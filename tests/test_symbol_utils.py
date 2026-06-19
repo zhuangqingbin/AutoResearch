@@ -48,6 +48,22 @@ class TestNormalizeSymbol(unittest.TestCase):
         # must not be mangled into a fake forex pair.
         self.assertEqual(normalize_symbol("ABCDEF"), "ABCDEF")
 
+    def test_bare_china_a_share_codes_get_exchange_suffix(self):
+        # Users may type the bare 6-digit code; infer the Yahoo exchange suffix.
+        self.assertEqual(normalize_symbol("600519"), "600519.SS")    # Shanghai main
+        self.assertEqual(normalize_symbol("688981"), "688981.SS")    # Shanghai STAR
+        self.assertEqual(normalize_symbol("000001"), "000001.SZ")    # Shenzhen main
+        self.assertEqual(normalize_symbol("300750"), "300750.SZ")    # ChiNext
+        self.assertEqual(normalize_symbol("830799"), "830799.BJ")    # Beijing
+        self.assertEqual(normalize_symbol(" 600519 "), "600519.SS")  # trimmed
+
+    def test_non_a_share_numeric_left_alone(self):
+        # Only bare 6-digit codes are A-shares; other numeric forms pass through.
+        self.assertEqual(normalize_symbol("600519.SS"), "600519.SS")  # already suffixed
+        self.assertEqual(normalize_symbol("0700.HK"), "0700.HK")      # HK code + suffix
+        self.assertEqual(normalize_symbol("12345"), "12345")          # 5 digits
+        self.assertEqual(normalize_symbol("1234567"), "1234567")      # 7 digits
+
     def test_empty_input_passthrough(self):
         self.assertEqual(normalize_symbol(""), "")
 

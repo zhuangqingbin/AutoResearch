@@ -80,6 +80,18 @@ _YAHOO_SAFE = re.compile(r"^[A-Za-z0-9._\-\^=]+$")
 _CRYPTO_QUOTES = ("USDT", "USDC", "USD")
 
 
+# Mainland-China A-shares: yfinance needs an exchange suffix, but users often
+# type the bare 6-digit code. The leading digit identifies the exchange
+# (Shanghai .SS: 6xx main / 688 STAR, 9xx B-share; Shenzhen .SZ: 0xx main/SME,
+# 3xx ChiNext, 2xx B-share; Beijing .BJ: 4xx / 8xx). A bare 6-digit all-numeric
+# symbol is unambiguously an A-share — no other Yahoo market uses that form.
+_CN_EXCHANGE_BY_LEAD = {
+    "0": "SZ", "2": "SZ", "3": "SZ",
+    "4": "BJ", "8": "BJ",
+    "6": "SS", "9": "SS",
+}
+
+
 def _normalize_crypto(s: str) -> str | None:
     """Return ``<BASE>-USD`` if ``s`` is a known crypto quoted in USD/USDT/USDC.
 
@@ -104,7 +116,9 @@ def normalize_symbol(raw: str) -> str:
       2. Crypto rule: a known crypto base quoted in USD/USDT/USDC (dashed or
          not) -> ``BASE-USD``.
       3. Forex rule: six letters that are two ISO currency codes -> ``PAIR=X``.
-      4. Otherwise the upper-cased symbol is returned unchanged (plain
+      4. China A-share rule: a bare 6-digit code -> ``CODE.SS/.SZ/.BJ`` keyed
+         on the leading digit.
+      5. Otherwise the upper-cased symbol is returned unchanged (plain
          equities, ETFs, Yahoo-native symbols like ``GC=F`` or ``^GSPC``).
 
     A trailing ``+`` (broker CFD marker, e.g. ``XAUUSD+``) is stripped before
@@ -125,6 +139,8 @@ def normalize_symbol(raw: str) -> str:
         canonical = crypto
     elif len(s) == 6 and s[:3] in _FOREX_CURRENCIES and s[3:] in _FOREX_CURRENCIES:
         canonical = f"{s}=X"
+    elif len(s) == 6 and s.isdigit() and s[0] in _CN_EXCHANGE_BY_LEAD:
+        canonical = f"{s}.{_CN_EXCHANGE_BY_LEAD[s[0]]}"
     else:
         canonical = s
 
