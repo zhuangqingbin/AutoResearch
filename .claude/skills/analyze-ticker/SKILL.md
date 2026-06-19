@@ -21,12 +21,12 @@ TradingAgents = `确定性数据工具(免费)` + `LLM 多 agent 推理(要钱)`
 
 1. **取数（零 LLM）**：
    ```bash
-   uv run python scripts/harvest_context.py TICKER [YYYY-MM-DD] [stock|crypto]
+   uv run python scripts/harvest_context.py TICKER [YYYY-MM-DD] [stock|crypto] [PEER1,PEER2,...]
    ```
-   → 真实数据落到 `context/<TICKER>_<DATE>.md`（~80KB）。TICKER 必带交易所后缀（见 playbook）。日期默认今天。
+   → 真实数据落到 `context/<TICKER>_<DATE>.md`（~84KB，含 v2 期权/分析师/财报/同业）。TICKER 必带交易所后缀（见 playbook）。日期默认今天。第 4 参=同业(可选,逗号分隔)，缺省用内置映射或仅基准。
 2. **读 context**：分页读 `context/<TICKER>_<DATE>.md`（文件大，用 offset/limit 或 Grep 定位）。锁定：验证快照的最新收盘+指标、个股/全球新闻、8 个 FRED 宏观、4 张财报。
-3. **读 playbook**：读本目录的 `engine-playbook.md`，拿到 12 个 agent 的角色/顺序/输出格式/五档评级，**不要回去重读 60 个源文件**。
-4. **扮演 12 个 agent**：按真实 LangGraph 顺序逐段产出。报告目录命名 **`reports/<TICKER>_<分析日YYYYMMDD>/`**（分析日 = 第 1 步用的那个日期；如 `2026-06-19` → 目录 `NVDA_20260619`，去掉连字符），子结构见 playbook。**必须把 12 个文件全部写齐**；每段的**每个数字必须来自第 2 步的 context，禁止凭记忆/编造**。
+3. **读 playbook**：读本目录的 `engine-playbook.md`，拿到 **17 个 agent**（v1 12 + v2 5：估值/催化剂&定位/同业/证伪/红队）的角色/顺序/输出格式/五档评级，**不要回去重读 60 个源文件**。
+4. **扮演 17 个 agent**：按真实 LangGraph 顺序逐段产出。报告目录命名 **`reports/<TICKER>_<分析日YYYYMMDD>/`**（分析日 = 第 1 步用的那个日期；如 `2026-06-19` → 目录 `NVDA_20260619`，去掉连字符），子结构见 playbook。**写齐 17 个文件**（每段结尾带 `置信度:` 行；v2 段即便缺了 assemble 也会自动跳过，但应尽量写齐）；每段的**每个数字必须来自第 2 步的 context，禁止凭记忆/编造**。
 5. **组装+校验**：
    ```bash
    uv run python scripts/assemble_report.py reports/<TICKER>_<分析日YYYYMMDD>
@@ -39,6 +39,7 @@ TradingAgents = `确定性数据工具(免费)` + `LLM 多 agent 推理(要钱)`
 - 以 `get_verified_market_snapshot` 为价格/指标的**唯一真值**；其他来源与之冲突时**标注冲突**，不要私自调和。
 - **已知数据坑必须如实标注**（详见 playbook）：①头条净利可能含非经营投资收益→拆出营业利润；②yfinance FCF 字段常与现金流量表打架→以报表为准；③内部人卖出多为 10b5-1 预设→点明别过度解读；④Polymarket/StockTwits/Reddit 常取不到→降级处理、下调情绪置信度。
 - 分析窗口**钉死在分析日**，绝不使用未来数据。
+- **(v2)** 全员每份报告结尾带 `置信度: 高/中/低 ｜ 最大不确定项: …`；PM 产出含**三档情景(目标+概率)+期望值+触发位**。新增数据坑见 playbook #6–8（Reported EPS≠GAAP摊薄、期权/卖方美股为主、同业选择）。
 - 多空/风控辩论必须有**真实张力**（不许橡皮图章式一边倒）。
 - 收尾必须写明：**这是我(Claude)的推理产出、非 LangGraph 自动运行；仅供研究，非投资建议。**
 
