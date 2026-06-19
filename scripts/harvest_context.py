@@ -847,14 +847,17 @@ def _section(title: str, fn, *args, **kwargs) -> str:
 
 
 def main() -> int:
-    if len(sys.argv) < 2:
+    flags = {a for a in sys.argv[1:] if a.startswith("--")}
+    pos = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if not pos:
         print(__doc__)
         return 1
-
-    ticker = sys.argv[1]
-    trade_date = sys.argv[2] if len(sys.argv) > 2 else date.today().isoformat()
-    asset_type = sys.argv[3] if len(sys.argv) > 3 else "stock"
-    peers_arg = sys.argv[4] if len(sys.argv) > 4 else ""
+    # --slim:轻量模式,只 harvest 决策驱动块(scan-market L3b / analyze-ticker-lite 用),体积/token 大幅下降
+    slim = "--slim" in flags
+    ticker = pos[0]
+    trade_date = pos[1] if len(pos) > 1 else date.today().isoformat()
+    asset_type = pos[2] if len(pos) > 2 else "stock"
+    peers_arg = pos[3] if len(pos) > 3 else ""
     peers = [p.strip() for p in peers_arg.split(",") if p.strip()] or PEER_MAP.get(ticker.upper(), [])
 
     set_config(DEFAULT_CONFIG)
@@ -864,7 +867,8 @@ def main() -> int:
     price_start = (d - timedelta(days=400)).strftime("%Y-%m-%d")  # >200 trading days for 200 SMA
     news_start = (d - timedelta(days=14)).strftime("%Y-%m-%d")
 
-    print(f"[harvest v4] {ticker} @ {trade_date} (asset_type={asset_type}, peers={peers or 'none'})", flush=True)
+    print(f"[harvest v4{' SLIM' if slim else ''}] {ticker} @ {trade_date} "
+          f"(asset_type={asset_type}, peers={peers or 'none'})", flush=True)
 
     identity = resolve_instrument_identity(ticker)
     instrument_context = build_instrument_context(ticker, asset_type, identity)
@@ -877,13 +881,14 @@ def main() -> int:
     ]
 
     print("[market]", flush=True)
-    parts.append(_section(
-        f"Price history (OHLCV) {price_start} → {end}",
-        get_stock_data, {"symbol": ticker, "start_date": price_start, "end_date": end}))
-    parts.append(_section(
-        "Technical indicators (full menu)",
-        get_indicators, {"symbol": ticker, "indicator": ",".join(INDICATORS),
-                         "curr_date": end, "look_back_days": 30}))
+    if not slim:  # OHLCV 400天(最大块)+ 30天指标多序列:slim 用 snapshot 的当前指标值即可(去冗余)
+        parts.append(_section(
+            f"Price history (OHLCV) {price_start} → {end}",
+            get_stock_data, {"symbol": ticker, "start_date": price_start, "end_date": end}))
+        parts.append(_section(
+            "Technical indicators (full menu)",
+            get_indicators, {"symbol": ticker, "indicator": ",".join(INDICATORS),
+                             "curr_date": end, "look_back_days": 30}))
     parts.append(_section(
         "Verified market snapshot (source of truth)",
         get_verified_market_snapshot, {"symbol": ticker, "curr_date": end, "look_back_days": 30}))
@@ -900,48 +905,53 @@ def main() -> int:
     parts.append(_section(
         f"Ticker news {news_start} → {end}",
         ticker_news_block, ticker, news_start, end))
-    parts.append(_section("Global / macro news", get_global_news, {"curr_date": end}))
-    parts.append(_section("Insider transactions", get_insider_transactions, {"ticker": ticker}))
-    parts.append(_section("Ownership & short interest (v3)", ownership_short, ticker))
+    if not slim:  # 全球宏观新闻 / 内部交易 / 持仓做空:决策卡用不上
+        parts.append(_section("Global / macro news", get_global_news, {"curr_date": end}))
+        parts.append(_section("Insider transactions", get_insider_transactions, {"ticker": ticker}))
+        parts.append(_section("Ownership & short interest (v3)", ownership_short, ticker))
     if _is_ashare(ticker):
         parts.append(_section("股东户数 / 散户数量 (A股, v4)",
                               ashare_shareholder_count, normalize_symbol(ticker)))
 
-    print("[macro]", flush=True)
-    for series in MACRO:
-        parts.append(_section(f"Macro: {series}", get_macro_indicators,
-                              {"indicator": series, "curr_date": end}))
-    if _is_ashare(ticker):
-        parts.append(_section("China market backdrop (A-share)", china_backdrop, end))
+    if not slim:  # 8 个 FRED 宏观 + 中国背景 + 预测市场:对单只决策卡是背景噪音
+        print("[macro]", flush=True)
+        for series in MACRO:
+            parts.append(_section(f"Macro: {series}", get_macro_indicators,
+                                  {"indicator": series, "curr_date": end}))
+        if _is_ashare(ticker):
+            parts.append(_section("China market backdrop (A-share)", china_backdrop, end))
 
-    print("[prediction markets]", flush=True)
-    parts.append(_section("Prediction markets (Polymarket; WebSearch fallback if blocked)",
-                          prediction_markets_or_websearch_note, PREDICTION_TOPICS))
+        print("[prediction markets]", flush=True)
+        parts.append(_section("Prediction markets (Polymarket; WebSearch fallback if blocked)",
+                              prediction_markets_or_websearch_note, PREDICTION_TOPICS))
 
     print("[fundamentals]", flush=True)
     parts.append(_section("Fundamentals overview", get_fundamentals, {"ticker": ticker, "curr_date": end}))
     parts.append(_section("Income statement (quarterly)", get_income_statement,
                           {"ticker": ticker, "freq": "quarterly", "curr_date": end}))
-    parts.append(_section("Balance sheet (quarterly)", get_balance_sheet,
-                          {"ticker": ticker, "freq": "quarterly", "curr_date": end}))
-    parts.append(_section("Cash flow (quarterly)", get_cashflow,
-                          {"ticker": ticker, "freq": "quarterly", "curr_date": end}))
+    if not slim:  # 资产负债表/现金流量表全表:slim 用 solvency + earnings-quality 的摘要替代
+        parts.append(_section("Balance sheet (quarterly)", get_balance_sheet,
+                              {"ticker": ticker, "freq": "quarterly", "curr_date": end}))
+        parts.append(_section("Cash flow (quarterly)", get_cashflow,
+                              {"ticker": ticker, "freq": "quarterly", "curr_date": end}))
     parts.append(_section("Earnings quality / forensics (v3)", earnings_quality_metrics, ticker))
     parts.append(_section("Solvency & refinancing (v4)", solvency_block, ticker))
 
     # --- v2 enrichments (yfinance direct; US-centric, degrade gracefully) ---
-    print("[v2: options / analyst / earnings / peers]", flush=True)
-    parts.append(_section("Options & implied volatility (v2)", options_iv_summary, ticker, end))
+    print("[v2: analyst / earnings / calendar]", flush=True)
+    if not slim:  # 期权链(A股空)+ 同业全表(取数慢):决策卡靠自身估值 + 卖方目标即可
+        parts.append(_section("Options & implied volatility (v2)", options_iv_summary, ticker, end))
     parts.append(_section("Analyst consensus & price targets (v2)", analyst_consensus, ticker))
     parts.append(_section("Earnings & events calendar (v2)", earnings_calendar, ticker))
     if _is_ashare(ticker):
         parts.append(_section("Corporate calendar — A股 解禁/业绩预告 (v4)",
                               ashare_corporate_calendar, normalize_symbol(ticker), end))
-    parts.append(_section("Peer-relative valuation & strength (v2)", peer_relative, ticker, peers, end))
+    if not slim:
+        parts.append(_section("Peer-relative valuation & strength (v2)", peer_relative, ticker, peers, end))
 
     out_dir = ROOT / "context"
     out_dir.mkdir(exist_ok=True)
-    out_path = out_dir / f"{ticker}_{trade_date}.md"
+    out_path = out_dir / f"{ticker}_{trade_date}{'_slim' if slim else ''}.md"
     out_path.write_text("".join(parts), encoding="utf-8")
     print(f"\n[saved] {out_path}  ({out_path.stat().st_size:,} bytes)", flush=True)
     return 0
