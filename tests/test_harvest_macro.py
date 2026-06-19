@@ -41,3 +41,15 @@ def test_recent_rows_picks_recent_end_regardless_of_sort_order():
     assert harvest_macro._recent_rows(asc, n=2)["v"].tolist() == [2, 3]
     # descending frame (akshare PPI/PMI style): most-recent rows are at the head
     assert harvest_macro._recent_rows(desc, n=2)["v"].tolist() == [3, 2]
+
+
+@pytest.mark.unit
+def test_basket_table_renders_rows_and_handles_missing():
+    rows = [
+        {"label": "Gold", "symbol": "GC=F", "last": 2400.0, "chg_1m": "+3.10%", "chg_ytd": "+15.00%"},
+        {"label": "USDCNY", "symbol": "CNY=X", "last": None, "chg_1m": "n/a", "chg_ytd": "n/a"},
+    ]
+    table = harvest_macro._basket_table(rows)
+    assert "| Gold | GC=F | 2400.0 | +3.10% | +15.00% |" in table
+    assert "| USDCNY | CNY=X | n/a | n/a | n/a |" in table   # None last -> 'n/a', no crash
+    assert table.startswith("| Asset | Symbol |")

@@ -184,6 +184,45 @@ def china_macro_block(curr_date: str) -> str:
     return "\n\n".join(out)
 
 
+def _basket_table(rows: list[dict]) -> str:
+    """Render the cross-asset basket as a markdown table (pure; None -> 'n/a')."""
+    head = "| Asset | Symbol | Last | Δ1m | ΔYTD |\n|---|---|---:|---:|---:|"
+    body = [
+        f"| {r['label']} | {r['symbol']} | {'n/a' if r['last'] is None else r['last']} "
+        f"| {r['chg_1m']} | {r['chg_ytd']} |"
+        for r in rows
+    ]
+    return head + "\n" + "\n".join(body)
+
+
+def cross_asset_block(curr_date: str) -> str:
+    """Cross-asset price basket via yfinance: last + 1-month + YTD change.
+    Windows end at curr_date (lookahead-safe). yfinance returns a tz-aware index;
+    we normalize to naive so date-string masks don't raise tz-compare errors."""
+    end = datetime.strptime(curr_date, "%Y-%m-%d")
+    start = (end - timedelta(days=400)).strftime("%Y-%m-%d")
+    m_cut = (end - timedelta(days=30)).strftime("%Y-%m-%d")
+    ytd_anchor = f"{end.year}-01-01"
+    rows = []
+    for label, symbol in CROSS_ASSET.items():
+        last = chg_1m = chg_ytd = None
+        try:
+            hist = yf.Ticker(symbol).history(start=start, end=curr_date)["Close"].dropna()
+            if getattr(hist.index, "tz", None) is not None:
+                hist.index = hist.index.tz_localize(None)
+            if len(hist):
+                last = round(float(hist.iloc[-1]), 4)
+                m_ago = hist[hist.index <= m_cut]
+                ytd = hist[hist.index >= ytd_anchor]
+                chg_1m = _pct_change(float(m_ago.iloc[-1]), last) if len(m_ago) else "n/a"
+                chg_ytd = _pct_change(float(ytd.iloc[0]), last) if len(ytd) else "n/a"
+        except Exception:  # noqa: BLE001 — degrade per-symbol
+            pass
+        rows.append({"label": label, "symbol": symbol,
+                     "last": last, "chg_1m": chg_1m or "n/a", "chg_ytd": chg_ytd or "n/a"})
+    return _basket_table(rows)
+
+
 def main() -> int:
     trade_date = sys.argv[1] if len(sys.argv) > 1 else date.today().isoformat()
     datetime.strptime(trade_date, "%Y-%m-%d")  # validate / fail loud on bad date
@@ -201,6 +240,9 @@ def main() -> int:
     parts.append(_section("US macro (FRED)", us_macro_block, end))
     parts.append(_section("China macro (akshare macro_china)", china_macro_block, end))
     parts.append(_section("Global outer layer (FRED international + WebSearch)", global_macro_block, end))
+
+    print("[cross-asset]", flush=True)
+    parts.append(_section("Cross-asset price basket (yfinance)", cross_asset_block, end))
 
     out_dir = ROOT / "context" / "macro" / trade_date
     out_dir.mkdir(parents=True, exist_ok=True)
