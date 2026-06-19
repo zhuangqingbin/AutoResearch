@@ -25,7 +25,9 @@
 
 ---
 
-# TradingAgents: Multi-Agents LLM Financial Trading Framework
+# AutoResearch: Multi-Agent LLM Financial Trading Research Framework
+
+> **About this fork — AutoResearch.** A refocused fork of [TradingAgents](https://github.com/TauricResearch/TradingAgents). The paid-LLM multi-agent path (LangGraph orchestration, provider clients, the CLI, and the batch runner) has been **removed**; the multi-agent analysis now runs **in-session with Claude as the engine** via the `analyze-ticker` skill, on top of the free data layer only (`tradingagents/dataflows` + `tradingagents/agents/utils` — yfinance / FRED, keyless + `FRED_API_KEY`). Start at [`CLAUDE.md`](CLAUDE.md) and [`.claude/skills/analyze-ticker/`](.claude/skills/analyze-ticker/). Sections below that mention LLM providers, model catalogs, or `cli`/`run_analysis` usage are **legacy upstream docs** kept for reference.
 
 ## News
 - [2026-05] **TradingAgents v0.2.5** released with the grounded Sentiment Analyst, GPT-5.5 etc. model coverage, Qwen/GLM/MiniMax dual-region support, `TRADINGAGENTS_*` env-var configurability with API-key auto-detection, remote Ollama support, non-US alpha benchmarks, and ticker path-traversal hardening. See [CHANGELOG.md](CHANGELOG.md) for the full list.
