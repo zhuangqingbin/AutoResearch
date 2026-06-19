@@ -97,6 +97,23 @@ def _ak_call(fn, tries: int = 3, backoff: float = 1.5):
     raise last
 
 
+def _recent_rows(df, n: int = 6):
+    """Most-recent n rows from an akshare macro frame, robust to sort order.
+    akshare endpoints are inconsistently ordered (CPI ascending, PPI/PMI
+    descending) and name their date column differently; trust the frame's own
+    monotonic order and pick the recent END, so we never show ancient rows."""
+    date_col = next(
+        (c for c in ("日期", "月份", "时间", "数据日期", "发布时间", "date") if c in df.columns),
+        df.columns[0],
+    )
+    try:
+        s = df[date_col].astype(str)
+        ascending = s.iloc[0] <= s.iloc[-1]
+        return df.tail(n) if ascending else df.head(n)
+    except Exception:  # noqa: BLE001 — never let recency selection crash the block
+        return df.tail(n)
+
+
 def _section(title: str, fn, *args, **kwargs) -> str:
     """Run one data call, capturing output or a readable error per section.
     Verbatim from scripts/harvest_context.py."""
@@ -107,6 +124,64 @@ def _section(title: str, fn, *args, **kwargs) -> str:
     except Exception as e:  # noqa: BLE001 — one flaky vendor must not kill the harvest
         body = f"_ERROR fetching this section: {e}_\n```\n{traceback.format_exc()}```"
     return f"\n## {title}\n\n{body}\n"
+
+
+def us_macro_block(curr_date: str) -> str:
+    """US regional macro: every US_FRED series via the project's FRED tool."""
+    out = []
+    for series in US_FRED:
+        try:
+            md = get_macro_indicators.invoke({"indicator": series, "curr_date": curr_date})
+        except Exception as e:  # noqa: BLE001
+            md = f"_({series} unavailable: {e})_"
+        out.append(f"### {series}\n\n{md}")
+    return "\n\n".join(out)
+
+
+def global_macro_block(curr_date: str) -> str:
+    """Global outer layer: FRED international series by raw ID (passthrough).
+    Series that FRED does not carry return MACRO_DATA_UNAVAILABLE — kept inline so
+    the build-time smoke run can spot and drop them."""
+    out = []
+    for label, series_id in INTL_FRED.items():
+        try:
+            md = get_macro_indicators.invoke({"indicator": series_id, "curr_date": curr_date})
+        except Exception as e:  # noqa: BLE001
+            md = f"_({series_id} unavailable: {e})_"
+        out.append(f"### {label} ({series_id})\n\n{md}")
+    out.append(
+        "\n_BOJ/ECB forward guidance, EM policy rates, and any series returning "
+        "MACRO_DATA_UNAVAILABLE above → fetch via WebSearch at reasoning time, tag '实时网查'._"
+    )
+    return "\n\n".join(out)
+
+
+def china_macro_block(curr_date: str) -> str:
+    """China regional macro via akshare macro_china_* (OPTIONAL dep). Defensive:
+    endpoint/column drift across akshare versions → degrade + WebSearch directive,
+    never silently collapse."""
+    try:
+        import akshare as ak
+    except ImportError:
+        return ("_akshare 未安装(`uv add akshare`)→ 中国宏观走 WebSearch:CPI/PPI/PMI(官+财新)/"
+                "社融·M2/LPR/外储/进出口/GDP/工增/社零/地产投资,标『实时网查』。_")
+    # (label, callable) — each guarded independently so one bad endpoint can't kill the block.
+    specs = [
+        ("CPI 当月同比", lambda: ak.macro_china_cpi_monthly()),
+        ("PPI 当月同比", lambda: ak.macro_china_ppi()),
+        ("制造业 PMI", lambda: ak.macro_china_pmi()),
+        ("社融规模存量", lambda: ak.macro_china_shrzgm()),
+        ("货币供应 M2", lambda: ak.macro_china_money_supply()),
+        ("LPR 利率", lambda: ak.macro_china_lpr()),
+    ]
+    out = []
+    for label, fn in specs:
+        try:
+            df = _ak_call(fn)
+            out.append(f"### {label}\n\n```\n{_recent_rows(df).to_string(index=False)}\n```")
+        except Exception as e:  # noqa: BLE001
+            out.append(f"### {label}\n\n_取数失败({e})→ WebSearch『{label} 最新』,标『实时网查』。_")
+    return "\n\n".join(out)
 
 
 def main() -> int:
@@ -122,7 +197,10 @@ def main() -> int:
         f"+ yfinance + akshare. No LLM used._\n",
     ]
 
-    # Blocks are wired in Tasks 2–4.
+    print("[regional macro]", flush=True)
+    parts.append(_section("US macro (FRED)", us_macro_block, end))
+    parts.append(_section("China macro (akshare macro_china)", china_macro_block, end))
+    parts.append(_section("Global outer layer (FRED international + WebSearch)", global_macro_block, end))
 
     out_dir = ROOT / "context" / "macro" / trade_date
     out_dir.mkdir(parents=True, exist_ok=True)
