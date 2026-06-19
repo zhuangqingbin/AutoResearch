@@ -223,6 +223,70 @@ def cross_asset_block(curr_date: str) -> str:
     return _basket_table(rows)
 
 
+def meso_ashare_block(curr_date: str) -> str:
+    """A-share 中观骨架 via akshare (OPTIONAL dep): sector fund-flow, Dragon-Tiger
+    (游资), limit-up sentiment, northbound summary. Each guarded independently;
+    failures degrade to an explicit WebSearch directive, never silent collapse."""
+    try:
+        import akshare as ak
+    except ImportError:
+        return ("_akshare 未安装 → A股中观走 WebSearch:行业资金流入流出排名 / 龙虎榜游资 / "
+                "涨停家数·连板 / 北向资金,标『实时网查』。_")
+    out = []
+    # 1) 行业资金流排名(主力净流入)— try Eastmoney, fall back to THS, then WebSearch.
+    #    Both sources sort by net flow, so head=净流入领先、tail=净流出领先.
+    ff_md = None
+    for src, call in (
+        ("Eastmoney", lambda: ak.stock_sector_fund_flow_rank(indicator="今日", sector_type="行业资金流")),
+        ("THS", lambda: ak.stock_fund_flow_industry(symbol="即时")),
+    ):
+        try:
+            ff = _ak_call(call)
+            ff_md = (f"**行业主力资金流(今日, {src};头部=净流入,尾部=净流出)**\n\n```\n"
+                     + ff.head(10).to_string(index=False)
+                     + "\n...\n" + ff.tail(5).to_string(index=False) + "\n```")
+            break
+        except Exception:  # noqa: BLE001 — try next source
+            continue
+    out.append(ff_md or "_行业资金流取数失败(Eastmoney+THS 均失败)→ "
+               "WebSearch『今日行业主力资金净流入排名 净流出』,标『实时网查』。_")
+    # 2) 龙虎榜 / 游资(近三月统计)
+    try:
+        lhb = _ak_call(lambda: ak.stock_lhb_stock_statistic_em(symbol="近三月"))
+        out.append("**龙虎榜活跃个股(近三月,游资/机构席位线索)**\n\n```\n"
+                   + lhb.head(12).to_string(index=False) + "\n```")
+    except Exception as e:  # noqa: BLE001
+        out.append(f"_龙虎榜取数失败({e})→ WebSearch『近期龙虎榜 游资 营业部』,标『实时网查』。_")
+    # 3) 涨停情绪(回看最近有数据的交易日)
+    try:
+        base = datetime.strptime(curr_date, "%Y-%m-%d")
+        zt = used = None
+        for back in range(6):
+            d = (base - timedelta(days=back)).strftime("%Y%m%d")
+            try:
+                z = ak.stock_zt_pool_em(date=d)
+            except Exception:
+                z = None
+            if z is not None and len(z):
+                zt, used = z, d
+                break
+        if zt is not None:
+            maxlb = int(zt["连板数"].astype(int).max())
+            hot = "、".join(f"{k}({v})" for k, v in zt["所属行业"].value_counts().head(5).items())
+            out.append(f"**涨停情绪({used})**:涨停 **{len(zt)}** 家、最高 **{maxlb} 连板**;"
+                       f"涨停最集中行业:{hot}。(涨停多+连板高=情绪亢奋;少=退潮)")
+    except Exception as e:  # noqa: BLE001
+        out.append(f"_涨停池取数失败({e})→ WebSearch『今日涨停家数 最高连板 涨停行业』,标『实时网查』。_")
+    # 4) 北向资金(汇总;个股实时披露 2024-08 已停)
+    try:
+        nb = _ak_call(lambda: ak.stock_hsgt_fund_flow_summary_em())
+        out.append("**北向资金(汇总;注:个股实时披露 2024-08 已停,仅汇总/板块/季度口径)**\n\n```\n"
+                   + nb.tail(8).to_string(index=False) + "\n```")
+    except Exception as e:  # noqa: BLE001
+        out.append(f"_北向资金取数失败({e})→ WebSearch『北向资金 今日净流入 行业』,标『实时网查』。_")
+    return "\n\n".join(out)
+
+
 def main() -> int:
     trade_date = sys.argv[1] if len(sys.argv) > 1 else date.today().isoformat()
     datetime.strptime(trade_date, "%Y-%m-%d")  # validate / fail loud on bad date
@@ -243,6 +307,9 @@ def main() -> int:
 
     print("[cross-asset]", flush=True)
     parts.append(_section("Cross-asset price basket (yfinance)", cross_asset_block, end))
+
+    print("[A股中观]", flush=True)
+    parts.append(_section("A股中观骨架 (行业资金/游资/涨停情绪/北向)", meso_ashare_block, end))
 
     out_dir = ROOT / "context" / "macro" / trade_date
     out_dir.mkdir(parents=True, exist_ok=True)
