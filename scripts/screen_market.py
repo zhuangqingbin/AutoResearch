@@ -218,7 +218,10 @@ def fetch_universe(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: b
     return _apply_universe_gates(df, cap_floor_yi=cap_floor_yi, include_bj=include_bj)
 
 
-def _apply_universe_gates(df: pd.DataFrame, cap_floor_yi: float = 30.0, include_bj: bool = False) -> pd.DataFrame:
+_GATE_INFO: dict = {}   # 跨函数传 L0 原始数(全A,硬门前);pandas .attrs 不可靠故用模块级
+
+
+def _apply_universe_gates(df: pd.DataFrame, cap_floor_yi: float = 30.0, include_bj: bool = True) -> pd.DataFrame:
     """硬门:剔 ST/退市/停牌/次新代理 + 市值地板 + 北交所开关。"""
     df = df.copy()
     name = df["name"].fillna("")
@@ -232,6 +235,7 @@ def _apply_universe_gates(df: pd.DataFrame, cap_floor_yi: float = 30.0, include_
         # 北交所:8/4 开头(及 920 新段)
         keep &= ~df["code"].str.match(r"^(8|4|920)")
     out = df[keep].reset_index(drop=True)
+    _GATE_INFO["n_raw"] = len(df)   # 全A 原始数(供漏斗显示 全A → 硬门)
     print(f"[L0] universe: {len(df)} → 过门 {len(out)} "
           f"(cap≥{cap_floor_yi}亿, 北交所={'纳入' if include_bj else '排除'})", file=sys.stderr)
     return out
@@ -243,15 +247,23 @@ LENS_NAMES = ["momentum", "growth", "value", "reversal"]
 
 
 def lens_momentum(df: pd.DataFrame) -> pd.DataFrame:
-    """趋势动量:RS35 + 主力净流入30 + 趋势结构20 + 量能15;过热 −15。松门:60日或YTD涨幅>0。"""
+    """趋势动量:RS40 + 主力净流入30 + 趋势结构30;过热 −15。松门:60日或YTD涨幅>0。
+
+    量能项(原 15)经 factor_lab 实证剔除:vol_ratio 对 T+1 收益显著**负**相关(rank IC t=-2.31,
+    样本前后半皆负)=放量滞涨/派发,turnover 近噪声;剔后复合 T+1 ICIR +32% 且 T+5/10 不降。
+    主力净流入对 T+1 近中性、对 T+5/10 最强 → 作为 swing 信号保留高权重。(见 factor_lab.py / spec §实证)
+    """
     g = df.copy()
     gate = (g["pct_60d"].fillna(-1) > 0) | (g["pct_ytd"].fillna(-1) > 0)
     rs = 0.6 * _pct(g["pct_60d"]) + 0.4 * _pct(g["pct_ytd"])
-    trend = 0.5 * (g["pct_60d"].fillna(0) > 0).astype(float) + 0.5 * _pct(g["pct_ytd"])
-    volume = 0.5 * _pct(g["vol_ratio"]) + 0.5 * _pct(g["turnover"])
-    score = _wsum({"rs": (rs, 35), "inflow": (_pct(g["main_inflow_yi"]), 30),
-                   "trend": (trend, 20), "volume": (volume, 15)})
+    if {"ma_bull", "above_ma60"} <= set(g.columns):  # 真趋势结构(tushare 多头排列 + 站上 MA60)
+        trend = 0.5 * _num(g["above_ma60"]).fillna(0.0) + 0.5 * _num(g["ma_bull"]).fillna(0.0)
+    else:
+        trend = 0.5 * (g["pct_60d"].fillna(0) > 0).astype(float) + 0.5 * _pct(g["pct_ytd"])
+    score = _wsum({"rs": (rs, 40), "inflow": (_pct(g["main_inflow_yi"]), 30), "trend": (trend, 30)})
     overheat = _pct(g["pct_60d"]) > 0.95          # 60日涨幅顶 5% = 抛物线顶
+    if "rsi6" in g.columns:                        # + RSI6 过热(真技术面确认)
+        overheat = overheat | (_num(g["rsi6"]) > 85)
     score = (score - overheat.astype(float) * 15).clip(lower=0)
     g["momentum_score"] = score
     g["momentum_gate"] = gate
@@ -287,8 +299,12 @@ def lens_value(df: pd.DataFrame) -> pd.DataFrame:
     g["_pe_pos"] = g["pe"].where(g["pe"] > 0)
     pe_lo = _pct_within(g, "_pe_pos", "industry", ascending=False)   # 低 PE = 高分
     pb_lo = _pct_within(g, "pb", "industry", ascending=False)
-    score = _wsum({"pe": (pe_lo, 35), "roe": (_pct(g["roe"]), 30),
-                   "pb": (pb_lo, 25), "margin": (_pct(g["gross_margin"]), 10)})
+    parts = {"pe": (pe_lo, 35), "roe": (_pct(g["roe"]), 30),
+             "pb": (pb_lo, 25), "margin": (_pct(g["gross_margin"]), 10)}
+    if "dv_ratio" in g.columns:   # 股息率可得(tushare)→ 恢复股息因子(原 push2 端点缺)
+        parts = {"pe": (pe_lo, 30), "roe": (_pct(g["roe"]), 25), "pb": (pb_lo, 20),
+                 "margin": (_pct(g["gross_margin"]), 10), "div": (_pct(g["dv_ratio"]), 15)}
+    score = _wsum(parts)
     gate = (g["pe"].fillna(-1) > 0) & (~g["is_st"]) \
         & (g["rev_yoy"].fillna(0) > -15) & (g["roe"].fillna(-1) > 0)
     g["value_score"] = score
@@ -298,9 +314,12 @@ def lens_value(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def lens_reversal(df: pd.DataFrame) -> pd.DataFrame:
-    """困境反转:边际改善35 + 超跌25 + 资金确认25 + 底部结构15。门:(改善∨资金)亮。
+    """困境反转:边际改善40 + 超跌30 + 资金确认30。门:(改善∨资金)亮。
 
-    超跌/底部结构需历史 → bulk 用 60日/YTD 跌幅 + 量能代理,真结构留给 L3b。
+    超跌需历史 → bulk 用 60日/YTD 跌幅代理,真结构留给 L3b。
+    原「底部结构」base 用 winner_rate(低获利盘=套牢=超跌底)——factor_lab 实测该用法 **regime 翻转**
+    (弱市低获利盘反弹、强市续跌)且全样本净**负**相关,不宜作静态正向因子 → 剔除,权重并入
+    改善/超跌/资金;筹码数据(winner_rate/cost)保留在 survivors 输出供 L3b 定性核。(见 spec §实证)
     """
     g = df.copy()
     accel = g["np_yoy"] - g["np_yoy_prev"]
@@ -309,9 +328,7 @@ def lens_reversal(df: pd.DataFrame) -> pd.DataFrame:
     oversold = 0.5 * _pct(g["pct_60d"], ascending=False) + 0.5 * _pct(g["pct_ytd"], ascending=False)
     improve_sc = 0.6 * improving.astype(float) + 0.4 * _pct(accel)
     fund_sc = 0.6 * inflow_on.astype(float) + 0.4 * _pct(g["main_inflow_yi"])
-    base = _pct(g["vol_ratio"])                       # 量能企稳代理(弱代理,L3b 核)
-    score = _wsum({"improve": (improve_sc, 35), "oversold": (oversold, 25),
-                   "fund": (fund_sc, 25), "base": (base, 15)})
+    score = _wsum({"improve": (improve_sc, 40), "oversold": (oversold, 30), "fund": (fund_sc, 30)})
     gate = (improving | inflow_on) & (~df["name"].fillna("").str.contains("退"))
     g["reversal_score"] = score
     g["reversal_gate"] = gate
@@ -378,38 +395,159 @@ def aggregate_sectors(survivors: pd.DataFrame, uni: pd.DataFrame, top_sectors: i
     return sec
 
 
+# ───────────────────────── L1 召回:轻门 + 行业条件化复合分 ─────────────────────────
+
+# 8 因子组(自然朝向:高=常规看多;真方向由 weights.json 的 IC 符号决定)。
+_GROUPS = ("momentum", "fund_main", "fund_retail", "chip", "north", "tech", "growth", "value")
+
+# weights.json 缺失时的先验(仅 __global__;慢因子 growth/value 给小权重——T+1 近噪声但仍纳入)。
+_PRIOR_WEIGHTS = {"meta": {"source": "prior(无 weights.json)"}, "weights": {"__global__": {
+    "momentum": 0.10, "fund_main": 0.06, "fund_retail": -0.02, "chip": 0.02,
+    "north": 0.03, "tech": -0.03, "growth": 0.03, "value": 0.03}}}
+
+
+def _load_weights(path: str = "context/factor_lab/weights.json") -> dict:
+    """读 factor_lab 校准产物;缺失则回落内置先验(并提示)。"""
+    p = Path(path)
+    if p.exists():
+        return json.loads(p.read_text(encoding="utf-8"))
+    print(f"[warn] {path} 不存在 → 用内置先验权重(建议先 factor_lab calibrate)", file=sys.stderr)
+    return _PRIOR_WEIGHTS
+
+
+def _blend(*parts) -> pd.Series:
+    """加权平均,跳过 NaN 子项(权重重归一)。parts = [(series, w), ...]。"""
+    num = den = None
+    for s, w in parts:
+        sv = s.fillna(0.0) * w
+        pv = s.notna().astype(float) * w
+        num = sv if num is None else num + sv
+        den = pv if den is None else den + pv
+    return num / den.replace(0, np.nan)
+
+
+def _factor_groups(df: pd.DataFrame) -> dict[str, pd.Series]:
+    """8 组子分(各 0–1 横截面分位,自然朝向)。缺列的组返回全 NaN。calibrate 与 composite 共用。"""
+    nan = pd.Series(np.nan, index=df.index)
+
+    def p(col, asc=True):
+        return _pct(df[col], ascending=asc) if col in df.columns else nan
+
+    has = set(df.columns)
+    return {
+        "momentum": _blend((p("pct_60d"), 0.6), (p("pct_ytd"), 0.4)),
+        "fund_main": p("main_net_ratio") if "main_net_ratio" in has else p("main_inflow_yi"),
+        "fund_retail": p("retail_net_yi"),
+        "chip": _blend((p("chip_concentration"), 0.5), (p("price_to_cost"), 0.5)),
+        "north": p("hk_ratio"),
+        "tech": _blend((p("rsi6"), 0.5), (p("rsi12"), 0.5)),
+        "growth": _blend((p("np_yoy"), 0.5), (p("rev_yoy"), 0.3), (p("roe"), 0.2)),
+        "value": _pct_within(df, "pe", "industry", ascending=False) if {"pe", "industry"} <= has else nan,
+    }
+
+
+def composite_score(df: pd.DataFrame, weights: dict) -> pd.DataFrame:
+    """行业条件化复合分:Σ (组分位−0.5) × 该行业组权重(signed IC);归一映射 0–100。
+
+    权重符号由校准 IC 决定(正=该组高分看多、负=看空);排序用 composite 即可。
+    """
+    groups = _factor_groups(df)
+    wmap = weights.get("weights", {})
+    glob = wmap.get("__global__", {})
+    ind = df["industry"] if "industry" in df.columns else pd.Series("", index=df.index)
+    out = df.copy()
+    comp = pd.Series(0.0, index=df.index)
+    wabs = pd.Series(0.0, index=df.index)
+    for name, s in groups.items():
+        out[f"score_{name}"] = (s * 100).round(1)
+        w = ind.map(lambda x, n=name: float(wmap.get(x, {}).get(n, glob.get(n, 0.0))))
+        comp += (s - 0.5).fillna(0.0) * w
+        wabs += s.notna().astype(float) * w.abs()
+    raw = comp / wabs.replace(0, np.nan)
+    comp100 = 50 + 50 * raw.clip(-1, 1)
+    # 过热抑制(风险叠加,**不改 IC 权重**):高动量 **且** 超买/获利盘满 = "见顶 leader" → 压低,
+    # 避免 T+1 动量校准把这类 froth 堆到召回顶端(swing 视角多为见顶,L4 实测被打回)。
+    if "pct_60d" in df.columns:
+        high_mom = _pct(df["pct_60d"]) > 0.90
+        exhausted = pd.Series(False, index=df.index)
+        if "rsi6" in df.columns:
+            exhausted = exhausted | (_num(df["rsi6"]) > 80)
+        if "winner_rate" in df.columns:
+            exhausted = exhausted | (_num(df["winner_rate"]) > 85)
+        comp100 = comp100 - (high_mom & exhausted).fillna(False).astype(float) * 8
+    out["composite"] = comp100.clip(lower=0).round(1)
+    return out
+
+
+def _recall_gate_a(df: pd.DataFrame, min_amount_yi: float = 0.0) -> pd.Series:
+    """L1 召回轻门:只去真正不可交易/无核心数据的尾部(召回优先,尽量不误杀)。"""
+    keep = df["amount_yi"].fillna(0) > min_amount_yi       # 有流动性/非停牌
+    keep &= df["close"].notna()                            # 有价
+    keep &= df["pct_60d"].notna() | df["pct_ytd"].notna()  # 有动量价(打分核心)
+    return keep
+
+
+def aggregate_sectors_overview(recall: pd.DataFrame, uni: pd.DataFrame) -> pd.DataFrame:
+    """板块概览(L2 不再聚合截断;仅供 L5 描述):各行业召回数 / 中位复合分 / 中位动量 / 中位主力净占比。"""
+    if "industry" not in recall.columns or not len(recall):
+        return pd.DataFrame(columns=["industry", "n_recall", "median_composite", "is_top"])
+    g = recall.groupby("industry")
+    sec = pd.DataFrame({"industry": g.size().index, "n_recall": g.size().to_numpy(),
+                        "median_composite": g["composite"].median().to_numpy()})
+    for col, name in [("pct_60d", "median_pct_60d"), ("main_net_ratio", "median_main_net_ratio")]:
+        if col in recall.columns:
+            sec = sec.merge(g[col].median().rename(name).reset_index(), on="industry", how="left")
+    sec = sec.sort_values("n_recall", ascending=False).reset_index(drop=True)
+    sec["is_top"] = sec.index < 8
+    return sec
+
+
 # ───────────────────────── 编排 + 输出 ─────────────────────────
 
 
-def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = False,
-        top_per_lens: int = 50, top_sectors: int = 5, outdir: Path | None = None) -> dict:
-    uni = fetch_universe(analysis_date, cap_floor_yi=cap_floor_yi, include_bj=include_bj)
-    survivors, tops = run_lenses(uni, top_per_lens=top_per_lens)
-    sectors = aggregate_sectors(survivors, uni, top_sectors=top_sectors)
+def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
+        recall_n: int = 1000, outdir: Path | None = None, source: str = "tushare") -> dict:
+    """L0 选集 + L1 召回(轻门 → 行业条件化复合分 → top recall_n)。零 LLM。"""
+    if source == "tushare":
+        from tushare_source import _RAW_COUNT, fetch_universe_tushare  # 默认源(东财 push2 常被封)
+        uni = fetch_universe_tushare(analysis_date, cap_floor_yi=cap_floor_yi, include_bj=include_bj)
+        n_raw = _RAW_COUNT.get("n", len(uni))
+    else:
+        uni = fetch_universe(analysis_date, cap_floor_yi=cap_floor_yi, include_bj=include_bj)
+        n_raw = _GATE_INFO.get("n_raw", len(uni))   # em 路径同模块,可靠
+    n_l0 = len(uni)
 
-    top_inds = set(sectors[sectors["is_top"]]["industry"])
-    in_top = survivors[survivors["industry"].isin(top_inds)].copy()
-    print(f"[L2] top 板块内 survivors(喂 L3a): {len(in_top)}", file=sys.stderr)
+    # L1 召回:Step A 轻门 → Step B 复合分 → top recall_n
+    uni = uni[_recall_gate_a(uni)].reset_index(drop=True)
+    weights = _load_weights()
+    scored = composite_score(uni, weights)
+    recall = scored.sort_values("composite", ascending=False).head(recall_n).reset_index(drop=True)
+    print(f"[L1 召回] L0 {n_l0} → 轻门 {len(uni)} → 复合分 top {len(recall)}", file=sys.stderr)
+    sectors = aggregate_sectors_overview(recall, uni)
 
     outdir = outdir or Path("context/scan") / analysis_date
     outdir.mkdir(parents=True, exist_ok=True)
-    keep = ["code", "name", "industry", "mktcap_yi", "close", "pct_60d", "pct_ytd",
-            "main_inflow_yi", "rev_yoy", "np_yoy", "roe", "pe", "pb",
-            "n_lens", "conviction", "lens_mean"] + [f"hit_{x}" for x in LENS_NAMES]
-    survivors[[c for c in keep if c in survivors.columns]].to_csv(outdir / "survivors.csv", index=False)
-    in_top[[c for c in keep if c in in_top.columns]].to_csv(outdir / "survivors_top_sectors.csv", index=False)
+    keep = (["code", "name", "industry", "composite"] + [f"score_{g}" for g in _GROUPS]
+            + ["mktcap_yi", "close", "pct_60d", "pct_ytd", "main_inflow_yi", "main_net_ratio",
+               "retail_net_yi", "winner_rate", "chip_concentration", "price_to_cost", "hk_ratio",
+               "rsi6", "rsi12", "pe", "pb", "dv_ratio", "np_yoy", "rev_yoy", "roe",
+               "ma_bull", "above_ma60"])
+    recall[[c for c in keep if c in recall.columns]].to_csv(outdir / "L1_recall_top1000.csv", index=False)
+    # 全量打分(所有过门股,按 composite 降序 + recalled 标记)→ A_pipeline 留全阶段数据,不截断
+    full = scored.sort_values("composite", ascending=False).reset_index(drop=True)
+    full.insert(0, "rank", range(1, len(full) + 1))
+    full.insert(1, "recalled", full["rank"] <= recall_n)
+    full[["rank", "recalled"] + [c for c in keep if c in full.columns]].to_csv(
+        outdir / "L1_scored_full.csv", index=False)
     sectors.to_csv(outdir / "sectors.csv", index=False)
-    for lens, t in tops.items():
-        t.to_csv(outdir / f"lens_{lens}.csv", index=False)
     (outdir / "meta.json").write_text(json.dumps({
-        "analysis_date": analysis_date, "universe": len(uni), "survivors": len(survivors),
-        "in_top_sectors": len(in_top), "n_sectors": len(sectors), "top_sectors": top_sectors,
-        "top_per_lens": top_per_lens, "cap_floor_yi": cap_floor_yi, "include_bj": include_bj,
+        "analysis_date": analysis_date, "universe_raw": n_raw, "universe": n_l0, "after_gate_a": len(uni),
+        "recall_n": len(recall), "cap_floor_yi": cap_floor_yi, "include_bj": include_bj, "source": source,
+        "weights_source": weights.get("meta", {}).get("source", "weights.json"),
     }, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"[done] 写出 → {outdir}/ (survivors / survivors_top_sectors / sectors / lens_* / meta.json)",
-          file=sys.stderr)
-    return {"universe": len(uni), "survivors": len(survivors),
-            "in_top_sectors": len(in_top), "sectors": len(sectors), "outdir": str(outdir)}
+    print(f"[done] L1 召回 → {outdir}/L1_recall_top1000.csv ({len(recall)})", file=sys.stderr)
+    return {"universe": n_l0, "after_gate_a": len(uni), "recall_n": len(recall),
+            "sectors": len(sectors), "outdir": str(outdir)}
 
 
 # ───────────────────────── 离线自测(无网络) ─────────────────────────
@@ -446,6 +584,20 @@ def _selftest() -> int:
         "rev_yoy_prev": rng.uniform(-40, 100, n),
         "main_inflow_yi": rng.uniform(-5, 8, n),
     })
+    # tushare 增强列(覆盖 value/momentum/reversal 的增强分支)
+    df["dv_ratio"] = rng.uniform(0, 6, n)
+    df["ma_bull"] = rng.integers(0, 2, n).astype(float)
+    df["above_ma60"] = rng.integers(0, 2, n).astype(float)
+    df["rsi6"] = rng.uniform(10, 95, n)
+    df["winner_rate"] = rng.uniform(0, 100, n)
+    df["cost_50pct"] = rng.uniform(5, 300, n)
+    # v2 富因子(资金结构/筹码集中度/北向/RSI12)
+    df["rsi12"] = rng.uniform(10, 95, n)
+    df["main_net_ratio"] = rng.uniform(-0.1, 0.1, n)
+    df["retail_net_yi"] = rng.uniform(-2, 2, n)
+    df["chip_concentration"] = rng.uniform(0.1, 2.0, n)
+    df["price_to_cost"] = rng.uniform(0.7, 1.5, n)
+    df["hk_ratio"] = rng.uniform(0, 30, n)
     df["is_st"] = False
 
     fails = []
@@ -475,6 +627,18 @@ def _selftest() -> int:
     if not sectors["sector_score"].is_monotonic_decreasing:
         fails.append("板块未按 sector_score 降序")
 
+    # 4) v2 召回:轻门 + 行业条件化复合分
+    ga = _recall_gate_a(df)
+    if ga.dtype != bool or ga.sum() == 0:
+        fails.append("recall gate_a 异常(非 bool 或全剔)")
+    comp = composite_score(df, _PRIOR_WEIGHTS)
+    cs = comp["composite"]
+    if not ((cs.dropna() >= 0).all() and (cs.dropna() <= 100).all()):
+        fails.append(f"composite 越界 [{cs.min()},{cs.max()}]")
+    for gname in ("momentum", "fund_main", "chip", "tech", "value"):
+        if f"score_{gname}" not in comp.columns:
+            fails.append(f"缺子分列 score_{gname}")
+
     # 3) 报告期 helper
     cases = {"2026-06-20": "20260331", "2026-09-15": "20260630",
              "2026-11-01": "20260930", "2026-02-01": "20250930"}
@@ -490,7 +654,7 @@ def _selftest() -> int:
         for f in fails:
             print("  -", f)
         return 1
-    print(f"SELFTEST ✅  四透镜打分/门/编排/板块聚合/报告期 全部通过 "
+    print(f"SELFTEST ✅  四透镜 + v2召回(轻门/复合分)/编排/板块/报告期 全过 "
           f"(survivors={len(survivors)}, sectors={len(sectors)})")
     return 0
 
@@ -499,12 +663,13 @@ def _selftest() -> int:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="scan-market L0–L2 确定性漏斗(零 LLM)")
+    ap = argparse.ArgumentParser(description="scan-market L0 选集 + L1 召回(确定性,零 LLM)")
     ap.add_argument("date", nargs="?", help="分析日 YYYY-MM-DD(缺省=今天)")
     ap.add_argument("--cap-floor", type=float, default=30.0, help="市值地板(亿),默认 30")
-    ap.add_argument("--include-bj", action="store_true", help="纳入北交所(默认排除)")
-    ap.add_argument("--top-per-lens", type=int, default=50, help="每透镜取前 N,默认 50")
-    ap.add_argument("--top-sectors", type=int, default=5, help="取前 N 强板块,默认 5")
+    ap.add_argument("--exclude-bj", action="store_true", help="排除北交所(默认纳入)")
+    ap.add_argument("--recall-n", type=int, default=1000, help="召回数(复合分 top N),默认 1000")
+    ap.add_argument("--source", choices=["em", "tushare"], default="tushare",
+                    help="universe 取数源:tushare=默认(push2 常被封);em=东财 push2")
     ap.add_argument("--selftest", action="store_true", help="离线验证打分逻辑(无网络)")
     args = ap.parse_args()
 
@@ -512,10 +677,10 @@ def main() -> int:
         return _selftest()
 
     analysis_date = args.date or date.today().isoformat()
-    res = run(analysis_date, cap_floor_yi=args.cap_floor, include_bj=args.include_bj,
-              top_per_lens=args.top_per_lens, top_sectors=args.top_sectors)
-    print(f"\nuniverse={res['universe']} → survivors={res['survivors']} "
-          f"→ top板块内={res['in_top_sectors']} (板块 {res['sectors']} 个)\n→ {res['outdir']}/")
+    res = run(analysis_date, cap_floor_yi=args.cap_floor, include_bj=not args.exclude_bj,
+              recall_n=args.recall_n, source=args.source)
+    print(f"\nL0 universe={res['universe']} → 轻门 {res['after_gate_a']} → 召回 top{res['recall_n']} "
+          f"(板块概览 {res['sectors']} 个)\n→ {res['outdir']}/L1_recall_top1000.csv")
     return 0
 
 

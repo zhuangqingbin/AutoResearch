@@ -1,4 +1,4 @@
-"""Assemble the per-agent markdown files into one complete_report.md (v4).
+"""Assemble the per-agent markdown files into one reports/analyze/<HHMM>_<TICKER>.md (v4).
 
 v4 reorganises the body from "org chart" order into "decision argument" order,
 split into two tiers so the note reads top-down like a real PM memo:
@@ -18,7 +18,8 @@ optional and skipped if absent. The final decision is still validated with the
 project's own ``parse_rating`` (the function behind ``SignalProcessor``).
 
 Usage:
-    python scripts/assemble_report.py reports/<YYYYMMDD>/<TICKER>
+    python scripts/assemble_report.py context/analyze/<TICKER>_<YYYYMMDD>
+    # → reports/analyze/<HHMM>_<TICKER>.md   (HHMM = 组装时本地时间)
 """
 
 import re
@@ -158,10 +159,14 @@ def main() -> int:
         for name, rel in present:
             out.append(_anchored("###", name, _read(root, rel)))
 
-    (root / "complete_report.md").write_text("\n".join(out), encoding="utf-8")
+    hhmm = datetime.now().strftime("%H%M")
+    out_dir = Path("reports/analyze")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{hhmm}_{ticker}.md"
+    out_path.write_text("\n".join(out), encoding="utf-8")
 
     rating = parse_rating(_read(root, DECISION_REL))
-    print(f"[assembled] {root / 'complete_report.md'}")
+    print(f"[assembled] {out_path}")
     print(f"[parse_rating → 5-tier signal] {rating}")
     if skipped:
         print("[note] 跳过未提供的可选 lens 分段: " + ", ".join(skipped))

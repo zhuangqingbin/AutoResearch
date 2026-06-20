@@ -50,6 +50,7 @@ def _load_env(env_path: Path) -> None:
 
 _load_env(ROOT / ".env")
 
+import pandas as pd  # noqa: E402
 import yfinance as yf  # noqa: E402
 
 from tradingagents.agents.utils.agent_utils import (  # noqa: E402
@@ -846,6 +847,196 @@ def _section(title: str, fn, *args, **kwargs) -> str:
     return f"\n## {title}\n\n{body}\n"
 
 
+# --- scan-market L4:复用 L1 召回因子行,消除富因子(主力/技术/筹码/北向)重复取数 -----
+
+def _l1_float(row: dict, key: str) -> float | None:
+    """Float from an L1 row dict, or None if absent/NaN."""
+    try:
+        f = float(row.get(key))
+    except (TypeError, ValueError):
+        return None
+    return None if f != f else f   # NaN != NaN
+
+
+def _l1_flag(row: dict, key: str) -> bool | None:
+    """Bool-ish L1 flag (ma_bull/above_ma60 persisted as 0/1/True/False/是)."""
+    v = row.get(key)
+    if v is None or (isinstance(v, float) and v != v):
+        return None
+    if isinstance(v, str):
+        return v.strip().lower() in ("1", "true", "是", "yes")
+    try:
+        return bool(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
+def _load_l1_row(ticker: str, trade_date: str, root: Path | None = None) -> dict | None:
+    """This ticker's L1 召回因子行 from scan artifacts (L1_scored_full superset,
+    fallback L1_recall_top1000). None when no scan ran that date / code absent →
+    caller falls back to the live tushare fetch (standalone lite / 全量 analyze)。"""
+    code = normalize_symbol(ticker).split(".")[0].zfill(6)
+    base = (root or (ROOT / "context" / "scan")) / trade_date
+    for fname in ("L1_scored_full.csv", "L1_recall_top1000.csv"):
+        fp = base / fname
+        if not fp.exists():
+            continue
+        try:
+            df = pd.read_csv(fp, dtype={"code": str})
+        except Exception:  # noqa: BLE001 — 坏文件 → 当未命中,走 live
+            continue
+        df["code"] = df["code"].astype(str).str.zfill(6)
+        hit = df[df["code"] == code]
+        if len(hit):
+            return hit.iloc[0].to_dict()
+    return None
+
+
+def ashare_market_context_from_l1(row: dict) -> str:
+    """用 L1 召回因子行重建『主力/技术/筹码/北向』块 —— 与召回打分同源、零重复取数。
+
+    L1(screen_market)已对全市场取过 tushare 富因子并落盘;scan-market L4 决策卡直接复用
+    该行,不再二次 round-trip(单一真值,L4 与召回数字一致)。10 日资金序列 / MACD 金叉死叉 /
+    股东户数趋势等 L1 未存的细节,如需 → 对该票跑全量 analyze-ticker。
+    """
+    out: list[str] = []
+
+    # 0) L1 召回打分(复合分 + 8 子分):卡片自带召回理由
+    comp = _l1_float(row, "composite")
+    if comp is not None:
+        subs = [("动量", "score_momentum"), ("主力", "score_fund_main"),
+                ("散户", "score_fund_retail"), ("筹码", "score_chip"),
+                ("北向", "score_north"), ("技术", "score_tech"),
+                ("成长", "score_growth"), ("价值", "score_value")]
+        cells = []
+        for lab, k in subs:
+            v = _l1_float(row, k)
+            if v is not None:
+                cells.append(f"{lab} {v:.0f}")
+        out.append(f"**L1 召回复合分 {comp:.1f}**(行业条件化,0–100)｜子分:" + " / ".join(cells))
+
+    # 1) 主力资金流(L1:最新主力净流入 + 净占比;10日序列见全量)
+    main_yi, main_ratio, retail_yi = (_l1_float(row, k) for k in
+                                      ("main_inflow_yi", "main_net_ratio", "retail_net_yi"))
+    if main_yi is not None or main_ratio is not None:
+        bits = []
+        if main_yi is not None:
+            bits.append(f"最新主力净流入 **{main_yi:+.2f} 亿**")
+        if main_ratio is not None:
+            bits.append(f"主力净占比 **{main_ratio * 100:+.1f}%**({'净流入' if main_ratio > 0 else '净流出'})")
+        if retail_yi is not None:
+            bits.append(f"散户(小单)净 {retail_yi:+.2f} 亿")
+        out.append("**主力资金流(L1·tushare moneyflow)**:" + "、".join(bits) + "。")
+
+    # 2) 技术结构(L1:多头排列/价在MA60/RSI)
+    bull, above60 = _l1_flag(row, "ma_bull"), _l1_flag(row, "above_ma60")
+    rsi6, rsi12 = _l1_float(row, "rsi6"), _l1_float(row, "rsi12")
+    if bull is not None or above60 is not None or rsi6 is not None:
+        bits = []
+        if bull is not None:
+            bits.append(f"多头排列 **{'是' if bull else '否'}**")
+        if above60 is not None:
+            bits.append(f"价在 MA60 **{'上方' if above60 else '下方'}**")
+        if rsi6 is not None:
+            bits.append(f"RSI6 **{rsi6:.0f}**({'过热' if rsi6 > 80 else '超卖' if rsi6 < 20 else '中性'})")
+        if rsi12 is not None:
+            bits.append(f"RSI12 {rsi12:.0f}")
+        out.append("**技术结构(L1·stk_factor_pro 前复权)**:" + "、".join(bits)
+                   + "。_(MACD 金叉/死叉明细见全量 analyze-ticker)_")
+
+    # 3) 筹码(L1:获利比例/集中度/相对成本)
+    wr, conc, ptc = (_l1_float(row, k) for k in ("winner_rate", "chip_concentration", "price_to_cost"))
+    close = _l1_float(row, "close")
+    if wr is not None or conc is not None or ptc is not None:
+        bits = []
+        if wr is not None:
+            t = "高位获利盘重(抛压/见顶风险)" if wr > 85 else "深度套牢/超跌(上行有空间)" if wr < 15 else "中性"
+            bits.append(f"获利比例 **{wr:.0f}%**({t})")
+        if ptc is not None:
+            cost50 = (close / ptc) if (close is not None and ptc) else None
+            bits.append(f"现价/平均成本 **{ptc:.2f}**({'浮盈' if ptc > 1 else '浮亏'}"
+                        + (f",均成本 {cost50:.2f}" if cost50 is not None else "") + ")")
+        if conc is not None:
+            bits.append(f"筹码集中度 {conc:.2f}")
+        out.append("**筹码(L1·cyq_perf)**:" + "、".join(bits) + "。")
+
+    # 4) 北向(L1:沪深股通持股占比;多为小盘 NaN)
+    hk = _l1_float(row, "hk_ratio")
+    out.append(f"**北向(沪深股通,L1)**:持股占比 **{hk:.2f}%**(聪明钱仓位)。" if hk is not None
+               else "**北向(沪深股通,L1)**:非标的/无持股记录(小盘常见)。")
+
+    body = "\n\n".join(out) if out else "_L1 召回行无富因子字段(异常)。_"
+    return (body + "\n\n_复用 L1 召回因子(与召回打分同源,零重复取数);"
+            "10 日资金序列 / MACD / 股东户数趋势如需 → 跑全量 analyze-ticker。_")
+
+
+# --- A股富化:优先 tushare(绕开被封的东财 push2),失败回退 akshare ---------------
+
+def ashare_market_context_best(ticker: str, curr_date: str) -> str:
+    """A股市场上下文:tushare(主力/技术/筹码/北向)优先,失败回退 akshare(资金/龙虎榜/涨停)。"""
+    try:
+        from tushare_enrich import ashare_market_context_ts
+        b = ashare_market_context_ts(normalize_symbol(ticker), curr_date)
+        if b:
+            return b + "\n\n_(tushare 源;akshare 东财 push2 在本机被网络封锁时自动走此路。)_"
+    except Exception:  # noqa: BLE001 — tushare 不可用 → 回退
+        pass
+    return ashare_market_context_or_note(ticker, curr_date)
+
+
+def ashare_shareholder_best(ticker: str) -> str:
+    """股东户数:tushare(含质押爆雷红旗)优先,失败回退 akshare。"""
+    try:
+        from tushare_enrich import ashare_shareholder_ts
+        b = ashare_shareholder_ts(normalize_symbol(ticker))
+        if b:
+            return b
+    except Exception:  # noqa: BLE001
+        pass
+    return ashare_shareholder_count(normalize_symbol(ticker))
+
+
+def ashare_calendar_best(ticker: str, curr_date: str) -> str:
+    """A股日历:tushare(业绩预告/快报=前瞻成长)+ akshare(解禁),各自降级。"""
+    parts: list[str] = []
+    try:
+        from tushare_enrich import ashare_calendar_ts
+        b = ashare_calendar_ts(normalize_symbol(ticker), curr_date)
+        if b:
+            parts.append(b)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        ak_cal = ashare_corporate_calendar(normalize_symbol(ticker), curr_date)
+        if ak_cal:
+            parts.append(ak_cal)
+    except Exception:  # noqa: BLE001
+        pass
+    return "\n\n".join(parts) if parts else "_A股日历(业绩预告/解禁)暂不可用。_"
+
+
+# --- UZI 增量透镜(L4 单票深研:A股原生财报 / 融资趋势 / 龙虎榜席位 / 杀猪盘)---
+
+def _uzi_fundamentals(ticker: str) -> str:
+    from uzi_lenses import ashare_fundamentals_ts
+    return ashare_fundamentals_ts(ticker) or "_UZI A股原生财报暂不可用(非A股/取数失败)。_"
+
+
+def _uzi_margin(ticker: str) -> str:
+    from uzi_lenses import margin_trend_ts
+    return margin_trend_ts(ticker) or "_非两融标的或融资数据暂无。_"
+
+
+def _uzi_seats(ticker: str, curr_date: str) -> str:
+    from uzi_lenses import lhb_seats
+    return lhb_seats(ticker, curr_date) or "_龙虎榜席位数据暂不可用。_"
+
+
+def _uzi_trap(row: dict) -> str:
+    from uzi_lenses import render_trap_block, trap_signals
+    return render_trap_block(trap_signals(row))
+
+
 def main() -> int:
     flags = {a for a in sys.argv[1:] if a.startswith("--")}
     pos = [a for a in sys.argv[1:] if not a.startswith("--")]
@@ -893,8 +1084,15 @@ def main() -> int:
         "Verified market snapshot (source of truth)",
         get_verified_market_snapshot, {"symbol": ticker, "curr_date": end, "look_back_days": 30}))
     if _is_ashare(ticker):
-        parts.append(_section("Market context — A股 (主力资金/龙虎榜/涨停情绪)",
-                              ashare_market_context_or_note, ticker, end))
+        # scan-market L4:有 L1 召回行 → 复用(零富因子重复取数,与召回同源);
+        # 全量 analyze-ticker / 无 scan → live tushare(10日资金序列+MACD 更全)。
+        l1_row = _load_l1_row(ticker, trade_date) if slim else None
+        if l1_row is not None:
+            parts.append(_section("Market context — A股 (主力/技术/筹码/北向 · 复用L1召回)",
+                                  ashare_market_context_from_l1, l1_row))
+        else:
+            parts.append(_section("Market context — A股 (主力/技术/筹码/北向)",
+                                  ashare_market_context_best, ticker, end))
     else:
         parts.append(_section("Market context — US (regime/breadth/sector/VIX)",
                               us_market_context, ticker, end))
@@ -910,8 +1108,15 @@ def main() -> int:
         parts.append(_section("Insider transactions", get_insider_transactions, {"ticker": ticker}))
         parts.append(_section("Ownership & short interest (v3)", ownership_short, ticker))
     if _is_ashare(ticker):
-        parts.append(_section("股东户数 / 散户数量 (A股, v4)",
-                              ashare_shareholder_count, normalize_symbol(ticker)))
+        parts.append(_section("股东户数 / 质押 (A股, v4)",
+                              ashare_shareholder_best, ticker))
+        # UZI 增量透镜:便宜的(财报1调/融资1调/trap零调)slim 也取;席位识别(多日 top_inst)给全量
+        parts.append(_section("A股原生财报 (UZI·tushare)", _uzi_fundamentals, ticker))
+        parts.append(_section("融资余额趋势 (UZI·tushare)", _uzi_margin, ticker))
+        if l1_row is not None:        # 杀猪盘:复用 L1 因子行,零取数
+            parts.append(_section("杀猪盘/派发风险 (UZI·复用L1)", _uzi_trap, l1_row))
+        if not slim:
+            parts.append(_section("龙虎榜席位识别 (UZI·tushare)", _uzi_seats, ticker, end))
 
     if not slim:  # 8 个 FRED 宏观 + 中国背景 + 预测市场:对单只决策卡是背景噪音
         print("[macro]", flush=True)
@@ -944,8 +1149,8 @@ def main() -> int:
     parts.append(_section("Analyst consensus & price targets (v2)", analyst_consensus, ticker))
     parts.append(_section("Earnings & events calendar (v2)", earnings_calendar, ticker))
     if _is_ashare(ticker):
-        parts.append(_section("Corporate calendar — A股 解禁/业绩预告 (v4)",
-                              ashare_corporate_calendar, normalize_symbol(ticker), end))
+        parts.append(_section("Corporate calendar — A股 业绩预告·快报/解禁 (v4)",
+                              ashare_calendar_best, ticker, end))
     if not slim:
         parts.append(_section("Peer-relative valuation & strength (v2)", peer_relative, ticker, peers, end))
 

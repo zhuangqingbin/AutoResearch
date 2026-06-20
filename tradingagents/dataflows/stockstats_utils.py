@@ -122,6 +122,47 @@ def _assert_ohlcv_not_stale(
         )
 
 
+def _tushare_token() -> str:
+    """Read TUSHARE_TOKEN from env or project .env (no value printed)."""
+    tok = os.environ.get("TUSHARE_TOKEN")
+    if not tok:
+        envp = os.path.join(os.getcwd(), ".env")
+        if os.path.exists(envp):
+            with open(envp, encoding="utf-8") as f:
+                for ln in f:
+                    ln = ln.strip()
+                    if ln and not ln.startswith("#") and "=" in ln and ln.split("=", 1)[0].strip() == "TUSHARE_TOKEN":
+                        tok = ln.split("=", 1)[1].strip().strip('"').strip("'")
+                        break
+    if not tok:
+        raise NoMarketDataError("A-share", None, "TUSHARE_TOKEN 未配置(A股 OHLCV 需要)")
+    return tok
+
+
+def _load_ohlcv_tushare(canonical: str, start_str: str, end_str: str) -> pd.DataFrame:
+    """A股(.SS/.SZ/.BJ)OHLCV 走 tushare 前复权(qfq)。
+
+    yfinance 不覆盖北交所、且 A股价格口径与召回阶段(tushare)不一致 → A股统一用 tushare,
+    与 scan-market 召回同源,顺带修复北交所。返回 Date/Open/High/Low/Close/Volume(与 yfinance 路径同形)。
+    """
+    import tushare as ts
+
+    pro = ts.pro_api(_tushare_token())
+    ts_code = canonical.replace(".SS", ".SH")   # yfinance .SS=上交所 → tushare .SH;.SZ/.BJ 一致
+    df = ts.pro_bar(ts_code=ts_code, adj="qfq", api=pro,
+                    start_date=start_str.replace("-", ""), end_date=end_str.replace("-", ""))
+    if df is None or df.empty:
+        return pd.DataFrame()
+    return pd.DataFrame({
+        "Date": pd.to_datetime(df["trade_date"], format="%Y%m%d"),
+        "Open": pd.to_numeric(df["open"], errors="coerce"),
+        "High": pd.to_numeric(df["high"], errors="coerce"),
+        "Low": pd.to_numeric(df["low"], errors="coerce"),
+        "Close": pd.to_numeric(df["close"], errors="coerce"),
+        "Volume": pd.to_numeric(df["vol"], errors="coerce"),
+    }).sort_values("Date").reset_index(drop=True)
+
+
 def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
     """Fetch OHLCV data with caching, filtered to prevent look-ahead bias.
 
@@ -148,9 +189,12 @@ def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
     end_str = (today_date + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
 
     os.makedirs(config["data_cache_dir"], exist_ok=True)
+    # A股(.SS/.SZ/.BJ)走 tushare 前复权(yfinance 不覆盖北交所、A股口径不一);其余走 yfinance。
+    is_ashare = canonical.endswith((".SS", ".SZ", ".BJ"))
+    vendor = "TuShare" if is_ashare else "YFin"
     data_file = os.path.join(
         config["data_cache_dir"],
-        f"{safe_symbol}-YFin-data-{start_str}-{end_str}.csv",
+        f"{safe_symbol}-{vendor}-data-{start_str}-{end_str}.csv",
     )
 
     # A cached file may be empty if a prior fetch failed (unknown symbol,
@@ -163,19 +207,22 @@ def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
             data = cached
 
     if data is None:
-        downloaded = yf_retry(lambda: yf.download(
-            canonical,
-            start=start_str,
-            end=end_str,
-            multi_level_index=False,
-            progress=False,
-            auto_adjust=True,
-        ))
-        downloaded = _ensure_date_column(downloaded.reset_index())
+        if is_ashare:
+            downloaded = _load_ohlcv_tushare(canonical, start_str, end_str)
+        else:
+            downloaded = yf_retry(lambda: yf.download(
+                canonical,
+                start=start_str,
+                end=end_str,
+                multi_level_index=False,
+                progress=False,
+                auto_adjust=True,
+            ))
+            downloaded = _ensure_date_column(downloaded.reset_index())
         # Only cache real data — never persist an empty frame.
         if downloaded.empty or "Close" not in downloaded.columns:
             raise NoMarketDataError(
-                symbol, canonical, "Yahoo Finance returned no rows"
+                symbol, canonical, f"{vendor} returned no rows"
             )
         downloaded.to_csv(data_file, index=False, encoding="utf-8")
         data = downloaded

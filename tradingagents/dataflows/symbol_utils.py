@@ -140,7 +140,8 @@ def normalize_symbol(raw: str) -> str:
     elif len(s) == 6 and s[:3] in _FOREX_CURRENCIES and s[3:] in _FOREX_CURRENCIES:
         canonical = f"{s}=X"
     elif len(s) == 6 and s.isdigit() and s[0] in _CN_EXCHANGE_BY_LEAD:
-        canonical = f"{s}.{_CN_EXCHANGE_BY_LEAD[s[0]]}"
+        # 北交所 92xxxx 系列(920000-929999)以 "9" 开头但属北交所,非上交所 B 股(900xxx)
+        canonical = f"{s}.BJ" if s[:2] == "92" else f"{s}.{_CN_EXCHANGE_BY_LEAD[s[0]]}"
     else:
         canonical = s
 

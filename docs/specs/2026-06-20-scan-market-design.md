@@ -25,11 +25,11 @@ scan-market (new skill, orchestrator)
   L2 板块聚合         ─┘
   L3a 轻量 triage     ── 批量分诊 ~100→~30 (只吃已拉 bulk, 不重 harvest)
   L3b 决策卡深挖      ── ~30 逐只委托 analyze-ticker-lite (slim harvest → 决策卡, subagent 扇出)
-  L4 综合            ── scripts/assemble_scan.py   (汇总 sector + 个股 → scan_summary.md)
+  L4 综合            ── scripts/assemble_scan.py   (汇总 sector + 个股 → <HHMM>_summary.md + <HHMM>_detail/)
 ```
 
 analyze-ticker(全量)/ analyze-ticker-lite(决策卡)各保持单一职责,一行不改。skill 间通过接口解耦:
-**接口 = finalist 清单(ticker + 标签)→ analyze-ticker-lite → `reports/<date>/<ticker>/complete_report.md`。**
+**接口 = finalist 清单(ticker + 标签)→ analyze-ticker-lite → staging `context/scan/<date>/details/<ticker>.md`。**
 
 ## 3. 漏斗分层(L0–L4;L3 分 a/b 两档)
 
@@ -60,22 +60,49 @@ L1 的任务是**高召回 + 可解释**,不是"验证过的 alpha 模型"。真
 
 | 透镜 | 松门(高召回) | 子因子(默认权重,和=100) | 惩罚/约束 |
 |---|---|---|---|
-| **趋势动量** | 60日 或 YTD 涨幅>0、非 ST/停牌 | RS(60日.6+YTD.4)**35** · 主力净流入(5/10日)**30** · 趋势结构代理 **20** · 量能(量比/换手)**15** | 60日涨幅顶 5% / RSI 过热 → **−15 分**(防抛物线顶) |
+| **趋势动量** | 60日 或 YTD 涨幅>0、非 ST/停牌 | RS(60日.6+YTD.4)**40** · 主力净流入(5/10日)**30** · 趋势结构(tushare 多头排列+站上MA60)**30** | 60日涨幅顶 5% / RSI6>85 → **−15 分**;量能项经 factor_lab 实测剔除(§4.5) |
 | **成长加速** | 净利YoY>0 **或** 营收YoY>15%;CFO>0;营收≥3亿/季 | **加速度(最新YoY−上期YoY)30** · 净利YoY **25** · 营收YoY **20** · ROE **15** · 质量(CFO/NI·毛利)**10** | PE 行业分位过高 → 估值惩罚 |
 | **价值低估** | PE>0、非 ST、营收YoY>−15%、ROE>0 | PE(行业内低分位)**30** · ROE **25** · PB(行业内)**20** · 股息率 **15** · 利润率 **10** | 全部行业内分位;崩塌门挡陷阱 |
-| **困境反转** | **(边际改善 ∨ 资金确认)至少一项亮**;非退市;亏损未扩大 | **边际改善 35** · 超跌 **25** · 资金确认 **25** · 底部结构 **15** | 仍在 freefall 无拐点 → 出局 |
+| **困境反转** | **(边际改善 ∨ 资金确认)至少一项亮**;非退市;亏损未扩大 | **边际改善 40** · 超跌 **30** · 资金确认 **30** | 仍在 freefall 无拐点 → 出局;底部结构(winner_rate)经实测剔除(§4.5) |
 
 **有意为之的偏重**:动量重资金(A股趋势资金推动)、成长重加速度(二阶导=alpha)、价值重 ROE(防"便宜因为烂")、反转门+权重双重强调"必须有拐点"。
 
-**高召回落地**:每透镜 top ~50 → 去重后 ~150 进 L2。权重为起步默认,首轮产出后微调。
+**高召回落地**:每透镜 top ~50 → 去重后 ~150 进 L2。权重为起步默认,**已由 factor_lab 实证微调**(剔量能/winner_rate,见 §4.5)。
 
 ### 4.4 数据可行性与坑
 - 动量来自单次 `stock_zh_a_spot_em` 快照 + 资金流排名;成长/价值/ROE/毛利/CFO 来自 `stock_yjbb_em`(已实测:列名与本节一致)。
 - **坑① 扣非净利** bulk 可能取不到(在财务摘要,逐个拉太贵)→ L1 用头条净利 + 毛利/CFO 质量门补偿,扣非确认留 L3b。
-- **坑② 多头排列/精确 52周回撤**需历史 → L1 用 60日/YTD 涨跌幅代理,L3b 的 slim snapshot 有当前指标值。
+- **坑② 多头排列/RSI/MACD** 现经 tushare `stk_factor_pro` 全市场历史直接可得(多头排列+站上MA60 已替代趋势代理,实测拉正分);精确 52周回撤仍留 L3b。
 - **坑③ akshare 端点/列名跨版本漂** → 防御性取列(`_col`)+ 缓存快照到 `context/scan/<date>/`;spot/资金流端点偶发断连,`_ak_call` 3 次重试 + 降级。
 - **坑④ 业绩披露滞后** → 用最近可得报告期(脚本按分析日推算),输出标注 staleness。
-- **坑⑤ 股息率不在 bulk 端点** → 价值透镜暂不含;`所处行业` 对北交所/部分票为空 → 归"未分类"(板块榜剔除)。
+- **坑⑤ 股息率** 现经 tushare `daily_basic`(`dv_ratio`)可得 → 价值透镜已恢复股息因子(@15);`所处行业` 对北交所/部分票为空 → 归"未分类"(板块榜剔除)。
+
+### 4.5 实证验证与迭代(`factor_lab.py`)
+
+§4.3 权重原为作者先验(无回测)。`scripts/factor_lab.py` 用 **tushare 全市场历史**做**点对点 rank-IC 回测**,把"分数 → 未来收益"量化,据此完成了上表已标注的改动。
+
+**方法**:对一组历史成型日 D(默认 23 个,跨 ~5 个月,每 4 交易日一个),算全市场横截面因子值 → join D 之后前瞻收益 → 每日每因子算 **rank IC**(Spearman),跨日聚合 IC 均值 / ICIR / t / 十分位多空价差 + **前后半 regime 稳定性**。三条铁律:① **无前视**(D 收盘出信号 → D+1 **开盘**买入);② **A股可交易性**(剔 D+1 一字涨停=买不到——实测该控制使动量 IC 仅降 ~0.001,即边际非"买不到的涨停"虚高);③ **缓存**(拉一次 ~258 调用,之后离线迭代零成本)。只验**快因子**(价/量/技术/筹码/资金/估值乘数)——tushare 全市场历史可得且驱动 T+1;季度基本面(成长/价值 ROE)不驱动 T+1,留长周期另验。
+
+**关键发现(23 日,~4,477 只/日)**:
+
+| 因子 | T+1 IC | 结论 |
+|---|---|---|
+| `pct_60d`/`above_ma60`/`ma_bull`/复合动量 | +(十分位多空 +40~68bps,t 2.5~3.7) | 动量核心成立;**tushare 趋势升级(多头排列/站上MA60)拉正分**,`above_ma60` 十分位 t=3.73 最干净 |
+| `vol_ratio`(量能) | **−0.040(t=−2.31,前后半皆负)** | 放量滞涨/派发 → **剔除量能项**;剔后复合 T+1 ICIR **0.187→0.246(+32%)**、T+5/10 不降 |
+| `main_inflow`(主力净流入) | T+1≈0,**T+5/10 最强(+0.060/+0.035)** | 是 **swing(1–2周)信号非 T+1**;swing 筛选保留高权重 30 |
+| `winner_rate`(筹码,反转 base) | 净负 + **regime 翻转**(弱市 +0.035 / 强市 −0.041) | "低获利盘=超跌反弹"**不稳**(强市续跌)→ 从反转**静态分剔除**,数据保留供 L3b 定性 |
+| `pe`/`pb`/`dv_ratio`(估值,市场口径) | T+1 负 | 预期内:价值是**长周期 + 行业内**因子,T+1 数据无法公允评判 → 价值/成长透镜**未动** |
+
+**已落地**:动量 = RS40/资金30/趋势30(剔量能);反转 = 改善40/超跌30/资金30(剔 winner_rate base)。两处 `screen_market.py` 注释标了出处。
+
+**诚实局限**:① 23 日**单一 regime**、统计功效低;**动量整体 regime 依赖**(本样本前半 IC 负、后半正)——不宣称稳态 alpha,只采纳"两 regime 皆稳健"的改动(剔 `vol_ratio` 两半皆负=安全;剔 `winner_rate` 因其 regime 翻转不可靠)。② 成长/价值/反转的**基本面腿未做全市场历史回测**(季度数据点对点取数昂贵)。③ 板块聚合 / conviction 排名未做组合级回测。
+
+**复现 / 继续迭代**:
+```bash
+uv run --no-sync python scripts/factor_lab.py harvest   # 拉+缓存全市场面板(~258 调用,一次)
+uv run --no-sync python scripts/factor_lab.py eval      # 离线算 IC/十分位(改打分后重跑即可对比)
+```
+**下一步(future)**:扩样到多年/跨牛熊验稳定性;接 `stock_yjbb_em` 季度快照做成长/价值腿的长周期(T+20/60)+ 行业内中性 IC;组合级 conviction 回测。
 
 ## 5. L2 板块聚合("先板块"的核心)
 
@@ -101,12 +128,12 @@ L3 分两档深度,**只有最终 ~30 才 harvest(且是 `--slim`)+ 写卡**。
 - **可选加速**:并行 workflow 把 ~100 拆给多个 triage agent(需用户显式开启,非默认)。
 
 ### 6.2 L3b — analyze-ticker-lite 决策卡(最终 ~30,~20% token)
-- 逐只走 **analyze-ticker-lite**:`harvest_context.py <ticker> <date> --slim`(只取决策块,实测 = 全量的 **20.4%**)→ Claude 按 `lite-playbook.md` 产出**单张决策卡** → `reports/<date>/<ticker>/complete_report.md`。
+- 逐只走 **analyze-ticker-lite**:`harvest_context.py <ticker> <date> --slim`(只取决策块,实测 = 全量的 **20.4%**)→ Claude 按 `lite-playbook.md` 产出**单张决策卡** → staging `context/scan/<date>/details/<ticker>.md`(L4 由 assemble_scan 发布到带时间戳 detail/)。
 - **必须 subagent 扇出**:每只一个 subagent(独立 context),只回传评级/目标/R:R;否则 30×context 撑爆主线窗口。可选 workflow 并行。
 - **lite vs full**:lite 出"买不买"的卡;某只想下重注,再单独对它跑**全量 analyze-ticker** 看证据附录。
 - **模型**:建议 Opus。
 
-## 7. L4 综合(`scan_summary.md`)
+## 7. L4 综合(`<HHMM>_summary.md` + `<HHMM>_detail/`)
 
 `scripts/assemble_scan.py` 读 ~30 份 finalist 决策卡(五档评级 / 目标 / R:R)+ L2 板块排名,产出一页:
 - **漏斗计数**:5,400 → L1 ~150 → L2 ~100 → L3a ~30 → 报告数,扫描日期、universe 规模。
@@ -130,8 +157,8 @@ L3 分两档深度,**只有最终 ~30 才 harvest(且是 `--slim`)+ 写卡**。
 ```
 context/scan/<date>/   universe.csv  lens_*.csv  sectors.csv  finalists.csv  meta.json
 context/<ticker>_<date>_slim.md      # L3b 每只 slim context
-reports/<date>/<ticker>/complete_report.md   # lite 决策卡(每只 finalist)
-reports/scan/<date>/scan_summary.md  # L4 综合
+context/scan/<date>/details/<ticker>.md      # lite 决策卡 staging(每只 finalist)
+reports/scan/<YYYYMMDD>/<HHMM>_summary.md + <HHMM>_detail/<代码>.md  # L4 发布(同一 HHMM)
 ```
 (`context/`、`reports/` 已 gitignore。)
 

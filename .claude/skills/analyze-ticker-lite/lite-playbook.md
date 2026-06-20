@@ -5,8 +5,10 @@
 ## 输入
 `context/<ticker>_<date>_slim.md`(`harvest_context.py --slim` 产出)。块清单见 SKILL.md。
 **slim 没取的块(宏观/做空/同业全表/期权/资产负债+现金流全表)不得在卡里引用数字**——没取就是没取,不编、不靠记忆补。
+**UZI 增量块(A股 slim 已含,可引用)**:`A股原生财报(UZI·tushare)`(5y ROE/毛利/负债率/分红)、`融资余额趋势`、`杀猪盘/派发风险(复用L1)`——卡片**风险段优先看 trap 信号**(获利盘满/放量滞涨/过热/浮盈了结),命中即压低评级。席位识别/DCF 只在**全量 analyze-ticker**。
 
-## 输出:单文件 `reports/<date>/<ticker>/complete_report.md`
+## 输出:单张决策卡(两种落点)
+独立跑 → `reports/analyze/<HHMM>_<TICKER>_lite.md`(HHMM=`date +%H%M`);被 scan L4 研究阶段 调用 → staging `context/scan/<date>/details/<ticker>.md`(`assemble_scan.py` 发布到 `<HHMM>_detail/`)。
 
 写成下面这一张卡(`assemble_scan.py` + `parse_rating` 直接读它):
 
@@ -40,7 +42,7 @@
 
 **催化 & 认错位**: <1–2 个关键日期> ｜ 失效:<价/指标/事件 → 减仓>
 
-**(A股)一行**: 股东户数 <↑↓ 含义> ｜ 主力 <净流入/出> ｜ 涨跌停可交易性 <提示> ｜ 偿付红旗 <有则标,无则略>
+**(A股,tushare 富化)**: 主力净流入(10日)<净流入/出;1–2周 swing 信号非次日> ｜ 筹码获利比例 <高=惜售/低=套牢压反弹;**非超跌买点**> ｜ 多头排列·RSI·MACD <真技术位置> ｜ 北向持股占比 <聪明钱,看趋势> ｜ 股东户数 <↑↓ 集中度> ｜ 业绩预告/快报 <预增减,前瞻催化> ｜ 质押红旗 <>40%标爆雷> ｜ 涨跌停可交易性 <提示>
 
 FINAL TRANSACTION PROPOSAL: **<BUY|HOLD|SELL>**
 
@@ -56,4 +58,4 @@ _Claude 推理产出,非全量报告;仅供研究,非投资建议。要完整证
 - 评级用项目五档(Buy/Overweight/Hold/Underweight/Sell),`**Rating**` 行 + `FINAL TRANSACTION PROPOSAL` 行必须在,否则 `parse_rating`/`assemble_scan` 读不到。
 
 ## 与 scan-market 的衔接
-scan-market L3b 对 `finalists.csv` 每只调本 skill;产物 `reports/<date>/<ticker>/complete_report.md` 直接喂 `assemble_scan.py` 汇成 buy-list。建议在 subagent 里逐只跑(每只独立 context,只回传评级/目标/R:R),避免主线上下文堆叠。
+scan-market L4 研究阶段 对 `finalists.csv` 每只调本 skill;产物写到 staging `context/scan/<date>/details/<ticker>.md`,由 `assemble_scan.py` 发布到 `reports/scan/<YYYYMMDD>/<HHMM>_detail/` 并汇成 buy-list。建议在 subagent 里逐只跑(每只独立 context,只回传评级/目标/R:R),避免主线上下文堆叠。
