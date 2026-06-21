@@ -256,7 +256,7 @@ def render_volume_price_block(vp: dict) -> str:
 def ashare_fundamentals_ts(code: str) -> str | None:
     """A股原生财报:fina_indicator(5y ROE/利润率/负债率/同比)+ dividend(最新分红)。补 yfinance 稀疏。"""
     try:
-        from tushare_source import _pro, _ts_call
+        from autoresearch.data.tushare_source import _pro, _ts_call
         pro = _pro()
     except Exception:  # noqa: BLE001
         return None
@@ -294,7 +294,7 @@ def ashare_fundamentals_ts(code: str) -> str | None:
 def margin_trend_ts(code: str, lookback: int = 30) -> str | None:
     """近 ~20 交易日融资余额趋势(两融标的;非标的返回 None)。"""
     try:
-        from tushare_source import _pro, _ts_call
+        from autoresearch.data.tushare_source import _pro, _ts_call
         pro = _pro()
     except Exception:  # noqa: BLE001
         return None
@@ -321,7 +321,13 @@ def margin_trend_ts(code: str, lookback: int = 30) -> str | None:
 def lhb_seats(code: str, date: str, lookback_days: int = 20) -> str | None:
     """龙虎榜机构 vs 游资席位识别(近窗口);Phase A 实测机构上榜买入后续偏弱 → 标注反指。"""
     try:
-        from tushare_source import _code6, _pro, _trade_days, _ts_call, resolve_momentum_dates
+        from autoresearch.data.tushare_source import (
+            _code6,
+            _pro,
+            _trade_days,
+            _ts_call,
+            resolve_momentum_dates,
+        )
         pro = _pro()
     except Exception:  # noqa: BLE001
         return None

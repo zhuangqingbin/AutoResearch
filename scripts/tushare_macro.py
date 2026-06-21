@@ -19,7 +19,7 @@ import sys
 from datetime import datetime, timedelta
 
 import pandas as pd
-from tushare_source import _pro, _ts_call, resolve_momentum_dates
+from autoresearch.data.tushare_source import _pro, _ts_call, resolve_momentum_dates
 
 
 def _num(s):

@@ -36,7 +36,7 @@ import pandas as pd
 # 复用 screen_market 的打分原语 + 真·动量透镜(验证"出厂逻辑"本身)
 from screen_market import _factor_groups, _pct, _wsum, lens_momentum
 from autoresearch.common.sw_sector_map import super_sector
-from tushare_source import _moneyflow_struct_cols
+from autoresearch.data.tushare_source import _moneyflow_struct_cols
 
 CACHE = Path("context/factor_lab/cache")
 OUT = Path("context/factor_lab")
@@ -46,13 +46,13 @@ OUT = Path("context/factor_lab")
 
 
 def _pro():
-    from tushare_source import _pro as src_pro
+    from autoresearch.data.tushare_source import _pro as src_pro
 
     return src_pro()
 
 
 def _ts_call(fn, tries: int = 5, backoff: float = 2.0):
-    from tushare_source import _ts_call as src_call
+    from autoresearch.data.tushare_source import _ts_call as src_call
 
     return src_call(fn, tries=tries, backoff=backoff)
 
@@ -124,7 +124,7 @@ def plan_dates(pro, end_anchor: str, form_span: int, step: int, back: int, fwd: 
     F = 在 [anchor 往前 form_span 个交易日, anchor 往前 fwd 个交易日] 内每 step 取一个。
     P = [min(F) 往前 back 个交易日, max(F) 往后 fwd 个交易日] 的全部交易日(供动量回看 + 前瞻收益)。
     """
-    from tushare_source import _trade_days
+    from autoresearch.data.tushare_source import _trade_days
 
     yyyymmdd = end_anchor.replace("-", "")
     year = int(yyyymmdd[:4])

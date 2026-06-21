@@ -171,7 +171,8 @@ def realized_returns(date: str, fwd: int = 10) -> pd.DataFrame:
     fwd 未实现(D+2 交易日还没到)→ 返回空(供 pending 判定)。
     """
     import factor_lab as fl
-    from tushare_source import _trade_days
+
+    from autoresearch.data.tushare_source import _trade_days
 
     cols = ["code", "fwd_1_oo", "fwd_5_oc", "buyable", "gap_d1"]
     pro = fl._pro()
@@ -198,7 +199,8 @@ def pending_days(today: str | None = None, scan_root: Path | None = None,
                  report_root: Path | None = None) -> list[str]:
     """未复盘 scan 日:有 L1 面板 + 有报告 + 无 retro/done.json + D 的 fwd 已实现。"""
     import factor_lab as fl
-    from tushare_source import _trade_days
+
+    from autoresearch.data.tushare_source import _trade_days
 
     today = today or datetime.now().strftime("%Y-%m-%d")
     scan_root = scan_root or Path("context/scan")

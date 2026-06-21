@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 # 复用 tushare_source 的句柄/重试/日期解析(同一 token、同一防御层)
-from tushare_source import _pro, _ts_call, resolve_momentum_dates
+from autoresearch.data.tushare_source import _pro, _ts_call, resolve_momentum_dates
 
 
 def _tscode(sym: str) -> str:

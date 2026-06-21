@@ -528,7 +528,7 @@ def _harvest_vol_series(codes, analysis_date: str, lookback: int = 20) -> pd.Dat
         from datetime import datetime, timedelta
 
         import autoresearch.common.vol_series as vol_series
-        from tushare_source import _code6, _pro, _trade_days, _ts_call, resolve_momentum_dates
+        from autoresearch.data.tushare_source import _code6, _pro, _trade_days, _ts_call, resolve_momentum_dates
         pro = _pro()
         last = resolve_momentum_dates(pro, analysis_date)[0]
         start = (datetime.strptime(last, "%Y%m%d") - timedelta(days=lookback * 2 + 15)).strftime("%Y%m%d")
@@ -569,7 +569,7 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
         source: str = "tushare") -> dict:
     """L0 选集 + L1 召回 + L2 粗排(GBDT 学习重排 → top l2_n)。全确定性,零 LLM。"""
     if source == "tushare":
-        from tushare_source import _RAW_COUNT, fetch_universe_tushare  # 默认源(东财 push2 常被封)
+        from autoresearch.data.tushare_source import _RAW_COUNT, fetch_universe_tushare  # 默认源(东财 push2 常被封)
         uni = fetch_universe_tushare(analysis_date, cap_floor_yi=cap_floor_yi, include_bj=include_bj)
         n_raw = _RAW_COUNT.get("n", len(uni))
     else:

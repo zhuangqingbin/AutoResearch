@@ -92,7 +92,7 @@ def harvest_l3_evidence(date: str, codes: list[str], root: Path | None = None) -
     """
     import json
 
-    from tushare_source import _code6, _pro, _ts_call, resolve_momentum_dates
+    from autoresearch.data.tushare_source import _code6, _pro, _ts_call, resolve_momentum_dates
     root = root or Path("context/scan")
     out_dir = root / date / "L3_evidence"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -116,7 +116,7 @@ def harvest_l3_evidence(date: str, codes: list[str], root: Path | None = None) -
     # forecast/express 需 ann_date 或 ts_code(period 单参不够)→ 扫最近 ~10 个交易日的公告
     from datetime import datetime, timedelta
 
-    from tushare_source import _trade_days
+    from autoresearch.data.tushare_source import _trade_days
     start = (datetime.strptime(last, "%Y%m%d") - timedelta(days=30)).strftime("%Y%m%d")
     for dd in _trade_days(pro, start, last)[-10:]:
         _bulk("forecast", lambda dd=dd: pro.forecast(ann_date=dd))   # 业绩预告
