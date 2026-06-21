@@ -8,7 +8,7 @@
 
 ## 报告结构（v4 核心：决策主线 + 证据附录）
 
-`assemble_report.py` 把各段拼成 `reports/analyze/<YYYYMMDD_HHMM>/<名称|TICKER>.md`(目录名=运行时刻;A股→中文名、其他市场→TICKER;数据日见同目录 manifest.json),顺序 = **目录 → 决策主线 → 证据附录**。
+`autoresearch.analyze.assemble` 把各段拼成 `reports/analyze/<YYYYMMDD_HHMM>/<名称|TICKER>.md`(目录名=运行时刻;A股→中文名、其他市场→TICKER;数据日见同目录 manifest.json),顺序 = **目录 → 决策主线 → 证据附录**。
 **决策主线 = 读它就能下单(目标 ~2 页);证据附录 = 读它来核实(按需下钻)。** 14+ 个 agent 照常产出全部明细,只是**分析师重活沉到附录**。
 
 ```
@@ -35,7 +35,7 @@
 ```
 `[ ]` = optional lens（缺了 assemble 自动跳过）。
 
-## 输出文件映射（须与 `scripts/assemble_report.py` 一致）
+## 输出文件映射（须与 `autoresearch/analyze/assemble.py` 一致）
 ```
 context/analyze/<TICKER>_<分析日YYYYMMDD>/  # 分节草稿(gitignored);assemble → reports/analyze/<YYYYMMDD_HHMM>/<名称|TICKER>.md
   1_analysts/  market.md  news.md  fundamentals.md  quality.md  valuation.md
@@ -158,7 +158,7 @@ context/analyze/<TICKER>_<分析日YYYYMMDD>/  # 分节草稿(gitignored);assemb
 FINAL TRANSACTION PROPOSAL: **<BUY|HOLD|SELL>**
 ```
 
-## 数据采集规格（`harvest_context.py` v4 已封装）
+## 数据采集规格（`autoresearch.analyze.harvest` v4 已封装）
 核心块：行情(400天)、12 指标、验证快照、个股新闻(14天)、全球新闻、内部交易、8 FRED 宏观、预测市场(失败→WebSearch)、4 张财报。
 **v2 块**(yfinance,美股为主)：期权/IV、分析师一致预期&目标价、财报日历、同业相对。
 **v3 块**：持仓/做空、盈利质量。**v3.3(A股本地化)**：个股新闻三层、同业基准换沪深300/创业板ETF、China backdrop、CFO 补 A股现金流行名。**v3.4(市场环境)**：A股主力资金流/龙虎榜/涨停池(akshare);美股 SPY regime/RSP广度/板块ETF/VIX。

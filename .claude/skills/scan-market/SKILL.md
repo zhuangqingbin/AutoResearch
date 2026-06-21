@@ -35,7 +35,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 ## 前置
 - 在**项目根目录**运行;akshare/tushare/lightgbm 已装(venv-only,**务必 `uv run --no-sync`**);`.env` 有 `TUSHARE_TOKEN`(默认源)+ `FRED_API_KEY`(L4 取数)。默认中文。
 - **召回权重 + L2 模型**来自 `context/factor_lab/`:`weights.json`(`factor_lab calibrate` 产,L1 复合分 + L2 线性回落用)+ `gbdt_model.pkl`(`factor_lab train` 产,L2 重排引擎;缺失/未胜线性→自动回落线性)。**校准/训练方法 + IC 实证基线见 `screening-playbook.md` 附录**。
-- **闭环(开跑前补跑复盘)**:先 `uv run --no-sync python scripts/retro.py pending`;若列出未复盘日 → 先用 **scan-retro** 把它们补上(权重/经验更到最新)再开始今天的扫描。
+- **闭环(开跑前补跑复盘)**:先 `uv run --no-sync python -m autoresearch.learning.retro pending`;若列出未复盘日 → 先用 **scan-retro** 把它们补上(权重/经验更到最新)再开始今天的扫描。
   - retro 的 `retro_input.md` 自带 **各阶段 agent edge**(`stage_eval`:L2 重排/L3/L4/Tier-3 各段对已实现收益的 lift/IC)+ **经验升门候选**(`feedback_store.promotion_candidates()`)。
   - L3 的『因子方向经验校准』运行时由 `feedback_store.render_calibration_block(本批申万行业, with_feedback=True)` 注入(近期反馈 + 自学习经验 + IC 基线,三层叠加);用户对报告的反馈用 **feedback** skill 记。
 
@@ -50,7 +50,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 2. **过目(建议)**:读 `L2_gbdt_top200.csv` 头部 + `sectors.csv`,把粗排概览给用户看一眼。
 3. **L3 精排(holistic 单 agent,200→~30)**:`l3_select.harvest_l3_evidence(date, codes)` 补真证据(龙虎榜/预告/快报)→ `l3_select.l3_table_md(date)` 把 ~200 只压成**一张紧凑表**(因子 + 证据摘要)→ **一个 `Agent(model='sonnet')` 通看全表、比较着选 ~30**(每只出 `论点 + 红队风险 + 催化 + 确信度/脆弱度 + lane`)→ 落 `L3_judged_full.csv` → `l3_select.merge_l3_finalists_v2(judged, target=30)`(趋势配额安全网)→ `finalists.csv`。函数在 `autoresearch.scan.agents.l3_select`。**比较式 > 孤立逐只打分**(后者各看各的、易虚高)。
 4. **L4 研究(token 大头,级联)**——选择器在 `autoresearch.scan.agents.l4_card`:
-   - **Tier-1 · 全 ~30 只 · Sonnet · 并发**:`l4_card.batch_finalists(size=3)` 切 ~10 批,**在一条消息里并发派 ~10 个 `Agent(model='sonnet')`**(非顺序逐批)跑 **analyze-ticker-lite**(`harvest_context.py <ticker> <date> --slim` → staging `details/<ticker>.md`)。**评级由 `l4_card.rubric_rating` 评分卡派生,防 gestalt 过度多报**。
+   - **Tier-1 · 全 ~30 只 · Sonnet · 并发**:`l4_card.batch_finalists(size=3)` 切 ~10 批,**在一条消息里并发派 ~10 个 `Agent(model='sonnet')`**(非顺序逐批)跑 **analyze-ticker-lite**(`python -m autoresearch.analyze.harvest <ticker> <date> --slim` → staging `details/<ticker>.md`)。**评级由 `l4_card.rubric_rating` 评分卡派生,防 gestalt 过度多报**。
    - **Tier-2 · Opus · 条件平反**:`l4_card.pick_downgrade_reviews(ratings, finalists_df)` 把被 Sonnet 压到 ≤Hold 的高 conviction 趋势票派 `Agent(model='opus')` 单遍平反(**名单空则不触发、零 Opus**);平反到 Buy/OW 的并入买点候选。
    - **Tier-3 · 买点候选 · Opus 多空辩论**:`l4_card.pick_buy_candidates(ratings)`(Buy/OW)每只派**多头⚔空头各一 `Agent(model='opus')`**,主线当 **PM 用 3 透镜投票裁判**(定级 + 证伪)→ `verify.csv`(`code,verdict,bull,bear,trigger,consensus`)。
 5. **L5 整合**:

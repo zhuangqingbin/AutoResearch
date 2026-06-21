@@ -2,7 +2,7 @@
 
 > 读完这份就不用回翻代码。报告 = 决策主线 + 中观落地 + 证据附录三层。
 
-## 输出文件映射(须与 assemble_macro.py 一致)
+## 输出文件映射(须与 autoresearch/macro/assemble.py 一致)
 ```
 context/macro/<date>/        # 分节草稿(gitignored);assemble → reports/macro/<YYYYMMDD>/<HHMM>_summary.md
   1_spine/      decision.md  variant.md  crossfire.md  calendar.md  premortem.md  debate.md(opt)

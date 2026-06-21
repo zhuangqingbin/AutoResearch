@@ -1,6 +1,6 @@
 # feedback playbook — 5 步把反馈记住并蒸馏成经验
 
-> **本文 + `scripts/feedback_store.py` 自足,无需 `docs/specs/`。** 真值源:`feedback_store.py`(四个 jsonl store + 注回渲染);本文是 5 步操作手册。
+> **本文 + `autoresearch/learning/feedback_store.py` 自足,无需 `docs/specs/`。** 真值源:`feedback_store.py`(四个 jsonl store + 注回渲染);本文是 5 步操作手册。
 
 ## 5 步
 

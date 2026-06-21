@@ -6,7 +6,7 @@
 与闭环耦合:经验红线直接来自 factor_lab 的 T+1 IC 校准(winner_rate 满=抛压、过热=回避)+
 `feedback_store` 的结构化 guard(lesson 带 {field,op,value} 时自动纳入)。
 
-用法:uv run --no-sync python scripts/self_review.py --selftest
+用法:uv run --no-sync python -m autoresearch.learning.self_review --selftest
 """
 from __future__ import annotations
 

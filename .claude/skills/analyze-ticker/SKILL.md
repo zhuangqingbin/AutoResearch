@@ -20,7 +20,7 @@ TradingAgents = `确定性数据工具(免费)` + `LLM 多 agent 推理(要钱)`
 
 1. **取数（零 LLM）**：
    ```bash
-   uv run python scripts/harvest_context.py TICKER [YYYY-MM-DD] [stock|crypto] [PEER1,PEER2,...]
+   uv run python -m autoresearch.analyze.harvest TICKER [YYYY-MM-DD] [stock|crypto] [PEER1,PEER2,...]
    ```
    → 真实数据落到 `context/<TICKER>_<DATE>.md`（~90KB，含 v2 期权/分析师/财报/同业 + v3 持仓做空/盈利质量 + **v4 可交易性·涨跌停 / 偿付再融资 / (A股)股东户数·解禁**）。TICKER 带交易所后缀（**A股可只传 6 位代码、自动补 .SS/.SZ/.BJ**；见 playbook）。日期默认今天。第 4 参=同业(可选,逗号分隔)，缺省用内置映射或仅基准。
 2. **读 context**：分页读 `context/<TICKER>_<DATE>.md`（文件大，用 offset/limit 或 Grep 定位）。锁定：验证快照的最新收盘+指标、个股/全球新闻、8 个 FRED 宏观、4 张财报。
@@ -28,7 +28,7 @@ TradingAgents = `确定性数据工具(免费)` + `LLM 多 agent 推理(要钱)`
 4. **扮演各 agent**：按真实 LangGraph 顺序逐段产出。工作目录(分节草稿)命名 **`context/analyze/<TICKER>_<分析日YYYYMMDD>/`**（gitignored 草稿区，用 Write 写嵌套文件时会自动建；分析日 = 第 1 步用的那个日期、去连字符，如 `2026-06-19` + `NVDA` → `context/analyze/NVDA_20260619/`），子结构见 playbook（`1_analysts/ 2_research/ 3_risk/ 4_portfolio/`，**v4 新文件**：`2_research/variant.md`·`2_research/faceoff.md`·`4_portfolio/calendar.md`·`1_analysts/solvency.md`；`decision.md` 顶部加仪表盘+评分卡、`premortem.md` 末尾加监控 KPI 表）。**写齐核心文件**（每段结尾带 `置信度:` 行；附录分析师段首行加「→ 对决策的影响」；optional lens 缺了 assemble 自动跳过，但应尽量写齐）；每段的**每个数字必须来自第 2 步的 context，禁止凭记忆/编造**。
 5. **组装+校验**：
    ```bash
-   uv run python scripts/assemble_report.py context/analyze/<TICKER>_<分析日YYYYMMDD> [--name <A股中文简称>]
+   uv run python -m autoresearch.analyze.assemble context/analyze/<TICKER>_<分析日YYYYMMDD> [--name <A股中文简称>]
    ```
    → 生成 `reports/analyze/<YYYYMMDD_HHMM>/<名称|TICKER>.md`(**目录名=组装/运行时刻**；**A股→中文名.md**〔优先 `--name`,否则脚本从 context 抠取、兜底 6 位代码〕、**其他市场→TICKER.md**；数据日(分析日)记在同目录 `manifest.json`,与目录名解耦——与 scan 布局一致)（**两层结构：目录 → 决策主线(读它就能下单) → 证据附录(按需核实)**；PM 仪表盘/评分卡/决策置顶），并用项目自己的 `parse_rating` 打印五档信号（校验你的 PM 决策能被框架原生解析）。**A股务必带 `--name`**（你在 session 内已知中文简称,最稳)。若提示 `[MISSING]`，说明第 4 步漏写了某个必需文件（含 v4 新增 variant/faceoff/calendar），补齐再跑。
 6. **汇报**：给用户最终评级 + 目标价/持有期/仓位/止损 + 诚实局限。

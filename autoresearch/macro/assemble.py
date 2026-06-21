@@ -1,6 +1,6 @@
 """Assemble macro-research per-agent markdown into one reports/macro/<YYYYMMDD>/<HHMM>_summary.md.
 
-Two-tier like assemble_report.py, plus a 中观 tier:
+Two-tier like autoresearch.analyze.assemble, plus a 中观 tier:
   ▸ 决策主线   decision / variant / crossfire / calendar / premortem (+debate)
   ▸ 中观落地   sector_map / flows / sentiment / themes
   ▸ 证据附录   regional(us/china/global) · crossasset(rates/fx/equities/commodities/crypto[/credit])
@@ -11,7 +11,7 @@ The decision (cross-asset) and sector_map (A股行业) tables each carry one key
 parse_rating on each so all five-band tilts stay machine-checked.
 
 Usage:
-    python scripts/assemble_macro.py context/macro/<YYYY-MM-DD>
+    python -m autoresearch.macro.assemble context/macro/<YYYY-MM-DD>
     # → reports/macro/<YYYYMMDD>/<HHMM>_summary.md   (HHMM = 组装时本地时间)
 """
 import re

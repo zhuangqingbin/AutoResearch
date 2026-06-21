@@ -13,8 +13,8 @@ of actions,不是单点输出)。每段一个 edge:
 喂 retro_input.md → scan-retro skill 据此判断哪段该调(松/紧/重标定),即闭环的『可观测』层。
 
 用法:
-  uv run --no-sync python scripts/stage_eval.py --selftest
-  uv run --no-sync python scripts/stage_eval.py 2026-06-18          # 需 fwd 已实现
+  uv run --no-sync python -m autoresearch.learning.stage_eval --selftest
+  uv run --no-sync python -m autoresearch.learning.stage_eval 2026-06-18          # 需 fwd 已实现
 """
 from __future__ import annotations
 

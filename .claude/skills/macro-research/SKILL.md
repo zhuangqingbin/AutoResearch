@@ -16,11 +16,11 @@ description: Use when the user wants top-down GLOBAL + 中美 macro research tha
 - 仓库根目录运行;`.env` 需 `FRED_API_KEY`(免费)。A股中观需 `uv add akshare`。报告默认中文。
 
 ## 流程(6 步)
-1. **取数(零 LLM)**:`uv run python scripts/harvest_macro.py [YYYY-MM-DD]` → `context/macro/<date>/data.md`(区域宏观 US/China/Global + 跨资产 basket + A股中观骨架)。日期默认今天。
+1. **取数(零 LLM)**:`uv run python -m autoresearch.macro.harvest [YYYY-MM-DD]` → `context/macro/<date>/data.md`(区域宏观 US/China/Global + 跨资产 basket + A股中观骨架)。日期默认今天。
 2. **读 context**:分页读 `context/macro/<date>/data.md`(文件较大,用 offset/limit 或 grep 定位),锁定 US/China/Global 宏观、跨资产价(含 USD/CNY/JPY/黄金/大宗/BTC)、A股中观(tushare 优先:北向官方汇总/**两融余额**/行业资金净流入(亿)/涨停情绪/**指数估值分位** + akshare 补游资龙虎榜)。
 3. **读 playbook**:读本目录 `macro-playbook.md` 拿报告骨架 + 各 agent 角色/输出格式 + 两张配置表的机器可读约定 + 数据坑,**不要回翻代码**。
 4. **扮演各 agent**:按 playbook 顺序逐段产出到 `context/macro/<date>/`(分节草稿,gitignored;目录结构见 playbook)。**每个数字必出 context;判断性内容(情景概率/政策路径/央行反应函数)显式标『判断』或『实时网查』。** 两张配置表(跨资产 `decision.md`、A股行业 `sector_map.md`)每行带 keyed `**Rating**` 行。
-5. **组装+校验**:`uv run python scripts/assemble_macro.py context/macro/<date>` → `reports/macro/<YYYYMMDD>/<HHMM>_summary.md`,并对跨资产表 + A股行业表逐行打印 `parse_rating` 信号(校验你的配置能被框架原生解析)。若 `[MISSING]`,补齐缺的必需分段再跑。
+5. **组装+校验**:`uv run python -m autoresearch.macro.assemble context/macro/<date>` → `reports/macro/<YYYYMMDD>/<HHMM>_summary.md`,并对跨资产表 + A股行业表逐行打印 `parse_rating` 信号(校验你的配置能被框架原生解析)。若 `[MISSING]`,补齐缺的必需分段再跑。
 6. **汇报**:regime 判断 + 两张配置表(关键超/低配 + 表达 + 触发位)+ 诚实局限。
 
 ## 铁律(防幻觉,违反即作废重来)

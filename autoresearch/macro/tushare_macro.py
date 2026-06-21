@@ -3,7 +3,7 @@
 
 design: docs/specs/2026-06-20-... (macro Phase 2 的"补全两融/行业PE")。
 
-供 harvest_macro.py 在 A股中观块**优先**调用(失败回退 akshare `meso_ashare_block`):
+供 autoresearch.macro.harvest 在 A股中观块**优先**调用(失败回退 akshare `meso_ashare_block`):
   * 北向/南向官方汇总(moneyflow_hsgt)—— 解决"个股实时披露 2024-08 已停",这是可靠汇总口径。
   * 两融余额趋势(margin)—— 风险偏好计(融资余额↑=加杠杆/risk-on);playbook 标的 Phase 2 项。
   * 行业资金净流入(moneyflow_ind_ths,90 申万级,net_amount 已是亿)—— sector_map 逐行主力资金。
@@ -19,6 +19,7 @@ import sys
 from datetime import datetime, timedelta
 
 import pandas as pd
+
 from autoresearch.data.tushare_source import _pro, _ts_call, resolve_momentum_dates
 
 

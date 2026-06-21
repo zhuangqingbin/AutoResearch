@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A股单只增强 —— tushare 版(替代被封 push2 的 akshare 个股富化)。
 
-供 harvest_context.py 在 A股标的上**优先**调用(失败则回退 akshare):
+供 autoresearch.analyze.harvest 在 A股标的上**优先**调用(失败则回退 akshare):
   * ashare_market_context_ts —— 主力资金流(10日)+ 技术(多头排列/RSI/MACD)+
     筹码(获利比例/套牢)+ 北向(沪深股通持股)。
   * ashare_shareholder_ts   —— 股东户数趋势 + 质押比例(爆雷红旗)。

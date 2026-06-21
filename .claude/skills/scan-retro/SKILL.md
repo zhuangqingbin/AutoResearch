@@ -13,7 +13,7 @@ scan-market 出的报告是"事前判断";retro 用**当日已实现 T+1 涨跌*
 - **出建议待批**:新因子 / 改 L0 门槛 / 改 L2-L3 prompt 规则 → `proposals.jsonl`。
 - **写经验**:反复出现的诊断 → `lessons.jsonl`,下次自动注回 L2/L3 校准块。
 
-确定性归因在 `scripts/retro.py`(纯函数已自测);诊断/写经验由你(Claude)在 session 内做(**零付费 LLM**)。
+确定性归因在 `autoresearch/learning/retro.py`(纯函数已自测);诊断/写经验由你(Claude)在 session 内做(**零付费 LLM**)。
 
 ## 何时触发
 - ✅ `/retro` 或"复盘昨天的扫描"。

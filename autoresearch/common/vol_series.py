@@ -8,7 +8,7 @@
 
 设计:Wyckoff/VSA「effort vs result」+ Chaikin CMF + Granville OBV + 机构 VWAP 折溢价。
 
-用法:uv run --no-sync python scripts/vol_series.py --selftest
+用法:uv run --no-sync python -m autoresearch.common.vol_series --selftest
 """
 from __future__ import annotations
 

@@ -11,7 +11,7 @@
 注回核心:render_calibration_block(scopes) —— 把命中经验叠加在 IC 基线上,注入 L2/L3 prompt;
 store 空时**逐字回退**到现有手写基线,老路径不破。
 
-用法:uv run --no-sync python scripts/feedback_store.py --selftest
+用法:uv run --no-sync python -m autoresearch.learning.feedback_store --selftest
 """
 from __future__ import annotations
 

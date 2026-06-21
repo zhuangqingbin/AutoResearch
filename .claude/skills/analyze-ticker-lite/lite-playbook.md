@@ -3,7 +3,7 @@
 > 沿用 `analyze-ticker/engine-playbook.md` 的**数据坑 + 铁律 + 五档评级**;本文只定义**压缩后的单张卡**。卡 ≈ 1 屏,目标 ~3–4k token 输出。
 
 ## 输入
-`context/<ticker>_<date>_slim.md`(`harvest_context.py --slim` 产出)。块清单见 SKILL.md。
+`context/<ticker>_<date>_slim.md`(`autoresearch.analyze.harvest --slim` 产出)。块清单见 SKILL.md。
 **slim 没取的块(宏观/做空/同业全表/期权/资产负债+现金流全表)不得在卡里引用数字**——没取就是没取,不编、不靠记忆补。
 **UZI 增量块(A股 slim 已含,可引用)**:`A股原生财报(UZI·tushare)`(5y ROE/毛利/负债率/分红)、`融资余额趋势`、`杀猪盘/派发风险(复用L1)`、**`量价形态/吸筹·多日资金流(复用L1)`**——后两块 slim context 已**直接渲染**(被 scan L4 调用时复用 L1 因子行,零取数)。卡片**风险段优先看 trap 信号**(获利盘满/放量滞涨/过热/浮盈了结)命中即压评级;**量价形态块**:`bias=吸筹`(底部放量/地量企稳/缩量回调/量增价涨)进多头论点(**底部放量须基本面背书,>70% 无支撑会败**)、`bias=派发`(高位放量净出)进风险段压级;**多日 `cmf_20`/`obv_mom_20`**(>0=资金净进侧,IC 实证强于单日量比)与快照位置共振更可信。席位识别/DCF 只在**全量 analyze-ticker**。
 

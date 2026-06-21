@@ -14,7 +14,7 @@ earnings calendars and short-interest are sparse-to-absent for many non-US
 tickers, so each block degrades gracefully and says so.
 
 Usage:
-    python scripts/harvest_context.py TICKER [YYYY-MM-DD] [stock|crypto] [PEER1,PEER2,...]
+    python -m autoresearch.analyze.harvest TICKER [YYYY-MM-DD] [stock|crypto] [PEER1,PEER2,...]
 """
 
 import os
@@ -24,7 +24,7 @@ import traceback
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]  # repo root (autoresearch/analyze/ → ../../)
 
 
 def _load_env(env_path: Path) -> None:
@@ -975,7 +975,7 @@ def ashare_market_context_from_l1(row: dict) -> str:
 def ashare_market_context_best(ticker: str, curr_date: str) -> str:
     """A股市场上下文:tushare(主力/技术/筹码/北向)优先,失败回退 akshare(资金/龙虎榜/涨停)。"""
     try:
-        from tushare_enrich import ashare_market_context_ts
+        from autoresearch.data.tushare_enrich import ashare_market_context_ts
         b = ashare_market_context_ts(normalize_symbol(ticker), curr_date)
         if b:
             return b + "\n\n_(tushare 源;akshare 东财 push2 在本机被网络封锁时自动走此路。)_"
@@ -987,7 +987,7 @@ def ashare_market_context_best(ticker: str, curr_date: str) -> str:
 def ashare_shareholder_best(ticker: str) -> str:
     """股东户数:tushare(含质押爆雷红旗)优先,失败回退 akshare。"""
     try:
-        from tushare_enrich import ashare_shareholder_ts
+        from autoresearch.data.tushare_enrich import ashare_shareholder_ts
         b = ashare_shareholder_ts(normalize_symbol(ticker))
         if b:
             return b
@@ -1000,7 +1000,7 @@ def ashare_calendar_best(ticker: str, curr_date: str) -> str:
     """A股日历:tushare(业绩预告/快报=前瞻成长)+ akshare(解禁),各自降级。"""
     parts: list[str] = []
     try:
-        from tushare_enrich import ashare_calendar_ts
+        from autoresearch.data.tushare_enrich import ashare_calendar_ts
         b = ashare_calendar_ts(normalize_symbol(ticker), curr_date)
         if b:
             parts.append(b)

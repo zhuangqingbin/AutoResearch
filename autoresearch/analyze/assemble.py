@@ -18,7 +18,7 @@ optional and skipped if absent. The final decision is still validated with the
 project's own ``parse_rating`` (the function behind ``SignalProcessor``).
 
 Usage:
-    python scripts/assemble_report.py context/analyze/<TICKER>_<YYYYMMDD> [--name 中文简称]
+    python -m autoresearch.analyze.assemble context/analyze/<TICKER>_<YYYYMMDD> [--name 中文简称]
     # → reports/analyze/<YYYYMMDD_HHMM>/<名称|TICKER>.md   (目录名 = 组装/运行时刻)
     #   A股 → 中文名.md(优先 --name,其次从 context 抠,兜底 6 位代码);其他市场 → TICKER.md。
     #   数据日(分析日)与目录名解耦,记在同目录 manifest.json。

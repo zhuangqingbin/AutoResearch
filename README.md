@@ -27,7 +27,43 @@
 
 # AutoResearch: Multi-Agent LLM Financial Trading Research Framework
 
-> **About this fork — AutoResearch.** A refocused fork of [TradingAgents](https://github.com/TauricResearch/TradingAgents). The paid-LLM multi-agent path (LangGraph orchestration, provider clients, the CLI, and the batch runner) has been **removed**; the multi-agent analysis now runs **in-session with Claude as the engine** via the `analyze-ticker` skill, on top of the free data layer only (`tradingagents/dataflows` + `tradingagents/agents/utils` — yfinance / FRED, keyless + `FRED_API_KEY`). Start at [`CLAUDE.md`](CLAUDE.md) and [`.claude/skills/analyze-ticker/`](.claude/skills/analyze-ticker/). Sections below that mention LLM providers, model catalogs, or `cli`/`run_analysis` usage are **legacy upstream docs** kept for reference.
+> **About this fork — AutoResearch.** A refocused fork of [TradingAgents](https://github.com/TauricResearch/TradingAgents). The paid-LLM multi-agent path (LangGraph orchestration, provider clients, the CLI, and the batch runner) has been **removed**; the multi-agent analysis now runs **in-session with Claude as the engine** via the `analyze-ticker` / `scan-market` / `macro-research` skills, on top of the free data layer only (`autoresearch/data` + `autoresearch/dataflows` + `autoresearch/agents/utils` — yfinance / FRED / akshare / tushare, keyless + `FRED_API_KEY` / `TUSHARE_TOKEN`). Start at [`CLAUDE.md`](CLAUDE.md) and [`.claude/skills/analyze-ticker/`](.claude/skills/analyze-ticker/). Sections below that mention LLM providers, model catalogs, or `cli`/`run_analysis` usage are **legacy upstream docs** kept for reference.
+
+## 架构
+
+All deterministic data/scoring/assembly code lives in the **`autoresearch/`** package (the old flat `scripts/` is gone). Skills (`scan-market` / `analyze-ticker` / `macro-research`) drive these modules; Claude is the LLM engine in-session, so there are no paid-LLM deps. Design: [`docs/specs/2026-06-22-autoresearch-arch-redesign-design.md`](docs/specs/2026-06-22-autoresearch-arch-redesign-design.md).
+
+```
+autoresearch/
+  data/        # Parquet data lake (ZSTD, "exists = hit") + DataHandler.materialize + sources (tushare/akshare/fred/yfinance)
+  dataflows/   # vendor data tools (yfinance/FRED/...) + agents/utils (rating.py etc.)
+  common/      # shared scoring primitives · sw_sector_map · uzi_lenses · vol_series
+  models/      # model framework: base(Model ABC) · registry · Trainer · champion–challenger · catalog (linear/lgbm/xgb/cat/dbl)
+  trace/       # typed run trace: store (parquet stages + manifest) · schema
+  learning/    # closed loop: feedback_store · self_review · retro · stage_eval
+  scan/        # full-market funnel: pipeline · stages/{l0,l1,l2} · agents · cli · parity
+  analyze/     # single-ticker deep-dive: harvest · assemble
+  macro/       # top-down macro: harvest · assemble
+```
+
+Run via `python -m autoresearch.*` (always `uv run --no-sync`):
+
+```bash
+# Full A-share scan: deterministic L0→L1→L2 funnel
+#   → legacy staging context/scan/<date>/*.csv  AND  typed trace reports/scan/<run_id>/
+uv run --no-sync python -m autoresearch.scan run 2026-06-20 --source tushare
+uv run --no-sync python -m autoresearch.scan.assemble 2026-06-20      # L5 整合 summary + trace
+
+# Single-ticker deep-dive
+uv run --no-sync python -m autoresearch.analyze.harvest NVDA 2026-06-20 stock AMD,AVGO
+uv run --no-sync python -m autoresearch.analyze.assemble context/analyze/NVDA_20260620
+
+# Top-down macro
+uv run --no-sync python -m autoresearch.macro.harvest 2026-06-20
+uv run --no-sync python -m autoresearch.macro.assemble context/macro/2026-06-20
+```
+
+Optional extras: `uv sync --extra data` (pyarrow lake), `--extra models` (lightgbm/xgboost/catboost), `--extra torch` (future MLP/TabNet/seq models).
 
 ## News
 - [2026-05] **TradingAgents v0.2.5** released with the grounded Sentiment Analyst, GPT-5.5 etc. model coverage, Qwen/GLM/MiniMax dual-region support, `TRADINGAGENTS_*` env-var configurability with API-key auto-detection, remote Ollama support, non-US alpha benchmarks, and ticker path-traversal hardening. See [CHANGELOG.md](CHANGELOG.md) for the full list.

@@ -1,6 +1,6 @@
 """Deterministic macro + 中观 harvester for the "Claude-as-engine" workflow.
 
-Top-down sibling of scripts/harvest_context.py. Harvests REGIONAL macro
+Top-down sibling of autoresearch.analyze.harvest. Harvests REGIONAL macro
 (US via FRED aliases, China via akshare macro_china_*, Global via FRED
 international series by raw ID), the CROSS-ASSET price basket (yfinance), and
 A-share 中观 (sector fund-flow, Dragon-Tiger, limit-up sentiment, northbound),
@@ -8,7 +8,7 @@ then dumps every raw output to one markdown file. No LLM is instantiated — onl
 free vendors (yfinance keyless; FRED needs FRED_API_KEY; akshare optional).
 
 Usage:
-    python scripts/harvest_macro.py [YYYY-MM-DD]
+    python -m autoresearch.macro.harvest [YYYY-MM-DD]
 """
 import os
 import sys
@@ -17,12 +17,12 @@ import traceback
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]  # repo root (autoresearch/macro/ → ../../)
 
 
 def _load_env(env_path: Path) -> None:
     """Minimal .env loader (no dependency); never overrides the real environment.
-    Verbatim from scripts/harvest_context.py."""
+    Verbatim from autoresearch.analyze.harvest."""
     if not env_path.exists():
         return
     for raw in env_path.read_text(encoding="utf-8").splitlines():
@@ -85,7 +85,7 @@ def _pct_change(first: float, last: float) -> str:
 
 def _ak_call(fn, tries: int = 3, backoff: float = 1.5):
     """Call a flaky akshare endpoint with retries + linear backoff.
-    Verbatim from scripts/harvest_context.py."""
+    Verbatim from autoresearch.analyze.harvest."""
     last = None
     for i in range(tries):
         try:
@@ -116,7 +116,7 @@ def _recent_rows(df, n: int = 6):
 
 def _section(title: str, fn, *args, **kwargs) -> str:
     """Run one data call, capturing output or a readable error per section.
-    Verbatim from scripts/harvest_context.py."""
+    Verbatim from autoresearch.analyze.harvest."""
     print(f"  - {title} ...", flush=True)
     try:
         out = fn.invoke(*args, **kwargs) if hasattr(fn, "invoke") else fn(*args, **kwargs)
@@ -295,7 +295,7 @@ def meso_ashare_best(curr_date: str) -> str:
     """
     parts: list[str] = []
     try:
-        from tushare_macro import meso_block_ts
+        from autoresearch.macro.tushare_macro import meso_block_ts
         b = meso_block_ts(curr_date)
         if b:
             parts.append(b)
@@ -312,6 +312,10 @@ def meso_ashare_best(curr_date: str) -> str:
 
 
 def main() -> int:
+    if any(a in ("-h", "--help") for a in sys.argv[1:]):
+        print(__doc__)
+        print("用法: python -m autoresearch.macro.harvest [YYYY-MM-DD]  (日期缺省=今天)")
+        return 0
     trade_date = sys.argv[1] if len(sys.argv) > 1 else date.today().isoformat()
     datetime.strptime(trade_date, "%Y-%m-%d")  # validate / fail loud on bad date
     set_config(DEFAULT_CONFIG)

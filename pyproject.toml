@@ -28,6 +28,13 @@ dev = [
     "pytest>=8.0",
     "pytest-subtests>=0.13",
 ]
+# Data lake (Parquet + ZSTD). Install with `uv sync --extra data`.
+data = ["pyarrow"]
+# Native ranking models (core feature_set, no torch). `uv sync --extra models`.
+models = ["lightgbm", "xgboost", "catboost"]
+# Placeholder for the future torch tabular/seq models (MLP/TabNet/LSTM/...).
+# Not installed now; the 5 Phase-1 core models (linear/lgbm/xgb/cat/dbl) need no torch.
+torch = ["torch"]
 
 [tool.setuptools.packages.find]
 include = ["autoresearch*"]

@@ -75,7 +75,7 @@ uv run --no-sync python -m autoresearch.scan.universe <date> --source tushare
 
 **Tier-1 · 全 ~30 只 · Sonnet · 并发**:`batch_finalists(finalists_df, size=3)` 切 ~10 批,**在一条消息里并发派发这 ~10 个 `Agent(model='sonnet')`(并行启动,非顺序逐批 → wall-clock ≈ 单批,不是 10×单批)**;每批 3 只/独立 context,逐只跑 analyze-ticker-lite(读其 `lite-playbook.md`):
 ```bash
-uv run --no-sync python scripts/harvest_context.py <ticker> <date> --slim   # slim 取数,每只 ~13KB(≈全量 20%)
+uv run --no-sync python -m autoresearch.analyze.harvest <ticker> <date> --slim   # slim 取数,每只 ~13KB(≈全量 20%)
 # → 决策卡 staging 到 context/scan/<date>/details/<ticker>.md
 ```
 > **批内逐只独立判、卡片之间不交叉引用**;每张卡仍带完整尽调 rubric(trap 信号 / 估值纪律 / **抛物线顶→压级**),保住「L4 反向打脸 L3」。
@@ -89,7 +89,7 @@ uv run --no-sync python scripts/harvest_context.py <ticker> <date> --slim   # sl
 > **实测(6-18 v2)**:Tier-1 收紧后 Sonnet 降级多半判对(菱电/亚翔 Opus 也认 Hold),故默认收紧(conv_floor=80、top_k=3)——**是防"误杀真买点"的保险、不是常态;Tier-1 越可信越该调高 conv_floor 或跳过**。
 > **K1 旋钮**:想拉 live 证据(新闻/DCF/席位/10日资金)→ 改跑该票**全量 analyze-ticker**(更贵更有 edge)。默认 lite-on-Opus 有界可复现。
 
-- **复用召回因子,不重算(已落到代码层)**:`harvest_context --slim` 在 scan 目录(`context/scan/<date>/`)能找到该只的 L1 行时,**自动**用 L1 因子(主力净占比/散户/筹码/北向/技术/复合分+8子分)重建『主力/技术/筹码/北向』块 —— **零 tushare 重复取数、与召回数字一致**;`harvest_context` 只 live 取 L1 没有的深块(个股新闻/利润表/偿付/卖方目标/解禁,及 L4 才增量的 股东户数·质押/业绩预告·快报)。判断 subagent 仍把该 L1 行塞进 prompt 供推理。**A股价格真值走 tushare(`load_ohlcv` 对 .SS/.SZ/.BJ 前复权),北交所可用、与召回同源,不走 yfinance。** 想要 10 日资金序列/MACD 明细 → 对该票跑**全量 analyze-ticker**(非 slim,live 重取更全)。
+- **复用召回因子,不重算(已落到代码层)**:`autoresearch.analyze.harvest --slim` 在 scan 目录(`context/scan/<date>/`)能找到该只的 L1 行时,**自动**用 L1 因子(主力净占比/散户/筹码/北向/技术/复合分+8子分)重建『主力/技术/筹码/北向』块 —— **零 tushare 重复取数、与召回数字一致**;`autoresearch.analyze.harvest` 只 live 取 L1 没有的深块(个股新闻/利润表/偿付/卖方目标/解禁,及 L4 才增量的 股东户数·质押/业绩预告·快报)。判断 subagent 仍把该 L1 行塞进 prompt 供推理。**A股价格真值走 tushare(`load_ohlcv` 对 .SS/.SZ/.BJ 前复权),北交所可用、与召回同源,不走 yfinance。** 想要 10 日资金序列/MACD 明细 → 对该票跑**全量 analyze-ticker**(非 slim,live 重取更全)。
 - subagent 独立 context、**只回传 评级/目标/R:R**;主线只收小结果。量大可选 **workflow** 并行(需用户显式开启)。
 - 某只想下重注 → 再单独跑**全量 analyze-ticker**(模型 **Opus**,live 重取最全)。
 
