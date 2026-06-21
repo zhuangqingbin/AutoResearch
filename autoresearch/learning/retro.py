@@ -279,13 +279,13 @@ def write_retro_input(date: str, attr: pd.DataFrame, scan_root: Path | None = No
     lines += _tbl(caught, fcols) if len(caught) else ["_无_"]
 
     try:                                   # F · 逐阶段 agent edge(staging 缺 / fwd 未实现则跳过)
-        import stage_eval
+        import autoresearch.learning.stage_eval as stage_eval
         lines += stage_eval.render_stage_eval(stage_eval.evaluate(date, scan_root=scan_root))
     except Exception as e:  # noqa: BLE001
         lines += [f"\n## 各阶段 agent edge\n_stage_eval 跳过:{e}_"]
 
     try:                                   # E2 · 够格升『程序性硬门』的经验(给它写 guard → self_review 拦)
-        import feedback_store as fs
+        import autoresearch.learning.feedback_store as fs
         cands = fs.promotion_candidates()
         if cands:
             lines += ["\n## 够格升硬门的经验(E2:反复强化、还没 guard → 给它写 {field,op,value} 升 self_review 硬门)"]
@@ -319,7 +319,8 @@ def recalibrate_and_log(retro_date: str, cap_floor: float = 30.0, k: float = 200
     快照旧权重(weights.<sha>.json,供 Phase 3 回滚)→ calibrate → log_change(前后 sha + top 变化)。
     """
     import factor_lab as fl
-    import feedback_store as fs
+
+    import autoresearch.learning.feedback_store as fs
     wp = Path("context/factor_lab/weights.json")
     before_raw = wp.read_bytes() if wp.exists() else b"{}"
     before_sha = fs.snapshot_weights() or _sha8(before_raw)   # 快照留底(Phase 3 回滚)

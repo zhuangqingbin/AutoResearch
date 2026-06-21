@@ -16,7 +16,7 @@ D 的报告(事前) ──对──> D 当日已实现 fwd_1_oo(事后)
 ```bash
 uv run --no-sync python - <<'PY'
 import sys; sys.path.insert(0, "scripts")
-import retro
+import autoresearch.learning.retro as retro
 for d in retro.pending_days():           # 有报告+有面板+fwd已实现+未done 的 scan 日
     attr = retro.attribute(d)            # 写 context/scan/<d>/retro/attribution.csv
     retro.write_retro_input(d, attr)     # 写 retro_input.md(stage_stats 各段命中率 + 漏判赢家因子行 + 对照 + F·stage_eval 各阶段 agent edge + E2·promotion_candidates 经验升门候选)
@@ -36,7 +36,7 @@ PY
 ```bash
 uv run --no-sync python - <<'PY'
 import sys; sys.path.insert(0, "scripts")
-import retro
+import autoresearch.learning.retro as retro
 r = retro.recalibrate_and_log("2026-06-19")   # 快照旧权重 → factor_lab.calibrate(多日滚动+收缩) → changelog.jsonl
 print("recalibrated:", r["before_sha"], "→", r["after_sha"], "| n_dates", r["n_dates"])
 print("top 变化:", r["top_changes"][:5])
@@ -48,8 +48,7 @@ PY
 门槛/新因子/prompt 规则类改动 → 写 `proposals.jsonl`:
 ```bash
 uv run --no-sync python - <<'PY'
-import sys; sys.path.insert(0, "scripts")
-import feedback_store as fs
+import autoresearch.learning.feedback_store as fs
 fs.add_proposal("gate", "cap_floor 30→20 亿",
                 rationale="""本日 missed_l0 中 N 只为 20–30亿 成长次新,门槛误杀""",
                 diff_sketch="""screen_market 硬门 cap_floor 默认 30 → 20""")
@@ -61,8 +60,7 @@ prompt 规则改动须按 **writing-skills** 测过再上线。
 反复出现的诊断 → `upsert_lesson`(同 slug 自动强化):
 ```bash
 uv run --no-sync python - <<'PY'
-import sys; sys.path.insert(0, "scripts")
-import feedback_store as fs
+import autoresearch.learning.feedback_store as fs
 fs.upsert_lesson("low_winner_reversal", ("global","*"),
                  rule="""低获利盘(winner_rate<25)+主力净流入+低动量=反转候选,别因动量低就压在召回线外""",
                  evidence=["retro 2026-06-19 missed_l1 群体特征","fwd_1_oo +X%"], confidence=0.6)
@@ -72,7 +70,7 @@ PY
 **6. retro 报告 + 标记完成**
 写 retro 报告到**被复盘扫描的运行目录**(`retro._report_dir_for(date)` 据 manifest.analysis_date 定位,与该次 `summary.md` 同级):`reports/scan/<YYYYMMDD>_<HHMM>/retro_<复盘HHMM>.md`,含:① 漏斗各段对赢家命中率(引 stage_stats)② 漏判赢家 top + **系统性病因**(第2步)③ 已自动落地的权重变化(引 changelog)④ 待批建议 ⑤ 新增/强化经验。然后:
 ```bash
-uv run --no-sync python -c "import sys;sys.path.insert(0,'scripts');import retro;retro.mark_done('2026-06-19')"
+uv run --no-sync python -c "import sys;sys.path.insert(0,'scripts');import autoresearch.learning.retro as retro;retro.mark_done('2026-06-19')"
 ```
 用户可对 retro 报告再 `/feedback` → 二次校正(闭环)。
 

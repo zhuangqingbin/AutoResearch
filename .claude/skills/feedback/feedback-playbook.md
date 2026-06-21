@@ -19,8 +19,7 @@
 
 ```bash
 uv run --no-sync python - <<'PY'
-import sys; sys.path.insert(0, "scripts")
-import feedback_store as fs
+import autoresearch.learning.feedback_store as fs
 fb = fs.record_feedback(
     skill="scan-market",                       # 或 analyze-ticker / macro-research
     scope=("global", "*"),                     # 见第 2 步
@@ -40,8 +39,7 @@ PY
 
 ```bash
 uv run --no-sync python - <<'PY'
-import sys; sys.path.insert(0, "scripts")
-import feedback_store as fs
+import autoresearch.learning.feedback_store as fs
 lsn = fs.upsert_lesson(
     "winner_rate_topping",                     # 稳定 slug:同一教训反复反馈会自动强化(count++/conf↑)
     ("global", "*"),
@@ -62,7 +60,7 @@ PY
 ## 注回怎么生效(无需手动)
 - scan-market 构造 L2/L3 subagent prompt 前,会调 `fs.render_calibration_block(本批申万行业 scopes)` —— 命中经验**叠加在 IC 基线之上**;store 空时逐字回退基线(老路径不破)。
 - `assemble_scan` 报告骨架对覆盖标的浮出"📌 经验 / 未决反馈"。
-- 验证某经验会被用上:`uv run --no-sync python -c "import sys;sys.path.insert(0,'scripts');import feedback_store as fs;print(fs.render_calibration_block([('global','*')]))"`。
+- 验证某经验会被用上:`uv run --no-sync python -c "import autoresearch.learning.feedback_store as fs;print(fs.render_calibration_block([('global','*')]))"`。
 
 ## 经验卫生
 - **slug 要稳定**:同一教训用同一 slug,反复反馈→自动强化(confidence 升、reinforce_count++),别每次新建。

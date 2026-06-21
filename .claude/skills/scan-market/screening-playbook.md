@@ -27,7 +27,7 @@ uv run --no-sync python scripts/screen_market.py <date> --source tushare
 
 ## ⚠️ 因子方向经验校准(L3/L4 通用,**务必写进每个 subagent prompt**)
 > **运行时由闭环记忆生成**:构造 L3 subagent prompt 前,调
-> `feedback_store.render_calibration_block(本批申万行业 scopes, with_feedback=True)` 取本块——三层叠加(优先级从高到低):**①近期同域未蒸馏反馈(E1·刚被你标错的坑,别再犯)→ ②自学习经验(retro 复盘;带 `〖硬门〗` 的已是 self_review 确定性拦截)→ ③IC 基线**;`context/knowledge/` 空 + 无反馈时**逐字回退**基线,老路径不破。取法:`uv run --no-sync python -c "import sys;sys.path.insert(0,'scripts');import feedback_store as fs;print(fs.render_calibration_block([('industry','电子'),('industry','医药')], with_feedback=True))"`。下面是**基线**(人读参考):
+> `feedback_store.render_calibration_block(本批申万行业 scopes, with_feedback=True)` 取本块——三层叠加(优先级从高到低):**①近期同域未蒸馏反馈(E1·刚被你标错的坑,别再犯)→ ②自学习经验(retro 复盘;带 `〖硬门〗` 的已是 self_review 确定性拦截)→ ③IC 基线**;`context/knowledge/` 空 + 无反馈时**逐字回退**基线,老路径不破。取法:`uv run --no-sync python -c "import autoresearch.learning.feedback_store as fs;print(fs.render_calibration_block([('industry','电子'),('industry','医药')], with_feedback=True))"`。下面是**基线**(人读参考):
 
 来自 `factor_lab` 的 T+1 IC 回测(完整基线见**附录 C**),几条**与直觉相反**、上一轮测试中 L2/L3 误读、被 L4 反向打脸的:
 - **高获利盘 winner_rate(>90)= 抛压/见顶风险,不是"筹码健康/顶配"**(十分位 −42bps)。低获利盘=套牢盘多=有上行空间。

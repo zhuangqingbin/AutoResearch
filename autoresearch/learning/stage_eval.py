@@ -116,7 +116,7 @@ def evaluate(date: str, scan_root: Path | None = None, report_root: Path | None 
     scan_root = scan_root or Path("context/scan")
     sdir = scan_root / date
     if realized is None:
-        import retro  # 延迟导入,避免与 retro 的循环 import
+        import autoresearch.learning.retro as retro  # 延迟导入,避免与 retro 的循环 import
         realized = retro.realized_returns(date)
     if realized is None or realized.empty:
         raise RuntimeError(f"{date} 的 fwd 未实现 / 无价格,暂不能逐段评估")
@@ -148,7 +148,7 @@ def evaluate(date: str, scan_root: Path | None = None, report_root: Path | None 
                                "ic_net_t5": rank_ic(m, "net", _RET_T5)}
 
     # L4:finalist 五档评级单调性(从已发布卡取 {code: rating})
-    import retro  # 复用卡片评级解析(发布层卡名是名称,code 从卡内标题取)
+    import autoresearch.learning.retro as retro  # 复用卡片评级解析(发布层卡名是名称,code 从卡内标题取)
     ratings = retro._buylist(date, report_root)
     if ratings:
         rdf = pd.DataFrame([{"code": c, "rating": r, "rating_score": rating_score(r)}

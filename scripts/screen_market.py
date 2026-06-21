@@ -527,7 +527,7 @@ def _harvest_vol_series(codes, analysis_date: str, lookback: int = 20) -> pd.Dat
     try:
         from datetime import datetime, timedelta
 
-        import vol_series
+        import autoresearch.common.vol_series as vol_series
         from tushare_source import _code6, _pro, _trade_days, _ts_call, resolve_momentum_dates
         pro = _pro()
         last = resolve_momentum_dates(pro, analysis_date)[0]

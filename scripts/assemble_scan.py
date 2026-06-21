@@ -292,7 +292,7 @@ def _knowledge_note(rows: list[dict]) -> str:
     store 空 / feedback_store 不可用 → 返回空串(向后兼容,老路径不破)。
     """
     try:
-        import feedback_store as fs
+        import autoresearch.learning.feedback_store as fs
     except Exception:  # noqa: BLE001 — 知识库是可选层,缺了不影响出报告
         return ""
     codes = {str(r.get("code")) for r in rows if r.get("code")}
@@ -330,7 +330,7 @@ def _knowledge_note(rows: list[dict]) -> str:
 def _self_review_banner(scan_dir: Path, rows: list[dict], summary_text: str) -> str:
     """发布前机械自检(self_review 硬门)→ 报告顶部 banner。缺依赖/无问题 → 空串(老路不破)。"""
     try:
-        import self_review
+        import autoresearch.learning.self_review as self_review
     except Exception:  # noqa: BLE001
         return ""
     l1 = {}
@@ -347,7 +347,7 @@ def _self_review_banner(scan_dir: Path, rows: list[dict], summary_text: str) -> 
     n_present = sum(1 for r in rows if r.get("target") != "⚠️卡片缺失")
     lessons = []
     try:
-        import feedback_store as fs
+        import autoresearch.learning.feedback_store as fs
         lessons = fs.lessons_for([("global", "*")])
     except Exception:  # noqa: BLE001
         pass

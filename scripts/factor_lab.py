@@ -35,7 +35,7 @@ import pandas as pd
 
 # 复用 screen_market 的打分原语 + 真·动量透镜(验证"出厂逻辑"本身)
 from screen_market import _factor_groups, _pct, _wsum, lens_momentum
-from sw_sector_map import super_sector
+from autoresearch.common.sw_sector_map import super_sector
 from tushare_source import _moneyflow_struct_cols
 
 CACHE = Path("context/factor_lab/cache")
@@ -395,7 +395,7 @@ def factor_frame(D: str, piv: dict, P: list[str], basic: pd.DataFrame,
         f["mom_v4_rsHeavy"] = _pen(_wsum({"rs": (rs, 50), "trend": (trend, 30), "inflow": (inflow, 20)}))
 
     # 多日量价序列因子(OBV/CMF/VWAP偏离/量价突破):从价格面板算,补单日 vol_ratio 分不清的资金流方向
-    import vol_series
+    import autoresearch.common.vol_series as vol_series
     win = P[max(0, idx - 19):idx + 1]
     if len(win) >= 10:
         H, L, C, A = piv["high"], piv["low"], piv["close"], piv["amount"]

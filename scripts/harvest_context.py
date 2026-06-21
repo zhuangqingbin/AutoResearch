@@ -1018,22 +1018,22 @@ def ashare_calendar_best(ticker: str, curr_date: str) -> str:
 # --- UZI 增量透镜(L4 单票深研:A股原生财报 / 融资趋势 / 龙虎榜席位 / 杀猪盘)---
 
 def _uzi_fundamentals(ticker: str) -> str:
-    from uzi_lenses import ashare_fundamentals_ts
+    from autoresearch.common.uzi_lenses import ashare_fundamentals_ts
     return ashare_fundamentals_ts(ticker) or "_UZI A股原生财报暂不可用(非A股/取数失败)。_"
 
 
 def _uzi_margin(ticker: str) -> str:
-    from uzi_lenses import margin_trend_ts
+    from autoresearch.common.uzi_lenses import margin_trend_ts
     return margin_trend_ts(ticker) or "_非两融标的或融资数据暂无。_"
 
 
 def _uzi_seats(ticker: str, curr_date: str) -> str:
-    from uzi_lenses import lhb_seats
+    from autoresearch.common.uzi_lenses import lhb_seats
     return lhb_seats(ticker, curr_date) or "_龙虎榜席位数据暂不可用。_"
 
 
 def _uzi_trap(row: dict) -> str:
-    from uzi_lenses import render_trap_block, trap_signals
+    from autoresearch.common.uzi_lenses import render_trap_block, trap_signals
     return render_trap_block(trap_signals(row))
 
 
@@ -1042,7 +1042,7 @@ def _uzi_volprice(row: dict) -> str:
 
     补 trap(派发空半)缺的**吸筹多半**:顶部放量=派发、底部放量=吸筹——裸量比对 T+1 负正因没分位置。
     """
-    from uzi_lenses import render_volume_price_block, volume_price_signals
+    from autoresearch.common.uzi_lenses import render_volume_price_block, volume_price_signals
     block = render_volume_price_block(volume_price_signals(row))
     extra = []
     for key, lab, pos, neg in (("cmf_20", "CMF·20日买卖压", "买压/吸筹侧", "卖压/派发侧"),
