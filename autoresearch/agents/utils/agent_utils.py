@@ -7,22 +7,22 @@ import yfinance as yf
 from langchain_core.messages import HumanMessage, RemoveMessage
 
 # Import tools from separate utility files
-from tradingagents.agents.utils.core_stock_tools import get_stock_data
-from tradingagents.agents.utils.fundamental_data_tools import (
+from autoresearch.agents.utils.core_stock_tools import get_stock_data
+from autoresearch.agents.utils.fundamental_data_tools import (
     get_balance_sheet,
     get_cashflow,
     get_fundamentals,
     get_income_statement,
 )
-from tradingagents.agents.utils.macro_data_tools import get_macro_indicators
-from tradingagents.agents.utils.market_data_validation_tools import get_verified_market_snapshot
-from tradingagents.agents.utils.news_data_tools import (
+from autoresearch.agents.utils.macro_data_tools import get_macro_indicators
+from autoresearch.agents.utils.market_data_validation_tools import get_verified_market_snapshot
+from autoresearch.agents.utils.news_data_tools import (
     get_global_news,
     get_insider_transactions,
     get_news,
 )
-from tradingagents.agents.utils.prediction_markets_tools import get_prediction_markets
-from tradingagents.agents.utils.technical_indicators_tools import get_indicators
+from autoresearch.agents.utils.prediction_markets_tools import get_prediction_markets
+from autoresearch.agents.utils.technical_indicators_tools import get_indicators
 
 # Public surface: the data tools are imported here so agents and the graph
 # import them from one place, plus the instrument/language helpers defined below.
@@ -58,7 +58,7 @@ def get_language_instruction() -> str:
     portfolio manager — so a non-English run produces a fully localized
     report rather than a mix of languages.
     """
-    from tradingagents.dataflows.config import get_config
+    from autoresearch.dataflows.config import get_config
     lang = get_config().get("output_language", "English")
     if lang.strip().lower() == "english":
         return ""
@@ -93,7 +93,7 @@ def resolve_instrument_identity(ticker: str) -> dict:
     The symbol is normalized first (e.g. ``XAUUSD`` -> ``GC=F``) so identity
     resolves for the same instrument the price path actually fetches (#983).
     """
-    from tradingagents.dataflows.symbol_utils import normalize_symbol
+    from autoresearch.dataflows.symbol_utils import normalize_symbol
 
     try:
         info = yf.Ticker(normalize_symbol(ticker)).info or {}

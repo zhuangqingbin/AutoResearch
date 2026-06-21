@@ -44,9 +44,9 @@ _load_env(ROOT / ".env")
 
 import yfinance as yf  # noqa: E402
 
-from tradingagents.agents.utils.agent_utils import get_macro_indicators  # noqa: E402
-from tradingagents.dataflows.config import set_config  # noqa: E402
-from tradingagents.default_config import DEFAULT_CONFIG  # noqa: E402
+from autoresearch.agents.utils.agent_utils import get_macro_indicators  # noqa: E402
+from autoresearch.dataflows.config import set_config  # noqa: E402
+from autoresearch.default_config import DEFAULT_CONFIG  # noqa: E402
 
 # US macro — friendly aliases already resolved by fred.py.
 US_FRED = [

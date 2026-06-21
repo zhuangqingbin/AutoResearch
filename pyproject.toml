@@ -30,7 +30,7 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["tradingagents*"]
+include = ["autoresearch*"]
 
 [tool.setuptools.package-data]
 cli = ["static/*"]

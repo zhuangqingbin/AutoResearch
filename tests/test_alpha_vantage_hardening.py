@@ -5,7 +5,7 @@ responses mislabeled as rate limits and silently treated as transient).
 """
 import pytest
 
-import tradingagents.dataflows.alpha_vantage_common as av
+import autoresearch.dataflows.alpha_vantage_common as av
 
 
 class _FakeResponse:

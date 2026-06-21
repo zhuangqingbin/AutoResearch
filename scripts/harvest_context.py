@@ -53,7 +53,7 @@ _load_env(ROOT / ".env")
 import pandas as pd  # noqa: E402
 import yfinance as yf  # noqa: E402
 
-from tradingagents.agents.utils.agent_utils import (  # noqa: E402
+from autoresearch.agents.utils.agent_utils import (  # noqa: E402
     build_instrument_context,
     get_balance_sheet,
     get_cashflow,
@@ -69,9 +69,9 @@ from tradingagents.agents.utils.agent_utils import (  # noqa: E402
     get_verified_market_snapshot,
     resolve_instrument_identity,
 )
-from tradingagents.dataflows.config import set_config  # noqa: E402
-from tradingagents.dataflows.symbol_utils import normalize_symbol  # noqa: E402
-from tradingagents.default_config import DEFAULT_CONFIG  # noqa: E402
+from autoresearch.dataflows.config import set_config  # noqa: E402
+from autoresearch.dataflows.symbol_utils import normalize_symbol  # noqa: E402
+from autoresearch.default_config import DEFAULT_CONFIG  # noqa: E402
 
 # The standard indicator menu the market analyst chooses from (its system prompt).
 INDICATORS = [

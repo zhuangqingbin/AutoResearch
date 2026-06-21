@@ -2,7 +2,7 @@ from typing import Annotated
 
 from langchain_core.tools import tool
 
-from tradingagents.dataflows.market_data_validator import build_verified_market_snapshot
+from autoresearch.dataflows.market_data_validator import build_verified_market_snapshot
 
 
 @tool

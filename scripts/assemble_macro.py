@@ -19,7 +19,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from tradingagents.agents.utils.rating import parse_rating
+from autoresearch.agents.utils.rating import parse_rating
 
 DECISION_REL = "1_spine/decision.md"
 SECTOR_MAP_REL = "2_meso/sector_map.md"

@@ -1,6 +1,6 @@
 from copy import deepcopy
 
-import tradingagents.default_config as default_config
+import autoresearch.default_config as default_config
 
 # Use default config but allow it to be overridden
 _config: dict | None = None

@@ -186,7 +186,7 @@ def parse_ratings_from_details(details_dir: Path | str) -> dict[str, str]:
 
     code = 文件名 stem(6 位代码);读不到卡/无评级 → `parse_rating` 回退 'Hold'。
     """
-    from tradingagents.agents.utils.rating import parse_rating  # 延迟导入,保持本模块轻量
+    from autoresearch.agents.utils.rating import parse_rating  # 延迟导入,保持本模块轻量
     out: dict[str, str] = {}
     base = Path(details_dir)
     if not base.exists():
@@ -209,7 +209,7 @@ def pick_buylist(ratings: dict[str, str], floor: str = "Overweight") -> list[str
     """评级 ≥ floor 的发布买单(floor=Overweight 时等价 pick_buy_candidates〔Buy/OW〕)。
 
     Tier-3 辩论输入用 `pick_buy_candidates`;本函数留作"最终买单"口径(Tier-3 折回后仍 ≥floor)。"""
-    from tradingagents.agents.utils.rating import (
+    from autoresearch.agents.utils.rating import (
         RATINGS_5_TIER,  # Buy>Overweight>Hold>Underweight>Sell
     )
     order = {r: i for i, r in enumerate(RATINGS_5_TIER)}
@@ -222,7 +222,7 @@ def pick_downgrade_reviews(ratings: dict[str, str], finalists: pd.DataFrame,
     """L4 **Tier-2**(瘦,唯一职责=防假阴性平反,**条件触发**):Sonnet 把**高 conviction 的趋势 finalist**
     判到 ≤max_rating 的,才送 Opus 单遍复核平反——买点候选已直接进 Tier-3 辩论,Tier-2 只救误杀的边界假阴;
     名单空(无高 conviction 趋势被压)则 **Tier-2 完全不触发、零 Opus**。按 conviction 取 top_k。"""
-    from tradingagents.agents.utils.rating import RATINGS_5_TIER
+    from autoresearch.agents.utils.rating import RATINGS_5_TIER
     order = {r: i for i, r in enumerate(RATINGS_5_TIER)}
     floor_idx = order.get(max_rating, 2)
     df = finalists.copy()
@@ -264,7 +264,7 @@ def rubric_rating(dims: dict, gates: dict) -> tuple[str, str]:
     gates: {主力真在|业绩真兑现|估值不透支: bool}(缺按 False 保守)。
     返回 (建议评级, 约束因)。
     """
-    from tradingagents.agents.utils.rating import RATINGS_5_TIER  # Buy>OW>Hold>UW>Sell
+    from autoresearch.agents.utils.rating import RATINGS_5_TIER  # Buy>OW>Hold>UW>Sell
     nd = {_norm_dim(k): v for k, v in (dims or {}).items()}
     net = sum(_DIM_SCORE.get(str(nd.get(d, "中")).strip(), 0) for d in _RUBRIC_DIMS)
     if net >= 4:

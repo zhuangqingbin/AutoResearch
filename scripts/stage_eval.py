@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from tradingagents.agents.utils.rating import RATINGS_5_TIER  # Buy>OW>Hold>UW>Sell
+from autoresearch.agents.utils.rating import RATINGS_5_TIER  # Buy>OW>Hold>UW>Sell
 
 _RET_T5 = "fwd_5_oc"   # T+5 收盘口径:LLM 阶段(L3/L4)推的是 1–2 周 swing,T+5 比 T+1 更贴论点
 _RET_T1 = "fwd_1_oo"   # T+1 开到开:更快、噪声大,主要给 L2

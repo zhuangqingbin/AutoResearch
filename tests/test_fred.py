@@ -9,10 +9,10 @@ from unittest import mock
 
 import pytest
 
-import tradingagents.dataflows.config as config_module
-import tradingagents.default_config as default_config
-from tradingagents.dataflows import fred, interface
-from tradingagents.dataflows.config import set_config
+import autoresearch.dataflows.config as config_module
+import autoresearch.default_config as default_config
+from autoresearch.dataflows import fred, interface
+from autoresearch.dataflows.config import set_config
 
 # A small, stable set of observations to format against.
 _META = {

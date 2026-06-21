@@ -30,7 +30,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from tradingagents.agents.utils.rating import parse_rating
+from autoresearch.agents.utils.rating import parse_rating
 
 # The PM decision — required, rendered FIRST as the executive summary. v4: the PM
 # prepends a 决策仪表盘 (one-row dashboard) + 维度评分卡 (scorecard) at its top.

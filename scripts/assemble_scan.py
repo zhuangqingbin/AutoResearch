@@ -30,7 +30,7 @@ from collections import Counter
 from datetime import date, datetime
 from pathlib import Path
 
-from tradingagents.agents.utils.rating import RATINGS_5_TIER, parse_rating
+from autoresearch.agents.utils.rating import RATINGS_5_TIER, parse_rating
 
 TIER_RANK = {r: i for i, r in enumerate(RATINGS_5_TIER)}  # Buy=0 … Sell=4
 

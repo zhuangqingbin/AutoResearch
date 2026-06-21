@@ -1,6 +1,6 @@
 import os
 
-_TRADINGAGENTS_HOME = os.path.join(os.path.expanduser("~"), ".tradingagents")
+_TRADINGAGENTS_HOME = os.path.join(os.path.expanduser("~"), ".autoresearch")
 
 # Single source of truth for env-var → config-key overrides. To expose
 # a new config key for environment-based override, add a row here — no

@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from tradingagents.agents.utils.rating import parse_rating
+from autoresearch.agents.utils.rating import parse_rating
 
 _BUY = ("Overweight", "Buy")
 
