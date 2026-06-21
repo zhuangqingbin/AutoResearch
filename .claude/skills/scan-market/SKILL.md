@@ -44,7 +44,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 
 1. **L0 选集 + L1 召回 + L2 粗排(全确定性,零 token)**:
    ```bash
-   uv run --no-sync python scripts/screen_market.py [YYYY-MM-DD] [--source tushare] [--recall-n 1000] [--l2-n 200] [--cap-floor 30] [--exclude-bj]
+   uv run --no-sync python -m autoresearch.scan.universe [YYYY-MM-DD] [--source tushare] [--recall-n 1000] [--l2-n 200] [--cap-floor 30] [--exclude-bj]
    ```
    → `L1_recall_top1000.csv`(复合分 + 9 子分〔含 volprice〕+ 原始因子)+ **`L2_gbdt_top200.csv`**(GBDT 重排 top200;`meta.l2_engine` 记 `gbdt` 或回落 `composite-linear`)+ `sectors.csv` + `meta.json`。默认源 tushare、含北交所、日期=今天。
 2. **过目(建议)**:读 `L2_gbdt_top200.csv` 头部 + `sectors.csv`,把粗排概览给用户看一眼。

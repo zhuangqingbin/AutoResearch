@@ -44,12 +44,9 @@ _GBDT_GROUPS = ("momentum", "fund_main", "fund_retail", "chip", "north", "tech",
 def _moneyflow_struct_cols(mf: pd.DataFrame) -> pd.DataFrame:
     """moneyflow → 主力净额(大+特大单)/ 散户净额(小单),单位亿。延迟拿 tushare_source 的实现。
 
-    tushare_source 顶层 `from screen_market import ...`(scripts/ 桥),为不在 import 期拉起该桥,
-    把取 _moneyflow_struct_cols 推迟到调用时;sources._ensure_scripts_on_path 先把 scripts/ 挂上
-    sys.path。与 factor_lab 共用同一口径实现(非复制)。
+    延迟到调用时 import,避免 import 期触发 tushare_source 的重依赖。与 factor_lab 共用同一口径
+    实现(非复制)。
     """
-    from autoresearch.data.sources import _ensure_scripts_on_path
-    _ensure_scripts_on_path()
     from autoresearch.data.tushare_source import _moneyflow_struct_cols as _impl
     return _impl(mf)
 

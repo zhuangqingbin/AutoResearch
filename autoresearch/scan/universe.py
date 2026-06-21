@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""scan-market · L0–L2 — A股全市场确定性漏斗(零 LLM)。
+"""scan-market · L0–L2 — A股全市场确定性漏斗(零 LLM)。SCAN 层编排。
 
-design: docs/specs/2026-06-20-scan-market-design.md
+design: docs/specs/2026-06-22-autoresearch-arch-redesign-design.md §A(scan 层编排)。
+        前身 scripts/screen_market.py(docs/specs/2026-06-20-scan-market-design.md)。
 
-把 ~5,400 只 A股用纯 pandas + akshare bulk 端点砍到 top 板块内 ~100 只排序
+把 ~5,400 只 A股用纯 pandas + akshare/tushare bulk 端点砍到 top 板块内 ~100 只排序
 survivors(喂给 L3a 的 LLM 轻量分诊)。**零 token。** 真正的深挖(全量
 analyze-ticker)只发生在 L3b 的 ~30 只 finalists。
 
@@ -12,44 +13,33 @@ analyze-ticker)只发生在 L3b 的 ~30 只 finalists。
   L1 四透镜    ── 动量 / 成长 / 价值 / 反转,各自"门→分位打分→top N"
   L2 板块聚合  ── survivors 映射行业,板块按 广度+跨透镜+资金+动量 排名 → top 板块
 
-设计要点:
-  * 横截面分位,不用绝对阈值;估值类按行业内分位,动量/资金按全市场分位。
-  * 高召回(松门):每透镜 top ~50;去重后 ~150 进 L2。
-  * 缺失不插补:缺核心因子 → 该透镜内剔除。
-  * **只用 bulk 端点,绝不逐只拉历史**(wall-clock/限流杀手);需历史的因子用
-    snapshot 自带 60日/YTD 涨跌幅当代理,真历史留给 L3b。
+层界:取数走 DATA 层(`autoresearch.data.akshare_universe.fetch_universe` em 路径 /
+`autoresearch.data.tushare_source.fetch_universe_tushare` 默认),打分走 `autoresearch.common.scoring`,
+L2 学习重排走 `autoresearch.research.factor_lab.predict_scores`。本模块只做编排 + 板块聚合 + 输出。
 
-数据坑(已在 §4.4 记):扣非 bulk 不可得→用头条净利+质量门;MA结构/52周回撤需
-历史→用 60日/YTD 代理;akshare 列名跨版本漂→`_col` 防御取列;业绩披露滞后→用
-最近可得报告期 + 标注。股息率不在这些 bulk 端点→价值透镜暂不含股息。
+`run()` 是 golden-parity 的对拍基准(tests/scan/test_parity.py 锁死新 Pipeline ≡ 本 run)。
 
 用法:
-  uv run --no-sync python scripts/screen_market.py 2026-06-20
-  uv run --no-sync python scripts/screen_market.py --selftest   # 离线验证打分逻辑
-  选项:--cap-floor 30 (市值地板,亿) --include-bj (纳入北交所) --top-per-lens 50
+  uv run --no-sync python -m autoresearch.scan.universe 2026-06-20
+  uv run --no-sync python -m autoresearch.scan.universe --selftest   # 离线验证打分逻辑
+  选项:--cap-floor 30 (市值地板,亿) --exclude-bj (排除北交所) --recall-n 1000 --l2-n 200
 """
 from __future__ import annotations
 
 import argparse
 import json
 import sys
-import time
 from datetime import date
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-# 让 `python scripts/screen_market.py` 也能 import 仓内 autoresearch 包(repo root 上 sys.path)。
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-# 纯打分原语下沉到包内(autoresearch.common.scoring),scan/factor_lab/handler 三处同口径复用。
-# 留在本文件的是 I/O / 网络 / 编排;以下为打分数学(无网络、无 I/O)。
+# 纯打分原语(autoresearch.common.scoring),scan/factor_lab/handler 三处同口径复用。
 from autoresearch.common.scoring import (
     _GROUPS,
     _PRIOR_WEIGHTS,
     _load_weights,
-    _num,
     _pct,
     _wsum,
     composite_score,
@@ -61,158 +51,18 @@ from autoresearch.common.scoring import (
     prev_quarter,
 )
 
-# ───────────────────────── akshare 防御层 ─────────────────────────
-
-
-def _ak_call(fn, tries: int = 3, backoff: float = 1.5):
-    """Retry akshare bulk calls (东财 push2 端点偶发限流/断连)。"""
-    last = None
-    for i in range(tries):
-        try:
-            return fn()
-        except Exception as e:  # noqa: BLE001 — akshare 抛各种网络/解析异常
-            last = e
-            if i < tries - 1:
-                time.sleep(backoff * (i + 1))
-    raise last
-
-
-def _col(df: pd.DataFrame, *cands: str, required: bool = False, default=None):
-    """按候选顺序解析列名,吸收 akshare 版本漂移(精确→子串包含)。"""
-    for c in cands:
-        if c in df.columns:
-            return c
-    for c in cands:
-        for col in df.columns:
-            if c in col:
-                return col
-    if required:
-        raise KeyError(f"none of {cands} present in {list(df.columns)}")
-    return default
-
+# 取数(DATA 层):em 路径的 fetch_universe + 硬门/原始数(_GATE_INFO)。
+from autoresearch.data.akshare_universe import _GATE_INFO, fetch_universe
 
 # 归一化 helpers(_num/_winsor/_pct/_pct_within/_wsum)与报告期 helpers
-# (latest_reported_quarter/prev_quarter)已下沉到 autoresearch.common.scoring,顶部 import 复用。
-
-
-# ───────────────────────── L0 universe ─────────────────────────
-
-# canonical 列(L1 透镜只认这些名字,fetch 层负责从 akshare 列映射过来):
-#   code name industry close mktcap_yi amount_yi
-#   pct_1d pct_60d pct_ytd vol_ratio turnover pe pb
-#   rev np_ rev_yoy np_yoy np_qoq roe gross_margin cfo_ps
-#   np_yoy_prev rev_yoy_prev main_inflow_yi is_st
-
-
-def fetch_universe(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = False) -> pd.DataFrame:
-    """L0:拉 spot + yjbb(当期&上期)+ fundflow,映射成 canonical 列,过硬门。
-
-    需要网络(akshare)。资金流/部分端点失败时优雅降级(该列置 NaN,打分自动重归一)。
-    """
-    import akshare as ak  # 延迟导入:--selftest 不需要 akshare/网络
-
-    spot = _ak_call(ak.stock_zh_a_spot_em)
-    c_code = _col(spot, "代码", required=True)
-    df = pd.DataFrame(
-        {
-            "code": spot[c_code].astype(str).str.zfill(6),
-            "name": spot[_col(spot, "名称", required=True)].astype(str),
-            "close": _num(spot[_col(spot, "最新价")]),
-            "pct_1d": _num(spot[_col(spot, "涨跌幅")]),
-            "pct_60d": _num(spot[_col(spot, "60日涨跌幅")]),
-            "pct_ytd": _num(spot[_col(spot, "年初至今涨跌幅")]),
-            "vol_ratio": _num(spot[_col(spot, "量比")]),
-            "turnover": _num(spot[_col(spot, "换手率")]),
-            "pe": _num(spot[_col(spot, "市盈率-动态", "市盈率")]),
-            "pb": _num(spot[_col(spot, "市净率")]),
-            "mktcap_yi": _num(spot[_col(spot, "总市值")]) / 1e8,
-            "amount_yi": _num(spot[_col(spot, "成交额")]) / 1e8,
-        }
-    )
-
-    # 业绩(当期):成长/价值/质量/行业
-    q = latest_reported_quarter(analysis_date)
-    yj = _ak_call(lambda: ak.stock_yjbb_em(date=q))
-    yj_code = _col(yj, "股票代码", required=True)
-    fin = pd.DataFrame(
-        {
-            "code": yj[yj_code].astype(str).str.zfill(6),
-            "rev": _num(yj[_col(yj, "营业总收入-营业总收入", "营业总收入")]),
-            "rev_yoy": _num(yj[_col(yj, "营业总收入-同比增长")]),
-            "np_": _num(yj[_col(yj, "净利润-净利润", "净利润")]),
-            "np_yoy": _num(yj[_col(yj, "净利润-同比增长")]),
-            "np_qoq": _num(yj[_col(yj, "净利润-季度环比增长")]),
-            "roe": _num(yj[_col(yj, "净资产收益率")]),
-            "gross_margin": _num(yj[_col(yj, "销售毛利率")]),
-            "cfo_ps": _num(yj[_col(yj, "每股经营现金流量")]),
-            "industry": yj[_col(yj, "所处行业")].astype("object") if _col(yj, "所处行业") else "未分类",
-        }
-    )
-    df = df.merge(fin, on="code", how="left")
-
-    # 业绩(上期):仅取 YoY 算加速度
-    try:
-        yjp = _ak_call(lambda: ak.stock_yjbb_em(date=prev_quarter(q)))
-        prev = pd.DataFrame(
-            {
-                "code": yjp[_col(yjp, "股票代码", required=True)].astype(str).str.zfill(6),
-                "np_yoy_prev": _num(yjp[_col(yjp, "净利润-同比增长")]),
-                "rev_yoy_prev": _num(yjp[_col(yjp, "营业总收入-同比增长")]),
-            }
-        )
-        df = df.merge(prev, on="code", how="left")
-    except Exception as e:  # noqa: BLE001
-        print(f"[warn] 上期业绩取数失败({e!r})→ 成长加速度降级", file=sys.stderr)
-        df["np_yoy_prev"] = np.nan
-        df["rev_yoy_prev"] = np.nan
-
-    # 主力资金流(今日):动量/反转的资金确认
-    try:
-        ff = _ak_call(lambda: ak.stock_individual_fund_flow_rank(indicator="今日"))
-        ff_code = _col(ff, "代码", required=True)
-        flow = pd.DataFrame(
-            {
-                "code": ff[ff_code].astype(str).str.zfill(6),
-                "main_inflow_yi": _num(ff[_col(ff, "今日主力净流入-净额", "主力净流入-净额", "主力净流入")]) / 1e8,
-            }
-        )
-        df = df.merge(flow, on="code", how="left")
-    except Exception as e:  # noqa: BLE001
-        print(f"[warn] 主力资金流取数失败({e!r})→ 资金因子降级(置 NaN)", file=sys.stderr)
-        df["main_inflow_yi"] = np.nan
-
-    df["industry"] = df["industry"].fillna("未分类").replace("", "未分类")
-    return _apply_universe_gates(df, cap_floor_yi=cap_floor_yi, include_bj=include_bj)
-
-
-_GATE_INFO: dict = {}   # 跨函数传 L0 原始数(全A,硬门前);pandas .attrs 不可靠故用模块级
-
-
-def _apply_universe_gates(df: pd.DataFrame, cap_floor_yi: float = 30.0, include_bj: bool = True) -> pd.DataFrame:
-    """硬门:剔 ST/退市/停牌/次新代理 + 市值地板 + 北交所开关。"""
-    df = df.copy()
-    name = df["name"].fillna("")
-    df["is_st"] = name.str.contains("ST", case=False) | name.str.contains("退")
-    keep = ~df["is_st"]
-    keep &= df["mktcap_yi"] >= cap_floor_yi
-    # 停牌代理:无成交额/无最新价
-    keep &= df["amount_yi"].fillna(0) > 0
-    keep &= df["close"].notna()
-    if not include_bj:
-        # 北交所:8/4 开头(及 920 新段)
-        keep &= ~df["code"].str.match(r"^(8|4|920)")
-    out = df[keep].reset_index(drop=True)
-    _GATE_INFO["n_raw"] = len(df)   # 全A 原始数(供漏斗显示 全A → 硬门)
-    print(f"[L0] universe: {len(df)} → 过门 {len(out)} "
-          f"(cap≥{cap_floor_yi}亿, 北交所={'纳入' if include_bj else '排除'})", file=sys.stderr)
-    return out
+# (latest_reported_quarter/prev_quarter)在 autoresearch.common.scoring,顶部 import 复用。
 
 
 # ───────────────────────── L1 四透镜 ─────────────────────────
 
 LENS_NAMES = ["momentum", "growth", "value", "reversal"]
 
-# 四透镜(lens_momentum/growth/value/reversal)已下沉到 autoresearch.common.scoring,顶部 import 复用。
+# 四透镜(lens_momentum/growth/value/reversal)在 autoresearch.common.scoring,顶部 import 复用。
 
 
 def run_lenses(uni: pd.DataFrame, top_per_lens: int = 50) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
@@ -277,7 +127,7 @@ def aggregate_sectors(survivors: pd.DataFrame, uni: pd.DataFrame, top_sectors: i
 # ───────────────────────── L1 召回:轻门 + 行业条件化复合分 ─────────────────────────
 
 # 9 因子组 / 先验权重 / _load_weights / _blend / _factor_groups / composite_score
-# 已下沉到 autoresearch.common.scoring(scan/factor_lab/handler 三处同口径),顶部 import 复用。
+# 在 autoresearch.common.scoring(scan/factor_lab/handler 三处同口径),顶部 import 复用。
 
 
 def _recall_gate_a(df: pd.DataFrame, min_amount_yi: float = 0.0) -> pd.Series:
@@ -402,7 +252,7 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
 
     # ── L2 粗排:GBDT 学习重排 recall(top recall_n)→ top l2_n(确定性,替旧 L2-AI keep/cut)──
     # 模型缺失 / oos 未胜线性 → predict_scores 返回 None → 回落 composite top(自保,绝不比线性差)。
-    import factor_lab
+    import autoresearch.research.factor_lab as factor_lab
     gscore = factor_lab.predict_scores(recall)
     if gscore is not None:
         l2 = recall.assign(gbdt_score=gscore.to_numpy()).sort_values(
@@ -540,7 +390,7 @@ def _selftest() -> int:
 # ───────────────────────── CLI ─────────────────────────
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="scan-market L0 选集 + L1 召回(确定性,零 LLM)")
     ap.add_argument("date", nargs="?", help="分析日 YYYY-MM-DD(缺省=今天)")
     ap.add_argument("--cap-floor", type=float, default=30.0, help="市值地板(亿),默认 30")
@@ -550,7 +400,7 @@ def main() -> int:
     ap.add_argument("--source", choices=["em", "tushare"], default="tushare",
                     help="universe 取数源:tushare=默认(push2 常被封);em=东财 push2")
     ap.add_argument("--selftest", action="store_true", help="离线验证打分逻辑(无网络)")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     if args.selftest:
         return _selftest()

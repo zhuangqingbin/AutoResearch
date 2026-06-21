@@ -3,34 +3,24 @@
 
 design: docs/specs/2026-06-22-autoresearch-arch-redesign-design.md §A;Plan 3.3。
 
-**逐行照搬 `screen_market.run` 的 L1 召回块**(复用 `_harvest_vol_series` / `_load_weights` /
+**逐行照搬 `scan.universe.run` 的 L1 召回块**(复用 `_harvest_vol_series` / `_load_weights` /
 `composite_score`,绝不重写打分):
   vps = _harvest_vol_series(codes, date); merge → composite_score(uni, weights)
   → recall = scored.sort_values("composite").head(recall_n)
   → full   = scored.sort_values("composite") + rank/recalled
 唯一区别:读上游 L0_universe 来自 trace、产物写回 trace(L1_recall / L1_scored_full),而非内存传参。
-展示列(keep)与 screen_market.run 落 CSV 时的列表一致。
+展示列(keep)与 scan.universe.run 落 CSV 时的列表一致。
 """
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
 from autoresearch.common.scoring import _GROUPS, _load_weights, composite_score
 from autoresearch.scan.context import RunContext
 from autoresearch.scan.stages.base import Stage
 from autoresearch.trace import schema
 
-
-def _screen_market():
-    repo = Path(__file__).resolve().parents[3]
-    if str(repo / "scripts") not in sys.path:
-        sys.path.insert(0, str(repo / "scripts"))
-    import screen_market
-    return screen_market
-
-
-# screen_market.run 落 L1/L2 CSV 时的 keep 列(逐字一致)——trace 产物按此裁列(有则保留)。
+# scan.universe.run 落 L1/L2 CSV 时的 keep 列(逐字一致)——trace 产物按此裁列(有则保留)。
 _KEEP = (["code", "name", "industry", "composite"] + [f"score_{g}" for g in _GROUPS]
          + ["mktcap_yi", "close", "amount_yi", "vol_ratio", "turnover", "cmf_20", "obv_mom_20",
             "pct_60d", "pct_ytd", "main_inflow_yi", "main_net_ratio",
@@ -51,13 +41,13 @@ class L1Recall(Stage):
         return [schema.L1_RECALL, schema.L1_SCORED_FULL]
 
     def run(self, ctx: RunContext) -> None:
-        sm = _screen_market()
+        from autoresearch.scan import universe as smu
         uni = ctx.trace.get_df(ctx.run_id, schema.L0_UNIVERSE)
         uni["code"] = uni["code"].astype(str).str.zfill(6)
         recall_n = ctx.config.recall_n
 
-        # 多日量价序列(CMF/OBV/...)→ volprice 组(screen_market.run 同款,失败返回空帧不破)。
-        vps = sm._harvest_vol_series(uni["code"], ctx.analysis_date)
+        # 多日量价序列(CMF/OBV/...)→ volprice 组(scan.universe.run 同款,失败返回空帧不破)。
+        vps = smu._harvest_vol_series(uni["code"], ctx.analysis_date)
         if len(vps):
             uni = uni.merge(vps, on="code", how="left")
 

@@ -170,8 +170,7 @@ def realized_returns(date: str, fwd: int = 10) -> pd.DataFrame:
 
     fwd 未实现(D+2 交易日还没到)→ 返回空(供 pending 判定)。
     """
-    import factor_lab as fl
-
+    import autoresearch.research.factor_lab as fl
     from autoresearch.data.tushare_source import _trade_days
 
     cols = ["code", "fwd_1_oo", "fwd_5_oc", "buyable", "gap_d1"]
@@ -198,8 +197,7 @@ def realized_returns(date: str, fwd: int = 10) -> pd.DataFrame:
 def pending_days(today: str | None = None, scan_root: Path | None = None,
                  report_root: Path | None = None) -> list[str]:
     """未复盘 scan 日:有 L1 面板 + 有报告 + 无 retro/done.json + D 的 fwd 已实现。"""
-    import factor_lab as fl
-
+    import autoresearch.research.factor_lab as fl
     from autoresearch.data.tushare_source import _trade_days
 
     today = today or datetime.now().strftime("%Y-%m-%d")
@@ -320,9 +318,8 @@ def recalibrate_and_log(retro_date: str, cap_floor: float = 30.0, k: float = 200
 
     快照旧权重(weights.<sha>.json,供 Phase 3 回滚)→ calibrate → log_change(前后 sha + top 变化)。
     """
-    import factor_lab as fl
-
     import autoresearch.learning.feedback_store as fs
+    import autoresearch.research.factor_lab as fl
     wp = Path("context/factor_lab/weights.json")
     before_raw = wp.read_bytes() if wp.exists() else b"{}"
     before_sha = fs.snapshot_weights() or _sha8(before_raw)   # 快照留底(Phase 3 回滚)

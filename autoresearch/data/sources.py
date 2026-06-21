@@ -34,21 +34,7 @@ def fetch(endpoint: str, params: dict) -> pd.DataFrame:
     raise ValueError(f"unknown source {src!r} for endpoint {endpoint!r}")
 
 
-def _ensure_scripts_on_path() -> None:
-    """临时桥:tushare_source 顶层 `from screen_market import ...`(6 个纯 helper)而
-    screen_market 仍在 scripts/(Phase E5/E6 才进包)。把 scripts/ 挂上 sys.path,使
-    autoresearch.data.tushare_source 可 import——**不改其 logic**。E5/E6 搬完即删此桥。
-    """
-    import sys
-    from pathlib import Path
-
-    scripts = Path(__file__).resolve().parent.parent.parent / "scripts"
-    if scripts.is_dir() and str(scripts) not in sys.path:
-        sys.path.insert(0, str(scripts))
-
-
 def _fetch_tushare(endpoint: str, params: dict) -> pd.DataFrame:
-    _ensure_scripts_on_path()
     from autoresearch.data.tushare_source import _pro, _ts_call
 
     pro = _pro()

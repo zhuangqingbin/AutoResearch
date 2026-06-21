@@ -14,9 +14,9 @@
 **成本级联**:模型曲线弯成跟漏斗一致——**越宽越便宜,Opus 只留刀尖**。
 **L2 确定性(GBDT,零 LLM)**;L3 / L4-Tier1 走 **Sonnet**;**Opus 只在 L4 顶点出场**(Tier-2 条件平反 ~0–3 + Tier-3 多空辩论 ~8×2 多/空)。**能力提升也只压顶点**:C 评分卡(`rubric_rating`)把 Sonnet 过度多报压在 Tier-1、买点候选变少;买点候选直接进 Tier-3 辩论(辩论既定级又证伪,一次 Opus 顶过去『单遍复核 + 对抗』两步)。L0/L1/L2/L5 零 token。
 
-## L0 选集 + L1 召回(`screen_market.py`,确定性,零 token)
+## L0 选集 + L1 召回(`autoresearch.scan.universe`,确定性,零 token)
 ```bash
-uv run --no-sync python scripts/screen_market.py <date> --source tushare
+uv run --no-sync python -m autoresearch.scan.universe <date> --source tushare
 ```
 - **L0 选集**:tushare 全市场富因子(daily_basic/daily×3/moneyflow 结构/stk_factor_pro/cyq_perf/hk_hold + yjbb 基本面)→ canonical 列;硬门 = 剔 ST/退/停牌/次新 + 市值地板(默认 30 亿)+ **含北交所**。
 - **L1 召回**:Step A 轻门(只去不可交易/无核心数据,尽量不误杀)→ Step B **行业条件化复合分**(9 因子组 × 申万/东财行业的 IC 校准权重,读 `weights.json`)→ 全市场排序 top `--recall-n`(默认 1000)。
@@ -151,13 +151,13 @@ L1 复合分 = Σ_组(组内因子 IC 加权 × 组权重),按申万一级条件
 - 缺端点权限 → 该列 NaN,打分按"有值子因子"重归一(降级不致命)。
 - **两个确定性量价叠加**(`composite_score` 内,**不改 IC 权重**,只调召回顺序):**过热抑制 −8**(高动量 + 超买/获利盘满 = 见顶 leader)+ **吸筹加成 +5**(低位〔获利盘<40/破成本〕+ 放量〔量比≥1.5〕+ 主力未撤 = 底部疑似吸筹,小幅保召回)。+5 < |−8|:只保召回、不越级多报,真伪交 L2/L3/L4 三维验证。
 
-## 附录 B · 召回权重校准 + L2 GBDT 训练(`factor_lab.py`,自足)
+## 附录 B · 召回权重校准 + L2 GBDT 训练(`autoresearch.research.factor_lab`,自足)
 **目标 = T+1 远期收益**(用户选定)。四命令闭环(`harvest` 缓存供 `calibrate`/`train` 离线复用):
 ```bash
-uv run --no-sync python scripts/factor_lab.py harvest     # 拉+缓存全市场面板(一次,慢;成型日越多 regime 越广)
-uv run --no-sync python scripts/factor_lab.py calibrate   # L1:T+1 IC + 申万一级层级收缩 → weights.json
-uv run --no-sync python scripts/factor_lab.py train       # L2:LightGBM 横截面排序 → gbdt_model.pkl(打印 oos vs 线性)
-uv run --no-sync python scripts/factor_lab.py eval        # 复核 IC/十分位多空,确认再上线
+uv run --no-sync python -m autoresearch.research.factor_lab harvest     # 拉+缓存全市场面板(一次,慢;成型日越多 regime 越广)
+uv run --no-sync python -m autoresearch.research.factor_lab calibrate   # L1:T+1 IC + 申万一级层级收缩 → weights.json
+uv run --no-sync python -m autoresearch.research.factor_lab train       # L2:LightGBM 横截面排序 → gbdt_model.pkl(打印 oos vs 线性)
+uv run --no-sync python -m autoresearch.research.factor_lab eval        # 复核 IC/十分位多空,确认再上线
 ```
 **`train`(L2 粗排引擎)**:特征 = 8 因子组分位 + 20 原始因子 + 线性 composite 锚定;标签 = 每日横截面 rank-norm 的 fwd_1_oo;时序留 oos 比 **GBDT vs 线性 composite** 的 rank-IC。**`beats_linear=False` → `predict_scores` 回落线性,L2 用 composite top200**(自保,绝不比线性差)。`composite` 锚定特征让 GBDT 至少能复刻线性;薄面板上它多半只复刻、加不出稳健非线性 → 门关属常态,`harvest` 更多成型日再 `train` 才可能翻盘启用。
 1. **无前视面板**:D 收盘出信号 → D+1 **开盘**买入,剔 D+1 一字板。

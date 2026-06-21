@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""golden 对拍 —— 锁住"新 Stage 管道 ≡ screen_market.run 的确定性产物"。
+"""golden 对拍 —— 锁住"新 Stage 管道 ≡ scan.universe.run 的确定性产物"。
 
 design: docs/specs/2026-06-22-autoresearch-arch-redesign-design.md §E。
 
-- `capture(date, out)`:跑现 `screen_market.run(date)`,把它的 L1_recall_top1000.csv +
+- `capture(date, out)`:跑现 `scan.universe.run(date)`,把它的 L1_recall_top1000.csv +
   L2_gbdt_top200.csv 快照成 golden(out/<...>.csv)。
 - `check(date)`:在**同一 lake / 同 weights / 同源**上跑新 `Pipeline`,把 trace 的 L1_recall /
   L2_rank 与 golden 对拍。**不变量按集合 + 排序对**(非逐位浮点):召回集合一致、L1 名次一致、
@@ -13,7 +13,6 @@ design: docs/specs/2026-06-22-autoresearch-arch-redesign-design.md §E。
 """
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -26,14 +25,6 @@ from autoresearch.trace import schema
 from autoresearch.trace.store import TraceStore
 
 _COMPOSITE_TOL = 1e-9
-
-
-def _screen_market():
-    repo = Path(__file__).resolve().parents[2]
-    if str(repo / "scripts") not in sys.path:
-        sys.path.insert(0, str(repo / "scripts"))
-    import screen_market
-    return screen_market
 
 
 @dataclass
@@ -57,13 +48,14 @@ class ParityResult:
 
 
 def capture(date: str, out: str | Path, *, config: ScanConfig | None = None) -> dict:
-    """跑现 screen_market.run(date),把 L1_recall / L2 CSV 快照到 out。返回各产物路径。"""
+    """跑现 scan.universe.run(date),把 L1_recall / L2 CSV 快照到 out。返回各产物路径。"""
+    from autoresearch.scan import universe as smu
+
     cfg = config or ScanConfig()
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
-    sm = _screen_market()
-    sm.run(date, cap_floor_yi=cfg.cap_floor, include_bj=cfg.include_bj,
-           recall_n=cfg.recall_n, l2_n=cfg.l2_n, outdir=out, source=cfg.source)
+    smu.run(date, cap_floor_yi=cfg.cap_floor, include_bj=cfg.include_bj,
+            recall_n=cfg.recall_n, l2_n=cfg.l2_n, outdir=out, source=cfg.source)
     return {"L1_recall": out / "L1_recall_top1000.csv", "L2_rank": out / "L2_gbdt_top200.csv"}
 
 

@@ -10,16 +10,16 @@ design: docs/specs/2026-06-20-scan-market-design.md(§4.4 坑③ 的"切换 univ
 还能拿 `stk_factor_pro`(MA多头排列/RSI/MACD)与 `cyq_perf`(筹码获利比例)——比原
 push2 设计更厚。
 
-本模块只负责"取数 + 富化成 canonical 列",**打分/板块/输出全部复用 screen_market**:
-canonical 列与 `screen_market.fetch_universe`(东财路径)完全一致,外加可选增强列
-(`dv_ratio` / `ma_bull` / `above_ma60` / `rsi6` / `winner_rate` / `cost_50pct`),供
-价值/动量/反转透镜(列存在才用,缺则降级)与 L3a/L3b 使用。
+本模块只负责"取数 + 富化成 canonical 列",**打分/板块/输出全部复用 scan 编排**:
+canonical 列与 `autoresearch.data.akshare_universe.fetch_universe`(东财路径)完全一致,外加
+可选增强列(`dv_ratio` / `ma_bull` / `above_ma60` / `rsi6` / `winner_rate` / `cost_50pct`),
+供价值/动量/反转透镜(列存在才用,缺则降级)与 L3a/L3b 使用。
 
 基本面(营收/净利/YoY/ROE/毛利/CFO/所处行业)仍走能跑通的东财 datacenter 端点
 `stock_yjbb_em`(akshare,**非** push2,未被封)——与东财路径同源,口径一致。
 
-用法(被 screen_market 调用):
-  uv run --no-sync python scripts/screen_market.py 2026-06-20 --source tushare
+用法(被 autoresearch.scan.universe 调用):
+  uv run --no-sync python -m autoresearch.scan.universe 2026-06-20 --source tushare
 """
 from __future__ import annotations
 
@@ -29,11 +29,12 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from screen_market import _ak_call, _apply_universe_gates, _col
 
-# 纯打分原语走包内(数值化 / 报告期推算);I/O·网络 helper(防御取列 / akshare 重试 / 硬门)
-# 仍在 scripts/screen_market(经 sources._ensure_scripts_on_path 桥接,E5/E6 搬完即并入包)。
+# 纯打分原语走包内(数值化 / 报告期推算)。
 from autoresearch.common.scoring import _num, latest_reported_quarter, prev_quarter
+
+# I/O·网络 helper(防御取列 / akshare 重试 / 硬门)走同 data 层的 akshare_universe(无 scripts/ 桥)。
+from autoresearch.data.akshare_universe import _ak_call, _apply_universe_gates, _col
 
 # ───────────────────────── token / pro 句柄 ─────────────────────────
 
@@ -116,7 +117,7 @@ def resolve_momentum_dates(pro, analysis_date: str) -> tuple[str, str, str]:
 def fetch_fundamentals_yjbb(analysis_date: str) -> pd.DataFrame:
     """业绩(当期+上期 YoY 算加速度)+ 所处行业,经 akshare `stock_yjbb_em`。
 
-    与 screen_market.fetch_universe 的东财路径同源、同口径(同样的列)。该端点在
+    与 akshare_universe.fetch_universe 的东财路径同源、同口径(同样的列)。该端点在
     datacenter-web.eastmoney.com,**不在被封的 push2**。
     """
     import akshare as ak
@@ -244,7 +245,7 @@ def _fetch_hk_hold(pro, last: str) -> pd.DataFrame | None:
 
 # ───────────────────────── L0 universe(tushare) ─────────────────────────
 
-_RAW_COUNT: dict = {}   # 全A(硬门前)原始数;放本模块(单次 import)避开 __main__/screen_market 双模块陷阱
+_RAW_COUNT: dict = {}   # 全A(硬门前)原始数;放本模块(单次 import)避开 __main__/scan.universe 双模块陷阱
 
 
 def fetch_universe_tushare(

@@ -9,11 +9,10 @@ on the SAME data and asserts the shared core feature columns are numerically ide
 E3 relies on when comparing the two pipelines.
 
 Also asserts the FEATURE_SETS["core"] column list matches factor_lab's live constants
-(CANDIDATES / GBDT_GROUPS / GBDT_RAW) so the registry can't silently drift from factor_lab.
+(CANDIDATES / GBDT_GROUPS / GBDT_RAW) so the registry can't silently drift away.
 """
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -22,15 +21,10 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-_REPO = Path(__file__).resolve().parent.parent.parent
-if str(_REPO / "scripts") not in sys.path:
-    sys.path.insert(0, str(_REPO / "scripts"))
-
-import factor_lab  # noqa: E402  (scripts/ — current pipeline under test)
-
-from autoresearch.data import cache  # noqa: E402
-from autoresearch.data.features import LABEL, feature_columns  # noqa: E402
-from autoresearch.data.handler import DataHandler  # noqa: E402
+import autoresearch.research.factor_lab as factor_lab
+from autoresearch.data import cache
+from autoresearch.data.features import LABEL, feature_columns
+from autoresearch.data.handler import DataHandler
 
 CAP_FLOOR = 30.0
 FWD = 10

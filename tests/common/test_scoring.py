@@ -1,6 +1,6 @@
 """Pure scoring primitives (autoresearch.common.scoring) — no network, no I/O.
 
-Mirrors the pure-math assertions from screen_market._selftest now that the
+Mirrors the pure-math assertions of the old screen_market `_selftest` now that the
 primitives live in the package: composite in [0,100], _factor_groups → 9 groups,
 the four lenses produce in-range scores + bool gates, and the report-quarter
 helpers hit the A-share disclosure-deadline cases.
