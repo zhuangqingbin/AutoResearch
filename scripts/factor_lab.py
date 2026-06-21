@@ -33,8 +33,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-# 复用 screen_market 的打分原语 + 真·动量透镜(验证"出厂逻辑"本身)
-from screen_market import _factor_groups, _pct, _wsum, lens_momentum
+# 让 `python scripts/factor_lab.py` 也能 import 仓内 autoresearch 包(repo root 上 sys.path)。
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# 复用包内打分原语 + 真·动量透镜(验证"出厂逻辑"本身;与 scan/handler 同口径)
+from autoresearch.common.scoring import _factor_groups, _pct, _wsum, lens_momentum
 from autoresearch.common.sw_sector_map import super_sector
 from autoresearch.data.tushare_source import _moneyflow_struct_cols
 
@@ -581,7 +584,7 @@ def calibrate(cap_floor: float = 30.0, k: float = 200.0,
     """
     import json
 
-    from screen_market import _factor_groups
+    from autoresearch.common.scoring import _factor_groups
 
     frames = _all_frames(cap_floor)
     if not frames:
@@ -689,7 +692,8 @@ def train_gbdt(cap_floor: float = 30.0, valid_dates: int = 5, out_path: str = GB
     import pickle
 
     import lightgbm as lgb
-    from screen_market import _load_weights, composite_score
+
+    from autoresearch.common.scoring import _load_weights, composite_score
 
     frames = _all_frames(cap_floor)
     if len(frames) < 8:

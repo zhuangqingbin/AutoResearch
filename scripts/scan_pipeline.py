@@ -81,7 +81,7 @@ def l3_table_md(date: str, root: Path | None = None) -> str:
 
 
 def _period(date: str) -> str:
-    from screen_market import latest_reported_quarter
+    from autoresearch.common.scoring import latest_reported_quarter
     return latest_reported_quarter(date)
 
 

@@ -29,16 +29,11 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from screen_market import _ak_call, _apply_universe_gates, _col
 
-# 复用 screen_market 的工具(防御取列 / 数值化 / akshare 重试 / 报告期推算 / 硬门)
-from screen_market import (
-    _ak_call,
-    _apply_universe_gates,
-    _col,
-    _num,
-    latest_reported_quarter,
-    prev_quarter,
-)
+# 纯打分原语走包内(数值化 / 报告期推算);I/O·网络 helper(防御取列 / akshare 重试 / 硬门)
+# 仍在 scripts/screen_market(经 sources._ensure_scripts_on_path 桥接,E5/E6 搬完即并入包)。
+from autoresearch.common.scoring import _num, latest_reported_quarter, prev_quarter
 
 # ───────────────────────── token / pro 句柄 ─────────────────────────
 
