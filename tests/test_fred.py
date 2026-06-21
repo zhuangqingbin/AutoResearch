@@ -99,11 +99,41 @@ class FredFormattingTests(unittest.TestCase):
             out = fred.get_macro_data("unemployment", "2025-09-30", 30)
         self.assertIn("No observations", out)
 
-    def test_unknown_series_raises(self):
+    def test_unknown_series_returns_message_not_raises(self):
+        # Empty seriess (FRED 200 with no match): return an instructive message
+        # so the agent can recover instead of crashing the whole run.
         no_series = {"seriess": []}
-        with mock.patch.object(fred, "_request", side_effect=_request_stub(meta=no_series)), \
-                self.assertRaises(ValueError):
-            fred.get_macro_data("totally_unknown_xyz", "2025-09-30", 30)
+        with mock.patch.object(fred, "_request", side_effect=_request_stub(meta=no_series)):
+            out = fred.get_macro_data("totally_unknown_xyz", "2025-09-30", 30)
+        self.assertIn("MACRO_DATA_UNAVAILABLE", out)
+        self.assertIn("totally_unknown_xyz", out)
+
+    def test_bad_request_series_returns_message_not_raises(self):
+        # FRED 400 "series does not exist" (the common non-US-ticker case):
+        # _request raises ValueError; the tool must convert it to a message
+        # rather than let it propagate and crash the graph.
+        def _bad_series(path, params):
+            if path == "series":
+                raise ValueError(
+                    "FRED request failed: Bad Request.  The series does not exist."
+                )
+            raise AssertionError("observations must not be requested for a bad series")
+
+        with mock.patch.object(fred, "_request", side_effect=_bad_series):
+            out = fred.get_macro_data("CN10Y", "2025-09-30", 30)
+        self.assertIn("MACRO_DATA_UNAVAILABLE", out)
+        self.assertIn("CN10Y", out)
+
+    def test_not_configured_still_propagates(self):
+        # A missing key must still surface as FredNotConfiguredError so the
+        # router treats FRED as unavailable — it must NOT be swallowed into a
+        # MACRO_DATA_UNAVAILABLE message (it subclasses ValueError).
+        def _unconfigured(path, params):
+            raise fred.FredNotConfiguredError("FRED_API_KEY not set")
+
+        with mock.patch.object(fred, "_request", side_effect=_unconfigured), \
+                self.assertRaises(fred.FredNotConfiguredError):
+            fred.get_macro_data("cpi", "2025-09-30", 30)
 
     def test_long_series_is_truncated_but_change_uses_full_range(self):
         # Build > MAX_ROWS observations deterministically.

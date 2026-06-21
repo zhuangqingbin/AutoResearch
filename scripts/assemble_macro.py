@@ -1,4 +1,4 @@
-"""Assemble macro-research per-agent markdown into one macro_compass.md.
+"""Assemble macro-research per-agent markdown into one reports/macro/<YYYYMMDD>/<HHMM>_summary.md.
 
 Two-tier like assemble_report.py, plus a 中观 tier:
   ▸ 决策主线   decision / variant / crossfire / calendar / premortem (+debate)
@@ -11,7 +11,8 @@ The decision (cross-asset) and sector_map (A股行业) tables each carry one key
 parse_rating on each so all five-band tilts stay machine-checked.
 
 Usage:
-    python scripts/assemble_macro.py reports/macro/<YYYY-MM-DD>
+    python scripts/assemble_macro.py context/macro/<YYYY-MM-DD>
+    # → reports/macro/<YYYYMMDD>/<HHMM>_summary.md   (HHMM = 组装时本地时间)
 """
 import re
 import sys
@@ -144,8 +145,12 @@ def main() -> int:
         for name, rel in present:
             out.append(_anchored("###", name, _read(root, rel)))
 
-    (root / "macro_compass.md").write_text("\n".join(out), encoding="utf-8")
-    print(f"[assembled] {root / 'macro_compass.md'}")
+    hhmm = datetime.now().strftime("%H%M")
+    out_dir = Path("reports/macro") / root.name.replace("-", "")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{hhmm}_summary.md"
+    out_path.write_text("\n".join(out), encoding="utf-8")
+    print(f"[assembled] {out_path}")
 
     alloc = parse_allocation(_read(root, DECISION_REL))
     print(f"[parse_rating → cross-asset ({len(alloc)})] {alloc}")

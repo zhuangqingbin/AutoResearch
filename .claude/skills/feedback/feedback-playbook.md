@@ -1,12 +1,11 @@
 # feedback playbook — 5 步把反馈记住并蒸馏成经验
 
-> 规格:`docs/specs/2026-06-20-closed-loop-learning-design.md` §3.1 §3.3。
-> 真值源:`scripts/feedback_store.py`(四个 jsonl store + 注回渲染)。
+> **本文 + `scripts/feedback_store.py` 自足,无需 `docs/specs/`。** 真值源:`feedback_store.py`(四个 jsonl store + 注回渲染);本文是 5 步操作手册。
 
 ## 5 步
 
 **1. 定位被评报告**
-用户没指明 → 取本 session 最近一份(`reports/scan/<date>/<HHMM>_summary.md` 或 `reports/analyze/<HHMM>_ticker.md` 或 retro 报告)。记下 `report` 相对路径。
+用户没指明 → 取本 session 最近一份(`reports/scan/<YYYYMMDD_HHMM>/summary.md` 或 `reports/analyze/<YYYYMMDD_HHMM>/<名称|TICKER>.md` 或 retro 报告)。记下 `report` 相对路径。
 
 **2. 判 verdict + scope**
 - `verdict` ∈ `wrong_rating`(评级看反/错)| `missed`(漏选了涨的)| `false_positive`(选了跌的)| `good_call`(认可,要保持)| `process`(流程/格式类)。
@@ -25,7 +24,7 @@ import feedback_store as fs
 fb = fs.record_feedback(
     skill="scan-market",                       # 或 analyze-ticker / macro-research
     scope=("global", "*"),                     # 见第 2 步
-    report="reports/scan/20260619/1553_summary.md",
+    report="reports/scan/20260619_1553/summary.md",
     note="""<用户原话,可多行>""",
     verdict="wrong_rating",
     root_cause="""<≤30 字>""",
@@ -51,7 +50,7 @@ lsn = fs.upsert_lesson(
     confidence=0.6,
 )
 fs.record_feedback(skill="scan-market", scope=("global","*"),
-                   report="reports/scan/20260619/1553_summary.md",
+                   report="reports/scan/20260619_1553/summary.md",
                    note="(已升经验)", verdict="wrong_rating",
                    root_cause="", corrective_rule="", lesson_id=lsn["id"])  # 回填 lesson_id
 print("lesson:", lsn["id"], "conf", lsn["confidence"], "x", lsn["reinforce_count"])
@@ -69,3 +68,6 @@ PY
 - **slug 要稳定**:同一教训用同一 slug,反复反馈→自动强化(confidence 升、reinforce_count++),别每次新建。
 - **能 global 就 global**:通则放 global 威力最大;只有真的行业/个股特异才下沉。
 - 退休(regime 翻转/不再成立)→ `fs.retire_lesson(slug)`(或交给 retro 的自动退休)。
+
+---
+> 设计沿革(可选背景,删除不影响运行):`docs/specs/2026-06-20-closed-loop-learning-design.md` §3.1(知识库底座)/ §3.3(注回机制)。

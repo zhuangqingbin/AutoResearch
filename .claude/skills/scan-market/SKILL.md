@@ -6,18 +6,26 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 # scan-market — 全 A股六段漏斗扫描(挖掘个股 + 板块,零付费 API)
 
 ## 核心原理
-对 ~5,500 只逐个跑深度报告 = 几亿 token,不可行。本 skill 用**搜索/推荐系统式六段漏斗**:确定性召回(零 token)把全市场富因子排序到 top1000,再用 Claude 当资深投资师做**两轮 AI 判断**(粗排/精排)收到 ~30,只对这 ~30 跑 **analyze-ticker-lite 决策卡**(研究阶段,每只 ~20% token),最后整合。**token 只跟最终深挖几只成正比,与全市场规模无关。**
+对 ~5,500 只逐个跑深度报告 = 几亿 token,不可行。本 skill 用**搜索/推荐系统式六段漏斗**:**确定性层**(零 token)把全市场富因子排序 → GBDT/线性**学习重排**收到 ~200;再让 Claude 当资深投资师 **holistic 一次通看、比较着精排**到 ~30;只对这 ~30 跑 **analyze-ticker-lite 决策卡**,最后整合。**token 只跟最终深挖的几十只成正比,与全市场规模无关。**
 
-| 段 | 名称 | 作用 | 进→出 | token |
-|---|---|---|---|---|
-| L0 | 选集 | 全市场 + 硬门 | 全A→~5,500 | 0 |
-| L1 | 召回 | 富因子复合分(T+1 IC 校准) | →1,000 | 0 |
-| L2 | 粗排 | AI 资深投资师 keep/cut | →200 | 中 |
-| L3 | 精排 | 增量真证据 + 论点/红队 | →~30 | 中 |
-| L4 | 研究 | analyze-ticker-lite 决策卡 | ~30 卡 | 大头 |
-| L5 | 整合 | summary + buy-list + 漏斗溯源 | 1 份 | 0 |
+**成本级联**:模型曲线弯成跟漏斗一致——**越宽的段越便宜**。L0/L1/**L2 全确定性(零 LLM)**;L3 精排 + L4-Tier1 走 Sonnet;**Opus 只留刀尖**(L4 顶点的 Tier-2 条件平反 + Tier-3 多空辩论)。
 
-本 skill 是**编排器**:L0/L1/L5 确定性(`screen_market.py` / `assemble_scan.py`);L2/L3 由你扮演资深投资师、subagent 扇出判断(`scan_pipeline.py` 供切片/合并/取数);L4 委托 **analyze-ticker-lite**。设计文档:`docs/specs/2026-06-20-scan-market-v2-design.md`。
+| 段 | 名称 | 引擎 / 模型 | 作用 | 进→出 | token |
+|---|---|---|---|---|---|
+| **L0** | 选集 | 确定性 | 全市场候选池 + 硬门(剔 ST/退/停牌/次新 + 市值地板) | 全A→~5,500 | 0 |
+| **L1** | 召回 | 确定性(IC 校准权重) | 9 因子组复合分排序,高召回 | →1,000 | 0 |
+| **L2** | 粗排 | **确定性 · GBDT 学习重排** | LightGBM 重排(T+1 IC 训练;oos 未胜线性则回落复合分) | →200 | **0** |
+| **L3** | 精排 | **Sonnet · holistic 单 agent** | 通看 ~200 比较选 + 增量真证据 + 论点/红队 | →~30 | 中 |
+| **L4** | 研究 | Tier-1 Sonnet 全判(~10 agent 并发) | 决策卡(评级由 `rubric_rating` 评分卡派生) | ~30 卡 | 大头 |
+| **Tier-2/3** | 对抗验证 | Opus 条件平反 + 多空辩论 | 高 conv 假阴平反 + 买点候选定级/证伪 | ~小 | 小 |
+| **L5** | 整合 | 确定性 | summary(逐阶段表 + token 估算) + buy-list + 漏斗溯源 | 1 份 | 0 |
+
+> **L2 从 AI keep/cut 改成确定性 GBDT 学习重排**(`factor_lab.train_gbdt`):用同一批因子组 + 原始因子学 T+1 横截面收益,把召回的 1000 重排成 200。**自保门**:模型 oos 未胜线性复合分 → 自动回落线性 top200(绝不部署比线性差的模型)。AI 判断从此**只在 L3/L4**。
+
+本 skill 是**编排器**,三类角色分工清楚:
+- **确定性层(零 LLM)** = L0/L1/L2(`screen_market.py` 一次产出,L2 调 `factor_lab.predict_scores`)+ L5(`assemble_scan.py`)。纯 pandas/GBDT,不编数。
+- **AI 判断层** = L3(holistic 单 agent 精排)+ L4(逐只决策卡),`scan_pipeline.py` 供紧凑表/取数/合并/级联名单;subagent 只回传紧凑结果。
+- **L4 委托 analyze-ticker-lite**,内部级联:**Tier-1 Sonnet 全判(并发)→ Tier-2 Opus 条件平反被压的高 conviction → Tier-3 Opus 对买点候选多空辩论**。
 
 ## 何时用 / 不用
 - ✅ 用户想**一次扫全市场**、挖"值得买的票 / 强势板块"(A股)。
@@ -25,36 +33,51 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 - ❌ 港股/美股全市场:本期不支持。
 
 ## 前置
-- 在**项目根目录**运行;akshare/tushare 已装(venv-only);`.env` 有 `TUSHARE_TOKEN`(默认源)+ `FRED_API_KEY`(L4 取数)。默认中文。
-- **召回权重**来自 `context/factor_lab/weights.json`(`factor_lab.py calibrate` 产;缺失则用内置先验,建议先校准)。
-- **闭环(开跑前补跑复盘)**:先 `uv run --no-sync python scripts/retro.py pending`;若列出未复盘日 → 先用 **scan-retro** 把它们补上(权重/经验更新到最新)再开始今天的扫描。L2/L3 的『因子方向经验校准』运行时由 `feedback_store.render_calibration_block(本批申万行业)` 注入(含你的反馈 + retro 学到的经验,叠加在 IC 基线之上);用户对报告的反馈用 **feedback** skill 记。
+- 在**项目根目录**运行;akshare/tushare/lightgbm 已装(venv-only,**务必 `uv run --no-sync`**);`.env` 有 `TUSHARE_TOKEN`(默认源)+ `FRED_API_KEY`(L4 取数)。默认中文。
+- **召回权重 + L2 模型**来自 `context/factor_lab/`:`weights.json`(`factor_lab calibrate` 产,L1 复合分 + L2 线性回落用)+ `gbdt_model.pkl`(`factor_lab train` 产,L2 重排引擎;缺失/未胜线性→自动回落线性)。**校准/训练方法 + IC 实证基线见 `screening-playbook.md` 附录**。
+- **闭环(开跑前补跑复盘)**:先 `uv run --no-sync python scripts/retro.py pending`;若列出未复盘日 → 先用 **scan-retro** 把它们补上(权重/经验更到最新)再开始今天的扫描。
+  - retro 的 `retro_input.md` 自带 **各阶段 agent edge**(`stage_eval`:L2 重排/L3/L4/Tier-3 各段对已实现收益的 lift/IC)+ **经验升门候选**(`feedback_store.promotion_candidates()`)。
+  - L3 的『因子方向经验校准』运行时由 `feedback_store.render_calibration_block(本批申万行业, with_feedback=True)` 注入(近期反馈 + 自学习经验 + IC 基线,三层叠加);用户对报告的反馈用 **feedback** skill 记。
 
 ## 流程(6 段)
-1. **L0 选集 + L1 召回(零 token)**:
+> 操作细节(L3 holistic prompt 模板 / 评分卡 / 多空辩论)全在 `screening-playbook.md`,按段对照。
+
+1. **L0 选集 + L1 召回 + L2 粗排(全确定性,零 token)**:
    ```bash
-   uv run --no-sync python scripts/screen_market.py [YYYY-MM-DD] [--source tushare] [--recall-n 1000] [--cap-floor 30] [--exclude-bj]
+   uv run --no-sync python scripts/screen_market.py [YYYY-MM-DD] [--source tushare] [--recall-n 1000] [--l2-n 200] [--cap-floor 30] [--exclude-bj]
    ```
-   → `context/scan/<date>/L1_recall_top1000.csv`(复合分 + 8 子分 + 原始因子)+ `sectors.csv`(板块概览)+ `meta.json`(漏斗计数)。默认源 tushare、含北交所、日期=今天。
-2. **过目(建议)**:读 `L1_recall_top1000.csv` 头部 + `sectors.csv`,把召回概览给用户看一眼。
-3. **L2 粗排(subagent 扇出,1000→200)**:按 `screening-playbook.md` 把召回集 `slice_recall` 切 ~10 片×100,每片一个 subagent 当资深投资师 keep/cut(信号共振 / 排陷阱),`merge_l2_keeps` → `context/scan/<date>/L2_coarse_keep200.csv`。
-4. **L3 精排(subagent 扇出,200→~30)**:`harvest_l3_evidence` 补真证据(龙虎榜/预告/快报)→ subagent 逐只出 `论点 + 红队风险 + 催化 + 确信度/脆弱度` → `merge_l3_finalists` → `context/scan/<date>/finalists.csv`(带 thesis/risk/catalyst)。
-5. **L4 研究(token 大头,~20%/只)**:对 finalists **逐只 subagent** 跑 **analyze-ticker-lite**(`harvest_context.py <ticker> <date> --slim` → 决策卡 → staging `context/scan/<date>/details/<ticker>.md`),**只回传 评级/目标/R:R**;想下重注的票再单独跑全量 analyze-ticker。
-6. **L5 整合**:
+   → `L1_recall_top1000.csv`(复合分 + 9 子分〔含 volprice〕+ 原始因子)+ **`L2_gbdt_top200.csv`**(GBDT 重排 top200;`meta.l2_engine` 记 `gbdt` 或回落 `composite-linear`)+ `sectors.csv` + `meta.json`。默认源 tushare、含北交所、日期=今天。
+2. **过目(建议)**:读 `L2_gbdt_top200.csv` 头部 + `sectors.csv`,把粗排概览给用户看一眼。
+3. **L3 精排(holistic 单 agent,200→~30)**:`harvest_l3_evidence(date, codes)` 补真证据(龙虎榜/预告/快报)→ `l3_table_md(date)` 把 ~200 只压成**一张紧凑表**(因子 + 证据摘要)→ **一个 `Agent(model='sonnet')` 通看全表、比较着选 ~30**(每只出 `论点 + 红队风险 + 催化 + 确信度/脆弱度 + lane`)→ 落 `L3_judged_full.csv` → `merge_l3_finalists_v2(judged, target=30)`(趋势配额安全网)→ `finalists.csv`。**比较式 > 孤立逐只打分**(后者各看各的、易虚高)。
+4. **L4 研究(token 大头,级联)**:
+   - **Tier-1 · 全 ~30 只 · Sonnet · 并发**:`batch_finalists(size=3)` 切 ~10 批,**在一条消息里并发派 ~10 个 `Agent(model='sonnet')`**(非顺序逐批)跑 **analyze-ticker-lite**(`harvest_context.py <ticker> <date> --slim` → staging `details/<ticker>.md`)。**评级由 `rubric_rating` 评分卡派生,防 gestalt 过度多报**。
+   - **Tier-2 · Opus · 条件平反**:`pick_downgrade_reviews(ratings, finalists_df)` 把被 Sonnet 压到 ≤Hold 的高 conviction 趋势票派 `Agent(model='opus')` 单遍平反(**名单空则不触发、零 Opus**);平反到 Buy/OW 的并入买点候选。
+   - **Tier-3 · 买点候选 · Opus 多空辩论**:`pick_buy_candidates(ratings)`(Buy/OW)每只派**多头⚔空头各一 `Agent(model='opus')`**,主线当 **PM 用 3 透镜投票裁判**(定级 + 证伪)→ `verify.csv`(`code,verdict,bull,bear,trigger,consensus`)。
+5. **L5 整合**:
    ```bash
    uv run --no-sync python scripts/assemble_scan.py <date>
    ```
-   → `reports/scan/<YYYYMMDD>/<HHMM>_summary.md`(三段:漏斗数量 / 各阶段卡点+概览 / L4 投资建议)+ `<HHMM>_detail/`(决策卡 + `A_pipeline/` 漏斗溯源)。**汇报**:漏斗 + buy-list(评级/目标/R:R)+ 诚实局限。
+   → **`reports/scan/<YYYYMMDD_HHMM>/`**(目录名 = **实际运行时刻**;数据日 analysis_date 记 `manifest.json`,解耦,retro 据此定位):`summary.md`(三段:漏斗数量 / 各阶段概览 / **buy-list〔逐阶段结论表 L1→L2→L3→L4 + Tier-3 徽标〕** + **各阶段 token 估算**)+ `details/〈股票名称〉.md`(决策卡按名称命名)+ `trace/`(每阶段全量数据 + `reasoning/` 留痕 + funnel)。**汇报**:漏斗 + buy-list(评级/目标 + 多空 verdict)+ 诚实局限。
 
 ## 铁律
-- **确定性层零 LLM**:L0/L1/L5 全 pandas/确定性,不在筛选里编数。
-- **召回宽、判断深**:L1 高召回(快因子排序);真正的取舍在 L2/L3 的资深投资师判断;慢因子(筹码/北向/基本面)在 L2/L3/L4 兑现。
-- **L2/L3/L4 必须 subagent 扇出**:每片/每只独立 context,只回传紧凑结果(L2 保留名单 / L3 论点分 / L4 评级目标),否则撑爆主线。量大可选 **workflow** 并行(需用户显式开启)。
+- **确定性层零 LLM**:L0/L1/**L2**/L5 全 pandas/GBDT,不在筛选里编数。
+- **召回宽、判断深**:L1 高召回(快因子排序)→ L2 GBDT 学习重排收口;真正的多空取舍在 L3 holistic 精排 + L4 决策卡;慢因子(筹码/北向/基本面)在 L3/L4 兑现。
+- **L3/L4 必须 subagent**:L3 一个 holistic agent(独立 context)+ L4 每只独立 context,只回传紧凑结果(L3 论点分 / L4 评级目标),否则撑爆主线。量大可选 **workflow** 并行(需用户显式开启)。
 - **每只 finalist 走 analyze-ticker-lite**——继承其铁律(数字出自 slim context、五档评级、EV/R:R、`FINAL TRANSACTION PROPOSAL`、诚实局限)。
-- **中间名单全 staging**(L2_keep / L3_evidence / finalists),L5 发布到 `A_pipeline/` 留溯源;re-run 友好。
-- **诚实收尾**:召回是启发式 + T+1 单 horizon IC 校准(随 regime 漂移);L2/L3 是 Claude 推理产出;"仅供研究,非投资建议"。
+- **中间名单全 staging**(L2_gbdt / L3_evidence / finalists),L5 发布到 `trace/` 留溯源;re-run 友好。
+- **诚实收尾**:召回/粗排是启发式 + T+1 单 horizon IC 校准/训练(随 regime 漂移);L3/L4 是 Claude 推理产出;"仅供研究,非投资建议"。
 
 ## 常见坑
-- 必须 `uv run --no-sync`(不误删 venv-only 的 akshare/tushare)、仓库根目录。
+- 必须 `uv run --no-sync`(不误删 venv-only 的 akshare/tushare/lightgbm)、仓库根目录。
 - **默认 `--source tushare`**(东财 push2 常被网络封锁);需 `TUSHARE_TOKEN`。富因子(资金结构/筹码集中度/北向/RSI)缺端点权限则自动降级置 NaN、打分重归一。
-- **召回权重**:`weights.json` 缺失 → 内置先验(能跑但弱)。改因子/组后跑 `factor_lab.py harvest`(一次)→ `calibrate` 重拟合 → `eval` 复核 IC 再上线(见 spec §9)。
+- **召回权重 / L2 模型**:`weights.json` 缺失 → 内置先验(能跑但弱);`gbdt_model.pkl` 缺失或 oos 未胜线性 → **L2 自动回落线性 top200**(`meta.l2_engine` 会标),不报错。改因子/组后:`factor_lab harvest`(取数,一次)→ `calibrate`(线性权重)→ `train`(GBDT,看是否胜线性)→ `eval`(复核 IC)再上线(方法见 `screening-playbook.md` 附录 B)。
+- **GBDT 胜不过线性是常态**(成型日少时):薄面板上 GBDT 多半只复刻线性(composite 锚定特征),加不出稳健非线性 → 门关、用线性。要它真启用:`harvest` 更多成型日(更广 regime)再 `train`。
 - `context/`、`reports/` 已 gitignore;别误提交大文件。
+
+---
+## 设计沿革(可选背景,删除不影响运行)
+本 skill 的**两份文档**(本文 + `screening-playbook.md`)是**自足**的:跑全流程、读懂每段、改因子、校准/训练所需的一切都收在这两份里。下列 `docs/specs/` 仅历史设计推演,**删掉不影响运行**,且部分已落后于现实现(以本 skill 为准):
+- `2026-06-20-scan-market-v2-design.md` — 六段漏斗 + 召回校准方法母文档
+- `2026-06-20-l2-dual-lane-design.md` — L2 旧双赛道 AI keep/cut(**已被 L2 确定性 GBDT 学习重排取代**)
+- `2026-06-21-cost-cascade-design.md` — 模型成本级联(Sonnet 宽段 / Opus 顶点)
+- `2026-06-21-agent-upgrade-design.md` — C 评分卡 rubric / A 多空辩论 / B 3透镜共识 / E 记忆闭环 / F 各阶段 eval

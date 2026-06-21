@@ -8,7 +8,7 @@
 
 ## 报告结构（v4 核心：决策主线 + 证据附录）
 
-`assemble_report.py` 把各段拼成 `reports/analyze/<HHMM>_<TICKER>.md`,顺序 = **目录 → 决策主线 → 证据附录**。
+`assemble_report.py` 把各段拼成 `reports/analyze/<YYYYMMDD_HHMM>/<名称|TICKER>.md`(目录名=运行时刻;A股→中文名、其他市场→TICKER;数据日见同目录 manifest.json),顺序 = **目录 → 决策主线 → 证据附录**。
 **决策主线 = 读它就能下单(目标 ~2 页);证据附录 = 读它来核实(按需下钻)。** 14+ 个 agent 照常产出全部明细,只是**分析师重活沉到附录**。
 
 ```
@@ -37,7 +37,7 @@
 
 ## 输出文件映射（须与 `scripts/assemble_report.py` 一致）
 ```
-context/analyze/<TICKER>_<分析日YYYYMMDD>/  # 分节草稿(gitignored);assemble → reports/analyze/<HHMM>_<TICKER>.md
+context/analyze/<TICKER>_<分析日YYYYMMDD>/  # 分节草稿(gitignored);assemble → reports/analyze/<YYYYMMDD_HHMM>/<名称|TICKER>.md
   1_analysts/  market.md  news.md  fundamentals.md  quality.md  valuation.md
                positioning.md  peer.md  solvency.md(新)
   2_research/  reality_check.md  variant.md(新)  bull.md  bear.md  faceoff.md(新)  manager.md
@@ -166,9 +166,9 @@ FINAL TRANSACTION PROPOSAL: **<BUY|HOLD|SELL>**
 > 数据→棒：可交易性→执行段;偿付→偿付棒;股东户数→定位&资金流;解禁→催化日历。
 
 ## UZI 增量透镜(A股全量卡,`uzi_lenses.py`)
-- harvest 已含:`A股原生财报(UZI·tushare 5y ROE/毛利/负债率/分红)` / `融资余额趋势` / `龙虎榜席位识别`(机构 vs 游资;**⚠️ Phase A 实测:机构上龙虎榜净买后续 T+1~T+10 反而偏弱,勿当强利好**)/ `杀猪盘风险`。
+- harvest 已含:`A股原生财报(UZI·tushare 5y ROE/毛利/负债率/分红)` / `融资余额趋势` / `龙虎榜席位识别`(机构 vs 游资;**⚠️ Phase A 实测:机构上龙虎榜净买后续 T+1~T+10 反而偏弱,勿当强利好**)。**价量(派发/吸筹)由下方机械底对 live 数据套用——本 skill 与 scan 解耦,不取 L1。**
 - **内在价值 DCF**:对重注票调 `uzi_lenses.simple_dcf(fcf_base, growth_5y, terminal_growth, wacc, shares, net_debt)` + `dcf_sensitivity(...,waccs,growths)` → 每股内在价值 + WACC×增长敏感性(`render_dcf_block` 出 markdown)。DCF 对 WACC/增长极敏感,**作区间参照、非点估**;与 comps(行业 PE/PB 分位)交叉。
-- **trap 机械底**:`trap_signals(L1因子行)`——获利盘满(winner_rate>85)/放量滞涨(涨幅高+主力流出)/过热(RSI>80)/浮盈了结(price_to_cost>1.5+主力流出)命中即压评级。
+- **量价机械底(派发 + 吸筹两半,position-conditioned;由你对上方 live 主力/技术/筹码上下文自行套用——本 skill 不取 L1、与 scan 解耦)**:① **派发→压评级**:获利盘满(winner_rate>85)/放量滞涨(涨幅高+主力净流出)/过热(RSI>80)/浮盈了结(price_to_cost>1.5+主力流出);② **吸筹→进多头**:底部放量(低位+放量+主力未撤)/地量企稳/缩量回调健康/量增价涨健康(**须基本面背书,>70% 无支撑会败**);③ 多日资金流(放量/缩量 × 涨跌方向)看资金净进/出。**关键:量价要分位置——顶部放量=派发(空)、底部放量=吸筹(多),裸量比对 T+1 负。** _(逻辑同 scan 的 `trap_signals`/`volume_price_signals`,但这里读 live 数字判读,不复用 L1。)_
 
 ## 已知数据坑（出现时必须如实标注）
 1. **头条净利含一次性投资收益**→ 同时报营业利润(盈利质量棒系统化)。

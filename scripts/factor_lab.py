@@ -34,7 +34,7 @@ import numpy as np
 import pandas as pd
 
 # 复用 screen_market 的打分原语 + 真·动量透镜(验证"出厂逻辑"本身)
-from screen_market import _pct, _wsum, lens_momentum
+from screen_market import _factor_groups, _pct, _wsum, lens_momentum
 from sw_sector_map import super_sector
 from tushare_source import _moneyflow_struct_cols
 
@@ -394,6 +394,16 @@ def factor_frame(D: str, piv: dict, P: list[str], basic: pd.DataFrame,
         f["mom_v3_capnorm"] = _pen(_wsum({"rs": (rs, 40), "inflow": (_pct(f["inflow_to_cap"]), 30), "trend": (trend, 30)}))
         f["mom_v4_rsHeavy"] = _pen(_wsum({"rs": (rs, 50), "trend": (trend, 30), "inflow": (inflow, 20)}))
 
+    # 多日量价序列因子(OBV/CMF/VWAP偏离/量价突破):从价格面板算,补单日 vol_ratio 分不清的资金流方向
+    import vol_series
+    win = P[max(0, idx - 19):idx + 1]
+    if len(win) >= 10:
+        H, L, C, A = piv["high"], piv["low"], piv["close"], piv["amount"]
+        f["cmf_20"] = vol_series.cmf(H, L, C, A, win).reindex(f["code"]).to_numpy()
+        f["obv_mom_20"] = vol_series.obv_momentum(C, A, win).reindex(f["code"]).to_numpy()
+        f["price_vs_vwap_20"] = vol_series.price_vs_vwap(H, L, C, A, win).reindex(f["code"]).to_numpy()
+        f["breakout_vol_20"] = vol_series.breakout_on_volume(C, A, win).reindex(f["code"]).to_numpy()
+
     # 前瞻收益
     fr = forward_returns(piv, P, D, fwd)
     f = f.merge(fr, left_on="code", right_index=True, how="left")
@@ -420,6 +430,8 @@ CANDIDATES = [
     # UZI 增量候选(方向先验;真符号/去留由 IC 定):融资融券(高覆盖)/ 大宗 / 龙虎榜机构(稀疏)
     ("rz_ratio", +1), ("rz_buy_intensity", +1),
     ("block_premium", -1), ("block_intensity", +1), ("lhb_inst_net", +1),
+    # 多日量价序列(OBV/CMF/VWAP偏离/量价突破;符号先验,真符号/去留由 IC 定)——补单日 vol_ratio(已剔)
+    ("cmf_20", +1), ("obv_mom_20", +1), ("price_vs_vwap_20", -1), ("breakout_vol_20", +1),
 ]
 FWDS = ["fwd_1_cc", "fwd_1_oo", "fwd_5_oc", "fwd_10_oc"]
 
@@ -618,6 +630,158 @@ def calibrate(cap_floor: float = 30.0, k: float = 200.0,
     return {"meta": meta, "weights": weights}
 
 
+# ───────────────────────── L2 GBDT 学习重排(LightGBM 横截面) ─────────────────────────
+#
+# 把 L1 线性复合分的"加权"换成 GBDT 非线性:同一批因子组 + 双侧都有的原始因子为特征,学每日
+# 横截面 rank-norm 后的 T+1(开到开)收益。screen_market.run() 在 L1 召回后调 predict_scores()
+# 把 top1000 重排成 top200(= L2 粗排,确定性,替代旧 L2-AI keep/cut);模型缺失 → 回落 composite top。
+#
+# 特征对齐:gbdt_features 在 factor_lab 帧(带前瞻收益=训练)与 screen_market L1 输出(=预测)上
+# **同口径**——组分来自共享的 _factor_groups,原始因子取两侧交集。**剔 growth 组**:factor_lab 帧无
+# 季度基本面 → 训练恒 NaN,与预测端有值不一致,故排除(成长不驱动 T+1,本就该长周期另验)。
+
+GBDT_GROUPS = ["momentum", "fund_main", "fund_retail", "chip", "north", "tech", "value", "volprice"]
+# 原始因子:factor_lab.factor_frame 与 screen_market L1_recall **都产出**的列(去掉只在一侧的)。
+GBDT_RAW = [
+    "pct_60d", "pct_ytd", "vol_ratio", "turnover",
+    "winner_rate", "chip_concentration", "price_to_cost",
+    "main_inflow_yi", "main_net_ratio", "retail_net_yi", "hk_ratio",
+    "rsi6", "rsi12", "pe", "pb", "dv_ratio",
+    "cmf_20", "obv_mom_20", "ma_bull", "above_ma60",
+]
+GBDT_LABEL = "fwd_1_oo"                          # T+1 开到开,与 calibrate 同口径(可交易、无前视)
+GBDT_MODEL = "context/factor_lab/gbdt_model.pkl"
+_GBDT_CACHE: dict = {}
+
+
+def gbdt_features(df: pd.DataFrame) -> pd.DataFrame:
+    """train/predict 共用特征矩阵:8 组分位分(_factor_groups,去 growth)+ 双侧都有的原始因子
+    + **线性 composite 锚定特征**(GBDT 至少能复刻线性,再在其上叠非线性交互 → 不该弱于线性)。
+
+    NaN 保留(LightGBM 原生分裂处理);列名/顺序固定 → 预测时 reindex 对齐。
+    `composite` 两侧都有:训练端由 train_gbdt 注入(composite_score),预测端即 L1_recall 自带列。
+    """
+    groups = _factor_groups(df)                 # 9 组 0–1 横截面分位(与线上同口径);取其中 8 组
+    feat = pd.DataFrame({f"g_{k}": groups[k].to_numpy() for k in GBDT_GROUPS}, index=df.index)
+    for c in [*GBDT_RAW, "composite"]:
+        feat[c] = _num(df[c]).to_numpy() if c in df.columns else np.nan
+    return feat
+
+
+def _rank_ic_by_date(score: pd.Series, fwd: pd.Series, date: pd.Series) -> float:
+    """跨日平均 rank-IC(每日横截面 Spearman(score, 实现收益))。"""
+    d = pd.DataFrame({"s": np.asarray(score), "f": np.asarray(fwd), "d": np.asarray(date)})
+    ics = []
+    for _, g in d.groupby("d"):
+        ic = _spearman(g["s"], g["f"])
+        if not np.isnan(ic):
+            ics.append(ic)
+    return float(np.mean(ics)) if ics else float("nan")
+
+
+def train_gbdt(cap_floor: float = 30.0, valid_dates: int = 5, out_path: str = GBDT_MODEL) -> dict:
+    """LightGBM 横截面排序模型(L2 粗排引擎)。
+
+    标签 = 每日横截面 rank-norm 的 fwd_1_oo(学相对排序,免 regime 水平位移,Qlib CSRankNorm 思路)。
+    时序留出最后 valid_dates 个成型日做 oos 验证 + 早停;打印 GBDT vs 线性 composite 的 oos rank-IC
+    (**不胜线性就直说**,不自欺)。模型 + 特征名 + meta(oos IC/重要度)落 out_path。
+    """
+    import pickle
+
+    import lightgbm as lgb
+    from screen_market import _load_weights, composite_score
+
+    frames = _all_frames(cap_floor)
+    if len(frames) < 8:
+        print(f"[gbdt] 成型日仅 {len(frames)}(<8)→ 不训(先 harvest 更多日)")
+        return {}
+    weights = _load_weights()
+    parts = []
+    for fr in frames:
+        sub = fr[fr["buyable"].fillna(True)].copy()
+        y = _num(sub[GBDT_LABEL])
+        m = y.notna()
+        if m.sum() < 100:
+            continue
+        sub = sub[m].reset_index(drop=True)
+        sub["composite"] = composite_score(sub, weights)["composite"].to_numpy()  # 线性基线:既作 GBDT 锚定特征,又作 oos 对照
+        feat = gbdt_features(sub)
+        feat["__date"] = sub["date"].to_numpy()
+        feat["__fwd"] = _num(sub[GBDT_LABEL]).to_numpy()
+        feat["__y"] = _num(sub[GBDT_LABEL]).rank(pct=True).to_numpy()       # 每日横截面 rank-norm 标签
+        feat["__lin"] = sub["composite"].to_numpy()
+        parts.append(feat)
+    if not parts:
+        print("[gbdt] 无可用成型日(先 harvest)")
+        return {}
+    panel = pd.concat(parts, ignore_index=True)
+    feat_cols = [c for c in panel.columns if not c.startswith("__")]
+    udates = sorted(panel["__date"].unique())
+    valid_dates = min(valid_dates, max(1, len(udates) // 4))
+    val = set(udates[-valid_dates:])
+    is_val = panel["__date"].isin(val).to_numpy()
+    # 原生 lgb.train(Dataset) API——不依赖 scikit-learn,且即 Qlib LGBModel 同路。
+    dtrain = lgb.Dataset(panel.loc[~is_val, feat_cols], label=panel.loc[~is_val, "__y"])
+    dvalid = lgb.Dataset(panel.loc[is_val, feat_cols], label=panel.loc[is_val, "__y"], reference=dtrain)
+    # 薄面板(~18 训练日)→ 偏强正则:浅树 + 大叶 + 强 L2,压过拟合(否则 oos 输线性)。
+    params = {"objective": "regression", "metric": "l2", "learning_rate": 0.03,
+              "num_leaves": 15, "max_depth": 5, "min_data_in_leaf": 200,
+              "bagging_fraction": 0.8, "bagging_freq": 1, "feature_fraction": 0.8,
+              "lambda_l2": 10.0, "lambda_l1": 1.0, "seed": 7, "num_threads": 0, "verbosity": -1}
+    model = lgb.train(params, dtrain, num_boost_round=800, valid_sets=[dvalid],
+                      callbacks=[lgb.early_stopping(60, verbose=False)])
+    best_iter = int(model.best_iteration or 800)
+    # oos rank-IC:GBDT vs 线性 composite(都对真实 fwd_1_oo)
+    pred = model.predict(panel.loc[is_val, feat_cols], num_iteration=best_iter)
+    d_val, f_val = panel.loc[is_val, "__date"], panel.loc[is_val, "__fwd"]
+    ic_gbdt = _rank_ic_by_date(pred, f_val, d_val)
+    ic_lin = _rank_ic_by_date(panel.loc[is_val, "__lin"], f_val, d_val)
+    imp = sorted(zip(feat_cols, model.feature_importance(importance_type="gain"), strict=False),
+                 key=lambda kv: kv[1], reverse=True)
+    meta = {"n_rows": int(len(panel)), "n_dates": len(udates), "valid_dates": valid_dates,
+            "oos_rank_ic_gbdt": round(ic_gbdt, 4), "oos_rank_ic_linear": round(ic_lin, 4),
+            "beats_linear": bool(ic_gbdt > ic_lin), "best_iteration": best_iter,
+            "label": GBDT_LABEL, "features": feat_cols,
+            "top_importance": [[k, int(v)] for k, v in imp[:10]], "source": "factor_lab.train_gbdt"}
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(out_path).write_bytes(pickle.dumps({"model": model, "features": feat_cols, "meta": meta}))
+    _GBDT_CACHE.pop(out_path, None)
+    verdict = "✅ GBDT 胜线性" if ic_gbdt > ic_lin else "⚠️ 未胜线性 → 建议 harvest 更多成型日,或 L2 暂留线性"
+    print(f"[gbdt] oos rank-IC  GBDT {ic_gbdt:+.4f}  vs  线性 {ic_lin:+.4f}   {verdict}")
+    print(f"[gbdt] rows={len(panel)} dates={len(udates)}(val={valid_dates}) best_iter={best_iter} "
+          f"feats={len(feat_cols)}")
+    print(f"[gbdt] top 特征: {', '.join(f'{k}={v}' for k, v in imp[:6])}")
+    print(f"[gbdt] → {out_path}")
+    return meta
+
+
+def predict_scores(df: pd.DataFrame, model_path: str = GBDT_MODEL,
+                   force: bool = False) -> pd.Series | None:
+    """对带原始因子的帧打 GBDT 分(越高越看多);模型缺失/失败 → None(调用方回落线性)。
+
+    **自保门**:若模型 meta.beats_linear=False(oos 未胜线性),默认返回 None → L2 回落线性,
+    绝不部署比线性差的模型(铁律:不自欺)。harvest 更多成型日重训、一旦胜线性即自动启用;
+    force=True 强制使用(实验用)。
+    """
+    p = Path(model_path)
+    if not p.exists():
+        return None
+    try:
+        import pickle
+        if model_path not in _GBDT_CACHE:
+            _GBDT_CACHE[model_path] = pickle.loads(p.read_bytes())
+        bundle = _GBDT_CACHE[model_path]
+        if not force and not bundle.get("meta", {}).get("beats_linear", False):
+            print("[gbdt] 模型 oos 未胜线性 → L2 回落线性(harvest 更多日重训以启用)", file=sys.stderr)
+            return None
+        X = gbdt_features(df).reindex(columns=bundle["features"])
+        n_iter = bundle.get("meta", {}).get("best_iteration")
+        return pd.Series(bundle["model"].predict(X, num_iteration=n_iter), index=df.index)
+    except Exception as e:  # noqa: BLE001
+        print(f"[warn] GBDT 预测失败 → 回落线性: {e}", file=sys.stderr)
+        return None
+
+
 # ───────────────────────── 离线自测(IC/十分位数学) ─────────────────────────
 
 
@@ -667,13 +831,59 @@ def _selftest_shrink() -> int:
     return 0
 
 
+def _selftest_gbdt() -> int:
+    """GBDT 特征形状 + 缺模型回落 None + 合成可学信号 oos IC>0(无网络/无缓存)。"""
+    import importlib.util
+    fails = []
+    rng = np.random.default_rng(11)
+    n = 600
+    df = pd.DataFrame({
+        "code": [f"{600000 + i:06d}" for i in range(n)], "industry": rng.choice(["A", "B", "C"], n),
+        "pct_60d": rng.normal(size=n), "pct_ytd": rng.normal(size=n), "vol_ratio": rng.uniform(0.3, 5, n),
+        "turnover": rng.uniform(0.1, 30, n), "winner_rate": rng.uniform(0, 100, n),
+        "chip_concentration": rng.uniform(0.1, 2, n), "price_to_cost": rng.uniform(0.7, 1.5, n),
+        "main_inflow_yi": rng.normal(size=n), "main_net_ratio": rng.normal(size=n) * 0.05,
+        "retail_net_yi": rng.normal(size=n), "hk_ratio": rng.uniform(0, 30, n),
+        "rsi6": rng.uniform(10, 95, n), "rsi12": rng.uniform(10, 95, n), "pe": rng.uniform(-50, 200, n),
+        "pb": rng.uniform(0.5, 30, n), "dv_ratio": rng.uniform(0, 6, n), "cmf_20": rng.normal(size=n) * 0.2,
+        "obv_mom_20": rng.normal(size=n) * 0.3, "ma_bull": rng.integers(0, 2, n).astype(float),
+        "above_ma60": rng.integers(0, 2, n).astype(float),
+    })
+    feat = gbdt_features(df)
+    exp_cols = len(GBDT_GROUPS) + len(GBDT_RAW) + 1   # +1 = composite 锚定特征
+    if feat.shape != (n, exp_cols):
+        fails.append(f"gbdt_features 形状 {feat.shape} 期望 ({n},{exp_cols})")
+    if predict_scores(df, model_path="context/factor_lab/__nonexistent__.pkl") is not None:
+        fails.append("缺模型时 predict_scores 应回落 None")
+    if importlib.util.find_spec("lightgbm"):
+        import lightgbm as lgb
+        sig = feat["g_momentum"].fillna(0.5).to_numpy()
+        y = sig + rng.normal(scale=0.5, size=n)                  # y 与 g_momentum 正相关
+        cut = int(n * 0.7)
+        dtr = lgb.Dataset(feat.iloc[:cut], label=y[:cut])
+        m = lgb.train({"objective": "regression", "num_leaves": 15, "min_data_in_leaf": 30,
+                       "verbosity": -1, "seed": 7}, dtr, num_boost_round=80)
+        ic = _spearman(pd.Series(m.predict(feat.iloc[cut:])), pd.Series(y[cut:]))
+        if not (ic > 0.1):
+            fails.append(f"合成信号 oos IC 偏低 {ic:.3f}")
+    if fails:
+        print("SELFTEST ❌")
+        for x in fails:
+            print("  -", x)
+        return 1
+    print(f"SELFTEST ✅  GBDT(特征 {feat.shape[1]} 列 / 缺模型回落 None / 合成 oos IC OK)")
+    return 0
+
+
 # ───────────────────────── CLI ─────────────────────────
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="factor_lab — scan-market 打分逻辑实证验证")
-    ap.add_argument("mode", nargs="?", choices=["harvest", "eval", "calibrate"],
-                    help="harvest=取数缓存;eval=离线评估;calibrate=T+1 IC→weights.json")
+    ap.add_argument("mode", nargs="?", choices=["harvest", "eval", "calibrate", "train"],
+                    help="harvest=取数缓存;eval=离线评估;calibrate=T+1 IC→weights.json;"
+                         "train=LightGBM 横截面排序→gbdt_model.pkl(L2 粗排引擎)")
+    ap.add_argument("--valid-dates", type=int, default=5, help="train:留作 oos 验证/早停的末尾成型日数")
     ap.add_argument("--anchor", default=None, help="结束锚定日 YYYY-MM-DD(缺省=今天)")
     ap.add_argument("--form-span", type=int, default=90, help="成型日跨度(交易日),默认 90")
     ap.add_argument("--step", type=int, default=4, help="成型日间隔(交易日),默认 4")
@@ -688,7 +898,8 @@ def main() -> int:
 
     if args.selftest:
         rc = _selftest()
-        return _selftest_shrink() or rc
+        rc = _selftest_shrink() or rc
+        return _selftest_gbdt() or rc
     from datetime import date as _date
     anchor = args.anchor or _date.today().isoformat()
     if args.mode == "harvest":
@@ -697,6 +908,8 @@ def main() -> int:
         evaluate(args.cap_floor, buyable_only=not args.all_names)
     elif args.mode == "calibrate":
         calibrate(args.cap_floor, k=args.k)
+    elif args.mode == "train":
+        train_gbdt(args.cap_floor, valid_dates=args.valid_dates)
     else:
         ap.print_help()
     return 0

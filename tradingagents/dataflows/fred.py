@@ -120,6 +120,24 @@ def _request(path: str, params: dict) -> dict:
     return response.json()
 
 
+def _series_unavailable_message(indicator: str, series_id: str, detail: str = "") -> str:
+    """Instructive message when a FRED series cannot be fetched.
+
+    Returned (not raised) so a bad indicator — e.g. a non-US series an agent
+    requests for a foreign ticker, which FRED does not carry — lets the agent
+    correct itself or proceed, instead of crashing the whole run. Mirrors the
+    ``NO_DATA_AVAILABLE`` sentinel the vendor router returns for missing prices.
+    """
+    reason = f" ({detail})" if detail else ""
+    aliases = ", ".join(sorted(MACRO_SERIES))
+    return (
+        f"MACRO_DATA_UNAVAILABLE: FRED has no series '{series_id}' for indicator "
+        f"'{indicator}'{reason}. FRED covers US macro data only. Retry with a "
+        f"known alias ({aliases}) or a valid FRED series ID, or proceed without "
+        f"this indicator. Do not fabricate macro values."
+    )
+
+
 def get_macro_data(
     indicator: str,
     curr_date: str,
@@ -145,12 +163,18 @@ def get_macro_data(
     start_date = (end_dt - timedelta(days=look_back_days)).strftime("%Y-%m-%d")
     series_id = _resolve_series_id(indicator)
 
-    meta = _request("series", {"series_id": series_id}).get("seriess") or []
+    try:
+        meta = _request("series", {"series_id": series_id}).get("seriess") or []
+    except FredNotConfiguredError:
+        # No API key: let the router treat FRED as "unavailable" (it subclasses
+        # ValueError, so this must propagate, not be swallowed below).
+        raise
+    except ValueError as e:
+        # FRED rejected the lookup (e.g. HTTP 400 "series does not exist" for a
+        # non-US indicator). Return a recoverable message instead of crashing.
+        return _series_unavailable_message(indicator, series_id, detail=str(e))
     if not meta:
-        raise ValueError(
-            f"FRED series '{series_id}' not found. Pass a known alias "
-            f"(e.g. 'cpi', 'unemployment') or a valid FRED series ID."
-        )
+        return _series_unavailable_message(indicator, series_id)
     info = meta[0]
     title = info.get("title", series_id)
     units = info.get("units_short") or info.get("units", "")

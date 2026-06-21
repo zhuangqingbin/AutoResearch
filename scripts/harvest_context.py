@@ -1037,6 +1037,29 @@ def _uzi_trap(row: dict) -> str:
     return render_trap_block(trap_signals(row))
 
 
+def _uzi_volprice(row: dict) -> str:
+    """量价形态(position-conditioned 吸筹/派发)+ 多日资金流(CMF/OBV,若 L1 行带 vol_series 因子)。
+
+    补 trap(派发空半)缺的**吸筹多半**:顶部放量=派发、底部放量=吸筹——裸量比对 T+1 负正因没分位置。
+    """
+    from uzi_lenses import render_volume_price_block, volume_price_signals
+    block = render_volume_price_block(volume_price_signals(row))
+    extra = []
+    for key, lab, pos, neg in (("cmf_20", "CMF·20日买卖压", "买压/吸筹侧", "卖压/派发侧"),
+                               ("obv_mom_20", "OBV·20日资金方向", "资金净进", "资金净出")):
+        try:
+            v = float(row.get(key))
+        except (TypeError, ValueError):
+            continue
+        if v != v:           # NaN
+            continue
+        extra.append(f"{lab} {v:+.2f}({pos if v > 0 else neg})")
+    if extra:
+        block += ("\n**多日量价资金流(vol_series·IC 实证 decile +40bps/t≈2)**:"
+                  + " ｜ ".join(extra) + " — 与上面快照位置共振更可信,仍须基本面背书。")
+    return block
+
+
 def main() -> int:
     flags = {a for a in sys.argv[1:] if a.startswith("--")}
     pos = [a for a in sys.argv[1:] if not a.startswith("--")]
@@ -1113,8 +1136,11 @@ def main() -> int:
         # UZI 增量透镜:便宜的(财报1调/融资1调/trap零调)slim 也取;席位识别(多日 top_inst)给全量
         parts.append(_section("A股原生财报 (UZI·tushare)", _uzi_fundamentals, ticker))
         parts.append(_section("融资余额趋势 (UZI·tushare)", _uzi_margin, ticker))
-        if l1_row is not None:        # 杀猪盘:复用 L1 因子行,零取数
+        # 量价机械底(**仅 scan L4 的 slim 路径**复用 L1 因子行,零取数):trap=派发空半 + volprice=吸筹多半 + 多日 CMF/OBV。
+        # 全量 analyze-ticker 与 scan **完全解耦——不取 L1**,改由分析师对上方 live 市场上下文(主力/技术/筹码)自行套用 trap/volume_price 判读。
+        if l1_row is not None:
             parts.append(_section("杀猪盘/派发风险 (UZI·复用L1)", _uzi_trap, l1_row))
+            parts.append(_section("量价形态/吸筹·多日资金流 (UZI·复用L1)", _uzi_volprice, l1_row))
         if not slim:
             parts.append(_section("龙虎榜席位识别 (UZI·tushare)", _uzi_seats, ticker, end))
 

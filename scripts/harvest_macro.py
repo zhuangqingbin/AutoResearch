@@ -287,6 +287,30 @@ def meso_ashare_block(curr_date: str) -> str:
     return "\n\n".join(out)
 
 
+def meso_ashare_best(curr_date: str) -> str:
+    """A股中观:tushare(北向汇总/两融/行业资金/涨停/指数估值)优先 + akshare 补龙虎榜游资。
+
+    tushare(api.tushare.pro,非 push2)更可靠,且独有**两融余额 + 指数估值分位**;akshare meso
+    块补**龙虎榜(游资席位,tushare 未覆盖)**,push2 被封时自身降级为 WebSearch 指令。两者皆失败才纯降级。
+    """
+    parts: list[str] = []
+    try:
+        from tushare_macro import meso_block_ts
+        b = meso_block_ts(curr_date)
+        if b:
+            parts.append(b)
+    except Exception:  # noqa: BLE001 — tushare 不可用 → 走 akshare
+        pass
+    try:
+        parts.append("---\n\n**akshare 补充(龙虎榜游资 + 交叉验证;push2 被封时自动降级为网查指令)**:\n\n"
+                     + meso_ashare_block(curr_date))
+    except Exception as e:  # noqa: BLE001
+        if not parts:
+            return (f"_A股中观取数失败({e})→ WebSearch:行业资金流入流出排名 / 龙虎榜游资 / "
+                    "涨停家数·连板 / 北向资金 / 两融余额,标『实时网查』。_")
+    return "\n\n".join(parts)
+
+
 def main() -> int:
     trade_date = sys.argv[1] if len(sys.argv) > 1 else date.today().isoformat()
     datetime.strptime(trade_date, "%Y-%m-%d")  # validate / fail loud on bad date
@@ -309,7 +333,8 @@ def main() -> int:
     parts.append(_section("Cross-asset price basket (yfinance)", cross_asset_block, end))
 
     print("[A股中观]", flush=True)
-    parts.append(_section("A股中观骨架 (行业资金/游资/涨停情绪/北向)", meso_ashare_block, end))
+    parts.append(_section("A股中观 (北向/两融/行业资金/涨停/指数估值 — tushare 优先;akshare 补龙虎榜游资)",
+                          meso_ashare_best, end))
 
     out_dir = ROOT / "context" / "macro" / trade_date
     out_dir.mkdir(parents=True, exist_ok=True)

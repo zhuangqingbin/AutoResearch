@@ -397,13 +397,14 @@ def aggregate_sectors(survivors: pd.DataFrame, uni: pd.DataFrame, top_sectors: i
 
 # ───────────────────────── L1 召回:轻门 + 行业条件化复合分 ─────────────────────────
 
-# 8 因子组(自然朝向:高=常规看多;真方向由 weights.json 的 IC 符号决定)。
-_GROUPS = ("momentum", "fund_main", "fund_retail", "chip", "north", "tech", "growth", "value")
+# 9 因子组(自然朝向:高=常规看多;真方向由 weights.json 的 IC 符号决定)。
+# volprice = 多日量价资金流(CMF+OBV;序列指标,IC 实证 decile +40bps/t≈2,远胜已剔的单日 vol_ratio)。
+_GROUPS = ("momentum", "fund_main", "fund_retail", "chip", "north", "tech", "growth", "value", "volprice")
 
 # weights.json 缺失时的先验(仅 __global__;慢因子 growth/value 给小权重——T+1 近噪声但仍纳入)。
 _PRIOR_WEIGHTS = {"meta": {"source": "prior(无 weights.json)"}, "weights": {"__global__": {
     "momentum": 0.10, "fund_main": 0.06, "fund_retail": -0.02, "chip": 0.02,
-    "north": 0.03, "tech": -0.03, "growth": 0.03, "value": 0.03}}}
+    "north": 0.03, "tech": -0.03, "growth": 0.03, "value": 0.03, "volprice": 0.04}}}
 
 
 def _load_weights(path: str = "context/factor_lab/weights.json") -> dict:
@@ -427,7 +428,7 @@ def _blend(*parts) -> pd.Series:
 
 
 def _factor_groups(df: pd.DataFrame) -> dict[str, pd.Series]:
-    """8 组子分(各 0–1 横截面分位,自然朝向)。缺列的组返回全 NaN。calibrate 与 composite 共用。"""
+    """9 组子分(各 0–1 横截面分位,自然朝向)。缺列的组返回全 NaN。calibrate 与 composite 共用。"""
     nan = pd.Series(np.nan, index=df.index)
 
     def p(col, asc=True):
@@ -443,6 +444,8 @@ def _factor_groups(df: pd.DataFrame) -> dict[str, pd.Series]:
         "tech": _blend((p("rsi6"), 0.5), (p("rsi12"), 0.5)),
         "growth": _blend((p("np_yoy"), 0.5), (p("rev_yoy"), 0.3), (p("roe"), 0.2)),
         "value": _pct_within(df, "pe", "industry", ascending=False) if {"pe", "industry"} <= has else nan,
+        # 多日量价资金流(CMF 买/卖压 + OBV 资金方向;缺列→NaN,组重归一,recall 不破)
+        "volprice": _blend((p("cmf_20"), 0.5), (p("obv_mom_20"), 0.5)),
     }
 
 
@@ -475,7 +478,20 @@ def composite_score(df: pd.DataFrame, weights: dict) -> pd.DataFrame:
         if "winner_rate" in df.columns:
             exhausted = exhausted | (_num(df["winner_rate"]) > 85)
         comp100 = comp100 - (high_mom & exhausted).fillna(False).astype(float) * 8
-    out["composite"] = comp100.clip(lower=0).round(1)
+    # 吸筹加成(froth 抑制的多头镜像,同为风险叠加、**不改 IC 权重**):低位(获利盘低/破成本)+ 放量
+    # + 主力未撤 = 底部疑似吸筹(量价『顶部=派发、底部=吸筹』)→ 小幅加分**保召回**(进 top recall_n),
+    # 交 L2/L3/L4 做基本面『三维验证』。研究:底部放量 >70% 无基本面会败,故 +5 < froth −8——只保召回、不越级多报。
+    if "vol_ratio" in df.columns:
+        low_pos = pd.Series(False, index=df.index)
+        if "winner_rate" in df.columns:
+            low_pos = low_pos | (_num(df["winner_rate"]) < 40)
+        if "price_to_cost" in df.columns:
+            low_pos = low_pos | (_num(df["price_to_cost"]) < 1.0)
+        not_high = (_num(df["pct_60d"]) < 20) if "pct_60d" in df.columns else pd.Series(True, index=df.index)
+        main_ok = (_num(df["main_net_ratio"]) >= 0) if "main_net_ratio" in df.columns else pd.Series(True, index=df.index)
+        accum = (_num(df["vol_ratio"]) >= 1.5) & low_pos & not_high & main_ok
+        comp100 = comp100 + accum.fillna(False).astype(float) * 5
+    out["composite"] = comp100.clip(lower=0, upper=100).round(1)   # upper 夹 100:吸筹加成不溢出
     return out
 
 
@@ -502,12 +518,56 @@ def aggregate_sectors_overview(recall: pd.DataFrame, uni: pd.DataFrame) -> pd.Da
     return sec
 
 
+def _harvest_vol_series(codes, analysis_date: str, lookback: int = 20) -> pd.DataFrame:
+    """拉近 ~lookback 交易日 daily(high/low/close/amount)→ vol_series 算多日量价因子 per code。
+
+    供 L1 召回的 volprice 组(快照层本来无序列)。tushare bulk by date(~lookback 次)→ pivot → 序列指标。
+    无权限/失败 → 返回空帧(volprice 列缺失 → 组 NaN 重归一,recall 不破)。
+    """
+    try:
+        from datetime import datetime, timedelta
+
+        import vol_series
+        from tushare_source import _code6, _pro, _trade_days, _ts_call, resolve_momentum_dates
+        pro = _pro()
+        last = resolve_momentum_dates(pro, analysis_date)[0]
+        start = (datetime.strptime(last, "%Y%m%d") - timedelta(days=lookback * 2 + 15)).strftime("%Y%m%d")
+        days = _trade_days(pro, start, last)[-lookback:]
+        if len(days) < 10:
+            return pd.DataFrame(columns=["code"])
+        want = {str(c).zfill(6) for c in codes}
+        recs = []
+        for d in days:
+            df = _ts_call(lambda d=d: pro.daily(trade_date=d, fields="ts_code,high,low,close,amount"))
+            if df is None or not len(df):
+                continue
+            df = df.assign(code=_code6(df["ts_code"]), date=d)
+            recs.append(df[df["code"].isin(want)][["code", "date", "high", "low", "close", "amount"]])
+        if not recs:
+            return pd.DataFrame(columns=["code"])
+        long = pd.concat(recs, ignore_index=True)
+        piv = {f: long.pivot_table(index="code", columns="date", values=f)
+               for f in ("high", "low", "close", "amount")}
+        win = sorted(piv["close"].columns)
+        H, L, C, A = (piv[f][win] for f in ("high", "low", "close", "amount"))
+        out = pd.DataFrame({"code": list(C.index)})
+        out["cmf_20"] = vol_series.cmf(H, L, C, A, win).to_numpy()
+        out["obv_mom_20"] = vol_series.obv_momentum(C, A, win).to_numpy()
+        out["price_vs_vwap_20"] = vol_series.price_vs_vwap(H, L, C, A, win).to_numpy()
+        out["breakout_vol_20"] = vol_series.breakout_on_volume(C, A, win).to_numpy()
+        return out
+    except Exception as e:  # noqa: BLE001
+        print(f"[warn] 多日量价序列取数失败 → volprice 组置 NaN: {e}", file=sys.stderr)
+        return pd.DataFrame(columns=["code"])
+
+
 # ───────────────────────── 编排 + 输出 ─────────────────────────
 
 
 def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
-        recall_n: int = 1000, outdir: Path | None = None, source: str = "tushare") -> dict:
-    """L0 选集 + L1 召回(轻门 → 行业条件化复合分 → top recall_n)。零 LLM。"""
+        recall_n: int = 1000, l2_n: int = 200, outdir: Path | None = None,
+        source: str = "tushare") -> dict:
+    """L0 选集 + L1 召回 + L2 粗排(GBDT 学习重排 → top l2_n)。全确定性,零 LLM。"""
     if source == "tushare":
         from tushare_source import _RAW_COUNT, fetch_universe_tushare  # 默认源(东财 push2 常被封)
         uni = fetch_universe_tushare(analysis_date, cap_floor_yi=cap_floor_yi, include_bj=include_bj)
@@ -519,6 +579,10 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
 
     # L1 召回:Step A 轻门 → Step B 复合分 → top recall_n
     uni = uni[_recall_gate_a(uni)].reset_index(drop=True)
+    uni["code"] = uni["code"].astype(str).str.zfill(6)
+    vps = _harvest_vol_series(uni["code"], analysis_date)          # 多日量价序列(CMF/OBV/...)→ volprice 组
+    if len(vps):
+        uni = uni.merge(vps, on="code", how="left")
     weights = _load_weights()
     scored = composite_score(uni, weights)
     recall = scored.sort_values("composite", ascending=False).head(recall_n).reset_index(drop=True)
@@ -528,26 +592,46 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
     outdir = outdir or Path("context/scan") / analysis_date
     outdir.mkdir(parents=True, exist_ok=True)
     keep = (["code", "name", "industry", "composite"] + [f"score_{g}" for g in _GROUPS]
-            + ["mktcap_yi", "close", "pct_60d", "pct_ytd", "main_inflow_yi", "main_net_ratio",
+            + ["mktcap_yi", "close", "amount_yi", "vol_ratio", "turnover", "cmf_20", "obv_mom_20",
+               "pct_60d", "pct_ytd",
+               "main_inflow_yi", "main_net_ratio",
                "retail_net_yi", "winner_rate", "chip_concentration", "price_to_cost", "hk_ratio",
                "rsi6", "rsi12", "pe", "pb", "dv_ratio", "np_yoy", "rev_yoy", "roe",
                "ma_bull", "above_ma60"])
     recall[[c for c in keep if c in recall.columns]].to_csv(outdir / "L1_recall_top1000.csv", index=False)
-    # 全量打分(所有过门股,按 composite 降序 + recalled 标记)→ A_pipeline 留全阶段数据,不截断
+    # 全量打分(所有过门股,按 composite 降序 + recalled 标记)→ trace/ 留全阶段数据,不截断
     full = scored.sort_values("composite", ascending=False).reset_index(drop=True)
     full.insert(0, "rank", range(1, len(full) + 1))
     full.insert(1, "recalled", full["rank"] <= recall_n)
     full[["rank", "recalled"] + [c for c in keep if c in full.columns]].to_csv(
         outdir / "L1_scored_full.csv", index=False)
+
+    # ── L2 粗排:GBDT 学习重排 recall(top recall_n)→ top l2_n(确定性,替旧 L2-AI keep/cut)──
+    # 模型缺失 / oos 未胜线性 → predict_scores 返回 None → 回落 composite top(自保,绝不比线性差)。
+    import factor_lab
+    gscore = factor_lab.predict_scores(recall)
+    if gscore is not None:
+        l2 = recall.assign(gbdt_score=gscore.to_numpy()).sort_values(
+            "gbdt_score", ascending=False).head(l2_n).reset_index(drop=True)
+        l2_engine = "gbdt"
+    else:
+        l2 = recall.head(l2_n).reset_index(drop=True)
+        l2_engine = "composite-linear(回落)"
+    l2.insert(0, "l2_rank", range(1, len(l2) + 1))
+    l2_cols = ["l2_rank", "gbdt_score", *keep]
+    l2[[c for c in l2_cols if c in l2.columns]].to_csv(outdir / "L2_gbdt_top200.csv", index=False)
+    print(f"[L2 粗排] recall {len(recall)} → {l2_engine} top {len(l2)}", file=sys.stderr)
+
     sectors.to_csv(outdir / "sectors.csv", index=False)
     (outdir / "meta.json").write_text(json.dumps({
         "analysis_date": analysis_date, "universe_raw": n_raw, "universe": n_l0, "after_gate_a": len(uni),
-        "recall_n": len(recall), "cap_floor_yi": cap_floor_yi, "include_bj": include_bj, "source": source,
+        "recall_n": len(recall), "l2_n": len(l2), "l2_engine": l2_engine,
+        "cap_floor_yi": cap_floor_yi, "include_bj": include_bj, "source": source,
         "weights_source": weights.get("meta", {}).get("source", "weights.json"),
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[done] L1 召回 → {outdir}/L1_recall_top1000.csv ({len(recall)})", file=sys.stderr)
     return {"universe": n_l0, "after_gate_a": len(uni), "recall_n": len(recall),
-            "sectors": len(sectors), "outdir": str(outdir)}
+            "l2_n": len(l2), "l2_engine": l2_engine, "sectors": len(sectors), "outdir": str(outdir)}
 
 
 # ───────────────────────── 离线自测(无网络) ─────────────────────────
@@ -668,6 +752,7 @@ def main() -> int:
     ap.add_argument("--cap-floor", type=float, default=30.0, help="市值地板(亿),默认 30")
     ap.add_argument("--exclude-bj", action="store_true", help="排除北交所(默认纳入)")
     ap.add_argument("--recall-n", type=int, default=1000, help="召回数(复合分 top N),默认 1000")
+    ap.add_argument("--l2-n", type=int, default=200, help="L2 粗排数(GBDT 重排 top N),默认 200")
     ap.add_argument("--source", choices=["em", "tushare"], default="tushare",
                     help="universe 取数源:tushare=默认(push2 常被封);em=东财 push2")
     ap.add_argument("--selftest", action="store_true", help="离线验证打分逻辑(无网络)")
@@ -678,9 +763,10 @@ def main() -> int:
 
     analysis_date = args.date or date.today().isoformat()
     res = run(analysis_date, cap_floor_yi=args.cap_floor, include_bj=not args.exclude_bj,
-              recall_n=args.recall_n, source=args.source)
+              recall_n=args.recall_n, l2_n=args.l2_n, source=args.source)
     print(f"\nL0 universe={res['universe']} → 轻门 {res['after_gate_a']} → 召回 top{res['recall_n']} "
-          f"(板块概览 {res['sectors']} 个)\n→ {res['outdir']}/L1_recall_top1000.csv")
+          f"→ L2 {res['l2_engine']} top{res['l2_n']} (板块概览 {res['sectors']} 个)"
+          f"\n→ {res['outdir']}/L2_gbdt_top200.csv")
     return 0
 
 

@@ -1,4 +1,4 @@
-"""Assemble the per-agent markdown files into one reports/analyze/<HHMM>_<TICKER>.md (v4).
+"""Assemble the per-agent markdown files into one reports/analyze/<YYYYMMDD_HHMM>/<name>.md (v4).
 
 v4 reorganises the body from "org chart" order into "decision argument" order,
 split into two tiers so the note reads top-down like a real PM memo:
@@ -18,10 +18,13 @@ optional and skipped if absent. The final decision is still validated with the
 project's own ``parse_rating`` (the function behind ``SignalProcessor``).
 
 Usage:
-    python scripts/assemble_report.py context/analyze/<TICKER>_<YYYYMMDD>
-    # → reports/analyze/<HHMM>_<TICKER>.md   (HHMM = 组装时本地时间)
+    python scripts/assemble_report.py context/analyze/<TICKER>_<YYYYMMDD> [--name 中文简称]
+    # → reports/analyze/<YYYYMMDD_HHMM>/<名称|TICKER>.md   (目录名 = 组装/运行时刻)
+    #   A股 → 中文名.md(优先 --name,其次从 context 抠,兜底 6 位代码);其他市场 → TICKER.md。
+    #   数据日(分析日)与目录名解耦,记在同目录 manifest.json。
 """
 
+import json
 import re
 import sys
 from datetime import datetime
@@ -101,12 +104,57 @@ def _read(root: Path, rel: str) -> str:
     return (root / rel).read_text(encoding="utf-8").strip()
 
 
+_ASHARE_RE = re.compile(r"^\d{6}(\.(SS|SZ|BJ))?$", re.IGNORECASE)
+
+
+def _is_ashare(ticker: str) -> bool:
+    """A股 = 6 位代码,带或不带 .SS/.SZ/.BJ 后缀(港股 .HK / 美股 / crypto 不算)。"""
+    return bool(_ASHARE_RE.match((ticker or "").strip()))
+
+
+def _safe_name(name: str) -> str:
+    """中文名/ticker → 文件名安全(去 /\\:*?\"<>| 与空白,*ST→ST);空则回退 未命名。"""
+    return re.sub(r'[/\\:*?"<>|\s]', "", str(name)).replace("*ST", "ST").strip() or "未命名"
+
+
+def _ashare_name_from_context(ticker: str, root: Path) -> str | None:
+    """兜底中文简称:从 harvest context(context/<dir>.md)新闻标题抠 `<中文名><6位代码>`;取不到回 None。"""
+    m = re.match(r"\d{6}", ticker or "")
+    if not m:
+        return None
+    code = m.group(0)
+    ctx = root.parent.parent / f"{root.name}.md"      # context/analyze/<dir>/ → context/<dir>.md
+    if not ctx.exists():
+        return None
+    try:
+        text = ctx.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    hits = re.findall(rf"([一-龥][一-龥A-Za-z\*]{{1,7}}){code}", text)
+    return max(set(hits), key=hits.count) if hits else None
+
+
+def _resolve_filename(ticker: str, root: Path, explicit_name: str | None) -> str:
+    """A股 → 中文名(优先 --name,其次 context 抠取,兜底 6 位代码);其他市场 → ticker。"""
+    if _is_ashare(ticker):
+        name = explicit_name or _ashare_name_from_context(ticker, root)
+        return _safe_name(name) if name else re.match(r"\d{6}", ticker).group(0)
+    return _safe_name(ticker)
+
+
 def main() -> int:
-    if len(sys.argv) < 2:
+    argv = sys.argv[1:]
+    explicit_name = None
+    if "--name" in argv:                        # A股 中文简称(Claude 在 session 内已知,显式传最稳)
+        i = argv.index("--name")
+        explicit_name = argv[i + 1] if i + 1 < len(argv) else None
+        argv = argv[:i] + argv[i + 2:]
+    if not argv:
         print(__doc__)
         return 1
-    root = Path(sys.argv[1])
-    ticker = root.name.split("_")[0]
+    root = Path(argv[0])
+    ticker, _, datestr = root.name.rpartition("_")    # <TICKER>_<YYYYMMDD>
+    ticker = ticker or root.name
 
     required = [DECISION_REL] + [
         rel for _, items in (SPINE + APPENDIX) for _, rel, opt in items if not opt
@@ -123,7 +171,9 @@ def main() -> int:
     skipped = [rel for _, items in (SPINE + APPENDIX)
                for _, rel, opt in items if opt and not (root / rel).exists()]
 
-    out = [f"# Trading Analysis Report: {ticker}\n",
+    fname = _resolve_filename(ticker, root, explicit_name)
+    title_id = f"{fname}（{ticker}）" if _is_ashare(ticker) and fname != ticker else ticker
+    out = [f"# Trading Analysis Report: {title_id}\n",
            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  ",
            "_Engine: Claude (in-session), zero paid LLM API. "
            "Data: project tools (yfinance/FRED) + v2/v3/v4 enrichments._\n"]
@@ -159,14 +209,24 @@ def main() -> int:
         for name, rel in present:
             out.append(_anchored("###", name, _read(root, rel)))
 
-    hhmm = datetime.now().strftime("%H%M")
-    out_dir = Path("reports/analyze")
+    now = datetime.now()
+    out_dir = Path("reports/analyze") / now.strftime("%Y%m%d_%H%M")   # 目录名=运行时刻(与 scan 一致)
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{hhmm}_{ticker}.md"
+    out_path = out_dir / f"{fname}.md"
     out_path.write_text("\n".join(out), encoding="utf-8")
+
+    adate = (f"{datestr[:4]}-{datestr[4:6]}-{datestr[6:]}"            # 数据日(分析日)与目录名解耦
+             if re.fullmatch(r"\d{8}", datestr or "") else (datestr or ""))
+    (out_dir / "manifest.json").write_text(json.dumps({
+        "ticker": ticker, "name": fname,
+        "market": "A股" if _is_ashare(ticker) else "其他",
+        "analysis_date": adate, "generated_at": now.isoformat(),
+        "hhmm": now.strftime("%H%M"),
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
 
     rating = parse_rating(_read(root, DECISION_REL))
     print(f"[assembled] {out_path}")
+    print(f"[manifest]  {out_dir / 'manifest.json'}  (analysis_date={adate})")
     print(f"[parse_rating → 5-tier signal] {rating}")
     if skipped:
         print("[note] 跳过未提供的可选 lens 分段: " + ", ".join(skipped))

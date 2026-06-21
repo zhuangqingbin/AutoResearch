@@ -32,8 +32,8 @@ scripts/
   assemble_macro.py   克隆 assemble_report.py;对两张配置表逐行跑 parse_rating 校验
 产物:
   context/macro/<date>/     区域宏观 + 跨资产价 + 中观板块/资金/龙虎榜/涨停(缓存)
-  reports/macro/<date>/      各 agent 分段 .md
-  reports/macro/<date>/macro_compass.md   组装后的完整报告
+  context/macro/<date>/1_spine…6_*/   各 agent 分段 .md(草稿)
+  reports/macro/<YYYYMMDD>/<HHMM>_summary.md   组装后的完整报告
 ```
 (`context/`、`reports/` 已 gitignore。)
 
@@ -85,7 +85,7 @@ scripts/
 
 ### 4.2 文件映射(须与 `assemble_macro.py` 一致)
 ```
-reports/macro/<date>/
+context/macro/<date>/        # 分节草稿(gitignored);assemble → reports/macro/<YYYYMMDD>/<HHMM>_summary.md
   1_spine/      decision.md  variant.md  crossfire.md  calendar.md  premortem.md  debate.md(opt)
   2_meso/       sector_map.md  flows.md  sentiment.md  themes.md
   3_regional/   us.md  china.md  global.md

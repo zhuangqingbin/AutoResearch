@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -127,19 +128,40 @@ def stage_stats(attr: pd.DataFrame) -> dict:
 # ───────────────────────── IO:买单 / 已实现收益 / 待复盘日 ─────────────────────────
 
 
+def _report_dir_for(date: str, report_root: Path) -> Path | None:
+    """定位数据日 analysis_date=date 的已发布报告目录(最新一轮)。
+
+    新布局目录名 = **运行时刻**(与数据日解耦),数据日记在 `manifest.json` → 按 `analysis_date` 匹配;
+    老布局目录名 = 数据日(无 manifest)→ glob `<date>_*` 兜底。都取目录名最大(= 最近运行)。
+    """
+    compact = date.replace("-", "")
+    cands: set[Path] = set()
+    for mf in report_root.glob("*/manifest.json"):
+        try:
+            if json.loads(mf.read_text(encoding="utf-8")).get("analysis_date") == date:
+                cands.add(mf.parent)
+        except (json.JSONDecodeError, OSError):
+            continue
+    cands |= set(report_root.glob(f"{compact}_*"))                 # 老布局:目录名即数据日
+    dirs = sorted((p for p in cands if (p / "details").is_dir()), key=lambda p: p.name)
+    return dirs[-1] if dirs else None
+
+
 def _buylist(date: str, report_root: Path | None = None) -> dict[str, str]:
-    """读 reports/scan/<YYYYMMDD>/ 最新 <HHMM>_detail/<code>.md → {code: 五档评级}(复用 parse_rating)。"""
-    base = (report_root or Path("reports/scan")) / date.replace("-", "")
-    if not base.exists():
-        return {}
-    detail_dirs = sorted(p for p in base.glob("*_detail") if p.is_dir())
-    if not detail_dirs:
+    """读数据日=date 的已发布报告 details/<名称>.md → {code: 五档评级}。
+
+    目录名现在是运行时刻(数据日在 manifest),由 `_report_dir_for` 解析定位;发布层卡名是**名称**,
+    code 从卡内标题 `# 决策卡 — <code> <名称>` 取(复用 parse_rating 提评级)。
+    """
+    rdir = _report_dir_for(date, report_root or Path("reports/scan"))
+    if rdir is None:
         return {}
     out: dict[str, str] = {}
-    for md in detail_dirs[-1].glob("*.md"):
-        code = md.stem
-        if code.isdigit():
-            out[code.zfill(6)] = parse_rating(md.read_text(encoding="utf-8"))
+    for md in (rdir / "details").glob("*.md"):
+        text = md.read_text(encoding="utf-8")
+        m = re.search(r"决策卡\s*[—\-]\s*(\d{6})", text)
+        if m:
+            out[m.group(1).zfill(6)] = parse_rating(text)
     return out
 
 
@@ -193,7 +215,7 @@ def pending_days(today: str | None = None, scan_root: Path | None = None,
             continue
         if (dd / "retro" / "done.json").exists():
             continue
-        if not list((report_root / date.replace("-", "")).glob("*_summary.md")):
+        if _report_dir_for(date, report_root) is None:           # 无已发布报告(目录名=运行日,按 manifest 定位)
             continue
         i = pos.get(date.replace("-", ""))
         if i is not None and i + 2 < len(cal):                   # D+2 交易日 ≤ today → fwd 已实现
@@ -255,6 +277,22 @@ def write_retro_input(date: str, attr: pd.DataFrame, scan_root: Path | None = No
     caught = attr[attr["bucket"] == "caught"].sort_values("fwd_1_oo", ascending=False).head(10)
     lines += ["\n## 对照:抓到的赢家(caught, top 10)"]
     lines += _tbl(caught, fcols) if len(caught) else ["_无_"]
+
+    try:                                   # F · 逐阶段 agent edge(staging 缺 / fwd 未实现则跳过)
+        import stage_eval
+        lines += stage_eval.render_stage_eval(stage_eval.evaluate(date, scan_root=scan_root))
+    except Exception as e:  # noqa: BLE001
+        lines += [f"\n## 各阶段 agent edge\n_stage_eval 跳过:{e}_"]
+
+    try:                                   # E2 · 够格升『程序性硬门』的经验(给它写 guard → self_review 拦)
+        import feedback_store as fs
+        cands = fs.promotion_candidates()
+        if cands:
+            lines += ["\n## 够格升硬门的经验(E2:反复强化、还没 guard → 给它写 {field,op,value} 升 self_review 硬门)"]
+            lines += [f"- `{c['id']}` ×{c.get('reinforce_count')} conf {c.get('confidence')}:{c.get('rule')}"
+                      for c in cands]
+    except Exception:  # noqa: BLE001
+        pass
 
     p = scan_root / date / "retro" / "retro_input.md"
     p.parent.mkdir(parents=True, exist_ok=True)

@@ -17,10 +17,10 @@ description: Use when the user wants top-down GLOBAL + 中美 macro research tha
 
 ## 流程(6 步)
 1. **取数(零 LLM)**:`uv run python scripts/harvest_macro.py [YYYY-MM-DD]` → `context/macro/<date>/data.md`(区域宏观 US/China/Global + 跨资产 basket + A股中观骨架)。日期默认今天。
-2. **读 context**:分页读 `context/macro/<date>/data.md`(文件较大,用 offset/limit 或 grep 定位),锁定 US/China/Global 宏观、跨资产价(含 USD/CNY/JPY/黄金/大宗/BTC)、A股中观(行业资金流入流出/游资龙虎榜/涨停情绪/北向)。
+2. **读 context**:分页读 `context/macro/<date>/data.md`(文件较大,用 offset/limit 或 grep 定位),锁定 US/China/Global 宏观、跨资产价(含 USD/CNY/JPY/黄金/大宗/BTC)、A股中观(tushare 优先:北向官方汇总/**两融余额**/行业资金净流入(亿)/涨停情绪/**指数估值分位** + akshare 补游资龙虎榜)。
 3. **读 playbook**:读本目录 `macro-playbook.md` 拿报告骨架 + 各 agent 角色/输出格式 + 两张配置表的机器可读约定 + 数据坑,**不要回翻代码**。
-4. **扮演各 agent**:按 playbook 顺序逐段产出到 `reports/macro/<date>/`(目录结构见 playbook)。**每个数字必出 context;判断性内容(情景概率/政策路径/央行反应函数)显式标『判断』或『实时网查』。** 两张配置表(跨资产 `decision.md`、A股行业 `sector_map.md`)每行带 keyed `**Rating**` 行。
-5. **组装+校验**:`uv run python scripts/assemble_macro.py reports/macro/<date>` → `macro_compass.md`,并对跨资产表 + A股行业表逐行打印 `parse_rating` 信号(校验你的配置能被框架原生解析)。若 `[MISSING]`,补齐缺的必需分段再跑。
+4. **扮演各 agent**:按 playbook 顺序逐段产出到 `context/macro/<date>/`(分节草稿,gitignored;目录结构见 playbook)。**每个数字必出 context;判断性内容(情景概率/政策路径/央行反应函数)显式标『判断』或『实时网查』。** 两张配置表(跨资产 `decision.md`、A股行业 `sector_map.md`)每行带 keyed `**Rating**` 行。
+5. **组装+校验**:`uv run python scripts/assemble_macro.py context/macro/<date>` → `reports/macro/<YYYYMMDD>/<HHMM>_summary.md`,并对跨资产表 + A股行业表逐行打印 `parse_rating` 信号(校验你的配置能被框架原生解析)。若 `[MISSING]`,补齐缺的必需分段再跑。
 6. **汇报**:regime 判断 + 两张配置表(关键超/低配 + 表达 + 触发位)+ 诚实局限。
 
 ## 铁律(防幻觉,违反即作废重来)
@@ -28,7 +28,7 @@ description: Use when the user wants top-down GLOBAL + 中美 macro research tha
 - 宏观判断性内容(情景概率、政策路径、央行反应函数)显式标注,不冒充确定性数据。
 - 分析窗口钉死分析日,绝不用未来数据。
 - 中美对撞 / Risk Debate 必须有真实张力(不许橡皮图章一边倒)。
-- 北向个股实时披露 2024-08 已停 → 中观北向只用汇总/板块口径,标 staleness。
+- 北向个股实时披露 2024-08 已停 → 中观北向用 tushare `moneyflow_hsgt` 官方**日频汇总**(可靠);仍是汇总非个股口径。
 - 跨资产相关性随 regime 漂移(通胀期股债翻正)→ 配置表声明当前相关性假设。
 - 收尾写明:这是 Claude 的推理产出、非自动引擎;仅供研究,非投资建议。
 
@@ -36,4 +36,4 @@ description: Use when the user wants top-down GLOBAL + 中美 macro research tha
 - 必须 `uv run` + 仓库根目录,否则 `.env`/依赖加载不到。
 - akshare 版本漂/限流 → harvester 已防御降级 + WebSearch 兜底;context 出现『取数失败 → WebSearch』时,推理阶段务必网查补回逐日/逐行颗粒度,**别静默跳过或塌缩成一个累计数**。
 - FRED 国际 series 若 `MACRO_DATA_UNAVAILABLE` → 该指标走 WebSearch,标『实时网查』。
-- 行业资金流走 Eastmoney→THS 双源兜底;两源都失败才降级 WebSearch。
+- A股中观 **tushare 优先**(`tushare_macro`:北向/两融/行业资金/涨停/指数估值,非 push2 更稳),akshare(Eastmoney→THS)补龙虎榜游资;都失败才 WebSearch。

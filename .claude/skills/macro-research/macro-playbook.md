@@ -4,7 +4,7 @@
 
 ## 输出文件映射(须与 assemble_macro.py 一致)
 ```
-reports/macro/<date>/
+context/macro/<date>/        # 分节草稿(gitignored);assemble → reports/macro/<YYYYMMDD>/<HHMM>_summary.md
   1_spine/      decision.md  variant.md  crossfire.md  calendar.md  premortem.md  debate.md(opt)
   2_meso/       sector_map.md  flows.md  sentiment.md  themes.md
   3_regional/   us.md  china.md  global.md
@@ -40,8 +40,8 @@ reports/macro/<date>/
 3. **执行摘要** 2–4 句。
 
 ## 中观落地 — M1 sector_map.md(Phase 1 重点)
-申万一级行业排名表:相对强度(1/5/20日)+ 主力净流入(来自 context「行业主力资金流」逐行)+ 北向变化(标 staleness)+ 估值方向 → 每行业 5 档倾向 + 表后 keyed `**Rating**` 行。
-> M2 flows / M3 sentiment / M4 themes:Phase 1 据 context 中观骨架写**精简版**(资金&游资逐条读「拉高出货 vs 吸筹」、涨停情绪档位、题材/风格一句),Phase 2 补全两融/ETF/概念/行业PE。
+申万一级行业排名表:相对强度(1/5/20日)+ 主力净流入(context「行业资金净流入」tushare 逐行,**亿**)+ 北向(tushare 官方汇总,日频可靠)+ 估值方向(context「指数估值」沪深300/创业板 **PE 近1年分位**)→ 每行业 5 档倾向 + 表后 keyed `**Rating**` 行。
+> M2 flows / M3 sentiment / M4 themes:据 context 中观块写(资金&游资逐条读「拉高出货 vs 吸筹」、涨停情绪档位[tushare 涨停家数/连板/最热行业]、题材/风格一句)。**两融余额趋势(tushare,融资余额↑=加杠杆=risk-on)+ 行业/指数 PE 分位现已在 context**——直接读进 M2/风险偏好与估值锚;ETF/概念可后续补。
 
 ## 区域读数 — A 区域宏观(Phase 1 重点)
 - `us.md`:增长/通胀/就业/金融条件/政策路径 — 数字出 context 的 US FRED 段;Fed 反应函数判断标『判断』。
@@ -68,7 +68,7 @@ reports/macro/<date>/
 ## 已知数据坑
 1. FRED 国际 series 若 `MACRO_DATA_UNAVAILABLE` → WebSearch,标『实时网查』。
 2. akshare 中观端点版本漂/限流 → context 已留 WebSearch 指令,推理阶段补回逐日/逐行颗粒度,别静默跳过。
-3. 北向个股实时披露 2024-08 已停 → 只用汇总/板块/季度口径,标 staleness。
+3. 北向个股实时披露 2024-08 已停 → 用**汇总口径**;现 tushare `moneyflow_hsgt`(north_money)提供**日频官方汇总**(可靠、非 push2),不必再标 staleness——但仍是汇总而非个股口径。
 4. 跨资产相关性随 regime 漂移(通胀期股债翻正)→ 配置表声明当前相关性假设。
 5. 期货(GC=F/CL=F)盘后可能 n/a → 用现货 ETF 或标注时点。
-6. 行业资金流:context 走 Eastmoney→THS 双源;若都失败显示 WebSearch 指令,推理阶段补「行业净流入/流出排名」。
+6. 行业资金流 + 两融 + 涨停 + 北向 + 指数估值:context **tushare 优先**(`tushare_macro`,非 push2 更稳),akshare(Eastmoney→THS)补龙虎榜游资;都失败才 WebSearch『行业净流入排名 / 两融余额 / 涨停家数 / 北向净流入』。

@@ -108,8 +108,12 @@ def record_feedback(skill: str, scope, report: str, note: str, verdict: str,
 
 
 def upsert_lesson(slug: str, scope, rule: str, evidence: list[str],
-                  confidence: float = 0.6, day: str | None = None) -> dict:
-    """新建或强化一条经验。已存在 → reinforce_count++、last_reinforced 更新、evidence 并集、confidence 升。"""
+                  confidence: float = 0.6, day: str | None = None, guard: dict | None = None) -> dict:
+    """新建或强化一条经验。已存在 → reinforce_count++、last_reinforced 更新、evidence 并集、confidence 升。
+
+    guard={field,op,value}(可选,E·程序性记忆):带 guard 的经验从『建议文本』升为 self_review 的
+    **确定性硬门**(发布买单触发即 fail)——经验反复强化后由 retro/feedback skill 给它写 guard 落地。
+    """
     day = day or _today()
     lid = slug if slug.startswith("ls_") else f"ls_{slug}"
     recs = _read_jsonl(_LESSONS)
@@ -118,6 +122,8 @@ def upsert_lesson(slug: str, scope, rule: str, evidence: list[str],
         rec = {"id": lid, "scope": _norm_scope(scope), "rule": rule, "evidence": list(evidence),
                "confidence": round(float(confidence), 2), "created": day, "last_reinforced": day,
                "reinforce_count": 1, "status": "active"}
+        if guard is not None:
+            rec["guard"] = guard
         recs.append(rec)
     else:
         rec = recs[idx]
@@ -132,6 +138,8 @@ def upsert_lesson(slug: str, scope, rule: str, evidence: list[str],
         rec["last_reinforced"] = day
         rec["reinforce_count"] = int(rec.get("reinforce_count", 1)) + 1
         rec["status"] = "active"
+        if guard is not None:                 # 升/更新硬门(None 则保留原 guard,不误清)
+            rec["guard"] = guard
         recs[idx] = rec
     _write_jsonl(_LESSONS, recs)
     return rec
@@ -166,6 +174,32 @@ def lessons_for(query_scopes) -> list[dict]:
     hits = [r for r in _read_jsonl(_LESSONS)
             if r.get("status") == "active" and scope_match(r.get("scope", {}), query_scopes)]
     return sorted(hits, key=lambda r: r.get("confidence", 0), reverse=True)
+
+
+def recent_feedback_for(query_scopes, k: int = 3,
+                        verdicts: tuple[str, ...] = ("wrong_rating", "false_positive", "missed"),
+                        only_open: bool = True) -> list[dict]:
+    """E1·检索式记忆:近期**同域、未蒸馏**(open)的反馈(踩过的坑),scope+verdict 命中,ts 倒序取 k。
+
+    注入判断 prompt 让 agent**在判断当下**就避开刚被用户标错的坑——补『flag 到 distill』之间的延迟
+    (蒸馏成 lesson 前,原始反馈也该influence下一轮)。good_call/process 不注入(只防错,不复述对的)。
+    """
+    fb = [f for f in _read_jsonl(_FEEDBACK)
+          if (not only_open or f.get("status") == "open")
+          and f.get("verdict") in verdicts
+          and scope_match(f.get("scope", {}), query_scopes)]
+    return sorted(fb, key=lambda r: r.get("ts", ""), reverse=True)[:k]
+
+
+def promotion_candidates(min_count: int = 3, min_conf: float = 0.7) -> list[dict]:
+    """E2·够格从『建议』升『程序性硬门』的经验:active + 反复强化(count≥min_count)+ 高 conf 且**还没 guard**。
+
+    交 retro/feedback skill 给它写 {field,op,value} → `upsert_lesson(guard=...)` → self_review 自动按它拦。
+    """
+    return [r for r in _read_jsonl(_LESSONS)
+            if r.get("status") == "active" and not r.get("guard")
+            and int(r.get("reinforce_count", 1)) >= min_count
+            and float(r.get("confidence", 0)) >= min_conf]
 
 
 # ───────────────────────── 建议 + 审计 ─────────────────────────
@@ -245,25 +279,44 @@ def _lesson_bullet(lsn: dict) -> str:
     sc = lsn.get("scope", {})
     tag = "" if sc.get("kind") == "global" else f"[{sc.get('value')}] "
     ev = "/".join(str(e) for e in lsn.get("evidence", [])[:2])
-    return f"- {tag}{lsn['rule']}  _(conf {lsn.get('confidence', 0):.2f}; {ev})_"
+    guard = ""
+    if isinstance(lsn.get("guard"), dict):
+        g = lsn["guard"]
+        guard = f" 〖硬门 {g.get('field')}{g.get('op')}{g.get('value')}〗"
+    return f"- {tag}{lsn['rule']}{guard}  _(conf {lsn.get('confidence', 0):.2f}; {ev})_"
 
 
-def render_calibration_block(query_scopes=None, lane="reversion") -> str:
+def _feedback_bullet(fb: dict) -> str:
+    sc = fb.get("scope", {})
+    tag = "" if sc.get("kind") == "global" else f"[{sc.get('value')}] "
+    rule = fb.get("corrective_rule") or fb.get("root_cause") or fb.get("note", "")
+    return f"- {tag}{str(rule)[:60]}  _({fb.get('verdict')}; {fb.get('id')})_"
+
+
+def render_calibration_block(query_scopes=None, lane="reversion", with_feedback: bool = False) -> str:
     """命中经验时:自学习经验(优先)叠加在 IC 基线上;无命中时:逐字回退基线(老路径不破)。
 
     lane='trend' → 趋势延续版校准(动量为正、主力还在=健康、只砍衰竭);
     lane='reversion'(默认)→ 原 T+1 均值回归基线;**不带 lane 调用结果与改前逐字一致**。
+    with_feedback=True(E1·检索式记忆)→ 额外把**近期同域未蒸馏反馈**注在最前(最高优先,别再犯);
+    默认 False → 输出与改前逐字一致(空 store / 全退休仍回退基线)。
     """
     intro, body, baseline = (
         (_TREND_INTRO, _TREND_BODY, _TREND_CALIBRATION) if lane == "trend"
         else (_BASELINE_INTRO, _BASELINE_BODY, _BASELINE_CALIBRATION)
     )
-    hits = lessons_for(query_scopes or [("global", "*")])
-    if not hits:
-        return baseline
-    lines = ["## ⚠️ 因子方向经验校准(自学习 + IC 基线,**务必写进每个 subagent prompt**)",
-             "### 自学习经验(你的反馈 + retro 复盘,优先级高)"]
-    lines += [_lesson_bullet(h) for h in hits]
+    scopes = query_scopes or [("global", "*")]
+    hits = lessons_for(scopes)
+    fb = recent_feedback_for(scopes) if with_feedback else []
+    if not hits and not fb:
+        return baseline               # 无经验无反馈 → 逐字基线(老路径不破)
+    lines = ["## ⚠️ 因子方向经验校准(自学习 + IC 基线,**务必写进每个 subagent prompt**)"]
+    if fb:
+        lines += ["### 近期同域反馈(未蒸馏,最高优先——别再犯)"]
+        lines += [_feedback_bullet(f) for f in fb]
+    if hits:
+        lines += ["### 自学习经验(你的反馈 + retro 复盘,优先级高)"]
+        lines += [_lesson_bullet(h) for h in hits]
     lines += ["", "### IC 回测基线", intro, body]
     return "\n".join(lines)
 
@@ -454,12 +507,44 @@ def _selftest() -> int:
         if not rollback_weights(sha, str(wp)) or "0.02" not in wp.read_text(encoding="utf-8"):
             fails.append("快照/回滚未复原 weights")
 
+        # 9) E · 程序性 guard 持久化 + 升门候选 + 检索式反馈注入
+        set_root(Path(td) / "know_e")
+        lg = upsert_lesson("wr_guard", ("global", "*"), "winner_rate>90=见顶", ["x"],
+                           confidence=0.8, day="2026-06-20", guard={"field": "winner_rate", "op": ">", "value": 90})
+        if lg.get("guard", {}).get("field") != "winner_rate":
+            fails.append("guard 未持久化到经验")
+        if not any(isinstance(r.get("guard"), dict) for r in _read_jsonl(_LESSONS)):
+            fails.append("guard 未落盘(self_review 取不到)")
+        # guard 在 reinforce 时不被 None 误清
+        if upsert_lesson("wr_guard", ("global", "*"), "winner_rate>90=见顶", ["y"], day="2026-06-21").get("guard") is None:
+            fails.append("reinforce(guard=None)误清了 guard")
+        # 够格升门:无 guard + count≥3 + 高conf → 入候选;已带 guard 的不入
+        for d in ("2026-06-20", "2026-06-21", "2026-06-22"):
+            upsert_lesson("ripe", ("global", "*"), "够格升门", [d], confidence=0.75, day=d)  # conf→0.85,count3
+        cand = {r["id"] for r in promotion_candidates(min_count=3, min_conf=0.7)}
+        if "ls_ripe" not in cand or "ls_wr_guard" in cand:
+            fails.append(f"promotion_candidates 错(应含 ripe、不含已带guard的): {cand}")
+        # 检索式反馈:open + 同域 + verdict 命中,with_feedback 注入;默认不注入(老路径不破)
+        record_feedback("scan-market", ("industry", "电子"), "reports/y.md", "买了电子高位票次日跌",
+                        "false_positive", "高位追涨", "电子高位不追", ts="2026-06-21T09:00:00")
+        rf = recent_feedback_for([("industry", "电子")])
+        if not rf or rf[0]["verdict"] != "false_positive":
+            fails.append(f"recent_feedback_for 未命中近期同域反馈: {rf}")
+        blk_fb = render_calibration_block([("industry", "电子")], with_feedback=True)
+        if "近期同域反馈" not in blk_fb or "电子高位不追" not in blk_fb:
+            fails.append("with_feedback=True 未注入近期反馈")
+        if "近期同域反馈" in render_calibration_block([("industry", "电子")]):
+            fails.append("默认(with_feedback=False)不应注入反馈(老路径)")
+        if "〖硬门 winner_rate>90〗" not in render_calibration_block([("global", "*")]):
+            fails.append("带 guard 的经验未在校准块标注硬门")
+
     if fails:
         print("SELFTEST ❌")
         for f in fails:
             print("  -", f)
         return 1
-    print("SELFTEST ✅  反馈/经验 upsert·强化/范围召回/校准块渲染·回退/建议·审计 全过")
+    print("SELFTEST ✅  反馈/经验 upsert·强化/范围召回/校准块渲染·回退/建议·审计 "
+          "+ E(guard 程序性硬门 / 升门候选 / 检索式反馈注入)全过")
     return 0
 
 

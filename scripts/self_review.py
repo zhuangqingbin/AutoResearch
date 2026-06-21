@@ -15,6 +15,8 @@ from collections import Counter
 
 _BUY = ("Overweight", "Buy")
 _BANNED = ("基本面良好", "前景广阔", "值得关注", "建议关注")
+_TIER = ("Buy", "Overweight", "Hold", "Underweight", "Sell")
+_RANK = {r: i for i, r in enumerate(_TIER)}  # 越小越多头
 
 
 def _num(v):
@@ -96,6 +98,15 @@ def review(ctx: dict) -> dict:
                 add(f"违背经验·{lsn.get('id', '?')}", "fail",
                     f"{f.get('code', '?')} 触发经验红线 {gd.get('field')}{gd.get('op')}{gd.get('value')}")
 
+    # 6) 评级超 rubric 评分卡建议(C·LLM-as-judge:防 gestalt 过度多报;有 偏离/override 说明则豁免)
+    for f in buys:
+        if f.get("override") or f.get("rubric_dev"):
+            continue
+        rs, rt = f.get("rubric_suggest"), f.get("rating")
+        if rs in _RANK and rt in _RANK and _RANK[rt] < _RANK[rs]:
+            add("评级超rubric", "warn",
+                f"{f.get('code', '?')} 评级 {rt} 激进于评分卡建议 {rs}(需 **偏离** 说明或下修)")
+
     n_fail = sum(1 for x in failures if x["severity"] == "fail")
     return {"ok": n_fail == 0, "n_fail": n_fail, "n_warn": len(failures) - n_fail,
             "failures": failures}
@@ -160,6 +171,16 @@ def _selftest() -> int:
     if r5["ok"] or not any("违背经验" in x["check"] for x in r5["failures"]):
         fails.append(f"结构化 guard 应触发 fail: {r5}")
 
+    # 评级超 rubric 建议 → warn(card 评分卡只支持 Hold 却给了 OW);偏离说明 → 豁免
+    r6 = review({"finalists": [{"code": "7", "rating": "Overweight", "composite": 50,
+                                "rubric_suggest": "Hold"}], "n_cards_expected": 1, "n_cards_present": 1})
+    if not any(x["check"] == "评级超rubric" for x in r6["failures"]) or r6["n_fail"]:
+        fails.append(f"评级超 rubric 应 warn(非 fail): {r6}")
+    r6b = review({"finalists": [{"code": "7", "rating": "Overweight", "rubric_suggest": "Hold",
+                                 "rubric_dev": True}], "n_cards_expected": 1, "n_cards_present": 1})
+    if any(x["check"] == "评级超rubric" for x in r6b["failures"]):
+        fails.append("偏离说明应豁免评级超rubric")
+
     # banner 渲染(r=干净结果 banner 空;r3=fail 含 🛑)
     if "🛑" not in render_banner(r3) or render_banner(r) != "":
         fails.append("banner 渲染错")
@@ -169,7 +190,8 @@ def _selftest() -> int:
         for f in fails:
             print("  -", f)
         return 1
-    print("SELFTEST ✅  覆盖率/经验红线(获利盘满·override)/评级矛盾/行业集中/空泛话术/结构化guard/banner 全过")
+    print("SELFTEST ✅  覆盖率/经验红线(获利盘满·override)/评级矛盾/行业集中/空泛话术/结构化guard"
+          "/评级超rubric(C)/banner 全过")
     return 0
 
 

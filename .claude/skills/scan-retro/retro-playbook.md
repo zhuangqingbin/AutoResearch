@@ -1,7 +1,6 @@
 # scan-retro playbook — 6 步复盘自迭代
 
-> 规格:`docs/specs/2026-06-20-closed-loop-learning-design.md` §3.2 §5。
-> 确定性归因:`scripts/retro.py`;知识库:`scripts/feedback_store.py`;重标定:`scripts/factor_lab.py`。
+> **本文 + `retro.py` / `feedback_store.py` / `factor_lab.py` 自足,无需 `docs/specs/`。** 确定性归因:`retro.py`;知识库:`feedback_store.py`;重标定:`factor_lab.py`。本文是 6 步操作手册。
 
 ## 漏斗复盘一图
 ```
@@ -20,7 +19,7 @@ import sys; sys.path.insert(0, "scripts")
 import retro
 for d in retro.pending_days():           # 有报告+有面板+fwd已实现+未done 的 scan 日
     attr = retro.attribute(d)            # 写 context/scan/<d>/retro/attribution.csv
-    retro.write_retro_input(d, attr)     # 写 retro_input.md(stage_stats + 漏判赢家因子行 + 对照)
+    retro.write_retro_input(d, attr)     # 写 retro_input.md(stage_stats 各段命中率 + 漏判赢家因子行 + 对照 + F·stage_eval 各阶段 agent edge + E2·promotion_candidates 经验升门候选)
     print("ready:", d)
 PY
 ```
@@ -71,7 +70,7 @@ PY
 ```
 
 **6. retro 报告 + 标记完成**
-写 `reports/scan/<YYYYMMDD>/retro_<HHMM>.md`,含:① 漏斗各段对赢家命中率(引 stage_stats)② 漏判赢家 top + **系统性病因**(第2步)③ 已自动落地的权重变化(引 changelog)④ 待批建议 ⑤ 新增/强化经验。然后:
+写 retro 报告到**被复盘扫描的运行目录**(`retro._report_dir_for(date)` 据 manifest.analysis_date 定位,与该次 `summary.md` 同级):`reports/scan/<YYYYMMDD>_<HHMM>/retro_<复盘HHMM>.md`,含:① 漏斗各段对赢家命中率(引 stage_stats)② 漏判赢家 top + **系统性病因**(第2步)③ 已自动落地的权重变化(引 changelog)④ 待批建议 ⑤ 新增/强化经验。然后:
 ```bash
 uv run --no-sync python -c "import sys;sys.path.insert(0,'scripts');import retro;retro.mark_done('2026-06-19')"
 ```
@@ -81,3 +80,6 @@ uv run --no-sync python -c "import sys;sys.path.insert(0,'scripts');import retro
 - 仅权重自动落地;门槛/因子/prompt **只出建议**。
 - 消息脉冲赢家不计入系统性结论与重标定。
 - 量大(多日积压)可用 **workflow** 并行各日(需用户显式开启);否则逐日 in-session。
+
+---
+> 设计沿革(可选背景,删除不影响运行):`docs/specs/2026-06-20-closed-loop-learning-design.md` §3.2(复盘归因闭环)/ §5(半自动边界)。
