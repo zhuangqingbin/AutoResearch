@@ -24,8 +24,8 @@ description: Use when you need a FAST, low-token decision card for a single tick
    uv run --no-sync python scripts/harvest_context.py <ticker> <date> --slim
    ```
    → `context/<ticker>_<date>_slim.md`(只含:技术快照/指标、市场资金、可交易性、个股新闻、(A股)股东户数、估值概况、利润表、盈利质量、偿付、卖方目标、财报/解禁日历)。
-2. **写决策卡**:读 slim context,按 `lite-playbook.md` 产出**单张决策卡**。**默认(独立跑)**:写到 `reports/analyze/<YYYYMMDD>_<HHMM>/<名称|TICKER>_lite.md`(目录名=运行时刻;**A股→中文名、其他市场→TICKER**,与 analyze-ticker 落点一致);**被 scan L4 研究阶段 调用时**:改写到 staging `context/scan/<date>/details/<ticker>.md`(由 `assemble_scan.py` 统一发布到 `reports/scan/<YYYYMMDD>_<HHMM>/details/`,目录名=运行时刻、数据日见 manifest.json)。**每个数字出自 context**;沿用 analyze-ticker 的数据坑/铁律(见其 `engine-playbook.md`)。
-3. **(可选)校验**:`assemble_scan.py` / `parse_rating` 直接读这张卡(含 `**Rating**` + 决策仪表盘 + `FINAL TRANSACTION PROPOSAL`)。
+2. **写决策卡**:读 slim context,按 `lite-playbook.md` 产出**单张决策卡**。**默认(独立跑)**:写到 `reports/analyze/<YYYYMMDD>_<HHMM>/<名称|TICKER>_lite.md`(目录名=运行时刻;**A股→中文名、其他市场→TICKER**,与 analyze-ticker 落点一致);**被 scan L4 研究阶段 调用时**:改写到 staging `context/scan/<date>/details/<ticker>.md`(由 `autoresearch.scan.assemble` 统一发布到 `reports/scan/<YYYYMMDD>_<HHMM>/details/`,目录名=运行时刻、数据日见 manifest.json)。**每个数字出自 context**;沿用 analyze-ticker 的数据坑/铁律(见其 `engine-playbook.md`)。
+3. **(可选)校验**:`autoresearch.scan.assemble` / `parse_rating` 直接读这张卡(含 `**Rating**` + 决策仪表盘 + `FINAL TRANSACTION PROPOSAL`)。
 
 ## 铁律(继承 analyze-ticker)
 - 每个价格/财务数字**出自 slim context**,不编。

@@ -23,8 +23,8 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 > **L2 从 AI keep/cut 改成确定性 GBDT 学习重排**(`factor_lab.train_gbdt`):用同一批因子组 + 原始因子学 T+1 横截面收益,把召回的 1000 重排成 200。**自保门**:模型 oos 未胜线性复合分 → 自动回落线性 top200(绝不部署比线性差的模型)。AI 判断从此**只在 L3/L4**。
 
 本 skill 是**编排器**,三类角色分工清楚:
-- **确定性层(零 LLM)** = L0/L1/L2(`screen_market.py` 一次产出,L2 调 `factor_lab.predict_scores`)+ L5(`assemble_scan.py`)。纯 pandas/GBDT,不编数。
-- **AI 判断层** = L3(holistic 单 agent 精排)+ L4(逐只决策卡),`scan_pipeline.py` 供紧凑表/取数/合并/级联名单;subagent 只回传紧凑结果。
+- **确定性层(零 LLM)** = L0/L1/L2(`screen_market.py` 一次产出,L2 调 `factor_lab.predict_scores`)+ L5(`autoresearch.scan.assemble`)。纯 pandas/GBDT,不编数。
+- **AI 判断层** = L3(holistic 单 agent 精排)+ L4(逐只决策卡),`autoresearch.scan.agents.l3_select` / `autoresearch.scan.agents.l4_card` 供紧凑表/取数/合并/级联名单;subagent 只回传紧凑结果。
 - **L4 委托 analyze-ticker-lite**,内部级联:**Tier-1 Sonnet 全判(并发)→ Tier-2 Opus 条件平反被压的高 conviction → Tier-3 Opus 对买点候选多空辩论**。
 
 ## 何时用 / 不用
@@ -48,14 +48,14 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
    ```
    → `L1_recall_top1000.csv`(复合分 + 9 子分〔含 volprice〕+ 原始因子)+ **`L2_gbdt_top200.csv`**(GBDT 重排 top200;`meta.l2_engine` 记 `gbdt` 或回落 `composite-linear`)+ `sectors.csv` + `meta.json`。默认源 tushare、含北交所、日期=今天。
 2. **过目(建议)**:读 `L2_gbdt_top200.csv` 头部 + `sectors.csv`,把粗排概览给用户看一眼。
-3. **L3 精排(holistic 单 agent,200→~30)**:`harvest_l3_evidence(date, codes)` 补真证据(龙虎榜/预告/快报)→ `l3_table_md(date)` 把 ~200 只压成**一张紧凑表**(因子 + 证据摘要)→ **一个 `Agent(model='sonnet')` 通看全表、比较着选 ~30**(每只出 `论点 + 红队风险 + 催化 + 确信度/脆弱度 + lane`)→ 落 `L3_judged_full.csv` → `merge_l3_finalists_v2(judged, target=30)`(趋势配额安全网)→ `finalists.csv`。**比较式 > 孤立逐只打分**(后者各看各的、易虚高)。
-4. **L4 研究(token 大头,级联)**:
-   - **Tier-1 · 全 ~30 只 · Sonnet · 并发**:`batch_finalists(size=3)` 切 ~10 批,**在一条消息里并发派 ~10 个 `Agent(model='sonnet')`**(非顺序逐批)跑 **analyze-ticker-lite**(`harvest_context.py <ticker> <date> --slim` → staging `details/<ticker>.md`)。**评级由 `rubric_rating` 评分卡派生,防 gestalt 过度多报**。
-   - **Tier-2 · Opus · 条件平反**:`pick_downgrade_reviews(ratings, finalists_df)` 把被 Sonnet 压到 ≤Hold 的高 conviction 趋势票派 `Agent(model='opus')` 单遍平反(**名单空则不触发、零 Opus**);平反到 Buy/OW 的并入买点候选。
-   - **Tier-3 · 买点候选 · Opus 多空辩论**:`pick_buy_candidates(ratings)`(Buy/OW)每只派**多头⚔空头各一 `Agent(model='opus')`**,主线当 **PM 用 3 透镜投票裁判**(定级 + 证伪)→ `verify.csv`(`code,verdict,bull,bear,trigger,consensus`)。
+3. **L3 精排(holistic 单 agent,200→~30)**:`l3_select.harvest_l3_evidence(date, codes)` 补真证据(龙虎榜/预告/快报)→ `l3_select.l3_table_md(date)` 把 ~200 只压成**一张紧凑表**(因子 + 证据摘要)→ **一个 `Agent(model='sonnet')` 通看全表、比较着选 ~30**(每只出 `论点 + 红队风险 + 催化 + 确信度/脆弱度 + lane`)→ 落 `L3_judged_full.csv` → `l3_select.merge_l3_finalists_v2(judged, target=30)`(趋势配额安全网)→ `finalists.csv`。函数在 `autoresearch.scan.agents.l3_select`。**比较式 > 孤立逐只打分**(后者各看各的、易虚高)。
+4. **L4 研究(token 大头,级联)**——选择器在 `autoresearch.scan.agents.l4_card`:
+   - **Tier-1 · 全 ~30 只 · Sonnet · 并发**:`l4_card.batch_finalists(size=3)` 切 ~10 批,**在一条消息里并发派 ~10 个 `Agent(model='sonnet')`**(非顺序逐批)跑 **analyze-ticker-lite**(`harvest_context.py <ticker> <date> --slim` → staging `details/<ticker>.md`)。**评级由 `l4_card.rubric_rating` 评分卡派生,防 gestalt 过度多报**。
+   - **Tier-2 · Opus · 条件平反**:`l4_card.pick_downgrade_reviews(ratings, finalists_df)` 把被 Sonnet 压到 ≤Hold 的高 conviction 趋势票派 `Agent(model='opus')` 单遍平反(**名单空则不触发、零 Opus**);平反到 Buy/OW 的并入买点候选。
+   - **Tier-3 · 买点候选 · Opus 多空辩论**:`l4_card.pick_buy_candidates(ratings)`(Buy/OW)每只派**多头⚔空头各一 `Agent(model='opus')`**,主线当 **PM 用 3 透镜投票裁判**(定级 + 证伪)→ `verify.csv`(`code,verdict,bull,bear,trigger,consensus`)。
 5. **L5 整合**:
    ```bash
-   uv run --no-sync python scripts/assemble_scan.py <date>
+   uv run --no-sync python -m autoresearch.scan.assemble <date>
    ```
    → **`reports/scan/<YYYYMMDD_HHMM>/`**(目录名 = **实际运行时刻**;数据日 analysis_date 记 `manifest.json`,解耦,retro 据此定位):`summary.md`(三段:漏斗数量 / 各阶段概览 / **buy-list〔逐阶段结论表 L1→L2→L3→L4 + Tier-3 徽标〕** + **各阶段 token 估算**)+ `details/〈股票名称〉.md`(决策卡按名称命名)+ `trace/`(每阶段全量数据 + `reasoning/` 留痕 + funnel)。**汇报**:漏斗 + buy-list(评级/目标 + 多空 verdict)+ 诚实局限。
 

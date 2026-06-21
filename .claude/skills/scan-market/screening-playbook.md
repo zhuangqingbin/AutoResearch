@@ -53,7 +53,7 @@ uv run --no-sync python scripts/screen_market.py <date> --source tushare
 ## L3 精排(holistic 单 agent:一次通看 ~200、比较着选 ~30)
 > **holistic > 逐只孤立打分**:一个 agent 通看整张 ~200 行表、横向比较着选,把旧 L2 双赛道的"信号共振/排陷阱/趋势 vs 回归"判断 + 精排一次做掉。孤立逐只打分各看各的、易虚高;比较式天然控总量、强制相对排序。
 > **多 persona 对抗(UZI 思维,可选增强)**:必要时对**入围候选**可再用多个 subagent 扮不同流派(价值/成长/游资/quant/风险官)各自引因子复核,**分歧大就把分歧本身写进结论、不取均值抹平**(「矛盾必须呈现」)。`uzi_lenses.trap_signals(L1因子行)` 做风险官的机械底(获利盘满/过热/派发命中即压 conviction);`uzi_lenses.volume_price_signals(L1因子行)` 做游资/技术派的机械底(底部放量吸筹/地量企稳/缩量回调=量价转多→`bias=吸筹` 抬 conviction,但**须基本面背书**;`bias=派发` 压 conviction)。
-> **发布前硬门**:`assemble_scan` 已接 `self_review` —— 买单若踩经验红线(winner_rate>88 无 override)/ 覆盖不足 / 评级-因子矛盾 / 行业过度集中 / 空泛话术,summary 顶部出 🛑 banner,**先修根因再信报告**。结构化经验(`lessons.jsonl` 带 `guard:{field,op,value}`)自动并入硬门。
+> **发布前硬门**:`autoresearch.scan.assemble` 已接 `self_review` —— 买单若踩经验红线(winner_rate>88 无 override)/ 覆盖不足 / 评级-因子矛盾 / 行业过度集中 / 空泛话术,summary 顶部出 🛑 banner,**先修根因再信报告**。结构化经验(`lessons.jsonl` 带 `guard:{field,op,value}`)自动并入硬门。
 **目标**:对 200 补 L1 没有的**真证据**,一次通看比较着选 ~30 并红队压测。慢因子在此兑现。
 
 **步骤**:
@@ -79,7 +79,7 @@ uv run --no-sync python scripts/harvest_context.py <ticker> <date> --slim   # sl
 # → 决策卡 staging 到 context/scan/<date>/details/<ticker>.md
 ```
 > **批内逐只独立判、卡片之间不交叉引用**;每张卡仍带完整尽调 rubric(trap 信号 / 估值纪律 / **抛物线顶→压级**),保住「L4 反向打脸 L3」。
-> **⚠️ Tier-1 评级由评分卡派生(`rubric_rating`),不是 gestalt——防过度多报**(实测 6-18 Sonnet 10 OW vs Opus 3 OW,撑大了 Tier-2 复核量)。每张卡:填 6 维评分卡(强+1/中0/弱−1)算**净分**,再过 **3 道 OW 硬门**;`scan_pipeline.rubric_rating(dims, gates)` 给**建议评级**,卡片 `**Rubric建议**` + `**Rating**` 必须等于它,否则显式写 `**偏离**:<硬理由>`(发布层 `self_review` 抓『评级超 rubric』)。**净分定档**(≥+4 Buy／≥+2 OW／−1~+1 Hold／≤−2 UW／≤−4 Sell);**任一 OW 门未过 → ≥OW 一律压 Hold**。三道门:
+> **⚠️ Tier-1 评级由评分卡派生(`rubric_rating`),不是 gestalt——防过度多报**(实测 6-18 Sonnet 10 OW vs Opus 3 OW,撑大了 Tier-2 复核量)。每张卡:填 6 维评分卡(强+1/中0/弱−1)算**净分**,再过 **3 道 OW 硬门**;`l4_card.rubric_rating(dims, gates)`(`autoresearch.scan.agents.l4_card`)给**建议评级**,卡片 `**Rubric建议**` + `**Rating**` 必须等于它,否则显式写 `**偏离**:<硬理由>`(发布层 `self_review` 抓『评级超 rubric』)。**净分定档**(≥+4 Buy／≥+2 OW／−1~+1 Hold／≤−2 UW／≤−4 Sell);**任一 OW 门未过 → ≥OW 一律压 Hold**。三道门:
 > ① **主力真在**:净占比为正 **且** 绝对净额(亿)同向为正——占比+但绝对净出、或微盘(<0.3亿)占比放大 = 占比假象(`trap_signals` 已机械标注『主力占比绝对额背离/微盘放大』);
 > ② **业绩真兑现**:预增先看基数——ROE 仍低(<8%)的『预增 X 倍』是近零基数幻觉(`低基数幻觉` flag);营收同比为负(丢单)即便净利增也不算兑现;
 > ③ **估值不透支**:fwd PE 远低于 TTM 时**核实预告是否全年口径**(『+200%』只覆盖单季 → 年化真实 PE 翻几倍,标称 14.7x 可能实为 46x);CFO/NI<0 的『盈利』先打折。
@@ -108,13 +108,13 @@ uv run --no-sync python scripts/harvest_context.py <ticker> <date> --slim   # sl
 
 **两研究员共用攻击面**(空头逐条找最强反面、多头逐条防守):① 估值(PE/PEG 分位、Bear 情景概率)② 解禁/质押(时点+比例)③ 主力背离(承接是否消失、`main_net_ratio` 转负)④ 业绩雷(预告/快报/应收·存货·商誉)⑤ **前视偏差**(证据严格 ≤ 分析日,无未来信息泄漏)⑥ 筹码派发(获利盘满 + 放量滞涨)。
 
-`assemble_scan` 据此:**① 折回评级**——`降级`→降一档(OW→Hold,踢出买单)、`否决`→至少 Hold(买单不挂系统自己都不信的评级);**② 归档** reasoning/verify/(多空两稿 + verify.csv);**③ summary** 买单行带徽标(✅维持/⚠️降级/🛑否决)+ 多空辩论明细块(多/空/触发/共识)。
+`autoresearch.scan.assemble` 据此:**① 折回评级**——`降级`→降一档(OW→Hold,踢出买单)、`否决`→至少 Hold(买单不挂系统自己都不信的评级);**② 归档** reasoning/verify/(多空两稿 + verify.csv);**③ summary** 买单行带徽标(✅维持/⚠️降级/🛑否决)+ 多空辩论明细块(多/空/触发/共识)。
 
 > 与既有 `self_review` 机械硬门**叠加且正交**:self_review 是确定性红线(winner>88 无 override / 覆盖 / 评级-因子矛盾 / **评级超 rubric** / 行业集中 / 空泛),本闸是 LLM 临场多空对抗找**新** bear/bull 证据;summary 同时呈现。
 
-## L5 整合(`assemble_scan.py`,确定性)
+## L5 整合(`autoresearch.scan.assemble`,确定性)
 ```bash
-uv run --no-sync python scripts/assemble_scan.py <date>
+uv run --no-sync python -m autoresearch.scan.assemble <date>
 ```
 读 `meta.json` + `L1_recall_top1000.csv` + `L1_scored_full.csv` + `L2_gbdt_top200.csv` + `finalists.csv` + `details/<ticker>.md`(用 `parse_rating` 提五档 + 仪表盘),发布到 **`reports/scan/<YYYYMMDD_HHMM>/`**(目录名 = **实际运行时刻**;数据日 analysis_date 落 `manifest.json`,与目录名解耦,`retro._report_dir_for` 据此定位):
 - `summary.md` 三段:**①漏斗数量(带引擎列)②各阶段卡点+股票概览 ③投资建议**——buy-list 是**逐阶段结论宽表**(每只 `名称/板块 | L1召回〔#名次·复合分〕| L2粗排〔#重排名次·gbdt〕| L3论点·确信 | 评级 | 目标 | 置信度 | Tier-3 徽标 ✅维持/⚠️降级/🛑否决`,**已删 代码/R:R/提案 列**)+ 组合视角 + 局限。

@@ -59,7 +59,7 @@ PY
 
 ## 注回怎么生效(无需手动)
 - scan-market 构造 L2/L3 subagent prompt 前,会调 `fs.render_calibration_block(本批申万行业 scopes)` —— 命中经验**叠加在 IC 基线之上**;store 空时逐字回退基线(老路径不破)。
-- `assemble_scan` 报告骨架对覆盖标的浮出"📌 经验 / 未决反馈"。
+- `autoresearch.scan.assemble` 报告骨架对覆盖标的浮出"📌 经验 / 未决反馈"。
 - 验证某经验会被用上:`uv run --no-sync python -c "import autoresearch.learning.feedback_store as fs;print(fs.render_calibration_block([('global','*')]))"`。
 
 ## 经验卫生

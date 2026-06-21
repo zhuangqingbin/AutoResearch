@@ -8,9 +8,9 @@
 **UZI 增量块(A股 slim 已含,可引用)**:`A股原生财报(UZI·tushare)`(5y ROE/毛利/负债率/分红)、`融资余额趋势`、`杀猪盘/派发风险(复用L1)`、**`量价形态/吸筹·多日资金流(复用L1)`**——后两块 slim context 已**直接渲染**(被 scan L4 调用时复用 L1 因子行,零取数)。卡片**风险段优先看 trap 信号**(获利盘满/放量滞涨/过热/浮盈了结)命中即压评级;**量价形态块**:`bias=吸筹`(底部放量/地量企稳/缩量回调/量增价涨)进多头论点(**底部放量须基本面背书,>70% 无支撑会败**)、`bias=派发`(高位放量净出)进风险段压级;**多日 `cmf_20`/`obv_mom_20`**(>0=资金净进侧,IC 实证强于单日量比)与快照位置共振更可信。席位识别/DCF 只在**全量 analyze-ticker**。
 
 ## 输出:单张决策卡(两种落点)
-独立跑 → `reports/analyze/<YYYYMMDD>_<HHMM>/<名称|TICKER>_lite.md`(目录名=运行时刻;**A股→中文名、其他市场→TICKER**,与 analyze-ticker 落点一致);被 scan L4 研究阶段 调用 → staging `context/scan/<date>/details/<ticker>.md`(`assemble_scan.py` 发布到 `reports/scan/<YYYYMMDD>_<HHMM>/details/`)。
+独立跑 → `reports/analyze/<YYYYMMDD>_<HHMM>/<名称|TICKER>_lite.md`(目录名=运行时刻;**A股→中文名、其他市场→TICKER**,与 analyze-ticker 落点一致);被 scan L4 研究阶段 调用 → staging `context/scan/<date>/details/<ticker>.md`(`autoresearch.scan.assemble` 发布到 `reports/scan/<YYYYMMDD>_<HHMM>/details/`)。
 
-写成下面这一张卡(`assemble_scan.py` + `parse_rating` 直接读它):
+写成下面这一张卡(`autoresearch.scan.assemble` + `parse_rating` 直接读它):
 
 ```
 # 决策卡 — <代码> <名称> @ <date>
@@ -57,9 +57,9 @@ _Claude 推理产出,非全量报告;仅供研究,非投资建议。要完整证
 - **三档情景 / R:R / 预期差是卡的核心**,务必落实数字(出自 slim context 的估值/财务)。
 - **偿付红旗、股东户数、可交易性保留压缩版一行**(用户看重的爆雷/筹码/执行,不能丢,但只一行)。
 - 卡内每个数字可回溯到 slim context;slim 没有的(宏观/同业/做空)不引、不编。
-- 评级用项目五档(Buy/Overweight/Hold/Underweight/Sell),`**Rating**` 行 + `FINAL TRANSACTION PROPOSAL` 行必须在,否则 `parse_rating`/`assemble_scan` 读不到。
+- 评级用项目五档(Buy/Overweight/Hold/Underweight/Sell),`**Rating**` 行 + `FINAL TRANSACTION PROPOSAL` 行必须在,否则 `parse_rating`/`autoresearch.scan.assemble` 读不到。
 - **评级由评分卡派生,非 gestalt**:先填 6 维评分卡算净分 + 过 3 道 OW 门 → `**Rubric建议**` 行,`**Rating**` 必须等于它(否则写 `**偏离**`)。这条直接压制『拍脑袋给 OW』(实测 Sonnet 比 Opus 多报 3 倍 OW)——别让乐观情绪绕过评分卡。
 - **新闻必扫(slim 已取近 14 天个股新闻,免费)**:写催化前**先读一遍 slim 的新闻块**,把具体催化/风险事件落到**日期**(预约披露/中标/定增/诉讼/减持/解禁),不靠记忆、不编;事件严格 ≤ 分析日(无未来泄漏);无事件就明说。新闻是 slim 里**唯一的前瞻事件源**,别浪费。
 
 ## 与 scan-market 的衔接
-scan-market L4 研究阶段 对 `finalists.csv` 每只调本 skill;产物写到 staging `context/scan/<date>/details/<ticker>.md`,由 `assemble_scan.py` 发布到 `reports/scan/<YYYYMMDD_HHMM>/details/〈名称〉.md`(发布层按**股票名称**命名)并汇成 buy-list。建议在 subagent 里逐只跑(每只独立 context,只回传评级/目标/R:R),避免主线上下文堆叠。
+scan-market L4 研究阶段 对 `finalists.csv` 每只调本 skill;产物写到 staging `context/scan/<date>/details/<ticker>.md`,由 `autoresearch.scan.assemble` 发布到 `reports/scan/<YYYYMMDD_HHMM>/details/〈名称〉.md`(发布层按**股票名称**命名)并汇成 buy-list。建议在 subagent 里逐只跑(每只独立 context,只回传评级/目标/R:R),避免主线上下文堆叠。

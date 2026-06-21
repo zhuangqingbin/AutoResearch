@@ -12,11 +12,10 @@ L4 决策卡),用项目 parse_rating 提五档评级 + 仪表盘,产出三段 su
 发布到 reports/scan/<运行日YYYYMMDD>_<HHMM>/(summary.md + details/〈名称〉.md + trace/ 溯源 + manifest.json
 〔记数据日 analysis_date,供 retro 按数据日定位本报告——目录名是运行时刻,与数据日解耦〕)。
 
-纯确定性(stdlib + parse_rating),零 LLM。
+纯确定性(stdlib + parse_rating),零 LLM。selftest 已迁 pytest(tests/scan/test_assemble.py)。
 
 用法:
-  uv run --no-sync python scripts/assemble_scan.py 2026-06-20
-  uv run --no-sync python scripts/assemble_scan.py --selftest
+  uv run --no-sync python -m autoresearch.scan.assemble 2026-06-20
 """
 from __future__ import annotations
 
@@ -25,7 +24,6 @@ import csv
 import json
 import re
 import shutil
-import tempfile
 from collections import Counter
 from datetime import date, datetime
 from pathlib import Path
@@ -539,145 +537,13 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
     return summary_path
 
 
-# ───────────────────────── 离线自测(无网络) ─────────────────────────
-
-
-def _selftest() -> int:
-    fails: list[str] = []
-    with tempfile.TemporaryDirectory() as td:
-        root = Path(td)
-        d = "2026-06-20"
-        scan = root / "context/scan" / d
-        (scan / "details").mkdir(parents=True)
-        (scan / "meta.json").write_text(json.dumps({
-            "universe": 5483, "recall_n": 1000, "l2_n": 200, "l2_engine": "gbdt", "source": "tushare",
-            "weights_source": "factor_lab.calibrate"}), encoding="utf-8")
-        # L1 召回(概览用)
-        with (scan / "L1_recall_top1000.csv").open("w", encoding="utf-8", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=["code", "name", "industry", "composite"])
-            w.writeheader()
-            for i in range(20):
-                w.writerow({"code": f"{300000 + i:06d}", "name": f"光{i}", "industry": "电子",
-                            "composite": 90 - i})
-        # L1 全量打分(_l1_cell 查 rank/composite)+ L2 粗排(GBDT 学习重排;_l2_cell 查 l2_rank/gbdt)
-        l1l2 = [("300476", 5, 80, 2, 0.54), ("600519", 50, 60, 40, 0.49),
-                ("002384", 8, 77, 6, 0.52), ("301117", 3, 82, 1, 0.55)]
-        with (scan / "L1_scored_full.csv").open("w", encoding="utf-8", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=["rank", "recalled", "code", "name", "industry", "composite",
-                                              "winner_rate", "pct_60d", "rsi6"])
-            w.writeheader()
-            for code, rk, comp, _lr, _g in l1l2:
-                w.writerow({"rank": rk, "recalled": True, "code": code, "name": code, "industry": "电子",
-                            "composite": comp, "winner_rate": 60, "pct_60d": 80, "rsi6": 65})
-        with (scan / "L2_gbdt_top200.csv").open("w", encoding="utf-8", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=["l2_rank", "gbdt_score", "code", "name", "industry", "composite"])
-            w.writeheader()
-            for code, _rk, comp, lr, g in l1l2:
-                w.writerow({"l2_rank": lr, "gbdt_score": g, "code": code, "name": code,
-                            "industry": "电子", "composite": comp})
-        # L3 精排 finalists(带 thesis/risk/catalyst)
-        with (scan / "finalists.csv").open("w", encoding="utf-8", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=["ticker", "code", "name", "sector", "lenses", "conviction",
-                                              "triage_lean", "triage_reason", "thesis", "risk", "catalyst"])
-            w.writeheader()
-            w.writerow({"ticker": "300476", "code": "300476", "name": "甲", "sector": "光模块",
-                        "lenses": "动量", "conviction": "203", "triage_lean": "看多", "triage_reason": "加速",
-                        "thesis": "AI 光模块需求超预期", "risk": "估值高", "catalyst": "Q2 财报"})
-            w.writerow({"ticker": "600519", "code": "600519", "name": "乙", "sector": "白酒",
-                        "lenses": "价值", "conviction": "125", "triage_lean": "中性", "triage_reason": "低估",
-                        "thesis": "现金牛低估", "risk": "需求弱", "catalyst": "中报"})
-            w.writerow({"ticker": "002384", "code": "002384", "name": "丙", "sector": "光模块",
-                        "lenses": "动量", "conviction": "118", "triage_lean": "回避", "triage_reason": "过热",
-                        "thesis": "x", "risk": "y", "catalyst": "z"})
-            w.writerow({"ticker": "301117", "code": "301117", "name": "丁", "sector": "光模块",
-                        "lenses": "动量", "conviction": "150", "triage_lean": "看多", "triage_reason": "稳健",
-                        "thesis": "维持OW对照票", "risk": "无硬伤", "catalyst": "无"})
-        # L4 决策卡(002384 故意缺卡 → 测降级;301117 OW+维持 对照不折回)
-        for tk, rating, prop, rub in [("300476", "Overweight", "BUY", "Overweight"),
-                                      ("600519", "Hold", "HOLD", "Hold"),
-                                      ("301117", "Overweight", "BUY", "Overweight")]:
-            (scan / "details" / f"{tk}.md").write_text(
-                "# 决策卡\n## 决策仪表盘\n| 评级 | 现价 | EV目标 | R:R | 置信度 |\n|---|---|---|---|---|\n"
-                f"| **{rating}** | 100元 | 130元(+30%) | 2.1:1 | 中 |\n\n"
-                f"**Rubric建议**: {rub}(净分 +2,OW门 3/3)\n\n**Rating**: {rating}\n\n"
-                f"FINAL TRANSACTION PROPOSAL: **{prop}**\n", encoding="utf-8")
-        # 中间推理件(应归档到 trace/reasoning/{l3,l4};L2 已确定性化,无 LLM 留痕)
-        for fn in ("_l3_judged_0.csv", "_l4_prompt.md", "_l4_batch_0.md"):
-            (scan / fn).write_text("x", encoding="utf-8")
-        # Tier-3 多空辩论:买单 300476 降级(带 bull+consensus)+ 多空中间稿(→ reasoning/verify/)
-        (scan / "verify.csv").write_text(
-            "code,verdict,bull,bear,trigger,consensus\n"
-            '300476,降级,"AI光模块需求真切","估值已透支PE160","跌破120元","降级2/3(估值/资金)"\n'
-            '301117,维持,"龙头卡位稀缺","无硬伤","继续持有","维持3/3"\n', encoding="utf-8")
-        (scan / "_v_bull_300476.md").write_text("多头研究员稿", encoding="utf-8")
-        (scan / "_v_300476.md").write_text("空头研究员稿", encoding="utf-8")
-        # 运行日(run_date)= 6-21 ≠ 数据日(d)= 6-20:验证目录名取运行时刻、数据日落 manifest(解耦)
-        summary_path = run(d, scan_dir=scan, out_root=root / "reports/scan", hhmm="0930", run_date="2026-06-21")
-        md = summary_path.read_text(encoding="utf-8")
-        out_base = root / "reports/scan/20260621_0930"     # 目录名 = 运行日_HHMM(非数据日)
-        if summary_path.parent != out_base:
-            fails.append(f"发布目录应取运行日(20260621_0930),实得 {summary_path.parent.name}")
-        mpath = out_base / "manifest.json"
-        if not mpath.exists() or json.loads(mpath.read_text(encoding="utf-8")).get("analysis_date") != d:
-            fails.append("manifest.json 缺 / analysis_date 应为数据日 d")
-        pdir = out_base / "trace"
-        for fn in ("L1_recall_top1000.csv", "L2_gbdt_top200.csv", "L3_fine_finalists.csv", "funnel.md",
-                   "L0_universe_meta.json"):
-            if not (pdir / fn).exists():
-                fails.append(f"trace 缺 {fn}")
-        if not (out_base / "summary.md").exists():
-            fails.append("summary.md 未发布到 <运行日_HHMM>/")
-        if not (out_base / "details" / "甲.md").exists():        # 决策卡按名称发布(300476→甲)
-            fails.append("决策卡未按名称发布(details/甲.md)")
-        if (out_base / "details" / "300476.md").exists():
-            fails.append("发布层不应再用 ticker.md")
-        rdir = pdir / "reasoning"
-        for stage, fn in [("l3", "_l3_judged_0.csv"), ("l4", "_l4_prompt.md"), ("l4", "_l4_batch_0.md"),
-                          ("verify", "verify.csv"), ("verify", "_v_300476.md")]:
-            if not (rdir / stage / fn).exists():
-                fails.append(f"reasoning 归档缺 {stage}/{fn}")
-
-    for must in ["## 1. 漏斗", "## 2. 各阶段", "## 3. 投资建议", "5483", "1000", "选集", "召回", "粗排",
-                 "精排", "Overweight", "+30%", "⚠️卡片缺失", "AI 光模块需求超预期", "组合视角",
-                 "L1召回", "L2粗排", "L3论点·确信", "#5·80", "·g0.54",       # 逐阶段结论列
-                 "## 各阶段 token 消耗", "确定性·GBDT",                       # token 估算段
-                 "🛡️红队", "🛡️ Tier-3 买单多空辩论", "⚠️降级", "✅维持", "估值已透支PE160",
-                 "AI光模块需求真切", "降级2/3"]:
-        if must not in md:
-            fails.append(f"summary 缺 '{must}'")
-    # buy-list 排序(评级→确信度):丁(OW维持)<甲(Hold降级,conv203)<乙(Hold,conv125)<丙(缺卡)
-    s3 = md.find("## 3. 投资建议")
-    ords = [md.find(n, s3) for n in ("丁", "甲", "乙", "丙")]
-    if not (ords[0] < ords[1] < ords[2] < ords[3]):
-        fails.append(f"buy-list 排序错(应 丁<甲<乙<丙): {ords}")
-    # Tier-3 折回评级:300476(甲,降级)OW→Hold 踢出买单;301117(丁,维持)留 OW(代码列已删,按名称定位行)
-    row476 = next((ln for ln in md.splitlines() if "甲" in ln and ln.lstrip().startswith("|")), "")
-    if "Overweight" in row476 or "Hold" not in row476:
-        fails.append(f"降级未折回(甲/300476 应 OW→Hold): {row476}")
-    row117 = next((ln for ln in md.splitlines() if "丁" in ln and ln.lstrip().startswith("|")), "")
-    if "Overweight" not in row117:
-        fails.append(f"维持不应改评级(丁/301117 应留 OW): {row117}")
-
-    if fails:
-        print("SELFTEST ❌")
-        for f in fails:
-            print("  -", f)
-        return 1
-    print("SELFTEST ✅  L5 三段(漏斗/各阶段概览/投资建议)+ trace/ 发布(目录名=运行日 + manifest 数据日)"
-          "+ reasoning 留痕(含 verify)+ Tier-3 多空辩论徽标(多/空/共识)+ C·rubric 解析 + 缺卡降级 + 排序 全过")
-    return 0
-
-
 # ───────────────────────── CLI ─────────────────────────
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="scan-market L5 整合(漏斗 + 三段 summary + trace/)")
     ap.add_argument("date", nargs="?", help="分析日 YYYY-MM-DD(缺省=今天)")
-    ap.add_argument("--selftest", action="store_true", help="离线验证解析/排序逻辑(无网络)")
     args = ap.parse_args()
-    if args.selftest:
-        return _selftest()
     run(args.date or date.today().isoformat())
     return 0
 
