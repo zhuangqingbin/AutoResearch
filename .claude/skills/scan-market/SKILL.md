@@ -14,16 +14,16 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 |---|---|---|---|---|---|
 | **L0** | 选集 | 确定性 | 全市场候选池 + 硬门(剔 ST/退/停牌/次新 + 市值地板) | 全A→~5,500 | 0 |
 | **L1** | 召回 | 确定性 · 多路策略召回 | 8 路 channel(动量/反转/成长/价值/主力/北向/吸筹 + IC 校准复合分)各取 top-Kᶜ → quota union(floor 保底多样性)+ provenance | →1,000 | 0 |
-| **L2** | 粗排 | **确定性 · GBDT 学习重排** | LightGBM 重排(T+1 IC 训练;oos 未胜线性则回落复合分) | →200 | **0** |
+| **L2** | 粗排 | **确定性 · champion 学习重排** | zoo champion 重排(全 20 模型 × 3 horizon 训练、胜线性才晋升;默认 swing `l2_fwd5`,缺/未胜线性→回落 GBDT/复合分) | →200 | **0** |
 | **L3** | 精排 | **Opus-high · holistic 单 agent** | 通看 ~200 比较选 + 增量真证据 + **公告情感** + **channel 共振** + 论点/红队/sentiment | →~30 | 中 |
 | **L4** | 研究 | Tier-1 Sonnet 全判(~10 agent 并发) | 决策卡(评级由 `rubric_rating` 评分卡派生) | ~30 卡 | 大头 |
 | **Tier-2/3** | 对抗验证 | Opus 条件平反 + 多空辩论 | 高 conv 假阴平反 + 买点候选定级/证伪 | ~小 | 小 |
 | **L5** | 整合 | 确定性 | summary(逐阶段表 + token 估算) + buy-list + 漏斗溯源 | 1 份 | 0 |
 
-> **L2 从 AI keep/cut 改成确定性 GBDT 学习重排**(`factor_lab.train_gbdt`):用同一批因子组 + 原始因子学 T+1 横截面收益,把召回的 1000 重排成 200。**自保门**:模型 oos 未胜线性复合分 → 自动回落线性 top200(绝不部署比线性差的模型)。AI 判断从此**只在 L3/L4**。
+> **L2 从 AI keep/cut 改成确定性 champion 学习重排**(`autoresearch.models.zoo`):全 zoo(core/seq/graph 共 20 模型)× 3 horizon(`fwd_1_oo/fwd_5_oc/fwd_10_oc`)统一训练,每 horizon 选 OOS rank-IC 最高且**严格胜线性**者晋升 champion;L2 默认加载 swing 的 `l2_fwd5`(与 L3/L4 持有期对齐)。**自保门**:无人胜线性 → 不晋升,L2 回落 GBDT/线性 top200(绝不部署比线性差的模型)。AI 判断从此**只在 L3/L4**。
 
 本 skill 是**编排器**,三类角色分工清楚:
-- **确定性层(零 LLM)** = L0/L1/L2(`screen_market.py` 一次产出,L2 调 `factor_lab.predict_scores`)+ L5(`autoresearch.scan.assemble`)。纯 pandas/GBDT,不编数。
+- **确定性层(零 LLM)** = L0/L1/L2(`autoresearch.scan.universe` 一次产出,L2 调 `champion_scores` → champion→GBDT→composite 级联回落)+ L5(`autoresearch.scan.assemble`)。纯 pandas/树/torch,不编数。
 - **AI 判断层** = L3(holistic 单 agent 精排)+ L4(逐只决策卡),`autoresearch.scan.agents.l3_select` / `autoresearch.scan.agents.l4_card` 供紧凑表/取数/合并/级联名单;subagent 只回传紧凑结果。
 - **L4 委托 analyze-ticker-lite**,内部级联:**Tier-1 Sonnet 全判(并发)→ Tier-2 Opus 条件平反被压的高 conviction → Tier-3 Opus 对买点候选多空辩论**。
 
@@ -34,7 +34,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 
 ## 前置
 - 在**项目根目录**运行;akshare/tushare/lightgbm 已装(venv-only,**务必 `uv run --no-sync`**);`.env` 有 `TUSHARE_TOKEN`(默认源)+ `FRED_API_KEY`(L4 取数)。默认中文。
-- **召回权重 + L2 模型**来自 `context/factor_lab/`:`weights.json`(`factor_lab calibrate` 产,L1 复合分 + L2 线性回落用)+ `gbdt_model.pkl`(`factor_lab train` 产,L2 重排引擎;缺失/未胜线性→自动回落线性)。**校准/训练方法 + IC 实证基线见 `screening-playbook.md` 附录**。
+- **召回权重 + L2 champion**:`weights.json`(`factor_lab calibrate` 产,L1 复合分 + L2 回落基线)+ **lake 历史**(`python -m autoresearch.data.harvest <start> <end>` 落 `context/lake/`)→ **zoo 训练**(`python -m autoresearch.models.zoo train --dates-from … --dates-to …` → `context/factor_lab/zoo_leaderboard.csv` + champion 落 `models/store/l2_<horizon>/`;缺/未胜线性→自动回落)。**方法 + IC 实证基线见 `screening-playbook.md` 附录**。
 - **闭环(开跑前补跑复盘)**:先 `uv run --no-sync python -m autoresearch.learning.retro pending`;若列出未复盘日 → 先用 **scan-retro** 把它们补上(权重/经验更到最新)再开始今天的扫描。
   - retro 的 `retro_input.md` 自带 **各阶段 agent edge**(`stage_eval`:L2 重排/L3/L4/Tier-3 各段对已实现收益的 lift/IC)+ **经验升门候选**(`feedback_store.promotion_candidates()`)。
   - L3 的『因子方向经验校准』运行时由 `feedback_store.render_calibration_block(本批申万行业, with_feedback=True)` 注入(近期反馈 + 自学习经验 + IC 基线,三层叠加);用户对报告的反馈用 **feedback** skill 记。
@@ -46,7 +46,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
    ```bash
    uv run --no-sync python -m autoresearch.scan.universe [YYYY-MM-DD] [--source tushare] [--recall-n 1000] [--l2-n 200] [--cap-floor 30] [--exclude-bj] [--recall-mode multi|composite] [--recall-channels a,b,c]
    ```
-   → `L1_recall_top1000.csv`(复合分 + 9 子分〔含 volprice〕+ 原始因子 + **多路 provenance `recall_channels`/`n_channels`**)+ **`L1_channels.csv`**(各路召回名单,复盘/学习用)+ **`L2_gbdt_top200.csv`**(GBDT 重排 top200;`meta.l2_engine` 记 `gbdt` 或回落 `composite-linear`)+ `sectors.csv` + `meta.json`。默认 `--recall-mode multi`(8 路策略召回);`composite` 为对拍/回退口径。默认源 tushare、含北交所、日期=今天。
+   → `L1_recall_top1000.csv`(复合分 + 9 子分〔含 volprice〕+ 原始因子 + **多路 provenance `recall_channels`/`n_channels`**)+ **`L1_channels.csv`**(各路召回名单,复盘/学习用)+ **`L2_gbdt_top200.csv`**(champion 重排 top200;`meta.l2_engine` 记 `champion:l2_fwd5` / `gbdt` / 回落 `composite-linear`)+ `sectors.csv` + `meta.json`。默认 `--recall-mode multi`(8 路策略召回);`composite` 为对拍/回退口径。默认源 tushare、含北交所、日期=今天。
 2. **过目(建议)**:读 `L2_gbdt_top200.csv` 头部 + `sectors.csv`,把粗排概览给用户看一眼。
 3. **L3 精排(holistic 单 agent,200→~30)**:`harvest_l3_evidence`(龙虎榜/预告/快报)+ **`harvest_l3_news`(近 ~10 日 anns_d 公告情感,入湖复用)** 补真证据 → `l3_table_md(date)` 把 ~200 只压成**一张紧凑表**(因子 + 证据 + **公告情感 + 召回 provenance**)→ **一个 `Agent(model='opus')` + high reasoning 通看全表、比较着选 ~30**(5 维 rubric:channel 共振/资金/基本面/情感/脆弱;每只出 `论点 + 红队 + 催化 + 确信/脆弱 + lane + sentiment`)→ 落 `L3_judged_full.csv` → `merge_l3_finalists_v2(judged, target=30)`(趋势配额安全网)→ `finalists.csv`。函数在 `autoresearch.scan.agents.l3_select` / `l3_news`。**比较式 > 孤立逐只打分**(后者各看各的、易虚高)。
 4. **L4 研究(token 大头,级联)**——选择器在 `autoresearch.scan.agents.l4_card`:

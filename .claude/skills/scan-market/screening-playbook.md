@@ -39,15 +39,15 @@ uv run --no-sync python -m autoresearch.scan.universe <date> --source tushare
 - **价值(低 PE)在 T+1 反而偏弱**(成长/动量续涨);价值用于"不追高",非"次日动量"。
 - **优先留**:涨幅适中(未过热)+ 主力真实进场(main_net_ratio 正)+ 筹码有空间(获利盘不满)+ 基本面干净;纯动量抛物线顶,L4 大概率 Underweight,别堆到精排顶端。
 
-## L2 粗排(GBDT 学习重排,确定性零 LLM,1000→200)
-> **从 AI keep/cut 改成确定性学习重排**(对症旧 L2 的 token 成本 + 主观漂移):用 GBDT 学每日横截面 T+1 收益,把召回的 1000 重排成 200。"cheap 线性召回 → learned 重排"正是搜索排序的级联,**不和 L1 冗余**。**已在 `screen_market.run()` 内自动产出**(见上节命令),无需单独 subagent 步;AI 判断从此**只在 L3/L4**。
+## L2 粗排(champion 学习重排,确定性零 LLM,1000→200)
+> **从 AI keep/cut 改成确定性学习重排**(对症旧 L2 的 token 成本 + 主观漂移):全 zoo 模型学每日横截面收益,把召回的 1000 重排成 200。"cheap 多路召回 → learned champion 重排"正是搜索排序的级联,**不和 L1 冗余**。**已在 `autoresearch.scan.universe.run()` 内自动产出**(见上节命令),无需单独 subagent 步;AI 判断从此**只在 L3/L4**。
 
-**引擎**(`factor_lab.py` + `screen_market.py`,全确定性):
-- **模型**:LightGBM 横截面排序(`factor_lab.train_gbdt`)。**特征** = 8 因子组分位(去 growth,factor_lab 帧无季度基本面)+ 20 个双侧都有的原始因子 + **线性 composite 锚定特征**(GBDT 至少能复刻线性,再叠非线性 → 不该弱于线性)。**标签** = 每日横截面 rank-norm 的 `fwd_1_oo`(T+1 开到开,可交易、无前视;Qlib CSRankNorm 思路)。
-- **自保门(铁律:不自欺)**:`train_gbdt` 时序留出末尾成型日做 oos,比 GBDT vs **线性复合分**的 rank-IC;**oos 未胜线性 → 模型 meta 标 `beats_linear=False`,`predict_scores` 默认回落 `None` → L2 用 composite top200**。绝不部署比线性差的模型。`meta.l2_engine` 记 `gbdt` 或 `composite-linear(回落)`。
-- **薄面板常态**:成型日少(~1 季度)时 GBDT 多半只复刻线性(composite 锚定特征 gain 占绝对大头)、加不出稳健非线性 → 门关、用线性。要它真启用:`factor_lab harvest` 更多成型日(更广 regime)再 `train`,**一旦 oos 胜线性即自动启用,无需改代码**。
+**引擎**(`autoresearch.models.zoo` + `autoresearch.data.handler`,全确定性):
+- **模型**:全 zoo **20 个排序模型**(core 横截面 7:linear/lgbm/xgb/catboost/double_ensemble/mlp/tabnet;seq 滚动窗 10:lstm/gru/alstm/tcn/transformer/localformer/tft/tra/sfm/krnn;graph 行业邻接 3:gats/hist/igmtf),统一 `Trainer` 同口径训练。**core 特征** = 45 列(8 因子组分位 + 双侧原始因子〔含 UZI 融资/大宗/龙虎榜机构〕+ 线性 composite 锚定);**标签** = 每日横截面 rank-norm 的 `fwd_1_oo` / `fwd_5_oc` / `fwd_10_oc` 三 horizon(可交易、无前视;Qlib CSRankNorm 思路)。
+- **champion 门(铁律:不自欺)**:每 horizon 时序留出末尾成型日做 oos rank-IC,**最高且严格 > 线性基线**者晋升 `models/store/l2_<horizon>/`;**无人胜线性 → 不晋升**,L2 回落 GBDT/线性(绝不部署比线性差的模型)。L2 默认加载 swing 的 `l2_fwd5`(与 L3/L4 持有期对齐),`ScanConfig.l2_model` 可改。`meta.l2_engine` 记 `champion:l2_fwd5(<kind>)` / `gbdt` / `composite-linear(回落)`。
+- **样本是胜线性的最大杠杆**:成型日少(~1 季度)时各模型多半只复刻线性(composite 锚定 gain 占大头)、加不出稳健非线性 → 门关、用线性。要真启用:`python -m autoresearch.data.harvest <start> <end>` 落更多历史入湖(更广 regime)再 `python -m autoresearch.models.zoo train`,**一旦 oos 胜线性即自动晋升,无需改代码**;`zoo_leaderboard.csv` 诚实列各模型 × horizon 的 IC vs 线性。
 
-**产物**:`L2_gbdt_top200.csv`(`l2_rank` + `gbdt_score`〔回落时空〕+ 召回因子列);`meta.l2_engine` 标引擎。**无 LLM 中间件、无 reasoning 留痕**(确定性层)。
+**产物**:`L2_gbdt_top200.csv`(`l2_rank` + `gbdt_score`〔champion/GBDT 分,回落时为 composite 序〕+ 召回因子列);`meta.l2_engine` 标引擎(champion/gbdt/composite-linear)。**无 LLM 中间件、无 reasoning 留痕**(确定性层)。
 
 > **L2 已无 subagent / prompt 模板**——keep/cut 的主观判断上移到 L3 holistic 精排(那里一个 agent 通看 ~200 比较着选,把旧 L2 双赛道的"信号共振 / 排陷阱 / 趋势 vs 回归"判断一次做掉)。旧『因子方向经验校准』仍在 L3 注入(见上)。
 
