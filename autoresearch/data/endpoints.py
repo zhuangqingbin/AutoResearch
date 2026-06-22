@@ -41,6 +41,7 @@ ENDPOINTS: dict[str, dict] = {
     # ── ① tushare 公告类(按公告日切;过去公告永不变) ──
     "forecast": {"key": "date", "settle": "eod", "source": "tushare"},   # 业绩预告(ann_date)
     "express": {"key": "date", "settle": "eod", "source": "tushare"},    # 业绩快报(ann_date)
+    "anns_d": {"key": "date", "settle": "eod", "source": "tushare"},     # 信息披露公告(ann_date;标题情感)
 
     # ── ① tushare 区间/标的级(按取数日快照——含到取数日为止的截面,按 as_of 留底) ──
     "moneyflow_hsgt": {"key": "as_of", "settle": "eod", "source": "tushare"},   # 沪深港通区间
