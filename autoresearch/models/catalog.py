@@ -60,9 +60,10 @@ MODELS: dict[str, dict] = {
              "ref": "qlib.contrib.model.pytorch_hist.HISTModel"},
     "igmtf": {"kind": "igmtf", "feature_set": "graph", "status": "pending-graph",
               "ref": "qlib.contrib.model.pytorch_igmtf.IGMTFModel"},
-    "sfm": {"kind": "sfm", "feature_set": "graph", "status": "pending-graph",
+    # SFM/KRNN 实为序列模型(状态-频率记忆 / CNN+RNN),非图 → 归 seq,已迁(rnn.py)。
+    "sfm": {"kind": "sfm", "feature_set": "seq", "status": "ported",
             "ref": "qlib.contrib.model.pytorch_sfm.SFMModel"},
-    "krnn": {"kind": "krnn", "feature_set": "graph", "status": "pending-graph",
+    "krnn": {"kind": "krnn", "feature_set": "seq", "status": "ported",
              "ref": "qlib.contrib.model.pytorch_krnn.KRNNModel"},
 }
 

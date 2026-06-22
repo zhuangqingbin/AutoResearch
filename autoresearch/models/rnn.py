@@ -154,3 +154,50 @@ class GRURanker(_SeqRanker):
 class ALSTMRanker(_SeqRanker):
     def _make_net(self) -> nn.Module:
         return _ALSTMNet(self.hidden, self.layers, self.dropout)
+
+
+# ── KRNN / SFM:本质是序列模型(CNN+RNN / 状态-频率记忆),非图;归 seq feature_set ──
+
+
+class _KRNNNet(nn.Module):
+    """KRNN:时间维 1D 卷积抽局部模式 → GRU 聚合 → 末步打分。"""
+
+    def __init__(self, hidden: int, kernel: int, layers: int, dropout: float) -> None:
+        super().__init__()
+        self.conv = nn.Conv1d(K, hidden, kernel, padding=kernel // 2)
+        self.rnn = nn.GRU(hidden, hidden, num_layers=layers, batch_first=True,
+                          dropout=dropout if layers > 1 else 0.0)
+        self.head = nn.Sequential(nn.Dropout(dropout), nn.Linear(hidden, 1))
+
+    def forward(self, x):
+        h = torch.relu(self.conv(_reshape(x).transpose(1, 2))).transpose(1, 2)   # [N, W, hidden]
+        out, _ = self.rnn(h)
+        return self.head(out[:, -1, :]).squeeze(-1)
+
+
+class _SFMNet(nn.Module):
+    """紧凑 SFM:LSTM + 多频率投影聚合(近似 State-Frequency-Memory 的频域分解)。"""
+
+    def __init__(self, hidden: int, freqs: int, dropout: float) -> None:
+        super().__init__()
+        self.hidden, self.freqs = hidden, freqs
+        self.lstm = nn.LSTM(K, hidden, batch_first=True)
+        self.freq = nn.Linear(hidden, hidden * freqs)
+        self.head = nn.Sequential(nn.Dropout(dropout), nn.Linear(hidden, 1))
+
+    def forward(self, x):
+        out, _ = self.lstm(_reshape(x))
+        f = self.freq(out[:, -1, :]).view(-1, self.freqs, self.hidden)   # [N, F, H]
+        return self.head(torch.relu(f.mean(dim=1))).squeeze(-1)
+
+
+@register("krnn")
+class KRNNRanker(_SeqRanker):
+    def _make_net(self) -> nn.Module:
+        return _KRNNNet(self.hidden, self.net_kwargs.get("kernel", 3), self.layers, self.dropout)
+
+
+@register("sfm")
+class SFMRanker(_SeqRanker):
+    def _make_net(self) -> nn.Module:
+        return _SFMNet(self.hidden, self.net_kwargs.get("freqs", 4), self.dropout)
