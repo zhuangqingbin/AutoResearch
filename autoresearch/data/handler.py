@@ -334,8 +334,10 @@ class DataHandler:
         """
         if kind == "seq":
             return self._materialize_seq(dates, cap_floor=cap_floor, price_dates=price_dates, fwd=fwd)
+        if kind == "graph":
+            return self._materialize_graph(dates, cap_floor=cap_floor, price_dates=price_dates, fwd=fwd)
         if kind != "core":
-            raise NotImplementedError(f"DataHandler.materialize kind={kind!r} 未实现(core / seq)")
+            raise NotImplementedError(f"DataHandler.materialize kind={kind!r} 未实现(core / seq / graph)")
         price_dates = price_dates if price_dates is not None else self._discover_price_dates()
         piv = self.load_price_pivots(price_dates)
         basic = self.load_basic()
@@ -403,4 +405,32 @@ class DataHandler:
             frames.append(seqdf[["date", "code", *seq_cols, "fwd_1_oo", "buyable"]])
         if not frames:
             return pd.DataFrame(columns=["date", "code", *seq_cols, LABEL, "buyable"])
+        return pd.concat(frames, ignore_index=True)
+
+    def _materialize_graph(self, dates: list[str], *, cap_floor: float = 30.0,
+                           price_dates: list[str] | None = None, fwd: int = 10) -> pd.DataFrame:
+        """graph 视图:节点特征 = gbdt 特征(自身)+ 行业邻接上下文(同申万行业的特征均值,ctx_)。
+
+        把"图关系"编码进**预计算**特征(1-hop 行业 GCN,groupby-行业 均值,O(N) 无 N×N 邻接)→
+        图模型走行独立 Trainer,无需逐日图训练。universe + 标签复用 factor_frame(core 口径)。
+        """
+        from autoresearch.data.features import GRAPH_SELF, LABEL, feature_columns
+        price_dates = price_dates if price_dates is not None else self._discover_price_dates()
+        piv = self.load_price_pivots(price_dates)
+        basic = self.load_basic()
+        graph_cols = feature_columns("graph")
+        frames = []
+        for D in dates:
+            fr = self.factor_frame(D, piv, price_dates, basic, cap_floor, fwd)
+            if fr is None or fr.empty:
+                continue
+            fr = _derive_model_features(fr).reset_index(drop=True)   # g_* + composite 齐
+            self_feats = fr.reindex(columns=GRAPH_SELF)
+            ind = fr["industry"].fillna("未分类").to_numpy()
+            ctx = self_feats.groupby(ind).transform("mean")         # 行业邻接上下文(均值)
+            ctx.columns = [f"ctx_{c}" for c in GRAPH_SELF]
+            out = pd.concat([fr[["date", "code", "fwd_1_oo", "buyable"]], self_feats, ctx], axis=1)
+            frames.append(out[["date", "code", *graph_cols, "fwd_1_oo", "buyable"]])
+        if not frames:
+            return pd.DataFrame(columns=["date", "code", *graph_cols, LABEL, "buyable"])
         return pd.concat(frames, ignore_index=True)

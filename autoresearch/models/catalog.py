@@ -53,12 +53,12 @@ MODELS: dict[str, dict] = {
     "tra": {"kind": "tra", "feature_set": "seq", "status": "ported",
             "ref": "qlib.contrib.model.pytorch_tra.TRAModel"},
 
-    # ── 图 / 其它(graph 关系图 + torch) ──
-    "gats": {"kind": "gats", "feature_set": "graph", "status": "pending-graph",
+    # ── 图(graph 行业邻接 + torch);全 3 个已迁(graph.py:GATs/HIST/IGMTF) ──
+    "gats": {"kind": "gats", "feature_set": "graph", "status": "ported",
              "ref": "qlib.contrib.model.pytorch_gats.GATModel"},
-    "hist": {"kind": "hist", "feature_set": "graph", "status": "pending-graph",
+    "hist": {"kind": "hist", "feature_set": "graph", "status": "ported",
              "ref": "qlib.contrib.model.pytorch_hist.HISTModel"},
-    "igmtf": {"kind": "igmtf", "feature_set": "graph", "status": "pending-graph",
+    "igmtf": {"kind": "igmtf", "feature_set": "graph", "status": "ported",
               "ref": "qlib.contrib.model.pytorch_igmtf.IGMTFModel"},
     # SFM/KRNN 实为序列模型(状态-频率记忆 / CNN+RNN),非图 → 归 seq,已迁(rnn.py)。
     "sfm": {"kind": "sfm", "feature_set": "seq", "status": "ported",

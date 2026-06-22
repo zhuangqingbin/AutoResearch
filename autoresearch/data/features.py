@@ -82,10 +82,18 @@ SEQ_FEATURES: list[str] = ["r", "rng", "amt"]
 SEQ_WINDOW: int = 20
 _SEQ_COLS: list[str] = [f"{f}_t{w}" for w in range(SEQ_WINDOW) for f in SEQ_FEATURES]
 
-# 命名视图 registry(graph 留后续,见 spec §C 三态 DataHandler)。
+# ── 图特征(kind="graph"):节点特征 = gbdt 特征(自身,29)+ 行业邻接上下文(同申万一级行业的
+# 特征均值,前缀 ctx_)。**把"图关系"编码进预计算特征** → 图模型走行独立 Trainer,无需逐日图训练、
+# 无 N×N 邻接(1-hop 行业 GCN 的高效实现);自身列即 gbdt_features 列序。
+GRAPH_SELF: list[str] = _GBDT_GROUP_COLS + _GBDT_RAW + ["composite"]
+GRAPH_CTX: list[str] = [f"ctx_{c}" for c in GRAPH_SELF]
+_GRAPH_COLS: list[str] = GRAPH_SELF + GRAPH_CTX
+
+# 命名视图 registry(core 横截面 / seq 滚动窗 / graph 行业邻接,见 spec §C 三态 DataHandler)。
 FEATURE_SETS: dict[str, list[str]] = {
     "core": _CORE_COLS,
     "seq": _SEQ_COLS,
+    "graph": _GRAPH_COLS,
 }
 
 # 训练标签:T+1 开到开 rank-norm 口径(可交易、无前视),与 factor_lab.GBDT_LABEL 同。

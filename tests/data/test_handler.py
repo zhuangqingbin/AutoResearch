@@ -244,6 +244,21 @@ def test_materialize_seq_window_and_columns(synth):
     assert {"date", "code", LABEL, "buyable"} <= set(panel.columns)
 
 
+def test_materialize_graph_self_and_context_columns(synth):
+    """kind='graph' → 自身 gbdt 特征 + 行业邻接上下文(ctx_,行业均值),列齐 + 标签/门。"""
+    from autoresearch.data.features import GRAPH_SELF
+    P, F = synth
+    panel = DataHandler().materialize([F[0]], feature_set="graph", kind="graph",
+                                      price_dates=P, cap_floor=CAP_FLOOR, fwd=FWD)
+    assert not panel.empty
+    graph_cols = feature_columns("graph")
+    assert len(graph_cols) == 2 * len(GRAPH_SELF)
+    for col in graph_cols:
+        assert col in panel.columns, f"graph materialize missing {col}"
+    assert {"date", "code", LABEL, "buyable"} <= set(panel.columns)
+    assert any(c.startswith("ctx_") for c in panel.columns)
+
+
 def test_parity_factor_frame_vs_materialize(synth):
     """The shared factor_frame columns must be numerically identical across both pipelines."""
     P, F = synth

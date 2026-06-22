@@ -34,6 +34,7 @@ from autoresearch.models.trainer import (
 with contextlib.suppress(ImportError):
     from autoresearch.models import (  # noqa: F401  (optional registration side-effects)
         attn,
+        graph,
         mlp,
         rnn,
         tabnet,

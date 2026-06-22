@@ -30,14 +30,20 @@ def test_seq_tier_all_ported():
     assert by_status("pending-seq") == []
 
 
-def test_torch_tier_ported_and_graph_pending():
-    # mlp/tabnet are now ported (torch installed + native impl); pending-torch tier is empty
+def test_torch_and_graph_tiers_ported():
+    # full Qlib zoo ported: no pending tiers left
     assert by_status("pending-torch") == []
-    assert {"mlp", "tabnet"} <= set(ported())
-    graph = set(by_status("pending-graph"))
-    for name in ("gats", "hist", "igmtf"):   # the 3 true graph models (sfm/krnn recategorized to seq)
-        assert name in graph, f"{name} should be pending-graph"
+    assert by_status("pending-graph") == []
+    for name in ("mlp", "tabnet", "gats", "hist", "igmtf"):
+        assert name in set(ported())
+    for name in ("gats", "hist", "igmtf"):
         assert MODELS[name]["feature_set"] == "graph"
+
+
+def test_entire_zoo_ported():
+    """All 20 cataloged models are ported (no pending status remains)."""
+    assert set(ported()) == set(MODELS)
+    assert len(MODELS) == 20
 
 
 def test_every_entry_has_required_keys():
