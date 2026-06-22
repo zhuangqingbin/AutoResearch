@@ -21,7 +21,9 @@ _L3_COLS = ["code", "name", "industry", "composite", "gbdt_score",
             "score_north", "score_tech", "score_growth", "score_value", "score_volprice",
             "pct_60d", "vol_ratio", "cmf_20", "obv_mom_20", "main_net_ratio", "retail_net_yi", "winner_rate",
             "chip_concentration", "price_to_cost", "hk_ratio", "rsi6", "pe", "pb",
-            "dv_ratio", "np_yoy", "roe"]
+            "dv_ratio", "np_yoy", "roe",
+            "n_channels", "recall_channels",          # Phase 2 召回 provenance(几路共振)
+            "news_n", "news_tags", "news_head"]       # Phase 3 公告情感 digest
 
 
 # ───────────────────────── L3:紧凑表 + 增量真证据 + finalists 合并 ─────────────────────────
@@ -66,6 +68,15 @@ def load_l3_input(date: str, root: Path | None = None) -> pd.DataFrame:
             else:
                 rows.append({"code": c, "lhb_n": 0, "has_forecast": False, "has_express": False})
         df = df.merge(pd.DataFrame(rows), on="code", how="left")
+    # Phase 3:并入公告情感 digest(L3_news/<code>.json,缺则缺省 0/""/—)。
+    from autoresearch.scan.agents.l3_news import news_digest
+    news_dir = root / date / "L3_news"
+    drows = []
+    for c in df["code"]:
+        fp = news_dir / f"{c}.json"
+        anns = json.loads(fp.read_text(encoding="utf-8")) if fp.exists() else []
+        drows.append({"code": c, **news_digest(anns)})
+    df = df.merge(pd.DataFrame(drows), on="code", how="left")
     return df
 
 
