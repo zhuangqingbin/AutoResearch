@@ -29,10 +29,13 @@ def _tag(title: str) -> str:
     return ""
 
 
-def news_digest(anns: list[dict]) -> dict:
-    """近期公告 list → {news_n, news_tags("利多×2|利空×1"), news_head(最新标题≤24)}。空→缺省。"""
+def news_digest(anns: list[dict], prefix: str = "news") -> dict:
+    """近期新闻/公告 list → {<prefix>_n, <prefix>_tags("利多×2|利空×1"), <prefix>_head(最新标题≤24)}。
+
+    prefix="news"(默认,anns_d 公告)/ "med"(akshare 媒体新闻)→ 两路情感列并存。空→缺省。
+    """
     if not anns:
-        return {"news_n": 0, "news_tags": "", "news_head": "—"}
+        return {f"{prefix}_n": 0, f"{prefix}_tags": "", f"{prefix}_head": "—"}
     counts: dict[str, int] = {}
     for a in anns:
         lab = _tag(str(a.get("title", "")))
@@ -41,7 +44,7 @@ def news_digest(anns: list[dict]) -> dict:
     tags = "|".join(f"{k}×{v}" for k, v in counts.items())
     latest = max(anns, key=lambda a: str(a.get("ann_date", "")))
     head = str(latest.get("title", ""))[:24] or "—"
-    return {"news_n": len(anns), "news_tags": tags, "news_head": head}
+    return {f"{prefix}_n": len(anns), f"{prefix}_tags": tags, f"{prefix}_head": head}
 
 
 def _trade_days_for(date: str, lookback_days: int) -> list[str]:
@@ -82,4 +85,32 @@ def harvest_l3_news(date: str, codes, root: Path | None = None, lookback_days: i
     for c in want:
         (out_dir / f"{c}.json").write_text(json.dumps(buckets[c], ensure_ascii=False, default=str),
                                            encoding="utf-8")
+    return buckets
+
+
+def harvest_l3_web_news(date: str, codes, root: Path | None = None) -> dict:
+    """对 codes 逐股拉 akshare 个股新闻(stock_news_em,as_of 入湖)→ 归一 + 分桶 + 落 staging。
+
+    归一:akshare 中文列 `新闻标题→title`、`发布时间→ann_date`(供 news_digest(prefix="med") 复用)。
+    best-effort:单股取数失败/空 → 该 code 空列表(降级隔离,不阻塞)。产出
+    context/scan/<date>/L3_webnews/<code>.json,返回 {code: [news]}。
+    """
+    root = root or Path("context/scan")
+    out_dir = root / date / "L3_webnews"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    buckets: dict[str, list] = {}
+    for c in codes:
+        code = str(c).zfill(6)
+        try:
+            df = get_or_fetch("stock_news_em", {"symbol": code}, today=date)
+            rows = []
+            if df is not None and len(df):
+                for _, r in df.iterrows():
+                    rows.append({"title": str(r.get("新闻标题", "")),
+                                 "ann_date": str(r.get("发布时间", ""))})
+            buckets[code] = rows
+        except Exception:  # noqa: BLE001 — 单股降级隔离(无网/被限/无该股)
+            buckets[code] = []
+        (out_dir / f"{code}.json").write_text(
+            json.dumps(buckets[code], ensure_ascii=False, default=str), encoding="utf-8")
     return buckets

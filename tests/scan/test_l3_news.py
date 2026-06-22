@@ -46,3 +46,41 @@ def test_harvest_buckets_by_code(monkeypatch, tmp_path):
     out = harvest_l3_news("2026-06-20", ["000001", "600000"], root=tmp_path / "scan")
     assert len(out["000001"]) == 1 and out["000001"][0]["title"] == "回购公告"
     assert len(out["600000"]) == 1
+
+
+# ───────────────────────── 媒体新闻(akshare stock_news_em)─────────────────────────
+
+
+def test_news_digest_prefix_med():
+    d = news_digest([{"title": "某公司中标大单", "ann_date": "20260601"}], prefix="med")
+    assert set(d) == {"med_n", "med_tags", "med_head"}
+    assert d["med_n"] == 1 and "利多×1" in d["med_tags"]
+
+
+def test_news_digest_default_prefix_unchanged():
+    assert set(news_digest([])) == {"news_n", "news_tags", "news_head"}
+    assert set(news_digest([{"title": "x", "ann_date": "1"}])) == {"news_n", "news_tags", "news_head"}
+
+
+def test_harvest_web_news_normalizes_and_buckets(tmp_path, monkeypatch):
+    """注入 get_or_fetch 桩:归一 akshare 中文列(新闻标题/发布时间)→ title/ann_date,按 code 分桶 + 落 json。"""
+    def fake_gof(endpoint, params, today=None, fetch=None):
+        assert endpoint == "stock_news_em"
+        return pd.DataFrame({"新闻标题": [f"{params['symbol']} 中标大单"],
+                             "发布时间": ["2026-06-20 09:00:00"]})
+    monkeypatch.setattr(l3_news, "get_or_fetch", fake_gof, raising=True)
+    out = l3_news.harvest_l3_web_news("2026-06-20", ["600519", "000001"], root=tmp_path / "scan")
+    assert set(out) == {"600519", "000001"}
+    assert out["600519"][0]["title"] == "600519 中标大单" and out["600519"][0]["ann_date"].startswith("2026")
+    saved = json.loads((tmp_path / "scan" / "2026-06-20" / "L3_webnews" / "600519.json").read_text())
+    assert saved[0]["title"] == "600519 中标大单"
+
+
+def test_harvest_web_news_degrades_on_error(tmp_path, monkeypatch):
+    """单股 get_or_fetch 抛错 → 该 code 空列表、写空 json、不抛(降级隔离)。"""
+    def boom(endpoint, params, today=None, fetch=None):
+        raise RuntimeError("no net")
+    monkeypatch.setattr(l3_news, "get_or_fetch", boom, raising=True)
+    out = l3_news.harvest_l3_web_news("2026-06-20", ["600519"], root=tmp_path / "scan")
+    assert out["600519"] == []
+    assert json.loads((tmp_path / "scan" / "2026-06-20" / "L3_webnews" / "600519.json").read_text()) == []
