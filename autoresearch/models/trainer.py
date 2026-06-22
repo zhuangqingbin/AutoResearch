@@ -189,12 +189,14 @@ def load_champion(name: str, model_cls: type[Model], *, root: Path = STORE_ROOT)
     return model_cls.load(pkl)
 
 
-def load_champion_any(name: str, *, root: Path = STORE_ROOT) -> Model | None:
+def load_champion_any(name: str, *, root: Path | None = None) -> Model | None:
     """按 champion.json 的 `kind` 用 registry 解析模型类反序列化(支持任意 zoo kind)。
 
     无 champion / pkl 缺失 / kind 未注册 / 反序列化失败 → None(调用方回落线性)。
     与 load_champion 的区别:不需调用方预知模型类——zoo 晋升的可能是任意 kind(lgbm/mlp/…)。
+    root=None → 动态读模块级 STORE_ROOT(测试可 monkeypatch 隔离 champion store)。
     """
+    root = root if root is not None else STORE_ROOT
     ptr = _champion_pointer(name, root)
     if ptr is None:
         return None

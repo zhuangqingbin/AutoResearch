@@ -13,6 +13,8 @@ design: docs/specs/2026-06-22-autoresearch-arch-redesign-design.md §E;Plan 3.4�
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -106,6 +108,10 @@ def patched_universe(monkeypatch):
     monkeypatch.setattr(screen_market, "_harvest_vol_series", _fake_vol, raising=True)
     # GBDT 自保门:确保现 run() 的 L2 走线性回落(模型文件指向不存在的 tmp 路径)。
     monkeypatch.setattr(factor_lab, "GBDT_MODEL", "/nonexistent/gbdt_model.pkl", raising=False)
+    # champion store 隔离:L2 用动态 STORE_ROOT 加载 champion;指向不存在路径 → 无 champion →
+    # 走 GBDT/线性回落,golden parity 锚定 composite,不被真实 models/store 训出的 champion 影响。
+    import autoresearch.models.trainer as _trainer
+    monkeypatch.setattr(_trainer, "STORE_ROOT", Path("/nonexistent/parity_store"))
     return uni
 
 

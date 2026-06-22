@@ -225,7 +225,8 @@ def recall_select(scored: pd.DataFrame, analysis_date: str, recall_n: int,
 
 def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
         recall_n: int = 1000, l2_n: int = 200, outdir: Path | None = None,
-        source: str = "tushare", recall_mode: str = "multi", recall_channels=None) -> dict:
+        source: str = "tushare", recall_mode: str = "multi", recall_channels=None,
+        l2_model: str = "l2_fwd5") -> dict:
     """L0 选集 + L1 召回 + L2 粗排(GBDT 学习重排 → top l2_n)。全确定性,零 LLM。
 
     recall_mode:multi=多路策略召回(默认,带 provenance + L1_channels.csv)| composite=单复合分(对拍/回退)。
@@ -274,17 +275,23 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
     full[["rank", "recalled"] + [c for c in keep if c in full.columns]].to_csv(
         outdir / "L1_scored_full.csv", index=False)
 
-    # ── L2 粗排:GBDT 学习重排 recall(top recall_n)→ top l2_n(确定性,替旧 L2-AI keep/cut)──
-    # 模型缺失 / oos 未胜线性 → predict_scores 返回 None → 回落 composite top(自保,绝不比线性差)。
-    import autoresearch.research.factor_lab as factor_lab
-    gscore = factor_lab.predict_scores(recall)
-    if gscore is not None:
-        l2 = recall.assign(gbdt_score=gscore.to_numpy()).sort_values(
-            "gbdt_score", ascending=False).head(l2_n).reset_index(drop=True)
-        l2_engine = "gbdt"
+    # ── L2 粗排:champion 重排 recall → top l2_n(确定性,替旧 L2-AI keep/cut)──
+    # 优先 zoo champion(swing,core 在召回帧可 predict)→ 回落 factor_lab GBDT → 回落 composite top。
+    # 任一缺失/失败 → 下一级回落(自保:绝不比线性差)。L2Rank stage 共用 champion_scores → 口径一致。
+    from autoresearch.scan.l2_model import champion_scores
+    scores, l2_engine = champion_scores(recall, l2_model)
+    if scores is None:
+        import autoresearch.research.factor_lab as factor_lab
+        g = factor_lab.predict_scores(recall)
+        if g is not None:
+            scores, l2_engine = g, "gbdt"
+        else:
+            l2_engine = "composite-linear(回落)"
+    if scores is not None:
+        l2 = recall.assign(gbdt_score=scores.to_numpy()).sort_values(
+            "gbdt_score", ascending=False, kind="stable").head(l2_n).reset_index(drop=True)
     else:
         l2 = recall.head(l2_n).reset_index(drop=True)
-        l2_engine = "composite-linear(回落)"
     l2.insert(0, "l2_rank", range(1, len(l2) + 1))
     l2_cols = ["l2_rank", "gbdt_score", *keep]
     l2[[c for c in l2_cols if c in l2.columns]].to_csv(outdir / "L2_gbdt_top200.csv", index=False)

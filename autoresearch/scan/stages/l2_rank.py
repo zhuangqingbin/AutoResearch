@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import sys
 
-from autoresearch.models import load_champion
 from autoresearch.models.linear import LinearComposite
 from autoresearch.scan.context import RunContext
 from autoresearch.scan.stages.base import Stage
@@ -33,31 +32,19 @@ class L2Rank(Stage):
     def outputs(self) -> list[str]:
         return [schema.L2_RANK]
 
-    def _champion(self, ctx: RunContext):
-        """加载 store 现任 champion(LinearComposite 反序列化);无 store → 默认 LinearComposite。
-
-        与 screen_market 回落口径一致:无晋升模型时,L2 退回线性复合分(绝不比线性差)。
-        """
-        name = ctx.config.l2_model
-        try:
-            champ = load_champion(name, LinearComposite)
-        except Exception as e:  # noqa: BLE001 — store 损坏/反序列化失败 → 回落默认线性
-            print(f"[L2] champion {name!r} 加载失败({e!r})→ 默认 LinearComposite", file=sys.stderr)
-            champ = None
-        if champ is None:
-            return LinearComposite(), "composite-linear(default champion)"
-        engine = f"{getattr(champ, 'kind', 'core')}:{name}"
-        return champ, engine
-
     def run(self, ctx: RunContext) -> None:
         recall = ctx.trace.get_df(ctx.run_id, schema.L1_RECALL)
         recall["code"] = recall["code"].astype(str).str.zfill(6)
         l2_n = ctx.config.l2_n
 
-        champ, engine = self._champion(ctx)
-        scores = champ.predict(recall)
-        # 稳定排序:recall 已按 composite 降序、linear champion 的 l2_score==composite,故 stable
-        # 重排逐位复现 screen_market 回落的 `recall.head(l2_n)`(含并列名次的原始顺序)。
+        # champion 重排(与 universe.run 共用 champion_scores,口径一致 → golden parity);
+        # 无 champion / predict 失败 → 回落线性复合分(= composite,绝不比线性差)。
+        from autoresearch.scan.l2_model import champion_scores
+        scores, engine = champion_scores(recall, ctx.config.l2_model)
+        if scores is None:
+            scores = LinearComposite().predict(recall)
+            engine = "composite-linear(default)"
+        # 稳定排序:recall 已按 composite 降序,无 champion 时 l2_score==composite → 逐位复现 head(l2_n)。
         l2 = recall.assign(l2_score=scores.to_numpy()).sort_values(
             "l2_score", ascending=False, kind="stable").head(l2_n).reset_index(drop=True)
         l2.insert(0, "l2_rank", range(1, len(l2) + 1))
