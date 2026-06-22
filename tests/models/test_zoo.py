@@ -27,7 +27,7 @@ def test_train_zoo_leaderboard_isolation_and_champion(tmp_path, monkeypatch):
 
     monkeypatch.setattr(zoo, "_train_one", fake_train_one)
 
-    lb = train_zoo(h, ["20260101"], ["fwd_1_oo", "fwd_5_oc"],
+    lb = train_zoo(h, ["20260101"], ["fwd_1_oo", "fwd_5_oc"], gate="positive",
                    store_root=tmp_path / "store", out_csv=tmp_path / "lb.csv")
 
     assert {"horizon", "model", "feature_set", "oos_rank_ic", "vs_linear", "status"} <= set(lb.columns)
@@ -76,9 +76,33 @@ def test_train_zoo_clears_stale_champion_on_no_promote(tmp_path, monkeypatch):
     monkeypatch.setattr(zoo, "_resolve_models", lambda names: [("linear", "linear", "core"), ("c", "c", "core")])
 
     def neg(handler, cfg, dates, label, **kw):
-        ic = -0.05 if cfg.kind == "linear" else -0.03   # 全负 → 无正-IC 合格者
+        ic = -0.03 if cfg.kind == "linear" else -0.05   # 都负且都不胜线性 → 无合格者(两种 gate 都清)
         return TrainedModel(LinearComposite(), FitReport(n_rows=1, n_dates=1, notes={}),
                             ic, {"kind": cfg.kind, "feature_set": "core"})
     monkeypatch.setattr(zoo, "_train_one", neg)
     zoo.train_zoo(object(), ["d"], ["fwd_1_oo"], store_root=store)
     assert load_champion_any("l2_fwd1", root=store) is None    # 旧 champion 被清 → L2 回落
+
+
+def test_beats_linear_gate_promotes_negative_but_better(tmp_path, monkeypatch):
+    """默认 gate=beats_linear:负 IC 但胜线性的最优 core 仍晋升(最不伤切,优于 composite 回落);
+    positive 门则因其 <0 不晋升、清旧。"""
+    import json
+
+    from autoresearch.models.base import FitReport
+    from autoresearch.models.linear import LinearComposite
+    from autoresearch.models.trainer import TrainedModel, load_champion_any
+    store = tmp_path / "store"
+    monkeypatch.setattr(zoo, "_resolve_models",
+                        lambda names: [("linear", "linear", "core"), ("xgb_like", "xgb_like", "core")])
+
+    def negbeat(handler, cfg, dates, label, **kw):
+        ic = -0.06 if cfg.kind == "linear" else -0.02      # 都负,但 xgb_like 胜线性
+        return TrainedModel(LinearComposite(), FitReport(n_rows=1, n_dates=1, notes={}),
+                            ic, {"kind": cfg.kind, "feature_set": "core"})
+    monkeypatch.setattr(zoo, "_train_one", negbeat)
+
+    zoo.train_zoo(object(), ["d"], ["fwd_1_oo"], store_root=store)           # 默认 beats_linear
+    assert json.loads((store / "l2_fwd1" / "champion.json").read_text())["kind"] == "xgb_like"
+    zoo.train_zoo(object(), ["d"], ["fwd_1_oo"], store_root=store, gate="positive")  # 严格门
+    assert load_champion_any("l2_fwd1", root=store) is None                  # 负 → 不晋升 + 清
