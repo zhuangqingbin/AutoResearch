@@ -19,7 +19,7 @@ import pandas as pd
 
 from autoresearch.models.catalog import MODELS, ported
 from autoresearch.models.registry import ModelConfig
-from autoresearch.models.trainer import STORE_ROOT, Trainer, save_champion
+from autoresearch.models.trainer import STORE_ROOT, Trainer, clear_champion, save_champion
 
 # horizon → champion 名(L2 默认加载 l2_fwd5)。
 _TAGS = {"fwd_1_oo": "l2_fwd1", "fwd_5_oc": "l2_fwd5", "fwd_10_oc": "l2_fwd10"}
@@ -75,8 +75,9 @@ def train_zoo(handler, dates, horizons, model_names=None, *, price_dates=None,
             print(f"[zoo] {horizon} champion = {best} (ic {winners[best]:+.4f} > 线性 {base:+.4f}, 正)",
                   file=sys.stderr)
         else:
-            print(f"[zoo] {horizon} 无正-IC 模型胜线性(线性 {base:+.4f}) → 不晋升,L2 回落 composite",
-                  file=sys.stderr)
+            cleared = clear_champion(_tag(horizon), root=store_root)
+            print(f"[zoo] {horizon} 无正-IC 模型胜线性(线性 {base:+.4f}) → 不晋升"
+                  f"{'(已清除旧 champion)' if cleared else ''},L2 回落 composite", file=sys.stderr)
 
     lb = pd.DataFrame(rows)
     lb["vs_linear"] = lb.apply(

@@ -62,3 +62,23 @@ def test_champion_gate_restricts_to_core(tmp_path, monkeypatch):
     zoo.train_zoo(object(), ["d"], ["fwd_1_oo"], store_root=tmp_path / "store")
     ptr = json.loads((tmp_path / "store" / "l2_fwd1" / "champion.json").read_text())
     assert ptr["kind"] == "good_core"     # 高 IC 的 fake_graph 不被选(graph 不可作 L2 champion)
+
+
+def test_train_zoo_clears_stale_champion_on_no_promote(tmp_path, monkeypatch):
+    """已有旧 champion + 新一轮全负(无合格)→ 清除旧 champion(L2 回落 composite,store 反映最新评估)。"""
+    from autoresearch.models.base import FitReport
+    from autoresearch.models.linear import LinearComposite
+    from autoresearch.models.trainer import TrainedModel, save_champion
+    store = tmp_path / "store"
+    save_champion("l2_fwd1", TrainedModel(LinearComposite(), FitReport(n_rows=1, n_dates=1, notes={}),
+                                          0.05, {"kind": "linear", "feature_set": "core"}), "v1", root=store)
+    assert load_champion_any("l2_fwd1", root=store) is not None
+    monkeypatch.setattr(zoo, "_resolve_models", lambda names: [("linear", "linear", "core"), ("c", "c", "core")])
+
+    def neg(handler, cfg, dates, label, **kw):
+        ic = -0.05 if cfg.kind == "linear" else -0.03   # 全负 → 无正-IC 合格者
+        return TrainedModel(LinearComposite(), FitReport(n_rows=1, n_dates=1, notes={}),
+                            ic, {"kind": cfg.kind, "feature_set": "core"})
+    monkeypatch.setattr(zoo, "_train_one", neg)
+    zoo.train_zoo(object(), ["d"], ["fwd_1_oo"], store_root=store)
+    assert load_champion_any("l2_fwd1", root=store) is None    # 旧 champion 被清 → L2 回落

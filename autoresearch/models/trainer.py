@@ -211,3 +211,17 @@ def load_champion_any(name: str, *, root: Path | None = None) -> Model | None:
         return cls.load(pkl)
     except Exception:  # noqa: BLE001 — 反序列化失败 → 调用方回落线性
         return None
+
+
+def clear_champion(name: str, *, root: Path | None = None) -> bool:
+    """删除某 champion 指针(champion.json)→ load_champion_any 返回 None(L2 回落 composite)。返回是否删除。
+
+    用于:最新一轮训练对该 horizon **无合格 champion**(无正-IC 胜线性者)时,清掉旧的(更乐观窗口
+    遗留)champion——否则已被新数据否定的 champion 会继续误部署。store 须反映最新评估(铁律:不自欺)。
+    """
+    root = root if root is not None else STORE_ROOT
+    p = _name_dir(name, root) / "champion.json"
+    if p.exists():
+        p.unlink()
+        return True
+    return False
