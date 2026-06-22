@@ -46,6 +46,8 @@ def make_panel(n_dates: int = 8, n_stocks: int = 120, signal: float = 0.6,
         df["above_ma60"] = rng.integers(0, 2, n_stocks).astype(float)
         # label: signal*pct_60d + noise (per-date), so cross-sectional rank-IC > 0 is learnable
         df["fwd_1_oo"] = signal * df["pct_60d"] + rng.normal(scale=1.0, size=n_stocks)
+        df["fwd_5_oc"] = signal * df["pct_60d"] + rng.normal(scale=1.2, size=n_stocks)
+        df["fwd_10_oc"] = signal * df["pct_60d"] + rng.normal(scale=1.5, size=n_stocks)
         df["buyable"] = True
         # fill any remaining core columns with noise so the panel has the full core schema
         for c in core:
@@ -53,7 +55,7 @@ def make_panel(n_dates: int = 8, n_stocks: int = 120, signal: float = 0.6,
                 df[c] = rng.normal(size=n_stocks)
         frames.append(df)
     panel = pd.concat(frames, ignore_index=True)
-    ordered = ["date", "code", "industry", *core, "fwd_1_oo", "buyable"]
+    ordered = ["date", "code", "industry", *core, "fwd_1_oo", "fwd_5_oc", "fwd_10_oc", "buyable"]
     seen, cols = set(), []
     for c in ordered:
         if c not in seen and c in panel.columns:
