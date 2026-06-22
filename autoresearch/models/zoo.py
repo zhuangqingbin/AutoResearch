@@ -65,14 +65,18 @@ def train_zoo(handler, dates, horizons, model_names=None, *, price_dates=None,
         lin_ic = results.get("linear", (None, float("nan")))[1]
         base = lin_ic if lin_ic == lin_ic else 0.0
         base_by_h[horizon] = base
-        winners = {n: ic for n, (_, ic) in results.items() if ic == ic and ic > base and n != "linear"}
+        # champion 必须**实际有预测力**(ic>0)且严格胜线性 —— 否则负 IC = 反预测,部署反伤;
+        # 无合格者 → 不晋升,L2 回落 composite(中性召回序,交 L3 做真判断)。
+        winners = {n: ic for n, (_, ic) in results.items()
+                   if ic == ic and ic > base and ic > 0 and n != "linear"}
         if winners:
             best = max(winners, key=winners.get)
             save_champion(_tag(horizon), results[best][0], "v1", root=store_root)
-            print(f"[zoo] {horizon} champion = {best} (ic {winners[best]:+.4f} > 线性 {base:+.4f})",
+            print(f"[zoo] {horizon} champion = {best} (ic {winners[best]:+.4f} > 线性 {base:+.4f}, 正)",
                   file=sys.stderr)
         else:
-            print(f"[zoo] {horizon} 无人胜线性({base:+.4f}) → 不晋升,L2 回落线性", file=sys.stderr)
+            print(f"[zoo] {horizon} 无正-IC 模型胜线性(线性 {base:+.4f}) → 不晋升,L2 回落 composite",
+                  file=sys.stderr)
 
     lb = pd.DataFrame(rows)
     lb["vs_linear"] = lb.apply(

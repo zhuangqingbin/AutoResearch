@@ -224,6 +224,9 @@ reports/
 # Claude-as-engine harvested data context (regenerable via scripts/harvest_context.py)
 context/
 
+# zoo champion store (binary artifacts, regenerable via autoresearch.models.zoo train)
+models/store/
+
 # 项目级 zsh 运行时缓存（.cursor-zsh/.zshrc 本身可提交）
 .cursor-zsh/.zsh_history
 .cursor-zsh/.zcompdump*

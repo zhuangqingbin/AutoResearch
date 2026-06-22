@@ -35,8 +35,8 @@ def test_train_zoo_leaderboard_isolation_and_champion(tmp_path, monkeypatch):
     assert (lb["status"] == "ok").sum() >= 2, "linear + lgbm 应照常训练"
     assert (tmp_path / "lb.csv").exists()
 
-    # champion 门:某 horizon 有非线性模型胜线性(vs_linear>0) ⟺ store 落了 champion。
+    # champion 门:某 horizon 有非线性模型胜线性(vs_linear>0)**且正 IC**(>0) ⟺ store 落了 champion。
     for hz in ("fwd_1_oo", "fwd_5_oc"):
-        beat = lb[(lb.horizon == hz) & (lb.vs_linear > 0) & (lb.status == "ok")]
+        beat = lb[(lb.horizon == hz) & (lb.vs_linear > 0) & (lb.oos_rank_ic > 0) & (lb.status == "ok")]
         champ = load_champion_any(_tag(hz), root=tmp_path / "store")
         assert (champ is not None) == (len(beat) > 0), f"{hz} champion 门与 leaderboard 不一致"

@@ -20,7 +20,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 | **Tier-2/3** | 对抗验证 | Opus 条件平反 + 多空辩论 | 高 conv 假阴平反 + 买点候选定级/证伪 | ~小 | 小 |
 | **L5** | 整合 | 确定性 | summary(逐阶段表 + token 估算) + buy-list + 漏斗溯源 | 1 份 | 0 |
 
-> **L2 从 AI keep/cut 改成确定性 champion 学习重排**(`autoresearch.models.zoo`):全 zoo(core/seq/graph 共 20 模型)× 3 horizon(`fwd_1_oo/fwd_5_oc/fwd_10_oc`)统一训练,每 horizon 选 OOS rank-IC 最高且**严格胜线性**者晋升 champion;L2 默认加载 swing 的 `l2_fwd5`(与 L3/L4 持有期对齐)。**自保门**:无人胜线性 → 不晋升,L2 回落 GBDT/线性 top200(绝不部署比线性差的模型)。AI 判断从此**只在 L3/L4**。
+> **L2 从 AI keep/cut 改成确定性 champion 学习重排**(`autoresearch.models.zoo`):全 zoo(core/seq/graph 共 20 模型)× 3 horizon(`fwd_1_oo/fwd_5_oc/fwd_10_oc`)统一训练,每 horizon 选 OOS rank-IC 最高、**正(>0)且严格胜线性**者晋升 champion;L2 默认加载 swing 的 `l2_fwd5`(与 L3/L4 持有期对齐)。**自保门**:无正-IC 模型胜线性 → 不晋升,L2 回落 GBDT/composite top200(绝不部署反预测/比线性差的模型)。AI 判断从此**只在 L3/L4**。
 
 本 skill 是**编排器**,三类角色分工清楚:
 - **确定性层(零 LLM)** = L0/L1/L2(`autoresearch.scan.universe` 一次产出,L2 调 `champion_scores` → champion→GBDT→composite 级联回落)+ L5(`autoresearch.scan.assemble`)。纯 pandas/树/torch,不编数。
