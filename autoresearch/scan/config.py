@@ -22,6 +22,10 @@ class ScanConfig:
     include_bj: bool = True       # 是否纳入北交所
     source: str = "tushare"       # universe 取数源:tushare(默认)| em
     l2_model: str = "champion"    # L2 用的 champion 名(store 现任;无→默认 LinearComposite)
+    recall_mode: str = "multi"                       # L1 召回:multi(多路)| composite(单复合分,对拍)
+    recall_channels: list[str] | None = None         # 启用的 channel 子集(None=全注册)
+    channel_quotas: dict[str, int] | None = None     # 覆盖各路 quota(None=CHANNEL_DEFAULTS)
+    channel_floors: dict[str, int] | None = None     # 覆盖各路 floor(None=CHANNEL_DEFAULTS)
 
     def to_dict(self) -> dict:
         """落 manifest 的纯 dict(可 JSON 序列化)。"""

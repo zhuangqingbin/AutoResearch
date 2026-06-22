@@ -38,6 +38,8 @@ def _config_from_args(args: argparse.Namespace) -> ScanConfig:
         cap_floor=args.cap_floor,
         include_bj=not args.exclude_bj,
         source=args.source,
+        recall_mode=args.recall_mode,
+        recall_channels=(args.recall_channels.split(",") if args.recall_channels else None),
     )
 
 
@@ -104,6 +106,10 @@ def _add_common_funnel_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--exclude-bj", action="store_true", help="排除北交所(默认纳入)")
     p.add_argument("--source", choices=["em", "tushare"], default="tushare",
                    help="universe 取数源:tushare=默认(push2 常被封);em=东财 push2")
+    p.add_argument("--recall-mode", choices=["multi", "composite"], default="multi",
+                   help="L1 召回:multi=多路策略召回(默认)| composite=单复合分(对拍/回退)")
+    p.add_argument("--recall-channels", default=None,
+                   help="启用的 channel 子集(逗号分隔;缺省=全 8 路)")
 
 
 def build_parser() -> argparse.ArgumentParser:
