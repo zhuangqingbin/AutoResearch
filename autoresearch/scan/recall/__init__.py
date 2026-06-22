@@ -14,6 +14,7 @@ from autoresearch.scan.recall.registry import (
     registered_channels,
 )
 from autoresearch.scan.recall import channels  # noqa: F401  (registration side-effects)
+from autoresearch.scan.recall.merge import quota_union
 
 __all__ = ["gate_rank", "channel", "build", "registered_channels",
-           "CHANNEL_DEFAULTS", "ChannelSpec"]
+           "CHANNEL_DEFAULTS", "ChannelSpec", "quota_union"]
