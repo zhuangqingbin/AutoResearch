@@ -325,3 +325,15 @@ def test_parity_also_covers_derived_g_and_composite(synth):
 
     cm_b = pd.to_numeric(mat_s["composite"], errors="coerce")
     assert (comp_by_code - cm_b).abs().max() < 1e-9, "composite parity broke"
+
+
+def test_materialize_retains_all_three_fwd_labels(synth):
+    """core/seq/graph 三视图都保留 fwd_1_oo/fwd_5_oc/fwd_10_oc(多 horizon 训练前置)。"""
+    from autoresearch.data.features import FWD_LABELS
+    P, F = synth
+    for fs in ("core", "seq", "graph"):
+        panel = DataHandler().materialize([F[0]], feature_set=fs, kind=fs,
+                                          price_dates=P, cap_floor=CAP_FLOOR, fwd=FWD)
+        assert not panel.empty, f"{fs} materialize 空"
+        for lab in FWD_LABELS:
+            assert lab in panel.columns, f"{fs} 缺标签 {lab}"

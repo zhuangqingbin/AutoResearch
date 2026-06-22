@@ -34,7 +34,7 @@ from autoresearch.common.scoring import (
     lens_momentum,
 )
 from autoresearch.data.cache import lake_path
-from autoresearch.data.features import LABEL, feature_columns
+from autoresearch.data.features import FWD_LABELS, feature_columns
 
 # core 派生模型特征:8 组分位 g_*(取 _factor_groups 的这 8 组)与 composite 的成员组定义,
 # 镜像 factor_lab.GBDT_GROUPS——保证 handler 物化的 g_* 与 factor_lab.gbdt_features 同口径。
@@ -342,7 +342,7 @@ class DataHandler:
         piv = self.load_price_pivots(price_dates)
         basic = self.load_basic()
         cols = feature_columns(feature_set)
-        keep_extra = [LABEL, "buyable"]
+        keep_extra = [*FWD_LABELS, "buyable"]
         frames = []
         for D in dates:
             fr = self.factor_frame(D, piv, price_dates, basic, cap_floor, fwd)
@@ -374,7 +374,7 @@ class DataHandler:
         窗特征从 lake daily 价格面板算:r=日收益、rng=日内振幅、amt=每股窗内标准化对数成交额。
         历史不足 SEQ_WINDOW 天的成型日跳过。序列模型把 [N, W*K] reshape 回 [N, W, K]。
         """
-        from autoresearch.data.features import LABEL, SEQ_FEATURES, SEQ_WINDOW, feature_columns
+        from autoresearch.data.features import FWD_LABELS, SEQ_FEATURES, SEQ_WINDOW, feature_columns
         price_dates = price_dates if price_dates is not None else self._discover_price_dates()
         piv = self.load_price_pivots(price_dates)
         basic = self.load_basic()
@@ -401,10 +401,10 @@ class DataHandler:
             for w in range(SEQ_WINDOW):           # 时间主序:t0 最旧 … t(W-1) 最新
                 for f in SEQ_FEATURES:
                     out[f"{f}_t{w}"] = arr[f][:, w]
-            seqdf = pd.DataFrame(out).merge(fr[["code", "fwd_1_oo", "buyable"]], on="code", how="left")
-            frames.append(seqdf[["date", "code", *seq_cols, "fwd_1_oo", "buyable"]])
+            seqdf = pd.DataFrame(out).merge(fr[["code", *FWD_LABELS, "buyable"]], on="code", how="left")
+            frames.append(seqdf[["date", "code", *seq_cols, *FWD_LABELS, "buyable"]])
         if not frames:
-            return pd.DataFrame(columns=["date", "code", *seq_cols, LABEL, "buyable"])
+            return pd.DataFrame(columns=["date", "code", *seq_cols, *FWD_LABELS, "buyable"])
         return pd.concat(frames, ignore_index=True)
 
     def _materialize_graph(self, dates: list[str], *, cap_floor: float = 30.0,
@@ -414,7 +414,7 @@ class DataHandler:
         把"图关系"编码进**预计算**特征(1-hop 行业 GCN,groupby-行业 均值,O(N) 无 N×N 邻接)→
         图模型走行独立 Trainer,无需逐日图训练。universe + 标签复用 factor_frame(core 口径)。
         """
-        from autoresearch.data.features import GRAPH_SELF, LABEL, feature_columns
+        from autoresearch.data.features import FWD_LABELS, GRAPH_SELF, feature_columns
         price_dates = price_dates if price_dates is not None else self._discover_price_dates()
         piv = self.load_price_pivots(price_dates)
         basic = self.load_basic()
@@ -429,8 +429,8 @@ class DataHandler:
             ind = fr["industry"].fillna("未分类").to_numpy()
             ctx = self_feats.groupby(ind).transform("mean")         # 行业邻接上下文(均值)
             ctx.columns = [f"ctx_{c}" for c in GRAPH_SELF]
-            out = pd.concat([fr[["date", "code", "fwd_1_oo", "buyable"]], self_feats, ctx], axis=1)
-            frames.append(out[["date", "code", *graph_cols, "fwd_1_oo", "buyable"]])
+            out = pd.concat([fr[["date", "code", *FWD_LABELS, "buyable"]], self_feats, ctx], axis=1)
+            frames.append(out[["date", "code", *graph_cols, *FWD_LABELS, "buyable"]])
         if not frames:
-            return pd.DataFrame(columns=["date", "code", *graph_cols, LABEL, "buyable"])
+            return pd.DataFrame(columns=["date", "code", *graph_cols, *FWD_LABELS, "buyable"])
         return pd.concat(frames, ignore_index=True)

@@ -99,6 +99,10 @@ FEATURE_SETS: dict[str, list[str]] = {
 # 训练标签:T+1 开到开 rank-norm 口径(可交易、无前视),与 factor_lab.GBDT_LABEL 同。
 LABEL: str = "fwd_1_oo"
 
+# 多 horizon 训练标签:forward_returns 全算齐(T+1 开到开 + 5/10 日开到收),materialize 三视图
+# 都保留,供 Trainer(label=任意 horizon) 训练对齐 swing 的 champion(见 zoo train)。
+FWD_LABELS: list[str] = ["fwd_1_oo", "fwd_5_oc", "fwd_10_oc"]
+
 
 def feature_columns(name: str = "core") -> list[str]:
     """返回某命名视图的列清单(副本,调用方改不到 registry)。未登记 → KeyError。"""
