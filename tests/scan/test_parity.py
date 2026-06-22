@@ -116,7 +116,8 @@ def _run_current(tmp_path) -> tuple[pd.DataFrame, pd.DataFrame]:
     """现 screen_market.run → (L1_recall_top1000, L2_gbdt_top200)。"""
     outdir = tmp_path / "current"
     screen_market.run(DATE, cap_floor_yi=30.0, include_bj=True,
-                      recall_n=1000, l2_n=200, outdir=outdir, source="tushare")
+                      recall_n=1000, l2_n=200, outdir=outdir, source="tushare",
+                      recall_mode="composite")   # 对拍锚定单复合分口径(multi 是新行为)
     l1 = pd.read_csv(outdir / "L1_recall_top1000.csv")
     l2 = pd.read_csv(outdir / "L2_gbdt_top200.csv")
     return l1, l2
@@ -125,7 +126,8 @@ def _run_current(tmp_path) -> tuple[pd.DataFrame, pd.DataFrame]:
 def _run_new(tmp_path) -> tuple[pd.DataFrame, pd.DataFrame, str]:
     """新 Pipeline → trace 的 (L1_recall, L2_rank, run_id)。"""
     store = TraceStore(tmp_path / "trace")
-    ctx = RunContext(analysis_date=DATE, config=ScanConfig(recall_n=1000, l2_n=200), trace=store)
+    ctx = RunContext(analysis_date=DATE,
+                     config=ScanConfig(recall_n=1000, l2_n=200, recall_mode="composite"), trace=store)
     run_id = Pipeline().run(ctx)
     return (store.get_df(run_id, schema.L1_RECALL),
             store.get_df(run_id, schema.L2_RANK), run_id)
@@ -169,9 +171,22 @@ def test_golden_parity_via_parity_module(patched_universe, tmp_path):
 
     golden = tmp_path / "golden"
     parity.capture(DATE, golden, config=ScanConfig(recall_n=1000, l2_n=200))
-    res = parity.check(DATE, golden, config=ScanConfig(recall_n=1000, l2_n=200),
+    res = parity.check(DATE, golden, config=ScanConfig(recall_n=1000, l2_n=200, recall_mode="composite"),
                        trace_root=tmp_path / "trace_check")
     assert res.ok, res.summary()
     assert not res.l1_set_diff and not res.l1_order_diff and not res.l1_composite_diff
     assert not res.l2_set_diff and not res.l2_order_diff
     assert res.notes.get("l1_composite_max_abs_diff", 1.0) < 1e-9
+
+
+def test_multi_mode_differs_and_has_provenance(patched_universe, tmp_path):
+    """multi 模式:产 provenance、多路 channel 都跑了,且仍恰 recall_n(尾部或有 backfill)。"""
+    store = TraceStore(tmp_path / "trace_multi")
+    ctx = RunContext(analysis_date=DATE, trace=store,
+                     config=ScanConfig(recall_n=300, l2_n=100, recall_mode="multi"))
+    Pipeline().run(ctx)
+    l1 = store.get_df(ctx.run_id, schema.L1_RECALL)
+    assert len(l1) == 300 and "n_channels" in l1.columns
+    assert (l1["n_channels"] >= 1).sum() >= 250        # 绝大多数来自多路 channel
+    chans = store.get_df(ctx.run_id, schema.L1_CHANNELS)
+    assert chans["channel"].nunique() >= 5             # 多路确实跑了

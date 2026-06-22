@@ -54,8 +54,10 @@ def capture(date: str, out: str | Path, *, config: ScanConfig | None = None) -> 
     cfg = config or ScanConfig()
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
+    # golden 锚定**单复合分**召回(behavior-preserving 口径);multi 是新行为,不对拍旧路径。
     smu.run(date, cap_floor_yi=cfg.cap_floor, include_bj=cfg.include_bj,
-            recall_n=cfg.recall_n, l2_n=cfg.l2_n, outdir=out, source=cfg.source)
+            recall_n=cfg.recall_n, l2_n=cfg.l2_n, outdir=out, source=cfg.source,
+            recall_mode="composite")
     return {"L1_recall": out / "L1_recall_top1000.csv", "L2_rank": out / "L2_gbdt_top200.csv"}
 
 
