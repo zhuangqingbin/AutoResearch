@@ -54,7 +54,7 @@ def train_zoo(handler, dates, horizons, model_names=None, *, price_dates=None,
                 trained = _train_one(handler, cfg, dates, horizon,
                                      price_dates=price_dates, cap_floor=cap_floor)
                 ic = float(trained.oos_rank_ic)
-                results[name] = (trained, ic)
+                results[name] = (trained, ic, fset)
                 rows.append({"horizon": horizon, "model": name, "feature_set": fset,
                              "oos_rank_ic": ic, "status": "ok"})
             except Exception as e:  # noqa: BLE001 — 单模型隔离,不毁全 zoo
@@ -62,13 +62,13 @@ def train_zoo(handler, dates, horizons, model_names=None, *, price_dates=None,
                              "oos_rank_ic": float("nan"), "status": f"error:{type(e).__name__}"})
                 print(f"[zoo] {horizon}/{name} 失败: {e!r}", file=sys.stderr)
         # 线性基线(NaN/缺 → 0.0);gate 与 leaderboard vs_linear 共用同一 base。
-        lin_ic = results.get("linear", (None, float("nan")))[1]
+        lin_ic = results.get("linear", (None, float("nan"), "core"))[1]
         base = lin_ic if lin_ic == lin_ic else 0.0
         base_by_h[horizon] = base
-        # champion 必须**实际有预测力**(ic>0)且严格胜线性 —— 否则负 IC = 反预测,部署反伤;
-        # 无合格者 → 不晋升,L2 回落 composite(中性召回序,交 L3 做真判断)。
-        winners = {n: ic for n, (_, ic) in results.items()
-                   if ic == ic and ic > base and ic > 0 and n != "linear"}
+        # champion 须:① **core**(L2 在召回帧上 predict,seq/graph 视图不可得 → 只能作 leaderboard 研究)
+        # ② **正 IC**(>0,否则反预测、部署反伤)③ 严格胜线性。无合格者 → 不晋升,L2 回落 composite。
+        winners = {n: ic for n, (_, ic, fs) in results.items()
+                   if fs == "core" and ic == ic and ic > base and ic > 0 and n != "linear"}
         if winners:
             best = max(winners, key=winners.get)
             save_champion(_tag(horizon), results[best][0], "v1", root=store_root)

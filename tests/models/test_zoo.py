@@ -40,3 +40,25 @@ def test_train_zoo_leaderboard_isolation_and_champion(tmp_path, monkeypatch):
         beat = lb[(lb.horizon == hz) & (lb.vs_linear > 0) & (lb.oos_rank_ic > 0) & (lb.status == "ok")]
         champ = load_champion_any(_tag(hz), root=tmp_path / "store")
         assert (champ is not None) == (len(beat) > 0), f"{hz} champion 门与 leaderboard 不一致"
+
+
+def test_champion_gate_restricts_to_core(tmp_path, monkeypatch):
+    """L2 champion 只从 core 选(seq/graph 视图在召回帧不可得);即便 graph IC 最高也不晋升。"""
+    import json
+
+    from autoresearch.models.base import FitReport
+    from autoresearch.models.linear import LinearComposite
+    from autoresearch.models.trainer import TrainedModel
+    monkeypatch.setattr(zoo, "_resolve_models", lambda names: [
+        ("linear", "linear", "core"), ("good_core", "good_core", "core"),
+        ("fake_graph", "fake_graph", "graph")])
+    ics = {"linear": -0.01, "good_core": 0.01, "fake_graph": 0.99}
+
+    def fake_train_one(handler, cfg, dates, label, **kw):
+        return TrainedModel(model=LinearComposite(), report=FitReport(n_rows=1, n_dates=1, notes={}),
+                            oos_rank_ic=ics[cfg.kind],
+                            meta={"kind": cfg.kind, "feature_set": cfg.feature_set})
+    monkeypatch.setattr(zoo, "_train_one", fake_train_one)
+    zoo.train_zoo(object(), ["d"], ["fwd_1_oo"], store_root=tmp_path / "store")
+    ptr = json.loads((tmp_path / "store" / "l2_fwd1" / "champion.json").read_text())
+    assert ptr["kind"] == "good_core"     # 高 IC 的 fake_graph 不被选(graph 不可作 L2 champion)
