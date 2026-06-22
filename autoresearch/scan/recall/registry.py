@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 _REGISTRY: dict[str, object] = {}
-_DEFAULTS: dict[str, "ChannelSpec"] = {}
+_DEFAULTS: dict[str, ChannelSpec] = {}
 
 
 @dataclass(frozen=True)

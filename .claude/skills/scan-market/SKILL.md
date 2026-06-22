@@ -13,7 +13,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 | 段 | 名称 | 引擎 / 模型 | 作用 | 进→出 | token |
 |---|---|---|---|---|---|
 | **L0** | 选集 | 确定性 | 全市场候选池 + 硬门(剔 ST/退/停牌/次新 + 市值地板) | 全A→~5,500 | 0 |
-| **L1** | 召回 | 确定性(IC 校准权重) | 9 因子组复合分排序,高召回 | →1,000 | 0 |
+| **L1** | 召回 | 确定性 · 多路策略召回 | 8 路 channel(动量/反转/成长/价值/主力/北向/吸筹 + IC 校准复合分)各取 top-Kᶜ → quota union(floor 保底多样性)+ provenance | →1,000 | 0 |
 | **L2** | 粗排 | **确定性 · GBDT 学习重排** | LightGBM 重排(T+1 IC 训练;oos 未胜线性则回落复合分) | →200 | **0** |
 | **L3** | 精排 | **Sonnet · holistic 单 agent** | 通看 ~200 比较选 + 增量真证据 + 论点/红队 | →~30 | 中 |
 | **L4** | 研究 | Tier-1 Sonnet 全判(~10 agent 并发) | 决策卡(评级由 `rubric_rating` 评分卡派生) | ~30 卡 | 大头 |
@@ -44,9 +44,9 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 
 1. **L0 选集 + L1 召回 + L2 粗排(全确定性,零 token)**:
    ```bash
-   uv run --no-sync python -m autoresearch.scan.universe [YYYY-MM-DD] [--source tushare] [--recall-n 1000] [--l2-n 200] [--cap-floor 30] [--exclude-bj]
+   uv run --no-sync python -m autoresearch.scan.universe [YYYY-MM-DD] [--source tushare] [--recall-n 1000] [--l2-n 200] [--cap-floor 30] [--exclude-bj] [--recall-mode multi|composite] [--recall-channels a,b,c]
    ```
-   → `L1_recall_top1000.csv`(复合分 + 9 子分〔含 volprice〕+ 原始因子)+ **`L2_gbdt_top200.csv`**(GBDT 重排 top200;`meta.l2_engine` 记 `gbdt` 或回落 `composite-linear`)+ `sectors.csv` + `meta.json`。默认源 tushare、含北交所、日期=今天。
+   → `L1_recall_top1000.csv`(复合分 + 9 子分〔含 volprice〕+ 原始因子 + **多路 provenance `recall_channels`/`n_channels`**)+ **`L1_channels.csv`**(各路召回名单,复盘/学习用)+ **`L2_gbdt_top200.csv`**(GBDT 重排 top200;`meta.l2_engine` 记 `gbdt` 或回落 `composite-linear`)+ `sectors.csv` + `meta.json`。默认 `--recall-mode multi`(8 路策略召回);`composite` 为对拍/回退口径。默认源 tushare、含北交所、日期=今天。
 2. **过目(建议)**:读 `L2_gbdt_top200.csv` 头部 + `sectors.csv`,把粗排概览给用户看一眼。
 3. **L3 精排(holistic 单 agent,200→~30)**:`l3_select.harvest_l3_evidence(date, codes)` 补真证据(龙虎榜/预告/快报)→ `l3_select.l3_table_md(date)` 把 ~200 只压成**一张紧凑表**(因子 + 证据摘要)→ **一个 `Agent(model='sonnet')` 通看全表、比较着选 ~30**(每只出 `论点 + 红队风险 + 催化 + 确信度/脆弱度 + lane`)→ 落 `L3_judged_full.csv` → `l3_select.merge_l3_finalists_v2(judged, target=30)`(趋势配额安全网)→ `finalists.csv`。函数在 `autoresearch.scan.agents.l3_select`。**比较式 > 孤立逐只打分**(后者各看各的、易虚高)。
 4. **L4 研究(token 大头,级联)**——选择器在 `autoresearch.scan.agents.l4_card`:

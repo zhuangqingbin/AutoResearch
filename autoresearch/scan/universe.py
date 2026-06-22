@@ -423,6 +423,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--l2-n", type=int, default=200, help="L2 粗排数(GBDT 重排 top N),默认 200")
     ap.add_argument("--source", choices=["em", "tushare"], default="tushare",
                     help="universe 取数源:tushare=默认(push2 常被封);em=东财 push2")
+    ap.add_argument("--recall-mode", choices=["multi", "composite"], default="multi",
+                    help="L1 召回:multi=多路策略召回(默认)| composite=单复合分(对拍/回退)")
+    ap.add_argument("--recall-channels", default=None, help="启用 channel 子集(逗号分隔;缺省=全 8 路)")
     ap.add_argument("--selftest", action="store_true", help="离线验证打分逻辑(无网络)")
     args = ap.parse_args(argv)
 
@@ -431,7 +434,9 @@ def main(argv: list[str] | None = None) -> int:
 
     analysis_date = args.date or date.today().isoformat()
     res = run(analysis_date, cap_floor_yi=args.cap_floor, include_bj=not args.exclude_bj,
-              recall_n=args.recall_n, l2_n=args.l2_n, source=args.source)
+              recall_n=args.recall_n, l2_n=args.l2_n, source=args.source,
+              recall_mode=args.recall_mode,
+              recall_channels=(args.recall_channels.split(",") if args.recall_channels else None))
     print(f"\nL0 universe={res['universe']} → 轻门 {res['after_gate_a']} → 召回 top{res['recall_n']} "
           f"→ L2 {res['l2_engine']} top{res['l2_n']} (板块概览 {res['sectors']} 个)"
           f"\n→ {res['outdir']}/L2_gbdt_top200.csv")

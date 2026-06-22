@@ -5,7 +5,9 @@ design: docs/specs/2026-06-22-l1-multi-recall-design.md。
 """
 from __future__ import annotations
 
+from autoresearch.scan.recall import channels  # noqa: F401  (registration side-effects)
 from autoresearch.scan.recall.base import gate_rank
+from autoresearch.scan.recall.merge import quota_union
 from autoresearch.scan.recall.registry import (
     CHANNEL_DEFAULTS,
     ChannelSpec,
@@ -13,8 +15,6 @@ from autoresearch.scan.recall.registry import (
     channel,
     registered_channels,
 )
-from autoresearch.scan.recall import channels  # noqa: F401  (registration side-effects)
-from autoresearch.scan.recall.merge import quota_union
 
 __all__ = ["gate_rank", "channel", "build", "registered_channels",
            "CHANNEL_DEFAULTS", "ChannelSpec", "quota_union"]
