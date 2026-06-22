@@ -86,7 +86,7 @@ class Trainer:
     def train(self, cfg: ModelConfig, dates: list[str], *, price_dates: list[str] | None = None,
               cap_floor: float = 30.0, fwd: int = 10) -> TrainedModel:
         """物化面板 → 时序切 → fit(train) → oos rank-IC(valid)。返回 TrainedModel。"""
-        panel = self.handler.materialize(dates, feature_set=cfg.feature_set,
+        panel = self.handler.materialize(dates, feature_set=cfg.feature_set, kind=cfg.feature_set,
                                          price_dates=price_dates, cap_floor=cap_floor, fwd=fwd)
         if panel.empty:
             raise ValueError("Trainer.train: materialized panel is empty (no usable formation dates)")
@@ -187,3 +187,25 @@ def load_champion(name: str, model_cls: type[Model], *, root: Path = STORE_ROOT)
     if not pkl.exists():
         return None
     return model_cls.load(pkl)
+
+
+def load_champion_any(name: str, *, root: Path = STORE_ROOT) -> Model | None:
+    """按 champion.json 的 `kind` 用 registry 解析模型类反序列化(支持任意 zoo kind)。
+
+    无 champion / pkl 缺失 / kind 未注册 / 反序列化失败 → None(调用方回落线性)。
+    与 load_champion 的区别:不需调用方预知模型类——zoo 晋升的可能是任意 kind(lgbm/mlp/…)。
+    """
+    ptr = _champion_pointer(name, root)
+    if ptr is None:
+        return None
+    pkl = _name_dir(name, root) / f"{ptr['version']}.pkl"
+    if not pkl.exists():
+        return None
+    from autoresearch.models.registry import _REGISTRY
+    cls = _REGISTRY.get(ptr.get("kind") or "")
+    if cls is None:
+        return None
+    try:
+        return cls.load(pkl)
+    except Exception:  # noqa: BLE001 — 反序列化失败 → 调用方回落线性
+        return None

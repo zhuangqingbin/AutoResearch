@@ -26,6 +26,7 @@ from autoresearch.models.trainer import (
     Trainer,
     champion_ic,
     load_champion,
+    load_champion_any,
     save_champion,
 )
 
@@ -44,6 +45,6 @@ with contextlib.suppress(ImportError):
 __all__ = [
     "Model", "Dataset", "FitReport",
     "ModelConfig", "register", "build", "registered_kinds",
-    "Trainer", "TrainedModel", "save_champion", "load_champion", "champion_ic",
+    "Trainer", "TrainedModel", "save_champion", "load_champion", "load_champion_any", "champion_ic",
     "MODELS", "ported", "by_status",
 ]
