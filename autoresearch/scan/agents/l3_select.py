@@ -23,7 +23,8 @@ _L3_COLS = ["code", "name", "industry", "composite", "gbdt_score",
             "chip_concentration", "price_to_cost", "hk_ratio", "rsi6", "pe", "pb",
             "dv_ratio", "np_yoy", "roe",
             "n_channels", "recall_channels",          # Phase 2 召回 provenance(几路共振)
-            "news_n", "news_tags", "news_head"]       # Phase 3 公告情感 digest
+            "news_n", "news_tags", "news_head",       # Phase 3 公告情感 digest(anns_d)
+            "med_n", "med_tags", "med_head"]          # 媒体新闻情感 digest(akshare stock_news_em)
 
 
 # ───────────────────────── L3:紧凑表 + 增量真证据 + finalists 合并 ─────────────────────────
@@ -77,6 +78,14 @@ def load_l3_input(date: str, root: Path | None = None) -> pd.DataFrame:
         anns = json.loads(fp.read_text(encoding="utf-8")) if fp.exists() else []
         drows.append({"code": c, **news_digest(anns)})
     df = df.merge(pd.DataFrame(drows), on="code", how="left")
+    # 媒体新闻情感 digest(L3_webnews/<code>.json,akshare stock_news_em;缺则缺省 0/""/—)。
+    web_dir = root / date / "L3_webnews"
+    mrows = []
+    for c in df["code"]:
+        fp = web_dir / f"{c}.json"
+        web = json.loads(fp.read_text(encoding="utf-8")) if fp.exists() else []
+        mrows.append({"code": c, **news_digest(web, prefix="med")})
+    df = df.merge(pd.DataFrame(mrows), on="code", how="left")
     return df
 
 
