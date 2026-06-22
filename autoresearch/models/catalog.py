@@ -29,10 +29,10 @@ MODELS: dict[str, dict] = {
     "double_ensemble": {"kind": "double_ensemble", "feature_set": "core", "status": "ported",
                         "ref": "qlib.contrib.model.double_ensemble.DEnsembleModel"},
 
-    # ── torch 表格(core,随 torch 依赖迁入) ──
-    "mlp": {"kind": "mlp", "feature_set": "core", "status": "pending-torch",
+    # ── torch 表格(core,已迁:native torch → Model 接口,走统一 Trainer) ──
+    "mlp": {"kind": "mlp", "feature_set": "core", "status": "ported",
             "ref": "qlib.contrib.model.pytorch_nn.DNNModelPytorch"},
-    "tabnet": {"kind": "tabnet", "feature_set": "core", "status": "pending-torch",
+    "tabnet": {"kind": "tabnet", "feature_set": "core", "status": "ported",
                "ref": "qlib.contrib.model.pytorch_tabnet.TabnetModel"},
 
     # ── 序列(seq 滚动窗 DataHandler + torch) ──

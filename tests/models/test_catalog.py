@@ -4,10 +4,10 @@ from __future__ import annotations
 from autoresearch.models.catalog import MODELS, by_status, ported
 from autoresearch.models.registry import registered_kinds
 
-_PORTED = {"linear", "lgbm", "xgb", "catboost", "double_ensemble"}
+_PORTED = {"linear", "lgbm", "xgb", "catboost", "double_ensemble", "mlp", "tabnet"}
 
 
-def test_five_core_models_are_ported():
+def test_core_tabular_models_are_ported():
     for name in _PORTED:
         assert name in MODELS, f"{name} missing from MODELS"
         assert MODELS[name]["status"] == "ported", f"{name} should be ported"
@@ -30,9 +30,10 @@ def test_pending_seq_entries_present():
         assert MODELS[name]["feature_set"] == "seq"
 
 
-def test_pending_torch_and_graph_tiers():
-    torch = set(by_status("pending-torch"))
-    assert {"mlp", "tabnet"} <= torch
+def test_torch_tier_ported_and_graph_pending():
+    # mlp/tabnet are now ported (torch installed + native impl); pending-torch tier is empty
+    assert by_status("pending-torch") == []
+    assert {"mlp", "tabnet"} <= set(ported())
     graph = set(by_status("pending-graph"))
     for name in ("gats", "hist", "igmtf", "sfm", "krnn"):
         assert name in graph, f"{name} should be pending-graph"
