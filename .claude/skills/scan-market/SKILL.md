@@ -15,8 +15,8 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 | **L0** | 选集 | 确定性 | 全市场候选池 + 硬门(剔 ST/退/停牌/次新 + 市值地板) | 全A→~5,500 | 0 |
 | **L1** | 召回 | 确定性 · 多路策略召回 | 8 路 channel(动量/反转/成长/价值/主力/北向/吸筹 + IC 校准复合分)各取 top-Kᶜ → quota union(floor 保底多样性)+ provenance | →1,000 | 0 |
 | **L2** | 粗排 | **确定性 · champion 学习重排** | zoo champion 重排(全 20 模型 × 3 horizon 训练、胜线性才晋升;默认 swing `l2_fwd5`,缺/未胜线性→回落 GBDT/复合分) | →200 | **0** |
-| **L3** | 精排 | **Opus-high · holistic 单 agent** | 通看 ~200 比较选 + 增量真证据 + **公告情感** + **channel 共振** + 论点/红队/sentiment | →~30 | 中 |
-| **L4** | 研究 | Tier-1 Sonnet 全判(~10 agent 并发) | 决策卡(评级由 `rubric_rating` 评分卡派生) | ~30 卡 | 大头 |
+| **L3** | 精排 | **Opus-high · holistic 单 agent** | 通看 ~200 比较选 + 增量真证据 + **公告/媒体情感(anns_d+akshare)** + **channel 共振** + 论点/红队/sentiment | →~30 | 中 |
+| **L4** | 研究 | Tier-1 Sonnet 全判(~10 agent 并发) | 决策卡(`rubric_rating` 派生评级 + **finalists WebSearch 实时催化**) | ~30 卡 | 大头 |
 | **Tier-2/3** | 对抗验证 | Opus 条件平反 + 多空辩论 | 高 conv 假阴平反 + 买点候选定级/证伪 | ~小 | 小 |
 | **L5** | 整合 | 确定性 | summary(逐阶段表 + token 估算) + buy-list + 漏斗溯源 | 1 份 | 0 |
 

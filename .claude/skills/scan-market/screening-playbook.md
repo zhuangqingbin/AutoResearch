@@ -58,15 +58,15 @@ uv run --no-sync python -m autoresearch.scan.universe <date> --source tushare
 **目标**:对 200 补 L1 没有的**真证据**,一次通看比较着选 ~30 并红队压测。慢因子在此兑现。
 
 **步骤**:
-1. 增量取数:`harvest_l3_evidence(date, l2_top200_codes)` → `L3_evidence/<code>.json`(龙虎榜席位 / 业绩预告 / 快报);**`harvest_l3_news(date, l2_top200_codes)`**(`autoresearch.scan.agents.l3_news`)→ `L3_news/<code>.json`(近 ~10 日 `anns_d` 公告标题,**入湖按 ann_date、L4/analyze 复用**;无权限降级空)。
-2. **一个 holistic subagent,`Agent(model='opus')` + high reasoning**(全表一次通看,非逐只 → 成本仍小):`l3_table_md(date)` 把 ~200 只(因子 + 证据摘要 `lhb_n/has_forecast/has_express` + **公告情感 `news_n/news_tags/news_head`** + **召回 provenance `n_channels/recall_channels`〔几路共振〕**)压成**一张紧凑表**喂它,**通看全表、横向比较着选 ~30**(每只入选出 论点/红队/催化/确信度/脆弱度/lane/**sentiment**),落 `L3_judged_full.csv`。量大可拆 2–3 个 holistic 片,但**每片仍是"比较着选"而非逐只孤立**。
+1. 增量取数:`harvest_l3_evidence(date, l2_top200_codes)` → `L3_evidence/<code>.json`(龙虎榜席位 / 业绩预告 / 快报);**`harvest_l3_news(date, l2_top200_codes)`**(`autoresearch.scan.agents.l3_news`)→ `L3_news/<code>.json`(近 ~10 日 `anns_d` 公告标题,**入湖按 ann_date、L4/analyze 复用**;无权限降级空)。**`harvest_l3_web_news(date, l2_top200_codes)`** → `L3_webnews/<code>.json`(akshare 个股新闻 `stock_news_em`,**入湖 as_of、免费 keyless、逐股降级隔离**)。
+2. **一个 holistic subagent,`Agent(model='opus')` + high reasoning**(全表一次通看,非逐只 → 成本仍小):`l3_table_md(date)` 把 ~200 只(因子 + 证据摘要 `lhb_n/has_forecast/has_express` + **公告情感 `news_*` + 媒体情感 `med_n/med_tags/med_head`〔akshare〕** + **召回 provenance `n_channels/recall_channels`〔几路共振〕**)压成**一张紧凑表**喂它,**通看全表、横向比较着选 ~30**(每只入选出 论点/红队/催化/确信度/脆弱度/lane/**sentiment**),落 `L3_judged_full.csv`。量大可拆 2–3 个 holistic 片,但**每片仍是"比较着选"而非逐只孤立**。
 3. **`merge_l3_finalists_v2(judged_df, target=30, trend_quota=10, hybrid=True)`** → `context/scan/<date>/finalists.csv`(把 holistic 入选排成 finalists + 趋势配额安全网)。
    - judged_df 需含列:`code,name,sector,lenses,conviction,fragility,thesis,risk,catalyst,triage_lean,lane,pct_60d`(`lane`/`pct_60d` 配额用,源自 L2 表)。
    - **趋势配额(安全网)**:纯 `conviction−fragility` 会把高 fragility 的强势票挤出(实测:生益+205%/亨通+158% conv 高但 frag 高 → 进不了 top30)。`merge_l3_finalists_v2` 给 trend lane 保底 `trend_quota` 席,**一半按 conviction(质量趋势:健康强势)+ 一半按 pct_60d(动量龙头:最热的票)**(hybrid)——高 fragility 是 T+1 概念,swing 不该一票否决。捞进来后由 **L4 做估值/解禁尽调定级**(实证:抛物线顶 PE160~440 + CFO负 + 解禁 多半 Underweight/Sell,质量强势如胜宏 PE77 才 Overweight)。
 
 **L3 holistic 选股 prompt(模板)**:
 > 你是资深 A股投资人 + 风险官 + PM。下面是 L2 粗排出的 ~200 只紧凑表(因子 + 龙虎榜/预告/快报摘要 + **近期公告情感 + 召回 provenance**)。**先内化『因子方向经验校准』**(上节,`render_calibration_block` 注入)。**一次通看全表、横向比较**,选出最值得深研的 ~30 只——**趋势 + 回归兼顾,别全堆抛物线顶,别只挑 composite 顶(反羊群)**。
-> **比较 rubric(5 维,逐只权衡、给"为何此刻选它")**:① **channel 共振**(`n_channels`/`recall_channels`:多路召回=多策略确认,3+ 路共振优先)② **资金确认**(main_net_ratio/lhb_n:主力真在)③ **基本面支撑**(growth/value 子分 + np_yoy/roe)④ **情感**(`news_tags`/`news_head`:回购/增持/中标=利多;减持/质押/问询/立案=利空、压 conviction)⑤ **脆弱度**(过热/见顶/利空公告)。
+> **比较 rubric(5 维,逐只权衡、给"为何此刻选它")**:① **channel 共振**(`n_channels`/`recall_channels`:多路召回=多策略确认,3+ 路共振优先)② **资金确认**(main_net_ratio/lhb_n:主力真在)③ **基本面支撑**(growth/value 子分 + np_yoy/roe)④ **情感**(公告 `news_tags` + 媒体 `med_tags`/`med_head`:回购/增持/中标=利多;减持/质押/问询/立案=利空、压 conviction;公告与媒体两路共振更可信)⑤ **脆弱度**(过热/见顶/利空公告)。
 > **比较着选**:同板块/同因子画像的票互相比、只留最强的;陷阱直接弃(高位放量派发 / winner满主力撤 / 低PE但 np<0 / 抛物线无主力承接 / 近期减持·问询·立案);**底部放量吸筹 + 基本面背书 + 多路共振**优先(`volume_price_signals`/`trap_signals` 机械底辅助);趋势票**不因"涨多"误杀健康强势**(主力还在+业绩跟得上),回归票看低位空间(低获利盘=空间)。
 > **内化校准**:满仓获利盘/winner>90 在主力撤/业绩证伪时=见顶,主力还在则不是。
 > **每只入选输出**(CSV `code,name,sector,lenses,conviction,fragility,thesis,risk,catalyst,triage_lean,lane,pct_60d,sentiment`):thesis≤25字多头论点(落因子/证据)、risk≤25字最大证伪点(**必须真,不许橡皮图章**)、catalyst≤15字时点(无则"无明确催化")、conviction/fragility 0–100、triage_lean 看多/中性/回避、lane trend/reversion、**sentiment 利多/中性/利空 + 一句依据(据公告标题)**。
@@ -87,6 +87,8 @@ uv run --no-sync python -m autoresearch.analyze.harvest <ticker> <date> --slim  
 > ② **业绩真兑现**:预增先看基数——ROE 仍低(<8%)的『预增 X 倍』是近零基数幻觉(`低基数幻觉` flag);营收同比为负(丢单)即便净利增也不算兑现;
 > ③ **估值不透支**:fwd PE 远低于 TTM 时**核实预告是否全年口径**(『+200%』只覆盖单季 → 年化真实 PE 翻几倍,标称 14.7x 可能实为 46x);CFO/NI<0 的『盈利』先打折。
 > 拿不准就给 Hold——**Buy/OW 直接进 Tier-3 辩论;Sonnet 宁可漏,也别滥报撑大 Tier-3 辩论量**。
+
+> **🔎 web 外源催化(finalists 专属,hybrid 外源新闻 Part B)**:每张卡建卡前对该股 **WebSearch**(如 `<名称> <代码> 最新 研报/突发/政策/订单`)→ 提炼 **1–2 条真·催化 + 时效**(注明日期/来源),纳入卡片 `催化`/`风险`。**边界**:仅 finalists、仅**定性佐证**——评级/目标/数字仍出自确定性 slim context(继承 analyze-ticker-lite 铁律);结果不可复现、有时延,无网/无结果 → 跳过,卡片照常。媒体情感 `med_*` 已在 L3 喂过,此处只补**实时**外源。
 
 **Tier-2 · Opus 平反(瘦,唯一职责=防假阴性)**:Tier-1 全部回卡后,主线 `ratings = parse_ratings_from_details('context/scan/<date>/details')`。**买点候选(Buy/OW)不在这里确认**——它们直接进 **Tier-3 辩论**(辩论既定级又证伪,比单遍复核强,省掉一次 Opus)。Tier-2 **只**救 Sonnet 误杀:`pick_downgrade_reviews(ratings, finalists_df, conv_floor=80, top_k=3)`——把 L3 极高确信的趋势票被 Sonnet 判到 ≤Hold 的,**派一个 `Agent(model='opus')`** 在**同 slim 证据**上**单遍平反 / 确认**,**覆盖**原 `details/<code>.md`,稿存 `context/scan/<date>/_l4_tier2_<code>.md`(归档 reasoning/l4/)。平反到 Buy/OW 的**并入下面 Tier-3 买点候选**。
 > **实测(6-18 v2)**:Tier-1 收紧后 Sonnet 降级多半判对(菱电/亚翔 Opus 也认 Hold),故默认收紧(conv_floor=80、top_k=3)——**是防"误杀真买点"的保险、不是常态;Tier-1 越可信越该调高 conv_floor 或跳过**。
