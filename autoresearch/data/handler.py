@@ -332,8 +332,10 @@ class DataHandler:
         对每个成型日跑 factor_frame(湖版),再裁到 feature_columns(feature_set) 列(+ key/标签/门)。
         与 factor_lab.factor_frame 同公式、同口径 → 同特征值。
         """
+        if kind == "seq":
+            return self._materialize_seq(dates, cap_floor=cap_floor, price_dates=price_dates, fwd=fwd)
         if kind != "core":
-            raise NotImplementedError(f"DataHandler.materialize kind={kind!r} 未实现(Phase 1 仅 core)")
+            raise NotImplementedError(f"DataHandler.materialize kind={kind!r} 未实现(core / seq)")
         price_dates = price_dates if price_dates is not None else self._discover_price_dates()
         piv = self.load_price_pivots(price_dates)
         basic = self.load_basic()
@@ -361,3 +363,44 @@ class DataHandler:
         if not ddir.exists():
             return []
         return sorted(p.stem for p in ddir.glob("*.parquet"))
+
+    def _materialize_seq(self, dates: list[str], *, cap_floor: float = 30.0,
+                         price_dates: list[str] | None = None, fwd: int = 10) -> pd.DataFrame:
+        """seq 视图:每股 SEQ_WINDOW 日滚动窗 × SEQ_FEATURES 日级特征,展平为 `{feat}_t{w}`。
+
+        universe(硬门)+ 标签(fwd_1_oo/buyable)复用 factor_frame(与 core 同口径、同股池);
+        窗特征从 lake daily 价格面板算:r=日收益、rng=日内振幅、amt=每股窗内标准化对数成交额。
+        历史不足 SEQ_WINDOW 天的成型日跳过。序列模型把 [N, W*K] reshape 回 [N, W, K]。
+        """
+        from autoresearch.data.features import LABEL, SEQ_FEATURES, SEQ_WINDOW, feature_columns
+        price_dates = price_dates if price_dates is not None else self._discover_price_dates()
+        piv = self.load_price_pivots(price_dates)
+        basic = self.load_basic()
+        high, low, close, amount, pct = (piv[k] for k in ("high", "low", "close", "amount", "pct_chg"))
+        seq_cols = feature_columns("seq")
+        frames = []
+        for D in dates:
+            if D not in price_dates:
+                continue
+            idx = price_dates.index(D)
+            win = price_dates[max(0, idx - SEQ_WINDOW + 1): idx + 1]
+            if len(win) < SEQ_WINDOW:
+                continue
+            fr = self.factor_frame(D, piv, price_dates, basic, cap_floor, fwd)
+            if fr is None or fr.empty:
+                continue
+            codes = fr["code"].tolist()
+            ret = pct[win].reindex(codes) / 100.0
+            rng = ((high[win] - low[win]) / close[win].replace(0, np.nan)).reindex(codes)
+            amt = np.log1p(amount[win].reindex(codes).clip(lower=0))
+            amt = amt.sub(amt.mean(axis=1), axis=0).div(amt.std(axis=1).replace(0, 1.0), axis=0)
+            arr = {"r": ret.to_numpy(), "rng": rng.to_numpy(), "amt": amt.to_numpy()}
+            out = {"date": D, "code": codes}
+            for w in range(SEQ_WINDOW):           # 时间主序:t0 最旧 … t(W-1) 最新
+                for f in SEQ_FEATURES:
+                    out[f"{f}_t{w}"] = arr[f][:, w]
+            seqdf = pd.DataFrame(out).merge(fr[["code", "fwd_1_oo", "buyable"]], on="code", how="left")
+            frames.append(seqdf[["date", "code", *seq_cols, "fwd_1_oo", "buyable"]])
+        if not frames:
+            return pd.DataFrame(columns=["date", "code", *seq_cols, LABEL, "buyable"])
+        return pd.concat(frames, ignore_index=True)

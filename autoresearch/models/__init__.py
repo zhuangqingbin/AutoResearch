@@ -32,7 +32,11 @@ from autoresearch.models.trainer import (
 # torch 表格 ranker(mlp/tabnet):**可选**——装了 torch 才注册;没装则跳过,树/线性 ranker
 # 不受影响(torch 是 `[torch]` extra,不是核心依赖)。放在末尾保持上面 import 块连续可排序。
 with contextlib.suppress(ImportError):
-    from autoresearch.models import mlp, tabnet  # noqa: F401  (optional registration side-effects)
+    from autoresearch.models import (  # noqa: F401  (optional registration side-effects)
+        mlp,
+        rnn,
+        tabnet,
+    )
 
 __all__ = [
     "Model", "Dataset", "FitReport",

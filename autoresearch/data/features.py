@@ -75,9 +75,17 @@ _CORE_COLS: list[str] = _dedup(
     _CANDIDATE_COLS, _GBDT_GROUP_COLS, _GBDT_RAW, ["composite"]
 )
 
-# 命名视图 registry(seq/graph 留 Phase 1 后续填,见 spec §C 三态 DataHandler)。
+# ── 序列特征(kind="seq"):每股 SEQ_WINDOW 日滚动窗 × SEQ_FEATURES 个日级特征,展平为
+# `{feat}_t{w}`(**时间主序**:w=0 最旧 … W-1 最新)→ 序列模型 reshape [N, W, K]。
+# 日级特征从 lake daily 算:r=日收益、rng=日内振幅(高-低)/收、amt=每股窗内标准化对数成交额。
+SEQ_FEATURES: list[str] = ["r", "rng", "amt"]
+SEQ_WINDOW: int = 20
+_SEQ_COLS: list[str] = [f"{f}_t{w}" for w in range(SEQ_WINDOW) for f in SEQ_FEATURES]
+
+# 命名视图 registry(graph 留后续,见 spec §C 三态 DataHandler)。
 FEATURE_SETS: dict[str, list[str]] = {
     "core": _CORE_COLS,
+    "seq": _SEQ_COLS,
 }
 
 # 训练标签:T+1 开到开 rank-norm 口径(可交易、无前视),与 factor_lab.GBDT_LABEL 同。

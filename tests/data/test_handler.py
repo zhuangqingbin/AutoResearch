@@ -230,6 +230,20 @@ def test_materialize_contains_full_core_plus_label_and_buyable(synth):
     assert {"date", "code"} <= set(panel.columns)
 
 
+def test_materialize_seq_window_and_columns(synth):
+    """kind='seq' → 每股 SEQ_WINDOW 日滚动窗 × SEQ_FEATURES,展平 {feat}_t{w} + 标签/门齐。"""
+    from autoresearch.data.features import SEQ_FEATURES, SEQ_WINDOW
+    P, F = synth
+    panel = DataHandler().materialize([F[-1]], feature_set="seq", kind="seq",
+                                      price_dates=P, cap_floor=CAP_FLOOR, fwd=FWD)
+    assert not panel.empty
+    seq_cols = feature_columns("seq")
+    assert len(seq_cols) == SEQ_WINDOW * len(SEQ_FEATURES)
+    for col in seq_cols:
+        assert col in panel.columns, f"seq materialize missing {col}"
+    assert {"date", "code", LABEL, "buyable"} <= set(panel.columns)
+
+
 def test_parity_factor_frame_vs_materialize(synth):
     """The shared factor_frame columns must be numerically identical across both pipelines."""
     P, F = synth

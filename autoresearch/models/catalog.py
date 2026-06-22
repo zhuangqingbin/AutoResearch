@@ -35,10 +35,10 @@ MODELS: dict[str, dict] = {
     "tabnet": {"kind": "tabnet", "feature_set": "core", "status": "ported",
                "ref": "qlib.contrib.model.pytorch_tabnet.TabnetModel"},
 
-    # ── 序列(seq 滚动窗 DataHandler + torch) ──
-    "lstm": {"kind": "lstm", "feature_set": "seq", "status": "pending-seq",
+    # ── 序列(seq 滚动窗 DataHandler + torch);lstm/gru 已迁,其余待续 ──
+    "lstm": {"kind": "lstm", "feature_set": "seq", "status": "ported",
              "ref": "qlib.contrib.model.pytorch_lstm.LSTMModel"},
-    "gru": {"kind": "gru", "feature_set": "seq", "status": "pending-seq",
+    "gru": {"kind": "gru", "feature_set": "seq", "status": "ported",
             "ref": "qlib.contrib.model.pytorch_gru.GRUModel"},
     "alstm": {"kind": "alstm", "feature_set": "seq", "status": "pending-seq",
               "ref": "qlib.contrib.model.pytorch_alstm.ALSTMModel"},
