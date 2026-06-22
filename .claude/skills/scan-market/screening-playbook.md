@@ -58,18 +58,20 @@ uv run --no-sync python -m autoresearch.scan.universe <date> --source tushare
 **目标**:对 200 补 L1 没有的**真证据**,一次通看比较着选 ~30 并红队压测。慢因子在此兑现。
 
 **步骤**:
-1. 增量取数:`harvest_l3_evidence(date, l2_top200_codes)` → 每只 `context/scan/<date>/L3_evidence/<code>.json`(龙虎榜席位 / 业绩预告 / 快报;无权限端点降级标注)。
-2. **一个 holistic subagent,`Agent(model='sonnet')`**:`l3_table_md(date)` 把 ~200 只(因子 + 证据摘要 `lhb_n/has_forecast/has_express`)压成**一张紧凑表**喂它,**通看全表、横向比较着选 ~30**(每只入选出 论点/红队/催化/确信度/脆弱度/lane),落 `L3_judged_full.csv`。量大可拆 2–3 个 holistic 片(每片通看一截、各给配额),但**每片仍是"比较着选"而非逐只孤立**。
+1. 增量取数:`harvest_l3_evidence(date, l2_top200_codes)` → `L3_evidence/<code>.json`(龙虎榜席位 / 业绩预告 / 快报);**`harvest_l3_news(date, l2_top200_codes)`**(`autoresearch.scan.agents.l3_news`)→ `L3_news/<code>.json`(近 ~10 日 `anns_d` 公告标题,**入湖按 ann_date、L4/analyze 复用**;无权限降级空)。
+2. **一个 holistic subagent,`Agent(model='opus')` + high reasoning**(全表一次通看,非逐只 → 成本仍小):`l3_table_md(date)` 把 ~200 只(因子 + 证据摘要 `lhb_n/has_forecast/has_express` + **公告情感 `news_n/news_tags/news_head`** + **召回 provenance `n_channels/recall_channels`〔几路共振〕**)压成**一张紧凑表**喂它,**通看全表、横向比较着选 ~30**(每只入选出 论点/红队/催化/确信度/脆弱度/lane/**sentiment**),落 `L3_judged_full.csv`。量大可拆 2–3 个 holistic 片,但**每片仍是"比较着选"而非逐只孤立**。
 3. **`merge_l3_finalists_v2(judged_df, target=30, trend_quota=10, hybrid=True)`** → `context/scan/<date>/finalists.csv`(把 holistic 入选排成 finalists + 趋势配额安全网)。
    - judged_df 需含列:`code,name,sector,lenses,conviction,fragility,thesis,risk,catalyst,triage_lean,lane,pct_60d`(`lane`/`pct_60d` 配额用,源自 L2 表)。
    - **趋势配额(安全网)**:纯 `conviction−fragility` 会把高 fragility 的强势票挤出(实测:生益+205%/亨通+158% conv 高但 frag 高 → 进不了 top30)。`merge_l3_finalists_v2` 给 trend lane 保底 `trend_quota` 席,**一半按 conviction(质量趋势:健康强势)+ 一半按 pct_60d(动量龙头:最热的票)**(hybrid)——高 fragility 是 T+1 概念,swing 不该一票否决。捞进来后由 **L4 做估值/解禁尽调定级**(实证:抛物线顶 PE160~440 + CFO负 + 解禁 多半 Underweight/Sell,质量强势如胜宏 PE77 才 Overweight)。
 
 **L3 holistic 选股 prompt(模板)**:
-> 你是资深 A股投资人 + 风险官 + PM。下面是 L2 粗排出的 ~200 只紧凑表(因子 + 龙虎榜/预告/快报摘要)。**先内化『因子方向经验校准』**(上节,`render_calibration_block` 注入)。**一次通看全表、横向比较**,选出最值得深研的 ~30 只——**趋势 + 回归兼顾,别全堆抛物线顶**。
-> **比较着选**:同板块/同因子画像的票互相比、只留最强的;陷阱直接弃(高位放量派发 / winner满主力撤 / 低PE但 np<0 / 抛物线无主力承接);**底部放量吸筹 + 基本面背书**的优先(`volume_price_signals`/`trap_signals` 机械底辅助);趋势票**不因"涨多"误杀健康强势**(主力还在+业绩跟得上),回归票看低位空间(低获利盘=空间)。
+> 你是资深 A股投资人 + 风险官 + PM。下面是 L2 粗排出的 ~200 只紧凑表(因子 + 龙虎榜/预告/快报摘要 + **近期公告情感 + 召回 provenance**)。**先内化『因子方向经验校准』**(上节,`render_calibration_block` 注入)。**一次通看全表、横向比较**,选出最值得深研的 ~30 只——**趋势 + 回归兼顾,别全堆抛物线顶,别只挑 composite 顶(反羊群)**。
+> **比较 rubric(5 维,逐只权衡、给"为何此刻选它")**:① **channel 共振**(`n_channels`/`recall_channels`:多路召回=多策略确认,3+ 路共振优先)② **资金确认**(main_net_ratio/lhb_n:主力真在)③ **基本面支撑**(growth/value 子分 + np_yoy/roe)④ **情感**(`news_tags`/`news_head`:回购/增持/中标=利多;减持/质押/问询/立案=利空、压 conviction)⑤ **脆弱度**(过热/见顶/利空公告)。
+> **比较着选**:同板块/同因子画像的票互相比、只留最强的;陷阱直接弃(高位放量派发 / winner满主力撤 / 低PE但 np<0 / 抛物线无主力承接 / 近期减持·问询·立案);**底部放量吸筹 + 基本面背书 + 多路共振**优先(`volume_price_signals`/`trap_signals` 机械底辅助);趋势票**不因"涨多"误杀健康强势**(主力还在+业绩跟得上),回归票看低位空间(低获利盘=空间)。
 > **内化校准**:满仓获利盘/winner>90 在主力撤/业绩证伪时=见顶,主力还在则不是。
-> **每只入选输出**(CSV `code,name,sector,lenses,conviction,fragility,thesis,risk,catalyst,triage_lean,lane,pct_60d`):thesis≤25字多头论点(落因子/证据)、risk≤25字最大证伪点(**必须真,不许橡皮图章**)、catalyst≤15字时点(无则"无明确催化")、conviction/fragility 0–100、triage_lean 看多/中性/回避、lane trend/reversion。
+> **每只入选输出**(CSV `code,name,sector,lenses,conviction,fragility,thesis,risk,catalyst,triage_lean,lane,pct_60d,sentiment`):thesis≤25字多头论点(落因子/证据)、risk≤25字最大证伪点(**必须真,不许橡皮图章**)、catalyst≤15字时点(无则"无明确催化")、conviction/fragility 0–100、triage_lean 看多/中性/回避、lane trend/reversion、**sentiment 利多/中性/利空 + 一句依据(据公告标题)**。
 > 紧凑表:`<l3_table_md(date)>`
+> **FinGPT 借鉴(记录)**:采纳「情感即特征」(公告 digest 喂 holistic);**不**跑 FinGPT 模型(Claude 即情感引擎,更强且零 API);`anns_d` = FinNLP 新闻连接器的免费等价;FinGPT 的 market-feedback(情感 vs 价格验证)→ 留 `learning/` retro 用前瞻收益验证 L3 情感判断(后续 phase)。
 
 ## L4 研究(委托 analyze-ticker-lite,三层成本级联)
 对 `finalists.csv` 跑**三层级联**:**Tier-1** Sonnet 全判 → **Tier-2** Opus 只平反被 Sonnet 误压的高 conviction → **Tier-3** Opus 对买点候选跑多空辩论(定级+证伪)——把 frontier 模型收敛到唯一真花钱的决策点,且买点候选只过一次 Opus(辩论),不再双重复核。

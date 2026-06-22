@@ -8,14 +8,14 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 ## 核心原理
 对 ~5,500 只逐个跑深度报告 = 几亿 token,不可行。本 skill 用**搜索/推荐系统式六段漏斗**:**确定性层**(零 token)把全市场富因子排序 → GBDT/线性**学习重排**收到 ~200;再让 Claude 当资深投资师 **holistic 一次通看、比较着精排**到 ~30;只对这 ~30 跑 **analyze-ticker-lite 决策卡**,最后整合。**token 只跟最终深挖的几十只成正比,与全市场规模无关。**
 
-**成本级联**:模型曲线弯成跟漏斗一致——**越宽的段越便宜**。L0/L1/**L2 全确定性(零 LLM)**;L3 精排 + L4-Tier1 走 Sonnet;**Opus 只留刀尖**(L4 顶点的 Tier-2 条件平反 + Tier-3 多空辩论)。
+**成本级联**:模型曲线弯成跟漏斗一致——**越宽的段越便宜**。L0/L1/**L2 全确定性(零 LLM)**;**L3 精排 = 1 次 Opus-high holistic**(全表一次通看、非逐只 → 单次便宜);L4-Tier1 走 Sonnet 全判;**Opus 顶点**(L4 Tier-2 条件平反 + Tier-3 多空辩论)。
 
 | 段 | 名称 | 引擎 / 模型 | 作用 | 进→出 | token |
 |---|---|---|---|---|---|
 | **L0** | 选集 | 确定性 | 全市场候选池 + 硬门(剔 ST/退/停牌/次新 + 市值地板) | 全A→~5,500 | 0 |
 | **L1** | 召回 | 确定性 · 多路策略召回 | 8 路 channel(动量/反转/成长/价值/主力/北向/吸筹 + IC 校准复合分)各取 top-Kᶜ → quota union(floor 保底多样性)+ provenance | →1,000 | 0 |
 | **L2** | 粗排 | **确定性 · GBDT 学习重排** | LightGBM 重排(T+1 IC 训练;oos 未胜线性则回落复合分) | →200 | **0** |
-| **L3** | 精排 | **Sonnet · holistic 单 agent** | 通看 ~200 比较选 + 增量真证据 + 论点/红队 | →~30 | 中 |
+| **L3** | 精排 | **Opus-high · holistic 单 agent** | 通看 ~200 比较选 + 增量真证据 + **公告情感** + **channel 共振** + 论点/红队/sentiment | →~30 | 中 |
 | **L4** | 研究 | Tier-1 Sonnet 全判(~10 agent 并发) | 决策卡(评级由 `rubric_rating` 评分卡派生) | ~30 卡 | 大头 |
 | **Tier-2/3** | 对抗验证 | Opus 条件平反 + 多空辩论 | 高 conv 假阴平反 + 买点候选定级/证伪 | ~小 | 小 |
 | **L5** | 整合 | 确定性 | summary(逐阶段表 + token 估算) + buy-list + 漏斗溯源 | 1 份 | 0 |
@@ -48,7 +48,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
    ```
    → `L1_recall_top1000.csv`(复合分 + 9 子分〔含 volprice〕+ 原始因子 + **多路 provenance `recall_channels`/`n_channels`**)+ **`L1_channels.csv`**(各路召回名单,复盘/学习用)+ **`L2_gbdt_top200.csv`**(GBDT 重排 top200;`meta.l2_engine` 记 `gbdt` 或回落 `composite-linear`)+ `sectors.csv` + `meta.json`。默认 `--recall-mode multi`(8 路策略召回);`composite` 为对拍/回退口径。默认源 tushare、含北交所、日期=今天。
 2. **过目(建议)**:读 `L2_gbdt_top200.csv` 头部 + `sectors.csv`,把粗排概览给用户看一眼。
-3. **L3 精排(holistic 单 agent,200→~30)**:`l3_select.harvest_l3_evidence(date, codes)` 补真证据(龙虎榜/预告/快报)→ `l3_select.l3_table_md(date)` 把 ~200 只压成**一张紧凑表**(因子 + 证据摘要)→ **一个 `Agent(model='sonnet')` 通看全表、比较着选 ~30**(每只出 `论点 + 红队风险 + 催化 + 确信度/脆弱度 + lane`)→ 落 `L3_judged_full.csv` → `l3_select.merge_l3_finalists_v2(judged, target=30)`(趋势配额安全网)→ `finalists.csv`。函数在 `autoresearch.scan.agents.l3_select`。**比较式 > 孤立逐只打分**(后者各看各的、易虚高)。
+3. **L3 精排(holistic 单 agent,200→~30)**:`harvest_l3_evidence`(龙虎榜/预告/快报)+ **`harvest_l3_news`(近 ~10 日 anns_d 公告情感,入湖复用)** 补真证据 → `l3_table_md(date)` 把 ~200 只压成**一张紧凑表**(因子 + 证据 + **公告情感 + 召回 provenance**)→ **一个 `Agent(model='opus')` + high reasoning 通看全表、比较着选 ~30**(5 维 rubric:channel 共振/资金/基本面/情感/脆弱;每只出 `论点 + 红队 + 催化 + 确信/脆弱 + lane + sentiment`)→ 落 `L3_judged_full.csv` → `merge_l3_finalists_v2(judged, target=30)`(趋势配额安全网)→ `finalists.csv`。函数在 `autoresearch.scan.agents.l3_select` / `l3_news`。**比较式 > 孤立逐只打分**(后者各看各的、易虚高)。
 4. **L4 研究(token 大头,级联)**——选择器在 `autoresearch.scan.agents.l4_card`:
    - **Tier-1 · 全 ~30 只 · Sonnet · 并发**:`l4_card.batch_finalists(size=3)` 切 ~10 批,**在一条消息里并发派 ~10 个 `Agent(model='sonnet')`**(非顺序逐批)跑 **analyze-ticker-lite**(`python -m autoresearch.analyze.harvest <ticker> <date> --slim` → staging `details/<ticker>.md`)。**评级由 `l4_card.rubric_rating` 评分卡派生,防 gestalt 过度多报**。
    - **Tier-2 · Opus · 条件平反**:`l4_card.pick_downgrade_reviews(ratings, finalists_df)` 把被 Sonnet 压到 ≤Hold 的高 conviction 趋势票派 `Agent(model='opus')` 单遍平反(**名单空则不触发、零 Opus**);平反到 Buy/OW 的并入买点候选。
