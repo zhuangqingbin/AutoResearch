@@ -202,13 +202,34 @@ def _harvest_vol_series(codes, analysis_date: str, lookback: int = 20) -> pd.Dat
         return pd.DataFrame(columns=["code"])
 
 
+def recall_select(scored: pd.DataFrame, analysis_date: str, recall_n: int,
+                  recall_mode: str = "multi", recall_channels=None):
+    """L1 召回:multi=多路 quota_union(provenance)| composite=单复合分降序 top-n。
+
+    返回 (recall_df, per_channel_long|None)。composite 模式逐值复现今天(parity 锚点);
+    multi 模式 8 路 channel(全复用 scoring)各取 top-Kᶜ → quota union(floor 保底多样性)。
+    单一来源:scan.universe.run(staging)与 L1Recall stage(trace)都调它。
+    """
+    if recall_mode == "composite":
+        recall = scored.sort_values("composite", ascending=False).head(recall_n).reset_index(drop=True)
+        return recall, None
+    from autoresearch.scan.recall import CHANNEL_DEFAULTS, build, quota_union, registered_channels
+    names = recall_channels or registered_channels()
+    frames = {n: build(n)(scored, analysis_date, CHANNEL_DEFAULTS[n].quota) for n in names}
+    recall, per_channel = quota_union(frames, CHANNEL_DEFAULTS, recall_n, scored)
+    return recall, per_channel
+
+
 # ───────────────────────── 编排 + 输出 ─────────────────────────
 
 
 def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
         recall_n: int = 1000, l2_n: int = 200, outdir: Path | None = None,
-        source: str = "tushare") -> dict:
-    """L0 选集 + L1 召回 + L2 粗排(GBDT 学习重排 → top l2_n)。全确定性,零 LLM。"""
+        source: str = "tushare", recall_mode: str = "multi", recall_channels=None) -> dict:
+    """L0 选集 + L1 召回 + L2 粗排(GBDT 学习重排 → top l2_n)。全确定性,零 LLM。
+
+    recall_mode:multi=多路策略召回(默认,带 provenance + L1_channels.csv)| composite=单复合分(对拍/回退)。
+    """
     if source == "tushare":
         from autoresearch.data.tushare_source import (  # 默认源(东财 push2 常被封)
             _RAW_COUNT,
@@ -229,8 +250,8 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
         uni = uni.merge(vps, on="code", how="left")
     weights = _load_weights()
     scored = composite_score(uni, weights)
-    recall = scored.sort_values("composite", ascending=False).head(recall_n).reset_index(drop=True)
-    print(f"[L1 召回] L0 {n_l0} → 轻门 {len(uni)} → 复合分 top {len(recall)}", file=sys.stderr)
+    recall, per_channel = recall_select(scored, analysis_date, recall_n, recall_mode, recall_channels)
+    print(f"[L1 召回] L0 {n_l0} → 轻门 {len(uni)} → {recall_mode} top {len(recall)}", file=sys.stderr)
     sectors = aggregate_sectors_overview(recall, uni)
 
     outdir = outdir or Path("context/scan") / analysis_date
@@ -242,7 +263,10 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
                "retail_net_yi", "winner_rate", "chip_concentration", "price_to_cost", "hk_ratio",
                "rsi6", "rsi12", "pe", "pb", "dv_ratio", "np_yoy", "rev_yoy", "roe",
                "ma_bull", "above_ma60"])
+    keep = keep + [c for c in ("recall_channels", "n_channels", "best_rank") if c in recall.columns]
     recall[[c for c in keep if c in recall.columns]].to_csv(outdir / "L1_recall_top1000.csv", index=False)
+    if per_channel is not None and len(per_channel):           # multi:各路召回名单留底(provenance/复盘)
+        per_channel.to_csv(outdir / "L1_channels.csv", index=False)
     # 全量打分(所有过门股,按 composite 降序 + recalled 标记)→ trace/ 留全阶段数据,不截断
     full = scored.sort_values("composite", ascending=False).reset_index(drop=True)
     full.insert(0, "rank", range(1, len(full) + 1))

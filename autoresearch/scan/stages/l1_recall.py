@@ -38,7 +38,7 @@ class L1Recall(Stage):
         return [schema.L0_UNIVERSE]
 
     def outputs(self) -> list[str]:
-        return [schema.L1_RECALL, schema.L1_SCORED_FULL]
+        return [schema.L1_RECALL, schema.L1_SCORED_FULL, schema.L1_CHANNELS]
 
     def run(self, ctx: RunContext) -> None:
         from autoresearch.scan import universe as smu
@@ -53,7 +53,9 @@ class L1Recall(Stage):
 
         weights = _load_weights()
         scored = composite_score(uni, weights)
-        recall = scored.sort_values("composite", ascending=False).head(recall_n).reset_index(drop=True)
+        recall, per_channel = smu.recall_select(
+            scored, ctx.analysis_date, recall_n,
+            ctx.config.recall_mode, ctx.config.recall_channels)
 
         # 全量打分(过门股按 composite 降序 + rank + recalled 标记)——trace 留全阶段不截断。
         full = scored.sort_values("composite", ascending=False).reset_index(drop=True)
@@ -68,6 +70,8 @@ class L1Recall(Stage):
         full_keep = full[["rank", "recalled"] + [c for c in _KEEP if c in full.columns]]
         ctx.trace.put_df(ctx.run_id, schema.L1_RECALL, recall_full)
         ctx.trace.put_df(ctx.run_id, schema.L1_SCORED_FULL, full_keep)
+        if per_channel is not None and len(per_channel):    # multi:各路召回名单进 trace(复盘/学习)
+            ctx.trace.put_df(ctx.run_id, schema.L1_CHANNELS, per_channel)
         ctx.trace.put_meta(ctx.run_id, {
             "recall_n": int(len(recall)),
             "weights_source": weights.get("meta", {}).get("source", "weights.json"),
