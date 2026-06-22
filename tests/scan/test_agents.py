@@ -95,6 +95,12 @@ def test_merge_l3_finalists_has_required_columns():
     assert need <= set(out3.columns), f"finalists 缺列 {need - set(out3.columns)}"
 
 
+def test_merge_l3_finalists_carries_sentiment():
+    j = _judged_hybrid().assign(sentiment=["利多", "中性", "中性", "中性", "利多"])
+    out = merge_l3_finalists_v2(j, target=3, trend_quota=2)
+    assert "sentiment" in out.columns
+
+
 # ───────────────────────── L4:成本级联选择器 ─────────────────────────
 
 
