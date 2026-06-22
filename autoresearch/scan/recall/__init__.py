@@ -13,6 +13,7 @@ from autoresearch.scan.recall.registry import (
     channel,
     registered_channels,
 )
+from autoresearch.scan.recall import channels  # noqa: F401  (registration side-effects)
 
 __all__ = ["gate_rank", "channel", "build", "registered_channels",
            "CHANNEL_DEFAULTS", "ChannelSpec"]
