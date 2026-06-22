@@ -337,3 +337,16 @@ def test_materialize_retains_all_three_fwd_labels(synth):
         assert not panel.empty, f"{fs} materialize 空"
         for lab in FWD_LABELS:
             assert lab in panel.columns, f"{fs} 缺标签 {lab}"
+
+
+def test_materialize_memoized_and_returns_copy(synth):
+    """同参 materialize 命中缓存(zoo 多模型复用);返回副本,改它不污染缓存。"""
+    P, F = synth
+    h = DataHandler()
+    a = h.materialize([F[0]], price_dates=P, cap_floor=CAP_FLOOR, fwd=FWD)
+    b = h.materialize([F[0]], price_dates=P, cap_floor=CAP_FLOOR, fwd=FWD)
+    assert len(h.__dict__.get("_mat_cache", {})) == 1            # 只物化一次
+    pd.testing.assert_frame_equal(a, b)
+    a.loc[a.index[0], "composite"] = -999.0                      # 改副本
+    c = h.materialize([F[0]], price_dates=P, cap_floor=CAP_FLOOR, fwd=FWD)
+    assert c.loc[c.index[0], "composite"] != -999.0             # 缓存未被污染

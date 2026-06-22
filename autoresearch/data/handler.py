@@ -326,7 +326,23 @@ class DataHandler:
     def materialize(self, dates: list[str], feature_set: str = "core", kind: str = "core",
                     cap_floor: float = 30.0, *, price_dates: list[str] | None = None,
                     fwd: int = 10) -> pd.DataFrame:
-        """物化 dates 的横截面特征面板(纵向 concat)→ columns: date/code/<core 特征>/fwd_1_oo/buyable。
+        """物化特征面板(**memoized**)。同 (kind,feature_set,dates,cap_floor,fwd,price_dates) 只算一次。
+
+        zoo 多模型 × 多 horizon 复用同一物化(materialize 很贵:逐成型日 factor_frame + 价格 pivot)→
+        避免 N×重复物化(实测必要)。返回**副本**:调用方(Trainer)会写 __y 列,不能污染缓存。
+        """
+        key = (kind, feature_set, tuple(dates), round(float(cap_floor), 4), int(fwd),
+               tuple(price_dates) if price_dates is not None else None)
+        cache = self.__dict__.setdefault("_mat_cache", {})
+        if key not in cache:
+            cache[key] = self._materialize_impl(dates, feature_set=feature_set, kind=kind,
+                                                cap_floor=cap_floor, price_dates=price_dates, fwd=fwd)
+        return cache[key].copy()
+
+    def _materialize_impl(self, dates: list[str], feature_set: str = "core", kind: str = "core",
+                          cap_floor: float = 30.0, *, price_dates: list[str] | None = None,
+                          fwd: int = 10) -> pd.DataFrame:
+        """物化 dates 的横截面特征面板(纵向 concat)→ columns: date/code/<特征>/标签/buyable。
 
         从 lake 读 daily 价格面板(price_dates 缺省=用 daily 端点下所有可见交易日)+ stock_basic,
         对每个成型日跑 factor_frame(湖版),再裁到 feature_columns(feature_set) 列(+ key/标签/门)。
