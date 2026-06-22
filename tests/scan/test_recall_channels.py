@@ -12,7 +12,7 @@ _EIGHT = {"composite", "momentum", "reversal", "growth", "value",
 
 
 def test_eight_channels_registered():
-    assert _EIGHT <= set(registered_channels())
+    assert set(registered_channels()) >= _EIGHT
 
 
 def test_each_channel_returns_contract_and_respects_k():
