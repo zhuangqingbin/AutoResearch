@@ -35,22 +35,22 @@ MODELS: dict[str, dict] = {
     "tabnet": {"kind": "tabnet", "feature_set": "core", "status": "ported",
                "ref": "qlib.contrib.model.pytorch_tabnet.TabnetModel"},
 
-    # ── 序列(seq 滚动窗 DataHandler + torch);lstm/gru 已迁,其余待续 ──
+    # ── 序列(seq 滚动窗 DataHandler + torch);全 8 个已迁(rnn/tcn/attn) ──
     "lstm": {"kind": "lstm", "feature_set": "seq", "status": "ported",
              "ref": "qlib.contrib.model.pytorch_lstm.LSTMModel"},
     "gru": {"kind": "gru", "feature_set": "seq", "status": "ported",
             "ref": "qlib.contrib.model.pytorch_gru.GRUModel"},
-    "alstm": {"kind": "alstm", "feature_set": "seq", "status": "pending-seq",
+    "alstm": {"kind": "alstm", "feature_set": "seq", "status": "ported",
               "ref": "qlib.contrib.model.pytorch_alstm.ALSTMModel"},
-    "tcn": {"kind": "tcn", "feature_set": "seq", "status": "pending-seq",
+    "tcn": {"kind": "tcn", "feature_set": "seq", "status": "ported",
             "ref": "qlib.contrib.model.pytorch_tcn.TCNModel"},
-    "transformer": {"kind": "transformer", "feature_set": "seq", "status": "pending-seq",
+    "transformer": {"kind": "transformer", "feature_set": "seq", "status": "ported",
                     "ref": "qlib.contrib.model.pytorch_transformer.TransformerModel"},
-    "localformer": {"kind": "localformer", "feature_set": "seq", "status": "pending-seq",
+    "localformer": {"kind": "localformer", "feature_set": "seq", "status": "ported",
                     "ref": "qlib.contrib.model.pytorch_localformer.LocalformerModel"},
-    "tft": {"kind": "tft", "feature_set": "seq", "status": "pending-seq",
+    "tft": {"kind": "tft", "feature_set": "seq", "status": "ported",
             "ref": "qlib.contrib.model.pytorch_tft.TFTModel"},
-    "tra": {"kind": "tra", "feature_set": "seq", "status": "pending-seq",
+    "tra": {"kind": "tra", "feature_set": "seq", "status": "ported",
             "ref": "qlib.contrib.model.pytorch_tra.TRAModel"},
 
     # ── 图 / 其它(graph 关系图 + torch) ──

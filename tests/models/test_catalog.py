@@ -22,15 +22,12 @@ def test_ported_models_are_actually_registered():
         assert MODELS[name]["kind"] in reg, f"{name} declared ported but kind not registered"
 
 
-def test_seq_tier_lstm_gru_ported_rest_pending():
-    # lstm/gru ported (native RNN on seq feature_set); the rest still pending-seq
-    assert {"lstm", "gru"} <= set(ported())
-    for name in ("lstm", "gru"):
+def test_seq_tier_all_ported():
+    # all 8 sequence models ported (rnn/tcn/attn) on the seq feature_set
+    for name in ("lstm", "gru", "alstm", "tcn", "transformer", "localformer", "tft", "tra"):
+        assert MODELS[name]["status"] == "ported", f"{name} should be ported"
         assert MODELS[name]["feature_set"] == "seq"
-    seq_pending = set(by_status("pending-seq"))
-    for name in ("alstm", "tcn", "transformer", "localformer", "tft", "tra"):
-        assert name in seq_pending, f"{name} should be pending-seq"
-        assert MODELS[name]["feature_set"] == "seq"
+    assert by_status("pending-seq") == []
 
 
 def test_torch_tier_ported_and_graph_pending():

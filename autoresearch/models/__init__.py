@@ -33,9 +33,11 @@ from autoresearch.models.trainer import (
 # 不受影响(torch 是 `[torch]` extra,不是核心依赖)。放在末尾保持上面 import 块连续可排序。
 with contextlib.suppress(ImportError):
     from autoresearch.models import (  # noqa: F401  (optional registration side-effects)
+        attn,
         mlp,
         rnn,
         tabnet,
+        tcn,
     )
 
 __all__ = [

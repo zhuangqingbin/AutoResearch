@@ -41,7 +41,7 @@ def _dataset(panel: pd.DataFrame) -> Dataset:
                    dates=panel["date"].reset_index(drop=True))
 
 
-@pytest.mark.parametrize("kind", ["lstm", "gru"])
+@pytest.mark.parametrize("kind", ["lstm", "gru", "alstm", "tcn", "transformer", "localformer", "tft", "tra"])
 def test_seq_ranker_fit_predict_finite(kind):
     panel = _seq_panel(n_dates=6, n_stocks=100, signal=0.6)
     model = build(ModelConfig(kind=kind, feature_set="seq", params=_FAST))
@@ -54,7 +54,7 @@ def test_seq_ranker_fit_predict_finite(kind):
     assert np.isfinite(scores.to_numpy()).all(), f"{kind} produced non-finite scores"
 
 
-@pytest.mark.parametrize("kind", ["lstm", "gru"])
+@pytest.mark.parametrize("kind", ["lstm", "gru", "alstm", "tcn", "transformer", "localformer", "tft", "tra"])
 def test_seq_ranker_save_load_roundtrip(tmp_path, kind):
     panel = _seq_panel(n_dates=5, n_stocks=90, signal=0.6)
     feats = panel[panel["date"] == panel["date"].iloc[0]].reset_index(drop=True)
