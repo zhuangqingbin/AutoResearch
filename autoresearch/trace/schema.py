@@ -20,6 +20,7 @@ L0_UNIVERSE = "L0_universe"
 L1_RECALL = "L1_recall"
 L1_SCORED_FULL = "L1_scored_full"
 L2_RANK = "L2_rank"
+L1_CHANNELS = "L1_channels"   # Phase 2:各路 channel 召回名单(长表)
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,9 @@ _DISPLAY_COLS = (
     "ma_bull", "above_ma60",
 )
 
+# Phase 2 多路召回 provenance(L1_RECALL/L1_SCORED_FULL 追加;有则带、无则不强求)
+_PROV_COLS = ("recall_channels", "n_channels", "best_rank")
+
 SCHEMAS: dict[str, ArtifactSchema] = {
     # L0 过门后的全 A(canonical 列;打分前)——下游 L1 读它。
     L0_UNIVERSE: ArtifactSchema(
@@ -61,13 +65,19 @@ SCHEMAS: dict[str, ArtifactSchema] = {
     L1_RECALL: ArtifactSchema(
         name=L1_RECALL,
         required=("code", "composite"),
-        optional=("name", "industry", *_SCORE_GROUP_COLS, *_DISPLAY_COLS),
+        optional=("name", "industry", *_SCORE_GROUP_COLS, *_DISPLAY_COLS, *_PROV_COLS),
     ),
     # L1 全量打分(所有过门股,rank + recalled 标记)——trace 留全阶段不截断。
     L1_SCORED_FULL: ArtifactSchema(
         name=L1_SCORED_FULL,
         required=("rank", "recalled", "code", "composite"),
-        optional=("name", "industry", *_SCORE_GROUP_COLS, *_DISPLAY_COLS),
+        optional=("name", "industry", *_SCORE_GROUP_COLS, *_DISPLAY_COLS, *_PROV_COLS),
+    ),
+    # L1 多路召回:各 channel 的 top-Kᶜ 名单(长表;Phase 2)。
+    L1_CHANNELS: ArtifactSchema(
+        name=L1_CHANNELS,
+        required=("channel", "code"),
+        optional=("channel_rank", "channel_score"),
     ),
     # L2 粗排:champion 重排 top l2_n。
     L2_RANK: ArtifactSchema(
