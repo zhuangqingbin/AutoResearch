@@ -8,14 +8,14 @@
 **目标**
 - L1 召回从 **单条 `composite_score` 排序** → **N 路 channel 并行召回 + quota union 合并**。每路一种策略（趋势/反转/成长/价值/主力/北向/吸筹 + 校准复合分），各取 top-Kᶜ，**并集去重**到 `recall_n`。
 - **channel 可插拔**（镜像 `models/` 的 registry）：加一路 = 写函数 + `@channel` 注册，不动 stage/merge。
-- **零新因子数学**：8 路全部复用 `common/scoring.py` 现成的 lens / 因子组 / 列；只是换「怎么取候选」，不新增打分逻辑。
+- **零新因子数学**：9 路全部复用 `common/scoring.py` 现成的 lens / 因子组 / 列；只是换「怎么取候选」，不新增打分逻辑。
 - **现场全留**：每路召回名单进 trace（`L1_channels`），合并集带 **provenance**（`recall_channels` / `n_channels` / 各路 rank）→ retro 可学「哪一路召回出了赢家」。
 - **行为可回退**：`recall_mode=composite` 逐值复现今天的单复合分召回 → golden 对拍仍绿；`recall_mode=multi` 为新默认。
 
 **非目标（本 spec 不做）**
 - 不改 L2（champion 重排）、L3+ 逻辑。L2 仍 **自由重排**（见下「已知后果」）。
 - 不引入 RRF / 学习式融合（用户定：**pure quota union**）。`n_channels` 仅作 trim 的 tiebreak + provenance，非加权融合。
-- 不做情感 channel（属 Phase 3 的后续；本 spec 8 路均为量价/资金/基本面/筹码）。
+- 不做情感 channel（属 Phase 3 的后续；本 spec 9 路均为量价/资金/基本面/筹码/成交额）。
 - 不做 channel 权重的在线学习（trace 已留信号，retro 扩展属后续）。
 
 ## 决策摘要（brainstorming 定）
@@ -24,7 +24,7 @@
 |---|---|
 | 合并方式 | **pure quota union**（各路保底配额 → 并集去重；非 RRF、非 score-blend） |
 | L2 多样性 | **L2 自由重排**（不加 per-channel floor；多样性靠晋升的非线性 champion + provenance 流到 L3） |
-| channel 集 | **full 8**：composite + momentum + reversal + growth + value + main_fund + northbound + accumulation |
+| channel 集 | **full 9**：composite + momentum + reversal + growth + value + main_fund + northbound + accumulation + heat |
 | 默认 mode | `multi`（`composite` 保留作 A/B + 对拍） |
 
 ### ⚠️ 已知后果（诚实记录）
@@ -40,7 +40,7 @@ recall/
   __init__.py    # 导出 build · registered_channels · CHANNEL_DEFAULTS · quota_union
   base.py        # ChannelResult 类型 + 工具(_gate_rank)
   registry.py    # @channel(name, quota, floor, desc) 注册 + 默认元数据；build(name)；registered_channels()
-  channels.py    # 8 路内置 channel(全复用 scoring.py)
+  channels.py    # 9 路内置 channel(全复用 scoring.py)
   merge.py       # quota_union(channel_frames, defaults, recall_n) -> (merged_df, per_channel_long)
 ```
 
@@ -57,11 +57,11 @@ def momentum(frame: pd.DataFrame, date: str, k: int) -> pd.DataFrame:
 - 返回：`code / channel_rank / channel_score` 三列，已 gate + 排序 + 截断。`base._gate_rank(frame, mask, score_col, k)` 是共用 helper（过 mask → 按 score 降序 → 取 top-k → 编 rank）。
 - 未来「学习式 channel」可注册一个 callable 类实例，签名相同 → 自动进流水线。
 
-### 8 路 channel（全复用 `scoring.py`，零新因子数学）
+### 9 路 channel（全复用 `scoring.py`，零新因子数学）
 
 | name | quota | floor | gate | 排序信号 | 复用 |
 |---|---|---|---|---|---|
-| `composite` | 500 | 100 | 无 | `composite`（IC 校准复合分，=今天） | `composite_score` |
+| `composite` | 400 | 100 | 无 | `composite`（IC 校准复合分，=今天） | `composite_score` |
 | `momentum` | 250 | 50 | `momentum_gate` | `momentum_score` | `lens_momentum` |
 | `reversal` | 200 | 50 | `reversal_gate` | `reversal_score` | `lens_reversal` |
 | `growth` | 150 | 40 | `growth_gate` | `growth_score` | `lens_growth` |
@@ -69,8 +69,10 @@ def momentum(frame: pd.DataFrame, date: str, k: int) -> pd.DataFrame:
 | `main_fund` | 200 | 50 | `main_inflow_yi>0` | `main_net_ratio`（缺则 `main_inflow_yi`） | 现成列 |
 | `northbound` | 120 | 30 | `hk_ratio>0` | `hk_ratio` | 现成列 |
 | `accumulation` | 120 | 30 | froth-mirror（`vol_ratio≥1.5 & 低位 & 主力未撤`） | `vol_ratio` | `composite_score` 吸筹判据复用 |
+| `heat` | 200 | 50 | 无 | `amount_yi × (1+0.15·pct(换手)+0.10·pct(量比))` | `_pct`/`_num`（内联） |
 
-- `composite` 配额最大（校准基线、对拍锚点）；`accumulation` 是**刻意高召回低精度**的投机路，交 L2/L3/L4 证伪（与 `composite_score` 里 +5 吸筹加成同判据，不重写）。
+- `composite` 配额 400（校准基线、对拍锚点；原 500，为给 `heat`/多样性让位下调）；`accumulation` 是**刻意高召回低精度**的投机路，交 L2/L3/L4 证伪（与 `composite_score` 里 +5 吸筹加成同判据，不重写）。
+- `heat`（**后续增补**，2026-06-22）：与 `composite` **正交**的高热路——composite 是 T+1 IC 校准，**故意压抑**抛物线龙头（过热 −8/−15 + 主力出逃拖累），像中际旭创（成交额全市场第 2、composite 仅 32）在召回近乎隐形。heat 只看『钱在哪』，`floor=50` 把成交额最大的票无条件送进 L2。**机制坑（实测）**：百分位混合（amount/turnover/vol 各取分位加权）行不通——rank 把 386亿压成 0.9998（与第 100 名仅差 2pt）、换手却能 0→1 全摆，surfaces 的全是小盘换手异动股，中际旭创（换手仅 2.5%、量比 0.98）反而进不来；改用**成交额量级当乘法主轴 × 换手/量比 kicker（≤1.25×）**，才稳锁龙头（实测全市场 heat rank #1）。
 - 缺列/缺权限的 channel：gate/排序列缺失 → 该路返回空帧（不破合并；与现有「降级置 NaN」一致）。
 - `CHANNEL_DEFAULTS`：上表的 `quota/floor/desc` 存在 `registry.py`；`scan/config.py` 可整体覆盖（`channel_quotas: dict[str,int]`、`channel_floors: dict[str,int]`、`recall_channels: list[str]` 启用子集）。
 
@@ -85,7 +87,7 @@ def quota_union(channel_frames: dict[str, pd.DataFrame], defaults, recall_n: int
    - `n_channels`：命中路数（=共识计数，**union 的自然副产物，非 RRF 加权**）。
    - `best_rank`：各路 `channel_rank` 最小值。
    - `composite`：始终带（来自 composite 打分，供 tiebreak/回退）。
-2. **保底 floor**：每路 top-`floorᶜ` 标 protected（无条件保留）→ 多样性保证（8 路保底合计 ≈ 380，远 < `recall_n`）。
+2. **保底 floor**：每路 top-`floorᶜ` 标 protected（无条件保留）→ 多样性保证（9 路保底合计 ≈ 450，远 < `recall_n`）。
 3. **裁到 `recall_n`**：
    - 全部 protected 先入；
    - 剩余席位按 **(`n_channels` desc, `composite` desc)** 填（共识 + 高复合分优先；这是 trim 的 tiebreak，不是加权融合）；
@@ -115,7 +117,7 @@ def run(self, ctx):
     # 写 trace:L1_recall(带 provenance)+ L1_scored_full(不变)+ L1_channels(per_channel)
 ```
 - 段间仍只经 trace 通信；manifest 记 `recall_mode / recall_channels / n_per_channel`。
-- `scored` 全表算一次，8 路共享其列（momentum_score 等由 lens 在各 channel 内按需算；或预算进 scored —— 实现时择一，保证零重复网络取数）。
+- `scored` 全表算一次，9 路共享其列（momentum_score 等由 lens 在各 channel 内按需算；或预算进 scored —— 实现时择一，保证零重复网络取数）。
 
 ### trace schema 追加（`trace/schema.py`）
 - `L1_CHANNELS = "L1_channels"`：长表 parquet（channel/code/channel_rank/channel_score）。
@@ -124,7 +126,7 @@ def run(self, ctx):
 
 ### config 追加（`scan/config.py`）
 - `recall_mode: str = "multi"`（`multi` | `composite`）。
-- `recall_channels: list[str] | None = None`（None = 全 8 路）。
+- `recall_channels: list[str] | None = None`（None = 全 9 路）。
 - `channel_quotas: dict[str,int] | None`、`channel_floors: dict[str,int] | None`（覆盖默认）。
 - CLI：`--recall-mode`、`--recall-channels a,b,c`（默认全开）。
 
@@ -150,7 +152,7 @@ def run(self, ctx):
 ## 成功标准（Phase 2 Done）
 - `python -m autoresearch.scan run <date>`（默认 `multi`）端到端跑通，L1_recall 带 provenance、L1_channels 入 trace。
 - `recall_mode=composite` golden 对拍 diff=0（旧路径未破）。
-- 8 路 channel 全注册、`quota_union` 保证每路 top-floor 入选、输出恰 `recall_n`。
+- 9 路 channel 全注册、`quota_union` 保证每路 top-floor 入选、输出恰 `recall_n`。
 - 全 pytest 绿；ruff 净。
 - skill 文档/CLI 更新（多路召回 + provenance）。
 

@@ -207,7 +207,7 @@ def recall_select(scored: pd.DataFrame, analysis_date: str, recall_n: int,
     """L1 召回:multi=多路 quota_union(provenance)| composite=单复合分降序 top-n。
 
     返回 (recall_df, per_channel_long|None)。composite 模式逐值复现今天(parity 锚点);
-    multi 模式 8 路 channel(全复用 scoring)各取 top-Kᶜ → quota union(floor 保底多样性)。
+    multi 模式 9 路 channel(全复用 scoring)各取 top-Kᶜ → quota union(floor 保底多样性)。
     单一来源:scan.universe.run(staging)与 L1Recall stage(trace)都调它。
     """
     if recall_mode == "composite":
@@ -432,7 +432,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="universe 取数源:tushare=默认(push2 常被封);em=东财 push2")
     ap.add_argument("--recall-mode", choices=["multi", "composite"], default="multi",
                     help="L1 召回:multi=多路策略召回(默认)| composite=单复合分(对拍/回退)")
-    ap.add_argument("--recall-channels", default=None, help="启用 channel 子集(逗号分隔;缺省=全 8 路)")
+    ap.add_argument("--recall-channels", default=None, help="启用 channel 子集(逗号分隔;缺省=全 9 路)")
     ap.add_argument("--selftest", action="store_true", help="离线验证打分逻辑(无网络)")
     args = ap.parse_args(argv)
 

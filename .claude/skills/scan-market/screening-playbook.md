@@ -19,7 +19,8 @@
 uv run --no-sync python -m autoresearch.scan.universe <date> --source tushare
 ```
 - **L0 选集**:tushare 全市场富因子(daily_basic/daily×3/moneyflow 结构/stk_factor_pro/cyq_perf/hk_hold + yjbb 基本面)→ canonical 列;硬门 = 剔 ST/退/停牌/次新 + 市值地板(默认 30 亿)+ **含北交所**。
-- **L1 召回(多路策略召回)**:Step A 轻门(只去不可交易/无核心数据,尽量不误杀)→ Step B **8 路 channel 各取 top-Kᶜ**(动量/反转/成长/价值 lens + 主力/北向/吸筹 + **IC 校准复合分** channel〔9 因子组 × 行业条件化权重,读 `weights.json`〕;全复用 `common.scoring`,零新因子)→ **quota union 合并**(每路 floor 保底多样性 → 裁到 `--recall-n`〔默认 1000〕,不足从 composite backfill)。带 provenance `recall_channels`/`n_channels`(几路共振)。`--recall-mode composite` 回退单复合分(对拍/回退口径)。
+- **L1 召回(多路策略召回)**:Step A 轻门(只去不可交易/无核心数据,尽量不误杀)→ Step B **9 路 channel 各取 top-Kᶜ**(动量/反转/成长/价值 lens + 主力/北向/吸筹/**高热〔成交额量级〕** + **IC 校准复合分** channel〔9 因子组 × 行业条件化权重,读 `weights.json`〕;全复用 `common.scoring`,零新因子)→ **quota union 合并**(每路 floor 保底多样性 → 裁到 `--recall-n`〔默认 1000〕,不足从 composite backfill)。带 provenance `recall_channels`/`n_channels`(几路共振)。`--recall-mode composite` 回退单复合分(对拍/回退口径)。
+- **`heat` 高热路(成交额主导,正交 composite)**:composite 是 T+1 IC 校准、**故意压抑**抛物线龙头(过热 −8/−15 + 主力出逃拖累)——像**中际旭创**(成交额全市场第 2、composite 仅 32)在召回近乎隐形。heat 只看『钱在哪』:`amount_yi × (1+0.15·pct换手+0.10·pct量比)`,`floor=50` 把成交额最大的票无条件送进 L2。**坑(实测)**:百分位混合不行(rank 把 386亿压成 0.9998、换手却 0→1 全摆 → surfaces 全是小盘换手股,龙头进不来);**成交额量级当乘法主轴**才稳锁龙头(实测全市场 heat rank #1)。捞回的是热门龙头,froth 真伪交 L3/L4。
 - 9 因子组:①动量/趋势 ②资金·主力(净占比) ③资金·散户(小单净) ④筹码(集中度/相对成本) ⑤北向 ⑥技术(RSI/MACD) ⑦成长 ⑧价值(行业内) **⑨ volprice(多日量价资金流:CMF 买卖压 + OBV 资金方向;`_harvest_vol_series` 拉 ~20 日序列算,IC 实证 decile +40bps/t≈2、calibrate 全市场权重 0.0276=并列最高组)**。**因子→端点映射见附录 A、权重校准方法见附录 B**(符号由 T+1 IC 决定)。
 - 产物:`L1_recall_top1000.csv`(复合分 + 9 子分 + 原始因子〔含 cmf_20/obv_mom_20〕+ **provenance `recall_channels`/`n_channels`**)、**`L1_channels.csv`(各路召回名单,复盘/学习用)**、`sectors.csv`(板块概览)、`meta.json`(漏斗计数)。
 - **召回宽**:T+1 校准下复合分由快因子(动量/技术)主导,会把强动量/甚至过热票放进来——**这是故意的**(高召回),过热透支由 L2 剔。

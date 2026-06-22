@@ -110,7 +110,7 @@ def _add_common_funnel_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--recall-mode", choices=["multi", "composite"], default="multi",
                    help="L1 召回:multi=多路策略召回(默认)| composite=单复合分(对拍/回退)")
     p.add_argument("--recall-channels", default=None,
-                   help="启用的 channel 子集(逗号分隔;缺省=全 8 路)")
+                   help="启用的 channel 子集(逗号分隔;缺省=全 9 路)")
 
 
 def build_parser() -> argparse.ArgumentParser:
