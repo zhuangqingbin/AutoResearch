@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""scan-market · L4 研究的确定性 helper(成本级联三层选择器 + 评级评分卡 rubric)。
+"""scan-market · L4 研究的确定性 helper(漏斗简报 + 选择器 + 评级评分卡 rubric)。
 
-design: docs/specs/2026-06-22-autoresearch-arch-redesign-design.md §A/§D;Plan 4.1。
+design: docs/specs/2026-06-24-l4-progressive-depth-design.md。
 
-零 LLM。L4 决策卡(analyze-ticker-lite)+ Tier-2 平反 + Tier-3 多空辩论由 skill 编排 subagent
-(见 screening-playbook.md);本模块只做**确定性的级联名单 + 评级派生**:Tier-1 分批、卡片评级
-解析、Tier-2/Tier-3 候选名单、以及 LLM-as-judge 评分卡(净分定档 + OW 硬门压 Hold,防过度多报)。
+零 LLM。L4 = 一只 finalist = 一个 Opus subagent 跑 analyze-ticker-lite(渐进深度 + 早停);
+本模块只做**确定性件**:P0 漏斗简报组装(compose_funnel_brief)、卡片评级解析、买单 skeptic
+名单(pick_buy_candidates / pick_buylist)、LLM-as-judge 评分卡(净分定档 + OW 硬门压 Hold,防过度多报)。
 selftest 已迁 pytest(tests/scan/test_agents.py)。
 """
 from __future__ import annotations
@@ -14,18 +14,7 @@ from pathlib import Path
 
 import pandas as pd
 
-# ───────────────────────── L4:成本级联三层选择器(Tier-1 Sonnet / Tier-2 平反 / Tier-3 辩论) ─────────────────────────
-
-
-def batch_finalists(df: pd.DataFrame, size: int = 3):
-    """L4 Tier-1 分批:按 finalists 顺序每 size 只一个 subagent;yield (batch_idx, DataFrame)。
-
-    宽筛阶段走 Sonnet,3 只/子代理摊薄重复子代理前导(~30 张卡 → ~10 个 subagent)。
-    **这 ~10 个 subagent 由 skill 在一条消息里并发派发(并行启动),非顺序逐批**(见 screening-playbook.md)。
-    """
-    d = df.reset_index(drop=True)
-    for i in range(0, len(d), size):
-        yield i // size, d.iloc[i:i + size]
+# ───────────────────────── L4:选择器(评级解析 + 买单 skeptic 名单;单 Opus subagent 渐进深度) ─────────────────────────
 
 
 def parse_ratings_from_details(details_dir: Path | str) -> dict[str, str]:
@@ -46,8 +35,8 @@ def parse_ratings_from_details(details_dir: Path | str) -> dict[str, str]:
 
 def pick_buy_candidates(ratings: dict[str, str],
                         include: tuple[str, ...] = ("Buy", "Overweight")) -> list[str]:
-    """L4 **Tier-3 多空辩论**名单:Tier-1(+Tier-2 平反)评级落在 include 的买点候选,直接进
-    Tier-3 辩论(辩论既定级又证伪,吃掉旧 Tier-2 的单遍买点确认)。K2 默认 Buy/Overweight。"""
+    """L4 **买单独立 skeptic 名单**:最终评级 ∈ include(Buy/OW)的发布买单,每只派一个
+    独立 Opus skeptic 证伪(发布前红队)。早停只向下、买点必走 P4+P5 后才可能 ≥OW 到此。"""
     keep = set(include)
     return [c for c, r in ratings.items() if r in keep]
 
@@ -62,27 +51,6 @@ def pick_buylist(ratings: dict[str, str], floor: str = "Overweight") -> list[str
     order = {r: i for i, r in enumerate(RATINGS_5_TIER)}
     cap = order.get(floor, 1)
     return [c for c, r in ratings.items() if order.get(r, 99) <= cap]
-
-
-def pick_downgrade_reviews(ratings: dict[str, str], finalists: pd.DataFrame,
-                           conv_floor: float = 75, top_k: int = 5, max_rating: str = "Hold") -> list[str]:
-    """L4 **Tier-2**(瘦,唯一职责=防假阴性平反,**条件触发**):Sonnet 把**高 conviction 的趋势 finalist**
-    判到 ≤max_rating 的,才送 Opus 单遍复核平反——买点候选已直接进 Tier-3 辩论,Tier-2 只救误杀的边界假阴;
-    名单空(无高 conviction 趋势被压)则 **Tier-2 完全不触发、零 Opus**。按 conviction 取 top_k。"""
-    from autoresearch.agents.utils.rating import RATINGS_5_TIER
-    order = {r: i for i, r in enumerate(RATINGS_5_TIER)}
-    floor_idx = order.get(max_rating, 2)
-    df = finalists.copy()
-    df["code"] = df["code"].astype(str).str.zfill(6)
-    conv = pd.to_numeric(df.get("conviction"), errors="coerce").fillna(0)
-    lane = df["lane"] if "lane" in df.columns else pd.Series("", index=df.index)
-    picks: list[tuple[str, float]] = []
-    for i, c in enumerate(df["code"]):
-        rt = ratings.get(c, "Hold")
-        if lane.iloc[i] == "trend" and conv.iloc[i] >= conv_floor and order.get(rt, 9) >= floor_idx:
-            picks.append((c, float(conv.iloc[i])))
-    picks.sort(key=lambda x: -x[1])
-    return [c for c, _ in picks[:top_k]]
 
 
 # ───────────────────────── L4 · P0:漏斗简报(定向,确定性组装) ─────────────────────────

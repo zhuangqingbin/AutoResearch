@@ -3,8 +3,7 @@
 覆盖(逐项对应原 selftest):
   - L3 紧凑表 / load_l3_input(证据摘要 lhb_n/has_forecast/has_express)/ l3_table_md
   - merge_l3_finalists_v2 趋势配额混合(一半 conviction + 一半 pct_60d)+ schema 列
-  - L4 batch_finalists(30→10 批)/ parse_ratings_from_details / pick_buy_candidates / pick_buylist
-  - pick_downgrade_reviews 条件触发(高 conv 趋势被压 Hold 才入,否则空)
+  - L4 compose_funnel_brief(P0 简报)/ parse_ratings_from_details / pick_buy_candidates(买单 skeptic 名单)/ pick_buylist
   - rubric_rating 净分定档 + OW 门压 Hold(键名容错)
 NO network. 纯确定性。
 """
@@ -20,12 +19,10 @@ from autoresearch.scan.agents.l3_select import (
     merge_l3_finalists_v2,
 )
 from autoresearch.scan.agents.l4_card import (
-    batch_finalists,
     compose_funnel_brief,
     parse_ratings_from_details,
     pick_buy_candidates,
     pick_buylist,
-    pick_downgrade_reviews,
     rubric_rating,
 )
 
@@ -102,13 +99,7 @@ def test_merge_l3_finalists_carries_sentiment():
     assert "sentiment" in out.columns
 
 
-# ───────────────────────── L4:成本级联选择器 ─────────────────────────
-
-
-def test_batch_finalists_30_to_10_batches():
-    batched = [len(x[1]) for x in batch_finalists(
-        pd.DataFrame({"code": [f"{i:06d}" for i in range(30)]}), size=3)]
-    assert batched == [3] * 10, f"batch_finalists 30→10 批错: {batched}"
+# ───────────────────────── L4:选择器(评级解析 + 买单 skeptic 名单) ─────────────────────────
 
 
 def test_parse_ratings_from_details(tmp_path):
@@ -122,25 +113,13 @@ def test_parse_ratings_from_details(tmp_path):
     assert parse_ratings_from_details(dd) == cards
 
 
-def test_pick_buy_candidates_and_buylist(tmp_path):
+def test_pick_buy_candidates_is_buy_skeptic_list(tmp_path):
+    """pick_buy_candidates(ratings) = 最终 ≥OW 买单 → 独立 skeptic 名单(语义改;集合不变)。"""
     got = {"000001": "Buy", "000002": "Overweight", "000003": "Hold",
            "000004": "Underweight", "000005": "Sell"}
     assert set(pick_buy_candidates(got)) == {"000001", "000002"}
     assert set(pick_buylist(got, floor="Overweight")) == {"000001", "000002"}
     assert set(pick_buylist(got, floor="Buy")) == {"000001"}
-
-
-def test_pick_downgrade_reviews_conditional():
-    """高 conviction 趋势被压 ≤Hold → 送 Tier-2;低conv/回归/已OW 都排除;无假阴则空(零 Opus)。"""
-    fdf = pd.DataFrame({"code": ["000021", "000022", "000023", "000024"],
-                        "lane": ["trend", "trend", "reversion", "trend"],
-                        "conviction": [90, 60, 90, 95]})
-    rev = pick_downgrade_reviews(
-        {"000021": "Hold", "000022": "Hold", "000023": "Hold", "000024": "Overweight"},
-        fdf, conv_floor=75, top_k=5)
-    assert set(rev) == {"000021"}, f"高conv趋势被压Hold 才入: {rev}"
-    assert not pick_downgrade_reviews({"000021": "Overweight"}, fdf.head(1), conv_floor=75), \
-        "无假阴时应空(Tier-2 不触发)"
 
 
 # ───────────────────────── L4 · C:rubric 评分卡 ─────────────────────────
