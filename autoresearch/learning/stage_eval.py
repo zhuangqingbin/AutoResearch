@@ -249,6 +249,15 @@ def render_stage_eval(res: dict) -> list[str]:
     out = [f"\n## 各阶段 agent edge(已实现 {res.get('n_realized', '?')} 只;T+5 收口径,L2 用 T+1)"]
     if not s:
         return out + ["_无可评估阶段(staging 缺失)_"]
+    if "L1" in s:
+        d = s["L1"]
+        chans = sorted(d.get("by_channel", []),
+                       key=lambda r: (r.get("unique_excess_t5") is None, -(r.get("unique_excess_t5") or 0)))
+        head = "、".join(f"{r['channel']} 边际{_pct(r.get('unique_excess_t5'))}×{r.get('n_unique', 0)}"
+                         f"(命中{_pct(r.get('hit_rate_t5'))})" for r in chans[:6])
+        out.append(f"- **L1 多路召回**:各路边际超额(unique vs 全市场,T+5):{head or '—'}"
+                   f";n_channels 共振 IC(T+5){d.get('ic_n_channels_t5')}"
+                   f"  _(边际>0=该路找到别人没找到的赢家,值得留)_")
     if "L2" in s:
         d = s["L2"]
         out.append(f"- **L2 粗排**:keep {d['n_in']} vs cut {d['n_out']},fwd lift **{_pct(d['lift'])}**"

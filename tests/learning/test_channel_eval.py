@@ -65,3 +65,13 @@ def test_evaluate_writes_l1_channel_block(tmp_path):
     assert (sdir / "retro" / "channel_eval.csv").exists()
     ce = pd.read_csv(sdir / "retro" / "channel_eval.csv")
     assert "unique_excess_t5" in ce.columns and "heat" in set(ce["channel"])
+
+
+def test_render_has_l1_channel_section():
+    from autoresearch.learning.stage_eval import render_stage_eval
+    res = {"date": "2026-06-20", "n_realized": 5, "stages": {"L1": {
+        "by_channel": [{"channel": "heat", "n_unique": 2, "unique_excess_t5": 0.06, "hit_rate_t5": 1.0},
+                       {"channel": "composite", "n_unique": 1, "unique_excess_t5": -0.06, "hit_rate_t5": 0.0}],
+        "ic_n_channels_t5": 0.12}}}
+    md = "\n".join(render_stage_eval(res))
+    assert "L1 多路召回" in md and "heat" in md and "+6.0%" in md
