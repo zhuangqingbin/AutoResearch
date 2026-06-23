@@ -24,6 +24,8 @@ scan-market 出的报告是"事前判断";retro 用**当日已实现 T+1 涨跌*
 ## 流程
 读 `retro-playbook.md` 跑完整 6 步:`pending_days` → `attribute`+`write_retro_input` → Claude 诊断(三段药 + 分离消息脉冲)→ 自动重标定 + changelog → 建议/经验 → retro 报告 + `mark_done`。
 
+- **per-channel edge(L1 段)**:`stage_eval.evaluate` 已落 `retro/channel_eval.csv`(每路 T+5 截面**边际超额** `unique_excess_t5` = 这路独占票有没有赢);跨日看 `uv run --no-sync python -m autoresearch.learning.channel_ledger`(→ `reports/learning/channel_ledger.md`)。某路 `unique_excess_t5` 持续为负且 `n_days≥3` → 建议下调其 quota(写 `proposals.jsonl`,**人工决定,不自动改**)。`n_days<3` 标 ⚠样本少,不下结论。
+
 ## 前置
 - 项目根目录;`.env` 有 `TUSHARE_TOKEN`;factor_lab cache 在(retro 会按需补拉 D+1/D+2 的 daily)。
 - 依赖 Phase 1 的 `feedback_store`(写经验/建议/审计)。模型建议 **Sonnet**(结构化对比,便宜)。

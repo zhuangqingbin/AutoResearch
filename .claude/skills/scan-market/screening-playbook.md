@@ -174,6 +174,8 @@ uv run --no-sync python -m autoresearch.research.factor_lab eval        # 复核
 5. **产物**:`weights.json`(`{行业:{因子:权重}}` + as-of/样本期/horizon/k),L1 读它打分,**权重与代码解耦**。改因子/组后必须重跑本闭环再上线。
 > 改 `weights.json` 前先 `feedback_store.snapshot_weights()` 留快照,出问题可 `rollback_weights(sha)` 回滚。
 
+- **per-channel 前向归因(`stage_eval` L1 段 + `channel_ledger`)**:retro 评估每只召回票的 T+5 **截面超额**(个股 fwd − 全市场中位),按 `recall_channels` provenance 归到各路 → `context/scan/<date>/retro/channel_eval.csv`。头条看 **`unique_excess_t5`**(仅此一路独占票的超额 = 边际 alpha:这路有没有找到别人没找到的赢家),buyable-aware(D+1 买不进的剔出 + `n_unbuyable` 计数);另带 `n_channels` 共振 rank-IC(多路共振是否预测,验证 merge tiebreak)。**单日是噪声**;跨日滚动:`uv run --no-sync python -m autoresearch.learning.channel_ledger` → `reports/learning/channel_ledger.md`(`n_days<3` 标 ⚠样本少)。**measure-only**:据此人/scan-retro 决定调不调某路 quota,不自动改。
+
 ## 附录 C · IC 实证基线(读校准块 / 写 prompt 的依据)
 > **⚠️ 窗口 = regime,符号会翻**:`render_calibration_block` 注入的是 **live `weights.json`**,随校准窗口漂移。**近季(23 日)momentum/tech/volprice 为正**(下方详表);**近年(84 日)它们转负**(全市场组 IC:动量 −0.035、技术 −0.046、volprice −0.035、价值 +0.009、散户 +0.006)= **reversal regime**。用近季(动量延续)还是近年(均值回归)窗口是 **regime 选择**——这恰是『召回随 regime 漂移』的活样本,不是 bug。`weights.84d.json` 存了近年快照;`snapshot_weights()` 留每次校准。
 
