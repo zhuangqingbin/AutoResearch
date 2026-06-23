@@ -8,11 +8,10 @@
 ```
 全A ~5,500 →(L0 选集·硬门)~4,300 →(L1 召回·复合分 top)1,000
    →(L2 粗排·GBDT 学习重排·零 LLM)200 →(L3 精排·holistic 单 agent 通看比较选 + 增量证据/论点/红队)~30
-   →(L4 研究·级联卡:Tier-1 Sonnet 全判〔rubric 派生〕·~10 agent 并发 / Tier-2 Opus 条件平反)~30 张
-   →(Tier-3 买点候选多空辩论·多头⚔空头 + PM 3透镜裁判,定级+证伪)~8 →(L5 整合)<运行时刻YYYYMMDD_HHMM>/{summary.md〔逐阶段表 + token 估算〕 + details/〈名称〉 + trace/ + manifest.json〔记数据日〕}
+   →(L4 研究·一只=一个 Opus subagent 渐进深度 DD + 早停〔P0 简报→P1–P3 表面→主早停②→P4 陷阱核→③击杀→P5 满卡〕·~29 并发)~29 张
+   →(买单独立 skeptic·≥OW 每只一个 Opus 证伪 + PM 3透镜裁判)~0–4 →(L5 整合)<运行时刻YYYYMMDD_HHMM>/{summary.md + details/〈名称〉 + trace/ + manifest.json〔记数据日〕}
 ```
-**成本级联**:模型曲线弯成跟漏斗一致——**越宽越便宜,Opus 只留刀尖**。
-**L2 确定性(GBDT,零 LLM)**;L3 / L4-Tier1 走 **Sonnet**;**Opus 只在 L4 顶点出场**(Tier-2 条件平反 ~0–3 + Tier-3 多空辩论 ~8×2 多/空)。**能力提升也只压顶点**:C 评分卡(`rubric_rating`)把 Sonnet 过度多报压在 Tier-1、买点候选变少;买点候选直接进 Tier-3 辩论(辩论既定级又证伪,一次 Opus 顶过去『单遍复核 + 对抗』两步)。L0/L1/L2/L5 零 token。
+**渐进深度 + 早停**:L4 = 一只 finalist = 一个 Opus subagent 跑 analyze-ticker-lite——**读够真数据才判,判断不好就早停**(出早停卡、不深挖),看着像买点的才走 P4 陷阱核 + P5 满卡。**全程 Opus 质量;省 token 靠早停**(多数 finalist 在 P3 主早停跳过深核 + 精雕)。**漏斗简报只定向不判**(信息薄,据它早停=误杀);**评级由 `rubric_rating` 评分卡派生**(防 gestalt 过度多报)。买点(≥OW)再过一道**独立 Opus skeptic** 证伪(发布前红队)。L0/L1/L2/L5 零 token。
 
 ## L0 选集 + L1 召回(`autoresearch.scan.universe`,确定性,零 token)
 ```bash
@@ -75,40 +74,32 @@ uv run --no-sync python -m autoresearch.scan.universe <date> --source tushare
 > 紧凑表:`<l3_table_md(date)>`
 > **FinGPT 借鉴(记录)**:采纳「情感即特征」(公告 digest 喂 holistic);**不**跑 FinGPT 模型(Claude 即情感引擎,更强且零 API);`anns_d` = FinNLP 新闻连接器的免费等价;FinGPT 的 market-feedback(情感 vs 价格验证)→ 留 `learning/` retro 用前瞻收益验证 L3 情感判断(后续 phase)。
 
-## L4 研究(委托 analyze-ticker-lite,三层成本级联)
-对 `finalists.csv` 跑**三层级联**:**Tier-1** Sonnet 全判 → **Tier-2** Opus 只平反被 Sonnet 误压的高 conviction → **Tier-3** Opus 对买点候选跑多空辩论(定级+证伪)——把 frontier 模型收敛到唯一真花钱的决策点,且买点候选只过一次 Opus(辩论),不再双重复核。
+## L4 研究(一只 = 一个 Opus subagent · 渐进深度 + 早停)
+对 `finalists.csv` **每只一个 `Agent(model='opus')`** 跑 analyze-ticker-lite:`l4_card.compose_funnel_brief(code, scan_dir)` 拼漏斗简报 → **前置到该票 `harvest --slim` 产出的 slim 顶部** → subagent **渐进深度 DD + 早停**(读够真数据才判,判断不好就早停、不深挖)。**~29 个 subagent 一条消息并发派发**;每只独立 context、只回传 评级/目标/R:R/早停与否。**全程 Opus,省 token 靠早停**(多数 finalist 在 P3 主早停跳过深核+精雕);无 Tier-2 平反(base 已是 Opus,无 Sonnet 误杀要救)。
 
-**Tier-1 · 全 ~30 只 · Sonnet · 并发**:`batch_finalists(finalists_df, size=3)` 切 ~10 批,**在一条消息里并发派发这 ~10 个 `Agent(model='sonnet')`(并行启动,非顺序逐批 → wall-clock ≈ 单批,不是 10×单批)**;每批 3 只/独立 context,逐只跑 analyze-ticker-lite(读其 `lite-playbook.md`):
+**取数 + 简报**:每只 `harvest <ticker> <date> --slim`(~13KB,已重排表面前/深核后 + `<!-- P4 深核分界 -->`)→ `compose_funnel_brief` 拼简报前置 slim 顶 → 决策卡 staging `context/scan/<date>/details/<ticker>.md`:
 ```bash
-uv run --no-sync python -m autoresearch.analyze.harvest <ticker> <date> --slim   # slim 取数,每只 ~13KB(≈全量 20%)
-# → 决策卡 staging 到 context/scan/<date>/details/<ticker>.md
+uv run --no-sync python -m autoresearch.analyze.harvest <ticker> <date> --slim
 ```
-> **批内逐只独立判、卡片之间不交叉引用**;每张卡仍带完整尽调 rubric(trap 信号 / 估值纪律 / **抛物线顶→压级**),保住「L4 反向打脸 L3」。
-> **⚠️ Tier-1 评级由评分卡派生(`rubric_rating`),不是 gestalt——防过度多报**(实测 6-18 Sonnet 10 OW vs Opus 3 OW,撑大了 Tier-2 复核量)。每张卡:填 6 维评分卡(强+1/中0/弱−1)算**净分**,再过 **3 道 OW 硬门**;`l4_card.rubric_rating(dims, gates)`(`autoresearch.scan.agents.l4_card`)给**建议评级**,卡片 `**Rubric建议**` + `**Rating**` 必须等于它,否则显式写 `**偏离**:<硬理由>`(发布层 `self_review` 抓『评级超 rubric』)。**净分定档**(≥+4 Buy／≥+2 OW／−1~+1 Hold／≤−2 UW／≤−4 Sell);**任一 OW 门未过 → ≥OW 一律压 Hold**。三道门:
-> ① **主力真在**:净占比为正 **且** 绝对净额(亿)同向为正——占比+但绝对净出、或微盘(<0.3亿)占比放大 = 占比假象(`trap_signals` 已机械标注『主力占比绝对额背离/微盘放大』);
-> ② **业绩真兑现**:预增先看基数——ROE 仍低(<8%)的『预增 X 倍』是近零基数幻觉(`低基数幻觉` flag);营收同比为负(丢单)即便净利增也不算兑现;
-> ③ **估值不透支**:fwd PE 远低于 TTM 时**核实预告是否全年口径**(『+200%』只覆盖单季 → 年化真实 PE 翻几倍,标称 14.7x 可能实为 46x);CFO/NI<0 的『盈利』先打折。
-> 拿不准就给 Hold——**Buy/OW 直接进 Tier-3 辩论;Sonnet 宁可漏,也别滥报撑大 Tier-3 辩论量**。
+> **渐进深度 + 早停(详见 `lite-playbook.md`)**:P0 读简报定向 → P1–P3 表面 DD 填 4 表面维(技术资金/基本面/估值/催化)→【**主早停②**:加不起买点 → 早停卡止】→ survivor 读 P4 深核分界后做陷阱核(CFO/质押/商誉/周期顶)【③击杀】→ P5 满卡。**评级由 `l4_card.rubric_rating` 评分卡派生(防 gestalt 过度多报)+ 3 道 OW 硬门(主力真在/业绩真兑现/估值不透支)**;**早停只向下、任何 ≥OW 必走 P4+P5**(绝不在早停点发买单)。
+> **防误杀铁律**:不在读到翻盘牌〔催化/forward PE/吸筹〕前早停 → 主早停 = P3 后;漏斗简报只定向不判(信息薄,据它早停=误杀)。
 
-> **🔎 web 外源催化(finalists 专属,hybrid 外源新闻 Part B)**:每张卡建卡前对该股 **WebSearch**(如 `<名称> <代码> 最新 研报/突发/政策/订单`)→ 提炼 **1–2 条真·催化 + 时效**(注明日期/来源),纳入卡片 `催化`/`风险`。**边界**:仅 finalists、仅**定性佐证**——评级/目标/数字仍出自确定性 slim context(继承 analyze-ticker-lite 铁律);结果不可复现、有时延,无网/无结果 → 跳过,卡片照常。媒体情感 `med_*` 已在 L3 喂过,此处只补**实时**外源。
+> **🔎 web 外源催化(P3/P5,finalists 专属)**:做催化核(P3)/ 终判(P5)时对该股 **WebSearch**(`<名称> <代码> 最新 研报/突发/政策/订单`)→ 提炼 **1–2 条真·催化 + 时效**(日期/来源)纳入 `催化`/`风险`。**边界**:仅定性佐证——评级/目标/数字仍出自 slim;无网/无结果 → 跳过。**早停卡不做深 WebSearch**(省 token)。
 
-**Tier-2 · Opus 平反(瘦,唯一职责=防假阴性)**:Tier-1 全部回卡后,主线 `ratings = parse_ratings_from_details('context/scan/<date>/details')`。**买点候选(Buy/OW)不在这里确认**——它们直接进 **Tier-3 辩论**(辩论既定级又证伪,比单遍复核强,省掉一次 Opus)。Tier-2 **只**救 Sonnet 误杀:`pick_downgrade_reviews(ratings, finalists_df, conv_floor=80, top_k=3)`——把 L3 极高确信的趋势票被 Sonnet 判到 ≤Hold 的,**派一个 `Agent(model='opus')`** 在**同 slim 证据**上**单遍平反 / 确认**,**覆盖**原 `details/<code>.md`,稿存 `context/scan/<date>/_l4_tier2_<code>.md`(归档 reasoning/l4/)。平反到 Buy/OW 的**并入下面 Tier-3 买点候选**。
-> **实测(6-18 v2)**:Tier-1 收紧后 Sonnet 降级多半判对(菱电/亚翔 Opus 也认 Hold),故默认收紧(conv_floor=80、top_k=3)——**是防"误杀真买点"的保险、不是常态;Tier-1 越可信越该调高 conv_floor 或跳过**。
-> **K1 旋钮**:想拉 live 证据(新闻/DCF/席位/10日资金)→ 改跑该票**全量 analyze-ticker**(更贵更有 edge)。默认 lite-on-Opus 有界可复现。
+**回卡后**:主线 `ratings = parse_ratings_from_details('context/scan/<date>/details')`(无 Tier-2 平反——base 已是 Opus)。
 
 - **复用召回因子,不重算(已落到代码层)**:`autoresearch.analyze.harvest --slim` 在 scan 目录(`context/scan/<date>/`)能找到该只的 L1 行时,**自动**用 L1 因子(主力净占比/散户/筹码/北向/技术/复合分+8子分)重建『主力/技术/筹码/北向』块 —— **零 tushare 重复取数、与召回数字一致**;`autoresearch.analyze.harvest` 只 live 取 L1 没有的深块(个股新闻/利润表/偿付/卖方目标/解禁,及 L4 才增量的 股东户数·质押/业绩预告·快报)。判断 subagent 仍把该 L1 行塞进 prompt 供推理。**A股价格真值走 tushare(`load_ohlcv` 对 .SS/.SZ/.BJ 前复权),北交所可用、与召回同源,不走 yfinance。** 想要 10 日资金序列/MACD 明细 → 对该票跑**全量 analyze-ticker**(非 slim,live 重取更全)。
 - subagent 独立 context、**只回传 评级/目标/R:R**;主线只收小结果。量大可选 **workflow** 并行(需用户显式开启)。
 - 某只想下重注 → 再单独跑**全量 analyze-ticker**(模型 **Opus**,live 重取最全)。
 
-## Tier-3 买点候选多空辩论 + PM 裁判(对抗验证闸,~8 只)
-把级联省下的预算重投到**最贵的决策点**:**所有买点候选(Buy/OW)**每只跑一场**多空辩论**——独立的多头/空头研究员各自尽调,主线当**组合经理(PM)裁判**用 3 透镜投票**定级 + 证伪**(买点候选只过这一次 Opus:辩论既定级又证伪,不再单遍复核)。错一个买点 = 真金白银。这是从单边 skeptic → 真·多 agent 辩论的升级(借鉴上游 TradingAgents 的 Bull-vs-Bear → PM 结构)。
+## 买单独立 skeptic(发布前红队,~0–4 只)
+把省下的预算重投到**最贵的决策点**:**最终评级 ≥OW 的发布买单**每只派一个**独立** `Agent(model='opus')` 专职**证伪**——它没参与过该票分析、对多头故事零包袱,比 subagent 自压更抗自我合理化。主线当**组合经理(PM)裁判**用 3 透镜投票定 verdict。错一个买点 = 真金白银。
 
-**为什么辩论而非单 skeptic**:单边 skeptic 只从一个角度挑刺——它的特定框架既可能漏掉真风险,也可能拿弱空头论点**错杀好买点**。独立多头(steelman 买点)⚔ 独立空头(证伪)+ 中立 PM 裁判 = 两面都被最强论证压过;再叠 **3 透镜共识**收掉单样本评级方差(self-consistency,治『同一票 Opus 复核两次结论飘』)。
+> **为何独立 skeptic 而非自压**:survivor 的 P5 多空对撞已是**多头自己 steelman**(它建的论点);这里只需一个**独立空头**把它拆了 + 中立 PM 裁判,比同一个 agent 自辩稳(自辩易轻描淡写自己的 bear case)。这不是「tier」(不对全 29 铺一层),是发布前最后一道闸。
 
-**步骤**:Tier-1/Tier-2 回卡后,主线 `candidates = pick_buy_candidates(ratings)`(Buy/OW 买点候选,含 Tier-2 平反进来的)。每只候选:
-1. **多头研究员**(`Agent(model='opus')`):steelman 买点——最强多头论证落到数字(预期差/催化/资金承接/估值锚),产物 `context/scan/<date>/_v_bull_<code>.md`,**只回传一句最强多头**。
-2. **空头研究员**(`Agent(model='opus')`,**与多头独立、不互看稿**):证伪买点(攻击面见下),产物 `context/scan/<date>/_v_<code>.md`,**只回传一句最强空头 + 触发位**。
-3. **PM 裁判(主线你自己,非另起 subagent——省 1 次 Opus/只,且你是天然 orchestrator)**:读多空两句,**3 透镜各投一票**:① **估值透镜**(空头估值证伪是否成立)② **资金面透镜**(主力承接 vs 派发,谁的证据硬)③ **毁灭风险透镜**(解禁/质押/业绩雷的尾部概率)。多数票定 verdict、记票型;写/追加一行到 `context/scan/<date>/verify.csv`(表头 `code,verdict,bull,bear,trigger,consensus`)。
+**步骤**:回卡后主线 `candidates = pick_buy_candidates(ratings)`(最终 Buy/OW)。每只:
+1. **独立空头 skeptic**(`Agent(model='opus')`,**不看 subagent 的满卡多头稿**):证伪买点(攻击面见下),产物 `context/scan/<date>/_v_<code>.md`,**只回传一句最强空头 + 触发位**。(subagent 满卡里的多头论点即 bull 方,无需另起多头 agent。)
+2. **PM 裁判(主线你自己,非另起 subagent)**:读 subagent 满卡的多头 + skeptic 的空头,**3 透镜各投一票**:① **估值透镜**(空头估值证伪是否成立)② **资金面透镜**(主力承接 vs 派发,谁的证据硬)③ **毁灭风险透镜**(解禁/质押/业绩雷的尾部概率)。多数票定 verdict、记票型;写/追加一行到 `context/scan/<date>/verify.csv`(表头 `code,verdict,bull,bear,trigger,consensus`)。
 
 > **verify.csv 一行**:`<code>,<维持|降级|否决>,"<≤20字最强多头·禁英文逗号>","<≤20字最强空头·禁英文逗号>","<触发位:价/指标/事件>","<共识:如 维持3/3 或 降级2/3(估值/资金)>"`。降级/否决 → 在 `details/<code>.md` 顶部加一行 `> ⚠️多空辩论:<bear>`。
 > **verdict 口径(按 3 透镜票)**:维持=≥2 透镜判多头赢(空头无证伪买点的硬证据);降级=2:1 偏空、有真实下行但不致命(评级降一档);否决=≥2 透镜判否、买点被实锤推翻(估值透支/解禁砸盘/业绩证伪)。
@@ -124,8 +115,8 @@ uv run --no-sync python -m autoresearch.analyze.harvest <ticker> <date> --slim  
 uv run --no-sync python -m autoresearch.scan.assemble <date>
 ```
 读 `meta.json` + `L1_recall_top1000.csv` + `L1_scored_full.csv` + `L2_gbdt_top200.csv` + `finalists.csv` + `details/<ticker>.md`(用 `parse_rating` 提五档 + 仪表盘),发布到 **`reports/scan/<YYYYMMDD_HHMM>/`**(目录名 = **实际运行时刻**;数据日 analysis_date 落 `manifest.json`,与目录名解耦,`retro._report_dir_for` 据此定位):
-- `summary.md` 三段:**①漏斗数量(带引擎列)②各阶段卡点+股票概览 ③投资建议**——buy-list 是**逐阶段结论宽表**(每只 `名称/板块 | L1召回〔#名次·复合分〕| L2粗排〔#重排名次·gbdt〕| L3论点·确信 | 评级 | 目标 | 置信度 | Tier-3 徽标 ✅维持/⚠️降级/🛑否决`,**已删 代码/R:R/提案 列**)+ 组合视角 + 局限。
-- **`## 各阶段 token 消耗(估算)`**:分阶段引擎/LLM 调用数/输出字节/~token(L0/L1/L2 确定性=0;L3/L4/Tier-2/3 按落盘推理稿字节 ÷2.8 粗估)。**口径诚实**:输入侧(slim 上下文)未全留痕→真实数倍于此表,为可测下界。
+- `summary.md` 三段:**①漏斗数量(带引擎列)②各阶段卡点+股票概览 ③投资建议**——buy-list 是**逐阶段结论宽表**(每只 `名称/板块 | L1召回〔#名次·复合分〕| L2粗排〔#重排名次·gbdt〕| L3论点·确信 | 评级 | 目标 | 置信度 | 买单 skeptic 徽标 ✅维持/⚠️降级/🛑否决`,**已删 代码/R:R/提案 列**)+ 组合视角 + 局限。
+- **`## 各阶段 token 消耗(估算)`**:分阶段引擎/LLM 调用数/输出字节/~token(L0/L1/L2 确定性=0;L3/L4/买单 skeptic 按落盘推理稿字节 ÷2.8 粗估)。**口径诚实**:输入侧(slim 上下文)未全留痕→真实数倍于此表,为可测下界。
 - `details/〈名称〉.md`:决策卡(**按股票名称命名**,非 ticker;staging 仍 `<code>.md`,发布层改名,retro 从卡内标题取 code)——仅当前 finalists。
 - `trace/`(与 details 同级):**每阶段全量数据**(L0计数 / **L1_scored_full 全打分排序(4000+,非仅1000)** / L1_weights / **L2_gbdt_top200 重排** / **L3_judged_full 全判断** / L3最终入选 / reasoning 推理留痕〔l3/l4/verify,L2 确定性无留痕〕/ funnel.md 溯源)。
 - 缺卡的 finalist 标 `⚠️卡片缺失`。
