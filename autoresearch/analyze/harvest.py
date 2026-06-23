@@ -69,6 +69,7 @@ from autoresearch.agents.utils.agent_utils import (  # noqa: E402
     get_verified_market_snapshot,
     resolve_instrument_identity,
 )
+from autoresearch.data.keyless import consensus_eps_block  # noqa: E402
 from autoresearch.dataflows.config import set_config  # noqa: E402
 from autoresearch.dataflows.symbol_utils import normalize_symbol  # noqa: E402
 from autoresearch.default_config import DEFAULT_CONFIG  # noqa: E402
@@ -1177,6 +1178,10 @@ def main() -> int:
     if _is_ashare(ticker):
         parts.append(_section("Corporate calendar — A股 业绩预告·快报/解禁 (v4)",
                               ashare_calendar_best, ticker, end))
+        # A股卖方一致预期 EPS → 真 fwd-PE(补 yfinance 对 A 股 forwardPE 的缺口;同花顺 keyless)
+        _eps_px = _l1_float(l1_row, "close") if l1_row is not None else None
+        parts.append(_section("A股卖方一致预期 EPS / fwd-PE (同花顺·keyless)",
+                              consensus_eps_block, ticker, _eps_px))
     if not slim:
         parts.append(_section("Peer-relative valuation & strength (v2)", peer_relative, ticker, peers, end))
 

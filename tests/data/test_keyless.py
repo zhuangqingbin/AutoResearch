@@ -1,7 +1,12 @@
 """免 token 直连源:同花顺一致预期 EPS 解析 + 取数桩 + 降级。NO network(合成 HTML)。"""
 from __future__ import annotations
 
-from autoresearch.data.keyless import fetch_consensus_eps, fwd_eps, parse_consensus_eps
+from autoresearch.data.keyless import (
+    consensus_eps_block,
+    fetch_consensus_eps,
+    fwd_eps,
+    parse_consensus_eps,
+)
 
 # 真实 worth.html 内嵌的 yjycData 形态(SJ=实际 / YC=预测)
 _HTML = (
@@ -45,3 +50,18 @@ def test_fetch_consensus_eps_degrades_on_error():
         raise RuntimeError("no net")
     out = fetch_consensus_eps("600519", get=boom)
     assert out.empty and list(out.columns) == ["year", "eps", "np_yi", "kind"]
+
+
+def test_consensus_eps_block_with_price_shows_fwd_pe():
+    out = consensus_eps_block("600519.SS", 1222.45, fetch=lambda c: parse_consensus_eps(_HTML))
+    assert "fwd-PE" in out and "17.8" in out and "2026" in out      # 1222.45/68.82 ≈ 17.8x
+
+
+def test_consensus_eps_block_no_price_lists_eps_no_pe():
+    out = consensus_eps_block("600519.SS", None, fetch=lambda c: parse_consensus_eps(_HTML))
+    assert "68.82" in out and "fwd-PE" not in out                   # 无价 → 列 EPS 不算 PE
+
+
+def test_consensus_eps_block_degrades_on_empty():
+    out = consensus_eps_block("600519.SS", 1222.45, fetch=lambda c: parse_consensus_eps("<html></html>"))
+    assert "降级" in out

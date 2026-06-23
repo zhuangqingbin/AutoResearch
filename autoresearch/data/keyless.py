@@ -100,3 +100,36 @@ def fetch_consensus_eps(code: str, *, get=_keyless_get) -> pd.DataFrame:
         return parse_consensus_eps(html)
     except Exception:
         return _empty()
+
+
+def consensus_eps_block(ticker: str, price: float | None = None, *, fetch=fetch_consensus_eps) -> str:
+    """A股卖方一致预期 EPS(同花顺 keyless)→ 预测年 EPS/净利 (+ fwd-PE 若给价)。
+
+    补 yfinance 对 A 股 `forwardPE` 多缺失的缺口。降级 / 无前瞻 → 文字提示。可注入 fetch= 离线测。
+    """
+    code = str(ticker).split(".")[0]
+    try:
+        df = fetch(code)
+    except Exception:
+        df = _empty()
+    if df is None or df.empty:
+        return "_同花顺一致预期 EPS 不可用(降级);fwd-PE 由分析师用上方 snapshot 价自算_"
+    yc = df[df["kind"] == "YC"].sort_values("year")
+    if yc.empty:
+        return "_同花顺仅有实际值、无前瞻一致预期;fwd-PE 由分析师自算_"
+    has_pe = price is not None and float(price) == float(price) and float(price) > 0
+    lines = ["| 年度 | 预测EPS(元) | 预测净利(亿) |" + (" fwd-PE |" if has_pe else ""),
+             "|---|---:|---:|" + ("---:|" if has_pe else "")]
+    for r in yc.itertuples(index=False):
+        eps = float(r.eps) if r.eps == r.eps else None
+        npy = float(r.np_yi) if r.np_yi == r.np_yi else None
+        row = f"| {r.year} | {eps if eps is not None else '—'} | {npy if npy is not None else '—'} |"
+        if has_pe:
+            row += f" {price / eps:.1f}x |" if eps else " — |"
+        lines.append(row)
+    nxt_year, nxt_eps = yc["year"].iloc[0], float(yc["eps"].iloc[0])
+    headline = (f"**下一财年({nxt_year})fwd-PE ≈ {price / nxt_eps:.1f}x**"
+                f"(卖方一致预期 EPS {nxt_eps})\n\n") if (has_pe and nxt_eps) else ""
+    note = ("\n\n_来源:同花顺 worth.html 一致预期(keyless·免 token);YC=预测/SJ=实际。"
+            "补 yfinance 对 A 股 forwardPE 的缺口。_")
+    return headline + "\n".join(lines) + note
