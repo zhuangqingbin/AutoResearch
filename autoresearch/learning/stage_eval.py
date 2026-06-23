@@ -18,6 +18,7 @@ of actions,不是单点输出)。每段一个 edge:
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -147,6 +148,27 @@ def rating_score(rating: str) -> float | None:
     return None if i is None else float(len(RATINGS_5_TIER) - 1 - i)
 
 
+def _ratings_from_details(date: str, scan_root: Path | None = None) -> dict[str, str]:
+    """从 context/scan/<date>/details/<code>.md 解析 {6位code: 五档评级}(发布前兜底)。
+
+    正则取 `**Rating**` 行(半/全角冒号);非五档 / 无文件 / 无目录 → 跳过该只。
+    """
+    scan_root = scan_root or Path("context/scan")
+    ddir = scan_root / date / "details"
+    if not ddir.exists():
+        return {}
+    valid = set(RATINGS_5_TIER)
+    out: dict[str, str] = {}
+    for p in sorted(ddir.glob("*.md")):
+        code = p.stem[:6]
+        if not code.isdigit():
+            continue
+        m = re.search(r"\*\*Rating\*\*[:：]?\s*([A-Za-z]+)", p.read_text(encoding="utf-8"))
+        if m and m.group(1) in valid:
+            out[code] = m.group(1)
+    return out
+
+
 # ───────────────────────── IO:读阶段产物 × 已实现收益 → 各段 edge ─────────────────────────
 
 
@@ -209,7 +231,7 @@ def evaluate(date: str, scan_root: Path | None = None, report_root: Path | None 
 
     # L4:finalist 五档评级单调性(从已发布卡取 {code: rating})
     import autoresearch.learning.retro as retro  # 复用卡片评级解析(发布层卡名是名称,code 从卡内标题取)
-    ratings = retro._buylist(date, report_root)
+    ratings = retro._buylist(date, report_root) or _ratings_from_details(date, scan_root)
     if ratings:
         rdf = pd.DataFrame([{"code": c, "rating": r, "rating_score": rating_score(r)}
                             for c, r in ratings.items()])

@@ -75,3 +75,19 @@ def test_render_has_l1_channel_section():
         "ic_n_channels_t5": 0.12}}}
     md = "\n".join(render_stage_eval(res))
     assert "L1 多路召回" in md and "heat" in md and "+6.0%" in md
+
+
+def test_ratings_from_details_parses_and_filters(tmp_path):
+    from autoresearch.learning.stage_eval import _ratings_from_details
+    d = tmp_path / "2026-06-20" / "details"
+    d.mkdir(parents=True)
+    (d / "000001.md").write_text("dash\n**Rating**: Overweight\n更多", encoding="utf-8")
+    (d / "000002.md").write_text("**Rating**：Hold\n", encoding="utf-8")          # 全角冒号
+    (d / "000003.md").write_text("**Rating**: Banana\n", encoding="utf-8")        # 非五档→剔
+    out = _ratings_from_details("2026-06-20", scan_root=tmp_path)
+    assert out == {"000001": "Overweight", "000002": "Hold"}
+
+
+def test_ratings_from_details_missing_dir(tmp_path):
+    from autoresearch.learning.stage_eval import _ratings_from_details
+    assert _ratings_from_details("2026-06-20", scan_root=tmp_path) == {}
