@@ -23,14 +23,15 @@ description: Use when you need a FAST, low-token decision card for a single tick
    ```bash
    uv run --no-sync python -m autoresearch.analyze.harvest <ticker> <date> --slim
    ```
-   → `context/<ticker>_<date>_slim.md`(只含:技术快照/指标、市场资金、可交易性、个股新闻、(A股)股东户数、估值概况、利润表、盈利质量、偿付、卖方目标、财报/解禁日历)。
-2. **写决策卡**:读 slim context,按 `lite-playbook.md` 产出**单张决策卡**。**默认(独立跑)**:写到 `reports/analyze/<YYYYMMDD>_<HHMM>/<名称|TICKER>_lite.md`(目录名=运行时刻;**A股→中文名、其他市场→TICKER**,与 analyze-ticker 落点一致);**被 scan L4 研究阶段 调用时**:改写到 staging `context/scan/<date>/details/<ticker>.md`(由 `autoresearch.scan.assemble` 统一发布到 `reports/scan/<YYYYMMDD>_<HHMM>/details/`,目录名=运行时刻、数据日见 manifest.json)。**每个数字出自 context**;沿用 analyze-ticker 的数据坑/铁律(见其 `engine-playbook.md`)。
+   → `context/<ticker>_<date>_slim.md`(技术快照/指标、市场资金、可交易性、个股新闻、(A股)股东户数、估值概况、利润表、盈利质量、偿付、卖方目标、财报/解禁日历)。**slim 已重排「表面块在前 / 深核块(利润表/盈利质量/偿付)在后 + `<!-- P4 深核分界 -->` 标记」支持渐进读盘;被 scan L4 调用时顶部前置漏斗简报(L1/L2/L3 评价,定向用)。**
+2. **渐进 DD + 早停**(按 `lite-playbook.md`):**P0** 读漏斗简报定向 → **P1–P3** 读表面块填 4 表面维(技术资金/基本面/估值/催化)→【**主早停②**:加不起买点 → 出**早停卡**止,跳深核】→ survivor 读 `<!-- P4 深核分界 -->` 后做 **P4 陷阱核**(CFO/质押/商誉/周期顶)【**③** 命中击杀】→ **P5** 满卡(三档 EV/R:R + 多空自压)。**早停只向下,任何 ≥OW 必走 P4+P5**。落点:**独立跑** `reports/analyze/<YYYYMMDD>_<HHMM>/<名称|TICKER>_lite.md`(A股→中文名、其他→TICKER);**被 scan L4 调用** staging `context/scan/<date>/details/<ticker>.md`(`autoresearch.scan.assemble` 发布)。沿用 analyze-ticker 数据坑/铁律(`engine-playbook.md`)。
 3. **(可选)校验**:`autoresearch.scan.assemble` / `parse_rating` 直接读这张卡(含 `**Rating**` + 决策仪表盘 + `FINAL TRANSACTION PROPOSAL`)。
 
 ## 铁律(继承 analyze-ticker)
 - 每个价格/财务数字**出自 slim context**,不编。
 - `get_verified_market_snapshot` 为价格唯一真值。
-- 卡必须含:`**Rating**`(五档)、三档情景+EV+R:R、`FINAL TRANSACTION PROPOSAL`、认错位、诚实局限。
+- 卡必须含 `**Rating**`(五档)+ `FINAL TRANSACTION PROPOSAL`(发布层依赖);**满卡**另含三档情景+EV+R:R+认错位+诚实局限,**早停卡**只到评分卡+Rating+一行(陷阱维标「未核」)。
+- **早停建立在已读真数据,不据漏斗简报判**(防误杀);**早停只向下,≥OW 必走 P4+P5**。
 - 收尾写明"Claude 推理产出、仅供研究,非投资建议"。
 - **不水化也不补全**:lite 就是卡;要附录就对本票跑全量。
 
