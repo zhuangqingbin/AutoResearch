@@ -51,3 +51,17 @@ def test_channel_edge_unique_membership_buyable_excess():
 def test_channel_edge_empty_or_no_provenance():
     assert channel_edge(pd.DataFrame(), _realized()).empty
     assert channel_edge(pd.DataFrame({"code": ["000001"]}), _realized()).empty  # 无 recall_channels 列
+
+
+def test_evaluate_writes_l1_channel_block(tmp_path):
+    sdir = tmp_path / "2026-06-20"
+    sdir.mkdir(parents=True)
+    _recall().assign(composite=[90, 80, 70, 60, 50]).to_csv(sdir / "L1_recall_top1000.csv", index=False)
+    from autoresearch.learning.stage_eval import evaluate
+    res = evaluate("2026-06-20", scan_root=tmp_path, realized=_realized())
+    assert "L1" in res["stages"]
+    assert len(res["stages"]["L1"]["by_channel"]) >= 3              # composite/heat/momentum…
+    assert "ic_n_channels_t5" in res["stages"]["L1"]
+    assert (sdir / "retro" / "channel_eval.csv").exists()
+    ce = pd.read_csv(sdir / "retro" / "channel_eval.csv")
+    assert "unique_excess_t5" in ce.columns and "heat" in set(ce["channel"])

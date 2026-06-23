@@ -170,6 +170,18 @@ def evaluate(date: str, scan_root: Path | None = None, report_root: Path | None 
         raise RuntimeError(f"{date} 的 fwd 未实现 / 无价格,暂不能逐段评估")
     realized = _code6(realized)
     res: dict = {"date": date, "n_realized": int(realized["fwd_5_oc"].notna().sum()), "stages": {}}
+    outdir = sdir / "retro"
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    # L1:多路召回 provenance × fwd → 每路边际超额 + n_channels 共振 IC
+    recall_l1 = _read(sdir / "L1_recall_top1000.csv")
+    if recall_l1 is not None and "recall_channels" in recall_l1.columns:
+        recall_l1 = _code6(recall_l1)
+        ce = channel_edge(recall_l1, realized)
+        ce.to_csv(outdir / "channel_eval.csv", index=False)
+        m1 = recall_l1.merge(_code6(realized), on="code", how="left")
+        res["stages"]["L1"] = {"by_channel": ce.to_dict("records"),
+                               "ic_n_channels_t5": rank_ic(m1, "n_channels", _RET_T5)}
 
     # L2:召回池内 是否进 GBDT 学习重排 top200(l2_kept)+ gbdt_score 的 IC(确定性 L2 的 edge 评估)
     recall, keep = _read(sdir / "L1_recall_top1000.csv"), _read(sdir / "L2_gbdt_top200.csv")
@@ -212,8 +224,6 @@ def evaluate(date: str, scan_root: Path | None = None, report_root: Path | None 
         vdf = _code6(v[["code", "verdict"]]).merge(realized, on="code", how="left")
         res["stages"]["Tier-3"] = verdict_edge(vdf, "verdict", _RET_T5)
 
-    outdir = sdir / "retro"
-    outdir.mkdir(parents=True, exist_ok=True)
     _flat_csv(res).to_csv(outdir / "stage_eval.csv", index=False)
     return res
 
