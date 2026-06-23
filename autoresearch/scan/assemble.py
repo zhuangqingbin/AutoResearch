@@ -199,7 +199,7 @@ def _funnel_rows(meta: dict, n_l2, n_l3, n_cards) -> list[str]:
         f"| L1 | 召回 | {meta.get('recall_n', '?')} | 确定性 | 轻门 + 行业条件化复合分(T+1 IC 校准) top |",
         f"| L2 | 粗排 | {n_l2} | GBDT/{l2_eng} | LightGBM 学习重排(T+1 IC 训练;oos 未胜线性则回落复合分) |",
         f"| L3 | 精排 | {n_l3} | Sonnet·holistic | 1 agent 通看 ~200 比较选 + 增量证据/论点/红队 |",
-        f"| L4 | 研究 | {n_cards} 卡 | Sonnet+Opus | analyze-ticker-lite 决策卡 + Tier-2 条件平反 + Tier-3 证伪 |",
+        f"| L4 | 研究 | {n_cards} 卡 | Opus | 一只=一个 Opus subagent 渐进深度 DD + 早停 + 买单 skeptic |",
     ]
 
 
@@ -241,16 +241,14 @@ def _stage_token_estimate(scan_dir: Path) -> list[str]:
     cards = sorted((det / "details").glob("*.md")) if (det / "details").is_dir() else []
     l3 = list(det.glob("_l3*"))
     l4t1 = list(det.glob("_l4_batch*")) + list(det.glob("_l4_prompt*"))
-    l4t2 = list(det.glob("_l4_tier2_*"))
     verify = list(det.glob("_v_*"))
     rows = [
         ("L0 选集", "确定性", 0, 0, "纯 pandas 硬门"),
         ("L1 召回", "确定性", 0, 0, "复合分排序"),
         ("L2 粗排", "确定性·GBDT", 0, 0, "LightGBM 重排,零 LLM"),
         ("L3 精排", "Sonnet·holistic", 1 if l3 else 0, _b(l3), "1 agent 通看 ~200 选 30"),
-        ("L4·T1 研究", "Sonnet", len(cards), _b(cards) + _b(l4t1), f"{len(cards)} 张决策卡"),
-        ("L4·T2 平反", "Opus", len(l4t2), _b(l4t2), "条件触发(高conv趋势假阴)"),
-        ("L4·T3 验证", "Opus", len(verify), _b(verify), "买点多空辩论证伪"),
+        ("L4 研究", "Opus", len(cards), _b(cards) + _b(l4t1), f"{len(cards)} 张卡(早停卡/满卡)"),
+        ("L4 买单 skeptic", "Opus", len(verify), _b(verify), "≥OW 买单独立证伪"),
     ]
     lines = ["## 各阶段 token 消耗(估算)",
              "| 阶段 | 引擎 | LLM 调用 | 输出字节 | ~输出token | 说明 |",
