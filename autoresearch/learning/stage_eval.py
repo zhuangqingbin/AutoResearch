@@ -92,6 +92,54 @@ def verdict_edge(df: pd.DataFrame, verdict_col: str = "verdict", ret_col: str = 
     return {"by_verdict": gm, "edge_keep_minus_down": edge}
 
 
+def channel_edge(recall: pd.DataFrame, realized: pd.DataFrame) -> pd.DataFrame:
+    """L1 多路召回 provenance × 已实现 fwd → 每路一行的前向归因(纯函数,零网络)。
+
+    recall:   L1_recall_top1000(需 code, recall_channels);realized:全市场(code, fwd_1_oo, fwd_5_oc, buyable)。
+    excess = 个股 fwd − 全市场截面中位;均值/命中只在 buyable 行;unique = recall_channels 仅此一路(边际 alpha)。
+    返回列固定,按 unique_excess_t5 降序(None 殿后)。
+    """
+    cols = ["channel", "n_recalled", "n_unique", "n_unbuyable",
+            "mean_excess_t5", "unique_excess_t5", "mean_excess_t1", "hit_rate_t5"]
+    if recall is None or not len(recall) or "recall_channels" not in recall.columns:
+        return pd.DataFrame(columns=cols)
+    r = _code6(recall)[["code", "recall_channels"]].copy()
+    rl = _code6(realized).copy()
+    for c in (_RET_T5, _RET_T1):
+        rl[c] = pd.to_numeric(rl.get(c), errors="coerce")
+    if "buyable" not in rl.columns:
+        rl["buyable"] = True
+    mkt5, mkt1 = rl[_RET_T5].median(), rl[_RET_T1].median()
+    m = r.merge(rl[["code", _RET_T5, _RET_T1, "buyable"]], on="code", how="left")
+    m["excess_t5"] = m[_RET_T5] - mkt5
+    m["excess_t1"] = m[_RET_T1] - mkt1
+    m["buyable"] = _as_bool(m["buyable"].fillna(True))
+    m["chans"] = m["recall_channels"].fillna("").map(lambda s: set(str(s).split("|")) - {""})
+
+    def _mean(s):
+        s = s.dropna()
+        return round(float(s.mean()), 4) if len(s) else None
+
+    rows = []
+    for c in sorted({x for cs in m["chans"] for x in cs}):
+        members = m[m["chans"].map(lambda cs, c=c: c in cs)]
+        unique = m[m["recall_channels"].astype(str) == c]
+        mb, ub = members[members["buyable"]], unique[unique["buyable"]]
+        ex = mb["excess_t5"].dropna()
+        rows.append({
+            "channel": c,
+            "n_recalled": int(len(members)),
+            "n_unique": int(len(unique)),
+            "n_unbuyable": int((~members["buyable"]).sum()),
+            "mean_excess_t5": _mean(mb["excess_t5"]),
+            "unique_excess_t5": _mean(ub["excess_t5"]),
+            "mean_excess_t1": _mean(mb["excess_t1"]),
+            "hit_rate_t5": round(float((ex > 0).mean()), 4) if len(ex) else None,
+        })
+    out = pd.DataFrame(rows, columns=cols)
+    return out.sort_values("unique_excess_t5", ascending=False, na_position="last").reset_index(drop=True)
+
+
 def rating_score(rating: str) -> float | None:
     """五档 → 多头分(Buy=4 … Sell=0;越多头越大),供评级单调性 rank-IC。"""
     order = {r: i for i, r in enumerate(RATINGS_5_TIER)}
