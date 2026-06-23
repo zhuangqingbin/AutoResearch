@@ -1061,6 +1061,26 @@ def _uzi_volprice(row: dict) -> str:
     return block
 
 
+_P4_DEEP_TITLES = ("Income statement", "Earnings quality", "Solvency")
+_P4_MARKER = ("\n<!-- P4 深核分界(早停在此之前 return;表面 DD〔P1–P3:快照/资金/量价/财报/估值/"
+              "fwd PE/新闻/日历〕已在上方;以下为陷阱核 P4) -->\n")
+
+
+def _reorder_slim_for_progressive(parts: list[str]) -> list[str]:
+    """slim 渐进读盘:深核块(P4 陷阱维:利润表全表/盈利质量/偿付)移到 P4 分界标记之后,
+    表面块保序在前。subagent 读到标记为止做 P1–P3,主早停②则不读标记后;survivor 才读。
+    无深核块 → 原样返回(不插标记,老路不破)。纯函数,可离线测。"""
+    def _is_deep(p: str) -> bool:
+        head = p[:120]
+        return any(f"## {t}" in head for t in _P4_DEEP_TITLES)
+
+    deep = [p for p in parts if _is_deep(p)]
+    if not deep:
+        return parts
+    surface = [p for p in parts if not _is_deep(p)]
+    return surface + [_P4_MARKER] + deep
+
+
 def main() -> int:
     flags = {a for a in sys.argv[1:] if a.startswith("--")}
     pos = [a for a in sys.argv[1:] if not a.startswith("--")]
@@ -1188,6 +1208,8 @@ def main() -> int:
     out_dir = ROOT / "context"
     out_dir.mkdir(exist_ok=True)
     out_path = out_dir / f"{ticker}_{trade_date}{'_slim' if slim else ''}.md"
+    if slim:
+        parts = _reorder_slim_for_progressive(parts)
     out_path.write_text("".join(parts), encoding="utf-8")
     print(f"\n[saved] {out_path}  ({out_path.stat().st_size:,} bytes)", flush=True)
     return 0
