@@ -21,6 +21,7 @@ from autoresearch.scan.agents.l3_select import (
 )
 from autoresearch.scan.agents.l4_card import (
     batch_finalists,
+    compose_funnel_brief,
     parse_ratings_from_details,
     pick_buy_candidates,
     pick_buylist,
@@ -175,3 +176,47 @@ def test_rubric_rating_net0_is_hold():
 def test_rubric_rating_six_weak_is_sell_gate_does_not_rescue_downside():
     weak = dict.fromkeys(("基本面", "估值", "技术·资金", "盈利质量", "偿付(爆雷)", "催化"), "弱")  # net-6
     assert rubric_rating(weak, _ALL_GATES)[0] == "Sell", "门只压上行,不救下行"
+
+
+# ───────────────────────── L4 · P0:漏斗简报 ─────────────────────────
+
+
+def _make_funnel_dir(tmp_path):
+    """造 L1_recall / L2_gbdt / finalists 各 1 行(神火 000933)。"""
+    d = tmp_path / "context/scan/2026-06-24"
+    d.mkdir(parents=True)
+    pd.DataFrame([{"code": "000933", "name": "神火股份", "industry": "工业金属",
+                   "composite": 66.6, "n_channels": 3, "recall_channels": "共振|价值|成长",
+                   "best_rank": 43, "score_momentum": 50, "score_fund_main": 60,
+                   "score_growth": 70, "score_value": 80, "score_volprice": 40,
+                   "score_chip": 55, "score_north": 0, "score_tech": 45,
+                   "np_yoy": 223.0, "rev_yoy": 10.0, "roe": 17.3, "pe": 9.3, "pb": 1.2,
+                   "dv_ratio": 3.19, "main_net_ratio": 0.87, "cmf_20": 0.1, "obv_mom_20": 0.2,
+                   "rsi6": 55, "ma_bull": 1, "pct_60d": 12.0, "winner_rate": 1.1,
+                   "chip_concentration": 0.3, "price_to_cost": 1.05, "hk_ratio": 0.0}],
+                 ).to_csv(d / "L1_recall_top1000.csv", index=False)
+    pd.DataFrame([{"code": "000933", "l2_rank": 132, "gbdt_score": 0.54}],
+                 ).to_csv(d / "L2_gbdt_top200.csv", index=False)
+    pd.DataFrame([{"ticker": "000933", "code": "000933", "name": "神火股份", "sector": "工业金属",
+                   "lenses": "共振3路", "conviction": 90, "triage_lean": "看多",
+                   "thesis": "3路共振·PE9.3低估·np+223", "risk": "煤铝价周期下行盈利回吐",
+                   "catalyst": "无明确催化", "lane": "trend", "sentiment": "中性"}],
+                 ).to_csv(d / "finalists.csv", index=False)
+    return d
+
+
+def test_compose_funnel_brief_has_channels_factors_thesis(tmp_path):
+    brief = compose_funnel_brief("000933", _make_funnel_dir(tmp_path))
+    assert "神火股份" in brief
+    assert "命中 3 路" in brief                 # n_channels
+    assert "conviction 90" in brief             # L3
+    assert "3路共振·PE9.3低估" in brief          # L3 thesis
+    assert "np_yoy 223" in brief                # L1 先验因子
+    assert "gbdt_score 0.54" in brief           # L2
+
+
+def test_compose_funnel_brief_degrades_missing_finalists(tmp_path):
+    d = _make_funnel_dir(tmp_path)
+    (d / "finalists.csv").unlink()
+    brief = compose_funnel_brief("000933", d)   # 无 L3 → 不抛,仍出 L1 先验
+    assert "神火股份" in brief and "np_yoy 223" in brief
