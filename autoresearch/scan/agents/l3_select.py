@@ -22,7 +22,7 @@ _L3_COLS = ["code", "name", "industry", "composite", "gbdt_score",
             "pct_60d", "vol_ratio", "cmf_20", "obv_mom_20", "main_net_ratio", "retail_net_yi", "winner_rate",
             "chip_concentration", "price_to_cost", "hk_ratio", "rsi6", "pe", "pb",
             "dv_ratio", "np_yoy", "roe",
-            "n_channels", "recall_channels",          # Phase 2 召回 provenance(几路共振)
+            "n_channels", "recall_channels", "l2_lane_reserved",  # 召回 provenance + L2 lane 配额救回标记
             "news_n", "news_tags", "news_head",       # Phase 3 公告情感 digest(anns_d)
             "med_n", "med_tags", "med_head"]          # 媒体新闻情感 digest(akshare stock_news_em)
 

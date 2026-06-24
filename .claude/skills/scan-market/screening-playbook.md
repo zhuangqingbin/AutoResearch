@@ -64,10 +64,11 @@ uv run --no-sync python -m autoresearch.scan.universe <date> --source tushare
 3. **`merge_l3_finalists_v2(judged_df, target=30, trend_quota=10, hybrid=True)`** → `context/scan/<date>/finalists.csv`(把 holistic 入选排成 finalists + 趋势配额安全网)。
    - judged_df 需含列:`code,name,sector,lenses,conviction,fragility,thesis,risk,catalyst,triage_lean,lane,pct_60d`(`lane`/`pct_60d` 配额用,源自 L2 表)。
    - **趋势配额(安全网)**:纯 `conviction−fragility` 会把高 fragility 的强势票挤出(实测:生益+205%/亨通+158% conv 高但 frag 高 → 进不了 top30)。`merge_l3_finalists_v2` 给 trend lane 保底 `trend_quota` 席,**一半按 conviction(质量趋势:健康强势)+ 一半按 pct_60d(动量龙头:最热的票)**(hybrid)——高 fragility 是 T+1 概念,swing 不该一票否决。捞进来后由 **L4 做估值/解禁尽调定级**(实证:抛物线顶 PE160~440 + CFO负 + 解禁 多半 Underweight/Sell,质量强势如胜宏 PE77 才 Overweight)。
+   - **`l2_lane_reserved=True`(L2 lane 配额救回的票)**:动量/题材龙头被反转 champion 在 L2 压掉、靠配额硬塞回(药明/普冉这类**已突破强势股**)。judge **倾向打 `lane="trend"`**,让 `trend_quota` 在 200→30 接住(否则纯 net 排序仍砍);但**照常用 rubric 诚实定级**——多数应在 L4 被三门否掉,留的是尾部真龙头(设计:`2026-06-24-l2-lane-quota-design.md`,默认关、`--l2-lane-quota 30` 开)。
 
 **L3 holistic 选股 prompt(模板)**:
 > 你是资深 A股投资人 + 风险官 + PM。下面是 L2 粗排出的 ~200 只紧凑表(因子 + 龙虎榜/预告/快报摘要 + **近期公告情感 + 召回 provenance**)。**先内化『因子方向经验校准』**(上节,`render_calibration_block` 注入)。**一次通看全表、横向比较**,选出最值得深研的 ~30 只——**趋势 + 回归兼顾,别全堆抛物线顶,别只挑 composite 顶(反羊群)**。
-> **比较 rubric(5 维,逐只权衡、给"为何此刻选它")**:① **channel 共振**(`n_channels`/`recall_channels`:多路召回=多策略确认,3+ 路共振优先)② **资金确认**(main_net_ratio/lhb_n:主力真在)③ **基本面支撑**(growth/value 子分 + np_yoy/roe)④ **情感**(公告 `news_tags` + 媒体 `med_tags`/`med_head`:回购/增持/中标=利多;减持/质押/问询/立案=利空、压 conviction;公告与媒体两路共振更可信)⑤ **脆弱度**(过热/见顶/利空公告)。
+> **比较 rubric(5 维,逐只权衡、给"为何此刻选它")**:① **channel 共振**(`n_channels`/`recall_channels`:多路召回=多策略确认,3+ 路共振优先;`l2_lane_reserved=True`=L2 配额救回的动量/题材票,倾向 lane=trend)② **资金确认**(main_net_ratio/lhb_n:主力真在)③ **基本面支撑**(growth/value 子分 + np_yoy/roe)④ **情感**(公告 `news_tags` + 媒体 `med_tags`/`med_head`:回购/增持/中标=利多;减持/质押/问询/立案=利空、压 conviction;公告与媒体两路共振更可信)⑤ **脆弱度**(过热/见顶/利空公告)。
 > **比较着选**:同板块/同因子画像的票互相比、只留最强的;陷阱直接弃(高位放量派发 / winner满主力撤 / 低PE但 np<0 / 抛物线无主力承接 / 近期减持·问询·立案);**底部放量吸筹 + 基本面背书 + 多路共振**优先(`volume_price_signals`/`trap_signals` 机械底辅助);趋势票**不因"涨多"误杀健康强势**(主力还在+业绩跟得上),回归票看低位空间(低获利盘=空间)。
 > **内化校准**:满仓获利盘/winner>90 在主力撤/业绩证伪时=见顶,主力还在则不是。
 > **每只入选输出**(CSV `code,name,sector,lenses,conviction,fragility,thesis,risk,catalyst,triage_lean,lane,pct_60d,sentiment`):thesis≤25字多头论点(落因子/证据)、risk≤25字最大证伪点(**必须真,不许橡皮图章**)、catalyst≤15字时点(无则"无明确催化")、conviction/fragility 0–100、triage_lean 看多/中性/回避、lane trend/reversion、**sentiment 利多/中性/利空 + 一句依据(据公告标题)**。
