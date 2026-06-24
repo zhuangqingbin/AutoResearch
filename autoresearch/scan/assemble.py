@@ -203,16 +203,39 @@ def _funnel_rows(meta: dict, n_l2, n_l3, n_cards) -> list[str]:
     ]
 
 
-def _l1_cell(code: str, l1_full: dict[str, dict]) -> str:
-    """L1 召回结论:#复合分名次(分母在列头;裸复合分无量纲已删)。"""
+_CH_ZH = {"composite": "复合", "momentum": "动量", "reversal": "反转", "growth": "成长",
+          "value": "价值", "main_fund": "主力", "northbound": "北向",
+          "accumulation": "吸筹", "heat": "热度"}
+
+
+def _channels_zh(s) -> str:
+    """recall_channels 串('growth|heat')→ 中文短标('成长|热度');回填/空 → 标注。"""
+    if not isinstance(s, str) or not s:
+        return "—"
+    if s == "(backfill)":
+        return "回填"
+    return "|".join(_CH_ZH.get(c, c) for c in s.split("|"))
+
+
+def _l1_cell(code: str, l1_full: dict[str, dict], ch_map: dict[str, str]) -> str:
+    """L1 召回结论:#复合分名次(分母在列头)· 命中队列(哪几路召回)。"""
     r = l1_full.get(str(code).zfill(6))
-    return f"#{r.get('rank', '?')}" if r else "—"
+    if not r:
+        return "—"
+    return f"#{r.get('rank', '?')}·{_channels_zh(ch_map.get(str(code).zfill(6), ''))}"
 
 
 def _l2_cell(code: str, l2_top: dict[str, dict]) -> str:
-    """L2 粗排结论:#GBDT重排名次(分母在列头;裸 gbdt 分近常数无意义已删)。"""
+    """L2 粗排结论:#GBDT重排名次(分母在列头)· gbdt 分。"""
     r = l2_top.get(str(code).zfill(6))
-    return f"#{r.get('l2_rank', '?')}" if r else "—"
+    if not r:
+        return "—"
+    g = r.get("gbdt_score")
+    try:
+        gtxt = f"·g{float(g):.2f}" if g not in (None, "", "nan") else ""
+    except (TypeError, ValueError):
+        gtxt = ""
+    return f"#{r.get('l2_rank', '?')}{gtxt}"
 
 
 _BYTES_PER_TOK = 2.8   # CJK 混合文本粗估(中文≈3字节/字≈1+ token,夹杂 ASCII 数字/markdown)
@@ -384,6 +407,7 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str) ->
     vcol, vsep = (" 🛡️红队 |", "---|") if vmap else ("", "")
     n_l1 = meta.get("after_gate_a") or meta.get("universe") or len(l1_full) or "?"
     n_l2 = meta.get("l2_n") or len(l2_top) or "?"
+    ch_map = {c: (r.get("recall_channels") or "") for c, r in l2_top.items()}   # 命中队列(随 keep 流到 L2 表)
     out += [f"## 3. 投资建议(buy-list, {len(rows)} 只,按 评级 → 确信度 排序;逐阶段结论)\n",
             f"| # | 名称 | 板块 | L1召回(#/{n_l1}) | L2粗排(#/{n_l2}) | L3论点·确信 | 评级 | 目标(EV) | 置信度 |" + vcol,
             "|---|---|---|---|---|---|---|---|---|" + vsep]
@@ -395,10 +419,10 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str) ->
         l3cell = l3txt + (f"·conv{conv}" if conv else "")
         out.append(
             f"| {i} | {r.get('name', '')} | {r.get('sector') or r.get('industry', '')} "
-            f"| {_l1_cell(code, l1_full)} | {_l2_cell(code, l2_top)} | {l3cell} "
+            f"| {_l1_cell(code, l1_full, ch_map)} | {_l2_cell(code, l2_top)} | {l3cell} "
             f"| **{r.get('rating', '—')}** | {r.get('target', '—')} | {r.get('conf', '—')} |" + vcell)
-    out.append(f"\n_列注:**L1召回** #复合分名次/{n_l1}(越小越强;多路召回的低复合分票名次会很大);"
-               f"**L2粗排** #GBDT重排名次/{n_l2};**L3论点·确信** 为 Opus 精排理由 + conviction。_")
+    out.append(f"\n_列注:**L1召回** #复合分名次/{n_l1}·命中队列(越小越强;低复合分票靠某条队列召回→名次很大);"
+               f"**L2粗排** #GBDT重排名次/{n_l2}·gbdt分;**L3论点·确信** 为 Opus 精排理由 + conviction。_")
     out += _verify_detail(vmap)
     out += ["", "### 组合视角", _portfolio_note(rows), ""]
     kn = _knowledge_note(rows)

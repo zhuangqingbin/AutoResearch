@@ -50,12 +50,15 @@ def _build_scan_dir(root):
         for code, rk, comp, _lr, _g in l1l2:
             w.writerow({"rank": rk, "recalled": True, "code": code, "name": code, "industry": "电子",
                         "composite": comp, "winner_rate": 60, "pct_60d": 80, "rsi6": 65})
+    _ch = {"300476": "growth|heat|momentum", "600519": "composite|value",
+           "002384": "momentum", "301117": "composite|growth"}   # 命中队列(随 keep 流到 L2 表)
     with (scan / "L2_gbdt_top200.csv").open("w", encoding="utf-8", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=["l2_rank", "gbdt_score", "code", "name", "industry", "composite"])
+        w = csv.DictWriter(f, fieldnames=["l2_rank", "gbdt_score", "code", "name", "industry",
+                                          "composite", "recall_channels"])
         w.writeheader()
         for code, _rk, comp, lr, g in l1l2:
             w.writerow({"l2_rank": lr, "gbdt_score": g, "code": code, "name": code,
-                        "industry": "电子", "composite": comp})
+                        "industry": "电子", "composite": comp, "recall_channels": _ch.get(code, "")})
     # L3 精排 finalists(带 thesis/risk/catalyst)
     with (scan / "finalists.csv").open("w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["ticker", "code", "name", "sector", "lenses", "conviction",
@@ -202,13 +205,15 @@ def test_maintained_keeps_rating(published):
     assert "Overweight" in row117, f"维持不应改评级(丁 应留 OW): {row117}"
 
 
-def test_buylist_l1l2_cells_rank_over_total(published):
-    """L1召回/L2粗排:分母进列头(#/N),单元格只 #名次,删掉无量纲的 composite/gbdt。"""
+def test_buylist_l1l2_cells_queue_and_score(published):
+    """L1召回:#名次/N(列头)+ 命中队列(中文);L2粗排:#名次/N + gbdt 分。"""
     md = published["md"]
     s3 = md.find("## 3. 投资建议")
     header = next((ln for ln in md[s3:].splitlines() if ln.lstrip().startswith("| #")), "")
     assert "L1召回(#/" in header and "L2粗排(#/" in header, f"列头应带分母(#/N): {header}"
     row = next((ln for ln in md.splitlines() if "甲" in ln and ln.lstrip().startswith("|")), "")
     assert "#5" in row, f"甲 L1 名次应显示 #5: {row}"
-    assert "·80" not in row and "g0.5" not in row, f"不应再有裸 composite/gbdt: {row}"
-    assert "列注" in md, "应有列注解释名次含义"
+    assert "成长" in row, f"L1召回应显示命中队列(growth→成长): {row}"
+    assert "g0.5" in row, f"L2粗排应带 gbdt 分(0.54→g0.54): {row}"
+    assert "·80" not in row, f"L1 不应再有裸 composite: {row}"
+    assert "列注" in md, "应有列注解释名次/队列含义"
