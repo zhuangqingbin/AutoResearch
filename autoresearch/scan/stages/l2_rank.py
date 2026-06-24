@@ -45,12 +45,15 @@ class L2Rank(Stage):
             scores = LinearComposite().predict(recall)
             engine = "composite-linear(default)"
         # 稳定排序:recall 已按 composite 降序,无 champion 时 l2_score==composite → 逐位复现 head(l2_n)。
-        l2 = recall.assign(l2_score=scores.to_numpy()).sort_values(
-            "l2_score", ascending=False, kind="stable").head(l2_n).reset_index(drop=True)
+        from autoresearch.scan.recall.l2_quota import apply_l2_lane_quota
+        ranked = recall.assign(l2_score=scores.to_numpy()).sort_values(
+            "l2_score", ascending=False, kind="stable")
+        l2 = apply_l2_lane_quota(ranked, l2_n, ctx.config.l2_lane_quota, ctx.config.l2_lane_channels)
         l2.insert(0, "l2_rank", range(1, len(l2) + 1))
 
-        cols = ["l2_rank", "l2_score", *_KEEP]
+        cols = ["l2_rank", "l2_score", "l2_lane_reserved", *_KEEP]
         l2_out = l2[[c for c in cols if c in l2.columns]]
         ctx.trace.put_df(ctx.run_id, schema.L2_RANK, l2_out)
-        ctx.trace.put_meta(ctx.run_id, {"l2_n": int(len(l2)), "l2_engine": engine})
+        ctx.trace.put_meta(ctx.run_id, {"l2_n": int(len(l2)), "l2_engine": engine,
+                                        "l2_lane_quota": int(ctx.config.l2_lane_quota)})
         print(f"[L2 粗排] recall {len(recall)} → {engine} top {len(l2)}", file=sys.stderr)
