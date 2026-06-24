@@ -60,7 +60,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     from autoresearch.scan import universe as smu
     res = smu.run(analysis_date, cap_floor_yi=cfg.cap_floor, include_bj=cfg.include_bj,
                   recall_n=cfg.recall_n, l2_n=cfg.l2_n, source=cfg.source,
-                  recall_mode=cfg.recall_mode, recall_channels=cfg.recall_channels)
+                  recall_mode=cfg.recall_mode, recall_channels=cfg.recall_channels,
+                  l2_lane_quota=cfg.l2_lane_quota, l2_lane_channels=cfg.l2_lane_channels)
 
     # ② typed trace：同一 lake/weights/champion 上跑新 Pipeline → reports/scan/<run_id>/。
     ctx = RunContext(analysis_date=analysis_date, config=cfg)

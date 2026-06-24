@@ -226,7 +226,8 @@ def recall_select(scored: pd.DataFrame, analysis_date: str, recall_n: int,
 def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
         recall_n: int = 1000, l2_n: int = 200, outdir: Path | None = None,
         source: str = "tushare", recall_mode: str = "multi", recall_channels=None,
-        l2_model: str = "l2_fwd5") -> dict:
+        l2_model: str = "l2_fwd5", l2_lane_quota: int = 0,
+        l2_lane_channels=("momentum", "heat", "growth", "accumulation")) -> dict:
     """L0 选集 + L1 召回 + L2 粗排(GBDT 学习重排 → top l2_n)。全确定性,零 LLM。
 
     recall_mode:multi=多路策略召回(默认,带 provenance + L1_channels.csv)| composite=单复合分(对拍/回退)。
@@ -287,13 +288,15 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
             scores, l2_engine = g, "gbdt"
         else:
             l2_engine = "composite-linear(回落)"
+    from autoresearch.scan.recall.l2_quota import apply_l2_lane_quota
     if scores is not None:
-        l2 = recall.assign(gbdt_score=scores.to_numpy()).sort_values(
-            "gbdt_score", ascending=False, kind="stable").head(l2_n).reset_index(drop=True)
+        ranked = recall.assign(gbdt_score=scores.to_numpy()).sort_values(
+            "gbdt_score", ascending=False, kind="stable")
     else:
-        l2 = recall.head(l2_n).reset_index(drop=True)
+        ranked = recall.assign(gbdt_score=np.nan)
+    l2 = apply_l2_lane_quota(ranked, l2_n, l2_lane_quota, l2_lane_channels)  # Q=0 → 逐值复现 head(l2_n)
     l2.insert(0, "l2_rank", range(1, len(l2) + 1))
-    l2_cols = ["l2_rank", "gbdt_score", *keep]
+    l2_cols = ["l2_rank", "gbdt_score", "l2_lane_reserved", *keep]
     l2[[c for c in l2_cols if c in l2.columns]].to_csv(outdir / "L2_gbdt_top200.csv", index=False)
     print(f"[L2 粗排] recall {len(recall)} → {l2_engine} top {len(l2)}", file=sys.stderr)
 
@@ -301,6 +304,7 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
     (outdir / "meta.json").write_text(json.dumps({
         "analysis_date": analysis_date, "universe_raw": n_raw, "universe": n_l0, "after_gate_a": len(uni),
         "recall_n": len(recall), "l2_n": len(l2), "l2_engine": l2_engine,
+        "l2_lane_quota": l2_lane_quota,
         "cap_floor_yi": cap_floor_yi, "include_bj": include_bj, "source": source,
         "weights_source": weights.get("meta", {}).get("source", "weights.json"),
     }, ensure_ascii=False, indent=2), encoding="utf-8")
