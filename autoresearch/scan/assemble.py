@@ -198,30 +198,21 @@ def _funnel_rows(meta: dict, n_l2, n_l3, n_cards) -> list[str]:
         f"| L0 | 选集 | {meta.get('universe', '?')} | 确定性 | 全A {meta.get('universe_raw', '?')} → 硬门(剔ST/退/停牌/次新, 市值地板, 含北交所) |",
         f"| L1 | 召回 | {meta.get('recall_n', '?')} | 确定性 | 轻门 + 行业条件化复合分(T+1 IC 校准) top |",
         f"| L2 | 粗排 | {n_l2} | GBDT/{l2_eng} | LightGBM 学习重排(T+1 IC 训练;oos 未胜线性则回落复合分) |",
-        f"| L3 | 精排 | {n_l3} | Sonnet·holistic | 1 agent 通看 ~200 比较选 + 增量证据/论点/红队 |",
+        f"| L3 | 精排 | {n_l3} | Opus-high·holistic | 1 agent 通看 ~200 比较选 + 增量证据/论点/红队 |",
         f"| L4 | 研究 | {n_cards} 卡 | Opus | 一只=一个 Opus subagent 渐进深度 DD + 早停 + 买单 skeptic |",
     ]
 
 
 def _l1_cell(code: str, l1_full: dict[str, dict]) -> str:
-    """L1 召回结论:#召回名次 · 复合分。"""
+    """L1 召回结论:#复合分名次(分母在列头;裸复合分无量纲已删)。"""
     r = l1_full.get(str(code).zfill(6))
-    if not r:
-        return "—"
-    return f"#{r.get('rank', '?')}·{r.get('composite', '?')}"
+    return f"#{r.get('rank', '?')}" if r else "—"
 
 
 def _l2_cell(code: str, l2_top: dict[str, dict]) -> str:
-    """L2 粗排结论:#重排名次(· gbdt 分,若 GBDT 启用)。"""
+    """L2 粗排结论:#GBDT重排名次(分母在列头;裸 gbdt 分近常数无意义已删)。"""
     r = l2_top.get(str(code).zfill(6))
-    if not r:
-        return "—"
-    g = r.get("gbdt_score")
-    try:
-        gtxt = f"·g{float(g):.2f}" if g not in (None, "", "nan") else ""
-    except (TypeError, ValueError):
-        gtxt = ""
-    return f"#{r.get('l2_rank', '?')}{gtxt}"
+    return f"#{r.get('l2_rank', '?')}" if r else "—"
 
 
 _BYTES_PER_TOK = 2.8   # CJK 混合文本粗估(中文≈3字节/字≈1+ token,夹杂 ASCII 数字/markdown)
@@ -246,7 +237,7 @@ def _stage_token_estimate(scan_dir: Path) -> list[str]:
         ("L0 选集", "确定性", 0, 0, "纯 pandas 硬门"),
         ("L1 召回", "确定性", 0, 0, "复合分排序"),
         ("L2 粗排", "确定性·GBDT", 0, 0, "LightGBM 重排,零 LLM"),
-        ("L3 精排", "Sonnet·holistic", 1 if l3 else 0, _b(l3), "1 agent 通看 ~200 选 30"),
+        ("L3 精排", "Opus-high·holistic", 1 if l3 else 0, _b(l3), "1 agent 通看 ~200 选 30"),
         ("L4 研究", "Opus", len(cards), _b(cards) + _b(l4t1), f"{len(cards)} 张卡(早停卡/满卡)"),
         ("L4 买单 skeptic", "Opus", len(verify), _b(verify), "≥OW 买单独立证伪"),
     ]
@@ -391,8 +382,10 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str) ->
 
     # ── 3. 投资建议 ──(vmap 已在上方加载并折回评级)
     vcol, vsep = (" 🛡️红队 |", "---|") if vmap else ("", "")
+    n_l1 = meta.get("after_gate_a") or meta.get("universe") or len(l1_full) or "?"
+    n_l2 = meta.get("l2_n") or len(l2_top) or "?"
     out += [f"## 3. 投资建议(buy-list, {len(rows)} 只,按 评级 → 确信度 排序;逐阶段结论)\n",
-            "| # | 名称 | 板块 | L1召回 | L2粗排 | L3论点·确信 | 评级 | 目标(EV) | 置信度 |" + vcol,
+            f"| # | 名称 | 板块 | L1召回(#/{n_l1}) | L2粗排(#/{n_l2}) | L3论点·确信 | 评级 | 目标(EV) | 置信度 |" + vcol,
             "|---|---|---|---|---|---|---|---|---|" + vsep]
     for i, r in enumerate(rows, 1):
         code = str(r.get("code", "")).zfill(6)
@@ -404,6 +397,8 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str) ->
             f"| {i} | {r.get('name', '')} | {r.get('sector') or r.get('industry', '')} "
             f"| {_l1_cell(code, l1_full)} | {_l2_cell(code, l2_top)} | {l3cell} "
             f"| **{r.get('rating', '—')}** | {r.get('target', '—')} | {r.get('conf', '—')} |" + vcell)
+    out.append(f"\n_列注:**L1召回** #复合分名次/{n_l1}(越小越强;多路召回的低复合分票名次会很大);"
+               f"**L2粗排** #GBDT重排名次/{n_l2};**L3论点·确信** 为 Opus 精排理由 + conviction。_")
     out += _verify_detail(vmap)
     out += ["", "### 组合视角", _portfolio_note(rows), ""]
     kn = _knowledge_note(rows)

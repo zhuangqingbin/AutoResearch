@@ -3,7 +3,7 @@
 一个 module-scoped fixture 造与原 selftest **完全相同**的合成 scan dir(meta/L1/L2/finalists/L4 卡/
 中间推理件/verify.csv),跑 `assemble.run(d, run_date=2026-06-21, hhmm=0930)`,各 test 对发布产物断言:
   - 三段 summary(## 1 漏斗 / ## 2 各阶段 / ## 3 投资建议)
-  - **逐阶段 buy-list 表**(L1召回/L2粗排/L3论点 列;#5·80 / ·g0.54;已删 代码/R:R/提案)
+  - **逐阶段 buy-list 表**(L1召回/L2粗排/L3论点 列;名次带分母 #5 + 列头 #/N + 列注;已删 代码/R:R/提案)
   - **token 估算段**(## 各阶段 token 消耗 / 确定性·GBDT)
   - Tier-3 多空辩论徽标(🛡️红队 / ⚠️降级 / ✅维持 / 多/空/共识明细)
   - 降级折回(甲 OW→Hold 踢出买单;丁 OW 维持不改)
@@ -155,7 +155,7 @@ def test_reasoning_archived(published):
     "选集", "召回", "粗排", "精排", "Overweight", "+30%", "⚠️卡片缺失",
     "AI 光模块需求超预期", "组合视角",
     # 逐阶段结论列(per-stage buy-list 表)
-    "L1召回", "L2粗排", "L3论点·确信", "#5·80", "·g0.54",
+    "L1召回(#/", "L2粗排(#/", "L3论点·确信", "#5", "列注",
     # token 估算段
     "## 各阶段 token 消耗", "确定性·GBDT",
     # Tier-3 多空辩论徽标 + 明细
@@ -200,3 +200,15 @@ def test_maintained_keeps_rating(published):
     md = published["md"]
     row117 = next((ln for ln in md.splitlines() if "丁" in ln and ln.lstrip().startswith("|")), "")
     assert "Overweight" in row117, f"维持不应改评级(丁 应留 OW): {row117}"
+
+
+def test_buylist_l1l2_cells_rank_over_total(published):
+    """L1召回/L2粗排:分母进列头(#/N),单元格只 #名次,删掉无量纲的 composite/gbdt。"""
+    md = published["md"]
+    s3 = md.find("## 3. 投资建议")
+    header = next((ln for ln in md[s3:].splitlines() if ln.lstrip().startswith("| #")), "")
+    assert "L1召回(#/" in header and "L2粗排(#/" in header, f"列头应带分母(#/N): {header}"
+    row = next((ln for ln in md.splitlines() if "甲" in ln and ln.lstrip().startswith("|")), "")
+    assert "#5" in row, f"甲 L1 名次应显示 #5: {row}"
+    assert "·80" not in row and "g0.5" not in row, f"不应再有裸 composite/gbdt: {row}"
+    assert "列注" in md, "应有列注解释名次含义"
