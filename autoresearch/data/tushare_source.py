@@ -111,6 +111,28 @@ def resolve_momentum_dates(pro, analysis_date: str) -> tuple[str, str, str]:
     return last, d60, dys
 
 
+def assert_tushare_ready(pro, last: str) -> None:
+    """盘后数据就绪硬门:探 daily/moneyflow/cyq_perf 是否已落 `last` 日。
+
+    A股是 EOD 系统,跑"今天"必须等今天收盘后数据全部发布(筹码/主力常 ≥19:00 才落)。
+    **空结果**(端点已发布但当日无数据=跑太早)→ 抛 RuntimeError **中止整条流程**,不静默跑残缺;
+    **异常**(权限/网络)→ 跳过不据此 hard-gate(沿用富因子缺权限自动降级语义)。
+    """
+    not_ready = []
+    for label, ep in (("daily 日线", "daily"), ("moneyflow 主力资金", "moneyflow"), ("cyq_perf 筹码", "cyq_perf")):
+        try:
+            df = getattr(pro, ep)(trade_date=last, fields="ts_code")
+        except Exception:  # noqa: BLE001 — 权限/网络:不据此 hard-gate
+            continue
+        if df is None or len(df) == 0:
+            not_ready.append(label)
+    if not_ready:
+        raise RuntimeError(
+            f"[数据未就绪] tushare 尚未落 {last} 的盘后数据:缺 {' / '.join(not_ready)}。\n"
+            f"  A股盘后通常 ≥19:00(筹码/主力)才齐 → 晚点再跑,或直接跑前一交易日(数据必全)。\n"
+            f"  整条扫描流程已中止(拒绝静默跑残缺数据)。")
+
+
 # ───────────────────────── 基本面(东财 datacenter,非 push2) ─────────────────────────
 
 
@@ -261,6 +283,7 @@ def fetch_universe_tushare(
     """
     pro = _pro()
     last, d60, dys = resolve_momentum_dates(pro, analysis_date)
+    assert_tushare_ready(pro, last)   # 盘后就绪硬门:今天数据没落全 → 抛错中止,别静默跑残缺
     print(f"[L0·tushare] as-of 交易日={last}  60日前={d60}  年初={dys}", flush=True)
 
     # 每日指标:市值/PE/PB/量比/换手/股息率
