@@ -26,6 +26,8 @@ class ScanConfig:
     recall_channels: list[str] | None = None         # 启用的 channel 子集(None=全注册)
     channel_quotas: dict[str, int] | None = None     # 覆盖各路 quota(None=CHANNEL_DEFAULTS)
     channel_floors: dict[str, int] | None = None     # 覆盖各路 floor(None=CHANNEL_DEFAULTS)
+    l2_lane_quota: int = 0                            # L2 给多样性 lane 保留席(0=关=parity;建议 30)
+    l2_lane_channels: tuple[str, ...] = ("momentum", "heat", "growth", "accumulation")  # 哪些 lane 算多样性
 
     def to_dict(self) -> dict:
         """落 manifest 的纯 dict(可 JSON 序列化)。"""

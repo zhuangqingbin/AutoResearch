@@ -40,6 +40,9 @@ def _config_from_args(args: argparse.Namespace) -> ScanConfig:
         source=args.source,
         recall_mode=args.recall_mode,
         recall_channels=(args.recall_channels.split(",") if args.recall_channels else None),
+        l2_lane_quota=args.l2_lane_quota,
+        l2_lane_channels=(tuple(args.l2_lane_channels.split(",")) if args.l2_lane_channels
+                          else ("momentum", "heat", "growth", "accumulation")),
     )
 
 
@@ -111,6 +114,10 @@ def _add_common_funnel_flags(p: argparse.ArgumentParser) -> None:
                    help="L1 召回:multi=多路策略召回(默认)| composite=单复合分(对拍/回退)")
     p.add_argument("--recall-channels", default=None,
                    help="启用的 channel 子集(逗号分隔;缺省=全 9 路)")
+    p.add_argument("--l2-lane-quota", type=int, default=0,
+                   help="L2 给多样性 lane 保留席(0=关=parity;建议 30)")
+    p.add_argument("--l2-lane-channels", default=None,
+                   help="算多样性的 lane(逗号分隔;缺省 momentum,heat,growth,accumulation)")
 
 
 def build_parser() -> argparse.ArgumentParser:
