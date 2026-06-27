@@ -198,15 +198,27 @@ _PRIOR_WEIGHTS = {"meta": {"source": "prior(无 weights.json)"}, "weights": {"__
     "north": 0.03, "tech": -0.03, "growth": 0.03, "value": 0.03, "volprice": 0.04}}}
 
 
-def _load_weights(path: str = "context/factor_lab/weights.json") -> dict:
-    """读 factor_lab 校准产物;缺失则回落内置先验(并提示)。"""
+def _load_weights(path: str = "context/factor_lab/weights.json", regime: str | None = None) -> dict:
+    """读 factor_lab 校准产物;缺失则回落内置先验(并提示)。
+
+    `regime` 给定且文件含 `regimes[regime]["weights"]` → 返回该 regime 的权重块(meta 标 regime);
+    否则返回 flat(现行为)。**parity 锚**:无 regimes 块 / regime=None / 未知 regime 一律退 flat,
+    与改动前逐值一致(regime-aware 默认关时不破 golden)。
+    """
     import sys
 
     p = Path(path)
-    if p.exists():
-        return json.loads(p.read_text(encoding="utf-8"))
-    print(f"[warn] {path} 不存在 → 用内置先验权重(建议先 factor_lab calibrate)", file=sys.stderr)
-    return _PRIOR_WEIGHTS
+    if not p.exists():
+        print(f"[warn] {path} 不存在 → 用内置先验权重(建议先 factor_lab calibrate)", file=sys.stderr)
+        return _PRIOR_WEIGHTS
+    data = json.loads(p.read_text(encoding="utf-8"))
+    if regime:
+        block = (data.get("regimes") or {}).get(regime)
+        if block and block.get("weights"):
+            meta = dict(data.get("meta", {}))
+            meta["regime"] = regime
+            return {"meta": meta, "weights": block["weights"]}
+    return data
 
 
 def _factor_groups(df: pd.DataFrame) -> dict[str, pd.Series]:
