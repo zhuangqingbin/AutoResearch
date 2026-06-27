@@ -221,6 +221,21 @@ def _load_weights(path: str = "context/factor_lab/weights.json", regime: str | N
     return data
 
 
+def pick_weights(frame: pd.DataFrame, regime_aware: bool, *,
+                 path: str = "context/factor_lab/weights.json", load=_load_weights):
+    """L1 权重选择(L1Recall stage 与 universe.run 共用 → 两路一致)。
+
+    `regime_aware` 关(默认)→ flat 权重(regime=None,**parity**:不分类、与改动前一致);
+    开 → `classify_regime(frame)` 得 regime → `_load_weights(regime=label)` 取该 regime 权重块。
+    返回 (weights_dict, regime_label|None)。`load` 可注入(测试)。
+    """
+    if not regime_aware:
+        return load(path), None
+    from autoresearch.common.regime import classify_regime
+    label = classify_regime(frame).label
+    return load(path, regime=label), label
+
+
 def _factor_groups(df: pd.DataFrame) -> dict[str, pd.Series]:
     """9 组子分(各 0–1 横截面分位,自然朝向)。缺列的组返回全 NaN。calibrate 与 composite 共用。"""
     nan = pd.Series(np.nan, index=df.index)

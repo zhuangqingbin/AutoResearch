@@ -24,10 +24,15 @@ class ScanConfig:
     l2_model: str = "l2_fwd5"     # L2 champion 名(zoo 训的 swing champion;无→回落 GBDT/线性)
     recall_mode: str = "multi"                       # L1 召回:multi(多路)| composite(单复合分,对拍)
     recall_channels: list[str] | None = None         # 启用的 channel 子集(None=全注册)
+    regime_aware: bool = False                        # L1 权重按 regime 选(需 weights.json regimes 块);默认关=parity
     channel_quotas: dict[str, int] | None = None     # 覆盖各路 quota(None=CHANNEL_DEFAULTS)
     channel_floors: dict[str, int] | None = None     # 覆盖各路 floor(None=CHANNEL_DEFAULTS)
-    l2_lane_quota: int = 0                            # L2 给多样性 lane 保留席(0=关=parity;建议 30)
-    l2_lane_channels: tuple[str, ...] = ("momentum", "heat", "growth", "accumulation")  # 哪些 lane 算多样性
+    # L2 分层多样性采样器(ML-free;sector-neutral composite;design 2026-06-25-l2-stratified-sampler)
+    l2_floors: dict | None = None                     # 各风格 floor(None=l2_stratify.DEFAULT_FLOORS;{}=不分层)
+    l2_sector_cap: float = 0.20                        # 任一申万一级 ≤ 此比例(0.20=40/200);≥1.0=关
+    # ── 下两项已弃用(被分层采样器取代,保留仅为 caller 兼容,不参与 L2 选股)──
+    l2_lane_quota: int = 40
+    l2_lane_channels: tuple[str, ...] = ("momentum", "heat", "growth", "accumulation")
 
     def to_dict(self) -> dict:
         """落 manifest 的纯 dict(可 JSON 序列化)。"""
