@@ -130,11 +130,17 @@ def aggregate_sectors(survivors: pd.DataFrame, uni: pd.DataFrame, top_sectors: i
 # 在 autoresearch.common.scoring(scan/factor_lab/handler 三处同口径),顶部 import 复用。
 
 
-def _recall_gate_a(df: pd.DataFrame, min_amount_yi: float = 0.0) -> pd.Series:
-    """L1 召回轻门:只去真正不可交易/无核心数据的尾部(召回优先,尽量不误杀)。"""
+def _recall_gate_a(df: pd.DataFrame, min_amount_yi: float = 0.0, min_list_days: int = 0) -> pd.Series:
+    """L1 召回轻门:只去真正不可交易/无核心数据的尾部(召回优先,尽量不误杀)。
+
+    `min_list_days`>0 且帧有 `list_days` 列 → 剔次新(上市<阈值日,量价/IC 因子无意义);缺列降级不剔。
+    默认两门 =0 → 与改动前逐值一致(parity)。
+    """
     keep = df["amount_yi"].fillna(0) > min_amount_yi       # 有流动性/非停牌
     keep &= df["close"].notna()                            # 有价
     keep &= df["pct_60d"].notna() | df["pct_ytd"].notna()  # 有动量价(打分核心)
+    if min_list_days > 0 and "list_days" in df.columns:    # 次新过滤(有 list_days 才生效,缺则降级)
+        keep &= pd.to_numeric(df["list_days"], errors="coerce").fillna(1e9) >= min_list_days
     return keep
 
 
@@ -227,6 +233,7 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
         recall_n: int = 1000, l2_n: int = 200, outdir: Path | None = None,
         source: str = "tushare", recall_mode: str = "multi", recall_channels=None,
         regime_aware: bool = False,                                      # L1 权重按 regime 选(默认关=parity)
+        l0_min_amount_yi: float = 0.0, l0_min_list_days: int = 0,         # L0 流动性/次新硬门(默认 0=关=parity)
         l2_model: str = "l2_fwd5", l2_floors: dict | None = None, l2_sector_cap: float = 0.20,
         l2_lane_quota: int = 40,                                          # 弃用(分层采样取代)
         l2_lane_channels=("momentum", "heat", "growth", "accumulation")) -> dict:
@@ -247,7 +254,8 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
     n_l0 = len(uni)
 
     # L1 召回:Step A 轻门 → Step B 复合分 → top recall_n
-    uni = uni[_recall_gate_a(uni)].reset_index(drop=True)
+    uni = uni[_recall_gate_a(uni, min_amount_yi=l0_min_amount_yi,
+                             min_list_days=l0_min_list_days)].reset_index(drop=True)
     uni["code"] = uni["code"].astype(str).str.zfill(6)
     vps = _harvest_vol_series(uni["code"], analysis_date)          # 多日量价序列(CMF/OBV/...)→ volprice 组
     if len(vps):

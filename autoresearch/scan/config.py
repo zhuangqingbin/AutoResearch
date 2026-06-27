@@ -25,6 +25,8 @@ class ScanConfig:
     recall_mode: str = "multi"                       # L1 召回:multi(多路)| composite(单复合分,对拍)
     recall_channels: list[str] | None = None         # 启用的 channel 子集(None=全注册)
     regime_aware: bool = False                        # L1 权重按 regime 选(需 weights.json regimes 块);默认关=parity
+    l0_min_amount_yi: float = 0.0                      # L0 流动性门(成交额亿 >);默认 0=关=parity
+    l0_min_list_days: int = 0                          # L0 次新门(上市天数 ≥);默认 0=关=parity(需 list_days 列)
     channel_quotas: dict[str, int] | None = None     # 覆盖各路 quota(None=CHANNEL_DEFAULTS)
     channel_floors: dict[str, int] | None = None     # 覆盖各路 floor(None=CHANNEL_DEFAULTS)
     # L2 分层多样性采样器(ML-free;sector-neutral composite;design 2026-06-25-l2-stratified-sampler)
