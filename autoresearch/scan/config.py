@@ -30,6 +30,7 @@ class ScanConfig:
     # L2 分层多样性采样器(ML-free;sector-neutral composite;design 2026-06-25-l2-stratified-sampler)
     l2_floors: dict | None = None                     # 各风格 floor(None=l2_stratify.DEFAULT_FLOORS;{}=不分层)
     l2_sector_cap: float = 0.20                        # 任一申万一级 ≤ 此比例(0.20=40/200);≥1.0=关
+    l2_engine: str = "stratified"                      # L2 引擎:stratified(默认=parity)| champion(待 l2_eval 验证占优才接线)
     # ── 下两项已弃用(被分层采样器取代,保留仅为 caller 兼容,不参与 L2 选股)──
     l2_lane_quota: int = 40
     l2_lane_channels: tuple[str, ...] = ("momentum", "heat", "growth", "accumulation")
