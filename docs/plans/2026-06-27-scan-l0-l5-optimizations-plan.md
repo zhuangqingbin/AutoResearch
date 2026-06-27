@@ -38,6 +38,16 @@
       测试:`tests/scan/test_l4_helpers.py`(强先验入白名单;gates 与正文矛盾→flag)。
 
 ## 收尾
-- [ ] 全量 `uv run --no-sync python -m pytest` + `ruff check` 通过。
-- [ ] `scan run` 烟测(若 token/网络可用):off 默认跑通且 parity check 绿。
-- [ ] 本地合并 main(finishing-a-development-branch),更新 memory。
+- [x] 全量 `uv run --no-sync python -m pytest`(485 passed,warning-free)+ 新增/改动文件 `ruff check` 通过。
+      (注:`tests/scan/test_l2_stratify.py` 有 2 处 pre-existing F401,在 main 上已存在、非本分支引入,未扫入。)
+- [x] 本地合并 main + 更新 memory。
+- [~] `scan run` 真数据烟测:需 TUSHARE_TOKEN + 网络,留作合并后手动跑(off 默认即 parity,逻辑已被 parity 单测锁)。
+
+## 完成状态(2026-06-27)
+T1–T12 全部 TDD 落地,每项单独 commit,**行为变更默认关 → golden parity 不破**。
+- **已交付机制**:regime 地基 + regime-aware 权重(默认关)+ calibrate_regimes 多 horizon + 闭环 quota 提议/应用
+  + regime drift(self_review warn + assemble banner)+ 情感 score_title/数值净情感 + L2 champion A/B harness
+  + L0 流动性/次新门 + L2 sector_mom/regime cap + L5 regime 标注 + L4 force_full_card/audit_rubric_gates。
+- **需真数据跑(机制已交付,结论另跑)**:`calibrate_regimes`(产 regimes 权重块)、`l2_eval`(champion vs stratified verdict)。
+- **诚实记账**:L5 的 "self_review false_positive 反推钩子" 判定为低置信/投机项,**未实现**(不交付空壳);
+  per-finalist 得分轨迹已由 §3 表满足,未另起冗余产物。

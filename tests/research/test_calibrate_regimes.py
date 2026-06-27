@@ -20,7 +20,7 @@ def _panel():
     for date, regime, sign in plan:
         for i in range(40):                       # ≥30/日(_spearman 最小样本门)
             mom = i / 39.0
-            rows.append({"grp_momentum": mom, "grp_value": 0.5,
+            rows.append({"grp_momentum": mom, "grp_value": (i * 7 % 13) / 13.0,  # 有方差噪声(IC≈0,免 corr warning)
                          "industry": "半导体", "sector": super_sector("半导体"),
                          "fwd": sign * mom, "date": date, "regime": regime})
     return pd.DataFrame(rows)
