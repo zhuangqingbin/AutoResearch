@@ -66,3 +66,17 @@ def classify_regime(frame: pd.DataFrame, *, breadth_hi: float = 0.55, breadth_lo
     else:
         label = "range"
     return RegimeState(label, breadth, med_mom, n)
+
+
+def detect_drift(current: RegimeState, weights_meta: dict | None) -> tuple[bool, str]:
+    """今日 regime 与 weights.json 校准期主导 regime(`meta.regime_calib`)比对 → (drifted, reason)。
+
+    无 regime_calib 基线(flat 校准、未跑 calibrate_regimes)→ (False, 提示)。drift=True 时上游
+    (self_review warn + assemble banner)提示"建议重校准"。
+    """
+    base = (weights_meta or {}).get("regime_calib")
+    if not base:
+        return False, "weights 无 regime_calib 基线(calibrate_regimes 校准后才检测漂移)"
+    if current.label != base:
+        return True, f"当日 regime={current.label} ≠ 校准主导 {base},建议 calibrate_regimes 重校准"
+    return False, f"regime={current.label} 与校准一致"
