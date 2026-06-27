@@ -10,7 +10,7 @@ from autoresearch.scan.agents.l3_news import harvest_l3_news, news_digest
 
 
 def test_digest_empty_defaults():
-    assert news_digest([]) == {"news_n": 0, "news_tags": "", "news_head": "—"}
+    assert news_digest([]) == {"news_n": 0, "news_tags": "", "news_head": "—", "news_sent": 0.0}
 
 
 def test_digest_counts_tags_and_latest_head():
@@ -53,13 +53,13 @@ def test_harvest_buckets_by_code(monkeypatch, tmp_path):
 
 def test_news_digest_prefix_med():
     d = news_digest([{"title": "某公司中标大单", "ann_date": "20260601"}], prefix="med")
-    assert set(d) == {"med_n", "med_tags", "med_head"}
+    assert set(d) == {"med_n", "med_tags", "med_sent", "med_head"}
     assert d["med_n"] == 1 and "利多×1" in d["med_tags"]
 
 
 def test_news_digest_default_prefix_unchanged():
-    assert set(news_digest([])) == {"news_n", "news_tags", "news_head"}
-    assert set(news_digest([{"title": "x", "ann_date": "1"}])) == {"news_n", "news_tags", "news_head"}
+    assert set(news_digest([])) == {"news_n", "news_tags", "news_sent", "news_head"}
+    assert set(news_digest([{"title": "x", "ann_date": "1"}])) == {"news_n", "news_tags", "news_sent", "news_head"}
 
 
 def test_harvest_web_news_normalizes_and_buckets(tmp_path, monkeypatch):
