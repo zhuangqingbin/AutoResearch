@@ -37,6 +37,10 @@ _CONF_RE = re.compile(r"置信度[:：]\s*\**\s*([高中低]+)")
 # C·评分卡建议(卡片 `**Rubric建议**: <Rating>...`)+ 偏离说明(`**偏离**:...`)→ self_review 比对
 _RUBRIC_RE = re.compile(r"Rubric[^\n]*?(Buy|Overweight|Hold|Underweight|Sell)", re.IGNORECASE)
 _DEV_RE = re.compile(r"\*\*\s*偏离\s*\*\*")
+# L4 一句话结论(给 buy-list 的『L4研究』列):一行多空 / 早停因 / 满卡多空对撞首条
+_BULLBEAR_RE = re.compile(r"\*\*一行多空\*\*[:：]?\s*(.+)")
+_STOPWHY_RE = re.compile(r"早停因[:：]\s*(.+?)(?:→|\*\*|$)")
+_BEARBULLET_RE = re.compile(r"[-•]\s*空[:：]\s*(.+)")
 
 
 # ───────────────────────── 解析 helpers ─────────────────────────
@@ -54,7 +58,8 @@ def _load_json(path: Path) -> dict:
 
 
 def _strip(s: str | None) -> str:
-    return (s or "").replace("**", "").strip()
+    # '|' → '/':去掉会劈裂 markdown 表格列的管道符(L3 自由文本里偶发);'**' 去强调标记。
+    return (s or "").replace("**", "").replace("|", "/").strip()
 
 
 _VERDICT_BADGE = {"维持": "✅维持", "降级": "⚠️降级", "否决": "🛑否决"}
@@ -138,6 +143,31 @@ def _get(d: dict[str, str], *needles: str) -> str:
     return ""
 
 
+def _clip(s: str, n: int = 48) -> str:
+    """收紧成表格单元格:去 markdown/管道符、顿号→中点、截断加省略号。"""
+    s = _strip(s).replace("、", "·").strip("=。;； ")
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def _l4_brief(text: str, rating: str) -> str:
+    """L4 决策卡的一句话结论(buy-list『L4研究』列):≥OW 取『一行多空』多头驱动,
+    否则取空头/早停因(为何没给买点)。回退满卡多空对撞首条空。"""
+    m = _BULLBEAR_RE.search(text)
+    if m:
+        segs = re.split(r"[｜|]", m.group(1))
+        want = "多" if rating in ("Buy", "Overweight") else "空"
+        seg = next((s for s in segs if s.strip().startswith(want)), "")
+        if seg:
+            return _clip(seg.strip().lstrip("多空").strip(" :："))
+    m = _STOPWHY_RE.search(text)
+    if m:
+        return _clip(m.group(1))
+    m = _BEARBULLET_RE.search(text)
+    if m:
+        return _clip(m.group(1))
+    return "—"
+
+
 def _decision_text(scan_dir: Path, ticker: str) -> str | None:
     """定位 finalist 的 lite 决策卡:context/scan/<date>/details/<ticker>.md,按 6 位代码 glob 兜底。"""
     base = scan_dir / "details"
@@ -159,7 +189,8 @@ def _finalist_row(scan_dir: Path, fr: dict) -> dict:
     ticker = (fr.get("ticker") or fr.get("code") or "").strip()
     text = _decision_text(scan_dir, ticker)
     if text is None:
-        return {**fr, "rating": "—", "target": "⚠️卡片缺失", "rr": "—", "proposal": "—", "conf": "—"}
+        return {**fr, "rating": "—", "target": "⚠️卡片缺失", "rr": "—", "proposal": "—",
+                "conf": "—", "l4": "⚠️卡片缺失"}
     dash = _parse_dashboard(text)
     conf = _get(dash, "置信度")
     if not conf:
@@ -167,13 +198,15 @@ def _finalist_row(scan_dir: Path, fr: dict) -> dict:
         conf = m.group(1) if m else "—"
     prop = _PROPOSAL_RE.search(text)
     rub = _RUBRIC_RE.search(text)
+    rating = parse_rating(text)
     return {
         **fr,
-        "rating": parse_rating(text),
+        "rating": rating,
         "target": _get(dash, "EV目标", "目标") or "—",
         "rr": _get(dash, "R:R") or "—",
         "proposal": prop.group(1).upper() if prop else "—",
         "conf": conf or "—",
+        "l4": _l4_brief(text, rating),                            # L4 深核一句话结论(买列『L4研究』)
         "rubric_suggest": rub.group(1).title() if rub else "",   # C·评分卡建议(self_review 比对)
         "rubric_dev": bool(_DEV_RE.search(text)),                # 卡片有 **偏离** 说明 → 豁免
     }
@@ -209,12 +242,15 @@ _CH_ZH = {"composite": "复合", "momentum": "动量", "reversal": "反转", "gr
 
 
 def _channels_zh(s) -> str:
-    """recall_channels 串('growth|heat')→ 中文短标('成长|热度');回填/空 → 标注。"""
+    """recall_channels 串('growth|heat')→ 中文短标('成长/热度');回填/空 → 标注。
+
+    注:分隔符用 '/' 而非 '|' —— '|' 会被 markdown 表格当成列分隔符、把单元格劈成两列(列错位)。
+    """
     if not isinstance(s, str) or not s:
         return "—"
     if s == "(backfill)":
         return "回填"
-    return "|".join(_CH_ZH.get(c, c) for c in s.split("|"))
+    return "/".join(_CH_ZH.get(c, c) for c in s.split("|"))
 
 
 def _l1_cell(code: str, l1_full: dict[str, dict], ch_map: dict[str, str]) -> str:
@@ -337,7 +373,38 @@ def _knowledge_note(rows: list[dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _self_review_banner(scan_dir: Path, rows: list[dict], summary_text: str) -> str:
+def regime_and_drift(scan_dir: Path) -> tuple[str, str]:
+    """从 L1 帧算今日 regime + 与 weights.meta.regime_calib 比对 → (summary 行, drift reason|'')。
+
+    给 summary 一句 regime 定性(哑铃/落刀的关键上下文)+ 把 drift 喂 self_review warn。
+    缺 L1/regime 依赖 → ('', '')(老路不破)。
+    """
+    try:
+        import pandas as pd
+
+        from autoresearch.common.regime import classify_regime, detect_drift
+        from autoresearch.common.scoring import _load_weights
+    except Exception:  # noqa: BLE001
+        return "", ""
+    src = scan_dir / "L1_scored_full.csv"
+    if not src.exists():
+        src = scan_dir / "L1_recall_top1000.csv"
+    if not src.exists():
+        return "", ""
+    try:
+        df = pd.read_csv(src)
+    except Exception:  # noqa: BLE001
+        return "", ""
+    st = classify_regime(df)
+    drifted, reason = detect_drift(st, _load_weights().get("meta", {}))
+    zh = {"trend": "趋势", "range": "震荡", "risk_off": "避险"}.get(st.label, st.label)
+    line = (f"**市场 regime**:{zh}(breadth {st.breadth:.0%}·中位动量 {st.med_mom:+.1f}%"
+            + (f";⚠️ {reason}" if drifted else "") + ")")
+    return line, (reason if drifted else "")
+
+
+def _self_review_banner(scan_dir: Path, rows: list[dict], summary_text: str,
+                        regime_drift: str = "") -> str:
     """发布前机械自检(self_review 硬门)→ 报告顶部 banner。缺依赖/无问题 → 空串(老路不破)。"""
     try:
         import autoresearch.learning.self_review as self_review
@@ -362,7 +429,7 @@ def _self_review_banner(scan_dir: Path, rows: list[dict], summary_text: str) -> 
     except Exception:  # noqa: BLE001
         pass
     ctx = {"finalists": finals, "n_cards_expected": len(rows), "n_cards_present": n_present,
-           "summary_text": summary_text, "lessons": lessons}
+           "summary_text": summary_text, "lessons": lessons, "regime_drift": regime_drift}
     return self_review.render_banner(self_review.review(ctx))
 
 
@@ -381,10 +448,13 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str) ->
             r["rating"] = _apply_verify_downgrade(r.get("rating", "Hold"), v["verdict"])
             r["proposal"] = _PROPOSAL_BY_RATING.get(r["rating"], r.get("proposal", "—"))
     rows.sort(key=_sortkey)
+    regime_line, regime_drift = regime_and_drift(scan_dir)
 
     out = [f"# A股扫描 v2 · Buy-List & 漏斗 — {analysis_date} {hhmm[:2]}:{hhmm[2:]}\n",
            "_六段漏斗:选集→召回→粗排(GBDT)→精排→研究→整合。L0/L1/L2 确定性,L3/L4 Claude 为引擎,"
            "**仅供研究,非投资建议。**_\n"]
+    if regime_line:
+        out.append(regime_line + "\n")
 
     # ── 1. 漏斗数量 ──
     out += ["## 1. 漏斗(数量)"] + _funnel_rows(meta, len(keep) or "?", len(finals), len(rows)) + [""]
@@ -409,8 +479,8 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str) ->
     n_l2 = meta.get("l2_n") or len(l2_top) or "?"
     ch_map = {c: (r.get("recall_channels") or "") for c, r in l2_top.items()}   # 命中队列(随 keep 流到 L2 表)
     out += [f"## 3. 投资建议(buy-list, {len(rows)} 只,按 评级 → 确信度 排序;逐阶段结论)\n",
-            f"| # | 名称 | 板块 | L1召回(#/{n_l1}) | L2粗排(#/{n_l2}) | L3论点·确信 | 评级 | 目标(EV) | 置信度 |" + vcol,
-            "|---|---|---|---|---|---|---|---|---|" + vsep]
+            f"| # | 名称 | 板块 | L1召回(#/{n_l1}) | L2粗排(#/{n_l2}) | L3精排 | L4研究·结论 | 评级 | 目标(EV) | 置信度 |" + vcol,
+            "|---|---|---|---|---|---|---|---|---|---|" + vsep]
     for i, r in enumerate(rows, 1):
         code = str(r.get("code", "")).zfill(6)
         vcell = f" {_verify_badge(code, vmap)} |" if vmap else ""
@@ -420,9 +490,11 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str) ->
         out.append(
             f"| {i} | {r.get('name', '')} | {r.get('sector') or r.get('industry', '')} "
             f"| {_l1_cell(code, l1_full, ch_map)} | {_l2_cell(code, l2_top)} | {l3cell} "
+            f"| {_strip(r.get('l4', '—'))} "
             f"| **{r.get('rating', '—')}** | {r.get('target', '—')} | {r.get('conf', '—')} |" + vcell)
     out.append(f"\n_列注:**L1召回** #复合分名次/{n_l1}·命中队列(越小越强;低复合分票靠某条队列召回→名次很大);"
-               f"**L2粗排** #GBDT重排名次/{n_l2}·gbdt分;**L3论点·确信** 为 Opus 精排理由 + conviction。_")
+               f"**L2粗排** #GBDT重排名次/{n_l2}·gbdt分;**L3精排** = Opus holistic 论点 + conviction;"
+               f"**L4研究·结论** = 决策卡深核后的关键定级依据(≥OW 取多头驱动,否则取空头/早停因)。_")
     out += _verify_detail(vmap)
     out += ["", "### 组合视角", _portfolio_note(rows), ""]
     kn = _knowledge_note(rows)
@@ -435,7 +507,7 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str) ->
             "- A股涨跌停/停牌使名义止损未必可执行(见各决策卡执行段)。",
             f"\n_明细 + 漏斗溯源:`reports/scan/{folder}/`(summary.md + details/〈名称〉.md + trace/;目录名=运行时刻,数据日见 manifest.json)_"]
     body = "\n".join(out)
-    banner = _self_review_banner(scan_dir, rows, body)   # UZI self-review 硬门:fail 顶到最前
+    banner = _self_review_banner(scan_dir, rows, body, regime_drift=regime_drift)   # UZI self-review 硬门:fail 顶到最前
     return f"{banner}\n{body}" if banner else body
 
 

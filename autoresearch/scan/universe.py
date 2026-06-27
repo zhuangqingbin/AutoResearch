@@ -39,7 +39,6 @@ import pandas as pd
 from autoresearch.common.scoring import (
     _GROUPS,
     _PRIOR_WEIGHTS,
-    _load_weights,
     _pct,
     _wsum,
     composite_score,
@@ -48,6 +47,7 @@ from autoresearch.common.scoring import (
     lens_momentum,
     lens_reversal,
     lens_value,
+    pick_weights,
     prev_quarter,
 )
 
@@ -130,11 +130,17 @@ def aggregate_sectors(survivors: pd.DataFrame, uni: pd.DataFrame, top_sectors: i
 # 在 autoresearch.common.scoring(scan/factor_lab/handler 三处同口径),顶部 import 复用。
 
 
-def _recall_gate_a(df: pd.DataFrame, min_amount_yi: float = 0.0) -> pd.Series:
-    """L1 召回轻门:只去真正不可交易/无核心数据的尾部(召回优先,尽量不误杀)。"""
+def _recall_gate_a(df: pd.DataFrame, min_amount_yi: float = 0.0, min_list_days: int = 0) -> pd.Series:
+    """L1 召回轻门:只去真正不可交易/无核心数据的尾部(召回优先,尽量不误杀)。
+
+    `min_list_days`>0 且帧有 `list_days` 列 → 剔次新(上市<阈值日,量价/IC 因子无意义);缺列降级不剔。
+    默认两门 =0 → 与改动前逐值一致(parity)。
+    """
     keep = df["amount_yi"].fillna(0) > min_amount_yi       # 有流动性/非停牌
     keep &= df["close"].notna()                            # 有价
     keep &= df["pct_60d"].notna() | df["pct_ytd"].notna()  # 有动量价(打分核心)
+    if min_list_days > 0 and "list_days" in df.columns:    # 次新过滤(有 list_days 才生效,缺则降级)
+        keep &= pd.to_numeric(df["list_days"], errors="coerce").fillna(1e9) >= min_list_days
     return keep
 
 
@@ -226,7 +232,10 @@ def recall_select(scored: pd.DataFrame, analysis_date: str, recall_n: int,
 def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
         recall_n: int = 1000, l2_n: int = 200, outdir: Path | None = None,
         source: str = "tushare", recall_mode: str = "multi", recall_channels=None,
-        l2_model: str = "l2_fwd5", l2_lane_quota: int = 0,
+        regime_aware: bool = False,                                      # L1 权重按 regime 选(默认关=parity)
+        l0_min_amount_yi: float = 0.0, l0_min_list_days: int = 0,         # L0 流动性/次新硬门(默认 0=关=parity)
+        l2_model: str = "l2_fwd5", l2_floors: dict | None = None, l2_sector_cap: float = 0.20,
+        l2_lane_quota: int = 40,                                          # 弃用(分层采样取代)
         l2_lane_channels=("momentum", "heat", "growth", "accumulation")) -> dict:
     """L0 选集 + L1 召回 + L2 粗排(GBDT 学习重排 → top l2_n)。全确定性,零 LLM。
 
@@ -245,12 +254,13 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
     n_l0 = len(uni)
 
     # L1 召回:Step A 轻门 → Step B 复合分 → top recall_n
-    uni = uni[_recall_gate_a(uni)].reset_index(drop=True)
+    uni = uni[_recall_gate_a(uni, min_amount_yi=l0_min_amount_yi,
+                             min_list_days=l0_min_list_days)].reset_index(drop=True)
     uni["code"] = uni["code"].astype(str).str.zfill(6)
     vps = _harvest_vol_series(uni["code"], analysis_date)          # 多日量价序列(CMF/OBV/...)→ volprice 组
     if len(vps):
         uni = uni.merge(vps, on="code", how="left")
-    weights = _load_weights()
+    weights, _regime = pick_weights(uni, regime_aware)
     scored = composite_score(uni, weights)
     recall, per_channel = recall_select(scored, analysis_date, recall_n, recall_mode, recall_channels)
     print(f"[L1 召回] L0 {n_l0} → 轻门 {len(uni)} → {recall_mode} top {len(recall)}", file=sys.stderr)
@@ -276,27 +286,12 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
     full[["rank", "recalled"] + [c for c in keep if c in full.columns]].to_csv(
         outdir / "L1_scored_full.csv", index=False)
 
-    # ── L2 粗排:champion 重排 recall → top l2_n(确定性,替旧 L2-AI keep/cut)──
-    # 优先 zoo champion(swing,core 在召回帧可 predict)→ 回落 factor_lab GBDT → 回落 composite top。
-    # 任一缺失/失败 → 下一级回落(自保:绝不比线性差)。L2Rank stage 共用 champion_scores → 口径一致。
-    from autoresearch.scan.l2_model import champion_scores
-    scores, l2_engine = champion_scores(recall, l2_model)
-    if scores is None:
-        import autoresearch.research.factor_lab as factor_lab
-        g = factor_lab.predict_scores(recall)
-        if g is not None:
-            scores, l2_engine = g, "gbdt"
-        else:
-            l2_engine = "composite-linear(回落)"
-    from autoresearch.scan.recall.l2_quota import apply_l2_lane_quota
-    if scores is not None:
-        ranked = recall.assign(gbdt_score=scores.to_numpy()).sort_values(
-            "gbdt_score", ascending=False, kind="stable")
-    else:
-        ranked = recall.assign(gbdt_score=np.nan)
-    l2 = apply_l2_lane_quota(ranked, l2_n, l2_lane_quota, l2_lane_channels)  # Q=0 → 逐值复现 head(l2_n)
-    l2.insert(0, "l2_rank", range(1, len(l2) + 1))
-    l2_cols = ["l2_rank", "gbdt_score", "l2_lane_reserved", *keep]
+    # ── L2 粗排:确定性分层多样性采样器(ML-free;sector-neutral composite + 风格 floor + sector cap)──
+    # 实证:确定性 L2 无稳健 alpha、regime 依赖 → 不预测、不赌 regime,只给 L3/L4 建均衡菜单;alpha 在 L3/L4。
+    # L2Rank stage 共用 select_l2 → golden parity。(design: 2026-06-25-l2-stratified-sampler)
+    from autoresearch.scan.recall.l2_stratify import select_l2
+    l2, l2_engine = select_l2(recall, l2_n, floors=l2_floors, sector_cap_frac=l2_sector_cap)
+    l2_cols = ["l2_rank", "gbdt_score", "l2_lane_reserved", "sector_mom", *keep]
     l2[[c for c in l2_cols if c in l2.columns]].to_csv(outdir / "L2_gbdt_top200.csv", index=False)
     print(f"[L2 粗排] recall {len(recall)} → {l2_engine} top {len(l2)}", file=sys.stderr)
 
@@ -304,7 +299,7 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
     (outdir / "meta.json").write_text(json.dumps({
         "analysis_date": analysis_date, "universe_raw": n_raw, "universe": n_l0, "after_gate_a": len(uni),
         "recall_n": len(recall), "l2_n": len(l2), "l2_engine": l2_engine,
-        "l2_lane_quota": l2_lane_quota,
+        "l2_sector_cap": l2_sector_cap,
         "cap_floor_yi": cap_floor_yi, "include_bj": include_bj, "source": source,
         "weights_source": weights.get("meta", {}).get("source", "weights.json"),
     }, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -437,6 +432,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--recall-mode", choices=["multi", "composite"], default="multi",
                     help="L1 召回:multi=多路策略召回(默认)| composite=单复合分(对拍/回退)")
     ap.add_argument("--recall-channels", default=None, help="启用 channel 子集(逗号分隔;缺省=全 9 路)")
+    ap.add_argument("--l2-sector-cap", type=float, default=0.20,
+                    help="L2 分层采样:任一申万一级 ≤ 此比例,默认 0.20(=40/200);≥1.0=关")
     ap.add_argument("--selftest", action="store_true", help="离线验证打分逻辑(无网络)")
     args = ap.parse_args(argv)
 
@@ -446,7 +443,7 @@ def main(argv: list[str] | None = None) -> int:
     analysis_date = args.date or date.today().isoformat()
     res = run(analysis_date, cap_floor_yi=args.cap_floor, include_bj=not args.exclude_bj,
               recall_n=args.recall_n, l2_n=args.l2_n, source=args.source,
-              recall_mode=args.recall_mode,
+              recall_mode=args.recall_mode, l2_sector_cap=args.l2_sector_cap,
               recall_channels=(args.recall_channels.split(",") if args.recall_channels else None))
     print(f"\nL0 universe={res['universe']} → 轻门 {res['after_gate_a']} → 召回 top{res['recall_n']} "
           f"→ L2 {res['l2_engine']} top{res['l2_n']} (板块概览 {res['sectors']} 个)"

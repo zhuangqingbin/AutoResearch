@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import sys
 
-from autoresearch.common.scoring import _GROUPS, _load_weights, composite_score
+from autoresearch.common.scoring import _GROUPS, composite_score, pick_weights
 from autoresearch.scan.context import RunContext
 from autoresearch.scan.stages.base import Stage
 from autoresearch.trace import schema
@@ -51,7 +51,7 @@ class L1Recall(Stage):
         if len(vps):
             uni = uni.merge(vps, on="code", how="left")
 
-        weights = _load_weights()
+        weights, _regime = pick_weights(uni, ctx.config.regime_aware)
         scored = composite_score(uni, weights)
         recall, per_channel = smu.recall_select(
             scored, ctx.analysis_date, recall_n,

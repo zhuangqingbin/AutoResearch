@@ -19,12 +19,12 @@ import pandas as pd
 _L3_COLS = ["code", "name", "industry", "composite", "gbdt_score",
             "score_momentum", "score_fund_main", "score_fund_retail", "score_chip",
             "score_north", "score_tech", "score_growth", "score_value", "score_volprice",
-            "pct_60d", "vol_ratio", "cmf_20", "obv_mom_20", "main_net_ratio", "retail_net_yi", "winner_rate",
+            "pct_60d", "sector_mom", "vol_ratio", "cmf_20", "obv_mom_20", "main_net_ratio", "retail_net_yi", "winner_rate",
             "chip_concentration", "price_to_cost", "hk_ratio", "rsi6", "pe", "pb",
             "dv_ratio", "np_yoy", "roe",
             "n_channels", "recall_channels", "l2_lane_reserved",  # 召回 provenance + L2 lane 配额救回标记
-            "news_n", "news_tags", "news_head",       # Phase 3 公告情感 digest(anns_d)
-            "med_n", "med_tags", "med_head"]          # 媒体新闻情感 digest(akshare stock_news_em)
+            "news_n", "news_tags", "news_sent", "news_head",   # Phase 3 公告情感 digest(anns_d)+ 数值净情感
+            "med_n", "med_tags", "med_sent", "med_head"]       # 媒体新闻情感 digest(akshare)+ 数值净情感
 
 
 # ───────────────────────── L3:紧凑表 + 增量真证据 + finalists 合并 ─────────────────────────

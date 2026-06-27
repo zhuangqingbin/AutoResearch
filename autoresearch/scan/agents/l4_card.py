@@ -151,3 +151,51 @@ def rubric_rating(dims: dict, gates: dict) -> tuple[str, str]:
         return "Hold", f"净分{net:+d}→{base},OW门未过({'、'.join(failed)})→压Hold"
     suffix = "(OW门3/3)" if order[base] < order["Hold"] else ""
     return base, f"净分{net:+d}→{base}{suffix}"
+
+
+# ───────────────────────── L4 · 早停安全网 + 自评一致性抽检 ─────────────────────────
+
+
+def force_full_card(priors: dict, *, conv_min: float = 70.0, channels_min: int = 4) -> bool:
+    """**强先验白名单**:P0 先验极强者强制跑满卡(P4+P5),不被表面 P1-P3 早停误杀真龙头。
+
+    判据:conviction≥conv_min **且**(多路共振 n_channels≥channels_min **或** L2 配额救回 lane_reserved)。
+    高 conviction 但孤路无 lane → 不强制(可能是单因子虚高,照常走早停)。priors 缺键按弱处理。
+    """
+    conv = priors.get("conviction")
+    try:
+        conv = float(conv)
+    except (TypeError, ValueError):
+        return False
+    if conv < conv_min:
+        return False
+    n_ch = priors.get("n_channels") or 0
+    try:
+        n_ch = int(n_ch)
+    except (TypeError, ValueError):
+        n_ch = 0
+    return n_ch >= channels_min or bool(priors.get("l2_lane_reserved"))
+
+
+# 卡片自评 gate=True 时,正文若含这些词即矛盾(疑自评 gaming)。
+_GATE_CONTRA = {
+    "主力真在": ["净流出", "主力流出", "资金流出", "主力撤", "主力出逃"],
+    "业绩真兑现": ["业绩下滑", "预亏", "预减", "净利下降", "增收不增利", "亏损扩大"],
+    "估值不透支": ["估值偏高", "高估", "估值透支", "泡沫", "PE 偏高", "估值贵"],
+}
+
+
+def audit_rubric_gates(card_text: str, gates: dict) -> list[str]:
+    """**自评一致性抽检**:卡片自报 OW gate=True,但正文出现反向措辞 → flag(防自评 gaming)。
+
+    只查被声明为 True 的门;返回矛盾说明 list(空=无矛盾)。供 L4 回卡后抽检 / self_review 用。
+    """
+    t = str(card_text)
+    flags: list[str] = []
+    for gate, contras in _GATE_CONTRA.items():
+        if not (gates or {}).get(gate):
+            continue
+        hit = next((c for c in contras if c in t), None)
+        if hit:
+            flags.append(f"{gate}=True 但正文含「{hit}」(自评与正文矛盾,疑 gaming)")
+    return flags

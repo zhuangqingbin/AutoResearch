@@ -571,34 +571,37 @@ def _all_frames(cap_floor: float) -> list[pd.DataFrame]:
     return frames
 
 
-def calibrate(cap_floor: float = 30.0, k: float = 200.0,
-              out_path: str = "context/factor_lab/weights.json") -> dict:
-    """每"因子组"对 T+1(开到开)的 rank-IC,按申万/东财行业 + 大类层级收缩 → weights.json。
+def _build_calib_panel(frames: list[pd.DataFrame], label_col: str = "fwd_1_oo"):
+    """frames → 校准 panel(grp_* + industry/sector/fwd/date,buyable 过滤)+ regime_by_date。
 
-    组定义复用 autoresearch.common.scoring._factor_groups(校准与线上同口径)。factor_lab 无季度基本面 →
-    growth 组 IC=NaN 跳过(权重 0);value 组用 pe 行业内分位可校准。权重 = signed IC(线上
-    composite_score 用其符号+大小)。
+    `label_col` 选前向标签(fwd_1_oo 默认 / fwd_5_oc / fwd_10_oc 多 horizon);regime 逐日由
+    `classify_regime(factor_frame)` 算(与线上 scan 同口径)。
     """
-    import json
-
+    from autoresearch.common.regime import classify_regime
     from autoresearch.common.scoring import _factor_groups
 
-    frames = _all_frames(cap_floor)
-    if not frames:
-        print("无可用成型日(先 harvest)")
-        return {}
-    rows = []
+    rows, regime_by_date = [], {}
     for fr in frames:
         groups = _factor_groups(fr)
         g = pd.DataFrame({f"grp_{name}": v.to_numpy() for name, v in groups.items()})
         g["industry"] = fr["industry"].to_numpy()
         g["sector"] = g["industry"].map(super_sector)
-        g["fwd"] = fr["fwd_1_oo"].to_numpy()
+        g["fwd"] = fr[label_col].to_numpy()
         g["buyable"] = fr["buyable"].fillna(True).to_numpy()
         g["date"] = fr["date"].to_numpy()
         rows.append(g)
+        if len(fr):
+            regime_by_date[fr["date"].iloc[0]] = classify_regime(fr).label
     panel = pd.concat(rows, ignore_index=True)
     panel = panel[panel["buyable"]]
+    return panel, regime_by_date
+
+
+def _weights_from_panel(panel: pd.DataFrame, k: float = 200.0):
+    """panel(grp_* + industry/sector/fwd/date)→ (weights dict, ic_global dict[grp_col→ic])。纯函数。
+
+    每组对 fwd 的逐日 rank-IC → 全市场 / 大类 / 行业三层收缩(`_shrink_weights`)。__global__ = 裸全市场 IC。
+    """
     grp_cols = [c for c in panel.columns if c.startswith("grp_")]
 
     def _ic_by(df_) -> dict:
@@ -610,15 +613,49 @@ def calibrate(cap_floor: float = 30.0, k: float = 200.0,
 
     ic_global = _ic_by(panel)
     ic_sector = {sec: _ic_by(gp) for sec, gp in panel.groupby("sector")}
-
     weights = {}
     for ind, gi in panel.groupby("industry"):
         ic_i, ic_p = _ic_by(gi), ic_sector.get(super_sector(ind), {})
         weights[ind] = {c[4:]: round(_shrink_weights(_nz(ic_i.get(c)), len(gi), _nz(ic_p.get(c)),
                                                       _nz(ic_global.get(c)), k=k), 5) for c in grp_cols}
     weights["__global__"] = {c[4:]: round(_nz(ic_global.get(c)), 5) for c in grp_cols}
+    return weights, ic_global
 
-    meta = {"horizon": "fwd_1_oo(T+1 开到开)", "k": k, "n_dates": int(panel["date"].nunique()),
+
+def _regimes_from_panel(panel: pd.DataFrame, k: float = 200.0, min_dates: int = 5) -> dict:
+    """按 panel['regime'] 分桶,每桶(覆盖 ≥min_dates 日)→ {regime: {weights, meta}}。纯函数。"""
+    out: dict = {}
+    if "regime" not in panel.columns:
+        return out
+    for label, sub in panel.groupby("regime"):
+        if sub["date"].nunique() < min_dates:
+            continue
+        w, icg = _weights_from_panel(sub, k)
+        out[str(label)] = {"weights": w, "meta": {
+            "n_dates": int(sub["date"].nunique()), "n_rows": int(len(sub)),
+            "ic_global": {c[4:]: round(_nz(v), 4) for c, v in icg.items()}}}
+    return out
+
+
+def calibrate(cap_floor: float = 30.0, k: float = 200.0, label_col: str = "fwd_1_oo",
+              out_path: str = "context/factor_lab/weights.json") -> dict:
+    """每"因子组"对前向收益的 rank-IC,按申万/东财行业 + 大类层级收缩 → weights.json(flat)。
+
+    组定义复用 autoresearch.common.scoring._factor_groups(校准与线上同口径)。factor_lab 无季度基本面 →
+    growth 组 IC=NaN 跳过(权重 0);value 组用 pe 行业内分位可校准。权重 = signed IC(线上
+    composite_score 用其符号+大小)。`label_col` 默认 T+1 开到开(parity);可换多 horizon。
+    """
+    import json
+
+    frames = _all_frames(cap_floor)
+    if not frames:
+        print("无可用成型日(先 harvest)")
+        return {}
+    panel, _ = _build_calib_panel(frames, label_col=label_col)
+    weights, ic_global = _weights_from_panel(panel, k)
+    grp_cols = [c for c in panel.columns if c.startswith("grp_")]
+    horizon = "fwd_1_oo(T+1 开到开)" if label_col == "fwd_1_oo" else label_col
+    meta = {"horizon": horizon, "k": k, "n_dates": int(panel["date"].nunique()),
             "n_rows": int(len(panel)), "n_industries": int(panel["industry"].nunique()),
             "ic_global": {c[4:]: round(_nz(v), 4) for c, v in ic_global.items()},
             "source": "factor_lab.calibrate"}
@@ -626,8 +663,42 @@ def calibrate(cap_floor: float = 30.0, k: float = 200.0,
     Path(out_path).write_text(json.dumps({"meta": meta, "weights": weights}, ensure_ascii=False, indent=2),
                               encoding="utf-8")
     print(f"[calibrate] weights → {out_path}")
-    print(f"  组×行业: {len(grp_cols)} × {len(weights) - 1};全市场组 IC(T+1 oo): {meta['ic_global']}")
+    print(f"  组×行业: {len(grp_cols)} × {len(weights) - 1};全市场组 IC({horizon}): {meta['ic_global']}")
     return {"meta": meta, "weights": weights}
+
+
+def calibrate_regimes(cap_floor: float = 30.0, k: float = 200.0, label_col: str = "fwd_1_oo",
+                      min_dates: int = 5, out_path: str = "context/factor_lab/weights.json") -> dict:
+    """逐日 regime 分桶校准 → weights.json 增 `regimes` 块(同时保留 flat 全样本权重)。
+
+    flat `weights` = 全样本(向后兼容、regime_aware 关时用);`regimes[trend|range|risk_off].weights`
+    = 该 regime 子样本 IC(趋势市 momentum 翻正等)。`meta.regime_calib` = 主导 regime(drift 基线)。
+    线上 `_load_weights(regime=classify_regime(今日帧).label)` 取对应块。
+    """
+    import json
+    from collections import Counter
+
+    frames = _all_frames(cap_floor)
+    if not frames:
+        print("无可用成型日(先 harvest)")
+        return {}
+    panel, regime_by_date = _build_calib_panel(frames, label_col=label_col)
+    panel = panel.copy()
+    panel["regime"] = panel["date"].map(regime_by_date)
+    weights, ic_global = _weights_from_panel(panel, k)
+    regimes = _regimes_from_panel(panel, k, min_dates)
+    dom = Counter(regime_by_date.values()).most_common(1)[0][0] if regime_by_date else "range"
+    horizon = "fwd_1_oo(T+1 开到开)" if label_col == "fwd_1_oo" else label_col
+    meta = {"horizon": horizon, "k": k, "n_dates": int(panel["date"].nunique()),
+            "n_rows": int(len(panel)), "n_industries": int(panel["industry"].nunique()),
+            "ic_global": {c[4:]: round(_nz(v), 4) for c, v in ic_global.items()},
+            "regime_calib": dom, "regimes_present": sorted(regimes.keys()),
+            "source": "factor_lab.calibrate_regimes"}
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(out_path).write_text(json.dumps({"meta": meta, "weights": weights, "regimes": regimes},
+                                         ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"[calibrate_regimes] → {out_path};regimes {meta['regimes_present']};主导 {dom}")
+    return {"meta": meta, "weights": weights, "regimes": regimes}
 
 
 # ───────────────────────── L2 GBDT 学习重排(LightGBM 横截面) ─────────────────────────

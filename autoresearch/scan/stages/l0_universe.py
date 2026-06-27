@@ -48,7 +48,8 @@ class L0Universe(Stage):
         n_l0 = len(uni)
 
         # 轻召回门(scan.universe.run 的 `uni = uni[_recall_gate_a(uni)]`)+ code 规整。
-        uni = uni[smu._recall_gate_a(uni)].reset_index(drop=True)
+        uni = uni[smu._recall_gate_a(uni, min_amount_yi=cfg.l0_min_amount_yi,
+                                     min_list_days=cfg.l0_min_list_days)].reset_index(drop=True)
         uni["code"] = uni["code"].astype(str).str.zfill(6)
 
         ctx.trace.put_df(ctx.run_id, schema.L0_UNIVERSE, uni)

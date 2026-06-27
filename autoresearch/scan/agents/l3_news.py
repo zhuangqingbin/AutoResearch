@@ -13,38 +13,63 @@ from pathlib import Path
 
 from autoresearch.data.cache import get_or_fetch
 
-# 标题关键词 → 方向(粗;Claude 细化)。覆盖 A 股最常见材料事件。
+# 标题关键词 → 方向(粗;Claude 在 holistic 内细化)。覆盖 A 股最常见材料事件。
 _EVENT_TAGS = {
     "利多": ["回购", "增持", "中标", "股权激励", "业绩预增", "预增", "预盈", "扭亏",
              "定增", "重组", "收购", "签约", "订单", "获批"],
     "利空": ["减持", "质押", "问询", "关注函", "立案", "商誉减值", "业绩预减", "预减",
              "预亏", "退市", "违规", "诉讼", "处罚", "冻结", "终止"],
 }
+# 否定/澄清词:标题含之 → 中性化(保守不翻转,避免"不增持/澄清重组"误判方向)。
+_NEGATORS = ("未", "不", "否认", "澄清", "辟谣", "无", "暂不", "拟不", "取消")
+# 强信号词(intensity ×2):材料度高的真事件,区别于"签约/质押"这类弱噪声。
+_STRONG = frozenset({"回购", "增持", "中标", "预增", "扭亏", "重组", "收购", "获批", "订单",
+                     "立案", "退市", "商誉减值", "处罚", "诉讼", "冻结", "违规"})
+
+
+def score_title(title: str) -> tuple[str, float]:
+    """标题 → (direction, intensity)。direction∈{利多,利空,''};intensity≥0(强词×2 + 命中累加)。
+
+    ① 否定/澄清词在标题 → 中性化((''、0.0),保守不翻转;② 强词权重 2、其余 1,正负净额定方向,
+    势均 → 中性。比纯首词命中更稳:方向更准 + 给 holistic 一个数值强度先验(`*_sent`)。
+    """
+    t = str(title)
+    if any(neg in t for neg in _NEGATORS):
+        return "", 0.0
+    pos = sum(2 if kw in _STRONG else 1 for kw in _EVENT_TAGS["利多"] if kw in t)
+    neg = sum(2 if kw in _STRONG else 1 for kw in _EVENT_TAGS["利空"] if kw in t)
+    if pos == neg:
+        return "", 0.0
+    return ("利多", float(pos)) if pos > neg else ("利空", float(neg))
 
 
 def _tag(title: str) -> str:
-    for label, kws in _EVENT_TAGS.items():
-        if any(kw in title for kw in kws):
-            return label
-    return ""
+    """方向标签(兼容旧用法)= score_title 的 direction。"""
+    return score_title(title)[0]
 
 
 def news_digest(anns: list[dict], prefix: str = "news") -> dict:
-    """近期新闻/公告 list → {<prefix>_n, <prefix>_tags("利多×2|利空×1"), <prefix>_head(最新标题≤24)}。
+    """近期新闻/公告 list → {<prefix>_n, <prefix>_tags("利多×2|利空×1"), <prefix>_head(≤24), <prefix>_sent}。
 
-    prefix="news"(默认,anns_d 公告)/ "med"(akshare 媒体新闻)→ 两路情感列并存。空→缺省。
+    `<prefix>_sent`∈[-1,1]:按 intensity 加权的净情感(利多正/利空负;mass 归一)→ 给 holistic 数值先验。
+    prefix="news"(anns_d 公告)/ "med"(akshare 媒体新闻)。空→缺省(sent=0.0)。
     """
     if not anns:
-        return {f"{prefix}_n": 0, f"{prefix}_tags": "", f"{prefix}_head": "—"}
+        return {f"{prefix}_n": 0, f"{prefix}_tags": "", f"{prefix}_head": "—", f"{prefix}_sent": 0.0}
     counts: dict[str, int] = {}
+    net = mass = 0.0
     for a in anns:
-        lab = _tag(str(a.get("title", "")))
-        if lab:
-            counts[lab] = counts.get(lab, 0) + 1
+        direction, inten = score_title(str(a.get("title", "")))
+        if direction:
+            counts[direction] = counts.get(direction, 0) + 1
+            signed = inten if direction == "利多" else -inten
+            net += signed
+            mass += inten
     tags = "|".join(f"{k}×{v}" for k, v in counts.items())
     latest = max(anns, key=lambda a: str(a.get("ann_date", "")))
     head = str(latest.get("title", ""))[:24] or "—"
-    return {f"{prefix}_n": len(anns), f"{prefix}_tags": tags, f"{prefix}_head": head}
+    sent = round(net / mass, 2) if mass > 0 else 0.0
+    return {f"{prefix}_n": len(anns), f"{prefix}_tags": tags, f"{prefix}_head": head, f"{prefix}_sent": sent}
 
 
 def _trade_days_for(date: str, lookback_days: int) -> list[str]:

@@ -107,6 +107,11 @@ def review(ctx: dict) -> dict:
             add("评级超rubric", "warn",
                 f"{f.get('code', '?')} 评级 {rt} 激进于评分卡建议 {rs}(需 **偏离** 说明或下修)")
 
+    # 7) regime 漂移(assemble 传 detect_drift 的 reason;仅 drift 时传)→ warn,提示重校准
+    rd = ctx.get("regime_drift")
+    if rd:
+        add("regime 漂移", "warn", str(rd))
+
     n_fail = sum(1 for x in failures if x["severity"] == "fail")
     return {"ok": n_fail == 0, "n_fail": n_fail, "n_warn": len(failures) - n_fail,
             "failures": failures}
