@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import sys
 
-from autoresearch.models.linear import LinearComposite
 from autoresearch.scan.context import RunContext
 from autoresearch.scan.stages.base import Stage
 from autoresearch.scan.stages.l1_recall import _KEEP
@@ -37,23 +36,14 @@ class L2Rank(Stage):
         recall["code"] = recall["code"].astype(str).str.zfill(6)
         l2_n = ctx.config.l2_n
 
-        # champion 重排(与 universe.run 共用 champion_scores,口径一致 → golden parity);
-        # 无 champion / predict 失败 → 回落线性复合分(= composite,绝不比线性差)。
-        from autoresearch.scan.l2_model import champion_scores
-        scores, engine = champion_scores(recall, ctx.config.l2_model)
-        if scores is None:
-            scores = LinearComposite().predict(recall)
-            engine = "composite-linear(default)"
-        # 稳定排序:recall 已按 composite 降序,无 champion 时 l2_score==composite → 逐位复现 head(l2_n)。
-        from autoresearch.scan.recall.l2_quota import apply_l2_lane_quota
-        ranked = recall.assign(l2_score=scores.to_numpy()).sort_values(
-            "l2_score", ascending=False, kind="stable")
-        l2 = apply_l2_lane_quota(ranked, l2_n, ctx.config.l2_lane_quota, ctx.config.l2_lane_channels)
-        l2.insert(0, "l2_rank", range(1, len(l2) + 1))
+        # L2 确定性分层多样性采样(与 universe.run 共用 select_l2 → golden parity);ML-free。
+        from autoresearch.scan.recall.l2_stratify import select_l2
+        l2, engine = select_l2(recall, l2_n, floors=ctx.config.l2_floors,
+                               sector_cap_frac=ctx.config.l2_sector_cap)
 
-        cols = ["l2_rank", "l2_score", "l2_lane_reserved", *_KEEP]
+        cols = ["l2_rank", "l2_score", "l2_lane_reserved", "sector_mom", *_KEEP]
         l2_out = l2[[c for c in cols if c in l2.columns]]
         ctx.trace.put_df(ctx.run_id, schema.L2_RANK, l2_out)
         ctx.trace.put_meta(ctx.run_id, {"l2_n": int(len(l2)), "l2_engine": engine,
-                                        "l2_lane_quota": int(ctx.config.l2_lane_quota)})
+                                        "l2_sector_cap": float(ctx.config.l2_sector_cap)})
         print(f"[L2 粗排] recall {len(recall)} → {engine} top {len(l2)}", file=sys.stderr)

@@ -291,7 +291,7 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
     # L2Rank stage 共用 select_l2 → golden parity。(design: 2026-06-25-l2-stratified-sampler)
     from autoresearch.scan.recall.l2_stratify import select_l2
     l2, l2_engine = select_l2(recall, l2_n, floors=l2_floors, sector_cap_frac=l2_sector_cap)
-    l2_cols = ["l2_rank", "gbdt_score", "l2_lane_reserved", *keep]
+    l2_cols = ["l2_rank", "gbdt_score", "l2_lane_reserved", "sector_mom", *keep]
     l2[[c for c in l2_cols if c in l2.columns]].to_csv(outdir / "L2_gbdt_top200.csv", index=False)
     print(f"[L2 粗排] recall {len(recall)} → {l2_engine} top {len(l2)}", file=sys.stderr)
 

@@ -19,7 +19,7 @@ import pandas as pd
 _L3_COLS = ["code", "name", "industry", "composite", "gbdt_score",
             "score_momentum", "score_fund_main", "score_fund_retail", "score_chip",
             "score_north", "score_tech", "score_growth", "score_value", "score_volprice",
-            "pct_60d", "vol_ratio", "cmf_20", "obv_mom_20", "main_net_ratio", "retail_net_yi", "winner_rate",
+            "pct_60d", "sector_mom", "vol_ratio", "cmf_20", "obv_mom_20", "main_net_ratio", "retail_net_yi", "winner_rate",
             "chip_concentration", "price_to_cost", "hk_ratio", "rsi6", "pe", "pb",
             "dv_ratio", "np_yoy", "roe",
             "n_channels", "recall_channels", "l2_lane_reserved",  # 召回 provenance + L2 lane 配额救回标记
