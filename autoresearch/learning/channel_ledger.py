@@ -59,9 +59,76 @@ def render(ledger: pd.DataFrame) -> list[str]:
     return out
 
 
+def current_quotas() -> dict[str, int]:
+    """从 recall registry 取各路当前 quota({name: quota})。导入 channels 模块以填充注册表。"""
+    import autoresearch.scan.recall.channels  # noqa: F401 —— 触发 @channel 注册
+    from autoresearch.scan.recall.registry import CHANNEL_DEFAULTS
+    return {name: int(spec.quota) for name, spec in CHANNEL_DEFAULTS.items()}
+
+
+def propose_quota_adjustments(ledger: pd.DataFrame, quotas: dict[str, int], *, min_days: int = 3,
+                              neg_thresh: float = 0.0, pos_thresh: float = 0.005,
+                              step_frac: float = 0.25) -> list[dict]:
+    """ledger(roll 输出)+ 当前 quotas → 调整提议(**advisory,不改线上**)。
+
+    持续负边际超额(`mean_unique_excess_t5 < neg_thresh`,n_days≥min_days)→ 提议降 quota;
+    持续正(> pos_thresh)→ 提议升;中性带 (neg, pos) / 样本不足 → 不提议。单步 ±step_frac。
+    """
+    props: list[dict] = []
+    if ledger is None or not len(ledger):
+        return props
+    for r in ledger.itertuples(index=False):
+        ch = r.channel
+        if ch not in quotas or (r.n_days or 0) < min_days:
+            continue
+        m = r.mean_unique_excess_t5
+        if m is None or pd.isna(m):
+            continue
+        cur = int(quotas[ch])
+        if m < neg_thresh:
+            proposed, direction = max(1, round(cur * (1 - step_frac))), "降"
+        elif m > pos_thresh:
+            proposed, direction = round(cur * (1 + step_frac)), "升"
+        else:
+            continue
+        if proposed == cur:
+            continue
+        props.append({"channel": ch, "cur_quota": cur, "proposed_quota": int(proposed),
+                      "delta": int(proposed) - cur,
+                      "reason": f"{direction}:边际超额T5 {m * 100:+.1f}% / {int(r.n_days)}日"})
+    return props
+
+
+def apply_proposals(proposals: list[dict], quotas: dict[str, int], *,
+                    max_delta_frac: float = 0.25) -> tuple[dict[str, int], list[str]]:
+    """把提议合进 quotas(单路单次 |Δ| ≤ max_delta_frac·cur 防抖)→ (new_quotas, audit 行)。
+
+    **仅显式调用才改**(默认人工 gate);未知路忽略。
+    """
+    new = dict(quotas)
+    audit: list[str] = []
+    for p in proposals:
+        ch = p.get("channel")
+        if ch not in new:
+            continue
+        cur = int(new[ch])
+        cap = max(1, int(round(max_delta_frac * cur)))
+        delta = max(-cap, min(cap, int(p["proposed_quota"]) - cur))
+        nq = max(1, cur + delta)
+        if nq != cur:
+            new[ch] = nq
+            audit.append(f"{ch}: {cur} → {nq} ({p.get('reason', '')})")
+    return new, audit
+
+
 def main() -> int:
     led = roll()
     body = "\n".join(render(led))
+    props = propose_quota_adjustments(led, current_quotas())
+    if props:
+        body += "\n\n## quota 调整提议(advisory,人工 gate)\n"
+        body += "\n".join(f"- {p['channel']}: {p['cur_quota']} → {p['proposed_quota']}({p['reason']})"
+                          for p in props)
     outp = Path("reports/learning/channel_ledger.md")
     outp.parent.mkdir(parents=True, exist_ok=True)
     outp.write_text(body, encoding="utf-8")

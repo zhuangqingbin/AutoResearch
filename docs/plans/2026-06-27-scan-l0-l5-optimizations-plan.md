@@ -3,14 +3,14 @@
 > Spec: `docs/specs/2026-06-27-scan-l0-l5-optimizations-design.md`。TDD,每 Task 单独 commit。
 > 全局铁律:行为变更默认关 → golden parity 不破;合成 fixture 无网络;`uv run --no-sync python -m pytest`。
 
-## Phase 1 — 地基 + 最高杠杆(regime + 权重)
-- [ ] **T1 `regime.py`**:`RegimeState` + `classify_regime`(trend/range/risk_off + 退化 range)。
+## Phase 1 — 地基 + 最高杠杆(regime + 权重) ✅ 完成
+- [x] **T1 `regime.py`**:`RegimeState` + `classify_regime`(trend/range/risk_off + 退化 range)。
       测试:`tests/common/test_regime.py`(三态 + 空帧 + 缺 above_ma60 用 pct_60d 代理 + 阈值边界)。
-- [ ] **T2 `_load_weights(regime=None)`**:weights.json `regimes` 块选择;无块退 flat(parity)。
+- [x] **T2 `_load_weights(regime=None)`**:weights.json `regimes` 块选择;无块退 flat(parity)。
       测试:`tests/common/test_weights_regime.py`(选 trend / 缺 regimes 退 flat / regime=None 恒 flat)。
-- [ ] **T3 `factor_lab.calibrate_regimes` + `label_col`**:逐日 regime 分桶 IC,写 `regimes` + 保留 flat。
+- [x] **T3 `factor_lab.calibrate_regimes` + `label_col`**:逐日 regime 分桶 IC,写 `regimes` + 保留 flat。
       测试:`tests/research/test_calibrate_regimes.py`(合成 2-regime panel → 两桶 IC 异号;flat 仍在)。
-- [ ] **T4 L1 接线**:`ScanConfig.regime_aware=False`;L1Recall/universe.run on 时按帧 regime 选权重。
+- [x] **T4 L1 接线**:`ScanConfig.regime_aware=False`;L1Recall/universe.run on 时按帧 regime 选权重。
       测试:`tests/scan/test_regime_wiring.py`(off → 与现行同;on → 调 classify + load(regime))。
 
 ## Phase 2 — 闭环半自动
