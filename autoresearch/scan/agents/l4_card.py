@@ -56,6 +56,18 @@ def pick_buylist(ratings: dict[str, str], floor: str = "Overweight") -> list[str
 # ───────────────────────── L4 · P0:漏斗简报(定向,确定性组装) ─────────────────────────
 
 
+def _market_ctx(scan_dir, industry) -> str:
+    """本股所在市场地形块(有 L1_scored_full 才注入;失败静默降级空串)。lazy import 避免 cycle。"""
+    try:
+        from autoresearch.scan.market import market_context_block, market_pack
+        pack = market_pack(scan_dir)
+        if not pack.get("regime"):
+            return ""
+        return market_context_block(pack, industry=industry)
+    except Exception:   # noqa: BLE001 —— 市场层可选,缺了不挡简报
+        return ""
+
+
 def compose_funnel_brief(code: str, scan_dir: Path | str) -> str:
     """L4 **P0 定向**:从漏斗产物(L1_recall/L2/finalists)拼该票紧凑简报 markdown。
 
@@ -103,7 +115,9 @@ def compose_funnel_brief(code: str, scan_dir: Path | str) -> str:
         f"  - 最大风险:{_g(l3,'risk')}",
         f"  - 催化:{_g(l3,'catalyst')}",
     ]
-    return "\n".join(lines) + "\n"
+    brief = "\n".join(lines) + "\n"
+    ctx = _market_ctx(base, l3.get("industry") or l3.get("sector") or l1.get("industry"))
+    return (ctx + "\n" + brief) if ctx else brief
 
 
 # ───────────────────────── L4 · C:评级评分卡(LLM-as-judge rubric,确定性锚) ─────────────────────────
