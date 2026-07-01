@@ -373,6 +373,12 @@ def _knowledge_note(rows: list[dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _load_market_view(scan_dir: Path) -> str:
+    """读 L2 后策略师写的 market_view.md staging(缺 → '')。assemble 仍零-LLM(只读文件)。"""
+    p = scan_dir / "market_view.md"
+    return p.read_text(encoding="utf-8").strip() if p.exists() else ""
+
+
 def regime_and_drift(scan_dir: Path) -> tuple[str, str]:
     """从 L1 帧算今日 regime + 与 weights.meta.regime_calib 比对 → (summary 行, drift reason|'')。
 
@@ -455,6 +461,20 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str) ->
            "**仅供研究,非投资建议。**_\n"]
     if regime_line:
         out.append(regime_line + "\n")
+
+    # ── 市场研判(首席策略师视角;策略师未写 → 回退确定性脉搏)──
+    mv = _load_market_view(scan_dir)
+    if mv:
+        from autoresearch.scan.market import render_funnel_readout   # lazy:避免 import cycle
+        out += ["## 📈 今日 A 股市场(首席策略师视角)\n", mv, ""]
+        readout = render_funnel_readout(scan_dir)
+        if readout:
+            out += [readout]
+    else:
+        from autoresearch.scan.market import market_pack, render_fallback_pulse
+        pulse = render_fallback_pulse(market_pack(scan_dir))
+        if pulse:
+            out += ["## 📈 今日 A 股市场\n", pulse, ""]
 
     # ── 1. 漏斗数量 ──
     out += ["## 1. 漏斗(数量)"] + _funnel_rows(meta, len(keep) or "?", len(finals), len(rows)) + [""]
