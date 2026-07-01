@@ -1,4 +1,5 @@
 import pandas as pd
+
 from autoresearch.scan.agents.l4_card import compose_funnel_brief
 
 

@@ -1,4 +1,5 @@
 import pandas as pd
+
 from autoresearch.scan.market import render_fallback_pulse, render_funnel_readout
 
 

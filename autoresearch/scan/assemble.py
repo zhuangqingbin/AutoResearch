@@ -465,7 +465,7 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str) ->
     # ── 市场研判(首席策略师视角;策略师未写 → 回退确定性脉搏)──
     mv = _load_market_view(scan_dir)
     if mv:
-        from autoresearch.scan.market import render_funnel_readout   # lazy:避免 import cycle
+        from autoresearch.scan.market import render_funnel_readout  # lazy:避免 import cycle
         out += ["## 📈 今日 A 股市场(首席策略师视角)\n", mv, ""]
         readout = render_funnel_readout(scan_dir)
         if readout:

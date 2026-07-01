@@ -208,7 +208,9 @@ def render_funnel_readout(scan_dir: Path | str) -> str:
 
     无决策卡 → 空串。verify 折回口径复用 assemble(降级=降一档、否决=至少 Hold)。
     """
-    from autoresearch.scan.agents.l4_card import parse_ratings_from_details   # lazy:避免 import cycle
+    from autoresearch.scan.agents.l4_card import (
+        parse_ratings_from_details,  # lazy:避免 import cycle
+    )
     from autoresearch.scan.assemble import _apply_verify_downgrade, _load_verify
 
     scan_dir = Path(scan_dir)
@@ -229,7 +231,7 @@ def render_funnel_readout(scan_dir: Path | str) -> str:
         reg = (market_pack(scan_dir).get("regime") or {}).get("label")
         zh = _REGIME_ZH.get(reg, reg or "")
         lines.append(f"- **0 买**:{len(final)} 只 finalist 深核后无一过 ≥OW 三门 —— "
-                     f"{zh}regime 下的纪律空仓观望,非漏斗故障。")
+                     f"{zh} regime 下的纪律空仓观望,非漏斗故障。")
     downgraded = [c for c, v in vmap.items() if v["verdict"] == "降级"]
     if downgraded:
         lines.append(f"- **观察单**:{_names(scan_dir, downgraded)}(skeptic 降级,待触发复核)")

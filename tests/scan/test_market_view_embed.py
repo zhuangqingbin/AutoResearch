@@ -1,4 +1,5 @@
 import pandas as pd
+
 from autoresearch.scan.assemble import build_summary
 
 
