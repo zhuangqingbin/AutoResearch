@@ -121,3 +121,51 @@ def market_pack(scan_dir: Path | str) -> dict:
     if sec.exists():
         pack["sectors"] = _sectors(pd.read_csv(sec))
     return pack
+
+
+# ───────────────────────── L3/L4 注入:描述性地形块(防锚定) ─────────────────────────
+
+
+def _pct(x) -> str:
+    return f"{x:.0%}" if isinstance(x, (int, float)) and not isinstance(x, bool) else "—"
+
+
+def _sign(x) -> str:
+    return f"{x:+.1f}%" if isinstance(x, (int, float)) and not isinstance(x, bool) else "—"
+
+
+def _sector_rank(industry: str, secs: dict) -> str:
+    for r in secs.get("red", []):
+        if r.get("industry") == industry:
+            return f"{industry} 属**强势**端(中位60日动量 {_sign(r.get('median_pct_60d'))})"
+    for r in secs.get("black", []):
+        if r.get("industry") == industry:
+            return f"{industry} 属**弱势**端(中位60日动量 {_sign(r.get('median_pct_60d'))})"
+    return f"{industry}(非红黑榜极端)"
+
+
+def market_context_block(pack: dict, industry: str | None = None) -> str:
+    """L3/L4 注入的**描述性市场地形**块(防锚定:只陈述结构事实,无操作/个股方向指令)。"""
+    reg = pack.get("regime") or {}
+    br = pack.get("breadth") or {}
+    val = pack.get("valuation") or {}
+    mon = pack.get("money") or {}
+    secs = pack.get("sectors") or {}
+    zh = _REGIME_ZH.get(reg.get("label"), reg.get("label") or "—")
+    lines = ["## 市场地形(背景校准 · 非选股指令)",
+             f"- **regime**:{zh}(breadth {_pct(br.get('above_ma60'))}·中位60日动量 "
+             f"{_sign(br.get('med_pct_60d'))}·落刀面 {_pct(br.get('falling_knife'))})",
+             f"- **估值分散**:中位 PE {val.get('med_pe')}·上十分位 PE {val.get('pe_top_decile')}"
+             f"(贵端 PE>60 占比 {_pct(val.get('pe_gt_60'))})",
+             f"- **资金**:主力净流入为正占比 {_pct(mon.get('main_pos'))}·CMF>0 占比 {_pct(mon.get('cmf_pos'))}"]
+    if secs.get("red"):
+        lines.append("- **强势板块**:" + "、".join(
+            f"{r['industry']}({_sign(r.get('median_pct_60d'))})" for r in secs["red"][:3]))
+    if secs.get("black"):
+        lines.append("- **弱势板块**:" + "、".join(
+            f"{r['industry']}({_sign(r.get('median_pct_60d'))})" for r in secs["black"][:3]))
+    if industry and secs:
+        lines.append(f"- **本股所在板块**:{_sector_rank(industry, secs)}")
+    lines.append("- 用途:据此校准估值/资金门严格度;**个股评级只由本股 rubric 三门决定,"
+                 "大盘看空不压个股、看多不松门**。")
+    return "\n".join(lines) + "\n"
