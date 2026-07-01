@@ -7,7 +7,7 @@
 ## 漏斗一图
 ```
 全A ~5,500 →(L0 选集·硬门)~4,300 →(L1 召回·复合分 top)1,000
-   →(L2 粗排·GBDT 学习重排·零 LLM)200 →(L3 精排·holistic 单 agent 通看比较选 + 增量证据/论点/红队)~30
+   →(L2 粗排·分层多样性采样·零 LLM)200 →(L3 精排·holistic 单 agent 通看比较选 + 增量证据/论点/红队)~30
    →(L4 研究·一只=一个 Opus subagent 渐进深度 DD + 早停〔P0 简报→P1–P3 表面→主早停②→P4 陷阱核→③击杀→P5 满卡〕·~29 并发)~29 张
    →(买单独立 skeptic·≥OW 每只一个 Opus 证伪 + PM 3透镜裁判)~0–4 →(L5 整合)<运行时刻YYYYMMDD_HHMM>/{summary.md + details/〈名称〉 + trace/ + manifest.json〔记数据日〕}
 ```
@@ -23,7 +23,7 @@ uv run --no-sync python -m autoresearch.scan.universe <date> --source tushare
 - 9 因子组:①动量/趋势 ②资金·主力(净占比) ③资金·散户(小单净) ④筹码(集中度/相对成本) ⑤北向 ⑥技术(RSI/MACD) ⑦成长 ⑧价值(行业内) **⑨ volprice(多日量价资金流:CMF 买卖压 + OBV 资金方向;`_harvest_vol_series` 拉 ~20 日序列算,IC 实证 decile +40bps/t≈2、calibrate 全市场权重 0.0276=并列最高组)**。**因子→端点映射见附录 A、权重校准方法见附录 B**(符号由 T+1 IC 决定)。
 - 产物:`L1_recall_top1000.csv`(复合分 + 9 子分 + 原始因子〔含 cmf_20/obv_mom_20〕+ **provenance `recall_channels`/`n_channels`**)、**`L1_channels.csv`(各路召回名单,复盘/学习用)**、`sectors.csv`(板块概览)、`meta.json`(漏斗计数)。
 - **召回宽**:T+1 校准下复合分由快因子(动量/技术)主导,会把强动量/甚至过热票放进来——**这是故意的**(高召回),过热透支由 L2 剔。
-- **多样性的去向(诚实)**:多路召回保证 1000 池策略多样;但 L2 仍按 champion **自由重排**到 200,过渡期线性 champion(=composite)下额外多样性在 L2 收口,**待训练出胜线性的 champion(GBDT/zoo)晋升才完整流到 L3**。即时收益:更优的多样化候选池 + provenance(`n_channels` 几路共振,L3 holistic 可参考)+ 各路命中可供 retro 学习。
+- **多样性的去向**:多路召回保证 1000 池策略多样;**L2 分层采样按风格 floor 把这份多样性显式带到 200**(每风格保底,见 L2 节)——而非靠一个 champion 自由重排(那会把弱 regime 的票全压掉)。L3 holistic 拿到的是均衡菜单 + provenance(`n_channels` 几路共振)+ 各路命中供 retro 学习。
 - **两个确定性量价叠加(不改 IC 权重,风险调整)**:**过热抑制**(高动量 + 超买/获利盘满 = 见顶 leader → 复合分 −8)+ **吸筹加成**(低位〔获利盘<40/破成本〕+ 放量〔量比≥1.5〕+ 主力未撤 = 底部疑似吸筹 → +5,小幅**保召回**)。后者是"底部放量"在 L1 的落点——只保证被召回进 top,**真伪交 L2/L3/L4 三维验证**(研究:底部放量 >70% 无基本面会败)。`vol_ratio` 已随召回 CSV 落地、贯穿 L2/L3/L4。
 
 ## ⚠️ 因子方向经验校准(L3/L4 通用,**务必写进每个 subagent prompt**)
@@ -39,18 +39,37 @@ uv run --no-sync python -m autoresearch.scan.universe <date> --source tushare
 - **价值(低 PE)在 T+1 反而偏弱**(成长/动量续涨);价值用于"不追高",非"次日动量"。
 - **优先留**:涨幅适中(未过热)+ 主力真实进场(main_net_ratio 正)+ 筹码有空间(获利盘不满)+ 基本面干净;纯动量抛物线顶,L4 大概率 Underweight,别堆到精排顶端。
 
-## L2 粗排(champion 学习重排,确定性零 LLM,1000→200)
-> **从 AI keep/cut 改成确定性学习重排**(对症旧 L2 的 token 成本 + 主观漂移):全 zoo 模型学每日横截面收益,把召回的 1000 重排成 200。"cheap 多路召回 → learned champion 重排"正是搜索排序的级联,**不和 L1 冗余**。**已在 `autoresearch.scan.universe.run()` 内自动产出**(见上节命令),无需单独 subagent 步;AI 判断从此**只在 L3/L4**。
+## L2 粗排(确定性分层多样性采样器,ML-free,1000→200)
+> **`autoresearch.scan.recall.l2_stratify.select_l2`**,`universe.run` 与 `L2Rank` stage 共用(golden parity)。**已在 `universe.run()` 内自动产出**,无 subagent、无 reasoning 留痕。**为什么不是模型**:回测坐实**确定性 L2 无稳健 alpha**——别让它预测,只让它给 L3/L4 建均衡菜单;AI 判断**只在 L3/L4**。design:`docs/specs/2026-06-25-l2-stratified-sampler-design.md`。
 
-**引擎**(`autoresearch.models.zoo` + `autoresearch.data.handler`,全确定性):
-- **模型**:全 zoo **20 个排序模型**(core 横截面 7:linear/lgbm/xgb/catboost/double_ensemble/mlp/tabnet;seq 滚动窗 10:lstm/gru/alstm/tcn/transformer/localformer/tft/tra/sfm/krnn;graph 行业邻接 3:gats/hist/igmtf),统一 `Trainer` 同口径训练。**core 特征** = 45 列(8 因子组分位 + 双侧原始因子〔含 UZI 融资/大宗/龙虎榜机构〕+ 线性 composite 锚定);**标签** = 每日横截面 rank-norm 的 `fwd_1_oo` / `fwd_5_oc` / `fwd_10_oc` 三 horizon(可交易、无前视;Qlib CSRankNorm 思路)。
-- **champion 门(铁律:不自欺)**:每 horizon 时序留出末尾成型日做 oos rank-IC,**最高、> 0 且严格 > 线性基线**者晋升 `models/store/l2_<horizon>/`;**无正-IC 模型胜线性 → 不晋升**,L2 回落 GBDT/composite(绝不部署反预测/比线性差的模型——负 IC = 反向选股)。L2 默认加载 swing 的 `l2_fwd5`(与 L3/L4 持有期对齐),`ScanConfig.l2_model` 可改。`meta.l2_engine` 记 `champion:l2_fwd5(<kind>)` / `gbdt` / `composite-linear(回落)`。
-- **样本是胜线性的最大杠杆**:成型日少(~1 季度)时各模型多半只复刻线性(composite 锚定 gain 占大头)、加不出稳健非线性 → 门关、用线性。要真启用:`python -m autoresearch.data.harvest <start> <end>` 落更多历史入湖(更广 regime)再 `python -m autoresearch.models.zoo train`,**一旦 oos 胜线性即自动晋升,无需改代码**;`zoo_leaderboard.csv` 诚实列各模型 × horizon 的 IC vs 线性。**无合格 champion 时 zoo 自动清掉旧 champion(`clear_champion`),避免更乐观窗口遗留的 champion 误部署。**
-> **实测(2024-06~2026-06 全网格,OOS 落在近 2026-Q2)**:全 7 个 core 模型 OOS rank-IC **绝对值仍为负**,但 **xgb 三 horizon 均胜线性**(最不负,vs_linear +0.007/+0.036/+0.059;catboost/double_ensemble 次之)。默认 `gate=beats_linear` → **晋升 xgb 作 L2 champion**(给**最不伤的 1000→200 切**——胜 composite 回落,即便绝对 IC 仍负);严格 `gate=positive` 则因 xgb<0 不晋升、回落 composite。诚实结论:**近窗因子整体偏反预测,扩样本不够**——要**绝对正-IC** 需补更好特征(递延的季度基本面)或 **regime-aware 建模**。L2 此刻只做"宽召回 + 最不伤切",真 alpha 在 L3(holistic)/L4(深研)。
+**三件确定性的事**:
+- **① 风格桶**(复用 `recall_channels` provenance,零新增):趋势(momentum/heat)· 反转(reversal)· 价值(value)· 成长(growth)· 吸筹(accumulation)· 主力(main_fund)。一只票可属多桶。
+- **② 固定 floor(policy,非模型)**:`DEFAULT_FLOORS` 趋势20/反转12/价值12/成长12/吸筹12/主力10(Σ78,merit 核 122)。保证**每风格不为 0**(治本反转 regime 下"0 趋势"的落刀池)。`channel_ledger` 的 `unique_excess_t5` 持续为负且 n_days≥3 → 人工下调该桶 floor(写 proposals,不自动)。
+- **③ sector-neutral composite 排序**:`sn = composite − 申万一级组均值`(去行业 beta)。merit 核 + 桶内都按 sn 排;`l2_sector_cap` 默认 0.20(任一申万一级 ≤40/200)。
+**算法**:sn 排序 → merit 核取 top(200−Σfloor)过 cap → 逐风格(floor 大先)把不足 floor 的从线下按 sn 补 → 回填到 200。`floors={}`+`cap=1.0` → 退化纯 sn top200(parity 锚)。
 
-**产物**:`L2_gbdt_top200.csv`(`l2_rank` + `gbdt_score`〔champion/GBDT 分,回落时为 composite 序〕+ 召回因子列);`meta.l2_engine` 标引擎(champion/gbdt/composite-linear)。**无 LLM 中间件、无 reasoning 留痕**(确定性层)。
+> **回测实证(83 成型日 × 2022-2026,fwd_5,`scratchpad/bt_*.py`;附录 D)**:① **桶内 sector-neutral composite 最优**(每桶 per-bucket IC 最高;**风格自己的分反预测**——趋势按动量排 IC −0.076;cmf/obv/volprice 全桶负 → **不要落刀守卫**)② **确定性 L2 无稳健 alpha**:composite-top200 全样本 ≈ 0(t<1),**regime 依赖**(2022熊+20/2023+14/2024含动量+28/**2025-26反转 −24bps**)——"负-IC"是当前 regime 现象 ③ **分层免费**:strat ≈ composite-top200 ≈ 0 → 多样性零 alpha 代价。**结论**:L2 = 免费的多样性采样器,alpha 在 L3/L4。
+
+> **为何彻底弃 ML(2026-06-25)**:全 zoo 20 模型 × 3 horizon **OOS rank-IC 全负**,xgb champion 也只是 −0.023("最不伤切");它在反转 regime 把**动量/heat 票全压出 L2**(实测 0/200,健康图形 1%)= 用户体感"形态全很差"。换模型种类无解(xgb 已最优)、扩**同 regime** 样本无解(训练窗已含 2024 动量仍负)。真要正-IC 需**换特征**(盈利修正/北向变化/行业动量)——大 R&D,非当前数据能解。`models/zoo` 基建保留为 **measure-only 研究**,**不接 L2**。
+
+**产物**:`L2_gbdt_top200.csv`(`l2_rank`=分层选择序 + `gbdt_score`=composite〔显示用,旧列名〕 + `l2_lane_reserved`=floor 救回 + 召回因子列);`meta.l2_engine`=`stratified(sn_composite)`、`meta.l2_sector_cap`。**确定性层,无 LLM、无留痕**。
 
 > **L2 已无 subagent / prompt 模板**——keep/cut 的主观判断上移到 L3 holistic 精排(那里一个 agent 通看 ~200 比较着选,把旧 L2 双赛道的"信号共振 / 排陷阱 / 趋势 vs 回归"判断一次做掉)。旧『因子方向经验校准』仍在 L3 注入(见上)。
+
+## 首席策略师市场研判(L2 后,L3 前 · `autoresearch.scan.market`)
+> **一次产出、三处复用**:L2 完(`L1_scored_full`+`sectors.csv` 就绪)派**一个 `Agent(model='opus')`** 读确定性数据包 `market_pack(scan_dir)`(regime/宽度/估值分散/资金/板块红黑榜)写 `context/scan/<date>/market_view.md`。**地形段(`market_context_block`)喂 L3 prompt + 每张 L4 卡简报做 regime 校准(防锚定:只描述不指令)、操作基调/漏斗读数只进 L5 报告**。数字全出自 pack(不编数)。
+> **产出分层**:1–3 节=描述性地形(L3/L4 读);4–5 节=规范性+前瞻(仅 L5)。**为什么这样切**:一段"避险别追"的 house view 会把 20 张 L4 卡带成集体附和 → 破坏"每只独立自下而上 DD + rubric 防 gestalt 多报";喂卡片的必须是**数字地形**(校准估值/资金门严格度),不是方向指令。
+
+**首席策略师 prompt(模板)**:
+> 你是一名**资深 A 股投资大师 / 首席策略师**。下面是今日全市场确定性数据包(`market_pack`,数字不可编造)。写一段 ~300–400 字的市场研判 `market_view.md`,**6 小节**:
+> 1. **一句话定调**(regime + 结构 + 情绪,如"避险哑铃:AI 半导体极致拥挤 + 宽基超跌落刀");
+> 2. **市场结构**(宽度〔多少票站上 MA60〕/ 主力资金净流向 / 估值分散〔哑铃两端〕);
+> 3. **板块红黑榜**(强 top3 / 弱 bottom3,各一句 why);
+> 4. **操作基调**(基于 regime 的整体仓位姿态;**规范性,仅 L5 用**);
+> 5. **关注**(催化日历:中报窗口 / 政策会议 / 解禁);
+> 6. 收尾"仅供研究,非投资建议"。
+> **铁律**:前 3 节是**描述性地形**(会喂 L3/L4 校准,**不得含个股买卖指令 / 不得对具体票定方向**);第 4–5 节才是规范性 + 前瞻。**个股评级只由 L4 rubric 三门决定,你的研判不改判、不锚定卡片**。
+> 数据包:`<market_pack(scan_dir) 的 JSON>`
 
 ## L3 精排(holistic 单 agent:一次通看 ~200、比较着选 ~30)
 > **holistic > 逐只孤立打分**:一个 agent 通看整张 ~200 行表、横向比较着选,把旧 L2 双赛道的"信号共振/排陷阱/趋势 vs 回归"判断 + 精排一次做掉。孤立逐只打分各看各的、易虚高;比较式天然控总量、强制相对排序。
@@ -64,11 +83,11 @@ uv run --no-sync python -m autoresearch.scan.universe <date> --source tushare
 3. **`merge_l3_finalists_v2(judged_df, target=30, trend_quota=10, hybrid=True)`** → `context/scan/<date>/finalists.csv`(把 holistic 入选排成 finalists + 趋势配额安全网)。
    - judged_df 需含列:`code,name,sector,lenses,conviction,fragility,thesis,risk,catalyst,triage_lean,lane,pct_60d`(`lane`/`pct_60d` 配额用,源自 L2 表)。
    - **趋势配额(安全网)**:纯 `conviction−fragility` 会把高 fragility 的强势票挤出(实测:生益+205%/亨通+158% conv 高但 frag 高 → 进不了 top30)。`merge_l3_finalists_v2` 给 trend lane 保底 `trend_quota` 席,**一半按 conviction(质量趋势:健康强势)+ 一半按 pct_60d(动量龙头:最热的票)**(hybrid)——高 fragility 是 T+1 概念,swing 不该一票否决。捞进来后由 **L4 做估值/解禁尽调定级**(实证:抛物线顶 PE160~440 + CFO负 + 解禁 多半 Underweight/Sell,质量强势如胜宏 PE77 才 Overweight)。
-   - **`l2_lane_reserved=True`(L2 lane 配额救回的票)**:动量/题材龙头被反转 champion 在 L2 压掉、靠配额硬塞回(药明/普冉这类**已突破强势股**)。judge **倾向打 `lane="trend"`**,让 `trend_quota` 在 200→30 接住(否则纯 net 排序仍砍);但**照常用 rubric 诚实定级**——多数应在 L4 被三门否掉,留的是尾部真龙头(设计:`2026-06-24-l2-lane-quota-design.md`,默认关、`--l2-lane-quota 30` 开)。
+   - **`l2_lane_reserved=True`(L2 风格 floor 救回的票)**:被 sn_composite 排在 merit 核之外、靠风格 floor 塞进 200 的票(趋势/价值/成长等各风格的保底席)。judge **倾向打 `lane="trend"`**(若是趋势/题材龙头),让 `trend_quota` 在 200→30 接住;但**照常用 rubric 诚实定级**——多数应在 L4 被三门否掉,留的是尾部真龙头。floor 的意义=**保证 L3 永远看得到每种风格**(治本反转 regime 下"0 趋势"的落刀池),不是替它们背书。
 
 **L3 holistic 选股 prompt(模板)**:
-> 你是资深 A股投资人 + 风险官 + PM。下面是 L2 粗排出的 ~200 只紧凑表(因子 + 龙虎榜/预告/快报摘要 + **近期公告情感 + 召回 provenance**)。**先内化『因子方向经验校准』**(上节,`render_calibration_block` 注入)。**一次通看全表、横向比较**,选出最值得深研的 ~30 只——**趋势 + 回归兼顾,别全堆抛物线顶,别只挑 composite 顶(反羊群)**。
-> **比较 rubric(5 维,逐只权衡、给"为何此刻选它")**:① **channel 共振**(`n_channels`/`recall_channels`:多路召回=多策略确认,3+ 路共振优先;`l2_lane_reserved=True`=L2 配额救回的动量/题材票,倾向 lane=trend)② **资金确认**(main_net_ratio/lhb_n:主力真在)③ **基本面支撑**(growth/value 子分 + np_yoy/roe)④ **情感**(公告 `news_tags` + 媒体 `med_tags`/`med_head`:回购/增持/中标=利多;减持/质押/问询/立案=利空、压 conviction;公告与媒体两路共振更可信)⑤ **脆弱度**(过热/见顶/利空公告)。
+> 你是资深 A股投资人 + 风险官 + PM。下面是 L2 粗排出的 ~200 只紧凑表(因子 + 龙虎榜/预告/快报摘要 + **近期公告情感 + 召回 provenance**)。**先内化『因子方向经验校准』**(上节,`render_calibration_block` 注入)。**再读顶部『市场地形』段(`market_context_block`,首席策略师研判)——按 regime 加权资金确认/避落刀、校准估值容忍度;但选股仍由下方 5 维 rubric 定,不因大盘定调整体偏多偏空。****一次通看全表、横向比较**,选出最值得深研的 ~30 只——**趋势 + 回归兼顾,别全堆抛物线顶,别只挑 composite 顶(反羊群)**。
+> **比较 rubric(5 维,逐只权衡、给"为何此刻选它")**:① **channel 共振**(`n_channels`/`recall_channels`:多路召回=多策略确认,3+ 路共振优先;`l2_lane_reserved=True`=L2 风格 floor 救回的票,倾向 lane=trend)② **资金确认**(main_net_ratio/lhb_n:主力真在)③ **基本面支撑**(growth/value 子分 + np_yoy/roe)④ **情感**(公告 `news_tags` + 媒体 `med_tags`/`med_head`:回购/增持/中标=利多;减持/质押/问询/立案=利空、压 conviction;公告与媒体两路共振更可信)⑤ **脆弱度**(过热/见顶/利空公告)。
 > **比较着选**:同板块/同因子画像的票互相比、只留最强的;陷阱直接弃(高位放量派发 / winner满主力撤 / 低PE但 np<0 / 抛物线无主力承接 / 近期减持·问询·立案);**底部放量吸筹 + 基本面背书 + 多路共振**优先(`volume_price_signals`/`trap_signals` 机械底辅助);趋势票**不因"涨多"误杀健康强势**(主力还在+业绩跟得上),回归票看低位空间(低获利盘=空间)。
 > **内化校准**:满仓获利盘/winner>90 在主力撤/业绩证伪时=见顶,主力还在则不是。
 > **每只入选输出**(CSV `code,name,sector,lenses,conviction,fragility,thesis,risk,catalyst,triage_lean,lane,pct_60d,sentiment`):thesis≤25字多头论点(落因子/证据)、risk≤25字最大证伪点(**必须真,不许橡皮图章**)、catalyst≤15字时点(无则"无明确催化")、conviction/fragility 0–100、triage_lean 看多/中性/回避、lane trend/reversion、**sentiment 利多/中性/利空 + 一句依据(据公告标题)**。
@@ -82,6 +101,7 @@ uv run --no-sync python -m autoresearch.scan.universe <date> --source tushare
 ```bash
 uv run --no-sync python -m autoresearch.analyze.harvest <ticker> <date> --slim
 ```
+> **推荐操作姿势(2026-06-24 实跑验证)·确定性数据层与 LLM 分析层解耦**:① **先**用一个**确定性批脚本**把全部 finalist 的 slim 一次性 harvest 好(zero-LLM,`xargs -P 6` 控并发、逐只验 ≥8KB;harvest 自动复用 scan 目录的 L1 因子、只 live 取深块)—— 既对齐"取数=脚本、判断=Claude"的项目铁律,又能在烧 Opus 前先验证数据完好。② **再**把全部 ~30 个**分析 subagent 一条消息并发派发**(读预建 slim + `compose_funnel_brief` 简报,**不再各自并发打 tushare/akshare → 无限频风险**)。**别分 wave**:slim 既已预建,拆 wave 只多几个同步 barrier 的墙钟延迟、不提质量(各卡独立、同输入同输出);reviewability 用抽检 1–2 张回卡换,不用串行 wave 换。
 > **渐进深度 + 早停(详见 `lite-playbook.md`)**:P0 读简报定向 → P1–P3 表面 DD 填 4 表面维(技术资金/基本面/估值/催化)→【**主早停②**:加不起买点 → 早停卡止】→ survivor 读 P4 深核分界后做陷阱核(CFO/质押/商誉/周期顶)【③击杀】→ P5 满卡。**评级由 `l4_card.rubric_rating` 评分卡派生(防 gestalt 过度多报)+ 3 道 OW 硬门(主力真在/业绩真兑现/估值不透支)**;**早停只向下、任何 ≥OW 必走 P4+P5**(绝不在早停点发买单)。
 > **防误杀铁律**:不在读到翻盘牌〔催化/forward PE/吸筹〕前早停 → 主早停 = P3 后;漏斗简报只定向不判(信息薄,据它早停=误杀)。
 
@@ -116,7 +136,7 @@ uv run --no-sync python -m autoresearch.analyze.harvest <ticker> <date> --slim
 uv run --no-sync python -m autoresearch.scan.assemble <date>
 ```
 读 `meta.json` + `L1_recall_top1000.csv` + `L1_scored_full.csv` + `L2_gbdt_top200.csv` + `finalists.csv` + `details/<ticker>.md`(用 `parse_rating` 提五档 + 仪表盘),发布到 **`reports/scan/<YYYYMMDD_HHMM>/`**(目录名 = **实际运行时刻**;数据日 analysis_date 落 `manifest.json`,与目录名解耦,`retro._report_dir_for` 据此定位):
-- `summary.md` 三段:**①漏斗数量(带引擎列)②各阶段卡点+股票概览 ③投资建议**——buy-list 是**逐阶段结论宽表**(每只 `名称/板块 | L1召回〔#名次·复合分〕| L2粗排〔#重排名次·gbdt〕| L3论点·确信 | 评级 | 目标 | 置信度 | 买单 skeptic 徽标 ✅维持/⚠️降级/🛑否决`,**已删 代码/R:R/提案 列**)+ 组合视角 + 局限。
+- `summary.md` 三段:**①漏斗数量(带引擎列)②各阶段卡点+股票概览 ③投资建议**——buy-list 是**逐阶段结论宽表**(每只 `名称/板块 | L1召回〔#名次·命中队列〕| L2粗排〔#重排名次·gbdt〕| L3精排〔论点·conviction〕| L4研究·结论〔深核定级依据:≥OW 取多头驱动 / 否则取空头·早停因,`_l4_brief`〕| 评级 | 目标 | 置信度 | 买单 skeptic 徽标 ✅维持/⚠️降级/🛑否决`,**已删 代码/R:R/提案 列**)+ 组合视角 + 局限。表头四阶段并列 **L1召回→L2粗排→L3精排→L4研究·结论**,把"看多论点(L3)→ 为何定级(L4)"的转折显式呈现。**注:命中队列等多路 provenance 在单元格内用 `/` 连接(非 `|`),否则劈裂 markdown 表格列**。
 - **`## 各阶段 token 消耗(估算)`**:分阶段引擎/LLM 调用数/输出字节/~token(L0/L1/L2 确定性=0;L3/L4/买单 skeptic 按落盘推理稿字节 ÷2.8 粗估)。**口径诚实**:输入侧(slim 上下文)未全留痕→真实数倍于此表,为可测下界。
 - `details/〈名称〉.md`:决策卡(**按股票名称命名**,非 ticker;staging 仍 `<code>.md`,发布层改名,retro 从卡内标题取 code)——仅当前 finalists。
 - `trace/`(与 details 同级):**每阶段全量数据**(L0计数 / **L1_scored_full 全打分排序(4000+,非仅1000)** / L1_weights / **L2_gbdt_top200 重排** / **L3_judged_full 全判断** / L3最终入选 / reasoning 推理留痕〔l3/l4/verify,L2 确定性无留痕〕/ funnel.md 溯源)。
@@ -150,8 +170,9 @@ L1 复合分 = Σ_组(组内因子 IC 加权 × 组权重),按申万一级条件
 - 缺端点权限 → 该列 NaN,打分按"有值子因子"重归一(降级不致命)。
 - **两个确定性量价叠加**(`composite_score` 内,**不改 IC 权重**,只调召回顺序):**过热抑制 −8**(高动量 + 超买/获利盘满 = 见顶 leader)+ **吸筹加成 +5**(低位〔获利盘<40/破成本〕+ 放量〔量比≥1.5〕+ 主力未撤 = 底部疑似吸筹,小幅保召回)。+5 < |−8|:只保召回、不越级多报,真伪交 L2/L3/L4 三维验证。
 
-## 附录 B · 召回权重校准 + L2 GBDT 训练(`autoresearch.research.factor_lab`,自足)
-**目标 = T+1 远期收益**(用户选定)。四命令闭环(`harvest` 缓存供 `calibrate`/`train` 离线复用):
+## 附录 B · 召回权重校准(L1 live)+ zoo 训练(measure-only)(`autoresearch.research.factor_lab` / `models.zoo`,自足)
+> **`calibrate` 仍 live**(产 `weights.json`,L1 复合分 + L2 分层采样的 sn_composite 底分都读它)。**`train`/zoo champion 现为 measure-only 研究,L2 不再用模型**(见 L2 节:回测证确定性 L2 无 alpha → 改分层采样)。下列闭环仍可跑(复核因子 IC、做 zoo 研究),只是产物不接 L2。
+**目标 = T+1 远期收益**。四命令闭环(`harvest` 缓存供 `calibrate`/`train` 离线复用):
 ```bash
 uv run --no-sync python -m autoresearch.research.factor_lab harvest     # 拉+缓存全市场面板(一次,慢;成型日越多 regime 越广)
 uv run --no-sync python -m autoresearch.research.factor_lab calibrate   # L1:T+1 IC + 申万一级层级收缩 → weights.json
