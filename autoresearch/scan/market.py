@@ -169,3 +169,68 @@ def market_context_block(pack: dict, industry: str | None = None) -> str:
     lines.append("- 用途:据此校准估值/资金门严格度;**个股评级只由本股 rubric 三门决定,"
                  "大盘看空不压个股、看多不松门**。")
     return "\n".join(lines) + "\n"
+
+
+# ───────────────────────── L5 渲染:回退脉搏 + 漏斗读数尾注 ─────────────────────────
+
+
+def render_fallback_pulse(pack: dict) -> str:
+    """market_view.md 缺失时的确定性市场脉搏(2–3 行);无 regime → 空串。"""
+    reg = pack.get("regime") or {}
+    if not reg:
+        return ""
+    br = pack.get("breadth") or {}
+    secs = pack.get("sectors") or {}
+    zh = _REGIME_ZH.get(reg.get("label"), reg.get("label") or "—")
+    lines = [f"**市场脉搏(确定性回退)**:{zh} regime — breadth {_pct(br.get('above_ma60'))}·"
+             f"中位60日动量 {_sign(br.get('med_pct_60d'))}·落刀面 {_pct(br.get('falling_knife'))}。"]
+    if secs.get("red") and secs.get("black"):
+        red = "、".join(r["industry"] for r in secs["red"][:3])
+        black = "、".join(r["industry"] for r in secs["black"][:3])
+        lines.append(f"强势:{red};弱势:{black}。")
+    lines.append("_(未生成首席策略师研判 market_view.md → 回退确定性脉搏)_")
+    return "\n".join(lines) + "\n"
+
+
+def _names(scan_dir: Path, codes) -> str:
+    """code → 名称(读 finalists.csv);缺 → code。"""
+    f = Path(scan_dir) / "finalists.csv"
+    m: dict = {}
+    if f.exists():
+        fdf = pd.read_csv(f, dtype={"code": str})
+        for _, r in fdf.iterrows():
+            m[str(r["code"]).zfill(6)] = r.get("name")
+    return "、".join(f"{m.get(str(c).zfill(6)) or c}({str(c).zfill(6)})" for c in codes)
+
+
+def render_funnel_readout(scan_dir: Path | str) -> str:
+    """L5 确定性漏斗读数尾注:今日买单(≥OW,含 verify 折回)/ 观察单(skeptic 降级)。
+
+    无决策卡 → 空串。verify 折回口径复用 assemble(降级=降一档、否决=至少 Hold)。
+    """
+    from autoresearch.scan.agents.l4_card import parse_ratings_from_details   # lazy:避免 import cycle
+    from autoresearch.scan.assemble import _apply_verify_downgrade, _load_verify
+
+    scan_dir = Path(scan_dir)
+    ratings = parse_ratings_from_details(scan_dir / "details")
+    if not ratings:
+        return ""
+    vmap = _load_verify(scan_dir)
+    final: dict = {}
+    for code, r in ratings.items():
+        v = vmap.get(str(code).zfill(6))
+        final[code] = (_apply_verify_downgrade(r, v["verdict"])
+                       if v and v["verdict"] in ("降级", "否决") else r)
+    buys = [c for c, r in final.items() if r in ("Buy", "Overweight")]
+    lines = ["", "### 📉 今日漏斗读数"]
+    if buys:
+        lines.append(f"- **{len(buys)} 买**(≥OW):{_names(scan_dir, buys)}")
+    else:
+        reg = (market_pack(scan_dir).get("regime") or {}).get("label")
+        zh = _REGIME_ZH.get(reg, reg or "")
+        lines.append(f"- **0 买**:{len(final)} 只 finalist 深核后无一过 ≥OW 三门 —— "
+                     f"{zh}regime 下的纪律空仓观望,非漏斗故障。")
+    downgraded = [c for c, v in vmap.items() if v["verdict"] == "降级"]
+    if downgraded:
+        lines.append(f"- **观察单**:{_names(scan_dir, downgraded)}(skeptic 降级,待触发复核)")
+    return "\n".join(lines) + "\n"
