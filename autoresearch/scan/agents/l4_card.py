@@ -141,7 +141,14 @@ def compose_funnel_brief(code: str, scan_dir: Path | str) -> str:
     ]
     brief = "\n".join(lines) + "\n"
     ctx = _market_ctx(base, l3.get("industry") or l3.get("sector") or l1.get("industry"))
-    return (ctx + "\n" + brief) if ctx else brief
+    doss = ""
+    try:                                     # R5·前科卡(历史事实,增量研究;异常吞掉老 brief 不破)
+        from autoresearch.scan.dossier import render_dossier
+        doss = render_dossier(code6, scan_root=base.parent, exclude=base.name)
+    except Exception:  # noqa: BLE001
+        doss = ""
+    parts = [p for p in (ctx, doss, brief) if p]
+    return "\n".join(parts)
 
 
 # ───────────────────────── L4 · C:评级评分卡(LLM-as-judge rubric,确定性锚) ─────────────────────────
