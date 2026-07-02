@@ -99,16 +99,16 @@ def l4_phase_stats(scan_dir: Path) -> dict | None:
             "n_full": len(cards) - n_stop - n_reuse, "p4_seen": p4_seen, "p4_flips": p4_flips}
 
 
-def count_buys(scan_dir: Path) -> int:
-    """最终买单数(≥OW):finalists → parse_rating(卡)→ verify 降级折回。与 assemble 同口径。"""
+def final_ratings(scan_dir: Path) -> dict[str, str]:
+    """{code: 最终评级}(finalists → parse_rating(卡)→ verify 降级折回)。与 assemble 同口径。"""
     scan_dir = Path(scan_dir)
     fin = _read(scan_dir / "finalists.csv")
     if fin is None or "code" not in fin.columns:
-        return 0
+        return {}
     from autoresearch.agents.utils.rating import parse_rating  # lazy 防环
     from autoresearch.scan.assemble import _apply_verify_downgrade, _load_verify
     vmap = _load_verify(scan_dir)
-    n = 0
+    out: dict[str, str] = {}
     for code in fin["code"].astype(str).str.zfill(6):
         p = scan_dir / "details" / f"{code}.md"
         if not p.exists():
@@ -117,9 +117,13 @@ def count_buys(scan_dir: Path) -> int:
         v = vmap.get(code)
         if v and v["verdict"] in ("降级", "否决"):
             rating = _apply_verify_downgrade(rating, v["verdict"])
-        if rating in ("Buy", "Overweight"):
-            n += 1
-    return n
+        out[code] = rating
+    return out
+
+
+def count_buys(scan_dir: Path) -> int:
+    """最终买单数(≥OW,verify 折回后)。"""
+    return sum(1 for r in final_ratings(scan_dir).values() if r in ("Buy", "Overweight"))
 
 
 def run_health(scan_dir: Path) -> dict:
