@@ -34,3 +34,21 @@ def test_on_classifies_and_passes_regime():
 
 def test_config_default_regime_aware_off():
     assert ScanConfig().regime_aware is False
+
+
+def test_universe_cli_regime_aware_flag(monkeypatch):
+    """universe.py CLI 暴露 --regime-aware 并透传 run(regime_aware=…);缺省 False(parity)。"""
+    from autoresearch.scan import universe as smu
+    seen = {}
+
+    def fake_run(analysis_date, **kw):
+        seen.clear()
+        seen.update(kw, analysis_date=analysis_date)
+        return {"universe": 0, "after_gate_a": 0, "recall_n": 0, "l2_engine": "x",
+                "l2_n": 0, "sectors": 0, "outdir": "."}
+
+    monkeypatch.setattr(smu, "run", fake_run)
+    smu.main(["2026-07-01", "--regime-aware"])
+    assert seen["regime_aware"] is True
+    smu.main(["2026-07-01"])
+    assert seen["regime_aware"] is False

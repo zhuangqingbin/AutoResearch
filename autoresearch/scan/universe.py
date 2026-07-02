@@ -434,6 +434,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--recall-channels", default=None, help="启用 channel 子集(逗号分隔;缺省=全 9 路)")
     ap.add_argument("--l2-sector-cap", type=float, default=0.20,
                     help="L2 分层采样:任一申万一级 ≤ 此比例,默认 0.20(=40/200);≥1.0=关")
+    ap.add_argument("--regime-aware", action="store_true",
+                    help="L1 权重按当日 regime 选(需 weights.json regimes 块;默认关=parity)")
     ap.add_argument("--selftest", action="store_true", help="离线验证打分逻辑(无网络)")
     args = ap.parse_args(argv)
 
@@ -444,7 +446,8 @@ def main(argv: list[str] | None = None) -> int:
     res = run(analysis_date, cap_floor_yi=args.cap_floor, include_bj=not args.exclude_bj,
               recall_n=args.recall_n, l2_n=args.l2_n, source=args.source,
               recall_mode=args.recall_mode, l2_sector_cap=args.l2_sector_cap,
-              recall_channels=(args.recall_channels.split(",") if args.recall_channels else None))
+              recall_channels=(args.recall_channels.split(",") if args.recall_channels else None),
+              regime_aware=args.regime_aware)
     print(f"\nL0 universe={res['universe']} → 轻门 {res['after_gate_a']} → 召回 top{res['recall_n']} "
           f"→ L2 {res['l2_engine']} top{res['l2_n']} (板块概览 {res['sectors']} 个)"
           f"\n→ {res['outdir']}/L2_gbdt_top200.csv")
