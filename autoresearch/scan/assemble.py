@@ -616,6 +616,8 @@ def _publish_pipeline(scan_dir: Path, out_base: Path, analysis_date: str) -> int
     pdir.mkdir(parents=True, exist_ok=True)
     mapping = {
         "meta.json": "L0_universe_meta.json",
+        "run_health.json": "run_health.json",              # 运行体检(NaN 降级/churn/L4 阶段效能)
+        "weights_used.json": "weights_used.json",          # 重放快照(当日实际权重)
         "L1_scored_full.csv": "L1_scored_full.csv",        # 全量打分(所有过门股 sorted + recalled 标记)
         "L1_recall_top1000.csv": "L1_recall_top1000.csv",  # 召回工作集(top N)
         "L2_gbdt_top200.csv": "L2_gbdt_top200.csv",        # 粗排:GBDT 学习重排 top N(确定性)
@@ -650,6 +652,11 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
     detail_out = out_base / "details"
     detail_out.mkdir(parents=True, exist_ok=True)
     n_cards = _publish_details(scan_dir, detail_out)
+    import contextlib
+
+    from autoresearch.scan import health as _health  # lazy:体检失败不阻发布
+    with contextlib.suppress(Exception):
+        _health.write_run_health(scan_dir)             # 先写 staging,再随 trace mapping 带走
     n_pipe = _publish_pipeline(scan_dir, out_base, analysis_date)   # trace/ 挂 out_base(details 同级)
     (out_base / "manifest.json").write_text(json.dumps(            # retro 按 analysis_date 定位本报告(目录名≠数据日)
         {"analysis_date": analysis_date, "generated_at": now.isoformat(timespec="seconds"), "hhmm": hhmm},
@@ -657,6 +664,8 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
     md = build_summary(scan_dir, analysis_date, hhmm, folder)
     summary_path = out_base / "summary.md"
     summary_path.write_text(md, encoding="utf-8")
+    with contextlib.suppress(Exception):               # 现场导航页(第二天复盘入口)
+        (out_base / "index.md").write_text(_health.index_md(scan_dir, out_base), encoding="utf-8")
     print(f"[L5 整合] summary → {summary_path}  (数据日 {analysis_date})")
     print(f"[L5 整合] details → {detail_out}  ({n_cards} 张卡 + trace/ {n_pipe} 件溯源)")
     return summary_path

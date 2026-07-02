@@ -388,6 +388,31 @@ def attribute(date: str, scan_root: Path | None = None, report_root: Path | None
     return attr
 
 
+def _health_section(sdir: Path) -> list[str]:
+    """run_health.json → retro_input 运行健康节(降级字段/缺产物提示)。缺文件/无恙 → []。
+
+    目的:勿把数据病当因子病——降级字段多的日子,IC/归因读数打折扣,重标定留意。
+    """
+    p = sdir / "run_health.json"
+    if not p.exists():
+        return []
+    try:
+        h = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return []
+    deg = h.get("degraded_fields") or []
+    core_miss = h.get("core_missing") or []
+    if not deg and not core_miss:
+        return []
+    out = ["\n## 运行健康(run_health)"]
+    if deg:
+        out.append(f"- 降级字段(NaN>30%):{'、'.join(deg)} —— 该日与这些因子相关的 IC/归因读数打折扣,"
+                   "**勿把数据病当因子病**,重标定时留意。")
+    if core_miss:
+        out.append(f"- 核心产物缺失:{'、'.join(core_miss)} —— 该日漏斗不完整,分桶归因可能失真。")
+    return out
+
+
 def write_retro_input(date: str, attr: pd.DataFrame, scan_root: Path | None = None) -> Path:
     """把 stage_stats + 漏判赢家 top(带因子行)+ 选中对照写成 retro_input.md(喂诊断)。"""
     scan_root = scan_root or Path("context/scan")
@@ -474,6 +499,8 @@ def write_retro_input(date: str, attr: pd.DataFrame, scan_root: Path | None = No
                       f"{p['summary']}" for p in props]
     except Exception as e:  # noqa: BLE001
         lines += [f"\n_MTM/门审计/看板跳过:{e}_"]
+
+    lines += _health_section(sdir)         # 运行健康:降级字段/缺产物 → 勿把数据病当因子病
 
     try:                                   # F · 逐阶段 agent edge(staging 缺 / fwd 未实现则跳过)
         import autoresearch.learning.stage_eval as stage_eval

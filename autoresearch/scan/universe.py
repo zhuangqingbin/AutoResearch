@@ -301,8 +301,14 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
         "recall_n": len(recall), "l2_n": len(l2), "l2_engine": l2_engine,
         "l2_sector_cap": l2_sector_cap,
         "cap_floor_yi": cap_floor_yi, "include_bj": include_bj, "source": source,
+        "regime": _regime,                                    # 当日 regime(regime_aware 关 = null)
         "weights_source": weights.get("meta", {}).get("source", "weights.json"),
     }, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:                                                      # 重放快照:当日实际权重固化进现场
+        (outdir / "weights_used.json").write_text(
+            json.dumps(weights, ensure_ascii=False, indent=2, default=float), encoding="utf-8")
+    except Exception as e:  # noqa: BLE001 — 快照失败只警告,不阻断漏斗
+        print(f"[warn] weights_used.json 快照失败: {e}", file=sys.stderr)
     print(f"[done] L1 召回 → {outdir}/L1_recall_top1000.csv ({len(recall)})", file=sys.stderr)
     return {"universe": n_l0, "after_gate_a": len(uni), "recall_n": len(recall),
             "l2_n": len(l2), "l2_engine": l2_engine, "sectors": len(sectors), "outdir": str(outdir)}
