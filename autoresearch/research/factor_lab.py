@@ -222,7 +222,9 @@ def forward_returns(piv: dict, P: list[str], D: str, fwd: int) -> pd.DataFrame:
 
     def col(piv_, k):
         j = idx + k
-        return piv_[P[j]] if 0 <= j < len(P) else pd.Series(np.nan, index=codes)
+        if not (0 <= j < len(P)) or P[j] not in piv_.columns:   # 越界 / 日历日在但 EOD 未发布
+            return pd.Series(np.nan, index=codes)
+        return piv_[P[j]]
 
     o1 = col(o, 1)
     res["fwd_1_cc"] = col(c, 1) / cD - 1.0

@@ -100,3 +100,22 @@ def test_gbdt_learns_synthetic_signal():
                    "verbosity": -1, "seed": 7}, dtr, num_boost_round=80)
     ic = fl._spearman(pd.Series(m.predict(feat.iloc[cut:])), pd.Series(y[cut:]))
     assert ic > 0.1, f"合成信号 oos IC 偏低 {ic:.3f}"
+
+
+def test_forward_returns_missing_future_column_degrades_to_nan():
+    """P 含日历交易日但 pivot 缺该列(当日 EOD 未发布)→ 对应 fwd 降级 NaN,不抛 KeyError。
+
+    真实场景:D+5=今天,盘中跑 retro,daily 缓存只到昨天 → load_price_pivots 无该列。
+    """
+    codes = ["000001", "600000"]
+    P = ["20260625", "20260626", "20260629", "20260630", "20260701", "20260702"]
+    have = P[:-1]  # 最后一个交易日 EOD 未发布
+
+    def piv_of(base):
+        return pd.DataFrame({d: base + i for i, d in enumerate(have)}, index=codes)
+
+    piv = {"close": piv_of(10.0), "open": piv_of(9.8), "high": piv_of(10.5),
+           "pct_chg": pd.DataFrame(dict.fromkeys(have, 1.0), index=codes)}
+    res = fl.forward_returns(piv, P, "20260625", 10)
+    assert res["fwd_5_oc"].isna().all()      # 需 P[5]=20260702 close → 缺列 → NaN
+    assert res["fwd_1_oo"].notna().all()     # 只用 26/29 开盘 → 有数
