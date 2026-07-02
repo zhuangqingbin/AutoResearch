@@ -388,6 +388,36 @@ def attribute(date: str, scan_root: Path | None = None, report_root: Path | None
     return attr
 
 
+def shadow_compare(attr: pd.DataFrame, sdir: Path) -> list[dict]:
+    """影子漏斗对照:各变体 L2 vs 主 L2 的 T+1/T+5 赢家捕获数(design: calendar-shadow §2)。
+
+    读 <scan_dir>/shadow/L2_*.csv;无影子/无赢家列 → []。单日读数薄,≥10 日累计再下结论。
+    """
+    sh = sdir / "shadow"
+    if not sh.is_dir():
+        return []
+    mp = sdir / "L2_gbdt_top200.csv"
+    if not mp.exists():
+        return []
+    main = set(pd.read_csv(mp, dtype={"code": str})["code"].astype(str).str.zfill(6))
+    a = attr.copy()
+    a["code"] = a["code"].astype(str).str.zfill(6)
+    w1 = set(a.loc[a.get("winner", pd.Series(dtype=bool)).fillna(False), "code"]) \
+        if "winner" in a.columns else set()
+    w5 = set(a.loc[a.get("winner_5", pd.Series(dtype=bool)).fillna(False), "code"]) \
+        if "winner_5" in a.columns else set()
+    out = []
+    for f in sorted(sh.glob("L2_*.csv")):
+        try:
+            codes = set(pd.read_csv(f, dtype={"code": str})["code"].astype(str).str.zfill(6))
+        except Exception:  # noqa: BLE001
+            continue
+        out.append({"variant": f.stem[3:], "n": len(codes),
+                    "cap1": len(w1 & codes), "cap1_main": len(w1 & main),
+                    "cap5": len(w5 & codes), "cap5_main": len(w5 & main)})
+    return out
+
+
 def _health_section(sdir: Path) -> list[str]:
     """run_health.json → retro_input 运行健康节(降级字段/缺产物提示)。缺文件/无恙 → []。
 
@@ -501,6 +531,15 @@ def write_retro_input(date: str, attr: pd.DataFrame, scan_root: Path | None = No
         lines += [f"\n_MTM/门审计/看板跳过:{e}_"]
 
     lines += _health_section(sdir)         # 运行健康:降级字段/缺产物 → 勿把数据病当因子病
+
+    try:                                   # 影子漏斗对照(变体 L2 的赢家捕获 vs 主;免费 A/B)
+        sc = shadow_compare(attr, sdir)
+        if sc:
+            lines += ["\n## 影子漏斗对照(赢家捕获数;单日勿下结论,≥10 日累计再提 proposal)"]
+            lines += [f"- **{r['variant']}**(n={r['n']}):T+1 捕获 {r['cap1']} vs 主 {r['cap1_main']};"
+                      f"T+5 捕获 {r['cap5']} vs 主 {r['cap5_main']}" for r in sc]
+    except Exception:  # noqa: BLE001
+        pass
 
     try:                                   # F · 逐阶段 agent edge(staging 缺 / fwd 未实现则跳过)
         import autoresearch.learning.stage_eval as stage_eval

@@ -233,6 +233,7 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
         recall_n: int = 1000, l2_n: int = 200, outdir: Path | None = None,
         source: str = "tushare", recall_mode: str = "multi", recall_channels=None,
         regime_aware: bool = False,                                      # L1 权重按 regime 选(默认关=parity)
+        shadow: bool = True,                                              # 影子漏斗变体 L2(纯增量文件,可 --no-shadow 关)
         l0_min_amount_yi: float = 0.0, l0_min_list_days: int = 0,         # L0 流动性/次新硬门(默认 0=关=parity)
         l2_model: str = "l2_fwd5", l2_floors: dict | None = None, l2_sector_cap: float = 0.20,
         l2_lane_quota: int = 40,                                          # 弃用(分层采样取代)
@@ -294,6 +295,19 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
     l2_cols = ["l2_rank", "gbdt_score", "l2_lane_reserved", "sector_mom", *keep]
     l2[[c for c in l2_cols if c in l2.columns]].to_csv(outdir / "L2_gbdt_top200.csv", index=False)
     print(f"[L2 粗排] recall {len(recall)} → {l2_engine} top {len(l2)}", file=sys.stderr)
+
+    if shadow:   # ── 影子漏斗:同一 recall 帧再产变体 L2(确定性 A/B;只落 staging 不喂 L3;免费)──
+        try:
+            sh = outdir / "shadow"
+            sh.mkdir(exist_ok=True)
+            nostrat = recall.sort_values("composite", ascending=False).head(l2_n).copy()
+            nostrat.insert(0, "l2_rank", range(1, len(nostrat) + 1))
+            nocap, _ = select_l2(recall, l2_n, floors=l2_floors, sector_cap_frac=1.0)
+            for vname, vdf in {"nostrat": nostrat, "nocap": nocap}.items():
+                vdf[[c for c in l2_cols if c in vdf.columns]].to_csv(sh / f"L2_{vname}.csv", index=False)
+            print(f"[shadow] 变体 L2 ×2(nostrat/nocap)→ {sh}(retro 对照赢家捕获)", file=sys.stderr)
+        except Exception as e:  # noqa: BLE001 — 影子失败不阻主漏斗
+            print(f"[warn] 影子漏斗失败: {e}", file=sys.stderr)
 
     sectors.to_csv(outdir / "sectors.csv", index=False)
     (outdir / "meta.json").write_text(json.dumps({
@@ -442,6 +456,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="L2 分层采样:任一申万一级 ≤ 此比例,默认 0.20(=40/200);≥1.0=关")
     ap.add_argument("--regime-aware", action="store_true",
                     help="L1 权重按当日 regime 选(需 weights.json regimes 块;默认关=parity)")
+    ap.add_argument("--no-shadow", action="store_true",
+                    help="关掉影子漏斗变体 L2(默认开;纯增量文件,retro 做确定性 A/B)")
     ap.add_argument("--selftest", action="store_true", help="离线验证打分逻辑(无网络)")
     args = ap.parse_args(argv)
 
@@ -453,7 +469,7 @@ def main(argv: list[str] | None = None) -> int:
               recall_n=args.recall_n, l2_n=args.l2_n, source=args.source,
               recall_mode=args.recall_mode, l2_sector_cap=args.l2_sector_cap,
               recall_channels=(args.recall_channels.split(",") if args.recall_channels else None),
-              regime_aware=args.regime_aware)
+              regime_aware=args.regime_aware, shadow=not args.no_shadow)
     print(f"\nL0 universe={res['universe']} → 轻门 {res['after_gate_a']} → 召回 top{res['recall_n']} "
           f"→ L2 {res['l2_engine']} top{res['l2_n']} (板块概览 {res['sectors']} 个)"
           f"\n→ {res['outdir']}/L2_gbdt_top200.csv")

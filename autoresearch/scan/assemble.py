@@ -532,6 +532,10 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str) ->
         wb = render_watchlist_block(pd.read_csv(ws, dtype={"code": str}))
         if wb:
             out += ["", wb]
+    from autoresearch.scan.calendar import calendar_section  # lazy:日历块,缺 staging 自 ""
+    cal = calendar_section(scan_dir)
+    if cal:
+        out += ["", cal]
     out += ["", "### 组合视角", _portfolio_note(rows), ""]
     kn = _knowledge_note(rows)
     if kn:
