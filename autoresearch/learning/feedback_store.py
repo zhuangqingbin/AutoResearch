@@ -108,11 +108,14 @@ def record_feedback(skill: str, scope, report: str, note: str, verdict: str,
 
 
 def upsert_lesson(slug: str, scope, rule: str, evidence: list[str],
-                  confidence: float = 0.6, day: str | None = None, guard: dict | None = None) -> dict:
+                  confidence: float = 0.6, day: str | None = None, guard: dict | None = None,
+                  regimes: list[str] | None = None) -> dict:
     """新建或强化一条经验。已存在 → reinforce_count++、last_reinforced 更新、evidence 并集、confidence 升。
 
     guard={field,op,value}(可选,E·程序性记忆):带 guard 的经验从『建议文本』升为 self_review 的
     **确定性硬门**(发布买单触发即 fail)——经验反复强化后由 retro/feedback skill 给它写 guard 落地。
+    regimes(可选,R1):经验只在这些 regime 生效(如 ["risk_off","range"]);缺省 = 全 regime
+    (老记录兼容)。retro 写经验时标注当日 regime,防 regime 翻转后集体中毒。
     """
     day = day or _today()
     lid = slug if slug.startswith("ls_") else f"ls_{slug}"
@@ -124,6 +127,8 @@ def upsert_lesson(slug: str, scope, rule: str, evidence: list[str],
                "reinforce_count": 1, "status": "active"}
         if guard is not None:
             rec["guard"] = guard
+        if regimes:
+            rec["regimes"] = list(regimes)
         recs.append(rec)
     else:
         rec = recs[idx]
@@ -140,6 +145,8 @@ def upsert_lesson(slug: str, scope, rule: str, evidence: list[str],
         rec["status"] = "active"
         if guard is not None:                 # 升/更新硬门(None 则保留原 guard,不误清)
             rec["guard"] = guard
+        if regimes is not None:               # 同理:None 保留原 regimes
+            rec["regimes"] = list(regimes)
         recs[idx] = rec
     _write_jsonl(_LESSONS, recs)
     return rec
@@ -161,6 +168,51 @@ def retire_lesson(slug: str, day: str | None = None) -> bool:
     return hit
 
 
+def mtm_update(slug: str, verdict: str, day: str | None = None, note: str = "") -> dict | None:
+    """经验 mark-to-market(R2+R7):用市场结果给经验记支持/反驳账,confidence 机械升降。
+
+    verdict ∈ {support, refute};同 lesson 同日同 verdict 幂等。confidence:support +0.03、
+    refute **−0.08**(反驳惩罚 > 支持奖励:记忆宁可谦逊),clip [0.20, 0.95]。
+    `refute≥3 ∧ refute>support` → 自动 add_proposal 提名摘 guard/退休(**人批,不自动动门**)。
+    """
+    assert verdict in ("support", "refute"), verdict
+    day = day or _today()
+    lid = slug if slug.startswith("ls_") else f"ls_{slug}"
+    recs = _read_jsonl(_LESSONS)
+    idx = next((i for i, r in enumerate(recs) if r["id"] == lid), None)
+    if idx is None:
+        return None
+    rec = recs[idx]
+    mtm = rec.setdefault("mtm", {"support": 0, "refute": 0})
+    if mtm.get(f"last_{verdict}") == day:                 # 幂等
+        return rec
+    mtm[verdict] = int(mtm.get(verdict, 0)) + 1
+    mtm[f"last_{verdict}"] = day
+    if note:
+        mtm["note"] = note
+    delta = 0.03 if verdict == "support" else -0.08
+    rec["confidence"] = round(min(0.95, max(0.20, float(rec.get("confidence", 0.6)) + delta)), 2)
+    recs[idx] = rec
+    _write_jsonl(_LESSONS, recs)
+    if (mtm["refute"] >= 3 and mtm["refute"] > mtm.get("support", 0)
+            and not any(p.get("kind") == "lesson" and lid in p.get("summary", "")
+                        for p in _read_jsonl(_PROPOSALS))):
+        add_proposal("lesson", f"摘除 guard/退休提名: {lid}",
+                     rationale=f"MTM 反驳 {mtm['refute']} vs 支持 {mtm.get('support', 0)};"
+                               f"rule: {rec.get('rule', '')[:80]}",
+                     diff_sketch="人批后 retire_lesson 或 upsert_lesson(guard=…) 摘门")
+    return rec
+
+
+def open_proposals(today: str | None = None) -> list[dict]:
+    """R4·看板:open 状态 proposals + 天龄,age 降序(积压最久的最先看见)。"""
+    today = today or _today()
+    out = [{"id": p.get("id"), "age_days": _days_between(p.get("ts", "")[:10], today),
+            "kind": p.get("kind"), "summary": p.get("summary", "")}
+           for p in _read_jsonl(_PROPOSALS) if p.get("status") == "open"]
+    return sorted(out, key=lambda r: r["age_days"], reverse=True)
+
+
 def scope_match(lesson_scope: dict, query_scopes) -> bool:
     """global 经验永远命中;否则 (kind,value) 须在查询集合内。"""
     if lesson_scope.get("kind") == "global":
@@ -169,11 +221,21 @@ def scope_match(lesson_scope: dict, query_scopes) -> bool:
     return (lesson_scope.get("kind"), lesson_scope.get("value")) in q
 
 
-def lessons_for(query_scopes) -> list[dict]:
-    """按范围过滤 active 经验,confidence 降序。query_scopes: list[dict|tuple]。"""
+_SCOPE_RANK = {"ticker": 3, "industry": 3, "sector": 2, "global": 1}   # 精度:具体 > 泛化
+
+
+def lessons_for(query_scopes, regime: str | None = None) -> list[dict]:
+    """按范围过滤 active 经验;排序 = confidence 降序 → last_reinforced 降序 → scope 精度(R6)。
+
+    regime 给定(R1)→ 带 `regimes` 字段的经验须包含之,否则过滤;缺字段 = 全 regime 生效;
+    regime=None → 行为同旧(parity)。query_scopes: list[dict|tuple]。
+    """
     hits = [r for r in _read_jsonl(_LESSONS)
-            if r.get("status") == "active" and scope_match(r.get("scope", {}), query_scopes)]
-    return sorted(hits, key=lambda r: r.get("confidence", 0), reverse=True)
+            if r.get("status") == "active" and scope_match(r.get("scope", {}), query_scopes)
+            and (regime is None or not r.get("regimes") or regime in r["regimes"])]
+    return sorted(hits, key=lambda r: (r.get("confidence", 0), r.get("last_reinforced", ""),
+                                       _SCOPE_RANK.get(r.get("scope", {}).get("kind"), 0)),
+                  reverse=True)
 
 
 def recent_feedback_for(query_scopes, k: int = 3,
@@ -293,20 +355,26 @@ def _feedback_bullet(fb: dict) -> str:
     return f"- {tag}{str(rule)[:60]}  _({fb.get('verdict')}; {fb.get('id')})_"
 
 
-def render_calibration_block(query_scopes=None, lane="reversion", with_feedback: bool = False) -> str:
+_LESSON_CAP = 8   # R6·注入 cap:防经验库长大后校准块膨胀成 prompt 噪声
+
+
+def render_calibration_block(query_scopes=None, lane="reversion", with_feedback: bool = False,
+                             regime: str | None = None) -> str:
     """命中经验时:自学习经验(优先)叠加在 IC 基线上;无命中时:逐字回退基线(老路径不破)。
 
     lane='trend' → 趋势延续版校准(动量为正、主力还在=健康、只砍衰竭);
     lane='reversion'(默认)→ 原 T+1 均值回归基线;**不带 lane 调用结果与改前逐字一致**。
     with_feedback=True(E1·检索式记忆)→ 额外把**近期同域未蒸馏反馈**注在最前(最高优先,别再犯);
     默认 False → 输出与改前逐字一致(空 store / 全退休仍回退基线)。
+    regime 给定(R1)→ 只注入当日 regime 适用的经验(带 regimes 标注的按标过滤);None = 老行为。
+    经验条目 cap=_LESSON_CAP(R6),命中 ≤cap 时输出与无 cap 逐字一致。
     """
     intro, body, baseline = (
         (_TREND_INTRO, _TREND_BODY, _TREND_CALIBRATION) if lane == "trend"
         else (_BASELINE_INTRO, _BASELINE_BODY, _BASELINE_CALIBRATION)
     )
     scopes = query_scopes or [("global", "*")]
-    hits = lessons_for(scopes)
+    hits = lessons_for(scopes, regime=regime)
     fb = recent_feedback_for(scopes) if with_feedback else []
     if not hits and not fb:
         return baseline               # 无经验无反馈 → 逐字基线(老路径不破)
@@ -316,7 +384,9 @@ def render_calibration_block(query_scopes=None, lane="reversion", with_feedback:
         lines += [_feedback_bullet(f) for f in fb]
     if hits:
         lines += ["### 自学习经验(你的反馈 + retro 复盘,优先级高)"]
-        lines += [_lesson_bullet(h) for h in hits]
+        lines += [_lesson_bullet(h) for h in hits[:_LESSON_CAP]]
+        if len(hits) > _LESSON_CAP:
+            lines += [f"_(另有 {len(hits) - _LESSON_CAP} 条低置信经验未注入,见 lessons.jsonl)_"]
     lines += ["", "### IC 回测基线", intro, body]
     return "\n".join(lines)
 
