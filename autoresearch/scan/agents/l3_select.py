@@ -89,11 +89,92 @@ def load_l3_input(date: str, root: Path | None = None) -> pd.DataFrame:
     return df
 
 
-def l3_table_md(date: str, root: Path | None = None) -> str:
-    """L3 holistic 选股 subagent 的完整输入表(~200 行紧凑表 + 证据摘要列)。"""
+def _prev_l3_day(date: str, root: Path | None = None) -> Path | None:
+    """最近一个有 L3 现场(L3_judged_full + L2)的更早 scan 日;无 → None。"""
+    root = root or Path("context/scan")
+    if not root.exists():
+        return None
+    cands = sorted((p for p in root.iterdir()
+                    if p.is_dir() and p.name[:2] == "20" and p.name < date
+                    and (p / "L3_judged_full.csv").exists()
+                    and (p / "L2_gbdt_top200.csv").exists()), reverse=True)
+    return cands[0] if cands else None
+
+
+def _delta_filter(df: pd.DataFrame, prev_dir: Path,
+                  comp_tol: float = 2.0, mom_tol: float = 2.0) -> tuple[pd.DataFrame, list[str]]:
+    """Δ模式过滤:略去「昨判弃 ∧ 今无变化」的行,保留行加 prev_l3 标记(选/弃)。
+
+    变化 = |Δcomposite|>comp_tol ∨ |Δpct_60d|>mom_tol ∨ 今日有 lhb/预告/快报证据;
+    prev 缺值 = 视为变(保守保留)。返回 (过滤后帧, 被略去 codes)。
+    """
+    jd = pd.read_csv(prev_dir / "L3_judged_full.csv", dtype={"code": str})
+    judged = set(jd["code"].astype(str).str.zfill(6)) if "code" in jd.columns else set()
+    fp = prev_dir / "finalists.csv"
+    fin: set[str] = set()
+    if fp.exists():
+        fd = pd.read_csv(fp, dtype={"code": str})
+        if "code" in fd.columns:
+            fin = set(fd["code"].astype(str).str.zfill(6))
+    rejected = judged - fin
+    prev_l2 = pd.read_csv(prev_dir / "L2_gbdt_top200.csv", dtype={"code": str})
+    prev_l2["code"] = prev_l2["code"].astype(str).str.zfill(6)
+    keep_prev = [c for c in ("code", "composite", "pct_60d") if c in prev_l2.columns]
+    m = df.merge(prev_l2[keep_prev], on="code", how="left", suffixes=("", "_prev"))
+    dcomp = (pd.to_numeric(m.get("composite"), errors="coerce")
+             - pd.to_numeric(m.get("composite_prev"), errors="coerce")).abs()
+    dmom = (pd.to_numeric(m.get("pct_60d"), errors="coerce")
+            - pd.to_numeric(m.get("pct_60d_prev"), errors="coerce")).abs()
+    changed = dcomp.isna() | (dcomp > comp_tol) | dmom.isna() | (dmom > mom_tol)
+    for c, is_bool in (("lhb_n", False), ("has_forecast", True), ("has_express", True)):
+        if c in m.columns:
+            v = m[c].fillna(False).astype(bool) if is_bool else pd.to_numeric(m[c], errors="coerce").fillna(0) > 0
+            changed |= v
+    is_rejected = m["code"].isin(rejected)
+    drop = is_rejected & ~changed
+    dropped = m.loc[drop, "code"].tolist()
+    kept = df[~df["code"].isin(set(dropped))].copy()
+    kept["prev_l3"] = kept["code"].map(
+        lambda c: "选" if c in fin else ("弃" if c in rejected else ""))
+    return kept, dropped
+
+
+def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
+                shuffle_seed: int | None = None) -> str:
+    """L3 holistic 选股 subagent 的完整输入表(~200 行紧凑表 + 证据摘要列)。
+
+    delta=True:略去「昨判弃 ∧ 今无变化」行 + prev_l3 标记(design: l4-economy §3;
+    默认 False = 逐字 parity;无前日 L3 现场 → 自动回退全量)。
+    shuffle_seed:确定性乱序行序(稳定性抽检用;同 seed 同输出)。
+    """
     df = load_l3_input(date, root=root)
     cols = [*_L3_COLS] + [c for c in ("lhb_n", "has_forecast", "has_express") if c in df.columns]
-    return compact_table(df, cols=cols)
+    header: list[str] = []
+    if delta:
+        prev = _prev_l3_day(date, root=root)
+        if prev is None:
+            header = ["_Δ模式:无前日 L3 现场 → 回退全量表_", ""]
+        else:
+            df, dropped = _delta_filter(df, prev)
+            cols = [*cols, "prev_l3"]
+            header = [f"_Δ模式(vs {prev.name}):略去 **{len(dropped)}** 只「昨判弃且无变化」票"
+                      f"(重新入场条件:Δcomposite>2 或 Δpct60>2 或新 lhb/预告/快报);"
+                      f"**今日仍须对下表独立重新比较,prev_l3 列仅供参考、严禁沿用昨日结论**;"
+                      f"全量表每 ≤5 个 scan 日至少 1 次_", ""]
+    if shuffle_seed is not None:
+        df = df.sample(frac=1, random_state=int(shuffle_seed)).reset_index(drop=True)
+    table = compact_table(df, cols=cols)
+    return "\n".join([*header, table]) if header else table
+
+
+def stability_overlap(codes_a, codes_b) -> dict:
+    """两次 L3 选择的重叠度(稳定性抽检:同表乱序重跑,<70% = rubric 太松/噪声大)。"""
+    a = {str(c).zfill(6) for c in codes_a}
+    b = {str(c).zfill(6) for c in codes_b}
+    inter = a & b
+    denom = min(len(a), len(b))
+    return {"n_a": len(a), "n_b": len(b), "n_common": len(inter),
+            "overlap": round(len(inter) / denom, 3) if denom else 0.0}
 
 
 def _period(date: str) -> str:
