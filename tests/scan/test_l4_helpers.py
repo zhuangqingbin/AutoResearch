@@ -37,3 +37,17 @@ def test_audit_no_flag_when_consistent():
 
 def test_audit_ignores_unclaimed_gate():
     assert audit_rubric_gates("主力流出明显", {"主力真在": False}) == []
+
+
+def test_pick_opportunity_candidates(tmp_path):
+    """0买日机会成本红队名单:Hold 按 L3 conviction 降序取 top-k(spec 2026-07-02 任务E)。"""
+    import pandas as pd
+
+    from autoresearch.scan.agents.l4_card import pick_opportunity_candidates
+    pd.DataFrame({"code": ["000001", "000002", "000003", "000004"],
+                  "conviction": [55, 70, 62, 90]}).to_csv(tmp_path / "finalists.csv", index=False)
+    ratings = {"000001": "Hold", "000002": "Hold", "000003": "Hold", "000004": "Underweight"}
+    out = pick_opportunity_candidates(ratings, tmp_path, k=2)
+    assert out == ["000002", "000003"]        # UW 不入;按 conviction 70>62>55 取 2
+    assert pick_opportunity_candidates({}, tmp_path) == []
+    assert pick_opportunity_candidates(ratings, tmp_path / "nope") == []   # 缺 finalists 优雅

@@ -131,6 +131,16 @@ uv run --no-sync python -m autoresearch.analyze.harvest <ticker> <date> --slim
 
 > 与既有 `self_review` 机械硬门**叠加且正交**:self_review 是确定性红线(winner>88 无 override / 覆盖 / 评级-因子矛盾 / **评级超 rubric** / 行业集中 / 空泛),本闸是 LLM 临场多空对抗找**新** bear/bull 证据;summary 同时呈现。
 
+## 机会成本红队(0买日,skeptic 之后 · 对称性修复)
+**为什么**:买单有 skeptic,空仓从来没有——连续 0 买后系统无法自证"门太紧还是市场真没货"。空仓也要红队。
+**何时**:verify 折回后**今日 0 买**(无 ≥OW)才跑;`l4_card.pick_opportunity_candidates(ratings, scan_dir, k=2)` 取 rubric/conviction 最高的 Hold top-2。
+**怎么跑**:每只派一个**独立** `Agent(model='opus')` 当 **bull 方**(镜像 skeptic:没参与过该票分析、只演多头),prompt 要点:
+- 输入:该股决策卡(details/<code>.md)+ 漏斗简报;人设=错过成本审计员。
+- 任务:**攻"把它压在 Hold 的那道 binding gate"**——这道门(主力/估值/业绩兑现)的反证是什么?什么**可核实**证据出现时该门会翻转?
+- 铁律:**不改评级、不喊单**;数字出自卡片与 slim,不编数。
+- 输出(紧凑回传):最强多头 3 条 + `binding_gate` + **翻转触发**(用观察单词表:`close_above/close_below/ma_bull/money_pos/manual`)+ 一句风险自认。
+**PM 裁判(主线,3 透镜:估值/资金/毁灭风险)**:采纳 → 写进 `context/watchlist.csv`(结构化 conds,source=opp_redteam);不采纳 → verify reasoning 归档记一句 why。**产出只进观察单与校准数据,评级一个字不动**(这是证据流,不是翻案通道)。
+
 ## L5 整合(`autoresearch.scan.assemble`,确定性)
 ```bash
 uv run --no-sync python -m autoresearch.scan.assemble <date>

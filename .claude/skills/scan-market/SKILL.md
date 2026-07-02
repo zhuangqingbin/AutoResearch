@@ -56,6 +56,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 4. **L4 研究(token 大头,一只=一个 Opus subagent)**——helper 在 `autoresearch.scan.agents.l4_card`:
    - **L4 · 渐进深度 + 早停**:对 finalists 每只 `l4_card.compose_funnel_brief(code, scan_dir)` 拼简报前置 slim 顶 → 一个 `Agent(model='opus')` 跑 **analyze-ticker-lite**(`harvest <ticker> <date> --slim` → staging `details/<ticker>.md`)。**P0 简报定向 → P1–P3 表面填 4 维 → 主早停②(非买点 → 早停卡)→ survivor P4 陷阱核 → ③击杀 → P5 满卡;评级由 `l4_card.rubric_rating` 派生(防 gestalt 过度多报)、早停只向下、≥OW 必走 P4+P5**。**推荐:先用确定性批脚本预 harvest 全部 finalist 的 slim(zero-LLM、与分析层解耦、烧 Opus 前先验数据完好)→ 再 ~29 个分析 subagent 一条消息并发派发(读预建 slim、不各自取数 → 无限频);别分 wave(只徒增 barrier 延迟、不提质量)**。
    - **买单 skeptic · ≥OW · 独立 Opus**:`l4_card.pick_buy_candidates(ratings)`(最终 Buy/OW)每只派一个**独立** `Agent(model='opus')` 证伪(subagent 满卡多头 = bull 方,skeptic 只演空头),主线当 **PM 用 3 透镜投票裁判** → `verify.csv`(`code,verdict,bull,bear,trigger,consensus`)。落定后 `watchlist.ingest_verify(scan_dir, 'context/watchlist.csv')` 把**降级**条目草拟进观察单,并由编排层(你)为其补**结构化 conds**(词表 v1:`close_above/close_below/ma_bull/money_pos/manual`,与 L4 卡触发叙事对齐)——观察单从此每天被 `run_check` 机判。
+   - **机会成本红队 · 仅 0 买日 · 独立 Opus**(对称性修复:空仓也要红队):verify 折回后今日无 ≥OW → `l4_card.pick_opportunity_candidates(ratings, scan_dir, k=2)`(conviction 最高的 Hold top-2)每只派一个独立 Opus **bull 方**攻"压评级的那道门",PM 三透镜裁判。**产出只进观察单(结构化 conds,source=opp_redteam)与校准数据,不改评级**——门的松紧不动,但系统从此有"门是否太紧"的对抗证据流(prompt 模板见 playbook『机会成本红队』节)。
 5. **L5 整合**:
    ```bash
    uv run --no-sync python -m autoresearch.scan.assemble <date>
