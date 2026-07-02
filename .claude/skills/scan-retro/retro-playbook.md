@@ -73,6 +73,18 @@ fs.upsert_lesson("low_winner_reversal", ("global","*"),
 PY
 ```
 
+**5.5 行业备忘录(月度蒸馏,记忆中层)**
+每 ≥20 个 scan 日(或月末)一次:通读当月 details 卡片,把**行业级反复出现的事实**
+(估值区间常态/哪道 OW 门高频触发/共性坑位)蒸馏成 1–2 句/行业,`upsert_memo` 落
+`sector_memos.jsonl`(覆盖式,别累积成散文)→ 下月该行业出现时自动注入 L4 简报
+(`render_memo_line`)与 L3 prompt(`render_memo_block`)。**铁律同档案:历史事实非方向。**
+```bash
+uv run --no-sync python - <<'PY'
+from autoresearch.learning.sector_memo import upsert_memo
+upsert_memo("半导体", "fwd PE 常年 100+;CFO/FCF 门高频(紫光国微三度);解禁潮 Q3", "2026-07-31")
+PY
+```
+
 **6. retro 报告 + 标记完成**
 写 retro 报告到**被复盘扫描的运行目录**(`retro._report_dir_for(date)` 据 manifest.analysis_date 定位,与该次 `summary.md` 同级):`reports/scan/<YYYYMMDD>_<HHMM>/retro_<复盘HHMM>.md`,含:① 漏斗各段对赢家命中率(引 stage_stats)② 漏判赢家 top + **系统性病因**(第2步)③ 已自动落地的权重变化(引 changelog)④ 待批建议 ⑤ 新增/强化经验。然后:
 ```bash

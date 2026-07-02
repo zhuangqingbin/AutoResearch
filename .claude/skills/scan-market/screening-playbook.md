@@ -119,6 +119,8 @@ uv run --no-sync python -m autoresearch.analyze.harvest <ticker> <date> --slim
 - 某只想下重注 → 再单独跑**全量 analyze-ticker**(模型 **Opus**,live 重取最全)。
 
 ## 买单独立 skeptic(发布前红队,~0–4 只)
+
+> **📊 评级基率先验(样本 ≥10 才用)**:跑 `uv run --no-sync python -m autoresearch.learning.buy_ledger` 看 `reports/learning/buy_ledger.md` 的评级基率;当某评级已实现样本 n≥10 时,把"本系统 <评级> 历史 T+5 胜率 X%、目标命中率 Y%"一行写进 skeptic 与 PM 三透镜 prompt 当 Bayesian 先验(**n<10 标 ⚠样本少,禁止注入**——薄样本先验比没有更坏)。
 把省下的预算重投到**最贵的决策点**:**最终评级 ≥OW 的发布买单**每只派一个**独立** `Agent(model='opus')` 专职**证伪**——它没参与过该票分析、对多头故事零包袱,比 subagent 自压更抗自我合理化。主线当**组合经理(PM)裁判**用 3 透镜投票定 verdict。错一个买点 = 真金白银。
 
 > **为何独立 skeptic 而非自压**:survivor 的 P5 多空对撞已是**多头自己 steelman**(它建的论点);这里只需一个**独立空头**把它拆了 + 中立 PM 裁判,比同一个 agent 自辩稳(自辩易轻描淡写自己的 bear case)。这不是「tier」(不对全 29 铺一层),是发布前最后一道闸。

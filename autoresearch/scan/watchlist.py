@@ -146,6 +146,56 @@ def run_check(date: str, scan_dir: Path | str,
     return st
 
 
+def express_candidates(scan_dir: Path | str) -> pd.DataFrame:
+    """触发直通车名单:watchlist_status 触发* 且不在今日 finalists → 待追加行(直达 L4 再判)。
+
+    防悲剧:触发了、但该票当天不在 L2 菜单 → 没人研究。行 lane=watchlist_trigger,
+    thesis=触发叙事;sector 从 L1_scored_full.industry 补。缺 status/finalists → 空。
+    """
+    scan_dir = Path(scan_dir)
+    sp, fp = scan_dir / "watchlist_status.csv", scan_dir / "finalists.csv"
+    cols = ["ticker", "code", "name", "sector", "conviction", "thesis", "risk", "catalyst", "lane"]
+    if not sp.exists() or not fp.exists():
+        return pd.DataFrame(columns=cols)
+    st = pd.read_csv(sp, dtype={"code": str}).fillna("")
+    trig = st[st["status"].astype(str).str.startswith("触发")]
+    if not len(trig):
+        return pd.DataFrame(columns=cols)
+    fin = pd.read_csv(fp, dtype={"code": str})
+    have = set(fin["code"].astype(str).str.zfill(6)) if "code" in fin.columns else set()
+    ind: dict[str, str] = {}
+    lp = scan_dir / "L1_scored_full.csv"
+    if lp.exists():
+        l1 = pd.read_csv(lp, dtype={"code": str})
+        if {"code", "industry"} <= set(l1.columns):
+            ind = dict(zip(l1["code"].astype(str).str.zfill(6), l1["industry"], strict=False))
+    rows = []
+    for _, r in trig.iterrows():
+        code = str(r["code"]).zfill(6)
+        if code in have:
+            continue
+        rows.append({"ticker": code, "code": code, "name": r.get("name", ""),
+                     "sector": ind.get(code, ""), "conviction": "",
+                     "thesis": f"观察单触发:{r.get('narrative', '')}",
+                     "risk": "", "catalyst": str(r.get("detail", "")), "lane": "watchlist_trigger"})
+    return pd.DataFrame(rows, columns=cols)
+
+
+def append_express(scan_dir: Path | str) -> int:
+    """把直通车行追加进 finalists.csv(幂等:code 已在则跳)。返回追加数。"""
+    scan_dir = Path(scan_dir)
+    ex = express_candidates(scan_dir)
+    if not len(ex):
+        return 0
+    fp = scan_dir / "finalists.csv"
+    fin = pd.read_csv(fp, dtype={"code": str})
+    out = pd.concat([fin, ex[[c for c in ex.columns if c in fin.columns or c in
+                              ("ticker", "code", "name", "sector", "thesis", "lane", "catalyst")]]],
+                    ignore_index=True)
+    out.to_csv(fp, index=False)
+    return len(ex)
+
+
 def render_watchlist_block(status: pd.DataFrame) -> str:
     """L5 嵌入块:触发置顶,失效垫底;空 → ""。"""
     if status is None or not len(status):

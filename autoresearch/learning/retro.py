@@ -313,7 +313,7 @@ def realized_returns(date: str, fwd: int = 10) -> pd.DataFrame:
     import autoresearch.research.factor_lab as fl
     from autoresearch.data.tushare_source import _trade_days
 
-    cols = ["code", "fwd_1_oo", "fwd_5_oc", "buyable", "gap_d1"]
+    cols = ["code", "fwd_1_oo", "fwd_5_oc", "fwd_10_oc", "buyable", "gap_d1"]   # fwd_10 供买后管理(未成熟=NaN)
     pro = fl._pro()
     d0 = date.replace("-", "")
     today = datetime.now().strftime("%Y%m%d")
@@ -366,7 +366,7 @@ def pending_days(today: str | None = None, scan_root: Path | None = None,
 # ───────────────────────── 编排:attribute / retro_input / done ─────────────────────────
 
 _KEEP = ["code", "name", "industry", "bucket", "winner", "news_pop", "fwd_1_oo", "fwd_5_oc",
-         "winner_5", "bucket_5",
+         "fwd_10_oc", "winner_5", "bucket_5",
          "gap_d1", "rank", "recalled_flag", "composite", "score_momentum", "score_fund_main",
          "score_chip", "pct_60d", "main_net_ratio", "winner_rate", "price_to_cost", "rsi6", "rating"]
 

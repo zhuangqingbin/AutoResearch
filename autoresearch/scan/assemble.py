@@ -327,9 +327,42 @@ def _stage_overview(label: str, rows: list[dict], reason: str) -> list[str]:
 def _portfolio_note(rows: list[dict]) -> str:
     secs = Counter((r.get("sector") or r.get("industry") or "?") for r in rows)
     top = "、".join(f"{k}×{v}" for k, v in secs.most_common(5))
-    buys = sum(1 for r in rows if r.get("rating") in ("Buy", "Overweight"))
-    return (f"买入/超配 **{buys}** 只;板块集中度:{top or '—'}。"
+    buys = [r for r in rows if r.get("rating") in ("Buy", "Overweight")]
+    note = (f"买入/超配 **{len(buys)}** 只;板块集中度:{top or '—'}。"
             "注意单板块过度集中的相关性风险;按评级×置信度分配仓位,催化日历做节奏。")
+    if len(buys) >= 2:                       # 买单同板块 = 1 个 bet 不是 N 个(组合视角告警)
+        bsec = Counter((r.get("sector") or r.get("industry") or "?") for r in buys)
+        k, v = bsec.most_common(1)[0]
+        if v >= 2:
+            note += f" **⚠️ {v}/{len(buys)} 只买单同属{k} = 相关性上是 1 个 bet,仓位按 1 个算。**"
+    return note
+
+
+def _position_overlay(scan_dir: Path, rows: list[dict]) -> str:
+    """仓位建议(组合 overlay,确定性):regime 档位 + 菜单病取下沿 + 0 买一致性。缺 regime → ""。
+
+    只作用于总仓位,不改单票评级(与策略师"方向只进 L5"同一铁律)。
+    """
+    try:
+        meta = _load_json(scan_dir / "meta.json")
+        regime = meta.get("regime")
+    except Exception:  # noqa: BLE001
+        return ""
+    band = {"risk_off": "0–2 成", "range": "3–5 成", "trend": "5–8 成"}.get(regime or "")
+    if not band:
+        return ""
+    n_buys = sum(1 for r in rows if r.get("rating") in ("Buy", "Overweight"))
+    sick = ""
+    try:
+        from autoresearch.scan.menu import l4_budget
+        n, _why = l4_budget(scan_dir)
+        if n < 30:
+            sick = "(菜单病 → 取区间下沿)"
+    except Exception:  # noqa: BLE001
+        pass
+    tail = ("今日 0 买 → 空仓/底仓与系统读数一致,别为凑单加仓。" if n_buys == 0
+            else f"{n_buys} 只买单在区间内按评级×置信度分配。")
+    return (f"**仓位建议(overlay,非个股)**:regime={regime} → 总仓位基准 **{band}**{sick};{tail}")
 
 
 def _knowledge_note(rows: list[dict]) -> str:
@@ -435,7 +468,12 @@ def _self_review_banner(scan_dir: Path, rows: list[dict], summary_text: str,
     except Exception:  # noqa: BLE001
         pass
     ctx = {"finalists": finals, "n_cards_expected": len(rows), "n_cards_present": n_present,
-           "summary_text": summary_text, "lessons": lessons, "regime_drift": regime_drift}
+           "summary_text": summary_text, "lessons": lessons, "regime_drift": regime_drift,
+           "flow": {                                       # 编排完备性 lint(LLM 段可能被静默跳过)
+               "buys_n": sum(1 for r in rows if r.get("rating") in ("Buy", "Overweight")),
+               "verify_n": len(_load_verify(scan_dir)),
+               "has_market_view": (scan_dir / "market_view.md").exists(),
+               "finalists_n": len(rows)}}
     import contextlib
     res = self_review.review(ctx)
     with contextlib.suppress(Exception):
@@ -536,7 +574,11 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str) ->
     cal = calendar_section(scan_dir)
     if cal:
         out += ["", cal]
-    out += ["", "### 组合视角", _portfolio_note(rows), ""]
+    out += ["", "### 组合视角", _portfolio_note(rows)]
+    pos = _position_overlay(scan_dir, rows)
+    if pos:
+        out += ["", pos]
+    out += [""]
     kn = _knowledge_note(rows)
     if kn:
         out += [kn]

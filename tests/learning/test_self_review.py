@@ -20,3 +20,21 @@ def test_failures_carry_code_and_dump_gate_fires(tmp_path):
     # 无 failures → 只有表头(区分"没拦"与"没跑")
     p2 = sr.dump_gate_fires(tmp_path, {"failures": []}, "2026-07-02")
     assert list(csv.DictReader(p2.open(encoding="utf-8"))) == []
+
+
+def test_flow_lint_buy_without_skeptic_and_missing_strategist():
+    """流程完备性:买单未过 skeptic=fail;finalists≥5 无 market_view=warn;小 fixture 不误报。"""
+    r = self_review.review({
+        "finalists": [{"code": "1", "rating": "Overweight", "composite": 60,
+                       "winner_rate": 40, "sector": "电子"}],
+        "n_cards_expected": 1, "n_cards_present": 1,
+        "flow": {"buys_n": 1, "verify_n": 0, "has_market_view": True, "finalists_n": 1}})
+    assert not r["ok"] and any("买单未过skeptic" in x["check"] for x in r["failures"])
+    r2 = self_review.review({
+        "finalists": [], "n_cards_expected": 0, "n_cards_present": 0,
+        "flow": {"buys_n": 0, "verify_n": 0, "has_market_view": False, "finalists_n": 8}})
+    assert any("策略师未跑" in x["check"] for x in r2["failures"]) and r2["ok"]   # warn 非 fail
+    r3 = self_review.review({
+        "finalists": [], "n_cards_expected": 0, "n_cards_present": 0,
+        "flow": {"buys_n": 0, "verify_n": 0, "has_market_view": False, "finalists_n": 1}})
+    assert not any("策略师" in x["check"] for x in r3["failures"])                # 小 fixture 不误报

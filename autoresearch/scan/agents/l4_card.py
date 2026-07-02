@@ -144,6 +144,13 @@ def compose_funnel_brief(code: str, scan_dir: Path | str) -> str:
         lines += calendar_flags(base, code6)
     except Exception:  # noqa: BLE001 — 日历可选,缺了不挡简报
         pass
+    try:                                     # 行业备忘录(记忆中层:行业级历史事实,非方向)
+        from autoresearch.learning.sector_memo import render_memo_line
+        ml = render_memo_line(l3.get("industry") or l3.get("sector") or l1.get("industry"))
+        if ml:
+            lines.append(ml)
+    except Exception:  # noqa: BLE001
+        pass
     brief = "\n".join(lines) + "\n"
     ctx = _market_ctx(base, l3.get("industry") or l3.get("sector") or l1.get("industry"))
     doss = ""

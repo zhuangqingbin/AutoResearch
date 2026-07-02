@@ -116,6 +116,16 @@ def review(ctx: dict) -> dict:
     if rd:
         add("regime 漂移", "warn", str(rd))
 
+    # 8) 流程完备性(编排 lint:LLM 段可能被静默跳过;阈值防合成小 fixture 误报)
+    fl = ctx.get("flow") or {}
+    if fl:
+        if fl.get("buys_n") and not fl.get("verify_n"):
+            add("流程完备性·买单未过skeptic", "fail",
+                f"{fl['buys_n']} 只 ≥OW 买单但 verify.csv 空——每只买单发布前必须独立 skeptic 证伪")
+        if fl.get("finalists_n", 0) >= 5 and not fl.get("has_market_view"):
+            add("流程完备性·策略师未跑", "warn",
+                "market_view.md 缺——L3/L4 少了地形块(可选段;真实跑动建议补上)")
+
     n_fail = sum(1 for x in failures if x["severity"] == "fail")
     return {"ok": n_fail == 0, "n_fail": n_fail, "n_warn": len(failures) - n_fail,
             "failures": failures}

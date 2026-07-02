@@ -88,3 +88,38 @@ def test_render_triggered_first_and_empty():
     s = render_watchlist_block(st)
     assert "👀 观察单日检" in s and s.index("甲") < s.index("乙")
     assert render_watchlist_block(st.iloc[0:0]) == ""
+
+
+def test_express_candidates_and_append(tmp_path):
+    """触发直通车:触发* 且不在 finalists → 追加(lane=watchlist_trigger);幂等;已在则跳。
+
+    spec: docs/specs/2026-07-02-scan-portfolio-memory-design.md §1
+    """
+    from autoresearch.scan.watchlist import append_express, express_candidates
+    d = tmp_path / "2026-07-02"
+    d.mkdir()
+    pd.DataFrame([
+        {"code": "300476", "name": "胜宏科技", "status": "触发", "detail": "close_above:314=yes",
+         "narrative": "中报beat+站回多头", "born": "2026-06-30", "expiry": "2026-08-14"},
+        {"code": "600000", "name": "已入围", "status": "触发", "detail": "", "narrative": "",
+         "born": "2026-06-30", "expiry": ""},
+        {"code": "000002", "name": "未触发", "status": "临近", "detail": "", "narrative": "",
+         "born": "2026-06-30", "expiry": ""},
+    ]).to_csv(d / "watchlist_status.csv", index=False)
+    pd.DataFrame([{"code": "600000", "name": "已入围", "sector": "银行"}]).to_csv(
+        d / "finalists.csv", index=False)
+    pd.DataFrame([{"code": "300476", "industry": "PCB"}]).to_csv(
+        d / "L1_scored_full.csv", index=False)
+    ex = express_candidates(d)
+    assert len(ex) == 1 and ex.iloc[0]["code"] == "300476"
+    assert ex.iloc[0]["lane"] == "watchlist_trigger" and ex.iloc[0]["sector"] == "PCB"
+    assert "观察单触发" in ex.iloc[0]["thesis"]
+    assert append_express(d) == 1
+    fin = pd.read_csv(d / "finalists.csv", dtype={"code": str})
+    assert "300476" in set(fin["code"].astype(str).str.zfill(6)) and len(fin) == 2
+    assert append_express(d) == 0                              # 幂等
+
+
+def test_express_missing_staging_empty(tmp_path):
+    from autoresearch.scan.watchlist import express_candidates
+    assert len(express_candidates(tmp_path)) == 0
