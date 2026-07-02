@@ -483,6 +483,10 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str) ->
     out += ["## 2. 各阶段卡点 & 股票概览"]
     out += _stage_overview("召回(L1)", recall, "复合分 top;快因子(动量/资金结构/技术)主导排序,慢因子带下游判断。")
     out += _stage_overview("粗排(L2)", keep, f"GBDT 学习重排({meta.get('l2_engine', 'gbdt')});信号弱/陷阱因子自动降权,零 LLM。")
+    from autoresearch.scan.menu import menu_health  # lazy:确定性菜单体检,缺 staging 自 ""
+    mh = menu_health(scan_dir)
+    if mh:
+        out += ["", mh]
     out += ["", "**精排(L3)入选(含论点/风险/催化)**:"]
     if finals:
         for fr in finals[:15]:
@@ -516,6 +520,14 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str) ->
                f"**L2粗排** #GBDT重排名次/{n_l2}·gbdt分;**L3精排** = Opus holistic 论点 + conviction;"
                f"**L4研究·结论** = 决策卡深核后的关键定级依据(≥OW 取多头驱动,否则取空头/早停因)。_")
     out += _verify_detail(vmap)
+    ws = scan_dir / "watchlist_status.csv"
+    if ws.exists():
+        import pandas as pd  # lazy:assemble 主体走 csv/json,仅此块用 pandas
+
+        from autoresearch.scan.watchlist import render_watchlist_block
+        wb = render_watchlist_block(pd.read_csv(ws, dtype={"code": str}))
+        if wb:
+            out += ["", wb]
     out += ["", "### 组合视角", _portfolio_note(rows), ""]
     kn = _knowledge_note(rows)
     if kn:
