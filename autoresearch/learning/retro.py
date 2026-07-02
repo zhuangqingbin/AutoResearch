@@ -79,7 +79,86 @@ def attribute_frame(l1: pd.DataFrame, realized: pd.DataFrame, buylist: dict,
         return ""
 
     m["bucket"] = m.apply(bucket, axis=1)
+
+    # T+5 swing 口径(spec 2026-07-02-scan-retro-depth-metrics §①):L3/L4 猎的是 swing,
+    # 盲区审计与 T+1 并存;fwd_5 未成熟(NaN)→ winner_5 全 False(retro 补跑成熟日覆写)。
+    abs_thresh_5 = 0.05
+    if "fwd_5_oc" in m.columns:
+        t5 = m["buyable"].fillna(True) & m["fwd_5_oc"].notna()
+        trad5 = m[t5]
+        hi5 = trad5["fwd_5_oc"].quantile(top_q) if len(trad5) else float("nan")
+        m["winner_5"] = t5 & (m["fwd_5_oc"] >= hi5) & (m["fwd_5_oc"] >= abs_thresh_5)
+    else:
+        m["winner_5"] = False
+
+    def bucket5(r) -> str:
+        if not r["winner_5"]:
+            return ""
+        if r["bought"]:
+            return "caught"
+        if r["recalled_flag"]:
+            return "recalled_cut"
+        return "missed_l1" if r["in_l1"] else "missed_l0"
+
+    m["bucket_5"] = m.apply(bucket5, axis=1)
     return m
+
+
+def floor_experiment(l2df: pd.DataFrame, attr: pd.DataFrame) -> dict:
+    """L2 风格 floor 自然实验(spec §③):floor 救回 vs merit 入选 vs 被挤掉 的 fwd 对照。纯函数。
+
+    组:floor=`l2_lane_reserved>0`;merit=L2 内其余;cut=召回(top1000)但没进 L2。
+    返回 {组: {n, fwd1, fwd5}};缺列/空 → 组 n=0。
+    """
+    a = attr.copy()
+    a["code"] = a["code"].astype(str).str.zfill(6)
+    l2codes: set[str] = set()
+    floor_codes: set[str] = set()
+    if l2df is not None and len(l2df) and "code" in l2df.columns:
+        l2 = l2df.copy()
+        l2["code"] = l2["code"].astype(str).str.zfill(6)
+        l2codes = set(l2["code"])
+        if "l2_lane_reserved" in l2.columns:
+            rsv = pd.to_numeric(l2["l2_lane_reserved"], errors="coerce").fillna(0)
+            floor_codes = set(l2.loc[rsv > 0, "code"])
+    recalled = a["recalled_flag"].fillna(False) if "recalled_flag" in a.columns \
+        else pd.Series(False, index=a.index)
+    groups = {"floor": a["code"].isin(floor_codes),
+              "merit": a["code"].isin(l2codes - floor_codes),
+              "cut": recalled & ~a["code"].isin(l2codes)}
+
+    def _agg(mask) -> dict:
+        sub = a[mask]
+        f1 = pd.to_numeric(sub.get("fwd_1_oo"), errors="coerce") if len(sub) else pd.Series(dtype=float)
+        f5 = pd.to_numeric(sub.get("fwd_5_oc"), errors="coerce") if len(sub) else pd.Series(dtype=float)
+        return {"n": int(len(sub)),
+                "fwd1": round(float(f1.mean()), 6) if f1.notna().any() else None,
+                "fwd5": round(float(f5.mean()), 6) if f5.notna().any() else None}
+
+    return {k: _agg(v) for k, v in groups.items()}
+
+
+def l3_miss_autopsy(attr: pd.DataFrame, l2df: pd.DataFrame, finalists: pd.DataFrame,
+                    judged: pd.DataFrame, top_n: int = 10) -> pd.DataFrame:
+    """L3 错杀验尸(spec §②):L2-keep ∧ 非 finalist ∧ winner_5 → join L3 判分(当时的红队理由)。纯函数。"""
+    cols = ["code", "name", "fwd_5_oc", "thesis", "risk", "triage_lean", "lane",
+            "conviction", "fragility"]
+    if judged is None or not len(judged) or attr is None or not len(attr):
+        return pd.DataFrame(columns=cols)
+
+    def _codes(df) -> set[str]:
+        return set(df["code"].astype(str).str.zfill(6)) if df is not None and len(df) and "code" in df.columns else set()
+
+    a = attr.copy()
+    a["code"] = a["code"].astype(str).str.zfill(6)
+    j = judged.copy()
+    j["code"] = j["code"].astype(str).str.zfill(6)
+    pool = _codes(l2df) - _codes(finalists)
+    w5 = a.get("winner_5", pd.Series(False, index=a.index)).fillna(False)
+    miss = a[w5 & a["code"].isin(pool)]
+    out = miss.merge(j, on="code", how="inner", suffixes=("", "_j"))
+    out = out.sort_values("fwd_5_oc", ascending=False).head(top_n)
+    return out[[c for c in cols if c in out.columns]].reset_index(drop=True)
 
 
 def flag_news_pop(attr: pd.DataFrame, gap_thresh: float = 0.07) -> pd.DataFrame:
@@ -226,6 +305,7 @@ def pending_days(today: str | None = None, scan_root: Path | None = None,
 # ───────────────────────── 编排:attribute / retro_input / done ─────────────────────────
 
 _KEEP = ["code", "name", "industry", "bucket", "winner", "news_pop", "fwd_1_oo", "fwd_5_oc",
+         "winner_5", "bucket_5",
          "gap_d1", "rank", "recalled_flag", "composite", "score_momentum", "score_fund_main",
          "score_chip", "pct_60d", "main_net_ratio", "winner_rate", "price_to_cost", "rsi6", "rating"]
 
@@ -277,6 +357,39 @@ def write_retro_input(date: str, attr: pd.DataFrame, scan_root: Path | None = No
     caught = attr[attr["bucket"] == "caught"].sort_values("fwd_1_oo", ascending=False).head(10)
     lines += ["\n## 对照:抓到的赢家(caught, top 10)"]
     lines += _tbl(caught, fcols) if len(caught) else ["_无_"]
+
+    # ── T+5 盲区(swing 口径;spec 2026-07-02-scan-retro-depth-metrics)──
+    if "winner_5" in attr.columns and attr["winner_5"].fillna(False).any():
+        w5 = attr[attr["winner_5"].fillna(False)]
+        b5 = {k: int(v) for k, v in w5["bucket_5"].value_counts().items() if k}
+        lines += [f"\n## T+5 盲区(swing 口径):赢家(前10%∧≥5%){len(w5)};分桶:{b5}"]
+        f5cols = ["code", "name", "industry", "fwd_5_oc", "rank", "composite", "score_momentum",
+                  "main_net_ratio", "winner_rate", "pct_60d"]
+        sub5 = attr[attr["bucket_5"] == "missed_l1"].sort_values("fwd_5_oc", ascending=False).head(10)
+        lines += _tbl(sub5, f5cols) if len(sub5) else ["_missed_l1(T+5)无_"]
+    else:
+        lines += ["\n## T+5 盲区(swing 口径)\n_fwd_5 未成熟或无数据(retro 补跑成熟日自动补)_"]
+
+    # ── L3 错杀验尸 + L2 floor 自然实验(读 staging,presence-gated)──
+    sdir = scan_root / date
+    try:
+        def _rd(fn):
+            p = sdir / fn
+            return pd.read_csv(p, dtype={"code": str}) if p.exists() else None
+
+        l2df, fin, jud = _rd("L2_gbdt_top200.csv"), _rd("finalists.csv"), _rd("L3_judged_full.csv")
+        if jud is not None and l2df is not None:
+            au = l3_miss_autopsy(attr, l2df, fin if fin is not None else pd.DataFrame(), jud)
+            lines += ["\n## L3 错杀验尸(L2-keep ∧ 非 finalist ∧ T+5 赢家;risk=当时红队理由)"]
+            lines += _tbl(au, list(au.columns)) if len(au) else ["_无错杀(或 fwd_5 未成熟)_"]
+        if l2df is not None:
+            fx = floor_experiment(l2df, attr)
+            lines += ["\n## L2 floor 自然实验(fwd 均值;救回≈merit → floor 免费,持续弱于被挤掉 → 复审)",
+                      f"- floor 救回 n={fx['floor']['n']}:fwd1 {fx['floor']['fwd1']} / fwd5 {fx['floor']['fwd5']};"
+                      f"merit n={fx['merit']['n']}:fwd1 {fx['merit']['fwd1']} / fwd5 {fx['merit']['fwd5']};"
+                      f"被挤掉 n={fx['cut']['n']}:fwd1 {fx['cut']['fwd1']} / fwd5 {fx['cut']['fwd5']}"]
+    except Exception as e:  # noqa: BLE001
+        lines += [f"\n_L3 错杀/floor 实验跳过:{e}_"]
 
     try:                                   # F · 逐阶段 agent edge(staging 缺 / fwd 未实现则跳过)
         import autoresearch.learning.stage_eval as stage_eval
