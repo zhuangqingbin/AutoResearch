@@ -94,7 +94,7 @@ def render_dossier(code: str, scan_root: Path | str = "context/scan",
         vtxt = f" ｜ skeptic:{v['verdict']}(触发:{v['trigger']})" if v else ""
         lines.append(f"- **{e['date']}**:{e['rating'] or '—'} —— {e['l4_line'] or e['l3_risk'] or '—'}{vtxt}")
         for k in (e.get("l4_line"), e.get("l3_risk")):
-            if k and k not in kills:
+            if k and k != "—" and k not in kills:
                 kills.append(k)
     if kills:
         lines.append("- **已知证伪点**:" + ";".join(kills[:4]))
