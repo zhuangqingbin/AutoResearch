@@ -31,6 +31,9 @@ PY
 - **missed_l1(权重压低)**:在召回池但 composite 排到召回线外。它们共有什么被低估的因子?(如"低获利盘+主力进场+低动量的反转票,被动量主导的复合分压住")→ 病因=权重/因子方向。
 - **recalled_cut(L2-L3 误判)**:召回了却被 AI cut。当时的 L2/L3 理由错在哪?(对照『因子方向经验校准』,是不是又踩了 winner_rate/过热的坑)→ 病因=判断规则。
 - **分离消息脉冲**:涨停/一字/停复牌复牌/巨量异动驱动的赢家 ≠ 选股失败 → 标 `news_pop`,**排除出重标定样本与"系统性漏判"结论**(不可预测,别拿去惩罚打分)。
+- **T+5 盲区节(swing 口径)**:与 T+1 节并排读——L3/L4 猎的是 swing,若 T+5 missed_l1 持续显著多于 T+1,是 regime 块 horizon 之争(pr_20260702_001)的裁决证据。
+- **L3 错杀验尸节**:错杀群体的 `risk` 文本共性 = L3 系统性偏见候选(如反转市对"获利盘满"的过度恐惧);反复出现 → 第 5 步写 lesson(自动注回 L3 校准块)。**错杀=0 且 T+5 missed_l1 很大 → 病在召回线不在 L3,别冤枉判断层。**
+- **floor 自然实验节**:救回组 ≈ merit 组 → floor 免费维持;救回组持续显著弱于被挤掉组 → 第 4 步提 floor 参数复审建议(人批)。
 
 **3. 自动落地:权重重标定 + 审计**(仅这一项自动改线上)
 ```bash
@@ -45,7 +48,7 @@ PY
 > **绝非单日翻权重**:calibrate 跑的是多日面板 + 申万层级收缩;单日只是把样本并进去让权重平滑漂移。weights 异常可 `weights.<sha>.json` 回滚(Phase 3)。
 
 **4. 出建议(结构性,待你批准——不自动改)**
-门槛/新因子/prompt 规则类改动 → 写 `proposals.jsonl`:
+门槛/新因子/prompt 规则类改动 → 写 `proposals.jsonl`。**quota 接线**:`channel_ledger` 某路 `n_days≥3` 且 `unique_excess_t5` 持续负 → 用 `channel_ledger.propose_quota_adjustments` 写降 quota 提议(单步±25%,advisory);持续强的路(如 momentum)同理提升 quota。floor 复审建议同此步。示例:
 ```bash
 uv run --no-sync python - <<'PY'
 import autoresearch.learning.feedback_store as fs
