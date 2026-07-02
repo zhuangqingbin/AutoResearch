@@ -161,6 +161,67 @@ def l3_miss_autopsy(attr: pd.DataFrame, l2df: pd.DataFrame, finalists: pd.DataFr
     return out[[c for c in cols if c in out.columns]].reset_index(drop=True)
 
 
+_GUARD_OPS = {">": lambda s, t: s > t, ">=": lambda s, t: s >= t, "<": lambda s, t: s < t,
+              "<=": lambda s, t: s <= t, "==": lambda s, t: s == t}
+
+
+def mtm_check_guards(attr: pd.DataFrame, lessons: list[dict], day: str,
+                     min_n: int = 5, apply: bool = True) -> list[dict]:
+    """R2·经验 MTM 机判:带 guard 的经验,其条件组当日 fwd_1 对市场的 excess → support/refute。
+
+    guard 全是"拦买"型 → 满足组跑输市场(excess<0)= 拦得对 = support;跑赢 = refute。
+    n<min_n → skip(样本不足不判)。apply=True → 判定即调 feedback_store.mtm_update
+    (confidence 机械升降;达阈自动提名摘门/退休,人批)。
+    """
+    import autoresearch.learning.feedback_store as fs
+
+    out: list[dict] = []
+    mkt = pd.to_numeric(attr.get("fwd_1_oo"), errors="coerce")
+    for lsn in lessons:
+        gd = lsn.get("guard")
+        if not isinstance(gd, dict) or gd.get("field") not in attr.columns:
+            continue
+        op = _GUARD_OPS.get(gd.get("op"))
+        thr = pd.to_numeric(pd.Series([gd.get("value")]), errors="coerce").iloc[0]
+        if op is None or pd.isna(thr):
+            continue
+        vals = pd.to_numeric(attr[gd["field"]], errors="coerce")
+        sub = mkt[op(vals, float(thr)).fillna(False) & mkt.notna()]
+        n = int(len(sub))
+        if n < min_n or not mkt.notna().any():
+            out.append({"id": lsn.get("id"), "n": n, "excess": None, "verdict": "skip"})
+            continue
+        excess = float(sub.mean() - mkt.mean())
+        verdict = "support" if excess < 0 else "refute"
+        out.append({"id": lsn.get("id"), "n": n, "excess": round(excess, 6), "verdict": verdict})
+        if apply:
+            fs.mtm_update(lsn.get("id", ""), verdict, day=day,
+                          note=f"机判 {day}: n={n} excess={excess:+.4f}")
+    return out
+
+
+def gate_audit(attr: pd.DataFrame, scan_dir: Path | str) -> pd.DataFrame:
+    """R3·门审计:gate_fires.csv × 已实现 fwd → 被拦票后来怎么走(excess<0 = 拦对)。纯读。"""
+    cols = ["code", "check", "severity", "fwd_1_oo", "ex1", "fwd_5_oc", "ex5"]
+    p = Path(scan_dir) / "gate_fires.csv"
+    if not p.exists():
+        return pd.DataFrame(columns=cols)
+    fires = pd.read_csv(p, dtype={"code": str})
+    fires = fires[fires["code"].astype(str).str.len() > 0].copy()
+    if not len(fires):
+        return pd.DataFrame(columns=cols)
+    fires["code"] = fires["code"].astype(str).str.zfill(6)
+    a = attr.copy()
+    a["code"] = a["code"].astype(str).str.zfill(6)
+    m1 = pd.to_numeric(a["fwd_1_oo"], errors="coerce").mean()
+    m5 = pd.to_numeric(a.get("fwd_5_oc"), errors="coerce").mean() if "fwd_5_oc" in a.columns else float("nan")
+    out = fires.merge(a[[c for c in ("code", "fwd_1_oo", "fwd_5_oc") if c in a.columns]],
+                      on="code", how="left")
+    out["ex1"] = pd.to_numeric(out.get("fwd_1_oo"), errors="coerce") - m1
+    out["ex5"] = (pd.to_numeric(out.get("fwd_5_oc"), errors="coerce") - m5) if "fwd_5_oc" in out.columns else None
+    return out[[c for c in cols if c in out.columns]]
+
+
 def flag_news_pop(attr: pd.DataFrame, gap_thresh: float = 0.07) -> pd.DataFrame:
     """赢家里"隔夜大跳空"(gap_d1 ≥ 阈值)= 多为消息/事件脉冲,不可预测 →
 
@@ -391,6 +452,29 @@ def write_retro_input(date: str, attr: pd.DataFrame, scan_root: Path | None = No
     except Exception as e:  # noqa: BLE001
         lines += [f"\n_L3 错杀/floor 实验跳过:{e}_"]
 
+    try:                                   # R2/R3/R4 · 经验 MTM(机判自动记账)+ 门审计 + proposals 看板
+        import autoresearch.learning.feedback_store as fs
+        active = fs.lessons_for([("global", "*")])
+        mtm = mtm_check_guards(attr, active, day=date, apply=True)
+        if mtm:
+            lines += ["\n## 经验 mark-to-market(带 guard 的机判已自动记账;无 guard 的逐条 support/refute 由你判)"]
+            lines += [f"- `{m['id']}`:n={m['n']} excess={m['excess']} → **{m['verdict']}**" for m in mtm]
+        no_guard = [r for r in active if not r.get("guard")]
+        if no_guard:
+            lines += ["- 待人判(无 guard):" + "、".join(f"`{r['id']}`" for r in no_guard)
+                      + " —— 用 `fs.mtm_update(id, 'support'|'refute', day)` 记账"]
+        ga = gate_audit(attr, sdir)
+        if len(ga):
+            lines += ["\n## 门审计(self_review 拦的票后来怎么走;ex<0 = 拦对)"]
+            lines += _tbl(ga.head(15), list(ga.columns))
+        props = fs.open_proposals(date)
+        if props:
+            lines += ["\n## 待裁决 proposals(看板;>14 天 ⚠)"]
+            lines += [f"- {'⚠️ ' if p['age_days'] > 14 else ''}`{p['id']}`({p['age_days']}d,{p['kind']}):"
+                      f"{p['summary']}" for p in props]
+    except Exception as e:  # noqa: BLE001
+        lines += [f"\n_MTM/门审计/看板跳过:{e}_"]
+
     try:                                   # F · 逐阶段 agent edge(staging 缺 / fwd 未实现则跳过)
         import autoresearch.learning.stage_eval as stage_eval
         lines += stage_eval.render_stage_eval(stage_eval.evaluate(date, scan_root=scan_root))
@@ -452,6 +536,13 @@ def mark_done(date: str, summary: dict | None = None, scan_root: Path | None = N
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps({"date": date, "ts": datetime.now().isoformat(timespec="seconds"),
                              "summary": summary or {}}, ensure_ascii=False), encoding="utf-8")
+    try:                                    # R2·decay 接入节奏:每完成一次复盘做一次记忆防腐(幂等/日)
+        import autoresearch.learning.feedback_store as fs
+        decayed = fs.decay_lessons()
+        if decayed:
+            print(f"[mark_done] decay_lessons: {decayed}")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # ───────────────────────── 离线自测(分桶 + 阶段统计) ─────────────────────────
