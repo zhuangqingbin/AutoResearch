@@ -436,7 +436,11 @@ def _self_review_banner(scan_dir: Path, rows: list[dict], summary_text: str,
         pass
     ctx = {"finalists": finals, "n_cards_expected": len(rows), "n_cards_present": n_present,
            "summary_text": summary_text, "lessons": lessons, "regime_drift": regime_drift}
-    return self_review.render_banner(self_review.review(ctx))
+    import contextlib
+    res = self_review.review(ctx)
+    with contextlib.suppress(Exception):
+        self_review.dump_gate_fires(scan_dir, res, scan_dir.name)   # R3 留痕;IO 失败不阻发布
+    return self_review.render_banner(res)
 
 
 def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str) -> str:

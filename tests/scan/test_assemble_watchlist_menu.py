@@ -46,3 +46,10 @@ def test_menu_block_when_l2_present(tmp_path):
 def test_no_menu_block_when_absent(tmp_path):
     md = build_summary(_min_scan(tmp_path), "2026-07-02", "1200", "20260702_1200")
     assert "菜单体检" not in md
+
+
+def test_gate_fires_staging_written_by_assemble(tmp_path):
+    """assemble 每次跑完幂等落 gate_fires.csv(即使 0 failures,写表头区分没拦/没跑)。"""
+    d = _min_scan(tmp_path)
+    build_summary(d, "2026-07-02", "1200", "20260702_1200")
+    assert (d / "gate_fires.csv").exists()

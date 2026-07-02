@@ -43,8 +43,8 @@ def review(ctx: dict) -> dict:
     """
     failures: list[dict] = []
 
-    def add(check, sev, detail):
-        failures.append({"check": check, "severity": sev, "detail": detail})
+    def add(check, sev, detail, code=None):
+        failures.append({"check": check, "severity": sev, "detail": detail, "code": code})
 
     finals = ctx.get("finalists", [])
     buys = [f for f in finals if f.get("rating") in _BUY]
@@ -66,11 +66,13 @@ def review(ctx: dict) -> dict:
         p60, rsi = _num(f.get("pct_60d")), _num(f.get("rsi6"))
         if wr is not None and wr > 88:
             add("经验红线·获利盘满", "fail",
-                f"{code} 买入但 winner_rate {wr:.0f}>88(IC:抛压/见顶),需特批 override")
+                f"{code} 买入但 winner_rate {wr:.0f}>88(IC:抛压/见顶),需特批 override", code=code)
         if p60 is not None and rsi is not None and p60 > 50 and rsi > 80:
-            add("经验红线·过热", "warn", f"{code} 买入但过热(60日 {p60:.0f}% + RSI6 {rsi:.0f}>80)")
+            add("经验红线·过热", "warn", f"{code} 买入但过热(60日 {p60:.0f}% + RSI6 {rsi:.0f}>80)",
+                code=code)
         if comp is not None and comp < comp_floor:
-            add("评级-因子矛盾", "warn", f"{code} 买入但 composite {comp:.0f} < {comp_floor:.0f}")
+            add("评级-因子矛盾", "warn", f"{code} 买入但 composite {comp:.0f} < {comp_floor:.0f}",
+                code=code)
 
     # 3) 行业过度集中(≥2 只买单才有意义)
     if len(buys) >= 2:
@@ -96,7 +98,8 @@ def review(ctx: dict) -> dict:
             v = _num(f.get(gd.get("field")))
             if v is not None and _guard_hit(v, gd):
                 add(f"违背经验·{lsn.get('id', '?')}", "fail",
-                    f"{f.get('code', '?')} 触发经验红线 {gd.get('field')}{gd.get('op')}{gd.get('value')}")
+                    f"{f.get('code', '?')} 触发经验红线 {gd.get('field')}{gd.get('op')}{gd.get('value')}",
+                    code=f.get("code", "?"))
 
     # 6) 评级超 rubric 评分卡建议(C·LLM-as-judge:防 gestalt 过度多报;有 偏离/override 说明则豁免)
     for f in buys:
@@ -105,7 +108,8 @@ def review(ctx: dict) -> dict:
         rs, rt = f.get("rubric_suggest"), f.get("rating")
         if rs in _RANK and rt in _RANK and _RANK[rt] < _RANK[rs]:
             add("评级超rubric", "warn",
-                f"{f.get('code', '?')} 评级 {rt} 激进于评分卡建议 {rs}(需 **偏离** 说明或下修)")
+                f"{f.get('code', '?')} 评级 {rt} 激进于评分卡建议 {rs}(需 **偏离** 说明或下修)",
+                code=f.get("code", "?"))
 
     # 7) regime 漂移(assemble 传 detect_drift 的 reason;仅 drift 时传)→ warn,提示重校准
     rd = ctx.get("regime_drift")
@@ -115,6 +119,25 @@ def review(ctx: dict) -> dict:
     n_fail = sum(1 for x in failures if x["severity"] == "fail")
     return {"ok": n_fail == 0, "n_fail": n_fail, "n_warn": len(failures) - n_fail,
             "failures": failures}
+
+
+def dump_gate_fires(scan_dir, result: dict, date: str):
+    """R3·门审计地基:review 结果幂等落 <scan_dir>/gate_fires.csv(每次 assemble 覆写)。
+
+    无 failures 也写表头(区分"没拦"与"没跑");retro 侧 join fwd 度量"被拦的后来怎么走"。
+    """
+    import csv
+    from pathlib import Path
+
+    p = Path(scan_dir) / "gate_fires.csv"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["date", "code", "check", "severity", "detail"])
+        w.writeheader()
+        for x in result.get("failures", []):
+            w.writerow({"date": date, "code": x.get("code") or "", "check": x.get("check", ""),
+                        "severity": x.get("severity", ""), "detail": x.get("detail", "")})
+    return p
 
 
 def render_banner(result: dict) -> str:
