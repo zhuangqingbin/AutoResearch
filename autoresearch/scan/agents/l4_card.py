@@ -139,6 +139,11 @@ def compose_funnel_brief(code: str, scan_dir: Path | str) -> str:
         f"  - 最大风险:{_g(l3,'risk')}",
         f"  - 催化:{_g(l3,'catalyst')}",
     ]
+    try:                                     # 日历旗:解禁风险窗/预约披露日(事实日期非方向)
+        from autoresearch.scan.calendar import calendar_flags
+        lines += calendar_flags(base, code6)
+    except Exception:  # noqa: BLE001 — 日历可选,缺了不挡简报
+        pass
     brief = "\n".join(lines) + "\n"
     ctx = _market_ctx(base, l3.get("industry") or l3.get("sector") or l1.get("industry"))
     doss = ""
