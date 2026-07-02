@@ -43,7 +43,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
   - L3 的『因子方向经验校准』运行时由 `feedback_store.render_calibration_block(本批申万行业, with_feedback=True)` 注入(近期反馈 + 自学习经验 + IC 基线,三层叠加);用户对报告的反馈用 **feedback** skill 记。
 
 ## 流程(6 段)
-> 操作细节(L3 holistic prompt 模板 / 评分卡 / 多空辩论)全在 `screening-playbook.md`,按段对照。
+> 操作细节(L3 holistic prompt 模板 / 评分卡 / 多空辩论)全在 `screening-playbook.md`,按段对照;**各阶段现状快照**(引擎/参数/实证读数/已知局限/勿重启清单)见 `STAGES.md`(as-of 日期标注,冲突以源码为准)。
 
 1. **L0 选集 + L1 召回 + L2 粗排(全确定性,零 token)**:
    ```bash
