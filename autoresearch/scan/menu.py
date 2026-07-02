@@ -66,3 +66,53 @@ def menu_health(scan_dir: Path | str) -> str:
     if rsv is not None:
         lines.append(f"- **floor 救回**:{int((rsv > 0).sum())} 只(l2_lane_reserved,风格保底)")
     return "\n".join(lines) + "\n" if len(lines) > 1 else ""
+
+
+def l4_budget(scan_dir: Path | str, base: int = 30, floor: int = 12) -> tuple[int, str]:
+    """菜单感知 L4 预算:病菜单/risk_off 的日子少烧 Opus(design: 2026-07-02-scan-l4-economy §2)。
+
+    三旗:落刀>60% / 健康涨≤2 / regime==risk_off。0 旗=base、1 旗=3/4、≥2 旗=1/2(≥floor)。
+    **只降不升**;L2/meta 缺 → (base, parity 注)。机会成本红队 + 观察单兜底防错过。
+    """
+    scan_dir = Path(scan_dir)
+    f2 = scan_dir / "L2_gbdt_top200.csv"
+    if not f2.exists():
+        return base, f"L2 缺 → 预算={base}(基准,parity)"
+    try:
+        l2 = pd.read_csv(f2)
+    except Exception:  # noqa: BLE001
+        return base, f"L2 不可读 → 预算={base}(基准,parity)"
+    flags: list[str] = []
+    k, h = _knife_share(l2), _healthy(l2)
+    if k is not None and k > 0.60:
+        flags.append(f"落刀{k:.0%}")
+    if h is not None and h <= 2:
+        flags.append(f"健康涨仅{h}只")
+    mp = scan_dir / "meta.json"
+    if mp.exists():
+        try:
+            import json
+            if json.loads(mp.read_text(encoding="utf-8")).get("regime") == "risk_off":
+                flags.append("risk_off")
+        except Exception:  # noqa: BLE001
+            pass
+    if not flags:
+        return base, f"菜单健康 → 预算={base}(基准)"
+    n = max(floor, round(base * 0.75)) if len(flags) == 1 else max(floor, base // 2)
+    return n, f"⚠️ {'+'.join(flags)} → L4 预算降至 {n}(基准 {base};省 Opus 于低产日,红队/观察单兜底)"
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+    ap = argparse.ArgumentParser(description="L2 菜单体检 + L4 预算(确定性,零 LLM)")
+    ap.add_argument("date", help="scan 日 YYYY-MM-DD")
+    args = ap.parse_args(argv)
+    d = Path("context/scan") / args.date
+    print(menu_health(d) or "(菜单体检:staging 缺)")
+    n, why = l4_budget(d)
+    print(f"[l4_budget] target={n} —— {why}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

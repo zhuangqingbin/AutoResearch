@@ -46,3 +46,36 @@ def test_missing_cols_degrade(tmp_path):
     s = menu_health(tmp_path)
     assert "🍱 L2 菜单体检" in s and "落刀" in s
     assert "健康上涨" not in s        # 缺 main/cmf 列 → 该行降级消失,不抛
+
+
+def test_l4_budget_sick_menu(tmp_path):
+    """三旗(落刀70%+健康0+risk_off)→ 预算砍半;spec l4-economy §2。"""
+    import json
+
+    from autoresearch.scan.menu import l4_budget
+    l2 = [_row(f"{i:06d}", pct=-30, mnr=-0.01, cmf=-0.05) for i in range(7)] + \
+         [_row(f"{i:06d}", pct=60, mnr=-0.01, cmf=-0.05) for i in range(7, 10)]
+    _mk(tmp_path, l2, l2)
+    (tmp_path / "meta.json").write_text(json.dumps({"regime": "risk_off"}), encoding="utf-8")
+    n, why = l4_budget(tmp_path)
+    assert n == 15 and "落刀" in why and "risk_off" in why
+
+
+def test_l4_budget_one_flag_and_clean(tmp_path):
+    from autoresearch.scan.menu import l4_budget
+    l2 = [_row(f"{i:06d}", pct=10, mnr=0.01, cmf=0.05) for i in range(9)] + \
+         [_row("000099", pct=-30, mnr=-0.01, cmf=-0.05)]          # 健康9只、落刀10% → 0旗
+    _mk(tmp_path, l2, l2)
+    n, why = l4_budget(tmp_path)
+    assert n == 30 and "健康" in why
+    l2b = [_row(f"{i:06d}", pct=60, mnr=0.01, cmf=0.05) for i in range(9)] + \
+          [_row("000098", pct=10, mnr=0.01, cmf=0.05)]            # 健康仅1 → 1旗
+    _mk(tmp_path, l2b, l2b)
+    n2, why2 = l4_budget(tmp_path)
+    assert n2 == 22 and "健康涨仅1" in why2
+
+
+def test_l4_budget_missing_is_parity(tmp_path):
+    from autoresearch.scan.menu import l4_budget
+    n, why = l4_budget(tmp_path)
+    assert n == 30 and "parity" in why

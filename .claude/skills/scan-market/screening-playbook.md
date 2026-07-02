@@ -80,7 +80,8 @@ uv run --no-sync python -m autoresearch.scan.universe <date> --source tushare
 **步骤**:
 1. 增量取数:`harvest_l3_evidence(date, l2_top200_codes)` → `L3_evidence/<code>.json`(龙虎榜席位 / 业绩预告 / 快报);**`harvest_l3_news(date, l2_top200_codes)`**(`autoresearch.scan.agents.l3_news`)→ `L3_news/<code>.json`(近 ~10 日 `anns_d` 公告标题,**入湖按 ann_date、L4/analyze 复用**;无权限降级空)。**`harvest_l3_web_news(date, l2_top200_codes)`** → `L3_webnews/<code>.json`(akshare 个股新闻 `stock_news_em`,**入湖 as_of、免费 keyless、逐股降级隔离**)。
 2. **一个 holistic subagent,`Agent(model='opus')` + high reasoning**(全表一次通看,非逐只 → 成本仍小):`l3_table_md(date)` 把 ~200 只(因子 + 证据摘要 `lhb_n/has_forecast/has_express` + **公告情感 `news_*` + 媒体情感 `med_n/med_tags/med_head`〔akshare〕** + **召回 provenance `n_channels/recall_channels`〔几路共振〕**)压成**一张紧凑表**喂它,**通看全表、横向比较着选 ~30**(每只入选出 论点/红队/催化/确信度/脆弱度/lane/**sentiment**),落 `L3_judged_full.csv`。量大可拆 2–3 个 holistic 片,但**每片仍是"比较着选"而非逐只孤立**。
-3. **`merge_l3_finalists_v2(judged_df, target=30, trend_quota=10, hybrid=True)`** → `context/scan/<date>/finalists.csv`(把 holistic 入选排成 finalists + 趋势配额安全网)。
+3. **`merge_l3_finalists_v2(judged_df, target=<L4预算>, trend_quota=10, hybrid=True)`** → `context/scan/<date>/finalists.csv`(把 holistic 入选排成 finalists + 趋势配额安全网)。**target 用 `menu.l4_budget(scan_dir)`**(病菜单/risk_off 日 15–22、健康日 30;只降不升)。
+   - **Δ模式与稳定性(l4-economy §3-4)**:紧凑表建议 `l3_table_md(date, delta=True)`(略去"昨判弃且无变化"票;表头带防锚定令——**今日仍须独立重新比较**;全量表每 ≤5 个 scan 日 1 次);周频用 `shuffle_seed` 乱序表跑 audit agent,`stability_overlap<0.70` → proposal。
    - judged_df 需含列:`code,name,sector,lenses,conviction,fragility,thesis,risk,catalyst,triage_lean,lane,pct_60d`(`lane`/`pct_60d` 配额用,源自 L2 表)。
    - **趋势配额(安全网)**:纯 `conviction−fragility` 会把高 fragility 的强势票挤出(实测:生益+205%/亨通+158% conv 高但 frag 高 → 进不了 top30)。`merge_l3_finalists_v2` 给 trend lane 保底 `trend_quota` 席,**一半按 conviction(质量趋势:健康强势)+ 一半按 pct_60d(动量龙头:最热的票)**(hybrid)——高 fragility 是 T+1 概念,swing 不该一票否决。捞进来后由 **L4 做估值/解禁尽调定级**(实证:抛物线顶 PE160~440 + CFO负 + 解禁 多半 Underweight/Sell,质量强势如胜宏 PE77 才 Overweight)。
    - **`l2_lane_reserved=True`(L2 风格 floor 救回的票)**:被 sn_composite 排在 merit 核之外、靠风格 floor 塞进 200 的票(趋势/价值/成长等各风格的保底席)。judge **倾向打 `lane="trend"`**(若是趋势/题材龙头),让 `trend_quota` 在 200→30 接住;但**照常用 rubric 诚实定级**——多数应在 L4 被三门否掉,留的是尾部真龙头。floor 的意义=**保证 L3 永远看得到每种风格**(治本反转 regime 下"0 趋势"的落刀池),不是替它们背书。
@@ -97,7 +98,9 @@ uv run --no-sync python -m autoresearch.scan.universe <date> --source tushare
 ## L4 研究(一只 = 一个 Opus subagent · 渐进深度 + 早停)
 对 `finalists.csv` **每只一个 `Agent(model='opus')`** 跑 analyze-ticker-lite:`l4_card.compose_funnel_brief(code, scan_dir)` 拼漏斗简报 → **前置到该票 `harvest --slim` 产出的 slim 顶部** → subagent **渐进深度 DD + 早停**(读够真数据才判,判断不好就早停、不深挖)。**~29 个 subagent 一条消息并发派发**;每只独立 context、只回传 评级/目标/R:R/早停与否。**全程 Opus,省 token 靠早停**(多数 finalist 在 P3 主早停跳过深核+精雕);无 Tier-2 平反(base 已是 Opus,无 Sonnet 误杀要救)。
 
-**取数 + 简报**:每只 `harvest <ticker> <date> --slim`(~13KB,已重排表面前/深核后 + `<!-- P4 深核分界 -->`)→ `compose_funnel_brief` 拼简报前置 slim 顶 → 决策卡 staging `context/scan/<date>/details/<ticker>.md`:
+**♻️ 卡片 TTL 复用(派发前先跑,确定性)**:`uv run --no-sync python -m autoresearch.scan.l4_reuse <date> --apply` —— 近 4 日已出过卡、评级 ≤Hold、|Δ价|≤5%、无新公告、regime 未翻、非强先验(conviction<70)的票**直接复用前卡**(自动拷卡 + ♻️ banner),**不派 subagent、不 harvest**;每张复用卡省一整次 Opus 渐进 DD。≥OW 永不复用(买点必须重研),失效条件写在卡顶。复用量在 `run_health.l4_phases.n_reused` 可测。
+
+**取数 + 简报**:对**剩余**(非复用)finalist 每只 `harvest <ticker> <date> --slim`(~13KB,已重排表面前/深核后 + `<!-- P4 深核分界 -->`)→ `compose_funnel_brief` 拼简报前置 slim 顶 → 决策卡 staging `context/scan/<date>/details/<ticker>.md`:
 ```bash
 uv run --no-sync python -m autoresearch.analyze.harvest <ticker> <date> --slim
 ```
