@@ -313,7 +313,7 @@ def realized_returns(date: str, fwd: int = 10) -> pd.DataFrame:
     import autoresearch.research.factor_lab as fl
     from autoresearch.data.tushare_source import _trade_days
 
-    cols = ["code", "fwd_1_oo", "fwd_5_oc", "fwd_10_oc", "buyable", "gap_d1"]   # fwd_10 供买后管理(未成熟=NaN)
+    cols = ["code", "fwd_1_oo", "fwd_5_oc", "fwd_10_oc", "hi_10_oc", "buyable", "gap_d1"]   # fwd_10/hi_10 供买后管理(未成熟=NaN)
     pro = fl._pro()
     d0 = date.replace("-", "")
     today = datetime.now().strftime("%Y%m%d")
@@ -330,6 +330,12 @@ def realized_returns(date: str, fwd: int = 10) -> pd.DataFrame:
     gap = (op[P[1]] / cl[P[0]] - 1.0).reset_index()       # D+1 开盘相对 D 收盘的隔夜跳空
     gap.columns = ["code", "gap_d1"]
     fr = fr.merge(gap, on="code", how="left")
+    hs = piv.get("high")                                   # 触价口径:D+1..D+10 最高 / D+1 开盘(同 fwd_10_oc 基)
+    win = [d for d in P[1:11] if hs is not None and d in hs.columns]
+    if win and P[1] in op.columns:
+        hi = (hs[win].max(axis=1) / op[P[1]] - 1.0).reset_index()
+        hi.columns = ["code", "hi_10_oc"]
+        fr = fr.merge(hi, on="code", how="left")
     fr["code"] = fr["code"].astype(str).str.zfill(6)
     return fr[[c for c in cols if c in fr.columns]]
 
@@ -366,7 +372,7 @@ def pending_days(today: str | None = None, scan_root: Path | None = None,
 # ───────────────────────── 编排:attribute / retro_input / done ─────────────────────────
 
 _KEEP = ["code", "name", "industry", "bucket", "winner", "news_pop", "fwd_1_oo", "fwd_5_oc",
-         "fwd_10_oc", "winner_5", "bucket_5",
+         "fwd_10_oc", "hi_10_oc", "winner_5", "bucket_5",
          "gap_d1", "rank", "recalled_flag", "composite", "score_momentum", "score_fund_main",
          "score_chip", "pct_60d", "main_net_ratio", "winner_rate", "price_to_cost", "rsi6", "rating"]
 
@@ -596,6 +602,40 @@ def recalibrate_and_log(retro_date: str, cap_floor: float = 30.0, k: float = 200
     return {"before_sha": before_sha, "after_sha": after_sha, "top_changes": tc, "n_dates": n_dates}
 
 
+def refresh_attributions(scan_root: Path | None = None, report_root: Path | None = None,
+                         max_days: int = 20) -> list[str]:
+    """对已复盘(done)但 fwd 未成熟即落账的老日重写 attribution(幂等,价格走 cache)。
+
+    需要刷新 = attribution 缺 `fwd_10_oc`/`hi_10_oc` 列,或 fwd_5/fwd_10 全 NaN。治"买单
+    ledger 永远 —"(attribution 原为 retro 时一次性落账)。design: run-reliability §3。
+    """
+    scan_root = scan_root or Path("context/scan")
+    if not scan_root.exists():
+        return []
+    today = datetime.now().strftime("%Y-%m-%d")
+    days = sorted(p.name for p in scan_root.iterdir()
+                  if p.is_dir() and p.name[:2] == "20" and p.name < today
+                  and (p / "retro" / "done.json").exists()
+                  and (p / "retro" / "attribution.csv").exists())[-max_days:]
+    out: list[str] = []
+    for d in days:
+        try:
+            attr = pd.read_csv(scan_root / d / "retro" / "attribution.csv")
+        except Exception:  # noqa: BLE001
+            continue
+        need = ("fwd_10_oc" not in attr.columns or "hi_10_oc" not in attr.columns
+                or pd.to_numeric(attr.get("fwd_5_oc"), errors="coerce").isna().all()
+                or pd.to_numeric(attr.get("fwd_10_oc"), errors="coerce").isna().all())
+        if not need:
+            continue
+        try:
+            attribute(d, scan_root=scan_root, report_root=report_root)
+            out.append(d)
+        except Exception as e:  # noqa: BLE001 — 单日失败不阻其余
+            print(f"[refresh] {d} 跳过: {e}", file=sys.stderr)
+    return out
+
+
 def mark_done(date: str, summary: dict | None = None, scan_root: Path | None = None) -> None:
     scan_root = scan_root or Path("context/scan")
     p = scan_root / date / "retro" / "done.json"
@@ -688,6 +728,10 @@ def main() -> int:
         return _selftest()
     if args and args[0] == "pending":
         print("\n".join(pending_days()) or "(无待复盘日)")
+        return 0
+    if args and args[0] == "refresh":
+        done = refresh_attributions()
+        print(f"[refresh] 刷新 {len(done)} 日:{'、'.join(done) or '(无需刷新)'}")
         return 0
     if len(args) >= 2 and args[0] == "attribute":
         attr = attribute(args[1])

@@ -131,6 +131,39 @@ def review(ctx: dict) -> dict:
             "failures": failures}
 
 
+def card_contract_lint(scan_dir) -> list[dict]:
+    """卡片契约 lint(编排可靠性;design: run-reliability §1)。全 warn,不阻发布。
+
+    07-02 实证:2 张满卡都没写『进入P4倾向』行(p4_seen=0)——LLM 段契约靠 playbook
+    嘱咐会被忘,必须机器抓。复用卡(机器写)跳过;早停卡免 P4 检。
+    """
+    import re
+    from pathlib import Path
+    scan_dir = Path(scan_dir)
+    base = scan_dir / "details"
+    if not base.is_dir():
+        return []
+    p4_re = re.compile(r"进入P4倾向[:：]")
+    out: list[dict] = []
+    for p in sorted(base.glob("*.md")):
+        text = p.read_text(encoding="utf-8")
+        code = p.stem
+        if "♻️" in text and "复用" in text:
+            continue
+        if "早停因" not in text and not p4_re.search(text):
+            out.append({"check": "卡片契约·P4倾向缺失", "severity": "warn", "code": code,
+                        "detail": f"{code} 满卡未记『进入P4倾向: <Rating>』(阶段效能计量断供)"})
+        if "变化项" not in text:
+            try:
+                from autoresearch.scan.dossier import render_dossier
+                if render_dossier(code, scan_root=scan_dir.parent, exclude=scan_dir.name):
+                    out.append({"check": "卡片契约·变化项缺失", "severity": "warn", "code": code,
+                                "detail": f"{code} 有个股档案但卡片无『变化项(vs 档案)』节(增量研究契约)"})
+            except Exception:  # noqa: BLE001 — 档案层可选
+                pass
+    return out
+
+
 def dump_gate_fires(scan_dir, result: dict, date: str):
     """R3·门审计地基:review 结果幂等落 <scan_dir>/gate_fires.csv(每次 assemble 覆写)。
 

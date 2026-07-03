@@ -12,7 +12,7 @@ CARD = ("# 决策卡\n\n| 评级 | 目标(EV) | R:R |\n|---|---|---|\n"
         "| Overweight | 120(EV) | 2:1 |\n\n**Rating**: Overweight\n")
 
 
-def _mk_day(root, date, with_attr=True):
+def _mk_day(root, date, with_attr=True, hi=None, fwd10=0.25):
     d = root / date
     (d / "details").mkdir(parents=True)
     pd.DataFrame([{"code": "000001", "name": "甲", "sector": "半导体"}]).to_csv(
@@ -22,14 +22,16 @@ def _mk_day(root, date, with_attr=True):
         d / "L1_scored_full.csv", index=False)
     if with_attr:
         (d / "retro").mkdir()
-        pd.DataFrame([{"code": "000001", "fwd_1_oo": 0.01, "fwd_5_oc": 0.08,
-                       "fwd_10_oc": 0.25, "gap_d1": 0.02}]).to_csv(
-            d / "retro" / "attribution.csv", index=False)
+        row = {"code": "000001", "fwd_1_oo": 0.01, "fwd_5_oc": 0.08,
+               "fwd_10_oc": fwd10, "gap_d1": 0.02}
+        if hi is not None:
+            row["hi_10_oc"] = hi
+        pd.DataFrame([row]).to_csv(d / "retro" / "attribution.csv", index=False)
     return d
 
 
-def test_roll_and_target_hit(tmp_path):
-    _mk_day(tmp_path, "2026-07-01")
+def test_roll_and_target_hit_close_fallback(tmp_path):
+    _mk_day(tmp_path, "2026-07-01")                           # 无 hi_10 → 回退收盘口径
     df = roll(tmp_path)
     assert len(df) == 1
     r = df.iloc[0]
@@ -39,6 +41,16 @@ def test_roll_and_target_hit(tmp_path):
     assert bool(r["target_hit"])                              # fwd_10 0.25 ≥ 0.20
     md = "\n".join(render(df))
     assert "✅" in md and "Overweight" in md and "⚠样本少" in md
+
+
+def test_target_hit_by_touch(tmp_path):
+    """触价口径:收盘没到目标(fwd_10 0.10 < 0.20)但 10 日内最高摸到过 → 命中。"""
+    _mk_day(tmp_path, "2026-07-01", hi=0.25, fwd10=0.10)
+    r = roll(tmp_path).iloc[0]
+    # 目标幅 0.20(close 基)→ o1 基 = 1.20/1.02−1 ≈ 0.1765;hi 0.25 ≥ → 触价命中
+    assert bool(r["target_hit"]) and r["hi_10"] == 0.25 and r["fwd_10"] == 0.10
+    _mk_day(tmp_path / "b", "2026-07-01", hi=0.05, fwd10=0.10)
+    assert not bool(roll(tmp_path / "b").iloc[0]["target_hit"])   # 没摸到也没收到 → ✗
 
 
 def test_unrealized_fwd_degrades(tmp_path):
