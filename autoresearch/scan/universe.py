@@ -226,6 +226,35 @@ def recall_select(scored: pd.DataFrame, analysis_date: str, recall_n: int,
     return recall, per_channel
 
 
+def write_shadow_variants(outdir: Path, scored: pd.DataFrame, recall: pd.DataFrame,
+                          analysis_date: str, recall_n: int, l2_n: int,
+                          l2_floors: dict | None, l2_sector_cap: float, l2_cols: list[str],
+                          recall_mode: str = "multi") -> list[str]:
+    """影子漏斗:变体 L2 落 <outdir>/shadow/(确定性 A/B,只落 staging 不喂 L3)。返回变体名。
+
+    - nostrat:纯 composite 序(分层到底救了还是害了);
+    - nocap:分层但无行业上限(cap 挡了多少赢家);
+    - pre_healthy:**旧 9 路口径反事实**(无 healthy 通道、无健康桶)——healthy 通道的
+      捕获增量由 retro 对照直接可测(2026-07-03 起)。仅 multi 模式有意义。
+    """
+    from autoresearch.scan.recall.l2_stratify import DEFAULT_FLOORS, select_l2
+    sh = outdir / "shadow"
+    sh.mkdir(exist_ok=True)
+    nostrat = recall.sort_values("composite", ascending=False).head(l2_n).copy()
+    nostrat.insert(0, "l2_rank", range(1, len(nostrat) + 1))
+    variants: dict[str, pd.DataFrame] = {"nostrat": nostrat}
+    variants["nocap"], _ = select_l2(recall, l2_n, floors=l2_floors, sector_cap_frac=1.0)
+    if recall_mode == "multi":
+        from autoresearch.scan.recall.registry import registered_channels
+        old = [n for n in registered_channels() if n != "healthy"]
+        re9, _ = recall_select(scored, analysis_date, recall_n, "multi", old)
+        f9 = {k: v for k, v in (l2_floors or DEFAULT_FLOORS).items() if k != "健康"}
+        variants["pre_healthy"], _ = select_l2(re9, l2_n, floors=f9, sector_cap_frac=l2_sector_cap)
+    for vname, vdf in variants.items():
+        vdf[[c for c in l2_cols if c in vdf.columns]].to_csv(sh / f"L2_{vname}.csv", index=False)
+    return list(variants)
+
+
 # ───────────────────────── 编排 + 输出 ─────────────────────────
 
 
@@ -296,16 +325,12 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
     l2[[c for c in l2_cols if c in l2.columns]].to_csv(outdir / "L2_gbdt_top200.csv", index=False)
     print(f"[L2 粗排] recall {len(recall)} → {l2_engine} top {len(l2)}", file=sys.stderr)
 
-    if shadow:   # ── 影子漏斗:同一 recall 帧再产变体 L2(确定性 A/B;只落 staging 不喂 L3;免费)──
+    if shadow:   # ── 影子漏斗:变体 L2(确定性 A/B;只落 staging 不喂 L3;免费)──
         try:
-            sh = outdir / "shadow"
-            sh.mkdir(exist_ok=True)
-            nostrat = recall.sort_values("composite", ascending=False).head(l2_n).copy()
-            nostrat.insert(0, "l2_rank", range(1, len(nostrat) + 1))
-            nocap, _ = select_l2(recall, l2_n, floors=l2_floors, sector_cap_frac=1.0)
-            for vname, vdf in {"nostrat": nostrat, "nocap": nocap}.items():
-                vdf[[c for c in l2_cols if c in vdf.columns]].to_csv(sh / f"L2_{vname}.csv", index=False)
-            print(f"[shadow] 变体 L2 ×2(nostrat/nocap)→ {sh}(retro 对照赢家捕获)", file=sys.stderr)
+            names = write_shadow_variants(outdir, scored, recall, analysis_date, recall_n,
+                                          l2_n, l2_floors, l2_sector_cap, l2_cols, recall_mode)
+            print(f"[shadow] 变体 L2 ×{len(names)}({'/'.join(names)})→ {outdir / 'shadow'}"
+                  "(retro 对照赢家捕获)", file=sys.stderr)
         except Exception as e:  # noqa: BLE001 — 影子失败不阻主漏斗
             print(f"[warn] 影子漏斗失败: {e}", file=sys.stderr)
 

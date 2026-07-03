@@ -78,6 +78,24 @@ def accumulation(frame, date, k):
     return gate_rank(frame, mask, "vol_ratio", k)
 
 
+@channel("healthy", quota=150, floor=40,
+         desc="质量上涨(0<pct60<40 ∧ 主力+ ∧ cmf+;menu_health 病灶指标直接变召回信号)")
+def healthy(frame, date, k):
+    """swing 品相通道(2026-07-03,治 07-02 根因):261 只健康上涨 0 只进池——温和上涨
+    进不了 momentum 路 top(被 100%+ 猛票占满)、不够底不过吸筹门、value 分平平被 range
+    权重的 composite 压到 rank 3760。本路以 `healthy_riser_mask`(与菜单体检同一谓词,
+    单一事实源)过门,按**主力×资金共振强度**排序(pct(main)+pct(cmf);门内已限温和
+    区间,不再按动量排——要质量不要 froth)。缺列 → 空帧降级(与其他路一致)。
+    """
+    from autoresearch.common.scoring import healthy_riser_mask
+    mask = healthy_riser_mask(frame)
+    if mask is None:
+        return gate_rank(frame, None, "healthy_score", k)   # 缺核心列 → 空帧
+    g = frame.copy()
+    g["healthy_score"] = _pct(g["main_net_ratio"]).fillna(0.0) + _pct(g["cmf_20"]).fillna(0.0)
+    return gate_rank(g, mask, "healthy_score", k)
+
+
 @channel("heat", quota=200, floor=50,
          desc="高热(成交额量级主轴 × 换手/量比 kicker;捞巨额成交龙头,免疫 composite 的 IC froth 惩罚,交下游证伪)")
 def heat(frame, date, k):
