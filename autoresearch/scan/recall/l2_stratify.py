@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 # 风格桶 → recall channel(召回 provenance 已打标,零新增)。northbound/composite 不单列桶。
+# 健康桶(2026-07-03):healthy 通道的票再由桶 floor 保底进 L2——通道进池、桶上菜,两级都补。
 STYLE_CHANNELS: dict[str, tuple[str, ...]] = {
     "趋势": ("momentum", "heat"),
     "反转": ("reversal",),
@@ -21,8 +22,10 @@ STYLE_CHANNELS: dict[str, tuple[str, ...]] = {
     "成长": ("growth",),
     "吸筹": ("accumulation",),
     "主力": ("main_fund",),
+    "健康": ("healthy",),
 }
-DEFAULT_FLOORS: dict[str, int] = {"趋势": 20, "反转": 12, "价值": 12, "成长": 12, "吸筹": 12, "主力": 10}
+DEFAULT_FLOORS: dict[str, int] = {"趋势": 20, "健康": 15, "反转": 12, "价值": 12,
+                                  "成长": 12, "吸筹": 12, "主力": 10}
 
 
 def sector_neutral(score: pd.Series, industry: pd.Series) -> pd.Series:

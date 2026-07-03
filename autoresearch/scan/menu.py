@@ -19,11 +19,10 @@ def _num(df: pd.DataFrame, col: str) -> pd.Series | None:
 
 
 def _healthy(df: pd.DataFrame) -> int | None:
-    """健康上涨 = 0<pct_60d<40 且 main_net_ratio>0 且 cmf_20>0(06-30 病灶指标)。"""
-    p, m, c = _num(df, "pct_60d"), _num(df, "main_net_ratio"), _num(df, "cmf_20")
-    if p is None or m is None or c is None:
-        return None
-    return int(((p > 0) & (p < 40) & (m > 0) & (c > 0)).sum())
+    """健康上涨计数(06-30 病灶指标;谓词=`scoring.healthy_riser_mask`,与 healthy 召回通道单一事实源)。"""
+    from autoresearch.common.scoring import healthy_riser_mask
+    m = healthy_riser_mask(df)
+    return None if m is None else int(m.sum())
 
 
 def _knife_share(df: pd.DataFrame) -> float | None:

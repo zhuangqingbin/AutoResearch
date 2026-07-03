@@ -35,7 +35,7 @@ L4 派发前(确定性):🚄 观察单触发直通车(触发票直达 L4)→ ♻
 
 ## L1 · 召回(`autoresearch.scan.recall`,确定性,→1000)
 
-- **机制**:9 路策略 channel 各自"过门 + 按信号排序 + 截 top-quota",`quota_union` 合并(floor 保底多样性)+ provenance(`recall_channels`/`n_channels` 随行);默认 `--recall-mode multi`,`composite` 为对拍口径。
+- **机制**:10 路策略 channel 各自"过门 + 按信号排序 + 截 top-quota",`quota_union` 合并(floor 保底多样性)+ provenance(`recall_channels`/`n_channels` 随行);默认 `--recall-mode multi`,`composite` 为对拍口径。
 
 | channel | quota/floor | 信号 |
 |---|---|---|
@@ -48,16 +48,17 @@ L4 派发前(确定性):🚄 观察单触发直通车(触发票直达 L4)→ ♻
 | growth | 150/40 | 成长加速 |
 | northbound | 120/30 | 北向持股 |
 | accumulation | 120/30 | 底部吸筹(投机高召回,交下游证伪) |
+| **healthy**(07-03) | 150/40 | **质量上涨**(0<pct60<40∧主力+∧cmf+,=菜单体检谓词;按主力×cmf 共振排序。07-02 取证:261 只该品相 0 进池、通道 top10 被旧 composite 排在 4095–4201 名——结构性空洞修复) |
 
 - **composite 权重**:`weights.json`(factor_lab T+1 IC 校准 + 申万层级收缩 k=200);**regime-aware(2026-07-02 起推荐常开)**:`--regime-aware` → `classify_regime(当日帧)` 选 `regimes[trend|range|risk_off]` 权重块;未知 regime/缺块**自动回退 flat**(parity 锚,代码默认关)。
   - regime 判定(`common/regime.py`):breadth(站上MA60占比)≥0.55 ∧ 中位 pct_60d>0 → **trend**;≤0.30 ∧ <0 → **risk_off**;否则 **range**;空帧安全退 range。
   - 当前块(107 成型日,T+1 口径):**trend 43 日 / range 53 日 / risk_off 11 日**。关键符号:momentum IC **trend −0.055 vs range +0.015**(单一 flat 权重结构性不可行);risk_off 下 **value −0.033(抄便宜=接刀)、RSI −0.067(超跌反弹最强)、主力流入 −0.020(反向指标)**。
 - **已知局限**:① risk_off 块仅 11 成型日(样本薄,收缩兜底,随积累增厚);② **horizon 之争未决**(`pr_20260702_001`):现行 T+1 块 vs 06-27 实证 fwd_5 口径 regime 信号更强(trend momentum −0.094)——用 retro T+5 盲区数据裁决,勿拍脑袋切;③ T+5 口径下漏斗更盲(06-24:swing 赢家 550,missed_l1 448,有研硅 fwd_5 +87% 被压 rank 3172)。
-- **影子漏斗(07-02 新,免费 A/B)**:universe 默认(`--no-shadow` 关)在同一 recall 帧再产 2 套变体 L2 只落 staging(`shadow/L2_nostrat.csv` 纯 composite 序 / `L2_nocap.csv` 无行业上限),retro `shadow_compare` 逐变体对照赢家捕获 → "分层/cap 到底救了还是害了"从验尸变成**常态前向实验**;≥10 日累计才提 proposal。
+- **影子漏斗(07-02 新,免费 A/B)**:universe 默认(`--no-shadow` 关)产 3 套变体 L2 只落 staging(`nostrat` 纯 composite 序 / `nocap` 无行业上限 / **`pre_healthy` 旧 9 路反事实**〔07-03,healthy 通道的捕获增量直接可测〕),retro `shadow_compare` 逐变体对照赢家捕获 → 从验尸变成**常态前向实验**;≥10 日累计才提 proposal。
 
 ## L2 · 粗排(`recall/l2_stratify.select_l2`,确定性分层采样,→200)
 
-- **是什么**:**确定性分层多样性采样器,ML-free**(旧 GBDT/champion 已弃用,`models/` 只留 measure-only)。三件事:① sector-neutral composite(composite − 申万一级组均值)排 merit 核与桶内;② 6 风格桶**固定 floor** 保底(趋势20〔momentum+heat〕/反转12/价值12/成长12/吸筹12/主力10;northbound/composite 不单列桶);③ sector cap ≤20%(`--l2-sector-cap`)。产物 `L2_gbdt_top200.csv`(列名历史遗留):`l2_rank`=选择序、`gbdt_score`=composite(显示)、`l2_lane_reserved`=floor 救回标记。
+- **是什么**:**确定性分层多样性采样器,ML-free**(旧 GBDT/champion 已弃用,`models/` 只留 measure-only)。三件事:① sector-neutral composite(composite − 申万一级组均值)排 merit 核与桶内;② 7 风格桶**固定 floor** 保底(趋势20〔momentum+heat〕/**健康15〔healthy,07-03〕**/反转12/价值12/成长12/吸筹12/主力10;northbound/composite 不单列桶);③ sector cap ≤20%(`--l2-sector-cap`)。产物 `L2_gbdt_top200.csv`(列名历史遗留):`l2_rank`=选择序、`gbdt_score`=composite(显示)、`l2_lane_reserved`=floor 救回标记。
 - **为什么不预测**:见"核心世界观";分层实测免费(strat ≈ composite-top200 ≈ 0)→ 多样性零 alpha 代价。
 - **菜单体检(07-02 新,`scan/menu.py`)**:L2 vs 全市场的行业集中度/落刀面/健康上涨(0<pct60<40∧主力+∧cmf+)/估值/floor 救回数,自动嵌 L5;健康=0 打 **⚠️菜单病** 预警。实证(06-30):**落刀 L2 70% vs 市场 32%、健康 3/200 vs 242/4184**——召回错配的当天即时读数。
 - **floor 自然实验(07-02 新,retro 侧)**:救回组 vs merit 组 vs 被挤掉组的 fwd 对照,持续弱才复审 floor(数据从 06-27 分层器上线后的日子开始积累)。

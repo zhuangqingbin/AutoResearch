@@ -186,6 +186,20 @@ def lens_reversal(df: pd.DataFrame) -> pd.DataFrame:
     return g
 
 
+def healthy_riser_mask(frame: pd.DataFrame) -> pd.Series | None:
+    """健康上涨谓词(**单一事实源**:menu_health 病灶指标 = healthy 召回通道同一定义):
+    0<pct_60d<40(温和上涨,未过热)∧ main_net_ratio>0(主力真进)∧ cmf_20>0(多日资金共振)。
+
+    07-02 取证:全市场 261 只健康上涨 **0 只**过召回线(rank 中位 3760)——momentum 路被
+    pct60 100%+ 猛票占满、吸筹路要底部、T+1 IC composite 在 range 下偏爱接刀价值,该品相
+    是 9 路召回的结构性空洞。缺任一列 → None(调用方降级)。
+    """
+    if not all(c in frame.columns for c in ("pct_60d", "main_net_ratio", "cmf_20")):
+        return None
+    p, m, c = _num(frame["pct_60d"]), _num(frame["main_net_ratio"]), _num(frame["cmf_20"])
+    return (p > 0) & (p < 40) & (m > 0) & (c > 0)
+
+
 # ───────────────────────── 9 因子组 + 行业条件化复合分 ─────────────────────────
 
 # 9 因子组(自然朝向:高=常规看多;真方向由 weights.json 的 IC 符号决定)。
