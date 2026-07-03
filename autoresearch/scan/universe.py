@@ -184,8 +184,12 @@ def _harvest_vol_series(codes, analysis_date: str, lookback: int = 20) -> pd.Dat
             return pd.DataFrame(columns=["code"])
         want = {str(c).zfill(6) for c in codes}
         recs = []
+        from autoresearch.data.cache import get_or_fetch  # 已结算日湖命中零网络(policy: daily=eod)
         for d in days:
-            df = _ts_call(lambda d=d: pro.daily(trade_date=d, fields="ts_code,high,low,close,amount"))
+            try:
+                df = get_or_fetch("daily", {"trade_date": d}, today=analysis_date)
+            except Exception:  # noqa: BLE001 — 湖/policy 异常回退直拉
+                df = _ts_call(lambda d=d: pro.daily(trade_date=d, fields="ts_code,high,low,close,amount"))
             if df is None or not len(df):
                 continue
             df = df.assign(code=_code6(df["ts_code"]), date=d)

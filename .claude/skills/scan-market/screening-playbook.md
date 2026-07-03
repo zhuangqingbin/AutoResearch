@@ -79,7 +79,7 @@ uv run --no-sync python -m autoresearch.scan.universe <date> --source tushare
 
 **步骤**:
 1. 增量取数:`harvest_l3_evidence(date, l2_top200_codes)` → `L3_evidence/<code>.json`(龙虎榜席位 / 业绩预告 / 快报);**`harvest_l3_news(date, l2_top200_codes)`**(`autoresearch.scan.agents.l3_news`)→ `L3_news/<code>.json`(近 ~10 日 `anns_d` 公告标题,**入湖按 ann_date、L4/analyze 复用**;无权限降级空)。**`harvest_l3_web_news(date, l2_top200_codes)`** → `L3_webnews/<code>.json`(akshare 个股新闻 `stock_news_em`,**入湖 as_of、免费 keyless、逐股降级隔离**)。
-2. **一个 holistic subagent,`Agent(model='opus')` + high reasoning**(全表一次通看,非逐只 → 成本仍小):`l3_table_md(date)` 把 ~200 只(因子 + 证据摘要 `lhb_n/has_forecast/has_express` + **公告情感 `news_*` + 媒体情感 `med_n/med_tags/med_head`〔akshare〕** + **召回 provenance `n_channels/recall_channels`〔几路共振〕**)压成**一张紧凑表**喂它,**通看全表、横向比较着选 ~30**(每只入选出 论点/红队/催化/确信度/脆弱度/lane/**sentiment**),落 `L3_judged_full.csv`。量大可拆 2–3 个 holistic 片,但**每片仍是"比较着选"而非逐只孤立**。
+2. **一个 holistic subagent,`Agent(model='opus')` + high reasoning**(全表一次通看,非逐只 → 成本仍小):`l3_table_md(date)` 把 ~200 只(因子 + 证据摘要 `lhb_n/has_forecast/has_express` + **公告情感 `news_*` + 媒体情感 `med_n/med_tags/med_head`〔akshare〕** + **召回 provenance `n_channels/recall_channels`〔几路共振〕**)压成**一张紧凑表**喂它,**通看全表、横向比较着选 ~30**(每只入选出 论点/红队/催化/确信度/脆弱度/lane/**sentiment**),落 `L3_judged_full.csv`。量大可拆 2–3 个 holistic 片,但**每片仍是"比较着选"而非逐只孤立**。**📝 落稿契约(token 计量)**:表原文落 `context/scan/<date>/_l3_table.md`、agent 回稿原文落 `_l3_judged_raw.md`——估算器据此计 L3 输入+输出;缺稿=token 表该段 `—`(未计而非为零)。
 3. **`merge_l3_finalists_v2(judged_df, target=<L4预算>, trend_quota=10, hybrid=True)`** → `context/scan/<date>/finalists.csv`(把 holistic 入选排成 finalists + 趋势配额安全网)。**target 用 `menu.l4_budget(scan_dir)`**(病菜单/risk_off 日 15–22、健康日 30;只降不升)。
    - **Δ模式与稳定性(l4-economy §3-4)**:紧凑表建议 `l3_table_md(date, delta=True)`(略去"昨判弃且无变化"票;表头带防锚定令——**今日仍须独立重新比较**;全量表每 ≤5 个 scan 日 1 次);周频用 `shuffle_seed` 乱序表跑 audit agent,`stability_overlap<0.70` → proposal。
    - judged_df 需含列:`code,name,sector,lenses,conviction,fragility,thesis,risk,catalyst,triage_lean,lane,pct_60d`(`lane`/`pct_60d` 配额用,源自 L2 表)。
@@ -109,6 +109,7 @@ uv run --no-sync python -m autoresearch.analyze.harvest <ticker> <date> --slim
 > **📁 档案增量研究(R5)**:简报若带『个股档案』块(该票近日入围过,`dossier.render_dossier` 自动注入),卡片**必须含"变化项(vs 档案)"一小节**——逐条对已知证伪点答【已变/未变/新证据】;**未变的门引档案一句带过不再长篇重证,变了的才展开**(增量研究,省 token 靠这里)。铁律:档案是历史事实非预判,本次评级仍由本卡 rubric 三门独立定。
 > **防误杀铁律**:不在读到翻盘牌〔催化/forward PE/吸筹〕前早停 → 主早停 = P3 后;漏斗简报只定向不判(信息薄,据它早停=误杀)。
 > **📐 阶段效能契约**:survivor 进 P4 前,卡片记一行 `进入P4倾向: <五档Rating>`(P3 时点的倾向评级)。`health.l4_phase_stats` 据此测 **P4 翻盘率**——若长期≈0,陷阱核就可条件化(先测量后动刀);写了不白写,一行而已。
+> **📝 落稿契约(token 计量)**:派发时把每卡**完整 prompt**(共享块+简报)落 `context/scan/<date>/_l4_prompt_<code>.md`,skeptic/红队稿落 `_v_<code>.md`——估算器据此计输入侧(L4 输入是全程最大头);缺稿=token 表 `—`(未计而非为零)。
 
 > **🔎 web 外源催化(P3/P5,finalists 专属)**:做催化核(P3)/ 终判(P5)时对该股 **WebSearch**(`<名称> <代码> 最新 研报/突发/政策/订单`)→ 提炼 **1–2 条真·催化 + 时效**(日期/来源)纳入 `催化`/`风险`。**边界**:仅定性佐证——评级/目标/数字仍出自 slim;无网/无结果 → 跳过。**早停卡不做深 WebSearch**(省 token)。
 

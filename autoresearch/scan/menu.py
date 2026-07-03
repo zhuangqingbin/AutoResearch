@@ -101,15 +101,56 @@ def l4_budget(scan_dir: Path | str, base: int = 30, floor: int = 12) -> tuple[in
     return n, f"⚠️ {'+'.join(flags)} → L4 预算降至 {n}(基准 {base};省 Opus 于低产日,红队/观察单兜底)"
 
 
+def sentinel_advice(scan_dir: Path | str, frac_lo: float = 0.03,
+                    frac_hi: float = 0.05) -> tuple[str, str]:
+    """哨兵建议(design: 2026-07-03-scan-sentinel-economy §1)。人拍板,不自动降档。
+
+    判据用**全市场**健康上涨占比(L1_scored_full × healthy_riser_mask——不受自家 L2 采样
+    影响;healthy 通道上线后 L2 健康数被桶保底"治愈",不能再当判据)× regime:
+    <frac_lo → sentinel;frac_lo–frac_hi ∧ risk_off → sentinel;frac_lo–frac_hi → consider;
+    其余 → full。07-02(6.2%,range)→ full:通道修好后该日应全扫。
+    """
+    scan_dir = Path(scan_dir)
+    p = scan_dir / "L1_scored_full.csv"
+    if not p.exists():
+        return "full", "无 L1_scored_full → 全扫(降级)"
+    try:
+        from autoresearch.common.scoring import healthy_riser_mask
+        df = pd.read_csv(p)
+        m = healthy_riser_mask(df)
+    except Exception:  # noqa: BLE001
+        m = None
+    if m is None:
+        return "full", "健康谓词缺列 → 全扫(降级)"
+    frac = float(m.mean())
+    regime = None
+    mp = scan_dir / "meta.json"
+    if mp.exists():
+        import contextlib
+        import json
+        with contextlib.suppress(Exception):
+            regime = json.loads(mp.read_text(encoding="utf-8")).get("regime")
+    pct = f"{frac:.1%}"
+    if frac < frac_lo:
+        return "sentinel", f"全市场健康上涨仅 {pct}(<{frac_lo:.0%})= 材料枯竭 → 建议哨兵档(跳 L3/L4)"
+    if frac < frac_hi and regime == "risk_off":
+        return "sentinel", f"健康上涨 {pct} + risk_off → 建议哨兵档"
+    if frac < frac_hi:
+        return "consider", f"健康上涨 {pct}(<{frac_hi:.0%})材料偏薄 → 可考虑哨兵档,人拍板"
+    return "full", f"全市场健康上涨 {pct} 材料充足 → 全扫"
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
-    ap = argparse.ArgumentParser(description="L2 菜单体检 + L4 预算(确定性,零 LLM)")
+    ap = argparse.ArgumentParser(description="L2 菜单体检 + L4 预算 + 哨兵建议(确定性,零 LLM)")
     ap.add_argument("date", help="scan 日 YYYY-MM-DD")
     args = ap.parse_args(argv)
     d = Path("context/scan") / args.date
     print(menu_health(d) or "(菜单体检:staging 缺)")
     n, why = l4_budget(d)
     print(f"[l4_budget] target={n} —— {why}")
+    level, reason = sentinel_advice(d)
+    print(f"[sentinel] {level} —— {reason}")
     return 0
 
 

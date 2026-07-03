@@ -289,19 +289,24 @@ def _stage_token_estimate(scan_dir: Path) -> list[str]:
         return sum(p.stat().st_size for p in files if p.is_file())
 
     cards = sorted((det / "details").glob("*.md")) if (det / "details").is_dir() else []
-    l3 = list(det.glob("_l3*"))
+    strat = ([det / "market_view.md"] if (det / "market_view.md").is_file() else []) \
+        + list(det.glob("_strategist*"))
+    l3 = list(det.glob("_l3*")) \
+        + ([det / "L3_judged_full.csv"] if (det / "L3_judged_full.csv").is_file() else [])
     l4t1 = list(det.glob("_l4_batch*")) + list(det.glob("_l4_prompt*"))
-    verify = list(det.glob("_v_*"))
+    vfiles = list(det.glob("_v_*"))
+    verify = vfiles + ([det / "verify.csv"] if (det / "verify.csv").is_file() else [])
     rows = [
-        ("L0 选集", "确定性", 0, 0, "纯 pandas 硬门"),
-        ("L1 召回", "确定性", 0, 0, "复合分排序"),
-        ("L2 粗排", "确定性·GBDT", 0, 0, "LightGBM 重排,零 LLM"),
-        ("L3 精排", "Opus-high·holistic", 1 if l3 else 0, _b(l3), "1 agent 通看 ~200 选 30"),
-        ("L4 研究", "Opus", len(cards), _b(cards) + _b(l4t1), f"{len(cards)} 张卡(早停卡/满卡)"),
-        ("L4 买单 skeptic", "Opus", len(verify), _b(verify), "≥OW 买单独立证伪"),
+        ("L0/L1/L2", "确定性", 0, 0, "纯 pandas,零 LLM"),
+        ("旁路 策略师", "Opus", 1 if strat else 0, _b(strat), "market_pack → market_view.md"),
+        ("L3 精排", "Opus-high·holistic", 1 if l3 else 0, _b(l3),
+         "通看全表选 finalists(输入表落 `_l3_table.md` 才计入)"),
+        ("L4 研究", "Opus", len(cards), _b(cards) + _b(l4t1),
+         f"{len(cards)} 张卡(早停/满卡/复用;每卡 prompt 落 `_l4_prompt_*` 才计入)"),
+        ("skeptic/红队", "Opus", len(vfiles), _b(verify), "≥OW 证伪 + 0 买日机会成本红队(_v_* 稿)"),
     ]
     lines = ["## 各阶段 token 消耗(估算)",
-             "| 阶段 | 引擎 | LLM 调用 | 输出字节 | ~输出token | 说明 |",
+             "| 阶段 | 引擎 | LLM 调用 | 落盘字节 | ~token | 说明 |",
              "|---|---|---:|---:|---:|---|"]
     tot_calls = tot_tok = 0
     for name, eng, calls, b, note in rows:
@@ -309,9 +314,11 @@ def _stage_token_estimate(scan_dir: Path) -> list[str]:
         tot_calls += calls
         tot_tok += tok
         lines.append(f"| {name} | {eng} | {calls or '—'} | {b or '—'} | {tok or '—'} | {note} |")
-    lines.append(f"| **合计** | — | **{tot_calls}** | — | **~{tot_tok}** | 输出侧下界 |")
-    lines += ["", "> 口径:**输出落盘字节 ÷ 2.8**(CJK 混合粗估)。**输入侧未全留痕**(L4 每卡 slim 上下文数千 "
-              "token × 卡数才是大头)→ **真实总 token 数倍于此表**,此为可测下界。L0/L1/L2 确定性 = 0 LLM。", ""]
+    lines.append(f"| **合计** | — | **{tot_calls}** | — | **~{tot_tok}** | 落盘可测下界 |")
+    lines += ["", "> 口径:**落盘字节 ÷ 2.8**(CJK 粗估)。**落稿契约**(playbook):编排把 L3 输入表落 "
+              "`_l3_table.md`、每卡完整 prompt 落 `_l4_prompt_<code>.md`、skeptic/红队稿落 `_v_<code>.md` "
+              "后,本表 ≈ **输入+输出全量下界**;缺稿段 `—` = 该段用量**未计而非为零**。"
+              "真实计费口径只有 Claude Code `/usage` 可见。", ""]
     return lines
 
 

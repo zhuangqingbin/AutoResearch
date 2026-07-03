@@ -65,6 +65,24 @@ def pick_opportunity_candidates(ratings: dict[str, str], scan_dir, k: int = 2) -
     return df["code"].head(k).tolist()
 
 
+def pick_sentinel_candidates(scan_dir, k: int = 2) -> list[str]:
+    """哨兵日红队对象:L2 `gbdt_score` top-k(哨兵档跳过 L3,无 conviction 可用)。缺 L2 → []。
+
+    design: 2026-07-03-scan-sentinel-economy §1。产出与机会成本红队同规:只进观察单,不发评级。
+    """
+    from pathlib import Path
+
+    import pandas as pd
+    p = Path(scan_dir) / "L2_gbdt_top200.csv"
+    if not p.exists():
+        return []
+    df = pd.read_csv(p, dtype={"code": str})
+    if "code" not in df.columns:
+        return []
+    df["_s"] = pd.to_numeric(df.get("gbdt_score"), errors="coerce").fillna(-1e18)
+    return df.sort_values("_s", ascending=False)["code"].astype(str).str.zfill(6).head(k).tolist()
+
+
 def pick_buylist(ratings: dict[str, str], floor: str = "Overweight") -> list[str]:
     """评级 ≥ floor 的发布买单(floor=Overweight 时等价 pick_buy_candidates〔Buy/OW〕)。
 
