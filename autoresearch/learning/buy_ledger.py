@@ -17,7 +17,7 @@ from pathlib import Path
 import pandas as pd
 
 _COLS = ["date", "code", "name", "rating", "gap_open", "fwd_1", "fwd_5", "fwd_10",
-         "target_ret", "target_hit"]
+         "hi_10", "target_ret", "target_hit"]
 _TARGET_RE = re.compile(r"(\d+(?:\.\d+)?)")
 
 
@@ -85,12 +85,18 @@ def roll(scan_root: Path | str | None = None) -> pd.DataFrame:
                 return None if pd.isna(v) else round(float(v), 6)
             tr = _target_ret(d, code)
             f10, f5 = _a("fwd_10_oc"), _a("fwd_5_oc")
+            hi10, gap = _a("hi_10_oc"), _a("gap_d1")
             hit = None
-            if tr is not None and (f10 is not None or f5 is not None):
-                hit = bool((f10 if f10 is not None else f5) >= tr)
+            if tr is not None:
+                if hi10 is not None:                # 触价口径:目标幅(close_D 基)换算到 o1 基与最高价比
+                    t_entry = (1 + tr) / (1 + gap) - 1 if gap is not None else tr
+                    hit = bool(hi10 >= t_entry)
+                elif f10 is not None or f5 is not None:   # 缺 hi → 回退收盘口径
+                    hit = bool((f10 if f10 is not None else f5) >= tr)
             rows.append({"date": d.name, "code": code, "name": names.get(code, ""),
-                         "rating": rating, "gap_open": _a("gap_d1"), "fwd_1": _a("fwd_1_oo"),
-                         "fwd_5": f5, "fwd_10": f10, "target_ret": tr, "target_hit": hit})
+                         "rating": rating, "gap_open": gap, "fwd_1": _a("fwd_1_oo"),
+                         "fwd_5": f5, "fwd_10": f10, "hi_10": hi10,
+                         "target_ret": tr, "target_hit": hit})
     return pd.DataFrame(rows, columns=_COLS)
 
 
@@ -120,12 +126,13 @@ def render(ledger: pd.DataFrame) -> list[str]:
             return "—"
         return f"{x * 100:+.2f}%" if pct else str(x)
 
-    out += ["| 日期 | 股票 | 评级 | gap开盘 | fwd_1 | fwd_5 | fwd_10 | 目标幅 | 命中 |",
-            "|---|---|---|---|---|---|---|---|---|"]
+    out += ["| 日期 | 股票 | 评级 | gap开盘 | fwd_1 | fwd_5 | fwd_10 | 触价hi10 | 目标幅 | 命中 |",
+            "|---|---|---|---|---|---|---|---|---|---|"]
     for r in ledger.itertuples(index=False):
         hit = "—" if r.target_hit is None or pd.isna(r.target_hit) else ("✅" if r.target_hit else "✗")
         out.append(f"| {r.date} | {r.name}({r.code}) | {r.rating} | {f(r.gap_open)} "
-                   f"| {f(r.fwd_1)} | {f(r.fwd_5)} | {f(r.fwd_10)} | {f(r.target_ret)} | {hit} |")
+                   f"| {f(r.fwd_1)} | {f(r.fwd_5)} | {f(r.fwd_10)} | {f(r.hi_10)} "
+                   f"| {f(r.target_ret)} | {hit} |")
     br = rating_base_rates(ledger)
     if br:
         out += ["", "## 评级基率(n≥10 才可注入 skeptic/PM 当先验)"]

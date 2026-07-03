@@ -483,6 +483,11 @@ def _self_review_banner(scan_dir: Path, rows: list[dict], summary_text: str,
                "finalists_n": len(rows)}}
     import contextlib
     res = self_review.review(ctx)
+    with contextlib.suppress(Exception):                            # 卡片契约 lint(在 dump 前合并 → 留痕)
+        extra = self_review.card_contract_lint(scan_dir)
+        if extra:
+            res["failures"].extend(extra)
+            res["n_warn"] = res.get("n_warn", 0) + len(extra)
     with contextlib.suppress(Exception):
         self_review.dump_gate_fires(scan_dir, res, scan_dir.name)   # R3 留痕;IO 失败不阻发布
     return self_review.render_banner(res)

@@ -45,6 +45,11 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 ## 流程(6 段)
 > 操作细节(L3 holistic prompt 模板 / 评分卡 / 多空辩论)全在 `screening-playbook.md`,按段对照;**各阶段现状快照**(引擎/参数/实证读数/已知局限/勿重启清单)见 `STAGES.md`(as-of 日期标注,冲突以源码为准)。
 
+0. **⚡ 前奏一键(推荐,取代下方 1/2 的人肉串)**:
+   ```bash
+   uv run --no-sync python -m autoresearch.scan.prelude <YYYY-MM-DD>
+   ```
+   一条命令跑完全部确定性前奏:attribution 刷新(成熟老日 fwd 补齐)→ retro pending 列出(**只备料,诊断仍走 scan-retro**)→ consensus 拉 → universe(regime-aware+影子)→ 日历 → 观察单日检(**🔔 触发置顶警报**)→ 菜单/L4 预算/哨兵建议 → journal+buy_ledger 刷新。各步失败不阻断,末尾汇总屏。之后从 2.2 哨兵决策/2.5 策略师接 LLM 段。下方 1–2 保留作分解说明与调参入口。
 1. **L0 选集 + L1 召回 + L2 粗排(全确定性,零 token)**:
    ```bash
    uv run --no-sync python -m autoresearch.scan.universe [YYYY-MM-DD] --regime-aware [--source tushare] [--recall-n 1000] [--l2-n 200] [--cap-floor 30] [--exclude-bj] [--recall-mode multi|composite] [--recall-channels a,b,c] [--l2-sector-cap 0.20]

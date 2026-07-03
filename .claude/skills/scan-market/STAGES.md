@@ -133,7 +133,7 @@ tushare 默认源(push2 被网络封锁;`TUSHARE_TOKEN` 高权限);keyless 可�
 2. regime 块 horizon 之争(`pr_20260702_001`)待 T+5 数据裁决;risk_off 块样本薄(11 日);
 3. **全部新 LLM 流程段(策略师/机会成本红队/观察单补 conds/档案"变化项"/经验人判 MTM/P4 倾向行/复用后编排)未在真实 skill 跑动中实测**——确定性件全有测试(**591 绿**),LLM 段是脚手架就位;
 3b. MTM/gate_fires/触发 ledger/影子对照/P4 翻盘率全部从 2026-07-02 起零积累——头两周读数样本薄,别过度反应;
-3c. **attribution 是 retro 时一次性落账**:fwd_5/10 未成熟就写盘则该日买单 ledger 永远 "—";成熟老日可手动 `retro.attribute('<date>')` 刷新(幂等,已写进 ledger 尾注);
+3c. attribution 一次性落账问题**已修**(07-03):`retro refresh`(prelude 首步自动跑)对成熟老日重写 attribution 补 fwd/hi;实测刷 8 日、东方财富现真身(hi10 +6.3% vs 目标 +28.8% = 首条"目标价过乐观"实证)。遗留孤儿:06-19 为端午假日跑动(非交易日键),fwd 永远无法结算,保持 "—";
 3d. Δ表省幅随日况(L2 轮换大的日子略 0 只);卡片复用省幅=churn(07-01 实测 20%,窗口而异);评级基率 n<10 禁注;
 3e. **07-02 首航后新增(07-03)**:healthy 通道/健康桶已上线但其 alpha/捕获增量未验——由 `pre_healthy` 影子反事实 + retro 裁决(≥10 日);哨兵档、落稿契约(`_l3_table`/`_l4_prompt_*`/`_v_*`,token 表缺稿=未计而非为零)均未实跑;token 真实计费仍只有 Claude Code `/usage` 可见;
 4. consensus 首拉待限频窗;积累 <60 日前盈利修正不入线上;
