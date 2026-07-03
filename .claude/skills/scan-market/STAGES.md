@@ -61,6 +61,7 @@ L4 派发前(确定性):🚄 观察单触发直通车(触发票直达 L4)→ ♻
 - **是什么**:**确定性分层多样性采样器,ML-free**(旧 GBDT/champion 已弃用,`models/` 只留 measure-only)。三件事:① sector-neutral composite(composite − 申万一级组均值)排 merit 核与桶内;② 7 风格桶**固定 floor** 保底(趋势20〔momentum+heat〕/**健康15〔healthy,07-03〕**/反转12/价值12/成长12/吸筹12/主力10;northbound/composite 不单列桶);③ sector cap ≤20%(`--l2-sector-cap`)。产物 `L2_gbdt_top200.csv`(列名历史遗留):`l2_rank`=选择序、`gbdt_score`=composite(显示)、`l2_lane_reserved`=floor 救回标记。
 - **为什么不预测**:见"核心世界观";分层实测免费(strat ≈ composite-top200 ≈ 0)→ 多样性零 alpha 代价。
 - **菜单体检(07-02 新,`scan/menu.py`)**:L2 vs 全市场的行业集中度/落刀面/健康上涨(0<pct60<40∧主力+∧cmf+)/估值/floor 救回数,自动嵌 L5;健康=0 打 **⚠️菜单病** 预警。实证(06-30):**落刀 L2 70% vs 市场 32%、健康 3/200 vs 242/4184**——召回错配的当天即时读数。
+- **哨兵建议(07-03 新,`menu.sentinel_advice`)**:判据=**全市场**健康上涨占比 × regime(healthy 桶上线后 L2 健康数被 floor"治愈",不能再当判据):<3% 材料枯竭 → 建议哨兵档(只跑策略师/观察单/日历/红队×2,跳 L3+L4,省 ~70% token 与 ~35 分钟);3–5%+risk_off → 建议;≥5% → 全扫。**人拍板不自动**;07-02(6.2%,range)→ full = healthy 通道修好后该日应全扫。哨兵日 retro/影子照算 = 错过率可监控。
 - **floor 自然实验(07-02 新,retro 侧)**:救回组 vs merit 组 vs 被挤掉组的 fwd 对照,持续弱才复审 floor(数据从 06-27 分层器上线后的日子开始积累)。
 
 ## 旁路 · 首席策略师市场研判(L2 后 L3 前,Opus×1)
@@ -134,5 +135,6 @@ tushare 默认源(push2 被网络封锁;`TUSHARE_TOKEN` 高权限);keyless 可�
 3b. MTM/gate_fires/触发 ledger/影子对照/P4 翻盘率全部从 2026-07-02 起零积累——头两周读数样本薄,别过度反应;
 3c. **attribution 是 retro 时一次性落账**:fwd_5/10 未成熟就写盘则该日买单 ledger 永远 "—";成熟老日可手动 `retro.attribute('<date>')` 刷新(幂等,已写进 ledger 尾注);
 3d. Δ表省幅随日况(L2 轮换大的日子略 0 只);卡片复用省幅=churn(07-01 实测 20%,窗口而异);评级基率 n<10 禁注;
+3e. **07-02 首航后新增(07-03)**:healthy 通道/健康桶已上线但其 alpha/捕获增量未验——由 `pre_healthy` 影子反事实 + retro 裁决(≥10 日);哨兵档、落稿契约(`_l3_table`/`_l4_prompt_*`/`_v_*`,token 表缺稿=未计而非为零)均未实跑;token 真实计费仍只有 Claude Code `/usage` 可见;
 4. consensus 首拉待限频窗;积累 <60 日前盈利修正不入线上;
 5. 仅供研究,非投资建议。
