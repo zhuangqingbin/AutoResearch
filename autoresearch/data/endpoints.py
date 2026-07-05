@@ -42,6 +42,9 @@ ENDPOINTS: dict[str, dict] = {
     "forecast": {"key": "date", "settle": "eod", "source": "tushare"},   # 业绩预告(ann_date)
     "express": {"key": "date", "settle": "eod", "source": "tushare"},    # 业绩快报(ann_date)
     "anns_d": {"key": "date", "settle": "eod", "source": "tushare"},     # 信息披露公告(ann_date;标题情感)
+    "stk_holdertrade": {"key": "date", "settle": "eod", "source": "tushare"},  # 股东增减持(ann_date;催化)
+    "repurchase": {"key": "date", "settle": "eod", "source": "tushare"},       # 回购(ann_date;催化)
+    "stk_surv": {"key": "date", "settle": "eod", "source": "tushare"},         # 机构调研(trade_date;催化)
 
     # ── ① tushare 区间/标的级(按取数日快照——含到取数日为止的截面,按 as_of 留底) ──
     "moneyflow_hsgt": {"key": "as_of", "settle": "eod", "source": "tushare"},   # 沪深港通区间
