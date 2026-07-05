@@ -141,7 +141,7 @@ def _delta_filter(df: pd.DataFrame, prev_dir: Path,
 
 def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
                 shuffle_seed: int | None = None, sector_terrain: bool = False,
-                dist_flag: bool = False, reg_flag: bool = False) -> str:
+                dist_flag: bool = False, reg_flag: bool = False, cat_flag: bool = False) -> str:
     """L3 holistic 选股 subagent 的完整输入表(~200 行紧凑表 + 证据摘要列)。
 
     delta=True:略去「昨判弃 ∧ 今无变化」行 + prev_l3 标记(design: l4-economy §3;
@@ -155,6 +155,9 @@ def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
     reg_flag=True:加 `news_reg` 列(近 10 日公告标题命中监管事项词,`l3_news.reg_hits`
     独立检测器——**不动 _EVENT_TAGS/news_digest,情感列口径不变**)+ 图例禁则
     (默认 False = 逐字 parity)。spec 2026-07-05 §5.3。
+    cat_flag=True:加 `cat` 列(近 10 日 回购/增持/调研/减持 事件计数徽标,staging
+    `L3_catalyst.csv` 在才生效)+ 图例禁则——事件存在性≠方向确认(默认 False = 逐字 parity)。
+    spec 2026-07-05 wave §B2。
     """
     df = load_l3_input(date, root=root)
     cols = [*_L3_COLS] + [c for c in ("lhb_n", "has_forecast", "has_express") if c in df.columns]
@@ -176,6 +179,22 @@ def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
         header += ["_⚠监管旗(news_reg):近 10 日公告命中 立案/问询/关注函/处罚/违规/诉讼/"
                    "监管/证监会/交易所。旗票论点**必须显式回应监管事项**,不得无视;独立检测器,"
                    "情感列口径不变(非利空词表变更)。_", ""]
+    if cat_flag and "code" in df.columns:
+        catp = (root or Path("context/scan")) / date / "L3_catalyst.csv"
+        if catp.exists():
+            from autoresearch.scan.agents.l3_catalyst import cat_label
+            try:
+                cf = pd.read_csv(catp, dtype={"code": str})
+                cf["code"] = cf["code"].astype(str).str.zfill(6)
+                lab = {r["code"]: cat_label(r) for r in cf.to_dict("records")}
+            except Exception:  # noqa: BLE001 — 坏 staging 降级不加列
+                lab = None
+            if lab is not None:
+                df["cat"] = [lab.get(str(c).zfill(6), "") for c in df["code"]]
+                cols = [*cols, "cat"]
+                header += ["_📣催化列(cat):近 10 日 回购/增持/机构调研/减持 事件计数(存在性"
+                           "≠方向确认)。催化须与资金/基本面共振才可作论点支柱;**减持≥2 的票"
+                           "论点必须显式回应**。_", ""]
     if delta:
         prev = _prev_l3_day(date, root=root)
         if prev is None:

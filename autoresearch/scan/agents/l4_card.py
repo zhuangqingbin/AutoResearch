@@ -148,6 +148,26 @@ def _pledge_mark(base: Path, code6: str) -> str:
             f"与补充质押公告(截至 {sub.iloc[0].get('end_date', '—')})")
 
 
+def _cat_mark(base: Path, code6: str) -> str:
+    """催化事件行(presence-gated:`L3_catalyst.csv` 在且有非零计数才注)。
+    spec 2026-07-05 §B2。"""
+    p = base / "L3_catalyst.csv"
+    if not p.exists():
+        return ""
+    try:
+        from autoresearch.scan.agents.l3_catalyst import cat_label
+        df = pd.read_csv(p, dtype={"code": str})
+        df["code"] = df["code"].astype(str).str.zfill(6)
+        sub = df[df["code"] == code6]
+        lbl = cat_label(sub.iloc[0].to_dict()) if len(sub) else ""
+    except Exception:  # noqa: BLE001 — 行可选,缺了不挡简报
+        return ""
+    if not lbl:
+        return ""
+    return (f"- **📣催化事件(近10日,事实)**:{lbl}(存在性≠方向确认;"
+            f"与资金/基本面共振才可作论点支柱)")
+
+
 def compose_funnel_brief(code: str, scan_dir: Path | str) -> str:
     """L4 **P0 定向**:从漏斗产物(L1_recall/L2/finalists)拼该票紧凑简报 markdown。
 
@@ -204,6 +224,9 @@ def compose_funnel_brief(code: str, scan_dir: Path | str) -> str:
     pm = _pledge_mark(base, code6)           # 质押旗:确定性预旗(pledge.csv 在才注,presence-gated)
     if pm:
         lines.append(pm)
+    cm = _cat_mark(base, code6)              # 催化行:三端点事件计数(L3_catalyst.csv 在才注)
+    if cm:
+        lines.append(cm)
     ind = l3.get("industry") or l3.get("sector") or l1.get("industry")
     sector_block = ""
     try:                                     # Phase 3:行业 brief 地形段(同链摊销;无 brief → memo 行回退)

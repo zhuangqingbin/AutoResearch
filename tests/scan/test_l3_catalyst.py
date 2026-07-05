@@ -50,3 +50,35 @@ def test_counts_pure_empty():
     out = catalyst_counts({"stk_holdertrade": [], "repurchase": [], "stk_surv": []}, {"000001"})
     assert list(out.columns) == ["code", "rep_impl", "rep_plan", "holder_in", "holder_de", "surv_n"]
     assert out.set_index("code").loc["000001"].sum() == 0
+
+
+def _mk_scan(root, cat_rows):
+    d = root / _DATE
+    d.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([{"code": "000001", "name": "甲", "industry": "电子", "composite": 80.0,
+                   "main_net_ratio": 0.05, "pct_60d": 10.0, "pe": 30.0}]).to_csv(
+        d / "L2_gbdt_top200.csv", index=False)
+    pd.DataFrame(cat_rows).to_csv(d / "L3_catalyst.csv", index=False)
+    return d
+
+
+def test_l3_table_cat_flag_on_and_parity(tmp_path):
+    from autoresearch.scan.agents.l3_select import l3_table_md
+    _mk_scan(tmp_path, [{"code": "000001", "rep_impl": 1, "rep_plan": 0,
+                         "holder_in": 2, "holder_de": 0, "surv_n": 3}])
+    md = l3_table_md(_DATE, root=tmp_path, cat_flag=True)
+    assert "cat" in md and "回购1(实施)·增持2·调研3" in md
+    assert "📣催化列" in md and "减持≥2" in md                 # 图例 + 禁则
+    assert "📣催化列" not in l3_table_md(_DATE, root=tmp_path)   # 默认关 = parity
+
+
+def test_funnel_brief_cat_mark(tmp_path):
+    from autoresearch.scan.agents.l4_card import compose_funnel_brief
+    d = _mk_scan(tmp_path, [{"code": "000001", "rep_impl": 0, "rep_plan": 0,
+                             "holder_in": 0, "holder_de": 2, "surv_n": 0}])
+    pd.DataFrame([{"code": "000001", "name": "甲", "industry": "电子"}]).to_csv(
+        d / "L1_recall_top1000.csv", index=False)
+    brief = compose_funnel_brief("000001", d)
+    assert "📣催化事件" in brief and "减持2" in brief
+    (d / "L3_catalyst.csv").unlink()                             # presence-gated:无 staging 无行
+    assert "📣催化事件" not in compose_funnel_brief("000001", d)
