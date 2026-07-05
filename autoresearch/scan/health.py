@@ -51,6 +51,38 @@ def nan_report(scan_dir: Path, thresh: float = 0.30) -> tuple[dict, list[str]]:
     return rates, degraded
 
 
+def anns_empty_rate(scan_dir: Path) -> float | None:
+    """L3_news 空稿率(=1.0 → anns_d 断链/无权限,公告情感与监管旗在裸奔)。无目录 → None。"""
+    d = Path(scan_dir) / "L3_news"
+    files = sorted(d.glob("*.json")) if d.is_dir() else []
+    if not files:
+        return None
+    def _n(p: Path) -> int:
+        try:
+            v = json.loads(p.read_text(encoding="utf-8"))
+            return len(v) if isinstance(v, list) else 0
+        except Exception:  # noqa: BLE001 — 坏 JSON 记空
+            return 0
+    empty = sum(1 for p in files if _n(p) == 0)
+    return round(empty / len(files), 3)
+
+
+def northbound_probe(scan_dir: Path) -> dict | None:
+    """northbound 召回通道空转读数:该路召回票数 + 其 hk_ratio NaN 率(=1.0 → quota 白占)。
+
+    只取证不动结构(spec 2026-07-05 wave §顺带修);坐实后另走 proposal 人拍板。
+    """
+    df = _read(Path(scan_dir) / "L1_recall_top1000.csv")
+    if df is None or "recall_channels" not in df.columns:
+        return None
+    sub = df[df["recall_channels"].astype(str).str.contains("northbound", na=False)]
+    if not len(sub):
+        return {"n": 0, "hk_nan": None}
+    nanr = (round(float(pd.to_numeric(sub["hk_ratio"], errors="coerce").isna().mean()), 3)
+            if "hk_ratio" in sub.columns else None)
+    return {"n": int(len(sub)), "hk_nan": nanr}
+
+
 def finalist_churn(scan_dir: Path) -> dict | None:
     """与上一 scan 日 finalists 的重叠(卡片 TTL 复用的前置测量)。无前日 → None。"""
     scan_dir = Path(scan_dir)
@@ -151,6 +183,7 @@ def run_health(scan_dir: Path) -> dict:
                        "l2": _n("L2_gbdt_top200.csv"), "finalists": _n("finalists.csv"),
                        "cards": cards, "buys": count_buys(scan_dir)},
             "nan_rates": rates, "degraded_fields": degraded,
+            "anns_empty_rate": anns_empty_rate(scan_dir), "northbound": northbound_probe(scan_dir),
             "regime": meta.get("regime"), "l2_engine": meta.get("l2_engine"),
             "weights_source": meta.get("weights_source"),
             "churn": finalist_churn(scan_dir), "l4_phases": l4_phase_stats(scan_dir)}
