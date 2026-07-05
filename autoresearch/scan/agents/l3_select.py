@@ -169,20 +169,9 @@ def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
                    "**不得单独作核心多头论点**,须绝对净额+cmf/obv 同向共振才算确认"
                    "(07-03 实证:该型 finalist 深核全数翻案)。_", ""]
     if reg_flag and "code" in df.columns:
-        from autoresearch.scan.agents.l3_news import reg_hits
-        news_dir = (root or Path("context/scan")) / date / "L3_news"
-
-        def _reg(c: str) -> str:
-            fp = news_dir / f"{str(c).zfill(6)}.json"
-            if not fp.exists():
-                return ""
-            try:
-                anns = json.loads(fp.read_text(encoding="utf-8"))
-            except Exception:  # noqa: BLE001 — 坏 JSON 降级空
-                return ""
-            return reg_hits([a.get("title", "") for a in anns])
-
-        df["news_reg"] = [_reg(c) for c in df["code"]]
+        from autoresearch.scan.agents.l3_news import reg_hits_for_code
+        day_dir = (root or Path("context/scan")) / date
+        df["news_reg"] = [reg_hits_for_code(day_dir, c) for c in df["code"]]
         cols = [*cols, "news_reg"]
         header += ["_⚠监管旗(news_reg):近 10 日公告命中 立案/问询/关注函/处罚/违规/诉讼/"
                    "监管/证监会/交易所。旗票论点**必须显式回应监管事项**,不得无视;独立检测器,"

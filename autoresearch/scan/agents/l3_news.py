@@ -41,6 +41,26 @@ def reg_hits(titles) -> str:
     return "|".join(seen)
 
 
+def reg_hits_for_code(day_dir: Path, code: str) -> str:
+    """某票监管旗:L3_news(anns_d 公告)优先,空/缺回退 L3_webnews(东财个股新闻)。
+
+    anns_d 无权限断链修复(spec 2026-07-05 wave §B0):公告线聋时监管词表退而扫新闻标题,
+    有权限恢复后自动回到公告优先。坏 JSON/两处皆空 → ""(降级不抛)。
+    """
+    code6 = str(code).zfill(6)
+    for sub in ("L3_news", "L3_webnews"):
+        fp = Path(day_dir) / sub / f"{code6}.json"
+        if not fp.exists():
+            continue
+        try:
+            items = json.loads(fp.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 — 坏 JSON 降级下一源
+            continue
+        if items:
+            return reg_hits([a.get("title", "") for a in items])
+    return ""
+
+
 def score_title(title: str) -> tuple[str, float]:
     """标题 → (direction, intensity)。direction∈{利多,利空,''};intensity≥0(强词×2 + 命中累加)。
 
