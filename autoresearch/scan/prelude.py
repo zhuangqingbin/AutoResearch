@@ -118,12 +118,13 @@ def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()
         return f"L4 预算 {n}({why});sentinel={level}({reason})"
 
     def _ledgers():
-        from autoresearch.learning import buy_ledger, catalyst_ledger, cross_calib, journal
+        from autoresearch.learning import buy_ledger, catalyst_ledger, cross_calib, journal, paper_nav
         journal.main()
         buy_ledger.main()
         cross_calib.main()
         catalyst_ledger.main()
-        return "journal + buy_ledger + cross_calib + catalyst 已刷新"
+        paper_nav.main()
+        return "journal + buy_ledger + cross_calib + catalyst + paper_nav 已刷新"
 
     all_steps = [("retro_refresh", _refresh), ("retro_pending", _pending),
                  ("consensus", _consensus), ("universe", _universe), ("calendar", _calendar),

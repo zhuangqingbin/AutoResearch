@@ -641,6 +641,16 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str) ->
         if pulse:
             out += ["## 📈 今日 A 股市场\n", pulse, ""]
 
+    # ── 影子组合成绩单一行(spec 2026-07-05 wave §A1;presence-gated:文件缺 → 不加)──
+    pn = Path("reports/learning/paper_nav_summary.txt")
+    if pn.exists():
+        try:
+            nav_line = pn.read_text(encoding="utf-8").strip()
+        except Exception:  # noqa: BLE001
+            nav_line = ""
+        if nav_line:
+            out += [nav_line, ""]
+
     # ── 观察单日检(上移:触发/临近是读者最先要看的可操作项,别压在行业研判之下)──
     ws = scan_dir / "watchlist_status.csv"
     if ws.exists():
