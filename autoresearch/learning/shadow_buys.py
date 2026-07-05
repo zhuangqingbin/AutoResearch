@@ -78,7 +78,8 @@ def record(scan_dir: Path | str, path: Path | str = _PATH, k: int = 3) -> int:
                      "close": None if cl is None or pd.isna(cl) else float(cl)})
     if not rows:
         return 0
-    out = pd.concat([old, pd.DataFrame(rows)], ignore_index=True)
+    new = pd.DataFrame(rows)
+    out = new if old.empty else pd.concat([old, new], ignore_index=True)
     path.parent.mkdir(parents=True, exist_ok=True)
     out.to_csv(path, index=False)
     return len(rows)
