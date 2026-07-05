@@ -96,6 +96,19 @@ def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()
             return "🔔 触发:" + "、".join(f"{r['name']}({r['code']})" for _, r in trig.iterrows())
         return f"{len(st)} 条在监控,无触发"
 
+    def _catalyst():
+        import pandas as pd
+
+        from autoresearch.scan.agents.l3_catalyst import harvest_catalyst
+        p = scan_dir / "L2_gbdt_top200.csv"
+        if not p.exists():
+            return "跳过(无 L2 staging)"
+        codes = pd.read_csv(p, dtype={"code": str})["code"].astype(str).str.zfill(6).tolist()
+        df = harvest_catalyst(date, codes)
+        pos = [c for c in ("rep_impl", "rep_plan", "holder_in", "surv_n") if c in df.columns]
+        n = int((df[pos].fillna(0).sum(axis=1) > 0).sum()) if len(df) and pos else 0
+        return f"催化旗 {n}/{len(df)} 只(回购/增持/调研)"
+
     def _menu():
         from autoresearch.scan.menu import l4_budget, menu_health, sentinel_advice
         mh = menu_health(scan_dir)
@@ -105,15 +118,17 @@ def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()
         return f"L4 预算 {n}({why});sentinel={level}({reason})"
 
     def _ledgers():
-        from autoresearch.learning import buy_ledger, cross_calib, journal
+        from autoresearch.learning import buy_ledger, catalyst_ledger, cross_calib, journal
         journal.main()
         buy_ledger.main()
         cross_calib.main()
-        return "journal + buy_ledger + cross_calib 已刷新"
+        catalyst_ledger.main()
+        return "journal + buy_ledger + cross_calib + catalyst 已刷新"
 
     all_steps = [("retro_refresh", _refresh), ("retro_pending", _pending),
                  ("consensus", _consensus), ("universe", _universe), ("calendar", _calendar),
-                 ("watchlist", _watchlist), ("menu", _menu), ("ledgers", _ledgers)]
+                 ("watchlist", _watchlist), ("catalyst", _catalyst), ("menu", _menu),
+                 ("ledgers", _ledgers)]
     results = _run_steps([(n, f) for n, f in all_steps if n not in skip])
 
     print("\n" + "═" * 30 + f" prelude 汇总 · {date} " + "═" * 30)
