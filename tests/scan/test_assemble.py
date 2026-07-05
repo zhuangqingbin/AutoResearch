@@ -236,3 +236,37 @@ def test_buylist_header_drops_confidence(published):
     s3 = md.find("## 3. 投资建议")
     header = next((ln for ln in md[s3:].splitlines() if ln.lstrip().startswith("| #")), "")
     assert "置信度" not in header, f"buy-list 表不应再有置信度列: {header}"
+
+
+# ───────────────────────── 影子买单 CSV 污染防护 ─────────────────────────
+
+
+def test_run_does_not_touch_real_shadow_csv(tmp_path):
+    """assemble.run(tmp_scan_dir) 不应创建或修改真实 context/learning/shadow_buys.csv。"""
+    from pathlib import Path
+
+    # 记录真实 CSV 的初始状态
+    real_csv = Path("context/learning/shadow_buys.csv")
+    if real_csv.exists():
+        original_mtime = real_csv.stat().st_mtime
+        original_lines = len(real_csv.read_text(encoding="utf-8").splitlines())
+    else:
+        original_mtime = None
+        original_lines = None
+
+    # 在 tmp_path 运行 assemble
+    root = tmp_path / "scan_l5"
+    scan = _build_scan_dir(root)
+    assemble.run(_DATA_DATE, scan_dir=scan, out_root=root / "reports/scan",
+                 hhmm=_HHMM, run_date=_RUN_DATE)
+
+    # 验证真实 CSV 未被修改
+    if original_mtime is not None:
+        # 文件存在过，检查未被修改
+        assert real_csv.exists(), "真实 CSV 不应被删除"
+        assert real_csv.stat().st_mtime == original_mtime, "真实 CSV 不应被修改"
+        assert len(real_csv.read_text(encoding="utf-8").splitlines()) == original_lines, \
+            "真实 CSV 行数不应改变"
+    else:
+        # 文件不存在过，检查仍不存在
+        assert not real_csv.exists(), "真实 CSV 不应被创建"
