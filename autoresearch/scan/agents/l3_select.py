@@ -140,31 +140,77 @@ def _delta_filter(df: pd.DataFrame, prev_dir: Path,
 
 
 def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
-                shuffle_seed: int | None = None) -> str:
+                shuffle_seed: int | None = None, sector_terrain: bool = False,
+                dist_flag: bool = False, reg_flag: bool = False) -> str:
     """L3 holistic 选股 subagent 的完整输入表(~200 行紧凑表 + 证据摘要列)。
 
     delta=True:略去「昨判弃 ∧ 今无变化」行 + prev_l3 标记(design: l4-economy §3;
     默认 False = 逐字 parity;无前日 L3 现场 → 自动回退全量)。
     shuffle_seed:确定性乱序行序(稳定性抽检用;同 seed 同输出)。
+    sector_terrain=True:前置**全行业确定性地形段**(申万一级对称覆盖,防"有 brief 行业被高看";
+    design: 2026-07-03 海拔重构 §5.5;默认 False = 逐字 parity,缺 staging 自动跳过)。
+    dist_flag=True:加 `main_inflow_yi`(绝对净额,亿)+ `main_dist`(反号/微量,谓词
+    = `scoring.main_net_distortion_label` 单一事实源)两列 + 图例禁则——07-03 病灶:L3 把
+    失真占比读成"真主力"打 conv 60-82,L4 再花 ~15 卡逐一辟谣(默认 False = 逐字 parity)。
+    reg_flag=True:加 `news_reg` 列(近 10 日公告标题命中监管事项词,`l3_news.reg_hits`
+    独立检测器——**不动 _EVENT_TAGS/news_digest,情感列口径不变**)+ 图例禁则
+    (默认 False = 逐字 parity)。spec 2026-07-05 §5.3。
     """
     df = load_l3_input(date, root=root)
     cols = [*_L3_COLS] + [c for c in ("lhb_n", "has_forecast", "has_express") if c in df.columns]
     header: list[str] = []
+    if dist_flag and {"main_net_ratio", "main_inflow_yi"}.issubset(df.columns):
+        from autoresearch.common.scoring import main_net_distortion_label
+        df["main_dist"] = [main_net_distortion_label(r, a) for r, a in
+                          zip(df["main_net_ratio"], df["main_inflow_yi"], strict=True)]
+        cols = [*cols, "main_inflow_yi", "main_dist"]
+        header += ["_⚠主力失真列(main_dist):**反号**=占比正而绝对净额(main_inflow_yi,亿)为负;"
+                   "**微量**=占比≥2%而|绝对|<0.5亿(微盘/窗口放大)。两型下「主力净流入」"
+                   "**不得单独作核心多头论点**,须绝对净额+cmf/obv 同向共振才算确认"
+                   "(07-03 实证:该型 finalist 深核全数翻案)。_", ""]
+    if reg_flag and "code" in df.columns:
+        from autoresearch.scan.agents.l3_news import reg_hits
+        news_dir = (root or Path("context/scan")) / date / "L3_news"
+
+        def _reg(c: str) -> str:
+            fp = news_dir / f"{str(c).zfill(6)}.json"
+            if not fp.exists():
+                return ""
+            try:
+                anns = json.loads(fp.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001 — 坏 JSON 降级空
+                return ""
+            return reg_hits([a.get("title", "") for a in anns])
+
+        df["news_reg"] = [_reg(c) for c in df["code"]]
+        cols = [*cols, "news_reg"]
+        header += ["_⚠监管旗(news_reg):近 10 日公告命中 立案/问询/关注函/处罚/违规/诉讼/"
+                   "监管/证监会/交易所。旗票论点**必须显式回应监管事项**,不得无视;独立检测器,"
+                   "情感列口径不变(非利空词表变更)。_", ""]
     if delta:
         prev = _prev_l3_day(date, root=root)
         if prev is None:
-            header = ["_Δ模式:无前日 L3 现场 → 回退全量表_", ""]
+            header += ["_Δ模式:无前日 L3 现场 → 回退全量表_", ""]
         else:
             df, dropped = _delta_filter(df, prev)
             cols = [*cols, "prev_l3"]
-            header = [f"_Δ模式(vs {prev.name}):略去 **{len(dropped)}** 只「昨判弃且无变化」票"
-                      f"(重新入场条件:Δcomposite>2 或 Δpct60>2 或新 lhb/预告/快报);"
-                      f"**今日仍须对下表独立重新比较,prev_l3 列仅供参考、严禁沿用昨日结论**;"
-                      f"全量表每 ≤5 个 scan 日至少 1 次_", ""]
+            header += [f"_Δ模式(vs {prev.name}):略去 **{len(dropped)}** 只「昨判弃且无变化」票"
+                       f"(重新入场条件:Δcomposite>2 或 Δpct60>2 或新 lhb/预告/快报);"
+                       f"**今日仍须对下表独立重新比较,prev_l3 列仅供参考、严禁沿用昨日结论**;"
+                       f"全量表每 ≤5 个 scan 日至少 1 次_", ""]
     if shuffle_seed is not None:
         df = df.sample(frac=1, random_state=int(shuffle_seed)).reset_index(drop=True)
     table = compact_table(df, cols=cols)
-    return "\n".join([*header, table]) if header else table
+    body = "\n".join([*header, table]) if header else table
+    if sector_terrain:                      # Phase 3:全行业地形段前置(默认关 = 逐字 parity)
+        try:
+            from autoresearch.sector.pack import sector_terrain_md
+            terr = sector_terrain_md((root or Path("context/scan")) / date)
+            if terr:
+                body = terr + "\n\n" + body
+        except Exception:  # noqa: BLE001 — 地形可选,缺 staging 不挡表
+            pass
+    return body
 
 
 def stability_overlap(codes_a, codes_b) -> dict:

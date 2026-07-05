@@ -51,8 +51,14 @@ from autoresearch.common.scoring import (
     prev_quarter,
 )
 
-# 取数(DATA 层):em 路径的 fetch_universe + 硬门/原始数(_GATE_INFO)。
-from autoresearch.data.akshare_universe import _GATE_INFO, fetch_universe
+# 帧构建(L0 取数 + 轻门 + 多日量价)已抽到 scan.frame(Phase 0,design:
+# 2026-07-03-research-skills-altitude-refactor §5.1):run / L1Recall stage / 盘前预告 CLI 三处共用;
+# _recall_gate_a / _harvest_vol_series 由此 re-export(tests/stages 旧导入路径兼容,patch 锚点在 frame)。
+from autoresearch.scan.frame import (  # noqa: F401 — re-export 兼容
+    _harvest_vol_series,
+    _recall_gate_a,
+    build_market_frame,
+)
 
 # 归一化 helpers(_num/_winsor/_pct/_pct_within/_wsum)与报告期 helpers
 # (latest_reported_quarter/prev_quarter)在 autoresearch.common.scoring,顶部 import 复用。
@@ -130,18 +136,7 @@ def aggregate_sectors(survivors: pd.DataFrame, uni: pd.DataFrame, top_sectors: i
 # 在 autoresearch.common.scoring(scan/factor_lab/handler 三处同口径),顶部 import 复用。
 
 
-def _recall_gate_a(df: pd.DataFrame, min_amount_yi: float = 0.0, min_list_days: int = 0) -> pd.Series:
-    """L1 召回轻门:只去真正不可交易/无核心数据的尾部(召回优先,尽量不误杀)。
-
-    `min_list_days`>0 且帧有 `list_days` 列 → 剔次新(上市<阈值日,量价/IC 因子无意义);缺列降级不剔。
-    默认两门 =0 → 与改动前逐值一致(parity)。
-    """
-    keep = df["amount_yi"].fillna(0) > min_amount_yi       # 有流动性/非停牌
-    keep &= df["close"].notna()                            # 有价
-    keep &= df["pct_60d"].notna() | df["pct_ytd"].notna()  # 有动量价(打分核心)
-    if min_list_days > 0 and "list_days" in df.columns:    # 次新过滤(有 list_days 才生效,缺则降级)
-        keep &= pd.to_numeric(df["list_days"], errors="coerce").fillna(1e9) >= min_list_days
-    return keep
+# _recall_gate_a / _harvest_vol_series 已移 scan.frame(顶部 re-export,行为逐字不变)。
 
 
 def aggregate_sectors_overview(recall: pd.DataFrame, uni: pd.DataFrame) -> pd.DataFrame:
@@ -157,59 +152,6 @@ def aggregate_sectors_overview(recall: pd.DataFrame, uni: pd.DataFrame) -> pd.Da
     sec = sec.sort_values("n_recall", ascending=False).reset_index(drop=True)
     sec["is_top"] = sec.index < 8
     return sec
-
-
-def _harvest_vol_series(codes, analysis_date: str, lookback: int = 20) -> pd.DataFrame:
-    """拉近 ~lookback 交易日 daily(high/low/close/amount)→ vol_series 算多日量价因子 per code。
-
-    供 L1 召回的 volprice 组(快照层本来无序列)。tushare bulk by date(~lookback 次)→ pivot → 序列指标。
-    无权限/失败 → 返回空帧(volprice 列缺失 → 组 NaN 重归一,recall 不破)。
-    """
-    try:
-        from datetime import datetime, timedelta
-
-        import autoresearch.common.vol_series as vol_series
-        from autoresearch.data.tushare_source import (
-            _code6,
-            _pro,
-            _trade_days,
-            _ts_call,
-            resolve_momentum_dates,
-        )
-        pro = _pro()
-        last = resolve_momentum_dates(pro, analysis_date)[0]
-        start = (datetime.strptime(last, "%Y%m%d") - timedelta(days=lookback * 2 + 15)).strftime("%Y%m%d")
-        days = _trade_days(pro, start, last)[-lookback:]
-        if len(days) < 10:
-            return pd.DataFrame(columns=["code"])
-        want = {str(c).zfill(6) for c in codes}
-        recs = []
-        from autoresearch.data.cache import get_or_fetch  # 已结算日湖命中零网络(policy: daily=eod)
-        for d in days:
-            try:
-                df = get_or_fetch("daily", {"trade_date": d}, today=analysis_date)
-            except Exception:  # noqa: BLE001 — 湖/policy 异常回退直拉
-                df = _ts_call(lambda d=d: pro.daily(trade_date=d, fields="ts_code,high,low,close,amount"))
-            if df is None or not len(df):
-                continue
-            df = df.assign(code=_code6(df["ts_code"]), date=d)
-            recs.append(df[df["code"].isin(want)][["code", "date", "high", "low", "close", "amount"]])
-        if not recs:
-            return pd.DataFrame(columns=["code"])
-        long = pd.concat(recs, ignore_index=True)
-        piv = {f: long.pivot_table(index="code", columns="date", values=f)
-               for f in ("high", "low", "close", "amount")}
-        win = sorted(piv["close"].columns)
-        H, L, C, A = (piv[f][win] for f in ("high", "low", "close", "amount"))
-        out = pd.DataFrame({"code": list(C.index)})
-        out["cmf_20"] = vol_series.cmf(H, L, C, A, win).to_numpy()
-        out["obv_mom_20"] = vol_series.obv_momentum(C, A, win).to_numpy()
-        out["price_vs_vwap_20"] = vol_series.price_vs_vwap(H, L, C, A, win).to_numpy()
-        out["breakout_vol_20"] = vol_series.breakout_on_volume(C, A, win).to_numpy()
-        return out
-    except Exception as e:  # noqa: BLE001
-        print(f"[warn] 多日量价序列取数失败 → volprice 组置 NaN: {e}", file=sys.stderr)
-        return pd.DataFrame(columns=["code"])
 
 
 def recall_select(scored: pd.DataFrame, analysis_date: str, recall_n: int,
@@ -275,25 +217,11 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
 
     recall_mode:multi=多路策略召回(默认,带 provenance + L1_channels.csv)| composite=单复合分(对拍/回退)。
     """
-    if source == "tushare":
-        from autoresearch.data.tushare_source import (  # 默认源(东财 push2 常被封)
-            _RAW_COUNT,
-            fetch_universe_tushare,
-        )
-        uni = fetch_universe_tushare(analysis_date, cap_floor_yi=cap_floor_yi, include_bj=include_bj)
-        n_raw = _RAW_COUNT.get("n", len(uni))
-    else:
-        uni = fetch_universe(analysis_date, cap_floor_yi=cap_floor_yi, include_bj=include_bj)
-        n_raw = _GATE_INFO.get("n_raw", len(uni))   # em 路径同模块,可靠
-    n_l0 = len(uni)
-
-    # L1 召回:Step A 轻门 → Step B 复合分 → top recall_n
-    uni = uni[_recall_gate_a(uni, min_amount_yi=l0_min_amount_yi,
-                             min_list_days=l0_min_list_days)].reset_index(drop=True)
-    uni["code"] = uni["code"].astype(str).str.zfill(6)
-    vps = _harvest_vol_series(uni["code"], analysis_date)          # 多日量价序列(CMF/OBV/...)→ volprice 组
-    if len(vps):
-        uni = uni.merge(vps, on="code", how="left")
+    # L0 取数 + L1 轻门 + 多日量价富化 → 全市场因子帧(scan.frame 单一代码路径,Phase 0 抽取)
+    uni, _counts = build_market_frame(analysis_date, cap_floor_yi=cap_floor_yi, include_bj=include_bj,
+                                      source=source, l0_min_amount_yi=l0_min_amount_yi,
+                                      l0_min_list_days=l0_min_list_days)
+    n_raw, n_l0 = _counts["universe_raw"], _counts["universe"]
     weights, _regime = pick_weights(uni, regime_aware)
     scored = composite_score(uni, weights)
     recall, per_channel = recall_select(scored, analysis_date, recall_n, recall_mode, recall_channels)

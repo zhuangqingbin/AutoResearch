@@ -22,7 +22,7 @@ def patched(monkeypatch):
     uni = synth_universe(n=600, seed=7)
     monkeypatch.setattr(tushare_source, "fetch_universe_tushare",
                         lambda *a, **k: uni.copy(), raising=True)
-    monkeypatch.setattr(smu, "_harvest_vol_series",
+    monkeypatch.setattr("autoresearch.scan.frame._harvest_vol_series",
                         lambda codes, d, lookback=20: pd.DataFrame(columns=["code"]), raising=True)
     import autoresearch.research.factor_lab as fl
     monkeypatch.setattr(fl, "GBDT_MODEL", "/nonexistent/x.pkl", raising=False)

@@ -110,6 +110,44 @@ def _market_ctx(scan_dir, industry) -> str:
         return ""
 
 
+def _dist_mark(l1: dict) -> str:
+    """主力占比失真标注(谓词=`scoring.main_net_distortion_label` 单一事实源;缺值 → "")。
+
+    07-03 病灶:占比失真票 L4 每卡都要自己重新发现"绝对净出/微盘放大"——确定性标进 P0 简报,
+    subagent 直接从矛盾核查起步,不再重复还债。
+    """
+    try:
+        from autoresearch.common.scoring import main_net_distortion_label
+        lbl = main_net_distortion_label(l1.get("main_net_ratio"), l1.get("main_inflow_yi"))
+    except Exception:  # noqa: BLE001 — 标注可选,缺了不挡简报
+        return ""
+    return f"·⚠主力占比失真({lbl}:勿单独作多头论点,须绝对净额+cmf/obv 同向确认)" if lbl else ""
+
+
+def _pledge_mark(base: Path, code6: str) -> str:
+    """质押旗行(presence-gated:`pledge.csv` 在且比例过阈才注;阈值 =
+    `scoring.pledge_flag_label` 单一事实源,与深核 slim 质押段同源)。低比例/缺档 → ""
+    (不加噪)。spec 2026-07-05 §5.2。"""
+    p = base / "pledge.csv"
+    if not p.exists():
+        return ""
+    try:
+        from autoresearch.common.scoring import pledge_flag_label
+        df = pd.read_csv(p, dtype={"code": str})
+        df["code"] = df["code"].astype(str).str.zfill(6)
+        sub = df[df["code"] == code6]
+        if not len(sub):
+            return ""
+        r = float(pd.to_numeric(pd.Series([sub.iloc[0]["pledge_ratio"]]), errors="coerce").iloc[0])
+        lbl = pledge_flag_label(r)
+    except Exception:  # noqa: BLE001 — 旗可选,缺了不挡简报
+        return ""
+    if not lbl:
+        return ""
+    return (f"- **质押旗(先验)**:质押比例 {r:.1f}%,⚠高质押({lbl})——P4 必核平仓线"
+            f"与补充质押公告(截至 {sub.iloc[0].get('end_date', '—')})")
+
+
 def compose_funnel_brief(code: str, scan_dir: Path | str) -> str:
     """L4 **P0 定向**:从漏斗产物(L1_recall/L2/finalists)拼该票紧凑简报 markdown。
 
@@ -147,7 +185,8 @@ def compose_funnel_brief(code: str, scan_dir: Path | str) -> str:
         f"筹码{_g(l1,'score_chip')}·北向{_g(l1,'score_north')}·技术{_g(l1,'score_tech')}",
         f"- **基本面(先验)**:np_yoy {_g(l1,'np_yoy')}·rev_yoy {_g(l1,'rev_yoy')}·roe {_g(l1,'roe')}",
         f"- **估值(先验)**:pe {_g(l1,'pe')}·pb {_g(l1,'pb')}·股息 {_g(l1,'dv_ratio')}",
-        f"- **资金/技术(先验)**:主力净占比 {_g(l1,'main_net_ratio')}·cmf20 {_g(l1,'cmf_20')}·"
+        f"- **资金/技术(先验)**:主力净占比 {_g(l1,'main_net_ratio')}·主力绝对 {_g(l1,'main_inflow_yi')}亿"
+        f"{_dist_mark(l1)}·cmf20 {_g(l1,'cmf_20')}·"
         f"obv20 {_g(l1,'obv_mom_20')}·rsi6 {_g(l1,'rsi6')}·多头排列 {_g(l1,'ma_bull')}·pct60d {_g(l1,'pct_60d')}",
         f"- **筹码(先验)**:winner {_g(l1,'winner_rate')}·集中度 {_g(l1,'chip_concentration')}·"
         f"现价/成本 {_g(l1,'price_to_cost')}·北向占比 {_g(l1,'hk_ratio')}",
@@ -162,15 +201,28 @@ def compose_funnel_brief(code: str, scan_dir: Path | str) -> str:
         lines += calendar_flags(base, code6)
     except Exception:  # noqa: BLE001 — 日历可选,缺了不挡简报
         pass
-    try:                                     # 行业备忘录(记忆中层:行业级历史事实,非方向)
-        from autoresearch.learning.sector_memo import render_memo_line
-        ml = render_memo_line(l3.get("industry") or l3.get("sector") or l1.get("industry"))
-        if ml:
-            lines.append(ml)
+    pm = _pledge_mark(base, code6)           # 质押旗:确定性预旗(pledge.csv 在才注,presence-gated)
+    if pm:
+        lines.append(pm)
+    ind = l3.get("industry") or l3.get("sector") or l1.get("industry")
+    sector_block = ""
+    try:                                     # Phase 3:行业 brief 地形段(同链摊销;无 brief → memo 行回退)
+        from autoresearch.sector.brief import render_terrain_block
+        sector_block = render_terrain_block(ind, base)
     except Exception:  # noqa: BLE001
-        pass
+        sector_block = ""
+    if sector_block:
+        lines.append(sector_block)
+    else:
+        try:                                 # 行业备忘录(记忆中层:行业级历史事实,非方向)
+            from autoresearch.learning.sector_memo import render_memo_line
+            ml = render_memo_line(ind)
+            if ml:
+                lines.append(ml)
+        except Exception:  # noqa: BLE001
+            pass
     brief = "\n".join(lines) + "\n"
-    ctx = _market_ctx(base, l3.get("industry") or l3.get("sector") or l1.get("industry"))
+    ctx = _market_ctx(base, ind)
     doss = ""
     try:                                     # R5·前科卡(历史事实,增量研究;异常吞掉老 brief 不破)
         from autoresearch.scan.dossier import render_dossier
@@ -274,3 +326,153 @@ def audit_rubric_gates(card_text: str, gates: dict) -> list[str]:
         if hit:
             flags.append(f"{gate}=True 但正文含「{hit}」(自评与正文矛盾,疑 gaming)")
     return flags
+
+
+# ───────────────────────── L4 · 派发包确定性落稿(harvest 清单 + prompt 稿) ─────────────────────────
+
+
+def write_dispatch_pack(scan_dir: Path | str) -> dict:
+    """L4 派发包确定性落稿(零 LLM):`_harvest_list.txt`(yfinance 归一后缀,`.SH` 绝迹)
+    + 每卡 `_l4_prompt_<code>.md`(共享指令 + 漏斗简报 + slim/卡路径指针)。
+
+    已有 `details/<code>.md`(♻️ 复用/已出卡)跳过。落稿契约从人肉变确定性:
+    ① token 表输入侧从此可计(assemble 估算器认 `_l4_prompt_*`);② 编排以 prompt 稿为
+    派发正文(共享块在前 = prompt cache 前缀命中);③ 07-03 `.SH` 空 slim 双跑从清单源头消灭。
+    返回 {n_prompts, n_skipped, tickers}。
+    """
+    scan_dir = Path(scan_dir)
+    date = scan_dir.name
+    fp = scan_dir / "finalists.csv"
+    if not fp.exists():
+        return {"n_prompts": 0, "n_skipped": 0, "tickers": []}
+    from autoresearch.dataflows.symbol_utils import normalize_symbol  # lazy,保持模块轻量
+    fin = pd.read_csv(fp, dtype={"code": str})
+    shared = ""
+    sp = scan_dir / "_l4_shared_instructions.md"
+    if sp.exists():
+        shared = sp.read_text(encoding="utf-8").strip()
+    tickers: list[str] = []
+    n_prompts = n_skipped = 0
+    for _, r in fin.iterrows():
+        raw = str(r.get("code", "") or "").strip()
+        if not raw or raw == "nan":
+            continue
+        code6 = raw.split(".")[0].zfill(6)
+        if (scan_dir / "details" / f"{code6}.md").exists():
+            n_skipped += 1                          # ♻️ 复用卡已就位:不重拉不派发
+            continue
+        ticker = normalize_symbol(code6)            # 6 位码 → .SS/.SZ/.BJ(单一后缀口径)
+        tickers.append(ticker)
+        prompt = "\n".join([
+            f"# L4 派发 prompt — {code6} {r.get('name', '')}(确定性落稿;编排以此为派发正文)",
+            "",
+            shared or "_(共享指令稿缺:`_l4_shared_instructions.md` 未落——按 stock-research lite-playbook 执行)_",
+            "",
+            "---",
+            "",
+            compose_funnel_brief(code6, scan_dir).rstrip(),
+            "",
+            "---",
+            f"- slim 数据:`context/{ticker}_{date}_slim.md`(P1+ 逐段读;**>10KB 才可信**,≈4.8KB=NO_DATA 须重拉)",
+            f"- 决策卡写往:`context/scan/{date}/details/{code6}.md`",
+            ""])
+        (scan_dir / f"_l4_prompt_{code6}.md").write_text(prompt, encoding="utf-8")
+        n_prompts += 1
+    (scan_dir / "_harvest_list.txt").write_text(
+        "\n".join(tickers) + ("\n" if tickers else ""), encoding="utf-8")
+    return {"n_prompts": n_prompts, "n_skipped": n_skipped, "tickers": tickers}
+
+
+def _tushare_pledge(code6: str) -> tuple[float, str] | None:
+    """默认取数器:tushare pledge_stat 最新一期 → (ratio, end_date);失败/空 → None。"""
+    from autoresearch.data.tushare_enrich import _pro, _ts_call, _tscode
+    pro = _pro()
+    pl = _ts_call(lambda: pro.pledge_stat(ts_code=_tscode(code6)))
+    if pl is None or not len(pl):
+        return None
+    row = pl.sort_values("end_date").tail(1).iloc[0]
+    r = pd.to_numeric(pd.Series([row["pledge_ratio"]]), errors="coerce").iloc[0]
+    return None if pd.isna(r) else (float(r), str(row["end_date"]))
+
+
+def fetch_pledge(scan_dir: Path | str, codes=None, fetch_fn=None,
+                 reuse_days: int = 7) -> pd.DataFrame:
+    """finalists 级质押取数 → `pledge.csv`(code,pledge_ratio,end_date)。零 LLM。
+
+    近 reuse_days 内其他 scan 日已拉过的 code 直接复用(周频数据,不重拉);缺的走
+    fetch_fn(默认 tushare pledge_stat,~30 calls/日远离限频),单票失败降级跳过。
+    spec 2026-07-05 §5.2。
+    """
+    from datetime import datetime
+    scan_dir = Path(scan_dir)
+    if codes is None:
+        fp = scan_dir / "finalists.csv"
+        if not fp.exists():
+            return pd.DataFrame(columns=["code", "pledge_ratio", "end_date"])
+        codes = pd.read_csv(fp, dtype={"code": str})["code"].tolist()
+    want = [str(c).split(".")[0].zfill(6) for c in codes]
+
+    def _d(name: str):
+        try:
+            return datetime.strptime(name, "%Y-%m-%d")
+        except ValueError:
+            return None
+
+    today = _d(scan_dir.name)
+    rows: dict[str, dict] = {}
+    if today is not None and scan_dir.parent.exists():
+        for sib in sorted((p for p in scan_dir.parent.iterdir() if p.is_dir()), reverse=True):
+            sd = _d(sib.name)
+            if sd is None or sib == scan_dir or not 0 <= (today - sd).days <= reuse_days:
+                continue
+            pp = sib / "pledge.csv"
+            if not pp.exists():
+                continue
+            try:
+                prev = pd.read_csv(pp, dtype={"code": str})
+            except Exception:  # noqa: BLE001
+                continue
+            prev["code"] = prev["code"].astype(str).str.zfill(6)
+            for _, r in prev.iterrows():
+                c = r["code"]
+                if c in want and c not in rows:
+                    rows[c] = {"code": c, "pledge_ratio": r.get("pledge_ratio"),
+                               "end_date": r.get("end_date")}
+    fetch_fn = fetch_fn or _tushare_pledge
+    for c in want:
+        if c in rows:
+            continue
+        try:
+            got = fetch_fn(c)
+        except Exception:  # noqa: BLE001 — 单票降级隔离
+            got = None
+        if got is not None:
+            rows[c] = {"code": c, "pledge_ratio": got[0], "end_date": got[1]}
+    out = pd.DataFrame([rows[c] for c in want if c in rows],
+                       columns=["code", "pledge_ratio", "end_date"])
+    out.to_csv(scan_dir / "pledge.csv", index=False)
+    return out
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+    ap = argparse.ArgumentParser(description="L4 确定性件 CLI(派发包落稿/质押预旗,零 LLM)")
+    ap.add_argument("cmd", choices=["prompts", "pledge"],
+                    help="prompts = 写 _harvest_list.txt + _l4_prompt_<code>.md;"
+                         "pledge = finalists 批量质押 → pledge.csv(简报自动带 ⚠质押旗)")
+    ap.add_argument("date", help="scan 日 YYYY-MM-DD")
+    args = ap.parse_args(argv)
+    if args.cmd == "pledge":
+        df = fetch_pledge(Path("context/scan") / args.date)
+        n_flag = int((pd.to_numeric(df.get("pledge_ratio"), errors="coerce") > 20).sum()) if len(df) else 0
+        print(f"[l4_card pledge] {len(df)} 票落 pledge.csv(>20% 偏高/红旗 {n_flag} 票);"
+              f"派发前跑,简报自动注 ⚠质押旗")
+        return 0
+    res = write_dispatch_pack(Path("context/scan") / args.date)
+    print(f"[l4_card prompts] {res['n_prompts']} 份 prompt + _harvest_list({len(res['tickers'])} 票,"
+          f"已归一 yfinance 后缀);跳过已有卡 {res['n_skipped']}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -152,6 +152,15 @@ def main() -> int:
     out_path.write_text("\n".join(out), encoding="utf-8")
     print(f"[assembled] {out_path}")
 
+    try:   # Phase 2:full 档机读摘要 macro_state.json(宏观 lite / scan Stage 0 消费;失败不阻报告)
+        from autoresearch.macro.state import write_macro_state
+        st = write_macro_state(root, report_path=out_path, out_dir=root.parent)
+        print(f"[macro_state] {root.parent / 'macro_state.json'}(as_of {st['as_of']} · "
+              f"跨资产 {len(st['cross_asset'])} 行 · A股行业 {len(st['ashare_sectors'])} 行 · "
+              f"regime_at_run {st['regime_at_run'] or '未记'})")
+    except Exception as e:  # noqa: BLE001
+        print(f"[warn] macro_state 落盘失败(不阻报告): {e}")
+
     alloc = parse_allocation(_read(root, DECISION_REL))
     print(f"[parse_rating → cross-asset ({len(alloc)})] {alloc}")
     if (root / SECTOR_MAP_REL).exists():

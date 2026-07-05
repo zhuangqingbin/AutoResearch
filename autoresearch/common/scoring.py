@@ -200,6 +200,54 @@ def healthy_riser_mask(frame: pd.DataFrame) -> pd.Series | None:
     return (p > 0) & (p < 40) & (m > 0) & (c > 0)
 
 
+def main_net_distortion_label(ratio, inflow_yi, ratio_min: float = 0.02,
+                              abs_min_yi: float = 0.5) -> str:
+    """主力占比失真判型(**单一事实源**:L3 表 dist_flag 列 = L4 简报标注同一定义)。
+
+    2026-07-03 取证:两型精确命中 L4 逐卡辟谣的 ~18/30 finalist(重复深核的浪费源):
+      反号 = main_net_ratio>0 而绝对净额(main_inflow_yi,亿)<0 —— 占比与绝对矛盾(窗口/口径放大);
+      微量 = 占比≥ratio_min 而 |绝对|<abs_min_yi —— 绝对量撑不起占比读数(微盘放大,
+             如东北证券 +8.7% 实为 +0.03亿)。
+    规则:两型下「主力净流入」不得单独作核心多头论点,须绝对净额+cmf/obv 同向共振才算确认。
+    占比≤0 无多头读数不标;缺值/非数容错返回 ""。
+    """
+    try:
+        r, a = float(ratio), float(inflow_yi)
+    except (TypeError, ValueError):
+        return ""
+    if r != r or a != a or r <= 0:          # NaN / 占比非正
+        return ""
+    if a < 0:
+        return "反号"
+    if r >= ratio_min and abs(a) < abs_min_yi:
+        return "微量"
+    return ""
+
+
+def main_net_distortion_mask(frame: pd.DataFrame, ratio_min: float = 0.02,
+                             abs_min_yi: float = 0.5) -> pd.Series | None:
+    """主力占比失真谓词(向量版,阈值与 `main_net_distortion_label` 同源)。缺列 → None。"""
+    if not all(c in frame.columns for c in ("main_net_ratio", "main_inflow_yi")):
+        return None
+    r, a = _num(frame["main_net_ratio"]), _num(frame["main_inflow_yi"])
+    return (r > 0) & ((a < 0) | ((r >= ratio_min) & (a.abs() < abs_min_yi)))
+
+
+def pledge_flag_label(ratio, high: float = 40.0, warn: float = 20.0) -> str:
+    """股权质押比例判型(**单一事实源**:L4 简报质押旗 = 深核 slim 质押段同一阈值)。
+
+    >high(%)= 爆雷红旗(平仓线连锁风险);>warn = 偏高;低/缺值 → ""(不加噪)。
+    spec: 2026-07-05 计量·校准四件套 §5.2。
+    """
+    try:
+        r = float(ratio)
+    except (TypeError, ValueError):
+        return ""
+    if r != r:                               # NaN
+        return ""
+    return "爆雷红旗" if r > high else ("偏高" if r > warn else "")
+
+
 # ───────────────────────── 9 因子组 + 行业条件化复合分 ─────────────────────────
 
 # 9 因子组(自然朝向:高=常规看多;真方向由 weights.json 的 IC 符号决定)。

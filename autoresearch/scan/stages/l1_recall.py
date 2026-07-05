@@ -41,13 +41,14 @@ class L1Recall(Stage):
         return [schema.L1_RECALL, schema.L1_SCORED_FULL, schema.L1_CHANNELS]
 
     def run(self, ctx: RunContext) -> None:
+        from autoresearch.scan import frame as smf
         from autoresearch.scan import universe as smu
         uni = ctx.trace.get_df(ctx.run_id, schema.L0_UNIVERSE)
         uni["code"] = uni["code"].astype(str).str.zfill(6)
         recall_n = ctx.config.recall_n
 
-        # 多日量价序列(CMF/OBV/...)→ volprice 组(scan.universe.run 同款,失败返回空帧不破)。
-        vps = smu._harvest_vol_series(uni["code"], ctx.analysis_date)
+        # 多日量价序列(CMF/OBV/...)→ volprice 组(scan.frame 同款——run 也经它,失败返回空帧不破)。
+        vps = smf._harvest_vol_series(uni["code"], ctx.analysis_date)
         if len(vps):
             uni = uni.merge(vps, on="code", how="left")
 

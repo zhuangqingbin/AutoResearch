@@ -17,7 +17,7 @@ import pytest
 
 import autoresearch.research.factor_lab as factor_lab
 from autoresearch.data import tushare_source
-from autoresearch.scan import cli, universe as screen_market
+from autoresearch.scan import cli
 
 DATE = "2026-06-20"
 
@@ -82,7 +82,7 @@ def offline_universe(monkeypatch, tmp_path):
         return pd.DataFrame(columns=["code"])
 
     monkeypatch.setattr(tushare_source, "fetch_universe_tushare", _fake_fetch, raising=True)
-    monkeypatch.setattr(screen_market, "_harvest_vol_series", _fake_vol, raising=True)
+    monkeypatch.setattr("autoresearch.scan.frame._harvest_vol_series", _fake_vol, raising=True)
     monkeypatch.setattr(factor_lab, "GBDT_MODEL", "/nonexistent/gbdt_model.pkl", raising=False)
     monkeypatch.chdir(tmp_path)
     return tmp_path

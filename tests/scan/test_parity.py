@@ -91,9 +91,10 @@ def _fixed_universe(n: int = 600) -> pd.DataFrame:
 def patched_universe(monkeypatch):
     """Patch BOTH 取数入口 → fixed universe;_harvest_vol_series → 空帧。
 
-    现 run() 在 run() 内 `from autoresearch.data.tushare_source import fetch_universe_tushare`,新
-    L0Universe 也从同一模块取 → patch `tushare_source.fetch_universe_tushare` 覆盖两条路径。
-    `_harvest_vol_series` 是 scan.universe 的模块级函数,两条路径都经它 → patch 在 scan.universe 上。
+    现 run() 经 `scan.frame.build_market_frame` 内 `from ...tushare_source import fetch_universe_tushare`,
+    新 L0Universe 也从同一模块取 → patch `tushare_source.fetch_universe_tushare` 覆盖两条路径。
+    `_harvest_vol_series` 现居 scan.frame(run 经 build_market_frame、L1 stage 直调 frame)→
+    patch 在 scan.frame 上,一个锚点覆盖两条路径(Phase 0 抽取后的单一代码路径不变量)。
     同时把 GBDT 模型路径指到 tmp(不存在)→ predict_scores 回落线性,与默认 champion(linear)对齐。
     """
     uni = _fixed_universe()
@@ -105,7 +106,7 @@ def patched_universe(monkeypatch):
         return pd.DataFrame(columns=["code"])
 
     monkeypatch.setattr(tushare_source, "fetch_universe_tushare", _fake_fetch, raising=True)
-    monkeypatch.setattr(screen_market, "_harvest_vol_series", _fake_vol, raising=True)
+    monkeypatch.setattr("autoresearch.scan.frame._harvest_vol_series", _fake_vol, raising=True)
     # GBDT 自保门:确保现 run() 的 L2 走线性回落(模型文件指向不存在的 tmp 路径)。
     monkeypatch.setattr(factor_lab, "GBDT_MODEL", "/nonexistent/gbdt_model.pkl", raising=False)
     # champion store 隔离:L2 用动态 STORE_ROOT 加载 champion;指向不存在路径 → 无 champion →

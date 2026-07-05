@@ -123,6 +123,43 @@ def market_pack(scan_dir: Path | str) -> dict:
     return pack
 
 
+def _sectors_from_frame(df: pd.DataFrame, n: int = 5) -> dict | None:
+    """帧 groupby(industry)→ 与 sectors.csv 兼容的行(n_recall=全市场计数、无打分列)→ 红黑榜。
+
+    盘前帧无 composite → `median_composite` 缺省 None(描述性字段可缺,_row 已容)。
+    """
+    if "industry" not in df.columns or "pct_60d" not in df.columns or not len(df):
+        return None
+    gd = df[["industry"]].copy()
+    gd["pct_60d"] = _num(df, "pct_60d")
+    if "main_net_ratio" in df.columns:
+        gd["main_net_ratio"] = _num(df, "main_net_ratio")
+    g = gd.groupby("industry")
+    sec = pd.DataFrame({"industry": list(g.size().index), "n_recall": g.size().to_numpy(),
+                        "median_pct_60d": g["pct_60d"].median().to_numpy()})
+    if "main_net_ratio" in gd.columns:
+        sec["median_main_net_ratio"] = g["main_net_ratio"].median().to_numpy()
+    return _sectors(sec, n=n)
+
+
+def market_pack_from_frame(frame: pd.DataFrame | None) -> dict:
+    """帧入口(盘前 cron / Stage 0 宏观 lite,scan staging 尚不存在时)。零 LLM。
+
+    与 `market_pack(scan_dir)` 同字段形状、regime/breadth/valuation/money 四段同函数同口径;
+    sectors 由帧 groupby 生成(n_recall=全市场计数、median_composite=None——帧无打分)。
+    design: docs/specs/2026-07-03-research-skills-altitude-refactor-design.md §5.1。
+    """
+    pack: dict = {"regime": None, "breadth": None, "valuation": None, "money": None, "sectors": None}
+    if frame is None or not len(frame):
+        return pack
+    pack["regime"] = classify_regime(frame).to_dict()
+    pack["breadth"] = _breadth(frame)
+    pack["valuation"] = _valuation(frame)
+    pack["money"] = _money(frame)
+    pack["sectors"] = _sectors_from_frame(frame)
+    return pack
+
+
 # ───────────────────────── L3/L4 注入:描述性地形块(防锚定) ─────────────────────────
 
 

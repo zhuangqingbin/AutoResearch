@@ -65,6 +65,30 @@ context/macro/<date>/        # 分节草稿(gitignored);assemble → reports/mac
 - as-of 分析日,无未来数据。
 - 中美对撞 / Risk Debate 有真实张力。
 
+## lite 档:市场研判(首席策略师 · scan-market Stage 0 / 日频 brief)
+
+> 自 scan-market `screening-playbook.md` 迁入(2026-07-03 海拔重构,design:
+> `docs/specs/2026-07-03-research-skills-altitude-refactor-design.md` §5.2:市场层=宏观能力 lite 档)。
+> **一次产出、三处复用**:写 `context/scan/<date>/market_view.md` → scan 的 L3 prompt 地形段 +
+> 每张 L4 卡简报(`market_context_block` 自动注入)+ L5 置顶;缺文件 → L5 回退确定性脉搏(parity 不破)。
+
+**输入(全确定性,数字不可编造)**:
+- `market_pack` JSON —— **Stage 0**(与 universe 并行,推荐):`uv run --no-sync python -m autoresearch.scan.frame <date> --json`(湖派生帧 → `market_pack_from_frame`);或 **L2 后**:`autoresearch.scan.market.market_pack(scan_dir)`。两口径同字段(帧口径的 sectors 无打分列,描述性可缺)。
+- `context/macro/macro_state.json`(本 skill **full 档** assemble 自动落的机读产物,**presence-gated**):存在 **且** 未过期(`today − as_of ≤ 7天` 且 当日 regime == `regime_at_run`,双失效由 `autoresearch.macro.state.load_macro_state` 判)才注入;缺/过期 → 只用 pack,研判中标一句"无新鲜宏观视图(仅日频 pack)"。**`frame <date> --json` 已把失效判定后的 `macro_state`(+`macro_state_note`)捆绑进同一份 JSON——Stage 0 一条命令拿全输入。**
+
+**首席策略师 prompt(模板)**:
+> 你是一名**资深 A 股投资大师 / 首席策略师**。下面是今日全市场确定性数据包(`market_pack`,数字不可编造)[,及最近一次全球宏观研究的机读摘要 `macro_state`]。写一段 ~300–400 字的市场研判 `market_view.md`,**6 小节**:
+> 1. **一句话定调**(regime + 结构 + 情绪,如"避险哑铃:AI 半导体极致拥挤 + 宽基超跌落刀");
+> 2. **市场结构**(宽度〔多少票站上 MA60〕/ 主力资金净流向 / 估值分散〔哑铃两端〕);
+> 3. **板块红黑榜**(强 top3 / 弱 bottom3,各一句 why);
+> 4. **操作基调**(基于 regime 的整体仓位姿态;**规范性,仅 L5 用**);
+> 5. **关注**(催化日历:中报窗口 / 政策会议 / 解禁);
+> 6. 收尾"仅供研究,非投资建议"。
+> **铁律**:前 3 节是**描述性地形**(会喂 L3/L4 校准,**不得含个股买卖指令 / 不得对具体票定方向**);第 4–5 节才是规范性 + 前瞻。**个股评级只由 L4 rubric 三门决定,你的研判不改判、不锚定卡片**。macro_state 缺/过期时,不得引用旧宏观的方向性结论。
+> 数据包:`<market_pack JSON>` [宏观摘要:`<macro_state JSON>`]
+
+**产出分层(防锚定不变量,务必守)**:1–3 节=描述性地形(L3/L4 读);4–5 节=规范性+前瞻(仅 L5)。**为什么这样切**:一段"避险别追"的 house view 会把 20 张 L4 卡带成集体附和 → 破坏"每只独立自下而上 DD + rubric 防 gestalt 多报";喂卡片的必须是**数字地形**,不是方向指令。
+
 ## 已知数据坑
 1. FRED 国际 series 若 `MACRO_DATA_UNAVAILABLE` → WebSearch,标『实时网查』。
 2. akshare 中观端点版本漂/限流 → context 已留 WebSearch 指令,推理阶段补回逐日/逐行颗粒度,别静默跳过。

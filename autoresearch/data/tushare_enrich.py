@@ -136,9 +136,11 @@ def ashare_shareholder_ts(sym: str) -> str | None:
     try:
         pl = _ts_call(lambda: pro.pledge_stat(ts_code=tc))
         if len(pl):
+            from autoresearch.common.scoring import pledge_flag_label  # 阈值单一事实源(与 L4 质押旗同)
             pl = pl.sort_values("end_date").tail(1).iloc[0]
             pr = float(_num(pd.Series([pl["pledge_ratio"]])).iloc[0])
-            flag = "⚠️高质押(爆雷红旗)" if pr > 40 else "偏高" if pr > 20 else "可控"
+            lbl = pledge_flag_label(pr)
+            flag = "⚠️高质押(爆雷红旗)" if lbl == "爆雷红旗" else (lbl or "可控")
             out.append(f"**股权质押(tushare)**:质押比例 **{pr:.1f}%**({flag}),截至 {pl['end_date']}。")
     except Exception as e:  # noqa: BLE001
         out.append(f"_tushare 质押取数失败: {e}_")

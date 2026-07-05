@@ -3,7 +3,7 @@
 一个 module-scoped fixture 造与原 selftest **完全相同**的合成 scan dir(meta/L1/L2/finalists/L4 卡/
 中间推理件/verify.csv),跑 `assemble.run(d, run_date=2026-06-21, hhmm=0930)`,各 test 对发布产物断言:
   - 三段 summary(## 1 漏斗 / ## 2 各阶段 / ## 3 投资建议)
-  - **逐阶段 buy-list 表**(L1召回/L2粗排/L3论点 列;名次带分母 #5 + 列头 #/N + 列注;已删 代码/R:R/提案)
+  - **逐阶段 buy-list 表**(L1召回/L2粗排/L3精排/L4研究 列;名次带分母 #5 + 列头 #/N + 列注;已删 代码/R:R/提案)
   - **token 估算段**(## 各阶段 token 消耗 / 确定性·GBDT)
   - Tier-3 多空辩论徽标(🛡️红队 / ⚠️降级 / ✅维持 / 多/空/共识明细)
   - 降级折回(甲 OW→Hold 踢出买单;丁 OW 维持不改)
@@ -158,9 +158,9 @@ def test_reasoning_archived(published):
     "选集", "召回", "粗排", "精排", "Overweight", "+30%", "⚠️卡片缺失",
     "AI 光模块需求超预期", "组合视角",
     # 逐阶段结论列(per-stage buy-list 表)
-    "L1召回(#/", "L2粗排(#/", "L3论点·确信", "#5", "列注",
+    "L1召回(#/", "L2粗排(#/", "L3精排", "L4研究·结论", "#5", "列注",
     # token 估算段
-    "## 各阶段 token 消耗", "确定性·GBDT",
+    "## 各阶段 token 消耗", "落盘可测下界",   # 07-03 估算器改版:确定性三行合一,行名不再含 GBDT
     # Tier-3 多空辩论徽标 + 明细
     "🛡️红队", "🛡️ Tier-3 买单多空辩论", "⚠️降级", "✅维持",
     "估值已透支PE160", "AI光模块需求真切", "降级2/3",
@@ -170,11 +170,11 @@ def test_summary_contains_token(published, token):
 
 
 def test_per_stage_table_dropped_code_rr_proposal(published):
-    """逐阶段 buy-list 表已删 代码/R:R/提案 列(只留 L1召回/L2粗排/L3论点 等结论列)。"""
+    """逐阶段 buy-list 表已删 代码/R:R/提案 列(只留 L1召回/L2粗排/L3精排/L4研究 等结论列)。"""
     md = published["md"]
     s3 = md.find("## 3. 投资建议")
     header = next((ln for ln in md[s3:].splitlines() if ln.lstrip().startswith("| #")), "")
-    assert "L1召回" in header and "L2粗排" in header and "L3论点" in header, f"逐阶段表头缺列: {header}"
+    assert all(c in header for c in ("L1召回", "L2粗排", "L3精排", "L4研究")), f"逐阶段表头缺列: {header}"
     assert "R:R" not in header, f"逐阶段表不应有 R:R 列: {header}"
     assert "提案" not in header, f"逐阶段表不应有 提案 列: {header}"
     assert "代码" not in header, f"逐阶段表不应有 代码 列: {header}"
@@ -217,3 +217,22 @@ def test_buylist_l1l2_cells_queue_and_score(published):
     assert "g0.5" in row, f"L2粗排应带 gbdt 分(0.54→g0.54): {row}"
     assert "·80" not in row, f"L1 不应再有裸 composite: {row}"
     assert "列注" in md, "应有列注解释名次/队列含义"
+
+
+# ───────────────────────── 呈现层瘦身(2026-07-04) ─────────────────────────
+
+
+def test_l4_brief_not_over_truncated():
+    """L4 结论列 48→96:0买日『为何没买』是全部信息量,别腰斩。"""
+    bear = "PB16极端加近4季连miss下共识未证·主力派发占比假象·破多头排列·震荡无垫·估值透支是核心杀点·中报八月下旬前无近端催化"
+    text = f"**一行多空**: 多 xxx ｜ 空 {bear}\n"
+    out = assemble._l4_brief(text, "Hold")
+    assert bear.replace("、", "·") in out, f"96 字符内不应截断: {out}"
+
+
+def test_buylist_header_drops_confidence(published):
+    """置信度列 30 行全『中』零信息 → 删;置信度仍在 details 卡内。"""
+    md = published["md"]
+    s3 = md.find("## 3. 投资建议")
+    header = next((ln for ln in md[s3:].splitlines() if ln.lstrip().startswith("| #")), "")
+    assert "置信度" not in header, f"buy-list 表不应再有置信度列: {header}"

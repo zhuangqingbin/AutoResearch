@@ -68,3 +68,90 @@ def test_base_rates_and_empty(tmp_path):
     br = rating_base_rates(roll(tmp_path), min_n=10)
     assert br[0]["rating"] == "Overweight" and br[0]["n"] == 1 and br[0]["thin"]
     assert br[0]["win5"] == 1.0
+
+
+# ---------------- 全卡目标校准(spec 2026-07-05 §6) ----------------
+
+def _mk_rated_day(root, date, cards, with_attr=True):
+    """cards = [(code, rating, hi_10 或 None)];close=100、目标=120(幅 0.20)、gap=0.02。"""
+    d = root / date
+    (d / "details").mkdir(parents=True)
+    pd.DataFrame([{"code": c, "name": f"n{c}", "sector": "半导体"} for c, _, _ in cards]
+                 ).to_csv(d / "finalists.csv", index=False)
+    pd.DataFrame([{"code": c, "close": 100.0} for c, _, _ in cards]
+                 ).to_csv(d / "L1_scored_full.csv", index=False)
+    attr_rows = []
+    for code, rating, hi in cards:
+        (d / "details" / f"{code}.md").write_text(CARD.replace("Overweight", rating),
+                                                  encoding="utf-8")
+        row = {"code": code, "fwd_1_oo": 0.01, "fwd_5_oc": 0.08, "fwd_10_oc": 0.10,
+               "gap_d1": 0.02}
+        if hi is not None:
+            row["hi_10_oc"] = hi
+        attr_rows.append(row)
+    if with_attr:
+        (d / "retro").mkdir()
+        pd.DataFrame(attr_rows).to_csv(d / "retro" / "attribution.csv", index=False)
+    return d
+
+
+def test_target_calibration_counts_all_ratings(tmp_path):
+    """全评级入账(非只 ≥OW):Hold 卡也进统计 —— 0 买连败下样本不再永久 thin。"""
+    from autoresearch.learning.buy_ledger import target_calibration
+    # 目标幅 0.20(close 基)→ o1 基 t_entry = 1.20/1.02−1 ≈ 0.1765
+    _mk_rated_day(tmp_path, "2026-07-01", [("000001", "Hold", 0.25)])        # 触达
+    _mk_rated_day(tmp_path, "2026-07-02", [("000002", "Underweight", 0.05)])  # 未触达
+    st = target_calibration(tmp_path, min_n=1)
+    assert st["n"] == 2 and st["n_mature"] == 2
+    assert abs(st["hit_rate"] - 0.5) < 1e-9
+    assert abs(st["med_target"] - 0.20) < 1e-9
+    assert abs(st["med_mfe"] - 0.15) < 1e-9          # median(0.25, 0.05)
+    assert not st["thin"]
+
+
+def test_target_calibration_excludes_downside_targets(tmp_path):
+    """UW 向下目标(tr≤0)不入统计——负目标幅任何上涨都'触达',会稀释过乐观读数。"""
+    from autoresearch.learning.buy_ledger import target_calibration
+    _mk_rated_day(tmp_path, "2026-07-01", [("000001", "Hold", 0.25)])
+    d = tmp_path / "2026-07-01"
+    (d / "details" / "000002.md").write_text(
+        CARD.replace("Overweight", "Underweight").replace("120(EV)", "80(EV)"),
+        encoding="utf-8")
+    fin = pd.read_csv(d / "finalists.csv", dtype={"code": str})
+    pd.concat([fin, pd.DataFrame([{"code": "000002", "name": "n2", "sector": "半导体"}])]
+              ).to_csv(d / "finalists.csv", index=False)
+    l1 = pd.read_csv(d / "L1_scored_full.csv", dtype={"code": str})
+    pd.concat([l1, pd.DataFrame([{"code": "000002", "close": 100.0}])]
+              ).to_csv(d / "L1_scored_full.csv", index=False)
+    st = target_calibration(tmp_path, min_n=1)
+    assert st["n"] == 1                      # 80/100−1 = −0.2 ≤ 0 → 剔除
+
+
+def test_target_calibration_window_and_immature(tmp_path):
+    from autoresearch.learning.buy_ledger import target_calibration
+    _mk_rated_day(tmp_path, "2026-07-01", [("000001", "Hold", 0.25)])
+    _mk_rated_day(tmp_path, "2026-07-02", [("000002", "Hold", None)])   # 无 hi → 未成熟
+    st = target_calibration(tmp_path, min_n=1)
+    assert st["n"] == 2 and st["n_mature"] == 1      # 未成熟计 n 不计 mature
+    st1 = target_calibration(tmp_path, window=1, min_n=1)
+    assert st1["n"] == 1 and st1["n_mature"] == 0    # 窗口只留最近 1 个 scan 日
+    assert target_calibration(tmp_path / "nx") is None    # 无现场 → None
+
+
+def test_calibration_line_thin_gates_injection(tmp_path):
+    from autoresearch.learning.buy_ledger import calibration_line, target_calibration
+    _mk_rated_day(tmp_path, "2026-07-01", [("000001", "Hold", 0.25)])
+    thin_line = calibration_line(target_calibration(tmp_path))          # 默认 min_n=10
+    assert "样本少" in thin_line and "禁注" in thin_line
+    line = calibration_line(target_calibration(tmp_path, min_n=1))
+    assert line.startswith("📐") and "触达率" in line and "100%" in line
+    assert calibration_line(None) is None
+
+
+def test_render_calibration_section_presence_gated(tmp_path):
+    from autoresearch.learning.buy_ledger import target_calibration
+    _mk_day(tmp_path, "2026-07-01")
+    ledger = roll(tmp_path)
+    assert "全卡目标校准" not in "\n".join(render(ledger))               # 不传 → 无节(parity)
+    md = "\n".join(render(ledger, calib=target_calibration(tmp_path, min_n=1)))
+    assert "全卡目标校准" in md and "触达率" in md

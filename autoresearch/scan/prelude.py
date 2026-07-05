@@ -31,6 +31,19 @@ def _run_steps(steps) -> list[dict]:
     return out
 
 
+def calib_suggestion_lines(scan_root=None) -> list[str]:
+    """当日件建议行(spec 2026-07-05 §8 验收⑤):📐 触价校准 + 🔁 L3 翻案 + 🚪 门柱。
+
+    组件各自 thin 禁注(样本不足的行自带"禁注"字样,编排层勿贴);报表落盘由 _ledgers
+    步骤负责,本函数只收集行(纯读,可单测)。
+    """
+    from autoresearch.learning.buy_ledger import calibration_line, target_calibration
+    from autoresearch.learning.cross_calib import flip_stats, gate_stats, suggestion_lines
+    lines = [ln for ln in [calibration_line(target_calibration(scan_root))] if ln]
+    lines += suggestion_lines(flip_stats(scan_root), gate_stats(scan_root))
+    return lines
+
+
 def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()) -> list[dict]:
     scan_dir = Path("context/scan") / date
 
@@ -92,10 +105,11 @@ def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()
         return f"L4 预算 {n}({why});sentinel={level}({reason})"
 
     def _ledgers():
-        from autoresearch.learning import buy_ledger, journal
+        from autoresearch.learning import buy_ledger, cross_calib, journal
         journal.main()
         buy_ledger.main()
-        return "journal + buy_ledger 已刷新"
+        cross_calib.main()
+        return "journal + buy_ledger + cross_calib 已刷新"
 
     all_steps = [("retro_refresh", _refresh), ("retro_pending", _pending),
                  ("consensus", _consensus), ("universe", _universe), ("calendar", _calendar),
@@ -112,6 +126,15 @@ def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()
     pend = next((r["note"] for r in results if r["step"] == "retro_pending" and "待诊断" in r["note"]), None)
     if pend:
         print(f"  ⚠️  {pend}")
+    try:                                      # 当日件建议行(spec 2026-07-05;含"禁注"的行勿贴)
+        clines = calib_suggestion_lines()
+        if clines:
+            print("  当日件建议行(📐 贴 _l4_shared_instructions.md;🔁 贴 L3 校准块旁;"
+                  "🚪 贴 skeptic/PM 先验;**含「禁注」的行勿贴**):")
+            for ln in clines:
+                print(f"    {ln}")
+    except Exception as e:  # noqa: BLE001 — 建议行可选,缺了不挡前奏
+        print(f"[prelude] ✗ calib_lines: {e}", file=sys.stderr)
     print("  下一步(LLM 段):哨兵档 → 策略师+红队×2;全扫 → 策略师 → L3 → L4(见 SKILL 流程)")
     return results
 

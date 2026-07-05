@@ -1,6 +1,6 @@
 ---
 name: feedback
-description: Use when the user reacts to a research report / scan result with a correction, complaint, praise, or "记住/下次注意/这个评级错了/你漏了X/为什么没选到Y", or types /feedback — capture it into the closed-loop knowledge store and distil reusable lessons that flow back into future reports. Works across scan-market / analyze-ticker / macro-research. Project-local.
+description: Use when the user reacts to a research report / scan result with a correction, complaint, praise, or "记住/下次注意/这个评级错了/你漏了X/为什么没选到Y", or types /feedback — capture it into the closed-loop knowledge store and distil reusable lessons that flow back into future reports. Works across scan-market / stock-research / macro-research. Project-local.
 ---
 
 # feedback — 把你对研报的反馈记住,并蒸馏成经验注回下一份研报

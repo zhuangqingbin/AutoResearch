@@ -151,20 +151,21 @@ def _clip(s: str, n: int = 48) -> str:
 
 def _l4_brief(text: str, rating: str) -> str:
     """L4 决策卡的一句话结论(buy-list『L4研究』列):≥OW 取『一行多空』多头驱动,
-    否则取空头/早停因(为何没给买点)。回退满卡多空对撞首条空。"""
+    否则取空头/早停因(为何没给买点)。回退满卡多空对撞首条空。
+    宽 96(0买日『为何没买』是该表全部信息量,48 腰斩到句中,07-04 用户反馈)。"""
     m = _BULLBEAR_RE.search(text)
     if m:
         segs = re.split(r"[｜|]", m.group(1))
         want = "多" if rating in ("Buy", "Overweight") else "空"
         seg = next((s for s in segs if s.strip().startswith(want)), "")
         if seg:
-            return _clip(seg.strip().lstrip("多空").strip(" :："))
+            return _clip(seg.strip().lstrip("多空").strip(" :："), 96)
     m = _STOPWHY_RE.search(text)
     if m:
-        return _clip(m.group(1))
+        return _clip(m.group(1), 96)
     m = _BEARBULLET_RE.search(text)
     if m:
-        return _clip(m.group(1))
+        return _clip(m.group(1), 96)
     return "—"
 
 
@@ -210,6 +211,50 @@ def _finalist_row(scan_dir: Path, fr: dict) -> dict:
         "rubric_suggest": rub.group(1).title() if rub else "",   # C·评分卡建议(self_review 比对)
         "rubric_dev": bool(_DEV_RE.search(text)),                # 卡片有 **偏离** 说明 → 豁免
     }
+
+
+_GATES3 = ("主力真在", "业绩真兑现", "估值不透支")
+_GATESEG_RE = re.compile(r"OW三门[^\n→]*")
+
+
+def gate_status(text: str) -> dict[str, bool] | None:
+    """解析卡文『OW三门…』段 → {门: 是否✗失守};无门柱段(如早停卡)→ None。
+    门柱直方图与 learning.cross_calib 共用本函数(单一口径,防漂移)。"""
+    m = _GATESEG_RE.search(text)
+    if not m:
+        return None
+    seg = m.group(0)
+    out: dict[str, bool] = {}
+    for g in _GATES3:
+        i = seg.find(g)
+        if i < 0:
+            continue
+        j = i + len(g)
+        if seg[j:j + 1] == "门":                # 措辞容错:「主力真在门✗」
+            j += 1
+        out[g] = seg[j:j + 1] == "✗"
+    return out
+
+
+def _gate_histogram(scan_dir: Path, rows: list[dict]) -> str:
+    """OW三门失守分布一行(确定性,逐卡数 `OW三门 …` 段的 ✗)。0买日一行看懂"今天为什么没买"
+    ——胜过读 30 格被截断的结论;有买日同样给出门柱形状。无可解析卡 → ''。"""
+    cnt = dict.fromkeys(_GATES3, 0)
+    parsed = 0
+    for r in rows:
+        text = _decision_text(scan_dir, str(r.get("code", "")).zfill(6)) or ""
+        st = gate_status(text)
+        if st is None:
+            continue
+        parsed += 1
+        for g, failed in st.items():
+            if failed:
+                cnt[g] += 1
+    if not parsed:
+        return ""
+    parts = " · ".join(f"{g}✗ {cnt[g]}" for g in _GATES3)
+    return (f"**OW三门失守分布**({parsed} 卡可解析):{parts}"
+            f"(任一门✗ 即压 ≤Hold;门柱即当日 0买/有买的结构性原因)")
 
 
 def _sortkey(r: dict):
@@ -291,18 +336,27 @@ def _stage_token_estimate(scan_dir: Path) -> list[str]:
     cards = sorted((det / "details").glob("*.md")) if (det / "details").is_dir() else []
     strat = ([det / "market_view.md"] if (det / "market_view.md").is_file() else []) \
         + list(det.glob("_strategist*"))
+    sbriefs = (sorted((det / "sector_briefs").glob("*.md"))
+               if (det / "sector_briefs").is_dir() else [])
     l3 = list(det.glob("_l3*")) \
         + ([det / "L3_judged_full.csv"] if (det / "L3_judged_full.csv").is_file() else [])
     l4t1 = list(det.glob("_l4_batch*")) + list(det.glob("_l4_prompt*"))
     vfiles = list(det.glob("_v_*"))
     verify = vfiles + ([det / "verify.csv"] if (det / "verify.csv").is_file() else [])
+    # L4 输入侧最大件 = slim(context/<ticker>_<date>_slim.md,scan_dir 通常是 context/scan/<date>)
+    slim_root = det.parent.parent
+    slims = sorted(slim_root.glob(f"*_{det.name}_slim.md")) if slim_root.exists() else []
     rows = [
         ("L0/L1/L2", "确定性", 0, 0, "纯 pandas,零 LLM"),
         ("旁路 策略师", "Opus", 1 if strat else 0, _b(strat), "market_pack → market_view.md"),
+        ("旁路 行业brief", "Opus", len(sbriefs), _b(sbriefs),
+         "sector pack → sector_briefs/*.md(♻️TTL 复用亦计字节)"),
         ("L3 精排", "Opus-high·holistic", 1 if l3 else 0, _b(l3),
          "通看全表选 finalists(输入表落 `_l3_table.md` 才计入)"),
         ("L4 研究", "Opus", len(cards), _b(cards) + _b(l4t1),
          f"{len(cards)} 张卡(早停/满卡/复用;每卡 prompt 落 `_l4_prompt_*` 才计入)"),
+        ("L4 输入·slim", "—(输入侧)", len(slims), _b(slims),
+         "harvest --slim 落稿(每卡 subagent 读入;≈4.8KB 空稿=NO_DATA 亦计=真实浪费)"),
         ("skeptic/红队", "Opus", len(vfiles), _b(verify), "≥OW 证伪 + 0 买日机会成本红队(_v_* 稿)"),
     ]
     lines = ["## 各阶段 token 消耗(估算)",
@@ -311,13 +365,18 @@ def _stage_token_estimate(scan_dir: Path) -> list[str]:
     tot_calls = tot_tok = 0
     for name, eng, calls, b, note in rows:
         tok = int(b / _BYTES_PER_TOK)
-        tot_calls += calls
+        tot_calls += 0 if name.startswith("L4 输入") else calls
         tot_tok += tok
         lines.append(f"| {name} | {eng} | {calls or '—'} | {b or '—'} | {tok or '—'} | {note} |")
     lines.append(f"| **合计** | — | **{tot_calls}** | — | **~{tot_tok}** | 落盘可测下界 |")
+    if cards and not list(det.glob("_l4_prompt*")):
+        lines += ["", "> ⚠️ L4 输入 prompt 未落稿(`_l4_prompt_*` 缺)——上表 L4 行仅计输出;派发前先 "
+                  "`uv run --no-sync python -m autoresearch.scan.agents.l4_card prompts <date>` "
+                  "落稿,输入侧才可计。"]
     lines += ["", "> 口径:**落盘字节 ÷ 2.8**(CJK 粗估)。**落稿契约**(playbook):编排把 L3 输入表落 "
               "`_l3_table.md`、每卡完整 prompt 落 `_l4_prompt_<code>.md`、skeptic/红队稿落 `_v_<code>.md` "
               "后,本表 ≈ **输入+输出全量下界**;缺稿段 `—` = 该段用量**未计而非为零**。"
+              "另:每个 subagent 系统前缀 ~15k token(批内同前缀,prompt cache 摊薄)未计;"
               "真实计费口径只有 Claude Code `/usage` 可见。", ""]
     return lines
 
@@ -413,10 +472,62 @@ def _knowledge_note(rows: list[dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _sector_view_section(scan_dir: Path) -> str:
+    """行业 brief 研判段汇总(Phase 3;方向性内容只在整合层——地形段已注 L3/L4)。无 briefs → ''。"""
+    d = scan_dir / "sector_briefs"
+    if not d.is_dir():
+        return ""
+    try:
+        from autoresearch.sector.brief import extract_view, parse_direction
+    except Exception:  # noqa: BLE001
+        return ""
+    parts: list[str] = []
+    for p in sorted(d.glob("*.md")):
+        try:
+            view = extract_view(p.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            continue
+        if view:
+            parts.append(f"**{p.stem}**(方向:{parse_direction(view) or '—'})\n\n{view}")
+    if not parts:
+        return ""
+    return "## 🏭 行业研判(sector-research lite · 仅整合层)\n\n" + "\n\n".join(parts)
+
+
+def _same_chain_block(rows) -> str:
+    """同申万一级 ≥2 只 finalist → 并排一行(择链上最佳表达,同链多买=1 个 bet)。<2 → ''。"""
+    by_sec: dict[str, list[dict]] = {}
+    for r in rows:
+        sec = str(r.get("sector") or r.get("industry") or "").strip()
+        if sec and sec != "nan":
+            by_sec.setdefault(sec, []).append(r)
+    multi = {s: rs for s, rs in by_sec.items() if len(rs) >= 2}
+    if not multi:
+        return ""
+    lines = ["#### 🔗 同链对比(同申万一级 ≥2 只 → 择链上最佳表达,同链多买=1 个 bet)",
+             "| 行业 | 同链 finalists(评级 · 目标) |", "|---|---|"]
+    for sec in sorted(multi, key=lambda s: -len(multi[s])):
+        cell = "、".join(f"{r.get('name', '')}(**{r.get('rating', '—')}** · {r.get('target', '—')})"
+                         for r in sorted(multi[sec], key=_sortkey))
+        lines.append(f"| {sec}({len(multi[sec])}只) | {cell} |")
+    return "\n".join(lines)
+
+
 def _load_market_view(scan_dir: Path) -> str:
-    """读 L2 后策略师写的 market_view.md staging(缺 → '')。assemble 仍零-LLM(只读文件)。"""
+    """读 L2 后策略师写的 market_view.md staging(缺 → '')。assemble 仍零-LLM(只读文件)。
+
+    嵌入前剥样板:自带 H1(报告已有 H1,双标题是噪声)+ 免责节(报告已有诚实局限)。"""
     p = scan_dir / "market_view.md"
-    return p.read_text(encoding="utf-8").strip() if p.exists() else ""
+    if not p.exists():
+        return ""
+    lines = p.read_text(encoding="utf-8").strip().splitlines()
+    if lines and lines[0].lstrip().startswith("# "):
+        lines = lines[1:]
+    for i, ln in enumerate(lines):
+        if ln.lstrip().startswith("#") and "免责" in ln:
+            lines = lines[:i]
+            break
+    return "\n".join(lines).strip()
 
 
 def regime_and_drift(scan_dir: Path) -> tuple[str, str]:
@@ -530,6 +641,20 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str) ->
         if pulse:
             out += ["## 📈 今日 A 股市场\n", pulse, ""]
 
+    # ── 观察单日检(上移:触发/临近是读者最先要看的可操作项,别压在行业研判之下)──
+    ws = scan_dir / "watchlist_status.csv"
+    if ws.exists():
+        import pandas as pd  # lazy:assemble 主体走 csv/json,仅此块用 pandas
+
+        from autoresearch.scan.watchlist import render_watchlist_block
+        wb = render_watchlist_block(pd.read_csv(ws, dtype={"code": str}))
+        if wb:
+            out += [wb, ""]
+
+    sect = _sector_view_section(scan_dir)   # Phase 3:行业研判(briefs 研判段,方向性只在整合层)
+    if sect:
+        out += [sect, ""]
+
     # ── 1. 漏斗数量 ──
     out += ["## 1. 漏斗(数量)"] + _funnel_rows(meta, len(keep) or "?", len(finals), len(rows)) + [""]
 
@@ -541,12 +666,11 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str) ->
     mh = menu_health(scan_dir)
     if mh:
         out += ["", mh]
-    out += ["", "**精排(L3)入选(含论点/风险/催化)**:"]
+    out += ["", "**精排(L3)入选(风险/催化;论点见 buy-list 表 L3精排 列,不重复两遍)**:"]
     if finals:
-        for fr in finals[:15]:
+        for fr in finals:
             out.append(f"- **{fr.get('name', '')}({fr.get('code', '')})** · {fr.get('sector', '')} — "
-                       f"多头:{_strip(fr.get('thesis', ''))};风险:{_strip(fr.get('risk', ''))};"
-                       f"催化:{_strip(fr.get('catalyst', ''))}")
+                       f"风险:{_strip(fr.get('risk', ''))};催化:{_strip(fr.get('catalyst', ''))}")
     else:
         out.append("_无 finalists.csv_")
     out.append("")
@@ -557,8 +681,8 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str) ->
     n_l2 = meta.get("l2_n") or len(l2_top) or "?"
     ch_map = {c: (r.get("recall_channels") or "") for c, r in l2_top.items()}   # 命中队列(随 keep 流到 L2 表)
     out += [f"## 3. 投资建议(buy-list, {len(rows)} 只,按 评级 → 确信度 排序;逐阶段结论)\n",
-            f"| # | 名称 | 板块 | L1召回(#/{n_l1}) | L2粗排(#/{n_l2}) | L3精排 | L4研究·结论 | 评级 | 目标(EV) | 置信度 |" + vcol,
-            "|---|---|---|---|---|---|---|---|---|---|" + vsep]
+            f"| # | 名称 | 板块 | L1召回(#/{n_l1}) | L2粗排(#/{n_l2}) | L3精排 | L4研究·结论 | 评级 | 目标(EV) |" + vcol,
+            "|---|---|---|---|---|---|---|---|---|" + vsep]
     for i, r in enumerate(rows, 1):
         code = str(r.get("code", "")).zfill(6)
         vcell = f" {_verify_badge(code, vmap)} |" if vmap else ""
@@ -569,24 +693,23 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str) ->
             f"| {i} | {r.get('name', '')} | {r.get('sector') or r.get('industry', '')} "
             f"| {_l1_cell(code, l1_full, ch_map)} | {_l2_cell(code, l2_top)} | {l3cell} "
             f"| {_strip(r.get('l4', '—'))} "
-            f"| **{r.get('rating', '—')}** | {r.get('target', '—')} | {r.get('conf', '—')} |" + vcell)
+            f"| **{r.get('rating', '—')}** | {r.get('target', '—')} |" + vcell)
     out.append(f"\n_列注:**L1召回** #复合分名次/{n_l1}·命中队列(越小越强;低复合分票靠某条队列召回→名次很大);"
                f"**L2粗排** #GBDT重排名次/{n_l2}·gbdt分;**L3精排** = Opus holistic 论点 + conviction;"
-               f"**L4研究·结论** = 决策卡深核后的关键定级依据(≥OW 取多头驱动,否则取空头/早停因)。_")
+               f"**L4研究·结论** = 决策卡深核后的关键定级依据(≥OW 取多头驱动,否则取空头/早停因);"
+               f"置信度见各决策卡(30 行全『中』的列已删)。_")
+    gh = _gate_histogram(scan_dir, rows)
+    if gh:
+        out += ["", gh]
     out += _verify_detail(vmap)
-    ws = scan_dir / "watchlist_status.csv"
-    if ws.exists():
-        import pandas as pd  # lazy:assemble 主体走 csv/json,仅此块用 pandas
-
-        from autoresearch.scan.watchlist import render_watchlist_block
-        wb = render_watchlist_block(pd.read_csv(ws, dtype={"code": str}))
-        if wb:
-            out += ["", wb]
     from autoresearch.scan.calendar import calendar_section  # lazy:日历块,缺 staging 自 ""
     cal = calendar_section(scan_dir)
     if cal:
         out += ["", cal]
     out += ["", "### 组合视角", _portfolio_note(rows)]
+    chain = _same_chain_block(rows)         # Phase 3:同链 ≥2 卡并排(择链上最佳表达素材)
+    if chain:
+        out += ["", chain]
     pos = _position_overlay(scan_dir, rows)
     if pos:
         out += ["", pos]
@@ -692,6 +815,13 @@ def _publish_pipeline(scan_dir: Path, out_base: Path, analysis_date: str) -> int
     if wp.exists():
         shutil.copy2(wp, pdir / "L1_weights.json")
         n += 1
+    sb = scan_dir / "sector_briefs"
+    if sb.is_dir():                                     # Phase 3:行业 brief 随 trace 归档(留痕)
+        dst = pdir / "sector_briefs"
+        dst.mkdir(parents=True, exist_ok=True)
+        for p in sorted(sb.glob("*.md")):
+            shutil.copy2(p, dst / p.name)
+            n += 1
     (pdir / "funnel.md").write_text(_funnel_md(scan_dir, analysis_date), encoding="utf-8")
     n += _archive_reasoning(scan_dir, pdir)
     return n + 1
@@ -724,6 +854,11 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
     summary_path.write_text(md, encoding="utf-8")
     with contextlib.suppress(Exception):               # 现场导航页(第二天复盘入口)
         (out_base / "index.md").write_text(_health.index_md(scan_dir, out_base), encoding="utf-8")
+    with contextlib.suppress(Exception):               # Phase 4:行业方向记账(sector_ledger,失败不阻发布)
+        from autoresearch.learning.sector_ledger import record_calls
+        n_calls = record_calls(scan_dir, analysis_date)
+        if n_calls:
+            print(f"[sector_ledger] 记 {n_calls} 条行业方向 → context/knowledge/sector_calls.jsonl")
     print(f"[L5 整合] summary → {summary_path}  (数据日 {analysis_date})")
     print(f"[L5 整合] details → {detail_out}  ({n_cards} 张卡 + trace/ {n_pipe} 件溯源)")
     return summary_path

@@ -67,11 +67,44 @@ def menu_health(scan_dir: Path | str) -> str:
     return "\n".join(lines) + "\n" if len(lines) > 1 else ""
 
 
-def l4_budget(scan_dir: Path | str, base: int = 30, floor: int = 12) -> tuple[int, str]:
-    """菜单感知 L4 预算:病菜单/risk_off 的日子少烧 Opus(design: 2026-07-02-scan-l4-economy §2)。
+def zero_buy_streak(scan_dir: Path | str, lookback: int = 10) -> int:
+    """今日之前连续 0 买 scan 日数(只数出过卡的日;哨兵/未跑 L4 的日子跳过、不断链)。
 
-    三旗:落刀>60% / 健康涨≤2 / regime==risk_off。0 旗=base、1 旗=3/4、≥2 旗=1/2(≥floor)。
-    **只降不升**;L2/meta 缺 → (base, parity 注)。机会成本红队 + 观察单兜底防错过。
+    源 = details 卡最终评级(`health.final_ratings`,与 assemble 同口径含 verify 折回);
+    碰到最近一个有 Buy/OW 的日即停。lookback 限回看深度(成本上限)。
+    2026-07-03 病灶:9 连 0 买日预算仍=30 基准——连败从不是预算函数的输入。
+    """
+    scan_dir = Path(scan_dir)
+    root = scan_dir.parent
+    if not root.exists():
+        return 0
+    from autoresearch.scan.health import final_ratings  # lazy:避免 import cycle
+    streak = seen = 0
+    for d in sorted((p for p in root.iterdir()
+                     if p.is_dir() and p.name[:2] == "20" and p.name < scan_dir.name),
+                    reverse=True):
+        if seen >= lookback:
+            break
+        try:
+            ratings = final_ratings(d)
+        except Exception:  # noqa: BLE001
+            continue
+        if not ratings:
+            continue
+        seen += 1
+        if any(r in ("Buy", "Overweight") for r in ratings.values()):
+            break
+        streak += 1
+    return streak
+
+
+def l4_budget(scan_dir: Path | str, base: int = 30, floor: int = 12) -> tuple[int, str]:
+    """菜单感知 L4 预算:病菜单/risk_off/0买连败的日子少烧 Opus(design: l4-economy §2 + 2026-07-04 加旗)。
+
+    五旗:落刀>60% / **相对落刀**(>40% 且 >2×全市场,07-03 病灶 45% vs 20% 绝对门抓不住)/
+    健康涨≤2 / regime==risk_off / **0买连败≥3**(≥5 计重旗=双份)。
+    权重 1=3/4 档、≥2=1/2 档(≥floor)。**只降不升**;L2/meta 缺 → (base, parity 注)。
+    机会成本红队 + 观察单兜底防错过。
     """
     scan_dir = Path(scan_dir)
     f2 = scan_dir / "L2_gbdt_top200.csv"
@@ -82,9 +115,19 @@ def l4_budget(scan_dir: Path | str, base: int = 30, floor: int = 12) -> tuple[in
     except Exception:  # noqa: BLE001
         return base, f"L2 不可读 → 预算={base}(基准,parity)"
     flags: list[str] = []
+    weight = 0
     k, h = _knife_share(l2), _healthy(l2)
+    k1 = None
+    f1 = scan_dir / "L1_scored_full.csv"
+    if f1.exists():
+        try:
+            k1 = _knife_share(pd.read_csv(f1))
+        except Exception:  # noqa: BLE001
+            k1 = None
     if k is not None and k > 0.60:
         flags.append(f"落刀{k:.0%}")
+    elif k is not None and k1 and k > 0.40 and k > 2 * k1:
+        flags.append(f"落刀{k:.0%}(全市场{k1:.0%}×2=召回错配)")
     if h is not None and h <= 2:
         flags.append(f"健康涨仅{h}只")
     mp = scan_dir / "meta.json"
@@ -95,9 +138,15 @@ def l4_budget(scan_dir: Path | str, base: int = 30, floor: int = 12) -> tuple[in
                 flags.append("risk_off")
         except Exception:  # noqa: BLE001
             pass
+    streak = zero_buy_streak(scan_dir)
+    if streak >= 3:
+        flags.append(f"0买连败{streak}日" + ("·重旗" if streak >= 5 else ""))
+        if streak >= 5:
+            weight += 1                      # 重旗:连败≥5 单独就该压到 1/2 档
     if not flags:
         return base, f"菜单健康 → 预算={base}(基准)"
-    n = max(floor, round(base * 0.75)) if len(flags) == 1 else max(floor, base // 2)
+    weight += len(flags)
+    n = max(floor, round(base * 0.75)) if weight == 1 else max(floor, base // 2)
     return n, f"⚠️ {'+'.join(flags)} → L4 预算降至 {n}(基准 {base};省 Opus 于低产日,红队/观察单兜底)"
 
 
@@ -130,6 +179,12 @@ def sentinel_advice(scan_dir: Path | str, frac_lo: float = 0.03,
         import json
         with contextlib.suppress(Exception):
             regime = json.loads(mp.read_text(encoding="utf-8")).get("regime")
+    return _sentinel_verdict(frac, regime, frac_lo, frac_hi)
+
+
+def _sentinel_verdict(frac: float, regime: str | None,
+                      frac_lo: float, frac_hi: float) -> tuple[str, str]:
+    """哨兵判据核(scan-dir 与帧两入口共用;文案逐字保持)。"""
     pct = f"{frac:.1%}"
     if frac < frac_lo:
         return "sentinel", f"全市场健康上涨仅 {pct}(<{frac_lo:.0%})= 材料枯竭 → 建议哨兵档(跳 L3/L4)"
@@ -138,6 +193,24 @@ def sentinel_advice(scan_dir: Path | str, frac_lo: float = 0.03,
     if frac < frac_hi:
         return "consider", f"健康上涨 {pct}(<{frac_hi:.0%})材料偏薄 → 可考虑哨兵档,人拍板"
     return "full", f"全市场健康上涨 {pct} 材料充足 → 全扫"
+
+
+def sentinel_advice_from_frame(frame: pd.DataFrame, frac_lo: float = 0.03,
+                               frac_hi: float = 0.05) -> tuple[str, str]:
+    """帧入口(盘前 cron / `python -m autoresearch.scan.frame`):同谓词同口径,scan staging 无需存在。
+
+    regime 由 `classify_regime(frame)` 现算(scan-dir 版读 meta.json——那是 universe 落的同一标签)。
+    design: docs/specs/2026-07-03-research-skills-altitude-refactor-design.md §5.1。
+    """
+    try:
+        from autoresearch.common.scoring import healthy_riser_mask
+        m = healthy_riser_mask(frame)
+    except Exception:  # noqa: BLE001
+        m = None
+    if m is None:
+        return "full", "健康谓词缺列 → 全扫(降级)"
+    from autoresearch.common.regime import classify_regime
+    return _sentinel_verdict(float(m.mean()), classify_regime(frame).label, frac_lo, frac_hi)
 
 
 def main(argv: list[str] | None = None) -> int:

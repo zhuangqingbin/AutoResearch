@@ -48,6 +48,19 @@ def _target_ret(scan_dir: Path, code: str) -> float | None:
     return round(float(target / close - 1.0), 4)
 
 
+def _read_attr(d: Path) -> pd.DataFrame | None:
+    """读该 scan 日的 attribution(code 索引);缺/坏 → None。"""
+    ap = d / "retro" / "attribution.csv"
+    if not ap.exists():
+        return None
+    try:
+        attr = pd.read_csv(ap, dtype={"code": str})
+        attr["code"] = attr["code"].astype(str).str.zfill(6)
+        return attr.set_index("code")
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def roll(scan_root: Path | str | None = None) -> pd.DataFrame:
     """逐 scan 日抽 ≥OW 买单 × attribution 已实现 fwd → ledger 帧。无买单日自然无行。"""
     from autoresearch.scan.health import final_ratings  # lazy 防环
@@ -59,15 +72,7 @@ def roll(scan_root: Path | str | None = None) -> pd.DataFrame:
         ratings = {c: r for c, r in final_ratings(d).items() if r in ("Buy", "Overweight")}
         if not ratings:
             continue
-        attr = None
-        ap = d / "retro" / "attribution.csv"
-        if ap.exists():
-            try:
-                attr = pd.read_csv(ap, dtype={"code": str})
-                attr["code"] = attr["code"].astype(str).str.zfill(6)
-                attr = attr.set_index("code")
-            except Exception:  # noqa: BLE001
-                attr = None
+        attr = _read_attr(d)
         names = {}
         fp = d / "finalists.csv"
         if fp.exists():
@@ -100,6 +105,63 @@ def roll(scan_root: Path | str | None = None) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=_COLS)
 
 
+def target_calibration(scan_root: Path | str | None = None, window: int = 30,
+                       min_n: int = 10) -> dict | None:
+    """全卡目标触达统计(近 window 个 scan 日,**全评级**非只 ≥OW —— 0 买期样本不断供)。
+
+    只统计**看多目标**(tr>0;UW 向下目标负幅任何上涨都"触达",会稀释过乐观读数——
+    07-05 真数据冒烟发现)+ 已成熟行(attribution 有 hi_10_oc);触价口径与 roll 同:
+    目标幅(close_D 基)rebase 到 o1 基再与 10 日最高比。返回 None = 无现场。spec 2026-07-05 §6。
+    """
+    from autoresearch.scan.health import final_ratings  # lazy 防环
+    scan_root = Path(scan_root or "context/scan")
+    if not scan_root.exists():
+        return None
+    days = sorted(p for p in scan_root.iterdir() if p.is_dir() and p.name[:2] == "20")
+    days = days[-window:]
+    if not days:
+        return None
+    n = 0
+    targets, mfes, hits = [], [], []
+    for d in days:
+        attr = _read_attr(d)
+        for code in final_ratings(d):
+            tr = _target_ret(d, code)
+            if tr is None or tr <= 0:        # 只看多目标:向下目标不入过乐观统计
+                continue
+            n += 1
+            if attr is None or code not in attr.index or "hi_10_oc" not in attr.columns:
+                continue
+            hi10 = pd.to_numeric(pd.Series([attr.at[code, "hi_10_oc"]]), errors="coerce").iloc[0]
+            if pd.isna(hi10):
+                continue
+            gap = pd.to_numeric(pd.Series([attr.at[code, "gap_d1"]]), errors="coerce").iloc[0] \
+                if "gap_d1" in attr.columns else None
+            t_entry = (1 + tr) / (1 + gap) - 1 if gap is not None and not pd.isna(gap) else tr
+            targets.append(tr)
+            mfes.append(float(hi10))
+            hits.append(bool(hi10 >= t_entry))
+    n_mature = len(hits)
+    return {"n": n, "n_mature": n_mature, "window": window, "min_n": min_n,
+            "hit_rate": round(sum(hits) / n_mature, 3) if n_mature else None,
+            "med_target": round(float(pd.Series(targets).median()), 4) if targets else None,
+            "med_mfe": round(float(pd.Series(mfes).median()), 4) if mfes else None,
+            "thin": n_mature < min_n}
+
+
+def calibration_line(stats: dict | None) -> str | None:
+    """当日件建议行(编排层贴 `_l4_shared_instructions.md`);thin → 禁注文案。"""
+    if stats is None:
+        return None
+    if stats["thin"]:
+        return (f"📐 目标价校准:成熟样本不足(n={stats['n_mature']}<{stats['min_n']})"
+                f"⚠样本少·禁注,先积累")
+    return (f"📐 目标价校准:近{stats['window']}scan日全卡10日触达率 "
+            f"{stats['hit_rate']:.0%}(成熟 n={stats['n_mature']};中位目标 "
+            f"{stats['med_target']:+.0%} vs 中位MFE {stats['med_mfe']:+.0%})"
+            f"——目标幅>{stats['med_mfe']:+.0%} 需给出超额理由")
+
+
 def rating_base_rates(ledger: pd.DataFrame, min_n: int = 10) -> list[dict]:
     """按评级聚基率:n / T+5 胜率 / T+5 均值 / 目标命中率;n<min_n 标 thin(先验别急着用)。"""
     if ledger is None or not len(ledger):
@@ -116,10 +178,23 @@ def rating_base_rates(ledger: pd.DataFrame, min_n: int = 10) -> list[dict]:
     return sorted(out, key=lambda r: r["rating"])
 
 
-def render(ledger: pd.DataFrame) -> list[str]:
+def _calib_section(calib: dict | None) -> list[str]:
+    """『全卡目标校准』节(calib=None → 不加节,presence-gated)。"""
+    if calib is None:
+        return []
+    line = calibration_line(calib)
+    return ["", f"## 📐 全卡目标校准(近{calib['window']} scan 日,全评级)",
+            f"- 有目标价卡 n={calib['n']},成熟(有 hi_10)n={calib['n_mature']};"
+            f"触达率 {'—' if calib['hit_rate'] is None else format(calib['hit_rate'], '.0%')},"
+            f"中位目标 {'—' if calib['med_target'] is None else format(calib['med_target'], '+.0%')} "
+            f"vs 中位MFE {'—' if calib['med_mfe'] is None else format(calib['med_mfe'], '+.0%')}",
+            f"- 当日件建议行:{line}"]
+
+
+def render(ledger: pd.DataFrame, calib: dict | None = None) -> list[str]:
     out = ["# 买单 ledger(买后 T+1/5/10 + 目标命中 + 开盘 gap;评级基率供 skeptic 先验)", ""]
     if ledger is None or not len(ledger):
-        return out + ["_尚无 ≥OW 买单入账(0 买期,机制就绪等首单)_"]
+        return out + ["_尚无 ≥OW 买单入账(0 买期,机制就绪等首单)_"] + _calib_section(calib)
 
     def f(x, pct=True):
         if x is None or pd.isna(x):
@@ -142,6 +217,7 @@ def render(ledger: pd.DataFrame) -> list[str]:
                        f"T+5 胜率 {f(b['win5'], False) if b['win5'] is None else format(b['win5'], '.0%')},"
                        f"均值 {f(b['mean5'])},目标命中 "
                        f"{('—' if b['target_hit'] is None else format(b['target_hit'], '.0%'))}{thin}")
+    out += _calib_section(calib)
     out += ["", "> fwd 列 `—` = 该日 attribution 在 fwd 成熟前写盘(retro 一次性落账)。刷新:对已成熟老日"
             "手动 `retro.attribute('<date>')` 重写 attribution 再重跑本 ledger(拉数走 factor_lab cache,幂等)。"]
     return out
@@ -149,10 +225,12 @@ def render(ledger: pd.DataFrame) -> list[str]:
 
 def main() -> int:
     ledger = roll()
+    calib = target_calibration()
     out = Path("reports/learning/buy_ledger.md")
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text("\n".join(render(ledger)) + "\n", encoding="utf-8")
-    print(f"[buy_ledger] {len(ledger)} 单 → {out}")
+    out.write_text("\n".join(render(ledger, calib=calib)) + "\n", encoding="utf-8")
+    line = calibration_line(calib)
+    print(f"[buy_ledger] {len(ledger)} 单 → {out}" + (f"\n{line}" if line else ""))
     return 0
 
 

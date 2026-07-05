@@ -57,6 +57,15 @@ class TestNormalizeSymbol(unittest.TestCase):
         self.assertEqual(normalize_symbol("830799"), "830799.BJ")    # Beijing
         self.assertEqual(normalize_symbol(" 600519 "), "600519.SS")  # trimmed
 
+    def test_tushare_sh_suffix_maps_to_yahoo_ss(self):
+        # tushare 上交所后缀 .SH ≠ yfinance .SS;scan finalists 直喂 harvest 时必须归一,
+        # 否则上交所票拉出 ~4.8KB NO_DATA 空 slim(2026-07-03 实证 10/30 双跑)。
+        self.assertEqual(normalize_symbol("600584.SH"), "600584.SS")
+        self.assertEqual(normalize_symbol("688325.sh"), "688325.SS")
+        self.assertEqual(normalize_symbol("000001.SZ"), "000001.SZ")   # 深市两家同名,不动
+        self.assertEqual(normalize_symbol("920000.BJ"), "920000.BJ")
+        self.assertEqual(normalize_symbol("ABC.SH"), "ABC.SH")         # 非 6 位数字代码不动
+
     def test_non_a_share_numeric_left_alone(self):
         # Only bare 6-digit codes are A-shares; other numeric forms pass through.
         self.assertEqual(normalize_symbol("600519.SS"), "600519.SS")  # already suffixed

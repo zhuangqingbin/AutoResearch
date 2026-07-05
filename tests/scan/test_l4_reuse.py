@@ -102,3 +102,48 @@ def test_reuse_pass_apply(tmp_path):
     assert (d / "details" / f"{_C}.md").exists()
     from autoresearch.scan.health import l4_phase_stats
     assert l4_phase_stats(d)["n_reused"] == 1                    # health 能识别复用卡
+
+
+# ───────────────────────── 深否决豁免 + 菜单滞回(2026-07-04) ─────────────────────────
+
+_GATED_HOLD = HOLD + ("\n**Rubric建议**: 表面4维净分 **-2/4** ｜ "
+                      "OW三门 主力真在✗·业绩真兑现△·估值不透支✗ → 两门失守 → 建议 Hold\n")
+
+
+def test_reuse_deep_reject_bypasses_conviction(tmp_path):
+    """前卡 OW三门失守≥2 = 深否决 → 今日 L3 conviction 再高也复用(别为失真先验重烧 Opus)。"""
+    _mk(tmp_path, "2026-06-30", card=_GATED_HOLD)
+    d = _mk(tmp_path, "2026-07-02", close=100.0, conviction=85.0, anns=[])
+    (d / "details" / f"{_C}.md").unlink(missing_ok=True)
+    dec = reuse_decision(_C, d)
+    assert dec["reuse"], dec["reasons"]
+    assert any("豁免" in r for r in dec["reasons"])
+
+
+def test_carryover_append(tmp_path):
+    """菜单滞回:昨日 finalist(前卡 ≤Hold)∩ 今日 L2 但被 L3 换血 → 保席追加(lane=carryover),
+    幂等;不在今日 L2 的不追。churn 90% 日复用率从 7% 上抬的入口。"""
+    import pandas as pd
+
+    from autoresearch.scan.l4_reuse import append_carryover
+    prior = tmp_path / "2026-07-01"
+    (prior / "details").mkdir(parents=True)
+    pd.DataFrame([{"code": "000010", "name": "甲", "sector": "电子"},
+                  {"code": "000020", "name": "乙", "sector": "电力"}]).to_csv(
+        prior / "finalists.csv", index=False)
+    (prior / "details" / "000010.md").write_text(HOLD, encoding="utf-8")
+    (prior / "details" / "000020.md").write_text(HOLD, encoding="utf-8")
+
+    today = tmp_path / "2026-07-02"
+    (today / "details").mkdir(parents=True)
+    pd.DataFrame([{"code": "000030", "name": "丙", "sector": "汽车"}]).to_csv(
+        today / "finalists.csv", index=False)
+    pd.DataFrame([{"code": "000010", "name": "甲", "industry": "电子", "l2_rank": 5},
+                  {"code": "000030", "name": "丙", "industry": "汽车", "l2_rank": 1}]).to_csv(
+        today / "L2_gbdt_top200.csv", index=False)
+
+    assert append_carryover(today) == 1                      # 甲追加;乙不在今日 L2 → 不追
+    fin = pd.read_csv(today / "finalists.csv", dtype={"code": str})
+    row = fin[fin["code"].astype(str).str.zfill(6) == "000010"]
+    assert len(row) == 1 and row.iloc[0]["lane"] == "carryover"
+    assert append_carryover(today) == 0                      # 幂等

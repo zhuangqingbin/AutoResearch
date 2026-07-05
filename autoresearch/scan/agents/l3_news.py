@@ -25,6 +25,20 @@ _NEGATORS = ("未", "不", "否认", "澄清", "辟谣", "无", "暂不", "拟�
 # 强信号词(intensity ×2):材料度高的真事件,区别于"签约/质押"这类弱噪声。
 _STRONG = frozenset({"回购", "增持", "中标", "预增", "扭亏", "重组", "收购", "获批", "订单",
                      "立案", "退市", "商誉减值", "处罚", "诉讼", "冻结", "违规"})
+# 监管事项词(⚠监管旗专用,含"监管/证监会/交易所"三扩展词)。**独立于 _EVENT_TAGS**:
+# news_digest key 集合与情感口径被契约测试冻结(test_news_digest_default_prefix_unchanged),
+# 旗只在 l3_table_md(reg_flag=True) 时按需计算,默认关 = parity。spec 2026-07-05 §5.3。
+_REG_WORDS = ("立案", "问询", "关注函", "处罚", "违规", "诉讼", "监管", "证监会", "交易所")
+
+
+def reg_hits(titles) -> str:
+    """近期公告标题 → 命中的监管事项词(去重保序,"|" 连接);无命中/空 → ""。"""
+    seen: list[str] = []
+    for t in titles:
+        for w in _REG_WORDS:
+            if w in str(t) and w not in seen:
+                seen.append(w)
+    return "|".join(seen)
 
 
 def score_title(title: str) -> tuple[str, float]:

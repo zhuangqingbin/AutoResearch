@@ -1,6 +1,6 @@
 ---
 name: macro-research
-description: Use when the user wants top-down GLOBAL + 中美 macro research that ends in cross-asset allocation tilts AND A股 sector/中观 read — e.g. "研究全球宏观", "中美宏观现在怎么看", "现在该超配什么资产", "A股哪些行业值得配", "give me a macro regime + asset allocation view". NOT for one named ticker (use analyze-ticker) or a full A-share stock screen (use scan-market). Project-local skill.
+description: Use when the user wants top-down GLOBAL + 中美 macro research that ends in cross-asset allocation tilts AND A股 sector/中观 read — e.g. "研究全球宏观", "中美宏观现在怎么看", "现在该超配什么资产", "A股哪些行业值得配", "give me a macro regime + asset allocation view". Also owns the LITE tier 市场研判(首席策略师 daily brief): invoked by scan-market (Stage 0, parallel with universe) or when the user asks "今天大盘怎么看" — writes market_view.md from the deterministic market_pack. NOT for one named ticker (use stock-research) or a full A-share stock screen (use scan-market). Project-local skill.
 ---
 
 # macro-research — 在 session 内零付费 API 跑全球+中美宏观 + A股中观 → 配置
@@ -8,9 +8,14 @@ description: Use when the user wants top-down GLOBAL + 中美 macro research tha
 ## 核心原理
 宏观研究 = `确定性数据(免费)` + `多 agent 推理(本来要钱)`。本 skill 调项目数据工具取真宏观/中观数据(FRED/akshare/yfinance),把推理换成你(Claude,本 session)——零 LLM API,产出 regime 判断 + 跨资产配置表 + A股行业配置表。
 
+## 档位路由(一个 skill 两档)
+- **full(默认,用户触发)**:全球宏观 6 步流程(下节)→ 两张配置表报告。
+- **lite = 市场研判(首席策略师)**:被 **scan-market 调用**(Stage 0,与 universe 并行跑)或用户要日频大盘 brief。输入 = 确定性 `market_pack`(盘前帧入口 `uv run --no-sync python -m autoresearch.scan.frame <date> --json`;或 L2 后 `autoresearch.scan.market.market_pack(scan_dir)`,两口径同字段)+ `macro_state.json`(full 档机读产物,presence-gated:缺/过期只用 pack);产出 `context/scan/<date>/market_view.md`。**prompt 模板与防锚定铁律见 `macro-playbook.md` 末节「lite 档:市场研判」**(自 scan-market 迁入,2026-07-03 海拔重构:市场层 = 宏观能力的 lite 档)。
+
 ## 何时用 / 不用
-- ✅ 自上而下的宏观/中美/中观研究,收在跨资产 + A股行业的超-中-低配。
-- ❌ 单只票 → analyze-ticker;❌ 全 A股选股 → scan-market。
+- ✅ 自上而下的宏观/中美/中观研究,收在跨资产 + A股行业的超-中-低配(full)。
+- ✅ scan-market Stage 0 的市场研判 / "今天大盘怎么看"(lite)。
+- ❌ 单只票 → stock-research;❌ 全 A股选股 → scan-market。
 
 ## 前置
 - 仓库根目录运行;`.env` 需 `FRED_API_KEY`(免费)。A股中观需 `uv add akshare`。报告默认中文。

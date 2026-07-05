@@ -27,11 +27,11 @@
 
 # AutoResearch: Multi-Agent LLM Financial Trading Research Framework
 
-> **About this fork — AutoResearch.** A refocused fork of [TradingAgents](https://github.com/TauricResearch/TradingAgents). The paid-LLM multi-agent path (LangGraph orchestration, provider clients, the CLI, and the batch runner) has been **removed**; the multi-agent analysis now runs **in-session with Claude as the engine** via the `analyze-ticker` / `scan-market` / `macro-research` skills, on top of the free data layer only (`autoresearch/data` + `autoresearch/dataflows` + `autoresearch/agents/utils` — yfinance / FRED / akshare / tushare, keyless + `FRED_API_KEY` / `TUSHARE_TOKEN`). Start at [`CLAUDE.md`](CLAUDE.md) and [`.claude/skills/analyze-ticker/`](.claude/skills/analyze-ticker/). Sections below that mention LLM providers, model catalogs, or `cli`/`run_analysis` usage are **legacy upstream docs** kept for reference.
+> **About this fork — AutoResearch.** A refocused fork of [TradingAgents](https://github.com/TauricResearch/TradingAgents). The paid-LLM multi-agent path (LangGraph orchestration, provider clients, the CLI, and the batch runner) has been **removed**; the multi-agent analysis now runs **in-session with Claude as the engine** via the `stock-research` / `scan-market` / `macro-research` skills, on top of the free data layer only (`autoresearch/data` + `autoresearch/dataflows` + `autoresearch/agents/utils` — yfinance / FRED / akshare / tushare, keyless + `FRED_API_KEY` / `TUSHARE_TOKEN`). Start at [`CLAUDE.md`](CLAUDE.md) and [`.claude/skills/stock-research/`](.claude/skills/stock-research/). Sections below that mention LLM providers, model catalogs, or `cli`/`run_analysis` usage are **legacy upstream docs** kept for reference.
 
 ## 架构
 
-All deterministic data/scoring/assembly code lives in the **`autoresearch/`** package (the old flat `scripts/` is gone). Skills (`scan-market` / `analyze-ticker` / `macro-research`) drive these modules; Claude is the LLM engine in-session, so there are no paid-LLM deps. Design: [`docs/specs/2026-06-22-autoresearch-arch-redesign-design.md`](docs/specs/2026-06-22-autoresearch-arch-redesign-design.md).
+All deterministic data/scoring/assembly code lives in the **`autoresearch/`** package (the old flat `scripts/` is gone). Skills (`scan-market` / `stock-research` / `macro-research`) drive these modules; Claude is the LLM engine in-session, so there are no paid-LLM deps. Design: [`docs/specs/2026-06-22-autoresearch-arch-redesign-design.md`](docs/specs/2026-06-22-autoresearch-arch-redesign-design.md).
 
 ```
 autoresearch/

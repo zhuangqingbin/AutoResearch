@@ -1089,11 +1089,12 @@ def main() -> int:
         return 1
     # --slim:轻量模式,只 harvest 决策驱动块(scan-market L3b / analyze-ticker-lite 用),体积/token 大幅下降
     slim = "--slim" in flags
-    ticker = pos[0]
+    ticker = normalize_symbol(pos[0])   # 入口归一(.SH→.SS 等):取数/staging 文件名/下游指针三处口径一致
     trade_date = pos[1] if len(pos) > 1 else date.today().isoformat()
     asset_type = pos[2] if len(pos) > 2 else "stock"
     peers_arg = pos[3] if len(pos) > 3 else ""
-    peers = [p.strip() for p in peers_arg.split(",") if p.strip()] or PEER_MAP.get(ticker.upper(), [])
+    peers = [normalize_symbol(p.strip()) for p in peers_arg.split(",") if p.strip()] \
+        or PEER_MAP.get(ticker.upper(), [])
 
     set_config(DEFAULT_CONFIG)
 

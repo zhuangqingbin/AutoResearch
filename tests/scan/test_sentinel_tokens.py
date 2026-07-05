@@ -69,3 +69,19 @@ def test_token_estimate_rows(tmp_path):
     assert "落稿契约" in md and "未计而非为零" in md
     md2 = "\n".join(_stage_token_estimate(tmp_path))           # 空目录 → 全 —
     assert "旁路 策略师 | Opus | — | — | —" in md2
+
+
+def test_token_estimate_l4_input_slim_row_and_prompt_hint(tmp_path):
+    """输入侧纠偏:slim 落稿计入 L4 输入行;卡在而 prompt 稿缺 → 提示用 l4_card prompts 落稿。"""
+    from autoresearch.scan.assemble import _stage_token_estimate
+    d = tmp_path / "context" / "scan" / "2026-07-03"
+    (d / "details").mkdir(parents=True)
+    (d / "details" / "600584.md").write_text("卡" * 200, encoding="utf-8")
+    (tmp_path / "context" / "600584.SS_2026-07-03_slim.md").write_text("数" * 1000, encoding="utf-8")
+    md = "\n".join(_stage_token_estimate(d))
+    assert "L4 输入·slim" in md
+    assert "l4_card prompts" in md          # prompt 稿缺 → 可执行提示
+
+    (d / "_l4_prompt_600584.md").write_text("p" * 300, encoding="utf-8")
+    md2 = "\n".join(_stage_token_estimate(d))
+    assert "l4_card prompts" not in md2     # 落稿后提示消失

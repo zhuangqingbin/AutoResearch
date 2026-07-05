@@ -79,3 +79,73 @@ def test_l4_budget_missing_is_parity(tmp_path):
     from autoresearch.scan.menu import l4_budget
     n, why = l4_budget(tmp_path)
     assert n == 30 and "parity" in why
+
+
+# ───────────────────────── 预算加旗:相对落刀 + 0买连败(2026-07-04) ─────────────────────────
+
+
+def _mk_day(root, date, rating_text):
+    """造一个已出卡的 scan 日(finalists + details 卡),供 0买连败判定。"""
+    d = root / date
+    (d / "details").mkdir(parents=True)
+    pd.DataFrame([{"code": "000001", "name": "甲"}]).to_csv(d / "finalists.csv", index=False)
+    (d / "details" / "000001.md").write_text(rating_text, encoding="utf-8")
+    return d
+
+
+_HOLD_CARD = "# 决策卡\n**Rating**: Hold\n"
+_OW_CARD = "# 决策卡\n**Rating**: Overweight\n"
+
+
+def _healthy_menu(scan_dir, n=10):
+    """0 旗基准菜单(健康上涨 n 只,无落刀)。"""
+    rows = [_row(f"{i:06d}", pct=10, mnr=0.01, cmf=0.05) for i in range(n)]
+    _mk(scan_dir, rows, rows)
+
+
+def test_l4_budget_relative_knife(tmp_path):
+    """07-03 病灶:L2 落刀 45% vs 全市场 15%(>2× 且 >40%)绝对门 60% 抓不住 → 应计 1 旗。"""
+    from autoresearch.scan.menu import l4_budget
+    l2 = [_row(f"{i:06d}", pct=-30, mnr=-0.01, cmf=-0.05) for i in range(9)] + \
+         [_row(f"{100 + i:06d}", pct=10, mnr=0.01, cmf=0.05) for i in range(11)]   # 落刀 45%,健康 11
+    l1 = [_row(f"{i:06d}", pct=-30, mnr=-0.01, cmf=-0.05) for i in range(6)] + \
+         [_row(f"{200 + i:06d}", pct=10, mnr=0.01, cmf=0.05) for i in range(34)]   # 全市场落刀 15%
+    _mk(tmp_path, l2, l1)
+    n, why = l4_budget(tmp_path)
+    assert n == 22 and "落刀45%" in why and "全市场" in why
+
+
+def test_l4_budget_zero_buy_streak_flags(tmp_path):
+    """0买连败≥3 计 1 旗(→3/4 档);≥5 计重旗(→1/2 档)。"""
+    from autoresearch.scan.menu import l4_budget, zero_buy_streak
+    root = tmp_path / "a"
+    for dt in ("2026-07-01", "2026-07-02", "2026-07-03"):
+        _mk_day(root, dt, _HOLD_CARD)
+    today = root / "2026-07-04"
+    _healthy_menu(today)
+    assert zero_buy_streak(today) == 3
+    n, why = l4_budget(today)
+    assert n == 22 and "0买连败3日" in why
+
+    root2 = tmp_path / "b"
+    for dt in ("2026-06-27", "2026-06-28", "2026-07-01", "2026-07-02", "2026-07-03"):
+        _mk_day(root2, dt, _HOLD_CARD)
+    today2 = root2 / "2026-07-04"
+    _healthy_menu(today2)
+    assert zero_buy_streak(today2) == 5
+    n2, why2 = l4_budget(today2)
+    assert n2 == 15 and "0买连败5日" in why2
+
+
+def test_l4_budget_streak_broken_by_buy_day(tmp_path):
+    """最近一个有买日打断连败 → 不计旗,预算回基准。"""
+    from autoresearch.scan.menu import l4_budget, zero_buy_streak
+    root = tmp_path / "c"
+    _mk_day(root, "2026-07-01", _HOLD_CARD)
+    _mk_day(root, "2026-07-02", _HOLD_CARD)
+    _mk_day(root, "2026-07-03", _OW_CARD)        # 昨日有买 → 连败清零
+    today = root / "2026-07-04"
+    _healthy_menu(today)
+    assert zero_buy_streak(today) == 0
+    n, why = l4_budget(today)
+    assert n == 30 and "菜单健康" in why

@@ -139,6 +139,10 @@ def normalize_symbol(raw: str) -> str:
         canonical = crypto
     elif len(s) == 6 and s[:3] in _FOREX_CURRENCIES and s[3:] in _FOREX_CURRENCIES:
         canonical = f"{s}=X"
+    elif len(s) == 9 and s.endswith(".SH") and s[:6].isdigit():
+        # tushare 上交所后缀 .SH → Yahoo .SS(深/北 .SZ/.BJ 两家同名,无需映射)。
+        # scan finalists(tushare ts_code)直喂 harvest 不归一 → ~4.8KB 空 slim 双跑(2026-07-03 中招 10/30)。
+        canonical = f"{s[:6]}.SS"
     elif len(s) == 6 and s.isdigit() and s[0] in _CN_EXCHANGE_BY_LEAD:
         # 北交所 92xxxx 系列(920000-929999)以 "9" 开头但属北交所,非上交所 B 股(900xxx)
         canonical = f"{s}.BJ" if s[:2] == "92" else f"{s}.{_CN_EXCHANGE_BY_LEAD[s[0]]}"

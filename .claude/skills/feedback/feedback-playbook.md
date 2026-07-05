@@ -21,7 +21,7 @@
 uv run --no-sync python - <<'PY'
 import autoresearch.learning.feedback_store as fs
 fb = fs.record_feedback(
-    skill="scan-market",                       # 或 analyze-ticker / macro-research
+    skill="scan-market",                       # 或 stock-research / macro-research
     scope=("global", "*"),                     # 见第 2 步
     report="reports/scan/20260619_1553/summary.md",
     note="""<用户原话,可多行>""",
