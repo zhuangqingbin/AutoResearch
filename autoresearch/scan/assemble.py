@@ -859,6 +859,11 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
         n_calls = record_calls(scan_dir, analysis_date)
         if n_calls:
             print(f"[sector_ledger] 记 {n_calls} 条行业方向 → context/knowledge/sector_calls.jsonl")
+    with contextlib.suppress(Exception):               # 影子买单记账(spec 2026-07-05 wave §A2,失败不阻发布)
+        from autoresearch.learning.shadow_buys import record as _shadow_record
+        n_sh = _shadow_record(scan_dir)
+        if n_sh:
+            print(f"[shadow_buys] 记 {n_sh} 只影子买单 → context/learning/shadow_buys.csv")
     print(f"[L5 整合] summary → {summary_path}  (数据日 {analysis_date})")
     print(f"[L5 整合] details → {detail_out}  ({n_cards} 张卡 + trace/ {n_pipe} 件溯源)")
     return summary_path
