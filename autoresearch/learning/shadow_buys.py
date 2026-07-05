@@ -9,6 +9,7 @@ spec: 2026-07-05 wave §WS-A2。语义:"如果门不拦,系统最想买的 k 只
 """
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -84,13 +85,22 @@ def record(scan_dir: Path | str, path: Path | str = _PATH, k: int = 3) -> int:
 
 
 def backfill(scan_root: Path | str = "context/scan", path: Path | str = _PATH) -> int:
-    """对全部历史 scan 日 record(幂等)——上线即让影子线有 13 日底仓数据。"""
+    """对全部历史 scan 日 record(幂等)——上线即让影子线有 13 日底仓数据。
+
+    单日故障隔离:坏历史日(e.g. 损坏 finalists.csv)跳过,不中断整个回填。
+    """
     scan_root = Path(scan_root)
     if not scan_root.exists():
         return 0
-    return sum(record(d, path=path)
-               for d in sorted(p for p in scan_root.iterdir()
-                               if p.is_dir() and p.name[:2] == "20"))
+    total = 0
+    for d in sorted(p for p in scan_root.iterdir()
+                    if p.is_dir() and p.name[:2] == "20"):
+        try:
+            total += record(d, path=path)
+        except Exception as e:  # noqa: BLE001
+            print(f"[shadow_buys] 跳过 {d.name}: {type(e).__name__}: {e}", file=sys.stderr)
+            continue
+    return total
 
 
 def main() -> int:
