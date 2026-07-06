@@ -39,7 +39,8 @@ def test_l4_card_contract_anchors_synced():
     agent = _agent_text("l4-card")
     playbook = (SKILLS / "stock-research" / "lite-playbook.md").read_text(encoding="utf-8")
     anchors = ["进入P4倾向", "FINAL TRANSACTION PROPOSAL", "**Rating**",
-               "早停只向下", "Rubric建议", *(g for g in _OW_GATES)]
+               "早停只向下", "Rubric建议", "一段话研判", "L3 论点裁决",
+               "已核数字摘录", "多写不多读", *(g for g in _OW_GATES)]
     for a in anchors:
         assert a in agent, f"l4-card 缺契约锚「{a}」"
         assert a in playbook, f"lite-playbook 缺契约锚「{a}」(真值源被改,先同步 agent 定义)"
