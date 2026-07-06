@@ -642,14 +642,17 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str) ->
             out += ["## 📈 今日 A 股市场\n", pulse, ""]
 
     # ── 影子组合成绩单一行(spec 2026-07-05 wave §A1;presence-gated:文件缺 → 不加)──
-    pn = Path("reports/learning/paper_nav_summary.txt")
-    if pn.exists():
-        try:
-            nav_line = pn.read_text(encoding="utf-8").strip()
-        except Exception:  # noqa: BLE001
-            nav_line = ""
-        if nav_line:
-            out += [nav_line, ""]
+    # 只在真实现场注入(与 run() 的 is_real 判据同姿势):tmp 测试目录从此不受开发机全局
+    # reports/learning/paper_nav_summary.txt 污染(该文件由真实 prelude 跑动落盘,与 tmp scan_dir 无关)。
+    if scan_dir == Path("context/scan") / analysis_date:
+        pn = Path("reports/learning/paper_nav_summary.txt")
+        if pn.exists():
+            try:
+                nav_line = pn.read_text(encoding="utf-8").strip()
+            except Exception:  # noqa: BLE001
+                nav_line = ""
+            if nav_line:
+                out += [nav_line, ""]
 
     # ── 观察单日检(上移:触发/临近是读者最先要看的可操作项,别压在行业研判之下)──
     ws = scan_dir / "watchlist_status.csv"
@@ -864,19 +867,21 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
     summary_path.write_text(md, encoding="utf-8")
     with contextlib.suppress(Exception):               # 现场导航页(第二天复盘入口)
         (out_base / "index.md").write_text(_health.index_md(scan_dir, out_base), encoding="utf-8")
-    with contextlib.suppress(Exception):               # Phase 4:行业方向记账(sector_ledger,失败不阻发布)
-        from autoresearch.learning.sector_ledger import record_calls
-        n_calls = record_calls(scan_dir, analysis_date)
-        if n_calls:
-            print(f"[sector_ledger] 记 {n_calls} 条行业方向 → context/knowledge/sector_calls.jsonl")
-    if scan_dir == Path("context/scan") / analysis_date:   # 真实现场才记账(测试 tmp 目录不触发)
-        with contextlib.suppress(Exception):               # 影子买单记账(spec 2026-07-05 wave §A2,失败不阻发布)
+    # 三个记账/刷新副作用共享同一条真实现场判据(resolve() 防相对/绝对路径假阴性)——
+    # 测试 tmp 目录一律不触发,堵同类测试泄漏口(此前 sector_ledger 无门,曾单独裸奔)。
+    is_real = Path(scan_dir).resolve() == (Path("context/scan") / analysis_date).resolve()
+    if is_real:
+        with contextlib.suppress(Exception):           # Phase 4:行业方向记账(sector_ledger,失败不阻发布)
+            from autoresearch.learning.sector_ledger import record_calls
+            n_calls = record_calls(scan_dir, analysis_date)
+            if n_calls:
+                print(f"[sector_ledger] 记 {n_calls} 条行业方向 → context/knowledge/sector_calls.jsonl")
+        with contextlib.suppress(Exception):           # 影子买单记账(spec 2026-07-05 wave §A2,失败不阻发布)
             from autoresearch.learning.shadow_buys import record as _shadow_record
             n_sh = _shadow_record(scan_dir)
             if n_sh:
                 print(f"[shadow_buys] 记 {n_sh} 只影子买单 → context/learning/shadow_buys.csv")
-    if scan_dir == Path("context/scan") / analysis_date:   # 真实现场才刷新日记(测试 tmp 目录不触发)
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(Exception):           # 扫描日记刷新(失败不阻发布)
             from autoresearch.learning import journal as _journal
             _journal.main()
     print(f"[L5 整合] summary → {summary_path}  (数据日 {analysis_date})")

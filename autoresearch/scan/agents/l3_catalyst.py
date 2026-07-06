@@ -33,7 +33,8 @@ def catalyst_counts(frames: dict[str, list[pd.DataFrame]], want: set[str]) -> pd
         key = "holder_in" if str(r.get("in_de", "")).upper() == "IN" else "holder_de"
         acc[r["_c"]][key] += 1
     for r in _rows("repurchase"):
-        key = "rep_impl" if "实施" in str(r.get("proc", "")) else "rep_plan"
+        proc = str(r.get("proc", ""))
+        key = "rep_impl" if ("实施" in proc and not any(w in proc for w in ("停止", "终止"))) else "rep_plan"
         acc[r["_c"]][key] += 1
     for r in _rows("stk_surv"):
         acc[r["_c"]]["surv_n"] += 1

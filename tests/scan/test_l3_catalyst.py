@@ -46,6 +46,16 @@ def test_cat_label():
     assert cat_label({"rep_impl": 0, "rep_plan": 0, "holder_in": 0, "holder_de": 0, "surv_n": 0}) == ""
 
 
+def test_repurchase_stopped_counts_as_plan_not_impl():
+    """proc="停止实施" 含"实施"二字但语义是撤回——应计入 rep_plan(预案),不算 rep_impl(实施)。"""
+    frames = {"stk_holdertrade": [], "stk_surv": [], "repurchase": [pd.DataFrame([
+        {"ts_code": "000001.SZ", "ann_date": "20260703", "proc": "停止实施"},
+    ])]}
+    out = catalyst_counts(frames, {"000001"}).set_index("code")
+    assert out.at["000001", "rep_impl"] == 0
+    assert out.at["000001", "rep_plan"] == 1
+
+
 def test_counts_pure_empty():
     out = catalyst_counts({"stk_holdertrade": [], "repurchase": [], "stk_surv": []}, {"000001"})
     assert list(out.columns) == ["code", "rep_impl", "rep_plan", "holder_in", "holder_de", "surv_n"]

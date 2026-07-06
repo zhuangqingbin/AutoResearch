@@ -128,10 +128,13 @@ def _label(cond: dict, date: str | None = None) -> str:
         due, txt = str(cond.get("date", "")), cond.get("text", "")
         mark = ""
         if date and due:
-            if date > due:
-                mark = "(⏰已到期待确认)"
-            elif (pd.Timestamp(due) - pd.Timestamp(date)).days <= 3:
-                mark = "(⏰临期)"
+            try:
+                if date > due:
+                    mark = "(⏰已到期待确认)"
+                elif (pd.Timestamp(due) - pd.Timestamp(date)).days <= 3:
+                    mark = "(⏰临期)"
+            except Exception:  # noqa: BLE001 — 毒日期(如月份 20)不击杀整条 check/run_check
+                mark = "(⚠日期无效)"
         return f"by_date:{due}{mark}:{txt}"
     return k
 
@@ -364,7 +367,12 @@ def migrate_by_date(path: Path | str = "context/watchlist.csv") -> int:
             m = re.search(r"(\d{2})-(\d{2})", str(c.get("text", "")))
             if not m:
                 continue
-            c["kind"], c["date"] = "by_date", f"{year}-{m.group(1)}-{m.group(2)}"
+            mm, dd = m.group(1), m.group(2)
+            try:
+                pd.Timestamp(f"{year}-{mm}-{dd}")
+            except Exception:  # noqa: BLE001 — 非法日期(如 20-25)跳过不转
+                continue
+            c["kind"], c["date"] = "by_date", f"{year}-{mm}-{dd}"
             changed = True
         if changed:
             wl.at[i, "conds"] = json.dumps(conds, ensure_ascii=False)

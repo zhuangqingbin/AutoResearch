@@ -26,7 +26,7 @@ def _day(d: Path) -> dict | None:
         attr = pd.read_csv(ap, dtype={"code": str})
     except Exception:  # noqa: BLE001
         return None
-    if "fwd_5_oc" not in attr.columns or "code" not in cat.columns:
+    if "fwd_5_oc" not in attr.columns or "code" not in attr.columns or "code" not in cat.columns:
         return None
     cat["code"] = cat["code"].astype(str).str.zfill(6)
     attr["code"] = attr["code"].astype(str).str.zfill(6)

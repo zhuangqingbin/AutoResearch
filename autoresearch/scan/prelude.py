@@ -118,13 +118,21 @@ def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()
         return f"L4 预算 {n}({why});sentinel={level}({reason})"
 
     def _ledgers():
-        from autoresearch.learning import buy_ledger, catalyst_ledger, cross_calib, journal, paper_nav
-        journal.main()
-        buy_ledger.main()
-        cross_calib.main()
-        catalyst_ledger.main()
-        paper_nav.main()
-        return "journal + buy_ledger + cross_calib + catalyst + paper_nav 已刷新"
+        import contextlib
+
+        from autoresearch.learning import (
+            buy_ledger,
+            catalyst_ledger,
+            cross_calib,
+            journal,
+            paper_nav,
+            watchlist_ledger,
+        )
+        # 六个 ledger 串行但各自 suppress:单点故障不再连坐(改前五个共享一个 try,一炸全炸)。
+        for mod in (journal, buy_ledger, cross_calib, catalyst_ledger, paper_nav, watchlist_ledger):
+            with contextlib.suppress(Exception):
+                mod.main()
+        return "journal + buy_ledger + cross_calib + catalyst + paper_nav + watchlist 已刷新"
 
     all_steps = [("retro_refresh", _refresh), ("retro_pending", _pending),
                  ("consensus", _consensus), ("universe", _universe), ("calendar", _calendar),

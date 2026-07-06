@@ -183,6 +183,8 @@ def main() -> int:
     outp.parent.mkdir(parents=True, exist_ok=True)
     if not days:
         outp.write_text("# 影子组合成绩单\n\n_湖 daily 分区缺,无法结算_\n", encoding="utf-8")
+        # 同步清空 summary 行(存在即覆盖)——不然 assemble 会把上一次(湖尚在时)的旧行当今日读数幽灵注入。
+        Path("reports/learning/paper_nav_summary.txt").write_text("", encoding="utf-8")
         print("[paper_nav] 湖 daily 缺 → 空稿")
         return 0
     rs, ss = real_signals(), shadow_signals()

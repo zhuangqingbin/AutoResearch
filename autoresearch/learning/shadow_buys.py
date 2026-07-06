@@ -88,7 +88,7 @@ def record(scan_dir: Path | str, path: Path | str = _PATH, k: int = 3) -> int:
 def backfill(scan_root: Path | str = "context/scan", path: Path | str = _PATH) -> int:
     """对全部历史 scan 日 record(幂等)——上线即让影子线有 13 日底仓数据。
 
-    单日故障隔离:坏历史日(e.g. 损坏 finalists.csv)跳过,不中断整个回填。
+    单日故障隔离:坏历史日(e.g. 损坏 L1_scored_full.csv 等)跳过,不中断整个回填。
     """
     scan_root = Path(scan_root)
     if not scan_root.exists():

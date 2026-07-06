@@ -184,6 +184,30 @@ def test_mark_new_vs_prev_day():
     assert not out2["new_k"].any()
 
 
+def test_check_by_date_invalid_date_does_not_raise():
+    """毒日期(月份 20 非法)不击杀整条 check——_label 捕获后标 ⚠日期无效,status 仍照常算。"""
+    wl = pd.DataFrame([_wl("000014", [{"kind": "by_date", "date": "2026-20-25", "text": "毒日期"}])])
+    l1 = _l1([{"code": "000014", "close": 11.0, "ma_bull": 1,
+               "main_net_ratio": 0.1, "cmf_20": 0.1}])
+    st = check(wl, l1, "2026-07-02").set_index("code")   # 不应抛异常
+    assert "⚠日期无效" in st.at["000014", "detail"]
+
+
+def test_migrate_manual_invalid_date_not_converted(tmp_path):
+    """manual 文本里的 MM-DD 若不是合法日期(如 20-25)→ migrate 跳过不转,留作 manual。"""
+    import json as _json
+
+    import pandas as _pd
+
+    from autoresearch.scan.watchlist import migrate_by_date
+    row = _wl("000015", [{"kind": "manual", "text": "毛利率20-25%区间"}])
+    wl_path = tmp_path / "watchlist.csv"
+    _pd.DataFrame([row]).to_csv(wl_path, index=False)
+    assert migrate_by_date(path=wl_path) == 0
+    conds = _json.loads(load_watchlist(wl_path).iloc[0]["conds"])
+    assert conds[0]["kind"] == "manual" and "date" not in conds[0]
+
+
 def test_migrate_manual_dates_to_by_date(tmp_path):
     import json as _json
 

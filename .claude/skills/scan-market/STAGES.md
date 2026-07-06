@@ -102,7 +102,7 @@ L4 派发前(确定性):🚄 观察单触发直通车(触发票直达 L4)→ ♻
 
 - **summary.md 节序(当前)**:self_review 硬门 banner(fail 顶置;含**编排 lint**:买单未过 skeptic=fail、finalists≥5 无策略师=warn)→ regime+drift 行 → **📈 市场研判**(market_view 或回退脉搏 + 📉 漏斗读数)→ 漏斗数量 → 各阶段卡点&概览(+ **🍱 菜单体检**)→ 投资建议表(逐阶段结论 + 🛡️ 红队徽标)→ 红队明细 → **👀 观察单日检** → **📅 两周日历**(finalists 披露日+大解禁)→ 组合视角(**买单同板块=1 个 bet 告警** + **仓位 overlay**:regime 档位 risk_off 0–2 成/range 3–5/trend 5–8、菜单病取下沿、0 买=空仓一致)→ 经验浮出 → token 估算 → 诚实局限。所有新节 **presence-gated**(staging 缺 → 不加节,parity 不破)。
 - **现场完备(07-02 新)**:发布同时写 `run_health.json`(staging+trace;NaN 降级/产物在位/churn/L4 阶段效能/买单数)+ 报告目录 `index.md` 导航页(卡片/trace/staging/上一 run/健康一行)——**第二天复盘从 index.md 进**。universe 侧固化 `weights_used.json` + meta.regime = 重放输入齐备(漏斗确定性,同输入可复现)。
-- **观察单(07-02 新,`scan/watchlist.py`)**:`context/watchlist.csv` 跨日活状态;机判词表 v1 `close_above/close_below/ma_bull/money_pos/manual`;每日 `run_check` 对 `L1_scored_full` 判 **触发/触发(待人工项)/临近/待触发/失效**(invalidation 或过期 → 失效)。**触发≠自动升级**,只提示按 stock-research lite 档复核。种子:胜宏 300476(当前状态"临近":314 上方 ✓、多头排列 ✗、中报待人工;失效线 298.5)。
+- **观察单(07-02 新,`scan/watchlist.py`)**:`context/watchlist.csv` 跨日活状态;机判词表 v2 `close_above/close_below/ma_bull/money_pos/by_date(日期锚⏰)+manual`;每日 `run_check` 对 `L1_scored_full` 判 **触发/触发(待人工项)/提醒(k/n)/临近/待触发/失效**(invalidation 或过期 → 失效)。状态梯度:触发>提醒(k/n)>临近>待触发;since_born≥+15% 未触发标🔥(错过审计)、🆕=较前日新达成。**触发≠自动升级**,只提示按 stock-research lite 档复核。种子:胜宏 300476(当前状态"临近":314 上方 ✓、多头排列 ✗、中报待人工;失效线 298.5)。
 - 发布:`reports/scan/<运行时刻>/`(数据日在 manifest.json,retro 据此定位)。
 
 ## 真实计量(OTEL 遥测,07-05 新;未实跑)
@@ -128,7 +128,7 @@ L4 派发前(确定性):🚄 观察单触发直通车(触发票直达 L4)→ ♻
 | `zero_buy_ledger`(新) | 0 买日 vs 有买日市场后市对照 | 7 个 0 买日 fwd_5 −0.60% = 空仓正确 |
 | `feedback_store` | lessons(反复强化可升 self_review 硬门;**regime 作用域** + **MTM 计数/机械 confidence**〔support +0.03/refute −0.08,达阈自动提名摘门/退休,人批〕;注入 cap=8)/ proposals(**看板**:retro_input 列 open+天龄)/ changelog / 权重快照回滚;`decay_lessons` 已接 `mark_done` 节奏 | `ls_reversal_regime_low_composite_trust` ×4;open:cap_floor 软化、main_net 口径、horizon 之争 |
 | `gate_ledger`(新) | **门的 MTM**:assemble 落 `gate_fires.csv`(failure 带 code)× retro fwd → 每门拦对率;持续 ex>0 → 松阈/退役建议(人批) | 数据从 07-02 起积累 |
-| `watchlist_ledger`(新) | 观察单**触发→后市**度量(触发单准不准) | 待首个触发样本 |
+| `watchlist_ledger`(新) | 观察单**触发→后市**度量(触发单准不准) | prelude 每日刷新(born→今 巡检节);触发主表待首个触发样本 |
 | `scan/dossier.py`(新) | **个股档案(前科卡)**:近 10 日入围史(评级/binding 理由/skeptic verdict)注入 L4 简报 → **增量研究**(卡片须含"变化项 vs 档案"节);防锚定铁律同策略师 | 紫光国微 4 次入围/三度 CFO 门史自动聚出 |
 | `factor_lab` | harvest(成型日面板)→ calibrate(flat)/**calibrate_regimes**(分桶)→ eval | 面板 107 成型日(至 07-01);重标定一律走 `retro.recalibrate_and_log`(审计) |
 | `consensus`(新) | 卖方一致预期**前向积累**(`report_rc` 限频 **1次/小时** → 每日 1 拉,scan 前置)| 积累 0 日;**≥60 日过 factor_lab IC 门才谈入 composite** |
@@ -156,7 +156,7 @@ tushare 默认源(push2 被网络封锁;`TUSHARE_TOKEN` 高权限);keyless 可�
 
 1. 06-25/26/29/30 retro 待 fwd 成熟(07-03~07-07 陆续),补跑后 T+5 盲区/错杀/floor/影子对照数据自动变厚;
 2. regime 块 horizon 之争(`pr_20260702_001`)待 T+5 数据裁决;risk_off 块样本薄(11 日);
-3. **全部新 LLM 流程段(宏观 lite 新输入〔macro_state 捆绑〕/行业 brief 与同链对比/机会成本红队/观察单补 conds/档案"变化项"/经验人判 MTM/P4 倾向行/复用后编排)未在真实 skill 跑动中实测**——确定性件全有测试(**07-03 海拔重构后 640 绿**),LLM 段是脚手架就位;
+3. **全部新 LLM 流程段(宏观 lite 新输入〔macro_state 捆绑〕/行业 brief 与同链对比/机会成本红队/观察单补 conds/档案"变化项"/经验人判 MTM/P4 倾向行/复用后编排)未在真实 skill 跑动中实测**——确定性件全有测试(**07-03 海拔重构后 640 绿**),LLM 段是脚手架就位;**A3 早停抽检 / D1 卡模板 v2 未实跑**;
 3b. MTM/gate_fires/触发 ledger/影子对照/P4 翻盘率全部从 2026-07-02 起零积累——头两周读数样本薄,别过度反应;
 3c. attribution 一次性落账问题**已修**(07-03):`retro refresh`(prelude 首步自动跑)对成熟老日重写 attribution 补 fwd/hi;实测刷 8 日、东方财富现真身(hi10 +6.3% vs 目标 +28.8% = 首条"目标价过乐观"实证)。遗留孤儿:06-19 为端午假日跑动(非交易日键),fwd 永远无法结算,保持 "—";
 3d. Δ表省幅随日况(L2 轮换大的日子略 0 只);卡片复用省幅=churn(07-01 实测 20%,窗口而异);评级基率 n<10 禁注;
