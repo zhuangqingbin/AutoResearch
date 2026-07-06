@@ -68,11 +68,38 @@ def render(ledger: pd.DataFrame) -> list[str]:
     return out
 
 
+def monitoring_section(scan_root: Path | None = None) -> list[str]:
+    """最新一日 watchlist_status 的 born→今 巡检(错过审计;spec 2026-07-05 wave §C3)。
+
+    ledger 主表要等首个触发样本;本节让 ledger 从第一天就有读数——在监控条目此刻涨了多少。
+    """
+    scan_root = Path(scan_root or "context/scan")
+    days = sorted(scan_root.glob("*/watchlist_status.csv"), reverse=True)
+    if not days:
+        return []
+    try:
+        st = pd.read_csv(days[0], dtype={"code": str})
+    except Exception:  # noqa: BLE001
+        return []
+    if "since_born" not in st.columns:
+        return []
+    sub = st.dropna(subset=["since_born"])
+    if not len(sub):
+        return []
+    out = ["", f"## 在监控 born→今(错过审计;{days[0].parent.name})",
+           "| 股票 | 状态 | born→今 |", "|---|---|---|"]
+    for r in sub.to_dict("records"):
+        fire = " 🔥" if bool(r.get("fire")) else ""
+        out.append(f"| {r.get('name', '')}({r['code']}) | {r.get('status', '')} "
+                   f"| {float(r['since_born']):+.0%}{fire} |")
+    return out
+
+
 def main() -> int:
     ledger = roll()
     out = Path("reports/learning/watchlist_ledger.md")
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text("\n".join(render(ledger)) + "\n", encoding="utf-8")
+    out.write_text("\n".join(render(ledger) + monitoring_section()) + "\n", encoding="utf-8")
     print(f"[watchlist_ledger] {len(ledger)} 触发 → {out}")
     return 0
 

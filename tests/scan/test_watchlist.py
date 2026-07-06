@@ -123,3 +123,79 @@ def test_express_candidates_and_append(tmp_path):
 def test_express_missing_staging_empty(tmp_path):
     from autoresearch.scan.watchlist import express_candidates
     assert len(express_candidates(tmp_path)) == 0
+
+
+def test_check_remind_gradient_and_by_date():
+    wl = pd.DataFrame([
+        _wl("000010", [{"kind": "close_above", "value": 10}, {"kind": "ma_bull"},
+                       {"kind": "money_pos"}]),                                   # 2/3 yes → 提醒(2/3)
+        _wl("000011", [{"kind": "close_above", "value": 10},
+                       {"kind": "by_date", "date": "2026-07-04", "text": "中报"}]),  # 机判全 yes+日期锚 → 触发(待人工项)
+    ])
+    l1 = _l1([
+        {"code": "000010", "close": 11.0, "ma_bull": 1, "main_net_ratio": -0.1, "cmf_20": 0.1},
+        {"code": "000011", "close": 11.0, "ma_bull": 1, "main_net_ratio": 0.1, "cmf_20": 0.1},
+    ])
+    st = check(wl, l1, "2026-07-02").set_index("code")
+    assert st.at["000010", "status"] == "提醒(2/3)"
+    assert st.at["000010", "k"] == 2 and st.at["000010", "n"] == 3
+    assert st.at["000011", "status"] == "触发(待人工项)"
+    assert "by_date:2026-07-04(⏰临期)" in st.at["000011", "detail"]      # T-3 内标临期
+    st2 = check(wl, l1, "2026-07-06").set_index("code")
+    assert "⏰已到期待确认" in st2.at["000011", "detail"]
+
+
+def test_since_born_and_fire():
+    row = _wl("000012", [{"kind": "ma_bull"}])
+    row["born_price"] = "10.0"
+    wl = pd.DataFrame([row])
+    l1 = _l1([{"code": "000012", "close": 12.0, "ma_bull": 0,
+               "main_net_ratio": 0.1, "cmf_20": 0.1}])
+    st = check(wl, l1, "2026-07-02").set_index("code")
+    assert abs(st.at["000012", "since_born"] - 0.20) < 1e-9
+    assert bool(st.at["000012", "fire"])                                  # +20% 未触发 → 🔥
+    s = render_watchlist_block(check(wl, l1, "2026-07-02"))
+    assert "🔥" in s and "+20%" in s and "stock-research lite" in s        # C4 文案同步换名
+
+
+def test_backfill_born_price_from_lake(tmp_path):
+    import pandas as _pd
+
+    from autoresearch.scan.watchlist import backfill_born_price
+    lake = tmp_path / "daily"
+    lake.mkdir()
+    _pd.DataFrame([{"ts_code": "300476.SZ", "open": 300.0, "close": 310.0}]).to_parquet(
+        lake / "20260630.parquet", index=False)
+    wl_path = tmp_path / "watchlist.csv"
+    _pd.DataFrame([{**_wl("300476", [{"kind": "ma_bull"}]), "born": "2026-06-30"}]).to_csv(
+        wl_path, index=False)
+    assert backfill_born_price(path=wl_path, lake=lake) == 1
+    wl = load_watchlist(wl_path)
+    assert float(wl.iloc[0]["born_price"]) == 310.0
+
+
+def test_mark_new_vs_prev_day():
+    from autoresearch.scan.watchlist import mark_new
+    today = pd.DataFrame([{"code": "000001", "k": 2, "n": 3}, {"code": "000002", "k": 1, "n": 2}])
+    prev = pd.DataFrame([{"code": "000001", "k": 1, "n": 3}, {"code": "000002", "k": 1, "n": 2}])
+    out = mark_new(today, prev).set_index("code")
+    assert bool(out.at["000001", "new_k"]) and not bool(out.at["000002", "new_k"])
+    out2 = mark_new(today, None).set_index("code")            # 无前日 → 全 False(防首日全🆕噪声)
+    assert not out2["new_k"].any()
+
+
+def test_migrate_manual_dates_to_by_date(tmp_path):
+    import json as _json
+
+    import pandas as _pd
+
+    from autoresearch.scan.watchlist import migrate_by_date
+    row = _wl("000013", [{"kind": "money_pos"},
+                         {"kind": "manual", "text": "08-29中报净利同比转正"}])
+    wl_path = tmp_path / "watchlist.csv"
+    _pd.DataFrame([row]).to_csv(wl_path, index=False)
+    assert migrate_by_date(path=wl_path) == 1
+    conds = _json.loads(load_watchlist(wl_path).iloc[0]["conds"])
+    bd = [c for c in conds if c["kind"] == "by_date"]
+    assert bd and bd[0]["date"] == "2026-08-29" and "中报" in bd[0]["text"]
+    assert migrate_by_date(path=wl_path) == 0                             # 幂等

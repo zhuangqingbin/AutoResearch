@@ -33,3 +33,16 @@ def test_roll_triggers_join_fwd(tmp_path):
 def test_empty_graceful(tmp_path):
     assert len(roll(tmp_path)) == 0
     assert any("无" in ln for ln in render(roll(tmp_path)))
+
+
+def test_monitoring_section_born_to_date(tmp_path):
+    import pandas as pd
+
+    from autoresearch.learning.watchlist_ledger import monitoring_section
+    d = tmp_path / "2026-07-03"
+    d.mkdir(parents=True)
+    pd.DataFrame([{"code": "300476", "name": "胜宏科技", "status": "待触发",
+                   "since_born": 0.22, "fire": True}]).to_csv(d / "watchlist_status.csv", index=False)
+    text = "\n".join(monitoring_section(tmp_path))
+    assert "born→今" in text and "+22%" in text and "🔥" in text
+    assert monitoring_section(tmp_path / "nope") == []
