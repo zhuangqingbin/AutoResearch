@@ -139,6 +139,9 @@ L4 派发前(确定性):🚄 观察单触发直通车(触发票直达 L4)→ ♻
 | `scan/health.py`(07-02) | **run_health**(NaN 降级/在位/churn/L4 阶段效能/买单数)+ `index.md` 导航;retro 读之防"数据病当因子病" | 07-01:hk_ratio 降级、churn 16%、早停率 20% |
 | `scan/calendar.py`(07-02) | **解禁+预约披露日历**(share_float 分块 + disclosure_date)→ L4 旗 + summary 日历 + 触发日期锚 | 07-01:216 披露+1 大解禁;紫光国微中报=08-15 |
 | 影子漏斗(07-02) | universe 变体 L2(nostrat/nocap)→ retro 捕获对照(**免费确定性 A/B**) | 数据从下一真实 scan 起积累 |
+| `paper_nav`(07-05 wave) | **影子组合成绩单**:真实(≥OW)/影子(top-3 Hold)/市场等权 三线 NAV(10% 槽·持10日·次日开盘进出);`真实−影子`=门的价值;summary 置顶一行 | 回填起 06-18;06-19 孤儿键跳过 |
+| `shadow_buys`(07-05 wave) | 每日 conviction top-3 Hold 确定性记账(assemble 自动)→ NAV 影子线 + 评级基率样本池;与机会成本红队正交 | 历史回填 ~30 行 |
+| `catalyst_ledger`(07-05 wave) | 催化旗票 vs 无旗票 fwd_5 对照(**n≥30 才读数**);IC 过硬前不入 composite | 零积累起步 |
 
 ## 数据层要点
 
@@ -160,3 +163,4 @@ tushare 默认源(push2 被网络封锁;`TUSHARE_TOKEN` 高权限);keyless 可�
 3e. **07-02 首航后新增(07-03;07-04 落稿契约确定性化)**:healthy 通道/健康桶已上线但其 alpha/捕获增量未验——由 `pre_healthy` 影子反事实 + retro 裁决(≥10 日);哨兵档未实跑;落稿契约中 `_l4_prompt_*`+`_harvest_list` 已由 `l4_card prompts` 确定性产出(`_l3_table`/`_v_*` 仍靠编排手落;token 表新增 **L4 输入·slim** 行 + prompt 缺稿可执行提示;07-03 实证:落盘下界 ~75k vs 真实量级 ~1M,主因 L4 输入侧 28 卡 × ~25k 未计);token 真实计费仍只有 Claude Code `/usage` 可见;
 4. consensus 首拉待限频窗;积累 <60 日前盈利修正不入线上;
 5. 仅供研究,非投资建议。
+6. anns_d 无接口权限(07-05 实测):公告情感列空、监管旗走 L3_webnews 回退(`reg_hits_for_code`);run_health `anns_empty_rate`=1.0 即该态。权限开通/替代公告端点待核;northbound 通道 hk_ratio NaN=100% 空转读数(`northbound_probe`)取证中,quota 不动待 proposal。

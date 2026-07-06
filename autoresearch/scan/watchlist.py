@@ -5,8 +5,10 @@ design: docs/specs/2026-07-02-scan-watchlist-and-health-metrics-design.md §2.1
 
 哑铃/避险市里高价值产物 = 待触发观察单;本模块把触发条件从报告散文升为机判状态:
 `context/watchlist.csv`(跨日活状态)→ 每日对 `L1_scored_full.csv` 逐条件判定 →
-`watchlist_status.csv`(staging)→ L5 嵌入。机判词表 v1:close_above/close_below/
-ma_bull/money_pos;`manual` 恒待人工。结构化 conds 由编排层补——机器只搬运不理解。
+`watchlist_status.csv`(staging)→ L5 嵌入。机判词表 v2:close_above/close_below/
+ma_bull/money_pos/by_date(日期锚⏰);manual 恒待人工。状态梯度:触发>提醒(k/n,k≥2)>
+临近(k=1)>待触发;since_born≥+15% 未触发标🔥(错过审计);🆕=较前日新达成。结构化 conds
+由编排层补——机器只搬运不理解。
 """
 from __future__ import annotations
 
