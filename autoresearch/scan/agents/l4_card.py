@@ -83,6 +83,34 @@ def pick_sentinel_candidates(scan_dir, k: int = 2) -> list[str]:
     return df.sort_values("_s", ascending=False)["code"].astype(str).str.zfill(6).head(k).tolist()
 
 
+def pick_earlystop_audit(scan_dir, k: int = 2, seed: int | None = None) -> list[str]:
+    """早停抽检对象(opt-in;spec 2026-07-05 wave §A3):当日早停卡里确定性抽 k 张,
+    派独立复核 agent 只读「深核分界后块 + 早停卡 + 简报」判误杀;产出进 proposals 不改评级。
+
+    seed 缺省 = 数据日整数(同日重跑同名单);复用卡(♻️)与满卡(进入P4倾向)不抽。
+    """
+    import random
+    from pathlib import Path
+    scan_dir = Path(scan_dir)
+    base = scan_dir / "details"
+    if not base.is_dir():
+        return []
+    stops = []
+    for p in sorted(base.glob("*.md")):
+        text = p.read_text(encoding="utf-8")
+        if "♻️" in text or "进入P4倾向" in text:
+            continue
+        if "早停因" in text:
+            stops.append(p.stem)
+    if not stops:
+        return []
+    if seed is None:
+        digits = "".join(ch for ch in scan_dir.name if ch.isdigit())
+        seed = int(digits or "0")
+    rng = random.Random(seed)
+    return sorted(rng.sample(stops, min(k, len(stops))))
+
+
 def pick_buylist(ratings: dict[str, str], floor: str = "Overweight") -> list[str]:
     """评级 ≥ floor 的发布买单(floor=Overweight 时等价 pick_buy_candidates〔Buy/OW〕)。
 

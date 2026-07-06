@@ -875,6 +875,10 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
             n_sh = _shadow_record(scan_dir)
             if n_sh:
                 print(f"[shadow_buys] 记 {n_sh} 只影子买单 → context/learning/shadow_buys.csv")
+    if scan_dir == Path("context/scan") / analysis_date:   # 真实现场才刷新日记(测试 tmp 目录不触发)
+        with contextlib.suppress(Exception):
+            from autoresearch.learning import journal as _journal
+            _journal.main()
     print(f"[L5 整合] summary → {summary_path}  (数据日 {analysis_date})")
     print(f"[L5 整合] details → {detail_out}  ({n_cards} 张卡 + trace/ {n_pipe} 件溯源)")
     return summary_path
