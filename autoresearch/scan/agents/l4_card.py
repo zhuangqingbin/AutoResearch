@@ -557,7 +557,7 @@ def _tushare_seats_by_date(dates: list[str]) -> dict[str, pd.DataFrame]:
     return out
 
 
-def fetch_seats(scan_dir, codes=None, bulk_fn=None, reuse_days: int = 7,
+def fetch_seats(scan_dir: Path | str, codes=None, bulk_fn=None, reuse_days: int = 7,
                 window_days: int = 20) -> pd.DataFrame:
     """finalists 龙虎榜机构 vs 游资席位聚合 → `seats.csv`(code,inst_net_wan,retail_net_wan,n_appear)。
 

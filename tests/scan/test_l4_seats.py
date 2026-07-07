@@ -1,5 +1,6 @@
 import pandas as pd
 
+from autoresearch.data import tushare_source
 from autoresearch.scan.agents.l4_card import fetch_seats
 
 
@@ -15,7 +16,14 @@ def _bulk_stub(dates):
     }
 
 
-def test_fetch_seats_aggregates_inst_vs_retail(tmp_path):
+def test_fetch_seats_aggregates_inst_vs_retail(tmp_path, monkeypatch):
+    # 缺 code 分支在 bulk_fn 之前先探 resolve_momentum_dates/_trade_days/_pro(真 tushare);
+    # 全部 stub 掉 → 离线 hermetic,bulk_fn 才会真正被调用。
+    monkeypatch.setattr(tushare_source, "resolve_momentum_dates",
+                        lambda *a, **k: ("20260707", "20260707"), raising=True)
+    monkeypatch.setattr(tushare_source, "_trade_days",
+                        lambda *a, **k: ["20260701", "20260707"], raising=True)
+    monkeypatch.setattr(tushare_source, "_pro", lambda *a, **k: object(), raising=True)
     d = tmp_path / "2026-07-07"
     d.mkdir()
     pd.DataFrame({"code": ["600000", "300001"]}).to_csv(d / "finalists.csv", index=False)
