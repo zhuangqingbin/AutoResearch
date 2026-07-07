@@ -10,6 +10,7 @@ screening-playbook.md);本模块只做**确定性喂料 + 取数 + 格式化**:�
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -315,3 +316,67 @@ def merge_l3_finalists_v2(judged: pd.DataFrame, target: int = 30, trend_quota: i
     cols = ["ticker", "code", "name", "sector", "lenses", "conviction",
             "triage_lean", "triage_reason", "thesis", "risk", "catalyst", "lane", "sentiment"]
     return out[[c for c in cols if c in out.columns]]
+
+
+def write_finalists(date: str, budget: int = 30, root: Path | None = None) -> dict:
+    """确定性写 finalists.csv + L3_judged_full.csv(workflow L3 后确定性入口,取代手工 glue)。
+
+    读 l3-rank agent 落的 _l3_judged.json → 从 L2 回填 pct_60d(供 merge 混合配额)
+    → merge_l3_finalists_v2 → 写盘。**全程 6 位零填**,修 000062→62 的 CSV 往返坑。
+    """
+    base = Path(root) if root else Path("context/scan")
+    scan_dir = base / date
+    picks = json.loads((scan_dir / "_l3_judged.json").read_text(encoding="utf-8"))
+    jd = pd.DataFrame(picks)
+    if jd.empty or "code" not in jd.columns:
+        raise ValueError(f"_l3_judged.json 空或缺 code 列:{scan_dir / '_l3_judged.json'}")
+    jd["code"] = jd["code"].astype(str).str.zfill(6)
+    l2p = scan_dir / "L2_gbdt_top200.csv"
+    if l2p.exists() and "pct_60d" not in jd.columns:
+        l2 = pd.read_csv(l2p, dtype={"code": str})
+        l2["code"] = l2["code"].astype(str).str.zfill(6)
+        if "pct_60d" in l2.columns:
+            jd = jd.merge(l2[["code", "pct_60d"]], on="code", how="left")
+    jd.to_csv(scan_dir / "L3_judged_full.csv", index=False)       # 全量判断(retro/assemble/trace)
+    fin = merge_l3_finalists_v2(jd, target=budget)                # 内部 zfill code + ticker=code
+    fin.to_csv(scan_dir / "finalists.csv", index=False)
+    return {"judged_n": int(len(jd)), "finalists_n": int(len(fin))}
+
+
+def prepare_l3_table(date: str, root: Path | None = None, delta: bool = True,
+                     do_harvest: bool = True) -> dict:
+    """L3 精排前的确定性件:harvest 证据/公告情感 + 构建紧凑表 → 写 _l3_table.md(l3-rank agent 读)。"""
+    base = Path(root) if root else Path("context/scan")
+    scan_dir = base / date
+    l2 = pd.read_csv(scan_dir / "L2_gbdt_top200.csv", dtype={"code": str})
+    codes = l2["code"].astype(str).str.zfill(6).tolist()
+    if do_harvest:
+        harvest_l3_evidence(date, codes, root=base)
+        from autoresearch.scan.agents.l3_news import harvest_l3_news
+        harvest_l3_news(date, codes, root=base)
+    md = l3_table_md(date, root=base, delta=delta, dist_flag=True, reg_flag=True,
+                     cat_flag=True, sector_terrain=True)
+    (scan_dir / "_l3_table.md").write_text(md, encoding="utf-8")
+    return {"codes": len(codes), "table_bytes": len(md)}
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    ap = argparse.ArgumentParser(prog="l3_select")
+    ap.add_argument("cmd", choices=["finalists", "prepare"])
+    ap.add_argument("date")
+    ap.add_argument("--budget", type=int, default=30)
+    ap.add_argument("--root", default=None)
+    a = ap.parse_args(argv)
+    if a.cmd == "finalists":
+        res = write_finalists(a.date, budget=a.budget, root=a.root)
+        print(f"[l3_select finalists] judged {res['judged_n']} → finalists {res['finalists_n']}")
+    else:
+        res = prepare_l3_table(a.date, root=a.root)
+        print(f"[l3_select prepare] codes {res['codes']} → _l3_table.md {res['table_bytes']}B")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
