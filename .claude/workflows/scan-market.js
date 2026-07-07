@@ -46,8 +46,8 @@ await bash(`mkdir -p ${SD} && ${R} autoresearch.scan.frame ${date} --json > ${SD
 await parallel([
   () => bash(`${R} autoresearch.scan.prelude ${date}`, 'prelude/universe'),
   () => agent(
-    `你是首席策略师。按 macro-research lite 档(模板见 .claude/skills/macro-research/macro-playbook.md 末节「lite 档:市场研判」)读 ${SD}/market_pack.json,写 ${SD}/market_view.md(定调/结构/红黑榜/操作基调)。数字只出自 pack,不编数;个股不评级。`,
-    { agentType: 'claude', model: 'opus', effort: 'medium', label: 'market_view', phase: 'Prelude' }),
+    `读 ${SD}/market_pack.json,按你的人设写 ${SD}/market_view.md(六小节;前3描述性地形、后2仅 L5)。数字只出自 pack,不编;个股不评级、不锚定卡片。`,
+    { agentType: 'macro-brief', effort: 'high', label: 'market_view', phase: 'Prelude' }),
 ])
 const g1 = await gate('GATE1', `${R} autoresearch.scan.gates gate1 ${date}`, GATE1)
 if (!g1 || !g1.ok) throw new Error(`GATE1 失败:${g1 ? g1.reason : 'agent 无返回'}`)
