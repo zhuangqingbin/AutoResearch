@@ -136,7 +136,9 @@ def ashare_shareholder_ts(sym: str) -> str | None:
     try:
         pl = _ts_call(lambda: pro.pledge_stat(ts_code=tc))
         if len(pl):
-            from autoresearch.common.scoring import pledge_flag_label  # 阈值单一事实源(与 L4 质押旗同)
+            from autoresearch.common.scoring import (
+                pledge_flag_label,  # 阈值单一事实源(与 L4 质押旗同)
+            )
             pl = pl.sort_values("end_date").tail(1).iloc[0]
             pr = float(_num(pd.Series([pl["pledge_ratio"]])).iloc[0])
             lbl = pledge_flag_label(pr)

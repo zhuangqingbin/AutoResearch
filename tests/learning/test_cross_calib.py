@@ -86,8 +86,7 @@ def test_gate_stats_binding_misskill(tmp_path):
 
 
 def test_render_and_suggestion_lines(tmp_path):
-    from autoresearch.learning.cross_calib import (flip_stats, gate_stats, render,
-                                                   suggestion_lines)
+    from autoresearch.learning.cross_calib import flip_stats, gate_stats, render, suggestion_lines
     md = "\n".join(render(flip_stats(tmp_path / "nx"), gate_stats(tmp_path / "nx")))
     assert "翻案" in md and "门柱" in md                       # 空表也有骨架
     assert suggestion_lines(flip_stats(tmp_path / "nx"), gate_stats(tmp_path / "nx")) == []

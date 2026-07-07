@@ -5,10 +5,13 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import pytest
 
-from autoresearch.scan.recall.l2_stratify import (DEFAULT_FLOORS, sector_neutral,
-                                                  select_l2, stratified_l2)
+from autoresearch.scan.recall.l2_stratify import (
+    DEFAULT_FLOORS,
+    sector_neutral,
+    select_l2,
+    stratified_l2,
+)
 
 
 def _universe(n=600, seed=7):

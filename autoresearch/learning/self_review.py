@@ -118,7 +118,7 @@ def review(ctx: dict) -> dict:
 
     # 8) 流程完备性(编排 lint:LLM 段可能被静默跳过;阈值防合成小 fixture 误报)
     fl = ctx.get("flow") or {}
-    if fl:
+    if fl:  # noqa: SIM102 — 外层 guard 留作恢复买单 skeptic lint(届时块内会有多个 if)
         # 买单 skeptic 已按用户决定移除(2026-07-06)——原 fail lint「买单>0 而 verify.csv 空」停用。
         # 恢复:取消下方三行注释,即恢复"每只 ≥OW 买单发布前必须独立 skeptic 证伪"硬门。
         # if fl.get("buys_n") and not fl.get("verify_n"):

@@ -48,7 +48,7 @@ def test_backfill_walks_days(tmp_path):
 def test_backfill_fault_isolation(tmp_path):
     """一日 L1_scored_full.csv 损坏时,backfill 跳过该日但继续处理其他日。"""
     root = tmp_path / "scan"
-    good_day = _mk_day(root, "2026-07-02")
+    _mk_day(root, "2026-07-02")                                   # 好日:建目录(返回值不用)
     bad_day = _mk_day(root, "2026-07-03")
 
     # 破坏 bad_day 的 L1_scored_full.csv:改成目录,使 record() 的 pd.read_csv 抛 IsADirectoryError

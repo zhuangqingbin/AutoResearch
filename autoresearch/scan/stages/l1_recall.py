@@ -41,8 +41,7 @@ class L1Recall(Stage):
         return [schema.L1_RECALL, schema.L1_SCORED_FULL, schema.L1_CHANNELS]
 
     def run(self, ctx: RunContext) -> None:
-        from autoresearch.scan import frame as smf
-        from autoresearch.scan import universe as smu
+        from autoresearch.scan import frame as smf, universe as smu
         uni = ctx.trace.get_df(ctx.run_id, schema.L0_UNIVERSE)
         uni["code"] = uni["code"].astype(str).str.zfill(6)
         recall_n = ctx.config.recall_n
