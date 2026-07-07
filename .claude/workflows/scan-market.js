@@ -88,12 +88,13 @@ log(`GATE2 ✓ finalists=${g2.n}`)
 
 // ── Phase L4 ────────────────────────────────────────────────────
 phase('L4')
-// 派发包(确定性):TTL复用+carryover → prompts(.SH 归一)→ pledge → calendar
+// 派发包(确定性):TTL复用+carryover → pledge/seats/calendar(旗源 csv)→ prompts(.SH 归一;compose 时读旗源)
 await bash(
   `${R} autoresearch.scan.l4_reuse ${date} --apply --carryover; ` +
-  `${R} autoresearch.scan.agents.l4_card prompts ${date}; ` +
   `${R} autoresearch.scan.agents.l4_card pledge ${date} || true; ` +
-  `${R} autoresearch.scan.calendar ${date} || true`, 'l4-prep')
+  `${R} autoresearch.scan.agents.l4_card seats ${date} || true; ` +
+  `${R} autoresearch.scan.calendar ${date} || true; ` +
+  `${R} autoresearch.scan.agents.l4_card prompts ${date}`, 'l4-prep')
 // GATE3:批量 slim 失败响亮(harvest-slim 打印 JSON + 非零退出)
 const g3 = await gate('GATE3', `${R} autoresearch.scan.agents.l4_card harvest-slim ${date}`, OK)
 if (!g3 || !g3.ok) throw new Error(`GATE3 失败(slim<10KB 或 .SH):${g3 ? g3.reason : 'no return'}`)
