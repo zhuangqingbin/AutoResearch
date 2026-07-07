@@ -65,6 +65,7 @@ def test_token_estimate_rows(tmp_path):
     md = "\n".join(_stage_token_estimate(d))
     assert "旁路 策略师 | Opus | session | — | 1" in md        # 07-06:引擎后加 effort+墙钟列(无计时→墙钟—)
     assert "落稿契约" in md and "未计而非为零" in md
+    assert "L4 新闻网查" in md and "未计非零" in md
     md2 = "\n".join(_stage_token_estimate(tmp_path))           # 空目录 → 全 —
     assert "旁路 策略师 | Opus | session | — | — | —" in md2
 

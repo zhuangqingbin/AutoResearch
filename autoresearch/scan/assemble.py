@@ -375,6 +375,8 @@ def _stage_token_estimate(scan_dir: Path) -> list[str]:
          f"{len(cards)} 张卡(早停/满卡/复用;每卡 prompt 落 `_l4_prompt_*` 才计入)"),
         ("L4 输入·slim", "—(输入侧)", "—", "L4slim", len(slims), _b(slims),
          "harvest --slim 落稿(每卡 subagent 读入;≈4.8KB 空稿=NO_DATA 亦计=真实浪费)"),
+        ("L4 新闻网查", "WebSearch", "—", "L4news", 0, 0,
+         "P3 有界活体新闻(≤3/卡)+ sector/macro 网查(≤2)——无落盘 artifact,token 计费经 OTEL/`/usage`,此处**未计非零**"),
     ]
     lines = ["## 各阶段耗时 & token 消耗(估算)",
              "| 阶段 | 引擎 | effort | 墙钟 | LLM 调用 | 落盘字节 | ~token | 说明 |",
