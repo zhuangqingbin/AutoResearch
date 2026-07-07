@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 AGENTS = ROOT / ".claude" / "agents"
 SKILLS = ROOT / ".claude" / "skills"
 
-_NAMES = ("l4-card", "sector-brief")
+_NAMES = ("l4-card", "sector-brief", "macro-brief")
 
 
 def _agent_text(name: str) -> str:
@@ -60,3 +60,14 @@ def test_skill_docs_wire_agent_types():
     stages = (SKILLS / "scan-market" / "STAGES.md").read_text(encoding="utf-8")
     for name in _NAMES:
         assert name in skill or name in stages, f"scan 文档未接线 agent 类型「{name}」"
+
+
+def test_macro_brief_anchors_synced():
+    """macro-brief 六小节标题 + 防锚定铁律与 macro-playbook 末节(市场研判 lite)同源。"""
+    agent = _agent_text("macro-brief")
+    playbook = (SKILLS / "macro-research" / "macro-playbook.md").read_text(encoding="utf-8")
+    anchors = ["一句话定调", "市场结构", "板块红黑榜", "操作基调",
+               "描述性地形", "不锚定卡片"]
+    for a in anchors:
+        assert a in agent, f"macro-brief 缺契约锚「{a}」"
+        assert a in playbook, f"macro-playbook 缺契约锚「{a}」(真值源被改,先同步 agent 定义)"

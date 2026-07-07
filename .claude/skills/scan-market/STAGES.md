@@ -67,6 +67,7 @@ L4 派发前(确定性):🚄 观察单触发直通车(触发票直达 L4)→ ♻
 
 > 07-03 海拔重构:人格/prompt 模板已迁 `macro-research/macro-playbook.md` 末节;帧入口
 > `market_pack_from_frame`(`scan/frame.py` 湖派生)使其不再依赖 L2 完成——本节其余描述为 L2 后回退口径。
+> Stage 0 市场研判由 `macro-brief` leaf agent 产出(读 market_pack.json 写 market_view.md;六小节,前3描述性地形喂 L3/L4、后2仅 L5)。
 
 - **机制**:确定性 `market_pack(scan_dir)`(`scan/market.py`:regime/宽度/估值分散/资金/板块红黑榜,只读 `L1_scored_full`——全市场真宽度,不用 recall 子集)→ 一个 Opus subagent 以资深投资大师口吻写 `market_view.md`(staging)。**一次产出三处复用**:L3 prompt 前置地形段、L4 每卡简报注入本股板块地形(`market_context_block`)、L5 置顶嵌入 + 确定性漏斗读数尾注。
 - **防锚定不变量(易违反,务必守)**:喂 L3/L4 的只能是**描述性地形**(数字),不是方向指令;操作建议/漏斗读数只进 L5;**个股评级只由本股 rubric 三门决定,大盘看空不压个股、看多不松门**。缺 `market_view.md` → L5 回退确定性脉搏(parity 不破)。
