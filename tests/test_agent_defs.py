@@ -53,6 +53,8 @@ def test_sector_brief_anchors_synced():
     for a in (TERRAIN_HDR, VIEW_HDR, "**行业方向**", "不编", "实时网查"):
         assert a in agent, f"sector-brief 缺契约锚「{a}」"
     assert "WebSearch" in agent.split("---", 2)[1], "sector-brief frontmatter 缺 WebSearch tool"
+    playbook = (SKILLS / "sector-research" / "sector-playbook.md").read_text(encoding="utf-8")
+    assert "实时网查" in playbook, "sector-playbook lite 段缺实时网查 note(agent↔真值源漂移)"
 
 
 def test_skill_docs_wire_agent_types():
@@ -73,4 +75,5 @@ def test_macro_brief_anchors_synced():
         assert a in agent, f"macro-brief 缺契约锚「{a}」"
         assert a in playbook, f"macro-playbook 缺契约锚「{a}」(真值源被改,先同步 agent 定义)"
     assert "实时网查" in agent, "macro-brief 缺契约锚「实时网查」"
+    assert "实时网查" in playbook, "macro-playbook lite 段缺实时网查 note(agent↔真值源漂移)"
     assert "WebSearch" in agent.split("---", 2)[1], "macro-brief frontmatter 缺 WebSearch tool"
