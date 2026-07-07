@@ -1,0 +1,101 @@
+"""scan-market workflow 校验门(确定性,零 LLM)。workflow 经 Bash-agent 调,读 JSON 分支。
+
+GATE1 = prelude 后数据体检(L2 非空 + 代码 6 位)+ 返回 sentinel/budget;
+GATE2 = finalists 定稿后(代码 6 位 + count≤budget)+ 返回名单;
+GATE4 = assemble 后 self_review 硬门(gate_fires.csv 无 severity=fail)。
+GATE3(slim>10KB / 无 .SH)由 l4_card harvest-slim 自身承担。redteam = 0买日抽检门。
+"""
+from __future__ import annotations
+
+import csv
+import json
+import re
+from pathlib import Path
+
+import pandas as pd
+
+_CODE_RE = re.compile(r"^\d{6}$")
+
+
+def _codes_ok(codes) -> bool:
+    return len(codes) > 0 and all(bool(_CODE_RE.match(str(c))) for c in codes)
+
+
+def gate1(scan_dir: Path) -> dict:
+    scan_dir = Path(scan_dir)
+    l2 = scan_dir / "L2_gbdt_top200.csv"
+    if not l2.exists():
+        return {"ok": False, "gate": "gate1", "reason": "L2_gbdt_top200.csv 缺失(universe 未跑?)"}
+    df = pd.read_csv(l2, dtype={"code": str})
+    if df.empty:
+        return {"ok": False, "gate": "gate1", "reason": "L2 为空"}
+    if not _codes_ok(df["code"].astype(str)):
+        return {"ok": False, "gate": "gate1", "reason": "L2 代码非 6 位(前导零坑)"}
+    from autoresearch.scan.menu import l4_budget, sentinel_advice
+
+    level, _ = sentinel_advice(scan_dir)
+    budget, _ = l4_budget(scan_dir)
+    return {"ok": True, "gate": "gate1", "reason": "ok", "sentinel_level": level,
+            "l4_budget": int(budget), "l2_n": int(len(df))}
+
+
+def gate2(scan_dir: Path, budget: int = 30) -> dict:
+    scan_dir = Path(scan_dir)
+    fp = scan_dir / "finalists.csv"
+    if not fp.exists():
+        return {"ok": False, "gate": "gate2", "reason": "finalists.csv 缺失"}
+    df = pd.read_csv(fp, dtype={"code": str, "ticker": str})
+    if df.empty:
+        return {"ok": False, "gate": "gate2", "reason": "finalists 空"}
+    raw = df["code"].astype(str)          # dtype=str 读入原样保留(不 zfill)—— 与 gate1 同口径
+    if not _codes_ok(raw):
+        return {"ok": False, "gate": "gate2", "reason": "finalist 代码非 6 位(前导零坑)"}
+    if len(df) > budget:
+        return {"ok": False, "gate": "gate2", "reason": f"finalists {len(df)} > budget {budget}"}
+    return {"ok": True, "gate": "gate2", "reason": "ok", "finalists": raw.tolist(),
+            "n": int(len(df))}
+
+
+def gate4(scan_dir: Path) -> dict:
+    scan_dir = Path(scan_dir)
+    gf = scan_dir / "gate_fires.csv"
+    if not gf.exists():
+        return {"ok": False, "gate": "gate4", "reason": "gate_fires.csv 缺失(assemble 未跑?)"}
+    with gf.open(encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    fails = [r for r in rows if r.get("severity") == "fail"]
+    if fails:
+        detail = "; ".join(f"{r['check']}:{r['detail']}" for r in fails)
+        return {"ok": False, "gate": "gate4", "reason": f"self_review fail×{len(fails)} — {detail}"}
+    return {"ok": True, "gate": "gate4", "reason": "self_review 通过", "n_checks": len(rows)}
+
+
+def redteam_check(scan_dir: Path) -> dict:
+    from autoresearch.scan.menu import should_run_opportunity_redteam
+
+    run, reason = should_run_opportunity_redteam(Path(scan_dir))
+    return {"run": bool(run), "reason": reason}
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    ap = argparse.ArgumentParser(prog="gates")
+    ap.add_argument("gate", choices=["gate1", "gate2", "gate4", "redteam"])
+    ap.add_argument("date")
+    ap.add_argument("--budget", type=int, default=30)
+    ap.add_argument("--root", default=None)
+    a = ap.parse_args(argv)
+    base = Path(a.root) if a.root else Path("context/scan")
+    scan_dir = base / a.date
+    res = {"gate1": lambda: gate1(scan_dir),
+           "gate2": lambda: gate2(scan_dir, budget=a.budget),
+           "gate4": lambda: gate4(scan_dir),
+           "redteam": lambda: redteam_check(scan_dir)}[a.gate]()
+    print(json.dumps(res, ensure_ascii=False))
+    ok = res.get("ok", res.get("run"))
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
