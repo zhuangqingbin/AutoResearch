@@ -434,6 +434,43 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
     return {"n_prompts": n_prompts, "n_skipped": n_skipped, "tickers": tickers}
 
 
+def dispatch_plan(date: str, root: Path | str | None = None) -> dict:
+    """L4 派发感知 TTL 复用/carryover(确定性,零 LLM;复审 task-4-review.md Important #1 修复)。
+
+    `write_dispatch_pack` 对已有 `details/<code>.md` 的复用/carryover 码 skip(不写
+    `_l4_prompt_<code>.md`),但工作流原先对**全部** finalists 无条件派卡 —— 复用码那份
+    prompt 文件根本不存在,派了个读空文件的 Opus(抵消 TTL 复用省下的成本,复用卡评级也
+    没并回 `cards`)。本函数按同一判据(`_l4_prompt_<code>.md` 是否存在)把 finalists
+    分两路:`dispatch`(需新派 Opus)与 `reused`(已就位卡,直接 `parse_rating` 解评级
+    并回,不再派 subagent)。两个标志都缺(异常态)→ 归 `dispatch`,兜底走正常派发。
+
+    返回 `{"dispatch": [code6...], "reused": [{"code","rating"}...]}`。
+    """
+    base = Path(root) if root else Path("context/scan")
+    scan_dir = base / date
+    fp = scan_dir / "finalists.csv"
+    dispatch: list[str] = []
+    reused: list[dict] = []
+    if not fp.exists():
+        return {"dispatch": dispatch, "reused": reused}
+    from autoresearch.agents.utils.rating import parse_rating  # 延迟导入,保持本模块轻量
+    fin = pd.read_csv(fp, dtype={"code": str})
+    for _, r in fin.iterrows():
+        raw = str(r.get("code", "") or "").strip()
+        if not raw or raw == "nan":
+            continue
+        code6 = raw.split(".")[0].zfill(6)
+        if (scan_dir / f"_l4_prompt_{code6}.md").exists():
+            dispatch.append(code6)
+            continue
+        details = scan_dir / "details" / f"{code6}.md"
+        if details.exists():
+            reused.append({"code": code6, "rating": parse_rating(details.read_text(encoding="utf-8"))})
+        else:
+            dispatch.append(code6)   # 两者皆无(异常):兜底走正常派发,不静默丢票
+    return {"dispatch": dispatch, "reused": reused}
+
+
 def _tushare_pledge(code6: str) -> tuple[float, str] | None:
     """默认取数器:tushare pledge_stat 最新一期 → (ratio, end_date);失败/空 → None。"""
     from autoresearch.data.tushare_enrich import _pro, _ts_call, _tscode
@@ -549,12 +586,18 @@ def harvest_slim_batch(date: str, root: Path | None = None, min_bytes: int = 10_
 def main(argv: list[str] | None = None) -> int:
     import argparse
     ap = argparse.ArgumentParser(description="L4 确定性件 CLI(派发包落稿/质押预旗,零 LLM)")
-    ap.add_argument("cmd", choices=["prompts", "pledge", "harvest-slim"],
+    ap.add_argument("cmd", choices=["prompts", "pledge", "harvest-slim", "dispatch-plan"],
                     help="prompts = 写 _harvest_list.txt + _l4_prompt_<code>.md;"
                          "pledge = finalists 批量质押 → pledge.csv(简报自动带 ⚠质押旗);"
-                         "harvest-slim = 按 _harvest_list.txt 批量 harvest slim")
+                         "harvest-slim = 按 _harvest_list.txt 批量 harvest slim;"
+                         "dispatch-plan = 派发感知 TTL 复用/carryover(dispatch/reused 分流)")
     ap.add_argument("date", help="scan 日 YYYY-MM-DD")
+    ap.add_argument("--root", default=None, help="scan 根目录(默认 context/scan)")
     args = ap.parse_args(argv)
+    if args.cmd == "dispatch-plan":
+        import json
+        print(json.dumps(dispatch_plan(args.date, root=args.root), ensure_ascii=False))
+        return 0
     if args.cmd == "harvest-slim":
         import json
         res = harvest_slim_batch(args.date)

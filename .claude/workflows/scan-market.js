@@ -98,17 +98,28 @@ await bash(
 const g3 = await gate('GATE3', `${R} autoresearch.scan.agents.l4_card harvest-slim ${date}`, OK)
 if (!g3 || !g3.ok) throw new Error(`GATE3 失败(slim<10KB 或 .SH):${g3 ? g3.reason : 'no return'}`)
 log('GATE3 ✓ 全 slim >10KB')
-// 决策卡:全部 finalist 一次并发(barrier —— 红队需全部评级才知是否 0 买)
+// 派发计划(确定性):按 _l4_prompt_<code>.md 是否存在分 dispatch(需新派)/ reused(TTL复用
+// 或 carryover 已写 details/<code>.md,不再派 subagent,直接解析该卡评级)。修复:此前对
+// 全部 finalists 无条件派卡,复用码从未写过 prompt 文件,等于空派 Opus,抵消复用省下的成本。
+const PLAN = { type: 'object', required: ['dispatch'],
+  properties: { dispatch: { type: 'array', items: { type: 'string' } },
+    reused: { type: 'array', items: { type: 'object',
+      properties: { code: { type: 'string' }, rating: { type: 'string' } } } } } }
+const plan = await gate('dispatch-plan', `${R} autoresearch.scan.agents.l4_card dispatch-plan ${date}`, PLAN)
+if (!plan) throw new Error('dispatch-plan 无返回')
+// 决策卡:只派 dispatch 码一次并发(barrier —— 红队需全部评级才知是否 0 买)
 const CARD = { type: 'object', required: ['code', 'rating'],
   properties: { code: { type: 'string' }, rating: { type: 'string' }, conviction: { type: 'number' } } }
-const cards = (await parallel(g2.finalists.map((code) => () => agent(
+const fresh = (await parallel(plan.dispatch.map((code) => () => agent(
   `执行 ${SD}/_l4_prompt_${code}.md:先读整个任务包,再按其指令做渐进深度 DD + 早停,写决策卡到 ${SD}/details/${code}.md。最后返回该卡最终五档评级(code / rating / conviction)。`,
   { agentType: 'l4-card', effort: 'medium', label: `card:${code}`, phase: 'L4', schema: CARD }))))
   .filter(Boolean)
+// 复用卡是 {code, rating}(无 conviction),下方 typeof c.conviction === 'number' 过滤天然排除它们
+const cards = [...fresh, ...(plan.reused || [])]
 const isOW = (r) => /(overweight|\bbuy\b|增持|买入)/i.test(r || '')
 const buys = cards.filter((c) => isOW(c.rating)).map((c) => c.code)
 const isZeroBuy = buys.length === 0
-log(`L4 ✓ ${cards.length} 卡 · ≥OW ${buys.length} · ${isZeroBuy ? '0买日' : '有买单'}`)
+log(`L4 ✓ 新派 ${fresh.length} + 复用 ${(plan.reused || []).length} = ${cards.length} 卡 · ≥OW ${buys.length} · ${isZeroBuy ? '0买日' : '有买单'}`)
 
 // ── Phase Assemble ──────────────────────────────────────────────
 phase('Assemble')
