@@ -159,7 +159,7 @@ def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()
                 print(f"    {ln}")
     except Exception as e:  # noqa: BLE001 — 建议行可选,缺了不挡前奏
         print(f"[prelude] ✗ calib_lines: {e}", file=sys.stderr)
-    print("  下一步(LLM 段):哨兵档 → 策略师+红队×2;全扫 → 策略师 → L3 → L4(见 SKILL 流程)")
+    print("  下一步(LLM 段):哨兵档 → 直接 assemble(观察单/日历已跑);全扫 → 策略师 → L3 → L4(见 SKILL 流程)")
     return results
 
 

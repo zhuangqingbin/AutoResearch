@@ -277,7 +277,7 @@ def _funnel_rows(meta: dict, n_l2, n_l3, n_cards) -> list[str]:
         f"| L1 | 召回 | {meta.get('recall_n', '?')} | 确定性 | 轻门 + 行业条件化复合分(T+1 IC 校准) top |",
         f"| L2 | 粗排 | {n_l2} | GBDT/{l2_eng} | LightGBM 学习重排(T+1 IC 训练;oos 未胜线性则回落复合分) |",
         f"| L3 | 精排 | {n_l3} | Opus·max·holistic | 1 agent 通看 ~200 比较选 + 增量证据/论点/红队 |",
-        f"| L4 | 研究 | {n_cards} 卡 | Opus·medium | 一只=一个 Opus subagent 渐进深度 DD + 早停(买单 skeptic 已停用,0买日红队抽检) |",
+        f"| L4 | 研究 | {n_cards} 卡 | Opus·medium | 一只=一个 Opus subagent 渐进深度 DD + 早停 |",
     ]
 
 
@@ -341,8 +341,6 @@ def _stage_token_estimate(scan_dir: Path) -> list[str]:
     l3 = list(det.glob("_l3*")) \
         + ([det / "L3_judged_full.csv"] if (det / "L3_judged_full.csv").is_file() else [])
     l4t1 = list(det.glob("_l4_batch*")) + list(det.glob("_l4_prompt*"))
-    vfiles = list(det.glob("_v_*"))
-    verify = vfiles + ([det / "verify.csv"] if (det / "verify.csv").is_file() else [])
     # L4 输入侧最大件 = slim(context/<ticker>_<date>_slim.md,scan_dir 通常是 context/scan/<date>)
     slim_root = det.parent.parent
     slims = sorted(slim_root.glob(f"*_{det.name}_slim.md")) if slim_root.exists() else []
@@ -377,8 +375,6 @@ def _stage_token_estimate(scan_dir: Path) -> list[str]:
          f"{len(cards)} 张卡(早停/满卡/复用;每卡 prompt 落 `_l4_prompt_*` 才计入)"),
         ("L4 输入·slim", "—(输入侧)", "—", "L4slim", len(slims), _b(slims),
          "harvest --slim 落稿(每卡 subagent 读入;≈4.8KB 空稿=NO_DATA 亦计=真实浪费)"),
-        ("0买红队(抽检)", "Opus", "high", "红队", len(vfiles), _b(verify),
-         "0 买日机会成本红队抽检(_v_* 稿;买单 skeptic 已停用)"),
     ]
     lines = ["## 各阶段耗时 & token 消耗(估算)",
              "| 阶段 | 引擎 | effort | 墙钟 | LLM 调用 | 落盘字节 | ~token | 说明 |",
@@ -395,7 +391,7 @@ def _stage_token_estimate(scan_dir: Path) -> list[str]:
                   "`uv run --no-sync python -m autoresearch.scan.agents.l4_card prompts <date>` "
                   "落稿,输入侧才可计。"]
     lines += ["", "> 口径:**落盘字节 ÷ 2.8**(CJK 粗估)。**落稿契约**(playbook):编排把 L3 输入表落 "
-              "`_l3_table.md`、每卡完整 prompt 落 `_l4_prompt_<code>.md`、skeptic/红队稿落 `_v_<code>.md` "
+              "`_l3_table.md`、每卡完整 prompt 落 `_l4_prompt_<code>.md` "
               "后,本表 ≈ **输入+输出全量下界**;缺稿段 `—` = 该段用量**未计而非为零**。"
               "另:每个 subagent 系统前缀 ~15k token(批内同前缀,prompt cache 摊薄)未计;"
               "真实计费口径只有 Claude Code `/usage` 可见。", ""]

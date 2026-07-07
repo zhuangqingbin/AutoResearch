@@ -53,7 +53,7 @@ def test_pick_sentinel_candidates(tmp_path):
 
 
 def test_token_estimate_rows(tmp_path):
-    """估算器:策略师行/L3(csv+落稿)/L4 prompt/红队 _v_ 计数;缺稿 → —。"""
+    """估算器:策略师行/L3(csv+落稿)/L4 prompt 计数;缺稿 → —。"""
     from autoresearch.scan.assemble import _stage_token_estimate
     d = tmp_path / "s"
     (d / "details").mkdir(parents=True)
@@ -62,10 +62,8 @@ def test_token_estimate_rows(tmp_path):
     (d / "L3_judged_full.csv").write_text("code\n000001\n", encoding="utf-8")
     (d / "details" / "000001.md").write_text("卡" * 200, encoding="utf-8")
     (d / "_l4_prompt_000001.md").write_text("p" * 300, encoding="utf-8")
-    (d / "_v_000001.md").write_text("驳" * 100, encoding="utf-8")
     md = "\n".join(_stage_token_estimate(d))
     assert "旁路 策略师 | Opus | session | — | 1" in md        # 07-06:引擎后加 effort+墙钟列(无计时→墙钟—)
-    assert "0买红队(抽检) | Opus | high | — | 1" in md         # 买单 skeptic 已停用 → 该行只剩 0 买日红队抽检
     assert "落稿契约" in md and "未计而非为零" in md
     md2 = "\n".join(_stage_token_estimate(tmp_path))           # 空目录 → 全 —
     assert "旁路 策略师 | Opus | session | — | — | —" in md2

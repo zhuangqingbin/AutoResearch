@@ -150,7 +150,7 @@ def l4_budget(scan_dir: Path | str, base: int = 30, floor: int = 12) -> tuple[in
     if streak >= 7:                      # 长连败硬压(2026-07-06):再降到 ~1/3 档(≥8),低产日别烧 20 卡
         n = min(n, max(8, base // 3))
         flags.append(f"连败≥7硬压→{n}")
-    return n, f"⚠️ {'+'.join(flags)} → L4 预算降至 {n}(基准 {base};省 Opus 于低产日,红队/观察单兜底)"
+    return n, f"⚠️ {'+'.join(flags)} → L4 预算降至 {n}(基准 {base};省 Opus 于低产日,观察单兜底)"
 
 
 def sentinel_advice(scan_dir: Path | str, frac_lo: float = 0.03,

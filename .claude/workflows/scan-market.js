@@ -5,7 +5,7 @@ export const meta = {
     { title: 'Prelude', detail: 'frame → [universe/L0-L2 ∥ market_view] → GATE1' },
     { title: 'L3', detail: '[sector-briefs ∥ 证据harvest] → L3-rank → finalists → GATE2' },
     { title: 'L4', detail: 'slim-harvest(GATE3) → 决策卡并发' },
-    { title: 'Assemble', detail: '0买红队 → assemble → GATE4' },
+    { title: 'Assemble', detail: 'assemble → GATE4' },
   ],
 }
 
@@ -108,7 +108,7 @@ const PLAN = { type: 'object', required: ['dispatch'],
       properties: { code: { type: 'string' }, rating: { type: 'string' } } } } } }
 const plan = await gate('dispatch-plan', `${R} autoresearch.scan.agents.l4_card dispatch-plan ${date}`, PLAN)
 if (!plan) throw new Error('dispatch-plan 无返回')
-// 决策卡:只派 dispatch 码一次并发(barrier —— 红队需全部评级才知是否 0 买)
+// 决策卡:只派 dispatch 码一次并发(barrier —— assemble 与 isZeroBuy 需全部卡评级才能判)
 const CARD = { type: 'object', required: ['code', 'rating'],
   properties: { code: { type: 'string' }, rating: { type: 'string' }, conviction: { type: 'number' } } }
 const fresh = (await parallel(plan.dispatch.map((code) => () => agent(
