@@ -1,0 +1,28 @@
+import pandas as pd
+
+from autoresearch.scan.agents.l4_card import fetch_seats
+
+
+def _bulk_stub(dates):
+    # 两天龙虎榜:600000 机构专用净买 +500万/-200万;300001 游资营业部 +80万
+    def frame(rows):
+        return pd.DataFrame(rows)
+
+    return {
+        dates[0]: frame([{"ts_code": "600000.SH", "exalter": "机构专用", "net_buy": 5_000_000},
+                         {"ts_code": "300001.SZ", "exalter": "某某营业部", "net_buy": 800_000}]),
+        dates[-1]: frame([{"ts_code": "600000.SH", "exalter": "机构专用", "net_buy": -2_000_000}]),
+    }
+
+
+def test_fetch_seats_aggregates_inst_vs_retail(tmp_path):
+    d = tmp_path / "2026-07-07"
+    d.mkdir()
+    pd.DataFrame({"code": ["600000", "300001"]}).to_csv(d / "finalists.csv", index=False)
+    out = fetch_seats(d, bulk_fn=lambda dates: _bulk_stub(["20260701", "20260707"]))
+    row = out.set_index("code").loc["600000"]
+    assert row["inst_net_wan"] == 300      # (5_000_000 - 2_000_000)/1e4
+    assert row["n_appear"] == 2
+    assert (d / "seats.csv").exists()
+    r2 = out.set_index("code").loc["300001"]
+    assert r2["retail_net_wan"] == 80 and r2["inst_net_wan"] == 0

@@ -542,6 +542,102 @@ def fetch_pledge(scan_dir: Path | str, codes=None, fetch_fn=None,
     return out
 
 
+def _tushare_seats_by_date(dates: list[str]) -> dict[str, pd.DataFrame]:
+    """按 trade_date bulk 龙虎榜机构明细(一天一调,非逐票)。date=YYYYMMDD。"""
+    from autoresearch.data.tushare_source import _pro, _ts_call
+    pro = _pro()
+    out: dict[str, pd.DataFrame] = {}
+    for d in dates:
+        try:
+            df = _ts_call(lambda d=d: pro.top_inst(trade_date=d))
+        except Exception:  # noqa: BLE001 — 单日降级隔离
+            df = None
+        if df is not None and len(df):
+            out[d] = df
+    return out
+
+
+def fetch_seats(scan_dir, codes=None, bulk_fn=None, reuse_days: int = 7,
+                window_days: int = 20) -> pd.DataFrame:
+    """finalists 龙虎榜机构 vs 游资席位聚合 → `seats.csv`(code,inst_net_wan,retail_net_wan,n_appear)。
+
+    成本控制:`top_inst` 按日 bulk **一次**再对全 finalists 过滤聚合(非 lhb_seats 逐票×15);
+    近 reuse_days 内其他 scan 日已算的 code 直接复用。mirror `fetch_pledge`。零 LLM。
+    """
+    from datetime import datetime, timedelta
+
+    from autoresearch.data.tushare_source import _code6, _pro, _trade_days, resolve_momentum_dates
+    scan_dir = Path(scan_dir)
+    cols = ["code", "inst_net_wan", "retail_net_wan", "n_appear"]
+    if codes is None:
+        fp = scan_dir / "finalists.csv"
+        if not fp.exists():
+            return pd.DataFrame(columns=cols)
+        codes = pd.read_csv(fp, dtype={"code": str})["code"].tolist()
+    want = [str(c).split(".")[0].zfill(6) for c in codes]
+
+    def _d(name: str):
+        try:
+            return datetime.strptime(name, "%Y-%m-%d")
+        except ValueError:
+            return None
+
+    today = _d(scan_dir.name)
+    rows: dict[str, dict] = {}
+    # 1) 跨 scan 日复用(mirror fetch_pledge)
+    if today is not None and scan_dir.parent.exists():
+        for sib in sorted((p for p in scan_dir.parent.iterdir() if p.is_dir()), reverse=True):
+            sd = _d(sib.name)
+            if sd is None or sib == scan_dir or not 0 <= (today - sd).days <= reuse_days:
+                continue
+            pp = sib / "seats.csv"
+            if not pp.exists():
+                continue
+            try:
+                prev = pd.read_csv(pp, dtype={"code": str})
+            except Exception:  # noqa: BLE001
+                continue
+            prev["code"] = prev["code"].astype(str).str.zfill(6)
+            for _, r in prev.iterrows():
+                c = r["code"]
+                if c in want and c not in rows:
+                    rows[c] = {k: r.get(k) for k in cols}
+    missing = [c for c in want if c not in rows]
+    # 2) 缺的:按日 bulk 一次,聚合全 missing
+    if missing:
+        try:
+            pro = _pro()
+            last = resolve_momentum_dates(pro, scan_dir.name)[0]
+            start = (datetime.strptime(last, "%Y%m%d") - timedelta(days=window_days)).strftime("%Y%m%d")
+            dates = _trade_days(pro, start, last)[-15:]
+        except Exception:  # noqa: BLE001
+            dates = []
+        frames = (bulk_fn or _tushare_seats_by_date)(dates) if dates else {}
+        agg = {c: {"inst": 0.0, "retail": 0.0, "n": 0} for c in missing}
+        for df in frames.values():
+            if df is None or not len(df):
+                continue
+            c6 = _code6(df["ts_code"])
+            for c in missing:
+                sub = df[c6 == c]
+                if not len(sub):
+                    continue
+                agg[c]["n"] += 1
+                for _, r in sub.iterrows():
+                    net = float(r.get("net_buy") or 0)
+                    if "机构专用" in str(r.get("exalter", "")):
+                        agg[c]["inst"] += net
+                    else:
+                        agg[c]["retail"] += net
+        for c in missing:
+            a = agg[c]
+            rows[c] = {"code": c, "inst_net_wan": round(a["inst"] / 1e4, 0),
+                       "retail_net_wan": round(a["retail"] / 1e4, 0), "n_appear": a["n"]}
+    out = pd.DataFrame([rows[c] for c in want if c in rows], columns=cols)
+    out.to_csv(scan_dir / "seats.csv", index=False)
+    return out
+
+
 def _default_harvest_slim(ticker: str, date: str, ctx_root: Path) -> Path:
     import subprocess
     import sys
@@ -586,9 +682,10 @@ def harvest_slim_batch(date: str, root: Path | None = None, min_bytes: int = 10_
 def main(argv: list[str] | None = None) -> int:
     import argparse
     ap = argparse.ArgumentParser(description="L4 确定性件 CLI(派发包落稿/质押预旗,零 LLM)")
-    ap.add_argument("cmd", choices=["prompts", "pledge", "harvest-slim", "dispatch-plan"],
+    ap.add_argument("cmd", choices=["prompts", "pledge", "seats", "harvest-slim", "dispatch-plan"],
                     help="prompts = 写 _harvest_list.txt + _l4_prompt_<code>.md;"
                          "pledge = finalists 批量质押 → pledge.csv(简报自动带 ⚠质押旗);"
+                         "seats = finalists 龙虎榜席位聚合 → seats.csv(_seat_mark 注简报);"
                          "harvest-slim = 按 _harvest_list.txt 批量 harvest slim;"
                          "dispatch-plan = 派发感知 TTL 复用/carryover(dispatch/reused 分流)")
     ap.add_argument("date", help="scan 日 YYYY-MM-DD")
@@ -613,6 +710,11 @@ def main(argv: list[str] | None = None) -> int:
         n_flag = int((pd.to_numeric(df.get("pledge_ratio"), errors="coerce") > 20).sum()) if len(df) else 0
         print(f"[l4_card pledge] {len(df)} 票落 pledge.csv(>20% 偏高/红旗 {n_flag} 票);"
               f"派发前跑,简报自动注 ⚠质押旗")
+        return 0
+    if args.cmd == "seats":
+        df = fetch_seats(Path("context/scan") / args.date)
+        n_inst = int((df["inst_net_wan"] > 0).sum()) if len(df) else 0
+        print(f"[l4_card seats] {len(df)} 票落 seats.csv(机构净买>0 {n_inst} 票=Phase A 反指候选)")
         return 0
     res = write_dispatch_pack(Path("context/scan") / args.date)
     print(f"[l4_card prompts] {res['n_prompts']} 份 prompt + _harvest_list({len(res['tickers'])} 票,"
