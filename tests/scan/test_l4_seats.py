@@ -1,7 +1,7 @@
 import pandas as pd
 
 from autoresearch.data import tushare_source
-from autoresearch.scan.agents.l4_card import fetch_seats
+from autoresearch.scan.agents.l4_card import _seat_mark, fetch_seats
 
 
 def _bulk_stub(dates):
@@ -34,3 +34,12 @@ def test_fetch_seats_aggregates_inst_vs_retail(tmp_path, monkeypatch):
     assert (d / "seats.csv").exists()
     r2 = out.set_index("code").loc["300001"]
     assert r2["retail_net_wan"] == 80 and r2["inst_net_wan"] == 0
+
+
+def test_seat_mark_flags_inst_contra_indicator(tmp_path):
+    pd.DataFrame({"code": ["600000"], "inst_net_wan": [300.0],
+                  "retail_net_wan": [80.0], "n_appear": [2]}).to_csv(tmp_path / "seats.csv", index=False)
+    s = _seat_mark(tmp_path, "600000")
+    assert "机构" in s and "反指" in s and "游资" in s
+    assert _seat_mark(tmp_path, "000999") == ""      # 未上榜 → 空
+    assert _seat_mark(tmp_path / "nope", "600000") == ""  # 无 seats.csv → 空

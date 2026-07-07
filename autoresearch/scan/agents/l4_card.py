@@ -176,6 +176,29 @@ def _pledge_mark(base: Path, code6: str) -> str:
             f"与补充质押公告(截至 {sub.iloc[0].get('end_date', '—')})")
 
 
+def _seat_mark(base: Path, code6: str) -> str:
+    """龙虎榜席位行(presence-gated:seats.csv 在且该票近窗口上榜才注)。
+    机构净买>0 标 Phase A 反指(机构上榜买后续偏弱);游资净买作接力信号。缺档/未上榜 → ""。"""
+    p = Path(base) / "seats.csv"
+    if not p.exists():
+        return ""
+    try:
+        df = pd.read_csv(p, dtype={"code": str})
+        df["code"] = df["code"].astype(str).str.zfill(6)
+        sub = df[df["code"] == code6]
+        if not len(sub):
+            return ""
+        r = sub.iloc[0]
+        if float(r.get("n_appear") or 0) <= 0:
+            return ""
+        inst, retail = float(r.get("inst_net_wan") or 0), float(r.get("retail_net_wan") or 0)
+    except Exception:  # noqa: BLE001
+        return ""
+    contra = "（⚠️Phase A:机构上榜净买后续 T+1~10 偏弱=反指,勿当强利好）" if inst > 0 else ""
+    return (f"·龙虎榜近窗口上榜 {int(float(r['n_appear']))} 次:机构净买 {inst:+.0f}万{contra}、"
+            f"游资/营业部净买 {retail:+.0f}万")
+
+
 def _cat_mark(base: Path, code6: str) -> str:
     """催化事件行(presence-gated:`L3_catalyst.csv` 在且有非零计数才注)。
     spec 2026-07-05 §B2。"""
@@ -237,7 +260,7 @@ def compose_funnel_brief(code: str, scan_dir: Path | str) -> str:
         f"{_dist_mark(l1)}·cmf20 {_g(l1,'cmf_20')}·"
         f"obv20 {_g(l1,'obv_mom_20')}·rsi6 {_g(l1,'rsi6')}·多头排列 {_g(l1,'ma_bull')}·pct60d {_g(l1,'pct_60d')}",
         f"- **筹码(先验)**:winner {_g(l1,'winner_rate')}·集中度 {_g(l1,'chip_concentration')}·"
-        f"现价/成本 {_g(l1,'price_to_cost')}·北向占比 {_g(l1,'hk_ratio')}",
+        f"现价/成本 {_g(l1,'price_to_cost')}·北向占比 {_g(l1,'hk_ratio')}" + _seat_mark(base, code6),
         f"- **L2**:gbdt_score {_g(l2,'gbdt_score')}(rank {_g(l2,'l2_rank')})",
         f"- **L3 入选**:conviction {_g(l3,'conviction')}·lane {_g(l3,'lane')}·情感 {_g(l3,'sentiment')}",
         f"  - 多头论点:{_g(l3,'thesis')}",
