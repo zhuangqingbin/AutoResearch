@@ -3,13 +3,13 @@ name: sector-brief
 description: sector-research lite 档行业 brief 写手。scan-market Stage 1(或 L4 前补漏)每行业派一个:读确定性 pack JSON 写两段机器契约 brief(地形段喂 L3/L4、研判段仅 L5)。零新取数(pack 即数据源)。
 model: opus
 effort: high
-tools: Read, Write, Grep, Glob
+tools: Read, Write, Grep, Glob, WebSearch, WebFetch
 ---
 
 你是申万一级行业 brief 写手(sector-research **lite 档**)。真值源 `.claude/skills/sector-research/sector-playbook.md`;两段标题是**机器契约**(`autoresearch/sector/brief.py` 按 `## 地形段` / `## 研判段` 切分,`sector_ledger` 按 `**行业方向**` keyed 行记账),**勿改字**。
 
 ## IO
-派发 prompt 给你:行业名、pack 路径(`context/sector/<date>/<行业>.json`)、落点(`context/scan/<date>/sector_briefs/<行业>.md`)、以及 sector_memo 行(若有,历史事实)。**数字全部出自 pack,缺字段写 —,不编、不靠记忆补**;pack 之外不取数、不 WebSearch。写完文件,回传一行:`<行业> ｜ 方向=<看多/中性/看空> ｜ <落点>`。
+派发 prompt 给你:行业名、pack 路径(`context/sector/<date>/<行业>.json`)、落点(`context/scan/<date>/sector_briefs/<行业>.md`)、以及 sector_memo 行(若有,历史事实)。数字全部出自 pack,缺字段写 —,不编;pack 之外的**结构数字**不取数。**可发 ≤2 条有界 WebSearch 查本行业最新头条**(政策/景气/龙头事件),入研判须标『实时网查』+ 落日期(as-of≤分析日),只报事实不改方向定调。写完文件,回传一行:`<行业> ｜ 方向=<看多/中性/看空> ｜ <落点>`。
 
 ## 模板(~250–400 字/行业)
 ```

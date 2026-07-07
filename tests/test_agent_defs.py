@@ -50,8 +50,9 @@ def test_sector_brief_anchors_synced():
     """sector-brief 两段标题/方向行与 brief.py 机器契约同源(extract_terrain/extract_view/记账)。"""
     from autoresearch.sector.brief import TERRAIN_HDR, VIEW_HDR  # 单一事实源
     agent = _agent_text("sector-brief")
-    for a in (TERRAIN_HDR, VIEW_HDR, "**行业方向**", "不编"):
+    for a in (TERRAIN_HDR, VIEW_HDR, "**行业方向**", "不编", "实时网查"):
         assert a in agent, f"sector-brief 缺契约锚「{a}」"
+    assert "WebSearch" in agent.split("---", 2)[1], "sector-brief frontmatter 缺 WebSearch tool"
 
 
 def test_skill_docs_wire_agent_types():
@@ -71,3 +72,5 @@ def test_macro_brief_anchors_synced():
     for a in anchors:
         assert a in agent, f"macro-brief 缺契约锚「{a}」"
         assert a in playbook, f"macro-playbook 缺契约锚「{a}」(真值源被改,先同步 agent 定义)"
+    assert "实时网查" in agent, "macro-brief 缺契约锚「实时网查」"
+    assert "WebSearch" in agent.split("---", 2)[1], "macro-brief frontmatter 缺 WebSearch tool"
