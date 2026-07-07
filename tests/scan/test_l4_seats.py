@@ -43,3 +43,15 @@ def test_seat_mark_flags_inst_contra_indicator(tmp_path):
     assert "机构" in s and "反指" in s and "游资" in s
     assert _seat_mark(tmp_path, "000999") == ""      # 未上榜 → 空
     assert _seat_mark(tmp_path / "nope", "600000") == ""  # 无 seats.csv → 空
+
+
+def test_seat_mark_nan_degrades_to_empty(tmp_path):
+    # n_appear NaN(如跨日复用了不含该列的旧 seats.csv)→ 降级空串,绝不抛
+    pd.DataFrame({"code": ["600000"], "inst_net_wan": [300.0], "retail_net_wan": [80.0],
+                  "n_appear": [float("nan")]}).to_csv(tmp_path / "seats.csv", index=False)
+    assert _seat_mark(tmp_path, "600000") == ""
+    # 净买字段 NaN → 同样降级,输出绝不含 "nan"
+    pd.DataFrame({"code": ["600001"], "inst_net_wan": [float("nan")], "retail_net_wan": [80.0],
+                  "n_appear": [2]}).to_csv(tmp_path / "seats.csv", index=False)
+    out = _seat_mark(tmp_path, "600001")
+    assert out == "" and "nan" not in out

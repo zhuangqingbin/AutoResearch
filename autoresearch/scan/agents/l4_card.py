@@ -189,13 +189,15 @@ def _seat_mark(base: Path, code6: str) -> str:
         if not len(sub):
             return ""
         r = sub.iloc[0]
-        if float(r.get("n_appear") or 0) <= 0:
+        n = float(r.get("n_appear") or 0)
+        inst = float(r.get("inst_net_wan") or 0)
+        retail = float(r.get("retail_net_wan") or 0)
+        if n <= 0 or any(pd.isna(x) for x in (n, inst, retail)):
             return ""
-        inst, retail = float(r.get("inst_net_wan") or 0), float(r.get("retail_net_wan") or 0)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — 行可选,缺了不挡简报
         return ""
     contra = "（⚠️Phase A:机构上榜净买后续 T+1~10 偏弱=反指,勿当强利好）" if inst > 0 else ""
-    return (f"·龙虎榜近窗口上榜 {int(float(r['n_appear']))} 次:机构净买 {inst:+.0f}万{contra}、"
+    return (f"·龙虎榜近窗口上榜 {int(n)} 次:机构净买 {inst:+.0f}万{contra}、"
             f"游资/营业部净买 {retail:+.0f}万")
 
 
