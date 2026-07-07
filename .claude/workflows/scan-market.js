@@ -21,11 +21,13 @@ function bash(cmd, label) {
     `在仓库根目录精确执行下面这条命令,然后只回报:退出码 + stdout 末 15 行。不要做别的、不要判断、不要解释。\n\n\`\`\`\n${cmd}\n\`\`\``,
     { agentType: 'general-purpose', effort: 'low', label })
 }
-// 门 CLI → Bash-agent + schema(把 CLI 打印的 JSON 原样带回)
-const GATE1 = { type: 'object', required: ['ok', 'sentinel_level', 'l4_budget'],
+// 门 CLI → Bash-agent + schema(把 CLI 打印的 JSON 原样带回)。
+// required 只列 'ok':失败 JSON 只含 {ok:false, reason}(无 sentinel_level/finalists 等成功字段);
+// 若把成功字段列进 required,失败 JSON 校验不过 → agent 返回 null → 丢失 reason(报错退化为"无返回")。
+const GATE1 = { type: 'object', required: ['ok'],
   properties: { ok: { type: 'boolean' }, reason: { type: 'string' },
     sentinel_level: { type: 'string' }, l4_budget: { type: 'integer' } } }
-const GATE2 = { type: 'object', required: ['ok', 'finalists'],
+const GATE2 = { type: 'object', required: ['ok'],
   properties: { ok: { type: 'boolean' }, reason: { type: 'string' },
     finalists: { type: 'array', items: { type: 'string' } }, n: { type: 'integer' } } }
 const OK = { type: 'object', required: ['ok'],
