@@ -202,6 +202,11 @@ def carryover_candidates(scan_dir: Path | str, cap: int = 5) -> pd.DataFrame:
                    and (p / "finalists.csv").exists()), reverse=True)
     if not prev:
         return pd.DataFrame()
+    # regime 翻转日关 carryover(2026-07-06):昨日 regime 的 ≤Hold 票拖进今日新 regime 重烧
+    # = 低价值重复(如 range→risk_off 把上一档的票全烧成 Hold)。翻转 → 不保席,让今日菜单自己定。
+    r_now, r_prev = _regime_of(scan_dir), _regime_of(prev[0])
+    if r_now is not None and r_prev is not None and r_now != r_prev:
+        return pd.DataFrame()
     pf = pd.read_csv(prev[0] / "finalists.csv", dtype={"code": str})
     if "code" not in pf.columns:
         return pd.DataFrame()

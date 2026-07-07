@@ -160,7 +160,7 @@ def test_reasoning_archived(published):
     # 逐阶段结论列(per-stage buy-list 表)
     "L1召回(#/", "L2粗排(#/", "L3精排", "L4研究·结论", "#5", "列注",
     # token 估算段
-    "## 各阶段 token 消耗", "落盘可测下界",   # 07-03 估算器改版:确定性三行合一,行名不再含 GBDT
+    "## 各阶段耗时 & token 消耗", "落盘可测下界", "effort", "墙钟",   # 07-06:加 effort/墙钟列(耗时来自 _stage_timing.json)
     # Tier-3 多空辩论徽标 + 明细
     "🛡️红队", "🛡️ Tier-3 买单多空辩论", "⚠️降级", "✅维持",
     "估值已透支PE160", "AI光模块需求真切", "降级2/3",

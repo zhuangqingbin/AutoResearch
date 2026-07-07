@@ -276,8 +276,8 @@ def _funnel_rows(meta: dict, n_l2, n_l3, n_cards) -> list[str]:
         f"| L0 | 选集 | {meta.get('universe', '?')} | 确定性 | 全A {meta.get('universe_raw', '?')} → 硬门(剔ST/退/停牌/次新, 市值地板, 含北交所) |",
         f"| L1 | 召回 | {meta.get('recall_n', '?')} | 确定性 | 轻门 + 行业条件化复合分(T+1 IC 校准) top |",
         f"| L2 | 粗排 | {n_l2} | GBDT/{l2_eng} | LightGBM 学习重排(T+1 IC 训练;oos 未胜线性则回落复合分) |",
-        f"| L3 | 精排 | {n_l3} | Opus-high·holistic | 1 agent 通看 ~200 比较选 + 增量证据/论点/红队 |",
-        f"| L4 | 研究 | {n_cards} 卡 | Opus | 一只=一个 Opus subagent 渐进深度 DD + 早停 + 买单 skeptic |",
+        f"| L3 | 精排 | {n_l3} | Opus·max·holistic | 1 agent 通看 ~200 比较选 + 增量证据/论点/红队 |",
+        f"| L4 | 研究 | {n_cards} 卡 | Opus·medium | 一只=一个 Opus subagent 渐进深度 DD + 早停(买单 skeptic 已停用,0买日红队抽检) |",
     ]
 
 
@@ -346,29 +346,50 @@ def _stage_token_estimate(scan_dir: Path) -> list[str]:
     # L4 输入侧最大件 = slim(context/<ticker>_<date>_slim.md,scan_dir 通常是 context/scan/<date>)
     slim_root = det.parent.parent
     slims = sorted(slim_root.glob(f"*_{det.name}_slim.md")) if slim_root.exists() else []
+    # 每阶段墙钟(编排层写 _stage_timing.json:{stage_key: {"wall_s": int}} 或 {stage_key: int});缺 → "—"
+    import json as _json
+    _tmap: dict = {}
+    _tp = det / "_stage_timing.json"
+    if _tp.is_file():
+        try:
+            _tmap = _json.loads(_tp.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            _tmap = {}
+
+    def _wall(key: str) -> str:
+        v = _tmap.get(key)
+        if isinstance(v, dict):
+            v = v.get("wall_s")
+        if not v:
+            return "—"
+        v = int(v)
+        return f"{v // 60}m{v % 60:02d}s" if v >= 60 else f"{v}s"
+
+    # (阶段名, 引擎, effort, 计时键, LLM调用, 落盘字节, 说明)
     rows = [
-        ("L0/L1/L2", "确定性", 0, 0, "纯 pandas,零 LLM"),
-        ("旁路 策略师", "Opus", 1 if strat else 0, _b(strat), "market_pack → market_view.md"),
-        ("旁路 行业brief", "Opus", len(sbriefs), _b(sbriefs),
+        ("L0/L1/L2", "确定性", "—", "L0L1L2", 0, 0, "纯 pandas,零 LLM"),
+        ("旁路 策略师", "Opus", "session", "策略师", 1 if strat else 0, _b(strat), "market_pack → market_view.md"),
+        ("旁路 行业brief", "Opus", "low", "行业brief", len(sbriefs), _b(sbriefs),
          "sector pack → sector_briefs/*.md(♻️TTL 复用亦计字节)"),
-        ("L3 精排", "Opus-high·holistic", 1 if l3 else 0, _b(l3),
+        ("L3 精排", "Opus·holistic", "max", "L3精排", 1 if l3 else 0, _b(l3),
          "通看全表选 finalists(输入表落 `_l3_table.md` 才计入)"),
-        ("L4 研究", "Opus", len(cards), _b(cards) + _b(l4t1),
+        ("L4 研究", "Opus", "medium", "L4研究", len(cards), _b(cards) + _b(l4t1),
          f"{len(cards)} 张卡(早停/满卡/复用;每卡 prompt 落 `_l4_prompt_*` 才计入)"),
-        ("L4 输入·slim", "—(输入侧)", len(slims), _b(slims),
+        ("L4 输入·slim", "—(输入侧)", "—", "L4slim", len(slims), _b(slims),
          "harvest --slim 落稿(每卡 subagent 读入;≈4.8KB 空稿=NO_DATA 亦计=真实浪费)"),
-        ("skeptic/红队", "Opus", len(vfiles), _b(verify), "≥OW 证伪 + 0 买日机会成本红队(_v_* 稿)"),
+        ("0买红队(抽检)", "Opus", "high", "红队", len(vfiles), _b(verify),
+         "0 买日机会成本红队抽检(_v_* 稿;买单 skeptic 已停用)"),
     ]
-    lines = ["## 各阶段 token 消耗(估算)",
-             "| 阶段 | 引擎 | LLM 调用 | 落盘字节 | ~token | 说明 |",
-             "|---|---|---:|---:|---:|---|"]
+    lines = ["## 各阶段耗时 & token 消耗(估算)",
+             "| 阶段 | 引擎 | effort | 墙钟 | LLM 调用 | 落盘字节 | ~token | 说明 |",
+             "|---|---|---|---:|---:|---:|---:|---|"]
     tot_calls = tot_tok = 0
-    for name, eng, calls, b, note in rows:
+    for name, eng, eff, tkey, calls, b, note in rows:
         tok = int(b / _BYTES_PER_TOK)
         tot_calls += 0 if name.startswith("L4 输入") else calls
         tot_tok += tok
-        lines.append(f"| {name} | {eng} | {calls or '—'} | {b or '—'} | {tok or '—'} | {note} |")
-    lines.append(f"| **合计** | — | **{tot_calls}** | — | **~{tot_tok}** | 落盘可测下界 |")
+        lines.append(f"| {name} | {eng} | {eff} | {_wall(tkey)} | {calls or '—'} | {b or '—'} | {tok or '—'} | {note} |")
+    lines.append(f"| **合计** | — | — | {_wall('总计')} | **{tot_calls}** | — | **~{tot_tok}** | 落盘可测下界(墙钟需编排写 _stage_timing.json) |")
     if cards and not list(det.glob("_l4_prompt*")):
         lines += ["", "> ⚠️ L4 输入 prompt 未落稿(`_l4_prompt_*` 缺)——上表 L4 行仅计输出;派发前先 "
                   "`uv run --no-sync python -m autoresearch.scan.agents.l4_card prompts <date>` "

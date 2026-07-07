@@ -64,11 +64,11 @@ def test_token_estimate_rows(tmp_path):
     (d / "_l4_prompt_000001.md").write_text("p" * 300, encoding="utf-8")
     (d / "_v_000001.md").write_text("驳" * 100, encoding="utf-8")
     md = "\n".join(_stage_token_estimate(d))
-    assert "旁路 策略师 | Opus | 1" in md
-    assert "skeptic/红队 | Opus | 1" in md
+    assert "旁路 策略师 | Opus | session | — | 1" in md        # 07-06:引擎后加 effort+墙钟列(无计时→墙钟—)
+    assert "0买红队(抽检) | Opus | high | — | 1" in md         # 买单 skeptic 已停用 → 该行只剩 0 买日红队抽检
     assert "落稿契约" in md and "未计而非为零" in md
     md2 = "\n".join(_stage_token_estimate(tmp_path))           # 空目录 → 全 —
-    assert "旁路 策略师 | Opus | — | — | —" in md2
+    assert "旁路 策略师 | Opus | session | — | — | —" in md2
 
 
 def test_token_estimate_l4_input_slim_row_and_prompt_hint(tmp_path):

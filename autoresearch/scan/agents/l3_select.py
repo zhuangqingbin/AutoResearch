@@ -16,15 +16,14 @@ import pandas as pd
 
 # L3 holistic 选股 subagent 要看的紧凑列(GBDT 复合分/重排分 + 9 子分〔含 volprice 多日量价〕+ 关键原始
 # 因子;量价位置/多日资金流/筹码/估值都在,够它一次通看 ~200 只比较着选 30)。
+# 2026-07-06 瘦身:L3 max-effort 需更小输入才净提速 → 删 9 个 score_* 子分(composite 已含、与原始因子冗余)
+# + retail_net_yi/chip_concentration/price_to_cost/hk_ratio(常 NaN)/dv_ratio/l2_lane_reserved/news_n·tags/med_n·tags·head。
+# 保留 = 5 维 rubric 真正读的原始因子 + composite/gbdt + 情感 sent/head(42→22 列)。旧宽表见 git 历史。
 _L3_COLS = ["code", "name", "industry", "composite", "gbdt_score",
-            "score_momentum", "score_fund_main", "score_fund_retail", "score_chip",
-            "score_north", "score_tech", "score_growth", "score_value", "score_volprice",
-            "pct_60d", "sector_mom", "vol_ratio", "cmf_20", "obv_mom_20", "main_net_ratio", "retail_net_yi", "winner_rate",
-            "chip_concentration", "price_to_cost", "hk_ratio", "rsi6", "pe", "pb",
-            "dv_ratio", "np_yoy", "roe",
-            "n_channels", "recall_channels", "l2_lane_reserved",  # 召回 provenance + L2 lane 配额救回标记
-            "news_n", "news_tags", "news_sent", "news_head",   # Phase 3 公告情感 digest(anns_d)+ 数值净情感
-            "med_n", "med_tags", "med_sent", "med_head"]       # 媒体新闻情感 digest(akshare)+ 数值净情感
+            "pct_60d", "sector_mom", "vol_ratio", "cmf_20", "obv_mom_20", "main_net_ratio", "winner_rate",
+            "rsi6", "pe", "pb", "np_yoy", "roe",
+            "n_channels", "recall_channels",                   # 召回 provenance(channel 共振)
+            "news_sent", "news_head", "med_sent"]              # 情感(净分 + 头条;counts/tags 已删)
 
 
 # ───────────────────────── L3:紧凑表 + 增量真证据 + finalists 合并 ─────────────────────────

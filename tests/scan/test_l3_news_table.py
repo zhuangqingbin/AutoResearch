@@ -53,7 +53,7 @@ def test_load_l3_input_degrades_without_news(tmp_path):
 def test_l3_table_md_shows_news_and_provenance(tmp_path):
     root = _make_l2(tmp_path)
     md = l3_table_md("2026-06-20", root=root)
-    assert "news_tags" in md and "n_channels" in md
+    assert "news_sent" in md and "n_channels" in md   # 07-06 瘦身:表显示 news_sent(净分);news_tags/n 已从表删(df 仍有)
 
 
 def test_load_l3_input_merges_media_digest(tmp_path):

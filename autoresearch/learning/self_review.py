@@ -119,9 +119,11 @@ def review(ctx: dict) -> dict:
     # 8) 流程完备性(编排 lint:LLM 段可能被静默跳过;阈值防合成小 fixture 误报)
     fl = ctx.get("flow") or {}
     if fl:
-        if fl.get("buys_n") and not fl.get("verify_n"):
-            add("流程完备性·买单未过skeptic", "fail",
-                f"{fl['buys_n']} 只 ≥OW 买单但 verify.csv 空——每只买单发布前必须独立 skeptic 证伪")
+        # 买单 skeptic 已按用户决定移除(2026-07-06)——原 fail lint「买单>0 而 verify.csv 空」停用。
+        # 恢复:取消下方三行注释,即恢复"每只 ≥OW 买单发布前必须独立 skeptic 证伪"硬门。
+        # if fl.get("buys_n") and not fl.get("verify_n"):
+        #     add("流程完备性·买单未过skeptic", "fail",
+        #         f"{fl['buys_n']} 只 ≥OW 买单但 verify.csv 空——每只买单发布前必须独立 skeptic 证伪")
         if fl.get("finalists_n", 0) >= 5 and not fl.get("has_market_view"):
             add("流程完备性·策略师未跑", "warn",
                 "market_view.md 缺——L3/L4 少了地形块(可选段;真实跑动建议补上)")

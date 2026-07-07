@@ -23,13 +23,14 @@ def test_failures_carry_code_and_dump_gate_fires(tmp_path):
 
 
 def test_flow_lint_buy_without_skeptic_and_missing_strategist():
-    """流程完备性:买单未过 skeptic=fail;finalists≥5 无 market_view=warn;小 fixture 不误报。"""
+    """流程完备性:买单 skeptic 已移除(2026-07-06 用户决定)→ 买单无 verify 不再 fail;
+    finalists≥5 无 market_view=warn;小 fixture 不误报。"""
     r = self_review.review({
         "finalists": [{"code": "1", "rating": "Overweight", "composite": 60,
                        "winner_rate": 40, "sector": "电子"}],
         "n_cards_expected": 1, "n_cards_present": 1,
         "flow": {"buys_n": 1, "verify_n": 0, "has_market_view": True, "finalists_n": 1}})
-    assert not r["ok"] and any("买单未过skeptic" in x["check"] for x in r["failures"])
+    assert r["ok"] and not any("买单未过skeptic" in x["check"] for x in r["failures"])
     r2 = self_review.review({
         "finalists": [], "n_cards_expected": 0, "n_cards_present": 0,
         "flow": {"buys_n": 0, "verify_n": 0, "has_market_view": False, "finalists_n": 8}})

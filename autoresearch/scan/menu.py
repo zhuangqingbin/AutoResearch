@@ -147,7 +147,21 @@ def l4_budget(scan_dir: Path | str, base: int = 30, floor: int = 12) -> tuple[in
         return base, f"菜单健康 → 预算={base}(基准)"
     weight += len(flags)
     n = max(floor, round(base * 0.75)) if weight == 1 else max(floor, base // 2)
+    if streak >= 7:                      # 长连败硬压(2026-07-06):再降到 ~1/3 档(≥8),低产日别烧 20 卡
+        n = min(n, max(8, base // 3))
+        flags.append(f"连败≥7硬压→{n}")
     return n, f"⚠️ {'+'.join(flags)} → L4 预算降至 {n}(基准 {base};省 Opus 于低产日,红队/观察单兜底)"
+
+
+def should_run_opportunity_redteam(scan_dir: Path | str, every: int = 3) -> tuple[bool, str]:
+    """0 买日机会成本红队抽检(2026-07-06):连续 0 买日边际价值递减 → 每 `every` 个 0 买日跑 1 次。
+    判据 = zero_buy_streak % every == 1(第 1、1+every、1+2·every… 个连续 0 买日跑)。
+    有买单的日子走买单侧,本函数只节流 0 买日红队的频率(编排层据此决定当日是否派红队)。"""
+    s = zero_buy_streak(scan_dir)
+    if s <= 0:
+        return True, "非连续 0 买(首日)→ 跑红队"
+    run = (s % every) == 1
+    return run, f"0买连败第{s}日 · 每{every}日抽检 → {'跑' if run else '跳过(本轮抽检不覆盖)'}"
 
 
 def sentinel_advice(scan_dir: Path | str, frac_lo: float = 0.03,
