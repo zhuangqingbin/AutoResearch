@@ -3,7 +3,7 @@ import json
 
 import pandas as pd
 
-from autoresearch.scan.gates import gate1, gate2, gate4, redteam_check
+from autoresearch.scan.gates import gate1, gate2, gate4
 
 
 def test_gate1_flags_bad_codes(tmp_path):
@@ -83,13 +83,6 @@ def test_gate4_fails_on_fail_row(tmp_path):
 
 def test_gate4_missing_file(tmp_path):
     assert gate4(tmp_path)["ok"] is False                        # assemble 没跑
-
-
-def test_redteam_check(tmp_path):
-    # 空 scan_dir(无 0 买历史)→ zero_buy_streak<=0 → 首日必跑(最简路径,无需造 0 买历史)
-    r = redteam_check(tmp_path)
-    assert r["run"] is True
-    assert "reason" in r
 
 
 def test_gate2_cli_flags_bad_codes(tmp_path, monkeypatch, capsys):

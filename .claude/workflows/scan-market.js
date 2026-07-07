@@ -32,12 +32,10 @@ const GATE2 = { type: 'object', required: ['ok'],
     finalists: { type: 'array', items: { type: 'string' } }, n: { type: 'integer' } } }
 const OK = { type: 'object', required: ['ok'],
   properties: { ok: { type: 'boolean' }, reason: { type: 'string' } } }
-const RT = { type: 'object', required: ['run'],
-  properties: { run: { type: 'boolean' }, reason: { type: 'string' } } }
 function gate(label, cmd, schema) {
   return agent(
     `执行:\`${cmd}\`\n它会向 stdout 打印一行 JSON。把那行 JSON 原样作为你的结构化返回(字段不改、不增删)。`,
-    { agentType: 'general-purpose', effort: 'low', label, schema })
+    { agentType: 'general-purpose', effort: 'high', label, schema })
 }
 
 // ── Phase Prelude ───────────────────────────────────────────────
@@ -76,7 +74,7 @@ await parallel([
   () => bash(`${R} autoresearch.scan.agents.l3_select prepare ${date}`, 'l3-prepare'),
   ...sectors.map((sec) => () => agent(
     `你是行业分析师。读 context/sector/${date}/${sec}.json 写 ${SD}/sector_briefs/${sec}.md,两段机器契约(## 地形段 喂 L3/L4 · ## 研判段 仅 L5,含 **行业方向** 行)。零新取数。`,
-    { agentType: 'sector-brief', effort: 'low', label: `brief:${sec}`, phase: 'L3' })),
+    { agentType: 'sector-brief', effort: 'high', label: `brief:${sec}`, phase: 'L3' })),
 ])
 // L3 holistic 精排(唯一 max-effort 判断核心)
 await agent(
@@ -114,9 +112,8 @@ const CARD = { type: 'object', required: ['code', 'rating'],
   properties: { code: { type: 'string' }, rating: { type: 'string' }, conviction: { type: 'number' } } }
 const fresh = (await parallel(plan.dispatch.map((code) => () => agent(
   `执行 ${SD}/_l4_prompt_${code}.md:先读整个任务包,再按其指令做渐进深度 DD + 早停,写决策卡到 ${SD}/details/${code}.md。最后返回该卡最终五档评级(code / rating / conviction)。`,
-  { agentType: 'l4-card', effort: 'medium', label: `card:${code}`, phase: 'L4', schema: CARD }))))
+  { agentType: 'l4-card', effort: 'xhigh', label: `card:${code}`, phase: 'L4', schema: CARD }))))
   .filter(Boolean)
-// 复用卡是 {code, rating}(无 conviction),下方 typeof c.conviction === 'number' 过滤天然排除它们
 const cards = [...fresh, ...(plan.reused || [])]
 const isOW = (r) => /(overweight|\bbuy\b|增持|买入)/i.test(r || '')
 const buys = cards.filter((c) => isOW(c.rating)).map((c) => c.code)
@@ -125,21 +122,6 @@ log(`L4 ✓ 新派 ${fresh.length} + 复用 ${(plan.reused || []).length} = ${ca
 
 // ── Phase Assemble ──────────────────────────────────────────────
 phase('Assemble')
-// 0 买日:机会成本红队(抽检门 + conviction 最高的 2 个 Hold),产出只进观察单
-if (isZeroBuy) {
-  const rt = await gate('redteam-gate', `${R} autoresearch.scan.gates redteam ${date}`, RT)
-  const holds = cards
-    .filter((c) => !isOW(c.rating) && typeof c.conviction === 'number')
-    .sort((a, b) => b.conviction - a.conviction).slice(0, 2)
-  if (rt && rt.run && holds.length) {
-    log(`机会成本红队 ×${holds.length}(${rt.reason})`)
-    await parallel(holds.map((h) => () => agent(
-      `机会成本红队(模式B=多方)。攻"压 ${h.code} 评级的那道 binding gate"是否太紧:读 ${SD}/details/${h.code}.md + slim,给翻转触发(观察单词表 close_above/ma_bull/money_pos/by_date),写 ${SD}/_v_${h.code}.md。不改评级、不喊单。`,
-      { agentType: 'buy-skeptic', effort: 'high', label: `redteam:${h.code}`, phase: 'Assemble' })))
-  } else {
-    log(`机会成本红队跳过(${rt ? rt.reason : '无候选'})`)
-  }
-}
 // L5 整合(内含 self_review 硬门 + dump gate_fires)+ GATE4
 await bash(`${R} autoresearch.scan.assemble ${date}`, 'assemble')
 const g4 = await gate('GATE4', `${R} autoresearch.scan.gates gate4 ${date}`, OK)

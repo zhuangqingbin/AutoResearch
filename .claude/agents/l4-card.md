@@ -2,7 +2,7 @@
 name: l4-card
 description: scan-market L4 决策卡研究员(= stock-research lite 档)。一只 A 股 finalist 的渐进深度 DD + 早停,读预建 slim 写五档决策卡。由 scan-market 步骤 4 派发(prompt 只需指向 _l4_prompt_<code>.md 任务包);也可单票直接用("快速看一眼/出张卡")。
 model: opus
-effort: medium
+effort: xhigh
 tools: Read, Grep, Glob, Write, WebSearch, WebFetch
 ---
 

@@ -3,7 +3,7 @@
 GATE1 = prelude 后数据体检(L2 非空 + 代码 6 位)+ 返回 sentinel/budget;
 GATE2 = finalists 定稿后(代码 6 位 + count≤budget)+ 返回名单;
 GATE4 = assemble 后 self_review 硬门(gate_fires.csv 无 severity=fail)。
-GATE3(slim>10KB / 无 .SH)由 l4_card harvest-slim 自身承担。redteam = 0买日抽检门。
+GATE3(slim>10KB / 无 .SH)由 l4_card harvest-slim 自身承担。
 """
 from __future__ import annotations
 
@@ -70,18 +70,11 @@ def gate4(scan_dir: Path) -> dict:
     return {"ok": True, "gate": "gate4", "reason": "self_review 通过", "n_checks": len(rows)}
 
 
-def redteam_check(scan_dir: Path) -> dict:
-    from autoresearch.scan.menu import should_run_opportunity_redteam
-
-    run, reason = should_run_opportunity_redteam(Path(scan_dir))
-    return {"run": bool(run), "reason": reason}
-
-
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
     ap = argparse.ArgumentParser(prog="gates")
-    ap.add_argument("gate", choices=["gate1", "gate2", "gate4", "redteam"])
+    ap.add_argument("gate", choices=["gate1", "gate2", "gate4"])
     ap.add_argument("date")
     ap.add_argument("--budget", type=int, default=30)
     ap.add_argument("--root", default=None)
@@ -90,11 +83,9 @@ def main(argv: list[str] | None = None) -> int:
     scan_dir = base / a.date
     res = {"gate1": lambda: gate1(scan_dir),
            "gate2": lambda: gate2(scan_dir, budget=a.budget),
-           "gate4": lambda: gate4(scan_dir),
-           "redteam": lambda: redteam_check(scan_dir)}[a.gate]()
+           "gate4": lambda: gate4(scan_dir)}[a.gate]()
     print(json.dumps(res, ensure_ascii=False))
-    ok = res.get("ok", res.get("run"))
-    return 0 if ok else 1
+    return 0 if res.get("ok") else 1
 
 
 if __name__ == "__main__":

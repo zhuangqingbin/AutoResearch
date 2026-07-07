@@ -2,7 +2,7 @@
 name: sector-brief
 description: sector-research lite 档行业 brief 写手。scan-market Stage 1(或 L4 前补漏)每行业派一个:读确定性 pack JSON 写两段机器契约 brief(地形段喂 L3/L4、研判段仅 L5)。零新取数(pack 即数据源)。
 model: opus
-effort: low
+effort: high
 tools: Read, Write, Grep, Glob
 ---
 

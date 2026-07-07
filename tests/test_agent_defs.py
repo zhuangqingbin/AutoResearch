@@ -1,6 +1,6 @@
 """agent-defs lint —— `.claude/agents/` 叶子 agent 定义与源码/playbook 的最低一致性。
 
-2026-07-05:scan 叶子 agent 化(l4-card / buy-skeptic / sector-brief)——稳定人设烤进
+2026-07-05:scan 叶子 agent 化(l4-card / sector-brief;buy-skeptic 07-07 移除)——稳定人设烤进
 agent system prompt(派发 prompt 缩到两行、前缀吃 cache、契约不再靠每次转述)。
 本文件治两类漂移:① agent 文件缺/frontmatter 坏;② 关键**机器契约锚**(进入P4倾向 /
 FINAL TRANSACTION PROPOSAL / OW三门名 / 两段标题)在 agent 定义与真值源间失同步。
@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 AGENTS = ROOT / ".claude" / "agents"
 SKILLS = ROOT / ".claude" / "skills"
 
-_NAMES = ("l4-card", "buy-skeptic", "sector-brief")
+_NAMES = ("l4-card", "sector-brief")
 
 
 def _agent_text(name: str) -> str:
@@ -23,7 +23,7 @@ def _agent_text(name: str) -> str:
 
 
 def test_agent_files_exist_with_frontmatter():
-    """三个叶子 agent 定义在位:frontmatter 有 name/description/model: opus(全 Opus 设计)。"""
+    """叶子 agent 定义在位:frontmatter 有 name/description/model: opus(全 Opus 设计)。"""
     for name in _NAMES:
         text = _agent_text(name)
         assert text.startswith("---"), f"{name}: 缺 frontmatter"
@@ -44,13 +44,6 @@ def test_l4_card_contract_anchors_synced():
     for a in anchors:
         assert a in agent, f"l4-card 缺契约锚「{a}」"
         assert a in playbook, f"lite-playbook 缺契约锚「{a}」(真值源被改,先同步 agent 定义)"
-
-
-def test_buy_skeptic_anchors():
-    """buy-skeptic 双人设契约:证伪空方 + 0买红队多方;不改评级、裁决在 PM、落 _v_ 稿。"""
-    agent = _agent_text("buy-skeptic")
-    for a in ("证伪", "机会成本红队", "不改评级", "_v_", "三透镜", "观察单"):
-        assert a in agent, f"buy-skeptic 缺契约锚「{a}」"
 
 
 def test_sector_brief_anchors_synced():

@@ -7,21 +7,20 @@
 ## 漏斗一图(含旁路与闭环)
 
 ```
-L0 选集 ──→ L1 召回 ──→ L2 粗排 ──┬→ L3 精排 ──→ L4 研究 ──→ 买单skeptic ──→ L5 整合
-全A~5500     top1000      top200    │  ~15–30 只   卡(复用+新)  ≥OW 0–4 只      1 份报告
-(确定性)    (确定性)   (确定性)   │  (Opus×1)  (Opus×N)  (Opus×N独立)  (确定性)
+L0 选集 ──→ L1 召回 ──→ L2 粗排 ──┬→ L3 精排 ──→ L4 研究 ──→ L5 整合
+全A~5500     top1000      top200    │  ~15–30 只   卡(复用+新)  1 份报告
+(确定性)    (确定性)   (确定性)   │  (Opus×1)   (Opus×N)   (确定性)
                         └影子变体×2 └─★ 宏观 lite·市场研判旁路(=macro-research lite 档;Stage 0 可并行,Opus×1,三处复用)
 L4 派发前(确定性):🚄 观察单触发直通车(触发票直达 L4)→ ♻️ 卡片 TTL 复用(无变化 Hold 票不派)
-0 买日追加:机会成本红队(top-Hold ×2,Opus 独立 bull 方,产出只进观察单)
 闭环(事后):retro 归因 → 权重重标定(自动)+ 建议/经验(人批)→ 注回 L1 权重与 L3 校准块
 ```
 
-**角色分工三层**:确定性层(L0/L1/L2/L5 + 全部度量,零 LLM、纯 pandas、不编数)/ AI 判断层(L3/L4/skeptic/策略师,全 Opus subagent、只回传紧凑结果)/ 闭环层(`autoresearch/learning`,用已实现涨跌批改前两层)。
+**角色分工三层**:确定性层(L0/L1/L2/L5 + 全部度量,零 LLM、纯 pandas、不编数)/ AI 判断层(L3/L4/策略师,全 Opus subagent、只回传紧凑结果)/ 闭环层(`autoresearch/learning`,用已实现涨跌批改前两层)。
 
 ## 核心世界观(实证,决定功夫花在哪)
 
 - **确定性层无 alpha**:L2 全 zoo(20 模型×3 horizon)OOS rank-IC 全负;4 年回测 composite-top200 ≈ 0 且 regime 依赖(2025-26 反转段 −24bps)。→ L2 不预测,只做菜单。
-- **判断层有 edge**(06-24 复盘):L3 净 IC **+0.144**、L4 评级单调 IC **+0.075**(Sell −5.3% < Hold −1.2%);买单 skeptic 曾把胜宏从 OW 压回 Hold(事后正确)。
+- **判断层有 edge**(06-24 复盘):L3 净 IC **+0.144**、L4 评级单调 IC **+0.075**(Sell −5.3% < Hold −1.2%);发布前独立复核曾把胜宏从 OW 压回 Hold(事后正确)。
 - **0 买的根因在召回线**(06-24 定量):413 只 T+1 赢家 **91% 在打分池、仅 4.8% 过 top1000 线**(劣于随机 18%),当日 composite IC **−0.11**。修法 = regime 分桶权重(已上线,见 L1)。
 - **0 买对照**(zero_buy_ledger,7 个 0 买日):市场 fwd_1 −0.48% / fwd_5 −0.60% → **空仓方向正确**;若持续为正 = 失明预警。
 
@@ -61,7 +60,7 @@ L4 派发前(确定性):🚄 观察单触发直通车(触发票直达 L4)→ ♻
 - **是什么**:**确定性分层多样性采样器,ML-free**(旧 GBDT/champion 已弃用,`models/` 只留 measure-only)。三件事:① sector-neutral composite(composite − 申万一级组均值)排 merit 核与桶内;② 7 风格桶**固定 floor** 保底(趋势20〔momentum+heat〕/**健康15〔healthy,07-03〕**/反转12/价值12/成长12/吸筹12/主力10;northbound/composite 不单列桶);③ sector cap ≤20%(`--l2-sector-cap`)。产物 `L2_gbdt_top200.csv`(列名历史遗留):`l2_rank`=选择序、`gbdt_score`=composite(显示)、`l2_lane_reserved`=floor 救回标记。
 - **为什么不预测**:见"核心世界观";分层实测免费(strat ≈ composite-top200 ≈ 0)→ 多样性零 alpha 代价。
 - **菜单体检(07-02 新,`scan/menu.py`)**:L2 vs 全市场的行业集中度/落刀面/健康上涨(0<pct60<40∧主力+∧cmf+)/估值/floor 救回数,自动嵌 L5;健康=0 打 **⚠️菜单病** 预警。实证(06-30):**落刀 L2 70% vs 市场 32%、健康 3/200 vs 242/4184**——召回错配的当天即时读数。
-- **哨兵建议(07-03 新,`menu.sentinel_advice`)**:判据=**全市场**健康上涨占比 × regime(healthy 桶上线后 L2 健康数被 floor"治愈",不能再当判据):<3% 材料枯竭 → 建议哨兵档(只跑观察单/日历/红队×2〔market_view 已由 Stage 0 宏观 lite 产出〕,跳 L3+L4,省 ~70% token 与 ~35 分钟);3–5%+risk_off → 建议;≥5% → 全扫。**人拍板不自动**;07-02(6.2%,range)→ full = healthy 通道修好后该日应全扫。哨兵日 retro/影子照算 = 错过率可监控。
+- **哨兵建议(07-03 新,`menu.sentinel_advice`)**:判据=**全市场**健康上涨占比 × regime(healthy 桶上线后 L2 健康数被 floor"治愈",不能再当判据):<3% 材料枯竭 → 建议哨兵档(只跑观察单/日历〔market_view 已由 Stage 0 宏观 lite 产出〕,跳 L3+L4,省 ~70% token 与 ~35 分钟);3–5%+risk_off → 建议;≥5% → 全扫。**人拍板不自动**;07-02(6.2%,range)→ full = healthy 通道修好后该日应全扫。哨兵日 retro/影子照算 = 错过率可监控。
 - **floor 自然实验(07-02 新,retro 侧)**:救回组 vs merit 组 vs 被挤掉组的 fwd 对照,持续弱才复审 floor(数据从 06-27 分层器上线后的日子开始积累)。
 
 ## 旁路 · 市场研判 = macro-research lite 档(07-03 起;推荐 Stage 0 与 universe 并行,回退 L2 后;Opus×1)
@@ -88,19 +87,13 @@ L4 派发前(确定性):🚄 观察单触发直通车(触发票直达 L4)→ ♻
 ## L4 · 研究(一只 = 一个 Opus subagent,渐进深度 + 早停)
 
 - **派发前三道确定性闸(07-02 新;07-04/07-05 扩)**:⓪(07-05 新,finalists 定稿后)**🛡 质押预旗** `python -m autoresearch.scan.agents.l4_card pledge <date>`——finalists 批量 `pledge_stat` → `pledge.csv`(近 7 日跨 scan 日复用),简报自动注 ⚠质押旗(阈值=`scoring.pledge_flag_label` 单一事实源,>40 爆雷/>20 偏高,与深核 slim 质押段同);**advisory 不动门**,取证 ≥2 周后升门另走 proposal(最小侵入点已探明=构造 `gates` dict 强制置 False);① **🚄 触发直通车** `watchlist.append_express`——观察单触发票不在 finalists 则追加(lane=watchlist_trigger),防"触发了但不在菜单 → 没人研究";② **♻️ 卡片 TTL 复用 + 滞回** `python -m autoresearch.scan.l4_reuse <date> --apply --carryover`——`--carryover` 先滞回保席(昨日 finalist∩今日 L2 的 ≤Hold 换血票追加 lane=carryover,cap 5;07-03 churn 90%〔repeat 3/30〕把复用架空只救 2 张的修法);复用门:近 4 日已出卡、≤Hold、|Δ价|≤5%、无新公告、regime 未翻、conviction<70 → 直接复用前卡(♻️banner+失效条件),**不派 subagent**;**前卡 OW三门失守≥2=深否决 → 豁免 conviction 拦截**(07-03:conv 82/80/78 全被 L4 翻案,失真先验不值得重烧)。≥OW 永不复用、禁链式。实测 07-01:5/25 可复用(20%)。
-- **机制(07-04 派发三步)**:① 共享指令落 `_l4_shared_instructions.md` → `python -m autoresearch.scan.agents.l4_card prompts <date>` 确定性落稿:`_harvest_list.txt`(**yfinance 归一后缀,`.SH` 绝迹**;`normalize_symbol` 同步支持 `.SH→.SS`——07-03 上交所空 slim 双跑 10/30 的修法)+ 每卡 `_l4_prompt_<code>.md`(共享块前置吃 cache 前缀,简报自动带 ⚠主力失真标注);② 按清单批量预 harvest slim(零 LLM、验数据完好,**>10KB 才可信**);③ **全部 `Agent(subagent_type='l4-card')` 一条消息并发**(别分 wave;07-05 起 lite 流程/卡模板/契约烤进 `.claude/agents/l4-card.md`,每只 prompt 两行=指向 `_l4_prompt_<code>.md` 任务包;`_l4_shared_instructions.md` 只放当日件),落稿即派发稿 → token 表输入侧可计。skeptic/红队同理走 `subagent_type='buy-skeptic'`(模式 A=空方证伪/模式 B=红队,自动落 `_v_*`);行业 brief 走 `subagent_type='sector-brief'`。每只:P0 简报定向(`compose_funnel_brief`,自动前置市场地形 + 📁 档案 + **⚠️解禁旗/📅披露日**〔calendar.csv〕+ **🏭 行业备忘录行**)→ P1–P3 表面填 4 维 → **主早停②**(非买点 → 早停卡)→ survivor P4 陷阱核(质押/商誉/解禁/审计/现金流;**进 P4 前记一行 `进入P4倾向: <Rating>`**,供 P4 翻盘率计量)→ ③击杀 → P5 满卡。**评级由 `rubric_rating` 评分卡派生**(防 gestalt 过度多报);早停只向下;≥OW 必走 P4+P5。
+- **机制(07-04 派发三步)**:① 共享指令落 `_l4_shared_instructions.md` → `python -m autoresearch.scan.agents.l4_card prompts <date>` 确定性落稿:`_harvest_list.txt`(**yfinance 归一后缀,`.SH` 绝迹**;`normalize_symbol` 同步支持 `.SH→.SS`——07-03 上交所空 slim 双跑 10/30 的修法)+ 每卡 `_l4_prompt_<code>.md`(共享块前置吃 cache 前缀,简报自动带 ⚠主力失真标注);② 按清单批量预 harvest slim(零 LLM、验数据完好,**>10KB 才可信**);③ **全部 `Agent(subagent_type='l4-card')` 一条消息并发**(别分 wave;07-05 起 lite 流程/卡模板/契约烤进 `.claude/agents/l4-card.md`,每只 prompt 两行=指向 `_l4_prompt_<code>.md` 任务包;`_l4_shared_instructions.md` 只放当日件),落稿即派发稿 → token 表输入侧可计。行业 brief 走 `subagent_type='sector-brief'`。每只:P0 简报定向(`compose_funnel_brief`,自动前置市场地形 + 📁 档案 + **⚠️解禁旗/📅披露日**〔calendar.csv〕+ **🏭 行业备忘录行**)→ P1–P3 表面填 4 维 → **主早停②**(非买点 → 早停卡)→ survivor P4 陷阱核(质押/商誉/解禁/审计/现金流;**进 P4 前记一行 `进入P4倾向: <Rating>`**,供 P4 翻盘率计量)→ ③击杀 → P5 满卡。**评级由 `rubric_rating` 评分卡派生**(防 gestalt 过度多报);早停只向下;≥OW 必走 P4+P5。
 - **阶段效能读数**(`health.l4_phase_stats`):早停率实测仅 20%(5/25,07-01)= 早停省得有限,复用+预算才是大头;P4 翻盘率零积累中(持续≈0 → P4 可条件化,先测量后动刀)。
-- **纪律实证**:紫光国微三度被 CFO/FCF"业绩真兑现"门封顶 Hold;胜宏满卡过三门后被 skeptic 降级(见下)。**别放宽资金/估值门凑买单**(06-25 的学费)。
-
-## 买单 skeptic(≥OW,独立 Opus)+ 机会成本红队(0 买日,07-02 新)
-
-- **skeptic**:每只 ≥OW 派一个没参与过该票分析的独立 Opus 专职证伪(共用攻击面:估值/解禁质押/主力背离/业绩雷/前视/派发),主线 PM 三透镜(估值/资金/毁灭风险)投票 → `verify.csv`;assemble **折回评级**(降级=降一档、否决=至少 Hold)。与 self_review 机械硬门叠加且正交。**评级基率先验(07-02 新)**:buy_ledger 某评级已实现 n≥10 后,把"本系统 OW 历史 T+5 胜率 X%"注入 skeptic/PM prompt(n<10 禁注,薄先验比没有更坏);**流程 lint**:买单>0 而 verify.csv 空 = self_review **fail**(最后防线不可静默跳过)。
-- **机会成本红队(对称性修复:空仓也要红队)**:verify 折回后**今日 0 买**才跑;`pick_opportunity_candidates`(conviction 最高的 Hold top-2)每只派独立 Opus **bull 方**攻"压评级的那道 binding gate",PM 三透镜裁判。**产出只进观察单(结构化 conds,source=opp_redteam)与校准数据,评级一个字不动**——这是"门是否太紧"的证据流,不是翻案通道。
-- **skeptic 落定后**:`watchlist.ingest_verify` 把降级条目草拟进观察单 + 编排层补结构化 conds。
+- **纪律实证**:紫光国微三度被 CFO/FCF"业绩真兑现"门封顶 Hold。**别放宽资金/估值门凑买单**(06-25 的学费)。
 
 ## L5 · 整合(`scan/assemble.py`,确定性,零 LLM 铁律)
 
-- **summary.md 节序(当前)**:self_review 硬门 banner(fail 顶置;含**编排 lint**:买单未过 skeptic=fail、finalists≥5 无策略师=warn)→ regime+drift 行 → **📈 市场研判**(market_view 或回退脉搏 + 📉 漏斗读数)→ 漏斗数量 → 各阶段卡点&概览(+ **🍱 菜单体检**)→ 投资建议表(逐阶段结论 + 🛡️ 红队徽标)→ 红队明细 → **👀 观察单日检** → **📅 两周日历**(finalists 披露日+大解禁)→ 组合视角(**买单同板块=1 个 bet 告警** + **仓位 overlay**:regime 档位 risk_off 0–2 成/range 3–5/trend 5–8、菜单病取下沿、0 买=空仓一致)→ 经验浮出 → token 估算 → 诚实局限。所有新节 **presence-gated**(staging 缺 → 不加节,parity 不破)。
+- **summary.md 节序(当前)**:self_review 硬门 banner(fail 顶置;含**编排 lint**:finalists≥5 无策略师=warn)→ regime+drift 行 → **📈 市场研判**(market_view 或回退脉搏 + 📉 漏斗读数)→ 漏斗数量 → 各阶段卡点&概览(+ **🍱 菜单体检**)→ 投资建议表(逐阶段结论)→ **👀 观察单日检** → **📅 两周日历**(finalists 披露日+大解禁)→ 组合视角(**买单同板块=1 个 bet 告警** + **仓位 overlay**:regime 档位 risk_off 0–2 成/range 3–5/trend 5–8、菜单病取下沿、0 买=空仓一致)→ 经验浮出 → token 估算 → 诚实局限。所有新节 **presence-gated**(staging 缺 → 不加节,parity 不破)。
 - **现场完备(07-02 新)**:发布同时写 `run_health.json`(staging+trace;NaN 降级/产物在位/churn/L4 阶段效能/买单数)+ 报告目录 `index.md` 导航页(卡片/trace/staging/上一 run/健康一行)——**第二天复盘从 index.md 进**。universe 侧固化 `weights_used.json` + meta.regime = 重放输入齐备(漏斗确定性,同输入可复现)。
 - **观察单(07-02 新,`scan/watchlist.py`)**:`context/watchlist.csv` 跨日活状态;机判词表 v2 `close_above/close_below/ma_bull/money_pos/by_date(日期锚⏰)+manual`;每日 `run_check` 对 `L1_scored_full` 判 **触发/触发(待人工项)/提醒(k/n)/临近/待触发/失效**(invalidation 或过期 → 失效)。状态梯度:触发>提醒(k/n)>临近>待触发;since_born≥+15% 未触发标🔥(错过审计)、🆕=较前日新达成。**触发≠自动升级**,只提示按 stock-research lite 档复核。种子:胜宏 300476(当前状态"临近":314 上方 ✓、多头排列 ✗、中报待人工;失效线 298.5)。
 - 发布:`reports/scan/<运行时刻>/`(数据日在 manifest.json,retro 据此定位)。
@@ -108,7 +101,7 @@ L4 派发前(确定性):🚄 观察单触发直通车(触发票直达 L4)→ ♻
 ## 真实计量(OTEL 遥测,07-05 新;未实跑)
 
 - **为什么**:落稿估算下界 ~75k vs 真实 ~1M(07-03 实证,主因 L4 输入 28卡×~25k);07-05 叶子 agent 化的 cache 收益假设未验——30 卡同一条消息并发存在 **cache 写入竞态**,可能全 miss。
-- **仪器(旁路,生产派发路径零改动)**:跑扫描的会话从带 env 的 shell 启动:`CLAUDE_CODE_ENABLE_TELEMETRY=1 OTEL_METRICS_EXPORTER=console OTEL_LOGS_EXPORTER=console OTEL_METRIC_EXPORT_INTERVAL=30000 OTEL_LOG_TOOL_DETAILS=1`;metric=`claude_code.token.usage`(`type∈{input,output,cacheRead,cacheCreation}` × `agent.name` × `query_source`,文档确认——可按 l4-card/buy-skeptic/sector-brief 聚合)。console 出 stdout 与交互 TUI 可能互扰 → 冒烟三选一(console 重定向 / prometheus 本地轮询 / otelcol file exporter),验收不变=拿到分解表。
+- **仪器(旁路,生产派发路径零改动)**:跑扫描的会话从带 env 的 shell 启动:`CLAUDE_CODE_ENABLE_TELEMETRY=1 OTEL_METRICS_EXPORTER=console OTEL_LOGS_EXPORTER=console OTEL_METRIC_EXPORT_INTERVAL=30000 OTEL_LOG_TOOL_DETAILS=1`;metric=`claude_code.token.usage`(`type∈{input,output,cacheRead,cacheCreation}` × `agent.name` × `query_source`,文档确认——可按 l4-card/sector-brief 聚合)。console 出 stdout 与交互 TUI 可能互扰 → 冒烟三选一(console 重定向 / prometheus 本地轮询 / otelcol file exporter),验收不变=拿到分解表。
 - **解析**:`python -m autoresearch.trace.telemetry <raw> --out reports/scan/<run>/token_telemetry.md` → agent×type 表 + cache命中率(=cacheRead/(input+cacheRead));多形态容错、累计/增量按 key 单调性自动判别;与当次落稿估算表对账。
 - **判读**:l4-card 行 cacheRead≈0 → 并发竞态坐实 → 修法(1+29 暖 cache/前缀重排)另走 proposal,**勿预做**;显著 >0 → 07-05 假设成立,落账真实命中率。
 
@@ -116,7 +109,7 @@ L4 派发前(确定性):🚄 观察单触发直通车(触发票直达 L4)→ ♻
 
 - `python -m autoresearch.learning.cross_calib` → `reports/learning/cross_calib.md`(prelude 自动刷新):① **L3→L4 翻案率 per lane**(`L3_judged_full` × `health.final_ratings`,高确信=conviction≥70、翻案=L4 ≤UW);② **rubric 门柱级拦对/错杀**(binding=唯一✗门,`assemble.gate_status` 共享解析防口径漂移;ex 口径同 `gate_ledger`,**错杀=ex5>0 且 hi_10 触达卡内目标**,拦对/错杀不互补——中间地带=拦了但未触达)。
 - **触价校准(buy_ledger 扩)**:`target_calibration` 统计**全卡**(全评级——0 买连败下样本不断供,解 ≥OW-only 永久 thin 困局)10 日目标触达率 → `buy_ledger.md` 新节;首证=东方财富 hi10 6.3% vs 目标 28.8% 过乐观。
-- **注入分层(铁律)**:python 只产读数;prelude 汇总屏打三条**当日件建议行**(📐→`_l4_shared_instructions.md`;🔁→L3 校准块旁;🚪→skeptic/PM 先验),n<10 thin 行自带「禁注」**勿贴**。**校准不改门/权重/评级**。
+- **注入分层(铁律)**:python 只产读数;prelude 汇总屏打三条**当日件建议行**(📐→`_l4_shared_instructions.md`;🔁→L3 校准块旁;🚪→门柱先验贴校准块旁),n<10 thin 行自带「禁注」**勿贴**。**校准不改门/权重/评级**。
 
 ## 闭环层(`autoresearch/learning`,确定性度量 + Claude 诊断)
 
@@ -129,7 +122,7 @@ L4 派发前(确定性):🚄 观察单触发直通车(触发票直达 L4)→ ♻
 | `feedback_store` | lessons(反复强化可升 self_review 硬门;**regime 作用域** + **MTM 计数/机械 confidence**〔support +0.03/refute −0.08,达阈自动提名摘门/退休,人批〕;注入 cap=8)/ proposals(**看板**:retro_input 列 open+天龄)/ changelog / 权重快照回滚;`decay_lessons` 已接 `mark_done` 节奏 | `ls_reversal_regime_low_composite_trust` ×4;open:cap_floor 软化、main_net 口径、horizon 之争 |
 | `gate_ledger`(新) | **门的 MTM**:assemble 落 `gate_fires.csv`(failure 带 code)× retro fwd → 每门拦对率;持续 ex>0 → 松阈/退役建议(人批) | 数据从 07-02 起积累 |
 | `watchlist_ledger`(新) | 观察单**触发→后市**度量(触发单准不准) | prelude 每日刷新(born→今 巡检节);触发主表待首个触发样本 |
-| `scan/dossier.py`(新) | **个股档案(前科卡)**:近 10 日入围史(评级/binding 理由/skeptic verdict)注入 L4 简报 → **增量研究**(卡片须含"变化项 vs 档案"节);防锚定铁律同策略师 | 紫光国微 4 次入围/三度 CFO 门史自动聚出 |
+| `scan/dossier.py`(新) | **个股档案(前科卡)**:近 10 日入围史(评级/binding 理由)注入 L4 简报 → **增量研究**(卡片须含"变化项 vs 档案"节);防锚定铁律同策略师 | 紫光国微 4 次入围/三度 CFO 门史自动聚出 |
 | `factor_lab` | harvest(成型日面板)→ calibrate(flat)/**calibrate_regimes**(分桶)→ eval | 面板 107 成型日(至 07-01);重标定一律走 `retro.recalibrate_and_log`(审计) |
 | `consensus`(新) | 卖方一致预期**前向积累**(`report_rc` 限频 **1次/小时** → 每日 1 拉,scan 前置)| 积累 0 日;**≥60 日过 factor_lab IC 门才谈入 composite** |
 | `journal`(07-02) | **扫描日记**:每日一行(regime/菜单/漏斗/买/触发/市场 fwd 回填)——按日叙事主干,与各 ledger(按仪器)正交 | 11 日已回填;9/11 为 0 买日 |
@@ -140,7 +133,7 @@ L4 派发前(确定性):🚄 观察单触发直通车(触发票直达 L4)→ ♻
 | `scan/calendar.py`(07-02) | **解禁+预约披露日历**(share_float 分块 + disclosure_date)→ L4 旗 + summary 日历 + 触发日期锚 | 07-01:216 披露+1 大解禁;紫光国微中报=08-15 |
 | 影子漏斗(07-02) | universe 变体 L2(nostrat/nocap)→ retro 捕获对照(**免费确定性 A/B**) | 数据从下一真实 scan 起积累 |
 | `paper_nav`(07-05 wave) | **影子组合成绩单**:真实(≥OW)/影子(top-3 Hold)/市场等权 三线 NAV(10% 槽·持10日·次日开盘进出);`真实−影子`=门的价值;summary 置顶一行 | 回填起 06-18;06-19 孤儿键跳过 |
-| `shadow_buys`(07-05 wave) | 每日 conviction top-3 Hold 确定性记账(assemble 自动)→ NAV 影子线 + 评级基率样本池;与机会成本红队正交 | 历史回填 ~30 行 |
+| `shadow_buys`(07-05 wave) | 每日 conviction top-3 Hold 确定性记账(assemble 自动)→ NAV 影子线 + 评级基率样本池 | 历史回填 ~30 行 |
 | `catalyst_ledger`(07-05 wave) | 催化旗票 vs 无旗票 fwd_5 对照(**n≥30 才读数**);IC 过硬前不入 composite | 零积累起步 |
 
 ## 数据层要点
@@ -156,11 +149,11 @@ tushare 默认源(push2 被网络封锁;`TUSHARE_TOKEN` 高权限);keyless 可�
 
 1. 06-25/26/29/30 retro 待 fwd 成熟(07-03~07-07 陆续),补跑后 T+5 盲区/错杀/floor/影子对照数据自动变厚;
 2. regime 块 horizon 之争(`pr_20260702_001`)待 T+5 数据裁决;risk_off 块样本薄(11 日);
-3. **全部新 LLM 流程段(宏观 lite 新输入〔macro_state 捆绑〕/行业 brief 与同链对比/机会成本红队/观察单补 conds/档案"变化项"/经验人判 MTM/P4 倾向行/复用后编排)未在真实 skill 跑动中实测**——确定性件全有测试(**07-03 海拔重构后 640 绿**),LLM 段是脚手架就位;**A3 早停抽检 / D1 卡模板 v2 未实跑**;
+3. **全部新 LLM 流程段(宏观 lite 新输入〔macro_state 捆绑〕/行业 brief 与同链对比/观察单补 conds/档案"变化项"/经验人判 MTM/P4 倾向行/复用后编排)未在真实 skill 跑动中实测**——确定性件全有测试(**07-03 海拔重构后 640 绿**),LLM 段是脚手架就位;**A3 早停抽检 / D1 卡模板 v2 未实跑**;
 3b. MTM/gate_fires/触发 ledger/影子对照/P4 翻盘率全部从 2026-07-02 起零积累——头两周读数样本薄,别过度反应;
 3c. attribution 一次性落账问题**已修**(07-03):`retro refresh`(prelude 首步自动跑)对成熟老日重写 attribution 补 fwd/hi;实测刷 8 日、东方财富现真身(hi10 +6.3% vs 目标 +28.8% = 首条"目标价过乐观"实证)。遗留孤儿:06-19 为端午假日跑动(非交易日键),fwd 永远无法结算,保持 "—";
 3d. Δ表省幅随日况(L2 轮换大的日子略 0 只);卡片复用省幅=churn(07-01 实测 20%,窗口而异);评级基率 n<10 禁注;
-3e. **07-02 首航后新增(07-03;07-04 落稿契约确定性化)**:healthy 通道/健康桶已上线但其 alpha/捕获增量未验——由 `pre_healthy` 影子反事实 + retro 裁决(≥10 日);哨兵档未实跑;落稿契约中 `_l4_prompt_*`+`_harvest_list` 已由 `l4_card prompts` 确定性产出(`_l3_table`/`_v_*` 仍靠编排手落;token 表新增 **L4 输入·slim** 行 + prompt 缺稿可执行提示;07-03 实证:落盘下界 ~75k vs 真实量级 ~1M,主因 L4 输入侧 28 卡 × ~25k 未计);token 真实计费仍只有 Claude Code `/usage` 可见;
+3e. **07-02 首航后新增(07-03;07-04 落稿契约确定性化)**:healthy 通道/健康桶已上线但其 alpha/捕获增量未验——由 `pre_healthy` 影子反事实 + retro 裁决(≥10 日);哨兵档未实跑;落稿契约中 `_l4_prompt_*`+`_harvest_list` 已由 `l4_card prompts` 确定性产出(`_l3_table` 仍靠编排手落;token 表新增 **L4 输入·slim** 行 + prompt 缺稿可执行提示;07-03 实证:落盘下界 ~75k vs 真实量级 ~1M,主因 L4 输入侧 28 卡 × ~25k 未计);token 真实计费仍只有 Claude Code `/usage` 可见;
 4. consensus 首拉待限频窗;积累 <60 日前盈利修正不入线上;
 5. 仅供研究,非投资建议。
 6. anns_d 无接口权限(07-05 实测):公告情感列空、监管旗走 L3_webnews 回退(`reg_hits_for_code`);run_health `anns_empty_rate`=1.0 即该态。权限开通/替代公告端点待核;northbound 通道 hk_ratio NaN=100% 空转读数(`northbound_probe`)取证中,quota 不动待 proposal。
