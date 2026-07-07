@@ -505,14 +505,66 @@ def fetch_pledge(scan_dir: Path | str, codes=None, fetch_fn=None,
     return out
 
 
+def _default_harvest_slim(ticker: str, date: str, ctx_root: Path) -> Path:
+    import subprocess
+    import sys
+
+    subprocess.run(
+        [sys.executable, "-m", "autoresearch.analyze.harvest", ticker, date, "stock", "--slim"],
+        check=False)
+    return ctx_root / f"{ticker}_{date}_slim.md"
+
+
+def harvest_slim_batch(date: str, root: Path | None = None, min_bytes: int = 10_240,
+                       retries: int = 1, harvest_fn=None, ctx_root: Path | None = None) -> dict:
+    """按 _harvest_list.txt 批量 harvest slim,**失败响亮**(修 603799 静默失败坑 = GATE 3)。
+
+    07-06 教训:slim >10KB 才可信。offender 重试 `retries` 次仍小/异常/含 .SH → 记失败。
+    harvest_fn(ticker, date)->Path 可注入(测试用),默认 shell 到 analyze.harvest --slim。
+    """
+    base = Path(root) if root else Path("context/scan")
+    scan_dir = base / date
+    ctx = ctx_root or Path("context")
+    tickers = [t for t in (scan_dir / "_harvest_list.txt").read_text(encoding="utf-8").split() if t]
+    hv = harvest_fn or (lambda t, dt: _default_harvest_slim(t, dt, ctx))
+    failures = []
+    for t in tickers:
+        if ".SH" in t:                                    # 归一漏网(GATE 3 防线)
+            failures.append({"ticker": t, "bytes": -1, "why": ".SH 未归一"})
+            continue
+        size = 0
+        for _ in range(retries + 1):
+            try:
+                p = hv(t, date)
+                size = p.stat().st_size if p and Path(p).exists() else 0
+            except Exception:                             # noqa: BLE001
+                size = 0
+            if size >= min_bytes:
+                break
+        if size < min_bytes:
+            failures.append({"ticker": t, "bytes": int(size), "why": f"<{min_bytes}B"})
+    return {"ok": not failures, "n": len(tickers), "failures": failures}
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     ap = argparse.ArgumentParser(description="L4 确定性件 CLI(派发包落稿/质押预旗,零 LLM)")
-    ap.add_argument("cmd", choices=["prompts", "pledge"],
+    ap.add_argument("cmd", choices=["prompts", "pledge", "harvest-slim"],
                     help="prompts = 写 _harvest_list.txt + _l4_prompt_<code>.md;"
-                         "pledge = finalists 批量质押 → pledge.csv(简报自动带 ⚠质押旗)")
+                         "pledge = finalists 批量质押 → pledge.csv(简报自动带 ⚠质押旗);"
+                         "harvest-slim = 按 _harvest_list.txt 批量 harvest slim")
     ap.add_argument("date", help="scan 日 YYYY-MM-DD")
     args = ap.parse_args(argv)
+    if args.cmd == "harvest-slim":
+        import json
+        res = harvest_slim_batch(args.date)
+        print(json.dumps({"ok": res["ok"],
+                          "reason": ("ok" if res["ok"]
+                                     else f"{len(res['failures'])}/{res['n']} slim 失败:"
+                                          + ", ".join(f"{f['ticker']}({f['bytes']}B)"
+                                                      for f in res["failures"])),
+                          "failures": res["failures"]}, ensure_ascii=False))
+        return 0 if res["ok"] else 1
     if args.cmd == "pledge":
         df = fetch_pledge(Path("context/scan") / args.date)
         n_flag = int((pd.to_numeric(df.get("pledge_ratio"), errors="coerce") > 20).sum()) if len(df) else 0
