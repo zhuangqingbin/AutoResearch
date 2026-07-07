@@ -36,6 +36,29 @@ def test_fetch_seats_aggregates_inst_vs_retail(tmp_path, monkeypatch):
     assert r2["retail_net_wan"] == 80 and r2["inst_net_wan"] == 0
 
 
+def test_fetch_seats_nan_net_buy_does_not_poison_aggregate(tmp_path, monkeypatch):
+    # 写侧 NaN 守卫(与 _seat_mark 读侧 aaea58e 同 class):同一 code 一条 net_buy=NaN + 一条有效,
+    # NaN 行当 0 处理,不把该 code 整个聚合毒化成 NaN(`float('nan') or 0 → nan` 坑)。
+    monkeypatch.setattr(tushare_source, "resolve_momentum_dates",
+                        lambda *a, **k: ("20260707", "20260707"), raising=True)
+    monkeypatch.setattr(tushare_source, "_trade_days",
+                        lambda *a, **k: ["20260707"], raising=True)
+    monkeypatch.setattr(tushare_source, "_pro", lambda *a, **k: object(), raising=True)
+    d = tmp_path / "2026-07-07"
+    d.mkdir()
+    pd.DataFrame({"code": ["600000"]}).to_csv(d / "finalists.csv", index=False)
+
+    def _stub(_dates):
+        return {"20260707": pd.DataFrame(
+            [{"ts_code": "600000.SH", "exalter": "机构专用", "net_buy": float("nan")},
+             {"ts_code": "600000.SH", "exalter": "机构专用", "net_buy": 3_000_000}])}
+
+    out = fetch_seats(d, bulk_fn=_stub)
+    row = out.set_index("code").loc["600000"]
+    assert not pd.isna(row["inst_net_wan"])      # NaN 行不得毒化聚合
+    assert row["inst_net_wan"] == 300            # 仅有效行贡献 3_000_000/1e4,NaN 行=0
+
+
 def test_seat_mark_flags_inst_contra_indicator(tmp_path):
     pd.DataFrame({"code": ["600000"], "inst_net_wan": [300.0],
                   "retail_net_wan": [80.0], "n_appear": [2]}).to_csv(tmp_path / "seats.csv", index=False)

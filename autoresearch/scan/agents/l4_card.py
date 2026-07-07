@@ -649,7 +649,8 @@ def fetch_seats(scan_dir: Path | str, codes=None, bulk_fn=None, reuse_days: int 
                     continue
                 agg[c]["n"] += 1
                 for _, r in sub.iterrows():
-                    net = float(r.get("net_buy") or 0)
+                    _nb = r.get("net_buy")                       # NaN 守卫:`nan or 0 → nan` 会毒化整 code 聚合
+                    net = 0.0 if (_nb is None or pd.isna(_nb)) else float(_nb)
                     if "机构专用" in str(r.get("exalter", "")):
                         agg[c]["inst"] += net
                     else:
