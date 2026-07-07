@@ -15,7 +15,8 @@
 
 1. **手工执行 = 会漏步会错**。仅 07-06 一轮就踩了三个"执行时"数据坑:finalists 代码丢前导零(5/20 卡误判缺失)、`.SH` 后缀空 slim、批量 slim 静默失败(603799)。都是我在场逐段读中间产物才抓到——但这依赖"我在场"。
 2. **per-agent effort 不可靠**。07-06 用 `.claude/agents/*.md` frontmatter 加 `effort:`(l3-rank=max、l4-card=medium、sector-brief=low)——**harness 是否读它未经验证**,可能被静默忽略。真正契约级的 per-agent effort 只有 **Workflow 的 `agent({effort})`**。
-3. **粗 barrier 浪费墙钟**。现行 L4 是"一条消息派 ~30 张卡 → 等**全部**回 → 再派 skeptic"。最慢那张不回,skeptic 一张都发不出。
+3. **编排全靠我在场逐段驱动**。判断点(哨兵、L3 复核)和数据坑全靠我人肉盯:要么我在(不可复现、占我时间),要么没人管(盲跑出错)。这才是核心——把编排变成"确定的东西"。
+   > 注:买单 skeptic(mode A)已于 07-06 按用户决定移除,故 L4 已无"派卡→派 skeptic"的两段串行,本设计不追求 card→skeptic 的 pipeline 重叠;并发就是 `parallel()` 一次扇出。workflow 的真实收益 = **契约级 effort + 确定性/不漏步 + 校验门**,而非墙钟重叠。
 
 **用户决定**(2026-07-07):把**整条漏斗做成一个确定性的 Workflow**,全自动后台跑完,产出成品报告。因为"整个流程应该是一个很确定的,用这种方式是合适的"。correctness 模型选 **全自动 + 程序化校验门**(而非保留人工暂停点)。
 
@@ -26,7 +27,7 @@
 ### 目标
 - 把 L0→L5 全漏斗编排收进**一个 JS Workflow 脚本**,后台一次跑完(~45–60 min),末尾交付成品 `reports/scan/<run>/`。
 - **契约级 per-agent effort/model**:L3=max、L4 卡=medium、sector-brief/校验门=low。
-- **pipeline 重叠**:每张 L4 卡研究完 → 它的 skeptic 立即启动,不等全批。
+- **L4 卡并发 + effort 分层**:~30 张卡 `parallel()` 一次扇出(与现行"一条消息派全部"同并发),但每张 `{effort:'medium'}` 是契约级。
 - **程序化校验门**取代"我在场逐段读"的人工检查点,把 07-06 那三类坑变成**自动拦截/自愈或响亮中止**。
 - 把三个数据坑**在源头修死**(而非每轮手工打补丁),让漏斗敢盲跑。
 - **可复现**:同日期同输入 → 同编排;`resumeFromRunId` 让"后段出错不必重跑前段"。
@@ -94,15 +95,14 @@ frame --json  ── 1 general-purpose agent ──  湖派生 market_pack(取�
    ⟦GATE 3⟧ reader-agent: 每 slim >10KB · _harvest_list 无 .SH · 逐票核对 → 列出 offenders
       │        └─(有 offender)→ 定向重 harvest 一个 general-purpose agent → 复检
       │
-   L4 卡  ══ pipeline(finalists, cardFn, skepticFn) ══
-      │   cardFn: agent{l4-card, medium} 渐进深度+早停 → details/<code>.md
-      │   skepticFn: 读该卡评级;≥OW → agent{buy-skeptic 模式A} 证伪 → _v_<code>.md;否则 no-op(返回 null)
-      │   (A 卡出卡即触发其 skeptic,不等 B 卡)
+   L4 卡  ══ parallel(finalists.map(card)) ══  (barrier:红队需全部评级才知是否 0 买)
+      │   card: agent{l4-card, medium} 渐进深度+早停 → details/<code>.md · schema 返回 {code, rating}
+      │   (买单 skeptic mode A 已移除 → 无 card→skeptic 阶段)
       │
-   ⟦控制⟧ reader-agent: 汇总评级 → {buys[], is_zero_buy}
+   ⟦控制⟧ JS 汇总各卡 rating → buys=≥OW · is_zero_buy = buys.length===0
       │
-      └─ 若 is_zero_buy ──▶ 机会成本红队(menu.should_run_opportunity_redteam 抽检)
-      │        agent{buy-skeptic 模式B}×≤2 → 产出只进观察单
+      └─ 若 is_zero_buy 且 menu.should_run_opportunity_redteam(抽检) ──▶ 机会成本红队
+      │        agent{buy-skeptic 模式B}×≤2 → 产出只进观察单(不改评级)
       │
    assemble  ── 1 general-purpose agent ──  写 reports/scan/<run>/
       │
@@ -124,7 +124,7 @@ frame --json  ── 1 general-purpose agent ──  湖派生 market_pack(取�
 
 ### 4.4 并发模型
 - **prep 三件并发**(market_view ∥ sector-briefs ∥ L3 证据 harvest):`parallel()` 屏障——L3 表要三者齐备。
-- **L4 卡 + skeptic**:`pipeline(finalists, cardFn, skepticFn)`——**无屏障**,A 卡完 → 其 skeptic 起,同时 B 卡还在跑。墙钟 = 最慢单条链。
+- **L4 卡**:`parallel()` 一次扇出全部卡(barrier——红队需全部评级才知是否 0 买)。买单 skeptic 已移除,无 card→skeptic pipeline;红队是 0 买日 post-barrier 的抽检。
 - 并发上限 `min(16, cores-2)`;~30 张卡排队跑,自动填满。
 
 ---
