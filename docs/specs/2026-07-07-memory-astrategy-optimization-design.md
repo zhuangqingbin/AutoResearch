@@ -18,6 +18,16 @@
 - 不做 prompt 自动优化（R9 已拒）、不做风险人格翻转（与 0 买纪律冲突）、不做 K 线视觉多模态。
 - 不改「宁缺勿滥」哲学：所有新机制**切品相/给地形/改记账，不放宽质量门**。
 
+## 实现进度（2026-07-08）
+
+已落地（TDD·全绿 768 测试）：**M2 M3 M1 X3**。
+- **M3** 失效记账：`upsert` 记 `valid_from`、退休/衰减记 `invalid_at`、`lessons_as_of(day)` 时点信念集（feedback_store.py）。
+- **M2** 写入四操作裁决：`similar_lessons`（结构化召回，零 embedding）+ `adjudicate(ADD/UPDATE/DELETE/NOOP)` + changelog 审计；已接线 feedback / scan-retro 蒸馏段。
+- **M1** 同日配对蒸馏：`build_retro_pairs`（retro.py），`attribute()` 成熟日落 `retro/_retro_pairs.csv`；retro-playbook 步骤2 消费。**真数据驱动逮到并修复「未评级 universe 票误纳 fail 侧」坑。**
+- **X3** 评测卫生：`risk_metrics` + `risk_block`（MDD/Sortino vs buy&hold 基线）入 paper NAV render。
+
+未开始：S1 温度计 · X1 校准加权 · S2 因子外环 · S3 sizer · S4 保真度 · S5 数据扩容 · X2 回放 · M4/M5/M6（触发式后排）。
+
 ## 决策摘要（brainstorm 定）
 
 | # | 工作流 | 一句话 | 灵感来源 | 成本 |
