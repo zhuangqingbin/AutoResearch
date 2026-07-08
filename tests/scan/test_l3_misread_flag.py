@@ -59,7 +59,11 @@ def test_table_column_and_legend(tmp_path):
     date_dir = _staging(tmp_path)
     on = l3_table_md(date_dir.name, root=date_dir.parent, misread_flag=True)
     off = l3_table_md(date_dir.name, root=date_dir.parent, misread_flag=False)
-    assert "misread" in on and "低基" in on and "自证" in on
+    assert "misread" in on and "自证" in on              # 列头 + 图例禁则
+    # 行级断言:触发行(np_yoy=568/roe=4.1)的 misread 列必须真算出「低基」——只查图例子串
+    # 的话,删掉 df.apply(l3_misread_flags) 行照样绿(review Important #1)。
+    row_line = next(ln for ln in on.splitlines() if ln.startswith("| 000001"))
+    assert "低基" in row_line
     assert "misread" not in off
 
 
