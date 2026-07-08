@@ -17,8 +17,8 @@ description: Use when the user reacts to a research report / scan result with a 
 - ❌ 与研报无关的闲聊;❌ 一次性的事实订正(无泛化价值)→ 可记 feedback 但不升经验。
 
 ## 流程
-读 `feedback-playbook.md` 跑完整 5 步:定位报告 → 判 verdict/scope → 蒸馏 root_cause + corrective_rule → `record_feedback` → 决定是否 `upsert_lesson` 升语义 → 回执。
+读 `feedback-playbook.md` 跑完整 5 步:定位报告 → 判 verdict/scope → 蒸馏 root_cause + corrective_rule → `record_feedback` → 决定是否升语义(新 slug 先 `similar_lessons` 召回→`adjudicate` 裁决,已有 slug 直接 `upsert_lesson` 强化)→ 回执。
 
 ## 前置
 - 项目根目录运行;`context/knowledge/` 随 context 自动 gitignore。
-- store API:`autoresearch/learning/feedback_store.py`(`record_feedback / upsert_lesson / lessons_for / render_calibration_block`)。
+- store API:`autoresearch/learning/feedback_store.py`(`record_feedback / upsert_lesson / similar_lessons / adjudicate / lessons_for / render_calibration_block`)。

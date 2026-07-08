@@ -63,13 +63,17 @@ PY
 prompt 规则改动须按 **writing-skills** 测过再上线。
 
 **5. 写经验(语义,自动注回下次)**
-反复出现的诊断 → `upsert_lesson`(同 slug 自动强化):
+反复出现的诊断 → **已有 slug 直接 `upsert_lesson` 强化**;**起新 slug 前先 M2 裁决**(`similar_lessons` 召回 → 判 op → `adjudicate`),防 retro 日复日堆出重复/矛盾条:
 ```bash
 uv run --no-sync python - <<'PY'
 import autoresearch.learning.feedback_store as fs
-fs.upsert_lesson("low_winner_reversal", ("global","*"),
-                 rule="""低获利盘(winner_rate<25)+主力净流入+低动量=反转候选,别因动量低就压在召回线外""",
-                 evidence=["retro 2026-06-19 missed_l1 群体特征","fwd_1_oo +X%"], confidence=0.6)
+cand = dict(slug="low_winner_reversal", scope=("global","*"),
+            rule="""低获利盘(winner_rate<25)+主力净流入+低动量=反转候选,别因动量低就压在召回线外""",
+            evidence=["retro 2026-06-19 missed_l1 群体特征","fwd_1_oo +X%"], confidence=0.6,
+            regimes=["risk_off"])                             # 写新经验标 regime,防翻转后毒害全域
+for s in fs.similar_lessons(cand["rule"], cand["scope"], regimes=cand["regimes"])[:3]:
+    print("  近似:", s["id"], "|", s["rule"][:40])
+fs.adjudicate("ADD", cand)     # 无强相似→ADD;精化→UPDATE(target_id=,保id/MTM);矛盾→DELETE(取代);已表达→NOOP
 PY
 ```
 

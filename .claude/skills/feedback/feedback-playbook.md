@@ -37,16 +37,22 @@ PY
 **5. 决定是否升语义经验(lesson)**
 **可泛化、会反复用** → 升;**纯一次性事实订正** → 只留 feedback、不升。升的话:
 
+- **已知反复教训**(同一 slug 曾升过)→ 直接用**同一稳定 slug** `upsert_lesson`,自动强化(count++/conf↑),跳过下面的裁决。
+- **新洞见**(要起新 slug)→ **先跑 M2 写入裁决**,防和已有条重复/矛盾:`similar_lessons` 结构化召回相似旧条(零 embedding)→ 你判 op → `adjudicate` 执行。
+
 ```bash
 uv run --no-sync python - <<'PY'
 import autoresearch.learning.feedback_store as fs
-lsn = fs.upsert_lesson(
-    "winner_rate_topping",                     # 稳定 slug:同一教训反复反馈会自动强化(count++/conf↑)
-    ("global", "*"),
-    rule="""winner_rate>90=抛压/见顶,非筹码健康;低 winner_rate=有上行空间。""",
-    evidence=["fb_20260619_001", "factor_lab T+1 IC -42bps"],
-    confidence=0.6,
-)
+cand = dict(slug="winner_rate_topping", scope=("global","*"),
+            rule="""winner_rate>90=抛压/见顶,非筹码健康;低 winner_rate=有上行空间。""",
+            evidence=["fb_20260619_001", "factor_lab T+1 IC -42bps"], confidence=0.6)
+
+sim = fs.similar_lessons(cand["rule"], cand["scope"])          # 召回相似旧条(看 rule/id/conf)
+for s in sim[:3]:
+    print("  近似:", s["id"], "|", s["rule"][:40])
+# ↑ 你据此判 op:无强相似→ADD;精化某条→UPDATE(改写并保 id/MTM);与某条矛盾→DELETE(新条取代旧条);已表达→NOOP
+lsn = fs.adjudicate("ADD", cand)                               # target_id=... 传给 UPDATE/DELETE/NOOP
+
 fs.record_feedback(skill="scan-market", scope=("global","*"),
                    report="reports/scan/20260619_1553/summary.md",
                    note="(已升经验)", verdict="wrong_rating",
@@ -54,6 +60,7 @@ fs.record_feedback(skill="scan-market", scope=("global","*"),
 print("lesson:", lsn["id"], "conf", lsn["confidence"], "x", lsn["reinforce_count"])
 PY
 ```
+> 拿不准就用 ADD(新条)——裁决 UPDATE/DELETE 会改/失效旧条,只在**确有**近似/矛盾条时用。裁决全落 changelog 可回滚。
 
 **回执用户**:记了哪条 feedback、是否升成经验(及 slug/confidence)、下次哪个 skill/阶段会自动用上(scan 的 L2/L3 校准块 / 报告骨架)。
 
