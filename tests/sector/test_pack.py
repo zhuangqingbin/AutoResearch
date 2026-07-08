@@ -108,3 +108,13 @@ def test_sector_terrain_md(tmp_path):
         assert f"| {ind} |" in s                                     # 全行业对称覆盖
     assert "| 半导体 | 4 | 3 |" in s                                 # n全市场/入L2
     assert sector_terrain_md(tmp_path / "nope") == ""                # 缺 staging → ''(parity)
+
+
+def test_sector_terrain_top200_only_filters_uncovered_industries(tmp_path):
+    # L2 只覆盖 半导体/白酒(煤炭全无 L2 命中,见 _mk_scan) → top200_only=True 地形裁掉煤炭;
+    # 默认 False 逐字 parity(三行业全出,同 test_sector_terrain_md)
+    d = _mk_scan(tmp_path)
+    on = sector_terrain_md(d, top200_only=True)
+    off = sector_terrain_md(d)
+    assert "| 半导体 |" in on and "| 白酒 |" in on and "| 煤炭 |" not in on
+    assert "| 半导体 |" in off and "| 白酒 |" in off and "| 煤炭 |" in off

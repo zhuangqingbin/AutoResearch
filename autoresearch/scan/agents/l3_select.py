@@ -223,7 +223,7 @@ def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
     if sector_terrain:                      # Phase 3:全行业地形段前置(默认关 = 逐字 parity)
         try:
             from autoresearch.sector.pack import sector_terrain_md
-            terr = sector_terrain_md((root or Path("context/scan")) / date)
+            terr = sector_terrain_md((root or Path("context/scan")) / date, top200_only=True)
             if terr:
                 body = terr + "\n\n" + body
         except Exception:  # noqa: BLE001 — 地形可选,缺 staging 不挡表

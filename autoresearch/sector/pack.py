@@ -165,9 +165,11 @@ def select_briefing_sectors(scan_dir: Path | str, k: int = 6,
 # ───────────────────────── L3 全行业确定性地形(对称覆盖) ─────────────────────────
 
 
-def sector_terrain_md(scan_dir: Path | str, max_rows: int = 40) -> str:
+def sector_terrain_md(scan_dir: Path | str, max_rows: int = 40, top200_only: bool = False) -> str:
     """L3 紧凑表前置的**全行业地形段**:每申万一级一行,全行业对称——防"有 brief 的行业被系统性
-    高看"(design §5.5-4)。数字全出 staging;缺 staging → ''(l3_table_md 默认关 = parity)。"""
+    高看"(design §5.5-4)。数字全出 staging;缺 staging → ''(l3_table_md 默认关 = parity)。
+    top200_only=True:只渲染 L2 top200 出现过的申万一级行业(~110→30-50 行,L3 表最大块瘦身);
+    默认 False = 逐字 parity。"""
     scan_dir = Path(scan_dir)
     l1 = _read_csv(scan_dir / "L1_scored_full.csv")
     if l1 is None or "industry" not in l1.columns:
@@ -175,6 +177,8 @@ def sector_terrain_md(scan_dir: Path | str, max_rows: int = 40) -> str:
     l2 = _read_csv(scan_dir / "L2_gbdt_top200.csv")
     l2n = (l2["industry"].astype(str).value_counts().to_dict()
            if l2 is not None and "industry" in l2.columns else {})
+    if top200_only and l2n:
+        l1 = l1[l1["industry"].astype(str).isin(l2n)]   # 只渲染 top200 覆盖行业(≈110→30-50 行)
     try:
         from autoresearch.common.scoring import healthy_riser_mask
         hm = healthy_riser_mask(l1)
