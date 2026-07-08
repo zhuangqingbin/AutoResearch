@@ -141,7 +141,8 @@ def _delta_filter(df: pd.DataFrame, prev_dir: Path,
 
 def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
                 shuffle_seed: int | None = None, sector_terrain: bool = False,
-                dist_flag: bool = False, reg_flag: bool = False, cat_flag: bool = False) -> str:
+                dist_flag: bool = False, reg_flag: bool = False, cat_flag: bool = False,
+                misread_flag: bool = False) -> str:
     """L3 holistic 选股 subagent 的完整输入表(~200 行紧凑表 + 证据摘要列)。
 
     delta=True:略去「昨判弃 ∧ 今无变化」行 + prev_l3 标记(design: l4-economy §3;
@@ -158,6 +159,8 @@ def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
     cat_flag=True:加 `cat` 列(近 10 日 回购/增持/调研/减持 事件计数徽标,staging
     `L3_catalyst.csv` 在才生效)+ 图例禁则——事件存在性≠方向确认(默认 False = 逐字 parity)。
     spec 2026-07-05 wave §B2。
+    misread_flag=True:加 misread 预警列(低基/背离/套牢,谓词=scoring.l3_misread_flags
+    单一事实源)+图例禁则;默认 False = 逐字 parity。
     """
     df = load_l3_input(date, root=root)
     cols = [*_L3_COLS] + [c for c in ("lhb_n", "has_forecast", "has_express") if c in df.columns]
@@ -206,6 +209,13 @@ def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
                        f"(重新入场条件:Δcomposite>2 或 Δpct60>2 或新 lhb/预告/快报);"
                        f"**今日仍须对下表独立重新比较,prev_l3 列仅供参考、严禁沿用昨日结论**;"
                        f"全量表每 ≤5 个 scan 日至少 1 次_", ""]
+    if misread_flag:
+        from autoresearch.common.scoring import l3_misread_flags
+        df["misread"] = df.apply(l3_misread_flags, axis=1)
+        cols = [*cols, "misread"]
+        header.append(
+            "misread 预警:低基=净利暴增但 ROE 极低(低基数幻觉,勿当真成长);背离=cmf/obv 正但当日主力净流出"
+            "(拉高派发嫌疑);套牢=低获利盘且非多头排列(≠上行空间)。**旗亮仍以对应论点入选者,thesis 必须一句自证非陷阱**。")
     if shuffle_seed is not None:
         df = df.sample(frac=1, random_state=int(shuffle_seed)).reset_index(drop=True)
     table = compact_table(df, cols=cols)
@@ -355,7 +365,7 @@ def prepare_l3_table(date: str, root: Path | None = None, delta: bool = True,
         from autoresearch.scan.agents.l3_news import harvest_l3_news
         harvest_l3_news(date, codes, root=base)
     md = l3_table_md(date, root=base, delta=delta, dist_flag=True, reg_flag=True,
-                     cat_flag=True, sector_terrain=True)
+                     cat_flag=True, sector_terrain=True, misread_flag=True)
     (scan_dir / "_l3_table.md").write_text(md, encoding="utf-8")
     return {"codes": len(codes), "table_bytes": len(md)}
 

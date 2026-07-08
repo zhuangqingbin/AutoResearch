@@ -221,6 +221,22 @@ def _cat_mark(base: Path, code6: str) -> str:
             f"与资金/基本面共振才可作论点支柱)")
 
 
+def _misread_mark(scan_dir, code: str) -> str:
+    """误读三预警徽标(presence-gated:L2 行在才算;never raises,缺了不挡简报)。"""
+    try:
+        import pandas as pd
+        l2 = pd.read_csv(Path(scan_dir) / "L2_gbdt_top200.csv", dtype={"code": str})
+        l2["code"] = l2["code"].str.zfill(6)
+        row = l2[l2["code"] == str(code).zfill(6)]
+        if not len(row):
+            return ""
+        from autoresearch.common.scoring import l3_misread_flags
+        m = l3_misread_flags(row.iloc[0].to_dict())
+        return f"⚠️误读预警: {m} —— 该论点若为 L3 选票理由,P1-P3 优先证伪" if m else ""
+    except Exception:
+        return ""   # 行可选,缺了不挡简报
+
+
 def compose_funnel_brief(code: str, scan_dir: Path | str) -> str:
     """L4 **P0 定向**:从漏斗产物(L1_recall/L2/finalists)拼该票紧凑简报 markdown。
 
@@ -277,6 +293,9 @@ def compose_funnel_brief(code: str, scan_dir: Path | str) -> str:
     pm = _pledge_mark(base, code6)           # 质押旗:确定性预旗(pledge.csv 在才注,presence-gated)
     if pm:
         lines.append(pm)
+    mm = _misread_mark(base, code6)          # 误读预警:低基/背离/套牢(L2 行在才注,presence-gated)
+    if mm:
+        lines.append(mm)
     cm = _cat_mark(base, code6)              # 催化行:三端点事件计数(L3_catalyst.csv 在才注)
     if cm:
         lines.append(cm)

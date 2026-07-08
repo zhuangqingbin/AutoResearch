@@ -233,6 +233,33 @@ def main_net_distortion_mask(frame: pd.DataFrame, ratio_min: float = 0.02,
     return (r > 0) & ((a < 0) | ((r >= ratio_min) & (a.abs() < abs_min_yi)))
 
 
+def l3_misread_flags(row) -> str:
+    """L3 误读三预警旗(07-08 诊断:L4 打脸 L3 的证据 22/31 纯表内可见,三模式确定性可预检)。
+    低基=np_yoy>100∧roe<8(低基数幻觉);背离=cmf/obv 任一>0∧当日主力<0(拉高派发嫌疑);
+    套牢=winner_rate<25∧ma_bull=0(低获利盘≠上行空间)。任一输入缺/NaN → 该旗不亮(不冤枉)。"""
+    import pandas as pd
+
+    def _f(v):
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return None
+        return None if pd.isna(v) else v
+
+    g = row.get if hasattr(row, "get") else (lambda k, d=None: None)
+    flags = []
+    np_yoy, roe = _f(g("np_yoy")), _f(g("roe"))
+    if np_yoy is not None and roe is not None and np_yoy > 100 and roe < 8:
+        flags.append("低基")
+    cmf, obv, main = _f(g("cmf_20")), _f(g("obv_mom_20")), _f(g("main_net_ratio"))
+    if main is not None and main < 0 and ((cmf is not None and cmf > 0) or (obv is not None and obv > 0)):
+        flags.append("背离")
+    wr, ma = _f(g("winner_rate")), _f(g("ma_bull"))
+    if wr is not None and ma is not None and wr < 25 and ma == 0:
+        flags.append("套牢")
+    return "·".join(flags)
+
+
 def pledge_flag_label(ratio, high: float = 40.0, warn: float = 20.0) -> str:
     """股权质押比例判型(**单一事实源**:L4 简报质押旗 = 深核 slim 质押段同一阈值)。
 
