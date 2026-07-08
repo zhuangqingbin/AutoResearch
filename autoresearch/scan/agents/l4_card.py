@@ -454,11 +454,15 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
         ticker = normalize_symbol(code6)            # 6 位码 → .SS/.SZ/.BJ(单一后缀口径)
         tickers.append(ticker)
         prompt = "\n".join([
-            f"# L4 派发 prompt — {code6} {r.get('name', '')}(确定性落稿;编排以此为派发正文)",
+            # 固定标头(逐卡不变,≤300B)——cache 前缀契约(T8):共享块前不得出现逐卡可变内容,
+            # 否则 30 卡并发前缀全断、cache 全 miss。逐卡专属标题移到共享块**之后**。
+            "# L4 派发 prompt(确定性落稿;编排以此为派发正文;先读共享块再读下方逐卡简报)",
             "",
             shared or "_(共享指令稿缺:`_l4_shared_instructions.md` 未落——按 stock-research lite-playbook 执行)_",
             "",
             "---",
+            "",
+            f"## L4 派发 — {code6} {r.get('name', '')}",
             "",
             compose_funnel_brief(code6, scan_dir).rstrip(),
             "",
