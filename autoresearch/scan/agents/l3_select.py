@@ -215,7 +215,7 @@ def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
         cols = [*cols, "misread"]
         header.append(
             "misread 预警:低基=净利暴增但 ROE 极低(低基数幻觉,勿当真成长);背离=cmf/obv 正但当日主力净流出"
-            "(拉高派发嫌疑);套牢=低获利盘且非多头排列(≠上行空间)。**旗亮仍以对应论点入选者,thesis 必须一句自证非陷阱**。")
+            "(拉高派发嫌疑);套牢=低获利盘·非多头排列·60日已涨(反弹撞套牢盘≠上行空间)。**旗亮仍以对应论点入选者,thesis 必须一句自证非陷阱**。")
     if shuffle_seed is not None:
         df = df.sample(frac=1, random_state=int(shuffle_seed)).reset_index(drop=True)
     table = compact_table(df, cols=cols)

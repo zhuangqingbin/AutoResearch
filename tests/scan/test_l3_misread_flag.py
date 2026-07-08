@@ -28,12 +28,18 @@ def test_flow_divergence_flag():
 
 
 def test_trapped_flag():
-    assert "套牢" in l3_misread_flags(_row(winner_rate=16.0, ma_bull=0.0))
-    assert "套牢" not in l3_misread_flags(_row(winner_rate=16.0, ma_bull=1.0))  # 多头低 winner=真空间
+    # 套牢 = 低获利盘 ∧ 非多头排列 ∧ 60日已涨(=反弹正撞进套牢盘,上行被压)。
+    # 07-08 校准:加 pct_60d>0——risk_off 深跌市 winner<25∧ma_bull=0 覆盖 ~90%(179/200),
+    # 是 wallpaper 非信号;一路下跌的深跌股可见地跌、无人误读为「上行空间」,不属该误读。
+    assert "套牢" in l3_misread_flags(_row(winner_rate=16.0, ma_bull=0.0, pct_60d=10.0))
+    assert "套牢" not in l3_misread_flags(_row(winner_rate=16.0, ma_bull=0.0, pct_60d=-30.0))  # 一路下跌≠套牢误读
+    assert "套牢" not in l3_misread_flags(_row(winner_rate=16.0, ma_bull=1.0, pct_60d=10.0))   # 多头低 winner=真空间
+    assert "套牢" not in l3_misread_flags(_row(winner_rate=16.0, ma_bull=0.0))                 # pct_60d 缺 → 不冤枉
 
 
 def test_nan_never_flags_never_raises():
     assert l3_misread_flags(_row(np_yoy=math.nan, roe=math.nan)) == ""
+    assert l3_misread_flags(_row(winner_rate=16.0, ma_bull=0.0, pct_60d=math.nan)) == ""  # 新输入 NaN 不亮
     assert l3_misread_flags({"np_yoy": "x"}) == ""   # 缺列/脏值不抛
 
 

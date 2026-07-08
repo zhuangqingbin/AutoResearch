@@ -75,7 +75,7 @@ L2后与L3证据取数**并发**——`sector.reuse <date> --apply`(TTL≤5日�
 `harvest_l3_evidence`(龙虎榜/预告/快报)+`harvest_l3_news`(公告情感)补证据→`l3_table_md`压紧凑表→**一个Opus-high通看全表、比较着选~30**(5维rubric:channel共振/资金/基本面/情感/脆弱)→`L3_judged_full.csv`→`merge_l3_finalists_v2`(趋势配额安全网)→`finalists.csv`。校准注入:因子方向经验校准块+策略师地形段+行业备忘录块。**比较式>孤立逐只打分**。
 
 - **token经济与预算**:`delta=True`略去无变化票。**L4预算**`menu.l4_budget`(五旗:落刀>60%/相对落刀>40%且>2×全市场/健康涨≤2/risk_off/0买连败≥3→权重1旗=22、≥2=15)控派发数。
-- **推荐常开三旗**(presence-gated,默认关=parity):**主力失真**`dist_flag=True`(反号/微量;命中18/30被L4辟谣);**监管**`reg_flag=True`(近10日立案/问询/处罚等,未实跑);**误读三预警**`misread_flag=True`(`misread`列:低基〔np_yoy>100∧roe<8〕/背离〔cmf_20或obv_mom_20正但main_net_ratio<0〕/套牢〔winner_rate<25∧ma_bull=0〕,谓词=`scoring.l3_misread_flags`;L4简报同步注旗;l3-rank硬约束E强制自证;回放命中12/20)。
+- **推荐常开三旗**(presence-gated,默认关=parity):**主力失真**`dist_flag=True`(反号/微量;命中18/30被L4辟谣);**监管**`reg_flag=True`(近10日立案/问询/处罚等,未实跑);**误读三预警**`misread_flag=True`(`misread`列:低基〔np_yoy>100∧roe<8〕/背离〔cmf_20或obv_mom_20正但main_net_ratio<0〕/套牢〔winner_rate<25∧ma_bull=0∧pct_60d>0=反弹撞套牢盘〕,谓词=`scoring.l3_misread_flags`;L4简报同步注旗;l3-rank硬约束E强制自证;回放命中12/20)。
 - **周频稳定性抽检**:`shuffle_seed` 乱序再跑 audit agent,overlap<0.70 → proposal。**错杀验尸**(retro侧):L2-keep∧非finalist∧T+5赢家 join 红队理由写 lesson;实证:错杀=0——**病在召回线,别冤枉判断层**。
 
 ## L4 · 研究(一只 = 一个 Opus subagent,渐进深度 + 早停)
