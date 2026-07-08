@@ -33,7 +33,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 - **召回权重**:`weights.json`(`factor_lab calibrate` 产;命令见常见坑节)。**regime 分桶权重**(`--regime-aware` 用):`factor_lab` `harvest` 后 python 里 `fl.calibrate_regimes()` → `weights.json` 增 `regimes` 块;重标定一律走 `retro.recalibrate_and_log`(快照+changelog 可回滚)。L2 不用模型(见铁律 / STAGES.md 核心世界观节)。
 - **闭环(开跑前补跑复盘)**:先 `uv run --no-sync python -m autoresearch.learning.retro pending`;列出未复盘日 → 先用 **scan-retro** 补上再开始今天的扫描。连续 0 买时看对照读数:`uv run --no-sync python -m autoresearch.learning.zero_buy_ledger`。
 - **一致预期积累(每日 1 拉)**:`uv run --no-sync python -m autoresearch.research.consensus pull <date>`(tushare `report_rc` 限频 **1次/小时**,历史回补不可行);`status` 看进度。**验证门:积累 ≥60 日后 factor_lab 验 IC(两半稳+符号一致)才谈入 composite**。
-- **(可选)token 真计量与 cache 审计**:跑扫描的 Claude Code 会话从带 OTEL env 的 shell 启动(五件 env 见 `STAGES.md`『真实计量』节),跑完 `uv run --no-sync python -m autoresearch.trace.telemetry <原始导出> --out reports/scan/<run>/token_telemetry.md`。生产派发路径零改动,仪器旁路。
+- **(可选)token 真计量与 cache 审计**:跑扫描的 Claude Code 会话从带 OTEL env 的 shell 启动(五件 env 见 `STAGES.md`『真实计量与跨层校准』节),跑完 `uv run --no-sync python -m autoresearch.trace.telemetry <原始导出> --out reports/scan/<run>/token_telemetry.md`。生产派发路径零改动,仪器旁路。
 - 用户对报告的反馈用 **feedback** skill 记。
 
 ## 流程(6 段)
@@ -68,7 +68,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
    uv run --no-sync python -m autoresearch.sector.reuse <date> --apply
    uv run --no-sync python -m autoresearch.sector.pack <date>
    ```
-   → 每行业一个 `Agent(subagent_type='sector-brief')`(机制/两段契约见 STAGES.md 旁路节)。
+   → 每行业一个 `Agent(subagent_type='sector-brief')`(机制/两段契约见 STAGES.md『旁路 · 行业 brief』节)。
 3. **L3 精排**(holistic 单 agent,200→~30;workflow L3 相位):`harvest_l3_evidence`+`harvest_l3_news` 补真证据 → `l3_table_md(date, delta=True, sector_terrain=True, dist_flag=True, reg_flag=True, cat_flag=True, misread_flag=True)` 压紧凑表 → 一个 `Agent(subagent_type='l3-rank')` 通看全表、比较着选 ~30 → `uv run --no-sync python -m autoresearch.scan.menu <date>` 拿 L4 预算 → `merge_l3_finalists_v2(judged, target=预算)` → `finalists.csv`(rubric 维度/推荐旗/token 经济见 STAGES.md L3 节)。
 4. **L4 研究**(token 大头,一只=一个 Opus subagent;workflow L4 相位)——helper 在 `autoresearch.scan.agents.l4_card`:派发前四道确定性闸(质押旗/触发直通车/TTL复用+滞回/席位·催化·日历生产者先行,机制见 STAGES.md L4 节)→ 落稿:
    ```bash
