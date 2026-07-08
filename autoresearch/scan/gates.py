@@ -3,7 +3,7 @@
 GATE1 = prelude 后数据体检(L2 非空 + 代码 6 位)+ 返回 sentinel/budget;
 GATE2 = finalists 定稿后(代码 6 位 + count≤budget)+ 返回名单;
 GATE4 = assemble 后 self_review 硬门(gate_fires.csv 无 severity=fail)。
-GATE3(slim>10KB / 无 .SH)由 l4_card harvest-slim 自身承担。
+GATE3(slim>8KB(surface) / 无 .SH)由 l4_card harvest-slim 自身承担。
 """
 from __future__ import annotations
 

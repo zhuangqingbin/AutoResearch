@@ -449,7 +449,8 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
             compose_funnel_brief(code6, scan_dir).rstrip(),
             "",
             "---",
-            f"- slim 数据:`context/{ticker}_{date}_slim.md`(P1+ 逐段读;**>10KB 才可信**,≈4.8KB=NO_DATA 须重拉)",
+            f"- slim 数据:`context/{ticker}_{date}_slim.md`(P1–P3 表面块;**>8KB 才可信**,≈4.8KB=NO_DATA 须重拉)",
+            f"- deep 深核:`context/{ticker}_{date}_slim_deep.md`(**survivor 进 P4 才 Read**;早停卡不读;缺文件=陷阱维标「未核」)",
             f"- 决策卡写往:`context/scan/{date}/details/{code6}.md`",
             ""])
         (scan_dir / f"_l4_prompt_{code6}.md").write_text(prompt, encoding="utf-8")
@@ -674,12 +675,13 @@ def _default_harvest_slim(ticker: str, date: str, ctx_root: Path) -> Path:
     return ctx_root / f"{ticker}_{date}_slim.md"
 
 
-def harvest_slim_batch(date: str, root: Path | None = None, min_bytes: int = 10_240,
+def harvest_slim_batch(date: str, root: Path | None = None, min_bytes: int = 8_192,
                        retries: int = 1, harvest_fn=None, ctx_root: Path | None = None) -> dict:
     """按 _harvest_list.txt 批量 harvest slim,**失败响亮**(修 603799 静默失败坑 = GATE 3)。
 
-    07-06 教训:slim >10KB 才可信。offender 重试 `retries` 次仍小/异常/含 .SH → 记失败。
-    harvest_fn(ticker, date)->Path 可注入(测试用),默认 shell 到 analyze.harvest --slim。
+    07-06 教训:slim >8KB 才可信(表面块口径;深核块在 *_slim_deep.md)。offender 重试
+    `retries` 次仍小/异常/含 .SH → 记失败。harvest_fn(ticker, date)->Path 可注入(测试用),
+    默认 shell 到 analyze.harvest --slim。
     """
     base = Path(root) if root else Path("context/scan")
     scan_dir = base / date

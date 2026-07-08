@@ -97,8 +97,8 @@ await bash(
   `${R} autoresearch.scan.agents.l4_card prompts ${date}`, 'l4-prep')
 // GATE3:批量 slim 失败响亮(harvest-slim 打印 JSON + 非零退出)
 const g3 = await gate('GATE3', `${R} autoresearch.scan.agents.l4_card harvest-slim ${date}`, OK)
-if (!g3 || !g3.ok) throw new Error(`GATE3 失败(slim<10KB 或 .SH):${g3 ? g3.reason : 'no return'}`)
-log('GATE3 ✓ 全 slim >10KB')
+if (!g3 || !g3.ok) throw new Error(`GATE3 失败(slim<8KB 或 .SH):${g3 ? g3.reason : 'no return'}`)
+log('GATE3 ✓ 全 slim >8KB(surface)')
 // 派发计划(确定性):按 _l4_prompt_<code>.md 是否存在分 dispatch(需新派)/ reused(TTL复用
 // 或 carryover 已写 details/<code>.md,不再派 subagent,直接解析该卡评级)。修复:此前对
 // 全部 finalists 无条件派卡,复用码从未写过 prompt 文件,等于空派 Opus,抵消复用省下的成本。

@@ -44,6 +44,19 @@ def test_harvest_slim_all_ok(tmp_path):
     assert res["ok"] is True and res["failures"] == []
 
 
+def test_harvest_slim_9kb_passes_new_floor(tmp_path):
+    """地板 10K→8K(T1 二段式):9KB 表面块在旧地板(10_240B)下会判失败,新地板(8_192B)下应通过。"""
+    _setup(tmp_path, ["600584.SS"])
+
+    def fake(t, dt):
+        p = tmp_path / f"{t}_{dt}_slim.md"
+        p.write_text("x" * 9 * 1024, encoding="utf-8")
+        return p
+
+    res = harvest_slim_batch("2026-07-07", root=tmp_path, retries=0, harvest_fn=fake)
+    assert res["ok"] is True and res["failures"] == []
+
+
 def test_harvest_slim_catches_sh_suffix(tmp_path):
     _setup(tmp_path, ["600584.SH"])                        # 归一漏网 → 直接判失败
     res = harvest_slim_batch("2026-07-07", root=tmp_path, retries=0,
