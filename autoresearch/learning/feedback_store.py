@@ -124,7 +124,7 @@ def upsert_lesson(slug: str, scope, rule: str, evidence: list[str],
     if idx is None:
         rec = {"id": lid, "scope": _norm_scope(scope), "rule": rule, "evidence": list(evidence),
                "confidence": round(float(confidence), 2), "created": day, "last_reinforced": day,
-               "reinforce_count": 1, "status": "active"}
+               "reinforce_count": 1, "status": "active", "valid_from": day}   # M3·失效记账起点
         if guard is not None:
             rec["guard"] = guard
         if regimes:
@@ -162,6 +162,7 @@ def retire_lesson(slug: str, day: str | None = None) -> bool:
         if r["id"] == lid:
             r["status"] = "retired"
             r["retired"] = day
+            r["invalid_at"] = day        # M3·失效时点(退休不删,供 lessons_as_of 时点重放)
             hit = True
     if hit:
         _write_jsonl(_LESSONS, recs)
@@ -238,6 +239,26 @@ def lessons_for(query_scopes, regime: str | None = None) -> list[dict]:
                   reverse=True)
 
 
+def lessons_as_of(day: str, query_scopes=None) -> list[dict]:
+    """M3·时点信念集:返回在 `day` 当天『有效』的经验(valid_from≤day<invalid_at),**忽略当前 status**。
+
+    供 X2 回放/反事实:重放『若当日仍信某条已退休 lesson 会怎样』。日期为 ISO(YYYY-MM-DD)按字典序比较。
+    老记录缺 valid_from/invalid_at → 用 created/retired 兜底;query_scopes 给定则再按范围过滤(同 lessons_for)。
+    """
+    out: list[dict] = []
+    for r in _read_jsonl(_LESSONS):
+        vf = r.get("valid_from") or r.get("created") or ""
+        iv = r.get("invalid_at") or r.get("retired")       # None = 至今有效
+        if vf and vf > day:                                 # 尚未生效
+            continue
+        if iv is not None and iv <= day:                    # 已失效(失效当日起不再信)
+            continue
+        if query_scopes is not None and not scope_match(r.get("scope", {}), query_scopes):
+            continue
+        out.append(r)
+    return out
+
+
 def recent_feedback_for(query_scopes, k: int = 3,
                         verdicts: tuple[str, ...] = ("wrong_rating", "false_positive", "missed"),
                         only_open: bool = True) -> list[dict]:
@@ -262,6 +283,106 @@ def promotion_candidates(min_count: int = 3, min_conf: float = 0.7) -> list[dict
             if r.get("status") == "active" and not r.get("guard")
             and int(r.get("reinforce_count", 1)) >= min_count
             and float(r.get("confidence", 0)) >= min_conf]
+
+
+# ───────────────────────── M2 · 写入四操作裁决 ─────────────────────────
+# 落 lesson 前先结构化召回相似旧条(scope/regime/文本 三信号,**零 embedding**)→ Claude 判
+# op ∈ {ADD,UPDATE,DELETE,NOOP} → adjudicate 确定性执行。防经验库长大后重复/矛盾条无人裁决。
+
+
+def _bigrams(s: str) -> set[str]:
+    """字符二元组集合(中文无分词依赖):去标点/空白后取相邻 2-gram。"""
+    t = "".join(ch for ch in str(s) if ch.isalnum())      # CJK 亦 isalnum → 保留
+    if len(t) < 2:
+        return {t} if t else set()
+    return {t[i:i + 2] for i in range(len(t) - 1)}
+
+
+def _jaccard(a: set, b: set) -> float:
+    u = a | b
+    return len(a & b) / len(u) if u else 0.0
+
+
+def _scope_sim(sc_a, sc_b) -> float:
+    """scope 相似:全等 1.0;任一 global 0.4;同 kind 不同 value 0.5;否则 0。"""
+    a, b = _norm_scope(sc_a), _norm_scope(sc_b)
+    if a == b:
+        return 1.0
+    if a.get("kind") == "global" or b.get("kind") == "global":
+        return 0.4
+    return 0.5 if a.get("kind") == b.get("kind") else 0.0
+
+
+def similar_lessons(rule: str, scope, regimes: list[str] | None = None, k: int = 5) -> list[dict]:
+    """结构化召回 top-k active 相似经验(供 Claude 判 op)。score = 0.5·文本 + 0.3·scope + 0.2·regime。
+
+    regime:任一方为空(=全 regime)视作匹配(1.0),否则 Jaccard。**不用向量**,纯确定性可复现。
+    """
+    cand_bi = _bigrams(rule)
+    ra = set(regimes or [])
+    scored: list[tuple[float, dict]] = []
+    for r in _read_jsonl(_LESSONS):
+        if r.get("status") != "active":
+            continue
+        txt = _jaccard(cand_bi, _bigrams(r.get("rule", "")))
+        scp = _scope_sim(scope, r.get("scope", {}))
+        rb = set(r.get("regimes") or [])
+        reg = 1.0 if (not ra or not rb) else _jaccard(ra, rb)
+        scored.append((0.5 * txt + 0.3 * scp + 0.2 * reg, r))
+    scored.sort(key=lambda t: (t[0], t[1].get("last_reinforced", "")), reverse=True)
+    return [r for _, r in scored[:k]]
+
+
+def _supersede(old_id: str, new_id: str, day: str) -> None:
+    """DELETE 用:旧条失效(记 invalid_at + superseded_by),不物理删(退休不删)。"""
+    recs = _read_jsonl(_LESSONS)
+    for r in recs:
+        if r["id"] == old_id:
+            r["status"] = "retired"
+            r["retired"] = day
+            r["invalid_at"] = day
+            r["superseded_by"] = new_id
+    _write_jsonl(_LESSONS, recs)
+
+
+def adjudicate(op: str, candidate: dict, target_id: str | None = None, day: str | None = None) -> dict | None:
+    """确定性执行 Claude 判定的写入 op(判断由 Claude,存取确定性)。candidate={slug,scope,rule,evidence,...}。
+
+    ADD    → 新经验(candidate 独立入库)。
+    UPDATE → 折进 target(改写 rule 文本 + evidence 并集 + 强化++),**保 target 的 id/MTM 账**,candidate slug 不入库。
+    DELETE → 语义『取代』:candidate 作为新真值入库,target 失效并 superseded_by=新条(退休不删)。
+    NOOP   → 重复,不动库。
+    每次裁决落 changelog(kind=lesson_adjudicate)可回滚/审计。
+    """
+    op = op.upper()
+    day = day or _today()
+    if op == "ADD":
+        rec = upsert_lesson(candidate["slug"], candidate["scope"], candidate["rule"],
+                            candidate.get("evidence", []), confidence=candidate.get("confidence", 0.6),
+                            day=day, regimes=candidate.get("regimes"))
+    elif op == "NOOP":
+        rec = next((r for r in _read_jsonl(_LESSONS) if r["id"] == target_id), None) if target_id else None
+    elif op == "UPDATE":
+        if not target_id:
+            raise ValueError("UPDATE 需 target_id")
+        tgt = next((r for r in _read_jsonl(_LESSONS) if r["id"] == target_id), None)
+        if tgt is None:
+            raise ValueError(f"UPDATE target 不存在: {target_id}")
+        rec = upsert_lesson(target_id, tgt.get("scope", candidate["scope"]), candidate["rule"],
+                            candidate.get("evidence", []), day=day)   # 按 id 折入:改写 rule+并集+强化,保 MTM
+    elif op == "DELETE":
+        if not target_id:
+            raise ValueError("DELETE 需 target_id")
+        rec = upsert_lesson(candidate["slug"], candidate["scope"], candidate["rule"],
+                            candidate.get("evidence", []), confidence=candidate.get("confidence", 0.6),
+                            day=day, regimes=candidate.get("regimes"))
+        _supersede(target_id, rec["id"], day)
+    else:
+        raise ValueError(f"未知 op: {op}(仅 ADD/UPDATE/DELETE/NOOP)")
+    _append_jsonl(_CHANGELOG, {"id": f"adj_{_now_ts().replace(':', '').replace('-', '')}",
+                               "ts": _now_ts(), "kind": "lesson_adjudicate", "op": op,
+                               "target_id": target_id, "result_id": rec["id"] if rec else None, "day": day})
+    return rec
 
 
 # ───────────────────────── 建议 + 审计 ─────────────────────────
@@ -441,6 +562,7 @@ def decay_lessons(today: str | None = None, stale_days: int = 30, step: float = 
             if r["confidence"] < min_conf:
                 r["status"] = "retired"
                 r["retired"] = today
+                r["invalid_at"] = today       # M3·衰减退休同记失效时点
             changed.append(r["id"])
     if changed:
         _write_jsonl(_LESSONS, recs)
