@@ -33,6 +33,7 @@ PY
 - **分离消息脉冲**:涨停/一字/停复牌复牌/巨量异动驱动的赢家 ≠ 选股失败 → 标 `news_pop`,**排除出重标定样本与"系统性漏判"结论**(不可预测,别拿去惩罚打分)。
 - **T+5 盲区节(swing 口径)**:与 T+1 节并排读——L3/L4 猎的是 swing,若 T+5 missed_l1 持续显著多于 T+1,是 regime 块 horizon 之争(pr_20260702_001)的裁决证据。
 - **L3 错杀验尸节**:错杀群体的 `risk` 文本共性 = L3 系统性偏见候选(如反转市对"获利盘满"的过度恐惧);反复出现 → 第 5 步写 lesson(自动注回 L3 校准块)。**错杀=0 且 T+5 missed_l1 很大 → 病在召回线不在 L3,别冤枉判断层。**
+- **同日配对节(M1·ExpeL 控制变量)**:读 `context/scan/<D>/retro/_retro_pairs.csv`(成熟日才有)。每行 = **同一天**的一对:`fail`(评级最高档但 T+5 跌)vs `win`(同日被门拦/漏召回但 T+5 涨),同 industry 最近邻优先(`matched_on`)。同日 = regime/地形/注入 lessons/漏斗参数全恒定 → diff 只剩标的特征与判断,`d_*` 因子差(fail − win:如 `d_winner_rate>0` = 我们买的获利盘更满、`d_momentum>0` = 追了动量)**直接指向判断偏差**。把反复出现的差蒸馏成 lesson candidate → 第 5 步走 M2 `adjudicate` 落库。0 买日也有(fail 侧用当日最高评级档代理),别因没买单就跳过。
 - **floor 自然实验节**:救回组 ≈ merit 组 → floor 免费维持;救回组持续显著弱于被挤掉组 → 第 4 步提 floor 参数复审建议(人批)。
 - **经验 MTM 节**:带 guard 的经验已被机判自动记账(support/refute + confidence 机械升降);**无 guard 的经验由你逐条判**——今天的归因数据支持还是打脸这条 rule?`fs.mtm_update(id, 'support'|'refute', day)` 记账,拿不准就跳过(别硬判)。refute 达阈会自动出"摘 guard/退休"提名(人批)。**写新经验时标 regime**:`upsert_lesson(..., regimes=['risk_off'])`——regime 条件真理别让它在翻转后毒害全域。
 - **门审计节**:被拦票的 ex<0 = 拦对;跨日看 `uv run --no-sync python -m autoresearch.learning.gate_ledger`(→ `reports/learning/gate_ledger.md`)。某门持续 ex>0 且样本 ≥5 → 第 4 步提松阈/退役建议。**门也要 mark-to-market,别让它无问责地累积成保守棘轮。**

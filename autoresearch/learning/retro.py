@@ -22,9 +22,13 @@ from pathlib import Path
 
 import pandas as pd
 
-from autoresearch.agents.utils.rating import parse_rating
+from autoresearch.agents.utils.rating import RATINGS_5_TIER, parse_rating
 
 _BUY = ("Overweight", "Buy")
+_RATING_RANK = {r: i for i, r in enumerate(RATINGS_5_TIER)}   # Buy0<OW1<Hold2<UW3<Sell4(小=看多)
+_PAIR_DIFF_COLS = [("d_composite", "composite"), ("d_momentum", "score_momentum"),
+                   ("d_main_net", "main_net_ratio"), ("d_winner_rate", "winner_rate"),
+                   ("d_pct60", "pct_60d")]
 
 
 # ───────────────────────── 纯函数:分桶 + 阶段统计(可离线自测) ─────────────────────────
@@ -159,6 +163,65 @@ def l3_miss_autopsy(attr: pd.DataFrame, l2df: pd.DataFrame, finalists: pd.DataFr
     out = miss.merge(j, on="code", how="inner", suffixes=("", "_j"))
     out = out.sort_values("fwd_5_oc", ascending=False).head(top_n)
     return out[[c for c in cols if c in out.columns]].reset_index(drop=True)
+
+
+def build_retro_pairs(attr: pd.DataFrame, max_pairs: int = 20) -> pd.DataFrame:
+    """M1·同日配对蒸馏:构造 ExpeL 式 fail/success 对(控制变量=同日 → regime/地形/漏斗参数恒定)。
+
+    fail 侧 = 评级最高档但 T+5 跌(有 bought=OW/Buy 则用之;**0 买日**退化到当日最高评级档的下跌者);
+    success 侧 = 同日被门拦/漏召回(bucket_5 ∈ missed_l0/l1)但 T+5 涨(winner_5)。
+    贪心配对:worst-fail 先,同 industry 最近邻优先(matched_on=industry),无则放宽全局(=global),success 各用一次。
+    输出每对带因子差(fail − success),diff 只剩标的特征与判断 → 喂 Claude 蒸馏,走 M2 `adjudicate` 落库。
+    fwd_5 未成熟 / 缺 fail 或 success 侧 → 返回空表(优雅,retro 未成熟日不产)。
+    """
+    empty = pd.DataFrame()
+    if attr is None or attr.empty or "fwd_5_oc" not in attr.columns:
+        return empty
+    a = attr.copy()
+    a["_fwd5"] = pd.to_numeric(a["fwd_5_oc"], errors="coerce")
+    if a["_fwd5"].notna().sum() == 0:                        # fwd_5 未成熟
+        return empty
+    # fail 侧只在**真被 L4 评级过**的票里选(rating ∈ 五档);未评级 universe 票即便暴跌也非判断失败
+    rated = a[a.get("rating", pd.Series(dtype=str)).astype(str).isin(set(RATINGS_5_TIER))] \
+        if "rating" in a.columns else a.iloc[0:0]
+    rated = rated.copy()
+    if not rated.empty:
+        rated["_rank"] = rated["rating"].map(_RATING_RANK)
+    # bought(OW/Buy)优先;0 买日退化到当日最高评级档(_rank 最小)present
+    bought = rated[rated["rating"].isin(_BUY)] if not rated.empty else rated
+    fail_pool = bought if not bought.empty else (
+        rated[rated["_rank"] == rated["_rank"].min()] if not rated.empty else rated)
+    fails = fail_pool[fail_pool["_fwd5"] < 0].sort_values("_fwd5")     # 跌得最狠先配
+
+    # success 侧:同日被门拦/漏召回但 T+5 涨
+    miss = a.get("bucket_5", "").isin(["missed_l0", "missed_l1"]) if "bucket_5" in a.columns else False
+    win = a.get("winner_5", False).fillna(False).astype(bool) if "winner_5" in a.columns else False
+    succ = a[miss & win].sort_values("_fwd5", ascending=False)
+    if fails.empty or succ.empty:
+        return empty
+
+    used: set[str] = set()
+    rows: list[dict] = []
+    for _, f in fails.iterrows():
+        if len(rows) >= max_pairs:
+            break
+        pool = succ[~succ["code"].isin(used)]
+        if pool.empty:
+            break
+        same = pool[pool.get("industry") == f.get("industry")]
+        w = same.iloc[0] if not same.empty else pool.iloc[0]
+        used.add(w["code"])
+        rec = {"fail_code": f["code"], "fail_name": f.get("name"), "fail_rating": f.get("rating"),
+               "fail_fwd5": round(float(f["_fwd5"]), 4), "win_code": w["code"], "win_name": w.get("name"),
+               "win_bucket5": w.get("bucket_5"), "win_fwd5": round(float(w["_fwd5"]), 4),
+               "industry": f.get("industry"),
+               "matched_on": "industry" if (not same.empty) else "global"}
+        for dcol, src in _PAIR_DIFF_COLS:                    # 因子差 = fail − success(控制变量对比)
+            if src in a.columns:
+                fv, wv = pd.to_numeric(pd.Series([f.get(src), w.get(src)]), errors="coerce")
+                rec[dcol] = round(float(fv - wv), 4) if pd.notna(fv) and pd.notna(wv) else None
+        rows.append(rec)
+    return pd.DataFrame(rows)
 
 
 _GUARD_OPS = {">": lambda s, t: s > t, ">=": lambda s, t: s >= t, "<": lambda s, t: s < t,
@@ -391,6 +454,9 @@ def attribute(date: str, scan_root: Path | None = None, report_root: Path | None
     outdir = sdir / "retro"
     outdir.mkdir(parents=True, exist_ok=True)
     attr[[c for c in _KEEP if c in attr.columns]].to_csv(outdir / "attribution.csv", index=False)
+    pairs = build_retro_pairs(attr)                  # M1·同日 fail/success 对(成熟日才非空)
+    if not pairs.empty:                              # presence-gated:未成熟日不落文件
+        pairs.to_csv(outdir / "_retro_pairs.csv", index=False)
     return attr
 
 
