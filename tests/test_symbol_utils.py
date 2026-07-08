@@ -8,6 +8,7 @@ from autoresearch.dataflows.symbol_utils import (
     NoMarketDataError,
     is_yahoo_safe,
     normalize_symbol,
+    to_ts_code,
 )
 
 
@@ -75,6 +76,42 @@ class TestNormalizeSymbol(unittest.TestCase):
 
     def test_empty_input_passthrough(self):
         self.assertEqual(normalize_symbol(""), "")
+
+
+@pytest.mark.unit
+class TestToTsCode(unittest.TestCase):
+    """A股码 → tushare ts_code 的单一事实源(裸码/后缀双兼容)。"""
+
+    def test_bare_codes_keyed_on_leading_digit(self):
+        self.assertEqual(to_ts_code("600519"), "600519.SH")   # 上交所主板
+        self.assertEqual(to_ts_code("688981"), "688981.SH")   # 科创板
+        self.assertEqual(to_ts_code("000001"), "000001.SZ")   # 深市主板
+        self.assertEqual(to_ts_code("300750"), "300750.SZ")   # 创业板
+        self.assertEqual(to_ts_code("830799"), "830799.BJ")   # 北交所 8xx
+        self.assertEqual(to_ts_code("430047"), "430047.BJ")   # 北交所 4xx
+
+    def test_bare_92_series_is_beijing_not_shanghai(self):
+        # 920000-929999 是北交所新段,首位 "9" 不得误判上交所 B 股
+        self.assertEqual(to_ts_code("920000"), "920000.BJ")
+        self.assertEqual(to_ts_code("920981"), "920981.BJ")
+
+    def test_yfinance_suffix_remaps_ss_to_sh(self):
+        self.assertEqual(to_ts_code("600519.SS"), "600519.SH")
+        self.assertEqual(to_ts_code("000001.SZ"), "000001.SZ")
+        self.assertEqual(to_ts_code("830799.BJ"), "830799.BJ")
+
+    def test_tushare_suffix_already_canonical(self):
+        self.assertEqual(to_ts_code("600519.SH"), "600519.SH")
+        self.assertEqual(to_ts_code("688325.sh"), "688325.SH")  # 大小写不敏感
+        self.assertEqual(to_ts_code(" 600519.SH "), "600519.SH")  # 去空白
+
+    def test_short_bare_code_zfills_to_six(self):
+        self.assertEqual(to_ts_code("1"), "000001.SZ")
+
+    def test_junk_falls_to_sz_never_raises(self):
+        # 非 A股形态到不了这里(harvest 有 _is_ashare 门);按深市兜底让 tushare
+        # 自然返回空,与 uzi_lenses 历史行为一致,不引入新失败模式。
+        self.assertEqual(to_ts_code("ABC"), "000ABC.SZ")
 
 
 @pytest.mark.unit

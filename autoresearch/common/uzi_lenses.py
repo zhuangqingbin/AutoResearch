@@ -17,13 +17,12 @@ from __future__ import annotations
 import sys
 from datetime import datetime, timedelta
 
+from autoresearch.dataflows.symbol_utils import to_ts_code
+
 
 def _tscode(code: str) -> str:
-    """6 位代码 → tushare ts_code(.SH/.SZ/.BJ)。"""
-    c = str(code).split(".")[0].zfill(6)
-    if c[:2] == "92" or c[0] in ("4", "8"):
-        return f"{c}.BJ"
-    return f"{c}.SH" if c[0] in ("6", "9") else f"{c}.SZ"
+    """6 位代码 → tushare ts_code(.SH/.SZ/.BJ);委托 symbol_utils.to_ts_code。"""
+    return to_ts_code(code)
 
 
 # ───────────────────────── 纯函数:DCF + 杀猪盘信号(可自测) ─────────────────────────

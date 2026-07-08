@@ -154,6 +154,26 @@ def normalize_symbol(raw: str) -> str:
     return canonical
 
 
+def to_ts_code(sym: str) -> str:
+    """A股任意写法 → tushare ts_code(``.SH``/``.SZ``/``.BJ``)。单一事实源。
+
+    兼容裸 6 位码(首位判交易所,92xxxx 北交所优先于 9xx 上交所 B 股)与已带
+    后缀的 yfinance(``.SS``)/tushare(``.SH``)写法;短裸码 zfill 到 6 位。
+    非 A股形态不 raise,按深市兜底(tushare 对无效码自然返回空)。
+    """
+    s = str(sym).strip().upper()
+    code, _, suf = s.partition(".")
+    code = code.zfill(6)
+    if suf in ("SS", "SH"):
+        return f"{code}.SH"
+    if suf in ("SZ", "BJ"):
+        return f"{code}.{suf}"
+    if code[:2] == "92":
+        return f"{code}.BJ"
+    ex = _CN_EXCHANGE_BY_LEAD.get(code[0], "SZ")
+    return f"{code}.{'SH' if ex == 'SS' else ex}"
+
+
 def is_yahoo_safe(symbol: str) -> bool:
     """True when ``symbol`` only contains characters Yahoo symbols use."""
     return bool(symbol) and _YAHOO_SAFE.fullmatch(symbol) is not None

@@ -18,13 +18,12 @@ import pandas as pd
 
 # 复用 tushare_source 的句柄/重试/日期解析(同一 token、同一防御层)
 from autoresearch.data.tushare_source import _pro, _ts_call, resolve_momentum_dates
+from autoresearch.dataflows.symbol_utils import to_ts_code
 
 
 def _tscode(sym: str) -> str:
-    """normalize_symbol 的 .SS/.SZ/.BJ → tushare 的 .SH/.SZ/.BJ。"""
-    code = sym.split(".")[0]
-    suf = {".SS": "SH", ".SZ": "SZ", ".BJ": "BJ"}.get(sym[-3:].upper(), "SH")
-    return f"{code}.{suf}"
+    """A股码(裸 6 位或带后缀)→ tushare ts_code;委托 symbol_utils.to_ts_code。"""
+    return to_ts_code(sym)
 
 
 def _num(s):
