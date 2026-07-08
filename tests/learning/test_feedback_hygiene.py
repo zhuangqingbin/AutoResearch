@@ -48,7 +48,9 @@ def test_decay_autoretire_sets_invalid_at():
 def test_lessons_as_of_temporal_window():
     fs.upsert_lesson("x", ("global", "*"), rule="r", evidence=[], day="2026-06-01")
     fs.retire_lesson("x", day="2026-06-20")
-    ids = lambda d: {h["id"] for h in fs.lessons_as_of(d)}
+
+    def ids(d):
+        return {h["id"] for h in fs.lessons_as_of(d)}
     assert ids("2026-06-10") == {"ls_x"}      # 窗口内(valid_from≤d<invalid_at)
     assert ids("2026-06-25") == set()         # 失效之后
     assert ids("2026-05-01") == set()         # valid_from 之前
@@ -59,7 +61,9 @@ def test_lessons_as_of_legacy_record_fallback():
     fs._write_jsonl(fs._LESSONS, [{
         "id": "ls_old", "scope": {"kind": "global", "value": "*"}, "rule": "r",
         "evidence": [], "created": "2026-06-01", "retired": "2026-06-20", "status": "retired"}])
-    ids = lambda d: {h["id"] for h in fs.lessons_as_of(d)}
+
+    def ids(d):
+        return {h["id"] for h in fs.lessons_as_of(d)}
     assert ids("2026-06-10") == {"ls_old"} and ids("2026-06-25") == set()
 
 

@@ -16,9 +16,10 @@ from autoresearch.learning.retro import build_retro_pairs
 
 def _row(code, name, industry, rating, fwd5, winner_5=False, bucket_5="other",
          composite=0.0, mom=0.0, main=0.0, wr=50.0, pct=0.0):
-    return dict(code=code, name=name, industry=industry, rating=rating, fwd_5_oc=fwd5,
-                winner_5=winner_5, bucket_5=bucket_5, composite=composite,
-                score_momentum=mom, main_net_ratio=main, winner_rate=wr, pct_60d=pct)
+    return {"code": code, "name": name, "industry": industry, "rating": rating,
+            "fwd_5_oc": fwd5, "winner_5": winner_5, "bucket_5": bucket_5,
+            "composite": composite, "score_momentum": mom, "main_net_ratio": main,
+            "winner_rate": wr, "pct_60d": pct}
 
 
 def test_build_pairs_matches_same_industry():
