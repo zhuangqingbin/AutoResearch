@@ -109,3 +109,26 @@ T8 前缀审计契约测试 ────────┘
 2. **T9 评级封顶 Hold 的错失面**：低确信票若真有大机会，lite 卡看不出——靠影子反事实+观察单兜底；≥10 日后 retro 裁决阈值。
 3. **T11 收益不确定**：若 cache 本来就命中（竞态假设不成立），预热只多花 3-4min 墙钟——OTEL（T12）读数出来后可一行回退。
 4. **诊断样本薄**：打脸率分析仅 07-06 一日 20 卡（卡 v2 才有裁决表）；T6 验收②用该日回放，后续每真跑日自动累积。
+
+## 实现进度（2026-07-08 更新）
+
+**P0 全部落地**（分支 `feat/token-economy-p0`，main `47141d9`→`f3e4f79`，12 commit，788 tests green + ruff clean，subagent-driven 逐 task 审 + whole-branch 终审 Ready-to-merge）：
+
+| Task | 状态 | commit / 备注 |
+|---|---|---|
+| T1 slim 二段式 | ✅ | `acc30ce` `_slim.md`(表面 P0–P3)+`_slim_deep.md`(深核 P4)；GATE3 地板 10K→8K；早停卡永不读 deep |
+| T6 误读三预警旗 | ✅ | `eb1db74`+`3a0b2d9` `scoring.l3_misread_flags` 单一事实源→L3 列+L4 简报+l3-rank 硬约束 E |
+| T3 早停假阳+短格式 | ✅ | `2b269f2`+`01c7c5d` 豁免收紧到首行(fail-open)；早停卡短格式 ≤35 行 |
+| T4 地形 top200 裁剪 | ✅ | `8356a59` `sector_terrain_md(top200_only=True)` ≈110→30-50 行 |
+| T5 bash 步合并 | ✅ **已满足**（无需新改） | 前一波 research-depth（`a61192c`）已把 L4-prep 五步重排为 workflow.js 内 `l4_reuse→pledge→seats→calendar→prompts` 按序执行；本波核实其已满足 T5 意图（生产者先于 prompts 顺序语义在位），未重复改。 |
+| T7 SKILL/STAGES 瘦身 | ✅ | `803afe4`+`5fcb52d` 51KB→25.7KB，契约锚保留，交叉引用修 |
+| — cache 前缀契约（T8 关联） | ✅ | `7495bf4`+`7d12805` **首跑逮到真 bug**：逐票标题排共享块前→30 卡 cache 前缀从第 1 字节断裂（历史实跑大概率全 miss）；修=固定标头前置，byte-identical 契约锁死 |
+| — sector 复用白做修复 | ✅ | `36084df` fan-out 排除已复用 brief（cost-only） |
+
+**终审 I-1 已修**（`f3e4f79`）：套牢旗 `winner_rate<25∧ma_bull=0` 在 risk_off 深跌市亮 ~90%=wallpaper → 加 `∧pct_60d>0`（反弹撞套牢盘才成立），真数据 07-07 **90%→12%**、三旗均衡。此即兑现 §决策摘要 T6「阈值先验，标注待校准」的校准承诺。
+
+**未做（转后续）**：
+- **P1**：T9 conviction 分层短卡（方案 B，依赖本波 T1 surface/deep 形态）/ T10 / T11 预热派发 / T12 OTEL 真计量 — 另立 plan。
+- **P2**：T13 / T14 引用面砍列 / T8 剩余 — P1 后排。
+- **defer Minor**（终审三诊 OK-to-defer）：`低基` 概念在 `uzi_lenses.trap_signals`(np_yoy≥150) 与 `scoring.l3_misread_flags`(np_yoy>100) 双阈值（建议加交叉引用注）；T4-M1 L2 缺失回退分支无专项回归测试；其余见 `.superpowers/sdd/final-review-p0.md`。
+- **P0 验收日**（下次真扫描）：slim surface/deep 两桶 token 对比 / misread 列上表（套牢校准后 ~30% 覆盖）/ 早停卡短格式 / GATE3 8K 地板 / sector 复用不再被覆盖 / cache 命中率（OTEL）实测修复后改善。
