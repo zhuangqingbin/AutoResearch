@@ -67,7 +67,7 @@ phase('L3')
 // 中观行业 pack(确定性)先行,再 [sector-briefs ∥ L3 表准备] barrier
 await bash(`${R} autoresearch.sector.reuse ${date} --apply; ${R} autoresearch.sector.pack ${date}`, 'sector-pack')
 const sectors = await agent(
-  `列出目录 context/sector/${date}/ 下所有 *.json 文件的文件名去扩展名(= 行业名)。只返回 JSON 字符串数组;目录不存在或空则返回 []。`,
+  `执行:\`uv run --no-sync python -c "import json,glob,os;d='context/sector/${date}';b='${SD}/sector_briefs';print(json.dumps(sorted(os.path.splitext(os.path.basename(p))[0] for p in glob.glob(d+'/*.json') if not os.path.exists(os.path.join(b,os.path.splitext(os.path.basename(p))[0]+'.md')))))"\`\n它打印一行 JSON 数组 = 待写 brief 的行业(有 pack 且尚无 brief;♻️复用行业已被 reuse 拷贝,故被排除,勿再派发覆盖)。把那行 JSON 原样作为结构化返回;目录不存在则返回 []。`,
   { agentType: 'general-purpose', effort: 'low', label: 'sector-list',
     schema: { type: 'array', items: { type: 'string' } } }) || []
 await parallel([
