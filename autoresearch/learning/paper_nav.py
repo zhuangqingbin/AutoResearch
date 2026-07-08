@@ -152,6 +152,50 @@ def shadow_signals(path: Path | str = "context/learning/shadow_buys.csv") -> lis
     return [{"date": r["date"], "code": str(r["code"]).zfill(6)} for r in df.to_dict("records")]
 
 
+def risk_metrics(nav: pd.Series, ann: int = 252) -> dict:
+    """NAV 序列 → 风险调整指标(纯函数,X3)。total=总收益;mdd=最大回撤(峰→谷最深,≤0);
+
+    sortino=年化下行风险调整(target 0,mean/下行波动×√ann);全程无下行→inf(标记);样本<2→NaN。
+    短序列 sortino 噪声大(诚实局限,同文件『仅供研究』基调)——重在真实 vs 市场的**相对**排序。
+    """
+    v = pd.to_numeric(nav, errors="coerce").dropna()
+    nan = float("nan")
+    if len(v) < 2:
+        return {"total": nan, "mdd": nan, "sortino": nan}
+    total = float(v.iloc[-1] / v.iloc[0] - 1)
+    mdd = float((v / v.cummax() - 1).min())
+    ret = v.pct_change().dropna()
+    downside = ret[ret < 0]
+    dd = float((downside.pow(2).mean()) ** 0.5) if len(downside) else 0.0
+    sortino = float("inf") if dd == 0 else float(ret.mean() / dd * (ann ** 0.5))
+    return {"total": total, "mdd": mdd, "sortino": sortino}
+
+
+def _fmt_sortino(s: float) -> str:
+    if s != s:            # NaN
+        return "—"
+    return "∞" if s == float("inf") else f"{s:+.2f}"
+
+
+def risk_block(real: pd.Series, shadow: pd.Series, mkt: pd.Series) -> list[str]:
+    """风险调整对照块:三线 total/MDD/Sortino;市场等权 = buy&hold 基线(StockBench:多数跑不赢它)。"""
+    rows = [("真实", real), ("影子", shadow), ("市场(买入持有 buy&hold)", mkt)]
+    out = ["## 风险调整对照(X3)", "", "| 线 | 总收益 | 最大回撤 | Sortino |", "|---|---|---|---|"]
+    ms = {}
+    for label, nav in rows:
+        m = risk_metrics(nav)
+        ms[label] = m
+        tot = "—" if m["total"] != m["total"] else f"{m['total']:+.2%}"
+        mdd = "—" if m["mdd"] != m["mdd"] else f"{m['mdd']:+.2%}"
+        out.append(f"| {label} | {tot} | {mdd} | {_fmt_sortino(m['sortino'])} |")
+    rs, ks = ms["真实"]["sortino"], ms["市场(买入持有 buy&hold)"]["sortino"]
+    if rs == rs and ks == ks:                     # 均非 NaN → 给一句 buy&hold 裁决
+        verdict = "跑赢" if rs > ks else ("打平" if rs == ks else "**跑输**")
+        out += ["", f"- 真实 vs buy&hold(市场等权)风险调整(Sortino):{verdict}"
+                    f"({_fmt_sortino(rs)} vs {_fmt_sortino(ks)})。"]
+    return out
+
+
 def render(days: list[str], real: pd.Series, shadow: pd.Series, mkt: pd.Series,
            n_real: int, n_shadow: int, skipped: list[str]) -> list[str]:
     out = ["# 影子组合成绩单(paper NAV;10% 固定槽·持10交易日·次日开盘进出)", "",
@@ -162,6 +206,7 @@ def render(days: list[str], real: pd.Series, shadow: pd.Series, mkt: pd.Series,
         out += ["", f"- **截至 {last}**:真实 {real[last] - 1:+.2%}({n_real} 笔)"
                     f" vs 影子 {shadow[last] - 1:+.2%}({n_shadow} 笔)"
                     f" vs 市场 {mkt[last] - 1:+.2%};`真实 − 影子` = 门的价值。"]
+        out += [""] + risk_block(real, shadow, mkt)     # X3·风险调整对照(MDD/Sortino vs buy&hold)
     if skipped:
         out += ["", "## 未入组信号"] + [f"- {s}" for s in skipped]
     out += ["", "_涨跌停/停牌可成交性未模拟;仅供研究,非投资建议。_"]
