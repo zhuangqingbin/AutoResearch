@@ -12,6 +12,9 @@ FULL_OK = "# 卡\n**Rating**: Hold\n进入P4倾向: Hold\n变化项(vs 档案):�
 FULL_NO_P4 = "# 卡\n**Rating**: Hold\n**一行多空**:多:x ｜ 空:y\n"
 STOP = "# 卡\n**Rating**: Hold\n早停因: 资金流出\n"
 REUSE = "♻️ 复用卡\n**Rating**: Hold\n"
+# 07-06 假阳:标题标〔早停·表面 DD〕但正文无「早停因」字样的卡,被当满卡查 P4 行
+STOP_TITLE_ONLY = ("# 决策卡 — 002185 华天科技 @ 2026-07-06  ·  〔早停·表面 DD〕\n\n"
+                    "**Rating**: Underweight\n\nFINAL TRANSACTION PROPOSAL: **HOLD**\n")
 
 
 def _mk(root, date, cards):
@@ -32,6 +35,13 @@ def test_p4_line_lint(tmp_path):
     assert not any(c == "000003" for c, _ in checks)          # 复用卡全豁免
     assert not any(c == "000004" for c, _ in checks)
     assert all(x["severity"] == "warn" for x in out)
+
+
+def test_early_stop_title_card_exempt_from_p4_line(tmp_path):
+    # 标题行含〔早停…〕即认早停卡,不强求正文再写「早停因」——两代卡片格式都豁免 P4 检
+    d = _mk(tmp_path, "2026-07-06", {"002185": STOP_TITLE_ONLY})
+    fires = card_contract_lint(d)
+    assert not [f for f in fires if f["check"].startswith("卡片契约·P4倾向")], fires
 
 
 def test_dossier_change_section_lint(tmp_path):
