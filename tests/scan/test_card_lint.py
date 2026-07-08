@@ -15,6 +15,10 @@ REUSE = "♻️ 复用卡\n**Rating**: Hold\n"
 # 07-06 假阳:标题标〔早停·表面 DD〕但正文无「早停因」字样的卡,被当满卡查 P4 行
 STOP_TITLE_ONLY = ("# 决策卡 — 002185 华天科技 @ 2026-07-06  ·  〔早停·表面 DD〕\n\n"
                     "**Rating**: Underweight\n\nFINAL TRANSACTION PROPOSAL: **HOLD**\n")
+# 满卡标题正常,正文却带一个含「早停」的说明性小标题——豁免只认首行,warn 不得被吞
+FULL_STRAY_HEADING = ("# 决策卡 — 000001 甲 @ 2026-07-06\n\n**Rating**: Hold\n\n"
+                      "## 早停判断:未触发,完整走完 P4+P5\n\n"
+                      "FINAL TRANSACTION PROPOSAL: **HOLD**\n")
 
 
 def _mk(root, date, cards):
@@ -42,6 +46,13 @@ def test_early_stop_title_card_exempt_from_p4_line(tmp_path):
     d = _mk(tmp_path, "2026-07-06", {"002185": STOP_TITLE_ONLY})
     fires = card_contract_lint(d)
     assert not [f for f in fires if f["check"].startswith("卡片契约·P4倾向")], fires
+
+
+def test_full_card_with_stray_early_stop_heading_still_warns(tmp_path):
+    # 豁免面收紧回归:满卡正文的杂散「早停」小标题不构成早停卡,缺 P4 行必须照旧 warn
+    d = _mk(tmp_path, "2026-07-06", {"000001": FULL_STRAY_HEADING})
+    fires = card_contract_lint(d)
+    assert [f for f in fires if f["check"] == "卡片契约·P4倾向缺失"], fires
 
 
 def test_dossier_change_section_lint(tmp_path):

@@ -146,14 +146,15 @@ def card_contract_lint(scan_dir) -> list[dict]:
     if not base.is_dir():
         return []
     p4_re = re.compile(r"进入P4倾向[:：]")
-    early_title_re = re.compile(r"^#.*早停", re.M)   # 标题行〔早停·表面 DD〕= 早停卡
     out: list[dict] = []
     for p in sorted(base.glob("*.md")):
         text = p.read_text(encoding="utf-8")
         code = p.stem
         if "♻️" in text and "复用" in text:
             continue
-        if ("早停因" not in text and not early_title_re.search(text)
+        # 早停豁免只认文本首行标题〔早停·表面 DD〕——正文杂散「早停」小标题不豁免(防吞满卡 warn)
+        first_line = text.split("\n", 1)[0]
+        if ("早停因" not in text and "早停" not in first_line
                 and not p4_re.search(text)):
             out.append({"check": "卡片契约·P4倾向缺失", "severity": "warn", "code": code,
                         "detail": f"{code} 满卡未记『进入P4倾向: <Rating>』(阶段效能计量断供)"})
