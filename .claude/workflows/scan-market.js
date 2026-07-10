@@ -17,10 +17,10 @@ const R = 'uv run --no-sync python -m'
 const SD = `context/scan/${date}`
 
 // 确定性命令 → general-purpose Bash-agent(只跑命令、回报退出码,不判断)
-function bash(cmd, label, phase) {
+function bash(cmd, label, phaseName) {   // 形参勿叫 phase:会遮蔽全局 phase() 分组函数
   return agent(
     `在仓库根目录精确执行下面这条命令,然后只回报:退出码 + stdout 末 15 行。不要做别的、不要判断、不要解释。\n\n\`\`\`\n${cmd}\n\`\`\``,
-    { agentType: 'general-purpose', effort: 'low', label, ...(phase ? { phase } : {}) })
+    { agentType: 'general-purpose', effort: 'low', label, ...(phaseName ? { phase: phaseName } : {}) })
 }
 // 门 CLI → Bash-agent + schema(把 CLI 打印的 JSON 原样带回)。
 // required 只列 'ok':失败 JSON 只含 {ok:false, reason}(无 sentinel_level/finalists 等成功字段);
@@ -33,10 +33,10 @@ const GATE2 = { type: 'object', required: ['ok'],
     finalists: { type: 'array', items: { type: 'string' } }, n: { type: 'integer' } } }
 const OK = { type: 'object', required: ['ok'],
   properties: { ok: { type: 'boolean' }, reason: { type: 'string' } } }
-function gate(label, cmd, schema, phase) {
+function gate(label, cmd, schema, phaseName) {   // 同上:避免遮蔽全局 phase()
   return agent(
     `执行:\`${cmd}\`\n它会向 stdout 打印一行 JSON。把那行 JSON 原样作为你的结构化返回(字段不改、不增删)。`,
-    { agentType: 'general-purpose', effort: 'high', label, schema, ...(phase ? { phase } : {}) })
+    { agentType: 'general-purpose', effort: 'high', label, schema, ...(phaseName ? { phase: phaseName } : {}) })
 }
 
 // ── Phase Prelude ───────────────────────────────────────────────
