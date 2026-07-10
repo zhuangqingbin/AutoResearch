@@ -2,8 +2,10 @@
 """卖方一致预期(tushare report_rc)前向积累 + 盈利修正 Δ(确定性,零 LLM)。
 
 **为什么是前向积累**:report_rc 限频 **1次/小时**(2026-07-02 实测)→ 历史按日回补
-(~282 天)不可行;但生产日用(每天 1 拉当日研报流)完全兼容。故本模块只做三件事:
-`pull` 每日 1 拉入缓存、`status` 看积累进度、`consensus_delta` 算窗口间 FY EPS 中位修正。
+**可行**(2026-07-10 探针实证,见 backfill;限频用 --sleep/--max-calls 应对);但生产日用
+(每天 1 拉当日研报流)完全兼容。故本模块做四件事:`pull` 每日 1 拉入缓存、`backfill`
+按交易日回补历史(skip-existing 幂等可续跑)、`status` 看积累进度、`consensus_delta`
+算窗口间 FY EPS 中位修正。
 
 **验证门(纪律,附录 B)**:积累 ≥60 个交易日后跑 factor_lab 风格 IC 验证,
 两半样本稳、符号一致才谈入 L1 composite/channel;在那之前**不接线上**。
@@ -11,6 +13,7 @@
 用法:
   uv run --no-sync python -m autoresearch.research.consensus pull [YYYY-MM-DD]   # 每日 1 拉(scan 前置)
   uv run --no-sync python -m autoresearch.research.consensus status
+  uv run --no-sync python -m autoresearch.research.consensus backfill 2026-04-01 2026-07-09 [--max-calls 10 --sleep 3700]
 """
 from __future__ import annotations
 
@@ -95,15 +98,63 @@ def status(cache_root: Path | None = None) -> dict:
             "gate": "≥60 日后 factor_lab 验 IC(两半稳+符号一致)再谈入 composite"}
 
 
+def backfill(start: str, end: str, cache_root: Path | None = None,
+             max_calls: int | None = None, sleep_s: float = 0.0,
+             pull_fn=None, days_fn=None) -> dict:
+    """按交易日回补 report_rc 缓存(skip-existing → 幂等,可反复续跑)。
+
+    2026-07-10 探针裁决"历史按日回补是否可行"(见 progress.md);限频应对:
+    `--max-calls` 分片 + `--sleep` 节流;撞异常打印续跑提示后停,已落缓存不丢。
+    """
+    _pull = pull_fn or pull
+    if days_fn is not None:
+        days = days_fn(start, end)
+    else:
+        import autoresearch.research.factor_lab as fl
+        from autoresearch.data.tushare_source import _trade_days
+        days = _trade_days(fl._pro(), start.replace("-", ""), end.replace("-", ""))
+    root = _dir(cache_root)
+    pulled = skipped = 0
+    stopped_by = None
+    for d in days:
+        d8 = str(d).replace("-", "")
+        if (root / f"{d8}.pkl").exists():
+            skipped += 1
+            continue
+        if max_calls is not None and pulled >= max_calls:
+            stopped_by = "max_calls"
+            break
+        try:
+            _pull(f"{d8[:4]}-{d8[4:6]}-{d8[6:]}", cache_root)
+        except Exception as e:  # noqa: BLE001 — 限频/网络:停下可续跑
+            stopped_by = f"error: {e}"
+            print(f"[consensus] {d8} 拉取失败({e})→ 停;已缓存不丢,续跑同命令即可")
+            break
+        pulled += 1
+        if sleep_s:
+            import time
+            time.sleep(sleep_s)
+    print(f"[consensus] backfill: +{pulled} pulled, {skipped} skipped"
+          + (f", stopped_by={stopped_by}" if stopped_by else ""))
+    return {"pulled": pulled, "skipped": skipped, "stopped_by": stopped_by}
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     from datetime import date as _date
-    ap = argparse.ArgumentParser(description="卖方一致预期前向积累(report_rc,限频 1/h)")
-    ap.add_argument("mode", choices=["pull", "status"])
-    ap.add_argument("date", nargs="?", help="pull 的日期 YYYY-MM-DD(缺省=今天)")
+    ap = argparse.ArgumentParser(description="卖方一致预期前向积累(report_rc)")
+    ap.add_argument("mode", choices=["pull", "status", "backfill"])
+    ap.add_argument("date", nargs="?", help="pull 的日期 / backfill 的 start(YYYY-MM-DD)")
+    ap.add_argument("end", nargs="?", help="backfill 的 end(YYYY-MM-DD)")
+    ap.add_argument("--max-calls", type=int, default=None)
+    ap.add_argument("--sleep", type=float, default=0.0)
     args = ap.parse_args(argv)
     if args.mode == "pull":
         pull(args.date or _date.today().isoformat())
+    elif args.mode == "backfill":
+        if not (args.date and args.end):
+            ap.error("backfill 需要 start end 两个日期")
+        backfill(args.date, args.end, max_calls=args.max_calls, sleep_s=args.sleep)
     else:
         print(status())
     return 0
