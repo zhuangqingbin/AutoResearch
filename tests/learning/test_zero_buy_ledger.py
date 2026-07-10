@@ -43,6 +43,17 @@ def test_verdict_uses_fwd2(tmp_path):
     assert "空仓方向正确" in "\n".join(lines)
 
 
+def test_verdict_falls_back_without_fwd2_column(tmp_path):
+    """旧 attribution(无 fwd_2_oc 列,当前 100% 真实生产形态)→ roll/render 不炸,
+    verdict 回退按 fwd_1 正常出(fwd_2 全列缺,非单行 NaN)。"""
+    _mk_day(tmp_path, "2026-06-24", [False, False, False],
+            [-0.01, -0.02, 0.01], [0.03, -0.02, 0.01])   # 不传 fwd2 → 无 fwd_2_oc 列
+    led = roll(tmp_path)
+    assert "mkt_fwd2" in led.columns and pd.isna(led.iloc[0]["mkt_fwd2"])
+    md = "\n".join(render(led))
+    assert "空仓方向正确" in md          # v1 均值 −0.00667 < 0 → 回退判定生效,不炸
+
+
 def test_empty_root_graceful(tmp_path):
     df = roll(tmp_path)
     assert len(df) == 0

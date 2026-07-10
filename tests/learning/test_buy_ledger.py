@@ -73,6 +73,29 @@ def test_base_rates_and_empty(tmp_path):
     assert br[0]["win2"] == 1.0 and abs(br[0]["mean2"] - 0.05) < 1e-9   # 按 fwd_2 计,主尺
 
 
+def test_base_rates_n_realized_follows_fwd2_not_fwd5(tmp_path):
+    """f2 已实现样本 > f5(近期买单 T+2 已成熟、T+5 未成熟,retro 一次性落账不会自动重跑)→
+    n_realized/thin 按主尺 f2 走,不被更慢成熟的 f5 拖累标 thin。"""
+    _mk_day(tmp_path, "2026-07-01", fwd2=0.03)                    # 甲:f2/f5 都已实现
+    d2 = tmp_path / "2026-07-02"
+    (d2 / "details").mkdir(parents=True)
+    pd.DataFrame([{"code": "000002", "name": "乙", "sector": "半导体"}]).to_csv(
+        d2 / "finalists.csv", index=False)
+    (d2 / "details" / "000002.md").write_text(CARD, encoding="utf-8")
+    pd.DataFrame([{"code": "000002", "close": 100.0}]).to_csv(
+        d2 / "L1_scored_full.csv", index=False)
+    (d2 / "retro").mkdir()
+    pd.DataFrame([{"code": "000002", "fwd_1_oo": 0.01, "fwd_2_oc": 0.04,
+                  "fwd_10_oc": 0.25, "gap_d1": 0.02}]).to_csv(     # 无 fwd_5_oc 列 → 该单 f5 未实现
+        d2 / "retro" / "attribution.csv", index=False)
+    ledger = roll(tmp_path)
+    br = rating_base_rates(ledger, min_n=2)
+    row = br[0]
+    assert row["n"] == 2
+    assert row["n_realized"] == 2       # 两单 fwd_2 都已实现(若仍按 f5 只有 1 单)
+    assert not row["thin"]              # 按旧口径(f5=1<2)会被误标 thin
+
+
 # ---------------- 全卡目标校准(spec 2026-07-05 §6) ----------------
 
 def _mk_rated_day(root, date, cards, with_attr=True):

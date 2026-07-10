@@ -64,8 +64,13 @@ def render(ledger: pd.DataFrame) -> list[str]:
     out += ["| 日期 | 股票 | 状态 | fwd_1 | fwd_2 | fwd_5 |", "|---|---|---|---|---|---|"]
     for r in ledger.itertuples(index=False):
         out.append(f"| {r.date} | {r.name}({r.code}) | {r.status} | {f(r.fwd_1)} | {f(r.fwd_2)} | {f(r.fwd_5)} |")
+    f2 = pd.to_numeric(ledger["fwd_2"], errors="coerce").dropna()
     f5 = pd.to_numeric(ledger["fwd_5"], errors="coerce").dropna()
-    if len(f5):
+    if len(f2):
+        out += ["", f"- **汇总**:{len(ledger)} 次触发;**fwd_2 均值 {f(f2.mean())}(主尺)**、"
+                    f"胜率 {(f2 > 0).mean():.0%},fwd_5 均值 {f(f5.mean()) if len(f5) else '—'}(参考)"
+                    " —— 持续为负 = 触发条件太松,回修 conds/到期纪律。"]
+    elif len(f5):     # fwd_2 全列缺(旧数据)→ 回退只出 fwd_5
         out += ["", f"- **汇总**:{len(ledger)} 次触发;fwd_5 均值 {f(f5.mean())}、胜率 {(f5 > 0).mean():.0%}"
                     " —— 持续为负 = 触发条件太松,回修 conds/到期纪律。"]
     return out

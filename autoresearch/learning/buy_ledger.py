@@ -164,22 +164,26 @@ def calibration_line(stats: dict | None) -> str | None:
 
 
 def rating_base_rates(ledger: pd.DataFrame, min_n: int = 10) -> list[dict]:
-    """按评级聚基率:n / T+2 胜率&均值(主)/ T+5 胜率&均值(参考)/ 目标命中率;n<min_n 标 thin。"""
+    """按评级聚基率:n / T+2 胜率&均值(主)/ T+5 胜率&均值(参考)/ 目标命中率。
+
+    n_realized/thin 样本口径按主尺 fwd_2 已实现数(仅当 ledger 无 fwd_2 列即旧数据时回退 fwd_5)。
+    """
     if ledger is None or not len(ledger):
         return []
     out = []
     for rating, g in ledger.groupby("rating"):
-        f2 = pd.to_numeric(g["fwd_2"], errors="coerce").dropna() if "fwd_2" in g.columns \
-            else pd.Series(dtype=float)
+        has_f2 = "fwd_2" in g.columns
+        f2 = pd.to_numeric(g["fwd_2"], errors="coerce").dropna() if has_f2 else pd.Series(dtype=float)
         f5 = pd.to_numeric(g["fwd_5"], errors="coerce").dropna()
         th = g["target_hit"].dropna()
-        out.append({"rating": rating, "n": len(g), "n_realized": len(f5),
+        n_realized = len(f2) if has_f2 else len(f5)
+        out.append({"rating": rating, "n": len(g), "n_realized": n_realized,
                     "win2": round(float((f2 > 0).mean()), 3) if len(f2) else None,
                     "mean2": round(float(f2.mean()), 4) if len(f2) else None,
                     "win5": round(float((f5 > 0).mean()), 3) if len(f5) else None,
                     "mean5": round(float(f5.mean()), 4) if len(f5) else None,
                     "target_hit": round(float(th.mean()), 3) if len(th) else None,
-                    "thin": len(f5) < min_n})
+                    "thin": n_realized < min_n})
     return sorted(out, key=lambda r: r["rating"])
 
 
