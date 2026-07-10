@@ -551,7 +551,8 @@ Expected: `grep -c '"rejected"' context/knowledge/proposals.jsonl` → 2。
 - `autoresearch/research/factor_lab.py` train_gbdt 族 4 处:`:774` 标签句 fwd_1_oo→fwd_2_oc、`:824` oos 注释同、`:572` 段横幅「calibrate(T+1 IC→…)」、`:725` GBDT 块注释「T+1(开到开)收益」;
 - `factor_lab.py:552` evaluate 打印 `cols` 把 `IC_fwd_1_cc/ICIR_fwd_1_cc` 换成 `IC_fwd_2_oc/ICIR_fwd_2_oc`(表按它排序却不显示它);`:556` 十分位 header「T+1 收到收」→「超短主尺 fwd_2_oc(开→D+2收,±0.30 clip)」;
 - `autoresearch/common/regime.py:6` docstring「单 horizon T+1 IC 校准」同步;
-- `autoresearch/data/features.py:99`「与 factor_lab.GBDT_LABEL 同」已解耦,改「(model-zoo 自有口径,已与 factor_lab.GBDT_LABEL 解耦,后者现为 fwd_2_oc)」。
+- `autoresearch/data/features.py:99`「与 factor_lab.GBDT_LABEL 同」已解耦,改「(model-zoo 自有口径,已与 factor_lab.GBDT_LABEL 解耦,后者现为 fwd_2_oc)」;
+- `.claude/skills/scan-retro/retro-playbook.md:36`(T3 移交)`_retro_pairs.csv` 描述「fail(评级最高档但 T+5 跌) vs win(…但 T+5 涨)」→ T+2 口径(D+2 即产出,不再等 T+5);顺带 grep 该 playbook 其余 T+5/fwd_5 自述一并同步。
 
 - [ ] **Step 4: 全量回归**
 
