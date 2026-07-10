@@ -187,6 +187,88 @@ def lens_reversal(df: pd.DataFrame) -> pd.DataFrame:
     return g
 
 
+def lens_reversal_confirm(df: pd.DataFrame) -> pd.DataFrame:
+    """反转**确认**(四段确认通道,起爆日硬门):前置低位30 + 衰竭企稳30 + 确认起爆40。
+
+    与旧 `lens_reversal`(:167,困境反转:边际改善∨资金即放行,门内无企稳段、无量价确认,可召回
+    仍在下跌途中的票)的本质区别、也是本通道价值所在——Plan A1-T2 用 107 个成型日真实回测坐实:
+    `dist_low_60` 对 fwd_2_oc **反预测**(decile spread_t=−2.06,方向与 IC 反号)——贴 60 日低点
+    一档 fwd_2_oc 反而显著**跑输**贴高点一档,即"光有『前置低位』=接刀"。故③必须是真 AND 硬门:
+    无量突破的票**一律不入召回**,不能降级成软加分让低位票混进来对冲低分。两路双路并跑(影子对照,
+    不动旧 reversal),channel_eval 按 lane 分行裁决。
+
+    四段(全 EOD 可算;①②④缺列 presence-gated 跳过=不拦,③缺列/缺值=整段判 False,不可跳):
+      ① 前置低位:pct_60d≤−25 或 dist_low_60≤15(后者 Plan A1-T2 新因子,尚未接入现场 L1 帧,
+         presence-gated;两条本是 OR,pct_60d 视作恒在核心列,同 lens_momentum/lens_reversal
+         的既有用法不做存在性判断)。
+      ② 衰竭企稳:days_no_new_low≥10(presence-gated)∧ 5日均量<20日均量(`vol_ma5`/`vol_ma20`,
+         现场尚无此列,presence-gated 跳过,接入前恒放行)∧ RSI6 从超卖回升——本帧只有『当日』
+         RSI6 快照、无逐日序列做不了真"从…回升",用 presence-gated 代理:已脱离本代码库既定的
+         超卖线(rsi6<20,见 analyze/harvest.py "超卖"判词)但仍处 20–50 的低位回升带。
+      ③ 确认起爆硬门:vol_ratio_20≥1.5(Plan A1-T2 新因子)∧ ma_bull>0(现场无逐日『破20日高/
+         站上MA20』专列,用既有『多头排列』ma_bull 作最近似代理)。**两者任一缺列/缺值 →
+         该段整段判 False**——硬门不可 presence-gated 跳过:vol_ratio_20 若尚未接入现场,本通道
+         会诚实地空召回,而不是悄悄放行凑数(这正是"无量突破不入池"延伸到"没证据也不入池")。
+      ④ 可交易:镜像 `lens_reversal`(:167)既有的 `~name.str.contains("退")` 过滤,叠加
+         presence-gated 的既有『涨跌停可交易性』`buyable` 列(factor_lab.forward_returns /
+         data.handler 同源,列缺→默认可交易不拦)。
+
+    **禁用 CMF-20 作确认信号**:07-02 汇川/柳工机会成本红队实证,CMF-20 是窗口累积指标,对反转
+    方向确认存在 day-1/2 滞后(反应慢半拍),不适合当"当日确认"用;③只用当日 vol_ratio_20 +
+    ma_bull,不掺 cmf_20/obv_mom_20。
+
+    评分(仅 ①②③;④是纯可交易性门,不进分,与 lens_reversal 对 tradability 的处理一致):
+    低位30 + 企稳30 + 确认40,`_wsum` 按"有值子项"重新归一(某段全 NaN 不拖累)。
+    """
+    g = df.copy()
+    nan = pd.Series(np.nan, index=g.index)
+
+    # ① 前置低位(30):pct_60d 视为恒在核心列;dist_low_60 presence-gated——列缺时 `<=15`
+    # 天然 NaN 比较→False,OR 自动退化为只看 pct_60d。
+    dist_low = _num(g["dist_low_60"]) if "dist_low_60" in g.columns else nan
+    lowpos_gate = (_num(g["pct_60d"]) <= -25) | (dist_low <= 15)
+    lowpos_sc = _blend((_pct(g["pct_60d"], ascending=False), 0.6), (_pct(dist_low, ascending=False), 0.4))
+
+    # ② 衰竭企稳(30):三子条件独立 presence-gated——gate 侧列缺→显式 True(不拦),
+    # score 侧列缺→NaN(交 _blend 重新归一)。vol_ma5/vol_ma20 现场尚无该列,恒走 else 分支。
+    has_days = "days_no_new_low" in g.columns
+    days_ok = (_num(g["days_no_new_low"]) >= 10) if has_days else pd.Series(True, index=g.index)
+    days_sc = _pct(g["days_no_new_low"]) if has_days else nan
+
+    has_vol_ma = {"vol_ma5", "vol_ma20"} <= set(g.columns)
+    shrink_ok = (_num(g["vol_ma5"]) < _num(g["vol_ma20"])) if has_vol_ma else pd.Series(True, index=g.index)
+
+    has_rsi = "rsi6" in g.columns
+    rsi = _num(g["rsi6"]) if has_rsi else nan
+    rebound_ok = ((rsi >= 20) & (rsi <= 50)) if has_rsi else pd.Series(True, index=g.index)
+    rebound_sc = ((rsi >= 20) & (rsi <= 50)).astype(float) if has_rsi else nan
+
+    stabilize_gate = days_ok & shrink_ok & rebound_ok
+    stabilize_sc = _blend((days_sc, 0.5), (rebound_sc, 0.5))
+
+    # ③ 确认起爆硬门(40):vol_ratio_20/ma_bull 缺列或缺值 → 比较天然 NaN→False,硬门自动
+    # "不可跳"(与①②故意不同,这里不写 presence-gated 的 else 分支去放行)。
+    vol20 = _num(g["vol_ratio_20"]) if "vol_ratio_20" in g.columns else nan
+    has_ma_bull = "ma_bull" in g.columns
+    ma_bull = _num(g["ma_bull"]) if has_ma_bull else nan
+    confirm_gate = (vol20 >= 1.5) & (ma_bull > 0)
+    ma_bull_sc = (ma_bull > 0).astype(float) if has_ma_bull else nan
+    confirm_sc = _blend((_pct(vol20), 0.5), (ma_bull_sc, 0.5))
+
+    # ④ 可交易:镜像 lens_reversal(:167)既有过滤 + presence-gated 现有『buyable』涨跌停可交易性列。
+    tradable = ~g["name"].fillna("").str.contains("退")
+    if "buyable" in g.columns:
+        tradable = tradable & g["buyable"].fillna(True).astype(bool)
+
+    gate = lowpos_gate & stabilize_gate & confirm_gate & tradable
+    score = _wsum({"lowpos": (lowpos_sc, 30), "stabilize": (stabilize_sc, 30), "confirm": (confirm_sc, 40)})
+
+    g["reversal_confirm_score"] = score
+    g["reversal_confirm_gate"] = gate
+    g["reversal_confirm_signals"] = np.where(confirm_gate, "起爆确认·硬门过", "未过起爆硬门")
+    return g
+
+
 def healthy_riser_mask(frame: pd.DataFrame) -> pd.Series | None:
     """健康上涨谓词(**单一事实源**:menu_health 病灶指标 = healthy 召回通道同一定义):
     0<pct_60d<40(温和上涨,未过热)∧ main_net_ratio>0(主力真进)∧ cmf_20>0(多日资金共振)。

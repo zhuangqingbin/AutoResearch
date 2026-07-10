@@ -8,7 +8,7 @@ from autoresearch.scan.recall import build, registered_channels
 from autoresearch.scan.recall.registry import CHANNEL_DEFAULTS
 from tests.scan._synth_universe import synth_universe
 
-_CHANNELS = {"composite", "momentum", "reversal", "growth", "value",
+_CHANNELS = {"composite", "momentum", "reversal", "reversal_confirm", "growth", "value",
              "main_fund", "northbound", "accumulation", "heat"}
 
 
@@ -87,4 +87,41 @@ def test_heat_surfaces_amount_leader_that_composite_buries():
 def test_heat_degrades_without_heat_columns():
     df = pd.DataFrame({"code": [f"{i:06d}" for i in range(5)], "composite": range(5)})
     out = build("heat")(df, "2026-06-20", 50)
+    assert out.empty and list(out.columns) == ["code", "channel_rank", "channel_score"]
+
+
+# ───────────────────────── reversal_confirm 通道(四段确认,起爆日硬门,Plan A1-T3)─────────────────────────
+#
+# 与旧 reversal 通道双路并跑(影子对照,见 channel_eval);字段同 test_scoring.py 的 _confirm_row。
+
+
+def _perfect_confirm_row(code="600001", **overrides):
+    row = {"code": code, "name": "股票甲", "pct_60d": -30.0, "dist_low_60": 8.0,
+           "days_no_new_low": 15.0, "rsi6": 35.0, "vol_ratio_20": 2.0, "ma_bull": 1.0}
+    row.update(overrides)
+    return row
+
+
+def test_reversal_confirm_registered_with_quota_and_floor():
+    assert "reversal_confirm" in registered_channels()
+    assert CHANNEL_DEFAULTS["reversal_confirm"].quota == 200 and CHANNEL_DEFAULTS["reversal_confirm"].floor == 50
+
+
+def test_reversal_confirm_channel_admits_perfect_and_rejects_no_volume_breakout():
+    """一只完美四段票必入;一只无量突破票必拒(验硬门);一只仍创新低票必拒——channel 层同款三案例。"""
+    rows = [
+        _perfect_confirm_row("600001"),                      # 完美四段 → 应入选
+        _perfect_confirm_row("600002", vol_ratio_20=0.8),     # 无量突破 → 硬门拒
+        _perfect_confirm_row("600003", days_no_new_low=0.0),  # 仍创新低 → 未企稳拒
+    ]
+    out = build("reversal_confirm")(pd.DataFrame(rows), "2026-06-20", 50)
+    codes = out["code"].tolist()
+    assert "600001" in codes
+    assert "600002" not in codes and "600003" not in codes
+
+
+def test_reversal_confirm_degrades_to_empty_without_vol_ratio_20():
+    """vol_ratio_20 现场尚未接入 L1 帧(A1-T3 范围外)→ 硬门列缺,诚实空召回,不悄悄放行凑数。"""
+    frame = pd.DataFrame([_perfect_confirm_row("600001")]).drop(columns=["vol_ratio_20"])
+    out = build("reversal_confirm")(frame, "2026-06-20", 50)
     assert out.empty and list(out.columns) == ["code", "channel_rank", "channel_score"]

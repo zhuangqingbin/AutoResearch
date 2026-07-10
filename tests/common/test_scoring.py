@@ -20,6 +20,7 @@ from autoresearch.common.scoring import (
     lens_growth,
     lens_momentum,
     lens_reversal,
+    lens_reversal_confirm,
     lens_value,
     prev_quarter,
 )
@@ -141,3 +142,71 @@ def test_prev_quarter_wraps_year_at_q1():
     assert prev_quarter("20260630") == "20260331"
     assert prev_quarter("20260930") == "20260630"
     assert prev_quarter("20261231") == "20260930"
+
+
+# ───────────────────────── lens_reversal_confirm(四段确认通道,Plan A1-T3) ─────────────────────────
+#
+# design: docs/specs/2026-07-11-recall-gate-pinned-config-design.md §2.1。
+# 四段:①前置低位 ②衰竭企稳 ③确认起爆(硬门,vol_ratio_20/ma_bull 缺列或不达标 → 整段判 False,
+# 不像 ①②④ 那样"presence-gated 跳过=不拦")④可交易。评分只用 ①②③(低位30+企稳30+确认40)。
+
+
+def _confirm_row(**overrides) -> dict:
+    """一行"完美四段"反转确认候选的默认值;overrides 覆写单字段来构造反例,精确定位失败段。"""
+    row = {
+        "code": "600001", "name": "股票甲",
+        "pct_60d": -30.0, "dist_low_60": 8.0,
+        "days_no_new_low": 15.0, "rsi6": 35.0,
+        "vol_ratio_20": 2.0, "ma_bull": 1.0,
+    }
+    row.update(overrides)
+    return row
+
+
+def _confirm_frame(rows: list) -> pd.DataFrame:
+    return pd.DataFrame(rows)
+
+
+def test_reversal_confirm_admits_perfect_four_stage_stock():
+    """①②③④全过 → gate=True,score 落在 (0,100]。"""
+    g = lens_reversal_confirm(_confirm_frame([_confirm_row()]))
+    assert bool(g["reversal_confirm_gate"].iloc[0]) is True
+    assert 0 < g["reversal_confirm_score"].iloc[0] <= 100
+
+
+def test_reversal_confirm_rejects_no_volume_breakout_hard_gate():
+    """①②④全过、只③的量比不足(0.8<1.5)→ 硬门必拒,不能被①②④的高分冲抵(核心:硬门非软加分)。"""
+    g = lens_reversal_confirm(_confirm_frame([_confirm_row(vol_ratio_20=0.8)]))
+    assert bool(g["reversal_confirm_gate"].iloc[0]) is False
+
+
+def test_reversal_confirm_rejects_no_trend_break_hard_gate():
+    """①②④全过、只③的 ma_bull=0(未站上均线/未破高)→ 硬门同样必拒(AND 的另一半也不可绕过)。"""
+    g = lens_reversal_confirm(_confirm_frame([_confirm_row(ma_bull=0.0)]))
+    assert bool(g["reversal_confirm_gate"].iloc[0]) is False
+
+
+def test_reversal_confirm_rejects_still_making_new_lows():
+    """①③④全过、只②的 days_no_new_low=0(今日仍创新低,未衰竭企稳)→ 必拒,即便③硬门已过。"""
+    g = lens_reversal_confirm(_confirm_frame([_confirm_row(days_no_new_low=0.0)]))
+    assert bool(g["reversal_confirm_gate"].iloc[0]) is False
+
+
+def test_reversal_confirm_dist_low_60_is_alternative_to_pct_60d():
+    """①是 OR:pct_60d 不达标(+50%)但 dist_low_60 达标(5%贴近低点)→ 仍应过①(需②③④配合过)。"""
+    g = lens_reversal_confirm(_confirm_frame([_confirm_row(pct_60d=50.0, dist_low_60=5.0)]))
+    assert bool(g["reversal_confirm_gate"].iloc[0]) is True
+
+
+def test_reversal_confirm_missing_vol_ratio_20_column_rejects_all():
+    """现场 vol_ratio_20 尚未接入 L1 帧(A1-T3 范围外)→ 硬门列缺,诚实全拒,不悄悄放行凑数。"""
+    frame = _confirm_frame([_confirm_row()]).drop(columns=["vol_ratio_20"])
+    g = lens_reversal_confirm(frame)
+    assert not g["reversal_confirm_gate"].any()
+
+
+def test_reversal_confirm_score_bounds_and_gate_dtype():
+    g = lens_reversal_confirm(_confirm_frame([_confirm_row(), _confirm_row(code="600002", vol_ratio_20=0.5)]))
+    sc = g["reversal_confirm_score"]
+    assert (sc.dropna() >= 0).all() and (sc.dropna() <= 100).all()
+    assert g["reversal_confirm_gate"].dtype == bool

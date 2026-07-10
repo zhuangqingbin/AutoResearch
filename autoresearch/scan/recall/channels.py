@@ -15,6 +15,7 @@ from autoresearch.common.scoring import (
     lens_growth,
     lens_momentum,
     lens_reversal,
+    lens_reversal_confirm,
     lens_value,
 )
 from autoresearch.scan.recall.base import gate_rank
@@ -36,6 +37,14 @@ def momentum(frame, date, k):
 def reversal(frame, date, k):
     g = lens_reversal(frame)
     return gate_rank(g, g["reversal_gate"], "reversal_score", k)
+
+
+@channel("reversal_confirm", quota=200, floor=50, desc="反转确认(四段,起爆日硬门)")
+def reversal_confirm(frame, date, k):
+    """与 `reversal` 双路并跑(影子对照,不动旧路):lens_reversal_confirm 的起爆日硬门比旧路的
+    "边际改善∨资金即放行"更严——channel_eval 按 lane 分行累计 ≥10 日后裁决新旧路优劣。"""
+    g = lens_reversal_confirm(frame)
+    return gate_rank(g, g["reversal_confirm_gate"], "reversal_confirm_score", k)
 
 
 @channel("growth", quota=150, floor=40, desc="成长加速(lens_growth 过门)")
