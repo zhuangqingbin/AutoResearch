@@ -18,6 +18,7 @@ import argparse
 import json
 import sys
 from datetime import date
+from pathlib import Path
 
 import pandas as pd
 
@@ -149,8 +150,15 @@ def main(argv: list[str] | None = None) -> int:
     mstate, mnote = load_macro_state(analysis_date, regime_today=reg.get("label"))
     print(f"[macro_state] {mnote}")
     if args.json:
-        print(json.dumps({**pack, "macro_state": mstate, "macro_state_note": mnote},
+        from autoresearch.scan.user_config import load_user_config  # Plan A3 T1:用户配置层回显
+        user_cfg = load_user_config()
+        print(json.dumps({**pack, "macro_state": mstate, "macro_state_note": mnote,
+                          "user_config": user_cfg},
                          ensure_ascii=False, indent=2))
+        echo_dir = Path("context/scan") / analysis_date       # run meta:本次跑用的配置,可复现
+        echo_dir.mkdir(parents=True, exist_ok=True)
+        (echo_dir / "user_config_echo.json").write_text(
+            json.dumps(user_cfg, ensure_ascii=False, indent=2), encoding="utf-8")
     return 0
 
 

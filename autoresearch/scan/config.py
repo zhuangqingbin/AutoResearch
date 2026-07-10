@@ -37,6 +37,13 @@ class ScanConfig:
     l2_lane_quota: int = 40
     l2_lane_channels: tuple[str, ...] = ("momentum", "heat", "growth", "accumulation")
 
+    # ── 用户配置层映射(scan_config.json 白名单;全默认 None=parity;design 2026-07-11 §4.2)──
+    agents: dict | None = None        # {stage: {model, effort}} 覆盖 workflow 内建(Task 2 消费)
+    l4_gate: dict | None = None       # {name, params} L3.5 可插拔闸选择(Task 3+ 消费)
+    pinned: dict | None = None        # {cap, ttl_days} 保送票参数(Task 3+ 消费)
+    redteam_prob: float | None = None  # 机会成本红队触发概率覆盖(None=沿用现硬编码值)
+    reuse: dict | None = None         # {max_age_days, price_delta_pct} L4 卡片复用参数覆盖
+
     def to_dict(self) -> dict:
         """落 manifest 的纯 dict(可 JSON 序列化)。"""
         return asdict(self)

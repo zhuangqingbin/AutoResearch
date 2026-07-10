@@ -124,7 +124,7 @@ def test_sentinel_frame_missing_col_degrades():
 # ───────────────────────── CLI 盘前预告 ─────────────────────────
 
 
-def test_frame_cli_smoke(monkeypatch, capsys):
+def test_frame_cli_smoke(monkeypatch, capsys, tmp_path):
     df = synth_universe(n=100, seed=9)
     monkeypatch.setattr(scan_frame, "build_market_frame",
                         lambda d, **kw: (df, {"universe_raw": 100, "universe": 100,
@@ -132,6 +132,7 @@ def test_frame_cli_smoke(monkeypatch, capsys):
     monkeypatch.setattr("autoresearch.macro.state.load_macro_state",   # 隔离真实 context/macro
                         lambda today, regime_today=None, path=None:
                         (None, "无 macro_state.json → 只用日频 pack"), raising=True)
+    monkeypatch.chdir(tmp_path)   # 隔离真实 context/scan/<date>(Plan A3 T1 起 --json 落 echo 文件)
     rc = scan_frame.main([DATE, "--json"])
     out = capsys.readouterr().out
     assert rc == 0
@@ -139,3 +140,4 @@ def test_frame_cli_smoke(monkeypatch, capsys):
     assert "[macro_state]" in out        # Phase 2:宏观视图新鲜度一行
     assert '"breadth"' in out            # --json 打印 market_pack(宏观 lite 输入)
     assert '"macro_state_note"' in out   # 捆绑进 JSON,缺文件 → null + note(presence-gated)
+    assert '"user_config"' in out        # Plan A3 T1:用户配置层回显(缺文件 → {})
