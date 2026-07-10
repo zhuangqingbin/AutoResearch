@@ -22,6 +22,11 @@ _TARGET_RE = re.compile(r"(\d+(?:\.\d+)?)")
 _SCHEMA_SWITCH = "2026-07-10"   # 卡契约 v3(超短)生效日:此前卡=10日语义按 hi_10 判,此后按 hi_2
 
 
+def _hi_col_for(day: str) -> str:
+    """日期分界唯一出处:switch 起 v3 超短卡按 `hi_2_oc`,旧 swing 卡按 `hi_10_oc`。"""
+    return "hi_2_oc" if str(day) >= _SCHEMA_SWITCH else "hi_10_oc"
+
+
 def target_hit_for(day: str, tr: float | None, row) -> bool | None:
     """日期分界触价命中:目标幅(close_D 基)rebase 到 o1 基,与对应窗口 MFE 比。
 
@@ -30,7 +35,7 @@ def target_hit_for(day: str, tr: float | None, row) -> bool | None:
     """
     if tr is None:
         return None
-    col = "hi_2_oc" if str(day) >= _SCHEMA_SWITCH else "hi_10_oc"
+    col = _hi_col_for(day)
     hi = pd.to_numeric(pd.Series([row.get(col)]), errors="coerce").iloc[0]
     if pd.isna(hi):
         return None
@@ -150,7 +155,7 @@ def target_calibration(scan_root: Path | str | None = None, window: int = 30,
             hit = target_hit_for(d.name, tr, attr.loc[code])
             if hit is None:
                 continue
-            col = "hi_2_oc" if str(d.name) >= _SCHEMA_SWITCH else "hi_10_oc"
+            col = _hi_col_for(d.name)
             hi = pd.to_numeric(pd.Series([attr.at[code, col]]), errors="coerce").iloc[0]
             targets.append(tr)
             mfes.append(float(hi))
@@ -206,7 +211,7 @@ def _calib_section(calib: dict | None) -> list[str]:
         return []
     line = calibration_line(calib)
     return ["", f"## 📐 全卡目标校准(近{calib['window']} scan 日,全评级)",
-            f"- 有目标价卡 n={calib['n']},成熟(有 hi_10)n={calib['n_mature']};"
+            f"- 有目标价卡 n={calib['n']},成熟(有对应窗口MFE)n={calib['n_mature']};"
             f"触达率 {'—' if calib['hit_rate'] is None else format(calib['hit_rate'], '.0%')},"
             f"中位目标 {'—' if calib['med_target'] is None else format(calib['med_target'], '+.0%')} "
             f"vs 中位MFE {'—' if calib['med_mfe'] is None else format(calib['med_mfe'], '+.0%')}",
