@@ -9,7 +9,7 @@ top-N 的前向收益(mean_fwd / hit),给"是否把 champion 接回 L2"一个数
 
 verdict 需真数据跑(本模块只交付可复现机制 + 单测核心)。结论为正再考虑把 ScanConfig.l2_engine 接到线上。
 
-用法:uv run --no-sync python -m autoresearch.research.l2_eval [--l2-n 200] [--label fwd_5_oc] [--cap-floor 30]
+用法:uv run --no-sync python -m autoresearch.research.l2_eval [--l2-n 200] [--label fwd_2_oc(主尺,默认)] [--cap-floor 30]
 """
 from __future__ import annotations
 
@@ -66,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m autoresearch.research.l2_eval",
                                  description="L2 stratified vs champion 前向对照")
     ap.add_argument("--l2-n", type=int, default=200)
-    ap.add_argument("--label", default="fwd_5_oc", help="前向标签列(fwd_1_oo/fwd_5_oc/fwd_10_oc)")
+    ap.add_argument("--label", default="fwd_2_oc", help="前向标签列(fwd_2_oc 主尺/fwd_1_oo/fwd_5_oc/fwd_10_oc)")
     ap.add_argument("--cap-floor", type=float, default=30.0)
     ap.add_argument("--l2-model", default="l2_fwd5")
     args = ap.parse_args(argv)
