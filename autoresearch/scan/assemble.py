@@ -346,15 +346,8 @@ def _stage_token_estimate(scan_dir: Path) -> list[str]:
     # L4 输入侧最大件 = slim(context/<ticker>_<date>_slim.md,scan_dir 通常是 context/scan/<date>)
     slim_root = det.parent.parent
     slims = sorted(slim_root.glob(f"*_{det.name}_slim.md")) if slim_root.exists() else []
-    # 每阶段墙钟(编排层写 _stage_timing.json:{stage_key: {"wall_s": int}} 或 {stage_key: int});缺 → "—"
-    import json as _json
-    _tmap: dict = {}
-    _tp = det / "_stage_timing.json"
-    if _tp.is_file():
-        try:
-            _tmap = _json.loads(_tp.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001
-            _tmap = {}
+    from autoresearch.scan.stage_timing import ensure_stage_timing
+    _tmap: dict = ensure_stage_timing(det)   # mtime 推导补缺 + 写回;编排写过的 key 优先
 
     def _wall(key: str) -> str:
         v = _tmap.get(key)
@@ -389,7 +382,7 @@ def _stage_token_estimate(scan_dir: Path) -> list[str]:
         tot_calls += 0 if name.startswith("L4 输入") else calls
         tot_tok += tok
         lines.append(f"| {name} | {eng} | {eff} | {_wall(tkey)} | {calls or '—'} | {b or '—'} | {tok or '—'} | {note} |")
-    lines.append(f"| **合计** | — | — | {_wall('总计')} | **{tot_calls}** | — | **~{tot_tok}** | 落盘可测下界(墙钟需编排写 _stage_timing.json) |")
+    lines.append(f"| **合计** | — | — | {_wall('总计')} | **{tot_calls}** | — | **~{tot_tok}** | 落盘可测下界(墙钟 = mtime 推导下界·stage_timing.py) |")
     if cards and not list(det.glob("_l4_prompt*")):
         lines += ["", "> ⚠️ L4 输入 prompt 未落稿(`_l4_prompt_*` 缺)——上表 L4 行仅计输出;派发前先 "
                   "`uv run --no-sync python -m autoresearch.scan.agents.l4_card prompts <date>` "
