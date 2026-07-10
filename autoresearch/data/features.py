@@ -40,6 +40,7 @@ _CANDIDATE_COLS: list[str] = [
     "block_premium", "block_intensity",                  # block_trade
     "lhb_inst_net",                                      # top_inst
     "cmf_20", "obv_mom_20", "price_vs_vwap_20", "breakout_vol_20",  # daily(多日量价序列)
+    "vol_ratio_20", "dist_low_60", "days_no_new_low",     # daily(反转确认三因子,Plan A1-T2)
 ]
 
 # ── GBDT 特征(factor_lab.gbdt_features):8 组分位 g_* + 双侧都有的原始因子 + composite 锚定 ──

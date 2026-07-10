@@ -255,6 +255,48 @@ def forward_returns(piv: dict, P: list[str], D: str, fwd: int) -> pd.DataFrame:
     return res
 
 
+def reversal_confirm_factors(piv: dict, P: list[str], D: str) -> pd.DataFrame:
+    """反转确认三因子(Plan A1-T2):`vol_ratio_20` / `dist_low_60` / `days_no_new_low`。
+
+    供 `lens_reversal_confirm`(common/scoring.py,Task 3)的起爆日硬门 + 前置低位判定候选,也是
+    本文件 CANDIDATES 的 IC 验证对象。三者共用 piv["low"]/["close"]/["amount"] 的 code×date
+    pivot,窗口严格 ≤D(无前视)。
+
+      * `vol_ratio_20` = D 日成交额 / 近 20 个交易日(含 D)成交额均值(量能倍数;窗口口径镜像
+        既有 cmf_20/breakout_vol_20 等多日量价因子的 `win`;分母 0/NaN → NaN)。
+      * `dist_low_60` = D 收盘价相对「≤D 全部可得历史中 60 日滚动最低价」的溢价 %
+        ((close[D]/low60[D] − 1) × 100)。低点用 `low`(非 close)算,现价用 close;现价恒不低于
+        该滚动最低价 → 结果恒 ≥0。历史不足 60 日(窗口早期)→ 用已有天数的最低价
+        (rolling min_periods=1),量仍良定义,不强制 NaN。
+      * `days_no_new_low` = 截至 D 连续未创 60 日新低的天数:从 D 倒数,数到最近一次「当日 low
+        等于当时 60 日滚动最低价」(即真正创出新低/平历史低点的那天)为止,中间隔了几天;D 当日
+        本身创新低 → 0。**边界**:纳入统计区间里最早一个可得交易日,因 rolling(min_periods=1)
+        平凡地"等于自己的滚动最低价" → 天然是一次"新低"事件,从而给整条 streak 封顶(不会因窗口
+        不够长就误判成"无穷多天未创新低",也不会在 argmax 上越界/崩溃)。
+    """
+    idx = P.index(D)
+    A, L, C = piv["amount"], piv["low"], piv["close"]
+    codes = C.index
+    out = pd.DataFrame(index=codes)
+
+    win20 = P[max(0, idx - 19):idx + 1]
+    denom20 = A.reindex(columns=win20).mean(axis=1).replace(0, np.nan)
+    amtD = A.reindex(columns=[D]).iloc[:, 0]
+    out["vol_ratio_20"] = amtD / denom20
+
+    hist = P[:idx + 1]
+    low_hist = L.reindex(columns=hist)
+    roll_min60 = low_hist.T.rolling(60, min_periods=1).min().T
+    low60_D = roll_min60.reindex(columns=[D]).iloc[:, 0]
+    closeD = C.reindex(columns=[D]).iloc[:, 0]
+    out["dist_low_60"] = (closeD / low60_D - 1.0) * 100
+
+    is_new_low = (low_hist <= roll_min60 + 1e-9).to_numpy()
+    rev = is_new_low[:, ::-1]
+    out["days_no_new_low"] = rev.argmax(axis=1).astype(float)
+    return out
+
+
 # ───────────────────────── 因子帧(每个成型日) ─────────────────────────
 
 
@@ -422,6 +464,10 @@ def factor_frame(D: str, piv: dict, P: list[str], basic: pd.DataFrame,
         f["price_vs_vwap_20"] = vol_series.price_vs_vwap(H, L, C, A, win).reindex(f["code"]).to_numpy()
         f["breakout_vol_20"] = vol_series.breakout_on_volume(C, A, win).reindex(f["code"]).to_numpy()
 
+    # 反转确认三因子(vol_ratio_20/dist_low_60/days_no_new_low,Plan A1-T2):见 reversal_confirm_factors docstring
+    rcf = reversal_confirm_factors(piv, P, D)
+    f = f.merge(rcf, left_on="code", right_index=True, how="left")
+
     # 前瞻收益
     fr = forward_returns(piv, P, D, fwd)
     f = f.merge(fr, left_on="code", right_index=True, how="left")
@@ -450,6 +496,11 @@ CANDIDATES = [
     ("block_premium", -1), ("block_intensity", +1), ("lhb_inst_net", +1),
     # 多日量价序列(OBV/CMF/VWAP偏离/量价突破;符号先验,真符号/去留由 IC 定)——补单日 vol_ratio(已剔)
     ("cmf_20", +1), ("obv_mom_20", +1), ("price_vs_vwap_20", -1), ("breakout_vol_20", +1),
+    # 反转确认三因子(Plan A1-T2,2026-07-11):供 lens_reversal_confirm 候选(起爆硬门/前置低位/
+    # 衰竭企稳)。符号先验:vol_ratio_20 沿用旧 vol_ratio 的 +1(新 20 日口径,真符号/去留由 IC 定);
+    # dist_low_60 距 60 日低点% 越小=越贴近低位反转候选 → -1;days_no_new_low 越多天未创新低=越
+    # "衰竭企稳" → +1。
+    ("vol_ratio_20", +1), ("dist_low_60", -1), ("days_no_new_low", +1),
 ]
 FWDS = ["fwd_1_cc", "fwd_1_oo", "fwd_2_oc", "fwd_5_oc", "fwd_10_oc"]
 

@@ -219,3 +219,56 @@ def test_forward_returns_hi2_nan_when_d2_missing():
     res = fl.forward_returns(piv, P, "20260630", 10)
     assert res["hi_2_oc"].isna().all(), "D+2 缺列 → hi_2_oc 必须全 NaN"
     assert res["fwd_2_oc"].isna().all(), "D+2 缺列 → fwd_2_oc 必须全 NaN"
+
+
+# ── 反转确认三因子(vol_ratio_20/dist_low_60/days_no_new_low,Plan A1-T2:2026-07-11) ──
+
+
+def test_reversal_confirm_vol_ratio_20_value():
+    """vol_ratio_20 = D 日成交额 / 近 20 个交易日(含 D)成交额均值;量能骤增 → 比值数值精确。"""
+    P = [f"e{i}" for i in range(1, 22)]          # 21 个交易日,D = 最后一日
+    amount = pd.DataFrame([[1.0] * 20 + [3.0]], index=["A"], columns=P)
+    piv = {"amount": amount, "low": amount, "close": amount}   # low/close 本测试不用,占位同形状
+    out = fl.reversal_confirm_factors(piv, P, "e21")
+    # 窗口 = e2..e21(19 个 1.0 + 1 个 3.0),均值 (19+3)/20=1.1;3.0/1.1
+    assert np.isclose(out.loc["A", "vol_ratio_20"], 3.0 / 1.1)
+
+
+def test_reversal_confirm_dist_low_60_nonneg_and_value():
+    """dist_low_60 = (close[D]/60 日内最低价 − 1)×100;现价不低于历史低点 → 恒非负,数值精确。"""
+    P = ["d1", "d2", "d3", "d4", "d5", "d6"]
+    low = pd.DataFrame([[10, 9, 9.5, 9.2, 9.0, 9.1]], index=["A"], columns=P, dtype=float)
+    amount = pd.DataFrame([[1.0] * 6], index=["A"], columns=P)
+    piv = {"low": low, "close": low, "amount": amount}
+    out = fl.reversal_confirm_factors(piv, P, "d6")
+    assert out.loc["A", "dist_low_60"] >= 0, "现价不低于 60 日低点 → dist_low_60 恒非负"
+    assert np.isclose(out.loc["A", "dist_low_60"], (9.1 / 9.0 - 1.0) * 100)
+
+
+def test_reversal_confirm_days_no_new_low_boundary():
+    """边界:①窗口首个可得交易日恒创新低(min_periods=1 平凡)→ 0(防越界/防误判无穷);
+    ②D 当日本身创新低 → 0;③平历史低点算创新低,截断计数;④多股向量化互不干扰。"""
+    P = ["d1", "d2", "d3", "d4", "d5", "d6"]
+    low = pd.DataFrame(
+        [[10, 9, 9.5, 9.2, 9.0, 9.1],     # A: d2 创新低、d5 平历史低(=9)、d6 未创新低
+         [5, 6, 7, 8, 9, 10]],            # B: 只 d1 创新低,此后单调走高
+        index=["A", "B"], columns=P, dtype=float)
+    amount = pd.DataFrame([[1.0] * 6] * 2, index=["A", "B"], columns=P)
+    piv = {"low": low, "close": low, "amount": amount}
+
+    out_d1 = fl.reversal_confirm_factors(piv, P, "d1")
+    assert out_d1.loc["A", "days_no_new_low"] == 0, "窗口首个可用交易日恒创新低(边界,防越界/防误判无穷)"
+
+    out_d2 = fl.reversal_confirm_factors(piv, P, "d2")
+    assert out_d2.loc["A", "days_no_new_low"] == 0, "D 当日本身创新低 → 0"
+
+    out_d6 = fl.reversal_confirm_factors(piv, P, "d6")
+    assert out_d6.loc["A", "days_no_new_low"] == 1, "d5 平历史低点截断计数,d6 未创新低 → 仅 1 天"
+    assert out_d6.loc["B", "days_no_new_low"] == 5, "B 只 d1 创新低,此后 d2..d6 共 5 天未再创新低"
+
+
+def test_reversal_confirm_factors_registered_in_candidates():
+    """三因子须挂进 CANDIDATES(IC 三门读数的唯一入口),防漏挂/防手滑改名。"""
+    cand = dict(fl.CANDIDATES)
+    for name in ("vol_ratio_20", "dist_low_60", "days_no_new_low"):
+        assert name in cand, f"{name} 未注册进 CANDIDATES(IC 三门验证读不到它)"

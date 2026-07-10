@@ -158,6 +158,33 @@ class DataHandler:
         res["buyable"] = ~sealed.fillna(False)
         return res
 
+    def reversal_confirm_factors(self, piv: dict, price_dates: list[str], D: str) -> pd.DataFrame:
+        """反转确认三因子:vol_ratio_20/dist_low_60/days_no_new_low。镜像 factor_lab.reversal_confirm_factors
+        (公式逐行照搬,只换数据访问——见该函数 docstring 的定义/边界说明)。
+        """
+        P = price_dates
+        idx = P.index(D)
+        A, L, C = piv["amount"], piv["low"], piv["close"]
+        codes = C.index
+        out = pd.DataFrame(index=codes)
+
+        win20 = P[max(0, idx - 19):idx + 1]
+        denom20 = A.reindex(columns=win20).mean(axis=1).replace(0, np.nan)
+        amtD = A.reindex(columns=[D]).iloc[:, 0]
+        out["vol_ratio_20"] = amtD / denom20
+
+        hist = P[:idx + 1]
+        low_hist = L.reindex(columns=hist)
+        roll_min60 = low_hist.T.rolling(60, min_periods=1).min().T
+        low60_D = roll_min60.reindex(columns=[D]).iloc[:, 0]
+        closeD = C.reindex(columns=[D]).iloc[:, 0]
+        out["dist_low_60"] = (closeD / low60_D - 1.0) * 100
+
+        is_new_low = (low_hist <= roll_min60 + 1e-9).to_numpy()
+        rev = is_new_low[:, ::-1]
+        out["days_no_new_low"] = rev.argmax(axis=1).astype(float)
+        return out
+
     def factor_frame(self, D: str, piv: dict, price_dates: list[str], basic: pd.DataFrame,
                      cap_floor: float, fwd: int) -> pd.DataFrame | None:
         """组装 D 的横截面:canonical 因子 + tushare 增强 + 真·动量透镜分 + 前瞻收益 + 门。
@@ -316,6 +343,10 @@ class DataHandler:
             f["obv_mom_20"] = vol_series.obv_momentum(C, A, win).reindex(f["code"]).to_numpy()
             f["price_vs_vwap_20"] = vol_series.price_vs_vwap(H, L, C, A, win).reindex(f["code"]).to_numpy()
             f["breakout_vol_20"] = vol_series.breakout_on_volume(C, A, win).reindex(f["code"]).to_numpy()
+
+        # 反转确认三因子(vol_ratio_20/dist_low_60/days_no_new_low):镜像 factor_lab.reversal_confirm_factors
+        rcf = self.reversal_confirm_factors(piv, P, D)
+        f = f.merge(rcf, left_on="code", right_index=True, how="left")
 
         # 前瞻收益
         fr = self.forward_returns(piv, P, D, fwd)
