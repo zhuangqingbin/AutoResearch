@@ -12,7 +12,7 @@ CARD = ("# 决策卡\n\n| 评级 | 目标(EV) | R:R |\n|---|---|---|\n"
         "| Overweight | 120(EV) | 2:1 |\n\n**Rating**: Overweight\n")
 
 
-def _mk_day(root, date, with_attr=True, hi=None, fwd10=0.25):
+def _mk_day(root, date, with_attr=True, hi=None, fwd10=0.25, fwd2=0.05):
     d = root / date
     (d / "details").mkdir(parents=True)
     pd.DataFrame([{"code": "000001", "name": "甲", "sector": "半导体"}]).to_csv(
@@ -22,7 +22,7 @@ def _mk_day(root, date, with_attr=True, hi=None, fwd10=0.25):
         d / "L1_scored_full.csv", index=False)
     if with_attr:
         (d / "retro").mkdir()
-        row = {"code": "000001", "fwd_1_oo": 0.01, "fwd_5_oc": 0.08,
+        row = {"code": "000001", "fwd_1_oo": 0.01, "fwd_2_oc": fwd2, "fwd_5_oc": 0.08,
                "fwd_10_oc": fwd10, "gap_d1": 0.02}
         if hi is not None:
             row["hi_10_oc"] = hi
@@ -36,11 +36,12 @@ def test_roll_and_target_hit_close_fallback(tmp_path):
     assert len(df) == 1
     r = df.iloc[0]
     assert r["rating"] == "Overweight" and r["fwd_5"] == 0.08 and r["fwd_10"] == 0.25
+    assert r["fwd_2"] == 0.05
     assert r["gap_open"] == 0.02
     assert abs(r["target_ret"] - 0.20) < 1e-9                # 120/100−1
     assert bool(r["target_hit"])                              # fwd_10 0.25 ≥ 0.20
     md = "\n".join(render(df))
-    assert "✅" in md and "Overweight" in md and "⚠样本少" in md
+    assert "✅" in md and "Overweight" in md and "⚠样本少" in md and "fwd_2" in md
 
 
 def test_target_hit_by_touch(tmp_path):
@@ -57,6 +58,7 @@ def test_unrealized_fwd_degrades(tmp_path):
     _mk_day(tmp_path, "2026-07-01", with_attr=False)
     df = roll(tmp_path)
     r = df.iloc[0]
+    assert r["fwd_2"] is None or pd.isna(r["fwd_2"])
     assert r["fwd_5"] is None or pd.isna(r["fwd_5"])
     assert r["target_hit"] is None or pd.isna(r["target_hit"])
 
@@ -68,6 +70,7 @@ def test_base_rates_and_empty(tmp_path):
     br = rating_base_rates(roll(tmp_path), min_n=10)
     assert br[0]["rating"] == "Overweight" and br[0]["n"] == 1 and br[0]["thin"]
     assert br[0]["win5"] == 1.0
+    assert br[0]["win2"] == 1.0 and abs(br[0]["mean2"] - 0.05) < 1e-9   # 按 fwd_2 计,主尺
 
 
 # ---------------- 全卡目标校准(spec 2026-07-05 §6) ----------------

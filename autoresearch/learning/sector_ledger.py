@@ -87,7 +87,7 @@ def mature_call(frame0, frame1, industry: str) -> float | None:
     return round(float(ret.median()), 2)
 
 
-def backfill(call: dict, frame0, frame1, horizon: str = "fwd_5") -> dict:
+def backfill(call: dict, frame0, frame1, horizon: str = "fwd_2") -> dict:
     """给一条 call 回填 realized(retro 侧成熟后调;返回新 dict 不改原)。"""
     out = dict(call)
     v = mature_call(frame0, frame1, call.get("industry", ""))
@@ -114,7 +114,7 @@ def render_report(calls: list[dict]) -> str:
                          f"{'—' if hit is None else format(hit, '.0%')} |")
     pending = [c for c in calls if c.get("realized_pct") is None]
     if pending:
-        lines.append(f"\n_待成熟 {len(pending)} 条(retro 侧数据成熟后 `backfill` 回填;horizon=fwd_5)。_")
+        lines.append(f"\n_待成熟 {len(pending)} 条(retro 侧数据成熟后 `backfill` 回填;horizon=fwd_2 主尺)。_")
     return "\n".join(lines)
 
 

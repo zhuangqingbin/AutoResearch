@@ -21,13 +21,15 @@ def test_roll_triggers_join_fwd(tmp_path):
               "narrative": "n", "born": "2026-06-30", "expiry": "2026-08-31"},
              {"code": "000001", "name": "甲", "status": "临近", "detail": "d",
               "narrative": "n", "born": "2026-06-30", "expiry": "2026-08-31"}],
-            [{"code": "300476", "fwd_1_oo": 0.03, "fwd_5_oc": 0.08},
-             {"code": "000001", "fwd_1_oo": 0.0, "fwd_5_oc": 0.0}])
+            [{"code": "300476", "fwd_1_oo": 0.03, "fwd_2_oc": 0.05, "fwd_5_oc": 0.08},
+             {"code": "000001", "fwd_1_oo": 0.0, "fwd_2_oc": 0.0, "fwd_5_oc": 0.0}])
     df = roll(tmp_path)
     assert len(df) == 1 and df.iloc[0]["code"] == "300476"        # 只统计触发行
+    assert "fwd_2" in df.columns
+    assert abs(df.iloc[0]["fwd_2"] - 0.05) < 1e-9
     assert abs(df.iloc[0]["fwd_5"] - 0.08) < 1e-9
     md = "\n".join(render(df))
-    assert "胜宏科技" in md and "触发" in md
+    assert "胜宏科技" in md and "触发" in md and "fwd_2" in md
 
 
 def test_empty_graceful(tmp_path):

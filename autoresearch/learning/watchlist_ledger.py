@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pandas as pd
 
-_COLS = ["date", "code", "name", "status", "fwd_1", "fwd_5"]
+_COLS = ["date", "code", "name", "status", "fwd_1", "fwd_2", "fwd_5"]
 
 
 def roll(scan_root: Path | None = None) -> pd.DataFrame:
@@ -38,14 +38,17 @@ def roll(scan_root: Path | None = None) -> pd.DataFrame:
                 attr = None
         for _, r in trig.iterrows():
             code = str(r["code"]).zfill(6)
-            f1 = f5 = None
+            f1 = f2 = f5 = None
             if attr is not None and code in attr.index:
                 f1 = pd.to_numeric(pd.Series([attr.at[code, "fwd_1_oo"]]), errors="coerce").iloc[0]
+                if "fwd_2_oc" in attr.columns:
+                    f2 = pd.to_numeric(pd.Series([attr.at[code, "fwd_2_oc"]]), errors="coerce").iloc[0]
                 if "fwd_5_oc" in attr.columns:
                     f5 = pd.to_numeric(pd.Series([attr.at[code, "fwd_5_oc"]]), errors="coerce").iloc[0]
             rows.append({"date": ws.parent.name, "code": code, "name": r.get("name", ""),
                          "status": r.get("status", ""),
                          "fwd_1": None if pd.isna(f1) else round(float(f1), 6) if f1 is not None else None,
+                         "fwd_2": None if pd.isna(f2) else round(float(f2), 6) if f2 is not None else None,
                          "fwd_5": None if pd.isna(f5) else round(float(f5), 6) if f5 is not None else None})
     return pd.DataFrame(rows, columns=_COLS).sort_values(["date", "code"]).reset_index(drop=True)
 
@@ -58,9 +61,9 @@ def render(ledger: pd.DataFrame) -> list[str]:
     def f(x):
         return "—" if x is None or pd.isna(x) else f"{x * 100:+.2f}%"
 
-    out += ["| 日期 | 股票 | 状态 | fwd_1 | fwd_5 |", "|---|---|---|---|---|"]
+    out += ["| 日期 | 股票 | 状态 | fwd_1 | fwd_2 | fwd_5 |", "|---|---|---|---|---|---|"]
     for r in ledger.itertuples(index=False):
-        out.append(f"| {r.date} | {r.name}({r.code}) | {r.status} | {f(r.fwd_1)} | {f(r.fwd_5)} |")
+        out.append(f"| {r.date} | {r.name}({r.code}) | {r.status} | {f(r.fwd_1)} | {f(r.fwd_2)} | {f(r.fwd_5)} |")
     f5 = pd.to_numeric(ledger["fwd_5"], errors="coerce").dropna()
     if len(f5):
         out += ["", f"- **汇总**:{len(ledger)} 次触发;fwd_5 均值 {f(f5.mean())}、胜率 {(f5 > 0).mean():.0%}"

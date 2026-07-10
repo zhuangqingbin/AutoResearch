@@ -6,14 +6,18 @@ import pandas as pd
 from autoresearch.learning.channel_ledger import render, roll
 
 
-def _write_day(root, date, heat_ue, comp_ue):
+def _write_day(root, date, heat_ue, comp_ue, heat_ue2=None, comp_ue2=None):
+    heat_ue2 = heat_ue if heat_ue2 is None else heat_ue2
+    comp_ue2 = comp_ue if comp_ue2 is None else comp_ue2
     rd = root / date / "retro"
     rd.mkdir(parents=True)
     pd.DataFrame([
         {"channel": "heat", "n_recalled": 10, "n_unique": 3, "n_unbuyable": 0,
-         "mean_excess_t5": heat_ue, "unique_excess_t5": heat_ue, "mean_excess_t1": 0.0, "hit_rate_t5": 0.6},
+         "mean_excess_t5": heat_ue, "unique_excess_t5": heat_ue, "mean_excess_t1": 0.0, "hit_rate_t5": 0.6,
+         "mean_excess_t2": heat_ue2, "unique_excess_t2": heat_ue2, "hit_rate_t2": 0.6},
         {"channel": "composite", "n_recalled": 50, "n_unique": 5, "n_unbuyable": 0,
-         "mean_excess_t5": comp_ue, "unique_excess_t5": comp_ue, "mean_excess_t1": 0.0, "hit_rate_t5": 0.4},
+         "mean_excess_t5": comp_ue, "unique_excess_t5": comp_ue, "mean_excess_t1": 0.0, "hit_rate_t5": 0.4,
+         "mean_excess_t2": comp_ue2, "unique_excess_t2": comp_ue2, "hit_rate_t2": 0.4},
     ]).to_csv(rd / "channel_eval.csv", index=False)
 
 
@@ -25,7 +29,16 @@ def test_roll_aggregates_across_days(tmp_path):
     heat = led[led["channel"] == "heat"].iloc[0]
     assert int(heat["n_days"]) == 3 and int(heat["sum_unique"]) == 9
     assert abs(heat["mean_unique_excess_t5"] - 0.04) < 1e-9          # mean(0.02,0.04,0.06)
+    assert abs(heat["mean_unique_excess_t2"] - 0.04) < 1e-9          # 本 fixture t2 镜像 t5
     assert led.iloc[0]["channel"] == "heat"                          # 降序:heat 在 composite 前
+
+
+def test_roll_sorts_by_t2(tmp_path):
+    # t5:heat(0.10) > composite(0.01);t2:composite(0.05) > heat(0.01) —— 主排序=t2,故 composite 第一。
+    _write_day(tmp_path, "2026-06-18", 0.10, 0.01, heat_ue2=0.01, comp_ue2=0.05)
+    led = roll(scan_root=tmp_path)
+    assert "mean_unique_excess_t2" in led.columns
+    assert led.iloc[0]["channel"] == "composite"
 
 
 def test_roll_empty_when_no_files(tmp_path):
@@ -35,6 +48,7 @@ def test_roll_empty_when_no_files(tmp_path):
 
 def test_render_flags_thin_sample():
     led = pd.DataFrame([{"channel": "heat", "n_days": 2, "sum_unique": 4,
+                         "mean_unique_excess_t2": 0.03, "mean_excess_t2": 0.02, "mean_hit_rate_t2": 0.6,
                          "mean_unique_excess_t5": 0.03, "mean_excess_t5": 0.02, "mean_hit_rate_t5": 0.6}])
     md = "\n".join(render(led))
     assert "⚠样本少" in md and "heat" in md and "+3.0%" in md

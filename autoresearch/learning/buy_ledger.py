@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pandas as pd
 
-_COLS = ["date", "code", "name", "rating", "gap_open", "fwd_1", "fwd_5", "fwd_10",
+_COLS = ["date", "code", "name", "rating", "gap_open", "fwd_1", "fwd_2", "fwd_5", "fwd_10",
          "hi_10", "target_ret", "target_hit"]
 _TARGET_RE = re.compile(r"(\d+(?:\.\d+)?)")
 
@@ -100,6 +100,7 @@ def roll(scan_root: Path | str | None = None) -> pd.DataFrame:
                     hit = bool((f10 if f10 is not None else f5) >= tr)
             rows.append({"date": d.name, "code": code, "name": names.get(code, ""),
                          "rating": rating, "gap_open": gap, "fwd_1": _a("fwd_1_oo"),
+                         "fwd_2": _a("fwd_2_oc"),
                          "fwd_5": f5, "fwd_10": f10, "hi_10": hi10,
                          "target_ret": tr, "target_hit": hit})
     return pd.DataFrame(rows, columns=_COLS)
@@ -163,14 +164,18 @@ def calibration_line(stats: dict | None) -> str | None:
 
 
 def rating_base_rates(ledger: pd.DataFrame, min_n: int = 10) -> list[dict]:
-    """按评级聚基率:n / T+5 胜率 / T+5 均值 / 目标命中率;n<min_n 标 thin(先验别急着用)。"""
+    """按评级聚基率:n / T+2 胜率&均值(主)/ T+5 胜率&均值(参考)/ 目标命中率;n<min_n 标 thin。"""
     if ledger is None or not len(ledger):
         return []
     out = []
     for rating, g in ledger.groupby("rating"):
+        f2 = pd.to_numeric(g["fwd_2"], errors="coerce").dropna() if "fwd_2" in g.columns \
+            else pd.Series(dtype=float)
         f5 = pd.to_numeric(g["fwd_5"], errors="coerce").dropna()
         th = g["target_hit"].dropna()
         out.append({"rating": rating, "n": len(g), "n_realized": len(f5),
+                    "win2": round(float((f2 > 0).mean()), 3) if len(f2) else None,
+                    "mean2": round(float(f2.mean()), 4) if len(f2) else None,
                     "win5": round(float((f5 > 0).mean()), 3) if len(f5) else None,
                     "mean5": round(float(f5.mean()), 4) if len(f5) else None,
                     "target_hit": round(float(th.mean()), 3) if len(th) else None,
@@ -201,22 +206,25 @@ def render(ledger: pd.DataFrame, calib: dict | None = None) -> list[str]:
             return "—"
         return f"{x * 100:+.2f}%" if pct else str(x)
 
-    out += ["| 日期 | 股票 | 评级 | gap开盘 | fwd_1 | fwd_5 | fwd_10 | 触价hi10 | 目标幅 | 命中 |",
-            "|---|---|---|---|---|---|---|---|---|---|"]
+    out += ["| 日期 | 股票 | 评级 | gap开盘 | fwd_1 | fwd_2 | fwd_5 | fwd_10 | 触价hi10 | 目标幅 | 命中 |",
+            "|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in ledger.itertuples(index=False):
         hit = "—" if r.target_hit is None or pd.isna(r.target_hit) else ("✅" if r.target_hit else "✗")
         out.append(f"| {r.date} | {r.name}({r.code}) | {r.rating} | {f(r.gap_open)} "
-                   f"| {f(r.fwd_1)} | {f(r.fwd_5)} | {f(r.fwd_10)} | {f(r.hi_10)} "
+                   f"| {f(r.fwd_1)} | {f(r.fwd_2)} | {f(r.fwd_5)} | {f(r.fwd_10)} | {f(r.hi_10)} "
                    f"| {f(r.target_ret)} | {hit} |")
     br = rating_base_rates(ledger)
     if br:
         out += ["", "## 评级基率(n≥10 才可注入 skeptic/PM 当先验)"]
         for b in br:
             thin = " ⚠样本少" if b["thin"] else ""
-            out.append(f"- **{b['rating']}**:n={b['n']}(已实现 {b['n_realized']}),"
-                       f"T+5 胜率 {f(b['win5'], False) if b['win5'] is None else format(b['win5'], '.0%')},"
-                       f"均值 {f(b['mean5'])},目标命中 "
-                       f"{('—' if b['target_hit'] is None else format(b['target_hit'], '.0%'))}{thin}")
+            out.append(
+                f"- **{b['rating']}**:n={b['n']}(已实现 {b['n_realized']}),"
+                f"**T+2 胜率 {'—' if b['win2'] is None else format(b['win2'], '.0%')}(主)**"
+                f"/均值 {f(b['mean2'])},"
+                f"T+5 胜率 {'—' if b['win5'] is None else format(b['win5'], '.0%')}(参考)"
+                f"/均值 {f(b['mean5'])},目标命中 "
+                f"{('—' if b['target_hit'] is None else format(b['target_hit'], '.0%'))}{thin}")
     out += _calib_section(calib)
     out += ["", "> fwd 列 `—` = 该日 attribution 在 fwd 成熟前写盘(retro 一次性落账)。刷新:对已成熟老日"
             "手动 `retro.attribute('<date>')` 重写 attribution 再重跑本 ledger(拉数走 factor_lab cache,幂等)。"]

@@ -4,8 +4,8 @@
 design: docs/specs/2026-07-02-learning-mtm-design.md §R3
 
 聚合各 scan 日 gate_fires.csv × retro/attribution.csv 的已实现 fwd → 每门 n_fires/被拦票
-excess 均值/拦对率。某门持续 excess>0(拦的票反而跑赢)→ 第 4 步提松阈/退役建议(人批)。
-门拦对了是功劳簿,拦错了是退役依据——没有这本账,门只会累积成保守棘轮。
+excess 均值/拦对率(**主尺 T+2**,fwd_1/fwd_5 保留参考)。某门持续 excess>0(拦的票反而跑赢)→
+第 4 步提松阈/退役建议(人批)。门拦对了是功劳簿,拦错了是退役依据——没有这本账,门只会累积成保守棘轮。
 
   uv run --no-sync python -m autoresearch.learning.gate_ledger   # → reports/learning/gate_ledger.md
 """
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pandas as pd
 
-_COLS = ["check", "n_days", "n_fires", "mean_ex1", "mean_ex5", "hit_rate"]
+_COLS = ["check", "n_days", "n_fires", "mean_ex1", "mean_ex2", "mean_ex5", "hit_rate"]
 
 
 def roll(scan_root: Path | None = None) -> pd.DataFrame:
@@ -37,12 +37,17 @@ def roll(scan_root: Path | None = None) -> pd.DataFrame:
         fires["code"] = fires["code"].astype(str).str.zfill(6)
         attr["code"] = attr["code"].astype(str).str.zfill(6)
         f1 = pd.to_numeric(attr["fwd_1_oo"], errors="coerce")
+        f2 = pd.to_numeric(attr.get("fwd_2_oc"), errors="coerce") if "fwd_2_oc" in attr.columns \
+            else pd.Series(dtype=float)
         f5 = pd.to_numeric(attr.get("fwd_5_oc"), errors="coerce") if "fwd_5_oc" in attr.columns \
             else pd.Series(dtype=float)
-        m1, m5 = f1.mean(), (f5.mean() if len(f5) else float("nan"))
-        j = fires.merge(attr[[c for c in ("code", "fwd_1_oo", "fwd_5_oc") if c in attr.columns]],
+        m1 = f1.mean()
+        m2 = f2.mean() if len(f2) else float("nan")
+        m5 = f5.mean() if len(f5) else float("nan")
+        j = fires.merge(attr[[c for c in ("code", "fwd_1_oo", "fwd_2_oc", "fwd_5_oc") if c in attr.columns]],
                         on="code", how="left")
         j["ex1"] = pd.to_numeric(j.get("fwd_1_oo"), errors="coerce") - m1
+        j["ex2"] = (pd.to_numeric(j.get("fwd_2_oc"), errors="coerce") - m2) if "fwd_2_oc" in j.columns else None
         j["ex5"] = (pd.to_numeric(j.get("fwd_5_oc"), errors="coerce") - m5) if "fwd_5_oc" in j.columns else None
         j["date"] = gf.parent.name
         rows.append(j)
@@ -51,10 +56,10 @@ def roll(scan_root: Path | None = None) -> pd.DataFrame:
     alld = pd.concat(rows, ignore_index=True)
     out = alld.groupby("check").agg(
         n_days=("date", "nunique"), n_fires=("code", "size"),
-        mean_ex1=("ex1", "mean"), mean_ex5=("ex5", "mean"),
-        hit_rate=("ex1", lambda s: float((s.dropna() < 0).mean()) if s.notna().any() else None),
+        mean_ex1=("ex1", "mean"), mean_ex2=("ex2", "mean"), mean_ex5=("ex5", "mean"),
+        hit_rate=("ex2", lambda s: float((s.dropna() < 0).mean()) if s.notna().any() else None),
     ).reset_index()
-    for c in ("mean_ex1", "mean_ex5", "hit_rate"):
+    for c in ("mean_ex1", "mean_ex2", "mean_ex5", "hit_rate"):
         out[c] = pd.to_numeric(out[c], errors="coerce").round(4)
     return out.sort_values("n_fires", ascending=False).reset_index(drop=True)
 
@@ -67,12 +72,13 @@ def render(ledger: pd.DataFrame) -> list[str]:
     def f(x):
         return "—" if x is None or pd.isna(x) else f"{x * 100:+.2f}%"
 
-    out += ["| 门 | 天数 | 拦次 | 被拦ex1 | 被拦ex5 | 拦对率 |", "|---|---|---|---|---|---|"]
+    out += ["| 门 | 天数 | 拦次 | 被拦ex1(参考) | 被拦ex2(主尺) | 被拦ex5(参考) | 拦对率(按ex2) |",
+            "|---|---|---|---|---|---|---|"]
     for r in ledger.itertuples(index=False):
         thin = " ⚠样本少" if (r.n_fires or 0) < 5 else ""
         hr = "—" if pd.isna(r.hit_rate) else f"{r.hit_rate:.0%}"
         out.append(f"| {r.check}{thin} | {int(r.n_days)} | {int(r.n_fires)} | "
-                   f"{f(r.mean_ex1)} | {f(r.mean_ex5)} | {hr} |")
+                   f"{f(r.mean_ex1)} | {f(r.mean_ex2)} | {f(r.mean_ex5)} | {hr} |")
     out += ["", "_某门持续 ex>0 → 提松阈/退役建议(proposals,人批);别让门无问责地累积。_"]
     return out
 

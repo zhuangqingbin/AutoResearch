@@ -15,11 +15,11 @@ from pathlib import Path
 
 import pandas as pd
 
-_COLS = ["date", "n_bought", "n_stocks", "mkt_fwd1", "mkt_fwd5"]
+_COLS = ["date", "n_bought", "n_stocks", "mkt_fwd1", "mkt_fwd2", "mkt_fwd5"]
 
 
 def roll(scan_root: Path | None = None) -> pd.DataFrame:
-    """聚合 context/scan/*/retro/attribution.csv → 每日 [date,n_bought,n_stocks,mkt_fwd1,mkt_fwd5]。"""
+    """聚合 context/scan/*/retro/attribution.csv → 每日 [date,n_bought,n_stocks,mkt_fwd1,mkt_fwd2,mkt_fwd5]。"""
     scan_root = scan_root or Path("context/scan")
     rows = []
     for p in sorted(Path(scan_root).glob("*/retro/attribution.csv")):
@@ -32,10 +32,12 @@ def roll(scan_root: Path | None = None) -> pd.DataFrame:
         bought = df["bought"].astype(str).str.lower().isin(("true", "1")) if "bought" in df.columns \
             else pd.Series(False, index=df.index)
         f1 = pd.to_numeric(df["fwd_1_oo"], errors="coerce")
+        f2 = pd.to_numeric(df.get("fwd_2_oc"), errors="coerce") if "fwd_2_oc" in df.columns else pd.Series(dtype=float)
         f5 = pd.to_numeric(df.get("fwd_5_oc"), errors="coerce") if "fwd_5_oc" in df.columns else pd.Series(dtype=float)
         rows.append({"date": p.parent.parent.name, "n_bought": int(bought.sum()),
                      "n_stocks": int(f1.notna().sum()),
                      "mkt_fwd1": round(float(f1.mean()), 6) if f1.notna().any() else None,
+                     "mkt_fwd2": round(float(f2.mean()), 6) if len(f2) and f2.notna().any() else None,
                      "mkt_fwd5": round(float(f5.mean()), 6) if len(f5) and f5.notna().any() else None})
     return pd.DataFrame(rows, columns=_COLS).sort_values("date").reset_index(drop=True)
 
@@ -49,19 +51,20 @@ def render(ledger: pd.DataFrame) -> list[str]:
     def f(x):
         return "—" if x is None or pd.isna(x) else f"{x * 100:+.2f}%"
 
-    out += ["| 日期 | 买单 | 全市场fwd_1 | 全市场fwd_5 |", "|---|---|---|---|"]
+    out += ["| 日期 | 买单 | 全市场fwd_1 | 全市场fwd_2 | 全市场fwd_5 |", "|---|---|---|---|---|"]
     for r in ledger.itertuples(index=False):
-        out.append(f"| {r.date} | {int(r.n_bought)} | {f(r.mkt_fwd1)} | {f(r.mkt_fwd5)} |")
+        out.append(f"| {r.date} | {int(r.n_bought)} | {f(r.mkt_fwd1)} | {f(r.mkt_fwd2)} | {f(r.mkt_fwd5)} |")
     zero, some = ledger[ledger["n_bought"] == 0], ledger[ledger["n_bought"] > 0]
     out.append("")
     if len(zero):
-        v1, v5 = zero["mkt_fwd1"].mean(), zero["mkt_fwd5"].mean()
-        verdict = "空仓方向正确" if (pd.notna(v5) and v5 < 0) or (pd.isna(v5) and pd.notna(v1) and v1 < 0) \
+        v1, v2, v5 = zero["mkt_fwd1"].mean(), zero["mkt_fwd2"].mean(), zero["mkt_fwd5"].mean()
+        verdict = "空仓方向正确" if (pd.notna(v2) and v2 < 0) or (pd.isna(v2) and pd.notna(v1) and v1 < 0) \
             else "⚠️ 0买日后市为正——查召回/门(失明预警),别只归因纪律"
-        out.append(f"- **0买日**({len(zero)} 日):市场 fwd_1 均值 {f(v1)}、fwd_5 均值 {f(v5)} → {verdict}")
+        out.append(f"- **0买日**({len(zero)} 日):市场 fwd_1 {f(v1)}、**fwd_2 {f(v2)}(主尺)**、"
+                   f"fwd_5 {f(v5)}(参考)→ {verdict}")
     if len(some):
         out.append(f"- **有买日**({len(some)} 日):市场 fwd_1 均值 {f(some['mkt_fwd1'].mean())}、"
-                   f"fwd_5 均值 {f(some['mkt_fwd5'].mean())}")
+                   f"fwd_2 均值 {f(some['mkt_fwd2'].mean())}、fwd_5 均值 {f(some['mkt_fwd5'].mean())}")
     out.append("")
     out.append("_口径:attribution.csv 全市场等权均值(与 channel_eval 同源);仅供研究。_")
     return out

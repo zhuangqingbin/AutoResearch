@@ -55,7 +55,7 @@ def test_mature_call_and_backfill():
     assert mature_call(None, f1, "半导体") is None             # 缺帧 → None
     call = {"date": DATE, "industry": "半导体", "direction": "看多", "realized_pct": None}
     out = backfill(call, f0, f1)
-    assert out["realized_pct"] == 2.5 and out["horizon"] == "fwd_5"
+    assert out["realized_pct"] == 2.5 and out["horizon"] == "fwd_2"   # 默认 horizon 主尺切 fwd_2
     assert call["realized_pct"] is None                        # 不改原 dict
 
 
