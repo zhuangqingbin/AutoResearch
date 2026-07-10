@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""闭环复盘 retro · 归因前一日 scan 报告 vs T+1 已实现涨跌(确定性,零 LLM)。
+"""闭环复盘 retro · 归因前一日 scan 报告 vs T+2 已实现涨跌(确定性,零 LLM)。
 
-仅挂 scan-market。用当日已实现 `fwd_1_oo`(T+1 开到开,复用 factor_lab 口径:D 收盘信号→
-D+1 开盘买、剔 D+1 一字板)检验 D 的报告,把每只股票分桶:抓到 / L2-L3 误判 / 漏在 L1 /
-漏在 L0 / 误买。产出 attribution.csv + retro_input.md,喂给 scan-retro skill 做 Claude 诊断
+仅挂 scan-market。用当日已实现 `fwd_2_oc`(超短主尺,复用 factor_lab 口径:D 收盘信号→D+1 开盘买、
+D+2 收盘卖、剔 D+1 一字板;`fwd_1_oo` 仍留作参考)检验 D 的报告,把每只股票分桶:抓到 / L2-L3 误判 /
+漏在 L1 / 漏在 L0 / 误买。产出 attribution.csv + retro_input.md,喂给 scan-retro skill 做 Claude 诊断
 (系统性病因 + 自动重标定 + 经验/建议)。归因数学纯函数、可离线自测;取数复用 factor_lab。
 
 用法:
@@ -49,7 +49,7 @@ def attribute_frame(l1: pd.DataFrame, realized: pd.DataFrame, buylist: dict,
                     abs_thresh: float = 0.03, top_q: float = 0.9, bot_q: float = 0.1) -> pd.DataFrame:
     """全市场已实现收益 × L1 全打分面板 × 报告买单 → 每只一个 bucket。纯函数(无 IO)。
 
-    赢家 = 可交易 universe 内 fwd_1_oo ≥ 九分位 ∧ ≥ abs_thresh。
+    赢家 = 可交易 universe 内 fwd_2_oc(T+2 主尺)≥ 九分位 ∧ ≥ abs_thresh。
     """
     l1 = l1.copy()
     l1["code"] = l1["code"].astype(str).str.zfill(6)
@@ -62,12 +62,12 @@ def attribute_frame(l1: pd.DataFrame, realized: pd.DataFrame, buylist: dict,
     m["recalled_flag"] = _as_bool(m["recalled"]) if "recalled" in m.columns else False
     m["rating"] = m["code"].map(bl)
     m["bought"] = m["rating"].isin(_BUY)
-    m["tradable"] = m["buyable"].fillna(True) & m["fwd_1_oo"].notna()
+    m["tradable"] = m["buyable"].fillna(True) & m["fwd_2_oc"].notna()
 
     trad = m[m["tradable"]]
-    hi = trad["fwd_1_oo"].quantile(top_q) if len(trad) else float("nan")
-    lo = trad["fwd_1_oo"].quantile(bot_q) if len(trad) else float("nan")
-    m["winner"] = m["tradable"] & (m["fwd_1_oo"] >= hi) & (m["fwd_1_oo"] >= abs_thresh)
+    hi = trad["fwd_2_oc"].quantile(top_q) if len(trad) else float("nan")
+    lo = trad["fwd_2_oc"].quantile(bot_q) if len(trad) else float("nan")
+    m["winner"] = m["tradable"] & (m["fwd_2_oc"] >= hi) & (m["fwd_2_oc"] >= abs_thresh)
 
     def bucket(r) -> str:
         if r["winner"] and r["bought"]:
@@ -78,14 +78,14 @@ def attribute_frame(l1: pd.DataFrame, realized: pd.DataFrame, buylist: dict,
             return "missed_l1"
         if r["winner"] and not r["in_l1"]:
             return "missed_l0"
-        if r["bought"] and r["tradable"] and r["fwd_1_oo"] <= lo:
+        if r["bought"] and r["tradable"] and r["fwd_2_oc"] <= lo:
             return "false_positive"
         return ""
 
     m["bucket"] = m.apply(bucket, axis=1)
 
-    # T+5 swing 口径(spec 2026-07-02-scan-retro-depth-metrics §①):L3/L4 猎的是 swing,
-    # 盲区审计与 T+1 并存;fwd_5 未成熟(NaN)→ winner_5 全 False(retro 补跑成熟日覆写)。
+    # T+5 参考口径(降级保留;spec 2026-07-02-scan-retro-depth-metrics §①):L3/L4 猎的是 swing,
+    # 盲区审计与主尺(T+2)并存;fwd_5 未成熟(NaN)→ winner_5 全 False(retro 补跑成熟日覆写)。
     abs_thresh_5 = 0.05
     if "fwd_5_oc" in m.columns:
         t5 = m["buyable"].fillna(True) & m["fwd_5_oc"].notna()
@@ -144,8 +144,8 @@ def floor_experiment(l2df: pd.DataFrame, attr: pd.DataFrame) -> dict:
 
 def l3_miss_autopsy(attr: pd.DataFrame, l2df: pd.DataFrame, finalists: pd.DataFrame,
                     judged: pd.DataFrame, top_n: int = 10) -> pd.DataFrame:
-    """L3 错杀验尸(spec §②):L2-keep ∧ 非 finalist ∧ winner_5 → join L3 判分(当时的红队理由)。纯函数。"""
-    cols = ["code", "name", "fwd_5_oc", "thesis", "risk", "triage_lean", "lane",
+    """L3 错杀验尸(spec §②):L2-keep ∧ 非 finalist ∧ winner(T+2 主尺) → join L3 判分(当时的红队理由)。纯函数。"""
+    cols = ["code", "name", "fwd_2_oc", "thesis", "risk", "triage_lean", "lane",
             "conviction", "fragility"]
     if judged is None or not len(judged) or attr is None or not len(attr):
         return pd.DataFrame(columns=cols)
@@ -158,28 +158,28 @@ def l3_miss_autopsy(attr: pd.DataFrame, l2df: pd.DataFrame, finalists: pd.DataFr
     j = judged.copy()
     j["code"] = j["code"].astype(str).str.zfill(6)
     pool = _codes(l2df) - _codes(finalists)
-    w5 = a.get("winner_5", pd.Series(False, index=a.index)).fillna(False)
-    miss = a[w5 & a["code"].isin(pool)]
+    w2 = a.get("winner", pd.Series(False, index=a.index)).fillna(False)
+    miss = a[w2 & a["code"].isin(pool)]
     out = miss.merge(j, on="code", how="inner", suffixes=("", "_j"))
-    out = out.sort_values("fwd_5_oc", ascending=False).head(top_n)
+    out = out.sort_values("fwd_2_oc", ascending=False).head(top_n)
     return out[[c for c in cols if c in out.columns]].reset_index(drop=True)
 
 
 def build_retro_pairs(attr: pd.DataFrame, max_pairs: int = 20) -> pd.DataFrame:
     """M1·同日配对蒸馏:构造 ExpeL 式 fail/success 对(控制变量=同日 → regime/地形/漏斗参数恒定)。
 
-    fail 侧 = 评级最高档但 T+5 跌(有 bought=OW/Buy 则用之;**0 买日**退化到当日最高评级档的下跌者);
-    success 侧 = 同日被门拦/漏召回(bucket_5 ∈ missed_l0/l1)但 T+5 涨(winner_5)。
+    fail 侧 = 评级最高档但 T+2 跌(有 bought=OW/Buy 则用之;**0 买日**退化到当日最高评级档的下跌者);
+    success 侧 = 同日被门拦/漏召回(bucket ∈ missed_l0/l1)但 T+2 涨(winner)。
     贪心配对:worst-fail 先,同 industry 最近邻优先(matched_on=industry),无则放宽全局(=global),success 各用一次。
     输出每对带因子差(fail − success),diff 只剩标的特征与判断 → 喂 Claude 蒸馏,走 M2 `adjudicate` 落库。
-    fwd_5 未成熟 / 缺 fail 或 success 侧 → 返回空表(优雅,retro 未成熟日不产)。
+    fwd_2 与主归因同尺、D+2 即成熟 → 配对当日可产,不再等 T+5(缺 fail 或 success 侧仍返回空表,优雅)。
     """
     empty = pd.DataFrame()
-    if attr is None or attr.empty or "fwd_5_oc" not in attr.columns:
+    if attr is None or attr.empty or "fwd_2_oc" not in attr.columns:
         return empty
     a = attr.copy()
-    a["_fwd5"] = pd.to_numeric(a["fwd_5_oc"], errors="coerce")
-    if a["_fwd5"].notna().sum() == 0:                        # fwd_5 未成熟
+    a["_fwd2"] = pd.to_numeric(a["fwd_2_oc"], errors="coerce")
+    if a["_fwd2"].notna().sum() == 0:                        # fwd_2 未成熟
         return empty
     # fail 侧只在**真被 L4 评级过**的票里选(rating ∈ 五档);未评级 universe 票即便暴跌也非判断失败
     rated = a[a.get("rating", pd.Series(dtype=str)).astype(str).isin(set(RATINGS_5_TIER))] \
@@ -191,12 +191,12 @@ def build_retro_pairs(attr: pd.DataFrame, max_pairs: int = 20) -> pd.DataFrame:
     bought = rated[rated["rating"].isin(_BUY)] if not rated.empty else rated
     fail_pool = bought if not bought.empty else (
         rated[rated["_rank"] == rated["_rank"].min()] if not rated.empty else rated)
-    fails = fail_pool[fail_pool["_fwd5"] < 0].sort_values("_fwd5")     # 跌得最狠先配
+    fails = fail_pool[fail_pool["_fwd2"] < 0].sort_values("_fwd2")     # 跌得最狠先配
 
-    # success 侧:同日被门拦/漏召回但 T+5 涨
-    miss = a.get("bucket_5", "").isin(["missed_l0", "missed_l1"]) if "bucket_5" in a.columns else False
-    win = a.get("winner_5", False).fillna(False).astype(bool) if "winner_5" in a.columns else False
-    succ = a[miss & win].sort_values("_fwd5", ascending=False)
+    # success 侧:同日被门拦/漏召回但 T+2 涨
+    miss = a.get("bucket", "").isin(["missed_l0", "missed_l1"]) if "bucket" in a.columns else False
+    win = a.get("winner", False).fillna(False).astype(bool) if "winner" in a.columns else False
+    succ = a[miss & win].sort_values("_fwd2", ascending=False)
     if fails.empty or succ.empty:
         return empty
 
@@ -212,8 +212,8 @@ def build_retro_pairs(attr: pd.DataFrame, max_pairs: int = 20) -> pd.DataFrame:
         w = same.iloc[0] if not same.empty else pool.iloc[0]
         used.add(w["code"])
         rec = {"fail_code": f["code"], "fail_name": f.get("name"), "fail_rating": f.get("rating"),
-               "fail_fwd5": round(float(f["_fwd5"]), 4), "win_code": w["code"], "win_name": w.get("name"),
-               "win_bucket5": w.get("bucket_5"), "win_fwd5": round(float(w["_fwd5"]), 4),
+               "fail_fwd2": round(float(f["_fwd2"]), 4), "win_code": w["code"], "win_name": w.get("name"),
+               "win_bucket": w.get("bucket"), "win_fwd2": round(float(w["_fwd2"]), 4),
                "industry": f.get("industry"),
                "matched_on": "industry" if (not same.empty) else "global"}
         for dcol, src in _PAIR_DIFF_COLS:                    # 因子差 = fail − success(控制变量对比)
@@ -230,7 +230,7 @@ _GUARD_OPS = {">": lambda s, t: s > t, ">=": lambda s, t: s >= t, "<": lambda s,
 
 def mtm_check_guards(attr: pd.DataFrame, lessons: list[dict], day: str,
                      min_n: int = 5, apply: bool = True) -> list[dict]:
-    """R2·经验 MTM 机判:带 guard 的经验,其条件组当日 fwd_1 对市场的 excess → support/refute。
+    """R2·经验 MTM 机判:带 guard 的经验,其条件组当日 fwd_2(超短主尺)对市场的 excess → support/refute。
 
     guard 全是"拦买"型 → 满足组跑输市场(excess<0)= 拦得对 = support;跑赢 = refute。
     n<min_n → skip(样本不足不判)。apply=True → 判定即调 feedback_store.mtm_update
@@ -239,7 +239,7 @@ def mtm_check_guards(attr: pd.DataFrame, lessons: list[dict], day: str,
     import autoresearch.learning.feedback_store as fs
 
     out: list[dict] = []
-    mkt = pd.to_numeric(attr.get("fwd_1_oo"), errors="coerce")
+    mkt = pd.to_numeric(attr.get("fwd_2_oc"), errors="coerce")
     for lsn in lessons:
         gd = lsn.get("guard")
         if not isinstance(gd, dict) or gd.get("field") not in attr.columns:
@@ -265,7 +265,7 @@ def mtm_check_guards(attr: pd.DataFrame, lessons: list[dict], day: str,
 
 def gate_audit(attr: pd.DataFrame, scan_dir: Path | str) -> pd.DataFrame:
     """R3·门审计:gate_fires.csv × 已实现 fwd → 被拦票后来怎么走(excess<0 = 拦对)。纯读。"""
-    cols = ["code", "check", "severity", "fwd_1_oo", "ex1", "fwd_5_oc", "ex5"]
+    cols = ["code", "check", "severity", "fwd_1_oo", "ex1", "fwd_2_oc", "ex2", "fwd_5_oc", "ex5"]
     p = Path(scan_dir) / "gate_fires.csv"
     if not p.exists():
         return pd.DataFrame(columns=cols)
@@ -277,10 +277,12 @@ def gate_audit(attr: pd.DataFrame, scan_dir: Path | str) -> pd.DataFrame:
     a = attr.copy()
     a["code"] = a["code"].astype(str).str.zfill(6)
     m1 = pd.to_numeric(a["fwd_1_oo"], errors="coerce").mean()
+    m2 = pd.to_numeric(a.get("fwd_2_oc"), errors="coerce").mean() if "fwd_2_oc" in a.columns else float("nan")
     m5 = pd.to_numeric(a.get("fwd_5_oc"), errors="coerce").mean() if "fwd_5_oc" in a.columns else float("nan")
-    out = fires.merge(a[[c for c in ("code", "fwd_1_oo", "fwd_5_oc") if c in a.columns]],
+    out = fires.merge(a[[c for c in ("code", "fwd_1_oo", "fwd_2_oc", "fwd_5_oc") if c in a.columns]],
                       on="code", how="left")
     out["ex1"] = pd.to_numeric(out.get("fwd_1_oo"), errors="coerce") - m1
+    out["ex2"] = (pd.to_numeric(out.get("fwd_2_oc"), errors="coerce") - m2) if "fwd_2_oc" in out.columns else None
     out["ex5"] = (pd.to_numeric(out.get("fwd_5_oc"), errors="coerce") - m5) if "fwd_5_oc" in out.columns else None
     return out[[c for c in cols if c in out.columns]]
 
@@ -322,7 +324,7 @@ def stage_stats(attr: pd.DataFrame) -> dict:
     res["buylist_hitrate"] = round(res["buylist_hit"] / nB, 3) if nB else None
     sub = attr[attr["tradable"] & attr.get("composite", pd.Series(dtype=float)).notna()]
     if len(sub) >= 30:
-        res["day_ic_composite"] = round(sub["composite"].rank().corr(sub["fwd_1_oo"].rank()), 4)
+        res["day_ic_composite"] = round(sub["composite"].rank().corr(sub["fwd_2_oc"].rank()), 4)
     else:
         res["day_ic_composite"] = None
     return res
@@ -369,14 +371,14 @@ def _buylist(date: str, report_root: Path | None = None) -> dict[str, str]:
 
 
 def realized_returns(date: str, fwd: int = 10) -> pd.DataFrame:
-    """全市场 D 的已实现 fwd_1_oo/fwd_5_oc + buyable(复用 factor_lab;按需拉 D..D+fwd 的 daily)。
+    """全市场 D 的已实现 fwd_1_oo/fwd_2_oc/fwd_5_oc + buyable(复用 factor_lab;按需拉 D..D+fwd 的 daily)。
 
     fwd 未实现(D+2 交易日还没到)→ 返回空(供 pending 判定)。
     """
     import autoresearch.research.factor_lab as fl
     from autoresearch.data.tushare_source import _trade_days
 
-    cols = ["code", "fwd_1_oo", "fwd_5_oc", "fwd_10_oc", "hi_10_oc", "buyable", "gap_d1"]   # fwd_10/hi_10 供买后管理(未成熟=NaN)
+    cols = ["code", "fwd_1_oo", "fwd_2_oc", "fwd_5_oc", "fwd_10_oc", "hi_2_oc", "hi_10_oc", "buyable", "gap_d1"]   # fwd_10/hi_10 供买后管理(未成熟=NaN)
     pro = fl._pro()
     d0 = date.replace("-", "")
     today = datetime.now().strftime("%Y%m%d")
@@ -434,8 +436,8 @@ def pending_days(today: str | None = None, scan_root: Path | None = None,
 
 # ───────────────────────── 编排:attribute / retro_input / done ─────────────────────────
 
-_KEEP = ["code", "name", "industry", "bucket", "winner", "news_pop", "fwd_1_oo", "fwd_5_oc",
-         "fwd_10_oc", "hi_10_oc", "winner_5", "bucket_5",
+_KEEP = ["code", "name", "industry", "bucket", "winner", "news_pop", "fwd_1_oo", "fwd_2_oc", "hi_2_oc",
+         "fwd_5_oc", "fwd_10_oc", "hi_10_oc", "winner_5", "bucket_5",
          "gap_d1", "rank", "recalled_flag", "composite", "score_momentum", "score_fund_main",
          "score_chip", "pct_60d", "main_net_ratio", "winner_rate", "price_to_cost", "rsi6", "rating"]
 
@@ -520,13 +522,13 @@ def write_retro_input(date: str, attr: pd.DataFrame, scan_root: Path | None = No
     scan_root = scan_root or Path("context/scan")
     st = stage_stats(attr)
     lines = [f"# retro 输入 — {date}\n", "## 漏斗命中(对赢家)",
-             f"- 当日可交易 universe:{st['n_universe_realized']};**赢家(前10%∧≥3%):{st['n_winners']}**",
+             f"- 当日可交易 universe:{st['n_universe_realized']};**赢家(T+2 前10%∧≥3%):{st['n_winners']}**",
              f"- 赢家进入 L1 召回池:{st['winners_in_l1']}/{st['n_winners']} "
              f"(到召回 {st['winner_to_l1']});被买单抓到:{st['winners_bought']}/{st['n_winners']} "
              f"(到买单 {st['winner_to_buylist']})",
              f"- 买单 {st['buylist_n']} 只,命中赢家 {st['buylist_hit']}(命中率 {st['buylist_hitrate']}),"
              f"误买(跌入底10%){st['buylist_fp']}",
-             f"- 分桶:{st['buckets']};当日 composite IC(vs fwd_1_oo):{st['day_ic_composite']}\n"]
+             f"- 分桶:{st['buckets']};当日 composite IC(vs fwd_2_oc):{st['day_ic_composite']}\n"]
 
     def _tbl(df: pd.DataFrame, cols: list[str]) -> list[str]:
         cols = [c for c in cols if c in df.columns]
@@ -535,14 +537,14 @@ def write_retro_input(date: str, attr: pd.DataFrame, scan_root: Path | None = No
         rows = ["| " + " | ".join(str(r[c]) for c in cols) + " |" for _, r in df.iterrows()]
         return [head, sep, *rows]
 
-    fcols = ["code", "name", "industry", "fwd_1_oo", "rank", "composite", "score_momentum",
+    fcols = ["code", "name", "industry", "fwd_2_oc", "rank", "composite", "score_momentum",
              "main_net_ratio", "winner_rate", "price_to_cost", "rsi6", "pct_60d"]
     for label, bk in [("漏在 L0(门槛误杀)", "missed_l0"), ("漏在 L1(权重压低)", "missed_l1"),
                       ("L2-L3 误判(召回了却 cut)", "recalled_cut")]:
-        sub = attr[attr["bucket"] == bk].sort_values("fwd_1_oo", ascending=False).head(15)
+        sub = attr[attr["bucket"] == bk].sort_values("fwd_2_oc", ascending=False).head(15)
         lines += [f"\n## {label} — {len(attr[attr['bucket'] == bk])} 只(top 15)"]
         lines += _tbl(sub, fcols) if len(sub) else ["_无_"]
-    caught = attr[attr["bucket"] == "caught"].sort_values("fwd_1_oo", ascending=False).head(10)
+    caught = attr[attr["bucket"] == "caught"].sort_values("fwd_2_oc", ascending=False).head(10)
     lines += ["\n## 对照:抓到的赢家(caught, top 10)"]
     lines += _tbl(caught, fcols) if len(caught) else ["_无_"]
 
@@ -568,8 +570,8 @@ def write_retro_input(date: str, attr: pd.DataFrame, scan_root: Path | None = No
         l2df, fin, jud = _rd("L2_gbdt_top200.csv"), _rd("finalists.csv"), _rd("L3_judged_full.csv")
         if jud is not None and l2df is not None:
             au = l3_miss_autopsy(attr, l2df, fin if fin is not None else pd.DataFrame(), jud)
-            lines += ["\n## L3 错杀验尸(L2-keep ∧ 非 finalist ∧ T+5 赢家;risk=当时红队理由)"]
-            lines += _tbl(au, list(au.columns)) if len(au) else ["_无错杀(或 fwd_5 未成熟)_"]
+            lines += ["\n## L3 错杀验尸(L2-keep ∧ 非 finalist ∧ T+2 赢家;risk=当时红队理由)"]
+            lines += _tbl(au, list(au.columns)) if len(au) else ["_无错杀(或 fwd_2 未成熟)_"]
         if l2df is not None:
             fx = floor_experiment(l2df, attr)
             lines += ["\n## L2 floor 自然实验(fwd 均值;救回≈merit → floor 免费,持续弱于被挤掉 → 复审)",
@@ -724,10 +726,11 @@ def _selftest() -> int:
     fails: list[str] = []
     # 构造全市场已实现:4 赢家(0.10)、1 误买(-0.09)、20 噪声(~0)
     rows = []
-    rows += [{"code": c, "fwd_1_oo": 0.10, "fwd_5_oc": 0.12, "buyable": True}
+    rows += [{"code": c, "fwd_1_oo": 0.10, "fwd_2_oc": 0.10, "fwd_5_oc": 0.12, "buyable": True}
              for c in ("000001", "000002", "000003", "000004")]
-    rows += [{"code": "000005", "fwd_1_oo": -0.09, "fwd_5_oc": -0.10, "buyable": True}]
-    rows += [{"code": f"0001{i:02d}", "fwd_1_oo": (i - 10) * 0.002, "fwd_5_oc": 0.0, "buyable": True}
+    rows += [{"code": "000005", "fwd_1_oo": -0.09, "fwd_2_oc": -0.09, "fwd_5_oc": -0.10, "buyable": True}]
+    rows += [{"code": f"0001{i:02d}", "fwd_1_oo": (i - 10) * 0.002, "fwd_2_oc": (i - 10) * 0.002,
+             "fwd_5_oc": 0.0, "buyable": True}
              for i in range(20)]
     realized = pd.DataFrame(rows)
     # L1 面板:000001-3 在 universe(2 recalled),000005 在 universe 且被买,000004 不在(漏 L0)
@@ -760,7 +763,7 @@ def _selftest() -> int:
         fails.append(f"buckets 计数错: {st['buckets']}")
 
     # 边界:realized 为空 → attribute_frame 不崩(无赢家)
-    empty = attribute_frame(l1, pd.DataFrame(columns=["code", "fwd_1_oo", "fwd_5_oc", "buyable"]), {})
+    empty = attribute_frame(l1, pd.DataFrame(columns=["code", "fwd_1_oo", "fwd_2_oc", "fwd_5_oc", "buyable"]), {})
     if len(empty[empty["winner"]]) != 0:
         fails.append("空 realized 不应有赢家")
 

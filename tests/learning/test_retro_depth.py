@@ -20,9 +20,9 @@ def _l1(n=40):
 
 
 def _realized(n=40, fwd5=True):
-    f1 = np.linspace(-0.05, 0.15, n)                     # 后段是 T+1 赢家
+    f1 = np.linspace(-0.05, 0.15, n)                     # 后段是 T+1 赢家(fwd_2_oc 复用同设定)
     df = pd.DataFrame({"code": [f"{i:06d}" for i in range(n)],
-                       "fwd_1_oo": f1, "buyable": True, "gap_d1": 0.0})
+                       "fwd_1_oo": f1, "fwd_2_oc": f1, "buyable": True, "gap_d1": 0.0})
     if fwd5:
         df["fwd_5_oc"] = np.linspace(0.20, -0.10, n)     # 反向:前段是 T+5 赢家
     else:
@@ -67,9 +67,9 @@ def test_l3_miss_autopsy_joins_risk_text():
                            "conviction": [60, 55], "fragility": [50, 70]})
     attr = pd.DataFrame({"code": ["000001", "000002", "000003"],
                          "name": ["甲", "乙", "丙"],
-                         "fwd_5_oc": [0.30, 0.01, 0.40], "winner_5": [True, False, True]})
+                         "fwd_2_oc": [0.30, 0.01, 0.40], "winner": [True, False, True]})
     out = l3_miss_autopsy(attr, l2, finalists, judged)
-    assert list(out["code"]) == ["000001"]               # 000003 是 finalist、000002 非 winner_5
+    assert list(out["code"]) == ["000001"]               # 000003 是 finalist、000002 非 winner
     assert out.iloc[0]["risk"] == "获利盘满"
     empty = l3_miss_autopsy(attr, l2, finalists, judged.iloc[0:0])
     assert len(empty) == 0

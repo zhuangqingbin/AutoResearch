@@ -25,6 +25,7 @@ def _attr(n=20, sat_fwd=-0.02, base_fwd=0.01, sat_n=6, field="winner_rate"):
     df = pd.DataFrame({"code": [f"{i:06d}" for i in range(n)],
                        field: [95.0] * sat_n + [50.0] * (n - sat_n),
                        "fwd_1_oo": [sat_fwd] * sat_n + [base_fwd] * (n - sat_n),
+                       "fwd_2_oc": [sat_fwd] * sat_n + [base_fwd] * (n - sat_n),
                        "fwd_5_oc": np.linspace(-0.05, 0.05, n)})
     return df
 
