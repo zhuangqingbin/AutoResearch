@@ -28,7 +28,7 @@ def _topn_metrics(sub: pd.DataFrame, label_col: str) -> dict:
     return {"mean_fwd": round(float(fwd.mean()), 5), "hit": round(float((fwd > 0).mean()), 4), "n": int(len(fwd))}
 
 
-def forward_compare(panel: pd.DataFrame, *, l2_n: int = 200, label_col: str = "fwd_5_oc",
+def forward_compare(panel: pd.DataFrame, *, l2_n: int = 200, label_col: str = "fwd_2_oc",
                     l2_model: str = "l2_fwd5", floors: dict | None = None,
                     sector_cap_frac: float = 0.20, champion_fn=None) -> dict:
     """同一 panel 上 stratified vs champion 各选 top l2_n,比前向 `label_col`。

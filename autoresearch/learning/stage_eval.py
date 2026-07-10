@@ -26,8 +26,9 @@ import pandas as pd
 
 from autoresearch.agents.utils.rating import RATINGS_5_TIER  # Buy>OW>Hold>UW>Sell
 
-_RET_T5 = "fwd_5_oc"   # T+5 收盘口径:LLM 阶段(L3/L4)推的是 1–2 周 swing,T+5 比 T+1 更贴论点
-_RET_T1 = "fwd_1_oo"   # T+1 开到开:更快、噪声大,主要给 L2
+_RET_MAIN = "fwd_2_oc"  # 超短主尺:D+1开→D+2收(2026-07-10 用户裁定持仓 1~2 日)
+_RET_T5 = "fwd_5_oc"    # 参考口径(降级保留,列名带 t5 的输出继续产)
+_RET_T1 = "fwd_1_oo"    # 副口径(更快、噪声大)
 
 
 # ───────────────────────── 纯统计核(无 IO,可离线自测) ─────────────────────────
@@ -50,7 +51,7 @@ def _code6(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def binary_lift(df: pd.DataFrame, flag_col: str, ret_col: str = _RET_T5) -> dict:
+def binary_lift(df: pd.DataFrame, flag_col: str, ret_col: str = _RET_MAIN) -> dict:
     """成员 flag(bool)分两组的 fwd 均值 + lift(in−out)。某组空 → 对应均值 None。纯函数。"""
     d = df.copy()
     d[ret_col] = pd.to_numeric(d.get(ret_col), errors="coerce")
@@ -63,7 +64,7 @@ def binary_lift(df: pd.DataFrame, flag_col: str, ret_col: str = _RET_T5) -> dict
     return {"n_in": int(len(a)), "n_out": int(len(b)), "mean_in": mi, "mean_out": mo, "lift": lift}
 
 
-def rank_ic(df: pd.DataFrame, score_col: str, ret_col: str = _RET_T5, min_n: int = 20) -> float | None:
+def rank_ic(df: pd.DataFrame, score_col: str, ret_col: str = _RET_MAIN, min_n: int = 20) -> float | None:
     """score 与 fwd 的 Spearman rank-IC;有效样本 < min_n → None(样本太小不算)。纯函数。"""
     d = df.copy()
     for c in (score_col, ret_col):
@@ -74,7 +75,7 @@ def rank_ic(df: pd.DataFrame, score_col: str, ret_col: str = _RET_T5, min_n: int
     return round(float(d[score_col].rank().corr(d[ret_col].rank())), 4)
 
 
-def group_means(df: pd.DataFrame, group_col: str, ret_col: str = _RET_T5) -> dict:
+def group_means(df: pd.DataFrame, group_col: str, ret_col: str = _RET_MAIN) -> dict:
     """按 group_col 分组的 fwd 均值 + 计数 → {group: {n, mean}}。纯函数。"""
     d = df.copy()
     d[ret_col] = pd.to_numeric(d.get(ret_col), errors="coerce")
@@ -83,7 +84,7 @@ def group_means(df: pd.DataFrame, group_col: str, ret_col: str = _RET_T5) -> dic
             for g, sub in d.groupby(group_col)}
 
 
-def verdict_edge(df: pd.DataFrame, verdict_col: str = "verdict", ret_col: str = _RET_T5) -> dict:
+def verdict_edge(df: pd.DataFrame, verdict_col: str = "verdict", ret_col: str = _RET_MAIN) -> dict:
     """Tier-3 多空辩论 edge:`维持` 组 fwd 均值 − (`降级`∪`否决`)组 fwd 均值。>0 = 辩论压对了。纯函数。"""
     gm = group_means(df, verdict_col, ret_col)
     keep = gm.get("维持", {}).get("mean")
@@ -96,22 +97,24 @@ def verdict_edge(df: pd.DataFrame, verdict_col: str = "verdict", ret_col: str = 
 def channel_edge(recall: pd.DataFrame, realized: pd.DataFrame) -> pd.DataFrame:
     """L1 多路召回 provenance × 已实现 fwd → 每路一行的前向归因(纯函数,零网络)。
 
-    recall:   L1_recall_top1000(需 code, recall_channels);realized:全市场(code, fwd_1_oo, fwd_5_oc, buyable)。
+    recall:   L1_recall_top1000(需 code, recall_channels);realized:全市场(code, fwd_1_oo, fwd_2_oc, fwd_5_oc, buyable)。
     excess = 个股 fwd − 全市场截面中位;均值/命中只在 buyable 行;unique = recall_channels 仅此一路(边际 alpha)。
-    返回列固定,按 unique_excess_t5 降序(None 殿后)。
+    返回列固定(t2 主 + t5/t1 参考保留、不删),按 unique_excess_t2 降序(None 殿后)。
     """
     cols = ["channel", "n_recalled", "n_unique", "n_unbuyable",
+            "mean_excess_t2", "unique_excess_t2", "hit_rate_t2",
             "mean_excess_t5", "unique_excess_t5", "mean_excess_t1", "hit_rate_t5"]
     if recall is None or not len(recall) or "recall_channels" not in recall.columns:
         return pd.DataFrame(columns=cols)
     r = _code6(recall)[["code", "recall_channels"]].copy()
     rl = _code6(realized).copy()
-    for c in (_RET_T5, _RET_T1):
+    for c in (_RET_MAIN, _RET_T5, _RET_T1):
         rl[c] = pd.to_numeric(rl.get(c), errors="coerce")
     if "buyable" not in rl.columns:
         rl["buyable"] = True
-    mkt5, mkt1 = rl[_RET_T5].median(), rl[_RET_T1].median()
-    m = r.merge(rl[["code", _RET_T5, _RET_T1, "buyable"]], on="code", how="left")
+    mkt2, mkt5, mkt1 = rl[_RET_MAIN].median(), rl[_RET_T5].median(), rl[_RET_T1].median()
+    m = r.merge(rl[["code", _RET_MAIN, _RET_T5, _RET_T1, "buyable"]], on="code", how="left")
+    m["excess_t2"] = m[_RET_MAIN] - mkt2
     m["excess_t5"] = m[_RET_T5] - mkt5
     m["excess_t1"] = m[_RET_T1] - mkt1
     m["buyable"] = _as_bool(m["buyable"].fillna(True))
@@ -126,19 +129,23 @@ def channel_edge(recall: pd.DataFrame, realized: pd.DataFrame) -> pd.DataFrame:
         members = m[m["chans"].map(lambda cs, c=c: c in cs)]
         unique = m[m["recall_channels"].astype(str) == c]
         mb, ub = members[members["buyable"]], unique[unique["buyable"]]
-        ex = mb["excess_t5"].dropna()
+        ex2 = mb["excess_t2"].dropna()
+        ex5 = mb["excess_t5"].dropna()
         rows.append({
             "channel": c,
             "n_recalled": int(len(members)),
             "n_unique": int(len(unique)),
             "n_unbuyable": int((~members["buyable"]).sum()),
+            "mean_excess_t2": _mean(mb["excess_t2"]),
+            "unique_excess_t2": _mean(ub["excess_t2"]),
+            "hit_rate_t2": round(float((ex2 > 0).mean()), 4) if len(ex2) else None,
             "mean_excess_t5": _mean(mb["excess_t5"]),
             "unique_excess_t5": _mean(ub["excess_t5"]),
             "mean_excess_t1": _mean(mb["excess_t1"]),
-            "hit_rate_t5": round(float((ex > 0).mean()), 4) if len(ex) else None,
+            "hit_rate_t5": round(float((ex5 > 0).mean()), 4) if len(ex5) else None,
         })
     out = pd.DataFrame(rows, columns=cols)
-    return out.sort_values("unique_excess_t5", ascending=False, na_position="last").reset_index(drop=True)
+    return out.sort_values("unique_excess_t2", ascending=False, na_position="last").reset_index(drop=True)
 
 
 def rating_score(rating: str) -> float | None:
@@ -191,7 +198,8 @@ def evaluate(date: str, scan_root: Path | None = None, report_root: Path | None 
     if realized is None or realized.empty:
         raise RuntimeError(f"{date} 的 fwd 未实现 / 无价格,暂不能逐段评估")
     realized = _code6(realized)
-    res: dict = {"date": date, "n_realized": int(realized["fwd_5_oc"].notna().sum()), "stages": {}}
+    n_main = pd.to_numeric(realized.get(_RET_MAIN, pd.Series(dtype=float)), errors="coerce")
+    res: dict = {"date": date, "n_realized": int(n_main.notna().sum()), "stages": {}}
     outdir = sdir / "retro"
     outdir.mkdir(parents=True, exist_ok=True)
 
@@ -203,6 +211,7 @@ def evaluate(date: str, scan_root: Path | None = None, report_root: Path | None 
         ce.to_csv(outdir / "channel_eval.csv", index=False)
         m1 = recall_l1.merge(_code6(realized), on="code", how="left")
         res["stages"]["L1"] = {"by_channel": ce.to_dict("records"),
+                               "ic_n_channels_t2": rank_ic(m1, "n_channels", _RET_MAIN),
                                "ic_n_channels_t5": rank_ic(m1, "n_channels", _RET_T5)}
 
     # L2:召回池内 是否进 GBDT 学习重排 top200(l2_kept)+ gbdt_score 的 IC(确定性 L2 的 edge 评估)
@@ -226,7 +235,8 @@ def evaluate(date: str, scan_root: Path | None = None, report_root: Path | None 
         fin_codes = set(_code6(fin)["code"]) if fin is not None else set()
         l3["is_finalist"] = l3["code"].isin(fin_codes)
         m = l3.merge(realized, on="code", how="left")
-        res["stages"]["L3"] = {**binary_lift(m, "is_finalist", _RET_T5),
+        res["stages"]["L3"] = {**binary_lift(m, "is_finalist", _RET_MAIN),
+                               "ic_net_t2": rank_ic(m, "net", _RET_MAIN),
                                "ic_net_t5": rank_ic(m, "net", _RET_T5)}
 
     # L4:finalist 五档评级单调性(从已发布卡取 {code: rating})
@@ -236,7 +246,8 @@ def evaluate(date: str, scan_root: Path | None = None, report_root: Path | None 
         rdf = pd.DataFrame([{"code": c, "rating": r, "rating_score": rating_score(r)}
                             for c, r in ratings.items()])
         rdf = _code6(rdf).merge(realized, on="code", how="left")
-        res["stages"]["L4"] = {"by_rating": group_means(rdf, "rating", _RET_T5),
+        res["stages"]["L4"] = {"by_rating": group_means(rdf, "rating", _RET_MAIN),
+                               "ic_rating_t2": rank_ic(rdf, "rating_score", _RET_MAIN, min_n=10),
                                "ic_rating_t5": rank_ic(rdf, "rating_score", _RET_T5, min_n=10),
                                "ic_rating_t1": rank_ic(rdf, "rating_score", _RET_T1, min_n=10)}
 
@@ -244,7 +255,7 @@ def evaluate(date: str, scan_root: Path | None = None, report_root: Path | None 
     v = _read(sdir / "verify.csv")
     if v is not None and "verdict" in v.columns and "code" in v.columns:
         vdf = _code6(v[["code", "verdict"]]).merge(realized, on="code", how="left")
-        res["stages"]["Tier-3"] = verdict_edge(vdf, "verdict", _RET_T5)
+        res["stages"]["Tier-3"] = verdict_edge(vdf, "verdict", _RET_MAIN)
 
     _flat_csv(res).to_csv(outdir / "stage_eval.csv", index=False)
     return res
@@ -268,17 +279,17 @@ def _pct(x) -> str:
 def render_stage_eval(res: dict) -> list[str]:
     """逐段 edge → retro_input.md 区块(给 scan-retro skill 判断哪段该松/紧/重标定)。"""
     s = res.get("stages", {})
-    out = [f"\n## 各阶段 agent edge(已实现 {res.get('n_realized', '?')} 只;T+5 收口径,L2 用 T+1)"]
+    out = [f"\n## 各阶段 agent edge(已实现 {res.get('n_realized', '?')} 只;T+2 收口径主/T+5 参考,L2 用 T+1)"]
     if not s:
         return out + ["_无可评估阶段(staging 缺失)_"]
     if "L1" in s:
         d = s["L1"]
         chans = sorted(d.get("by_channel", []),
-                       key=lambda r: (r.get("unique_excess_t5") is None, -(r.get("unique_excess_t5") or 0)))
-        head = "、".join(f"{r['channel']} 边际{_pct(r.get('unique_excess_t5'))}×{r.get('n_unique', 0)}"
-                         f"(命中{_pct(r.get('hit_rate_t5'))})" for r in chans[:6])
-        out.append(f"- **L1 多路召回**:各路边际超额(unique vs 全市场,T+5):{head or '—'}"
-                   f";n_channels 共振 IC(T+5){d.get('ic_n_channels_t5')}"
+                       key=lambda r: (r.get("unique_excess_t2") is None, -(r.get("unique_excess_t2") or 0)))
+        head = "、".join(f"{r['channel']} 边际{_pct(r.get('unique_excess_t2'))}×{r.get('n_unique', 0)}"
+                         f"(命中{_pct(r.get('hit_rate_t2'))})" for r in chans[:6])
+        out.append(f"- **L1 多路召回**:各路边际超额(unique vs 全市场,T+2 主):{head or '—'}"
+                   f";n_channels 共振 IC(T+2 主){d.get('ic_n_channels_t2')} / T+5 参考{d.get('ic_n_channels_t5')}"
                    f"  _(边际>0=该路找到别人没找到的赢家,值得留)_")
     if "L2" in s:
         d = s["L2"]
@@ -287,12 +298,12 @@ def render_stage_eval(res: dict) -> list[str]:
     if "L3" in s:
         d = s["L3"]
         out.append(f"- **L3 精排**:finalist {d['n_in']} vs 落选 {d['n_out']},lift **{_pct(d['lift'])}**"
-                   f";(确信−脆弱)net IC(T+5){d.get('ic_net_t5')}")
+                   f";(确信−脆弱)net IC(T+2 主){d.get('ic_net_t2')} / T+5 参考{d.get('ic_net_t5')}")
     if "L4" in s:
         d = s["L4"]
         br = "、".join(f"{k} {_pct(v['mean'])}×{v['n']}" for k, v in d.get("by_rating", {}).items())
-        out.append(f"- **L4 评级**:单调性 rank-IC(T+5){d.get('ic_rating_t5')} / T+1 {d.get('ic_rating_t1')}"
-                   f";分档:{br or '—'}  _(IC>0 = 越多头越涨,评级有效)_")
+        out.append(f"- **L4 评级**:单调性 rank-IC(T+2 主){d.get('ic_rating_t2')} / T+5 参考{d.get('ic_rating_t5')}"
+                   f" / T+1 {d.get('ic_rating_t1')};分档(T+2):{br or '—'}  _(IC>0 = 越多头越涨,评级有效)_")
     if "Tier-3" in s:
         d = s["Tier-3"]
         bv = "、".join(f"{k} {_pct(v['mean'])}×{v['n']}" for k, v in d.get("by_verdict", {}).items())
@@ -329,15 +340,15 @@ def _selftest() -> int:
     if rank_ic(mono.head(5), "score", "fwd_5_oc") is not None:
         fails.append("rank_ic 样本<min_n 应 None")
 
-    # group_means:分组均值 + 计数
-    gm = group_means(pd.DataFrame({"g": ["A", "A", "B"], "fwd_5_oc": [0.1, 0.3, -0.1]}), "g")
+    # group_means:分组均值 + 计数(显式传 ret_col——本段只测通用聚合逻辑,不测主口径默认值)
+    gm = group_means(pd.DataFrame({"g": ["A", "A", "B"], "fwd_5_oc": [0.1, 0.3, -0.1]}), "g", "fwd_5_oc")
     if gm["A"]["n"] != 2 or abs(gm["A"]["mean"] - 0.2) > 1e-9 or gm["B"]["mean"] != -0.1:
         fails.append(f"group_means 错: {gm}")
 
     # verdict_edge:维持涨、降级跌 → edge 正;否决并入 down
     vdf = pd.DataFrame({"verdict": ["维持", "维持", "降级", "否决"],
                         "fwd_5_oc": [0.08, 0.06, -0.03, -0.05]})
-    ve = verdict_edge(vdf)
+    ve = verdict_edge(vdf, "verdict", "fwd_5_oc")
     if ve["edge_keep_minus_down"] is None or ve["edge_keep_minus_down"] <= 0:
         fails.append(f"verdict_edge 应正(辩论压对): {ve}")
     if ve["by_verdict"]["维持"]["n"] != 2:
@@ -358,7 +369,8 @@ def _selftest() -> int:
         pd.DataFrame({"code": ["000001", "000002"], "verdict": ["维持", "降级"],
                       "bear": ["x", "y"]}).to_csv(sdir / "verify.csv", index=False)
         realized = pd.DataFrame({"code": ["000001", "000002", "000003"],
-                                 "fwd_1_oo": [0.05, -0.02, -0.01], "fwd_5_oc": [0.09, -0.03, -0.02]})
+                                 "fwd_1_oo": [0.05, -0.02, -0.01], "fwd_2_oc": [0.05, -0.02, -0.01],
+                                 "fwd_5_oc": [0.09, -0.03, -0.02]})
         res = evaluate("2026-06-18", scan_root=Path(td), realized=realized)
         if "L3" not in res["stages"] or res["stages"]["L3"]["lift"] is None:
             fails.append(f"evaluate L3 缺/无 lift: {res['stages'].get('L3')}")
