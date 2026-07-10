@@ -206,7 +206,6 @@ def test_ultrashort_label_defaults():
 
 def test_forward_returns_hi2_nan_when_d2_missing():
     """D+2 EOD 未发布 → hi_2_oc 必须 NaN(与 fwd_2_oc 成熟配对),不得用 high[D+1] 冒充。"""
-    # fixture 仿 test_forward_returns_missing_future_column_degrades_to_nan 构造
     codes = ["000001", "600000"]
     P = ["20260625", "20260626", "20260629", "20260630", "20260701", "20260702"]
     have = P[:-1]  # 最后一个交易日 EOD 未发布
@@ -216,16 +215,7 @@ def test_forward_returns_hi2_nan_when_d2_missing():
 
     piv = {"close": piv_of(10.0), "open": piv_of(9.8), "high": piv_of(10.5),
            "pct_chg": pd.DataFrame(dict.fromkeys(have, 1.0), index=codes)}
-    res = fl.forward_returns(piv, P, "20260625", 10)
-    # D=06-25 → o1=open[06-26];hi_2 用 high[06-26..06-29];fwd_2_oc 用 close[06-29]
-    # P[2]=06-29 是最后有数据的,P[3]=06-30 往后无数据
-    # 从 06-25 的 D+1=06-26(P[1]),D+2=06-29(P[2])
-    # 实际上 hi_2 应该用 high[D+1=P[1]] 和 high[D+2=P[2]],都在 have 范围内,所以应该有数值
-    # 让我重新思考这个 fixture...
-    # 其实应该是:D=某个日期使得 D+2 超出 have 范围
-    # 改为:P 有 6 个日期,have 只有 5 个,那么 D 选倒数第二个
-    # 这样 D+2 会落到最后一个(缺数据的)
-    # D = P[3]=06-30, D+1=P[4]=07-01, D+2=P[5]=07-02(缺)
+    # D=06-30 → D+1=07-01(有数)、D+2=07-02(缺)→ 两列必须整列 NaN,不得降级 1 日读数
     res = fl.forward_returns(piv, P, "20260630", 10)
     assert res["hi_2_oc"].isna().all(), "D+2 缺列 → hi_2_oc 必须全 NaN"
     assert res["fwd_2_oc"].isna().all(), "D+2 缺列 → fwd_2_oc 必须全 NaN"

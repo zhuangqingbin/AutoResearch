@@ -276,8 +276,8 @@ def _funnel_rows(meta: dict, n_l2, n_l3, n_cards) -> list[str]:
     return [
         "| 阶段 | 名称 | 出量 | 引擎 | 卡点标准 |", "|---|---|---:|---|---|",
         f"| L0 | 选集 | {meta.get('universe', '?')} | 确定性 | 全A {meta.get('universe_raw', '?')} → 硬门(剔ST/退/停牌/次新, 市值地板, 含北交所) |",
-        f"| L1 | 召回 | {meta.get('recall_n', '?')} | 确定性 | 轻门 + 行业条件化复合分(T+1 IC 校准) top |",
-        f"| L2 | 粗排 | {n_l2} | GBDT/{l2_eng} | LightGBM 学习重排(T+1 IC 训练;oos 未胜线性则回落复合分) |",
+        f"| L1 | 召回 | {meta.get('recall_n', '?')} | 确定性 | 轻门 + 行业条件化复合分(fwd_2_oc 超短主尺 IC 校准) top |",
+        f"| L2 | 粗排 | {n_l2} | GBDT/{l2_eng} | LightGBM 学习重排(fwd_2_oc 主尺训练;oos 未胜线性则回落复合分) |",
         f"| L3 | 精排 | {n_l3} | Opus·max·holistic | 1 agent 通看 ~200 比较选 + 增量证据/论点/红队 |",
         f"| L4 | 研究 | {n_cards} 卡 | Opus·medium | 一只=一个 Opus subagent 渐进深度 DD + 早停 |",
     ]
