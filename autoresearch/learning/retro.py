@@ -463,7 +463,7 @@ def attribute(date: str, scan_root: Path | None = None, report_root: Path | None
 
 
 def shadow_compare(attr: pd.DataFrame, sdir: Path) -> list[dict]:
-    """影子漏斗对照:各变体 L2 vs 主 L2 的 T+1/T+5 赢家捕获数(design: calendar-shadow §2)。
+    """影子漏斗对照:各变体 L2 vs 主 L2 的 T+2(主尺)/T+5 赢家捕获数(design: calendar-shadow §2)。
 
     读 <scan_dir>/shadow/L2_*.csv;无影子/无赢家列 → []。单日读数薄,≥10 日累计再下结论。
     """
@@ -610,7 +610,7 @@ def write_retro_input(date: str, attr: pd.DataFrame, scan_root: Path | None = No
         sc = shadow_compare(attr, sdir)
         if sc:
             lines += ["\n## 影子漏斗对照(赢家捕获数;单日勿下结论,≥10 日累计再提 proposal)"]
-            lines += [f"- **{r['variant']}**(n={r['n']}):T+1 捕获 {r['cap1']} vs 主 {r['cap1_main']};"
+            lines += [f"- **{r['variant']}**(n={r['n']}):T+2 捕获 {r['cap1']} vs 主 {r['cap1_main']};"
                       f"T+5 捕获 {r['cap5']} vs 主 {r['cap5_main']}" for r in sc]
     except Exception:  # noqa: BLE001
         pass
