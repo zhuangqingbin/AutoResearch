@@ -243,11 +243,12 @@ def forward_returns(piv: dict, P: list[str], D: str, fwd: int) -> pd.DataFrame:
     res["fwd_1_cc"] = col(c, 1) / cD - 1.0
     res["fwd_1_oo"] = col(o, 2) / o1 - 1.0
     res["fwd_2_oc"] = col(c, 2) / o1 - 1.0            # 超短主尺:D+1 开买 → D+2 收卖(成熟同 fwd_1_oo)
-    res["hi_2_oc"] = pd.concat([col(h, 1), col(h, 2)], axis=1).max(axis=1) / o1 - 1.0   # 2 日触价 MFE
+    h1, h2 = col(h, 1), col(h, 2)
+    res["hi_2_oc"] = np.maximum(h1, h2) / o1 - 1.0   # np.maximum NaN 传染:D+2 缺→NaN,与 fwd_2_oc 成熟配对
     res["fwd_5_oc"] = col(c, 5) / o1 - 1.0
     res["fwd_10_oc"] = col(c, min(10, fwd)) / o1 - 1.0
     # D+1 一字涨停(开=收=高,且涨幅≥板*0.98)→ 买不到
-    pc1, o1h, c1, h1 = col(pc, 1), o1, col(c, 1), col(h, 1)
+    pc1, o1h, c1 = col(pc, 1), o1, col(c, 1)
     lim = pd.Series([_board_limit(x) for x in codes], index=codes)
     sealed = (pc1 >= lim * 0.98) & (c1 >= h1 - 1e-6) & (o1h >= h1 - 1e-6)
     res["buyable"] = ~sealed.fillna(False)
