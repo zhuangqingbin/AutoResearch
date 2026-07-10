@@ -520,6 +520,8 @@ def evaluate(cap_floor: float, buyable_only: bool) -> None:
         d1, d10, spreads = [], [], []
         for fr in frames:
             sub = fr if not buyable_only else fr[fr["buyable"].fillna(True)]
+            if col not in sub.columns or "fwd_2_oc" not in sub.columns:
+                continue                            # 缺列帧跳过(与上方 IC 循环同护栏;旧帧可能缺新因子列)
             s = (sub[col] * sign)
             r = sub["fwd_2_oc"].clip(-0.30, 0.30)  # 2 日容 10cm 两连板
             m = s.notna() & r.notna()
