@@ -230,3 +230,10 @@ models/store/
 # 项目级 zsh 运行时缓存（.cursor-zsh/.zshrc 本身可提交）
 .cursor-zsh/.zsh_history
 .cursor-zsh/.zcompdump*
+
+# 本地环境垃圾(勿入库;2026-07-10 曾被 subagent 广域 add 扫进 commit,已手术)
+.DS_Store
+.vscode/
+.omc/
+.cursor-zsh/
+.claude/skills/.omc/
