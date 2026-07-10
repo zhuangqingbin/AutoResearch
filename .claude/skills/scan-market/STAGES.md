@@ -63,6 +63,7 @@ L4 派发前(确定性):🚄 观察单触发直通车(触发票直达 L4)→ ♻
 
 - **机制**:确定性`market_pack(scan_dir)`(regime/宽度/估值分散/资金/红黑榜,只读`L1_scored_full`)→Opus subagent写`market_view.md`。三处复用:L3地形段、L4 `market_context_block`、L5置顶。
 - **防锚定不变量**:喂L3/L4只能是**描述性地形**,不是方向指令;操作建议只进L5;**个股评级只由本股rubric三门决定**。缺文件→L5回退确定性脉搏。
+- **配置装载链**(Plan A3):`scan_config.json`(白名单加载见`autoresearch/scan/user_config.py`)经`frame --json`校验回显进`market_pack`/`user_config_echo.json`,由调用方随 Workflow `args.config` 传入`scan-market.js`(脚本本身无文件系统访问,不能自己读文件);各 stage(`strategist/sector_brief/l3_rank/l4_card/redteam`)的 agent model/effort 优先级:**scan_config > workflow 内建 > agent def frontmatter 默认**,缺配置/缺键=workflow 内建现值(parity)。
 
 ## 旁路 · 行业 brief(sector-research lite)
 

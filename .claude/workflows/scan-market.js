@@ -13,6 +13,10 @@ export const meta = {
 // args 可能以对象或(harness 序列化后的)JSON 字符串到达 —— 两种都容错解析。
 const date = (typeof args === 'string' && args ? JSON.parse(args).date : (args && args.date))
 if (!date) throw new Error('args.date 必填,如 {date:"2026-07-07"}')
+// scan_config.json 白名单校验后的 user_config(autoresearch/scan/user_config.py)经 frame --json
+// 回显、由调用方随 Workflow args.config 传入(本脚本无文件系统访问,不能自己读文件)。缺省 = {} →
+// 下游 `cfg.agents?.<stage>?.effort ?? '<现值>'` 全部落回硬编码现值(parity)。顶部取一次。
+const cfg = (typeof args === 'string' && args ? JSON.parse(args).config : (args && args.config)) || {}
 const R = 'uv run --no-sync python -m'
 const SD = `context/scan/${date}`
 
@@ -49,7 +53,9 @@ await parallel([
   () => bash(`${R} autoresearch.scan.prelude ${date}`, 'prelude/universe', 'Prelude'),
   () => agent(
     `读 ${SD}/market_pack.json,按你的人设写 ${SD}/market_view.md(六小节;前3描述性地形、后2仅 L5)。数字只出自 pack,不编;个股不评级、不锚定卡片。`,
-    { agentType: 'macro-brief', effort: 'high', label: 'market_view', phase: 'Prelude' }),
+    { agentType: 'macro-brief', effort: cfg.agents?.strategist?.effort ?? 'high',
+      ...(cfg.agents?.strategist?.model ? { model: cfg.agents.strategist.model } : {}),
+      label: 'market_view', phase: 'Prelude' }),
 ])
 // universe 走 tushare 全市场取数,偶发 ChunkedEncodingError 半途而废(prelude 内 ✗ 但不阻断),
 // 结果是 GATE1 在第 ~14 分钟毙掉整条流水线。进门前先探一次 L2,缺就重试一遍确定性前奏。
@@ -91,14 +97,18 @@ await parallel([
   () => bash(`${R} autoresearch.scan.agents.l3_select prepare ${date}`, 'l3-prepare', 'L3'),
   ...sectors.map((sec) => () => agent(
     `你是行业分析师。读 context/sector/${date}/${sec}.json 写 ${SD}/sector_briefs/${sec}.md,两段机器契约(## 地形段 喂 L3/L4 · ## 研判段 仅 L5,含 **行业方向** 行)。零新取数。`,
-    { agentType: 'sector-brief', effort: 'high', label: `brief:${sec}`, phase: 'L3' })
+    { agentType: 'sector-brief', effort: cfg.agents?.sector_brief?.effort ?? 'high',
+      ...(cfg.agents?.sector_brief?.model ? { model: cfg.agents.sector_brief.model } : {}),
+      label: `brief:${sec}`, phase: 'L3' })
     .then((r) => { log(`brief ✓ ${sec}`); return r })),
 ])
 // L3 holistic 精排(唯一 max-effort 判断核心)
 log(`L3 精排开始:通读 _l3_table(~200 只)比较式选 ~${g1.l4_budget}(effort max,历史 ~14m)`)
 await agent(
   `L3 精排 · 日期 ${date} · 目标约 ${g1.l4_budget} 只。文件在 ${SD}/:_l3_table.md(~200 表)、market_view.md(§1-3 地形)、sector_briefs/(地形段)。按你的人设(5 维 rubric + 硬约束 A/B/C/D)比较式精排,写 ${SD}/_l3_judged.json。`,
-  { agentType: 'l3-rank', effort: 'max', label: 'L3-rank', phase: 'L3' })
+  { agentType: 'l3-rank', effort: cfg.agents?.l3_rank?.effort ?? 'max',
+    ...(cfg.agents?.l3_rank?.model ? { model: cfg.agents.l3_rank.model } : {}),
+    label: 'L3-rank', phase: 'L3' })
 // 确定性写 finalists(修前导零)+ GATE2
 await bash(`${R} autoresearch.scan.agents.l3_select finalists ${date} --budget ${g1.l4_budget}`, 'finalists', 'L3')
 const g2 = await gate('GATE2', `${R} autoresearch.scan.gates gate2 ${date} --budget ${g1.l4_budget}`, GATE2, 'L3')
@@ -136,7 +146,9 @@ log(`L4 并发:新派 ${plan.dispatch.length} 张(历史 ~7–15m)· 复用 ${(p
 let _done = 0
 const fresh = (await parallel(plan.dispatch.map((code) => () => agent(
   `执行 ${SD}/_l4_prompt_${code}.md:先读整个任务包,再按其指令做渐进深度 DD + 早停,写决策卡到 ${SD}/details/${code}.md。最后返回该卡最终五档评级(code / rating / conviction)。`,
-  { agentType: 'l4-card', effort: 'xhigh', label: `card:${code}`, phase: 'L4', schema: CARD })
+  { agentType: 'l4-card', effort: cfg.agents?.l4_card?.effort ?? 'xhigh',
+    ...(cfg.agents?.l4_card?.model ? { model: cfg.agents.l4_card.model } : {}),
+    label: `card:${code}`, phase: 'L4', schema: CARD })
   .then((r) => { _done += 1; log(`L4 卡 ${_done}/${plan.dispatch.length} ✓ ${code}${r ? ` → ${r.rating}` : '(无返回)'}`); return r }))))
   .filter(Boolean)
 const cards = [...fresh, ...(plan.reused || [])]
