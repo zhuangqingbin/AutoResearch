@@ -222,7 +222,7 @@ def _board_limit(code: str) -> float:
 
 
 def forward_returns(piv: dict, P: list[str], D: str, fwd: int) -> pd.DataFrame:
-    """D 的前瞻收益(D+1 开盘进):cc=收盘到收盘;oo=次日开到再次日开;oc/ocN=开盘到第N日收盘。
+    """D 的前瞻收益(D+1 开盘进):cc=收盘到收盘;oo=次日开到再次日开;oc/ocN=开盘到第N日收盘;fwd_2_oc=超短主尺(2026-07-10 用户裁定持仓 1~2 日)。
 
     并标 D+1 一字涨停(open==close==high 且涨幅近板)= 买不到 → unbuyable。
     """
@@ -242,6 +242,8 @@ def forward_returns(piv: dict, P: list[str], D: str, fwd: int) -> pd.DataFrame:
     o1 = col(o, 1)
     res["fwd_1_cc"] = col(c, 1) / cD - 1.0
     res["fwd_1_oo"] = col(o, 2) / o1 - 1.0
+    res["fwd_2_oc"] = col(c, 2) / o1 - 1.0            # 超短主尺:D+1 开买 → D+2 收卖(成熟同 fwd_1_oo)
+    res["hi_2_oc"] = pd.concat([col(h, 1), col(h, 2)], axis=1).max(axis=1) / o1 - 1.0   # 2 日触价 MFE
     res["fwd_5_oc"] = col(c, 5) / o1 - 1.0
     res["fwd_10_oc"] = col(c, min(10, fwd)) / o1 - 1.0
     # D+1 一字涨停(开=收=高,且涨幅≥板*0.98)→ 买不到
@@ -448,7 +450,7 @@ CANDIDATES = [
     # 多日量价序列(OBV/CMF/VWAP偏离/量价突破;符号先验,真符号/去留由 IC 定)——补单日 vol_ratio(已剔)
     ("cmf_20", +1), ("obv_mom_20", +1), ("price_vs_vwap_20", -1), ("breakout_vol_20", +1),
 ]
-FWDS = ["fwd_1_cc", "fwd_1_oo", "fwd_5_oc", "fwd_10_oc"]
+FWDS = ["fwd_1_cc", "fwd_1_oo", "fwd_2_oc", "fwd_5_oc", "fwd_10_oc"]
 
 
 def _spearman(a: pd.Series, b: pd.Series) -> float:

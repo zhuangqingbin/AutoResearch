@@ -165,3 +165,26 @@ def test_cache_other_endpoints_still_cache_empty(tmp_path, monkeypatch):
 
     fl._cache("hk_hold", "20260619", _fake_fetch(pd.DataFrame()))
     assert (tmp_path / "hk_hold" / "20260619.pkl").exists(), "非 daily 空结果应缓存"
+
+
+def test_forward_returns_fwd2_hi2():
+    """超短主尺两窗:fwd_2_oc=close[D+2]/open[D+1]−1;hi_2_oc=max(high[D+1..D+2])/open[D+1]−1。"""
+    P = ["20260701", "20260702", "20260703", "20260706", "20260707", "20260708"]
+    codes = ["000001", "600519"]
+
+    def _piv(rows):
+        return pd.DataFrame(rows, index=codes, columns=P, dtype=float)
+
+    piv = {
+        "open":    _piv([[10, 10.5, 11.0, 11.5, 12, 12.5], [100, 101, 102, 103, 104, 105]]),
+        "close":   _piv([[10.2, 10.8, 11.55, 11.6, 12.1, 12.6], [100.5, 101.5, 103, 103.5, 104.5, 105.5]]),
+        "high":    _piv([[10.3, 11.0, 11.9, 11.7, 12.2, 12.7], [101, 102, 104, 104, 105, 106]]),
+        "pct_chg": _piv([[1, 2, 3, 1, 1, 1], [1, 1, 1, 1, 1, 1]]),
+    }
+    fr = fl.forward_returns(piv, P, "20260701", fwd=10)
+    # D=07-01 → o1=open[07-02];fwd_2_oc 用 close[07-03];hi_2 用 high[07-02..07-03]
+    assert np.isclose(fr.loc["000001", "fwd_2_oc"], 11.55 / 10.5 - 1.0)
+    assert np.isclose(fr.loc["000001", "hi_2_oc"], 11.9 / 10.5 - 1.0)
+    assert np.isclose(fr.loc["600519", "fwd_2_oc"], 103 / 101 - 1.0)
+    assert np.isclose(fr.loc["600519", "hi_2_oc"], 104 / 101 - 1.0)
+    assert "fwd_2_oc" in fl.FWDS
