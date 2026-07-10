@@ -44,8 +44,21 @@ def calib_suggestion_lines(scan_root=None) -> list[str]:
     return lines
 
 
+def _write_t0(scan_dir: Path) -> None:
+    """墙钟 t0 标记:mtime 即 stage_timing 的起点锚,内容仅自述。
+    已存在不覆盖(prelude-retry/重跑不重置起点);失败不挡 prelude。"""
+    try:
+        scan_dir.mkdir(parents=True, exist_ok=True)
+        fp = scan_dir / "_t0.json"
+        if not fp.exists():
+            fp.write_text('{"purpose": "stage_timing 起点锚(mtime)"}', encoding="utf-8")
+    except Exception:  # noqa: BLE001 — 计时锚可选
+        pass
+
+
 def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()) -> list[dict]:
     scan_dir = Path("context/scan") / date
+    _write_t0(scan_dir)
 
     def _refresh():
         from autoresearch.learning.retro import refresh_attributions
