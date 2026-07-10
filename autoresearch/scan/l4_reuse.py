@@ -24,6 +24,8 @@ from autoresearch.scan.artifacts import read_finalists
 
 _REUSABLE = {"Hold", "Underweight", "Sell"}
 
+_CARD_SCHEMA_MARK = "卡契约 v3"   # 2026-07-10 超短化;无标记的旧 swing 语义卡禁复用/禁 carryover
+
 _GATESEG_RE = re.compile(r"OW三门[^\n→]*")
 
 
@@ -117,6 +119,8 @@ def reuse_decision(code: str, scan_dir: Path | str, max_age_days: int = 4,
         out["reasons"].append("日期不可解析")
         return out
     out["age_days"] = age
+    if _CARD_SCHEMA_MARK not in text:
+        out["reasons"].append("旧契约卡(schema v3 前,禁复用)")
     if "♻️" in text:
         out["reasons"].append("前卡即复用卡(禁链式复用)")
     if rating not in _REUSABLE:
@@ -228,7 +232,10 @@ def carryover_candidates(scan_dir: Path | str, cap: int = 5) -> pd.DataFrame:
         cp = prev[0] / "details" / f"{r['code']}.md"
         if not cp.exists():
             continue
-        if parse_rating(cp.read_text(encoding="utf-8")) not in _REUSABLE:
+        card_text = cp.read_text(encoding="utf-8")
+        if _CARD_SCHEMA_MARK not in card_text:
+            continue                                   # 旧契约卡禁滞回(无 schema v3 标记)
+        if parse_rating(card_text) not in _REUSABLE:
             continue                                   # ≥OW 前卡不滞回(买点必进正常菜单重研)
         keep.append({"ticker": r["code"], "code": r["code"], "name": r.get("name", ""),
                      "sector": r.get("industry", ""), "lane": "carryover",

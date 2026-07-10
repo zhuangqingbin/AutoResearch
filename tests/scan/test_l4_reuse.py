@@ -11,8 +11,9 @@ import pandas as pd
 from autoresearch.scan.l4_reuse import reuse_decision, reuse_pass, write_reused_card
 
 _C = "000001"
-HOLD = "# 决策卡\n**Rating**: Hold\n**一行多空**:多:x ｜ 空:y\n"
-OW = "# 决策卡\n**Rating**: Overweight\n"
+HOLD = "〔卡契约 v3·超短 1~2 日〕\n# 决策卡\n**Rating**: Hold\n**一行多空**:多:x ｜ 空:y\n"
+HOLD_OLD = "# 决策卡\n**Rating**: Hold\n**一行多空**:多:x ｜ 空:y\n"  # 旧卡:无 v3 标记
+OW = "〔卡契约 v3·超短 1~2 日〕\n# 决策卡\n**Rating**: Overweight\n"
 
 
 def _mk(root, date, card=None, close=100.0, regime="range", conviction=50.0,
@@ -106,8 +107,9 @@ def test_reuse_pass_apply(tmp_path):
 
 # ───────────────────────── 深否决豁免 + 菜单滞回(2026-07-04) ─────────────────────────
 
-_GATED_HOLD = HOLD + ("\n**Rubric建议**: 表面4维净分 **-2/4** ｜ "
-                      "OW三门 主力真在✗·业绩真兑现△·估值不透支✗ → 两门失守 → 建议 Hold\n")
+_GATED_HOLD = ("〔卡契约 v3·超短 1~2 日〕\n# 决策卡\n**Rating**: Hold\n**一行多空**:多:x ｜ 空:y\n"
+              "\n**Rubric建议**: 表面4维净分 **-2/4** ｜ "
+              "OW三门 主力真在✗·业绩真兑现△·估值不透支✗ → 两门失守 → 建议 Hold\n")
 
 
 def test_reuse_deep_reject_bypasses_conviction(tmp_path):
@@ -176,3 +178,26 @@ def test_carryover_append_preserves_ticker_leading_zeros(tmp_path):
     fin = pd.read_csv(today / "finalists.csv", dtype=str)
     assert set(fin["ticker"]) == {"002156", "000010"}, f"ticker 丢前导零:{list(fin['ticker'])}"
     assert set(fin["code"]) == {"002156", "000010"}
+
+
+# ───────────────────────── 卡契约 v3 版本门(2026-07-10) ─────────────────────────
+
+
+def test_old_schema_card_not_reused(tmp_path):
+    """前卡无「卡契约 v3」标记 → 旧语义卡禁复用(防超短/swing 混用)。"""
+    _mk(tmp_path, "2026-06-30", card=HOLD_OLD)  # 旧卡:无 v3 标记
+    d = _mk(tmp_path, "2026-07-02", close=101.0, anns=[])
+    (d / "details" / f"{_C}.md").unlink(missing_ok=True)
+    out = reuse_decision(_C, d)
+    assert out["reuse"] is False
+    assert any("旧契约卡" in r for r in out["reasons"])
+
+
+def test_v3_card_reusable(tmp_path):
+    """前卡正文含「〔卡契约 v3·超短 1~2 日〕」→ 不因 schema 被否决。"""
+    card_v3 = "〔卡契约 v3·超短 1~2 日〕\n# 决策卡\n**Rating**: Hold\n**一行多空**:多:x ｜ 空:y\n"
+    _mk(tmp_path, "2026-06-30", card=card_v3)  # v3 卡
+    d = _mk(tmp_path, "2026-07-02", close=101.0, anns=[])
+    (d / "details" / f"{_C}.md").unlink(missing_ok=True)
+    out = reuse_decision(_C, d)
+    assert not any("旧契约卡" in r for r in out["reasons"])
