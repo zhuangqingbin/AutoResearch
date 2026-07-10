@@ -140,7 +140,7 @@ FINAL TRANSACTION PROPOSAL: **<HOLD|SELL>**
 
 **催化 & 认错位(先扫 slim 近 14 天新闻 + WebSearch 补日期,不靠记忆/不编)**: 催化 <事件→时点> ｜ 风险事件 <诉讼/减持/问询/解禁/商誉,带时点> ｜ 失效:<价/指标/事件 → 隔日减仓>;近 14 天无重大事件就写「近 14 天无重大事件」
 
-**(A股,tushare 富化)**: 主力净流入(10日)<1–2周 swing 信号> ｜ 筹码获利比例 <高=惜售/低=套牢压反弹> ｜ 多头排列·RSI·MACD ｜ 北向持股占比 ｜ 股东户数 <↑↓集中度> ｜ 业绩预告/快报 ｜ 质押红旗 <>40%标爆雷> ｜ 涨跌停可交易性
+**(A股,tushare 富化)**: 主力净流入(10日)<1–2周尺度因子;超短窗仅作方向背景,勿当持仓论据> ｜ 筹码获利比例 <高=惜售/低=套牢压反弹> ｜ 多头排列·RSI·MACD ｜ 北向持股占比 ｜ 股东户数 <↑↓集中度> ｜ 业绩预告/快报 ｜ 质押红旗 <>40%标爆雷> ｜ 涨跌停可交易性
 
 FINAL TRANSACTION PROPOSAL: **<BUY|HOLD|SELL>**
 
@@ -162,4 +162,4 @@ _Claude 推理产出,非全量报告;仅供研究,非投资建议。要完整证
 
 ## 与 scan-market 的衔接
 
-scan-market L4 对 `finalists.csv` **每只一个 `Agent(model='opus')`** 调本 skill(渐进深度 + 早停);产物写 staging `context/scan/<date>/details/<ticker>.md`,由 `autoresearch.scan.assemble` 发布并汇成 buy-list。**~29 个 subagent 一条消息并发派发**,每只独立 context、只回传 评级/目标/R:R/早停与否。最终 ≥OW 的买单再过一道**独立 Opus skeptic** 证伪(发布前红队,见 screening-playbook)。
+scan-market L4 对 `finalists.csv` **每只一个 `Agent(model='opus')`** 调本 skill(渐进深度 + 早停);产物写 staging `context/scan/<date>/details/<ticker>.md`,由 `autoresearch.scan.assemble` 发布并汇成 buy-list。**~29 个 subagent 一条消息并发派发**,每只独立 context、只回传 评级/目标/R:R/早停与否。最终 ≥OW 的买单在发布前由 assemble 把关:self_review 硬门 + Tier-3 辩论折回评级(verify.csv,presence-gated;独立买单 skeptic 已于 07-06 移除)。
