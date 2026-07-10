@@ -265,6 +265,31 @@ def _fetch_hk_hold(pro, last: str) -> pd.DataFrame | None:
         return None
 
 
+def _fetch_fund_portfolio(pro, period: str, page_size: int = 8000) -> pd.DataFrame | None:
+    """基金重仓(fund_portfolio;按 period=季度末 YYYYMMDD 批量,单页上限 8000 行需翻页——
+    探针 2026-07-10 实证,见 context/factor_lab/cache/probes/fund_portfolio_20260710.json)。
+
+    该端点不支持按个股直查(ts_code/ann_date/period 三选一起效,个股不在其中)→ 反查姿势 =
+    本函数按 period 批量拉全量、调用方(`scan.agents.l4_card.fetch_fund_hold`)按 symbol
+    (重仓股代码)本地过滤。失败/空 → None(降级)。"""
+    frames: list[pd.DataFrame] = []
+    offset = 0
+    try:
+        while True:
+            page = _ts_call(lambda offset=offset: pro.fund_portfolio(
+                period=period, offset=offset, limit=page_size))
+            if page is None or not len(page):
+                break
+            frames.append(page)
+            if len(page) < page_size:
+                break
+            offset += page_size
+    except Exception as e:  # noqa: BLE001
+        print(f"[warn] fund_portfolio 取数失败({e!r})→ 机构面基金行降级", flush=True)
+        return None
+    return pd.concat(frames, ignore_index=True) if frames else None
+
+
 # ───────────────────────── L0 universe(tushare) ─────────────────────────
 
 _RAW_COUNT: dict = {}   # 全A(硬门前)原始数;放本模块(单次 import)避开 __main__/scan.universe 双模块陷阱

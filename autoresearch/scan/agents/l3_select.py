@@ -142,7 +142,7 @@ def _delta_filter(df: pd.DataFrame, prev_dir: Path,
 def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
                 shuffle_seed: int | None = None, sector_terrain: bool = False,
                 dist_flag: bool = False, reg_flag: bool = False, cat_flag: bool = False,
-                misread_flag: bool = False) -> str:
+                misread_flag: bool = False, rc_flag: bool = False) -> str:
     """L3 holistic 选股 subagent 的完整输入表(~200 行紧凑表 + 证据摘要列)。
 
     delta=True:略去「昨判弃 ∧ 今无变化」行 + prev_l3 标记(design: l4-economy §3;
@@ -161,6 +161,9 @@ def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
     spec 2026-07-05 wave §B2。
     misread_flag=True:加 misread 预警列(低基/背离/套牢,谓词=scoring.l3_misread_flags
     单一事实源)+图例禁则;默认 False = 逐字 parity。
+    rc_flag=True:加 `rc` 列(卖方一致预期 FY EPS 近窗修正 %,staging `consensus.csv`——
+    `l4_card.fetch_consensus` 产出——在才生效)+ 图例禁则,镜像 cat_flag 接线;
+    默认 False = 逐字 parity。
     """
     df = load_l3_input(date, root=root)
     cols = [*_L3_COLS] + [c for c in ("lhb_n", "has_forecast", "has_express") if c in df.columns]
@@ -198,6 +201,22 @@ def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
                 header += ["_📣催化列(cat):近 10 日 回购/增持/机构调研/减持 事件计数(存在性"
                            "≠方向确认)。催化须与资金/基本面共振才可作论点支柱;**减持≥2 的票"
                            "论点必须显式回应**。_", ""]
+    if rc_flag and "code" in df.columns:
+        rcp = (root or Path("context/scan")) / date / "consensus.csv"
+        if rcp.exists():
+            try:
+                rf = pd.read_csv(rcp, dtype={"code": str})
+                rf["code"] = rf["code"].astype(str).str.zfill(6)
+                rf["_d"] = pd.to_numeric(rf.get("eps_delta_pct"), errors="coerce")
+                lab = {r["code"]: (f"{r['_d']:+.0f}%" if pd.notna(r["_d"]) else "")
+                       for r in rf.to_dict("records")}
+            except Exception:  # noqa: BLE001 — 坏 staging 降级不加列
+                lab = None
+            if lab is not None:
+                df["rc"] = [lab.get(str(c).zfill(6), "") for c in df["code"]]
+                cols = [*cols, "rc"]
+                header += ["_机构面列(rc):卖方一致预期 FY EPS 近窗修正(%,存在性≠方向确认,"
+                           "advisory)。与资金/基本面共振才可作论点支柱。_", ""]
     if delta:
         prev = _prev_l3_day(date, root=root)
         if prev is None:

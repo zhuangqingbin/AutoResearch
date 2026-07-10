@@ -114,6 +114,7 @@ await bash(
   `${R} autoresearch.scan.agents.l4_card pledge ${date} || true; ` +
   `${R} autoresearch.scan.agents.l4_card seats ${date} || true; ` +
   `${R} autoresearch.scan.calendar ${date} || true; ` +
+  `${R} autoresearch.scan.agents.l4_card consensus ${date} || true; ` +
   `${R} autoresearch.scan.agents.l4_card prompts ${date}`, 'l4-prep', 'L4')
 // GATE3:批量 slim 失败响亮(harvest-slim 打印 JSON + 非零退出)
 const g3 = await gate('GATE3', `${R} autoresearch.scan.agents.l4_card harvest-slim ${date}`, OK, 'L4')

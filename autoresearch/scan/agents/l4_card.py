@@ -232,6 +232,58 @@ def _misread_mark(l2: dict) -> str:
     return f"⚠️误读预警: {m} —— 该论点若为 L3 选票理由,P1-P3 优先证伪" if m else ""
 
 
+def _inst_mark(base: Path, code6: str) -> str:
+    """机构面行(presence-gated:consensus.csv 在且该票有行才注)。advisory 事实,非方向。"""
+    p = Path(base) / "consensus.csv"
+    if not p.exists():
+        return ""
+    try:
+        df = pd.read_csv(p, dtype={"code": str})
+        df["code"] = df["code"].astype(str).str.zfill(6)
+        sub = df[df["code"] == code6]
+        if not len(sub):
+            return ""
+        r = sub.iloc[0]
+        d = float(pd.to_numeric(pd.Series([r.get("eps_delta_pct")]), errors="coerce").iloc[0])
+        n = int(r.get("n_reports") or 0)
+    except Exception:  # noqa: BLE001 — 行可选,缺了不挡简报
+        return ""
+    if pd.isna(d) or n <= 0:
+        return ""
+    arrow = "上修" if d > 0 else ("下修" if d < 0 else "持平")
+    return (f"- **机构面(卖方,近窗)**:研报 {n} 篇;FY 一致 EPS 修正:{arrow} {d:+.1f}%"
+            f"(窗口对比,advisory 存在性≠方向;与资金/基本面共振才可作论点支柱)")
+
+
+def _fund_mark(base: Path, code6: str) -> str:
+    """机构面第二行(条件分支):基金重仓(presence-gated:`fund_hold.csv` 在且该票有行才注)。
+
+    Plan 1 Task 6 探针裁决"可用"(fund_portfolio 按 period 批量+本地按 symbol 反查)后接线;
+    **季度滞后**(定期报告披露制,非实时,与卖方修正的"近窗"时效不同)——advisory,不进分
+    不设门,与 `_inst_mark` 相互独立(各自 presence-gate,互不影响对方能否输出)。
+    """
+    p = Path(base) / "fund_hold.csv"
+    if not p.exists():
+        return ""
+    try:
+        df = pd.read_csv(p, dtype={"code": str})
+        df["code"] = df["code"].astype(str).str.zfill(6)
+        sub = df[df["code"] == code6]
+        if not len(sub):
+            return ""
+        r = sub.iloc[0]
+        n = int(pd.to_numeric(pd.Series([r.get("n_funds")]), errors="coerce").iloc[0])
+        mkv = float(pd.to_numeric(pd.Series([r.get("mkv_yi")]), errors="coerce").iloc[0])
+        delta = pd.to_numeric(pd.Series([r.get("n_funds_delta")]), errors="coerce").iloc[0]
+    except Exception:  # noqa: BLE001 — 行可选,缺了不挡简报
+        return ""
+    if n <= 0:
+        return ""
+    d_txt = f"{delta:+.0f}家" if pd.notna(delta) else "—"
+    return (f"- **机构面(基金重仓,季度滞后)**:{n} 只基金持有,市值 {mkv:.1f} 亿"
+            f"(环比 {d_txt};定期报告口径,滞后于当前,advisory 存在性≠方向)")
+
+
 def compose_funnel_brief(code: str, scan_dir: Path | str) -> str:
     """L4 **P0 定向**:从漏斗产物(L1_recall/L2/finalists)拼该票紧凑简报 markdown。
 
@@ -294,6 +346,12 @@ def compose_funnel_brief(code: str, scan_dir: Path | str) -> str:
     cm = _cat_mark(base, code6)              # 催化行:三端点事件计数(L3_catalyst.csv 在才注)
     if cm:
         lines.append(cm)
+    im = _inst_mark(base, code6)             # 机构面:卖方修正(consensus.csv 在才注,presence-gated)
+    if im:
+        lines.append(im)
+    fm = _fund_mark(base, code6)             # 机构面第二行:基金重仓(fund_hold.csv 在才注,presence-gated)
+    if fm:
+        lines.append(fm)
     ind = l3.get("industry") or l3.get("sector") or l1.get("industry")
     sector_block = ""
     try:                                     # Phase 3:行业 brief 地形段(同链摊销;无 brief → memo 行回退)
@@ -683,6 +741,109 @@ def fetch_seats(scan_dir: Path | str, codes=None, bulk_fn=None, reuse_days: int 
     return out
 
 
+def fetch_consensus(scan_dir: Path | str, codes=None, window: int = 30,
+                    cache_root: Path | None = None) -> pd.DataFrame:
+    """finalists 卖方一致预期修正 → `consensus.csv`(code,n_reports,eps_delta_pct)。零 LLM。
+
+    从 report_rc 缓存(consensus.pull/backfill 积累)取分析日前最近 `window` 个缓存日,
+    前后对半为两窗,算 FY 一致 EPS 中位修正(research/consensus.consensus_delta)。
+    缓存日 <10 → 空表不落盘(样本太薄禁注,presence-gated)。advisory:不进分、不设门。
+    """
+    scan_dir = Path(scan_dir)
+    date = scan_dir.name
+    from autoresearch.research.consensus import _dir, _load_span, consensus_delta
+    stems = sorted(p.stem for p in _dir(cache_root).glob("*.pkl")
+                   if p.stem <= date.replace("-", ""))[-window:]
+    if len(stems) < 10:
+        return pd.DataFrame(columns=["code", "n_reports", "eps_delta_pct"])
+    half = len(stems) // 2
+    old_span, new_span = (stems[0], stems[half - 1]), (stems[half], stems[-1])
+    fy = date[:4]
+    delta = consensus_delta(date, old_span, new_span, fy, cache_root=cache_root)
+    recent = _load_span(new_span, cache_root)
+    recent["code"] = recent["ts_code"].astype(str).str[:6]
+    n_rep = recent.groupby("code").size().rename("n_reports")
+    out = delta.merge(n_rep, on="code", how="left")
+    out["n_reports"] = out["n_reports"].fillna(0).astype(int)
+    if codes is not None:
+        want = {str(c).split(".")[0].zfill(6) for c in codes}
+        out = out[out["code"].isin(want)]
+    out = out[["code", "n_reports", "eps_delta_pct"]].reset_index(drop=True)
+    if len(out):
+        out.to_csv(scan_dir / "consensus.csv", index=False)
+    return out
+
+
+def _tushare_fund_hold(period: str) -> pd.DataFrame | None:
+    """默认取数器:tushare `fund_portfolio`(翻页取数在 `tushare_source._fetch_fund_portfolio`)。"""
+    from autoresearch.data.tushare_source import _fetch_fund_portfolio, _pro
+    return _fetch_fund_portfolio(_pro(), period)
+
+
+def fetch_fund_hold(scan_dir: Path | str, codes=None, fetch_fn=None) -> pd.DataFrame:
+    """finalists 基金重仓聚合 → `fund_hold.csv`(code,n_funds,mkv_yi,n_funds_delta)。零 LLM。
+
+    Plan 1 Task 6 探针裁决"可用"(context/factor_lab/cache/probes/fund_portfolio_20260710.json):
+    该端点不支持按个股直查(ts_code/ann_date/period 三选一起效,个股不在其中)→ 反查姿势 =
+    按最近季度末(`common.scoring.latest_reported_quarter`)批量拉取(翻页,默认走
+    `tushare_source._fetch_fund_portfolio`)再本地按 symbol(重仓股代码)过滤聚合。
+    `n_funds_delta` = 与上一季度末(`prev_quarter`)对比家数环比。**季度滞后**
+    (定期报告披露制,非实时)——advisory,不进分不设门。缺权限/端点异常/无覆盖 → 空表
+    不落盘(presence-gated,mirror `fetch_pledge`)。
+    """
+    from autoresearch.common.scoring import latest_reported_quarter, prev_quarter
+    scan_dir = Path(scan_dir)
+    cols = ["code", "n_funds", "mkv_yi", "n_funds_delta"]
+    if codes is None:
+        fp = scan_dir / "finalists.csv"
+        if not fp.exists():
+            return pd.DataFrame(columns=cols)
+        codes = pd.read_csv(fp, dtype={"code": str})["code"].tolist()
+    want = {str(c).split(".")[0].zfill(6) for c in codes}
+    if not want:
+        return pd.DataFrame(columns=cols)
+
+    def _agg(df: pd.DataFrame | None) -> pd.DataFrame:
+        empty = pd.DataFrame(columns=["code", "n_funds", "mkv_yi"])
+        if df is None or not len(df) or "symbol" not in df.columns or "ts_code" not in df.columns:
+            return empty
+        d = df.copy()
+        d["code"] = d["symbol"].astype(str).str.split(".").str[0].str.zfill(6)
+        d = d[d["code"].isin(want)]
+        if not len(d):
+            return empty
+        n_funds = d.groupby("code")["ts_code"].nunique().rename("n_funds")
+        mkv_src = pd.to_numeric(d["mkv"], errors="coerce") if "mkv" in d.columns else pd.Series(0.0, index=d.index)
+        mkv_yi = (mkv_src.groupby(d["code"]).sum() / 1e8).rename("mkv_yi")
+        return pd.concat([n_funds, mkv_yi], axis=1).reset_index()
+
+    fetch_fn = fetch_fn or _tushare_fund_hold
+    period = latest_reported_quarter(scan_dir.name)
+    try:
+        cur = fetch_fn(period)
+    except Exception:  # noqa: BLE001 — 端点/权限降级隔离,行可选
+        cur = None
+    out = _agg(cur)
+    if not len(out):
+        return pd.DataFrame(columns=cols)
+
+    try:
+        prev_raw = fetch_fn(prev_quarter(period))
+    except Exception:  # noqa: BLE001
+        prev_raw = None
+    prev_agg = _agg(prev_raw)
+    if len(prev_agg):
+        out = out.merge(prev_agg[["code", "n_funds"]].rename(columns={"n_funds": "n_funds_prev"}),
+                        on="code", how="left")
+        out["n_funds_delta"] = out["n_funds"] - out["n_funds_prev"].fillna(0)
+        out = out.drop(columns=["n_funds_prev"])
+    else:
+        out["n_funds_delta"] = float("nan")
+    out = out[cols].reset_index(drop=True)
+    out.to_csv(scan_dir / "fund_hold.csv", index=False)
+    return out
+
+
 def _default_harvest_slim(ticker: str, date: str, ctx_root: Path) -> Path:
     import subprocess
     import sys
@@ -728,10 +889,12 @@ def harvest_slim_batch(date: str, root: Path | None = None, min_bytes: int = 8_1
 def main(argv: list[str] | None = None) -> int:
     import argparse
     ap = argparse.ArgumentParser(description="L4 确定性件 CLI(派发包落稿/质押预旗,零 LLM)")
-    ap.add_argument("cmd", choices=["prompts", "pledge", "seats", "harvest-slim", "dispatch-plan"],
+    ap.add_argument("cmd", choices=["prompts", "pledge", "seats", "consensus", "harvest-slim", "dispatch-plan"],
                     help="prompts = 写 _harvest_list.txt + _l4_prompt_<code>.md;"
                          "pledge = finalists 批量质押 → pledge.csv(简报自动带 ⚠质押旗);"
                          "seats = finalists 龙虎榜席位聚合 → seats.csv(_seat_mark 注简报);"
+                         "consensus = finalists 卖方一致预期修正 → consensus.csv"
+                         "(+条件 fund_hold.csv 基金重仓;_inst_mark/_fund_mark 注简报);"
                          "harvest-slim = 按 _harvest_list.txt 批量 harvest slim;"
                          "dispatch-plan = 派发感知 TTL 复用/carryover(dispatch/reused 分流)")
     ap.add_argument("date", help="scan 日 YYYY-MM-DD")
@@ -761,6 +924,18 @@ def main(argv: list[str] | None = None) -> int:
         df = fetch_seats(Path("context/scan") / args.date)
         n_inst = int((df["inst_net_wan"] > 0).sum()) if len(df) else 0
         print(f"[l4_card seats] {len(df)} 票落 seats.csv(机构净买>0 {n_inst} 票=Phase A 反指候选)")
+        return 0
+    if args.cmd == "consensus":
+        sd = Path("context/scan") / args.date
+        fp = sd / "finalists.csv"
+        codes = pd.read_csv(fp, dtype={"code": str})["code"].tolist() if fp.exists() else None
+        df = fetch_consensus(sd, codes=codes)
+        try:
+            fh = fetch_fund_hold(sd, codes=codes)
+        except Exception:  # noqa: BLE001 — 基金行独立分支,不拖累卖方修正主线
+            fh = pd.DataFrame()
+        extra = f";{len(fh)} 票落 fund_hold.csv(基金重仓,季度滞后)" if len(fh) else ""
+        print(f"[l4_card consensus] {len(df)} 票落 consensus.csv(卖方一致预期修正,advisory){extra}")
         return 0
     res = write_dispatch_pack(Path("context/scan") / args.date)
     print(f"[l4_card prompts] {res['n_prompts']} 份 prompt + _harvest_list({len(res['tickers'])} 票,"

@@ -80,7 +80,7 @@ L2后与L3证据取数**并发**——`sector.reuse <date> --apply`(TTL≤5日�
 
 ## L4 · 研究(一只 = 一个 Opus subagent,渐进深度 + 早停)
 
-- **派发前四道确定性闸(按序,生产者先于 prompts)**:⓪ 批量质押旗(`l4_card pledge <date>` → `pledge.csv`,>40 爆雷/>20 偏高,advisory 不动门)→① 观察单触发直通车(触发票补进 finalists)→② `l4_reuse <date> --apply --carryover` 卡片 TTL 复用+滞回(近4日已出卡/≤Hold/|Δ价|≤5%/无新公告/regime未翻/conviction<70→直接复用,♻️不派subagent;OW三门失守≥2深否决豁免conviction拦截;≥OW永不复用;复用率约20%)→③ 席位/催化/日历生产者先行落稿。
+- **派发前四道确定性闸(按序,生产者先于 prompts)**:⓪ 批量质押旗(`l4_card pledge <date>` → `pledge.csv`,>40 爆雷/>20 偏高,advisory 不动门)→① 观察单触发直通车(触发票补进 finalists)→② `l4_reuse <date> --apply --carryover` 卡片 TTL 复用+滞回(近4日已出卡/≤Hold/|Δ价|≤5%/无新公告/regime未翻/conviction<70→直接复用,♻️不派subagent;OW三门失守≥2深否决豁免conviction拦截;≥OW永不复用;复用率约20%)→③ 席位/催化/日历/**卖方修正(consensus)**生产者先行落稿。
 - **派发三步**:① 落 `_l4_shared_instructions.md`(只放当日件)→ `l4_card prompts <date>` 落 `_harvest_list.txt`(`.SH`→`.SS`)+ 每卡 `_l4_prompt_<code>.md`(固定标头→共享块→逐卡简报,顺序契约测试锁死 byte-identical,防 cache 前缀断裂);② 预 harvest slim——**二段式**:`_slim.md`(表面,P0–P3,**>8KB 才可信**)+ `_slim_deep.md`(深核:盈利质量/偿付/利润表,仅P4读,早停卡永不读);③ 全部 `Agent(subagent_type='l4-card')` 一条消息并发(别分wave)。行业brief走`subagent_type='sector-brief'`。
 - **渐进深度**:P0简报(市场地形+档案+解禁/披露旗+行业备忘+误读预警)→P1–P3表面填4维→**主早停②**(非买点→早停卡,**短格式**≤35行:决策仪表盘/一段话研判/L3裁决表,未核维标「未核」)→survivor读deep进P4陷阱核(质押/商誉/解禁/审计/现金流,记`进入P4倾向`)→③击杀→P5满卡。评级由`rubric_rating`派生;早停只向下;≥OW必走P4+P5。
 - **阶段效能**:早停率随regime波动大(20%~100%),弱市高早停是纪律非失灵,错杀率≈10%与满卡组持平;P4翻盘率零积累。**纪律实证**:紫光国微三度被CFO/FCF门封顶Hold——**别放宽资金/估值门凑买单**。
