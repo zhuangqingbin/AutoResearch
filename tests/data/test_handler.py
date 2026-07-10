@@ -216,7 +216,9 @@ def test_core_feature_set_matches_factor_lab_constants():
             seen.add(c)
             expected.append(c)
     assert feature_columns("core") == expected
-    assert LABEL == factor_lab.GBDT_LABEL
+    # 2026-07-10(计划2·尺子对齐):factor_lab.GBDT_LABEL 切超短主尺 fwd_2_oc,LABEL(本模型注册表/
+    # Trainer 框架,T+1 开到开)仍用 fwd_1_oo——两者自此有意解耦,不再断言相等;仍冻结 LABEL 自身取值。
+    assert LABEL == "fwd_1_oo"
 
 
 def test_materialize_contains_full_core_plus_label_and_buyable(synth):

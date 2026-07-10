@@ -504,7 +504,7 @@ def evaluate(cap_floor: float, buyable_only: bool) -> None:
             if len(ics):
                 rec[f"IC_{fwdcol}"] = round(ics.mean(), 4)
                 rec[f"ICIR_{fwdcol}"] = round(ics.mean() / (ics.std() + 1e-9), 3)
-                if fwdcol == "fwd_1_cc":
+                if fwdcol == "fwd_2_oc":
                     rec["t"] = round(ics.mean() / (ics.std() + 1e-9) * np.sqrt(len(ics)), 2)
                     rec["hit"] = round((ics > 0).mean(), 2)
                     h = len(ics) // 2  # 前半 vs 后半:regime 稳定性(同号=稳健,反号=可能过拟合)
@@ -514,14 +514,14 @@ def evaluate(cap_floor: float, buyable_only: bool) -> None:
         rows.append(rec)
     ic_tbl = pd.DataFrame(rows)
 
-    # 十分位多空价差(T+1 cc,买得到的)
+    # 十分位多空价差(超短主尺 fwd_2_oc,买得到的)
     dec_rows = []
     for col, sign in CANDIDATES:
         d1, d10, spreads = [], [], []
         for fr in frames:
             sub = fr if not buyable_only else fr[fr["buyable"].fillna(True)]
             s = (sub[col] * sign)
-            r = sub["fwd_1_cc"].clip(-0.21, 0.21)
+            r = sub["fwd_2_oc"].clip(-0.30, 0.30)  # 2 日容 10cm 两连板
             m = s.notna() & r.notna()
             if m.sum() < 100:
                 continue
@@ -542,8 +542,8 @@ def evaluate(cap_floor: float, buyable_only: bool) -> None:
     ic_tbl.to_csv(OUT / "ic_table.csv", index=False)
     dec_tbl.to_csv(OUT / "decile_table.csv", index=False)
 
-    # 排序打印(按 T+1 cc 的 ICIR 降序;缺列的因子排末尾)
-    sortcol = "ICIR_fwd_1_cc"
+    # 排序打印(按超短主尺 ICIR 降序;缺列的因子排末尾)
+    sortcol = "ICIR_fwd_2_oc"
     if sortcol not in ic_tbl:
         ic_tbl[sortcol] = np.nan
     show = ic_tbl.sort_values(sortcol, ascending=False, na_position="last")
@@ -589,11 +589,11 @@ def _all_frames(cap_floor: float) -> list[pd.DataFrame]:
     return frames
 
 
-def _build_calib_panel(frames: list[pd.DataFrame], label_col: str = "fwd_1_oo"):
+def _build_calib_panel(frames: list[pd.DataFrame], label_col: str = "fwd_2_oc"):
     """frames → 校准 panel(grp_* + industry/sector/fwd/date,buyable 过滤)+ regime_by_date。
 
-    `label_col` 选前向标签(fwd_1_oo 默认 / fwd_5_oc / fwd_10_oc 多 horizon);regime 逐日由
-    `classify_regime(factor_frame)` 算(与线上 scan 同口径)。
+    `label_col` 选前向标签(fwd_2_oc 超短主尺默认 / fwd_1_oo / fwd_5_oc / fwd_10_oc 多 horizon);
+    regime 逐日由 `classify_regime(factor_frame)` 算(与线上 scan 同口径)。
     """
     from autoresearch.common.regime import classify_regime
     from autoresearch.common.scoring import _factor_groups
@@ -655,13 +655,13 @@ def _regimes_from_panel(panel: pd.DataFrame, k: float = 200.0, min_dates: int = 
     return out
 
 
-def calibrate(cap_floor: float = 30.0, k: float = 200.0, label_col: str = "fwd_1_oo",
+def calibrate(cap_floor: float = 30.0, k: float = 200.0, label_col: str = "fwd_2_oc",
               out_path: str = "context/factor_lab/weights.json") -> dict:
     """每"因子组"对前向收益的 rank-IC,按申万/东财行业 + 大类层级收缩 → weights.json(flat)。
 
     组定义复用 autoresearch.common.scoring._factor_groups(校准与线上同口径)。factor_lab 无季度基本面 →
     growth 组 IC=NaN 跳过(权重 0);value 组用 pe 行业内分位可校准。权重 = signed IC(线上
-    composite_score 用其符号+大小)。`label_col` 默认 T+1 开到开(parity);可换多 horizon。
+    composite_score 用其符号+大小)。label_col 默认超短主尺 fwd_2_oc(2026-07-10 裁定);可换多 horizon。
     """
     import json
 
@@ -672,7 +672,7 @@ def calibrate(cap_floor: float = 30.0, k: float = 200.0, label_col: str = "fwd_1
     panel, _ = _build_calib_panel(frames, label_col=label_col)
     weights, ic_global = _weights_from_panel(panel, k)
     grp_cols = [c for c in panel.columns if c.startswith("grp_")]
-    horizon = "fwd_1_oo(T+1 开到开)" if label_col == "fwd_1_oo" else label_col
+    horizon = "fwd_2_oc(超短:D+1开→D+2收)" if label_col == "fwd_2_oc" else label_col
     meta = {"horizon": horizon, "k": k, "n_dates": int(panel["date"].nunique()),
             "n_rows": int(len(panel)), "n_industries": int(panel["industry"].nunique()),
             "ic_global": {c[4:]: round(_nz(v), 4) for c, v in ic_global.items()},
@@ -685,7 +685,7 @@ def calibrate(cap_floor: float = 30.0, k: float = 200.0, label_col: str = "fwd_1
     return {"meta": meta, "weights": weights}
 
 
-def calibrate_regimes(cap_floor: float = 30.0, k: float = 200.0, label_col: str = "fwd_1_oo",
+def calibrate_regimes(cap_floor: float = 30.0, k: float = 200.0, label_col: str = "fwd_2_oc",
                       min_dates: int = 5, out_path: str = "context/factor_lab/weights.json") -> dict:
     """逐日 regime 分桶校准 → weights.json 增 `regimes` 块(同时保留 flat 全样本权重)。
 
@@ -706,7 +706,7 @@ def calibrate_regimes(cap_floor: float = 30.0, k: float = 200.0, label_col: str 
     weights, ic_global = _weights_from_panel(panel, k)
     regimes = _regimes_from_panel(panel, k, min_dates)
     dom = Counter(regime_by_date.values()).most_common(1)[0][0] if regime_by_date else "range"
-    horizon = "fwd_1_oo(T+1 开到开)" if label_col == "fwd_1_oo" else label_col
+    horizon = "fwd_2_oc(超短:D+1开→D+2收)" if label_col == "fwd_2_oc" else label_col
     meta = {"horizon": horizon, "k": k, "n_dates": int(panel["date"].nunique()),
             "n_rows": int(len(panel)), "n_industries": int(panel["industry"].nunique()),
             "ic_global": {c[4:]: round(_nz(v), 4) for c, v in ic_global.items()},
@@ -738,7 +738,7 @@ GBDT_RAW = [
     "rsi6", "rsi12", "pe", "pb", "dv_ratio",
     "cmf_20", "obv_mom_20", "ma_bull", "above_ma60",
 ]
-GBDT_LABEL = "fwd_1_oo"                          # T+1 开到开,与 calibrate 同口径(可交易、无前视)
+GBDT_LABEL = "fwd_2_oc"                          # 超短主尺,与 calibrate 同口径(可交易、无前视)
 GBDT_MODEL = "context/factor_lab/gbdt_model.pkl"
 _GBDT_CACHE: dict = {}
 
@@ -970,8 +970,10 @@ def _selftest_gbdt() -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="factor_lab — scan-market 打分逻辑实证验证")
-    ap.add_argument("mode", nargs="?", choices=["harvest", "eval", "calibrate", "train"],
-                    help="harvest=取数缓存;eval=离线评估;calibrate=T+1 IC→weights.json;"
+    ap.add_argument("mode", nargs="?",
+                    choices=["harvest", "eval", "calibrate", "calibrate-regimes", "train"],
+                    help="harvest=取数缓存;eval=离线评估;calibrate=主尺(fwd_2_oc)IC→weights.json;"
+                         "calibrate-regimes=同尺+regime分块;"
                          "train=LightGBM 横截面排序→gbdt_model.pkl(L2 粗排引擎)")
     ap.add_argument("--valid-dates", type=int, default=5, help="train:留作 oos 验证/早停的末尾成型日数")
     ap.add_argument("--anchor", default=None, help="结束锚定日 YYYY-MM-DD(缺省=今天)")
@@ -998,6 +1000,8 @@ def main() -> int:
         evaluate(args.cap_floor, buyable_only=not args.all_names)
     elif args.mode == "calibrate":
         calibrate(args.cap_floor, k=args.k)
+    elif args.mode == "calibrate-regimes":
+        calibrate_regimes(args.cap_floor, k=args.k)
     elif args.mode == "train":
         train_gbdt(args.cap_floor, valid_dates=args.valid_dates)
     else:

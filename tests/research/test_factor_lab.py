@@ -192,6 +192,18 @@ def test_forward_returns_fwd2_hi2():
     assert "hi_2_oc" not in fl.FWDS
 
 
+def test_ultrashort_label_defaults():
+    """主尺契约:校准/GBDT label 默认 fwd_2_oc(2026-07-10 用户裁定);IC 表主排序同尺。"""
+    import inspect
+
+    import autoresearch.research.factor_lab as fl
+
+    assert inspect.signature(fl.calibrate).parameters["label_col"].default == "fwd_2_oc"
+    assert inspect.signature(fl.calibrate_regimes).parameters["label_col"].default == "fwd_2_oc"
+    assert inspect.signature(fl._build_calib_panel).parameters["label_col"].default == "fwd_2_oc"
+    assert fl.GBDT_LABEL == "fwd_2_oc"
+
+
 def test_forward_returns_hi2_nan_when_d2_missing():
     """D+2 EOD 未发布 → hi_2_oc 必须 NaN(与 fwd_2_oc 成熟配对),不得用 high[D+1] 冒充。"""
     # fixture 仿 test_forward_returns_missing_future_column_degrades_to_nan 构造
