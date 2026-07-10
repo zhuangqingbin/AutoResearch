@@ -57,16 +57,29 @@ def _ts_call(fn, tries: int = 5, backoff: float = 2.0):
     return src_call(fn, tries=tries, backoff=backoff)
 
 
+_NEVER_EMPTY = ("daily",)   # 调用点只喂交易日 → 空结果必是拉取失败,不是真相
+
+
 def _cache(endpoint: str, day: str, fetch_fn) -> pd.DataFrame:
-    """(endpoint, day) → pickle 缓存;命中即读,否则拉取 + 落盘。空结果也缓存(避免重拉)。"""
+    """(endpoint, day) → pickle 缓存;命中即读,否则拉取 + 落盘。
+
+    空结果也缓存(避免重拉)——**除 `_NEVER_EMPTY` 端点外**。`daily` 的两个调用点
+    (harvest 的 plan_dates / retro.realized_returns 的 _trade_days)都只传交易日,
+    所以空 daily 只可能是瞬时拉取失败;把它落盘会永久毒化前向收益(fwd 全 NaN →
+    retro 当日"赢家 0"的假空结论)。已存在的毒化空 pickle 读时清除重拉。
+    """
     fp = CACHE / endpoint / f"{day}.pkl"
     if fp.exists():
-        return pd.read_pickle(fp)
+        df = pd.read_pickle(fp)
+        if len(df) or endpoint not in _NEVER_EMPTY:
+            return df
+        fp.unlink()                       # 毒化的空缓存 → 清掉,往下重拉
     fp.parent.mkdir(parents=True, exist_ok=True)
     df = _ts_call(fetch_fn)
     if df is None:
         df = pd.DataFrame()
-    df.to_pickle(fp)
+    if len(df) or endpoint not in _NEVER_EMPTY:
+        df.to_pickle(fp)
     time.sleep(0.35)  # 礼貌限频
     return df
 

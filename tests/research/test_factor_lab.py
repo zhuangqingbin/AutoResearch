@@ -119,3 +119,49 @@ def test_forward_returns_missing_future_column_degrades_to_nan():
     res = fl.forward_returns(piv, P, "20260625", 10)
     assert res["fwd_5_oc"].isna().all()      # 需 P[5]=20260702 close → 缺列 → NaN
     assert res["fwd_1_oo"].notna().all()     # 只用 26/29 开盘 → 有数
+
+
+# ── _cache 空结果护栏(2026-07-09:20260708.pkl 空 pickle 毒化 07-06 复盘) ──
+
+
+def _fake_fetch(df):
+    return lambda: df
+
+
+def test_cache_daily_empty_is_not_persisted(tmp_path, monkeypatch):
+    """`daily` 调用点只喂交易日 → 空结果必是拉取失败,不许落盘(否则永不重拉)。"""
+    monkeypatch.setattr(fl, "CACHE", tmp_path)
+    monkeypatch.setattr(fl, "time", type("T", (), {"sleep": staticmethod(lambda _: None)}))
+
+    got = fl._cache("daily", "20260708", _fake_fetch(pd.DataFrame()))
+    assert got.empty
+    assert not (tmp_path / "daily" / "20260708.pkl").exists(), "空 daily 被缓存 = 毒化"
+
+    # 下次拉到真数据 → 正常落盘
+    real = pd.DataFrame({"ts_code": ["000001.SZ"], "trade_date": ["20260708"]})
+    got = fl._cache("daily", "20260708", _fake_fetch(real))
+    assert len(got) == 1
+    assert (tmp_path / "daily" / "20260708.pkl").exists()
+
+
+def test_cache_daily_purges_poisoned_empty_pickle(tmp_path, monkeypatch):
+    """已存在的空 daily pickle(历史毒化)→ 读时清掉并重拉,而不是返回空。"""
+    monkeypatch.setattr(fl, "CACHE", tmp_path)
+    monkeypatch.setattr(fl, "time", type("T", (), {"sleep": staticmethod(lambda _: None)}))
+    fp = tmp_path / "daily" / "20260708.pkl"
+    fp.parent.mkdir(parents=True)
+    pd.DataFrame(columns=["ts_code", "trade_date"]).to_pickle(fp)   # 毒化现场
+
+    real = pd.DataFrame({"ts_code": ["000001.SZ"], "trade_date": ["20260708"]})
+    got = fl._cache("daily", "20260708", _fake_fetch(real))
+    assert len(got) == 1, "毒化空 pickle 未被清除 → 仍返回空"
+    assert len(pd.read_pickle(fp)) == 1
+
+
+def test_cache_other_endpoints_still_cache_empty(tmp_path, monkeypatch):
+    """非 daily 端点空结果是真相(无权限/当日无数据)→ 仍缓存,避免每次重拉。"""
+    monkeypatch.setattr(fl, "CACHE", tmp_path)
+    monkeypatch.setattr(fl, "time", type("T", (), {"sleep": staticmethod(lambda _: None)}))
+
+    fl._cache("hk_hold", "20260619", _fake_fetch(pd.DataFrame()))
+    assert (tmp_path / "hk_hold" / "20260619.pkl").exists(), "非 daily 空结果应缓存"
