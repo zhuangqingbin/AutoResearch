@@ -265,7 +265,8 @@ def _fetch_hk_hold(pro, last: str) -> pd.DataFrame | None:
         return None
 
 
-def _fetch_fund_portfolio(pro, period: str, page_size: int = 8000) -> pd.DataFrame | None:
+def _fetch_fund_portfolio(pro, period: str, page_size: int = 8000,
+                          max_pages: int = 60) -> pd.DataFrame | None:
     """基金重仓(fund_portfolio;按 period=季度末 YYYYMMDD 批量,单页上限 8000 行需翻页——
     探针 2026-07-10 实证,见 context/factor_lab/cache/probes/fund_portfolio_20260710.json)。
 
@@ -276,6 +277,9 @@ def _fetch_fund_portfolio(pro, period: str, page_size: int = 8000) -> pd.DataFra
     offset = 0
     try:
         while True:
+            if offset // page_size >= max_pages:   # offset 语义若被上游破坏,防同页空转撞限频
+                print(f"[warn] fund_portfolio 翻页达上限 {max_pages} 页→截断", flush=True)
+                break
             page = _ts_call(lambda offset=offset: pro.fund_portfolio(
                 period=period, offset=offset, limit=page_size))
             if page is None or not len(page):

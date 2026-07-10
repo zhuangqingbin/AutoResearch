@@ -280,7 +280,8 @@ def _fund_mark(base: Path, code6: str) -> str:
     if n <= 0:
         return ""
     d_txt = f"{delta:+.0f}家" if pd.notna(delta) else "—"
-    return (f"- **机构面(基金重仓,季度滞后)**:{n} 只基金持有,市值 {mkv:.1f} 亿"
+    mkv_txt = f"{mkv:.1f} 亿" if pd.notna(mkv) else "—"
+    return (f"- **机构面(基金重仓,季度滞后)**:{n} 只基金持有,市值 {mkv_txt}"
             f"(环比 {d_txt};定期报告口径,滞后于当前,advisory 存在性≠方向)")
 
 
