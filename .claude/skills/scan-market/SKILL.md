@@ -38,7 +38,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 
 ## 流程(6 段)
 
-> **编排真身 = `.claude/workflows/scan-market.js`**(4 相位/4 GATE:Prelude→L3→L4→Assemble,相位末尾一道 GATE 阻断)。**正常跑动直接用 workflow**;以下是其内部调用的同一批命令,留作**调参/单步重跑入口**。操作模板分驻:市场研判在 `macro-research/macro-playbook.md` 末节、L4 决策卡在 stock-research 的 `lite-playbook.md`;**各阶段机制/参数/实证读数**见 `STAGES.md`。
+> **编排真身 = `.claude/workflows/scan-market.js`**(4 相位/4 GATE:Prelude→L3→L4→Assemble,相位末尾一道 GATE 阻断)。**正常跑动直接用 workflow**;以下是其内部调用的同一批命令,留作**调参/单步重跑入口**。操作模板分驻:市场研判在 `macro-research/macro-playbook.md` 末节、L4 决策卡在 stock-research 的 `lite-playbook.md`;**各阶段机制/参数/实证读数**见 `STAGES.md`。workflow 后台跑时随时用 `/workflows` 看实时进度树(逐卡 spinner + log 计数);各阶段墙钟收尾自动落 `_stage_timing.json`(mtime 推导)。
 
 0. **前奏一键**(workflow Prelude 相位的确定性部分):
    ```bash
