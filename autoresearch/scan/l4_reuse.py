@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.scan.artifacts import read_finalists
+
 _REUSABLE = {"Hold", "Underweight", "Sell"}
 
 _GATESEG_RE = re.compile(r"OW三门[^\n→]*")
@@ -243,7 +245,7 @@ def append_carryover(scan_dir: Path | str, cap: int = 5) -> int:
     if not len(ca):
         return 0
     fp = scan_dir / "finalists.csv"
-    fin = pd.read_csv(fp, dtype={"code": str})
+    fin = read_finalists(fp)
     out = pd.concat([fin, ca[[c for c in ca.columns if c in fin.columns or c in
                               ("ticker", "code", "name", "sector", "thesis", "lane")]]],
                     ignore_index=True)

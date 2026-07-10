@@ -175,7 +175,9 @@ def _decision_text(scan_dir: Path, ticker: str) -> str | None:
     code = ticker.split(".")[0]
     tries = [base / f"{ticker}.md"]
     if base.is_dir():
-        tries += sorted(p for p in base.glob(f"{code}*.md"))
+        # 上游 CSV 往返可能吃掉前导零(2156 ← 002156);6 位零填后再 glob 一次兜底。
+        for c in dict.fromkeys((code, code.zfill(6))):
+            tries += sorted(p for p in base.glob(f"{c}*.md"))
     seen: set[Path] = set()
     for p in tries:
         if p in seen:

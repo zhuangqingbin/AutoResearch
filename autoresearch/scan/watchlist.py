@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.scan.artifacts import read_finalists
+
 WATCHLIST_COLS = ("code", "name", "born", "expiry", "source", "narrative",
                   "conds", "invalidation", "note", "born_price")
 _FIRE_TH = 0.15     # 未触发已 +15% → 🔥 错过审计旗
@@ -273,7 +275,7 @@ def append_express(scan_dir: Path | str) -> int:
     if not len(ex):
         return 0
     fp = scan_dir / "finalists.csv"
-    fin = pd.read_csv(fp, dtype={"code": str})
+    fin = read_finalists(fp)
     out = pd.concat([fin, ex[[c for c in ex.columns if c in fin.columns or c in
                               ("ticker", "code", "name", "sector", "thesis", "lane", "catalyst")]]],
                     ignore_index=True)

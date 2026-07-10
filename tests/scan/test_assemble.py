@@ -270,3 +270,13 @@ def test_run_does_not_touch_real_shadow_csv(tmp_path):
     else:
         # 文件不存在过，检查仍不存在
         assert not real_csv.exists(), "真实 CSV 不应被创建"
+
+
+def test_decision_text_zfills_short_ticker(tmp_path):
+    """纵深防御:即便上游递来去零 ticker(2156),也要按 6 位零填找到 details/002156.md。"""
+    from autoresearch.scan.assemble import _decision_text
+    (tmp_path / "details").mkdir(parents=True)
+    (tmp_path / "details" / "002156.md").write_text("# 决策卡 — 002156\n", encoding="utf-8")
+    assert _decision_text(tmp_path, "2156") is not None
+    assert _decision_text(tmp_path, "002156") is not None
+    assert _decision_text(tmp_path, "999999") is None

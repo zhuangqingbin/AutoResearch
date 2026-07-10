@@ -223,3 +223,22 @@ def test_migrate_manual_dates_to_by_date(tmp_path):
     bd = [c for c in conds if c["kind"] == "by_date"]
     assert bd and bd[0]["date"] == "2026-08-29" and "中报" in bd[0]["text"]
     assert migrate_by_date(path=wl_path) == 0                             # 幂等
+
+
+def test_express_append_preserves_ticker_leading_zeros(tmp_path):
+    """append_express 与 append_carryover 同族:finalists.csv 往返保 `ticker` 6 位零填。"""
+    from autoresearch.scan.watchlist import append_express
+    d = tmp_path / "2026-07-09"
+    d.mkdir()
+    pd.DataFrame([{"code": "300476", "name": "胜宏科技", "status": "触发",
+                   "detail": "close_above:314=yes", "narrative": "n",
+                   "born": "2026-06-30", "expiry": ""}]).to_csv(
+        d / "watchlist_status.csv", index=False)
+    pd.DataFrame([{"ticker": "002049", "code": "002049", "name": "紫光国微"}]).to_csv(
+        d / "finalists.csv", index=False)
+    pd.DataFrame([{"code": "300476", "industry": "PCB"}]).to_csv(
+        d / "L1_scored_full.csv", index=False)
+
+    assert append_express(d) == 1
+    fin = pd.read_csv(d / "finalists.csv", dtype=str)
+    assert set(fin["ticker"]) == {"002049", "300476"}, f"ticker 丢前导零:{list(fin['ticker'])}"
