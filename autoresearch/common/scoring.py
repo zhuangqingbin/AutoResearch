@@ -101,7 +101,8 @@ def lens_momentum(df: pd.DataFrame) -> pd.DataFrame:
 
     量能项(原 15)经 factor_lab 实证剔除:vol_ratio 对 T+1 收益显著**负**相关(rank IC t=-2.31,
     样本前后半皆负)=放量滞涨/派发,turnover 近噪声;剔后复合 T+1 ICIR +32% 且 T+5/10 不降。
-    主力净流入对 T+1 近中性、对 T+5/10 最强 → 作为 swing 信号保留高权重。(见 factor_lab.py / spec §实证)
+    主力净流入对 T+1/T+2 近中性、对 T+5/10 最强;超短主尺(fwd_2_oc)下其权重由 calibrate 重定,
+    不再预设 swing 高权重。(见 factor_lab.py / spec §实证)
     """
     g = df.copy()
     gate = (g["pct_60d"].fillna(-1) > 0) | (g["pct_ytd"].fillna(-1) > 0)

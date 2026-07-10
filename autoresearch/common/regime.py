@@ -3,7 +3,7 @@
 
 design: docs/specs/2026-06-27-scan-l0-l5-optimizations-design.md §F。
 
-动机:`composite` 权重是单 horizon T+1 IC 校准,momentum/tech 等 IC 几乎全负(均值回归)。趋势
+动机:`composite` 权重是单 horizon fwd_2_oc 超短主尺 IC 校准,momentum/tech 等 IC 几乎全负(均值回归)。趋势
 regime 下这些符号翻正,静态校准看不到 → regime 错配("连续两天 0 买")。本模块给 L1 权重选择 /
 L5 标注 / 闭环 drift 一个**共用的、可在历史帧与今日帧上一致复算**的 regime 信号——直接用截面里
 已有的 `above_ma60`(站上 MA60 占比 = breadth)+ median `pct_60d`(截面动量),不额外取数。

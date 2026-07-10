@@ -549,11 +549,11 @@ def evaluate(cap_floor: float, buyable_only: bool) -> None:
     show = ic_tbl.sort_values(sortcol, ascending=False, na_position="last")
     pd.set_option("display.width", 200, "display.max_columns", 30)
     print("\n================ rank IC(因子已按 sign 取向;正=看多有效)================")
-    cols = ["factor", "IC_fwd_1_cc", "ICIR_fwd_1_cc", "t", "hit", "IC_h1", "IC_h2",
+    cols = ["factor", "IC_fwd_2_oc", "ICIR_fwd_2_oc", "t", "hit", "IC_h1", "IC_h2",
             "IC_fwd_5_oc", "IC_fwd_10_oc", "n_days"]
     cols = [c for c in cols if c in show.columns]
     print(show[cols].to_string(index=False))
-    print("\n================ 十分位多空价差(T+1 收到收, bps;买得到的)================")
+    print("\n================ 十分位多空价差(超短主尺 fwd_2_oc:开→D+2收,±0.30 clip, bps;买得到的)================")
     print(dec_tbl.sort_values("LS_spread_bps", ascending=False).to_string(index=False))
     print(f"\n[done] → {OUT}/ic_table.csv, decile_table.csv  (buyable_only={buyable_only})")
 
@@ -569,7 +569,7 @@ def _load_basic() -> pd.DataFrame:
     })
 
 
-# ───────────────────────── calibrate(T+1 IC → 层级收缩 → weights.json) ─────────────────────────
+# ───────────────────────── calibrate(fwd_2_oc 超短主尺 IC → 层级收缩 → weights.json) ─────────────────────────
 
 
 def _nz(x) -> float:
@@ -722,7 +722,7 @@ def calibrate_regimes(cap_floor: float = 30.0, k: float = 200.0, label_col: str 
 # ───────────────────────── L2 GBDT 学习重排(LightGBM 横截面) ─────────────────────────
 #
 # 把 L1 线性复合分的"加权"换成 GBDT 非线性:同一批因子组 + 双侧都有的原始因子为特征,学每日
-# 横截面 rank-norm 后的 T+1(开到开)收益。scan.universe.run() 在 L1 召回后调 predict_scores()
+# 横截面 rank-norm 后的 fwd_2_oc(超短主尺:开到 D+2 收)收益。scan.universe.run() 在 L1 召回后调 predict_scores()
 # 把 top1000 重排成 top200(= L2 粗排,确定性,替代旧 L2-AI keep/cut);模型缺失 → 回落 composite top。
 #
 # 特征对齐:gbdt_features 在 factor_lab 帧(带前瞻收益=训练)与 scan.universe L1 输出(=预测)上
@@ -771,7 +771,7 @@ def _rank_ic_by_date(score: pd.Series, fwd: pd.Series, date: pd.Series) -> float
 def train_gbdt(cap_floor: float = 30.0, valid_dates: int = 5, out_path: str = GBDT_MODEL) -> dict:
     """LightGBM 横截面排序模型(L2 粗排引擎)。
 
-    标签 = 每日横截面 rank-norm 的 fwd_1_oo(学相对排序,免 regime 水平位移,Qlib CSRankNorm 思路)。
+    标签 = 每日横截面 rank-norm 的 fwd_2_oc(超短主尺,学相对排序,免 regime 水平位移,Qlib CSRankNorm 思路)。
     时序留出最后 valid_dates 个成型日做 oos 验证 + 早停;打印 GBDT vs 线性 composite 的 oos rank-IC
     (**不胜线性就直说**,不自欺)。模型 + 特征名 + meta(oos IC/重要度)落 out_path。
     """
@@ -821,7 +821,7 @@ def train_gbdt(cap_floor: float = 30.0, valid_dates: int = 5, out_path: str = GB
     model = lgb.train(params, dtrain, num_boost_round=800, valid_sets=[dvalid],
                       callbacks=[lgb.early_stopping(60, verbose=False)])
     best_iter = int(model.best_iteration or 800)
-    # oos rank-IC:GBDT vs 线性 composite(都对真实 fwd_1_oo)
+    # oos rank-IC:GBDT vs 线性 composite(都对真实 fwd_2_oc)
     pred = model.predict(panel.loc[is_val, feat_cols], num_iteration=best_iter)
     d_val, f_val = panel.loc[is_val, "__date"], panel.loc[is_val, "__fwd"]
     ic_gbdt = _rank_ic_by_date(pred, f_val, d_val)

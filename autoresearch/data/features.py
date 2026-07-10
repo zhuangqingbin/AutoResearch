@@ -96,7 +96,7 @@ FEATURE_SETS: dict[str, list[str]] = {
     "graph": _GRAPH_COLS,
 }
 
-# 训练标签:T+1 开到开 rank-norm 口径(可交易、无前视),与 factor_lab.GBDT_LABEL 同。
+# 训练标签:T+1 开到开 rank-norm 口径(可交易、无前视)(model-zoo 自有口径,已与 factor_lab.GBDT_LABEL 解耦,后者现为 fwd_2_oc)。
 LABEL: str = "fwd_1_oo"
 
 # 多 horizon 训练标签:forward_returns 全算齐(T+1 开到开 + 5/10 日开到收),materialize 三视图

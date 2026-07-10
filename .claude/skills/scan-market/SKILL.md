@@ -89,7 +89,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 - **L3/L4 必须 subagent**:L3 一个 holistic agent(独立 context)+ L4 每只独立 context,只回传紧凑结果,否则撑爆主线;标准编排路径是 `.claude/workflows/scan-market.js`(见流程节顶部)。
 - **每只 finalist 走 stock-research lite 档**——继承其铁律(数字出自 slim context、五档评级、EV/R:R、`FINAL TRANSACTION PROPOSAL`、诚实局限)。
 - **中间名单全 staging**(L2_gbdt / L3_evidence / finalists),L5 发布到 `trace/` 留溯源;re-run 友好。
-- **诚实收尾**:召回/粗排是启发式 + T+1 单 horizon IC 校准/训练(随 regime 漂移);L3/L4 是 Claude 推理产出;"仅供研究,非投资建议"。
+- **诚实收尾**:召回/粗排是启发式 + fwd_2_oc 超短主尺 IC 校准/训练(2026-07-10 裁定;随 regime 漂移);L3/L4 是 Claude 推理产出;"仅供研究,非投资建议"。
 
 ## 常见坑
 - 必须 `uv run --no-sync`(不误删 venv-only 的 akshare/tushare/lightgbm)、仓库根目录。

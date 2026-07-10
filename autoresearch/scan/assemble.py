@@ -746,7 +746,7 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str) ->
         out += [kn]
     out += _stage_token_estimate(scan_dir)
     out += ["## 诚实局限",
-            "- 召回/粗排为启发式 + T+1 单 horizon IC 校准/训练(L1 复合分、L2 GBDT 同口径),随 regime 漂移;L3/L4 为 Claude 推理产出。",
+            "- 召回/粗排为启发式 + fwd_2_oc 超短主尺 IC 校准/训练(L1 复合分、L2 GBDT 同口径;T+1/T+5 参考),随 regime 漂移;L3/L4 为 Claude 推理产出。",
             "- 业绩/龙虎榜/预告有披露滞后;无权限端点降级标注。",
             "- A股涨跌停/停牌使名义止损未必可执行(见各决策卡执行段)。",
             f"\n_明细 + 漏斗溯源:`reports/scan/{folder}/`(summary.md + details/〈名称〉.md + trace/;目录名=运行时刻,数据日见 manifest.json)_"]
