@@ -88,10 +88,20 @@
 - **parity**:缺文件/缺键 = 现行为,一切默认关。
 - **不进配置**:网查上界(≤2/≤3/全卡5)——那是提示词契约,锚测试锁死,配置化反破契约。
 
-## §5 hermes 借鉴落地(Wave B)
+## §5 hermes 借鉴落地(Wave B,细化)
 
-- **5.1 playbook-diff 自改进提案**:retro/复盘除权重提案外,可产出「提示词补丁提案」(target file + 具体 diff + 证据读数),进 proposals.jsonl 同一审批流(人批才落)。解"lessons 仅 4 条=写侧瓶颈";M2 四操作裁决的自然延伸。
-- **5.2 FTS 判例检索**:历史卡片+lessons 建 SQLite FTS5 索引,L4 派发前按 票/行业/门型 检索 top-k 判例注入简报(E1 检索式注入的跨票扩展;个股档案已覆盖单票前科)。presence-gated,索引缺=现行为。
+### 5.1 prompt_patch 自改进提案(playbook-diff)
+
+- **载体零新建**:`feedback_store.add_proposal` 已有 `diff_sketch` 字段且 docstring 已列"prompt 规则"用途(现场核实 :391)→ 只需约定新 `kind="prompt_patch"`,payload=`{target_file, anchor_text, current_text, proposed_text, evidence:[日期+账本读数]}`。
+- **产出端(判断层)**:scan-retro playbook 加一节——同型失误 ≥2 次且有账本读数支撑 → 起草 prompt_patch 提案;M2 lesson 四操作裁决加第五出口「**毕业**」:lesson 反复生效(MTM support 高)→ 建议固化为 playbook 正文,lesson 本体退役。解"lessons 仅 4 条=写侧瓶颈"的根因:好经验的终点应是提示词,不是记忆条目。
+- **落地端(确定性)**:proposals CLI 加 `show/apply` 辅助——apply=打印目标文件+diff 供人核,施工在会话中人批后进行;**强制门**:目标文件若在契约锚覆盖集(l4-card.md/lite-playbook.md/SKILL/STAGES)→ 施工后必跑 test_agent_defs + doc-lint。
+- **护栏**:open prompt_patch ≤5 + TTL 过期;锚字符串本身列为 patch 禁区(白名单校验)。
+
+### 5.2 FTS 判例检索(跨票同型先例)
+
+- **索引**:新 CLI(零 LLM)walk `context/scan/*/details/*.md` + lessons → SQLite **FTS5** 表(date/code/name/sector/rating/gate/text),按日增量幂等(retro 或 assemble 后追加当日);库落 `context/knowledge/precedents.db`(gitignored)。探针:FTS5 不可用 → LIKE 降级。
+- **查询注入**:l4_card 组包时在**逐卡块**(决不入共享前缀,cache 契约)加「📚 判例」块:按 行业×门型×旗子 查 top-k(k≤3,近 90 日),每条一行(日期/票/一句结局/T+2 读数);presence-gated(无库=现行为);advisory 不进分不设门;token 预算 ≤400/卡。
+- **与个股档案分工**:档案=同票前科(已有),判例=跨票同型(新增),并存不重复。
 
 ## §6 分波与验收
 
