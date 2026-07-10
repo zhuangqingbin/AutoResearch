@@ -2,9 +2,10 @@
 """影子组合成绩单 —— 真实/影子/市场三条 NAV(确定性,零 LLM,零新端点)。
 
 spec: 2026-07-05 wave §WS-A1。规则(零判断可复现):每笔买单信号日**次日开盘**建仓,固定占
-当时 NAV 的 10% 槽;持有 10 个交易日后次日开盘平仓(无价顺延);无持仓=现金。三条线:
-真实(≥OW 买单,buy_ledger 同源)/ 影子(shadow_buys.csv)/ 市场(全市场等权日收益,
-与 zero_buy_ledger 口径同族)。`真实 − 影子` = 门的价值。涨跌停可成交性不模拟(诚实局限)。
+当时 NAV 的 10% 槽;**持有 2 个交易日**后次日开盘平仓(无价顺延,超短主口径,2026-07-10 裁定);
+另出 hold=10 副表做连续性对照。无持仓=现金。三条线:真实(≥OW 买单,buy_ledger 同源)/
+影子(shadow_buys.csv)/ 市场(全市场等权日收益,与 zero_buy_ledger 口径同族)。
+`真实 − 影子` = 门的价值。涨跌停可成交性不模拟(诚实局限)。
 
   uv run --no-sync python -m autoresearch.learning.paper_nav   # → reports/learning/paper_nav.md
 """
@@ -51,7 +52,7 @@ def load_prices(codes: set[str], days: list[str], lake: Path | None = None) -> d
 
 
 def simulate(signals: list[dict], prices: dict, days: list[str],
-             slot: float = 0.10, hold: int = 10) -> tuple[pd.Series, list[str]]:
+             slot: float = 0.10, hold: int = 2) -> tuple[pd.Series, list[str]]:
     """事件组合模拟(纯函数)。signals=[{date, code}](date 兼容 YYYY-MM-DD / YYYYMMDD)。
 
     次日开盘建仓(slot×当时NAV,现金不足取剩余);exit=entry 后第 hold 个交易日开盘
@@ -197,8 +198,8 @@ def risk_block(real: pd.Series, shadow: pd.Series, mkt: pd.Series) -> list[str]:
 
 
 def render(days: list[str], real: pd.Series, shadow: pd.Series, mkt: pd.Series,
-           n_real: int, n_shadow: int, skipped: list[str]) -> list[str]:
-    out = ["# 影子组合成绩单(paper NAV;10% 固定槽·持10交易日·次日开盘进出)", "",
+           n_real: int, n_shadow: int, skipped: list[str], hold: int = 2) -> list[str]:
+    out = [f"# 影子组合成绩单(paper NAV;10% 固定槽·持{hold}交易日·次日开盘进出)", "",
            "| 日期 | 真实线 | 影子线 | 市场等权 |", "|---|---|---|---|"]
     out += [f"| {d} | {real[d]:.4f} | {shadow[d]:.4f} | {mkt[d]:.4f} |" for d in days]
     if len(days):
@@ -235,14 +236,19 @@ def main() -> int:
     rs, ss = real_signals(), shadow_signals()
     codes = {s["code"] for s in rs} | {s["code"] for s in ss}
     prices = load_prices(codes, days)
-    real, sk1 = simulate(rs, prices, days)
-    shadow, sk2 = simulate(ss, prices, days)
     mkt = market_nav(days)
-    outp.write_text("\n".join(render(days, real, shadow, mkt, len(rs), len(ss), sk1 + sk2)) + "\n",
-                    encoding="utf-8")
-    line = summary_line(days, real, shadow, mkt, len(rs), len(ss))
+    # 主表:hold=2(超短主口径,2026-07-10 裁定);副表:hold=10(旧口径连续性对照)。
+    real2, sk1_2 = simulate(rs, prices, days, hold=2)
+    shadow2, sk2_2 = simulate(ss, prices, days, hold=2)
+    real10, sk1_10 = simulate(rs, prices, days, hold=10)
+    shadow10, sk2_10 = simulate(ss, prices, days, hold=10)
+    primary = render(days, real2, shadow2, mkt, len(rs), len(ss), sk1_2 + sk2_2, hold=2)
+    secondary = render(days, real10, shadow10, mkt, len(rs), len(ss), sk1_10 + sk2_10, hold=10)
+    full = primary + ["", "## 副表:hold=10(旧口径连续性对照)", ""] + secondary[2:]
+    outp.write_text("\n".join(full) + "\n", encoding="utf-8")
+    line = summary_line(days, real2, shadow2, mkt, len(rs), len(ss))
     Path("reports/learning/paper_nav_summary.txt").write_text(line + "\n", encoding="utf-8")
-    print(f"[paper_nav] {len(days)} 日 × (真实{len(rs)}/影子{len(ss)}) → {outp}")
+    print(f"[paper_nav] {len(days)} 日 × (真实{len(rs)}/影子{len(ss)}) hold=2 主表 → {outp}")
     return 0
 
 
