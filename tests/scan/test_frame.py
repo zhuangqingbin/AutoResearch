@@ -103,15 +103,16 @@ def test_sentinel_frame_full_when_rich(tmp_path):
 
 
 def test_sentinel_frame_midband_risk_off(tmp_path):
-    """中带(3–5%)+ risk_off → sentinel;帧入口 regime 现算 ≡ scan-dir 读 meta 的同一标签。"""
+    """中带(3–5%)+ risk_off → consider(2026-07-08 放宽:删掉 risk_off 升级档,不再 auto-skip);
+    帧入口 regime 现算 ≡ scan-dir 读 meta 的同一标签(两入口同判)。"""
     df = synth_universe(n=200, seed=7)
     df["pct_60d"], df["main_net_ratio"], df["cmf_20"] = -30.0, -0.05, -0.1
     df["above_ma60"] = 0.0                                # breadth=0 + med_mom<0 → risk_off
     healthy = df.index[:8]                                # 8/200 = 4% ∈ (3%,5%)
     df.loc[healthy, ["pct_60d", "main_net_ratio", "cmf_20"]] = [20.0, 0.05, 0.3]
     _write_scandir(tmp_path, df, regime="risk_off")
-    assert sentinel_advice(tmp_path)[0] == "sentinel"
-    assert sentinel_advice_from_frame(df)[0] == "sentinel"
+    assert sentinel_advice(tmp_path)[0] == "consider"
+    assert sentinel_advice_from_frame(df)[0] == "consider"
 
 
 def test_sentinel_frame_missing_col_degrades():

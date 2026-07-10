@@ -26,8 +26,9 @@ def _mk(tmp_path, frac_healthy, n=200, regime=None):
 
 
 def test_sentinel_levels(tmp_path):
-    assert sentinel_advice(_mk(tmp_path, 0.01))[0] == "sentinel"           # 材料枯竭
-    assert sentinel_advice(_mk(tmp_path, 0.04, regime="risk_off"))[0] == "sentinel"
+    assert sentinel_advice(_mk(tmp_path, 0.01))[0] == "sentinel"           # 材料枯竭(<3%)
+    # 2026-07-08 放宽:3–5% 中带一律 consider(删掉 risk_off 升级档),regime 不再左右自动哨兵
+    assert sentinel_advice(_mk(tmp_path, 0.04, regime="risk_off"))[0] == "consider"
     assert sentinel_advice(_mk(tmp_path, 0.04, regime="range"))[0] == "consider"
     level, reason = sentinel_advice(_mk(tmp_path, 0.06, regime="range"))   # 07-02 口径 6.2% → full
     assert level == "full" and "材料充足" in reason

@@ -55,7 +55,7 @@ L4 派发前(确定性):🚄 观察单触发直通车(触发票直达 L4)→ ♻
 **确定性分层多样性采样器,ML-free**。①sector-neutral composite排merit核与桶内;②7风格桶固定floor(趋势20/健康15/反转12/价值12/成长12/吸筹12/主力10);③sector cap≤20%。产物`L2_gbdt_top200.csv`:`l2_rank`=选择序、`gbdt_score`=composite、`l2_lane_reserved`=floor救回。**不预测**(分层免费,strat≈composite-top200≈0)。
 
 - **菜单体检**(`scan/menu.py`):行业集中度/落刀面/健康上涨/估值,自动嵌L5;健康=0打**⚠️菜单病**。实证:落刀L2 70% vs市场32%。
-- **哨兵建议**(`menu.sentinel_advice`):全市场健康占比×regime:<3%建议哨兵档(跳L3+L4,省~70% token);3–5%+risk_off建议;≥5%全扫。**人拍板不自动**。floor自然实验(retro侧):救回组vs merit组vs被挤组fwd对照,持续弱才复审。
+- **哨兵建议**(`menu.sentinel_advice`):全市场健康占比:<3%建议哨兵档(跳L3+L4,省~70% token);3–5%仅consider(**2026-07-08放宽**:删掉原risk_off升级档,3–5%不再auto-skip、regime只进文案);≥5%全扫。**人拍板不自动**(workflow仅对`sentinel`自动跳)。floor自然实验(retro侧):救回组vs merit组vs被挤组fwd对照,持续弱才复审。
 
 ## 旁路 · 市场研判 = macro-research lite 档(Stage 0 与 universe 并行,回退 L2 后;Opus×1)
 

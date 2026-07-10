@@ -10,7 +10,8 @@ export const meta = {
 }
 
 // ── 输入 & 常量 ──────────────────────────────────────────────────
-const date = args && args.date
+// args 可能以对象或(harness 序列化后的)JSON 字符串到达 —— 两种都容错解析。
+const date = (typeof args === 'string' && args ? JSON.parse(args).date : (args && args.date))
 if (!date) throw new Error('args.date 必填,如 {date:"2026-07-07"}')
 const R = 'uv run --no-sync python -m'
 const SD = `context/scan/${date}`
@@ -49,6 +50,15 @@ await parallel([
     `读 ${SD}/market_pack.json,按你的人设写 ${SD}/market_view.md(六小节;前3描述性地形、后2仅 L5)。数字只出自 pack,不编;个股不评级、不锚定卡片。`,
     { agentType: 'macro-brief', effort: 'high', label: 'market_view', phase: 'Prelude' }),
 ])
+// universe 走 tushare 全市场取数,偶发 ChunkedEncodingError 半途而废(prelude 内 ✗ 但不阻断),
+// 结果是 GATE1 在第 ~14 分钟毙掉整条流水线。进门前先探一次 L2,缺就重试一遍确定性前奏。
+const l2ok = await gate('l2-check',
+  `test -s ${SD}/L2_gbdt_top200.csv && echo '{"ok":true}' || echo '{"ok":false,"reason":"L2 缺失"}'`, OK)
+if (!l2ok || !l2ok.ok) {
+  log('L2 缺失(universe 半途失败)→ 重试确定性前奏一次')
+  await bash(`${R} autoresearch.scan.prelude ${date} --skip retro_refresh,retro_pending,consensus`,
+    'prelude-retry')
+}
 const g1 = await gate('GATE1', `${R} autoresearch.scan.gates gate1 ${date}`, GATE1)
 if (!g1 || !g1.ok) throw new Error(`GATE1 失败:${g1 ? g1.reason : 'agent 无返回'}`)
 log(`GATE1 ✓ sentinel=${g1.sentinel_level} · L4预算=${g1.l4_budget}`)
@@ -66,10 +76,16 @@ if (g1.sentinel_level === 'sentinel') {
 phase('L3')
 // 中观行业 pack(确定性)先行,再 [sector-briefs ∥ L3 表准备] barrier
 await bash(`${R} autoresearch.sector.reuse ${date} --apply; ${R} autoresearch.sector.pack ${date}`, 'sector-pack')
-const sectors = await agent(
-  `执行:\`uv run --no-sync python -c "import json,glob,os;d='context/sector/${date}';b='${SD}/sector_briefs';print(json.dumps(sorted(os.path.splitext(os.path.basename(p))[0] for p in glob.glob(d+'/*.json') if not os.path.exists(os.path.join(b,os.path.splitext(os.path.basename(p))[0]+'.md')))))"\`\n它打印一行 JSON 数组 = 待写 brief 的行业(有 pack 且尚无 brief;♻️复用行业已被 reuse 拷贝,故被排除,勿再派发覆盖)。把那行 JSON 原样作为结构化返回;目录不存在则返回 []。`,
+// schema 顶层必须是 object(API 拒 `type:'array'` → 400 → agent 返回 null → `|| []` 静默吞掉,
+// 结果是一份行业 brief 都不写、L3 在没有行业地形段的情况下精排。2026-07-09 实跑逮到。
+const sectorsRes = await agent(
+  `执行:\`uv run --no-sync python -c "import json,glob,os;d='context/sector/${date}';b='${SD}/sector_briefs';print(json.dumps(sorted(os.path.splitext(os.path.basename(p))[0] for p in glob.glob(d+'/*.json') if not os.path.exists(os.path.join(b,os.path.splitext(os.path.basename(p))[0]+'.md')))))"\`\n它打印一行 JSON 数组 = 待写 brief 的行业(有 pack 且尚无 brief;♻️复用行业已被 reuse 拷贝,故被排除,勿再派发覆盖)。把该数组放进 \`sectors\` 字段作为结构化返回;目录不存在则 \`sectors: []\`。`,
   { agentType: 'general-purpose', effort: 'low', label: 'sector-list',
-    schema: { type: 'array', items: { type: 'string' } } }) || []
+    schema: { type: 'object', required: ['sectors'],
+      properties: { sectors: { type: 'array', items: { type: 'string' } } } } })
+if (!sectorsRes) throw new Error('sector-list 无返回(schema/API 失败)—— 不静默降级为"无行业 brief"')
+const sectors = sectorsRes.sectors || []
+log(`待写行业 brief:${sectors.length} 个${sectors.length ? ` (${sectors.join('、')})` : '(全部 TTL 复用)'}`)
 await parallel([
   () => bash(`${R} autoresearch.scan.agents.l3_select prepare ${date}`, 'l3-prepare'),
   ...sectors.map((sec) => () => agent(

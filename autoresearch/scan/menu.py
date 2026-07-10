@@ -158,9 +158,9 @@ def sentinel_advice(scan_dir: Path | str, frac_lo: float = 0.03,
     """哨兵建议(design: 2026-07-03-scan-sentinel-economy §1)。人拍板,不自动降档。
 
     判据用**全市场**健康上涨占比(L1_scored_full × healthy_riser_mask——不受自家 L2 采样
-    影响;healthy 通道上线后 L2 健康数被桶保底"治愈",不能再当判据)× regime:
-    <frac_lo → sentinel;frac_lo–frac_hi ∧ risk_off → sentinel;frac_lo–frac_hi → consider;
-    其余 → full。07-02(6.2%,range)→ full:通道修好后该日应全扫。
+    影响;healthy 通道上线后 L2 健康数被桶保底"治愈",不能再当判据):
+    <frac_lo → sentinel;frac_lo–frac_hi → consider(2026-07-08 放宽:删掉 risk_off 升级档,
+    不再对 risk_off 中带自动哨兵);其余 → full。07-02(6.2%,range)→ full。
     """
     scan_dir = Path(scan_dir)
     p = scan_dir / "L1_scored_full.csv"
@@ -187,14 +187,18 @@ def sentinel_advice(scan_dir: Path | str, frac_lo: float = 0.03,
 
 def _sentinel_verdict(frac: float, regime: str | None,
                       frac_lo: float, frac_hi: float) -> tuple[str, str]:
-    """哨兵判据核(scan-dir 与帧两入口共用;文案逐字保持)。"""
+    """哨兵判据核(scan-dir 与帧两入口共用;文案逐字保持)。
+
+    2026-07-08 放宽:删掉『3–5% + risk_off → sentinel』边界档(过严,曾误跳全量扫描)。
+    现只有 <frac_lo 真枯竭才自动哨兵;3–5% 一律 consider(人拍板,workflow 不 auto-skip),
+    regime 仅进文案、不再左右自动降档。
+    """
     pct = f"{frac:.1%}"
     if frac < frac_lo:
         return "sentinel", f"全市场健康上涨仅 {pct}(<{frac_lo:.0%})= 材料枯竭 → 建议哨兵档(跳 L3/L4)"
-    if frac < frac_hi and regime == "risk_off":
-        return "sentinel", f"健康上涨 {pct} + risk_off → 建议哨兵档"
     if frac < frac_hi:
-        return "consider", f"健康上涨 {pct}(<{frac_hi:.0%})材料偏薄 → 可考虑哨兵档,人拍板"
+        tag = " + risk_off" if regime == "risk_off" else ""
+        return "consider", f"健康上涨 {pct}{tag}(<{frac_hi:.0%})材料偏薄 → 可考虑哨兵档,人拍板"
     return "full", f"全市场健康上涨 {pct} 材料充足 → 全扫"
 
 
