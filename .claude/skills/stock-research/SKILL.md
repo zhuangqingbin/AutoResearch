@@ -8,7 +8,7 @@ description: Use when the user wants to research or analyze a SINGLE stock/crypt
 ## 核心原理
 同一免费数据层(yfinance/FRED/akshare/tushare)+ Claude(本 session)当引擎,零 LLM API。
 - **full 档** = v4 全量报告(决策主线+证据附录;`harvest` 全量 ~90KB context)。
-- **lite 档** = 一张决策卡(`harvest --slim` 只取决策驱动块;渐进深度 DD + 早停;~20–30% token)。
+- **lite 档** = 一张决策卡(`harvest --slim` 只取决策驱动块;渐进深度 DD + 早停;~20–30% token)。lite 卡=超短交易语义(1~2 日窗);full 深研报告不受此限。
 原 analyze-ticker(full)/ analyze-ticker-lite(lite)合并于此(design: `docs/specs/2026-07-03-research-skills-altitude-refactor-design.md` §5.4)。
 
 ## 档位路由(先定档,再进对应 playbook)

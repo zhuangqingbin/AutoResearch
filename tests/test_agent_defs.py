@@ -41,7 +41,8 @@ def test_l4_card_contract_anchors_synced():
     anchors = ["进入P4倾向", "FINAL TRANSACTION PROPOSAL", "**Rating**",
                "早停只向下", "Rubric建议", "一段话研判", "L3 论点裁决",
                "已核数字摘录", "多写不多读", "龙虎榜席位", "活体新闻",
-               "早停卡短格式", *(g for g in _OW_GATES)]
+               "早停卡短格式", "卡契约 v3·超短 1~2 日", "超短口径",
+               "机构面网查", *(g for g in _OW_GATES)]
     for a in anchors:
         assert a in agent, f"l4-card 缺契约锚「{a}」"
         assert a in playbook, f"lite-playbook 缺契约锚「{a}」(真值源被改,先同步 agent 定义)"
