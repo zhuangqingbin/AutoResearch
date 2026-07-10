@@ -17,10 +17,10 @@ const R = 'uv run --no-sync python -m'
 const SD = `context/scan/${date}`
 
 // 确定性命令 → general-purpose Bash-agent(只跑命令、回报退出码,不判断)
-function bash(cmd, label) {
+function bash(cmd, label, phase) {
   return agent(
     `在仓库根目录精确执行下面这条命令,然后只回报:退出码 + stdout 末 15 行。不要做别的、不要判断、不要解释。\n\n\`\`\`\n${cmd}\n\`\`\``,
-    { agentType: 'general-purpose', effort: 'low', label })
+    { agentType: 'general-purpose', effort: 'low', label, ...(phase ? { phase } : {}) })
 }
 // 门 CLI → Bash-agent + schema(把 CLI 打印的 JSON 原样带回)。
 // required 只列 'ok':失败 JSON 只含 {ok:false, reason}(无 sentinel_level/finalists 等成功字段);
@@ -33,19 +33,20 @@ const GATE2 = { type: 'object', required: ['ok'],
     finalists: { type: 'array', items: { type: 'string' } }, n: { type: 'integer' } } }
 const OK = { type: 'object', required: ['ok'],
   properties: { ok: { type: 'boolean' }, reason: { type: 'string' } } }
-function gate(label, cmd, schema) {
+function gate(label, cmd, schema, phase) {
   return agent(
     `执行:\`${cmd}\`\n它会向 stdout 打印一行 JSON。把那行 JSON 原样作为你的结构化返回(字段不改、不增删)。`,
-    { agentType: 'general-purpose', effort: 'high', label, schema })
+    { agentType: 'general-purpose', effort: 'high', label, schema, ...(phase ? { phase } : {}) })
 }
 
 // ── Phase Prelude ───────────────────────────────────────────────
 phase('Prelude')
 // frame 先行:pack 存盘 + 取数入湖(prelude/universe 随后湖命中不重拉)
-await bash(`mkdir -p ${SD} && ${R} autoresearch.scan.frame ${date} --json > ${SD}/market_pack.json`, 'frame')
+log('Prelude 开始:frame → [universe 全市场取数 ∥ market_view](取数历史 ~10m,完成即 GATE1)')
+await bash(`mkdir -p ${SD} && ${R} autoresearch.scan.frame ${date} --json > ${SD}/market_pack.json`, 'frame', 'Prelude')
 // universe(确定性)∥ market_view(macro-lite 判断)—— barrier
 await parallel([
-  () => bash(`${R} autoresearch.scan.prelude ${date}`, 'prelude/universe'),
+  () => bash(`${R} autoresearch.scan.prelude ${date}`, 'prelude/universe', 'Prelude'),
   () => agent(
     `读 ${SD}/market_pack.json,按你的人设写 ${SD}/market_view.md(六小节;前3描述性地形、后2仅 L5)。数字只出自 pack,不编;个股不评级、不锚定卡片。`,
     { agentType: 'macro-brief', effort: 'high', label: 'market_view', phase: 'Prelude' }),
@@ -53,21 +54,21 @@ await parallel([
 // universe 走 tushare 全市场取数,偶发 ChunkedEncodingError 半途而废(prelude 内 ✗ 但不阻断),
 // 结果是 GATE1 在第 ~14 分钟毙掉整条流水线。进门前先探一次 L2,缺就重试一遍确定性前奏。
 const l2ok = await gate('l2-check',
-  `test -s ${SD}/L2_gbdt_top200.csv && echo '{"ok":true}' || echo '{"ok":false,"reason":"L2 缺失"}'`, OK)
+  `test -s ${SD}/L2_gbdt_top200.csv && echo '{"ok":true}' || echo '{"ok":false,"reason":"L2 缺失"}'`, OK, 'Prelude')
 if (!l2ok || !l2ok.ok) {
   log('L2 缺失(universe 半途失败)→ 重试确定性前奏一次')
   await bash(`${R} autoresearch.scan.prelude ${date} --skip retro_refresh,retro_pending,consensus`,
-    'prelude-retry')
+    'prelude-retry', 'Prelude')
 }
-const g1 = await gate('GATE1', `${R} autoresearch.scan.gates gate1 ${date}`, GATE1)
+const g1 = await gate('GATE1', `${R} autoresearch.scan.gates gate1 ${date}`, GATE1, 'Prelude')
 if (!g1 || !g1.ok) throw new Error(`GATE1 失败:${g1 ? g1.reason : 'agent 无返回'}`)
 log(`GATE1 ✓ sentinel=${g1.sentinel_level} · L4预算=${g1.l4_budget}`)
 
 // ── 哨兵档:材料枯竭 → 跳过 sector/L3/L4 ─────────────────────────
 if (g1.sentinel_level === 'sentinel') {
   log('哨兵档 → 跳过 L3/L4,直接 assemble(观察单/日历已在 prelude 跑过)')
-  await bash(`${R} autoresearch.scan.assemble ${date}`, 'assemble')
-  const g4s = await gate('GATE4', `${R} autoresearch.scan.gates gate4 ${date}`, OK)
+  await bash(`${R} autoresearch.scan.assemble ${date}`, 'assemble', 'Assemble')
+  const g4s = await gate('GATE4', `${R} autoresearch.scan.gates gate4 ${date}`, OK, 'Assemble')
   if (!g4s || !g4s.ok) throw new Error(`GATE4(哨兵)失败:${g4s ? g4s.reason : 'no return'}`)
   return { date, mode: 'sentinel', finalists: 0, cards: 0, buys: [], isZeroBuy: true, published: true }
 }
@@ -75,44 +76,47 @@ if (g1.sentinel_level === 'sentinel') {
 // ── Phase L3 ────────────────────────────────────────────────────
 phase('L3')
 // 中观行业 pack(确定性)先行,再 [sector-briefs ∥ L3 表准备] barrier
-await bash(`${R} autoresearch.sector.reuse ${date} --apply; ${R} autoresearch.sector.pack ${date}`, 'sector-pack')
+await bash(`${R} autoresearch.sector.reuse ${date} --apply; ${R} autoresearch.sector.pack ${date}`, 'sector-pack', 'L3')
 // schema 顶层必须是 object(API 拒 `type:'array'` → 400 → agent 返回 null → `|| []` 静默吞掉,
 // 结果是一份行业 brief 都不写、L3 在没有行业地形段的情况下精排。2026-07-09 实跑逮到。
 const sectorsRes = await agent(
   `执行:\`uv run --no-sync python -c "import json,glob,os;d='context/sector/${date}';b='${SD}/sector_briefs';print(json.dumps(sorted(os.path.splitext(os.path.basename(p))[0] for p in glob.glob(d+'/*.json') if not os.path.exists(os.path.join(b,os.path.splitext(os.path.basename(p))[0]+'.md')))))"\`\n它打印一行 JSON 数组 = 待写 brief 的行业(有 pack 且尚无 brief;♻️复用行业已被 reuse 拷贝,故被排除,勿再派发覆盖)。把该数组放进 \`sectors\` 字段作为结构化返回;目录不存在则 \`sectors: []\`。`,
-  { agentType: 'general-purpose', effort: 'low', label: 'sector-list',
+  { agentType: 'general-purpose', effort: 'low', label: 'sector-list', phase: 'L3',
     schema: { type: 'object', required: ['sectors'],
       properties: { sectors: { type: 'array', items: { type: 'string' } } } } })
 if (!sectorsRes) throw new Error('sector-list 无返回(schema/API 失败)—— 不静默降级为"无行业 brief"')
 const sectors = sectorsRes.sectors || []
 log(`待写行业 brief:${sectors.length} 个${sectors.length ? ` (${sectors.join('、')})` : '(全部 TTL 复用)'}`)
 await parallel([
-  () => bash(`${R} autoresearch.scan.agents.l3_select prepare ${date}`, 'l3-prepare'),
+  () => bash(`${R} autoresearch.scan.agents.l3_select prepare ${date}`, 'l3-prepare', 'L3'),
   ...sectors.map((sec) => () => agent(
     `你是行业分析师。读 context/sector/${date}/${sec}.json 写 ${SD}/sector_briefs/${sec}.md,两段机器契约(## 地形段 喂 L3/L4 · ## 研判段 仅 L5,含 **行业方向** 行)。零新取数。`,
-    { agentType: 'sector-brief', effort: 'high', label: `brief:${sec}`, phase: 'L3' })),
+    { agentType: 'sector-brief', effort: 'high', label: `brief:${sec}`, phase: 'L3' })
+    .then((r) => { log(`brief ✓ ${sec}`); return r })),
 ])
 // L3 holistic 精排(唯一 max-effort 判断核心)
+log(`L3 精排开始:通读 _l3_table(~200 只)比较式选 ~${g1.l4_budget}(effort max,历史 ~14m)`)
 await agent(
   `L3 精排 · 日期 ${date} · 目标约 ${g1.l4_budget} 只。文件在 ${SD}/:_l3_table.md(~200 表)、market_view.md(§1-3 地形)、sector_briefs/(地形段)。按你的人设(5 维 rubric + 硬约束 A/B/C/D)比较式精排,写 ${SD}/_l3_judged.json。`,
   { agentType: 'l3-rank', effort: 'max', label: 'L3-rank', phase: 'L3' })
 // 确定性写 finalists(修前导零)+ GATE2
-await bash(`${R} autoresearch.scan.agents.l3_select finalists ${date} --budget ${g1.l4_budget}`, 'finalists')
-const g2 = await gate('GATE2', `${R} autoresearch.scan.gates gate2 ${date} --budget ${g1.l4_budget}`, GATE2)
+await bash(`${R} autoresearch.scan.agents.l3_select finalists ${date} --budget ${g1.l4_budget}`, 'finalists', 'L3')
+const g2 = await gate('GATE2', `${R} autoresearch.scan.gates gate2 ${date} --budget ${g1.l4_budget}`, GATE2, 'L3')
 if (!g2 || !g2.ok) throw new Error(`GATE2 失败:${g2 ? g2.reason : 'no return'}`)
 log(`GATE2 ✓ finalists=${g2.n}`)
 
 // ── Phase L4 ────────────────────────────────────────────────────
 phase('L4')
 // 派发包(确定性):TTL复用+carryover → pledge/seats/calendar(旗源 csv)→ prompts(.SH 归一;compose 时读旗源)
+log('L4 派发包+slim 预取开始(reuse→旗源→prompts→slim,历史 ~10m)')
 await bash(
   `${R} autoresearch.scan.l4_reuse ${date} --apply --carryover; ` +
   `${R} autoresearch.scan.agents.l4_card pledge ${date} || true; ` +
   `${R} autoresearch.scan.agents.l4_card seats ${date} || true; ` +
   `${R} autoresearch.scan.calendar ${date} || true; ` +
-  `${R} autoresearch.scan.agents.l4_card prompts ${date}`, 'l4-prep')
+  `${R} autoresearch.scan.agents.l4_card prompts ${date}`, 'l4-prep', 'L4')
 // GATE3:批量 slim 失败响亮(harvest-slim 打印 JSON + 非零退出)
-const g3 = await gate('GATE3', `${R} autoresearch.scan.agents.l4_card harvest-slim ${date}`, OK)
+const g3 = await gate('GATE3', `${R} autoresearch.scan.agents.l4_card harvest-slim ${date}`, OK, 'L4')
 if (!g3 || !g3.ok) throw new Error(`GATE3 失败(slim<8KB 或 .SH):${g3 ? g3.reason : 'no return'}`)
 log('GATE3 ✓ 全 slim >8KB(surface)')
 // 派发计划(确定性):按 _l4_prompt_<code>.md 是否存在分 dispatch(需新派)/ reused(TTL复用
@@ -122,14 +126,17 @@ const PLAN = { type: 'object', required: ['dispatch'],
   properties: { dispatch: { type: 'array', items: { type: 'string' } },
     reused: { type: 'array', items: { type: 'object',
       properties: { code: { type: 'string' }, rating: { type: 'string' } } } } } }
-const plan = await gate('dispatch-plan', `${R} autoresearch.scan.agents.l4_card dispatch-plan ${date}`, PLAN)
+const plan = await gate('dispatch-plan', `${R} autoresearch.scan.agents.l4_card dispatch-plan ${date}`, PLAN, 'L4')
 if (!plan) throw new Error('dispatch-plan 无返回')
 // 决策卡:只派 dispatch 码一次并发(barrier —— assemble 与 isZeroBuy 需全部卡评级才能判)
 const CARD = { type: 'object', required: ['code', 'rating'],
   properties: { code: { type: 'string' }, rating: { type: 'string' }, conviction: { type: 'number' } } }
+log(`L4 并发:新派 ${plan.dispatch.length} 张(历史 ~7–15m)· 复用 ${(plan.reused || []).length} 张跳派发`)
+let _done = 0
 const fresh = (await parallel(plan.dispatch.map((code) => () => agent(
   `执行 ${SD}/_l4_prompt_${code}.md:先读整个任务包,再按其指令做渐进深度 DD + 早停,写决策卡到 ${SD}/details/${code}.md。最后返回该卡最终五档评级(code / rating / conviction)。`,
-  { agentType: 'l4-card', effort: 'xhigh', label: `card:${code}`, phase: 'L4', schema: CARD }))))
+  { agentType: 'l4-card', effort: 'xhigh', label: `card:${code}`, phase: 'L4', schema: CARD })
+  .then((r) => { _done += 1; log(`L4 卡 ${_done}/${plan.dispatch.length} ✓ ${code}${r ? ` → ${r.rating}` : '(无返回)'}`); return r }))))
   .filter(Boolean)
 const cards = [...fresh, ...(plan.reused || [])]
 const isOW = (r) => /(overweight|\bbuy\b|增持|买入)/i.test(r || '')
@@ -140,8 +147,8 @@ log(`L4 ✓ 新派 ${fresh.length} + 复用 ${(plan.reused || []).length} = ${ca
 // ── Phase Assemble ──────────────────────────────────────────────
 phase('Assemble')
 // L5 整合(内含 self_review 硬门 + dump gate_fires)+ GATE4
-await bash(`${R} autoresearch.scan.assemble ${date}`, 'assemble')
-const g4 = await gate('GATE4', `${R} autoresearch.scan.gates gate4 ${date}`, OK)
+await bash(`${R} autoresearch.scan.assemble ${date}`, 'assemble', 'Assemble')
+const g4 = await gate('GATE4', `${R} autoresearch.scan.gates gate4 ${date}`, OK, 'Assemble')
 if (!g4 || !g4.ok) throw new Error(`GATE4 失败(self_review 未通过):${g4 ? g4.reason : 'no return'}`)
 log('GATE4 ✓ self_review 通过')
 
