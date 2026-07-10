@@ -546,6 +546,12 @@ Expected: `grep -c '"rejected"' context/knowledge/proposals.jsonl` → 2。
 ② scoring `lens_momentum` docstring 末句「主力净流入对 T+1 近中性、对 T+5/10 最强 → 作为 swing 信号保留高权重。」→「主力净流入对 T+1/T+2 近中性、对 T+5/10 最强;超短主尺(fwd_2_oc)下其权重由 calibrate 重定,不再预设 swing 高权重。」
 ③ SKILL.md 铁律「诚实收尾」句「T+1 单 horizon IC 校准/训练」→「fwd_2_oc 超短主尺 IC 校准/训练(2026-07-10 裁定)」。
 ④ 扫尾:`grep -rn "1–2 周\|1-2 周\|1~2 周" autoresearch/ .claude/skills/scan-market/ | grep -i "swing\|持仓\|推的"` ——凡**自述持仓意图**处改「超短 1~2 日」;凡**陈述因子事实**(如"主力是 1-2 周尺度的信号")保留事实但补超短结论(同①句式)。
+⑤ 「T+1 口径」旧自述点名清单(T2 复审 I-1/I-2/M-1/M-3 移交,全为文本/展示级,行号为 T2 时点近似,以内容锚定位):
+- `autoresearch/scan/assemble.py:749` 诚实局限行「T+1 单 horizon IC 校准/训练」→「fwd_2_oc 超短主尺 IC 校准/训练(T+1/T+5 参考)」——**用户可见报告文本,最高优先**;
+- `autoresearch/research/factor_lab.py` train_gbdt 族 4 处:`:774` 标签句 fwd_1_oo→fwd_2_oc、`:824` oos 注释同、`:572` 段横幅「calibrate(T+1 IC→…)」、`:725` GBDT 块注释「T+1(开到开)收益」;
+- `factor_lab.py:552` evaluate 打印 `cols` 把 `IC_fwd_1_cc/ICIR_fwd_1_cc` 换成 `IC_fwd_2_oc/ICIR_fwd_2_oc`(表按它排序却不显示它);`:556` 十分位 header「T+1 收到收」→「超短主尺 fwd_2_oc(开→D+2收,±0.30 clip)」;
+- `autoresearch/common/regime.py:6` docstring「单 horizon T+1 IC 校准」同步;
+- `autoresearch/data/features.py:99`「与 factor_lab.GBDT_LABEL 同」已解耦,改「(model-zoo 自有口径,已与 factor_lab.GBDT_LABEL 解耦,后者现为 fwd_2_oc)」。
 
 - [ ] **Step 4: 全量回归**
 
