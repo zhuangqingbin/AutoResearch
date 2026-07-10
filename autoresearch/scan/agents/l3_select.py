@@ -142,7 +142,8 @@ def _delta_filter(df: pd.DataFrame, prev_dir: Path,
 def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
                 shuffle_seed: int | None = None, sector_terrain: bool = False,
                 dist_flag: bool = False, reg_flag: bool = False, cat_flag: bool = False,
-                misread_flag: bool = False, rc_flag: bool = False) -> str:
+                misread_flag: bool = False, rc_flag: bool = False,
+                pinned_flag: bool = False, pinned_path: Path | str | None = None) -> str:
     """L3 holistic 选股 subagent 的完整输入表(~200 行紧凑表 + 证据摘要列)。
 
     delta=True:略去「昨判弃 ∧ 今无变化」行 + prev_l3 标记(design: l4-economy §3;
@@ -164,6 +165,12 @@ def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
     rc_flag=True:加 `rc` 列(卖方一致预期 FY EPS 近窗修正 %,staging `consensus.csv`——
     `l4_card.fetch_consensus` 产出——在才生效)+ 图例禁则,镜像 cat_flag 接线;
     默认 False = 逐字 parity。
+    pinned_flag=True:加 `pinned` 列(📌 标记该码;来自 `user_config.load_pinned(date,
+    path=pinned_path)` 的 kept 集合,presence-gated——无 pinned.json / kept 全空(含全
+    过期)→ 列不出现)+ 图例禁则——保送票 L1→L5 全程强留、L3 真判但不可淘汰(design
+    2026-07-11-recall-gate-pinned-config-design.md §4.1);默认 False = 逐字 parity。
+    pinned_path:`load_pinned` 的自定义路径(测试注入;生产默认
+    `.claude/skills/scan-market/pinned.json`)。
     """
     df = load_l3_input(date, root=root)
     cols = [*_L3_COLS] + [c for c in ("lhb_n", "has_forecast", "has_express") if c in df.columns]
@@ -217,6 +224,15 @@ def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
                 cols = [*cols, "rc"]
                 header += ["_机构面列(rc):卖方一致预期 FY EPS 近窗修正(%,存在性≠方向确认,"
                            "advisory)。与资金/基本面共振才可作论点支柱。_", ""]
+    if pinned_flag and "code" in df.columns:
+        from autoresearch.scan.user_config import load_pinned
+        kept = load_pinned(date, path=pinned_path)["kept"]
+        if kept:
+            pin_codes = {e["code"] for e in kept}
+            df["pinned"] = df["code"].map(lambda c: "📌" if str(c).zfill(6) in pin_codes else "")
+            cols = [*cols, "pinned"]
+            header += ["_📌(pinned列):用户手工保送票——L1→L5 全程强留、不可淘汰;"
+                       "仍须按下表真实证据独立评判,不因『保送』降低尽调标准。_", ""]
     if delta:
         prev = _prev_l3_day(date, root=root)
         if prev is None:
@@ -347,11 +363,85 @@ def merge_l3_finalists_v2(judged: pd.DataFrame, target: int = 30, trend_quota: i
     return out[[c for c in cols if c in out.columns]]
 
 
-def write_finalists(date: str, budget: int = 30, root: Path | None = None) -> dict:
+def _inject_pinned_finalists(fin: pd.DataFrame, kept: list[dict],
+                             lookup: pd.DataFrame | None = None) -> pd.DataFrame:
+    """finalists 强留(design 2026-07-11-recall-gate-pinned-config-design.md §4.1;plan Task 4)。
+
+    pinned 每条(`user_config.load_pinned(...)["kept"]`):
+      - 已在 `fin`(L3 holistic 真判已入选)→ 不重复行,只把 `lane` 强改判 `"pinned"` +
+        落 `pinned_note`——**finalists.csv 里识别 pinned 行的单一信号**(A2-T4 的 L3.5
+        闸据此构造 exempt 集;L5 assemble 的「📌 保送」节也按此在 finalists 里查评级)。
+        conviction/thesis/risk/catalyst 等 L3 真判字段原样保留(判断记录在案,不因保送
+        抹掉——design §4.1"L3 真判但不可淘汰")。**注**:本函数只改 finalists.csv,不碰
+        `L3_judged_full.csv`(该文件仍留 L3 agent 自己判的原始 lane,如 trend/value——
+        `learning.cross_calib.flip_stats` 的按 lane 翻案率读的正是那份原始记录,与此处
+        finalists 层的"pinned"标记是两回事,故意不合并;`learning.channel_ledger` 的
+        per-channel 账则完全在 L1 层(`recall_channels`,universe._inject_pinned_l1 已标
+        `"pinned"`),同样与本函数无关——三层"pinned"标记互相独立、各自服务各自的下游);
+      - 不在(L3 未选中/未进候选池)→ 从 `lookup`(通常是 `write_finalists` 已读入的
+        L2_gbdt_top200.csv)取真实行补 name/sector 等展示字段;`lookup` 无该码/未传 →
+        占位行(仅 code/ticker/lane/pinned_note,`data_missing=True`,不编数,镜像
+        `universe._inject_pinned_l1` 同一降级顺序)。
+
+    本函数在 `merge_l3_finalists_v2` 已完成 `target` 截断排序**之后**调用(`write_finalists`
+    编排),纯追加/打标——不占 target 名额、不挤他票(与 L1/L2 强留同一"全程直通"结构性
+    保证)。`kept` 空 → 原样返回(presence-gated parity)。
+    """
+    if not kept:
+        return fin
+    out = fin.copy()
+    if "code" in out.columns:
+        out["code"] = out["code"].astype(str).str.zfill(6)
+    have = set(out["code"]) if "code" in out.columns else set()
+    if "lane" not in out.columns:
+        out["lane"] = ""
+    if "pinned_note" not in out.columns:
+        out["pinned_note"] = ""
+    if "data_missing" not in out.columns:
+        out["data_missing"] = False
+
+    lookup_z = None
+    if lookup is not None and "code" in lookup.columns:
+        lookup_z = lookup.assign(code=lookup["code"].astype(str).str.zfill(6))
+
+    new_rows: list[pd.DataFrame] = []
+    seen_new: set[str] = set()
+    for entry in kept:
+        code = str(entry["code"]).split(".")[0].zfill(6)
+        note = entry.get("note", "")
+        if code in have:                          # L3 真判已入选 → 只强改判 lane,不重复行
+            m = out["code"] == code
+            out.loc[m, "lane"] = "pinned"
+            out.loc[m, "pinned_note"] = note
+            continue
+        if code in seen_new:                      # 同票重复 pin 条目(用户笔误)→ 只注一次
+            continue
+        seen_new.add(code)
+        row_data: dict = {"code": code, "ticker": code, "lane": "pinned",
+                          "pinned_note": note, "data_missing": True}
+        if lookup_z is not None:
+            hit = lookup_z[lookup_z["code"] == code]
+            if len(hit):
+                r0 = hit.iloc[0]
+                row_data["data_missing"] = False
+                if "name" in lookup_z.columns and pd.notna(r0.get("name")):
+                    row_data["name"] = r0["name"]
+                if "industry" in lookup_z.columns and pd.notna(r0.get("industry")):
+                    row_data["sector"] = r0["industry"]
+        new_rows.append(pd.DataFrame([row_data]))
+    if new_rows:
+        out = pd.concat([out, *new_rows], ignore_index=True, sort=False)
+    return out
+
+
+def write_finalists(date: str, budget: int = 30, root: Path | None = None,
+                    pinned_path: Path | str | None = None) -> dict:
     """确定性写 finalists.csv + L3_judged_full.csv(workflow L3 后确定性入口,取代手工 glue)。
 
     读 l3-rank agent 落的 _l3_judged.json → 从 L2 回填 pct_60d(供 merge 混合配额)
-    → merge_l3_finalists_v2 → 写盘。**全程 6 位零填**,修 000062→62 的 CSV 往返坑。
+    → merge_l3_finalists_v2 → pinned 强留(`_inject_pinned_finalists`,design 2026-07-11
+    §4.1;plan Task 4;presence-gated:无 pinned.json/kept 全空 → 不变)→ 写盘。**全程 6
+    位零填**,修 000062→62 的 CSV 往返坑。
     """
     base = Path(root) if root else Path("context/scan")
     scan_dir = base / date
@@ -361,20 +451,28 @@ def write_finalists(date: str, budget: int = 30, root: Path | None = None) -> di
         raise ValueError(f"_l3_judged.json 空或缺 code 列:{scan_dir / '_l3_judged.json'}")
     jd["code"] = jd["code"].astype(str).str.zfill(6)
     l2p = scan_dir / "L2_gbdt_top200.csv"
-    if l2p.exists() and "pct_60d" not in jd.columns:
+    l2 = None
+    if l2p.exists():
         l2 = pd.read_csv(l2p, dtype={"code": str})
         l2["code"] = l2["code"].astype(str).str.zfill(6)
-        if "pct_60d" in l2.columns:
+        if "pct_60d" not in jd.columns and "pct_60d" in l2.columns:
             jd = jd.merge(l2[["code", "pct_60d"]], on="code", how="left")
     jd.to_csv(scan_dir / "L3_judged_full.csv", index=False)       # 全量判断(retro/assemble/trace)
     fin = merge_l3_finalists_v2(jd, target=budget)                # 内部 zfill code + ticker=code
+    from autoresearch.scan.user_config import load_pinned
+    kept = load_pinned(date, path=pinned_path)["kept"]
+    if kept:
+        fin = _inject_pinned_finalists(fin, kept, lookup=l2)
     fin.to_csv(scan_dir / "finalists.csv", index=False)
     return {"judged_n": int(len(jd)), "finalists_n": int(len(fin))}
 
 
 def prepare_l3_table(date: str, root: Path | None = None, delta: bool = True,
-                     do_harvest: bool = True) -> dict:
-    """L3 精排前的确定性件:harvest 证据/公告情感 + 构建紧凑表 → 写 _l3_table.md(l3-rank agent 读)。"""
+                     do_harvest: bool = True, pinned_path: Path | str | None = None) -> dict:
+    """L3 精排前的确定性件:harvest 证据/公告情感 + 构建紧凑表 → 写 _l3_table.md(l3-rank agent 读)。
+
+    pinned_path 透传给 `l3_table_md`(测试注入;生产默认路径见 `user_config.load_pinned`)。
+    """
     base = Path(root) if root else Path("context/scan")
     scan_dir = base / date
     l2 = pd.read_csv(scan_dir / "L2_gbdt_top200.csv", dtype={"code": str})
@@ -384,7 +482,8 @@ def prepare_l3_table(date: str, root: Path | None = None, delta: bool = True,
         from autoresearch.scan.agents.l3_news import harvest_l3_news
         harvest_l3_news(date, codes, root=base)
     md = l3_table_md(date, root=base, delta=delta, dist_flag=True, reg_flag=True,
-                     cat_flag=True, sector_terrain=True, misread_flag=True)
+                     cat_flag=True, sector_terrain=True, misread_flag=True,
+                     pinned_flag=True, pinned_path=pinned_path)
     (scan_dir / "_l3_table.md").write_text(md, encoding="utf-8")
     return {"codes": len(codes), "table_bytes": len(md)}
 

@@ -486,6 +486,42 @@ def _knowledge_note(rows: list[dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _pinned_section(scan_dir: Path, analysis_date: str, rows: list[dict],
+                    pinned_path: str | Path | None = None) -> str:
+    """📌 保送节(pinned 直通;design 2026-07-11-recall-gate-pinned-config-design.md §4.1;
+    plan Task 4):`kept` 每票一行 评级 + note,`expired` 每票一行到期备注(不再强留,提醒续期)。
+
+    presence-gated:`load_pinned` 返回 kept/expired 皆空(无 pinned.json,或有文件但全部
+    条目既非 kept 也非 expired——即空列表)→ 不加节(老路不破)。评级从 `rows`(build_summary
+    已用 `_finalist_row` 解析好的 finalists 行,天然含 pinned 强留/L3 真判两路来源)按 code
+    查——无论该 pinned 码这次是被 L3 真判选中、还是被 `_inject_pinned_finalists` 强留注入,
+    只要在 finalists.csv 里就查得到卡评级。
+    """
+    try:
+        from autoresearch.scan.user_config import load_pinned
+        pin = load_pinned(analysis_date, path=pinned_path)
+    except Exception:  # noqa: BLE001 — 可选层,坏 pinned.json 不挡整份报告发布
+        return ""
+    kept, expired = pin.get("kept") or [], pin.get("expired") or []
+    if not kept and not expired:
+        return ""
+    by_code = {str(r.get("code", "")).zfill(6): r for r in rows}
+    lines = ["## 📌 保送(用户手工直通;L1→L5 全程强留,不占漏斗配额)"]
+    for e in kept:
+        code = e["code"]
+        r = by_code.get(code)
+        rating = r.get("rating", "—") if r else "⚠️无卡"
+        name = f" {r.get('name', '')}" if r and r.get("name") else ""
+        note = f" ——{e['note']}" if e.get("note") else ""
+        lines.append(f"- **{code}**{name} · **{rating}**{note}(到期 {e.get('expires', '—')})")
+    if expired:
+        lines += ["", "_已过期(不再强留,续期请更新 pinned.json):_"]
+        for e in expired:
+            note = f" ——{e['note']}" if e.get("note") else ""
+            lines.append(f"- {e['code']}{note}(已于 {e.get('expires', '—')} 过期)")
+    return "\n".join(lines)
+
+
 def _sector_view_section(scan_dir: Path) -> str:
     """行业 brief 研判段汇总(Phase 3;方向性内容只在整合层——地形段已注 L3/L4)。无 briefs → ''。"""
     d = scan_dir / "sector_briefs"
@@ -618,7 +654,8 @@ def _self_review_banner(scan_dir: Path, rows: list[dict], summary_text: str,
     return self_review.render_banner(res)
 
 
-def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str) -> str:
+def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
+                  pinned_path: str | Path | None = None) -> str:
     meta = _load_json(scan_dir / "meta.json")
     recall = _read_csv(scan_dir / "L1_recall_top1000.csv")
     keep = _read_csv(scan_dir / "L2_gbdt_top200.csv")
@@ -677,6 +714,11 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str) ->
         wb = render_watchlist_block(pd.read_csv(ws, dtype={"code": str}))
         if wb:
             out += [wb, ""]
+
+    # ── 📌 保送(pinned 直通;presence-gated:无 pinned.json/kept+expired 皆空 → 跳过)──
+    pin_sec = _pinned_section(scan_dir, analysis_date, rows, pinned_path=pinned_path)
+    if pin_sec:
+        out += [pin_sec, ""]
 
     sect = _sector_view_section(scan_dir)   # Phase 3:行业研判(briefs 研判段,方向性只在整合层)
     if sect:
@@ -855,7 +897,8 @@ def _publish_pipeline(scan_dir: Path, out_base: Path, analysis_date: str) -> int
 
 
 def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None = None,
-        hhmm: str | None = None, run_date: str | None = None) -> Path:
+        hhmm: str | None = None, run_date: str | None = None,
+        pinned_path: str | Path | None = None) -> Path:
     scan_dir = scan_dir or Path("context/scan") / analysis_date
     out_root = out_root or Path("reports/scan")
     now = datetime.now()
@@ -876,7 +919,7 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
     (out_base / "manifest.json").write_text(json.dumps(            # retro 按 analysis_date 定位本报告(目录名≠数据日)
         {"analysis_date": analysis_date, "generated_at": now.isoformat(timespec="seconds"), "hhmm": hhmm},
         ensure_ascii=False), encoding="utf-8")
-    md = build_summary(scan_dir, analysis_date, hhmm, folder)
+    md = build_summary(scan_dir, analysis_date, hhmm, folder, pinned_path=pinned_path)
     summary_path = out_base / "summary.md"
     summary_path.write_text(md, encoding="utf-8")
     with contextlib.suppress(Exception):               # 现场导航页(第二天复盘入口)

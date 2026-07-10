@@ -487,13 +487,19 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
     已有 `details/<code>.md`(♻️ 复用/已出卡)跳过。落稿契约从人肉变确定性:
     ① token 表输入侧从此可计(assemble 估算器认 `_l4_prompt_*`);② 编排以 prompt 稿为
     派发正文(共享块在前 = prompt cache 前缀命中);③ 07-03 `.SH` 空 slim 双跑从清单源头消灭。
-    返回 {n_prompts, n_skipped, tickers}。
+
+    pinned 票(finalists 行 `lane == "pinned"`,design 2026-07-11 §4.1;plan Task 4):
+    ♻️ 复用规则照常适用(已有卡照样跳过,不强制重派)——**只在确实要写新 prompt 时**,逐卡块
+    (共享前缀**之后**,不碰 cache 契约)插一行 📌 标记 + note,让 L4 subagent 知道这是用户
+    手工直通票、仍须真判不可走过场;跳过(♻️)的 pinned 票不计入本次 `pinned` 名单——它的
+    📌 可见性在 L5 assemble 独立的「📌 保送」节(读 pinned.json + 已有卡评级),不需要本函数
+    额外动作。返回 {n_prompts, n_skipped, tickers, pinned}(pinned = 本次新派发的 pinned 码)。
     """
     scan_dir = Path(scan_dir)
     date = scan_dir.name
     fp = scan_dir / "finalists.csv"
     if not fp.exists():
-        return {"n_prompts": 0, "n_skipped": 0, "tickers": []}
+        return {"n_prompts": 0, "n_skipped": 0, "tickers": [], "pinned": []}
     from autoresearch.dataflows.symbol_utils import normalize_symbol  # lazy,保持模块轻量
     fin = pd.read_csv(fp, dtype={"code": str})
     shared = ""
@@ -501,6 +507,7 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
     if sp.exists():
         shared = sp.read_text(encoding="utf-8").strip()
     tickers: list[str] = []
+    pinned: list[str] = []
     n_prompts = n_skipped = 0
     for _, r in fin.iterrows():
         raw = str(r.get("code", "") or "").strip()
@@ -508,22 +515,29 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
             continue
         code6 = raw.split(".")[0].zfill(6)
         if (scan_dir / "details" / f"{code6}.md").exists():
-            n_skipped += 1                          # ♻️ 复用卡已就位:不重拉不派发
+            n_skipped += 1                          # ♻️ 复用卡已就位:不重拉不派发(pinned 不例外)
             continue
         ticker = normalize_symbol(code6)            # 6 位码 → .SS/.SZ/.BJ(单一后缀口径)
         tickers.append(ticker)
+        is_pinned = str(r.get("lane", "") or "").strip() == "pinned"
+        body = [f"## L4 派发 — {code6} {r.get('name', '')}", ""]
+        if is_pinned:                                # 逐卡块内标记(共享前缀之后,不破 cache 契约)
+            pinned.append(code6)
+            note = str(r.get("pinned_note", "") or "").strip()
+            body += ["**📌 保送票**(用户手工直通;已在 L1→L3 全程强留,不受漏斗取舍影响"
+                    + (f":{note}" if note else "") +
+                    ")——仍须按下方真实证据独立评判,不因『保送』降低尽调标准。", ""]
+        body.append(compose_funnel_brief(code6, scan_dir).rstrip())
         prompt = "\n".join([
             # 固定标头(逐卡不变,≤300B)——cache 前缀契约(T8):共享块前不得出现逐卡可变内容,
-            # 否则 30 卡并发前缀全断、cache 全 miss。逐卡专属标题移到共享块**之后**。
+            # 否则 30 卡并发前缀全断、cache 全 miss。逐卡专属标题(含 📌 保送标记)移到共享块**之后**。
             "# L4 派发 prompt(确定性落稿;编排以此为派发正文;先读共享块再读下方逐卡简报)",
             "",
             shared or "_(共享指令稿缺:`_l4_shared_instructions.md` 未落——按 stock-research lite-playbook 执行)_",
             "",
             "---",
             "",
-            f"## L4 派发 — {code6} {r.get('name', '')}",
-            "",
-            compose_funnel_brief(code6, scan_dir).rstrip(),
+            *body,
             "",
             "---",
             f"- slim 数据:`context/{ticker}_{date}_slim.md`(P1–P3 表面块;**>8KB 才可信**,≈4.8KB=NO_DATA 须重拉)",
@@ -534,7 +548,7 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
         n_prompts += 1
     (scan_dir / "_harvest_list.txt").write_text(
         "\n".join(tickers) + ("\n" if tickers else ""), encoding="utf-8")
-    return {"n_prompts": n_prompts, "n_skipped": n_skipped, "tickers": tickers}
+    return {"n_prompts": n_prompts, "n_skipped": n_skipped, "tickers": tickers, "pinned": pinned}
 
 
 def dispatch_plan(date: str, root: Path | str | None = None) -> dict:
