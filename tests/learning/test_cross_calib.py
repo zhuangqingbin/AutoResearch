@@ -26,11 +26,11 @@ def _mk_day(root, date, cards, judged=None, attr_extra=()):
         (d / "details" / f"{code}.md").write_text(
             CARD.format(rating=rating, g1=g1, g2=g2, g3=g3, note="压 Hold"),
             encoding="utf-8")
-        attr_rows.append({"code": code, "fwd_1_oo": 0.01, "fwd_5_oc": fwd5,
-                          "fwd_10_oc": fwd5, "hi_10_oc": hi, "gap_d1": 0.02})
+        attr_rows.append({"code": code, "fwd_1_oo": 0.01, "fwd_2_oc": fwd5, "fwd_5_oc": fwd5,
+                          "fwd_10_oc": fwd5, "hi_2_oc": hi, "hi_10_oc": hi, "gap_d1": 0.02})
     for i, fwd5 in enumerate(attr_extra):                     # 市场对照行(非 finalist)
-        attr_rows.append({"code": f"9{i:05d}", "fwd_1_oo": 0.0, "fwd_5_oc": fwd5,
-                          "fwd_10_oc": fwd5, "hi_10_oc": 0.0, "gap_d1": 0.0})
+        attr_rows.append({"code": f"9{i:05d}", "fwd_1_oo": 0.0, "fwd_2_oc": fwd5, "fwd_5_oc": fwd5,
+                          "fwd_10_oc": fwd5, "hi_2_oc": 0.0, "hi_10_oc": 0.0, "gap_d1": 0.0})
     pd.DataFrame(attr_rows).to_csv(d / "retro" / "attribution.csv", index=False)
     if judged is not None:
         pd.DataFrame(judged).to_csv(d / "L3_judged_full.csv", index=False)
@@ -67,9 +67,13 @@ def test_flip_stats_per_lane(tmp_path):
 
 
 def test_gate_stats_binding_misskill(tmp_path):
-    """binding=唯一✗门;错杀 = ex5>0 且 hi_10 触达卡内目标;拦对 = ex5<0。"""
+    """binding=唯一✗门;主口径 ex2(T+2);错杀 = ex2>0 且触价命中卡内目标;拦对 = ex2<0。
+
+    此 fixture 日期(2026-07-01)在卡契约 v3 switch 日(2026-07-10)前 → 触价命中走 hi_10 判
+    (旧卡 10 日语义);fixture 里 fwd_2_oc/hi_2_oc 镜像 fwd_5_oc/hi_10_oc → ex2 数值上同 ex5。
+    """
     from autoresearch.learning.cross_calib import gate_stats
-    # 目标幅 0.20(close基)→ o1 基 ≈0.1765;市场均值由 attr 全表 fwd_5 算
+    # 目标幅 0.20(close基)→ o1 基 ≈0.1765;市场均值由 attr 全表 fwd_2/fwd_5 算
     _mk_day(tmp_path, "2026-07-01",
             cards=[("000001", "Hold", ("✓", "✗", "✓"), 0.20, 0.25),    # 兑现门拦;跑赢+触达 → 错杀
                    ("000002", "Hold", ("✓", "✓", "✗"), -0.10, 0.02),   # 估值门拦;跑输 → 拦对
@@ -78,8 +82,9 @@ def test_gate_stats_binding_misskill(tmp_path):
             attr_extra=(0.0, 0.0))
     df = gate_stats(tmp_path, min_n=1).set_index("gate")
     assert set(df.index) == {"业绩真兑现", "估值不透支", "多门"}
+    assert "mean_ex2" in df.columns                            # 主口径列存在
     a = df.loc["业绩真兑现"]
-    assert a["n_blocked"] == 1 and a["mean_ex5"] > 0
+    assert a["n_blocked"] == 1 and a["mean_ex2"] > 0 and a["mean_ex5"] > 0
     assert abs(a["misskill_rate"] - 1.0) < 1e-9 and abs(a["block_ok_rate"] - 0.0) < 1e-9
     b = df.loc["估值不透支"]
     assert abs(b["block_ok_rate"] - 1.0) < 1e-9 and abs(b["misskill_rate"] - 0.0) < 1e-9

@@ -30,8 +30,9 @@ def _mk_day(root, date, with_attr=True, hi=None, fwd10=0.25, fwd2=0.05):
     return d
 
 
-def test_roll_and_target_hit_close_fallback(tmp_path):
-    _mk_day(tmp_path, "2026-07-01")                           # 无 hi_10 → 回退收盘口径
+def test_roll_and_target_hit_immature_without_hi(tmp_path):
+    """无 hi_10(未成熟)→ target_hit 诚实标 None,不再回退收盘口径(旧分支已删除)。"""
+    _mk_day(tmp_path, "2026-07-01")                           # 无 hi_10 → 未成熟
     df = roll(tmp_path)
     assert len(df) == 1
     r = df.iloc[0]
@@ -39,9 +40,21 @@ def test_roll_and_target_hit_close_fallback(tmp_path):
     assert r["fwd_2"] == 0.05
     assert r["gap_open"] == 0.02
     assert abs(r["target_ret"] - 0.20) < 1e-9                # 120/100−1
-    assert bool(r["target_hit"])                              # fwd_10 0.25 ≥ 0.20
+    assert r["target_hit"] is None or pd.isna(r["target_hit"])   # 缺 hi → 未成熟,不回退收盘
     md = "\n".join(render(df))
-    assert "✅" in md and "Overweight" in md and "⚠样本少" in md and "fwd_2" in md
+    assert "Overweight" in md and "⚠样本少" in md and "fwd_2" in md
+
+
+def test_target_hit_schema_switch():
+    """switch 日前的卡按 hi_10 判(10日语义),switch 日起按 hi_2(超短语义)。"""
+    from autoresearch.learning import buy_ledger as bl
+
+    row = pd.Series({"hi_2_oc": 0.02, "hi_10_oc": 0.08, "gap_d1": 0.0})
+    tr = 0.05                                      # 目标 +5%
+    assert bl.target_hit_for("2026-07-06", tr, row) is True    # 旧卡:hi_10=8% ≥ 5%
+    assert bl.target_hit_for("2026-07-13", tr, row) is False   # 新卡:hi_2=2% < 5%
+    assert bl.target_hit_for("2026-07-10", None, row) is None  # tr=None → 未成熟
+    assert bl.target_hit_for("2026-07-10", tr, pd.Series({"gap_d1": 0.0})) is None  # 缺 hi 列 → None
 
 
 def test_target_hit_by_touch(tmp_path):

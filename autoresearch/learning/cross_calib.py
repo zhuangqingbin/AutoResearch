@@ -5,9 +5,10 @@ design: docs/specs/2026-07-05-scan-metering-calibration-wave-design.md §7
 
 两张 join 报表:① **L3→L4 翻案率 per lane**(L3 高确信被 L4 压 ≤UW 的历史倾向,建议行贴
 L3 校准块旁);② **rubric 门柱级拦对/错杀**(binding gate = 唯一✗门 × attribution 前向,
-机会成本红队的确定性对账面;口径对齐 gate_ledger:ex = 被拦票 fwd − 全市场均值,ex5<0=拦对,
-错杀 = ex5>0 且 hi_10 触达卡内目标)。**校准不改门/权重/评级**——只给判断层"你自己的
-历史倾向"数字;n<min_n thin 禁注。
+机会成本红队的确定性对账面;口径对齐 gate_ledger:ex = 被拦票 fwd − 全市场均值,主口径 T+2
+(ex2<0=拦对,错杀 = ex2>0 且触价命中卡内目标——日期分界:v3 起 hi_2_oc,旧卡 hi_10_oc;
+ex5 保留供参考)。**校准不改门/权重/评级**——只给判断层"你自己的历史倾向"数字;
+n<min_n thin 禁注。
 
   uv run --no-sync python -m autoresearch.learning.cross_calib  # → reports/learning/cross_calib.md
 """
@@ -18,7 +19,7 @@ from pathlib import Path
 import pandas as pd
 
 _FLIP_COLS = ["lane", "n", "n_hiconv", "flip_rate", "triage_n", "triage_hit", "thin"]
-_GATE_COLS = ["gate", "n_blocked", "n_realized", "mean_ex5", "block_ok_rate",
+_GATE_COLS = ["gate", "n_blocked", "n_realized", "mean_ex2", "mean_ex5", "block_ok_rate",
               "misskill_n", "misskill_rate", "thin"]
 _LOW = ("Underweight", "Sell")
 _HICONV = 70
@@ -70,13 +71,23 @@ def flip_stats(scan_root: Path | str | None = None, window: int = 30,
 
 def gate_stats(scan_root: Path | str | None = None, window: int = 30,
                min_n: int = 10) -> pd.DataFrame:
-    """binding gate(唯一✗门;≥2✗ 计"多门")× attribution → 每门拦对率/错杀率。"""
-    from autoresearch.learning.buy_ledger import _read_attr, _target_ret  # lazy 防环
+    """binding gate(唯一✗门;≥2✗ 计"多门")× attribution → 每门拦对率/错杀率。
+
+    主口径 T+2(`ex2`,fwd_2_oc);T+5(`ex5`)保留供参考。触价命中走卡契约日期分界
+    (`buy_ledger.target_hit_for`:switch 日起按 hi_2_oc 判,旧卡按 hi_10_oc 判)。
+    """
+    from autoresearch.learning.buy_ledger import (  # lazy 防环
+        _read_attr,
+        _target_ret,
+        target_hit_for,
+    )
     from autoresearch.scan.assemble import gate_status
     from autoresearch.scan.health import final_ratings
     rows = []
     for d in _days(scan_root, window):
         attr = _read_attr(d)
+        m2 = (pd.to_numeric(attr["fwd_2_oc"], errors="coerce").mean()
+              if attr is not None and "fwd_2_oc" in attr.columns else None)
         m5 = (pd.to_numeric(attr["fwd_5_oc"], errors="coerce").mean()
               if attr is not None and "fwd_5_oc" in attr.columns else None)
         for code in final_ratings(d):
@@ -90,31 +101,33 @@ def gate_stats(scan_root: Path | str | None = None, window: int = 30,
             if not failed:
                 continue
             gate = failed[0] if len(failed) == 1 else "多门"
-            ex5 = hit = None
+            ex2 = ex5 = hit = None
             if attr is not None and code in attr.index:
                 def _num(col, code=code, attr=attr):
                     if col not in attr.columns:
                         return None
                     v = pd.to_numeric(pd.Series([attr.at[code, col]]), errors="coerce").iloc[0]
                     return None if pd.isna(v) else float(v)
-                f5, hi10, gap = _num("fwd_5_oc"), _num("hi_10_oc"), _num("gap_d1")
+                f2, f5 = _num("fwd_2_oc"), _num("fwd_5_oc")
+                if f2 is not None and m2 is not None and not pd.isna(m2):
+                    ex2 = f2 - float(m2)
                 if f5 is not None and m5 is not None and not pd.isna(m5):
                     ex5 = f5 - float(m5)
                 tr = _target_ret(d, code)
-                if tr is not None and hi10 is not None:   # 触价口径同 buy_ledger(o1 基 rebase)
-                    t_entry = (1 + tr) / (1 + gap) - 1 if gap is not None else tr
-                    hit = bool(hi10 >= t_entry)
-            rows.append({"gate": gate, "ex5": ex5, "hit": hit})
+                hit = target_hit_for(d.name, tr, attr.loc[code])
+            rows.append({"gate": gate, "ex2": ex2, "ex5": ex5, "hit": hit})
     if not rows:
         return pd.DataFrame(columns=_GATE_COLS)
     out = []
     for gate, g in pd.DataFrame(rows).groupby("gate"):
-        ex = pd.to_numeric(g["ex5"], errors="coerce").dropna()
-        mk = g.dropna(subset=["ex5", "hit"])              # 错杀列:缺目标价/未成熟票剔除
-        miss = (pd.to_numeric(mk["ex5"], errors="coerce") > 0) & mk["hit"].astype(bool)
-        out.append({"gate": gate, "n_blocked": len(g), "n_realized": len(ex),
-                    "mean_ex5": round(float(ex.mean()), 4) if len(ex) else None,
-                    "block_ok_rate": round(float((ex < 0).mean()), 3) if len(ex) else None,
+        ex2c = pd.to_numeric(g["ex2"], errors="coerce").dropna()
+        ex5c = pd.to_numeric(g["ex5"], errors="coerce").dropna()
+        mk = g.dropna(subset=["ex2", "hit"])              # 错杀列:缺目标价/未成熟票剔除
+        miss = (pd.to_numeric(mk["ex2"], errors="coerce") > 0) & mk["hit"].astype(bool)
+        out.append({"gate": gate, "n_blocked": len(g), "n_realized": len(ex2c),
+                    "mean_ex2": round(float(ex2c.mean()), 4) if len(ex2c) else None,
+                    "mean_ex5": round(float(ex5c.mean()), 4) if len(ex5c) else None,
+                    "block_ok_rate": round(float((ex2c < 0).mean()), 3) if len(ex2c) else None,
                     "misskill_n": len(mk),
                     "misskill_rate": round(float(miss.mean()), 3) if len(mk) else None,
                     "thin": len(g) < min_n})
@@ -166,17 +179,18 @@ def render(flips: pd.DataFrame, gates: pd.DataFrame) -> list[str]:
             thin = "⚠样本少" if r.thin else ""
             out.append(f"| {r.lane} | {r.n} | {r.n_hiconv} | {f(r.flip_rate)} "
                        f"| {r.triage_n} | {f(r.triage_hit)} | {thin} |")
-    out += ["", "## 🚪 rubric 门柱级拦对/错杀(binding=唯一✗门;ex5<0=拦对;"
-            "错杀=ex5>0 且 hi_10 触达卡内目标)", ""]
+    out += ["", "## 🚪 rubric 门柱级拦对/错杀(binding=唯一✗门;ex2<0=拦对(主口径,T+2);"
+            "错杀=ex2>0 且触价命中卡内目标——日期分界:v3 起 hi_2,旧卡 hi_10;ex5 列供参考)", ""]
     if gates is None or not len(gates):
         out.append("_无门柱 × attribution 数据_")
     else:
-        out += ["| 门 | 拦次 | 已实现 | 被拦ex5 | 拦对率 | 错杀n | 错杀率 | |",
-                "|---|---|---|---|---|---|---|---|"]
+        out += ["| 门 | 拦次 | 已实现 | 被拦ex2(主) | 被拦ex5(参考) | 拦对率 | 错杀n | 错杀率 | |",
+                "|---|---|---|---|---|---|---|---|---|"]
         for r in gates.itertuples(index=False):
             thin = "⚠样本少" if r.thin else ""
-            ex = "—" if r.mean_ex5 is None or pd.isna(r.mean_ex5) else f"{r.mean_ex5 * 100:+.2f}%"
-            out.append(f"| {r.gate} | {r.n_blocked} | {r.n_realized} | {ex} "
+            ex2 = "—" if r.mean_ex2 is None or pd.isna(r.mean_ex2) else f"{r.mean_ex2 * 100:+.2f}%"
+            ex5 = "—" if r.mean_ex5 is None or pd.isna(r.mean_ex5) else f"{r.mean_ex5 * 100:+.2f}%"
+            out.append(f"| {r.gate} | {r.n_blocked} | {r.n_realized} | {ex2} | {ex5} "
                        f"| {f(r.block_ok_rate)} | {r.misskill_n} | {f(r.misskill_rate)} | {thin} |")
     out += ["", "_拦对/错杀不互补(中间地带=拦了但未触达目标);错杀持续高的门 → 走 proposal "
             "人拍板,本报表不自动动门。_"]

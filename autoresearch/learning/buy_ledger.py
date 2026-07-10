@@ -17,8 +17,26 @@ from pathlib import Path
 import pandas as pd
 
 _COLS = ["date", "code", "name", "rating", "gap_open", "fwd_1", "fwd_2", "fwd_5", "fwd_10",
-         "hi_10", "target_ret", "target_hit"]
+         "hi_10", "hi_2", "target_ret", "target_hit"]
 _TARGET_RE = re.compile(r"(\d+(?:\.\d+)?)")
+_SCHEMA_SWITCH = "2026-07-10"   # 卡契约 v3(超短)生效日:此前卡=10日语义按 hi_10 判,此后按 hi_2
+
+
+def target_hit_for(day: str, tr: float | None, row) -> bool | None:
+    """日期分界触价命中:目标幅(close_D 基)rebase 到 o1 基,与对应窗口 MFE 比。
+
+    switch 日(`_SCHEMA_SWITCH`)起卡契约 v3(超短)生效,窗口收窄到 2 日 → 按 `hi_2_oc` 判;
+    之前的卡是 10 日语义 → 按 `hi_10_oc` 判(不拿新窗口冤枉旧卡)。缺值 → None(诚实标未成熟)。
+    """
+    if tr is None:
+        return None
+    col = "hi_2_oc" if str(day) >= _SCHEMA_SWITCH else "hi_10_oc"
+    hi = pd.to_numeric(pd.Series([row.get(col)]), errors="coerce").iloc[0]
+    if pd.isna(hi):
+        return None
+    gap = pd.to_numeric(pd.Series([row.get("gap_d1")]), errors="coerce").iloc[0]
+    t_entry = (1 + tr) / (1 + gap) - 1 if not pd.isna(gap) else tr
+    return bool(hi >= t_entry)
 
 
 def _target_ret(scan_dir: Path, code: str) -> float | None:
@@ -90,18 +108,13 @@ def roll(scan_root: Path | str | None = None) -> pd.DataFrame:
                 return None if pd.isna(v) else round(float(v), 6)
             tr = _target_ret(d, code)
             f10, f5 = _a("fwd_10_oc"), _a("fwd_5_oc")
-            hi10, gap = _a("hi_10_oc"), _a("gap_d1")
-            hit = None
-            if tr is not None:
-                if hi10 is not None:                # 触价口径:目标幅(close_D 基)换算到 o1 基与最高价比
-                    t_entry = (1 + tr) / (1 + gap) - 1 if gap is not None else tr
-                    hit = bool(hi10 >= t_entry)
-                elif f10 is not None or f5 is not None:   # 缺 hi → 回退收盘口径
-                    hit = bool((f10 if f10 is not None else f5) >= tr)
+            hi10, hi2, gap = _a("hi_10_oc"), _a("hi_2_oc"), _a("gap_d1")
+            hit = (target_hit_for(d.name, tr, attr.loc[code])
+                   if (attr is not None and code in attr.index) else None)
             rows.append({"date": d.name, "code": code, "name": names.get(code, ""),
                          "rating": rating, "gap_open": gap, "fwd_1": _a("fwd_1_oo"),
                          "fwd_2": _a("fwd_2_oc"),
-                         "fwd_5": f5, "fwd_10": f10, "hi_10": hi10,
+                         "fwd_5": f5, "fwd_10": f10, "hi_10": hi10, "hi_2": hi2,
                          "target_ret": tr, "target_hit": hit})
     return pd.DataFrame(rows, columns=_COLS)
 
@@ -111,8 +124,9 @@ def target_calibration(scan_root: Path | str | None = None, window: int = 30,
     """全卡目标触达统计(近 window 个 scan 日,**全评级**非只 ≥OW —— 0 买期样本不断供)。
 
     只统计**看多目标**(tr>0;UW 向下目标负幅任何上涨都"触达",会稀释过乐观读数——
-    07-05 真数据冒烟发现)+ 已成熟行(attribution 有 hi_10_oc);触价口径与 roll 同:
-    目标幅(close_D 基)rebase 到 o1 基再与 10 日最高比。返回 None = 无现场。spec 2026-07-05 §6。
+    07-05 真数据冒烟发现)+ 已成熟行(有对应窗口 MFE 列);触价口径与 roll 同款 helper
+    (`target_hit_for`):目标幅(close_D 基)rebase 到 o1 基再与窗口最高比;日期分界:
+    v3 起 `hi_2_oc`(2日 MFE),旧卡 `hi_10_oc`。返回 None = 无现场。spec 2026-07-05 §6。
     """
     from autoresearch.scan.health import final_ratings  # lazy 防环
     scan_root = Path(scan_root or "context/scan")
@@ -131,17 +145,16 @@ def target_calibration(scan_root: Path | str | None = None, window: int = 30,
             if tr is None or tr <= 0:        # 只看多目标:向下目标不入过乐观统计
                 continue
             n += 1
-            if attr is None or code not in attr.index or "hi_10_oc" not in attr.columns:
+            if attr is None or code not in attr.index:
                 continue
-            hi10 = pd.to_numeric(pd.Series([attr.at[code, "hi_10_oc"]]), errors="coerce").iloc[0]
-            if pd.isna(hi10):
+            hit = target_hit_for(d.name, tr, attr.loc[code])
+            if hit is None:
                 continue
-            gap = pd.to_numeric(pd.Series([attr.at[code, "gap_d1"]]), errors="coerce").iloc[0] \
-                if "gap_d1" in attr.columns else None
-            t_entry = (1 + tr) / (1 + gap) - 1 if gap is not None and not pd.isna(gap) else tr
+            col = "hi_2_oc" if str(d.name) >= _SCHEMA_SWITCH else "hi_10_oc"
+            hi = pd.to_numeric(pd.Series([attr.at[code, col]]), errors="coerce").iloc[0]
             targets.append(tr)
-            mfes.append(float(hi10))
-            hits.append(bool(hi10 >= t_entry))
+            mfes.append(float(hi))
+            hits.append(hit)
     n_mature = len(hits)
     return {"n": n, "n_mature": n_mature, "window": window, "min_n": min_n,
             "hit_rate": round(sum(hits) / n_mature, 3) if n_mature else None,
@@ -157,7 +170,7 @@ def calibration_line(stats: dict | None) -> str | None:
     if stats["thin"]:
         return (f"📐 目标价校准:成熟样本不足(n={stats['n_mature']}<{stats['min_n']})"
                 f"⚠样本少·禁注,先积累")
-    return (f"📐 目标价校准:近{stats['window']}scan日全卡10日触达率 "
+    return (f"📐 目标价校准:近{stats['window']}scan日全卡触达率(v3 起 2 日窗) "
             f"{stats['hit_rate']:.0%}(成熟 n={stats['n_mature']};中位目标 "
             f"{stats['med_target']:+.0%} vs 中位MFE {stats['med_mfe']:+.0%})"
             f"——目标幅>{stats['med_mfe']:+.0%} 需给出超额理由")
@@ -210,13 +223,13 @@ def render(ledger: pd.DataFrame, calib: dict | None = None) -> list[str]:
             return "—"
         return f"{x * 100:+.2f}%" if pct else str(x)
 
-    out += ["| 日期 | 股票 | 评级 | gap开盘 | fwd_1 | fwd_2 | fwd_5 | fwd_10 | 触价hi10 | 目标幅 | 命中 |",
-            "|---|---|---|---|---|---|---|---|---|---|---|"]
+    out += ["| 日期 | 股票 | 评级 | gap开盘 | fwd_1 | fwd_2 | fwd_5 | fwd_10 | 触价hi10 | hi_2 | 目标幅 | 命中 |",
+            "|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in ledger.itertuples(index=False):
         hit = "—" if r.target_hit is None or pd.isna(r.target_hit) else ("✅" if r.target_hit else "✗")
         out.append(f"| {r.date} | {r.name}({r.code}) | {r.rating} | {f(r.gap_open)} "
                    f"| {f(r.fwd_1)} | {f(r.fwd_2)} | {f(r.fwd_5)} | {f(r.fwd_10)} | {f(r.hi_10)} "
-                   f"| {f(r.target_ret)} | {hit} |")
+                   f"| {f(r.hi_2)} | {f(r.target_ret)} | {hit} |")
     br = rating_base_rates(ledger)
     if br:
         out += ["", "## 评级基率(n≥10 才可注入 skeptic/PM 当先验)"]
