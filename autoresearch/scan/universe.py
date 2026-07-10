@@ -154,22 +154,83 @@ def aggregate_sectors_overview(recall: pd.DataFrame, uni: pd.DataFrame) -> pd.Da
     return sec
 
 
+# ── pinned 强注(design: 2026-07-11-recall-gate-pinned-config-design.md §4.1;plan Task 3)──
+# 保送票额外注入 L1 召回,标 lane="pinned"(镜像 quota_union 的 "(backfill)" 哨兵惯例)——
+# 不占 recall_n(纯后处理,发生在 quota_union/composite 排序**已经**产出恰 recall_n 的结果
+# 之后,故对其余票的入选结果零影响,"不挤他票"由此结构性保证);湖无该票数据 → 注入占位行
+# `data_missing=True`(不编数,其余因子列经 concat 自动落 NaN)。`pinned` 为空/None → 原样
+# 返回,不新增任何列(presence-gated parity)。
+_PINNED_RANK_SENTINEL = 10**9
+
+
+def _inject_pinned_l1(recall: pd.DataFrame, scored: pd.DataFrame,
+                      pinned: list[dict] | None) -> pd.DataFrame:
+    """L1 强注:pinned 每条 → 已在 recall 里只打标(不重复行,不动其真实 provenance);
+    不在 → 从 scored 取真实行(找不到 → 占位 data_missing=True)。见模块顶部设计注释。
+    """
+    if not pinned:
+        return recall
+    out = recall.copy()
+    out["code"] = out["code"].astype(str).str.zfill(6)
+    out["pinned"] = False
+    out["pinned_note"] = ""
+    out["data_missing"] = False
+    have = set(out["code"])
+
+    scored_z = scored.assign(code=scored["code"].astype(str).str.zfill(6))
+    new_rows: list[pd.DataFrame] = []
+    seen_new: set[str] = set()
+    for entry in pinned:
+        code = str(entry["code"]).split(".")[0].zfill(6)
+        note = entry.get("note", "")
+        if code in have:                       # 已在自然召回里 → 只打标,不重复行
+            m = out["code"] == code
+            out.loc[m, "pinned"] = True
+            out.loc[m, "pinned_note"] = note
+            continue
+        if code in seen_new:                   # 同票重复 pin 条目(用户笔误)→ 只注一次
+            continue
+        seen_new.add(code)
+        lake_hit = scored_z[scored_z["code"] == code]
+        if len(lake_hit):
+            row = lake_hit.iloc[[0]].copy()
+            row["data_missing"] = False
+        else:                                    # 湖无该票数据 → 占位行,不编数
+            row = pd.DataFrame([{"code": code, "data_missing": True}])
+        row["pinned"] = True
+        row["pinned_note"] = note
+        if "recall_channels" in out.columns:      # multi 模式才有 provenance 列
+            row["recall_channels"] = "pinned"
+        if "n_channels" in out.columns:
+            row["n_channels"] = 0
+        if "best_rank" in out.columns:
+            row["best_rank"] = _PINNED_RANK_SENTINEL
+        new_rows.append(row)
+    if new_rows:
+        out = pd.concat([out, *new_rows], ignore_index=True, sort=False)
+    return out
+
+
 def recall_select(scored: pd.DataFrame, analysis_date: str, recall_n: int,
-                  recall_mode: str = "multi", recall_channels=None):
+                  recall_mode: str = "multi", recall_channels=None,
+                  pinned: list[dict] | None = None):
     """L1 召回:multi=多路 quota_union(provenance)| composite=单复合分降序 top-n。
 
     返回 (recall_df, per_channel_long|None)。composite 模式逐值复现今天(parity 锚点);
     multi 模式 9 路 channel(全复用 scoring)各取 top-Kᶜ → quota union(floor 保底多样性)。
     单一来源:scan.universe.run(staging)与 L1Recall stage(trace)都调它。
+
+    `pinned`(可选,直出 `user_config.load_pinned(...)["kept"]`):保送票强注,见
+    `_inject_pinned_l1`;None/空列表 → 不触碰返回值(parity)。
     """
     if recall_mode == "composite":
         recall = scored.sort_values("composite", ascending=False).head(recall_n).reset_index(drop=True)
-        return recall, None
+        return _inject_pinned_l1(recall, scored, pinned), None
     from autoresearch.scan.recall import CHANNEL_DEFAULTS, build, quota_union, registered_channels
     names = recall_channels or registered_channels()
     frames = {n: build(n)(scored, analysis_date, CHANNEL_DEFAULTS[n].quota) for n in names}
     recall, per_channel = quota_union(frames, CHANNEL_DEFAULTS, recall_n, scored)
-    return recall, per_channel
+    return _inject_pinned_l1(recall, scored, pinned), per_channel
 
 
 def write_shadow_variants(outdir: Path, scored: pd.DataFrame, recall: pd.DataFrame,

@@ -129,10 +129,32 @@ def select_l2(recall: pd.DataFrame, l2_n: int, floors: dict[str, int] | None = N
     返回 (l2_df, engine):l2_df 带 `l2_rank`(分层选择序)+ `l2_lane_reserved` + `sector_mom`(行业动量)
     + `gbdt_score`/`l2_score`(=composite,显示用,向后兼容旧列名)+ 召回列。确定性、零 LLM、无模型。
     `regime`+`regime_caps` 给定 → 按 regime 调 sector cap(默认 None=固定 cap=parity)。
+
+    pinned 强留(design 2026-07-11 §4.1;plan Task 3):`recall` 若带 `pinned`(bool)列且有
+    True 行 → 这些行**先抽出、完全不进分层采样的竞争池**(不占 l2_n、不因它们恰好达标与否
+    改变对待——"全程直通"语义:即便某行凭 merit 本就能挤进 l2_n,也只走保送这一条路,不占
+    竞争名额,故其余票的入选结果零影响),分层采样只在剩余票上跑,选完后**无条件**拼回末尾
+    (l2_rank 接续编号、`l2_lane_reserved=True`,与 floor 救回同一"保底进场"语义)。无
+    `pinned` 列 / 全 False → 原逻辑不变(presence-gated parity)。
     """
-    l2 = stratified_l2(recall, l2_n, floors=floors, sector_cap_frac=sector_cap_frac,
+    has_pinned = "pinned" in recall.columns and bool(
+        recall["pinned"].fillna(False).astype(bool).any())
+    if has_pinned:
+        mask = recall["pinned"].fillna(False).astype(bool)
+        pinned_rows = recall[mask].copy()
+        rest = recall[~mask].copy()
+    else:
+        rest = recall
+
+    l2 = stratified_l2(rest, l2_n, floors=floors, sector_cap_frac=sector_cap_frac,
                        score_col="composite", regime=regime, regime_caps=regime_caps)
     l2.insert(0, "l2_rank", range(1, len(l2) + 1))
+
+    if has_pinned:
+        pinned_rows.insert(0, "l2_rank", range(len(l2) + 1, len(l2) + 1 + len(pinned_rows)))
+        pinned_rows["l2_lane_reserved"] = True
+        l2 = pd.concat([l2, pinned_rows], ignore_index=True, sort=False)
+
     if "composite" in l2.columns:                    # 显示分(两条管道列名各异,都填 composite)
         l2["gbdt_score"] = l2["composite"]
         l2["l2_score"] = l2["composite"]
