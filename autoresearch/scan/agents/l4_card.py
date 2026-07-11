@@ -752,6 +752,12 @@ def dispatch_plan(date: str, root: Path | str | None = None) -> dict:
         return {"dispatch": dispatch, "reused": reused, "meta": meta}
     from autoresearch.agents.utils.rating import parse_rating  # 延迟导入,保持本模块轻量
     fin = pd.read_csv(fp, dtype={"code": str})
+
+    def _cell(row, k):
+        # 空单元格 pandas 读成 NaN(truthy float)→ str() 会产字面 "nan" 注入盲搜 prompt(终审 I-1)
+        v = row.get(k, "")
+        return "" if pd.isna(v) else str(v)
+
     for _, r in fin.iterrows():
         raw = str(r.get("code", "") or "").strip()
         if not raw or raw == "nan":
@@ -759,14 +765,14 @@ def dispatch_plan(date: str, root: Path | str | None = None) -> dict:
         code6 = raw.split(".")[0].zfill(6)
         if (scan_dir / f"_l4_prompt_{code6}.md").exists():
             dispatch.append(code6)
-            meta[code6] = {"name": str(r.get("name", "") or ""), "sector": str(r.get("sector", "") or "")}
+            meta[code6] = {"name": _cell(r, "name"), "sector": _cell(r, "sector")}
             continue
         details = scan_dir / "details" / f"{code6}.md"
         if details.exists():
             reused.append({"code": code6, "rating": parse_rating(details.read_text(encoding="utf-8"))})
         else:
             dispatch.append(code6)   # 两者皆无(异常):兜底走正常派发,不静默丢票
-            meta[code6] = {"name": str(r.get("name", "") or ""), "sector": str(r.get("sector", "") or "")}
+            meta[code6] = {"name": _cell(r, "name"), "sector": _cell(r, "sector")}
     return {"dispatch": dispatch, "reused": reused, "meta": meta}
 
 

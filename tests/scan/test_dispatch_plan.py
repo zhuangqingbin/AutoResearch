@@ -80,3 +80,13 @@ def test_dispatch_plan_meta_names(tmp_path):
     code = plan["dispatch"][0]
     assert plan["meta"][code]["name"] and "sector" in plan["meta"][code]
     assert all(c not in plan["meta"] for c in [r["code"] for r in plan["reused"]])
+
+
+def test_dispatch_plan_meta_nan_cells(tmp_path):
+    """终审 I-1:空单元格(NaN)不得以字面 "nan" 注入盲搜 prompt 的 meta。"""
+    sd = tmp_path / "2026-07-09"
+    sd.mkdir()
+    (sd / "finalists.csv").write_text("code,name,sector\n600584,,\n", encoding="utf-8")
+    (sd / "_l4_prompt_600584.md").write_text("x", encoding="utf-8")
+    plan = dispatch_plan("2026-07-09", root=tmp_path)
+    assert plan["meta"]["600584"] == {"name": "", "sector": ""}

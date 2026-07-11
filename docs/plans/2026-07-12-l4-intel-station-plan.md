@@ -366,5 +366,5 @@ def test_token_table_intel_row(tmp_scan_dir_ready):
 
 1. 全量 pytest 绿；`node --check` 过。
 2. `dispatch-plan 2026-07-09` 真命令回 meta；任务包含 intel 指针行；cache prefix 测试绿。
-3. `l4_intel.enabled` 默认 false（parity）：不开 = 现行为逐字节不变（除任务包多一行指针——卡侧缺文件走回退分支）。
+3. `l4_intel.enabled` 默认 false（parity）：不开 = 现行为逐字节不变（例外两处观测面：任务包多一行指针——卡侧缺文件走回退分支；summary token 表恒渲染「L4 输入·情报」0 行）。
 4. 已知坑复述：`.claude/agents/l4-intel.md` **下个 session 才装载**；首次真跑（P1 验收后置 true）按设计稿 §6 冒烟三查（WebSearch 并发限频/中文源可达率/intel 空稿率）。

@@ -83,7 +83,7 @@ _SUB_WHITELIST = {
 def load_user_config(path: str | Path | None = None) -> dict:
     """读 scan_config.json → 白名单校验后的 dict;缺文件 → `{}`(=现行为,parity)。
 
-    未知顶层键、或 funnel/pinned/reuse 内未知子键 → `ValueError`(消息含具体键名)。
+    未知顶层键、或 funnel/pinned/reuse/l4_intel 内未知子键 → `ValueError`(消息含具体键名)。
     """
     p = Path(path) if path is not None else DEFAULT_PATH
     if not p.exists():
