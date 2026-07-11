@@ -870,6 +870,11 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
     if kn:
         out += [kn]
     out += _stage_token_estimate(scan_dir)
+    # ── ⏳ 待裁决提案 nag(presence-gated;仅真实现场注入,镜像 paper_nav 成绩单守卫防 tmp 测试污染)──
+    if scan_dir == Path("context/scan") / analysis_date:
+        nag = _proposals_nag()
+        if nag:
+            out += [nag, ""]
     out += ["## 诚实局限",
             "- 召回/粗排为启发式 + fwd_2_oc 超短主尺 IC 校准/训练(L1 复合分、L2 GBDT 同口径;T+1/T+5 参考),随 regime 漂移;L3/L4 为 Claude 推理产出。",
             "- 业绩/龙虎榜/预告有披露滞后;无权限端点降级标注。",
@@ -881,6 +886,37 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
 
 
 # ───────────────────────── 发布 ─────────────────────────
+
+
+_PROPOSALS_PATH = Path("context/knowledge/proposals.jsonl")
+
+
+def _proposals_nag() -> str:
+    """## ⏳ 待裁决提案(open 清单;presence-gated:缺文件/无 open/坏行 → "")。
+
+    运营节奏 nag:proposals 攒着不裁 = 闭环学习卡死("过度建设跑动不足"的解药是节奏不是机制)。
+    """
+    p = _PROPOSALS_PATH
+    if not p.exists():
+        return ""
+    items = []
+    try:
+        for ln in p.read_text(encoding="utf-8").splitlines():
+            ln = ln.strip()
+            if not ln:
+                continue
+            try:
+                d = json.loads(ln)
+            except Exception:  # noqa: BLE001 — 坏行跳过,不阻发布
+                continue
+            if d.get("status") == "open":
+                items.append(f"- `{d.get('id', '?')}` · {d.get('kind', '')} · {str(d.get('summary', ''))[:60]}")
+    except Exception:  # noqa: BLE001 — IO 失败当无提案
+        return ""
+    if not items:
+        return ""
+    return ("## ⏳ 待裁决提案\n" + "\n".join(items)
+            + "\n\n_提案满 20 交易日未裁将持续在此提醒;裁决走 feedback / scan-retro 流程,别攒。_")
 
 
 def _safe_name(name: str) -> str:

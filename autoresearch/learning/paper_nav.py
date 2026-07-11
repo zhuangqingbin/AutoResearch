@@ -219,7 +219,8 @@ def summary_line(days, real, shadow, mkt, n_real, n_shadow) -> str:
         return ""
     last = days[-1]
     return (f"**📈 影子组合成绩单**(起 {days[0]}):真实 {real[last] - 1:+.2%}({n_real}笔)"
-            f" vs 影子 {shadow[last] - 1:+.2%}({n_shadow}笔) vs 市场等权 {mkt[last] - 1:+.2%}"
+            f" vs 影子(若门不拦最想买3只) {shadow[last] - 1:+.2%}({n_shadow}笔)"
+            f" vs 市场等权 {mkt[last] - 1:+.2%}"
             f"——`真实−影子`=门的价值(明细 reports/learning/paper_nav.md)")
 
 
