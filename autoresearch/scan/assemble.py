@@ -433,6 +433,7 @@ def _stage_token_estimate(scan_dir: Path) -> list[str]:
     # L4 输入侧最大件 = slim(context/<ticker>_<date>_slim.md,scan_dir 通常是 context/scan/<date>)
     slim_root = det.parent.parent
     slims = sorted(slim_root.glob(f"*_{det.name}_slim.md")) if slim_root.exists() else []
+    intels = sorted(det.glob("_l4_intel_*.md"))   # 活体情报(l4-intel 盲搜落稿;config 未启用/未派 → 空)
     from autoresearch.scan.stage_timing import ensure_stage_timing
     _tmap: dict = ensure_stage_timing(det)   # mtime 推导补缺 + 写回;编排写过的 key 优先
 
@@ -457,6 +458,8 @@ def _stage_token_estimate(scan_dir: Path) -> list[str]:
          f"{len(cards)} 张卡(早停/满卡/复用;每卡 prompt 落 `_l4_prompt_*` 才计入)"),
         ("L4 输入·slim", "—(输入侧)", "—", "L4slim", len(slims), _b(slims),
          "harvest --slim 落稿(每卡 subagent 读入;≈4.8KB 空稿=NO_DATA 亦计=真实浪费)"),
+        ("L4 输入·情报", "—(输入侧)", "—", "L4intel", len(intels), _b(intels),
+         "l4-intel 盲搜落稿(每票活体情报;未启用=0)"),
         ("L4 新闻网查", "WebSearch", "—", "L4news", 0, 0,
          "P3 有界活体新闻(≤3/卡)+ sector/macro 网查(≤2)——无落盘 artifact,token 计费经 OTEL/`/usage`,此处**未计非零**"),
     ]
@@ -774,6 +777,11 @@ def _self_review_banner(scan_dir: Path, rows: list[dict], summary_text: str,
         if extra:
             res["failures"].extend(extra)
             res["n_warn"] = res.get("n_warn", 0) + len(extra)
+    with contextlib.suppress(Exception):                            # intel as-of 前视机检(advisory)
+        intel_extra = self_review.intel_future_dates_lint(scan_dir, scan_dir.name)
+        if intel_extra:
+            res["failures"].extend(intel_extra)
+            res["n_warn"] = res.get("n_warn", 0) + len(intel_extra)
     with contextlib.suppress(Exception):
         self_review.dump_gate_fires(scan_dir, res, scan_dir.name)   # R3 留痕;IO 失败不阻发布
     with contextlib.suppress(Exception):

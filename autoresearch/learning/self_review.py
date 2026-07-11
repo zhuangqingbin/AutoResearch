@@ -169,6 +169,42 @@ def card_contract_lint(scan_dir) -> list[dict]:
     return out
 
 
+def intel_future_dates_lint(scan_dir, date_str: str) -> list[dict]:
+    """intel as-of 前视机检(advisory;design: 2026-07-12-l4-intel-station-plan.md Task 6)。
+
+    逐 `_l4_intel_*.md`(l4-intel 盲搜落稿)**只查「## 事件段」表格行首日期列**
+    (`| YYYY-MM-DD | ... |`)——事件**正文**里提到的未来催化时点(如「8-15 披露中报」)合法,
+    不算前视穿越,不查。命中晚于扫描日的表格行日期 → `severity="warn"`(advisory,不挡发布)。
+
+    scan_dir:通常 = `context/scan/<date>`;date_str 按 `dump_gate_fires` 同款惯例由调用方传
+    `scan_dir.name`(数据日,`YYYY-MM-DD`)。缺 `_l4_intel_*.md`(未启用/未派发)→ 空列表。
+    """
+    import re
+    from pathlib import Path
+    scan_dir = Path(scan_dir)
+    out: list[dict] = []
+
+    def add(check, sev, detail, code=None):
+        out.append({"check": check, "severity": sev, "detail": detail, "code": code})
+
+    for p in sorted(scan_dir.glob("_l4_intel_*.md")):
+        in_events, future = False, []
+        for line in p.read_text(encoding="utf-8").splitlines():
+            if line.startswith("## 事件段"):
+                in_events = True
+                continue
+            if in_events and line.startswith("## "):
+                break
+            m = re.match(r"\|\s*(\d{4}-\d{2}-\d{2})\s*\|", line) if in_events else None
+            if m and m.group(1) > date_str:
+                future.append(m.group(1))
+        if future:
+            add("intel_future_dates", "warn",
+                f"{p.name} 事件段含晚于扫描日的日期:{','.join(future[:3])}",
+                code=p.stem.replace("_l4_intel_", ""))
+    return out
+
+
 def dump_gate_fires(scan_dir, result: dict, date: str):
     """R3·门审计地基:review 结果幂等落 <scan_dir>/gate_fires.csv(每次 assemble 覆写)。
 

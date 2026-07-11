@@ -170,6 +170,13 @@ def test_summary_contains_token(published, token):
     assert token in published["md"], f"summary 缺 '{token}'"
 
 
+def test_token_table_intel_row(tmp_path):
+    """token 估算表新增『L4 输入·情报』行(l4-intel 盲搜落稿计数;镜像『L4 输入·slim』行元组形状)。"""
+    (tmp_path / "_l4_intel_000001.md").write_text("# 活体情报\n", encoding="utf-8")
+    md = "\n".join(assemble._stage_token_estimate(tmp_path))
+    assert "L4 输入·情报" in md
+
+
 def test_per_stage_table_dropped_code_rr_proposal(published):
     """逐阶段 buy-list 表已删 代码/R:R/提案 列(只留 L1召回/L2粗排/L3精排/L4研究 等结论列)。"""
     md = published["md"]
