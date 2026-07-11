@@ -101,6 +101,52 @@ def _apply_verify_downgrade(rating: str, verdict: str) -> str:
     return RATINGS_5_TIER[idx]
 
 
+def _load_ensemble(scan_dir: Path) -> dict[str, dict]:
+    """读买单复核 ensemble(B10 集成配方;task-11-brief——≥OW **新派**卡各追加 2 独立 run
+    取中位)`_ensemble.json` → {code: {ratings, median, spread}}。
+
+    workflow(scan-market.js L4 段)产物:`[{"code","ratings":[...],"median":...,"spread":int}]`;
+    无文件/坏 json → {}(presence-gated,老路不破,同 `_load_verify` 惯例)。
+    """
+    p = scan_dir / "_ensemble.json"
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 — 可选层,坏 json 不挡整份报告发布
+        return {}
+    out: dict[str, dict] = {}
+    for r in data if isinstance(data, list) else []:
+        code = r.get("code")
+        if code:
+            out[str(code).strip().zfill(6)] = r
+    return out
+
+
+def _apply_ensemble_fold(rating: str, rec: dict | None) -> str:
+    """买单复核折回:rec 存在且中位档比卡面评级更差(更靠 Sell)→ 折到中位,否则原样。
+
+    只向下(不向上)——与"早停只向下"同族:集成不能把卡面评级抬高,只拉低单跑过度乐观的判断。
+    median/rating 不在五档词表(脏数据)→ 原样不动,不报错。
+    """
+    if not rec:
+        return rating
+    median = rec.get("median")
+    if median not in TIER_RANK or rating not in TIER_RANK:
+        return rating
+    return median if TIER_RANK[median] > TIER_RANK[rating] else rating
+
+
+def _ensemble_dissent_lines(emap: dict[str, dict]) -> list[str]:
+    """买单复核 spread≥2(3 run 评级分歧 ≥2 档)→ 组合视角节人裁提示行;无分歧 → []。"""
+    lines = []
+    for code, e in sorted(emap.items()):
+        if int(e.get("spread") or 0) >= 2:
+            ratings = e.get("ratings") or []
+            lines.append(f"🎭 买单复核分歧:{code} {len(ratings)} run={ratings},已按中位折回,建议人工复核")
+    return lines
+
+
 _PROPOSAL_BY_RATING = {"Buy": "BUY", "Overweight": "BUY", "Hold": "HOLD",
                        "Underweight": "SELL", "Sell": "SELL"}
 
@@ -741,6 +787,17 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
         if v and v["verdict"] in ("降级", "否决"):
             r["rating"] = _apply_verify_downgrade(r.get("rating", "Hold"), v["verdict"])
             r["proposal"] = _PROPOSAL_BY_RATING.get(r["rating"], r.get("proposal", "—"))
+    emap = _load_ensemble(scan_dir)  # 买单复核 ensemble(B10 集成配方,≥OW 追加 2 独立 run 取中位);无 _ensemble.json 则空(老路不破)
+    for r in rows:
+        e = emap.get(str(r.get("code", "")).zfill(6))
+        if not e:
+            continue
+        folded = _apply_ensemble_fold(r.get("rating", "Hold"), e)
+        if folded != r.get("rating"):
+            r["rating"] = folded
+            r["proposal"] = _PROPOSAL_BY_RATING.get(folded, r.get("proposal", "—"))
+        if int(e.get("spread") or 0) >= 2:
+            r["ens_flag"] = True                # 🎭复核分歧:spread≥2 → 行 badge + 组合视角人裁提示
     rows.sort(key=_sortkey)
     regime_line, regime_drift = regime_and_drift(scan_dir)
 
@@ -841,11 +898,12 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
         l3txt = _strip(r.get("thesis") or r.get("triage_reason", ""))
         conv = r.get("conviction")
         l3cell = l3txt + (f"·conv{conv}" if conv else "")
+        rating_cell = f"**{r.get('rating', '—')}**" + (" 🎭复核分歧" if r.get("ens_flag") else "")
         out.append(
             f"| {i} | {r.get('name', '')} | {r.get('sector') or r.get('industry', '')} "
             f"| {_l1_cell(code, l1_full, ch_map)} | {_l2_cell(code, l2_top)} | {l3cell} "
             f"| {_strip(r.get('l4', '—'))} "
-            f"| **{r.get('rating', '—')}** | {r.get('target', '—')} |" + vcell)
+            f"| {rating_cell} | {r.get('target', '—')} |" + vcell)
     out.append(f"\n_列注:**L1召回** #复合分名次/{n_l1}·命中队列(越小越强;低复合分票靠某条队列召回→名次很大);"
                f"**L2粗排** #GBDT重排名次/{n_l2}·gbdt分;**L3精排** = Opus holistic 论点 + conviction;"
                f"**L4研究·结论** = 决策卡深核后的关键定级依据(≥OW 取多头驱动,否则取空头/早停因);"
@@ -859,6 +917,9 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
     if cal:
         out += ["", cal]
     out += ["", "### 组合视角", _portfolio_note(rows)]
+    ens_lines = _ensemble_dissent_lines(emap)   # 🎭 spread≥2 人裁提示(presence-gated:无分歧 → [])
+    if ens_lines:
+        out += [""] + ens_lines
     chain = _same_chain_block(rows)         # Phase 3:同链 ≥2 卡并排(择链上最佳表达素材)
     if chain:
         out += ["", chain]

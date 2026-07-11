@@ -166,6 +166,31 @@ const fresh = (await parallel(plan.dispatch.map((code) => () => agent(
   .filter(Boolean)
 const cards = [...fresh, ...(plan.reused || [])]
 const isOW = (r) => /(overweight|\bbuy\b|增持|买入)/i.test(r || '')
+
+// 买单复核 ensemble(拍板 2):≥OW 的新派卡各追加 2 个独立 run,取中位;只向下折回。
+const RANK = { 'sell': 0, 'underweight': 1, 'hold': 2, 'overweight': 3, 'buy': 4 }
+const tier = (r) => RANK[String(r || '').toLowerCase()] ?? 2
+const owFresh = fresh.filter((c) => isOW(c.rating))
+if (owFresh.length) {
+  log(`🎭 买单复核:${owFresh.length} 张 ≥OW 卡各追加 2 独立 run 取中位`)
+  const ens = await parallel(owFresh.map((c) => () => (async () => {
+    const reruns = (await parallel([2, 3].map((i) => () => agent(
+      `独立复核 run${i}(不知道其它 run 结论):执行 ${SD}/_l4_prompt_${c.code}.md 的任务包,按人设走渐进深度 DD,决策卡写到 ${SD}/ensemble/${c.code}.run${i}.md(先自行创建 ensemble/ 目录),返回 code/rating/conviction。`,
+      { agentType: 'l4-card', effort: cfg.agents?.l4_card?.effort ?? 'xhigh', label: `ens${i}:${c.code}`, phase: 'L4', schema: CARD })))).filter(Boolean)
+    const ratings = [c.rating, ...reruns.map((r) => r.rating)]
+    const sorted = ratings.map(tier).sort((a, b) => a - b)
+    const medianTier = sorted[Math.floor(sorted.length / 2)]
+    const names = ['Sell', 'Underweight', 'Hold', 'Overweight', 'Buy']
+    return { code: c.code, ratings, median: names[medianTier], spread: sorted[sorted.length - 1] - sorted[0] }
+  })()))
+  const rows = ens.filter(Boolean)
+  await bash(`cat > ${SD}/_ensemble.json << 'EOF'\n${JSON.stringify(rows)}\nEOF`, 'ensemble-dump', 'L4')
+  for (const e of rows) {                       // buys 判定用折回后评级
+    const card = cards.find((c) => c.code === e.code)
+    if (card && tier(e.median) < tier(card.rating)) card.rating = e.median
+  }
+}
+
 const buys = cards.filter((c) => isOW(c.rating)).map((c) => c.code)
 const isZeroBuy = buys.length === 0
 log(`L4 ✓ 新派 ${fresh.length} + 复用 ${(plan.reused || []).length} = ${cards.length} 卡 · ≥OW ${buys.length} · ${isZeroBuy ? '0买日' : '有买单'}`)
