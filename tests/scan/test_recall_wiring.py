@@ -57,6 +57,8 @@ def test_universe_run_wires_pinned_into_l1(patched, tmp_path):
     row = l1[l1["code"] == "600123"]
     # FN-1 核心契约:保送票被强注进 L1(标记 recall_channels="pinned"),不再在 finalists 层空降 L4
     assert len(row) == 1 and row.iloc[0]["recall_channels"] == "pinned", "保送票未强注进 L1(FN-1)"
+    # pinned 布尔列持久化进 artifact(复盘可见哪些是保送票)
+    assert "pinned" in l1.columns and bool(row.iloc[0]["pinned"]), "L1 artifact 缺 pinned 列"
     # 且随 L1 流入 L2(被 L3 真判的前提;若缺则仍是空降)
     l2 = pd.read_csv(out / "L2_gbdt_top200.csv", dtype={"code": str})
     assert "600123" in set(l2["code"]), "保送票未随 L1 流入 L2(仍会空降 L4)"
@@ -69,6 +71,7 @@ def test_universe_run_no_pinned_file_parity(patched, tmp_path):
             pinned_path=tmp_path / "nope.json")
     l1 = pd.read_csv(out / "L1_recall_top1000.csv", dtype={"code": str})
     assert len(l1) == 300      # 缺 pinned.json → load_pinned kept=[] → 无强注,召回数量不变
+    assert "pinned" not in l1.columns   # presence-gated:无保送→不加 pinned 列(parity)
 
 
 def test_l1recall_stage_multi_writes_channels(patched, tmp_path):

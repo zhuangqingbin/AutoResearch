@@ -302,7 +302,8 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
                "retail_net_yi", "winner_rate", "chip_concentration", "price_to_cost", "hk_ratio",
                "rsi6", "rsi12", "pe", "pb", "dv_ratio", "np_yoy", "rev_yoy", "roe",
                "ma_bull", "above_ma60"])
-    keep = keep + [c for c in ("recall_channels", "n_channels", "best_rank") if c in recall.columns]
+    keep = keep + [c for c in ("recall_channels", "n_channels", "best_rank",
+                               "pinned", "pinned_note") if c in recall.columns]  # pinned 列 presence-gated:无保送不出现=parity
     recall[[c for c in keep if c in recall.columns]].to_csv(outdir / "L1_recall_top1000.csv", index=False)
     if per_channel is not None and len(per_channel):           # multi:各路召回名单留底(provenance/复盘)
         per_channel.to_csv(outdir / "L1_channels.csv", index=False)
