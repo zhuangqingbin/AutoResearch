@@ -41,3 +41,17 @@ def test_dump_ow_gate_fires_skips_passed_gates(tmp_path):
     card = "**Rubric建议**: OW三门 主力真在✓·业绩真兑现✓·估值不透支✓ → **建议 Overweight**\n"
     (d / "details" / "000001.md").write_text(card, encoding="utf-8")
     assert self_review.dump_ow_gate_fires(d) == 0
+
+
+def test_dump_ow_gate_fires_dedupes_same_key_within_one_call(tmp_path):
+    """同次调用内两张卡巧合解出同一 (date,check,code)(如 000001.md + 000001.bak.md 同 stem 前缀)
+    不应各记一行——`seen` 须随 rows 累积同步更新,不能只在调用开头从旧文件建一次。"""
+    d = tmp_path / "2026-07-09"
+    (d / "details").mkdir(parents=True)
+    card = "**Rubric建议**: OW三门 主力真在✗·业绩真兑现✓·估值不透支✓ → **建议 Hold**\n"
+    (d / "details" / "000001.md").write_text(card, encoding="utf-8")
+    (d / "details" / "000001.bak.md").write_text(card, encoding="utf-8")   # split(".")[0] 同 code
+    n = self_review.dump_ow_gate_fires(d)
+    assert n == 1
+    df = pd.read_csv(d / "gate_fires.csv", dtype=str)
+    assert len(df) == 1

@@ -214,6 +214,7 @@ def dump_ow_gate_fires(scan_dir) -> int:
             key = (date, f"OW三门·{gate}", code)
             if failed and key not in seen:
                 rows.append(dict(zip(("date", "check", "code"), key), level="binding"))
+                seen.add(key)   # 同次调用内也去重(两张卡巧合同 code 时防重复行,不止防跨调用重跑)
     if rows:
         pd.concat([old, pd.DataFrame(rows)], ignore_index=True).to_csv(fp, index=False)
     return len(rows)
