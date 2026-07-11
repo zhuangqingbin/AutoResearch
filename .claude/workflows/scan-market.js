@@ -112,6 +112,14 @@ await agent(
   { agentType: 'l3-rank', effort: cfg.agents?.l3_rank?.effort ?? 'max',
     ...(cfg.agents?.l3_rank?.model ? { model: cfg.agents.l3_rank.model } : {}),
     label: 'L3-rank', phase: 'L3' })
+// thesis 数字机检(确定性 lint):打回一次自修,修复后不再二检(防循环)
+const l3lint = await gate('l3-lint', `${R} autoresearch.scan.agents.l3_select lint ${date}`, OK, 'L3')
+if (l3lint && l3lint.ok === false) {
+  log(`L3 数字机检未过 → 打回一次自修:${(l3lint.reason || '').slice(0, 200)}`)
+  await agent(
+    `你之前写的 ${SD}/_l3_judged.json 有 thesis 引用数字与 ${SD}/_l3_table.md 不符:\n${l3lint.reason}\n只修这些票的 thesis/数字(以表为准或删掉具体数字改定性措辞),其余票原样保留,用 Write 覆写同一文件。`,
+    { agentType: 'l3-rank', effort: 'medium', label: 'L3-lint-fix', phase: 'L3' })
+}
 // 确定性写 finalists(修前导零)+ GATE2
 await bash(`${R} autoresearch.scan.agents.l3_select finalists ${date} --budget ${g1.l4_budget}`, 'finalists', 'L3')
 const g2 = await gate('GATE2', `${R} autoresearch.scan.gates gate2 ${date} --budget ${g1.l4_budget}`, GATE2, 'L3')

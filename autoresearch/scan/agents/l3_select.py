@@ -11,6 +11,7 @@ screening-playbook.md);本模块只做**确定性喂料 + 取数 + 格式化**:�
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -20,7 +21,9 @@ import pandas as pd
 # 2026-07-06 瘦身:L3 max-effort 需更小输入才净提速 → 删 9 个 score_* 子分(composite 已含、与原始因子冗余)
 # + retail_net_yi/chip_concentration/price_to_cost/hk_ratio(常 NaN)/dv_ratio/l2_lane_reserved/news_n·tags/med_n·tags·head。
 # 保留 = 5 维 rubric 真正读的原始因子 + composite/gbdt + 情感 sent/head(42→22 列)。旧宽表见 git 历史。
-_L3_COLS = ["code", "name", "industry", "composite", "gbdt_score",
+# 2026-07-11:加 `pf`(行语义指纹,见 row_profile)——07-08 诊断误读 22/31 纯表内可见,读定性词
+# 比读裸浮点更不容易漏读/误读;确定性纯函数,l3_table_md 组表时对每行算,恒出现(非 flag 位)。
+_L3_COLS = ["code", "name", "pf", "industry", "composite", "gbdt_score",
             "pct_60d", "sector_mom", "vol_ratio", "cmf_20", "obv_mom_20", "main_net_ratio", "winner_rate",
             "rsi6", "pe", "pb", "np_yoy", "roe",
             "n_channels", "recall_channels",                   # 召回 provenance(channel 共振)
@@ -34,6 +37,86 @@ def _fmt(v) -> str:
     if isinstance(v, float):
         return (f"{v:.2f}".rstrip("0").rstrip(".")) if v == v else "—"
     return str(v)
+
+
+def row_profile(r) -> str:
+    """行语义指纹(确定性纯函数,`pf` 列):把该票关键因子压成一句 `·` 连接的定性短语——
+    L3 通看 ~200 行×22 列裸浮点易误读(07-08 诊断 22/31 证据纯表内可见,读词比读裸浮点更
+    不容易漏读)。`r` 支持 dict / `pd.Series`(`.get` 语义);字段缺失/NaN → 该维度不出现
+    (不冤枉、不编造)。同输入同输出,禁 wall-clock/随机。词表固定(顺序即优先级):
+
+    位置(pct_60d):高位≥40 / 中位≥10 / 低位>−10 / 深跌(其余,恒出现)。
+    放量(vol_ratio≥2,仅达标才出现)。
+    主力(main_net_ratio 与 cmf_20/obv_mom_20 同向判,main 有值即恒出现):main>0 且资金指标
+      未反向 → 主力+;main<0 且资金指标未反向 → 主力−;main≈0 → 主力平;主力方向与
+      cmf_20/obv_mom_20 明确相反 → 主力背离。
+    估值(pe):PE负<0 / PE低<20 / PE中<60 / PE高(其余,恒出现)。
+    筹码(winner_rate,仅两端极值出现):满盈利⚠≥90 / 深套牢<25。
+    超买超卖(rsi6,仅两端极值出现):超买≥80 / 超卖≤20。
+    """
+    def _f(key):
+        v = r.get(key) if hasattr(r, "get") else None
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return None
+        return None if v != v else v          # NaN 自比不等
+
+    words: list[str] = []
+
+    pct60 = _f("pct_60d")
+    if pct60 is not None:
+        if pct60 >= 40:
+            words.append("高位")
+        elif pct60 >= 10:
+            words.append("中位")
+        elif pct60 > -10:
+            words.append("低位")
+        else:
+            words.append("深跌")
+
+    vol = _f("vol_ratio")
+    if vol is not None and vol >= 2:
+        words.append("放量")
+
+    main, cmf, obv = _f("main_net_ratio"), _f("cmf_20"), _f("obv_mom_20")
+    if main is not None:
+        flow = [x for x in (cmf, obv) if x is not None]
+        flow_pos = any(x > 0 for x in flow)
+        flow_neg = any(x < 0 for x in flow)
+        if main > 0:
+            words.append("主力背离" if (flow_neg and not flow_pos) else "主力+")
+        elif main < 0:
+            words.append("主力背离" if (flow_pos and not flow_neg) else "主力−")
+        else:
+            words.append("主力平")
+
+    pe = _f("pe")
+    if pe is not None:
+        if pe < 0:
+            words.append("PE负")
+        elif pe < 20:
+            words.append("PE低")
+        elif pe < 60:
+            words.append("PE中")
+        else:
+            words.append("PE高")
+
+    winner = _f("winner_rate")
+    if winner is not None:
+        if winner >= 90:
+            words.append("满盈利⚠")
+        elif winner < 25:
+            words.append("深套牢")
+
+    rsi = _f("rsi6")
+    if rsi is not None:
+        if rsi >= 80:
+            words.append("超买")
+        elif rsi <= 20:
+            words.append("超卖")
+
+    return "·".join(words)
 
 
 def compact_table(df: pd.DataFrame, cols: list[str] | None = None) -> str:
@@ -139,11 +222,53 @@ def _delta_filter(df: pd.DataFrame, prev_dir: Path,
     return kept, dropped
 
 
+def _row_lane(row) -> str:
+    """lane 分块渲染的分块键(确定性):`l2_lane_reserved` 非空真值(floor 救回——桶配额
+    从线下补进来的,非有机进场)→ `"floor"`;否则取 `recall_channels`(如 `"momentum|value"`)
+    首通道;两者皆缺/空 →`"other"`。缺列/坏值容错返回 `"other"`(不抛)。"""
+    reserved = row.get("l2_lane_reserved") if hasattr(row, "get") else None
+    is_reserved = False
+    if isinstance(reserved, str):
+        is_reserved = reserved.strip().lower() not in ("", "false", "nan", "0")
+    elif reserved is not None:
+        try:
+            is_reserved = bool(reserved) and reserved == reserved   # NaN 自比不等
+        except (TypeError, ValueError):
+            is_reserved = False
+    if is_reserved:
+        return "floor"
+    ch = row.get("recall_channels") if hasattr(row, "get") else None
+    ch = "" if ch is None else str(ch)
+    if not ch or ch.lower() == "nan" or ch == "(backfill)":
+        return "other"
+    return ch.split("|")[0].strip() or "other"
+
+
+def _render_lane_blocks(df: pd.DataFrame, cols: list[str]) -> str:
+    """按 lane 分块渲染表体(去 L3 通看单一大表时的位置偏差):每块一个 `### lane:<名>`
+    小标题,块内按 composite 降序;块序 = 有机召回通道按名升序在前、`floor`(配额救回,非
+    有机进场)殿后——同一票只出现在一个块。尾附 `_meta: render_order=lane_blocks_` 供
+    下游识别渲染模式。"""
+    d = df.copy()
+    d["_lane"] = d.apply(_row_lane, axis=1)
+    comp = pd.to_numeric(d["composite"], errors="coerce") if "composite" in d.columns else pd.Series(0.0, index=d.index)
+    d["_sort"] = comp.fillna(-1e18)
+    lanes = sorted(d["_lane"].unique(), key=lambda x: (x == "floor", x))
+    parts: list[str] = []
+    for lane in lanes:
+        sub = d[d["_lane"] == lane].sort_values("_sort", ascending=False)
+        parts.append(f"### lane:{lane}")
+        parts.append(compact_table(sub, cols=cols))
+    parts.append("_meta: render_order=lane_blocks_")
+    return "\n\n".join(parts)
+
+
 def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
                 shuffle_seed: int | None = None, sector_terrain: bool = False,
                 dist_flag: bool = False, reg_flag: bool = False, cat_flag: bool = False,
                 misread_flag: bool = False, rc_flag: bool = False,
-                pinned_flag: bool = False, pinned_path: Path | str | None = None) -> str:
+                pinned_flag: bool = False, pinned_path: Path | str | None = None,
+                lane_blocks: bool = False) -> str:
     """L3 holistic 选股 subagent 的完整输入表(~200 行紧凑表 + 证据摘要列)。
 
     delta=True:略去「昨判弃 ∧ 今无变化」行 + prev_l3 标记(design: l4-economy §3;
@@ -171,8 +296,13 @@ def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
     2026-07-11-recall-gate-pinned-config-design.md §4.1);默认 False = 逐字 parity。
     pinned_path:`load_pinned` 的自定义路径(测试注入;生产默认
     `.claude/skills/scan-market/pinned.json`)。
+    lane_blocks=True:表渲染从单一大表改为按 lane 分块(`_render_lane_blocks`——`### lane:<名>`
+    小标题;`l2_lane_reserved` 真值行归 `floor` 块,其余行归 `recall_channels` 首通道块;
+    块内按 composite 降序;块序=有机通道在前、`floor` 殿后)去位置偏差(07-08 诊断 22/31
+    误读之一);默认 False = 逐字 parity。
     """
     df = load_l3_input(date, root=root)
+    df["pf"] = df.apply(row_profile, axis=1)   # 行语义指纹(确定性,恒计算——非 flag 位,见 row_profile)
     cols = [*_L3_COLS] + [c for c in ("lhb_n", "has_forecast", "has_express") if c in df.columns]
     header: list[str] = []
     if dist_flag and {"main_net_ratio", "main_inflow_yi"}.issubset(df.columns):
@@ -253,7 +383,7 @@ def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
             "(拉高派发嫌疑);套牢=低获利盘·非多头排列·60日已涨(反弹撞套牢盘≠上行空间)。**旗亮仍以对应论点入选者,thesis 必须一句自证非陷阱**。")
     if shuffle_seed is not None:
         df = df.sample(frac=1, random_state=int(shuffle_seed)).reset_index(drop=True)
-    table = compact_table(df, cols=cols)
+    table = _render_lane_blocks(df, cols) if lane_blocks else compact_table(df, cols=cols)
     body = "\n".join([*header, table]) if header else table
     if sector_terrain:                      # Phase 3:全行业地形段前置(默认关 = 逐字 parity)
         try:
@@ -483,16 +613,125 @@ def prepare_l3_table(date: str, root: Path | None = None, delta: bool = True,
         harvest_l3_news(date, codes, root=base)
     md = l3_table_md(date, root=base, delta=delta, dist_flag=True, reg_flag=True,
                      cat_flag=True, sector_terrain=True, misread_flag=True,
-                     pinned_flag=True, pinned_path=pinned_path)
+                     pinned_flag=True, pinned_path=pinned_path, lane_blocks=True)
     (scan_dir / "_l3_table.md").write_text(md, encoding="utf-8")
     return {"codes": len(codes), "table_bytes": len(md)}
+
+
+# ───────────────────────── L3:thesis 数字机检(lint_judged) ─────────────────────────
+
+_NUM_RE = re.compile(r"-?\d+(?:\.\d+)?")
+# 长的先试(YYYY-MM-DD 整段吃掉,防被短的 MM-DD 分支截成两段残留数字)。
+_DATE_TOKEN_RE = re.compile(r"\d{4}-\d{1,2}-\d{1,2}|\d{1,2}-\d{1,2}")
+_YEAR_TOKEN_RE = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
+_CODE_TOKEN_RE = re.compile(r"(?<!\d)\d{6}(?!\d)")
+_PERIOD_SUFFIX = ("年", "月", "日", "周", "季")   # 数字紧跟这些字 = 窗口/周期标签(如"60日"),非数据主张
+_IDENT_CHAR_RE = re.compile(r"[A-Za-z_]")        # 数字紧贴字母/下划线 = 列标识符内嵌窗口(如 pct_60d/rsi6),非数据主张
+
+
+def _thesis_number_tokens(text: str) -> list[str]:
+    r"""thesis 里「待核实」的数字 token:过滤 4 位年份 / 6 位代码 / `07-15`(或 `2026-07-15`)形
+    日期 / `N年|月|日|周|季` 窗口标签(如"60日涨12%"的 60 是窗口)/ 紧贴字母或下划线的数字
+    (如引用列名 `pct_60d`/`rsi6`/`cmf_20` 时嵌在标识符里的窗口数——07-08 真实数据冒烟逮到
+    "pct_60d +21.95" 的 60、"rsi6 52.51" 的 6 被错当数字核对)后,
+    `re.findall(r"-?\d+(?:\.\d+)?", ...)` 逐个取出。"""
+    if not text:
+        return []
+    t = _DATE_TOKEN_RE.sub(" ", text)
+    t = _YEAR_TOKEN_RE.sub(" ", t)
+    t = _CODE_TOKEN_RE.sub(" ", t)
+    out: list[str] = []
+    for m in _NUM_RE.finditer(t):
+        if t[m.end():m.end() + 1] in _PERIOD_SUFFIX:
+            continue
+        before = t[m.start() - 1:m.start()] if m.start() > 0 else ""
+        after = t[m.end():m.end() + 1]
+        if _IDENT_CHAR_RE.match(before) or _IDENT_CHAR_RE.match(after):
+            continue
+        out.append(m.group())
+    return out
+
+
+def _row_numeric_pool(pick: dict, l2_row) -> list[float]:
+    """该票行的数值集合:L2 csv 该码全部数值列(`code` 本身除外)+ judged 行自身
+    pct_60d/conviction(容差匹配用)。坏值/非数容错跳过。"""
+    pool: list[float] = []
+    if l2_row is not None:
+        for k, v in l2_row.items():
+            if k == "code":
+                continue
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                continue
+            if fv == fv:
+                pool.append(fv)
+    for key in ("pct_60d", "conviction"):
+        try:
+            fv = float(pick.get(key))
+        except (TypeError, ValueError):
+            continue
+        if fv == fv:
+            pool.append(fv)
+    return pool
+
+
+def _approx_in_pool(token_val: float, pool: list[float]) -> bool:
+    """±1% 相对或 ±0.1 绝对容差;百分数与小数互认(×100/÷100 都试一遍)。"""
+    for v in pool:
+        for scale in (1.0, 100.0, 0.01):
+            cv = v * scale
+            if abs(token_val - cv) <= 0.1:
+                return True
+            if cv and abs(token_val - cv) / abs(cv) <= 0.01:
+                return True
+    return False
+
+
+def lint_judged(date: str, root: Path | None = None) -> dict:
+    """thesis 数字机检(确定性 lint,零 LLM):每条 thesis 的数字 token(过滤年份/代码/日期/
+    N日窗口标签)须能在该票 L2 数值列(±1% 相对或 ±0.1 绝对容差,百分数/小数互认)或
+    `catalyst` 字段里找到,否则记 `code:数字` 入 reason → `ok=False`。workflow 据此打回一次
+    自修(`gate('l3-lint', ...)`,一次打回上限,修复后不再二检)。
+
+    CLI(GATE 惯例):`python -m autoresearch.scan.agents.l3_select lint <date>` 打一行 JSON。
+    """
+    base = Path(root) if root else Path("context/scan")
+    scan_dir = base / date
+    judged_path = scan_dir / "_l3_judged.json"
+    if not judged_path.exists():
+        return {"ok": False, "reason": f"{judged_path} 缺失"}
+    picks = json.loads(judged_path.read_text(encoding="utf-8"))
+    l2_by_code: dict[str, object] = {}
+    l2p = scan_dir / "L2_gbdt_top200.csv"
+    if l2p.exists():
+        l2 = pd.read_csv(l2p, dtype={"code": str})
+        l2["code"] = l2["code"].astype(str).str.zfill(6)
+        l2_by_code = {r["code"]: r for _, r in l2.iterrows()}
+    bad: list[str] = []
+    for pick in picks:
+        code = str(pick.get("code", "")).zfill(6)
+        thesis = str(pick.get("thesis") or "")
+        catalyst = str(pick.get("catalyst") or "")
+        pool = _row_numeric_pool(pick, l2_by_code.get(code))
+        for tok in _thesis_number_tokens(thesis):
+            try:
+                tv = float(tok)
+            except ValueError:
+                continue
+            if _approx_in_pool(tv, pool) or tok in catalyst:
+                continue
+            bad.append(f"{code}:{tok}")
+    if bad:
+        return {"ok": False, "reason": "; ".join(bad)}
+    return {"ok": True, "reason": "ok"}
 
 
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
     ap = argparse.ArgumentParser(prog="l3_select")
-    ap.add_argument("cmd", choices=["finalists", "prepare"])
+    ap.add_argument("cmd", choices=["finalists", "prepare", "lint"])
     ap.add_argument("date")
     ap.add_argument("--budget", type=int, default=30)
     ap.add_argument("--root", default=None)
@@ -500,9 +739,13 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "finalists":
         res = write_finalists(a.date, budget=a.budget, root=a.root)
         print(f"[l3_select finalists] judged {res['judged_n']} → finalists {res['finalists_n']}")
-    else:
+    elif a.cmd == "prepare":
         res = prepare_l3_table(a.date, root=a.root)
         print(f"[l3_select prepare] codes {res['codes']} → _l3_table.md {res['table_bytes']}B")
+    else:
+        res = lint_judged(a.date, root=a.root)
+        print(json.dumps(res, ensure_ascii=False))
+        return 0 if res.get("ok") else 1
     return 0
 
 
