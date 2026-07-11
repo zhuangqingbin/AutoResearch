@@ -42,7 +42,7 @@ def test_dispatch_plan_no_finalists(tmp_path):
     d = tmp_path / "context" / "scan" / _DATE
     d.mkdir(parents=True)
     res = dispatch_plan(_DATE, root=d.parent)
-    assert res == {"dispatch": [], "reused": []}
+    assert res == {"dispatch": [], "reused": [], "meta": {}}
 
 
 def test_dispatch_plan_cli(tmp_path, monkeypatch, capsys):
@@ -53,3 +53,30 @@ def test_dispatch_plan_cli(tmp_path, monkeypatch, capsys):
     out = json.loads(capsys.readouterr().out)
     assert set(out["dispatch"]) == {"600584", "000063"}
     assert out["reused"] == [{"code": "000062", "rating": "Hold"}]
+
+
+# ══════════════════════════ meta(name/sector,仅 dispatch 码;L4 情报站 plan Task 2) ══════════════════════════
+
+
+def _mk_with_sector(root):
+    """mirror `_mk` 但 finalists 多一列 `sector`,验 `meta` 落 name/sector(仅 dispatch 码)。"""
+    d = root / "context" / "scan" / _DATE
+    (d / "details").mkdir(parents=True)
+    pd.DataFrame([
+        {"code": "600584", "name": "长电科技", "sector": "半导体"},
+        {"code": "000062", "name": "深圳华强", "sector": "汽车"},
+        {"code": "000063", "name": "中兴通讯", "sector": "通信"},
+    ]).to_csv(d / "finalists.csv", index=False)
+    (d / "_l4_prompt_600584.md").write_text(
+        "# L4 派发 prompt — 600584 长电科技\n", encoding="utf-8")
+    (d / "details" / "000062.md").write_text(
+        "♻️ **复用卡**(源 2026-07-03)\n**Rating**: Hold\n", encoding="utf-8")
+    return d
+
+
+def test_dispatch_plan_meta_names(tmp_path):
+    _mk_with_sector(tmp_path)
+    plan = dispatch_plan(_DATE, root=tmp_path / "context" / "scan")
+    code = plan["dispatch"][0]
+    assert plan["meta"][code]["name"] and "sector" in plan["meta"][code]
+    assert all(c not in plan["meta"] for c in [r["code"] for r in plan["reused"]])

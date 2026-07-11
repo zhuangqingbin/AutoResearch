@@ -55,6 +55,18 @@ def test_dispatch_pack_cli(tmp_path, monkeypatch, capsys):
     assert "2" in capsys.readouterr().out
 
 
+# ══════════════════════════ 活体情报指针行(逐卡尾部指针区;L4 情报站 plan Task 2) ══════════════════════════
+
+
+def test_prompt_has_intel_pointer(tmp_path):
+    d = _mk(tmp_path)
+    write_dispatch_pack(d)
+    p = next(d.glob("_l4_prompt_*.md")).read_text(encoding="utf-8")
+    assert "_l4_intel_" in p and "回退" in p
+    # cache 契约:指针行必须在共享块之后(简单锚:出现在 "## L4 派发 —" 之后)
+    assert p.index("_l4_intel_") > p.index("## L4 派发 —")
+
+
 # ══════════════════════════ pinned 票 📌 逐卡标记(design §4.1;plan Task 4) ══════════════════════════
 
 

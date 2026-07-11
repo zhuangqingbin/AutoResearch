@@ -717,6 +717,8 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
             "---",
             f"- slim 数据:`context/{ticker}_{date}_slim.md`(P1–P3 表面块;**>8KB 才可信**,≈4.8KB=NO_DATA 须重拉)",
             f"- deep 深核:`context/{ticker}_{date}_slim_deep.md`(**survivor 进 P4 才 Read**;早停卡不读;缺文件=陷阱维标「未核」)",
+            f"- 活体情报:`context/scan/{date}/_l4_intel_{code6}.md`(若存在:P3 先读它作催化/题材/机构主料、"
+            f"自发网查降 ≤1 条验证;缺文件=回退卡内网查,cap 原规则)",
             f"- 决策卡写往:`context/scan/{date}/details/{code6}.md`",
             ""])
         (scan_dir / f"_l4_prompt_{code6}.md").write_text(prompt, encoding="utf-8")
@@ -736,15 +738,18 @@ def dispatch_plan(date: str, root: Path | str | None = None) -> dict:
     分两路:`dispatch`(需新派 Opus)与 `reused`(已就位卡,直接 `parse_rating` 解评级
     并回,不再派 subagent)。两个标志都缺(异常态)→ 归 `dispatch`,兜底走正常派发。
 
-    返回 `{"dispatch": [code6...], "reused": [{"code","rating"}...]}`。
+    返回 `{"dispatch": [code6...], "reused": [{"code","rating"}...], "meta": {code6: {"name","sector"}}}`
+    ——`meta` 仅含 `dispatch` 码(L4 情报站 plan Task 2:供并行情报 agent 派发 prompt 用名称/行业,
+    不查 finalists.csv 即可读到),直取 finalists.csv 的 `name`/`sector` 列,缺列容错为 `""`。
     """
     base = Path(root) if root else Path("context/scan")
     scan_dir = base / date
     fp = scan_dir / "finalists.csv"
     dispatch: list[str] = []
     reused: list[dict] = []
+    meta: dict[str, dict] = {}
     if not fp.exists():
-        return {"dispatch": dispatch, "reused": reused}
+        return {"dispatch": dispatch, "reused": reused, "meta": meta}
     from autoresearch.agents.utils.rating import parse_rating  # 延迟导入,保持本模块轻量
     fin = pd.read_csv(fp, dtype={"code": str})
     for _, r in fin.iterrows():
@@ -754,13 +759,15 @@ def dispatch_plan(date: str, root: Path | str | None = None) -> dict:
         code6 = raw.split(".")[0].zfill(6)
         if (scan_dir / f"_l4_prompt_{code6}.md").exists():
             dispatch.append(code6)
+            meta[code6] = {"name": str(r.get("name", "") or ""), "sector": str(r.get("sector", "") or "")}
             continue
         details = scan_dir / "details" / f"{code6}.md"
         if details.exists():
             reused.append({"code": code6, "rating": parse_rating(details.read_text(encoding="utf-8"))})
         else:
             dispatch.append(code6)   # 两者皆无(异常):兜底走正常派发,不静默丢票
-    return {"dispatch": dispatch, "reused": reused}
+            meta[code6] = {"name": str(r.get("name", "") or ""), "sector": str(r.get("sector", "") or "")}
+    return {"dispatch": dispatch, "reused": reused, "meta": meta}
 
 
 def _tushare_pledge(code6: str) -> tuple[float, str] | None:
