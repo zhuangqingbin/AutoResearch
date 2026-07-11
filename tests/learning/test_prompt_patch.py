@@ -144,3 +144,97 @@ def test_contract_anchors_constant_matches_plan_spec():
         "FINAL TRANSACTION PROPOSAL", "Rubric建议", "进入P4倾向",
     }
     assert set(fs._CONTRACT_ANCHORS) == expected
+
+
+# ───────────────────────── Task 2 · proposals show/apply 辅助流 ─────────────────────────
+# plan: docs/plans/2026-07-11-hermes-selfimprove-plan.md Task 2;
+# spec: docs/specs/2026-07-11-recall-gate-pinned-config-design.md §5.1「落地端」。
+# show = 只读打印 diff+evidence;apply = 只读打印施工指引(契约文件命中→强制列必跑命令)+
+# set_proposal_status 收尾 —— **两者都绝不 Edit/Write target_file**。
+
+
+def test_show_prints_target_diff_and_evidence(tmp_path):
+    target = _mk_target(tmp_path, text="正文:普通文案,无契约锚。")
+    rec = fs.add_prompt_patch(
+        str(target), "起草小节锚点", "普通文案", "改写后的文案",
+        ["同型失误1:07-05 diagnosis X", "同型失误2:07-09 diagnosis X 再现", "gate_ledger ex>0 n=6"],
+    )
+    out = fs.show_proposal(rec["id"])
+    assert str(target) in out                       # target_file 可见
+    assert "普通文案" in out and "改写后的文案" in out  # current/proposed 都进了 diff
+    assert "-普通文案" in out and "+改写后的文案" in out  # 真是 diff(+/- 标记),非只是原文罗列
+    assert "同型失误1:07-05 diagnosis X" in out        # evidence 逐条可见
+    assert "gate_ledger ex>0 n=6" in out
+
+
+def test_show_unknown_pid_raises():
+    with pytest.raises(KeyError):
+        fs.show_proposal("pr_不存在_001")
+
+
+def test_show_non_prompt_patch_kind_falls_back_to_raw_fields():
+    """非 prompt_patch 提案(如 gate/factor)没有 target_file/diff 结构,show 退化打印原字段不崩。"""
+    pr = fs.add_proposal("gate", "cap_floor 30→20 亿", rationale="14 个 missed_l0 卡在 20-30亿",
+                         diff_sketch="screen_market 硬门 cap_floor 默认 30 → 20")
+    out = fs.show_proposal(pr["id"])
+    assert "cap_floor 30→20 亿" in out
+    assert "screen_market 硬门 cap_floor 默认 30 → 20" in out
+    assert "14 个 missed_l0 卡在 20-30亿" in out
+
+
+def test_contract_file_set_matches_plan_spec():
+    """契约文件集(按 basename 命中)= l4-card.md / lite-playbook.md / 任意 SKILL.md / STAGES.md。"""
+    assert fs._is_contract_file(".claude/agents/l4-card.md")
+    assert fs._is_contract_file(".claude/skills/stock-research/lite-playbook.md")
+    assert fs._is_contract_file(".claude/skills/scan-market/SKILL.md")
+    assert fs._is_contract_file(".claude/skills/scan-market/STAGES.md")
+    assert not fs._is_contract_file(".claude/skills/scan-retro/retro-playbook.md")
+
+
+def test_apply_contract_file_lists_mandatory_verification_commands(tmp_path):
+    target = tmp_path / "l4-card.md"
+    target.write_text("卡契约 v3 相关文案,勿删。", encoding="utf-8")
+    rec = fs.add_prompt_patch(
+        str(target), "锚点", "卡契约 v3 相关文案,勿删。",
+        "卡契约 v3:改写后的更精简文案,勿删。", ["证据"],
+    )
+    before = target.read_text(encoding="utf-8")
+    out = fs.apply_proposal(rec["id"])
+    assert "tests/test_agent_defs.py" in out
+    assert "tests/test_skill_docs_refs.py" in out
+    assert "doc-lint" in out
+    assert target.read_text(encoding="utf-8") == before        # 硬约束:文件内容逐字未变
+
+
+def test_apply_non_contract_file_has_no_mandatory_commands(tmp_path):
+    target = _mk_target(tmp_path, name="random_note.md", text="普通文案。")
+    rec = fs.add_prompt_patch(str(target), "锚点", "普通文案。", "改写后。", ["证据"])
+    before = target.read_text(encoding="utf-8")
+    out = fs.apply_proposal(rec["id"])
+    assert "test_agent_defs.py" not in out
+    assert "test_skill_docs_refs.py" not in out
+    assert target.read_text(encoding="utf-8") == before        # 硬约束:文件内容逐字未变
+
+
+def test_apply_sets_status_applied_and_drops_off_open_board(tmp_path):
+    target = _mk_target(tmp_path)
+    rec = fs.add_prompt_patch(str(target), "锚", "普通文案", "改写", ["证据"])
+    assert rec["id"] in {p["id"] for p in fs.open_proposals()}
+    fs.apply_proposal(rec["id"])
+    recs = {r["id"]: r for r in fs._read_jsonl(fs._PROPOSALS)}
+    assert recs[rec["id"]]["status"] == "applied"
+    assert rec["id"] not in {p["id"] for p in fs.open_proposals()}
+
+
+def test_apply_unknown_pid_raises():
+    with pytest.raises(KeyError):
+        fs.apply_proposal("pr_不存在_002")
+
+
+def test_apply_non_prompt_patch_kind_has_no_target_file_instructions():
+    """非 prompt_patch 提案没有 target_file,apply 仍不崩、仍不列强制命令、仍收尾改 status。"""
+    pr = fs.add_proposal("gate", "cap_floor 30→20 亿", rationale="证据",
+                         diff_sketch="screen_market 硬门 cap_floor 默认 30 → 20")
+    out = fs.apply_proposal(pr["id"])
+    assert "test_agent_defs.py" not in out
+    assert fs._read_jsonl(fs._PROPOSALS)[0]["status"] == "applied"

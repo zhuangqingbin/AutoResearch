@@ -12,9 +12,12 @@
 store 空时**逐字回退**到现有手写基线,老路径不破。
 
 用法:uv run --no-sync python -m autoresearch.learning.feedback_store --selftest
+     uv run --no-sync python -m autoresearch.learning.feedback_store show <pid>   # 打印提案 diff+evidence
+     uv run --no-sync python -m autoresearch.learning.feedback_store apply <pid>  # 打印施工指引(不改文件)
 """
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
 import shutil
@@ -471,6 +474,109 @@ def set_proposal_status(pid: str, status: str) -> bool:
     return hit
 
 
+# ───────────── Plan B T2 · proposals show/apply 辅助流(prompt_patch 施工辅助) ─────────────
+# show = 只读打印 diff+evidence;apply = 只读打印施工指引 + set_proposal_status 收尾。
+# 两者都**绝不 Edit/Write target_file**——实际改文件永远是人批后的会话内手改动作(见
+# retro-playbook.md「4.5 起草 prompt_patch」节)。
+
+_CONTRACT_FILE_BASENAMES = ("l4-card.md", "lite-playbook.md", "SKILL.md", "STAGES.md")
+
+
+def _is_contract_file(target_file: str) -> bool:
+    """target_file 是否属机器契约文件集(按 basename 命中,不看目录)。
+
+    l4-card.md(agent 定义)/ lite-playbook.md(stock-research 真值源)/ 任意 SKILL.md / STAGES.md
+    (各 skill 文档)——命中即由 `test_agent_defs.py`/`test_skill_docs_refs.py` 之一锁着契约锚或
+    接线,施工后必须重跑二者(`apply_proposal` 据此在指引末尾强制列出验门命令)。
+    """
+    return Path(target_file).name in _CONTRACT_FILE_BASENAMES
+
+
+def _get_proposal(pid: str) -> dict:
+    rec = next((r for r in _read_jsonl(_PROPOSALS) if r.get("id") == pid), None)
+    if rec is None:
+        raise KeyError(f"提案不存在: {pid}")
+    return rec
+
+
+def _prompt_patch_payload(rec: dict) -> dict | None:
+    """rec 是合法 prompt_patch 载体(kind 对且 diff_sketch 可解出 target_file)→ payload dict;否则 None。"""
+    if rec.get("kind") != "prompt_patch":
+        return None
+    try:
+        payload = json.loads(rec.get("diff_sketch") or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return payload if isinstance(payload, dict) and "target_file" in payload else None
+
+
+def show_proposal(pid: str) -> str:
+    """`show <pid>`:prompt_patch 提案 → 人读 target_file + current→proposed diff + evidence。
+
+    kind != prompt_patch 或 diff_sketch 不是预期 JSON payload → 退化打印 summary/rationale/
+    diff_sketch 原文(不崩溃,仍可读)。只读 proposals.jsonl,零副作用。pid 不存在 → KeyError。
+    """
+    rec = _get_proposal(pid)
+    lines = [f"# 提案 {rec['id']} · kind={rec.get('kind')} · status={rec.get('status')}",
+             f"summary: {rec.get('summary', '')}"]
+    payload = _prompt_patch_payload(rec)
+    if payload:
+        lines.append(f"target_file: {payload.get('target_file', '')}")
+        if payload.get("anchor_text"):
+            lines.append(f"anchor: {payload['anchor_text']}")
+        current = str(payload.get("current_text", ""))
+        proposed = str(payload.get("proposed_text", ""))
+        diff = list(difflib.unified_diff(current.splitlines(), proposed.splitlines(),
+                                         fromfile="current", tofile="proposed", lineterm=""))
+        lines += ["", "```diff", *diff, "```"]
+    else:
+        lines.append(f"diff_sketch: {rec.get('diff_sketch', '')}")
+    lines += ["", "evidence:"]
+    ev_lines = [ln for ln in str(rec.get("rationale", "")).splitlines() if ln.strip()]
+    lines += ([f"- {ln}" for ln in ev_lines] if ev_lines else ["- (无)"])
+    return "\n".join(lines)
+
+
+def apply_proposal(pid: str) -> str:
+    """`apply <pid>`:**不自动改文件**——只打印施工指引,实际编辑永远是人批后的会话内手改。
+
+    target_file 命中 `_is_contract_file` → 指引末尾强制列出必跑命令(test_agent_defs.py +
+    doc-lint=test_skill_docs_refs.py);随后 `set_proposal_status(pid, "applied")` 收尾
+    (退出 `open_proposals` 看板)。
+
+    **硬约束**:本函数从不 Edit/Write target_file、甚至不重新读它——指引里的 current_text/
+    proposed_text 全部来自 proposals.jsonl 里已存的 diff_sketch,调用前后 target_file 磁盘内容
+    逐字不变(这是安全边界,不是实现细节——测试锁死)。
+    """
+    rec = _get_proposal(pid)
+    lines = [f"# 施工指引 · 提案 {rec['id']}({rec.get('kind')})",
+             "以下步骤须在人批后于会话内手工编辑完成——本命令不改任何文件:"]
+    payload = _prompt_patch_payload(rec)
+    target_file = payload.get("target_file") if payload else None
+    if payload and target_file:
+        lines += [
+            f"1. 打开 target_file: {target_file}",
+            "2. 把 current_text 原样替换为 proposed_text(契约锚字符串已由 add_prompt_patch 校验保留):",
+            f"   current_text  = {payload.get('current_text', '')!r}",
+            f"   proposed_text = {payload.get('proposed_text', '')!r}",
+            "3. 保存后人工核对改动与本提案 evidence 一致。",
+        ]
+        if _is_contract_file(target_file):
+            lines += [
+                "",
+                "**契约文件命中 —— 施工后必跑(强制,勿跳过)**:",
+                "    uv run --no-sync python -m pytest tests/test_agent_defs.py "
+                "tests/test_skill_docs_refs.py   # test_skill_docs_refs.py = doc-lint",
+            ]
+    else:
+        lines += [f"summary: {rec.get('summary', '')}", f"diff_sketch: {rec.get('diff_sketch', '')}",
+                  "(非 prompt_patch 结构或缺 target_file——按 summary/rationale 人工处理,无处方级指引)"]
+    lines += ["", f"evidence/rationale: {rec.get('rationale', '')}"]
+    set_proposal_status(pid, "applied")
+    lines += ["", f"→ 提案 {pid} 状态已置为 applied(收尾;第 2 步手工编辑仍需你确认已完成)。"]
+    return "\n".join(lines)
+
+
 def log_change(retro_date: str, before_sha: str, after_sha: str, top_changes: list[dict],
                panel_dates_n: int, ts: str | None = None, kind: str = "recalibrate") -> dict:
     """自动重标定审计一条。"""
@@ -798,5 +904,19 @@ def _selftest() -> int:
     return 0
 
 
+def main() -> int:
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if "--selftest" in sys.argv:
+        return _selftest()
+    if len(args) >= 2 and args[0] == "show":
+        print(show_proposal(args[1]))
+        return 0
+    if len(args) >= 2 and args[0] == "apply":
+        print(apply_proposal(args[1]))
+        return 0
+    print(__doc__)
+    return 0
+
+
 if __name__ == "__main__":
-    raise SystemExit(_selftest() if "--selftest" in sys.argv else 0)
+    raise SystemExit(main())
