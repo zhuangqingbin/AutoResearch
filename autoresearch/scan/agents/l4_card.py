@@ -285,6 +285,47 @@ def _fund_mark(base: Path, code6: str) -> str:
             f"(环比 {d_txt};定期报告口径,滞后于当前,advisory 存在性≠方向)")
 
 
+def _precedent_mark(base: Path, code6: str, sector, gate_hint: str | None = None) -> str:
+    """跨票同型判例块(presence-gated:`precedents.db` 不存在 → "";异常降级空串,风格同
+    `_inst_mark`/`_seat_mark` 家族)。plan: 2026-07-11-hermes-selfimprove-plan.md Plan B Task 4;
+    design: 2026-07-11-recall-gate-pinned-config-design.md §5.2。
+
+    db 路径按 `base`(scan_dir,生产态 = `context/scan/<date>`)反推兄弟目录
+    `base.parent.parent/knowledge/precedents.db`——镜像 `learning.precedents` 模块自身
+    `context/{scan,knowledge}` 兄弟约定(同函数内 `render_dossier(scan_root=base.parent, ...)`
+    也是同一手法);零硬编码路径,tmp_path 天然隔离,不需 monkeypatch。
+
+    查 `learning.precedents.query`(近90日,按 sector + 可选 gate_hint AND 过滤)找跨票同型
+    历史判例,渲染「📚 判例(跨票同型,advisory)」块,每条一行(日期/代码/名称/结局摘要/fwd_2)。
+    用 `code6` 剔除同票命中——同票历史已由 `dossier`(R5 前科卡)覆盖,本块只负责"其它票"的
+    跨票同型旁证,两者并存不重复(design §5.2「与个股档案分工」)。advisory:不进分不设门;
+    token 预算 ≤400/卡(k≤3 + 单行短摘要天然封顶)。
+
+    gate_hint:P0 简报组装时尚无门型判定(OW三门是 subagent 读完深核才判的),多数调用点
+    传 None——拿不到就只按 sector 查,不强凑一个不可靠的门型猜测。
+    """
+    db_path = Path(base).parent.parent / "knowledge" / "precedents.db"
+    if not db_path.exists():
+        return ""
+    try:
+        from autoresearch.learning.precedents import query
+        sector_s = None if sector is None or pd.isna(sector) else (str(sector).strip() or None)
+        # k 留缓冲:剔除同票命中后仍够凑 top-3(跨票池通常够,凑不满也不报错,只是更短)。
+        rows = query(sector=sector_s, gate=gate_hint, k=8, days=90, db_path=db_path)
+        rows = [r for r in rows if str(r.get("code") or "").zfill(6) != code6][:3]
+    except Exception:  # noqa: BLE001 — 判例可选,缺了不挡简报
+        return ""
+    if not rows:
+        return ""
+    out = ["- **📚 判例(跨票同型,advisory)**:近90日同型 top-3(仅供旁证,不进分不设门)"]
+    for r in rows:
+        fwd = r.get("fwd_2")
+        fwd_txt = f"{fwd * 100:+.2f}%" if fwd is not None else "—"
+        out.append(f"  - {r.get('date') or '—'} {r.get('code') or '—'} {r.get('name') or '—'}"
+                   f" | {r.get('verdict_line') or '—'} | fwd_2 {fwd_txt}")
+    return "\n".join(out)
+
+
 def compose_funnel_brief(code: str, scan_dir: Path | str) -> str:
     """L4 **P0 定向**:从漏斗产物(L1_recall/L2/finalists)拼该票紧凑简报 markdown。
 
@@ -312,6 +353,7 @@ def compose_funnel_brief(code: str, scan_dir: Path | str) -> str:
         return dflt if v is None or (isinstance(v, float) and v != v) else v
 
     name = _g(l3, "name") if l3 else _g(l1, "name")
+    ind = l3.get("industry") or l3.get("sector") or l1.get("industry")
     lines = [
         f"## 漏斗简报 — {code6} {name}(L1/L2/L3 评价·定向用,**判定须读下方真数据**)",
         "",
@@ -353,7 +395,9 @@ def compose_funnel_brief(code: str, scan_dir: Path | str) -> str:
     fm = _fund_mark(base, code6)             # 机构面第二行:基金重仓(fund_hold.csv 在才注,presence-gated)
     if fm:
         lines.append(fm)
-    ind = l3.get("industry") or l3.get("sector") or l1.get("industry")
+    pcm = _precedent_mark(base, code6, ind, None)   # 跨票同型判例:precedents.db 在才注(presence-gated)
+    if pcm:
+        lines.append(pcm)
     sector_block = ""
     try:                                     # Phase 3:行业 brief 地形段(同链摊销;无 brief → memo 行回退)
         from autoresearch.sector.brief import render_terrain_block
