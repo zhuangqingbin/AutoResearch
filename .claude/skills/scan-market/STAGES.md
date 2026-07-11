@@ -216,6 +216,8 @@ L2 之后、与 L3 证据取数**并发**:
 2. 预 harvest slim —— **二段式**:`_slim.md`(表面,P0–P3,**>8KB 才可信**)+ `_slim_deep.md`(深核:盈利质量 / 偿付 / 利润表,仅 P4 读、早停卡永不读)。
 3. 全部 `Agent(subagent_type='l4-card')` **一条消息并发**(别分 wave);行业 brief 走 `subagent_type='sector-brief'`。
 
+**活体情报**(与步骤 2 slim 预取并行派发):`l4-intel`(sonnet·max 盲搜六面)∥ slim 预取,config `l4_intel.enabled` 默认关。
+
 ### 渐进深度 + 早停
 
 ```

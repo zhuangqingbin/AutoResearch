@@ -90,3 +90,20 @@ def test_macro_brief_anchors_synced():
     assert "实时网查" in agent, "macro-brief 缺契约锚「实时网查」"
     assert "实时网查" in playbook, "macro-playbook lite 段缺实时网查 note(agent↔真值源漂移)"
     assert "WebSearch" in agent.split("---", 2)[1], "macro-brief frontmatter 缺 WebSearch tool"
+
+
+def test_l4_intel_def():
+    """l4-intel:sonnet·max 盲搜情报员;结构性盲(无 Read 工具);六面契约锚在位。"""
+    text = _agent_text("l4-intel")
+    head = text.split("---", 2)[1]
+    assert "model: sonnet" in head and "effort: max" in head
+    assert "WebSearch" in head and "WebFetch" in head and "Write" in head
+    assert "Read" not in head.replace("WebSearch", "").replace("WebFetch", ""), "结构性盲:不得有 Read/Grep/Glob"
+    for a in ("事件段", "题材段", "机构段", "互动段", "负面增量段", "声明行",
+              "as-of", "六面全查", "≤15", "净分", "只报本票事实", "只攒料不判断", "不编", "盲"):
+        assert a in text, f"l4-intel 缺契约锚「{a}」"
+
+def test_l4_intel_wired_in_docs():
+    skill = (SKILLS / "scan-market" / "SKILL.md").read_text(encoding="utf-8")
+    stages = (SKILLS / "scan-market" / "STAGES.md").read_text(encoding="utf-8")
+    assert "l4-intel" in skill or "l4-intel" in stages, "scan 文档未接线 l4-intel(Task 7 落)"
