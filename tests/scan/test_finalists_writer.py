@@ -19,6 +19,7 @@ def _judged():
 
 
 def test_write_finalists_preserves_leading_zeros(tmp_path):
+    # 默认 pinned 路径由 conftest autouse fixture 隔离(本测不涉 pinned)。
     base = tmp_path / "context" / "scan"
     d = base / "2026-07-07"
     d.mkdir(parents=True)
@@ -127,7 +128,9 @@ def test_write_finalists_expired_pinned_not_injected(tmp_path):
 
 def test_write_finalists_no_pinned_json_is_parity(tmp_path):
     """无 pinned.json(显式指向不存在文件,等价生产默认路径缺文件)→ finalists.csv 与不传
-    pinned_path 时逐字节一致;lane 值不受任何改判(presence-gated parity)。"""
+    pinned_path 时逐字节一致;lane 值不受任何改判(presence-gated parity)。
+
+    默认 pinned 路径由 conftest autouse fixture 隔离到不存在路径,证「默认路径缺文件 == 显式缺文件」。"""
     base = tmp_path / "context" / "scan"
     d = base / "2026-07-11"
     d.mkdir(parents=True)

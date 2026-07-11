@@ -3,7 +3,7 @@
 
 design: docs/specs/2026-07-11-recall-gate-pinned-config-design.md §4.2。
 
-用户在 `.claude/skills/scan-market/scan_config.json` 里管控 scan-market 全程用到的 agent
+用户在 `.claude/skills/scan-market/scan_config.jsonc` 里管控 scan-market 全程用到的 agent
 model/effort、召回旋钮、L3.5 闸选择、保送参数、红队触发率、卡片复用参数——**白名单外的键一律
 raise**(防拼写错静默失效,是本文件存在的唯一理由);缺文件 = 现行为(`{}`,一切默认关=parity)。
 
@@ -20,8 +20,8 @@ from pathlib import Path
 
 from autoresearch.scan.config import ScanConfig
 
-DEFAULT_PATH = Path(".claude/skills/scan-market/scan_config.json")
-DEFAULT_PINNED_PATH = Path(".claude/skills/scan-market/pinned.json")
+DEFAULT_PATH = Path(".claude/skills/scan-market/scan_config.jsonc")
+DEFAULT_PINNED_PATH = Path(".claude/skills/scan-market/pinned.jsonc")
 
 
 def _strip_jsonc(text: str) -> str:
@@ -127,7 +127,7 @@ def apply_to_scan_config(cfg: dict, sc: ScanConfig) -> ScanConfig:
 # ───────────────────────── pinned.json:保送票 loader(cap/TTL) ─────────────────────────
 #
 # design: docs/specs/2026-07-11-recall-gate-pinned-config-design.md §4.1。plan Task 3。
-# 用户在 `.claude/skills/scan-market/pinned.json` 里手工保送 ≤cap 只票,L1→L5 全程强制在场
+# 用户在 `.claude/skills/scan-market/pinned.jsonc` 里手工保送 ≤cap 只票,L1→L5 全程强制在场
 # (不占各段名额、不挤他票——见 autoresearch.scan.universe.recall_select 的 `pinned=` 形参
 # 与 autoresearch.scan.recall.l2_stratify.select_l2 的 `pinned` 列自动识别)。本函数只管
 # 读文件 + 分类(kept/expired)+ cap 截断,不碰漏斗本身。

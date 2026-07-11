@@ -89,7 +89,10 @@ def test_no_pinned_section_even_with_pinned_lane_row_if_no_pinned_json(tmp_path)
 
 
 def test_no_pinned_section_default_path_is_parity(tmp_path):
-    """不传 pinned_path(真实生产签名)→ 本仓无真实 pinned.json,行为与显式缺文件一致。"""
+    """不传 pinned_path(真实生产签名)+ 默认路径无文件 → 无 📌 节(与显式缺文件一致)。
+
+    默认 pinned 路径由 conftest autouse fixture 隔离到不存在的路径(防开发者真实保送票污染)。
+    """
     md = build_summary(_min_scan(tmp_path), "2026-07-11", "1200", "20260711_1200")
     assert "📌 保送" not in md
     assert "## 1. 漏斗(数量)" in md          # 其余照旧

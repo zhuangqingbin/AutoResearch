@@ -63,7 +63,7 @@ L4 派发前(确定性):🚄 观察单触发直通车(触发票直达 L4)→ ♻
 
 - **机制**:确定性`market_pack(scan_dir)`(regime/宽度/估值分散/资金/红黑榜,只读`L1_scored_full`)→Opus subagent写`market_view.md`。三处复用:L3地形段、L4 `market_context_block`、L5置顶。
 - **防锚定不变量**:喂L3/L4只能是**描述性地形**,不是方向指令;操作建议只进L5;**个股评级只由本股rubric三门决定**。缺文件→L5回退确定性脉搏。
-- **配置装载链**(Plan A3):`scan_config.json`(白名单加载见`autoresearch/scan/user_config.py`)经`frame --json`校验回显进`market_pack`/`user_config_echo.json`,由调用方随 Workflow `args.config` 传入`scan-market.js`(脚本本身无文件系统访问,不能自己读文件);各 stage(`strategist/sector_brief/l3_rank/l4_card/redteam`)的 agent model/effort 优先级:**scan_config > workflow 内建 > agent def frontmatter 默认**,缺配置/缺键=workflow 内建现值(parity)。
+- **配置装载链**(Plan A3):`scan_config.jsonc`(真 JSON 直接生效·支持 `//` 注释·白名单加载见`autoresearch/scan/user_config.py`)经`frame --json`校验回显进`market_pack`/`user_config_echo.json`,由调用方随 Workflow `args.config` 传入`scan-market.js`(脚本本身无文件系统访问,不能自己读文件);各 stage(`strategist/sector_brief/l3_rank/l4_card/redteam`)的 agent model/effort 优先级:**scan_config > workflow 内建 > agent def frontmatter 默认**,缺配置/缺键=workflow 内建现值(parity)。
 
 ## 旁路 · 行业 brief(sector-research lite)
 
@@ -78,7 +78,7 @@ L2后与L3证据取数**并发**——`sector.reuse <date> --apply`(TTL≤5日�
 - **token经济与预算**:`delta=True`略去无变化票。**L4预算**`menu.l4_budget`(五旗:落刀>60%/相对落刀>40%且>2×全市场/健康涨≤2/risk_off/0买连败≥3→权重1旗=22、≥2=15)控派发数。
 - **推荐常开三旗**(presence-gated,默认关=parity):**主力失真**`dist_flag=True`(反号/微量;命中18/30被L4辟谣);**监管**`reg_flag=True`(近10日立案/问询/处罚等,未实跑);**误读三预警**`misread_flag=True`(`misread`列:低基〔np_yoy>100∧roe<8〕/背离〔cmf_20或obv_mom_20正但main_net_ratio<0〕/套牢〔winner_rate<25∧ma_bull=0∧pct_60d>0=反弹撞套牢盘〕,谓词=`scoring.l3_misread_flags`;L4简报同步注旗;l3-rank硬约束E强制自证;回放命中12/20)。
 - **周频稳定性抽检**:`shuffle_seed` 乱序再跑 audit agent,overlap<0.70 → proposal。**错杀验尸**(retro侧):L2-keep∧非finalist∧T+5赢家 join 红队理由写 lesson;实证:错杀=0——**病在召回线,别冤枉判断层**。
-- **L3.5 可插拔闸(finalists→L4 收窄到 6~10;`scan/gates.py` GATE2 后;默认 passthrough=parity)**:`scan_config.json` 的 `l4_gate:{name,params}` 选策略(`passthrough`/`topk_simple`/`conviction_floor_quota`,`scan/l35_gate.py` @gate 注册);**exempt=lane∈{pinned/carryover/watchlist} 恒直通不占配额**;预算旗 `l4_budget` 收编为上限(setdefault);cut 落 `_l35_cut.csv` → retro 补 fwd_2 → L5「🚪L3.5 闸影子」行(picked vs cut 均值=闸日常体检)。**回测迭代**:`python -m autoresearch.research.gate_backtest --gate <name> [--params-json ...]` 重放历史 L3_judged×fwd_2_oc(入选收益+落选赢家错杀审计),数据累积后调参。**当前裁决=保 passthrough 不切**(2026-07-11 13日回测:conviction floor 55-65 比 passthrough 更差、唯 floor=70 跑赢但仅~3只/日;只有 conviction≥70 极高确信在 T+2 有正 edge,中间band 噪声/反预测=确信度为 swing 校准的残留)。
+- **L3.5 可插拔闸(finalists→L4 收窄到 6~10;`scan/gates.py` GATE2 后;默认 passthrough=parity)**:`scan_config.jsonc` 的 `l4_gate:{name,params}` 选策略(`passthrough`/`topk_simple`/`conviction_floor_quota`,`scan/l35_gate.py` @gate 注册);**exempt=lane∈{pinned/carryover/watchlist} 恒直通不占配额**;预算旗 `l4_budget` 收编为上限(setdefault);cut 落 `_l35_cut.csv` → retro 补 fwd_2 → L5「🚪L3.5 闸影子」行(picked vs cut 均值=闸日常体检)。**回测迭代**:`python -m autoresearch.research.gate_backtest --gate <name> [--params-json ...]` 重放历史 L3_judged×fwd_2_oc(入选收益+落选赢家错杀审计),数据累积后调参。**当前裁决=保 passthrough 不切**(2026-07-11 13日回测:conviction floor 55-65 比 passthrough 更差、唯 floor=70 跑赢但仅~3只/日;只有 conviction≥70 极高确信在 T+2 有正 edge,中间band 噪声/反预测=确信度为 swing 校准的残留)。
 
 ## L4 · 研究(一只 = 一个 Opus subagent,渐进深度 + 早停)
 

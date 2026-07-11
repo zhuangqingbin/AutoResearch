@@ -179,7 +179,7 @@ def test_frame_json_echo_reflects_real_config(monkeypatch, tmp_path, capsys):
     monkeypatch.chdir(tmp_path)
     cfg_dir = tmp_path / ".claude" / "skills" / "scan-market"
     cfg_dir.mkdir(parents=True)
-    (cfg_dir / "scan_config.json").write_text(json.dumps({"redteam_prob": 0.2}), encoding="utf-8")
+    (cfg_dir / "scan_config.jsonc").write_text(json.dumps({"redteam_prob": 0.2}), encoding="utf-8")
 
     rc = scan_frame.main(["2026-07-12", "--json"])
     out = capsys.readouterr().out

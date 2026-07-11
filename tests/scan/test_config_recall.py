@@ -14,7 +14,7 @@ def _args(*extra):
 def _write_cfg(tmp_path, obj):
     d = tmp_path / ".claude" / "skills" / "scan-market"
     d.mkdir(parents=True)
-    (d / "scan_config.json").write_text(json.dumps(obj), encoding="utf-8")
+    (d / "scan_config.jsonc").write_text(json.dumps(obj), encoding="utf-8")
 
 
 def test_config_defaults_multi():
