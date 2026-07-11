@@ -139,6 +139,29 @@ def test_apply_to_scan_config_empty_cfg_is_parity():
     assert apply_to_scan_config({}, ScanConfig()) == ScanConfig()
 
 
+# ───────────────────────── l4_intel:新顶层键白名单 + 透传 ScanConfig ─────────────────────────
+
+
+def test_l4_intel_whitelisted(tmp_path):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text('{"l4_intel": {"enabled": true}}', encoding="utf-8")
+    cfg = load_user_config(p)
+    assert cfg["l4_intel"]["enabled"] is True
+
+
+def test_l4_intel_unknown_subkey_raises(tmp_path):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text('{"l4_intel": {"enable": true}}', encoding="utf-8")   # 拼写错
+    with pytest.raises(ValueError, match="l4_intel"):
+        load_user_config(p)
+
+
+def test_l4_intel_applies_to_scan_config():
+    sc = ScanConfig()
+    apply_to_scan_config({"l4_intel": {"enabled": True}}, sc)
+    assert sc.l4_intel == {"enabled": True}
+
+
 # ───────────────────────── frame --json:user_config 回显 + run meta 落盘 ─────────────────────────
 
 

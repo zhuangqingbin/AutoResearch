@@ -8,8 +8,13 @@
     "strategist":   { "effort": "high" },    // 市场研判(macro lite 档,Stage 0)
     "sector_brief": { "effort": "high" },    // 行业 brief 写手
     "l3_rank":      { "effort": "max" },     // L3 精排(200只 holistic 比较=判断核心,给最高 effort)
-    "l4_card":      { "effort": "xhigh" }    // L4 决策卡(逐只渐进深度 DD)
+    "l4_card":      { "effort": "xhigh" },   // L4 决策卡(逐只渐进深度 DD)
+    "l4_intel":     { "effort": "max" }      // 活体情报员(盲搜六面,sonnet 由 agent 定义默认)
   },
+
+  // ── L4 活体情报站 ──(sonnet·max 盲搜情报员 ∥ slim 预取;卡侧缺文件自动回退卡内网查)
+  // P1 波真跑验收后再置 true(设计稿 2026-07-12-l4-intel-station §6:单变量 A/B,账本 ≥10-20 日裁)。
+  "l4_intel": { "enabled": false },
 
   // ── L3.5 可插拔闸:finalists → L4 收窄到 6~10 ──(经 scan/gates.py 生效)
   // name ∈ passthrough(不收窄)/ topk_simple / conviction_floor_quota。
