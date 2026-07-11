@@ -148,7 +148,11 @@ def _load(path: Path) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame(columns=_COLS)
     try:
-        return pd.read_csv(path, dtype={"date": str})
+        # float_precision="round_trip":pandas 默认 C 解析器对满精度(~17位)浮点小数
+        # 不保证 bit-exact 回读(实测最后 1-2 位漂移)——部分区间 rollup 会把"读回的旧行"
+        # 和"新算的行"一起整表重写,默认解析器会让未改动的历史行悄悄漂移小数位;
+        # round_trip 解析器慢但精确回读,避免这种"读了就变"的假幂等。
+        return pd.read_csv(path, dtype={"date": str}, float_precision="round_trip")
     except Exception as exc:  # noqa: BLE001 — 损坏文件不炸,当空表(下次 rollup 会重建)
         print(f"[temperature] {path} 读取失败({exc!r})→ 当空表处理", file=sys.stderr)
         return pd.DataFrame(columns=_COLS)
