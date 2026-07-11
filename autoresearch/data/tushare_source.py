@@ -294,6 +294,30 @@ def _fetch_fund_portfolio(pro, period: str, page_size: int = 8000,
     return pd.concat(frames, ignore_index=True) if frames else None
 
 
+# ───────────────────────── S1 情绪温度计数据(lake-backed;consumer=autoresearch.scan.temperature) ─────────────────────────
+
+
+def fetch_limit_list_d(trade_date: str) -> pd.DataFrame:
+    """涨跌停明细单日快照(`limit`∈U涨停/D跌停/Z炸板,`limit_times`=连板数——07-11 真数据探针
+    确认仅 U 行有值,Z/D 行为 NaN)。
+
+    走 `cache.get_or_fetch`(policy 已登记 `limit_list_d`: key=date/settle=eod/source=tushare,
+    见 `autoresearch.data.endpoints`)——已结算日湖命中零网络,重复调用不二次取数;缺省路由
+    经 `sources.fetch`→`_fetch_tushare`,内部仍是本模块的 `_pro()` + `_ts_call` 限频重试。
+
+    权限/网络异常原样向上抛(不在此吞错)——presence-gated 的降级责任在调用方(如
+    `autoresearch.scan.temperature.rollup`,按天捕获、跳过、记 warn),与
+    `l3_catalyst.harvest_catalyst` 既有惯例一致。
+    """
+    from autoresearch.data.cache import get_or_fetch
+
+    params = {
+        "trade_date": trade_date,
+        "fields": "ts_code,trade_date,limit,limit_times,open_times",
+    }
+    return get_or_fetch("limit_list_d", params)
+
+
 # ───────────────────────── L0 universe(tushare) ─────────────────────────
 
 _RAW_COUNT: dict = {}   # 全A(硬门前)原始数;放本模块(单次 import)避开 __main__/scan.universe 双模块陷阱
