@@ -159,6 +159,10 @@ def market_pack_from_frame(frame: pd.DataFrame | None, date: str | None = None) 
     逐字 parity);调用方(如 `frame.py` CLI)有 `analysis_date` 时显式传入。
     """
     pack: dict = {"regime": None, "breadth": None, "valuation": None, "money": None, "sectors": None}
+    if date:                                # 温度=独立数据源,与帧空否正交(镜像 market_pack 语义)
+        blk = _temperature_block(date)
+        if blk:
+            pack["temperature"] = blk
     if frame is None or not len(frame):
         return pack
     pack["regime"] = classify_regime(frame).to_dict()
@@ -166,10 +170,6 @@ def market_pack_from_frame(frame: pd.DataFrame | None, date: str | None = None) 
     pack["valuation"] = _valuation(frame)
     pack["money"] = _money(frame)
     pack["sectors"] = _sectors_from_frame(frame)
-    if date:
-        blk = _temperature_block(date)
-        if blk:
-            pack["temperature"] = blk
     return pack
 
 
@@ -197,6 +197,8 @@ def _temperature_block(date: str) -> dict | None:
         return None
     df = df[df["date"] <= date].sort_values("date", kind="stable")   # 防未来行渗入(防御性)
     sc_all = _num(df, "score")
+    if not len(sc_all):                     # score 列整体缺失(csv 被外部改坏)→ 与缺值同路降级
+        return None
     sc = sc_all.iloc[-1]
     if pd.isna(sc):
         return None

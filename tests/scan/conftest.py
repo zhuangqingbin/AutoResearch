@@ -17,3 +17,13 @@ import pytest
 def _isolate_default_pinned(monkeypatch):
     monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PINNED_PATH",
                         Path("/nonexistent/tests-no-real-pinned.jsonc"))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_temperature_csv(monkeypatch):
+    """镜像 _isolate_default_pinned:context/learning/temperature.csv 由真实 prelude 增量落盘
+    (gitignored、按日期键),tmp_path 隔离测试不该读到——否则硬编码 analysis_date 的既有断言会被
+    开发机真数据污染(如 2026-07-02 行使 assemble 多出 🌡 行)。要测温度的用例自行 monkeypatch
+    CSV_PATH(测试体内的 setattr 后执行,优先生效)。"""
+    monkeypatch.setattr("autoresearch.scan.temperature.CSV_PATH",
+                        Path("/nonexistent/tests-no-real-temperature.csv"))

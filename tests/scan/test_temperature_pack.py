@@ -74,6 +74,23 @@ def test_market_pack_from_frame_injects_temperature_with_explicit_date(tmp_path,
     assert pack["temperature"] == {"score": 41.0, "phase": "发酵", "trend5": [41.0]}
 
 
+def test_market_pack_from_frame_empty_frame_still_injects_temperature(tmp_path, monkeypatch):
+    """温度独立于帧:节假日/取数中断日 frame 为空,显式传 date 时温度块照注(与 market_pack 对称)。"""
+    csv = tmp_path / "temperature.csv"
+    pd.DataFrame({"date": ["2026-07-09"], "score": [41.0], "phase": ["发酵"]}).to_csv(csv, index=False)
+    monkeypatch.setattr("autoresearch.scan.temperature.CSV_PATH", csv)
+    pack = market.market_pack_from_frame(None, date="2026-07-09")
+    assert pack["temperature"]["score"] == 41.0
+
+
+def test_temperature_block_missing_score_column_degrades_none(tmp_path, monkeypatch):
+    """csv 有 date 无 score 列(外部改坏)→ None 降级,不抛 IndexError(与 phase 缺列防护对称)。"""
+    csv = tmp_path / "temperature.csv"
+    pd.DataFrame({"date": ["2026-07-09"], "phase": ["发酵"]}).to_csv(csv, index=False)
+    monkeypatch.setattr("autoresearch.scan.temperature.CSV_PATH", csv)
+    assert market._temperature_block("2026-07-09") is None
+
+
 def test_market_pack_from_frame_no_date_skips_temperature(tmp_path, monkeypatch):
     """库函数不碰 wall-clock:不传 date → 不注入 temperature(即便 csv 有当日行)——
     调用方(如 frame.py CLI)须显式传 date,与老调用点(未传 date)保持向后兼容(parity)。"""
