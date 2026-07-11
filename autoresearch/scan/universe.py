@@ -59,6 +59,7 @@ from autoresearch.scan.frame import (  # noqa: F401 — re-export 兼容
     _recall_gate_a,
     build_market_frame,
 )
+from autoresearch.scan.user_config import load_pinned
 
 # 归一化 helpers(_num/_winsor/_pct/_pct_within/_wsum)与报告期 helpers
 # (latest_reported_quarter/prev_quarter)在 autoresearch.common.scoring,顶部 import 复用。
@@ -268,6 +269,7 @@ def write_shadow_variants(outdir: Path, scored: pd.DataFrame, recall: pd.DataFra
 def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
         recall_n: int = 1000, l2_n: int = 200, outdir: Path | None = None,
         source: str = "tushare", recall_mode: str = "multi", recall_channels=None,
+        pinned_path=None,                                                # 保送 pinned.json 路径(None=默认路径;缺文件→kept=[]→no-op parity)
         regime_aware: bool = False,                                      # L1 权重按 regime 选(默认关=parity)
         shadow: bool = True,                                              # 影子漏斗变体 L2(纯增量文件,可 --no-shadow 关)
         l0_min_amount_yi: float = 0.0, l0_min_list_days: int = 0,         # L0 流动性/次新硬门(默认 0=关=parity)
@@ -285,7 +287,9 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
     n_raw, n_l0 = _counts["universe_raw"], _counts["universe"]
     weights, _regime = pick_weights(uni, regime_aware)
     scored = composite_score(uni, weights)
-    recall, per_channel = recall_select(scored, analysis_date, recall_n, recall_mode, recall_channels)
+    pinned = load_pinned(analysis_date, path=pinned_path)["kept"]   # 保送票强注 L1(缺 pinned.json→kept=[]→no-op parity)
+    recall, per_channel = recall_select(scored, analysis_date, recall_n, recall_mode,
+                                        recall_channels, pinned=pinned)
     print(f"[L1 召回] L0 {n_l0} → 轻门 {len(uni)} → {recall_mode} top {len(recall)}", file=sys.stderr)
     sectors = aggregate_sectors_overview(recall, uni)
 
