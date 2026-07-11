@@ -196,8 +196,9 @@ def dump_ow_gate_fires(scan_dir) -> int:
     (date,check,code) 幂等(可重复调用不重复落账);presence-gated(缺 details/ 或无满卡 → 0 行,不炸)。
     返回本次新增行数。
     """
-    import pandas as pd
     from pathlib import Path
+
+    import pandas as pd
 
     from autoresearch.scan.assemble import gate_status
 
@@ -213,7 +214,7 @@ def dump_ow_gate_fires(scan_dir) -> int:
         for gate, failed in gates.items():
             key = (date, f"OW三门·{gate}", code)
             if failed and key not in seen:
-                rows.append(dict(zip(("date", "check", "code"), key), level="binding"))
+                rows.append(dict(zip(("date", "check", "code"), key, strict=True), level="binding"))
                 seen.add(key)   # 同次调用内也去重(两张卡巧合同 code 时防重复行,不止防跨调用重跑)
     if rows:
         pd.concat([old, pd.DataFrame(rows)], ignore_index=True).to_csv(fp, index=False)
