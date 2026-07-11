@@ -45,3 +45,15 @@ def test_hit_rate_computed_from_ex2(tmp_path):
 def test_empty_graceful(tmp_path):
     assert len(roll(tmp_path)) == 0
     assert any("无" in ln for ln in render(roll(tmp_path)))
+
+
+def test_gate_ledger_tail_rate(tmp_path):
+    """左尾 KPI:门=避雷器,tail_rate= 被拦票 fwd_2_oc ≤ -5% 占比(原始值非超额,同 hit_rate 并列)。"""
+    _mk_day(tmp_path, "2026-07-09",
+            [{"date": "2026-07-09", "check": "OW三门·估值不透支", "code": "000002", "level": "binding"}],
+            [{"code": "000002", "fwd_1_oo": -0.06, "fwd_2_oc": -0.08, "fwd_5_oc": -0.1}])
+    led = roll(tmp_path)
+    assert "tail_rate" in led.columns
+    assert led.iloc[0]["tail_rate"] == 1.0            # -8% ≤ -5% 左尾
+    md = "\n".join(render(led))
+    assert "拦对率(左尾≤-5%)" in md

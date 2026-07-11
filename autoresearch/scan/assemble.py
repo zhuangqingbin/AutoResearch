@@ -689,6 +689,8 @@ def _self_review_banner(scan_dir: Path, rows: list[dict], summary_text: str,
             res["n_warn"] = res.get("n_warn", 0) + len(extra)
     with contextlib.suppress(Exception):
         self_review.dump_gate_fires(scan_dir, res, scan_dir.name)   # R3 留痕;IO 失败不阻发布
+    with contextlib.suppress(Exception):
+        self_review.dump_ow_gate_fires(scan_dir)          # OW三门失守 binding 行;IO 失败不阻发布
     return self_review.render_banner(res)
 
 

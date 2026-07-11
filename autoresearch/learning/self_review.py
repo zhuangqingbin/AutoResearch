@@ -188,6 +188,37 @@ def dump_gate_fires(scan_dir, result: dict, date: str):
     return p
 
 
+def dump_ow_gate_fires(scan_dir) -> int:
+    """逐满卡解析 OW 三门(主力真在/业绩真兑现/估值不透支)失守 → gate_fires.csv 追加 binding 行。
+
+    R3 门审计地基的姊妹函数:dump_gate_fires 记 self_review 硬门,本函数记卡文里『OW三门…』段的
+    结构化失守——此前只在卡片散文里留痕,从没进过 gate_fires.csv,gate_ledger 拿不到这三门的账。
+    (date,check,code) 幂等(可重复调用不重复落账);presence-gated(缺 details/ 或无满卡 → 0 行,不炸)。
+    返回本次新增行数。
+    """
+    import pandas as pd
+    from pathlib import Path
+
+    from autoresearch.scan.assemble import gate_status
+
+    scan_dir = Path(scan_dir)
+    date = scan_dir.name
+    fp = scan_dir / "gate_fires.csv"
+    old = pd.read_csv(fp, dtype=str) if fp.exists() else pd.DataFrame(columns=["date", "check", "code", "level"])
+    seen = {(r["date"], r["check"], r["code"]) for _, r in old.iterrows()}
+    rows = []
+    for card in sorted((scan_dir / "details").glob("*.md")):
+        gates = gate_status(card.read_text(encoding="utf-8")) or {}
+        code = card.stem.split(".")[0]
+        for gate, failed in gates.items():
+            key = (date, f"OW三门·{gate}", code)
+            if failed and key not in seen:
+                rows.append(dict(zip(("date", "check", "code"), key), level="binding"))
+    if rows:
+        pd.concat([old, pd.DataFrame(rows)], ignore_index=True).to_csv(fp, index=False)
+    return len(rows)
+
+
 def render_banner(result: dict) -> str:
     """自检结果 → 报告顶部 banner(有 fail 醒目拦截,有 warn 提示)。无问题返回空串。"""
     if not result["failures"]:

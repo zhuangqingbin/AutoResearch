@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pandas as pd
 
-_COLS = ["check", "n_days", "n_fires", "mean_ex1", "mean_ex2", "mean_ex5", "hit_rate"]
+_COLS = ["check", "n_days", "n_fires", "mean_ex1", "mean_ex2", "mean_ex5", "hit_rate", "tail_rate"]
 
 
 def roll(scan_root: Path | None = None) -> pd.DataFrame:
@@ -46,6 +46,7 @@ def roll(scan_root: Path | None = None) -> pd.DataFrame:
         m5 = f5.mean() if len(f5) else float("nan")
         j = fires.merge(attr[[c for c in ("code", "fwd_1_oo", "fwd_2_oc", "fwd_5_oc") if c in attr.columns]],
                         on="code", how="left")
+        j["fwd2_raw"] = pd.to_numeric(j.get("fwd_2_oc"), errors="coerce")   # 原始值(非超额)→ 左尾 KPI
         j["ex1"] = pd.to_numeric(j.get("fwd_1_oo"), errors="coerce") - m1
         j["ex2"] = (pd.to_numeric(j.get("fwd_2_oc"), errors="coerce") - m2) if "fwd_2_oc" in j.columns else None
         j["ex5"] = (pd.to_numeric(j.get("fwd_5_oc"), errors="coerce") - m5) if "fwd_5_oc" in j.columns else None
@@ -58,8 +59,9 @@ def roll(scan_root: Path | None = None) -> pd.DataFrame:
         n_days=("date", "nunique"), n_fires=("code", "size"),
         mean_ex1=("ex1", "mean"), mean_ex2=("ex2", "mean"), mean_ex5=("ex5", "mean"),
         hit_rate=("ex2", lambda s: float((s.dropna() < 0).mean()) if s.notna().any() else None),
+        tail_rate=("fwd2_raw", lambda s: float((s.dropna() <= -0.05).mean()) if s.notna().any() else None),
     ).reset_index()
-    for c in ("mean_ex1", "mean_ex2", "mean_ex5", "hit_rate"):
+    for c in ("mean_ex1", "mean_ex2", "mean_ex5", "hit_rate", "tail_rate"):
         out[c] = pd.to_numeric(out[c], errors="coerce").round(4)
     return out.sort_values("n_fires", ascending=False).reset_index(drop=True)
 
@@ -72,13 +74,14 @@ def render(ledger: pd.DataFrame) -> list[str]:
     def f(x):
         return "—" if x is None or pd.isna(x) else f"{x * 100:+.2f}%"
 
-    out += ["| 门 | 天数 | 拦次 | 被拦ex1(参考) | 被拦ex2(主尺) | 被拦ex5(参考) | 拦对率(按ex2) |",
-            "|---|---|---|---|---|---|---|"]
+    out += ["| 门 | 天数 | 拦次 | 被拦ex1(参考) | 被拦ex2(主尺) | 被拦ex5(参考) | 拦对率(按ex2) | 拦对率(左尾≤-5%) |",
+            "|---|---|---|---|---|---|---|---|"]
     for r in ledger.itertuples(index=False):
         thin = " ⚠样本少" if (r.n_fires or 0) < 5 else ""
         hr = "—" if pd.isna(r.hit_rate) else f"{r.hit_rate:.0%}"
+        tr = "—" if pd.isna(r.tail_rate) else f"{r.tail_rate:.0%}"
         out.append(f"| {r.check}{thin} | {int(r.n_days)} | {int(r.n_fires)} | "
-                   f"{f(r.mean_ex1)} | {f(r.mean_ex2)} | {f(r.mean_ex5)} | {hr} |")
+                   f"{f(r.mean_ex1)} | {f(r.mean_ex2)} | {f(r.mean_ex5)} | {hr} | {tr} |")
     out += ["", "_某门持续 ex>0 → 提松阈/退役建议(proposals,人批);别让门无问责地累积。_"]
     return out
 
