@@ -110,10 +110,11 @@ def _norm(v, lo: float, hi: float) -> float | None:
 
 def score(m: dict) -> float | None:
     """五序列中的 4 键(promote_rate 暂不入)→ 0-100 情绪温度;任一核心键缺 → None。"""
+    fr_norm = _norm(m.get("fried_rate"), 0.0, 0.5)
     parts = [
         (_norm(m.get("n_limit_up"), 10, 150), 0.40),
         (_norm(m.get("max_streak"), 1, 8), 0.20),
-        (None if m.get("fried_rate") is None else 1 - _norm(m["fried_rate"], 0.0, 0.5), 0.20),
+        (None if fr_norm is None else 1 - fr_norm, 0.20),
         (_norm(m.get("yesterday_premium"), -3.0, 5.0), 0.20),
     ]
     if any(p is None for p, _ in parts):
