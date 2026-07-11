@@ -35,8 +35,10 @@ def _config_from_args(args: argparse.Namespace) -> ScanConfig:
     的 funnel(recall_channels/channel_quotas/channel_floors)等键。
 
     优先级:CLI 显式 `--recall-channels` > scan_config.json > ScanConfig 默认;缺 scan_config.json
-    → `load_user_config()` 返回 `{}` → 叠加 no-op(parity,与波前逐字节一致)。config 提供的
-    channel_quotas/channel_floors 目前 recall_select 未消费(follow-up),recall_channels 全链生效。
+    → `load_user_config()` 返回 `{}` → 叠加 no-op(parity,与波前逐字节一致)。channel_quotas/
+    channel_floors 与 recall_channels 一样已全链生效(Task 8):`cmd_run` 把 `cfg.channel_quotas`/
+    `cfg.channel_floors` 透传给 `universe.run` → `recall_select` 的同名 override 形参,两者均
+    缺省 None(=CHANNEL_DEFAULTS,parity)。
     """
     sc = ScanConfig(
         recall_n=args.recall_n,
@@ -81,7 +83,8 @@ def cmd_run(args: argparse.Namespace) -> int:
                   recall_mode=cfg.recall_mode, recall_channels=cfg.recall_channels,
                   regime_aware=cfg.regime_aware,
                   l0_min_amount_yi=cfg.l0_min_amount_yi, l0_min_list_days=cfg.l0_min_list_days,
-                  l2_lane_quota=cfg.l2_lane_quota, l2_lane_channels=cfg.l2_lane_channels)
+                  l2_lane_quota=cfg.l2_lane_quota, l2_lane_channels=cfg.l2_lane_channels,
+                  channel_quotas=cfg.channel_quotas, channel_floors=cfg.channel_floors)
 
     # ② typed trace：同一 lake/weights/champion 上跑新 Pipeline → reports/scan/<run_id>/。
     ctx = RunContext(analysis_date=analysis_date, config=cfg)

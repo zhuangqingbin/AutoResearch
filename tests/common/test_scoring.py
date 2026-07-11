@@ -83,15 +83,25 @@ def test_lenses_scores_in_range_and_bool_gates():
         assert gate.sum() > 0, f"{lens} loose gate passed nobody (suspicious)"
 
 
-def test_factor_groups_returns_nine_groups():
+def test_factor_groups_returns_all_groups_including_rz():
     df = _synthetic()
     groups = _factor_groups(df)
     assert set(groups.keys()) == set(_GROUPS)
-    assert len(groups) == 9
+    assert len(groups) == len(_GROUPS) == 10
+    assert groups["rz"].isna().all()   # _synthetic() 无 rz_buy_intensity 列 → NaN 降级(既有机制)
     for name, s in groups.items():
         present = s.dropna()
         if len(present):
             assert (present >= 0).all() and (present <= 1).all(), f"group {name} not a [0,1] percentile"
+
+
+def test_factor_groups_rz_uses_rz_buy_intensity_when_present():
+    """rz 组(融资买入强度,pr_20260710_001):列存在时是真横截面分位,自然朝向+(值越大分位越高)。"""
+    df = _synthetic()
+    df["rz_buy_intensity"] = np.linspace(0.0, 1.0, len(df))
+    groups = _factor_groups(df)
+    assert groups["rz"].notna().all()
+    assert groups["rz"].is_monotonic_increasing
 
 
 def test_composite_in_0_100_and_has_subscores():
@@ -108,9 +118,10 @@ def test_factor_groups_missing_columns_yield_nan_group():
     df = pd.DataFrame({"code": ["600000", "600001"], "industry": ["白酒", "煤炭"],
                        "pct_60d": [10.0, -5.0], "pct_ytd": [20.0, -10.0]})
     groups = _factor_groups(df)
-    assert len(groups) == 9
+    assert len(groups) == len(_GROUPS) == 10
     assert groups["north"].isna().all()       # hk_ratio absent
     assert groups["fund_retail"].isna().all()  # retail_net_yi absent
+    assert groups["rz"].isna().all()           # rz_buy_intensity absent
     assert groups["momentum"].notna().any()    # pct_60d/pct_ytd present
 
 

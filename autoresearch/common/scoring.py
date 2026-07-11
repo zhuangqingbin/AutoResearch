@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""纯打分原语 —— 横截面分位 / 加权 / 9 因子组 / 复合分 / 四透镜 / 报告期。
+"""纯打分原语 —— 横截面分位 / 加权 / 10 因子组 / 复合分 / 四透镜 / 报告期。
 
 design: docs/specs/2026-06-22-autoresearch-arch-redesign-design.md §A(common)。
 
@@ -360,16 +360,19 @@ def pledge_flag_label(ratio, high: float = 40.0, warn: float = 20.0) -> str:
     return "爆雷红旗" if r > high else ("偏高" if r > warn else "")
 
 
-# ───────────────────────── 9 因子组 + 行业条件化复合分 ─────────────────────────
+# ───────────────────────── 10 因子组 + 行业条件化复合分 ─────────────────────────
 
-# 9 因子组(自然朝向:高=常规看多;真方向由 weights.json 的 IC 符号决定)。
+# 10 因子组(自然朝向:高=常规看多;真方向由 weights.json 的 IC 符号决定)。
 # volprice = 多日量价资金流(CMF+OBV;序列指标,IC 实证 decile +40bps/t≈2,远胜已剔的单日 vol_ratio)。
-_GROUPS = ("momentum", "fund_main", "fund_retail", "chip", "north", "tech", "growth", "value", "volprice")
+# rz = 融资买入强度(rz_buy_intensity;07-10 T7 六因子重审三条全过门,pr_20260710_001,唯一过线
+# 机构因子——见 _factor_groups 该组注释)。
+_GROUPS = ("momentum", "fund_main", "fund_retail", "chip", "north", "tech", "growth", "value",
+          "volprice", "rz")
 
 # weights.json 缺失时的先验(仅 __global__;慢因子 growth/value 给小权重——T+1 近噪声但仍纳入)。
 _PRIOR_WEIGHTS = {"meta": {"source": "prior(无 weights.json)"}, "weights": {"__global__": {
     "momentum": 0.10, "fund_main": 0.06, "fund_retail": -0.02, "chip": 0.02,
-    "north": 0.03, "tech": -0.03, "growth": 0.03, "value": 0.03, "volprice": 0.04}}}
+    "north": 0.03, "tech": -0.03, "growth": 0.03, "value": 0.03, "volprice": 0.04, "rz": 0.02}}}
 
 
 def _load_weights(path: str = "context/factor_lab/weights.json", regime: str | None = None) -> dict:
@@ -411,7 +414,7 @@ def pick_weights(frame: pd.DataFrame, regime_aware: bool, *,
 
 
 def _factor_groups(df: pd.DataFrame) -> dict[str, pd.Series]:
-    """9 组子分(各 0–1 横截面分位,自然朝向)。缺列的组返回全 NaN。calibrate 与 composite 共用。"""
+    """10 组子分(各 0–1 横截面分位,自然朝向)。缺列的组返回全 NaN。calibrate 与 composite 共用。"""
     nan = pd.Series(np.nan, index=df.index)
 
     def p(col, asc=True):
@@ -429,6 +432,12 @@ def _factor_groups(df: pd.DataFrame) -> dict[str, pd.Series]:
         "value": _pct_within(df, "pe", "industry", ascending=False) if {"pe", "industry"} <= has else nan,
         # 多日量价资金流(CMF 买/卖压 + OBV 资金方向;缺列→NaN,组重归一,recall 不破)
         "volprice": _blend((p("cmf_20"), 0.5), (p("obv_mom_20"), 0.5)),
+        # 融资买入强度(rz_buy_intensity = rzmre/成交额;自然朝向+,杠杆资金买入越猛越看多)——
+        # 07-10 T7 六因子重审三条全过门(pr_20260710_001,ICIR 0.134/IC 两半同号/decile spread_t
+        # 2.11,唯一过线机构因子),真方向随 calibrate 的 IC 符号定。现场 scan.frame 帧尚无该列
+        # (margin_detail 未接入,只 factor_lab 校准侧 factor_frame 有)→ NaN 降级,组权重被
+        # composite_score 既有的"有值子项重归一"机制自动跳过(wabs 不计入该组),不冤枉、不破 parity。
+        "rz": p("rz_buy_intensity"),
     }
 
 

@@ -57,3 +57,54 @@ def test_cli_recall_channels_flag_wins_over_config(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     rc = _config_from_args(_args("--recall-channels", "momentum,heat")).recall_channels
     assert rc == ["momentum", "heat"]                # flag 赢,不被 config 覆盖
+
+
+# ── Task 8:channel_quotas/floors 从 scan_config.json 一路透传到 universe.run(cmd_run 接线) ──
+
+
+def test_cmd_run_wires_channel_quotas_and_floors_from_config(monkeypatch, tmp_path):
+    """scan_config.json funnel.channel_quotas/floors → cmd_run 透传给 universe.run(与 recall_select
+    的同名 override 形参对齐)。mock universe.run + Pipeline.run,不碰网络/真实漏斗。"""
+    _write_cfg(tmp_path, {"funnel": {"channel_quotas": {"heat": 150}, "channel_floors": {"heat": 30}}})
+    monkeypatch.chdir(tmp_path)
+
+    import autoresearch.scan.cli as cli_mod
+    from autoresearch.scan import universe as smu
+
+    captured = {}
+
+    def _fake_run(analysis_date, **kwargs):
+        captured.update(kwargs)
+        return {"universe": 0, "after_gate_a": 0, "recall_n": 0, "l2_n": 0,
+                "l2_engine": "x", "sectors": 0, "outdir": str(tmp_path)}
+
+    monkeypatch.setattr(smu, "run", _fake_run, raising=True)
+    monkeypatch.setattr(cli_mod.Pipeline, "run", lambda self, ctx: "fake_run_id", raising=True)
+
+    rc = cli_mod.cmd_run(_args())
+    assert rc == 0
+    assert captured["channel_quotas"] == {"heat": 150}
+    assert captured["channel_floors"] == {"heat": 30}
+
+
+def test_cmd_run_no_config_passes_none_channel_overrides(monkeypatch, tmp_path):
+    """无 scan_config.json → cmd_run 传给 universe.run 的 channel_quotas/floors 均 None(parity)。"""
+    monkeypatch.chdir(tmp_path)
+
+    import autoresearch.scan.cli as cli_mod
+    from autoresearch.scan import universe as smu
+
+    captured = {}
+
+    def _fake_run(analysis_date, **kwargs):
+        captured.update(kwargs)
+        return {"universe": 0, "after_gate_a": 0, "recall_n": 0, "l2_n": 0,
+                "l2_engine": "x", "sectors": 0, "outdir": str(tmp_path)}
+
+    monkeypatch.setattr(smu, "run", _fake_run, raising=True)
+    monkeypatch.setattr(cli_mod.Pipeline, "run", lambda self, ctx: "fake_run_id", raising=True)
+
+    rc = cli_mod.cmd_run(_args())
+    assert rc == 0
+    assert captured["channel_quotas"] is None
+    assert captured["channel_floors"] is None

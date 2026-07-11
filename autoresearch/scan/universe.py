@@ -27,6 +27,7 @@ L2 学习重排走 `autoresearch.research.factor_lab.predict_scores`。本模块
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import sys
 from datetime import date
@@ -133,7 +134,7 @@ def aggregate_sectors(survivors: pd.DataFrame, uni: pd.DataFrame, top_sectors: i
 
 # ───────────────────────── L1 召回:轻门 + 行业条件化复合分 ─────────────────────────
 
-# 9 因子组 / 先验权重 / _load_weights / _blend / _factor_groups / composite_score
+# 10 因子组 / 先验权重 / _load_weights / _blend / _factor_groups / composite_score
 # 在 autoresearch.common.scoring(scan/factor_lab/handler 三处同口径),顶部 import 复用。
 
 
@@ -214,7 +215,9 @@ def _inject_pinned_l1(recall: pd.DataFrame, scored: pd.DataFrame,
 
 def recall_select(scored: pd.DataFrame, analysis_date: str, recall_n: int,
                   recall_mode: str = "multi", recall_channels=None,
-                  pinned: list[dict] | None = None):
+                  pinned: list[dict] | None = None,
+                  channel_quotas: dict[str, int] | None = None,
+                  channel_floors: dict[str, int] | None = None):
     """L1 召回:multi=多路 quota_union(provenance)| composite=单复合分降序 top-n。
 
     返回 (recall_df, per_channel_long|None)。composite 模式逐值复现今天(parity 锚点);
@@ -223,27 +226,46 @@ def recall_select(scored: pd.DataFrame, analysis_date: str, recall_n: int,
 
     `pinned`(可选,直出 `user_config.load_pinned(...)["kept"]`):保送票强注,见
     `_inject_pinned_l1`;None/空列表 → 不触碰返回值(parity)。
+
+    `channel_quotas`/`channel_floors`(可选,scan_config.json funnel 或 CLI 覆盖;design:
+    2026-07-11-recall-gate-pinned-config-design.md §4.2):按 channel 名覆盖 `CHANNEL_DEFAULTS`
+    的 quota(build 时的 top-k 截断)/floor(quota_union 的保底多样性)——
+    `effective = {n: dataclasses.replace(CHANNEL_DEFAULTS[n], quota=q?, floor=f?) for n in names}`,
+    build 与 quota_union 都吃 effective;两者均 None(默认)→ effective 逐值等于 CHANNEL_DEFAULTS
+    (parity,tests/scan/test_parity.py 锁死)。composite 模式不涉及 channel,两参数被忽略。
     """
     if recall_mode == "composite":
         recall = scored.sort_values("composite", ascending=False).head(recall_n).reset_index(drop=True)
         return _inject_pinned_l1(recall, scored, pinned), None
     from autoresearch.scan.recall import CHANNEL_DEFAULTS, build, quota_union, registered_channels
     names = recall_channels or registered_channels()
-    frames = {n: build(n)(scored, analysis_date, CHANNEL_DEFAULTS[n].quota) for n in names}
-    recall, per_channel = quota_union(frames, CHANNEL_DEFAULTS, recall_n, scored)
+    quotas, floors = channel_quotas or {}, channel_floors or {}
+    effective = {n: dataclasses.replace(CHANNEL_DEFAULTS[n],
+                                        quota=quotas.get(n, CHANNEL_DEFAULTS[n].quota),
+                                        floor=floors.get(n, CHANNEL_DEFAULTS[n].floor))
+                for n in names}
+    frames = {n: build(n)(scored, analysis_date, effective[n].quota) for n in names}
+    recall, per_channel = quota_union(frames, effective, recall_n, scored)
     return _inject_pinned_l1(recall, scored, pinned), per_channel
 
 
 def write_shadow_variants(outdir: Path, scored: pd.DataFrame, recall: pd.DataFrame,
                           analysis_date: str, recall_n: int, l2_n: int,
                           l2_floors: dict | None, l2_sector_cap: float, l2_cols: list[str],
-                          recall_mode: str = "multi") -> list[str]:
+                          recall_mode: str = "multi",
+                          include_bj: bool = True, source: str = "tushare",
+                          l0_min_amount_yi: float = 0.0, l0_min_list_days: int = 0,
+                          recall_channels=None, regime_aware: bool = False) -> list[str]:
     """影子漏斗:变体 L2 落 <outdir>/shadow/(确定性 A/B,只落 staging 不喂 L3)。返回变体名。
 
     - nostrat:纯 composite 序(分层到底救了还是害了);
     - nocap:分层但无行业上限(cap 挡了多少赢家);
     - pre_healthy:**旧 9 路口径反事实**(无 healthy 通道、无健康桶)——healthy 通道的
       捕获增量由 retro 对照直接可测(2026-07-03 起)。仅 multi 模式有意义。
+    - capfloor20:cap_floor_yi=20(默认 30)重跑 L0→L1→L2——验证 pr_20260624_001(小盘/北交所
+      领涨日 30亿地板系统性漏判赢家)是否值得放宽。**唯一非零成本变体**:前三个都在本次已取好
+      的 `scored`/`recall` 上重组,capfloor20 要真重新拉取 universe(网络/湖),故单独 try/except
+      兜底——它失败不牵连前三个已经算好、只等落盘的零成本变体。
     """
     from autoresearch.scan.recall.l2_stratify import DEFAULT_FLOORS, select_l2
     sh = outdir / "shadow"
@@ -258,6 +280,16 @@ def write_shadow_variants(outdir: Path, scored: pd.DataFrame, recall: pd.DataFra
         re9, _ = recall_select(scored, analysis_date, recall_n, "multi", old)
         f9 = {k: v for k, v in (l2_floors or DEFAULT_FLOORS).items() if k != "健康"}
         variants["pre_healthy"], _ = select_l2(re9, l2_n, floors=f9, sector_cap_frac=l2_sector_cap)
+    try:
+        uni20, _ = build_market_frame(analysis_date, cap_floor_yi=20.0, include_bj=include_bj,
+                                      source=source, l0_min_amount_yi=l0_min_amount_yi,
+                                      l0_min_list_days=l0_min_list_days)
+        weights20, _ = pick_weights(uni20, regime_aware)
+        scored20 = composite_score(uni20, weights20)
+        recall20, _ = recall_select(scored20, analysis_date, recall_n, recall_mode, recall_channels)
+        variants["capfloor20"], _ = select_l2(recall20, l2_n, floors=l2_floors, sector_cap_frac=l2_sector_cap)
+    except Exception as e:  # noqa: BLE001 — 唯一重取数变体,失败不阻其余零成本变体落盘
+        print(f"[warn] shadow capfloor20 失败(不阻其余变体): {e}", file=sys.stderr)
     for vname, vdf in variants.items():
         vdf[[c for c in l2_cols if c in vdf.columns]].to_csv(sh / f"L2_{vname}.csv", index=False)
     return list(variants)
@@ -275,7 +307,9 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
         l0_min_amount_yi: float = 0.0, l0_min_list_days: int = 0,         # L0 流动性/次新硬门(默认 0=关=parity)
         l2_model: str = "l2_fwd5", l2_floors: dict | None = None, l2_sector_cap: float = 0.20,
         l2_lane_quota: int = 40,                                          # 弃用(分层采样取代)
-        l2_lane_channels=("momentum", "heat", "growth", "accumulation")) -> dict:
+        l2_lane_channels=("momentum", "heat", "growth", "accumulation"),
+        channel_quotas: dict[str, int] | None = None,                     # 覆盖各路 quota(None=CHANNEL_DEFAULTS,parity)
+        channel_floors: dict[str, int] | None = None) -> dict:            # 覆盖各路 floor(None=CHANNEL_DEFAULTS,parity)
     """L0 选集 + L1 召回 + L2 粗排(GBDT 学习重排 → top l2_n)。全确定性,零 LLM。
 
     recall_mode:multi=多路策略召回(默认,带 provenance + L1_channels.csv)| composite=单复合分(对拍/回退)。
@@ -289,7 +323,8 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
     scored = composite_score(uni, weights)
     pinned = load_pinned(analysis_date, path=pinned_path)["kept"]   # 保送票强注 L1(缺 pinned.json→kept=[]→no-op parity)
     recall, per_channel = recall_select(scored, analysis_date, recall_n, recall_mode,
-                                        recall_channels, pinned=pinned)
+                                        recall_channels, pinned=pinned,
+                                        channel_quotas=channel_quotas, channel_floors=channel_floors)
     print(f"[L1 召回] L0 {n_l0} → 轻门 {len(uni)} → {recall_mode} top {len(recall)}", file=sys.stderr)
     sectors = aggregate_sectors_overview(recall, uni)
 
@@ -323,10 +358,14 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
     l2[[c for c in l2_cols if c in l2.columns]].to_csv(outdir / "L2_gbdt_top200.csv", index=False)
     print(f"[L2 粗排] recall {len(recall)} → {l2_engine} top {len(l2)}", file=sys.stderr)
 
-    if shadow:   # ── 影子漏斗:变体 L2(确定性 A/B;只落 staging 不喂 L3;免费)──
+    if shadow:   # ── 影子漏斗:变体 L2(确定性 A/B;只落 staging 不喂 L3;前三免费+capfloor20 重取数)──
         try:
             names = write_shadow_variants(outdir, scored, recall, analysis_date, recall_n,
-                                          l2_n, l2_floors, l2_sector_cap, l2_cols, recall_mode)
+                                          l2_n, l2_floors, l2_sector_cap, l2_cols, recall_mode,
+                                          include_bj=include_bj, source=source,
+                                          l0_min_amount_yi=l0_min_amount_yi,
+                                          l0_min_list_days=l0_min_list_days,
+                                          recall_channels=recall_channels, regime_aware=regime_aware)
             print(f"[shadow] 变体 L2 ×{len(names)}({'/'.join(names)})→ {outdir / 'shadow'}"
                   "(retro 对照赢家捕获)", file=sys.stderr)
         except Exception as e:  # noqa: BLE001 — 影子失败不阻主漏斗

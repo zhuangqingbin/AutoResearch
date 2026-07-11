@@ -16,15 +16,21 @@
   // 现 passthrough:13日回测证 conviction 闸更差(只≥70有T+2 edge/~3只日),维持不切;想迭代用 gate_backtest。
   "l4_gate": { "name": "passthrough", "params": {} },
 
-  // ── L1 召回漏斗 ──(recall_channels 经 scan/cli.py 生效)
+  // ── L1 召回漏斗 ──(recall_channels/channel_quotas 经 scan/cli.py → universe.recall_select 生效)
   "funnel": {
     // 启用的召回通道。整编后 9 路(2026-07-11 channel_audit 13日累计裁决):
     //   剔 accumulation(unique超额T2 −0.21%=唯一实数据负路)、northbound(hk_ratio T+2 IC −0.108);
     //   保 momentum(unique +0.75% 为正,单日 −1.35% 是噪声);reversal_confirm 与旧 reversal 并跑 A/B(≥10日再裁)。
     //   删掉本行 = 用全部注册通道(11路)。
-    "recall_channels": ["composite", "momentum", "reversal_confirm", "reversal", "value", "main_fund", "heat", "growth", "healthy"]
-    // "channel_quotas":  { "heat": 100 },   // 各路配额覆盖 —— ⚠ recall_select 暂未消费(quota 仅来自注册表默认),follow-up
-    // "channel_floors":  {}                 // 各路保底覆盖 —— 同上,暂未消费
+    "recall_channels": ["composite", "momentum", "reversal_confirm", "reversal", "value", "main_fund", "heat", "growth", "healthy"],
+    // 各路配额覆盖(Task 8 起 recall_select 真消费,build/quota_union 都吃覆盖后的 effective spec)。
+    // heat 200→150:pr_20260711_003 提案 200→100(unique超额T2 全表最弱正值+与 momentum Jaccard
+    //   0.27 最高重叠),本 task 拍板取 advisory 档 150、非提案的 100(折中,floor 不动)。
+    // value 200→250、main_fund 200→150:同一波 channel_audit 累计账本的 advisory 结论,随本 task
+    //   一并应用(proposals.jsonl 无独立 pr_id,归入本 task 的整编批次)。
+    // 删掉本行 = 用 CHANNEL_DEFAULTS(注册表默认 quota)。
+    "channel_quotas": { "value": 250, "heat": 150, "main_fund": 150 }
+    // "channel_floors":  {}                 // 各路保底覆盖 —— 同一形参已接线,本波无需覆盖,维持默认
   }
 
   // ── 以下 key 白名单已认但消费方尚未接线(预留,写了也暂不生效)──
