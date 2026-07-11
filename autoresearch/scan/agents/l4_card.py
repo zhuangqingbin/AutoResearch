@@ -326,6 +326,93 @@ def _precedent_mark(base: Path, code6: str, sector, gate_hint: str | None = None
     return "\n".join(out)
 
 
+def _base_rate_mark(base: Path, lane) -> str:
+    """🔁 基率行(presence-gated:`_l4_base_rates.json`〔`write_base_rates` 产〕缺 → ""）。
+
+    逐卡块内,拼 ≤3 项频率锚(brainstorm §5.2):该票 lane 的 L3→L4 高确信翻案率
+    (`by_lane`,cross_calib.flip_stats)+ OW 评级历史 T+2 胜率/均值(`by_rating["Overweight"]`,
+    buy_ledger 全库买单账;"过三门票" 的代理——rubric_rating 定义 OW 即三门皆过)。三项各自
+    独立 presence-gate(有则加,没有就跳),互不挡对方;n<10 已在 `write_base_rates` 写盘时
+    过滤掉,这里只管"有没有条目"。全部缺 → 整行不注(不加噪)。
+    """
+    p = Path(base) / "_l4_base_rates.json"
+    if not p.exists():
+        return ""
+    try:
+        import json
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 — 基率可选,缺了不挡简报
+        return ""
+    parts: list[str] = []
+    lane_s = lane.strip() if isinstance(lane, str) and lane.strip() else None
+    if lane_s:
+        bl = (data.get("by_lane") or {}).get(lane_s)
+        if bl and bl.get("flip_rate") is not None:
+            parts.append(f"{lane_s} lane 高确信历史被 L4 翻案 "
+                        f"{bl['flip_rate']:.0%}(n={bl.get('n')})")
+    ow = (data.get("by_rating") or {}).get("Overweight")
+    if ow:
+        if ow.get("win") is not None:
+            parts.append(f"OW 卡历史 T+2 胜率 {ow['win']:.0%}(n={ow.get('n')})")
+        if ow.get("mean_fwd2") is not None:
+            parts.append(f"OW 历史 T+2 均值 {ow['mean_fwd2']:+.1%}")
+    if not parts:
+        return ""
+    return "🔁 基率:" + "｜".join(parts[:3])
+
+
+def write_base_rates(scan_dir: Path | str, min_n: int = 10) -> Path | None:
+    """L4 逐卡 🔁 基率锚落稿(presence-gated 消费方:`_base_rate_mark` 读此文件注入简报)。
+
+    从 `cross_calib.flip_stats`(近30 scan日,per lane 高确信翻案率,列 lane/n_hiconv/
+    flip_rate/thin)+ `buy_ledger.roll` → `rating_base_rates`(全库 ≥OW 买单 T+2 胜率/均值,
+    per rating)聚 `_l4_base_rates.json`:
+    `{"by_lane": {lane: {"n", "flip_rate"}}, "by_rating": {rating: {"n", "mean_fwd2", "win"}}}`。
+    两条数据源各自的 `thin` 判据(min_n=10,与 `flip_stats`/`rating_base_rates` 默认同阈值)
+    条目直接不写(⚠禁注惯例,与门校准/L3校准同款)。任一数据源缺失/异常 → 该侧降级空字典,
+    不挡另一侧、不挡落稿(mirror 本文件其余 `_xxx_mark` presence-gated 风格)。
+
+    `scan_dir` = 当日 scan 目录(如 `context/scan/<date>`,与 `_l4_prompt_*.md` 同级);
+    跨日统计的 `scan_root` 由 `scan_dir.parent` 反推(mirror `_target_calib_mark` 的
+    `Path(base).parent.parent` 兄弟目录约定,这里只需上一级,因为 `flip_stats`/`roll` 的
+    `scan_root` 本身就是"逐日子目录的容器",不是再上一层的 `context/`)。两侧都空手(无
+    现场)→ 不写垃圾空骨架,返回 None;presence-gated 消费方按文件是否存在处理,行为一致。
+    """
+    scan_dir = Path(scan_dir)
+    scan_root = scan_dir.parent
+
+    by_lane: dict = {}
+    try:
+        from autoresearch.learning import cross_calib
+        flips = cross_calib.flip_stats(scan_root=scan_root, window=30)
+        for r in flips.itertuples(index=False):
+            if bool(r.thin) or pd.isna(r.flip_rate):
+                continue
+            by_lane[str(r.lane)] = {"n": int(r.n_hiconv), "flip_rate": float(r.flip_rate)}
+    except Exception:  # noqa: BLE001 — L3 校准可选,缺了不挡落稿
+        pass
+
+    by_rating: dict = {}
+    try:
+        from autoresearch.learning import buy_ledger
+        ledger = buy_ledger.roll(scan_root=scan_root)
+        for b in buy_ledger.rating_base_rates(ledger, min_n=min_n):
+            if b["thin"] or b["mean2"] is None or b["win2"] is None:
+                continue
+            by_rating[b["rating"]] = {"n": b["n_realized"], "mean_fwd2": b["mean2"], "win": b["win2"]}
+    except Exception:  # noqa: BLE001 — 评级基率可选,缺了不挡落稿
+        pass
+
+    if not by_lane and not by_rating:
+        return None
+    scan_dir.mkdir(parents=True, exist_ok=True)
+    out = scan_dir / "_l4_base_rates.json"
+    import json
+    out.write_text(json.dumps({"by_lane": by_lane, "by_rating": by_rating},
+                              ensure_ascii=False, indent=2), encoding="utf-8")
+    return out
+
+
 def compose_funnel_brief(code: str, scan_dir: Path | str) -> str:
     """L4 **P0 定向**:从漏斗产物(L1_recall/L2/finalists)拼该票紧凑简报 markdown。
 
@@ -354,6 +441,8 @@ def compose_funnel_brief(code: str, scan_dir: Path | str) -> str:
 
     name = _g(l3, "name") if l3 else _g(l1, "name")
     ind = l3.get("industry") or l3.get("sector") or l1.get("industry")
+    mech = l3.get("mechanism")
+    mech_ok = isinstance(mech, str) and mech.strip()
     lines = [
         f"## 漏斗简报 — {code6} {name}(L1/L2/L3 评价·定向用,**判定须读下方真数据**)",
         "",
@@ -370,11 +459,16 @@ def compose_funnel_brief(code: str, scan_dir: Path | str) -> str:
         f"- **筹码(先验)**:winner {_g(l1,'winner_rate')}·集中度 {_g(l1,'chip_concentration')}·"
         f"现价/成本 {_g(l1,'price_to_cost')}·北向占比 {_g(l1,'hk_ratio')}" + _seat_mark(base, code6),
         f"- **L2**:gbdt_score {_g(l2,'gbdt_score')}(rank {_g(l2,'l2_rank')})",
-        f"- **L3 入选**:conviction {_g(l3,'conviction')}·lane {_g(l3,'lane')}·情感 {_g(l3,'sentiment')}",
-        f"  - 多头论点:{_g(l3,'thesis')}",
+        "- **L3 前提清单(中性措辞,逐条核真)**:",         # 防锚定(B2):中性前提替代方向性"多头论点"
+        f"  - 前提1:{_g(l3,'thesis')}",
+        *([f"  - 前提2(兑现机制):{mech.strip()}"] if mech_ok else []),   # 缺 mechanism 整行省略,不占位符
+        f"- **L3 元数据(读完 P1 数字后再看)**:conviction {_g(l3,'conviction')}·lane {_g(l3,'lane')}·情感 {_g(l3,'sentiment')}",
         f"  - 最大风险:{_g(l3,'risk')}",
         f"  - 催化:{_g(l3,'catalyst')}",
     ]
+    br = _base_rate_mark(base, l3.get("lane"))
+    if br:
+        lines.append(br)
     try:                                     # 日历旗:解禁风险窗/预约披露日(事实日期非方向)
         from autoresearch.scan.calendar import calendar_flags
         lines += calendar_flags(base, code6)

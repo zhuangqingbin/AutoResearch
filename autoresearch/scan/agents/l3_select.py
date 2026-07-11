@@ -489,7 +489,8 @@ def merge_l3_finalists_v2(judged: pd.DataFrame, target: int = 30, trend_quota: i
     out = out.sort_values("net", ascending=False).reset_index(drop=True)
     out["ticker"] = out["code"]
     cols = ["ticker", "code", "name", "sector", "lenses", "conviction",
-            "triage_lean", "triage_reason", "thesis", "risk", "catalyst", "lane", "sentiment"]
+            "triage_lean", "triage_reason", "thesis", "mechanism", "risk", "catalyst",
+            "lane", "sentiment"]
     return out[[c for c in cols if c in out.columns]]
 
 

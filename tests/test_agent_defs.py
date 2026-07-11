@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 AGENTS = ROOT / ".claude" / "agents"
 SKILLS = ROOT / ".claude" / "skills"
 
-_NAMES = ("l4-card", "sector-brief", "macro-brief")
+_NAMES = ("l4-card", "sector-brief", "macro-brief", "l3-rank")
 
 
 def _agent_text(name: str) -> str:
@@ -42,10 +42,21 @@ def test_l4_card_contract_anchors_synced():
                "早停只向下", "Rubric建议", "一段话研判", "L3 论点裁决",
                "已核数字摘录", "多写不多读", "龙虎榜席位", "活体新闻",
                "早停卡短格式", "卡契约 v3·超短 1~2 日", "超短口径",
-               "机构面网查", *(g for g in _OW_GATES)]
+               "机构面网查", "先读数据后读论点", *(g for g in _OW_GATES)]
     for a in anchors:
         assert a in agent, f"l4-card 缺契约锚「{a}」"
         assert a in playbook, f"lite-playbook 缺契约锚「{a}」(真值源被改,先同步 agent 定义)"
+
+
+def test_l3_rank_anchors_present():
+    """l3-rank 契约锚:T+2 兑现机制维 + conviction 行为化重锚(≥70 限额)+ mechanism 输出字段。
+
+    l3-rank 无 lite-playbook 式的独立真值源(screening-playbook 已退役),故只做单文件
+    存在性检查,不做双侧同步(与 test_l4_card_contract_anchors_synced 的双文件模式不同)。
+    """
+    agent = _agent_text("l3-rank")
+    for a in ("兑现机制", "≥70", "mechanism"):
+        assert a in agent, f"l3-rank 缺契约锚「{a}」"
 
 
 def test_sector_brief_anchors_synced():

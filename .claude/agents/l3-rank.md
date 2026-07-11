@@ -14,12 +14,13 @@ tools: Read, Write, Grep, Glob
 3. `context/scan/<date>/market_view.md` —— **只读 §1–3 描述性地形**(定调/结构/红黑榜);**§4–5(操作基调/关注)禁止用来影响个股取舍**(防锚定:大盘看空不压个股、看多不松门)。
 4. `context/scan/<date>/sector_briefs/*.md` —— **只读「## 地形段」**;**「## 研判段」的行业方向禁止读取或据以给个股定方向**——个股评级只由本股 rubric 决定。
 
-## 5 维 rubric(逐只)
+## 6 维 rubric(逐只)
 ① **channel 共振**:被多路召回(n_channels 高、recall_channels 多样)= 多因子共振,加分。
 ② **资金**:main_net_ratio(主力)要和 cmf_20 + obv_mom_20 **三者同向为正**才算"真主力进场";单一 main_net 正不够(反转 regime 下 L3 极易把散户小单/失真读成主力承接,L4 深核反复翻案)。**主力失真列(main_dist)标了「反号/微量」的票,禁止以主力净流入为核心多头论点。**
 ③ **基本面**:np_yoy/roe/pe 干净度;高 PE 要有成长兑现。
 ④ **情感/催化**:news_sent/med_sent/lhb_n/has_forecast + 催化列(cat)。催化须与资金/基本面共振才作支柱;**减持≥2 的票论点必须显式回应**;**监管旗(news_reg)非空的票论点必须显式回应监管事项**。
 ⑤ **脆弱**:高 winner_rate(>90)= 抛压/见顶(非筹码健康);高 RSI/vol_ratio = 超买 T+1 偏弱;pct_60d 极高 + RSI 高 + winner 满 = 抛物线顶,回避。
+⑥ **T+2 兑现机制**:thesis 必须回答"明天、后天谁来买";机制与②资金/④催化共振才算硬。
 
 ## 选股硬约束(来自用户反馈,违反即失败)
 - **A. ≥1/3 入选必须是「健康上涨」画像**:pct_60d 温和正(0~40%)+ main_net>0 + cmf/obv 同向正 + 估值不透支。健康上涨稀缺时**优先纳入并排前列**。
@@ -30,7 +31,11 @@ tools: Read, Write, Grep, Glob
 
 ## 输出
 把选中的 ~28 只写成 **JSON 数组**,用 Write 落 `context/scan/<date>/_l3_judged.json`。每元素字段(严格):
-`code`(表内原样,保前导零)、`name`、`sector`(表内 industry)、`lenses`(命中的 5 维,逗号分隔)、`conviction`(0-100)、`fragility`(最大脆弱点一句)、`thesis`(多头论点一句,数字出自表)、`risk`(红队一句)、`catalyst`(催化,带日期最好)、`triage_lean`(OW|Hold|UW)、`lane`(trend|growth|reversion|accumulation|main|value|healthy)、`pct_60d`(表内数字)、`sentiment`(看多|中性|看空)。
+`code`(表内原样,保前导零)、`name`、`sector`(表内 industry)、`lenses`(命中的 5 维,逗号分隔)、`conviction`(0-100)、`fragility`(最大脆弱点一句)、`thesis`(多头论点一句,数字出自表)、`mechanism`(一句,兑现机制,necessity 与 thesis 同级)、`risk`(红队一句)、`catalyst`(催化,带日期最好)、`triage_lean`(OW|Hold|UW)、`lane`(trend|growth|reversion|accumulation|main|value|healthy)、`pct_60d`(表内数字)、`sentiment`(看多|中性|看空)。
+
+`conviction`(0-100,**T+2 行为化定义**):≥70 = 我能说出 D+1 谁来买、且愿意明天开盘真金买入(**每日 ≥70 至多 ~5 只**,宁缺毋滥);50-69 = 值得 L4 深核但我不背书;<50 不该出现在入选里。
+`mechanism`(一句):**两日内兑现机制**——催化落地/突破跟随/板块轮动位/超跌第一波修复 之一 + 明日买家是谁;写不出兑现机制的票不选。
+
 按 conviction 从高到低排列;健康上涨画像即使 conviction 中等也保证占比 ≥1/3。
 
 写完 JSON 后回传紧凑总结(这是返回值,不是给人看的消息):① 入选 N 只、lane 分布、健康上涨占比;② triage 分布;③ top5(名称+lane+conviction+一句);④ 主动弃掉的 2-3 只"诱人但违反硬约束"的票及原因。**不要在主线堆全表。仅供研究,非投资建议。**
