@@ -1,6 +1,6 @@
 # 2026-07-12 · L4 情报站方向稿——检索/判断分离（每票 1 盲搜 Sonnet 情报员 → 单脑 Opus 分析）
 
-> 状态：**方向稿（brainstorm 产物，未实施、不开发）**。实施排队在 P1 波（盲读微pass/基率注入/买单 ensemble，07-11 落 main）**真跑验收之后**；届时 config 默认关、单变量 A/B、账本 ≥10–20 日裁去留。
+> 状态：**已实施**（2026-07-12 当日落 main，plan=`docs/plans/2026-07-12-l4-intel-station-plan.md`，7 任务）。用户实施期改点：情报员 **sonnet·max**（非 low）、搜索**六面全覆盖上界 ≤15**（非 ≤6–8）、**结构性盲**（tools 无 Read）、v1 不做"已知事件标题清单"输入（接受与 slim 新闻少量重叠，卡侧以数字为准）。**启用仍按原纪律**：config 默认关，P1 波真跑验收后置 `l4_intel.enabled=true`，单变量 A/B、账本 ≥10–20 日裁去留。
 > 来源：用户 07-11/12 提问——"L4 每票研究能否更优化：一只票先用低 effort sonnet agent 把实时情报读 ready，加上之前阶段的数据，给一个 opus agent 分析；参照券商研报的分工流程调研"。
 > 方法：券商研究所组织学调研（`docs/research/2026-07-12-sellside-research-org-survey.md`）+ L4 现状勘察（workflow/menu/l4-card/近三跑）+ 六问稿 §5 与外部调研 A/B 弹药复用（`docs/research/2026-07-11-ultrashort-llm-analyst-external-research.md`）。
 > 关系：`2026-07-11-funnel-six-questions-brainstorm.md` §5 的姊妹篇——那里改 **prompt 层**（已实施），这里改**执行架构的攒料段**。判断骨架（评分卡/OW 三门/早停/ensemble）一毫米不动。

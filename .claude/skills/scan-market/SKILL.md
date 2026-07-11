@@ -77,6 +77,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
    uv run --no-sync python -m autoresearch.scan.agents.l4_card prompts <date>
    ```
    → 全部 **`Agent(subagent_type='l4-card')` 一条消息并发**(别分 wave;卡模板/契约烤进 `.claude/agents/l4-card.md`)。行业 brief 补漏走 `subagent_type='sector-brief'`。**早停抽检**(opt-in,默认不跑):`l4_card.pick_earlystop_audit(scan_dir, k=2)` 抽样独立复核。
+   **活体情报站**(config `l4_intel.enabled`,默认关):dispatch-plan 前移,每只新派票并发一个 `l4-intel`(sonnet·max,结构性盲——prompt 只给码/名/行业/日期)与 slim 预取同窗口盲搜六面,落 `_l4_intel_<code>.md`;卡 P3 先读 intel、自发网查降 ≤1 验证,缺文件自动回退卡内网查(presence-gated,parity 不破)。裁决:stage_eval+账本 ≥10–20 日,P1 波验收后才开(design 2026-07-12 §6:冒烟三查=网查限频/中文源可达率/空稿率)。
 5. **L5 整合**(workflow Assemble 相位):
    ```bash
    uv run --no-sync python -m autoresearch.scan.assemble <date>
