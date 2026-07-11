@@ -4,7 +4,7 @@ export const meta = {
   phases: [
     { title: 'Prelude', detail: 'frame → [universe/L0-L2 ∥ market_view] → GATE1' },
     { title: 'L3', detail: '[sector-briefs ∥ 证据harvest] → L3-rank → finalists → GATE2' },
-    { title: 'L4', detail: 'slim-harvest(GATE3) → 决策卡并发' },
+    { title: 'L4', detail: 'slim-harvest ∥ 情报站(GATE3) → 决策卡并发' },
     { title: 'Assemble', detail: 'assemble → GATE4' },
   ],
 }
@@ -139,19 +139,33 @@ await bash(
   `${R} autoresearch.scan.calendar ${date} || true; ` +
   `${R} autoresearch.scan.agents.l4_card consensus ${date} || true; ` +
   `${R} autoresearch.scan.agents.l4_card prompts ${date}`, 'l4-prep', 'L4')
-// GATE3:批量 slim 失败响亮(harvest-slim 打印 JSON + 非零退出)
-const g3 = await gate('GATE3', `${R} autoresearch.scan.agents.l4_card harvest-slim ${date}`, OK, 'L4')
-if (!g3 || !g3.ok) throw new Error(`GATE3 失败(slim<8KB 或 .SH):${g3 ? g3.reason : 'no return'}`)
-log('GATE3 ✓ 全 slim >8KB(surface)')
-// 派发计划(确定性):按 _l4_prompt_<code>.md 是否存在分 dispatch(需新派)/ reused(TTL复用
-// 或 carryover 已写 details/<code>.md,不再派 subagent,直接解析该卡评级)。修复:此前对
-// 全部 finalists 无条件派卡,复用码从未写过 prompt 文件,等于空派 Opus,抵消复用省下的成本。
+// 派发计划(确定性)提前到 GATE3 之前:情报站要与 slim 预取同窗口并行(只读 finalists/_l4_prompt 存在性,与 slim 无依赖)
 const PLAN = { type: 'object', required: ['dispatch'],
   properties: { dispatch: { type: 'array', items: { type: 'string' } },
+    meta: { type: 'object' },
     reused: { type: 'array', items: { type: 'object',
       properties: { code: { type: 'string' }, rating: { type: 'string' } } } } } }
 const plan = await gate('dispatch-plan', `${R} autoresearch.scan.agents.l4_card dispatch-plan ${date}`, PLAN, 'L4')
 if (!plan) throw new Error('dispatch-plan 无返回')
+// 活体情报站(design 2026-07-12 §3;config 默认关):盲搜 sonnet·max,每票一个,∥ GATE3 slim 预取。
+// agent 失败→null 不阻断——卡侧 presence-gated 缺文件自动回退卡内网查。
+const intelOn = !!(cfg.l4_intel && cfg.l4_intel.enabled)
+const INTEL = { type: 'object', required: ['code'],
+  properties: { code: { type: 'string' }, events: { type: 'integer' } } }
+const intelThunks = intelOn ? plan.dispatch.map((code) => () => agent(
+  `活体情报采集:${code} ${(plan.meta?.[code]?.name) || ''}(${(plan.meta?.[code]?.sector) || '行业未知'})· 分析日 ${date}。按你的人设六面全查(≤15 条),写 ${SD}/_l4_intel_${code}.md;返回 code 与事件行数 events。`,
+  { agentType: 'l4-intel', effort: cfg.agents?.l4_intel?.effort ?? 'max',
+    ...(cfg.agents?.l4_intel?.model ? { model: cfg.agents.l4_intel.model } : {}),
+    label: `intel:${code}`, phase: 'L4', schema: INTEL })) : []
+if (intelOn) log(`🕵️ 情报站并行:${plan.dispatch.length} 票盲搜(sonnet·max,与 slim 预取同窗口)`)
+// GATE3:批量 slim 失败响亮(harvest-slim 打印 JSON + 非零退出)—— intel 与之并行,barrier 后再派卡
+const [g3, ...intelRes] = await parallel([
+  () => gate('GATE3', `${R} autoresearch.scan.agents.l4_card harvest-slim ${date}`, OK, 'L4'),
+  ...intelThunks,
+])
+if (!g3 || !g3.ok) throw new Error(`GATE3 失败(slim<8KB 或 .SH):${g3 ? g3.reason : 'no return'}`)
+if (intelOn) log(`🕵️ 情报站 ✓ ${intelRes.filter(Boolean).length}/${plan.dispatch.length}(缺稿卡自动回退网查)`)
+log('GATE3 ✓ 全 slim >8KB(surface)')
 // 决策卡:只派 dispatch 码一次并发(barrier —— assemble 与 isZeroBuy 需全部卡评级才能判)
 const CARD = { type: 'object', required: ['code', 'rating'],
   properties: { code: { type: 'string' }, rating: { type: 'string' }, conviction: { type: 'number' } } }
