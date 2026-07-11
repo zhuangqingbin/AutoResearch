@@ -23,6 +23,51 @@ from autoresearch.scan.config import ScanConfig
 DEFAULT_PATH = Path(".claude/skills/scan-market/scan_config.json")
 DEFAULT_PINNED_PATH = Path(".claude/skills/scan-market/pinned.json")
 
+
+def _strip_jsonc(text: str) -> str:
+    """去掉 JSONC 的 `//` 行注释与 `/* */` 块注释(字符串内的 `//` 原样保留)→ 供 `json.loads`。
+
+    让 `.claude/skills/scan-market/*.json` 能给每个 key 写行内说明(纯 JSON 不支持注释)。
+    字符状态机:只有双引号 `"` 切换字符串态,转义 `\\` 原样带下一字符,故串内的 `//`/`/*` 不误删。
+    """
+    out: list[str] = []
+    i, n, in_str = 0, len(text), False
+    while i < n:
+        c = text[i]
+        if in_str:
+            out.append(c)
+            if c == "\\" and i + 1 < n:          # 转义:原样保留下一字符(含 \" )
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+            out.append(c)
+            i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "/":      # // 行注释 → 跳到行尾(留换行)
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "*":      # /* */ 块注释
+            i += 2
+            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                i += 1
+            i += 2
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _read_jsonc(p: Path):
+    """读 JSONC 文件 → 去注释 → `json.loads`。"""
+    return json.loads(_strip_jsonc(p.read_text(encoding="utf-8")))
+
 # 顶层白名单;funnel/pinned/reuse 额外校验子键(agents/l4_gate 内部形状由各自消费方解释:
 # agents={stage: {model, effort}} 无固定 stage 集,Task 2 workflow 直接按需取;l4_gate=
 # {name, params},params 形状随 gate 实现而变,Task 3+ gate registry 各自校验)。
@@ -42,7 +87,7 @@ def load_user_config(path: str | Path | None = None) -> dict:
     p = Path(path) if path is not None else DEFAULT_PATH
     if not p.exists():
         return {}
-    cfg = json.loads(p.read_text(encoding="utf-8"))
+    cfg = _read_jsonc(p)
 
     unknown_top = sorted(set(cfg) - _TOP_WHITELIST)
     if unknown_top:
@@ -128,7 +173,7 @@ def load_pinned(today: str, path: str | Path | None = None,
     p = Path(path) if path is not None else DEFAULT_PINNED_PATH
     if not p.exists():
         return {"kept": [], "expired": []}
-    raw = json.loads(p.read_text(encoding="utf-8"))
+    raw = _read_jsonc(p)
     if not raw:
         return {"kept": [], "expired": []}
 

@@ -1,0 +1,34 @@
+{
+  // ═══ scan-market 全流程用户配置(直接生效;支持 // 注释)═══
+  // 优先级:CLI 显式 flag > 本文件 > 代码内建默认。删掉某 key = 用其默认(=无此文件时的 parity 行为)。
+
+  // ── 各 stage 的 AI agent 模型/effort ──(覆盖 .claude/agents/*.md frontmatter 默认;经 workflow 生效)
+  // effort ∈ low/medium/high/xhigh/max;省略某 stage 或 model 字段 = 用其默认。
+  "agents": {
+    "strategist":   { "effort": "high" },    // 市场研判(macro lite 档,Stage 0)
+    "sector_brief": { "effort": "high" },    // 行业 brief 写手
+    "l3_rank":      { "effort": "max" },     // L3 精排(200只 holistic 比较=判断核心,给最高 effort)
+    "l4_card":      { "effort": "xhigh" }    // L4 决策卡(逐只渐进深度 DD)
+  },
+
+  // ── L3.5 可插拔闸:finalists → L4 收窄到 6~10 ──(经 scan/gates.py 生效)
+  // name ∈ passthrough(不收窄)/ topk_simple / conviction_floor_quota。
+  // 现 passthrough:13日回测证 conviction 闸更差(只≥70有T+2 edge/~3只日),维持不切;想迭代用 gate_backtest。
+  "l4_gate": { "name": "passthrough", "params": {} },
+
+  // ── L1 召回漏斗 ──(recall_channels 经 scan/cli.py 生效)
+  "funnel": {
+    // 启用的召回通道。整编后 9 路(2026-07-11 channel_audit 13日累计裁决):
+    //   剔 accumulation(unique超额T2 −0.21%=唯一实数据负路)、northbound(hk_ratio T+2 IC −0.108);
+    //   保 momentum(unique +0.75% 为正,单日 −1.35% 是噪声);reversal_confirm 与旧 reversal 并跑 A/B(≥10日再裁)。
+    //   删掉本行 = 用全部注册通道(11路)。
+    "recall_channels": ["composite", "momentum", "reversal_confirm", "reversal", "value", "main_fund", "heat", "growth", "healthy"]
+    // "channel_quotas":  { "heat": 100 },   // 各路配额覆盖 —— ⚠ recall_select 暂未消费(quota 仅来自注册表默认),follow-up
+    // "channel_floors":  {}                 // 各路保底覆盖 —— 同上,暂未消费
+  }
+
+  // ── 以下 key 白名单已认但消费方尚未接线(预留,写了也暂不生效)──
+  // "pinned":       { "cap": 5, "ttl_days": 10 },              // 保送 cap/TTL(load_pinned 现用函数默认 5/10)
+  // "redteam_prob": 0.33,                                       // 0买日机会成本红队触发概率
+  // "reuse":        { "max_age_days": 4, "price_delta_pct": 5 } // L4 卡 TTL 复用参数
+}

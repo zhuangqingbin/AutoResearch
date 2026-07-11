@@ -237,7 +237,3 @@ models/store/
 .omc/
 .cursor-zsh/
 .claude/skills/.omc/
-
-# scan-market 运行时用户配置(真文件本地,.example 已 tracked 作模板)
-.claude/skills/scan-market/scan_config.json
-.claude/skills/scan-market/pinned.json

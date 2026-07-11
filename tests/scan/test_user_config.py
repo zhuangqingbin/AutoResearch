@@ -15,7 +15,42 @@ import json
 import pytest
 
 from autoresearch.scan.config import ScanConfig
-from autoresearch.scan.user_config import apply_to_scan_config, load_user_config
+from autoresearch.scan.user_config import (
+    _strip_jsonc,
+    apply_to_scan_config,
+    load_pinned,
+    load_user_config,
+)
+
+
+def test_strip_jsonc_removes_comments_keeps_strings():
+    """// 行注释与 /* */ 块注释剥离;字符串内的 // 原样保留。"""
+    import json
+    src = '''{
+      // 顶层说明
+      "funnel": {"recall_channels": ["a", "b"]},  // 行尾说明
+      /* 块注释 */
+      "reuse": {"max_age_days": 4}
+    }'''
+    assert json.loads(_strip_jsonc(src)) == {"funnel": {"recall_channels": ["a", "b"]},
+                                             "reuse": {"max_age_days": 4}}
+    # 字符串内的 // 不被误删
+    assert json.loads(_strip_jsonc('{"pinned": {"cap": 5}, "x": "a//b"}'))["x"] == "a//b"
+
+
+def test_load_user_config_parses_jsonc(tmp_path):
+    """带 // 说明的真 scan_config.json 能正常加载 + 白名单校验。"""
+    p = tmp_path / "scan_config.json"
+    p.write_text('{\n  // 召回通道整编\n  "funnel": {"recall_channels": ["composite", "value"]}\n}',
+                 encoding="utf-8")
+    assert load_user_config(p)["funnel"]["recall_channels"] == ["composite", "value"]
+
+
+def test_load_pinned_parses_jsonc(tmp_path):
+    """带 // 说明的真 pinned.json(空 active 列表)→ kept 空,不炸。"""
+    p = tmp_path / "pinned.json"
+    p.write_text('[\n  // 保送票清单(每条 {code,note,expires});空=无保送\n]', encoding="utf-8")
+    assert load_pinned("2026-07-11", path=p) == {"kept": [], "expired": []}
 
 _VALID_FULL = {
     "agents": {"l4_card": {"model": "opus", "effort": "high"}},
