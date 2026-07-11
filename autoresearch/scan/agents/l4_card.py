@@ -666,6 +666,11 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
         return {"n_prompts": 0, "n_skipped": 0, "tickers": [], "pinned": []}
     from autoresearch.dataflows.symbol_utils import normalize_symbol  # lazy,保持模块轻量
     fin = pd.read_csv(fp, dtype={"code": str})
+    import contextlib
+    # FN-1 第四修:🔁 基率 json 此前无生产调用点(真实跑动恒空)——派发前日级落稿,幂等;
+    # 失败不挡派发(消费方 _base_rate_mark presence-gated,缺文件即无此行)。
+    with contextlib.suppress(Exception):
+        write_base_rates(scan_dir)
     shared = ""
     sp = scan_dir / "_l4_shared_instructions.md"
     if sp.exists():

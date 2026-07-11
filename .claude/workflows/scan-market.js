@@ -179,9 +179,11 @@ if (owFresh.length) {
       { agentType: 'l4-card', effort: cfg.agents?.l4_card?.effort ?? 'xhigh', label: `ens${i}:${c.code}`, phase: 'L4', schema: CARD })))).filter(Boolean)
     const ratings = [c.rating, ...reruns.map((r) => r.rating)]
     const sorted = ratings.map(tier).sort((a, b) => a - b)
-    const medianTier = sorted[Math.floor(sorted.length / 2)]
+    // N<3(复核 run 失败被 filter 掉)→ 退化取更偏空一侧(与"只向下"哲学对齐)+degraded 标记强制人裁展示
+    const degraded = ratings.length < 3
+    const medianTier = degraded ? sorted[0] : sorted[Math.floor(sorted.length / 2)]
     const names = ['Sell', 'Underweight', 'Hold', 'Overweight', 'Buy']
-    return { code: c.code, ratings, median: names[medianTier], spread: sorted[sorted.length - 1] - sorted[0] }
+    return { code: c.code, ratings, median: names[medianTier], spread: sorted[sorted.length - 1] - sorted[0], degraded }
   })()))
   const rows = ens.filter(Boolean)
   await bash(`cat > ${SD}/_ensemble.json << 'EOF'\n${JSON.stringify(rows)}\nEOF`, 'ensemble-dump', 'L4')

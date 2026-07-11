@@ -16,6 +16,13 @@ from autoresearch.scan.agents import l3_select as L
 # ───────────────────────── ① row_profile(行语义指纹,纯函数) ─────────────────────────
 
 
+def test_thesis_tokens_unicode_minus_normalized():
+    """U+2212 全角负号归一(T9-11 review Minor#1):pf 列自产"主力−"同字形,thesis 若效仿
+    写"中位−13.5%",符号不得丢——丢了会拿 '13.5' 去池里找不到 '-13.5' 而误报。"""
+    toks = L._thesis_number_tokens("中位−13.5%,反弹")
+    assert "-13.5" in toks and "13.5" not in toks
+
+
 def test_row_profile_words():
     r = {"pct_60d": 45.0, "vol_ratio": 2.5, "main_net_ratio": 1.2, "cmf_20": 0.1,
          "obv_mom_20": 0.2, "pe": 15.0, "winner_rate": 95.0, "rsi6": 85.0}

@@ -638,6 +638,7 @@ def _thesis_number_tokens(text: str) -> list[str]:
     `re.findall(r"-?\d+(?:\.\d+)?", ...)` 逐个取出。"""
     if not text:
         return []
+    text = text.replace("−", "-")           # U+2212 全角负号归一(pf 列"主力−"同字形,防丢符号误报)
     t = _DATE_TOKEN_RE.sub(" ", text)
     t = _YEAR_TOKEN_RE.sub(" ", t)
     t = _CODE_TOKEN_RE.sub(" ", t)

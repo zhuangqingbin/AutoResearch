@@ -16,6 +16,16 @@ from autoresearch.scan import assemble
 _DATE = "2026-07-11"
 
 
+def test_ensemble_flag_degraded_one_tier_dissent():
+    """N=2 退化(某复核 run 失败)+ 仅 1 档分歧 → 必须亮 🎭(T9-11 review Important#2:
+    修复前该分歧被静默吞掉);无分歧退化不误报;正常 N=3 仍按 spread≥2。"""
+    assert assemble._ensemble_flag({"spread": 1, "degraded": True}) is True
+    assert assemble._ensemble_flag({"spread": 0, "degraded": True}) is False
+    assert assemble._ensemble_flag({"spread": 1, "degraded": False}) is False
+    assert assemble._ensemble_flag({"spread": 2}) is True
+    assert assemble._ensemble_flag(None) is False
+
+
 def test_load_and_fold(tmp_path):
     (tmp_path / "_ensemble.json").write_text(json.dumps([
         {"code": "688213", "ratings": ["Overweight", "Hold", "Hold"], "median": "Hold", "spread": 1}]),

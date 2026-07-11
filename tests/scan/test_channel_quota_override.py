@@ -25,6 +25,29 @@ def _scored(n=300) -> pd.DataFrame:
     return df
 
 
+def test_shadow_variants_pass_channel_overrides_through(monkeypatch, tmp_path):
+    """影子透传回归锁(7cc7f51/T9-11 review Important#3):pre_healthy/capfloor20 内部 recall_select
+    必须吃到 channel_quotas/floors,否则反事实被配额差异污染。spy 捕获 kwargs,不跑真漏斗。"""
+    seen = []
+
+    def _spy_recall(scored, date, recall_n, recall_mode, channels=None, **kw):
+        seen.append(kw)
+        return scored.head(0), {}
+
+    monkeypatch.setattr(universe, "recall_select", _spy_recall)
+    monkeypatch.setattr("autoresearch.scan.recall.l2_stratify.select_l2",
+                        lambda df, n, **kw: (df.head(0), {}))
+    monkeypatch.setattr(universe, "build_market_frame",
+                        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("no network in test")))
+    universe.write_shadow_variants(tmp_path, _scored(), _scored().head(5), DATE,
+                                   recall_n=50, l2_n=10, l2_floors=None, l2_sector_cap=0.2,
+                                   l2_cols=["code"], recall_mode="multi",
+                                   channel_quotas={"heat": 5}, channel_floors={"heat": 1})
+    assert seen, "pre_healthy 分支未调用 recall_select(spy 未触发)"
+    for kw in seen:
+        assert kw.get("channel_quotas") == {"heat": 5} and kw.get("channel_floors") == {"heat": 1}
+
+
 def test_funnel_overlay_fills_only_none_and_explicit_wins(monkeypatch):
     """FN-1 第三修:run 直调路径(prelude/universe.main)的 scan_config 兜底——None 的键补齐,显式恒优先。"""
     monkeypatch.setattr("autoresearch.scan.user_config.load_user_config",

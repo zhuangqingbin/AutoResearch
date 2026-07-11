@@ -123,6 +123,15 @@ def _load_ensemble(scan_dir: Path) -> dict[str, dict]:
     return out
 
 
+def _ensemble_flag(rec: dict | None) -> bool:
+    """🎭 人裁条件:3 run 分歧 ≥2 档;或复核 run 缺席退化(degraded,N<3)且仍有分歧(spread>0)——
+    退化时 workflow 端中位已取偏空侧,1 档分歧也不许静默消失(T9-11 review Important#2)。"""
+    if not rec:
+        return False
+    spread = int(rec.get("spread") or 0)
+    return spread >= 2 or (bool(rec.get("degraded")) and spread > 0)
+
+
 def _apply_ensemble_fold(rating: str, rec: dict | None) -> str:
     """买单复核折回:rec 存在且中位档比卡面评级更差(更靠 Sell)→ 折到中位,否则原样。
 
@@ -141,7 +150,7 @@ def _ensemble_dissent_lines(emap: dict[str, dict]) -> list[str]:
     """买单复核 spread≥2(3 run 评级分歧 ≥2 档)→ 组合视角节人裁提示行;无分歧 → []。"""
     lines = []
     for code, e in sorted(emap.items()):
-        if int(e.get("spread") or 0) >= 2:
+        if _ensemble_flag(e):
             ratings = e.get("ratings") or []
             lines.append(f"🎭 买单复核分歧:{code} {len(ratings)} run={ratings},已按中位折回,建议人工复核")
     return lines
@@ -796,7 +805,7 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
         if folded != r.get("rating"):
             r["rating"] = folded
             r["proposal"] = _PROPOSAL_BY_RATING.get(folded, r.get("proposal", "—"))
-        if int(e.get("spread") or 0) >= 2:
+        if _ensemble_flag(e):
             r["ens_flag"] = True                # 🎭复核分歧:spread≥2 → 行 badge + 组合视角人裁提示
     rows.sort(key=_sortkey)
     regime_line, regime_drift = regime_and_drift(scan_dir)
