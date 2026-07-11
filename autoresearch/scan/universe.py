@@ -255,7 +255,9 @@ def write_shadow_variants(outdir: Path, scored: pd.DataFrame, recall: pd.DataFra
                           recall_mode: str = "multi",
                           include_bj: bool = True, source: str = "tushare",
                           l0_min_amount_yi: float = 0.0, l0_min_list_days: int = 0,
-                          recall_channels=None, regime_aware: bool = False) -> list[str]:
+                          recall_channels=None, regime_aware: bool = False,
+                          channel_quotas: dict[str, int] | None = None,
+                          channel_floors: dict[str, int] | None = None) -> list[str]:
     """影子漏斗:变体 L2 落 <outdir>/shadow/(确定性 A/B,只落 staging 不喂 L3)。返回变体名。
 
     - nostrat:纯 composite 序(分层到底救了还是害了);
@@ -277,7 +279,8 @@ def write_shadow_variants(outdir: Path, scored: pd.DataFrame, recall: pd.DataFra
     if recall_mode == "multi":
         from autoresearch.scan.recall.registry import registered_channels
         old = [n for n in registered_channels() if n != "healthy"]
-        re9, _ = recall_select(scored, analysis_date, recall_n, "multi", old)
+        re9, _ = recall_select(scored, analysis_date, recall_n, "multi", old,
+                               channel_quotas=channel_quotas, channel_floors=channel_floors)
         f9 = {k: v for k, v in (l2_floors or DEFAULT_FLOORS).items() if k != "健康"}
         variants["pre_healthy"], _ = select_l2(re9, l2_n, floors=f9, sector_cap_frac=l2_sector_cap)
     try:
@@ -286,7 +289,8 @@ def write_shadow_variants(outdir: Path, scored: pd.DataFrame, recall: pd.DataFra
                                       l0_min_list_days=l0_min_list_days)
         weights20, _ = pick_weights(uni20, regime_aware)
         scored20 = composite_score(uni20, weights20)
-        recall20, _ = recall_select(scored20, analysis_date, recall_n, recall_mode, recall_channels)
+        recall20, _ = recall_select(scored20, analysis_date, recall_n, recall_mode, recall_channels,
+                                    channel_quotas=channel_quotas, channel_floors=channel_floors)
         variants["capfloor20"], _ = select_l2(recall20, l2_n, floors=l2_floors, sector_cap_frac=l2_sector_cap)
     except Exception as e:  # noqa: BLE001 — 唯一重取数变体,失败不阻其余零成本变体落盘
         print(f"[warn] shadow capfloor20 失败(不阻其余变体): {e}", file=sys.stderr)
@@ -365,7 +369,8 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
                                           include_bj=include_bj, source=source,
                                           l0_min_amount_yi=l0_min_amount_yi,
                                           l0_min_list_days=l0_min_list_days,
-                                          recall_channels=recall_channels, regime_aware=regime_aware)
+                                          recall_channels=recall_channels, regime_aware=regime_aware,
+                                          channel_quotas=channel_quotas, channel_floors=channel_floors)
             print(f"[shadow] 变体 L2 ×{len(names)}({'/'.join(names)})→ {outdir / 'shadow'}"
                   "(retro 对照赢家捕获)", file=sys.stderr)
         except Exception as e:  # noqa: BLE001 — 影子失败不阻主漏斗
