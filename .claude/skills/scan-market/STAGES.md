@@ -73,6 +73,10 @@ L0 选集  →  L1 召回  →  L2 粗排  →  L3 精排  →  L4 研究  →  
 | accumulation | 120/30 | 底部吸筹 —— **默认停用**(累计 unique 超额 −0.21%,并入 reversal_confirm) |
 | northbound | 120/30 | 北向持股 —— **默认停用**(hk_ratio T+2 IC −0.108,信息已在 L4 简报行) |
 
+**配额覆盖已接线生效(2026-07-11)**:`scan_config.jsonc` 的 `funnel.channel_quotas` 当前生效 **value 250 / heat 150 / main_fund 150**(channel_ledger advisory 档,拍板 5);兜底读取在 `universe.run` 本体(`_funnel_overlay`,FN-1 第三修——prelude/`universe.main` 直调路径同样生效,显式参数/CLI flag 恒优先,缺文件=注册表默认 parity)。影子变体(`pre_healthy`/`capfloor20`)同口径透传,反事实不受配额差异污染。
+
+**rz 入组(2026-07-11,pr_20260710_001 resolved)**:融资买入强度 `rz_buy_intensity` 独立第 10 因子组(自然朝向+,权重 calibrate@fwd_2_oc 重校,changelog 可回滚);语义=情绪接力资金代理(文献 A9),非基本面确认。**capfloor20 第 4 影子变体**上线(cap_floor_yi=20,验 pr_20260624_001 市值地板漏判)。
+
 **regime-aware(推荐常开):**
 
 - `--regime-aware` 会按当日 regime 取 `weights.json` 里 `regimes[trend|range|risk_off]` 对应的权重块,缺块回退 flat。
@@ -109,6 +113,12 @@ L0 选集  →  L1 召回  →  L2 粗排  →  L3 精排  →  L4 研究  →  
 - **由人拍板,不自动**(workflow 只对 `sentinel` 档自动跳)。retro 侧做 floor 自然实验(救回组 vs merit 组 vs 被挤组 fwd 对照),持续弱才复审。
 
 ---
+
+## 旁路 · S1 情绪温度计(2026-07-11 上线,展示先行)
+
+- **数据**:tushare `limit_list_d` 入湖(勿用 akshare 涨停池,push2ex 被封);五序列 = 涨停/跌停家数、连板高度、晋级率、炸板率、昨涨停今溢价 → `score` 0-100 + 五相位(冰点<20 / 修复 / 发酵 / 高潮≥65 / 退潮=带内下行,±3 滞回)。已回填 124 交易日(2026-01-05 起),幂等增量 `context/learning/temperature.csv`。
+- **消费**:market_pack `temperature` 块(两条 pack 路径,presence-gated 缺→键不出现)+ L5 🌡 行;prelude 新增 `temperature` 步(当日 fetch+rollup,失败不阻断);分段校准报告 `python -m autoresearch.scan.temperature_calib`(phase×regime 交叉表,n<10 ⚠)。
+- **边界**:**本波不接菜单/预算联动**(拍板:相位判定质量复审后下一波);涨停数据只进温度计,不做打板/隔日溢价信号(负结果清单)。
 
 ## 旁路 · 市场研判 = macro-research lite 档(Opus×1)
 
@@ -164,6 +174,14 @@ L2 之后、与 L3 证据取数**并发**:
   - 低基:np_yoy>100 且 roe<8;
   - 背离:cmf_20 或 obv_mom_20 为正,但 main_net_ratio<0;
   - 套牢:winner_rate<25 且 ma_bull=0 且 pct_60d>0(反弹撞上套牢盘)。
+
+**误读三闸(2026-07-11,直击误读自见数据 22/31):**
+
+- 行语义指纹 `pf` 列(确定性画像短语,如 `高位·放量·主力+·PE低`——LLM 读词不读裸浮点);
+- 表按 lane 分块渲染(`l2_lane_reserved` 非空值分块、其余按 `recall_channels` 首通道,块内 composite 降序,meta 记 render_order);
+- `l3_select lint <date>` thesis 数字机检(引用数字须能在该票行值/催化字段容差匹配)→ workflow L3 后**一次打回自修**(不二检)。
+
+**输出契约增强(2026-07-11)**:judged 增 `mechanism` 字段(两日内兑现机制+明日买家,写不出不选);conviction 行为化定义(**≥70 = 能说出 D+1 谁买且愿真金买入,每日 ≥70 限 ~5 只**;50-69 = 值得 L4 验不背书)——L3.5 回测(唯 ≥70 有 T+2 edge)的语义落地。
 
 **稳定性与验尸:**
 

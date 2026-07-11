@@ -180,6 +180,8 @@ def test_frame_json_echo_reflects_real_config(monkeypatch, tmp_path, capsys):
     cfg_dir = tmp_path / ".claude" / "skills" / "scan-market"
     cfg_dir.mkdir(parents=True)
     (cfg_dir / "scan_config.jsonc").write_text(json.dumps({"redteam_prob": 0.2}), encoding="utf-8")
+    monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH",   # 显式指回本测试的真配置(冲销 conftest 隔离)
+                        cfg_dir / "scan_config.jsonc")
 
     rc = scan_frame.main(["2026-07-12", "--json"])
     out = capsys.readouterr().out

@@ -17,10 +17,17 @@ DATE = "2026-07-09"
 
 
 def _patch_deps(monkeypatch, tmp_path):
-    """monkeypatch main() 实际调用的四处外部依赖(源码 :128-162),隔离网络与真实 context/。"""
+    """monkeypatch main() 实际调用的四处外部依赖(源码 :128-162),隔离网络与真实 context/。
+
+    build_market_frame 桩内故意 print 一行到 stdout——模拟湖冷时取数层([L0·tushare] 等)的进度行
+    (2026-07-09 现场污染的完整根因),锁死 --json 的 redirect_stdout 必须把库层 print 也圈走。"""
     df = pd.DataFrame({"code": ["000001"], "close": [10.0]})
-    monkeypatch.setattr(frame, "build_market_frame",
-                        lambda d, **k: (df, {"universe_raw": 1, "universe": 1, "after_gate_a": 1}))
+
+    def _stub_build(d, **k):
+        print("[L0·tushare] as-of 交易日=模拟取数进度行(库层 stdout)")
+        return df, {"universe_raw": 1, "universe": 1, "after_gate_a": 1}
+
+    monkeypatch.setattr(frame, "build_market_frame", _stub_build)
     monkeypatch.setattr("autoresearch.scan.market.market_pack_from_frame",
                         lambda f, **k: {"date": DATE, "regime": {"label": "risk_off"}})
     monkeypatch.setattr("autoresearch.scan.menu.sentinel_advice_from_frame",
@@ -52,11 +59,21 @@ def test_json_mode_info_lines_go_to_stderr_not_stdout(monkeypatch, capsys, tmp_p
 
 
 def test_no_json_mode_info_lines_still_go_to_stderr(monkeypatch, capsys, tmp_path):
-    """无 --json 时人看终端行为照旧可见,只是通道统一为 stderr(不再回归 stdout)。"""
+    """无 --json 时人看终端行为照旧可见:info 行在 stderr,库层 print 仍走 stdout(不重定向)。"""
     _patch_deps(monkeypatch, tmp_path)
     rc = frame.main([DATE])
     captured = capsys.readouterr()
     assert rc == 0
-    assert captured.out == ""
+    assert "[L0·tushare]" in captured.out      # 无 --json:库层进度行保持原通道(parity)
     for marker in ("[frame]", "[sentinel·盘前预告]", "[macro_state]"):
         assert marker in captured.err
+
+
+def test_json_mode_contains_library_stdout(monkeypatch, capsys, tmp_path):
+    """--json 时库层(取数)print 一并被圈进 stderr——stdout 只剩 JSON(完整根因回归锁)。"""
+    _patch_deps(monkeypatch, tmp_path)
+    rc = frame.main([DATE, "--json"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "[L0·tushare]" not in captured.out and "[L0·tushare]" in captured.err
+    json.loads(captured.out.strip())

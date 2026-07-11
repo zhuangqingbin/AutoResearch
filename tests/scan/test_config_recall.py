@@ -46,6 +46,8 @@ def test_config_from_args_applies_funnel_recall_channels(monkeypatch, tmp_path):
                ["composite", "momentum", "reversal_confirm", "reversal", "value",
                 "main_fund", "heat", "growth", "healthy"]}})
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH",   # 显式指回本测试的真配置(冲销 conftest 隔离)
+                        tmp_path / ".claude" / "skills" / "scan-market" / "scan_config.jsonc")
     rc = _config_from_args(_args()).recall_channels
     assert rc is not None and "accumulation" not in rc and "northbound" not in rc
     assert "reversal_confirm" in rc and len(rc) == 9
@@ -67,6 +69,8 @@ def test_cmd_run_wires_channel_quotas_and_floors_from_config(monkeypatch, tmp_pa
     的同名 override 形参对齐)。mock universe.run + Pipeline.run,不碰网络/真实漏斗。"""
     _write_cfg(tmp_path, {"funnel": {"channel_quotas": {"heat": 150}, "channel_floors": {"heat": 30}}})
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH",   # 显式指回本测试的真配置(冲销 conftest 隔离)
+                        tmp_path / ".claude" / "skills" / "scan-market" / "scan_config.jsonc")
 
     import autoresearch.scan.cli as cli_mod
     from autoresearch.scan import universe as smu

@@ -25,6 +25,22 @@ def _scored(n=300) -> pd.DataFrame:
     return df
 
 
+def test_funnel_overlay_fills_only_none_and_explicit_wins(monkeypatch):
+    """FN-1 第三修:run 直调路径(prelude/universe.main)的 scan_config 兜底——None 的键补齐,显式恒优先。"""
+    monkeypatch.setattr("autoresearch.scan.user_config.load_user_config",
+                        lambda: {"funnel": {"recall_channels": ["composite"],
+                                            "channel_quotas": {"heat": 150}}})
+    rc, q, f = universe._funnel_overlay(None, None, None)
+    assert rc == ["composite"] and q == {"heat": 150} and f is None
+    rc2, q2, f2 = universe._funnel_overlay(["momentum"], {"heat": 99}, {"heat": 1})
+    assert (rc2, q2, f2) == (["momentum"], {"heat": 99}, {"heat": 1})
+
+
+def test_funnel_overlay_missing_config_is_parity(monkeypatch):
+    monkeypatch.setattr("autoresearch.scan.user_config.load_user_config", lambda: {})
+    assert universe._funnel_overlay(None, None, None) == (None, None, None)
+
+
 def test_quota_override_shrinks_channel():
     """channel_quotas={"heat": 10} 把 heat 通道的召回候选数(L1_channels 长表行数)砍到 ≤10。"""
     df = _scored()

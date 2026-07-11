@@ -302,6 +302,25 @@ def write_shadow_variants(outdir: Path, scored: pd.DataFrame, recall: pd.DataFra
 # ───────────────────────── 编排 + 输出 ─────────────────────────
 
 
+def _funnel_overlay(recall_channels, channel_quotas, channel_floors):
+    """scan_config.json funnel 兜底(仅补 None 的键;显式参数恒优先)。缺文件/坏文件 → 原样返回。"""
+    if recall_channels is not None and channel_quotas is not None and channel_floors is not None:
+        return recall_channels, channel_quotas, channel_floors
+    try:
+        from autoresearch.scan.user_config import load_user_config
+        fn = (load_user_config() or {}).get("funnel") or {}
+    except Exception as e:  # noqa: BLE001 — 配置层故障不挡确定性扫描
+        print(f"[warn] scan_config 读取失败({e!r})→ funnel 用注册表默认", file=sys.stderr)
+        fn = {}
+    if recall_channels is None:
+        recall_channels = fn.get("recall_channels")
+    if channel_quotas is None:
+        channel_quotas = fn.get("channel_quotas")
+    if channel_floors is None:
+        channel_floors = fn.get("channel_floors")
+    return recall_channels, channel_quotas, channel_floors
+
+
 def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
         recall_n: int = 1000, l2_n: int = 200, outdir: Path | None = None,
         source: str = "tushare", recall_mode: str = "multi", recall_channels=None,
@@ -318,6 +337,12 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
 
     recall_mode:multi=多路策略召回(默认,带 provenance + L1_channels.csv)| composite=单复合分(对拍/回退)。
     """
+    # FN-1 缝第三修:生产真身(workflow→prelude→本函数直调)不经 cli._config_from_args,scan_config
+    # 的 funnel 在真跑动从未生效(2026-07-11 冒烟坐实:仍 11 路旧配额)。兜底下沉:调用方没显式给的
+    # 键从 scan_config.json 读(显式参数恒优先;缺文件/缺键=None=注册表默认 parity;镜像 pinned
+    # 166e4d1 的"默认路径在 run 本体读"先例)。坏配置响亮警告后按默认跑,不让扫描失败。
+    recall_channels, channel_quotas, channel_floors = _funnel_overlay(
+        recall_channels, channel_quotas, channel_floors)
     # L0 取数 + L1 轻门 + 多日量价富化 → 全市场因子帧(scan.frame 单一代码路径,Phase 0 抽取)
     uni, _counts = build_market_frame(analysis_date, cap_floor_yi=cap_floor_yi, include_bj=include_bj,
                                       source=source, l0_min_amount_yi=l0_min_amount_yi,

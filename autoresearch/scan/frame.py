@@ -135,21 +135,26 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     analysis_date = args.date or date.today().isoformat()
 
-    frame, counts = build_market_frame(analysis_date, cap_floor_yi=args.cap_floor,
-                                       include_bj=not args.exclude_bj, source=args.source)
-    from autoresearch.scan.market import market_pack_from_frame
-    from autoresearch.scan.menu import sentinel_advice_from_frame
-    pack = market_pack_from_frame(frame, date=analysis_date)
-    level, reason = sentinel_advice_from_frame(frame)
-    reg = pack.get("regime") or {}
-    print(f"[frame] {analysis_date} 帧 {counts['after_gate_a']} 只(L0 {counts['universe']})｜"
-          f"regime={reg.get('label', '—')} breadth={reg.get('breadth', '—')} "
-          f"med_mom={reg.get('med_mom', '—')}", file=sys.stderr)
-    print(f"[sentinel·盘前预告] {level} —— {reason}(正式判据以 scan 内 L1_scored_full 口径为准)",
-          file=sys.stderr)
-    from autoresearch.macro.state import load_macro_state  # Phase 2:宏观 lite 的输入捆绑
-    mstate, mnote = load_macro_state(analysis_date, regime_today=reg.get("label"))
-    print(f"[macro_state] {mnote}", file=sys.stderr)
+    import contextlib
+
+    # --json 时把整个构建段的 stdout 圈进 stderr:湖冷时取数层(tushare_source 等)会 print 进度行,
+    # 只改本函数三行 info 挡不住(2026-07-09 market_pack 污染的完整根因)。JSON 是 stdout 唯一产出。
+    with contextlib.redirect_stdout(sys.stderr) if args.json else contextlib.nullcontext():
+        frame, counts = build_market_frame(analysis_date, cap_floor_yi=args.cap_floor,
+                                           include_bj=not args.exclude_bj, source=args.source)
+        from autoresearch.scan.market import market_pack_from_frame
+        from autoresearch.scan.menu import sentinel_advice_from_frame
+        pack = market_pack_from_frame(frame, date=analysis_date)
+        level, reason = sentinel_advice_from_frame(frame)
+        reg = pack.get("regime") or {}
+        print(f"[frame] {analysis_date} 帧 {counts['after_gate_a']} 只(L0 {counts['universe']})｜"
+              f"regime={reg.get('label', '—')} breadth={reg.get('breadth', '—')} "
+              f"med_mom={reg.get('med_mom', '—')}", file=sys.stderr)
+        print(f"[sentinel·盘前预告] {level} —— {reason}(正式判据以 scan 内 L1_scored_full 口径为准)",
+              file=sys.stderr)
+        from autoresearch.macro.state import load_macro_state  # Phase 2:宏观 lite 的输入捆绑
+        mstate, mnote = load_macro_state(analysis_date, regime_today=reg.get("label"))
+        print(f"[macro_state] {mnote}", file=sys.stderr)
     if args.json:
         from autoresearch.scan.user_config import load_user_config  # Plan A3 T1:用户配置层回显
         user_cfg = load_user_config()

@@ -17,6 +17,10 @@ import pytest
 def _isolate_default_pinned(monkeypatch):
     monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PINNED_PATH",
                         Path("/nonexistent/tests-no-real-pinned.jsonc"))
+    # 同族隔离:universe.run 的 _funnel_overlay 兜底会读默认 scan_config.jsonc(FN-1 第三修)——
+    # 真配置(9 路+advisory 配额)不该渗进 tmp_path 测试的 parity 断言;要测 overlay 的用例自行 monkeypatch。
+    monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH",
+                        Path("/nonexistent/tests-no-real-scan-config.jsonc"))
 
 
 @pytest.fixture(autouse=True)
