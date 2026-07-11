@@ -219,13 +219,9 @@ _GATES3 = ("主力真在", "业绩真兑现", "估值不透支")
 _GATESEG_RE = re.compile(r"OW三门[^\n→]*")
 
 
-def gate_status(text: str) -> dict[str, bool] | None:
-    """解析卡文『OW三门…』段 → {门: 是否✗失守};无门柱段(如早停卡)→ None。
-    门柱直方图与 learning.cross_calib 共用本函数(单一口径,防漂移)。"""
-    m = _GATESEG_RE.search(text)
-    if not m:
-        return None
-    seg = m.group(0)
+def _parse_gate_seg(seg: str) -> dict[str, bool]:
+    """单段『OW三门…』文本 → {门: 是否✗};门名允许紧邻「门」后缀 + 空白再判标记,找不到判 False
+    (gate_status 的既有语义,供其挑出目标段后调用)。"""
     out: dict[str, bool] = {}
     for g in _GATES3:
         i = seg.find(g)
@@ -234,8 +230,44 @@ def gate_status(text: str) -> dict[str, bool] | None:
         j = i + len(g)
         if seg[j:j + 1] == "门":                # 措辞容错:「主力真在门✗」
             j += 1
+        while seg[j:j + 1].isspace():           # 措辞容错:门名与标记之间的空格(l4-card.md Rubric 行写法)
+            j += 1
         out[g] = seg[j:j + 1] == "✗"
     return out
+
+
+def _seg_has_mark(seg: str) -> bool:
+    """段内是否至少一个门名紧邻(容许「门」后缀 + 空白)着实际 ✓/✗ 标记——用来判该段是否「可解析」。"""
+    for g in _GATES3:
+        i = seg.find(g)
+        if i < 0:
+            continue
+        j = i + len(g)
+        if seg[j:j + 1] == "门":
+            j += 1
+        while seg[j:j + 1].isspace():
+            j += 1
+        if seg[j:j + 1] in ("✓", "✗"):
+            return True
+    return False
+
+
+def gate_status(text: str) -> dict[str, bool] | None:
+    """解析卡文『OW三门…』段 → {门: 是否✗失守};无门柱段(如早停卡)→ None。
+    门柱直方图与 learning.cross_calib 共用本函数(单一口径,防漂移)。
+
+    容错(漏斗 P0+P1 波 Task 2b 修复):①门名与 ✓/✗ 之间允许空白(l4-card.md 满卡模板 Rubric 行的
+    真实写法「主力真在 ✗」带空格);②卡片正文可能多处出现"OW三门"字样(如先散文一句带过、文末
+    Rubric 行才结构化判定)——取全部匹配段里**最后一个**能解析出至少一个 ✓/✗ 标记的段;若全部段
+    都解析不出标记,退回首段(与改动前完全一致的返回语义)。"""
+    matches = list(_GATESEG_RE.finditer(text))
+    if not matches:
+        return None
+    for m in reversed(matches):
+        seg = m.group(0)
+        if _seg_has_mark(seg):
+            return _parse_gate_seg(seg)
+    return _parse_gate_seg(matches[0].group(0))
 
 
 def _gate_histogram(scan_dir: Path, rows: list[dict]) -> str:
