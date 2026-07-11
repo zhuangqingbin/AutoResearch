@@ -439,7 +439,7 @@ def pending_days(today: str | None = None, scan_root: Path | None = None,
 _KEEP = ["code", "name", "industry", "bucket", "winner", "news_pop", "fwd_1_oo", "fwd_2_oc", "hi_2_oc",
          "fwd_5_oc", "fwd_10_oc", "hi_10_oc", "winner_5", "bucket_5",
          "gap_d1", "rank", "recalled_flag", "composite", "score_momentum", "score_fund_main",
-         "score_chip", "pct_60d", "main_net_ratio", "winner_rate", "price_to_cost", "rsi6", "rating"]
+         "score_chip", "pct_60d", "main_net_ratio", "winner_rate", "price_to_cost", "rsi6", "rating", "bought"]
 
 
 def attribute(date: str, scan_root: Path | None = None, report_root: Path | None = None,
@@ -460,6 +460,24 @@ def attribute(date: str, scan_root: Path | None = None, report_root: Path | None
     if not pairs.empty:                              # presence-gated:未成熟日不落文件
         pairs.to_csv(outdir / "_retro_pairs.csv", index=False)
     return attr
+
+
+def backfill_bought(scan_root: Path | str | None = None) -> int:
+    """历史 attribution.csv 补 `bought` 列(rating∈OW/Buy);已有列跳过 → 幂等。返回补写文件数。
+
+    修复:`_KEEP` 曾漏 `bought`(attribute_frame 算好但落盘白名单未收),导致老 attribution.csv
+    无此列 → zero_buy_ledger.roll() 容错读成全 False → 真实买单日被记成 0 买(台账污染)。
+    """
+    root = Path(scan_root) if scan_root else Path("context/scan")
+    n = 0
+    for p in sorted(root.glob("*/retro/attribution.csv")):
+        df = pd.read_csv(p, dtype={"code": str})
+        if "bought" in df.columns:
+            continue
+        df["bought"] = df.get("rating", pd.Series("", index=df.index)).astype(str).isin(_BUY)
+        df.to_csv(p, index=False)
+        n += 1
+    return n
 
 
 def shadow_compare(attr: pd.DataFrame, sdir: Path) -> list[dict]:
@@ -860,6 +878,10 @@ def main() -> int:
     if args and args[0] == "refresh":
         done = refresh_attributions()
         print(f"[refresh] 刷新 {len(done)} 日:{'、'.join(done) or '(无需刷新)'}")
+        return 0
+    if args and args[0] == "backfill-bought":
+        n = backfill_bought()
+        print(f"[backfill-bought] 补写 {n} 个文件")
         return 0
     if len(args) >= 2 and args[0] == "attribute":
         attr = attribute(args[1])
