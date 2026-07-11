@@ -610,6 +610,44 @@ def regime_and_drift(scan_dir: Path) -> tuple[str, str]:
     return line, (reason if drifted else "")
 
 
+def _l35_gate_shadow_line(scan_dir: Path) -> str:
+    """L3.5 闸影子一行(design 2026-07-11-recall-gate-pinned-config-design.md §3;
+    plan 2026-07-11-l35-gate-backtest-plan.md Task 3)。presence-gated:无
+    `_l35_cut.csv`(passthrough 默认 / 该闸当日全放行)→ `""` 不加节,老路不破。
+
+    同日 assemble 跑在 L4 之后、retro 之前(retro 要 T+2 fwd 才成熟)——`retro/attribution.csv`
+    通常还不在场,此时只报 cut 只数 + "成熟中"注记;retro 已为该日补跑(`attribution.csv`
+    在场,如晚于 T+2 重新 assemble)→ 复用 `learning.retro.l35_gate_shadow` 同款计算,报
+    cut vs picked 的 fwd_2 均值对照。
+    """
+    cutp = scan_dir / "_l35_cut.csv"
+    if not cutp.exists():
+        return ""
+    import pandas as pd  # lazy:assemble 主体走 csv/json,仅此块用 pandas(同 watchlist 块惯例)
+
+    try:
+        n_cut = int(len(pd.read_csv(cutp, dtype={"code": str})))
+    except Exception:  # noqa: BLE001
+        return ""
+    maturing = f"- **🚧 L3.5 闸影子**:cut {n_cut} 只(T+2 fwd_2 成熟中,retro 后回填对照)"
+    attrp = scan_dir / "retro" / "attribution.csv"
+    if not attrp.exists():
+        return maturing
+    try:
+        from autoresearch.learning.retro import l35_gate_shadow
+        attr = pd.read_csv(attrp, dtype={"code": str})
+        gs = l35_gate_shadow(attr, scan_dir)
+    except Exception:  # noqa: BLE001
+        gs = None
+    if not gs:
+        return maturing
+    cutm = "—" if gs["cut_mean_fwd2"] is None else f"{gs['cut_mean_fwd2'] * 100:+.2f}%"
+    pkm = "—" if gs["picked_mean_fwd2"] is None else f"{gs['picked_mean_fwd2'] * 100:+.2f}%"
+    return (f"- **🚧 L3.5 闸影子**:cut {gs['n_cut']} 只(已实现{gs['n_cut_realized']}) "
+            f"mean_fwd2 {cutm} vs picked(已实现{gs['n_picked_realized']}) mean_fwd2 {pkm}"
+            "(闸的日常体检读数)")
+
+
 def _self_review_banner(scan_dir: Path, rows: list[dict], summary_text: str,
                         regime_drift: str = "") -> str:
     """发布前机械自检(self_review 硬门)→ 报告顶部 banner。缺依赖/无问题 → 空串(老路不破)。"""
@@ -726,6 +764,11 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
 
     # ── 1. 漏斗数量 ──
     out += ["## 1. 漏斗(数量)"] + _funnel_rows(meta, len(keep) or "?", len(finals), len(rows)) + [""]
+
+    # ── L3.5 闸影子(presence-gated:无 _l35_cut.csv → "" 不加节;见 gates.apply_l35_gate)──
+    l35_line = _l35_gate_shadow_line(scan_dir)
+    if l35_line:
+        out += [l35_line, ""]
 
     # ── 2. 各阶段卡点 + 概览 ──
     out += ["## 2. 各阶段卡点 & 股票概览"]

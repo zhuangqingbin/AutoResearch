@@ -16,6 +16,7 @@ from __future__ import annotations
 import csv
 import json
 
+import pandas as pd
 import pytest
 
 from autoresearch.scan import assemble
@@ -280,3 +281,52 @@ def test_decision_text_zfills_short_ticker(tmp_path):
     assert _decision_text(tmp_path, "2156") is not None
     assert _decision_text(tmp_path, "002156") is not None
     assert _decision_text(tmp_path, "999999") is None
+
+
+# ───────────────────────── L3.5 闸影子(_l35_gate_shadow_line,plan A2 Task 3) ─────────────────────────
+#
+# design: docs/specs/2026-07-11-recall-gate-pinned-config-design.md §3
+# plan:   docs/plans/2026-07-11-l35-gate-backtest-plan.md Task 3
+
+
+def test_l35_gate_shadow_line_absent_cut_file_returns_empty(tmp_path):
+    """presence-gated:无 _l35_cut.csv(passthrough 默认)→ "" 不加节,老路不破。"""
+    assert assemble._l35_gate_shadow_line(tmp_path) == ""
+
+
+def test_l35_gate_shadow_line_cut_present_no_attribution_yet(tmp_path):
+    """同日 assemble(L4 后、retro 前,T+2 fwd 未成熟):只报 cut 只数 + 成熟中注记。"""
+    pd.DataFrame({"code": ["000002", "000003"], "rank": [2, 3], "conviction": [10, 5],
+                 "lane": ["trend", "trend"],
+                 "reason": ["conviction<floor(50)"] * 2}).to_csv(tmp_path / "_l35_cut.csv", index=False)
+    line = assemble._l35_gate_shadow_line(tmp_path)
+    assert "cut 2 只" in line and "成熟中" in line
+
+
+def test_l35_gate_shadow_line_with_attribution_shows_means(tmp_path):
+    """retro 已补跑(attribution.csv 在场)→ 一行报 cut vs picked 的 fwd_2 均值对照。"""
+    pd.DataFrame({"code": ["000002"], "rank": [2], "conviction": [10], "lane": ["trend"],
+                 "reason": ["conviction<floor(50)"]}).to_csv(tmp_path / "_l35_cut.csv", index=False)
+    pd.DataFrame({"code": ["000001"]}).to_csv(tmp_path / "finalists.csv", index=False)
+    (tmp_path / "retro").mkdir()
+    pd.DataFrame({"code": ["000001", "000002"], "fwd_2_oc": [0.05, -0.02]}).to_csv(
+        tmp_path / "retro" / "attribution.csv", index=False)
+    line = assemble._l35_gate_shadow_line(tmp_path)
+    assert "cut 1 只" in line
+    assert "-2.00%" in line, f"cut 侧均值应显示 -2.00%: {line}"
+    assert "+5.00%" in line, f"picked 侧均值应显示 +5.00%: {line}"
+
+
+def test_build_summary_includes_l35_line_when_cut_file_present(tmp_path):
+    """集成:build_summary 输出含「L3.5 闸影子」一行(scan_dir 有 _l35_cut.csv 时)。"""
+    root = tmp_path / "scan_l5_l35"
+    scan = _build_scan_dir(root)
+    pd.DataFrame({"code": ["300476"], "rank": [1], "conviction": [10], "lane": ["trend"],
+                 "reason": ["conviction<floor(50)"]}).to_csv(scan / "_l35_cut.csv", index=False)
+    md = assemble.build_summary(scan, _DATA_DATE, _HHMM, "folder")
+    assert "L3.5 闸影子" in md
+
+
+def test_published_default_fixture_has_no_l35_shadow_line(published):
+    """反向 parity 检查:默认合成 scan dir(无 _l35_cut.csv)不应出现 L3.5 闸影子节。"""
+    assert "L3.5 闸影子" not in published["md"]

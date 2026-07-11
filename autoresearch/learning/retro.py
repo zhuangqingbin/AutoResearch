@@ -492,6 +492,54 @@ def shadow_compare(attr: pd.DataFrame, sdir: Path) -> list[dict]:
     return out
 
 
+def l35_gate_shadow(attr: pd.DataFrame, sdir: Path) -> dict | None:
+    """L3.5 闸影子反事实(design 2026-07-11-recall-gate-pinned-config-design.md §3;
+    plan 2026-07-11-l35-gate-backtest-plan.md Task 3):被闸掉的候选(`gates.apply_l35_gate`
+    落的 `_l35_cut.csv`)T+2 主尺 fwd_2_oc vs picked(`finalists.csv`,闸后名单)均值对照——
+    闸的日常体检读数,抄 `shadow_compare` 同款姿势(presence-gated,单日读数薄)。
+
+    无 `_l35_cut.csv`(passthrough 默认 / 当日该闸恰好全放行)→ `None`(不进 retro_input,
+    呼应 assemble「无 cut 文件不加节」的 presence-gated 契约,两处同一判据)。fwd_2_oc 未成熟
+    或两侧样本皆空 → 对应 mean 为 `None`(不臆造数字),`n_*_realized` 如实报 0。
+    """
+    cutp = sdir / "_l35_cut.csv"
+    if not cutp.exists():
+        return None
+    try:
+        cut = pd.read_csv(cutp, dtype={"code": str})
+    except Exception:  # noqa: BLE001
+        return None
+    if not len(cut) or "code" not in cut.columns:
+        return None
+    cut = cut.copy()
+    cut["code"] = cut["code"].astype(str).str.zfill(6)
+
+    a = attr.copy()
+    a["code"] = a["code"].astype(str).str.zfill(6)
+    fwd = (pd.to_numeric(a.set_index("code")["fwd_2_oc"], errors="coerce")
+          if "fwd_2_oc" in a.columns else pd.Series(dtype=float))
+
+    cut_fwd = fwd.reindex(cut["code"]).dropna()
+    picked_fwd = pd.Series(dtype=float)
+    finp = sdir / "finalists.csv"
+    if finp.exists():
+        try:
+            fin = pd.read_csv(finp, dtype={"code": str})
+        except Exception:  # noqa: BLE001
+            fin = None
+        if fin is not None and "code" in fin.columns:
+            picked_codes = fin["code"].astype(str).str.zfill(6)
+            picked_fwd = fwd.reindex(picked_codes).dropna()
+
+    return {
+        "n_cut": int(len(cut)),
+        "n_cut_realized": int(len(cut_fwd)),
+        "cut_mean_fwd2": round(float(cut_fwd.mean()), 5) if len(cut_fwd) else None,
+        "n_picked_realized": int(len(picked_fwd)),
+        "picked_mean_fwd2": round(float(picked_fwd.mean()), 5) if len(picked_fwd) else None,
+    }
+
+
 def _health_section(sdir: Path) -> list[str]:
     """run_health.json → retro_input 运行健康节(降级字段/缺产物提示)。缺文件/无恙 → []。
 
@@ -614,6 +662,17 @@ def write_retro_input(date: str, attr: pd.DataFrame, scan_root: Path | None = No
                       f"T+5 捕获 {r['cap5']} vs 主 {r['cap5_main']}" for r in sc]
     except Exception:  # noqa: BLE001
         pass
+
+    try:                                   # L3.5 闸影子(被闸票 T+2 主尺 fwd_2 vs picked 均值;presence-gated)
+        gs = l35_gate_shadow(attr, sdir)
+        if gs:
+            lines += ["\n## L3.5 闸影子(被闸票 fwd_2_oc vs picked 均值;闸的日常体检读数,"
+                      "无 `_l35_cut.csv` 则不进此节)",
+                      f"- cut {gs['n_cut']} 只(已实现 {gs['n_cut_realized']}):"
+                      f"mean_fwd2 {gs['cut_mean_fwd2']};picked(已实现 {gs['n_picked_realized']}):"
+                      f"mean_fwd2 {gs['picked_mean_fwd2']}"]
+    except Exception as e:  # noqa: BLE001
+        lines += [f"\n_L3.5 闸影子跳过:{e}_"]
 
     try:                                   # F · 逐阶段 agent edge(staging 缺 / fwd 未实现则跳过)
         import autoresearch.learning.stage_eval as stage_eval

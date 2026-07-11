@@ -34,7 +34,10 @@ const GATE1 = { type: 'object', required: ['ok'],
     sentinel_level: { type: 'string' }, l4_budget: { type: 'integer' } } }
 const GATE2 = { type: 'object', required: ['ok'],
   properties: { ok: { type: 'boolean' }, reason: { type: 'string' },
-    finalists: { type: 'array', items: { type: 'string' } }, n: { type: 'integer' } } }
+    finalists: { type: 'array', items: { type: 'string' } }, n: { type: 'integer' },
+    // L3.5 可插拔闸回显(design 2026-07-11 §3;plan Task 4):l4_gate=闸名(缺配置→'passthrough'
+    // =parity),l35_cut_n=闸砍掉几只(passthrough 恒 0)。finalists/n 已是闸后(收窄后)数。
+    l4_gate: { type: 'string' }, l35_cut_n: { type: 'integer' } } }
 const OK = { type: 'object', required: ['ok'],
   properties: { ok: { type: 'boolean' }, reason: { type: 'string' } } }
 function gate(label, cmd, schema, phaseName) {   // 同上:避免遮蔽全局 phase()
@@ -113,7 +116,9 @@ await agent(
 await bash(`${R} autoresearch.scan.agents.l3_select finalists ${date} --budget ${g1.l4_budget}`, 'finalists', 'L3')
 const g2 = await gate('GATE2', `${R} autoresearch.scan.gates gate2 ${date} --budget ${g1.l4_budget}`, GATE2, 'L3')
 if (!g2 || !g2.ok) throw new Error(`GATE2 失败:${g2 ? g2.reason : 'no return'}`)
-log(`GATE2 ✓ finalists=${g2.n}`)
+// finalists/n 已是 L3.5 闸后(收窄后)数——闸默认 passthrough(=parity,cut 恒 0),仅在
+// scan_config.json 显式配置 l4_gate 时才会真收窄,此时才附 cut 只数。
+log(`GATE2 ✓ finalists=${g2.n}(L3.5闸=${g2.l4_gate || 'passthrough'}${g2.l35_cut_n ? ` · cut${g2.l35_cut_n}` : ''})`)
 
 // ── Phase L4 ────────────────────────────────────────────────────
 phase('L4')
