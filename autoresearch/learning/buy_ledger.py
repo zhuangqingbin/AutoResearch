@@ -11,6 +11,7 @@ edge?本模块逐买单落账(来源=attribution 已实现 fwd + 卡片目标价
 """
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -20,6 +21,7 @@ _COLS = ["date", "code", "name", "rating", "gap_open", "fwd_1", "fwd_2", "fwd_5"
          "hi_10", "hi_2", "target_ret", "target_hit"]
 _TARGET_RE = re.compile(r"(\d+(?:\.\d+)?)")
 _SCHEMA_SWITCH = "2026-07-10"   # 卡契约 v3(超短)生效日:此前卡=10日语义按 hi_10 判,此后按 hi_2
+_HI2_MIN_N = 10   # hi2 校准分组样本门槛(⚠禁注惯例:n<此值的分组丢弃/禁注,all/by_regime 共用)
 
 
 def _hi_col_for(day: str) -> str:
@@ -179,6 +181,93 @@ def calibration_line(stats: dict | None) -> str | None:
             f"{stats['hit_rate']:.0%}(成熟 n={stats['n_mature']};中位目标 "
             f"{stats['med_target']:+.0%} vs 中位MFE {stats['med_mfe']:+.0%})"
             f"——目标幅>{stats['med_mfe']:+.0%} 需给出超额理由")
+
+
+# ---------------- 目标价 hi_2_oc 基率锚(全 universe 分布,非仅买单;task-6-brief) ----------------
+
+
+def hi2_calibration(scan_root: Path | str | None = None, window: int = 30) -> dict:
+    """全 universe(非仅买单)`hi_2_oc` 分布基率锚:近 window 个 scan 日 attribution.csv 全量
+    `hi_2_oc` 有值行 concat,按当日 `meta.json` 的 regime 分组(缺文件/缺键该日只进 all,
+    不进分组)。分位用 `series.quantile(0.5/0.6)`;`touch8_rate` = hi_2_oc≥8% 占比(即"旧
+    中位目标在 2 日窗的真实触达率")。
+
+    动机:全卡目标触达 43%、中位目标 +8% vs 中位 MFE +4% = 目标价系统性 2× 过乐观。本函数
+    给 L4 卡目标价一个**基于真实 2 日 MFE 分布**的基率锚(p60),而非拍脑袋。`by_regime`
+    分组 n<`_HI2_MIN_N` 直接丢弃(⚠禁注惯例);`all` 组恒返回(即便 n=0/n<阈值),是否
+    据此注入简报由调用方 `target_calib_line` 按同一阈值把关。
+    """
+    scan_root = Path(scan_root or "context/scan")
+    days: list[Path] = []
+    if scan_root.exists():
+        days = sorted(p for p in scan_root.iterdir() if p.is_dir() and p.name[:2] == "20")
+        days = days[-window:]
+
+    def _stats(vals: list[float]) -> dict:
+        s = pd.Series(vals, dtype=float)
+        n = len(s)
+        return {"n": n,
+                "hi2_p50": round(float(s.quantile(0.5)), 4) if n else None,
+                "hi2_p60": round(float(s.quantile(0.6)), 4) if n else None,
+                "touch8_rate": round(float((s >= 0.08).mean()), 4) if n else None}
+
+    all_vals: list[float] = []
+    regime_vals: dict[str, list[float]] = {}
+    for d in days:
+        attr = _read_attr(d)
+        if attr is None or "hi_2_oc" not in attr.columns:
+            continue
+        s = pd.to_numeric(attr["hi_2_oc"], errors="coerce").dropna()
+        if not len(s):
+            continue
+        vals = s.tolist()
+        all_vals.extend(vals)
+        regime = None
+        mp = d / "meta.json"
+        if mp.exists():
+            try:
+                regime = json.loads(mp.read_text(encoding="utf-8")).get("regime")
+            except Exception:  # noqa: BLE001 — 坏 meta 不阻校准,该日只进 all
+                regime = None
+        if regime:
+            regime_vals.setdefault(str(regime), []).extend(vals)
+
+    by_regime = {r: _stats(v) for r, v in regime_vals.items() if len(v) >= _HI2_MIN_N}
+    return {"all": _stats(all_vals), "by_regime": by_regime}
+
+
+def write_target_calib(scan_root: Path | str | None = None, window: int = 30,
+                       out_dir: Path | str | None = None) -> dict:
+    """`hi2_calibration()` 落盘 → `<out_dir>/target_calib.json`(presence-gated 消费方:
+    `l4_card._target_calib_mark` 读此文件组简报 📐 行)。`out_dir` 缺省 = `context/learning`。
+    一次性:`python -c "from autoresearch.learning.buy_ledger import write_target_calib as w; w()"`。
+    """
+    calib = hi2_calibration(scan_root=scan_root, window=window)
+    out = Path(out_dir) if out_dir else Path("context/learning")
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "target_calib.json").write_text(
+        json.dumps(calib, ensure_ascii=False, indent=2), encoding="utf-8")
+    return calib
+
+
+def target_calib_line(calib: dict | None, regime: str | None,
+                      min_n: int = _HI2_MIN_N) -> str | None:
+    """L4 逐卡块 📐 行(`hi_2_oc` 全 universe 分布基率锚)。presence-gated:全体 n<min_n →
+    None(⚠禁注惯例,整行不注);同 regime 分组若在 `by_regime` 出现(`hi2_calibration` 已按
+    `_HI2_MIN_N` 过滤)才追加第二段,否则只报全体。
+    """
+    if not calib:
+        return None
+    allg = calib.get("all") or {}
+    n_all = allg.get("n") or 0
+    p60 = allg.get("hi2_p60")
+    if n_all < min_n or p60 is None:
+        return None
+    line = f"📐 目标校准:全体 2 日 MFE p60={p60:+.1%}(n={n_all})"
+    rg = (calib.get("by_regime") or {}).get(regime) if regime else None
+    if rg and rg.get("hi2_p60") is not None:
+        line += f"·同 regime p60={rg['hi2_p60']:+.1%}(n={rg['n']})"
+    return line + "——目标价超 p60 须在卡内给硬理由"
 
 
 def rating_base_rates(ledger: pd.DataFrame, min_n: int = 10) -> list[dict]:

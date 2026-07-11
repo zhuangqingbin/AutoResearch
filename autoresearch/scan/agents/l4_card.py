@@ -524,6 +524,32 @@ def audit_rubric_gates(card_text: str, gates: dict) -> list[str]:
 # ───────────────────────── L4 · 派发包确定性落稿(harvest 清单 + prompt 稿) ─────────────────────────
 
 
+def _target_calib_mark(base: Path | str) -> str:
+    """📐 目标价基率锚行(presence-gated:`target_calib.json` 缺 → ""）。日级(非逐票),
+    整次派发只算一次,逐卡块内原样复用。
+
+    路径按 `base`(scan_dir,生产态 = `context/scan/<date>`)反推兄弟目录
+    `base.parent.parent/learning/target_calib.json`——镜像 `_precedent_mark` 的
+    `context/{scan,learning}` 兄弟约定,tmp_path 天然隔离,不需 monkeypatch。当日 regime
+    读 `base` 自己的 `meta.json`(缺文件/缺键 → 只报全体,同 regime 段跳过)。
+    """
+    p = Path(base).parent.parent / "learning" / "target_calib.json"
+    if not p.exists():
+        return ""
+    try:
+        import json
+
+        from autoresearch.learning.buy_ledger import target_calib_line
+        calib = json.loads(p.read_text(encoding="utf-8"))
+        regime = None
+        mp = Path(base) / "meta.json"
+        if mp.exists():
+            regime = json.loads(mp.read_text(encoding="utf-8")).get("regime")
+        return target_calib_line(calib, regime) or ""
+    except Exception:  # noqa: BLE001 — 锚可选,缺了不挡简报
+        return ""
+
+
 def write_dispatch_pack(scan_dir: Path | str) -> dict:
     """L4 派发包确定性落稿(零 LLM):`_harvest_list.txt`(yfinance 归一后缀,`.SH` 绝迹)
     + 每卡 `_l4_prompt_<code>.md`(共享指令 + 漏斗简报 + slim/卡路径指针)。
@@ -550,6 +576,7 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
     sp = scan_dir / "_l4_shared_instructions.md"
     if sp.exists():
         shared = sp.read_text(encoding="utf-8").strip()
+    calib_line = _target_calib_mark(scan_dir)        # 📐 目标价基率锚(日级,算一次逐卡复用)
     tickers: list[str] = []
     pinned: list[str] = []
     n_prompts = n_skipped = 0
@@ -572,6 +599,8 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
                     + (f":{note}" if note else "") +
                     ")——仍须按下方真实证据独立评判,不因『保送』降低尽调标准。", ""]
         body.append(compose_funnel_brief(code6, scan_dir).rstrip())
+        if calib_line:                               # 逐卡块内(共享前缀之后,不破 cache 契约)
+            body += ["", calib_line]
         prompt = "\n".join([
             # 固定标头(逐卡不变,≤300B)——cache 前缀契约(T8):共享块前不得出现逐卡可变内容,
             # 否则 30 卡并发前缀全断、cache 全 miss。逐卡专属标题(含 📌 保送标记)移到共享块**之后**。
