@@ -134,10 +134,14 @@ def test_frame_cli_smoke(monkeypatch, capsys, tmp_path):
                         (None, "无 macro_state.json → 只用日频 pack"), raising=True)
     monkeypatch.chdir(tmp_path)   # 隔离真实 context/scan/<date>(Plan A3 T1 起 --json 落 echo 文件)
     rc = scan_frame.main([DATE, "--json"])
-    out = capsys.readouterr().out
+    captured = capsys.readouterr()
+    out, err = captured.out, captured.err
     assert rc == 0
-    assert "[sentinel·盘前预告]" in out
-    assert "[macro_state]" in out        # Phase 2:宏观视图新鲜度一行
+    # 信息行走 stderr(2026-07-11 修:--json 时 stdout 须是纯 JSON,不再混日志——见 test_frame_json_clean.py)
+    assert "[sentinel·盘前预告]" in err
+    assert "[macro_state]" in err         # Phase 2:宏观视图新鲜度一行
+    assert "[sentinel·盘前预告]" not in out
+    assert "[macro_state]" not in out
     assert '"breadth"' in out            # --json 打印 market_pack(宏观 lite 输入)
     assert '"macro_state_note"' in out   # 捆绑进 JSON,缺文件 → null + note(presence-gated)
     assert '"user_config"' in out        # Plan A3 T1:用户配置层回显(缺文件 → {})

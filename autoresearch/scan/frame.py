@@ -144,11 +144,12 @@ def main(argv: list[str] | None = None) -> int:
     reg = pack.get("regime") or {}
     print(f"[frame] {analysis_date} 帧 {counts['after_gate_a']} 只(L0 {counts['universe']})｜"
           f"regime={reg.get('label', '—')} breadth={reg.get('breadth', '—')} "
-          f"med_mom={reg.get('med_mom', '—')}")
-    print(f"[sentinel·盘前预告] {level} —— {reason}(正式判据以 scan 内 L1_scored_full 口径为准)")
+          f"med_mom={reg.get('med_mom', '—')}", file=sys.stderr)
+    print(f"[sentinel·盘前预告] {level} —— {reason}(正式判据以 scan 内 L1_scored_full 口径为准)",
+          file=sys.stderr)
     from autoresearch.macro.state import load_macro_state  # Phase 2:宏观 lite 的输入捆绑
     mstate, mnote = load_macro_state(analysis_date, regime_today=reg.get("label"))
-    print(f"[macro_state] {mnote}")
+    print(f"[macro_state] {mnote}", file=sys.stderr)
     if args.json:
         from autoresearch.scan.user_config import load_user_config  # Plan A3 T1:用户配置层回显
         user_cfg = load_user_config()
