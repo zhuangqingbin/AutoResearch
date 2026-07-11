@@ -390,7 +390,7 @@ def adjudicate(op: str, candidate: dict, target_id: str | None = None, day: str 
 
 def add_proposal(kind: str, summary: str, rationale: str = "", diff_sketch: str = "",
                  ts: str | None = None) -> dict:
-    """结构性改动建议(待批)。kind ∈ {factor,gate,prompt_rule}。"""
+    """结构性改动建议(待批)。kind ∈ {factor,gate,prompt_rule,prompt_patch}。"""
     ts = ts or _now_ts()
     day = ts[:10].replace("-", "")
     seq = sum(1 for r in _read_jsonl(_PROPOSALS) if r.get("id", "").startswith(f"pr_{day}_")) + 1
@@ -398,6 +398,64 @@ def add_proposal(kind: str, summary: str, rationale: str = "", diff_sketch: str 
            "rationale": rationale, "diff_sketch": diff_sketch, "status": "open"}
     _append_jsonl(_PROPOSALS, rec)
     return rec
+
+
+# ───────────────── prompt_patch(Plan B T1·经验 → 提示词补丁) ─────────────────
+# 锚集来自 grep -n "卡契约 v3|超短口径|机构面网查|FINAL TRANSACTION PROPOSAL|Rubric建议|进入P4倾向"
+# tests/test_agent_defs.py autoresearch/ —— l4-card 机器契约核心锚串:部分被 self_review/health/
+# assemble/l4_reuse 的正则原样解析(卡片契约),部分被 test_agent_defs.py 锁 agent↔playbook 同步;
+# proposed_text 绝不能让它们从 target_file 消失,否则下游解析器或契约同步测试失明/失步。
+_CONTRACT_ANCHORS = (
+    "卡契约 v3",
+    "超短口径",
+    "机构面网查",
+    "FINAL TRANSACTION PROPOSAL",
+    "Rubric建议",
+    "进入P4倾向",
+)
+_MAX_OPEN_PROMPT_PATCH = 5   # open 状态 prompt_patch 计数上限;防无节制堆积无人处理
+
+
+def add_prompt_patch(target_file: str, anchor_text: str, current_text: str,
+                     proposed_text: str, evidence: list[str]) -> dict:
+    """经验 → 提示词补丁提案:对某 playbook/agent 文案的改写建议,只出建议不自动改文件。
+
+    三重校验(核心安全,任一不过直接 raise,不静默降级/不部分写入):
+    ① `target_file` 必须存在,否则 `FileNotFoundError`。
+    ② `proposed_text` 不得让 `_CONTRACT_ANCHORS` 任何一个契约锚从 target_file 消失,否则
+       `ValueError`——模拟把 target_file 现有全文里的 `current_text` 换成 `proposed_text`,
+       原文里有的锚若换后不在了就是删锚,直接拒(`current_text` 为空 = 纯追加,不模拟替换)。
+    ③ 当前 open 状态、kind=prompt_patch 的提案数已达 `_MAX_OPEN_PROMPT_PATCH` 时拒绝新起草,
+       否则 `RuntimeError`——先清积压(批准/拒绝)再写新的,防看板堆成摆设无人处理。
+
+    起草门槛(见 retro-playbook「起草 prompt_patch」节):同型失误 ≥2 次 + 账本读数支撑才起草,
+    不是每次诊断都升级到改提示词文案。`evidence` 拼进 rationale;target_file/anchor_text/
+    current_text/proposed_text 打包 JSON 存 diff_sketch,供 Task2 `show` 复原成人读 diff。
+    """
+    p = Path(target_file)
+    if not p.exists():
+        raise FileNotFoundError(f"add_prompt_patch: target_file 不存在: {target_file}")
+
+    original = p.read_text(encoding="utf-8")
+    after = original.replace(current_text, proposed_text) if current_text else original
+    for anchor in _CONTRACT_ANCHORS:
+        if anchor in original and anchor not in after:
+            raise ValueError(
+                f"add_prompt_patch: proposed_text 会让契约锚「{anchor}」从 {target_file} 消失,禁止起草")
+
+    open_n = sum(1 for r in _read_jsonl(_PROPOSALS)
+                if r.get("status") == "open" and r.get("kind") == "prompt_patch")
+    if open_n >= _MAX_OPEN_PROMPT_PATCH:
+        raise RuntimeError(
+            f"add_prompt_patch: open 状态 prompt_patch 已有 {open_n} 条"
+            f"(上限 {_MAX_OPEN_PROMPT_PATCH}),先批复/拒绝积压再起草新的")
+
+    diff_sketch = json.dumps({
+        "target_file": target_file, "anchor_text": anchor_text,
+        "current_text": current_text, "proposed_text": proposed_text,
+    }, ensure_ascii=False)
+    return add_proposal("prompt_patch", f"{anchor_text}({target_file})"[:120],
+                        rationale="\n".join(str(e) for e in evidence), diff_sketch=diff_sketch)
 
 
 def set_proposal_status(pid: str, status: str) -> bool:

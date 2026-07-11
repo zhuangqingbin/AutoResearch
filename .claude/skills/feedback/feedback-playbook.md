@@ -62,6 +62,12 @@ PY
 ```
 > 拿不准就用 ADD(新条)——裁决 UPDATE/DELETE 会改/失效旧条,只在**确有**近似/矛盾条时用。裁决全落 changelog 可回滚。
 
+- **毕业(第五出口,不是 `adjudicate` 的 op)**:同一条 lesson 反复强化 + MTM **support 明显压过
+refute**(如 `reinforce_count` 持续走高、`mtm.support≥3` 且 support>refute)→ 别让它继续占
+lessons.jsonl 与 render_calibration_block 的注入名额,把 `rule` 原文**固化写进对应 playbook 正文**
+(如本文件「经验卫生」节,或对应 skill 的 playbook),再 `fs.retire_lesson(slug)` 退役该条——知识从
+『待验证的动态经验』升级成『确定的固定流程』,retire 不代表这条经验错了(区别于失效退休)。
+
 **回执用户**:记了哪条 feedback、是否升成经验(及 slug/confidence)、下次哪个 skill/阶段会自动用上(scan 的 L2/L3 校准块 / 报告骨架)。
 
 ## 注回怎么生效(无需手动)
@@ -73,6 +79,7 @@ PY
 - **slug 要稳定**:同一教训用同一 slug,反复反馈→自动强化(confidence 升、reinforce_count++),别每次新建。
 - **能 global 就 global**:通则放 global 威力最大;只有真的行业/个股特异才下沉。
 - 退休(regime 翻转/不再成立)→ `fs.retire_lesson(slug)`(或交给 retro 的自动退休)。
+- **毕业退休**(区别于上一条的失效退休):规则依然成立,只是已固化进 playbook 正文,`retire_lesson` 只是清理动态 store 的注入名额,不代表这条经验错了——见第 5 步「毕业」。
 
 ---
 > 设计沿革(可选背景,删除不影响运行):`docs/specs/2026-06-20-closed-loop-learning-design.md` §3.1(知识库底座)/ §3.3(注回机制)。

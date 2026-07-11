@@ -63,6 +63,29 @@ PY
 ```
 prompt 规则改动须按 **writing-skills** 测过再上线。
 
+**4.5 起草 prompt_patch(经验 → 提示词补丁,结构性建议的一种)**
+判断层(L2/L3/L4)反复踩同一坑、且病因是 prompt/playbook 文案本身(不是权重/门槛能治)才起草——
+门槛:**同型失误 ≥2 次**(同一诊断连续多日重现,如「同日配对节」或「L3 错杀验尸节」连续两次指向
+同一段文案)**+ 账本读数支撑**(gate_ledger/channel_ledger 等确定性账本能量化这坑的代价,不是拍脑袋)。
+`fs.add_prompt_patch` 自带三重校验(target_file 必须存在;**契约锚字符串一个都不能被删**——
+`_CONTRACT_ANCHORS`=卡契约 v3/超短口径/机构面网查/FINAL TRANSACTION PROPOSAL/Rubric建议/进入P4倾向
+等 l4-card 机器契约锚,proposed_text 让任一消失直接 raise;open 状态 prompt_patch 计数≤5,超了先
+清积压),只出建议不自动改文件:
+```bash
+uv run --no-sync python - <<'PY'
+import autoresearch.learning.feedback_store as fs
+fs.add_prompt_patch(
+    target_file=".claude/skills/scan-retro/retro-playbook.md",
+    anchor_text="""<定位旧文案的短锚句>""",
+    current_text="""<现状文案原文>""",
+    proposed_text="""<改写后文案,不得删契约锚>""",
+    evidence=["同型失误1:07-05 诊断……", "同型失误2:07-09 诊断再现……", "gate_ledger ex>0 n=6"],
+)
+PY
+```
+施工(实际改文件)永远走人批——起草只落一条待审提案,不自动动文件;若目标是契约文件(agent 定义/
+lite-playbook/SKILL/STAGES),施工后务必重跑 `tests/test_agent_defs.py`(锚同步)与 doc-lint 复检。
+
 **5. 写经验(语义,自动注回下次)**
 反复出现的诊断 → **已有 slug 直接 `upsert_lesson` 强化**;**起新 slug 前先 M2 裁决**(`similar_lessons` 召回 → 判 op → `adjudicate`),防 retro 日复日堆出重复/矛盾条:
 ```bash
