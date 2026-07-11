@@ -139,7 +139,7 @@ def main(argv: list[str] | None = None) -> int:
                                        include_bj=not args.exclude_bj, source=args.source)
     from autoresearch.scan.market import market_pack_from_frame
     from autoresearch.scan.menu import sentinel_advice_from_frame
-    pack = market_pack_from_frame(frame)
+    pack = market_pack_from_frame(frame, date=analysis_date)
     level, reason = sentinel_advice_from_frame(frame)
     reg = pack.get("regime") or {}
     print(f"[frame] {analysis_date} 帧 {counts['after_gate_a']} 只(L0 {counts['universe']})｜"

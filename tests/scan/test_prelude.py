@@ -41,3 +41,36 @@ def test_calib_suggestion_lines(tmp_path):
     lines = calib_suggestion_lines(tmp_path)
     assert lines and any(ln.startswith("📐") for ln in lines)
     assert all("禁注" in ln for ln in lines)                 # n=1 全 thin → 全带禁注
+
+
+_SKIP_ALL_BUT_TEMPERATURE = ("retro_refresh", "retro_pending", "consensus", "universe",
+                             "calendar", "watchlist", "catalyst", "menu", "ledgers")
+
+
+def test_temperature_step_reports_score_and_phase(tmp_path, monkeypatch):
+    """新 prelude 步 temperature:rollup 有新行 → 摘要含 score/phase(NO network,rollup 打桩)。"""
+    import pandas as pd
+
+    from autoresearch.scan.prelude import run_prelude
+    monkeypatch.chdir(tmp_path)   # 隔离 _write_t0 落盘(context/scan/<date>/_t0.json)
+
+    def _fake_rollup(start, end):
+        assert start == end == "2026-07-09"          # 当日增量:start==end==今日
+        return pd.DataFrame([{"date": end, "score": 62.1, "phase": "发酵"}])
+    monkeypatch.setattr("autoresearch.scan.temperature.rollup", _fake_rollup)
+    results = run_prelude("2026-07-09", skip=_SKIP_ALL_BUT_TEMPERATURE)
+    row = next(r for r in results if r["step"] == "temperature")
+    assert row["ok"] is True
+    assert "score=62.1" in row["note"] and "phase=发酵" in row["note"]
+
+
+def test_temperature_step_empty_rollup_degrades_not_fails(tmp_path, monkeypatch):
+    """rollup 空回填(取数失败/presence-gated)→ 步骤仍 ok=True,note 明确降级说明。"""
+    import pandas as pd
+
+    from autoresearch.scan.prelude import run_prelude
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("autoresearch.scan.temperature.rollup", lambda start, end: pd.DataFrame())
+    results = run_prelude("2026-07-09", skip=_SKIP_ALL_BUT_TEMPERATURE)
+    row = next(r for r in results if r["step"] == "temperature")
+    assert row["ok"] is True and "无新增" in row["note"]

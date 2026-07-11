@@ -3,7 +3,7 @@ import time
 
 from autoresearch.scan.prelude import run_prelude
 
-_ALL = ("retro_refresh", "retro_pending", "consensus", "universe", "calendar",
+_ALL = ("retro_refresh", "retro_pending", "consensus", "temperature", "universe", "calendar",
         "watchlist", "catalyst", "menu", "ledgers")
 
 

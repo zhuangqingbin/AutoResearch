@@ -120,6 +120,11 @@ def market_pack(scan_dir: Path | str) -> dict:
     sec = scan_dir / "sectors.csv"
     if sec.exists():
         pack["sectors"] = _sectors(pd.read_csv(sec))
+    # S1 温度计(独立数据源,presence-gated:与 regime/sectors 是否存在无关,自成一门缺→不加键)。
+    # 目录名即分析日('context/scan/<date>' 是唯一真实调用约定;tmp_path 测试目录名非日期天然不命中)。
+    blk = _temperature_block(scan_dir.name)
+    if blk:
+        pack["temperature"] = blk
     return pack
 
 
@@ -142,12 +147,16 @@ def _sectors_from_frame(df: pd.DataFrame, n: int = 5) -> dict | None:
     return _sectors(sec, n=n)
 
 
-def market_pack_from_frame(frame: pd.DataFrame | None) -> dict:
+def market_pack_from_frame(frame: pd.DataFrame | None, date: str | None = None) -> dict:
     """帧入口(盘前 cron / Stage 0 宏观 lite,scan staging 尚不存在时)。零 LLM。
 
     与 `market_pack(scan_dir)` 同字段形状、regime/breadth/valuation/money 四段同函数同口径;
     sectors 由帧 groupby 生成(n_recall=全市场计数、median_composite=None——帧无打分)。
     design: docs/specs/2026-07-03-research-skills-altitude-refactor-design.md §5.1。
+
+    `date`(可选,'YYYY-MM-DD'):S1 温度计块锚点。帧本身不带日期语义,库函数不碰 wall-clock
+    (`date.today()` 只许留在 CLI `main()`)——缺省 → 不注入 temperature(与老调用点/老测试
+    逐字 parity);调用方(如 `frame.py` CLI)有 `analysis_date` 时显式传入。
     """
     pack: dict = {"regime": None, "breadth": None, "valuation": None, "money": None, "sectors": None}
     if frame is None or not len(frame):
@@ -157,7 +166,43 @@ def market_pack_from_frame(frame: pd.DataFrame | None) -> dict:
     pack["valuation"] = _valuation(frame)
     pack["money"] = _money(frame)
     pack["sectors"] = _sectors_from_frame(frame)
+    if date:
+        blk = _temperature_block(date)
+        if blk:
+            pack["temperature"] = blk
     return pack
+
+
+# ───────────────────────── S1 温度计消费(presence-gated;展示先行,不接菜单/预算) ─────────────────────────
+
+
+def _temperature_block(date: str) -> dict | None:
+    """`temperature.csv`(Task 4)当日读数 + 近 ≤5 个交易日走势 → 两个 pack 函数共用的 helper。
+
+    presence-gated:csv 缺 / 当日无行 / 当日 score 缺(fetch 成功但核心序列不全,`score()`
+    降级 None,只 phase 靠滞回延续)→ 统一 None,不抛,与 pack 其余字段"缺→不炸"同款契约。
+    `temperature.CSV_PATH` 现读(经 `autoresearch.scan.temperature` 模块引用,不在本模块顶部
+    `from ... import CSV_PATH` 绑值——否则测试 `monkeypatch.setattr(...CSV_PATH, ...)` 不生效,
+    与 temperature.py 顶部同款告诫一致)。
+    """
+    from autoresearch.scan import temperature as T
+    path = Path(T.CSV_PATH)
+    if not path.exists():
+        return None
+    try:
+        df = pd.read_csv(path, dtype={"date": str})
+    except Exception:  # noqa: BLE001 — 损坏 csv 当无数据,不阻塞 pack 组装
+        return None
+    if "date" not in df.columns or date not in set(df["date"]):
+        return None
+    df = df[df["date"] <= date].sort_values("date", kind="stable")   # 防未来行渗入(防御性)
+    sc_all = _num(df, "score")
+    sc = sc_all.iloc[-1]
+    if pd.isna(sc):
+        return None
+    phase = df["phase"].iloc[-1] if "phase" in df.columns else None
+    trend5 = [float(v) for v in sc_all.tail(5).dropna()]
+    return {"score": float(sc), "phase": phase, "trend5": trend5}
 
 
 # ───────────────────────── L3/L4 注入:描述性地形块(防锚定) ─────────────────────────
@@ -208,7 +253,23 @@ def market_context_block(pack: dict, industry: str | None = None) -> str:
     return "\n".join(lines) + "\n"
 
 
-# ───────────────────────── L5 渲染:回退脉搏 + 漏斗读数尾注 ─────────────────────────
+# ───────────────────────── L5 渲染:回退脉搏 + 温度一行 + 漏斗读数尾注 ─────────────────────────
+
+
+def render_temperature_line(date: str) -> str:
+    """L5 一行情绪温度读数(assemble regime 行旁;presence-gated:无当日读数 → ''):
+
+        🌡 情绪温度 41(发酵)·近5日 28→41
+
+    只描述数值+分段+近况走向,不含操作建议(与 market_context_block 同一"防锚定"纪律;
+    本波不接菜单/预算联动)。
+    """
+    blk = _temperature_block(date)
+    if not blk:
+        return ""
+    sc, ph, trend = blk["score"], blk["phase"], blk["trend5"]
+    arrow = f"{trend[0]:.0f}→{trend[-1]:.0f}" if len(trend) >= 2 else f"{sc:.0f}"
+    return f"🌡 情绪温度 {sc:.0f}({ph})·近{len(trend)}日 {arrow}"
 
 
 def render_fallback_pulse(pack: dict) -> str:

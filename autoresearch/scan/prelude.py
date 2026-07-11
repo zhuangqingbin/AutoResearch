@@ -76,6 +76,14 @@ def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()
         pull(date)
         return "一致预期已拉(或今日已有)"
 
+    def _temperature():
+        from autoresearch.scan.temperature import rollup
+        out = rollup(date, date)
+        if not len(out):
+            return "无新增(空回填/取数失败·presence-gated,详见 stderr)"
+        row = out.iloc[-1]
+        return f"score={row['score']} phase={row['phase']}"
+
     def _universe():
         from autoresearch.scan.universe import run
         res = run(date, regime_aware=regime_aware)
@@ -148,7 +156,8 @@ def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()
         return "journal + buy_ledger + cross_calib + catalyst + paper_nav + watchlist 已刷新"
 
     all_steps = [("retro_refresh", _refresh), ("retro_pending", _pending),
-                 ("consensus", _consensus), ("universe", _universe), ("calendar", _calendar),
+                 ("consensus", _consensus), ("temperature", _temperature),
+                 ("universe", _universe), ("calendar", _calendar),
                  ("watchlist", _watchlist), ("catalyst", _catalyst), ("menu", _menu),
                  ("ledgers", _ledgers)]
     results = _run_steps([(n, f) for n, f in all_steps if n not in skip])

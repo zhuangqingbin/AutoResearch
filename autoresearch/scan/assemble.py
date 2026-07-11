@@ -750,6 +750,12 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
     if regime_line:
         out.append(regime_line + "\n")
 
+    # ── S1 情绪温度计一行(regime 行旁,presence-gated:temperature.csv 无当日读数 → 不加)──
+    from autoresearch.scan.market import render_temperature_line  # lazy:避免 import cycle
+    temp_line = render_temperature_line(analysis_date)
+    if temp_line:
+        out.append(temp_line + "\n")
+
     # ── 市场研判(首席策略师视角;策略师未写 → 回退确定性脉搏)──
     mv = _load_market_view(scan_dir)
     if mv:

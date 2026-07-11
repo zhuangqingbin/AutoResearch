@@ -22,7 +22,7 @@ def _patch_deps(monkeypatch, tmp_path):
     monkeypatch.setattr(frame, "build_market_frame",
                         lambda d, **k: (df, {"universe_raw": 1, "universe": 1, "after_gate_a": 1}))
     monkeypatch.setattr("autoresearch.scan.market.market_pack_from_frame",
-                        lambda f: {"date": DATE, "regime": {"label": "risk_off"}})
+                        lambda f, **k: {"date": DATE, "regime": {"label": "risk_off"}})
     monkeypatch.setattr("autoresearch.scan.menu.sentinel_advice_from_frame",
                         lambda f: ("full", "ok"))
     monkeypatch.setattr("autoresearch.macro.state.load_macro_state",
