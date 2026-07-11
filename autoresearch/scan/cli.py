@@ -31,8 +31,14 @@ from autoresearch.scan.pipeline import Pipeline
 
 
 def _config_from_args(args: argparse.Namespace) -> ScanConfig:
-    """把 CLI flags 收成 ScanConfig(与 universe.run 默认对齐)。"""
-    return ScanConfig(
+    """把 CLI flags 收成 ScanConfig(与 universe.run 默认对齐),再叠加 scan_config.json
+    的 funnel(recall_channels/channel_quotas/channel_floors)等键。
+
+    优先级:CLI 显式 `--recall-channels` > scan_config.json > ScanConfig 默认;缺 scan_config.json
+    → `load_user_config()` 返回 `{}` → 叠加 no-op(parity,与波前逐字节一致)。config 提供的
+    channel_quotas/channel_floors 目前 recall_select 未消费(follow-up),recall_channels 全链生效。
+    """
+    sc = ScanConfig(
         recall_n=args.recall_n,
         l2_n=args.l2_n,
         cap_floor=args.cap_floor,
@@ -47,6 +53,15 @@ def _config_from_args(args: argparse.Namespace) -> ScanConfig:
         l2_lane_channels=(tuple(args.l2_lane_channels.split(",")) if args.l2_lane_channels
                           else ("momentum", "heat", "growth", "accumulation")),
     )
+    from autoresearch.scan.user_config import apply_to_scan_config, load_user_config
+    user_cfg = load_user_config()
+    if user_cfg:
+        if sc.recall_channels is not None and isinstance(user_cfg.get("funnel"), dict):
+            # CLI 显式 --recall-channels 优先:剔除 config 同名键,不让它覆盖本次运行的显式意图
+            user_cfg = {**user_cfg,
+                        "funnel": {k: v for k, v in user_cfg["funnel"].items() if k != "recall_channels"}}
+        apply_to_scan_config(user_cfg, sc)
+    return sc
 
 
 def cmd_run(args: argparse.Namespace) -> int:
