@@ -10,6 +10,8 @@ D+2 收盘卖、剔 D+1 一字板;`fwd_1_oo` 仍留作参考)检验 D 的报告,
   uv run --no-sync python -m autoresearch.learning.retro --selftest
   uv run --no-sync python -m autoresearch.learning.retro attribute 2026-06-19      # 单日(需 fwd 已实现)
   uv run --no-sync python -m autoresearch.learning.retro pending                   # 列未复盘日
+  uv run --no-sync python -m autoresearch.learning.retro refresh                   # 补跑已成熟未归因日
+  uv run --no-sync python -m autoresearch.learning.retro backfill-bought           # 历史 attribution 补 bought 列(幂等)
 """
 from __future__ import annotations
 

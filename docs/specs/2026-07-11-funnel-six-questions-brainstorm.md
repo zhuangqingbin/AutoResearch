@@ -1,6 +1,6 @@
 # 2026-07-11 · 漏斗六问 brainstorm——召回 / 粗排 / 精排 / L4 研究 / L5 / 链路一致性
 
-> 状态:**已择向**——2026-07-11 用户批复"都按你的建议来吧",六个择向点全按本稿推荐拍板(见 §8 拍板记录);实施走 `2026-07-11-funnel-p0p1-wave-plan.md`。
+> 状态:**已实施**——P0+P1 波 2026-07-11 当晚全落 main(0e2e522..终审后收口,1146 测试绿;终审 Approved,报告见 `.superpowers/sdd/final-review.md`)。有意未做并记录在案:周检双序(等周检节奏真跑起来)、L4 机器块字段序(与仪表盘置顶版式冲突,待裁决)、P0-1③ attribution 终评级(转下波首件,STAGES 开放线头 6);P2 全部按拍板等账本攒够。六个择向点拍板见 §8。
 > 来源:用户六问——①L1 召回池有效性(增删召回路/配额) ②L2 粗排 ③L3 精排 context+prompt ④L4 单票研究 agent ⑤L5 ⑥L1-L4 链路一致性("每天可以 buy 的股票几乎没有")。
 > 方法:代码勘察(STAGES/SKILL/workflow/agents/channels/scoring)+ 账本证据(channel_audit·paper_nav·attribution·gate_backtest·buy_ledger·zero_buy·run_health,快照全文 `docs/research/2026-07-11-funnel-evidence-snapshot.md`)+ 外部调研(18 次检索 30 条弹药,编号 A1-A15/B1-B15 带证据强度,全文 `docs/research/2026-07-11-ultrashort-llm-analyst-external-research.md`)。
 > 纪律:**不重启已否决方向**——L2 上模型、业绩预告事件路、北向召回、打板/隔日溢价交易信号、T+5 尺、放宽三门凑买单,一律不提;每个提案自带"怎么被数据裁决"。

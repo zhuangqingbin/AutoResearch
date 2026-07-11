@@ -434,9 +434,9 @@ def _factor_groups(df: pd.DataFrame) -> dict[str, pd.Series]:
         "volprice": _blend((p("cmf_20"), 0.5), (p("obv_mom_20"), 0.5)),
         # 融资买入强度(rz_buy_intensity = rzmre/成交额;自然朝向+,杠杆资金买入越猛越看多)——
         # 07-10 T7 六因子重审三条全过门(pr_20260710_001,ICIR 0.134/IC 两半同号/decile spread_t
-        # 2.11,唯一过线机构因子),真方向随 calibrate 的 IC 符号定。现场 scan.frame 帧尚无该列
-        # (margin_detail 未接入,只 factor_lab 校准侧 factor_frame 有)→ NaN 降级,组权重被
-        # composite_score 既有的"有值子项重归一"机制自动跳过(wabs 不计入该组),不冤枉、不破 parity。
+        # 2.11,唯一过线机构因子),真方向随 calibrate 的 IC 符号定。生产帧已接 margin_detail
+        # (fetch_universe_tushare,FN-1 第五修——2026-07-11 终审逮到"入组无数据面"的 no-op);
+        # 缺权限/端点失败 → NaN 降级,composite_score 重归一自动跳过(wabs 不计入),不破 parity。
         "rz": p("rz_buy_intensity"),
     }
 

@@ -244,7 +244,7 @@ P0 简报（市场地形+档案+解禁/披露旗+行业备忘+误读预警）
 
 ```
 self_review 硬门 banner → regime+drift 行(+🌡情绪温度行) → 📈市场研判 → 漏斗数量
-→ 🧾纸面法庭行(真实 vs 影子[若门不拦最想买3只] vs 市场,hold=2 主尺)
+→ 📈影子组合成绩单行(即"纸面法庭":真实 vs 影子[若门不拦最想买3只] vs 市场,hold=2 主尺)
 → 各阶段卡点&概览（+🍱菜单体检）→ 投资建议表(🎭复核分歧 badge) → 👀观察单日检 → 📅两周日历
 → 组合视角（买单同板块告警 + 🎭人裁行 + 仓位 overlay:risk_off 0–2 成 / range 3–5 / trend 5–8）
 → 经验浮出 → token 估算 → ⏳待裁决提案(open 清单,20 日节奏 nag) → 诚实局限
@@ -317,5 +317,6 @@ self_review 硬门 banner → regime+drift 行(+🌡情绪温度行) → 📈市
 3. attribution 孤儿:06-19 端午假日键是非交易日,fwd 永远无法结算,保持 "—"。Δ 表省幅随日况;卡片复用省幅 = churn;评级基率 n<10 禁注。
 4. reversal_confirm 上线但与旧 reversal 的 A/B 未裁决(channel_eval 按 lane 计量,≥10 日再切/留);healthy 通道 alpha / 捕获增量也待 `pre_healthy` 影子反事实 + retro 裁决;哨兵档未实跑;token 真实计费只有 `/usage` 或 OTEL 落稿可见。
 5. consensus 首拉待限频窗,积累 <60 日前盈利修正不入线上;anns_d 无接口权限 → 公告情感列空、监管旗走 L3_webnews 回退,`anns_empty_rate`=1.0 即该态;northbound hk_ratio NaN=100% 时空转,已默认停用。
-6. **2026-07-11 P0+P1 波新开线头**:温度计菜单/预算联动待相位判定质量复审(下一波);L3 pf 指纹/lint 打回/L4 中性前提/盲读/基率行/📐锚/ensemble 全部**未实跑**(确定性件测试绿,LLM 段脚手架就位,下次真扫描=正式验收);capfloor20 影子/新配额(value250/heat150/main_fund150)攒 channel_ledger 前向读数 ≥10 日再复盘;三门账本/tail_rate 攒 ≥20 日才裁雷分级(P2);07-09 冒烟发现 reversal_confirm/healthy 当日 0 召回(数据条件性,非接线故障——起爆硬门无人过/健康谓词依赖 cmf 列,留意后续真跑读数)。
-7. 仅供研究,非投资建议。
+6. **attribution 终评级缺口(终审 I-2,下波首件)**:retro 的 rating 取 staging 卡面,verify/ensemble 折回只改 summary → 被折回的 OW 会以卡面 OW 进 attribution 再污染 bought/评级基率(胜宏 06-30 实证)。修法已定:assemble 落 `_final_ratings.json`,retro 优先 join、缺文件回退卡面(presence-gated);**ensemble 首次真折回前必须完成**。
+7. **2026-07-11 P0+P1 波新开线头**:温度计菜单/预算联动待相位判定质量复审(下一波);L3 pf 指纹/lint 打回/L4 中性前提/盲读/基率行/📐锚/ensemble 全部**未实跑**(确定性件测试绿,LLM 段脚手架就位,下次真扫描=正式验收);capfloor20 影子/新配额(value250/heat150/main_fund150)攒 channel_ledger 前向读数 ≥10 日再复盘;三门账本/tail_rate 攒 ≥20 日才裁雷分级(P2);07-09 冒烟发现 reversal_confirm/healthy 当日 0 召回(数据条件性,非接线故障——起爆硬门无人过/健康谓词依赖 cmf 列,留意后续真跑读数)。
+8. 仅供研究,非投资建议。

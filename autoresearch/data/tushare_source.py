@@ -323,6 +323,23 @@ def fetch_limit_list_d(trade_date: str) -> pd.DataFrame:
 _RAW_COUNT: dict = {}   # 全A(硬门前)原始数;放本模块(单次 import)避开 __main__/scan.universe 双模块陷阱
 
 
+def _margin_rz_cols(mg: pd.DataFrame) -> pd.DataFrame:
+    """margin_detail → code + rzmre_yuan(融资买入额,元)。纯函数无网络,selftest 可测。"""
+    return pd.DataFrame({"code": _code6(mg["ts_code"]), "rzmre_yuan": _num(mg["rzmre"])})
+
+
+def _fetch_margin_rz(pro, last: str) -> pd.DataFrame | None:
+    """margin_detail(两融明细)→ rz 原料。失败/空 → None(rz 组 NaN 降级,composite 重归一跳过)。"""
+    try:
+        mg = _ts_call(lambda: pro.margin_detail(trade_date=last, fields="ts_code,rzmre"))
+        if mg is None or mg.empty:
+            return None
+        return _margin_rz_cols(mg)
+    except Exception as e:  # noqa: BLE001
+        print(f"[warn] margin_detail 取数失败({e!r})→ rz_buy_intensity 降级", flush=True)
+        return None
+
+
 def fetch_universe_tushare(
     analysis_date: str,
     cap_floor_yi: float = 30.0,
@@ -385,6 +402,15 @@ def fetch_universe_tushare(
     else:
         for c in ("main_inflow_yi", "main_net_yi", "retail_net_yi", "main_net_ratio"):
             df[c] = np.nan
+    # 融资买入强度(FN-1 第五修:pr_20260710_001 rz 入组后,生产帧此前无此列 → 组恒 NaN = no-op)。
+    # 口径同 factor_lab.py:rzmre(元)/当日成交额(元);amount_yi 亿 → ×1e8。
+    mg = _fetch_margin_rz(pro, last)
+    if mg is not None:
+        df = df.merge(mg, on="code", how="left")
+        df["rz_buy_intensity"] = df["rzmre_yuan"] / (df["amount_yi"] * 1e8).replace(0, np.nan)
+        df = df.drop(columns=["rzmre_yuan"])
+    else:
+        df["rz_buy_intensity"] = np.nan
     # 名称 + 上市日
     sb_ = pd.DataFrame({"code": _code6(sb["ts_code"]), "name": sb["name"].astype(str), "list_date": sb["list_date"].astype(str)})
     df = df.merge(sb_, on="code", how="left")

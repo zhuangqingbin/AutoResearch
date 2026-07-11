@@ -263,7 +263,9 @@ def target_calib_line(calib: dict | None, regime: str | None,
     p60 = allg.get("hi2_p60")
     if n_all < min_n or p60 is None:
         return None
-    line = f"📐 目标校准:全体 2 日 MFE p60={p60:+.1%}(n={n_all})"
+    t8 = allg.get("touch8_rate")
+    line = f"📐 目标校准:全体 2 日 MFE p60={p60:+.1%}(n={n_all}"
+    line += f"·+8%目标历史触达 {t8:.0%})" if t8 is not None else ")"
     rg = (calib.get("by_regime") or {}).get(regime) if regime else None
     if rg and rg.get("hi2_p60") is not None:
         line += f"·同 regime p60={rg['hi2_p60']:+.1%}(n={rg['n']})"

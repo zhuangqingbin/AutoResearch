@@ -671,6 +671,9 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
     # 失败不挡派发(消费方 _base_rate_mark presence-gated,缺文件即无此行)。
     with contextlib.suppress(Exception):
         write_base_rates(scan_dir)
+    with contextlib.suppress(Exception):   # 终审 I-3:📐 锚随派发日刷新(与基率同节奏),不冻结在首算日分布
+        from autoresearch.learning.buy_ledger import write_target_calib
+        write_target_calib()
     shared = ""
     sp = scan_dir / "_l4_shared_instructions.md"
     if sp.exists():
