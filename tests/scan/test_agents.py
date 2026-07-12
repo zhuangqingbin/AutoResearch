@@ -2,7 +2,6 @@
 
 覆盖(逐项对应原 selftest):
   - L3 紧凑表 / load_l3_input(证据摘要 lhb_n/has_forecast/has_express)/ l3_table_md
-  - merge_l3_finalists_v2 趋势配额混合(一半 conviction + 一半 pct_60d)+ schema 列
   - L4 compose_funnel_brief(P0 简报)/ parse_ratings_from_details / pick_buy_candidates(买单 skeptic 名单)/ pick_buylist
   - rubric_rating 净分定档 + OW 门压 Hold(键名容错)
 NO network. 纯确定性。
@@ -16,7 +15,6 @@ import pandas as pd
 from autoresearch.scan.agents.l3_select import (
     l3_table_md,
     load_l3_input,
-    merge_l3_finalists_v2,
 )
 from autoresearch.scan.agents.l4_card import (
     compose_funnel_brief,
@@ -64,42 +62,6 @@ def test_l3_table_md_has_cols_and_evidence(tmp_path):
 
 
 # ───────────────────────── L3:finalists 合并(趋势配额安全网) ─────────────────────────
-
-
-def _judged_hybrid() -> pd.DataFrame:
-    """5 只:000010 高conv趋势(net低)、000014 高pct_60d趋势(conv最低)、3 只 reversion(net高)。"""
-    return pd.DataFrame({
-        "code": ["000010", "000011", "000012", "000013", "000014"],
-        "name": ["趋高conv", "回1", "回2", "回3", "趋高动量"],
-        "sector": ["元件", "银行", "银行", "银行", "元件"], "lenses": ["动量"] * 5,
-        "conviction": [75, 60, 58, 55, 50], "fragility": [50, 20, 20, 20, 45],
-        "thesis": ["t"] * 5, "risk": ["r"] * 5, "catalyst": ["c"] * 5,
-        "triage_lean": ["看多"] * 5, "triage_reason": ["x"] * 5,
-        "lane": ["trend", "reversion", "reversion", "reversion", "trend"],
-        "pct_60d": [60, 5, 5, 5, 300]})
-
-
-def test_merge_l3_finalists_hybrid_quota_keeps_both_trend_halves():
-    out3 = merge_l3_finalists_v2(_judged_hybrid(), target=3, trend_quota=2)  # quota 2 = 1 conv + 1 动量
-    codes = set(out3["code"])
-    assert "000010" in codes, "hybrid conviction 半未保住高conv趋势票"
-    assert "000014" in codes, "hybrid 动量半未保住高pct_60d趋势票"
-    assert len(out3) == 3, "finalists 数错"
-
-
-def test_merge_l3_finalists_has_required_columns():
-    out3 = merge_l3_finalists_v2(_judged_hybrid(), target=3, trend_quota=2)
-    need = {"ticker", "code", "name", "sector", "conviction", "thesis", "risk", "catalyst", "lane"}
-    assert need <= set(out3.columns), f"finalists 缺列 {need - set(out3.columns)}"
-
-
-def test_merge_l3_finalists_carries_sentiment():
-    j = _judged_hybrid().assign(sentiment=["利多", "中性", "中性", "中性", "利多"])
-    out = merge_l3_finalists_v2(j, target=3, trend_quota=2)
-    assert "sentiment" in out.columns
-
-
-# ───────────────────────── L4:选择器(评级解析 + 买单 skeptic 名单) ─────────────────────────
 
 
 def test_parse_ratings_from_details(tmp_path):

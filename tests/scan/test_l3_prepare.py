@@ -27,7 +27,6 @@ def test_prepare_with_harvest_default(tmp_path, monkeypatch):
     d = base / "2026-06-20"
     (d / "L3_news").mkdir(parents=True)
     (d / "L3_evidence").mkdir(parents=True)
-    (d / "L3_webnews").mkdir(parents=True)
     pd.DataFrame([{"code": f"{i:06d}", "name": f"s{i}", "industry": "电子", "composite": 90 - i,
                    "gbdt_score": 0.5, "pct_60d": 10.0, "main_net_ratio": 0.01,
                    "winner_rate": 30.0, "np_yoy": 50.0, "n_channels": 2,
@@ -36,7 +35,6 @@ def test_prepare_with_harvest_default(tmp_path, monkeypatch):
     for c in ("000000", "000001", "000002"):
         (d / "L3_news" / f"{c}.json").write_text("[]", encoding="utf-8")
         (d / "L3_evidence" / f"{c}.json").write_text("{}", encoding="utf-8")
-        (d / "L3_webnews" / f"{c}.json").write_text("[]", encoding="utf-8")
 
     # Monkeypatch harvest functions to no-op to prevent network calls
     monkeypatch.setattr("autoresearch.scan.agents.l3_select.harvest_l3_evidence",

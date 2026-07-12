@@ -15,12 +15,6 @@ def _put(day_dir, sub, code, items):
     (d / f"{code}.json").write_text(json.dumps(items, ensure_ascii=False), encoding="utf-8")
 
 
-def test_fallback_to_webnews_when_anns_empty(tmp_path):
-    _put(tmp_path, "L3_news", "000001", [])                              # anns_d 断链:空列表
-    _put(tmp_path, "L3_webnews", "000001", [{"title": "关于收到问询函的公告", "ann_date": "2026-07-01"}])
-    assert reg_hits_for_code(tmp_path, "000001") == "问询"
-
-
 def test_anns_present_takes_priority(tmp_path):
     _put(tmp_path, "L3_news", "000002", [{"title": "立案调查进展", "ann_date": "2026-07-01"}])
     _put(tmp_path, "L3_webnews", "000002", [{"title": "关于收到问询函的公告", "ann_date": "2026-07-01"}])

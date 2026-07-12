@@ -20,7 +20,7 @@ import pandas as pd
 # L3 holistic 选股 subagent 要看的紧凑列(GBDT 复合分/重排分 + 9 子分〔含 volprice 多日量价〕+ 关键原始
 # 因子;量价位置/多日资金流/筹码/估值都在,够它一次通看 ~200 只比较着选 30)。
 # 2026-07-06 瘦身:L3 max-effort 需更小输入才净提速 → 删 9 个 score_* 子分(composite 已含、与原始因子冗余)
-# + retail_net_yi/chip_concentration/price_to_cost/hk_ratio(常 NaN)/dv_ratio/l2_lane_reserved/news_n·tags/med_n·tags·head。
+# + retail_net_yi/chip_concentration/price_to_cost/hk_ratio(常 NaN)/dv_ratio/l2_lane_reserved/news_n·tags。
 # 保留 = 5 维 rubric 真正读的原始因子 + composite/gbdt + 情感 sent/head(42→22 列)。旧宽表见 git 历史。
 # 2026-07-11:加 `pf`(行语义指纹,见 row_profile)——07-08 诊断误读 22/31 纯表内可见,读定性词
 # 比读裸浮点更不容易漏读/误读;确定性纯函数,l3_table_md 组表时对每行算,恒出现(非 flag 位)。
@@ -28,7 +28,7 @@ _L3_COLS = ["code", "name", "pf", "industry", "composite", "gbdt_score",
             "pct_60d", "sector_mom", "vol_ratio", "cmf_20", "obv_mom_20", "main_net_ratio", "winner_rate",
             "rsi6", "pe", "pb", "np_yoy", "roe",
             "n_channels", "recall_channels",                   # 召回 provenance(channel 共振)
-            "news_sent", "news_head", "med_sent"]              # 情感(净分 + 头条;counts/tags 已删)
+            "news_sent", "news_head"]                          # 情感(净分 + 头条;counts/tags 已删;med_* 随 webnews 死链 2026-07-13 摘除)
 
 
 # ───────────────────────── L3:紧凑表 + 增量真证据 + finalists 合并 ─────────────────────────
@@ -162,14 +162,6 @@ def load_l3_input(date: str, root: Path | None = None) -> pd.DataFrame:
         anns = json.loads(fp.read_text(encoding="utf-8")) if fp.exists() else []
         drows.append({"code": c, **news_digest(anns)})
     df = df.merge(pd.DataFrame(drows), on="code", how="left")
-    # 媒体新闻情感 digest(L3_webnews/<code>.json,akshare stock_news_em;缺则缺省 0/""/—)。
-    web_dir = root / date / "L3_webnews"
-    mrows = []
-    for c in df["code"]:
-        fp = web_dir / f"{c}.json"
-        web = json.loads(fp.read_text(encoding="utf-8")) if fp.exists() else []
-        mrows.append({"code": c, **news_digest(web, prefix="med")})
-    df = df.merge(pd.DataFrame(mrows), on="code", how="left")
     return df
 
 
@@ -581,53 +573,6 @@ def harvest_l3_evidence(date: str, codes: list[str], root: Path | None = None) -
     for c in want:
         (out_dir / f"{c}.json").write_text(json.dumps(ev[c], ensure_ascii=False, default=str), encoding="utf-8")
     return ev
-
-
-def merge_l3_finalists_v2(judged: pd.DataFrame, target: int = 30, trend_quota: int = 10,
-                          hybrid: bool = True) -> pd.DataFrame:
-    """格式化 L3 holistic 选股 agent 的入选 → finalists.csv(L4/L5 读),并做趋势配额安全网。
-
-    **v3 已取代本函数为 `write_finalists` 的生产路径**(design: plan 2026-07-12-l3-merge-plan.md
-    Task 2;L3.5 收窄职能并入 L3 finalist tier,见 `merge_l3_finalists_v3`)。本函数保留不删
-    只为旧测试引用(`target`/`trend_quota` 硬配额语义已被 v3 的 `finalist` 标记消费 + 比例制/
-    soft 配额守卫取代),新代码请用 v3。
-
-    holistic 单 agent 通看 ~200 只、比较着选 ~30(各只带 conviction/fragility/thesis/risk/catalyst/lane)。
-    本函数把它的入选排成 finalists:先给 trend lane(非回避)保底 trend_quota 席(强势票的高 fragility 多是
-    T+1/短期回撤概念,swing 视角不该被 `conviction−fragility` 一票挤出),再按 net 填满。
-    - hybrid=True(默认):配额**一半按 conviction**(质量趋势:健康强势+主力在)+ **一半按 pct_60d**
-      (动量龙头:最热的强势票)→ 兼得"健康强势"与"市场最热龙头"。需 `pct_60d` 列,缺则退化为纯 conviction 配额。
-    - judged 需含 `lane` 列(无则退化为纯 net 排序)。
-    """
-    m = judged.copy()
-    m["code"] = m["code"].astype(str).str.zfill(6)
-    for c in ("conviction", "fragility", "pct_60d"):
-        if c in m.columns:
-            m[c] = pd.to_numeric(m[c], errors="coerce")
-    m["net"] = m["conviction"].fillna(0) - m["fragility"].fillna(0)
-
-    is_trend = (m["lane"] == "trend") if "lane" in m.columns else pd.Series(False, index=m.index)
-    not_avoid = (m["triage_lean"] != "回避") if "triage_lean" in m.columns else pd.Series(True, index=m.index)
-    cand = m[is_trend & not_avoid]
-    reserved_codes: list[str] = []
-    if hybrid and "pct_60d" in m.columns and trend_quota > 0:
-        n_conv = trend_quota // 2
-        reserved_codes += list(cand.sort_values("conviction", ascending=False).head(n_conv)["code"])
-        by_mom = cand[~cand["code"].isin(reserved_codes)].sort_values("pct_60d", ascending=False)
-        reserved_codes += list(by_mom.head(trend_quota - n_conv)["code"])
-    else:
-        reserved_codes = list(cand.sort_values("conviction", ascending=False).head(max(0, trend_quota))["code"])
-
-    reserved = m[m["code"].isin(reserved_codes)]
-    rest = m[~m["code"].isin(set(reserved_codes))].sort_values("net", ascending=False)
-    out = (pd.concat([reserved, rest], ignore_index=True)
-           .drop_duplicates(subset="code", keep="first").head(target))
-    out = out.sort_values("net", ascending=False).reset_index(drop=True)
-    out["ticker"] = out["code"]
-    cols = ["ticker", "code", "name", "sector", "lenses", "conviction",
-            "triage_lean", "triage_reason", "thesis", "mechanism", "risk", "catalyst",
-            "lane", "sentiment"]
-    return out[[c for c in cols if c in out.columns]]
 
 
 def _swap_lane_quota(m: pd.DataFrame, conv: pd.Series, fin_idx: set, lane_val: str,

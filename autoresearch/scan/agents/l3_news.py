@@ -42,13 +42,13 @@ def reg_hits(titles) -> str:
 
 
 def reg_hits_for_code(day_dir: Path, code: str) -> str:
-    """某票监管旗:L3_news(anns_d 公告)优先,空/缺回退 L3_webnews(东财个股新闻)。
+    """某票监管旗:扫 L3_news(anns_d 公告)标题。
 
-    anns_d 无权限断链修复(spec 2026-07-05 wave §B0):公告线聋时监管词表退而扫新闻标题,
-    有权限恢复后自动回到公告优先。坏 JSON/两处皆空 → ""(降级不抛)。
+    (原 L3_webnews 回退随其 producer 于 2026-07-13 移除——该目录从未有生产写入者。)
+    坏 JSON/空 → ""(降级不抛)。
     """
     code6 = str(code).zfill(6)
-    for sub in ("L3_news", "L3_webnews"):
+    for sub in ("L3_news",):
         fp = Path(day_dir) / sub / f"{code6}.json"
         if not fp.exists():
             continue
@@ -153,30 +153,3 @@ def harvest_l3_news(date: str, codes, root: Path | None = None, lookback_days: i
                                            encoding="utf-8")
     return buckets
 
-
-def harvest_l3_web_news(date: str, codes, root: Path | None = None) -> dict:
-    """对 codes 逐股拉 akshare 个股新闻(stock_news_em,as_of 入湖)→ 归一 + 分桶 + 落 staging。
-
-    归一:akshare 中文列 `新闻标题→title`、`发布时间→ann_date`(供 news_digest(prefix="med") 复用)。
-    best-effort:单股取数失败/空 → 该 code 空列表(降级隔离,不阻塞)。产出
-    context/scan/<date>/L3_webnews/<code>.json,返回 {code: [news]}。
-    """
-    root = root or Path("context/scan")
-    out_dir = root / date / "L3_webnews"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    buckets: dict[str, list] = {}
-    for c in codes:
-        code = str(c).zfill(6)
-        try:
-            df = get_or_fetch("stock_news_em", {"symbol": code}, today=date)
-            rows = []
-            if df is not None and len(df):
-                for _, r in df.iterrows():
-                    rows.append({"title": str(r.get("新闻标题", "")),
-                                 "ann_date": str(r.get("发布时间", ""))})
-            buckets[code] = rows
-        except Exception:  # noqa: BLE001 — 单股降级隔离(无网/被限/无该股)
-            buckets[code] = []
-        (out_dir / f"{code}.json").write_text(
-            json.dumps(buckets[code], ensure_ascii=False, default=str), encoding="utf-8")
-    return buckets

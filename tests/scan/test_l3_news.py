@@ -61,26 +61,3 @@ def test_news_digest_default_prefix_unchanged():
     assert set(news_digest([])) == {"news_n", "news_tags", "news_sent", "news_head"}
     assert set(news_digest([{"title": "x", "ann_date": "1"}])) == {"news_n", "news_tags", "news_sent", "news_head"}
 
-
-def test_harvest_web_news_normalizes_and_buckets(tmp_path, monkeypatch):
-    """注入 get_or_fetch 桩:归一 akshare 中文列(新闻标题/发布时间)→ title/ann_date,按 code 分桶 + 落 json。"""
-    def fake_gof(endpoint, params, today=None, fetch=None):
-        assert endpoint == "stock_news_em"
-        return pd.DataFrame({"新闻标题": [f"{params['symbol']} 中标大单"],
-                             "发布时间": ["2026-06-20 09:00:00"]})
-    monkeypatch.setattr(l3_news, "get_or_fetch", fake_gof, raising=True)
-    out = l3_news.harvest_l3_web_news("2026-06-20", ["600519", "000001"], root=tmp_path / "scan")
-    assert set(out) == {"600519", "000001"}
-    assert out["600519"][0]["title"] == "600519 中标大单" and out["600519"][0]["ann_date"].startswith("2026")
-    saved = json.loads((tmp_path / "scan" / "2026-06-20" / "L3_webnews" / "600519.json").read_text())
-    assert saved[0]["title"] == "600519 中标大单"
-
-
-def test_harvest_web_news_degrades_on_error(tmp_path, monkeypatch):
-    """单股 get_or_fetch 抛错 → 该 code 空列表、写空 json、不抛(降级隔离)。"""
-    def boom(endpoint, params, today=None, fetch=None):
-        raise RuntimeError("no net")
-    monkeypatch.setattr(l3_news, "get_or_fetch", boom, raising=True)
-    out = l3_news.harvest_l3_web_news("2026-06-20", ["600519"], root=tmp_path / "scan")
-    assert out["600519"] == []
-    assert json.loads((tmp_path / "scan" / "2026-06-20" / "L3_webnews" / "600519.json").read_text()) == []
