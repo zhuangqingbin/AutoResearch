@@ -3,8 +3,8 @@ export const meta = {
   description: '全 A股六段漏斗:一个确定性 workflow 编排全流程 + 四校验门(prelude→市场/行业→L3→L4→assemble)',
   phases: [
     { title: 'Prelude', detail: 'frame → [universe/L0-L2 ∥ market_view] → GATE1' },
-    { title: 'L3', detail: '[sector-briefs ∥ 证据harvest] → L3-rank(pass1→深比较 7-10) → finalists → GATE2' },
-    { title: 'L4', detail: 'slim-harvest ∥ 情报站(GATE3) → 决策卡并发' },
+    { title: 'L3', detail: '[sector-briefs ∥ 证据harvest] → L3-rank → finalists+GATE2(合并壳)' },
+    { title: 'L4', detail: '情报站(GATE2 后即发)∥ [l4-prep(生产者并行) → slim-harvest] → 决策卡并发' },
     { title: 'Assemble', detail: 'assemble → GATE4' },
   ],
 }
@@ -34,12 +34,13 @@ const GATE1 = { type: 'object', required: ['ok'],
     sentinel_level: { type: 'string' }, l4_budget: { type: 'integer' } } }
 const GATE2 = { type: 'object', required: ['ok'],
   properties: { ok: { type: 'boolean' }, reason: { type: 'string' },
-    finalists: { type: 'array', items: { type: 'string' } }, n: { type: 'integer' } } }
+    finalists: { type: 'array', items: { type: 'string' } }, n: { type: 'integer' },
+    meta: { type: 'object' } } }
 const OK = { type: 'object', required: ['ok'],
   properties: { ok: { type: 'boolean' }, reason: { type: 'string' } } }
 function gate(label, cmd, schema, phaseName) {   // 同上:避免遮蔽全局 phase()
   return agent(
-    `执行:\`${cmd}\`\n它会向 stdout 打印一行 JSON。把那行 JSON 原样作为你的结构化返回(字段不改、不增删)。`,
+    `执行:\`${cmd}\`\n它会向 stdout 打印 JSON。把它打印的最后一行 JSON 原样作为你的结构化返回(字段不改、不增删)。`,
     { agentType: 'general-purpose', effort: 'high', label, schema, ...(phaseName ? { phase: phaseName } : {}) })
 }
 
@@ -84,16 +85,19 @@ phase('L3')
 // finalist tier 上限(plan 2026-07-12-l3-merge-plan.md Task 4):L3.5 闸的收窄职能已并入 L3,
 // L3 直接出 7–10 只 finalist(宁缺毋滥,不强制凑到此数)——cap 而非目标。
 const l3cap = Math.min(10, g1.l4_budget)
-// 中观行业 pack(确定性)先行,再 [sector-briefs ∥ L3 表准备] barrier
-await bash(`${R} autoresearch.sector.reuse ${date} --apply; ${R} autoresearch.sector.pack ${date}`, 'sector-pack', 'L3')
-// schema 顶层必须是 object(API 拒 `type:'array'` → 400 → agent 返回 null → `|| []` 静默吞掉,
-// 结果是一份行业 brief 都不写、L3 在没有行业地形段的情况下精排。2026-07-09 实跑逮到。
-const sectorsRes = await agent(
-  `执行:\`uv run --no-sync python -c "import json,glob,os;d='context/sector/${date}';b='${SD}/sector_briefs';print(json.dumps(sorted(os.path.splitext(os.path.basename(p))[0] for p in glob.glob(d+'/*.json') if not os.path.exists(os.path.join(b,os.path.splitext(os.path.basename(p))[0]+'.md')))))"\`\n它打印一行 JSON 数组 = 待写 brief 的行业(有 pack 且尚无 brief;♻️复用行业已被 reuse 拷贝,故被排除,勿再派发覆盖)。把该数组放进 \`sectors\` 字段作为结构化返回;目录不存在则 \`sectors: []\`。`,
-  { agentType: 'general-purpose', effort: 'low', label: 'sector-list', phase: 'L3',
-    schema: { type: 'object', required: ['sectors'],
-      properties: { sectors: { type: 'array', items: { type: 'string' } } } } })
-if (!sectorsRes) throw new Error('sector-list 无返回(schema/API 失败)—— 不静默降级为"无行业 brief"')
+// 中观行业 pack(确定性)先行,再 [sector-briefs ∥ L3 表准备] barrier。sector-pack + 待写清单
+// 合并一个 gate(壳合并①,-1 spawn):schema 顶层必须是 object(API 拒 `type:'array'` → 400 →
+// agent 返回 null → `|| []` 静默吞掉,结果是一份行业 brief 都不写、L3 在没有行业地形段的情况下
+// 精排。2026-07-09 实跑逮到。
+const SECTORS = { type: 'object', required: ['ok', 'sectors'],
+  properties: { ok: { type: 'boolean' }, sectors: { type: 'array', items: { type: 'string' } } } }
+const sectorsRes = await gate('sector-pack+list',
+  `${R} autoresearch.sector.reuse ${date} --apply; ${R} autoresearch.sector.pack ${date}; ` +
+  `uv run --no-sync python -c "import json,glob,os;d='context/sector/${date}';b='${SD}/sector_briefs';` +
+  `print(json.dumps({'ok':True,'sectors':sorted(os.path.splitext(os.path.basename(p))[0] ` +
+  `for p in glob.glob(d+'/*.json') if not os.path.exists(os.path.join(b,os.path.splitext(os.path.basename(p))[0]+'.md')))}))"`,
+  SECTORS, 'L3')
+if (!sectorsRes) throw new Error('sector-pack+list 无返回(schema/API 失败)—— 不静默降级为"无行业 brief"')
 const sectors = sectorsRes.sectors || []
 log(`待写行业 brief:${sectors.length} 个${sectors.length ? ` (${sectors.join('、')})` : '(全部 TTL 复用)'}`)
 await parallel([
@@ -120,23 +124,37 @@ if (l3lint && l3lint.ok === false) {
     `你之前写的 ${SD}/_l3_judged.json 有 thesis 引用数字与 ${SD}/_l3_table.md 不符:\n${l3lint.reason}\n只修这些票的 thesis/数字(以表为准或删掉具体数字改定性措辞),其余票原样保留,用 Write 覆写同一文件。`,
     { agentType: 'l3-rank', effort: 'medium', label: 'L3-lint-fix', phase: 'L3' })
 }
-// 确定性写 finalists(修前导零)+ GATE2
-await bash(`${R} autoresearch.scan.agents.l3_select finalists ${date} --budget ${l3cap}`, 'finalists', 'L3')
-const g2 = await gate('GATE2', `${R} autoresearch.scan.gates gate2 ${date} --budget ${l3cap}`, GATE2, 'L3')
+// 确定性写 finalists(修前导零)+ GATE2,合并一个 gate(壳合并②,-1 spawn)
+const g2 = await gate('GATE2',
+  `${R} autoresearch.scan.agents.l3_select finalists ${date} --budget ${l3cap} && ` +
+  `${R} autoresearch.scan.gates gate2 ${date} --budget ${l3cap}`, GATE2, 'L3')
 if (!g2 || !g2.ok) throw new Error(`GATE2 失败:${g2 ? g2.reason : 'no return'}`)
 // L3.5 闸已完全移除(2026-07-12 用户裁定"直接 L3 输出"):L3 finalist tier 即 L4 入选集。
 log(`GATE2 ✓ finalists=${g2.n}`)
 
+// 活体情报站(spec §P4②):GATE2 后即发——盲于 L3 论点,只需 code/name/sector/date(g2.meta),
+// 与 l4-prep + GATE3 slim 全窗重叠。carryover 复用票的情报可能白跑(近期 reuse=0,接受并 log)。
+const intelOn = !!(cfg.l4_intel && cfg.l4_intel.enabled)
+const maxQ = (cfg.l4_intel && cfg.l4_intel.max_queries) || 15
+const INTEL = { type: 'object', required: ['code'],
+  properties: { code: { type: 'string' }, events: { type: 'integer' } } }
+const intelPromises = intelOn ? g2.finalists.map((code) => agent(
+  `活体情报采集:${code} ${(g2.meta?.[code]?.name) || ''}(${(g2.meta?.[code]?.sector) || '行业未知'})· 分析日 ${date}。按你的人设六面全查(≤${maxQ} 条),写 ${SD}/_l4_intel_${code}.md;返回 code 与事件行数 events。`,
+  { agentType: 'l4-intel', effort: cfg.agents?.l4_intel?.effort ?? 'max',
+    ...(cfg.agents?.l4_intel?.model ? { model: cfg.agents.l4_intel.model } : {}),
+    label: `intel:${code}`, phase: 'L4', schema: INTEL })) : []
+if (intelOn) log(`🕵️ 情报站并行:${g2.finalists.length} 票盲搜(GATE2 后即发,≤${maxQ} 查/票)`)
+
 // ── Phase L4 ────────────────────────────────────────────────────
 phase('L4')
-// 派发包(确定性):TTL复用+carryover → pledge/seats/calendar(旗源 csv)→ prompts(.SH 归一;compose 时读旗源)
-log('L4 派发包+slim 预取开始(reuse→旗源→prompts→slim,历史 ~10m)')
+log('L4 派发包+slim 预取开始(reuse→[四生产者并行]→prompts→slim)')
 await bash(
   `${R} autoresearch.scan.l4_reuse ${date} --apply --carryover; ` +
-  `${R} autoresearch.scan.agents.l4_card pledge ${date} || true; ` +
-  `${R} autoresearch.scan.agents.l4_card seats ${date} || true; ` +
-  `${R} autoresearch.scan.calendar ${date} || true; ` +
-  `${R} autoresearch.scan.agents.l4_card consensus ${date} || true; ` +
+  `( ${R} autoresearch.scan.agents.l4_card pledge ${date} || true ) & ` +
+  `( ${R} autoresearch.scan.agents.l4_card seats ${date} || true ) & ` +
+  `( ${R} autoresearch.scan.calendar ${date} || true ) & ` +
+  `( ${R} autoresearch.scan.agents.l4_card consensus ${date} || true ) & ` +
+  `wait; ` +
   `${R} autoresearch.scan.agents.l4_card prompts ${date}`, 'l4-prep', 'L4')
 // 派发计划(确定性)提前到 GATE3 之前:情报站要与 slim 预取同窗口并行(只读 finalists/_l4_prompt 存在性,与 slim 无依赖)
 const PLAN = { type: 'object', required: ['dispatch'],
@@ -146,24 +164,13 @@ const PLAN = { type: 'object', required: ['dispatch'],
       properties: { code: { type: 'string' }, rating: { type: 'string' } } } } } }
 const plan = await gate('dispatch-plan', `${R} autoresearch.scan.agents.l4_card dispatch-plan ${date}`, PLAN, 'L4')
 if (!plan) throw new Error('dispatch-plan 无返回')
-// 活体情报站(design 2026-07-12 §3;config 默认关):盲搜 sonnet·max,每票一个,∥ GATE3 slim 预取。
-// agent 失败→null 不阻断——卡侧 presence-gated 缺文件自动回退卡内网查。
-const intelOn = !!(cfg.l4_intel && cfg.l4_intel.enabled)
-const INTEL = { type: 'object', required: ['code'],
-  properties: { code: { type: 'string' }, events: { type: 'integer' } } }
-const intelThunks = intelOn ? plan.dispatch.map((code) => () => agent(
-  `活体情报采集:${code} ${(plan.meta?.[code]?.name) || ''}(${(plan.meta?.[code]?.sector) || '行业未知'})· 分析日 ${date}。按你的人设六面全查(≤15 条),写 ${SD}/_l4_intel_${code}.md;返回 code 与事件行数 events。`,
-  { agentType: 'l4-intel', effort: cfg.agents?.l4_intel?.effort ?? 'max',
-    ...(cfg.agents?.l4_intel?.model ? { model: cfg.agents.l4_intel.model } : {}),
-    label: `intel:${code}`, phase: 'L4', schema: INTEL })) : []
-if (intelOn) log(`🕵️ 情报站并行:${plan.dispatch.length} 票盲搜(sonnet·max,与 slim 预取同窗口)`)
 // GATE3:批量 slim 失败响亮(harvest-slim 打印 JSON + 非零退出)—— intel 与之并行,barrier 后再派卡
 const [g3, ...intelRes] = await parallel([
   () => gate('GATE3', `${R} autoresearch.scan.agents.l4_card harvest-slim ${date}`, OK, 'L4'),
-  ...intelThunks,
+  ...intelPromises.map((p) => () => p),
 ])
 if (!g3 || !g3.ok) throw new Error(`GATE3 失败(slim<8KB 或 .SH):${g3 ? g3.reason : 'no return'}`)
-if (intelOn) log(`🕵️ 情报站 ✓ ${intelRes.filter(Boolean).length}/${plan.dispatch.length}(缺稿卡自动回退网查)`)
+if (intelOn) log(`🕵️ 情报站 ✓ ${intelRes.filter(Boolean).length}/${g2.finalists.length}(缺稿卡自动回退网查)`)
 log('GATE3 ✓ 全 slim >8KB(surface)')
 // 决策卡:只派 dispatch 码一次并发(barrier —— assemble 与 isZeroBuy 需全部卡评级才能判)
 const CARD = { type: 'object', required: ['code', 'rating'],
