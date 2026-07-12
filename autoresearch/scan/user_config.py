@@ -68,15 +68,18 @@ def _read_jsonc(p: Path):
     """读 JSONC 文件 → 去注释 → `json.loads`。"""
     return json.loads(_strip_jsonc(p.read_text(encoding="utf-8")))
 
-# 顶层白名单;funnel/pinned/reuse/l4_intel 额外校验子键(agents/l4_gate 内部形状由各自消费方解释:
-# agents={stage: {model, effort}} 无固定 stage 集,Task 2 workflow 直接按需取;l4_gate=
+# 顶层白名单;funnel/pinned/reuse/l4_intel/l3 额外校验子键(agents/l4_gate 内部形状由各自消费方
+# 解释:agents={stage: {model, effort}} 无固定 stage 集,Task 2 workflow 直接按需取;l4_gate=
 # {name, params},params 形状随 gate 实现而变,Task 3+ gate registry 各自校验)。
-_TOP_WHITELIST = {"agents", "l4_gate", "funnel", "pinned", "redteam_prob", "reuse", "l4_intel"}
+# l3:两遍法分诊(design 2026-07-12-l3-merge-plan.md Task 1)——two_pass/pass1_target 由
+# `l3_select.prepare_l3_table` 消费;finalist_max 由后续 merge v3(Task 2)消费,本 task 先占位。
+_TOP_WHITELIST = {"agents", "l4_gate", "funnel", "pinned", "redteam_prob", "reuse", "l4_intel", "l3"}
 _SUB_WHITELIST = {
     "funnel": {"recall_channels", "channel_quotas", "channel_floors"},
     "pinned": {"cap", "ttl_days"},
     "reuse": {"max_age_days", "price_delta_pct"},
     "l4_intel": {"enabled"},
+    "l3": {"two_pass", "pass1_target", "finalist_max"},
 }
 
 
@@ -119,7 +122,7 @@ def apply_to_scan_config(cfg: dict, sc: ScanConfig) -> ScanConfig:
             sc.channel_quotas = funnel["channel_quotas"]
         if "channel_floors" in funnel:
             sc.channel_floors = funnel["channel_floors"]
-    for key in ("agents", "l4_gate", "pinned", "redteam_prob", "reuse", "l4_intel"):
+    for key in ("agents", "l4_gate", "pinned", "redteam_prob", "reuse", "l4_intel", "l3"):
         if key in cfg:
             setattr(sc, key, cfg[key])
     return sc

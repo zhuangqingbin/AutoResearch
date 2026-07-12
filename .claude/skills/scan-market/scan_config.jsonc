@@ -12,6 +12,15 @@
     "l4_intel":     { "effort": "max" }      // 活体情报员(盲搜六面,sonnet 由 agent 定义默认)
   },
 
+  // ── L3 两遍法:pass1 确定性分诊 200→~60 + pass2(l3-rank)深比较出 finalist tier ──
+  // (design: 2026-07-12-l3-merge-plan.md;用户裁定即新基线,下列值 = 本波后默认行为,
+  // 本 key 是回滚杆而非 opt-in——删掉本块或把 two_pass 改 false 都退回"L3 单遍读全表"旧行为)。
+  "l3": {
+    "two_pass": true,        // false = 回滚:prepare_l3_table 现行为逐字节不变(不 triage/不切表/不读本块)
+    "pass1_target": 60,      // pass1 分诊后喂 pass2(l3-rank)的行数(全入规则命中多时可能略多于此数)
+    "finalist_max": 10       // finalist tier 上限(由 merge v3 消费;本 task 尚未接线,先占位——cap=min(此值,l4_budget))
+  },
+
   // ── L4 活体情报站 ──(sonnet·max 盲搜情报员 ∥ slim 预取;卡侧缺文件自动回退卡内网查)
   // P1 波真跑验收后再置 true(设计稿 2026-07-12-l4-intel-station §6:单变量 A/B,账本 ≥10-20 日裁)。
   "l4_intel": { "enabled": false },

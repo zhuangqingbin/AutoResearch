@@ -162,6 +162,31 @@ def test_l4_intel_applies_to_scan_config():
     assert sc.l4_intel == {"enabled": True}
 
 
+# ───────────────────────── l3:两遍法分诊新顶层键白名单 + 透传 ScanConfig(镜像 l4_intel 三连) ─────────────────────────
+# design: docs/plans/2026-07-12-l3-merge-plan.md Task 1。
+
+
+def test_l3_whitelisted(tmp_path):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"l3": {"two_pass": False, "pass1_target": 40, "finalist_max": 8}}),
+                encoding="utf-8")
+    cfg = load_user_config(p)
+    assert cfg["l3"] == {"two_pass": False, "pass1_target": 40, "finalist_max": 8}
+
+
+def test_l3_unknown_subkey_raises(tmp_path):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"l3": {"two_pas": True}}), encoding="utf-8")   # 拼写错
+    with pytest.raises(ValueError, match="l3"):
+        load_user_config(p)
+
+
+def test_l3_applies_to_scan_config():
+    sc = ScanConfig()
+    apply_to_scan_config({"l3": {"two_pass": True, "pass1_target": 60, "finalist_max": 10}}, sc)
+    assert sc.l3 == {"two_pass": True, "pass1_target": 60, "finalist_max": 10}
+
+
 # ───────────────────────── frame --json:user_config 回显 + run meta 落盘 ─────────────────────────
 
 
