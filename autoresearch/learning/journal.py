@@ -21,8 +21,25 @@ _COLS = ["date", "regime", "knife", "healthy", "l2", "finalists", "cards", "buys
          "triggers", "mkt_fwd1", "mkt_fwd5", "retro_done"]
 
 
+def _count_buys(d: Path, attr: pd.DataFrame | None) -> int:
+    """D5 口径统一(spec 2026-07-12 P0-1):买单计数改用 attribution `bought` 单一事实源。
+
+    历史上 journal 走 `health.count_buys`(重读卡面文本 + verify.csv 折回)、zero_buy_ledger 走
+    attribution `bought` 列——同一天两本账可能给出不同答案(D5)。现在两者统一读 attribution;
+    `bought_mask` 与 zero_buy_ledger 共用同一实现,防止两处再各写一套判定分叉。
+
+    presence-gated 向后兼容:`attr` 为 None(无 retro/attribution.csv,如今日刚发布/T+2 未成熟)
+    或缺 `bought` 列(旧格式 attribution)→ 回退 `health.count_buys`(卡面口径,现行为不变)。
+    """
+    from autoresearch.scan.health import count_buys  # lazy 防环
+    if attr is not None and "bought" in attr.columns:
+        from autoresearch.learning.zero_buy_ledger import bought_mask
+        return int(bought_mask(attr).sum())
+    return count_buys(d)
+
+
 def _day_row(d: Path) -> dict:
-    from autoresearch.scan.health import count_buys, l4_phase_stats  # lazy 防环
+    from autoresearch.scan.health import l4_phase_stats  # lazy 防环
     from autoresearch.scan.menu import _healthy, _knife_share
     row: dict = {"date": d.name, "regime": None, "knife": None, "healthy": None,
                  "l2": None, "finalists": None, "cards": None, "buys": None,
@@ -48,8 +65,13 @@ def _day_row(d: Path) -> dict:
             row["finalists"] = len(pd.read_csv(pf))
     ph = l4_phase_stats(d)
     row["cards"] = ph["n_cards"] if ph else None
+    pa = d / "retro" / "attribution.csv"
+    attr = None
+    if pa.exists():
+        with contextlib.suppress(Exception):
+            attr = pd.read_csv(pa)
     if row["finalists"] is not None:
-        row["buys"] = count_buys(d)
+        row["buys"] = _count_buys(d, attr)
     ws = d / "watchlist_status.csv"
     if ws.exists():
         try:
@@ -57,17 +79,13 @@ def _day_row(d: Path) -> dict:
             row["triggers"] = int(st["status"].astype(str).str.startswith("触发").sum())
         except Exception:  # noqa: BLE001
             pass
-    pa = d / "retro" / "attribution.csv"
-    if pa.exists():
-        try:
-            attr = pd.read_csv(pa)
+    if attr is not None:
+        with contextlib.suppress(Exception):
             for src, dst in [("fwd_1_oo", "mkt_fwd1"), ("fwd_5_oc", "mkt_fwd5")]:
                 if src in attr.columns:
                     v = pd.to_numeric(attr[src], errors="coerce").dropna()
                     if len(v):
                         row[dst] = round(float(v.mean()), 6)
-        except Exception:  # noqa: BLE001
-            pass
     return row
 
 

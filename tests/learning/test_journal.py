@@ -52,3 +52,71 @@ def test_journal_empty(tmp_path):
     df = roll(tmp_path)
     assert not len(df)
     assert "_无 scan 日_" in "\n".join(render(df))
+
+
+# ───────────────────────── D5 口径统一(spec 2026-07-12 P0-1):买单计数改用 attribution `bought` ─────────────────────────
+
+
+def _mk_finalist_day(root, date, cards: dict, attribution_rows=None):
+    """轻量 fixture:只搭 finalists+details+可选 attribution(D5 场景专用,别与 _mk_day 混)。"""
+    d = root / date
+    (d / "details").mkdir(parents=True)
+    pd.DataFrame([{"code": c, "name": f"N{c}", "sector": "半导体"} for c in cards]).to_csv(
+        d / "finalists.csv", index=False)
+    for code, text in cards.items():
+        (d / "details" / f"{code}.md").write_text(text, encoding="utf-8")
+    if attribution_rows is not None:
+        (d / "retro").mkdir()
+        pd.DataFrame(attribution_rows).to_csv(d / "retro" / "attribution.csv", index=False)
+    return d
+
+
+def test_journal_buys_prefers_attribution_bought(tmp_path):
+    """attribution.csv 有 bought 列且与卡面一致 → 走新路径,读数不变。"""
+    _mk_finalist_day(tmp_path, "2026-07-03",
+                     cards={"000001": "**Rating**: Overweight\n", "000002": "**Rating**: Hold\n"},
+                     attribution_rows=[{"code": "000001", "bought": True, "fwd_1_oo": 0.01},
+                                       {"code": "000002", "bought": False, "fwd_1_oo": -0.01}])
+    df = roll(tmp_path)
+    assert df.iloc[0]["buys"] == 1
+
+
+def test_journal_buys_attribution_overrides_card_face(tmp_path):
+    """D5 核心验收:attribution.bought 与卡面评级不一致时(如折回未回写卡片文本),
+    journal 现在以 attribution 为单一事实源,不再被卡面文本带偏——证明真的切换了口径,非空转。"""
+    _mk_finalist_day(tmp_path, "2026-07-03",
+                     cards={"000001": "**Rating**: Overweight\n"},   # 卡面仍是 OW
+                     attribution_rows=[{"code": "000001", "bought": False, "fwd_1_oo": 0.01}])  # 账本说没买
+    df = roll(tmp_path)
+    assert df.iloc[0]["buys"] == 0     # 以 attribution 为准(旧口径 count_buys 会读成 1)
+
+
+def test_journal_buys_falls_back_without_attribution(tmp_path):
+    """无 retro/attribution.csv(如今日刚发布、T+2 未成熟)→ 回退卡面口径 count_buys,现行为不变。"""
+    _mk_finalist_day(tmp_path, "2026-07-03", cards={"000001": "**Rating**: Overweight\n"})
+    df = roll(tmp_path)
+    assert df.iloc[0]["buys"] == 1
+
+
+def test_journal_buys_falls_back_without_bought_column(tmp_path):
+    """attribution.csv 存在但无 bought 列(旧格式/仅归因子集)→ presence-gated 回退卡面口径,不误判 0。"""
+    _mk_finalist_day(tmp_path, "2026-07-03", cards={"000001": "**Rating**: Overweight\n"},
+                     attribution_rows=[{"code": "000001", "fwd_1_oo": 0.01}])   # 无 bought 列
+    df = roll(tmp_path)
+    assert df.iloc[0]["buys"] == 1
+
+
+def test_journal_and_zero_buy_agree_on_same_attribution(tmp_path):
+    """D5 收口验收:同一 attribution.csv 喂两本账,journal.buys 与 zero_buy_ledger.n_bought 现在同口径。
+
+    卡面故意都写 Hold(与 attribution 相反)——旧代码下 journal 会读出 0、zero_buy 读出 1(分叉复现);
+    修复后两本账必须相等。
+    """
+    from autoresearch.learning.zero_buy_ledger import roll as zb_roll
+    _mk_finalist_day(tmp_path, "2026-07-03",
+                     cards={"000001": "**Rating**: Hold\n", "000002": "**Rating**: Hold\n"},
+                     attribution_rows=[{"code": "000001", "bought": True, "fwd_1_oo": 0.01},
+                                       {"code": "000002", "bought": False, "fwd_1_oo": -0.01}])
+    j = roll(tmp_path)
+    z = zb_roll(tmp_path)
+    assert j.iloc[0]["buys"] == int(z.iloc[0]["n_bought"]) == 1

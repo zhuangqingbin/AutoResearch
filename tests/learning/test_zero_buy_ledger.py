@@ -7,7 +7,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from autoresearch.learning.zero_buy_ledger import render, roll
+from autoresearch.learning.zero_buy_ledger import bought_mask, render, roll
 
 
 def _mk_day(root, date, bought_flags, fwd1, fwd5, fwd2=None):
@@ -58,3 +58,14 @@ def test_empty_root_graceful(tmp_path):
     df = roll(tmp_path)
     assert len(df) == 0
     assert any("无" in ln for ln in render(df))
+
+
+def test_bought_mask_is_public_and_reused_by_journal(tmp_path):
+    """D5 单一事实源:`bought_mask` 抽成可复用原语(journal.py 会同口径导入,见 test_journal.py)。
+
+    兼容字符串 True/False、1/0;缺列 → 全 False(不炸,现行为不变)。
+    """
+    df = pd.DataFrame({"bought": [True, False, "True", "false", 1, 0]})
+    m = bought_mask(df)
+    assert list(m) == [True, False, True, False, True, False]
+    assert list(bought_mask(pd.DataFrame({"code": ["000001"]}))) == [False]

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -158,6 +159,74 @@ def count_buys(scan_dir: Path) -> int:
     return sum(1 for r in final_ratings(scan_dir).values() if r in ("Buy", "Overweight"))
 
 
+# D3 清欠(spec 2026-07-12 P0-1):这四本"存在但不会自己长大"的账本现已纳入 prelude._ledgers()
+# 白名单(见 autoresearch/scan/prelude.py),本节验它们是否真的被刷新。
+_D3_LEDGERS = ("channel_ledger", "gate_ledger", "zero_buy_ledger", "changelog_ledger")
+
+
+def ledger_freshness(scan_dir: Path, learning_root: Path | str | None = None) -> dict:
+    """账本新鲜度体检(P0-1 裁决法产物):复盘欠账日数 + 四账本 mtime 滞后 + 两本买单计数一致性。
+
+    - `pending_retro_days`/`pending_retro_list`:有 `retro/attribution.csv`(fwd 已实现,
+      `attribute()` 才会成功落盘)但无 `retro/done.json` 的天数——纯本地文件判定,**刻意不复用**
+      `retro.pending_days()`(它要连 `factor_lab._pro()`/交易日历,实测每次 ~0.5-0.8s;`run_health`
+      被 assemble/index_md 等到处调用,接上会把网络依赖/延迟传染到全仓库测试套件)。语义上是它的
+      保守子集(只数"已确认欠账"的天,不判"是否够资格复盘"这层日历逻辑,那是 prelude 里
+      `retro_pending` 步骤 + `_retro_input_nag` 的管辖)。
+    - `ledger_lag_days`:`_D3_LEDGERS` 各自报告 mtime 落后多少个 scan 日(从未生成过 → None)。
+    - `buy_count_consistent`/`buy_count_mismatches`:journal vs zero_buy_ledger 重叠日买单计数
+      是否一致——D5 口径统一后应恒为 True,留作日后再分叉的回归检测器;无重叠日 → None(非误判)。
+
+    presence-gated、每项各自 try/except:任一子计算失败不拖垮整体,退化为空/None。全函数零网络。
+    """
+    scan_dir = Path(scan_dir)
+    scan_root = scan_dir.parent
+    day_dirs = sorted((p for p in scan_root.iterdir() if p.is_dir() and p.name[:2] == "20"),
+                      key=lambda p: p.name) if scan_root.exists() else []
+    days = [p.name for p in day_dirs]
+
+    pending = sorted(p.name for p in day_dirs
+                     if (p / "retro" / "attribution.csv").exists()
+                     and not (p / "retro" / "done.json").exists())
+
+    troot = Path(learning_root) if learning_root else Path("reports/learning")
+    lag: dict[str, int | None] = {}
+    for name in _D3_LEDGERS:
+        p = troot / f"{name}.md"
+        if not p.exists():
+            lag[name] = None
+            continue
+        try:
+            mdate = datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d")
+            lag[name] = sum(1 for d in days if d > mdate)
+        except Exception:  # noqa: BLE001
+            lag[name] = None
+
+    consistent: bool | None = None
+    mismatches: list[str] = []
+    try:
+        from autoresearch.learning import (
+            journal as _journal_mod,  # lazy 防环
+            zero_buy_ledger as _zbl_mod,
+        )
+        jr, zr = _journal_mod.roll(scan_root), _zbl_mod.roll(scan_root)
+        if len(jr) and len(zr) and "buys" in jr.columns and "n_bought" in zr.columns:
+            jm, zm = jr.set_index("date")["buys"], zr.set_index("date")["n_bought"]
+            common = jm.index.intersection(zm.index)
+            for dte in common:
+                jv, zv = jm.loc[dte], zm.loc[dte]
+                if pd.notna(jv) and pd.notna(zv) and int(jv) != int(zv):
+                    mismatches.append(str(dte))
+            if len(common):
+                consistent = not mismatches
+    except Exception:  # noqa: BLE001
+        consistent = None
+
+    return {"pending_retro_days": len(pending), "pending_retro_list": pending,
+            "ledger_lag_days": lag, "buy_count_consistent": consistent,
+            "buy_count_mismatches": mismatches}
+
+
 def run_health(scan_dir: Path) -> dict:
     """一次 scan 的体检 dict(artifacts/counts/NaN 降级/churn/L4 阶段/meta 回显)。"""
     scan_dir = Path(scan_dir)
@@ -186,7 +255,8 @@ def run_health(scan_dir: Path) -> dict:
             "anns_empty_rate": anns_empty_rate(scan_dir), "northbound": northbound_probe(scan_dir),
             "regime": meta.get("regime"), "l2_engine": meta.get("l2_engine"),
             "weights_source": meta.get("weights_source"),
-            "churn": finalist_churn(scan_dir), "l4_phases": l4_phase_stats(scan_dir)}
+            "churn": finalist_churn(scan_dir), "l4_phases": l4_phase_stats(scan_dir),
+            "ledger_freshness": ledger_freshness(scan_dir)}
 
 
 def write_run_health(scan_dir: Path) -> Path:

@@ -18,6 +18,17 @@ import pandas as pd
 _COLS = ["date", "n_bought", "n_stocks", "mkt_fwd1", "mkt_fwd2", "mkt_fwd5"]
 
 
+def bought_mask(df: pd.DataFrame) -> pd.Series:
+    """attribution.csv 的 `bought` 列 → 规范布尔 Series(兼容字符串 True/False、1/0);缺列 → 全 False。
+
+    D5 单一事实源(spec 2026-07-12 P0-1):journal.py 的买单计数经此与本 ledger 同口径读
+    attribution `bought`(见 `journal._count_buys`),而非各自实现一套判定,防止两本账再分叉。
+    """
+    if "bought" not in df.columns:
+        return pd.Series(False, index=df.index)
+    return df["bought"].astype(str).str.lower().isin(("true", "1"))
+
+
 def roll(scan_root: Path | None = None) -> pd.DataFrame:
     """聚合 context/scan/*/retro/attribution.csv → 每日 [date,n_bought,n_stocks,mkt_fwd1,mkt_fwd2,mkt_fwd5]。"""
     scan_root = scan_root or Path("context/scan")
@@ -29,8 +40,7 @@ def roll(scan_root: Path | None = None) -> pd.DataFrame:
             continue
         if "fwd_1_oo" not in df.columns or not len(df):
             continue
-        bought = df["bought"].astype(str).str.lower().isin(("true", "1")) if "bought" in df.columns \
-            else pd.Series(False, index=df.index)
+        bought = bought_mask(df)
         f1 = pd.to_numeric(df["fwd_1_oo"], errors="coerce")
         f2 = pd.to_numeric(df.get("fwd_2_oc"), errors="coerce") if "fwd_2_oc" in df.columns else pd.Series(dtype=float)
         f5 = pd.to_numeric(df.get("fwd_5_oc"), errors="coerce") if "fwd_5_oc" in df.columns else pd.Series(dtype=float)

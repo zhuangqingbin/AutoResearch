@@ -44,6 +44,25 @@ def calib_suggestion_lines(scan_root=None) -> list[str]:
     return lines
 
 
+def _retro_input_nag(scan_root: Path | str | None = None) -> str:
+    """retro_input.md 已备料但未收尾(无 done.json)→ 提醒行(D1 清欠;仿 `assemble._proposals_nag` 语气)。
+
+    比既有 `retro_pending` 步骤(只看"够资格复盘")更进一步的欠账信号:这里专挑"scan-retro 已经
+    跑过 write_retro_input 却从没 mark_done"——诊断会话烂尾比"还没开始"更该催办(勘察 D1:
+    07-07/07-08 两日就是这个状态)。presence-gated:无 context/scan / 无烂尾日 → ""。
+    """
+    scan_root = Path(scan_root or "context/scan")
+    if not scan_root.exists():
+        return ""
+    stalled = sorted(p.name for p in scan_root.iterdir()
+                     if p.is_dir() and (p / "retro" / "retro_input.md").exists()
+                     and not (p / "retro" / "done.json").exists())
+    if not stalled:
+        return ""
+    return ("retro_input 已备料但未收尾(无 done.json):" + "、".join(stalled)
+            + " ← scan-retro 诊断烂尾,去补 mark_done 或重跑诊断,别让欠账攒着")
+
+
 def _write_t0(scan_dir: Path) -> None:
     """墙钟 t0 标记:mtime 即 stage_timing 的起点锚,内容仅自述。
     已存在不覆盖(prelude-retry/重跑不重置起点);失败不挡 prelude。"""
@@ -144,16 +163,24 @@ def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()
         from autoresearch.learning import (
             buy_ledger,
             catalyst_ledger,
+            changelog_ledger,
+            channel_ledger,
             cross_calib,
+            gate_ledger,
             journal,
             paper_nav,
             watchlist_ledger,
+            zero_buy_ledger,
         )
-        # 六个 ledger 串行但各自 suppress:单点故障不再连坐(改前五个共享一个 try,一炸全炸)。
-        for mod in (journal, buy_ledger, cross_calib, catalyst_ledger, paper_nav, watchlist_ledger):
+        # 十个 ledger 串行但各自 suppress:单点故障不再连坐(改前五个共享一个 try,一炸全炸)。
+        # 07-12 D3 清欠:channel/gate/zero_buy/changelog 四个"存在但不会自己长大"的账本纳入白名单
+        # (此前只能靠人/Claude 手跑 CLI,见 docs/research/2026-07-12-learning-system-survey.md §1)。
+        for mod in (journal, buy_ledger, cross_calib, catalyst_ledger, paper_nav, watchlist_ledger,
+                    channel_ledger, gate_ledger, zero_buy_ledger, changelog_ledger):
             with contextlib.suppress(Exception):
                 mod.main()
-        return "journal + buy_ledger + cross_calib + catalyst + paper_nav + watchlist 已刷新"
+        return ("journal + buy_ledger + cross_calib + catalyst + paper_nav + watchlist + "
+                "channel + gate + zero_buy + changelog 已刷新")
 
     all_steps = [("retro_refresh", _refresh), ("retro_pending", _pending),
                  ("consensus", _consensus), ("temperature", _temperature),
@@ -172,6 +199,12 @@ def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()
     pend = next((r["note"] for r in results if r["step"] == "retro_pending" and "待诊断" in r["note"]), None)
     if pend:
         print(f"  ⚠️  {pend}")
+    try:                                      # D1 清欠:retro_input 已备料未收尾 nag
+        stalled = _retro_input_nag()
+        if stalled:
+            print(f"  ⚠️  {stalled}")
+    except Exception as e:  # noqa: BLE001 — nag 可选,缺了不挡前奏
+        print(f"[prelude] ✗ retro_input_nag: {e}", file=sys.stderr)
     try:                                      # 当日件建议行(spec 2026-07-05;含"禁注"的行勿贴)
         clines = calib_suggestion_lines()
         if clines:
