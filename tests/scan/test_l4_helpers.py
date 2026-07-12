@@ -51,3 +51,14 @@ def test_pick_opportunity_candidates(tmp_path):
     assert out == ["000002", "000003"]        # UW 不入;按 conviction 70>62>55 取 2
     assert pick_opportunity_candidates({}, tmp_path) == []
     assert pick_opportunity_candidates(ratings, tmp_path / "nope") == []   # 缺 finalists 优雅
+
+
+def test_force_full_card_pinned_always_full():
+    """📌 保送持仓票恒强制满卡:你真金白银持有的票,盈利质量/偿付(爆雷)两维不允许标『未核』。
+
+    pinned 票绕过 L3 finalist tier(finalist=false → conviction 常 50–55),按 conv_min=70
+    的通用判据必然落进早停 → 2026-07-12 实测 4/4 持仓卡全部早停在 P3、爆雷维未核。
+    """
+    assert force_full_card({"lane": "pinned", "conviction": 50, "n_channels": 1}) is True
+    assert force_full_card({"lane": "pinned"}) is True                     # 连 conviction 都缺也强制
+    assert force_full_card({"lane": "value", "conviction": 50, "n_channels": 1}) is False

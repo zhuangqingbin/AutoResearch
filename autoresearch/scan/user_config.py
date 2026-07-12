@@ -4,12 +4,12 @@
 design: docs/specs/2026-07-11-recall-gate-pinned-config-design.md §4.2。
 
 用户在 `.claude/skills/scan-market/scan_config.jsonc` 里管控 scan-market 全程用到的 agent
-model/effort、召回旋钮、L3.5 闸选择、保送参数、红队触发率、卡片复用参数——**白名单外的键一律
+model/effort、召回旋钮、保送参数、红队触发率、卡片复用参数——**白名单外的键一律
 raise**(防拼写错静默失效,是本文件存在的唯一理由);缺文件 = 现行为(`{}`,一切默认关=parity)。
 
 装载链(技术约束:workflow 脚本无文件系统访问):`frame --json`(Stage 0)读入本模块 → 回显进
 market_pack/run meta(trace 记录本次跑用的配置=可复现)→ workflow 经 `args` 消费(Task 2)→
-Python 侧 `apply_to_scan_config` 喂 `ScanConfig`(Task 3+ 的 L1/L2/L3.5/L4 各消费点)。
+Python 侧 `apply_to_scan_config` 喂 `ScanConfig`(L1/L2/L4 各消费点)。
 """
 from __future__ import annotations
 
@@ -68,9 +68,8 @@ def _read_jsonc(p: Path):
     """读 JSONC 文件 → 去注释 → `json.loads`。"""
     return json.loads(_strip_jsonc(p.read_text(encoding="utf-8")))
 
-# 顶层白名单;funnel/pinned/reuse/l4_intel/l3 额外校验子键(agents/l4_gate 内部形状由各自消费方
-# 解释:agents={stage: {model, effort}} 无固定 stage 集,Task 2 workflow 直接按需取;l4_gate=
-# {name, params},params 形状随 gate 实现而变,Task 3+ gate registry 各自校验)。
+# 顶层白名单;funnel/pinned/reuse/l4_intel/l3 额外校验子键(agents 内部形状由消费方解释:
+# agents={stage: {model, effort}} 无固定 stage 集,workflow 直接按需取)。
 # l3:两遍法分诊(design 2026-07-12-l3-merge-plan.md Task 1)——two_pass/pass1_target 由
 # `l3_select.prepare_l3_table` 消费;finalist_max 由 merge v3 消费(`write_finalists` 已接线,
 # cap=min(finalist_max, budget))。
@@ -78,7 +77,7 @@ def _read_jsonc(p: Path):
 # `autoresearch.learning.shrink.shrink_config` 消费,四消费点(l4_card.write_base_rates/
 # cross_calib.flip_stats/buy_ledger 的 target_calib/gate_ledger 的 tail_rate)各自读取。
 # 默认 shrink=true·shrink_k=15(新基线);本块是回滚杆,不是 opt-in。
-_TOP_WHITELIST = {"agents", "l4_gate", "funnel", "pinned", "redteam_prob", "reuse", "l4_intel", "l3",
+_TOP_WHITELIST = {"agents", "funnel", "pinned", "redteam_prob", "reuse", "l4_intel", "l3",
                   "learning"}
 _SUB_WHITELIST = {
     "funnel": {"recall_channels", "channel_quotas", "channel_floors"},
@@ -118,7 +117,7 @@ def apply_to_scan_config(cfg: dict, sc: ScanConfig) -> ScanConfig:
     """把 `load_user_config()` 出的白名单 dict 映射进既有 `ScanConfig`(原地改,返回同一实例)。
 
     `funnel` 拆到既有字段(recall_channels/channel_quotas/channel_floors);其余键(agents/
-    l4_gate/pinned/redteam_prob/reuse)整块挂同名新字段。cfg 中未出现的键保留 sc 原值不动
+    pinned/redteam_prob/reuse 等)整块挂同名新字段。cfg 中未出现的键保留 sc 原值不动
     (缺配置=parity,不用 None 覆盖已设值)。
     """
     funnel = cfg.get("funnel")
@@ -129,7 +128,7 @@ def apply_to_scan_config(cfg: dict, sc: ScanConfig) -> ScanConfig:
             sc.channel_quotas = funnel["channel_quotas"]
         if "channel_floors" in funnel:
             sc.channel_floors = funnel["channel_floors"]
-    for key in ("agents", "l4_gate", "pinned", "redteam_prob", "reuse", "l4_intel", "l3", "learning"):
+    for key in ("agents", "pinned", "redteam_prob", "reuse", "l4_intel", "l3", "learning"):
         if key in cfg:
             setattr(sc, key, cfg[key])
     return sc

@@ -5,8 +5,7 @@ design: docs/specs/2026-07-11-recall-gate-pinned-config-design.md §4.2。
 plan: docs/plans/2026-07-11-pinned-config-plan.md Task 1(全波地基)。
 
 白名单外顶层键 / funnel·pinned·reuse 白名单外子键 → raise(防拼写错静默失效);缺文件 → {}
-(=现行为,parity)。`agents`/`l4_gate` 内部结构本层不校验(消费方——Task 2 workflow / Task 3+
-gate registry——各自解释其形状)。
+(=现行为,parity)。`agents` 内部结构本层不校验(消费方 workflow 各自解释其形状)。
 """
 from __future__ import annotations
 
@@ -54,7 +53,6 @@ def test_load_pinned_parses_jsonc(tmp_path):
 
 _VALID_FULL = {
     "agents": {"l4_card": {"model": "opus", "effort": "high"}},
-    "l4_gate": {"name": "conviction_floor_quota", "params": {"quota": 8}},
     "funnel": {
         "recall_channels": ["composite", "momentum", "value"],
         "channel_quotas": {"momentum": 200},
@@ -122,7 +120,6 @@ def test_apply_to_scan_config_maps_funnel_to_existing_fields():
 def test_apply_to_scan_config_maps_new_fields():
     sc = apply_to_scan_config(_VALID_FULL, ScanConfig())
     assert sc.agents == _VALID_FULL["agents"]
-    assert sc.l4_gate == _VALID_FULL["l4_gate"]
     assert sc.pinned == _VALID_FULL["pinned"]
     assert sc.redteam_prob == 0.33
     assert sc.reuse == _VALID_FULL["reuse"]

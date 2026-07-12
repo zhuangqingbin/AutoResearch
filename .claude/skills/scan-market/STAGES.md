@@ -129,7 +129,7 @@ Stage 0 与 L0 并行,回退到 L2 之后落盘。模板在 `macro-playbook.md` 
 - **配置装载链**(Plan A3):
   - `scan_config.jsonc`(真 JSON 直接生效、支持 `//` 注释;白名单加载见 `autoresearch/scan/user_config.py`)经 `frame --json` 校验后,回显进 `market_pack` 与 `user_config_echo.json`。
   - 由调用方随 Workflow 的 `args.config` 传进 `scan-market.js`(脚本本身无文件系统访问,不能自己读文件)。
-  - 各 stage(`strategist` / `sector_brief` / `l3_rank` / `l4_card` / `l4_intel` / `redteam`)的 agent model / effort **优先级:scan_config > workflow 内建 > agent def frontmatter 默认**;缺配置或缺键 = workflow 内建现值(parity)。当前试点:`sector_brief` model=sonnet(07-12 下沉,账本验 brief 质量,删键回滚 opus)。
+  - 各 stage(`strategist` / `sector_brief` / `l3_rank` / `l4_card` / `l4_intel` / `redteam`)的 agent model / effort **优先级:scan_config > workflow 内建 > agent def frontmatter 默认**;缺配置或缺键 = workflow 内建现值(parity)。当前档位(07-12 用户拍板):`strategist` effort=max、`sector_brief` effort=xhigh(sonnet 下沉试点**已回滚**,恢复 agent def 默认 opus)、`l3_rank` max、`l4_card` xhigh、`l4_intel` max(sonnet)。
 
 ---
 
@@ -150,6 +150,9 @@ L2 之后、与 L3 证据取数**并发**:
 ---
 
 ## L3 · 精排 —— pass1 确定性分诊 + holistic 单 Opus 深比较(200 → ~60 → finalist tier 7–10)
+
+**📌 保送票也走 L3**(2026-07-12 修复):pinned 由 pass1 的「① pinned 全入」规则保证进 L3 表 → l3-rank **照常独立判**(写 thesis/风险/催化/conviction,`finalist:false` 不占 7–10 名额)→ `_inject_pinned_finalists` 把这份判断**整段带进 finalists.csv**(lookup 优先级 `fin` → `judged` → L2 → 占位)。
+> 🐛 修复前:该函数只在 `fin`(=`finalist:true`)里找 pinned,找不到就退回 L2 表(**没有** thesis/risk/catalyst 列)→ L3 对持仓票的判断被**整段丢弃** → finalists.csv 空 thesis → summary 渲染成「风险:;催化:」→ L4 prompt 告诉卡片「pinned 无 L3 前提清单」,卡只好自己从 L1 重建前提。07-10 实跑 4/4 持仓中招。**保送 ≠ 免判,更 ≠ 判了不要。**
 
 **两遍法**(2026-07-12,用户裁定 L3.5 收窄职能并入 L3):pass1 是确定性分诊(零 LLM,`triage_l2_for_l3`)——pinned/多路共振/healthy lane 全入 + 各召回通道 top-K 轮询,把 L2 的 ~200 行收到 `pass1_target`(默认 60);被切部分不代表判死,落影子 `_l3_pass1_cut.csv` 供 attribution 验证分诊没吃赢家。pass2 由一个 Opus 通看这 ~60 只、比较着选(而不是孤立逐只打分,比较式 > 逐只),深比较后给出 **finalist tier:7–10 只**(按当天质量,`finalist:true`,宁缺毋滥不凑数)+ 其余判断过但未入选的 **bench**(`finalist:false`,落 `_l3_bench.csv`,防漏影子——账本会追踪 bench 里有没有藏该进 finalist 的够格票)。
 
@@ -191,7 +194,7 @@ L2 之后、与 L3 证据取数**并发**:
 - 周频抽检:`shuffle_seed` 乱序再跑 audit agent,overlap<0.70 → 提 proposal。
 - 错杀验尸(retro 侧):L2-keep 且非 finalist 且 T+5 赢家,join 红队理由写 lesson。实证错杀 = 0 —— **病在召回线,别冤枉判断层**。
 
-**(原 L3.5 闸已并入 L3——2026-07-12 用户裁定,生产路径无独立 L3.5 段)**:收窄职能由上面的 finalist tier 承接。残留现状三行:①`scan_config.jsonc` 的 `l4_gate` 恒 `passthrough`(GATE2 处 no-op);②GATE2 预算计数排除 exempt lane(pinned/carryover/watchlist 直通不占坑,`gates.py`);③`scan/l35_gate.py` + `research.gate_backtest` 仅作**回测 harness** 保留(13 日回测结论「只有 conviction≥70 有 T+2 edge、中间 band 是噪声」已内化为 conviction 行为化定义与 finalist tier 质量门,实验复用,勿删)。
+**(L3.5 已完全移除——2026-07-12 用户二次裁定"完全移除、直接 L3 输出";design `2026-07-12-funnel-replay-l35-removal-design.md` §1)**:收窄职能由上面的 finalist tier 承接(merge v3 cap=min(`finalist_max`, `l4_budget`)),链路 = L3 → GATE2(只读校验:6 位码 + exempt lane 不占名额记账,`gates._EXEMPT_LANES`)→ L4 派发,中间无任何收窄层。`scan/l35_gate.py`、`research.gate_backtest`、`l4_gate` 配置键、retro/assemble 的闸影子节**全部删除**;13 日回测结论(「只有 conviction≥70 有 T+2 edge、中间 band 是噪声」)已内化为 conviction 行为化定义与 finalist tier 质量门,历史报告留存 `reports/research/gate_backtest_2026-07-11.md`;将来复验"收窄闸"类假设用**漏斗回放器**(同设计稿 Part B),不复活 L3.5。
 
 ---
 
@@ -210,7 +213,10 @@ L2 之后、与 L3 证据取数**并发**:
 2. 预 harvest slim —— **二段式**:`_slim.md`(表面,P0–P3,**>8KB 才可信**)+ `_slim_deep.md`(深核:盈利质量 / 偿付 / 利润表,仅 P4 读、早停卡永不读)。
 3. 全部 `Agent(subagent_type='l4-card')` **一条消息并发**(别分 wave);行业 brief 走 `subagent_type='sector-brief'`。
 
-**活体情报**(与步骤 2 slim 预取并行派发):`l4-intel`(sonnet·max 盲搜六面)∥ slim 预取,config `l4_intel.enabled` 默认关。
+**⛔ 强制满卡**(`force_full_card`,2026-07-12 接线):逐卡块内插「禁止早停」指令,两条独立通路任一成立即触发 —— ① **📌 保送票**(`lane == "pinned"`)恒强制:你真金白银持有的票,「盈利质量」「偿付(爆雷)」**不允许**标『未核』;② **强先验**:`conviction ≥ 70` ∧(`n_channels ≥ 4` ∨ L2 配额救回)。**强制满卡只保证核得够深,不保证结论向好**(照样可以 UW/Sell),评级仍由 rubric 三门定。
+> ⚠️ FN-1 史(第五例):本函数 2026-06-27 建成后**零生产调用点**(只有单测 + 从未勾选的 plan 复选框 T12),这道早停安全网**从没跑过** —— 07-10 实跑 11 张卡里 10 张早停,含 4 张持仓卡爆雷维「未核」。**新生产者必须 grep 调用链 + 真实命令冒烟。**
+
+**活体情报**(与步骤 2 slim 预取并行派发):`l4-intel`(sonnet·max 盲搜六面)∥ slim 预取。**config `l4_intel.enabled` 2026-07-12 已开**(P1 波 07-10 实跑验收通过:38 agent / 0 error / 4 GATE 全绿)。首跑冒烟三查:① WebSearch 并发限频 ② 中文源可达率 ③ intel 空稿率。代价:每天多几百次网查、L4 段墙钟 ~14m → ~30m+;裁决走单变量 A/B、账本 ≥10–20 日。
 
 ### 渐进深度 + 早停
 
@@ -281,6 +287,7 @@ self_review 硬门 banner → regime+drift 行(+🌡情绪温度行) → 📈市
 | `watchlist_ledger` | 观察单触发 → 后市度量;待首样本 |
 | `scan/dossier.py` | 个股档案注入 L4,强制"变化项"节;紫光国微 4 次入围 |
 | `factor_lab` | harvest → calibrate(_regimes)→ eval;107 成型日 |
+| `research/replay` | **漏斗历史回放器**(2026-07-12,design `2026-07-12-funnel-replay-l35-removal-design.md` Part B):逐日调**生产真身** `universe.run(outdir=…)` 重放 L0→L1→L2 + `retro.attribute` 归因 + 温度相位 → R1 相位×fwd / R2 通道×相位 / R3 赢家验尸。**把裁决样本从"每月 20 日"换成"一次 250–500 日"**,且覆盖前向窗从未出现的修复/发酵/高潮相位。**PIT 六条**(权重 PIT 最隐蔽:weights.json 由含未来收益的 retro 校准而来 → 默认 `weights=prior` 零泄漏);M1 可信度门已过(见下)。CLI:`replay m1/run/attr/report` |
 | `consensus` | 一致预期前向积累(限频 1 次/小时);<60 日不入线上 IC 门 |
 | `journal` | 扫描日记;11 日已回填,9/11 为 0 买日 |
 | `changelog_ledger` | 重标定前后 composite IC 对比 + **trial 计数与 DSR-lite 两行**(多重检验提醒 + C18 红灯);07-12 复活首读:6 版、样本足 3 次 Δ 均值 +0.0614、**最新一次 Δ≤0 红灯亮**(该出「recalibrate 仅 regime 切换时触发」提案而非继续调) |
@@ -299,7 +306,13 @@ self_review 硬门 banner → regime+drift 行(+🌡情绪温度行) → 📈市
 
 - **源**:tushare 默认(push2 被网络封锁;`TUSHARE_TOKEN` 高权限);keyless 可达的有 —— 同花顺一致预期(L4 fwd-PE)/ 腾讯 / datacenter-web。
 - **限频**:`report_rc` 1 次/小时。
-- **降级**:缺权限的端点自动降级为 NaN、打分重新归一。盘中跑 retro 时,当日 EOD 未发布 → fwd 降级 NaN(不抛异常)。
+- 🚨 **数据契约**(`autoresearch/data/contracts.py`,2026-07-12 用户裁定"取数后要全面校验,为空抛异常阻断";design `2026-07-12-data-contracts-design.md`):
+  - **A 级(地基:daily/daily_basic/moneyflow/cyq_perf/stk_factor_pro/stock_basic/trade_cal)** —— 空 / 行数腰斩 / 缺列 → `DataContractError` **阻断整条流程**,且**拒绝入湖**(脏数据一旦落盘就被钉死,重跑也自愈不了)。校验挂在**三条路径**上(取数后写湖前 / **湖命中** / 未结算日只查空不查列)+ **因子帧出口门**(`check_market_frame`)+ `_harvest_vol_series` 失败即抛。**`DataContractError` 不得被任何 `except Exception` 吞掉**(已修 frame/temperature)。
+  - **B 级(增强:北向/两融/龙虎榜/公告/质押/新闻/宏观)** —— 缺失只降级,但**必须记账**(`degradations()` → `degraded.json` → 报告一行)。不走 cache 的降级点用 `record_degradation()`(如 `_fetch_hk_hold`)。
+  - **为什么分级**:真实的空是合法的(无北向额度的日子 hk_hold 就是空),presence-gated 降级是设计。真正的病是**降级不留痕**——`composite_score` 对整组 NaN 的因子会把它从分母剔除、放大其余组权重,**打分照样输出 0–100、漏斗照样跑完、退出码 0**(2026-07-12 实证:volprice 组静默丢失 → 全市场失真 98.8%、L2 jaccard 0.36)。系统有降级能力,曾经没有「我降级了」的传达能力。
+  - 湖体检:`python -m autoresearch.data.contracts doctor [--purge]`(A 级毒源必清;B 级空帧不删——多为真实的空)。
+- **降级**:缺权限的 B 级端点自动降级为 NaN、打分重新归一(**且记账**,见上)。盘中跑 retro 时,当日 EOD 未发布 → fwd 降级 NaN(不抛异常)。
+- 🚨 **入湖一律全字段**(`cache._lake_params`,2026-07-12 事故后加):`_cache_key` **不含 `fields`** → 湖里一个 key 只有一个 parquet,带窄 `fields` 的查询若成为某 key 的**首个写入者**,就把窄表钉成该日快照,后来要别的列的调用方只会读到缺列的表 —— 而这类失败大多被上游 try/except **静默吞成降级**。真实事故:`temperature.rollup` 用 `fields='ts_code,pct_chg'` 回填 07-09/07-10 的 daily(那两天在扫描当天尚未结算、按"date>=today 拉新但不写"故未入湖)→ 钉成两列窄表 → `_harvest_vol_series` 拿不到 high/low/amount → **volprice 组整组 NaN → 全市场 composite 失真 98.8%、L2 名单 jaccard 0.36**,而这两天正落在下次扫描的近 20 日窗口里(生产本会静默中招,唯一信号是一行淹没的 warn)。**教训:静默降级 + 共享缓存键 = 数据毒化**;要窄列自己 `df[cols]`,多几列无害,少一列是灾难。同族坑见记忆 `scan-cache-emptypickle-and-0702`。
 
 ---
 

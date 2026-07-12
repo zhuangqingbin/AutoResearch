@@ -719,42 +719,26 @@ def regime_and_drift(scan_dir: Path) -> tuple[str, str]:
     return line, (reason if drifted else "")
 
 
-def _l35_gate_shadow_line(scan_dir: Path) -> str:
-    """L3.5 闸影子一行(design 2026-07-11-recall-gate-pinned-config-design.md §3;
-    plan 2026-07-11-l35-gate-backtest-plan.md Task 3)。presence-gated:无
-    `_l35_cut.csv`(passthrough 默认 / 该闸当日全放行)→ `""` 不加节,老路不破。
+def _degraded_line(scan_dir: Path) -> str:
+    """B 级数据降级一行(`degraded.json`,由 `universe.run` 落)。presence-gated:无文件 → ""。
 
-    同日 assemble 跑在 L4 之后、retro 之前(retro 要 T+2 fwd 才成熟)——`retro/attribution.csv`
-    通常还不在场,此时只报 cut 只数 + "成熟中"注记;retro 已为该日补跑(`attribution.csv`
-    在场,如晚于 T+2 重新 assemble)→ 复用 `learning.retro.l35_gate_shadow` 同款计算,报
-    cut vs picked 的 fwd_2 均值对照。
+    A 级(地基)违约在取数处就抛异常阻断了,报告压根不会生成;所以这里显示的一定是 B 级增强端点
+    缺失(北向/质押/席位/公告…)。**降级必须可见**:否则读报告的人无从分辨某面旗是"真没有"
+    还是"没取到"(design 2026-07-12-data-contracts-design.md §1:系统有降级能力,曾经没有
+    「我降级了」的传达能力)。
     """
-    cutp = scan_dir / "_l35_cut.csv"
-    if not cutp.exists():
+    p = Path(scan_dir) / "degraded.json"
+    if not p.exists():
         return ""
-    import pandas as pd  # lazy:assemble 主体走 csv/json,仅此块用 pandas(同 watchlist 块惯例)
+    try:
+        recs = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return ""
+    if not recs:
+        return ""
+    from autoresearch.data.contracts import render
 
-    try:
-        n_cut = int(len(pd.read_csv(cutp, dtype={"code": str})))
-    except Exception:  # noqa: BLE001
-        return ""
-    maturing = f"- **🚧 L3.5 闸影子**:cut {n_cut} 只(T+2 fwd_2 成熟中,retro 后回填对照)"
-    attrp = scan_dir / "retro" / "attribution.csv"
-    if not attrp.exists():
-        return maturing
-    try:
-        from autoresearch.learning.retro import l35_gate_shadow
-        attr = pd.read_csv(attrp, dtype={"code": str})
-        gs = l35_gate_shadow(attr, scan_dir)
-    except Exception:  # noqa: BLE001
-        gs = None
-    if not gs:
-        return maturing
-    cutm = "—" if gs["cut_mean_fwd2"] is None else f"{gs['cut_mean_fwd2'] * 100:+.2f}%"
-    pkm = "—" if gs["picked_mean_fwd2"] is None else f"{gs['picked_mean_fwd2'] * 100:+.2f}%"
-    return (f"- **🚧 L3.5 闸影子**:cut {gs['n_cut']} 只(已实现{gs['n_cut_realized']}) "
-            f"mean_fwd2 {cutm} vs picked(已实现{gs['n_picked_realized']}) mean_fwd2 {pkm}"
-            "(闸的日常体检读数)")
+    return render(recs)
 
 
 def _self_review_banner(scan_dir: Path, rows: list[dict], summary_text: str,
@@ -899,10 +883,13 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
     # ── 1. 漏斗数量 ──
     out += ["## 1. 漏斗(数量)"] + _funnel_rows(meta, len(keep) or "?", len(finals), len(rows)) + [""]
 
-    # ── L3.5 闸影子(presence-gated:无 _l35_cut.csv → "" 不加节;见 gates.apply_l35_gate)──
-    l35_line = _l35_gate_shadow_line(scan_dir)
-    if l35_line:
-        out += [l35_line, ""]
+    # ── 数据降级(presence-gated:无 degraded.json → 不加行)──
+    # A 级(地基)违约会在取数处直接抛异常阻断,能出报告说明地基是全的;这里显示的是 B 级增强端点
+    # 缺失(北向/质押/席位/公告…)。**降级必须可见** —— 否则读报告的人无从知道哪些旗是"真没有"、
+    # 哪些是"没取到"(design 2026-07-12-data-contracts-design.md)。
+    dline = _degraded_line(scan_dir)
+    if dline:
+        out += [dline, ""]
 
     # ── 2. 各阶段卡点 + 概览 ──
     out += ["## 2. 各阶段卡点 & 股票概览"]

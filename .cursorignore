@@ -1,0 +1,11 @@
+# Cursor 的索引器/文件监视器不读 .gitignore，需要单独排除。
+# 下面这些是生成物和依赖，占了本仓库 5.3G 中的 5.2G / 54k 文件中的大部分。
+
+.venv/
+context/
+reports/
+models/store/
+
+.ruff_cache/
+.pytest_cache/
+*.egg-info/

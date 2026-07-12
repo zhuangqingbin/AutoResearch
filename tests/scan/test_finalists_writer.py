@@ -154,3 +154,46 @@ def test_write_finalists_no_pinned_json_is_parity(tmp_path):
     rows = list(csv.DictReader(text_explicit.splitlines()))
     assert {r["lane"] for r in rows} == {"value", "trend"}   # 不受任何 pinned 改判
     assert "pinned_note" not in rows[0]
+
+
+def test_write_finalists_pinned_judged_but_benched_keeps_l3_fields(tmp_path):
+    """🐛 回归(2026-07-12 生产实测):pinned 被 L3 判过但未入选(finalist=false → bench)
+    → 强留时必须带上 L3 的 thesis/risk/catalyst/conviction,不得退化成 L2 空行。
+
+    实测:4 只保送持仓全部被 l3-rank 判过(conviction 50–55、写了完整 thesis/risk/catalyst),
+    但 `_inject_pinned_finalists` 只在 `fin`(=finalist:true)里找,找不到就退回
+    L2_gbdt_top200.csv(**该表没有这些列**)→ finalists.csv 的 thesis/risk/catalyst 全空
+    → summary 渲染成「风险:;催化:」→ L4 prompt 告诉卡片「pinned 无 L3 前提清单」。
+    L3 对持仓票的整段判断被丢弃。lookup 优先级须是 fin → judged → L2 → 占位。
+    """
+    base = tmp_path / "context" / "scan"
+    d = base / "2026-07-12"
+    d.mkdir(parents=True)
+    judged = _judged() + [
+        {"code": "000099", "name": "保送票", "sector": "军工", "lane": "value",
+         "conviction": 52, "fragility": 60, "triage_lean": "低配", "finalist": False,
+         "thesis": "📌 pinned 保送票,基本面尚可但无真吸筹",
+         "risk": "硬约束 B:main_net −0.11 且 cmf/obv 未转正 = 无真吸筹",
+         "catalyst": "中报窗口;无带日期硬催化。", "lenses": "价值", "sentiment": "中性"},
+    ]
+    (d / "_l3_judged.json").write_text(json.dumps(judged), encoding="utf-8")
+    pd.DataFrame({"code": ["000062", "000063", "000099"],
+                  "name": ["华东电脑", "中兴通讯", "保送票"],
+                  "industry": ["计算机", "通信", "军工"],
+                  "pct_60d": [12.0, 8.0, -18.0]}).to_csv(d / "L2_gbdt_top200.csv", index=False)
+    pin = tmp_path / "pinned.json"
+    pin.write_text(json.dumps([{"code": "000099", "note": "持仓", "expires": "2099-01-01"}]),
+                   encoding="utf-8")
+
+    write_finalists("2026-07-12", budget=5, root=base, pinned_path=pin)
+    rows = {r["code"]: r for r in csv.DictReader((d / "finalists.csv").open(encoding="utf-8"))}
+
+    r = rows["000099"]
+    assert r["lane"] == "pinned"                      # 保送标记仍在(单一识别信号)
+    assert r["pinned_note"] == "持仓"
+    # ↓ 核心:L3 的真判字段必须活着,不能被 L2 空行覆盖
+    assert "无真吸筹" in r["risk"], f"L3 risk 被丢弃了:{r['risk']!r}"
+    assert "中报窗口" in r["catalyst"], f"L3 catalyst 被丢弃了:{r['catalyst']!r}"
+    assert "保送票" in r["thesis"]
+    assert str(r["conviction"]) in ("52", "52.0")     # L3 的 conviction 保留
+    assert r["data_missing"] == "False"

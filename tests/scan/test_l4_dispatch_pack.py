@@ -123,3 +123,42 @@ def test_write_dispatch_pack_no_lane_column_is_parity(tmp_path):
     assert res["pinned"] == []
     p = (d / "_l4_prompt_600584.md").read_text(encoding="utf-8")
     assert "📌" not in p
+
+
+def _mk_full(root):
+    """强先验票(conv 78 + 4 路共振)+ 保送持仓票 + 普通弱先验票。"""
+    d = root / "context" / "scan" / _DATE
+    (d / "details").mkdir(parents=True)
+    pd.DataFrame([
+        {"code": "600584", "name": "强先验", "sector": "半导体", "conviction": 78, "lane": "healthy"},
+        {"code": "000001", "name": "保送持仓", "sector": "银行", "conviction": 52, "lane": "pinned",
+         "pinned_note": "持仓"},
+        {"code": "300001", "name": "弱先验", "sector": "电力设备", "conviction": 45, "lane": "value"},
+    ]).to_csv(d / "finalists.csv", index=False)
+    pd.DataFrame([
+        {"code": "600584", "name": "强先验", "composite": 80, "n_channels": 4, "l2_lane_reserved": False},
+        {"code": "000001", "name": "保送持仓", "composite": 40, "n_channels": 1, "l2_lane_reserved": False},
+        {"code": "300001", "name": "弱先验", "composite": 55, "n_channels": 1, "l2_lane_reserved": False},
+    ]).to_csv(d / "L2_gbdt_top200.csv", index=False)
+    (d / "_l4_shared_instructions.md").write_text("共享指令块", encoding="utf-8")
+    return d
+
+
+def test_dispatch_pack_wires_force_full_card(tmp_path):
+    """🐛 回归(2026-07-12):`force_full_card`(早停安全网/强先验白名单)此前**零生产调用点**
+    —— 只有定义 + 单测 + 一个从未勾选的 plan 复选框(T12)。于是"高 conviction+多路共振
+    强制满卡、不被表面早停误杀真龙头"这道网**从没跑过**;7-10 实跑 11 张卡里 10 张早停。
+
+    本测锁死接线:强先验票与 📌 保送票的 prompt 必须含「强制满卡·禁止早停」指令;
+    弱先验票不得含(照常早停 = parity)。
+    """
+    d = _mk_full(tmp_path)
+    write_dispatch_pack(d)
+
+    strong = (d / "_l4_prompt_600584.md").read_text(encoding="utf-8")
+    pinned = (d / "_l4_prompt_000001.md").read_text(encoding="utf-8")
+    weak = (d / "_l4_prompt_300001.md").read_text(encoding="utf-8")
+
+    assert "强制满卡" in strong and "禁止早停" in strong      # conv 78 + 4 路共振
+    assert "强制满卡" in pinned and "禁止早停" in pinned      # 📌 持仓票恒满卡
+    assert "强制满卡" not in weak                             # 弱先验照常早停(parity)

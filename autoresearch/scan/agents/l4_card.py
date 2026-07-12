@@ -597,9 +597,23 @@ def rubric_rating(dims: dict, gates: dict) -> tuple[str, str]:
 def force_full_card(priors: dict, *, conv_min: float = 70.0, channels_min: int = 4) -> bool:
     """**强先验白名单**:P0 先验极强者强制跑满卡(P4+P5),不被表面 P1-P3 早停误杀真龙头。
 
-    判据:conviction≥conv_min **且**(多路共振 n_channels≥channels_min **或** L2 配额救回 lane_reserved)。
-    高 conviction 但孤路无 lane → 不强制(可能是单因子虚高,照常走早停)。priors 缺键按弱处理。
+    两条独立通路,任一成立即强制满卡:
+
+    ① **📌 保送票**(`lane == "pinned"`)—— 恒 True,不看 conviction/通道。你真金白银持有的票,
+       「盈利质量」「偿付(爆雷)」两维**不允许**标『未核』。pinned 走的是 finalist tier 之外的
+       通路(`finalist=false`,conviction 常 50–55),按下面 ② 的 conv_min=70 判据必然落进早停
+       —— 2026-07-12 实测 4/4 持仓卡全部早停在 P3、爆雷维未核,正是这个原因。
+    ② **强先验**:conviction≥conv_min **且**(多路共振 n_channels≥channels_min **或** L2 配额
+       救回 lane_reserved)。高 conviction 但孤路无 lane → 不强制(可能是单因子虚高,照常早停)。
+
+    priors 缺键按弱处理。
+
+    ⚠️ FN-1 史:本函数 2026-06-27 建成后**零生产调用点**(只有单测 + 一个从未勾选的 plan 复
+    选框 T12),即这道早停安全网**从未在生产跑过**。2026-07-12 接进 `write_dispatch_pack`。
+    改本函数请一并 grep 调用链,别再让它变回死码。
     """
+    if str(priors.get("lane", "") or "").strip() == "pinned":
+        return True
     conv = priors.get("conviction")
     try:
         conv = float(conv)
@@ -703,6 +717,18 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
     if sp.exists():
         shared = sp.read_text(encoding="utf-8").strip()
     calib_line = _target_calib_mark(scan_dir)        # 📐 目标价基率锚(日级,算一次逐卡复用)
+
+    # FN-1 第五修:`force_full_card`(早停安全网)自 2026-06-27 建成起**零生产调用点** ——
+    # 高 conviction+多路共振的真龙头照样被表面 P1-P3 早停砍掉。这里接进真派发链。
+    # n_channels / l2_lane_reserved 只在 L2 表里(finalists.csv 没这两列)→ 一次读入建索引。
+    l2_priors: dict[str, dict] = {}
+    l2p = scan_dir / "L2_gbdt_top200.csv"
+    if l2p.exists():
+        _l2 = pd.read_csv(l2p, dtype={"code": str})
+        if "code" in _l2.columns:
+            _l2["code"] = _l2["code"].astype(str).str.zfill(6)
+            l2_priors = _l2.set_index("code").to_dict("index")
+
     tickers: list[str] = []
     pinned: list[str] = []
     n_prompts = n_skipped = 0
@@ -727,6 +753,18 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
                     "**📌持仓管理要求**:本票为用户保送票(可能已持有)——满卡/早停卡都必须含"
                     "『持仓管理』小节:D+1/D+2 卖出纪律(何价减/何价清)+加减仓触发位;若 "
                     "pinned_note 含成本信息按其计算浮盈亏,无则按现价基准写纪律。", ""]
+        # 强制满卡(逐卡块内,共享前缀之后 → 不破 cache 契约):priors = finalists 行(conviction/
+        # lane)+ L2 行(n_channels/l2_lane_reserved)。
+        priors = {**l2_priors.get(code6, {}),
+                  "conviction": r.get("conviction"),
+                  "lane": r.get("lane")}
+        if force_full_card(priors):
+            why = ("📌 保送持仓票" if is_pinned else
+                   f"强先验(conviction {r.get('conviction')} + 多路共振/配额救回)")
+            body += [f"**⛔ 强制满卡 — {why}:禁止早停。** 必须跑完 P4(陷阱核)+ P5(满卡):"
+                     "「盈利质量」与「偿付(爆雷)」两维**不得**标『未核』,必须 Read "
+                     "`_slim_deep.md` 取证后给分。评级仍由 rubric 三门定——强制满卡只保证"
+                     "**核得够深**,不保证结论向好(照样可以是 Underweight/Sell)。", ""]
         body.append(compose_funnel_brief(code6, scan_dir).rstrip())
         if calib_line:                               # 逐卡块内(共享前缀之后,不破 cache 契约)
             body += ["", calib_line]

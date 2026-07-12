@@ -38,7 +38,14 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 
 ## 流程(6 段)
 
-> **编排真身 = `.claude/workflows/scan-market.js`**(4 相位/4 GATE:Prelude→L3→L4→Assemble,相位末尾一道 GATE 阻断)。**正常跑动直接用 workflow**;以下是其内部调用的同一批命令,留作**调参/单步重跑入口**。操作模板分驻:市场研判在 `macro-research/macro-playbook.md` 末节、L4 决策卡在 stock-research 的 `lite-playbook.md`;**各阶段机制/参数/实证读数**见 `STAGES.md`。workflow 后台跑时随时用 `/workflows` 看实时进度树(逐卡 spinner + log 计数);各阶段墙钟收尾自动落 `_stage_timing.json`(mtime 推导)。
+> **编排真身 = `.claude/workflows/scan-market.js`**(4 相位/4 GATE:Prelude→L3→L4→Assemble,相位末尾一道 GATE 阻断)。**正常跑动直接用 workflow**;以下是其内部调用的同一批命令,留作**调参/单步重跑入口**。操作模板分驻:市场研判在 `macro-research/macro-playbook.md` 末节、L4 决策卡在 stock-research 的 `lite-playbook.md`;**各阶段机制/参数/实证读数**见 `STAGES.md`。各阶段墙钟收尾自动落 `_stage_timing.json`(mtime 推导)。
+>
+> **进度可视化(必做,2026-07-12 用户反馈"跑起来主对话一片空白")**:workflow 一落地就**同时**挂一个 Monitor 播报进度到主对话 ——
+> ```
+> Monitor(command: "uv run --no-sync python -m autoresearch.scan.progress <date> --watch",
+>         description: "scan 漏斗进度", timeout_ms: 3600000, persistent: false)
+> ```
+> `autoresearch.scan.progress`(确定性读盘,零 LLM)从产物文件反推阶段+计数,**只在变化时**打一行(不刷屏):`⏳ L4 · finalists 11 · 🕵️ 情报 8 · 卡 7/11 · Hold 5·Overweight 1`。跑完自动退出。用户另可用 `/workflows` 看 spinner 级进度树。
 
 0. **前奏一键**(workflow Prelude 相位的确定性部分):
    ```bash

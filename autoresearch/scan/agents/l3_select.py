@@ -802,7 +802,8 @@ def merge_l3_finalists_v3(judged: pd.DataFrame, budget: int,
 
 
 def _inject_pinned_finalists(fin: pd.DataFrame, kept: list[dict],
-                             lookup: pd.DataFrame | None = None) -> pd.DataFrame:
+                             lookup: pd.DataFrame | None = None,
+                             judged: pd.DataFrame | None = None) -> pd.DataFrame:
     """finalists 强留(design 2026-07-11-recall-gate-pinned-config-design.md §4.1;plan Task 4)。
 
     pinned 每条(`user_config.load_pinned(...)["kept"]`):
@@ -816,10 +817,18 @@ def _inject_pinned_finalists(fin: pd.DataFrame, kept: list[dict],
         finalists 层的"pinned"标记是两回事,故意不合并;`learning.channel_ledger` 的
         per-channel 账则完全在 L1 层(`recall_channels`,universe._inject_pinned_l1 已标
         `"pinned"`),同样与本函数无关——三层"pinned"标记互相独立、各自服务各自的下游);
-      - 不在(L3 未选中/未进候选池)→ 从 `lookup`(通常是 `write_finalists` 已读入的
-        L2_gbdt_top200.csv)取真实行补 name/sector 等展示字段;`lookup` 无该码/未传 →
-        占位行(仅 code/ticker/lane/pinned_note,`data_missing=True`,不编数,镜像
-        `universe._inject_pinned_l1` 同一降级顺序)。
+      - 不在 `fin` 但**在 `judged` 里**(L3 判过、`finalist=false` → 落 bench)→ 从 `judged`
+        取该行,**thesis/risk/catalyst/conviction/lenses/sentiment 等 L3 真判字段整段带过来**
+        (只把 lane 改判 `"pinned"`、挂 note)。2026-07-12 生产实测:4/4 保送持仓走的都是这条
+        路径,而修复前只查 `lookup`(L2 表**没有**这些列)→ L3 的判断被整段丢弃 → finalists.csv
+        thesis 全空 → summary 渲染成「风险:;催化:」→ L4 prompt 告诉卡片「pinned 无 L3 前提
+        清单」,卡片只好自己从 L1 重建前提。**保送 ≠ 免判,更 ≠ 判了不要。**
+      - 既不在 `fin` 也不在 `judged`(L3 压根没见过它:pass1 切了 / 不在 L2)→ 从 `lookup`
+        (通常是 `write_finalists` 已读入的 L2_gbdt_top200.csv)取真实行补 name/sector 等展示
+        字段;`lookup` 无该码/未传 → 占位行(仅 code/ticker/lane/pinned_note,`data_missing=True`,
+        不编数,镜像 `universe._inject_pinned_l1` 同一降级顺序)。
+
+    lookup 优先级 = `fin` → `judged` → `lookup`(L2) → 占位行。
 
     本函数在 `merge_l3_finalists_v2` 已完成 `target` 截断排序**之后**调用(`write_finalists`
     编排),纯追加/打标——不占 target 名额、不挤他票(与 L1/L2 强留同一"全程直通"结构性
@@ -842,6 +851,10 @@ def _inject_pinned_finalists(fin: pd.DataFrame, kept: list[dict],
     if lookup is not None and "code" in lookup.columns:
         lookup_z = lookup.assign(code=lookup["code"].astype(str).str.zfill(6))
 
+    judged_z = None
+    if judged is not None and not judged.empty and "code" in judged.columns:
+        judged_z = judged.assign(code=judged["code"].astype(str).str.zfill(6))
+
     new_rows: list[pd.DataFrame] = []
     seen_new: set[str] = set()
     for entry in kept:
@@ -857,7 +870,19 @@ def _inject_pinned_finalists(fin: pd.DataFrame, kept: list[dict],
         seen_new.add(code)
         row_data: dict = {"code": code, "ticker": code, "lane": "pinned",
                           "pinned_note": note, "data_missing": True}
-        if lookup_z is not None:
+        # ① judged 优先:pinned 被 L3 判过但未入选(finalist=false → 落 bench,不在 `fin`)时,
+        #    它的 thesis/risk/catalyst/conviction 就在 judged 帧里 —— 必须整段带过来。
+        #    2026-07-12 生产实测:4/4 保送持仓都走这条路,此前只查 L2(无这些列)→ L3 判断被
+        #    整段丢弃 → finalists.csv 空 thesis → summary 渲染「风险:;催化:」→ L4 prompt
+        #    告诉卡片「pinned 无 L3 前提清单」,卡只好自己从 L1 重建前提。L3 的活白干。
+        hit_j = judged_z[judged_z["code"] == code] if judged_z is not None else None
+        if hit_j is not None and len(hit_j):
+            r0 = hit_j.iloc[0].to_dict()
+            r0.pop("finalist", None)              # finalist 是 judged 内部字段,不进 finalists.csv
+            row_data = {**{k: v for k, v in r0.items() if pd.notna(v)}, **row_data}
+            row_data["data_missing"] = False
+        # ② L2 兜底:L3 压根没判过它(pass1 切了 / 不在 L2)→ 只能取展示字段,不编数。
+        elif lookup_z is not None:
             hit = lookup_z[lookup_z["code"] == code]
             if len(hit):
                 r0 = hit.iloc[0]
@@ -917,7 +942,9 @@ def write_finalists(date: str, budget: int = 30, root: Path | None = None,
     from autoresearch.scan.user_config import load_pinned
     kept = load_pinned(date, path=pinned_path)["kept"]
     if kept:
-        fin = _inject_pinned_finalists(fin, kept, lookup=l2)
+        # judged=jd:pinned 被 L3 判过但落 bench 时,把它的 L3 真判字段带进 finalists(不然
+        # 只剩 L2 空行 → 下游 summary/L4 prompt 全以为"pinned 没有 L3 论点")。
+        fin = _inject_pinned_finalists(fin, kept, lookup=l2, judged=jd)
         # M-1 修复(final-review-l3-merge.md Minor-1):pinned 码若被 l3-rank 判为 bench
         # (`finalist=False`)且此处被强留注入 finalists,不应再留在 bench 账本里双记——
         # 否则 `refine_l3_bucket` 会把明明已上 L4 的票误标 `l3_bench`,`l3_bench_shadow`
