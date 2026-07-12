@@ -7,6 +7,10 @@ spec: 2026-07-05 wave §WS-A1。规则(零判断可复现):每笔买单信号日
 影子(shadow_buys.csv)/ 市场(全市场等权日收益,与 zero_buy_ledger 口径同族)。
 `真实 − 影子` = 门的价值。涨跌停可成交性不模拟(诚实局限)。
 
+W1(2026-07-12,S3 纸面 sizer):影子线之外并列一条"影子(sized)"——同一批 shadow_buys 信号,
+仓位改用 `autoresearch.learning.sizer` 的分数 Kelly×波动率目标×流动性 cap 公式,而非固定
+10% 槽;presence-gated(无波动数据的票在该轨回退等权)。见 sizer.py 模块 docstring。
+
   uv run --no-sync python -m autoresearch.learning.paper_nav   # → reports/learning/paper_nav.md
 """
 from __future__ import annotations
@@ -17,6 +21,7 @@ import pandas as pd
 
 _LAKE_DAILY = Path("context/lake/daily")
 _START = "20260618"          # 首个 scan 日;之前的湖数据不进成绩单
+_SLOT = 0.10                  # 等权轨固定槽(= simulate() 默认 slot;sized 轨回退目标同此值)
 
 
 def trade_days(start: str = _START, lake: Path | None = None) -> list[str]:
@@ -52,14 +57,16 @@ def load_prices(codes: set[str], days: list[str], lake: Path | None = None) -> d
 
 
 def simulate(signals: list[dict], prices: dict, days: list[str],
-             slot: float = 0.10, hold: int = 2) -> tuple[pd.Series, list[str]]:
+             slot: float = _SLOT, hold: int = 2) -> tuple[pd.Series, list[str]]:
     """事件组合模拟(纯函数)。signals=[{date, code}](date 兼容 YYYY-MM-DD / YYYYMMDD)。
 
     次日开盘建仓(slot×当时NAV,现金不足取剩余);exit=entry 后第 hold 个交易日开盘
     (无 open 顺延);持仓按最新可得 close 估值(停牌沿用)。信号日非交易日 → 跳过并记行。
+    signal 可选带 "weight" 键(0-1,NAV 占比,S3 sized 轨用)覆盖 slot;缺省仍用 slot
+    (等权轨,parity 不破——不带 weight 的信号与改动前行为逐字一致)。
     """
     idx = {d: i for i, d in enumerate(days)}
-    entries: dict[int, list[str]] = {}
+    entries: dict[int, list[tuple[str, float]]] = {}
     skipped: list[str] = []
     for s in signals:
         d = str(s["date"]).replace("-", "")
@@ -71,7 +78,8 @@ def simulate(signals: list[dict], prices: dict, days: list[str],
         if i >= len(days):
             skipped.append(f"{d} {code}(次日未到,待成熟)")
             continue
-        entries.setdefault(i, []).append(code)
+        w = s.get("weight", slot)
+        entries.setdefault(i, []).append((code, w))
     cash, nav = 1.0, 1.0
     pos: list[dict] = []
     navs: list[float] = []
@@ -84,12 +92,12 @@ def simulate(signals: list[dict], prices: dict, days: list[str],
             else:
                 keep.append(p)
         pos = keep
-        for code in entries.get(i, ()):                   # ② 建仓
+        for code, w in entries.get(i, ()):                 # ② 建仓(w=该信号权重,缺省 slot)
             o = prices.get((d, code), (None, None))[0]
             if o is None:
                 skipped.append(f"{d} {code}(入场日无价,跳过)")
                 continue
-            cost = min(slot * nav, cash)
+            cost = min(w * nav, cash)
             if cost <= 1e-12:
                 skipped.append(f"{d} {code}(现金槽满,跳过)")
                 continue
@@ -146,11 +154,13 @@ def real_signals(scan_root: Path | str | None = None) -> list[dict]:
 
 
 def shadow_signals(path: Path | str = "context/learning/shadow_buys.csv") -> list[dict]:
+    """conviction 随信号带出(S3 sizer 的输入;`simulate()` 本身忽略多余键,老调用方不受影响)。"""
     p = Path(path)
     if not p.exists():
         return []
     df = pd.read_csv(p, dtype={"code": str})
-    return [{"date": r["date"], "code": str(r["code"]).zfill(6)} for r in df.to_dict("records")]
+    return [{"date": r["date"], "code": str(r["code"]).zfill(6), "conviction": r.get("conviction")}
+            for r in df.to_dict("records")]
 
 
 def risk_metrics(nav: pd.Series, ann: int = 252) -> dict:
@@ -198,30 +208,48 @@ def risk_block(real: pd.Series, shadow: pd.Series, mkt: pd.Series) -> list[str]:
 
 
 def render(days: list[str], real: pd.Series, shadow: pd.Series, mkt: pd.Series,
-           n_real: int, n_shadow: int, skipped: list[str], hold: int = 2) -> list[str]:
-    out = [f"# 影子组合成绩单(paper NAV;10% 固定槽·持{hold}交易日·次日开盘进出)", "",
-           "| 日期 | 真实线 | 影子线 | 市场等权 |", "|---|---|---|---|"]
-    out += [f"| {d} | {real[d]:.4f} | {shadow[d]:.4f} | {mkt[d]:.4f} |" for d in days]
+           n_real: int, n_shadow: int, skipped: list[str], hold: int = 2,
+           sized: pd.Series | None = None) -> list[str]:
+    """sized(S3 纸面 sizer 的影子轨,presence-gated)不传 → 输出与改动前逐字一致(parity)。"""
+    out = [f"# 影子组合成绩单(paper NAV;10% 固定槽·持{hold}交易日·次日开盘进出)", ""]
+    if sized is not None:
+        out += ["| 日期 | 真实线 | 影子线 | 影子(sized) | 市场等权 |", "|---|---|---|---|---|"]
+        out += [f"| {d} | {real[d]:.4f} | {shadow[d]:.4f} | {sized[d]:.4f} | {mkt[d]:.4f} |"
+                for d in days]
+    else:
+        out += ["| 日期 | 真实线 | 影子线 | 市场等权 |", "|---|---|---|---|"]
+        out += [f"| {d} | {real[d]:.4f} | {shadow[d]:.4f} | {mkt[d]:.4f} |" for d in days]
     if len(days):
         last = days[-1]
-        out += ["", f"- **截至 {last}**:真实 {real[last] - 1:+.2%}({n_real} 笔)"
-                    f" vs 影子 {shadow[last] - 1:+.2%}({n_shadow} 笔)"
-                    f" vs 市场 {mkt[last] - 1:+.2%};`真实 − 影子` = 门的价值。"]
+        line = (f"- **截至 {last}**:真实 {real[last] - 1:+.2%}({n_real} 笔)"
+                f" vs 影子 {shadow[last] - 1:+.2%}({n_shadow} 笔)")
+        if sized is not None:
+            line += f" vs 影子(sized) {sized[last] - 1:+.2%}"
+        line += f" vs 市场 {mkt[last] - 1:+.2%};`真实 − 影子` = 门的价值。"
+        out += ["", line]
         out += [""] + risk_block(real, shadow, mkt)     # X3·风险调整对照(MDD/Sortino vs buy&hold)
     if skipped:
         out += ["", "## 未入组信号"] + [f"- {s}" for s in skipped]
     out += ["", "_涨跌停/停牌可成交性未模拟;仅供研究,非投资建议。_"]
+    if sized is not None:
+        out += ["", "_影子(sized) = S3 纸面仓位 sizer(分数 Kelly×波动率目标×流动性 cap;公式见 "
+                    "`autoresearch/learning/sizer.py` docstring);presence-gated:无波动数据的"
+                    "票在该轨回退为等权固定槽。_"]
     return out
 
 
-def summary_line(days, real, shadow, mkt, n_real, n_shadow) -> str:
+def summary_line(days, real, shadow, mkt, n_real, n_shadow, sized=None) -> str:
+    """sized(presence-gated)不传 → 输出与改动前逐字一致(parity)。"""
     if not len(days):
         return ""
     last = days[-1]
-    return (f"**📈 影子组合成绩单**(起 {days[0]}):真实 {real[last] - 1:+.2%}({n_real}笔)"
-            f" vs 影子(若门不拦最想买3只) {shadow[last] - 1:+.2%}({n_shadow}笔)"
-            f" vs 市场等权 {mkt[last] - 1:+.2%}"
-            f"——`真实−影子`=门的价值(明细 reports/learning/paper_nav.md)")
+    line = (f"**📈 影子组合成绩单**(起 {days[0]}):真实 {real[last] - 1:+.2%}({n_real}笔)"
+            f" vs 影子(若门不拦最想买3只) {shadow[last] - 1:+.2%}({n_shadow}笔)")
+    if sized is not None:
+        line += f" vs 影子(sized) {sized[last] - 1:+.2%}"
+    line += (f" vs 市场等权 {mkt[last] - 1:+.2%}"
+             f"——`真实−影子`=门的价值(明细 reports/learning/paper_nav.md)")
+    return line
 
 
 def main() -> int:
@@ -238,16 +266,23 @@ def main() -> int:
     codes = {s["code"] for s in rs} | {s["code"] for s in ss}
     prices = load_prices(codes, days)
     mkt = market_nav(days)
+    # W1·S3 sizer:同一批影子信号,仓位改按 sizer.size_weights 公式(presence-gated 回退等权)。
+    from autoresearch.learning.sizer import size_shadow_signals
+    ss_sized = size_shadow_signals(ss, equal_slot=_SLOT)
     # 主表:hold=2(超短主口径,2026-07-10 裁定);副表:hold=10(旧口径连续性对照)。
     real2, sk1_2 = simulate(rs, prices, days, hold=2)
     shadow2, sk2_2 = simulate(ss, prices, days, hold=2)
+    sized2, sk3_2 = simulate(ss_sized, prices, days, hold=2)
     real10, sk1_10 = simulate(rs, prices, days, hold=10)
     shadow10, sk2_10 = simulate(ss, prices, days, hold=10)
-    primary = render(days, real2, shadow2, mkt, len(rs), len(ss), sk1_2 + sk2_2, hold=2)
-    secondary = render(days, real10, shadow10, mkt, len(rs), len(ss), sk1_10 + sk2_10, hold=10)
+    sized10, sk3_10 = simulate(ss_sized, prices, days, hold=10)
+    primary = render(days, real2, shadow2, mkt, len(rs), len(ss), sk1_2 + sk2_2 + sk3_2,
+                      hold=2, sized=sized2)
+    secondary = render(days, real10, shadow10, mkt, len(rs), len(ss), sk1_10 + sk2_10 + sk3_10,
+                        hold=10, sized=sized10)
     full = primary + ["", "## 副表:hold=10(旧口径连续性对照)", ""] + secondary[2:]
     outp.write_text("\n".join(full) + "\n", encoding="utf-8")
-    line = summary_line(days, real2, shadow2, mkt, len(rs), len(ss))
+    line = summary_line(days, real2, shadow2, mkt, len(rs), len(ss), sized=sized2)
     Path("reports/learning/paper_nav_summary.txt").write_text(line + "\n", encoding="utf-8")
     print(f"[paper_nav] {len(days)} 日 × (真实{len(rs)}/影子{len(ss)}) hold=2 主表 → {outp}")
     return 0
