@@ -77,8 +77,21 @@ def gate2(scan_dir: Path, budget: int = 30) -> dict:
     if n_counted > budget:
         return {"ok": False, "gate": "gate2",
                 "reason": f"finalists {n_counted} > budget {budget}(exempt 不计入)"}
+
+    # P4a(task-7-brief.md):GATE2 成功分支为每只 finalist 回显 name/sector 元数据,
+    # workflow(Task 9)据此在 GATE2 后立即派发 l4-intel,不必让每个 intel subagent 自己
+    # 回查 finalists.csv。失败分支(上面的 return)不动,meta 只在成功分支纯新增。
+    # NaN 防守:name/sector 列可能整列缺失(旧格式 finalists.csv,r.get 返回 None)或
+    # 单元格是 float('nan')(pandas 对空字符串常见的读入结果,`v != v` 是 NaN 自反假的经典判据)
+    # ——两种情况都归一成空串,不让 NaN 泄漏进 JSON(json.dumps(float('nan')) 输出非法 JSON)。
+    def _s(r, col):
+        v = r.get(col)
+        return "" if v is None or (isinstance(v, float) and v != v) else str(v)
+
+    meta = {str(r["code"]): {"name": _s(r, "name"), "sector": _s(r, "sector")}
+            for _, r in df.iterrows()}
     return {"ok": True, "gate": "gate2", "reason": "ok", "finalists": codes,
-            "n": int(len(df))}
+            "n": int(len(df)), "meta": meta}
 
 
 def gate4(scan_dir: Path) -> dict:

@@ -169,3 +169,36 @@ def test_gate2_no_lane_column_counts_all_rows_unaffected_by_exempt_logic(tmp_pat
     pd.DataFrame({"code": [f"{i:06d}" for i in range(11)]}).to_csv(
         tmp_path / "finalists.csv", index=False)
     assert gate2(tmp_path, budget=10)["ok"] is False
+
+
+# ───────────────────────── P4a: GATE2 返回 meta{code:{name,sector}} ─────────────────────────
+#
+# task-7-brief.md:GATE2 成功 JSON 增 meta 字段(每只 finalist 的 name/sector),
+# workflow(Task 9)据此在 GATE2 后立即派发 l4-intel,不必让每个 intel subagent 自己
+# 回查 finalists.csv。契约:只加在成功分支,失败分支 JSON 不变(仍只 ok/gate/reason)。
+
+
+def test_gate2_returns_meta(tmp_path):
+    import pandas as pd
+
+    from autoresearch.scan.gates import gate2
+    scan_dir = tmp_path
+    pd.DataFrame({"code": ["603259", "000567"], "ticker": ["603259", "000567"],
+                  "name": ["药明康德", "海德股份"], "sector": ["医疗服务", "多元金融"],
+                  "lane": ["trend", "value"]}).to_csv(scan_dir / "finalists.csv", index=False)
+    res = gate2(scan_dir, budget=10)
+    assert res["ok"]
+    assert res["meta"]["603259"] == {"name": "药明康德", "sector": "医疗服务"}
+    assert set(res["meta"]) == {"603259", "000567"}
+
+
+def test_gate2_meta_missing_cols_empty_strings(tmp_path):
+    # name/sector 整列缺失(旧格式 finalists.csv)→ _s helper 靠 Series.get 兜底 None → 空串,
+    # 不抛 KeyError(区别于 r["name"] 直接下标访问在列缺失时会抛异常)。
+    import pandas as pd
+
+    from autoresearch.scan.gates import gate2
+    pd.DataFrame({"code": ["603259"], "ticker": ["603259"], "lane": ["trend"]}
+                 ).to_csv(tmp_path / "finalists.csv", index=False)
+    res = gate2(tmp_path, budget=10)
+    assert res["ok"] and res["meta"]["603259"] == {"name": "", "sector": ""}
