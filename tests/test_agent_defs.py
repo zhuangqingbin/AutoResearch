@@ -49,13 +49,14 @@ def test_l4_card_contract_anchors_synced():
 
 
 def test_l3_rank_anchors_present():
-    """l3-rank 契约锚:T+2 兑现机制维 + conviction 行为化重锚(≥70 限额)+ mechanism 输出字段。
+    """l3-rank 契约锚:T+2 兑现机制维 + conviction 行为化重锚(≥70 限额)+ mechanism 输出字段
+    + finalist tier 语义(finalist/bench 二分、≥75 误杀保险、宁缺毋滥不凑数)。
 
     l3-rank 无 lite-playbook 式的独立真值源(screening-playbook 已退役),故只做单文件
     存在性检查,不做双侧同步(与 test_l4_card_contract_anchors_synced 的双文件模式不同)。
     """
     agent = _agent_text("l3-rank")
-    for a in ("兑现机制", "≥70", "mechanism"):
+    for a in ("兑现机制", "≥70", "mechanism", "finalist", "bench", "≥75", "宁缺毋滥"):
         assert a in agent, f"l3-rank 缺契约锚「{a}」"
 
 
