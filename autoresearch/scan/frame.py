@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.data.contracts import check_market_frame
+
 
 def _recall_gate_a(df: pd.DataFrame, min_amount_yi: float = 0.0, min_list_days: int = 0) -> pd.Series:
     """L1 召回轻门:只去真正不可交易/无核心数据的尾部(召回优先,尽量不误杀)。
@@ -37,57 +39,80 @@ def _recall_gate_a(df: pd.DataFrame, min_amount_yi: float = 0.0, min_list_days: 
     return keep
 
 
+_VOL_MIN_DAYS = 10          # 少于 10 个交易日算不出 20 日 CMF/OBV —— 与原 `len(days) < 10` 同阈值
+
+
 def _harvest_vol_series(codes, analysis_date: str, lookback: int = 20) -> pd.DataFrame:
     """拉近 ~lookback 交易日 daily(high/low/close/amount)→ vol_series 算多日量价因子 per code。
 
-    供 L1 召回的 volprice 组(快照层本来无序列)。tushare bulk by date(~lookback 次)→ pivot → 序列指标。
-    无权限/失败 → 返回空帧(volprice 列缺失 → 组 NaN 重归一,recall 不破)。
-    """
-    try:
-        from datetime import datetime, timedelta
+    供 L1 召回的 **volprice 组**(快照层本来无序列)。tushare bulk by date(~lookback 次)→ pivot。
 
-        import autoresearch.common.vol_series as vol_series
-        from autoresearch.data.tushare_source import (
-            _code6,
-            _pro,
-            _trade_days,
-            _ts_call,
-            resolve_momentum_dates,
-        )
+    **失败即抛 `DataContractError`,不再静默返回空帧**(2026-07-12 用户裁定 + 事故复盘)。
+    原实现三层吞异常 → 任何失败都退化成空帧 → cmf_20/obv_mom_20 **整列不落盘** →
+    `composite_score` 把 volprice 组从分母剔除、放大其余组权重 → 打分照样输出 0–100、漏斗照样
+    跑完、退出码 0。实测代价:全市场打分失真 **98.8%**、L2 名单 jaccard **0.36**,而唯一的信号
+    是一行淹没在日志里的 warn(根因是 lake 的 daily 被窄表毒化,见 `cache._lake_params`)。
+
+    volprice 是 A 级地基(10 组因子之一,且是唯一的多日序列组)——**它死了这次扫描就不该发布**。
+    """
+    from datetime import datetime, timedelta
+
+    import autoresearch.common.vol_series as vol_series
+    from autoresearch.data.cache import get_or_fetch  # 已结算日湖命中零网络(policy: daily=eod)
+    from autoresearch.data.contracts import DataContractError
+    from autoresearch.data.tushare_source import (
+        _code6,
+        _pro,
+        _trade_days,
+        _ts_call,
+        resolve_momentum_dates,
+    )
+
+    try:
         pro = _pro()
         last = resolve_momentum_dates(pro, analysis_date)[0]
         start = (datetime.strptime(last, "%Y%m%d") - timedelta(days=lookback * 2 + 15)).strftime("%Y%m%d")
         days = _trade_days(pro, start, last)[-lookback:]
-        if len(days) < 10:
-            return pd.DataFrame(columns=["code"])
         want = {str(c).zfill(6) for c in codes}
         recs = []
-        from autoresearch.data.cache import get_or_fetch  # 已结算日湖命中零网络(policy: daily=eod)
         for d in days:
             try:
                 df = get_or_fetch("daily", {"trade_date": d}, today=analysis_date)
-            except Exception:  # noqa: BLE001 — 湖/policy 异常回退直拉
+            except DataContractError:
+                raise                       # 契约违约必须炸穿:回退直拉只会掩盖湖里的毒源
+            except Exception:  # noqa: BLE001 — 湖/policy 其它异常(如未登记端点)→ 回退直拉
                 df = _ts_call(lambda d=d: pro.daily(trade_date=d, fields="ts_code,high,low,close,amount"))
             if df is None or not len(df):
                 continue
             df = df.assign(code=_code6(df["ts_code"]), date=d)
             recs.append(df[df["code"].isin(want)][["code", "date", "high", "low", "close", "amount"]])
-        if not recs:
-            return pd.DataFrame(columns=["code"])
-        long = pd.concat(recs, ignore_index=True)
-        piv = {f: long.pivot_table(index="code", columns="date", values=f)
-               for f in ("high", "low", "close", "amount")}
-        win = sorted(piv["close"].columns)
-        H, L, C, A = (piv[f][win] for f in ("high", "low", "close", "amount"))
-        out = pd.DataFrame({"code": list(C.index)})
-        out["cmf_20"] = vol_series.cmf(H, L, C, A, win).to_numpy()
-        out["obv_mom_20"] = vol_series.obv_momentum(C, A, win).to_numpy()
-        out["price_vs_vwap_20"] = vol_series.price_vs_vwap(H, L, C, A, win).to_numpy()
-        out["breakout_vol_20"] = vol_series.breakout_on_volume(C, A, win).to_numpy()
-        return out
-    except Exception as e:  # noqa: BLE001
-        print(f"[warn] 多日量价序列取数失败 → volprice 组置 NaN: {e}", file=sys.stderr)
-        return pd.DataFrame(columns=["code"])
+    except DataContractError:
+        raise
+    except Exception as e:  # noqa: BLE001 — 其余任何失败都升级为契约违约(不再静默降级)
+        raise DataContractError(
+            f"[数据契约·A级] volprice 组(多日量价序列)取数失败:{e!r}\n"
+            f"  为什么阻断:cmf_20/obv_mom_20 整列缺失 → composite_score 会把 volprice 组从分母\n"
+            f"           剔除、放大其余组权重 → 打分照样输出 0–100,**残废得看不出来**。\n"
+            f"  怎么办:若是湖里的 daily 损坏 → `python -m autoresearch.data.contracts doctor --purge`") from e
+
+    if len(recs) < _VOL_MIN_DAYS:
+        raise DataContractError(
+            f"[数据契约·A级] volprice 组只取到 {len(recs)} 个交易日(需 ≥{_VOL_MIN_DAYS})"
+            f" —— 20 日 CMF/OBV 算不出来,拒绝用残缺序列打分。\n"
+            f"  多半是 lake 里这段日期的 daily 缺失/损坏 → "
+            f"`python -m autoresearch.data.contracts doctor --purge` 后重跑。")
+
+    long = pd.concat(recs, ignore_index=True)
+    piv = {f: long.pivot_table(index="code", columns="date", values=f)
+           for f in ("high", "low", "close", "amount")}
+    win = sorted(piv["close"].columns)
+    H, L, C, A = (piv[f][win] for f in ("high", "low", "close", "amount"))
+    out = pd.DataFrame({"code": list(C.index)})
+    out["cmf_20"] = vol_series.cmf(H, L, C, A, win).to_numpy()
+    out["obv_mom_20"] = vol_series.obv_momentum(C, A, win).to_numpy()
+    out["price_vs_vwap_20"] = vol_series.price_vs_vwap(H, L, C, A, win).to_numpy()
+    out["breakout_vol_20"] = vol_series.breakout_on_volume(C, A, win).to_numpy()
+    return out
 
 
 def build_market_frame(analysis_date: str, *, cap_floor_yi: float = 30.0, include_bj: bool = True,
@@ -117,8 +142,9 @@ def build_market_frame(analysis_date: str, *, cap_floor_yi: float = 30.0, includ
     uni["code"] = uni["code"].astype(str).str.zfill(6)
     if vol_series:
         vps = _harvest_vol_series(uni["code"], analysis_date)      # 多日量价序列(CMF/OBV/...)→ volprice 组
-        if len(vps):
-            uni = uni.merge(vps, on="code", how="left")
+        uni = uni.merge(vps, on="code", how="left")                # 失败已在上面抛 DataContractError
+    # 出口契约(漏斗地基的最后一道门):喂给 composite_score 的帧到底全不全,与它从哪来无关。
+    check_market_frame(uni, with_vol_series=vol_series)
     return uni, {"universe_raw": int(n_raw), "universe": n_l0, "after_gate_a": len(uni)}
 
 

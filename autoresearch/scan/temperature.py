@@ -38,6 +38,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.data.contracts import DataContractError
+
 # 数据落盘根(测试/Task 5 消费端以 monkeypatch 改向)。读写一律在函数体内读"现值"
 # (`CSV_PATH` 或 `temperature.CSV_PATH`),不要把它绑进函数默认参数——default 在函数定义时
 # 就绑定求值,monkeypatch 模块属性后不会再生效,会悄悄读到改前的旧值。
@@ -251,7 +253,13 @@ def rollup(start: str, end: str, path: Path | str | None = None) -> pd.DataFrame
             try:
                 lu = fetch_limit_list_d(d)
                 pct = get_or_fetch("daily", {"trade_date": d, "fields": "ts_code,pct_chg"})
-            except Exception as exc:  # noqa: BLE001 — 限频/权限/网络 → 跳过该日
+            except DataContractError:
+                # **契约违约必须炸穿**:本函数读的 `daily` 是 A 级地基,它坏了不是"温度计少一天"
+                # 的问题 —— 是**湖里有毒源**,所有下游(volprice 组/回放/扫描)都会中招。吞掉它
+                # 只会让整条链继续静默跑残缺(这正是 2026-07-12 事故的形态,且温度计自己就是
+                # 那次窄表毒化的始作俑者)。让它上抛 → doctor --purge → 重拉。
+                raise
+            except Exception as exc:  # noqa: BLE001 — 限频/权限/网络 → 跳过该日(相位降级,可接受)
                 print(f"[temperature] {d} 取数失败({exc!r})→ 跳过", file=sys.stderr)
                 prev_lu = None
                 continue

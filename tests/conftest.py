@@ -35,6 +35,22 @@ def _dummy_api_keys(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_row_checks(monkeypatch):
+    """关掉数据契约的**规模性**检查(行数腰斩线),全局。
+
+    单测用合成小 fixture(几十~几百只股票)是常态,拿生产的全市场行数线(3000+)去卡它全是误报
+    ——golden parity 的 600 只帧就是这么被打挂的。
+
+    **结构性**检查(空帧 / 缺列 / 整列全 NaN)**仍然全开**,不受此开关影响:那是无论数据规模都
+    成立的 bug,也正是真实事故的形态(窄表毒化的签名恰恰是"行数够、但缺 high/low/amount")。
+    行数逻辑本身由 `tests/data/test_contracts.py` 显式打开开关来测。
+    """
+    import autoresearch.data.contracts as contracts
+
+    monkeypatch.setattr(contracts, "CHECK_ROWS", False)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_config():
     """Reset the global dataflows config before and after each test.
 

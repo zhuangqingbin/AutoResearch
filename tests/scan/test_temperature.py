@@ -116,3 +116,36 @@ def test_upsert_preserves_untouched_rows_bytes():
         first_row = result[result["date"] == "2026-01-01"].iloc[0]
         assert float(first_row["max_streak"]) == 5.0, \
             f"First row max_streak should equal 5.0 but got {first_row['max_streak']}"
+
+
+# ───────────────── 契约异常不得被吞(2026-07-12 负向验证逮到) ─────────────────
+
+
+def test_rollup_does_not_swallow_data_contract_error(monkeypatch):
+    """`rollup` 读的 `daily` 是 A 级地基 —— 它坏了不是"温度计少一天"的问题,是**湖里有毒源**,
+    所有下游(volprice 组/回放/扫描)都会中招。原实现的 `except Exception → 跳过该日` 会把契约
+    异常一并吞掉,让整条链继续静默跑残缺 —— 而温度计自己正是那次窄表毒化的始作俑者。
+
+    (限频/网络异常仍按老样子跳过该日:那只是相位降级,可接受。)
+    """
+    import pytest
+
+    from autoresearch.data.contracts import DataContractError
+    from autoresearch.scan import temperature as temp
+
+    monkeypatch.setattr(temp, "_trade_days", lambda pro, s, e: ["20260707", "20260708"],
+                        raising=False)
+    monkeypatch.setattr("autoresearch.data.tushare_source._pro", lambda: object())
+    monkeypatch.setattr("autoresearch.data.tushare_source._trade_days",
+                        lambda pro, s, e: ["20260707", "20260708"])
+    monkeypatch.setattr("autoresearch.data.tushare_source.fetch_limit_list_d",
+                        lambda d: pd.DataFrame({"ts_code": ["600000.SH"], "limit": ["U"],
+                                                "limit_times": [1]}))
+
+    def _poisoned_lake(endpoint, params, **kw):
+        raise DataContractError("[数据契约·A级] daily[20260707](来源:湖命中) 违约:缺列 ['high']")
+
+    monkeypatch.setattr("autoresearch.data.cache.get_or_fetch", _poisoned_lake)
+
+    with pytest.raises(DataContractError):
+        temp.rollup("2026-07-07", "2026-07-08")

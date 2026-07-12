@@ -99,42 +99,76 @@ def _atomic_write(path: Path, df: pd.DataFrame) -> None:
     os.replace(tmp, path)
 
 
+def _lake_params(params: dict) -> dict:
+    """**入湖取数参数 = 原参数剥掉 `fields`。**
+
+    湖里一个 key 只有一个 parquet,而 `_cache_key` **不含 `fields`** —— 所以带窄 `fields` 的
+    查询一旦成为某 key 的首个写入者,就把窄表钉成了这一天的湖快照:后来要别的列的调用方只会
+    读到缺列的表,而这类失败往往被上游的 try/except 静默吞成"降级"。
+
+    2026-07-12 实证(漏斗回放器 M1 对拍逮到):`temperature.rollup` 用
+    `fields='ts_code,pct_chg'` 回填 07-09/07-10 的 daily(那两天在扫描**当天**尚未结算,按
+    "date>=today 拉新但不写"的规则没入湖),把这两天钉成了两列窄表 → `_harvest_vol_series`
+    拿不到 high/low/amount → volprice 组整组 NaN → 全市场 composite 失真 98.8% → L2 名单
+    面目全非。而这两天正落在下次扫描的近 20 日窗口里 —— 生产扫描本会静默中招。
+
+    故:**写湖一律拉全字段**;要窄列的调用方自己 `df[cols]`(多几列无害,少一列是灾难)。
+    不入湖的路径(live / date>=today)不走本函数,保留窄 `fields` 省流量。
+    """
+    return {k: v for k, v in params.items() if k != "fields"}
+
+
 def get_or_fetch(
     endpoint: str,
     params: dict,
     today: str | None = None,
     fetch=None,
 ) -> pd.DataFrame:
-    """湖命中即读,否则拉取 → 原子写;按 policy 决定 key/是否缓存/今天是否取新。
+    """湖命中即读,否则拉取 → **契约校验** → 原子写;按 policy 决定 key/是否缓存/今天是否取新。
 
     fetch(endpoint, params) -> DataFrame  缺省走 sources.fetch(可注入,便于离线测)。
+
+    **契约校验**(`contracts.check`,2026-07-12 用户裁定"取数以后要有全面校验,为空抛异常阻断"):
+    A 级(地基:行情/估值/资金/筹码/技术/证券基础)空或残缺 → `DataContractError` 阻断,且
+    **拒绝入湖**——脏数据一旦落盘就被钉死,之后每次命中都是脏的,重跑也自愈不了(窄表毒化事故的
+    根本教训)。B 级(增强)缺失 → 记账 + 降级,不阻断。
+
+    校验挂在**三条路径**上,尤其是**湖命中**:历史脏数据(空帧/窄表)读出来照样毒化下游,而且它
+    **不会**再经过取数路径的任何检查 —— 这是原设计的盲区。
     """
     if fetch is None:
         from autoresearch.data.sources import fetch as fetch  # 延迟导入,避开取数依赖
 
+    from autoresearch.data.contracts import check  # 延迟导入:契约表是纯数据,无取数依赖
+
     pol = policy(endpoint)
     t = _today_compact(today)
 
-    # ③ live:总取新,绝不缓存。
+    # ③ live:总取新,绝不缓存,不校验(盘中快照的完整性由调用方自负——它们本就不入湖)。
     if pol["settle"] == "live":
         return fetch(endpoint, params)
 
     key = _cache_key(endpoint, params, t)
     path = LAKE / endpoint / f"{key}.parquet"
 
-    # 已结算(date < today)且文件存在 → 命中,零取数。
+    # 已结算(date < today)且文件存在 → 命中,零取数。**命中也要校验**(湖里可能躺着毒源)。
     if path.exists():
-        return _read(path)
+        return check(endpoint, _read(path), key=str(key), source="lake")
 
-    # date 键:date >= today(盘中未结算)→ 拉新但不写(明天结算后才入湖)。
+    # date 键:date >= today(盘中未结算)→ 拉新但不写(明天结算后才入湖)。**只查空、不查列**
+    # (`cols=False`):这份数据不入湖、只服务当次调用,调用方要哪几列是它自己的事(温度计只要
+    # `ts_code,pct_chg`)。但 A 级拉到空仍要抛 —— 数据还没发布,下游必然残废,与
+    # `assert_tushare_ready` 同一立场("晚点再跑,或跑前一交易日")。
     if pol["key"] == "date":
         d = _compact(_first(params, _DATE_PARAM_KEYS))
         if d and d >= t:
-            return fetch(endpoint, params)
+            return check(endpoint, fetch(endpoint, params), key=str(key), source="fetch", cols=False)
 
-    # 拉取 → 原子写(空帧也写)→ 返回。
-    df = fetch(endpoint, params)
+    # 拉取 → 校验 → 原子写。**入湖必须全字段**(`_lake_params`:窄 fields 会把窄表钉成该 key 的
+    # 湖快照,毒化所有后来的调用方——2026-07-12 M1 对拍实证)。
+    df = fetch(endpoint, _lake_params(params))
     if df is None:
         df = pd.DataFrame()
+    df = check(endpoint, df, key=str(key), source="fetch")   # A 级违约 → 抛,下一行不执行 = 不入湖
     _atomic_write(path, df)
     return df

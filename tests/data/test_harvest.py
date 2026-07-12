@@ -26,8 +26,17 @@ def test_harvest_writes_lake_and_is_resumable(tmp_path, monkeypatch):
     seen = {"n": 0}
 
     def fake_fetch(endpoint, params):
+        """所有 A 级端点必需列的超集 —— 数据契约(2026-07-12)会查列,假数据也得像真数据。
+        (行数腰斩那条规模检查由 conftest 全局关掉,故一行足矣。)"""
         seen["n"] += 1
-        return pd.DataFrame({"ts_code": ["600000.SH"], "trade_date": [params.get("trade_date", "static")]})
+        return pd.DataFrame({
+            "ts_code": ["600000.SH"], "trade_date": [params.get("trade_date", "static")],
+            "open": [10.0], "high": [11.0], "low": [9.0], "close": [10.5],
+            "amount": [1e5], "pct_chg": [1.2],                       # daily
+            "turnover_rate": [1.5], "pe_ttm": [20.0], "pb": [2.0],
+            "total_mv": [1e6], "circ_mv": [8e5],                     # daily_basic
+            "name": ["浦发银行"], "list_date": ["19991110"],          # stock_basic
+        })
 
     r1 = harvest(_CAL[80], _CAL[90], step=5, today=_CAL[150], trade_days=_CAL, fetch=fake_fetch)
     assert r1["calls"] > 0

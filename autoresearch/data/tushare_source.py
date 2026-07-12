@@ -256,13 +256,24 @@ def _fetch_moneyflow_struct(pro, last: str) -> pd.DataFrame | None:
 
 
 def _fetch_hk_hold(pro, last: str) -> pd.DataFrame | None:
-    """北向持股占比(hk_hold;ratio = 占流通股比 %)。失败 → None(降级)。"""
+    """北向持股占比(hk_hold;ratio = 占流通股比 %)。B 级(增强)→ 失败/空 = 降级,但**必须记账**。
+
+    2026-07-09 实证:该日 `hk_ratio` 全表为空(north 组整组失效),当时唯一的痕迹是一行
+    `[warn] hk_hold 取数失败`,没人看见、也没有任何账本记得——直到回放器对拍时才被发现。
+    降级本身是合法的(北向确有空档期,且 northbound 通道已停用),**但它必须是可见的**
+    (design 2026-07-12-data-contracts-design.md)。
+    """
+    from autoresearch.data.contracts import record_degradation
+
     try:
         hk = _ts_call(lambda: pro.hk_hold(trade_date=last, fields="ts_code,ratio"))
-        return pd.DataFrame({"code": _code6(hk["ts_code"]), "hk_ratio": _num(hk["ratio"])})
     except Exception as e:  # noqa: BLE001
-        print(f"[warn] hk_hold 取数失败({e!r})→ 北向因子降级", flush=True)
+        record_degradation("hk_hold", f"取数失败({e!r})→ north 组置空", key=last)
         return None
+    if hk is None or not len(hk):
+        record_degradation("hk_hold", "空返回(该日无北向数据)→ north 组置空", key=last)
+        return None
+    return pd.DataFrame({"code": _code6(hk["ts_code"]), "hk_ratio": _num(hk["ratio"])})
 
 
 def _fetch_fund_portfolio(pro, period: str, page_size: int = 8000,
