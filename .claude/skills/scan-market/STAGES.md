@@ -1,4 +1,4 @@
-# scan-market 各阶段现状(as-of 2026-07-11)
+# scan-market 各阶段现状(as-of 2026-07-12)
 
 > 本文件只记**当前态快照**。沿革见 git log 与 `docs/specs/` 下各设计稿;**冲突时以源码为准**。
 > 文档分工:`SKILL.md` 讲**怎么跑**;操作模板分驻各能力 skill —— 市场研判在 `macro-playbook.md` 末节,L4 决策卡在 `stock-research` 的 `lite-playbook.md`。
@@ -149,22 +149,23 @@ L2 之后、与 L3 证据取数**并发**:
 
 ---
 
-## L3 · 精排 —— holistic 单 Opus(200 → ~30)
+## L3 · 精排 —— pass1 确定性分诊 + holistic 单 Opus 深比较(200 → ~60 → finalist tier 7–10)
 
-一个 Opus 通看全表、比较着选,而不是孤立逐只打分(比较式 > 逐只)。
+**两遍法**(2026-07-12,用户裁定 L3.5 收窄职能并入 L3):pass1 是确定性分诊(零 LLM,`triage_l2_for_l3`)——pinned/多路共振/healthy lane 全入 + 各召回通道 top-K 轮询,把 L2 的 ~200 行收到 `pass1_target`(默认 60);被切部分不代表判死,落影子 `_l3_pass1_cut.csv` 供 attribution 验证分诊没吃赢家。pass2 由一个 Opus 通看这 ~60 只、比较着选(而不是孤立逐只打分,比较式 > 逐只),深比较后给出 **finalist tier:7–10 只**(按当天质量,`finalist:true`,宁缺毋滥不凑数)+ 其余判断过但未入选的 **bench**(`finalist:false`,落 `_l3_bench.csv`,防漏影子——账本会追踪 bench 里有没有藏该进 finalist 的够格票)。
 
 **流程:**
 
 1. `harvest_l3_evidence`(龙虎榜 / 预告 / 快报)+ `harvest_l3_news`(公告情感)补证据;
-2. `l3_table_md` 压成紧凑表;
-3. 一个 Opus-high 通看全表,按 5 维 rubric(channel 共振 / 资金 / 基本面 / 情感 / 脆弱)比较着选 ~30;
-4. 写 `L3_judged_full.csv` → `merge_l3_finalists_v2`(趋势配额安全网)→ `finalists.csv`。
-5. 校准注入:因子方向经验校准块 + 策略师地形段 + 行业备忘录块。
+2. **pass1 分诊**(`prepare_l3_table` 内接线,`two_pass` 默认开):`triage_l2_for_l3` 把 ~200 行收到 ~60,cut 落 `_l3_pass1_cut.csv`;
+3. `l3_table_md` 压成紧凑表(表头注明「pass1 分诊 n→n」);
+4. 一个 Opus-high 通看 ~60 只,按 6 维 rubric(channel 共振 / 资金 / 基本面 / 情感 / 脆弱 / T+2 兑现机制)比较着深比较,给出 finalist tier:7–10 只(`finalist:true`)+ 其余 bench(`finalist:false`);
+5. 写 `L3_judged_full.csv`(finalist+bench 全量判断)→ `merge_l3_finalists_v3`(finalist 标记消费 + conviction≥75 误杀保险 + <55 剔除 + 健康画像比例守卫 + cap=min(`finalist_max`,预算))→ `finalists.csv`,bench 落 `_l3_bench.csv`;
+6. 校准注入:因子方向经验校准块 + 策略师地形段 + 行业备忘录块。
 
 **token 经济与预算:**
 
 - `delta=True` 略去无变化的票。
-- L4 派发数由 `menu.l4_budget` 控(五面旗:落刀>60% / 相对落刀>40% 且 >2× 全市场 / 健康涨≤2 / risk_off / 0买连败≥3;命中 1 旗 → 22,≥2 旗 → 15)。
+- L4 派发数由 `menu.l4_budget` 控(五面旗:落刀>60% / 相对落刀>40% 且 >2× 全市场 / 健康涨≤2 / risk_off / 0买连败≥3;命中 1 旗 → 22,≥2 旗 → 15);finalist tier 上限 `l3cap = min(10, l4_budget)`,由 workflow 传作 `finalists`/`gate2` 的 `--budget`。
 
 **推荐常开三面旗**(presence-gated,默认关 = parity):
 
@@ -183,12 +184,16 @@ L2 之后、与 L3 证据取数**并发**:
 
 **输出契约增强(2026-07-11)**:judged 增 `mechanism` 字段(两日内兑现机制+明日买家,写不出不选);conviction 行为化定义(**≥70 = 能说出 D+1 谁买且愿真金买入,每日 ≥70 限 ~5 只**;50-69 = 值得 L4 验不背书)——L3.5 回测(唯 ≥70 有 T+2 edge)的语义落地。
 
+**输出契约增强(2026-07-12,finalist tier 落地)**:judged 每元素加 `finalist`(true/false)——`true` 者即 finalist tier(7–10 只,数量看当天质量,宁缺毋滥不凑数),`false` 即 bench(仍全字段判断,落 `_l3_bench.csv`,防漏影子)。确定性守卫(`merge_l3_finalists_v3`):conviction≥75 未标 finalist → 强制补入(误杀保险,`guard=ins75`);conviction<55 → 剔除(`guard=lt55`);超 `finalist_max`(默认 10)→ 按 conviction 截尾;健康画像不足 ceil(n/3) 且 bench 有够格 → 从 bench 补(`guard=healthy_quota`)。缺 `finalist` 字段(向后兼容旧 judged)→ 全体按 conviction 排序取 cap,同守卫。
+
 **稳定性与验尸:**
 
 - 周频抽检:`shuffle_seed` 乱序再跑 audit agent,overlap<0.70 → 提 proposal。
 - 错杀验尸(retro 侧):L2-keep 且非 finalist 且 T+5 赢家,join 红队理由写 lesson。实证错杀 = 0 —— **病在召回线,别冤枉判断层**。
 
-### L3.5 · 可插拔闸(finalists → L4 收窄到 6~10)
+### L3.5 · 可插拔闸(finalists → L4 收窄到 6~10;2026-07-12 起收窄职能已并入 L3)
+
+> **2026-07-12 用户裁定**:L3.5 闸=**passthrough 保留为回测 harness**,生产路径的收窄职能已并入 L3(L3 直接出 finalist tier 7–10,见上「输出契约增强」)——本闸不再是生产收窄的主路径,以下机制/策略/回测工具保留供实验复用,别删。
 
 在 `scan/gates.py` 的 GATE2 之后、L4 派发之前,把 finalists 收窄。**默认 passthrough(= 不收窄 = parity)。**
 

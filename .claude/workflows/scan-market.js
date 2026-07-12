@@ -3,7 +3,7 @@ export const meta = {
   description: '全 A股六段漏斗:一个确定性 workflow 编排全流程 + 四校验门(prelude→市场/行业→L3→L4→assemble)',
   phases: [
     { title: 'Prelude', detail: 'frame → [universe/L0-L2 ∥ market_view] → GATE1' },
-    { title: 'L3', detail: '[sector-briefs ∥ 证据harvest] → L3-rank → finalists → GATE2' },
+    { title: 'L3', detail: '[sector-briefs ∥ 证据harvest] → L3-rank(pass1→深比较 7-10) → finalists → GATE2' },
     { title: 'L4', detail: 'slim-harvest ∥ 情报站(GATE3) → 决策卡并发' },
     { title: 'Assemble', detail: 'assemble → GATE4' },
   ],
@@ -84,6 +84,9 @@ if (g1.sentinel_level === 'sentinel') {
 
 // ── Phase L3 ────────────────────────────────────────────────────
 phase('L3')
+// finalist tier 上限(plan 2026-07-12-l3-merge-plan.md Task 4):L3.5 闸的收窄职能已并入 L3,
+// L3 直接出 7–10 只 finalist(宁缺毋滥,不强制凑到此数)——cap 而非目标。
+const l3cap = Math.min(10, g1.l4_budget)
 // 中观行业 pack(确定性)先行,再 [sector-briefs ∥ L3 表准备] barrier
 await bash(`${R} autoresearch.sector.reuse ${date} --apply; ${R} autoresearch.sector.pack ${date}`, 'sector-pack', 'L3')
 // schema 顶层必须是 object(API 拒 `type:'array'` → 400 → agent 返回 null → `|| []` 静默吞掉,
@@ -106,9 +109,9 @@ await parallel([
     .then((r) => { log(`brief ✓ ${sec}`); return r })),
 ])
 // L3 holistic 精排(唯一 max-effort 判断核心)
-log(`L3 精排开始:通读 _l3_table(~200 只)比较式选 ~${g1.l4_budget}(effort max,历史 ~14m)`)
+log(`L3 精排开始:pass1 已分诊 200→~60(影子 _l3_pass1_cut.csv),l3-rank 深比较出 finalist tier 7~${l3cap} 只+bench(effort max,历史 ~14m)`)
 await agent(
-  `L3 精排 · 日期 ${date} · 目标约 ${g1.l4_budget} 只。文件在 ${SD}/:_l3_table.md(~200 表)、market_view.md(§1-3 地形)、sector_briefs/(地形段)。按你的人设(5 维 rubric + 硬约束 A/B/C/D)比较式精排,写 ${SD}/_l3_judged.json。`,
+  `L3 精排 · 日期 ${date} · finalist tier 按质 7~${l3cap} 只(judged 每元素带 finalist:true/false)+其余为 bench;宁缺毋滥。文件在 ${SD}/:_l3_table.md(~60 表,pass1 已分诊)、market_view.md(§1-3 地形)、sector_briefs/(地形段)。按你的人设(6 维 rubric + 硬约束 A-E)比较式精排,写 ${SD}/_l3_judged.json。`,
   { agentType: 'l3-rank', effort: cfg.agents?.l3_rank?.effort ?? 'max',
     ...(cfg.agents?.l3_rank?.model ? { model: cfg.agents.l3_rank.model } : {}),
     label: 'L3-rank', phase: 'L3' })
@@ -121,8 +124,8 @@ if (l3lint && l3lint.ok === false) {
     { agentType: 'l3-rank', effort: 'medium', label: 'L3-lint-fix', phase: 'L3' })
 }
 // 确定性写 finalists(修前导零)+ GATE2
-await bash(`${R} autoresearch.scan.agents.l3_select finalists ${date} --budget ${g1.l4_budget}`, 'finalists', 'L3')
-const g2 = await gate('GATE2', `${R} autoresearch.scan.gates gate2 ${date} --budget ${g1.l4_budget}`, GATE2, 'L3')
+await bash(`${R} autoresearch.scan.agents.l3_select finalists ${date} --budget ${l3cap}`, 'finalists', 'L3')
+const g2 = await gate('GATE2', `${R} autoresearch.scan.gates gate2 ${date} --budget ${l3cap}`, GATE2, 'L3')
 if (!g2 || !g2.ok) throw new Error(`GATE2 失败:${g2 ? g2.reason : 'no return'}`)
 // finalists/n 已是 L3.5 闸后(收窄后)数——闸默认 passthrough(=parity,cut 恒 0),仅在
 // scan_config.json 显式配置 l4_gate 时才会真收窄,此时才附 cut 只数。
