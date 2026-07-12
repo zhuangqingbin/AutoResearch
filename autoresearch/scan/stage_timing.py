@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import time
 from pathlib import Path
 
 
@@ -29,7 +30,14 @@ def _maxopt(*xs) -> float | None:
 
 
 def derive_stage_timing(det: Path) -> dict:
-    """从 mtime 锚推导 `{key: {"wall_s": int}}`;锚缺/负跨度 → 略过该 key。"""
+    """从 mtime 锚推导 `{key: {"wall_s": int}}`;锚缺/负跨度 → 略过该 key。
+
+    `预热` 例外:直接读 `_prewarm.json` **内容**(`started_at`/`ended_at` epoch 秒),
+    非 mtime 链——该文件由独立 prewarm CLI 写,落盘时刻不等于预热跨度。
+    `ensemble` = 卡 max-mtime → `ensemble/*.md` max-mtime(多轮蒸馏相位)。
+    `assemble` = max(ensemble,卡,judged) → 本次推导时刻(诚实下界"截至本表";
+    `ensure_stage_timing` 的「已有 key 优先」保证它只在首次 assemble 时定格,复渲染不漂移)。
+    """
     det = Path(det)
     t0 = _mt(det / "_t0.json") or _mt(det / "market_pack.json")
     pack = _mt(det / "market_pack.json")
@@ -42,6 +50,7 @@ def derive_stage_timing(det: Path) -> dict:
     cards = _mx((det / "details").glob("*.md")) if (det / "details").is_dir() else None
     slim_root = det.parent.parent
     slims = _mx(slim_root.glob(f"*_{det.name}_slim.md")) if slim_root.exists() else None
+    ens = _mx((det / "ensemble").glob("*.md")) if (det / "ensemble").is_dir() else None
 
     spans = {
         "L0L1L2": (t0, l2),
@@ -50,12 +59,23 @@ def derive_stage_timing(det: Path) -> dict:
         "L3精排": (table, judged),
         "L4slim": (prompts, slims),
         "L4研究": (prompts, cards),
-        "总计": (t0, _maxopt(cards, judged, briefs, l2)),
+        "ensemble": (cards, ens),
+        "assemble": (_maxopt(ens, cards, judged), time.time() if (ens or cards or judged) else None),
+        "总计": (t0, _maxopt(ens, cards, judged, briefs, l2)),
     }
     out: dict = {}
     for k, (a, b) in spans.items():
         if a and b and b >= a:
             out[k] = {"wall_s": int(b - a)}
+    pw = det / "_prewarm.json"                      # 预热:读内容(epoch),非 mtime 链
+    if pw.is_file():
+        try:
+            j = json.loads(pw.read_text(encoding="utf-8"))
+            w = int(float(j["ended_at"]) - float(j["started_at"]))
+            if w >= 0:
+                out["预热"] = {"wall_s": w}
+        except Exception:  # noqa: BLE001 — 计时可选
+            pass
     return out
 
 

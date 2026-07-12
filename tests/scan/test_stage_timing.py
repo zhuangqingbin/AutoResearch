@@ -62,3 +62,27 @@ def test_ensure_respects_existing_and_writes(tmp_path):
     assert merged["L3精排"]["wall_s"] == 7          # 编排/人工写的优先
     on_disk = json.loads((det / "_stage_timing.json").read_text(encoding="utf-8"))
     assert on_disk["L0L1L2"]["wall_s"] == 600       # 推导补缺已写回
+
+
+def test_stage_timing_prewarm_ensemble_assemble(tmp_path):
+    from autoresearch.scan.stage_timing import derive_stage_timing
+    det = tmp_path
+    t0 = time.time() - 3600
+    (det / "_t0.json").write_text("{}", encoding="utf-8")
+    os.utime(det / "_t0.json", (t0, t0))
+    (det / "_prewarm.json").write_text(json.dumps(
+        {"date": "2026-07-10", "started_at": t0 - 900, "ended_at": t0 - 300, "steps": []}),
+        encoding="utf-8")
+    (det / "details").mkdir()
+    card = det / "details" / "600000.md"
+    card.write_text("x", encoding="utf-8")
+    os.utime(card, (t0 + 1800, t0 + 1800))
+    (det / "ensemble").mkdir()
+    ens = det / "ensemble" / "600000.run2.md"
+    ens.write_text("x", encoding="utf-8")
+    os.utime(ens, (t0 + 2100, t0 + 2100))
+    out = derive_stage_timing(det)
+    assert out["预热"]["wall_s"] == 600
+    assert out["ensemble"]["wall_s"] == 300
+    assert out["assemble"]["wall_s"] >= 0          # ensemble → now(截至推导)
+    assert out["总计"]["wall_s"] >= 2100           # 终锚并入 ensemble
