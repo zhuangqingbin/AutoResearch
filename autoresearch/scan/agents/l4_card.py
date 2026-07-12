@@ -1123,23 +1123,27 @@ def _default_harvest_slim(ticker: str, date: str, ctx_root: Path) -> Path:
 
 
 def harvest_slim_batch(date: str, root: Path | None = None, min_bytes: int = 8_192,
-                       retries: int = 1, harvest_fn=None, ctx_root: Path | None = None) -> dict:
+                       retries: int = 1, harvest_fn=None, ctx_root: Path | None = None,
+                       workers: int = 4) -> dict:
     """按 _harvest_list.txt 批量 harvest slim,**失败响亮**(修 603799 静默失败坑 = GATE 3)。
 
     07-06 教训:slim >8KB 才可信(表面块口径;深核块在 *_slim_deep.md)。offender 重试
     `retries` 次仍小/异常/含 .SH → 记失败。harvest_fn(ticker, date)->Path 可注入(测试用),
     默认 shell 到 analyze.harvest --slim。
+
+    workers=4 默认并发(spec §P3);subprocess 取数为 I/O 密集,限频靠 per-ticker retries
+    串行重试承担。workers<=1 退化原串行 for 循环(兼容旧行为/便于对串行时序敏感的测试)。
     """
     base = Path(root) if root else Path("context/scan")
     scan_dir = base / date
     ctx = ctx_root or Path("context")
     tickers = [t for t in (scan_dir / "_harvest_list.txt").read_text(encoding="utf-8").split() if t]
     hv = harvest_fn or (lambda t, dt: _default_harvest_slim(t, dt, ctx))
-    failures = []
-    for t in tickers:
+
+    def _one(t: str) -> dict | None:
+        """单票 harvest+判定,逐行照搬自旧循环体;返回失败记录或 None(成功)。"""
         if ".SH" in t:                                    # 归一漏网(GATE 3 防线)
-            failures.append({"ticker": t, "bytes": -1, "why": ".SH 未归一"})
-            continue
+            return {"ticker": t, "bytes": -1, "why": ".SH 未归一"}
         size = 0
         for _ in range(retries + 1):
             try:
@@ -1150,7 +1154,16 @@ def harvest_slim_batch(date: str, root: Path | None = None, min_bytes: int = 8_1
             if size >= min_bytes:
                 break
         if size < min_bytes:
-            failures.append({"ticker": t, "bytes": int(size), "why": f"<{min_bytes}B"})
+            return {"ticker": t, "bytes": int(size), "why": f"<{min_bytes}B"}
+        return None
+
+    if workers <= 1:
+        results = [_one(t) for t in tickers]
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            results = list(ex.map(_one, tickers))       # map 保序 → failures 原序
+    failures = [r for r in results if r]
     return {"ok": not failures, "n": len(tickers), "failures": failures}
 
 
@@ -1167,6 +1180,7 @@ def main(argv: list[str] | None = None) -> int:
                          "dispatch-plan = 派发感知 TTL 复用/carryover(dispatch/reused 分流)")
     ap.add_argument("date", help="scan 日 YYYY-MM-DD")
     ap.add_argument("--root", default=None, help="scan 根目录(默认 context/scan)")
+    ap.add_argument("--workers", type=int, default=4, help="slim 批量并发数(1=串行)")
     args = ap.parse_args(argv)
     if args.cmd == "dispatch-plan":
         import json
@@ -1174,7 +1188,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "harvest-slim":
         import json
-        res = harvest_slim_batch(args.date)
+        res = harvest_slim_batch(args.date, workers=args.workers)
         print(json.dumps({"ok": res["ok"],
                           "reason": ("ok" if res["ok"]
                                      else f"{len(res['failures'])}/{res['n']} slim 失败:"

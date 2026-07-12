@@ -1,9 +1,12 @@
-"""L4 helpers 单测 —— force_full_card(强先验白名单)+ audit_rubric_gates(自评一致性抽检)。无网络。
+"""L4 helpers 单测 —— force_full_card(强先验白名单)+ audit_rubric_gates(自评一致性抽检)
++ harvest_slim_batch(P3 ThreadPool 并发)。无网络。
 
 覆盖 spec §Leaf L4:
   - 强先验(高 conviction + 多路/lane 救回)→ 强制满卡(不被表面早停误杀)
   - 弱先验 → 不强制
   - 卡片自评 gate=True 但正文矛盾 → flag(防 gaming);一致/未声明 → 不 flag
+  - harvest_slim_batch workers=4 默认并发真跑(lock+peak 计数证非串行)、workers=1
+    退化串行时 failures 仍按 tickers 原序(GATE 3 报告顺序不变、.SH 归一漏网判定不变)
 """
 from __future__ import annotations
 
@@ -62,3 +65,48 @@ def test_force_full_card_pinned_always_full():
     assert force_full_card({"lane": "pinned", "conviction": 50, "n_channels": 1}) is True
     assert force_full_card({"lane": "pinned"}) is True                     # 连 conviction 都缺也强制
     assert force_full_card({"lane": "value", "conviction": 50, "n_channels": 1}) is False
+
+
+def test_harvest_slim_batch_parallel_workers(tmp_path):
+    """P3:workers=4 默认并发——fake_hv 用 lock+peak 计数器证明真并发(串行时 peak 恒为 1)。"""
+    import threading
+
+    from autoresearch.scan.agents.l4_card import harvest_slim_batch
+    scan_dir = tmp_path / "2026-07-10"
+    scan_dir.mkdir(parents=True)
+    (scan_dir / "_harvest_list.txt").write_text("AAA BBB CCC DDD", encoding="utf-8")
+    lock, state = threading.Lock(), {"now": 0, "peak": 0}
+
+    def fake_hv(t, dt):
+        import time
+        with lock:
+            state["now"] += 1
+            state["peak"] = max(state["peak"], state["now"])
+        time.sleep(0.05)
+        p = tmp_path / f"{t}_{dt}_slim.md"
+        p.write_text("x" * 10_000, encoding="utf-8")
+        with lock:
+            state["now"] -= 1
+        return p
+
+    res = harvest_slim_batch("2026-07-10", root=tmp_path, harvest_fn=fake_hv, workers=4)
+    assert res["ok"] and res["n"] == 4 and res["failures"] == []
+    assert state["peak"] >= 2                       # 真并发(串行时 peak==1)
+
+
+def test_harvest_slim_batch_workers1_failures_ordered(tmp_path):
+    """P3:workers=1 退化串行——failures 仍严格按 tickers 原序(GATE 3 报告读序不能乱)。"""
+    from autoresearch.scan.agents.l4_card import harvest_slim_batch
+    scan_dir = tmp_path / "2026-07-10"
+    scan_dir.mkdir(parents=True)
+    (scan_dir / "_harvest_list.txt").write_text("AAA 600000.SH BBB", encoding="utf-8")
+
+    def tiny(t, dt):
+        p = tmp_path / f"{t}_{dt}_slim.md"
+        p.write_text("x", encoding="utf-8")
+        return p
+
+    res = harvest_slim_batch("2026-07-10", root=tmp_path, harvest_fn=tiny, workers=1)
+    assert not res["ok"]
+    assert [f["ticker"] for f in res["failures"]] == ["AAA", "600000.SH", "BBB"]
+    assert res["failures"][1]["why"] == ".SH 未归一"
