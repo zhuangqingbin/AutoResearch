@@ -30,11 +30,8 @@ dev = [
 ]
 # Data lake (Parquet + ZSTD). Install with `uv sync --extra data`.
 data = ["pyarrow"]
-# Native ranking models (core feature_set, no torch). `uv sync --extra models`.
-models = ["lightgbm", "xgboost", "catboost"]
-# Placeholder for the future torch tabular/seq models (MLP/TabNet/LSTM/...).
-# Not installed now; the 5 Phase-1 core models (linear/lgbm/xgb/cat/dbl) need no torch.
-torch = ["torch"]
+# factor_lab 可选 GBDT(原生模型园区已于 2026-07-13 移除)。`uv sync --extra models`.
+models = ["lightgbm"]
 
 [tool.setuptools.packages.find]
 include = ["autoresearch*"]

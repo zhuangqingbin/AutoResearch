@@ -38,7 +38,6 @@ autoresearch/
   data/        # Parquet data lake (ZSTD, "exists = hit") + DataHandler.materialize + sources (tushare/akshare/fred/yfinance)
   dataflows/   # vendor data tools (yfinance/FRED/...) + agents/utils (rating.py etc.)
   common/      # shared scoring primitives · sw_sector_map · uzi_lenses · vol_series
-  models/      # model framework: base(Model ABC) · registry · Trainer · champion–challenger · catalog (linear/lgbm/xgb/cat/dbl)
   trace/       # typed run trace: store (parquet stages + manifest) · schema
   learning/    # closed loop: feedback_store · self_review · retro · stage_eval
   scan/        # full-market funnel: pipeline · stages/{l0,l1,l2} · agents · cli · parity
@@ -63,7 +62,7 @@ uv run --no-sync python -m autoresearch.macro.harvest 2026-06-20
 uv run --no-sync python -m autoresearch.macro.assemble context/macro/2026-06-20
 ```
 
-Optional extras: `uv sync --extra data` (pyarrow lake), `--extra models` (lightgbm/xgboost/catboost), `--extra torch` (future MLP/TabNet/seq models).
+Optional extras: `uv sync --extra data` (pyarrow lake), `--extra models` (lightgbm — factor_lab 可选 GBDT).
 
 ## News
 - [2026-05] **TradingAgents v0.2.5** released with the grounded Sentiment Analyst, GPT-5.5 etc. model coverage, Qwen/GLM/MiniMax dual-region support, `TRADINGAGENTS_*` env-var configurability with API-key auto-detection, remote Ollama support, non-US alpha benchmarks, and ticker path-traversal hardening. See [CHANGELOG.md](CHANGELOG.md) for the full list.

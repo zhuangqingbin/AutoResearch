@@ -15,7 +15,6 @@ import pytest
 
 from autoresearch.research import replay
 
-
 # ───────────────────────── PIT 卫兵(§1 权重 / §2 端点) ─────────────────────────
 
 
@@ -32,7 +31,8 @@ def test_weights_path_prior_writes_snapshot_without_regimes_block(tmp_path):
     这样 `_load_weights(path, regime=<label>)` 的 regime 分支落空、退回 flat 先验;
     regime 标签本身仍照算(标签 PIT 安全,只有权重值带未来信息)。"""
     p = replay.weights_path_for("prior", tmp_path)
-    data = json.loads(open(p, encoding="utf-8").read())
+    with open(p, encoding="utf-8") as f:
+        data = json.load(f)
     assert "regimes" not in data, "先验快照不得含 regimes 块(否则又把校准过的权重喂回去了)"
     assert data["weights"]["__global__"]["momentum"] == pytest.approx(0.10)
 

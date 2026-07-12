@@ -21,7 +21,6 @@ class ScanConfig:
     cap_floor: float = 30.0       # 市值地板(亿)
     include_bj: bool = True       # 是否纳入北交所
     source: str = "tushare"       # universe 取数源:tushare(默认)| em
-    l2_model: str = "l2_fwd5"     # L2 champion 名(zoo 训的 swing champion;无→回落 GBDT/线性)
     recall_mode: str = "multi"                       # L1 召回:multi(多路)| composite(单复合分,对拍)
     recall_channels: list[str] | None = None         # 启用的 channel 子集(None=全注册)
     regime_aware: bool = False                        # L1 权重按 regime 选(需 weights.json regimes 块);默认关=parity
@@ -32,10 +31,6 @@ class ScanConfig:
     # L2 分层多样性采样器(ML-free;sector-neutral composite;design 2026-06-25-l2-stratified-sampler)
     l2_floors: dict | None = None                     # 各风格 floor(None=l2_stratify.DEFAULT_FLOORS;{}=不分层)
     l2_sector_cap: float = 0.20                        # 任一申万一级 ≤ 此比例(0.20=40/200);≥1.0=关
-    l2_engine: str = "stratified"                      # L2 引擎:stratified(默认=parity)| champion(待 l2_eval 验证占优才接线)
-    # ── 下两项已弃用(被分层采样器取代,保留仅为 caller 兼容,不参与 L2 选股)──
-    l2_lane_quota: int = 40
-    l2_lane_channels: tuple[str, ...] = ("momentum", "heat", "growth", "accumulation")
 
     # ── 用户配置层映射(scan_config.json 白名单;全默认 None=parity;design 2026-07-11 §4.2)──
     agents: dict | None = None        # {stage: {model, effort}} 覆盖 workflow 内建(Task 2 消费)

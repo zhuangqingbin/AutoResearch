@@ -329,9 +329,7 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
         regime_aware: bool = False,                                      # L1 权重按 regime 选(默认关=parity)
         shadow: bool = True,                                              # 影子漏斗变体 L2(纯增量文件,可 --no-shadow 关)
         l0_min_amount_yi: float = 0.0, l0_min_list_days: int = 0,         # L0 流动性/次新硬门(默认 0=关=parity)
-        l2_model: str = "l2_fwd5", l2_floors: dict | None = None, l2_sector_cap: float = 0.20,
-        l2_lane_quota: int = 40,                                          # 弃用(分层采样取代)
-        l2_lane_channels=("momentum", "heat", "growth", "accumulation"),
+        l2_floors: dict | None = None, l2_sector_cap: float = 0.20,
         channel_quotas: dict[str, int] | None = None,                     # 覆盖各路 quota(None=CHANNEL_DEFAULTS,parity)
         channel_floors: dict[str, int] | None = None,                     # 覆盖各路 floor(None=CHANNEL_DEFAULTS,parity)
         weights_path: str | None = None) -> dict:                         # L1 权重文件(None=默认路径=parity;回放器注入 as-of 快照防前视)

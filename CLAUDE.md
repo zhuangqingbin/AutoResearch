@@ -20,8 +20,8 @@
 
 ### 包结构（`autoresearch/`）
 
-- `autoresearch/data`、`autoresearch/dataflows`、`autoresearch/agents/utils` —— 免费数据层（lake + DataHandler + sources；yfinance/FRED/akshare/tushare）+ `rating.py` 等工具。
-- `autoresearch/common`、`autoresearch/models`、`autoresearch/trace`、`autoresearch/learning` —— 打分原语 / 模型框架（registry+Trainer+champion）/ 现场存储 / 闭环学习（feedback·retro·self_review·stage_eval）。
+- `autoresearch/data`、`autoresearch/dataflows`、`autoresearch/agents/utils` —— 免费数据层（lake + contracts + sources；yfinance/FRED/akshare/tushare）+ `rating.py` 等工具。
+- `autoresearch/common`、`autoresearch/trace`、`autoresearch/learning` —— 打分原语 / OTEL 计量（telemetry）/ 闭环学习（feedback·retro·self_review·stage_eval）。（原 `models` 模型园区与 typed-trace 平行实现已于 2026-07-13 移除：零生产调用，L2 champion 方向此前已弃用。）
 - `autoresearch/scan`、`autoresearch/analyze`、`autoresearch/macro` —— 三个 skill 的 stage 管道 + agents + CLI。
 
 > 注：原框架的**付费 LLM 多 agent 路径**（LangGraph 编排、provider clients、CLI、批量 runner）已移除——本项目现在**只**保留 Claude-as-engine 的 scan / analyze / macro 路线 + 其依赖的免费数据层（`autoresearch/data`、`autoresearch/dataflows`、`autoresearch/agents/utils`）。架构详见 `docs/specs/2026-06-22-autoresearch-arch-redesign-design.md` 与 README 的 **架构** 节。
