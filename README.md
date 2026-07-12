@@ -49,9 +49,9 @@ autoresearch/
 Run via `python -m autoresearch.*` (always `uv run --no-sync`):
 
 ```bash
-# Full A-share scan: deterministic L0→L1→L2 funnel
-#   → legacy staging context/scan/<date>/*.csv  AND  typed trace reports/scan/<run_id>/
-uv run --no-sync python -m autoresearch.scan run 2026-06-20 --source tushare
+# Full A-share scan: deterministic prelude (L0→L2 + calendar/watchlist/menu/ledgers)
+#   → staging context/scan/<date>/*.csv ; published reports/scan/<run_id>/ come from assemble
+uv run --no-sync python -m autoresearch.scan.prelude 2026-06-20
 uv run --no-sync python -m autoresearch.scan.assemble 2026-06-20      # L5 整合 summary + trace
 
 # Single-ticker deep-dive

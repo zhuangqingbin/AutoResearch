@@ -3,9 +3,9 @@
 
 design: docs/specs/2026-06-22-autoresearch-arch-redesign-design.md §A。
 
-把 screen_market.run 的关键字参数(recall_n / l2_n / cap_floor / include_bj / source)收成一个
-dataclass,作为 RunContext 的一部分随 run 走;`l2_model` 选 L2 粗排用哪个 champion(默认 "l2_fwd5"
-= zoo 训的 swing champion,无则回落 GBDT/线性)。值与 screen_market CLI 默认逐一对齐。
+把漏斗关键字参数(recall_n / l2_n / cap_floor / include_bj / source)收成一个 dataclass。
+现存消费方 = `user_config.apply_to_scan_config`(scan_config.jsonc 白名单映射);typed-trace
+平行实现(Pipeline/RunContext/cli)已于 2026-07-13 移除(生产真身一直是 prelude→universe.run 直调)。
 """
 from __future__ import annotations
 

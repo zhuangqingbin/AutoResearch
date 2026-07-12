@@ -13,7 +13,7 @@
   - 取数：`python -m autoresearch.analyze.harvest <ticker> [date] [stock|crypto] [PEER1,PEER2]`（`--slim` = lite 档轻量取数）。
   - 组装：`python -m autoresearch.analyze.assemble context/analyze/<TICKER>_<date>`（用项目 `parse_rating` 校验五档评级）。
 - **全 A 扫描**：`scan-market` skill —— "扫描全 A 股 / 全市场选股 / 哪些板块值得买"。确定性漏斗 L0→L1→L2 + Claude 在 L3/L4/L5 做研究/辩论/整合。
-  - 漏斗：`python -m autoresearch.scan run <date> [--recall-n 1000 --l2-n 200 --cap-floor 30 --source tushare --exclude-bj]`（旧 staging `context/scan/<date>/*.csv` + typed trace `reports/scan/<run_id>/`）。
+  - 漏斗：`python -m autoresearch.scan.prelude <date>`（确定性前奏一键：L0→L2 + 日历/观察单/菜单/账本；staging `context/scan/<date>/*.csv`；发布产物 `reports/scan/<run_id>/` 由 assemble 生成）。
   - 整合：`python -m autoresearch.scan.assemble <date>`。复盘：`python -m autoresearch.learning.retro pending`（`scan-retro` skill）。
 - **宏观**：`macro-research` skill（**full/lite 两档**）—— full："研究全球宏观 / 现在该超配什么资产 / A股哪些行业值得配";lite = **市场研判**(原首席策略师,scan-market Stage 0 调用或"今天大盘怎么看",读 `python -m autoresearch.scan.frame <date> --json` 的湖派生 market_pack 写 market_view.md)。
   - 取数：`python -m autoresearch.macro.harvest [date]`；组装：`python -m autoresearch.macro.assemble context/macro/<date>`。
