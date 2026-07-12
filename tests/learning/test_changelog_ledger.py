@@ -56,3 +56,19 @@ def test_thin_flag_and_empty(tmp_path):
     assert df.iloc[0]["thin"]                               # 前后各 1 日 <3
     assert "⚠样本少" in "\n".join(render(df))
     assert not len(roll(tmp_path / "nope", scan))           # 无 changelog → 空
+
+
+def test_trial_count_and_dsr_lines(tmp_path):
+    """P0-6:trial 按 retro_date 升序 1-based;渲染含多重检验行;最近 Δ≤0 亮 C18 红灯。"""
+    import pandas as pd
+
+    from autoresearch.learning.changelog_ledger import render, roll  # noqa: F401
+    df = pd.DataFrame([
+        {"id": "a", "retro_date": "2026-07-01", "trial": 1, "n_before": 3, "n_after": 3,
+         "ic_before": 0.01, "ic_after": 0.02, "delta": 0.01, "thin": False},
+        {"id": "b", "retro_date": "2026-07-05", "trial": 2, "n_before": 3, "n_after": 3,
+         "ic_before": 0.02, "ic_after": 0.01, "delta": -0.01, "thin": False},
+    ])
+    text = "\n".join(render(df))
+    assert "已试 **2** 版" in text and "多重检验" in text
+    assert "C18 红灯" in text and "停止调参信号" in text

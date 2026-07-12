@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pandas as pd
 
-_COLS = ["id", "retro_date", "n_before", "n_after", "ic_before", "ic_after", "delta", "thin"]
+_COLS = ["id", "retro_date", "trial", "n_before", "n_after", "ic_before", "ic_after", "delta", "thin"]
 
 
 def _read_jsonl(p: Path) -> list[dict]:
@@ -68,13 +68,15 @@ def roll(knowledge_dir: Path | str | None = None, scan_root: Path | str | None =
     ics = day_ics(scan_root)
     dates = sorted(ics)
     rows = []
-    for r in recs:
+    # P0-6 DSR-lite:trial = 同参数族第 N 次校准(现全部 recalibrate 都动 composite 权重族,
+    # 按 retro_date 升序 1-based 计数;将来引入别的参数族时按 kind+族键分组再计)。
+    for trial, r in enumerate(sorted(recs, key=lambda x: str(x["retro_date"])), start=1):
         d = str(r["retro_date"])
         before = [ics[x] for x in dates if x < d][-k:]
         after = [ics[x] for x in dates if x >= d][:k]
         ib = round(sum(before) / len(before), 4) if before else None
         ia = round(sum(after) / len(after), 4) if after else None
-        rows.append({"id": r.get("id", ""), "retro_date": d,
+        rows.append({"id": r.get("id", ""), "retro_date": d, "trial": trial,
                      "n_before": len(before), "n_after": len(after),
                      "ic_before": ib, "ic_after": ia,
                      "delta": round(ia - ib, 4) if ib is not None and ia is not None else None,
@@ -90,15 +92,24 @@ def render(df: pd.DataFrame) -> list[str]:
     def f(x):
         return "—" if x is None or pd.isna(x) else f"{x:+.4f}"
 
-    out += ["| 重标定 | retro日 | 前n | 后n | IC前 | IC后 | Δ | |", "|---|---|---|---|---|---|---|---|"]
+    out += ["| 重标定 | retro日 | 试次 | 前n | 后n | IC前 | IC后 | Δ | |", "|---|---|---|---|---|---|---|---|---|"]
     for r in df.itertuples(index=False):
-        out.append(f"| {r.id} | {r.retro_date} | {r.n_before} | {r.n_after} "
+        out.append(f"| {r.id} | {r.retro_date} | 第{r.trial}版 | {r.n_before} | {r.n_after} "
                    f"| {f(r.ic_before)} | {f(r.ic_after)} | {f(r.delta)} "
                    f"| {'⚠样本少' if r.thin else ''} |")
     solid = df[~df["thin"]]["delta"].dropna()
     if len(solid):
         out += ["", f"- **汇总**:{len(solid)} 次样本足的重标定,Δ 均值 {solid.mean():+.4f}"
                 " —— 持续 ≤0 = 校准空转,查 horizon/收缩/样本窗。"]
+    # P0-6 DSR-lite 两行固定文案(design: 2026-07-12-selflearning brainstorm §4 P0-6;C19/C18):
+    n_trials = int(df["trial"].max()) if "trial" in df.columns and len(df) else 0
+    out += ["", f"- **多重检验(DSR-lite)**:composite 权重族已试 **{n_trials}** 版——试得越多,"
+            "纯凭运气也会有一版好看(C19);第 N 版须 Δ 显著大于噪声才可信,别就着最近一版顺眼就批。"]
+    latest = df.sort_values("retro_date").iloc[-1] if len(df) else None
+    if latest is not None and latest["delta"] is not None and not pd.isna(latest["delta"]) \
+            and float(latest["delta"]) <= 0:
+        out += ["- 🔴 **C18 红灯**:最近一次重标定后不如未标定版(Δ≤0)= **停止调参信号,而非继续调**"
+                "——考虑出提案:recalibrate 从『诊断顺带』改『仅 regime 切换时触发』(20 交易日 cadence 人批)。"]
     return out
 
 
