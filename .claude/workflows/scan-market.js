@@ -53,7 +53,7 @@ await bash(`mkdir -p ${SD} && ${R} autoresearch.scan.frame ${date} --json > ${SD
 await parallel([
   () => bash(`${R} autoresearch.scan.prelude ${date}`, 'prelude/universe', 'Prelude'),
   () => agent(
-    `读 ${SD}/market_pack.json,按你的人设写 ${SD}/market_view.md(六小节;前3描述性地形、后2仅 L5)。数字只出自 pack,不编;个股不评级、不锚定卡片。`,
+    `读 ${SD}/market_pack.json,按你的人设写 ${SD}/market_view.md(六小节;前3描述性地形、后2仅 L5)。数字只出自 pack,不编;个股不评级、不锚定卡片。pack 里的 sector_healthy_top3 键是 L5 专用的确定性产物,忽略它,不得把"看多行业"及其排名写进任何小节。`,
     { agentType: 'macro-brief', effort: cfg.agents?.strategist?.effort ?? 'high',
       ...(cfg.agents?.strategist?.model ? { model: cfg.agents.strategist.model } : {}),
       label: 'market_view', phase: 'Prelude' }),
@@ -135,7 +135,7 @@ log(`GATE2 ✓ finalists=${g2.n}`)
 // 活体情报站(spec §P4②):GATE2 后即发——盲于 L3 论点,只需 code/name/sector/date(g2.meta),
 // 与 l4-prep + GATE3 slim 全窗重叠。carryover 复用票的情报可能白跑(近期 reuse=0,接受并 log)。
 const intelOn = !!(cfg.l4_intel && cfg.l4_intel.enabled)
-const maxQ = (cfg.l4_intel && cfg.l4_intel.max_queries) || 15
+const maxQ = (cfg.l4_intel && cfg.l4_intel.max_queries) ?? 15
 const INTEL = { type: 'object', required: ['code'],
   properties: { code: { type: 'string' }, events: { type: 'integer' } } }
 const intelPromises = intelOn ? g2.finalists.map((code) => agent(

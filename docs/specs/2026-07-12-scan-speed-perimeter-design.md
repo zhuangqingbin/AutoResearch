@@ -121,7 +121,7 @@
 2. **真实命令冒烟**(FN-1 族教训:接线 ≠ 生效):`prewarm` 真跑一次(含守卫拒绝路径的假数据测试);下次真扫描 `_stage_timing.json` 对照第 3 节账目。
 3. parity:所有新旋钮缺省即现行为;P2 产物**字节级不变**(只省网络);P7 产物全为**新增块**(market_pack top3 块 / L5 小节 / ledger 行,presence-gated,缺失不挡发布);`LAKE_ASSUME_SETTLED` 未设置 = cache 现行为逐字节不变。
 4. launchd plist 装载后 `launchctl list` 可见 + 次日 19:30 产物 mtime 佐证。
-5. P7:上线前一次性回算读数落 csv 附稿(判读留用户);上线后 grep 断言 `_l3_table.md`/`_l4_prompt_*` 不含 top3 标签(防锚定);sector_ledger 出现 source=deterministic_top3 行;brief 派发数 = hot-K ∪ top3 去重数。
+5. P7:上线前一次性回算读数落 csv 附稿(判读留用户);上线后 grep 断言 `_l3_table.md`/`_l4_prompt_*`/**`market_view.md`** 不含 top3 标签(防锚定;策略师读整包 market_pack.json 是唯一 LLM 泄漏通道,故并入此 grep);sector_ledger 出现 source=deterministic_top3 行;brief 派发数 = hot-K ∪ top3 去重数。
 
 ## 5. 风险清单
 
