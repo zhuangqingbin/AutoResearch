@@ -103,6 +103,7 @@
   - top3 行业**自动并入 sector-brief 派发集合**(hot-K ∪ top3 去重,pack 侧读 market_pack 的 top3 块)→ 它们的 brief 地形段照常喂 L3/L4(描述性,合规),brief 数 6→≤9,并行派发墙钟不变、token +≈2.5k;
   - `sector_ledger` 记账:方向=看多、**source=deterministic_top3**(与 brief 的 LLM 方向判断分账,前向收益各自问责——这把尺子准不准,账本说了算)。
 - **验收前置(尺子先见读数)**:一次性脚本(factor_lab 式,非常驻 harness——遵守 gate_backtest 已删的裁定)在湖上回算最近 ~40-60 已结算交易日:逐日 top3 → 行业等权成分 fwd_2_oc 超额(vs 全市场等权)→ 读数落 csv 附设计稿;判读留用户,读数烂则带参重调或搁置,不裸上。
+  - 读数(2026-07-12 回算,`sector_top3_backtest.py --days 60`;CACHE 覆盖:daily 340 日全,daily_basic/moneyflow 仅 121 个稀疏截面 ∩ 最近 60 候选交易日 → 实际可算 n=39 日,20260414–20260701,均 3/3 满额过门):平均超额 +0.189pp · 命中率 64% · 中位 +0.169pp——判读留用户。
 
 ## 3. 墙钟账(估)
 
