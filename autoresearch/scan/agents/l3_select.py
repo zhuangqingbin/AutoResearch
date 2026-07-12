@@ -11,6 +11,7 @@ screening-playbook.md);本模块只做**确定性喂料 + 取数 + 格式化**:�
 from __future__ import annotations
 
 import json
+import math
 import re
 from pathlib import Path
 
@@ -575,6 +576,11 @@ def merge_l3_finalists_v2(judged: pd.DataFrame, target: int = 30, trend_quota: i
                           hybrid: bool = True) -> pd.DataFrame:
     """格式化 L3 holistic 选股 agent 的入选 → finalists.csv(L4/L5 读),并做趋势配额安全网。
 
+    **v3 已取代本函数为 `write_finalists` 的生产路径**(design: plan 2026-07-12-l3-merge-plan.md
+    Task 2;L3.5 收窄职能并入 L3 finalist tier,见 `merge_l3_finalists_v3`)。本函数保留不删
+    只为旧测试引用(`target`/`trend_quota` 硬配额语义已被 v3 的 `finalist` 标记消费 + 比例制/
+    soft 配额守卫取代),新代码请用 v3。
+
     holistic 单 agent 通看 ~200 只、比较着选 ~30(各只带 conviction/fragility/thesis/risk/catalyst/lane)。
     本函数把它的入选排成 finalists:先给 trend lane(非回避)保底 trend_quota 席(强势票的高 fragility 多是
     T+1/短期回撤概念,swing 视角不该被 `conviction−fragility` 一票挤出),再按 net 填满。
@@ -611,6 +617,147 @@ def merge_l3_finalists_v2(judged: pd.DataFrame, target: int = 30, trend_quota: i
             "triage_lean", "triage_reason", "thesis", "mechanism", "risk", "catalyst",
             "lane", "sentiment"]
     return out[[c for c in cols if c in out.columns]]
+
+
+def _swap_lane_quota(m: pd.DataFrame, conv: pd.Series, fin_idx: set, lane_val: str,
+                     target: int, guard_name: str, qualify_conv: float = 65.0) -> set:
+    """守卫④/⑤共用的尾部票置换:`fin_idx`(候选集索引)里 `lane==lane_val` 计数不足
+    `target` → 从 bench(`m.index` 里不在 `fin_idx` 的行)找够格候选(`lane==lane_val`
+    且 `conviction>=qualify_conv`,按 conviction 降序),换掉候选集里"非 `lane_val` 且
+    `conviction<75`(受 ins75 保险保护的行不可被换出)"中 conviction 最低的一个,双方
+    都记 `guard=guard_name`(就地写回 `m`,不覆盖已有更具体的 guard)。**bench 无够格
+    候选,或候选集里找不到可换的尾部票 → 提前 break,不硬凑**(用户裁定:有够格候选
+    才凑,无则不硬凑)。返回置换后的 `fin_idx`(新 set,不改原对象)。"""
+    if "lane" not in m.columns:
+        return fin_idx
+    lane = m["lane"].astype(str)
+    have = sum(1 for i in fin_idx if lane.loc[i] == lane_val)
+    deficit = target - have
+    if deficit <= 0:
+        return fin_idx
+    bench_pool = [i for i in m.index if i not in fin_idx
+                 and lane.loc[i] == lane_val and conv.loc[i] >= qualify_conv]
+    bench_pool.sort(key=lambda i: conv.loc[i], reverse=True)
+    fin_idx = set(fin_idx)
+    for cand in bench_pool:
+        if deficit <= 0:
+            break
+        removable = [i for i in fin_idx if lane.loc[i] != lane_val and conv.loc[i] < 75]
+        if not removable:
+            break                                   # 无可换尾部票 → 不硬凑
+        removable.sort(key=lambda i: conv.loc[i])    # 换掉候选集里最弱的
+        victim = removable[0]
+        fin_idx.discard(victim)
+        fin_idx.add(cand)
+        m.loc[cand, "guard"] = guard_name
+        if not m.loc[victim, "guard"]:
+            m.loc[victim, "guard"] = guard_name
+        deficit -= 1
+    return fin_idx
+
+
+def merge_l3_finalists_v3(judged: pd.DataFrame, budget: int,
+                          finalist_max: int = 10) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """L3 finalist tier 合并(design: plan 2026-07-12-l3-merge-plan.md Task 2;L3.5 的收窄职能
+    并入本函数,取代 `merge_l3_finalists_v2` 的 target/trend_quota 硬配额)。
+
+    l3-rank(`.claude/agents/l3-rank.md` v2)判断每票时写 `finalist` 布尔字段(True=finalist
+    tier,7–10 只,数量看当天质量;False=**bench**,仍全字段判断、不是弃权)。本函数消费该
+    标记 + 施加确定性守卫,产出 `(finalists, bench)` 两张表——**互斥、并集=`judged` 全量**
+    (`bench` = `judged` − `finalists`)。
+
+    `cap = min(finalist_max, budget)`(`budget` 通常是 workflow `--budget`,即当日 `l4_budget`;
+    `finalist_max` 是本波新增上限,默认 10——两者取更严格的一个)。
+
+    守卫序(按序应用,后一守卫在前一守卫处理后的候选集上运行):
+
+    ① **ins75 保险**:候选集外(未标 `finalist=True`)但 `conviction>=75` 的行强制补入,
+       `guard="ins75"`——用户裁定"conviction≥75 必须 finalist"是确定性硬约束,不能只靠
+       l3-rank 人设自觉遵守(人设里也写了这条,这里是不依赖 agent 遵守的兜底)。已经在
+       候选集里的 conviction≥75 行不需要这个标记(它本来就在,不算"被保险救回")。
+    ② **lt55 拒绝**:候选集里 `conviction<55` 的行剔除(挪进 bench),`guard="lt55"`——
+       即便 l3-rank 误标 `finalist=True` 也不该出现,同样是确定性硬约束,不靠自觉。
+    ③ **cap 截尾**:候选集超过 `cap` → 按 `conviction` 降序保留前 `cap`,其余挪进 bench
+       (`guard="cap"`,已带 `"lt55"` 的行不会出现在这一步的候选集里,不冲突)。
+    ④ **健康比例守卫**(比例制,`ceil(n/3)`,`n`=当前候选集大小):候选集里 `lane=="healthy"`
+       (v1 从简判定——只认 l3-rank 已写下的 `lane` 字段是否恰为 `"healthy"` 这一个字符串,
+       不重算 pct_60d/main_net/cmf/obv 的组合读数;那套定性判断是 l3-rank rubric 硬约束 A
+       的职责,确定性层这里只做"数够不够"的兜底,故意从简,更精细的健康画像判定留给
+       将来版本)计数不足 → 见 `_swap_lane_quota`(target=`ceil(n/3)`、`guard="healthy_quota"`)。
+    ⑤ **trend soft 2 席**:同④机制(`_swap_lane_quota`),`target=2`(固定,非比例)、
+       `lane=="trend"`、`guard="trend_quota"`——L3.5 时代硬配额(`trend_quota=10`)降级为
+       soft 下限,"有够格候选才凑,无则不硬凑"同样适用(不达标不强求)。
+
+    **缺 `finalist` 列**(向后兼容:T3 之前落的旧 `_l3_judged.json` 没有这个字段)→ 全体行
+    视为初始候选(等价"先假设全选"),同样跑①–⑤(①在此情形恒无操作对象——全体已是候选;
+    ②③④⑤照常运行),等效于"全体按 conviction 排序取 cap,同守卫"。
+
+    返回 `(finalists, bench)`:
+      - `finalists` 沿用 `merge_l3_finalists_v2` 的展示 schema(`ticker`/`code`/`name`/
+        `sector`/`lenses`/`conviction`/`triage_lean`/`triage_reason`/`thesis`/`mechanism`/
+        `risk`/`catalyst`/`lane`/`sentiment`)+ 本函数新增的 `guard` 列(`write_finalists`
+        据此写 finalists.csv,格式"照旧"只加这一列)。
+      - `bench` 保留 `judged` **全部原始列**(`code` 已 6 位零填、`conviction`/`fragility`/
+        `pct_60d` 已转数值,与 `finalists` 同口径)+ `guard`(`write_finalists` 据此落
+        `_l3_bench.csv`——账本要看到完整判断,不是展示裁剪后的字段)。
+
+    两表按 `code` 互斥、按行索引并集覆盖 `judged` 全量(无遗漏无重复)。`judged` 为空 →
+    两个都空(仍带 `guard` 列)。
+    """
+    if judged.empty:
+        empty = judged.copy()
+        empty["guard"] = pd.Series(dtype=object)
+        return empty.copy(), empty.copy()
+
+    cap = max(0, min(int(finalist_max), int(budget)))
+    m = judged.reset_index(drop=True).copy()
+    m["code"] = m["code"].astype(str).str.zfill(6)
+    if "conviction" not in m.columns:
+        m["conviction"] = 0.0
+    for c in ("conviction", "fragility", "pct_60d"):
+        if c in m.columns:
+            m[c] = pd.to_numeric(m[c], errors="coerce")
+    conv = m["conviction"].fillna(0.0)
+    m["guard"] = ""
+
+    if "finalist" in m.columns:
+        sel = m["finalist"].fillna(False).astype(bool).copy()
+    else:                                       # 缺列向后兼容:全体皆候选
+        sel = pd.Series(True, index=m.index)
+
+    ins75 = (conv >= 75) & (~sel)                # 守卫①:误杀保险强制补入
+    m.loc[ins75, "guard"] = "ins75"
+    sel = sel | ins75
+
+    lt55 = sel & (conv < 55)                     # 守卫②:低于 55 禁止 finalist
+    m.loc[lt55, "guard"] = "lt55"
+    sel = sel & ~lt55
+
+    order = list(m.index[sel])
+    order.sort(key=lambda i: conv.loc[i], reverse=True)
+    if len(order) > cap:                         # 守卫③:超 cap 按 conviction 截尾
+        for i in order[cap:]:
+            if not m.loc[i, "guard"]:
+                m.loc[i, "guard"] = "cap"
+        order = order[:cap]
+
+    fin_idx: set = set(order)
+    n = len(fin_idx)
+    fin_idx = _swap_lane_quota(m, conv, fin_idx, "healthy",             # 守卫④
+                               math.ceil(n / 3) if n else 0, "healthy_quota")
+    fin_idx = _swap_lane_quota(m, conv, fin_idx, "trend", 2, "trend_quota")   # 守卫⑤
+
+    fin_order = sorted(fin_idx, key=lambda i: conv.loc[i], reverse=True)
+    fin = m.loc[fin_order].copy()
+    fin["ticker"] = fin["code"]
+    cols = ["ticker", "code", "name", "sector", "lenses", "conviction",
+            "triage_lean", "triage_reason", "thesis", "mechanism", "risk", "catalyst",
+            "lane", "sentiment", "guard"]
+    fin = fin[[c for c in cols if c in fin.columns]].reset_index(drop=True)
+
+    bench_idx = [i for i in m.index if i not in fin_idx]
+    bench = m.loc[bench_idx].reset_index(drop=True)
+    return fin, bench
 
 
 def _inject_pinned_finalists(fin: pd.DataFrame, kept: list[dict],
@@ -686,12 +833,23 @@ def _inject_pinned_finalists(fin: pd.DataFrame, kept: list[dict],
 
 def write_finalists(date: str, budget: int = 30, root: Path | None = None,
                     pinned_path: Path | str | None = None) -> dict:
-    """确定性写 finalists.csv + L3_judged_full.csv(workflow L3 后确定性入口,取代手工 glue)。
+    """确定性写 finalists.csv + L3_judged_full.csv + `_l3_bench.csv`(workflow L3 后确定性入口,
+    取代手工 glue)。
 
-    读 l3-rank agent 落的 _l3_judged.json → 从 L2 回填 pct_60d(供 merge 混合配额)
-    → merge_l3_finalists_v2 → pinned 强留(`_inject_pinned_finalists`,design 2026-07-11
-    §4.1;plan Task 4;presence-gated:无 pinned.json/kept 全空 → 不变)→ 写盘。**全程 6
-    位零填**,修 000062→62 的 CSV 往返坑。
+    读 l3-rank agent 落的 _l3_judged.json → 从 L2 回填 pct_60d(供缺 `finalist` 列时的旧
+    judged 回退路径与 v2 兼容;v3 本身不需要 pct_60d)→ `merge_l3_finalists_v3`(消费
+    `finalist` 标记 + 确定性守卫,design: plan 2026-07-12-l3-merge-plan.md Task 2)产出
+    (finalists, bench)→ bench 落 `_l3_bench.csv`(全字段+guard,防漏账本)→ pinned 强留
+    (`_inject_pinned_finalists`,design 2026-07-11 §4.1;plan Task 4;presence-gated:无
+    pinned.json/kept 全空 → 不变,**在 v3 之后、不占 finalist 名额**)→ 写盘。**全程 6 位
+    零填**,修 000062→62 的 CSV 往返坑。
+
+    `finalist_max`(v3 的 `min(finalist_max, budget)` 上限)从
+    `load_user_config().get("l3", {}).get("finalist_max", 10)` 读(T1 已建白名单)。
+
+    返回 dict:`judged_n`/`finalists_n` 语义不变(`finalists_n` = 写盘 finalists.csv 的最终
+    行数,含 pinned 追加);新增 `finalist_n`(v3 产出的 finalist tier 行数,**pinned 注入前**,
+    即当日 L3 finalist tier 的真实大小)、`bench_n`(bench 行数)。
     """
     base = Path(root) if root else Path("context/scan")
     scan_dir = base / date
@@ -708,13 +866,21 @@ def write_finalists(date: str, budget: int = 30, root: Path | None = None,
         if "pct_60d" not in jd.columns and "pct_60d" in l2.columns:
             jd = jd.merge(l2[["code", "pct_60d"]], on="code", how="left")
     jd.to_csv(scan_dir / "L3_judged_full.csv", index=False)       # 全量判断(retro/assemble/trace)
-    fin = merge_l3_finalists_v2(jd, target=budget)                # 内部 zfill code + ticker=code
+
+    from autoresearch.scan.user_config import load_user_config
+    finalist_max = int((load_user_config().get("l3") or {}).get("finalist_max", 10))
+    fin, bench = merge_l3_finalists_v3(jd, budget=budget, finalist_max=finalist_max)
+    bench.to_csv(scan_dir / "_l3_bench.csv", index=False)
+    finalist_n = int(len(fin))
+    bench_n = int(len(bench))
+
     from autoresearch.scan.user_config import load_pinned
     kept = load_pinned(date, path=pinned_path)["kept"]
     if kept:
         fin = _inject_pinned_finalists(fin, kept, lookup=l2)
     fin.to_csv(scan_dir / "finalists.csv", index=False)
-    return {"judged_n": int(len(jd)), "finalists_n": int(len(fin))}
+    return {"judged_n": int(len(jd)), "finalists_n": int(len(fin)),
+            "finalist_n": finalist_n, "bench_n": bench_n}
 
 
 def prepare_l3_table(date: str, root: Path | None = None, delta: bool = True,

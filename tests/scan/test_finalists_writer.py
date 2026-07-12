@@ -145,7 +145,11 @@ def test_write_finalists_no_pinned_json_is_parity(tmp_path):
                                    pinned_path=tmp_path / "nope.json")
     text_explicit = (d / "finalists.csv").read_text(encoding="utf-8")
 
-    assert res_default == res_explicit == {"judged_n": 2, "finalists_n": 2}
+    # Task 2(l3-merge-plan)加了 finalist_n/bench_n 两个新键(v3 merge 的产物计数),
+    # 不再是旧的 2 键 dict——parity 的实质是"default == explicit(不存在路径)"这一相等性,
+    # 而非某个写死的旧 shape,故拆成两条断言。
+    assert res_default == res_explicit
+    assert res_explicit["judged_n"] == 2 and res_explicit["finalists_n"] == 2
     assert text_default == text_explicit
     rows = list(csv.DictReader(text_explicit.splitlines()))
     assert {r["lane"] for r in rows} == {"value", "trend"}   # 不受任何 pinned 改判
