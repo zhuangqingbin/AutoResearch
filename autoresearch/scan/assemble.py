@@ -906,6 +906,15 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
     if pin_sec:
         out += [pin_sec, ""]
 
+    # ── 🎯 看多行业 top3(P7:确定性零 LLM;presence-gated,失败不挡发布)──
+    try:
+        from autoresearch.scan.market import market_pack as _mp2, render_sector_top3
+        top3_sec = render_sector_top3(_mp2(scan_dir))
+    except Exception:  # noqa: BLE001
+        top3_sec = ""
+    if top3_sec:
+        out += [top3_sec, ""]
+
     sect = _sector_view_section(scan_dir)   # Phase 3:行业研判(briefs 研判段,方向性只在整合层)
     if sect:
         out += [sect, ""]
@@ -1170,6 +1179,13 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
             n_calls = record_calls(scan_dir, analysis_date)
             if n_calls:
                 print(f"[sector_ledger] 记 {n_calls} 条行业方向 → context/knowledge/sector_calls.jsonl")
+        with contextlib.suppress(Exception):       # P7:top3 看多记账(分账,失败不阻发布)
+            from autoresearch.learning.sector_ledger import record_top3
+            from autoresearch.scan.market import market_pack as _mp3
+            inds3 = [r["industry"] for r in (_mp3(scan_dir).get("sector_healthy_top3") or [])]
+            n3 = record_top3(analysis_date, inds3)      # date 变量名与相邻 record_calls 调用一致,以现场为准
+            if n3:
+                print(f"[sector_ledger] 记 top3 看多 {n3} 条(source=deterministic_top3)")
         with contextlib.suppress(Exception):           # 影子买单记账(spec 2026-07-05 wave §A2,失败不阻发布)
             from autoresearch.learning.shadow_buys import record as _shadow_record
             n_sh = _shadow_record(scan_dir)

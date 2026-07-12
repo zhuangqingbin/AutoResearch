@@ -132,6 +132,8 @@ def select_briefing_sectors(scan_dir: Path | str, k: int = 6,
 
     返回 (industries, provenance{行业: 来源});任一来源缺文件 → 该来源为空(降级不抛)。
     行业选择需要"当日菜单"做锚 —— 这是中观 lite 挂 L2 后而非更早的原因(design §4 D6)。
+    P7:第四来源 = market_pack.json 的 sector_healthy_top3(确定性看多榜);**top3看多 追加不占 k**
+    ——基础三来源仍 cap=k,top3 只在基础集之外补(不挤占红榜/集中度/观察单名额)。
     """
     scan_dir = Path(scan_dir)
     prov: dict[str, str] = {}
@@ -158,7 +160,16 @@ def select_briefing_sectors(scan_dir: Path | str, k: int = 6,
             ind = imap.get(str(c).zfill(6))
             if ind:
                 _add(ind, "观察单")
-    inds = list(prov)[:k]
+    mp = scan_dir / "market_pack.json"                       # P7:确定性看多 top3(追加,不占 k)
+    if mp.exists():
+        try:
+            for r in (json.loads(mp.read_text(encoding="utf-8")).get("sector_healthy_top3") or [])[:3]:
+                _add(r.get("industry"), "top3看多")
+        except Exception:  # noqa: BLE001 — 新增来源,坏 pack 不挡行业选择
+            pass
+    base = [i for i, tag in prov.items() if tag != "top3看多"][:k]
+    extra = [i for i in prov if prov[i] == "top3看多" and i not in base]
+    inds = base + extra
     return inds, {i: prov[i] for i in inds}
 
 

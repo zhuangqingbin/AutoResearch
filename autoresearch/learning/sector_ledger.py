@@ -42,7 +42,7 @@ def record_calls(scan_dir: Path | str, date: str, path: Path | str = LEDGER_PATH
     if not d.is_dir():
         return 0
     path = Path(path)
-    seen = {(c.get("date"), c.get("industry")) for c in _load(path)}
+    seen = {(c.get("date"), c.get("industry"), c.get("source", "brief")) for c in _load(path)}
     rows: list[dict] = []
     for p in sorted(d.glob("*.md")):
         try:
@@ -50,10 +50,27 @@ def record_calls(scan_dir: Path | str, date: str, path: Path | str = LEDGER_PATH
         except Exception:  # noqa: BLE001
             continue
         dirn = parse_direction(extract_view(text)) or parse_direction(text)
-        if not dirn or (date, p.stem) in seen:
+        if not dirn or (date, p.stem, "brief") in seen:
             continue
         rows.append({"date": date, "industry": p.stem, "direction": dirn,
                      "source": "brief", "realized_pct": None, "horizon": None})
+    if rows:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            for r in rows:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    return len(rows)
+
+
+def record_top3(date: str, industries: list[str], path: Path | str = LEDGER_PATH) -> int:
+    """P7 确定性 top3 → 看多 call(source=deterministic_top3,与 brief 分账;三元组幂等)。"""
+    if not industries:
+        return 0
+    path = Path(path)
+    seen = {(c.get("date"), c.get("industry"), c.get("source", "brief")) for c in _load(path)}
+    rows = [{"date": date, "industry": str(i), "direction": "看多",
+             "source": "deterministic_top3", "realized_pct": None, "horizon": None}
+            for i in industries if (date, str(i), "deterministic_top3") not in seen]
     if rows:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as f:
@@ -103,13 +120,16 @@ def render_report(calls: list[dict]) -> str:
         lines.append(f"> ⚠ 已成熟样本 {len(matured)} < 10 —— 只记账不下结论(薄样本先验比没有更坏)。\n")
     by_dir: dict[str, list[float]] = {}
     for c in matured:
-        by_dir.setdefault(str(c.get("direction", "—")), []).append(float(c["realized_pct"]))
+        # 聚合键 = 方向·来源(P7:deterministic_top3 与 brief 分账统计,不混池平均)。
+        by_dir.setdefault(f"{c.get('direction', '—')}·{c.get('source', 'brief')}",
+                          []).append(float(c["realized_pct"]))
     if by_dir:
-        lines += ["| 方向 | n | 中位已实现% | 命中率 |", "|---|---|---|---|"]
+        lines += ["| 方向·来源 | n | 中位已实现% | 命中率 |", "|---|---|---|---|"]
         for d, vals in sorted(by_dir.items()):
             med = statistics.median(vals)
-            hit = (sum(1 for v in vals if v > 0) / len(vals) if d == "看多"
-                   else sum(1 for v in vals if v < 0) / len(vals) if d == "看空" else None)
+            dirn = d.split("·", 1)[0]           # 命中率仍按纯方向判(键含来源后缀,先剥离)
+            hit = (sum(1 for v in vals if v > 0) / len(vals) if dirn == "看多"
+                   else sum(1 for v in vals if v < 0) / len(vals) if dirn == "看空" else None)
             lines.append(f"| {d} | {len(vals)} | {med:+.2f} | "
                          f"{'—' if hit is None else format(hit, '.0%')} |")
     pending = [c for c in calls if c.get("realized_pct") is None]

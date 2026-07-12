@@ -65,6 +65,7 @@ def test_render_report_discipline():
              {"date": DATE, "industry": "白酒", "direction": "中性", "realized_pct": None}]
     rpt = render_report(calls)
     assert "⚠ 已成熟样本 2 < 10" in rpt                       # 薄样本只记账不下结论
-    assert "| 看多 | 1 | +2.50 | 100% |" in rpt
-    assert "| 看空 | 1 | -1.00 | 100% |" in rpt               # 看空且跌 = 命中
+    assert "| 方向·来源 | n | 中位已实现% | 命中率 |" in rpt   # P7:聚合键改「方向·来源」(缺 source→brief)
+    assert "| 看多·brief | 1 | +2.50 | 100% |" in rpt
+    assert "| 看空·brief | 1 | -1.00 | 100% |" in rpt          # 看空且跌 = 命中(纯方向剥离后仍判对)
     assert "待成熟 1 条" in rpt

@@ -17,6 +17,12 @@ from autoresearch.common.regime import classify_regime
 
 _REGIME_ZH = {"trend": "趋势", "range": "震荡", "risk_off": "避险"}
 
+# ── P7:确定性看多行业 top3 带参(spec 2026-07-12-scan-speed-perimeter §P7)──
+_TOP3_MIN_N = 8            # 资格门①:成分数(剔 n=1 噪声行业)
+_TOP3_KNIFE = -20.0        # 资格门③:非落刀(60日中位)
+_TOP3_MOM_CENTER = 10.0    # 倒U 动量带中心
+_TOP3_MOM_HALF = 15.0      # 倒U 半宽
+
 
 def _num(df: pd.DataFrame, col: str) -> pd.Series:
     if col not in df.columns:
@@ -117,6 +123,7 @@ def market_pack(scan_dir: Path | str) -> dict:
             pack["breadth"] = _breadth(df)
             pack["valuation"] = _valuation(df)
             pack["money"] = _money(df)
+            pack["sector_healthy_top3"] = sector_healthy_top3(df)
     sec = scan_dir / "sectors.csv"
     if sec.exists():
         pack["sectors"] = _sectors(pd.read_csv(sec))
@@ -147,6 +154,92 @@ def _sectors_from_frame(df: pd.DataFrame, n: int = 5) -> dict | None:
     return _sectors(sec, n=n)
 
 
+# ───────────────────────── P7:确定性看多行业 top3(healthy 分 · 零 LLM) ─────────────────────────
+
+
+def sector_healthy_table(df: pd.DataFrame) -> pd.DataFrame | None:
+    """P7 行业级 healthy 组件表(spec 2026-07-12-scan-speed-perimeter §P7,零 LLM)。
+
+    资格门(先过门再排序):n≥_TOP3_MIN_N ∧ 资金门(主力净比中位>0 或 为正占比≥50%)∧
+    非落刀(60日中位>_TOP3_KNIFE)。过门行业按四组件 rank-sum 等权(score 越小越好):
+    资金(净比中位+为正占比)/ 健康占比(healthy_riser_mask 单一事实源)/ 估值(中位PE低+
+    PE>60 占比低)/ 动量(倒U:|中位60日−center|/half 越小越好——不追拥挤链不接刀)。
+    缺列/空帧 → None(presence-gated)。
+    """
+    need = ("industry", "pct_60d", "main_net_ratio", "cmf_20", "pe")
+    if df is None or not len(df) or not all(c in df.columns for c in need):
+        return None
+    from autoresearch.common.scoring import healthy_riser_mask
+    d = df.copy()
+    hm = healthy_riser_mask(d)
+    d["_healthy"] = hm.astype(float) if hm is not None else 0.0
+    d["_pe"], d["_mnr"], d["_p60"] = _num(d, "pe"), _num(d, "main_net_ratio"), _num(d, "pct_60d")
+    g = d.groupby(d["industry"].astype(str))
+
+    def _agg(fn):
+        return g.apply(fn).to_numpy()
+
+    t = pd.DataFrame({
+        "industry": list(g.size().index),
+        "n": g.size().to_numpy(),
+        "med_main_ratio": _agg(lambda s: float(s["_mnr"].median()) if s["_mnr"].notna().any() else float("nan")),
+        "main_pos": _agg(lambda s: float((s["_mnr"].dropna() > 0).mean()) if s["_mnr"].notna().any() else float("nan")),
+        "healthy_share": _agg(lambda s: float(s["_healthy"].mean())),
+        "med_pct_60d": _agg(lambda s: float(s["_p60"].median()) if s["_p60"].notna().any() else float("nan")),
+        "med_pe": _agg(lambda s: float(s.loc[s["_pe"] > 0, "_pe"].median()) if (s["_pe"] > 0).any() else float("nan")),
+        "pe_gt_60": _agg(lambda s: float((s.loc[s["_pe"] > 0, "_pe"] > 60).mean()) if (s["_pe"] > 0).any() else float("nan")),
+    })
+    t["qualified"] = ((t["n"] >= _TOP3_MIN_N)
+                      & ((t["med_main_ratio"] > 0) | (t["main_pos"] >= 0.5))
+                      & (t["med_pct_60d"] > _TOP3_KNIFE))
+    t["score"] = float("nan")
+    q = t[t["qualified"]]
+    if len(q):
+        comp = pd.DataFrame({
+            "fund": (q["med_main_ratio"].rank(ascending=False) + q["main_pos"].rank(ascending=False)) / 2,
+            "health": q["healthy_share"].rank(ascending=False),
+            "valuation": (q["med_pe"].rank(ascending=True) + q["pe_gt_60"].rank(ascending=True)) / 2,
+            "momentum": ((q["med_pct_60d"] - _TOP3_MOM_CENTER).abs() / _TOP3_MOM_HALF).rank(ascending=True),
+        })
+        t.loc[q.index, "score"] = comp.mean(axis=1)
+    return t.sort_values("score", na_position="last").reset_index(drop=True)
+
+
+def sector_healthy_top3(df: pd.DataFrame, k: int = 3) -> list[dict]:
+    """过门行业按 score 取前 k(不足 k 出几个是几个,宁缺毋滥);缺列 → []。"""
+    t = sector_healthy_table(df)
+    if t is None:
+        return []
+    out = []
+    for _, r in t[t["qualified"] & t["score"].notna()].head(k).iterrows():
+        out.append({"industry": r["industry"], "n": int(r["n"]),
+                    "med_main_ratio": _round(r["med_main_ratio"], 4),
+                    "main_pos": _round(r["main_pos"], 2),
+                    "healthy_share": _round(r["healthy_share"], 2),
+                    "med_pct_60d": _round(r["med_pct_60d"]),
+                    "med_pe": _round(r["med_pe"], 1),
+                    "pe_gt_60": _round(r["pe_gt_60"], 2)})
+    return out
+
+
+def render_sector_top3(pack: dict) -> str:
+    """L5 小节「🎯 看多行业 top3」(仅 L5 + sector_ledger;防锚定:不喂 L3/L4)。空 → ''。"""
+    rows = pack.get("sector_healthy_top3") or []
+    if not rows:
+        return ""
+    lines = ["## 🎯 看多行业 top3(确定性 healthy 分 · 零 LLM)",
+             "_资格门:n≥8 ∧ 资金门(主力净比中位>0 或 为正占比≥50%)∧ 非落刀(60日中位>−20%);"
+             "四组件 rank-sum 等权(资金/健康占比/估值/倒U动量,带参见 market.py 常量)。"
+             "无论点;证伪点 = 分数构成反转(资金转负/健康占比塌/进入拥挤带)。"
+             "只进 L5 与 sector_ledger(source=deterministic_top3),不喂 L3/L4。_", "",
+             "| # | 行业 | n | 主力净比中位 | 主力+占比 | 健康占比 | 60日中位% | 中位PE | PE>60占比 |",
+             "|---|---|---|---|---|---|---|---|---|"]
+    for i, r in enumerate(rows, 1):
+        lines.append(f"| {i} | {r['industry']} | {r['n']} | {r['med_main_ratio']} | {r['main_pos']} | "
+                     f"{r['healthy_share']} | {r['med_pct_60d']} | {r['med_pe']} | {r['pe_gt_60']} |")
+    return "\n".join(lines) + "\n"
+
+
 def market_pack_from_frame(frame: pd.DataFrame | None, date: str | None = None) -> dict:
     """帧入口(盘前 cron / Stage 0 宏观 lite,scan staging 尚不存在时)。零 LLM。
 
@@ -170,6 +263,7 @@ def market_pack_from_frame(frame: pd.DataFrame | None, date: str | None = None) 
     pack["valuation"] = _valuation(frame)
     pack["money"] = _money(frame)
     pack["sectors"] = _sectors_from_frame(frame)
+    pack["sector_healthy_top3"] = sector_healthy_top3(frame)
     return pack
 
 
