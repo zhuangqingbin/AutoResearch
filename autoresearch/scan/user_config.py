@@ -74,13 +74,19 @@ def _read_jsonc(p: Path):
 # l3:两遍法分诊(design 2026-07-12-l3-merge-plan.md Task 1)——two_pass/pass1_target 由
 # `l3_select.prepare_l3_table` 消费;finalist_max 由 merge v3 消费(`write_finalists` 已接线,
 # cap=min(finalist_max, budget))。
-_TOP_WHITELIST = {"agents", "l4_gate", "funnel", "pinned", "redteam_prob", "reuse", "l4_intel", "l3"}
+# learning:基率收缩估计(brainstorm 2026-07-12 §4 P0-3)——shrink/shrink_k 由
+# `autoresearch.learning.shrink.shrink_config` 消费,四消费点(l4_card.write_base_rates/
+# cross_calib.flip_stats/buy_ledger 的 target_calib/gate_ledger 的 tail_rate)各自读取。
+# 默认 shrink=true·shrink_k=15(新基线);本块是回滚杆,不是 opt-in。
+_TOP_WHITELIST = {"agents", "l4_gate", "funnel", "pinned", "redteam_prob", "reuse", "l4_intel", "l3",
+                  "learning"}
 _SUB_WHITELIST = {
     "funnel": {"recall_channels", "channel_quotas", "channel_floors"},
     "pinned": {"cap", "ttl_days"},
     "reuse": {"max_age_days", "price_delta_pct"},
     "l4_intel": {"enabled"},
     "l3": {"two_pass", "pass1_target", "finalist_max"},
+    "learning": {"shrink", "shrink_k"},
 }
 
 
@@ -123,7 +129,7 @@ def apply_to_scan_config(cfg: dict, sc: ScanConfig) -> ScanConfig:
             sc.channel_quotas = funnel["channel_quotas"]
         if "channel_floors" in funnel:
             sc.channel_floors = funnel["channel_floors"]
-    for key in ("agents", "l4_gate", "pinned", "redteam_prob", "reuse", "l4_intel", "l3"):
+    for key in ("agents", "l4_gate", "pinned", "redteam_prob", "reuse", "l4_intel", "l3", "learning"):
         if key in cfg:
             setattr(sc, key, cfg[key])
     return sc

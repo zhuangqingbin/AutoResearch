@@ -326,14 +326,19 @@ def _precedent_mark(base: Path, code6: str, sector, gate_hint: str | None = None
     return "\n".join(out)
 
 
+_BASE_RATE_THIN_N = 10   # ⚠ 薄样本阈值(既有 cross_calib/rating_base_rates min_n 惯例,镜像不新拍)
+
+
 def _base_rate_mark(base: Path, lane) -> str:
     """🔁 基率行(presence-gated:`_l4_base_rates.json`〔`write_base_rates` 产〕缺 → ""）。
 
     逐卡块内,拼 ≤3 项频率锚(brainstorm §5.2):该票 lane 的 L3→L4 高确信翻案率
     (`by_lane`,cross_calib.flip_stats)+ OW 评级历史 T+2 胜率/均值(`by_rating["Overweight"]`,
     buy_ledger 全库买单账;"过三门票" 的代理——rubric_rating 定义 OW 即三门皆过)。三项各自
-    独立 presence-gate(有则加,没有就跳),互不挡对方;n<10 已在 `write_base_rates` 写盘时
-    过滤掉,这里只管"有没有条目"。全部缺 → 整行不注(不加噪)。
+    独立 presence-gate(有则加,没有就跳),互不挡对方;n<3 已在 `write_base_rates` 写盘时
+    过滤掉(绝对禁注 floor,design 2026-07-12-selflearning-optimization-brainstorm.md §4
+    P0-3),这里只管"有没有条目"。数值本身是收缩估计,`n_tag` 按既有 ⚠ 阈值(=10)标薄样本
+    (双轨语义:门槛用硬 n,这里注入锚用收缩值+⚠提示,不再二值断供)。全部缺 → 整行不注。
     """
     p = Path(base) / "_l4_base_rates.json"
     if not p.exists():
@@ -343,17 +348,18 @@ def _base_rate_mark(base: Path, lane) -> str:
         data = json.loads(p.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001 — 基率可选,缺了不挡简报
         return ""
+    from autoresearch.learning.shrink import n_tag
     parts: list[str] = []
     lane_s = lane.strip() if isinstance(lane, str) and lane.strip() else None
     if lane_s:
         bl = (data.get("by_lane") or {}).get(lane_s)
         if bl and bl.get("flip_rate") is not None:
             parts.append(f"{lane_s} lane 高确信历史被 L4 翻案 "
-                        f"{bl['flip_rate']:.0%}(n={bl.get('n')})")
+                        f"{bl['flip_rate']:.0%}{n_tag(bl.get('n'), _BASE_RATE_THIN_N)}")
     ow = (data.get("by_rating") or {}).get("Overweight")
     if ow:
         if ow.get("win") is not None:
-            parts.append(f"OW 卡历史 T+2 胜率 {ow['win']:.0%}(n={ow.get('n')})")
+            parts.append(f"OW 卡历史 T+2 胜率 {ow['win']:.0%}{n_tag(ow.get('n'), _BASE_RATE_THIN_N)}")
         if ow.get("mean_fwd2") is not None:
             parts.append(f"OW 历史 T+2 均值 {ow['mean_fwd2']:+.1%}")
     if not parts:
@@ -364,13 +370,19 @@ def _base_rate_mark(base: Path, lane) -> str:
 def write_base_rates(scan_dir: Path | str, min_n: int = 10) -> Path | None:
     """L4 逐卡 🔁 基率锚落稿(presence-gated 消费方:`_base_rate_mark` 读此文件注入简报)。
 
-    从 `cross_calib.flip_stats`(近30 scan日,per lane 高确信翻案率,列 lane/n_hiconv/
-    flip_rate/thin)+ `buy_ledger.roll` → `rating_base_rates`(全库 ≥OW 买单 T+2 胜率/均值,
-    per rating)聚 `_l4_base_rates.json`:
+    从 `cross_calib.flip_stats`(近30 scan日,per lane 高确信翻案率**收缩估计**,列 lane/
+    n_hiconv/flip_rate/thin)+ `buy_ledger.roll` → `rating_base_rates`(全库 ≥OW 买单 T+2
+    胜率/均值,per rating,本函数对 `win2` 再收缩一次——`rating_base_rates` 本身仍回原始值,
+    供 `buy_ledger.md` 审计表按既有口径展示)聚 `_l4_base_rates.json`:
     `{"by_lane": {lane: {"n", "flip_rate"}}, "by_rating": {rating: {"n", "mean_fwd2", "win"}}}`。
-    两条数据源各自的 `thin` 判据(min_n=10,与 `flip_stats`/`rating_base_rates` 默认同阈值)
-    条目直接不写(⚠禁注惯例,与门校准/L3校准同款)。任一数据源缺失/异常 → 该侧降级空字典,
-    不挡另一侧、不挡落稿(mirror 本文件其余 `_xxx_mark` presence-gated 风格)。
+
+    收缩公式 p̂=(n·p_桶+k·p_全局)/(n+k)(design 2026-07-12-selflearning-optimization-
+    brainstorm.md §4 P0-3,C9-C12);n<3(`shrink.MIN_N_INJECT`)绝对禁注——`flip_stats` 已把
+    这条 floor 烤进它自己的 `flip_rate` 列(本函数只需再检查是否 NaN);`by_rating` 侧的
+    floor 在本函数内独立判(`n_realized<3` 剔除)。`min_n`(默认10)不再是排除门槛,只是
+    `rating_base_rates` 自己的 `thin` 标记阈值(供 `_base_rate_mark` 的 `n_tag` 沿用同一惯例)。
+    任一数据源缺失/异常 → 该侧降级空字典,不挡另一侧、不挡落稿(mirror 本文件其余 `_xxx_mark`
+    presence-gated 风格)。
 
     `scan_dir` = 当日 scan 目录(如 `context/scan/<date>`,与 `_l4_prompt_*.md` 同级);
     跨日统计的 `scan_root` 由 `scan_dir.parent` 反推(mirror `_target_calib_mark` 的
@@ -378,15 +390,18 @@ def write_base_rates(scan_dir: Path | str, min_n: int = 10) -> Path | None:
     `scan_root` 本身就是"逐日子目录的容器",不是再上一层的 `context/`)。两侧都空手(无
     现场)→ 不写垃圾空骨架,返回 None;presence-gated 消费方按文件是否存在处理,行为一致。
     """
+    from autoresearch.learning.shrink import MIN_N_INJECT, shrink as _shrink_fn, shrink_config
+
     scan_dir = Path(scan_dir)
     scan_root = scan_dir.parent
+    shrink_on, k = shrink_config()
 
     by_lane: dict = {}
     try:
         from autoresearch.learning import cross_calib
         flips = cross_calib.flip_stats(scan_root=scan_root, window=30)
         for r in flips.itertuples(index=False):
-            if bool(r.thin) or pd.isna(r.flip_rate):
+            if pd.isna(r.flip_rate):
                 continue
             by_lane[str(r.lane)] = {"n": int(r.n_hiconv), "flip_rate": float(r.flip_rate)}
     except Exception:  # noqa: BLE001 — L3 校准可选,缺了不挡落稿
@@ -396,10 +411,19 @@ def write_base_rates(scan_dir: Path | str, min_n: int = 10) -> Path | None:
     try:
         from autoresearch.learning import buy_ledger
         ledger = buy_ledger.roll(scan_root=scan_root)
+        f2_all = (pd.to_numeric(ledger["fwd_2"], errors="coerce").dropna()
+                 if "fwd_2" in ledger.columns else pd.Series(dtype=float))
+        p_global_win = float((f2_all > 0).mean()) if len(f2_all) else None
         for b in buy_ledger.rating_base_rates(ledger, min_n=min_n):
-            if b["thin"] or b["mean2"] is None or b["win2"] is None:
+            n = b["n_realized"]
+            if n < MIN_N_INJECT or b["mean2"] is None or b["win2"] is None:
                 continue
-            by_rating[b["rating"]] = {"n": b["n_realized"], "mean_fwd2": b["mean2"], "win": b["win2"]}
+            if shrink_on:
+                shrunk = _shrink_fn(b["win2"], n, p_global_win, k)
+                win = round(float(shrunk), 4) if shrunk is not None else b["win2"]
+            else:
+                win = b["win2"]
+            by_rating[b["rating"]] = {"n": n, "mean_fwd2": b["mean2"], "win": win}
     except Exception:  # noqa: BLE001 — 评级基率可选,缺了不挡落稿
         pass
 

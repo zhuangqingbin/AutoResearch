@@ -187,6 +187,30 @@ def test_l3_applies_to_scan_config():
     assert sc.l3 == {"two_pass": True, "pass1_target": 60, "finalist_max": 10}
 
 
+# ───────────────────────── learning:基率收缩估计新顶层键白名单 + 透传 ScanConfig(镜像 l3/l4_intel 三连) ─────────────────────────
+# spec: docs/specs/2026-07-12-selflearning-optimization-brainstorm.md §4 P0-3。
+
+
+def test_learning_whitelisted(tmp_path):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"learning": {"shrink": False, "shrink_k": 20}}), encoding="utf-8")
+    cfg = load_user_config(p)
+    assert cfg["learning"] == {"shrink": False, "shrink_k": 20}
+
+
+def test_learning_unknown_subkey_raises(tmp_path):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"learning": {"shrinkage": True}}), encoding="utf-8")   # 拼写错
+    with pytest.raises(ValueError, match="learning"):
+        load_user_config(p)
+
+
+def test_learning_applies_to_scan_config():
+    sc = ScanConfig()
+    apply_to_scan_config({"learning": {"shrink": True, "shrink_k": 15}}, sc)
+    assert sc.learning == {"shrink": True, "shrink_k": 15}
+
+
 # ───────────────────────── frame --json:user_config 回显 + run meta 落盘 ─────────────────────────
 
 

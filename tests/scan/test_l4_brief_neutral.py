@@ -84,16 +84,22 @@ def test_brief_still_has_risk_and_catalyst_lines(tmp_path):
 # ───────────────────────── write_base_rates ─────────────────────────
 
 
-def test_write_base_rates_thin_dropped(tmp_path, monkeypatch):
+def test_write_base_rates_below_floor_dropped(tmp_path, monkeypatch):
+    """`flip_stats` 已把 n_hiconv<3(MIN_N_INJECT)烤成 `flip_rate=None`(收缩波,design
+    2026-07-12-selflearning-optimization-brainstorm.md §4 P0-3)——本函数只需认 `flip_rate`
+    是否 NaN;旧 `thin`(n<10)标记不再是排除条件,只随行携带供 `_base_rate_mark` 标 ⚠。"""
     monkeypatch.setattr(
         "autoresearch.learning.cross_calib.flip_stats",
         lambda **k: pd.DataFrame([
             {"lane": "trend", "n_hiconv": 52, "flip_rate": 0.33, "thin": False},
-            {"lane": "value", "n_hiconv": 3, "flip_rate": 1.0, "thin": True}]))
+            {"lane": "value", "n_hiconv": 3, "flip_rate": 0.4, "thin": True},     # thin 但 ≥floor → 写
+            {"lane": "reversal", "n_hiconv": 2, "flip_rate": None, "thin": True}]))  # <floor → 不写
     p = l4_card.write_base_rates(tmp_path)
     data = json.loads(p.read_text(encoding="utf-8"))
-    assert "trend" in data["by_lane"] and "value" not in data["by_lane"]
+    assert "trend" in data["by_lane"] and "value" in data["by_lane"]
+    assert "reversal" not in data["by_lane"]
     assert data["by_lane"]["trend"] == {"n": 52, "flip_rate": 0.33}
+    assert data["by_lane"]["value"] == {"n": 3, "flip_rate": 0.4}
 
 
 def test_write_base_rates_no_data_returns_none(tmp_path, monkeypatch):
@@ -104,6 +110,42 @@ def test_write_base_rates_no_data_returns_none(tmp_path, monkeypatch):
     scan_dir.mkdir(parents=True)
     assert l4_card.write_base_rates(scan_dir) is None
     assert not (scan_dir / "_l4_base_rates.json").exists()
+
+
+def test_write_base_rates_shrinks_rating_win_rate(tmp_path, monkeypatch):
+    """by_rating 侧(评级基率)独立收缩:OW 历史 win2 向全库 pooled 胜率拉一把,
+    n_realized<3(MIN_N_INJECT)整条剔除;`rating_base_rates` 本身仍传回原始值(不改
+    buy_ledger.md 审计表口径),收缩只发生在 `write_base_rates` 这一注入点。"""
+    monkeypatch.setattr("autoresearch.learning.cross_calib.flip_stats",
+                        lambda **k: pd.DataFrame(columns=["lane", "n", "n_hiconv", "flip_rate", "thin"]))
+    monkeypatch.setattr("autoresearch.learning.buy_ledger.roll",
+                        lambda **k: pd.DataFrame({"fwd_2": [0.01] * 7 + [-0.01] * 3}))   # pooled win=0.7
+    monkeypatch.setattr(
+        "autoresearch.learning.buy_ledger.rating_base_rates",
+        lambda ledger, min_n=10: [
+            {"rating": "Overweight", "n": 5, "n_realized": 3, "mean2": 0.05,
+             "win2": 1.0, "win5": None, "mean5": None, "target_hit": None, "thin": True},
+            {"rating": "Buy", "n": 2, "n_realized": 2, "mean2": 0.02,
+             "win2": 1.0, "win5": None, "mean5": None, "target_hit": None, "thin": True}])
+    p = l4_card.write_base_rates(tmp_path)
+    data = json.loads(p.read_text(encoding="utf-8"))
+    assert "Buy" not in data["by_rating"]          # n_realized=2<3 → 绝对禁注
+    ow = data["by_rating"]["Overweight"]
+    assert ow["n"] == 3
+    # shrink(1.0, 3, 0.7, k=15) = (3*1.0+15*0.7)/18 = 0.75
+    assert abs(ow["win"] - 0.75) < 1e-6
+    assert ow["win"] < 1.0                          # 收缩后必然偏离原始 100%(证明真收缩发生)
+
+
+def test_base_rate_mark_flags_thin_lane_with_warning(tmp_path):
+    """⚠ 标记随 n_tag 按既有阈值(=10)判:n<10 加 ⚠,n>=10 不加——四消费点共享统一格式。"""
+    scan_dir = _make_funnel_dir(tmp_path)      # finalists lane = trend
+    (scan_dir / "_l4_base_rates.json").write_text(
+        json.dumps({"by_lane": {"trend": {"n": 5, "flip_rate": 0.4}}, "by_rating": {}}),
+        encoding="utf-8")
+    text = l4_card.compose_funnel_brief("000001", scan_dir)
+    line = text.split("🔁 基率")[1].split("\n")[0]
+    assert "(n=5⚠)" in line
 
 
 # ───────────────────────── 逐卡 🔁 基率注入(presence-gated) ─────────────────────────

@@ -15,11 +15,25 @@ from pathlib import Path
 
 import pandas as pd
 
-_COLS = ["check", "n_days", "n_fires", "mean_ex1", "mean_ex2", "mean_ex5", "hit_rate", "tail_rate"]
+from autoresearch.learning.shrink import MIN_N_INJECT, n_tag, shrink as _shrink_fn, shrink_config
+
+_COLS = ["check", "n_days", "n_fires", "mean_ex1", "mean_ex2", "mean_ex5", "hit_rate",
+         "tail_rate", "tail_n", "tail_rate_raw"]
+_TAIL_THIN_N = 5   # 既有 render() "⚠样本少"阈值(n_fires<5);tail_rate 的 ⚠ 沿用同一数字,测的是 tail_n
 
 
-def roll(scan_root: Path | None = None) -> pd.DataFrame:
-    """聚合 context/scan/*/{gate_fires.csv × retro/attribution.csv} → 每门跨日汇总。"""
+def roll(scan_root: Path | None = None, shrink: bool | None = None,
+        k: float | None = None) -> pd.DataFrame:
+    """聚合 context/scan/*/{gate_fires.csv × retro/attribution.csv} → 每门跨日汇总。
+
+    `tail_rate` 是**收缩估计**(design 2026-07-12-selflearning-optimization-brainstorm.md
+    §4 P0-3,C9-C12——spec 原文点名此处"现 n=2-3 天最急需"):p̂=(n·p_门+k·p_全局)/(n+k),
+    `p_全局`=全部门池化左尾率,`n`=`tail_n`(该门 `fwd2_raw` 非空观测数——денominator 与
+    `n_fires` 可能不同:未成熟票 fwd_2_oc 尚缺时计入 n_fires 但不计入 tail_n)。`tail_n`<3
+    (`shrink.MIN_N_INJECT`)→ `tail_rate=None`(绝对禁注,不受 `shrink` 开关影响)。
+    `tail_rate_raw` 保留原始比例供审计/回放对照,不收缩。`shrink`/`k` 缺省 → 读
+    `scan_config.json` 的 `learning.{shrink,shrink_k}`。
+    """
     scan_root = Path(scan_root or "context/scan")
     rows = []
     for gf in sorted(scan_root.glob("*/gate_fires.csv")):
@@ -59,10 +73,30 @@ def roll(scan_root: Path | None = None) -> pd.DataFrame:
         n_days=("date", "nunique"), n_fires=("code", "size"),
         mean_ex1=("ex1", "mean"), mean_ex2=("ex2", "mean"), mean_ex5=("ex5", "mean"),
         hit_rate=("ex2", lambda s: float((s.dropna() < 0).mean()) if s.notna().any() else None),
-        tail_rate=("fwd2_raw", lambda s: float((s.dropna() <= -0.05).mean()) if s.notna().any() else None),
+        tail_n=("fwd2_raw", lambda s: int(s.notna().sum())),
+        tail_rate_raw=("fwd2_raw", lambda s: float((s.dropna() <= -0.05).mean()) if s.notna().any() else None),
     ).reset_index()
-    for c in ("mean_ex1", "mean_ex2", "mean_ex5", "hit_rate", "tail_rate"):
+    for c in ("mean_ex1", "mean_ex2", "mean_ex5", "hit_rate", "tail_rate_raw"):
         out[c] = pd.to_numeric(out[c], errors="coerce").round(4)
+
+    if shrink is None or k is None:
+        cfg_on, cfg_k = shrink_config()
+        shrink = cfg_on if shrink is None else shrink
+        k = cfg_k if k is None else k
+    fwd2_all = pd.to_numeric(alld["fwd2_raw"], errors="coerce").dropna()
+    p_global = float((fwd2_all <= -0.05).mean()) if len(fwd2_all) else None
+
+    def _tail(row):
+        n = row["tail_n"]
+        raw = row["tail_rate_raw"]
+        if n < MIN_N_INJECT or raw is None or pd.isna(raw):
+            return None
+        if not shrink:
+            return raw
+        v = _shrink_fn(raw, n, p_global, k)
+        return round(float(v), 4) if v is not None else raw
+
+    out["tail_rate"] = pd.to_numeric(out.apply(_tail, axis=1), errors="coerce")
     return out.sort_values("n_fires", ascending=False).reset_index(drop=True)
 
 
@@ -79,7 +113,7 @@ def render(ledger: pd.DataFrame) -> list[str]:
     for r in ledger.itertuples(index=False):
         thin = " ⚠样本少" if (r.n_fires or 0) < 5 else ""
         hr = "—" if pd.isna(r.hit_rate) else f"{r.hit_rate:.0%}"
-        tr = "—" if pd.isna(r.tail_rate) else f"{r.tail_rate:.0%}"
+        tr = "—" if pd.isna(r.tail_rate) else f"{r.tail_rate:.0%}{n_tag(r.tail_n, _TAIL_THIN_N)}"
         out.append(f"| {r.check}{thin} | {int(r.n_days)} | {int(r.n_fires)} | "
                    f"{f(r.mean_ex1)} | {f(r.mean_ex2)} | {f(r.mean_ex5)} | {hr} | {tr} |")
     out += ["", "_某门持续 ex>0 → 提松阈/退役建议(proposals,人批);别让门无问责地累积。_"]

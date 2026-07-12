@@ -7,8 +7,12 @@ design: docs/specs/2026-07-05-scan-metering-calibration-wave-design.md §7
 L3 校准块旁);② **rubric 门柱级拦对/错杀**(binding gate = 唯一✗门 × attribution 前向,
 机会成本红队的确定性对账面;口径对齐 gate_ledger:ex = 被拦票 fwd − 全市场均值,主口径 T+2
 (ex2<0=拦对,错杀 = ex2>0 且触价命中卡内目标——日期分界:v3 起 hi_2_oc,旧卡 hi_10_oc;
-ex5 保留供参考)。**校准不改门/权重/评级**——只给判断层"你自己的历史倾向"数字;
-n<min_n thin 禁注。
+ex5 保留供参考)。**校准不改门/权重/评级**——只给判断层"你自己的历史倾向"数字。
+
+`flip_stats` 的 `flip_rate` 是**收缩估计**(design 2026-07-12-selflearning-optimization-
+brainstorm.md §4 P0-3,C9-C12):p̂=(n·p_桶+k·p_全局)/(n+k),n_hiconv<3(`shrink.MIN_N_INJECT`)
+仍绝对禁注(`flip_rate=None`);`min_n`(默认10)降级为 ⚠ 薄样本标记,不再是排除门槛——
+裁决门槛(改不改机制)与注入锚(此处)双轨语义不混,见 brainstorm §4 排序原则。
 
   uv run --no-sync python -m autoresearch.learning.cross_calib  # → reports/learning/cross_calib.md
 """
@@ -17,6 +21,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
+
+from autoresearch.learning.shrink import MIN_N_INJECT, n_tag, shrink as _shrink_fn, shrink_config
 
 _FLIP_COLS = ["lane", "n", "n_hiconv", "flip_rate", "triage_n", "triage_hit", "thin"]
 _GATE_COLS = ["gate", "n_blocked", "n_realized", "mean_ex2", "mean_ex5", "block_ok_rate",
@@ -34,8 +40,17 @@ def _days(scan_root: Path | str | None, window: int) -> list[Path]:
 
 
 def flip_stats(scan_root: Path | str | None = None, window: int = 30,
-               min_n: int = 10) -> pd.DataFrame:
-    """L3_judged × L4 最终评级(verify 折回后)→ 每 lane 高确信翻案率。无卡行不入分母。"""
+               min_n: int = 10, shrink: bool | None = None,
+               k: float | None = None) -> pd.DataFrame:
+    """L3_judged × L4 最终评级(verify 折回后)→ 每 lane 高确信翻案率。无卡行不入分母。
+
+    `flip_rate` = 收缩估计 p̂=(n·p_桶+k·p_全局)/(n+k)(`p_全局` = 全部 lane 池化的高确信
+    翻案率)。`shrink`/`k` 缺省(`None`)→ 读 `scan_config.json` 的 `learning.{shrink,shrink_k}`
+    (缺配置 → shrink=True,k=15 新基线);显式传参可覆盖(供测试/回放用)。n_hiconv<3
+    (`shrink.MIN_N_INJECT`)→ `flip_rate=None`,不受 `shrink`/`k` 影响(绝对禁注)。
+    `thin`(n_hiconv<`min_n`,默认10)只是 ⚠ 薄样本标记,不再是排除条件——双轨语义:
+    `min_n` 仍是"这一行数据薄不薄"的既有阈值文化,`MIN_N_INJECT` 才是"还展不展示"的硬 floor。
+    """
     from autoresearch.scan.health import final_ratings  # lazy 防环
     rows = []
     for d in _days(scan_root, window):
@@ -55,16 +70,35 @@ def flip_stats(scan_root: Path | str | None = None, window: int = 30,
         return pd.DataFrame(columns=_FLIP_COLS)
     matched = pd.concat(rows, ignore_index=True)
     matched = matched[matched["final"].notna()]
+
+    if shrink is None or k is None:
+        cfg_on, cfg_k = shrink_config()
+        shrink = cfg_on if shrink is None else shrink
+        k = cfg_k if k is None else k
+
+    conv_all = pd.to_numeric(matched.get("conviction"), errors="coerce")
+    hi_all = matched[conv_all >= _HICONV]
+    p_global = float(hi_all["final"].isin(_LOW).mean()) if len(hi_all) else None
+
     out = []
     for lane, g in matched.groupby("lane"):
         conv = pd.to_numeric(g.get("conviction"), errors="coerce")
         hi = g[conv >= _HICONV]
         tg = g[g["triage_lean"] == "回避"] if "triage_lean" in g.columns else g.iloc[0:0]
-        out.append({"lane": lane, "n": len(g), "n_hiconv": len(hi),
-                    "flip_rate": round(float(hi["final"].isin(_LOW).mean()), 3) if len(hi) else None,
+        n_hi = len(hi)
+        raw = float(hi["final"].isin(_LOW).mean()) if n_hi else None
+        if raw is None or n_hi < MIN_N_INJECT:
+            flip_rate = None
+        elif shrink:
+            shrunk = _shrink_fn(raw, n_hi, p_global, k)
+            flip_rate = round(float(shrunk), 3) if shrunk is not None else None
+        else:
+            flip_rate = round(raw, 3)
+        out.append({"lane": lane, "n": len(g), "n_hiconv": n_hi,
+                    "flip_rate": flip_rate,
                     "triage_n": len(tg),
                     "triage_hit": round(float(tg["final"].isin(_LOW).mean()), 3) if len(tg) else None,
-                    "thin": len(hi) < min_n})
+                    "thin": n_hi < min_n})
     return (pd.DataFrame(out, columns=_FLIP_COLS)
             .sort_values("n_hiconv", ascending=False).reset_index(drop=True))
 
@@ -137,18 +171,22 @@ def gate_stats(scan_root: Path | str | None = None, window: int = 30,
 
 def suggestion_lines(flips: pd.DataFrame, gates: pd.DataFrame,
                      min_n: int = 10) -> list[str]:
-    """两条建议行(编排层手贴:🔁 → L3 校准块旁;🚪 → skeptic/PM 先验旁);thin → 禁注。"""
+    """两条建议行(编排层手贴:🔁 → L3 校准块旁;🚪 → skeptic/PM 先验旁);thin → 禁注。
+
+    🔁 行:`flip_stats` 已把 `flip_rate` 收缩且 n_hiconv<3 禁注(`flip_rate=None`),本函数
+    只挑 flip_rate 最高的 lane 报一行,`(n=X)` 尾标经 `n_tag` 按 `min_n` 判 ⚠(P0-3:薄样本
+    不再二值排除,只标记)。全体 lane 皆 `flip_rate` 缺失(即全 <3)才落回"先积累"占位文案。
+    """
     lines: list[str] = []
     if flips is not None and len(flips):
-        ok = flips[(pd.to_numeric(flips["n_hiconv"], errors="coerce") >= min_n)
-                   & flips["flip_rate"].notna()]
+        ok = flips[flips["flip_rate"].notna()]
         if len(ok):
             w = ok.sort_values("flip_rate", ascending=False).iloc[0]
             lines.append(f"🔁 L3校准:{w['lane']} lane 高确信(conviction≥{_HICONV})被 L4 "
-                         f"翻案 {w['flip_rate']:.0%}(n={int(w['n_hiconv'])})"
+                         f"翻案 {w['flip_rate']:.0%}{n_tag(w['n_hiconv'], min_n)}"
                          f"——该 lane 论点请先自证翻案主因")
         else:
-            lines.append(f"🔁 L3校准:各 lane 高确信样本 <{min_n} ⚠样本少·禁注,先积累")
+            lines.append(f"🔁 L3校准:各 lane 高确信样本 <{MIN_N_INJECT} ⚠样本少·禁注,先积累")
     if gates is not None and len(gates):
         ok = gates[(pd.to_numeric(gates["n_blocked"], errors="coerce") >= min_n)
                    & gates["misskill_rate"].notna()]

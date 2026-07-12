@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.learning.shrink import MIN_N_INJECT, n_tag, shrink as _shrink_fn, shrink_config
+
 _COLS = ["date", "code", "name", "rating", "gap_open", "fwd_1", "fwd_2", "fwd_5", "fwd_10",
          "hi_10", "hi_2", "target_ret", "target_hit"]
 _TARGET_RE = re.compile(r"(\d+(?:\.\d+)?)")
@@ -186,16 +188,23 @@ def calibration_line(stats: dict | None) -> str | None:
 # ---------------- 目标价 hi_2_oc 基率锚(全 universe 分布,非仅买单;task-6-brief) ----------------
 
 
-def hi2_calibration(scan_root: Path | str | None = None, window: int = 30) -> dict:
+def hi2_calibration(scan_root: Path | str | None = None, window: int = 30,
+                    shrink: bool | None = None, k: float | None = None) -> dict:
     """全 universe(非仅买单)`hi_2_oc` 分布基率锚:近 window 个 scan 日 attribution.csv 全量
     `hi_2_oc` 有值行 concat,按当日 `meta.json` 的 regime 分组(缺文件/缺键该日只进 all,
     不进分组)。分位用 `series.quantile(0.5/0.6)`;`touch8_rate` = hi_2_oc≥8% 占比(即"旧
     中位目标在 2 日窗的真实触达率")。
 
     动机:全卡目标触达 43%、中位目标 +8% vs 中位 MFE +4% = 目标价系统性 2× 过乐观。本函数
-    给 L4 卡目标价一个**基于真实 2 日 MFE 分布**的基率锚(p60),而非拍脑袋。`by_regime`
-    分组 n<`_HI2_MIN_N` 直接丢弃(⚠禁注惯例);`all` 组恒返回(即便 n=0/n<阈值),是否
-    据此注入简报由调用方 `target_calib_line` 按同一阈值把关。
+    给 L4 卡目标价一个**基于真实 2 日 MFE 分布**的基率锚(p60),而非拍脑袋。
+
+    `by_regime` 的 `touch8_rate` 是**收缩估计**(design 2026-07-12-selflearning-optimization-
+    brainstorm.md §4 P0-3,C9-C12):p̂=(n·p_regime+k·p_all)/(n+k),`p_all`=`all` 组的
+    `touch8_rate`。`shrink`/`k` 缺省 → 读 `scan_config.json` 的 `learning.{shrink,shrink_k}`。
+    regime 分组 n<3(`shrink.MIN_N_INJECT`)仍绝对丢弃(禁注 floor,不受 `shrink` 开关影响);
+    n∈[3,`_HI2_MIN_N`) 现在会出现(`thin=True` 标记),不再二值断供。`hi2_p50`/`hi2_p60`
+    (分位,非"率")本函数不收缩,原始值不变。`all` 组恒返回(即便 n=0),是否据此注入简报由
+    调用方 `target_calib_line` 按 `min_n` 把关。
     """
     scan_root = Path(scan_root or "context/scan")
     days: list[Path] = []
@@ -232,8 +241,26 @@ def hi2_calibration(scan_root: Path | str | None = None, window: int = 30) -> di
         if regime:
             regime_vals.setdefault(str(regime), []).extend(vals)
 
-    by_regime = {r: _stats(v) for r, v in regime_vals.items() if len(v) >= _HI2_MIN_N}
-    return {"all": _stats(all_vals), "by_regime": by_regime}
+    all_stats = _stats(all_vals)
+    p_global = all_stats.get("touch8_rate")
+    if shrink is None or k is None:
+        cfg_on, cfg_k = shrink_config()
+        shrink = cfg_on if shrink is None else shrink
+        k = cfg_k if k is None else k
+
+    by_regime: dict = {}
+    for r, v in regime_vals.items():
+        st = _stats(v)
+        n = st["n"]
+        if n < MIN_N_INJECT:
+            continue                                   # 绝对禁注 floor,不受 shrink 开关影响
+        raw = st["touch8_rate"]
+        if shrink and raw is not None:
+            shrunk = _shrink_fn(raw, n, p_global, k)
+            st["touch8_rate"] = round(float(shrunk), 4) if shrunk is not None else raw
+        st["thin"] = n < _HI2_MIN_N
+        by_regime[r] = st
+    return {"all": all_stats, "by_regime": by_regime}
 
 
 def write_target_calib(scan_root: Path | str | None = None, window: int = 30,
@@ -254,7 +281,8 @@ def target_calib_line(calib: dict | None, regime: str | None,
                       min_n: int = _HI2_MIN_N) -> str | None:
     """L4 逐卡块 📐 行(`hi_2_oc` 全 universe 分布基率锚)。presence-gated:全体 n<min_n →
     None(⚠禁注惯例,整行不注);同 regime 分组若在 `by_regime` 出现(`hi2_calibration` 已按
-    `_HI2_MIN_N` 过滤)才追加第二段,否则只报全体。
+    `MIN_N_INJECT`=3 过滤,n<10 仍会出现但 `n_tag` 标 ⚠)才追加第二段(p60 + 收缩后
+    `touch8_rate`),否则只报全体。
     """
     if not calib:
         return None
@@ -268,7 +296,9 @@ def target_calib_line(calib: dict | None, regime: str | None,
     line += f"·+8%目标历史触达 {t8:.0%})" if t8 is not None else ")"
     rg = (calib.get("by_regime") or {}).get(regime) if regime else None
     if rg and rg.get("hi2_p60") is not None:
-        line += f"·同 regime p60={rg['hi2_p60']:+.1%}(n={rg['n']})"
+        line += f"·同 regime p60={rg['hi2_p60']:+.1%}{n_tag(rg['n'], min_n)}"
+        if rg.get("touch8_rate") is not None:
+            line += f"·触达率{rg['touch8_rate']:.0%}"
     return line + "——目标价超 p60 须在卡内给硬理由"
 
 

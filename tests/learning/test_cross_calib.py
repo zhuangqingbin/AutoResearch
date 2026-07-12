@@ -48,22 +48,76 @@ def test_gate_status_shared_parser():
 
 
 def test_flip_stats_per_lane(tmp_path):
-    """高确信翻案率:conviction≥70 且 L4 ≤UW = 翻案;低确信/无卡行不入分母。"""
+    """高确信翻案率:conviction≥70 且 L4 ≤UW = 翻案;低确信/无卡行不入分母。
+
+    吸筹 lane 凑 4 个高确信观测(≥MIN_N_INJECT=3 才不禁注);因全表只有吸筹 lane 有高确信
+    观测,桶=全局池 → 收缩值恒等于原始值(shrink(p,n,p,k)==p),此用例仍验证"原始翻案率算对"。
+    """
     from autoresearch.learning.cross_calib import flip_stats
     _mk_day(tmp_path, "2026-07-01",
             cards=[("000001", "Underweight", ("✓", "✗", "✓"), 0.0, 0.0),
-                   ("000002", "Hold", ("✓", "✓", "✓"), 0.0, 0.0)],
+                   ("000002", "Hold", ("✓", "✓", "✓"), 0.0, 0.0),
+                   ("000005", "Underweight", ("✓", "✗", "✓"), 0.0, 0.0),
+                   ("000006", "Hold", ("✓", "✓", "✓"), 0.0, 0.0)],
             judged=[{"code": "000001", "lane": "吸筹", "conviction": 80, "triage_lean": "看多"},
                     {"code": "000002", "lane": "吸筹", "conviction": 75, "triage_lean": "看多"},
+                    {"code": "000005", "lane": "吸筹", "conviction": 85, "triage_lean": "看多"},
+                    {"code": "000006", "lane": "吸筹", "conviction": 90, "triage_lean": "看多"},
                     {"code": "000003", "lane": "吸筹", "conviction": 90, "triage_lean": "看多"},  # 无卡
                     {"code": "000002", "lane": "趋势", "conviction": 50, "triage_lean": "回避"}])
     df = flip_stats(tmp_path, min_n=1)
     row = df[df["lane"] == "吸筹"].iloc[0]
-    assert row["n_hiconv"] == 2                # 000003 无卡不入分母
-    assert abs(row["flip_rate"] - 0.5) < 1e-9  # 000001 UW 翻案 / 000002 Hold 未翻
+    assert row["n_hiconv"] == 4                # 000003 无卡不入分母
+    assert abs(row["flip_rate"] - 0.5) < 1e-9  # 000001/000005 UW 翻案,000002/000006 Hold 未翻
     assert not row["thin"]
     trend = df[df["lane"] == "趋势"].iloc[0]
     assert trend["n_hiconv"] == 0 and (trend["flip_rate"] is None or pd.isna(trend["flip_rate"]))
+
+
+def test_flip_stats_below_floor_is_none_even_with_low_min_n(tmp_path):
+    """n_hiconv<3(MIN_N_INJECT)→ flip_rate=None,不受 `min_n` 参数(⚠标记阈值)影响——
+    双轨语义:min_n 只管 thin 标记,3 是绝对 floor,与旧版"min_n 调到 1 就能看见"行为不同。"""
+    from autoresearch.learning.cross_calib import flip_stats
+    _mk_day(tmp_path, "2026-07-01",
+            cards=[("000001", "Underweight", ("✓", "✗", "✓"), 0.0, 0.0)],
+            judged=[{"code": "000001", "lane": "吸筹", "conviction": 80, "triage_lean": "看多"}])
+    df = flip_stats(tmp_path, min_n=1)
+    row = df[df["lane"] == "吸筹"].iloc[0]
+    assert row["n_hiconv"] == 1
+    assert row["flip_rate"] is None or pd.isna(row["flip_rate"])
+
+
+def test_flip_stats_shrinks_toward_pooled_global(tmp_path):
+    """两 lane 场景:桶≠全局 时收缩值应落在原始桶值与全局值之间(真实拉力验证)。"""
+    from autoresearch.learning.cross_calib import flip_stats
+    cards = [(f"{i:06d}", "Underweight" if i < 4 else "Hold", ("✓", "✗", "✓"), 0.0, 0.0)
+             for i in range(1, 7)]          # 000001-3 = UW(翻案),000004-6 = Hold(未翻)
+    judged = ([{"code": f"{i:06d}", "lane": "吸筹", "conviction": 80, "triage_lean": "看多"}
+               for i in range(1, 4)]                                   # 吸筹:3 翻/3 = 100%
+              + [{"code": f"{i:06d}", "lane": "趋势", "conviction": 80, "triage_lean": "看多"}
+                 for i in range(4, 7)])                                # 趋势:0 翻/3 = 0%
+    _mk_day(tmp_path, "2026-07-01", cards=cards, judged=judged)
+    df = flip_stats(tmp_path, min_n=1, shrink=True, k=15).set_index("lane")
+    # p_global = 3/6 = 0.5;吸筹 raw=1.0 收缩后应 <1.0 且 >0.5;趋势 raw=0.0 收缩后应 >0.0 且 <0.5
+    assert 0.5 < df.loc["吸筹", "flip_rate"] < 1.0
+    assert 0.0 < df.loc["趋势", "flip_rate"] < 0.5
+    expect_xi = (3 * 1.0 + 15 * 0.5) / (3 + 15)
+    assert abs(df.loc["吸筹", "flip_rate"] - round(expect_xi, 3)) < 1e-6
+
+
+def test_flip_stats_shrink_false_returns_raw(tmp_path):
+    """shrink=False → 原始桶值(回滚开关)。"""
+    from autoresearch.learning.cross_calib import flip_stats
+    cards = [(f"{i:06d}", "Underweight" if i < 4 else "Hold", ("✓", "✗", "✓"), 0.0, 0.0)
+             for i in range(1, 7)]
+    judged = ([{"code": f"{i:06d}", "lane": "吸筹", "conviction": 80, "triage_lean": "看多"}
+               for i in range(1, 4)]
+              + [{"code": f"{i:06d}", "lane": "趋势", "conviction": 80, "triage_lean": "看多"}
+                 for i in range(4, 7)])
+    _mk_day(tmp_path, "2026-07-01", cards=cards, judged=judged)
+    df = flip_stats(tmp_path, min_n=1, shrink=False).set_index("lane")
+    assert abs(df.loc["吸筹", "flip_rate"] - 1.0) < 1e-9
+    assert abs(df.loc["趋势", "flip_rate"] - 0.0) < 1e-9
 
 
 def test_gate_stats_binding_misskill(tmp_path):
@@ -96,14 +150,38 @@ def test_render_and_suggestion_lines(tmp_path):
     assert "翻案" in md and "门柱" in md                       # 空表也有骨架
     assert suggestion_lines(flip_stats(tmp_path / "nx"), gate_stats(tmp_path / "nx")) == []
     _mk_day(tmp_path, "2026-07-01",
-            cards=[("000001", "Underweight", ("✓", "✗", "✓"), 0.20, 0.25)],
-            judged=[{"code": "000001", "lane": "吸筹", "conviction": 80, "triage_lean": "看多"}],
+            cards=[("000001", "Underweight", ("✓", "✗", "✓"), 0.20, 0.25),
+                   ("000004", "Underweight", ("✓", "✗", "✓"), 0.20, 0.25),
+                   ("000005", "Underweight", ("✓", "✗", "✓"), 0.20, 0.25),
+                   ("000006", "Underweight", ("✓", "✗", "✓"), 0.20, 0.25)],
+            judged=[{"code": "000001", "lane": "吸筹", "conviction": 80, "triage_lean": "看多"},
+                    {"code": "000004", "lane": "吸筹", "conviction": 82, "triage_lean": "看多"},
+                    {"code": "000005", "lane": "吸筹", "conviction": 88, "triage_lean": "看多"},
+                    {"code": "000006", "lane": "吸筹", "conviction": 91, "triage_lean": "看多"}],
             attr_extra=(0.0,))
     flips, gates = flip_stats(tmp_path, min_n=1), gate_stats(tmp_path, min_n=1)
     lines = suggestion_lines(flips, gates, min_n=1)
     assert any("吸筹" in ln and "翻案" in ln for ln in lines)
     assert any("业绩真兑现" in ln for ln in lines)
-    thin = suggestion_lines(flip_stats(tmp_path), gate_stats(tmp_path), min_n=10)
-    assert all("禁注" in ln for ln in thin) and thin           # thin → 禁注文案
+
+    # min_n=10(既有 ⚠ 阈值):n_hiconv=4 仍 ≥MIN_N_INJECT(3)→ 不再二值禁注,只加 ⚠ 标记
+    # ——P0-3 修的正是这条"断流":旧版这里 🔁 行会整行退化成"先积累"占位文案。
+    mixed = suggestion_lines(flip_stats(tmp_path), gate_stats(tmp_path), min_n=10)
+    flip_line = next(ln for ln in mixed if ln.startswith("🔁"))
+    assert "吸筹" in flip_line and "⚠" in flip_line and "禁注" not in flip_line
+    gate_line = next(ln for ln in mixed if ln.startswith("🚪"))
+    assert "禁注" in gate_line          # 门柱侧(cross_calib.gate_stats)样本仍 <10,本任务不改其阈值语义
+
     md = "\n".join(render(flips, gates))
     assert "吸筹" in md and "业绩真兑现" in md
+
+
+def test_suggestion_lines_flip_all_below_floor_falls_back_to_placeholder(tmp_path):
+    """全部 lane 的高确信样本 <MIN_N_INJECT(=3)→ 🔁 行仍是"先积累"占位文案(真无信息可报)。"""
+    from autoresearch.learning.cross_calib import flip_stats, gate_stats, suggestion_lines
+    _mk_day(tmp_path, "2026-07-01",
+            cards=[("000001", "Underweight", ("✓", "✗", "✓"), 0.0, 0.0)],
+            judged=[{"code": "000001", "lane": "吸筹", "conviction": 80, "triage_lean": "看多"}])
+    lines = suggestion_lines(flip_stats(tmp_path, min_n=1), gate_stats(tmp_path, min_n=1), min_n=1)
+    flip_line = next(ln for ln in lines if ln.startswith("🔁"))
+    assert "禁注" in flip_line
