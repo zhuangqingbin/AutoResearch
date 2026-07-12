@@ -194,3 +194,45 @@ def test_default_today_uses_compact_date(lake, monkeypatch):
     fetch = _Counter(_daily_row())
     cache.get_or_fetch("daily", {"trade_date": "20200101"}, fetch=fetch)
     assert cache.lake_path("daily", {"trade_date": "20200101"}).exists()
+
+
+# ───────────────────── LAKE_ASSUME_SETTLED 结算豁免(2026-07-12,P1a) ─────────────────────
+#
+# `date` 键端点默认对 `d >= today`(盘中未结算)一律"拉新但不写",预热当天数据永远进不了湖。
+# `LAKE_ASSUME_SETTLED=1` 开一条窄缝:仅当 `d == today` 才视为已结算放行入湖(19:15 后 EOD 已
+# 发布,契约 min_rows 仍兜底);`d > today`(未来日)任何情况恒拒写;env 未设 = 现行为逐字节不变。
+
+
+def test_lake_assume_settled_writes_same_day(tmp_path, monkeypatch):
+    import autoresearch.data.cache as cache
+    monkeypatch.setattr(cache, "LAKE", tmp_path)
+    monkeypatch.setenv("LAKE_ASSUME_SETTLED", "1")
+    df = pd.DataFrame({"ts_code": [f"{i:06d}.SZ" for i in range(3100)],
+                       "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0,
+                       "amount": 1.0, "pct_chg": 0.0})
+    out = cache.get_or_fetch("daily", {"trade_date": "20260710"}, today="2026-07-10",
+                             fetch=lambda ep, p: df)
+    assert len(out) == 3100
+    assert (tmp_path / "daily" / "20260710.parquet").exists()      # 同日入湖(豁免生效)
+
+
+def test_lake_assume_settled_never_writes_future(tmp_path, monkeypatch):
+    import autoresearch.data.cache as cache
+    monkeypatch.setattr(cache, "LAKE", tmp_path)
+    monkeypatch.setenv("LAKE_ASSUME_SETTLED", "1")
+    df = pd.DataFrame({"ts_code": ["000001.SZ"], "open": [1.0], "high": [1.0],
+                       "low": [1.0], "close": [1.0], "amount": [1.0], "pct_chg": [0.0]})
+    cache.get_or_fetch("top_list", {"trade_date": "20260711"}, today="2026-07-10",
+                       fetch=lambda ep, p: df)
+    assert not (tmp_path / "top_list" / "20260711.parquet").exists()   # 未来日恒不写
+
+
+def test_no_env_same_day_not_written(tmp_path, monkeypatch):
+    import autoresearch.data.cache as cache
+    monkeypatch.setattr(cache, "LAKE", tmp_path)
+    monkeypatch.delenv("LAKE_ASSUME_SETTLED", raising=False)
+    df = pd.DataFrame({"ts_code": ["000001.SZ"], "open": [1.0], "high": [1.0],
+                       "low": [1.0], "close": [1.0], "amount": [1.0], "pct_chg": [0.0]})
+    cache.get_or_fetch("top_list", {"trade_date": "20260710"}, today="2026-07-10",
+                       fetch=lambda ep, p: df)
+    assert not (tmp_path / "top_list" / "20260710.parquet").exists()   # parity

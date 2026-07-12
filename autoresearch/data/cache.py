@@ -161,7 +161,10 @@ def get_or_fetch(
     # `assert_tushare_ready` 同一立场("晚点再跑,或跑前一交易日")。
     if pol["key"] == "date":
         d = _compact(_first(params, _DATE_PARAM_KEYS))
-        if d and d >= t:
+        # 预热豁免(spec 2026-07-12-scan-speed-perimeter §P1):LAKE_ASSUME_SETTLED=1 且
+        # d == today → 视为已结算,落到下方「拉取→契约→原子写」正常入湖(19:15 后 EOD 已发布,
+        # 契约 min_rows 仍兜底);d > today(未来日)任何情况拒写。env 未设 = 现行为逐字节不变。
+        if d and d >= t and not (d == t and os.environ.get("LAKE_ASSUME_SETTLED") == "1"):
             return check(endpoint, fetch(endpoint, params), key=str(key), source="fetch", cols=False)
 
     # 拉取 → 校验 → 原子写。**入湖必须全字段**(`_lake_params`:窄 fields 会把窄表钉成该 key 的
