@@ -699,7 +699,10 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
             note = str(r.get("pinned_note", "") or "").strip()
             body += ["**📌 保送票**(用户手工直通;已在 L1→L3 全程强留,不受漏斗取舍影响"
                     + (f":{note}" if note else "") +
-                    ")——仍须按下方真实证据独立评判,不因『保送』降低尽调标准。", ""]
+                    ")——仍须按下方真实证据独立评判,不因『保送』降低尽调标准。", "",
+                    "**📌持仓管理要求**:本票为用户保送票(可能已持有)——满卡/早停卡都必须含"
+                    "『持仓管理』小节:D+1/D+2 卖出纪律(何价减/何价清)+加减仓触发位;若 "
+                    "pinned_note 含成本信息按其计算浮盈亏,无则按现价基准写纪律。", ""]
         body.append(compose_funnel_brief(code6, scan_dir).rstrip())
         if calib_line:                               # 逐卡块内(共享前缀之后,不破 cache 契约)
             body += ["", calib_line]

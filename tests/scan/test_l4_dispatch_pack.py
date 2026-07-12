@@ -89,8 +89,10 @@ def test_write_dispatch_pack_marks_pinned_prompt(tmp_path):
     assert res["pinned"] == ["600000"]
     p = (d / "_l4_prompt_600000.md").read_text(encoding="utf-8")
     assert "📌 保送票" in p and "长期观察仓" in p
+    assert "持仓管理要求" in p           # W2:pinned 逐卡块须追加「持仓管理」卡片要求行
     p2 = (d / "_l4_prompt_600584.md").read_text(encoding="utf-8")   # 非 pinned 票不受影响
     assert "📌 保送票" not in p2
+    assert "持仓管理要求" not in p2
 
 
 def test_write_dispatch_pack_pinned_marker_after_shared_prefix(tmp_path):
