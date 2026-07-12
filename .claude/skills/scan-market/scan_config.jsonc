@@ -26,7 +26,7 @@
   // 首跑冒烟三查(设计稿 §6,跑完必看):① WebSearch 并发限频(11–30 并发 searcher 会不会被限)
   //   ② 中文源可达率 ③ intel 空稿率。代价:每天多几百次网查、L4 段墙钟 ~14m → ~30m+。
   // 裁决:单变量 A/B,账本 ≥10–20 日再定去留(enabled 改回 false 即干净回滚)。
-  "l4_intel": { "enabled": true },
+  "l4_intel": { "enabled": true, "max_queries": 15 },   // 每票盲搜查询上限(首跑实测>8m 再拧,spec §P4③)
 
   // ── L1 召回漏斗 ──(recall_channels/channel_quotas 经 scan/cli.py → universe.recall_select 生效)
   "funnel": {

@@ -159,6 +159,24 @@ def test_l4_intel_applies_to_scan_config():
     assert sc.l4_intel == {"enabled": True}
 
 
+def test_l4_intel_max_queries_allowed(tmp_path):
+    from autoresearch.scan.user_config import load_user_config
+    p = tmp_path / "scan_config.json"
+    p.write_text('{"l4_intel": {"enabled": true, "max_queries": 10}}', encoding="utf-8")
+    cfg = load_user_config(p)
+    assert cfg["l4_intel"] == {"enabled": True, "max_queries": 10}
+
+
+def test_l4_intel_unknown_subkey_still_raises(tmp_path):
+    import pytest
+
+    from autoresearch.scan.user_config import load_user_config
+    p = tmp_path / "scan_config.json"
+    p.write_text('{"l4_intel": {"enabled": true, "max_query": 10}}', encoding="utf-8")
+    with pytest.raises(ValueError, match="max_query"):
+        load_user_config(p)
+
+
 # ───────────────────────── l3:两遍法分诊新顶层键白名单 + 透传 ScanConfig(镜像 l4_intel 三连) ─────────────────────────
 # design: docs/plans/2026-07-12-l3-merge-plan.md Task 1。
 

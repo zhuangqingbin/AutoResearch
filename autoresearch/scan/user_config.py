@@ -83,7 +83,7 @@ _SUB_WHITELIST = {
     "funnel": {"recall_channels", "channel_quotas", "channel_floors"},
     "pinned": {"cap", "ttl_days"},
     "reuse": {"max_age_days", "price_delta_pct"},
-    "l4_intel": {"enabled"},
+    "l4_intel": {"enabled", "max_queries"},
     "l3": {"two_pass", "pass1_target", "finalist_max"},
     "learning": {"shrink", "shrink_k"},
 }
