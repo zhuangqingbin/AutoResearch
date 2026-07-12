@@ -210,3 +210,56 @@ def test_gate2_unknown_gate_name_raises_not_silent_fallback(tmp_path):
         tmp_path / "finalists.csv", index=False)
     with pytest.raises(KeyError, match="unknown gate"):
         gate2(tmp_path, budget=30, user_config_path=cfg)
+
+
+# ───────────────────────── C-1 回归:GATE2 预算计数排除 exempt lane ─────────────────────────
+#
+# final-review-l3-merge.md Critical-1:pinned 强留行注入在 v3 cap 之后(不占 finalist tier
+# 名额)——但 GATE2 原实现数的是 finalists.csv 全行数,满员日(cap=10)+1 只 pinned 即
+# 11>10 硬失败。修复:GATE2 计数排除 `lane` 命中 `_L35_EXEMPT_LANES`
+# ({"pinned","carryover","watchlist_trigger"})的行。
+
+
+def test_gate2_pinned_row_does_not_count_against_budget(tmp_path):
+    """真值复现(终审报告实证场景):10 只普通 finalist(满 cap)+ 1 只 pinned 强留行
+    → budget=10 时不应再挂,ok 必须为 True,且 pinned 行仍完整出现在 codes/n 里
+    (它确实要送 L4,只是不占『门』的坑)。"""
+    rows = [{"code": f"{i:06d}", "conviction": 90 - i, "lane": "trend"} for i in range(10)]
+    rows.append({"code": "600519", "conviction": 10.0, "lane": "pinned"})
+    pd.DataFrame(rows).to_csv(tmp_path / "finalists.csv", index=False)
+    r = gate2(tmp_path, budget=10)
+    assert r["ok"] is True, f"pinned 行不应占 GATE2 名额,实际:{r}"
+    assert r["n"] == 11                                   # 全量行数(含 pinned)如实回显
+    assert set(r["finalists"]) == {f"{i:06d}" for i in range(10)} | {"600519"}
+
+
+def test_gate2_pinned_row_still_fails_when_non_exempt_rows_alone_exceed_budget(tmp_path):
+    """反向:即便排除 pinned,非豁免行本身已超预算 → 仍应失败(exempt 只是不占名额,
+    不是把预算变大)。"""
+    rows = [{"code": f"{i:06d}", "conviction": 90 - i, "lane": "trend"} for i in range(11)]
+    rows.append({"code": "600519", "conviction": 10.0, "lane": "pinned"})
+    pd.DataFrame(rows).to_csv(tmp_path / "finalists.csv", index=False)
+    r = gate2(tmp_path, budget=10)
+    assert r["ok"] is False
+    assert "11" in r["reason"]                            # 失败原因数的是排除 pinned 后的 11,非 12
+
+
+def test_gate2_carryover_and_watchlist_trigger_rows_also_exempt_from_budget(tmp_path):
+    """纵深防御:即便 carryover/watchlist_trigger 行在 GATE2 之前就已出现在 finalists.csv
+    里(当前生产时序下不会,见 gates.py 核查笔记),也应同样不计入预算——镜像 L3.5 闸
+    `_L35_EXEMPT_LANES` 的三 lane 统一语义。"""
+    rows = [{"code": f"{i:06d}", "conviction": 90 - i, "lane": "trend"} for i in range(10)]
+    rows.append({"code": "000900", "conviction": 5.0, "lane": "carryover"})
+    rows.append({"code": "000901", "conviction": 5.0, "lane": "watchlist_trigger"})
+    pd.DataFrame(rows).to_csv(tmp_path / "finalists.csv", index=False)
+    r = gate2(tmp_path, budget=10)
+    assert r["ok"] is True
+    assert r["n"] == 12
+
+
+def test_gate2_no_lane_column_counts_all_rows_unaffected_by_exempt_logic(tmp_path):
+    """无 `lane` 列(退化态,如旧 finalists.csv)→ exempt 判据整体跳过,行为与修复前一致
+    (全行数与 budget 比较)。"""
+    pd.DataFrame({"code": [f"{i:06d}" for i in range(11)]}).to_csv(
+        tmp_path / "finalists.csv", index=False)
+    assert gate2(tmp_path, budget=10)["ok"] is False

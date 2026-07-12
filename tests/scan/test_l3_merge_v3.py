@@ -275,3 +275,16 @@ def test_write_finalists_real_2026_07_09_judged_missing_finalist_column_falls_ba
     assert res["bench_n"] == res["judged_n"] - res["finalist_n"]
     # 隔离副本验证:原目录一字未动。
     assert not (real_dir / "_l3_bench.csv").exists()
+
+
+def test_dup_codes_dropped_to_bench_with_guard():
+    """终审 I-1:judged 同码两行(zfill 后重码)→ 只留首行走守卫,其余整行归 bench 记 guard="dup"。"""
+    judged = pd.DataFrame([
+        {"code": "000001", "name": "A", "conviction": 80.0, "lane": "trend", "finalist": True},
+        {"code": "1", "name": "A-dup", "conviction": 70.0, "lane": "trend", "finalist": True},
+        {"code": "000002", "name": "B", "conviction": 68.0, "lane": "value", "finalist": True},
+    ])
+    fin, bench = merge_l3_finalists_v3(judged, budget=30)
+    assert list(fin["code"]).count("000001") == 1
+    dup_rows = bench[bench["guard"] == "dup"]
+    assert len(dup_rows) == 1 and dup_rows.iloc[0]["code"] == "000001"

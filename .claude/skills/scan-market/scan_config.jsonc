@@ -6,7 +6,7 @@
   // effort ∈ low/medium/high/xhigh/max;省略某 stage 或 model 字段 = 用其默认。
   "agents": {
     "strategist":   { "effort": "high" },    // 市场研判(macro lite 档,Stage 0)
-    "sector_brief": { "effort": "high" },    // 行业 brief 写手
+    "sector_brief": { "effort": "high", "model": "sonnet" },    // 行业 brief 写手(07-12 下沉试点:机器契约+lint 兜底;账本验 brief 质量/L5 引用密度,删 model 键即回滚 opus)
     "l3_rank":      { "effort": "max" },     // L3 精排(200只 holistic 比较=判断核心,给最高 effort)
     "l4_card":      { "effort": "xhigh" },   // L4 决策卡(逐只渐进深度 DD)
     "l4_intel":     { "effort": "max" }      // 活体情报员(盲搜六面,sonnet 由 agent 定义默认)
@@ -18,7 +18,7 @@
   "l3": {
     "two_pass": true,        // false = 回滚:prepare_l3_table 现行为逐字节不变(不 triage/不切表/不读本块)
     "pass1_target": 60,      // pass1 分诊后喂 pass2(l3-rank)的行数(全入规则命中多时可能略多于此数)
-    "finalist_max": 10       // finalist tier 上限(由 merge v3 消费;本 task 尚未接线,先占位——cap=min(此值,l4_budget))
+    "finalist_max": 10       // finalist tier 上限(merge v3 已接线消费——cap=min(此值,l4_budget))
   },
 
   // ── L4 活体情报站 ──(sonnet·max 盲搜情报员 ∥ slim 预取;卡侧缺文件自动回退卡内网查)

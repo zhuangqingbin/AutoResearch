@@ -143,8 +143,26 @@ def gate2(scan_dir: Path, budget: int = 30, user_config_path: str | Path | None 
     # cut_n:0}。非默认才会收窄 df + 落 _l35_cut.csv(见 apply_l35_gate)。
     df, l35 = apply_l35_gate(scan_dir, df, user_config_path=user_config_path)
     codes = df["code"].astype(str).tolist()
-    if len(df) > budget:
-        return {"ok": False, "gate": "gate2", "reason": f"finalists {len(df)} > budget {budget}",
+    # C-1 修复(final-review-l3-merge.md Critical-1):GATE2 的预算数的是「L3 finalist tier
+    # 名额」,exempt lane(pinned 保送/carryover 菜单滞回/watchlist_trigger 观察单直通车——
+    # 镜像本文件 `_L35_EXEMPT_LANES`/`_l35_exempt` 已用于 L3.5 闸的"强留/滞回/直通车不占
+    # 名额"契约)即便已出现在 finalists.csv 里也不计入预算比较。铁律「pinned 强留不占名额」
+    # 原实现只在"注入发生于 v3 cap 之后"生效、GATE2 记账却按全行数走,两者矛盾——满员日
+    # (cap=10 是好日子的常态输出)+1 只 pinned 即确定性触发 GATE2 硬失败(见终审报告实证)。
+    # exempt 行仍全额出现在 codes/n 里(它们确实会全部送 L4,只是不占『门』的坑)。
+    # 核查结论(carryover/watchlist_trigger 是否也会在 GATE2 时出现在 finalists 里):
+    # workflow scan-market.js 里 GATE2(128 行)先于 `l4_reuse --apply --carryover`
+    # (139 行)与 watchlist 直通车追加(watchlist.append_watchlist_trigger,同在 L4 phase)
+    # 执行——两者当前**晚于**本闸,GATE2 见到的 finalists.csv 此刻不会含这两个 lane。
+    # 但 pinned 由 `l3_select finalists`(127 行,GATE2 之前)注入,GATE2 时**已经在场**——
+    # 这才是本 Critical 的真实触发路径。此处仍一并排除 carryover/watchlist_trigger 是纵深
+    # 防御(镜像 `_l35_exempt` 的既有防呆注释:万一未来追加顺序提前,契约不因此漂移),
+    # 不依赖"当前时序恰好安全"这一脆弱前提。
+    n_counted = (len(df[~df["lane"].astype(str).isin(_L35_EXEMPT_LANES)])
+                 if "lane" in df.columns else len(df))
+    if n_counted > budget:
+        return {"ok": False, "gate": "gate2",
+                "reason": f"finalists {n_counted} > budget {budget}(exempt 不计入)",
                 "l4_gate": l35["name"], "l35_cut_n": l35["cut_n"]}
     return {"ok": True, "gate": "gate2", "reason": "ok", "finalists": codes,
             "n": int(len(df)), "l4_gate": l35["name"], "l35_cut_n": l35["cut_n"]}

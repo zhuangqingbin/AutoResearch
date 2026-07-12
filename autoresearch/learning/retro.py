@@ -734,7 +734,12 @@ def write_retro_input(date: str, attr: pd.DataFrame, scan_root: Path | None = No
     fcols = ["code", "name", "industry", "fwd_2_oc", "rank", "composite", "score_momentum",
              "main_net_ratio", "winner_rate", "price_to_cost", "rsi6", "pct_60d"]
     for label, bk in [("漏在 L0(门槛误杀)", "missed_l0"), ("漏在 L1(权重压低)", "missed_l1"),
-                      ("L2-L3 误判(召回了却 cut)", "recalled_cut")]:
+                      ("L2-L3 误判(召回了却 cut)", "recalled_cut"),
+                      # 终审 I-3:refine_l3_bucket 细分两桶也要逐票因子行(明细层与聚合层同权),
+                      # 否则 bench/pass1 漏检赢家从所有逐票表消失,诊断能力比细分前退步;
+                      # 旧日期无影子文件 → 桶恒空 → 渲染 "_无_"(presence 天然)。
+                      ("L3 bench 漏检(judged 未晋级)", "l3_bench"),
+                      ("pass1 分诊漏检", "pass1_cut")]:
         sub = attr[attr["bucket"] == bk].sort_values("fwd_2_oc", ascending=False).head(15)
         lines += [f"\n## {label} — {len(attr[attr['bucket'] == bk])} 只(top 15)"]
         lines += _tbl(sub, fcols) if len(sub) else ["_无_"]
