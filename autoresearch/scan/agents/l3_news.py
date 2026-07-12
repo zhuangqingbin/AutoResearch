@@ -122,6 +122,8 @@ def harvest_l3_news(date: str, codes, root: Path | None = None, lookback_days: i
     """对 codes 拉最近 ~lookback_days 公告(anns_d 按 ann_date 入湖)→ 按 code 分桶 + 落 staging。
 
     best-effort:任一 ann_date 拉取失败 → 跳过该日;全失败 → 各 code 空列表。返回 {code: [anns]}。
+    P2b 有界降级:权限类异常(消息含"权限"/错误码 40203)必然日日同错 → 首次命中即 break;
+    其余瞬时异常(网络抖动等)累计 ≥3 次同样 break,避免为 0 字节数据烧满全部 lookback_days 次退避。
     """
     from autoresearch.data.tushare_source import _code6
     root = root or Path("context/scan")
@@ -130,10 +132,15 @@ def harvest_l3_news(date: str, codes, root: Path | None = None, lookback_days: i
     want = {str(c).zfill(6) for c in codes}
     buckets: dict[str, list] = {c: [] for c in want}
 
+    _PERM_MARKS = ("权限", "40203")
+    fails = 0
     for dd in _trade_days_for(date, lookback_days):
         try:
             df = get_or_fetch("anns_d", {"ann_date": dd}, today=date)
-        except Exception:  # noqa: BLE001 — 无权限/无端点 → 跳过该日(降级)
+        except Exception as e:  # noqa: BLE001 — 无权限/无端点 → 有界降级(P2b)
+            fails += 1
+            if any(m in repr(e) for m in _PERM_MARKS) or fails >= 3:
+                break           # 权限错必然日日同错;瞬时错也别为 0 字节数据烧满 10×4 连退避
             continue
         if df is None or not len(df) or "ts_code" not in df.columns:
             continue
