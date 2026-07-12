@@ -178,6 +178,37 @@ def test_token_table_intel_row(tmp_path):
     assert "L4 输入·情报" in md
 
 
+def test_stage_table_effort_from_echo_and_new_rows(tmp_path):
+    """P6b:effort/引擎列读 `user_config_echo.json`(presence-gated;有 echo → 真实值覆盖硬编码)+
+    预热/L4 买单ensemble/整合 assemble 三新行(presence-gated:锚文件/目录存在才加行)。"""
+    import json
+
+    from autoresearch.scan.assemble import _stage_token_estimate
+    det = tmp_path
+    (det / "user_config_echo.json").write_text(json.dumps({"agents": {
+        "l4_card": {"effort": "xhigh"}, "sector_brief": {"effort": "high", "model": "sonnet"},
+        "strategist": {"effort": "high"}, "l3_rank": {"effort": "max"}}}), encoding="utf-8")
+    (det / "_prewarm.json").write_text(json.dumps(
+        {"date": "x", "started_at": 0.0, "ended_at": 60.0, "steps": []}), encoding="utf-8")
+    (det / "ensemble").mkdir()
+    (det / "ensemble" / "600000.run2.md").write_text("y" * 280, encoding="utf-8")
+    text = "\n".join(_stage_token_estimate(det))
+    l4_row = next(ln for ln in text.splitlines() if ln.startswith("| L4 研究"))
+    assert "xhigh" in l4_row and "medium" not in l4_row
+    brief_row = next(ln for ln in text.splitlines() if "行业brief" in ln)
+    assert "Sonnet" in brief_row and "high" in brief_row
+    assert "| 预热(夜间)" in text and "| L4 买单ensemble" in text and "| 整合 assemble" in text
+
+
+def test_stage_table_no_echo_parity(tmp_path):
+    """P6b parity:无 `user_config_echo.json` → effort/引擎回退现硬编码值;三新行 presence-gated 不加。"""
+    from autoresearch.scan.assemble import _stage_token_estimate
+    text = "\n".join(_stage_token_estimate(tmp_path))
+    l4_row = next(ln for ln in text.splitlines() if ln.startswith("| L4 研究"))
+    assert "medium" in l4_row                        # 无 echo → 旧现值(parity)
+    assert "| 预热(夜间)" not in text               # presence-gated:无 _prewarm.json 不加行
+
+
 def test_per_stage_table_dropped_code_rr_proposal(published):
     """逐阶段 buy-list 表已删 代码/R:R/提案 列(只留 L1召回/L2粗排/L3精排/L4研究 等结论列)。"""
     md = published["md"]

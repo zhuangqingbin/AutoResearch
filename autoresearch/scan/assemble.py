@@ -465,22 +465,52 @@ def _stage_token_estimate(scan_dir: Path) -> list[str]:
         v = int(v)
         return f"{v // 60}m{v % 60:02d}s" if v >= 60 else f"{v}s"
 
+    # P6b:effort/引擎列改读 `user_config_echo.json`(frame --json 落的当日实际调用配置)——
+    # 此前是硬编码现值,和真实调用(如 L4 xhigh/sonnet·high)脱节,表面 medium 掩盖了真实档位。
+    # presence-gated:无 echo 文件/字段缺失 → 回退旧硬编码值(parity,原表不变)。
+    echo_agents: dict = {}
+    try:
+        import json as _json
+        echo_agents = (_json.loads((det / "user_config_echo.json").read_text(encoding="utf-8"))
+                       .get("agents") or {})
+    except Exception:  # noqa: BLE001 — 无 echo = 旧硬编码现值(parity)
+        echo_agents = {}
+
+    def _eff(key: str, default: str) -> str:
+        v = (echo_agents.get(key) or {}).get("effort")
+        return str(v) if v else default
+
+    def _eng(key: str, default: str) -> str:
+        m = (echo_agents.get(key) or {}).get("model")
+        return {"sonnet": "Sonnet", "opus": "Opus", "haiku": "Haiku"}.get(str(m).lower(), str(m)) \
+            if m else default
+
+    ens_files = sorted((det / "ensemble").glob("*.md")) if (det / "ensemble").is_dir() else []
+    has_prewarm = (det / "_prewarm.json").is_file()
+
     # (阶段名, 引擎, effort, 计时键, LLM调用, 落盘字节, 说明)
     rows = [
+        *([("预热(夜间)", "确定性", "—", "预热", 0, 0, "lake/evidence/温度预拉(_prewarm.json)")]
+          if has_prewarm else []),
         ("L0/L1/L2", "确定性", "—", "L0L1L2", 0, 0, "纯 pandas,零 LLM"),
-        ("旁路 策略师", "Opus", "session", "策略师", 1 if strat else 0, _b(strat), "market_pack → market_view.md"),
-        ("旁路 行业brief", "Opus", "low", "行业brief", len(sbriefs), _b(sbriefs),
-         "sector pack → sector_briefs/*.md(♻️TTL 复用亦计字节)"),
-        ("L3 精排", "Opus·holistic", "max", "L3精排", 1 if l3 else 0, _b(l3),
-         "通看全表选 finalists(输入表落 `_l3_table.md` 才计入)"),
-        ("L4 研究", "Opus", "medium", "L4研究", len(cards), _b(cards) + _b(l4t1),
-         f"{len(cards)} 张卡(早停/满卡/复用;每卡 prompt 落 `_l4_prompt_*` 才计入)"),
+        ("旁路 策略师", _eng("strategist", "Opus"), _eff("strategist", "session"), "策略师",
+         1 if strat else 0, _b(strat), "market_pack → market_view.md"),
+        ("旁路 行业brief", _eng("sector_brief", "Opus"), _eff("sector_brief", "low"), "行业brief",
+         len(sbriefs), _b(sbriefs), "sector pack → sector_briefs/*.md(♻️TTL 复用亦计字节)"),
+        ("L3 精排", _eng("l3_rank", "Opus·holistic"), _eff("l3_rank", "max"), "L3精排",
+         1 if l3 else 0, _b(l3), "通看全表选 finalists(输入表落 `_l3_table.md` 才计入)"),
+        ("L4 研究", _eng("l4_card", "Opus"), _eff("l4_card", "medium"), "L4研究", len(cards),
+         _b(cards) + _b(l4t1), f"{len(cards)} 张卡(早停/满卡/复用;每卡 prompt 落 `_l4_prompt_*` 才计入)"),
+        *([("L4 买单ensemble", _eng("l4_card", "Opus"), _eff("l4_card", "medium"), "ensemble",
+            len(ens_files), _b(ens_files), "≥OW 追加 run2/3 取中位(仅有买日)")] if ens_files else []),
         ("L4 输入·slim", "—(输入侧)", "—", "L4slim", len(slims), _b(slims),
          "harvest --slim 落稿(每卡 subagent 读入;≈4.8KB 空稿=NO_DATA 亦计=真实浪费)"),
-        ("L4 输入·情报", "Sonnet", "max", "L4intel", len(intels), _b(intels),
+        ("L4 输入·情报", _eng("l4_intel", "Sonnet"), _eff("l4_intel", "max"), "L4intel",
+         len(intels), _b(intels),
          "l4-intel 盲搜落稿(1 文件=1 sonnet 会话;网查计费经 OTEL,此处**未计非零**;未启用=0;不计入 LLM 调用合计)"),
         ("L4 新闻网查", "WebSearch", "—", "L4news", 0, 0,
          "P3 有界活体新闻(≤3/卡)+ sector/macro 网查(≤2)——无落盘 artifact,token 计费经 OTEL/`/usage`,此处**未计非零**"),
+        ("整合 assemble", "确定性", "—", "assemble", 0, 0, "L5 组装 + self_review(截至本表渲染)"),
     ]
     lines = ["## 各阶段耗时 & token 消耗(估算)",
              "| 阶段 | 引擎 | effort | 墙钟 | LLM 调用 | 落盘字节 | ~token | 说明 |",
