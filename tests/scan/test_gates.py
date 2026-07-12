@@ -97,126 +97,32 @@ def test_gate2_cli_flags_bad_codes(tmp_path, monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out)["ok"] is False
 
 
-# ───────────────────────── L3.5 可插拔闸接线(GATE2 内,plan A2 Task 3/4) ─────────────────────────
+# ───────────────────────── L3.5 完全移除(2026-07-12 用户裁定):GATE2 只读校验 ─────────────────────────
 #
-# design: docs/specs/2026-07-11-recall-gate-pinned-config-design.md §3
-# plan:   docs/plans/2026-07-11-l35-gate-backtest-plan.md Task 4
-#
-# user_config_path 显式注入(不 chdir):隔离真实 .claude/skills/scan-market/scan_config.json,
-# 与 tests/scan/test_user_config.py 的 monkeypatch.chdir 风格互补,更贴近本文件"直传 tmp_path"惯例。
+# design: docs/specs/2026-07-12-funnel-replay-l35-removal-design.md §1
+# L3 finalist tier 即 L4 入选集,GATE2 不再收窄、不写任何文件;闸回显键(l4_gate/l35_cut_n)随闸移除。
 
 
-def test_gate2_default_passthrough_is_byte_identical_parity(tmp_path):
-    """parity 铁律:无 scan_config.json(或未指定 l4_gate)→ passthrough,finalists.csv 逐字节
-    不改、不落 _l35_cut.csv、回显 l4_gate='passthrough' + l35_cut_n=0。"""
+def test_gate2_is_read_only_and_has_no_gate_echo_keys(tmp_path):
+    """L3.5 移除后的行为锁:GATE2 逐字节不改 finalists.csv、不落 _l35_cut.csv,
+    返回 JSON 不含 l4_gate/l35_cut_n 键(workflow GATE2 schema 已同步删键)。"""
     fp = tmp_path / "finalists.csv"
     pd.DataFrame({"code": ["000001", "000002"], "conviction": [10.0, 90.0],
                   "lane": ["trend", "value"]}).to_csv(fp, index=False)
     before = fp.read_bytes()
-    r = gate2(tmp_path, budget=30, user_config_path=tmp_path / "no_such_config.json")
+    r = gate2(tmp_path, budget=30)
     assert r["ok"] is True
-    assert r["l4_gate"] == "passthrough"
-    assert r["l35_cut_n"] == 0
     assert r["finalists"] == ["000001", "000002"]
-    assert fp.read_bytes() == before, "passthrough 默认应逐字节不改 finalists.csv"
-    assert not (tmp_path / "_l35_cut.csv").exists(), "passthrough 默认不应落 _l35_cut.csv"
-
-
-def test_gate2_configured_gate_narrows_finalists_and_writes_cut(tmp_path):
-    """配了非默认闸(topk_simple k=1)→ finalists.csv 收窄落盘 + _l35_cut.csv 落盘(L4 派发读前者)。"""
-    cfg = tmp_path / "scan_config.json"
-    cfg.write_text(json.dumps({"l4_gate": {"name": "topk_simple", "params": {"k": 1}}}),
-                   encoding="utf-8")
-    fp = tmp_path / "finalists.csv"
-    pd.DataFrame({"code": ["000001", "000002", "000003"],
-                  "conviction": [90.0, 50.0, 10.0],
-                  "lane": ["trend", "trend", "trend"]}).to_csv(fp, index=False)
-    r = gate2(tmp_path, budget=30, user_config_path=cfg)
-    assert r["ok"] is True
-    assert r["l4_gate"] == "topk_simple"
-    assert r["l35_cut_n"] == 2
-    assert r["finalists"] == ["000001"] and r["n"] == 1
-    after = pd.read_csv(fp, dtype={"code": str})
-    assert after["code"].tolist() == ["000001"], "finalists.csv 应被收窄落盘(dispatch_plan 直接读此文件)"
-    cut = pd.read_csv(tmp_path / "_l35_cut.csv", dtype={"code": str})
-    assert set(cut["code"]) == {"000002", "000003"}
-    assert set(cut["reason"]) == {"topk_cut"}
-
-
-def test_gate2_exempt_pinned_survives_low_conviction_floor(tmp_path):
-    """exempt 正确性(A2-T1 契约 + A3-T4 对齐):pinned 票即便 conviction 远低于 floor 也必须在
-    picked、绝不进 _l35_cut.csv;同批非豁免的低分票正常被砍。"""
-    cfg = tmp_path / "scan_config.json"
-    cfg.write_text(json.dumps({"l4_gate": {"name": "conviction_floor_quota",
-                                            "params": {"floor": 50}}}), encoding="utf-8")
-    fp = tmp_path / "finalists.csv"
-    pd.DataFrame({"code": ["000001", "000002", "000003"],
-                  "conviction": [90.0, 1.0, 5.0],
-                  "lane": ["trend", "pinned", "trend"]}).to_csv(fp, index=False)
-    r = gate2(tmp_path, budget=30, user_config_path=cfg)
-    assert r["ok"] is True
-    assert set(r["finalists"]) == {"000001", "000002"}, \
-        "000003(非豁免、conviction<floor)应被砍;000002(pinned)应豁免直通"
-    cut = pd.read_csv(tmp_path / "_l35_cut.csv", dtype={"code": str})
-    assert set(cut["code"]) == {"000003"}
-
-
-def test_gate2_regime_read_from_meta_json(tmp_path):
-    """regime 取 meta.json.regime(risk_off → 默认 cap=6),与 menu.l4_budget 同一读法。"""
-    (tmp_path / "meta.json").write_text(json.dumps({"regime": "risk_off"}), encoding="utf-8")
-    cfg = tmp_path / "scan_config.json"
-    cfg.write_text(json.dumps({"l4_gate": {"name": "conviction_floor_quota", "params": {"floor": 0}}}),
-                   encoding="utf-8")
-    rows = [{"code": f"{i:06d}", "conviction": 100 - i, "lane": "trend"} for i in range(20)]
-    pd.DataFrame(rows).to_csv(tmp_path / "finalists.csv", index=False)
-    r = gate2(tmp_path, budget=30, user_config_path=cfg)
-    assert r["n"] == 6, "risk_off 默认 cap=6"
-
-
-def test_gate2_regime_defaults_to_range_without_meta_json(tmp_path):
-    """无 meta.json(regime 拿不到)→ 'range' 兜底,默认 cap=8。"""
-    cfg = tmp_path / "scan_config.json"
-    cfg.write_text(json.dumps({"l4_gate": {"name": "conviction_floor_quota", "params": {"floor": 0}}}),
-                   encoding="utf-8")
-    rows = [{"code": f"{i:06d}", "conviction": 100 - i, "lane": "trend"} for i in range(20)]
-    pd.DataFrame(rows).to_csv(tmp_path / "finalists.csv", index=False)
-    r = gate2(tmp_path, budget=30, user_config_path=cfg)
-    assert r["n"] == 8, "无 meta.json → regime 兜底 range,cap=8"
-
-
-def test_gate2_injects_menu_l4_budget_into_gate_params(tmp_path, monkeypatch):
-    """预算旗收编为输入(design §3):menu.l4_budget(scan_dir) 算出的数塞进 params['l4_budget'],
-    比 regime cap 更紧时应生效收窄(min 语义,l35_gate.conviction_floor_quota 已单测覆盖 min 本身,
-    这里只验证 gates.py 确有调用 + 传参)。"""
-    import autoresearch.scan.menu as menu
-
-    monkeypatch.setattr(menu, "l4_budget", lambda scan_dir, **kw: (2, "monkeypatched"))
-    cfg = tmp_path / "scan_config.json"
-    cfg.write_text(json.dumps({"l4_gate": {"name": "conviction_floor_quota", "params": {"floor": 0}}}),
-                   encoding="utf-8")
-    rows = [{"code": f"{i:06d}", "conviction": 100 - i, "lane": "trend"} for i in range(20)]
-    pd.DataFrame(rows).to_csv(tmp_path / "finalists.csv", index=False)
-    r = gate2(tmp_path, budget=30, user_config_path=cfg)
-    assert r["n"] == 2, "regime cap(trend=10)应被更紧的 menu.l4_budget=2 压低"
-
-
-def test_gate2_unknown_gate_name_raises_not_silent_fallback(tmp_path):
-    """坏闸名(拼写错)不静默退化 passthrough——防拼写错静默失效,与 user_config 白名单哲学一致。"""
-    import pytest
-
-    cfg = tmp_path / "scan_config.json"
-    cfg.write_text(json.dumps({"l4_gate": {"name": "totally_typoed_gate"}}), encoding="utf-8")
-    pd.DataFrame({"code": ["000001"], "conviction": [90.0]}).to_csv(
-        tmp_path / "finalists.csv", index=False)
-    with pytest.raises(KeyError, match="unknown gate"):
-        gate2(tmp_path, budget=30, user_config_path=cfg)
+    assert "l4_gate" not in r and "l35_cut_n" not in r
+    assert fp.read_bytes() == before, "GATE2 只读:不得改写 finalists.csv"
+    assert not (tmp_path / "_l35_cut.csv").exists()
 
 
 # ───────────────────────── C-1 回归:GATE2 预算计数排除 exempt lane ─────────────────────────
 #
 # final-review-l3-merge.md Critical-1:pinned 强留行注入在 v3 cap 之后(不占 finalist tier
 # 名额)——但 GATE2 原实现数的是 finalists.csv 全行数,满员日(cap=10)+1 只 pinned 即
-# 11>10 硬失败。修复:GATE2 计数排除 `lane` 命中 `_L35_EXEMPT_LANES`
+# 11>10 硬失败。修复:GATE2 计数排除 `lane` 命中 `_EXEMPT_LANES`
 # ({"pinned","carryover","watchlist_trigger"})的行。
 
 
@@ -246,8 +152,8 @@ def test_gate2_pinned_row_still_fails_when_non_exempt_rows_alone_exceed_budget(t
 
 def test_gate2_carryover_and_watchlist_trigger_rows_also_exempt_from_budget(tmp_path):
     """纵深防御:即便 carryover/watchlist_trigger 行在 GATE2 之前就已出现在 finalists.csv
-    里(当前生产时序下不会,见 gates.py 核查笔记),也应同样不计入预算——镜像 L3.5 闸
-    `_L35_EXEMPT_LANES` 的三 lane 统一语义。"""
+    里(当前生产时序下不会,见 gates.py 核查笔记),也应同样不计入预算——`_EXEMPT_LANES`
+    三 lane 统一语义。"""
     rows = [{"code": f"{i:06d}", "conviction": 90 - i, "lane": "trend"} for i in range(10)]
     rows.append({"code": "000900", "conviction": 5.0, "lane": "carryover"})
     rows.append({"code": "000901", "conviction": 5.0, "lane": "watchlist_trigger"})

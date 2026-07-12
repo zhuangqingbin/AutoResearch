@@ -1,9 +1,9 @@
 """scan-market workflow 校验门(确定性,零 LLM)。workflow 经 Bash-agent 调,读 JSON 分支。
 
 GATE1 = prelude 后数据体检(L2 非空 + 代码 6 位)+ 返回 sentinel/budget;
-GATE2 = finalists 定稿后(代码 6 位 + count≤budget)+ 返回名单——**L3.5 可插拔闸**(design
-2026-07-11-recall-gate-pinned-config-design.md §3;plan 2026-07-11-l35-gate-backtest-plan.md
-Task 3/4)也插在这里(finalists 已落、L4 派发前):见 `apply_l35_gate`;
+GATE2 = finalists 定稿后(代码 6 位 + count≤budget;exempt lane 不占名额)+ 返回名单——
+L3.5 可插拔闸已**完全移除**(2026-07-12 用户裁定"直接 L3 输出",design
+2026-07-12-funnel-replay-l35-removal-design.md §1;L3 finalist tier 即 L4 入选集);
 GATE4 = assemble 后 self_review 硬门(gate_fires.csv 无 severity=fail)。
 GATE3(slim>8KB(surface) / 无 .SH)由 l4_card harvest-slim 自身承担。
 """
@@ -18,95 +18,16 @@ import pandas as pd
 
 _CODE_RE = re.compile(r"^\d{6}$")
 
-# L3.5 闸 exempt 契约(design §3/§4.1):保送(pinned)/菜单滞回(carryover)/观察单直通车
-# (watchlist_trigger)三个 lane 恒直通、不占闸的配额——"不占 6~10 坑"。三者若已出现在
-# finalists.csv 的 `lane` 列(pinned 由 l3_select._inject_pinned_finalists 写在 GATE2 之前;
-# carryover/watchlist_trigger 目前在 workflow 里于 L4 phase 才追加,晚于本闸——届时它们天然
-# 不经过闸;此处仍一并识别是防呆:万一未来追加顺序提前,契约不因此漂移)。
-_L35_EXEMPT_LANES = {"pinned", "carryover", "watchlist_trigger"}
+# GATE2 exempt 记账契约(终审 C-1;原 L3.5 闸 exempt 契约收编,闸删记账留):保送(pinned)/
+# 菜单滞回(carryover)/观察单直通车(watchlist_trigger)三个 lane 不占 finalist tier 预算名额。
+# pinned 由 l3_select._inject_pinned_finalists 写在 GATE2 之前(GATE2 时已在场);
+# carryover/watchlist_trigger 目前在 workflow 里于 L4 phase 才追加,晚于 GATE2——此处仍
+# 一并识别是防呆:万一未来追加顺序提前,契约不因此漂移。
+_EXEMPT_LANES = {"pinned", "carryover", "watchlist_trigger"}
 
 
 def _codes_ok(codes) -> bool:
     return len(codes) > 0 and all(bool(_CODE_RE.match(str(c))) for c in codes)
-
-
-def _l35_regime(scan_dir: Path) -> str:
-    """当日 regime 标签:`meta.json.regime` 优先(universe.run 落盘,与 L1 权重选择/`menu.l4_budget`
-    同一标签,可复现);缺失(文件缺 / regime_aware 关的默认态 = null)→ `'range'` 兜底,与
-    `classify_regime` 自身"安全退化 range"的惯例一致(design 已侦察:gates.py 现无 regime 读法,
-    此处新增,不强算 classify_regime——finalists.csv 无 above_ma60/pct_60d 等分类列)。
-    """
-    p = scan_dir / "meta.json"
-    if p.exists():
-        try:
-            r = json.loads(p.read_text(encoding="utf-8")).get("regime")
-            if r:
-                return str(r)
-        except Exception:  # noqa: BLE001
-            pass
-    return "range"
-
-
-def _l35_exempt(df: pd.DataFrame) -> set[str]:
-    """exempt 集 = `lane` 命中 `_L35_EXEMPT_LANES` 的 code(A2-T1 的 exempt 恒直通契约,
-    与 A3-T4 pinned 对齐)。`lane` 列缺失(退化态)→ 空集,不报错。"""
-    if "lane" not in df.columns:
-        return set()
-    return set(df.loc[df["lane"].astype(str).isin(_L35_EXEMPT_LANES), "code"].astype(str))
-
-
-def _l35_gate_choice(user_config_path: str | Path | None = None) -> tuple[str, dict]:
-    """scan_config.json 的 `l4_gate:{name,params}`(经 `user_config.load_user_config` 白名单);
-    缺文件/缺键 → `('passthrough', {})` = **parity**(当前默认,回测已证 conviction_floor_quota
-    更差,不切换默认——见 plan Task 5)。坏键/坏闸名不吞:`load_user_config`/`l35_gate.build` 该
-    raise 就 raise(防拼写错静默失效,与既有配置层哲学一致)。
-    """
-    from autoresearch.scan.user_config import load_user_config
-
-    cfg = load_user_config(user_config_path)   # path=None → load_user_config 自身的默认路径解析
-    l4_gate_cfg = cfg.get("l4_gate") or {}
-    name = l4_gate_cfg.get("name") or "passthrough"
-    params = dict(l4_gate_cfg.get("params") or {})
-    return name, params
-
-
-def apply_l35_gate(scan_dir: Path, df: pd.DataFrame,
-                   user_config_path: str | Path | None = None) -> tuple[pd.DataFrame, dict]:
-    """L3.5 可插拔闸接线(finalists 已落、L4 派发前;plan Task 4)。`df` = GATE2 已校验过 6 位
-    代码的 finalists 帧。
-
-    gate 选择见 `_l35_gate_choice`(缺配置 = passthrough = parity)。**预算旗收编为输入**
-    (design §3"现有预算旗逻辑收编为闸的输入参数,一个机制不留两套"):算好
-    `menu.l4_budget(scan_dir)` 填入 `params['l4_budget']`(用户在 scan_config.json 显式给的
-    `l4_budget` 优先,不覆盖——`setdefault`)。exempt 见 `_l35_exempt`;regime 见 `_l35_regime`。
-
-    **passthrough(默认)时 `cut` 恒空 → 直接原样返回 `df`,不碰任何文件**——与改动前逐字节
-    parity(连 `finalists.csv` 的 mtime 都不动)。非 passthrough 且真产生 cut → `df` 收窄到
-    `picked`(只删行、不改列/不改序)重写 `finalists.csv`(L4 派发/`dispatch_plan` 直接读此
-    文件,是闸生效的唯一机制)+ 落 `_l35_cut.csv`(`GateResult.cut` 的 code/rank/conviction/
-    lane/reason 列,T3 影子账本消费此文件)。
-
-    返回 `(narrowed_df, info)`,`info = {"name": 闸名, "cut_n": 砍掉几只}` 供 GATE2 回显。
-    """
-    from autoresearch.scan.l35_gate import build
-    from autoresearch.scan.menu import l4_budget as _menu_l4_budget
-
-    name, params = _l35_gate_choice(user_config_path)
-    budget_n, _ = _menu_l4_budget(scan_dir)
-    params.setdefault("l4_budget", int(budget_n))
-
-    gate_fn = build(name)
-    regime = _l35_regime(scan_dir)
-    exempt = _l35_exempt(df)
-    result = gate_fn(df, regime=regime, exempt=exempt, params=params)
-    if not result.cut:                # passthrough(默认)/ 该闸当日恰好全放行 → 零文件改动
-        return df, {"name": name, "cut_n": 0}
-
-    picked = {str(c) for c in result.picked}
-    narrowed = df[df["code"].astype(str).isin(picked)].reset_index(drop=True)
-    narrowed.to_csv(scan_dir / "finalists.csv", index=False)     # 收窄名单落盘(L4 派发读此文件)
-    pd.DataFrame(result.cut).to_csv(scan_dir / "_l35_cut.csv", index=False)  # 影子账本(T3 消费)
-    return narrowed, {"name": name, "cut_n": len(result.cut)}
 
 
 def gate1(scan_dir: Path) -> dict:
@@ -127,7 +48,7 @@ def gate1(scan_dir: Path) -> dict:
             "l4_budget": int(budget), "l2_n": int(len(df))}
 
 
-def gate2(scan_dir: Path, budget: int = 30, user_config_path: str | Path | None = None) -> dict:
+def gate2(scan_dir: Path, budget: int = 30) -> dict:
     scan_dir = Path(scan_dir)
     fp = scan_dir / "finalists.csv"
     if not fp.exists():
@@ -138,34 +59,26 @@ def gate2(scan_dir: Path, budget: int = 30, user_config_path: str | Path | None 
     raw = df["code"].astype(str)          # dtype=str 读入原样保留(不 zfill)—— 与 gate1 同口径
     if not _codes_ok(raw):
         return {"ok": False, "gate": "gate2", "reason": "finalist 代码非 6 位(前导零坑)"}
-    # L3.5 可插拔闸(finalists 已落、L4 派发前;design §3;plan Task 3/4)。passthrough(默认,
-    # 缺 scan_config.json 时)= parity:df/finalists.csv 原样不动,l35 info 恒 {name:"passthrough",
-    # cut_n:0}。非默认才会收窄 df + 落 _l35_cut.csv(见 apply_l35_gate)。
-    df, l35 = apply_l35_gate(scan_dir, df, user_config_path=user_config_path)
     codes = df["code"].astype(str).tolist()
     # C-1 修复(final-review-l3-merge.md Critical-1):GATE2 的预算数的是「L3 finalist tier
-    # 名额」,exempt lane(pinned 保送/carryover 菜单滞回/watchlist_trigger 观察单直通车——
-    # 镜像本文件 `_L35_EXEMPT_LANES`/`_l35_exempt` 已用于 L3.5 闸的"强留/滞回/直通车不占
-    # 名额"契约)即便已出现在 finalists.csv 里也不计入预算比较。铁律「pinned 强留不占名额」
-    # 原实现只在"注入发生于 v3 cap 之后"生效、GATE2 记账却按全行数走,两者矛盾——满员日
+    # 名额」,exempt lane(pinned 保送/carryover 菜单滞回/watchlist_trigger 观察单直通车,
+    # `_EXEMPT_LANES`)即便已出现在 finalists.csv 里也不计入预算比较。铁律「pinned 强留不占
+    # 名额」原实现只在"注入发生于 v3 cap 之后"生效、GATE2 记账却按全行数走,两者矛盾——满员日
     # (cap=10 是好日子的常态输出)+1 只 pinned 即确定性触发 GATE2 硬失败(见终审报告实证)。
     # exempt 行仍全额出现在 codes/n 里(它们确实会全部送 L4,只是不占『门』的坑)。
-    # 核查结论(carryover/watchlist_trigger 是否也会在 GATE2 时出现在 finalists 里):
-    # workflow scan-market.js 里 GATE2(128 行)先于 `l4_reuse --apply --carryover`
-    # (139 行)与 watchlist 直通车追加(watchlist.append_watchlist_trigger,同在 L4 phase)
-    # 执行——两者当前**晚于**本闸,GATE2 见到的 finalists.csv 此刻不会含这两个 lane。
-    # 但 pinned 由 `l3_select finalists`(127 行,GATE2 之前)注入,GATE2 时**已经在场**——
-    # 这才是本 Critical 的真实触发路径。此处仍一并排除 carryover/watchlist_trigger 是纵深
-    # 防御(镜像 `_l35_exempt` 的既有防呆注释:万一未来追加顺序提前,契约不因此漂移),
-    # 不依赖"当前时序恰好安全"这一脆弱前提。
-    n_counted = (len(df[~df["lane"].astype(str).isin(_L35_EXEMPT_LANES)])
+    # 时序核查(carryover/watchlist_trigger 是否也会在 GATE2 时出现在 finalists 里):workflow
+    # scan-market.js 里 GATE2 先于 `l4_reuse --apply --carryover` 与 watchlist 直通车追加
+    # (均在 L4 phase)执行——两者当前**晚于**本门,GATE2 见到的 finalists.csv 此刻不会含
+    # 这两个 lane;但 pinned 由 `l3_select finalists`(GATE2 之前)注入,GATE2 时**已经在场**
+    # ——这才是 C-1 的真实触发路径。此处仍一并排除 carryover/watchlist_trigger 是纵深防御:
+    # 万一未来追加顺序提前,契约不因此漂移,不依赖"当前时序恰好安全"这一脆弱前提。
+    n_counted = (len(df[~df["lane"].astype(str).isin(_EXEMPT_LANES)])
                  if "lane" in df.columns else len(df))
     if n_counted > budget:
         return {"ok": False, "gate": "gate2",
-                "reason": f"finalists {n_counted} > budget {budget}(exempt 不计入)",
-                "l4_gate": l35["name"], "l35_cut_n": l35["cut_n"]}
+                "reason": f"finalists {n_counted} > budget {budget}(exempt 不计入)"}
     return {"ok": True, "gate": "gate2", "reason": "ok", "finalists": codes,
-            "n": int(len(df)), "l4_gate": l35["name"], "l35_cut_n": l35["cut_n"]}
+            "n": int(len(df))}
 
 
 def gate4(scan_dir: Path) -> dict:

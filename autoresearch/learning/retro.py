@@ -595,54 +595,6 @@ def shadow_compare(attr: pd.DataFrame, sdir: Path) -> list[dict]:
     return out
 
 
-def l35_gate_shadow(attr: pd.DataFrame, sdir: Path) -> dict | None:
-    """L3.5 闸影子反事实(design 2026-07-11-recall-gate-pinned-config-design.md §3;
-    plan 2026-07-11-l35-gate-backtest-plan.md Task 3):被闸掉的候选(`gates.apply_l35_gate`
-    落的 `_l35_cut.csv`)T+2 主尺 fwd_2_oc vs picked(`finalists.csv`,闸后名单)均值对照——
-    闸的日常体检读数,抄 `shadow_compare` 同款姿势(presence-gated,单日读数薄)。
-
-    无 `_l35_cut.csv`(passthrough 默认 / 当日该闸恰好全放行)→ `None`(不进 retro_input,
-    呼应 assemble「无 cut 文件不加节」的 presence-gated 契约,两处同一判据)。fwd_2_oc 未成熟
-    或两侧样本皆空 → 对应 mean 为 `None`(不臆造数字),`n_*_realized` 如实报 0。
-    """
-    cutp = sdir / "_l35_cut.csv"
-    if not cutp.exists():
-        return None
-    try:
-        cut = pd.read_csv(cutp, dtype={"code": str})
-    except Exception:  # noqa: BLE001
-        return None
-    if not len(cut) or "code" not in cut.columns:
-        return None
-    cut = cut.copy()
-    cut["code"] = cut["code"].astype(str).str.zfill(6)
-
-    a = attr.copy()
-    a["code"] = a["code"].astype(str).str.zfill(6)
-    fwd = (pd.to_numeric(a.set_index("code")["fwd_2_oc"], errors="coerce")
-          if "fwd_2_oc" in a.columns else pd.Series(dtype=float))
-
-    cut_fwd = fwd.reindex(cut["code"]).dropna()
-    picked_fwd = pd.Series(dtype=float)
-    finp = sdir / "finalists.csv"
-    if finp.exists():
-        try:
-            fin = pd.read_csv(finp, dtype={"code": str})
-        except Exception:  # noqa: BLE001
-            fin = None
-        if fin is not None and "code" in fin.columns:
-            picked_codes = fin["code"].astype(str).str.zfill(6)
-            picked_fwd = fwd.reindex(picked_codes).dropna()
-
-    return {
-        "n_cut": int(len(cut)),
-        "n_cut_realized": int(len(cut_fwd)),
-        "cut_mean_fwd2": round(float(cut_fwd.mean()), 5) if len(cut_fwd) else None,
-        "n_picked_realized": int(len(picked_fwd)),
-        "picked_mean_fwd2": round(float(picked_fwd.mean()), 5) if len(picked_fwd) else None,
-    }
-
-
 def l3_bench_shadow(attr: pd.DataFrame, sdir: Path, top_n: int = 5) -> dict | None:
     """L3 bench 防漏体检(design: plan 2026-07-12-l3-merge-plan.md Task 5):bench(l3-rank judged
     但未晋级 finalist 的候选,`_l3_bench.csv`)按 conviction 取 top-N 的已实现 fwd_2_oc 均值,
@@ -650,7 +602,7 @@ def l3_bench_shadow(attr: pd.DataFrame, sdir: Path, top_n: int = 5) -> dict | No
     若跑赢/持平 finalists,说明 finalist tier 收窄可能漏掉了够格票。
 
     无 `_l3_bench.csv`(旧日期/two_pass 关闭/Task2 bench 落地前)→ `None`(presence-gated,
-    不进 retro_input,姿势同 `l35_gate_shadow`)。缺 `conviction` 列 → 退化为文件前 N 行
+    不进 retro_input,姿势同 `shadow_compare`)。缺 `conviction` 列 → 退化为文件前 N 行
     (不排序,不报错)。`finalists.csv` 缺失 → finalists 侧 mean 报 `None`(纵深防御,不因此
     连 bench 侧读数也不渲染)。fwd_2_oc 未成熟/两侧样本皆空 → mean 为 `None`(不臆造数字)。
     """
@@ -854,17 +806,6 @@ def write_retro_input(date: str, attr: pd.DataFrame, scan_root: Path | None = No
                       f"T+5 捕获 {r['cap5']} vs 主 {r['cap5_main']}" for r in sc]
     except Exception:  # noqa: BLE001
         pass
-
-    try:                                   # L3.5 闸影子(被闸票 T+2 主尺 fwd_2 vs picked 均值;presence-gated)
-        gs = l35_gate_shadow(attr, sdir)
-        if gs:
-            lines += ["\n## L3.5 闸影子(被闸票 fwd_2_oc vs picked 均值;闸的日常体检读数,"
-                      "无 `_l35_cut.csv` 则不进此节)",
-                      f"- cut {gs['n_cut']} 只(已实现 {gs['n_cut_realized']}):"
-                      f"mean_fwd2 {gs['cut_mean_fwd2']};picked(已实现 {gs['n_picked_realized']}):"
-                      f"mean_fwd2 {gs['picked_mean_fwd2']}"]
-    except Exception as e:  # noqa: BLE001
-        lines += [f"\n_L3.5 闸影子跳过:{e}_"]
 
     try:                                   # L3 收窄防漏体检(bench 头部 vs finalists + pass1_cut 赢家数;
                                             # plan 2026-07-12-l3-merge-plan.md Task 5;逐行 presence-gated)

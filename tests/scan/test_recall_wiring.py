@@ -83,3 +83,37 @@ def test_l1recall_stage_multi_writes_channels(patched, tmp_path):
     assert "n_channels" in l1.columns and len(l1) == 300
     chans = store.get_df(ctx.run_id, schema.L1_CHANNELS)
     assert set(chans["channel"].unique()) and "code" in chans.columns
+
+
+# ───────────────── 数据降级落盘(接线验证:FN-1 教训"接了 ≠ 生效") ─────────────────
+
+
+def test_universe_run_writes_degraded_json_when_tier_b_degrades(patched, tmp_path):
+    """B 级降级 → `degraded.json` 落进当日 staging(assemble 据此在报告里显示一行)。
+
+    走**真的 `universe.run`**,不是单独测那三行落盘代码 —— FN-1 三连的教训:
+    "接了参数/写了生产者 ≠ 它真的在生产路径上被调用"。
+    """
+    import json
+
+    from autoresearch.data import contracts
+
+    contracts.clear_degradations()
+    contracts.record_degradation("hk_hold", "空返回(该日无北向数据)→ north 组置空", key="20260709")
+    try:
+        out = tmp_path / "scan_deg"
+        smu.run(DATE, recall_n=300, l2_n=100, outdir=out, recall_mode="multi")
+        recs = json.loads((out / "degraded.json").read_text(encoding="utf-8"))
+        assert recs[0]["endpoint"] == "hk_hold"
+    finally:
+        contracts.clear_degradations()
+
+
+def test_universe_run_no_degraded_json_when_all_data_clean(patched, tmp_path):
+    """presence-gated:无降级 → 不落文件(不给报告加噪音)。"""
+    from autoresearch.data import contracts
+
+    contracts.clear_degradations()
+    out = tmp_path / "scan_clean"
+    smu.run(DATE, recall_n=300, l2_n=100, outdir=out, recall_mode="multi")
+    assert not (out / "degraded.json").exists()

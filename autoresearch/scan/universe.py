@@ -55,6 +55,7 @@ from autoresearch.common.scoring import (
 # 帧构建(L0 取数 + 轻门 + 多日量价)已抽到 scan.frame(Phase 0,design:
 # 2026-07-03-research-skills-altitude-refactor §5.1):run / L1Recall stage / 盘前预告 CLI 三处共用;
 # _recall_gate_a / _harvest_vol_series 由此 re-export(tests/stages 旧导入路径兼容,patch 锚点在 frame)。
+from autoresearch.data.contracts import degradations as contracts_degradations
 from autoresearch.scan.frame import (  # noqa: F401 — re-export 兼容
     _harvest_vol_series,
     _recall_gate_a,
@@ -332,10 +333,17 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
         l2_lane_quota: int = 40,                                          # 弃用(分层采样取代)
         l2_lane_channels=("momentum", "heat", "growth", "accumulation"),
         channel_quotas: dict[str, int] | None = None,                     # 覆盖各路 quota(None=CHANNEL_DEFAULTS,parity)
-        channel_floors: dict[str, int] | None = None) -> dict:            # 覆盖各路 floor(None=CHANNEL_DEFAULTS,parity)
+        channel_floors: dict[str, int] | None = None,                     # 覆盖各路 floor(None=CHANNEL_DEFAULTS,parity)
+        weights_path: str | None = None) -> dict:                         # L1 权重文件(None=默认路径=parity;回放器注入 as-of 快照防前视)
     """L0 选集 + L1 召回 + L2 粗排(GBDT 学习重排 → top l2_n)。全确定性,零 LLM。
 
     recall_mode:multi=多路策略召回(默认,带 provenance + L1_channels.csv)| composite=单复合分(对拍/回退)。
+
+    `weights_path`:透传 `pick_weights(path=...)`。**None = 现行为**(读
+    `context/factor_lab/weights.json`)→ 逐字节 parity,生产路径不受影响。存在的理由是
+    **权重 PIT**(design 2026-07-12-funnel-replay-l35-removal-design.md Part B §2.3):
+    weights.json 是 retro 用含未来前向收益校准出来的,拿它回放历史 = 用未来的权重预测过去;
+    `research.replay` 因此注入先验/as-of 权重快照。
     """
     # FN-1 缝第三修:生产真身(workflow→prelude→本函数直调)不经 cli._config_from_args,scan_config
     # 的 funnel 在真跑动从未生效(2026-07-11 冒烟坐实:仍 11 路旧配额)。兜底下沉:调用方没显式给的
@@ -348,7 +356,9 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
                                       source=source, l0_min_amount_yi=l0_min_amount_yi,
                                       l0_min_list_days=l0_min_list_days)
     n_raw, n_l0 = _counts["universe_raw"], _counts["universe"]
-    weights, _regime = pick_weights(uni, regime_aware)
+    # weights_path=None → 不传 path,吃 pick_weights 的默认值(=现行为,parity);给了才覆盖。
+    weights, _regime = pick_weights(uni, regime_aware,
+                                    **({"path": weights_path} if weights_path else {}))
     scored = composite_score(uni, weights)
     pinned = load_pinned(analysis_date, path=pinned_path)["kept"]   # 保送票强注 L1(缺 pinned.json→kept=[]→no-op parity)
     recall, per_channel = recall_select(scored, analysis_date, recall_n, recall_mode,
@@ -415,6 +425,14 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
             json.dumps(weights, ensure_ascii=False, indent=2, default=float), encoding="utf-8")
     except Exception as e:  # noqa: BLE001 — 快照失败只警告,不阻断漏斗
         print(f"[warn] weights_used.json 快照失败: {e}", file=sys.stderr)
+    # B 级数据降级落盘(design 2026-07-12-data-contracts-design.md §3):A 级违约已在取数处抛异常
+    # 阻断,能跑到这里说明地基是全的;剩下的是增强端点缺失(北向/质押/席位/公告…)——它们**必须
+    # 可见**,否则又回到"系统有降级能力、没有传达能力"的老路。presence-gated:无降级不落文件。
+    degraded = contracts_degradations()
+    if degraded:
+        (outdir / "degraded.json").write_text(
+            json.dumps(degraded, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"[数据契约] 本次 B 级降级 {len(degraded)} 条 → {outdir / 'degraded.json'}", file=sys.stderr)
     print(f"[done] L1 召回 → {outdir}/L1_recall_top1000.csv ({len(recall)})", file=sys.stderr)
     return {"universe": n_l0, "after_gate_a": len(uni), "recall_n": len(recall),
             "l2_n": len(l2), "l2_engine": l2_engine, "sectors": len(sectors), "outdir": str(outdir)}
