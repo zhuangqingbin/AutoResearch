@@ -544,10 +544,12 @@ def harvest_l3_evidence(date: str, codes: list[str], root: Path | None = None) -
     """对 L2 保留的 ~200 只补 L1 没有的真证据(龙虎榜/预告/快报)。bulk by date 一次拉、本地过滤;
 
     失败/无权限降级标注。产出 context/scan/<date>/L3_evidence/<code>.json,返回 {code: evidence}。
+    2026-07-12 P2a:三端点改走 get_or_fetch(policy 早已注册)——已结算日湖命中零网络,预热(P1)可预拉。
     """
     import json
 
-    from autoresearch.data.tushare_source import _code6, _pro, _ts_call, resolve_momentum_dates
+    from autoresearch.data import cache as _cache  # 经模块属性调用,测试可 monkeypatch
+    from autoresearch.data.tushare_source import _code6, _pro, resolve_momentum_dates
     root = root or Path("context/scan")
     out_dir = root / date / "L3_evidence"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -558,7 +560,7 @@ def harvest_l3_evidence(date: str, codes: list[str], root: Path | None = None) -
 
     def _bulk(label, fn, key_field="ts_code"):
         try:
-            df = _ts_call(fn)
+            df = fn()
             if df is None or df.empty:
                 return
             df = df.assign(_c=_code6(df[key_field]))
@@ -567,15 +569,15 @@ def harvest_l3_evidence(date: str, codes: list[str], root: Path | None = None) -
         except Exception as e:  # noqa: BLE001
             ev.setdefault("_errors", {}).setdefault(label, str(e))   # 端点级错误记一次,不污染每只
 
-    _bulk("longhu", lambda: pro.top_list(trade_date=last))           # 龙虎榜席位(游资/机构)
+    _bulk("longhu", lambda: _cache.get_or_fetch("top_list", {"trade_date": last}, today=date))  # 龙虎榜席位(游资/机构)
     # forecast/express 需 ann_date 或 ts_code(period 单参不够)→ 扫最近 ~10 个交易日的公告
     from datetime import datetime, timedelta
 
     from autoresearch.data.tushare_source import _trade_days
     start = (datetime.strptime(last, "%Y%m%d") - timedelta(days=30)).strftime("%Y%m%d")
     for dd in _trade_days(pro, start, last)[-10:]:
-        _bulk("forecast", lambda dd=dd: pro.forecast(ann_date=dd))   # 业绩预告
-        _bulk("express", lambda dd=dd: pro.express(ann_date=dd))     # 快报
+        _bulk("forecast", lambda dd=dd: _cache.get_or_fetch("forecast", {"ann_date": dd}, today=date))   # 业绩预告
+        _bulk("express", lambda dd=dd: _cache.get_or_fetch("express", {"ann_date": dd}, today=date))     # 快报
     for c in want:
         (out_dir / f"{c}.json").write_text(json.dumps(ev[c], ensure_ascii=False, default=str), encoding="utf-8")
     return ev
