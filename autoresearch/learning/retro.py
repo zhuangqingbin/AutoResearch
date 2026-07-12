@@ -354,12 +354,29 @@ def _report_dir_for(date: str, report_root: Path) -> Path | None:
     return dirs[-1] if dirs else None
 
 
-def _buylist(date: str, report_root: Path | None = None) -> dict[str, str]:
-    """读数据日=date 的已发布报告 details/<名称>.md → {code: 五档评级}。
+def _buylist(date: str, report_root: Path | None = None,
+             scan_dir: Path | None = None) -> dict[str, str]:
+    """评级 buylist:{code: 五档评级}。
+
+    P0-2(坏账③修复):优先读 `<scan_dir>/_final_ratings.json`(assemble 发布时落的
+    ensemble/verify **折回后终评级**)——此前直接解析已发布报告卡面文本,Tier-3 红队降级/
+    否决 + 买单 ensemble 折回都只改了 assemble 内存里的评级,从未写回卡片文件,导致被折回的
+    OW 仍以卡面 OW 进 attribution,污染 `bought`/评级基率(06-30 胜宏实证;STAGES.md 开放
+    线头 #6)。presence-gated:缺 `scan_dir` 入参/缺文件/坏 json/空表 → 回退**卡面解析**
+    (读已发布报告 `details/*.md` 的 `parse_rating`,现行为不变)。
 
     目录名现在是运行时刻(数据日在 manifest),由 `_report_dir_for` 解析定位;发布层卡名是**名称**,
     code 从卡内标题 `# 决策卡 — <code> <名称>` 取(复用 parse_rating 提评级)。
     """
+    if scan_dir is not None:
+        fp = Path(scan_dir) / "_final_ratings.json"
+        if fp.exists():
+            try:
+                data = json.loads(fp.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001 — 坏 json 回退卡面解析
+                data = None
+            if isinstance(data, dict) and data:
+                return {str(k).zfill(6): str(v) for k, v in data.items()}
     rdir = _report_dir_for(date, report_root or Path("reports/scan"))
     if rdir is None:
         return {}
@@ -441,7 +458,8 @@ def pending_days(today: str | None = None, scan_root: Path | None = None,
 _KEEP = ["code", "name", "industry", "bucket", "winner", "news_pop", "fwd_1_oo", "fwd_2_oc", "hi_2_oc",
          "fwd_5_oc", "fwd_10_oc", "hi_10_oc", "winner_5", "bucket_5",
          "gap_d1", "rank", "recalled_flag", "composite", "score_momentum", "score_fund_main",
-         "score_chip", "pct_60d", "main_net_ratio", "winner_rate", "price_to_cost", "rsi6", "rating", "bought"]
+         "score_chip", "pct_60d", "main_net_ratio", "winner_rate", "price_to_cost", "rsi6", "rating", "bought",
+         "process_score"]   # P0-4:逐卡过程分(presence-gated join,见 _join_process_score)
 
 
 def refine_l3_bucket(attr: pd.DataFrame, sdir: Path) -> pd.DataFrame:
@@ -485,6 +503,28 @@ def refine_l3_bucket(attr: pd.DataFrame, sdir: Path) -> pd.DataFrame:
     return out
 
 
+def _join_process_score(attr: pd.DataFrame, sdir: Path) -> pd.DataFrame:
+    """P0-4:`<sdir>/process_scores.csv`(逐卡过程分 checklist)→ attribution 加
+    `process_score` 列(presence-gated join)。
+
+    缺文件/空表/缺列 → 原样返回,不加列(老路不破;调用方按 `"process_score" in attr.columns`
+    判断该日是否有过程分读数)。"""
+    p = Path(sdir) / "process_scores.csv"
+    if not p.exists():
+        return attr
+    try:
+        ps = pd.read_csv(p, dtype={"code": str})
+    except Exception:  # noqa: BLE001
+        return attr
+    if not len(ps) or "code" not in ps.columns or "process_score" not in ps.columns:
+        return attr
+    ps = ps[["code", "process_score"]].copy()
+    ps["code"] = ps["code"].astype(str).str.zfill(6)
+    out = attr.copy()
+    out["code"] = out["code"].astype(str).str.zfill(6)
+    return out.merge(ps, on="code", how="left")
+
+
 def attribute(date: str, scan_root: Path | None = None, report_root: Path | None = None,
               abs_thresh: float = 0.03) -> pd.DataFrame:
     """单日归因 → 写 context/scan/<date>/retro/attribution.csv,返回全帧。"""
@@ -494,9 +534,10 @@ def attribute(date: str, scan_root: Path | None = None, report_root: Path | None
     realized = realized_returns(date)
     if realized.empty:
         raise RuntimeError(f"{date} 的 fwd 未实现 / 无价格,暂不能复盘")
-    attr = attribute_frame(l1, realized, _buylist(date, report_root), abs_thresh=abs_thresh)
+    attr = attribute_frame(l1, realized, _buylist(date, report_root, scan_dir=sdir), abs_thresh=abs_thresh)
     attr = flag_news_pop(attr)                       # 标隔夜跳空脉冲(诊断/重标定排除)
     attr = refine_l3_bucket(attr, sdir)              # 细分 recalled_cut → l3_bench/pass1_cut(presence-gated)
+    attr = _join_process_score(attr, sdir)           # P0-4:process_scores.csv → process_score 列(presence-gated)
     outdir = sdir / "retro"
     outdir.mkdir(parents=True, exist_ok=True)
     attr[[c for c in _KEEP if c in attr.columns]].to_csv(outdir / "attribution.csv", index=False)

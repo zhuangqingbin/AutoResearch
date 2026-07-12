@@ -156,6 +156,25 @@ def _ensemble_dissent_lines(emap: dict[str, dict]) -> list[str]:
     return lines
 
 
+def _dump_final_ratings(scan_dir: Path, rows: list[dict]) -> None:
+    """P0-2(坏账③修复):把 ensemble/verify 折回后的**终评级**落 `<scan_dir>/_final_ratings.json`
+    (`{code: rating}`)。
+
+    此前 retro 归因只读发布报告 `details/*.md` 的**卡面**评级(`parse_rating`)——Tier-3 红队
+    降级/否决 + 买单 ensemble 折回都只改了 `build_summary` 内存里的 `rows["rating"]`,从未写回
+    卡片文件,导致被折回的 OW(如 06-30 胜宏)仍以卡面 OW 进 attribution,污染 `bought`/评级基率
+    (STAGES.md 开放线头 #6)。`retro._buylist` 优先 join 本文件(presence-gated,缺文件回退卡面
+    解析,老路不破)。调用时机:两个 fold 循环(verify 降级 + ensemble 折回)都已跑完、`rows.sort`
+    之前——此时 `rows` 里的 `rating` 即最终值。IO 失败不阻发布(同 assemble 其余 staging 写手惯例)。
+    """
+    import contextlib
+    with contextlib.suppress(Exception):
+        out = {str(r.get("code", "")).zfill(6): r.get("rating", "—")
+               for r in rows if r.get("code")}
+        (Path(scan_dir) / "_final_ratings.json").write_text(
+            json.dumps(out, ensure_ascii=False), encoding="utf-8")
+
+
 _PROPOSAL_BY_RATING = {"Buy": "BUY", "Overweight": "BUY", "Hold": "HOLD",
                        "Underweight": "SELL", "Sell": "SELL"}
 
@@ -815,6 +834,7 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
             r["proposal"] = _PROPOSAL_BY_RATING.get(folded, r.get("proposal", "—"))
         if _ensemble_flag(e):
             r["ens_flag"] = True                # 🎭复核分歧:spread≥2 → 行 badge + 组合视角人裁提示
+    _dump_final_ratings(scan_dir, rows)   # P0-2:两个 fold 循环已跑完 → rows["rating"] 即终评级,落盘供 retro 优先 join
     rows.sort(key=_sortkey)
     regime_line, regime_drift = regime_and_drift(scan_dir)
 
@@ -1112,6 +1132,9 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
     from autoresearch.scan import health as _health  # lazy:体检失败不阻发布
     with contextlib.suppress(Exception):
         _health.write_run_health(scan_dir)             # 先写 staging,再随 trace mapping 带走
+    with contextlib.suppress(Exception):               # P0-4:逐卡过程分 checklist(presence-gated,失败不阻发布)
+        from autoresearch.learning.process_score import write_process_scores
+        write_process_scores(scan_dir)
     n_pipe = _publish_pipeline(scan_dir, out_base, analysis_date)   # trace/ 挂 out_base(details 同级)
     (out_base / "manifest.json").write_text(json.dumps(            # retro 按 analysis_date 定位本报告(目录名≠数据日)
         {"analysis_date": analysis_date, "generated_at": now.isoformat(timespec="seconds"), "hhmm": hhmm},
@@ -1138,6 +1161,11 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
         with contextlib.suppress(Exception):           # 扫描日记刷新(失败不阻发布)
             from autoresearch.learning import journal as _journal
             _journal.main()
+        with contextlib.suppress(Exception):           # P0-1(c):判例索引增量建库(precedents.build_index,失败不阻发布)
+            from autoresearch.learning.precedents import build_index
+            res = build_index()
+            if res.get("dates_indexed"):
+                print(f"[precedents] 索引 {len(res['dates_indexed'])} 新日 → context/knowledge/precedents.db")
     print(f"[L5 整合] summary → {summary_path}  (数据日 {analysis_date})")
     print(f"[L5 整合] details → {detail_out}  ({n_cards} 张卡 + trace/ {n_pipe} 件溯源)")
     return summary_path

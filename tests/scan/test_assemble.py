@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import csv
 import json
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -337,3 +338,100 @@ def test_build_summary_includes_l35_line_when_cut_file_present(tmp_path):
 def test_published_default_fixture_has_no_l35_shadow_line(published):
     """反向 parity 检查:默认合成 scan dir(无 _l35_cut.csv)不应出现 L3.5 闸影子节。"""
     assert "L3.5 闸影子" not in published["md"]
+
+
+# ───────────────────────── P0-2:_final_ratings.json(assemble.py 单写者 T2) ─────────────────────────
+#
+# design: docs/specs/2026-07-12-selflearning-optimization-brainstorm.md §4 P0-2
+# STAGES: .claude/skills/scan-market/STAGES.md 开放线头 #6
+
+
+def test_final_ratings_json_written_after_publish(tmp_path):
+    root = tmp_path / "scan_l5_fr"
+    scan = _build_scan_dir(root)
+    assemble.run(_DATA_DATE, scan_dir=scan, out_root=root / "reports/scan",
+                hhmm=_HHMM, run_date=_RUN_DATE)
+    fp = scan / "_final_ratings.json"
+    assert fp.exists()
+    data = json.loads(fp.read_text(encoding="utf-8"))
+    assert data == {"300476": "Hold", "600519": "Hold", "002384": "—", "301117": "Overweight"}, data
+
+
+def test_final_ratings_json_reflects_verify_downgrade_not_card_face(tmp_path):
+    """300476(甲)卡面 Overweight,但 verify.csv 判『降级』→ _final_ratings.json 必须落 Hold
+    (终评级),不能是卡面残留的 Overweight —— 这正是坏账③要修的行为(STAGES 线头 #6)。"""
+    root = tmp_path / "scan_l5_fr2"
+    scan = _build_scan_dir(root)
+    card_text = (scan / "details" / "300476.md").read_text(encoding="utf-8")
+    assert "**Overweight**" in card_text, "夹具前提:甲卡面应仍是 Overweight(折回前)"
+    assemble.run(_DATA_DATE, scan_dir=scan, out_root=root / "reports/scan",
+                hhmm=_HHMM, run_date=_RUN_DATE)
+    data = json.loads((scan / "_final_ratings.json").read_text(encoding="utf-8"))
+    assert data["300476"] == "Hold"
+
+
+def test_final_ratings_json_maintained_ow_keeps_overweight(tmp_path):
+    """301117(丁)verify.csv 判『维持』→ 终评级仍是 Overweight,不误折。"""
+    root = tmp_path / "scan_l5_fr3"
+    scan = _build_scan_dir(root)
+    assemble.run(_DATA_DATE, scan_dir=scan, out_root=root / "reports/scan",
+                hhmm=_HHMM, run_date=_RUN_DATE)
+    data = json.loads((scan / "_final_ratings.json").read_text(encoding="utf-8"))
+    assert data["301117"] == "Overweight"
+
+
+# ───────────────────────── P0-4:process_scores.csv 接线(assemble.run 侧) ─────────────────────────
+
+
+def test_process_scores_csv_present_in_fresh_publish(tmp_path):
+    """assemble.run() 应把过程分 checklist 落 <scan_dir>/process_scores.csv(presence-gated,
+    finalists.csv 在场即写)。"""
+    root = tmp_path / "scan_l5_ps"
+    scan = _build_scan_dir(root)
+    assemble.run(_DATA_DATE, scan_dir=scan, out_root=root / "reports/scan",
+                hhmm=_HHMM, run_date=_RUN_DATE)
+    p = scan / "process_scores.csv"
+    assert p.exists()
+    df = pd.read_csv(p, dtype={"code": str})
+    assert set(df["code"]) == {"300476", "600519", "002384", "301117"}
+    assert "process_score" in df.columns
+
+
+# ───────────────────────── P0-1(c):precedents.build_index 挂 is_real 后处理 ─────────────────────────
+
+
+def test_run_does_not_touch_real_precedents_db(tmp_path):
+    """assemble.run(tmp_scan_dir) 不应创建或修改真实 context/knowledge/precedents.db
+    (is_real=False 时不触发 precedents.build_index;镜像 test_run_does_not_touch_real_shadow_csv)。"""
+    real_db = Path("context/knowledge/precedents.db")
+    original_mtime = real_db.stat().st_mtime if real_db.exists() else None
+
+    root = tmp_path / "scan_l5_prec"
+    scan = _build_scan_dir(root)
+    assemble.run(_DATA_DATE, scan_dir=scan, out_root=root / "reports/scan",
+                hhmm=_HHMM, run_date=_RUN_DATE)
+
+    if original_mtime is not None:
+        assert real_db.stat().st_mtime == original_mtime, "真实 precedents.db 不应被修改"
+    else:
+        assert not real_db.exists(), "真实 precedents.db 不应被创建"
+
+
+def test_is_real_publish_calls_precedents_build_index(tmp_path, monkeypatch):
+    """is_real 分支(scan_dir 解析为 context/scan/<date> 本尊)应调用一次
+    `precedents.build_index`(P0-1(c))。
+
+    `is_real` 判据硬编码相对路径比较(`Path("context/scan")/analysis_date`),无参数可覆盖,
+    只能靠 chdir 到全新 tmp_path 触发正分支(全沙盒,不碰真实仓库;对照上面的负分支测试)。
+    build_index 本体替换为计数桩,避免真建 sqlite 索引、不受环境 FTS5 差异影响。
+    """
+    monkeypatch.chdir(tmp_path)
+    scan = _build_scan_dir(tmp_path)   # root=tmp_path(已 chdir)→ scan = tmp_path/context/scan/<date>
+    calls: list[tuple] = []
+    monkeypatch.setattr("autoresearch.learning.precedents.build_index",
+                        lambda *a, **k: calls.append((a, k)) or {"dates_indexed": ["x"]})
+
+    assemble.run(_DATA_DATE, scan_dir=scan, out_root=tmp_path / "reports/scan",
+                hhmm=_HHMM, run_date=_RUN_DATE)
+
+    assert calls, "is_real 发布应调用 precedents.build_index 一次"
