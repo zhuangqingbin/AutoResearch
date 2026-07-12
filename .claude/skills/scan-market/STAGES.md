@@ -10,9 +10,9 @@
 主链六段,从全市场一路收窄到一份报告:
 
 ```
-L0 选集  →  L1 召回  →  L2 粗排  →  L3 精排  →  L4 研究  →  L5 整合
-全A ~5500    top1000    top200     ~15–30 只   决策卡×N    1 份报告
-（确定性）  （确定性）  （确定性）  （Opus×1）  （Opus×N）  （确定性）
+L0 选集  →  L1 召回  →  L2 粗排  →  L3 精排(两遍法)      →  L4 研究     →  L5 整合
+全A ~5500    top1000    top200     pass1→~60→finalist 7–10   决策卡×(7–10   1 份报告
+（确定性）  （确定性）  （确定性）  （确定性+Opus×1）          +♻️复用/📌保送） （确定性）
 ```
 
 **两条旁路**(不在主链上,并行算好后喂进主链):
@@ -129,7 +129,7 @@ Stage 0 与 L0 并行,回退到 L2 之后落盘。模板在 `macro-playbook.md` 
 - **配置装载链**(Plan A3):
   - `scan_config.jsonc`(真 JSON 直接生效、支持 `//` 注释;白名单加载见 `autoresearch/scan/user_config.py`)经 `frame --json` 校验后,回显进 `market_pack` 与 `user_config_echo.json`。
   - 由调用方随 Workflow 的 `args.config` 传进 `scan-market.js`(脚本本身无文件系统访问,不能自己读文件)。
-  - 各 stage(`strategist` / `sector_brief` / `l3_rank` / `l4_card` / `redteam`)的 agent model / effort **优先级:scan_config > workflow 内建 > agent def frontmatter 默认**;缺配置或缺键 = workflow 内建现值(parity)。
+  - 各 stage(`strategist` / `sector_brief` / `l3_rank` / `l4_card` / `l4_intel` / `redteam`)的 agent model / effort **优先级:scan_config > workflow 内建 > agent def frontmatter 默认**;缺配置或缺键 = workflow 内建现值(parity)。当前试点:`sector_brief` model=sonnet(07-12 下沉,账本验 brief 质量,删键回滚 opus)。
 
 ---
 
@@ -191,18 +191,7 @@ L2 之后、与 L3 证据取数**并发**:
 - 周频抽检:`shuffle_seed` 乱序再跑 audit agent,overlap<0.70 → 提 proposal。
 - 错杀验尸(retro 侧):L2-keep 且非 finalist 且 T+5 赢家,join 红队理由写 lesson。实证错杀 = 0 —— **病在召回线,别冤枉判断层**。
 
-### L3.5 · 可插拔闸(finalists → L4 收窄到 6~10;2026-07-12 起收窄职能已并入 L3)
-
-> **2026-07-12 用户裁定**:L3.5 闸=**passthrough 保留为回测 harness**,生产路径的收窄职能已并入 L3(L3 直接出 finalist tier 7–10,见上「输出契约增强」)——本闸不再是生产收窄的主路径,以下机制/策略/回测工具保留供实验复用,别删。
-
-在 `scan/gates.py` 的 GATE2 之后、L4 派发之前,把 finalists 收窄。**默认 passthrough(= 不收窄 = parity)。**
-
-- **选策略**:`scan_config.jsonc` 的 `l4_gate:{name, params}`。三个已注册策略(`scan/l35_gate.py` 的 `@gate`):`passthrough` / `topk_simple` / `conviction_floor_quota`。
-- **豁免直通**:lane ∈ {pinned, carryover, watchlist} 的票恒直通、不占配额。
-- **预算收编**:`l4_budget` 作为上限(setdefault)并进策略。
-- **影子账本**:被闸掉的票落 `_l35_cut.csv` → retro 补它们的 fwd_2 → L5 出「🚪 L3.5 闸影子」行(picked 均值 vs cut 均值 = 闸的日常体检)。
-- **回测迭代**:`python -m autoresearch.research.gate_backtest --gate <name> [--params-json ...]` 重放历史(L3_judged × fwd_2_oc,出入选收益 + 落选赢家错杀审计),攒够数据再调参。
-- **当前裁决 = 保 passthrough 不切**(2026-07-11 的 13 日回测):conviction floor 55–65 都比 passthrough 更差,只有 floor=70 跑赢、但每天只出 ~3 只;结论是只有 conviction≥70 的极高确信在 T+2 有正 edge,中间 band 是噪声 / 反预测(确信度是为 swing 校准的残留)。
+**(原 L3.5 闸已并入 L3——2026-07-12 用户裁定,生产路径无独立 L3.5 段)**:收窄职能由上面的 finalist tier 承接。残留现状三行:①`scan_config.jsonc` 的 `l4_gate` 恒 `passthrough`(GATE2 处 no-op);②GATE2 预算计数排除 exempt lane(pinned/carryover/watchlist 直通不占坑,`gates.py`);③`scan/l35_gate.py` + `research.gate_backtest` 仅作**回测 harness** 保留(13 日回测结论「只有 conviction≥70 有 T+2 edge、中间 band 是噪声」已内化为 conviction 行为化定义与 finalist tier 质量门,实验复用,勿删)。
 
 ---
 
@@ -217,7 +206,7 @@ L2 之后、与 L3 证据取数**并发**:
 
 ### 派发三步
 
-1. 落 `_l4_shared_instructions.md`(只放当日件)→ `l4_card prompts <date>` 落 `_harvest_list.txt`(`.SH`→`.SS`)+ 每卡一个 `_l4_prompt_<code>.md`(固定标头 → 共享块 → 逐卡简报;顺序被契约测试锁死 byte-identical,防 cache 前缀断裂)。
+1. 落 `_l4_shared_instructions.md`(只放当日件)→ `l4_card prompts <date>` 落 `_harvest_list.txt`(`.SH`→`.SS`)+ 每卡一个 `_l4_prompt_<code>.md`(固定标头 → 共享块 → 逐卡简报;顺序被契约测试锁死 byte-identical,防 cache 前缀断裂)。**pinned 票**逐卡块带 📌保送标记 + 📌持仓管理要求行(卡片须含『持仓管理』节:D+1/D+2 卖出纪律+触发位,评级独立;07-12 W2)。
 2. 预 harvest slim —— **二段式**:`_slim.md`(表面,P0–P3,**>8KB 才可信**)+ `_slim_deep.md`(深核:盈利质量 / 偿付 / 利润表,仅 P4 读、早停卡永不读)。
 3. 全部 `Agent(subagent_type='l4-card')` **一条消息并发**(别分 wave);行业 brief 走 `subagent_type='sector-brief'`。
 
@@ -277,12 +266,16 @@ self_review 硬门 banner → regime+drift 行(+🌡情绪温度行) → 📈市
 
 | 件 | 现状 |
 |---|---|
-| `retro` | 归因 → 诊断 → 权重重标定(可回滚)→ 建议 → 经验;根因已坐实,后续按 fwd_5 自动补跑 |
+| `retro` | 归因 → 诊断 → 权重重标定(可回滚)→ 建议 → 经验;归因桶细分 `l3_bench`/`pass1_cut`+漏检两行读数(bench top-5 vs finalists / pass1_cut 赢家数);attribution 优先 join `_final_ratings.json`(终评级)与 process_score 列(均 presence-gated);retro_input 未读 → prelude nag |
+| `prelude` 账本白名单 | 每日自动刷:attribution + journal/buy_ledger/cross_calib/catalyst/paper_nav/watchlist + **07-12 增 channel/gate/zero_buy/changelog 四账本**;失败不阻断 |
 | `stage_eval` | 逐段 edge:L2 −1.1%、L3 +0.144、L4 +0.075 |
 | `channel_ledger` | 边际 alpha → quota 提议;momentum unique +9.2% |
-| `zero_buy_ledger` | 0买日 vs 有买日对照;**2026-07-11 修 attribution `bought` 列落盘+幂等回填**(此前 3 个真实买单日被记 0 买,汇总待重读) |
+| `zero_buy_ledger` | 0买日 vs 有买日对照;买单口径 = attribution `bought` **单一事实源**(07-12 与 journal 统一,run_health 逐日核一致性) |
 | `temperature` | S1 情绪温度计五序列+五相位;回填 124 日,展示先行(菜单/预算联动=下一波) |
 | `target_calib` | hi_2_oc 分位校准 json(📐 目标锚);全市场 p60≈+3.7%,+8% 目标触达仅 14% |
+| `shrink` / `shrink_replay` | **基率收缩原语**(P0-3):四消费点(🔁基率/翻案率/📐细分格/tail_rate)注入收缩值 p̂=(n·p+k·p_g)/(n+k),n<3 仍禁注;`learning` 配置回滚杆;留一日回放 CLI 首读=翻案率 shrunk 优5.5%/左尾 raw 微优→默认开续攒 |
+| `process_score` / `process_backfill` | **过程分机检**(P0-4):逐卡 6 项确定性 checklist → `process_scores.csv` + attribution 列——0 买日也有日 n=10-30 过程标签;历史回填 355 卡,分布 {1:27,2:158,3:134,4:20,5:16} |
+| `lesson_yield` | **教训证伪器**(P0-5):逐条带 guard 教训的反事实 Δpp 累计 + MTM 计数;命中 n≥20 且累计 Δ≤0 自动提名 retire(只提名人批) |
 | `feedback_store` | lessons(regime 域 + MTM,cap=8)/ proposals / changelog / 权重回滚;`ls_reversal_regime_low_composite_trust` ×4 |
 | `gate_ledger` | 门 MTM 拦对率;**2026-07-11 OW 三门建账**(assemble 逐满卡解析失守→gate_fires binding 行;gate_status 容错空格+取最后可解析段,补记 12 行漏记)+ `tail_rate` 左尾 ≤−5% KPI(拍板 3:门=避雷器);首读:三门 mean_ex2 为正但 tail_rate 36-46% |
 | `watchlist_ledger` | 观察单触发 → 后市度量;待首样本 |
@@ -290,14 +283,14 @@ self_review 硬门 banner → regime+drift 行(+🌡情绪温度行) → 📈市
 | `factor_lab` | harvest → calibrate(_regimes)→ eval;107 成型日 |
 | `consensus` | 一致预期前向积累(限频 1 次/小时);<60 日不入线上 IC 门 |
 | `journal` | 扫描日记;11 日已回填,9/11 为 0 买日 |
-| `changelog_ledger` | 重标定前后 composite IC 对比;4 条入账 |
+| `changelog_ledger` | 重标定前后 composite IC 对比 + **trial 计数与 DSR-lite 两行**(多重检验提醒 + C18 红灯);07-12 复活首读:6 版、样本足 3 次 Δ 均值 +0.0614、**最新一次 Δ≤0 红灯亮**(该出「recalibrate 仅 regime 切换时触发」提案而非继续调) |
 | `buy_ledger` | 买后管理 → 评级基率(n≥10);6 笔历史 OW |
 | `sector_memo` | 行业事实月度蒸馏;空(待 ≥20 scan 日) |
-| `scan/health.py` | run_health + index.md 导航;churn 16% / 早停率 20% |
+| `scan/health.py` | run_health + index.md 导航 + **账本新鲜度行**(复盘欠账日数/账本 mtime 滞后/买单口径一致 ✓✗;07-12 P0-1);churn 16% / 早停率 20% |
 | `scan/calendar.py` | 解禁 + 披露日历;216 披露 + 1 大解禁 |
 | 影子漏斗 | universe 变体 L2 免费 A/B;积累中 |
-| `paper_nav` | 真实 / 影子 / 市场 三线 NAV;回填起 06-18 |
-| `shadow_buys` | conviction top-3 记账;历史回填 ~30 行 |
+| `paper_nav` | 真实 / 影子 / 市场 三线 NAV;回填起 06-18;**+sized 双轨**(分数Kelly×vol目标×流动性cap,纯纸面,缺数据回退等权;07-12 W1) |
+| `shadow_buys` | conviction top-3 纸面记账(三门证伪法庭);~45 笔;等权+sized 双轨 |
 | `catalyst_ledger` | 催化旗 fwd_5 对照(n≥30);零积累 |
 
 ---
@@ -324,6 +317,7 @@ self_review 硬门 banner → regime+drift 行(+🌡情绪温度行) → 📈市
 3. attribution 孤儿:06-19 端午假日键是非交易日,fwd 永远无法结算,保持 "—"。Δ 表省幅随日况;卡片复用省幅 = churn;评级基率 n<10 禁注。
 4. reversal_confirm 上线但与旧 reversal 的 A/B 未裁决(channel_eval 按 lane 计量,≥10 日再切/留);healthy 通道 alpha / 捕获增量也待 `pre_healthy` 影子反事实 + retro 裁决;哨兵档未实跑;token 真实计费只有 `/usage` 或 OTEL 落稿可见。
 5. consensus 首拉待限频窗,积累 <60 日前盈利修正不入线上;anns_d 无接口权限 → 公告情感列空、监管旗走 L3_webnews 回退,`anns_empty_rate`=1.0 即该态;northbound hk_ratio NaN=100% 时空转,已默认停用。
-6. **attribution 终评级缺口(终审 I-2,下波首件)**:retro 的 rating 取 staging 卡面,verify/ensemble 折回只改 summary → 被折回的 OW 会以卡面 OW 进 attribution 再污染 bought/评级基率(胜宏 06-30 实证)。修法已定:assemble 落 `_final_ratings.json`,retro 优先 join、缺文件回退卡面(presence-gated);**ensemble 首次真折回前必须完成**。
-7. **2026-07-11 P0+P1 波新开线头**:温度计菜单/预算联动待相位判定质量复审(下一波);L3 pf 指纹/lint 打回/L4 中性前提/盲读/基率行/📐锚/ensemble 全部**未实跑**(确定性件测试绿,LLM 段脚手架就位,下次真扫描=正式验收);capfloor20 影子/新配额(value250/heat150/main_fund150)攒 channel_ledger 前向读数 ≥10 日再复盘;三门账本/tail_rate 攒 ≥20 日才裁雷分级(P2);07-09 冒烟发现 reversal_confirm/healthy 当日 0 召回(数据条件性,非接线故障——起爆硬门无人过/健康谓词依赖 cmf 列,留意后续真跑读数)。
+6. ~~attribution 终评级缺口~~ **已修(07-12 P0-2)**:assemble 发布落 `_final_ratings.json`(两个 fold 循环后的终评级),retro 优先 join、缺文件回退卡面(presence-gated);仍欠=首次真实折回日人工核对一次。
+7. **2026-07-12 三波全部未实跑**:L3 两遍法+finalist tier(pass1 影子/bench 账本/守卫)、L4 情报站(config 默认关,启用即换 sonnet·max 盲搜)、自学习 P0 仪器(新鲜度行/过程分/收缩注入/lesson_yield/C18 红灯)——**下次真扫描=三波联合验收**,清单=`.superpowers/sdd/final-review-l3-merge.md`+`final-review-l4-intel.md`+各设计稿;07-07/08 复盘欠账由 nag 浮出;自学习 P0 波欠一轮正式终审(速审模式)。
+8. **2026-07-11 P0+P1 波新开线头**:温度计菜单/预算联动待相位判定质量复审(下一波);L3 pf 指纹/lint 打回/L4 中性前提/盲读/基率行/📐锚/ensemble 全部**未实跑**(确定性件测试绿,LLM 段脚手架就位,下次真扫描=正式验收);capfloor20 影子/新配额(value250/heat150/main_fund150)攒 channel_ledger 前向读数 ≥10 日再复盘;三门账本/tail_rate 攒 ≥20 日才裁雷分级(P2);07-09 冒烟发现 reversal_confirm/healthy 当日 0 召回(数据条件性,非接线故障——起爆硬门无人过/健康谓词依赖 cmf 列,留意后续真跑读数)。
 8. 仅供研究,非投资建议。
