@@ -1,6 +1,6 @@
 # 自学习系统优化方向 brainstorm(2026-07-12)
 
-> 状态:**方向稿·未拍板未实施**——三输入合成(仓内勘察+外部 C1-C27+六问纪律),优先级候选见 §4,拍板留给用户。调研原稿:`docs/research/2026-07-12-selflearning-external-research.md`。
+> 状态:**P0-1..7 已实施**(2026-07-12 当日落 main,plan=`docs/plans/2026-07-12-selflearning-p0-plan.md`;P0-1a 补跑复盘=运营项由 nag 浮出;P1/P2 仍待拍板)。首批真跑读数:shrink 回放=翻案率 shrunk 优5.5%/触达率平/左尾 raw 微优→默认开续攒;changelog 复活=样本足3次 Δ+0.0614 且最新 Δ≤0→C18 红灯首亮;过程分回填 355 卡。调研原稿:`docs/research/2026-07-12-selflearning-external-research.md`。
 
 
 > 输入:① 仓内闭环勘察(`learning-system-survey.md`,基于源码 grep+真实数据文件,截至 2026-07-12);② 外部调研 C1-C27(`selflearning-external-research.md`,24 次检索,证据强度已标注);③ 背景纪律 = `docs/specs/2026-07-11-funnel-six-questions-brainstorm.md` §0 证据底座、病灶三("反馈饥饿+仪器坏账——能学到别买什么,学不到该买什么")、§7 不做清单。
