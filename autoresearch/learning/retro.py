@@ -444,6 +444,47 @@ _KEEP = ["code", "name", "industry", "bucket", "winner", "news_pop", "fwd_1_oo",
          "score_chip", "pct_60d", "main_net_ratio", "winner_rate", "price_to_cost", "rsi6", "rating", "bought"]
 
 
+def refine_l3_bucket(attr: pd.DataFrame, sdir: Path) -> pd.DataFrame:
+    """细分 `recalled_cut` 桶(design: plan 2026-07-12-l3-merge-plan.md Task 5):L3 两遍法产两个
+    影子账本——pass1 分诊即切的 `_l3_pass1_cut.csv`、l3-rank judged 但未晋级 finalist 的
+    `_l3_bench.csv`。原先笼统落 `recalled_cut` 的赢家(召回了却没被买)现按命中哪个影子文件
+    细分成 `l3_bench`/`pass1_cut`——归因更贴近"漏在哪一步"(分诊就切 vs 判过没入选)。
+
+    命中优先序:bench 先于 pass1_cut(两文件结构上不重叠——一票只会出现在其一,顺序只为
+    防御性兜底)。任一文件缺失 → 该文件对应的码集合为空,不参与重打标(不要求"两个都在
+    才生效");**两文件都不存在/都空**(旧日期、two_pass 关闭、或 Task2 bench 落地前)→
+    原样返回,`recalled_cut` 现行为不变,presence-gated、零多算。只读,不写文件;只改
+    `recalled_cut` 行,其余 bucket(`caught`/`missed_l0`/`missed_l1`/`false_positive`/空)不动。
+    """
+    out = attr.copy()
+    if "bucket" not in out.columns or "code" not in out.columns:
+        return out
+
+    def _codes(fn: str) -> set[str]:
+        p = Path(sdir) / fn
+        if not p.exists():
+            return set()
+        try:
+            df = pd.read_csv(p, dtype={"code": str})
+        except Exception:  # noqa: BLE001
+            return set()
+        if not len(df) or "code" not in df.columns:
+            return set()
+        return set(df["code"].astype(str).str.zfill(6))
+
+    bench_codes = _codes("_l3_bench.csv")
+    cut_codes = _codes("_l3_pass1_cut.csv")
+    if not bench_codes and not cut_codes:
+        return out                                  # 两文件缺失/皆空 → 现行为不变
+
+    codes = out["code"].astype(str).str.zfill(6)
+    is_rc = out["bucket"] == "recalled_cut"
+    out.loc[is_rc & codes.isin(bench_codes), "bucket"] = "l3_bench"
+    still_rc = out["bucket"] == "recalled_cut"
+    out.loc[still_rc & codes.isin(cut_codes), "bucket"] = "pass1_cut"
+    return out
+
+
 def attribute(date: str, scan_root: Path | None = None, report_root: Path | None = None,
               abs_thresh: float = 0.03) -> pd.DataFrame:
     """单日归因 → 写 context/scan/<date>/retro/attribution.csv,返回全帧。"""
@@ -455,6 +496,7 @@ def attribute(date: str, scan_root: Path | None = None, report_root: Path | None
         raise RuntimeError(f"{date} 的 fwd 未实现 / 无价格,暂不能复盘")
     attr = attribute_frame(l1, realized, _buylist(date, report_root), abs_thresh=abs_thresh)
     attr = flag_news_pop(attr)                       # 标隔夜跳空脉冲(诊断/重标定排除)
+    attr = refine_l3_bucket(attr, sdir)              # 细分 recalled_cut → l3_bench/pass1_cut(presence-gated)
     outdir = sdir / "retro"
     outdir.mkdir(parents=True, exist_ok=True)
     attr[[c for c in _KEEP if c in attr.columns]].to_csv(outdir / "attribution.csv", index=False)
@@ -558,6 +600,90 @@ def l35_gate_shadow(attr: pd.DataFrame, sdir: Path) -> dict | None:
         "n_picked_realized": int(len(picked_fwd)),
         "picked_mean_fwd2": round(float(picked_fwd.mean()), 5) if len(picked_fwd) else None,
     }
+
+
+def l3_bench_shadow(attr: pd.DataFrame, sdir: Path, top_n: int = 5) -> dict | None:
+    """L3 bench 防漏体检(design: plan 2026-07-12-l3-merge-plan.md Task 5):bench(l3-rank judged
+    但未晋级 finalist 的候选,`_l3_bench.csv`)按 conviction 取 top-N 的已实现 fwd_2_oc 均值,
+    对照 finalists(`finalists.csv`)的 fwd_2_oc 均值——「收窄没吃好票」的日常法庭:bench 头部
+    若跑赢/持平 finalists,说明 finalist tier 收窄可能漏掉了够格票。
+
+    无 `_l3_bench.csv`(旧日期/two_pass 关闭/Task2 bench 落地前)→ `None`(presence-gated,
+    不进 retro_input,姿势同 `l35_gate_shadow`)。缺 `conviction` 列 → 退化为文件前 N 行
+    (不排序,不报错)。`finalists.csv` 缺失 → finalists 侧 mean 报 `None`(纵深防御,不因此
+    连 bench 侧读数也不渲染)。fwd_2_oc 未成熟/两侧样本皆空 → mean 为 `None`(不臆造数字)。
+    """
+    p = Path(sdir) / "_l3_bench.csv"
+    if not p.exists():
+        return None
+    try:
+        bench = pd.read_csv(p, dtype={"code": str})
+    except Exception:  # noqa: BLE001
+        return None
+    if not len(bench) or "code" not in bench.columns:
+        return None
+    bench = bench.copy()
+    bench["code"] = bench["code"].astype(str).str.zfill(6)
+    if "conviction" in bench.columns:
+        bench["conviction"] = pd.to_numeric(bench["conviction"], errors="coerce")
+        top = bench.sort_values("conviction", ascending=False).head(top_n)
+    else:
+        top = bench.head(top_n)
+
+    a = attr.copy()
+    a["code"] = a["code"].astype(str).str.zfill(6)
+    fwd = (pd.to_numeric(a.set_index("code")["fwd_2_oc"], errors="coerce")
+          if "fwd_2_oc" in a.columns else pd.Series(dtype=float))
+
+    top_fwd = fwd.reindex(top["code"]).dropna()
+    fin_fwd = pd.Series(dtype=float)
+    finp = Path(sdir) / "finalists.csv"
+    if finp.exists():
+        try:
+            fin = pd.read_csv(finp, dtype={"code": str})
+        except Exception:  # noqa: BLE001
+            fin = None
+        if fin is not None and "code" in fin.columns:
+            fin_codes = fin["code"].astype(str).str.zfill(6)
+            fin_fwd = fwd.reindex(fin_codes).dropna()
+
+    return {
+        "n_bench": int(len(bench)),
+        "n_bench_top": int(len(top)),
+        "n_bench_top_realized": int(len(top_fwd)),
+        "bench_top_mean_fwd2": round(float(top_fwd.mean()), 5) if len(top_fwd) else None,
+        "n_finalists_realized": int(len(fin_fwd)),
+        "finalists_mean_fwd2": round(float(fin_fwd.mean()), 5) if len(fin_fwd) else None,
+    }
+
+
+def pass1_cut_winners(attr: pd.DataFrame, sdir: Path) -> dict | None:
+    """pass1 分诊即切(`_l3_pass1_cut.csv`)中的 T+2 赢家数(design: plan 2026-07-12-l3-merge-plan.md
+    Task 5):沿用本模块 `attribute_frame` 已算好的 `winner` 定义(fwd_2_oc 前10%分位∧≥abs_thresh,
+    该模块现成赢家定义,不重算),数分诊环节切掉的票里事后有几只是赢家——「分诊有没有漏赢家」
+    的日常法庭读数。
+
+    无 `_l3_pass1_cut.csv`(旧日期/two_pass 关闭)→ `None`(presence-gated,不进 retro_input)。
+    """
+    p = Path(sdir) / "_l3_pass1_cut.csv"
+    if not p.exists():
+        return None
+    try:
+        cut = pd.read_csv(p, dtype={"code": str})
+    except Exception:  # noqa: BLE001
+        return None
+    if not len(cut) or "code" not in cut.columns:
+        return None
+    cut_codes = set(cut["code"].astype(str).str.zfill(6))
+
+    a = attr.copy()
+    a["code"] = a["code"].astype(str).str.zfill(6)
+    if "winner" in a.columns:
+        win_codes = set(a.loc[a["winner"].fillna(False).astype(bool), "code"])
+    else:
+        win_codes = set()
+
+    return {"n_cut": len(cut_codes), "n_winners": len(cut_codes & win_codes)}
 
 
 def _health_section(sdir: Path) -> list[str]:
@@ -693,6 +819,25 @@ def write_retro_input(date: str, attr: pd.DataFrame, scan_root: Path | None = No
                       f"mean_fwd2 {gs['picked_mean_fwd2']}"]
     except Exception as e:  # noqa: BLE001
         lines += [f"\n_L3.5 闸影子跳过:{e}_"]
+
+    try:                                   # L3 收窄防漏体检(bench 头部 vs finalists + pass1_cut 赢家数;
+                                            # plan 2026-07-12-l3-merge-plan.md Task 5;逐行 presence-gated)
+        sect: list[str] = []
+        bs = l3_bench_shadow(attr, sdir)
+        if bs:
+            sect.append(f"- L3 bench top-{bs['n_bench_top']}(按 conviction,bench 共 {bs['n_bench']} 只,"
+                        f"已实现 {bs['n_bench_top_realized']}):mean_fwd2 {bs['bench_top_mean_fwd2']} "
+                        f"vs finalists(已实现 {bs['n_finalists_realized']}):"
+                        f"mean_fwd2 {bs['finalists_mean_fwd2']}")
+        pc = pass1_cut_winners(attr, sdir)
+        if pc:
+            sect.append(f"- pass1_cut 中 T+2 赢家数:{pc['n_winners']}/{pc['n_cut']}"
+                        "(该模块 winner 定义:前10%∧≥3%)")
+        if sect:
+            lines += ["\n## L3 收窄防漏体检(「收窄没吃好票」的日常法庭;presence-gated,缺文件的行不渲染)",
+                      *sect]
+    except Exception as e:  # noqa: BLE001
+        lines += [f"\n_L3 收窄防漏体检跳过:{e}_"]
 
     try:                                   # F · 逐阶段 agent edge(staging 缺 / fwd 未实现则跳过)
         import autoresearch.learning.stage_eval as stage_eval
@@ -889,9 +1034,12 @@ def main() -> int:
         attr = attribute(args[1])
         write_retro_input(args[1], attr)
         st = stage_stats(attr)
+        # 误判 = recalled_cut + 其细分标签(l3_bench/pass1_cut,见 refine_l3_bucket)之和,
+        # 避免两遍法影子接入后 CLI 摘要静默漏计已被细分走的行。
+        misjudged = sum(st["buckets"].get(k, 0) for k in ("recalled_cut", "l3_bench", "pass1_cut"))
         print(f"[retro] {args[1]} 赢家 {st['n_winners']},买单命中 {st['buylist_hit']}/{st['buylist_n']},"
               f"漏 {st['buckets'].get('missed_l1', 0)+st['buckets'].get('missed_l0', 0)},"
-              f"误判 {st['buckets'].get('recalled_cut', 0)} → context/scan/{args[1]}/retro/")
+              f"误判 {misjudged} → context/scan/{args[1]}/retro/")
         return 0
     print(__doc__)
     return 0
