@@ -1,7 +1,7 @@
 # scan-market 周边提速包(perimeter speed)设计稿
 
 - 日期:2026-07-12
-- 状态:已拍板(用户批准六刀口;速度线只动「周边」,L3 判断结构明确不动)
+- 状态:已拍板(用户批准六刀口;速度线只动「周边」,L3 判断结构明确不动。**P7 为用户同日追加**:确定性「看多行业 top3」,非速度项,同波实施)
 - 基线读数:run `reports/scan/20260712_1857`(数据日 2026-07-10,详见下)
 - 关联:`docs/specs/2026-07-12-funnel-replay-l35-removal-design.md`(workflow 现状)、
   `docs/specs/2026-07-12-data-contracts-design.md`(P1 完整性守卫复用其分级思想)、
@@ -30,6 +30,7 @@
 
 **目标**:判断质量零改动(L3/L4 的模型、effort、prompt、评级语义、漏斗数量全不碰),纯编排/I/O 层提速。
 0买日 59m → **~42m**;有买日+intel 开 ~70m → **~55m**;冷数据日感知另省 10-15m(预热)。
+外加 P7(用户追加):确定性「看多行业 top3」,零 LLM 纯增量产物,不碰任何现有判断路径。
 
 **非目标**(明确不做,防 scope creep):
 - L3 26m 的结构/effort(降载实验、拒绝者重构)——下一波单独设计;
@@ -37,7 +38,7 @@
 - 质量/仪器线其余项(产物形状断言自动化、anns 断链根因、process_scores 口径)——另立;
 - 买单 ensemble 的 +5m(语义成本,保留)。
 
-## 2. 六个刀口
+## 2. 七个刀口(P1-P6 速度 · P7 行业 top3)
 
 ### P1 · Cron 预热(感知 −10~15m,冷数据日)
 
@@ -85,6 +86,22 @@
 - 效能表(assemble 渲染)effort/model 列改读 `user_config_echo.json`,修「表写 medium、实际 xhigh」失真(本次实锤:echo=strategist high/sector_brief sonnet·high/l4_card xhigh,表写 session/Opus·low/medium);
 - intel 行接真实墙钟(enabled 时);预热产物在表内单列一行(跑过=显示、没跑=—)。
 
+### P7 · 确定性「看多行业 top3」(用户追加;非速度项,零 LLM)
+
+- **动机**:现行 brief 行业选择是**被动的**(L2 菜单堆在哪写哪),而 L2 集中处多为已拥挤/已透支行业——本次 6 篇 brief 全「中性」即样本。缺一条「主动找可能涨的行业」的路。用户拍板:**纯确定性 top3**(否决了"策略师终选"与"策略师自由挑"两案)。
+- **分数(sector_healthy_score)**:挂 `frame.py` 湖派生帧的行业 groupby(与红黑榜同层,Stage 0 即得,零新取数;`sectors.csv` 是召回口径瘦表,**不用**)。资格门(先过门再排序):
+  1. 成分数 n ≥ 8(剔 n=1 的林业Ⅱ类噪声);
+  2. 资金门:行业主力净比中位 > 0 **或** 主力为正占比 ≥ 50%(掐掉"纯分选出已涨拥挤行业"的最大风险——本次红榜前三主力净比全负,应全被此门拦);
+  3. 非落刀:行业 pct_60d 中位 > −20%。
+  过门行业按四组件 **rank-sum 等权**排序取 top3:资金(主力净比中位 + 为正占比)、健康度(healthy 谓词占比:0<pct60<40 ∧ 主力+ ∧ cmf+)、估值(PE 中位全市场相对位,低者优;PE>60 占比,低者优)、动量(**倒 U**:温和上行带中心 +10%、半宽 ±15,离带越远分越低——不追 +44% 的拥挤链,不接落刀)。带参实施时定,写死进 config 可调。不足 3 个过门 → 出几个是几个(宁缺毋滥,如实标注)。
+- **产出与防锚定(不变量)**:
+  - market_pack 增 `sector_healthy_top3` 块(每行业:分数 + 四组件数据锚 + n);
+  - summary L5 新小节「🎯 看多行业 top3(确定性)」:每行业一行数据锚,**注明零 LLM、无论点;证伪点 = 分数构成反转**(资金转负/健康占比塌/进入拥挤带);
+  - **top3 标签只进 L5 与账本,不喂 L3/L4**(防锚定架构不变量:策略师/行业信息喂 L3/L4 的只能是描述性地形);
+  - top3 行业**自动并入 sector-brief 派发集合**(hot-K ∪ top3 去重,pack 侧读 market_pack 的 top3 块)→ 它们的 brief 地形段照常喂 L3/L4(描述性,合规),brief 数 6→≤9,并行派发墙钟不变、token +≈2.5k;
+  - `sector_ledger` 记账:方向=看多、**source=deterministic_top3**(与 brief 的 LLM 方向判断分账,前向收益各自问责——这把尺子准不准,账本说了算)。
+- **验收前置(尺子先见读数)**:一次性脚本(factor_lab 式,非常驻 harness——遵守 gate_backtest 已删的裁定)在湖上回算最近 ~40-60 已结算交易日:逐日 top3 → 行业等权成分 fwd_2_oc 超额(vs 全市场等权)→ 读数落 csv 附设计稿;判读留用户,读数烂则带参重调或搁置,不裸上。
+
 ## 3. 墙钟账(估)
 
 | 场景 | 现状 | 本包后 |
@@ -93,14 +110,15 @@
 | 有买日、intel 开(下次跑) | ~70m(外推) | **~55m** |
 | 冷数据日感知(+会话前段) | +15m | ~0(预热已跑) |
 
-构成(intel 开、有买日):prelude 3m + briefs floor 6m + **L3 26m(不动)** + max(intel ~6-8m, prep 1m+slim 1.5m) + 卡 10m + ensemble 5m + assemble 1m + 壳 ~2m。
+构成(intel 开、有买日):prelude 3m + briefs floor 6m(P7 并集后 ≤9 篇仍并行,floor 不变) + **L3 26m(不动)** + max(intel ~6-8m, prep 1m+slim 1.5m) + 卡 10m + ensemble 5m + assemble 1m + 壳 ~2m。
 
 ## 4. 验收
 
 1. 全测试绿;新增并发路径有单测(P2 迟取的列形状、P3 workers=1 与现基线产物等价、P4 gate2 meta 契约);conftest 隔离三件套照旧。
 2. **真实命令冒烟**(FN-1 族教训:接线 ≠ 生效):`prewarm` 真跑一次(含守卫拒绝路径的假数据测试);下次真扫描 `_stage_timing.json` 对照第 3 节账目。
-3. parity:所有新旋钮缺省即现行为;产物变化只有 P2 点名的两处(cut.csv 列、L3_news 覆盖面)。
+3. parity:所有新旋钮缺省即现行为;**改动**现有产物的只有 P2 点名的两处(cut.csv 列、L3_news 覆盖面);P7 产物全为**新增块**(market_pack top3 块 / L5 小节 / ledger 行,presence-gated,缺失不挡发布)。
 4. launchd plist 装载后 `launchctl list` 可见 + 次日 19:30 产物 mtime 佐证。
+5. P7:上线前一次性回算读数落 csv 附稿(判读留用户);上线后 grep 断言 `_l3_table.md`/`_l4_prompt_*` 不含 top3 标签(防锚定);sector_ledger 出现 source=deterministic_top3 行;brief 派发数 = hot-K ∪ top3 去重数。
 
 ## 5. 风险清单
 
