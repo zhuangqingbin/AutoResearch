@@ -52,6 +52,8 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
    uv run --no-sync python -m autoresearch.scan.prelude <YYYY-MM-DD>
    ```
    跑完全部确定性前奏(attribution 刷新/retro pending 列出/consensus 拉/universe/日历/观察单日检/菜单·L4预算·哨兵建议/journal 等 ledger 刷新,逐件见 STAGES.md 闭环层表)。各步失败不阻断,末尾汇总屏含 **📐/🔁/🚪 当日件建议行**(含「禁注」的行勿贴)。
+   - **夜间预热(可选,spec 2026-07-12 §P1)**:交易日 19:30 launchd 自动 `scripts/prewarm.sh`(= `python -m autoresearch.scan.prewarm`,湖预拉+温度;calibrate 默认不跑防污染 changelog/DSR 计数)。安装:
+     `sed "s|__REPO__|$PWD|" scripts/com.tradingagents.scan-prewarm.plist > ~/Library/LaunchAgents/com.tradingagents.scan-prewarm.plist && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tradingagents.scan-prewarm.plist`;验证 `launchctl list | grep scan-prewarm`。跑过预热的日子,开扫时 universe/L3 evidence 全湖命中。
 0.5. **市场研判**(workflow Prelude 相位并行调用):`uv run --no-sync python -m autoresearch.scan.frame <日期> --json` 拿湖派生 market_pack → 一个 `Agent(subagent_type='macro-brief')` 写 `context/scan/<日期>/market_view.md`(模板见 macro-playbook 末节;地形段喂 L3/L4,操作基调/漏斗读数只进 L5)。该命令回显的 `user_config`(`.claude/skills/scan-market/scan_config.json` 白名单校验后,见 `autoresearch/scan/user_config.py`)随 Workflow `args.config` 传入 `scan-market.js`,管控各 stage 的 agent model/effort,优先级 **scan_config > workflow 内建 > agent def frontmatter 默认**(缺配置/缺键 = 现硬编码值,parity)。
 1. **L0 选集 + L1 召回 + L2 粗排**(全确定性,零 token;workflow Prelude 相位):
    ```bash
