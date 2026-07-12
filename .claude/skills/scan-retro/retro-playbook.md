@@ -38,6 +38,7 @@ PY
 - **经验 MTM 节**:带 guard 的经验已被机判自动记账(support/refute + confidence 机械升降);**无 guard 的经验由你逐条判**——今天的归因数据支持还是打脸这条 rule?`fs.mtm_update(id, 'support'|'refute', day)` 记账,拿不准就跳过(别硬判)。refute 达阈会自动出"摘 guard/退休"提名(人批)。**写新经验时标 regime**:`upsert_lesson(..., regimes=['risk_off'])`——regime 条件真理别让它在翻转后毒害全域。
 - **门审计节**:被拦票的 ex<0 = 拦对;跨日看 `uv run --no-sync python -m autoresearch.learning.gate_ledger`(→ `reports/learning/gate_ledger.md`)。某门持续 ex>0 且样本 ≥5 → 第 4 步提松阈/退役建议。**门也要 mark-to-market,别让它无问责地累积成保守棘轮。**
 - **待裁决 proposals 节**:>14 天 ⚠ 的逐条给用户裁决建议(采纳/拒绝/再观察),别让看板变摆设。
+- **裁决 checklist 新增(P0-7/C20)**:凡三门/买侧提案,除 n≥20 外还须覆盖 ≥2 温度相位(冰点/修复/发酵/高潮/退潮,`context/learning/temperature.csv` 124 日回填在手,相位标签免费——查 `uv run --no-sync python -m autoresearch.scan.temperature show <date>`);单 regime/单相位攒再多 n 也裁不动三门(近 6 判定日全 risk_off 就是反例)——相位覆盖不足,即便 n 达标也只标"证据不足,再观察",不算可裁。
 
 **3. 自动落地:权重重标定 + 审计**(仅这一项自动改线上)
 ```bash
@@ -124,6 +125,14 @@ uv run --no-sync python -c "import sys;sys.path.insert(0,'scripts');import autor
 - 仅权重自动落地;门槛/因子/prompt **只出建议**。
 - 消息脉冲赢家不计入系统性结论与重标定。
 - 量大(多日积压)可用 **workflow** 并行各日(需用户显式开启);否则逐日 in-session。
+
+## 双轨语义:注入锚用收缩值 / 裁决门槛用硬 n
+**两套语义不混**(P0-3/P0-7 拍板):
+- **注入锚**——渲染进卡片/简报给 LLM 读的数字(`l4_card.write_base_rates`、`cross_calib.flip_stats`、`buy_ledger.write_target_calib` 的 regime×lane 细分格、`gate_ledger` tail_rate)用**收缩值**(shrinkage,见 `autoresearch/learning/shrink.py`)——小样本桶不再裸给 LLM 一个虚高/虚低的原始比率,往全局先验收缩后再标注样本量。
+- **裁决门槛**——改不改机制的人批标准(proposals 裁决、lesson retire 提名、重标定 cadence,含上面「待裁决 proposals 节」的 n≥20)仍用**硬 n**;收缩值只是让注入的数字更稳,不能反过来当成"样本变多了"去降裁决门槛。
+- **n<3 绝对禁注**:分母小到这个地步连收缩值都不可信,直接不渲染该行——这条底线两套语义都认,与裁决门槛高低无关。
+
+读 retro 报告或审 proposals 时先分清手上的数字是哪一套:给 LLM 看的收缩估计,还是给人裁决用的硬计数。
 
 ---
 > 设计沿革(可选背景,删除不影响运行):`docs/specs/2026-06-20-closed-loop-learning-design.md` §3.2(复盘归因闭环)/ §5(半自动边界)。
