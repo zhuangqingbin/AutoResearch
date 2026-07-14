@@ -377,14 +377,15 @@ def _sortkey(r: dict):
 # ───────────────────────── 三段 summary ─────────────────────────
 
 
-def _funnel_rows(meta: dict, n_l2, n_l3, n_cards) -> list[str]:
+def _funnel_rows(meta: dict, n_l2, n_l3, n_cards, n_pinned: int = 0) -> list[str]:
     l2_eng = meta.get("l2_engine", "GBDT")
+    l3_out = f"{n_l3} (+{n_pinned} 保送直通)" if n_pinned else f"{n_l3}"   # 保送不占 L3 名额,单列标注
     return [
         "| 阶段 | 名称 | 出量 | 引擎 | 卡点标准 |", "|---|---|---:|---|---|",
         f"| L0 | 选集 | {meta.get('universe', '?')} | 确定性 | 全A {meta.get('universe_raw', '?')} → 硬门(剔ST/退/停牌/次新, 市值地板, 含北交所) |",
         f"| L1 | 召回 | {meta.get('recall_n', '?')} | 确定性 | 轻门 + 行业条件化复合分(fwd_2_oc 超短主尺 IC 校准) top |",
         f"| L2 | 粗排 | {n_l2} | GBDT/{l2_eng} | LightGBM 学习重排(fwd_2_oc 主尺训练;oos 未胜线性则回落复合分) |",
-        f"| L3 | 精排 | {n_l3} | Opus·max·holistic | 1 agent 通看 ~200 比较选 + 增量证据/论点/红队 |",
+        f"| L3 | 精排 | {l3_out} | Opus·max·holistic | 1 agent 通看 ~200 比较选 + 增量证据/论点/红队(保送票不占名额) |",
         f"| L4 | 研究 | {n_cards} 卡 | Opus·medium | 一只=一个 Opus subagent 渐进深度 DD + 早停 |",
     ]
 
@@ -625,36 +626,37 @@ def _knowledge_note(rows: list[dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _pinned_section(scan_dir: Path, analysis_date: str, rows: list[dict],
+def _pinned_section(scan_dir: Path, analysis_date: str, pinned_rows: list[dict],
+                    l1_full: dict, l2_top: dict, ch_map: dict, vmap: dict, n_l1, n_l2,
                     pinned_path: str | Path | None = None) -> str:
-    """📌 保送节(pinned 直通;design 2026-07-11-recall-gate-pinned-config-design.md §4.1;
-    plan Task 4):`kept` 每票一行 评级 + note,`expired` 每票一行到期备注(不再强留,提醒续期)。
+    """📌 保送持仓节(design 2026-07-11 §4.1;feedback fb_20260714_001 改结构):保送持仓与真实
+    精选**分列**——运行期 `lane=="pinned"` 行(`pinned_rows`,`finalists.csv` 烤入的那次跑的事实)
+    渲染成与 §3 buy-list 同结构的完整表 + 「保送理由」列(不占 L3 名额、也不混进 buy-list)。
 
-    presence-gated:`load_pinned` 返回 kept/expired 皆空(无 pinned.json,或有文件但全部
-    条目既非 kept 也非 expired——即空列表)→ 不加节(老路不破)。评级从 `rows`(build_summary
-    已用 `_finalist_row` 解析好的 finalists 行,天然含 pinned 强留/L3 真判两路来源)按 code
-    查——无论该 pinned 码这次是被 L3 真判选中、还是被 `_inject_pinned_finalists` 强留注入,
-    只要在 finalists.csv 里就查得到卡评级。
+    **run-time-truth,不再挂 `load_pinned()`**:presence-gate = `pinned_rows` 非空 **或** config
+    有 expired。旧设计把 gate 挂在 `load_pinned()` 的 kept 上,`pinned.jsonc` 跑后一改,旧保送票
+    就从这份报告凭空消失——而 §3 又已把 `lane==pinned` 剔除,两头都没有 → 保送票蒸发。改挂
+    finalists.csv 的 lane 后,报告永远忠实于它自己那次运行。config 只再供 **expired** 尾注
+    (过期条目不会出现在 finalists 里,只能从 config 读)。
     """
+    expired: list[dict] = []
     try:
         from autoresearch.scan.user_config import load_pinned
-        pin = load_pinned(analysis_date, path=pinned_path)
+        expired = load_pinned(analysis_date, path=pinned_path).get("expired") or []
     except Exception:  # noqa: BLE001 — 可选层,坏 pinned.json 不挡整份报告发布
+        expired = []
+    if not pinned_rows and not expired:
         return ""
-    kept, expired = pin.get("kept") or [], pin.get("expired") or []
-    if not kept and not expired:
-        return ""
-    by_code = {str(r.get("code", "")).zfill(6): r for r in rows}
-    lines = ["## 📌 保送(用户手工直通;L1→L5 全程强留,不占漏斗配额)"]
-    for e in kept:
-        code = e["code"]
-        r = by_code.get(code)
-        rating = r.get("rating", "—") if r else "⚠️无卡"
-        name = f" {r.get('name', '')}" if r and r.get("name") else ""
-        note = f" ——{e['note']}" if e.get("note") else ""
-        lines.append(f"- **{code}**{name} · **{rating}**{note}(到期 {e.get('expires', '—')})")
+    lines = ["## 📌 保送持仓(用户手工直通;L1→L5 全程强留,**不占 L3 名额**,与真实精选分列)", "",
+             "_这些是你手工保送的持仓/关注票,不是漏斗筛出来的买入候选;评级仍按各自 rubric 独立"
+             "判定,不因『保送』放松尽调。_", ""]
+    if pinned_rows:
+        lines += _buylist_table_lines(pinned_rows, l1_full, l2_top, ch_map, vmap,
+                                      n_l1, n_l2, note_col=True)
+    else:
+        lines += ["_本次运行内无强留的保送持仓(finalists 无 lane=pinned 行)。_"]
     if expired:
-        lines += ["", "_已过期(不再强留,续期请更新 pinned.json):_"]
+        lines += ["", "_已过期(不再强留,续期请更新 pinned.jsonc):_"]
         for e in expired:
             note = f" ——{e['note']}" if e.get("note") else ""
             lines.append(f"- {e['code']}{note}(已于 {e.get('expires', '—')} 过期)")
@@ -822,6 +824,35 @@ def _self_review_banner(scan_dir: Path, rows: list[dict], summary_text: str,
     return self_review.render_banner(res)
 
 
+def _buylist_table_lines(rows: list[dict], l1_full: dict, l2_top: dict, ch_map: dict,
+                         vmap: dict, n_l1, n_l2, *, note_col: bool = False) -> list[str]:
+    """逐阶段结论表(§3 buy-list 与 📌 保送持仓共用):header + sep + 每行。
+
+    `note_col=True` 末尾追加「保送理由」列(取 pinned_note)。**genuine 场景(note_col=False)
+    输出与历史 §3 渲染逐字节一致**(test_assemble buy-list 契约:L1召回/L2粗排/L3精排/L4研究/
+    评级/目标 列 + 可选 🛡️红队 列)。"""
+    vcol, vsep = (" 🛡️红队 |", "---|") if vmap else ("", "")
+    ncol, nsep = (" 保送理由 |", "---|") if note_col else ("", "")
+    lines = [
+        f"| # | 名称 | 板块 | L1召回(#/{n_l1}) | L2粗排(#/{n_l2}) | L3精排 | L4研究·结论 | 评级 | 目标(EV) |"
+        + vcol + ncol,
+        "|---|---|---|---|---|---|---|---|---|" + vsep + nsep]
+    for i, r in enumerate(rows, 1):
+        code = str(r.get("code", "")).zfill(6)
+        vcell = f" {_verify_badge(code, vmap)} |" if vmap else ""
+        l3txt = _strip(r.get("thesis") or r.get("triage_reason", ""))
+        conv = r.get("conviction")
+        l3cell = l3txt + (f"·conv{conv}" if conv else "")
+        rating_cell = f"**{r.get('rating', '—')}**" + (" 🎭复核分歧" if r.get("ens_flag") else "")
+        ncell = f" {_strip(r.get('pinned_note', '') or '—')} |" if note_col else ""
+        lines.append(
+            f"| {i} | {r.get('name', '')} | {r.get('sector') or r.get('industry', '')} "
+            f"| {_l1_cell(code, l1_full, ch_map)} | {_l2_cell(code, l2_top)} | {l3cell} "
+            f"| {_strip(r.get('l4', '—'))} "
+            f"| {rating_cell} | {r.get('target', '—')} |" + vcell + ncell)
+    return lines
+
+
 def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
                   pinned_path: str | Path | None = None) -> str:
     meta = _load_json(scan_dir / "meta.json")
@@ -848,8 +879,17 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
             r["proposal"] = _PROPOSAL_BY_RATING.get(folded, r.get("proposal", "—"))
         if _ensemble_flag(e):
             r["ens_flag"] = True                # 🎭复核分歧:spread≥2 → 行 badge + 组合视角人裁提示
-    _dump_final_ratings(scan_dir, rows)   # P0-2:两个 fold 循环已跑完 → rows["rating"] 即终评级,落盘供 retro 优先 join
+    _dump_final_ratings(scan_dir, rows)   # P0-2:两个 fold 循环已跑完 → rows["rating"] 即终评级,落盘供 retro 优先 join(含保送,retro 口径不变)
     rows.sort(key=_sortkey)
+    # ── feedback fb_20260714_001:保送(lane==pinned)与真实精选分列 ──
+    # lane 是运行期烤进 finalists.csv 的事实(_inject_pinned_finalists 强改判),比当前 pinned.jsonc
+    # 更可靠(config 跑后可能被改)。genuine=真实精选(进 §3 buy-list);pinned=保送持仓(进 📌 表)。
+    pinned_rows = [r for r in rows if str(r.get("lane", "")).strip() == "pinned"]
+    genuine_rows = [r for r in rows if str(r.get("lane", "")).strip() != "pinned"]
+    # 表头分母 + 命中队列 map(§3 与 📌 表共用;上移到两处渲染之前)
+    n_l1 = meta.get("after_gate_a") or meta.get("universe") or len(l1_full) or "?"
+    n_l2 = meta.get("l2_n") or len(l2_top) or "?"
+    ch_map = {c: (r.get("recall_channels") or "") for c, r in l2_top.items()}   # 命中队列(随 keep 流到 L2 表)
     regime_line, regime_drift = regime_and_drift(scan_dir)
 
     out = [f"# A股扫描 v2 · Buy-List & 漏斗 — {analysis_date} {hhmm[:2]}:{hhmm[2:]}\n",
@@ -902,7 +942,8 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
             out += [wb, ""]
 
     # ── 📌 保送(pinned 直通;presence-gated:无 pinned.json/kept+expired 皆空 → 跳过)──
-    pin_sec = _pinned_section(scan_dir, analysis_date, rows, pinned_path=pinned_path)
+    pin_sec = _pinned_section(scan_dir, analysis_date, pinned_rows, l1_full, l2_top,
+                              ch_map, vmap, n_l1, n_l2, pinned_path=pinned_path)
     if pin_sec:
         out += [pin_sec, ""]
 
@@ -920,7 +961,8 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
         out += [sect, ""]
 
     # ── 1. 漏斗数量 ──
-    out += ["## 1. 漏斗(数量)"] + _funnel_rows(meta, len(keep) or "?", len(finals), len(rows)) + [""]
+    out += ["## 1. 漏斗(数量)"] + _funnel_rows(meta, len(keep) or "?", len(genuine_rows),
+                                              len(rows), n_pinned=len(pinned_rows)) + [""]
 
     # ── 数据降级(presence-gated:无 degraded.json → 不加行)──
     # A 级(地基)违约会在取数处直接抛异常阻断,能出报告说明地基是全的;这里显示的是 B 级增强端点
@@ -947,31 +989,16 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
         out.append("_无 finalists.csv_")
     out.append("")
 
-    # ── 3. 投资建议 ──(vmap 已在上方加载并折回评级)
-    vcol, vsep = (" 🛡️红队 |", "---|") if vmap else ("", "")
-    n_l1 = meta.get("after_gate_a") or meta.get("universe") or len(l1_full) or "?"
-    n_l2 = meta.get("l2_n") or len(l2_top) or "?"
-    ch_map = {c: (r.get("recall_channels") or "") for c, r in l2_top.items()}   # 命中队列(随 keep 流到 L2 表)
-    out += [f"## 3. 投资建议(buy-list, {len(rows)} 只,按 评级 → 确信度 排序;逐阶段结论)\n",
-            f"| # | 名称 | 板块 | L1召回(#/{n_l1}) | L2粗排(#/{n_l2}) | L3精排 | L4研究·结论 | 评级 | 目标(EV) |" + vcol,
-            "|---|---|---|---|---|---|---|---|---|" + vsep]
-    for i, r in enumerate(rows, 1):
-        code = str(r.get("code", "")).zfill(6)
-        vcell = f" {_verify_badge(code, vmap)} |" if vmap else ""
-        l3txt = _strip(r.get("thesis") or r.get("triage_reason", ""))
-        conv = r.get("conviction")
-        l3cell = l3txt + (f"·conv{conv}" if conv else "")
-        rating_cell = f"**{r.get('rating', '—')}**" + (" 🎭复核分歧" if r.get("ens_flag") else "")
-        out.append(
-            f"| {i} | {r.get('name', '')} | {r.get('sector') or r.get('industry', '')} "
-            f"| {_l1_cell(code, l1_full, ch_map)} | {_l2_cell(code, l2_top)} | {l3cell} "
-            f"| {_strip(r.get('l4', '—'))} "
-            f"| {rating_cell} | {r.get('target', '—')} |" + vcell)
+    # ── 3. 投资建议 ──(vmap 已在上方加载并折回评级;保送持仓已分列进「📌 保送持仓」节,这里只含真实精选)
+    xref = ";保送持仓见「📌 保送持仓」节" if pinned_rows else ""   # 无保送时不留悬空引用
+    out += [f"## 3. 投资建议(buy-list, {len(genuine_rows)} 只真实精选,按 评级 → 确信度 排序;"
+            f"逐阶段结论{xref})\n"]
+    out += _buylist_table_lines(genuine_rows, l1_full, l2_top, ch_map, vmap, n_l1, n_l2)
     out.append(f"\n_列注:**L1召回** #复合分名次/{n_l1}·命中队列(越小越强;低复合分票靠某条队列召回→名次很大);"
                f"**L2粗排** #GBDT重排名次/{n_l2}·gbdt分;**L3精排** = Opus holistic 论点 + conviction;"
                f"**L4研究·结论** = 决策卡深核后的关键定级依据(≥OW 取多头驱动,否则取空头/早停因);"
                f"置信度见各决策卡(30 行全『中』的列已删)。_")
-    gh = _gate_histogram(scan_dir, rows)
+    gh = _gate_histogram(scan_dir, genuine_rows)
     if gh:
         out += ["", gh]
     out += _verify_detail(vmap)
@@ -979,14 +1006,14 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
     cal = calendar_section(scan_dir)
     if cal:
         out += ["", cal]
-    out += ["", "### 组合视角", _portfolio_note(rows)]
+    out += ["", "### 组合视角", _portfolio_note(genuine_rows)]
     ens_lines = _ensemble_dissent_lines(emap)   # 🎭 spread≥2 人裁提示(presence-gated:无分歧 → [])
     if ens_lines:
         out += [""] + ens_lines
-    chain = _same_chain_block(rows)         # Phase 3:同链 ≥2 卡并排(择链上最佳表达素材)
+    chain = _same_chain_block(genuine_rows)  # Phase 3:同链 ≥2 卡并排(择链上最佳表达素材;保送不计)
     if chain:
         out += ["", chain]
-    pos = _position_overlay(scan_dir, rows)
+    pos = _position_overlay(scan_dir, genuine_rows)
     if pos:
         out += ["", pos]
     out += [""]
@@ -1075,8 +1102,10 @@ def _funnel_md(scan_dir: Path, analysis_date: str) -> str:
     meta = _load_json(scan_dir / "meta.json")
     keep = _read_csv(scan_dir / "L2_gbdt_top200.csv")
     finals = _read_csv(scan_dir / "finalists.csv")
+    n_pinned = sum(1 for r in finals if str(r.get("lane", "")).strip() == "pinned")   # 保送不占 L3 名额
+    n_genuine = len(finals) - n_pinned
     lines = [f"# 漏斗溯源 — {analysis_date}\n", "六段:选集→召回→粗排(GBDT)→精排→研究→整合。\n"]
-    lines += _funnel_rows(meta, len(keep) or "?", len(finals), len(finals))
+    lines += _funnel_rows(meta, len(keep) or "?", n_genuine, len(finals), n_pinned=n_pinned)
     lines += ["", f"权重来源:{meta.get('weights_source', '?')};L2 引擎:{meta.get('l2_engine', '?')};"
               f"universe 源:{meta.get('source', '?')}。",
               "各阶段明细见同目录 CSV(L1_recall_top1000 / L2_gbdt_top200 / L3_fine_finalists)。"]
