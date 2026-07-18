@@ -5,7 +5,8 @@
 retro 只评最终 buy-list 的命中;本模块补**逐阶段归因**(2026 agent-eval 的核心:measure a sequence
 of actions,不是单点输出)。每段一个 edge:
 - **L2 粗排**:召回池内 keep(200)vs cut(800)的 fwd 均值 lift;l2_score 的 rank-IC。
-- **L3 精排**:L2-keep 内 finalist(30)vs 非 finalist 的 lift;`conviction−fragility` 的 rank-IC。
+- **L3 精排**:L2-keep 内 finalist(30)vs 非 finalist 的 lift(**真选口径**:lane 为保送/直通的
+  finalist 剔出头条、escorted 单列回显,pr_20260716_002);`conviction−fragility` 的 rank-IC。
 - **L4 研究**:finalist 五档评级是否**单调**(越多头 fwd 越高)→ 评级-score 的 rank-IC + 分档均值。
 - **Tier-3 多空辩论**:`维持` vs `降级/否决` 的 fwd 均值差(>0 = 辩论正确压低了后来的差票)。
 
@@ -25,6 +26,10 @@ from pathlib import Path
 import pandas as pd
 
 from autoresearch.agents.utils.rating import RATINGS_5_TIER  # Buy>OW>Hold>UW>Sell
+
+# 保送/观察单直通/菜单滞回——不是 L3 当日选的票,不进「L3 选股成绩」头条(pr_20260716_002,
+# 与 t1_review 同一裁定同一集合;后两种 lane 已退役但历史 scan 目录仍有存量行)。
+from autoresearch.learning.t1_review import _NON_GENUINE_LANES
 
 _RET_MAIN = "fwd_2_oc"  # 超短主尺:D+1开→D+2收(2026-07-10 用户裁定持仓 1~2 日)
 _RET_T5 = "fwd_5_oc"    # 参考口径(降级保留,列名带 t5 的输出继续产)
@@ -222,8 +227,11 @@ def evaluate(date: str, scan_root: Path | None = None, report_root: Path | None 
         if "gbdt_score" in keep.columns:
             recall = recall.merge(keep[["code", "gbdt_score"]], on="code", how="left")
         m = recall.merge(realized, on="code", how="left")
+        # 键名 ic_l2_score_t1 与渲染侧同键(pr_20260716_004:此前写 ic_gbdt_score_t1、渲染读
+        # ic_l2_score_t1 → L2 IC 恒 None;L2 已是确定性分层采样器,gbdt 是遗留命名,以 l2 为准。
+        # 源列名 gbdt_score 是 L2_gbdt_top200.csv 的落盘契约,列不改只改指标键)。
         res["stages"]["L2"] = {**binary_lift(m, "l2_kept", _RET_T1),
-                               "ic_gbdt_score_t1": rank_ic(m, "gbdt_score", _RET_T1) if "gbdt_score" in m else None}
+                               "ic_l2_score_t1": rank_ic(m, "gbdt_score", _RET_T1) if "gbdt_score" in m else None}
 
     # L3:L2-keep 内 finalist vs 非 finalist + (conviction−fragility) IC
     l3 = _read(sdir / "L3_judged_full.csv")
@@ -232,12 +240,29 @@ def evaluate(date: str, scan_root: Path | None = None, report_root: Path | None 
         l3 = _code6(l3)
         l3["net"] = pd.to_numeric(l3["conviction"], errors="coerce").fillna(0) - \
             pd.to_numeric(l3["fragility"], errors="coerce").fillna(0)
-        fin_codes = set(_code6(fin)["code"]) if fin is not None else set()
+        # pr_20260716_002:lane∈{pinned,watchlist_trigger,carryover} 的 finalist 是保送/直通,
+        # L3 对它们没有选择权 → 头条 lift 只算真选:保送行**整行剔除**(既不进 in 也不能污染
+        # out 组),另立 escorted 照实回显;finalists 无 lane 列(老数据)→ 全量当真选,行为不变。
+        fin_c = _code6(fin) if fin is not None else None
+        escort_codes: set[str] = set()
+        if fin_c is not None and "lane" in fin_c.columns:
+            lane = fin_c["lane"].fillna("").astype(str).str.strip()
+            escort_codes = set(fin_c.loc[lane.isin(_NON_GENUINE_LANES), "code"])
+        fin_codes = (set(fin_c["code"]) - escort_codes) if fin_c is not None else set()
         l3["is_finalist"] = l3["code"].isin(fin_codes)
         m = l3.merge(realized, on="code", how="left")
-        res["stages"]["L3"] = {**binary_lift(m, "is_finalist", _RET_MAIN),
+        m_sel = m[~m["code"].isin(escort_codes)]
+        res["stages"]["L3"] = {**binary_lift(m_sel, "is_finalist", _RET_MAIN),
+                               # net IC 仍算全 judged 池:保送票的 conviction/fragility 判断是
+                               # L3 自己下的(判断力尺),被污染的只是成员资格尺(lift)。
                                "ic_net_t2": rank_ic(m, "net", _RET_MAIN),
                                "ic_net_t5": rank_ic(m, "net", _RET_T5)}
+        if escort_codes:
+            esc = pd.DataFrame({"code": sorted(escort_codes)}).merge(realized, on="code", how="left")
+            r_esc = pd.to_numeric(esc.get(_RET_MAIN, pd.Series(dtype=float)), errors="coerce").dropna()
+            res["stages"]["L3"]["escorted"] = {
+                "n": len(escort_codes), "n_realized": int(len(r_esc)),
+                "mean": round(float(r_esc.mean()), 4) if len(r_esc) else None}
 
     # L4:finalist 五档评级单调性(从已发布卡取 {code: rating})
     import autoresearch.learning.retro as retro  # 复用卡片评级解析(发布层卡名是名称,code 从卡内标题取)
@@ -293,12 +318,18 @@ def render_stage_eval(res: dict) -> list[str]:
                    f"  _(边际>0=该路找到别人没找到的赢家,值得留)_")
     if "L2" in s:
         d = s["L2"]
+        # 历史落盘产物(2026-07-17 前)写的是旧键 ic_gbdt_score_t1(pr_20260716_004 改统一
+        # ic_l2_score_t1)——读新键,缺则回退旧键,老 dict 不至于恒 None。
+        ic_l2 = d.get("ic_l2_score_t1", d.get("ic_gbdt_score_t1"))
         out.append(f"- **L2 粗排**:keep {d['n_in']} vs cut {d['n_out']},fwd lift **{_pct(d['lift'])}**"
-                   f"(keep {_pct(d['mean_in'])} / cut {_pct(d['mean_out'])});l2_score IC {d.get('ic_l2_score_t1')}")
+                   f"(keep {_pct(d['mean_in'])} / cut {_pct(d['mean_out'])});l2_score IC {ic_l2}")
     if "L3" in s:
         d = s["L3"]
-        out.append(f"- **L3 精排**:finalist {d['n_in']} vs 落选 {d['n_out']},lift **{_pct(d['lift'])}**"
-                   f";(确信−脆弱)net IC(T+2 主){d.get('ic_net_t2')} / T+5 参考{d.get('ic_net_t5')}")
+        esc = d.get("escorted") or {}
+        esc_txt = (f";📌保送/直通 {esc['n']} 只(已实现 {esc.get('n_realized', 0)})"
+                   f"mean {_pct(esc.get('mean'))},已剔出头条" if esc else "")
+        out.append(f"- **L3 精排(真选)**:finalist {d['n_in']} vs 落选 {d['n_out']},lift **{_pct(d['lift'])}**"
+                   f";(确信−脆弱)net IC(T+2 主){d.get('ic_net_t2')} / T+5 参考{d.get('ic_net_t5')}{esc_txt}")
     if "L4" in s:
         d = s["L4"]
         br = "、".join(f"{k} {_pct(v['mean'])}×{v['n']}" for k, v in d.get("by_rating", {}).items())

@@ -24,6 +24,23 @@ def _isolate_default_pinned(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_learning_stores(monkeypatch, tmp_path):
+    """镜像 _isolate_default_pinned:t1 快环账本/候选账本与 lessons 知识库都是开发机真数据
+    (gitignored)。`prepare_l3_table` 的校准块注入(2026-07-17 自我迭代腿)默认读它们——
+    tmp_path 测试不该被真账本污染(否则真 6 条 lessons/31 只次 t1 行会渗进字节断言)。
+    要测注入内容的用例自行传显式 path / fs.set_root。"""
+    import autoresearch.learning.feedback_store as fs
+    monkeypatch.setattr("autoresearch.learning.t1_review._LEDGER",
+                        tmp_path / "_iso" / "t1_review.jsonl")
+    monkeypatch.setattr("autoresearch.learning.t1_review._CAND_LEDGER",
+                        tmp_path / "_iso" / "t1_candidates.jsonl")
+    old = fs.KNOW
+    fs.set_root(tmp_path / "_iso" / "knowledge")
+    yield
+    fs.set_root(old)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_temperature_csv(monkeypatch):
     """镜像 _isolate_default_pinned:context/learning/temperature.csv 由真实 prelude 增量落盘
     (gitignored、按日期键),tmp_path 隔离测试不该读到——否则硬编码 analysis_date 的既有断言会被

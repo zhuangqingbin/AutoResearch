@@ -4,7 +4,7 @@ import time
 from autoresearch.scan.prelude import run_prelude
 
 _ALL = ("retro_refresh", "retro_pending", "consensus", "temperature", "universe", "calendar",
-        "watchlist", "catalyst", "menu", "ledgers")
+        "catalyst", "menu", "ledgers")
 
 
 def test_t0_written_once(tmp_path, monkeypatch):

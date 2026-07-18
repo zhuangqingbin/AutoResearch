@@ -26,6 +26,10 @@ import pandas as pd
 
 from autoresearch.agents.utils.rating import RATINGS_5_TIER, parse_rating
 
+# 保送/观察单直通/菜单滞回——不是 L3 当日选的票,不进「L3 选股成绩」头条(pr_20260716_002,
+# 与 t1_review 同一裁定同一集合;后两种 lane 已退役但历史 scan 目录仍有存量行)。
+from autoresearch.learning.t1_review import _NON_GENUINE_LANES
+
 _BUY = ("Overweight", "Buy")
 _RATING_RANK = {r: i for i, r in enumerate(RATINGS_5_TIER)}   # Buy0<OW1<Hold2<UW3<Sell4(小=看多)
 _PAIR_DIFF_COLS = [("d_composite", "composite"), ("d_momentum", "score_momentum"),
@@ -605,6 +609,11 @@ def l3_bench_shadow(attr: pd.DataFrame, sdir: Path, top_n: int = 5) -> dict | No
     不进 retro_input,姿势同 `shadow_compare`)。缺 `conviction` 列 → 退化为文件前 N 行
     (不排序,不报错)。`finalists.csv` 缺失 → finalists 侧 mean 报 `None`(纵深防御,不因此
     连 bench 侧读数也不渲染)。fwd_2_oc 未成熟/两侧样本皆空 → mean 为 `None`(不臆造数字)。
+
+    **真选口径**(pr_20260716_002):finalists 里 lane∈{pinned, watchlist_trigger, carryover}
+    的行是保送/直通,L3 对它们没有选择权 → 头条 `finalists_mean_fwd2`/`n_finalists_realized`
+    只算真选;保送行单独回显 `n_escorted`/`n_escorted_realized`/`escorted_mean_fwd2`
+    (n 照实,不藏账)。finalists 无 `lane` 列(老数据)→ 全量当真选,行为不变。
     """
     p = Path(sdir) / "_l3_bench.csv"
     if not p.exists():
@@ -630,6 +639,8 @@ def l3_bench_shadow(attr: pd.DataFrame, sdir: Path, top_n: int = 5) -> dict | No
 
     top_fwd = fwd.reindex(top["code"]).dropna()
     fin_fwd = pd.Series(dtype=float)
+    esc_fwd = pd.Series(dtype=float)
+    n_escorted = 0
     finp = Path(sdir) / "finalists.csv"
     if finp.exists():
         try:
@@ -637,8 +648,15 @@ def l3_bench_shadow(attr: pd.DataFrame, sdir: Path, top_n: int = 5) -> dict | No
         except Exception:  # noqa: BLE001
             fin = None
         if fin is not None and "code" in fin.columns:
-            fin_codes = fin["code"].astype(str).str.zfill(6)
-            fin_fwd = fwd.reindex(fin_codes).dropna()
+            fin = fin.copy()
+            fin["code"] = fin["code"].astype(str).str.zfill(6)
+            if "lane" in fin.columns:
+                esc_mask = fin["lane"].fillna("").astype(str).str.strip().isin(_NON_GENUINE_LANES)
+            else:                                     # 老数据无 lane 列 → 全量当真选(行为不变)
+                esc_mask = pd.Series(False, index=fin.index)
+            n_escorted = int(esc_mask.sum())
+            fin_fwd = fwd.reindex(fin.loc[~esc_mask, "code"]).dropna()
+            esc_fwd = fwd.reindex(fin.loc[esc_mask, "code"]).dropna()
 
     return {
         "n_bench": int(len(bench)),
@@ -647,6 +665,9 @@ def l3_bench_shadow(attr: pd.DataFrame, sdir: Path, top_n: int = 5) -> dict | No
         "bench_top_mean_fwd2": round(float(top_fwd.mean()), 5) if len(top_fwd) else None,
         "n_finalists_realized": int(len(fin_fwd)),
         "finalists_mean_fwd2": round(float(fin_fwd.mean()), 5) if len(fin_fwd) else None,
+        "n_escorted": n_escorted,
+        "n_escorted_realized": int(len(esc_fwd)),
+        "escorted_mean_fwd2": round(float(esc_fwd.mean()), 5) if len(esc_fwd) else None,
     }
 
 
@@ -812,10 +833,14 @@ def write_retro_input(date: str, attr: pd.DataFrame, scan_root: Path | None = No
         sect: list[str] = []
         bs = l3_bench_shadow(attr, sdir)
         if bs:
+            # 真选口径(pr_20260716_002):保送/直通行已剔出 finalists 头条,有则单独回显。
+            esc_txt = (f";📌保送/直通 {bs['n_escorted']} 只(已实现 {bs['n_escorted_realized']}):"
+                       f"mean_fwd2 {bs['escorted_mean_fwd2']},不计入头条"
+                       if bs.get("n_escorted") else "")
             sect.append(f"- L3 bench top-{bs['n_bench_top']}(按 conviction,bench 共 {bs['n_bench']} 只,"
                         f"已实现 {bs['n_bench_top_realized']}):mean_fwd2 {bs['bench_top_mean_fwd2']} "
-                        f"vs finalists(已实现 {bs['n_finalists_realized']}):"
-                        f"mean_fwd2 {bs['finalists_mean_fwd2']}")
+                        f"vs finalists 真选(已实现 {bs['n_finalists_realized']}):"
+                        f"mean_fwd2 {bs['finalists_mean_fwd2']}{esc_txt}")
         pc = pass1_cut_winners(attr, sdir)
         if pc:
             sect.append(f"- pass1_cut 中 T+2 赢家数:{pc['n_winners']}/{pc['n_cut']}"
@@ -868,6 +893,17 @@ def recalibrate_and_log(retro_date: str, cap_floor: float = 30.0, k: float = 200
     """
     import autoresearch.learning.feedback_store as fs
     import autoresearch.research.factor_lab as fl
+    # 先增量续面板(修 pr_20260716_001:calibrate 只消费冻结 plan.pkl → 连续 NO-OP)。
+    # 失败必须响(打 stderr),但不阻断:冻结面板校准仍好过不校准——心跳探针
+    # (changelog_ledger.heartbeat,prelude 每日打)会把持续冻结顶到汇总屏。
+    try:
+        ext = fl.extend_plan()
+        if ext["added_f"] or ext["added_p"] or ext["healed"]:
+            print(f"[recalibrate] 面板增量续:+F {ext['added_f']} / +P {ext['added_p']}"
+                  f" / 回补洞 {ext['healed']}(F 尾 {ext['f_last']},共 {ext['n_f']} 日)")
+    except Exception as e:  # noqa: BLE001
+        print(f"🚨 [recalibrate] extend_plan 失败({e})→ 本次退化为冻结面板校准"
+              f"(= 旧 NO-OP 行为);若心跳探针连日报警即是它", file=sys.stderr)
     wp = Path("context/factor_lab/weights.json")
     before_raw = wp.read_bytes() if wp.exists() else b"{}"
     before_sha = fs.snapshot_weights() or _sha8(before_raw)   # 快照留底(Phase 3 回滚)

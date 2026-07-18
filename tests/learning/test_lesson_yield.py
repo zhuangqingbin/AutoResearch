@@ -287,3 +287,30 @@ def test_render_curve_section_presence_gated():
     df_no_curve = pd.DataFrame([_row("ls_s", curve=[])])
     text_without = "\n".join(ly.render(df_no_curve, n_lessons_total=1))
     assert "逐条命中曲线" not in text_without
+
+
+# ───────────────────── guard 覆盖警示行(prelude 学习环健康查) ─────────────────────
+
+
+def test_guard_coverage_line_zero_guard(monkeypatch):
+    """0 带 guard → ⚠️ 空转警示(check#5 结构性无法开火,必须每日可见)。"""
+    from autoresearch.learning import lesson_yield as ly
+    monkeypatch.setattr(ly.fs, "lessons_for",
+                        lambda scopes: [{"id": "l1", "rule": "r"}, {"id": "l2", "rule": "r"}])
+    line = ly.guard_coverage_line()
+    assert "⚠️" in line and "0 条带 guard" in line and "check#5" in line
+
+
+def test_guard_coverage_line_with_guard(monkeypatch):
+    from autoresearch.learning import lesson_yield as ly
+    monkeypatch.setattr(ly.fs, "lessons_for",
+                        lambda scopes: [{"id": "l1", "guard": {"col": "x", "op": ">", "thr": 1}},
+                                        {"id": "l2"}])
+    line = ly.guard_coverage_line()
+    assert "1 条带 guard" in line and "⚠️" not in line
+
+
+def test_guard_coverage_line_empty(monkeypatch):
+    from autoresearch.learning import lesson_yield as ly
+    monkeypatch.setattr(ly.fs, "lessons_for", lambda scopes: [])
+    assert "经验库空" in ly.guard_coverage_line()

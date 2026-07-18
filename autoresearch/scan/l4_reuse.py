@@ -20,11 +20,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from autoresearch.scan.artifacts import read_finalists
-
 _REUSABLE = {"Hold", "Underweight", "Sell"}
 
-_CARD_SCHEMA_MARK = "卡契约 v3"   # 2026-07-10 超短化;无标记的旧 swing 语义卡禁复用/禁 carryover
+_CARD_SCHEMA_MARK = "卡契约 v3"   # 2026-07-10 超短化;无标记的旧 swing 语义卡禁复用
 
 _GATESEG_RE = re.compile(r"OW三门[^\n→]*")
 
@@ -192,86 +190,13 @@ def reuse_pass(scan_dir: Path | str, max_age_days: int = 4, price_tol: float = 0
     return pd.DataFrame(rows)
 
 
-def carryover_candidates(scan_dir: Path | str, cap: int = 5) -> pd.DataFrame:
-    """菜单滞回候选:最近前一 scan 日 finalists(前卡 ≤Hold)∩ 今日 L2 − 今日 finalists。
-
-    07-03 病灶:churn 90%(repeat 3/30)把 TTL 复用架空(仅救 2 张)——保席让前卡沿 TTL
-    摊销、个股档案有连续性;**复用/重研仍由 reuse_decision 门定**(价格/公告/regime 不动)。
-    按今日 l2_rank 取前 cap;缺前日/缺 L2 → 空帧。
-    """
-    scan_dir = Path(scan_dir)
-    l2p, fp = scan_dir / "L2_gbdt_top200.csv", scan_dir / "finalists.csv"
-    if not l2p.exists() or not fp.exists():
-        return pd.DataFrame()
-    prev = sorted((p for p in scan_dir.parent.iterdir()
-                   if p.is_dir() and p.name[:2] == "20" and p.name < scan_dir.name
-                   and (p / "finalists.csv").exists()), reverse=True)
-    if not prev:
-        return pd.DataFrame()
-    # regime 翻转日关 carryover(2026-07-06):昨日 regime 的 ≤Hold 票拖进今日新 regime 重烧
-    # = 低价值重复(如 range→risk_off 把上一档的票全烧成 Hold)。翻转 → 不保席,让今日菜单自己定。
-    r_now, r_prev = _regime_of(scan_dir), _regime_of(prev[0])
-    if r_now is not None and r_prev is not None and r_now != r_prev:
-        return pd.DataFrame()
-    pf = pd.read_csv(prev[0] / "finalists.csv", dtype={"code": str})
-    if "code" not in pf.columns:
-        return pd.DataFrame()
-    prev_codes = set(pf["code"].astype(str).str.zfill(6))
-    fin = pd.read_csv(fp, dtype={"code": str})
-    today_codes = set(fin["code"].astype(str).str.zfill(6)) if "code" in fin.columns else set()
-    l2 = pd.read_csv(l2p, dtype={"code": str})
-    if "code" not in l2.columns:
-        return pd.DataFrame()
-    l2["code"] = l2["code"].astype(str).str.zfill(6)
-    cand = l2[l2["code"].isin(prev_codes - today_codes)].copy()
-    cand["_rk"] = pd.to_numeric(cand.get("l2_rank"), errors="coerce")
-    cand = cand.sort_values("_rk", na_position="last")
-    from autoresearch.agents.utils.rating import parse_rating  # lazy
-    keep: list[dict] = []
-    for _, r in cand.iterrows():
-        cp = prev[0] / "details" / f"{r['code']}.md"
-        if not cp.exists():
-            continue
-        card_text = cp.read_text(encoding="utf-8")
-        if _CARD_SCHEMA_MARK not in card_text:
-            continue                                   # 旧契约卡禁滞回(无 schema v3 标记)
-        if parse_rating(card_text) not in _REUSABLE:
-            continue                                   # ≥OW 前卡不滞回(买点必进正常菜单重研)
-        keep.append({"ticker": r["code"], "code": r["code"], "name": r.get("name", ""),
-                     "sector": r.get("industry", ""), "lane": "carryover",
-                     "thesis": f"(滞回保席:{prev[0].name} finalist 连续性;复用/重研由 l4_reuse 门定)"})
-        if len(keep) >= cap:
-            break
-    return pd.DataFrame(keep)
-
-
-def append_carryover(scan_dir: Path | str, cap: int = 5) -> int:
-    """把滞回候选追加进 finalists.csv(幂等:code 已在则不再追;镜像 watchlist.append_express)。"""
-    scan_dir = Path(scan_dir)
-    ca = carryover_candidates(scan_dir, cap=cap)
-    if not len(ca):
-        return 0
-    fp = scan_dir / "finalists.csv"
-    fin = read_finalists(fp)
-    out = pd.concat([fin, ca[[c for c in ca.columns if c in fin.columns or c in
-                              ("ticker", "code", "name", "sector", "thesis", "lane")]]],
-                    ignore_index=True)
-    out.to_csv(fp, index=False)
-    return len(ca)
-
-
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="L4 卡片 TTL 复用(确定性;默认 dry-run)")
     ap.add_argument("date", help="scan 日 YYYY-MM-DD")
     ap.add_argument("--max-age", type=int, default=4, help="TTL 日历天,默认 4(覆盖周末)")
     ap.add_argument("--price-tol", type=float, default=0.05, help="价格容差,默认 5%%")
     ap.add_argument("--apply", action="store_true", help="给可复用票写 ♻️ 卡(默认只打表)")
-    ap.add_argument("--carryover", type=int, nargs="?", const=5, default=0, metavar="CAP",
-                    help="先做菜单滞回保席(昨日 finalist∩今日 L2 追加 lane=carryover;默认关,给值即开)")
     args = ap.parse_args(argv)
-    if args.carryover:
-        nc = append_carryover(Path("context/scan") / args.date, cap=args.carryover)
-        print(f"[carryover] 滞回保席 {nc} 只(lane=carryover;复用/重研仍由下方 TTL 门定)")
     df = reuse_pass(Path("context/scan") / args.date, max_age_days=args.max_age,
                     price_tol=args.price_tol, apply=args.apply)
     n = int(df["reuse"].sum()) if len(df) else 0

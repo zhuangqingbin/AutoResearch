@@ -907,7 +907,8 @@ def write_finalists(date: str, budget: int = 30, root: Path | None = None,
 
 def prepare_l3_table(date: str, root: Path | None = None, delta: bool = True,
                      do_harvest: bool = True, pinned_path: Path | str | None = None,
-                     two_pass: bool | None = None) -> dict:
+                     two_pass: bool | None = None,
+                     calib_blocks: bool | None = None) -> dict:
     """L3 精排前的确定性件:harvest 证据/公告情感 + 构建紧凑表 → 写 _l3_table.md(l3-rank agent 读)。
 
     pinned_path 透传给 `l3_table_md`(测试注入;生产默认路径见 `user_config.load_pinned`)。
@@ -922,6 +923,13 @@ def prepare_l3_table(date: str, root: Path | None = None, delta: bool = True,
     两键。显式传 `False`(回滚杆):**现行为逐字节不变**——不 triage、不写 cut csv、不加
     表头行、且**完全不调用 `load_user_config`**(纯净回滚,哪怕 scan_config.json 本身写坏
     了也不受影响);返回 dict 形状与本 task 之前实现完全一致(仅 `codes`/`table_bytes`)。
+
+    calib_blocks(2026-07-17 自我迭代腿,fb_20260717_001):表尾追加两个校准块——
+    ① T+1 快环校准(`t1_review.render_t1_calibration_block`,账本派生数据,空账本=零字节);
+    ② 经验校准(`feedback_store.render_calibration_block(regime, with_feedback=True)`,
+      修 pr_20260716_005:此前「经验自动注回 L2/L3 prompt」有腿无接线)。
+    `None`(默认)= 跟随 two_pass(two_pass 显式 False 时同关,保住上面「逐字节不变」的
+    回滚承诺);显式 True/False 独立强制。两块注入各自 suppress:炸了只丢块不挡 L3。
     """
     base = Path(root) if root else Path("context/scan")
     scan_dir = base / date
@@ -957,6 +965,26 @@ def prepare_l3_table(date: str, root: Path | None = None, delta: bool = True,
                      restrict_codes=restrict_codes)
     if pass1_header:
         md = pass1_header + "\n\n" + md
+
+    if calib_blocks is None:
+        calib_blocks = two_pass is not False    # 跟随回滚杆:two_pass=False 承诺逐字节不变
+    if calib_blocks:
+        import contextlib
+        with contextlib.suppress(Exception):    # 快环校准块(账本派生;空账本=零字节 parity)
+            from autoresearch.learning.t1_review import render_t1_calibration_block
+            blk = render_t1_calibration_block(stage="L3")   # 只带 L3/门/流程相关观察(ERL:相关性>数量)
+            if blk:
+                md = md + "\n\n" + blk
+        with contextlib.suppress(Exception):    # 经验校准块(pr_20260716_005 接线;恒有基线)
+            import json as _json
+
+            from autoresearch.learning.feedback_store import render_calibration_block
+            regime = None
+            mp = scan_dir / "meta.json"
+            if mp.exists():
+                regime = _json.loads(mp.read_text(encoding="utf-8")).get("regime")
+            md = md + "\n\n" + render_calibration_block(regime=regime, with_feedback=True)
+
     (scan_dir / "_l3_table.md").write_text(md, encoding="utf-8")
     return {"codes": len(codes), "table_bytes": len(md), **pass1_counts}
 

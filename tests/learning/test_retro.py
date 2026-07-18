@@ -122,6 +122,22 @@ def test_l3_bench_shadow_unrealized_fwd_reports_none_not_zero(tmp_path):
     assert bs["bench_top_mean_fwd2"] is None and bs["n_bench_top_realized"] == 0
 
 
+def test_l3_bench_shadow_splits_escort_lanes_from_headline(tmp_path):
+    """pr_20260716_002 账本侧:lane∈{pinned,watchlist_trigger,carryover} 的 finalist 行
+    不进 finalists 头条均值(L3 对它们没有选择权),escorted_* 单独照实回显;
+    lane 列缺失的老数据退化为全量(上方既有测试即回归锚)。"""
+    pd.DataFrame({"code": ["000001"], "conviction": [80]}).to_csv(tmp_path / "_l3_bench.csv", index=False)
+    pd.DataFrame({"code": ["000010", "000011", "000012", "000013"],
+                  "lane": ["healthy", "pinned", "carryover", "watchlist_trigger"]}
+                 ).to_csv(tmp_path / "finalists.csv", index=False)
+    attr = pd.DataFrame({"code": ["000001", "000010", "000011", "000012", "000013"],
+                         "fwd_2_oc": [0.05, 0.04, -0.10, -0.20, np.nan]})
+    bs = retro.l3_bench_shadow(attr, tmp_path)
+    assert bs["n_finalists_realized"] == 1 and bs["finalists_mean_fwd2"] == 0.04   # 真选头条不含保送
+    assert bs["n_escorted"] == 3 and bs["n_escorted_realized"] == 2                # 000013 缺价不计 realized
+    assert bs["escorted_mean_fwd2"] == round((-0.10 + -0.20) / 2, 5)
+
+
 def test_pass1_cut_winners_absent_file_returns_none(tmp_path):
     assert retro.pass1_cut_winners(pd.DataFrame({"code": ["000001"], "winner": [True]}), tmp_path) is None
 

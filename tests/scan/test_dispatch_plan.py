@@ -1,5 +1,5 @@
 """L4 派发计划(dispatch_plan):按 `_l4_prompt_<code>.md` / `details/<code>.md` 是否存在,
-把 finalists 分 dispatch(需新派 Opus)与 reused(TTL 复用/carryover 已就位,解析评级并回,
+把 finalists 分 dispatch(需新派 Opus)与 reused(TTL 复用卡已就位,解析评级并回,
 不再派 subagent)。复审 task-4-review.md Important #1 修复 —— workflow 此前对全部
 finalists 无条件派卡,复用码的 prompt 文件从未写过(write_dispatch_pack 早已 skip),
 等于空派 Opus 且丢了复用卡评级。合成,无网络。

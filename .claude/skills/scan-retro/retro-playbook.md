@@ -53,7 +53,7 @@ PY
 > **绝非单日翻权重**:calibrate 跑的是多日面板 + 申万层级收缩;单日只是把样本并进去让权重平滑漂移。weights 异常可 `weights.<sha>.json` 回滚(Phase 3)。
 
 **4. 出建议(结构性,待你批准——不自动改)**
-门槛/新因子/prompt 规则类改动 → 写 `proposals.jsonl`。**quota 接线**:`channel_ledger` 某路 `n_days≥3` 且 `unique_excess_t5` 持续负 → 用 `channel_ledger.propose_quota_adjustments` 写降 quota 提议(单步±25%,advisory);持续强的路(如 momentum)同理提升 quota。floor 复审建议同此步。示例:
+门槛/新因子/prompt 规则类改动 → 写 `proposals.jsonl`。**quota 接线**:`channel_ledger` 某路 `n_days≥3` 且 `unique_excess_t2` 持续负(主尺 T+2,2026-07-10 裁定;t5 仅参考列)→ 用 `channel_ledger.propose_quota_adjustments` 写降 quota 提议(单步±25%,advisory,基线读 scan_config.jsonc 的 channel_quotas);持续强的路(如 momentum)同理提升 quota。floor 复审建议同此步。示例:
 ```bash
 uv run --no-sync python - <<'PY'
 import autoresearch.learning.feedback_store as fs

@@ -84,6 +84,28 @@ def roll(knowledge_dir: Path | str | None = None, scan_root: Path | str | None =
     return pd.DataFrame(rows, columns=_COLS)
 
 
+def heartbeat(knowledge_dir: Path | str | None = None, k: int = 3) -> str:
+    """自动腿心跳探针(pr_20260716_001;探针配方:凡自动的腿必须有一个会变的量做断言)。
+
+    连续 ≥k 次 recalibrate 的 after_sha 全同 = NO-OP 空转(权重面板冻结,退出码 0 也照报)。
+    复发病实证:2026-06-23~25 已有 349fa46d×3,07-13~16 又 72b3d0af×4——只修不监必然再死。
+    """
+    recs = [r for r in _read_jsonl(Path(knowledge_dir or "context/knowledge") / "changelog.jsonl")
+            if r.get("kind") == "recalibrate" and r.get("after_sha")]
+    if not recs:
+        return "权重自动腿:无 recalibrate 记录(还没跑过)"
+    tail = recs[-k:]
+    last = tail[-1]
+    nd = last.get("panel_dates_n", last.get("n_dates"))   # 落盘键名 = panel_dates_n(log_change)
+    if len(tail) >= k and len({r["after_sha"] for r in tail}) == 1 \
+            and all(r.get("before_sha") == r.get("after_sha") for r in tail):
+        return (f"🚨 权重自动腿疑似死亡:连续 {len(tail)} 次重标定 NO-OP"
+                f"(sha {last['after_sha']} 不变,面板 {nd} 日冻结)"
+                f" ← 会变的量没变=死了也像活着;查 calibrate 是否在消费冻结的 plan.pkl")
+    return (f"权重自动腿心跳 ✓:最近 {last.get('ts', '')[:10]} "
+            f"{last.get('before_sha')}→{last['after_sha']}(面板 {nd} 日)")
+
+
 def render(df: pd.DataFrame) -> list[str]:
     out = ["# 重标定效果 ledger(采纳日前后日度 composite IC 对比)", ""]
     if df is None or not len(df):

@@ -123,7 +123,8 @@ def test_gate2_is_read_only_and_has_no_gate_echo_keys(tmp_path):
 # final-review-l3-merge.md Critical-1:pinned 强留行注入在 v3 cap 之后(不占 finalist tier
 # 名额)——但 GATE2 原实现数的是 finalists.csv 全行数,满员日(cap=10)+1 只 pinned 即
 # 11>10 硬失败。修复:GATE2 计数排除 `lane` 命中 `_EXEMPT_LANES`
-# ({"pinned","carryover","watchlist_trigger"})的行。
+# ({"pinned","watchlist_trigger"})的行。
+# 注:`carryover` 曾是第三个 exempt lane,随该机制 2026-07-16 退役移出(pr_20260716_006)。
 
 
 def test_gate2_pinned_row_does_not_count_against_budget(tmp_path):
@@ -150,17 +151,16 @@ def test_gate2_pinned_row_still_fails_when_non_exempt_rows_alone_exceed_budget(t
     assert "11" in r["reason"]                            # 失败原因数的是排除 pinned 后的 11,非 12
 
 
-def test_gate2_carryover_and_watchlist_trigger_rows_also_exempt_from_budget(tmp_path):
-    """纵深防御:即便 carryover/watchlist_trigger 行在 GATE2 之前就已出现在 finalists.csv
-    里(当前生产时序下不会,见 gates.py 核查笔记),也应同样不计入预算——`_EXEMPT_LANES`
-    三 lane 统一语义。"""
+def test_gate2_watchlist_trigger_row_also_exempt_from_budget(tmp_path):
+    """纵深防御:即便 watchlist_trigger 行在 GATE2 之前就已出现在 finalists.csv 里
+    (当前生产时序下不会,见 gates.py 核查笔记),也应同样不计入预算——`_EXEMPT_LANES`
+    两 lane 统一语义。"""
     rows = [{"code": f"{i:06d}", "conviction": 90 - i, "lane": "trend"} for i in range(10)]
-    rows.append({"code": "000900", "conviction": 5.0, "lane": "carryover"})
     rows.append({"code": "000901", "conviction": 5.0, "lane": "watchlist_trigger"})
     pd.DataFrame(rows).to_csv(tmp_path / "finalists.csv", index=False)
     r = gate2(tmp_path, budget=10)
     assert r["ok"] is True
-    assert r["n"] == 12
+    assert r["n"] == 11
 
 
 def test_gate2_no_lane_column_counts_all_rows_unaffected_by_exempt_logic(tmp_path):

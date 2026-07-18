@@ -72,3 +72,39 @@ def test_trial_count_and_dsr_lines(tmp_path):
     text = "\n".join(render(df))
     assert "已试 **2** 版" in text and "多重检验" in text
     assert "C18 红灯" in text and "停止调参信号" in text
+
+
+# ───────────────────── 心跳探针(pr_20260716_001 复发病监测) ─────────────────────
+
+
+def _hb_rec(sha_b, sha_a, ts="2026-07-16T20:00:00", nd=107):
+    return {"kind": "recalibrate", "ts": ts, "retro_date": "2026-07-14",
+            "before_sha": sha_b, "after_sha": sha_a, "n_dates": nd}
+
+
+def test_heartbeat_flags_consecutive_noop(tmp_path):
+    """连续 k 次 before==after 且 sha 全同 → 🚨(会变的量没变=死了也像活着)。"""
+    import json as _json
+
+    from autoresearch.learning.changelog_ledger import heartbeat
+    p = tmp_path / "changelog.jsonl"
+    p.write_text("".join(_json.dumps(_hb_rec("72b3d0af", "72b3d0af")) + "\n" for _ in range(3)),
+                 encoding="utf-8")
+    line = heartbeat(knowledge_dir=tmp_path, k=3)
+    assert "🚨" in line and "NO-OP" in line and "72b3d0af" in line
+
+
+def test_heartbeat_ok_when_sha_changes(tmp_path):
+    import json as _json
+
+    from autoresearch.learning.changelog_ledger import heartbeat
+    p = tmp_path / "changelog.jsonl"
+    recs = [_hb_rec("aaa", "aaa"), _hb_rec("aaa", "aaa"), _hb_rec("aaa", "bbb")]
+    p.write_text("".join(_json.dumps(r) + "\n" for r in recs), encoding="utf-8")
+    line = heartbeat(knowledge_dir=tmp_path, k=3)
+    assert "✓" in line and "bbb" in line
+
+
+def test_heartbeat_empty_ledger(tmp_path):
+    from autoresearch.learning.changelog_ledger import heartbeat
+    assert "无 recalibrate 记录" in heartbeat(knowledge_dir=tmp_path)

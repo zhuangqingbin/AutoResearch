@@ -277,3 +277,16 @@ def test_frame_json_echo_reflects_real_config(monkeypatch, tmp_path, capsys):
 
     echo = tmp_path / "context" / "scan" / "2026-07-12" / "user_config_echo.json"
     assert json.loads(echo.read_text(encoding="utf-8")) == {"redteam_prob": 0.2}
+
+
+def test_cli_main_prints_validated_json(tmp_path, monkeypatch, capsys):
+    """CLI 回显白名单校验后的 JSON(scan-retro 喂 t1-review workflow args.cfg 用)。"""
+    import json
+
+    from autoresearch.scan import user_config as uc
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text('{\n  // 注释\n  "agents": {"t1_diag": {"effort": "high"}}\n}', encoding="utf-8")
+    monkeypatch.setattr(uc, "DEFAULT_PATH", p)
+    assert uc.main() == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out == {"agents": {"t1_diag": {"effort": "high"}}}

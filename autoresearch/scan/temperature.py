@@ -21,7 +21,7 @@ plan doc §拍板记录);消费端见 Task 5(market_pack `temperature` 块 + L5 
 
 合成评分(`score`,0–100,权重 0.40/0.20/0.20/0.20 分别对应 n_limit_up/max_streak/
 (1-fried_rate)/yesterday_premium)与五相位(`phase`:冰点<20 / 修复 / 发酵 / 高潮≥65 /
-退潮,±3 分滞回防抖,沿用项目 carryover 滞回惯例)——**v1 权重与分段阈值是待校准先验,
+退潮,±3 分滞回防抖:带内小幅回落不切相位)——**v1 权重与分段阈值是待校准先验,
 不是拟合结果**;`promote_rate` 暂不入 composite(信息量待验证)。真实校准(温度分段 ×
 市场 fwd_1/fwd_2 条件分布,及与 regime 交叉表)走 Task 5 的
 `autoresearch.scan.temperature_calib` 报告,本模块之后按证据调整,不在本次改动范围内。

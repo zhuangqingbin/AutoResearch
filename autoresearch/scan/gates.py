@@ -18,12 +18,18 @@ import pandas as pd
 
 _CODE_RE = re.compile(r"^\d{6}$")
 
-# GATE2 exempt 记账契约(终审 C-1;原 L3.5 闸 exempt 契约收编,闸删记账留):保送(pinned)/
-# 菜单滞回(carryover)/观察单直通车(watchlist_trigger)三个 lane 不占 finalist tier 预算名额。
-# pinned 由 l3_select._inject_pinned_finalists 写在 GATE2 之前(GATE2 时已在场);
-# carryover/watchlist_trigger 目前在 workflow 里于 L4 phase 才追加,晚于 GATE2——此处仍
-# 一并识别是防呆:万一未来追加顺序提前,契约不因此漂移。
-_EXEMPT_LANES = {"pinned", "carryover", "watchlist_trigger"}
+# GATE2 exempt 记账契约(终审 C-1;原 L3.5 闸 exempt 契约收编,闸删记账留):这些 lane 不占
+# finalist tier 预算名额。pinned 由 l3_select._inject_pinned_finalists 写在 GATE2 之前
+# (GATE2 时已在场)——这是 C-1 的真实触发路径;watchlist_trigger 在 workflow 里于 L4 phase
+# 才追加、晚于 GATE2,仍一并识别是防呆:万一未来追加顺序提前,契约不因此漂移。
+#
+# ⚠️ carryover 已于 2026-07-16 退役(用户裁定,依据见 pr_20260716_006):它自称是 token 经济件,
+# 但账本读数 = 复用 7 次 vs 重研 11 次 = **净多烧 11 个 Opus**、18 只次 0 买单——保席从不省
+# token(票本不在名单上=0 卡),只会 0 成本或 +1 Opus。故本集合不再含 "carryover"。
+# 已知限制:2026-07-06~07-16 的历史 scan 目录里存有 lane=carryover 行,对这些老日期重跑
+# gate2 会把它们计入预算(可能虚假失败)。生产不重跑历史 gate2,故接受;若将来要跑历史对拍,
+# 用 --budget 放宽或按 lane 过滤,**勿为此把死 lane 加回契约**。
+_EXEMPT_LANES = {"pinned", "watchlist_trigger"}
 
 
 def _codes_ok(codes) -> bool:
@@ -61,17 +67,15 @@ def gate2(scan_dir: Path, budget: int = 30) -> dict:
         return {"ok": False, "gate": "gate2", "reason": "finalist 代码非 6 位(前导零坑)"}
     codes = df["code"].astype(str).tolist()
     # C-1 修复(final-review-l3-merge.md Critical-1):GATE2 的预算数的是「L3 finalist tier
-    # 名额」,exempt lane(pinned 保送/carryover 菜单滞回/watchlist_trigger 观察单直通车,
-    # `_EXEMPT_LANES`)即便已出现在 finalists.csv 里也不计入预算比较。铁律「pinned 强留不占
-    # 名额」原实现只在"注入发生于 v3 cap 之后"生效、GATE2 记账却按全行数走,两者矛盾——满员日
-    # (cap=10 是好日子的常态输出)+1 只 pinned 即确定性触发 GATE2 硬失败(见终审报告实证)。
+    # 名额」,exempt lane(pinned 保送 / watchlist_trigger 观察单直通车,见 `_EXEMPT_LANES`)
+    # 即便已出现在 finalists.csv 里也不计入预算比较。铁律「pinned 强留不占名额」原实现只在
+    # "注入发生于 v3 cap 之后"生效、GATE2 记账却按全行数走,两者矛盾——满员日(cap=10 是好日子
+    # 的常态输出)+1 只 pinned 即确定性触发 GATE2 硬失败(见终审报告实证)。
     # exempt 行仍全额出现在 codes/n 里(它们确实会全部送 L4,只是不占『门』的坑)。
-    # 时序核查(carryover/watchlist_trigger 是否也会在 GATE2 时出现在 finalists 里):workflow
-    # scan-market.js 里 GATE2 先于 `l4_reuse --apply --carryover` 与 watchlist 直通车追加
-    # (均在 L4 phase)执行——两者当前**晚于**本门,GATE2 见到的 finalists.csv 此刻不会含
-    # 这两个 lane;但 pinned 由 `l3_select finalists`(GATE2 之前)注入,GATE2 时**已经在场**
-    # ——这才是 C-1 的真实触发路径。此处仍一并排除 carryover/watchlist_trigger 是纵深防御:
-    # 万一未来追加顺序提前,契约不因此漂移,不依赖"当前时序恰好安全"这一脆弱前提。
+    # 时序核查:pinned 由 `l3_select finalists`(GATE2 之前)注入,GATE2 时**已经在场**——这
+    # 才是 C-1 的真实触发路径;watchlist_trigger 在 L4 phase 才追加、晚于本门,一并排除是
+    # 纵深防御:不依赖"当前时序恰好安全"这一脆弱前提。
+    # (carryover 已于 2026-07-16 退役,不再是 exempt lane——理由见 `_EXEMPT_LANES` 上方注释。)
     n_counted = (len(df[~df["lane"].astype(str).isin(_EXEMPT_LANES)])
                  if "lane" in df.columns else len(df))
     if n_counted > budget:

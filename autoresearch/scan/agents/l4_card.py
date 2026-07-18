@@ -10,6 +10,7 @@ selftest 已迁 pytest(tests/scan/test_agents.py)。
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -716,6 +717,11 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
     sp = scan_dir / "_l4_shared_instructions.md"
     if sp.exists():
         shared = sp.read_text(encoding="utf-8").strip()
+    with contextlib.suppress(Exception):   # 快环校准(L4/intel 相关观察;2026-07-17 自我迭代腿,
+        from autoresearch.learning.t1_review import render_t1_calibration_block
+        t1_blk = render_t1_calibration_block(stage="L4")     # 空账本=零字节 parity)
+        if t1_blk:
+            shared = (shared + "\n\n" + t1_blk).strip()
     calib_line = _target_calib_mark(scan_dir)        # 📐 目标价基率锚(日级,算一次逐卡复用)
 
     # FN-1 第五修:`force_full_card`(早停安全网)自 2026-06-27 建成起**零生产调用点** ——
@@ -794,9 +800,9 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
 
 
 def dispatch_plan(date: str, root: Path | str | None = None) -> dict:
-    """L4 派发感知 TTL 复用/carryover(确定性,零 LLM;复审 task-4-review.md Important #1 修复)。
+    """L4 派发感知 TTL 复用(确定性,零 LLM;复审 task-4-review.md Important #1 修复)。
 
-    `write_dispatch_pack` 对已有 `details/<code>.md` 的复用/carryover 码 skip(不写
+    `write_dispatch_pack` 对已有 `details/<code>.md` 的复用码 skip(不写
     `_l4_prompt_<code>.md`),但工作流原先对**全部** finalists 无条件派卡 —— 复用码那份
     prompt 文件根本不存在,派了个读空文件的 Opus(抵消 TTL 复用省下的成本,复用卡评级也
     没并回 `cards`)。本函数按同一判据(`_l4_prompt_<code>.md` 是否存在)把 finalists
@@ -1122,14 +1128,55 @@ def _default_harvest_slim(ticker: str, date: str, ctx_root: Path) -> Path:
     return ctx_root / f"{ticker}_{date}_slim.md"
 
 
-def harvest_slim_batch(date: str, root: Path | None = None, min_bytes: int = 8_192,
+# GATE3 结构锚:harvest 真跑通的 slim 必有这四块(表面块口径)。缺任一 = 降级/NO_DATA。
+_SLIM_ANCHORS = (
+    "## Verified market snapshot",          # 行情真身
+    "### Latest verified OHLCV row",        # 最新 K 线
+    "## Market context",                    # L1 复用块(主力/技术/筹码)
+    "## Fundamentals overview",             # 基本面
+)
+# OHLCV 的 Close 必须是真数值 —— 结构锚齐但填 NO_DATA 占位的降级稿要在这里落网。
+_SLIM_CLOSE_RE = re.compile(r"\|\s*Close\s*\|\s*([0-9]+(?:\.[0-9]+)?)\s*\|")
+
+
+def _slim_defect(path: Path | None, min_bytes: int) -> tuple[int, str | None]:
+    """判一份 slim 能不能用。返回 (bytes, 缺陷描述);缺陷 None = 合格。
+
+    **规模检查与结构检查分开**(2026-07-14 生产回归 + [[data-contracts-fail-fast]] 教训):
+    · 结构+内容 = 能不能用的真判据(锚齐 ∧ OHLCV Close 是真数值)
+    · 体积 = 只兜真垃圾(空文件/截断),**不参与"数据够不够"的判断**
+
+    为什么不能再用体积当主判据:2026-07-14 药石科技(300725)slim **8176B,差 16 字节**没够
+    8192B 门槛 —— 24 节一个不缺、行情/主力/筹码全真,只是当期新闻少几条 → 被 GATE3 误杀,
+    整条流水线在 60min / 1.6M token / 33 agent 全完成后被毙。该门槛此前已因同类误杀从
+    10_240B 降到 8_192B;再降一次只是把棘轮往下拧,治不了"拿体积当结构用"这个病根。
+    """
+    if path is None or not Path(path).exists():
+        return 0, "文件不存在"
+    p = Path(path)
+    size = p.stat().st_size
+    if size < min_bytes:                                  # 真垃圾地板(空/截断)
+        return size, f"<{min_bytes}B(疑空稿/截断)"
+    try:
+        text = p.read_text(encoding="utf-8", errors="replace")
+    except OSError as e:                                  # noqa: BLE001
+        return size, f"读取失败:{e}"
+    missing = [a for a in _SLIM_ANCHORS if a not in text]
+    if missing:
+        return size, f"结构缺块:{', '.join(missing)}"
+    if not _SLIM_CLOSE_RE.search(text):
+        return size, "结构齐但 OHLCV Close 无数值(NO_DATA 占位)"
+    return size, None
+
+
+def harvest_slim_batch(date: str, root: Path | None = None, min_bytes: int = 4_096,
                        retries: int = 1, harvest_fn=None, ctx_root: Path | None = None,
                        workers: int = 4) -> dict:
     """按 _harvest_list.txt 批量 harvest slim,**失败响亮**(修 603799 静默失败坑 = GATE 3)。
 
-    07-06 教训:slim >8KB 才可信(表面块口径;深核块在 *_slim_deep.md)。offender 重试
-    `retries` 次仍小/异常/含 .SH → 记失败。harvest_fn(ticker, date)->Path 可注入(测试用),
-    默认 shell 到 analyze.harvest --slim。
+    合格判据见 `_slim_defect`:**结构+内容**决定能不能用,体积只兜真垃圾(地板 4KB)。
+    offender 重试 `retries` 次仍有缺陷/含 .SH → 记失败。harvest_fn(ticker, date)->Path
+    可注入(测试用),默认 shell 到 analyze.harvest --slim。
 
     workers=4 默认并发(spec §P3);subprocess 取数为 I/O 密集,限频靠 per-ticker retries
     串行重试承担。workers<=1 退化原串行 for 循环(兼容旧行为/便于对串行时序敏感的测试)。
@@ -1141,21 +1188,18 @@ def harvest_slim_batch(date: str, root: Path | None = None, min_bytes: int = 8_1
     hv = harvest_fn or (lambda t, dt: _default_harvest_slim(t, dt, ctx))
 
     def _one(t: str) -> dict | None:
-        """单票 harvest+判定,逐行照搬自旧循环体;返回失败记录或 None(成功)。"""
+        """单票 harvest+判定;返回失败记录或 None(成功)。"""
         if ".SH" in t:                                    # 归一漏网(GATE 3 防线)
             return {"ticker": t, "bytes": -1, "why": ".SH 未归一"}
-        size = 0
+        size, why = 0, "未 harvest"
         for _ in range(retries + 1):
             try:
-                p = hv(t, date)
-                size = p.stat().st_size if p and Path(p).exists() else 0
-            except Exception:                             # noqa: BLE001
-                size = 0
-            if size >= min_bytes:
-                break
-        if size < min_bytes:
-            return {"ticker": t, "bytes": int(size), "why": f"<{min_bytes}B"}
-        return None
+                size, why = _slim_defect(hv(t, date), min_bytes)
+            except Exception as e:                        # noqa: BLE001
+                size, why = 0, f"harvest 异常:{e}"
+            if why is None:
+                return None
+        return {"ticker": t, "bytes": int(size), "why": why}
 
     if workers <= 1:
         results = [_one(t) for t in tickers]
@@ -1177,7 +1221,7 @@ def main(argv: list[str] | None = None) -> int:
                          "consensus = finalists 卖方一致预期修正 → consensus.csv"
                          "(+条件 fund_hold.csv 基金重仓;_inst_mark/_fund_mark 注简报);"
                          "harvest-slim = 按 _harvest_list.txt 批量 harvest slim;"
-                         "dispatch-plan = 派发感知 TTL 复用/carryover(dispatch/reused 分流)")
+                         "dispatch-plan = 派发感知 TTL 复用(dispatch/reused 分流)")
     ap.add_argument("date", help="scan 日 YYYY-MM-DD")
     ap.add_argument("--root", default=None, help="scan 根目录(默认 context/scan)")
     ap.add_argument("--workers", type=int, default=4, help="slim 批量并发数(1=串行)")

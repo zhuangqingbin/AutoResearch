@@ -212,3 +212,18 @@ def load_pinned(today: str, path: str | Path | None = None,
               file=sys.stderr)
 
     return {"kept": kept, "expired": expired}
+
+
+def main() -> int:
+    """CLI:打印白名单校验后的 scan_config JSON 一行。
+
+    给不经 `frame --json` 的编排场景(如 scan-retro 拉 t1-review workflow)喂 `args.cfg` 用
+    ——workflow 脚本无文件系统访问,配置必须由编排会话读出随 args 传入(装载链同 scan-market)。
+    配置文件写坏(白名单外键)→ 沿用 load_user_config 的 fail-fast raise,非零退出。
+    """
+    print(json.dumps(load_user_config(), ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -2,9 +2,10 @@
 """scan staging 产物的规范读取口 —— 把"代码是 6 位零填字符串"这条契约收在一处。
 
 存在理由(2026-07-09 实跑事故):`finalists.csv` 的 `code`/`ticker` 两列都是股票代码,但
-`append_carryover` / `append_express` 往返时只给 `code` 指定了 `dtype=str`,`ticker` 被 pandas
-解析成 int64 → `002156` 写回成 `2156` → assemble 按 ticker glob 卡片,把两张真卡报成
-「⚠️卡片缺失」。**只有当日有滞回/直通车追加时该路径才跑**,所以是间歇性的。
+往返追加时只给 `code` 指定了 `dtype=str`,`ticker` 被 pandas 解析成 int64 → `002156` 写回成
+`2156` → assemble 按 ticker glob 卡片,把两张真卡报成「⚠️卡片缺失」。**只有当日有追加时该路径
+才跑**,所以是间歇性的。(当年的两个追加者:`append_carryover` 已随菜单滞回于 2026-07-16 退役;
+`watchlist.append_express` 仍在。)
 """
 from __future__ import annotations
 

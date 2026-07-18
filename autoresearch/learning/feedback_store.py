@@ -20,6 +20,7 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
+import re
 import shutil
 import sys
 from datetime import datetime
@@ -64,6 +65,25 @@ def _read_jsonl(name: str) -> list[dict]:
         ln = ln.strip()
         if ln:
             out.append(json.loads(ln))
+    return out
+
+
+def _read_jsonl_tolerant(name: str) -> list[dict]:
+    """同 _read_jsonl 但坏行/非 dict 行跳过(看板·nag 用:一行损坏不阻整本渲染)。"""
+    p = _f(name)
+    if not p.exists():
+        return []
+    out: list[dict] = []
+    for ln in p.read_text(encoding="utf-8").splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        try:
+            rec = json.loads(ln)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(rec, dict):
+            out.append(rec)
     return out
 
 
@@ -215,6 +235,70 @@ def open_proposals(today: str | None = None) -> list[dict]:
             "kind": p.get("kind"), "summary": p.get("summary", "")}
            for p in _read_jsonl(_PROPOSALS) if p.get("status") == "open"]
     return sorted(out, key=lambda r: r["age_days"], reverse=True)
+
+
+# ───────────────────── R4+ · 看板自清洁(机器只整理,不裁决) ─────────────────────
+# 降低人工裁决成本:annotate 纯标注(龄/配对/疑失效),nag_lines 渲染紧凑提醒行;
+# 裁决永远走人(feedback / scan-retro),这里只把「看一眼看板」的成本压到几行。
+
+_PROPOSAL_ID_RE = re.compile(r"pr_\d{8}_\d{3}")
+_MOOT_TERMS = ("carryover", "滞回保席", "观察单", "watchlist", "T+5", "fwd_5")   # 已退役机制词表
+_STALE_DAYS = 14
+
+
+def annotate_open_proposals(recs: list[dict] | None = None, today: str | None = None) -> list[dict]:
+    """看板自清洁·纯标注(零裁决):每条 open 提案 → 原字段 + age_days/stale/pair_with/maybe_moot。
+
+    * age_days:ts 与 today 天差;stale = age>14(积压提示)。
+    * pair_with:summary/rationale 引用了**另一条 open 提案** id(pr_YYYYMMDD_NNN,排除自己)
+      → 记对方 id,提示「一起收」(真实案例:pr_20260714_003 的裁决建议引 pr_20260624_001)。
+    * maybe_moot:命中已退役机制词表 → 记命中词列表(仅提示,机制是否真退役由人判)。
+    recs 可注入(测试);None → 读 proposals.jsonl(坏行跳过,不阻看板)。
+    """
+    if recs is None:
+        recs = _read_jsonl_tolerant(_PROPOSALS)
+    today = today or _today()
+    opens = [r for r in recs if r.get("status") == "open"]
+    open_ids = {str(r.get("id")) for r in opens}
+    out: list[dict] = []
+    for r in opens:
+        text = f"{r.get('summary', '')}\n{r.get('rationale', '')}"
+        age = _days_between(str(r.get("ts", ""))[:10], today)
+        pair = next((m for m in _PROPOSAL_ID_RE.findall(text)
+                     if m != r.get("id") and m in open_ids), None)
+        low = text.lower()
+        out.append({**r, "age_days": age, "stale": age > _STALE_DAYS, "pair_with": pair,
+                    "maybe_moot": [w for w in _MOOT_TERMS if w.lower() in low]})
+    return out
+
+
+def proposals_nag_lines(max_lines: int = 6, today: str | None = None) -> list[str]:
+    """看板 nag 紧凑行(assemble ⏳节用)。排序:🚨/P0 字样 → 有配对 → stale → 龄大。
+
+    行 = `- \\`id\\` [kind·龄d·↔配对·疑失效:词] summary截40`;超过 max_lines 截断并补
+    「…共 N 条 open」。只整理不裁决:配对/疑失效都是给人看的收纳提示。
+    """
+    anns = annotate_open_proposals(today=today)
+
+    def _key(a: dict) -> tuple:
+        s = str(a.get("summary", ""))
+        return ("🚨" in s or "P0" in s, bool(a.get("pair_with")),
+                bool(a.get("stale")), a.get("age_days", 0))
+
+    anns.sort(key=_key, reverse=True)
+    lines: list[str] = []
+    for a in anns[:max_lines]:
+        tags = [str(a.get("kind") or "?"), f"{a.get('age_days', 0)}d"]
+        if a.get("pair_with"):
+            tags.append(f"↔{a['pair_with']}")
+        if a.get("maybe_moot"):
+            tags.append("疑失效:" + "/".join(a["maybe_moot"]))
+        summ = str(a.get("summary", ""))
+        cut = summ[:40] + ("…" if len(summ) > 40 else "")
+        lines.append(f"- `{a.get('id', '?')}` [{'·'.join(tags)}] {cut}")
+    if len(anns) > max_lines:
+        lines.append(f"- …共 {len(anns)} 条 open")
+    return lines
 
 
 def scope_match(lesson_scope: dict, query_scopes) -> bool:

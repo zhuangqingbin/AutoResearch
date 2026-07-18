@@ -105,7 +105,11 @@ def test_reuse_pass_apply(tmp_path):
     assert l4_phase_stats(d)["n_reused"] == 1                    # health 能识别复用卡
 
 
-# ───────────────────────── 深否决豁免 + 菜单滞回(2026-07-04) ─────────────────────────
+# ───────────────────────── 深否决豁免(2026-07-04) ─────────────────────────
+# 注:本节原有「菜单滞回(carryover)」两个测试,随 carryover 于 2026-07-16 退役一并删除
+# (pr_20260716_006)。其中「finalists.csv 往返保 ticker 前导零」这条回归护栏未丢覆盖 ——
+# 同一个 artifacts.read_finalists 契约由 tests/scan/test_watchlist.py::
+# test_express_append_preserves_ticker_leading_zeros 经 append_express 继续锁死。
 
 _GATED_HOLD = ("〔卡契约 v3·超短 1~2 日〕\n# 决策卡\n**Rating**: Hold\n**一行多空**:多:x ｜ 空:y\n"
               "\n**Rubric建议**: 表面4维净分 **-2/4** ｜ "
@@ -120,64 +124,6 @@ def test_reuse_deep_reject_bypasses_conviction(tmp_path):
     dec = reuse_decision(_C, d)
     assert dec["reuse"], dec["reasons"]
     assert any("豁免" in r for r in dec["reasons"])
-
-
-def test_carryover_append(tmp_path):
-    """菜单滞回:昨日 finalist(前卡 ≤Hold)∩ 今日 L2 但被 L3 换血 → 保席追加(lane=carryover),
-    幂等;不在今日 L2 的不追。churn 90% 日复用率从 7% 上抬的入口。"""
-    import pandas as pd
-
-    from autoresearch.scan.l4_reuse import append_carryover
-    prior = tmp_path / "2026-07-01"
-    (prior / "details").mkdir(parents=True)
-    pd.DataFrame([{"code": "000010", "name": "甲", "sector": "电子"},
-                  {"code": "000020", "name": "乙", "sector": "电力"}]).to_csv(
-        prior / "finalists.csv", index=False)
-    (prior / "details" / "000010.md").write_text(HOLD, encoding="utf-8")
-    (prior / "details" / "000020.md").write_text(HOLD, encoding="utf-8")
-
-    today = tmp_path / "2026-07-02"
-    (today / "details").mkdir(parents=True)
-    pd.DataFrame([{"code": "000030", "name": "丙", "sector": "汽车"}]).to_csv(
-        today / "finalists.csv", index=False)
-    pd.DataFrame([{"code": "000010", "name": "甲", "industry": "电子", "l2_rank": 5},
-                  {"code": "000030", "name": "丙", "industry": "汽车", "l2_rank": 1}]).to_csv(
-        today / "L2_gbdt_top200.csv", index=False)
-
-    assert append_carryover(today) == 1                      # 甲追加;乙不在今日 L2 → 不追
-    fin = pd.read_csv(today / "finalists.csv", dtype={"code": str})
-    row = fin[fin["code"].astype(str).str.zfill(6) == "000010"]
-    assert len(row) == 1 and row.iloc[0]["lane"] == "carryover"
-    assert append_carryover(today) == 0                      # 幂等
-
-
-def test_carryover_append_preserves_ticker_leading_zeros(tmp_path):
-    """finalists.csv 往返不许吃掉 `ticker` 前导零(002156→2156 → assemble 判「卡片缺失」)。
-
-    2026-07-09 实跑:append_carryover 以 dtype={"code": str} 读回,`ticker` 被解析成 int64,
-    002156/002049 两张真卡被 L5 报为缺失。旧 fixture 无 `ticker` 列 → 从没测到。
-    """
-    import pandas as pd
-
-    from autoresearch.scan.l4_reuse import append_carryover
-    prior = tmp_path / "2026-07-08"
-    (prior / "details").mkdir(parents=True)
-    pd.DataFrame([{"ticker": "000010", "code": "000010", "name": "甲"}]).to_csv(
-        prior / "finalists.csv", index=False)
-    (prior / "details" / "000010.md").write_text(HOLD, encoding="utf-8")
-
-    today = tmp_path / "2026-07-09"
-    (today / "details").mkdir(parents=True)
-    pd.DataFrame([{"ticker": "002156", "code": "002156", "name": "通富微电"}]).to_csv(
-        today / "finalists.csv", index=False)          # ← 生产形状:带 ticker 列
-    pd.DataFrame([{"code": "000010", "name": "甲", "industry": "电子", "l2_rank": 5},
-                  {"code": "002156", "name": "通富微电", "industry": "半导体", "l2_rank": 1}]).to_csv(
-        today / "L2_gbdt_top200.csv", index=False)
-
-    assert append_carryover(today) == 1
-    fin = pd.read_csv(today / "finalists.csv", dtype=str)
-    assert set(fin["ticker"]) == {"002156", "000010"}, f"ticker 丢前导零:{list(fin['ticker'])}"
-    assert set(fin["code"]) == {"002156", "000010"}
 
 
 # ───────────────────────── 卡契约 v3 版本门(2026-07-10) ─────────────────────────

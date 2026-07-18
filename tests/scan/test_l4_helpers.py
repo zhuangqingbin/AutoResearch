@@ -67,6 +67,20 @@ def test_force_full_card_pinned_always_full():
     assert force_full_card({"lane": "value", "conviction": 50, "n_channels": 1}) is False
 
 
+def _valid_slim(pad: int = 10_000) -> str:
+    """GATE3 结构合格的 slim 正文(四道锚 + 真 OHLCV Close)。
+
+    2026-07-14 起 GATE3 判据 = 结构+内容(见 l4_card._slim_defect),纯 "x"*N 填充物不再算合格 ——
+    只想撑体积/测并发的用例用这个,别退回填充物。
+    """
+    return (
+        "## Verified market snapshot (source of truth)\n"
+        "### Latest verified OHLCV row\n\n| Field | Value |\n|---|---:|\n| Close | 41.00 |\n"
+        "## Market context — A股 (主力/技术/筹码/北向 · 复用L1召回)\n"
+        "## Fundamentals overview\n"
+    ) + "x" * pad
+
+
 def test_harvest_slim_batch_parallel_workers(tmp_path):
     """P3:workers=4 默认并发——fake_hv 用 lock+peak 计数器证明真并发(串行时 peak 恒为 1)。"""
     import threading
@@ -84,7 +98,7 @@ def test_harvest_slim_batch_parallel_workers(tmp_path):
             state["peak"] = max(state["peak"], state["now"])
         time.sleep(0.05)
         p = tmp_path / f"{t}_{dt}_slim.md"
-        p.write_text("x" * 10_000, encoding="utf-8")
+        p.write_text(_valid_slim(), encoding="utf-8")   # 结构合格(本测只验并发,不验校验逻辑)
         with lock:
             state["now"] -= 1
         return p

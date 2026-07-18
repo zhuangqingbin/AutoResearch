@@ -44,7 +44,7 @@ def test_calib_suggestion_lines(tmp_path):
 
 
 _SKIP_ALL_BUT_TEMPERATURE = ("retro_refresh", "retro_pending", "consensus", "universe",
-                             "calendar", "watchlist", "catalyst", "menu", "ledgers")
+                             "calendar", "catalyst", "menu", "ledgers")
 
 
 def test_temperature_step_reports_score_and_phase(tmp_path, monkeypatch):
@@ -79,22 +79,22 @@ def test_temperature_step_empty_rollup_degrades_not_fails(tmp_path, monkeypatch)
 # ───────────────────────── D3 清欠:_ledgers 白名单加四账本 ─────────────────────────
 
 _SKIP_ALL_BUT_LEDGERS = ("retro_refresh", "retro_pending", "consensus", "temperature",
-                         "universe", "calendar", "watchlist", "catalyst", "menu")
+                         "universe", "calendar", "catalyst", "menu")
 
-_ALL_TEN_LEDGERS = ("journal", "buy_ledger", "cross_calib", "catalyst_ledger", "paper_nav",
-                    "watchlist_ledger", "channel_ledger", "gate_ledger", "zero_buy_ledger",
-                    "changelog_ledger")
+_ALL_NINE_LEDGERS = ("journal", "buy_ledger", "cross_calib", "catalyst_ledger", "paper_nav",
+                     "channel_ledger", "gate_ledger", "zero_buy_ledger",
+                     "changelog_ledger")
 
 
-def test_ledgers_step_runs_all_ten(tmp_path, monkeypatch):
-    """_ledgers 步现在覆盖十个账本(原六个 + D3 清欠的 channel/gate/zero_buy/changelog),
+def test_ledgers_step_runs_all_nine(tmp_path, monkeypatch):
+    """_ledgers 步覆盖九个账本(watchlist_ledger 已随观察单退役,fb_20260714_002),
     且单点故障不连坐(镜像既有六个的隔离风格)。"""
     import importlib
 
     from autoresearch.scan.prelude import run_prelude
     monkeypatch.chdir(tmp_path)
     calls: list[str] = []
-    for name in _ALL_TEN_LEDGERS:
+    for name in _ALL_NINE_LEDGERS:
         mod = importlib.import_module(f"autoresearch.learning.{name}")
         monkeypatch.setattr(mod, "main", (lambda n: lambda: calls.append(n))(name))
     # 一个刻意炸,验证其余九个不受牵连
@@ -108,7 +108,8 @@ def test_ledgers_step_runs_all_ten(tmp_path, monkeypatch):
     results = run_prelude("2026-07-09", skip=_SKIP_ALL_BUT_LEDGERS)
     row = next(r for r in results if r["step"] == "ledgers")
     assert row["ok"] is True                       # contextlib.suppress:单点故障不阻断步骤本身
-    assert set(calls) == set(_ALL_TEN_LEDGERS)
+    assert set(calls) == set(_ALL_NINE_LEDGERS)
+    assert "watchlist_ledger" not in calls         # 退役账本不得复活(fb_20260714_002)
     for name in ("channel", "gate", "zero_buy", "changelog"):
         assert name in row["note"]
 

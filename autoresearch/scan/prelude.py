@@ -5,8 +5,9 @@ design: docs/specs/2026-07-03-scan-run-reliability-design.md §2
 
 首航(07-02)人肉串前奏 ~10 分钟且有漏跑风险;本模块把它收编:
 attribution 刷新 → retro pending 列出(**只备料不代跑诊断**)→ consensus 拉(限频容忍)
-→ universe(regime-aware 默认开,含影子)→ 日历 → 观察单日检(触发置顶)→ 菜单/预算/哨兵
+→ universe(regime-aware 默认开,含影子)→ 日历 → 菜单/预算/哨兵
 → journal + buy_ledger 刷新。各步 try 包裹失败不阻断,末尾汇总屏。
+(观察单日检步骤已退役 —— 用户裁定 fb_20260714_002,别再加回。)
 
   uv run --no-sync python -m autoresearch.scan.prelude 2026-07-03
   uv run --no-sync python -m autoresearch.scan.prelude 2026-07-03 --no-regime-aware --skip universe
@@ -90,6 +91,30 @@ def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()
         return ("待诊断 retro 日:" + "、".join(days) + " ← 开扫前先用 scan-retro 补诊断") \
             if days else "无待复盘日"
 
+    def _t1_pending():
+        # 快环(T+1 判断层复盘,fb_20260717_001):T 报告真选票 vs T+1 收盘,D+1 即可复盘
+        from autoresearch.learning.t1_review import pending_pairs
+        pairs = pending_pairs(today=date)
+        return ("T+1 快环待复盘:" + "、".join(f"{p['t']}→{p['t1']}" for p in pairs)
+                + " ← 最新对跑 t1-review workflow,更早的 backfill") if pairs else "快环无欠账"
+
+    def _learning_health():
+        # 学习环健康三查(全只读,子项各自 suppress:一项炸不连坐)
+        import contextlib
+        lines: list[str] = []
+        with contextlib.suppress(Exception):
+            from autoresearch.learning.changelog_ledger import heartbeat
+            lines.append(heartbeat())
+        with contextlib.suppress(Exception):
+            from autoresearch.learning.lesson_yield import guard_coverage_line
+            lines.append(guard_coverage_line())
+        with contextlib.suppress(Exception):
+            import autoresearch.learning.feedback_store as fs
+            nag = getattr(fs, "proposals_nag_lines", None)   # 看板自清洁(可选,缺=旧版 parity)
+            if nag:
+                lines.extend(nag(max_lines=3))
+        return "\n           ".join(lines) if lines else "(学习环健康查不可用)"
+
     def _consensus():
         from autoresearch.research.consensus import pull
         pull(date)
@@ -126,16 +151,6 @@ def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()
         n_d = int((df["kind"] == "disclosure").sum()) if len(df) else 0
         return f"解禁 {n_u} + 披露 {n_d}"
 
-    def _watchlist():
-        from autoresearch.scan.watchlist import run_check
-        st = run_check(date, scan_dir)
-        if st is None or not len(st):
-            return "观察单空/无 L1"
-        trig = st[st["status"].astype(str).str.startswith("触发")]
-        if len(trig):
-            return "🔔 触发:" + "、".join(f"{r['name']}({r['code']})" for _, r in trig.iterrows())
-        return f"{len(st)} 条在监控,无触发"
-
     def _catalyst():
         import pandas as pd
 
@@ -169,23 +184,24 @@ def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()
             gate_ledger,
             journal,
             paper_nav,
-            watchlist_ledger,
             zero_buy_ledger,
         )
-        # 十个 ledger 串行但各自 suppress:单点故障不再连坐(改前五个共享一个 try,一炸全炸)。
+        # 九个 ledger 串行但各自 suppress:单点故障不再连坐(改前五个共享一个 try,一炸全炸)。
         # 07-12 D3 清欠:channel/gate/zero_buy/changelog 四个"存在但不会自己长大"的账本纳入白名单
         # (此前只能靠人/Claude 手跑 CLI,见 docs/research/2026-07-12-learning-system-survey.md §1)。
-        for mod in (journal, buy_ledger, cross_calib, catalyst_ledger, paper_nav, watchlist_ledger,
+        # watchlist_ledger 随观察单日检退役(fb_20260714_002),模块已于 2026-07-17 删除(P3 清欠)。
+        for mod in (journal, buy_ledger, cross_calib, catalyst_ledger, paper_nav,
                     channel_ledger, gate_ledger, zero_buy_ledger, changelog_ledger):
             with contextlib.suppress(Exception):
                 mod.main()
-        return ("journal + buy_ledger + cross_calib + catalyst + paper_nav + watchlist + "
+        return ("journal + buy_ledger + cross_calib + catalyst + paper_nav + "
                 "channel + gate + zero_buy + changelog 已刷新")
 
     all_steps = [("retro_refresh", _refresh), ("retro_pending", _pending),
+                 ("t1_pending", _t1_pending), ("learning_health", _learning_health),
                  ("consensus", _consensus), ("temperature", _temperature),
                  ("universe", _universe), ("calendar", _calendar),
-                 ("watchlist", _watchlist), ("catalyst", _catalyst), ("menu", _menu),
+                 ("catalyst", _catalyst), ("menu", _menu),
                  ("ledgers", _ledgers)]
     results = _run_steps([(n, f) for n, f in all_steps if n not in skip])
 
@@ -193,9 +209,6 @@ def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()
     for r in results:
         mark = "✓" if r["ok"] else "✗"
         print(f"  {mark} {r['step']}: {r['note']}")
-    trig = next((r["note"] for r in results if r["step"] == "watchlist" and "🔔" in r["note"]), None)
-    if trig:
-        print(f"  ⚠️  {trig} —— 触发票走直通车(append_express)直达 L4 复核")
     pend = next((r["note"] for r in results if r["step"] == "retro_pending" and "待诊断" in r["note"]), None)
     if pend:
         print(f"  ⚠️  {pend}")
@@ -214,7 +227,7 @@ def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()
                 print(f"    {ln}")
     except Exception as e:  # noqa: BLE001 — 建议行可选,缺了不挡前奏
         print(f"[prelude] ✗ calib_lines: {e}", file=sys.stderr)
-    print("  下一步(LLM 段):哨兵档 → 直接 assemble(观察单/日历已跑);全扫 → 策略师 → L3 → L4(见 SKILL 流程)")
+    print("  下一步(LLM 段):哨兵档 → 直接 assemble(日历已跑);全扫 → 策略师 → L3 → L4(见 SKILL 流程)")
     return results
 
 

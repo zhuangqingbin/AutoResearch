@@ -55,6 +55,22 @@ def active_guard_lessons() -> list[dict]:
     return [r for r in fs.lessons_for([("global", "*")]) if isinstance(r.get("guard"), dict)]
 
 
+def guard_coverage_line() -> str:
+    """经验的「牙齿」覆盖一行(prelude 汇总屏用,只读)。
+
+    guard=machine-checkable 谓词,是 self_review check#5(违背经验)的唯一弹药——
+    0 带 guard 时该硬门**结构性无法开火**(不是没触发,是永远不可能触发),必须每日可见。
+    """
+    total = len(fs.lessons_for([("global", "*")]))
+    guarded = len(active_guard_lessons())
+    if not total:
+        return "经验库空(写侧瓶颈)"
+    if not guarded:
+        return (f"⚠️ 经验 {total} 条 active、0 条带 guard → self_review check#5(违背经验)"
+                f"结构性空转 ← 裁决经验升 active 时补 machine-checkable guard")
+    return f"经验 {total} 条 active,{guarded} 条带 guard(check#5 有弹药)"
+
+
 def _walk_attribution(scan_root: Path) -> list[tuple[str, pd.DataFrame]]:
     """按日期升序读取全部历史 `context/scan/<date>/retro/attribution.csv`(缺失/损坏日跳过)。"""
     out: list[tuple[str, pd.DataFrame]] = []
