@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -183,6 +184,51 @@ def harvest(end_anchor: str, form_span: int, step: int, back: int, fwd: int, dry
     pd.Series({"F": F, "P": P, "end_anchor": end_anchor, "step": step,
                "form_span": form_span, "back": back, "fwd": fwd}).to_pickle(OUT / "plan.pkl")
     print(f"[done] harvest 完成 → {CACHE}/  (plan → {OUT}/plan.pkl)")
+
+
+def extend_plan(anchor: str | None = None, holdback: int = 2) -> dict:
+    """把 plan.pkl 面板向 anchor(默认今天)**增量续**——修 pr_20260716_001(重标定 NO-OP)。
+
+    病根:plan.pkl 由 harvest 一次性写死,calibrate 只消费它、从不重规划 → 07-02 后的扫描日
+    从未进面板,重标定连续 NO-OP(sha 不变)且退出码 0。**勿用「重跑 harvest」修**:现存 F=107
+    日是跨多次 harvest 历史累积的,`plan_dates` 按存参 form_span=24 只会重造 25 日面板把它
+    冲掉(面板缩 4 倍 = 回归)。
+
+    做法(全幂等,已缓存跳过;返回 {added_f, added_p, healed, f_last, n_f}):
+      * F_new = (F_old[-1], last_trade(anchor) − holdback] 的全部交易日 —— holdback=2 对齐
+        主尺 fwd_2_oc(标签只需 D+2 结算;旧参 fwd=10 只决定 fwd_10 展示列的口径,不再拖 F 的
+        推进上界,否则面板永久晚 8 个交易日);每个新成型日拉 8 因子端点快照。
+      * P_new = (P_old[-1], last_trade(anchor)] 的 daily;并**回补 P 全程缓存缺失日**(自愈:
+        某晚 daily 未发布留下的洞,下一晚自动补上;`_cache` 对空 daily 拒缓存,不会钉死)。
+      * plan.pkl:F/P 增量并集、end_anchor 刷新;step/form_span/back/fwd 原样保留(仅存档,
+        form_span 自此不再决定 F 的范围)。
+    """
+    from autoresearch.data.tushare_source import _trade_days
+    anchor_d = (anchor or datetime.now().strftime("%Y-%m-%d")).replace("-", "")
+    plan = pd.read_pickle(OUT / "plan.pkl")
+    F, P = [str(x) for x in plan["F"]], [str(x) for x in plan["P"]]
+    pro = _pro()
+    cal = _trade_days(pro, P[0], anchor_d)                 # 截到 anchor 的开市日
+    if not cal:
+        raise RuntimeError(f"交易日历为空({P[0]}..{anchor_d})")
+    f_hi = len(cal) - 1 - holdback                          # F 上界:最近交易日往回 holdback 个
+    f_new = [d for d in (cal[:f_hi + 1] if f_hi >= 0 else []) if d > F[-1]]
+    p_new = [d for d in cal if d > P[-1]]
+    p_all = sorted(set(P) | set(p_new))
+    # healed 只计存量 P 的缓存洞(新增日不算「回补」);拉取时两者并集
+    healed = [d for d in P if not (CACHE / "daily" / f"{d}.pkl").exists()]
+    for d in sorted(set(p_new) | set(healed)):
+        _cache("daily", d, _fetch(pro, "daily", d))
+    for d in f_new:
+        for ep in ("daily_basic", "stk_factor_pro", "cyq_perf", "moneyflow", "hk_hold",
+                   "margin_detail", "block_trade", "top_inst"):
+            _cache(ep, d, _fetch(pro, ep, d))
+    if f_new or p_new:
+        plan["F"], plan["P"] = F + f_new, p_all
+        plan["end_anchor"] = f"{anchor_d[:4]}-{anchor_d[4:6]}-{anchor_d[6:]}"
+        pd.Series(plan).to_pickle(OUT / "plan.pkl")
+    return {"added_f": len(f_new), "added_p": len(p_new), "healed": len(healed),
+            "f_last": (F + f_new)[-1], "n_f": len(F) + len(f_new)}
 
 
 # ───────────────────────── 价格面板 → pivots ─────────────────────────
@@ -772,11 +818,13 @@ def calibrate_regimes(cap_floor: float = 30.0, k: float = 200.0, label_col: str 
     return {"meta": meta, "weights": weights, "regimes": regimes}
 
 
-# ───────────────────────── L2 GBDT 学习重排(LightGBM 横截面) ─────────────────────────
+# ──────────────── GBDT 横截面工具(LightGBM;历史遗留命名,已非 L2 引擎) ────────────────
 #
-# 把 L1 线性复合分的"加权"换成 GBDT 非线性:同一批因子组 + 双侧都有的原始因子为特征,学每日
-# 横截面 rank-norm 后的 fwd_2_oc(超短主尺:开到 D+2 收)收益。scan.universe.run() 在 L1 召回后调 predict_scores()
-# 把 top1000 重排成 top200(= L2 粗排,确定性,替代旧 L2-AI keep/cut);模型缺失 → 回落 composite top。
+# 同一批因子组 + 双侧都有的原始因子为特征,学每日横截面 rank-norm 后的 fwd_2_oc(超短主尺:
+# 开到 D+2 收)收益。**历史遗留命名**:曾是 L2 champion 粗排方向;该簇(champion/模型园区)已于
+# 2026-07-13 整簇删除,L2 现为确定性分层采样(sn_composite 排序+风格桶 floor+sector cap,见
+# scan/recall/l2_stratify.py),生产漏斗不调 predict_scores。本节仅作 factor_lab 可选特征/研究
+# 工具保留(lightgbm 为可选依赖);模型缺失 → predict_scores 回落 None,调用方自回线性。
 #
 # 特征对齐:gbdt_features 在 factor_lab 帧(带前瞻收益=训练)与 scan.universe L1 输出(=预测)上
 # **同口径**——组分来自共享的 _factor_groups,原始因子取两侧交集。**剔 growth 组**:factor_lab 帧无
@@ -802,6 +850,8 @@ def gbdt_features(df: pd.DataFrame) -> pd.DataFrame:
 
     NaN 保留(LightGBM 原生分裂处理);列名/顺序固定 → 预测时 reindex 对齐。
     `composite` 两侧都有:训练端由 train_gbdt 注入(composite_score),预测端即 L1_recall 自带列。
+    历史遗留命名:现仅为 factor_lab 可选特征工具(L2 champion/模型园区已于 2026-07-13 整簇
+    删除,L2 现为确定性分层采样)。
     """
     groups = _factor_groups(df)                 # 9 组 0–1 横截面分位(与线上同口径);取其中 8 组
     feat = pd.DataFrame({f"g_{k}": groups[k].to_numpy() for k in GBDT_GROUPS}, index=df.index)
@@ -822,7 +872,7 @@ def _rank_ic_by_date(score: pd.Series, fwd: pd.Series, date: pd.Series) -> float
 
 
 def train_gbdt(cap_floor: float = 30.0, valid_dates: int = 5, out_path: str = GBDT_MODEL) -> dict:
-    """LightGBM 横截面排序模型(L2 粗排引擎)。
+    """LightGBM 横截面排序模型(历史遗留命名;现仅为 factor_lab 可选研究工具,非 L2 引擎)。
 
     标签 = 每日横截面 rank-norm 的 fwd_2_oc(超短主尺,学相对排序,免 regime 水平位移,Qlib CSRankNorm 思路)。
     时序留出最后 valid_dates 个成型日做 oos 验证 + 早停;打印 GBDT vs 线性 composite 的 oos rank-IC
@@ -1027,7 +1077,7 @@ def main() -> int:
                     choices=["harvest", "eval", "calibrate", "calibrate-regimes", "train"],
                     help="harvest=取数缓存;eval=离线评估;calibrate=主尺(fwd_2_oc)IC→weights.json;"
                          "calibrate-regimes=同尺+regime分块;"
-                         "train=LightGBM 横截面排序→gbdt_model.pkl(L2 粗排引擎)")
+                         "train=LightGBM 横截面排序→gbdt_model.pkl(历史遗留命名,非 L2 引擎;factor_lab 可选研究工具)")
     ap.add_argument("--valid-dates", type=int, default=5, help="train:留作 oos 验证/早停的末尾成型日数")
     ap.add_argument("--anchor", default=None, help="结束锚定日 YYYY-MM-DD(缺省=今天)")
     ap.add_argument("--form-span", type=int, default=90, help="成型日跨度(交易日),默认 90")

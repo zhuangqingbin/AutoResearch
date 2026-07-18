@@ -226,7 +226,13 @@ def test_migrate_manual_dates_to_by_date(tmp_path):
 
 
 def test_express_append_preserves_ticker_leading_zeros(tmp_path):
-    """append_express 与 append_carryover 同族:finalists.csv 往返保 `ticker` 6 位零填。"""
+    """finalists.csv 经 append_express 往返后仍保 `ticker` 6 位零填。
+
+    这是 `artifacts.read_finalists` 零填契约的**唯一**回归护栏 —— 同族的 append_carryover
+    随 carryover 机制 2026-07-16 退役删除(pr_20260716_006),其对应测试一并移除,覆盖
+    由本条独扛。丢了它,000062→"62" 那类前导零坑(assemble glob 匹配不到卡片→误判缺卡
+    →self_review 挡发布)就没人看着了。
+    """
     from autoresearch.scan.watchlist import append_express
     d = tmp_path / "2026-07-09"
     d.mkdir()

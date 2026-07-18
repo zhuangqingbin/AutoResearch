@@ -3,7 +3,9 @@
 
 design: docs/specs/2026-07-02-scan-watchlist-and-health-metrics-design.md §2.2
 
-L2 只做多样性采样不做预测 → 它的可优化目标是"菜单质量"。本模块把 06-30 式菜单病
+L2 只做多样性采样不做预测 → 它的可优化目标是"菜单质量"。L2 本体 = 确定性分层采样
+(sn_composite 排序 + 风格桶 floor + sector cap;`L2_gbdt_top200.csv` 文件名中的 gbdt
+为历史遗留别名,冻结契约、无模型参与)。本模块把 06-30 式菜单病
 ("健康上涨 0 只、全是落刀/贵票")在 L2 一出就用确定性报表喊出来,而不是 L4 烧完
 token 才发现。L2 vs 全市场同口径对照;缺文件 → "",缺列 → 对应行降级消失。
 """
@@ -104,7 +106,6 @@ def l4_budget(scan_dir: Path | str, base: int = 30, floor: int = 12) -> tuple[in
     五旗:落刀>60% / **相对落刀**(>40% 且 >2×全市场,07-03 病灶 45% vs 20% 绝对门抓不住)/
     健康涨≤2 / regime==risk_off / **0买连败≥3**(≥5 计重旗=双份)。
     权重 1=3/4 档、≥2=1/2 档(≥floor)。**只降不升**;L2/meta 缺 → (base, parity 注)。
-    观察单兜底防错过。
     """
     scan_dir = Path(scan_dir)
     f2 = scan_dir / "L2_gbdt_top200.csv"
@@ -150,7 +151,7 @@ def l4_budget(scan_dir: Path | str, base: int = 30, floor: int = 12) -> tuple[in
     if streak >= 7:                      # 长连败硬压(2026-07-06):再降到 ~1/3 档(≥8),低产日别烧 20 卡
         n = min(n, max(8, base // 3))
         flags.append(f"连败≥7硬压→{n}")
-    return n, f"⚠️ {'+'.join(flags)} → L4 预算降至 {n}(基准 {base};省 Opus 于低产日,观察单兜底)"
+    return n, f"⚠️ {'+'.join(flags)} → L4 预算降至 {n}(基准 {base};省 Opus 于低产日)"
 
 
 def sentinel_advice(scan_dir: Path | str, frac_lo: float = 0.03,

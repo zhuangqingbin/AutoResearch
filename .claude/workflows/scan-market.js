@@ -1,11 +1,10 @@
 export const meta = {
   name: 'scan-market',
-  description: '全 A股六段漏斗:一个确定性 workflow 编排全流程 + 四校验门(prelude→市场/行业→L3→L4→assemble)',
+  description: '全 A股漏斗前段(prelude→市场/行业→L3→L4-prep,GATE1/2/3)→ 返回 dispatch 交接;决策卡=每股独立 l4-stock workflow 由主会话并行拉起,assemble+GATE4 由主会话收尾(fb_20260714_003)',
   phases: [
     { title: 'Prelude', detail: 'frame → [universe/L0-L2 ∥ market_view] → GATE1' },
     { title: 'L3', detail: '[sector-briefs ∥ 证据harvest] → L3-rank → finalists+GATE2(合并壳)' },
-    { title: 'L4', detail: '情报站(GATE2 后即发)∥ [l4-prep(生产者并行) → slim-harvest] → 决策卡并发' },
-    { title: 'Assemble', detail: 'assemble → GATE4' },
+    { title: 'L4-prep', detail: 'l4-prep(生产者并行)→ dispatch-plan → GATE3 slim(失败只剔单股)→ 交接每股 l4-stock' },
   ],
 }
 
@@ -17,6 +16,9 @@ if (!date) throw new Error('args.date 必填,如 {date:"2026-07-07"}')
 // 回显、由调用方随 Workflow args.config 传入(本脚本无文件系统访问,不能自己读文件)。缺省 = {} →
 // 下游 `cfg.agents?.<stage>?.effort ?? '<现值>'` 全部落回硬编码现值(parity)。顶部取一次。
 const cfg = (typeof args === 'string' && args ? JSON.parse(args).config : (args && args.config)) || {}
+// 哨兵档人工 override(SKILL 步骤 2.2:哨兵是「确定性建议,**人拍板**」,而本脚本原先硬编码直接跳 L3/L4
+// —— 判据只问"今天有没有值得买的",不知道用户还有"保送持仓该不该走"的问题挂着)。缺省 false = 现行为(parity)。
+const forceFull = !!(typeof args === 'string' && args ? JSON.parse(args).force_full : (args && args.force_full))
 const R = 'uv run --no-sync python -m'
 const SD = `context/scan/${date}`
 
@@ -71,13 +73,14 @@ const g1 = await gate('GATE1', `${R} autoresearch.scan.gates gate1 ${date}`, GAT
 if (!g1 || !g1.ok) throw new Error(`GATE1 失败:${g1 ? g1.reason : 'agent 无返回'}`)
 log(`GATE1 ✓ sentinel=${g1.sentinel_level} · L4预算=${g1.l4_budget}`)
 
-// ── 哨兵档:材料枯竭 → 跳过 sector/L3/L4 ─────────────────────────
-if (g1.sentinel_level === 'sentinel') {
-  log('哨兵档 → 跳过 L3/L4,直接 assemble(观察单/日历已在 prelude 跑过)')
-  await bash(`${R} autoresearch.scan.assemble ${date}`, 'assemble', 'Assemble')
-  const g4s = await gate('GATE4', `${R} autoresearch.scan.gates gate4 ${date}`, OK, 'Assemble')
-  if (!g4s || !g4s.ok) throw new Error(`GATE4(哨兵)失败:${g4s ? g4s.reason : 'no return'}`)
-  return { date, mode: 'sentinel', finalists: 0, cards: 0, buys: [], isZeroBuy: true, published: true }
+// ── 哨兵档:材料枯竭 → 跳过 sector/L3/L4;assemble+GATE4 由主会话收尾 ──────────
+if (g1.sentinel_level === 'sentinel' && !forceFull) {
+  log('哨兵档 → 跳过 L3/L4(日历已在 prelude 跑过);assemble+GATE4 由主会话收尾')
+  return { date, mode: 'sentinel', finalists: 0, dispatch: [], reused: [], meta: {},
+    l4_budget: g1.l4_budget, published: false }
+}
+if (g1.sentinel_level === 'sentinel' && forceFull) {
+  log('⚠️ 哨兵档被人工 override(force_full)→ 照常跑 L3/L4。诚实标注:确定性判据判「材料枯竭」,买单侧期望低。')
 }
 
 // ── Phase L3 ────────────────────────────────────────────────────
@@ -110,9 +113,9 @@ await parallel([
     .then((r) => { log(`brief ✓ ${sec}`); return r })),
 ])
 // L3 holistic 精排(唯一 max-effort 判断核心)
-log(`L3 精排开始:pass1 已分诊 200→~60(影子 _l3_pass1_cut.csv),l3-rank 深比较出 finalist tier 7~${l3cap} 只+bench(effort max,历史 ~14m)`)
+log(`L3 精排开始:pass1 已分诊 200→~40(影子 _l3_pass1_cut.csv),l3-rank 深比较出 finalist tier 7~${l3cap} 只+bench(effort max,历史 60行~14-25m,40行待测)`)
 await agent(
-  `L3 精排 · 日期 ${date} · finalist tier 按质 7~${l3cap} 只(judged 每元素带 finalist:true/false)+其余为 bench;宁缺毋滥。文件在 ${SD}/:_l3_table.md(~60 表,pass1 已分诊)、market_view.md(§1-3 地形)、sector_briefs/(地形段)。按你的人设(6 维 rubric + 硬约束 A-E)比较式精排,写 ${SD}/_l3_judged.json。`,
+  `L3 精排 · 日期 ${date} · finalist tier 按质 7~${l3cap} 只(judged 每元素带 finalist:true/false)+其余为 bench;宁缺毋滥。文件在 ${SD}/:_l3_table.md(~40 表,pass1 已分诊)、market_view.md(§1-3 地形)、sector_briefs/(地形段)。按你的人设(6 维 rubric + 硬约束 A-E)比较式精排,写 ${SD}/_l3_judged.json。`,
   { agentType: 'l3-rank', effort: cfg.agents?.l3_rank?.effort ?? 'max',
     ...(cfg.agents?.l3_rank?.model ? { model: cfg.agents.l3_rank.model } : {}),
     label: 'L3-rank', phase: 'L3' })
@@ -132,97 +135,48 @@ if (!g2 || !g2.ok) throw new Error(`GATE2 失败:${g2 ? g2.reason : 'no return'}
 // L3.5 闸已完全移除(2026-07-12 用户裁定"直接 L3 输出"):L3 finalist tier 即 L4 入选集。
 log(`GATE2 ✓ finalists=${g2.n}`)
 
-// 活体情报站(spec §P4②):GATE2 后即发——盲于 L3 论点,只需 code/name/sector/date(g2.meta),
-// 与 l4-prep + GATE3 slim 全窗重叠。carryover 复用票的情报可能白跑(近期 reuse=0,接受并 log)。
-const intelOn = !!(cfg.l4_intel && cfg.l4_intel.enabled)
-const maxQ = (cfg.l4_intel && cfg.l4_intel.max_queries) ?? 15
-const INTEL = { type: 'object', required: ['code'],
-  properties: { code: { type: 'string' }, events: { type: 'integer' } } }
-const intelPromises = intelOn ? g2.finalists.map((code) => agent(
-  `活体情报采集:${code} ${(g2.meta?.[code]?.name) || ''}(${(g2.meta?.[code]?.sector) || '行业未知'})· 分析日 ${date}。按你的人设六面全查(≤${maxQ} 条),写 ${SD}/_l4_intel_${code}.md;返回 code 与事件行数 events。`,
-  { agentType: 'l4-intel', effort: cfg.agents?.l4_intel?.effort ?? 'max',
-    ...(cfg.agents?.l4_intel?.model ? { model: cfg.agents.l4_intel.model } : {}),
-    label: `intel:${code}`, phase: 'L4', schema: INTEL })) : []
-if (intelOn) log(`🕵️ 情报站并行:${g2.finalists.length} 票盲搜(GATE2 后即发,≤${maxQ} 查/票)`)
-
-// ── Phase L4 ────────────────────────────────────────────────────
-phase('L4')
-log('L4 派发包+slim 预取开始(reuse→[四生产者并行]→prompts→slim)')
+// ── Phase L4-prep ───────────────────────────────────────────────
+// (fb_20260714_003)决策卡与活体情报不再在本 workflow 内派发:每股一个独立 l4-stock workflow
+// (.claude/workflows/l4-stock.js,intel→card→OW复核 股内链式衔接),由主会话在本 workflow 返回后
+// 一条消息 N 个 Workflow 调用并行拉起——每股独立并发帽真并行、单股失败只废单股(2026-07-14
+// GATE3 差 16 字节毙掉 60min/1.6M token 全流水线的教训)。本 workflow 到 dispatch 交接为止,
+// assemble+GATE4 也随之上移主会话收尾。
+phase('L4-prep')
+log('L4-prep:reuse→[四生产者并行]→prompts→slim(决策卡交接给每股 l4-stock workflow)')
 await bash(
-  `${R} autoresearch.scan.l4_reuse ${date} --apply --carryover; ` +
+  `${R} autoresearch.scan.l4_reuse ${date} --apply; ` +
   `( ${R} autoresearch.scan.agents.l4_card pledge ${date} || true ) & ` +
   `( ${R} autoresearch.scan.agents.l4_card seats ${date} || true ) & ` +
   `( ${R} autoresearch.scan.calendar ${date} || true ) & ` +
   `( ${R} autoresearch.scan.agents.l4_card consensus ${date} || true ) & ` +
   `wait; ` +
-  `${R} autoresearch.scan.agents.l4_card prompts ${date}`, 'l4-prep', 'L4')
-// 派发计划(确定性)提前到 GATE3 之前:情报站要与 slim 预取同窗口并行(只读 finalists/_l4_prompt 存在性,与 slim 无依赖)
+  `${R} autoresearch.scan.agents.l4_card prompts ${date}`, 'l4-prep', 'L4-prep')
 const PLAN = { type: 'object', required: ['dispatch'],
   properties: { dispatch: { type: 'array', items: { type: 'string' } },
     meta: { type: 'object' },
     reused: { type: 'array', items: { type: 'object',
       properties: { code: { type: 'string' }, rating: { type: 'string' } } } } } }
-const plan = await gate('dispatch-plan', `${R} autoresearch.scan.agents.l4_card dispatch-plan ${date}`, PLAN, 'L4')
+const plan = await gate('dispatch-plan', `${R} autoresearch.scan.agents.l4_card dispatch-plan ${date}`, PLAN, 'L4-prep')
 if (!plan) throw new Error('dispatch-plan 无返回')
-// GATE3:批量 slim 失败响亮(harvest-slim 打印 JSON + 非零退出)—— intel 与之并行,barrier 后再派卡
-const [g3, ...intelRes] = await parallel([
-  () => gate('GATE3', `${R} autoresearch.scan.agents.l4_card harvest-slim ${date}`, OK, 'L4'),
-  ...intelPromises.map((p) => () => p),
-])
-if (!g3 || !g3.ok) throw new Error(`GATE3 失败(slim<8KB 或 .SH):${g3 ? g3.reason : 'no return'}`)
-if (intelOn) log(`🕵️ 情报站 ✓ ${intelRes.filter(Boolean).length}/${g2.finalists.length}(缺稿卡自动回退网查)`)
-log('GATE3 ✓ 全 slim >8KB(surface)')
-// 决策卡:只派 dispatch 码一次并发(barrier —— assemble 与 isZeroBuy 需全部卡评级才能判)
-const CARD = { type: 'object', required: ['code', 'rating'],
-  properties: { code: { type: 'string' }, rating: { type: 'string' }, conviction: { type: 'number' } } }
-log(`L4 并发:新派 ${plan.dispatch.length} 张(历史 ~7–15m)· 复用 ${(plan.reused || []).length} 张跳派发`)
-let _done = 0
-const fresh = (await parallel(plan.dispatch.map((code) => () => agent(
-  `执行 ${SD}/_l4_prompt_${code}.md:先读整个任务包,再按其指令做渐进深度 DD + 早停,写决策卡到 ${SD}/details/${code}.md。最后返回该卡最终五档评级(code / rating / conviction)。`,
-  { agentType: 'l4-card', effort: cfg.agents?.l4_card?.effort ?? 'xhigh',
-    ...(cfg.agents?.l4_card?.model ? { model: cfg.agents.l4_card.model } : {}),
-    label: `card:${code}`, phase: 'L4', schema: CARD })
-  .then((r) => { _done += 1; log(`L4 卡 ${_done}/${plan.dispatch.length} ✓ ${code}${r ? ` → ${r.rating}` : '(无返回)'}`); return r }))))
-  .filter(Boolean)
-const cards = [...fresh, ...(plan.reused || [])]
-const isOW = (r) => /(overweight|\bbuy\b|增持|买入)/i.test(r || '')
-
-// 买单复核 ensemble(拍板 2):≥OW 的新派卡各追加 2 个独立 run,取中位;只向下折回。
-const RANK = { 'sell': 0, 'underweight': 1, 'hold': 2, 'overweight': 3, 'buy': 4 }
-const tier = (r) => RANK[String(r || '').toLowerCase()] ?? 2
-const owFresh = fresh.filter((c) => isOW(c.rating))
-if (owFresh.length) {
-  log(`🎭 买单复核:${owFresh.length} 张 ≥OW 卡各追加 2 独立 run 取中位`)
-  const ens = await parallel(owFresh.map((c) => () => (async () => {
-    const reruns = (await parallel([2, 3].map((i) => () => agent(
-      `独立复核 run${i}(不知道其它 run 结论):执行 ${SD}/_l4_prompt_${c.code}.md 的任务包,按人设走渐进深度 DD,决策卡写到 ${SD}/ensemble/${c.code}.run${i}.md(先自行创建 ensemble/ 目录),返回 code/rating/conviction。`,
-      { agentType: 'l4-card', effort: cfg.agents?.l4_card?.effort ?? 'xhigh', label: `ens${i}:${c.code}`, phase: 'L4', schema: CARD })))).filter(Boolean)
-    const ratings = [c.rating, ...reruns.map((r) => r.rating)]
-    const sorted = ratings.map(tier).sort((a, b) => a - b)
-    // N<3(复核 run 失败被 filter 掉)→ 退化取更偏空一侧(与"只向下"哲学对齐)+degraded 标记强制人裁展示
-    const degraded = ratings.length < 3
-    const medianTier = degraded ? sorted[0] : sorted[Math.floor(sorted.length / 2)]
-    const names = ['Sell', 'Underweight', 'Hold', 'Overweight', 'Buy']
-    return { code: c.code, ratings, median: names[medianTier], spread: sorted[sorted.length - 1] - sorted[0], degraded }
-  })()))
-  const rows = ens.filter(Boolean)
-  await bash(`cat > ${SD}/_ensemble.json << 'EOF'\n${JSON.stringify(rows)}\nEOF`, 'ensemble-dump', 'L4')
-  for (const e of rows) {                       // buys 判定用折回后评级
-    const card = cards.find((c) => c.code === e.code)
-    if (card && tier(e.median) < tier(card.rating)) card.rating = e.median
-  }
+// GATE3:批量 slim 预取(合格判据 = 结构+内容,l4_card._slim_defect;体积只兜真垃圾)。
+// 失败响亮但**只剔失败股**,全失败才毙——不再让单股数据病拖死整条流水线。
+const G3 = { type: 'object', required: ['ok'],
+  properties: { ok: { type: 'boolean' }, reason: { type: 'string' },
+    failures: { type: 'array', items: { type: 'object',
+      properties: { ticker: { type: 'string' }, bytes: { type: 'integer' }, why: { type: 'string' } } } } } }
+const g3 = await gate('GATE3', `${R} autoresearch.scan.agents.l4_card harvest-slim ${date}`, G3, 'L4-prep')
+if (!g3) throw new Error('GATE3 无返回')
+let dispatch = plan.dispatch
+if (!g3.ok) {
+  const bad = new Set((g3.failures || []).map((f) => String(f.ticker || '').slice(0, 6)))
+  dispatch = dispatch.filter((c) => !bad.has(c))
+  log(`⚠️ GATE3:${bad.size} 股 slim 不合格被剔除(${[...bad].join('/') || '?'})—— ${(g3.failures || []).map((f) => `${f.ticker}:${f.why}`).join('; ') || g3.reason || ''}`)
+  if (!dispatch.length) throw new Error(`GATE3 失败:全部 slim 不合格 —— ${g3.reason || ''}`)
+} else {
+  log('GATE3 ✓ 全 slim 结构+内容合格')
 }
+log(`L4 交接:新派 ${dispatch.length} 股(每股一个 l4-stock workflow,主会话并行拉起)· 复用 ${(plan.reused || []).length} 张跳派发`)
 
-const buys = cards.filter((c) => isOW(c.rating)).map((c) => c.code)
-const isZeroBuy = buys.length === 0
-log(`L4 ✓ 新派 ${fresh.length} + 复用 ${(plan.reused || []).length} = ${cards.length} 卡 · ≥OW ${buys.length} · ${isZeroBuy ? '0买日' : '有买单'}`)
-
-// ── Phase Assemble ──────────────────────────────────────────────
-phase('Assemble')
-// L5 整合(内含 self_review 硬门 + dump gate_fires)+ GATE4
-await bash(`${R} autoresearch.scan.assemble ${date}`, 'assemble', 'Assemble')
-const g4 = await gate('GATE4', `${R} autoresearch.scan.gates gate4 ${date}`, OK, 'Assemble')
-if (!g4 || !g4.ok) throw new Error(`GATE4 失败(self_review 未通过):${g4 ? g4.reason : 'no return'}`)
-log('GATE4 ✓ self_review 通过')
-
-return { date, mode: 'full', finalists: g2.n, cards: cards.length, buys, isZeroBuy, published: true }
+// meta(名称/行业)透传给 l4-stock 的 intel 盲搜 prompt;assemble+GATE4 由主会话在全部 l4-stock 完成后收尾。
+return { date, mode: 'l4-handoff', finalists: g2.n, dispatch, reused: plan.reused || [],
+  meta: plan.meta || g2.meta || {}, l4_budget: g1.l4_budget, published: false }

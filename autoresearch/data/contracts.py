@@ -77,10 +77,15 @@ class Contract:
     required_cols: frozenset[str] = field(default_factory=frozenset)
     min_rows: int = 0
     note: str = ""
+    # B 级专用:某交易日 0 行 = **真实合法空**(forecast/express 无公告日就是没有)。
+    # 记账仍留痕(审计不丢),但不进告警渲染(`render`)——降级告警面只留"无权限/报错"类真降级
+    # (Minor-1,survey 2026-07-13 线 D)。
+    empty_ok: bool = False
 
 
-def _c(tier: str, cols: str = "", min_rows: int = 0, note: str = "") -> Contract:
-    return Contract(tier, frozenset(cols.split()) if cols else frozenset(), min_rows, note)
+def _c(tier: str, cols: str = "", min_rows: int = 0, note: str = "",
+       empty_ok: bool = False) -> Contract:
+    return Contract(tier, frozenset(cols.split()) if cols else frozenset(), min_rows, note, empty_ok)
 
 
 # ───────────────────────── 契约表 ─────────────────────────
@@ -110,12 +115,14 @@ CONTRACTS: dict[str, Contract] = {
     "top_list": _c(TIER_DEGRADE, note="龙虎榜明细:L4 advisory"),
     "limit_list_d": _c(TIER_DEGRADE, note="涨跌停:温度计五序列(缺 → 相位降级 None)"),
     "moneyflow_ind_ths": _c(TIER_DEGRADE, note="行业资金流:sector pack"),
-    "forecast": _c(TIER_DEGRADE, note="业绩预告:某日无公告 = 真实空"),
-    "express": _c(TIER_DEGRADE, note="业绩快报:同上"),
-    "anns_d": _c(TIER_DEGRADE, note="信息披露公告:**已知无权限**(anns_empty_rate=1.0)"),
+    "forecast": _c(TIER_DEGRADE, note="业绩预告:某日无公告 = 真实空", empty_ok=True),
+    "express": _c(TIER_DEGRADE, note="业绩快报:同上", empty_ok=True),
+    "anns_d": _c(TIER_DEGRADE, note="信息披露公告:已退役(2026-07-18):结构化公告标题流由 "
+                 "stock_news_em 头条 + l4-intel 活体盲搜双重覆盖;empty_rate=1.0 为 "
+                 "expected(no-permission),非告警"),
     "stk_holdertrade": _c(TIER_DEGRADE, note="股东增减持:催化"),
     "repurchase": _c(TIER_DEGRADE, note="回购:催化"),
-    "stk_surv": _c(TIER_DEGRADE, note="机构调研:某日无调研 = 真实空"),
+    "stk_surv": _c(TIER_DEGRADE, note="机构调研:某日无调研 = 真实空", empty_ok=True),
     "moneyflow_hsgt": _c(TIER_DEGRADE, note="沪深港通区间"),
     "margin": _c(TIER_DEGRADE, note="两融区间汇总"),
     "index_dailybasic": _c(TIER_DEGRADE, note="指数估值时序"),
@@ -151,15 +158,18 @@ def degradations() -> list[dict]:
     return list(_DEGRADED)
 
 
-def record_degradation(endpoint: str, reason: str, *, key: str = "") -> None:
+def record_degradation(endpoint: str, reason: str, *, key: str = "", kind: str = "degraded") -> None:
     """手工记一笔 B 级降级 —— 给**不走 `cache.get_or_fetch`** 的降级点用。
 
     有些增强数据是直接调 tushare 的(`_fetch_hk_hold` 就是:`try/except → return None`),
     契约层看不见它们。但它们的降级同样必须可见:2026-07-09 的 `hk_ratio` 全表为空(北向因子
     整组失效),当时唯一的痕迹就是一行 `[warn] hk_hold 取数失败 → 北向因子降级`,没人看见,
     也没有任何账本记得这件事 —— 直到回放器对拍时才被发现。
+
+    `kind`:"degraded"(默认,进告警渲染)| "legit_empty"(合法空,留痕不告警,见 `render`)。
     """
-    _DEGRADED.append({"endpoint": endpoint, "key": key, "source": "direct", "reasons": [reason]})
+    _DEGRADED.append({"endpoint": endpoint, "key": key, "source": "direct", "reasons": [reason],
+                      "kind": kind})
     print(f"[数据契约·B级降级] {endpoint}" + (f"[{key}]" if key else "") + f":{reason}(已记账)",
           file=sys.stderr)
 
@@ -169,8 +179,14 @@ def clear_degradations() -> None:
 
 
 def render(records: list[dict] | None = None) -> str:
-    """降级清单 → 一行 md(空 → "");供 meta/报告显示。"""
+    """降级清单 → 一行 md(空 → "");供 meta/报告显示。
+
+    **告警面过滤**(Minor-1,survey 2026-07-13 线 D):`kind == "legit_empty"`(forecast/express
+    这类"某日 0 行 = 真实空",契约 `empty_ok=True`)不进这行 —— 但仍留在 `degradations()`/
+    `degraded.json` 里可审计。旧记录无 `kind` 字段 → 按降级渲染(向后兼容,老现场不静默消失)。
+    """
     recs = degradations() if records is None else records
+    recs = [r for r in recs if r.get("kind", "degraded") != "legit_empty"]
     if not recs:
         return ""
     by_ep: dict[str, int] = {}
@@ -212,6 +228,9 @@ def check(endpoint: str, df: pd.DataFrame | None, *, key: str = "", source: str 
     - **A 级违约 → `DataContractError`**(阻断整条流程)。调用方(`cache.get_or_fetch`)据此
       **拒绝把脏数据写入湖** —— 否则它会被钉死,之后每次命中都是脏的,重跑也自愈不了。
     - B 级违约 → 记账进 `degradations()` 并 warn,**不阻断**(presence-gated 是设计)。
+      其中契约 `empty_ok=True` 的端点**恰为空帧** = 真实合法空(某日无预告/快报/调研)→
+      记 `kind="legit_empty"`:留痕可审计,但不进告警渲染(`render` 过滤);
+      返回 None/缺列等报错形态不在此列,照旧按降级告警。
 
     `source`:'fetch'(刚拉的)| 'lake'(湖命中的)—— 湖命中同样要校验:历史脏数据(空帧/窄表)
     读出来一样会毒化下游,而且它**不会**再触发取数路径的任何检查。
@@ -236,8 +255,12 @@ def check(endpoint: str, df: pd.DataFrame | None, *, key: str = "", source: str 
             f"  为什么阻断:该组因子会整组 NaN,而 composite_score 会把它从分母剔除、放大其余组权重\n"
             f"           → 打分照样输出 0–100,漏斗照样跑完,**残废得看不出来**(2026-07-12 实证:失真 98.8%)。\n"
             f"  怎么办:{hint}")
-    _DEGRADED.append({"endpoint": endpoint, "key": key, "source": source, "reasons": v})
-    print(f"[数据契约·B级降级] {where}:{'; '.join(v)} → 相关因子/旗置空(已记账)", file=sys.stderr)
+    kind = "legit_empty" if (con.empty_ok and v == ["空帧(0 行)"]) else "degraded"
+    _DEGRADED.append({"endpoint": endpoint, "key": key, "source": source, "reasons": v, "kind": kind})
+    if kind == "legit_empty":
+        print(f"[数据契约·B级合法空] {where}:该日 0 行为真实空(留痕不告警)", file=sys.stderr)
+    else:
+        print(f"[数据契约·B级降级] {where}:{'; '.join(v)} → 相关因子/旗置空(已记账)", file=sys.stderr)
     return df
 
 

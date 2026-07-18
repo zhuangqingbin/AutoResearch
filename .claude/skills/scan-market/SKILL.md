@@ -31,14 +31,14 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 ## 前置
 - 在**项目根目录**运行;akshare/tushare/lightgbm 已装(venv-only,**务必 `uv run --no-sync`**);`.env` 有 `TUSHARE_TOKEN`(默认源)+ `FRED_API_KEY`(L4 取数)。默认中文。
 - **召回权重**:`weights.json`(`factor_lab calibrate` 产;命令见常见坑节)。**regime 分桶权重**(`--regime-aware` 用):`factor_lab` `harvest` 后 python 里 `fl.calibrate_regimes()` → `weights.json` 增 `regimes` 块;重标定一律走 `retro.recalibrate_and_log`(快照+changelog 可回滚)。L2 不用模型(见铁律 / STAGES.md 核心世界观节)。
-- **闭环(开跑前补跑复盘)**:先 `uv run --no-sync python -m autoresearch.learning.retro pending`;列出未复盘日 → 先用 **scan-retro** 补上再开始今天的扫描。连续 0 买时看对照读数:`uv run --no-sync python -m autoresearch.learning.zero_buy_ledger`。
+- **闭环(开跑前补跑复盘)**:先 `uv run --no-sync python -m autoresearch.learning.retro pending`(慢环,D+2)与 `uv run --no-sync python -m autoresearch.learning.t1_review pending`(**快环,D+1 判断层复盘**,2026-07-17 起);有欠账 → 先用 **scan-retro**(含快环 t1-review workflow)补上再开始今天的扫描。连续 0 买时看对照读数:`uv run --no-sync python -m autoresearch.learning.zero_buy_ledger`。
 - **一致预期积累(每日 1 拉)**:`uv run --no-sync python -m autoresearch.research.consensus pull <date>`(tushare `report_rc` 限频 **1次/小时**,历史回补不可行);`status` 看进度。**验证门:积累 ≥60 日后 factor_lab 验 IC(两半稳+符号一致)才谈入 composite**。
 - **(可选)token 真计量与 cache 审计**:跑扫描的 Claude Code 会话从带 OTEL env 的 shell 启动(五件 env 见 `STAGES.md`『真实计量与跨层校准』节),跑完 `uv run --no-sync python -m autoresearch.trace.telemetry <原始导出> --out reports/scan/<run>/token_telemetry.md`。生产派发路径零改动,仪器旁路。
 - 用户对报告的反馈用 **feedback** skill 记。
 
 ## 流程(6 段)
 
-> **编排真身 = `.claude/workflows/scan-market.js`**(4 相位/4 GATE:Prelude→L3→L4→Assemble,相位末尾一道 GATE 阻断)。**正常跑动直接用 workflow**;以下是其内部调用的同一批命令,留作**调参/单步重跑入口**。操作模板分驻:市场研判在 `macro-research/macro-playbook.md` 末节、L4 决策卡在 stock-research 的 `lite-playbook.md`;**各阶段机制/参数/实证读数**见 `STAGES.md`。各阶段墙钟收尾自动落 `_stage_timing.json`(mtime 推导)。
+> **编排真身 = 两段 workflow + 主会话收尾**(fb_20260714_003):① `.claude/workflows/scan-market.js`(3 相位:Prelude→L3→L4-prep,GATE1/2/3;GATE3 失败只剔单股,返回 `{dispatch, reused, meta}` 交接)→ ② 主会话把 dispatch 里**每股拉一个 `.claude/workflows/l4-stock.js`**(**一条消息 N 个 Workflow 调用并行**,args=`{date, code, name, sector, cfg}`;每股链内 intel→card→(≥OW)双复核折回落 `_ensemble_<code>.json`,单股失败只废单股、对该股单独重跑即可)→ ③ 全部 l4-stock 完成后主会话直接跑步骤 5 的 `assemble` + `gates gate4` CLI 收尾。**正常跑动直接用 workflow**;以下是其内部调用的同一批命令,留作**调参/单步重跑入口**。操作模板分驻:市场研判在 `macro-research/macro-playbook.md` 末节、L4 决策卡在 stock-research 的 `lite-playbook.md`;**各阶段机制/参数/实证读数**见 `STAGES.md`。各阶段墙钟收尾自动落 `_stage_timing.json`(mtime 推导)。
 >
 > **进度可视化(必做,2026-07-12 用户反馈"跑起来主对话一片空白")**:workflow 一落地就**同时**挂一个 Monitor 播报进度到主对话 ——
 > ```
@@ -51,7 +51,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
    ```bash
    uv run --no-sync python -m autoresearch.scan.prelude <YYYY-MM-DD>
    ```
-   跑完全部确定性前奏(attribution 刷新/retro pending 列出/consensus 拉/universe/日历/观察单日检/菜单·L4预算·哨兵建议/journal 等 ledger 刷新,逐件见 STAGES.md 闭环层表)。各步失败不阻断,末尾汇总屏含 **📐/🔁/🚪 当日件建议行**(含「禁注」的行勿贴)。
+   跑完全部确定性前奏(attribution 刷新/retro pending 列出/consensus 拉/universe/日历/菜单·L4预算·哨兵建议/journal 等 ledger 刷新,逐件见 STAGES.md 闭环层表;观察单日检已退役 fb_20260714_002)。各步失败不阻断,末尾汇总屏含 **📐/🔁/🚪 当日件建议行**(含「禁注」的行勿贴)。
    - **夜间预热(可选,spec 2026-07-12 §P1)**:交易日 19:30 launchd 自动 `scripts/prewarm.sh`(= `python -m autoresearch.scan.prewarm`,湖预拉+温度;calibrate 默认不跑防污染 changelog/DSR 计数)。安装:
      `sed "s|__REPO__|$PWD|" scripts/com.tradingagents.scan-prewarm.plist > ~/Library/LaunchAgents/com.tradingagents.scan-prewarm.plist && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tradingagents.scan-prewarm.plist`;验证 `launchctl list | grep scan-prewarm`。跑过预热的日子,开扫时 universe/L3 evidence 全湖命中。
 0.5. **市场研判**(workflow Prelude 相位并行调用):`uv run --no-sync python -m autoresearch.scan.frame <日期> --json` 拿湖派生 market_pack → 一个 `Agent(subagent_type='macro-brief')` 写 `context/scan/<日期>/market_view.md`(模板见 macro-playbook 末节;地形段喂 L3/L4,操作基调/漏斗读数只进 L5)。该命令回显的 `user_config`(`.claude/skills/scan-market/scan_config.json` 白名单校验后,见 `autoresearch/scan/user_config.py`)随 Workflow `args.config` 传入 `scan-market.js`,管控各 stage 的 agent model/effort,优先级 **scan_config > workflow 内建 > agent def frontmatter 默认**(缺配置/缺键 = 现硬编码值,parity)。
@@ -60,17 +60,16 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
    uv run --no-sync python -m autoresearch.scan.universe [YYYY-MM-DD] --regime-aware [--source tushare] [--recall-n 1000] [--l2-n 200] [--cap-floor 30] [--exclude-bj] [--recall-mode multi|composite] [--recall-channels a,b,c] [--l2-sector-cap 0.20]
    ```
    → `L1_recall_top1000.csv`+`L1_channels.csv`+`L2_gbdt_top200.csv`+`sectors.csv`+`meta.json`(channel/floor 参数见 STAGES.md L1/L2 节)。
-2. **过目 + 日历 + 观察单**(单步重跑入口):
+2. **过目 + 日历**(单步重跑入口;观察单日检已退役 fb_20260714_002,勿再跑):
    ```bash
    uv run --no-sync python -m autoresearch.scan.calendar <date>
-   uv run --no-sync python -c "import autoresearch.scan.watchlist as w; print(w.run_check('<date>','context/scan/<date>'))"
    ```
    菜单体检(`autoresearch.scan.menu.menu_health`)由 L5 自动嵌;出现 ⚠️菜单病 时提前给用户预期。
 2.2. **哨兵决策**(确定性建议,人拍板):
    ```bash
    uv run --no-sync python -m autoresearch.scan.menu <date>
    ```
-   打印 `[sentinel]` 行(判据见 STAGES.md L2 节);建议哨兵档时只跑观察单+日历+步骤 5(跳 L3+L4,省 ~70% token/~35 分钟)。
+   打印 `[sentinel]` 行(判据见 STAGES.md L2 节);建议哨兵档时只跑日历+步骤 5(跳 L3+L4,省 ~70% token/~35 分钟)。
 2.5. **市场研判兜底**(仅当 0.5 未跑):同 0.5,读 `autoresearch.scan.market.market_pack(scan_dir)` 回退口径(L2 后)。
 2.7. **行业 brief**(与步骤 3 证据取数并发;workflow L3 相位):
    ```bash
@@ -78,25 +77,31 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
    uv run --no-sync python -m autoresearch.sector.pack <date>
    ```
    → 每行业一个 `Agent(subagent_type='sector-brief')`(机制/两段契约见 STAGES.md『旁路 · 行业 brief』节)。
-3. **L3 精排**(两遍法:pass1 确定性分诊 200→~60 + holistic 单 agent 深比较出 finalist tier 7–10;workflow L3 相位):`harvest_l3_evidence`+`harvest_l3_news` 补真证据 → `l3_table_md(date, delta=True, sector_terrain=True, dist_flag=True, reg_flag=True, cat_flag=True, misread_flag=True)` 压紧凑表(内含 pass1 分诊:`prepare_l3_table` 先用 `triage_l2_for_l3` 把 ~200 行收到 ~60,被切部分是影子,落 `_l3_pass1_cut.csv`,不代表判死)→ 一个 `Agent(subagent_type='l3-rank')` 通看 ~60 只深比较,给出 **finalist tier:7–10 只**(按当天质量,`finalist:true`,宁缺毋滥不凑数)+ 其余判断过但未入选的 **bench**(`finalist:false`)→ `uv run --no-sync python -m autoresearch.scan.menu <date>` 拿 L4 预算(cap = min(10, 预算))→ `merge_l3_finalists_v3(judged, budget=预算)`(conviction≥75 误杀保险强制补入 / <55 剔除 / 健康画像比例守卫)→ `finalists.csv` + bench 落 `_l3_bench.csv`(rubric 维度/推荐旗/token 经济见 STAGES.md L3 节)。**L3.5 闸=passthrough 保留为回测 harness,收窄职能已并入 L3**(用户 2026-07-12 裁定)。
-4. **L4 研究**(token 大头,一只=一个 Opus subagent;workflow L4 相位)——helper 在 `autoresearch.scan.agents.l4_card`:派发前四道确定性闸(质押旗/触发直通车/TTL复用+滞回/席位·催化·日历生产者先行,机制见 STAGES.md L4 节)→ 落稿:
+3. **L3 精排**(两遍法:pass1 确定性分诊 200→~40 + holistic 单 agent 深比较出 finalist tier 7–10;workflow L3 相位):`harvest_l3_evidence`+`harvest_l3_news` 补真证据 → `l3_table_md(date, delta=True, sector_terrain=True, dist_flag=True, reg_flag=True, cat_flag=True, misread_flag=True)` 压紧凑表(内含 pass1 分诊:`prepare_l3_table` 先用 `triage_l2_for_l3` 把 ~200 行收到 ~40(scan_config `pass1_target`,2026-07-18 影子验证后 60→40),被切部分是影子,落 `_l3_pass1_cut.csv`,不代表判死)→ 一个 `Agent(subagent_type='l3-rank')` 通看 ~40 只深比较,给出 **finalist tier:7–10 只**(按当天质量,`finalist:true`,宁缺毋滥不凑数)+ 其余判断过但未入选的 **bench**(`finalist:false`)→ `uv run --no-sync python -m autoresearch.scan.menu <date>` 拿 L4 预算(cap = min(10, 预算))→ `merge_l3_finalists_v3(judged, budget=预算)`(conviction≥75 误杀保险强制补入 / <55 剔除 / 健康画像比例守卫)→ `finalists.csv` + bench 落 `_l3_bench.csv`(rubric 维度/推荐旗/token 经济见 STAGES.md L3 节)。**L3.5 闸=passthrough 保留为回测 harness,收窄职能已并入 L3**(用户 2026-07-12 裁定)。
+4. **L4 研究**(token 大头;fb_20260714_003:**每股一个独立 `l4-stock` workflow,N 股并行**)——确定性准备(l4-prep)仍在 scan-market.js 的 L4-prep 相位:质押旗/TTL复用/席位·催化·日历生产者先行(机制见 STAGES.md L4 节;观察单直通车已随观察单退役、菜单滞回保席已随 pr_20260716_006 退役)→ 落稿(单步重跑入口):
    ```bash
    uv run --no-sync python -m autoresearch.scan.agents.l4_card pledge <date>
-   uv run --no-sync python -m autoresearch.scan.l4_reuse <date> --apply --carryover
+   uv run --no-sync python -m autoresearch.scan.l4_reuse <date> --apply
    uv run --no-sync python -m autoresearch.scan.agents.l4_card prompts <date>
    ```
-   → 全部 **`Agent(subagent_type='l4-card')` 一条消息并发**(别分 wave;卡模板/契约烤进 `.claude/agents/l4-card.md`)。行业 brief 补漏走 `subagent_type='sector-brief'`。**早停抽检**(opt-in,默认不跑):`l4_card.pick_earlystop_audit(scan_dir, k=2)` 抽样独立复核。
-   **活体情报站**(config `l4_intel.enabled`,默认关):dispatch-plan 前移,每只新派票并发一个 `l4-intel`(sonnet·max,结构性盲——prompt 只给码/名/行业/日期)与 slim 预取同窗口盲搜六面,落 `_l4_intel_<code>.md`;卡 P3 先读 intel、自发网查降 ≤1 验证,缺文件自动回退卡内网查(presence-gated;parity 例外仅两处观测面:任务包指针行+summary token 表恒 0 行)。裁决:stage_eval+账本 ≥10–20 日,P1 波验收后才开(design 2026-07-12 §6:冒烟三查=网查限频/中文源可达率/空稿率)。
-5. **L5 整合**(workflow Assemble 相位):
+   → scan-market.js 返回 `{dispatch, meta}` 后,主会话对 dispatch 里每股各拉一个
+   `Workflow({scriptPath: '.claude/workflows/l4-stock.js', args: {date, code, name, sector, cfg}})`
+   ——**一条消息 N 个调用并行**(每股独立并发帽,真并行;单股失败只废单股,单独重跑该 workflow 即可)。
+   每股链内:**intel(可关)→ l4-card 决策卡 →(≥OW)2 独立复核 run 取中位只向下折回**,复核落
+   `_ensemble_<code>.json`(assemble 合并读)。卡模板/契约烤进 `.claude/agents/l4-card.md`。
+   **早停抽检**(opt-in,默认不跑):`l4_card.pick_earlystop_audit(scan_dir, k=2)` 抽样独立复核。
+   **活体情报站**(config `l4_intel.enabled`):l4-stock 的 Intel 相位,sonnet·max 结构性盲(prompt 只给码/名/行业/日期)盲搜六面落 `_l4_intel_<code>.md`;卡 P3 先读 intel、自发网查降 ≤1 验证,缺文件自动回退卡内网查(presence-gated)。⚠️ 2026-07-14 首跑冒烟:空稿 0/13、中文源可达 ✓,但逮到**捏造涨停断言**(pr_20260714_006 待裁)+ 限频形同虚设/零 URL(pr_20260714_007)——卡片对 intel 的价格类断言必须与 verified OHLCV 对账后才可采信。
+5. **L5 整合**(全部 l4-stock workflow 完成后,主会话直接跑;哨兵档跳过 L3/L4 后也走这里):
    ```bash
    uv run --no-sync python -m autoresearch.scan.assemble <date>
+   uv run --no-sync python -m autoresearch.scan.gates gate4 <date>
    ```
    → **`reports/scan/<YYYYMMDD_HHMM>/`**(目录名=实际运行时刻,数据日记 `manifest.json`):`summary.md`(漏斗数量/各阶段概览/buy-list/token估算)+ `details/〈股票名称〉.md`+ `trace/`(留溯源)。**汇报**:漏斗 + buy-list(评级/目标)+ 诚实局限。
 
 ## 铁律
 - **确定性层零 LLM**:L0/L1/**L2**/L5 全 pandas,不在筛选里编数、不预测。
 - **召回宽、判断深**:L1 高召回 → L2 分层多样性采样收口(给均衡菜单,非 alpha);真正的多空取舍在 L3 holistic 精排 + L4 决策卡。
-- **L3/L4 必须 subagent**:L3 一个 holistic agent(独立 context)+ L4 每只独立 context,只回传紧凑结果,否则撑爆主线;标准编排路径是 `.claude/workflows/scan-market.js`(见流程节顶部)。
+- **L3/L4 必须 subagent**:L3 一个 holistic agent(独立 context)+ L4 每只独立 context(每股一个 `l4-stock` workflow),只回传紧凑结果,否则撑爆主线;标准编排路径见流程节顶部(scan-market.js 前段 + N×l4-stock.js + 主会话收尾)。
 - **每只 finalist 走 stock-research lite 档**——继承其铁律(数字出自 slim context、五档评级、EV/R:R、`FINAL TRANSACTION PROPOSAL`、诚实局限)。
 - **中间名单全 staging**(L2_gbdt / L3_evidence / finalists),L5 发布到 `trace/` 留溯源;re-run 友好。
 - **诚实收尾**:召回/粗排是启发式 + fwd_2_oc 超短主尺 IC 校准/训练(2026-07-10 裁定;随 regime 漂移);L3/L4 是 Claude 推理产出;"仅供研究,非投资建议"。

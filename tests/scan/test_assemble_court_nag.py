@@ -1,38 +1,54 @@
 """T7·纸面法庭+提案 nag:_proposals_nag 帮手 + summary_line 影子语义标注。
 
-nag 的 build_summary 接线与 paper_nav 成绩单同姿势(仅真实现场 scan_dir==context/scan/<date> 注入),
-tmp_path 测试天然不受开发机真 proposals.jsonl 污染——此处只测帮手本体。
+nag 的 build_summary 接线与 paper_nav 成绩单同姿势(仅真实现场 scan_dir==context/scan/<date> 注入);
+行渲染/排序/标注(龄·配对·疑失效)委托 feedback_store.proposals_nag_lines(看板自清洁,机器只整理
+不裁决)。测试用 set_root(tmp) 隔离(照 test_prompt_patch.py),不受开发机真 proposals.jsonl 污染。
 """
 from __future__ import annotations
 
 import json
 
+import pytest
+
+import autoresearch.learning.feedback_store as fs
 from autoresearch.scan import assemble
 
 
-def test_proposals_nag_lists_open_only(tmp_path, monkeypatch):
-    p = tmp_path / "proposals.jsonl"
-    p.write_text(
-        json.dumps({"id": "pr_x", "status": "open", "kind": "factor", "summary": "融资强度入组"}) + "\n"
-        + json.dumps({"id": "pr_y", "status": "resolved", "kind": "quota", "summary": "heat 降额"}) + "\n"
+@pytest.fixture(autouse=True)
+def _tmp_store(tmp_path):
+    old = fs.KNOW
+    fs.set_root(tmp_path / "knowledge")
+    yield
+    fs.set_root(old)
+
+
+def _write_ledger(text: str) -> None:
+    p = fs._f(fs._PROPOSALS)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
+
+
+def test_proposals_nag_lists_open_only():
+    _write_ledger(
+        json.dumps({"id": "pr_20260701_001", "ts": "2026-07-01T10:00:00", "status": "open",
+                    "kind": "factor", "summary": "融资强度入组"}) + "\n"
+        + json.dumps({"id": "pr_20260702_001", "ts": "2026-07-02T10:00:00", "status": "resolved",
+                      "kind": "quota", "summary": "heat 降额"}) + "\n"
         + "not-json\n",
-        encoding="utf-8")
-    monkeypatch.setattr(assemble, "_PROPOSALS_PATH", p)
+    )
     out = assemble._proposals_nag()
     assert out.startswith("## ⏳ 待裁决提案")
-    assert "pr_x" in out and "融资强度入组" in out
-    assert "pr_y" not in out                       # resolved 不列
-    assert "20 交易日" in out                       # 裁决节奏提醒行
+    assert "pr_20260701_001" in out and "融资强度入组" in out
+    assert "pr_20260702_001" not in out            # resolved 不列
+    assert "[factor·" in out                        # 看板标注(kind·龄)进了行
+    assert "20 交易日" in out                        # 裁决节奏提醒行(原文保留)
 
 
-def test_proposals_nag_missing_or_no_open_is_blank(tmp_path, monkeypatch):
-    monkeypatch.setattr(assemble, "_PROPOSALS_PATH", tmp_path / "none.jsonl")
-    assert assemble._proposals_nag() == ""
-    p = tmp_path / "proposals.jsonl"
-    p.write_text(json.dumps({"id": "pr_z", "status": "resolved", "kind": "x", "summary": "s"}) + "\n",
-                 encoding="utf-8")
-    monkeypatch.setattr(assemble, "_PROPOSALS_PATH", p)
-    assert assemble._proposals_nag() == ""
+def test_proposals_nag_missing_or_no_open_is_blank():
+    assert assemble._proposals_nag() == ""          # 账本缺 → 原行为(空,parity)
+    _write_ledger(json.dumps({"id": "pr_20260703_001", "ts": "2026-07-03T10:00:00",
+                              "status": "resolved", "kind": "x", "summary": "s"}) + "\n")
+    assert assemble._proposals_nag() == ""          # 无 open → 原行为(空)
 
 
 def test_summary_line_annotates_shadow_semantics():

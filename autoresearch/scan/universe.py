@@ -333,7 +333,7 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
         channel_quotas: dict[str, int] | None = None,                     # 覆盖各路 quota(None=CHANNEL_DEFAULTS,parity)
         channel_floors: dict[str, int] | None = None,                     # 覆盖各路 floor(None=CHANNEL_DEFAULTS,parity)
         weights_path: str | None = None) -> dict:                         # L1 权重文件(None=默认路径=parity;回放器注入 as-of 快照防前视)
-    """L0 选集 + L1 召回 + L2 粗排(GBDT 学习重排 → top l2_n)。全确定性,零 LLM。
+    """L0 选集 + L1 召回 + L2 粗排(确定性分层采样 → top l2_n)。全确定性,零 LLM。
 
     recall_mode:multi=多路策略召回(默认,带 provenance + L1_channels.csv)| composite=单复合分(对拍/回退)。
 
@@ -554,7 +554,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--cap-floor", type=float, default=30.0, help="市值地板(亿),默认 30")
     ap.add_argument("--exclude-bj", action="store_true", help="排除北交所(默认纳入)")
     ap.add_argument("--recall-n", type=int, default=1000, help="召回数(复合分 top N),默认 1000")
-    ap.add_argument("--l2-n", type=int, default=200, help="L2 粗排数(GBDT 重排 top N),默认 200")
+    ap.add_argument("--l2-n", type=int, default=200, help="L2 粗排数(分层采样 top N),默认 200")
     ap.add_argument("--source", choices=["em", "tushare"], default="tushare",
                     help="universe 取数源:tushare=默认(push2 常被封);em=东财 push2")
     ap.add_argument("--recall-mode", choices=["multi", "composite"], default="multi",

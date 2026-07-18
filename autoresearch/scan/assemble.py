@@ -105,21 +105,26 @@ def _load_ensemble(scan_dir: Path) -> dict[str, dict]:
     """读买单复核 ensemble(B10 集成配方;task-11-brief——≥OW **新派**卡各追加 2 独立 run
     取中位)`_ensemble.json` → {code: {ratings, median, spread}}。
 
-    workflow(scan-market.js L4 段)产物:`[{"code","ratings":[...],"median":...,"spread":int}]`;
+    两种产物布局都认(fb_20260714_003 起 L4 = 每股独立 workflow):
+    · 旧批量:`_ensemble.json` = `[{"code","ratings":[...],"median":...,"spread":int}]`
+    · 新每股:`_ensemble_<code>.json` = 单条 record(dict 或 单元素 list)——每股 workflow 各写
+      各的文件,天然无并发写竞态;per-code 文件后读,同 code 覆盖旧批量文件。
     无文件/坏 json → {}(presence-gated,老路不破,同 `_load_verify` 惯例)。
     """
-    p = scan_dir / "_ensemble.json"
-    if not p.exists():
-        return {}
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001 — 可选层,坏 json 不挡整份报告发布
-        return {}
     out: dict[str, dict] = {}
-    for r in data if isinstance(data, list) else []:
-        code = r.get("code")
-        if code:
-            out[str(code).strip().zfill(6)] = r
+
+    def _ingest(raw) -> None:
+        for r in raw if isinstance(raw, list) else [raw]:
+            if isinstance(r, dict) and r.get("code"):
+                out[str(r["code"]).strip().zfill(6)] = r
+
+    for p in [scan_dir / "_ensemble.json", *sorted(scan_dir.glob("_ensemble_*.json"))]:
+        if not p.exists():
+            continue
+        try:
+            _ingest(json.loads(p.read_text(encoding="utf-8")))
+        except Exception:  # noqa: BLE001 — 可选层,坏 json 不挡整份报告发布
+            continue
     return out
 
 
@@ -378,13 +383,13 @@ def _sortkey(r: dict):
 
 
 def _funnel_rows(meta: dict, n_l2, n_l3, n_cards, n_pinned: int = 0) -> list[str]:
-    l2_eng = meta.get("l2_engine", "GBDT")
+    l2_eng = meta.get("l2_engine", "stratified")
     l3_out = f"{n_l3} (+{n_pinned} 保送直通)" if n_pinned else f"{n_l3}"   # 保送不占 L3 名额,单列标注
     return [
         "| 阶段 | 名称 | 出量 | 引擎 | 卡点标准 |", "|---|---|---:|---|---|",
         f"| L0 | 选集 | {meta.get('universe', '?')} | 确定性 | 全A {meta.get('universe_raw', '?')} → 硬门(剔ST/退/停牌/次新, 市值地板, 含北交所) |",
         f"| L1 | 召回 | {meta.get('recall_n', '?')} | 确定性 | 轻门 + 行业条件化复合分(fwd_2_oc 超短主尺 IC 校准) top |",
-        f"| L2 | 粗排 | {n_l2} | GBDT/{l2_eng} | LightGBM 学习重排(fwd_2_oc 主尺训练;oos 未胜线性则回落复合分) |",
+        f"| L2 | 粗排 | {n_l2} | 分层采样/{l2_eng} | 确定性分层采样(sn_composite 排序+风格桶 floor+sector cap;零模型零 LLM;文件名/列名 gbdt 为遗留别名) |",
         f"| L3 | 精排 | {l3_out} | Opus·max·holistic | 1 agent 通看 ~200 比较选 + 增量证据/论点/红队(保送票不占名额) |",
         f"| L4 | 研究 | {n_cards} 卡 | Opus·medium | 一只=一个 Opus subagent 渐进深度 DD + 早停 |",
     ]
@@ -416,7 +421,7 @@ def _l1_cell(code: str, l1_full: dict[str, dict], ch_map: dict[str, str]) -> str
 
 
 def _l2_cell(code: str, l2_top: dict[str, dict]) -> str:
-    """L2 粗排结论:#GBDT重排名次(分母在列头)· gbdt 分。"""
+    """L2 粗排结论:#L2 重排名次(分母在列头)· gbdt 分(列名为遗留别名,值 = sn_composite 分层采样序)。"""
     r = l2_top.get(str(code).zfill(6))
     if not r:
         return "—"
@@ -790,6 +795,7 @@ def _self_review_banner(scan_dir: Path, rows: list[dict], summary_text: str,
                        "sector": r.get("sector") or r.get("industry"),
                        "composite": lf.get("composite"), "winner_rate": lf.get("winner_rate"),
                        "pct_60d": lf.get("pct_60d"), "rsi6": lf.get("rsi6"),
+                       "main_net_ratio": lf.get("main_net_ratio"),
                        "rubric_suggest": r.get("rubric_suggest"), "rubric_dev": r.get("rubric_dev")})
     n_present = sum(1 for r in rows if r.get("target") != "⚠️卡片缺失")
     lessons = []
@@ -817,6 +823,11 @@ def _self_review_banner(scan_dir: Path, rows: list[dict], summary_text: str,
         if intel_extra:
             res["failures"].extend(intel_extra)
             res["n_warn"] = res.get("n_warn", 0) + len(intel_extra)
+    with contextlib.suppress(Exception):                            # 产物形状 lint(线C 2026-07-18;全 warn/info 起步)
+        shape_extra = self_review.product_shape_lint(scan_dir, scan_dir.name)
+        if shape_extra:
+            res["failures"].extend(shape_extra)
+            res["n_warn"] = res.get("n_warn", 0) + sum(1 for x in shape_extra if x.get("severity") == "warn")
     with contextlib.suppress(Exception):
         self_review.dump_gate_fires(scan_dir, res, scan_dir.name)   # R3 留痕;IO 失败不阻发布
     with contextlib.suppress(Exception):
@@ -893,7 +904,7 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
     regime_line, regime_drift = regime_and_drift(scan_dir)
 
     out = [f"# A股扫描 v2 · Buy-List & 漏斗 — {analysis_date} {hhmm[:2]}:{hhmm[2:]}\n",
-           "_六段漏斗:选集→召回→粗排(GBDT)→精排→研究→整合。L0/L1/L2 确定性,L3/L4 Claude 为引擎,"
+           "_六段漏斗:选集→召回→粗排(分层采样)→精排→研究→整合。L0/L1/L2 确定性,L3/L4 Claude 为引擎,"
            "**仅供研究,非投资建议。**_\n"]
     if regime_line:
         out.append(regime_line + "\n")
@@ -931,15 +942,7 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
             if nav_line:
                 out += [nav_line, ""]
 
-    # ── 观察单日检(上移:触发/临近是读者最先要看的可操作项,别压在行业研判之下)──
-    ws = scan_dir / "watchlist_status.csv"
-    if ws.exists():
-        import pandas as pd  # lazy:assemble 主体走 csv/json,仅此块用 pandas
-
-        from autoresearch.scan.watchlist import render_watchlist_block
-        wb = render_watchlist_block(pd.read_csv(ws, dtype={"code": str}))
-        if wb:
-            out += [wb, ""]
+    # (观察单日检节已退役 —— 用户裁定 fb_20260714_002:即便 watchlist_status.csv 在也不渲染。)
 
     # ── 📌 保送(pinned 直通;presence-gated:无 pinned.json/kept+expired 皆空 → 跳过)──
     pin_sec = _pinned_section(scan_dir, analysis_date, pinned_rows, l1_full, l2_top,
@@ -975,7 +978,7 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
     # ── 2. 各阶段卡点 + 概览 ──
     out += ["## 2. 各阶段卡点 & 股票概览"]
     out += _stage_overview("召回(L1)", recall, "复合分 top;快因子(动量/资金结构/技术)主导排序,慢因子带下游判断。")
-    out += _stage_overview("粗排(L2)", keep, f"GBDT 学习重排({meta.get('l2_engine', 'gbdt')});信号弱/陷阱因子自动降权,零 LLM。")
+    out += _stage_overview("粗排(L2)", keep, f"确定性分层采样({meta.get('l2_engine', 'stratified')});sn_composite 排序+风格桶 floor+sector cap,零模型零 LLM。")
     from autoresearch.scan.menu import menu_health  # lazy:确定性菜单体检,缺 staging 自 ""
     mh = menu_health(scan_dir)
     if mh:
@@ -995,7 +998,7 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
             f"逐阶段结论{xref})\n"]
     out += _buylist_table_lines(genuine_rows, l1_full, l2_top, ch_map, vmap, n_l1, n_l2)
     out.append(f"\n_列注:**L1召回** #复合分名次/{n_l1}·命中队列(越小越强;低复合分票靠某条队列召回→名次很大);"
-               f"**L2粗排** #GBDT重排名次/{n_l2}·gbdt分;**L3精排** = Opus holistic 论点 + conviction;"
+               f"**L2粗排** #分层重排名次/{n_l2}·gbdt分(遗留列名);**L3精排** = Opus holistic 论点 + conviction;"
                f"**L4研究·结论** = 决策卡深核后的关键定级依据(≥OW 取多头驱动,否则取空头/早停因);"
                f"置信度见各决策卡(30 行全『中』的列已删)。_")
     gh = _gate_histogram(scan_dir, genuine_rows)
@@ -1027,7 +1030,7 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
         if nag:
             out += [nag, ""]
     out += ["## 诚实局限",
-            "- 召回/粗排为启发式 + fwd_2_oc 超短主尺 IC 校准/训练(L1 复合分、L2 GBDT 同口径;T+1/T+5 参考),随 regime 漂移;L3/L4 为 Claude 推理产出。",
+            "- 召回/粗排为启发式 + fwd_2_oc 超短主尺 IC 校准(L1 复合分、L2 sn_composite 同口径;T+1/T+5 参考),随 regime 漂移;L3/L4 为 Claude 推理产出。",
             "- 业绩/龙虎榜/预告有披露滞后;无权限端点降级标注。",
             "- A股涨跌停/停牌使名义止损未必可执行(见各决策卡执行段)。",
             f"\n_明细 + 漏斗溯源:`reports/scan/{folder}/`(summary.md + details/〈名称〉.md + trace/;目录名=运行时刻,数据日见 manifest.json)_"]
@@ -1039,34 +1042,21 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
 # ───────────────────────── 发布 ─────────────────────────
 
 
-_PROPOSALS_PATH = Path("context/knowledge/proposals.jsonl")
-
-
 def _proposals_nag() -> str:
-    """## ⏳ 待裁决提案(open 清单;presence-gated:缺文件/无 open/坏行 → "")。
+    """## ⏳ 待裁决提案(open 看板;presence-gated:缺文件/无 open/坏行 → "")。
 
     运营节奏 nag:proposals 攒着不裁 = 闭环学习卡死("过度建设跑动不足"的解药是节奏不是机制)。
+    行渲染/排序/标注(龄·配对·疑失效)委托 feedback_store.proposals_nag_lines(看板自清洁,
+    机器只整理不裁决);账本缺/空/坏行 → ""(原行为,parity 不破)。
     """
-    p = _PROPOSALS_PATH
-    if not p.exists():
-        return ""
-    items = []
     try:
-        for ln in p.read_text(encoding="utf-8").splitlines():
-            ln = ln.strip()
-            if not ln:
-                continue
-            try:
-                d = json.loads(ln)
-            except Exception:  # noqa: BLE001 — 坏行跳过,不阻发布
-                continue
-            if d.get("status") == "open":
-                items.append(f"- `{d.get('id', '?')}` · {d.get('kind', '')} · {str(d.get('summary', ''))[:60]}")
-    except Exception:  # noqa: BLE001 — IO 失败当无提案
+        from autoresearch.learning.feedback_store import proposals_nag_lines  # lazy 接线
+        lines = proposals_nag_lines()
+    except Exception:  # noqa: BLE001 — IO/渲染失败当无提案,不阻发布
         return ""
-    if not items:
+    if not lines:
         return ""
-    return ("## ⏳ 待裁决提案\n" + "\n".join(items)
+    return ("## ⏳ 待裁决提案\n" + "\n".join(lines)
             + "\n\n_提案满 20 交易日未裁将持续在此提醒;裁决走 feedback / scan-retro 流程,别攒。_")
 
 
@@ -1079,6 +1069,9 @@ def _publish_details(scan_dir: Path, detail_out: Path) -> int:
     """把 L4 staging 决策卡发布到 details/,文件名用**股票名称**(非 ticker);只发当前 finalists。
 
     staging 卡仍以 <code>.md 暂存(parse_rating/retro 内部按 code);发布层改名 <名称>.md 便于人读。
+    发布时若有 `_l4_intel_<code>.md`(活体情报盲搜稿)→ 原文附在卡片尾部(fb_20260714_004:
+    读者要在 details 里直接看到当日新闻依据,不用去翻 staging)。附录只加在**发布副本**,
+    staging 卡不动;parse_rating 两遍法先认卡面 `Rating:` 标签行,intel 中文文本不干扰评级解析。
     """
     src = scan_dir / "details"
     if not src.is_dir():
@@ -1094,6 +1087,16 @@ def _publish_details(scan_dir: Path, detail_out: Path) -> int:
         if dst.exists():                       # 同名兜底:挂 code 避免覆盖
             dst = detail_out / f"{name}_{code}.md"
         shutil.copy2(card, dst)
+        intel = scan_dir / f"_l4_intel_{code}.md"
+        if intel.exists():
+            try:
+                body = intel.read_text(encoding="utf-8").strip()
+            except OSError:
+                body = ""
+            if body:
+                with dst.open("a", encoding="utf-8") as fh:
+                    fh.write("\n\n---\n\n## 🕵️ 当日活体情报(盲搜原文·仅事实采集,评级不受此节影响)\n\n")
+                    fh.write(body + "\n")
         n += 1
     return n
 
@@ -1104,7 +1107,7 @@ def _funnel_md(scan_dir: Path, analysis_date: str) -> str:
     finals = _read_csv(scan_dir / "finalists.csv")
     n_pinned = sum(1 for r in finals if str(r.get("lane", "")).strip() == "pinned")   # 保送不占 L3 名额
     n_genuine = len(finals) - n_pinned
-    lines = [f"# 漏斗溯源 — {analysis_date}\n", "六段:选集→召回→粗排(GBDT)→精排→研究→整合。\n"]
+    lines = [f"# 漏斗溯源 — {analysis_date}\n", "六段:选集→召回→粗排(分层采样)→精排→研究→整合。\n"]
     lines += _funnel_rows(meta, len(keep) or "?", n_genuine, len(finals), n_pinned=n_pinned)
     lines += ["", f"权重来源:{meta.get('weights_source', '?')};L2 引擎:{meta.get('l2_engine', '?')};"
               f"universe 源:{meta.get('source', '?')}。",
@@ -1116,7 +1119,7 @@ def _archive_reasoning(scan_dir: Path, pdir: Path) -> int:
     """把各阶段 LLM 中间推理件(prompt/批表/keep-judged/calib)归档到
     trace/reasoning/{l2,l3,l4}/,让发布报告自带可追溯的 LLM 输入;缺失静默跳过。"""
     routes = [
-        # L2 已下沉确定性(GBDT),无 LLM 推理件;L3 holistic 选股 + L4 级联 + Tier-3 验证留痕。
+        # L2 已下沉确定性(分层采样),无 LLM 推理件;L3 holistic 选股 + L4 级联 + Tier-3 验证留痕。
         ("l3", lambda n: n.startswith("_l3")),
         ("l4", lambda n: n.startswith("_l4")),       # 含 _l4_tier2_<code>.md(Tier-2 复核稿)
         ("verify", lambda n: n.startswith("_v_") or n == "verify.csv"),  # Tier-3 买单对抗验证

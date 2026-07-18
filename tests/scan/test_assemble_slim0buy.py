@@ -36,20 +36,7 @@ def test_gate_histogram_line(tmp_path):
     assert "主力真在✗ 2" in md and "估值不透支✗ 1" in md
 
 
-def test_watchlist_moved_above_funnel_and_sector(tmp_path):
-    d = _scan(tmp_path)
-    (d / "market_view.md").write_text("## 定调\n震荡\n", encoding="utf-8")
-    pd.DataFrame([{"code": "300124", "name": "汇川技术", "status": "临近",
-                   "detail": "close_above:71.42=yes", "narrative": "红队观察",
-                   "born": "2026-07-02", "expiry": "2026-09-30"}]).to_csv(
-        d / "watchlist_status.csv", index=False)
-    (d / "sector_briefs").mkdir()
-    (d / "sector_briefs" / "元件.md").write_text(
-        "## 地形段\n中位60日+69%\n\n## 研判段\n**行业方向**: 中性 — 过热背离\n", encoding="utf-8")
-    md = build_summary(d, _D, "1200", _F)
-    i_watch, i_sector, i_funnel = (md.find("👀 观察单日检"), md.find("🏭 行业研判"), md.find("## 1. 漏斗"))
-    assert -1 < i_watch < i_sector, "观察单应上移到行业研判之前"
-    assert i_watch < i_funnel, "观察单应上移到漏斗节之前"
+# (test_watchlist_moved_above_funnel_and_sector 已删:观察单日检节整体退役,fb_20260714_002。)
 
 
 def test_market_view_h1_and_disclaimer_stripped(tmp_path):

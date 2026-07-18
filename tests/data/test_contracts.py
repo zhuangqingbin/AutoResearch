@@ -115,9 +115,9 @@ def test_check_healthy_frame_passes_through_untouched():
 def test_render_degradations_summarises_by_endpoint():
     contracts.check("hk_hold", pd.DataFrame(), key="d1")
     contracts.check("hk_hold", pd.DataFrame(), key="d2")
-    contracts.check("stk_surv", pd.DataFrame(), key="d1")
+    contracts.check("pledge_stat", pd.DataFrame(), key="d1")
     line = contracts.render()
-    assert "hk_hold×2" in line and "stk_surv×1" in line
+    assert "hk_hold×2" in line and "pledge_stat×1" in line
     contracts.clear_degradations()
     assert contracts.render() == ""
 
@@ -258,9 +258,12 @@ def test_degraded_json_written_by_universe_run_and_rendered_in_report(tmp_path):
         {"endpoint": "hk_hold", "key": "20260712", "source": "fetch", "reasons": ["空帧(0 行)"]},
         {"endpoint": "hk_hold", "key": "20260711", "source": "fetch", "reasons": ["空帧(0 行)"]},
         {"endpoint": "pledge_stat", "key": "x", "source": "fetch", "reasons": ["空帧(0 行)"]},
+        {"endpoint": "forecast", "key": "20260712", "source": "fetch",
+         "reasons": ["空帧(0 行)"], "kind": "legit_empty"},          # 合法空:留痕在 json
     ]), encoding="utf-8")
     line = assemble._degraded_line(scan)
     assert "数据降级" in line and "hk_hold×2" in line and "pledge_stat×1" in line
+    assert "forecast" not in line                          # ……但不进报告告警行(Minor-1)
 
 
 def test_record_degradation_covers_non_cache_paths():
@@ -270,3 +273,50 @@ def test_record_degradation_covers_non_cache_paths():
     recs = contracts.degradations()
     assert recs[0]["endpoint"] == "hk_hold" and recs[0]["source"] == "direct"
     assert "hk_hold×1" in contracts.render()
+
+
+# ───────────── anns_d 退役 + 合法空告警面(survey 2026-07-13 线 D · 2026-07-18)─────────────
+
+
+def test_anns_d_retired_note_but_contract_and_degrade_path_kept():
+    """anns_d 正式退役:note 说清由谁覆盖(news_em 头条 + intel 盲搜);**端点注册与 B 级降级
+    路径保留** —— 残余调用(l3_news harvest 等)仍优雅降级,不抛、照记账。"""
+    con = contracts.CONTRACTS["anns_d"]
+    assert con.tier == contracts.TIER_DEGRADE
+    assert "已退役" in con.note and "stock_news_em" in con.note and "expected" in con.note
+    out = contracts.check("anns_d", pd.DataFrame(), key="20260718")     # 残余调用
+    assert out is not None and len(out) == 0                            # 不阻断
+    assert contracts.degradations()[0]["endpoint"] == "anns_d"          # 仍记账
+
+
+def test_legit_empty_recorded_but_not_rendered():
+    """forecast/express/stk_surv 某交易日 0 行 = 真实合法空 → **留痕**(degradations/degraded.json
+    审计不丢)但**不进告警渲染** —— 告警面只留"今天坏了"类真降级(Minor-1)。"""
+    for ep in ("forecast", "express", "stk_surv"):
+        contracts.check(ep, pd.DataFrame(), key="20260718")
+    recs = contracts.degradations()
+    assert len(recs) == 3 and all(r["kind"] == "legit_empty" for r in recs)
+    assert contracts.render() == ""
+
+
+def test_no_permission_and_error_shapes_still_rendered():
+    """无权限空(anns_d,无 empty_ok)与报错形态(forecast 返回 None)**不是**合法空 →
+    照旧进告警渲染。empty_ok 只豁免"恰为空帧"这一种形态。"""
+    contracts.check("anns_d", pd.DataFrame(), key="d")     # 无权限恒空:仍告警(呈现面另行标 expected)
+    contracts.check("forecast", None, key="d")             # 返回 None = 报错降级,非合法空
+    line = contracts.render()
+    assert "anns_d×1" in line and "forecast×1" in line
+
+
+def test_mixed_records_render_only_real_degradations():
+    contracts.check("forecast", pd.DataFrame(), key="d")   # 合法空 → 滤掉
+    contracts.check("hk_hold", pd.DataFrame(), key="d")    # 增强缺失 → 保留
+    line = contracts.render()
+    assert "hk_hold×1" in line and "forecast" not in line
+
+
+def test_render_backward_compatible_with_kindless_records():
+    """旧 degraded.json(无 `kind` 字段)→ 按降级渲染 —— 老现场不因新字段静默消失。"""
+    line = contracts.render([{"endpoint": "hk_hold", "key": "x", "source": "fetch",
+                              "reasons": ["空帧(0 行)"]}])
+    assert "hk_hold×1" in line

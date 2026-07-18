@@ -272,3 +272,86 @@ def test_reversal_confirm_factors_registered_in_candidates():
     cand = dict(fl.CANDIDATES)
     for name in ("vol_ratio_20", "dist_low_60", "days_no_new_low"):
         assert name in cand, f"{name} 未注册进 CANDIDATES(IC 三门验证读不到它)"
+
+
+# ───────────────── extend_plan(pr_20260716_001:面板增量续,勿重跑 harvest) ─────────────────
+
+
+def _mk_plan(out_dir, F, P):
+    import pandas as pd
+    pd.Series({"F": F, "P": P, "end_anchor": "2026-07-15", "step": 1,
+               "form_span": 24, "back": 64, "fwd": 10}).to_pickle(out_dir / "plan.pkl")
+
+
+def _wire_extend(monkeypatch, tmp_path, cal, fetched):
+    """OUT/CACHE 指向 tmp;日历与取数全 fake(离线)。fetched 收集 (endpoint, day)。"""
+    import pandas as pd
+
+    import autoresearch.research.factor_lab as fl
+    out, cache = tmp_path / "out", tmp_path / "cache"
+    out.mkdir(), cache.mkdir()
+    monkeypatch.setattr(fl, "OUT", out)
+    monkeypatch.setattr(fl, "CACHE", cache)
+    monkeypatch.setattr(fl, "_pro", lambda: object())
+    monkeypatch.setattr("autoresearch.data.tushare_source._trade_days",
+                        lambda pro, s, e: [d for d in cal if s <= d <= e])
+    # 真 _fetch 返回「可调用」(lambda),_cache 只在缓存 miss 时才调它 → fetched 只记真拉取
+    monkeypatch.setattr(fl, "_fetch", lambda pro, ep, d: (lambda: fetched.append((ep, d)) or pd.DataFrame(
+        {"ts_code": ["000001.SZ"], "open": [1.0], "high": [1.0], "low": [1.0],
+         "close": [1.0], "pct_chg": [0.0], "amount": [1.0]})))
+    return fl, out, cache
+
+
+def test_extend_plan_appends_f_and_p_with_holdback_2(tmp_path, monkeypatch):
+    """新成型日推进到 last−2(对齐 fwd_2_oc 主尺,不被旧参 fwd=10 拖到 last−10);P 推进到 last。"""
+    cal = [f"202607{d:02d}" for d in (1, 2, 3, 6, 7, 8, 9, 10, 13, 14, 15, 16, 17)]
+    fetched = []
+    fl, out, cache = _wire_extend(monkeypatch, tmp_path, cal, fetched)
+    _mk_plan(out, F=["20260701"], P=["20260701", "20260702"])
+    res = fl.extend_plan(anchor="2026-07-17")
+    assert res["f_last"] == "20260715" and res["added_f"] == 10         # 07-02..07-15(留 16/17 做 holdback)
+    assert res["added_p"] == 11 and res["n_f"] == 11
+    import pandas as pd
+    plan = pd.read_pickle(out / "plan.pkl")
+    assert plan["F"][-1] == "20260715" and plan["P"][-1] == "20260717"
+    assert plan["F"][0] == "20260701" and len(plan["F"]) == 11          # 历史面板没被冲掉
+    assert plan["end_anchor"] == "2026-07-17"
+    assert ("moneyflow", "20260715") in fetched                          # 新成型日拉了因子端点
+    assert (cache / "daily" / "20260717.pkl").exists()
+
+
+def test_extend_plan_idempotent_and_heals_holes(tmp_path, monkeypatch):
+    """再跑一次 = 0 新增(幂等);P 里缓存缺失的洞会被回补(自愈)。"""
+    cal = ["20260701", "20260702", "20260703", "20260706", "20260707"]
+    fetched = []
+    fl, out, cache = _wire_extend(monkeypatch, tmp_path, cal, fetched)
+    _mk_plan(out, F=["20260701"], P=["20260701", "20260702", "20260703"])
+    r1 = fl.extend_plan(anchor="2026-07-07")
+    assert r1["added_f"] == 2 and r1["added_p"] == 2                     # F→07-03,P→07-07
+    assert r1["healed"] == 3                                             # 旧 P 三日缓存本来就缺 → 回补
+    n_before = len(fetched)
+    r2 = fl.extend_plan(anchor="2026-07-07")
+    assert r2["added_f"] == 0 and r2["added_p"] == 0 and r2["healed"] == 0
+    assert len(fetched) == n_before                                      # 幂等:一个端点都没重拉
+
+
+def test_recalibrate_and_log_calls_extend_before_calibrate(tmp_path, monkeypatch):
+    """接线序:extend_plan 先于 calibrate(否则续了也白续);extend 炸不阻断 calibrate。"""
+    calls = []
+    import autoresearch.learning.feedback_store as fs
+    import autoresearch.learning.retro as retro
+    import autoresearch.research.factor_lab as fl
+    wp = tmp_path / "weights.json"
+    wp.write_text('{"weights": {"__global__": {}}, "meta": {"n_dates": 1}}', encoding="utf-8")
+    monkeypatch.setattr(retro, "Path", lambda p: wp if "weights.json" in str(p) else __import__("pathlib").Path(p))
+    monkeypatch.setattr(fl, "extend_plan", lambda: calls.append("extend") or {"added_f": 1, "added_p": 1, "healed": 0, "f_last": "20260715", "n_f": 108})
+    monkeypatch.setattr(fl, "calibrate", lambda **k: calls.append("calibrate") or {})
+    monkeypatch.setattr(fs, "snapshot_weights", lambda: "aaa")
+    monkeypatch.setattr(fs, "log_change", lambda *a, **k: calls.append("log"))
+    retro.recalibrate_and_log("2026-07-16")
+    assert calls == ["extend", "calibrate", "log"]
+
+    calls.clear()
+    monkeypatch.setattr(fl, "extend_plan", lambda: (_ for _ in ()).throw(RuntimeError("网络断")))
+    retro.recalibrate_and_log("2026-07-16")
+    assert calls == ["calibrate", "log"]                                 # 退化但不死,探针兜底

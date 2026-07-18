@@ -36,6 +36,26 @@ def test_load_and_fold(tmp_path):
     assert assemble._apply_ensemble_fold("Overweight", None) == "Overweight"      # 无记录 = 原样
 
 
+def test_load_ensemble_merges_per_code_files(tmp_path):
+    """fb_20260714_003(每股独立 l4-stock workflow):每股各写 `_ensemble_<code>.json`
+    (单条 record,无共享文件写竞态),_load_ensemble 与旧批量 `_ensemble.json` 合并读,
+    同 code 时 per-code 文件覆盖旧批量。坏 per-code json 跳过不挡其余。"""
+    (tmp_path / "_ensemble.json").write_text(json.dumps([
+        {"code": "688213", "ratings": ["Overweight", "Hold", "Hold"], "median": "Hold", "spread": 1}]),
+        encoding="utf-8")
+    (tmp_path / "_ensemble_000651.json").write_text(json.dumps(
+        {"code": "000651", "ratings": ["Overweight", "Overweight", "Overweight"],
+         "median": "Overweight", "spread": 0, "degraded": False}), encoding="utf-8")
+    (tmp_path / "_ensemble_688213.json").write_text(json.dumps(
+        {"code": "688213", "ratings": ["Overweight", "Sell", "Sell"], "median": "Sell", "spread": 3}),
+        encoding="utf-8")
+    (tmp_path / "_ensemble_bad.json").write_text("{oops", encoding="utf-8")
+    ens = assemble._load_ensemble(tmp_path)
+    assert ens["000651"]["median"] == "Overweight"          # per-code 新路
+    assert ens["688213"]["median"] == "Sell"                # per-code 覆盖旧批量
+    assert len(ens) == 2                                     # 坏 json 跳过
+
+
 def test_load_ensemble_missing_file_is_empty(tmp_path):
     """无 _ensemble.json → {}(presence-gated,老路不破;非报错/非阻断)。"""
     assert assemble._load_ensemble(tmp_path) == {}

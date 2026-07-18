@@ -205,6 +205,180 @@ def intel_future_dates_lint(scan_dir, date_str: str) -> list[dict]:
     return out
 
 
+def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
+    """产物形状 lint(六探针,零 LLM;design: 2026-07-13-next-optimization-survey.md 线 C)。
+
+    把停车场里"已知的产物形状病"装成每跑可见的机械断言(advisory 起步,攒够跑数再升):
+
+    1. **保送§2空**(warn):finalists lane∈{pinned,watchlist_trigger} 的票,其 judged 条目
+       thesis(及 risk/catalyst 键若存在)为空/缺 → §2 保送表无料可填(07-14 事故:pinned
+       的 L3 判断在 merge 处被整段丢弃)。注意 pinned 身份只认 **finalists.csv 的 lane**
+       (judged 里存的是原召回 lane,如 trend/growth)。
+    2. **force_full 探针**(warn/info):按生产同款 priors(finalists 行 conviction/lane +
+       L2 表 n_channels/l2_lane_reserved,调 `l4_card.force_full_card` 真身)算命中集
+       (♻️ 复用卡派发时即跳过,不计);命中>0 但 `run_health.l4_phases.n_full`==0 →
+       warn「静默未生效」(FN-1 探针:死了也像活着);命中==0 → **info** 显式记账,非静默。
+    3. **intel 稿数**(warn):`_l4_intel_*.md` >0 份(=intel 启用)时,稿数(只认
+       `_l4_intel_<6位码>.md`,变体如 `*_probe` 不计)≠ 期望 = **全 finalist 行**(含保送——
+       保送票同走 l4-stock 链、同派 intel)− ♻️ 复用数(复用痕迹 = `details/<code>.md` 含
+       ♻️ banner,l4_reuse.write_reused_card 所落;details/ 缺 → 期望=全行数,detail 注明
+       口径)。0 份 intel = 未启用,本条不出。07-17 实测:10 行 − 1 复用 = 9 稿 ✓。
+    4. **anns 去伪**(info):`anns_empty_rate`==1.0 = expected/no-permission(公告面已由
+       news_em+intel 覆盖),明置非告警(线 D 退役配套)。
+    5. **market_view 防锚定**(warn):market_pack.json 的 sector_healthy_top3 行业名出现在
+       market_view.md 文本 → L5 专属看多读数泄漏进策略师稿(闭合 final-review I-1)。
+    6. **intel 零URL**(warn):单份 intel 稿 `http(s)://` 计数==0 → 情报不可审计
+       (07-14 事故 pr_007:零URL 逐稿逮)。
+
+    全部 presence-gated:缺文件/缺键/坏文件 → 该条静默跳过,**绝不抛异常**。
+    返回 [{check,severity,detail,code}](severity ∈ {warn,info});接线在 assemble
+    (与 card_contract_lint 同点),本函数纯读不写。
+    """
+    import contextlib
+    import json
+    import re
+    from pathlib import Path
+    scan_dir = Path(scan_dir)
+    exempt = {"pinned", "watchlist_trigger"}
+    out: list[dict] = []
+
+    def add(check, sev, detail, code=None):
+        out.append({"check": check, "severity": sev, "detail": detail, "code": code})
+
+    # ── 共享读数(各自 presence-gated;坏文件按缺处理) ──
+    fin_rows: list[dict] = []
+    fin_loaded = False
+    with contextlib.suppress(Exception):
+        fp = scan_dir / "finalists.csv"
+        if fp.exists():
+            import pandas as pd
+            fin = pd.read_csv(fp, dtype={"code": str})
+            if "code" in fin.columns:
+                for _, r in fin.iterrows():
+                    raw = str(r.get("code", "") or "").strip()
+                    if not raw or raw == "nan":
+                        continue
+                    fin_rows.append({"code": raw.split(".")[0].zfill(6),
+                                     "lane": str(r.get("lane", "") or "").strip(),
+                                     "conviction": r.get("conviction")})
+                fin_loaded = True
+    pinned_codes = [r["code"] for r in fin_rows if r["lane"] in exempt]
+
+    judged: dict[str, dict] = {}
+    judged_loaded = False
+    with contextlib.suppress(Exception):
+        jp = scan_dir / "_l3_judged.json"
+        if jp.exists():
+            for e in json.loads(jp.read_text(encoding="utf-8")) or []:
+                if isinstance(e, dict) and str(e.get("code", "") or "").strip():
+                    judged[str(e["code"]).split(".")[0].zfill(6)] = e
+            judged_loaded = True
+
+    health: dict = {}
+    with contextlib.suppress(Exception):
+        hp = scan_dir / "run_health.json"
+        if hp.exists():
+            h = json.loads(hp.read_text(encoding="utf-8"))
+            health = h if isinstance(h, dict) else {}
+
+    reused: set[str] = set()          # ♻️ 复用卡(l4_reuse banner;派发时被跳过的票)
+    with contextlib.suppress(Exception):
+        for p in (scan_dir / "details").glob("*.md"):
+            text = p.read_text(encoding="utf-8")
+            if "♻️" in text and "复用" in text:
+                reused.add(p.stem.split(".")[0].zfill(6))
+
+    intel_files = sorted(scan_dir.glob("_l4_intel_*.md"))
+    intel_codes = {m.group(1) for p in intel_files
+                   if (m := re.fullmatch(r"_l4_intel_(\d{6})", p.stem))}
+
+    # 1) 保送§2非空(finalists 是 pinned 身份唯一事实源;judged 文件缺 → 整条跳过)
+    if judged_loaded:
+        for code in pinned_codes:
+            e = judged.get(code)
+            if e is None:
+                add("产物形状·保送§2空", "warn",
+                    f"{code} 保送票在 _l3_judged.json 无条目 —— §2 风险/催化无料可填", code=code)
+                continue
+            empty = [k for k in ("thesis", "risk", "catalyst")
+                     if (k == "thesis" or k in e) and not str(e.get(k, "") or "").strip()]
+            if empty:
+                add("产物形状·保送§2空", "warn",
+                    f"{code} 保送票 judged 条目 {'/'.join(empty)} 为空 —— §2 风险/催化列将开天窗",
+                    code=code)
+
+    # 2) force_full 探针(生产同款判据真身;缺 l4_phases/n_full 或 finalists → 跳过)
+    l4_phases = health.get("l4_phases")
+    if fin_loaded and isinstance(l4_phases, dict) and "n_full" in l4_phases:
+        with contextlib.suppress(Exception):
+            from autoresearch.scan.agents.l4_card import force_full_card
+            l2_priors: dict[str, dict] = {}
+            with contextlib.suppress(Exception):
+                l2p = scan_dir / "L2_gbdt_top200.csv"
+                if l2p.exists():
+                    import pandas as pd
+                    l2 = pd.read_csv(l2p, dtype={"code": str})
+                    if "code" in l2.columns:
+                        l2["code"] = l2["code"].astype(str).str.zfill(6)
+                        l2_priors = l2.set_index("code").to_dict("index")
+            hits = [r["code"] for r in fin_rows
+                    if r["code"] not in reused          # 复用卡不派发,force_full 未评估
+                    and force_full_card({**l2_priors.get(r["code"], {}),
+                                         "conviction": r["conviction"], "lane": r["lane"]})]
+            n_full = int(l4_phases.get("n_full") or 0)
+            if hits and n_full == 0:
+                add("产物形状·force_full未生效", "warn",
+                    f"force_full 命中 {len(hits)} 只({','.join(hits[:5])})但 l4_phases.n_full=0"
+                    " —— 强制满卡静默未生效(FN-1:安全网死了也像活着)")
+            elif not hits:
+                add("产物形状·force_full零命中", "info",
+                    f"{date_str} force_full 0 命中(显式记账,非静默)")
+
+    # 3) intel 稿数 = 全 finalist 行(含保送,皆走 l4-stock 链派 intel)− 复用(0 份 = 未启用,不出本条)
+    if intel_files and fin_loaded:
+        n_rows = len(fin_rows)
+        if (scan_dir / "details").is_dir():
+            n_reuse = len({r["code"] for r in fin_rows} & reused)
+            expect, cal = n_rows - n_reuse, f"finalist 行 {n_rows}(含保送) − ♻️ 复用 {n_reuse}"
+        else:
+            expect, cal = n_rows, f"finalist 行 {n_rows}(含保送;details/ 缺,复用数不可得)"
+        if len(intel_codes) != expect:
+            add("产物形状·intel稿数不符", "warn",
+                f"intel 稿 {len(intel_codes)} 份 ≠ 期望 {expect}({cal})")
+
+    # 4) anns 去伪告警(线 D:expected 无权限 ≠ 当日故障)
+    rate = health.get("anns_empty_rate")
+    if rate is not None:
+        with contextlib.suppress(TypeError, ValueError):
+            if float(rate) == 1.0:
+                add("产物形状·anns去伪", "info",
+                    "anns_empty_rate=1.0 = expected/no-permission(公告面已由 news_em+intel 覆盖)"
+                    ",非当日故障告警")
+
+    # 5) market_view 防锚定(sector_healthy_top3 是 L5 专属,泄漏进策略师稿即锚定通道)
+    with contextlib.suppress(Exception):
+        mp, mv = scan_dir / "market_pack.json", scan_dir / "market_view.md"
+        if mp.exists() and mv.exists():
+            top3 = json.loads(mp.read_text(encoding="utf-8")).get("sector_healthy_top3") or []
+            inds = [s for r in top3 if isinstance(r, dict)
+                    and (s := str(r.get("industry", "") or "").strip())]
+            text = mv.read_text(encoding="utf-8")
+            hit = [i for i in inds if i in text]
+            if hit:
+                add("产物形状·market_view防锚定", "warn",
+                    f"market_view.md 出现确定性看多 top3 行业名 {hit}"
+                    " —— L5 专属读数泄漏进策略师稿(final-review I-1)")
+
+    # 6) intel 零URL(逐稿;含 `_probe` 等变体稿——是稿就该可审计)
+    for p in intel_files:
+        with contextlib.suppress(Exception):
+            if not re.search(r"https?://", p.read_text(encoding="utf-8")):
+                add("产物形状·intel零URL", "warn",
+                    f"{p.name} 全文 0 条 http(s) URL —— 情报不可审计(来源应带链接)",
+                    code=p.stem.replace("_l4_intel_", ""))
+    return out
+
+
 def dump_gate_fires(scan_dir, result: dict, date: str):
     """R3·门审计地基:review 结果幂等落 <scan_dir>/gate_fires.csv(每次 assemble 覆写)。
 

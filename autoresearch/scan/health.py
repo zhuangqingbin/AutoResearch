@@ -16,9 +16,10 @@ from pathlib import Path
 
 import pandas as pd
 
-# 关键产物在位表(缺 = 流程段没跑/失败;market_view/watchlist 是可选段,缺了只提示不报错)
+# 关键产物在位表(缺 = 流程段没跑/失败;market_view 是可选段,缺了只提示不报错。
+# watchlist_status.csv 随观察单日检退役摘除,fb_20260714_002)
 _ARTIFACTS = ["L1_scored_full.csv", "L1_recall_top1000.csv", "L2_gbdt_top200.csv",
-              "finalists.csv", "market_view.md", "verify.csv", "watchlist_status.csv",
+              "finalists.csv", "market_view.md", "verify.csv",
               "gate_fires.csv", "weights_used.json", "L3_judged_full.csv"]
 _CORE = {"L1_scored_full.csv", "L1_recall_top1000.csv", "L2_gbdt_top200.csv", "finalists.csv"}
 
@@ -53,7 +54,9 @@ def nan_report(scan_dir: Path, thresh: float = 0.30) -> tuple[dict, list[str]]:
 
 
 def anns_empty_rate(scan_dir: Path) -> float | None:
-    """L3_news 空稿率(=1.0 → anns_d 断链/无权限,公告情感与监管旗在裸奔)。无目录 → None。"""
+    """L3_news 空稿率。=1.0 为 **expected 非告警**(anns_d 已退役 2026-07-18:无接口权限,
+    结构化公告标题流由 stock_news_em 头条 + l4-intel 活体盲搜双重覆盖)。无目录 → None。
+    键与数值保留供下游消费,expected 语义见 `run_health` 并列布尔 `anns_expected`。"""
     d = Path(scan_dir) / "L3_news"
     files = sorted(d.glob("*.json")) if d.is_dir() else []
     if not files:
@@ -246,13 +249,18 @@ def run_health(scan_dir: Path) -> dict:
 
     cards = len(list((scan_dir / "details").glob("*.md"))) if (scan_dir / "details").is_dir() else 0
     rates, degraded = nan_report(scan_dir)
+    anns_rate = anns_empty_rate(scan_dir)
     return {"date": scan_dir.name, "artifacts": arts, "missing": missing,
             "core_missing": sorted(_CORE & set(missing)),
             "counts": {"l1_full": _n("L1_scored_full.csv"), "recall": _n("L1_recall_top1000.csv"),
                        "l2": _n("L2_gbdt_top200.csv"), "finalists": _n("finalists.csv"),
                        "cards": cards, "buys": count_buys(scan_dir)},
             "nan_rates": rates, "degraded_fields": degraded,
-            "anns_empty_rate": anns_empty_rate(scan_dir), "northbound": northbound_probe(scan_dir),
+            # anns_d 已退役(2026-07-18):=1.0 是 expected(no-permission·covered by
+            # news_em+intel),非告警。键名/数值原样保留(下游兼容),expected 语义走并列布尔。
+            "anns_empty_rate": anns_rate,
+            "anns_expected": anns_rate is None or anns_rate >= 1.0,
+            "northbound": northbound_probe(scan_dir),
             "regime": meta.get("regime"), "l2_engine": meta.get("l2_engine"),
             "weights_source": meta.get("weights_source"),
             "churn": finalist_churn(scan_dir), "l4_phases": l4_phase_stats(scan_dir),

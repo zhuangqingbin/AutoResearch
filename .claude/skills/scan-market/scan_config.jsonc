@@ -8,8 +8,14 @@
     "strategist":   { "effort": "max" },     // 市场研判(macro lite 档,Stage 0)——07-12 用户拍板 high→max
     "sector_brief": { "effort": "xhigh" },   // 行业 brief 写手——07-12 用户拍板:sonnet 下沉试点回滚(删 model 键 → 回 opus)+ effort high→xhigh
     "l3_rank":      { "effort": "max" },     // L3 精排(200只 holistic 比较=判断核心,给最高 effort)
-    "l4_card":      { "effort": "xhigh" },   // L4 决策卡(逐只渐进深度 DD)
-    "l4_intel":     { "effort": "max" }      // 活体情报员(盲搜六面,sonnet 由 agent 定义默认)
+    "l4_intel":     { "effort": "max" },     // 活体情报员(盲搜六面,sonnet 由 agent 定义默认)
+    "l4_card":      { "effort": "max" },     // L4 决策卡(逐只渐进深度 DD)
+    // T+1 快环(t1-review.js,fb_20260717_001):2 agent = 合诊 + 综合(2026-07-17 用户裁定
+    // 勿每票 fan-out——真选 ≤13 只一个 context 装得下,且跨票模式合诊才看得见)。
+    // 装载:scan-retro 编排时 `python -m autoresearch.scan.user_config` 读本文件随 args.cfg 传入
+    // (合诊 agent 自己跑 build CLI,没法从 pack 拿配置);综合官另有 pack.agents_cfg 兜底。
+    "t1_diag":      { "effort": "high" },    // 合诊(≤13 卡对比诊断;model 缺省=继承会话,要省钱可加 "model":"sonnet")
+    "t1_synth":     { "effort": "high" }     // 综合官(model 缺省 = 继承会话模型)
   },
 
   // ── L3 两遍法:pass1 确定性分诊 200→~60 + pass2(l3-rank)深比较出 finalist tier ──
@@ -17,7 +23,11 @@
   // 本 key 是回滚杆而非 opt-in——删掉本块或把 two_pass 改 false 都退回"L3 单遍读全表"旧行为)。
   "l3": {
     "two_pass": true,        // false = 回滚:prepare_l3_table 现行为逐字节不变(不 triage/不切表/不读本块)
-    "pass1_target": 60,      // pass1 分诊后喂 pass2(l3-rank)的行数(全入规则命中多时可能略多于此数)
+    "pass1_target": 40,      // pass1 分诊后喂 pass2(l3-rank)的行数(全入规则命中多时可能略多于此数)
+                             // 60→40(2026-07-18 线A):影子回放 20 日 mandatory 0漏;two-pass 时代(07-10起)6日
+                             // 仅丢 1 个非赢家 finalist(07-13 000999,target=50 也保不住);delta 20 行赢家率 8.9%
+                             // vs 本就被切的 140 行 7.6%=无富集(<1se)。回滚:改回 60 或 two_pass=false。
+                             // 前向守卫:retro.pass1_cut_winners 日常盯 cut 吃赢家。读数:scratchpad pass1_shadow_results_v2
     "finalist_max": 10       // finalist tier 上限(merge v3 已接线消费——cap=min(此值,l4_budget))
   },
 
