@@ -1,4 +1,4 @@
-"""shrink() 收缩估计原语 + n_tag/should_inject/shrink_config helpers。合成,无网络。
+"""shrink() 收缩估计原语 + n_tag/shrink_config helpers。合成,无网络。
 
 spec: docs/specs/2026-07-12-selflearning-optimization-brainstorm.md §4 P0-3(C9-C12)。
 双轨语义:裁决门槛仍用硬 n;本模块只服务"注入锚"(喂 LLM 读的数字)。n<3 绝对禁注。
@@ -9,7 +9,6 @@ from autoresearch.learning.shrink import (
     DEFAULT_K,
     MIN_N_INJECT,
     n_tag,
-    should_inject,
     shrink,
     shrink_config,
 )
@@ -61,7 +60,7 @@ def test_shrink_k_zero_disables_shrinkage():
     assert shrink(None, 0, 0.2, k=0) == 0.2      # k=0 仍退化(无桶数据没有"原始值"可用)
 
 
-# ───────────────────────── n_tag / should_inject:四消费点共享的注入格式 ─────────────────────────
+# ───────────────────────── n_tag:四消费点共享的注入格式 ─────────────────────────
 
 
 def test_n_tag_marks_thin_below_threshold():
@@ -70,12 +69,8 @@ def test_n_tag_marks_thin_below_threshold():
     assert n_tag(None, thin_n=5) == "(n=0⚠)"
 
 
-def test_should_inject_floor_is_three():
+def test_min_n_inject_floor_is_three():
     assert MIN_N_INJECT == 3
-    assert should_inject(3) is True
-    assert should_inject(2) is False
-    assert should_inject(0) is False
-    assert should_inject(None) is False
 
 
 # ───────────────────────── shrink_config:learning.{shrink,shrink_k} 读取 ─────────────────────────

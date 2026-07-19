@@ -1,6 +1,6 @@
 """memory 写侧卫生 M3(失效记账)+ M2(写入四操作裁决 ADD/UPDATE/DELETE/NOOP)。
 
-M3:lesson 加 valid_from/invalid_at/superseded_by,退休不删;lessons_as_of 做时点信念集查询。
+M3:lesson 加 valid_from/invalid_at/superseded_by,退休不删(留时点审计)。
 M2:落 lesson 前 similar_lessons 结构化召回相似旧条 → Claude 判 op → adjudicate 确定性执行。
 
 spec: docs/specs/2026-07-07-memory-astrategy-optimization-design.md §M2 §M3
@@ -43,28 +43,6 @@ def test_decay_autoretire_sets_invalid_at():
     fs.decay_lessons(today="2026-06-20", stale_days=30)
     rec = fs._read_jsonl(fs._LESSONS)[0]
     assert rec["status"] == "retired" and rec["invalid_at"] == "2026-06-20"
-
-
-def test_lessons_as_of_temporal_window():
-    fs.upsert_lesson("x", ("global", "*"), rule="r", evidence=[], day="2026-06-01")
-    fs.retire_lesson("x", day="2026-06-20")
-
-    def ids(d):
-        return {h["id"] for h in fs.lessons_as_of(d)}
-    assert ids("2026-06-10") == {"ls_x"}      # 窗口内(valid_from≤d<invalid_at)
-    assert ids("2026-06-25") == set()         # 失效之后
-    assert ids("2026-05-01") == set()         # valid_from 之前
-
-
-def test_lessons_as_of_legacy_record_fallback():
-    # 老记录缺 valid_from/invalid_at → 用 created/retired 兜底
-    fs._write_jsonl(fs._LESSONS, [{
-        "id": "ls_old", "scope": {"kind": "global", "value": "*"}, "rule": "r",
-        "evidence": [], "created": "2026-06-01", "retired": "2026-06-20", "status": "retired"}])
-
-    def ids(d):
-        return {h["id"] for h in fs.lessons_as_of(d)}
-    assert ids("2026-06-10") == {"ls_old"} and ids("2026-06-25") == set()
 
 
 # ─────────────────────────── M2 · 四操作裁决 ───────────────────────────

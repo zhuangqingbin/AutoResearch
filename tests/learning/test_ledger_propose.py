@@ -14,7 +14,6 @@ from __future__ import annotations
 import pandas as pd
 
 from autoresearch.learning.channel_ledger import (
-    apply_proposals,
     current_quotas,
     propose_quota_adjustments,
 )
@@ -51,19 +50,6 @@ def test_neutral_band_t2_no_proposal_even_if_t5_extreme():
     # t2 落中性带(0<m<pos_thresh)、t5 深负 → 不提议 = 决策只看 t2
     led = _led([["value", 5, 30, 0.001, 0.0, 0.40, -0.09, -0.08, 0.10]])
     assert propose_quota_adjustments(led, {"value": 200}) == []
-
-
-def test_apply_caps_delta():
-    props = [{"channel": "heat", "cur_quota": 200, "proposed_quota": 400, "delta": 200, "reason": "x"}]
-    new, audit = apply_proposals(props, {"heat": 200}, max_delta_frac=0.25)
-    assert new["heat"] == 250                              # +25% 封顶(不是 +200)
-    assert audit
-
-
-def test_apply_ignores_unknown_channel():
-    new, audit = apply_proposals(
-        [{"channel": "ghost", "cur_quota": 1, "proposed_quota": 9, "delta": 8, "reason": ""}], {"heat": 200})
-    assert new == {"heat": 200} and audit == []
 
 
 # ─────────────── ③ quota 基线读 scan_config(pr_20260714_004) ───────────────

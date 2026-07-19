@@ -3,12 +3,7 @@ L4 逐卡辟谣的 ~18/30 finalist(占比正·绝对净出 11 只 + 微盘放大
 """
 from __future__ import annotations
 
-import pandas as pd
-
-from autoresearch.common.scoring import (
-    main_net_distortion_label,
-    main_net_distortion_mask,
-)
+from autoresearch.common.scoring import main_net_distortion_label
 
 
 def test_label_sign_flip_and_micro_and_clean():
@@ -20,10 +15,3 @@ def test_label_sign_flip_and_micro_and_clean():
     assert main_net_distortion_label(0.01, 0.1) == ""           # 占比 <2%,弱读数不标微量
     assert main_net_distortion_label(None, 1.0) == ""           # 缺值容错
     assert main_net_distortion_label(0.05, None) == ""
-
-
-def test_mask_frame_and_missing_cols():
-    df = pd.DataFrame({"main_net_ratio": [0.012, 0.087, 0.14, -0.03],
-                       "main_inflow_yi": [-2.55, 0.03, 0.91, -1.17]})
-    assert main_net_distortion_mask(df).tolist() == [True, True, False, False]
-    assert main_net_distortion_mask(pd.DataFrame({"main_net_ratio": [0.1]})) is None

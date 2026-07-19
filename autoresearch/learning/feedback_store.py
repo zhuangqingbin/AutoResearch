@@ -185,7 +185,7 @@ def retire_lesson(slug: str, day: str | None = None) -> bool:
         if r["id"] == lid:
             r["status"] = "retired"
             r["retired"] = day
-            r["invalid_at"] = day        # M3·失效时点(退休不删,供 lessons_as_of 时点重放)
+            r["invalid_at"] = day        # M3·失效时点(退休不删,留时点审计)
             hit = True
     if hit:
         _write_jsonl(_LESSONS, recs)
@@ -324,26 +324,6 @@ def lessons_for(query_scopes, regime: str | None = None) -> list[dict]:
     return sorted(hits, key=lambda r: (r.get("confidence", 0), r.get("last_reinforced", ""),
                                        _SCOPE_RANK.get(r.get("scope", {}).get("kind"), 0)),
                   reverse=True)
-
-
-def lessons_as_of(day: str, query_scopes=None) -> list[dict]:
-    """M3·时点信念集:返回在 `day` 当天『有效』的经验(valid_from≤day<invalid_at),**忽略当前 status**。
-
-    供 X2 回放/反事实:重放『若当日仍信某条已退休 lesson 会怎样』。日期为 ISO(YYYY-MM-DD)按字典序比较。
-    老记录缺 valid_from/invalid_at → 用 created/retired 兜底;query_scopes 给定则再按范围过滤(同 lessons_for)。
-    """
-    out: list[dict] = []
-    for r in _read_jsonl(_LESSONS):
-        vf = r.get("valid_from") or r.get("created") or ""
-        iv = r.get("invalid_at") or r.get("retired")       # None = 至今有效
-        if vf and vf > day:                                 # 尚未生效
-            continue
-        if iv is not None and iv <= day:                    # 已失效(失效当日起不再信)
-            continue
-        if query_scopes is not None and not scope_match(r.get("scope", {}), query_scopes):
-            continue
-        out.append(r)
-    return out
 
 
 def recent_feedback_for(query_scopes, k: int = 3,
@@ -760,30 +740,6 @@ def render_calibration_block(query_scopes=None, lane="reversion", with_feedback:
     return "\n".join(lines)
 
 
-def render_lessons_md() -> str:
-    """active 经验的人读视图(按 scope 分组、conf 降序)。"""
-    recs = [r for r in _read_jsonl(_LESSONS) if r.get("status") == "active"]
-    if not recs:
-        return "# 经验库(lessons)\n\n_(空)_\n"
-    by_kind: dict[str, list[dict]] = {}
-    for r in recs:
-        by_kind.setdefault(r.get("scope", {}).get("kind", "global"), []).append(r)
-    out = ["# 经验库(lessons) —— 由 lessons.jsonl 渲染,勿手改本文件\n"]
-    for kind in ("global", "sector", "industry", "ticker"):
-        grp = sorted(by_kind.get(kind, []), key=lambda r: r.get("confidence", 0), reverse=True)
-        if not grp:
-            continue
-        out.append(f"## {kind}")
-        for r in grp:
-            sc = r.get("scope", {})
-            tag = "" if kind == "global" else f"`{sc.get('value')}` "
-            out.append(f"- {tag}**{r['rule']}**  "
-                       f"_(conf {r.get('confidence', 0):.2f}, 强化 {r.get('reinforce_count', 1)} 次,"
-                       f"更新 {r.get('last_reinforced', '?')}; 证据 {'/'.join(map(str, r.get('evidence', [])[:3]))})_")
-        out.append("")
-    return "\n".join(out)
-
-
 # ───────────────────────── 生命周期 + 审计/回滚(Phase 3) ─────────────────────────
 
 
@@ -838,14 +794,6 @@ def rollback_weights(sha: str, path: str = "context/factor_lab/weights.json",
     shutil.copy(snap, p)
     log_change("rollback", cur, sha, [], 0, ts=ts, kind="rollback")
     return True
-
-
-def write_lessons_md(path: str = "context/knowledge/lessons.md") -> Path:
-    """把 active 经验渲染落盘成人读 lessons.md(便于手工策展)。"""
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(render_lessons_md(), encoding="utf-8")
-    return p
 
 
 # ───────────────────────── 离线自测 ─────────────────────────

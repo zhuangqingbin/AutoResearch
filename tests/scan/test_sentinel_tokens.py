@@ -43,16 +43,6 @@ def test_sentinel_degrades(tmp_path):
     assert level == "full" and "降级" in reason                             # 谓词缺列
 
 
-def test_pick_sentinel_candidates(tmp_path):
-    from autoresearch.scan.agents.l4_card import pick_sentinel_candidates
-    d = tmp_path / "s"
-    d.mkdir()
-    pd.DataFrame([{"code": "000001", "gbdt_score": 50.0}, {"code": "000002", "gbdt_score": 90.0},
-                  {"code": "000003", "gbdt_score": 70.0}]).to_csv(d / "L2_gbdt_top200.csv", index=False)
-    assert pick_sentinel_candidates(d, k=2) == ["000002", "000003"]
-    assert pick_sentinel_candidates(tmp_path / "nope") == []
-
-
 def test_token_estimate_rows(tmp_path):
     """估算器:策略师行/L3(csv+落稿)/L4 prompt 计数;缺稿 → —。"""
     from autoresearch.scan.assemble import _stage_token_estimate

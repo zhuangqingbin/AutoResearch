@@ -130,28 +130,6 @@ def propose_quota_adjustments(ledger: pd.DataFrame, quotas: dict[str, int], *, m
     return props
 
 
-def apply_proposals(proposals: list[dict], quotas: dict[str, int], *,
-                    max_delta_frac: float = 0.25) -> tuple[dict[str, int], list[str]]:
-    """把提议合进 quotas(单路单次 |Δ| ≤ max_delta_frac·cur 防抖)→ (new_quotas, audit 行)。
-
-    **仅显式调用才改**(默认人工 gate);未知路忽略。
-    """
-    new = dict(quotas)
-    audit: list[str] = []
-    for p in proposals:
-        ch = p.get("channel")
-        if ch not in new:
-            continue
-        cur = int(new[ch])
-        cap = max(1, int(round(max_delta_frac * cur)))
-        delta = max(-cap, min(cap, int(p["proposed_quota"]) - cur))
-        nq = max(1, cur + delta)
-        if nq != cur:
-            new[ch] = nq
-            audit.append(f"{ch}: {cur} → {nq} ({p.get('reason', '')})")
-    return new, audit
-
-
 def main() -> int:
     led = roll()
     body = "\n".join(render(led))

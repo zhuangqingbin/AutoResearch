@@ -27,8 +27,8 @@ design: docs/specs/2026-07-12-funnel-replay-l35-removal-design.md Part B。
    不在此路径 —— `_assert_pit_source` 再加一道断言(source 必须 tushare)。
 3. **财务 PIT**:`scoring.latest_reported_quarter(analysis_date)` 按当日已披露报告期取。
 4. **幸存者偏差**:`stock_basic(list_status='L')` 只含**当前存续**股 → 回放期内已退市的票
-   可能拿不到 name/list_date。`survivorship_probe` 逐日报缺口(L0 全市场数 vs 帧内行数),
-   缺口异常放大 = 该窗口捕获率读数须打折看。
+   可能拿不到 name/list_date,merge 阶段掉队会系统性高估池子质量(退市票多为跌到底的)——
+   缺口异常放大的窗口,其捕获率/超额读数须打折看。
 5. **可执行性**:D+1 一字板/停牌不可买 —— `attribution.csv` 的 `buyable` 列已承担此职,
    `channel_audit` 与 `winner_autopsy` 均按可执行口径过滤。
 
@@ -185,27 +185,6 @@ def frame_integrity(sdir: Path | str) -> list[str]:
     except Exception:  # noqa: BLE001
         return ["L1_scored_full.csv(读取失败)"]
     return [c for c in _CRITICAL_COLS if c not in cols]
-
-
-def survivorship_probe(sdir: Path) -> dict | None:
-    """PIT §4:L0 全市场数 vs 帧内行数的缺口(meta.json 的 universe_raw/universe/after_gate_a)。
-
-    `stock_basic(list_status='L')` 只含当前存续股 → 回放期内已退市的票可能在 merge 阶段掉队。
-    缺文件 → None(presence-gated)。这不是"修复",是**如实报告**:缺口异常放大的窗口,其
-    捕获率/超额读数须打折看(退市票多为跌到底的,剔掉它们会系统性高估池子质量)。
-    """
-    p = Path(sdir) / "meta.json"
-    if not p.exists():
-        return None
-    try:
-        m = json.loads(p.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
-        return None
-    raw, uni = m.get("universe_raw"), m.get("universe")
-    if not raw or not uni:
-        return None
-    return {"universe_raw": int(raw), "universe": int(uni), "after_gate_a": m.get("after_gate_a"),
-            "l0_kept_pct": round(100.0 * int(uni) / int(raw), 2)}
 
 
 # ───────────────────────── 回放循环 ─────────────────────────

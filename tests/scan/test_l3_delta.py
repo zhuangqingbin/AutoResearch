@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from autoresearch.scan.agents.l3_select import l3_table_md, stability_overlap
+from autoresearch.scan.agents.l3_select import l3_table_md
 
 
 def _l2(root, date, rows):
@@ -62,9 +62,3 @@ def test_shuffle_deterministic(tmp_path):
     plain = l3_table_md("2026-07-02", root=tmp_path)
     assert a == b and a != plain
     assert sorted(a.splitlines()) == sorted(plain.splitlines())   # 同内容,仅行序不同
-
-
-def test_stability_overlap():
-    r = stability_overlap(["000001", "000002", "000003"], ["2", "3", "4"])
-    assert r["n_common"] == 2 and r["overlap"] == 0.667
-    assert stability_overlap([], [])["overlap"] == 0.0

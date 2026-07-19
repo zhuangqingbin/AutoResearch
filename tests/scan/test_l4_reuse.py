@@ -107,9 +107,21 @@ def test_reuse_pass_apply(tmp_path):
 
 # ───────────────────────── 深否决豁免(2026-07-04) ─────────────────────────
 # 注:本节原有「菜单滞回(carryover)」两个测试,随 carryover 于 2026-07-16 退役一并删除
-# (pr_20260716_006)。其中「finalists.csv 往返保 ticker 前导零」这条回归护栏未丢覆盖 ——
-# 同一个 artifacts.read_finalists 契约由 tests/scan/test_watchlist.py::
-# test_express_append_preserves_ticker_leading_zeros 经 append_express 继续锁死。
+# (pr_20260716_006)。「finalists.csv 往返保 ticker 前导零」这条回归护栏由下方
+# test_read_finalists_preserves_ticker_leading_zeros 直接锁 artifacts.read_finalists 契约
+#(原经 watchlist.append_express 往返锁,append_express 随观察单模块清理一并删除)。丢了它,
+# 000062→"62" 那类前导零坑(assemble glob 匹配不到卡片→误判缺卡→self_review 挡发布)就没人看着了。
+
+
+def test_read_finalists_preserves_ticker_leading_zeros(tmp_path):
+    from autoresearch.scan.artifacts import read_finalists
+    fp = tmp_path / "finalists.csv"
+    # 磁盘上代码列已丢前导零(002156→2156,如 int64 往返回写);读口必须补回 6 位零填。
+    fp.write_text("ticker,code,name\n2156,2156,x\n300476,300476,y\n", encoding="utf-8")
+    fin = read_finalists(fp)
+    assert set(fin["ticker"]) == {"002156", "300476"}
+    assert set(fin["code"]) == {"002156", "300476"}
+
 
 _GATED_HOLD = ("〔卡契约 v3·超短 1~2 日〕\n# 决策卡\n**Rating**: Hold\n**一行多空**:多:x ｜ 空:y\n"
               "\n**Rubric建议**: 表面4维净分 **-2/4** ｜ "

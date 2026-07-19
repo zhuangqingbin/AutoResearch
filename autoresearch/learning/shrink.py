@@ -40,12 +40,6 @@ def shrink(p_bucket: float | None, n_bucket: int | float | None,
     return (n * p_bucket + k * p_global) / (n + k)
 
 
-def should_inject(n_bucket: int | float | None) -> bool:
-    """n<`MIN_N_INJECT`(=3)→ 绝对禁注。此 floor 不参数化、不随 `shrink_k`/开关改变。"""
-    n = float(n_bucket) if n_bucket else 0.0
-    return n >= MIN_N_INJECT
-
-
 def n_tag(n_bucket: int | float | None, thin_n: int) -> str:
     """四消费点共享的注入格式尾巴:`(n=X)` / 薄样本 `(n=X⚠)`。
 

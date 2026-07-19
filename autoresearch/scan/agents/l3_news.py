@@ -77,11 +77,6 @@ def score_title(title: str) -> tuple[str, float]:
     return ("利多", float(pos)) if pos > neg else ("利空", float(neg))
 
 
-def _tag(title: str) -> str:
-    """方向标签(兼容旧用法)= score_title 的 direction。"""
-    return score_title(title)[0]
-
-
 def news_digest(anns: list[dict], prefix: str = "news") -> dict:
     """近期新闻/公告 list → {<prefix>_n, <prefix>_tags("利多×2|利空×1"), <prefix>_head(≤24), <prefix>_sent}。
 

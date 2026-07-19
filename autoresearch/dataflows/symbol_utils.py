@@ -21,7 +21,6 @@ appending a table row rather than editing call sites.
 from __future__ import annotations
 
 import logging
-import re
 
 # NoMarketDataError lives in the vendor-error taxonomy (errors.py); re-exported
 # here for the many call sites that import it alongside normalize_symbol.
@@ -68,10 +67,6 @@ _ALIASES = {
     "UK100": "^FTSE", "JP225": "^N225", "JPN225": "^N225",
     "FRA40": "^FCHI", "EU50": "^STOXX50E", "HK50": "^HSI",
 }
-
-# Yahoo symbols may contain letters, digits, and these structural characters.
-_YAHOO_SAFE = re.compile(r"^[A-Za-z0-9._\-\^=]+$")
-
 
 # Crypto quote currencies that all map to Yahoo's USD pair. Yahoo lists only
 # ``<BASE>-USD`` (not the USDT/USDC stablecoin pairs), so a broker symbol quoted
@@ -172,8 +167,3 @@ def to_ts_code(sym: str) -> str:
         return f"{code}.BJ"
     ex = _CN_EXCHANGE_BY_LEAD.get(code[0], "SZ")
     return f"{code}.{'SH' if ex == 'SS' else ex}"
-
-
-def is_yahoo_safe(symbol: str) -> bool:
-    """True when ``symbol`` only contains characters Yahoo symbols use."""
-    return bool(symbol) and _YAHOO_SAFE.fullmatch(symbol) is not None

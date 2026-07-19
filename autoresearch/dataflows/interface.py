@@ -77,13 +77,6 @@ TOOLS_CATEGORIES = {
     }
 }
 
-VENDOR_LIST = [
-    "yfinance",
-    "fred",
-    "polymarket",
-    "alpha_vantage",
-]
-
 # Mapping of methods to their vendor-specific implementations
 VENDOR_METHODS = {
     # core_stock_apis

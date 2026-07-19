@@ -4,8 +4,8 @@
 design: docs/specs/2026-06-24-l4-progressive-depth-design.md。
 
 零 LLM。L4 = 一只 finalist = 一个 Opus subagent 跑 analyze-ticker-lite(渐进深度 + 早停);
-本模块只做**确定性件**:P0 漏斗简报组装(compose_funnel_brief)、卡片评级解析、买单 skeptic
-名单(pick_buy_candidates / pick_buylist)、LLM-as-judge 评分卡(净分定档 + OW 硬门压 Hold,防过度多报)。
+本模块只做**确定性件**:P0 漏斗简报组装(compose_funnel_brief)、卡片评级解析、机会成本红队
+名单(pick_opportunity_candidates)、LLM-as-judge 评分卡(净分定档 + OW 硬门压 Hold,防过度多报)。
 selftest 已迁 pytest(tests/scan/test_agents.py)。
 """
 from __future__ import annotations
@@ -34,14 +34,6 @@ def parse_ratings_from_details(details_dir: Path | str) -> dict[str, str]:
     return out
 
 
-def pick_buy_candidates(ratings: dict[str, str],
-                        include: tuple[str, ...] = ("Buy", "Overweight")) -> list[str]:
-    """L4 **买单独立 skeptic 名单**:最终评级 ∈ include(Buy/OW)的发布买单,每只派一个
-    独立 Opus skeptic 证伪(发布前红队)。早停只向下、买点必走 P4+P5 后才可能 ≥OW 到此。"""
-    keep = set(include)
-    return [c for c, r in ratings.items() if r in keep]
-
-
 def pick_opportunity_candidates(ratings: dict[str, str], scan_dir, k: int = 2) -> list[str]:
     """**机会成本红队名单**(0买日;spec 2026-07-02 任务E):rubric 分最高的 Hold top-k。
 
@@ -64,64 +56,6 @@ def pick_opportunity_candidates(ratings: dict[str, str], scan_dir, k: int = 2) -
     df["_cv"] = pd.to_numeric(df.get("conviction"), errors="coerce").fillna(0)
     df = df[df["code"].isin(holds)].sort_values("_cv", ascending=False, kind="stable")
     return df["code"].head(k).tolist()
-
-
-def pick_sentinel_candidates(scan_dir, k: int = 2) -> list[str]:
-    """哨兵日红队对象:L2 `gbdt_score` top-k(哨兵档跳过 L3,无 conviction 可用)。缺 L2 → []。
-
-    design: 2026-07-03-scan-sentinel-economy §1。产出与机会成本红队同规:只进观察单,不发评级。
-    """
-    from pathlib import Path
-
-    import pandas as pd
-    p = Path(scan_dir) / "L2_gbdt_top200.csv"
-    if not p.exists():
-        return []
-    df = pd.read_csv(p, dtype={"code": str})
-    if "code" not in df.columns:
-        return []
-    df["_s"] = pd.to_numeric(df.get("gbdt_score"), errors="coerce").fillna(-1e18)
-    return df.sort_values("_s", ascending=False)["code"].astype(str).str.zfill(6).head(k).tolist()
-
-
-def pick_earlystop_audit(scan_dir, k: int = 2, seed: int | None = None) -> list[str]:
-    """早停抽检对象(opt-in;spec 2026-07-05 wave §A3):当日早停卡里确定性抽 k 张,
-    派独立复核 agent 只读「深核分界后块 + 早停卡 + 简报」判误杀;产出进 proposals 不改评级。
-
-    seed 缺省 = 数据日整数(同日重跑同名单);复用卡(♻️)与满卡(进入P4倾向)不抽。
-    """
-    import random
-    from pathlib import Path
-    scan_dir = Path(scan_dir)
-    base = scan_dir / "details"
-    if not base.is_dir():
-        return []
-    stops = []
-    for p in sorted(base.glob("*.md")):
-        text = p.read_text(encoding="utf-8")
-        if "♻️" in text or "进入P4倾向" in text:
-            continue
-        if "早停因" in text:
-            stops.append(p.stem)
-    if not stops:
-        return []
-    if seed is None:
-        digits = "".join(ch for ch in scan_dir.name if ch.isdigit())
-        seed = int(digits or "0")
-    rng = random.Random(seed)
-    return sorted(rng.sample(stops, min(k, len(stops))))
-
-
-def pick_buylist(ratings: dict[str, str], floor: str = "Overweight") -> list[str]:
-    """评级 ≥ floor 的发布买单(floor=Overweight 时等价 pick_buy_candidates〔Buy/OW〕)。
-
-    Tier-3 辩论输入用 `pick_buy_candidates`;本函数留作"最终买单"口径(Tier-3 折回后仍 ≥floor)。"""
-    from autoresearch.agents.utils.rating import (
-        RATINGS_5_TIER,  # Buy>Overweight>Hold>Underweight>Sell
-    )
-    order = {r: i for i, r in enumerate(RATINGS_5_TIER)}
-    cap = order.get(floor, 1)
-    return [c for c, r in ratings.items() if order.get(r, 99) <= cap]
 
 
 # ───────────────────────── L4 · P0:漏斗简报(定向,确定性组装) ─────────────────────────
@@ -592,7 +526,7 @@ def rubric_rating(dims: dict, gates: dict) -> tuple[str, str]:
     return base, f"净分{net:+d}→{base}{suffix}"
 
 
-# ───────────────────────── L4 · 早停安全网 + 自评一致性抽检 ─────────────────────────
+# ───────────────────────── L4 · 早停安全网(强先验强制满卡) ─────────────────────────
 
 
 def force_full_card(priors: dict, *, conv_min: float = 70.0, channels_min: int = 4) -> bool:
@@ -628,30 +562,6 @@ def force_full_card(priors: dict, *, conv_min: float = 70.0, channels_min: int =
     except (TypeError, ValueError):
         n_ch = 0
     return n_ch >= channels_min or bool(priors.get("l2_lane_reserved"))
-
-
-# 卡片自评 gate=True 时,正文若含这些词即矛盾(疑自评 gaming)。
-_GATE_CONTRA = {
-    "主力真在": ["净流出", "主力流出", "资金流出", "主力撤", "主力出逃"],
-    "业绩真兑现": ["业绩下滑", "预亏", "预减", "净利下降", "增收不增利", "亏损扩大"],
-    "估值不透支": ["估值偏高", "高估", "估值透支", "泡沫", "PE 偏高", "估值贵"],
-}
-
-
-def audit_rubric_gates(card_text: str, gates: dict) -> list[str]:
-    """**自评一致性抽检**:卡片自报 OW gate=True,但正文出现反向措辞 → flag(防自评 gaming)。
-
-    只查被声明为 True 的门;返回矛盾说明 list(空=无矛盾)。供 L4 回卡后抽检 / self_review 用。
-    """
-    t = str(card_text)
-    flags: list[str] = []
-    for gate, contras in _GATE_CONTRA.items():
-        if not (gates or {}).get(gate):
-            continue
-        hit = next((c for c in contras if c in t), None)
-        if hit:
-            flags.append(f"{gate}=True 但正文含「{hit}」(自评与正文矛盾,疑 gaming)")
-    return flags
 
 
 # ───────────────────────── L4 · 派发包确定性落稿(harvest 清单 + prompt 稿) ─────────────────────────

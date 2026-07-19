@@ -46,6 +46,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 >         description: "scan 漏斗进度", timeout_ms: 3600000, persistent: false)
 > ```
 > `autoresearch.scan.progress`(确定性读盘,零 LLM)从产物文件反推阶段+计数,**只在变化时**打一行(不刷屏):`⏳ L4 · finalists 11 · 🕵️ 情报 8 · 卡 7/11 · Hold 5·Overweight 1`。跑完自动退出。用户另可用 `/workflows` 看 spinner 级进度树。
+> ⚠️ **播报是「反推」不是「断言」**:它靠产物文件的存在性猜阶段,**不区分「在跑 / 被跳过 / 挂了」,也可能把某阶段的输入产物当成它已完成**(2026-07-17 实测误报两次:哨兵档已提前返回却报「L3 精排中」、把 l3-rank 的输入 `_l3_table.md` 当成「精排 ✓」)。真信号以 workflow 的 `journal.jsonl`(每 agent 一条 `started`/`result`)为准,别拿播报当阶段状态断言。代码侧修复在 `pr_20260717_004`。
 
 0. **前奏一键**(workflow Prelude 相位的确定性部分):
    ```bash
@@ -70,6 +71,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
    uv run --no-sync python -m autoresearch.scan.menu <date>
    ```
    打印 `[sentinel]` 行(判据见 STAGES.md L2 节);建议哨兵档时只跑日历+步骤 5(跳 L3+L4,省 ~70% token/~35 分钟)。
+   - ⚠️ **哨兵判据只问「今天有没有值得买的」,不含「持仓要不要动」**。当 `pinned.jsonc` 有保送持仓时,哨兵档跳 L3/L4 会让持仓拿不到当日卖/持决策卡 → 传 `force_full: true`(Workflow `args`)覆盖哨兵、照常跑 L3/L4(pinned 强注入 L3 → 每只出卡),scan-market.js 会诚实标注「确定性判据判材料枯竭、买单侧期望低」。**2026-07-17 实测**:全市场健康上涨 1.3%(哨兵开火)但 4 只持仓在 192 跌停的崩盘日,靠 `force_full` 才拿到 Sell/UW 决策(协创 Sell·普冉/长飞/北方华创 UW)。哨兵说的「没得买」是对的,它只是不知道你有持仓要判。
 2.5. **市场研判兜底**(仅当 0.5 未跑):同 0.5,读 `autoresearch.scan.market.market_pack(scan_dir)` 回退口径(L2 后)。
 2.7. **行业 brief**(与步骤 3 证据取数并发;workflow L3 相位):
    ```bash
@@ -89,7 +91,6 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
    ——**一条消息 N 个调用并行**(每股独立并发帽,真并行;单股失败只废单股,单独重跑该 workflow 即可)。
    每股链内:**intel(可关)→ l4-card 决策卡 →(≥OW)2 独立复核 run 取中位只向下折回**,复核落
    `_ensemble_<code>.json`(assemble 合并读)。卡模板/契约烤进 `.claude/agents/l4-card.md`。
-   **早停抽检**(opt-in,默认不跑):`l4_card.pick_earlystop_audit(scan_dir, k=2)` 抽样独立复核。
    **活体情报站**(config `l4_intel.enabled`):l4-stock 的 Intel 相位,sonnet·max 结构性盲(prompt 只给码/名/行业/日期)盲搜六面落 `_l4_intel_<code>.md`;卡 P3 先读 intel、自发网查降 ≤1 验证,缺文件自动回退卡内网查(presence-gated)。⚠️ 2026-07-14 首跑冒烟:空稿 0/13、中文源可达 ✓,但逮到**捏造涨停断言**(pr_20260714_006 待裁)+ 限频形同虚设/零 URL(pr_20260714_007)——卡片对 intel 的价格类断言必须与 verified OHLCV 对账后才可采信。
 5. **L5 整合**(全部 l4-stock workflow 完成后,主会话直接跑;哨兵档跳过 L3/L4 后也走这里):
    ```bash

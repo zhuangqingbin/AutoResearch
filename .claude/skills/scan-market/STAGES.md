@@ -203,8 +203,9 @@ L2 之后、与 L3 证据取数**并发**:
 ### 派发前四道确定性闸(按序,生产者都跑在 prompts 之前)
 
 - ⓪ **批量质押旗**:`l4_card pledge <date>` → `pledge.csv`(质押>40 标爆雷、>20 偏高;advisory,不动门)。
-- ① ~~观察单触发直通车~~(已随观察单日检退役,fb_20260714_002;`append_express` 保留为 inert 代码)。
+- ① ~~观察单触发直通车~~(已随观察单日检退役,fb_20260714_002;`append_express` 随 watchlist 模块一并删除)。
 - ② **卡片 TTL 复用**:`l4_reuse <date> --apply`。近 4 日已出卡、评级 ≤Hold、|Δ价|≤5%、无新公告、regime 未翻、conviction<70 → 直接 ♻️ 复用,不派 subagent(OW 三门失守 ≥2 的深否决豁免 conviction 拦截;≥OW 永不复用;复用率约 20%)。
+  - ⚠️ **复用门判据是「这只票变了吗」,不含「今天是不是极端日 / 它是不是持仓」**。持仓票(pinned)在崩盘日想要新鲜判断时,复用门可能按 |Δ价|≤5% 挡掉重研 → 手动删 `details/<code>.md` 复用卡再 `prompts` 重落稿 + 重派该股 l4-stock。**2026-07-17**:北方华创(持仓)被复用挡(Δ价 −3.7%<5%、无公告、regime 未变),强制重研结论未变(仍 UW)= 那次复用**判对了**;记此非为推翻复用门,而是崩盘日持仓「卡过期」的误判代价不对称(错的一侧是持仓在流血却拿旧卡),值得对 pinned 强制刷新。
   - **⛔ 菜单滞回(carryover)已于 2026-07-16 退役**(用户裁定,`pr_20260716_006`)——**勿再加回**。它自称 token 经济件,但用它自己的 KPI 量:全历史 18 只次里 ♻️复用 7 / 🔄重研 **11** = **净多烧 11 个 Opus**,且 **0 个买单**(Hold 15/UW 3)。根因是立论错了:carryover 票按定义是**今日 L3 没选的**票,没有保席它们本就不在名单上(= 0 卡 = 0 token)——**保席从不省 token,只会 0 成本或 +1 Opus**;「救活复用率」是把分母做大让比率好看。且它在**系统性推翻 L3 的拒绝**,而拒绝恰是本机器唯一被证明有效的功能。收益侧 n=13<20 不足以裁决(超额 −1.91%、同日对照混杂),**裁决依据是 token 会计事实不是收益**。
 - ③ **生产者落稿**:席位 / 催化 / 日历 / 卖方修正(consensus)—— 都先于 prompts。
 
@@ -254,7 +255,7 @@ self_review 硬门 banner → regime+drift 行(+🌡情绪温度行) → 📈市
 ```
 
 - **现场完备**:发布同时写 `run_health.json` + `index.md` 导航页(**第二天复盘从 index.md 进**);`weights_used.json` + meta.regime 固化,漏斗可复现。
-- **观察单已退役**(fb_20260714_002,2026-07-14 用户裁定):prelude 日检步骤、summary 渲染节、watchlist_ledger 刷新全部摘除;`scan/watchlist.py` 模块与存量 `context/watchlist.csv` 保留(sector.pack 行业选择器仍读存量文件),不再有日检/触发/直通车。发布仍落 `reports/scan/<运行时刻>/`(数据日在 manifest.json,retro 据此定位)。
+- **观察单已退役**(fb_20260714_002,2026-07-14 用户裁定):prelude 日检步骤、summary 渲染节、watchlist_ledger 刷新全部摘除;`scan/watchlist.py` 模块已删除(死码清理·零生产调用),存量 `context/watchlist.csv` 保留(sector.pack 行业选择器仍直接读该 CSV 文件),不再有日检/触发/直通车。发布仍落 `reports/scan/<运行时刻>/`(数据日在 manifest.json,retro 据此定位)。
 
 ---
 

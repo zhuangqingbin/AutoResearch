@@ -398,14 +398,3 @@ def test_replay_day_flags_degraded_frame(tmp_path, monkeypatch):
     monkeypatch.setattr("autoresearch.scan.universe.run", _fake_run)
     r = replay.replay_day("2026-07-09", tmp_path, attribute=False)
     assert r["degraded"] == ["cmf_20", "obv_mom_20"]
-
-
-def test_survivorship_probe_reports_l0_gap(tmp_path):
-    """PIT §4:幸存者缺口如实报告(stock_basic('L') 只含当前存续股 → 退市票可能掉队)。"""
-    d = tmp_path / "2026-06-01"
-    d.mkdir(parents=True)
-    (d / "meta.json").write_text(json.dumps({"universe_raw": 5000, "universe": 4000,
-                                             "after_gate_a": 3800}), encoding="utf-8")
-    probe = replay.survivorship_probe(d)
-    assert probe["l0_kept_pct"] == pytest.approx(80.0)
-    assert replay.survivorship_probe(tmp_path / "nope") is None

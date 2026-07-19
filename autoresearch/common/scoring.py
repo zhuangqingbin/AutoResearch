@@ -307,15 +307,6 @@ def main_net_distortion_label(ratio, inflow_yi, ratio_min: float = 0.02,
     return ""
 
 
-def main_net_distortion_mask(frame: pd.DataFrame, ratio_min: float = 0.02,
-                             abs_min_yi: float = 0.5) -> pd.Series | None:
-    """主力占比失真谓词(向量版,阈值与 `main_net_distortion_label` 同源)。缺列 → None。"""
-    if not all(c in frame.columns for c in ("main_net_ratio", "main_inflow_yi")):
-        return None
-    r, a = _num(frame["main_net_ratio"]), _num(frame["main_inflow_yi"])
-    return (r > 0) & ((a < 0) | ((r >= ratio_min) & (a.abs() < abs_min_yi)))
-
-
 def l3_misread_flags(row) -> str:
     """L3 误读三预警旗(07-08 诊断:L4 打脸 L3 的证据 22/31 纯表内可见,三模式确定性可预检)。
     低基=np_yoy>100∧roe<8(低基数幻觉);背离=cmf/obv 任一>0∧当日主力<0(拉高派发嫌疑);

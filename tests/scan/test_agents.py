@@ -2,7 +2,7 @@
 
 覆盖(逐项对应原 selftest):
   - L3 紧凑表 / load_l3_input(证据摘要 lhb_n/has_forecast/has_express)/ l3_table_md
-  - L4 compose_funnel_brief(P0 简报)/ parse_ratings_from_details / pick_buy_candidates(买单 skeptic 名单)/ pick_buylist
+  - L4 compose_funnel_brief(P0 简报)/ parse_ratings_from_details / pick_opportunity_candidates
   - rubric_rating 净分定档 + OW 门压 Hold(键名容错)
 NO network. 纯确定性。
 """
@@ -19,8 +19,6 @@ from autoresearch.scan.agents.l3_select import (
 from autoresearch.scan.agents.l4_card import (
     compose_funnel_brief,
     parse_ratings_from_details,
-    pick_buy_candidates,
-    pick_buylist,
     rubric_rating,
 )
 
@@ -73,15 +71,6 @@ def test_parse_ratings_from_details(tmp_path):
         (dd / f"{code}.md").write_text(
             f"# 决策卡\n**Rating**: {rt}\nFINAL TRANSACTION PROPOSAL: **HOLD**\n", encoding="utf-8")
     assert parse_ratings_from_details(dd) == cards
-
-
-def test_pick_buy_candidates_is_buy_skeptic_list(tmp_path):
-    """pick_buy_candidates(ratings) = 最终 ≥OW 买单 → 独立 skeptic 名单(语义改;集合不变)。"""
-    got = {"000001": "Buy", "000002": "Overweight", "000003": "Hold",
-           "000004": "Underweight", "000005": "Sell"}
-    assert set(pick_buy_candidates(got)) == {"000001", "000002"}
-    assert set(pick_buylist(got, floor="Overweight")) == {"000001", "000002"}
-    assert set(pick_buylist(got, floor="Buy")) == {"000001"}
 
 
 # ───────────────────────── L4 · C:rubric 评分卡 ─────────────────────────

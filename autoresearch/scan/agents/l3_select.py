@@ -517,21 +517,6 @@ def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
     return body
 
 
-def stability_overlap(codes_a, codes_b) -> dict:
-    """两次 L3 选择的重叠度(稳定性抽检:同表乱序重跑,<70% = rubric 太松/噪声大)。"""
-    a = {str(c).zfill(6) for c in codes_a}
-    b = {str(c).zfill(6) for c in codes_b}
-    inter = a & b
-    denom = min(len(a), len(b))
-    return {"n_a": len(a), "n_b": len(b), "n_common": len(inter),
-            "overlap": round(len(inter) / denom, 3) if denom else 0.0}
-
-
-def _period(date: str) -> str:
-    from autoresearch.common.scoring import latest_reported_quarter
-    return latest_reported_quarter(date)
-
-
 def harvest_l3_evidence(date: str, codes: list[str], root: Path | None = None) -> dict:
     """对 L2 保留的 ~200 只补 L1 没有的真证据(龙虎榜/预告/快报)。bulk by date 一次拉、本地过滤;
 
