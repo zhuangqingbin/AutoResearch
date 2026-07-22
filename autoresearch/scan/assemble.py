@@ -139,16 +139,17 @@ def _ensemble_flag(rec: dict | None) -> bool:
 
 
 def _apply_ensemble_fold(rating: str, rec: dict | None) -> str:
-    """买单复核折回:rec 存在且中位档比卡面评级更差(更靠 Sell)→ 折到中位,否则原样。
-
-    只向下(不向上)——与"早停只向下"同族:集成不能把卡面评级抬高,只拉低单跑过度乐观的判断。
+    """复核折回:ow_review(默认)只向下(更靠 Sell)折;sell_review 只向温和折(救误卖持仓,
+    Wave1 ⑤-3)。degraded(复核 run 不齐)→ 原样不折,交 ens_flag 人裁。
     median/rating 不在五档词表(脏数据)→ 原样不动,不报错。
     """
-    if not rec:
+    if not rec or rec.get("degraded"):
         return rating
     median = rec.get("median")
     if median not in TIER_RANK or rating not in TIER_RANK:
         return rating
+    if rec.get("trigger") == "sell_review":
+        return median if TIER_RANK[median] < TIER_RANK[rating] else rating
     return median if TIER_RANK[median] > TIER_RANK[rating] else rating
 
 

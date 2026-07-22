@@ -48,3 +48,20 @@ def test_publish_details_survives_bars_crash(tmp_path, monkeypatch):
         raise RuntimeError("lake down")
     monkeypatch.setattr("autoresearch.scan.price_claims.bars_for", boom)
     assert assemble._publish_details(sd, out) == 1     # 不炸,卡照发(对账段缺席)
+
+
+def test_ensemble_fold_ow_only_down():
+    assert assemble._apply_ensemble_fold("Overweight", {"median": "Hold"}) == "Hold"
+    assert assemble._apply_ensemble_fold("Hold", {"median": "Overweight"}) == "Hold"
+
+
+def test_ensemble_fold_sell_review_only_milder():
+    rec = {"median": "Hold", "trigger": "sell_review"}
+    assert assemble._apply_ensemble_fold("Sell", rec) == "Hold"          # 复核救回误卖
+    rec2 = {"median": "Sell", "trigger": "sell_review"}
+    assert assemble._apply_ensemble_fold("Underweight", rec2) == "Underweight"  # 不向更狠折
+
+
+def test_ensemble_fold_degraded_noop():
+    rec = {"median": "Hold", "trigger": "sell_review", "degraded": True}
+    assert assemble._apply_ensemble_fold("Sell", rec) == "Sell"
