@@ -206,8 +206,8 @@ def intel_future_dates_lint(scan_dir, date_str: str) -> list[dict]:
 
 
 def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
-    """产物形状 lint(八探针,零 LLM;design: 2026-07-13-next-optimization-survey.md 线 C
-    + 2026-07-22 dossier design Wave1 ⑤)。
+    """产物形状 lint(九探针,零 LLM;design: 2026-07-13-next-optimization-survey.md 线 C
+    + 2026-07-22 dossier design Wave1 ⑤ + 2026-07-23 终审 I-2)。
 
     把停车场里"已知的产物形状病"装成每跑可见的机械断言(advisory 起步,攒够跑数再升):
 
@@ -235,6 +235,9 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
     8. **价格断言对账 price_claim_mismatch**(warn,逐码):卡文里对本票的涨跌%/涨停断言
        经 `price_claims.audit_card_text` 与 lake OHLCV 对账,任一条不符 → warn,detail 带
        首条不符断言(pr_20260714_006 型:intel 捏造涨停)。
+    9. **pinned SELL 双复核 sell_review_missing**(warn,逐码):保送(lane=pinned)持仓卡
+       评级 Sell/Underweight 但缺 `_ensemble_<code>.json`(或 trigger≠sell_review)→ 持仓卖出
+       双复核静默漏跑(final-review I-2;镜像 probe 3 intel 稿数兜底,防 args.pinned 漏传)。
 
     全部 presence-gated:缺文件/缺键/坏文件 → 该条静默跳过,**绝不抛异常**。
     返回 [{check,severity,detail,code}](severity ∈ {warn,info});接线在 assemble
@@ -384,7 +387,13 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
                     code=p.stem.replace("_l4_intel_", ""))
 
     # ── 7. 引用密度(Wave1 ⑤-5):满卡带日期引用 <6 行 → warn;早停/♻️复用卡豁免 ──
-    _DATED = re.compile(r"20\d{2}-\d{1,2}-\d{1,2}|\b\d{1,2}[-/]\d{1,2}\b|20\d{6}")
+    # _DATED 收紧为真日历日(final-review I-1):裸支路 \b\d{1,2}[-/]\d{1,2}\b 把 R:R 1.8/1、
+    # PE band 20-30、5-10%、3/2/1 全计成日期 → n_cited 虚增、门槛 6 恒绿打不响。收紧后 M/D 支路
+    # 要求 月∈1-12、日∈1-31、数字前不接小数/数字(排除 1.8/1)、后不接 %/./数字/斜杠(排除 5-10%、3/2/1);
+    # 完整 ISO(20\d{2}-\d{1,2}-\d{1,2})与紧凑(20\d{6})支路保留。
+    _DATED = re.compile(
+        r"20\d{2}-\d{1,2}-\d{1,2}|20\d{6}"
+        r"|(?<![\d.])(?:1[0-2]|0?[1-9])[-/](?:3[01]|[12]?\d)(?![\d.%/])")
     cards: dict[str, str] = {}
     with contextlib.suppress(Exception):
         for p in (scan_dir / "details").glob("*.md"):
@@ -419,6 +428,30 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
                     f"称 {'涨停' if b['kind'] == 'limit' else str(b['claimed']) + '%'} "
                     f"实 {b['actual']}%)——pr_20260714_006 型",
                     code=code)
+
+    # ── 9. pinned SELL 双复核 tripwire(final-review I-2):镜像 intel 稿数兜底(probe 3)──
+    # 保送(lane=pinned)持仓卡评级 Sell/Underweight 但缺 _ensemble_<code>.json(或 trigger≠
+    # sell_review)→ 持仓卖出双复核静默漏跑(⑤-3 招牌场景:漏传 args.pinned 则单 run Sell 直出)。
+    for r in fin_rows:
+        if r["lane"] != "pinned":
+            continue
+        code = r["code"]
+        text = cards.get(code)
+        if text is None:                       # 卡缺 → presence-gated 跳过
+            continue
+        rating_line = next((ln for ln in text.splitlines() if "**Rating**" in ln), "")
+        if not any(w in rating_line for w in ("Sell", "Underweight")):
+            continue
+        ens = scan_dir / f"_ensemble_{code}.json"
+        trig = None
+        with contextlib.suppress(Exception):
+            if ens.exists():
+                trig = json.loads(ens.read_text(encoding="utf-8")).get("trigger")
+        if trig != "sell_review":
+            why = "缺失" if not ens.exists() else f"trigger={trig!r}≠sell_review"
+            add("sell_review_missing", "warn",
+                f"{code} 保送持仓卡评级偏空(Sell/UW)但 _ensemble_{code}.json {why}"
+                " —— 持仓 SELL 双复核未跑(⑤-3:漏传 args.pinned?单 run 直出无兜底)", code=code)
     return out
 
 
