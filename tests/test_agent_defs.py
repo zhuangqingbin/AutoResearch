@@ -109,3 +109,10 @@ def test_l4_intel_wired_in_docs():
     skill = (SKILLS / "scan-market" / "SKILL.md").read_text(encoding="utf-8")
     stages = (SKILLS / "scan-market" / "STAGES.md").read_text(encoding="utf-8")
     assert "l4-intel" in skill or "l4-intel" in stages, "scan 文档未接线 l4-intel(Task 7 落)"
+
+
+def test_l4_stock_workflow_sell_review_anchors():
+    """l4-stock.js 的 SELL 双复核契约锚(Wave1 ⑤-3):trigger 字段 + pinned 消费在场。"""
+    js = (ROOT / ".claude" / "workflows" / "l4-stock.js").read_text(encoding="utf-8")
+    for a in ("sell_review", "ow_review", "A.pinned", "proposal"):
+        assert a in js, f"l4-stock.js 缺 SELL 双复核锚「{a}」"

@@ -18,9 +18,11 @@ if (!date || !code) throw new Error('args.date/args.code 必填,如 {date:"2026-
 const name = A.name || ''
 const sector = A.sector || '行业未知'
 const cfg = A.cfg || {}
+const pinned = !!A.pinned   // dispatch-plan meta 透传;缺省 false = 现行为(parity)
 const SD = `context/scan/${date}`
 const CARD = { type: 'object', required: ['code', 'rating'],
-  properties: { code: { type: 'string' }, rating: { type: 'string' }, conviction: { type: 'number' } } }
+  properties: { code: { type: 'string' }, rating: { type: 'string' },
+    conviction: { type: 'number' }, proposal: { type: 'string' } } }
 
 // ── Intel(结构性盲:prompt 只给码/名/行业/日期,防确认偏误)────────────────────
 phase('Intel')
@@ -42,38 +44,46 @@ if (intelOn) {
 // ── Card ────────────────────────────────────────────────────────
 phase('Card')
 const card = await agent(
-  `执行 ${SD}/_l4_prompt_${code}.md:先读整个任务包,再按其指令做渐进深度 DD + 早停,写决策卡到 ${SD}/details/${code}.md。最后返回该卡最终五档评级(code / rating / conviction)。`,
+  `执行 ${SD}/_l4_prompt_${code}.md:先读整个任务包,再按其指令做渐进深度 DD + 早停,写决策卡到 ${SD}/details/${code}.md。最后返回该卡最终五档评级与 FINAL 行(code / rating / conviction / proposal=FINAL TRANSACTION PROPOSAL 的值,如 "SELL")。`,
   { agentType: 'l4-card', effort: cfg.agents?.l4_card?.effort ?? 'xhigh',
     ...(cfg.agents?.l4_card?.model ? { model: cfg.agents.l4_card.model } : {}),
     label: `card:${code}`, phase: 'Card', schema: CARD })
 if (!card) return { code, name, rating: null, final: null, error: 'card 无返回 —— 单股失败只废单股,主会话单独重跑本 workflow 即可' }
 log(`L4 卡 ✓ ${code} → ${card.rating}`)
 
-// ── Verify:≥OW 双复核取中位,只向下折回(权威折回在 assemble 侧按 _ensemble_<code>.json 再算一遍)──
+// ── Verify:≥OW 双复核(防追高误买)∥ pinned 卖出双复核(防误卖持仓,Wave1 ⑤-3)──
+// 取中位;ow_review 只向下折、sell_review 只向温和折(assemble 侧 _apply_ensemble_fold 按 trigger 再折一遍=权威)。
 const isOW = (r) => /(overweight|\bbuy\b|增持|买入)/i.test(r || '')
+const isSellish = (card) => /sell/i.test(card.rating || '') || /sell/i.test(card.proposal || '')
+const trigger = isOW(card.rating) ? 'ow_review' : (pinned && isSellish(card) ? 'sell_review' : null)
 let final = card.rating
-if (isOW(card.rating)) {
+if (trigger) {
   phase('Verify')
-  log(`🎭 买单复核:${code} 追加 2 独立 run 取中位(只向下折回)`)
+  log(trigger === 'ow_review'
+    ? `🎭 买单复核:${code} 追加 2 独立 run 取中位(只向下折回)`
+    : `🎭 持仓卖出复核:${code} 追加 2 独立 run 取中位(只向温和折回,卖错持仓代价不对称)`)
   const RANK = { 'sell': 0, 'underweight': 1, 'hold': 2, 'overweight': 3, 'buy': 4 }
   const tier = (r) => RANK[String(r || '').toLowerCase()] ?? 2
   const reruns = (await parallel([2, 3].map((i) => () => agent(
-    `独立复核 run${i}(不知道其它 run 结论):执行 ${SD}/_l4_prompt_${code}.md 的任务包,按人设走渐进深度 DD,决策卡写到 ${SD}/ensemble/${code}.run${i}.md(先自行创建 ensemble/ 目录),返回 code/rating/conviction。`,
+    `独立复核 run${i}(不知道其它 run 结论):执行 ${SD}/_l4_prompt_${code}.md 的任务包,按人设走渐进深度 DD,决策卡写到 ${SD}/ensemble/${code}.run${i}.md(先自行创建 ensemble/ 目录),返回 code/rating/conviction/proposal。`,
     { agentType: 'l4-card', effort: cfg.agents?.l4_card?.effort ?? 'xhigh',
       label: `ens${i}:${code}`, phase: 'Verify', schema: CARD })))).filter(Boolean)
   const ratings = [card.rating, ...reruns.map((r) => r.rating)]
   const sorted = ratings.map(tier).sort((a, b) => a - b)
-  // N<3(复核 run 失败被 filter 掉)→ 退化取更偏空一侧(与"只向下"哲学对齐)+degraded 标记强制人裁展示
+  // N<3(复核 run 失败)→ 不折回原判 + degraded 标记强制人裁展示(sell_review 不因缺 run 软化卖出)
   const degraded = ratings.length < 3
-  const medianTier = degraded ? sorted[0] : sorted[Math.floor(sorted.length / 2)]
+  const medianTier = sorted[Math.floor(sorted.length / 2)]
   const names = ['Sell', 'Underweight', 'Hold', 'Overweight', 'Buy']
-  const rec = { code, ratings, median: names[medianTier], spread: sorted[sorted.length - 1] - sorted[0], degraded }
-  // 每股各写各的 _ensemble_<code>.json —— N 个 l4-stock 并行时无共享文件写竞态;assemble 合并读(_load_ensemble)。
+  const rec = { code, ratings, median: names[medianTier],
+    spread: sorted[sorted.length - 1] - sorted[0], degraded, trigger }
   await agent(
     `在仓库根目录精确执行下面这条命令,然后只回报退出码。不要做别的、不要判断。\n\n\`\`\`\ncat > ${SD}/_ensemble_${code}.json << 'EOF'\n${JSON.stringify(rec)}\nEOF\n\`\`\``,
     { agentType: 'general-purpose', effort: 'low', label: `ens-dump:${code}`, phase: 'Verify' })
-  if (tier(rec.median) < tier(card.rating)) final = rec.median
-  log(`🎭 复核 ✓ ${code} runs=${JSON.stringify(ratings)} → 终评 ${final}${degraded ? '(degraded,报告强制人裁展示)' : ''}`)
+  if (!degraded) {
+    if (trigger === 'ow_review' && tier(rec.median) < tier(card.rating)) final = rec.median
+    if (trigger === 'sell_review' && tier(rec.median) > tier(card.rating)) final = rec.median
+  }
+  log(`🎭 复核 ✓ ${code} [${trigger}] runs=${JSON.stringify(ratings)} → 终评 ${final}${degraded ? '(degraded,报告强制人裁展示)' : ''}`)
 }
 
 return { code, name, rating: card.rating, final, conviction: card.conviction }
