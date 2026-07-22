@@ -39,6 +39,7 @@ def test_l4_card_contract_anchors_synced():
     agent = _agent_text("l4-card")
     playbook = (SKILLS / "stock-research" / "lite-playbook.md").read_text(encoding="utf-8")
     anchors = ["进入P4倾向", "FINAL TRANSACTION PROPOSAL", "**Rating**",
+               "断言分级", "一致预期差",
                "早停只向下", "Rubric建议", "一段话研判", "L3 论点裁决",
                "已核数字摘录", "多写不多读", "龙虎榜席位", "活体新闻",
                "早停卡短格式", "卡契约 v3·超短 1~2 日", "超短口径",
