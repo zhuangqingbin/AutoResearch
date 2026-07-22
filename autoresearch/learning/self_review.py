@@ -206,7 +206,8 @@ def intel_future_dates_lint(scan_dir, date_str: str) -> list[dict]:
 
 
 def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
-    """产物形状 lint(六探针,零 LLM;design: 2026-07-13-next-optimization-survey.md 线 C)。
+    """产物形状 lint(八探针,零 LLM;design: 2026-07-13-next-optimization-survey.md 线 C
+    + 2026-07-22 dossier design Wave1 ⑤)。
 
     把停车场里"已知的产物形状病"装成每跑可见的机械断言(advisory 起步,攒够跑数再升):
 
@@ -229,6 +230,11 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
        market_view.md 文本 → L5 专属看多读数泄漏进策略师稿(闭合 final-review I-1)。
     6. **intel 零URL**(warn):单份 intel 稿 `http(s)://` 计数==0 → 情报不可审计
        (07-14 事故 pr_007:零URL 逐稿逮)。
+    7. **引用密度 citation_density**(warn):`details/<code>.md` 满卡带日期引用行数<6 →
+       研究底料偏薄(07-21 银河微电实例仅 4 行);早停卡(标题含〔早停)与 ♻️ 复用卡豁免。
+    8. **价格断言对账 price_claim_mismatch**(warn,逐码):卡文里对本票的涨跌%/涨停断言
+       经 `price_claims.audit_card_text` 与 lake OHLCV 对账,任一条不符 → warn,detail 带
+       首条不符断言(pr_20260714_006 型:intel 捏造涨停)。
 
     全部 presence-gated:缺文件/缺键/坏文件 → 该条静默跳过,**绝不抛异常**。
     返回 [{check,severity,detail,code}](severity ∈ {warn,info});接线在 assemble
@@ -376,6 +382,43 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
                 add("产物形状·intel零URL", "warn",
                     f"{p.name} 全文 0 条 http(s) URL —— 情报不可审计(来源应带链接)",
                     code=p.stem.replace("_l4_intel_", ""))
+
+    # ── 7. 引用密度(Wave1 ⑤-5):满卡带日期引用 <6 行 → warn;早停/♻️复用卡豁免 ──
+    _DATED = re.compile(r"20\d{2}-\d{1,2}-\d{1,2}|\b\d{1,2}[-/]\d{1,2}\b|20\d{6}")
+    cards: dict[str, str] = {}
+    with contextlib.suppress(Exception):
+        for p in (scan_dir / "details").glob("*.md"):
+            cards[p.stem.split(".")[0].zfill(6)] = p.read_text(encoding="utf-8")
+    for code, text in sorted(cards.items()):
+        if "〔早停" in text or code in reused:
+            continue
+        n_cited = sum(1 for ln in text.splitlines() if _DATED.search(ln))
+        if n_cited < 6:
+            add("citation_density", "warn",
+                f"满卡带日期引用仅 {n_cited} 行(<6)——研究底料偏薄(07-21 银河微电 4 行病)",
+                code=code)
+
+    # ── 8. 价格断言对账聚合(Wave1 ⑤-2):任一卡有不符断言 → warn(逐码) ──
+    name_by_code = {r["code"]: "" for r in fin_rows}
+    with contextlib.suppress(Exception):
+        import pandas as pd
+        fin = pd.read_csv(scan_dir / "finalists.csv", dtype={"code": str})
+        for _, r in fin.iterrows():
+            c = str(r.get("code", "") or "").split(".")[0].zfill(6)
+            name_by_code[c] = "" if pd.isna(r.get("name")) else str(r.get("name"))
+    for code, text in sorted(cards.items()):
+        with contextlib.suppress(Exception):
+            from autoresearch.scan import price_claims
+            res = price_claims.audit_card_text(
+                text, name=name_by_code.get(code, ""), code6=code, date=date_str,
+                bars_fn=price_claims.bars_for)
+            if res["mismatches"]:
+                b = res["mismatches"][0]
+                add("price_claim_mismatch", "warn",
+                    f"{len(res['mismatches'])} 条价格断言与 OHLCV 不符(首条 {b['date']} "
+                    f"称 {'涨停' if b['kind'] == 'limit' else str(b['claimed']) + '%'} "
+                    f"实 {b['actual']}%)——pr_20260714_006 型",
+                    code=code)
     return out
 
 

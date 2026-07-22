@@ -51,8 +51,11 @@ def _mk_clean(tmp_path):
         {"sector_healthy_top3": [{"industry": "动物保健Ⅱ"}, {"industry": "商用车"}]},
         ensure_ascii=False), encoding="utf-8")
     (d / "market_view.md").write_text("# 市场研判\n宽度极窄,防守为主。\n", encoding="utf-8")
-    (d / "details" / "600285.md").write_text("〔卡契约 v3〕满卡", encoding="utf-8")
-    (d / "details" / "600519.md").write_text("〔卡契约 v3〕保送满卡", encoding="utf-8")
+    # 引用密度探针(Wave1 ⑤-5)要求满卡带日期引用 >=6 行——附无价格断言的纯日期引用行,
+    # 免得"干净盘"基线卡在新探针上(不带 %/涨跌字样,不触发价格断言对账探针)。
+    _cite = "\n".join(f"2026-07-{i:02d} 引用{i}" for i in range(10, 17))
+    (d / "details" / "600285.md").write_text(f"〔卡契约 v3〕满卡\n{_cite}", encoding="utf-8")
+    (d / "details" / "600519.md").write_text(f"〔卡契约 v3〕保送满卡\n{_cite}", encoding="utf-8")
     return d
 
 
