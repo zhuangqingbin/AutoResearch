@@ -89,4 +89,4 @@ def test_dispatch_plan_meta_nan_cells(tmp_path):
     (sd / "finalists.csv").write_text("code,name,sector\n600584,,\n", encoding="utf-8")
     (sd / "_l4_prompt_600584.md").write_text("x", encoding="utf-8")
     plan = dispatch_plan("2026-07-09", root=tmp_path)
-    assert plan["meta"]["600584"] == {"name": "", "sector": ""}
+    assert plan["meta"]["600584"] == {"name": "", "sector": "", "pinned": False}

@@ -746,7 +746,8 @@ def dispatch_plan(date: str, root: Path | str | None = None) -> dict:
         code6 = raw.split(".")[0].zfill(6)
         if (scan_dir / f"_l4_prompt_{code6}.md").exists():
             dispatch.append(code6)
-            meta[code6] = {"name": _cell(r, "name"), "sector": _cell(r, "sector")}
+            meta[code6] = {"name": _cell(r, "name"), "sector": _cell(r, "sector"),
+                           "pinned": _cell(r, "lane").strip() == "pinned"}
             continue
         details = scan_dir / "details" / f"{code6}.md"
         if details.exists():
