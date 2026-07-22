@@ -1,6 +1,8 @@
 # tests/scan/test_price_claims.py
 from autoresearch.scan.price_claims import (
-    extract_price_claims, reconcile_claims, audit_card_text,
+    audit_card_text,
+    extract_price_claims,
+    reconcile_claims,
 )
 
 NAME, CODE = "协创数据", "300857"
@@ -91,3 +93,45 @@ def test_extract_skips_range_phrase():
 def test_audit_bad_date_noop():
     assert audit_card_text("协创数据 07-21 大涨 11.4%。", name=NAME, code6=CODE,
                            date="", bars_fn=lambda c, d, t: {}) == {"n_claims": 0, "mismatches": []}
+
+
+# ── C-1 修(2026-07-23 终审):三条真卡假阳向量,逐字用原文,各自不产错误断言 ──
+
+def test_extract_skips_cumulative_range_move():
+    """向量1(华海 600521 卡第17行,逐字):`6/09 14.64→7/16 17.63(+20%)` 是 A日→B日 累计涨幅,
+    抽取器旧行为把区间起点 6/09 + 累计 +20% 当单日 → 假不符。区间标记 → 在日期与%间 ⇒ 弃。"""
+    line = ("| 前提2(兑现机制):医药超卖修复扩散买盘接力 | ✗ | 本股 6/09 14.64→7/16 17.63"
+            "(+20%)非超卖;7/20 医药生物净流出 41.32 亿,扩散资金反向 |")
+    assert extract_price_claims(line, name="华海药业", code6="600521", year_hint=2026) == []
+
+
+def test_extract_forward_scenario_dropped_realized_kept():
+    """向量2(普冉 688766 卡第43行,逐字):同句里 `延续至 510(+8.5%)` 是 Bull 情景目标(弃),
+    `7/21 单日已实测 +17.5%` 是已实现单日移动(留)。绝不允许把前向 +8.5% 挂到 7/21。"""
+    line = ("- Bull(25%):回购正式董事会决议落地 + 科创板资金续流入(7/21 净流入 91.95 亿),"
+            "超跌反弹延续至 510(**+8.5%**)——超 📐p60(+3.7%)锚,**硬理由**:该股 ATR 86.72 = "
+            "现价 18.5%,2 日波幅结构性数倍于全市场基率,7/21 单日已实测 +17.5%,"
+            "用全市场 p60 度量本票会系统性低估振幅。")
+    claims = extract_price_claims(line, name="普冉股份", code6="688766", year_hint=2026)
+    assert len(claims) == 1, claims                       # 只留已实现那条,情景/目标 % 全弃
+    c = claims[0]
+    assert c["date"] == "20260721" and c["kind"] == "pct"
+    assert abs(c["value"] - 17.5) < 1e-9                  # 是已实测 +17.5%,不是情景 +8.5%
+    assert all(abs(x["value"] - 8.5) > 1e-9 for x in claims)  # +8.5% 绝不被认领
+
+
+def test_extract_skips_fundamental_pct():
+    """向量3(协创 300857,C-1 给的合成示例句):`营收同比上涨12%` 是基本面%非股价%——
+    % 前后 8 字内有基本面名词(营收/同比)⇒ 弃(否则对账股价 +1.2% → 假不符)。"""
+    assert extract_price_claims("协创数据 2026-07-15 营收同比上涨12%",
+                                name=NAME, code6=CODE, year_hint=2026) == []
+
+
+def test_extract_still_keeps_genuine_single_day_moves():
+    """收紧后真断言仍被抽取(防过度收窄):放量上涨%、涨停都在场。"""
+    up = extract_price_claims("协创数据 7-21 放量上涨 11.4%,量比 1.9。",
+                              name=NAME, code6=CODE, year_hint=2026)
+    assert len(up) == 1 and up[0]["date"] == "20260721" and abs(up[0]["value"] - 11.4) < 1e-9
+    lim = extract_price_claims("本股 07-15 涨停,随后三日回落。",
+                               name=NAME, code6=CODE, year_hint=2026)
+    assert len(lim) == 1 and lim[0]["kind"] == "limit" and lim[0]["date"] == "20260715"
