@@ -61,3 +61,33 @@ def test_audit_card_text_injectable_bars():
                           bars_fn=lambda c, ds, today: {"20260721": 1.0, "20260715": 19.99})
     assert res["n_claims"] == 2
     assert len(res["mismatches"]) == 1 and res["mismatches"][0]["date"] == "20260721"
+
+
+def test_extract_direction_from_verb():
+    claims = extract_price_claims("协创数据 07-16 下跌 11.4%。", name=NAME, code6=CODE, year_hint=2026)
+    assert len(claims) == 1 and claims[0]["value"] == -11.4
+
+
+def test_reconcile_direction_mismatch():
+    claims = [{"date": "20260721", "kind": "pct", "value": 11.4, "snippet": "s"}]
+    assert len(reconcile_claims(claims, {"20260721": -11.4}, code6=CODE)) == 1
+
+
+def test_limit_claims_carry_direction():
+    up = extract_price_claims("本股 07-15 涨停。", name=NAME, code6=CODE, year_hint=2026)[0]
+    down = extract_price_claims("本股 07-15 跌停。", name=NAME, code6=CODE, year_hint=2026)[0]
+    assert up["dir"] == 1 and down["dir"] == -1
+    # 涨停断言撞上真实跌停日 → 必须抓出
+    assert len(reconcile_claims([up], {"20260715": -19.99}, code6="300857")) == 1
+    assert reconcile_claims([up], {"20260715": 19.99}, code6="300857") == []
+    assert reconcile_claims([down], {"20260715": -19.99}, code6="300857") == []
+
+
+def test_extract_skips_range_phrase():
+    assert extract_price_claims("本股 预计有 5-10% 的下行空间,继续观察。",
+                                name=NAME, code6=CODE, year_hint=2026) == []
+
+
+def test_audit_bad_date_noop():
+    assert audit_card_text("协创数据 07-21 大涨 11.4%。", name=NAME, code6=CODE,
+                           date="", bars_fn=lambda c, d, t: {}) == {"n_claims": 0, "mismatches": []}
