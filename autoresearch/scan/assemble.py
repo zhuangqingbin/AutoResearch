@@ -20,6 +20,7 @@ L4 决策卡),用项目 parse_rating 提五档评级 + 仪表盘,产出三段 su
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import json
 import re
@@ -1097,6 +1098,26 @@ def _publish_details(scan_dir: Path, detail_out: Path) -> int:
                 with dst.open("a", encoding="utf-8") as fh:
                     fh.write("\n\n---\n\n## 🕵️ 当日活体情报(盲搜原文·仅事实采集,评级不受此节影响)\n\n")
                     fh.write(body + "\n")
+        # ── 价格断言对账(Wave1 ⑤-2,advisory;含 intel 附录一起对——pr_006 的捏造在 intel 侧)──
+        with contextlib.suppress(Exception):
+            from autoresearch.scan import price_claims
+            card_txt = dst.read_text(encoding="utf-8")
+            res = price_claims.audit_card_text(
+                card_txt, name=str(fr.get("name", "") or ""), code6=code,
+                date=scan_dir.name, bars_fn=price_claims.bars_for)
+            if res["n_claims"]:
+                bad = res["mismatches"]
+                if bad:
+                    det = ";".join(f"{b['date'][4:6]}-{b['date'][6:]} 称"
+                                   f"{('涨停' if b['kind'] == 'limit' else str(b['claimed']) + '%')}"
+                                   f" 实为{b['actual']}%" for b in bad[:3])
+                    line = (f"\n\n---\n_🔎 价格断言对账(确定性·advisory):{res['n_claims']} 条可对账,"
+                            f"**{len(bad)} 条不符** → {det}_\n")
+                else:
+                    line = (f"\n\n---\n_🔎 价格断言对账(确定性·advisory):{res['n_claims']} 条可对账,"
+                            f"0 条不符_\n")
+                with dst.open("a", encoding="utf-8") as fh:
+                    fh.write(line)
         n += 1
     return n
 
