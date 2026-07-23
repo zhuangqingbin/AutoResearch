@@ -32,3 +32,32 @@ def test_policy_and_contract_registered():
     from autoresearch.data.endpoints import policy
     assert policy("fina_mainbz")["source"] == "tushare"
     assert "fina_mainbz" in CONTRACTS
+
+
+def test_ts_code_routing_via_single_source(monkeypatch):
+    seen = {}
+
+    def spy(endpoint, params):
+        seen[params["ts_code"]] = True
+        return pd.DataFrame()
+
+    mainbz_latest("920819", "2026-07-23", fetch=spy)
+    assert "920819.BJ" in seen and "920819.SH" not in seen
+
+
+def test_recent_periods_disclosure_lag():
+    from autoresearch.dossier.mainbz import _recent_periods
+    assert _recent_periods("2026-01-15", 2)[:2] == ["20250630", "20241231"]
+    assert _recent_periods("2026-05-01", 2)[:2] == ["20251231", "20250630"]
+    assert _recent_periods("2026-07-23", 2)[:2] == ["20251231", "20250630"]
+    assert _recent_periods("2026-09-10", 2)[:2] == ["20260630", "20251231"]
+
+
+def test_nan_cells_sanitized():
+    def f(endpoint, params):
+        if params["period"] == "20251231":
+            return pd.DataFrame([{"ts_code": "300857.SZ", "bz_item": "X",
+                                  "bz_sales": float("nan"), "bz_profit": float("nan")}])
+        return pd.DataFrame()
+    rows = mainbz_latest("300857", "2026-07-23", fetch=f)
+    assert rows[0]["bz_sales"] == 0.0 and rows[0]["bz_profit"] is None
