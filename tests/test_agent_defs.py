@@ -117,3 +117,16 @@ def test_l4_stock_workflow_sell_review_anchors():
     js = (ROOT / ".claude" / "workflows" / "l4-stock.js").read_text(encoding="utf-8")
     for a in ("sell_review", "ow_review", "A.pinned", "proposal"):
         assert a in js, f"l4-stock.js 缺 SELL 双复核锚「{a}」"
+
+
+def test_dossier_init_workflow_anchors():
+    js = (ROOT / ".claude" / "workflows" / "dossier-init.js").read_text(encoding="utf-8")
+    for a in ("dossier-init", "builder", "lint", "LLM:待首覆"):
+        assert a in js, f"dossier-init.js 缺锚「{a}」"
+
+
+def test_dossier_init_agent_def():
+    p = ROOT / ".claude" / "agents" / "dossier-init.md"
+    text = p.read_text(encoding="utf-8")
+    for a in ("model: opus", "三情景", "证伪触发点", "断言分级", "不改确定性节"):
+        assert a in text, f"dossier-init.md 缺契约锚「{a}」"

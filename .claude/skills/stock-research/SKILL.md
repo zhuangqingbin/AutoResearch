@@ -19,6 +19,8 @@ description: Use when the user wants to research or analyze a SINGLE stock/crypt
 | 用户说"快速 / 看一眼 / 出张卡 / lite / 不用全量" | **lite** | `lite-playbook.md` |
 | lite 结论想下重注 | 对该票再跑 **full**(live 重取最全) | `engine-playbook.md` |
 
+- **首覆建档**(覆盖池 pending_init → dossier-init workflow):见 spec 2026-07-22 ②,agent 真值源 `.claude/agents/dossier-init.md`
+
 ## 前置(两档同)
 在**项目根目录**运行;`.env` 有 `FRED_API_KEY`;A股需 akshare/tushare(venv-only,**务必 `uv run --no-sync`**)。默认报告语言中文。TICKER 带交易所后缀(**A股可只传 6 位代码**;规则见 engine-playbook 末节)。
 

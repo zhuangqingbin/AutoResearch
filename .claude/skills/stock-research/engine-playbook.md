@@ -190,3 +190,13 @@ FINAL TRANSACTION PROPOSAL: **<BUY|HOLD|SELL>**
 
 ## 交易所后缀（TICKER 必带）
 美股无后缀；**A股可省略后缀**(裸 6 位:6/9→`.SS`,0/2/3→`.SZ`,4/8→`.BJ`;也可显式 `600519.SS`);港股 `.HK`;东京 `.T`/伦敦 `.L`/印度 `.NS`/加拿大 `.TO`/澳洲 `.AX`;加密 `-USD`(第3参=crypto)。同业(第4参,可选):逗号分隔,如 `AMD,AVGO,MU,TSM`。
+
+## 首覆建档(dossier)扩展
+full 档的另一种产出形态:不写一次性报告,直接建**常备覆盖档案**(`context/knowledge/dossiers/<code>.md`,券商 standing coverage 的 initiation)。
+编排:`.claude/workflows/dossier-init.js`(单票一 workflow,与 l4-stock 同型)—— 确定性骨架 `autoresearch.dossier.builder` 幂等生成八节+prefetch 素材 → `dossier-init` agent 首覆 → `schema.lint_dossier` 校验。
+`dossier-init` agent 只填四个 `<!-- LLM:待首覆 -->` 节,**不改确定性节**(§3估值带/§4筹码资金史/§6催化剂日历/§7判例账本/§8变化项日志全出自确定性脚本):
+- **§1 业务模型**叙事:收入驱动公式 + 产业链上下游映射(供应商/客户/竞品)。
+- **§2 盈利驱动**:3~5 关键驱动变量 + **三情景方向框架**(Bull/Base/Bear,禁 EPS 点估)。
+- **§5 风险矩阵**:CFO/NI 史/监管前科/质押/大股东行为,每条带证伪触发点。
+- **摘要(注入用)**:业务/驱动/风险/催化四条叙事锚(≤60字/条),供 L4 增量消费(≤3k token 帽)。
+真值源 = `.claude/agents/dossier-init.md`(agent 人设不回读源码);设计全文见 `docs/specs/2026-07-22-research-depth-dossier-design.md` ①②。
