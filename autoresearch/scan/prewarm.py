@@ -72,6 +72,13 @@ def _temperature(date: str) -> str:
     return f"{len(out)} 行" if len(out) else "无新增"
 
 
+def _dossier_prefetch(date: str) -> str:
+    """覆盖池确定性预取(mainbz/fwd-EPS/估值带;presence-gated——空池即秒退,零网络)。"""
+    from autoresearch.dossier.prefetch import prefetch_pool
+    r = prefetch_pool(date)
+    return f"池预取 {sum(1 for v in r.values() if v)}/{len(r)}"
+
+
 def run_prewarm(date: str | None = None, *, with_calibrate: bool = False,
                 now: datetime | None = None) -> dict:
     now = now or datetime.now()
@@ -95,6 +102,7 @@ def run_prewarm(date: str | None = None, *, with_calibrate: bool = False,
         _step("frame_lake", _frame_lake)
         _step("evidence_lake", _prewarm_evidence)
         _step("temperature", _temperature)
+        _step("dossier_prefetch", _dossier_prefetch)
         if with_calibrate:
             def _calib(d):
                 from autoresearch.learning.retro import recalibrate_and_log
