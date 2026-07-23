@@ -6,7 +6,7 @@ design: docs/specs/2026-07-03-scan-run-reliability-design.md §2
 首航(07-02)人肉串前奏 ~10 分钟且有漏跑风险;本模块把它收编:
 attribution 刷新 → retro pending 列出(**只备料不代跑诊断**)→ consensus 拉(限频容忍)
 → universe(regime-aware 默认开,含影子)→ 日历 → 菜单/预算/哨兵
-→ journal + buy_ledger 刷新。各步 try 包裹失败不阻断,末尾汇总屏。
+→ journal + buy_ledger 刷新 → 覆盖池日检(进退复+待建档)。各步 try 包裹失败不阻断,末尾汇总屏。
 (观察单日检步骤已退役 —— 用户裁定 fb_20260714_002,别再加回。)
 
   uv run --no-sync python -m autoresearch.scan.prelude 2026-07-03
@@ -197,12 +197,21 @@ def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()
         return ("journal + buy_ledger + cross_calib + catalyst + paper_nav + "
                 "channel + gate + zero_buy + changelog 已刷新")
 
+    def _dossier_pool():
+        from autoresearch.dossier import pool
+        out = pool.refresh(date)
+        delta = f"进{len(out['entered'])}退{len(out['retired'])}复{len(out['revived'])}"
+        pend = out["pending_init"]
+        pend_txt = f"待建档 {len(pend)} 只({','.join(pend[:6])})" if pend else "待建档 0"
+        moved = out["entered"] or out["retired"] or out["revived"]
+        return (f"池 {out['n_active']} active · {delta if moved else '无变动'} · {pend_txt}")
+
     all_steps = [("retro_refresh", _refresh), ("retro_pending", _pending),
                  ("t1_pending", _t1_pending), ("learning_health", _learning_health),
                  ("consensus", _consensus), ("temperature", _temperature),
                  ("universe", _universe), ("calendar", _calendar),
                  ("catalyst", _catalyst), ("menu", _menu),
-                 ("ledgers", _ledgers)]
+                 ("ledgers", _ledgers), ("dossier_pool", _dossier_pool)]
     results = _run_steps([(n, f) for n, f in all_steps if n not in skip])
 
     print("\n" + "═" * 30 + f" prelude 汇总 · {date} " + "═" * 30)
