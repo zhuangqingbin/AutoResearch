@@ -754,7 +754,8 @@ def dispatch_plan(date: str, root: Path | str | None = None) -> dict:
             reused.append({"code": code6, "rating": parse_rating(details.read_text(encoding="utf-8"))})
         else:
             dispatch.append(code6)   # 两者皆无(异常):兜底走正常派发,不静默丢票
-            meta[code6] = {"name": _cell(r, "name"), "sector": _cell(r, "sector")}
+            meta[code6] = {"name": _cell(r, "name"), "sector": _cell(r, "sector"),
+                           "pinned": _cell(r, "lane").strip() == "pinned"}
     return {"dispatch": dispatch, "reused": reused, "meta": meta}
 
 

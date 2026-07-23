@@ -154,3 +154,21 @@ def test_extract_skips_cumulative_pct():
 def test_extract_skips_pct_tilde_range():
     assert extract_price_claims("协创数据 7-19 中报预告 +247%~+340%。",
                                 name=NAME, code6=CODE, year_hint=2026) == []
+
+
+# ── round3 立项(2026-07-23):指数名黑名单——句级自指(个股/本股)夹带指数名时,
+#    指数自己的涨跌% 不该被记到本票头上 ──
+
+def test_extract_skips_index_pct_in_long_sentence():
+    # 07-21 协创真卡长句(、/,连接一个句号):句尾「个股」不得给句首科创50 的 +10% 背书
+    text = ("实读确认了成长侧:7-19 中报预告 +247%~+340% 已落地、7-13 定增 80 亿过股东会、"
+            "7-21 工信部算力标准催化 + 科创50 单日 +10% 半导体涨停潮,个股放量 +11.4%(量比 1.9)"
+            "——催化与档案里「无带日期催化/深跌落刀」两条证伪点均已翻转。")
+    claims = extract_price_claims(text, name=NAME, code6=CODE, year_hint=2026)
+    assert [c["value"] for c in claims if c["kind"] == "pct"] == [11.4]  # 只留个股 +11.4,指数 +10 弃
+
+
+def test_extract_skips_index_pct_variants():
+    for idx in ("沪深300", "上证指数", "创业板指", "科创50", "北证50"):
+        t = f"本股 7-21 随{idx} 上涨 3.2%。"
+        assert extract_price_claims(t, name=NAME, code6=CODE, year_hint=2026) == [], idx

@@ -88,7 +88,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
    ```
    → scan-market.js 返回 `{dispatch, meta}` 后,主会话对 dispatch 里每股各拉一个
    `Workflow({scriptPath: '.claude/workflows/l4-stock.js', args: {date, code, name, sector, cfg}})`
-   (**cfg = 步骤 0.5 frame 回显的 `user_config` 块原样透传,勿传 `{}`**——空 cfg 静默关 intel/降 effort,见 0.5 节 07-21 事故注;**pinned = dispatch 返回的 `meta[code].pinned` 原样透传**——缺了 SELL 双复核不触发)
+   (**cfg = 步骤 0.5 frame 回显的 `user_config` 块原样透传,勿传 `{}`**——空 cfg 静默关 intel/降 effort,见 0.5 节 07-21 事故注;**pinned = dispatch 返回的 `meta[code].pinned` 原样透传**——缺了 SELL 双复核不触发)(degraded=复核 run 不齐时不折回、报告强制人裁)
    ——**一条消息 N 个调用并行**(每股独立并发帽,真并行;单股失败只废单股,单独重跑该 workflow 即可)。
    每股链内:**intel(可关)→ l4-card 决策卡 →(≥OW)2 独立复核 run 取中位只向下折回**,复核落
    `_ensemble_<code>.json`(assemble 合并读)。卡模板/契约烤进 `.claude/agents/l4-card.md`。

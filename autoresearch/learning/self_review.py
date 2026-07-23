@@ -234,7 +234,8 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
        研究底料偏薄(07-21 银河微电实例仅 4 行);早停卡(标题含〔早停)与 ♻️ 复用卡豁免。
     8. **价格断言对账 price_claim_mismatch**(warn,逐码):卡文里对本票的涨跌%/涨停断言
        经 `price_claims.audit_card_text` 与 lake OHLCV 对账,任一条不符 → warn,detail 带
-       首条不符断言(pr_20260714_006 型:intel 捏造涨停)。
+       首条不符断言(pr_20260714_006 同族(本探针读 staging 卡,不含 intel 附录;intel 侧
+       断言由 assemble 发布层对账兜底))。
     9. **pinned SELL 双复核 sell_review_missing**(warn,逐码):保送(lane=pinned)持仓卡
        评级 Sell/Underweight 但缺 `_ensemble_<code>.json`(或 trigger≠sell_review)→ 持仓卖出
        双复核静默漏跑(final-review I-2;镜像 probe 3 intel 稿数兜底,防 args.pinned 漏传)。

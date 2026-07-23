@@ -58,6 +58,17 @@ _FUND_WIN = 8       # 基本面名词判定窗(brief:% 前后 8 字内)
 #     判定为预测区间,两端都弃(右端常离基本面名词超 8 字窗,类 c 单独抓不住)
 _PCT_TILDE_RANGE = re.compile(r"[+-]?\d+(?:\.\d+)?%\s*~\s*[+-]?\d+(?:\.\d+)?%")
 
+# ── round3 立项(2026-07-23):指数名黑名单——句级自指(个股/本股等)夹带指数名时,
+#    指数自己的涨跌% 不该被记到本票头上(协创 07-21 真卡:句含"个股"但 +10% 是科创50 涨幅)──
+_INDEX_NAMES = ("科创50", "沪深300", "上证指数", "上证综指", "深证成指", "深成指",
+                "创业板指", "北证50", "中证500", "中证1000", "恒生", "纳指", "标普")
+
+
+def _near_index_name(sent: str, pct_pos: int, window: int = 12) -> bool:
+    """% 候选左邻 window 字内出现指数名 → 该 % 属指数,不认领给本票。"""
+    left = sent[max(0, pct_pos - window):pct_pos]
+    return any(ix in left for ix in _INDEX_NAMES)
+
 
 def _own_sentence(sent: str, name: str, code6: str) -> bool:
     if name and name in sent:
@@ -109,12 +120,14 @@ def _range_left(sent: str, dates: list[re.Match], dm: re.Match, npos: int, gap: 
 
 
 def _is_realized_price_pct(sent: str, dm: re.Match, pm: re.Match, dates: list[re.Match]) -> bool:
-    """pm(% 匹配)配 dm(其最近在前日期)是否为一条「已实现单日股价移动」。五类排除:
+    """pm(% 匹配)配 dm(其最近在前日期)是否为一条「已实现单日股价移动」。六类排除:
       · 区间幻影(如"5-10%"):_DATE 把 "5-10" 当日期、_PCT 把 "-10%" 当字面负号,两匹配抢同段字符;
       · 百分区间 `X%~Y%`(R-1):该数字与另一个 % 由 `~` 相连 → 预测区间,两端都非单日已实现;
       · 区间标记(→/至/到/从/累计)落在日期簇与数字之间 → 累计/区间移动非单日(华海
         6/09→7/16 +20%;R-1:「累计涨幅达 20%」同族,靠词不靠箭头);
       · 数字之前局部窗有情景/目标语境 → 前向情景 EV/目标价(普冉 延续至510 +8.5%);
+      · 数字左邻 12 字内有指数名(round3)→ 该 % 属指数非本票,不认领(协创 07-21:句含
+        "个股"但 +10% 是科创50 涨幅);
       · 数字前后 8 字内有基本面名词(含 R-1 补的 预告/预增/预盈/中报/年报/季报/归母)→
         营收/净利/业绩预告% 非股价%(协创 营收同比 +12%、中报预告 +66%)。"""
     if _overlaps(dm.span(), pm.span()):
@@ -125,6 +138,8 @@ def _is_realized_price_pct(sent: str, dm: re.Match, pm: re.Match, dates: list[re
     if any(r in sent[_range_left(sent, dates, dm, npos):npos] for r in _RANGE_MARKS):
         return False
     if any(k in sent[max(0, npos - _CTX_BACK):npos] for k in _SCENARIO):
+        return False
+    if _near_index_name(sent, npos):
         return False
     return not any(k in sent[max(0, npos - _FUND_WIN):pm.end() + _FUND_WIN] for k in _FUND)
 

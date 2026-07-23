@@ -131,7 +131,8 @@ def _load_ensemble(scan_dir: Path) -> dict[str, dict]:
 
 def _ensemble_flag(rec: dict | None) -> bool:
     """🎭 人裁条件:3 run 分歧 ≥2 档;或复核 run 缺席退化(degraded,N<3)且仍有分歧(spread>0)——
-    退化时 workflow 端中位已取偏空侧,1 档分歧也不许静默消失(T9-11 review Important#2)。"""
+    degraded(复核 run 不齐)时 workflow 与本侧均不折回,仅 ens_flag 强制人裁展示,1 档分歧
+    也不许静默消失(T9-11 review Important#2)。"""
     if not rec:
         return False
     spread = int(rec.get("spread") or 0)
