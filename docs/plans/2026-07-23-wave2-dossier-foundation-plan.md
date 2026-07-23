@@ -1039,3 +1039,14 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - **占位扫描**:T7 Step3 与 T4 Step3 的"按接口逐条实现"均已附核心完整代码或精确契约+测试;T8 agent def/js 全文在场;无 TBD。
 - **类型一致**:`schema.SECTIONS/SUMMARY_HEAD/SUMMARY_ANCHORS/est_tokens/lint_dossier/dossier_path` T3 定义、T4(pending_init)/T7(builder)/T8(js lint 调用)消费一致;`pool.refresh` 返回键 T5 消费一致;`prefetch_one(code6, today, *, fetch, ths_fn, band_fn)` T6 定义、T8 CLI 消费;`mainbz_latest` T2→T6。
 - **已知边界**:pinned 07-25 到期后 4 持仓靠"真选计数/手动"续池(池规则如实);keyless ths 入口函数名以源码为准(T6 明示 grep 步骤,不发明);`fina_mainbz` policy 字段镜像 forecast 条目(T2 明示);北交所 ts_code 后缀 4/8 开头 → .BJ(T2 已含)。
+
+---
+
+## Wave2 建档实录(2026-07-23 · Task 9 控制端自跑)
+
+- 池冷启动:69 入(历史 20 日真选≥2 富集)→ cap30 FIFO 退 39 → **30 active 全 pending_init**;4 持仓(002371/300857/688766/601869)全在池。
+- 预取 4/4 三腿全满(mainbz 2~10 行/fwd-EPS/估值带,notes 全空零降级)。
+- **坑(已记账)**:`dossier-init` agent def 本会话新建 → workflow 首派 4/4 失败 `agent type not found`(agents 会话启动装载);harness 热载后 resume 全部成功(骨架段缓存命中,零重复成本)。教训=新 agent def 落盘后需等热载通知/新会话再派发。
+- 首覆 4/4 成功:lint 全 clean、initiated=2026-07-23、摘要 216~251 token(帽 3000)、残留 LLM 锚 0、§7 判例史含 07-21 入围、档案 8~10KB。
+- 抽读(协创 §2):5 驱动变量各配信号源、三情景带触发+证伪点、零 EPS 点估、断言分级 `[网查/slim]` 标记在场——达设计意图。
+- 验收三条:①4 份档案八节齐 ✓ ②摘要 ≤3k ✓ ③夜批不阻塞(prefetch 在 prewarm/LLM 段 session 内)✓;池 pending_init 30→26。
