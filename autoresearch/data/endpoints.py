@@ -46,6 +46,9 @@ ENDPOINTS: dict[str, dict] = {
     "repurchase": {"key": "date", "settle": "eod", "source": "tushare"},       # 回购(ann_date;催化)
     "stk_surv": {"key": "date", "settle": "eod", "source": "tushare"},         # 机构调研(trade_date;催化)
 
+    # ── ① tushare 财务数据(按 ts_code+period 切;报告期披露后永不变,镜像 forecast 的 eod 类) ──
+    "fina_mainbz": {"key": "period", "settle": "eod", "source": "tushare"},  # 分业务收入/利润(ts_code+period+type=P)
+
     # ── ① tushare 区间/标的级(按取数日快照——含到取数日为止的截面,按 as_of 留底) ──
     "moneyflow_hsgt": {"key": "as_of", "settle": "eod", "source": "tushare"},   # 沪深港通区间
     "margin": {"key": "as_of", "settle": "eod", "source": "tushare"},           # 两融区间汇总

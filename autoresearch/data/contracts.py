@@ -133,6 +133,8 @@ CONTRACTS: dict[str, Contract] = {
     "stock_news_em": _c(TIER_DEGRADE, note="个股新闻"),
     "stock_lhb_stock_statistic_em": _c(TIER_DEGRADE),
     "stock_yjbb_em": _c(TIER_DEGRADE, note="业绩(报告期)"),
+    "fina_mainbz": _c(TIER_DEGRADE, note="分业务收入/利润(dossier 业务模型;小票/金融股披露口径可缺)",
+                      empty_ok=True),
     "macro_china_cpi_monthly": _c(TIER_DEGRADE),
     "macro_china_ppi": _c(TIER_DEGRADE),
     "macro_china_pmi": _c(TIER_DEGRADE),
