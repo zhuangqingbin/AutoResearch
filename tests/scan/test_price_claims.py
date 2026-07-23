@@ -135,3 +135,22 @@ def test_extract_still_keeps_genuine_single_day_moves():
     lim = extract_price_claims("本股 07-15 涨停,随后三日回落。",
                                name=NAME, code6=CODE, year_hint=2026)
     assert len(lim) == 1 and lim[0]["kind"] == "limit" and lim[0]["date"] == "20260715"
+
+
+# ── R-1 修(round2 复核):同 C-1 类的「预告%/累计%」旁路,黑名单未关住 ──
+
+def test_extract_skips_forecast_pct():
+    assert extract_price_claims("本股 7-14 中报预告 +66%,兑现在望。",
+                                name=NAME, code6=CODE, year_hint=2026) == []
+    assert extract_price_claims("本股 7-14 中报预增 +105%。",
+                                name=NAME, code6=CODE, year_hint=2026) == []
+
+
+def test_extract_skips_cumulative_pct():
+    assert extract_price_claims("本股 7-16 累计涨幅达 20%。",
+                                name=NAME, code6=CODE, year_hint=2026) == []
+
+
+def test_extract_skips_pct_tilde_range():
+    assert extract_price_claims("协创数据 7-19 中报预告 +247%~+340%。",
+                                name=NAME, code6=CODE, year_hint=2026) == []

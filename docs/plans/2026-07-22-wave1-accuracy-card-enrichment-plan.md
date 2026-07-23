@@ -878,3 +878,6 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 **全套件**:`1353 passed, 2 warnings`(baseline 1346 + 新增 7),`exit=0`;2 warning 均为 pre-existing pandas FutureWarning(temperature.py concat),与本次改动无关。ruff 4 改动文件全过。
 
 **判据②改写**:原"机制响但落卡的 catch 为假阳"→ 修后 **price 对账在真数据上 0 假阳、且对普冉保真(realized +17.5% 正确抽取通过)**,判据②由 FAIL-in-spirit 升为 **PASS**。
+
+**R-1 追记(round2 复核·2026-07-23 当日闭合)**:预告%/累计%/`X%~Y%` 百分区间三条同类旁路已闭合(`_FUND` 扩 `预告/预增/预盈/中报/年报/季报/归母`、`_RANGE_MARKS` 扩 `累计`、新增 `_PCT_TILDE_RANGE` 排除;`tests/scan/test_price_claims.py` 新增 3 测,全套件 1356 passed)。详见 `.superpowers/sdd/wave1-r1-fix-report.md`。
+协创 300857 卡内 `7-19 中报预告 +247%~+340%` 现为**抽取级排除**(`extract_price_claims` 直接判 0 claims),不再依赖 07-19 周日 nodata 的偶然守卫;真 staging `product_shape_lint` 的 `price_claim_mismatch` 仍 0。
