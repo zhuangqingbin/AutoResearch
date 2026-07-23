@@ -54,6 +54,11 @@ _FUND = ("营收", "收入", "净利", "利润", "毛利", "EPS", "业绩", "订
          "预告", "预增", "预盈", "中报", "年报", "季报", "归母")
 _CTX_BACK = 14      # 情景语境向前看的字符窗(延续至/目标/看至 通常紧邻 % 之前)
 _FUND_WIN = 8       # 基本面名词判定窗(brief:% 前后 8 字内)
+# W2-T1 复审验证指数黑名单修复时顺带隔离出的第二处遮蔽 bug(与 _INDEX_NAMES 碰撞同族不同因):
+# 「数字之后 8 字」原样跨逗号,会把下一个不相关小句的基本面词(如"系统集成订单加速"的"订单")
+# 误判成给本句价格 % 定性 → 静默吞真实断言。数字之前的窗不受影响(基本面修饰语通常紧邻 %
+# 之前,C-1/R-1 全部既有用例都是这个方向);只收紧"之后"这一侧,止于最近的小句分隔符。
+_FUND_CLAUSE_BREAK = re.compile(r"[，,、]")
 # (d) 百分区间 `X%~Y%`(R-1,协创 `中报预告 +247%~+340%`):两个 % 由 `~` 相连 ⇒ 整段
 #     判定为预测区间,两端都弃(右端常离基本面名词超 8 字窗,类 c 单独抓不住)
 _PCT_TILDE_RANGE = re.compile(r"[+-]?\d+(?:\.\d+)?%\s*~\s*[+-]?\d+(?:\.\d+)?%")
@@ -61,13 +66,28 @@ _PCT_TILDE_RANGE = re.compile(r"[+-]?\d+(?:\.\d+)?%\s*~\s*[+-]?\d+(?:\.\d+)?%")
 # ── round3 立项(2026-07-23):指数名黑名单——句级自指(个股/本股等)夹带指数名时,
 #    指数自己的涨跌% 不该被记到本票头上(协创 07-21 真卡:句含"个股"但 +10% 是科创50 涨幅)──
 _INDEX_NAMES = ("科创50", "沪深300", "上证指数", "上证综指", "深证成指", "深成指",
-                "创业板指", "北证50", "中证500", "中证1000", "恒生", "纳指", "标普")
+                "创业板指", "北证50", "中证500", "中证1000", "恒生指数", "恒生科技",
+                "纳指", "标普")
 
 
-def _near_index_name(sent: str, pct_pos: int, window: int = 12) -> bool:
-    """% 候选左邻 window 字内出现指数名 → 该 % 属指数,不认领给本票。"""
+def _near_index_name(sent: str, pct_pos: int, name: str = "", window: int = 14) -> bool:
+    """% 候选左邻 window 字内出现指数名 → 该 % 属指数,不认领给本票。
+
+    W2-T1 复审 Important 修(2026-07-23):指数名黑名单会与本票名字发生子串碰撞——例如裸
+    `"恒生"`(原意指恒生指数/恒生科技)本身就是**恒生电子**(600570.SH)股票名的前缀,导致该股
+    每一条真实价格断言都被误判成"指数涨跌"而静默吞掉。除了把最短的碰撞条目改成限定形
+    (`"恒生"` → `"恒生指数"`/`"恒生科技"`),这里再加一道通用防线:左窗命中的指数名如果本身是
+    本票 `name` 的子串(且 `name` 非空),不算指数命中——不管黑名单未来加了什么新词条,都不会
+    反噬名字里恰好包含该词的股票自己。
+
+    window 12→14(本次复审顺带的第三处窄修,与上面两条不同因):复审自带的回归向量
+    `"本股随恒生指数 7-21 上涨 2.1%。"`里"恒生指数"距数字 13 字,窗=12 会整词切在"恒"字
+    之后、漏判该 % 真是指数的(不涉及 name 碰撞,纯粹是"指数名结束到数字"这段本身就有 13
+    字)。+2 只补这一刀之窄,不是复审 Minor 项(22 字远距长句)的修复——那条更大的取舍
+    (窗口越宽越可能倒吞同句真实个股断言)复审已明确记为"非本轮阻塞项",本次不动,留给未来
+    有专门取舍设计的一轮。"""
     left = sent[max(0, pct_pos - window):pct_pos]
-    return any(ix in left for ix in _INDEX_NAMES)
+    return any(ix in left and not (name and ix in name) for ix in _INDEX_NAMES)
 
 
 def _own_sentence(sent: str, name: str, code6: str) -> bool:
@@ -106,6 +126,15 @@ def _num_pos(pm: re.Match) -> int:
     return pm.start("num") if pm.group("num") is not None else pm.start("num2")
 
 
+def _fund_after_end(sent: str, end: int, width: int = _FUND_WIN) -> int:
+    """基本面判定窗「数字之后」一侧的右边界:原样右探 width 字,但遇小句分隔符(，/,/、)即止
+    ——不跨小句,防止逗号后不相关小句里的基本面词(如"系统集成订单加速"的"订单")误伤本句
+    价格 %(恒生电子案例:验证 W2-T1 指数黑名单修复时隔离出的第二处遮蔽 bug)。"""
+    limit = min(len(sent), end + width)
+    m = _FUND_CLAUSE_BREAK.search(sent, end, limit)
+    return m.start() if m else limit
+
+
 def _range_left(sent: str, dates: list[re.Match], dm: re.Match, npos: int, gap: int = 16) -> int:
     """从最近在前日期 dm 向前吸收「紧邻(≤gap 字)的更早日期」成日期簇(`6/09 14.64→7/16` = 一个
     区间簇),返回簇最左日期的 start——区间标记须从这里查到数字,才能逮到落在两日期之间的 →/至;
@@ -119,17 +148,21 @@ def _range_left(sent: str, dates: list[re.Match], dm: re.Match, npos: int, gap: 
     return start
 
 
-def _is_realized_price_pct(sent: str, dm: re.Match, pm: re.Match, dates: list[re.Match]) -> bool:
+def _is_realized_price_pct(sent: str, dm: re.Match, pm: re.Match, dates: list[re.Match],
+                            name: str = "") -> bool:
     """pm(% 匹配)配 dm(其最近在前日期)是否为一条「已实现单日股价移动」。六类排除:
       · 区间幻影(如"5-10%"):_DATE 把 "5-10" 当日期、_PCT 把 "-10%" 当字面负号,两匹配抢同段字符;
       · 百分区间 `X%~Y%`(R-1):该数字与另一个 % 由 `~` 相连 → 预测区间,两端都非单日已实现;
       · 区间标记(→/至/到/从/累计)落在日期簇与数字之间 → 累计/区间移动非单日(华海
         6/09→7/16 +20%;R-1:「累计涨幅达 20%」同族,靠词不靠箭头);
       · 数字之前局部窗有情景/目标语境 → 前向情景 EV/目标价(普冉 延续至510 +8.5%);
-      · 数字左邻 12 字内有指数名(round3)→ 该 % 属指数非本票,不认领(协创 07-21:句含
-        "个股"但 +10% 是科创50 涨幅);
-      · 数字前后 8 字内有基本面名词(含 R-1 补的 预告/预增/预盈/中报/年报/季报/归母)→
-        营收/净利/业绩预告% 非股价%(协创 营收同比 +12%、中报预告 +66%)。"""
+      · 数字左邻 14 字内有指数名(round3;W2-T1 复审 Important 修:该指数名若是本票 `name` 的
+        子串则不算,防黑名单反噬同名股;窗 12→14 见 `_near_index_name` 注)→ 该 % 属指数非
+        本票,不认领(协创 07-21:句含"个股"但 +10% 是科创50 涨幅);
+      · 数字前 8 字/数字后 8 字(止于最近小句分隔符,防跨句误伤)内有基本面名词(含 R-1 补的
+        预告/预增/预盈/中报/年报/季报/归母)→ 营收/净利/业绩预告% 非股价%(协创 营收同比
+        +12%、中报预告 +66%;恒生电子 放量上涨11.4%,系统集成订单加速——"订单"落在逗号后的
+        下一小句,不该反噬前一小句的真实价格 %)。"""
     if _overlaps(dm.span(), pm.span()):
         return False
     if any(_overlaps(pm.span(), rm.span()) for rm in _PCT_TILDE_RANGE.finditer(sent)):
@@ -139,18 +172,19 @@ def _is_realized_price_pct(sent: str, dm: re.Match, pm: re.Match, dates: list[re
         return False
     if any(k in sent[max(0, npos - _CTX_BACK):npos] for k in _SCENARIO):
         return False
-    if _near_index_name(sent, npos):
+    if _near_index_name(sent, npos, name=name):
         return False
-    return not any(k in sent[max(0, npos - _FUND_WIN):pm.end() + _FUND_WIN] for k in _FUND)
+    fund_window = sent[max(0, npos - _FUND_WIN):_fund_after_end(sent, pm.end())]
+    return not any(k in fund_window for k in _FUND)
 
 
-def _first_realized_pct(sent: str, dates: list[re.Match]):
+def _first_realized_pct(sent: str, dates: list[re.Match], name: str = ""):
     """句内首个「已实现单日股价移动」%:每个 % 配其最近在前日期(缺则退回首日期),先滤掉区间/
     情景/基本面 %,取首个存活者。返回 (带号数值, 配对日期匹配) 或 None(每句只取首个=已知简化)。"""
     for pm in _PCT.finditer(sent):
         prev = [d for d in dates if d.end() <= pm.start()]
         dm = prev[-1] if prev else dates[0]
-        if _is_realized_price_pct(sent, dm, pm, dates):
+        if _is_realized_price_pct(sent, dm, pm, dates, name=name):
             return _pct_value(pm), dm
     return None
 
@@ -163,7 +197,7 @@ def extract_price_claims(text: str, *, name: str, code6: str, year_hint: int) ->
         dates = list(_DATE.finditer(sent))
         if not dates:
             continue
-        hit = _first_realized_pct(sent, dates)
+        hit = _first_realized_pct(sent, dates, name=name)
         if hit is not None:
             val, dm = hit
             out.append({"date": _fmt_date(dm, year_hint), "kind": "pct",

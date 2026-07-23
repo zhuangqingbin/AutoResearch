@@ -172,3 +172,36 @@ def test_extract_skips_index_pct_variants():
     for idx in ("沪深300", "上证指数", "创业板指", "科创50", "北证50"):
         t = f"本股 7-21 随{idx} 上涨 3.2%。"
         assert extract_price_claims(t, name=NAME, code6=CODE, year_hint=2026) == [], idx
+
+
+# ── W2-T1 复审 Important 修(2026-07-23):黑名单短条目撞本票名字(恒生电子/600570) ──
+
+def test_extract_keeps_claim_for_stock_named_like_index():
+    # 恒生电子(600570):名字含「恒生」,不得被指数黑名单误吞(W2-T1 复审 Important)
+    for t in ("7-21 提质增效催化兑现,恒生电子放量上涨11.4%,系统集成订单加速。",
+              "7-21 恒生电子大涨11.4%,系统集成需求回暖。"):
+        claims = extract_price_claims(t, name="恒生电子", code6="600570", year_hint=2026)
+        assert [c["value"] for c in claims] == [11.4], t
+
+
+def test_extract_still_skips_real_index_pct():
+    t = "本股随恒生指数 7-21 上涨 2.1%。"
+    assert extract_price_claims(t, name="协创数据", code6="300857", year_hint=2026) == []
+
+
+# ── 复核上一测试时顺带发现的第二处遮蔽 bug(与 _INDEX_NAMES 碰撞同族不同因,独立隔离验证):
+#    _FUND「数字之后 8 字」窗跨逗号吃进下一个不相关小句的基本面词(如"订单"),把该小句
+#    误判成给价格 % 定性,静默吞真实价格断言——与上面 test_extract_keeps_claim_for_stock_
+#    named_like_index 的第一条向量(系统集成订单加速)是同一句,但此处证明诱因与指数名黑名单
+#    完全无关(句中不含任何 _INDEX_NAMES 词) ──
+
+def test_extract_fund_word_in_next_clause_not_excluded():
+    t = "恒生电子 7-21 放量上涨11.4%,系统集成订单加速。"  # 不含任何指数名,隔离验证第二因
+    claims = extract_price_claims(t, name="恒生电子", code6="600570", year_hint=2026)
+    assert [c["value"] for c in claims] == [11.4]
+
+
+def test_extract_fund_word_same_clause_still_excluded():
+    # 防过度收窄:同一小句内(逗号前)紧跟基本面词仍须排除
+    assert extract_price_claims("协创数据 7-21 上涨12%订单强劲。",
+                                name=NAME, code6=CODE, year_hint=2026) == []
