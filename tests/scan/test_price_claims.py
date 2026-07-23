@@ -205,3 +205,15 @@ def test_extract_fund_word_same_clause_still_excluded():
     # 防过度收窄:同一小句内(逗号前)紧跟基本面词仍须排除
     assert extract_price_claims("协创数据 7-21 上涨12%订单强劲。",
                                 name=NAME, code6=CODE, year_hint=2026) == []
+
+
+def test_extract_keeps_claim_after_short_index_lead_in():
+    # 「隔夜美指弱,A股个股自身涨」的标准引句形;window=14 会误吞,13 不会(W2-T1 round2)
+    for t in ("纳指弱,个股 7-21 涨 3.2%。", "标普弱,个股 7-21 涨 3.2%。"):
+        claims = extract_price_claims(t, name="协创数据", code6="300857", year_hint=2026)
+        assert [c["value"] for c in claims] == [3.2], t
+
+
+def test_index_window_still_catches_hengsheng_distance():
+    assert extract_price_claims("本股随恒生指数 7-21 上涨 2.1%。",
+                                name="协创数据", code6="300857", year_hint=2026) == []

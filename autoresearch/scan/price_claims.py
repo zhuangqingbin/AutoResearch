@@ -70,7 +70,7 @@ _INDEX_NAMES = ("科创50", "沪深300", "上证指数", "上证综指", "深证
                 "纳指", "标普")
 
 
-def _near_index_name(sent: str, pct_pos: int, name: str = "", window: int = 14) -> bool:
+def _near_index_name(sent: str, pct_pos: int, name: str = "", window: int = 13) -> bool:
     """% 候选左邻 window 字内出现指数名 → 该 % 属指数,不认领给本票。
 
     W2-T1 复审 Important 修(2026-07-23):指数名黑名单会与本票名字发生子串碰撞——例如裸
