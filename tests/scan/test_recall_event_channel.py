@@ -132,11 +132,19 @@ def test_event_channel_all_survey_no_hard_events_degrades_to_empty():
 
 
 def test_event_not_enabled_by_default():
-    """新信号入场纪律:默认不进生产 recall_channels(scan_config 未列 = 不启用)。"""
+    """新信号入场纪律:默认不进生产 recall_channels(scan_config 未列 = 不启用)。
+
+    Wave4 终审 I-1(已实测):原断言 `cfg.get(...) or []` 在 key **缺失**时被 `or []` 空过——
+    而"删掉 recall_channels 整行"正是 `scan_config.jsonc` 注释里白纸黑字写着的推荐回滚动作,
+    删掉后 `event` 会经 `registered_channels()` 直接上生产主漏斗,此断言却仍然绿。加
+    `assert enabled`(照抄姊妹守卫 `test_disabled_channel_buckets_have_zero_floor`)堵死这条路。
+    """
     import json
     import re
     from pathlib import Path
     raw = Path(".claude/skills/scan-market/scan_config.jsonc").read_text(encoding="utf-8")
     cfg = json.loads(re.sub(r"//.*", "", raw))
-    assert "event" not in (cfg.get("funnel", {}).get("recall_channels") or []), \
+    enabled = cfg.get("funnel", {}).get("recall_channels") or []
+    assert enabled, "recall_channels 读不到(= 用全部注册通道,含 event)= 本测试失去意义"
+    assert "event" not in enabled, \
         "event 路须累计 ≥10 日 unique_excess_t2 为正、经人批才可启用"
