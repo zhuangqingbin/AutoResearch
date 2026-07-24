@@ -16,6 +16,13 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 
+# 业绩快报字段语义单一事实源(yoy 自算 + 时效守卫;dossier/reconcile 同源引用)
+from autoresearch.data.express_fields import (
+    EXPRESS_MAX_MONTHS,
+    express_expired,
+    express_yoy_pct,
+)
+
 # 复用 tushare_source 的句柄/重试/日期解析(同一 token、同一防御层)
 from autoresearch.data.tushare_source import _pro, _ts_call, resolve_momentum_dates
 from autoresearch.dataflows.symbol_utils import to_ts_code
@@ -171,13 +178,33 @@ def ashare_calendar_ts(sym: str, curr_date: str) -> str | None:
     except Exception as e:  # noqa: BLE001
         out.append(f"_tushare 业绩预告取数失败: {e}_")
     try:
+        # 不传 period / 不按 ann_date 收窄:每票 express 全历史也只有个位数行,而**过期留痕**
+        # 需要看得见那一行(API 侧过滤掉 = 陈年快报静默消失 = 降级不留痕)。限频/重试结构不动。
         ex = _ts_call(lambda: pro.express(ts_code=tc))
         if len(ex):
             r = ex.sort_values("ann_date").tail(1).iloc[0]
-            yoy = _num(pd.Series([r["yoy_net_profit"]])).iloc[0]
-            roe = _num(pd.Series([r["diluted_roe"]])).iloc[0]
-            out.append(f"**业绩快报(tushare,{r['end_date']})**:净利同比 **{yoy:+.1f}%**、"
-                       f"摊薄ROE {roe:.2f}%(快报=未审计,早于正式财报)。")
+            end_date = str(r.get("end_date") or "—")
+            if express_expired(end_date, curr_date):
+                # 时效守卫:slim 是 L4 卡铁律里的"已核"级来源,十几年前的快报不得冒充前瞻信号
+                out.append(f"_业绩快报:最新一期 {end_date} 已过期"
+                           f"(>{EXPRESS_MAX_MONTHS}个月),不采用_")
+            else:
+                # 同比须自算:yoy_net_profit = 去年同期净利润**金额**(单一事实源 express_fields)
+                seg: list[str] = []
+                yoy = express_yoy_pct(r.get("n_income"), r.get("yoy_net_profit"))
+                if yoy is not None:
+                    seg.append(f"净利同比 **{yoy:+.1f}%**")
+                ni = _num(pd.Series([r.get("n_income")])).iloc[0]
+                if pd.notna(ni):
+                    seg.append(f"净利 {ni / 1e8:.2f}亿")
+                roe = _num(pd.Series([r.get("diluted_roe")])).iloc[0]
+                if pd.notna(roe):
+                    seg.append(f"摊薄ROE {roe:.2f}%")           # NaN 不进 format(不出 `nan%`)
+                if seg:
+                    out.append(f"**业绩快报(tushare,{end_date})**:" + "、".join(seg)
+                               + "(快报=未审计,早于正式财报)。")
+                else:
+                    out.append(f"_业绩快报({end_date}):关键字段全缺,不渲染_")
     except Exception as e:  # noqa: BLE001
         out.append(f"_tushare 业绩快报取数失败: {e}_")
     return "\n\n".join(out) if out else None

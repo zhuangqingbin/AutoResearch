@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 
+from autoresearch.data.express_fields import express_yoy_pct  # 快报字段语义单一事实源
 from autoresearch.dossier import delta, pool, schema
 
 
@@ -48,17 +49,16 @@ def _fetch_actual(code6: str, period: str, *, fetch=None) -> dict | None:
         np_v = _num(r.get("n_income"))
         if np_v is not None:
             parts.append(f"净利 {np_v / 1e8:.1f}亿")
-        # yoy_net_profit = 去年同期净利润金额(元),非增长率——tushare 字段名误导,
-        # 2026-07-24 活体逮出(688766 兰剑智能:2.92 亿去年同期净利被误当
-        # +292416600.0% 直接渲染进真实档案)。同比增速须自算:
-        # (今年净利/去年同期净利 - 1) * 100;去年同期 <= 0(亏损或为零)时增速
-        # 无意义,改报金额;去年同期字段本身缺失(None)则整段不渲染。
+        # yoy_net_profit = 去年同期净利润金额(元),非增长率——语义单一事实源在
+        # data/express_fields(tushare_enrich 同源引用,2026-07-24 终审 C-1:同一误读
+        # 曾有两份实现)。去年同期 <= 0(亏损或为零)时增速无意义,改报金额;
+        # 去年同期字段本身缺失(None)则整段不渲染。
         base = _num(r.get("yoy_net_profit"))
-        if base is not None:
-            if np_v is not None and base > 0:
-                parts.append(f"yoy {(np_v / base - 1) * 100:+.1f}%")
-            elif base <= 0:
-                parts.append(f"去年同期 {base / 1e8:.1f}亿(增速不适用)")
+        yoy = express_yoy_pct(np_v, base)
+        if yoy is not None:
+            parts.append(f"yoy {yoy:+.1f}%")
+        elif base is not None and base <= 0:
+            parts.append(f"去年同期 {base / 1e8:.1f}亿(增速不适用)")
         eps = _num(r.get("diluted_eps"))
         if eps is not None:
             parts.append(f"摊薄EPS {eps:.2f}")
