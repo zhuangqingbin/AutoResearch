@@ -27,7 +27,6 @@ L2 学习重排走 `autoresearch.research.factor_lab.predict_scores`。本模块
 from __future__ import annotations
 
 import argparse
-import contextlib
 import dataclasses
 import json
 import sys
@@ -316,13 +315,18 @@ def write_shadow_variants(outdir: Path, scored: pd.DataFrame, recall: pd.DataFra
 
         if "event" not in base_names:
             plus = [*base_names, "event"]
-            with contextlib.suppress(Exception):  # event 路是本波新代码,单独兜底不牵连以上两个零成本变体
+            try:      # event 路是本波新代码,单独兜底不牵连以上两个零成本变体
                 re_p, pc_p = recall_select(scored, analysis_date, recall_n, "multi", plus,
                                            channel_quotas=channel_quotas,
                                            channel_floors=channel_floors)
                 variants["plus_event"], _ = select_l2(re_p, l2_n, floors=l2_floors,
                                                       sector_cap_frac=l2_sector_cap)
                 _dump_per_channel("plus_event", pc_p)
+            except Exception as e:  # noqa: BLE001 — 兜底可以,静默不行(同 I-2):plus_event
+                # 是 event 路唯一的 unique_excess_t2 证据源,它悄悄不落盘 = 十日审批的账本
+                # 缺日而无人知(下面 capfloor20 早就是"告警后继续",这里对齐)。
+                print(f"[warn] shadow plus_event 失败(event 路当日无影子读数): {e!r}",
+                      file=sys.stderr)
     try:
         uni20, _ = build_market_frame(analysis_date, cap_floor_yi=20.0, include_bj=include_bj,
                                       source=source, l0_min_amount_yi=l0_min_amount_yi,
@@ -398,9 +402,17 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
     weights, _regime = pick_weights(uni, regime_aware,
                                     **({"path": weights_path} if weights_path else {}))
     scored = composite_score(uni, weights)
-    with contextlib.suppress(Exception):   # Wave4:事件列(湖优先);失败=列缺失,event 路自动空帧降级
+    try:                                   # Wave4:事件列(湖优先),B 级增强腿,失败不阻扫描
         from autoresearch.scan.events import attach_event_cols, market_event_counts
         scored = attach_event_cols(scored, market_event_counts(analysis_date))
+    except Exception as e:  # noqa: BLE001 — 但**必须留痕**:Review Round 1 I-2 实测,原
+        # `contextlib.suppress(Exception)` 只有"三腿取数全失败"那一种形态有痕(那是
+        # `market_event_counts` 内部自己打的);聚合层抛 / `attach_event_cols` 抛 / import
+        # 失败这三种形态下 `scored` **根本没有 ev_* 列**,却一个字都不打 —— 而这恰是危害
+        # 更大的一类:event 路当天静默 0 召回,`channel_audit` 会把它记成"这路没 edge"
+        # 而不是"取数/挂载坏了"(本 repo 记过账的 FN-1「降级不留痕」变体)。
+        print(f"[events] ⚠️ 事件列挂载失败({e!r})→ scored 无 ev_* 列,event 路本日"
+              "等同停用(channel_audit 读数按'停用'而非'无 edge'解释)。", file=sys.stderr)
     pinned = load_pinned(analysis_date, path=pinned_path)["kept"]   # 保送票强注 L1(缺 pinned.json→kept=[]→no-op parity)
     recall, per_channel = recall_select(scored, analysis_date, recall_n, recall_mode,
                                         recall_channels, pinned=pinned,
