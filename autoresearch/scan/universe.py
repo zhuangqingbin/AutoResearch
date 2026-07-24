@@ -27,6 +27,7 @@ L2 学习重排走 `autoresearch.research.factor_lab.predict_scores`。本模块
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import json
 import sys
@@ -358,6 +359,9 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
     weights, _regime = pick_weights(uni, regime_aware,
                                     **({"path": weights_path} if weights_path else {}))
     scored = composite_score(uni, weights)
+    with contextlib.suppress(Exception):   # Wave4:事件列(湖优先);失败=列缺失,event 路自动空帧降级
+        from autoresearch.scan.events import attach_event_cols, market_event_counts
+        scored = attach_event_cols(scored, market_event_counts(analysis_date))
     pinned = load_pinned(analysis_date, path=pinned_path)["kept"]   # 保送票强注 L1(缺 pinned.json→kept=[]→no-op parity)
     recall, per_channel = recall_select(scored, analysis_date, recall_n, recall_mode,
                                         recall_channels, pinned=pinned,

@@ -23,9 +23,10 @@ STYLE_CHANNELS: dict[str, tuple[str, ...]] = {
     "吸筹": ("accumulation",),
     "主力": ("main_fund",),
     "健康": ("healthy",),
+    "事件": ("event",),
 }
 DEFAULT_FLOORS: dict[str, int] = {"趋势": 20, "健康": 15, "反转": 12, "价值": 12,
-                                  "成长": 12, "吸筹": 12, "主力": 10}
+                                  "成长": 12, "吸筹": 12, "主力": 10, "事件": 10}
 
 
 def sector_neutral(score: pd.Series, industry: pd.Series) -> pd.Series:

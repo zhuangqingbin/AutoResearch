@@ -132,3 +132,24 @@ def heat(frame, date, k):
         kicker = kicker + 0.10 * _pct(g["vol_ratio"]).fillna(0.0)
     g["heat_score"] = _num(g["amount_yi"]).fillna(0.0) * kicker
     return gate_rank(g, None, "heat_score", k)
+
+
+@channel("event", quota=80, floor=20,
+         desc="公告事件(回购实施/增持/机构调研近10日;确定性分类,非涨幅信号)")
+def event(frame, date, k):
+    """事件驱动召回(Wave4)——补漏斗唯一的"有实质公告但价格还没反应"缺口。
+
+    **不用当日涨幅**:2026-07-24 实证,07-21 当日 ≥9.5% 的 350 只票 fwd_2_oc −2.06%
+    vs 全市场 +1.60%(超额 −3.67pp,t=−11.91)——追当日大涨是负价值。本路只问
+    "近 10 交易日有没有发生正催化事件",排序按事件强度 `ev_pos`(减持不计正)。
+
+    缺列 / 整列全 0(事件取数三腿全失败)→ 空帧降级(与其余 10 路同契约)。
+    **默认不启用**:须 `channel_audit` 的 unique_excess_t2 累计 ≥10 日为正 + 人批
+    才进 scan_config.funnel.recall_channels(与 accumulation 2026-07-11 被裁同纪律)。
+    """
+    if "ev_pos" not in frame.columns:
+        return gate_rank(frame, None, "ev_pos", k)          # 缺列 → 空帧
+    mask = frame["ev_pos"].fillna(0.0) > 0
+    if not bool(mask.any()):
+        return gate_rank(frame, None, "__no_event__", k)    # 全 0 → 空帧(不召回零事件票)
+    return gate_rank(frame, mask, "ev_pos", k)
