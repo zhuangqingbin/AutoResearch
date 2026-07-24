@@ -25,8 +25,16 @@ STYLE_CHANNELS: dict[str, tuple[str, ...]] = {
     "健康": ("healthy",),
     "事件": ("event",),
 }
+# 事件桶 floor=0(Wave4 Review Round 1 C-1):event 通道**默认不启用**(不在 scan_config 的
+# funnel.recall_channels 里)⇒ 桶恒无成员,但 floor 只要 >0 就会**先把 `merit_need` 减掉**
+# (`merit_need = l2_n − Σfloor`),那部分名额落回 floor 补位/回填循环 ⇒ 每天恰好 10 行被打上
+# `l2_lane_reserved=True`(「配额救回,非有机进场」)。该标签有三个真消费者:`l3_select._row_lane`
+# (渲染进喂 l3-rank 的表)、`l4_card.force_full_card`(满卡/早停)、`retro.floor_experiment`
+# (闭环账本分组)⇒ 挂着「未启用」的牌子却天天改生产 LLM 输入,违背「全默认关→parity 不破」。
+# 真数据实测:floor=0 vs 「无事件桶」在 29 个扫描日 code/l2_rank/l2_lane_reserved 三列逐值一致。
+# **启用 event 路时,把这个 0 改成 10 即可**(桶与 STYLE_CHANNELS 的映射已就位)。
 DEFAULT_FLOORS: dict[str, int] = {"趋势": 20, "健康": 15, "反转": 12, "价值": 12,
-                                  "成长": 12, "吸筹": 12, "主力": 10, "事件": 10}
+                                  "成长": 12, "吸筹": 12, "主力": 10, "事件": 0}
 
 
 def sector_neutral(score: pd.Series, industry: pd.Series) -> pd.Series:

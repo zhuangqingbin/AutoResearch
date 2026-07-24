@@ -100,6 +100,14 @@ def test_shadow_plus_event_variant(tmp_path, monkeypatch):
     否则 event 通道会因缺列而静默退化成空帧,测试断言的两只事件票永远进不了 L2。
 
     同上一测试:mock 掉 capfloor20 的真取数入口,保持本文件"NO network"契约。
+
+    **2026-07-25(Review Round 1 C-1)改口径**:原断言"事件票应被 plus_event 变体捞进 L2"
+    其实是**靠 `DEFAULT_FLOORS["事件"]=10` 这个 bug 才成立的**——事件票的 composite 排名
+    故意靠后(那正是这条路的价值),L2 采样按 sector-neutral composite 排,只有事件桶 floor
+    才把它们捞得进来。C-1 把该 floor 改回 0(未启用通道不得改生产 L2)后,**production 默认
+    下事件票本来就不该进 L2**,而 `unique_excess_t2` 读的也从来不是 L2 名单,是逐路长表。
+    故本测试拆成两断言:①production 默认(floors=None)——只要求长表里有 event 行(仪器口径);
+    ②显式传事件 floor(= 将来真启用 event 路时的配置)——才要求事件票进 L2(锁住 floor 生效)。
     """
     import pandas as pd
 
@@ -122,14 +130,25 @@ def test_shadow_plus_event_variant(tmp_path, monkeypatch):
     made = U.write_shadow_variants(out, scored, recall, "2026-07-24", 20, 10, None, 1.0,
                                    list(scored.columns), recall_channels=["composite"])
     assert "plus_event" in made
-    codes = set(pd.read_csv(out / "shadow" / "L2_plus_event.csv",
-                            dtype={"code": str})["code"].str.zfill(6))
-    assert {"000026", "000027"} & codes, "事件票应被 plus_event 变体捞进 L2"
-    # plus_event 自己的逐路长表也要落盘(不能只靠 pre_healthy 的落盘掩盖 plus_event 没落的事实)
-    # ——这就是 unique_excess_t2 真正要算的那张表,里面必须能看到 "event" 这个 channel 值。
+    # ① plus_event 自己的逐路长表必须落盘(不能只靠 pre_healthy 的落盘掩盖 plus_event 没落的
+    # 事实)——这就是 unique_excess_t2 真正要算的那张表,里面必须能看到 "event" 这个 channel。
     per = pd.read_csv(out / "shadow" / "L1_channels_plus_event.csv", dtype={"code": str})
     assert "event" in set(per["channel"])
     assert {"000026", "000027"}.issubset(set(per.loc[per["channel"] == "event", "code"].str.zfill(6)))
+
+    # ② 显式给事件桶 floor(启用 event 路时的配置)→ 事件票才该被捞进 L2;production 默认
+    # (DEFAULT_FLOORS["事件"]=0)下不该,见 docstring 的 C-1 说明。
+    out2 = tmp_path / "with-floor"
+    out2.mkdir(parents=True)
+    U.write_shadow_variants(out2, scored, recall, "2026-07-24", 20, 10, {"事件": 10}, 1.0,
+                            list(scored.columns), recall_channels=["composite"])
+    codes2 = set(pd.read_csv(out2 / "shadow" / "L2_plus_event.csv",
+                             dtype={"code": str})["code"].str.zfill(6))
+    assert {"000026", "000027"}.issubset(codes2), "给了事件 floor 就该把事件票捞进 L2"
+    codes = set(pd.read_csv(out / "shadow" / "L2_plus_event.csv",
+                            dtype={"code": str})["code"].str.zfill(6))
+    assert not ({"000026", "000027"} & codes), \
+        "production 默认(事件 floor=0)下事件票不进 L2 —— 这正是 C-1 要的 parity"
 
 
 def test_pre_healthy_uses_actual_enabled_channels_not_full_registry(tmp_path, monkeypatch):
