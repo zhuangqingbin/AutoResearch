@@ -129,42 +129,102 @@ def _append_eps_snapshot(text: str, pf: dict | None) -> str:
     return replace_section(text, 1, body.rstrip("\n") + "\n" + line + "\n")
 
 
-def _staging_dir_for(scan_root: Path, date: str) -> Path | None:
+def _staging_dir_for(scan_root: str | Path, date: str) -> Path | None:
     """δ 用的 staging 目录:**当日优先**(δ 跑在 assemble 尾,当日素材就在手),
-    当日缺 → 回退 builder 的「最近有素材的日」;都无 → None。
+    当日缺 → 回退「不晚于 δ 日、最近有素材的日」;都无 → None。
 
-    为什么不直接复用 builder 的 `_latest_staging_dir`:建档跑在任意时点、只能取最近;
+    为什么不直接复用 builder 的 `_latest_staging_dir`:①建档跑在任意时点、只能取最近;
     δ 跑在当日收尾,拿当日才是正解——否则会用旧快照冒充今天(spec ① §4/§6「每次 δ」)。
+    ②回退多一道 `p.name <= date` 上界过滤(Wave3.5 review M-1):`_latest_staging_dir`
+    不做日期上界,重跑历史日 δ(补录/回放)会拿到**晚于**该历史日的素材,把未来数据
+    写进过去的档案;建档场景本就要"当下最新"、不受此约束,故不改 `_latest_staging_dir`
+    本体,只在这里的回退分支加过滤。
     """
-    d = Path(scan_root) / date
+    root = Path(scan_root)
+    d = root / date
     if any((d / f).exists() for f in builder._STAGING_FILES):
         return d
-    return builder._latest_staging_dir(Path(scan_root))
+    if not root.exists():
+        return None
+    days = sorted((p for p in root.iterdir()
+                   if p.is_dir() and p.name[:2] == "20" and p.name <= date),
+                  key=lambda p: p.name, reverse=True)
+    for cand in days:
+        if any((cand / f).exists() for f in builder._STAGING_FILES):
+            return cand
+    return None
+
+
+_PLEDGE_PREFIX = "- **质押**"          # builder._pledge_row 行首锚(§4 腿级守卫,C-1)
+_SEATS_PREFIX = "- **龙虎榜席位**"      # builder._seats_row 行首锚
+
+
+def _leg_line(body: str, prefix: str) -> str:
+    """从正文里按行首前缀取一行(§4 腿级守卫用;找不到 → ""）。"""
+    for ln in body.splitlines():
+        if ln.startswith(prefix):
+            return ln
+    return ""
+
+
+def _refresh_section4_legs(text: str, staging: Path | None, code6: str) -> tuple[str, list[str]]:
+    """§4 筹码与资金结构史 —— **腿级** upsert(Wave3.5 review C-1)。
+
+    `_section4_body` 由质押(`_pledge_row`)/席位(`_seats_row`)两条独立腿拼成;旧实现
+    只在**整节**判缺才保留旧值,只要一条腿有新值就整段覆盖 → 另一条腿的旧真内容被
+    静默删除(真档案 002371 复现:质押腿几乎恒在、席位腿常缺,整节覆盖等于席位史
+    天天被删)。这里改成腿级独立判断:某腿新值为空 → 保留该腿的旧行(从旧正文按
+    行首前缀 `_leg_line` 提取,不是重算);两腿新值都空 → 整节不动、不写 as-of 戳
+    (等价旧的整节守卫)。返回 (新文本, 跳过的腿标签列表,如 `["§4.seats"]`)。
+    """
+    old_body = section_body(text, 3)
+    new_pledge = builder._pledge_row(staging, code6)
+    new_seats = builder._seats_row(staging, code6)
+    skipped = [lbl for lbl, new in (("§4.pledge", new_pledge), ("§4.seats", new_seats))
+               if not new]
+    if not new_pledge and not new_seats:
+        return text, skipped
+    pledge_line = new_pledge or _leg_line(old_body, _PLEDGE_PREFIX)
+    seats_line = new_seats or _leg_line(old_body, _SEATS_PREFIX)
+    body = "\n".join(r for r in (pledge_line, seats_line) if r)
+    return replace_section(text, 3, f"_素材 as-of {staging.name}_\n\n{body}"), skipped
+
+
+def _refresh_section6(text: str, staging: Path | None, code6: str,
+                      date: str) -> tuple[str, list[str]]:
+    """§6 催化剂日历 —— 单腿(`calendar_flags`),沿用整节守卫:新素材算不出真内容
+    (含当日 staging 在但该票无行/无事件)→ 保留旧值,不覆盖(与 `_refresh_band` 同款;
+    Wave3 T1 review 教训:半更新会制造节间自相矛盾)。返回 (新文本, 跳过标签,空或 `["§6"]`)。
+    """
+    body = builder._section6_body(staging, code6, date)
+    if not body or body == builder._missing(date):
+        return text, ["§6"]
+    return replace_section(text, 5, f"_素材 as-of {staging.name}_\n\n{body}"), []
 
 
 def _refresh_staging_sections(text: str, code6: str, date: str,
-                              scan_root: str | Path) -> str:
-    """§4 筹码资金史 / §6 催化剂日历 就地刷新(spec ① 表:每次 δ)。
+                              scan_root: str | Path) -> tuple[str, list[str]]:
+    """§4 筹码资金史(腿级)/ §6 催化剂日历(节级)就地刷新(spec ① 表:每次 δ)。
 
-    **对称守卫**:新素材算不出真内容(返回 `_missing` 占位)→ 保留旧节,不覆盖
-    (与 `_refresh_band` 同款;Wave3 T1 review 教训:半更新会制造节间自相矛盾)。
+    返回 (新文本, 跳过的节/腿标签列表)。跳过不静默(Wave3.5 review I-2):调用方
+    (`record_scan_delta`/`record_scan_deltas`)把这份列表原样放进返回 dict,不再是
+    "跳过了但外界看不见"。
     """
     staging = _staging_dir_for(scan_root, date)
-    if staging is None:
-        return text
-    stamp = staging.name
-    miss = builder._missing(date)
-    for idx, fn in ((3, builder._section4_body), (5, builder._section6_body)):
-        body = fn(staging, code6, date)
-        if not body or body == miss:          # 素材缺 → 保留旧值(不降级覆盖)
-            continue
-        text = replace_section(text, idx, f"_素材 as-of {stamp}_\n\n{body}")
-    return text
+    text, skip4 = _refresh_section4_legs(text, staging, code6)
+    text, skip6 = _refresh_section6(text, staging, code6, date)
+    return text, skip4 + skip6
 
 
 def record_scan_delta(code6: str, date: str, *, rating: str, conviction=None,
                       scan_root: str | Path = "context/scan") -> dict:
-    """单票 δ 回写:§8 入围行 + §3 带位刷新 + §2 快照 + 摘要机算行 + last_delta。"""
+    """单票 δ 回写:§8 入围行 + §3 带位刷新 + §2 快照 + §4/§6 staging 刷新 + 摘要机算行 + last_delta。
+
+    返回 dict 的 `sections_skipped`(Wave3.5 review I-2):本次因素材缺而跳过刷新的
+    §4 腿/§6 节标签(如 `["§4.seats", "§6"]`),健康路径为 `[]`(不是缺键)——降级
+    留痕不静默;`record_scan_deltas` 批量层同款收进 `out["sections_skipped"][code]`
+    (非空才收,镜像 `issues` 记账口径)。
+    """
     code6 = str(code6).split(".")[0].zfill(6)
     path = schema.dossier_path(code6)
     if not path.exists():
@@ -181,7 +241,7 @@ def record_scan_delta(code6: str, date: str, *, rating: str, conviction=None,
     pf = builder._load_prefetch(code6)
     text = _refresh_band(text, pf)
     text = _append_eps_snapshot(text, pf)
-    text = _refresh_staging_sections(text, code6, date, scan_root)
+    text, sections_skipped = _refresh_staging_sections(text, code6, date, scan_root)
 
     from autoresearch.scan import dossier as scan_dossier  # lazy 防环(scan↔dossier,builder 同款)
     entries = scan_dossier.stock_dossier(code6, scan_root=scan_root,
@@ -204,7 +264,8 @@ def record_scan_delta(code6: str, date: str, *, rating: str, conviction=None,
 
     text = set_frontmatter_key(text, "last_delta", date)
     path.write_text(text, encoding="utf-8")
-    return {"code": code6, "updated": True, "issues": schema.lint_dossier(text)}
+    return {"code": code6, "updated": True, "issues": schema.lint_dossier(text),
+            "sections_skipped": sections_skipped}
 
 
 def record_scan_deltas(scan_dir: Path | str, date: str) -> dict:
@@ -213,17 +274,19 @@ def record_scan_deltas(scan_dir: Path | str, date: str) -> dict:
     终评级缺(文件缺/该票无卡「—」)→ 该票不记(防「无卡」污染 §8;卡面评级不可靠,
     P0-2 教训:折回只改 rows 不回写卡面)。单票失败不断链。
 
-    返回 `{"updated": n, "issues": {code: [lint...]}}`。**返回 dict 而非 int 是有意的**
-    (I-4,2026-07-24 终审):旧版只返回计数,`record_scan_delta` 尽责给出的 `issues`
-    从此消失 —— 摘要被写爆 3k 帽或锚行被写没 → `injectable_summary` 从此对该票返回 ""、
-    注入无声停摆,而 lint 门与注入门同源(连假警都不会有)。本 plan 的 Global Constraint
-    写死「降级留痕…不空写不吞」,故让调用方**必须**看得见 issues。
+    返回 `{"updated": n, "issues": {code: [lint...]}, "sections_skipped": {code: [...]}}`。
+    **返回 dict 而非 int 是有意的**(I-4,2026-07-24 终审):旧版只返回计数,
+    `record_scan_delta` 尽责给出的 `issues` 从此消失 —— 摘要被写爆 3k 帽或锚行被写没 →
+    `injectable_summary` 从此对该票返回 ""、注入无声停摆,而 lint 门与注入门同源(连假警
+    都不会有)。本 plan 的 Global Constraint 写死「降级留痕…不空写不吞」,故让调用方
+    **必须**看得见 issues。`sections_skipped` 同款(Wave3.5 review I-2):`record_scan_delta`
+    的 §4/§6 跳过标签逐票收进来,非空才落码,不被这层批量 suppress 吞掉。
     """
     import contextlib
     import json as _json
 
     import pandas as pd
-    out: dict = {"updated": 0, "issues": {}}
+    out: dict = {"updated": 0, "issues": {}, "sections_skipped": {}}
     scan_dir = Path(scan_dir)
     fp = scan_dir / "finalists.csv"
     if not fp.exists():
@@ -249,4 +312,6 @@ def record_scan_deltas(scan_dir: Path | str, date: str) -> dict:
             out["updated"] += bool(res.get("updated"))
             if res.get("issues"):               # 非空才收(留痕给调用方打印)
                 out["issues"][code6] = res["issues"]
+            if res.get("sections_skipped"):     # 非空才收(镜像 issues 记账口径,I-2)
+                out["sections_skipped"][code6] = res["sections_skipped"]
     return out

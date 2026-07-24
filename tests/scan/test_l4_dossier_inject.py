@@ -22,6 +22,7 @@ def test_mark_injects_summary_and_contract_line():
     assert "📚 覆盖档案摘要" in out
     assert "- 业务: 算力租赁" in out and "- 判例: 入围 5 次" in out
     assert "档案对账" in out                      # 卡内节要求随注入声明
+    assert "随每日 δ 刷新" in out                  # review M-2:刷新口径声明锚入测(防措辞漂移)
     assert str(schema.dossier_path("300857")) in out   # 全文路径指针
     assert schema.SECTIONS[0] not in out          # 只注摘要块,不带八节正文
 
