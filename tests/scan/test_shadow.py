@@ -186,3 +186,82 @@ def test_pre_healthy_uses_actual_enabled_channels_not_full_registry(tmp_path, mo
     ch = pd.read_csv(out / "shadow" / "L1_channels_pre_healthy.csv")
     assert set(ch["channel"]) == {"composite", "heat"}, \
         "pre_healthy 反事实必须恰是 recall_channels 去掉 healthy,不多不少(不得混入未启用的注册路)"
+
+
+# ───────────────────────── Review Round 1 m-3:同日重跑陈旧长表清理 ─────────────────────────
+# `plus_event`/`capfloor20` 各自独立 try/except 兜底(不牵连其余零成本变体)。若同一 outdir
+# 被重跑第二次且这次失败,`except` 分支不会重新落盘——若不清理,shadow/ 下停留的是上一次
+# 成功时留下的文件,会被 `channel_audit --variant` 当成"今天的证据"读进十日账本,而此时
+# stderr 的告警说的却是"这次失败"(证据与告警互相矛盾)。修法:重跑前(试算之前)先清掉
+# 这两个变体各自的逐路长表——试算成功会立刻重新写出全新文件,试算失败则保持清空状态。
+
+
+def test_shadow_plus_event_stale_file_cleared_on_rerun_failure(tmp_path, monkeypatch):
+    """m-3:plus_event 这次失败(event 通道触发异常)→ shadow/ 下预置的"上一次成功"残留
+    必须被清理,不能让 channel_audit --variant 读到陈旧数据。"""
+    import pandas as pd
+
+    from autoresearch.scan import universe as U
+
+    monkeypatch.setattr(U, "build_market_frame",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no network in test")))
+    real_recall_select = U.recall_select
+
+    def _fail_only_for_event(scored_df, date, n, mode, channels, **kw):
+        if channels is not None and "event" in channels:
+            raise RuntimeError("forced plus_event failure (m-3 rerun test)")
+        return real_recall_select(scored_df, date, n, mode, channels, **kw)
+
+    scored = pd.DataFrame({
+        "code": [f"{i:06d}" for i in range(30)],
+        "name": [f"n{i}" for i in range(30)],
+        "composite": [float(90 - i) for i in range(30)],
+        "industry": ["电子"] * 30,
+        "main_net_ratio": [0.1] * 30, "cmf_20": [0.1] * 30, "pct_60d": [5.0] * 30,
+        "amount_yi": [5.0] * 30, "mktcap_yi": [80.0] * 30,
+    })
+    recall, _ = U.recall_select(scored, "2026-07-24", 20, "multi", ["composite"])
+    out = tmp_path / "2026-07-24"
+    out.mkdir(parents=True)
+    (out / "shadow").mkdir()
+    stale = out / "shadow" / "L1_channels_plus_event.csv"
+    stale.write_text("channel,code,channel_rank,channel_score\ncomposite,000099,1,9.0\n", encoding="utf-8")
+
+    monkeypatch.setattr(U, "recall_select", _fail_only_for_event)
+    U.write_shadow_variants(out, scored, recall, "2026-07-24", 20, 10, None, 1.0,
+                            list(scored.columns), recall_channels=["composite"])
+
+    assert not stale.exists(), \
+        "m-3:plus_event 本次失败,shadow/ 下的陈旧逐路长表必须被清理,不能被 channel_audit --variant 读到"
+
+
+def test_shadow_capfloor20_stale_file_cleared_on_rerun_failure(tmp_path, monkeypatch):
+    """m-3:capfloor20 分支同形(见上一测试)——它是唯一重取数变体,本仓既有测试一律 mock
+    `build_market_frame` 令其失败(隔离网络),这正好天然是"本次失败"场景:预置一份上次
+    成功的残留,调用后必须被清理。"""
+    import pandas as pd
+
+    from autoresearch.scan import universe as U
+
+    monkeypatch.setattr(U, "build_market_frame",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no network in test")))
+    scored = pd.DataFrame({
+        "code": [f"{i:06d}" for i in range(30)],
+        "name": [f"n{i}" for i in range(30)],
+        "composite": [float(90 - i) for i in range(30)],
+        "industry": ["电子"] * 30,
+        "main_net_ratio": [0.1] * 30, "cmf_20": [0.1] * 30, "pct_60d": [5.0] * 30,
+        "amount_yi": [5.0] * 30, "mktcap_yi": [80.0] * 30,
+    })
+    recall, _ = U.recall_select(scored, "2026-07-24", 20, "multi", ["composite"])
+    out = tmp_path / "2026-07-24"
+    out.mkdir(parents=True)
+    (out / "shadow").mkdir()
+    stale = out / "shadow" / "L1_channels_capfloor20.csv"
+    stale.write_text("channel,code,channel_rank,channel_score\ncomposite,000099,1,9.0\n", encoding="utf-8")
+
+    U.write_shadow_variants(out, scored, recall, "2026-07-24", 20, 10, None, 1.0,
+                            list(scored.columns), recall_channels=["composite"])
+
+    assert not stale.exists(), \
+        "m-3:capfloor20 本次失败(mock 断网),shadow/ 下的陈旧逐路长表必须被清理"

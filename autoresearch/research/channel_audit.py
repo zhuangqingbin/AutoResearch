@@ -289,6 +289,14 @@ def main(argv: list[str] | None = None) -> int:
 
     result = audit(days=args.days, variant=args.variant)
     body = "\n".join(render(result))
+    if args.variant:
+        # m-5(Review Round 1 minor):变体报告里"其余路"的 unique_excess_t2 是相对**该文件
+        # 自己的路集合**重算的(加/减一路,其余路的独占集合随之变),与主报告同名路的数字
+        # 不逐格可比——反事实设计的必然,不是数据打架;判据只看 variant 自己的
+        # unique_excess_t2,不需要跨报告比较(两份报告并排看时极易被当成"数据打架")。
+        body += (f"\n\n> 注:本报告(--variant {args.variant})里『其余路』的 unique_excess_t2"
+                 f" 按**变体路集合**重算,与主 `channel_audit_<tag>.md` 同名路的数字不逐格"
+                 "可比(反事实设计的必然,非数据打架)。")
     dates = result.get("dates") or []
     tag = dates[-1] if dates else _date.today().isoformat()
     # 变体报告落独立文件名,不与主漏斗的 channel_audit_<tag>.md 互相覆盖(未给 --variant → 逐字节 parity)。
@@ -299,7 +307,10 @@ def main(argv: list[str] | None = None) -> int:
     print(body)
     print(f"\n[channel_audit] → {outp}", file=sys.stderr)
     if not dates:
-        print("[channel_audit] 窗口内无可用 L1_channels.csv/attribution.csv 配对数据", file=sys.stderr)
+        # m-2(Review Round 1 minor):--variant 给定时窗口内无数据,须点名实际缺失的
+        # shadow/L1_channels_<variant>.csv,不能沿用主表措辞把操作者引去查错文件。
+        src = f"shadow/L1_channels_{args.variant}.csv" if args.variant else "L1_channels.csv"
+        print(f"[channel_audit] 窗口内无可用 {src}/attribution.csv 配对数据", file=sys.stderr)
         return 1
     return 0
 

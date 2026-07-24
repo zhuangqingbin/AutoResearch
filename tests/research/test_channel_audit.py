@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 
 import pandas as pd
 
@@ -20,6 +21,7 @@ from autoresearch.research.channel_audit import (
     cumulative_ledger,
     day_channel_stats,
     jaccard_matrix,
+    main,
     render,
 )
 
@@ -295,3 +297,92 @@ def test_render_has_three_sections_and_thin_marker():
 def test_render_no_data_placeholder():
     md = "\n".join(render({"dates": [], "ledger": pd.DataFrame(), "jaccard": pd.DataFrame(), "notes": []}))
     assert "无数据" in md
+
+
+# ───────────────────────── main()(CLI 接线,Wave4 Task4 Review Round 1 I-1/m-2/m-5) ─────────────────────────
+# I-1(Important,唯一必修项):`main()` 的 `--variant` 此前只在 argparse 里注册,从未有测试
+# 证明它的值真的被送进了 `audit()` —— 变异「result = audit(days=args.days, variant=args.variant)」
+# 改成「result = audit(days=args.days)」(值被丢弃)在修复前的全套 1530 测试下零变红,因为
+# 所有既有测试都直调 `audit()`/`_load_day()`,从不经过 `main()`/argv 这条真实 CLI 入口——而
+# `channel_audit --variant plus_event` 正是本 task 十日取证的唯一判据命令(Review Round 1 原话)。
+
+_MAIN_ONLY_CHANNELS = pd.DataFrame([
+    {"channel": "main_only_channel", "code": "000001", "channel_rank": 1, "channel_score": 5.0},
+])
+
+
+def _write_main_and_shadow_day(scan_root, date, main_channels_df, shadow_channels_df, shadow_attr_df, variant):
+    """构造 `main()` 读取用的真实 staging 目录:主 L1_channels.csv(故意与影子内容不同,
+    充当"如果被误读会露馅"的指纹)+ shadow/L1_channels_<variant>.csv + retro/attribution.csv。"""
+    d = scan_root / date
+    d.mkdir(parents=True)
+    main_channels_df.to_csv(d / "L1_channels.csv", index=False)
+    (d / "shadow").mkdir()
+    shadow_channels_df.to_csv(d / "shadow" / f"L1_channels_{variant}.csv", index=False)
+    (d / "retro").mkdir()
+    shadow_attr_df.to_csv(d / "retro" / "attribution.csv", index=False)
+
+
+def test_main_variant_flag_wires_through_to_audit_and_report(tmp_path, monkeypatch):
+    """I-1 核心修复:`--variant` 的值必须真正抵达 `audit()`,不能止步于 argparse 注册。
+
+    主文件塞一个主文件独有的 channel 名(`main_only_channel`,code=000001 取自 `_DAY2_ATTR`
+    让它有真实可算的 excess_t2,不撞 `day_channel_stats` 对"channel 全体成员都不在 attribution
+    里"这个边界情形的既有行为——纯粹是"读没读到我"的指纹,不引入无关变量);shadow 塞的正是
+    既有测试 `test_audit_variant_end_to_end_uses_shadow_ledger` 验证过的组合(DAY2_CHANNELS ×
+    DAY2_ATTR → chan_a 的 unique_excess_t2 == +0.07,渲染成 "+7.00%")。两个指纹缺一不可:
+    ①报告正文必须含 shadow 独有的 "chan_a"/"+7.00%";②必须不含 main 独有的
+    "main_only_channel"——只查文件名(是否带 --variant 后缀)不足以证伪"main() 悄悄读了主表
+    却假装读了 variant"(Review Round 1 原话:文件名分支和值透传分支是两条独立的线)。
+    """
+    monkeypatch.chdir(tmp_path)
+    _write_main_and_shadow_day(Path("context/scan"), "2026-06-20",
+                               _MAIN_ONLY_CHANNELS, _DAY2_CHANNELS, _DAY2_ATTR, "plus_event")
+
+    rc = main(["--variant", "plus_event"])
+    assert rc == 0
+
+    outp = Path("reports/channel_audit_plus_event_2026-06-20.md")
+    assert outp.exists(), "报告文件名须含 --variant 后缀"
+    body = outp.read_text(encoding="utf-8")
+    assert "chan_a" in body and "+7.00%" in body, \
+        "正文须来自影子文件(chan_a 真实的 unique_excess_t2),证明 --variant 的值抵达了 audit()"
+    assert "main_only_channel" not in body, \
+        "main() 误读了主 L1_channels.csv —— --variant 的值没有被真正传进 audit()"
+    # m-5(Review Round 1 minor):变体报告须提示"其余路 unique 口径按变体路集合重算",防止
+    # 与主报告并排看被误当成数据打架。
+    assert "不逐格可比" in body and "非数据打架" in body
+
+
+def test_main_no_variant_report_filename_and_body_unchanged(tmp_path, monkeypatch):
+    """I-1 修法内"顺带"锁的 parity 项 + m-5 的反向保证:`--variant` 缺省时文件名与正文都
+    逐字节不受本轮修复影响——文件名沿用 `channel_audit_<tag>.md`(cd31179 报告 Step3 原话
+    "未给 --variant → 逐字节 parity"),正文也不该多出 m-5 新加的那行 variant 专属注记
+    (该注记由 `if args.variant:` 严格守卫)。
+    """
+    monkeypatch.chdir(tmp_path)
+    d = Path("context/scan/2026-06-20")
+    d.mkdir(parents=True)
+    _DAY1_CHANNELS.to_csv(d / "L1_channels.csv", index=False)
+    (d / "retro").mkdir()
+    _DAY1_ATTR.to_csv(d / "retro" / "attribution.csv", index=False)
+
+    rc = main([])
+    assert rc == 0
+    outp = Path("reports/channel_audit_2026-06-20.md")
+    assert outp.exists()
+    body = outp.read_text(encoding="utf-8")
+    assert "不逐格可比" not in body and "非数据打架" not in body
+
+
+def test_main_variant_empty_window_stderr_names_shadow_file(tmp_path, monkeypatch, capsys):
+    """m-2(Review Round 1 minor):`--variant` 跑而窗口内没有任何影子长表时,stderr 须点名
+    实际缺失的 `shadow/L1_channels_<variant>.csv`,不能沿用主表措辞把操作者引去查错文件
+    (首次取证必然命中这条:历史 scan 日一个影子长表都没有,Review Round 1 原话)。
+    """
+    monkeypatch.chdir(tmp_path)
+    Path("context/scan").mkdir(parents=True)   # 空目录 → _scan_dates 返回 []
+    rc = main(["--variant", "plus_event"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "窗口内无可用 shadow/L1_channels_plus_event.csv/attribution.csv 配对数据" in err

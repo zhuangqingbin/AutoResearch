@@ -315,18 +315,25 @@ def write_shadow_variants(outdir: Path, scored: pd.DataFrame, recall: pd.DataFra
 
         if "event" not in base_names:
             plus = [*base_names, "event"]
+            # m-3(Review Round 1 minor):重跑前清掉上次残留——若这次失败,except 分支不会
+            # 重新落盘,留着旧文件会被 channel_audit --variant 当成"今天的证据"误读进十日账本。
+            (sh / "L1_channels_plus_event.csv").unlink(missing_ok=True)
             try:      # event 路是本波新代码,单独兜底不牵连以上两个零成本变体
                 re_p, pc_p = recall_select(scored, analysis_date, recall_n, "multi", plus,
                                            channel_quotas=channel_quotas,
                                            channel_floors=channel_floors)
+                # m-4(Review Round 1 minor):逐路长表(仪器本体)提到 select_l2 之前落盘——
+                # L2 分层这一步失败不该连累它,它不依赖 select_l2 的产出。
+                _dump_per_channel("plus_event", pc_p)
                 variants["plus_event"], _ = select_l2(re_p, l2_n, floors=l2_floors,
                                                       sector_cap_frac=l2_sector_cap)
-                _dump_per_channel("plus_event", pc_p)
             except Exception as e:  # noqa: BLE001 — 兜底可以,静默不行(同 I-2):plus_event
                 # 是 event 路唯一的 unique_excess_t2 证据源,它悄悄不落盘 = 十日审批的账本
                 # 缺日而无人知(下面 capfloor20 早就是"告警后继续",这里对齐)。
                 print(f"[warn] shadow plus_event 失败(event 路当日无影子读数): {e!r}",
                       file=sys.stderr)
+    # m-3:capfloor20 同形(见上 plus_event 注释)——重跑前清掉上次残留,防陈旧长表被读进账本。
+    (sh / "L1_channels_capfloor20.csv").unlink(missing_ok=True)
     try:
         uni20, _ = build_market_frame(analysis_date, cap_floor_yi=20.0, include_bj=include_bj,
                                       source=source, l0_min_amount_yi=l0_min_amount_yi,
@@ -335,8 +342,8 @@ def write_shadow_variants(outdir: Path, scored: pd.DataFrame, recall: pd.DataFra
         scored20 = composite_score(uni20, weights20)
         recall20, pc20 = recall_select(scored20, analysis_date, recall_n, recall_mode, recall_channels,
                                        channel_quotas=channel_quotas, channel_floors=channel_floors)
+        _dump_per_channel("capfloor20", pc20)      # m-4:提到 select_l2 之前(理由同上 plus_event)
         variants["capfloor20"], _ = select_l2(recall20, l2_n, floors=l2_floors, sector_cap_frac=l2_sector_cap)
-        _dump_per_channel("capfloor20", pc20)
     except Exception as e:  # noqa: BLE001 — 唯一重取数变体,失败不阻其余零成本变体落盘
         print(f"[warn] shadow capfloor20 失败(不阻其余变体): {e}", file=sys.stderr)
     for vname, vdf in variants.items():
