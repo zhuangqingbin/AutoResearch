@@ -30,6 +30,7 @@ def test_code_track_record_direction_and_sign(tmp_path):
     ])
     rec = ledger.code_track_record("300857", ledger_path=p)
     assert (rec["n_dir"], rec["right"], rec["wrong"], rec["neutral"]) == (3, 2, 1, 0)
+    assert rec["n_pnl"] == 2               # I-1(M8 补强):分母=刨掉 sealed 的可实现样本
     # pnl 只有前两笔:UW sign=-1 → (+0.03) 与 (-0.01) → 均值 +1.0pp
     assert abs(rec["avg_pp"] - 1.0) < 1e-9
 
@@ -57,6 +58,7 @@ def test_render_precedent_value_presence_gated():
         5, {"n_dir": 3, "right": 2, "wrong": 1, "neutral": 0, "avg_pp": 1.0})
     assert up.startswith("近 10 扫描日入围 5 次;t1 方向 3 笔 准2/不准1")
     assert "+1.0pp" in up
+    assert "pnl n=" not in up   # m-1:rec 无 n_pnl 时不得渲染出自相矛盾的 "(pnl n=0)"
 
 
 def test_render_track_block_empty_when_no_data(tmp_path):
@@ -83,10 +85,10 @@ def test_render_discloses_pnl_sample_and_neutral(tmp_path):
     rec = ledger.code_track_record("300857", ledger_path=p)
     assert rec["n_dir"] == 3
     val = ledger.render_precedent_value(5, rec)
-    assert "中性" in val                                   # M-3:注入面不省中性
+    assert "/中性1" in val and "pnl n=2" in val    # I-1:判例行两项披露都要验数值,不靠字面蒙混
     block = ledger.render_track_block("300857", scan_root=tmp_path / "nope",
                                       ledger_path=p)
-    assert "pnl n=2" in block                              # M-2:披露 pnl 分母
+    assert "pnl n=2" in block and "/中性1" in block  # I-1:§7 同面同口径(勿分叉),两项都验数值
 
 
 def test_retro_buckets_reads_only_needed_columns(tmp_path, monkeypatch):

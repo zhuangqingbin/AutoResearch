@@ -90,7 +90,9 @@ def render_precedent_value(precedent_n: int, rec: dict) -> str:
     tail = (f";t1 方向 {rec['n_dir']} 笔 准{rec['right']}/不准{rec['wrong']}"
             f"/中性{rec.get('neutral', 0)}")
     if rec.get("avg_pp") is not None:
-        tail += f",顺方向超额均值 {rec['avg_pp']:+.1f}pp(pnl n={rec.get('n_pnl', 0)})"
+        n_pnl = rec.get("n_pnl")
+        pnl_tag = f"(pnl n={n_pnl})" if n_pnl is not None else ""
+        tail += f",顺方向超额均值 {rec['avg_pp']:+.1f}pp{pnl_tag}"
     return base + tail
 
 
@@ -101,9 +103,11 @@ def render_track_block(code6: str, *, scan_root: str | Path = "context/scan",
     buckets = retro_buckets(code6, scan_root=scan_root)
     lines: list[str] = []
     if rec.get("n_dir"):
-        avg = (f",顺方向超额均值 {rec['avg_pp']:+.1f}pp(pnl n={rec.get('n_pnl', 0)})"
+        n_pnl = rec.get("n_pnl")
+        pnl_tag = f"(pnl n={n_pnl})" if n_pnl is not None else ""
+        avg = (f",顺方向超额均值 {rec['avg_pp']:+.1f}pp{pnl_tag}"
                if rec.get("avg_pp") is not None else "")
-        small = "(⚠n<10 只看不裁)" if rec["n_dir"] < 10 else ""
+        small = " (⚠n<10 只看不裁)" if rec["n_dir"] < 10 else ""
         lines.append(f"- **t1 快环战绩**:方向判定 {rec['n_dir']} 笔,"
                      f"准{rec['right']}/不准{rec['wrong']}/中性{rec['neutral']}{avg}{small}")
     if buckets:
