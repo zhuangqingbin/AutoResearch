@@ -125,6 +125,20 @@ def test_l4_stock_workflow_sell_review_anchors():
         assert a in js, f"l4-stock.js 缺 SELL 双复核锚「{a}」"
 
 
+def test_l4_stock_workflow_dossier_summary_anchors():
+    """l4-stock.js 的 intel 已知底**消费**契约锚(Wave3.5 review R1 I-1)。
+
+    生产者(dispatch_plan)把摘要塞进 meta 只是一半——真正交付是它被拼进 Intel prompt
+    尾部。变异实测证明这条锚此前零覆盖:删掉 `${knownBase}` 拼接(=消费腿整条死掉,
+    meta 照带摘要但没人读它)后**全量 1468/1468 仍 PASS**,是本 repo 反复烧的 FN-1 族
+    (生产者接线了、消费者没接/被静默删,产物看起来一切正常)。`test_dossier_init_workflow_anchors`
+    已有同款先例。
+    """
+    js = (ROOT / ".claude" / "workflows" / "l4-stock.js").read_text(encoding="utf-8")
+    for a in ("A.dossierSummary", "knownBase", "${knownBase}", "已知底"):
+        assert a in js, f"l4-stock.js 缺 intel 已知底消费锚「{a}」"
+
+
 def test_dossier_init_workflow_anchors():
     js = (ROOT / ".claude" / "workflows" / "dossier-init.js").read_text(encoding="utf-8")
     for a in ("dossier-init", "builder", "lint", "LLM:待首覆"):

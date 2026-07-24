@@ -19,7 +19,7 @@ const name = A.name || ''
 const sector = A.sector || '行业未知'
 const cfg = A.cfg || {}
 const pinned = !!A.pinned   // dispatch-plan meta 透传;缺省 false = 现行为(parity)
-const dossierSummary = (A.dossierSummary || '').trim()   // dispatch-plan meta 透传;缺省空 = parity
+const dossierSummary = String(A.dossierSummary || '').trim()   // dispatch-plan meta 透传;缺省空 = parity(M-2:全函数防御,同款 !!A.pinned)
 const SD = `context/scan/${date}`
 const CARD = { type: 'object', required: ['code', 'rating'],
   properties: { code: { type: 'string' }, rating: { type: 'string' },

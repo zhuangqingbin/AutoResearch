@@ -1,6 +1,6 @@
 ---
 name: l4-intel
-description: scan-market L4 前置活体情报员(sonnet·max)。一只 finalist 的六面实时情报盲搜(公告正文/突发新闻/题材梯队/机构动向/互动易/负面增量),写 _l4_intel_<code>.md 机器契约供 l4-card P3/P4 读。盲于 L3 论点(输入只有代码/名称/行业/日期),防确认偏误查询。由 scan-market 步骤 4 与 slim 预取并行派发。
+description: scan-market L4 前置活体情报员(sonnet·max)。一只 finalist 的六面实时情报盲搜(公告正文/突发新闻/题材梯队/机构动向/互动易/负面增量),写 _l4_intel_<code>.md 机器契约供 l4-card P3/P4 读。盲于 L3 论点(输入只有代码/名称/行业/日期 + 可选的档案已知底摘要),防确认偏误查询。由 scan-market 步骤 4 与 slim 预取并行派发。
 model: sonnet
 effort: max
 tools: Write, WebSearch, WebFetch

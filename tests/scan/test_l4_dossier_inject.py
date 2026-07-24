@@ -81,3 +81,35 @@ def test_dispatch_meta_carries_dossier_summary(tmp_path):
     plan = dispatch_plan("2026-07-24", root=tmp_path)
     assert "业务: 算力租赁" in plan["meta"]["300857"]["dossier_summary"]
     assert plan["meta"]["002926"]["dossier_summary"] == ""     # 无档案 → 空(parity)
+
+
+def test_dispatch_meta_dossier_summary_gated_uninitiated(tmp_path):
+    """intel 已知底走 dispatch_plan 时仍受单一事实源四门约束:未首覆骨架不可注入。
+
+    review R1 I-3:变异实测把 `_dossier_summary_text` 换成绕开 `injectable_summary`
+    四门直接读摘要块的版本后,scan+agent_defs 618/618 仍 PASS——卡侧那条腿有
+    `test_mark_presence_gated_missing_and_skeleton` 锁着,intel 这条腿(经 dispatch_plan
+    的 meta)此前一条没继承,补上。
+    """
+    from autoresearch.scan.agents.l4_card import dispatch_plan
+    sd = tmp_path / "2026-07-24"
+    sd.mkdir(parents=True)
+    (sd / "finalists.csv").write_text(
+        "code,name,sector\n600006,示例票六,示例行业\n", encoding="utf-8")
+    (sd / "_l4_prompt_600006.md").write_text("x", encoding="utf-8")
+    _mk(code="600006", initiated="null")              # 骨架未首覆(四行占位是噪声)
+    plan = dispatch_plan("2026-07-24", root=tmp_path)
+    assert plan["meta"]["600006"]["dossier_summary"] == ""
+
+
+def test_dispatch_meta_dossier_summary_gated_over_cap(tmp_path):
+    """intel 已知底走 dispatch_plan 时仍受单一事实源四门约束:摘要超帽不可注入(同上,review R1 I-3)。"""
+    from autoresearch.scan.agents.l4_card import dispatch_plan
+    sd = tmp_path / "2026-07-24"
+    sd.mkdir(parents=True)
+    (sd / "finalists.csv").write_text(
+        "code,name,sector\n600007,示例票七,示例行业\n", encoding="utf-8")
+    (sd / "_l4_prompt_600007.md").write_text("x", encoding="utf-8")
+    _mk(code="600007", summary_pad="х" * 12000)        # 摘要超 3k token
+    plan = dispatch_plan("2026-07-24", root=tmp_path)
+    assert plan["meta"]["600007"]["dossier_summary"] == ""
