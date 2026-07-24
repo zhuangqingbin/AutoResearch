@@ -62,3 +62,49 @@ def test_render_precedent_value_presence_gated():
 def test_render_track_block_empty_when_no_data(tmp_path):
     assert ledger.render_track_block("300857", scan_root=tmp_path,
                                      ledger_path=tmp_path / "nope.jsonl") == ""
+
+
+def test_render_discloses_pnl_sample_and_neutral(tmp_path):
+    """M-2/M-3:样本量与中性数都要写出来(注入面读数不得含糊)。"""
+    import json
+
+    from autoresearch.dossier import ledger
+    p = tmp_path / "t1.jsonl"
+    rows = [
+        {"t": "2026-07-14", "code": "300857", "rating": "Underweight",
+         "verdict": "准", "excess_ind": -0.03, "sealed": False},
+        {"t": "2026-07-15", "code": "300857", "rating": "Sell",
+         "verdict": "准", "excess_ind": -0.02, "sealed": True},    # 计方向不计 pnl
+        {"t": "2026-07-16", "code": "300857", "rating": "Underweight",
+         "verdict": "中性", "excess_ind": 0.001, "sealed": False},
+    ]
+    p.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n",
+                 encoding="utf-8")
+    rec = ledger.code_track_record("300857", ledger_path=p)
+    assert rec["n_dir"] == 3
+    val = ledger.render_precedent_value(5, rec)
+    assert "中性" in val                                   # M-3:注入面不省中性
+    block = ledger.render_track_block("300857", scan_root=tmp_path / "nope",
+                                      ledger_path=p)
+    assert "pnl n=2" in block                              # M-2:披露 pnl 分母
+
+
+def test_retro_buckets_reads_only_needed_columns(tmp_path, monkeypatch):
+    """M-15:attribution.csv ≈5000×29,只需 code/bucket 两列。"""
+    import pandas as pd
+
+    from autoresearch.dossier import ledger
+    rd = tmp_path / "2026-07-14" / "retro"
+    rd.mkdir(parents=True)
+    (rd / "attribution.csv").write_text(
+        "code,name,bucket,fwd_2_oc\n300857,协创,recalled_cut,0.01\n", encoding="utf-8")
+    seen = {}
+    real = pd.read_csv
+
+    def spy(path, **kw):
+        seen.update(kw)
+        return real(path, **kw)
+
+    monkeypatch.setattr(pd, "read_csv", spy)
+    assert ledger.retro_buckets("300857", scan_root=tmp_path) == {"recalled_cut": 1}
+    assert set(seen.get("usecols") or []) == {"code", "bucket"}
