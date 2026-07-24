@@ -43,7 +43,7 @@
     // 启用的召回通道。整编后 9 路(2026-07-11 channel_audit 13日累计裁决):
     //   剔 accumulation(unique超额T2 −0.21%=唯一实数据负路)、northbound(hk_ratio T+2 IC −0.108);
     //   保 momentum(unique +0.75% 为正,单日 −1.35% 是噪声);reversal_confirm 与旧 reversal 并跑 A/B(≥10日再裁)。
-    //   删掉本行 = 用全部注册通道(11路)。
+    //   删掉本行 = 用全部注册通道(12 路,含未取证的 event —— 删本行会把它一并上线,违反 pr_20260725_001 的入场纪律)。
     "recall_channels": ["composite", "momentum", "reversal_confirm", "reversal", "value", "main_fund", "heat", "growth", "healthy"],
     // 各路配额覆盖(Task 8 起 recall_select 真消费,build/quota_union 都吃覆盖后的 effective spec)。
     // heat 200→150:pr_20260711_003 提案 200→100(unique超额T2 全表最弱正值+与 momentum Jaccard

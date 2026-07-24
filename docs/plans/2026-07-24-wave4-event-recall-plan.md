@@ -642,14 +642,14 @@ print('有正催化 n=%d fwd_2 %+.2f%% | 无 n=%d %+.2f%% | 差 %+.2fpp t=%.2f p
 - `STAGES.md` 的 L1 通道表加 `event` 行(quota 80/floor 20,标注**默认停用·取证中**),影子节加 `plus_event` 与"影子现在也落逐路长表"。
 - 本计划尾部追加 `## 冒烟实录(2026-07-24)`,记 Step 1-3 的**真实读数**与任何降级。
 - `.superpowers/sdd/progress.md` 收口。
-- **建 proposal**:`pr_20260724_001`「event 召回路启用」,状态 `pending`,判据写死「`channel_audit --variant plus_event` 的 `unique_excess_t2` 累计 ≥10 数据日且 >0」。
+- **建 proposal**:`pr_20260725_001`「event 召回路启用」,状态 `pending`,判据写死「`channel_audit --variant plus_event` 的 `unique_excess_t2` 累计 ≥10 数据日且 >0」。
 
 - [ ] **Step 5: 全量回归 + Commit**
 
 ```bash
 uv run --no-sync python -m pytest -q && uv run --no-sync ruff check autoresearch tests
 git add .claude/skills/scan-market/STAGES.md docs/plans .superpowers/sdd/progress.md
-git commit -m "docs(scan): Wave4 event 路接线文档 + 冒烟实录 + pr_20260724_001 取证判据"
+git commit -m "docs(scan): Wave4 event 路接线文档 + 冒烟实录 + pr_20260725_001 取证判据"
 ```
 
 ---
@@ -686,7 +686,7 @@ git commit -m "docs(scan): Wave4 event 路接线文档 + 冒烟实录 + pr_20260
 
 **本波逮到的真缺陷(复核循环,1 critical + 12 important)**:
 - 🔴 **L2 加「事件」桶 floor=10 → 未启用的功能天天在改生产**:`DEFAULT_FLOORS` 总和 93→103 使 `merit_need` 107→97,**每天恰好翻 10 行 `l2_lane_reserved` 标签**,而该标签有三个真消费者(喂 l3-rank 的表分块渲染 / `force_full_card` 决定满卡还是早停 / `retro.floor_experiment` 的闭环账本分组)。29 日真数据对拍:L2 选中集合逐日一致(万幸),但 `l2_rank` 每天变 24-61 行。修=`"事件": 0` + 长效守卫测试(未启用通道的 floor 必须为 0)。**教训:「默认不启用」必须连它的副作用一起不启用。**
-- **两次"数行数 ≠ 数事件"**:①`ev_pos` 裸相加被调研人次主导(一次接待 82 家机构 = 82,一次回购实施 = 1);②修完又发现 `ev_holder_in` 数的是原始分笔行——湖内 13% 完全重复行,`ev_holder_in>1` 的 84% 只有一个 `ann_date`,榜首 601009 是 1 股东 1 公告 9 分笔。改按 `nunique(ann_date)` 后 top10 换掉 80%。**同一个病在同一波里被逮两次。**
+- **两次"数行数 ≠ 数事件"**:①`ev_pos` 裸相加被调研人次主导(一次接待 82 家机构 = 82,一次回购实施 = 1);②修完又发现 `ev_holder_in` 数的是原始分笔行——湖内 13% 完全重复行,`ev_holder_in>1` 的 75.8%(25/33)只有一个 `ann_date`,榜首 601009 是 1 股东 1 公告 9 分笔。改按 `nunique(ann_date)` 后 top10 换掉 80%。**同一个病在同一波里被逮两次。**
 - **23% 名额靠任意行序**:`ev_hard` 是离散小整数(≥2 仅 62 只而 ==1 有 208 只),`gate_rank` 无二级键 → quota=80 里 18 席从并列票按 `build_market_frame` 原始行序切。修=复合分让 composite 决胜。
 - **测试挂在活网络上**:多个新测试没 patch `_trade_days_for` → 真发 tushare `trade_cal` 请求;无 token 时直接红,且反重试断言在离线时**恒过=零鉴别力**。
 - **两处文档说假话**:单腿告警的注释引了一个实测不触发的场景;Task 1 的 doc rot 三处(l3-rank.md 仍把恒空的 `news_sent` 当 rubric 输入)。

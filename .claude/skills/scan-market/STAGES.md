@@ -57,7 +57,7 @@ L0 选集  →  L1 召回  →  L2 粗排  →  L3 精排(两遍法)      →  L
 
 多路策略并行,每路都"过门 → 按信号排序 → 截 top-quota",再 `quota_union` 合并(各路 floor 保底多样性),带 provenance。默认 `--recall-mode multi`。
 
-**已注册 11 路通道**(启用哪些由 `scan_config.jsonc` 的 `funnel.recall_channels` 决定;当前默认启用 9 路):
+**已注册 12 路通道**(含 Wave4 新增、**默认停用·取证中**的 `event`;启用哪些由 `scan_config.jsonc` 的 `funnel.recall_channels` 决定,当前默认启用 9 路——**该 key 缺省 = 用全部 12 路**,删掉整行会把 `event` 一并上线,违反 `pr_20260725_001` 的入场纪律):
 
 | 通道 | quota/floor | 信号 |
 |---|---|---|
@@ -72,7 +72,7 @@ L0 选集  →  L1 召回  →  L2 粗排  →  L3 精排(两遍法)      →  L
 | healthy | 150/40 | 质量上涨(0<pct60<40 且 主力净流入>0 且 cmf>0);补的是旧 composite 把这类品相排到 4000+ 名外的空洞 |
 | accumulation | 120/30 | 底部吸筹 —— **默认停用**(累计 unique 超额 −0.21%,并入 reversal_confirm) |
 | northbound | 120/30 | 北向持股 —— **默认停用**(hk_ratio T+2 IC −0.108,信息已在 L4 简报行) |
-| **event** | 80/20 | 公告事件(近 10 日回购实施/预案 · 增持按 `nunique(ann_date)` · 调研只作有无)—— **默认停用·取证中**(`pr_20260725_001`)。信号来自 `scan/events.py` 全市场事件计数(复用 `l3_catalyst.catalyst_counts`,湖优先),排序键 `ev_hard` + composite 决胜;**不用当日涨幅**(07-21 实证:当日 ≥9.5% 的 350 只 fwd_2_oc −2.06% vs 市场 +1.60%,超额 −3.67pp t=−11.91 = 追涨为负价值)。L2「事件」桶 floor **=0**(未启用通道不得改生产 L2 分布——加 floor 会改 `merit_need` 进而每天翻 10 行 `l2_lane_reserved` 标签,而该标签喂 L3 表/`force_full_card`/`floor_experiment`)。首读(07-21,n=1 不裁决):会员面零 edge、**边际面 unique 40 只超额 −1.01pp(t=−1.83)**。判据:`channel_audit --variant plus_event` 的 `unique_excess_t2` 累计 ≥10 日 >0 才提启用,维持为负则退役 |
+| **event** | 80/20 | 公告事件(近 10 日回购实施/预案与增持均按公告去重:回购 `(ts_code,ann_date,proc)`、增持 `nunique(ann_date)` · 调研只作有无)—— **默认停用·取证中**(`pr_20260725_001`)。信号来自 `scan/events.py` 全市场事件计数(复用 `l3_catalyst.catalyst_counts`,湖优先),排序键 `ev_hard` + composite 决胜;**不用当日涨幅**(07-21 实证:当日 ≥9.5% 的 350 只 fwd_2_oc −2.06% vs 市场 +1.60%,超额 −3.67pp t=−11.91 = 追涨为负价值)。L2「事件」桶 floor **=0**(未启用通道不得改生产 L2 分布——加 floor 会改 `merit_need` 进而每天翻 10 行 `l2_lane_reserved` 标签,而该标签喂 L3 表/`force_full_card`/`floor_experiment`)。首读(07-21,n=1 不裁决):会员面零 edge、**边际面 unique 40 只超额 −1.01pp(t=−1.83)**。判据:`channel_audit --variant plus_event` 的 `unique_excess_t2` 累计 ≥10 日 >0 才提启用,维持为负则退役 |
 
 **配额覆盖已接线生效(2026-07-11)**:`scan_config.jsonc` 的 `funnel.channel_quotas` 当前生效 **value 250 / heat 150 / main_fund 150**(channel_ledger advisory 档,拍板 5);兜底读取在 `universe.run` 本体(`_funnel_overlay`,FN-1 第三修——prelude/`universe.main` 直调路径同样生效,显式参数/CLI flag 恒优先,缺文件=注册表默认 parity)。影子变体(`pre_healthy`/`capfloor20`)同口径透传,反事实不受配额差异污染。
 
@@ -87,7 +87,7 @@ L0 选集  →  L1 召回  →  L2 粗排  →  L3 精排(两遍法)      →  L
 **已知局限:**
 
 - risk_off 样本薄(仅 11 日);horizon 之争未决(`pr_20260702_001`,T+1 与 fwd_5 待数据裁决)。
-- 影子漏斗:`--no-shadow` 不加时产 3 个变体(`nostrat` / `nocap` / `pre_healthy`)落 staging,由 retro 对照捕获,累计 ≥10 日才提 proposal。
+- 影子漏斗:`--no-shadow` 不加时产 **5** 个变体(`nostrat` / `nocap` / `pre_healthy` / `plus_event` / `capfloor20`)落 staging,由 retro 对照捕获,累计 ≥10 日才提 proposal。**Wave4 起影子也落逐路长表** `L1_channels_<variant>.csv`(列同主 `L1_channels.csv`),由 `channel_audit --variant <name>` 消费算 `unique_excess_t2`(此前影子只落 L2 粗读数,新召回路无法按 accumulation 当年被裁同口径裁决,本波头号交付物)。`pre_healthy` 语义 **2026-07-25 起变更**(cd31179):基准从"全注册路"改为"当日实际启用路"(修复反事实混入已停用的 accumulation/northbound)——跨该日期读 `L2_pre_healthy.csv` 趋势线有定义断层,复盘时别直接连线。
 
 ---
 
