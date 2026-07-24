@@ -91,7 +91,12 @@ def test_reconcile_undisclosed_then_real_upgrades_s5_line():
 
 
 def test_reconcile_real_then_undisclosed_does_not_downgrade():
-    """已有真数据行,后续再查到未披露(如误触发/端点抖动)不得覆盖——真数据优先。"""
+    """已有真数据行,后续再查到未披露(如误触发/端点抖动)不得覆盖——真数据优先。
+
+    T3-m-4(2026-07-24 终审同批建议):I-2 的第二半此前无钉子——真数据分支写
+    `last_refresh`(D1)后,D2 未披露分支必须**不**把钟拨到 D2(否则「全量核对」的
+    语义被未披露污染)。断言 D2 后 `last_refresh` 仍停在 D1,不前进到 D2。
+    """
     _mk_dossier(code="601869")
     df = pd.DataFrame([{"ann_date": "20260828", "n_income": 2.5e8,
                         "yoy_net_profit": 2.0e8, "diluted_eps": 0.85}])
@@ -112,6 +117,9 @@ def test_reconcile_real_then_undisclosed_does_not_downgrade():
     # §8 仍按日志语义留一条未披露记账(不影响 §5 结论)
     assert "2026-09-01 季度对账 20260630:两端点均无数据,未披露" in delta.section_body(
         schema.dossier_path("601869").read_text(encoding="utf-8"), 7)
+    fm = schema.parse_frontmatter(
+        schema.dossier_path("601869").read_text(encoding="utf-8"))
+    assert fm["last_refresh"] == "2026-08-29"     # D2 未披露不得把钟拨到 D2(T3-m-4)
 
 
 def test_reconcile_undisclosed_rerun_is_idempotent():
@@ -227,7 +235,13 @@ def test_reconcile_yoy_missing_base_no_yoy_segment_but_profit_still_renders():
 
 
 def test_reconcile_sets_last_refresh():
-    """季度对账 = 报告期全量核对 → 写 last_refresh(spec:中报季强制全量刷新)。"""
+    """季度对账 = 报告期全量核对 → 写 last_refresh(spec:中报季强制全量刷新)。
+
+    N-12(2026-07-24 终审记账):本条是 `last_refresh` 写入路径的**唯一**守卫
+    (跨 task 变异 M6 实测:删掉 `reconcile_one` 里那行 `set_frontmatter_key(...,
+    "last_refresh", ...)` 后,全量回归里只有本条测试变红)。删本文件前先确认
+    有等价断言接手,否则该写入路径会静默失守。
+    """
     import pandas as pd
 
     from autoresearch.dossier import reconcile, schema
@@ -256,3 +270,18 @@ def test_reconcile_main_rejects_malformed_today(capsys):
         _reconcile.main(["20260630", "--code", "300857", "--today", "20260830"])
     assert exc.value.code != 0
     assert "--today" in capsys.readouterr().err
+
+
+def test_reconcile_main_rejects_malformed_period(capsys):
+    """Wave3.5 终审 I-1(镜像上面的 `..._rejects_malformed_today`):`period` 位置参此前
+    零格式校验——手误带横杠(如 `2026-06-30`)让 tushare 两端点必然皆空,必走 undisclosed
+    分支,把畸形串永久写进(默认全池 active 时**每一份**)档案的 §5+§8(终审活体复现)。
+    堵在源头:格式非法 → `ap.error` 报错退出(非零 code),不落任何笔、不碰任何一份档案。
+    """
+    import pytest
+
+    from autoresearch.dossier import reconcile as _reconcile
+    with pytest.raises(SystemExit) as exc:
+        _reconcile.main(["2026-06-30", "--code", "300857"])
+    assert exc.value.code != 0
+    assert "period" in capsys.readouterr().err

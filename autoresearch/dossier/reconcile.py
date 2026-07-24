@@ -174,12 +174,36 @@ def _valid_date(s: str) -> bool:
         return False
 
 
+def _valid_period(s: str) -> bool:
+    """YYYYMMDD 格式校验(`main` 的 `period` 位置参源头校验,镜像 `_valid_date`)。
+
+    Wave3.5 终审 I-1:本波刚给隔壁 `--today` 立的"格式非法 → `ap.error`"规矩,在
+    `period` 这个位置参上原样再犯一次——零校验。活体已复现:手误传 `2026-06-30`
+    (带横杠)让 tushare `express`/`forecast` 两端点必然皆空 → 必走 undisclosed 分支
+    → 那个畸形串被写进(默认全池 active 时**每一份**)档案的 §5+§8、`last_delta`
+    前进;`_upsert_period_line` 按 `mark = f"季度对账 {period}"` 定位,畸形 period
+    自成一个永不会被正确重跑命中的 mark → **§5 里这行垃圾是永久的**;`lint_dossier`
+    不查日期/期号、📐 nag 判据用规范 period,两边都不报。堵在写入前比事后探测更彻底。
+    """
+    s = str(s)
+    if len(s) != 8 or not s.isdigit():
+        return False
+    from datetime import date as _date
+    try:
+        _date(int(s[:4]), int(s[4:6]), int(s[6:8]))
+        return True
+    except Exception:  # noqa: BLE001 — 任何解析失败都算不合法
+        return False
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="dossier 季度对账(express/forecast vs §2 快照;确定性)")
     ap.add_argument("period", help="报告期 YYYYMMDD,如 20260630")
     ap.add_argument("--code", default=None, help="单票;缺省 = 全池 active")
     ap.add_argument("--today", default=None, help="记账日 YYYY-MM-DD,缺省=今天")
     args = ap.parse_args(argv)
+    if not _valid_period(args.period):
+        ap.error(f"period 格式非法(需 YYYYMMDD,如 20260630):{args.period!r}")
     from datetime import datetime
     today = args.today or datetime.now().strftime("%Y-%m-%d")
     if not _valid_date(today):
