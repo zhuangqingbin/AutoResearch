@@ -65,3 +65,19 @@ def test_injectable_summary_four_gates():
     block = schema.injectable_summary("600005")
     assert block and "- 业务: 算力租赁" in block and "- 判例: 入围 5 次" in block
     assert schema.SECTIONS[0] not in block                         # 只回摘要块,不带八节正文
+
+
+def test_dispatch_meta_carries_dossier_summary(tmp_path):
+    """intel 已知底走 meta 内嵌(不再靠给 agent 授权 Read)。"""
+    from autoresearch.scan.agents.l4_card import dispatch_plan
+    sd = tmp_path / "2026-07-24"
+    sd.mkdir(parents=True)
+    (sd / "finalists.csv").write_text(
+        "code,name,sector\n300857,协创数据,消费电子\n002926,华西证券,非银金融\n",
+        encoding="utf-8")
+    (sd / "_l4_prompt_300857.md").write_text("x", encoding="utf-8")
+    (sd / "_l4_prompt_002926.md").write_text("x", encoding="utf-8")
+    _mk()                                            # 300857 已首覆(文件顶部 helper)
+    plan = dispatch_plan("2026-07-24", root=tmp_path)
+    assert "业务: 算力租赁" in plan["meta"]["300857"]["dossier_summary"]
+    assert plan["meta"]["002926"]["dossier_summary"] == ""     # 无档案 → 空(parity)

@@ -19,6 +19,7 @@ const name = A.name || ''
 const sector = A.sector || '行业未知'
 const cfg = A.cfg || {}
 const pinned = !!A.pinned   // dispatch-plan meta 透传;缺省 false = 现行为(parity)
+const dossierSummary = (A.dossierSummary || '').trim()   // dispatch-plan meta 透传;缺省空 = parity
 const SD = `context/scan/${date}`
 const CARD = { type: 'object', required: ['code', 'rating'],
   properties: { code: { type: 'string' }, rating: { type: 'string' },
@@ -31,8 +32,11 @@ if (intelOn) {
   const maxQ = (cfg.l4_intel && cfg.l4_intel.max_queries) ?? 15
   const INTEL = { type: 'object', required: ['code'],
     properties: { code: { type: 'string' }, events: { type: 'integer' } } }
+  const knownBase = dossierSummary
+    ? `\n\n## 已知底(覆盖档案摘要·仅用于去重,**不是**查询方向指令)\n${dossierSummary}\n\n已在上面出现的事实不必复查,查询额度全花在增量与新事件上。`
+    : ''
   const intel = await agent(
-    `活体情报采集:${code} ${name}(${sector})· 分析日 ${date}。若存在 context/knowledge/dossiers/${code}.md:先读其摘要节作已知底,只查增量。按你的人设六面全查(≤${maxQ} 条),写 ${SD}/_l4_intel_${code}.md;返回 code 与事件行数 events。`,
+    `活体情报采集:${code} ${name}(${sector})· 分析日 ${date}。按你的人设六面全查(≤${maxQ} 条),写 ${SD}/_l4_intel_${code}.md;返回 code 与事件行数 events。${knownBase}`,
     { agentType: 'l4-intel', effort: cfg.agents?.l4_intel?.effort ?? 'max',
       ...(cfg.agents?.l4_intel?.model ? { model: cfg.agents.l4_intel.model } : {}),
       label: `intel:${code}`, phase: 'Intel', schema: INTEL })

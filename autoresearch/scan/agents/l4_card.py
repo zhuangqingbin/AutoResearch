@@ -261,6 +261,15 @@ def _precedent_mark(base: Path, code6: str, sector, gate_hint: str | None = None
     return "\n".join(out)
 
 
+def _dossier_summary_text(code6: str) -> str:
+    """给 intel 内嵌用的档案摘要纯文本;不可注入 → ""(与卡注入同一事实源)。"""
+    try:
+        from autoresearch.dossier import schema as dschema
+        return dschema.injectable_summary(code6).strip()
+    except Exception:  # noqa: BLE001 — 档案层可选
+        return ""
+
+
 def _dossier_summary_mark(code6: str) -> str:
     """Wave3 ④:覆盖档案摘要注入(presence-gated)。
 
@@ -773,7 +782,10 @@ def dispatch_plan(date: str, root: Path | str | None = None) -> dict:
         if (scan_dir / f"_l4_prompt_{code6}.md").exists():
             dispatch.append(code6)
             meta[code6] = {"name": _cell(r, "name"), "sector": _cell(r, "sector"),
-                           "pinned": _cell(r, "lane").strip() == "pinned"}
+                           "pinned": _cell(r, "lane").strip() == "pinned",
+                           # Wave3.5:intel 已知底「内嵌代替授权」——摘要文本随 meta 走,
+                           # workflow 内嵌进 intel prompt,agent 因此无需 Read 权限(结构性盲回工具级)。
+                           "dossier_summary": _dossier_summary_text(code6)}
             continue
         details = scan_dir / "details" / f"{code6}.md"
         if details.exists():
@@ -781,7 +793,10 @@ def dispatch_plan(date: str, root: Path | str | None = None) -> dict:
         else:
             dispatch.append(code6)   # 两者皆无(异常):兜底走正常派发,不静默丢票
             meta[code6] = {"name": _cell(r, "name"), "sector": _cell(r, "sector"),
-                           "pinned": _cell(r, "lane").strip() == "pinned"}
+                           "pinned": _cell(r, "lane").strip() == "pinned",
+                           # Wave3.5:intel 已知底「内嵌代替授权」——摘要文本随 meta 走,
+                           # workflow 内嵌进 intel prompt,agent 因此无需 Read 权限(结构性盲回工具级)。
+                           "dossier_summary": _dossier_summary_text(code6)}
     return {"dispatch": dispatch, "reused": reused, "meta": meta}
 
 

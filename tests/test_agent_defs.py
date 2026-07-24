@@ -96,16 +96,17 @@ def test_macro_brief_anchors_synced():
 
 
 def test_l4_intel_def():
-    """l4-intel:sonnet·max 盲搜情报员;结构性盲(仅 Read 档案已知底,无 Grep/Glob);六面契约锚在位。
+    """l4-intel:sonnet·max 盲搜情报员;**结构性盲=工具级**(无 Read/Grep/Glob);六面契约锚在位。
 
-    Wave3 ④:Read 加入 tools 是为读覆盖档案「## 摘要(注入用)」节作已知底(标题级历史事实,
-    非 L3 当日论点)——不破盲搜的防污染设计,Grep/Glob(可探索仓库)仍禁。
+    Wave3.5:档案已知底改由派发 prompt **内嵌摘要文本**提供(内嵌代替授权)——
+    盲性回到工具级保证,不再靠"授权 Read + 人设自觉"(同目录躺着 _l3_table.md)。
     """
     text = _agent_text("l4-intel")
     head = text.split("---", 2)[1]
     assert "model: sonnet" in head and "effort: max" in head
-    assert "WebSearch" in head and "WebFetch" in head and "Write" in head and "Read" in head
-    assert "Grep" not in head and "Glob" not in head, "结构性盲:不得有 Grep/Glob(可探索仓库)"
+    assert "WebSearch" in head and "WebFetch" in head and "Write" in head
+    for banned in ("Read", "Grep", "Glob"):
+        assert banned not in head, f"结构性盲:不得有 {banned}(可读/探索仓库)"
     for a in ("事件段", "题材段", "机构段", "互动段", "负面增量段", "声明行",
               "as-of", "六面全查", "≤15", "净分", "只报本票事实", "只攒料不判断", "不编", "盲",
               "已知底"):
