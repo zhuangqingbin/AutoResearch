@@ -114,7 +114,7 @@ def refresh(today: str, *, scan_root: str | Path = "context/scan",
             retired.append(c)
 
     actives = [c for c, s in stocks.items() if s.get("status") == "active"]
-    if len(actives) > pool.get("cap", 30):           # cap FIFO(pinned 永不被 cap 退)
+    if len(actives) > pool.get("cap", 30):           # cap LRU:按 last_selected 升序驱逐,不是入池序 FIFO(pinned 永不被 cap 退)
         evictable = sorted((c for c in actives if c not in kept),
                            key=lambda c: stocks[c].get("last_selected") or "")
         for c in evictable[:len(actives) - pool["cap"]]:

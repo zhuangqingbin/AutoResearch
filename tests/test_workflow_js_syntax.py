@@ -63,11 +63,16 @@ def test_workflow_js_compiles(path):
 
 @pytest.mark.skipif(_NODE is None, reason="本机无 node,跳过(见模块 docstring)")
 def test_probe_has_discriminating_power_that_node_check_lacks(tmp_path):
-    """反证探针本身有鉴别力,且 `node --check` 对同一份坏文件确实盲(I-2 实证,原地自证)。
+    """反证探针本身有鉴别力,且(本机 node 版本上)`node --check` 对同一份坏文件确实盲
+    (I-2 实证,原地自证)。
 
     造一份语法损坏的 workflow 文件(保留首行 `export const meta = {`,破坏后续一处模板串),
-    `node --check` 必须 exit 0(=盲,复现报告里的假绿灯);本文件的 AsyncFunction 探针必须
-    exit 非 0(=抓到)。两者都不成立就说明本文件挑的探针配方站不住。
+    本文件的 AsyncFunction 探针必须 exit 非 0(=抓到,硬性要求,不随 node 版本变化)。
+    `node --check` 在本机(v25.7.0)上 exit 0(=盲,复现报告里的假绿灯)——但那是 node
+    版本行为,不是探针的责任(老版本 node <~22 上 `node --check` 本就会正确抓到这类坏
+    文件)。T2-R2-M-6(2026-07-24 终审同批建议):不再钉死 `node_check.returncode == 0`
+    ——原强断言把本机 node 版本行为钉进了测试,换个 node 版本会让健康仓库直接变红;
+    两者结论不同即可(探针必抓到、`node --check` 抓没抓到只作记录,不再要求它必须是 0)。
     """
     src = (WORKFLOWS_DIR / "l4-stock.js").read_text(encoding="utf-8")
     assert "const knownBase = dossierSummary" in src, "样本锚点漂移,先更新本探针测试"
@@ -78,9 +83,11 @@ def test_probe_has_discriminating_power_that_node_check_lacks(tmp_path):
 
     node_check = subprocess.run([_NODE, "--check", str(broken_path)],
                                  capture_output=True, text=True, timeout=10, check=False)
-    assert node_check.returncode == 0, (
-        "`node --check` 意外抓到了坏文件——若 node 版本行为已变,I-2 的教训措辞需要跟着更新")
-
     probe = subprocess.run([_NODE, "-e", _PROBE_JS, "--", str(broken_path)],
                             capture_output=True, text=True, timeout=10, check=False)
     assert probe.returncode != 0, "AsyncFunction 探针未能抓到故意打坏的语法——探针本身失效"
+    # 唯一硬性要求:探针不劣于 `node --check`(node_check 抓到时探针不得反而没抓到)。
+    # 不再钉死 `node_check.returncode == 0` 本身——那是本机 node 版本行为,换版本后
+    # `node --check` 也可能自己抓到(两者结论相同,不代表探针失效)。
+    assert not (node_check.returncode != 0 and probe.returncode == 0), (
+        "反向失败:node --check 抓到了、探针反而没抓到——探针比 node --check 还弱")

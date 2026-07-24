@@ -591,3 +591,51 @@ git commit -m "docs(scan): STAGES/SKILL 补覆盖档案全链 + Wave3.5 冒烟�
 2. **Placeholder 扫描**:无 TBD;三处「以现场为准」都给了定位锚与不变量(只追加不改既有键 / 照抄同款追加模式 / 先跑测试确认),不是留白。
 3. **类型一致性**:`staleness_issues -> list[str]` 与 `lint_dossier` 同形;`code_track_record` 新增 `n_pnl` 后三个渲染消费者已同步;`dossier_summary` 键在 meta/js/SKILL 三处同名。
 4. **风险自查**:T2 引入「又一个必传 args」——缓解写进 SKILL(漏传只退化为 Wave3 前行为,非错误结果),且与 `pinned` 漏传(SELL 双复核断链)后果等级不同,不需要新探针。
+
+---
+
+## 冒烟实录(2026-07-24)
+
+> N-7(终审同批建议):Task 5 Step 4 的控制端活体冒烟当时只活在会话里,`## 冒烟实录` 节
+> 从未回填(`71eeb8f` 只动了 2 个 `.claude` 文件)。以下抄自终审 `.superpowers/sdd/final-review-wave35.md`
+> 记录的控制端真实读数(只读,未改真档案一字节;真档案 `context/knowledge/dossiers/*.md`
+> mtime 全程停在 `Jul 24 21:44`)。
+
+**池状态**:`context/knowledge/coverage_pool.json` 现有 **30 只 active**、**4 份已建档**
+(`002371`/`300857`/`601869`/`688766`)、**26 只 `pending_init`**(逐晚 ≤3 只消化)。
+
+**§4/§6 δ 刷新(spec ① 表「每次 δ」)**:4 份真档案的 §4/§6 已带 `_素材 as-of 2026-07-21_`
+且内容取自真 staging(不是建档日快照)。腿级守卫(C-1)在真数据上现形——只有缺料的
+那条腿被跳过,另一条腿的旧真内容保留:
+
+```
+sections_skipped = {'300857': ['§4.seats'], '688766': ['§4.pledge', '§4.seats'], '601869': ['§4.seats']}
+```
+
+**`sections_skipped` 可观测性(I-2 修复前的活体基线)**:控制端当天读数 = **3/4 份档案有跳过标签**
+——是生产常态(席位腿每天只有 0~4/12 只票有行),不是边缘态;修复前 `assemble` 终端
+一个字都不打印这个键(只印 `issues`)。本轮已修:`assemble.py` 现镜像 `issues` 的打印
+方式,新增一行 `[dossier] ℹ️ §4/§6 跳过刷新(素材缺,保留旧值):<code> <sections>`,
+并补测试 `test_is_real_publish_prints_dossier_sections_skipped` 锁住这条打印。
+
+**`last_refresh` 写入(M-13)**:`reconcile.py` 真数据分支写 `last_refresh`,未披露分支
+**不写**(有钉子测试 `test_reconcile_sets_last_refresh` + 本轮新增的
+`test_reconcile_real_then_undisclosed_does_not_downgrade` 尾部断言,T3-m-4)。
+
+**回归基线**(终审独立复跑,非转述):全量 `uv run --no-sync python -m pytest -q` =
+**1486 passed**;`uv run --no-sync ruff check autoresearch tests` = All checks passed;
+`git status --porcelain` 空,HEAD=`76e697d`。
+
+**7 个跨 task 关键不变量变异测试 7/7 全杀**(`_staging_dir_for`/`_dossier_summary_text`/
+`staleness_age`/`sections_skipped`/`n_pnl`/`last_refresh`/批量层收键逻辑),细节见终审
+`final-review-wave35.md` 跨 task 接缝专项③表。
+
+**本轮(Wave3.5 终审 fixer)追加验证**:上面 📐/🕰️ 两行读数是终审给「下次真扫描」的
+**预期验收基准**(非当次观测值)——本轮 fixer 直接只读查了一次真池当前状态,发现
+`dossier_reconcile_nag('2026-07-24')` 与 `dossier_staleness_nag('2026-07-24')` 当前
+**均为空串**(4 份档案 §5 已各有一行 `季度对账 20251231`,系终审复核**之前**某次真实
+`reconcile` 调用留下,`last_refresh` 仍为 `None`——早于 Task 3 补上 `last_refresh` 写入
+那行代码;`initiated=2026-07-23` 距今 1 日,远未过 90 日陈旧阈值)。这不是本轮改动引入
+的回归(`git status --porcelain` 收尾仍空,真档案 mtime 未变),只是记账:8 月中报季
+真正的披露窗口打开、`_recent_periods` 滚到下一个报告期后,📐/🕰️ 才会再度按终审给的
+判据出现非空读数,是该验收项的第一次真实触发,留给「下次真扫描验收追加项」#8 覆盖。

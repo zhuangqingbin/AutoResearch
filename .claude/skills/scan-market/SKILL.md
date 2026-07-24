@@ -108,7 +108,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
    uv run --no-sync python -m autoresearch.dossier.reconcile <period>          # 季度对账(中报/年报披露后,如 20260630)
    ```
    - **建档队列**:`pending_init` 里的票逐只派 `.claude/workflows/dossier-init.js`(**≤3 只/晚**,每只 ~10-20min);新 agent def 落盘当会话派发会 `not found`(会话启动装载),等热载或换会话。
-   - **prelude 会替你催**:📐 = 该报告期未对账、🕰️ = 档案 >90 日未全量刷新(该票补一次 `dossier-init --force` 或对账)。
+   - **prelude 会替你催**:📐 = 该报告期未对账、🕰️ = 档案 >90 日未全量刷新——解药是该票跑一次**成功的季度对账**(`dossier.reconcile <period>`,唯一写 `last_refresh` 的路径);要重做首覆需先 `builder --force`(**不是** `dossier-init --force`,该 flag 不存在;对已建档票重派 `dossier-init` 是 no-op,清不掉 🕰️)再派 `dossier-init`,注意 `builder --force` 会清空 `initiated`/`last_refresh`,该票期间会同时退出 🕰️ 与 `pending_init` 两个探针视野。
    - 未披露也会落痕(不是"没跑"),所以 📐 计数应随对账动作**下降**;天天恒定 = 探针坏了。
 
 ## 铁律
