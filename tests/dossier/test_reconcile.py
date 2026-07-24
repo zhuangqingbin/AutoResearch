@@ -47,6 +47,77 @@ def test_reconcile_forecast_fallback_and_undisclosed():
     res2 = reconcile.reconcile_one("002371", "20261231", "2027-01-05",
                                    fetch=_fake_fetch())
     assert res2["skipped"] == "undisclosed"
+    # R2-I-1:未披露也落痕(此前只 skip、档案零字节改动,nag 永远无法清除)
+    assert res2["recorded"] is True
+    text = schema.dossier_path("002371").read_text(encoding="utf-8")
+    s5 = delta.section_body(text, 4)
+    assert "季度对账 20261231" in s5 and "未披露" in s5
+    assert "季度对账 20261231" in delta.section_body(text, 7)      # §8 同款留痕
+    assert schema.parse_frontmatter(text)["last_delta"] == "2027-01-05"
+    # 20260630(forecast 真数据)那行不受影响
+    assert "+30%~+50%" in s5
+
+
+# ───────── R2-I-1:未披露留痕的升级/降级/幂等三条规则 ─────────
+
+
+def test_reconcile_undisclosed_then_real_upgrades_s5_line():
+    """未披露先落痕,真数据来后整行替换(升级)——§5 该 period 仍只一行且是真数据。"""
+    _mk_dossier(code="002371")
+    res1 = reconcile.reconcile_one("002371", "20251231", "2026-07-24",
+                                   fetch=_fake_fetch())
+    assert res1["skipped"] == "undisclosed" and res1["recorded"] is True
+    s5_1 = delta.section_body(
+        schema.dossier_path("002371").read_text(encoding="utf-8"), 4)
+    assert "季度对账 20251231" in s5_1 and "未披露" in s5_1
+
+    df = pd.DataFrame([{"ann_date": "20260227", "n_income": 2.08e8,
+                        "yoy_net_profit": 2.92e8, "diluted_eps": 1.41}])
+    res2 = reconcile.reconcile_one("002371", "20251231", "2026-08-29",
+                                   fetch=_fake_fetch(express_df=df))
+    assert res2["updated"] and res2["kind"] == "express"
+    s5_2 = delta.section_body(
+        schema.dossier_path("002371").read_text(encoding="utf-8"), 4)
+    marked = [ln for ln in s5_2.splitlines() if ln.startswith("- **季度对账 20251231**")]
+    assert len(marked) == 1                     # 同 period 仍只一行,未叠加
+    assert "未披露" not in marked[0]
+    assert "净利 2.1亿" in marked[0] and "yoy -28.8%" in marked[0]
+
+
+def test_reconcile_real_then_undisclosed_does_not_downgrade():
+    """已有真数据行,后续再查到未披露(如误触发/端点抖动)不得覆盖——真数据优先。"""
+    _mk_dossier(code="601869")
+    df = pd.DataFrame([{"ann_date": "20260828", "n_income": 2.5e8,
+                        "yoy_net_profit": 2.0e8, "diluted_eps": 0.85}])
+    res1 = reconcile.reconcile_one("601869", "20260630", "2026-08-29",
+                                   fetch=_fake_fetch(express_df=df))
+    assert res1["updated"]
+    s5_1 = delta.section_body(
+        schema.dossier_path("601869").read_text(encoding="utf-8"), 4)
+    assert "净利 2.5亿" in s5_1 and "未披露" not in s5_1
+
+    res2 = reconcile.reconcile_one("601869", "20260630", "2026-09-01",
+                                   fetch=_fake_fetch())
+    assert res2["skipped"] == "undisclosed" and res2["recorded"] is True
+    s5_2 = delta.section_body(
+        schema.dossier_path("601869").read_text(encoding="utf-8"), 4)
+    assert s5_2 == s5_1                          # §5 原行完全不动(不降级)
+    assert "未披露" not in s5_2
+    # §8 仍按日志语义留一条未披露记账(不影响 §5 结论)
+    assert "2026-09-01 季度对账 20260630:两端点均无数据,未披露" in delta.section_body(
+        schema.dossier_path("601869").read_text(encoding="utf-8"), 7)
+
+
+def test_reconcile_undisclosed_rerun_is_idempotent():
+    """同状态(未披露)重跑:§5 该 period 仍只 1 行,不重复堆积。"""
+    _mk_dossier(code="002415")
+    reconcile.reconcile_one("002415", "20251231", "2026-07-24", fetch=_fake_fetch())
+    reconcile.reconcile_one("002415", "20251231", "2026-07-24", fetch=_fake_fetch())
+    text = schema.dossier_path("002415").read_text(encoding="utf-8")
+    s5 = delta.section_body(text, 4)
+    assert s5.count("季度对账 20251231") == 1
+    assert len([ln for ln in s5.splitlines()
+               if ln.startswith("- **季度对账 20251231**")]) == 1
 
 
 def test_reconcile_presence_gated():

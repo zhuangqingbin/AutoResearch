@@ -45,8 +45,16 @@ def express_yoy_pct(n_income, yoy_base) -> float | None:
 
 
 def _parse_day(s) -> datetime | None:
-    """'20260630' / '2026-06-30' → datetime;其它(含 NaN/空/非日期)→ None。"""
+    """'20260630' / '2026-06-30' / '20260630.0'(pandas float64 化)→ datetime;
+    其它(含 NaN/空/非日期)→ None。
+
+    R2-M-1(2026-07-24 终审复核):`end_date` 整列若与 NaN 混列,pandas 会把它
+    float64 化(`20251231` → `20251231.0`),`str()` 后多出的 `.0` 尾缀原先会让
+    8 位数字校验落空 → 误判过期(fail-closed 方向安全但会误杀,记账修复)。
+    """
     t = "" if s is None else str(s).strip().replace("-", "")
+    if t.endswith(".0"):
+        t = t[:-2]
     if len(t) != 8 or not t.isdigit():
         return None
     try:

@@ -3,7 +3,11 @@
 中报/年报披露后:实际业绩(express 业绩快报优先——披露最早字段全;forecast 业绩预告
 兜底——只有区间)与档案 §2 一致预期快照对照,对账行写 §5 风险矩阵 + §8 变化项日志。
 三情景归属/证伪点核对是 LLM 判断,留给下次 δ 卡内「档案对账」节;本 CLI 只落事实数。
-取数直连 sources.fetch 不入湖(prefetch 估值带腿同款);两端点皆空 = 未披露 → skip 留痕。
+取数直连 sources.fetch 不入湖(prefetch 估值带腿同款);两端点皆空 = 未披露 → **也落痕**
+(R2-I-1,2026-07-24 终审复核:此前只 `skip` 不写档案,消费者 `dossier_reconcile_nag`
+分不清"没跑过"与"跑了、真没数据",导致该票永久被催办——同一波刚立的 I-4「降级留痕」
+原则在隔壁又破了一次)。§5 同 period 只保留一行:真数据优先(不被未披露降级),未披露
+可被真数据升级替换,见 `_upsert_period_line`。
 短尺对账仍归 t1/retro,此处不重复(spec 非目标)。
 """
 from __future__ import annotations
@@ -29,6 +33,30 @@ def _txt(v, default: str = "—") -> str:
         return default
     s = str(v).strip()
     return s if s and s.lower() != "nan" else default
+
+
+UNDISCLOSED_TAG = "未披露"    # §5 行内识别标记(真实业绩数据行不会自然出现这三个字)
+
+
+def _upsert_period_line(body5: str, mark: str, new_line: str, *, real: bool) -> str:
+    """§5 同 `mark`(如 "季度对账 20251231")只保留一行;按 `- **{mark}**` 行首前缀定位。
+
+    三条规则(R2-I-1):
+      - 无既有行 → 直接追加;
+      - 既有行是「未披露」、新行是真数据 → **整行替换**(升级,未披露痕迹让位给真数据);
+      - 既有行已是真数据、新行是「未披露」(`real=False`)→ **原样不动**(真数据优先,不降级);
+      - 其余情形(状态相同的重跑)→ 整行替换为最新一次记账(today/措辞可能变,幂等不重复)。
+    """
+    prefix = f"- **{mark}**"
+    lines = body5.splitlines()
+    idx = next((i for i, ln in enumerate(lines) if ln.startswith(prefix)), None)
+    if idx is None:
+        tail = body5.rstrip("\n")
+        return (tail + "\n" if tail else "") + new_line + "\n"
+    if not real and UNDISCLOSED_TAG not in lines[idx]:
+        return body5      # 已有真数据,未披露不得覆盖(真数据优先,不降级)
+    lines[idx] = new_line
+    return "\n".join(lines) + "\n"
 
 
 def _fetch_actual(code6: str, period: str, *, fetch=None) -> dict | None:
@@ -83,7 +111,13 @@ def _fetch_actual(code6: str, period: str, *, fetch=None) -> dict | None:
 
 
 def reconcile_one(code6: str, period: str, today: str, *, fetch=None) -> dict:
-    """单票对账;presence-gated(无档案/未首覆 skip),同 period 幂等。"""
+    """单票对账;presence-gated(无档案/未首覆 skip)。
+
+    两端点皆空(未披露)**也落痕**(R2-I-1):§5 写一行可识别的「未披露」记账、§8 同款
+    留痕、`last_delta` 照更新 —— 让 `dossier_reconcile_nag` 分得清"没跑过"与
+    "跑了、真没数据",不再对同一只票永久重复提醒。返回值仍带 `skipped="undisclosed"`
+    语义,额外加 `recorded=True` 表明已落痕(供 CLI 区分打印)。
+    """
     code6 = str(code6).split(".")[0].zfill(6)
     path = schema.dossier_path(code6)
     if not path.exists():
@@ -91,16 +125,26 @@ def reconcile_one(code6: str, period: str, today: str, *, fetch=None) -> dict:
     text = path.read_text(encoding="utf-8")
     if not schema.parse_frontmatter(text).get("initiated"):
         return {"code": code6, "skipped": "not_initiated"}
-    actual = _fetch_actual(code6, period, fetch=fetch)
-    if actual is None:
-        return {"code": code6, "skipped": "undisclosed"}
     mark = f"季度对账 {period}"
+    actual = _fetch_actual(code6, period, fetch=fetch)
     body5 = delta.section_body(text, 4)
-    if mark not in body5:
-        line5 = (f"- **{mark}**({today} 记,{actual['kind']} {actual['ann_date']}):"
-                 f"{actual['line']};fwd-EPS 快照见 §2,三情景归属与证伪点核对由"
-                 "下次 δ 卡内「档案对账」节裁决")
-        text = delta.replace_section(text, 4, body5.rstrip("\n") + "\n" + line5 + "\n")
+    if actual is None:
+        line5 = f"- **{mark}**({today} 查):两端点均无数据,{UNDISCLOSED_TAG}"
+        new_body5 = _upsert_period_line(body5, mark, line5, real=False)
+        if new_body5 != body5:
+            text = delta.replace_section(text, 4, new_body5)
+        text = delta.append_delta_line(text, today, f"{mark}:两端点均无数据,{UNDISCLOSED_TAG}",
+                                       key=mark)
+        text = delta.set_frontmatter_key(text, "last_delta", today)
+        path.write_text(text, encoding="utf-8")
+        return {"code": code6, "skipped": "undisclosed", "recorded": True,
+                "issues": schema.lint_dossier(text)}
+    line5 = (f"- **{mark}**({today} 记,{actual['kind']} {actual['ann_date']}):"
+             f"{actual['line']};fwd-EPS 快照见 §2,三情景归属与证伪点核对由"
+             "下次 δ 卡内「档案对账」节裁决")
+    new_body5 = _upsert_period_line(body5, mark, line5, real=True)
+    if new_body5 != body5:
+        text = delta.replace_section(text, 4, new_body5)
     text = delta.append_delta_line(text, today,
                                    f"{mark}:{actual['line']}({actual['kind']})", key=mark)
     text = delta.set_frontmatter_key(text, "last_delta", today)
@@ -122,7 +166,12 @@ def main(argv: list[str] | None = None) -> int:
     n = 0
     for c in codes:
         res = reconcile_one(c, args.period, today)
-        tag = "✓" if res.get("updated") else f"skip({res.get('skipped')})"
+        if res.get("updated"):
+            tag = "✓"
+        elif res.get("recorded"):
+            tag = f"skip({res.get('skipped')}·已留痕)"
+        else:
+            tag = f"skip({res.get('skipped')})"
         issues = f" issues={res['issues']}" if res.get("issues") else ""
         print(f"[reconcile] {c} {args.period}: {tag}{issues}")
         n += bool(res.get("updated"))

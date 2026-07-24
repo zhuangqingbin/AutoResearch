@@ -81,6 +81,18 @@ def test_express_expired_unparseable_end_date_treated_as_expired():
         assert express_expired(bad, "2026-07-24") is True
 
 
+@pytest.mark.unit
+def test_express_expired_tolerates_pandas_float64_dot_zero_end_date():
+    """R2-M-1(2026-07-24 终审复核):`end_date` 整列若与 NaN 混列,pandas 会把它
+    float64 化(`str(pd.Series([20251231, None]))` 的第一个元素是 `'20251231.0'`),
+    此前 `_parse_day` 8 位数字校验对带 `.0` 尾缀的串落空 → 误判过期(fail-closed
+    方向安全但会误杀,此处验证已容错,不再需要额外解析)。
+    """
+    assert express_expired(20251231.0, "2026-07-24") is False       # 原生 float
+    assert express_expired("20251231.0", "2026-07-24") is False     # str(float) 后的串
+    assert express_expired("20250331.0", "2026-07-24") is True      # 16 个月,仍正确过期
+
+
 # ───────────────────────── 渲染腿:ashare_calendar_ts ─────────────────────────
 
 

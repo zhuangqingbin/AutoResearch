@@ -112,6 +112,32 @@ def test_reconcile_nag_silent_after_reconciled(tmp_path):
     assert prelude.dossier_reconcile_nag("2026-07-24", pool_path=pp) == ""
 
 
+def test_reconcile_nag_silent_after_undisclosed_recorded(tmp_path):
+    """R2-I-1:两端点皆空(未披露)经 reconcile_one 落痕后,nag 判据同样能识别、计数下降
+    ——此前只 `skip` 不写档案,该票会被永久重复提醒(上线首日 2/2 假阳,活体复现过)。"""
+    import pandas as pd
+
+    from autoresearch.dossier import reconcile
+    from tests.dossier.test_delta import _mk_dossier
+
+    def _empty_fetch(endpoint, params):
+        assert params["ts_code"].endswith((".SZ", ".SH", ".BJ"))
+        return pd.DataFrame()
+
+    _mk_dossier(code="002371")
+    _mk_dossier(code="601869")
+    pp = _write_pool(tmp_path / "pool.json", ["002371", "601869"])
+    assert prelude.dossier_reconcile_nag("2026-07-24", pool_path=pp) == \
+        "📐 季度对账待跑:2 只(period=20251231)" \
+        "→ uv run --no-sync python -m autoresearch.dossier.reconcile 20251231"
+
+    res = reconcile.reconcile_one("002371", "20251231", "2026-07-24", fetch=_empty_fetch)
+    assert res["skipped"] == "undisclosed" and res["recorded"] is True
+
+    line = prelude.dossier_reconcile_nag("2026-07-24", pool_path=pp)
+    assert "📐 季度对账待跑:1 只(period=20251231)" in line   # 2 → 1(001869 仍待跑,002371 已落痕退出)
+
+
 def test_reconcile_nag_presence_gated(tmp_path):
     """池空 / 未建档 / 未首覆 / 已退池 → 全部静默(presence-gated,不空催)。"""
     from tests.dossier.test_delta import _mk_dossier
