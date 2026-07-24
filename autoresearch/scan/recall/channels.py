@@ -141,15 +141,30 @@ def event(frame, date, k):
 
     **不用当日涨幅**:2026-07-24 实证,07-21 当日 ≥9.5% 的 350 只票 fwd_2_oc −2.06%
     vs 全市场 +1.60%(超额 −3.67pp,t=−11.91)——追当日大涨是负价值。本路只问
-    "近 10 交易日有没有发生正催化事件",排序按事件强度 `ev_pos`(减持不计正)。
+    "近 10 交易日有没有发生正催化事件"。
 
-    缺列 / 整列全 0(事件取数三腿全失败)→ 空帧降级(与其余 10 路同契约)。
-    **默认不启用**:须 `channel_audit` 的 unique_excess_t2 累计 ≥10 日为正 + 人批
-    才进 scan_config.funnel.recall_channels(与 accumulation 2026-07-11 被裁同纪律)。
+    **排序用 `ev_hard`(真实公司行为:回购实施+回购预案+增持),不用 `ev_pos`**
+    (Review Round 1 I-5):门槛仍用 `ev_pos>0`(调研也是弱催化,不完全排除),但排序若
+    直接用 `ev_pos`,2026-07-21 真湖实证是**裸 `ev_pos` 降序 top10 全部 10/10 是纯调研**
+    (max=82 = 000729 一次接待 82 家机构;而一次回购实施只算 1)——这条召回路会实际变成
+    "近 10 日被调研机构家数排行",不是"事件强度"。改按 `ev_hard` 排序后,纯调研票仍可
+    经 `ev_pos>0` 入池,但排在所有有真实公司行为的票之后(`ev_pos` 定义见 `events.py`:
+    `ev_hard + min(ev_surv_n, 1)`,调研最多贡献 1)。
+
+    缺列 → 空帧降级(与其余 10 路同契约)。门内 `ev_hard` 全 0(整池只有调研、没有一件
+    回购/增持)→ 同样退化为空帧,不召回一整池纯调研票。**默认不启用**:须
+    `channel_audit` 的 unique_excess_t2 累计 ≥10 日为正 + 人批才进
+    scan_config.funnel.recall_channels(与 accumulation 2026-07-11 被裁同纪律)。
     """
-    if "ev_pos" not in frame.columns:
-        return gate_rank(frame, None, "ev_pos", k)          # 缺列 → 空帧
+    if "ev_pos" not in frame.columns or "ev_hard" not in frame.columns:
+        # 哨兵列名(frame 里必然不存在)——不能写死用 "ev_pos" 兜底:若只有 ev_hard 缺、
+        # ev_pos 还在,gate_rank(frame, None, "ev_pos", k) 会真的按 ev_pos 排序返回非空,
+        # 不是本分支要的"缺列 → 空帧"(实测坐实,见 test_event_channel_missing_ev_hard_
+        # degrades_to_empty)。
+        return gate_rank(frame, None, "__no_event__", k)    # 缺列 → 空帧
     mask = frame["ev_pos"].fillna(0.0) > 0
     if not bool(mask.any()):
         return gate_rank(frame, None, "__no_event__", k)    # 全 0 → 空帧(不召回零事件票)
-    return gate_rank(frame, mask, "ev_pos", k)
+    if not bool((frame.loc[mask, "ev_hard"].fillna(0.0) > 0).any()):
+        return gate_rank(frame, None, "__no_event__", k)    # 门内全是纯调研 → 空帧(不召回)
+    return gate_rank(frame, mask, "ev_hard", k)
