@@ -8,6 +8,7 @@ design: docs/specs/2026-06-22-l3-opus-sentiment-design.md §架构。
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -117,7 +118,8 @@ def harvest_l3_news(date: str, codes, root: Path | None = None, lookback_days: i
     """对 codes 拉最近 ~lookback_days 公告(anns_d 按 ann_date 入湖)→ 按 code 分桶 + 落 staging。
 
     best-effort:任一 ann_date 拉取失败 → 跳过该日;全失败 → 各 code 空列表。返回 {code: [anns]}。
-    P2b 有界降级:权限类异常(消息含"权限"/错误码 40203)必然日日同错 → 首次命中即 break;
+    P2b 有界降级:权限类异常(消息含"权限"/错误码 40203)必然日日同错 → 首次命中即一次性打印
+    显式告警后停(不再逐日试探;降级必须留痕,anns_d 已于 2026-07-18 退役见 `contracts.py`);
     其余瞬时异常(网络抖动等)累计 ≥3 次同样 break,避免为 0 字节数据烧满全部 lookback_days 次退避。
     """
     from autoresearch.data.tushare_source import _code6
@@ -129,12 +131,14 @@ def harvest_l3_news(date: str, codes, root: Path | None = None, lookback_days: i
 
     _PERM_MARKS = ("权限", "40203")
     fails = 0
+    retired = False
     for dd in _trade_days_for(date, lookback_days):
         try:
             df = get_or_fetch("anns_d", {"ann_date": dd}, today=date)
-        except Exception as e:  # noqa: BLE001 — 无权限/无端点 → 有界降级(P2b)
+        except Exception as e:  # noqa: BLE001 — 端点退役/无权限 → 一次性告警后停(降级必须留痕)
             fails += 1
             if any(m in repr(e) for m in _PERM_MARKS) or fails >= 3:
+                retired = True
                 break           # 权限错必然日日同错;瞬时错也别为 0 字节数据烧满 10×4 连退避
             continue
         if df is None or not len(df) or "ts_code" not in df.columns:
@@ -142,6 +146,12 @@ def harvest_l3_news(date: str, codes, root: Path | None = None, lookback_days: i
         df = df.assign(_c=_code6(df["ts_code"]))
         for c, g in df[df["_c"].isin(want)].groupby("_c"):
             buckets[c].extend(g.drop(columns=["_c"]).to_dict("records"))
+
+    if retired:
+        # contracts.py 已标 anns_d 退役(2026-07-18);此处让它在**运行时**也可见——
+        # 静默写空桶正是 news_n/news_sent/news_head 三列连续多个扫描日全为 0 而无人察觉的原因。
+        print(f"[l3_news] ⚠️ anns_d 已退役/无权限 → 公告标题流为空({len(want)} 只票的 "
+              f"news_n/news_sent/news_head 本日全为缺省值),L3 情感列不可用。", file=sys.stderr)
 
     for c in want:
         (out_dir / f"{c}.json").write_text(json.dumps(buckets[c], ensure_ascii=False, default=str),

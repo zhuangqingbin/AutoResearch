@@ -49,3 +49,23 @@ def test_l3_table_md_shows_news_and_provenance(tmp_path):
     md = l3_table_md("2026-06-20", root=root)
     assert "news_sent" in md and "n_channels" in md   # 07-06 瘦身:表显示 news_sent(净分);news_tags/n 已从表删(df 仍有)
 
+
+# ─────────────────── anns_d 退役:news_sent/news_head 整列全空须可见标注 ───────────────────
+# 断链可见性(Wave4 Task1):anns_d 已无权限退役,harvest_l3_news 现在会一次性告警(见
+# test_l3_news.py),但那只在 harvest 阶段的 stderr 可见——L3 holistic agent 读的是这张表,
+# 表本身也必须能让人一眼看出「这两列今天不可用」,不能留一整列 "—"/0.0 让人误判"今天无消息"。
+
+
+def test_l3_table_md_flags_all_empty_news_column(tmp_path):
+    """anns_d 退役当日:所有票 news_n=0(无 L3_news 落盘) → 表头须有可见标注。"""
+    root = _make_l2(tmp_path, with_news=False)
+    md = l3_table_md("2026-06-20", root=root)
+    assert "anns_d" in md and "退役" in md and "不可用" in md
+
+
+def test_l3_table_md_no_annotation_when_news_present(tmp_path):
+    """至少一票有真实公告(非整列全空)→ 不误报"不可用",维持逐字 parity。"""
+    root = _make_l2(tmp_path, with_news=True)
+    md = l3_table_md("2026-06-20", root=root)
+    assert "anns_d 已退役" not in md
+

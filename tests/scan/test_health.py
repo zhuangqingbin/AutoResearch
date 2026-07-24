@@ -91,6 +91,27 @@ def test_index_md_links_and_prev_run(tmp_path):
     assert "20260701_0900" in s and "健康一行" in s
 
 
+def test_index_md_shows_anns_unavailable_line(tmp_path):
+    """anns_d 已退役:index.md 不再对此静默——每次跑动都有一行显式标注(此前仅 JSON 里可查,
+    肉眼看报告完全无感,正是三个扫描日 news 列全零无人察觉的成因之一)。"""
+    d = _mk_day(tmp_path / "ctx", "2026-07-02", cards={"000001": CARD_OW})
+    rep = tmp_path / "reports" / "20260702_1200"
+    (rep / "details").mkdir(parents=True)
+    s = index_md(d, rep)
+    assert "anns_d" in s and "退役" in s and "不可用" in s
+
+
+def test_index_md_hides_anns_line_when_unexpected_data_present(tmp_path):
+    """anns_empty_rate<1.0(真出现部分数据,反常)→ 不误报"不可用"(anns_expected 语义不变)。"""
+    d = _mk_day(tmp_path / "ctx2", "2026-07-02", cards={"000001": CARD_OW})
+    (d / "L3_news").mkdir()
+    (d / "L3_news" / "000001.json").write_text(json.dumps([{"title": "回购"}]), encoding="utf-8")
+    rep = tmp_path / "reports2" / "20260702_1200"
+    (rep / "details").mkdir(parents=True)
+    s = index_md(d, rep)
+    assert "anns_d 已退役" not in s
+
+
 def test_retro_health_section(tmp_path):
     """retro 的运行健康节:降级字段/核心缺产物才出声;无恙/缺文件 → []。"""
     from autoresearch.learning.retro import _health_section

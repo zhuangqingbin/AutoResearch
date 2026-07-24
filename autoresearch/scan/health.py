@@ -305,4 +305,10 @@ def index_md(scan_dir: Path, report_dir: Path) -> str:
     if h["degraded_fields"]:
         hl += f";⚠️ 降级字段:{'、'.join(h['degraded_fields'])}"
     lines.append(hl)
+    if h["anns_expected"]:
+        # anns_d 已退役(2026-07-18):此前只在 run_health.json 里挂 anns_expected=True,报告
+        # 正文完全无感——这正是 news_n/news_sent/news_head 三个扫描日全为 0 却无人察觉的成因
+        # 之一(线 D 退役配套,断链必须留痕)。expected 语义不变,只是从"静默"改为显式一行。
+        lines.append("- **公告标题流**:不可用(anns_d 已退役,详见 `run_health.json` "
+                     "`anns_empty_rate`)")
     return "\n".join(lines) + "\n"

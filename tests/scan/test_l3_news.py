@@ -61,3 +61,33 @@ def test_news_digest_default_prefix_unchanged():
     assert set(news_digest([])) == {"news_n", "news_tags", "news_sent", "news_head"}
     assert set(news_digest([{"title": "x", "ann_date": "1"}])) == {"news_n", "news_tags", "news_sent", "news_head"}
 
+
+# ───────────────────────── anns_d 退役:一次性告警,不再逐日试探 ─────────────────────────
+# monkeypatch module-attr `get_or_fetch` 用 pytest 的 monkeypatch fixture(自动 teardown 恢复),
+# 不做裸赋值——裸赋值会永久改写 l3_news 模块命名空间,污染同进程后续测试(brief 原稿如此,已改)。
+
+
+def test_harvest_l3_news_retired_endpoint_is_loud(capsys, tmp_path, monkeypatch):
+    """anns_d 已退役(无权限):必须一次性识别 + 打印告警,不得静默写空。"""
+    calls = {"n": 0}
+
+    def _boom(endpoint, params, today=None):
+        calls["n"] += 1
+        raise Exception("抱歉，您没有接口(anns_d)访问权限")
+
+    monkeypatch.setattr(l3_news, "get_or_fetch", _boom)
+    out = l3_news.harvest_l3_news("2026-07-24", ["300857", "002371"], root=tmp_path)
+    assert out == {"300857": [], "002371": []}
+    assert calls["n"] <= 1, "权限错必然日日同错:不得逐日重试"
+    cap = capsys.readouterr()
+    assert "anns_d" in (cap.out + cap.err) and "退役" in (cap.out + cap.err), \
+        "断链必须留痕(降级不留痕是本项目最忌的形态)"
+
+
+def test_harvest_l3_news_writes_empty_buckets_still(tmp_path, monkeypatch):
+    """契约不变:仍为每只票落 json(下游 news_digest 依赖文件存在)。"""
+    monkeypatch.setattr(l3_news, "get_or_fetch",
+                        lambda *a, **k: (_ for _ in ()).throw(Exception("权限")))
+    l3_news.harvest_l3_news("2026-07-24", ["300857"], root=tmp_path)
+    assert (tmp_path / "2026-07-24" / "L3_news" / "300857.json").exists()
+

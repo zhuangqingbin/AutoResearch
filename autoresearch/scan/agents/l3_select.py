@@ -29,6 +29,8 @@ _L3_COLS = ["code", "name", "pf", "industry", "composite", "gbdt_score",
             "rsi6", "pe", "pb", "np_yoy", "roe",
             "n_channels", "recall_channels",                   # 召回 provenance(channel 共振)
             "news_sent", "news_head"]                          # 情感(净分 + 头条;counts/tags 已删;med_* 随 webnews 死链 2026-07-13 摘除)
+                                                                # anns_d 已退役(2026-07-18):两列契约不变(冻结),但当日整列全空时
+                                                                # l3_table_md 表头有可见标注(Wave4 Task1,断链留痕)——不要删列。
 
 
 # ───────────────────────── L3:紧凑表 + 增量真证据 + finalists 合并 ─────────────────────────
@@ -426,6 +428,13 @@ def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
     df["pf"] = df.apply(row_profile, axis=1)   # 行语义指纹(确定性,恒计算——非 flag 位,见 row_profile)
     cols = [*_L3_COLS] + [c for c in ("lhb_n", "has_forecast", "has_express") if c in df.columns]
     header: list[str] = []
+    # anns_d 已退役(2026-07-18,见 contracts.py):news_sent/news_head 列契约不变(冻结),
+    # 但当日全票 news_n=0(端点断链/无权限)时不得留一整列 "—"/0.0 静默充数——恒检查(非
+    # flag 位,同 pf 行语义指纹),整列全空才现身,避免真有公告的日子误报。
+    if "news_n" in df.columns and len(df) and pd.to_numeric(
+            df["news_n"], errors="coerce").fillna(0).eq(0).all():
+        header += ["_(公告情感列不可用:anns_d 已退役,news_sent/news_head 本日全为缺省值,"
+                   "详见 run_health)_", ""]
     if dist_flag and {"main_net_ratio", "main_inflow_yi"}.issubset(df.columns):
         from autoresearch.common.scoring import main_net_distortion_label
         df["main_dist"] = [main_net_distortion_label(r, a) for r, a in
@@ -923,7 +932,7 @@ def prepare_l3_table(date: str, root: Path | None = None, delta: bool = True,
     if do_harvest:
         harvest_l3_evidence(date, codes, root=base)
         from autoresearch.scan.agents.l3_news import harvest_l3_news
-        harvest_l3_news(date, codes, root=base)
+        harvest_l3_news(date, codes, root=base)   # anns_d 退役 → 一次性 stderr 告警(不逐日重试)
 
     l3_cfg: dict = {}
     if two_pass is not False:              # 显式 False = 纯回滚杆,连 load_user_config 都不碰
