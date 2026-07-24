@@ -150,16 +150,46 @@ def test_record_scan_deltas_batch(tmp_path, monkeypatch):
         encoding="utf-8")
     (sd / "_final_ratings.json").write_text(
         json.dumps({"300857": "Underweight", "600000": "Hold"}), encoding="utf-8")
-    n = delta.record_scan_deltas(sd, "2026-07-24")
-    assert n == 1                                         # 只有已首覆的 300857 落 δ
+    res = delta.record_scan_deltas(sd, "2026-07-24")
+    # 返回 dict(I-4):int 版本会把 record_scan_delta 的 lint issues 静默吞掉
+    assert res["updated"] == 1                            # 只有已首覆的 300857 落 δ
+    assert res["issues"] == {}                            # 健康档案 = 无 issues
     body = delta.section_body(p.read_text(encoding="utf-8"), 7)
     assert "- 2026-07-24 入围:评级 Underweight(conv 58)" in body
 
 
 def test_record_scan_deltas_missing_inputs(tmp_path):
     from autoresearch.dossier import delta
-    assert delta.record_scan_deltas(tmp_path / "nope", "2026-07-24") == 0   # 无 finalists
+    assert delta.record_scan_deltas(tmp_path / "nope", "2026-07-24") == {
+        "updated": 0, "issues": {}}                          # 无 finalists
     sd = tmp_path / "d"
     sd.mkdir()
     (sd / "finalists.csv").write_text("code,name\n300857,协创数据\n", encoding="utf-8")
-    assert delta.record_scan_deltas(sd, "2026-07-24") == 0   # 无 _final_ratings.json → 不记
+    assert delta.record_scan_deltas(sd, "2026-07-24") == {
+        "updated": 0, "issues": {}}                          # 无 _final_ratings.json → 不记
+
+
+def test_record_scan_deltas_surfaces_lint_issues(tmp_path):
+    """写坏的档案:issues 必须回传给调用方(I-4「降级留痕…不空写不吞」)。
+
+    坏法用真实故障形态:摘要被写爆 3k 帽 → `injectable_summary` 从此返回 ""、注入
+    无声停摆,而 lint 门与注入门同源 —— 旧版 int 返回值下**连假警都不会有**。
+    """
+    import json
+
+    from autoresearch.dossier import delta, schema
+    p = _mk_dossier(code="300857")
+    text = p.read_text(encoding="utf-8")
+    p.write_text(text.replace(schema.SUMMARY_HEAD + "\n",
+                              schema.SUMMARY_HEAD + "\n- 溢出: " + "填" * 5000 + "\n", 1),
+                 encoding="utf-8")
+    sd = tmp_path / "2026-07-24"
+    sd.mkdir()
+    (sd / "finalists.csv").write_text("code,name,conviction\n300857,协创数据,58\n",
+                                      encoding="utf-8")
+    (sd / "_final_ratings.json").write_text(json.dumps({"300857": "Hold"}), encoding="utf-8")
+    res = delta.record_scan_deltas(sd, "2026-07-24")
+    assert res["updated"] == 1
+    assert "300857" in res["issues"]
+    assert any("summary>cap" in s for s in res["issues"]["300857"])
+    assert schema.injectable_summary("300857") == ""      # 注入确实停摆 = 该警必须可见

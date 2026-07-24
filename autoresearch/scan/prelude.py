@@ -64,6 +64,38 @@ def _retro_input_nag(scan_root: Path | str | None = None) -> str:
             + " ← scan-retro 诊断烂尾,去补 mark_done 或重跑诊断,别让欠账攒着")
 
 
+def dossier_reconcile_nag(date: str, *, pool_path=None) -> str:
+    """池内已建档票缺「季度对账 <period>」痕迹 → 当日件建议行(纯读,可单测)。
+
+    I-1(2026-07-24 终审):`autoresearch.dossier.reconcile` 是手工 CLI,全仓零调用点
+    **零提醒** —— 8 月中报季会静默地什么都不发生(FN-1 家族:write_base_rates /
+    force_full_card / 权重自动重标定 NO-OP 之后第 N 例)。这里给它一个能被看见的入口。
+
+    period 用 `dossier.mainbz._recent_periods` 同款滞后逻辑取"最近应已披露的报告期"
+    (年报 4/30、中报 8/31 披露截止后才算已披露)——该滞后判定本身就是"当前披露窗口"
+    的判据。presence-gated:池空 / 无档案 / 未首覆 / 已对账 → ""(不打印)。
+    """
+    from autoresearch.dossier import delta as _delta, pool as _pool, schema as _schema
+    from autoresearch.dossier.mainbz import _recent_periods
+    period = _recent_periods(date, 1)[0]
+    todo: list[str] = []
+    for code, st in sorted(_pool.load_pool(pool_path).get("stocks", {}).items()):
+        if st.get("status") != "active":
+            continue
+        p = _schema.dossier_path(code)
+        if not p.exists():                       # 未建档 → 归 pending_init,不催对账
+            continue
+        text = p.read_text(encoding="utf-8")
+        if not _schema.parse_frontmatter(text).get("initiated"):
+            continue
+        if f"季度对账 {period}" not in _delta.section_body(text, 4):   # §5 风险矩阵
+            todo.append(code)
+    if not todo:
+        return ""
+    return (f"📐 季度对账待跑:{len(todo)} 只(period={period})"
+            f"→ uv run --no-sync python -m autoresearch.dossier.reconcile {period}")
+
+
 def _write_t0(scan_dir: Path) -> None:
     """墙钟 t0 标记:mtime 即 stage_timing 的起点锚,内容仅自述。
     已存在不覆盖(prelude-retry/重跑不重置起点);失败不挡 prelude。"""
@@ -198,13 +230,19 @@ def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()
                 "channel + gate + zero_buy + changelog 已刷新")
 
     def _dossier_pool():
+        import contextlib
+
         from autoresearch.dossier import pool
         out = pool.refresh(date)
         delta = f"进{len(out['entered'])}退{len(out['retired'])}复{len(out['revived'])}"
         pend = out["pending_init"]
         pend_txt = f"待建档 {len(pend)} 只({','.join(pend[:6])})" if pend else "待建档 0"
         moved = out["entered"] or out["retired"] or out["revived"]
-        return (f"池 {out['n_active']} active · {delta if moved else '无变动'} · {pend_txt}")
+        note = f"池 {out['n_active']} active · {delta if moved else '无变动'} · {pend_txt}"
+        nag = ""
+        with contextlib.suppress(Exception):   # 对账提醒可选,坏档不挡池日检
+            nag = dossier_reconcile_nag(date)
+        return f"{note} · {nag}" if nag else note
 
     all_steps = [("retro_refresh", _refresh), ("retro_pending", _pending),
                  ("t1_pending", _t1_pending), ("learning_health", _learning_health),
