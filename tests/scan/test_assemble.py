@@ -417,3 +417,32 @@ def test_is_real_publish_calls_precedents_build_index(tmp_path, monkeypatch):
                 hhmm=_HHMM, run_date=_RUN_DATE)
 
     assert calls, "is_real 发布应调用 precedents.build_index 一次"
+
+
+# ───────────────────────── Wave3.5 review I-2:sections_skipped 打印接线 ─────────────────────────
+
+
+def test_is_real_publish_prints_dossier_sections_skipped(tmp_path, monkeypatch, capsys):
+    """`record_scan_deltas` 的 `sections_skipped` 键此前有生产者、零消费者——assemble 尾
+    只打印了 `issues`,镜像它的这一行从未写(终审 I-2):控制端活体当天读数 = 3/4 份
+    档案有跳过标签(生产常态,非边缘态),终端上一个字都看不见,而同一波给 L4 卡注入块
+    新加的 tail 正明写「§4/§6 随每日 δ 刷新」——跳过静默 + 该断言并存会让卡片读者把
+    陈旧素材当作今天已核事实。本条锁住:`sections_skipped` 非空时必须打印到 stdout。
+
+    做法与上面的 `test_is_real_publish_calls_precedents_build_index` 同款:
+    monkeypatch 掉 `record_scan_deltas` 本体(它的内部正确性由 tests/dossier/test_delta.py
+    单独锁),只验 assemble 侧的打印接线。
+    """
+    monkeypatch.chdir(tmp_path)
+    scan = _build_scan_dir(tmp_path)
+    monkeypatch.setattr(
+        "autoresearch.dossier.delta.record_scan_deltas",
+        lambda *a, **k: {"updated": 1, "issues": {},
+                         "sections_skipped": {"300857": ["§4.seats", "§6"]}})
+
+    assemble.run(_DATA_DATE, scan_dir=scan, out_root=tmp_path / "reports/scan",
+                hhmm=_HHMM, run_date=_RUN_DATE)
+
+    out = capsys.readouterr().out
+    assert "300857" in out and "§4.seats" in out and "§6" in out
+    assert "跳过刷新" in out

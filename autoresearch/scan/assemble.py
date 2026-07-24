@@ -1261,6 +1261,8 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
                 print(f"[dossier] δ 回写 {doss['updated']} 份覆盖档案 → context/knowledge/dossiers/")
             for _c, _iss in sorted(doss["issues"].items()):   # I-4:lint 不吞(降级留痕)
                 print(f"[dossier] ⚠️ 档案 lint:{_c} {_iss}")
+            for _c, _sk in sorted(doss["sections_skipped"].items()):  # Wave3.5 I-2:镜像上一行
+                print(f"[dossier] ℹ️ §4/§6 跳过刷新(素材缺,保留旧值):{_c} {_sk}")
     print(f"[L5 整合] summary → {summary_path}  (数据日 {analysis_date})")
     print(f"[L5 整合] details → {detail_out}  ({n_cards} 张卡 + trace/ {n_pipe} 件溯源)")
     return summary_path

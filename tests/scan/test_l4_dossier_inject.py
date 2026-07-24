@@ -68,7 +68,12 @@ def test_injectable_summary_four_gates():
 
 
 def test_dispatch_meta_carries_dossier_summary(tmp_path):
-    """intel 已知底走 meta 内嵌(不再靠给 agent 授权 Read)。"""
+    """intel 已知底走 meta 内嵌(不再靠给 agent 授权 Read)。
+
+    N-12(2026-07-24 终审记账):本条是 `dispatch_plan` meta 携带 `dossier_summary`
+    这条不变量的**唯一**守卫(跨 task 变异 M2 实测:把 `_dossier_summary_text` 换成
+    恒返回 `""` 后,全量回归里只有本条测试变红)。
+    """
     from autoresearch.scan.agents.l4_card import dispatch_plan
     sd = tmp_path / "2026-07-24"
     sd.mkdir(parents=True)

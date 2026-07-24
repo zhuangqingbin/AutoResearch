@@ -118,6 +118,17 @@ def test_l4_intel_wired_in_docs():
     assert "l4-intel" in skill or "l4-intel" in stages, "scan 文档未接线 l4-intel(Task 7 落)"
 
 
+def test_dossier_chain_wired_in_stages_doc():
+    """N-6(2026-07-24 终审同批建议):Wave3.5 T5 Step 1 往 STAGES.md 补了覆盖档案链一段,
+    但 Step 3 的文档接线测试没做——机制对操作者可见的这段描述本身零锚,可被静默删除/
+    漂移而无人察觉(与 M-17 的病因同族)。断言两个关键机器契约锚在场:池文件
+    `coverage_pool.json`、季度对账 CLI `dossier.reconcile`。
+    """
+    stages = (SKILLS / "scan-market" / "STAGES.md").read_text(encoding="utf-8")
+    assert "coverage_pool" in stages, "STAGES.md 未接线覆盖池 coverage_pool"
+    assert "dossier.reconcile" in stages, "STAGES.md 未接线季度对账 dossier.reconcile"
+
+
 def test_l4_stock_workflow_sell_review_anchors():
     """l4-stock.js 的 SELL 双复核契约锚(Wave1 ⑤-3):trigger 字段 + pinned 消费在场。"""
     js = (ROOT / ".claude" / "workflows" / "l4-stock.js").read_text(encoding="utf-8")

@@ -378,7 +378,12 @@ def test_delta_section4_upgrades_from_missing_placeholder(tmp_path):
 
 def test_record_scan_delta_sections_skipped_observable(tmp_path):
     """review I-2:跳过刷新必须进返回值,不得静默——覆盖"全齐不跳过"与"部分跳过"
-    两态,并确认 `record_scan_deltas` 批量层原样透传(不吞)。"""
+    两态,并确认 `record_scan_deltas` 批量层原样透传(不吞)。
+
+    N-12(2026-07-24 终审记账):批量层最后一句断言是 `record_scan_deltas` 把
+    `sections_skipped` 原样透传(不吞)这条不变量的**唯一**守卫(跨 task 变异 M7
+    实测:把批量层的收键逻辑改成恒 `{}` 后,全量回归里只有本条测试变红)。
+    """
     import json
 
     from autoresearch.dossier import delta
