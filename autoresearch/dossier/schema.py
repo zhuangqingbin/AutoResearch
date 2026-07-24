@@ -99,24 +99,63 @@ def lint_dossier(text: str, cap: int = SUMMARY_CAP) -> list[str]:
 STALE_DAYS = 90     # 档案陈旧告警阈值(spec 风险节:last_refresh 超 90 日 → warn)
 
 
+def staleness_age(text: str, today: str) -> int | None:
+    """`last_refresh`(缺则退 `initiated`)距 `today` 的天数;机器面,不渲染文案。
+
+    I-3(2026-07-24 终审):`prelude` 此前靠 `str.split('距今 ')` 从 `staleness_issues`
+    的自然语言输出里反解天数——文案改一个词(「距今」→「已过」)、阈值改一个数
+    (`STALE_DAYS` 90→60)都能在反解逻辑不报错的前提下让下游读出垃圾/自相矛盾读数
+    (两个变异实测存活)。这里把"天数"独立成单一事实源:`staleness_issues` 内部调它
+    拼文案,`prelude` 直接调它 + `STALE_DAYS` 拼消息,不再有第二份反解逻辑。
+
+    两个日期都空 → None(骨架未首覆,归 pending_init 管);`ref` 存在但格式畸形(如手误
+    漏了横杠)→ None(由 `staleness_issues` 转成可留痕的「档案日期畸形」issue,I-1)。
+    `today` 畸形**不在此吞**——它是全池共享输入,一旦悄悄返回 None 会让整池探针系统性
+    失聪却看起来"全新鲜"(I-1,比抛异常更危险),交调用方决定是否兜底
+    (`prelude` 已有 `contextlib.suppress`)。
+    """
+    from datetime import date as _date
+    meta = parse_frontmatter(text)
+    ref = meta.get("last_refresh") or meta.get("initiated")
+    if not ref:
+        return None
+    ty, tm, td = (int(x) for x in str(today).split("-"))   # today 畸形 → 直接抛,不 catch
+    today_d = _date(ty, tm, td)
+    try:
+        y, m, d = (int(x) for x in str(ref).split("-"))
+        return (today_d - _date(y, m, d)).days
+    except Exception:  # noqa: BLE001 — 档案侧日期畸形(today 已验证合法)→ None
+        return None
+
+
 def staleness_issues(text: str, today: str, *, cap_days: int = STALE_DAYS) -> list[str]:
     """档案陈旧度探针:`last_refresh`(缺则退 `initiated`)距 today 超 cap_days → 一条 issue。
 
     与 `lint_dossier`(结构契约)分开:结构对但内容陈旧是另一类病,且需要"今天"这个
     外部输入才能判——不塞进纯结构 lint(规模检查与结构检查分开,repo 既有惯例)。
     两个日期都空 = 骨架未首覆,归 pending_init 管,不在此报。
+
+    天数由 `staleness_age` 机算(单一事实源,见其 docstring;I-3)。`ref` 存在但格式
+    畸形 → 返回一条「档案日期畸形」issue,不静默吞成 `[]`(I-1,2026-07-24 终审:此前
+    的 except 把"格式畸形"和"两日期皆空"混成同一句 `return []`,而 `lint_dossier` 对
+    frontmatter 日期**零校验**——两边都不报 = 降级不留痕,`reconcile.main --today` 一次
+    手误就能把畸形日期写进档案且此后 1.5 年都不再告警)。`today` 本身畸形不在此吞,
+    经 `staleness_age` 原样抛出,不伪装成"档案新鲜"。
     """
-    from datetime import date as _date
     meta = parse_frontmatter(text)
+    has_refresh = bool(meta.get("last_refresh"))
     ref = meta.get("last_refresh") or meta.get("initiated")
     if not ref:
         return []
-    try:
-        y, m, d = (int(x) for x in str(ref).split("-"))
-        ty, tm, td = (int(x) for x in str(today).split("-"))
-        age = (_date(ty, tm, td) - _date(y, m, d)).days
-    except Exception:  # noqa: BLE001 — 日期畸形不报陈旧(结构 lint 的事)
+    age = staleness_age(text, today)
+    if age is None:
+        field = "last_refresh" if has_refresh else "initiated"
+        return [f"档案日期畸形:{field}='{ref}' 无法解析"]
+    if age <= cap_days:
         return []
-    if age > cap_days:
+    if has_refresh:
         return [f"档案陈旧:last_refresh {ref} 距今 {age} 日(>{cap_days})"]
-    return []
+    # last_refresh 未设、退回 initiated 计龄(m-1,2026-07-24 终审):措辞须如实指名
+    # initiated——生产首批 4/4 真档案 last_refresh 皆 null,全部走这条回退路径,若消息
+    # 仍写「last_refresh {ref}」会指着一个从未被写过的字段读数,误导排障。
+    return [f"档案陈旧:initiated {ref} 距今 {age} 日(>{cap_days};last_refresh 未设)"]

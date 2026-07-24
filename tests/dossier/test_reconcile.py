@@ -70,6 +70,12 @@ def test_reconcile_undisclosed_then_real_upgrades_s5_line():
     s5_1 = delta.section_body(
         schema.dossier_path("002371").read_text(encoding="utf-8"), 4)
     assert "季度对账 20251231" in s5_1 and "未披露" in s5_1
+    # I-2(2026-07-24 终审):「未披露不写 last_refresh」此前零护栏——M6 变异(未披露分支
+    # 也写 last_refresh)在 668 测试下全绿存活,既有测试对 last_refresh 一个字都没断言过。
+    # 首次对账即未披露 = last_refresh 从未被设过,须仍是 None(only last_delta 前进)。
+    fm1 = schema.parse_frontmatter(
+        schema.dossier_path("002371").read_text(encoding="utf-8"))
+    assert fm1["last_refresh"] is None and fm1["last_delta"] == "2026-07-24"
 
     df = pd.DataFrame([{"ann_date": "20260227", "n_income": 2.08e8,
                         "yoy_net_profit": 2.92e8, "diluted_eps": 1.41}])
@@ -236,3 +242,17 @@ def test_reconcile_sets_last_refresh():
     reconcile.reconcile_one("300858", "20260630", "2026-08-29", fetch=fetch)
     fm = schema.parse_frontmatter(schema.dossier_path("300858").read_text(encoding="utf-8"))
     assert fm["last_refresh"] == "2026-08-29" and fm["last_delta"] == "2026-08-29"
+
+
+def test_reconcile_main_rejects_malformed_today(capsys):
+    """I-1(2026-07-24 终审):`--today` help 写着 YYYY-MM-DD 但此前零格式校验——一次手误
+    (如漏横杠 `20260830`)就把畸形日期写进档案,陈旧探针此后 1.5 年都读不出来(终审活体
+    复现)。堵在源头:格式非法 → `ap.error` 报错退出(非零 code),不落任何笔。
+    """
+    import pytest
+
+    from autoresearch.dossier import reconcile as _reconcile
+    with pytest.raises(SystemExit) as exc:
+        _reconcile.main(["20260630", "--code", "300857", "--today", "20260830"])
+    assert exc.value.code != 0
+    assert "--today" in capsys.readouterr().err

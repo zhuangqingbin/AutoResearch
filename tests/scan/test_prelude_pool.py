@@ -4,6 +4,8 @@ design: docs/specs/2026-07-03-scan-run-reliability-design.md §2(Task 5,承接 T
 """
 from __future__ import annotations
 
+import pytest
+
 from autoresearch.scan import prelude
 from autoresearch.scan.prelude import run_prelude
 
@@ -175,13 +177,57 @@ def test_prelude_dossier_pool_note_carries_reconcile_nag(tmp_path, monkeypatch):
 
 
 def test_staleness_nag_flags_pool_stock_over_90_days(tmp_path):
-    """池内已建档票 last_refresh(退 initiated)距 today 超 90 日 → 一行陈旧告警。"""
+    """池内已建档票 last_refresh(退 initiated)距 today 超 90 日 → 一行陈旧告警。
+
+    I-3(2026-07-24 终审):此前只断言 `"300857" in line`,括号里的天数没被任何断言看过
+    ——补上精确天数(2026-01-01→2026-07-24=204 日,与终审活体复现读数一致)。
+    """
     from tests.dossier.test_delta import _mk_dossier
     _mk_dossier(code="300857", today="2026-01-01")     # initiated=2026-01-01,从未 last_refresh
     pp = _write_pool(tmp_path / "pool.json", ["300857"])
     line = prelude.dossier_staleness_nag("2026-07-24", pool_path=pp)
     assert "🕰️ 档案陈旧 1 只(>90日未全量刷新)" in line
-    assert "300857" in line
+    assert "300857(204日)" in line
+
+
+def test_staleness_nag_threshold_derives_from_schema_stale_days(tmp_path, monkeypatch):
+    """I-3(M10 变异修复):阈值只能来自 schema.STALE_DAYS 一处,prelude 不得硬编码 90
+    ——否则 STALE_DAYS 改动后告警文案的">N日"与实际判据数字会自相矛盾(终审活体复现)。
+    """
+    from autoresearch.dossier import schema
+    from tests.dossier.test_delta import _mk_dossier
+    monkeypatch.setattr(schema, "STALE_DAYS", 60)
+    _mk_dossier(code="300857", today="2026-05-01")     # age@07-24=84:>60(新阈值)但<90(旧阈值)
+    pp = _write_pool(tmp_path / "pool.json", ["300857"])
+    line = prelude.dossier_staleness_nag("2026-07-24", pool_path=pp)
+    assert "🕰️ 档案陈旧 1 只(>60日未全量刷新)" in line
+    assert "300857(84日)" in line
+
+
+def test_staleness_nag_flags_malformed_ref_date_not_silently_skipped(tmp_path):
+    """I-1(2026-07-24 终审):last_refresh 格式畸形(如手误漏横杠)不再静默跳过——单独
+    标「日期畸形」,与"两日期皆空"(骨架未首覆,presence-gated 静默)区分开。
+    """
+    from autoresearch.dossier import delta
+    from tests.dossier.test_delta import _mk_dossier
+    p = _mk_dossier(code="300857", today="2026-01-01")
+    bad = delta.set_frontmatter_key(p.read_text(encoding="utf-8"), "last_refresh", "20260830")
+    p.write_text(bad, encoding="utf-8")
+    pp = _write_pool(tmp_path / "pool.json", ["300857"])
+    line = prelude.dossier_staleness_nag("2026-07-24", pool_path=pp)
+    assert "300857(日期畸形)" in line
+
+
+def test_staleness_nag_today_malformed_raises_not_silenced(tmp_path):
+    """I-1:today 畸形不得被静默吞成"全池都新鲜"——必须抛出(_dossier_pool 步已有
+    contextlib.suppress 兜底,坏档不挡池日检的性质不变;此处锁的是 schema/prelude 这层
+    不能再把"today 坏了"和"档案真新鲜"混成同一个静默 return)。
+    """
+    from tests.dossier.test_delta import _mk_dossier
+    _mk_dossier(code="300857", today="2026-01-01")
+    pp = _write_pool(tmp_path / "pool.json", ["300857"])
+    with pytest.raises(ValueError):
+        prelude.dossier_staleness_nag("20260724", pool_path=pp)   # 缺横杠,畸形
 
 
 def test_staleness_nag_silent_when_fresh(tmp_path):

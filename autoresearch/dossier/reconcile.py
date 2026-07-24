@@ -157,6 +157,23 @@ def reconcile_one(code6: str, period: str, today: str, *, fetch=None) -> dict:
             "issues": schema.lint_dossier(text)}
 
 
+def _valid_date(s: str) -> bool:
+    """YYYY-MM-DD 格式校验(`main` 的 `--today` 源头校验)。
+
+    I-1(2026-07-24 终审):此前零校验,`--today` help 文案写着 YYYY-MM-DD 但从不检查
+    ——一次手误(如漏横杠 `20260830`)就把畸形日期写进档案,`staleness_issues` 此后
+    1.5 年都读不出陈旧、`lint_dossier` 对日期又零校验,两边都不报 = 降级不留痕。
+    堵在写入前比事后探测更彻底。
+    """
+    from datetime import date as _date
+    try:
+        y, m, d = (int(x) for x in str(s).split("-"))
+        _date(y, m, d)
+        return True
+    except Exception:  # noqa: BLE001 — 任何解析失败都算不合法
+        return False
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="dossier 季度对账(express/forecast vs §2 快照;确定性)")
     ap.add_argument("period", help="报告期 YYYYMMDD,如 20260630")
@@ -165,6 +182,8 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     from datetime import datetime
     today = args.today or datetime.now().strftime("%Y-%m-%d")
+    if not _valid_date(today):
+        ap.error(f"--today 格式非法(需 YYYY-MM-DD):{today!r}")
     codes = [args.code] if args.code else sorted(
         c for c, e in pool.load_pool()["stocks"].items() if e.get("status") == "active")
     n = 0

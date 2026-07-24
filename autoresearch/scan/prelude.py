@@ -97,11 +97,14 @@ def dossier_reconcile_nag(date: str, *, pool_path=None) -> str:
 
 
 def dossier_staleness_nag(date: str, *, pool_path=None) -> str:
-    """池内已建档票 `last_refresh`(缺退 `initiated`)距 today 超 90 日 → 当日件陈旧告警。
+    """池内已建档票 `last_refresh`(缺退 `initiated`)距 today 超 `schema.STALE_DAYS` 日
+    → 当日件陈旧告警;`ref` 存在但格式畸形的票单独标「日期畸形」,不静默跳过(I-1)。
 
     Task 3(2026-07-24 终审 M-13 + spec 风险节):`last_refresh` 至今零写者零读者,档案
     陈旧目前没有任何探针。与 `dossier_reconcile_nag` 姊妹但判据不同——那个盯"有没有
-    做过对账",这个盯"上次全量刷新距今多久"(纯读 `schema.staleness_issues`,可单测)。
+    做过对账",这个盯"上次全量刷新距今多久"。天数与阈值统一取 `schema.staleness_age`/
+    `schema.STALE_DAYS`,不再从 `staleness_issues` 的自然语言文案里反解(I-3,2026-07-24
+    终审:反解在文案改动/阈值改动两种变异下都活体存活过,读出垃圾或自相矛盾读数)。
     presence-gated:池空/无档案/未首覆/未超期 → ""(不打印)。
     """
     from autoresearch.dossier import pool as _pool, schema as _schema
@@ -115,14 +118,16 @@ def dossier_staleness_nag(date: str, *, pool_path=None) -> str:
         text = p.read_text(encoding="utf-8")
         if not _schema.parse_frontmatter(text).get("initiated"):
             continue
-        iss = _schema.staleness_issues(text, date)
-        if not iss:
+        age = _schema.staleness_age(text, date)
+        if age is None:
+            if _schema.staleness_issues(text, date):   # ref 存在但畸形,与"两者皆空"区分(I-1)
+                stale.append(f"{code}(日期畸形)")
             continue
-        days = iss[0].split("距今 ")[-1].split(" 日")[0]
-        stale.append(f"{code}({days}日)")
+        if age > _schema.STALE_DAYS:
+            stale.append(f"{code}({age}日)")
     if not stale:
         return ""
-    return (f"🕰️ 档案陈旧 {len(stale)} 只(>90日未全量刷新):"
+    return (f"🕰️ 档案陈旧 {len(stale)} 只(>{_schema.STALE_DAYS}日未全量刷新):"
             + "、".join(stale[:6]) + ("…" if len(stale) > 6 else ""))
 
 
