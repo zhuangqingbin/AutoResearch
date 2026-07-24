@@ -67,6 +67,37 @@ def test_dossier_change_section_lint(tmp_path):
     assert not any(x["check"] == "卡片契约·变化项缺失" for x in card_contract_lint(d))
 
 
+def _mk_cov_dossier(code):
+    from autoresearch.dossier import schema
+    p = schema.dossier_path(code)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("---\ncode: " + code + "\nname: x\nsector: x\npool_status: active\n"
+                 "entered: 2026-07-23\nentry_reason: pinned\ninitiated: 2026-07-23\n"
+                 "last_refresh: null\nlast_delta: null\n---\n", encoding="utf-8")
+
+
+def test_card_lint_covered_stock_requires_reconcile_section(tmp_path):
+    from autoresearch.learning.self_review import card_contract_lint
+    d = tmp_path / "details"
+    d.mkdir(parents=True)
+    _mk_cov_dossier("300857")
+    (d / "300857.md").write_text(FULL_OK, encoding="utf-8")        # 有变化项、无档案对账
+    warns = [w for w in card_contract_lint(tmp_path)
+             if w["check"] == "卡片契约·档案对账缺失"]
+    assert len(warns) == 1 and warns[0]["code"] == "300857"
+
+
+def test_card_lint_covered_stock_with_reconcile_ok(tmp_path):
+    from autoresearch.learning.self_review import card_contract_lint
+    d = tmp_path / "details"
+    d.mkdir(parents=True)
+    _mk_cov_dossier("300858")
+    (d / "300858.md").write_text(FULL_OK + "\n**档案对账**:驱动无变化;风险无触发;判例一致\n",
+                                 encoding="utf-8")
+    assert not [w for w in card_contract_lint(tmp_path)
+                if w["check"] == "卡片契约·档案对账缺失"]
+
+
 def test_banner_merges_lint_and_gate_fires(tmp_path):
     """assemble banner 合并 lint(且 gate_fires 留痕)。"""
     from autoresearch.scan.assemble import build_summary

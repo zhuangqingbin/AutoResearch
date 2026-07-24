@@ -158,7 +158,20 @@ def card_contract_lint(scan_dir) -> list[dict]:
                 and not p4_re.search(text)):
             out.append({"check": "卡片契约·P4倾向缺失", "severity": "warn", "code": code,
                         "detail": f"{code} 满卡未记『进入P4倾向: <Rating>』(阶段效能计量断供)"})
-        if "变化项" not in text:
+        has_cov = False
+        try:                             # Wave3 ④:覆盖档案优先——有已首覆档案 → 查「档案对账」
+            from autoresearch.dossier import schema as _dsch
+            _dp = _dsch.dossier_path(code)
+            has_cov = _dp.exists() and bool(
+                _dsch.parse_frontmatter(_dp.read_text(encoding="utf-8")).get("initiated"))
+        except Exception:  # noqa: BLE001 — 档案层可选
+            has_cov = False
+        if has_cov:
+            if "档案对账" not in text:
+                out.append({"check": "卡片契约·档案对账缺失", "severity": "warn", "code": code,
+                            "detail": f"{code} 有覆盖档案但卡片无『档案对账』节"
+                                      "(驱动/风险/判例逐条核对,增量研究契约)"})
+        elif "变化项" not in text:
             try:
                 from autoresearch.scan.dossier import render_dossier
                 if render_dossier(code, scan_root=scan_dir.parent, exclude=scan_dir.name):
