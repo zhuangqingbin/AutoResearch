@@ -152,12 +152,21 @@ def record_scan_delta(code6: str, date: str, *, rating: str, conviction=None,
     from autoresearch.scan import dossier as scan_dossier  # lazy 防环(scan↔dossier,builder 同款)
     entries = scan_dossier.stock_dossier(code6, scan_root=scan_root,
                                          max_days=builder._PRECEDENT_WINDOW)
+    prec_text = scan_dossier.render_dossier(code6, scan_root=scan_root,
+                                            max_days=builder._PRECEDENT_WINDOW)
+    from autoresearch.dossier import ledger as dledger
+    rec = dledger.code_track_record(code6)
+    track = dledger.render_track_block(code6, scan_root=scan_root)
+    body7 = "\n\n".join(p for p in ((prec_text or builder._NO_PRECEDENT), track) if p)
+    text = replace_section(text, 6, body7)
+
     calc = builder.render_summary_calc(pf, len(entries))
     # 摘要「带位:」与 §3(_refresh_band)同守卫:val_band 缺 → 跳过,保留摘要旧值,
     # 不用「数据缺(待预取)」覆盖一个原本的好值(与 §3 对称,要么都更新要么都保留)。
     if (pf or {}).get("val_band"):
         text = refresh_summary_line(text, _ANCHOR_BAND, calc["带位"])
-    text = refresh_summary_line(text, _ANCHOR_PREC, calc["判例"])   # 判例不依赖 val_band,不受此限
+    text = refresh_summary_line(text, _ANCHOR_PREC,
+                                dledger.render_precedent_value(len(entries), rec))
 
     text = set_frontmatter_key(text, "last_delta", date)
     path.write_text(text, encoding="utf-8")
