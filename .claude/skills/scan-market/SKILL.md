@@ -102,6 +102,15 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
    ```
    → **`reports/scan/<YYYYMMDD_HHMM>/`**(目录名=实际运行时刻,数据日记 `manifest.json`):`summary.md`(漏斗数量/各阶段概览/buy-list/token估算)+ `details/〈股票名称〉.md`+ `trace/`(留溯源)。**汇报**:漏斗 + buy-list(评级/目标)+ 诚实局限。
 
+6. **覆盖档案维护**(盘后,不占扫描窗;presence-gated,池空则整段跳过)
+   ```bash
+   uv run --no-sync python -m autoresearch.dossier.pool <date> --status        # 看 pending_init 队列
+   uv run --no-sync python -m autoresearch.dossier.reconcile <period>          # 季度对账(中报/年报披露后,如 20260630)
+   ```
+   - **建档队列**:`pending_init` 里的票逐只派 `.claude/workflows/dossier-init.js`(**≤3 只/晚**,每只 ~10-20min);新 agent def 落盘当会话派发会 `not found`(会话启动装载),等热载或换会话。
+   - **prelude 会替你催**:📐 = 该报告期未对账、🕰️ = 档案 >90 日未全量刷新(该票补一次 `dossier-init --force` 或对账)。
+   - 未披露也会落痕(不是"没跑"),所以 📐 计数应随对账动作**下降**;天天恒定 = 探针坏了。
+
 ## 铁律
 - **确定性层零 LLM**:L0/L1/**L2**/L5 全 pandas,不在筛选里编数、不预测。
 - **召回宽、判断深**:L1 高召回 → L2 分层多样性采样收口(给均衡菜单,非 alpha);真正的多空取舍在 L3 holistic 精排 + L4 决策卡。
