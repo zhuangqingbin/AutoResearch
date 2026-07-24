@@ -261,6 +261,34 @@ def _precedent_mark(base: Path, code6: str, sector, gate_hint: str | None = None
     return "\n".join(out)
 
 
+def _dossier_summary_mark(code6: str) -> str:
+    """Wave3 ④:覆盖档案摘要注入(presence-gated)。
+
+    缺档案 / 未首覆(骨架四行占位是噪声)/ 摘要超 3k 帽(lint 已在建档/δ 侧 warn,
+    此处只跳不注)→ ""(byte-parity)。进逐卡 body,天然在共享前缀之后(cache 契约安全)。
+    """
+    try:
+        from autoresearch.dossier import schema as dschema
+        p = dschema.dossier_path(code6)
+        if not p.exists():
+            return ""
+        text = p.read_text(encoding="utf-8")
+        meta = dschema.parse_frontmatter(text)
+        if not meta.get("initiated"):
+            return ""
+        block = dschema._summary_block(text)
+        if not block or dschema.est_tokens(block) > 3000:
+            return ""
+        asof = meta.get("last_delta") or meta.get("initiated")
+        head = (f"### 📚 覆盖档案摘要(常备模型 as-of {asof};**增量研究**:"
+                "已覆盖项只核对不重写,深度花在变化上)")
+        tail = (f"_档案全文按需 Read:`{p}`;本卡必须含「**档案对账**」节:"
+                "驱动变量哪个动了/风险矩阵哪条触发或解除/判例账本一行。_")
+        return "\n".join([head, block.strip(), tail])
+    except Exception:  # noqa: BLE001 — 档案层可选,坏档不挡派发
+        return ""
+
+
 _BASE_RATE_THIN_N = 10   # ⚠ 薄样本阈值(既有 cross_calib/rating_base_rates min_n 惯例,镜像不新拍)
 
 
@@ -469,13 +497,14 @@ def compose_funnel_brief(code: str, scan_dir: Path | str) -> str:
             pass
     brief = "\n".join(lines) + "\n"
     ctx = _market_ctx(base, ind)
+    dsum = _dossier_summary_mark(code6)      # Wave3 ④:覆盖档案摘要(presence-gated,缺="")
     doss = ""
     try:                                     # R5·前科卡(历史事实,增量研究;异常吞掉老 brief 不破)
         from autoresearch.scan.dossier import render_dossier
         doss = render_dossier(code6, scan_root=base.parent, exclude=base.name)
     except Exception:  # noqa: BLE001
         doss = ""
-    parts = [p for p in (ctx, doss, brief) if p]
+    parts = [p for p in (ctx, dsum, doss, brief) if p]
     return "\n".join(parts)
 
 
