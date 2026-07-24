@@ -18,7 +18,7 @@ from autoresearch.common.scoring import (
     lens_reversal_confirm,
     lens_value,
 )
-from autoresearch.scan.recall.base import gate_rank
+from autoresearch.scan.recall.base import empty_result, gate_rank
 from autoresearch.scan.recall.registry import channel
 
 
@@ -135,7 +135,7 @@ def heat(frame, date, k):
 
 
 @channel("event", quota=80, floor=20,
-         desc="公告事件(回购实施/增持/机构调研近10日;确定性分类,非涨幅信号)")
+         desc="公告事件(近10日回购实施/预案+增持,按公告去重计件;调研只做门不排序;非涨幅信号)")
 def event(frame, date, k):
     """事件驱动召回(Wave4)——补漏斗唯一的"有实质公告但价格还没反应"缺口。
 
@@ -151,20 +151,41 @@ def event(frame, date, k):
     经 `ev_pos>0` 入池,但排在所有有真实公司行为的票之后(`ev_pos` 定义见 `events.py`:
     `ev_hard + min(ev_surv_n, 1)`,调研最多贡献 1)。
 
+    **排序分是复合分,不是裸 `ev_hard`**(Review Round 2 I-3 / Round 1 I-1):`ev_hard` 是
+    离散小整数,而 `gate_rank` 只有一个排序键、`kind="stable"` ⇒ 并列层内的顺序 = **帧行序**
+    (`recall_select` 跑在 `scored.sort_values("composite")` **之前**,进来的是
+    `build_market_frame` 的原始 ts_code 序 = 事实上任意)。2026-07-21 真湖(按公告去重后)
+    门内分布 `{3:12, 2:26, 1:218}`,quota=80 ⇒ **只有 38 席按信号排,其余 42 席(52%)从
+    218 只并列票里靠代码序切**;实测换帧行序(code 升序 vs 随机序)入选名单差 17 只,且
+    code 序系统性偏好 `000/002` 前缀。这会直接稀释 `unique_excess_t2` 十日审批的信噪
+    ——审的是一个"四分之一名单靠抽签"的排序器,读数无法归因。
+    故本路自己造 `event_score`(**不改 `gate_rank` 的公共契约**,其余 10 路照旧):
+
+        event_score = ev_hard + 0.5·「有没有调研」 + 0.2·pct(composite)
+
+    两个 kicker 合计 ≤0.7 < 1,**压不过一个整数级差**(主轴仍是硬事件件数);第二键
+    `ev_pos − ev_hard`(即 `min(ev_surv_n,1)`,取值 0/1)让"有真事件又被调研"的排前面;
+    第三键 `pct(composite)` 把剩下的并列层排开 —— 并列不再由行序决定。缺 composite 列时
+    第三项退化为 0(此时并列层重新退回帧行序,是降级不是设计)。
+
     缺列 → 空帧降级(与其余 10 路同契约)。门内 `ev_hard` 全 0(整池只有调研、没有一件
     回购/增持)→ 同样退化为空帧,不召回一整池纯调研票。**默认不启用**:须
     `channel_audit` 的 unique_excess_t2 累计 ≥10 日为正 + 人批才进
     scan_config.funnel.recall_channels(与 accumulation 2026-07-11 被裁同纪律)。
     """
     if "ev_pos" not in frame.columns or "ev_hard" not in frame.columns:
-        # 哨兵列名(frame 里必然不存在)——不能写死用 "ev_pos" 兜底:若只有 ev_hard 缺、
-        # ev_pos 还在,gate_rank(frame, None, "ev_pos", k) 会真的按 ev_pos 排序返回非空,
-        # 不是本分支要的"缺列 → 空帧"(实测坐实,见 test_event_channel_missing_ev_hard_
-        # degrades_to_empty)。
-        return gate_rank(frame, None, "__no_event__", k)    # 缺列 → 空帧
+        # 两列缺任一都要空帧:若只有 ev_hard 缺而 ev_pos 还在,按 ev_pos 排序会返回非空
+        # (那正是 I-5 要治的"调研家数排行");见 test_event_channel_missing_ev_hard_
+        # degrades_to_empty。
+        return empty_result()                               # 缺列 → 空帧
     mask = frame["ev_pos"].fillna(0.0) > 0
     if not bool(mask.any()):
-        return gate_rank(frame, None, "__no_event__", k)    # 全 0 → 空帧(不召回零事件票)
-    if not bool((frame.loc[mask, "ev_hard"].fillna(0.0) > 0).any()):
-        return gate_rank(frame, None, "__no_event__", k)    # 门内全是纯调研 → 空帧(不召回)
-    return gate_rank(frame, mask, "ev_hard", k)
+        return empty_result()                               # 全 0 → 空帧(不召回零事件票)
+    hard = _num(frame["ev_hard"]).fillna(0.0)
+    if not bool((hard[mask] > 0).any()):
+        return empty_result()                               # 门内全是纯调研 → 空帧(不召回)
+    g = frame.copy()
+    surveyed = (_num(g["ev_pos"]).fillna(0.0) - hard).clip(lower=0.0, upper=1.0)
+    tiebreak = _pct(g["composite"]).fillna(0.0) if "composite" in g.columns else 0.0
+    g["event_score"] = hard + 0.5 * surveyed + 0.2 * tiebreak
+    return gate_rank(g, mask, "event_score", k)

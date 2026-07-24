@@ -47,6 +47,48 @@ def test_event_channel_gates_on_events_not_price():
     )
 
 
+def _tie_frame():
+    """5 只**同为单一硬事件**(ev_hard=1)的票 —— 真湖 07-21 去重后门内分布是
+    `{3:12, 2:26, 1:218}`,即绝大多数候选都落在这一层。故意让**行序与 composite 完全相反**
+    (行序 000010→000014 是 composite 升序),这样"按行序切"和"按 composite 切"给出的答案
+    正好相反,测试才有鉴别力。"""
+    return pd.DataFrame({
+        "code": [f"0000{10 + i}" for i in range(5)],
+        "composite": [10.0, 20.0, 30.0, 40.0, 50.0],
+        "ev_pos": [1.0] * 5, "ev_hard": [1.0] * 5,
+        "ev_rep_impl": [0.0] * 5, "ev_rep_plan": [0.0] * 5,
+        "ev_holder_in": [1.0] * 5, "ev_holder_de": [0.0] * 5, "ev_surv_n": [0.0] * 5,
+    })
+
+
+def test_event_channel_breaks_ties_by_composite():
+    """R2-I3 / R1-I-1:`ev_hard` 是离散小整数,`gate_rank` 只有一个排序键且 `kind="stable"`
+    ⇒ 并列层内的顺序 = **帧行序**;而进 `gate_rank` 的是 `build_market_frame` 的原始 ts_code
+    序(`recall_select` 跑在 `scored.sort_values("composite")` 之前)= 事实上任意。
+
+    真湖 07-21(按公告去重后)门内 `{3:12, 2:26, 1:218}`,quota=80 ⇒ 38 席按信号排、
+    **42 席(52%)从 218 只并列票里靠代码序切**;换帧行序实测入选名单差 17 只,且 code 序
+    系统性偏好 000/002 前缀。这条锁住"并列票按 composite 决胜,不按行序"。
+    """
+    out = build("event")(_tie_frame(), "2026-07-25", 3)
+    assert list(out["code"]) == ["000014", "000013", "000012"], \
+        "全部 ev_hard 并列时须按 composite 降序取,不得按帧行序(行序取到的是 10/11/12)"
+    assert out["channel_score"].is_monotonic_decreasing
+    assert out["channel_score"].nunique() == 3, "并列层必须被排开(同分=又回到行序抽签)"
+
+
+def test_event_channel_tiebreak_cannot_overturn_hard_event_count():
+    """决胜键必须**只在并列层内**起作用:合计 kicker ≤0.7 < 1,压不过一个整数级差。
+    构造最极端的对抗——ev_hard=1 的票同时拿满"有调研"+全场最高 composite,仍须排在
+    ev_hard=2、composite 全场最低、且行序更靠后的票之后。"""
+    f = _tie_frame()
+    f.loc[0, ["ev_hard", "ev_pos", "composite"]] = [2.0, 2.0, 1.0]      # 双硬事件 + 最低分
+    f.loc[4, ["ev_pos", "ev_surv_n", "composite"]] = [2.0, 5.0, 99.0]   # 单硬事件 + 调研 + 最高分
+    out = build("event")(f, "2026-07-25", 5)
+    assert list(out["code"])[0] == "000010", "硬事件件数是主轴,kicker 不得翻盘"
+    assert list(out["code"])[1] == "000014", "同为 1 件硬事件时,带调研的排在纯事件票之前"
+
+
 def test_event_channel_missing_cols_degrades_to_empty():
     """事件列缺失(取数全失败)→ 空帧,与其余 10 路同款降级契约。"""
     f = _frame().drop(columns=["ev_pos"])
@@ -63,7 +105,16 @@ def test_event_channel_missing_ev_hard_degrades_to_empty():
 
 
 def test_event_channel_all_zero_degrades_to_empty():
-    """事件列在但全 0(三腿失败后 attach 填 0)→ 空帧,不得召回一堆零事件票。"""
+    """事件列在但全 0(三腿失败后 attach 填 0)→ 空帧,不得召回一堆零事件票。
+
+    **如实标注护栏强度(Review Round 1 m-2)**:本测试锁的是「行为」不是「那一行代码」——
+    源码里 `if not bool(mask.any()): return empty_result()` 那条守卫**删掉本测试照绿**
+    (reviewer 变异 M2a 实测):`ev_pos` 全 0 ⇒ mask 全 False ⇒ 后面第三条守卫(门内
+    `ev_hard` 全 0)接管返回同样的空帧;即便三条守卫全删,`gate_rank` 里 `frame[mask]`
+    也是空 ⇒ 还是空帧。那条守卫是**纵深防御 + 意图自述**,不是本测试的被守对象,别把它
+    当护栏记账(把冗余当护栏 = 以为有守卫其实没有,本 repo 的老病)。真正被本测试锁死的
+    是"全 0 输入不得产出非空召回"这个对外行为,无论它由哪条分支兑现。
+    """
     f = _frame()
     f["ev_pos"] = 0.0
     out = build("event")(f, "2026-07-24", 10)
