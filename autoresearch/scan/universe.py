@@ -264,36 +264,75 @@ def write_shadow_variants(outdir: Path, scored: pd.DataFrame, recall: pd.DataFra
 
     - nostrat:纯 composite 序(分层到底救了还是害了);
     - nocap:分层但无行业上限(cap 挡了多少赢家);
-    - pre_healthy:**旧 9 路口径反事实**(无 healthy 通道、无健康桶)——healthy 通道的
+    - pre_healthy:**当日实际启用路的反事实,去掉 healthy 通道**(无健康桶)——healthy 通道的
       捕获增量由 retro 对照直接可测(2026-07-03 起)。仅 multi 模式有意义。
+    - plus_event:**当日实际启用路 + event 通道的反事实**(pre_healthy 的镜像:少一路 vs 多一路)——
+      给事件驱动召回路(Wave4,默认不启用)攒 `unique_excess_t2` 累计证据,判它是否够格转正。
+      仅当日路未含 event 时有意义(已启用则无反事实可比)。
     - capfloor20:cap_floor_yi=20(默认 30)重跑 L0→L1→L2——验证 pr_20260624_001(小盘/北交所
-      领涨日 30亿地板系统性漏判赢家)是否值得放宽。**唯一非零成本变体**:前三个都在本次已取好
+      领涨日 30亿地板系统性漏判赢家)是否值得放宽。**唯一非零成本变体**:前面几个都在本次已取好
       的 `scored`/`recall` 上重组,capfloor20 要真重新拉取 universe(网络/湖),故单独 try/except
-      兜底——它失败不牵连前三个已经算好、只等落盘的零成本变体。
+      兜底——它失败不牵连前面已经算好、只等落盘的零成本变体。
+
+    每个经 `recall_select` 算出的变体(pre_healthy/plus_event/capfloor20)都把它的
+    `per_channel`(第二个返回值,逐路长表)落 `shadow/L1_channels_<variant>.csv`(列同主
+    `L1_channels.csv`:channel/code/channel_rank/channel_score)——`channel_audit --variant`
+    的 `unique_excess_t2` 只能从这张长表算。原实现三处 `re9, _ = ...` / `recall20, _ = ...`
+    一律丢弃第二个返回值,新召回路(如 event)因此无法按 accumulation 2026-07-11 被裁同口径
+    裁决(Wave4 仪器修复)。
     """
     from autoresearch.scan.recall.l2_stratify import DEFAULT_FLOORS, select_l2
+
     sh = outdir / "shadow"
     sh.mkdir(exist_ok=True)
+
+    def _dump_per_channel(vname: str, pc) -> None:
+        """影子变体的逐路长表(Wave4 仪器修复)。
+
+        原实现把 `recall_select` 的 per_channel 一律丢弃(`re9, _ = ...`),导致影子只能
+        拿到"L2 名单多捕几个赢家"的粗读数,拿不到 `unique_excess_t2` —— 而后者正是
+        accumulation 2026-07-11 被裁决退役所用的指标。没有它,新召回路无法按同口径裁决。
+        """
+        if pc is not None and len(pc):
+            pc.to_csv(sh / f"L1_channels_{vname}.csv", index=False)
+
     nostrat = recall.sort_values("composite", ascending=False).head(l2_n).copy()
     nostrat.insert(0, "l2_rank", range(1, len(nostrat) + 1))
     variants: dict[str, pd.DataFrame] = {"nostrat": nostrat}
     variants["nocap"], _ = select_l2(recall, l2_n, floors=l2_floors, sector_cap_frac=1.0)
     if recall_mode == "multi":
         from autoresearch.scan.recall.registry import registered_channels
-        old = [n for n in registered_channels() if n != "healthy"]
-        re9, _ = recall_select(scored, analysis_date, recall_n, "multi", old,
-                               channel_quotas=channel_quotas, channel_floors=channel_floors)
+        # bug 修复(Wave4):原先 `old` 恒取 registered_channels()(全部已注册路,含已停用的
+        # accumulation/northbound),不看当日实际启用了哪些路 → "去掉 healthy 的反事实"混进了
+        # 根本没参与当日召回的停用路,反事实失真。改为以调用方传入的 recall_channels(当日
+        # 实际启用路)为基准,缺省(None)才退回全部注册路。
+        base_names = list(recall_channels or registered_channels())
+        old = [n for n in base_names if n != "healthy"]
+        re9, pc9 = recall_select(scored, analysis_date, recall_n, "multi", old,
+                                 channel_quotas=channel_quotas, channel_floors=channel_floors)
         f9 = {k: v for k, v in (l2_floors or DEFAULT_FLOORS).items() if k != "健康"}
         variants["pre_healthy"], _ = select_l2(re9, l2_n, floors=f9, sector_cap_frac=l2_sector_cap)
+        _dump_per_channel("pre_healthy", pc9)
+
+        if "event" not in base_names:
+            plus = [*base_names, "event"]
+            with contextlib.suppress(Exception):  # event 路是本波新代码,单独兜底不牵连以上两个零成本变体
+                re_p, pc_p = recall_select(scored, analysis_date, recall_n, "multi", plus,
+                                           channel_quotas=channel_quotas,
+                                           channel_floors=channel_floors)
+                variants["plus_event"], _ = select_l2(re_p, l2_n, floors=l2_floors,
+                                                      sector_cap_frac=l2_sector_cap)
+                _dump_per_channel("plus_event", pc_p)
     try:
         uni20, _ = build_market_frame(analysis_date, cap_floor_yi=20.0, include_bj=include_bj,
                                       source=source, l0_min_amount_yi=l0_min_amount_yi,
                                       l0_min_list_days=l0_min_list_days)
         weights20, _ = pick_weights(uni20, regime_aware)
         scored20 = composite_score(uni20, weights20)
-        recall20, _ = recall_select(scored20, analysis_date, recall_n, recall_mode, recall_channels,
-                                    channel_quotas=channel_quotas, channel_floors=channel_floors)
+        recall20, pc20 = recall_select(scored20, analysis_date, recall_n, recall_mode, recall_channels,
+                                       channel_quotas=channel_quotas, channel_floors=channel_floors)
         variants["capfloor20"], _ = select_l2(recall20, l2_n, floors=l2_floors, sector_cap_frac=l2_sector_cap)
+        _dump_per_channel("capfloor20", pc20)
     except Exception as e:  # noqa: BLE001 — 唯一重取数变体,失败不阻其余零成本变体落盘
         print(f"[warn] shadow capfloor20 失败(不阻其余变体): {e}", file=sys.stderr)
     for vname, vdf in variants.items():

@@ -19,7 +19,9 @@ design: docs/specs/2026-07-11-recall-gate-pinned-config-design.md §2.3。
   ③ unique_excess_t2 排序 + 整编观察行 —— 高重叠对 + unique_excess_t2 为负的路点名,
      供人工参照 spec §2.3 默认整编案表逐条裁决(本模块不写 scan_config)。
 
-用法:uv run --no-sync python -m autoresearch.research.channel_audit [--days 30]
+用法:uv run --no-sync python -m autoresearch.research.channel_audit [--days 30] [--variant <name>]
+     --variant 读影子变体 shadow/L1_channels_<name>.csv(如 plus_event/pre_healthy)替代主
+     L1_channels.csv,用同一套 unique_excess_t2 裁决影子召回路是否够格转正(Wave4 仪器修复)。
 """
 from __future__ import annotations
 
@@ -193,9 +195,18 @@ def _scan_dates(scan_root: Path, days: int) -> list[str]:
     return names[-days:] if days > 0 else names
 
 
-def _load_day(scan_root: Path, date: str) -> tuple[pd.DataFrame, pd.DataFrame] | None:
-    """读单日 L1_channels.csv + retro/attribution.csv;任一缺失/空/读取失败 → None(静默跳过)。"""
-    cp, ap = scan_root / date / "L1_channels.csv", scan_root / date / "retro" / "attribution.csv"
+def _load_day(scan_root: Path, date: str, variant: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame] | None:
+    """读单日 channels 长表 + retro/attribution.csv;任一缺失/空/读取失败 → None(静默跳过)。
+
+    `variant`(可选,Wave4 仪器修复):给定 → 改读 `shadow/L1_channels_<variant>.csv`(影子变体
+    自己的逐路长表,见 `scan.universe.write_shadow_variants`)替代主 `L1_channels.csv`,让
+    event/pre_healthy 这类影子召回路能用**同一套** `unique_excess_t2` 计算裁决——其余口径
+    (attribution 路径、存在性检查、空表检查)与主路径一字不改。缺该文件 → None(跳过该日,
+    与现行"主文件缺失"行为一致)。默认 `None` = 现行为(读主 `L1_channels.csv`)。
+    """
+    cp = (scan_root / date / "shadow" / f"L1_channels_{variant}.csv" if variant
+          else scan_root / date / "L1_channels.csv")
+    ap = scan_root / date / "retro" / "attribution.csv"
     if not (cp.exists() and ap.exists()):
         return None
     try:
@@ -208,15 +219,17 @@ def _load_day(scan_root: Path, date: str) -> tuple[pd.DataFrame, pd.DataFrame] |
     return ch, attr
 
 
-def audit(scan_root: Path | None = None, days: int = 30) -> dict:
+def audit(scan_root: Path | None = None, days: int = 30, variant: str | None = None) -> dict:
     """扫 `context/scan/<date>/` 窗口(最近 `days` 个目录,双文件齐全才纳入)→ 整编报告三节数据。
 
-    返回 `{dates, ledger, jaccard, notes}`;窗口内无可用日 → dates=[]、ledger/jaccard 皆空表。
+    `variant`(可选,见 `_load_day`):给定 → 每日改读对应影子长表,用同一套账本/Jaccard 逻辑
+    裁决影子召回路(如 `plus_event`)。返回 `{dates, ledger, jaccard, notes}`;窗口内无可用日 →
+    dates=[]、ledger/jaccard 皆空表。
     """
     scan_root = scan_root or Path("context/scan")
     daily: dict[str, pd.DataFrame] = {}
     for d in _scan_dates(scan_root, days):
-        loaded = _load_day(scan_root, d)
+        loaded = _load_day(scan_root, d, variant=variant)
         if loaded is None:
             continue
         stats = day_channel_stats(*loaded)
@@ -269,13 +282,18 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m autoresearch.research.channel_audit",
                                  description="通道整编报告(累计T+2账本 + 召回集Jaccard重叠矩阵,证据件)")
     ap.add_argument("--days", type=int, default=30, help="回看最近 N 个 scan 日目录(默认 30)")
+    ap.add_argument("--variant", default=None,
+                    help="读影子变体 shadow/L1_channels_<variant>.csv 替代主 L1_channels.csv"
+                         "(裁决新召回路,如 plus_event/pre_healthy;默认=主漏斗,不给此参数)")
     args = ap.parse_args(argv)
 
-    result = audit(days=args.days)
+    result = audit(days=args.days, variant=args.variant)
     body = "\n".join(render(result))
     dates = result.get("dates") or []
     tag = dates[-1] if dates else _date.today().isoformat()
-    outp = Path("reports") / f"channel_audit_{tag}.md"
+    # 变体报告落独立文件名,不与主漏斗的 channel_audit_<tag>.md 互相覆盖(未给 --variant → 逐字节 parity)。
+    fname = f"channel_audit_{args.variant}_{tag}.md" if args.variant else f"channel_audit_{tag}.md"
+    outp = Path("reports") / fname
     outp.parent.mkdir(parents=True, exist_ok=True)
     outp.write_text(body, encoding="utf-8")
     print(body)

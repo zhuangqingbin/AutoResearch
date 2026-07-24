@@ -14,6 +14,7 @@ import inspect
 import pandas as pd
 
 from autoresearch.research.channel_audit import (
+    _load_day,
     audit,
     consolidation_notes,
     cumulative_ledger,
@@ -204,6 +205,73 @@ def test_audit_empty_root_no_crash(tmp_path):
 
 def test_audit_days_default_is_30():
     assert inspect.signature(audit).parameters["days"].default == 30
+
+
+# ───────────────────────── _load_day/audit(variant=...) 影子长表读取(Wave4 Task4 仪器修复) ─────────────────────────
+# 目的:让影子召回路(如 plus_event/pre_healthy)也能用同一套 unique_excess_t2 计算裁决——
+# 主/影子 channels 内容故意不同(DAY1 vs DAY2),这样"读对文件"与"读错文件"的结果不可能撞车。
+
+
+def test_load_day_variant_reads_shadow_file_not_main(tmp_path):
+    """variant= 给定 → 读 shadow/L1_channels_<variant>.csv,不读主 L1_channels.csv。"""
+    d = tmp_path / "2026-06-20"
+    d.mkdir(parents=True)
+    _DAY1_CHANNELS.to_csv(d / "L1_channels.csv", index=False)                          # 主文件(不应被读到)
+    (d / "shadow").mkdir()
+    _DAY2_CHANNELS.to_csv(d / "shadow" / "L1_channels_plus_event.csv", index=False)    # 影子(应被读到)
+    (d / "retro").mkdir()
+    _DAY1_ATTR.to_csv(d / "retro" / "attribution.csv", index=False)
+    loaded = _load_day(tmp_path, "2026-06-20", variant="plus_event")
+    assert loaded is not None
+    ch, _ = loaded
+    assert set(ch["code"]) == {"000001", "000004", "000005"}   # DAY2_CHANNELS 的码,不是 DAY1 的 {1,2,3}
+
+
+def test_load_day_variant_missing_file_returns_none(tmp_path):
+    """指定 variant 但该日没跑过该影子(无 shadow/ 目录或无对应文件)→ None,与主文件缺失同行为。"""
+    d = tmp_path / "2026-06-20"
+    d.mkdir(parents=True)
+    _DAY1_CHANNELS.to_csv(d / "L1_channels.csv", index=False)
+    (d / "retro").mkdir()
+    _DAY1_ATTR.to_csv(d / "retro" / "attribution.csv", index=False)
+    assert _load_day(tmp_path, "2026-06-20", variant="plus_event") is None
+
+
+def test_load_day_no_variant_reads_main_file_unchanged(tmp_path):
+    """variant=None(默认,现行为)→ 其余口径一字不改,仍读主 L1_channels.csv。"""
+    d = tmp_path / "2026-06-20"
+    d.mkdir(parents=True)
+    _DAY1_CHANNELS.to_csv(d / "L1_channels.csv", index=False)
+    (d / "retro").mkdir()
+    _DAY1_ATTR.to_csv(d / "retro" / "attribution.csv", index=False)
+    loaded = _load_day(tmp_path, "2026-06-20")
+    assert loaded is not None
+    ch, _ = loaded
+    assert set(ch["code"]) == {"000001", "000002", "000003"}   # DAY1_CHANNELS 的码
+
+
+def test_audit_variant_end_to_end_uses_shadow_ledger(tmp_path):
+    """audit(variant=...) 端到端:账本用影子长表配同日 attribution 算出,与主文件配出的不同
+    (chan_a 的 unique_excess_t2 只有读到 DAY2_CHANNELS 才是 +0.07;读到 DAY1_CHANNELS 会是 +0.04
+    或因码对不上 attribution 而是 None——两者都不等于 0.07,故此断言能鉴别读对读错)。"""
+    d = tmp_path / "2026-06-20"
+    d.mkdir(parents=True)
+    _DAY1_CHANNELS.to_csv(d / "L1_channels.csv", index=False)
+    (d / "shadow").mkdir()
+    _DAY2_CHANNELS.to_csv(d / "shadow" / "L1_channels_plus_event.csv", index=False)
+    (d / "retro").mkdir()
+    _DAY2_ATTR.to_csv(d / "retro" / "attribution.csv", index=False)
+    result = audit(scan_root=tmp_path, days=30, variant="plus_event")
+    assert result["dates"] == ["2026-06-20"]
+    a = result["ledger"][result["ledger"]["channel"] == "chan_a"].iloc[0]
+    assert abs(a["unique_excess_t2"] - 0.07) < 1e-6
+
+
+def test_audit_variant_missing_shadow_skips_day(tmp_path):
+    """指定 variant 但当日未产出该影子文件(未跑过该变体)→ 跳过该日,不报错。"""
+    _write_day(tmp_path, "2026-06-20", _DAY1_CHANNELS, _DAY1_ATTR)     # 只有主文件,无 shadow/
+    result = audit(scan_root=tmp_path, days=30, variant="plus_event")
+    assert result["dates"] == []
 
 
 # ───────────────────────── render(markdown 三节) ─────────────────────────
