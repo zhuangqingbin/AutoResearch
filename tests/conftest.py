@@ -67,3 +67,19 @@ def _isolate_config():
     config_module._config = copy.deepcopy(default_config.DEFAULT_CONFIG)
     yield
     config_module._config = copy.deepcopy(default_config.DEFAULT_CONFIG)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_dossier_dir(tmp_path, monkeypatch):
+    """dossier 层隔离(Wave3):防任何测试读写真实 context/knowledge/dossiers。
+
+    module-attr 派发(builder._load_prefetch 读 prefetch.PREFETCH_DIR、schema.dossier_path
+    读 schema.DOSSIER_DIR 均为调用时取值)→ monkeypatch 生效;两常量独立(PREFETCH_DIR
+    在 import 时由 DOSSIER_DIR 计算,patch 前者不会带动后者),必须双 patch。
+    """
+    from autoresearch.dossier import prefetch as _pf, schema as _sch
+    d = tmp_path / "_dossiers"
+    d.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(_sch, "DOSSIER_DIR", d)
+    monkeypatch.setattr(_pf, "PREFETCH_DIR", d / "_prefetch")
+    yield
