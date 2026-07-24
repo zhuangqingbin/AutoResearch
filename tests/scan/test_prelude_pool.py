@@ -169,3 +169,58 @@ def test_prelude_dossier_pool_note_carries_reconcile_nag(tmp_path, monkeypatch):
     note = next(r for r in results if r["step"] == "dossier_pool")["note"]
     assert "池 1 active" in note                       # 原有内容不丢
     assert "📐 季度对账待跑:1 只(period=20251231)" in note
+
+
+# ───────── 陈旧度告警(Task 3:`last_refresh` 至今零写者零读者,档案陈旧零探针) ─────────
+
+
+def test_staleness_nag_flags_pool_stock_over_90_days(tmp_path):
+    """池内已建档票 last_refresh(退 initiated)距 today 超 90 日 → 一行陈旧告警。"""
+    from tests.dossier.test_delta import _mk_dossier
+    _mk_dossier(code="300857", today="2026-01-01")     # initiated=2026-01-01,从未 last_refresh
+    pp = _write_pool(tmp_path / "pool.json", ["300857"])
+    line = prelude.dossier_staleness_nag("2026-07-24", pool_path=pp)
+    assert "🕰️ 档案陈旧 1 只(>90日未全量刷新)" in line
+    assert "300857" in line
+
+
+def test_staleness_nag_silent_when_fresh(tmp_path):
+    """未超期 → 静默(不制造常驻噪声)。"""
+    from tests.dossier.test_delta import _mk_dossier
+    _mk_dossier(code="300857", today="2026-07-01")     # 距 07-24 仅 23 日
+    pp = _write_pool(tmp_path / "pool.json", ["300857"])
+    assert prelude.dossier_staleness_nag("2026-07-24", pool_path=pp) == ""
+
+
+def test_staleness_nag_presence_gated(tmp_path):
+    """池空 / 未建档 / 未首覆 / 已退池 → 全部静默(presence-gated,不空催)。"""
+    from tests.dossier.test_delta import _mk_dossier
+    assert prelude.dossier_staleness_nag("2026-07-24",
+                                         pool_path=tmp_path / "nope.json") == ""
+    pp = _write_pool(tmp_path / "p1.json", ["300857"])          # 池里有但无档案
+    assert prelude.dossier_staleness_nag("2026-07-24", pool_path=pp) == ""
+    _mk_dossier(code="600000", initiated=False)                 # 骨架票(未首覆)→ 两日期皆空
+    pp2 = _write_pool(tmp_path / "p2.json", ["600000"])
+    assert prelude.dossier_staleness_nag("2026-07-24", pool_path=pp2) == ""
+    _mk_dossier(code="002371", today="2026-01-01")               # 已首覆但超期且已退池
+    pp3 = _write_pool(tmp_path / "p3.json", ["002371"], status="retired")
+    assert prelude.dossier_staleness_nag("2026-07-24", pool_path=pp3) == ""
+
+
+def test_prelude_dossier_pool_note_carries_staleness_nag(tmp_path, monkeypatch):
+    """接线:陈旧告警真的出现在 prelude 汇总的 dossier_pool 行里,且与季度对账提醒并存。"""
+    from tests.dossier.test_delta import _mk_dossier
+    monkeypatch.chdir(tmp_path)
+    _mk_dossier(code="300857", today="2026-01-01")
+    _write_pool(tmp_path / "context" / "knowledge" / "coverage_pool.json", ["300857"])
+
+    def fake_refresh(today, **kw):
+        return {"entered": [], "retired": [], "revived": [],
+                "pending_init": [], "n_active": 1}
+    monkeypatch.setattr("autoresearch.dossier.pool.refresh", fake_refresh)
+
+    results = run_prelude("2026-07-24", skip=_SKIP_ALL_BUT_DOSSIER_POOL)
+    note = next(r for r in results if r["step"] == "dossier_pool")["note"]
+    assert "池 1 active" in note
+    assert "📐 季度对账待跑:1 只(period=20251231)" in note      # 原有告警不丢
+    assert "🕰️ 档案陈旧 1 只(>90日未全量刷新):300857" in note

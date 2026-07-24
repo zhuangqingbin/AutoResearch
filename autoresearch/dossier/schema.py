@@ -94,3 +94,29 @@ def lint_dossier(text: str, cap: int = SUMMARY_CAP) -> list[str]:
         issues.append(f"summary>cap({est_tokens(block)}>{cap})")
     issues += [f"摘要缺锚:{a}" for a in SUMMARY_ANCHORS if a not in block]
     return issues
+
+
+STALE_DAYS = 90     # 档案陈旧告警阈值(spec 风险节:last_refresh 超 90 日 → warn)
+
+
+def staleness_issues(text: str, today: str, *, cap_days: int = STALE_DAYS) -> list[str]:
+    """档案陈旧度探针:`last_refresh`(缺则退 `initiated`)距 today 超 cap_days → 一条 issue。
+
+    与 `lint_dossier`(结构契约)分开:结构对但内容陈旧是另一类病,且需要"今天"这个
+    外部输入才能判——不塞进纯结构 lint(规模检查与结构检查分开,repo 既有惯例)。
+    两个日期都空 = 骨架未首覆,归 pending_init 管,不在此报。
+    """
+    from datetime import date as _date
+    meta = parse_frontmatter(text)
+    ref = meta.get("last_refresh") or meta.get("initiated")
+    if not ref:
+        return []
+    try:
+        y, m, d = (int(x) for x in str(ref).split("-"))
+        ty, tm, td = (int(x) for x in str(today).split("-"))
+        age = (_date(ty, tm, td) - _date(y, m, d)).days
+    except Exception:  # noqa: BLE001 — 日期畸形不报陈旧(结构 lint 的事)
+        return []
+    if age > cap_days:
+        return [f"档案陈旧:last_refresh {ref} 距今 {age} 日(>{cap_days})"]
+    return []

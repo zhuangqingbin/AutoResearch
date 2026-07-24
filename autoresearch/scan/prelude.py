@@ -96,6 +96,36 @@ def dossier_reconcile_nag(date: str, *, pool_path=None) -> str:
             f"→ uv run --no-sync python -m autoresearch.dossier.reconcile {period}")
 
 
+def dossier_staleness_nag(date: str, *, pool_path=None) -> str:
+    """池内已建档票 `last_refresh`(缺退 `initiated`)距 today 超 90 日 → 当日件陈旧告警。
+
+    Task 3(2026-07-24 终审 M-13 + spec 风险节):`last_refresh` 至今零写者零读者,档案
+    陈旧目前没有任何探针。与 `dossier_reconcile_nag` 姊妹但判据不同——那个盯"有没有
+    做过对账",这个盯"上次全量刷新距今多久"(纯读 `schema.staleness_issues`,可单测)。
+    presence-gated:池空/无档案/未首覆/未超期 → ""(不打印)。
+    """
+    from autoresearch.dossier import pool as _pool, schema as _schema
+    stale: list[str] = []
+    for code, st in sorted(_pool.load_pool(pool_path).get("stocks", {}).items()):
+        if st.get("status") != "active":
+            continue
+        p = _schema.dossier_path(code)
+        if not p.exists():                       # 未建档 → 归 pending_init,不催陈旧
+            continue
+        text = p.read_text(encoding="utf-8")
+        if not _schema.parse_frontmatter(text).get("initiated"):
+            continue
+        iss = _schema.staleness_issues(text, date)
+        if not iss:
+            continue
+        days = iss[0].split("距今 ")[-1].split(" 日")[0]
+        stale.append(f"{code}({days}日)")
+    if not stale:
+        return ""
+    return (f"🕰️ 档案陈旧 {len(stale)} 只(>90日未全量刷新):"
+            + "、".join(stale[:6]) + ("…" if len(stale) > 6 else ""))
+
+
 def _write_t0(scan_dir: Path) -> None:
     """墙钟 t0 标记:mtime 即 stage_timing 的起点锚,内容仅自述。
     已存在不覆盖(prelude-retry/重跑不重置起点);失败不挡 prelude。"""
@@ -242,7 +272,11 @@ def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()
         nag = ""
         with contextlib.suppress(Exception):   # 对账提醒可选,坏档不挡池日检
             nag = dossier_reconcile_nag(date)
-        return f"{note} · {nag}" if nag else note
+        stale = ""
+        with contextlib.suppress(Exception):   # 陈旧告警可选,坏档不挡池日检
+            stale = dossier_staleness_nag(date)
+        extra = " · ".join(x for x in (nag, stale) if x)
+        return f"{note} · {extra}" if extra else note
 
     all_steps = [("retro_refresh", _refresh), ("retro_pending", _pending),
                  ("t1_pending", _t1_pending), ("learning_health", _learning_health),

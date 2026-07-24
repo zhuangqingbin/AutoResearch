@@ -117,6 +117,9 @@ def reconcile_one(code6: str, period: str, today: str, *, fetch=None) -> dict:
     留痕、`last_delta` 照更新 —— 让 `dossier_reconcile_nag` 分得清"没跑过"与
     "跑了、真没数据",不再对同一只票永久重复提醒。返回值仍带 `skipped="undisclosed"`
     语义,额外加 `recorded=True` 表明已落痕(供 CLI 区分打印)。
+
+    真数据分支额外写 `last_refresh`(Task 3:季度对账 = 报告期全量核对);未披露分支
+    **不写** `last_refresh` —— 没核到数不算全量刷新,`staleness_issues` 陈旧计龄据此判断。
     """
     code6 = str(code6).split(".")[0].zfill(6)
     path = schema.dossier_path(code6)
@@ -148,6 +151,7 @@ def reconcile_one(code6: str, period: str, today: str, *, fetch=None) -> dict:
     text = delta.append_delta_line(text, today,
                                    f"{mark}:{actual['line']}({actual['kind']})", key=mark)
     text = delta.set_frontmatter_key(text, "last_delta", today)
+    text = delta.set_frontmatter_key(text, "last_refresh", today)   # 对账=报告期全量核对
     path.write_text(text, encoding="utf-8")
     return {"code": code6, "updated": True, "kind": actual["kind"],
             "issues": schema.lint_dossier(text)}

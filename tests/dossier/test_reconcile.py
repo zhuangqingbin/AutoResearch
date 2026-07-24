@@ -218,3 +218,21 @@ def test_reconcile_yoy_missing_base_no_yoy_segment_but_profit_still_renders():
     assert "净利 1.0亿" in s5
     assert "yoy" not in s5
     assert "增速不适用" not in s5
+
+
+def test_reconcile_sets_last_refresh():
+    """季度对账 = 报告期全量核对 → 写 last_refresh(spec:中报季强制全量刷新)。"""
+    import pandas as pd
+
+    from autoresearch.dossier import reconcile, schema
+    from tests.dossier.test_delta import _mk_dossier
+    _mk_dossier(code="300858")
+    df = pd.DataFrame([{"ann_date": "20260828", "n_income": 2.5e8,
+                        "yoy_net_profit": 2.0e8, "diluted_eps": 0.85}])
+
+    def fetch(endpoint, params):
+        return df if endpoint == "express" else pd.DataFrame()
+
+    reconcile.reconcile_one("300858", "20260630", "2026-08-29", fetch=fetch)
+    fm = schema.parse_frontmatter(schema.dossier_path("300858").read_text(encoding="utf-8"))
+    assert fm["last_refresh"] == "2026-08-29" and fm["last_delta"] == "2026-08-29"

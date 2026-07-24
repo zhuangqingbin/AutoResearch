@@ -46,3 +46,21 @@ def test_lint_summary_over_cap():
 
 def test_est_tokens_cjk():
     assert est_tokens("字" * 28) == 30      # 28字×3B=84B ÷2.8 = 30
+
+
+def test_staleness_issues():
+    from autoresearch.dossier import schema
+    head = ("---\ncode: 300857\nname: x\nsector: x\npool_status: active\n"
+            "entered: 2026-01-01\nentry_reason: pinned\ninitiated: {ini}\n"
+            "last_refresh: {ref}\nlast_delta: 2026-07-24\n---\n")
+    fresh = head.format(ini="2026-01-01", ref="2026-07-01")
+    assert schema.staleness_issues(fresh, "2026-07-24") == []
+    stale = head.format(ini="2026-01-01", ref="2026-03-01")
+    iss = schema.staleness_issues(stale, "2026-07-24")
+    assert len(iss) == 1 and "档案陈旧" in iss[0] and "2026-03-01" in iss[0]
+    # last_refresh 空 → 退回 initiated 计龄
+    no_ref = head.format(ini="2026-01-01", ref="null")
+    assert schema.staleness_issues(no_ref, "2026-07-24")
+    # 两者皆空 → 不报(骨架未首覆,归 pending_init 管)
+    both = head.format(ini="null", ref="null")
+    assert schema.staleness_issues(both, "2026-07-24") == []
