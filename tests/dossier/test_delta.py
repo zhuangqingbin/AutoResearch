@@ -135,3 +135,31 @@ def test_delta_refreshes_section7_with_track_block(tmp_path, monkeypatch):
     text = p.read_text(encoding="utf-8")
     assert "t1 快环战绩" in delta.section_body(text, 6)   # §7 尾战绩块
     assert "t1 方向 1 笔 准1/不准0" in text               # 摘要判例行升级
+
+
+def test_record_scan_deltas_batch(tmp_path, monkeypatch):
+    import json
+
+    from autoresearch.dossier import delta
+    p = _mk_dossier()                                     # 300857 已首覆
+    _mk_dossier(code="600000", initiated=False)           # 骨架票:应 skip
+    sd = tmp_path / "2026-07-24"
+    sd.mkdir()
+    (sd / "finalists.csv").write_text(
+        "code,name,conviction\n300857,协创数据,58\n600000,浦发银行,50\n000001,平安银行,60\n",
+        encoding="utf-8")
+    (sd / "_final_ratings.json").write_text(
+        json.dumps({"300857": "Underweight", "600000": "Hold"}), encoding="utf-8")
+    n = delta.record_scan_deltas(sd, "2026-07-24")
+    assert n == 1                                         # 只有已首覆的 300857 落 δ
+    body = delta.section_body(p.read_text(encoding="utf-8"), 7)
+    assert "- 2026-07-24 入围:评级 Underweight(conv 58)" in body
+
+
+def test_record_scan_deltas_missing_inputs(tmp_path):
+    from autoresearch.dossier import delta
+    assert delta.record_scan_deltas(tmp_path / "nope", "2026-07-24") == 0   # 无 finalists
+    sd = tmp_path / "d"
+    sd.mkdir()
+    (sd / "finalists.csv").write_text("code,name\n300857,协创数据\n", encoding="utf-8")
+    assert delta.record_scan_deltas(sd, "2026-07-24") == 0   # 无 _final_ratings.json → 不记

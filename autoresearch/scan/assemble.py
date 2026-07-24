@@ -1254,6 +1254,11 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
             res = build_index()
             if res.get("dates_indexed"):
                 print(f"[precedents] 索引 {len(res['dates_indexed'])} 新日 → context/knowledge/precedents.db")
+        with contextlib.suppress(Exception):           # Wave3 ④:覆盖档案 δ 回写(§8+摘要机算;失败不阻发布)
+            from autoresearch.dossier.delta import record_scan_deltas
+            n_doss = record_scan_deltas(scan_dir, analysis_date)
+            if n_doss:
+                print(f"[dossier] δ 回写 {n_doss} 份覆盖档案 → context/knowledge/dossiers/")
     print(f"[L5 整合] summary → {summary_path}  (数据日 {analysis_date})")
     print(f"[L5 整合] details → {detail_out}  ({n_cards} 张卡 + trace/ {n_pipe} 件溯源)")
     return summary_path

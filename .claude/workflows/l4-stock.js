@@ -32,7 +32,7 @@ if (intelOn) {
   const INTEL = { type: 'object', required: ['code'],
     properties: { code: { type: 'string' }, events: { type: 'integer' } } }
   const intel = await agent(
-    `活体情报采集:${code} ${name}(${sector})· 分析日 ${date}。按你的人设六面全查(≤${maxQ} 条),写 ${SD}/_l4_intel_${code}.md;返回 code 与事件行数 events。`,
+    `活体情报采集:${code} ${name}(${sector})· 分析日 ${date}。若存在 context/knowledge/dossiers/${code}.md:先读其摘要节作已知底,只查增量。按你的人设六面全查(≤${maxQ} 条),写 ${SD}/_l4_intel_${code}.md;返回 code 与事件行数 events。`,
     { agentType: 'l4-intel', effort: cfg.agents?.l4_intel?.effort ?? 'max',
       ...(cfg.agents?.l4_intel?.model ? { model: cfg.agents.l4_intel.model } : {}),
       label: `intel:${code}`, phase: 'Intel', schema: INTEL })

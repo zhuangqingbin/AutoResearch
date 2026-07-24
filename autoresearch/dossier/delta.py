@@ -171,3 +171,40 @@ def record_scan_delta(code6: str, date: str, *, rating: str, conviction=None,
     text = set_frontmatter_key(text, "last_delta", date)
     path.write_text(text, encoding="utf-8")
     return {"code": code6, "updated": True, "issues": schema.lint_dossier(text)}
+
+
+def record_scan_deltas(scan_dir: Path | str, date: str) -> int:
+    """整日批量 δ:finalists × 终评级(_final_ratings.json,ensemble/verify 折回后)。
+
+    终评级缺(文件缺/该票无卡「—」)→ 该票不记(防「无卡」污染 §8;卡面评级不可靠,
+    P0-2 教训:折回只改 rows 不回写卡面)。单票失败不断链;返回实际更新档案数。
+    """
+    import contextlib
+    import json as _json
+
+    import pandas as pd
+    scan_dir = Path(scan_dir)
+    fp = scan_dir / "finalists.csv"
+    if not fp.exists():
+        return 0
+    try:
+        fin = pd.read_csv(fp, dtype={"code": str})
+    except Exception:  # noqa: BLE001 — 坏 csv 当无处理
+        return 0
+    if "code" not in fin.columns:
+        return 0
+    ratings: dict = {}
+    with contextlib.suppress(Exception):
+        ratings = _json.loads((scan_dir / "_final_ratings.json").read_text(encoding="utf-8"))
+    n = 0
+    for _, r in fin.iterrows():
+        code6 = str(r.get("code", "") or "").split(".")[0].zfill(6)
+        rating = ratings.get(code6)
+        if not code6.strip("0") or not rating or rating == "—":
+            continue
+        with contextlib.suppress(Exception):    # 单票坏档不断链(δ 是记账,不是发布门)
+            res = record_scan_delta(code6, date, rating=rating,
+                                    conviction=r.get("conviction"),
+                                    scan_root=scan_dir.parent)
+            n += bool(res.get("updated"))
+    return n
