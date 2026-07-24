@@ -129,6 +129,39 @@ def _append_eps_snapshot(text: str, pf: dict | None) -> str:
     return replace_section(text, 1, body.rstrip("\n") + "\n" + line + "\n")
 
 
+def _staging_dir_for(scan_root: Path, date: str) -> Path | None:
+    """δ 用的 staging 目录:**当日优先**(δ 跑在 assemble 尾,当日素材就在手),
+    当日缺 → 回退 builder 的「最近有素材的日」;都无 → None。
+
+    为什么不直接复用 builder 的 `_latest_staging_dir`:建档跑在任意时点、只能取最近;
+    δ 跑在当日收尾,拿当日才是正解——否则会用旧快照冒充今天(spec ① §4/§6「每次 δ」)。
+    """
+    d = Path(scan_root) / date
+    if any((d / f).exists() for f in builder._STAGING_FILES):
+        return d
+    return builder._latest_staging_dir(Path(scan_root))
+
+
+def _refresh_staging_sections(text: str, code6: str, date: str,
+                              scan_root: str | Path) -> str:
+    """§4 筹码资金史 / §6 催化剂日历 就地刷新(spec ① 表:每次 δ)。
+
+    **对称守卫**:新素材算不出真内容(返回 `_missing` 占位)→ 保留旧节,不覆盖
+    (与 `_refresh_band` 同款;Wave3 T1 review 教训:半更新会制造节间自相矛盾)。
+    """
+    staging = _staging_dir_for(scan_root, date)
+    if staging is None:
+        return text
+    stamp = staging.name
+    miss = builder._missing(date)
+    for idx, fn in ((3, builder._section4_body), (5, builder._section6_body)):
+        body = fn(staging, code6, date)
+        if not body or body == miss:          # 素材缺 → 保留旧值(不降级覆盖)
+            continue
+        text = replace_section(text, idx, f"_素材 as-of {stamp}_\n\n{body}")
+    return text
+
+
 def record_scan_delta(code6: str, date: str, *, rating: str, conviction=None,
                       scan_root: str | Path = "context/scan") -> dict:
     """单票 δ 回写:§8 入围行 + §3 带位刷新 + §2 快照 + 摘要机算行 + last_delta。"""
@@ -148,6 +181,7 @@ def record_scan_delta(code6: str, date: str, *, rating: str, conviction=None,
     pf = builder._load_prefetch(code6)
     text = _refresh_band(text, pf)
     text = _append_eps_snapshot(text, pf)
+    text = _refresh_staging_sections(text, code6, date, scan_root)
 
     from autoresearch.scan import dossier as scan_dossier  # lazy 防环(scan↔dossier,builder 同款)
     entries = scan_dossier.stock_dossier(code6, scan_root=scan_root,

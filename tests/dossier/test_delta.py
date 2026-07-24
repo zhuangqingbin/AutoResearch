@@ -193,3 +193,65 @@ def test_record_scan_deltas_surfaces_lint_issues(tmp_path):
     assert "300857" in res["issues"]
     assert any("summary>cap" in s for s in res["issues"]["300857"])
     assert schema.injectable_summary("300857") == ""      # 注入确实停摆 = 该警必须可见
+
+
+def _mk_staging(root, day, code="300857", *, pledge=True, calendar=True):
+    """造一天的 staging:pledge.csv(§4 料)+ calendar.csv(§6 料)。
+
+    calendar.csv 列名按真实契约 `autoresearch.scan.calendar._CAL_COLS`
+    (code,kind,event_date,detail,ratio;非泛化的 ann_date/event)——
+    `calendar_flags` 按这五列读,列名不对会在 itertuples 属性访问上直接抛
+    AttributeError(非降级空,已实测验证),不是"数据缺"的降级路径。
+    """
+    d = root / day
+    d.mkdir(parents=True, exist_ok=True)
+    if pledge:
+        (d / "pledge.csv").write_text(
+            f"code,pledge_ratio,end_date\n{code},41.5,2026-07-20\n", encoding="utf-8")
+    if calendar:
+        (d / "calendar.csv").write_text(
+            f"code,kind,event_date,detail,ratio\n{code},disclosure,20260828,中报预约披露,\n",
+            encoding="utf-8")
+    return d
+
+
+def test_delta_refreshes_section4_6_from_today_staging(tmp_path):
+    from autoresearch.dossier import delta
+    p = _mk_dossier()
+    root = tmp_path / "scan"
+    _mk_staging(root, "2026-07-24")
+    delta.record_scan_delta("300857", "2026-07-24", rating="Hold", scan_root=root)
+    text = p.read_text(encoding="utf-8")
+    assert "41.5" in delta.section_body(text, 3)          # §4 拿到当日质押率
+    assert "2026-07-24" in delta.section_body(text, 3)     # 标注素材来自哪个扫描日
+
+
+def test_delta_section4_6_missing_material_keeps_old(tmp_path):
+    """对称守卫:当日无 staging → 保留旧 §4/§6,不得写成 [数据缺,…]。"""
+    from autoresearch.dossier import delta
+    p = _mk_dossier()
+    root = tmp_path / "scan"
+    _mk_staging(root, "2026-07-24")
+    delta.record_scan_delta("300857", "2026-07-24", rating="Hold", scan_root=root)
+    before4 = delta.section_body(p.read_text(encoding="utf-8"), 3)
+    assert "41.5" in before4
+    empty_root = tmp_path / "empty"
+    empty_root.mkdir()
+    delta.record_scan_delta("300857", "2026-07-25", rating="Hold", scan_root=empty_root)
+    after4 = delta.section_body(p.read_text(encoding="utf-8"), 3)
+    assert after4 == before4                               # 旧真值原样保留
+    assert "数据缺" not in after4
+
+
+def test_delta_prefers_today_staging_over_latest(tmp_path):
+    """当日目录存在即用当日,不回退到"最近有素材的日"(防拿旧快照冒充今天)。"""
+    from autoresearch.dossier import delta
+    p = _mk_dossier()
+    root = tmp_path / "scan"
+    old = _mk_staging(root, "2026-07-20")
+    (old / "pledge.csv").write_text("code,pledge_ratio,end_date\n300857,99.9,2026-07-01\n",
+                                    encoding="utf-8")
+    _mk_staging(root, "2026-07-24")                        # 当日 41.5
+    delta.record_scan_delta("300857", "2026-07-24", rating="Hold", scan_root=root)
+    body4 = delta.section_body(p.read_text(encoding="utf-8"), 3)
+    assert "41.5" in body4 and "99.9" not in body4

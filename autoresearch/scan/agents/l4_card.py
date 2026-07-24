@@ -278,7 +278,8 @@ def _dossier_summary_mark(code6: str) -> str:
         asof = meta.get("last_delta") or meta.get("initiated")
         head = (f"### 📚 覆盖档案摘要(常备模型 as-of {asof};**增量研究**:"
                 "已覆盖项只核对不重写,深度花在变化上)")
-        tail = (f"_档案全文按需 Read:`{p}`;本卡必须含「**档案对账**」节:"
+        tail = (f"_档案全文按需 Read:`{p}`(§4 筹码/§6 催化随每日 δ 刷新,"
+                "其余节为首覆/中报季全量);本卡必须含「**档案对账**」节:"
                 "驱动变量哪个动了/风险矩阵哪条触发或解除/判例账本一行。_")
         return "\n".join([head, block.strip(), tail])
     except Exception:  # noqa: BLE001 — 档案层可选,坏档不挡派发
