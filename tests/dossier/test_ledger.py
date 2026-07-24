@@ -108,3 +108,16 @@ def test_retro_buckets_reads_only_needed_columns(tmp_path, monkeypatch):
     monkeypatch.setattr(pd, "read_csv", spy)
     assert ledger.retro_buckets("300857", scan_root=tmp_path) == {"recalled_cut": 1}
     assert set(seen.get("usecols") or []) == {"code", "bucket"}
+
+
+def test_retro_buckets_missing_bucket_column_degrades_safely(tmp_path):
+    """M-15 降级路:老 CSV 缺 bucket 列 → usecols 令 pd.read_csv 抛 ValueError →
+    现有 except 跳过该日,不挡其余日子的聚合(安全降级,非整体失败)。"""
+    from autoresearch.dossier import ledger
+    old = tmp_path / "2026-07-13" / "retro"
+    old.mkdir(parents=True)
+    (old / "attribution.csv").write_text("code,name\n300857,协创\n", encoding="utf-8")
+    new = tmp_path / "2026-07-14" / "retro"
+    new.mkdir(parents=True)
+    (new / "attribution.csv").write_text("code,bucket\n300857,caught\n", encoding="utf-8")
+    assert ledger.retro_buckets("300857", scan_root=tmp_path) == {"caught": 1}
