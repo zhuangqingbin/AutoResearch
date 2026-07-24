@@ -639,3 +639,18 @@ sections_skipped = {'300857': ['§4.seats'], '688766': ['§4.pledge', '§4.seats
 的回归(`git status --porcelain` 收尾仍空,真档案 mtime 未变),只是记账:8 月中报季
 真正的披露窗口打开、`_recent_periods` 滚到下一个报告期后,📐/🕰️ 才会再度按终审给的
 判据出现非空读数,是该验收项的第一次真实触发,留给「下次真扫描验收追加项」#8 覆盖。
+
+## 冒烟实录 + 终审(2026-07-24·控制端自跑)
+
+**活体三链**:
+- `dispatch_plan('2026-07-21')`:12 只 finalist,4 只已建档带 `dossier_summary`,其余空串(parity)。
+- `record_scan_deltas('context/scan/2026-07-21','2026-07-21')` → `{'updated': 4, 'sections_skipped': {'300857': ['§4.seats'], '688766': ['§4.pledge','§4.seats'], '601869': ['§4.seats']}}` —— **T1 那条 critical 的修在真数据上现形**:这三票当日无席位/质押行,按原(整节)实现它们的旧席位史会被静默删掉。
+- 4 份真档案 §4/§6 已刷到 07-21 素材并带 `_素材 as-of 2026-07-21_`;lint 与 staleness 全净;1489 绿、ruff 净。
+
+**本波方法论收获(比代码更值钱)**:
+1. **运行时变异测试成了本波最有效的武器**——T1/T2/T3/T4 四个 task 的复核**全部**用它逮到「新测试零鉴别力」:T1 三个变异全存活(当日优先换 latest / 去掉守卫 continue / 只刷 §4 都能 657 全绿);T2 删掉 `${knownBase}` 拼接=交付整条死掉仍 1468 全绿;T3 「距今」润色成「已过」就让告警变垃圾;T4 测试只锁「对角线」。**绿灯不等于有灯**。
+2. **🚨可复用坑:`node --check` 对 `.claude/workflows/*.js` 零鉴别力**——这类文件同时含 ESM `export` 与顶层 `return`,node 走模块探测分支后**整个跳过检查**,故意写坏(括号不闭/模板串不闭)仍 exit 0 = 一盏永不变红的绿灯。有效探针 = AsyncFunction 编译桩跑(已换代并覆盖全部 workflow js)。
+3. **同一条原则要在同一波里被执行三次才算立住**:「降级留痕」在 Wave3 I-4(δ lint 被吞)、Wave3 R2-I-1(undisclosed 只 print)之后,本波终审又逮到第三次(`sections_skipped` 有生产者零消费者)。
+4. **我写的文档说了假话**(终审 I-3):SKILL 里 🕰️ 的处置建议写 `dossier-init --force`——该 flag 不存在;最接近的 `builder --force` 会把 `initiated`/`last_refresh` 清空,让该票**同时**从陈旧探针与 `pending_init` 消失 = FN-1 新变体「被修的票从此永远健康」。**操作建议必须先跑通再写**。
+
+**终审**:Blocked(critical=0 · important=3 · minor=31 · mustfix=3)→ 三条全修(`0b57559..3f30381`)。7 个跨 task 变异 **7/7 全杀**。
