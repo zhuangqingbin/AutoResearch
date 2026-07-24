@@ -98,7 +98,8 @@ def render_dossier(code: str, scan_root: Path | str = "context/scan",
                 kills.append(k)
     if kills:
         lines.append("- **已知证伪点**:" + ";".join(kills[:4]))
-    lines.append("- 用途:**只做增量研究**——在卡片『变化项(vs 档案)』节逐条核对上述证伪点"
+    lines.append("- 用途:**只做增量研究**——在卡片『变化项(vs 档案)』或(若本卡注入了覆盖档案摘要)"
+                 "『档案对账』节逐条核对上述证伪点"
                  "【已变/未变】,未变的引档案一句带过,变了的才展开。"
                  "**本次评级仍由本卡 rubric 三门独立定,档案不预判方向。**")
     return "\n".join(lines) + "\n"
