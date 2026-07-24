@@ -68,6 +68,21 @@ def test_dossier_change_section_lint(tmp_path):
 
 
 def _mk_cov_dossier(code):
+    """已首覆 + 含合格摘要块 → `injectable_summary` 真 → lint/注入器同判"可注入"。"""
+    from autoresearch.dossier import schema
+    p = schema.dossier_path(code)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("---\ncode: " + code + "\nname: x\nsector: x\npool_status: active\n"
+                 "entered: 2026-07-23\nentry_reason: pinned\ninitiated: 2026-07-23\n"
+                 "last_refresh: null\nlast_delta: null\n---\n"
+                 f"{schema.SUMMARY_HEAD}\n- 业务: x\n- 驱动: x\n- 带位: x\n"
+                 "- 风险: x\n- 催化: x\n- 判例: x\n", encoding="utf-8")
+
+
+def _mk_cov_dossier_no_summary(code):
+    """已首覆但**缺摘要块**——`injectable_summary` 假(与注入器 `_dossier_summary_mark`
+    的"不注入"同判)。review R1 important 逮到的缝:此形态下 lint 曾仍报「档案对账缺失」,
+    与注入器"根本没告诉 LLM 要写这节"矛盾(假阳)。"""
     from autoresearch.dossier import schema
     p = schema.dossier_path(code)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -94,6 +109,19 @@ def test_card_lint_covered_stock_with_reconcile_ok(tmp_path):
     _mk_cov_dossier("300858")
     (d / "300858.md").write_text(FULL_OK + "\n**档案对账**:驱动无变化;风险无触发;判例一致\n",
                                  encoding="utf-8")
+    assert not [w for w in card_contract_lint(tmp_path)
+                if w["check"] == "卡片契约·档案对账缺失"]
+
+
+def test_card_lint_covered_no_summary_not_injectable_no_reconcile_warn(tmp_path):
+    """review R1 important 修复回归锁:initiated 但摘要块缺失(不可注入)→ lint 不报
+    「档案对账缺失」——与注入器 `_dossier_summary_mark`(同一 `injectable_summary` 门)同判,
+    杜绝"没注入却照查"的假阳。"""
+    from autoresearch.learning.self_review import card_contract_lint
+    d = tmp_path / "details"
+    d.mkdir(parents=True)
+    _mk_cov_dossier_no_summary("300859")
+    (d / "300859.md").write_text(FULL_OK, encoding="utf-8")        # 有变化项、无档案对账
     assert not [w for w in card_contract_lint(tmp_path)
                 if w["check"] == "卡片契约·档案对账缺失"]
 

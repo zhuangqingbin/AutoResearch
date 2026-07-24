@@ -159,11 +159,9 @@ def card_contract_lint(scan_dir) -> list[dict]:
             out.append({"check": "卡片契约·P4倾向缺失", "severity": "warn", "code": code,
                         "detail": f"{code} 满卡未记『进入P4倾向: <Rating>』(阶段效能计量断供)"})
         has_cov = False
-        try:                             # Wave3 ④:覆盖档案优先——有已首覆档案 → 查「档案对账」
+        try:  # Wave3 ④→Fix1(review R1 important):与注入器 _dossier_summary_mark 同门
             from autoresearch.dossier import schema as _dsch
-            _dp = _dsch.dossier_path(code)
-            has_cov = _dp.exists() and bool(
-                _dsch.parse_frontmatter(_dp.read_text(encoding="utf-8")).get("initiated"))
+            has_cov = bool(_dsch.injectable_summary(code))
         except Exception:  # noqa: BLE001 — 档案层可选
             has_cov = False
         if has_cov:

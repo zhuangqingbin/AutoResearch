@@ -264,21 +264,17 @@ def _precedent_mark(base: Path, code6: str, sector, gate_hint: str | None = None
 def _dossier_summary_mark(code6: str) -> str:
     """Wave3 ④:覆盖档案摘要注入(presence-gated)。
 
-    缺档案 / 未首覆(骨架四行占位是噪声)/ 摘要超 3k 帽(lint 已在建档/δ 侧 warn,
-    此处只跳不注)→ ""(byte-parity)。进逐卡 body,天然在共享前缀之后(cache 契约安全)。
+    可注入判定单一事实源 = `dossier.schema.injectable_summary`(缺档案/未首覆/摘要
+    缺/超帽 → ""),与卡契约 lint 的 `has_cov` 同门——防「没注入却照查」的缝
+    (review R1 important)。进逐卡 body,天然在共享前缀之后(cache 契约安全)。
     """
     try:
         from autoresearch.dossier import schema as dschema
+        block = dschema.injectable_summary(code6)
+        if not block:
+            return ""
         p = dschema.dossier_path(code6)
-        if not p.exists():
-            return ""
-        text = p.read_text(encoding="utf-8")
-        meta = dschema.parse_frontmatter(text)
-        if not meta.get("initiated"):
-            return ""
-        block = dschema._summary_block(text)
-        if not block or dschema.est_tokens(block) > 3000:
-            return ""
+        meta = dschema.parse_frontmatter(p.read_text(encoding="utf-8"))
         asof = meta.get("last_delta") or meta.get("initiated")
         head = (f"### 📚 覆盖档案摘要(常备模型 as-of {asof};**增量研究**:"
                 "已覆盖项只核对不重写,深度花在变化上)")

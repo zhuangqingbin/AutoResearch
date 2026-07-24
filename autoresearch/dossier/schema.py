@@ -16,6 +16,7 @@ SECTIONS: tuple[str, ...] = (
 )
 SUMMARY_HEAD = "## 摘要(注入用)"
 SUMMARY_ANCHORS: tuple[str, ...] = ("业务:", "驱动:", "带位:", "风险:", "催化:", "判例:")
+SUMMARY_CAP = 3000    # 注入摘要 token 硬帽(spec ①;lint 与注入器同源引用)
 
 _META_KEYS = ("code", "name", "sector", "pool_status", "entered", "entry_reason",
               "initiated", "last_refresh", "last_delta")
@@ -62,7 +63,28 @@ def _summary_block(text: str) -> str:
     return text[i:j] if j > 0 else text[i:]
 
 
-def lint_dossier(text: str, cap: int = 3000) -> list[str]:
+def injectable_summary(code6: str) -> str:
+    """可注入的摘要块;不可注入(缺档案/未首覆/摘要缺/超帽)→ ""。
+
+    L4 注入器与卡契约 lint 的**单一分档事实源**(生产者/消费者必须同门,
+    防「没注入却照查」的 FN-1 族缝)。异常吞成 ""(坏档不挡派发/lint)。
+    """
+    try:
+        p = dossier_path(code6)
+        if not p.exists():
+            return ""
+        text = p.read_text(encoding="utf-8")
+        if not parse_frontmatter(text).get("initiated"):
+            return ""
+        block = _summary_block(text)
+        if not block or est_tokens(block) > SUMMARY_CAP:
+            return ""
+        return block
+    except Exception:  # noqa: BLE001 — 坏档=不可注入,不抛
+        return ""
+
+
+def lint_dossier(text: str, cap: int = SUMMARY_CAP) -> list[str]:
     issues = [f"缺节锚:{s}" for s in SECTIONS if s not in text]
     if SUMMARY_HEAD not in text:
         issues.append(f"缺节锚:{SUMMARY_HEAD}")

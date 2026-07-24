@@ -129,6 +129,7 @@ FINAL TRANSACTION PROPOSAL: **<HOLD|SELL>**
 | 偿付(爆雷) | 强/中/弱 | • 净债务/利息覆盖一句(P4 已核) • 商誉/A股质押一句 |
 | 催化 | 强/中/弱 | • 下一闸门一句 • 近14天新闻一句(如有) |
 
+(若有前科档案:**变化项(vs 档案)** 节;若注入覆盖档案摘要:改写为**档案对账** 节)
 **Rubric建议**(评分卡派生): 6 维净分 <±n>/6 ｜ OW三门 <主力真在 ✓/✗·业绩真兑现 ✓/✗·估值不透支 ✓/✗> → **建议 <Rating>**(≥+4 Buy／≥+2 OW／−1~+1 Hold／≤−2 UW／≤−4 Sell;**任一 OW 门未过 → ≥OW 一律压 Hold**)
 
 **Rating**: <Buy|Overweight|Hold|Underweight|Sell> ← **必须 = Rubric建议**;不同则下一行写 `**偏离**:<≤20字硬理由>`(`self_review` 抓『评级超 rubric』)

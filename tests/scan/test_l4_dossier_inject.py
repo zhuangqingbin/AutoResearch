@@ -35,3 +35,32 @@ def test_mark_presence_gated_missing_and_skeleton():
 def test_mark_skips_over_cap_summary():
     _mk(code="600001", summary_pad="х" * 12000)           # 摘要超 3k token → 不注
     assert _dossier_summary_mark("600001") == ""
+
+
+def test_injectable_summary_four_gates():
+    """schema.injectable_summary 单一事实源四门(review R1 important:注入器与 lint 同源锁)。
+
+    缺档案 / 未首覆 / 摘要块缺 / 超帽 → "";四门皆过 → 返回摘要块本身(不含 head/tail 装饰,
+    与 `_dossier_summary_mark` 分层——mark 只在 block 非空时才拼 head/tail)。
+    """
+    from autoresearch.dossier import schema
+
+    assert schema.injectable_summary("999998") == ""              # 缺档案
+
+    _mk(code="600002", initiated="null")                          # 骨架未首覆
+    assert schema.injectable_summary("600002") == ""
+
+    p = schema.dossier_path("600003")                              # 已首覆但缺摘要块
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("---\ncode: 600003\nname: x\nsector: x\npool_status: active\n"
+                 "entered: 2026-07-23\nentry_reason: pinned\ninitiated: 2026-07-23\n"
+                 "last_refresh: null\nlast_delta: null\n---\n", encoding="utf-8")
+    assert schema.injectable_summary("600003") == ""
+
+    _mk(code="600004", summary_pad="х" * 12000)                    # 摘要超 3k token
+    assert schema.injectable_summary("600004") == ""
+
+    _mk(code="600005")                                             # 正常:四门皆过
+    block = schema.injectable_summary("600005")
+    assert block and "- 业务: 算力租赁" in block and "- 判例: 入围 5 次" in block
+    assert schema.SECTIONS[0] not in block                         # 只回摘要块,不带八节正文
