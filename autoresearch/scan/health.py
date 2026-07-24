@@ -56,7 +56,9 @@ def nan_report(scan_dir: Path, thresh: float = 0.30) -> tuple[dict, list[str]]:
 def anns_empty_rate(scan_dir: Path) -> float | None:
     """L3_news 空稿率。=1.0 为 **expected 非告警**(anns_d 已退役 2026-07-18:无接口权限,
     结构化公告标题流由 stock_news_em 头条 + l4-intel 活体盲搜双重覆盖)。无目录 → None。
-    键与数值保留供下游消费,expected 语义见 `run_health` 并列布尔 `anns_expected`。"""
+    键与数值保留供下游消费,expected 语义见 `run_health` 并列布尔 `anns_expected`。
+    Wave4 Task1:`index_md` 现会据此(`anns_expected`)渲染一行「公告标题流不可用」——
+    此前只在 `run_health.json` 里挂 `anns_expected=True`,报告正文完全无感,断链留痕。"""
     d = Path(scan_dir) / "L3_news"
     files = sorted(d.glob("*.json")) if d.is_dir() else []
     if not files:

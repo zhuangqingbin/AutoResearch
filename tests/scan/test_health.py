@@ -93,9 +93,26 @@ def test_index_md_links_and_prev_run(tmp_path):
 
 def test_index_md_shows_anns_unavailable_line(tmp_path):
     """anns_d 已退役:index.md 不再对此静默——每次跑动都有一行显式标注(此前仅 JSON 里可查,
-    肉眼看报告完全无感,正是三个扫描日 news 列全零无人察觉的成因之一)。"""
+    肉眼看报告完全无感,正是三个扫描日 news 列全零无人察觉的成因之一)。此形态 = 目录压根
+    不存在(`anns_empty_rate` 走 `is None` 分支)——与下一条"真生产形态"并存两条,
+    见 `test_index_md_shows_anns_unavailable_line_when_rate_is_one` 的说明。"""
     d = _mk_day(tmp_path / "ctx", "2026-07-02", cards={"000001": CARD_OW})
     rep = tmp_path / "reports" / "20260702_1200"
+    (rep / "details").mkdir(parents=True)
+    s = index_md(d, rep)
+    assert "anns_d" in s and "退役" in s and "不可用" in s
+
+
+def test_index_md_shows_anns_unavailable_line_when_rate_is_one(tmp_path):
+    """Review Round 1 Important-2:上一条测试用的 `_mk_day` 不建 `L3_news/` 目录,走的是
+    `anns_empty_rate is None` 分支——但**真生产退役日**是另一形态:`L3_news/` 里躺着一堆
+    `[]` 空 json(`rate == 1.0`)。此前只测 is-None 分支时,变异 F2(把渲染判据从
+    `anns_expected` 改成 `anns_empty_rate is None`,= 只在"连目录都没有"时报、真退役日反而
+    静默,正是本 task 要治的病)能带绿全套件上线。本测试补造 `rate==1.0` 形态锁住它。"""
+    d = _mk_day(tmp_path / "ctx4", "2026-07-02", cards={"000001": CARD_OW})
+    (d / "L3_news").mkdir()
+    (d / "L3_news" / "000001.json").write_text("[]", encoding="utf-8")
+    rep = tmp_path / "reports4" / "20260702_1200"
     (rep / "details").mkdir(parents=True)
     s = index_md(d, rep)
     assert "anns_d" in s and "退役" in s and "不可用" in s
