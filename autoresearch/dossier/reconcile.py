@@ -22,6 +22,14 @@ def _num(v) -> float | None:
     return None if f != f else f
 
 
+def _txt(v, default: str = "—") -> str:
+    """字符串腿 NaN/None 守卫(数值腿归 _num;Wave2 NaN 教训的字符串版)。"""
+    if v is None or (isinstance(v, float) and v != v):
+        return default
+    s = str(v).strip()
+    return s if s and s.lower() != "nan" else default
+
+
 def _fetch_actual(code6: str, period: str, *, fetch=None) -> dict | None:
     """express 优先,forecast 兜底;皆空 → None。返回 {"kind","ann_date","line"}。"""
     from autoresearch.data import sources
@@ -33,6 +41,8 @@ def _fetch_actual(code6: str, period: str, *, fetch=None) -> dict | None:
     except Exception:  # noqa: BLE001 — 网络腿降级走 forecast
         df = None
     if df is not None and len(df):
+        if "ann_date" in df.columns:
+            df = df.sort_values("ann_date", ascending=False)
         r = df.iloc[0]
         parts = []
         np_v = _num(r.get("n_income"))
@@ -44,18 +54,20 @@ def _fetch_actual(code6: str, period: str, *, fetch=None) -> dict | None:
         eps = _num(r.get("diluted_eps"))
         if eps is not None:
             parts.append(f"摊薄EPS {eps:.2f}")
-        return {"kind": "express", "ann_date": str(r.get("ann_date", "—")),
+        return {"kind": "express", "ann_date": _txt(r.get("ann_date")),
                 "line": "、".join(parts) if parts else "快报关键字段缺"}
     try:
         df = fetch("forecast", {"ts_code": ts, "period": period})
     except Exception:  # noqa: BLE001 — 两腿皆断按未披露处理(skip 留痕在调用方)
         df = None
     if df is not None and len(df):
+        if "ann_date" in df.columns:
+            df = df.sort_values("ann_date", ascending=False)
         r = df.iloc[0]
         lo, hi = _num(r.get("p_change_min")), _num(r.get("p_change_max"))
         line = (f"预告净利变动 {lo:+.0f}%~{hi:+.0f}%" if lo is not None and hi is not None
-                else f"预告类型 {r.get('type', '—')}")
-        return {"kind": "forecast", "ann_date": str(r.get("ann_date", "—")), "line": line}
+                else f"预告类型 {_txt(r.get('type'))}")
+        return {"kind": "forecast", "ann_date": _txt(r.get("ann_date")), "line": line}
     return None
 
 

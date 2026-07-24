@@ -61,3 +61,34 @@ def test_reconcile_nan_fields_not_rendered():
                             fetch=_fake_fetch(express_df=df))
     s5 = delta.section_body(schema.dossier_path("601869").read_text(encoding="utf-8"), 4)
     assert "nan" not in s5 and "摊薄EPS 0.50" in s5      # NaN 穿 or-默认防线(Wave2 教训)
+
+
+def test_reconcile_forecast_nan_type_not_rendered():
+    """forecast 兜底路:type=NaN 且 p_change 双缺 → 字符串腿 NaN 不得渲染(Important-1 回归)。"""
+    _mk_dossier(code="002415")
+    fdf = pd.DataFrame([{"ann_date": float("nan"), "type": float("nan"),
+                         "p_change_min": float("nan"), "p_change_max": float("nan")}])
+    res = reconcile.reconcile_one("002415", "20260630", "2026-08-16",
+                                  fetch=_fake_fetch(forecast_df=fdf))
+    assert res["kind"] == "forecast"
+    text = schema.dossier_path("002415").read_text(encoding="utf-8")
+    s5 = delta.section_body(text, 4)
+    s8 = delta.section_body(text, 7)
+    assert "预告类型 —" in s5
+    assert "nan" not in s5.lower() and "nan" not in s8.lower()
+
+
+def test_reconcile_express_picks_latest_ann_date_not_first_row():
+    """多行修正公告:旧行放 df 第 0 位,须按 ann_date 降序锁最新披露(Important-2 回归)。"""
+    _mk_dossier(code="000725")
+    df = pd.DataFrame([
+        {"ann_date": "20260815", "n_income": 1e8, "yoy_net_profit": 10.0, "diluted_eps": 0.20},
+        {"ann_date": "20260828", "n_income": 2.5e8, "yoy_net_profit": 240.0, "diluted_eps": 0.85},
+    ])
+    res = reconcile.reconcile_one("000725", "20260630", "2026-08-29",
+                                  fetch=_fake_fetch(express_df=df))
+    assert res["updated"]
+    s5 = delta.section_body(schema.dossier_path("000725").read_text(encoding="utf-8"), 4)
+    assert "净利 2.5亿" in s5 and "yoy +240.0%" in s5
+    assert "20260828" in s5
+    assert "净利 1.0亿" not in s5 and "20260815" not in s5
