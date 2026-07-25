@@ -162,3 +162,38 @@ def test_dossier_init_agent_def():
     text = p.read_text(encoding="utf-8")
     for a in ("model: opus", "三情景", "证伪触发点", "断言分级", "不改确定性节"):
         assert a in text, f"dossier-init.md 缺契约锚「{a}」"
+
+
+def test_scan_market_workflow_pinned_roster_log():
+    """派发前必须逐只列出 pinned 名单(07-21 漏传 args.pinned → 持仓 SELL 双复核断链)。
+
+    探针 9 sell_review_missing 是事后 warn;真正断的是派发那一秒的记忆,所以契约必须
+    出现在 handoff 日志里。删掉那行 log,本测试应变红。
+    """
+    js = (ROOT / ".claude" / "workflows" / "scan-market.js").read_text(encoding="utf-8")
+    # 锚必须只出现在**承重行**里:第一版用 "📌 保送票"/"args.pinned" 做锚,结果这两串在上方
+    # 注释里也有 → 删掉整条 log 测试照绿(与 "停因:" 同一个病)。下面两个锚只有 log 语句有。
+    assert "${pinnedCodes.join('/')}" in js, "scan-market.js 缺 pinned 名单 log(派发时刻不可见)"
+    assert "args.pinned:true" in js, "scan-market.js 的 pinned log 未点名 args.pinned:true 传参要求"
+    assert "metaAll[c].pinned" in js, "pinned 名单没读 meta.pinned(名单恒空 = 假绿灯)"
+
+
+def test_scan_market_workflow_live_anchors():
+    """直播锚:GATE2 必须逐只列名单(g2.meta 已带 name/sector,此前只 log 计数)。"""
+    js = (ROOT / ".claude" / "workflows" / "scan-market.js").read_text(encoding="utf-8")
+    assert "_prelude_summary.md" in js, "prelude 汇总屏未指路(末15行截断依旧)"
+    assert "L3入围" in js, "GATE2 未逐只 log 入围名单"
+    assert "g2.meta" in js or "metaAll" in js, "GATE2 名单未读 meta(name/sector 白算)"
+
+
+def test_scan_market_skill_live_contract():
+    """8 检查点直播契约必须在 SKILL.md 里(主会话从 L0 到 L5 静默是 Wave5 ① 的起因)。"""
+    md = (SKILLS / "scan-market" / "SKILL.md").read_text(encoding="utf-8")
+    assert "过程直播契约" in md
+    # 锚取**表格行**而非裸 "CPn":裸串会被正文里的「**CP5 滚动表做法**」满足 → 删掉表行
+    # 测试照绿(第一版实测)。表是契约本体,散文是补充说明。
+    for cp in ("CP0", "CP1", "CP2", "CP3", "CP4", "CP5", "CP6", "CP7"):
+        assert f"| {cp} |" in md, f"SKILL.md 直播契约表缺 {cp} 行"
+    assert "autoresearch.scan.render" in md, "SKILL.md 未告诉主会话怎么调 render CLI"
+    assert "_prelude_summary.md" in md, "SKILL.md 未要求转播前奏汇总屏全文"
+    assert "停因分桶" in md, "SKILL.md 收尾未要求 0买日播停因分桶(旧不实判词会复辟)"

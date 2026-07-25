@@ -47,6 +47,26 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 > ```
 > `autoresearch.scan.progress`(确定性读盘,零 LLM)从产物文件反推阶段+计数,**只在变化时**打一行(不刷屏):`⏳ L4 · finalists 11 · 🕵️ 情报 8 · 卡 7/11 · Hold 5·Overweight 1`。跑完自动退出。用户另可用 `/workflows` 看 spinner 级进度树。
 > ⚠️ **播报是「反推」不是「断言」**:它靠产物文件的存在性猜阶段,**不区分「在跑 / 被跳过 / 挂了」,也可能把某阶段的输入产物当成它已完成**(2026-07-17 实测误报两次:哨兵档已提前返回却报「L3 精排中」、把 l3-rank 的输入 `_l3_table.md` 当成「精排 ✓」)。真信号以 workflow 的 `journal.jsonl`(每 agent 一条 `started`/`result`)为准,别拿播报当阶段状态断言。代码侧修复在 `pr_20260717_004`。
+>
+> ### 过程直播契约(必做,2026-07-25 用户反馈"各环节展示不够优雅完整")
+>
+> Monitor 只是兜底(见上:它靠存在性反推、有误报前科)。**主会话必须在下列 8 个检查点主动向用户播报**——素材全是零 LLM 的现成产物,只转播不加工,别自己编数:
+>
+> | # | 时机 | 播什么 | 怎么拿 |
+> |---|---|---|---|
+> | CP0 | Stage0 完 | regime + 温度 + 策略师定调句 | `market_pack.json` + `market_view.md` §1 首句 |
+> | CP1 | GATE1 过 | **前奏汇总屏全文**(12 步 ✓/✗ + 预热状态 + 当日件建议行) | Read `context/scan/<date>/_prelude_summary.md` **全量转播** |
+> | CP2 | 行业 brief 齐 | 每个行业一句地形定调 | 各 `sector_briefs/*.md` 地形段首句 |
+> | CP3 | GATE2 过 | **入围名单逐只**(代码/名称/行业)+ 被 pass1 切掉的影子名单 | workflow 的 `L3入围` 日志 + `_l3_pass1_cut.csv` |
+> | CP4 | L4 派发 | 派发 N 股 + 预算旗 + intel 开关 + 📌保送名单 | workflow 日志(含 `📌 保送票` 行) |
+> | CP5 | L4 进行中 | **每出一张卡播一行**:k/N 代码 名称 评级 | 轮询 `details/*.md`(见下方滚动表) |
+> | CP6 | L4 全完 | 评级分布 + 停因分桶 + OW三门直方图 | `uv run --no-sync python -m autoresearch.scan.render <date> --view gate_hist` |
+> | CP7 | GATE4 过 | 买单/0买判词 + 产物路径 + 分段耗时 | `summary.md` 摘录 + `--view timing` |
+>
+> 随时可调(零 LLM,几秒):`uv run --no-sync python -m autoresearch.scan.render <date> --view menu_health|gate_hist|timing|funnel`。
+>
+> **CP5 滚动表做法**:l4-stock 全部拉起后,主会话每 60–90s 跑一次
+> `ls -t context/scan/<date>/details/*.md 2>/dev/null | head -20`,对**新出现**的卡 grep 其 `**Rating**` 行,播一行 `k/N <代码> <名称> → <评级>`;N 张齐或收到 workflow 完成通知即停。卡文件存在 = 该股确实完成(卡就是产物),这与 `progress.py` 按存在性猜**阶段**不同——后者分不清"在跑/被跳过/挂了",别拿它当阶段断言。
 
 0. **前奏一键**(workflow Prelude 相位的确定性部分):
    ```bash
@@ -88,7 +108,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
    ```
    → scan-market.js 返回 `{dispatch, meta}` 后,主会话对 dispatch 里每股各拉一个
    `Workflow({scriptPath: '.claude/workflows/l4-stock.js', args: {date, code, name, sector, cfg, pinned, dossierSummary}})`
-   `pinned` 取自 dispatch-plan 的 `meta[code].pinned`——漏传→保送票 SELL 双复核断链(probe 9 `sell_review_missing` 会逮)。
+   `pinned` 取自 dispatch-plan 的 `meta[code].pinned`。**派发前对照 workflow 打印的「📌 保送票 N 只」行逐一核对**:名单里的每只必须带 `pinned: true`。漏传 = 持仓 SELL 双复核整段不跑(2026-07-21 实测 300857/601869 中招);probe 9 `sell_review_missing` 只能事后 warn,拦不住。
    `dossierSummary` 取自 dispatch-plan 的 `meta[code].dossier_summary`(无档案=空串);漏传只退化为「intel 无已知底」= Wave3 前行为,不影响正确性。
    (**cfg = 步骤 0.5 frame 回显的 `user_config` 块原样透传,勿传 `{}`**——空 cfg 静默关 intel/降 effort,见 0.5 节 07-21 事故注)(degraded=复核 run 不齐时不折回、报告强制人裁)
    ——**一条消息 N 个调用并行**(每股独立并发帽,真并行;单股失败只废单股,单独重跑该 workflow 即可)。
@@ -100,7 +120,8 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
    uv run --no-sync python -m autoresearch.scan.assemble <date>
    uv run --no-sync python -m autoresearch.scan.gates gate4 <date>
    ```
-   → **`reports/scan/<YYYYMMDD_HHMM>/`**(目录名=实际运行时刻,数据日记 `manifest.json`):`summary.md`(漏斗数量/各阶段概览/buy-list/token估算)+ `details/〈股票名称〉.md`+ `trace/`(留溯源)。**汇报**:漏斗 + buy-list(评级/目标)+ 诚实局限。
+   → **`reports/scan/<YYYYMMDD_HHMM>/`**(目录名=实际运行时刻,数据日记 `manifest.json`):`summary.md`(漏斗数量/各阶段概览/buy-list/token估算)+ `details/〈股票名称〉.md`+ `trace/`(留溯源)。
+   **汇报(CP7)**:漏斗 + buy-list(评级/目标)+ 分段耗时表(`render --view timing`)+ 诚实局限;0 买日必须播**停因分桶**(早停 N 张〔按停因〕/ 满卡未达 OW M 张),**不要再说「无一过 ≥OW 三门」**——早停卡按定义不写三门段(07-21 实测 12 卡里 6 张早停、仅 2 张可解析三门),那句话不被数据支持。
 
 6. **覆盖档案维护**(盘后,不占扫描窗;presence-gated,池空则整段跳过)
    ```bash

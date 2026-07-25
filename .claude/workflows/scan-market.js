@@ -53,7 +53,8 @@ log('Prelude 开始:frame → [universe 全市场取数 ∥ market_view](取数�
 await bash(`mkdir -p ${SD} && ${R} autoresearch.scan.frame ${date} --json > ${SD}/market_pack.json`, 'frame', 'Prelude')
 // universe(确定性)∥ market_view(macro-lite 判断)—— barrier
 await parallel([
-  () => bash(`${R} autoresearch.scan.prelude ${date}`, 'prelude/universe', 'Prelude'),
+  () => bash(`${R} autoresearch.scan.prelude ${date} && echo "SUMMARY_FILE=${SD}/_prelude_summary.md"`,
+    'prelude/universe', 'Prelude'),
   () => agent(
     `读 ${SD}/market_pack.json,按你的人设写 ${SD}/market_view.md(六小节;前3描述性地形、后2仅 L5)。数字只出自 pack,不编;个股不评级、不锚定卡片。pack 里的 sector_healthy_top3 键是 L5 专用的确定性产物,忽略它,不得把"看多行业"及其排名写进任何小节。`,
     { agentType: 'macro-brief', effort: cfg.agents?.strategist?.effort ?? 'high',
@@ -72,6 +73,9 @@ if (!l2ok || !l2ok.ok) {
 const g1 = await gate('GATE1', `${R} autoresearch.scan.gates gate1 ${date}`, GATE1, 'Prelude')
 if (!g1 || !g1.ok) throw new Error(`GATE1 失败:${g1 ? g1.reason : 'agent 无返回'}`)
 log(`GATE1 ✓ sentinel=${g1.sentinel_level} · L4预算=${g1.l4_budget}`)
+// CP1(Wave5 ①):bash 回报只有 stdout 末 15 行,而汇总屏是 12 步 ✓/✗ + 预热状态 + 当日件
+// 建议行 + 下一步 —— 结构性放不下。指路文件,由主会话 Read 后全量转播给用户。
+log(`📋 前奏汇总屏全文:${SD}/_prelude_summary.md(主会话 Read 后全量转播 —— 回报的末 15 行装不下 12 步屏)`)
 
 // ── 哨兵档:材料枯竭 → 跳过 sector/L3/L4;assemble+GATE4 由主会话收尾 ──────────
 if (g1.sentinel_level === 'sentinel' && !forceFull) {
@@ -133,7 +137,14 @@ const g2 = await gate('GATE2',
   `${R} autoresearch.scan.gates gate2 ${date} --budget ${l3cap}`, GATE2, 'L3')
 if (!g2 || !g2.ok) throw new Error(`GATE2 失败:${g2 ? g2.reason : 'no return'}`)
 // L3.5 闸已完全移除(2026-07-12 用户裁定"直接 L3 输出"):L3 finalist tier 即 L4 入选集。
+// CP3(Wave5 ①):整条漏斗最高光的一刻是"选出了哪几只",而不是"选出了几只"。
+// g2.meta 早就带着 name/sector(gates.py:95),此前被整段扔掉。
 log(`GATE2 ✓ finalists=${g2.n}`)
+const fmeta = g2.meta || {}
+;(g2.finalists || []).forEach((c, i) => {
+  const m = fmeta[c] || {}
+  log(`  L3入围 ${i + 1}/${g2.n} ${c} ${m.name || ''}${m.sector ? `(${m.sector})` : ''}`)
+})
 
 // ── Phase L4-prep ───────────────────────────────────────────────
 // (fb_20260714_003)决策卡与活体情报不再在本 workflow 内派发:每股一个独立 l4-stock workflow
@@ -179,6 +190,17 @@ if (!g3.ok) {
   log('GATE3 ✓ 全 slim 结构+内容合格')
 }
 log(`L4 交接:新派 ${dispatch.length} 股(每股一个 l4-stock workflow,主会话并行拉起)· 复用 ${(plan.reused || []).length} 张跳派发`)
+// CP4(Wave5 ①):随时可调的确定性看板,不用等一小时后的 summary.md
+log(`🔎 随时可调:\`${R} autoresearch.scan.render ${date} --view menu_health\`(L2 成色)· \`--view gate_hist\`(L4 完成后看评级分布/停因分桶/门柱)· \`--view timing\`(分段耗时)`)
+// 📌 保送票在派发那一秒必须可见:07-21 漏传 args.pinned → 300857/601869 的持仓 SELL 双复核
+// 整段没跑(self_review 探针 9 sell_review_missing 只能事后 warn,拦不住)。
+const metaAll = plan.meta || g2.meta || {}
+const pinnedCodes = dispatch.filter((c) => metaAll[c] && metaAll[c].pinned)
+if (pinnedCodes.length) {
+  log(`📌 保送票 ${pinnedCodes.length} 只:${pinnedCodes.join('/')} —— 派发这些 l4-stock 必须传 args.pinned:true(漏传=持仓 SELL 双复核断链)`)
+} else {
+  log('📌 保送票 0 只(本次 dispatch 无 pinned)')
+}
 
 // meta(名称/行业)透传给 l4-stock 的 intel 盲搜 prompt;assemble+GATE4 由主会话在全部 l4-stock 完成后收尾。
 return { date, mode: 'l4-handoff', finalists: g2.n, dispatch, reused: plan.reused || [],
