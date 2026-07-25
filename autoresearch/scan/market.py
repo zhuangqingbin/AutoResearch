@@ -9,6 +9,7 @@ render_funnel_readout 给 L5 确定性漏斗读数尾注;render_fallback_pulse �
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -132,6 +133,8 @@ def market_pack(scan_dir: Path | str) -> dict:
     blk = _temperature_block(scan_dir.name)
     if blk:
         pack["temperature"] = blk
+    # Wave5 ③A:资金面/指数估值同款 presence-gated(root 取 scan_dir 的父目录,与帧入口同源)
+    _attach_macro_cn(pack, scan_dir.name, root=scan_dir.parent)
     return pack
 
 
@@ -256,6 +259,7 @@ def market_pack_from_frame(frame: pd.DataFrame | None, date: str | None = None) 
         blk = _temperature_block(date)
         if blk:
             pack["temperature"] = blk
+        _attach_macro_cn(pack, date)        # Wave5 ③A:资金面/指数估值(presence-gated 同款)
     if frame is None or not len(frame):
         return pack
     pack["regime"] = classify_regime(frame).to_dict()
@@ -350,6 +354,56 @@ def market_context_block(pack: dict, industry: str | None = None) -> str:
 
 
 # ───────────────────────── L5 渲染:回退脉搏 + 温度一行 + 漏斗读数尾注 ─────────────────────────
+
+
+def _attach_macro_cn(pack: dict, date: str, root: Path | str | None = None) -> None:
+    """把 `_macro_cn_block` 的三样东西挂进 pack(缺 → 什么都不挂,老 pack 形状不变)。
+
+    两个 pack 入口(帧 / staging)共用,防"一个接了另一个没接"的半接线。
+    """
+    blk = _macro_cn_block(date, root)
+    if not blk:
+        return
+    if blk.get("cross_money"):
+        pack["cross_money"] = blk["cross_money"]
+    if blk.get("index_val"):
+        pack["index_val"] = blk["index_val"]
+    if blk.get("_degraded"):
+        pack["macro_cn_degraded"] = blk["_degraded"]
+
+
+def _macro_cn_block(date: str, root: Path | str | None = None) -> dict | None:
+    """`_macro_cn.json`(Wave5 ③A 取数产物)→ pack 的 cross_money / index_val 两块。
+
+    presence-gated,与 `_temperature_block` 同款契约:文件缺/坏 → None(pack 里就没这两个键,
+    下游 presence-gated 消费,老路不破)。**降级不静默**:文件里的 `_degraded` 原样带出,
+    market_view 与 prelude 汇总屏据此显示"哪块没取到"。
+
+    此前 market_pack 只有 24 个标量、且全部来自全 A 个股快照的横截面自聚合 —— 零真宏观
+    变量(无利率/汇率/北向/两融/指数估值分位)。这里补上资金面与指数估值两块。
+    """
+    p = Path(root or "context/scan") / date / "_macro_cn.json"
+    if not p.is_file():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 — 坏文件当无数据,不阻 pack 组装
+        return None
+    nb, mg, sf = data.get("northbound"), data.get("margin"), data.get("sector_flow")
+    cross_money = None
+    if nb or mg or sf:
+        cross_money = {
+            "as_of": data.get("as_of"),
+            "north_latest_yi": (nb or {}).get("latest_yi"),
+            "north_cum5_yi": (nb or {}).get("cum5_yi"),
+            "margin_rzye_yi": (mg or {}).get("rzye_yi"),
+            "margin_d5_yi": (mg or {}).get("d5_yi"),
+            "sector_flow_top": [(r["industry"], r["net_yi"]) for r in (sf or {}).get("top", [])[:5]],
+            "sector_flow_bottom": [(r["industry"], r["net_yi"])
+                                   for r in (sf or {}).get("bottom", [])[:5]],
+        }
+    return {"cross_money": cross_money, "index_val": data.get("index_val"),
+            "_degraded": data.get("_degraded") or []}
 
 
 def render_temperature_line(date: str) -> str:

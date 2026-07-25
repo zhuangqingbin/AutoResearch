@@ -168,6 +168,14 @@ def main(argv: list[str] | None = None) -> int:
     with contextlib.redirect_stdout(sys.stderr) if args.json else contextlib.nullcontext():
         frame, counts = build_market_frame(analysis_date, cap_floor_yi=args.cap_floor,
                                            include_bj=not args.exclude_bj, source=args.source)
+        # Wave5 ③A:资金面/指数估值取数落 `_macro_cn.json` —— 必须在 market_pack 之前跑,
+        # pack 读的就是这份文件(prewarm 跑过则本次多半是湖/缓存命中)。失败只降级不阻断。
+        try:
+            from autoresearch.data.macro_cn import write_macro_cn
+            mp = write_macro_cn(analysis_date)
+            print(f"[macro_cn] {mp}", file=sys.stderr)
+        except Exception as e:  # noqa: BLE001 — 取数全挂也只让 pack 少两块,不毁整帧
+            print(f"[warn] macro_cn 取数失败(pack 缺 cross_money/index_val): {e}", file=sys.stderr)
         from autoresearch.scan.market import market_pack_from_frame
         from autoresearch.scan.menu import sentinel_advice_from_frame
         pack = market_pack_from_frame(frame, date=analysis_date)

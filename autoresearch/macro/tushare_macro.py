@@ -40,56 +40,35 @@ def _pctile(hist: pd.Series, cur: float) -> float:
 
 
 def _northbound(pro, last: str) -> str:
-    """北向/南向官方汇总(moneyflow_hsgt);north_money 实测 /1e4=亿。"""
-    df = _ts_call(lambda: pro.moneyflow_hsgt(start_date=_back(last, 16), end_date=last))
-    df = df.sort_values("trade_date").tail(6)
-    nm = _num(df["north_money"]) / 1e4   # 万元 → 亿
-    sm = _num(df["south_money"]) / 1e4
+    """北向/南向官方汇总 —— 取数走 `data.macro_cn`(单一事实源),本函数只渲染。"""
+    from autoresearch.data.macro_cn import northbound_data
+    d = northbound_data(pro, last)
     rows = ["| 日期 | 北向净流入(亿) | 南向净流入(亿) |", "|---|---:|---:|"]
-    for dt, n, s in zip(df["trade_date"], nm, sm, strict=True):
-        rows.append(f"| {dt} | {n:+.1f} | {s:+.1f} |")
-    cum5 = nm.tail(5).sum()
+    for r in d["rows"]:
+        rows.append(f"| {r['date']} | {r['north_yi']:+.1f} | {r['south_yi']:+.1f} |")
     return ("**北向/南向(tushare moneyflow_hsgt,官方汇总;个股实时披露 2024-08 已停,此为可靠汇总口径)**:"
-            f"最新北向 **{nm.iloc[-1]:+.1f} 亿**、近5日累计 **{cum5:+.1f} 亿**"
+            f"最新北向 **{d['latest_yi']:+.1f} 亿**、近5日累计 **{d['cum5_yi']:+.1f} 亿**"
             f"(>0=外资净买、风险偏好升)。\n" + "\n".join(rows))
 
 
 def _margin(pro, last: str) -> str:
-    """两融余额(margin,SSE+SZSE 合计 rzye);元 /1e8=亿。融资余额↑=加杠杆/risk-on。"""
-    frames = []
-    for ex in ("SSE", "SZSE"):
-        try:
-            d = _ts_call(lambda ex=ex: pro.margin(start_date=_back(last, 16), end_date=last, exchange_id=ex))
-            frames.append(d[["trade_date", "rzye", "rqye"]])
-        except Exception:  # noqa: BLE001
-            pass
-    if not frames:
-        raise RuntimeError("margin 两交易所均空")
-    # 只保留两所都已披露的日期(最新日常只有 SSE 先出 → 否则合计虚降一半)
-    g = pd.concat(frames).groupby("trade_date").agg(rzye=("rzye", "sum"), n=("rzye", "size")).reset_index()
-    m = g[g["n"] >= 2].sort_values("trade_date").tail(6)
-    if m.empty:
-        raise RuntimeError("margin 无两所齐全的交易日")
-    rzye = _num(m["rzye"]) / 1e8   # 元 → 亿
-    latest, prev = rzye.iloc[-1], (rzye.iloc[-2] if len(rzye) > 1 else rzye.iloc[-1])
-    d5 = rzye.iloc[-1] - rzye.iloc[0]
+    """两融余额 —— 取数走 `data.macro_cn`,本函数只渲染。"""
+    from autoresearch.data.macro_cn import margin_data
+    d = margin_data(pro, last)
+    latest, d5 = d["rzye_yi"], d["d5_yi"]
     arrow = "↑加杠杆(risk-on)" if d5 > 0 else "↓去杠杆(risk-off)"
     return (f"**两融融资余额(tushare margin,沪深合计)**:最新 **{latest / 1e4:.2f} 万亿**"
-            f"(较上日 {latest - prev:+.0f} 亿、近5日 {d5:+.0f} 亿 → **{arrow}**)。")
+            f"(较上日 {d['d1_yi']:+.0f} 亿、近5日 {d5:+.0f} 亿 → **{arrow}**)。")
 
 
 def _sector_flow(pro, last: str, topn: int = 8) -> str:
-    """行业资金净流入排名(moneyflow_ind_ths,net_amount 已=亿)。"""
-    df = _ts_call(lambda: pro.moneyflow_ind_ths(trade_date=last))
-    df = df.assign(net=_num(df["net_amount"])).dropna(subset=["net"]).sort_values("net", ascending=False)
-    top = df.head(topn)
-    bot = df.tail(5)
+    """行业资金净流入排名 —— 取数走 `data.macro_cn`,本函数只渲染。"""
+    from autoresearch.data.macro_cn import sector_flow_data
+    d = sector_flow_data(pro, last, topn=topn)
     rows = ["| 行业 | 主力净流入(亿) | 领涨股 |", "|---|---:|---|"]
-    for _, r in top.iterrows():
-        rows.append(f"| {r['industry']} | {r['net']:+.1f} | {r['lead_stock']} |")
+    rows += [f"| {r['industry']} | {r['net_yi']:+.1f} | {r['lead']} |" for r in d["top"]]
     rows.append("| … | … | … |")
-    for _, r in bot.iloc[::-1].iterrows():
-        rows.append(f"| {r['industry']} | {r['net']:+.1f} | {r['lead_stock']} |")
+    rows += [f"| {r['industry']} | {r['net_yi']:+.1f} | {r['lead']} |" for r in d["bottom"]]
     return (f"**行业资金净流入(tushare moneyflow_ind_ths,{last};top{topn} 入 / bottom5 出)**:\n"
             + "\n".join(rows))
 
@@ -110,21 +89,17 @@ def _limit_sentiment(pro, last: str) -> str:
 
 
 def _index_valuation(pro, last: str) -> str:
-    """指数估值(index_dailybasic:沪深300/创业板/中证500 PE_ttm + 近1年分位)。"""
-    names = {"000300.SH": "沪深300", "399006.SZ": "创业板指", "000905.SH": "中证500"}
+    """指数估值 —— 取数走 `data.macro_cn`,本函数只渲染。"""
+    from autoresearch.data.macro_cn import index_val_data
     rows = ["| 指数 | PE(ttm) | 近1年分位 | PB |", "|---|---:|---:|---:|"]
-    for code, nm in names.items():
-        try:
-            d = _ts_call(lambda code=code: pro.index_dailybasic(
-                ts_code=code, start_date=_back(last, 400), end_date=last, fields="trade_date,pe_ttm,pb"))
-            d = d.sort_values("trade_date")
-            pe = _num(d["pe_ttm"]).iloc[-1]
-            pb = _num(d["pb"]).iloc[-1]
-            pct = _pctile(_num(d["pe_ttm"]), pe)
-            tag = "(低估区)" if pct < 30 else "(高估区)" if pct > 70 else ""
-            rows.append(f"| {nm} | {pe:.1f} | {pct:.0f}%{tag} | {pb:.2f} |")
-        except Exception as e:  # noqa: BLE001
-            rows.append(f"| {nm} | 取数失败 | {e} | |")
+    for v in index_val_data(pro, last).values():
+        if v.get("pe_ttm") is None:
+            rows.append(f"| {v['name']} | 取数失败 | {v.get('error', '')} | |")
+            continue
+        pct = v["pe_pct_1y"]
+        tag = "" if pct is None else ("(低估区)" if pct < 30 else "(高估区)" if pct > 70 else "")
+        pct_s = "—" if pct is None else f"{pct:.0f}%"
+        rows.append(f"| {v['name']} | {v['pe_ttm']:.1f} | {pct_s}{tag} | {v['pb']:.2f} |")
     return "**指数估值(tushare index_dailybasic;PE_ttm 近1年分位=regime 估值锚)**:\n" + "\n".join(rows)
 
 
