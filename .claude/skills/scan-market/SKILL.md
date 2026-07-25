@@ -61,7 +61,13 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 > | CP4 | L4 派发 | 派发 N 股 + 预算旗 + intel 开关 + 📌保送名单 | workflow 日志(含 `📌 保送票` 行) |
 > | CP5 | L4 进行中 | **每出一张卡播一行**:k/N 代码 名称 评级 | 轮询 `details/*.md`(见下方滚动表) |
 > | CP6 | L4 全完 | 评级分布 + 停因分桶 + OW三门直方图 | `uv run --no-sync python -m autoresearch.scan.render <date> --view gate_hist` |
-> | CP7 | GATE4 过 | 买单/0买判词 + 产物路径 + 分段耗时 | `summary.md` 摘录 + `--view timing` |
+> | CP7 | GATE4 过 | 买单/0买判词 + 产物路径 + 分段耗时 + **token 真计量** | `summary.md` 摘录 + `--view timing` + `usage_harvest`(下方) |
+>
+> **CP7 的 token 计量**(Wave5 ④A,替代 bytes÷2.8 估算):
+> `uv run --no-sync python -m autoresearch.trace.usage_harvest --session <本次 sessionId> --out reports/scan/<run_id>/token_usage.md`
+> 逐 subagent 的真 usage(含 cache 命中率),按**计价倍率加权**(cache读 ×0.1 / 5m写 ×1.25 / 1h写 ×2)——
+> 原始 token 总量会把「贵在哪」排反(实测某次 4 个 agent 原始 10.4M、加权仅 1.8M)。
+> ⚠️ 表里只有 subagent,**主会话自身不在内**;报读数时连同覆盖声明一起说,别当全量账单。
 >
 > 随时可调(零 LLM,几秒):`uv run --no-sync python -m autoresearch.scan.render <date> --view menu_health|gate_hist|timing|funnel`。
 >

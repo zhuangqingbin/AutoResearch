@@ -211,3 +211,14 @@ def test_macro_brief_consumes_new_pack_blocks():
         assert a in agent, f"macro-brief 未消费 pack 新块「{a}」"
         assert a in playbook, f"macro-playbook 未同步 pack 新块「{a}」"
     assert "macro_cn_degraded" in agent, "macro-brief 未要求披露取数降级(降级不留痕=本仓红线)"
+
+
+def test_usage_harvest_wired_in_skill():
+    """真计量必须有消费者(Wave5 ④A)。
+
+    生产者建好、SKILL 不提 = 没人会跑它,就是本仓 FN-1 家族的又一例。锚取 CLI 模块路径
+    与加权口径两项——删掉 CP7 的计量段就会红。
+    """
+    md = (SKILLS / "scan-market" / "SKILL.md").read_text(encoding="utf-8")
+    assert "autoresearch.trace.usage_harvest" in md, "SKILL 未接线 token 真计量 CLI"
+    assert "加权" in md, "SKILL 未说明按计价倍率加权(原始 token 会把「贵在哪」排反)"
