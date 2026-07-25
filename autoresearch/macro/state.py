@@ -100,6 +100,52 @@ def write_macro_state(root: Path | str, report_path: Path | str | None = None,
     return state
 
 
+def state_readiness(root: Path | str) -> dict:
+    """`context/macro/<date>` 能不能出 macro_state → {ok, have, missing_optional}。
+
+    Wave5 ③B 的根因诊断:`write_macro_state` 其实**只需要 `1_spine/decision.md`**
+    (sector_map/premortem 都是 best-effort),但它此前只在 `assemble.main()` 里被调用,
+    而 assemble 要求 **~20 个分段文件齐全**才肯往下走。于是"最便宜的机读产物(下游 lite
+    真正消费的那个)"被"最贵的门(整份 20 节报告)"扣着 —— 这就是 macro_state 从
+    2026-06-22 起恒为 None、market_view 一个月开篇都写「无新鲜宏观视图」的原因。
+    不是 bug,是门设错了地方。
+    """
+    root = Path(root)
+    from autoresearch.macro.assemble import DECISION_REL, SECTOR_MAP_REL
+    have = [rel for rel in (DECISION_REL, SECTOR_MAP_REL, "1_spine/premortem.md")
+            if (root / rel).exists()]
+    return {"ok": (root / DECISION_REL).exists(), "have": have,
+            "required": DECISION_REL,
+            "missing_optional": [rel for rel in (SECTOR_MAP_REL, "1_spine/premortem.md")
+                                 if rel not in have]}
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI:从 spine 直接落 macro_state.json,**不要求整份 20 节报告**。
+
+      uv run --no-sync python -m autoresearch.macro.state context/macro/2026-07-25
+    """
+    import argparse
+    ap = argparse.ArgumentParser(description="macro_state 落盘(只需 decision.md;零 LLM)")
+    ap.add_argument("root", help="macro context 目录,如 context/macro/2026-07-25")
+    ap.add_argument("--out-dir", default=None, help="macro_state.json 落点(默认 root 的父目录)")
+    a = ap.parse_args(argv)
+    root = Path(a.root)
+    rd = state_readiness(root)
+    if not rd["ok"]:
+        print(f"[MISSING] {root / rd['required']} 不存在 —— macro_state 的唯一硬依赖。\n"
+              f"  先让 macro-research full 档写出 S1 决策(含每行 `- <KEY>: **Rating**: <档>`),"
+              f"其余分段可后补。")
+        return 1
+    st = write_macro_state(root, out_dir=a.out_dir or root.parent)
+    print(f"[macro_state] {Path(a.out_dir or root.parent) / STATE_NAME}(as_of {st['as_of']} · "
+          f"跨资产 {len(st['cross_asset'])} 行 · A股行业 {len(st['ashare_sectors'])} 行 · "
+          f"overall {st['overall_rating'] or '—'} · regime_at_run {st['regime_at_run'] or '未记'})")
+    if rd["missing_optional"]:
+        print(f"[note] 可选分段缺(不阻):{'、'.join(rd['missing_optional'])}")
+    return 0
+
+
 def load_macro_state(today: str, regime_today: str | None = None,
                      path: Path | str | None = None) -> tuple[dict | None, str]:
     """读 + 双失效判定 → (state|None, 原因一句)。
@@ -128,3 +174,7 @@ def load_macro_state(today: str, regime_today: str | None = None,
     if regime_today and base and regime_today != base:
         return None, f"regime 已翻转({base}→{regime_today})→ 宏观视图失效,只用日频 pack"
     return state, f"macro_state 新鲜(as_of {as_of},{age}d≤{ttl}d,regime_at_run {base or '未记'})"
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

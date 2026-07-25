@@ -75,6 +75,17 @@ def prewarm_line(date: str, scan_root: Path | str | None = None) -> str:
     return f"预热(夜间):✓ 已跑({ts})—— universe/evidence 应全湖命中"
 
 
+def macro_state_line(date: str) -> str:
+    """宏观 full 档的机读摘要新不新鲜(Wave5 ③B)。
+
+    `macro_state.json` 自 2026-06-22 起恒缺 → market_view 一个月开篇都写「无新鲜宏观视图」,
+    而**没人看得见这件事**。放进汇总屏:过期/缺失当天就暴露,而不是攒一个月。
+    """
+    from autoresearch.macro.state import load_macro_state
+    st, note = load_macro_state(date)
+    return f"宏观 full 摘要:{'✓' if st else '✗'} {note}"
+
+
 def render_summary(date: str, results: list[dict], scan_root: Path | str | None = None) -> str:
     """prelude 汇总屏文本(纯函数,可单测 + 可落盘)。
 
@@ -87,6 +98,10 @@ def render_summary(date: str, results: list[dict], scan_root: Path | str | None 
         mark = "✓" if r["ok"] else "✗"
         out.append(f"  {mark} {r['step']}: {r['note']}")
     out.append(f"  {prewarm_line(date, scan_root)}")
+    try:
+        out.append(f"  {macro_state_line(date)}")
+    except Exception as e:  # noqa: BLE001 — 状态行可选,缺了不挡前奏
+        print(f"[prelude] ✗ macro_state_line: {e}", file=sys.stderr)
     pend = next((r["note"] for r in results
                  if r["step"] == "retro_pending" and "待诊断" in r["note"]), None)
     if pend:

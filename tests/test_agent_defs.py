@@ -197,3 +197,17 @@ def test_scan_market_skill_live_contract():
     assert "autoresearch.scan.render" in md, "SKILL.md 未告诉主会话怎么调 render CLI"
     assert "_prelude_summary.md" in md, "SKILL.md 未要求转播前奏汇总屏全文"
     assert "停因分桶" in md, "SKILL.md 收尾未要求 0买日播停因分桶(旧不实判词会复辟)"
+
+
+def test_macro_brief_consumes_new_pack_blocks():
+    """Wave5 ③A:新接的 cross_money/index_val 必须有**消费者**契约。
+
+    生产者接线了、消费者没接是本仓 FN-1 家族的常客(pack 多两块、market_view 照样只复述
+    老 24 个标量 = 白接)。锚同时钉 agent def 与 playbook 真值源。
+    """
+    agent = _agent_text("macro-brief")
+    playbook = (SKILLS / "macro-research" / "macro-playbook.md").read_text(encoding="utf-8")
+    for a in ("cross_money", "index_val"):
+        assert a in agent, f"macro-brief 未消费 pack 新块「{a}」"
+        assert a in playbook, f"macro-playbook 未同步 pack 新块「{a}」"
+    assert "macro_cn_degraded" in agent, "macro-brief 未要求披露取数降级(降级不留痕=本仓红线)"
