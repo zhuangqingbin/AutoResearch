@@ -49,6 +49,8 @@ def _view_gate_hist(det: Path) -> str:
     cnt = {k: sum(1 for r in ratings.values() if r == k) for k in order}
     dist = " · ".join(f"{k} {cnt[k]}" for k in order if cnt[k])
     lines = [f"**评级分布**({len(ratings)} 卡):{dist or '—'}"]
+    from autoresearch.scan.market import _zero_buy_mechanism
+    lines.append(f"**停因分桶**:{_zero_buy_mechanism(det, len(ratings))}")
     hist = gate_histogram(det, [{"code": c} for c in ratings])
     lines.append(hist or "(OW三门:无可解析卡 —— 多为早停卡,早停卡按定义不写三门段)")
     return "\n".join(lines)

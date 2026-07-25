@@ -397,6 +397,31 @@ def _names(scan_dir: Path, codes) -> str:
     return "、".join(f"{m.get(str(c).zfill(6)) or c}({str(c).zfill(6)})" for c in codes)
 
 
+def _zero_buy_mechanism(scan_dir: Path | str, n_cards: int) -> str:
+    """0 买的真机制分桶(Wave5 ②D)。
+
+    旧判词写死「无一过 ≥OW 三门」——07-21 实测 12 卡里 6 张是早停卡(按定义压 ≤Hold 且
+    从不写三门段)、仅 2 张能被 gate_status 解析。报告不能继续讲一个自己数据不支持的
+    故事:这里按 `_early_stop.json` 把 0 买拆成「早停 / 满卡未达 OW」两桶并列出停因。
+    """
+    import json as _json
+    p = Path(scan_dir) / "_early_stop.json"
+    if not p.is_file():
+        return "口径未知(`_early_stop.json` 未落——本日卡片早于早停记账上线,或 assemble 未跑完)"
+    try:
+        stops = _json.loads(p.read_text(encoding="utf-8")) or {}
+    except Exception:  # noqa: BLE001
+        return "口径未知(`_early_stop.json` 解析失败)"
+    n_early = len(stops)
+    buckets: dict[str, int] = {}
+    for meta in stops.values():
+        r = (meta or {}).get("reason", "其他")
+        buckets[r] = buckets.get(r, 0) + 1
+    detail = "、".join(f"{k} {v}" for k, v in sorted(buckets.items(), key=lambda kv: -kv[1]))
+    return (f"早停 {n_early} 张({detail or '—'})· 满卡未达 OW {max(n_cards - n_early, 0)} 张"
+            f"——早停卡按定义压 ≤Hold 且不写 OW三门段,不计入门柱直方图")
+
+
 def render_funnel_readout(scan_dir: Path | str) -> str:
     """L5 确定性漏斗读数尾注:今日买单(≥OW,含 verify 折回)/ 观察单(skeptic 降级)。
 
@@ -424,8 +449,9 @@ def render_funnel_readout(scan_dir: Path | str) -> str:
     else:
         reg = (market_pack(scan_dir).get("regime") or {}).get("label")
         zh = _REGIME_ZH.get(reg, reg or "")
-        lines.append(f"- **0 买**:{len(final)} 只 finalist 深核后无一过 ≥OW 三门 —— "
+        lines.append(f"- **0 买**:{len(final)} 只 finalist 深核后无一进买单 —— "
                      f"{zh} regime 下的纪律空仓观望,非漏斗故障。")
+        lines.append(f"  - 机制拆分:{_zero_buy_mechanism(scan_dir, len(final))}")
     downgraded = [c for c, v in vmap.items() if v["verdict"] == "降级"]
     if downgraded:
         lines.append(f"- **观察单**:{_names(scan_dir, downgraded)}(skeptic 降级,待触发复核)")
