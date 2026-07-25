@@ -181,6 +181,8 @@ def _dump_final_ratings(scan_dir: Path, rows: list[dict]) -> None:
                for r in rows if r.get("code")}
         (Path(scan_dir) / "_final_ratings.json").write_text(
             json.dumps(out, ensure_ascii=False), encoding="utf-8")
+    with contextlib.suppress(Exception):   # Wave5 ②C:早停分桶落盘(0买真机制记账,独立文件
+        write_early_stop(scan_dir)         # 不动 _final_ratings.json 的 {code: rating} 契约)
 
 
 _PROPOSAL_BY_RATING = {"Buy": "BUY", "Overweight": "BUY", "Hold": "HOLD",
@@ -350,6 +352,41 @@ def gate_status(text: str) -> dict[str, bool] | None:
         if _seg_has_mark(seg):
             return _parse_gate_seg(seg)
     return _parse_gate_seg(matches[0].group(0))
+
+
+_EARLYSTOP_RE = re.compile(r"\*\*早停\*\*[:：]\s*停于\s*(P[0-9])\s*[｜|]\s*停因[:：]\s*([^\s｜|]+)")
+_STOP_REASONS = ("数据不足", "涨停追高", "题材透支", "资金流出",
+                 "估值透支", "基本面恶化", "其他")
+
+
+def parse_early_stop(text: str) -> dict | None:
+    """决策卡的机读早停行 → {"phase","reason"};满卡无此行 → None。
+
+    Wave5 ②C:0 买的真机制是早停(07-21 实测 12 卡 6 张早停),而早停卡按定义不写 OW三门段
+    —— 门直方图看不见它们,账本也从来没数过。枚举外的自由文本归入「其他」(不丢样本、
+    也不让写卡人用自造词绕开分桶)。
+    """
+    m = _EARLYSTOP_RE.search(text or "")
+    if not m:
+        return None
+    reason = m.group(2).strip()
+    return {"phase": m.group(1), "reason": reason if reason in _STOP_REASONS else "其他"}
+
+
+def write_early_stop(scan_dir: Path | str) -> dict[str, dict]:
+    """逐卡解析早停行 → `_early_stop.json`({code: {phase,reason}});无早停卡则写空对象。"""
+    scan_dir = Path(scan_dir)
+    out: dict[str, dict] = {}
+    base = scan_dir / "details"
+    if base.is_dir():
+        for p in sorted(base.glob("*.md")):
+            got = parse_early_stop(p.read_text(encoding="utf-8"))
+            if got:
+                code = p.stem
+                out[code.zfill(6) if code.isdigit() else code] = got
+    (scan_dir / "_early_stop.json").write_text(
+        json.dumps(out, ensure_ascii=False), encoding="utf-8")
+    return out
 
 
 def gate_histogram(scan_dir: Path, rows: list[dict]) -> str:
