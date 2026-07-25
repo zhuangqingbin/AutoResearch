@@ -1751,3 +1751,56 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - 0 买判词说的是它真实做过的事。
 
 **不在本批**(见 spec):批 2 = 宏观接线 + macro full 修通 + usage 真计量;批 3 = ic_by_regime 裁决与板块动量路 replay;触发式 = playbook 修订、权重条件化、第二刀。
+
+---
+
+## 实施记录(2026-07-25 实跑)
+
+12 个代码任务全部完成,全量测试 **1571 passed**(基线 1448 + 本批新增 ~25)。逐 commit:
+
+| commit | 内容 |
+|---|---|
+| `97e5228` | render CLI 四 view + `_gate_histogram` 提公共 |
+| `ee83aef` | prelude 汇总屏提纯函数 + 落盘 + 预热状态行 |
+| `a52a26a` | `_l4_shared_instructions.md` 生产者 + workflow JS 语法探针 |
+| `dd7fbb9` | 卡片 `**早停**` 机读契约 + `_early_stop.json` |
+| `caab3ae` | earlystop_ledger + 接进 prelude |
+| `9bd0e97` | 0买判词按真机制分桶 |
+| `06e4f6d` | t1 记分卡早停桶 |
+| `2f65b1a` | 直播接线(SKILL 8检查点 + GATE2 名单 + pinned 名单) |
+| `d1c1f89` | 计数行改走 stdout(AST 守卫) |
+| `4a3f2c7` | prewarm 安装实测 |
+
+### 与计划的偏差(三处,均为实施中发现的事实修正)
+
+1. **frame.py 的计数行不改**(计划 Task 12 原写"一并改"):`frame --json` 的 **stdout 就是 `market_pack.json` 的 payload**(`scan-market.js:53` 重定向),往那里多打一行计数会直接产出非法 JSON、毁掉整条下游。改为只动 `universe.py`,并新增一条**反向测试**钉死 frame 必须留 stderr,防后人"顺手统一"。
+2. **早停落独立文件 `_early_stop.json`**(spec 原写"扩展进 `_final_ratings.json`"):后者的 `{code: rating}` 契约有既有消费者(retro `_buylist` 等),改形状风险不对称。独立文件零破坏。
+3. **`write_shared_instructions` 顺带接管 t1 校准块**:原先 `write_dispatch_pack` 会在读完文件后再拼一次 t1 块;生产者落地后那样会重复,故把拼接删掉——**共享块的唯一事实源 = 那个文件**,这正是 byte-identical 契约要的。
+
+### 契约锚踩坑记(同一个病,一波逮三次)
+
+「绿灯不等于有灯」在本批**连中三次**,病因完全相同:**锚串被承重行之外的文字满足**。
+
+| 锚(第一版) | 为什么零鉴别力 | 改成 |
+|---|---|---|
+| `"停因:"` | 既有模板行 `早停因:<≤20字>` 里就含这五个字 | `"**早停**: 停于"` |
+| `"📌 保送票"` / `"args.pinned"` | 上方**注释**里两串都有 → 删掉整条 log 照绿 | `"${pinnedCodes.join('/')}"` / `"args.pinned:true"` |
+| `"CP5"` | 正文散文 `**CP5 滚动表做法**` 满足它 → 删掉表行照绿 | `"| CP5 |"`(表格行) |
+
+**配方**:写完锚立刻问「把承重行删掉,它会红吗」,并**真的删一次跑一次**。三次里有两次是靠这个动作逮到的——不做这一步,本批会交付三个装饰性绿灯。
+
+另外两个探针相关的实测:
+- **`node --check` 对 workflow JS 零鉴别力复验成立**:往 `scan-market.js` 追加 `const broken = {{{` 后 `node --check` 仍 **exit 0**;新的 AsyncFunction 探针(`scripts/check_workflow_js.py`,已接进 pytest)exit 1。注意探针要先剥掉 `export ` 关键字,否则连好文件都会报 `Unexpected token 'export'`(第一版就是这么写错的)。
+- **AST > 逐行 grep**:`test_universe_stdout_counts` 第一版按行匹配 `file=sys.stderr`,把所有**跨行** print 误判成"没带 file=" —— 只会误报的守卫和不会报的守卫一样没用。改用 `ast.walk` 找 `print` 调用后正常。
+
+### 真产物冒烟读数(2026-07-21 / 07-24 staging)
+
+- `render --view gate_hist`(07-21):评级分布 12 卡 Hold 7 · UW 5;OW三门 6 卡可解析(主力真在✗3 · 业绩真兑现✗2 · 估值不透支✗3);停因分桶诚实报「口径未知」(该日卡片早于早停记账上线)。
+- `render --view timing`(07-21):L0L1L2 8m25s · 策略师 1m39s · 行业brief 4m03s · **L3精排 17m57s** · L4slim 1m28s · L4研究 5m35s。
+- `l4_card shared 2026-07-24`:716 字节,含 📐 目标价校准 / 🔁 L3校准 / 🚪 门校准 三条真行 + T+1 快环块 —— **这些行此前从未到达任何一张决策卡**。
+- prelude 汇总屏(07-21 冒烟):完整 12 步屏可见,顺带暴露真实欠账 —— **retro_input 已备料未收尾:07-16、07-17、07-21 三天**。
+- prewarm:`launchctl list` 可见;kickstart 实跑 ~12min 落 `_prewarm.json`(帧 3975 入湖 / 21 次端点预拉 / 温度 1 行 / 档案池预取 30/30)。
+
+### 剩余(Task 13,须新 session)
+
+agent def 与 playbook 改动**下 session 才装载**,故端到端验收必须新开 session 跑一次真扫描,按 Task 13 的验收表逐项对照。首要看:早停卡真的会写 `**早停**` 行吗(这是 ②C 整条链的入口)。
