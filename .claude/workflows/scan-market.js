@@ -144,6 +144,9 @@ log(`GATE2 ✓ finalists=${g2.n}`)
 phase('L4-prep')
 log('L4-prep:reuse→[四生产者并行]→prompts→slim(决策卡交接给每股 l4-stock workflow)')
 await bash(
+  // shared 必须先于 prompts:_l4_shared_instructions.md 此前全仓无生产者(只有读者),
+  // 当日 📐/🔁/🚪 校准行从未到达任何一张决策卡(Wave5 ④B)。
+  `${R} autoresearch.scan.agents.l4_card shared ${date}; ` +
   `${R} autoresearch.scan.l4_reuse ${date} --apply; ` +
   `( ${R} autoresearch.scan.agents.l4_card pledge ${date} || true ) & ` +
   `( ${R} autoresearch.scan.agents.l4_card seats ${date} || true ) & ` +

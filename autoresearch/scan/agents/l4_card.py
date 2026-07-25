@@ -628,6 +628,39 @@ def _target_calib_mark(base: Path | str) -> str:
         return ""
 
 
+def write_shared_instructions(scan_dir: Path | str) -> int:
+    """落 `_l4_shared_instructions.md`(当日共享块,逐卡 byte-identical)。返回写入字节数。
+
+    Wave5 ④B:该文件此前**全仓无生产者**(只有读者 + 测试写者),07-17/07-21 实测均不存在
+    —— prelude 每天算出的 📐/🔁/🚪 当日校准行从未到达任何一张决策卡。这里把 STAGES.md:215
+    描述的手工步骤变成确定性生产。
+
+    纪律:prelude 建议行里**含「禁注」的行不贴**(样本不足的自我标注,贴进 prompt = 用坏
+    先验污染判断);两个来源任一异常都不阻断(写出只含标头的稳定文件,好过没有文件)。
+    """
+    import contextlib
+
+    scan_dir = Path(scan_dir)
+    scan_dir.mkdir(parents=True, exist_ok=True)
+    lines = ["## 当日共享块(全卡一致;确定性生成,勿逐卡改写)"]
+    calib: list[str] = []
+    with contextlib.suppress(Exception):
+        from autoresearch.scan.prelude import calib_suggestion_lines
+        calib = [ln for ln in calib_suggestion_lines() if "禁注" not in ln]
+    if calib:
+        lines += ["", "### 当日校准锚(据实调用,不作评级指令)"] + [f"- {ln}" for ln in calib]
+    t1_blk = ""
+    with contextlib.suppress(Exception):
+        from autoresearch.learning.t1_review import render_t1_calibration_block
+        t1_blk = render_t1_calibration_block(stage="L4")
+    if t1_blk:
+        lines += ["", t1_blk.strip()]
+    text = "\n".join(lines).strip() + "\n"
+    p = scan_dir / "_l4_shared_instructions.md"
+    p.write_text(text, encoding="utf-8")
+    return len(text.encode("utf-8"))
+
+
 def write_dispatch_pack(scan_dir: Path | str) -> dict:
     """L4 派发包确定性落稿(零 LLM):`_harvest_list.txt`(yfinance 归一后缀,`.SH` 绝迹)
     + 每卡 `_l4_prompt_<code>.md`(共享指令 + 漏斗简报 + slim/卡路径指针)。
@@ -662,11 +695,8 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
     sp = scan_dir / "_l4_shared_instructions.md"
     if sp.exists():
         shared = sp.read_text(encoding="utf-8").strip()
-    with contextlib.suppress(Exception):   # 快环校准(L4/intel 相关观察;2026-07-17 自我迭代腿,
-        from autoresearch.learning.t1_review import render_t1_calibration_block
-        t1_blk = render_t1_calibration_block(stage="L4")     # 空账本=零字节 parity)
-        if t1_blk:
-            shared = (shared + "\n\n" + t1_blk).strip()
+    # (Wave5 ④B)t1 校准块已并入 `write_shared_instructions` 写的文件 —— 共享块的唯一事实源
+    # 就是那个文件,消费侧不再二次拼接(否则同一段会在每张卡里出现两遍)。
     calib_line = _target_calib_mark(scan_dir)        # 📐 目标价基率锚(日级,算一次逐卡复用)
 
     # FN-1 第五修:`force_full_card`(早停安全网)自 2026-06-27 建成起**零生产调用点** ——
@@ -1167,8 +1197,10 @@ def harvest_slim_batch(date: str, root: Path | None = None, min_bytes: int = 4_0
 def main(argv: list[str] | None = None) -> int:
     import argparse
     ap = argparse.ArgumentParser(description="L4 确定性件 CLI(派发包落稿/质押预旗,零 LLM)")
-    ap.add_argument("cmd", choices=["prompts", "pledge", "seats", "consensus", "harvest-slim", "dispatch-plan"],
-                    help="prompts = 写 _harvest_list.txt + _l4_prompt_<code>.md;"
+    ap.add_argument("cmd", choices=["shared", "prompts", "pledge", "seats", "consensus",
+                                    "harvest-slim", "dispatch-plan"],
+                    help="shared = 写 _l4_shared_instructions.md 当日共享块(prompts 之前跑);"
+                         "prompts = 写 _harvest_list.txt + _l4_prompt_<code>.md;"
                          "pledge = finalists 批量质押 → pledge.csv(简报自动带 ⚠质押旗);"
                          "seats = finalists 龙虎榜席位聚合 → seats.csv(_seat_mark 注简报);"
                          "consensus = finalists 卖方一致预期修正 → consensus.csv"
@@ -1179,6 +1211,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--root", default=None, help="scan 根目录(默认 context/scan)")
     ap.add_argument("--workers", type=int, default=4, help="slim 批量并发数(1=串行)")
     args = ap.parse_args(argv)
+    if args.cmd == "shared":
+        import json
+        base = Path(args.root) if args.root else Path("context/scan")
+        n = write_shared_instructions(base / args.date)
+        print(json.dumps({"ok": True, "bytes": n}, ensure_ascii=False))
+        return 0
     if args.cmd == "dispatch-plan":
         import json
         print(json.dumps(dispatch_plan(args.date, root=args.root), ensure_ascii=False))
