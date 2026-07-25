@@ -64,6 +64,62 @@ def _retro_input_nag(scan_root: Path | str | None = None) -> str:
             + " ← scan-retro 诊断烂尾,去补 mark_done 或重跑诊断,别让欠账攒着")
 
 
+def prewarm_line(date: str, scan_root: Path | str | None = None) -> str:
+    """夜间预热是否真跑过(Wave5 ④B:写了没装的优化必须当天可见,不靠事后考古)。"""
+    import datetime as _dt
+    p = Path(scan_root or "context/scan") / date / "_prewarm.json"
+    if not p.is_file():
+        return ("预热(夜间):✗ 未跑 —— L0/L1/L2 本次全额取数(~8-10m)。"
+                "装载检查:`launchctl list | grep scan-prewarm`")
+    ts = _dt.datetime.fromtimestamp(p.stat().st_mtime).strftime("%m-%d %H:%M")
+    return f"预热(夜间):✓ 已跑({ts})—— universe/evidence 应全湖命中"
+
+
+def render_summary(date: str, results: list[dict], scan_root: Path | str | None = None) -> str:
+    """prelude 汇总屏文本(纯函数,可单测 + 可落盘)。
+
+    此前这段是 run_prelude 里的一串 print —— 结果被 scan-market.js「只回报 stdout 末 15 行」
+    结构性截断(12 步 ✓/✗ + 建议行 + 下一步 > 15 行)。提成纯函数后既能照常打印,也能落盘
+    供 workflow 指路、主会话全量转播。
+    """
+    out = ["═" * 30 + f" prelude 汇总 · {date} " + "═" * 30]
+    for r in results:
+        mark = "✓" if r["ok"] else "✗"
+        out.append(f"  {mark} {r['step']}: {r['note']}")
+    out.append(f"  {prewarm_line(date, scan_root)}")
+    pend = next((r["note"] for r in results
+                 if r["step"] == "retro_pending" and "待诊断" in r["note"]), None)
+    if pend:
+        out.append(f"  ⚠️  {pend}")
+    try:
+        stalled = _retro_input_nag()
+        if stalled:
+            out.append(f"  ⚠️  {stalled}")
+    except Exception as e:  # noqa: BLE001 — nag 可选,缺了不挡前奏
+        print(f"[prelude] ✗ retro_input_nag: {e}", file=sys.stderr)
+    try:
+        clines = calib_suggestion_lines()
+        if clines:
+            out.append("  当日件建议行(📐 贴 _l4_shared_instructions.md;🔁 贴 L3 校准块旁;"
+                       "🚪 贴 skeptic/PM 先验;**含「禁注」的行勿贴**):")
+            out += [f"    {ln}" for ln in clines]
+    except Exception as e:  # noqa: BLE001 — 建议行可选,缺了不挡前奏
+        print(f"[prelude] ✗ calib_lines: {e}", file=sys.stderr)
+    out.append("  下一步(LLM 段):哨兵档 → 直接 assemble(日历已跑);"
+               "全扫 → 策略师 → L3 → L4(见 SKILL 流程)")
+    return "\n".join(out)
+
+
+def write_summary(date: str, results: list[dict],
+                  scan_root: Path | str | None = None) -> Path:
+    """汇总屏落 `context/scan/<date>/_prelude_summary.md`,返回路径(目录缺则建)。"""
+    det = Path(scan_root or "context/scan") / date
+    det.mkdir(parents=True, exist_ok=True)
+    p = det / "_prelude_summary.md"
+    p.write_text(render_summary(date, results, scan_root=scan_root) + "\n", encoding="utf-8")
+    return p
+
+
 def dossier_reconcile_nag(date: str, *, pool_path=None) -> str:
     """池内已建档票缺「季度对账 <period>」痕迹 → 当日件建议行(纯读,可单测)。
 
@@ -291,29 +347,12 @@ def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()
                  ("ledgers", _ledgers), ("dossier_pool", _dossier_pool)]
     results = _run_steps([(n, f) for n, f in all_steps if n not in skip])
 
-    print("\n" + "═" * 30 + f" prelude 汇总 · {date} " + "═" * 30)
-    for r in results:
-        mark = "✓" if r["ok"] else "✗"
-        print(f"  {mark} {r['step']}: {r['note']}")
-    pend = next((r["note"] for r in results if r["step"] == "retro_pending" and "待诊断" in r["note"]), None)
-    if pend:
-        print(f"  ⚠️  {pend}")
-    try:                                      # D1 清欠:retro_input 已备料未收尾 nag
-        stalled = _retro_input_nag()
-        if stalled:
-            print(f"  ⚠️  {stalled}")
-    except Exception as e:  # noqa: BLE001 — nag 可选,缺了不挡前奏
-        print(f"[prelude] ✗ retro_input_nag: {e}", file=sys.stderr)
-    try:                                      # 当日件建议行(spec 2026-07-05;含"禁注"的行勿贴)
-        clines = calib_suggestion_lines()
-        if clines:
-            print("  当日件建议行(📐 贴 _l4_shared_instructions.md;🔁 贴 L3 校准块旁;"
-                  "🚪 贴 skeptic/PM 先验;**含「禁注」的行勿贴**):")
-            for ln in clines:
-                print(f"    {ln}")
-    except Exception as e:  # noqa: BLE001 — 建议行可选,缺了不挡前奏
-        print(f"[prelude] ✗ calib_lines: {e}", file=sys.stderr)
-    print("  下一步(LLM 段):哨兵档 → 直接 assemble(日历已跑);全扫 → 策略师 → L3 → L4(见 SKILL 流程)")
+    # 汇总屏:打印 + 落盘(Wave5 ①)。落盘是为了绕开 scan-market.js「只回报 stdout 末 15 行」
+    # 的结构性截断 —— 12 步 ✓/✗ + 建议行 + 下一步放不进 15 行,workflow 改为指路该文件。
+    print("\n" + render_summary(date, results))
+    import contextlib
+    with contextlib.suppress(Exception):      # 落盘可选,写不了不挡前奏(stdout 仍有全文)
+        print(f"  (汇总屏已落盘:{write_summary(date, results)})")
     return results
 
 
