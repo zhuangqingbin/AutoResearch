@@ -304,6 +304,7 @@ def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()
             changelog_ledger,
             channel_ledger,
             cross_calib,
+            earlystop_ledger,
             gate_ledger,
             journal,
             paper_nav,
@@ -314,11 +315,12 @@ def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()
         # (此前只能靠人/Claude 手跑 CLI,见 docs/research/2026-07-12-learning-system-survey.md §1)。
         # watchlist_ledger 随观察单日检退役(fb_20260714_002),模块已于 2026-07-17 删除(P3 清欠)。
         for mod in (journal, buy_ledger, cross_calib, catalyst_ledger, paper_nav,
-                    channel_ledger, gate_ledger, zero_buy_ledger, changelog_ledger):
+                    channel_ledger, gate_ledger, zero_buy_ledger, changelog_ledger,
+                    earlystop_ledger):
             with contextlib.suppress(Exception):
                 mod.main()
         return ("journal + buy_ledger + cross_calib + catalyst + paper_nav + "
-                "channel + gate + zero_buy + changelog 已刷新")
+                "channel + gate + zero_buy + changelog + earlystop 已刷新")
 
     def _dossier_pool():
         import contextlib
