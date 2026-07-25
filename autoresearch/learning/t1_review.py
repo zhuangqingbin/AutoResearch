@@ -200,6 +200,18 @@ def build_scorecard(t: str, scan_root: Path | str | None = None,
 
     rows = genuine.merge(prices, on="code", how="left")
     rows["rating"] = rows["code"].map(ratings).fillna("无卡")
+    # Wave5 ②C:早停卡不判准/不准(Hold 无方向主张),但它们的 cc1 分布是「早停杀对了没有」
+    # 的第一手证据 —— 进表进桶,解快环"真选全 Hold 无从评"的样本饥饿。
+    import json as _json
+    _esp = sdir / "_early_stop.json"
+    _es: dict = {}
+    if _esp.is_file():
+        try:
+            _es = _json.loads(_esp.read_text(encoding="utf-8")) or {}
+        except Exception:  # noqa: BLE001 — 缺/坏文件只退化为空列
+            _es = {}
+    rows["early_stop"] = rows["code"].map(
+        lambda c: (_es.get(str(c).zfill(6)) or {}).get("reason", ""))
     rows["conviction"] = pd.to_numeric(rows.get("conviction"), errors="coerce")
     rows["excess"] = pd.to_numeric(rows["cc1"], errors="coerce") - market_cc
     rows["excess_ind"] = pd.to_numeric(rows["cc1"], errors="coerce") - rows["_bench"]
@@ -221,7 +233,7 @@ def build_scorecard(t: str, scan_root: Path | str | None = None,
         | (rows["verdict"].isin(["准", "中性"]) & zs.abs().ge(1.0).fillna(False))
     keep = ["code", "name", "lane", "rating", "conviction", "close_t", "close_t1",
             "cc1", "oc1", "hi_oc", "excess", "excess_ind", "z", "verdict", "surprise",
-            "sealed", "needs_diag", "limit"]
+            "sealed", "needs_diag", "limit", "early_stop"]
     sc = rows[[c for c in keep if c in rows.columns]].sort_values(
         "excess_ind", ascending=False, na_position="last").reset_index(drop=True)
     return {"t": t, "t1": t1, "market_cc": round(market_cc, 6),
@@ -256,6 +268,16 @@ def render_scorecard_md(res: dict) -> str:
                   f"不准 {int((d['verdict'] == '不准').sum())} / 中性 {int((d['verdict'] == '中性').sum())}"
                   f";Hold(无方向主张){int((sc['verdict'] == '—').sum())} 只;"
                   f"🩺必诊 {nd} 只(其余一句话带过,token 花在错与惊奇上)"]
+    # 早停桶(Wave5 ②C):不判准/不准 —— Hold 无方向主张,只记分布。真选全 Hold 的日子
+    # (最近 5 次里有 3 次)此前整张记分卡无信号可读,这一段是那些日子唯一的读数。
+    if "early_stop" in sc.columns and (sc["early_stop"].astype(str) != "").any():
+        es = sc[sc["early_stop"].astype(str) != ""]
+        lines += ["", f"**早停桶**({len(es)} 张;不判准/不准,只记分布):"]
+        for reason, g in es.groupby("early_stop"):
+            cc = pd.to_numeric(g["cc1"], errors="coerce")
+            avg = "—" if not cc.notna().any() else f"{cc.mean() * 100:+.1f}%"
+            lines.append(f"- {reason} ×{len(g)}:T+1 cc1 均值 {avg}"
+                         f"({'、'.join(str(c) for c in g['code'])})")
     return "\n".join(lines) + "\n"
 
 
