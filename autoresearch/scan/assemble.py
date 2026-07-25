@@ -352,7 +352,7 @@ def gate_status(text: str) -> dict[str, bool] | None:
     return _parse_gate_seg(matches[0].group(0))
 
 
-def _gate_histogram(scan_dir: Path, rows: list[dict]) -> str:
+def gate_histogram(scan_dir: Path, rows: list[dict]) -> str:
     """OW三门失守分布一行(确定性,逐卡数 `OW三门 …` 段的 ✗)。0买日一行看懂"今天为什么没买"
     ——胜过读 30 格被截断的结论;有买日同样给出门柱形状。无可解析卡 → ''。"""
     cnt = dict.fromkeys(_GATES3, 0)
@@ -371,6 +371,9 @@ def _gate_histogram(scan_dir: Path, rows: list[dict]) -> str:
     parts = " · ".join(f"{g}✗ {cnt[g]}" for g in _GATES3)
     return (f"**OW三门失守分布**({parsed} 卡可解析):{parts}"
             f"(任一门✗ 即压 ≤Hold;门柱即当日 0买/有买的结构性原因)")
+
+
+_gate_histogram = gate_histogram   # 向后兼容别名(Wave5 ①:render CLI 复用公共名)
 
 
 def _sortkey(r: dict):
