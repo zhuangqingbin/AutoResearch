@@ -1761,15 +1761,15 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 | commit | 内容 |
 |---|---|
 | `97e5228` | render CLI 四 view + `_gate_histogram` 提公共 |
-| `ee83aef` | prelude 汇总屏提纯函数 + 落盘 + 预热状态行 |
-| `a52a26a` | `_l4_shared_instructions.md` 生产者 + workflow JS 语法探针 |
-| `dd7fbb9` | 卡片 `**早停**` 机读契约 + `_early_stop.json` |
-| `caab3ae` | earlystop_ledger + 接进 prelude |
-| `9bd0e97` | 0买判词按真机制分桶 |
-| `06e4f6d` | t1 记分卡早停桶 |
-| `2f65b1a` | 直播接线(SKILL 8检查点 + GATE2 名单 + pinned 名单) |
-| `d1c1f89` | 计数行改走 stdout(AST 守卫) |
-| `4a3f2c7` | prewarm 安装实测 |
+| `25012e7` | prelude 汇总屏提纯函数 + 落盘 + 预热状态行 |
+| `f3f71bb` | `_l4_shared_instructions.md` 生产者 + workflow JS 语法探针 |
+| `6af8d95` | 卡片 `**早停**` 机读契约 + `_early_stop.json` |
+| `bde508a` | earlystop_ledger + 接进 prelude |
+| `4725419` | 0买判词按真机制分桶 |
+| `19ba8aa` | t1 记分卡早停桶 |
+| `2650d6b` | 直播接线(SKILL 8检查点 + GATE2 名单 + pinned 名单) |
+| `645a037` | 计数行改走 stdout(AST 守卫) |
+| `125554d` | prewarm 安装实测 |
 
 ### 与计划的偏差(三处,均为实施中发现的事实修正)
 
