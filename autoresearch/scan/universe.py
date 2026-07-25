@@ -424,7 +424,9 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
     recall, per_channel = recall_select(scored, analysis_date, recall_n, recall_mode,
                                         recall_channels, pinned=pinned,
                                         channel_quotas=channel_quotas, channel_floors=channel_floors)
-    print(f"[L1 召回] L0 {n_l0} → 轻门 {len(uni)} → {recall_mode} top {len(recall)}", file=sys.stderr)
+    # Wave5 ①:计数行走 stdout —— 编排层的 bash-agent 只回报 stdout,进 stderr 等于白打
+    # ([warn]/异常仍走 stderr,别把告警混进给人看的进度流)。
+    print(f"[L1 召回] L0 {n_l0} → 轻门 {len(uni)} → {recall_mode} top {len(recall)}")
     sectors = aggregate_sectors_overview(recall, uni)
 
     outdir = outdir or Path("context/scan") / analysis_date
@@ -455,7 +457,7 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
     l2, l2_engine = select_l2(recall, l2_n, floors=l2_floors, sector_cap_frac=l2_sector_cap)
     l2_cols = ["l2_rank", "gbdt_score", "l2_lane_reserved", "sector_mom", *keep]
     l2[[c for c in l2_cols if c in l2.columns]].to_csv(outdir / "L2_gbdt_top200.csv", index=False)
-    print(f"[L2 粗排] recall {len(recall)} → {l2_engine} top {len(l2)}", file=sys.stderr)
+    print(f"[L2 粗排] recall {len(recall)} → {l2_engine} top {len(l2)}")
 
     if shadow:   # ── 影子漏斗:变体 L2(确定性 A/B;只落 staging 不喂 L3;前三免费+capfloor20 重取数)──
         try:
@@ -492,8 +494,8 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
     if degraded:
         (outdir / "degraded.json").write_text(
             json.dumps(degraded, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"[数据契约] 本次 B 级降级 {len(degraded)} 条 → {outdir / 'degraded.json'}", file=sys.stderr)
-    print(f"[done] L1 召回 → {outdir}/L1_recall_top1000.csv ({len(recall)})", file=sys.stderr)
+        print(f"[数据契约] 本次 B 级降级 {len(degraded)} 条 → {outdir / 'degraded.json'}")
+    print(f"[done] L1 召回 → {outdir}/L1_recall_top1000.csv ({len(recall)})")
     return {"universe": n_l0, "after_gate_a": len(uni), "recall_n": len(recall),
             "l2_n": len(l2), "l2_engine": l2_engine, "sectors": len(sectors), "outdir": str(outdir)}
 
