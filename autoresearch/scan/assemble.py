@@ -1255,6 +1255,11 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
     from autoresearch.scan import health as _health  # lazy:体检失败不阻发布
     with contextlib.suppress(Exception):
         _health.write_run_health(scan_dir)             # 先写 staging,再随 trace mapping 带走
+        # ⚠️ 这一次**必须**在 build_summary 之前:`product_shape_lint` 的 force_full 探针读
+        # `run_health.l4_phases`,而它是 presence-gated —— run_health 缺席 = 该探针静默跳过
+        # (FN-1 家族)。但 build_summary 内部才写 gate_fires.csv,所以此刻的 artifacts 列表
+        # 必然把它记成 missing(07-24 实锤:run_health 13:16:21 / gate_fires 13:16:22)。
+        # 故 build_summary 之后再刷一次(见下方),让落盘的那份 missing 列表说真话。
     with contextlib.suppress(Exception):               # P0-4:逐卡过程分 checklist(presence-gated,失败不阻发布)
         from autoresearch.learning.process_score import write_process_scores
         write_process_scores(scan_dir)
@@ -1265,6 +1270,10 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
     md = build_summary(scan_dir, analysis_date, hhmm, folder, pinned_path=pinned_path)
     summary_path = out_base / "summary.md"
     summary_path.write_text(md, encoding="utf-8")
+    with contextlib.suppress(Exception):
+        # Wave6 Q6:build_summary 内部才落 gate_fires.csv —— 上面那次快照必然把它记成
+        # missing(07-24 实锤)。这里刷一次让 artifacts/missing 说真话;函数是纯快照,幂等。
+        _health.write_run_health(scan_dir)
     with contextlib.suppress(Exception):               # 现场导航页(第二天复盘入口)
         (out_base / "index.md").write_text(_health.index_md(scan_dir, out_base), encoding="utf-8")
     # 三个记账/刷新副作用共享同一条真实现场判据(resolve() 防相对/绝对路径假阴性)——

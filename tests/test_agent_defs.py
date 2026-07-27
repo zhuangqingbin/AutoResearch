@@ -303,3 +303,31 @@ def test_telemetry_module_is_gone():
     assert importlib.util.find_spec("autoresearch.trace.usage_harvest") is not None
     assert importlib.util.find_spec("autoresearch.trace.telemetry") is None, \
         "telemetry 模块仍在:文档说退役、代码还在 = 又一个只存在于叙事里的改动"
+
+
+def test_l4_stock_normalizes_conviction_scale():
+    """conviction 必须归一到 0-100(pr_20260717_005)。
+
+    07-14 实测:北方华创回传 0.62,其余 8 只是 60–78 整数 —— 同一字段两种标度。
+    下游 `force_full_card` 判据是 conviction>=70,0.62 会被当成极低确信 → 强制满卡
+    静默失效(FN-1 家族:网建成了但恒不触发)。
+    """
+    js = (ROOT / ".claude" / "workflows" / "l4-stock.js").read_text(encoding="utf-8")
+    assert "normConviction" in js, "l4-stock.js 未做 conviction 标度归一"
+    assert "card.conviction = normConviction(card.conviction)" in js, \
+        "归一函数定义了却没用上(生产者无消费者)"
+
+
+def test_run_health_refreshed_after_summary():
+    """run_health 的 artifacts/missing 必须在 gate_fires 落盘后再刷一次(Wave6 Q6)。
+
+    07-24 实锤:run_health.json 13:16:21 记 missing=[verify.csv, gate_fires.csv],
+    而 gate_fires.csv 13:16:22 就存在 —— 快照取早了。不能简单前后调换:
+    `product_shape_lint` 的 force_full 探针**读** run_health 且 presence-gated,
+    挪到 build_summary 之后会让那个探针静默失效。故保留前一次 + 之后补刷一次。
+    """
+    src = (ROOT / "autoresearch" / "scan" / "assemble.py").read_text(encoding="utf-8")
+    after = src.split("summary_path.write_text(md", 1)
+    assert len(after) == 2, "summary 写盘锚点漂移,先更新本测试"
+    assert "_health.write_run_health(scan_dir)" in after[1], \
+        "build_summary 之后没有补刷 run_health → missing 列表继续说假话"

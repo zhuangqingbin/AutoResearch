@@ -53,6 +53,11 @@ const card = await agent(
     ...(cfg.agents?.l4_card?.model ? { model: cfg.agents.l4_card.model } : {}),
     label: `card:${code}`, phase: 'Card', schema: CARD })
 if (!card) return { code, name, rating: null, final: null, error: 'card 无返回 —— 单股失败只废单股,主会话单独重跑本 workflow 即可' }
+// pr_20260717_005:同一字段两种标度(07-14 实测一只回 0.62,其余 8 只是 60–78 整数)。
+// 下游 force_full_card 判据是 conviction>=70 —— 0.62 会被当成极低确信而静默失效。
+// <=1 视为比例口径,归一到 0-100;>1 原样(0-100 本身不会落进 (0,1])。
+const normConviction = (v) => (typeof v === 'number' && v > 0 && v <= 1 ? v * 100 : v)
+if (card.conviction != null) card.conviction = normConviction(card.conviction)
 log(`L4 卡 ✓ ${code} → ${card.rating}`)
 
 // ── Verify:≥OW 双复核(防追高误买)∥ pinned 卖出双复核(防误卖持仓,Wave1 ⑤-3)──
