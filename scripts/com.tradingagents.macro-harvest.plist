@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.tradingagents.macro-harvest</string>
+  <key>ProgramArguments</key><array>
+    <string>/bin/zsh</string><string>-lc</string><string>__REPO__/scripts/macro-harvest.sh</string>
+  </array>
+  <!-- 周日 20:00:盘后无冲突,给周一开盘前留出跑 LLM 节的时间 -->
+  <key>StartCalendarInterval</key><array>
+    <dict><key>Weekday</key><integer>0</integer><key>Hour</key><integer>20</integer><key>Minute</key><integer>0</integer></dict>
+  </array>
+  <key>StandardOutPath</key><string>/tmp/macro-harvest.log</string>
+  <key>StandardErrorPath</key><string>/tmp/macro-harvest.err.log</string>
+</dict></plist>
