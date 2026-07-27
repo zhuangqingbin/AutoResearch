@@ -44,7 +44,10 @@ def test_sentinel_degrades(tmp_path):
 
 
 def test_token_estimate_rows(tmp_path):
-    """估算器:策略师行/L3(csv+落稿)/L4 prompt 计数;缺稿 → —。"""
+    """阶段表:策略师行/L3(csv+落稿)/L4 prompt 计数;缺稿 → —。
+
+    Wave6 T8:~token 列退役后本表只剩硬事实(墙钟/调用数/落盘字节),行结构与计数不变。
+    """
     from autoresearch.scan.assemble import _stage_token_estimate
     d = tmp_path / "s"
     (d / "details").mkdir(parents=True)
@@ -55,10 +58,10 @@ def test_token_estimate_rows(tmp_path):
     (d / "_l4_prompt_000001.md").write_text("p" * 300, encoding="utf-8")
     md = "\n".join(_stage_token_estimate(d))
     assert "旁路 策略师 | Opus | session | — | 1" in md        # 07-06:引擎后加 effort+墙钟列(无计时→墙钟—)
-    assert "落稿契约" in md and "未计而非为零" in md
-    assert "L4 新闻网查" in md and "未计非零" in md
+    assert "token_usage.md" in md and "不等于用量小" in md     # 真计量指路 + 缺席口径
+    assert "L4 新闻网查" in md and "无落盘 artifact" in md
     md2 = "\n".join(_stage_token_estimate(tmp_path))           # 空目录 → 全 —
-    assert "旁路 策略师 | Opus | session | — | — | —" in md2
+    assert "旁路 策略师 | Opus | session | — | — |" in md2
 
 
 def test_token_estimate_l4_input_slim_row_and_prompt_hint(tmp_path):
