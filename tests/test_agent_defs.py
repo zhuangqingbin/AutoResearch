@@ -208,16 +208,22 @@ def test_workflow_shell_wrappers_use_haiku():
     锚取**承重行**(agentType 与 model 同现在一个 opts 对象里):注释里写了不算,
     删掉任一 `model: 'haiku'` 本测试必须变红。
     """
-    sm = (ROOT / ".claude" / "workflows" / "scan-market.js").read_text(encoding="utf-8")
-    ls = (ROOT / ".claude" / "workflows" / "l4-stock.js").read_text(encoding="utf-8")
+    wf_dir = ROOT / ".claude" / "workflows"
+    all_js = {p.name: p.read_text(encoding="utf-8") for p in wf_dir.glob("*.js")}
 
-    assert sm.count("agentType: 'general-purpose', model: 'haiku'") == 2, \
-        "scan-market.js 的 bash()/gate() 两个壳 helper 必须都降 haiku"
-    assert "agentType: 'general-purpose', model: 'haiku'" in ls, \
-        "l4-stock.js 的 ens-dump 壳必须降 haiku"
+    # 全量扫:**任何** workflow 里的 general-purpose 壳都必须带 haiku。
+    # 第一版只点名 scan-market/l4-stock 两个文件 → dossier-init.js 的两个壳漏网,
+    # 2026-07-27 实测一次建档 249.8k 加权里它们占 27%(67.2k 换 1.0k 输出)。
+    # 逐文件枚举的清单会漏掉新增文件;改成全量扫,新 workflow 一进来就被管住。
+    for name, src in sorted(all_js.items()):
+        bare = src.count("agentType: 'general-purpose', effort:")
+        assert bare == 0, f"{name} 有 {bare} 个 general-purpose 壳未降 haiku(纯壳零判断,应降档)"
+    assert sum(s.count("agentType: 'general-purpose', model: 'haiku'")
+               for s in all_js.values()) >= 5, "壳降档锚整体消失了?(应至少 5 处)"
     # 判断 agent 不得被误降 —— 这条防的是「顺手把整个文件 sed 一遍」
-    for real in ("l3-rank", "l4-card", "l4-intel", "macro-brief", "sector-brief"):
-        assert f"agentType: '{real}', model: 'haiku'" not in sm + ls, \
+    joined = "".join(all_js.values())
+    for real in ("l3-rank", "l4-card", "l4-intel", "macro-brief", "sector-brief", "dossier-init"):
+        assert f"agentType: '{real}', model: 'haiku'" not in joined, \
             f"{real} 是判断 agent,不得降 haiku"
 
 

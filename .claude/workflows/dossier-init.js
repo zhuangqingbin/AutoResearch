@@ -20,7 +20,9 @@ const DP = `context/knowledge/dossiers/${code}.md`
 function bash(cmd, label, ph) {
   return agent(
     `在仓库根目录精确执行下面这条命令,然后只回报:退出码 + stdout 末 10 行。不要做别的。\n\n\`\`\`\n${cmd}\n\`\`\``,
-    { agentType: 'general-purpose', effort: 'low', label, phase: ph })
+    // Wave6 T1(扩到本 workflow):2026-07-27 实测一次建档 249.8k 加权,其中壳 agent 占 **27%**
+    // (67.2k 换 1.0k 输出)—— 与 scan-market/l4-stock 的壳同一形态,零判断,降 haiku。
+    { agentType: 'general-purpose', model: 'haiku', effort: 'low', label, phase: ph })
 }
 
 phase('Skeleton')
@@ -42,5 +44,6 @@ const LINT = { type: 'object', required: ['ok'],
   properties: { ok: { type: 'boolean' }, reason: { type: 'string' } } }
 const lint = await agent(
   `在仓库根目录执行:\n\n\`\`\`\nuv run --no-sync python -c "from autoresearch.dossier import schema; import json, pathlib; t=pathlib.Path('${DP}').read_text(encoding='utf-8'); iss=schema.lint_dossier(t); print(json.dumps({'ok': not iss, 'reason': ';'.join(iss)[:200]}, ensure_ascii=False))"\n\`\`\`\n\n它打印一行 JSON,把最后一行 JSON 原样作为结构化返回。`,
-  { agentType: 'general-purpose', effort: 'low', label: `lint:${code}`, phase: 'Lint', schema: LINT })
+  // lint 判据全在确定性 CLI(schema.lint_dossier)里,agent 只转述 JSON → haiku 足够
+  { agentType: 'general-purpose', model: 'haiku', effort: 'low', label: `lint:${code}`, phase: 'Lint', schema: LINT })
 return { code, initiated: true, issues: lint && !lint.ok ? [lint.reason] : [] }
