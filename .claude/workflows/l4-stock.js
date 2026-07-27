@@ -68,18 +68,29 @@ if (trigger) {
     : `🎭 持仓卖出复核:${code} 追加 2 独立 run 取中位(只向温和折回,卖错持仓代价不对称)`)
   const RANK = { 'sell': 0, 'underweight': 1, 'hold': 2, 'overweight': 3, 'buy': 4 }
   const tier = (r) => RANK[String(r || '').toLowerCase()] ?? 2
-  const reruns = (await parallel([2, 3].map((i) => () => agent(
+  const rerun = (i) => agent(
     `独立复核 run${i}(不知道其它 run 结论):执行 ${SD}/_l4_prompt_${code}.md 的任务包,按人设走渐进深度 DD,决策卡写到 ${SD}/ensemble/${code}.run${i}.md(先自行创建 ensemble/ 目录),返回 code/rating/conviction/proposal。`,
     { agentType: 'l4-card', effort: cfg.agents?.l4_card?.effort ?? 'xhigh',
-      label: `ens${i}:${code}`, phase: 'Verify', schema: CARD })))).filter(Boolean)
+      label: `ens${i}:${code}`, phase: 'Verify', schema: CARD })
+  // Wave6 T2 同档早止:run1==run2 时三票中位**数学上已定**(两票同档 → 排序中位恒为该档,
+  // 第三票投什么都改不了),run3 是确定的冗余 → 跳过省一张满卡(07-24 的 601869 三票全 UW)。
+  // 分歧则照常跑 run3 当裁决票。代价:串行化后分歧场景墙钟略长,同档场景反而更短。
+  const r2 = await rerun(2)
+  const sameTier = !!r2 && tier(r2.rating) === tier(card.rating)
+  const r3 = sameTier ? null : await rerun(3)
+  const earlyStopped = sameTier
+  const reruns = [r2, r3].filter(Boolean)
+  if (earlyStopped) log(`🎭 同档早止:${code} run2 与 run1 同为 ${card.rating} —— 中位已定,跳过 run3`)
   const ratings = [card.rating, ...reruns.map((r) => r.rating)]
   const sorted = ratings.map(tier).sort((a, b) => a - b)
-  // N<3(复核 run 失败)→ 不折回原判 + degraded 标记强制人裁展示(sell_review 不因缺 run 软化卖出)
-  const degraded = ratings.length < 3
+  // degraded 只表示「复核 run 失败」(→ 不折回原判 + 强制人裁展示,sell_review 不因缺 run 软化卖出)。
+  // 早止是**主动省跑**,必须照常折回 —— 写反会让 SELL 复核在最该救回误卖持仓时不折。
+  const degraded = earlyStopped ? false : ratings.length < 3
   const medianTier = sorted[Math.floor(sorted.length / 2)]
   const names = ['Sell', 'Underweight', 'Hold', 'Overweight', 'Buy']
   const rec = { code, ratings, median: names[medianTier],
-    spread: sorted[sorted.length - 1] - sorted[0], degraded, trigger }
+    spread: sorted[sorted.length - 1] - sorted[0], degraded, trigger,
+    n_runs: ratings.length, early_stopped: earlyStopped }
   await agent(
     `在仓库根目录精确执行下面这条命令,然后只回报退出码。不要做别的、不要判断。\n\n\`\`\`\ncat > ${SD}/_ensemble_${code}.json << 'EOF'\n${JSON.stringify(rec)}\nEOF\n\`\`\``,
     // Wave6 T1:heredoc 写文件,零判断

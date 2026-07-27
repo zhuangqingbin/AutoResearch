@@ -156,6 +156,21 @@ def test_l4_stock_workflow_sell_review_anchors():
         assert a in js, f"l4-stock.js 缺 SELL 双复核锚「{a}」"
 
 
+def test_l4_stock_ensemble_early_stop_anchors():
+    """同档早止的承重锚(Wave6 T2)。
+
+    07-24 的 601869 三票全 UW(spread 0)白烧第三跑。两票同档时三票中位数学上已定,
+    跳过 run3 结果逐字节相同(数学前提由 test_ensemble_fold 钉死)。
+
+    `earlyStopped ? false :` 是「早止不算 degraded」的判据本体 —— 删掉它(把早止并进
+    degraded)会让 SELL 复核该折不折,这是本改动最贵的写反方式,锚必须钉在这行上。
+    """
+    js = (ROOT / ".claude" / "workflows" / "l4-stock.js").read_text(encoding="utf-8")
+    assert "const r2 = await rerun(2)" in js, "run2 未串行化 → 无从同档早止"
+    assert "earlyStopped ? false :" in js, "早止被并进 degraded = SELL 复核该折不折"
+    assert "early_stopped: earlyStopped" in js, "产物未记早止标记(账本无法区分 2 跑/3 跑)"
+
+
 def test_l4_stock_workflow_dossier_summary_anchors():
     """l4-stock.js 的 intel 已知底**消费**契约锚(Wave3.5 review R1 I-1)。
 
