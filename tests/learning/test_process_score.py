@@ -220,24 +220,42 @@ def test_chk_numeric_loop_false_when_thesis_number_unmatched(tmp_path):
     assert not df.iloc[0]["chk_numeric_loop"]
 
 
-# ───────────────────────── checklist⑥:slim>10KB ─────────────────────────
+# ────────────── checklist⑥:slim 可用性(结构+内容,体积只兜真垃圾)──────────────
+# Wave6 Q6-a:本检查此前自持 `_SLIM_MIN_BYTES = 10*1024` 纯体积门槛 —— 而 GATE3 侧早在
+# 2026-07-14 就把体积判据退役了(`l4_card._slim_defect` docstring:药石科技差 16 字节被误杀,
+# 「体积只兜真垃圾,不参与数据够不够的判断」)。process_score 留着的是那条已废判据的孤儿副本:
+# 07-24 实测 11 份 slim 全在 8.7–10.1KB(表瘦身后新常态)被判 11/11 假阳。
+# 改为复用 `_slim_defect` 单一事实源 —— 判据同 GATE3:四个结构锚齐 ∧ Close 是真数值。
 
 
-def test_chk_slim_size_true_when_over_10kb(tmp_path):
+def _valid_slim(size_pad: int = 0) -> str:
+    """最小可用 slim(四个结构锚 + 真 Close 数值);size_pad 用于凑体积测试。"""
+    return ("## Verified market snapshot\n"
+            "### Latest verified OHLCV row\n"
+            "| Close | 42.15 |\n"
+            "## Market context\n"
+            "## Fundamentals overview\n" + "x" * size_pad)
+
+
+def test_chk_slim_size_true_for_structurally_complete_slim(tmp_path):
+    """结构齐 + Close 有真值 → 可用。**8.7KB 这种「表瘦身后的正常体积」必须通过**
+    (旧 10KB 门槛把 07-24 的 11/11 全判假阳)。"""
     scan = _scan_dir(tmp_path)
     _write_finalists(scan, ["300476"])
     _write_card(scan, "300476")
-    (scan.parent.parent / f"300476_{_DATE}_slim.md").write_text("x" * 11000, encoding="utf-8")
+    (scan.parent.parent / f"300476_{_DATE}_slim.md").write_text(
+        _valid_slim(8_700), encoding="utf-8")
     df = ps.compute_process_scores(scan)
     assert df.iloc[0]["chk_slim_size"]
 
 
-def test_chk_slim_size_false_when_small_or_absent(tmp_path):
+def test_chk_slim_size_false_when_garbage_or_absent(tmp_path):
+    """真垃圾仍要逮住:①体积地板以下的空/截断稿 ②无 slim 文件。"""
     scan = _scan_dir(tmp_path)
     _write_finalists(scan, ["300476", "600519"])
     _write_card(scan, "300476")
     _write_card(scan, "600519")
-    (scan.parent.parent / f"300476_{_DATE}_slim.md").write_text("x" * 500, encoding="utf-8")  # 小稿(NO_DATA)
+    (scan.parent.parent / f"300476_{_DATE}_slim.md").write_text("x" * 500, encoding="utf-8")
     # 600519 无 slim 文件
     df = ps.compute_process_scores(scan)
     by_code = df.set_index("code")
@@ -245,12 +263,28 @@ def test_chk_slim_size_false_when_small_or_absent(tmp_path):
     assert not by_code.loc["600519", "chk_slim_size"]
 
 
+def test_chk_slim_size_false_when_structure_complete_but_no_data(tmp_path):
+    """体积够大、结构锚也齐,但 Close 是 NO_DATA 占位 → 不可用。
+
+    这是纯体积门槛**永远逮不到**的一类:降级稿可以很大。改判据后才拦得住。
+    """
+    scan = _scan_dir(tmp_path)
+    _write_finalists(scan, ["300476"])
+    _write_card(scan, "300476")
+    degraded = ("## Verified market snapshot\n### Latest verified OHLCV row\n"
+                "| Close | NO_DATA |\n## Market context\n## Fundamentals overview\n" + "x" * 12000)
+    (scan.parent.parent / f"300476_{_DATE}_slim.md").write_text(degraded, encoding="utf-8")
+    df = ps.compute_process_scores(scan)
+    assert not df.iloc[0]["chk_slim_size"]
+
+
 def test_chk_slim_size_matches_suffixed_filename(tmp_path):
     """slim 文件名可能带 .SZ/.SH/.SS 后缀(harvest 归一化前遗留),code 前缀匹配须兜住。"""
     scan = _scan_dir(tmp_path)
     _write_finalists(scan, ["300476"])
     _write_card(scan, "300476")
-    (scan.parent.parent / f"300476.SZ_{_DATE}_slim.md").write_text("x" * 11000, encoding="utf-8")
+    (scan.parent.parent / f"300476.SZ_{_DATE}_slim.md").write_text(
+        _valid_slim(9_000), encoding="utf-8")
     df = ps.compute_process_scores(scan)
     assert df.iloc[0]["chk_slim_size"]
 
