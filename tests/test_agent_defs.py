@@ -45,6 +45,10 @@ def test_l4_card_contract_anchors_synced():
                # 锚必须独有:"停因:" 曾被既有的 "早停因:" 整段吃掉 → 删了早停行测试照绿
                "早停卡短格式", "**早停**: 停于", "卡契约 v3·超短 1~2 日", "超短口径",
                "机构面网查", "先读数据后读论点", "活体情报", "持仓管理", "档案对账",
+               # Wave6:①独立初判从散文铁律升格为**卡结构元素**(07-24 实测 0/11 卡含此串,
+               # chk_blind_pass 全 fail —— 指令在、检查在,缺的是机器可核的标签行);
+               # ②转引标题标注(07-24 两条 price_claim_mismatch 的真身是转述媒体标题)。
+               "**独立初判**:", "〔转引标题〕",
                *(g for g in _OW_GATES)]
     for a in anchors:
         assert a in agent, f"l4-card 缺契约锚「{a}」"
@@ -110,8 +114,23 @@ def test_l4_intel_def():
         assert banned not in head, f"结构性盲:不得有 {banned}(可读/探索仓库)"
     for a in ("事件段", "题材段", "机构段", "互动段", "负面增量段", "声明行",
               "as-of", "六面全查", "≤15", "净分", "只报本票事实", "只攒料不判断", "不编", "盲",
-              "已知底"):
+              "已知底",
+              # Wave6 Q1:①来源必须是可点击链接 —— 旧铁律只要求「站点名」,所以 07-24
+              # 11/11 稿零 URL 其实是**完全合规**的,罚它的 lint 才是孤儿;②本票行情数字
+              # 禁区(涨跌幅由确定性 slim 供给);③声明行的网查数现在有对账探针了。
+              "来源URL 必落", "行情数字不自报", "〔转引标题〕"):
         assert a in text, f"l4-intel 缺契约锚「{a}」"
+
+
+def test_l4_intel_price_ban_scoped_to_own_stock():
+    """行情数字禁区只针对**本票** —— 同题材涨停家数/产业链价格是题材强度证据,必须照查。
+
+    禁区若写成「一切数字不许写」会误伤 `题材段` 的「同题材今日涨停家数」要求(该要求
+    在同一份 def 里),两条指令互相打架 → agent 只能猜。这里钉死例外条款在场。
+    """
+    text = _agent_text("l4-intel")
+    assert "同题材今日强度" in text or "涨停家数" in text, "题材强度要求被误删"
+    assert "不是本票行情" in text, "禁区缺例外条款 → 与题材段的涨停家数要求打架"
 
 def test_l4_intel_wired_in_docs():
     skill = (SKILLS / "scan-market" / "SKILL.md").read_text(encoding="utf-8")
