@@ -476,14 +476,17 @@ def _l2_cell(code: str, l2_top: dict[str, dict]) -> str:
     return f"#{r.get('l2_rank', '?')}{gtxt}"
 
 
-_BYTES_PER_TOK = 2.8   # CJK 混合文本粗估(中文≈3字节/字≈1+ token,夹杂 ASCII 数字/markdown)
-
-
 def _stage_token_estimate(scan_dir: Path) -> list[str]:
-    """分阶段 token **粗估**(确定性,无 LLM):按落盘的推理稿/决策卡**输出字节** ÷ 2.8 估 ~token + 调用计数。
+    """分阶段耗时 + LLM 调用数 + 落盘字节(确定性,无 LLM)。**本表不再估算 token**。
 
-    口径诚实:**输入侧**(喂 subagent 的 slim 上下文/紧凑表)多未留痕 → 真实总量数倍于此,本表为可测下界;
-    L0/L1/L2 确定性层 = 0 LLM。要精确计量需在编排层逐次记 usage。
+    历史与退役理由(Wave6 T8):本表曾用「落盘字节 ÷ 2.8」估 token,2026-07-24 那份报告
+    因此写 ~183,623;对**同一次跑动**做 transcript 追溯真计量得到 **加权 5.49M /
+    billed 22.4M / 输出 716.6k** —— 对加权低估 **30 倍**,且分布与旧假设相反(L3 真占
+    7.8% 而非 37%,大头在主会话编排 27% 与 L4 卡 23%)。这张表是「第二刀砍哪里」的决策
+    输入,错 30 倍比没有更糟,故估算列整列退役。
+
+    保留的都是硬事实:分段墙钟(mtime 推导)、LLM 调用数、落盘字节。真实用量以 CP7 的
+    `token_usage.md`(`trace.usage_harvest`,按计价倍率加权)为唯一正典。
     """
     det = scan_dir
 
@@ -556,30 +559,29 @@ def _stage_token_estimate(scan_dir: Path) -> list[str]:
          "harvest --slim 落稿(每卡 subagent 读入;≈4.8KB 空稿=NO_DATA 亦计=真实浪费)"),
         ("L4 输入·情报", _eng("l4_intel", "Sonnet"), _eff("l4_intel", "max"), "L4intel",
          len(intels), _b(intels),
-         "l4-intel 盲搜落稿(1 文件=1 sonnet 会话;网查计费经 OTEL,此处**未计非零**;未启用=0;不计入 LLM 调用合计)"),
+         "l4-intel 盲搜落稿(1 文件=1 sonnet 会话;网查用量见 `token_usage.md`;未启用=0;不计入 LLM 调用合计)"),
         ("L4 新闻网查", "WebSearch", "—", "L4news", 0, 0,
-         "P3 有界活体新闻(≤3/卡)+ sector/macro 网查(≤2)——无落盘 artifact,token 计费经 OTEL/`/usage`,此处**未计非零**"),
+         "P3 有界活体新闻(≤3/卡)+ sector/macro 网查(≤2)——无落盘 artifact,用量见 `token_usage.md`"),
         ("整合 assemble", "确定性", "—", "assemble", 0, 0, "L5 组装 + self_review(截至本表渲染)"),
     ]
-    lines = ["## 各阶段耗时 & token 消耗(估算)",
-             "| 阶段 | 引擎 | effort | 墙钟 | LLM 调用 | 落盘字节 | ~token | 说明 |",
-             "|---|---|---|---:|---:|---:|---:|---|"]
-    tot_calls = tot_tok = 0
+    lines = ["## 各阶段耗时 & 落盘字节",
+             "| 阶段 | 引擎 | effort | 墙钟 | LLM 调用 | 落盘字节 | 说明 |",
+             "|---|---|---|---:|---:|---:|---|"]
+    tot_calls = 0
     for name, eng, eff, tkey, calls, b, note in rows:
-        tok = int(b / _BYTES_PER_TOK)
         tot_calls += 0 if name.startswith("L4 输入") else calls
-        tot_tok += tok
-        lines.append(f"| {name} | {eng} | {eff} | {_wall(tkey)} | {calls or '—'} | {b or '—'} | {tok or '—'} | {note} |")
-    lines.append(f"| **合计** | — | — | {_wall('总计')} | **{tot_calls}** | — | **~{tot_tok}** | 落盘可测下界(墙钟 = mtime 推导下界·stage_timing.py) |")
+        lines.append(f"| {name} | {eng} | {eff} | {_wall(tkey)} | {calls or '—'} | {b or '—'} | {note} |")
+    lines.append(f"| **合计** | — | — | {_wall('总计')} | **{tot_calls}** | — | 墙钟 = mtime 推导下界(stage_timing.py) |")
     if cards and not list(det.glob("_l4_prompt*")):
         lines += ["", "> ⚠️ L4 输入 prompt 未落稿(`_l4_prompt_*` 缺)——上表 L4 行仅计输出;派发前先 "
                   "`uv run --no-sync python -m autoresearch.scan.agents.l4_card prompts <date>` "
                   "落稿,输入侧才可计。"]
-    lines += ["", "> 口径:**落盘字节 ÷ 2.8**(CJK 粗估)。**落稿契约**(playbook):编排把 L3 输入表落 "
-              "`_l3_table.md`、每卡完整 prompt 落 `_l4_prompt_<code>.md` "
-              "后,本表 ≈ **输入+输出全量下界**;缺稿段 `—` = 该段用量**未计而非为零**。"
-              "另:每个 subagent 系统前缀 ~15k token(批内同前缀,prompt cache 摊薄)未计;"
-              "真实计费口径只有 Claude Code `/usage` 可见。", ""]
+    lines += ["", "> **token 计量**:本表**不估 token** —— 旧「落盘字节 ÷ 2.8」口径于 2026-07-24 "
+              "被同一次跑动的 transcript 追溯真计量证伪(估 ~183.6k vs 加权真值 5.49M,**低估 30 倍**,"
+              "且把「贵在哪」排反)。真实用量见 CP7 产出的 `token_usage.md`"
+              "(`python -m autoresearch.trace.usage_harvest --session <sessionId> --out …`,按计价倍率加权)。"
+              "**该文件不存在 = 本次未计量,不等于用量小。**"
+              "上表三列(墙钟/调用数/落盘字节)是确定性硬事实,可直接引用。", ""]
     return lines
 
 
@@ -1253,6 +1255,11 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
     from autoresearch.scan import health as _health  # lazy:体检失败不阻发布
     with contextlib.suppress(Exception):
         _health.write_run_health(scan_dir)             # 先写 staging,再随 trace mapping 带走
+        # ⚠️ 这一次**必须**在 build_summary 之前:`product_shape_lint` 的 force_full 探针读
+        # `run_health.l4_phases`,而它是 presence-gated —— run_health 缺席 = 该探针静默跳过
+        # (FN-1 家族)。但 build_summary 内部才写 gate_fires.csv,所以此刻的 artifacts 列表
+        # 必然把它记成 missing(07-24 实锤:run_health 13:16:21 / gate_fires 13:16:22)。
+        # 故 build_summary 之后再刷一次(见下方),让落盘的那份 missing 列表说真话。
     with contextlib.suppress(Exception):               # P0-4:逐卡过程分 checklist(presence-gated,失败不阻发布)
         from autoresearch.learning.process_score import write_process_scores
         write_process_scores(scan_dir)
@@ -1263,6 +1270,10 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
     md = build_summary(scan_dir, analysis_date, hhmm, folder, pinned_path=pinned_path)
     summary_path = out_base / "summary.md"
     summary_path.write_text(md, encoding="utf-8")
+    with contextlib.suppress(Exception):
+        # Wave6 Q6:build_summary 内部才落 gate_fires.csv —— 上面那次快照必然把它记成
+        # missing(07-24 实锤)。这里刷一次让 artifacts/missing 说真话;函数是纯快照,幂等。
+        _health.write_run_health(scan_dir)
     with contextlib.suppress(Exception):               # 现场导航页(第二天复盘入口)
         (out_base / "index.md").write_text(_health.index_md(scan_dir, out_base), encoding="utf-8")
     # 三个记账/刷新副作用共享同一条真实现场判据(resolve() 防相对/绝对路径假阴性)——

@@ -45,6 +45,10 @@ def test_l4_card_contract_anchors_synced():
                # 锚必须独有:"停因:" 曾被既有的 "早停因:" 整段吃掉 → 删了早停行测试照绿
                "早停卡短格式", "**早停**: 停于", "卡契约 v3·超短 1~2 日", "超短口径",
                "机构面网查", "先读数据后读论点", "活体情报", "持仓管理", "档案对账",
+               # Wave6:①独立初判从散文铁律升格为**卡结构元素**(07-24 实测 0/11 卡含此串,
+               # chk_blind_pass 全 fail —— 指令在、检查在,缺的是机器可核的标签行);
+               # ②转引标题标注(07-24 两条 price_claim_mismatch 的真身是转述媒体标题)。
+               "**独立初判**:", "〔转引标题〕",
                *(g for g in _OW_GATES)]
     for a in anchors:
         assert a in agent, f"l4-card 缺契约锚「{a}」"
@@ -110,8 +114,23 @@ def test_l4_intel_def():
         assert banned not in head, f"结构性盲:不得有 {banned}(可读/探索仓库)"
     for a in ("事件段", "题材段", "机构段", "互动段", "负面增量段", "声明行",
               "as-of", "六面全查", "≤15", "净分", "只报本票事实", "只攒料不判断", "不编", "盲",
-              "已知底"):
+              "已知底",
+              # Wave6 Q1:①来源必须是可点击链接 —— 旧铁律只要求「站点名」,所以 07-24
+              # 11/11 稿零 URL 其实是**完全合规**的,罚它的 lint 才是孤儿;②本票行情数字
+              # 禁区(涨跌幅由确定性 slim 供给);③声明行的网查数现在有对账探针了。
+              "来源URL 必落", "行情数字不自报", "〔转引标题〕"):
         assert a in text, f"l4-intel 缺契约锚「{a}」"
+
+
+def test_l4_intel_price_ban_scoped_to_own_stock():
+    """行情数字禁区只针对**本票** —— 同题材涨停家数/产业链价格是题材强度证据,必须照查。
+
+    禁区若写成「一切数字不许写」会误伤 `题材段` 的「同题材今日涨停家数」要求(该要求
+    在同一份 def 里),两条指令互相打架 → agent 只能猜。这里钉死例外条款在场。
+    """
+    text = _agent_text("l4-intel")
+    assert "同题材今日强度" in text or "涨停家数" in text, "题材强度要求被误删"
+    assert "不是本票行情" in text, "禁区缺例外条款 → 与题材段的涨停家数要求打架"
 
 def test_l4_intel_wired_in_docs():
     skill = (SKILLS / "scan-market" / "SKILL.md").read_text(encoding="utf-8")
@@ -135,6 +154,21 @@ def test_l4_stock_workflow_sell_review_anchors():
     js = (ROOT / ".claude" / "workflows" / "l4-stock.js").read_text(encoding="utf-8")
     for a in ("sell_review", "ow_review", "A.pinned", "proposal"):
         assert a in js, f"l4-stock.js 缺 SELL 双复核锚「{a}」"
+
+
+def test_l4_stock_ensemble_early_stop_anchors():
+    """同档早止的承重锚(Wave6 T2)。
+
+    07-24 的 601869 三票全 UW(spread 0)白烧第三跑。两票同档时三票中位数学上已定,
+    跳过 run3 结果逐字节相同(数学前提由 test_ensemble_fold 钉死)。
+
+    `earlyStopped ? false :` 是「早止不算 degraded」的判据本体 —— 删掉它(把早止并进
+    degraded)会让 SELL 复核该折不折,这是本改动最贵的写反方式,锚必须钉在这行上。
+    """
+    js = (ROOT / ".claude" / "workflows" / "l4-stock.js").read_text(encoding="utf-8")
+    assert "const r2 = await rerun(2)" in js, "run2 未串行化 → 无从同档早止"
+    assert "earlyStopped ? false :" in js, "早止被并进 degraded = SELL 复核该折不折"
+    assert "early_stopped: earlyStopped" in js, "产物未记早止标记(账本无法区分 2 跑/3 跑)"
 
 
 def test_l4_stock_workflow_dossier_summary_anchors():
@@ -162,6 +196,29 @@ def test_dossier_init_agent_def():
     text = p.read_text(encoding="utf-8")
     for a in ("model: opus", "三情景", "证伪触发点", "断言分级", "不改确定性节"):
         assert a in text, f"dossier-init.md 缺契约锚「{a}」"
+
+
+def test_workflow_shell_wrappers_use_haiku():
+    """纯壳 agent(跑命令 / 转述 JSON / 写文件)必须降 haiku(Wave6 T1)。
+
+    07-24 真计量:13 个 general-purpose 吃掉 798k 加权(全场 14.5%),其中 7 个是 2 消息的
+    纯壳,各背 ~60k 的 opus 系统前缀 ≈287k 加权纯过路费。壳本身零判断 —— 门的判据全在
+    确定性 CLI 里,agent 只负责执行与转述。
+
+    锚取**承重行**(agentType 与 model 同现在一个 opts 对象里):注释里写了不算,
+    删掉任一 `model: 'haiku'` 本测试必须变红。
+    """
+    sm = (ROOT / ".claude" / "workflows" / "scan-market.js").read_text(encoding="utf-8")
+    ls = (ROOT / ".claude" / "workflows" / "l4-stock.js").read_text(encoding="utf-8")
+
+    assert sm.count("agentType: 'general-purpose', model: 'haiku'") == 2, \
+        "scan-market.js 的 bash()/gate() 两个壳 helper 必须都降 haiku"
+    assert "agentType: 'general-purpose', model: 'haiku'" in ls, \
+        "l4-stock.js 的 ens-dump 壳必须降 haiku"
+    # 判断 agent 不得被误降 —— 这条防的是「顺手把整个文件 sed 一遍」
+    for real in ("l3-rank", "l4-card", "l4-intel", "macro-brief", "sector-brief"):
+        assert f"agentType: '{real}', model: 'haiku'" not in sm + ls, \
+            f"{real} 是判断 agent,不得降 haiku"
 
 
 def test_scan_market_workflow_pinned_roster_log():
@@ -222,3 +279,55 @@ def test_usage_harvest_wired_in_skill():
     md = (SKILLS / "scan-market" / "SKILL.md").read_text(encoding="utf-8")
     assert "autoresearch.trace.usage_harvest" in md, "SKILL 未接线 token 真计量 CLI"
     assert "加权" in md, "SKILL 未说明按计价倍率加权(原始 token 会把「贵在哪」排反)"
+
+
+def test_otel_path_retired_from_skill_docs():
+    """OTEL 那条路已退役(Wave6 E1):文档不得再教用户跑一个已删除的 CLI。
+
+    `trace/telemetry.py` 自 2026-07-05 建成起零生产调用点、全仓无一个 `token_telemetry.md`,
+    2026-07-27 删除。留着文档 = 后人照做直接 ModuleNotFoundError,且两套计量并存不知信谁。
+
+    变异验证:把 telemetry 命令写回任一文档,本测试变红。
+    """
+    skill = (SKILLS / "scan-market" / "SKILL.md").read_text(encoding="utf-8")
+    stages = (SKILLS / "scan-market" / "STAGES.md").read_text(encoding="utf-8")
+    for doc, nm in ((skill, "SKILL.md"), (stages, "STAGES.md")):
+        assert "trace.telemetry" not in doc, f"{nm} 仍在教已删除的 telemetry CLI"
+        assert "CLAUDE_CODE_ENABLE_TELEMETRY" not in doc, f"{nm} 仍在教 OTEL env"
+    assert "usage_harvest" in stages, "STAGES 计量节必须改记 usage_harvest 为唯一正典"
+
+
+def test_telemetry_module_is_gone():
+    """模块真删了(不是只改文档)—— 否则「退役」只是叙事。"""
+    import importlib.util
+    assert importlib.util.find_spec("autoresearch.trace.usage_harvest") is not None
+    assert importlib.util.find_spec("autoresearch.trace.telemetry") is None, \
+        "telemetry 模块仍在:文档说退役、代码还在 = 又一个只存在于叙事里的改动"
+
+
+def test_l4_stock_normalizes_conviction_scale():
+    """conviction 必须归一到 0-100(pr_20260717_005)。
+
+    07-14 实测:北方华创回传 0.62,其余 8 只是 60–78 整数 —— 同一字段两种标度。
+    下游 `force_full_card` 判据是 conviction>=70,0.62 会被当成极低确信 → 强制满卡
+    静默失效(FN-1 家族:网建成了但恒不触发)。
+    """
+    js = (ROOT / ".claude" / "workflows" / "l4-stock.js").read_text(encoding="utf-8")
+    assert "normConviction" in js, "l4-stock.js 未做 conviction 标度归一"
+    assert "card.conviction = normConviction(card.conviction)" in js, \
+        "归一函数定义了却没用上(生产者无消费者)"
+
+
+def test_run_health_refreshed_after_summary():
+    """run_health 的 artifacts/missing 必须在 gate_fires 落盘后再刷一次(Wave6 Q6)。
+
+    07-24 实锤:run_health.json 13:16:21 记 missing=[verify.csv, gate_fires.csv],
+    而 gate_fires.csv 13:16:22 就存在 —— 快照取早了。不能简单前后调换:
+    `product_shape_lint` 的 force_full 探针**读** run_health 且 presence-gated,
+    挪到 build_summary 之后会让那个探针静默失效。故保留前一次 + 之后补刷一次。
+    """
+    src = (ROOT / "autoresearch" / "scan" / "assemble.py").read_text(encoding="utf-8")
+    after = src.split("summary_path.write_text(md", 1)
+    assert len(after) == 2, "summary 写盘锚点漂移,先更新本测试"
+    assert "_health.write_run_health(scan_dir)" in after[1], \
+        "build_summary 之后没有补刷 run_health → missing 列表继续说假话"

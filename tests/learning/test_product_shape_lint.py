@@ -41,11 +41,15 @@ def _mk_clean(tmp_path):
          "thesis": "真选论点", "risk": "r", "catalyst": "c"},
     ], ensure_ascii=False), encoding="utf-8")
     _write_health(d)
+    # 声明行带「网查 N 条」= 生产形态(agent def 的契约锚);限频探针(10)据此对账,
+    # 干净盘必须自报且 ≤cap,否则基线会卡在新探针上。
     (d / "_l4_intel_600285.md").write_text(
-        "# 活体情报\n## 事件段\n| 2026-07-16 | 事件 | 源 https://example.com/a | 是 | +1 |\n",
+        "# 活体情报\n## 事件段\n| 2026-07-16 | 事件 | 源 https://example.com/a | 是 | +1 |\n"
+        "## 声明行\n网查 12 条 ｜ as-of ≤ 2026-07-17\n",
         encoding="utf-8")
     (d / "_l4_intel_600519.md").write_text(          # 保送票同走 l4-stock 链 → 也有 intel 稿
-        "# 活体情报\n## 事件段\n(近 14 天无重大事件)源 https://example.com/b\n",
+        "# 活体情报\n## 事件段\n(近 14 天无重大事件)源 https://example.com/b\n"
+        "## 声明行\n网查 9 条 ｜ as-of ≤ 2026-07-17\n",
         encoding="utf-8")
     (d / "market_pack.json").write_text(json.dumps(
         {"sector_healthy_top3": [{"industry": "动物保健Ⅱ"}, {"industry": "商用车"}]},
@@ -224,3 +228,53 @@ def test_return_row_shape(tmp_path):
     _write_health(d, anns=1.0)
     rows = product_shape_lint(d, DATE)
     assert rows and all(set(r) == {"check", "severity", "detail", "code"} for r in rows)
+
+
+# ── 10) intel 限频对账(Wave6 Q1-②)───────────────────────────────────────
+# 07-24 实测:11 稿自报 18/18/17/15/20/26/23/16/17/21/25 条,cap=15 → 10 只超限,
+# 最高 26(cap 的 173%)。声明行一直在写这个数,全仓却没有任何消费者(pr_20260714_007)。
+
+def test_intel_query_cap_over_warn(tmp_path):
+    d = _mk_clean(tmp_path)
+    (d / "user_config_echo.json").write_text('{"l4_intel": {"max_queries": 15}}', encoding="utf-8")
+    (d / "_l4_intel_600285.md").write_text(
+        "源 https://e.com/a\n## 声明行\n网查 26 条 ｜ as-of ≤ 2026-07-17\n", encoding="utf-8")
+
+    rows = _by(product_shape_lint(d, DATE), "产物形状·intel限频")
+
+    assert len(rows) == 1 and rows[0]["severity"] == "warn" and rows[0]["code"] == "600285"
+    assert "26" in rows[0]["detail"] and "15" in rows[0]["detail"]
+
+
+def test_intel_query_cap_at_cap_is_clean(tmp_path):
+    """恰好等于 cap 不算超(07-24 的 600018 就是 15/15)。"""
+    d = _mk_clean(tmp_path)
+    (d / "user_config_echo.json").write_text('{"l4_intel": {"max_queries": 15}}', encoding="utf-8")
+    (d / "_l4_intel_600285.md").write_text(
+        "源 https://e.com/a\n## 声明行\n网查 15 条\n", encoding="utf-8")
+
+    assert _by(product_shape_lint(d, DATE), "产物形状·intel限频") == []
+
+
+def test_intel_query_cap_missing_declaration_warn(tmp_path):
+    """没自报 = 无法对账,必须显式 flag —— 「文件/字段缺失是弱证据」,不得以缺推断合规。"""
+    d = _mk_clean(tmp_path)
+    (d / "_l4_intel_600285.md").write_text("源 https://e.com/a\n(没有声明行)\n", encoding="utf-8")
+
+    rows = _by(product_shape_lint(d, DATE), "产物形状·intel限频")
+
+    assert len(rows) == 1 and rows[0]["code"] == "600285"
+    assert "未自报" in rows[0]["detail"]
+
+
+def test_intel_query_cap_reads_echo_config(tmp_path):
+    """cap 取当日 user_config_echo,不是硬编码 15 —— 改了 config 就该按新 cap 对账。
+
+    变异验证:把读 echo 那几行删掉退回硬编码 15,本测试变红(20 条在 cap=25 下不该报)。
+    """
+    d = _mk_clean(tmp_path)
+    (d / "user_config_echo.json").write_text('{"l4_intel": {"max_queries": 25}}', encoding="utf-8")
+    (d / "_l4_intel_600285.md").write_text(
+        "源 https://e.com/a\n## 声明行\n网查 20 条\n", encoding="utf-8")
+
+    assert _by(product_shape_lint(d, DATE), "产物形状·intel限频") == []

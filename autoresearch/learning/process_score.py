@@ -11,16 +11,20 @@ checklist(全部读自**现成产物**,不新造判定逻辑,只把既有仪器�
      (`_thesis_number_tokens`/`_row_numeric_pool`/`_approx_in_pool`,与 `lint_judged`
      同一套判定,只是逐票拆开而非报全天 ok)对 `_l3_judged.json`(+`L2_gbdt_top200.csv`)
      逐票重算。缺 `_l3_judged.json`(旧日期/two_pass 关闭)→ 该日全体 False。
-  2. **盲读微pass 节存在** —— 卡文含「独立初判」字样(l4-card.md 铁律"先读数据后读论点"
-     的落地检测)。**局限**:这是对既定提示词汇的文本启发式,非机器契约行(卡片模板未
-     强制这个小节标题)——若未来该提示词措辞改了,这项检测需要跟着更新。
+  2. **盲读微pass 节存在** —— 卡文含「独立初判」字样。**2026-07-27 起它是卡的机器契约
+     元素**(l4-card.md / lite-playbook.md 两个模板都有 `**独立初判**:` 结构行,且列入
+     早停卡 ≤36 行的「保留」清单)。此前它只是散文铁律里的一句提示 → 07-24 实测 **0/11
+     卡命中**:指令在、检查在,缺的是「必须以这个标签落在卡里」的契约,agent 照做了却
+     不打标签。放宽检查是错解,正解是给它一个机器可核的标签行。
   3. **基率或目标锚行已渲染** —— 该票 `_l4_prompt_<code>.md`(任务包,已含
      `_base_rate_mark`/`_target_calib_mark` 的输出)含 🔁 或 📐 行。
   4. **卡片契约 lint 通过** —— `self_review.card_contract_lint(scan_dir)` 无该码命中。
   5. **评级=rubric 建议自洽** —— 卡文 `**Rating**` 与 `**Rubric建议**` 一致,或有
      **偏离** 说明(与卡片模板契约"必须=Rubric建议,否则下一行偏离硬理由"同语义;
      不同于 `self_review.review` 的"仅买单·仅评级更激进"版本,这里检的是全卡通用自洽)。
-  6. **slim>10KB** —— `context/<code>[后缀]_<date>_slim.md` 文件体积(NO_DATA 空稿判据)。
+  6. **slim 可用** —— `context/<code>[后缀]_<date>_slim.md` 过 `l4_card._slim_defect`
+     (四个结构锚齐 ∧ OHLCV Close 是真数值;体积只当 4KB 垃圾地板)。列名仍叫
+     `chk_slim_size` 是历史包袱(retro 账本已在 join 它),判据已不是体积——见常量注释。
 
 presence-gated:任一支撑产物缺失(该日某功能未启用/旧日期没有该产物)→ 对应项判 **False**,
 不是跳过整行——process_score 是"能否验证到位"的下界读数,不是乐观占位(§5 局限4)。
@@ -37,7 +41,13 @@ import pandas as pd
 
 _CHECKS = ["chk_numeric_loop", "chk_blind_pass", "chk_base_rate_or_target",
            "chk_card_contract", "chk_rubric_consistent", "chk_slim_size"]
-_SLIM_MIN_BYTES = 10 * 1024   # spec 字面:slim>10KB(l4-card 铁律的 ">8KB 可信" 是更松的门槛,这里按 spec 从严)
+# 真垃圾地板(空稿/截断),与 GATE3 的 `harvest_slim_batch(min_bytes=4_096)` 同值。
+# Wave6 Q6-a:本模块此前自持 `10 * 1024` 纯体积门槛,是一条**已废判据的孤儿副本** ——
+# GATE3 侧早在 2026-07-14 就把体积从主判据降为地板(`l4_card._slim_defect` docstring:
+# 药石科技 slim 8176B「差 16 字节」被误杀,毙掉 60min/1.6M token 的整条流水线;结论是
+# 「结构+内容决定能不能用,体积只兜真垃圾」)。留着的后果:2026-07-24 实测 11 份 slim
+# 全在 8.7–10.1KB(表瘦身后的新常态)被判 **11/11 假阳**,`chk_slim_size` 沦为噪声。
+_SLIM_FLOOR_BYTES = 4 * 1024
 
 
 # ───────────────────────── 逐项 checklist(纯读现成产物) ─────────────────────────
@@ -163,8 +173,11 @@ def compute_process_scores(scan_dir: Path | str) -> pd.DataFrame:
         rubric_dev = bool(_DEV_RE.search(text))
         chk_rubric = bool(rubric_suggest) and (rubric_suggest == rating or rubric_dev)
 
+        # slim 可用性:复用 GATE3 的单一事实源 `_slim_defect`(四个结构锚齐 ∧ Close 是真数值,
+        # 体积只当垃圾地板)。列名 `chk_slim_size` 保留不改 —— retro/账本已在 join 它。
+        from autoresearch.scan.agents.l4_card import _slim_defect
         sp = _slim_path(scan_dir, code, date)
-        chk_slim = bool(sp is not None and sp.stat().st_size > _SLIM_MIN_BYTES)
+        chk_slim = bool(sp is not None and _slim_defect(sp, _SLIM_FLOOR_BYTES)[1] is None)
 
         vals = {"chk_numeric_loop": chk_numeric, "chk_blind_pass": chk_blind,
                 "chk_base_rate_or_target": chk_baserate, "chk_card_contract": chk_contract,

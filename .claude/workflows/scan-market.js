@@ -23,10 +23,12 @@ const R = 'uv run --no-sync python -m'
 const SD = `context/scan/${date}`
 
 // 确定性命令 → general-purpose Bash-agent(只跑命令、回报退出码,不判断)
+// Wave6 T1:壳零判断,却背着 opus 系统前缀 —— 07-24 真计量 13 个 gp 共 798k 加权(全场 14.5%),
+// 其中 7 个 2-消息壳 ≈287k 纯过路费。降 haiku;判断仍在确定性 CLI 里,行为不变。
 function bash(cmd, label, phaseName) {   // 形参勿叫 phase:会遮蔽全局 phase() 分组函数
   return agent(
     `在仓库根目录精确执行下面这条命令,然后只回报:退出码 + stdout 末 15 行。不要做别的、不要判断、不要解释。\n\n\`\`\`\n${cmd}\n\`\`\``,
-    { agentType: 'general-purpose', effort: 'low', label, ...(phaseName ? { phase: phaseName } : {}) })
+    { agentType: 'general-purpose', model: 'haiku', effort: 'low', label, ...(phaseName ? { phase: phaseName } : {}) })
 }
 // 门 CLI → Bash-agent + schema(把 CLI 打印的 JSON 原样带回)。
 // required 只列 'ok':失败 JSON 只含 {ok:false, reason}(无 sentinel_level/finalists 等成功字段);
@@ -40,10 +42,12 @@ const GATE2 = { type: 'object', required: ['ok'],
     meta: { type: 'object' } } }
 const OK = { type: 'object', required: ['ok'],
   properties: { ok: { type: 'boolean' }, reason: { type: 'string' } } }
+// Wave6 T1:门的判据 100% 在确定性 CLI 里,agent 只把它打印的 JSON 原样带回 —— 转述不需要
+// 思考,effort high→low 且降 haiku。schema 校验仍在(格式错会被 harness 拒),门行为不变。
 function gate(label, cmd, schema, phaseName) {   // 同上:避免遮蔽全局 phase()
   return agent(
     `执行:\`${cmd}\`\n它会向 stdout 打印 JSON。把它打印的最后一行 JSON 原样作为你的结构化返回(字段不改、不增删)。`,
-    { agentType: 'general-purpose', effort: 'high', label, schema, ...(phaseName ? { phase: phaseName } : {}) })
+    { agentType: 'general-purpose', model: 'haiku', effort: 'low', label, schema, ...(phaseName ? { phase: phaseName } : {}) })
 }
 
 // ── Phase Prelude ───────────────────────────────────────────────

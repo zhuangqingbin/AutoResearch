@@ -24,7 +24,9 @@ import pandas as pd
 from autoresearch.learning import precedents as prec
 from autoresearch.scan.agents.l4_card import _precedent_mark, compose_funnel_brief
 
-_BYTES_PER_TOK = 2.8   # mirror autoresearch.scan.assemble._BYTES_PER_TOK(粗估口径同源,不重算)
+_BYTES_PER_TOK = 2.8   # 本文件自持:assemble 侧的同名常量已于 Wave6 T8 退役(对加权真值低估
+                       # 30 倍,不配当报告口径)。这里量的是**单卡 prompt 片段的相对预算**
+                       # (≤400/卡),粗估足够且与报告口径无关,故保留本地副本。
 
 
 def _card_text(code: str, name: str, date: str, rating: str, gate_line: str, trigger: str) -> str:

@@ -67,6 +67,34 @@ def _breadth(df: pd.DataFrame) -> dict:
     }
 
 
+def _today_slice(df: pd.DataFrame | None) -> dict | None:
+    """当日切面(pr_20260721_002):涨跌停家数 / 全市场当日中位 / 板块当日中位 top3·bottom3。
+
+    **零新端点** —— `pct_1d` 本来就在帧上(tushare daily 的 `pct_chg`,`tushare_source.py:398`),
+    此前全仓零生产消费者。pack 有 60 日动量、有估值分位、有资金面,唯独答不出「今天盘面
+    怎么样」,策略师小节 2 只能靠网查或不写。
+
+    涨停判据取 **≥9.5%**(主板 10%/创业板科创板 20%/ST 5% 各不同,这里只作**盘面温度描述**,
+    不作交易判据,故取一个略松的统一阈值,宁可把 20cm 板的半程算漏也不误报)。
+    缺 `pct_1d` 列 → `None`(presence-gated;「没有数据」不等于「今天 0 只涨停」)。
+    """
+    if df is None or not len(df) or "pct_1d" not in df.columns:
+        return None
+    s = _num(df, "pct_1d")
+    if not len(s.dropna()):
+        return None
+    out: dict = {"n_up_limit": int((s >= 9.5).sum()), "n_down_limit": int((s <= -9.5).sum()),
+                 "median_pct_1d": _med(s), "sector_top3": [], "sector_bottom3": []}
+    if "industry" in df.columns:
+        g = df.assign(_p=s).groupby(df["industry"].astype(str))["_p"].median().dropna()
+        g = g.sort_values(ascending=False)
+        out["sector_top3"] = [{"industry": k, "median_pct_1d": round(float(v), 2)}
+                              for k, v in g.head(3).items()]
+        out["sector_bottom3"] = [{"industry": k, "median_pct_1d": round(float(v), 2)}
+                                 for k, v in g.tail(3).items()]
+    return out
+
+
 def _valuation(df: pd.DataFrame) -> dict:
     pe = _num(df, "pe")
     pe_pos = pe[pe > 0]
@@ -124,6 +152,7 @@ def market_pack(scan_dir: Path | str) -> dict:
             pack["breadth"] = _breadth(df)
             pack["valuation"] = _valuation(df)
             pack["money"] = _money(df)
+            pack["today_slice"] = _today_slice(df)      # Wave6 Q3(两入口必须同时挂,防半接线)
             pack["sector_healthy_top3"] = sector_healthy_top3(df)
     sec = scan_dir / "sectors.csv"
     if sec.exists():
@@ -266,6 +295,7 @@ def market_pack_from_frame(frame: pd.DataFrame | None, date: str | None = None) 
     pack["breadth"] = _breadth(frame)
     pack["valuation"] = _valuation(frame)
     pack["money"] = _money(frame)
+    pack["today_slice"] = _today_slice(frame)           # Wave6 Q3(两入口必须同时挂,防半接线)
     pack["sectors"] = _sectors_from_frame(frame)
     pack["sector_healthy_top3"] = sector_healthy_top3(frame)
     return pack

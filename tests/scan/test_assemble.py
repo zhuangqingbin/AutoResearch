@@ -161,8 +161,8 @@ def test_reasoning_archived(published):
     "AI 光模块需求超预期", "组合视角",
     # 逐阶段结论列(per-stage buy-list 表)
     "L1召回(#/", "L2粗排(#/", "L3精排", "L4研究·结论", "#5", "列注",
-    # token 估算段
-    "## 各阶段耗时 & token 消耗", "落盘可测下界", "effort", "墙钟",   # 07-06:加 effort/墙钟列(耗时来自 _stage_timing.json)
+    # 耗时/字节段(Wave6 T8:~token 估算列已退役 —— 2026-07-24 实测对加权真值低估 30 倍)
+    "## 各阶段耗时 & 落盘字节", "effort", "墙钟", "token_usage.md",
     # Tier-3 多空辩论徽标 + 明细
     "🛡️红队", "🛡️ Tier-3 买单多空辩论", "⚠️降级", "✅维持",
     "估值已透支PE160", "AI光模块需求真切", "降级2/3",
@@ -172,10 +172,33 @@ def test_summary_contains_token(published, token):
 
 
 def test_token_table_intel_row(tmp_path):
-    """token 估算表新增『L4 输入·情报』行(l4-intel 盲搜落稿计数;镜像『L4 输入·slim』行元组形状)。"""
+    """阶段表『L4 输入·情报』行(l4-intel 盲搜落稿计数;镜像『L4 输入·slim』行元组形状)。"""
     (tmp_path / "_l4_intel_000001.md").write_text("# 活体情报\n", encoding="utf-8")
     md = "\n".join(assemble._stage_token_estimate(tmp_path))
     assert "L4 输入·情报" in md
+
+
+def test_stage_table_has_no_fabricated_token_column(tmp_path):
+    """~token 估算列必须消失(Wave6 T8)。
+
+    2026-07-24 那份报告的估算表写 ~183,623;对同一次跑动做 transcript 追溯真计量得到
+    **加权 5.49M / billed 22.4M / 输出 716.6k** —— 对加权低估 30 倍,且分布与旧假设相反
+    (L3 真占 7.8% 而非 37%)。这张表是「第二刀砍哪里」的决策输入,错 30 倍比没有更糟。
+
+    变异验证:把 ~token 列加回去,本测试变红。
+    """
+    lines = assemble._stage_token_estimate(tmp_path)
+    head = next(ln for ln in lines if ln.startswith("| 阶段"))
+    body = "\n".join(lines)
+
+    assert "~token" not in head, "估算列复辟"
+    assert "落盘字节" in head, "真实可测的字节列应保留"
+    # 「口径:落盘字节÷2.8」这类**主张句**必须绝迹;脚注里作为退役理由**引用**旧公式是允许的
+    # (读者需要知道为什么退役)。所以钉的是主张标记,不是「2.8」这三个字符。
+    assert "落盘可测下界" not in body, "旧估算口径仍在作为有效口径陈述"
+    assert not any(ln.startswith("| **合计**") and "~" in ln for ln in lines), "合计行仍在报估算 token"
+    assert "token_usage.md" in body, "必须指向 CP7 真计量产物"
+    assert "不等于用量小" in body, "真表缺席时必须显式说明「未计量」,不得让读者以为用量小"
 
 
 def test_stage_table_effort_from_echo_and_new_rows(tmp_path):

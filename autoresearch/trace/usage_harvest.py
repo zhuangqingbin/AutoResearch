@@ -82,6 +82,38 @@ def usage_of(path: Path) -> dict:
     return tot
 
 
+# 模型价差(相对 opus 输入价的**倍率**,仅供「贵在哪」定序,不冒充账单)。
+# 为什么必须单列:上面的加权口径只含 **cache 倍率**,不含模型价差 —— 把一个纯壳 agent
+# 从 opus 降到 haiku,加权 token 数几乎不变而真实成本降一个量级。没有这一维,Wave6 T1
+# 那类降档改动在表上完全看不出来,等于无法验收。
+_MODEL_MULT = {"haiku": 0.1, "sonnet": 0.33, "opus": 1.0}
+
+
+def model_family(model: str | None) -> str:
+    """完整 model id → 家族名(haiku/sonnet/opus);认不出 → `(未标注)`。
+
+    取家族而非原始 id:否则同族跨版本(`claude-haiku-4-5-20251001` vs `claude-haiku-…`)
+    会分裂成多行,汇总失去意义。
+    """
+    m = str(model or "").lower()
+    for fam in ("haiku", "sonnet", "opus"):
+        if fam in m:
+            return fam
+    return "(未标注)"
+
+
+def collect_glob(pattern: str) -> list[dict]:
+    """按 glob 收 transcript(追溯模式)→ 逐 agent usage(按加权降序)。
+
+    计量代码晚于某次 run 落地时(Wave6 附录 A 的处境:`73981` 比那次 run 晚 4h40m),
+    transcript 仍存活 —— 这里让补账成为官方入口,而不是每次手写驱动脚本。
+    """
+    import glob as _glob
+
+    rows = [usage_of(Path(p)) for p in sorted(_glob.glob(pattern, recursive=True))]
+    return sorted(rows, key=lambda r: -r["weighted_in"])
+
+
 def cache_hit_rate(rows: list[dict]) -> float | None:
     """cache_read / (cache_read + cache_create + input);分母 0 → None(不编 0%)。"""
     denom = sum(r["cache_read"] + r["cache_create"] + r["input"] for r in rows)
@@ -134,6 +166,21 @@ def render(rows: list[dict], sub_dir: str | None = None) -> str:
     for name, b in sorted(by.items(), key=lambda kv: -kv[1]["w"]):
         share = f"{b['w'] / tot_w:.0%}" if tot_w else "—"
         out.append(f"| {name} | {b['n']} | {_k(b['w'])} | {share} | {_k(b['out'])} |")
+    bym: dict[str, dict] = {}
+    for r in rows:
+        b = bym.setdefault(model_family(r.get("model")), {"n": 0, "w": 0, "out": 0})
+        b["n"] += 1
+        b["w"] += r["weighted_in"]
+        b["out"] += r["output"]
+    out += ["", "**按模型汇总**(加权 × 模型价差 ≈ 真实成本方向 —— 上面的加权口径本身"
+            "**不含**模型价差,壳从 opus 降 haiku 时加权几乎不变而成本降一个量级):", "",
+            "| 模型 | 个数 | 加权输入 | 价差倍率 | 折算(相对 opus) | 输出 |",
+            "|---|---:|---:|---:|---:|---:|"]
+    for fam, b in sorted(bym.items(), key=lambda kv: -kv[1]["w"]):
+        mult = _MODEL_MULT.get(fam)
+        adj = _k(int(b["w"] * mult)) if mult else "—"
+        out.append(f"| {fam} | {b['n']} | {_k(b['w'])} | {mult if mult else '—'} "
+                   f"| {adj} | {_k(b['out'])} |")
     out += ["", "_**覆盖声明**:本表只覆盖上表列出的 subagent transcript —— "
             "**主会话自身的消耗不在内**,跑在别的 session 目录下的 agent 也不在内。"
             "产物能证明跑过什么,不能证明没跑过什么:表里没有的不等于没花钱。_"]
@@ -156,13 +203,18 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="subagent token 真计量(零 LLM)")
     ap.add_argument("--dir", default=None, help="subagents 目录(与 --session 二选一)")
     ap.add_argument("--session", default=None, help="sessionId(自动定位 subagents 目录)")
+    ap.add_argument("--transcripts", default=None,
+                    help="transcript glob(追溯模式,与 --dir/--session 三选一)")
     ap.add_argument("--out", default=None, help="落盘 md 路径(缺省只打印)")
     a = ap.parse_args(argv)
-    sub = Path(a.dir) if a.dir else (find_session_dir(a.session) if a.session else None)
-    if sub is None:
-        print("[usage_harvest] 需要 --dir 或 --session(且该 session 目录存在)")
-        return 1
-    md = render(collect(sub), sub_dir=str(sub))
+    if a.transcripts:
+        md = render(collect_glob(a.transcripts), sub_dir=a.transcripts)
+    else:
+        sub = Path(a.dir) if a.dir else (find_session_dir(a.session) if a.session else None)
+        if sub is None:
+            print("[usage_harvest] 需要 --dir / --session / --transcripts 之一(且目录存在)")
+            return 1
+        md = render(collect(sub), sub_dir=str(sub))
     if a.out:
         p = Path(a.out)
         p.parent.mkdir(parents=True, exist_ok=True)

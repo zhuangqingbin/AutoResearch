@@ -78,6 +78,45 @@ def test_fold_ignores_unknown_ratings():
     assert assemble._apply_ensemble_fold("Overweight", {"median": "???"}) == "Overweight"
 
 
+# ── Wave6 T2:同档早止(run1==run2 → 中位数学上已定,跳过 run3)────────────────
+
+
+def test_early_stopped_ensemble_still_folds():
+    """早止 ≠ degraded —— 这是 T2 最容易写反的一处,钉死它。
+
+    `degraded` 语义 = **复核 run 失败**(→ 禁折回,交人裁);早止是**主动省跑**
+    (两票已定中位 → 必须照常折回)。若把 earlyStopped 并进 degraded,SELL 复核会在
+    最该救回误卖持仓的时候不折。
+    """
+    rec = {"code": "300857", "ratings": ["Sell", "Underweight"], "median": "Underweight",
+           "spread": 1, "degraded": False, "trigger": "sell_review",
+           "n_runs": 2, "early_stopped": True}
+    assert assemble._apply_ensemble_fold("Sell", rec) == "Underweight"
+
+
+def test_early_stopped_two_same_votes_raise_no_dissent():
+    """早止的 spread=0 不触发人裁 —— 两票确实同档,没有分歧可报。
+
+    记录这条推理:早止**不会**制造「三人一致」的假声称 —— dissent 行只在 flag 为真时
+    渲染,且它打印 len(ratings) = 真实跑数(2),不会把 2 跑说成 3 跑。
+    """
+    early = {"code": "601869", "ratings": ["Underweight", "Underweight"],
+             "median": "Underweight", "spread": 0, "degraded": False,
+             "trigger": "sell_review", "n_runs": 2, "early_stopped": True}
+    assert assemble._ensemble_flag(early) is False
+
+
+def test_median_of_two_same_tier_equals_that_tier():
+    """T2 的数学前提:两票同档时,第三票无论投什么,三票排序中位恒为该档。
+
+    这条是「跳过 run3 结果逐字节相同」的依据 —— 前提塌了整个优化就不成立,所以钉死它。
+    """
+    rank = {"Sell": 0, "Underweight": 1, "Hold": 2, "Overweight": 3, "Buy": 4}
+    for third in rank:
+        trio = sorted([rank["Underweight"], rank["Underweight"], rank[third]])
+        assert trio[len(trio) // 2] == rank["Underweight"], f"第三票 {third} 时中位变了"
+
+
 # ───────────────────────── build_summary 集成:badge + 组合视角人裁行 ─────────────────────────
 
 

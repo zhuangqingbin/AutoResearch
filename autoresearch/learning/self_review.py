@@ -35,6 +35,36 @@ def _guard_hit(v: float, gd: dict) -> bool:
             "==": v == thr}.get(op, False)
 
 
+def intel_query_cap_lint(scan_dir, cap: int = 15) -> list[dict]:
+    """情报稿自报查询数 vs 配置 cap 对账(product_shape_lint 探针 10 的素材)。
+
+    `l4-intel` 的声明行本来就写「网查 N 条」,但全仓此前**没有任何消费者**读它 ——
+    2026-07-24 实测 11 稿自报 18/18/17/15/20/26/23/16/17/21/25(cap=15)→ **10 只超限**,
+    最高 26 条 = cap 的 173%,而限频「形同虚设」这件事只在 pr_20260714_007 里挂着没人验。
+
+    返回逐码 `{"code", "claimed", "cap"}`;`claimed=None` = 稿里根本没自报,**同样上报**
+    ——缺字段是弱证据,不得以缺推断合规。无 intel 稿 → `[]`(presence-gated)。
+    """
+    import re
+    from pathlib import Path
+
+    d = Path(scan_dir)
+    out: list[dict] = []
+    for p in sorted(d.glob("_l4_intel_*.md")):
+        code = p.stem.replace("_l4_intel_", "")
+        try:
+            text = p.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001 — 读不了按未自报处理,不静默跳过
+            out.append({"code": code, "claimed": None, "cap": cap})
+            continue
+        m = re.search(r"网查\s*(\d+)\s*条", text)
+        if m is None:
+            out.append({"code": code, "claimed": None, "cap": cap})
+        elif int(m.group(1)) > cap:
+            out.append({"code": code, "claimed": int(m.group(1)), "cap": cap})
+    return out
+
+
 def review(ctx: dict) -> dict:
     """机械自检。ctx: {finalists:[{code,rating,composite,winner_rate,pct_60d,rsi6,sector,override?}],
     n_cards_expected, n_cards_present, summary_text, lessons:[{id,guard?}], 阈值可选}。
@@ -397,6 +427,20 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
                 add("产物形状·intel零URL", "warn",
                     f"{p.name} 全文 0 条 http(s) URL —— 情报不可审计(来源应带链接)",
                     code=p.stem.replace("_l4_intel_", ""))
+
+    # 10) intel 限频对账(Wave6 Q1-②):声明行自报「网查 N 条」vs 当日 config cap。
+    # 07-24 实测 10/11 超限、最高 26/15 —— 这个数一直在写,只是没有消费者(pr_20260714_007)。
+    # cap 取当日 echo(改了 config 就按新 cap 对账),缺 echo 回落 15(agent def 默认)。
+    _cap = 15
+    with contextlib.suppress(Exception):
+        _cap = int((json.loads((scan_dir / "user_config_echo.json").read_text(encoding="utf-8"))
+                    .get("l4_intel") or {}).get("max_queries") or 15)
+    for h in intel_query_cap_lint(scan_dir, cap=_cap):
+        _claimed = "未自报查询数" if h["claimed"] is None else f"自报 {h['claimed']} 条"
+        add("产物形状·intel限频", "warn",
+            f"{_claimed} > cap {h['cap']} —— 限频是指令级、无强制力(pr_20260714_007);"
+            f"未自报 = 无法对账,不等于合规",
+            code=h["code"])
 
     # ── 7. 引用密度(Wave1 ⑤-5):满卡带日期引用 <6 行 → warn;早停/♻️复用卡豁免 ──
     # _DATED 收紧为真日历日(final-review I-1):裸支路 \b\d{1,2}[-/]\d{1,2}\b 把 R:R 1.8/1、
