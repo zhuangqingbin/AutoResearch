@@ -128,3 +128,42 @@ def test_ranking_uses_weighted_not_raw(tmp_path):
     assert rows[0]["agent"] == "write-heavy", "按原始量排会把 cache 读大户排前面(错)"
     assert rows[0]["weighted_in"] == 1_250_000
     assert rows[1]["weighted_in"] == 500_000
+
+
+# ── Wave6 T8-b:分模型汇总 + 追溯模式 ────────────────────────────────────────
+
+
+def test_model_family_normalizes_ids():
+    """model 桶取家族名,不是带日期的完整 id —— 否则同族跨版本会分裂成多行,汇总失去意义。"""
+    assert U.model_family("claude-haiku-4-5-20251001") == "haiku"
+    assert U.model_family("claude-opus-5") == "opus"
+    assert U.model_family("claude-sonnet-5") == "sonnet"
+    assert U.model_family("—") == "(未标注)"
+    assert U.model_family(None) == "(未标注)"
+
+
+def test_rollup_splits_by_model(tmp_path):
+    """必须有按模型汇总:加权口径只含 cache 倍率、**不含模型价差**,所以把壳从 opus 降到
+    haiku 后加权 token 数几乎不变而真实成本降一个量级 —— 没有这一维,T1 那类降档改动
+    在表上完全看不出来(= 无法验收)。"""
+    _write(tmp_path, "agent-a.jsonl", [_row("m1", 500, 60000, 1000,
+                                            agent="general-purpose", effort="low",
+                                            model="claude-haiku-4-5-20251001")])
+    _write(tmp_path, "agent-b.jsonl", [_row("m2", 40000, 400000, 50000)])
+
+    md = U.render(U.collect(tmp_path))
+
+    assert "按模型汇总" in md
+    assert "| haiku |" in md and "| opus |" in md
+
+
+def test_transcripts_glob_mode(tmp_path):
+    """--transcripts <glob> 追溯模式:计量代码晚于某次 run 落地时,仍能从存活 transcript 补账
+    (Wave6 附录 A 的处境 —— 此前只能手写驱动脚本)。"""
+    d = tmp_path / "wf_x"
+    d.mkdir()
+    _write(d, "agent-1.jsonl", [_row("m1", 20, 30, 0)])
+
+    rows = U.collect_glob(str(tmp_path / "*" / "agent-*.jsonl"))
+
+    assert len(rows) == 1 and rows[0]["agent"] == "l4-card"
