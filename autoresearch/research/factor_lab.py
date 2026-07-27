@@ -754,6 +754,111 @@ def _regimes_from_panel(panel: pd.DataFrame, k: float = 200.0, min_dates: int = 
     return out
 
 
+_IC_T_GATE = 2.0        # |t| ≥ 此值才有资格进入权重条件化提案(spec §2.A:先分桶裁决再动权重)
+_IC_MIN_DATES = 5       # 桶内成型日下限;不足只记账不裁决
+
+
+def ic_by_regime(panel: pd.DataFrame, min_dates: int = _IC_MIN_DATES,
+                 t_gate: float = _IC_T_GATE) -> pd.DataFrame:
+    """分 regime × 因子组的逐日截面 IC + t 值裁决表(Wave6 批C ②A)。纯函数,零 IO。
+
+    **为什么必须分桶**:07-21 `stage_eval.csv` 的 L2 排序 IC 对主尺是 −0.2225,而 117 日面板
+    的 momentum 也是负的(−0.0325)。但「全期负」有两种完全不同的成因:①这个因子真没用;
+    ②risk_off 日的负信号把 trend 日的正信号**均值掩埋**了。二者的处方相反(前者该降权,
+    后者该做 regime 条件化),而全局平均分不出来 —— `test_flat_washes_out_regime` 已用合成
+    数据证明这种冲洗真的会发生。
+
+    **为什么必须带 t 值**:分桶后每桶样本变薄(117 日 → 每桶几十日),不带显著性就会把噪声
+    当信号,然后拿它去改生产打分尺。裁决口径:`|t| ≥ t_gate` 判「可提案」,否则「不显著」;
+    桶内成型日 < `min_dates` 一律「样本不足」——**显式记账而不是静默丢弃**(缺席要看得见)。
+
+    t = mean(daily_ic) / (std(daily_ic)/sqrt(n));日 IC 恒定(std=0)时 t 取 inf。
+    返回逐行 {regime, group, n_dates, ic_mean, ic_std, t_stat, verdict}。
+    """
+    cols = ["regime", "group", "n_dates", "ic_mean", "ic_std", "t_stat", "verdict"]
+    if panel is None or not len(panel) or "regime" not in panel.columns:
+        return pd.DataFrame(columns=cols)
+    grp_cols = [c for c in panel.columns if c.startswith("grp_")]
+    rows = []
+    for regime, sub in panel.groupby("regime"):
+        n_dates = int(sub["date"].nunique())
+        for c in grp_cols:
+            ics = [ic for _, dd in sub.groupby("date")
+                   if not np.isnan(ic := _spearman(dd[c], dd["fwd"]))]
+            n = len(ics)
+            mean = float(np.mean(ics)) if n else float("nan")
+            std = float(np.std(ics, ddof=1)) if n > 1 else 0.0
+            if not n or np.isnan(mean):
+                t = float("nan")
+            elif std == 0:
+                # 日 IC 零方差:真实数据里几乎不可能,出现即是退化样本(如全桶只有 1 日、
+                # 或因子列逐日完全相同)。给 t 一个**有限**的乐观上界而非 ±inf ——
+                # inf 会让任何退化桶自动过 |t|≥2 的门,把 fixture 级别的假信号送进提案。
+                t = 0.0 if mean == 0 else np.sign(mean) * (t_gate if n < min_dates else np.sqrt(n))
+            else:
+                t = mean / (std / np.sqrt(n))
+            if n_dates < min_dates:
+                verdict = "样本不足"
+            elif not np.isnan(t) and abs(t) >= t_gate:
+                verdict = "可提案"
+            else:
+                verdict = "不显著"
+            rows.append({"regime": str(regime), "group": c[4:], "n_dates": n_dates,
+                         "ic_mean": round(mean, 4) if not np.isnan(mean) else None,
+                         "ic_std": round(std, 4), "t_stat": round(t, 2) if np.isfinite(t) else t,
+                         "verdict": verdict})
+    return pd.DataFrame(rows, columns=cols)
+
+
+def render_ic_by_regime(df: pd.DataFrame, flat_ic: dict | None = None) -> str:
+    """裁决表 → markdown。`flat_ic`(可选)= 全样本各组 IC,用于并列「分桶 vs 全样本」对照。"""
+    out = ["# 分 regime 因子 IC 裁决表(对 fwd_2_oc 超短主尺)", "",
+           f"裁决口径:桶内成型日 ≥{_IC_MIN_DATES} 且 **|t| ≥ {_IC_T_GATE}** → 「可提案」"
+           "(仅取得**呈报资格**,改生产权重仍须用户点头);否则「不显著」/「样本不足」。", "",
+           "> 为什么分桶:全期 IC 为负有两种成因 —— 因子真没用 / risk_off 日把 trend 日的正信号"
+           "均值掩埋。二者处方相反,全局平均分不出来。", ""]
+    if df is None or not len(df):
+        out += ["_无数据(先 harvest 成型日)_"]
+        return "\n".join(out)
+    out += ["| regime | 因子组 | 成型日 | IC 均值 | IC 标准差 | t 值 | 裁决 |",
+            "|---|---|---:|---:|---:|---:|---|"]
+    for _, r in df.sort_values(["regime", "t_stat"], ascending=[True, False]).iterrows():
+        ic = "—" if r["ic_mean"] is None else f"{r['ic_mean']:+.4f}"
+        t = r["t_stat"]
+        ts = "—" if (t is None or (isinstance(t, float) and np.isnan(t))) else (
+            "∞" if t == float("inf") else ("−∞" if t == float("-inf") else f"{t:+.2f}"))
+        out.append(f"| {r['regime']} | {r['group']} | {r['n_dates']} | {ic} | "
+                   f"{r['ic_std']:.4f} | {ts} | {r['verdict']} |")
+    if flat_ic:
+        out += ["", "**对照:全样本(不分桶)IC** —— 与分桶结论相反的行就是 regime 条件化的候选:", "",
+                "| 因子组 | 全样本 IC |", "|---|---:|"]
+        for g, v in sorted(flat_ic.items(), key=lambda kv: -abs(_nz(kv[1]))):
+            out.append(f"| {g} | {_nz(v):+.4f} |")
+    return "\n".join(out)
+
+
+def run_ic_by_regime(cap_floor: float = 30.0, label_col: str = "fwd_2_oc",
+                     out_csv: str = "context/factor_lab/ic_by_regime.csv",
+                     out_md: str = "reports/research/ic_by_regime.md") -> pd.DataFrame:
+    """装载全历史成型日面板 → `ic_by_regime` 裁决表 → 落 csv + md。**只出读数,不改任何权重。**"""
+    frames = _all_frames(cap_floor)
+    if not frames:
+        print("无可用成型日(先 harvest)")
+        return pd.DataFrame()
+    panel, regime_by_date = _build_calib_panel(frames, label_col=label_col)
+    panel = panel.assign(regime=panel["date"].map(regime_by_date))
+    df = ic_by_regime(panel)
+    _w, ic_flat = _weights_from_panel(panel)
+    flat = {c[4:]: v for c, v in ic_flat.items()}
+    Path(out_csv).parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(out_csv, index=False)
+    Path(out_md).parent.mkdir(parents=True, exist_ok=True)
+    Path(out_md).write_text(render_ic_by_regime(df, flat_ic=flat) + "\n", encoding="utf-8")
+    print(f"[ic_by_regime] → {out_csv} / {out_md}")
+    print(df.to_string(index=False))
+    return df
+
+
 def calibrate(cap_floor: float = 30.0, k: float = 200.0, label_col: str = "fwd_2_oc",
               out_path: str = "context/factor_lab/weights.json") -> dict:
     """每"因子组"对前向收益的 rank-IC,按申万/东财行业 + 大类层级收缩 → weights.json(flat)。
@@ -1074,7 +1179,7 @@ def _selftest_gbdt() -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description="factor_lab — scan-market 打分逻辑实证验证")
     ap.add_argument("mode", nargs="?",
-                    choices=["harvest", "eval", "calibrate", "calibrate-regimes", "train"],
+                    choices=["harvest", "eval", "calibrate", "calibrate-regimes", "ic-by-regime", "train"],
                     help="harvest=取数缓存;eval=离线评估;calibrate=主尺(fwd_2_oc)IC→weights.json;"
                          "calibrate-regimes=同尺+regime分块;"
                          "train=LightGBM 横截面排序→gbdt_model.pkl(历史遗留命名,非 L2 引擎;factor_lab 可选研究工具)")
@@ -1105,6 +1210,8 @@ def main() -> int:
         calibrate(args.cap_floor, k=args.k)
     elif args.mode == "calibrate-regimes":
         calibrate_regimes(args.cap_floor, k=args.k)
+    elif args.mode == "ic-by-regime":
+        run_ic_by_regime(args.cap_floor)
     elif args.mode == "train":
         train_gbdt(args.cap_floor, valid_dates=args.valid_dates)
     else:
