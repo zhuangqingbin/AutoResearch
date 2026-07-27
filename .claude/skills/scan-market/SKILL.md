@@ -33,7 +33,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 - **召回权重**:`weights.json`(`factor_lab calibrate` 产;命令见常见坑节)。**regime 分桶权重**(`--regime-aware` 用):`factor_lab` `harvest` 后 python 里 `fl.calibrate_regimes()` → `weights.json` 增 `regimes` 块;重标定一律走 `retro.recalibrate_and_log`(快照+changelog 可回滚)。L2 不用模型(见铁律 / STAGES.md 核心世界观节)。
 - **闭环(开跑前补跑复盘)**:先 `uv run --no-sync python -m autoresearch.learning.retro pending`(慢环,D+2)与 `uv run --no-sync python -m autoresearch.learning.t1_review pending`(**快环,D+1 判断层复盘**,2026-07-17 起);有欠账 → 先用 **scan-retro**(含快环 t1-review workflow)补上再开始今天的扫描。连续 0 买时看对照读数:`uv run --no-sync python -m autoresearch.learning.zero_buy_ledger`。
 - **一致预期积累(每日 1 拉)**:`uv run --no-sync python -m autoresearch.research.consensus pull <date>`(tushare `report_rc` 限频 **1次/小时**,历史回补不可行);`status` 看进度。**验证门:积累 ≥60 日后 factor_lab 验 IC(两半稳+符号一致)才谈入 composite**。
-- **(可选)token 真计量与 cache 审计**:跑扫描的 Claude Code 会话从带 OTEL env 的 shell 启动(五件 env 见 `STAGES.md`『真实计量与跨层校准』节),跑完 `uv run --no-sync python -m autoresearch.trace.telemetry <原始导出> --out reports/scan/<run>/token_telemetry.md`。生产派发路径零改动,仪器旁路。
+- **token 真计量**:无需任何前置(不用配 env、不用特殊启动)——跑完在 CP7 直接跑 `usage_harvest`(命令见下方直播契约)。OTEL 那条路已于 2026-07-27 退役。
 - 用户对报告的反馈用 **feedback** skill 记。
 
 ## 流程(6 段)
@@ -122,12 +122,14 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
    每股链内:**intel(可关)→ l4-card 决策卡 →(≥OW)2 独立复核 run 取中位只向下折回**,复核落
    `_ensemble_<code>.json`(assemble 合并读)。卡模板/契约烤进 `.claude/agents/l4-card.md`。
    **活体情报站**(config `l4_intel.enabled`):l4-stock 的 Intel 相位,sonnet·max 结构性盲(prompt 只给码/名/行业/日期)盲搜六面落 `_l4_intel_<code>.md`;卡 P3 先读 intel、自发网查降 ≤1 验证,缺文件自动回退卡内网查(presence-gated)。⚠️ 2026-07-14 首跑冒烟:空稿 0/13、中文源可达 ✓,但逮到**捏造涨停断言**(pr_20260714_006 待裁)+ 限频形同虚设/零 URL(pr_20260714_007)——卡片对 intel 的价格类断言必须与 verified OHLCV 对账后才可采信。
-5. **L5 整合**(全部 l4-stock workflow 完成后,主会话直接跑;哨兵档跳过 L3/L4 后也走这里):
+5. **L5 整合**(全部 l4-stock workflow 完成后,主会话直接跑;哨兵档跳过 L3/L4 后也走这里)。
+   **三条一次跑完再播 CP7**,别一条一个来回(主会话每轮往返都要重读 ~113k cache,07-24 真计量里编排本身占全场加权 27%):
    ```bash
-   uv run --no-sync python -m autoresearch.scan.assemble <date>
-   uv run --no-sync python -m autoresearch.scan.gates gate4 <date>
+   uv run --no-sync python -m autoresearch.scan.assemble <date> && \
+   uv run --no-sync python -m autoresearch.scan.gates gate4 <date> && \
+   uv run --no-sync python -m autoresearch.trace.usage_harvest --session <本次 sessionId> --out reports/scan/<run_id>/token_usage.md
    ```
-   → **`reports/scan/<YYYYMMDD_HHMM>/`**(目录名=实际运行时刻,数据日记 `manifest.json`):`summary.md`(漏斗数量/各阶段概览/buy-list/token估算)+ `details/〈股票名称〉.md`+ `trace/`(留溯源)。
+   → **`reports/scan/<YYYYMMDD_HHMM>/`**(目录名=实际运行时刻,数据日记 `manifest.json`):`summary.md`(漏斗数量/各阶段概览/buy-list/**分段耗时与落盘字节**)+ `details/〈股票名称〉.md`+ `token_usage.md`(真计量)+ `trace/`(留溯源)。
    **汇报(CP7)**:漏斗 + buy-list(评级/目标)+ 分段耗时表(`render --view timing`)+ 诚实局限;0 买日必须播**停因分桶**(早停 N 张〔按停因〕/ 满卡未达 OW M 张),**不要再说「无一过 ≥OW 三门」**——早停卡按定义不写三门段(07-21 实测 12 卡里 6 张早停、仅 2 张可解析三门),那句话不被数据支持。
 
 6. **覆盖档案维护**(盘后,不占扫描窗;presence-gated,池空则整段跳过)

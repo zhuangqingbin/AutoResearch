@@ -260,11 +260,12 @@ self_review 硬门 banner → regime+drift 行(+🌡情绪温度行) → 📈市
 
 ---
 
-## 计量与跨层校准(报表就绪、样本积累中;OTEL 未实跑)
+## 计量与跨层校准(usage_harvest 已实跑;OTEL 路已退役)
 
-- **OTEL 遥测**:落稿估算下界 ~75k vs 真实量级 ~1M(主因 L4 输入未计)。带 env 启动会话:
-  `CLAUDE_CODE_ENABLE_TELEMETRY=1 OTEL_METRICS_EXPORTER=console OTEL_LOGS_EXPORTER=console OTEL_METRIC_EXPORT_INTERVAL=30000 OTEL_LOG_TOOL_DETAILS=1`;
-  解析 `python -m autoresearch.trace.telemetry <raw> --out reports/scan/<run>/token_telemetry.md` → agent×type 表 + cache 命中率。判读:l4-card 行 cacheRead≈0 → 前缀契约已锁死仍 miss,要查 TTL 窗口;显著>0 → 命中率可信落账。
+- **token 真计量(唯一正典)**:`python -m autoresearch.trace.usage_harvest --session <sessionId> --out reports/scan/<run>/token_usage.md`。逐 subagent 真 usage:**按 `message.id` 去重**(流式会让同一条 usage 重复落行,实测不去重把 cache_read 从 4.81M 虚报成 9.83M)、按**计价倍率加权**(cache读 ×0.1 / 5m写 ×1.25 / 1h写 ×2)+ **按模型汇总**(加权口径不含模型价差,壳降 haiku 只在这一维看得出来)。补账用 `--transcripts <glob>`(计量代码晚于某次 run 落地时)。
+  - **覆盖声明**:只覆盖 subagent,**主会话自身不在内**;表里没有的不等于没花钱。
+  - **2026-07-24 追溯首读**:50 agent · billed 22.4M / **加权 5.49M** / 输出 716.6k · cache 命中 85.6%。同一份报告的旧「落盘字节÷2.8」估算写 ~183.6k = **低估 30 倍**,且分布相反(L3 真占 7.8% 而非 37%;大头是主会话编排 27% / l4-card 23% / intel 20% / gp 壳 14.5%)。**按旧估算去砍会砍错地方** —— 报告侧估算列已随此发现退役。
+- **OTEL 遥测**:`trace/telemetry.py` 自 2026-07-05 建成起零生产调用点、全仓无一个 `token_telemetry.md`,已于 2026-07-27 **删除**。不要再配那五件 env(照旧文档跑会直接 ModuleNotFoundError)。
 - **跨层校准**:`python -m autoresearch.learning.cross_calib` → `reports/learning/cross_calib.md`。① L3→L4 翻案率 per lane(高确信 = conviction≥70、翻案 = L4≤UW);② rubric 门柱级拦对 / 错杀(错杀 = ex5>0 且 hi_10 触达目标)。
 - **触价校准**:`target_calibration` 统计全卡目标触达率 → `buy_ledger.md` 新节;首证 = 东方财富 hi10 6.3% vs 目标 28.8%(过乐观)。
 - **注入分层(铁律)**:python 只产读数;prelude 打三条当日件建议行(📐 / 🔁 / 🚪),n<10 的 thin 行标「禁注」勿贴。**校准不改门 / 权重 / 评级。**

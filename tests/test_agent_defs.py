@@ -279,3 +279,27 @@ def test_usage_harvest_wired_in_skill():
     md = (SKILLS / "scan-market" / "SKILL.md").read_text(encoding="utf-8")
     assert "autoresearch.trace.usage_harvest" in md, "SKILL 未接线 token 真计量 CLI"
     assert "加权" in md, "SKILL 未说明按计价倍率加权(原始 token 会把「贵在哪」排反)"
+
+
+def test_otel_path_retired_from_skill_docs():
+    """OTEL 那条路已退役(Wave6 E1):文档不得再教用户跑一个已删除的 CLI。
+
+    `trace/telemetry.py` 自 2026-07-05 建成起零生产调用点、全仓无一个 `token_telemetry.md`,
+    2026-07-27 删除。留着文档 = 后人照做直接 ModuleNotFoundError,且两套计量并存不知信谁。
+
+    变异验证:把 telemetry 命令写回任一文档,本测试变红。
+    """
+    skill = (SKILLS / "scan-market" / "SKILL.md").read_text(encoding="utf-8")
+    stages = (SKILLS / "scan-market" / "STAGES.md").read_text(encoding="utf-8")
+    for doc, nm in ((skill, "SKILL.md"), (stages, "STAGES.md")):
+        assert "trace.telemetry" not in doc, f"{nm} 仍在教已删除的 telemetry CLI"
+        assert "CLAUDE_CODE_ENABLE_TELEMETRY" not in doc, f"{nm} 仍在教 OTEL env"
+    assert "usage_harvest" in stages, "STAGES 计量节必须改记 usage_harvest 为唯一正典"
+
+
+def test_telemetry_module_is_gone():
+    """模块真删了(不是只改文档)—— 否则「退役」只是叙事。"""
+    import importlib.util
+    assert importlib.util.find_spec("autoresearch.trace.usage_harvest") is not None
+    assert importlib.util.find_spec("autoresearch.trace.telemetry") is None, \
+        "telemetry 模块仍在:文档说退役、代码还在 = 又一个只存在于叙事里的改动"
