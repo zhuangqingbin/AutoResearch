@@ -433,7 +433,8 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
     outdir.mkdir(parents=True, exist_ok=True)
     keep = (["code", "name", "industry", "composite"] + [f"score_{g}" for g in _GROUPS]
             + ["mktcap_yi", "close", "amount_yi", "vol_ratio", "turnover", "cmf_20", "obv_mom_20",
-               "pct_60d", "pct_ytd",
+               "pct_1d", "pct_60d", "pct_ytd",     # pct_1d(Wave6 Q3):market_pack 的当日切面块
+                                                    # 从 staging 入口读的就是本文件 —— 不投影 = L4 消费侧恒空
                "main_inflow_yi", "main_net_ratio",
                "retail_net_yi", "winner_rate", "chip_concentration", "price_to_cost", "hk_ratio",
                "rsi6", "rsi12", "pe", "pb", "dv_ratio", "np_yoy", "rev_yoy", "roe",
