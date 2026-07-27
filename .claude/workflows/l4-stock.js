@@ -82,7 +82,8 @@ if (trigger) {
     spread: sorted[sorted.length - 1] - sorted[0], degraded, trigger }
   await agent(
     `在仓库根目录精确执行下面这条命令,然后只回报退出码。不要做别的、不要判断。\n\n\`\`\`\ncat > ${SD}/_ensemble_${code}.json << 'EOF'\n${JSON.stringify(rec)}\nEOF\n\`\`\``,
-    { agentType: 'general-purpose', effort: 'low', label: `ens-dump:${code}`, phase: 'Verify' })
+    // Wave6 T1:heredoc 写文件,零判断
+    { agentType: 'general-purpose', model: 'haiku', effort: 'low', label: `ens-dump:${code}`, phase: 'Verify' })
   if (!degraded) {
     if (trigger === 'ow_review' && tier(rec.median) < tier(card.rating)) final = rec.median
     if (trigger === 'sell_review' && tier(rec.median) > tier(card.rating)) final = rec.median

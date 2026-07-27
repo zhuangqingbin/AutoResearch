@@ -183,6 +183,29 @@ def test_dossier_init_agent_def():
         assert a in text, f"dossier-init.md 缺契约锚「{a}」"
 
 
+def test_workflow_shell_wrappers_use_haiku():
+    """纯壳 agent(跑命令 / 转述 JSON / 写文件)必须降 haiku(Wave6 T1)。
+
+    07-24 真计量:13 个 general-purpose 吃掉 798k 加权(全场 14.5%),其中 7 个是 2 消息的
+    纯壳,各背 ~60k 的 opus 系统前缀 ≈287k 加权纯过路费。壳本身零判断 —— 门的判据全在
+    确定性 CLI 里,agent 只负责执行与转述。
+
+    锚取**承重行**(agentType 与 model 同现在一个 opts 对象里):注释里写了不算,
+    删掉任一 `model: 'haiku'` 本测试必须变红。
+    """
+    sm = (ROOT / ".claude" / "workflows" / "scan-market.js").read_text(encoding="utf-8")
+    ls = (ROOT / ".claude" / "workflows" / "l4-stock.js").read_text(encoding="utf-8")
+
+    assert sm.count("agentType: 'general-purpose', model: 'haiku'") == 2, \
+        "scan-market.js 的 bash()/gate() 两个壳 helper 必须都降 haiku"
+    assert "agentType: 'general-purpose', model: 'haiku'" in ls, \
+        "l4-stock.js 的 ens-dump 壳必须降 haiku"
+    # 判断 agent 不得被误降 —— 这条防的是「顺手把整个文件 sed 一遍」
+    for real in ("l3-rank", "l4-card", "l4-intel", "macro-brief", "sector-brief"):
+        assert f"agentType: '{real}', model: 'haiku'" not in sm + ls, \
+            f"{real} 是判断 agent,不得降 haiku"
+
+
 def test_scan_market_workflow_pinned_roster_log():
     """派发前必须逐只列出 pinned 名单(07-21 漏传 args.pinned → 持仓 SELL 双复核断链)。
 
