@@ -70,7 +70,7 @@ def test_frame_counts_must_not_touch_stdout():
     for marker in ("[frame]", "[sentinel·盘前预告]", "[macro_state]"):
         hits = [(t, has_file) for t, has_file in calls if marker in t]
         assert hits, f"frame.py 找不到 {marker} 打印(源码结构变了,先确认这条约束还在哪)"
-        for t, has_file in hits:
+        for _t, has_file in hits:
             assert has_file, f"frame 的 {marker} 打印必须带 file=(stdout 是 --json 的 payload)"
             checked += 1
     assert checked >= 3
