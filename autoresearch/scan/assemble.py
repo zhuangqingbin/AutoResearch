@@ -25,6 +25,7 @@ import csv
 import json
 import re
 import shutil
+import sys
 from collections import Counter
 from datetime import date, datetime
 from pathlib import Path
@@ -189,17 +190,14 @@ _PROPOSAL_BY_RATING = {"Buy": "BUY", "Overweight": "BUY", "Hold": "HOLD",
                        "Underweight": "SELL", "Sell": "SELL"}
 
 
-def _dump_decision_records(
+def _build_decision_records(
     scan_dir: Path,
     rows: list[dict],
     vmap: dict[str, dict],
     emap: dict[str, dict],
-) -> None:
-    """把既有卡面与折回链双写为结构化事实；失败不阻断报告发布。"""
-    from autoresearch.scan.decision_record import (
-        DecisionRecord,
-        safe_write_decision_records,
-    )
+) -> list:
+    """从既有卡面与折回检查点构造结构化事实。"""
+    from autoresearch.scan.decision_record import DecisionRecord
     from autoresearch.scan.stage_result import contract_hash_for
 
     records = []
@@ -278,6 +276,23 @@ def _dump_decision_records(
                 first_rejection_stage=first_rejection,
             )
         )
+    return records
+
+
+def _dump_decision_records(
+    scan_dir: Path,
+    rows: list[dict],
+    vmap: dict[str, dict],
+    emap: dict[str, dict],
+) -> None:
+    """影子双写的完整安全边界；构造或落盘失败均不阻断报告。"""
+    from autoresearch.scan.decision_record import safe_write_decision_records
+
+    try:
+        records = _build_decision_records(scan_dir, rows, vmap, emap)
+    except Exception as exc:  # noqa: BLE001 — 影子事实不能阻断 L5
+        print(f"[decision_record] 写入失败: {exc}", file=sys.stderr)
+        return
     safe_write_decision_records(scan_dir, records)
 
 
@@ -1369,6 +1384,7 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
         write_process_scores(scan_dir)
     n_pipe = _publish_pipeline(scan_dir, out_base, analysis_date)   # trace/ 挂 out_base(details 同级)
     from autoresearch.scan.artifacts import ARTIFACT_INDEX_SCHEMA_VERSION
+    from autoresearch.scan.decision_record import DECISION_RECORD_SCHEMA_VERSION
     from autoresearch.scan.run_contract import load_run_contract
 
     manifest = {                                             # retro 按 analysis_date 定位(目录名≠数据日)
@@ -1376,6 +1392,7 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
         "generated_at": now.isoformat(timespec="seconds"),
         "hhmm": hhmm,
         "artifact_index_schema_version": ARTIFACT_INDEX_SCHEMA_VERSION,
+        "decision_record_schema_version": DECISION_RECORD_SCHEMA_VERSION,
     }
     contract_path = scan_dir / "run_contract.json"
     if contract_path.exists():
@@ -1397,7 +1414,10 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
         scan_dir,
         stage="assemble",
         status="SUCCEEDED",
-        artifacts=["final_ratings", "gate_fires", "run_health", "summary", "manifest"],
+        artifacts=[
+            "final_ratings", "decision_records", "gate_fires", "run_health",
+            "summary", "manifest",
+        ],
         metrics={"n_cards": n_cards, "n_trace_before_final": n_pipe},
         warnings=[],
         error=None,
@@ -1417,6 +1437,13 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
         # 同时覆盖 trace 里 assemble 前发布的旧 health，保证 staging/trace 同一事实。
         from autoresearch.scan.artifacts import write_artifact_index
 
+        decision_source = scan_dir / "decision_records.json"
+        if decision_source.exists():
+            shutil.copy2(
+                decision_source,
+                out_base / "trace" / "decision_records.json",
+            )
+            n_pipe += 1
         stage_source = scan_dir / "stage_results"
         stage_trace = out_base / "trace" / "stage_results"
         if stage_source.is_dir():

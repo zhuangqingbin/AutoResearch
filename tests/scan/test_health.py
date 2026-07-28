@@ -172,6 +172,86 @@ def test_run_health_flags_stage_contract_mismatch_and_corruption(tmp_path):
     assert result["contract_hash_mismatches"] == ["gate2"]
 
 
+def test_decision_records_health_absent_is_advisory(tmp_path):
+    d = _mk_day(tmp_path, "2026-07-28")
+    result = run_health(d)["decision_records"]
+    assert result == {
+        "status": "ABSENT",
+        "n_records": 0,
+        "contract_hash_match": None,
+        "final_ratings_match": None,
+        "rating_mismatches": [],
+        "early_stop_match": None,
+        "early_stop_mismatches": [],
+        "error": None,
+    }
+
+
+def test_decision_records_health_detects_legacy_rating_mismatch(tmp_path):
+    from autoresearch.scan.decision_record import (
+        DecisionRecord,
+        write_decision_records,
+    )
+
+    d = _mk_day(tmp_path, "2026-07-28")
+    record = DecisionRecord.build(
+        analysis_date=d.name,
+        contract_hash=None,
+        code="000001",
+        source_rating="Hold",
+        rubric_rating="Hold",
+        gate_states={},
+        early_stop=None,
+        ensemble_ratings=[],
+        final_rating="Hold",
+        proposal="HOLD",
+        reason="rubric:Hold",
+        evidence_refs=[],
+        first_rejection_stage="L4_RUBRIC",
+    )
+    write_decision_records(d, [record])
+    (d / "_final_ratings.json").write_text(
+        json.dumps({"000001": "Overweight"}),
+        encoding="utf-8",
+    )
+    result = run_health(d)["decision_records"]
+    assert result["status"] == "MISMATCH"
+    assert result["final_ratings_match"] is False
+    assert result["rating_mismatches"] == ["000001"]
+
+
+def test_decision_records_health_rejects_tampered_book(tmp_path):
+    from autoresearch.scan.decision_record import (
+        DecisionRecord,
+        write_decision_records,
+    )
+
+    d = _mk_day(tmp_path, "2026-07-28")
+    record = DecisionRecord.build(
+        analysis_date=d.name,
+        contract_hash=None,
+        code="000001",
+        source_rating="Hold",
+        rubric_rating="Hold",
+        gate_states={},
+        early_stop=None,
+        ensemble_ratings=[],
+        final_rating="Hold",
+        proposal="HOLD",
+        reason="rubric:Hold",
+        evidence_refs=[],
+        first_rejection_stage="L4_RUBRIC",
+    )
+    path = write_decision_records(d, [record])
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["records"][0]["final_rating"] = "Buy"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    result = run_health(d)["decision_records"]
+    assert result["status"] == "INVALID"
+    assert "hash" in result["error"]
+
+
 def test_finalist_churn(tmp_path):
     _mk_day(tmp_path, "2026-07-01", codes=("000001", "000002"))
     d = _mk_day(tmp_path, "2026-07-02", codes=("000002", "000003"))

@@ -44,6 +44,7 @@ CRITICAL_ARTIFACTS = (
     ArtifactSpec("l4_cards", 1, "l4_stock", "details/*.md"),
     ArtifactSpec("ensemble", 1, "l4_ensemble", "_ensemble_*.json"),
     ArtifactSpec("final_ratings", 1, "assemble", "_final_ratings.json"),
+    ArtifactSpec("decision_records", 1, "assemble", "decision_records.json"),
     ArtifactSpec("gate_fires", 1, "assemble", "gate_fires.csv"),
     ArtifactSpec("early_stop", 1, "assemble", "_early_stop.json"),
     ArtifactSpec("run_health", 1, "health", "run_health.json"),

@@ -169,8 +169,11 @@ def test_artifact_index_is_written_and_published(published):
     index = json.loads(index_path.read_text(encoding="utf-8"))
     rows = {row["name"]: row for row in index["artifacts"]}
     assert index["contract_hash"]
-    for name in ("run_contract", "l1_full", "l2", "finalists", "l4_cards",
-                 "final_ratings", "gate_fires", "run_health", "summary", "manifest"):
+    for name in (
+        "run_contract", "l1_full", "l2", "finalists", "l4_cards",
+        "final_ratings", "decision_records", "gate_fires", "run_health",
+        "summary", "manifest",
+    ):
         assert rows[name]["status"] == "PRESENT", name
 
 
@@ -189,7 +192,8 @@ def test_assemble_records_final_stage_results(published):
     gate4_result = load_stage_result(stage_dir / "gate4.json")
     assert assemble_result.status == "SUCCEEDED"
     assert assemble_result.artifacts == [
-        "final_ratings", "gate_fires", "run_health", "summary", "manifest",
+        "final_ratings", "decision_records", "gate_fires", "run_health",
+        "summary", "manifest",
     ]
     assert assemble_result.metrics["n_cards"] == 3
     assert gate4_result.status == "FAILED"
@@ -213,6 +217,11 @@ def test_stage_results_are_published_and_indexed(published):
     assert health["stage_results"]["status"] == "OK"
     assert health["stage_results"]["counts"] == {"FAILED": 1, "SUCCEEDED": 1}
     assert health["stage_results"]["failed"] == ["gate4"]
+    assert health["decision_records"]["status"] == "OK"
+    assert health["decision_records"]["n_records"] == 4
+    assert health["decision_records"]["contract_hash_match"] is True
+    assert health["decision_records"]["final_ratings_match"] is True
+    assert health["decision_records"]["early_stop_match"] is True
 
 
 def test_decision_records_capture_fold_chain(published):
@@ -254,6 +263,42 @@ def test_decision_records_match_legacy_final_ratings(published):
         )
     )
     assert {code: record.final_rating for code, record in records.items()} == legacy
+
+
+def test_decision_records_are_published(published):
+    staging = published["scan_dir"] / "decision_records.json"
+    traced = published["trace"] / "decision_records.json"
+    assert traced.read_bytes() == staging.read_bytes()
+    manifest = json.loads(
+        (published["out_base"] / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["decision_record_schema_version"] == 1
+
+
+def test_decision_record_failure_does_not_block_summary(
+    tmp_path, monkeypatch, capsys,
+):
+    from autoresearch.scan.decision_record import DecisionRecord
+
+    root = tmp_path / "decision_shadow_failure"
+    scan = _build_scan_dir(root)
+
+    def _raise_dirty_rating(cls, **kwargs):
+        raise ValueError("dirty rating")
+
+    monkeypatch.setattr(
+        DecisionRecord,
+        "build",
+        classmethod(_raise_dirty_rating),
+    )
+    md = assemble.build_summary(
+        scan,
+        _DATA_DATE,
+        _HHMM,
+        _RUN_FOLDER,
+    )
+    assert "## 3. 投资建议" in md
+    assert "[decision_record] 写入失败: dirty rating" in capsys.readouterr().err
 
 
 def test_trace_pipeline_artifacts_published(published):

@@ -362,6 +362,85 @@ def stage_results_health(scan_dir: Path) -> dict:
     }
 
 
+def decision_records_health(scan_dir: Path) -> dict:
+    """校验影子决策事实本身，以及与旧终评级/早停入口的 parity。"""
+    from autoresearch.scan.decision_record import load_decision_records
+
+    scan = Path(scan_dir)
+    path = scan / "decision_records.json"
+    empty = {
+        "status": "ABSENT",
+        "n_records": 0,
+        "contract_hash_match": None,
+        "final_ratings_match": None,
+        "rating_mismatches": [],
+        "early_stop_match": None,
+        "early_stop_mismatches": [],
+        "error": None,
+    }
+    if not path.exists():
+        return empty
+    try:
+        records = load_decision_records(path)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        return {**empty, "status": "INVALID", "error": str(exc)}
+
+    contract = run_contract_health(scan)
+    expected_hash = contract.get("contract_hash")
+    contract_match = (
+        None
+        if expected_hash is None
+        else all(
+            record.contract_hash == expected_hash for record in records.values()
+        )
+    )
+    legacy_ratings = _json_object(scan / "_final_ratings.json")
+    ratings = {
+        code: record.final_rating for code, record in records.items()
+    }
+    rating_mismatches = []
+    ratings_match = None
+    if legacy_ratings is not None:
+        rating_mismatches = sorted(
+            code
+            for code in set(ratings) | set(legacy_ratings)
+            if ratings.get(code) != legacy_ratings.get(code)
+        )
+        ratings_match = not rating_mismatches
+
+    legacy_early = _json_object(scan / "_early_stop.json")
+    early = {
+        code: record.early_stop
+        for code, record in records.items()
+        if record.early_stop is not None
+    }
+    early_mismatches = []
+    early_match = None
+    if legacy_early is not None:
+        early_mismatches = sorted(
+            code
+            for code in set(early) | set(legacy_early)
+            if early.get(code) != legacy_early.get(code)
+        )
+        early_match = not early_mismatches
+
+    mismatch = (
+        contract_match is False
+        or ratings_match is False
+        or early_match is False
+    )
+    return {
+        "status": "MISMATCH" if mismatch else "OK",
+        "n_records": len(records),
+        "contract_hash_match": contract_match,
+        "final_ratings_match": ratings_match,
+        "rating_mismatches": rating_mismatches,
+        "early_stop_match": early_match,
+        "early_stop_mismatches": early_mismatches,
+        "error": None,
+    }
+
+
 def run_health(scan_dir: Path) -> dict:
     """一次 scan 的体检 dict(artifacts/counts/NaN 降级/churn/L4 阶段/meta 回显)。"""
     scan_dir = Path(scan_dir)
@@ -398,7 +477,8 @@ def run_health(scan_dir: Path) -> dict:
             "churn": finalist_churn(scan_dir), "l4_phases": l4_phase_stats(scan_dir),
             "ledger_freshness": ledger_freshness(scan_dir),
             "run_contract": run_contract_health(scan_dir),
-            "stage_results": stage_results_health(scan_dir)}
+            "stage_results": stage_results_health(scan_dir),
+            "decision_records": decision_records_health(scan_dir)}
 
 
 def write_run_health(scan_dir: Path) -> Path:
