@@ -7,9 +7,11 @@ or production artifacts.
 """
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import re
+import sys
 from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -651,3 +653,289 @@ def accept_experiment_as_baseline(
 
     record, _ = update_experiment(path, experiment_id, mutate)
     return record
+
+
+def _markdown_cell(value: object) -> str:
+    if value is None or value == "":
+        return "-"
+    return str(value).replace("|", r"\|").replace("\n", " ")
+
+
+def render_report(payload: dict) -> str:
+    """Render an operator-facing, non-authoritative registry summary."""
+    _validate_registry(payload)
+    baseline = payload.get("stable_baseline")
+    lines = [
+        "# Experiment Governance",
+        "",
+        "> This report is an audit view. Recommendations never activate, accept, "
+        "or roll back an experiment automatically.",
+        "",
+        "## Stable baseline",
+        "",
+    ]
+    if baseline is None:
+        lines.append("No stable baseline is registered.")
+    else:
+        lines.extend(
+            [
+                f"- Name: `{_markdown_cell(baseline.get('name'))}`",
+                f"- Pointer: `{_markdown_cell(baseline.get('pointer'))}`",
+                f"- Content hash: `{_markdown_cell(baseline.get('content_hash'))}`",
+                f"- Approved by: `{_markdown_cell(baseline.get('approved_by'))}` "
+                f"at `{_markdown_cell(baseline.get('approved_at'))}`",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Experiments",
+            "",
+            "| ID | Family | Status | Promotion | Maturity | Rollback watch | "
+            "Approval | Rollback pointer |",
+            "|---|---|---|---|---|---|---|---|",
+        ]
+    )
+    experiments = payload["experiments"]
+    if not experiments:
+        lines.append("| - | - | - | - | - | - | - | - |")
+    for experiment_id in sorted(experiments):
+        record = experiments[experiment_id]
+        evaluation = record.get("latest_evaluation") or {}
+        assessment = record.get("latest_rollback_assessment") or {}
+        approval = record.get("approval") or {}
+        rollback = record.get("rollback_pointer") or {}
+        approval_text = (
+            f"{approval.get('approved_by')} @ {approval.get('approved_at')}"
+            if approval
+            else "-"
+        )
+        lines.append(
+            "| "
+            + " | ".join(
+                _markdown_cell(value)
+                for value in (
+                    experiment_id,
+                    record.get("trial_family"),
+                    record.get("status"),
+                    evaluation.get("status"),
+                    (evaluation.get("maturity") or {}).get("status"),
+                    assessment.get("recommendation"),
+                    approval_text,
+                    rollback.get("pointer"),
+                )
+            )
+            + " |"
+        )
+
+    for experiment_id in sorted(experiments):
+        record = experiments[experiment_id]
+        evaluation = record.get("latest_evaluation") or {}
+        assessment = record.get("latest_rollback_assessment") or {}
+        lines.extend(["", f"### {experiment_id}", ""])
+        lines.append(f"- Status: `{_markdown_cell(record.get('status'))}`")
+        lines.append(
+            f"- Challenger: `{_markdown_cell((record.get('challenger_pointer') or {}).get('pointer'))}`"
+        )
+        lines.append(
+            f"- Rollback pointer: `{_markdown_cell((record.get('rollback_pointer') or {}).get('pointer'))}`"
+        )
+        lines.extend(
+            [
+                "",
+                "| Guard | Promotion | Rollback watch |",
+                "|---|---|---|",
+            ]
+        )
+        for domain in GUARD_DOMAINS:
+            promotion_status = (
+                (evaluation.get("guards") or {}).get(domain) or {}
+            ).get("status")
+            rollback_status = (
+                (assessment.get("guards") or {}).get(domain) or {}
+            ).get("status")
+            lines.append(
+                f"| {domain} | {_markdown_cell(promotion_status)} | "
+                f"{_markdown_cell(rollback_status)} |"
+            )
+
+    lines.extend(
+        [
+            "",
+            "## Audit",
+            "",
+            "| Seq | Time | Actor | Event | Experiment |",
+            "|---:|---|---|---|---|",
+        ]
+    )
+    if not payload["audit"]:
+        lines.append("| - | - | - | - | - |")
+    for item in payload["audit"]:
+        lines.append(
+            "| "
+            + " | ".join(
+                _markdown_cell(value)
+                for value in (
+                    item.get("seq"),
+                    item.get("at"),
+                    item.get("actor"),
+                    item.get("event"),
+                    item.get("experiment_id"),
+                )
+            )
+            + " |"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def write_report(
+    registry_path: Path | str = DEFAULT_REGISTRY,
+    out_path: Path | str = "reports/learning/experiments.md",
+) -> Path:
+    target = Path(out_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp = target.with_name(f"{target.name}.tmp")
+    temp.write_text(render_report(load_registry(registry_path)), encoding="utf-8")
+    temp.replace(target)
+    return target
+
+
+def _print_json(value: object, *, file=None) -> None:
+    print(
+        json.dumps(value, ensure_ascii=False, sort_keys=True),
+        file=file,
+    )
+
+
+def _read_json_object(path: Path | str, label: str) -> dict:
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RegistryError(f"invalid {label}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise RegistryError(f"invalid {label}: root must be an object")
+    return value
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--registry", default=str(DEFAULT_REGISTRY))
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    baseline = commands.add_parser("baseline", help="set the stable baseline")
+    baseline.add_argument("--name", required=True)
+    baseline.add_argument("--pointer", required=True)
+    baseline.add_argument("--content-hash", required=True)
+    baseline.add_argument("--approved-by", required=True)
+    baseline.add_argument("--approved-at")
+    baseline.add_argument("--note", default="")
+
+    register = commands.add_parser("register", help="preregister an experiment")
+    register.add_argument("--spec", required=True)
+    register.add_argument("--registered-at")
+
+    show = commands.add_parser("show", help="show one experiment")
+    show.add_argument("experiment_id")
+    commands.add_parser("list", help="list all experiments")
+
+    approve = commands.add_parser("approve", help="record human approval")
+    approve.add_argument("experiment_id")
+    approve.add_argument("--approved-by", required=True)
+    approve.add_argument("--approved-at")
+    approve.add_argument("--approval-expires-at")
+    approve.add_argument("--note", default="")
+
+    activate = commands.add_parser("activate", help="activate an approved experiment")
+    activate.add_argument("experiment_id")
+    activate.add_argument("--activated-by", required=True)
+    activate.add_argument("--activated-at")
+
+    rollback = commands.add_parser("rollback", help="audit a human-applied rollback")
+    rollback.add_argument("experiment_id")
+    rollback.add_argument("--rolled-back-by", required=True)
+    rollback.add_argument("--rolled-back-at")
+    rollback.add_argument("--note", default="")
+
+    accept = commands.add_parser("accept", help="accept a stable candidate")
+    accept.add_argument("experiment_id")
+    accept.add_argument("--accepted-by", required=True)
+    accept.add_argument("--accepted-at")
+    accept.add_argument("--note", default="")
+
+    report = commands.add_parser("report", help="write the governance report")
+    report.add_argument("--out", default="reports/learning/experiments.md")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    try:
+        if args.command == "baseline":
+            result = set_stable_baseline(
+                args.registry,
+                name=args.name,
+                pointer=args.pointer,
+                content_hash=args.content_hash,
+                approved_by=args.approved_by,
+                approved_at=args.approved_at,
+                note=args.note,
+            )
+        elif args.command == "register":
+            result = register_experiment(
+                args.registry,
+                _read_json_object(args.spec, "experiment spec"),
+                registered_at=args.registered_at,
+            )
+        elif args.command == "show":
+            result = get_experiment(args.registry, args.experiment_id)
+        elif args.command == "list":
+            payload = load_registry(args.registry)
+            result = [
+                _copy(payload["experiments"][experiment_id])
+                for experiment_id in sorted(payload["experiments"])
+            ]
+        elif args.command == "approve":
+            result = approve_experiment(
+                args.registry,
+                args.experiment_id,
+                approved_by=args.approved_by,
+                approved_at=args.approved_at,
+                approval_expires_at=args.approval_expires_at,
+                note=args.note,
+            )
+        elif args.command == "activate":
+            result = activate_experiment(
+                args.registry,
+                args.experiment_id,
+                activated_by=args.activated_by,
+                activated_at=args.activated_at,
+            )
+        elif args.command == "rollback":
+            result = rollback_experiment(
+                args.registry,
+                args.experiment_id,
+                rolled_back_by=args.rolled_back_by,
+                rolled_back_at=args.rolled_back_at,
+                note=args.note,
+            )
+        elif args.command == "accept":
+            result = accept_experiment_as_baseline(
+                args.registry,
+                args.experiment_id,
+                accepted_by=args.accepted_by,
+                accepted_at=args.accepted_at,
+                note=args.note,
+            )
+        else:
+            target = write_report(args.registry, args.out)
+            result = {"path": str(target)}
+    except RegistryError as exc:
+        _print_json({"error": str(exc)}, file=sys.stderr)
+        return 2
+    _print_json(result)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

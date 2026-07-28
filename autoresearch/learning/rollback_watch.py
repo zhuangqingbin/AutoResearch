@@ -2,7 +2,9 @@
 """Post-activation five-guard observation and rollback recommendations."""
 from __future__ import annotations
 
+import argparse
 import json
+import sys
 from datetime import date, datetime
 from pathlib import Path
 
@@ -177,3 +179,42 @@ def observe(
     if json_out is not None:
         _atomic_json(json_out, result)
     return result
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--registry", default=str(registry.DEFAULT_REGISTRY))
+    commands = parser.add_subparsers(dest="command", required=True)
+    observe_command = commands.add_parser(
+        "observe",
+        help="record one post-activation observation",
+    )
+    observe_command.add_argument("experiment_id")
+    observe_command.add_argument("--facts", required=True)
+    observe_command.add_argument("--run-id", required=True)
+    observe_command.add_argument("--observed-at")
+    observe_command.add_argument("--json-out")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    try:
+        facts = registry._read_json_object(args.facts, "rollback facts")
+        result = observe(
+            args.registry,
+            args.experiment_id,
+            facts,
+            run_id=args.run_id,
+            observed_at=args.observed_at,
+            json_out=args.json_out,
+        )
+    except registry.RegistryError as exc:
+        registry._print_json({"error": str(exc)}, file=sys.stderr)
+        return 2
+    registry._print_json(result)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
