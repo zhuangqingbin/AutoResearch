@@ -356,8 +356,10 @@ def _sector_rank(industry: str, secs: dict) -> str:
     return f"{industry}(非红黑榜极端)"
 
 
-def market_context_block(pack: dict, industry: str | None = None) -> str:
-    """L3/L4 注入的**描述性市场地形**块(防锚定:只陈述结构事实,无操作/个股方向指令)。"""
+def market_context_parts(
+    pack: dict, industry: str | None = None
+) -> tuple[str, str]:
+    """(全票 byte-stable 市场块,行业差异块)；拼接结果等于旧 `market_context_block`。"""
     reg = pack.get("regime") or {}
     br = pack.get("breadth") or {}
     val = pack.get("valuation") or {}
@@ -376,11 +378,21 @@ def market_context_block(pack: dict, industry: str | None = None) -> str:
     if secs.get("black"):
         lines.append("- **弱势板块**:" + "、".join(
             f"{r['industry']}({_sign(r.get('median_pct_60d'))})" for r in secs["black"][:3]))
+    common = "\n".join(lines) + "\n"
+    sector_lines: list[str] = []
     if industry and secs:
-        lines.append(f"- **本股所在板块**:{_sector_rank(industry, secs)}")
-    lines.append("- 用途:据此校准估值/资金门严格度;**个股评级只由本股 rubric 三门决定,"
-                 "大盘看空不压个股、看多不松门**。")
-    return "\n".join(lines) + "\n"
+        sector_lines.append(f"- **本股所在板块**:{_sector_rank(industry, secs)}")
+    sector_lines.append(
+        "- 用途:据此校准估值/资金门严格度;**个股评级只由本股 rubric 三门决定,"
+        "大盘看空不压个股、看多不松门**。"
+    )
+    return common, "\n".join(sector_lines) + "\n"
+
+
+def market_context_block(pack: dict, industry: str | None = None) -> str:
+    """L3/L4 注入的**描述性市场地形**块(防锚定:只陈述结构事实,无操作/个股方向指令)。"""
+    common, sector = market_context_parts(pack, industry=industry)
+    return common + sector
 
 
 # ───────────────────────── L5 渲染:回退脉搏 + 温度一行 + 漏斗读数尾注 ─────────────────────────

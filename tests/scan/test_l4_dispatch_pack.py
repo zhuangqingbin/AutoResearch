@@ -55,6 +55,14 @@ def test_dispatch_pack_cli(tmp_path, monkeypatch, capsys):
     assert "2" in capsys.readouterr().out
 
 
+def test_dispatch_pack_cli_accepts_stable_context(tmp_path, monkeypatch):
+    d = _mk(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    from autoresearch.scan.agents.l4_card import main
+    assert main(["prompts", _DATE, "--stable-context"]) == 0
+    assert (d / "_l4_prompt_manifest.json").exists()
+
+
 # ══════════════════════════ 活体情报指针行(逐卡尾部指针区;L4 情报站 plan Task 2) ══════════════════════════
 
 

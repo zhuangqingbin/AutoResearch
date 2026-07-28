@@ -661,7 +661,11 @@ def write_shared_instructions(scan_dir: Path | str) -> int:
     return len(text.encode("utf-8"))
 
 
-def write_dispatch_pack(scan_dir: Path | str) -> dict:
+def write_dispatch_pack(
+    scan_dir: Path | str,
+    *,
+    stable_context: bool = False,
+) -> dict:
     """L4 派发包确定性落稿(零 LLM):`_harvest_list.txt`(yfinance 归一后缀,`.SH` 绝迹)
     + 每卡 `_l4_prompt_<code>.md`(共享指令 + 漏斗简报 + slim/卡路径指针)。
 
@@ -713,6 +717,39 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
     tickers: list[str] = []
     pinned: list[str] = []
     n_prompts = n_skipped = 0
+    prompt_manifest = {
+        "schema_version": 1,
+        "mode": "stable_context" if stable_context else "legacy",
+        "prompts": {},
+    }
+    market_pack_data: dict = {}
+    common_market = ""
+    common_market_written = None
+    if stable_context:
+        from autoresearch.scan.context_blocks import write_context_block
+        from autoresearch.scan.market import market_context_parts, market_pack
+
+        try:
+            market_pack_data = market_pack(scan_dir)
+            if market_pack_data.get("regime"):
+                common_market = market_context_parts(market_pack_data)[0]
+        except Exception:  # noqa: BLE001 — 稳定块可选,与旧 _market_ctx 同降级语义
+            market_pack_data = {}
+            common_market = ""
+        market_sources = [
+            p for p in (
+                scan_dir / "market_pack.json",
+                scan_dir / "L1_scored_full.csv",
+                scan_dir / "sectors.csv",
+            ) if p.is_file()
+        ]
+        common_market_written = write_context_block(
+            scan_dir,
+            kind="market",
+            scope="all",
+            content=common_market,
+            source_paths=market_sources,
+        )
     for _, r in fin.iterrows():
         raw = str(r.get("code", "") or "").strip()
         if not raw or raw == "nan":
@@ -746,16 +783,136 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
                      "「盈利质量」与「偿付(爆雷)」两维**不得**标『未核』,必须 Read "
                      "`_slim_deep.md` 取证后给分。评级仍由 rubric 三门定——强制满卡只保证"
                      "**核得够深**,不保证结论向好(照样可以是 Underweight/Sell)。", ""]
-        body.append(compose_funnel_brief(code6, scan_dir).rstrip())
+        legacy_brief = compose_funnel_brief(code6, scan_dir)
+        stable_blocks = None
+        if stable_context:
+            from autoresearch.scan.context_blocks import (
+                manifest_ref,
+                write_context_block,
+            )
+            from autoresearch.scan.market import market_context_parts
+
+            industry = r.get("industry") or r.get("sector")
+            if pd.isna(industry):
+                industry = ""
+            industry = str(industry or "")
+            market_sector = ""
+            if market_pack_data.get("regime"):
+                market_sector = market_context_parts(
+                    market_pack_data, industry=industry
+                )[1]
+
+            dossier_parts: list[str] = []
+            dsum = _dossier_summary_mark(code6)
+            if dsum:
+                dossier_parts.append(dsum)
+            try:
+                from autoresearch.scan.dossier import render_dossier
+
+                history = render_dossier(
+                    code6, scan_root=scan_dir.parent, exclude=scan_dir.name
+                )
+            except Exception:  # noqa: BLE001
+                history = ""
+            if history:
+                dossier_parts.append(history)
+            dossier_content = "\n".join(dossier_parts)
+
+            terrain = ""
+            try:
+                from autoresearch.sector.brief import render_terrain_block
+
+                terrain = render_terrain_block(industry, scan_dir)
+            except Exception:  # noqa: BLE001
+                terrain = ""
+            sector_content = "\n".join(
+                part.rstrip() for part in (market_sector, terrain) if part
+            )
+            if sector_content:
+                sector_content += "\n"
+
+            # 从 legacy 全量简报中精确摘掉已提升为 stable block 的前导/独立块；
+            # 余下就是逐股 differential。旧模式完全不走此分支，字节契约不变。
+            differential = legacy_brief
+            full_market = common_market + market_sector
+            if full_market and differential.startswith(full_market):
+                differential = differential[len(full_market):].lstrip("\n")
+            if dossier_content and differential.startswith(dossier_content):
+                differential = differential[len(dossier_content):].lstrip("\n")
+            if terrain and terrain in differential:
+                differential = differential.replace(terrain, "", 1)
+            differential = differential.strip() + "\n"
+
+            sector_sources = [
+                p for p in (
+                    scan_dir / "sectors.csv",
+                    scan_dir / "sector_briefs" / f"{industry}.md",
+                    Path("context/sector") / date / f"{industry}.json",
+                ) if p.is_file()
+            ]
+            dossier_sources: list[Path] = []
+            try:
+                from autoresearch.dossier.schema import dossier_path
+
+                dp = dossier_path(code6)
+                if dp.is_file():
+                    dossier_sources.append(dp)
+            except Exception:  # noqa: BLE001
+                pass
+            differential_sources = [
+                p for p in (
+                    fp,
+                    scan_dir / "L1_recall_top1000.csv",
+                    scan_dir / "L2_gbdt_top200.csv",
+                ) if p.is_file()
+            ]
+            sector_written = write_context_block(
+                scan_dir,
+                kind="sector",
+                scope=industry or "unknown",
+                content=sector_content,
+                source_paths=sector_sources,
+            )
+            dossier_written = write_context_block(
+                scan_dir,
+                kind="dossier",
+                scope=code6,
+                content=dossier_content,
+                source_paths=dossier_sources,
+            )
+            differential_written = write_context_block(
+                scan_dir,
+                kind="differential",
+                scope=code6,
+                content=differential,
+                source_paths=differential_sources,
+            )
+            stable_blocks = {
+                "market": manifest_ref(common_market_written),
+                "sector": manifest_ref(sector_written),
+                "dossier": manifest_ref(dossier_written),
+                "differential": manifest_ref(differential_written),
+            }
+            body.extend([
+                sector_content.rstrip(),
+                dossier_content.rstrip(),
+                differential.rstrip(),
+            ])
+        else:
+            body.append(legacy_brief.rstrip())
         if calib_line:                               # 逐卡块内(共享前缀之后,不破 cache 契约)
             body += ["", calib_line]
-        prompt = "\n".join([
+        prompt_parts = [
             # 固定标头(逐卡不变,≤300B)——cache 前缀契约(T8):共享块前不得出现逐卡可变内容,
             # 否则 30 卡并发前缀全断、cache 全 miss。逐卡专属标题(含 📌 保送标记)移到共享块**之后**。
             "# L4 派发 prompt(确定性落稿;编排以此为派发正文;先读共享块再读下方逐卡简报)",
             "",
             shared or "_(共享指令稿缺:`_l4_shared_instructions.md` 未落——按 stock-research lite-playbook 执行)_",
             "",
+        ]
+        if stable_context and common_market:
+            prompt_parts += [common_market.rstrip(), ""]
+        prompt_parts += [
             "---",
             "",
             *body,
@@ -766,12 +923,35 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
             f"- 活体情报:`context/scan/{date}/_l4_intel_{code6}.md`(若存在:P3 先读它作催化/题材/机构主料、"
             f"自发网查降 ≤1 条验证;缺文件=回退卡内网查,cap 原规则)",
             f"- 决策卡写往:`context/scan/{date}/details/{code6}.md`",
-            ""])
+            ""]
+        prompt = "\n".join(prompt_parts)
         (scan_dir / f"_l4_prompt_{code6}.md").write_text(prompt, encoding="utf-8")
+        if stable_blocks is not None:
+            prompt_manifest["prompts"][code6] = {
+                "path": str(scan_dir / f"_l4_prompt_{code6}.md"),
+                "blocks": stable_blocks,
+            }
         n_prompts += 1
     (scan_dir / "_harvest_list.txt").write_text(
         "\n".join(tickers) + ("\n" if tickers else ""), encoding="utf-8")
-    return {"n_prompts": n_prompts, "n_skipped": n_skipped, "tickers": tickers, "pinned": pinned}
+    if stable_context:
+        import json
+
+        target = scan_dir / "_l4_prompt_manifest.json"
+        temp = target.with_name(f"{target.name}.tmp")
+        temp.write_text(
+            json.dumps(prompt_manifest, ensure_ascii=False, sort_keys=True, indent=2)
+            + "\n",
+            encoding="utf-8",
+        )
+        temp.replace(target)
+    return {
+        "n_prompts": n_prompts,
+        "n_skipped": n_skipped,
+        "tickers": tickers,
+        "pinned": pinned,
+        "context_mode": prompt_manifest["mode"],
+    }
 
 
 def dispatch_plan(date: str, root: Path | str | None = None) -> dict:
@@ -1215,6 +1395,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("date", help="scan 日 YYYY-MM-DD")
     ap.add_argument("--root", default=None, help="scan 根目录(默认 context/scan)")
     ap.add_argument("--workers", type=int, default=4, help="slim 批量并发数(1=串行)")
+    ap.add_argument(
+        "--stable-context",
+        action="store_true",
+        help="共享市场/行业/档案块置前并写 hash manifest(缺省 legacy 字节路径)",
+    )
     args = ap.parse_args(argv)
     if args.cmd == "shared":
         import json
@@ -1259,7 +1444,10 @@ def main(argv: list[str] | None = None) -> int:
         extra = f";{len(fh)} 票落 fund_hold.csv(基金重仓,季度滞后)" if len(fh) else ""
         print(f"[l4_card consensus] {len(df)} 票落 consensus.csv(卖方一致预期修正,advisory){extra}")
         return 0
-    res = write_dispatch_pack(Path("context/scan") / args.date)
+    res = write_dispatch_pack(
+        Path("context/scan") / args.date,
+        stable_context=args.stable_context,
+    )
     print(f"[l4_card prompts] {res['n_prompts']} 份 prompt + _harvest_list({len(res['tickers'])} 票,"
           f"已归一 yfinance 后缀);跳过已有卡 {res['n_skipped']}")
     return 0
