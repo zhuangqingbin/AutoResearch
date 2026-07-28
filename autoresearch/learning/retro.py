@@ -538,6 +538,18 @@ def attribute(date: str, scan_root: Path | None = None, report_root: Path | None
     realized = realized_returns(date)
     if realized.empty:
         raise RuntimeError(f"{date} 的 fwd 未实现 / 无价格,暂不能复盘")
+    # 主尺**有没有数**,不只是帧有没有行(Wave7 实锤):`pending_days` 的成熟判据是按**日期**
+    # 算的(D+2 交易日 ≤ today),盘后跑对、盘中跑就错 —— 2026-07-28 上午跑 07-24,D+2 正是
+    # 当天、收盘未发布,于是 realized **有行但 fwd_2_oc 全 NaN**,原判据("帧非空")放行,
+    # attribute_frame 一路算出 universe=0 / 赢家=0 的空归因,nightly_close 还报「归因 4/4 日 ✓」。
+    # 隔壁 t1_review._fetch_prices 早就立了正确规矩(「T+1 daily 未结算 → ValueError,**绝不
+    # 静默返回空帧**」),这里补齐同款:降级不留痕才是真病。
+    n_ruler = int(pd.to_numeric(realized.get("fwd_2_oc"), errors="coerce").notna().sum()) \
+        if "fwd_2_oc" in realized.columns else 0
+    if n_ruler < 100:
+        raise RuntimeError(
+            f"{date} 主尺 fwd_2_oc 仅 {n_ruler} 只有数(<100)——D+2 收盘多半未发布"
+            "(通常 17:00 后可用),稍后再跑;**不产出空归因**")
     attr = attribute_frame(l1, realized, _buylist(date, report_root, scan_dir=sdir), abs_thresh=abs_thresh)
     attr = flag_news_pop(attr)                       # 标隔夜跳空脉冲(诊断/重标定排除)
     attr = refine_l3_bucket(attr, sdir)              # 细分 recalled_cut → l3_bench/pass1_cut(presence-gated)

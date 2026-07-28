@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from autoresearch.learning import retro
 
@@ -205,3 +206,45 @@ def test_write_retro_input_omits_l3_shrink_section_when_both_absent(tmp_path):
     })
     p = retro.write_retro_input("2026-07-12", attr, scan_root=tmp_path / "context" / "scan")
     assert "L3 收窄防漏体检" not in p.read_text(encoding="utf-8")
+
+
+# ══ Wave7:主尺没数时必须响亮失败,不产出空归因 ═════════════════════════════
+#
+# 2026-07-28 上午实锤:`pending_days` 的成熟判据按**日期**算(D+2 交易日 ≤ today),
+# 盘后跑对、盘中跑就错 —— 那天上午跑 07-24,D+2 正是当天、收盘未发布,realized
+# **有行但 fwd_2_oc 全 NaN**,原判据(帧非空)放行,一路算出 universe=0/赢家=0 的
+# 空归因,而 nightly_close 还报「归因 4/4 日 ✓」。
+# 隔壁 t1_review._fetch_prices 早有正确规矩(「未结算 → ValueError,绝不静默返回空帧」)。
+
+
+def test_attribute_raises_when_main_ruler_all_nan(tmp_path, monkeypatch):
+    import pandas as pd
+
+    import autoresearch.learning.retro as R
+    d = tmp_path / "2026-07-24"
+    d.mkdir(parents=True)
+    pd.DataFrame([{"code": f"{i:06d}", "close": 10.0} for i in range(200)]).to_csv(
+        d / "L1_scored_full.csv", index=False)
+    # 有行,但主尺全 NaN(= D+2 收盘未发布的真实形状)
+    monkeypatch.setattr(R, "realized_returns", lambda date, **k: pd.DataFrame(
+        {"code": [f"{i:06d}" for i in range(200)], "fwd_2_oc": [float("nan")] * 200}))
+
+    with pytest.raises(RuntimeError, match="未发布|fwd_2_oc"):
+        R.attribute("2026-07-24", scan_root=tmp_path)
+
+
+def test_attribute_message_names_the_wait(tmp_path, monkeypatch):
+    """报错要说清「等什么、等到什么时候」—— 否则夜间任务的失败行没人看得懂。"""
+    import pandas as pd
+
+    import autoresearch.learning.retro as R
+    d = tmp_path / "2026-07-24"
+    d.mkdir(parents=True)
+    pd.DataFrame([{"code": "000001", "close": 10.0}]).to_csv(
+        d / "L1_scored_full.csv", index=False)
+    monkeypatch.setattr(R, "realized_returns", lambda date, **k: pd.DataFrame(
+        {"code": ["000001"], "fwd_2_oc": [float("nan")]}))
+
+    with pytest.raises(RuntimeError) as ei:
+        R.attribute("2026-07-24", scan_root=tmp_path)
+    assert "17:00" in str(ei.value) and "空归因" in str(ei.value)

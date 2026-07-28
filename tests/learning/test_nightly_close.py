@@ -39,6 +39,7 @@ def test_run_reports_counts(monkeypatch):
     monkeypatch.setattr("autoresearch.learning.retro.pending_days",
                         lambda *a, **k: ["2026-07-16", "2026-07-17"])
     monkeypatch.setattr("autoresearch.learning.retro.attribute", lambda d, *a, **k: None)
+    monkeypatch.setattr("autoresearch.learning.retro.write_retro_input", lambda d, a, **k: None)
     monkeypatch.setattr("autoresearch.learning.t1_review.pending_pairs",
                         lambda *a, **k: [{"t": "2026-07-24", "t1": "2026-07-27"}])
     monkeypatch.setattr("autoresearch.learning.t1_review.backfill_day", lambda t, *a, **k: {})
@@ -49,7 +50,7 @@ def test_run_reports_counts(monkeypatch):
 
     res = dict((r[0], r[2]) for r in N.run("2026-07-28"))
 
-    assert "归因 2/2 日" in res["retro_refresh"]
+    assert "归因+备料 2/2 日" in res["retro_refresh"]
     assert "确定性回补 1/1 对" in res["t1_backfill"]
     assert "⚡ 1 条触发" in res["tripwire"]
 
@@ -84,3 +85,29 @@ def test_main_exit_code_is_always_zero(monkeypatch, capsys):
     monkeypatch.setattr(N, "run", lambda today: [("a", False, "boom")])
     assert N.main(["2026-07-28"]) == 0
     assert "✗ a" in capsys.readouterr().out
+
+
+def test_retro_step_writes_input_not_just_attribution(monkeypatch):
+    """归因与备料必须成对:write_retro_input 吃的是 attribute() 的**内存帧**
+    (CSV 落盘丢了 tradable 等派生列,从 CSV 重读会 KeyError)。首版只跑 attribute,
+    人第二天打开 scan-retro 才发现 retro_input.md 不在 —— 自动化只省了半步。"""
+    seen = {}
+    monkeypatch.setattr("autoresearch.learning.retro.pending_days",
+                        lambda *a, **k: ["2026-07-24"])
+    def _fake_attribute(d, *a, **k):
+        seen["attr"] = d
+        return "FRAME"
+
+    monkeypatch.setattr("autoresearch.learning.retro.attribute", _fake_attribute)
+    monkeypatch.setattr("autoresearch.learning.retro.write_retro_input",
+                        lambda d, frame, **k: seen.update(input_day=d, frame=frame))
+    monkeypatch.setattr("autoresearch.learning.t1_review.pending_pairs", lambda *a, **k: [])
+    monkeypatch.setattr("autoresearch.learning.tripwire_watch.check", lambda *a, **k: [])
+    monkeypatch.setattr("importlib.import_module", lambda name: type(
+        "M", (), {"main": staticmethod(lambda: None)})())
+
+    N.run("2026-07-28")
+
+    assert seen["attr"] == "2026-07-24"
+    assert seen["input_day"] == "2026-07-24", "只归因没备料 = 自动化只省了半步"
+    assert seen["frame"] == "FRAME", "备料必须吃内存帧,不是从 CSV 重读"

@@ -36,15 +36,21 @@ def run(today: str) -> list[tuple[str, bool, str]]:
     out: list[tuple[str, bool, str]] = []
 
     def _retro_refresh() -> str:
-        """已成熟未归因日 → 逐日 attribute(纯计算,幂等)。诊断叙事仍归 scan-retro。"""
+        """已成熟未归因日 → 逐日 attribute + write_retro_input(纯计算,幂等)。
+
+        **两步必须成对**:`write_retro_input` 吃的是 `attribute()` 的**内存帧**(CSV 落盘时
+        丢了 `tradable` 等派生列,从 CSV 重读会 KeyError)。首版只跑了 attribute,备料做
+        一半 —— 人第二天打开 scan-retro 才发现 retro_input.md 不在,等于自动化只省了半步。
+        诊断叙事仍归 scan-retro(LLM 段),这里只把它的输入备齐。
+        """
         from autoresearch.learning import retro
         days = retro.pending_days(today) or []
         done = []
         for d in days:
             with contextlib.suppress(Exception):   # 单日失败不拖累其余日
-                retro.attribute(d)
+                retro.write_retro_input(d, retro.attribute(d))
                 done.append(d)
-        return (f"归因 {len(done)}/{len(days)} 日({'、'.join(done) or '—'})"
+        return (f"归因+备料 {len(done)}/{len(days)} 日({'、'.join(done) or '—'})"
                 if days else "无待归因日")
 
     def _t1_backfill() -> str:
