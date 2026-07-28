@@ -34,6 +34,7 @@ class ArtifactSpec:
 
 CRITICAL_ARTIFACTS = (
     ArtifactSpec("run_contract", 1, "frame", "run_contract.json"),
+    ArtifactSpec("stage_results", 1, "control_plane", "stage_results/*.json"),
     ArtifactSpec("market_pack", 1, "frame", "market_pack.json"),
     ArtifactSpec("l1_full", 1, "universe", "L1_scored_full.csv"),
     ArtifactSpec("l1_recall", 1, "universe", "L1_recall_top1000.csv"),

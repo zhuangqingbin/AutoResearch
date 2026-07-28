@@ -21,6 +21,11 @@ def test_index_hashes_scan_and_report_artifacts(tmp_path):
     (scan / "market_pack.json").write_text('{"breadth":{}}', encoding="utf-8")
     (scan / "details" / "000001.md").write_text("# card", encoding="utf-8")
     (scan / "details" / "000002.md").write_text("# card 2", encoding="utf-8")
+    (scan / "stage_results").mkdir()
+    (scan / "stage_results" / "gate1.json").write_text(
+        '{"stage":"gate1"}',
+        encoding="utf-8",
+    )
     (report / "summary.md").write_text("# summary", encoding="utf-8")
     (report / "manifest.json").write_text(
         '{"analysis_date":"2026-07-28"}',
@@ -37,6 +42,8 @@ def test_index_hashes_scan_and_report_artifacts(tmp_path):
     assert rows["l4_cards"]["status"] == "PRESENT"
     assert len(rows["l4_cards"]["content_hash"]) == 64
     assert rows["summary"]["status"] == "PRESENT"
+    assert rows["stage_results"]["status"] == "PRESENT"
+    assert len(rows["stage_results"]["content_hash"]) == 64
     assert rows["finalists"]["status"] == "MISSING"
     assert rows["finalists"]["content_hash"] is None
     assert rows["market_pack"]["input_hash"] is None

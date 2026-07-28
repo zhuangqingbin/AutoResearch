@@ -313,6 +313,55 @@ def run_contract_health(scan_dir: Path) -> dict:
     }
 
 
+def stage_results_health(scan_dir: Path) -> dict:
+    """汇总 StageResult 完整性与业务状态；FAILED 本身不是文件损坏。"""
+    from collections import Counter
+
+    from autoresearch.scan.stage_result import load_stage_result
+
+    scan = Path(scan_dir)
+    directory = scan / "stage_results"
+    empty = {
+        "status": "ABSENT",
+        "counts": {},
+        "failed": [],
+        "degraded": [],
+        "skipped": [],
+        "invalid_files": [],
+        "contract_hash_mismatches": [],
+    }
+    paths = sorted(directory.glob("*.json")) if directory.is_dir() else []
+    if not paths:
+        return empty
+    contract = run_contract_health(scan)
+    expected_hash = (
+        contract["contract_hash"]
+        if contract["status"] in {"OK", "INVALID"} and contract["contract_hash"]
+        else None
+    )
+    results = []
+    invalid = []
+    mismatches = []
+    for path in paths:
+        try:
+            result = load_stage_result(path)
+            results.append(result)
+            if expected_hash is not None and result.contract_hash != expected_hash:
+                mismatches.append(result.stage)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            invalid.append(path.name)
+    counts = Counter(result.status for result in results)
+    return {
+        "status": "INVALID" if invalid or mismatches else "OK",
+        "counts": dict(sorted(counts.items())),
+        "failed": sorted(r.stage for r in results if r.status == "FAILED"),
+        "degraded": sorted(r.stage for r in results if r.status == "DEGRADED"),
+        "skipped": sorted(r.stage for r in results if r.status == "SKIPPED"),
+        "invalid_files": sorted(invalid),
+        "contract_hash_mismatches": sorted(mismatches),
+    }
+
+
 def run_health(scan_dir: Path) -> dict:
     """一次 scan 的体检 dict(artifacts/counts/NaN 降级/churn/L4 阶段/meta 回显)。"""
     scan_dir = Path(scan_dir)
@@ -348,7 +397,8 @@ def run_health(scan_dir: Path) -> dict:
             "weights_source": meta.get("weights_source"),
             "churn": finalist_churn(scan_dir), "l4_phases": l4_phase_stats(scan_dir),
             "ledger_freshness": ledger_freshness(scan_dir),
-            "run_contract": run_contract_health(scan_dir)}
+            "run_contract": run_contract_health(scan_dir),
+            "stage_results": stage_results_health(scan_dir)}
 
 
 def write_run_health(scan_dir: Path) -> Path:

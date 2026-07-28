@@ -107,6 +107,71 @@ def test_run_health_contract_invalid_on_config_drift(tmp_path):
     assert "user_config_echo config_hash mismatch" in result["errors"]
 
 
+def test_run_health_stage_results_absent_is_advisory(tmp_path):
+    d = _mk_day(tmp_path, "2026-07-28")
+    result = run_health(d)["stage_results"]
+    assert result == {
+        "status": "ABSENT",
+        "counts": {},
+        "failed": [],
+        "degraded": [],
+        "skipped": [],
+        "invalid_files": [],
+        "contract_hash_mismatches": [],
+    }
+
+
+def test_run_health_summarizes_valid_stage_results(tmp_path):
+    from autoresearch.scan.stage_result import record_stage_result
+
+    d = _mk_day(tmp_path, "2026-07-28")
+    record_stage_result(
+        d, stage="prelude", status="DEGRADED", artifacts=[], metrics={},
+        warnings=["universe: boom"], error=None,
+    )
+    record_stage_result(
+        d, stage="gate1", status="FAILED", artifacts=[], metrics={},
+        warnings=[], error="L2 missing",
+    )
+    result = run_health(d)["stage_results"]
+    assert result["status"] == "OK"
+    assert result["counts"] == {"DEGRADED": 1, "FAILED": 1}
+    assert result["failed"] == ["gate1"]
+    assert result["degraded"] == ["prelude"]
+
+
+def test_run_health_flags_stage_contract_mismatch_and_corruption(tmp_path):
+    from autoresearch.scan.stage_result import (
+        StageResult,
+        record_stage_result,
+        write_stage_result,
+    )
+
+    d = _mk_day(tmp_path, "2026-07-28")
+    _write_contract(d)
+    record_stage_result(
+        d, stage="gate1", status="SUCCEEDED", artifacts=[], metrics={},
+        warnings=[], error=None,
+    )
+    mismatch = StageResult.build(
+        stage="gate2",
+        analysis_date=d.name,
+        status="SUCCEEDED",
+        artifacts=[],
+        metrics={},
+        warnings=[],
+        error=None,
+        contract_hash="b" * 64,
+    )
+    write_stage_result(d, mismatch)
+    (d / "stage_results" / "broken.json").write_text("{", encoding="utf-8")
+
+    result = run_health(d)["stage_results"]
+    assert result["status"] == "INVALID"
+    assert result["invalid_files"] == ["broken.json"]
+    assert result["contract_hash_mismatches"] == ["gate2"]
+
+
 def test_finalist_churn(tmp_path):
     _mk_day(tmp_path, "2026-07-01", codes=("000001", "000002"))
     d = _mk_day(tmp_path, "2026-07-02", codes=("000002", "000003"))
