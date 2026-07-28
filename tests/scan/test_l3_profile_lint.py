@@ -243,3 +243,66 @@ def test_prepare_l3_table_wires_lane_blocks(tmp_path, monkeypatch):
     L.prepare_l3_table("2026-07-09", root=base)
     text = (d / "_l3_table.md").read_text(encoding="utf-8")
     assert "### lane:" in text and "render_order=lane_blocks" in text
+
+
+# ══ Wave7 B′-c:thesis 数字机检的四类合法引用 ═════════════════════════════════
+#
+# 2026-07-27 实跑:lint 一次报 15 处「引用数字与表不符」,逐条核完 **15/15 合法**。
+# 修法排序(instruction-vs-check-mismatch 归档):补指令 > 给合法情形一个标记 > 才是加严检查。
+# 这里做的是第二档 —— 让检查认识 agent 本来就被要求写的四种东西。
+
+
+def test_window_label_with_space_is_not_a_data_claim():
+    """「60 日中位」「近 10 日回购」—— agent 一贯在数字与量词间加空格,而原判据只看紧邻的
+    下一个字符,于是窗口标签过滤对带空格写法整体失效(15 处里 5 处是这一个 off-by-one)。"""
+    assert L._thesis_number_tokens("全市场 60 日中位偏弱") == []
+    assert L._thesis_number_tokens("近 10 日回购 5 次") == []        # 10 日=窗口、5 次=量词
+    assert L._thesis_number_tokens("20 日吸筹组合") == []
+    # 但真数据主张不因为句里有窗口标签就一起被豁免
+    assert L._thesis_number_tokens("近 10 日回购,roe 7.13") == ["7.13"]
+
+
+def test_count_classifier_is_not_a_data_claim():
+    """「证券Ⅱ 49 只中健康上涨 8 只」= 计数陈述,表里没有这种量。"""
+    assert L._thesis_number_tokens("证券Ⅱ 49 只中健康上涨 8 只") == []
+
+
+def test_no_space_window_label_still_filtered():
+    """防回归:不带空格的老写法(60日)仍须过滤 —— 这刀是放宽判据,不是换判据。"""
+    assert L._thesis_number_tokens("60日中位") == []
+
+
+def test_fraction_operands_and_percentage_exempt():
+    """「finalist 内券商 2/8=25%」「健康上涨 8/49」—— 分数两端与其百分比都不是表内量。"""
+    got = L._fraction_exempt_values("券商 2/8=25%,行业 8/49 最高")
+    assert {2.0, 8.0, 25.0, 49.0} <= got
+
+
+def test_complement_pool_only_for_winner_rate():
+    """`100 - winner_rate` 是 rubric 鼓励的「筹码空间」口算;只对这一列开 ——
+    对全池开 `100-v` 实测把随机数误放行率再抬 7pp(38.8% vs 31.2%)。"""
+    assert L._complement_pool({"winner_rate": 73.92}) == [100.0 - 73.92]
+    assert L._complement_pool({"winner_rate": float("nan")}) == []
+    assert L._complement_pool(None) == []
+    assert L._complement_pool({}) == []
+
+
+def test_market_context_gate_recognizes_terrain_citation():
+    """地形引用(左窗有「全市场/行业/板块」)才查市场池 —— 闸本身的行为。"""
+    t = "pct_60d +14.02 在全市场 60 日中位 -17.68% 的对照下抗跌"
+    pos = t.index("-17.68")
+    assert L._has_market_context(t, pos) is True
+
+
+def test_market_context_gate_rejects_bare_stock_metric():
+    """个股指标citation 不带地形词 → 不许借市场池蒙混(闸不设,lint 就成橡皮图章)。"""
+    t = "本票 roe 42.13 冠绝同业者"
+    pos = t.index("42.13")
+    assert L._has_market_context(t, pos) is False
+
+
+def test_token_positions_align_with_source_text():
+    """位置必须与原文同坐标系:掩码用等长空格而不是单空格,否则语境闸会取错左窗。"""
+    src = "2026-07-15 全市场 60 日中位 -17.68% 收敛"
+    for tok, pos in L._thesis_number_tokens_pos(src):
+        assert src.replace("−", "-")[pos:pos + len(tok)] == tok

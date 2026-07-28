@@ -10,6 +10,7 @@ screening-playbook.md);本模块只做**确定性喂料 + 取数 + 格式化**:�
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import re
@@ -991,10 +992,53 @@ _DATE_TOKEN_RE = re.compile(r"\d{4}-\d{1,2}-\d{1,2}|\d{1,2}-\d{1,2}")
 _YEAR_TOKEN_RE = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
 _CODE_TOKEN_RE = re.compile(r"(?<!\d)\d{6}(?!\d)")
 _PERIOD_SUFFIX = ("年", "月", "日", "周", "季")   # 数字紧跟这些字 = 窗口/周期标签(如"60日"),非数据主张
+# 量词 = 计数陈述(「证券Ⅱ 49 只中健康上涨 8 只」),表里没有这种量,与窗口标签同族(Wave7 B′-c)
+_COUNT_SUFFIX = ("只", "家", "次", "条", "名", "位", "个", "档", "笔", "轮")
 _IDENT_CHAR_RE = re.compile(r"[A-Za-z_]")        # 数字紧贴字母/下划线 = 列标识符内嵌窗口(如 pct_60d/rsi6),非数据主张
+# `a/b` 形分数(Wave7 B′-c):操作数与其百分比都是 agent 对自己选择集/行业集的计数陈述
+# (「finalist 内券商 2/8=25%」「券商行业健康上涨 8/49」),不是表内可核对的量。
+_FRACTION_RE = re.compile(r"(?<!\d)(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)(?!\d)")
 
 
-def _thesis_number_tokens(text: str) -> list[str]:
+def _fraction_exempt_values(text: str) -> set[float]:
+    """thesis 里 `a/b` 分数的操作数与其百分比值 —— 这些数字表里根本不存在对应列。"""
+    out: set[float] = set()
+    for m in _FRACTION_RE.finditer(text or ""):
+        a, b = float(m.group(1)), float(m.group(2))
+        out.update({a, b})
+        if b:
+            out.add(round(a / b * 100.0, 2))
+    return out
+
+
+def _market_pool(scan_dir: Path) -> list[float]:
+    """市场/行业级数值池(`market_pack.json` 的全部数值,~126 个)。
+
+    Wave7 B′-c:lint 原本只拿**本票 L2 行**当参照,于是 thesis 里一切合法的跨文件引用
+    ——「在全市场 60 日中位 -17.68% 的对照下」「半导体今日行业资金流 +489 亿」——都被记成
+    「引用数字与表不符」。可这些数字正是我们**要求** L3 读的地形段(market_view/行业 brief
+    都由 market_pack 派生),把它们判成违规等于惩罚 agent 按指令办事。
+    用结构化 pack 而不是几份 md 的自由文本当池:后者上千个数字会把 lint 稀释成橡皮图章,
+    前者边界清楚(126 个)且与地形段同源。失败一律返回空池(lint 是 advisory,不阻断)。
+    """
+    out: list[float] = []
+
+    def _walk(o) -> None:
+        if isinstance(o, dict):
+            for v in o.values():
+                _walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                _walk(v)
+        elif isinstance(o, (int, float)) and not isinstance(o, bool):
+            out.append(float(o))
+
+    with contextlib.suppress(Exception):
+        _walk(json.loads((scan_dir / "market_pack.json").read_text(encoding="utf-8")))
+    return out
+
+
+def _thesis_number_tokens_pos(text: str) -> list[tuple[str, int]]:
     r"""thesis 里「待核实」的数字 token:过滤 4 位年份 / 6 位代码 / `07-15`(或 `2026-07-15`)形
     日期 / `N年|月|日|周|季` 窗口标签(如"60日涨12%"的 60 是窗口)/ 紧贴字母或下划线的数字
     (如引用列名 `pct_60d`/`rsi6`/`cmf_20` 时嵌在标识符里的窗口数——07-08 真实数据冒烟逮到
@@ -1003,19 +1047,61 @@ def _thesis_number_tokens(text: str) -> list[str]:
     if not text:
         return []
     text = text.replace("−", "-")           # U+2212 全角负号归一(pf 列"主力−"同字形,防丢符号误报)
-    t = _DATE_TOKEN_RE.sub(" ", text)
-    t = _YEAR_TOKEN_RE.sub(" ", t)
-    t = _CODE_TOKEN_RE.sub(" ", t)
-    out: list[str] = []
+    # 掩码保长(Wave7 B′-c):把匹配段替换成**等长**空格而不是单个空格,token 在 t 里的位置
+    # 才等于它在原文里的位置 —— 语境闸(下面 _has_market_context)要按位置取左窗,位置一偏
+    # 就会取错窗口。对原有过滤行为无影响(前后字符判据看到的仍是空白)。
+    _blank = lambda m: " " * len(m.group())      # noqa: E731
+    t = _DATE_TOKEN_RE.sub(_blank, text)
+    t = _YEAR_TOKEN_RE.sub(_blank, t)
+    t = _CODE_TOKEN_RE.sub(_blank, t)
+    out: list[tuple[str, int]] = []
     for m in _NUM_RE.finditer(t):
-        if t[m.end():m.end() + 1] in _PERIOD_SUFFIX:
+        # 后缀判定要跨过空格:agent 写的是「60 日中位」「近 10 日回购」「49 只」——中文数字与
+        # 量词间加空格是它一贯的排版习惯,而原判据只看紧邻的下一个字符,于是**窗口标签过滤对
+        # 带空格的写法整体失效**(2026-07-27 的 15 处告警里 5 处是这一个 off-by-one)。
+        after = t[m.end():m.end() + 4].lstrip()[:1]
+        if after in _PERIOD_SUFFIX or after in _COUNT_SUFFIX:
             continue
         before = t[m.start() - 1:m.start()] if m.start() > 0 else ""
         after = t[m.end():m.end() + 1]
         if _IDENT_CHAR_RE.match(before) or _IDENT_CHAR_RE.match(after):
             continue
-        out.append(m.group())
+        out.append((m.group(), m.start()))
     return out
+
+
+def _thesis_number_tokens(text: str) -> list[str]:
+    """同上,只要 token(既有调用点/测试的签名不变)。"""
+    return [tok for tok, _ in _thesis_number_tokens_pos(text)]
+
+
+# 市场/行业级语境词(Wave7 B′-c):数字左窗出现这些词 → 该数字引的是地形段(全市场/行业
+# 聚合量),才去查 market_pack 池;否则只认本票 L2 行。**语境闸是这刀的关键**——不设闸而把
+# 126 个市场级数字无条件并进池,实测随机数误放行率 8.4%→38.8%,lint 沦为橡皮图章。
+#
+# 实测代价(6000 个随机值,2026-07-27 真池):无语境路 8.4%→8.8%(几乎不动,绝大多数 token
+# 走这条);有语境路 30.6%(池大 126 个 + 既有 ±1% 相对容差,`0.55×100=55.0` 这类跨标度
+# 碰撞难免)。**这是知情取舍**:地形引用写错的危害(读者对大盘背景的印象偏一点)远低于个股
+# 指标写错(直接支撑选股论点),而误报的代价是探针公信力——07-27 十五连报里没有一条真错,
+# 再来几次 agent 就学会无视它了。要收紧就该收紧容差本身(全局影响,另立案),不是取消这道闸。
+_MARKET_CTX = ("全市场", "全表", "全A", "全 A", "大盘", "市场中位", "行业", "板块",
+               "同业", "簇", "指数", "两融", "北向")
+_MARKET_CTX_BACK = 16       # 左窗字符数(「在全市场 60 日中位 -17.68%」= 全市场距数字 ~9 字)
+
+
+def _has_market_context(text: str, pos: int) -> bool:
+    return any(w in text[max(0, pos - _MARKET_CTX_BACK):pos] for w in _MARKET_CTX)
+
+
+def _complement_pool(l2_row) -> list[float]:
+    """`100 - winner_rate` —— 唯一放行的口算派生式(「winner_rate 73.92 未满(尚有 26%
+    套牢盘)」)。只对这一列开:实测对全池开 `100-v` 会把误放行率再抬 7pp,而 rubric 里
+    需要口算补数的只有筹码空间这一处。"""
+    try:
+        wr = float(l2_row["winner_rate"]) if l2_row is not None else float("nan")
+    except (TypeError, ValueError, KeyError):
+        return []
+    return [100.0 - wr] if wr == wr else []
 
 
 def _row_numeric_pool(pick: dict, l2_row) -> list[float]:
@@ -1043,10 +1129,14 @@ def _row_numeric_pool(pick: dict, l2_row) -> list[float]:
 
 
 def _approx_in_pool(token_val: float, pool: list[float]) -> bool:
-    """±1% 相对或 ±0.1 绝对容差;百分数与小数互认(×100/÷100 都试一遍)。"""
+    """±1% 相对或 ±0.1 绝对容差;百分数与小数互认(×100/÷100 都试一遍)。
+
+    另认 `100 - v` 一种派生式(Wave7 B′-c):「winner_rate 73.92 未满(尚有 26% 套牢盘)」
+    里的 26 是 100−73.92 的口算,不是另一个待核数字 —— 这是 rubric 明确鼓励的「筹码空间」
+    表述,却每次都被记违规。只放行这一种口算,不做通用算术求解(那会把 lint 稀释掉)。
+    """
     for v in pool:
-        for scale in (1.0, 100.0, 0.01):
-            cv = v * scale
+        for cv in (v, v * 100.0, v * 0.01):
             if abs(token_val - cv) <= 0.1:
                 return True
             if cv and abs(token_val - cv) / abs(cv) <= 0.01:
@@ -1074,18 +1164,28 @@ def lint_judged(date: str, root: Path | None = None) -> dict:
         l2 = pd.read_csv(l2p, dtype={"code": str})
         l2["code"] = l2["code"].astype(str).str.zfill(6)
         l2_by_code = {r["code"]: r for _, r in l2.iterrows()}
+    market_pool = _market_pool(scan_dir)     # 地形段数字(全市场/行业级)——合法跨文件引用
     bad: list[str] = []
     for pick in picks:
         code = str(pick.get("code", "")).zfill(6)
         thesis = str(pick.get("thesis") or "")
         catalyst = str(pick.get("catalyst") or "")
-        pool = _row_numeric_pool(pick, l2_by_code.get(code))
-        for tok in _thesis_number_tokens(thesis):
+        l2_row = l2_by_code.get(code)
+        pool = _row_numeric_pool(pick, l2_row) + _complement_pool(l2_row)
+        frac = _fraction_exempt_values(thesis)
+        norm_thesis = thesis.replace("−", "-")            # 与 token 位置同一坐标系
+        for tok, pos in _thesis_number_tokens_pos(thesis):
             try:
                 tv = float(tok)
             except ValueError:
                 continue
             if _approx_in_pool(tv, pool) or tok in catalyst:
+                continue
+            if any(abs(tv - f) <= 0.1 for f in frac):     # `a/b` 计数陈述,表内无对应列
+                continue
+            # 地形段引用(左窗有「全市场/行业/板块…」)才查市场池 —— 不设这道闸,lint 会被
+            # 126 个市场级数字稀释成橡皮图章(见 _MARKET_CTX 注)。
+            if _has_market_context(norm_thesis, pos) and _approx_in_pool(tv, market_pool):
                 continue
             bad.append(f"{code}:{tok}")
     if bad:
