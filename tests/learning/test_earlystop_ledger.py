@@ -69,15 +69,18 @@ def test_roll_reads_same_day_early_stop(tmp_path):
 
 
 def test_assemble_refreshes_ledgers_whose_input_it_just_wrote():
-    """契约:assemble 收尾必须再刷一次「输入是它自己刚写的」那两个账本。
+    """契约:assemble 收尾必须派发「输入是它自己刚写的」那些账本 consumer。
 
-    这条锁的是**调用点存在性**,不是渲染结果 —— 07-27 的病正是「产物对、账本没人重刷」。
-    删掉 assemble 里那段 for 循环,本测试必须变红。
+    Wave 1 后副作用已迁到可重放 outbox；这里同时锁订阅关系和 assemble 调度点，
+    避免重新出现「产物对、账本没人重刷」。
     """
     from pathlib import Path as _P
+    from autoresearch.scan.post_run import SUBSCRIPTIONS
+
     src = _P("autoresearch/scan/assemble.py").read_text(encoding="utf-8")
-    head, _, tail = src.partition("_journal.main()")
-    assert tail, "assemble 的 journal 刷新锚点不见了(本测试的定位假设已失效,请重写)"
-    assert "earlystop_ledger" in tail, "assemble 收尾没刷 earlystop_ledger → 账本恒落后一个 run"
-    assert "gate_ledger" in tail, "assemble 收尾没刷 gate_ledger(gate_fires.csv 同族时序问题)"
-    assert "pinned_ledger" in tail, "assemble 收尾没刷 pinned_ledger(持仓判断当天必须进表)"
+    assert "safe_emit_finalization_events" in src
+    assert "safe_run_consumers" in src
+    run_consumers = SUBSCRIPTIONS["RUN_FINALIZED"]
+    assert "earlystop_ledger" in run_consumers
+    assert "gate_ledger" in run_consumers
+    assert "pinned_ledger" in run_consumers

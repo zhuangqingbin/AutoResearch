@@ -64,6 +64,10 @@ Wave 5 experiment governance
 Detailed plan:
 `docs/plans/2026-07-28-wave1-control-plane-completion-plan.md`.
 
+Status: **completed 2026-07-28**. ArtifactIndex registers 19 critical
+artifact classes; the full-suite acceptance run is recorded in the detailed
+plan (`1798 passed`, with two pre-existing pandas FutureWarnings).
+
 Exit evidence:
 
 - DecisionRecord is the primary final-rating read path with explicit legacy
@@ -168,4 +172,3 @@ For every wave:
 5. confirm no unintended gate, rating, horizon, or BUY-quota diff;
 6. update the master design implementation status;
 7. leave `main` clean and do not push without an explicit request.
-

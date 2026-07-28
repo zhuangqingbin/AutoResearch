@@ -1,6 +1,6 @@
 # scan-market 统一优化总纲：决策质量 × BUY 发现 × Token × 速度 × 架构
 
-> **状态**：设计已确认；只落开发文档，本轮不实施\
+> **状态**：设计已确认并进入实施；Wave 1 事实控制面已完成，Wave 2 起继续开发\
 > **基线日期**：2026-07-28\
 > **代码基线**：`16463c0`\
 > **适用范围**：`scan-market` 主链 + 共享数据、研究闭环与编排层\
@@ -1285,6 +1285,37 @@ DOSSIER_DELTA_READY
 
 - 将 summary/learning/dossier/retro 消费者逐个切到 DecisionRecord；
 - post-run outbox 与 consumer 幂等补跑。
+
+#### 2026-07-28 第四批实现状态（Wave 1 完成）
+
+已完成：
+
+- DecisionRecord 成为 health、retro、stage evaluation、dossier 等终评级
+  消费者的首选读模型；仅在结构化事实缺席时兼容非空 legacy JSON/卡片，
+  已存在但损坏的 DecisionRecord 会响亮失败；
+- `outbox/events.json` 使用稳定语义 ID 和内容 hash，覆盖 run/decision/gate/
+  early-stop/dossier 终态事实；
+- `outbox/consumer_state.json` 以 event-consumer 对为粒度记录成功、失败和
+  重试次数；成功对不重复执行，失败对可单独补跑；
+- 报告发布与 learning 副作用解耦：真实生产目录自动消费，历史/测试目录只建立
+  期望回执；任一 consumer 失败不阻断报告，并在 health 显示 backlog；
+- Workflow 的 GATE1/GATE2 分支改读经 hash、analysis date 和 contract hash
+  校验的 StageResult，旧 gate stdout 仅保留为诊断兼容输出；
+- L3 全量判断与 L4 新卡、失败卡、复用卡均有逐股 StageResult；L4 只记录
+  provisional rating，最终评级仍唯一归属 DecisionRecord；
+- outbox 与 consumer state 进入 ArtifactIndex 和 trace，关键产物注册表增至
+  19 类。
+
+兼容与回滚策略：
+
+- 旧 `_final_ratings.json`、卡片、gate JSON/退出码继续写出；
+- 旧现场没有新事实时走显式 fallback，不回填伪事实；
+- 新事实一旦存在但校验失败，不静默回退；
+- consumer 可用 `python -m autoresearch.scan.post_run ...` 查询和选择性补跑。
+
+Wave 1 不改变 L1/L3 选择、L4 rubric、门阈值、`fwd_2_oc` 主尺或 BUY 频率。
+后续工作从 Wave 2 的首次死亡点、0-BUY 日级裁决、审计篮、早停影子和
+ensemble 折回账本开始。
 
 ### Wave 2：0-BUY 可解释与研究闭环
 

@@ -626,7 +626,7 @@ git commit -m "feat(scan): record per-stock stage outcomes"
 
 ### Task 7: Wave 1 final parity and documentation
 
-- [ ] **Step 1: Compile touched Python modules**
+- [x] **Step 1: Compile touched Python modules**
 
 ```bash
 uv run --no-sync python -m compileall -q \
@@ -636,18 +636,18 @@ uv run --no-sync python -m compileall -q \
   autoresearch/scan/health.py
 ```
 
-- [ ] **Step 2: Run Wave 1 focused regression**
+- [x] **Step 2: Run Wave 1 focused regression**
 
 Run all newly added tests plus existing assemble, health, artifact, retro,
 dossier, ledger, StageResult, gate, and Workflow tests.
 
-- [ ] **Step 3: Run the full suite**
+- [x] **Step 3: Run the full suite**
 
 ```bash
 uv run --no-sync python -m pytest -q
 ```
 
-- [ ] **Step 4: Verify invariant-sensitive diffs**
+- [x] **Step 4: Verify invariant-sensitive diffs**
 
 Confirm no changes to production thresholds/rubrics:
 
@@ -660,7 +660,7 @@ git diff 5452769..HEAD -- \
 Workflow changes may alter status plumbing only; finalists and final-rating
 golden tests must remain green.
 
-- [ ] **Step 5: Update implementation status and commit docs**
+- [x] **Step 5: Update implementation status and commit docs**
 
 Update the master design with Wave 1 fourth-batch status, ArtifactIndex count,
 consumer fallback policy, and remaining Wave 2 work. Mark every completed
