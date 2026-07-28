@@ -194,13 +194,24 @@ def _dossier_delta(event: OutboxEvent, scan: Path) -> object:
 
     payload = event.payload
     conviction = payload.get("conviction")
-    return record_scan_delta(
+    result = record_scan_delta(
         str(payload["code"]).zfill(6),
         event.analysis_date,
         rating=str(payload["rating"]),
         conviction=conviction if conviction not in {"", None} else None,
         scan_root=scan.parent,
     )
+    code = str(payload["code"]).zfill(6)
+    if result.get("updated"):
+        print(f"[dossier] δ 回写 {code} → context/knowledge/dossiers/")
+    if result.get("issues"):
+        print(f"[dossier] ⚠️ 档案 lint:{code} {result['issues']}")
+    if result.get("sections_skipped"):
+        print(
+            "[dossier] ℹ️ §4/§6 跳过刷新(素材缺,保留旧值):"
+            f"{code} {result['sections_skipped']}"
+        )
+    return result
 
 
 def default_registry() -> dict[str, ConsumerHandler]:
@@ -313,8 +324,12 @@ def consumer_status(
     handlers = registry or default_registry()
     routes = subscriptions or SUBSCRIPTIONS
     events = load_events(outbox_path(scan))
-    state_path = initialize_consumer_state(scan)
-    receipts = load_consumer_receipts(state_path)
+    state_path = consumer_state_path(scan)
+    receipts = (
+        load_consumer_receipts(state_path)
+        if state_path.exists()
+        else {}
+    )
     pending_consumers = []
     failed_consumers = []
     succeeded = 0
@@ -326,6 +341,7 @@ def consumer_status(
             failed_consumers.append(consumer)
         elif receipt.status == "SUCCEEDED":
             succeeded += 1
+    pending = len(pending_consumers)
     pending_consumers = sorted(set(pending_consumers))
     failed_consumers = sorted(set(failed_consumers))
     backlog = bool(pending_consumers or failed_consumers)
@@ -334,7 +350,7 @@ def consumer_status(
         "n_events": len(events),
         "expected": len(_expected_pairs(events, handlers, routes)),
         "succeeded": succeeded,
-        "pending": len(pending_consumers),
+        "pending": pending,
         "pending_consumers": pending_consumers,
         "failed_consumers": failed_consumers,
     }

@@ -53,7 +53,7 @@ DSL, pytest, existing RunContract/ArtifactIndex/StageResult/DecisionRecord.
 
 ### Task 1: DecisionRecord read model and compatibility ladder
 
-- [ ] **Step 1: Write failing read-model tests**
+- [x] **Step 1: Write failing read-model tests**
 
 Create `tests/scan/test_decision_read_model.py` with cases that prove:
 
@@ -88,7 +88,7 @@ def test_optional_card_fallback_is_explicit(tmp_path):
     ) == {"000001": "Sell"}
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run:
 
@@ -98,7 +98,7 @@ uv run --no-sync python -m pytest tests/scan/test_decision_read_model.py -q
 
 Expected: collection error because `decision_read_model` does not exist.
 
-- [ ] **Step 3: Implement the read model**
+- [x] **Step 3: Implement the read model**
 
 Create `autoresearch/scan/decision_read_model.py` with:
 
@@ -137,7 +137,7 @@ An existing-but-invalid DecisionRecord must raise. It must not silently fall
 through to a contradictory legacy fact. A missing, empty, or malformed legacy
 file retains the historical card fallback.
 
-- [ ] **Step 4: Route final-rating consumers**
+- [x] **Step 4: Route final-rating consumers**
 
 Refactor `health.final_ratings()` so its existing card/verify/ensemble
 calculation becomes `_legacy_final_ratings()`, then call:
@@ -151,7 +151,7 @@ Change `retro._buylist()`, `dossier.delta.record_scan_deltas()`, and
 parsing only for dates where neither DecisionRecord nor a valid non-empty legacy
 JSON object exists.
 
-- [ ] **Step 5: Verify focused consumer parity**
+- [x] **Step 5: Verify focused consumer parity**
 
 Run:
 
@@ -166,7 +166,7 @@ uv run --no-sync python -m pytest \
 Expected: all selected tests pass, including contradictory legacy fixtures
 where DecisionRecord must win.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add autoresearch/scan/decision_read_model.py autoresearch/scan/health.py \
@@ -178,7 +178,7 @@ git commit -m "feat(scan): read final ratings from decision facts"
 
 ### Task 2: Stable local outbox domain
 
-- [ ] **Step 1: Write failing event/book tests**
+- [x] **Step 1: Write failing event/book tests**
 
 Create `tests/scan/test_outbox.py` covering:
 
@@ -223,7 +223,7 @@ EARLY_STOPPED
 DOSSIER_DELTA_READY
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run:
 
@@ -233,7 +233,7 @@ uv run --no-sync python -m pytest tests/scan/test_outbox.py -q
 
 Expected: collection error because `outbox` does not exist.
 
-- [ ] **Step 3: Implement event integrity and atomic book**
+- [x] **Step 3: Implement event integrity and atomic book**
 
 Create `autoresearch/scan/outbox.py`:
 
@@ -265,7 +265,7 @@ class OutboxEvent:
 book at `outbox/events.json`, sorted by `(event_type, aggregate_id, event_id)`.
 Merging the same semantic event preserves the first persisted bytes.
 
-- [ ] **Step 4: Build events from final facts**
+- [x] **Step 4: Build events from final facts**
 
 Implement:
 
@@ -282,7 +282,7 @@ Read identity from RunContract, decisions from DecisionRecord, and failed gates
 from StageResult. Missing optional inputs omit only the dependent event and
 return explicit warnings to the caller; invalid present inputs raise.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run:
 
@@ -299,7 +299,7 @@ git commit -m "feat(scan): add stable post-run outbox"
 
 ### Task 3: Idempotent consumer receipts and replay CLI
 
-- [ ] **Step 1: Write failing receipt/runner tests**
+- [x] **Step 1: Write failing receipt/runner tests**
 
 Create `tests/scan/test_post_run.py` proving:
 
@@ -326,7 +326,7 @@ def test_one_consumer_failure_does_not_block_another(tmp_path):
     assert result.failed == 1 and result.succeeded == 1
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run:
 
@@ -336,7 +336,7 @@ uv run --no-sync python -m pytest tests/scan/test_post_run.py -q
 
 Expected: collection error because `post_run` does not exist.
 
-- [ ] **Step 3: Implement receipt store and runner**
+- [x] **Step 3: Implement receipt store and runner**
 
 Create `autoresearch/scan/post_run.py` with immutable receipt snapshots:
 
@@ -371,7 +371,7 @@ once per stock. The default registry wraps existing idempotent functions.
 Handler exceptions become FAILED receipts and do not escape
 `safe_run_consumers()`.
 
-- [ ] **Step 4: Add replay/status CLI**
+- [x] **Step 4: Add replay/status CLI**
 
 Support:
 
@@ -385,7 +385,7 @@ uv run --no-sync python -m autoresearch.scan.post_run 2026-07-28 run \
 Status prints deterministic JSON and exits nonzero only for corrupt control
 files, not for ordinary pending/failed consumer business state.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run:
 
@@ -402,7 +402,7 @@ git commit -m "feat(scan): add replayable post-run consumers"
 
 ### Task 4: Assemble, ArtifactIndex, trace, and health integration
 
-- [ ] **Step 1: Write failing integration tests**
+- [x] **Step 1: Write failing integration tests**
 
 Extend assemble/artifact/health tests to assert:
 
@@ -419,20 +419,20 @@ assert health["post_run"]["failed_consumers"] == []
 
 Add corruption and failed-receipt tests expecting `INVALID` and `BACKLOG`.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run the named new tests and confirm they fail because integration is absent.
 
-- [ ] **Step 3: Wire non-blocking finalization**
+- [x] **Step 3: Wire non-blocking finalization**
 
 Move the existing `is_real` calculation before post-run dispatch. After gate4
 StageResult is written, call:
 
 ```python
-events, warnings = safe_emit_finalization_events(scan_dir)
-initialize_consumer_state(scan_dir)
-if is_real:
-    safe_run_consumers(scan_dir)
+if safe_emit_finalization_events(scan_dir) is not None:
+    initialize_consumer_state(scan_dir)
+    if is_real:
+        safe_run_consumers(scan_dir)
 ```
 
 Register:
@@ -445,7 +445,7 @@ ArtifactSpec("consumer_state", 1, "post_run", "outbox/consumer_state.json")
 Copy the outbox directory to trace before the final ArtifactIndex snapshot.
 Add `post_run_health()` with `ABSENT / OK / BACKLOG / INVALID`.
 
-- [ ] **Step 4: Verify integration**
+- [x] **Step 4: Verify integration**
 
 Run:
 
@@ -456,7 +456,7 @@ uv run --no-sync python -m pytest \
   tests/scan/test_assemble.py -q
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add autoresearch/scan/assemble.py autoresearch/scan/artifacts.py \

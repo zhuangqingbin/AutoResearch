@@ -120,6 +120,29 @@ def test_only_filter_leaves_other_expected_consumer_pending(tmp_path):
     assert status["pending_consumers"] == ["buy_ledger"]
 
 
+def test_pending_counts_event_consumer_pairs_not_unique_names(tmp_path):
+    scan, _ = _scan_with_run_event(tmp_path)
+    dossier_events = [
+        OutboxEvent.build(
+            event_type="DOSSIER_DELTA_READY",
+            analysis_date=scan.name,
+            run_id="run-1",
+            contract_hash=None,
+            aggregate_id=code,
+            payload={"code": code, "rating": "Hold", "conviction": "50"},
+            created_at="2026-07-28T10:00:00Z",
+        )
+        for code in ("000001", "000002", "000003")
+    ]
+    emit_events(scan, dossier_events)
+    status = consumer_status(
+        scan,
+        registry={"dossier_delta": lambda _event, _scan: None},
+    )
+    assert status["pending"] == 3
+    assert status["pending_consumers"] == ["dossier_delta"]
+
+
 def test_load_rejects_tampered_receipt(tmp_path):
     scan, _ = _scan_with_run_event(tmp_path)
     run_consumers(

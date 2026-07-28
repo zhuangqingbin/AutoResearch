@@ -171,8 +171,8 @@ def test_artifact_index_is_written_and_published(published):
     assert index["contract_hash"]
     for name in (
         "run_contract", "l1_full", "l2", "finalists", "l4_cards",
-        "final_ratings", "decision_records", "gate_fires", "run_health",
-        "summary", "manifest",
+        "final_ratings", "decision_records", "outbox_events",
+        "consumer_state", "gate_fires", "run_health", "summary", "manifest",
     ):
         assert rows[name]["status"] == "PRESENT", name
 
@@ -222,6 +222,11 @@ def test_stage_results_are_published_and_indexed(published):
     assert health["decision_records"]["contract_hash_match"] is True
     assert health["decision_records"]["final_ratings_match"] is True
     assert health["decision_records"]["early_stop_match"] is True
+    assert health["post_run"]["status"] == "BACKLOG"
+    assert health["post_run"]["n_events"] == 9
+    assert health["post_run"]["expected"] == 11
+    assert health["post_run"]["pending"] == 11
+    assert health["post_run"]["failed_consumers"] == []
 
 
 def test_decision_records_capture_fold_chain(published):
@@ -273,6 +278,13 @@ def test_decision_records_are_published(published):
         (published["out_base"] / "manifest.json").read_text(encoding="utf-8")
     )
     assert manifest["decision_record_schema_version"] == 1
+
+
+def test_outbox_control_state_is_published(published):
+    staging = published["scan_dir"] / "outbox"
+    traced = published["trace"] / "outbox"
+    for name in ("events.json", "consumer_state.json"):
+        assert (traced / name).read_bytes() == (staging / name).read_bytes()
 
 
 def test_decision_record_failure_does_not_block_summary(
@@ -620,26 +632,30 @@ def test_is_real_publish_calls_precedents_build_index(tmp_path, monkeypatch):
 
 
 def test_is_real_publish_prints_dossier_sections_skipped(tmp_path, monkeypatch, capsys):
-    """`record_scan_deltas` 的 `sections_skipped` 键此前有生产者、零消费者——assemble 尾
-    只打印了 `issues`,镜像它的这一行从未写(终审 I-2):控制端活体当天读数 = 3/4 份
+    """单票 dossier consumer 的 `sections_skipped` 必须出现在控制台——此前 assemble 尾
+    只打印了批处理 `issues`,镜像行曾缺失(终审 I-2):控制端活体当天读数 = 3/4 份
     档案有跳过标签(生产常态,非边缘态),终端上一个字都看不见,而同一波给 L4 卡注入块
     新加的 tail 正明写「§4/§6 随每日 δ 刷新」——跳过静默 + 该断言并存会让卡片读者把
     陈旧素材当作今天已核事实。本条锁住:`sections_skipped` 非空时必须打印到 stdout。
 
-    做法与上面的 `test_is_real_publish_calls_precedents_build_index` 同款:
-    monkeypatch 掉 `record_scan_deltas` 本体(它的内部正确性由 tests/dossier/test_delta.py
-    单独锁),只验 assemble 侧的打印接线。
+    monkeypatch 单票 adapter(内部正确性由 tests/dossier/test_delta.py 单独锁),
+    只验 outbox consumer 的打印接线。
     """
     monkeypatch.chdir(tmp_path)
     scan = _build_scan_dir(tmp_path)
     monkeypatch.setattr(
-        "autoresearch.dossier.delta.record_scan_deltas",
-        lambda *a, **k: {"updated": 1, "issues": {},
-                         "sections_skipped": {"300857": ["§4.seats", "§6"]}})
+        "autoresearch.dossier.delta.record_scan_delta",
+        lambda code, *a, **k: {
+            "code": code,
+            "updated": True,
+            "issues": [],
+            "sections_skipped": ["§4.seats", "§6"],
+        } if code == "300476" else {"code": code, "skipped": "no_dossier"},
+    )
 
     assemble.run(_DATA_DATE, scan_dir=scan, out_root=tmp_path / "reports/scan",
                 hhmm=_HHMM, run_date=_RUN_DATE)
 
     out = capsys.readouterr().out
-    assert "300857" in out and "§4.seats" in out and "§6" in out
+    assert "300476" in out and "§4.seats" in out and "§6" in out
     assert "跳过刷新" in out

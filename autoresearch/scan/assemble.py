@@ -1360,6 +1360,9 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
         pinned_path: str | Path | None = None) -> Path:
     scan_dir = scan_dir or Path("context/scan") / analysis_date
     out_root = out_root or Path("reports/scan")
+    is_real = Path(scan_dir).resolve() == (
+        Path("context/scan") / analysis_date
+    ).resolve()
     now = datetime.now()
     hhmm = hhmm or now.strftime("%H%M")
     # 发布目录时间戳 = **实际运行时刻**(run_date 仅自测注入);数据日 analysis_date 另记 manifest,与目录名解耦
@@ -1429,6 +1432,19 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
 
         record_gate_stage_result(scan_dir, gate4(scan_dir))
     with contextlib.suppress(Exception):
+        # 报告先落事实，再由可重放 consumer 独立刷新学习账本。测试/历史现场只
+        # 初始化空回执，不触碰全局知识库；真实现场才实际消费。
+        from autoresearch.scan.outbox import safe_emit_finalization_events
+        from autoresearch.scan.post_run import (
+            initialize_consumer_state,
+            safe_run_consumers,
+        )
+
+        if safe_emit_finalization_events(scan_dir) is not None:
+            initialize_consumer_state(scan_dir)
+            if is_real:
+                safe_run_consumers(scan_dir)
+    with contextlib.suppress(Exception):
         # Wave6 Q6:build_summary 内部才落 gate_fires.csv —— 上面那次快照必然把它记成
         # missing(07-24 实锤)。这里刷一次让 artifacts/missing 说真话;函数是纯快照,幂等。
         _health.write_run_health(scan_dir)
@@ -1451,6 +1467,13 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
             for stage_file in sorted(stage_source.glob("*.json")):
                 shutil.copy2(stage_file, stage_trace / stage_file.name)
                 n_pipe += 1
+        outbox_source = scan_dir / "outbox"
+        if outbox_source.is_dir():
+            outbox_trace = out_base / "trace" / "outbox"
+            outbox_trace.mkdir(parents=True, exist_ok=True)
+            for outbox_file in sorted(outbox_source.glob("*.json")):
+                shutil.copy2(outbox_file, outbox_trace / outbox_file.name)
+                n_pipe += 1
         artifact_index_path = write_artifact_index(scan_dir, report_dir=out_base)
         trace_dir = out_base / "trace"
         trace_dir.mkdir(parents=True, exist_ok=True)
@@ -1461,9 +1484,8 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
         n_pipe += 1
     with contextlib.suppress(Exception):               # 现场导航页(第二天复盘入口)
         (out_base / "index.md").write_text(_health.index_md(scan_dir, out_base), encoding="utf-8")
-    # 三个记账/刷新副作用共享同一条真实现场判据(resolve() 防相对/绝对路径假阴性)——
+    # 记账/刷新副作用共享同一条真实现场判据(resolve() 防相对/绝对路径假阴性)——
     # 测试 tmp 目录一律不触发,堵同类测试泄漏口(此前 sector_ledger 无门,曾单独裸奔)。
-    is_real = Path(scan_dir).resolve() == (Path("context/scan") / analysis_date).resolve()
     if is_real:
         with contextlib.suppress(Exception):           # Phase 4:行业方向记账(sector_ledger,失败不阻发布)
             from autoresearch.learning.sector_ledger import record_calls
@@ -1482,36 +1504,6 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
             n_sh = _shadow_record(scan_dir)
             if n_sh:
                 print(f"[shadow_buys] 记 {n_sh} 只影子买单 → context/learning/shadow_buys.csv")
-        with contextlib.suppress(Exception):           # 扫描日记刷新(失败不阻发布)
-            from autoresearch.learning import journal as _journal
-            _journal.main()
-        # Wave7 B′-d:**输入在本函数里刚写出来的账本,必须在这里再刷一次**。
-        # 这两个账本原先只在 prelude(跑前)刷,而它们的输入 `_early_stop.json`(上面
-        # `write_early_stop`)与 `gate_fires.csv`(`_self_review_banner` 里 `dump_gate_fires`)
-        # 都是本次 assemble 才落盘的 —— 于是账本恒定落后一个 run:2026-07-27 跑完 4 张早停卡,
-        # `earlystop_ledger.md` 仍写着「无早停记录」,Wave6 R3 验收④ 因此记 ✗。
-        # (journal/buy_ledger 读 finalists.csv 属另一类:它们本就是聚合历史,跑前刷拿到的是
-        # 截至昨日的全量,设计如此,不在此列。)幂等,失败不阻发布。
-        # pinned_ledger 同族(Wave7 P1):它读 finalists 的 pinned 行 × 本次终评级 ×
-        # attribution —— 当天的行必须当天进表(哪怕 fwd 未成熟,「今天判了什么」本身就是账)。
-        for _mod_name in ("earlystop_ledger", "gate_ledger", "pinned_ledger"):
-            with contextlib.suppress(Exception):
-                import importlib
-                importlib.import_module(f"autoresearch.learning.{_mod_name}").main()
-        with contextlib.suppress(Exception):           # P0-1(c):判例索引增量建库(precedents.build_index,失败不阻发布)
-            from autoresearch.learning.precedents import build_index
-            res = build_index()
-            if res.get("dates_indexed"):
-                print(f"[precedents] 索引 {len(res['dates_indexed'])} 新日 → context/knowledge/precedents.db")
-        with contextlib.suppress(Exception):           # Wave3 ④:覆盖档案 δ 回写(§8+摘要机算;失败不阻发布)
-            from autoresearch.dossier.delta import record_scan_deltas
-            doss = record_scan_deltas(scan_dir, analysis_date)
-            if doss["updated"]:
-                print(f"[dossier] δ 回写 {doss['updated']} 份覆盖档案 → context/knowledge/dossiers/")
-            for _c, _iss in sorted(doss["issues"].items()):   # I-4:lint 不吞(降级留痕)
-                print(f"[dossier] ⚠️ 档案 lint:{_c} {_iss}")
-            for _c, _sk in sorted(doss["sections_skipped"].items()):  # Wave3.5 I-2:镜像上一行
-                print(f"[dossier] ℹ️ §4/§6 跳过刷新(素材缺,保留旧值):{_c} {_sk}")
     print(f"[L5 整合] summary → {summary_path}  (数据日 {analysis_date})")
     print(f"[L5 整合] details → {detail_out}  ({n_cards} 张卡 + trace/ {n_pipe} 件溯源)")
     return summary_path

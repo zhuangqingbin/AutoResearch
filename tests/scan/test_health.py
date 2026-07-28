@@ -253,6 +253,55 @@ def test_decision_records_health_rejects_tampered_book(tmp_path):
     assert run_health(d)["counts"]["buys"] is None
 
 
+def test_post_run_health_absent_is_advisory_and_read_only(tmp_path):
+    d = _mk_day(tmp_path, "2026-07-28")
+    result = run_health(d)["post_run"]
+    assert result == {
+        "status": "ABSENT",
+        "n_events": 0,
+        "expected": 0,
+        "succeeded": 0,
+        "pending": 0,
+        "pending_consumers": [],
+        "failed_consumers": [],
+        "error": None,
+    }
+    assert not (d / "outbox").exists()
+
+
+def test_post_run_health_reports_consumer_backlog(tmp_path):
+    from autoresearch.scan.outbox import OutboxEvent, emit_events
+    from autoresearch.scan.post_run import initialize_consumer_state
+
+    d = _mk_day(tmp_path, "2026-07-28")
+    event = OutboxEvent.build(
+        event_type="RUN_FINALIZED",
+        analysis_date=d.name,
+        run_id="run-1",
+        contract_hash=None,
+        aggregate_id="run-1",
+        payload={"n_buys": 0, "n_decisions": 1},
+        created_at="2026-07-28T10:00:00Z",
+    )
+    emit_events(d, [event])
+    initialize_consumer_state(d)
+    result = run_health(d)["post_run"]
+    assert result["status"] == "BACKLOG"
+    assert result["n_events"] == 1
+    assert result["expected"] == 8
+    assert result["pending"] == 8
+    assert result["failed_consumers"] == []
+
+
+def test_post_run_health_rejects_corrupt_events(tmp_path):
+    d = _mk_day(tmp_path, "2026-07-28")
+    (d / "outbox").mkdir()
+    (d / "outbox" / "events.json").write_text("{", encoding="utf-8")
+    result = run_health(d)["post_run"]
+    assert result["status"] == "INVALID"
+    assert "JSONDecodeError" in result["error"]
+
+
 def test_finalist_churn(tmp_path):
     _mk_day(tmp_path, "2026-07-01", codes=("000001", "000002"))
     d = _mk_day(tmp_path, "2026-07-02", codes=("000002", "000003"))

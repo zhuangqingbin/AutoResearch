@@ -451,6 +451,35 @@ def decision_records_health(scan_dir: Path) -> dict:
     }
 
 
+def post_run_health(scan_dir: Path) -> dict:
+    """只读汇总 outbox/consumer receipts；缺席是兼容旧现场的 advisory。"""
+    empty = {
+        "status": "ABSENT",
+        "n_events": 0,
+        "expected": 0,
+        "succeeded": 0,
+        "pending": 0,
+        "pending_consumers": [],
+        "failed_consumers": [],
+        "error": None,
+    }
+    scan = Path(scan_dir)
+    from autoresearch.scan.outbox import outbox_path
+
+    if not outbox_path(scan).exists():
+        return empty
+    try:
+        from autoresearch.scan.post_run import consumer_status
+
+        return {**consumer_status(scan), "error": None}
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        return {
+            **empty,
+            "status": "INVALID",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
 def run_health(scan_dir: Path) -> dict:
     """一次 scan 的体检 dict(artifacts/counts/NaN 降级/churn/L4 阶段/meta 回显)。"""
     scan_dir = Path(scan_dir)
@@ -492,7 +521,8 @@ def run_health(scan_dir: Path) -> dict:
             "ledger_freshness": ledger_freshness(scan_dir),
             "run_contract": run_contract_health(scan_dir),
             "stage_results": stage_results_health(scan_dir),
-            "decision_records": decision_records_health(scan_dir)}
+            "decision_records": decision_records_health(scan_dir),
+            "post_run": post_run_health(scan_dir)}
 
 
 def write_run_health(scan_dir: Path) -> Path:
