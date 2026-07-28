@@ -1271,6 +1271,21 @@ DOSSIER_DELTA_READY
 - L3/L4 单票级 StageResult；
 - `DecisionRecord / outbox`。
 
+#### 2026-07-28 第三批实现状态
+
+已进入影子双写：
+
+- 每只 finalist 固化 DecisionRecord，缺卡票也保留；
+- source/rubric/三门/早停/verify/ensemble/final/proposal 可独立查询；
+- 首次拒绝阶段进入结构化事实；
+- health 对 `_final_ratings.json`、`_early_stop.json` 做 parity；
+- DecisionRecord 进入 ArtifactIndex 和 trace，注册表增至 17 类。
+
+仍待下一批：
+
+- 将 summary/learning/dossier/retro 消费者逐个切到 DecisionRecord；
+- post-run outbox 与 consumer 幂等补跑。
+
 ### Wave 2：0-BUY 可解释与研究闭环
 
 目标：回答每个 0 BUY 是正确弃权还是漏判。
