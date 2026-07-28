@@ -15,12 +15,15 @@ from __future__ import annotations
 
 import csv
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
 from autoresearch.scan import assemble
+from autoresearch.scan.artifacts import ARTIFACT_INDEX_SCHEMA_VERSION
+from autoresearch.scan.run_contract import RunContract, write_run_contract
 
 _DATA_DATE = "2026-06-20"
 _RUN_DATE = "2026-06-21"
@@ -97,6 +100,17 @@ def _build_scan_dir(root):
         '301117,维持,"龙头卡位稀缺","无硬伤","继续持有","维持3/3"\n', encoding="utf-8")
     (scan / "_v_bull_300476.md").write_text("多头研究员稿", encoding="utf-8")
     (scan / "_v_300476.md").write_text("空头研究员稿", encoding="utf-8")
+    contract = RunContract.build(
+        analysis_date=_DATA_DATE,
+        user_config={},
+        pinned={"kept": [], "expired": []},
+        data_policy={"source": "tushare"},
+        stage_budgets={"l3_finalist_max": 10},
+        artifact_schema_versions={"market_pack": 1},
+        git_sha="abc123",
+        now=datetime(2026, 6, 21, 1, 2, 3, tzinfo=timezone.utc),
+    )
+    write_run_contract(scan / "run_contract.json", contract)
     return scan
 
 
@@ -109,7 +123,13 @@ def published(tmp_path_factory):
                                 hhmm=_HHMM, run_date=_RUN_DATE)
     out_base = root / "reports/scan" / _RUN_FOLDER
     md = summary_path.read_text(encoding="utf-8")
-    return {"summary_path": summary_path, "out_base": out_base, "md": md, "trace": out_base / "trace"}
+    return {
+        "summary_path": summary_path,
+        "out_base": out_base,
+        "md": md,
+        "trace": out_base / "trace",
+        "scan_dir": scan,
+    }
 
 
 # ───────────────────────── run-folder / manifest 解耦 ─────────────────────────
@@ -125,6 +145,40 @@ def test_manifest_records_data_date(published):
     assert mpath.exists(), "manifest.json 缺"
     assert json.loads(mpath.read_text(encoding="utf-8")).get("analysis_date") == _DATA_DATE, \
         "manifest.analysis_date 应为数据日"
+
+
+def test_manifest_records_contract_identity(published):
+    manifest = json.loads(
+        (published["out_base"] / "manifest.json").read_text(encoding="utf-8")
+    )
+    contract = json.loads(
+        (published["trace"] / "run_contract.json").read_text(encoding="utf-8")
+    )
+    assert manifest["run_id"] == contract["run_id"]
+    assert manifest["contract_hash"] == contract["contract_hash"]
+    assert manifest["run_contract_schema_version"] == 1
+    assert manifest["artifact_index_schema_version"] == ARTIFACT_INDEX_SCHEMA_VERSION
+
+
+def test_artifact_index_is_written_and_published(published):
+    staging = published["scan_dir"]
+    index_path = staging / "artifact_index.json"
+    trace_path = published["trace"] / "artifact_index.json"
+    assert index_path.exists()
+    assert trace_path.exists()
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    rows = {row["name"]: row for row in index["artifacts"]}
+    assert index["contract_hash"]
+    for name in ("run_contract", "l1_full", "l2", "finalists", "l4_cards",
+                 "final_ratings", "gate_fires", "run_health", "summary", "manifest"):
+        assert rows[name]["status"] == "PRESENT", name
+
+
+def test_trace_run_health_is_final_refresh(published):
+    staging = published["scan_dir"]
+    assert (
+        published["trace"] / "run_health.json"
+    ).read_bytes() == (staging / "run_health.json").read_bytes()
 
 
 def test_trace_pipeline_artifacts_published(published):

@@ -1211,6 +1211,7 @@ def _publish_pipeline(scan_dir: Path, out_base: Path, analysis_date: str) -> int
     pdir.mkdir(parents=True, exist_ok=True)
     mapping = {
         "meta.json": "L0_universe_meta.json",
+        "run_contract.json": "run_contract.json",          # 运行身份契约(配置/保送/数据策略/hash)
         "run_health.json": "run_health.json",              # 运行体检(NaN 降级/churn/L4 阶段效能)
         "weights_used.json": "weights_used.json",          # 重放快照(当日实际权重)
         "L1_scored_full.csv": "L1_scored_full.csv",        # 全量打分(所有过门股 sorted + recalled 标记)
@@ -1269,9 +1270,26 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
         from autoresearch.learning.process_score import write_process_scores
         write_process_scores(scan_dir)
     n_pipe = _publish_pipeline(scan_dir, out_base, analysis_date)   # trace/ 挂 out_base(details 同级)
-    (out_base / "manifest.json").write_text(json.dumps(            # retro 按 analysis_date 定位本报告(目录名≠数据日)
-        {"analysis_date": analysis_date, "generated_at": now.isoformat(timespec="seconds"), "hhmm": hhmm},
-        ensure_ascii=False), encoding="utf-8")
+    from autoresearch.scan.artifacts import ARTIFACT_INDEX_SCHEMA_VERSION
+    from autoresearch.scan.run_contract import load_run_contract
+
+    manifest = {                                             # retro 按 analysis_date 定位(目录名≠数据日)
+        "analysis_date": analysis_date,
+        "generated_at": now.isoformat(timespec="seconds"),
+        "hhmm": hhmm,
+        "artifact_index_schema_version": ARTIFACT_INDEX_SCHEMA_VERSION,
+    }
+    contract_path = scan_dir / "run_contract.json"
+    if contract_path.exists():
+        with contextlib.suppress(Exception):
+            contract = load_run_contract(contract_path)
+            manifest.update({
+                "run_id": contract.run_id,
+                "contract_hash": contract.contract_hash,
+                "run_contract_schema_version": contract.schema_version,
+            })
+    (out_base / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
     md = build_summary(scan_dir, analysis_date, hhmm, folder, pinned_path=pinned_path)
     summary_path = out_base / "summary.md"
     summary_path.write_text(md, encoding="utf-8")
@@ -1279,6 +1297,19 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
         # Wave6 Q6:build_summary 内部才落 gate_fires.csv —— 上面那次快照必然把它记成
         # missing(07-24 实锤)。这里刷一次让 artifacts/missing 说真话;函数是纯快照,幂等。
         _health.write_run_health(scan_dir)
+    with contextlib.suppress(Exception):
+        # 最终快照必须等 manifest/summary/gate_fires/第二次 health 全部落盘后再 hash。
+        # 同时覆盖 trace 里 assemble 前发布的旧 health，保证 staging/trace 同一事实。
+        from autoresearch.scan.artifacts import write_artifact_index
+
+        artifact_index_path = write_artifact_index(scan_dir, report_dir=out_base)
+        trace_dir = out_base / "trace"
+        trace_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(artifact_index_path, trace_dir / "artifact_index.json")
+        refreshed_health = scan_dir / "run_health.json"
+        if refreshed_health.exists():
+            shutil.copy2(refreshed_health, trace_dir / "run_health.json")
+        n_pipe += 1
     with contextlib.suppress(Exception):               # 现场导航页(第二天复盘入口)
         (out_base / "index.md").write_text(_health.index_md(scan_dir, out_base), encoding="utf-8")
     # 三个记账/刷新副作用共享同一条真实现场判据(resolve() 防相对/绝对路径假阴性)——
