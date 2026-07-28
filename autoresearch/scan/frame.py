@@ -221,6 +221,21 @@ def main(argv: list[str] | None = None) -> int:
         write_run_contract(echo_dir / "run_contract.json", contract)
         (echo_dir / "user_config_echo.json").write_text(
             json.dumps(user_cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        from autoresearch.scan.stage_result import safe_record_stage_result
+        safe_record_stage_result(
+            echo_dir,
+            stage="frame",
+            status="SUCCEEDED",
+            artifacts=["run_contract"],
+            metrics={
+                "frame_rows": int(counts["after_gate_a"]),
+                "l0_rows": int(counts["universe"]),
+                "regime": reg.get("label"),
+                "sentinel_level": level,
+            },
+            warnings=[],
+            error=None,
+        )
         print(json.dumps({
             **pack,
             "macro_state": mstate,

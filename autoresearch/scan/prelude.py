@@ -386,6 +386,26 @@ def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()
     import contextlib
     with contextlib.suppress(Exception):      # 落盘可选,写不了不挡前奏(stdout 仍有全文)
         print(f"  (汇总屏已落盘:{write_summary(date, results)})")
+    from autoresearch.scan.stage_result import safe_record_stage_result
+
+    failed = [r for r in results if not r["ok"]]
+    artifact_candidates = (
+        ("l1_full", "L1_scored_full.csv"),
+        ("l1_recall", "L1_recall_top1000.csv"),
+        ("l2", "L2_gbdt_top200.csv"),
+    )
+    safe_record_stage_result(
+        scan_dir,
+        stage="prelude",
+        status="DEGRADED" if failed else "SUCCEEDED",
+        artifacts=[
+            name for name, filename in artifact_candidates
+            if (scan_dir / filename).exists()
+        ],
+        metrics={"n_steps": len(results), "n_failed": len(failed)},
+        warnings=[f"{r['step']}: {r['note']}" for r in failed],
+        error=None,
+    )
     return results
 
 

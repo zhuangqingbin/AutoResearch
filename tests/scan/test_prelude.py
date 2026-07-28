@@ -155,3 +155,40 @@ def test_run_prelude_prints_retro_input_nag(tmp_path, monkeypatch, capsys):
     run_prelude("2026-07-09", skip=_SKIP_ALL_BUT_LEDGERS + ("ledgers",))
     out = capsys.readouterr().out
     assert "retro_input" in out and "2026-07-07" in out
+
+
+def test_run_prelude_writes_succeeded_stage_result(tmp_path, monkeypatch):
+    from autoresearch.scan.prelude import run_prelude
+    from autoresearch.scan.stage_result import load_stage_result
+
+    monkeypatch.chdir(tmp_path)
+    results = run_prelude("2026-07-28", skip=(
+        "retro_refresh", "retro_pending", "t1_pending", "learning_health",
+        "consensus", "temperature", "universe", "calendar", "catalyst",
+        "menu", "ledgers", "dossier_pool",
+    ))
+    stage = load_stage_result(
+        tmp_path / "context" / "scan" / "2026-07-28" / "stage_results" / "prelude.json"
+    )
+    assert results == []
+    assert stage.status == "SUCCEEDED"
+    assert stage.metrics == {"n_failed": 0, "n_steps": 0}
+    assert stage.warnings == []
+
+
+def test_run_prelude_writes_degraded_stage_result(tmp_path, monkeypatch):
+    from autoresearch.scan import prelude
+    from autoresearch.scan.stage_result import load_stage_result
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(prelude, "_run_steps", lambda steps: [
+        {"step": "universe", "ok": False, "note": "RuntimeError: boom"},
+        {"step": "calendar", "ok": True, "note": "ok"},
+    ])
+    prelude.run_prelude("2026-07-28", skip=())
+    stage = load_stage_result(
+        tmp_path / "context" / "scan" / "2026-07-28" / "stage_results" / "prelude.json"
+    )
+    assert stage.status == "DEGRADED"
+    assert stage.metrics == {"n_failed": 1, "n_steps": 2}
+    assert stage.warnings == ["universe: RuntimeError: boom"]

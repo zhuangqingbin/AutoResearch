@@ -107,3 +107,12 @@ def test_json_mode_writes_contract_and_short_ref(monkeypatch, capsys, tmp_path):
         "pinned_cap": 5,
         "pinned_ttl_days": 10,
     }
+    from autoresearch.scan.stage_result import load_stage_result
+    stage = load_stage_result(
+        tmp_path / "context" / "scan" / DATE / "stage_results" / "frame.json"
+    )
+    assert stage.status == "SUCCEEDED"
+    assert stage.artifacts == ["run_contract"]
+    assert stage.contract_hash == contract["contract_hash"]
+    assert stage.metrics["frame_rows"] == 1
+    assert stage.metrics["sentinel_level"] == "full"
