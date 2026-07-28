@@ -42,6 +42,7 @@ CRITICAL_ARTIFACTS = (
     ArtifactSpec("l3_judged", 1, "l3_rank", "L3_judged_full.csv"),
     ArtifactSpec("finalists", 1, "l3_rank", "finalists.csv"),
     ArtifactSpec("l4_cards", 1, "l4_stock", "details/*.md"),
+    ArtifactSpec("l4_task_book", 1, "l4_tasks", "_l4_tasks.json"),
     ArtifactSpec("ensemble", 1, "l4_ensemble", "_ensemble_*.json"),
     ArtifactSpec("final_ratings", 1, "assemble", "_final_ratings.json"),
     ArtifactSpec("decision_records", 1, "assemble", "decision_records.json"),
