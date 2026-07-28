@@ -66,3 +66,16 @@ def test_l3_lint_fix_failure_is_caught_not_silent():
     assert tail, "L3-lint-fix 调用点不见了(本测试定位假设失效,请重写)"
     assert ".catch(" in tail[:400], "L3 自修 agent 调用没有 .catch —— 断连会静默"
     assert "未完成" in tail[:600] or "异常" in tail[:600], "失败路径没有可见日志 = 降级不留痕"
+
+
+def test_scan_gate_branches_read_verified_stage_results():
+    """GATE1/2 的唯一分支事实来自 StageResult，不再重复解析 gate stdout。"""
+    src = (WF / "scan-market.js").read_text(encoding="utf-8")
+    assert "autoresearch.scan.stage_result show" in src
+    assert "STAGE_RESULT" in src
+    assert "g1.status === 'SUCCEEDED'" in src
+    assert "g2.status === 'SUCCEEDED'" in src
+    assert "g1.metrics.sentinel_level" in src
+    assert "g2.metrics.finalists" in src
+    assert "g1.ok" not in src
+    assert "g2.ok" not in src

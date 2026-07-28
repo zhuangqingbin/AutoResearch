@@ -11,6 +11,7 @@ from autoresearch.scan.stage_result import (
     StageResult,
     StageStatus,
     load_stage_result,
+    main,
     record_stage_result,
     write_stage_result,
 )
@@ -105,3 +106,76 @@ def test_record_binds_valid_run_contract(tmp_path):
         now=NOW,
     )
     assert load_stage_result(path).contract_hash == contract.contract_hash
+
+
+def test_show_cli_returns_verified_snapshot(tmp_path, capsys):
+    record_stage_result(
+        tmp_path,
+        stage="gate1",
+        status="SUCCEEDED",
+        artifacts=["l2"],
+        metrics={"sentinel_level": "full", "l4_budget": 10},
+        warnings=[],
+        error=None,
+        now=NOW,
+    )
+
+    assert main(["show", str(tmp_path), "gate1"]) == 0
+    shown = json.loads(capsys.readouterr().out)
+    assert shown["stage"] == "gate1"
+    assert shown["status"] == "SUCCEEDED"
+    assert shown["metrics"]["sentinel_level"] == "full"
+
+
+def test_show_cli_fails_for_missing_or_corrupt_snapshot(tmp_path, capsys):
+    assert main(["show", str(tmp_path), "gate1"]) == 2
+    missing = json.loads(capsys.readouterr().out)
+    assert missing["status"] == "INVALID"
+    assert "FileNotFoundError" in missing["error"]
+
+    path = tmp_path / "stage_results" / "gate1.json"
+    path.parent.mkdir()
+    path.write_text("{", encoding="utf-8")
+    assert main(["show", str(tmp_path), "gate1"]) == 2
+    corrupt = json.loads(capsys.readouterr().out)
+    assert corrupt["status"] == "INVALID"
+    assert "JSONDecodeError" in corrupt["error"]
+
+
+def test_show_cli_rejects_contract_mismatch(tmp_path, capsys):
+    first = RunContract.build(
+        analysis_date=tmp_path.name,
+        user_config={},
+        pinned={"kept": [], "expired": []},
+        data_policy={"source": "tushare"},
+        stage_budgets={},
+        artifact_schema_versions={},
+        git_sha="first",
+        now=NOW,
+    )
+    write_run_contract(tmp_path / "run_contract.json", first)
+    record_stage_result(
+        tmp_path,
+        stage="gate1",
+        status="SUCCEEDED",
+        artifacts=["l2"],
+        metrics={},
+        warnings=[],
+        error=None,
+        now=NOW,
+    )
+    second = RunContract.build(
+        analysis_date=tmp_path.name,
+        user_config={"force_full": True},
+        pinned={"kept": [], "expired": []},
+        data_policy={"source": "tushare"},
+        stage_budgets={},
+        artifact_schema_versions={},
+        git_sha="second",
+        now=NOW,
+    )
+    write_run_contract(tmp_path / "run_contract.json", second)
+
+    assert main(["show", str(tmp_path), "gate1"]) == 2
+    error = json.loads(capsys.readouterr().out)
+    assert "contract_hash mismatch" in error["error"]

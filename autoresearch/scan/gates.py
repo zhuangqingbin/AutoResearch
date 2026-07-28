@@ -134,6 +134,10 @@ def record_gate_stage_result(scan_dir: Path, result: dict, *, budget: int | None
         metrics = {"budget": int(budget if budget is not None else 30)}
         if "n" in result:
             metrics["n"] = int(result["n"])
+        if "finalists" in result:
+            metrics["finalists"] = list(result["finalists"])
+        if "meta" in result:
+            metrics["meta"] = dict(result["meta"])
     else:
         metrics = {"n_checks": int(result["n_checks"])} if "n_checks" in result else {}
     return safe_record_stage_result(

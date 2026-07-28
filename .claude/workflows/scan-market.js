@@ -30,24 +30,25 @@ function bash(cmd, label, phaseName) {   // 形参勿叫 phase:会遮蔽全局 p
     `在仓库根目录精确执行下面这条命令,然后只回报:退出码 + stdout 末 15 行。不要做别的、不要判断、不要解释。\n\n\`\`\`\n${cmd}\n\`\`\``,
     { agentType: 'general-purpose', model: 'haiku', effort: 'low', label, ...(phaseName ? { phase: phaseName } : {}) })
 }
-// 门 CLI → Bash-agent + schema(把 CLI 打印的 JSON 原样带回)。
-// required 只列 'ok':失败 JSON 只含 {ok:false, reason}(无 sentinel_level/finalists 等成功字段);
-// 若把成功字段列进 required,失败 JSON 校验不过 → agent 返回 null → 丢失 reason(报错退化为"无返回")。
-const GATE1 = { type: 'object', required: ['ok'],
-  properties: { ok: { type: 'boolean' }, reason: { type: 'string' },
-    sentinel_level: { type: 'string' }, l4_budget: { type: 'integer' } } }
-const GATE2 = { type: 'object', required: ['ok'],
-  properties: { ok: { type: 'boolean' }, reason: { type: 'string' },
-    finalists: { type: 'array', items: { type: 'string' } }, n: { type: 'integer' },
-    meta: { type: 'object' } } }
 const OK = { type: 'object', required: ['ok'],
   properties: { ok: { type: 'boolean' }, reason: { type: 'string' } } }
+const STAGE_RESULT = { type: 'object', required: ['stage', 'status', 'metrics'],
+  properties: { stage: { type: 'string' }, status: { type: 'string' },
+    metrics: { type: 'object' }, error: {} } }
 // Wave6 T1:门的判据 100% 在确定性 CLI 里,agent 只把它打印的 JSON 原样带回 —— 转述不需要
 // 思考,effort high→low 且降 haiku。schema 校验仍在(格式错会被 harness 拒),门行为不变。
 function gate(label, cmd, schema, phaseName) {   // 同上:避免遮蔽全局 phase()
   return agent(
     `执行:\`${cmd}\`\n它会向 stdout 打印 JSON。把它打印的最后一行 JSON 原样作为你的结构化返回(字段不改、不增删)。`,
     { agentType: 'general-purpose', model: 'haiku', effort: 'low', label, schema, ...(phaseName ? { phase: phaseName } : {}) })
+}
+// 业务门先保留原 stdout 供诊断，Workflow 只消费随后读取并验 hash/contract 的 StageResult。
+function stageGate(label, cmd, stage, phaseName) {
+  return agent(
+    `依次执行:\`${cmd}; ${R} autoresearch.scan.stage_result show ${SD} ${stage}\`\n` +
+    '前一条命令的 stdout 保留作诊断；把最后一行 StageResult JSON 原样作为结构化返回。',
+    { agentType: 'general-purpose', model: 'haiku', effort: 'low', label,
+      schema: STAGE_RESULT, ...(phaseName ? { phase: phaseName } : {}) })
 }
 
 // ── Phase Prelude ───────────────────────────────────────────────
@@ -98,20 +99,20 @@ if (!l2ok || !l2ok.ok) {
   await bash(`${R} autoresearch.scan.prelude ${date} --skip retro_refresh,retro_pending,consensus`,
     'prelude-retry', 'Prelude')
 }
-const g1 = await gate('GATE1', `${R} autoresearch.scan.gates gate1 ${date}`, GATE1, 'Prelude')
-if (!g1 || !g1.ok) throw new Error(`GATE1 失败:${g1 ? g1.reason : 'agent 无返回'}`)
-log(`GATE1 ✓ sentinel=${g1.sentinel_level} · L4预算=${g1.l4_budget}`)
+const g1 = await stageGate('GATE1', `${R} autoresearch.scan.gates gate1 ${date}`, 'gate1', 'Prelude')
+if (!g1 || !(g1.status === 'SUCCEEDED')) throw new Error(`GATE1 失败:${g1 ? g1.error : 'agent 无返回'}`)
+log(`GATE1 ✓ sentinel=${g1.metrics.sentinel_level} · L4预算=${g1.metrics.l4_budget}`)
 // CP1(Wave5 ①):bash 回报只有 stdout 末 15 行,而汇总屏是 12 步 ✓/✗ + 预热状态 + 当日件
 // 建议行 + 下一步 —— 结构性放不下。指路文件,由主会话 Read 后全量转播给用户。
 log(`📋 前奏汇总屏全文:${SD}/_prelude_summary.md(主会话 Read 后全量转播 —— 回报的末 15 行装不下 12 步屏)`)
 
 // ── 哨兵档:材料枯竭 → 跳过 sector/L3/L4;assemble+GATE4 由主会话收尾 ──────────
-if (g1.sentinel_level === 'sentinel' && !forceFull) {
+if (g1.metrics.sentinel_level === 'sentinel' && !forceFull) {
   log('哨兵档 → 跳过 L3/L4(日历已在 prelude 跑过);assemble+GATE4 由主会话收尾')
   return { date, mode: 'sentinel', finalists: 0, dispatch: [], reused: [], meta: {},
-    l4_budget: g1.l4_budget, published: false }
+    l4_budget: g1.metrics.l4_budget, published: false }
 }
-if (g1.sentinel_level === 'sentinel' && forceFull) {
+if (g1.metrics.sentinel_level === 'sentinel' && forceFull) {
   log('⚠️ 哨兵档被人工 override(force_full)→ 照常跑 L3/L4。诚实标注:确定性判据判「材料枯竭」,买单侧期望低。')
 }
 
@@ -119,7 +120,7 @@ if (g1.sentinel_level === 'sentinel' && forceFull) {
 phase('L3')
 // finalist tier 上限(plan 2026-07-12-l3-merge-plan.md Task 4):L3.5 闸的收窄职能已并入 L3,
 // L3 直接出 7–10 只 finalist(宁缺毋滥,不强制凑到此数)——cap 而非目标。
-const l3cap = Math.min(10, g1.l4_budget)
+const l3cap = Math.min(10, g1.metrics.l4_budget)
 // 中观行业 pack(确定性)先行,再 [sector-briefs ∥ L3 表准备] barrier。sector-pack + 待写清单
 // 合并一个 gate(壳合并①,-1 spawn):schema 顶层必须是 object(API 拒 `type:'array'` → 400 →
 // agent 返回 null → `|| []` 静默吞掉,结果是一份行业 brief 都不写、L3 在没有行业地形段的情况下
@@ -167,18 +168,18 @@ if (l3lint && l3lint.ok === false) {
   if (!fix) log('⚠️ L3 数字自修未完成(agent 无返回/断连)—— 带未修 judged 继续,machine-lint 结论已记在上一行')
 }
 // 确定性写 finalists(修前导零)+ GATE2,合并一个 gate(壳合并②,-1 spawn)
-const g2 = await gate('GATE2',
+const g2 = await stageGate('GATE2',
   `${R} autoresearch.scan.agents.l3_select finalists ${date} --budget ${l3cap} && ` +
-  `${R} autoresearch.scan.gates gate2 ${date} --budget ${l3cap}`, GATE2, 'L3')
-if (!g2 || !g2.ok) throw new Error(`GATE2 失败:${g2 ? g2.reason : 'no return'}`)
+  `${R} autoresearch.scan.gates gate2 ${date} --budget ${l3cap}`, 'gate2', 'L3')
+if (!g2 || !(g2.status === 'SUCCEEDED')) throw new Error(`GATE2 失败:${g2 ? g2.error : 'no return'}`)
 // L3.5 闸已完全移除(2026-07-12 用户裁定"直接 L3 输出"):L3 finalist tier 即 L4 入选集。
 // CP3(Wave5 ①):整条漏斗最高光的一刻是"选出了哪几只",而不是"选出了几只"。
 // g2.meta 早就带着 name/sector(gates.py:95),此前被整段扔掉。
-log(`GATE2 ✓ finalists=${g2.n}`)
-const fmeta = g2.meta || {}
-;(g2.finalists || []).forEach((c, i) => {
+log(`GATE2 ✓ finalists=${g2.metrics.n}`)
+const fmeta = g2.metrics.meta || {}
+;(g2.metrics.finalists || []).forEach((c, i) => {
   const m = fmeta[c] || {}
-  log(`  L3入围 ${i + 1}/${g2.n} ${c} ${m.name || ''}${m.sector ? `(${m.sector})` : ''}`)
+  log(`  L3入围 ${i + 1}/${g2.metrics.n} ${c} ${m.name || ''}${m.sector ? `(${m.sector})` : ''}`)
 })
 
 // ── Phase L4-prep ───────────────────────────────────────────────
@@ -229,7 +230,7 @@ log(`L4 交接:新派 ${dispatch.length} 股(每股一个 l4-stock workflow,主�
 log(`🔎 随时可调:\`${R} autoresearch.scan.render ${date} --view menu_health\`(L2 成色)· \`--view gate_hist\`(L4 完成后看评级分布/停因分桶/门柱)· \`--view timing\`(分段耗时)`)
 // 📌 保送票在派发那一秒必须可见:07-21 漏传 args.pinned → 300857/601869 的持仓 SELL 双复核
 // 整段没跑(self_review 探针 9 sell_review_missing 只能事后 warn,拦不住)。
-const metaAll = plan.meta || g2.meta || {}
+const metaAll = plan.meta || g2.metrics.meta || {}
 const pinnedCodes = dispatch.filter((c) => metaAll[c] && metaAll[c].pinned)
 if (pinnedCodes.length) {
   log(`📌 保送票 ${pinnedCodes.length} 只:${pinnedCodes.join('/')} —— 派发这些 l4-stock 必须传 args.pinned:true(漏传=持仓 SELL 双复核断链)`)
@@ -238,5 +239,5 @@ if (pinnedCodes.length) {
 }
 
 // meta(名称/行业)透传给 l4-stock 的 intel 盲搜 prompt;assemble+GATE4 由主会话在全部 l4-stock 完成后收尾。
-return { date, mode: 'l4-handoff', finalists: g2.n, dispatch, reused: plan.reused || [],
-  meta: plan.meta || g2.meta || {}, l4_budget: g1.l4_budget, published: false }
+return { date, mode: 'l4-handoff', finalists: g2.metrics.n, dispatch, reused: plan.reused || [],
+  meta: plan.meta || g2.metrics.meta || {}, l4_budget: g1.metrics.l4_budget, published: false }

@@ -467,7 +467,7 @@ git commit -m "feat(scan): publish post-run control state"
 
 ### Task 5: StageResult read CLI and Workflow branching
 
-- [ ] **Step 1: Write failing CLI tests**
+- [x] **Step 1: Write failing CLI tests**
 
 Extend `tests/scan/test_stage_result.py`:
 
@@ -485,11 +485,11 @@ def test_show_cli_fails_for_missing_or_corrupt_snapshot(tmp_path, capsys):
 Add Workflow anchor tests requiring `stage-result`/`status`/`metrics` and
 forbidding direct branching on duplicated gate business fields.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run the new StageResult CLI and Workflow anchor tests.
 
-- [ ] **Step 3: Implement StageResult CLI**
+- [x] **Step 3: Implement StageResult CLI**
 
 Add an argv-testable `main(argv=None)` to `stage_result.py`:
 
@@ -501,7 +501,7 @@ It emits the verified `StageResult.to_dict()` as the final stdout line. Missing,
 invalid, or contract-mismatched snapshots emit structured error JSON and exit
 2.
 
-- [ ] **Step 4: Change Workflow gate adapter**
+- [x] **Step 4: Change Workflow gate adapter**
 
 In `scan-market.js`, execute the existing deterministic gate command, then read
 the StageResult snapshot and branch on:
@@ -516,7 +516,7 @@ stage.error
 The Python gate remains the only owner of gate rules. Keep legacy gate stdout
 for compatibility/debugging, but do not use it as the Workflow branch source.
 
-- [ ] **Step 5: Verify Workflow**
+- [x] **Step 5: Verify Workflow**
 
 Run:
 
@@ -527,7 +527,7 @@ uv run --no-sync python -m pytest \
   tests/test_agent_defs.py -q
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add autoresearch/scan/stage_result.py .claude/workflows/scan-market.js \

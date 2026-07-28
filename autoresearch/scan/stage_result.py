@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import argparse
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
@@ -184,3 +185,68 @@ def safe_record_stage_result(scan_dir: Path | str, **kwargs) -> Path | None:
     except Exception as exc:  # noqa: BLE001 — 影子控制面不能阻断生产阶段
         print(f"[stage_result] {kwargs.get('stage', '?')} 写入失败: {exc}", file=sys.stderr)
         return None
+
+
+def verified_stage_result(
+    scan_dir: Path | str,
+    stage: str,
+) -> StageResult:
+    """读取并校验快照身份，防止 Workflow 消费旧 run 或错目录的结果。"""
+    scan = Path(scan_dir)
+    result = load_stage_result(stage_result_path(scan, stage))
+    if result.stage != stage:
+        raise ValueError(
+            f"stage mismatch: expected={stage!r}, actual={result.stage!r}"
+        )
+    if result.analysis_date != scan.name:
+        raise ValueError(
+            "analysis_date mismatch: "
+            f"expected={scan.name!r}, actual={result.analysis_date!r}"
+        )
+    contract_path = scan / "run_contract.json"
+    current_hash = (
+        load_run_contract(contract_path).contract_hash
+        if contract_path.exists()
+        else None
+    )
+    if result.contract_hash != current_hash:
+        raise ValueError(
+            "contract_hash mismatch: "
+            f"expected={current_hash!r}, actual={result.contract_hash!r}"
+        )
+    return result
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="stage_result")
+    sub = parser.add_subparsers(dest="command", required=True)
+    show = sub.add_parser("show")
+    show.add_argument("scan_dir")
+    show.add_argument("stage")
+    args = parser.parse_args(argv)
+    try:
+        result = verified_stage_result(args.scan_dir, args.stage)
+        print(
+            json.dumps(
+                result.to_dict(),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 0
+    except Exception as exc:  # noqa: BLE001 — CLI returns one structured fault
+        print(
+            json.dumps(
+                {
+                    "status": "INVALID",
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

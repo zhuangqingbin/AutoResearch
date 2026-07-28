@@ -116,7 +116,12 @@ def test_gate_cli_writes_success_stage_result_without_changing_stdout(
     assert "status" not in legacy
     assert result.status == "SUCCEEDED"
     assert result.artifacts == ["finalists"]
-    assert result.metrics == {"budget": 10, "n": 1}
+    assert result.metrics == {
+        "budget": 10,
+        "finalists": ["000001"],
+        "meta": {"000001": {"name": "", "sector": ""}},
+        "n": 1,
+    }
     assert result.error is None
 
 
