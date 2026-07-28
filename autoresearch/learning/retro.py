@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -579,7 +580,74 @@ def attribute(date: str, scan_root: Path | None = None, report_root: Path | None
     pairs = build_retro_pairs(attr)                  # M1·同日 fail/success 对(成熟日才非空)
     if not pairs.empty:                              # presence-gated:未成熟日不落文件
         pairs.to_csv(outdir / "_retro_pairs.csv", index=False)
+    from autoresearch.scan.outbox import safe_emit_retro_finalized_event
+    from autoresearch.scan.post_run import (
+        initialize_consumer_state,
+        safe_run_consumers,
+    )
+
+    if safe_emit_retro_finalized_event(sdir) is not None:
+        initialize_consumer_state(sdir)
+        is_real = sdir.resolve() == (
+            Path("context/scan") / date
+        ).resolve()
+        if is_real:
+            safe_run_consumers(sdir)
+    _publish_retro_control_state(
+        sdir,
+        report_root=report_root or Path("reports/scan"),
+    )
     return attr
+
+
+def _publish_retro_control_state(
+    scan_dir: Path,
+    *,
+    report_root: Path,
+) -> None:
+    """Refresh health/index and mirror finite retro facts into report trace."""
+    import contextlib
+
+    scan = Path(scan_dir)
+    report = _report_dir_for(scan.name, Path(report_root))
+    with contextlib.suppress(Exception):
+        from autoresearch.scan.health import write_run_health
+
+        write_run_health(scan)
+    with contextlib.suppress(Exception):
+        from autoresearch.scan.artifacts import write_artifact_index
+
+        index = write_artifact_index(scan, report_dir=report)
+        if report is None:
+            return
+        trace = report / "trace"
+        trace.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(index, trace / "artifact_index.json")
+        health = scan / "run_health.json"
+        if health.exists():
+            shutil.copy2(health, trace / "run_health.json")
+
+        for directory in ("retro", "outbox"):
+            source = scan / directory
+            if not source.is_dir():
+                continue
+            target = trace / directory
+            target.mkdir(parents=True, exist_ok=True)
+            for path in sorted(source.glob("*")):
+                if path.is_file():
+                    shutil.copy2(path, target / path.name)
+
+        shadow = scan / "shadow"
+        if shadow.is_dir():
+            target = trace / "shadow"
+            target.mkdir(parents=True, exist_ok=True)
+            for path in sorted(shadow.rglob("*")):
+                if not path.is_file():
+                    continue
+                relative = path.relative_to(shadow)
+                destination = target / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, destination)
 
 
 def backfill_bought(scan_root: Path | str | None = None) -> int:

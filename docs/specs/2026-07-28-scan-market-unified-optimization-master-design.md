@@ -1317,6 +1317,33 @@ Wave 1 不改变 L1/L3 选择、L4 rubric、门阈值、`fwd_2_oc` 主尺或 BUY
 后续工作从 Wave 2 的首次死亡点、0-BUY 日级裁决、审计篮、早停影子和
 ensemble 折回账本开始。
 
+#### 2026-07-28 第五批实现状态（Wave 2 软件完成）
+
+已完成：
+
+- 每个 attribution-universe 股票生成唯一首次死亡点；L0/L1/L2/pass1/L3 bench/
+  L4 早停/单门/多门/rubric/ensemble/BUY/不可判互斥；
+- 0-BUY 日写 hash 校验的 `abstention_verdict.json`，按次日开盘可交易、
+  `fwd_2_oc` 相对全市场中位 `+2pp` 判 FALSE，未成熟显式记 IMMATURE；
+- 三门统计改为 DecisionRecord-first，唯一 FAIL、多门 FAIL、UNKNOWN 分别进入
+  单门/多门/不可判，旧 Markdown 仅用于结构化事实缺席的历史日；
+- L3 bench 固定 20% 影子审计篮与早停 SHA-256 稳定抽样深审均物理隔离在
+  `shadow/`，不能写正式卡、终评级或交易建议；
+- ensemble 账本分开计算 `ow_review` 与 `sell_review` 的折对/折错/中性；
+  degraded 记 UNDECIDABLE，同档早停保留真实两跑事实；
+- `RETRO_FINALIZED` 携 attribution/rejection 两份内容 hash；七个 Wave 2
+  consumer 独立回执、独立失败、独立重试，不重跑价格归因；
+- health 新增 rejection 完整性、abstention 数据质量、三门三态、shadow 队列和
+  retro consumer backlog；ArtifactIndex 注册表由 19 类增至 26 类，retro/outbox/
+  shadow 有产物时补发到对应报告 trace；
+- 全量测试 `1854 passed`，两条既有 pandas FutureWarning；从 Wave 1 完成点
+  `e53198e` 到当前，L3/L4 正式选择、评级、门阈值、BUY 频率及两个生产 Workflow
+  无行为 diff，唯一新增 Workflow 是独立的 `earlystop-shadow.js`。
+
+软件完成不等于研究结论成熟：L3 审计篮仍需 20 个前向扫描日；每个早停停因与
+ensemble trigger family 仍需至少 10 个成熟样本。任何门、阈值、早停或折回规则
+均未因此自动晋升。
+
 ### Wave 2：0-BUY 可解释与研究闭环
 
 目标：回答每个 0 BUY 是正确弃权还是漏判。

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -248,3 +250,67 @@ def test_attribute_message_names_the_wait(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError) as ei:
         R.attribute("2026-07-24", scan_root=tmp_path)
     assert "17:00" in str(ei.value) and "空归因" in str(ei.value)
+
+
+def _retro_event_fixture(scan_root, date="2026-07-24"):
+    day = scan_root / date
+    day.mkdir(parents=True)
+    codes = [f"{i:06d}" for i in range(100)]
+    pd.DataFrame(
+        {
+            "code": codes,
+            "composite": range(100),
+            "recalled": [False] * 100,
+        }
+    ).to_csv(day / "L1_scored_full.csv", index=False)
+    realized = pd.DataFrame(
+        {
+            "code": codes,
+            "fwd_1_oo": [0.0] * 100,
+            "fwd_2_oc": [i / 10000 for i in range(100)],
+            "fwd_5_oc": [np.nan] * 100,
+            "buyable": [True] * 100,
+        }
+    )
+    return day, realized
+
+
+def test_attribute_emits_retro_event_but_temp_scan_skips_global_consumers(
+    tmp_path,
+    monkeypatch,
+):
+    from autoresearch.scan.outbox import load_events
+
+    day, realized = _retro_event_fixture(tmp_path)
+    monkeypatch.setattr(retro, "realized_returns", lambda _date: realized)
+    calls = []
+    monkeypatch.setattr(
+        "autoresearch.scan.post_run.safe_run_consumers",
+        lambda scan: calls.append(scan),
+    )
+
+    retro.attribute(day.name, scan_root=tmp_path)
+
+    events = load_events(day / "outbox" / "events.json")
+    assert [event.event_type for event in events] == ["RETRO_FINALIZED"]
+    assert calls == []
+    assert (day / "artifact_index.json").exists()
+
+
+def test_attribute_runs_global_consumers_only_for_real_scan_path(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    scan_root = tmp_path / "context" / "scan"
+    day, realized = _retro_event_fixture(scan_root)
+    monkeypatch.setattr(retro, "realized_returns", lambda _date: realized)
+    calls = []
+    monkeypatch.setattr(
+        "autoresearch.scan.post_run.safe_run_consumers",
+        lambda scan: calls.append(Path(scan)),
+    )
+
+    retro.attribute(day.name)
+
+    assert calls == [Path("context/scan") / day.name]

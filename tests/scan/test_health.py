@@ -302,6 +302,101 @@ def test_post_run_health_rejects_corrupt_events(tmp_path):
     assert "JSONDecodeError" in result["error"]
 
 
+def test_retro_health_reports_facts_gates_consumers_and_shadow_counts(
+    tmp_path,
+):
+    from autoresearch.learning.abstention_ledger import (
+        write_abstention_verdict,
+    )
+    from autoresearch.scan.outbox import OutboxEvent, emit_events
+
+    d = _mk_day(tmp_path, "2026-07-28")
+    (d / "retro").mkdir()
+    attr = pd.DataFrame(
+        [
+            {"code": "000001", "fwd_2_oc": 0.03},
+            {"code": "000002", "fwd_2_oc": -0.03},
+            {"code": "000003", "fwd_2_oc": 0.0},
+        ]
+    )
+    attr.to_csv(d / "retro" / "attribution.csv", index=False)
+    rejection = pd.DataFrame(
+        [
+            {
+                "date": d.name,
+                "code": "000001",
+                "first_rejection_stage": "L4_GATE_MAIN",
+                "final_action": "ABSTAIN",
+                "gate_state_quality": "COMPLETE",
+                "buyable": True,
+                "mature": True,
+                "excess_2": 0.03,
+                "opportunity": True,
+            },
+            {
+                "date": d.name,
+                "code": "000002",
+                "first_rejection_stage": "L4_MULTI_GATE",
+                "final_action": "ABSTAIN",
+                "gate_state_quality": "COMPLETE",
+                "buyable": True,
+                "mature": True,
+                "excess_2": -0.03,
+                "opportunity": False,
+            },
+            {
+                "date": d.name,
+                "code": "000003",
+                "first_rejection_stage": "DATA_UNDECIDABLE",
+                "final_action": "ABSTAIN",
+                "gate_state_quality": "UNKNOWN",
+                "buyable": True,
+                "mature": True,
+                "excess_2": 0.0,
+                "opportunity": False,
+            },
+        ]
+    )
+    rejection.to_csv(d / "retro" / "rejection_attribution.csv", index=False)
+    write_abstention_verdict(d, rejection)
+    (d / "shadow").mkdir()
+    pd.DataFrame({"code": ["000002", "000003"]}).to_csv(
+        d / "shadow" / "l3_audit_candidates.csv",
+        index=False,
+    )
+    event = OutboxEvent.build(
+        event_type="RETRO_FINALIZED",
+        analysis_date=d.name,
+        run_id=None,
+        contract_hash=None,
+        aggregate_id=d.name,
+        payload={
+            "attribution_hash": "a" * 64,
+            "rejection_attribution_hash": "b" * 64,
+        },
+        created_at="2026-07-28T10:00:00Z",
+    )
+    emit_events(d, [event])
+
+    result = run_health(d)["retro"]
+
+    assert result["rejection"]["status"] == "OK"
+    assert result["rejection"]["n_rows"] == 3
+    assert result["abstention"]["verdict"] == "FALSE"
+    assert result["abstention"]["data_quality"] == "DEGRADED"
+    assert result["gate_counts"] == {"unique": 1, "multi": 1, "unknown": 1}
+    assert result["shadow_queues"]["l3_audit"] == 2
+    assert result["retro_consumers"]["status"] == "BACKLOG"
+    assert result["retro_consumers"]["pending"] > 0
+
+
+def test_retro_health_absence_is_advisory(tmp_path):
+    d = _mk_day(tmp_path, "2026-07-28")
+    result = run_health(d)["retro"]
+    assert result["status"] == "ABSENT"
+    assert result["rejection"]["status"] == "ABSENT"
+
+
 def test_finalist_churn(tmp_path):
     _mk_day(tmp_path, "2026-07-01", codes=("000001", "000002"))
     d = _mk_day(tmp_path, "2026-07-02", codes=("000002", "000003"))

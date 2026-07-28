@@ -39,6 +39,24 @@ def test_index_hashes_scan_and_report_artifacts(tmp_path):
         '{"receipts":[]}',
         encoding="utf-8",
     )
+    (scan / "retro").mkdir()
+    (scan / "retro" / "attribution.csv").write_text(
+        "code,fwd_2_oc\n000001,0.1\n",
+        encoding="utf-8",
+    )
+    (scan / "retro" / "rejection_attribution.csv").write_text(
+        "code,first_rejection_stage\n000001,BOUGHT\n",
+        encoding="utf-8",
+    )
+    (scan / "retro" / "abstention_verdict.json").write_text(
+        '{"status":"NOT_ABSTAINED"}',
+        encoding="utf-8",
+    )
+    (scan / "shadow").mkdir()
+    (scan / "shadow" / "l3_audit_candidates.csv").write_text(
+        "code\n000001\n",
+        encoding="utf-8",
+    )
     (report / "summary.md").write_text("# summary", encoding="utf-8")
     (report / "manifest.json").write_text(
         '{"analysis_date":"2026-07-28"}',
@@ -61,7 +79,11 @@ def test_index_hashes_scan_and_report_artifacts(tmp_path):
     assert len(rows["decision_records"]["content_hash"]) == 64
     assert rows["outbox_events"]["status"] == "PRESENT"
     assert rows["consumer_state"]["status"] == "PRESENT"
-    assert len(rows) == 19
+    assert rows["retro_attribution"]["status"] == "PRESENT"
+    assert rows["rejection_attribution"]["status"] == "PRESENT"
+    assert rows["abstention_verdict"]["status"] == "PRESENT"
+    assert rows["l3_audit_candidates"]["status"] == "PRESENT"
+    assert len(rows) == 26
     assert rows["finalists"]["status"] == "MISSING"
     assert rows["finalists"]["content_hash"] is None
     assert rows["market_pack"]["input_hash"] is None

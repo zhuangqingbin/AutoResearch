@@ -28,6 +28,15 @@ SUBSCRIPTIONS = {
         "pinned_ledger",
         "precedents",
     },
+    "RETRO_FINALIZED": {
+        "abstention_ledger",
+        "cross_calib",
+        "earlystop_shadow",
+        "ensemble_ledger",
+        "gate_ledger",
+        "l3_audit_ledger",
+        "zero_buy_ledger",
+    },
     "DOSSIER_DELTA_READY": {"dossier_delta"},
 }
 ConsumerHandler = Callable[[OutboxEvent, Path], object]
@@ -216,12 +225,17 @@ def _dossier_delta(event: OutboxEvent, scan: Path) -> object:
 
 def default_registry() -> dict[str, ConsumerHandler]:
     names = (
+        "abstention_ledger",
         "journal",
         "buy_ledger",
+        "cross_calib",
         "zero_buy_ledger",
         "paper_nav",
         "gate_ledger",
         "earlystop_ledger",
+        "earlystop_shadow",
+        "ensemble_ledger",
+        "l3_audit_ledger",
         "pinned_ledger",
     )
     return {
@@ -319,11 +333,16 @@ def consumer_status(
     *,
     registry: dict[str, ConsumerHandler] | None = None,
     subscriptions: dict[str, set[str]] | None = None,
+    event_types: set[str] | None = None,
 ) -> dict:
     scan = Path(scan_dir)
     handlers = registry or default_registry()
     routes = subscriptions or SUBSCRIPTIONS
     events = load_events(outbox_path(scan))
+    if event_types is not None:
+        events = [
+            event for event in events if event.event_type in event_types
+        ]
     state_path = consumer_state_path(scan)
     receipts = (
         load_consumer_receipts(state_path)

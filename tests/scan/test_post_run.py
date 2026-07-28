@@ -177,3 +177,54 @@ def test_status_cli_reports_corrupt_control_file(tmp_path, capsys):
     result = json.loads(capsys.readouterr().out)
     assert result["status"] == "INVALID"
     assert "JSONDecodeError" in result["error"]
+
+
+def test_retro_consumers_retry_independently_from_price_attribution(tmp_path):
+    scan = tmp_path / "2026-07-28"
+    scan.mkdir()
+    event = OutboxEvent.build(
+        event_type="RETRO_FINALIZED",
+        analysis_date=scan.name,
+        run_id="run-1",
+        contract_hash=None,
+        aggregate_id=scan.name,
+        payload={
+            "attribution_hash": "a" * 64,
+            "rejection_attribution_hash": "b" * 64,
+        },
+        created_at="2026-07-28T10:00:00Z",
+    )
+    emit_events(scan, [event])
+    calls = {"l3": 0, "ensemble": 0}
+
+    def l3(_event, _scan):
+        calls["l3"] += 1
+
+    def fail(_event, _scan):
+        calls["ensemble"] += 1
+        raise RuntimeError("boom")
+
+    first = run_consumers(
+        scan,
+        registry={"l3_audit_ledger": l3, "ensemble_ledger": fail},
+    )
+    second = run_consumers(
+        scan,
+        registry={"l3_audit_ledger": l3, "ensemble_ledger": l3},
+        only={"ensemble_ledger"},
+        retry_failed=True,
+    )
+
+    assert first.succeeded == 1 and first.failed == 1
+    assert second.succeeded == 1
+    assert calls == {"l3": 2, "ensemble": 1}
+    status = consumer_status(
+        scan,
+        registry={
+            "l3_audit_ledger": l3,
+            "ensemble_ledger": l3,
+        },
+        event_types={"RETRO_FINALIZED"},
+    )
+    assert status["status"] == "OK"
+    assert status["expected"] == 2

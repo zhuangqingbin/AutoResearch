@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import sys
 from dataclasses import asdict, dataclass, replace
@@ -20,6 +21,7 @@ EVENT_TYPES = {
     "GATE_FAILED",
     "EARLY_STOPPED",
     "DOSSIER_DELTA_READY",
+    "RETRO_FINALIZED",
 }
 
 
@@ -180,6 +182,14 @@ def _identity(scan: Path) -> tuple[str | None, str | None, str]:
     return contract.run_id, contract.contract_hash, contract.created_at
 
 
+def _content_hash(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _convictions(scan: Path) -> dict[str, str]:
     path = scan / "finalists.csv"
     if not path.exists():
@@ -283,4 +293,43 @@ def safe_emit_finalization_events(scan_dir: Path | str) -> Path | None:
         )
     except Exception as exc:  # noqa: BLE001 — post-run facts cannot block report
         print(f"[outbox] 写入失败: {exc}", file=sys.stderr)
+        return None
+
+
+def build_retro_finalized_event(
+    scan_dir: Path | str,
+) -> OutboxEvent:
+    """Build one semantic event from the two immutable retro fact views."""
+    scan = Path(scan_dir)
+    attribution = scan / "retro" / "attribution.csv"
+    rejection = scan / "retro" / "rejection_attribution.csv"
+    if not attribution.exists() or not rejection.exists():
+        raise FileNotFoundError(
+            "RETRO_FINALIZED requires attribution and rejection attribution"
+        )
+    run_id, contract_hash, created_at = _identity(scan)
+    return OutboxEvent.build(
+        event_type="RETRO_FINALIZED",
+        analysis_date=scan.name,
+        run_id=run_id,
+        contract_hash=contract_hash,
+        aggregate_id=scan.name,
+        payload={
+            "attribution_hash": _content_hash(attribution),
+            "rejection_attribution_hash": _content_hash(rejection),
+        },
+        created_at=created_at,
+    )
+
+
+def safe_emit_retro_finalized_event(
+    scan_dir: Path | str,
+) -> Path | None:
+    try:
+        return emit_events(
+            scan_dir,
+            [build_retro_finalized_event(scan_dir)],
+        )
+    except Exception as exc:  # noqa: BLE001 — learning dispatch is replayable
+        print(f"[outbox] RETRO_FINALIZED 写入失败: {exc}", file=sys.stderr)
         return None

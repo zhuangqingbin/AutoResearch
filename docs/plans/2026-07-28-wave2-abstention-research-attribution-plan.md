@@ -30,7 +30,20 @@ Wave 2 answers five separate questions:
 - [x] Task 4: L3 shadow audit basket
 - [x] Task 5: early-stop shadow deep-review queue
 - [x] Task 6: ensemble fold outcome ledger
-- [ ] Task 7: retro events, health, parity, and documentation
+- [x] Task 7: retro events, health, parity, and documentation
+
+Status: **software complete 2026-07-28**. The full acceptance run completed
+with `1854 passed` and two pre-existing pandas `FutureWarning`s. This means the
+fact contracts, shadow cohorts, replay paths, health probes, and parity guards
+are implemented; it does **not** mean the forward samples are mature.
+
+Current research maturity remains deliberately separate:
+
+- L3 audit remains `IMMATURE` until 20 forward scan days;
+- every early-stop reason remains `IMMATURE` until 10 mature shadow reviews;
+- each ensemble trigger family remains `IMMATURE` until 10 mature folds;
+- no gate, threshold, selection rule, early-stop rule, or ensemble rule was
+  promoted by this wave.
 
 ## Non-negotiable invariants
 
@@ -483,3 +496,18 @@ git commit -m "docs(learning): complete wave2 attribution controls"
 - Existing reports, ratings, thresholds, and `fwd_2_oc` semantics remain
   unchanged.
 - Full test suite passes.
+
+## Completion evidence
+
+- `RETRO_FINALIZED` carries stable SHA-256 hashes of both attribution facts and
+  independently dispatches seven replayable learning consumers.
+- Temporary scan roots persist local event/control facts but never execute
+  global report consumers; only `context/scan/<date>` does.
+- Health validates rejection-universe parity, abstention hash/data quality,
+  unique/multi/unknown counts, shadow queue depth, and retro consumer backlog.
+- ArtifactIndex now registers 26 finite artifact classes. Retro/outbox/shadow
+  facts are refreshed into the matching report trace when present.
+- The invariant diff from Wave 1 completion (`e53198e`) is empty for
+  `scan/config.py`, `scan/recall`, rating utilities, and the two production
+  Workflows. The sole added Workflow is `earlystop-shadow.js`.
+- Full suite: `1854 passed, 2 warnings`.

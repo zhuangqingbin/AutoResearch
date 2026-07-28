@@ -10,6 +10,7 @@ from autoresearch.scan.decision_record import DecisionRecord, write_decision_rec
 from autoresearch.scan.outbox import (
     OutboxEvent,
     build_finalization_events,
+    build_retro_finalized_event,
     emit_events,
     load_events,
 )
@@ -164,3 +165,25 @@ def test_emitted_finalization_events_are_semantically_idempotent(tmp_path):
     first = emit_events(scan, build_finalization_events(scan)).read_bytes()
     second = emit_events(scan, build_finalization_events(scan)).read_bytes()
     assert second == first
+
+
+def test_retro_finalized_event_carries_stable_fact_hashes(tmp_path):
+    scan = _finalized_scan(tmp_path)
+    (scan / "retro").mkdir()
+    attribution = scan / "retro" / "attribution.csv"
+    rejection = scan / "retro" / "rejection_attribution.csv"
+    attribution.write_text("code,fwd_2_oc\n000001,0.1\n", encoding="utf-8")
+    rejection.write_text(
+        "code,first_rejection_stage\n000001,BOUGHT\n",
+        encoding="utf-8",
+    )
+
+    event = build_retro_finalized_event(scan)
+    again = build_retro_finalized_event(scan)
+
+    assert event.event_type == "RETRO_FINALIZED"
+    assert event.event_id == again.event_id
+    assert len(event.payload["attribution_hash"]) == 64
+    assert len(event.payload["rejection_attribution_hash"]) == 64
+    attribution.write_text("code,fwd_2_oc\n000001,0.2\n", encoding="utf-8")
+    assert build_retro_finalized_event(scan).event_id != event.event_id

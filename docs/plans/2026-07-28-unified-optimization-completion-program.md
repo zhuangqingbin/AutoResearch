@@ -84,7 +84,12 @@ Exit evidence:
 Detailed plan:
 `docs/plans/2026-07-28-wave2-abstention-research-attribution-plan.md`.
 
-Planned components:
+Status: **software completed 2026-07-28**. ArtifactIndex now registers 26
+finite artifact classes; full-suite acceptance is `1854 passed` with the same
+two pre-existing pandas `FutureWarning`s. All new outcome cohorts remain
+shadow/measurement-only until their explicit forward-sample gates mature.
+
+Implemented components:
 
 - `autoresearch/learning/rejection_attribution.py`
 - `autoresearch/learning/abstention_ledger.py`
@@ -101,6 +106,10 @@ Exit evidence:
   T+2 mature.
 - Audit-basket, early-stop-shadow, and ensemble ledgers are separate from
   production rating behavior and production token baselines.
+- `RETRO_FINALIZED` makes all Wave 2 reports independently replayable and
+  health-observable without rerunning price attribution.
+- No L3/L4 selection, gate, rating, BUY quota, or production Workflow behavior
+  changed. Sample maturity is not claimed by software completion.
 
 ### Wave 3 — token and speed controls
 
