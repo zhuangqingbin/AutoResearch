@@ -121,11 +121,23 @@ def cache_hit_rate(rows: list[dict]) -> float | None:
 
 
 def collect(sub_dir: Path | str) -> list[dict]:
-    """目录下所有 `agent-*.jsonl` → 逐 agent usage(按计费输入降序)。"""
+    """目录下(**递归**)所有 `agent-*.jsonl` → 逐 agent usage(按加权降序)。
+
+    递归是必需的,不是保险:harness 把 **Agent 工具直派**的 subagent 放在 `subagents/` 扁平层,
+    把 **workflow 派**的放在 `subagents/workflows/wf_<id>/` —— 而本项目一次扫描的 agent 几乎
+    全部来自 workflow。原先的非递归 `glob("agent-*.jsonl")` 只看得见扁平层,于是
+    2026-07-27 的 CP7 首读对着 45 个真实 transcript 报「无 transcript」,只能改走
+    `--transcripts '<dir>/**/agent-*.jsonl'` 后门手搓(Wave7 B′-a)。
+    正门与后门给出同一张表是 CP7 作为裁决基础的前提 —— 读数不该取决于走了哪个入口。
+
+    `rglob` 天然按路径去重(同一份 transcript 不会被两条 glob 各收一次 = 账单翻倍);
+    session 目录下的一切按构造都属于该 session,不存在「别的 session 混入」问题
+    (那是手写 `--transcripts` glob 才需要自己当心的事)。
+    """
     d = Path(sub_dir)
     if not d.is_dir():
         return []
-    rows = [usage_of(p) for p in sorted(d.glob("agent-*.jsonl"))]
+    rows = [usage_of(p) for p in sorted(d.rglob("agent-*.jsonl"))]
     return sorted(rows, key=lambda r: -r["weighted_in"])   # 按真实贵不贵排,不按原始量
 
 

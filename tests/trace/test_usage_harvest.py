@@ -167,3 +167,54 @@ def test_transcripts_glob_mode(tmp_path):
     rows = U.collect_glob(str(tmp_path / "*" / "agent-*.jsonl"))
 
     assert len(rows) == 1 and rows[0]["agent"] == "l4-card"
+
+
+# ── Wave7 B′-a:正门必须收得到 workflow subagent ────────────────────────────
+#
+# 2026-07-27 实跑:`--session <id>` 报「无 transcript」,而同一批 transcript 用
+# `--transcripts '<subagents>/**/agent-*.jsonl'` 能出 45 行表 —— 因为 workflow 派的
+# agent 落在 `subagents/workflows/wf_*/`,比 collect() 的非递归 glob 深两层。
+# CP7 是 Wave6/Wave7 全部 token 刀的裁决基础,正门瞎 = 每次都得走后门手搓。
+
+
+def test_collect_finds_workflow_subagents(tmp_path):
+    """collect() 必须收 `workflows/wf_*/agent-*.jsonl` —— 这是 workflow 派 agent 的真实落点。"""
+    wf = tmp_path / "workflows" / "wf_39a95f6b-3a2"
+    wf.mkdir(parents=True)
+    _write(wf, "agent-a.jsonl", [_row("m1", 100, 900_000, 100_000, agent="l3-rank")])
+
+    rows = U.collect(tmp_path)
+
+    assert [r["agent"] for r in rows] == ["l3-rank"], \
+        "正门收不到 workflow agent(2026-07-27 CP7 首读翻车的原因)"
+
+
+def test_collect_merges_flat_and_workflow_layers(tmp_path):
+    """扁平层(Agent 工具直派)与 workflow 层同时存在时,两层都要收,且不重复计数。"""
+    _write(tmp_path, "agent-flat.jsonl", [_row("m1", 50, 90_000, 10_000, agent="Explore")])
+    wf = tmp_path / "workflows" / "wf_x"
+    wf.mkdir(parents=True)
+    _write(wf, "agent-deep.jsonl", [_row("m2", 100, 900_000, 100_000, agent="l3-rank")])
+
+    rows = U.collect(tmp_path)
+
+    assert sorted(r["agent"] for r in rows) == ["Explore", "l3-rank"]
+    assert len(rows) == 2, "同一份 transcript 被两条 glob 各收一次 = 账单翻倍"
+
+
+def test_collect_dir_and_glob_agree(tmp_path):
+    """同一批 transcript,正门(collect)与后门(collect_glob)必须给出同一张表。
+
+    2026-07-27 只有后门能出表 —— 两条路不一致时,读数取决于「你走了哪个入口」,
+    这正是 CP7 作为裁决基础最不能有的性质。
+    """
+    wf = tmp_path / "workflows" / "wf_x"
+    wf.mkdir(parents=True)
+    _write(wf, "agent-1.jsonl", [_row("m1", 20, 30_000, 3_000, agent="l4-intel")])
+    _write(wf, "agent-2.jsonl", [_row("m2", 40, 60_000, 6_000, agent="l4-card")])
+
+    front = U.collect(tmp_path)
+    back = U.collect_glob(str(tmp_path / "**" / "agent-*.jsonl"))
+
+    assert [(r["agent"], r["weighted_in"]) for r in front] == \
+           [(r["agent"], r["weighted_in"]) for r in back]
