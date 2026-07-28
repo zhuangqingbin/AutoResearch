@@ -138,14 +138,31 @@ def l4_phase_stats(scan_dir: Path) -> dict | None:
 
 
 def final_ratings(scan_dir: Path) -> dict[str, str]:
-    """{code: 最终评级}(finalists → parse_rating(卡)→ verify 降级折回)。与 assemble 同口径。"""
+    """{code: 最终评级}(finalists → parse_rating(卡)→ verify 降级折回 → **ensemble 复核折回**)。
+
+    与 assemble 同口径 —— assemble 里跑的是**两个** fold 循环,这里此前只跑了 verify 那个,
+    ensemble(≥OW 买单复核 / pinned SELL 复核)那条腿漏了(Wave7 P1 发现)。后果:
+    · sell_review 把 Sell 折回 Underweight 后,本函数仍报 Sell —— 07-24/07-27 的 300857 实锤,
+      与同目录 `_final_ratings.json`(assemble 落的权威值)直接打架;
+    · ow_review 只向下折,一旦发生,`buy_ledger`/`count_buys`/`paper_nav`/`shadow_buys`
+      会把一张已被折成 Hold 的卡继续算作买单 = 幽灵买单。历史上尚未发生(全量重放 0 例),
+      所以既有账本没被污染 —— 但这是运气,不是设计。
+    `retro.py` 早已绕过本函数直读 `_final_ratings.json`(注释「P0-2 坏账③修复」),
+    那是在消费侧打补丁;本次修在源头,让绕道不再必要。
+    """
     scan_dir = Path(scan_dir)
     fin = _read(scan_dir / "finalists.csv")
     if fin is None or "code" not in fin.columns:
         return {}
     from autoresearch.agents.utils.rating import parse_rating  # lazy 防环
-    from autoresearch.scan.assemble import _apply_verify_downgrade, _load_verify
+    from autoresearch.scan.assemble import (
+        _apply_ensemble_fold,
+        _apply_verify_downgrade,
+        _load_ensemble,
+        _load_verify,
+    )
     vmap = _load_verify(scan_dir)
+    emap = _load_ensemble(scan_dir)
     out: dict[str, str] = {}
     for code in fin["code"].astype(str).str.zfill(6):
         p = scan_dir / "details" / f"{code}.md"
@@ -155,6 +172,7 @@ def final_ratings(scan_dir: Path) -> dict[str, str]:
         v = vmap.get(code)
         if v and v["verdict"] in ("降级", "否决"):
             rating = _apply_verify_downgrade(rating, v["verdict"])
+        rating = _apply_ensemble_fold(rating, emap.get(code))   # 顺序与 assemble 一致:verify → ensemble
         out[code] = rating
     return out
 

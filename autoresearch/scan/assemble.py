@@ -1312,7 +1312,9 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
         # `earlystop_ledger.md` 仍写着「无早停记录」,Wave6 R3 验收④ 因此记 ✗。
         # (journal/buy_ledger 读 finalists.csv 属另一类:它们本就是聚合历史,跑前刷拿到的是
         # 截至昨日的全量,设计如此,不在此列。)幂等,失败不阻发布。
-        for _mod_name in ("earlystop_ledger", "gate_ledger"):
+        # pinned_ledger 同族(Wave7 P1):它读 finalists 的 pinned 行 × 本次终评级 ×
+        # attribution —— 当天的行必须当天进表(哪怕 fwd 未成熟,「今天判了什么」本身就是账)。
+        for _mod_name in ("earlystop_ledger", "gate_ledger", "pinned_ledger"):
             with contextlib.suppress(Exception):
                 import importlib
                 importlib.import_module(f"autoresearch.learning.{_mod_name}").main()

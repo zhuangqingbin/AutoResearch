@@ -80,3 +80,4 @@ def test_assemble_refreshes_ledgers_whose_input_it_just_wrote():
     assert tail, "assemble 的 journal 刷新锚点不见了(本测试的定位假设已失效,请重写)"
     assert "earlystop_ledger" in tail, "assemble 收尾没刷 earlystop_ledger → 账本恒落后一个 run"
     assert "gate_ledger" in tail, "assemble 收尾没刷 gate_ledger(gate_fires.csv 同族时序问题)"
+    assert "pinned_ledger" in tail, "assemble 收尾没刷 pinned_ledger(持仓判断当天必须进表)"

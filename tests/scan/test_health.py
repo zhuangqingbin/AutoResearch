@@ -239,3 +239,63 @@ def test_assemble_writes_health_and_index(tmp_path):
     assert (d / "run_health.json").exists()
     assert (base / "trace" / "run_health.json").exists()
     assert (base / "index.md").exists() and "扫描现场索引" in (base / "index.md").read_text(encoding="utf-8")
+
+
+# ══ Wave7 P1:final_ratings 必须含 ensemble 折回那条腿 ════════════════════════
+#
+# assemble 里跑的是**两个** fold 循环(verify + ensemble),而 health.final_ratings 此前
+# 只跑了 verify 那个 —— docstring 却写着「与 assemble 同口径」。
+# 后果:sell_review 把 Sell 折回 Underweight 后本函数仍报 Sell(07-24/07-27 的 300857 实锤,
+# 与同目录 _final_ratings.json 直接打架);ow_review 只向下折,一旦发生,buy_ledger /
+# count_buys / paper_nav / shadow_buys 会把已折成 Hold 的卡继续算作买单 = 幽灵买单。
+# 历史上尚未发生 ow 折回(全量重放 0 例)—— 既有账本没被污染是运气,不是设计。
+# retro.py 早已绕过本函数直读 _final_ratings.json(「P0-2 坏账③修复」),那是消费侧补丁。
+
+
+def _mk_fold_day(tmp_path, rating: str, ens: dict | None):
+    import json as _json
+
+    import pandas as _pd
+    d = tmp_path / "2026-07-27"
+    (d / "details").mkdir(parents=True)
+    _pd.DataFrame([{"code": "300857", "name": "协创", "lane": "pinned"}]).to_csv(
+        d / "finalists.csv", index=False)
+    (d / "details" / "300857.md").write_text(
+        f"〔卡契约 v3〕\n# 决策卡\n**Rating**: {rating}\n", encoding="utf-8")
+    if ens is not None:
+        (d / "_ensemble_300857.json").write_text(_json.dumps(ens), encoding="utf-8")
+    return d
+
+
+def test_final_ratings_applies_sell_review_fold(tmp_path):
+    """sell_review 只向温和折:卡判 Sell、三票中位 Underweight → 终评 Underweight。"""
+    from autoresearch.scan.health import final_ratings
+    d = _mk_fold_day(tmp_path, "Sell", {"code": "300857", "ratings": ["Sell", "Underweight", "Underweight"],
+                                   "median": "Underweight", "spread": 1, "degraded": False,
+                                   "trigger": "sell_review"})
+    assert final_ratings(d)["300857"] == "Underweight"
+
+
+def test_final_ratings_applies_ow_review_fold_down(tmp_path):
+    """ow_review 只向下折:卡判 Overweight、中位 Hold → 终评 Hold(否则是幽灵买单)。"""
+    from autoresearch.scan.health import final_ratings
+    d = _mk_fold_day(tmp_path, "Overweight", {"code": "300857", "ratings": ["Overweight", "Hold", "Hold"],
+                                         "median": "Hold", "spread": 1, "degraded": False,
+                                         "trigger": "ow_review"})
+    assert final_ratings(d)["300857"] == "Hold"
+
+
+def test_final_ratings_respects_degraded_no_fold(tmp_path):
+    """复核 run 不齐(degraded)→ 原样不折,交人裁 —— 与 assemble 语义一致。"""
+    from autoresearch.scan.health import final_ratings
+    d = _mk_fold_day(tmp_path, "Sell", {"code": "300857", "ratings": ["Sell", "Underweight"],
+                                   "median": "Underweight", "spread": 1, "degraded": True,
+                                   "trigger": "sell_review"})
+    assert final_ratings(d)["300857"] == "Sell"
+
+
+def test_final_ratings_without_ensemble_unchanged(tmp_path):
+    """无复核文件 → 老路逐字不破(presence-gated)。"""
+    from autoresearch.scan.health import final_ratings
+    d = _mk_fold_day(tmp_path, "Hold", None)
+    assert final_ratings(d)["300857"] == "Hold"
