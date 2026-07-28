@@ -1293,6 +1293,23 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
     md = build_summary(scan_dir, analysis_date, hhmm, folder, pinned_path=pinned_path)
     summary_path = out_base / "summary.md"
     summary_path.write_text(md, encoding="utf-8")
+    from autoresearch.scan.stage_result import safe_record_stage_result
+
+    safe_record_stage_result(
+        scan_dir,
+        stage="assemble",
+        status="SUCCEEDED",
+        artifacts=["final_ratings", "gate_fires", "run_health", "summary", "manifest"],
+        metrics={"n_cards": n_cards, "n_trace_before_final": n_pipe},
+        warnings=[],
+        error=None,
+    )
+    with contextlib.suppress(Exception):
+        # 正式 gate4 CLI 仍由主会话执行；此处只为最终 health/index 先写同一份影子事实。
+        # StageResult 语义幂等，随后 CLI 对相同结果不会刷新时间或 hash。
+        from autoresearch.scan.gates import gate4, record_gate_stage_result
+
+        record_gate_stage_result(scan_dir, gate4(scan_dir))
     with contextlib.suppress(Exception):
         # Wave6 Q6:build_summary 内部才落 gate_fires.csv —— 上面那次快照必然把它记成
         # missing(07-24 实锤)。这里刷一次让 artifacts/missing 说真话;函数是纯快照,幂等。
@@ -1302,6 +1319,13 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
         # 同时覆盖 trace 里 assemble 前发布的旧 health，保证 staging/trace 同一事实。
         from autoresearch.scan.artifacts import write_artifact_index
 
+        stage_source = scan_dir / "stage_results"
+        stage_trace = out_base / "trace" / "stage_results"
+        if stage_source.is_dir():
+            stage_trace.mkdir(parents=True, exist_ok=True)
+            for stage_file in sorted(stage_source.glob("*.json")):
+                shutil.copy2(stage_file, stage_trace / stage_file.name)
+                n_pipe += 1
         artifact_index_path = write_artifact_index(scan_dir, report_dir=out_base)
         trace_dir = out_base / "trace"
         trace_dir.mkdir(parents=True, exist_ok=True)

@@ -181,6 +181,40 @@ def test_trace_run_health_is_final_refresh(published):
     ).read_bytes() == (staging / "run_health.json").read_bytes()
 
 
+def test_assemble_records_final_stage_results(published):
+    from autoresearch.scan.stage_result import load_stage_result
+
+    stage_dir = published["scan_dir"] / "stage_results"
+    assemble_result = load_stage_result(stage_dir / "assemble.json")
+    gate4_result = load_stage_result(stage_dir / "gate4.json")
+    assert assemble_result.status == "SUCCEEDED"
+    assert assemble_result.artifacts == [
+        "final_ratings", "gate_fires", "run_health", "summary", "manifest",
+    ]
+    assert assemble_result.metrics["n_cards"] == 3
+    assert gate4_result.status == "FAILED"
+    assert gate4_result.artifacts == ["gate_fires"]
+    assert "覆盖率不足" in gate4_result.error
+
+
+def test_stage_results_are_published_and_indexed(published):
+    stage_trace = published["trace"] / "stage_results"
+    assert (stage_trace / "assemble.json").exists()
+    assert (stage_trace / "gate4.json").exists()
+    index = json.loads(
+        (published["scan_dir"] / "artifact_index.json").read_text(encoding="utf-8")
+    )
+    rows = {row["name"]: row for row in index["artifacts"]}
+    assert rows["stage_results"]["status"] == "PRESENT"
+    assert len(rows["stage_results"]["content_hash"]) == 64
+    health = json.loads(
+        (published["scan_dir"] / "run_health.json").read_text(encoding="utf-8")
+    )
+    assert health["stage_results"]["status"] == "OK"
+    assert health["stage_results"]["counts"] == {"FAILED": 1, "SUCCEEDED": 1}
+    assert health["stage_results"]["failed"] == ["gate4"]
+
+
 def test_trace_pipeline_artifacts_published(published):
     pdir = published["trace"]
     for fn in ("L1_recall_top1000.csv", "L2_gbdt_top200.csv", "L3_fine_finalists.csv", "funnel.md",
