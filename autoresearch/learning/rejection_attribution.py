@@ -62,6 +62,21 @@ class _LegacyDecision:
     first_rejection_stage: str | None
 
 
+def decision_gate_bucket(
+    decision: DecisionRecord | _LegacyDecision,
+) -> str | None:
+    """Return the accountable gate bucket without treating UNKNOWN as FAIL."""
+    states = {gate: decision.gate_states.get(gate, "UNKNOWN") for gate in GATES}
+    failed = [gate for gate, state in states.items() if state == "FAIL"]
+    if len(failed) >= 2:
+        return "多门"
+    if any(state == "UNKNOWN" for state in states.values()):
+        return "不可判"
+    if len(failed) == 1:
+        return failed[0]
+    return None
+
+
 def classify_first_death(
     *,
     in_l1: bool,
@@ -96,14 +111,13 @@ def classify_first_death(
     if decision.first_rejection_stage in {"VERIFY", "ENSEMBLE"}:
         return "ENSEMBLE_FOLDED", "COMPLETE"
 
-    states = {gate: decision.gate_states.get(gate, "UNKNOWN") for gate in GATES}
-    failed = [gate for gate, state in states.items() if state == "FAIL"]
-    if len(failed) >= 2:
+    gate_bucket = decision_gate_bucket(decision)
+    if gate_bucket == "多门":
         return "L4_MULTI_GATE", "COMPLETE"
-    if any(state == "UNKNOWN" for state in states.values()):
+    if gate_bucket == "不可判":
         return "DATA_UNDECIDABLE", "UNKNOWN"
-    if len(failed) == 1:
-        return GATE_STAGE[failed[0]], "COMPLETE"
+    if gate_bucket is not None:
+        return GATE_STAGE[gate_bucket], "COMPLETE"
     if decision.first_rejection_stage == "L4_RUBRIC":
         return "L4_RUBRIC_SCORE", "COMPLETE"
     return "DATA_UNDECIDABLE", "UNKNOWN"

@@ -34,16 +34,55 @@ def roll(scan_root: Path | None = None, shrink: bool | None = None,
     `tail_rate_raw` 保留原始比例供审计/回放对照,不收缩。`shrink`/`k` 缺省 → 读
     `scan_config.json` 的 `learning.{shrink,shrink_k}`。
     """
+    from autoresearch.learning.rejection_attribution import decision_gate_bucket
+    from autoresearch.scan.decision_read_model import read_decisions
+
     scan_root = Path(scan_root or "context/scan")
     rows = []
-    for gf in sorted(scan_root.glob("*/gate_fires.csv")):
-        attr_p = gf.parent / "retro" / "attribution.csv"
+    days = {
+        path.parent for pattern in ("*/gate_fires.csv", "*/decision_records.json")
+        for path in scan_root.glob(pattern)
+    }
+    for day in sorted(days):
+        gf = day / "gate_fires.csv"
+        attr_p = day / "retro" / "attribution.csv"
         if not attr_p.exists():
             continue
         try:
-            fires = pd.read_csv(gf, dtype={"code": str})
             attr = pd.read_csv(attr_p, dtype={"code": str})
         except Exception:
+            continue
+        if gf.exists():
+            try:
+                fires = pd.read_csv(gf, dtype={"code": str})
+            except Exception:
+                continue
+        else:
+            fires = pd.DataFrame(columns=["date", "check", "code", "level"])
+
+        decision_path = day / "decision_records.json"
+        if decision_path.exists():
+            records = read_decisions(day)
+            if "check" in fires.columns:
+                fires = fires[
+                    ~fires["check"].astype(str).str.startswith("OW三门·")
+                ].copy()
+            structured = pd.DataFrame(
+                [
+                    {
+                        "date": day.name,
+                        "check": f"OW三门·{bucket}",
+                        "code": code,
+                        "level": "binding",
+                    }
+                    for code, decision in records.items()
+                    if (bucket := decision_gate_bucket(decision)) is not None
+                ]
+            )
+            if len(structured):
+                fires = pd.concat([fires, structured], ignore_index=True)
+
+        if "code" not in fires.columns:
             continue
         fires = fires[fires["code"].astype(str).str.len() > 0]
         if not len(fires) or "fwd_1_oo" not in attr.columns:
@@ -64,7 +103,7 @@ def roll(scan_root: Path | None = None, shrink: bool | None = None,
         j["ex1"] = pd.to_numeric(j.get("fwd_1_oo"), errors="coerce") - m1
         j["ex2"] = (pd.to_numeric(j.get("fwd_2_oc"), errors="coerce") - m2) if "fwd_2_oc" in j.columns else None
         j["ex5"] = (pd.to_numeric(j.get("fwd_5_oc"), errors="coerce") - m5) if "fwd_5_oc" in j.columns else None
-        j["date"] = gf.parent.name
+        j["date"] = day.name
         rows.append(j)
     if not rows:
         return pd.DataFrame(columns=_COLS)

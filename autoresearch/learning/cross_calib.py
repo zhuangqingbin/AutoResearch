@@ -105,17 +105,21 @@ def flip_stats(scan_root: Path | str | None = None, window: int = 30,
 
 def gate_stats(scan_root: Path | str | None = None, window: int = 30,
                min_n: int = 10) -> pd.DataFrame:
-    """binding gate(唯一✗门;≥2✗ 计"多门")× attribution → 每门拦对率/错杀率。
+    """Gate bucket × attribution → 每门拦对率/错杀率。
 
     主口径 T+2(`ex2`,fwd_2_oc);T+5(`ex5`)保留供参考。触价命中走卡契约日期分界
     (`buy_ledger.target_hit_for`:switch 日起按 hi_2_oc 判,旧卡按 hi_10_oc 判)。
+    DecisionRecord 存在时以结构化事实为准:唯一 FAIL、多个 FAIL、UNKNOWN 分别计入
+    本门、"多门"、"不可判";仅历史日缺 DecisionRecord 时才解析 Markdown。
     """
     from autoresearch.learning.buy_ledger import (  # lazy 防环
         _read_attr,
         _target_ret,
         target_hit_for,
     )
+    from autoresearch.learning.rejection_attribution import decision_gate_bucket
     from autoresearch.scan.assemble import gate_status
+    from autoresearch.scan.decision_read_model import read_decisions
     from autoresearch.scan.health import final_ratings
     rows = []
     for d in _days(scan_root, window):
@@ -124,17 +128,27 @@ def gate_stats(scan_root: Path | str | None = None, window: int = 30,
               if attr is not None and "fwd_2_oc" in attr.columns else None)
         m5 = (pd.to_numeric(attr["fwd_5_oc"], errors="coerce").mean()
               if attr is not None and "fwd_5_oc" in attr.columns else None)
-        for code in final_ratings(d):
-            p = d / "details" / f"{code}.md"
-            if not p.exists():
-                continue
-            st = gate_status(p.read_text(encoding="utf-8"))
-            if not st:
-                continue
-            failed = [g for g, f in st.items() if f]
-            if not failed:
-                continue
-            gate = failed[0] if len(failed) == 1 else "多门"
+        if (d / "decision_records.json").exists():
+            gate_rows = [
+                (code, gate)
+                for code, decision in read_decisions(d).items()
+                if (gate := decision_gate_bucket(decision)) is not None
+            ]
+        else:
+            gate_rows = []
+            for code in final_ratings(d):
+                p = d / "details" / f"{code}.md"
+                if not p.exists():
+                    continue
+                st = gate_status(p.read_text(encoding="utf-8"))
+                if not st:
+                    continue
+                failed = [gate for gate, is_failed in st.items() if is_failed]
+                if failed:
+                    gate_rows.append(
+                        (code, failed[0] if len(failed) == 1 else "多门")
+                    )
+        for code, gate in gate_rows:
             ex2 = ex5 = hit = None
             if attr is not None and code in attr.index:
                 def _num(col, code=code, attr=attr):

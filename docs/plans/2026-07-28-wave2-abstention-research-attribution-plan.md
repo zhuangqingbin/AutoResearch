@@ -26,7 +26,7 @@ Wave 2 answers five separate questions:
 
 - [x] Task 1: candidate first-death attribution
 - [x] Task 2: day abstention verdict and causal ledger
-- [ ] Task 3: tri-state unique-gate accountability
+- [x] Task 3: tri-state unique-gate accountability
 - [ ] Task 4: L3 shadow audit basket
 - [ ] Task 5: early-stop shadow deep-review queue
 - [ ] Task 6: ensemble fold outcome ledger
