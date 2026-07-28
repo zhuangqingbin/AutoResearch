@@ -258,6 +258,47 @@ def test_budgets_unknown_subkey_raises(tmp_path):
         load_user_config(p)
 
 
+# ───────────────────────── performance:调度开关，不拥有评级语义 ─────────────────────────
+
+
+def test_performance_switches_whitelisted_and_applied(tmp_path):
+    raw = {
+        "streaming_l4": True,
+        "stable_context_blocks": False,
+        "sector_brief_mode": "all",
+    }
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"performance": raw}), encoding="utf-8")
+
+    cfg = load_user_config(p)
+    sc = apply_to_scan_config(cfg, ScanConfig())
+
+    assert cfg["performance"] == raw
+    assert sc.performance == raw
+
+
+@pytest.mark.parametrize("raw", [
+    {"streaming_l4": "yes"},
+    {"stable_context_blocks": 1},
+    {"sector_brief_mode": "selected"},
+])
+def test_performance_switches_reject_invalid_values(tmp_path, raw):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"performance": raw}), encoding="utf-8")
+    with pytest.raises(ValueError, match="performance"):
+        load_user_config(p)
+
+
+def test_performance_unknown_subkey_raises(tmp_path):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(
+        json.dumps({"performance": {"truncate_on_overrun": True}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="truncate_on_overrun"):
+        load_user_config(p)
+
+
 # ───────────────────────── frame --json:user_config 回显 + run meta 落盘 ─────────────────────────
 
 

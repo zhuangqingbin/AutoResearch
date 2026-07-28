@@ -77,8 +77,10 @@ def _read_jsonc(p: Path):
 # `autoresearch.learning.shrink.shrink_config` 消费,四消费点(l4_card.write_base_rates/
 # cross_calib.flip_stats/buy_ledger 的 target_calib/gate_ledger 的 tail_rate)各自读取。
 # 默认 shrink=true·shrink_k=15(新基线);本块是回滚杆,不是 opt-in。
-_TOP_WHITELIST = {"agents", "funnel", "pinned", "redteam_prob", "reuse", "l4_intel", "l3",
-                  "learning", "budgets"}
+_TOP_WHITELIST = {
+    "agents", "funnel", "pinned", "redteam_prob", "reuse", "l4_intel", "l3",
+    "learning", "budgets", "performance",
+}
 _SUB_WHITELIST = {
     "funnel": {"recall_channels", "channel_quotas", "channel_floors"},
     "pinned": {"cap", "ttl_days"},
@@ -89,6 +91,9 @@ _SUB_WHITELIST = {
     "budgets": {
         "cache_hit_min", "stage_cost_usd", "stage_wall_seconds", "concurrency",
         "min_real_scans", "baseline_run",
+    },
+    "performance": {
+        "streaming_l4", "stable_context_blocks", "sector_brief_mode",
     },
 }
 
@@ -114,6 +119,19 @@ def load_user_config(path: str | Path | None = None) -> dict:
             if unknown_sub:
                 raise ValueError(f"scan_config.json 的 {key} 含未知子键: {unknown_sub}"
                                  f"(白名单={sorted(sub_whitelist)})")
+    performance = cfg.get("performance")
+    if performance is not None:
+        if not isinstance(performance, dict):
+            raise ValueError("scan_config.json 的 performance 必须是 object")
+        for key in ("streaming_l4", "stable_context_blocks"):
+            if key in performance and not isinstance(performance[key], bool):
+                raise ValueError(f"scan_config.json performance.{key} 必须是 boolean")
+        mode = performance.get("sector_brief_mode")
+        if mode is not None and mode not in {"all", "finalist_only"}:
+            raise ValueError(
+                "scan_config.json performance.sector_brief_mode "
+                "必须是 all|finalist_only"
+            )
     return cfg
 
 
@@ -134,7 +152,7 @@ def apply_to_scan_config(cfg: dict, sc: ScanConfig) -> ScanConfig:
             sc.channel_floors = funnel["channel_floors"]
     for key in (
         "agents", "pinned", "redteam_prob", "reuse", "l4_intel", "l3",
-        "learning", "budgets",
+        "learning", "budgets", "performance",
     ):
         if key in cfg:
             setattr(sc, key, cfg[key])

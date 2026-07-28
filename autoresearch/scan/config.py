@@ -41,6 +41,7 @@ class ScanConfig:
     l3: dict | None = None            # {two_pass,pass1_target,finalist_max}
     learning: dict | None = None      # {shrink,shrink_k}
     budgets: dict | None = None       # 成本/墙钟/并发观测预算；不拥有截断权限
+    performance: dict | None = None   # 流式调度/稳定上下文/行业 brief A/B；不拥有评级语义
 
     def to_dict(self) -> dict:
         """落 manifest 的纯 dict(可 JSON 序列化)。"""

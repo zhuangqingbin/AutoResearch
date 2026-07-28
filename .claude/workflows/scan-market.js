@@ -16,6 +16,11 @@ if (!date) throw new Error('args.date 必填,如 {date:"2026-07-07"}')
 // 回显、由调用方随 Workflow args.config 传入(本脚本无文件系统访问,不能自己读文件)。缺省 = {} →
 // 下游 `cfg.agents?.<stage>?.effort ?? '<现值>'` 全部落回硬编码现值(parity)。顶部取一次。
 const cfg = (typeof args === 'string' && args ? JSON.parse(args).config : (args && args.config)) || {}
+// Wave 3 性能开关只改变调度/上下文布局，不拥有 finalist、rubric 或评级语义。
+// streaming 默认开；另外两项默认当前生产行为，均有显式回滚杆。
+const streamingL4 = cfg.performance?.streaming_l4 ?? true
+const stableContextBlocks = cfg.performance?.stable_context_blocks ?? false
+const sectorBriefMode = cfg.performance?.sector_brief_mode ?? 'all'
 // 哨兵档人工 override(SKILL 步骤 2.2:哨兵是「确定性建议,**人拍板**」,而本脚本原先硬编码直接跳 L3/L4
 // —— 判据只问"今天有没有值得买的",不知道用户还有"保送持仓该不该走"的问题挂着)。缺省 false = 现行为(parity)。
 const forceFull = !!(typeof args === 'string' && args ? JSON.parse(args).force_full : (args && args.force_full))
@@ -135,10 +140,13 @@ const sectorsRes = await gate('sector-pack+list',
   SECTORS, 'L3')
 if (!sectorsRes) throw new Error('sector-pack+list 无返回(schema/API 失败)—— 不静默降级为"无行业 brief"')
 const sectors = sectorsRes.sectors || []
-log(`待写行业 brief:${sectors.length} 个${sectors.length ? ` (${sectors.join('、')})` : '(全部 TTL 复用)'}`)
+const preL3BriefSectors = sectorBriefMode === 'all' ? sectors : []
+log(sectorBriefMode === 'all'
+  ? `待写行业 brief:${sectors.length} 个${sectors.length ? ` (${sectors.join('、')})` : '(全部 TTL 复用)'}`
+  : `行业 brief A/B=finalist_only:L3 只读确定性全行业地形；${sectors.length} 个候选 brief 延后到 GATE2 后按入围行业生成`)
 await parallel([
   () => bash(`${R} autoresearch.scan.agents.l3_select prepare ${date}`, 'l3-prepare', 'L3'),
-  ...sectors.map((sec) => () => agent(
+  ...preL3BriefSectors.map((sec) => () => agent(
     `你是行业分析师。读 context/sector/${date}/${sec}.json 写 ${SD}/sector_briefs/${sec}.md,两段机器契约(## 地形段 喂 L3/L4 · ## 研判段 仅 L5,含 **行业方向** 行)。零新取数。`,
     { agentType: 'sector-brief', effort: cfg.agents?.sector_brief?.effort ?? 'high',
       ...(cfg.agents?.sector_brief?.model ? { model: cfg.agents.sector_brief.model } : {}),
@@ -187,6 +195,21 @@ const g2 = await stageGate('GATE2',
   `${R} autoresearch.scan.agents.l3_select finalists ${date} --budget ${l3cap} && ` +
   `${R} autoresearch.scan.gates gate2 ${date} --budget ${l3cap}`, 'gate2', 'L3')
 if (!g2 || !(g2.status === 'SUCCEEDED')) throw new Error(`GATE2 失败:${g2 ? g2.error : 'no return'}`)
+// finalist_only 是纯调度 A/B：L3 输入仍有 deterministic sector terrain；只把昂贵的判断型
+// brief 延后，并且仅对实际入围票的唯一行业生成。卡片 prompt 落稿前有明确 barrier。
+const finalistBriefSectors = sectorBriefMode === 'finalist_only'
+  ? [...new Set(Object.values(g2.metrics.meta || {}).map((m) => String((m && m.sector) || '')).filter(Boolean))]
+      .filter((sec) => sectors.includes(sec))
+  : []
+if (sectorBriefMode === 'finalist_only') {
+  log(`finalist-only 行业 brief:${finalistBriefSectors.length} 个 (${finalistBriefSectors.join('、') || '无'})`)
+  await parallel(finalistBriefSectors.map((sec) => () => agent(
+    `你是行业分析师。读 context/sector/${date}/${sec}.json 写 ${SD}/sector_briefs/${sec}.md,两段机器契约(## 地形段 喂 L3/L4 · ## 研判段 仅 L5,含 **行业方向** 行)。零新取数。`,
+    { agentType: 'sector-brief', effort: cfg.agents?.sector_brief?.effort ?? 'high',
+      ...(cfg.agents?.sector_brief?.model ? { model: cfg.agents.sector_brief.model } : {}),
+      label: `brief-finalist:${sec}`, phase: 'L3' })
+    .then((r) => { log(`brief ✓ ${sec}`); return r })))
+}
 // L3.5 闸已完全移除(2026-07-12 用户裁定"直接 L3 输出"):L3 finalist tier 即 L4 入选集。
 // CP3(Wave5 ①):整条漏斗最高光的一刻是"选出了哪几只",而不是"选出了几只"。
 // g2.meta 早就带着 name/sector(gates.py:95),此前被整段扔掉。
@@ -204,7 +227,8 @@ const fmeta = g2.metrics.meta || {}
 // GATE3 差 16 字节毙掉 60min/1.6M token 全流水线的教训)。本 workflow 到 dispatch 交接为止,
 // assemble+GATE4 也随之上移主会话收尾。
 phase('L4-prep')
-log('L4-prep:reuse→[四生产者并行]→prompts→slim(决策卡交接给每股 l4-stock workflow)')
+log(`L4-prep:reuse→[四生产者并行]→prompts→${streamingL4 ? '单票 slim∥intel 流式交接' : '批量 slim legacy 交接'}`)
+const promptMode = stableContextBlocks ? ' --stable-context' : ''
 await bash(
   // shared 必须先于 prompts:_l4_shared_instructions.md 此前全仓无生产者(只有读者),
   // 当日 📐/🔁/🚪 校准行从未到达任何一张决策卡(Wave5 ④B)。
@@ -215,7 +239,7 @@ await bash(
   `( ${R} autoresearch.scan.calendar ${date} || true ) & ` +
   `( ${R} autoresearch.scan.agents.l4_card consensus ${date} || true ) & ` +
   `wait; ` +
-  `${R} autoresearch.scan.agents.l4_card prompts ${date}`, 'l4-prep', 'L4-prep')
+  `${R} autoresearch.scan.agents.l4_card prompts ${date}${promptMode}`, 'l4-prep', 'L4-prep')
 const PLAN = { type: 'object', required: ['dispatch'],
   properties: { dispatch: { type: 'array', items: { type: 'string' } },
     meta: { type: 'object' },
@@ -223,22 +247,36 @@ const PLAN = { type: 'object', required: ['dispatch'],
       properties: { code: { type: 'string' }, rating: { type: 'string' } } } } } }
 const plan = await gate('dispatch-plan', `${R} autoresearch.scan.agents.l4_card dispatch-plan ${date}`, PLAN, 'L4-prep')
 if (!plan) throw new Error('dispatch-plan 无返回')
-// GATE3:批量 slim 预取(合格判据 = 结构+内容,l4_card._slim_defect;体积只兜真垃圾)。
-// 失败响亮但**只剔失败股**,全失败才毙——不再让单股数据病拖死整条流水线。
-const G3 = { type: 'object', required: ['ok'],
-  properties: { ok: { type: 'boolean' }, reason: { type: 'string' },
-    failures: { type: 'array', items: { type: 'object',
-      properties: { ticker: { type: 'string' }, bytes: { type: 'integer' }, why: { type: 'string' } } } } } }
-const g3 = await gate('GATE3', `${R} autoresearch.scan.agents.l4_card harvest-slim ${date}`, G3, 'L4-prep')
-if (!g3) throw new Error('GATE3 无返回')
 let dispatch = plan.dispatch
-if (!g3.ok) {
-  const bad = new Set((g3.failures || []).map((f) => String(f.ticker || '').slice(0, 6)))
-  dispatch = dispatch.filter((c) => !bad.has(c))
-  log(`⚠️ GATE3:${bad.size} 股 slim 不合格被剔除(${[...bad].join('/') || '?'})—— ${(g3.failures || []).map((f) => `${f.ticker}:${f.why}`).join('; ') || g3.reason || ''}`)
-  if (!dispatch.length) throw new Error(`GATE3 失败:全部 slim 不合格 —— ${g3.reason || ''}`)
+let dispatchBatches = dispatch.length ? [dispatch] : []
+let taskBook = null
+if (!streamingL4) {
+  // 回滚路径保持旧批量 GATE3：先等所有 slim，再交接股票 workflow。
+  const G3 = { type: 'object', required: ['ok'],
+    properties: { ok: { type: 'boolean' }, reason: { type: 'string' },
+      failures: { type: 'array', items: { type: 'object',
+        properties: { ticker: { type: 'string' }, bytes: { type: 'integer' }, why: { type: 'string' } } } } } }
+  const g3 = await gate('GATE3', `${R} autoresearch.scan.agents.l4_card harvest-slim ${date}`, G3, 'L4-prep')
+  if (!g3) throw new Error('GATE3 无返回')
+  if (!g3.ok) {
+    const bad = new Set((g3.failures || []).map((f) => String(f.ticker || '').slice(0, 6)))
+    dispatch = dispatch.filter((c) => !bad.has(c))
+    log(`⚠️ GATE3:${bad.size} 股 slim 不合格被剔除(${[...bad].join('/') || '?'})—— ${(g3.failures || []).map((f) => `${f.ticker}:${f.why}`).join('; ') || g3.reason || ''}`)
+    if (!dispatch.length) throw new Error(`GATE3 失败:全部 slim 不合格 —— ${g3.reason || ''}`)
+  } else {
+    log('GATE3 ✓ 全 slim 结构+内容合格')
+  }
+  dispatchBatches = dispatch.length ? [dispatch] : []
 } else {
-  log('GATE3 ✓ 全 slim 结构+内容合格')
+  const TASKS = { type: 'object', required: ['ok', 'path', 'dispatch_batches'],
+    properties: { ok: { type: 'boolean' }, path: { type: 'string' },
+      effective_cap: { type: 'integer' },
+      dispatch_batches: { type: 'array', items: { type: 'array', items: { type: 'string' } } } } }
+  const tasks = await gate('l4-tasks-init', `${R} autoresearch.scan.l4_tasks init ${date}`, TASKS, 'L4-prep')
+  if (!tasks || !tasks.ok) throw new Error('L4 task book 初始化失败')
+  taskBook = tasks.path
+  dispatchBatches = tasks.dispatch_batches || []
+  log(`L4 流式任务簿 ✓ ${taskBook} · 批次宽度 ${tasks.effective_cap || '?'} · ${dispatchBatches.length} 批`)
 }
 log(`L4 交接:新派 ${dispatch.length} 股(每股一个 l4-stock workflow,主会话并行拉起)· 复用 ${(plan.reused || []).length} 张跳派发`)
 // CP4(Wave5 ①):随时可调的确定性看板,不用等一小时后的 summary.md
@@ -254,5 +292,6 @@ if (pinnedCodes.length) {
 }
 
 // meta(名称/行业)透传给 l4-stock 的 intel 盲搜 prompt;assemble+GATE4 由主会话在全部 l4-stock 完成后收尾。
-return { date, mode: 'l4-handoff', finalists: g2.metrics.n, dispatch, reused: plan.reused || [],
+return { date, mode: 'l4-handoff', finalists: g2.metrics.n, dispatch, dispatch_batches: dispatchBatches,
+  task_book: taskBook, streaming_l4: streamingL4, reused: plan.reused || [],
   meta: plan.meta || g2.metrics.meta || {}, l4_budget: g1.metrics.l4_budget, published: false }

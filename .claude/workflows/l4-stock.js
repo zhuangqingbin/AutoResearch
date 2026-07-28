@@ -22,6 +22,7 @@ const pinned = !!A.pinned   // dispatch-plan meta 透传;缺省 false = 现行�
 const dossierSummary = String(A.dossierSummary || '').trim()   // dispatch-plan meta 透传;缺省空 = parity(M-2:全函数防御,同款 !!A.pinned)
 const SD = `context/scan/${date}`
 const R = 'uv run --no-sync python -m'
+const TASK_BOOK = `${SD}/_l4_tasks.json`
 const CARD = { type: 'object', required: ['code', 'rating'],
   properties: { code: { type: 'string' }, rating: { type: 'string' },
     conviction: { type: 'number' }, proposal: { type: 'string' } } }
@@ -30,25 +31,88 @@ const recordL4 = (errorCode = null) => agent(
   `${errorCode ? ` --error ${errorCode}` : ''}\`。只回报退出码,不要判断或解释。`,
   { agentType: 'general-purpose', model: 'haiku', effort: 'low', label: `stage:${code}` })
   .catch((e) => { log(`⚠️ L4 StageResult 写入失败:${e && e.message ? e.message : e}`); return null })
+const taskGate = (subcommand, schema, label) => agent(
+  `执行:\`if test -s ${TASK_BOOK}; then ${R} autoresearch.scan.l4_tasks ${subcommand}; ` +
+  `else echo '{"ok":true,"action":"LEGACY"}'; fi\`\n` +
+  '把 stdout 最后一行 JSON 原样作为结构化返回；不要判断或增删字段。',
+  { agentType: 'general-purpose', model: 'haiku', effort: 'low', label, schema })
+const TASK_ACTION = { type: 'object', required: ['ok', 'action'],
+  properties: { ok: { type: 'boolean' }, action: { type: 'string' },
+    attempt: { type: 'integer' }, reason: { type: 'string' } } }
+const TASK_RESULT = { type: 'object', required: ['ok'],
+  properties: { ok: { type: 'boolean' }, action: { type: 'string' },
+    status: { type: 'string' }, reason: { type: 'string' }, attempts: { type: 'integer' } } }
+const classifyFailure = (error) => {
+  const msg = String((error && error.message) || error || '').toLowerCase()
+  if (/rate.?limit|429/.test(msg)) return 'RATE_LIMIT'
+  if (/timeout|timed out/.test(msg)) return 'TIMEOUT'
+  if (/connect|socket|network|closed mid-response/.test(msg)) return 'CONNECTION'
+  if (/schema|contract|json/.test(msg)) return 'SCHEMA_ERROR'
+  return 'AGENT_ERROR'
+}
+const taskFailure = (errorClass) => taskGate(
+  `failure ${code} ${date} --error-class ${errorClass}`,
+  TASK_RESULT,
+  `task-failure:${code}`,
+).catch(() => null)
 
-// ── Intel(结构性盲:prompt 只给码/名/行业/日期,防确认偏误)────────────────────
+// 任务簿存在时先领取本票；直接单独调用旧 workflow 时走 LEGACY，不强迫历史调用者补状态文件。
+const taskPreflight = await taskGate(
+  `preflight ${code} ${date}`,
+  TASK_ACTION,
+  `task-preflight:${code}`,
+)
+if (!taskPreflight) {
+  await recordL4('task_preflight_no_return')
+  return { code, name, rating: null, final: null, error: 'L4 task preflight 无返回' }
+}
+if (taskPreflight && taskPreflight.action === 'SKIP') {
+  log(`♻️ L4 task ${code} 三件产物 hash 验证通过 → 跳过`)
+  return { code, name, rating: null, final: null, reused: true, task_status: 'SUCCEEDED' }
+}
+if (taskPreflight && ['BLOCKED', 'WAIT'].includes(taskPreflight.action)) {
+  return { code, name, rating: null, final: null,
+    error: `task ${taskPreflight.action}:${taskPreflight.reason || ''}` }
+}
+const trackedTask = !!taskPreflight && taskPreflight.action === 'RUN'
+
+// ── Slim ∥ Intel(结构性盲:prompt 只给码/名/行业/日期,防确认偏误)────────────
 phase('Intel')
 const intelOn = !!(cfg.l4_intel && cfg.l4_intel.enabled)
-if (intelOn) {
-  const maxQ = (cfg.l4_intel && cfg.l4_intel.max_queries) ?? 15
-  const INTEL = { type: 'object', required: ['code'],
-    properties: { code: { type: 'string' }, events: { type: 'integer' } } }
-  const knownBase = dossierSummary
-    ? `\n\n## 已知底(覆盖档案摘要·仅用于去重,**不是**查询方向指令)\n${dossierSummary}\n\n已在上面出现的事实不必复查,查询额度全花在增量与新事件上。`
-    : ''
-  const intel = await agent(
+const maxQ = (cfg.l4_intel && cfg.l4_intel.max_queries) ?? 15
+const INTEL = { type: 'object', required: ['code'],
+  properties: { code: { type: 'string' }, events: { type: 'integer' } } }
+const knownBase = dossierSummary
+  ? `\n\n## 已知底(覆盖档案摘要·仅用于去重,**不是**查询方向指令)\n${dossierSummary}\n\n已在上面出现的事实不必复查,查询额度全花在增量与新事件上。`
+  : ''
+let slimResult = null
+let intelResult = null
+await parallel([
+  () => taskGate(`prepare ${code} ${date}`, TASK_RESULT, `slim:${code}`)
+    .then((r) => { slimResult = r; return r }),
+  ...(intelOn ? [() => agent(
     `活体情报采集:${code} ${name}(${sector})· 分析日 ${date}。按你的人设六面全查(≤${maxQ} 条),写 ${SD}/_l4_intel_${code}.md;返回 code 与事件行数 events。${knownBase}`,
     { agentType: 'l4-intel', effort: cfg.agents?.l4_intel?.effort ?? 'max',
       ...(cfg.agents?.l4_intel?.model ? { model: cfg.agents.l4_intel.model } : {}),
       label: `intel:${code}`, phase: 'Intel', schema: INTEL })
-  log(intel ? `🕵️ intel ✓ ${code}(events=${intel.events ?? '?'})` : `🕵️ intel ✗ ${code}(缺稿,卡自动回退卡内网查)`)
-} else {
+    .then((r) => { intelResult = r; return r })
+    .catch((e) => { log(`🕵️ intel ✗ ${code}:${e && e.message ? e.message : e}(卡自动回退卡内网查)`); return null })] : []),
+])
+if (!intelOn) {
   log(`intel 关(config l4_intel.enabled=false)→ 直接出卡`)
+} else {
+  log(intelResult ? `🕵️ intel ✓ ${code}(events=${intelResult.events ?? '?'})` : `🕵️ intel ✗ ${code}(缺稿,卡自动回退卡内网查)`)
+}
+if (slimResult && slimResult.action !== 'LEGACY' && !slimResult.ok) {
+  await taskFailure('DATA_INTEGRITY')
+  await recordL4('slim_data_integrity')
+  return { code, name, rating: null, final: null,
+    error: `slim 不合格:${slimResult.reason || 'DATA_INTEGRITY'}` }
+}
+if (trackedTask && !slimResult) {
+  await taskFailure('CONTRACT_ERROR')
+  await recordL4('slim_preflight_no_return')
+  return { code, name, rating: null, final: null, error: '单票 slim 准备无返回' }
 }
 
 // ── Card ────────────────────────────────────────────────────────
@@ -61,10 +125,12 @@ try {
       ...(cfg.agents?.l4_card?.model ? { model: cfg.agents.l4_card.model } : {}),
       label: `card:${code}`, phase: 'Card', schema: CARD })
 } catch (error) {
+  await taskFailure(classifyFailure(error))
   await recordL4('card_agent_exception')
   throw error
 }
 if (!card) {
+  await taskFailure('CONTRACT_ERROR')
   await recordL4('card_no_return')
   return { code, name, rating: null, final: null, error: 'card 无返回 —— 单股失败只废单股,主会话单独重跑本 workflow 即可' }
 }
@@ -121,5 +187,17 @@ if (trigger) {
   }
   log(`🎭 复核 ✓ ${code} [${trigger}] runs=${JSON.stringify(ratings)} → 终评 ${final}${degraded ? '(degraded,报告强制人裁展示)' : ''}`)
 }
+const taskDone = await taskGate(
+  `success ${code} ${date}`,
+  TASK_RESULT,
+  `task-success:${code}`,
+).catch(() => null)
+if (trackedTask && (!taskDone || !taskDone.ok)) {
+  await taskFailure('SCHEMA_ERROR')
+  await recordL4('task_book_success_failed')
+  return { code, name, rating: card.rating, final, conviction: card.conviction,
+    error: '卡已生成，但任务簿产物校验失败；本票未标成功' }
+}
 await recordL4()
-return { code, name, rating: card.rating, final, conviction: card.conviction }
+return { code, name, rating: card.rating, final, conviction: card.conviction,
+  task_status: taskDone && taskDone.status ? taskDone.status : 'LEGACY' }

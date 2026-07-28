@@ -38,6 +38,13 @@
   // 裁决:单变量 A/B,账本 ≥10–20 日再定去留(enabled 改回 false 即干净回滚)。
   "l4_intel": { "enabled": true, "max_queries": 15 },   // 每票盲搜查询上限(首跑实测>8m 再拧,spec §P4③)
 
+  // ── Wave 3 性能调度(不改变 finalist/rubric/评级)──
+  "performance": {
+    "streaming_l4": true,             // true=每票 slim∥intel 就绪即出卡;false=回滚到整批 slim GATE3
+    "stable_context_blocks": false,   // false=legacy prompt 字节路径;true=共享块置前并写 hash manifest
+    "sector_brief_mode": "all"        // all=现生产路径;finalist_only=GATE2 后只写入围行业 brief
+  },
+
   // ── L1 召回漏斗 ──(recall_channels/channel_quotas 经 scan/cli.py → universe.recall_select 生效)
   "funnel": {
     // 启用的召回通道。整编后 9 路(2026-07-11 channel_audit 13日累计裁决):

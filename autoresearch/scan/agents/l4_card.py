@@ -1413,7 +1413,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "harvest-slim":
         import json
-        res = harvest_slim_batch(args.date, workers=args.workers)
+        res = harvest_slim_batch(args.date, root=args.root, workers=args.workers)
         print(json.dumps({"ok": res["ok"],
                           "reason": ("ok" if res["ok"]
                                      else f"{len(res['failures'])}/{res['n']} slim 失败:"
@@ -1422,18 +1422,21 @@ def main(argv: list[str] | None = None) -> int:
                           "failures": res["failures"]}, ensure_ascii=False))
         return 0 if res["ok"] else 1
     if args.cmd == "pledge":
-        df = fetch_pledge(Path("context/scan") / args.date)
+        base = Path(args.root) if args.root else Path("context/scan")
+        df = fetch_pledge(base / args.date)
         n_flag = int((pd.to_numeric(df.get("pledge_ratio"), errors="coerce") > 20).sum()) if len(df) else 0
         print(f"[l4_card pledge] {len(df)} 票落 pledge.csv(>20% 偏高/红旗 {n_flag} 票);"
               f"派发前跑,简报自动注 ⚠质押旗")
         return 0
     if args.cmd == "seats":
-        df = fetch_seats(Path("context/scan") / args.date)
+        base = Path(args.root) if args.root else Path("context/scan")
+        df = fetch_seats(base / args.date)
         n_inst = int((df["inst_net_wan"] > 0).sum()) if len(df) else 0
         print(f"[l4_card seats] {len(df)} 票落 seats.csv(机构净买>0 {n_inst} 票=Phase A 反指候选)")
         return 0
     if args.cmd == "consensus":
-        sd = Path("context/scan") / args.date
+        base = Path(args.root) if args.root else Path("context/scan")
+        sd = base / args.date
         fp = sd / "finalists.csv"
         codes = pd.read_csv(fp, dtype={"code": str})["code"].tolist() if fp.exists() else None
         df = fetch_consensus(sd, codes=codes)
@@ -1445,7 +1448,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[l4_card consensus] {len(df)} 票落 consensus.csv(卖方一致预期修正,advisory){extra}")
         return 0
     res = write_dispatch_pack(
-        Path("context/scan") / args.date,
+        (Path(args.root) if args.root else Path("context/scan")) / args.date,
         stable_context=args.stable_context,
     )
     print(f"[l4_card prompts] {res['n_prompts']} 份 prompt + _harvest_list({len(res['tickers'])} 票,"

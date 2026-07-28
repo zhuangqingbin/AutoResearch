@@ -494,6 +494,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "init":
         from autoresearch.scan.agents.l4_card import dispatch_plan
 
+        if caps is None:
+            from autoresearch.scan.user_config import load_user_config
+
+            caps = (
+                (load_user_config().get("budgets") or {}).get("concurrency")
+                or None
+            )
         plan = dispatch_plan(args.first, root=args.root)
         result = initialize(
             args.first,
