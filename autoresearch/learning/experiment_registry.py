@@ -11,7 +11,7 @@ import hashlib
 import json
 import re
 from copy import deepcopy
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -152,6 +152,17 @@ def _parse_day(value: object, label: str) -> date:
         return date.fromisoformat(str(value))
     except (TypeError, ValueError) as exc:
         raise RegistryError(f"{label} must be YYYY-MM-DD") from exc
+
+
+def _parse_timestamp(value: object, label: str) -> datetime:
+    text = _nonempty(value, label)
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise RegistryError(f"{label} must be an ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _validate_guards(guards: object, label: str) -> dict:
@@ -298,6 +309,10 @@ def set_stable_baseline(
     current = payload.get("stable_baseline")
     if current == baseline:
         return _copy(current)
+    if payload["active_by_family"]:
+        raise RegistryError(
+            "stable baseline cannot change while an active experiment exists"
+        )
     if current is not None and current not in payload["baseline_history"]:
         payload["baseline_history"].append(_copy(current))
     payload["stable_baseline"] = baseline
@@ -387,3 +402,141 @@ def update_experiment(
     _validate_registry(payload)
     write_registry(path, payload)
     return _copy(record), result
+
+
+def approve_experiment(
+    path: Path | str,
+    experiment_id: str,
+    *,
+    approved_by: str,
+    approved_at: str | None = None,
+    approval_expires_at: str | None = None,
+    note: str = "",
+) -> dict:
+    """Record explicit human approval without activating the experiment."""
+    actor = _nonempty(approved_by, "approved_by")
+    at = approved_at or datetime.now().astimezone().isoformat(timespec="seconds")
+    at_dt = _parse_timestamp(at, "approved_at")
+    expires = approval_expires_at or (
+        at_dt + timedelta(days=7)
+    ).isoformat(timespec="seconds")
+    expires_dt = _parse_timestamp(expires, "approval_expires_at")
+    if expires_dt <= at_dt:
+        raise RegistryError("approval_expires_at must be after approved_at")
+
+    def mutate(payload: dict, record: dict):
+        approval = {
+            "decision": "APPROVE",
+            "approved_by": actor,
+            "approved_at": at,
+            "expires_at": expires,
+            "note": str(note or ""),
+            "evaluation_hash": (
+                (record.get("latest_evaluation") or {}).get("evaluation_hash")
+            ),
+        }
+        if record["status"] == "APPROVED" and record.get("approval") == approval:
+            return None
+        if record["status"] != "RECOMMENDED":
+            raise RegistryError(
+                f"approval requires RECOMMENDED, got {record['status']}"
+            )
+        if not approval["evaluation_hash"]:
+            raise RegistryError("approval requires a persisted PASS evaluation")
+        evaluated_at = _parse_timestamp(
+            record["latest_evaluation"].get("evaluated_at"),
+            "latest evaluation timestamp",
+        )
+        if at_dt < evaluated_at:
+            raise RegistryError("approval timestamp cannot predate evaluation")
+        if at_dt.date() > date.fromisoformat(record["expires_date"]):
+            raise RegistryError("experiment expired before approval")
+        record["approval"] = approval
+        record["status"] = "APPROVED"
+        _audit(
+            payload,
+            event="EXPERIMENT_APPROVED",
+            at=at,
+            actor=actor,
+            experiment_id=experiment_id,
+            details=approval,
+        )
+        return None
+
+    record, _ = update_experiment(path, experiment_id, mutate)
+    return record
+
+
+def _baseline_addressable(payload: dict, pointer: dict) -> bool:
+    candidates = [
+        payload.get("stable_baseline"),
+        *payload.get("baseline_history", []),
+    ]
+    return pointer in candidates
+
+
+def activate_experiment(
+    path: Path | str,
+    experiment_id: str,
+    *,
+    activated_by: str,
+    activated_at: str | None = None,
+) -> dict:
+    """Activate only an approved challenger; the stable baseline is untouched."""
+    actor = _nonempty(activated_by, "activated_by")
+    at = activated_at or datetime.now().astimezone().isoformat(timespec="seconds")
+    at_dt = _parse_timestamp(at, "activated_at")
+
+    def mutate(payload: dict, record: dict):
+        if record["status"] == "ACTIVE":
+            if payload["active_by_family"].get(record["trial_family"]) == experiment_id:
+                return None
+            raise RegistryError("active registry mapping is inconsistent")
+        if record["status"] != "APPROVED":
+            raise RegistryError(
+                f"activation requires APPROVED, got {record['status']}"
+            )
+        approval = record.get("approval") or {}
+        approval_expiry = _parse_timestamp(
+            approval.get("expires_at"),
+            "approval expires_at",
+        )
+        approval_at = _parse_timestamp(
+            approval.get("approved_at"),
+            "approval approved_at",
+        )
+        if at_dt < approval_at:
+            raise RegistryError("activation timestamp cannot predate approval")
+        if at_dt > approval_expiry:
+            raise RegistryError("approval expired before activation")
+        if at_dt.date() > date.fromisoformat(record["expires_date"]):
+            raise RegistryError("experiment expired before activation")
+        family = record["trial_family"]
+        active = payload["active_by_family"].get(family)
+        if active and active != experiment_id:
+            raise RegistryError(
+                f"trial family {family!r} already active as {active!r}"
+            )
+        if not _baseline_addressable(payload, record["rollback_pointer"]):
+            raise RegistryError("rollback pointer is no longer addressable")
+        record["status"] = "ACTIVE"
+        record["activated_at"] = at
+        record["activation"] = {
+            "activated_by": actor,
+            "activated_at": at,
+            "approval_evaluation_hash": approval.get("evaluation_hash"),
+            "rollback_pointer": _copy(record["rollback_pointer"]),
+        }
+        payload["active_by_family"][family] = experiment_id
+        _audit(
+            payload,
+            event="EXPERIMENT_ACTIVATED",
+            at=at,
+            actor=actor,
+            experiment_id=experiment_id,
+            details=record["activation"],
+        )
+        return None
+
+    record, _ = update_experiment(path, experiment_id, mutate)
+    return record
