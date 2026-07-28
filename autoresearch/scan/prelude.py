@@ -32,16 +32,29 @@ def _run_steps(steps) -> list[dict]:
     return out
 
 
-def calib_suggestion_lines(scan_root=None) -> list[str]:
-    """当日件建议行(spec 2026-07-05 §8 验收⑤):📐 触价校准 + 🔁 L3 翻案 + 🚪 门柱。
+def calib_suggestion_lines(scan_root=None, date: str | None = None) -> list[str]:
+    """当日件建议行(spec 2026-07-05 §8 验收⑤):📐 触价校准 + 🔁 L3 翻案 + 🚪 门柱 + ⚡tripwire。
 
     组件各自 thin 禁注(样本不足的行自带"禁注"字样,编排层勿贴);报表落盘由 _ledgers
     步骤负责,本函数只收集行(纯读,可单测)。
+
+    ⚡tripwire(Wave7 P2)与前三者性质不同:前三条是**校准先验**(贴给下游 agent 读),
+    这条是**当日风控提醒**(给人看)——持仓在两次扫描之间原本无人盯梢,卡片里的「失效」
+    条件写完就没有任何机器复核过。`date` 缺省则跳过该行(纯读接口不猜 wall-clock)。
     """
     from autoresearch.learning.buy_ledger import calibration_line, target_calibration
     from autoresearch.learning.cross_calib import flip_stats, gate_stats, suggestion_lines
     lines = [ln for ln in [calibration_line(target_calibration(scan_root))] if ln]
     lines += suggestion_lines(flip_stats(scan_root), gate_stats(scan_root))
+    if date:
+        import contextlib
+        with contextlib.suppress(Exception):   # 盯梢是 advisory,不该有能力阻断 prelude
+            from autoresearch.learning.tripwire_watch import check, render_line
+            from autoresearch.scan.user_config import load_pinned
+            n = len([e for e in (load_pinned(date).get("kept") or []) if e.get("code")])
+            ln = render_line(check(date, scan_root=scan_root or "context/scan"), n)
+            if ln:
+                lines.append(ln)
     return lines
 
 
@@ -113,10 +126,13 @@ def render_summary(date: str, results: list[dict], scan_root: Path | str | None 
     except Exception as e:  # noqa: BLE001 — nag 可选,缺了不挡前奏
         print(f"[prelude] ✗ retro_input_nag: {e}", file=sys.stderr)
     try:
-        clines = calib_suggestion_lines()
+        # 传 date → 多出 ⚡tripwire 行(Wave7 P2)。**只在这里传**:汇总屏是给人看的,
+        # 而 l4_card 那个调用点组装的是喂 agent 的校准先验 —— 持仓风控提醒不该混进去
+        # 影响个股评级(同 market_view §4-5 只进 L5 的防锚定纪律)。
+        clines = calib_suggestion_lines(date=date)
         if clines:
             out.append("  当日件建议行(📐 贴 _l4_shared_instructions.md;🔁 贴 L3 校准块旁;"
-                       "🚪 贴 skeptic/PM 先验;**含「禁注」的行勿贴**):")
+                       "🚪 贴 skeptic/PM 先验;⚡ 仅人看勿贴;**含「禁注」的行勿贴**):")
             out += [f"    {ln}" for ln in clines]
     except Exception as e:  # noqa: BLE001 — 建议行可选,缺了不挡前奏
         print(f"[prelude] ✗ calib_lines: {e}", file=sys.stderr)
