@@ -38,7 +38,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 
 ## 流程(6 段)
 
-> **编排真身 = 两段 workflow + 主会话收尾**(fb_20260714_003):① `.claude/workflows/scan-market.js`(3 相位:Prelude→L3→L4-prep,GATE1/2/3;GATE3 失败只剔单股,返回 `{dispatch, reused, meta}` 交接)→ ② 主会话把 dispatch 里**每股拉一个 `.claude/workflows/l4-stock.js`**(**一条消息 N 个 Workflow 调用并行**,args=`{date, code, name, sector, cfg}`;每股链内 intel→card→(≥OW)双复核折回落 `_ensemble_<code>.json`,单股失败只废单股、对该股单独重跑即可)→ ③ 全部 l4-stock 完成后主会话直接跑步骤 5 的 `assemble` + `gates gate4` CLI 收尾。**正常跑动直接用 workflow**;以下是其内部调用的同一批命令,留作**调参/单步重跑入口**。操作模板分驻:市场研判在 `macro-research/macro-playbook.md` 末节、L4 决策卡在 stock-research 的 `lite-playbook.md`;**各阶段机制/参数/实证读数**见 `STAGES.md`。各阶段墙钟收尾自动落 `_stage_timing.json`(mtime 推导)。
+> **编排真身 = 两段 workflow + 主会话收尾**:① `.claude/workflows/scan-market.js`(Prelude→L3→L4-prep;默认流式 L4,返回 `{dispatch, dispatch_batches, task_book, reused, meta}`)→ ② 主会话必须按 `dispatch_batches` **批次间顺序执行、批次内并行**拉 `.claude/workflows/l4-stock.js`；每票先过 `_l4_tasks.json` preflight，再让 slim 与 intel 并行，随后 card→(≥OW)双复核。单票失败只改变本票状态，不重跑已成功票 → ③ 全部批次完成后跑步骤 5 的 assemble/GATE4/计量回填。`streaming_l4=false` 才回到旧批量 GATE3。**正常跑动直接用 workflow**;以下命令留作调参/单步重跑入口。操作模板分驻:市场研判在 `macro-research/macro-playbook.md` 末节、L4 决策卡在 stock-research 的 `lite-playbook.md`;**各阶段机制/参数/实证读数**见 `STAGES.md`。
 >
 > **进度可视化(必做,2026-07-12 用户反馈"跑起来主对话一片空白")**:workflow 一落地就**同时**挂一个 Monitor 播报进度到主对话 ——
 > ```
@@ -63,11 +63,12 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 > | CP6 | L4 全完 | 评级分布 + 停因分桶 + OW三门直方图 | `uv run --no-sync python -m autoresearch.scan.render <date> --view gate_hist` |
 > | CP7 | GATE4 过 | 买单/0买判词 + 产物路径 + 分段耗时 + **token 真计量** | `summary.md` 摘录 + `--view timing` + `usage_harvest`(下方) |
 >
-> **CP7 的 token 计量**(Wave5 ④A,替代 bytes÷2.8 估算):
-> `uv run --no-sync python -m autoresearch.trace.usage_harvest --session <本次 sessionId> --out reports/scan/<run_id>/token_usage.md`
-> 逐 subagent 的真 usage(含 cache 命中率),按**计价倍率加权**(cache读 ×0.1 / 5m写 ×1.25 / 1h写 ×2)——
-> 原始 token 总量会把「贵在哪」排反(实测某次 4 个 agent 原始 10.4M、加权仅 1.8M)。
-> ⚠️ 表里只有 subagent,**主会话自身不在内**;报读数时连同覆盖声明一起说,别当全量账单。
+> **CP7 的 token/成本计量**(替代 bytes÷2.8 估算):
+> `uv run --no-sync python -m autoresearch.trace.usage_harvest --session <本次 sessionId> --out reports/scan/<run_id>/token_usage.md --json-out context/scan/<date>/_token_usage.json`
+> 随后执行
+> `uv run --no-sync python -m autoresearch.scan.post_run <date> observe --report-dir reports/scan/<run_id>`，
+> 把 canonical JSON 回填进 `summary.md` 的成本/时延节、`_budget_observation.json` 与 ArtifactIndex。
+> 表覆盖可定位到的**主会话 + subagent**，按 message.id 去重，并分 input/output、cache read、5m/1h write、模型、effort、失败/重试/废弃及公开价估算；成本按相应公开计价倍率**加权**，不能拿原始 token 总数判断“贵在哪”。仍须连同覆盖声明一起报告，公开价估算不等于实际账单。缺 JSON 时报告必须写 `UNMEASURED`，不能写 `$0`。
 >
 > 随时可调(零 LLM,几秒):`uv run --no-sync python -m autoresearch.scan.render <date> --view menu_health|gate_hist|timing|funnel`。
 >
@@ -107,29 +108,33 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
    ```
    → 每行业一个 `Agent(subagent_type='sector-brief')`(机制/两段契约见 STAGES.md『旁路 · 行业 brief』节)。
 3. **L3 精排**(两遍法:pass1 确定性分诊 200→~40 + holistic 单 agent 深比较出 finalist tier 7–10;workflow L3 相位):`harvest_l3_evidence`+`harvest_l3_news` 补真证据 → `l3_table_md(date, delta=True, sector_terrain=True, dist_flag=True, reg_flag=True, cat_flag=True, misread_flag=True)` 压紧凑表(内含 pass1 分诊:`prepare_l3_table` 先用 `triage_l2_for_l3` 把 ~200 行收到 ~40(scan_config `pass1_target`,2026-07-18 影子验证后 60→40),被切部分是影子,落 `_l3_pass1_cut.csv`,不代表判死)→ 一个 `Agent(subagent_type='l3-rank')` 通看 ~40 只深比较,给出 **finalist tier:7–10 只**(按当天质量,`finalist:true`,宁缺毋滥不凑数)+ 其余判断过但未入选的 **bench**(`finalist:false`)→ `uv run --no-sync python -m autoresearch.scan.menu <date>` 拿 L4 预算(cap = min(10, 预算))→ `merge_l3_finalists_v3(judged, budget=预算)`(conviction≥75 误杀保险强制补入 / <55 剔除 / 健康画像比例守卫)→ `finalists.csv` + bench 落 `_l3_bench.csv`(rubric 维度/推荐旗/token 经济见 STAGES.md L3 节)。**L3.5 闸=passthrough 保留为回测 harness,收窄职能已并入 L3**(用户 2026-07-12 裁定)。
-4. **L4 研究**(token 大头;fb_20260714_003:**每股一个独立 `l4-stock` workflow,N 股并行**)——确定性准备(l4-prep)仍在 scan-market.js 的 L4-prep 相位:质押旗/TTL复用/席位·催化·日历生产者先行(机制见 STAGES.md L4 节;观察单直通车已随观察单退役、菜单滞回保席已随 pr_20260716_006 退役)→ 落稿(单步重跑入口):
+4. **L4 研究**(token 大头;默认流式、每股独立可恢复)——确定性准备(l4-prep)仍在 scan-market.js 的 L4-prep 相位:质押旗/TTL复用/席位·催化·日历生产者先行(机制见 STAGES.md L4 节)→ 落稿(单步重跑入口):
    ```bash
    uv run --no-sync python -m autoresearch.scan.agents.l4_card pledge <date>
    uv run --no-sync python -m autoresearch.scan.l4_reuse <date> --apply
    uv run --no-sync python -m autoresearch.scan.agents.l4_card prompts <date>
    ```
-   → scan-market.js 返回 `{dispatch, meta}` 后,主会话对 dispatch 里每股各拉一个
+   → scan-market.js 返回 `{dispatch, dispatch_batches, task_book, meta}` 后，主会话**按批次数组原序逐批推进，每一批内并行**拉
    `Workflow({scriptPath: '.claude/workflows/l4-stock.js', args: {date, code, name, sector, cfg, pinned, dossierSummary}})`
    `pinned` 取自 dispatch-plan 的 `meta[code].pinned`。**派发前对照 workflow 打印的「📌 保送票 N 只」行逐一核对**:名单里的每只必须带 `pinned: true`。漏传 = 持仓 SELL 双复核整段不跑(2026-07-21 实测 300857/601869 中招);probe 9 `sell_review_missing` 只能事后 warn,拦不住。
    `dossierSummary` 取自 dispatch-plan 的 `meta[code].dossier_summary`(无档案=空串);漏传只退化为「intel 无已知底」= Wave3 前行为,不影响正确性。
    (**cfg = 步骤 0.5 frame 回显的 `user_config` 块原样透传,勿传 `{}`**——空 cfg 静默关 intel/降 effort,见 0.5 节 07-21 事故注)(degraded=复核 run 不齐时不折回、报告强制人裁)
-   ——**一条消息 N 个调用并行**(每股独立并发帽,真并行;单股失败只废单股,单独重跑该 workflow 即可)。
-   每股链内:**intel(可关)→ l4-card 决策卡 →(≥OW)2 独立复核 run 取中位只向下折回**,复核落
+   每股链内:**preflight → (本票 slim ∥ intel) → l4-card 决策卡 →(≥OW)2 独立复核 run 取中位只向下折回 → success hash 校验**。`_l4_tasks.json` 保存 prompt/slim/card hash 与尝试次数；只对 `RATE_LIMIT` / `CONNECTION` / `TIMEOUT` 瞬时错误给第 2 次尝试，schema/contract/data-integrity 错误直接阻断本票。重放先跑
+   `uv run --no-sync python -m autoresearch.scan.l4_tasks batches <date>`，只派返回的未完成批次；不要删任务簿或重跑成功票。复核落
    `_ensemble_<code>.json`(assemble 合并读)。卡模板/契约烤进 `.claude/agents/l4-card.md`。
    **活体情报站**(config `l4_intel.enabled`):l4-stock 的 Intel 相位,sonnet·max 结构性盲(prompt 只给码/名/行业/日期)盲搜六面落 `_l4_intel_<code>.md`;卡 P3 先读 intel、自发网查降 ≤1 验证,缺文件自动回退卡内网查(presence-gated)。⚠️ 2026-07-14 首跑冒烟:空稿 0/13、中文源可达 ✓,但逮到**捏造涨停断言**(pr_20260714_006 待裁)+ 限频形同虚设/零 URL(pr_20260714_007)——卡片对 intel 的价格类断言必须与 verified OHLCV 对账后才可采信。
 5. **L5 整合**(全部 l4-stock workflow 完成后,主会话直接跑;哨兵档跳过 L3/L4 后也走这里)。
-   **三条一次跑完再播 CP7**,别一条一个来回(主会话每轮往返都要重读 ~113k cache,07-24 真计量里编排本身占全场加权 27%):
+   **四条在一个 shell 批次跑完再播 CP7**，其中 `<run_id>` 是 assemble 打印的报告目录名:
    ```bash
    uv run --no-sync python -m autoresearch.scan.assemble <date> && \
    uv run --no-sync python -m autoresearch.scan.gates gate4 <date> && \
-   uv run --no-sync python -m autoresearch.trace.usage_harvest --session <本次 sessionId> --out reports/scan/<run_id>/token_usage.md
+   uv run --no-sync python -m autoresearch.trace.usage_harvest --session <本次 sessionId> \
+     --out reports/scan/<run_id>/token_usage.md \
+     --json-out context/scan/<date>/_token_usage.json && \
+   uv run --no-sync python -m autoresearch.scan.post_run <date> observe \
+     --report-dir reports/scan/<run_id>
    ```
-   → **`reports/scan/<YYYYMMDD_HHMM>/`**(目录名=实际运行时刻,数据日记 `manifest.json`):`summary.md`(漏斗数量/各阶段概览/buy-list/**分段耗时与落盘字节**)+ `details/〈股票名称〉.md`+ `token_usage.md`(真计量)+ `trace/`(留溯源)。
+   → **`reports/scan/<YYYYMMDD_HHMM>/`**:`summary.md`(含成本与时延观测)+ `details/`+ `token_usage.md`+ `trace/`。成本/墙钟晋升在 **10 次真实扫描**前恒为 `IMMATURE`；看中位成本与 P50/P90，禁止拿单次最佳 run 宣称达标。预算超线只写 warning/`DEGRADED`，不截断研究、不制造 BUY。
    **汇报(CP7)**:漏斗 + buy-list(评级/目标)+ 分段耗时表(`render --view timing`)+ 诚实局限;0 买日必须播**停因分桶**(早停 N 张〔按停因〕/ 满卡未达 OW M 张),**不要再说「无一过 ≥OW 三门」**——早停卡按定义不写三门段(07-21 实测 12 卡里 6 张早停、仅 2 张可解析三门),那句话不被数据支持。
 
 6. **覆盖档案维护**(盘后,不占扫描窗;presence-gated,池空则整段跳过)
@@ -148,6 +153,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 - **每只 finalist 走 stock-research lite 档**——继承其铁律(数字出自 slim context、五档评级、EV/R:R、`FINAL TRANSACTION PROPOSAL`、诚实局限)。
 - **中间名单全 staging**(L2_gbdt / L3_evidence / finalists),L5 发布到 `trace/` 留溯源;re-run 友好。
 - **诚实收尾**:召回/粗排是启发式 + fwd_2_oc 超短主尺 IC 校准/训练(2026-07-10 裁定;随 regime 漂移);L3/L4 是 Claude 推理产出;"仅供研究,非投资建议"。
+- **性能开关不拥有评级**:`performance.streaming_l4` 默认 true；`stable_context_blocks` 默认 false；`sector_brief_mode` 默认 `all`。回滚分别设 `streaming_l4=false`、`stable_context_blocks=false`、`sector_brief_mode="all"`；任何开关都不得改 finalist cap、rubric 三门、`fwd_2_oc` 或 BUY 数量。
 
 ## 常见坑
 - 必须 `uv run --no-sync`(不误删 venv-only 的 akshare/tushare/lightgbm)、仓库根目录。

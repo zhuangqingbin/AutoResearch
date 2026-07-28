@@ -1,6 +1,6 @@
 # scan-market 统一优化总纲：决策质量 × BUY 发现 × Token × 速度 × 架构
 
-> **状态**：设计已确认并进入实施；Wave 1 事实控制面已完成，Wave 2 起继续开发\
+> **状态**：设计已确认并进入实施；Wave 1–3 软件已完成，Wave 4 起继续开发\
 > **基线日期**：2026-07-28\
 > **代码基线**：`16463c0`\
 > **适用范围**：`scan-market` 主链 + 共享数据、研究闭环与编排层\
@@ -1374,6 +1374,30 @@ ensemble trigger family 仍需至少 10 个成熟样本。任何门、阈值、�
 
 目标：在研究守卫不退化的前提下压成本和关键路径。
 
+#### 2026-07-28 实现状态（软件完成，真实样本未成熟）
+
+已完成：
+
+- `usage_harvest` 以 canonical JSON + Markdown 覆盖可定位的主会话与
+  subagent，按 message ID 去重，并分输入、输出、cache read/write、模型、
+  effort、失败、重试和废弃调用折算成本；
+- RunContract 固化成本、墙钟、cache 与并发预算；预算超线只产生 warning 和
+  `DEGRADED` StageResult，不截断研究；
+- L4 共享上下文按 schema/content hash 固化为 byte-stable blocks，旧 prompt
+  模式保留为独立回滚开关；
+- L3 校验失败只生成失败行 repair pack，补丁经 schema/股票集合校验后原子
+  合并，不再整段重跑；
+- `_l4_tasks.json` 固化逐股任务状态、输入/输出 hash 和尝试次数；默认流式
+  L4 按批次限并发，批内并行 slim/Intel，成功票可直接重放复用，瞬时错误仅
+  重试一次，schema/contract/data-integrity 错误阻断本票；
+- `sector_brief_mode` 支持 `all/finalist_only` A/B，默认与旧行为一致；
+- assemble/post-run 发布成本与关键路径观测，缺计量显式 `UNMEASURED`。
+
+软件验收为 `1912 passed`，仅有两条既有 pandas FutureWarning；相对 Wave 2
+完成提交，生产评级、门、召回评分、`fwd_2_oc` 与 BUY 数量行为无语义变化。
+成本下降、P50/P90、cache 与研究效果守卫必须累计至少 **10 次真实扫描**后
+判断；当前一律 `IMMATURE`，不得从单测或单次最佳 run 宣称达标。
+
 交付顺序：
 
 1. 主会话计量；
@@ -1491,24 +1515,18 @@ ensemble trigger family 仍需至少 10 个成熟样本。任何门、阈值、�
 - nightly deterministic close；
 - retro 主尺无数时响亮失败。
 
-部分完成：
+本文已接管并完成：
 
-- token 已有模型价差表，但主会话、输出价格和废弃调用仍未完整计量；
-- Intel 时效已完成，但前置并行仍未完成；
-- pinned 自进化账本已完成，但与统一 DecisionRecord 尚未收口；
-- 夜间欠账补跑已完成，但控制面尚未统一 consumer 状态。
+- RunContract / ArtifactIndex / DecisionRecord 与本地 outbox 控制面；
+- 0-BUY 因果归因、门三态、L3 审计篮、早停影子深核和 ensemble 折回账；
+- 主会话/输出/失败/废弃调用计量、Intel 前置并行、流式 L4 与 sector brief
+  A/B；
+- pinned 与终评级读模型、nightly/retro consumer 的统一回执和可恢复补跑。
 
-仍待本文接管：
+后续只剩：
 
-- 0-BUY 因果归因；
-- 门三态；
-- L3 审计篮；
-- 早停影子深核；
-- ensemble 折回对错；
-- RunContract / ArtifactIndex / DecisionRecord；
-- 流式 L4；
-- sector brief A/B；
-- 核心模块拆分。
+- Wave 4 核心模块边界拆分与兼容适配；
+- Wave 5 实验登记、五守卫晋升、人审激活和回滚观察。
 
 ---
 

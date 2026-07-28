@@ -103,9 +103,20 @@ def test_json_mode_writes_contract_and_short_ref(monkeypatch, capsys, tmp_path):
         "include_bj": True,
     }
     assert contract["stage_budgets"] == {
+        "baseline_run": "20260727_2140",
+        "cache_hit_min": 0.85,
+        "concurrency": {
+            "l4_stock": 4,
+            "tushare": 4,
+            "web_fetch": 4,
+            "web_search": 4,
+        },
         "l3_finalist_max": 10,
+        "min_real_scans": 10,
         "pinned_cap": 5,
         "pinned_ttl_days": 10,
+        "stage_cost_usd": {},
+        "stage_wall_seconds": {},
     }
     from autoresearch.scan.stage_result import load_stage_result
     stage = load_stage_result(

@@ -113,7 +113,16 @@ Exit evidence:
 
 ### Wave 3 — token and speed controls
 
-Planned components:
+Detailed plan:
+`docs/plans/2026-07-28-wave3-token-critical-path-plan.md`.
+
+Status: **software completed 2026-07-28**. Full-suite acceptance is
+`1912 passed`, with the same two pre-existing pandas `FutureWarning`s.
+Cost/latency effectiveness remains `IMMATURE` until ten real scans exist; unit
+tests prove the measurement and promotion contracts, not the ≥15%/≥25% cost or
+P50/P90 targets.
+
+Implemented components:
 
 - Extend `autoresearch/trace/usage_harvest.py` with main-session, output-price,
   retry, failure, and discarded-call accounting.
@@ -122,6 +131,8 @@ Planned components:
   market/sector/dossier blocks.
 - Make `.claude/workflows/scan-market.js` and `l4-stock.js` use presence-gated,
   independently retryable stock tasks.
+- Add post-run cost/latency observations with honest `UNMEASURED` and
+  `IMMATURE` states.
 
 Exit evidence:
 
@@ -132,6 +143,8 @@ Exit evidence:
 - A stock failure does not require rerunning completed stocks.
 - Latency/cost promotion remains blocked until at least ten real scans establish
   P50/P90 and median cost; tests only verify the measurement and gate logic.
+- Production rating, gate, recall scoring, `fwd_2_oc`, and BUY-count behavior
+  are unchanged from the Wave 2 completion baseline.
 
 ### Wave 4 — module boundaries
 

@@ -301,6 +301,28 @@ def test_usage_harvest_wired_in_skill():
     assert "加权" in md, "SKILL 未说明按计价倍率加权(原始 token 会把「贵在哪」排反)"
 
 
+def test_scan_market_skill_documents_wave3_recovery_and_measurement_contract():
+    """Wave 3 不是只把代码接上：未来编排者必须知道批次、重放、回滚和计量回填。"""
+    skill = (SKILLS / "scan-market" / "SKILL.md").read_text(encoding="utf-8")
+    stages = (SKILLS / "scan-market" / "STAGES.md").read_text(encoding="utf-8")
+    for anchor in (
+        "dispatch_batches",
+        "批次内并行",
+        "RATE_LIMIT",
+        "streaming_l4",
+        "stable_context_blocks",
+        "sector_brief_mode",
+        "--json-out context/scan/<date>/_token_usage.json",
+        "autoresearch.scan.post_run <date> observe",
+        "IMMATURE",
+        "10 次真实扫描",
+    ):
+        assert anchor in skill, f"SKILL.md 缺 Wave 3 运行契约:{anchor}"
+    assert "_l4_tasks.json" in stages
+    assert "PENDING/RUNNING/SUCCEEDED/FAILED/BLOCKED" in stages
+    assert "预算只告警" in stages
+
+
 def test_otel_path_retired_from_skill_docs():
     """OTEL 那条路已退役(Wave6 E1):文档不得再教用户跑一个已删除的 CLI。
 

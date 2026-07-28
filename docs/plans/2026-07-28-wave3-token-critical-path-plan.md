@@ -1,5 +1,9 @@
 # Wave 3 Token and Critical-Path Controls Implementation Plan
 
+> **Status:** Software complete on 2026-07-28. Acceptance:
+> `1912 passed`, two pre-existing pandas `FutureWarning`s. Cost and latency
+> effectiveness remains `IMMATURE` until ten real scans exist.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > `superpowers:executing-plans` to implement this plan task-by-task. Steps use
 > checkbox (`- [ ]`) syntax for tracking.
@@ -53,7 +57,7 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
 - Modify: `tests/trace/test_usage_harvest.py`
 - Create: `tests/trace/test_pricing.py`
 
-- [ ] **Step 1: Write failing pricing and lifecycle tests**
+- [x] **Step 1: Write failing pricing and lifecycle tests**
 
   Add tests for:
 
@@ -73,7 +77,7 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
   and a failure followed by a terminal response is
   `RETRIED_SUCCEEDED`.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
   Run:
 
@@ -85,7 +89,7 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
   Expected: collection fails because `autoresearch.trace.pricing` and the new
   lifecycle/cost fields do not exist.
 
-- [ ] **Step 3: Implement dated price profiles**
+- [x] **Step 3: Implement dated price profiles**
 
   Define `PriceProfile`, `price_for_model(model, as_of, speed)` and
   `estimate_usd(model, usage, as_of, speed)` using Anthropic's standard global
@@ -103,7 +107,7 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
   silently applying a family guess. Record the source URL and effective date
   in the returned facts.
 
-- [ ] **Step 4: Add transcript lifecycle and cost facts**
+- [x] **Step 4: Add transcript lifecycle and cost facts**
 
   Extend `usage_of()` with:
 
@@ -125,7 +129,7 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
   `stop_sequence` responses. Error rows keep their own zero or non-zero usage;
   `message.id` de-duplication remains mandatory.
 
-- [ ] **Step 5: Discover and include the main transcript**
+- [x] **Step 5: Discover and include the main transcript**
 
   Add `find_session_files()` and `collect_session()` so `--session ID` reads
   both:
@@ -138,14 +142,14 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
   `--dir` retains subagent-only semantics. `--transcripts` remains the
   historical escape hatch.
 
-- [ ] **Step 6: Persist canonical JSON before Markdown**
+- [x] **Step 6: Persist canonical JSON before Markdown**
 
   Add `--json-out` and make the JSON ledger contain pricing metadata, rows,
   totals, role/model/agent rollups, cache hit rate, failure/retry/discarded
   cost, and coverage. Markdown must label unknown cost as `—` and must no
   longer claim the main session is absent when `collect_session()` found it.
 
-- [ ] **Step 7: Run focused tests and commit**
+- [x] **Step 7: Run focused tests and commit**
 
   Run:
 
@@ -176,7 +180,7 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
 - Modify: `tests/scan/test_user_config.py`
 - Modify: `tests/scan/test_frame.py`
 
-- [ ] **Step 1: Write failing budget tests**
+- [x] **Step 1: Write failing budget tests**
 
   Cover:
 
@@ -191,7 +195,7 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
   `cache_hit_min`, `stage_cost_usd`, `stage_wall_seconds`, `concurrency`,
   `min_real_scans`, `baseline_run`.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
   Run:
 
@@ -203,14 +207,14 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
 
   Expected: `budget` module and whitelist fields are missing.
 
-- [ ] **Step 3: Implement observations**
+- [x] **Step 3: Implement observations**
 
   `observe_run(scan_dir, usage_ledger, timing, budgets)` writes
   `_budget_observation.json` atomically and records a `budget` StageResult.
   Every exceeded threshold becomes a warning and `DEGRADED`; no candidate,
   card, query, or stage is cut short.
 
-- [ ] **Step 4: Implement ten-run evaluation**
+- [x] **Step 4: Implement ten-run evaluation**
 
   `evaluate_history(observations, phase)` returns `IMMATURE` until:
 
@@ -222,13 +226,13 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
   reduction versus `20260727_2140`, and phase-1/phase-2 target booleans. Never
   choose the single best run.
 
-- [ ] **Step 5: Put budgets in RunContract**
+- [x] **Step 5: Put budgets in RunContract**
 
   Whitelist `budgets`, map it to `ScanConfig.budgets`, and copy the normalized
   block into `RunContract.stage_budgets` in `frame --json`. Missing config
   retains current finalist/pinned budgets and default observation thresholds.
 
-- [ ] **Step 6: Run focused tests and commit**
+- [x] **Step 6: Run focused tests and commit**
 
   Run:
 
@@ -259,7 +263,7 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
 - Modify: `tests/scan/test_l4_prompt_cache_prefix.py`
 - Modify: `tests/scan/test_l4_dispatch_pack.py`
 
-- [ ] **Step 1: Write failing block and parity tests**
+- [x] **Step 1: Write failing block and parity tests**
 
   Prove:
 
@@ -270,7 +274,7 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
   - stable mode puts common market context before the first stock-specific
     byte, while sector/dossier/differential blocks retain all legacy evidence.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
   Run:
 
@@ -283,7 +287,7 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
 
   Expected: the context-block API and stable prompt mode are missing.
 
-- [ ] **Step 3: Implement atomic content-addressed blocks**
+- [x] **Step 3: Implement atomic content-addressed blocks**
 
   `ContextBlock` has:
 
@@ -295,14 +299,14 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
   Store it below `_context_blocks/<kind>/<safe-scope>.json`, write with a temp
   file plus replace, and verify schema/content/source hashes on read.
 
-- [ ] **Step 4: Split market content without losing text**
+- [x] **Step 4: Split market content without losing text**
 
   Extract common market lines and the industry-specific line from
   `market_context_block()`. The default combined function remains byte-for-byte
   compatible. Stable mode writes common market once, sector terrain once per
   sector, dossier once per stock, and stock differential once per stock.
 
-- [ ] **Step 5: Add stable prompt mode with legacy rollback**
+- [x] **Step 5: Add stable prompt mode with legacy rollback**
 
   `write_dispatch_pack(scan_dir, stable_context=False)` preserves current
   bytes by default. With `stable_context=True`, ordering is:
@@ -315,7 +319,7 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
   Hash facts remain in `_context_blocks` and a prompt manifest, not as
   per-stock bytes before the shared prefix.
 
-- [ ] **Step 6: Run focused tests and commit**
+- [x] **Step 6: Run focused tests and commit**
 
   Run the command from Step 2; expected all pass.
 
@@ -337,7 +341,7 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
 - Modify: `.claude/workflows/scan-market.js`
 - Modify: `tests/scan/test_workflow_contracts.py`
 
-- [ ] **Step 1: Write failing repair tests**
+- [x] **Step 1: Write failing repair tests**
 
   Build three judged rows with one lint failure and assert:
 
@@ -351,7 +355,7 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
   Reject patches containing an unrequested code, a duplicate code, or fields
   outside `code/thesis`.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
   Run:
 
@@ -361,7 +365,7 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
 
   Expected: repair-pack APIs and CLI commands are missing.
 
-- [ ] **Step 3: Implement repair pack and merge**
+- [x] **Step 3: Implement repair pack and merge**
 
   Add CLI commands:
 
@@ -376,14 +380,14 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
   preserves every unrequested row byte-semantically and rewrites
   `_l3_judged.json` atomically.
 
-- [ ] **Step 4: Replace full-context workflow repair**
+- [x] **Step 4: Replace full-context workflow repair**
 
   Workflow runs `repair-pack`, asks the repair agent to read only
   `_l3_repair_prompt.md`, then runs `apply-repair`. On connection failure it
   logs the failure and continues with the original judged file exactly as
   today.
 
-- [ ] **Step 5: Run tests, syntax probe, and commit**
+- [x] **Step 5: Run tests, syntax probe, and commit**
 
   Run:
 
@@ -412,7 +416,7 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
 - Modify: `autoresearch/scan/artifacts.py`
 - Modify: `tests/scan/test_artifacts.py`
 
-- [ ] **Step 1: Write failing task-book tests**
+- [x] **Step 1: Write failing task-book tests**
 
   Cover atomic initialization, successful-card skip, failed-stock isolation,
   one transient retry, no schema/contract retry, stale-task recovery, and
@@ -428,7 +432,7 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
   assert preflight(book, "000003")["action"] == "BLOCKED"
   ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
   Run:
 
@@ -438,7 +442,7 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
 
   Expected: `l4_tasks` is missing.
 
-- [ ] **Step 3: Implement the task state machine**
+- [x] **Step 3: Implement the task state machine**
 
   `_l4_tasks.json` stores `PENDING/RUNNING/SUCCEEDED/FAILED/BLOCKED`, attempt,
   pinned flag, required artifact paths/hashes, last error class, and timestamps.
@@ -446,13 +450,13 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
   classes are `RATE_LIMIT`, `CONNECTION`, and `TIMEOUT`; maximum attempt is
   two. Contract/schema/data-integrity failures never retry.
 
-- [ ] **Step 4: Implement per-stock slim preparation**
+- [x] **Step 4: Implement per-stock slim preparation**
 
   `prepare CODE DATE` harvests only that stock when the verified slim file is
   absent, uses `_slim_defect`, performs at most one light retry, and records the
   attempt. It never touches another stock's successful state.
 
-- [ ] **Step 5: Implement bounded dispatch batches**
+- [x] **Step 5: Implement bounded dispatch batches**
 
   Read independent configured caps for `tushare`, `web_search`, `web_fetch`,
   and `l4_stock`. The active batch width is their explicit minimum because one
@@ -460,7 +464,7 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
   and effective cap; after a rate-limit failure the next batch drops by one to
   a floor of one. This changes scheduling only, never rating or query caps.
 
-- [ ] **Step 6: Register the artifact and commit**
+- [x] **Step 6: Register the artifact and commit**
 
   Register `l4_task_book` in `ArtifactIndex`, run:
 
@@ -490,7 +494,7 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
 - Create: `tests/scan/test_wave3_workflows.py`
 - Modify: `tests/scan/test_user_config.py`
 
-- [ ] **Step 1: Write failing config/source-contract tests**
+- [x] **Step 1: Write failing config/source-contract tests**
 
   Accept:
 
@@ -508,7 +512,7 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
   batch `harvest-slim` barrier, l4-stock runs slim and Intel in `parallel`,
   task success is presence-gated, and legacy mode retains the old batch gate.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
   Run:
 
@@ -519,7 +523,7 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
 
   Expected: config keys and workflow branches are absent.
 
-- [ ] **Step 3: Add performance switches**
+- [x] **Step 3: Add performance switches**
 
   Whitelist:
 
@@ -533,7 +537,7 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
   streaming defaults on because its inputs and rating path are unchanged.
   `streaming_l4=false` is the byte-compatible rollback path.
 
-- [ ] **Step 4: Move slim into each stock workflow**
+- [x] **Step 4: Move slim into each stock workflow**
 
   In streaming mode scan-market initializes the task book and returns
   `dispatch_batches` immediately after prompt creation. Each l4-stock workflow:
@@ -545,14 +549,14 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
   5. verifies the card/ensemble and marks only that stock successful;
   6. records a classified failure without modifying other stocks.
 
-- [ ] **Step 5: Add sector-brief A/B scheduling**
+- [x] **Step 5: Add sector-brief A/B scheduling**
 
   `all` retains the current pre-L3 full sector brief path.
   `finalist_only` lets L3 consume deterministic sector terrain only, then
   generates briefs for unique finalist sectors after GATE2 and before those
   stocks' prompts. No rating or finalist cap changes.
 
-- [ ] **Step 6: Run workflow tests and commit**
+- [x] **Step 6: Run workflow tests and commit**
 
   Run:
 
@@ -585,14 +589,14 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
 - Create: `tests/scan/test_wave3_observation.py`
 - Modify: `tests/scan/test_assemble.py`
 
-- [ ] **Step 1: Write failing integration tests**
+- [x] **Step 1: Write failing integration tests**
 
   Assert that an available token JSON plus timing JSON produces a budget
   observation and artifact entry; absence produces an explicit unmeasured
   warning, not `$0`. Verify a degraded budget does not alter finalists,
   DecisionRecords, or report ratings.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
   Run:
 
@@ -603,13 +607,13 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
 
   Expected: no observation integration exists.
 
-- [ ] **Step 3: Integrate without business coupling**
+- [x] **Step 3: Integrate without business coupling**
 
   Post-run reads only canonical cost/timing artifacts, writes the observation,
   registers it, and adds a report section with `IMMATURE`/mature statistics.
   It must not import rating logic or mutate any DecisionRecord.
 
-- [ ] **Step 4: Add cost effectiveness denominators**
+- [x] **Step 4: Add cost effectiveness denominators**
 
   Report:
 
@@ -620,7 +624,7 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
   A zero denominator renders `—`; it is never converted to zero cost or a
   forced BUY.
 
-- [ ] **Step 5: Run tests and commit**
+- [x] **Step 5: Run tests and commit**
 
   Run:
 
@@ -649,14 +653,14 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
 - Modify: `docs/specs/2026-07-28-scan-market-unified-optimization-master-design.md`
 - Modify: `docs/plans/2026-07-28-wave3-token-critical-path-plan.md`
 
-- [ ] **Step 1: Update the runbook**
+- [x] **Step 1: Update the runbook**
 
   Document `dispatch_batches`, task replay, transient-only retry, legacy
   rollback switches, cost JSON/Markdown, budget observation, cache redline,
   and the ten-real-scan maturity rule. State that the main session must execute
   batches in order while calls within one batch remain parallel.
 
-- [ ] **Step 2: Run compile and focused regression**
+- [x] **Step 2: Run compile and focused regression**
 
   Run:
 
@@ -670,13 +674,13 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
     .claude/workflows/scan-market.js .claude/workflows/l4-stock.js
   ```
 
-- [ ] **Step 3: Prove rating/gate parity**
+- [x] **Step 3: Prove rating/gate parity**
 
   Diff production rating parser, gate thresholds, recall settings, and
   `fwd_2_oc` definitions against the Wave 2 completion commit. Expected: no
   semantic change. Run the prompt golden tests in both legacy and stable modes.
 
-- [ ] **Step 4: Run full suite**
+- [x] **Step 4: Run full suite**
 
   Run:
 
@@ -687,13 +691,13 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
   Expected: all tests pass; only the two pre-existing pandas FutureWarnings may
   remain.
 
-- [ ] **Step 5: Record honest completion**
+- [x] **Step 5: Record honest completion**
 
   Mark Wave 3 software complete, record exact test counts and commits, and keep
   cost/latency promotion `IMMATURE` until ten real scans exist. Do not claim
   the ≥15%/≥25% cost or P50/P90 targets from unit tests.
 
-- [ ] **Step 6: Commit documentation**
+- [x] **Step 6: Commit documentation**
 
   ```bash
   git add .claude/skills/scan-market/SKILL.md \
@@ -703,6 +707,21 @@ Claude Workflow JavaScript, Workflow `AsyncFunction` syntax probe.
     docs/plans/2026-07-28-wave3-token-critical-path-plan.md
   git commit -m "docs(scan): complete wave3 performance controls"
   ```
+
+### Completion record
+
+- Implementation commits:
+  `3c6c6f8`, `2dfce79`, `7a774d4`, `ac58161`, `7a85754`, `f885177`,
+  `4a1ac56`.
+- Focused acceptance: 62 performance-control tests plus 21 prompt/card parity
+  tests; both production Workflow files passed the `AsyncFunction` syntax
+  probe.
+- Full-suite acceptance: `1912 passed`, with two pre-existing pandas
+  `FutureWarning`s.
+- Production rating, gate, recall scoring, and `fwd_2_oc` files have no diff
+  against Wave 2 completion commit `257f826`.
+- Real-scan cost/latency promotion remains `IMMATURE`; no cost or speed target
+  is claimed from synthetic tests.
 
 ## Self-review
 

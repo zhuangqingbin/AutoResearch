@@ -1,4 +1,4 @@
-# scan-market 各阶段现状(as-of 2026-07-12)
+# scan-market 各阶段现状(as-of 2026-07-28)
 
 > 本文件只记**当前态快照**。沿革见 git log 与 `docs/specs/` 下各设计稿;**冲突时以源码为准**。
 > 文档分工:`SKILL.md` 讲**怎么跑**;操作模板分驻各能力 skill —— 市场研判在 `macro-playbook.md` 末节,L4 决策卡在 `stock-research` 的 `lite-playbook.md`。
@@ -142,6 +142,9 @@ L2 之后、与 L3 证据取数**并发**:
 - → 剩余的 `sector.pack <date>`(红榜 top3 ∪ L2 集中度 top3 ∪ 存量 watchlist.csv 行业,K ≤ 6;观察单日检已退役,此处只读存量文件)
 - → 每个行业派一个 `Agent(subagent_type='sector-brief')`,写两段契约 brief:`## 地形段`(喂 L3/L4)、`## 研判段`(仅 L5,含 `**行业方向**` 这一 keyed 行)。
 - L4 派发前,对 ≥2 只同行业 finalist 的行业补漏。
+- **Wave 3 A/B 调度**:`performance.sector_brief_mode="all"` 保留上述生产路径；
+  `"finalist_only"` 时 L3 仍读同一份确定性全行业地形，但判断型 brief 延后到
+  GATE2，只为实际入围票的唯一行业生成。该开关不改 finalist、行业方向或评级。
 
 **消费与价值:**
 
@@ -184,7 +187,9 @@ L2 之后、与 L3 证据取数**并发**:
 
 - 行语义指纹 `pf` 列(确定性画像短语,如 `高位·放量·主力+·PE低`——LLM 读词不读裸浮点);
 - 表按 lane 分块渲染(`l2_lane_reserved` 非空值分块、其余按 `recall_channels` 首通道,块内 composite 降序,meta 记 render_order);
-- `l3_select lint <date>` thesis 数字机检(引用数字须能在该票行值/催化字段容差匹配)→ workflow L3 后**一次打回自修**(不二检)。
+- `l3_select lint <date>` thesis 数字机检(引用数字须能在该票行值/催化字段容差匹配)→
+  `repair-pack` 只写失败行与本票证据，agent 只产 `{code, thesis}` patch，
+  `apply-repair` 用同一 lint 谓词复验后原子 merge；未失败行逐对象原样保留，连接失败继续原 judged。
 
 **输出契约增强(2026-07-11)**:judged 增 `mechanism` 字段(两日内兑现机制+明日买家,写不出不选);conviction 行为化定义(**≥70 = 能说出 D+1 谁买且愿真金买入,每日 ≥70 限 ~5 只**;50-69 = 值得 L4 验不背书)——L3.5 回测(唯 ≥70 有 T+2 edge)的语义落地。
 
@@ -212,9 +217,22 @@ L2 之后、与 L3 证据取数**并发**:
 
 ### 派发三步
 
-1. 落 `_l4_shared_instructions.md`(只放当日件)→ `l4_card prompts <date>` 落 `_harvest_list.txt`(`.SH`→`.SS`)+ 每卡一个 `_l4_prompt_<code>.md`(固定标头 → 共享块 → 逐卡简报;顺序被契约测试锁死 byte-identical,防 cache 前缀断裂)。**pinned 票**逐卡块带 📌保送标记 + 📌持仓管理要求行(卡片须含『持仓管理』节:D+1/D+2 卖出纪律+触发位,评级独立;07-12 W2)。
-2. 预 harvest slim —— **二段式**:`_slim.md`(表面,P0–P3)+ `_slim_deep.md`(深核:盈利质量 / 偿付 / 利润表,仅 P4 读、早停卡永不读)。**合格判据 = 结构+内容**(`l4_card._slim_defect`:四道结构锚 ∧ OHLCV Close 真数值;体积只兜 <4KB 真垃圾)——2026-07-14 教训:旧 8KB 体积门槛把差 16 字节的完整 slim 误杀、毙掉整条流水线,且该门槛此前已因同类误杀从 10KB 降过一次,**规模检查与结构检查必须分开**。
-3. **每股一个 `l4-stock` workflow**(fb_20260714_003):主会话一条消息 N 个 Workflow 并行,每股链内 intel→card→(≥OW)双复核;单股失败只废单股。行业 brief 补漏走 `subagent_type='sector-brief'`。
+1. 落 `_l4_shared_instructions.md`→ `l4_card prompts <date>` 落 `_harvest_list.txt`+
+   `_l4_prompt_<code>.md`。`stable_context_blocks=false` 是 legacy 字节路径；
+   true 时共享 market/sector/dossier/differential 写 `_context_blocks/` 和 hash manifest，
+   共同市场块置于首个逐股字节前。证据不删，评级不变。
+2. 默认 `streaming_l4=true`：初始化 `_l4_tasks.json`，状态为
+   `PENDING/RUNNING/SUCCEEDED/FAILED/BLOCKED`，逐票保存 prompt/slim/card hash、
+   attempt、pinned、错误类和时间戳。四类并发帽 `tushare/web_search/web_fetch/l4_stock`
+   取显式最小值形成 `dispatch_batches`；主会话批次间顺序执行、批次内并行。发生
+   `RATE_LIMIT` 后下一批降宽一档，最低 1；只改调度，不改查询 cap 或评级。
+3. 每股 `l4-stock` 先 preflight；本票 slim 与 intel 并行，二者终态后出卡。
+   成功仅在 prompt/slim/card hash 全部验证时复用。只有 `RATE_LIMIT`、`CONNECTION`、
+   `TIMEOUT` 允许第 2 次尝试；schema/contract/data-integrity 失败不重试且不碰其它票。
+   `streaming_l4=false` 回滚到旧批量 `harvest-slim` GATE3。
+
+单票恢复入口:`python -m autoresearch.scan.l4_tasks batches <date>` 只返回未完成批次；
+再按原 args 重派对应 `l4-stock`。不要删除 `_l4_tasks.json`，否则会丢失已验证成功的跳过事实。
 
 **⛔ 强制满卡**(`force_full_card`,2026-07-12 接线):逐卡块内插「禁止早停」指令,两条独立通路任一成立即触发 —— ① **📌 保送票**(`lane == "pinned"`)恒强制:你真金白银持有的票,「盈利质量」「偿付(爆雷)」**不允许**标『未核』;② **强先验**:`conviction ≥ 70` ∧(`n_channels ≥ 4` ∨ L2 配额救回)。**强制满卡只保证核得够深,不保证结论向好**(照样可以 UW/Sell),评级仍由 rubric 三门定。
 > ⚠️ FN-1 史(第五例):本函数 2026-06-27 建成后**零生产调用点**(只有单测 + 从未勾选的 plan 复选框 T12),这道早停安全网**从没跑过** —— 07-10 实跑 11 张卡里 10 张早停,含 4 张持仓卡爆雷维「未核」。**新生产者必须 grep 调用链 + 真实命令冒烟。**
@@ -252,18 +270,24 @@ self_review 硬门 banner → regime+drift 行(+🌡情绪温度行) → 📈市
 → 📈影子组合成绩单行(即"纸面法庭":真实 vs 影子[若门不拦最想买3只] vs 市场,hold=2 主尺)
 → 各阶段卡点&概览（+🍱菜单体检）→ 投资建议表(🎭复核分歧 badge) → 📅两周日历
 → 组合视角（买单同板块告警 + 🎭人裁行 + 仓位 overlay:risk_off 0–2 成 / range 3–5 / trend 5–8）
-→ 经验浮出 → token 估算 → ⏳待裁决提案(open 清单,20 日节奏 nag) → 诚实局限
+→ 经验浮出 → 分段耗时/落盘事实 → ⏳待裁决提案 → 💸成本与时延观测 → 诚实局限
 ```
 
 - **现场完备**:发布同时写 `run_health.json` + `index.md` 导航页(**第二天复盘从 index.md 进**);`weights_used.json` + meta.regime 固化,漏斗可复现。
+- **计量时序**:assemble 时 `_token_usage.json` 通常尚未生成，报告先明确
+  `UNMEASURED`；CP7 跑 usage_harvest `--json-out` 后由 `post_run observe` 原位替换
+  managed section，并刷新 `_budget_observation.json`、budget StageResult 与 ArtifactIndex。
 - **观察单已退役**(fb_20260714_002,2026-07-14 用户裁定):prelude 日检步骤、summary 渲染节、watchlist_ledger 刷新全部摘除;`scan/watchlist.py` 模块已删除(死码清理·零生产调用),存量 `context/watchlist.csv` 保留(sector.pack 行业选择器仍直接读该 CSV 文件),不再有日检/触发/直通车。发布仍落 `reports/scan/<运行时刻>/`(数据日在 manifest.json,retro 据此定位)。
 
 ---
 
 ## 计量与跨层校准(usage_harvest 已实跑;OTEL 路已退役)
 
-- **token 真计量(唯一正典)**:`python -m autoresearch.trace.usage_harvest --session <sessionId> --out reports/scan/<run>/token_usage.md`。逐 subagent 真 usage:**按 `message.id` 去重**(流式会让同一条 usage 重复落行,实测不去重把 cache_read 从 4.81M 虚报成 9.83M)、按**计价倍率加权**(cache读 ×0.1 / 5m写 ×1.25 / 1h写 ×2)+ **按模型汇总**(加权口径不含模型价差,壳降 haiku 只在这一维看得出来)。补账用 `--transcripts <glob>`(计量代码晚于某次 run 落地时)。
-  - **覆盖声明**:只覆盖 subagent,**主会话自身不在内**;表里没有的不等于没花钱。
+- **token/成本真计量(唯一正典)**:`python -m autoresearch.trace.usage_harvest --session <sessionId> --out reports/scan/<run>/token_usage.md --json-out context/scan/<date>/_token_usage.json`。覆盖可定位的**主会话 + subagent**；按 `message.id` 去重，分 input/output/cache read/5m write/1h write/model/effort/失败/重试/废弃，并按当前 Claude API 标准公开价估算。补账用 `--transcripts <glob>`。
+  - **回填**:`python -m autoresearch.scan.post_run <date> observe --report-dir reports/scan/<run>`；缺成本或墙钟写未计量 warning，绝不换算成 `$0`。
+  - **预算只告警**:超 cache 红线/阶段成本/墙钟只产 `DEGRADED` StageResult，`truncated=false`；不能截候选、查询、卡或阶段。
+  - **成熟门**:至少 **10 次真实扫描**，且基线已定价、成本/墙钟/cache 齐全，才报告中位成本与 P50/P90 并判 PASS/FAIL；此前恒 `IMMATURE`，不拿单次最佳 run 晋升。
+  - **效率分母**:USD/成熟 DecisionRecord、USD/最终 BUY、USD/已验证正确拒绝；分母 0 显示 `—`，不制造 BUY。
   - **2026-07-24 追溯首读**:50 agent · billed 22.4M / **加权 5.49M** / 输出 716.6k · cache 命中 85.6%。同一份报告的旧「落盘字节÷2.8」估算写 ~183.6k = **低估 30 倍**,且分布相反(L3 真占 7.8% 而非 37%;大头是主会话编排 27% / l4-card 23% / intel 20% / gp 壳 14.5%)。**按旧估算去砍会砍错地方** —— 报告侧估算列已随此发现退役。
 - **OTEL 遥测**:`trace/telemetry.py` 自 2026-07-05 建成起零生产调用点、全仓无一个 `token_telemetry.md`,已于 2026-07-27 **删除**。不要再配那五件 env(照旧文档跑会直接 ModuleNotFoundError)。
 - **跨层校准**:`python -m autoresearch.learning.cross_calib` → `reports/learning/cross_calib.md`。① L3→L4 翻案率 per lane(高确信 = conviction≥70、翻案 = L4≤UW);② rubric 门柱级拦对 / 错杀(错杀 = ex5>0 且 hi_10 触达目标)。
@@ -335,7 +359,7 @@ self_review 硬门 banner → regime+drift 行(+🌡情绪温度行) → 📈市
 1. regime 块 horizon 之争(`pr_20260702_001`)待 T+5 数据裁决;risk_off 块样本薄(11 日)。
 2. **多数 LLM 流程段还没在真实 skill 跑动中实测**(行业 brief 同链对比 / 观察单补 conds / 档案"变化项" / 经验人判 MTM / P4 倾向行 / 复用后编排 / L3 误读旗 / L4 slim 二段式与短格式早停卡):确定性件全测试全绿,LLM 段只是脚手架就位;早停抽检、卡模板 v2 未实跑;MTM / gate_fires / 触发 ledger / 影子对照 / P4 翻盘率样本仍薄,别过度反应。
 3. attribution 孤儿:06-19 端午假日键是非交易日,fwd 永远无法结算,保持 "—"。Δ 表省幅随日况;卡片复用省幅 = churn;评级基率 n<10 禁注。
-4. reversal_confirm 上线但与旧 reversal 的 A/B 未裁决(channel_eval 按 lane 计量,≥10 日再切/留);healthy 通道 alpha / 捕获增量也待 `pre_healthy` 影子反事实 + retro 裁决;哨兵档未实跑;token 真实计费只有 `/usage` 或 OTEL 落稿可见。
+4. reversal_confirm 上线但与旧 reversal 的 A/B 未裁决(channel_eval 按 lane 计量,≥10 日再切/留);healthy 通道 alpha / 捕获增量也待 `pre_healthy` 影子反事实 + retro 裁决;哨兵档未实跑；Wave 3 成本/时延软件已接线，但真实扫描样本未满 10 次，晋升仍 `IMMATURE`。
 5. consensus 首拉待限频窗,积累 <60 日前盈利修正不入线上;anns_d 无接口权限 → 公告情感列空,监管旗(news_reg)现**仅扫 L3_news(anns_d 公告)**、**无 webnews 回退**(该回退随 producer 已于 2026-07-13 移除,`L3_webnews` 目录从未有生产写入者)——anns_d 退役后监管旗同样恒空,`anns_empty_rate`=1.0 即该态(Wave4 Task1:index.md/L3 表头现会对此渲染显式标注,不再静默);northbound hk_ratio NaN=100% 时空转,已默认停用。
 6. ~~attribution 终评级缺口~~ **已修(07-12 P0-2)**:assemble 发布落 `_final_ratings.json`(两个 fold 循环后的终评级),retro 优先 join、缺文件回退卡面(presence-gated);仍欠=首次真实折回日人工核对一次。
 7. **2026-07-12 三波全部未实跑**:L3 两遍法+finalist tier(pass1 影子/bench 账本/守卫)、L4 情报站(config 默认关,启用即换 sonnet·max 盲搜)、自学习 P0 仪器(新鲜度行/过程分/收缩注入/lesson_yield/C18 红灯)——**下次真扫描=三波联合验收**,清单=`.superpowers/sdd/final-review-l3-merge.md`+`final-review-l4-intel.md`+各设计稿;07-07/08 复盘欠账由 nag 浮出;自学习 P0 波欠一轮正式终审(速审模式)。
