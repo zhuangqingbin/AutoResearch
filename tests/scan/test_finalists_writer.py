@@ -35,6 +35,47 @@ def test_write_finalists_preserves_leading_zeros(tmp_path):
     assert all(r["ticker"] == r["code"] for r in rows)             # ticker 与 code 同 6 位
 
 
+def test_write_finalists_emits_shadow_audit_without_changing_finalists(
+    tmp_path,
+    monkeypatch,
+):
+    base = tmp_path / "context" / "scan"
+    d = base / "2026-07-07"
+    d.mkdir(parents=True)
+    judged = [
+        {
+            "code": f"{i:06d}",
+            "name": f"N{i}",
+            "lane": "value",
+            "conviction": 70 - i,
+            "fragility": i,
+            "finalist": i < 2,
+        }
+        for i in range(12)
+    ]
+    (d / "_l3_judged.json").write_text(json.dumps(judged), encoding="utf-8")
+    pd.DataFrame({"code": [f"{i:06d}" for i in range(12)]}).to_csv(
+        d / "L2_gbdt_top200.csv",
+        index=False,
+    )
+    monkeypatch.setattr(
+        "autoresearch.scan.user_config.load_user_config",
+        lambda: {"l3": {"finalist_max": 10}},
+    )
+
+    res = write_finalists("2026-07-07", budget=10, root=base)
+
+    finalists = pd.read_csv(d / "finalists.csv", dtype={"code": str})
+    audit = pd.read_csv(
+        d / "shadow" / "l3_audit_candidates.csv",
+        dtype={"code": str},
+    )
+    assert set(finalists["code"]) == {"000000", "000001"}
+    assert len(audit) == 2
+    assert not set(audit["code"]) & set(finalists["code"])
+    assert res["audit_n"] == 2
+
+
 # ══════════════════════════ pinned 强留(design §4.1;plan Task 4) ══════════════════════════
 #
 # 全部沿用 _judged() 的 000062(lane=value)/000063(lane=trend)两只自然入选票;

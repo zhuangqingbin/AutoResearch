@@ -896,13 +896,20 @@ def write_finalists(date: str, budget: int = 30, root: Path | None = None,
     bench_n = int(len(bench))
     bench.to_csv(scan_dir / "_l3_bench.csv", index=False)
     fin.to_csv(scan_dir / "finalists.csv", index=False)
+    from autoresearch.learning.l3_audit_ledger import write_audit_candidates
+
+    audit_path = write_audit_candidates(
+        scan_dir,
+        finalist_max=finalist_max,
+    )
+    audit_n = len(pd.read_csv(audit_path, dtype={"code": str}))
     import contextlib
     with contextlib.suppress(Exception):
         from autoresearch.scan.stock_stage import record_l3_results
 
         record_l3_results(scan_dir)
     return {"judged_n": int(len(jd)), "finalists_n": int(len(fin)),
-            "finalist_n": finalist_n, "bench_n": bench_n}
+            "finalist_n": finalist_n, "bench_n": bench_n, "audit_n": audit_n}
 
 
 def prepare_l3_table(date: str, root: Path | None = None, delta: bool = True,

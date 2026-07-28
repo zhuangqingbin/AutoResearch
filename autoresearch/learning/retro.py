@@ -572,6 +572,10 @@ def attribute(date: str, scan_root: Path | None = None, report_root: Path | None
         build_rejection_attribution(sdir, attr),
         health=health,
     )
+    if (sdir / "shadow" / "l3_audit_candidates.csv").exists():
+        from autoresearch.learning.l3_audit_ledger import write_day_ledger
+
+        write_day_ledger(sdir, attr)
     pairs = build_retro_pairs(attr)                  # M1·同日 fail/success 对(成熟日才非空)
     if not pairs.empty:                              # presence-gated:未成熟日不落文件
         pairs.to_csv(outdir / "_retro_pairs.csv", index=False)
