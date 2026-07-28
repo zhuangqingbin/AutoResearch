@@ -180,6 +180,11 @@ Exit evidence:
 
 ### Wave 5 — experiment promotion and rollback
 
+Detailed plan:
+`docs/plans/2026-07-28-wave5-experiment-governance-plan.md`.
+
+Status: **in progress 2026-07-28**.
+
 Planned components:
 
 - `autoresearch/learning/experiment_registry.py`
