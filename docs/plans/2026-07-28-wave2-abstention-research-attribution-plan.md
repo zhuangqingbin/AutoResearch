@@ -29,7 +29,7 @@ Wave 2 answers five separate questions:
 - [x] Task 3: tri-state unique-gate accountability
 - [x] Task 4: L3 shadow audit basket
 - [x] Task 5: early-stop shadow deep-review queue
-- [ ] Task 6: ensemble fold outcome ledger
+- [x] Task 6: ensemble fold outcome ledger
 - [ ] Task 7: retro events, health, parity, and documentation
 
 ## Non-negotiable invariants

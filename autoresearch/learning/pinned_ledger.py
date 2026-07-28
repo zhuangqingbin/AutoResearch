@@ -16,7 +16,6 @@ design: docs/specs/2026-07-28-wave7-unified-roadmap-design.md §6 P1
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pandas as pd
@@ -76,16 +75,6 @@ def verdict_of(rating: str, excess: float | None, fly_pp: float = _FLY_PP) -> st
     return "判错(该走没走)" if excess <= -fly_pp else "中性"
 
 
-def _ensemble(d: Path, code: str) -> dict | None:
-    p = d / f"_ensemble_{code}.json"
-    if not p.exists():
-        return None
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
-        return None
-
-
 def fold_verdict_of(fold_from: str | None, fold_to: str | None,
                     excess: float | None) -> str | None:
     """双复核折回是救对了还是救错了(无折回 → None)。
@@ -129,6 +118,9 @@ def roll(scan_root: Path | str | None = None) -> pd.DataFrame:
         attr = _read_attr(d)
         mkt = market_fwd2(attr)
         ratings = final_ratings(d)
+        from autoresearch.learning.ensemble_ledger import load_fold_facts
+
+        fold_facts = load_fold_facts(d)
         for _, r in pinned.iterrows():
             code = str(r.get("code", "")).split(".")[0].zfill(6)
             rating = ratings.get(code) or ""
@@ -137,10 +129,9 @@ def roll(scan_root: Path | str | None = None) -> pd.DataFrame:
                 v = pd.to_numeric(pd.Series([attr.at[code, "fwd_2_oc"]]), errors="coerce").iloc[0]
                 fwd = None if pd.isna(v) else float(v)
             excess = None if (fwd is None or mkt is None) else fwd - mkt
-            ens = _ensemble(d, code) or {}
-            runs = ens.get("ratings") or []
-            fold_from = runs[0] if runs else None
-            fold_to = ens.get("median") if runs else None
+            fold = fold_facts.get(code) or {}
+            fold_from = fold.get("source_rating")
+            fold_to = fold.get("final_rating")
             conv = pd.to_numeric(pd.Series([r.get("conviction")]), errors="coerce").iloc[0]
             rows.append({
                 "date": d.name, "code": code,
@@ -150,7 +141,7 @@ def roll(scan_root: Path | str | None = None) -> pd.DataFrame:
                 "verdict": verdict_of(rating, excess),
                 "fold_from": fold_from, "fold_to": fold_to,
                 "fold_verdict": fold_verdict_of(fold_from, fold_to, excess),
-                "trigger": ens.get("trigger"), "spread": ens.get("spread"),
+                "trigger": fold.get("trigger"), "spread": fold.get("spread"),
                 "l3_conviction": None if pd.isna(conv) else float(conv),
             })
     return pd.DataFrame(rows, columns=_COLS).sort_values(["date", "code"]).reset_index(drop=True)
