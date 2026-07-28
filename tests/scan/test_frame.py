@@ -145,3 +145,11 @@ def test_frame_cli_smoke(monkeypatch, capsys, tmp_path):
     assert '"breadth"' in out            # --json 打印 market_pack(宏观 lite 输入)
     assert '"macro_state_note"' in out   # 捆绑进 JSON,缺文件 → null + note(presence-gated)
     assert '"user_config"' in out        # Plan A3 T1:用户配置层回显(缺文件 → {})
+    contract = json.loads(
+        (tmp_path / "context" / "scan" / DATE / "run_contract.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert contract["stage_budgets"]["cache_hit_min"] == 0.85
+    assert contract["stage_budgets"]["min_real_scans"] == 10
+    assert contract["stage_budgets"]["concurrency"]["tushare"] == 4

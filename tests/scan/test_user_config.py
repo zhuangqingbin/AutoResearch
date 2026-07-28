@@ -226,6 +226,38 @@ def test_learning_applies_to_scan_config():
     assert sc.learning == {"shrink": True, "shrink_k": 15}
 
 
+# ───────────────────────── budgets:只观测不截断 ─────────────────────────
+
+
+def test_budgets_whitelisted_and_applied(tmp_path):
+    raw = {
+        "cache_hit_min": 0.85,
+        "stage_cost_usd": {"l4-card": 20},
+        "stage_wall_seconds": {"L3精排": 900},
+        "concurrency": {
+            "tushare": 4,
+            "web_search": 3,
+            "web_fetch": 3,
+            "l4_stock": 4,
+        },
+        "min_real_scans": 10,
+        "baseline_run": "20260727_2140",
+    }
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"budgets": raw}), encoding="utf-8")
+    cfg = load_user_config(p)
+    assert cfg["budgets"] == raw
+    sc = apply_to_scan_config(cfg, ScanConfig())
+    assert sc.budgets == raw
+
+
+def test_budgets_unknown_subkey_raises(tmp_path):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"budgets": {"truncate_on_overrun": True}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="truncate_on_overrun"):
+        load_user_config(p)
+
+
 # ───────────────────────── frame --json:user_config 回显 + run meta 落盘 ─────────────────────────
 
 

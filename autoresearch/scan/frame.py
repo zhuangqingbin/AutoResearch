@@ -191,6 +191,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[macro_state] {mnote}", file=sys.stderr)
     if args.json:
         from autoresearch.scan.artifacts import artifact_schema_versions
+        from autoresearch.scan.budget import normalize_budgets
         from autoresearch.scan.run_contract import RunContract, write_run_contract
         from autoresearch.scan.user_config import load_pinned, load_user_config
 
@@ -210,6 +211,7 @@ def main(argv: list[str] | None = None) -> int:
                 "include_bj": not args.exclude_bj,
             },
             stage_budgets={
+                **normalize_budgets(user_cfg.get("budgets")),
                 "l3_finalist_max": int(l3_cfg.get("finalist_max", 10)),
                 "pinned_cap": pinned_cap,
                 "pinned_ttl_days": pinned_ttl,

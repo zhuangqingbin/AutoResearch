@@ -37,6 +37,10 @@ class ScanConfig:
     pinned: dict | None = None        # {cap, ttl_days} 保送票参数(Task 3+ 消费)
     redteam_prob: float | None = None  # 机会成本红队触发概率覆盖(None=沿用现硬编码值)
     reuse: dict | None = None         # {max_age_days, price_delta_pct} L4 卡片复用参数覆盖
+    l4_intel: dict | None = None      # {enabled,max_queries} 活体情报参数
+    l3: dict | None = None            # {two_pass,pass1_target,finalist_max}
+    learning: dict | None = None      # {shrink,shrink_k}
+    budgets: dict | None = None       # 成本/墙钟/并发观测预算；不拥有截断权限
 
     def to_dict(self) -> dict:
         """落 manifest 的纯 dict(可 JSON 序列化)。"""

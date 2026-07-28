@@ -78,7 +78,7 @@ def _read_jsonc(p: Path):
 # cross_calib.flip_stats/buy_ledger 的 target_calib/gate_ledger 的 tail_rate)各自读取。
 # 默认 shrink=true·shrink_k=15(新基线);本块是回滚杆,不是 opt-in。
 _TOP_WHITELIST = {"agents", "funnel", "pinned", "redteam_prob", "reuse", "l4_intel", "l3",
-                  "learning"}
+                  "learning", "budgets"}
 _SUB_WHITELIST = {
     "funnel": {"recall_channels", "channel_quotas", "channel_floors"},
     "pinned": {"cap", "ttl_days"},
@@ -86,6 +86,10 @@ _SUB_WHITELIST = {
     "l4_intel": {"enabled", "max_queries"},
     "l3": {"two_pass", "pass1_target", "finalist_max"},
     "learning": {"shrink", "shrink_k"},
+    "budgets": {
+        "cache_hit_min", "stage_cost_usd", "stage_wall_seconds", "concurrency",
+        "min_real_scans", "baseline_run",
+    },
 }
 
 
@@ -128,7 +132,10 @@ def apply_to_scan_config(cfg: dict, sc: ScanConfig) -> ScanConfig:
             sc.channel_quotas = funnel["channel_quotas"]
         if "channel_floors" in funnel:
             sc.channel_floors = funnel["channel_floors"]
-    for key in ("agents", "pinned", "redteam_prob", "reuse", "l4_intel", "l3", "learning"):
+    for key in (
+        "agents", "pinned", "redteam_prob", "reuse", "l4_intel", "l3",
+        "learning", "budgets",
+    ):
         if key in cfg:
             setattr(sc, key, cfg[key])
     return sc
