@@ -202,6 +202,40 @@ def _refresh_section6(text: str, staging: Path | None, code6: str,
     return replace_section(text, 5, f"_素材 as-of {staging.name}_\n\n{body}"), []
 
 
+def intel_dossier_gaps(staging: Path | None, code6: str, max_lines: int = 2) -> list[str]:
+    """当期情报稿里的 `档案缺口:` 行(Wave7 P4;确定性,零 LLM)。
+
+    由来:2026-07-27 实跑,300857 的情报查到「2026-04 以 5.1 亿增资控股光为科技 51% 切入
+    光模块」,**并且它自己注意到**注入的档案摘要里没有这第六项业务 —— 可那条发现只活在
+    当天的情报稿里,没有任何机制把它带回档案,下次覆盖照样缺。我们本来就把档案摘要注入
+    intel 让它去重,等于免费得到一个"档案哪儿旧了"的探测器,却一直没接收端。
+
+    只捡**结构性事实缺口**(契约规定当期新闻事件不写这里,它们进事件段);合并进 §1
+    业务模型叙事仍是 LLM 的活(首覆/季度对账时),本函数只负责让它**留下痕迹**。
+    """
+    if staging is None:
+        return []
+    p = Path(staging) / f"_l4_intel_{code6}.md"
+    if not p.exists():
+        return []
+    try:
+        lines = p.read_text(encoding="utf-8").splitlines()
+    except Exception:  # noqa: BLE001
+        return []
+    out: list[str] = []
+    for ln in lines:
+        s = ln.strip().lstrip("-").strip()
+        if s.startswith("档案缺口"):
+            # 只剥「档案缺口」标签与紧随的一个冒号 —— 正文里还有「｜ 源: http(s)…」,
+            # 逐个 split 冒号会把整条事实吃掉只剩 URL(首版就是这么写错的)。
+            body = s[len("档案缺口"):].lstrip(":: ").strip()
+            if body:
+                out.append(body[:180])
+        if len(out) >= max_lines:
+            break
+    return out
+
+
 def _refresh_staging_sections(text: str, code6: str, date: str,
                               scan_root: str | Path) -> tuple[str, list[str]]:
     """§4 筹码资金史(腿级)/ §6 催化剂日历(节级)就地刷新(spec ① 表:每次 δ)。
@@ -213,6 +247,9 @@ def _refresh_staging_sections(text: str, code6: str, date: str,
     staging = _staging_dir_for(scan_root, date)
     text, skip4 = _refresh_section4_legs(text, staging, code6)
     text, skip6 = _refresh_section6(text, staging, code6, date)
+    for gap in intel_dossier_gaps(staging, code6):    # Wave7 P4:情报侧发现的档案缺口留痕
+        text = append_delta_line(text, date, f"档案缺口(情报侧发现,待首覆/对账吸收):{gap}",
+                                 key=f"档案缺口:{gap[:24]}")
     return text, skip4 + skip6
 
 

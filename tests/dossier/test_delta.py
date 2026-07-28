@@ -414,3 +414,40 @@ def test_record_scan_delta_sections_skipped_observable(tmp_path):
     (d2 / "_final_ratings.json").write_text(json.dumps({"300857": "Hold"}), encoding="utf-8")
     batch = delta.record_scan_deltas(d2, "2026-07-24")      # 批量层同款不吞(I-2)
     assert batch["sections_skipped"]["300857"] == ["§4.seats", "§6"]
+
+
+# ══ Wave7 P4:情报侧发现的档案缺口回流 ═══════════════════════════════════════
+#
+# 2026-07-27 实跑:300857 的情报查到「2026-04 以 5.1 亿增资控股光为科技 51% 切入光模块」,
+# **并且它自己注意到**注入的档案摘要里没有这第六项业务 —— 可那条发现只活在当天的情报稿里,
+# 没有任何机制把它带回档案,下次覆盖照样缺。我们本来就把档案摘要注入 intel 让它去重,
+# 等于免费得到一个「档案哪儿旧了」的探测器,却一直没有接收端。
+
+
+def _intel(staging, code6, body):
+    staging.mkdir(parents=True, exist_ok=True)
+    (staging / f"_l4_intel_{code6}.md").write_text(body, encoding="utf-8")
+
+
+def test_intel_dossier_gaps_picks_contract_line(tmp_path):
+    from autoresearch.dossier.delta import intel_dossier_gaps
+    _intel(tmp_path, "300857",
+           "# 活体情报\n\n## 档案缺口\n"
+           "- 档案缺口: 2026-04 以 5.1 亿增资控股光为科技 51% 切入光模块 ｜ 源: http://x\n")
+    got = intel_dossier_gaps(tmp_path, "300857")
+    assert len(got) == 1 and "光为科技" in got[0]
+
+
+def test_intel_dossier_gaps_absent_section_is_empty(tmp_path):
+    """契约规定没发现就整段省略 —— 缺段是合法状态,不是错误。"""
+    from autoresearch.dossier.delta import intel_dossier_gaps
+    _intel(tmp_path, "300857", "# 活体情报\n\n## 事件段\n| 日期 | 时效窗 |\n")
+    assert intel_dossier_gaps(tmp_path, "300857") == []
+    assert intel_dossier_gaps(tmp_path, "999999") == []
+    assert intel_dossier_gaps(None, "300857") == []
+
+
+def test_intel_dossier_gaps_capped(tmp_path):
+    from autoresearch.dossier.delta import intel_dossier_gaps
+    _intel(tmp_path, "300857", "\n".join(f"- 档案缺口: 事实{i}" for i in range(5)))
+    assert len(intel_dossier_gaps(tmp_path, "300857")) == 2
