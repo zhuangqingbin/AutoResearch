@@ -215,6 +215,47 @@ def test_stage_results_are_published_and_indexed(published):
     assert health["stage_results"]["failed"] == ["gate4"]
 
 
+def test_decision_records_capture_fold_chain(published):
+    from autoresearch.scan.decision_record import load_decision_records
+
+    records = load_decision_records(
+        published["scan_dir"] / "decision_records.json"
+    )
+    assert set(records) == {"300476", "600519", "002384", "301117"}
+
+    downgraded = records["300476"]
+    assert downgraded.source_rating == "Overweight"
+    assert downgraded.rubric_rating == "Overweight"
+    assert downgraded.final_rating == "Hold"
+    assert downgraded.proposal == "HOLD"
+    assert downgraded.first_rejection_stage == "VERIFY"
+    assert downgraded.reason == "verify:降级"
+    assert "verify.csv#300476" in downgraded.evidence_refs
+
+    missing = records["002384"]
+    assert missing.source_rating == "—" and missing.final_rating == "—"
+    assert missing.first_rejection_stage == "L4_CARD_MISSING"
+
+    maintained = records["301117"]
+    assert maintained.source_rating == maintained.final_rating == "Overweight"
+    assert maintained.first_rejection_stage is None
+    assert maintained.reason == "qualified"
+
+
+def test_decision_records_match_legacy_final_ratings(published):
+    from autoresearch.scan.decision_record import load_decision_records
+
+    records = load_decision_records(
+        published["scan_dir"] / "decision_records.json"
+    )
+    legacy = json.loads(
+        (published["scan_dir"] / "_final_ratings.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert {code: record.final_rating for code, record in records.items()} == legacy
+
+
 def test_trace_pipeline_artifacts_published(published):
     pdir = published["trace"]
     for fn in ("L1_recall_top1000.csv", "L2_gbdt_top200.csv", "L3_fine_finalists.csv", "funnel.md",

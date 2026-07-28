@@ -189,6 +189,98 @@ _PROPOSAL_BY_RATING = {"Buy": "BUY", "Overweight": "BUY", "Hold": "HOLD",
                        "Underweight": "SELL", "Sell": "SELL"}
 
 
+def _dump_decision_records(
+    scan_dir: Path,
+    rows: list[dict],
+    vmap: dict[str, dict],
+    emap: dict[str, dict],
+) -> None:
+    """把既有卡面与折回链双写为结构化事实；失败不阻断报告发布。"""
+    from autoresearch.scan.decision_record import (
+        DecisionRecord,
+        safe_write_decision_records,
+    )
+    from autoresearch.scan.stage_result import contract_hash_for
+
+    records = []
+    qualified = {"Buy", "Overweight"}
+    for row in rows:
+        code = str(row.get("code", "")).zfill(6)
+        text = _decision_text(scan_dir, code)
+        gates = gate_status(text or "")
+        gate_states = dict.fromkeys(_GATES3, "UNKNOWN")
+        if gates is not None:
+            gate_states.update(
+                {
+                    gate: "FAIL" if failed else "PASS"
+                    for gate, failed in gates.items()
+                }
+            )
+        early = parse_early_stop(text or "")
+        source = row.get("_source_rating", "—")
+        post_verify = row.get("_post_verify_rating", source)
+        final = row.get("rating", "—")
+        verify = vmap.get(code)
+        ensemble = emap.get(code)
+
+        if final in qualified:
+            first_rejection = None
+            reason = "qualified"
+        elif text is None:
+            first_rejection = "L4_CARD_MISSING"
+            reason = "card_missing"
+        elif early:
+            first_rejection = f"L4_{early['phase']}_EARLY_STOP"
+            reason = f"early_stop:{early['phase']}:{early['reason']}"
+        elif source not in qualified:
+            first_rejection = "L4_RUBRIC"
+            failed_gates = [
+                gate for gate, state in gate_states.items() if state == "FAIL"
+            ]
+            reason = "rubric:" + (
+                "|".join(failed_gates) if failed_gates else source
+            )
+        elif post_verify not in qualified:
+            first_rejection = "VERIFY"
+            reason = f"verify:{(verify or {}).get('verdict', 'unknown')}"
+        else:
+            first_rejection = "ENSEMBLE"
+            reason = f"ensemble:{(ensemble or {}).get('median', 'unknown')}"
+
+        refs = [f"finalists.csv#{code}"]
+        if text is not None:
+            refs.append(f"details/{code}.md")
+        if verify:
+            refs.append(f"verify.csv#{code}")
+        if ensemble:
+            per_code = scan_dir / f"_ensemble_{code}.json"
+            refs.append(
+                per_code.name if per_code.exists() else f"_ensemble.json#{code}"
+            )
+        records.append(
+            DecisionRecord.build(
+                analysis_date=scan_dir.name,
+                contract_hash=contract_hash_for(scan_dir),
+                code=code,
+                source_rating=source,
+                rubric_rating=row.get("rubric_suggest") or "—",
+                gate_states=gate_states,
+                early_stop=early,
+                ensemble_ratings=list(
+                    row.get("_ensemble_ratings")
+                    or (ensemble or {}).get("ratings")
+                    or []
+                ),
+                final_rating=final,
+                proposal=_PROPOSAL_BY_RATING.get(final, "—"),
+                reason=reason,
+                evidence_refs=refs,
+                first_rejection_stage=first_rejection,
+            )
+        )
+    safe_write_decision_records(scan_dir, records)
+
+
 def _verify_detail(vmap: dict[str, dict]) -> list[str]:
     """Tier-3 多空辩论明细块:降级/否决 摊开 多/空/触发/共识(维持的不赘述);vmap 空 → [](老路不破)。"""
     if not vmap:
@@ -923,15 +1015,20 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
     l1_full = {str(r.get("code", "")).zfill(6): r for r in _read_csv(scan_dir / "L1_scored_full.csv")}
     l2_top = {str(r.get("code", "")).zfill(6): r for r in keep}
     rows = [_finalist_row(scan_dir, fr) for fr in finals]
+    for r in rows:
+        r["_source_rating"] = r.get("rating", "—")
     vmap = _load_verify(scan_dir)   # Tier-3 对抗验证;降级/否决折回评级(踢出买单),无 verify.csv 则空(老路不破)
     for r in rows:
         v = vmap.get(str(r.get("code", "")).zfill(6))
         if v and v["verdict"] in ("降级", "否决"):
             r["rating"] = _apply_verify_downgrade(r.get("rating", "Hold"), v["verdict"])
             r["proposal"] = _PROPOSAL_BY_RATING.get(r["rating"], r.get("proposal", "—"))
+    for r in rows:
+        r["_post_verify_rating"] = r.get("rating", "—")
     emap = _load_ensemble(scan_dir)  # 买单复核 ensemble(B10 集成配方,≥OW 追加 2 独立 run 取中位);无 _ensemble.json 则空(老路不破)
     for r in rows:
         e = emap.get(str(r.get("code", "")).zfill(6))
+        r["_ensemble_ratings"] = list((e or {}).get("ratings") or [])
         if not e:
             continue
         folded = _apply_ensemble_fold(r.get("rating", "Hold"), e)
@@ -941,6 +1038,7 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
         if _ensemble_flag(e):
             r["ens_flag"] = True                # 🎭复核分歧:spread≥2 → 行 badge + 组合视角人裁提示
     _dump_final_ratings(scan_dir, rows)   # P0-2:两个 fold 循环已跑完 → rows["rating"] 即终评级,落盘供 retro 优先 join(含保送,retro 口径不变)
+    _dump_decision_records(scan_dir, rows, vmap, emap)
     rows.sort(key=_sortkey)
     # ── feedback fb_20260714_001:保送(lane==pinned)与真实精选分列 ──
     # lane 是运行期烤进 finalists.csv 的事实(_inject_pinned_finalists 强改判),比当前 pinned.jsonc
