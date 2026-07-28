@@ -1,8 +1,12 @@
 # Wave7:统一 roadmap —— 新闻时效 × token/速度第三刀 × 保送持仓自进化 × 修缮批(design)
 
+> **已被取代（2026-07-28）**：当前统一方向、优先级、0-BUY 根因模型与实施波次，以
+> `docs/specs/2026-07-28-scan-market-unified-optimization-master-design.md` 为准。
+> 本文保留为 Wave7 事故证据、机制细节和已实施事项的历史记录，不再承担当前 roadmap 职责。
+
 > 2026-07-28 定稿(07-27 夜 brainstorm,**只落文档,不实施**)。起因:用户五问——①最新报告之后的遗留优化;②活体新闻以近 24h 为主(尤其收盘→跑报时段),面要够大不漏蛛丝马迹;③token 再省(不伤流程);④速度再快;⑤自进化能力(L4 推的 + 保送的)。
 > 证据基线:run `20260727_2140`(数据日 2026-07-27,含 CP7 真计量首读 + 一次 frame 事故全记录)。所有数字实测,估算处显式标注。
-> 上游:`docs/specs/2026-07-27-wave6-unified-roadmap-design.md`(Wave6;批 A/C 已实施、批 B 部分已实施)。**此后调度以本文为准,Wave6 退居机制参考**(与 Wave6 收编 Wave5 同款惯例)。
+> 上游:`docs/specs/2026-07-27-wave6-unified-roadmap-design.md`(Wave6;批 A/C 已实施、批 B 部分已实施)。历史上 Wave7 曾取代 Wave6 承担调度；当前调度已由页首所链统一总纲接管，本文与 Wave6 均退居机制参考。
 
 ## 用户已拍板(2026-07-27/28 brainstorm)
 
