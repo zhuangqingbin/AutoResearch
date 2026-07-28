@@ -77,3 +77,33 @@ def test_json_mode_contains_library_stdout(monkeypatch, capsys, tmp_path):
     assert rc == 0
     assert "[L0·tushare]" not in captured.out and "[L0·tushare]" in captured.err
     json.loads(captured.out.strip())
+
+
+def test_json_mode_writes_contract_and_short_ref(monkeypatch, capsys, tmp_path):
+    """frame 是运行身份最早边界：完整契约落盘，pack 只携带定长引用。"""
+    _patch_deps(monkeypatch, tmp_path)
+    monkeypatch.setattr("autoresearch.scan.run_contract.resolve_git_sha", lambda root=".": "deadbeef")
+    rc = frame.main([DATE, "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    contract_path = tmp_path / "context" / "scan" / DATE / "run_contract.json"
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+
+    assert rc == 0
+    assert payload["run_contract"] == {
+        "schema_version": 1,
+        "run_id": contract["run_id"],
+        "contract_hash": contract["contract_hash"],
+        "config_hash": contract["config_hash"],
+    }
+    assert contract["analysis_date"] == DATE
+    assert contract["git_sha"] == "deadbeef"
+    assert contract["data_policy"] == {
+        "source": "tushare",
+        "cap_floor_yi": 30.0,
+        "include_bj": True,
+    }
+    assert contract["stage_budgets"] == {
+        "l3_finalist_max": 10,
+        "pinned_cap": 5,
+        "pinned_ttl_days": 10,
+    }

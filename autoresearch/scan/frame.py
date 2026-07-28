@@ -190,15 +190,44 @@ def main(argv: list[str] | None = None) -> int:
         mstate, mnote = load_macro_state(analysis_date, regime_today=reg.get("label"))
         print(f"[macro_state] {mnote}", file=sys.stderr)
     if args.json:
-        from autoresearch.scan.user_config import load_user_config  # Plan A3 T1:用户配置层回显
+        from autoresearch.scan.artifacts import artifact_schema_versions
+        from autoresearch.scan.run_contract import RunContract, write_run_contract
+        from autoresearch.scan.user_config import load_pinned, load_user_config
+
         user_cfg = load_user_config()
-        print(json.dumps({**pack, "macro_state": mstate, "macro_state_note": mnote,
-                          "user_config": user_cfg},
-                         ensure_ascii=False, indent=2))
-        echo_dir = Path("context/scan") / analysis_date       # run meta:本次跑用的配置,可复现
+        pinned_cfg = user_cfg.get("pinned") or {}
+        pinned_cap = int(pinned_cfg.get("cap", 5))
+        pinned_ttl = int(pinned_cfg.get("ttl_days", 10))
+        l3_cfg = user_cfg.get("l3") or {}
+        pinned = load_pinned(analysis_date, cap=pinned_cap, ttl_days=pinned_ttl)
+        contract = RunContract.build(
+            analysis_date=analysis_date,
+            user_config=user_cfg,
+            pinned=pinned,
+            data_policy={
+                "source": args.source,
+                "cap_floor_yi": args.cap_floor,
+                "include_bj": not args.exclude_bj,
+            },
+            stage_budgets={
+                "l3_finalist_max": int(l3_cfg.get("finalist_max", 10)),
+                "pinned_cap": pinned_cap,
+                "pinned_ttl_days": pinned_ttl,
+            },
+            artifact_schema_versions=artifact_schema_versions(),
+        )
+        echo_dir = Path("context/scan") / analysis_date
         echo_dir.mkdir(parents=True, exist_ok=True)
+        write_run_contract(echo_dir / "run_contract.json", contract)
         (echo_dir / "user_config_echo.json").write_text(
             json.dumps(user_cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(json.dumps({
+            **pack,
+            "macro_state": mstate,
+            "macro_state_note": mnote,
+            "user_config": user_cfg,
+            "run_contract": contract.short_ref(),
+        }, ensure_ascii=False, indent=2))
     return 0
 
 
