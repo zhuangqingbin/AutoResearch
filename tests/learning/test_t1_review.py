@@ -335,3 +335,56 @@ def test_ledger_report_expectancy_and_conviction(tmp_path):
     assert "- Overweight" not in rep                               # 唯一 OW 是一字板 → 期望值行整行不出
     # conviction 校准看「判断」对错,sealed 不剔(识别对了只是买不到):>70 桶 = 不准(80)+准(75)
     assert "conviction 校准" in rep and "56-70: 1/1" in rep and ">70: 1/2" in rep
+
+
+# ══ Wave7 P3:L4 自己的置信度曲线 ═════════════════════════════════════════════
+#
+# 既有的 conviction 校准量的是 **L3** 的 0-100 分(来自 finalists.csv),回答「漏斗选得准不准」。
+# L4 深核完之后写下的「置信度: 高/中/低」是另一个量,回答「L4 知不知道自己什么时候更靠谱」。
+# L4 的**数值** conviction 只活在 workflow 返回值里、从未落盘(pr_20260717_005 标度不一致
+# 同因),但卡片正文一直写着定性档 —— 零新数据就能建曲线。
+
+
+def test_l4_confidence_parses_card(tmp_path):
+    from autoresearch.learning.t1_review import _l4_confidence
+    d = tmp_path / "2026-07-27"
+    (d / "details").mkdir(parents=True)
+    (d / "details" / "600988.md").write_text(
+        "# 决策卡\n置信度: 中 ｜ 最大不确定项: 金价方向\n", encoding="utf-8")
+    assert _l4_confidence(d, "600988") == "中"
+
+
+def test_l4_confidence_handles_fullwidth_colon(tmp_path):
+    from autoresearch.learning.t1_review import _l4_confidence
+    d = tmp_path / "2026-07-27"
+    (d / "details").mkdir(parents=True)
+    (d / "details" / "600988.md").write_text("置信度:高\n", encoding="utf-8")
+    assert _l4_confidence(d, "600988") == "高"
+
+
+def test_l4_confidence_missing_is_empty_not_guessed(tmp_path):
+    """读不到就是读不到 —— 不猜一个默认档(会把「没写」记成「中等确信」)。"""
+    from autoresearch.learning.t1_review import _l4_confidence
+    d = tmp_path / "2026-07-27"
+    (d / "details").mkdir(parents=True)
+    (d / "details" / "600988.md").write_text("# 决策卡\n没有置信度这一行\n", encoding="utf-8")
+    assert _l4_confidence(d, "600988") == ""
+    assert _l4_confidence(d, "999999") == ""
+
+
+def test_report_renders_both_conviction_curves(tmp_path):
+    """两条曲线并列:L3 高确信被翻案、L4 高置信仍判错 —— 是两种完全不同的病。"""
+    from autoresearch.learning import t1_review as M
+    led = tmp_path / "t1.jsonl"
+    rows = [
+        {"t": "2026-07-21", "code": "000001", "rating": "Overweight", "verdict": "准",
+         "conviction": 75, "l4_conf": "高", "surprise": False, "sealed": False},
+        {"t": "2026-07-21", "code": "000002", "rating": "Underweight", "verdict": "不准",
+         "conviction": 60, "l4_conf": "高", "surprise": False, "sealed": False},
+        {"t": "2026-07-21", "code": "000003", "rating": "Overweight", "verdict": "准",
+         "conviction": 50, "l4_conf": "低", "surprise": False, "sealed": False},
+    ]
+    led.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows), encoding="utf-8")
+    md = M.render_ledger_report(path=led)
+    assert "L3 conviction 校准" in md
+    assert "L4 置信度校准" in md and "高: 1/2" in md

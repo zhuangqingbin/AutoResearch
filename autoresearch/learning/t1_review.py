@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -52,6 +53,28 @@ _LEDGER = Path("context/learning/t1_review.jsonl")
 
 
 # ───────────────────────── 纯函数:判定 ─────────────────────────
+
+
+_L4_CONF_RE = re.compile(r"置信度[::]\s*(高|中|低)")
+
+
+def _l4_confidence(scan_dir: Path, code6: str) -> str:
+    """卡里的 **L4 自己的**置信度(高/中/低);读不到 → ""。
+
+    Wave7 P3:既有的 conviction 校准曲线量的是 **L3** 的 0-100 分(来自 finalists.csv),
+    而"深核完这一只之后你有多确信"是另一个量 —— 后者才是 L4 这一层的自我校准。
+    L4 的**数值** conviction 只活在 workflow 返回值里、从未落盘(pr_20260717_005 那次
+    标度不一致也是同一个原因),但卡片正文一直写着定性的「置信度: 高/中/低」——
+    零新数据就能建起这条曲线,不必为此改编排层去持久化一个数字。
+    """
+    p = Path(scan_dir) / "details" / f"{code6}.md"
+    if not p.exists():
+        return ""
+    try:
+        m = _L4_CONF_RE.search(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return ""
+    return m.group(1) if m else ""
 
 
 def verdict(rating: str, excess: float | None, z: float | None = None) -> str:
@@ -212,6 +235,7 @@ def build_scorecard(t: str, scan_root: Path | str | None = None,
             _es = {}
     rows["early_stop"] = rows["code"].map(
         lambda c: (_es.get(str(c).zfill(6)) or {}).get("reason", ""))
+    rows["l4_conf"] = rows["code"].map(lambda c: _l4_confidence(sdir, str(c).zfill(6)))
     rows["conviction"] = pd.to_numeric(rows.get("conviction"), errors="coerce")
     rows["excess"] = pd.to_numeric(rows["cc1"], errors="coerce") - market_cc
     rows["excess_ind"] = pd.to_numeric(rows["cc1"], errors="coerce") - rows["_bench"]
@@ -233,7 +257,7 @@ def build_scorecard(t: str, scan_root: Path | str | None = None,
         | (rows["verdict"].isin(["准", "中性"]) & zs.abs().ge(1.0).fillna(False))
     keep = ["code", "name", "lane", "rating", "conviction", "close_t", "close_t1",
             "cc1", "oc1", "hi_oc", "excess", "excess_ind", "z", "verdict", "surprise",
-            "sealed", "needs_diag", "limit", "early_stop"]
+            "sealed", "needs_diag", "limit", "early_stop", "l4_conf"]
     sc = rows[[c for c in keep if c in rows.columns]].sort_values(
         "excess_ind", ascending=False, na_position="last").reset_index(drop=True)
     return {"t": t, "t1": t1, "market_cc": round(market_cc, 6),
@@ -304,6 +328,7 @@ def append_ledger(res: dict, diagnoses: dict[str, dict] | None = None,
         new.append({"t": res["t"], "t1": res["t1"], "code": str(r["code"]),
                     "name": r.get("name"), "rating": r["rating"],
                     "conviction": _num(r.get("conviction"), 1),
+                    "l4_conf": r.get("l4_conf", ""),
                     "cc1": _num(r["cc1"]), "oc1": _num(r.get("oc1")),
                     "excess": _num(r["excess"]),
                     "excess_ind": _num(r.get("excess_ind")), "z": _num(r.get("z"), 3),
@@ -560,6 +585,7 @@ def build_and_stage(t: str, scan_root: Path | str | None = None,
     for _, r in sc.iterrows():
         rows.append({"code": str(r["code"]), "name": r.get("name"), "rating": r["rating"],
                      "conviction": None if pd.isna(r.get("conviction")) else float(r["conviction"]),
+                     "l4_conf": r.get("l4_conf", ""),
                      "cc_pct": _pctv(r["cc1"]), "oc_pct": _pctv(r.get("oc1")),
                      "excess_pct": _pctv(r["excess"]), "excess_ind_pct": _pctv(r.get("excess_ind")),
                      "z": None if pd.isna(r.get("z")) else round(float(r["z"]), 2),
@@ -683,8 +709,21 @@ def render_ledger_report(k: int = 20, path: Path | str | None = None) -> str:
                 hit = sum(1 for r in b if r["verdict"] == "准")
                 parts.append(f"{name}: {hit}/{len(b)}")
         if parts:
-            lines.append("- conviction 校准(方向票命中/样本):" + "、".join(parts)
+            lines.append("- L3 conviction 校准(方向票命中/样本):" + "、".join(parts)
                          + "(⚠攒够 n≥20 才谈校准曲线)")
+    # L4 自己的置信度曲线(Wave7 P3):上面那条量的是 **L3** 的 0-100 分,回答"漏斗选得准不准";
+    # 这条量的是卡片深核完之后写下的「置信度: 高/中/低」,回答"L4 知不知道自己什么时候更靠谱"。
+    # 两条都要:L3 高确信被 L4 翻案(🔁 行)与 L4 高置信仍判错,是两种完全不同的病。
+    l4 = [r for r in rows if r["verdict"] in ("准", "不准") and (r.get("l4_conf") or "")]
+    if l4:
+        parts4 = []
+        for name in ("高", "中", "低"):
+            b = [r for r in l4 if r.get("l4_conf") == name]
+            if b:
+                parts4.append(f"{name}: {sum(1 for r in b if r['verdict'] == '准')}/{len(b)}")
+        if parts4:
+            lines.append("- L4 置信度校准(卡内自评 · 方向票命中/样本):" + "、".join(parts4)
+                         + "(⚠攒够 n≥20 才谈校准曲线;高置信命中率若不高于低置信 = 自评失效)")
     mech = ledger_tail_summary(k, path)["mechanisms"]
     if mech:
         lines.append("- 诊断机制直方图:" + "、".join(f"{m}×{c}" for m, c in mech.items())
