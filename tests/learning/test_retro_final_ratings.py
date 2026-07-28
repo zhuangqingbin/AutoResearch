@@ -44,6 +44,51 @@ def test_buylist_prefers_final_ratings_json_over_card_face(tmp_path):
     assert bl["300476"] == "Hold", f"应取终评级 Hold,而非卡面 Overweight: {bl}"
 
 
+def test_buylist_prefers_decision_record_over_legacy_and_card(tmp_path):
+    from autoresearch.scan.decision_record import (
+        DecisionRecord,
+        write_decision_records,
+    )
+
+    report_root = tmp_path / "reports/scan"
+    scan_dir = tmp_path / "context/scan/2026-07-08"
+    scan_dir.mkdir(parents=True)
+    _mk_report(
+        report_root,
+        "20260708_2300",
+        "2026-07-08",
+        "300476",
+        "甲",
+        "Overweight",
+    )
+    (scan_dir / "_final_ratings.json").write_text(
+        json.dumps({"300476": "Overweight"}),
+        encoding="utf-8",
+    )
+    record = DecisionRecord.build(
+        analysis_date=scan_dir.name,
+        contract_hash=None,
+        code="300476",
+        source_rating="Overweight",
+        rubric_rating="Overweight",
+        gate_states={},
+        early_stop=None,
+        ensemble_ratings=["Overweight", "Hold"],
+        final_rating="Hold",
+        proposal="HOLD",
+        reason="ensemble:Hold",
+        evidence_refs=[],
+        first_rejection_stage="ENSEMBLE",
+    )
+    write_decision_records(scan_dir, [record])
+
+    assert retro._buylist(
+        "2026-07-08",
+        report_root=report_root,
+        scan_dir=scan_dir,
+    ) == {"300476": "Hold"}
+
+
 def test_buylist_falls_back_to_card_face_when_final_ratings_missing(tmp_path):
     """无 _final_ratings.json(旧日期/该功能上线前)→ 回退卡面解析,现行为不变。"""
     report_root = tmp_path / "reports/scan"

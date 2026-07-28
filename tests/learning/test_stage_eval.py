@@ -16,6 +16,40 @@ def _realized(codes, fwd):
     return pd.DataFrame({"code": codes, "fwd_1_oo": fwd, "fwd_2_oc": fwd, "fwd_5_oc": fwd})
 
 
+def test_l4_ratings_prefer_decision_record(tmp_path):
+    from autoresearch.scan.decision_record import (
+        DecisionRecord,
+        write_decision_records,
+    )
+
+    day = tmp_path / "2026-07-28"
+    (day / "details").mkdir(parents=True)
+    (day / "details" / "000001.md").write_text(
+        "**Rating**: Overweight\n",
+        encoding="utf-8",
+    )
+    record = DecisionRecord.build(
+        analysis_date=day.name,
+        contract_hash=None,
+        code="000001",
+        source_rating="Overweight",
+        rubric_rating="Overweight",
+        gate_states={},
+        early_stop=None,
+        ensemble_ratings=[],
+        final_rating="Hold",
+        proposal="HOLD",
+        reason="verify:降级",
+        evidence_refs=[],
+        first_rejection_stage="VERIFY",
+    )
+    write_decision_records(day, [record])
+
+    assert stage_eval._ratings_from_details(day.name, scan_root=tmp_path) == {
+        "000001": "Hold"
+    }
+
+
 # ───────────────────────── ① L2 段 IC 键名(pr_20260716_004) ─────────────────────────
 # 生产者此前写 ic_gbdt_score_t1、渲染读 ic_l2_score_t1 → L2 IC 恒 None。
 # 修:统一 ic_l2_score_t1(L2 是确定性分层采样器,gbdt 是遗留命名);渲染对老 dict 回退旧键。

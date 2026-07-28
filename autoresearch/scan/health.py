@@ -137,7 +137,7 @@ def l4_phase_stats(scan_dir: Path) -> dict | None:
             "n_full": len(cards) - n_stop - n_reuse, "p4_seen": p4_seen, "p4_flips": p4_flips}
 
 
-def final_ratings(scan_dir: Path) -> dict[str, str]:
+def _legacy_final_ratings(scan_dir: Path) -> dict[str, str]:
     """{code: 最终评级}(finalists → parse_rating(卡)→ verify 降级折回 → **ensemble 复核折回**)。
 
     与 assemble 同口径 —— assemble 里跑的是**两个** fold 循环,这里此前只跑了 verify 那个,
@@ -175,6 +175,16 @@ def final_ratings(scan_dir: Path) -> dict[str, str]:
         rating = _apply_ensemble_fold(rating, emap.get(code))   # 顺序与 assemble 一致:verify → ensemble
         out[code] = rating
     return out
+
+
+def final_ratings(scan_dir: Path) -> dict[str, str]:
+    """Read authoritative final ratings, with the historical card fold fallback."""
+    from autoresearch.scan.decision_read_model import read_final_ratings
+
+    return read_final_ratings(
+        scan_dir,
+        card_fallback=_legacy_final_ratings,
+    )
 
 
 def count_buys(scan_dir: Path) -> int:
@@ -461,11 +471,15 @@ def run_health(scan_dir: Path) -> dict:
     cards = len(list((scan_dir / "details").glob("*.md"))) if (scan_dir / "details").is_dir() else 0
     rates, degraded = nan_report(scan_dir)
     anns_rate = anns_empty_rate(scan_dir)
+    try:
+        buys = count_buys(scan_dir)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        buys = None
     return {"date": scan_dir.name, "artifacts": arts, "missing": missing,
             "core_missing": sorted(_CORE & set(missing)),
             "counts": {"l1_full": _n("L1_scored_full.csv"), "recall": _n("L1_recall_top1000.csv"),
                        "l2": _n("L2_gbdt_top200.csv"), "finalists": _n("finalists.csv"),
-                       "cards": cards, "buys": count_buys(scan_dir)},
+                       "cards": cards, "buys": buys},
             "nan_rates": rates, "degraded_fields": degraded,
             # anns_d 已退役(2026-07-18):=1.0 是 expected(no-permission·covered by
             # news_em+intel),非告警。键名/数值原样保留(下游兼容),expected 语义走并列布尔。

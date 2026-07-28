@@ -158,6 +158,49 @@ def test_record_scan_deltas_batch(tmp_path, monkeypatch):
     assert "- 2026-07-24 入围:评级 Underweight(conv 58)" in body
 
 
+def test_record_scan_deltas_prefers_decision_record(tmp_path):
+    import json
+
+    from autoresearch.dossier import delta
+    from autoresearch.scan.decision_record import (
+        DecisionRecord,
+        write_decision_records,
+    )
+
+    p = _mk_dossier()
+    sd = tmp_path / "2026-07-24"
+    sd.mkdir()
+    (sd / "finalists.csv").write_text(
+        "code,name,conviction\n300857,协创数据,58\n",
+        encoding="utf-8",
+    )
+    (sd / "_final_ratings.json").write_text(
+        json.dumps({"300857": "Underweight"}),
+        encoding="utf-8",
+    )
+    record = DecisionRecord.build(
+        analysis_date=sd.name,
+        contract_hash=None,
+        code="300857",
+        source_rating="Underweight",
+        rubric_rating="Underweight",
+        gate_states={},
+        early_stop=None,
+        ensemble_ratings=["Underweight", "Hold"],
+        final_rating="Hold",
+        proposal="HOLD",
+        reason="ensemble:Hold",
+        evidence_refs=[],
+        first_rejection_stage="ENSEMBLE",
+    )
+    write_decision_records(sd, [record])
+
+    res = delta.record_scan_deltas(sd, sd.name)
+    assert res["updated"] == 1
+    body = delta.section_body(p.read_text(encoding="utf-8"), 7)
+    assert "- 2026-07-24 入围:评级 Hold(conv 58)" in body
+
+
 def test_record_scan_deltas_missing_inputs(tmp_path):
     from autoresearch.dossier import delta
     assert delta.record_scan_deltas(tmp_path / "nope", "2026-07-24") == {

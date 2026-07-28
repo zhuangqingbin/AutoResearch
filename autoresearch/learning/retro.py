@@ -373,14 +373,11 @@ def _buylist(date: str, report_root: Path | None = None,
     code 从卡内标题 `# 决策卡 — <code> <名称>` 取(复用 parse_rating 提评级)。
     """
     if scan_dir is not None:
-        fp = Path(scan_dir) / "_final_ratings.json"
-        if fp.exists():
-            try:
-                data = json.loads(fp.read_text(encoding="utf-8"))
-            except Exception:  # noqa: BLE001 — 坏 json 回退卡面解析
-                data = None
-            if isinstance(data, dict) and data:
-                return {str(k).zfill(6): str(v) for k, v in data.items()}
+        from autoresearch.scan.decision_read_model import read_final_ratings
+
+        ratings = read_final_ratings(scan_dir)
+        if ratings:
+            return ratings
     rdir = _report_dir_for(date, report_root or Path("reports/scan"))
     if rdir is None:
         return {}

@@ -250,6 +250,7 @@ def test_decision_records_health_rejects_tampered_book(tmp_path):
     result = run_health(d)["decision_records"]
     assert result["status"] == "INVALID"
     assert "hash" in result["error"]
+    assert run_health(d)["counts"]["buys"] is None
 
 
 def test_finalist_churn(tmp_path):
@@ -465,6 +466,38 @@ def _mk_fold_day(tmp_path, rating: str, ens: dict | None):
     if ens is not None:
         (d / "_ensemble_300857.json").write_text(_json.dumps(ens), encoding="utf-8")
     return d
+
+
+def test_final_ratings_prefers_decision_record(tmp_path):
+    from autoresearch.scan.decision_record import (
+        DecisionRecord,
+        write_decision_records,
+    )
+    from autoresearch.scan.health import final_ratings
+
+    d = _mk_fold_day(tmp_path, "Overweight", None)
+    record = DecisionRecord.build(
+        analysis_date=d.name,
+        contract_hash=None,
+        code="300857",
+        source_rating="Overweight",
+        rubric_rating="Overweight",
+        gate_states={},
+        early_stop=None,
+        ensemble_ratings=[],
+        final_rating="Hold",
+        proposal="HOLD",
+        reason="verify:降级",
+        evidence_refs=[],
+        first_rejection_stage="VERIFY",
+    )
+    write_decision_records(d, [record])
+    (d / "_final_ratings.json").write_text(
+        json.dumps({"300857": "Overweight"}),
+        encoding="utf-8",
+    )
+
+    assert final_ratings(d) == {"300857": "Hold"}
 
 
 def test_final_ratings_applies_sell_review_fold(tmp_path):

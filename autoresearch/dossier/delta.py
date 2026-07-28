@@ -320,9 +320,9 @@ def record_scan_deltas(scan_dir: Path | str, date: str) -> dict:
     的 §4/§6 跳过标签逐票收进来,非空才落码,不被这层批量 suppress 吞掉。
     """
     import contextlib
-    import json as _json
-
     import pandas as pd
+    from autoresearch.scan.decision_read_model import read_final_ratings
+
     out: dict = {"updated": 0, "issues": {}, "sections_skipped": {}}
     scan_dir = Path(scan_dir)
     fp = scan_dir / "finalists.csv"
@@ -334,9 +334,7 @@ def record_scan_deltas(scan_dir: Path | str, date: str) -> dict:
         return out
     if "code" not in fin.columns:
         return out
-    ratings: dict = {}
-    with contextlib.suppress(Exception):
-        ratings = _json.loads((scan_dir / "_final_ratings.json").read_text(encoding="utf-8"))
+    ratings = read_final_ratings(scan_dir)
     for _, r in fin.iterrows():
         code6 = str(r.get("code", "") or "").split(".")[0].zfill(6)
         rating = ratings.get(code6)

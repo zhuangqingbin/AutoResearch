@@ -166,7 +166,13 @@ def _ratings_from_details(date: str, scan_root: Path | None = None) -> dict[str,
     正则取 `**Rating**` 行(半/全角冒号);非五档 / 无文件 / 无目录 → 跳过该只。
     """
     scan_root = scan_root or Path("context/scan")
-    ddir = scan_root / date / "details"
+    scan_dir = scan_root / date
+    from autoresearch.scan.decision_read_model import read_final_ratings
+
+    ratings = read_final_ratings(scan_dir)
+    if ratings:
+        return ratings
+    ddir = scan_dir / "details"
     if not ddir.exists():
         return {}
     valid = set(RATINGS_5_TIER)
