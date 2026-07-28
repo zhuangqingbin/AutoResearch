@@ -540,3 +540,114 @@ def activate_experiment(
 
     record, _ = update_experiment(path, experiment_id, mutate)
     return record
+
+
+def rollback_experiment(
+    path: Path | str,
+    experiment_id: str,
+    *,
+    rolled_back_by: str,
+    rolled_back_at: str | None = None,
+    note: str = "",
+) -> dict:
+    """Audit a human-applied rollback to the preserved stable pointer."""
+    actor = _nonempty(rolled_back_by, "rolled_back_by")
+    at = rolled_back_at or datetime.now().astimezone().isoformat(timespec="seconds")
+    at_dt = _parse_timestamp(at, "rolled_back_at")
+
+    def mutate(payload: dict, record: dict):
+        if record["status"] != "ROLLBACK_RECOMMENDED":
+            raise RegistryError(
+                f"rollback requires ROLLBACK_RECOMMENDED, got {record['status']}"
+            )
+        assessment_at = _parse_timestamp(
+            (record.get("latest_rollback_assessment") or {}).get("observed_at"),
+            "latest rollback assessment timestamp",
+        )
+        if at_dt < assessment_at:
+            raise RegistryError("rollback timestamp cannot predate recommendation")
+        if not _baseline_addressable(payload, record["rollback_pointer"]):
+            raise RegistryError("rollback pointer is no longer addressable")
+        target = _copy(record["rollback_pointer"])
+        record["rollback"] = {
+            "rolled_back_by": actor,
+            "rolled_back_at": at,
+            "note": str(note or ""),
+            "target": target,
+        }
+        record["status"] = "ROLLED_BACK"
+        record["closed_at"] = at
+        payload["active_by_family"].pop(record["trial_family"], None)
+        _audit(
+            payload,
+            event="EXPERIMENT_ROLLED_BACK",
+            at=at,
+            actor=actor,
+            experiment_id=experiment_id,
+            details=record["rollback"],
+        )
+        return None
+
+    record, _ = update_experiment(path, experiment_id, mutate)
+    return record
+
+
+def accept_experiment_as_baseline(
+    path: Path | str,
+    experiment_id: str,
+    *,
+    accepted_by: str,
+    accepted_at: str | None = None,
+    note: str = "",
+) -> dict:
+    """Explicitly accept a clean observed challenger as the new stable baseline."""
+    actor = _nonempty(accepted_by, "accepted_by")
+    at = accepted_at or datetime.now().astimezone().isoformat(timespec="seconds")
+    at_dt = _parse_timestamp(at, "accepted_at")
+
+    def mutate(payload: dict, record: dict):
+        if record["status"] != "STABLE_CANDIDATE":
+            raise RegistryError(
+                f"accept requires STABLE_CANDIDATE, got {record['status']}"
+            )
+        assessment_at = _parse_timestamp(
+            (record.get("latest_rollback_assessment") or {}).get("observed_at"),
+            "latest rollback assessment timestamp",
+        )
+        if at_dt < assessment_at:
+            raise RegistryError("accept timestamp cannot predate observation window")
+        current = payload.get("stable_baseline")
+        if current is not None and current not in payload["baseline_history"]:
+            payload["baseline_history"].append(_copy(current))
+        challenger = record["challenger_pointer"]
+        baseline = {
+            "name": f"experiment:{experiment_id}",
+            "pointer": challenger["pointer"],
+            "content_hash": challenger["content_hash"],
+            "approved_by": actor,
+            "approved_at": at,
+            "note": str(note or ""),
+        }
+        payload["stable_baseline"] = baseline
+        record["acceptance"] = {
+            "accepted_by": actor,
+            "accepted_at": at,
+            "note": str(note or ""),
+            "previous_baseline": current,
+            "new_baseline": baseline,
+        }
+        record["status"] = "ACCEPTED"
+        record["closed_at"] = at
+        payload["active_by_family"].pop(record["trial_family"], None)
+        _audit(
+            payload,
+            event="EXPERIMENT_ACCEPTED_AS_BASELINE",
+            at=at,
+            actor=actor,
+            experiment_id=experiment_id,
+            details=record["acceptance"],
+        )
+        return None
+
+    record, _ = update_experiment(path, experiment_id, mutate)
+    return record
