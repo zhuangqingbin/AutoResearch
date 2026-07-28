@@ -81,6 +81,9 @@ Exit evidence:
 
 ### Wave 2 — abstention and research attribution
 
+Detailed plan:
+`docs/plans/2026-07-28-wave2-abstention-research-attribution-plan.md`.
+
 Planned components:
 
 - `autoresearch/learning/rejection_attribution.py`
