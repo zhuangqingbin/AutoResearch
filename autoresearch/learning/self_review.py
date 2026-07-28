@@ -246,6 +246,90 @@ def intel_future_dates_lint(scan_dir, date_str: str) -> list[dict]:
     return out
 
 
+_INTEL_WINDOWS = ("T0", "24h", "背景", "催化挂")
+# 日历天口径(不是交易日):">1 周" 取 7 天,与契约里给 agent 的说法逐字一致。
+_INTEL_STALE_DAYS = 7
+# 各时效窗允许的日期跨度(天):宽松取并集 —— T0 与 24h 无法从**日期**区分(同一天盘后
+# 与当天白天都是 gap 0),探针不该假装分得清;分不清的地方就不报。
+_INTEL_WINDOW_SPAN = {"T0": (0, 0), "24h": (0, 1), "背景": (1, _INTEL_STALE_DAYS)}
+
+
+def intel_recency_lint(scan_dir, date_str: str) -> list[dict]:
+    """intel 时效三窗机检(advisory;Wave7 批 N §4.3)。三条:
+
+    1. **时效窗与日期对账**:`T0/24h/背景` 三档各有允许的日期跨度,标错 → warn
+       (`催化挂` 指向将来时点,无法由过去日期证伪,一律放行)。
+    2. **T0 面缺失**:声明行没有 `T0面=` 字段 → warn。写「盘后无增量」是合法结论,
+       **留空才是违规** —— 缺字段分不清「查了没料」与「根本没查」,而 T0(收盘→跑报)
+       是超短 T+2 主尺下唯一能改变明天开盘定价的窗口。
+    3. **净分未按时效衰减**:>1 周(日历 7 天)的事件净分非 0 且时效窗不是 `催化挂` → warn。
+       一周前的旧闻在 D+1 不产生增量买盘(07-27 实测有稿把「已消化超 1 周」的预告仍打 +1)。
+
+    **旧契约稿 presence-gated 跳过**:事件段没有任何一行的第 2 列命中三窗词 → 判为
+    Wave7 前的旧格式(表头是「2日内可发酵?」),整份跳过不报 —— 新探针不该对着历史存量稿
+    刷屏(那是 07-27 十五连报的同一种病)。一切异常路径返回已积累结果,绝不抛。
+    """
+    import re
+    from datetime import datetime
+    from pathlib import Path
+
+    scan_dir = Path(scan_dir)
+    out: list[dict] = []
+
+    def add(check, sev, detail, code=None):
+        out.append({"check": check, "severity": sev, "detail": detail, "code": code})
+
+    try:
+        as_of = datetime.strptime(date_str, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return out
+
+    row_re = re.compile(r"\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*([^|]*?)\s*\|(.*)\|\s*([+-]?\d+(?:\.\d+)?)\s*\|\s*$")
+    for p in sorted(scan_dir.glob("_l4_intel_*.md")):
+        code = p.stem.replace("_l4_intel_", "")
+        try:
+            text = p.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            continue
+        rows, in_events = [], False
+        for line in text.splitlines():
+            if line.startswith("## 事件段"):
+                in_events = True
+                continue
+            if in_events and line.startswith("## "):
+                in_events = False
+            if not in_events:
+                continue
+            m = row_re.match(line.strip())
+            if m:
+                rows.append((m.group(1), m.group(2).strip(), float(m.group(4))))
+        if not any(w in _INTEL_WINDOWS for _, w, _ in rows):
+            continue                      # 旧契约稿(Wave7 前)→ 整份跳过,不报
+        bad_win, stale = [], []
+        for d, win, score in rows:
+            try:
+                gap = (as_of - datetime.strptime(d, "%Y-%m-%d")).days
+            except ValueError:
+                continue
+            if gap < 0:
+                continue                  # 前视由 intel_future_dates_lint 管,不重复报
+            span = _INTEL_WINDOW_SPAN.get(win)
+            if span and not (span[0] <= gap <= span[1]):
+                bad_win.append(f"{d}({win},实距 {gap}d)")
+            if gap > _INTEL_STALE_DAYS and win != "催化挂" and score != 0:
+                stale.append(f"{d}({score:+g})")
+        if bad_win:
+            add("intel_window_mismatch", "warn",
+                f"{p.name} 时效窗与日期不符:{'、'.join(bad_win[:3])}", code=code)
+        if stale:
+            add("intel_stale_score", "warn",
+                f"{p.name} >1周事件净分未衰减到 0(且未标 催化挂):{'、'.join(stale[:3])}", code=code)
+        if "T0面=" not in text:
+            add("intel_t0_missing", "warn",
+                f"{p.name} 声明行缺 `T0面=` —— 分不清「盘后无增量」与「没查」", code=code)
+    return out
+
+
 def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
     """产物形状 lint(九探针,零 LLM;design: 2026-07-13-next-optimization-survey.md 线 C
     + 2026-07-22 dossier design Wave1 ⑤ + 2026-07-23 终审 I-2)。

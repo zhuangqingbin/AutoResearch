@@ -82,3 +82,84 @@ def test_intel_future_dates_wired_into_banner(tmp_path):
         "| 2026-07-20 | 未来事件 | x | 是 | +1 |\n## 题材段\n无\n", encoding="utf-8")
     banner = _self_review_banner(scan_dir, [], "")
     assert "intel_future_dates" in banner
+
+
+# ══ Wave7 批 N:intel 时效三窗机检 ═══════════════════════════════════════════
+#
+# 下游是超短 T+2 主尺(D 收盘信号 → D+1 开盘买 → D+2 收盘卖),能改变明天开盘定价的
+# 只有「今天收盘后到开工这段」的新信息。07-27 实测有情报把「已消化超 1 周」的预告仍打 +1。
+
+_NEW_HEAD = ("# 活体情报 — 000001 甲 @ 2026-07-27\n\n"
+             "## 事件段(≤10 行)\n"
+             "| 日期 | 时效窗 | 事件 | 源 | 净分 |\n|---|---|---|---|---|\n")
+_DECL = "\n## 声明行\n网查 9 条 ｜ T0面=有增量 ｜ 六面覆盖:公告=有料 ｜ as-of ≤ 2026-07-27\n"
+
+
+def _intel(tmp_path, body: str, decl: str = _DECL, code: str = "000001"):
+    (tmp_path / f"_l4_intel_{code}.md").write_text(_NEW_HEAD + body + decl, encoding="utf-8")
+    return tmp_path
+
+
+def test_recency_clean_sheet_has_no_findings(tmp_path):
+    d = _intel(tmp_path,
+               "| 2026-07-27 | T0 | 盘后公告中标 3.2 亿 | http://x | +2 |\n"
+               "| 2026-07-26 | 24h | 行业提价 | http://y | +1 |\n"
+               "| 2026-07-23 | 背景 | 调研纪要 | http://z | +0.5 |\n"
+               "| 2026-07-10 | 催化挂 | 8-25 披露中报 | http://w | +2 |\n")
+    assert self_review.intel_recency_lint(d, "2026-07-27") == []
+
+
+def test_recency_flags_window_date_mismatch(tmp_path):
+    """把 5 天前的事件标成 T0 —— 时效窗是给下游读的口径,标错等于谎报新鲜度。"""
+    d = _intel(tmp_path, "| 2026-07-22 | T0 | 五天前的旧闻 | http://x | +1 |\n")
+    got = self_review.intel_recency_lint(d, "2026-07-27")
+    assert [g["check"] for g in got] == ["intel_window_mismatch"]
+    assert "实距 5d" in got[0]["detail"]
+
+
+def test_recency_flags_stale_event_still_scored(tmp_path):
+    """>1 周的事件净分必须衰减到 0(除非指向将来时点的 催化挂)。"""
+    d = _intel(tmp_path, "| 2026-07-15 | 背景 | 12 天前中标 | http://x | +2 |\n")
+    got = self_review.intel_recency_lint(d, "2026-07-27")
+    checks = [g["check"] for g in got]
+    assert "intel_stale_score" in checks
+
+
+def test_recency_allows_stale_dated_future_catalyst(tmp_path):
+    """一周前的**报道**说下月披露中报 —— 兑现窗口在将来,催化挂不衰减,不该报。"""
+    d = _intel(tmp_path, "| 2026-07-10 | 催化挂 | 8-25 披露中报(预告 +711%) | http://x | +2 |\n")
+    assert self_review.intel_recency_lint(d, "2026-07-27") == []
+
+
+def test_recency_flags_missing_t0_declaration(tmp_path):
+    """写「盘后无增量」合法,留空违规 —— 缺字段分不清「查了没料」与「根本没查」。"""
+    d = _intel(tmp_path, "| 2026-07-27 | T0 | 盘后公告 | http://x | +1 |\n",
+               decl="\n## 声明行\n网查 9 条 ｜ 六面覆盖:公告=有料 ｜ as-of ≤ 2026-07-27\n")
+    assert [g["check"] for g in self_review.intel_recency_lint(d, "2026-07-27")] == ["intel_t0_missing"]
+
+
+def test_recency_accepts_no_increment_as_valid_t0_answer(tmp_path):
+    d = _intel(tmp_path, "| 2026-07-26 | 24h | 行业提价 | http://y | +1 |\n",
+               decl="\n## 声明行\n网查 9 条 ｜ T0面=盘后无增量 ｜ as-of ≤ 2026-07-27\n")
+    assert self_review.intel_recency_lint(d, "2026-07-27") == []
+
+
+def test_recency_skips_pre_wave7_sheets_silently(tmp_path):
+    """旧契约稿(表头「2日内可发酵?」,无时效窗列)整份跳过 —— 新探针不对着历史存量稿刷屏
+    (那正是 07-27 十五连报的同一种病:检查跑在指令前面)。"""
+    (tmp_path / "_l4_intel_000002.md").write_text(
+        "# 活体情报 — 000002 乙 @ 2026-07-27\n\n## 事件段(≤10 行)\n"
+        "| 日期 | 事件 | 源 | 2日内可发酵? | 净分 |\n|---|---|---|---|---|\n"
+        "| 2026-06-01 | 两月前中标 | http://x | 否 | +2 |\n"
+        "\n## 声明行\n网查 9 条 ｜ 六面覆盖:公告=有料\n", encoding="utf-8")
+    assert self_review.intel_recency_lint(tmp_path, "2026-07-27") == []
+
+
+def test_recency_no_intel_files_is_presence_gated(tmp_path):
+    assert self_review.intel_recency_lint(tmp_path, "2026-07-27") == []
+
+
+def test_recency_does_not_double_report_future_dates(tmp_path):
+    """前视由 intel_future_dates_lint 管,本探针不重复报。"""
+    d = _intel(tmp_path, "| 2026-08-30 | T0 | 未来日期 | http://x | +1 |\n")
+    assert [g["check"] for g in self_review.intel_recency_lint(d, "2026-07-27")] == []

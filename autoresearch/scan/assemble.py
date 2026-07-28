@@ -868,6 +868,11 @@ def _self_review_banner(scan_dir: Path, rows: list[dict], summary_text: str,
         if intel_extra:
             res["failures"].extend(intel_extra)
             res["n_warn"] = res.get("n_warn", 0) + len(intel_extra)
+    with contextlib.suppress(Exception):                            # intel 时效三窗机检(Wave7 批 N,advisory)
+        recency_extra = self_review.intel_recency_lint(scan_dir, scan_dir.name)
+        if recency_extra:
+            res["failures"].extend(recency_extra)
+            res["n_warn"] = res.get("n_warn", 0) + len(recency_extra)
     with contextlib.suppress(Exception):                            # 产物形状 lint(线C 2026-07-18;全 warn/info 起步)
         shape_extra = self_review.product_shape_lint(scan_dir, scan_dir.name)
         if shape_extra:
