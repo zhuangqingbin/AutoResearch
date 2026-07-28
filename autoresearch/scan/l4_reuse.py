@@ -52,6 +52,34 @@ def _close_for(d: Path, code6: str) -> float | None:
     return None
 
 
+def _market_move(now_dir: Path, prev_dir: Path) -> float | None:
+    """两日之间**全市场中位**涨跌幅(同窗口基准);任一帧缺/无重叠 → None。
+
+    Wave7 B′-f:复用的价格门原本量绝对涨跌幅,而「这票有没有动」在普涨/普跌日会被整体
+    漂移淹没 —— 2026-07-27 全市场中位 +2.67%、141 家涨停,持仓 688766 当日 **-4.58%**
+    (相对跑输 7.3pp、资金三线全负),却因绝对值差 0.4pp 没碰到 5% 阈值而被判「没动、可复用」。
+    基准取**同一对日期之间**的中位比值,而不是借用 market_pack 的单日 `median_pct_1d`:
+    卡龄常跨多个交易日(TTL 4 天),拿单日基准去比多日涨跌是量错了尺子。
+    """
+    frames = []
+    for d in (now_dir, prev_dir):
+        p = d / "L1_scored_full.csv"
+        if not p.exists():
+            return None
+        try:
+            df = pd.read_csv(p, dtype={"code": str}, usecols=["code", "close"])
+        except Exception:  # noqa: BLE001
+            return None
+        df["code"] = df["code"].astype(str).str.zfill(6)
+        df["close"] = pd.to_numeric(df["close"], errors="coerce")
+        frames.append(df.dropna(subset=["close"]).drop_duplicates("code"))
+    m = frames[0].merge(frames[1], on="code", suffixes=("_now", "_prev"))
+    m = m[m["close_prev"] > 0]
+    if len(m) < 100:                      # 帧太薄 → 中位数不可信,宁可回退绝对口径
+        return None
+    return float((m["close_now"] / m["close_prev"] - 1.0).median())
+
+
 def _regime_of(d: Path) -> str | None:
     p = d / "meta.json"
     if not p.exists():
@@ -93,12 +121,24 @@ def _conviction_today(scan_dir: Path, code6: str) -> float | None:
 
 
 def reuse_decision(code: str, scan_dir: Path | str, max_age_days: int = 4,
-                   price_tol: float = 0.05, conv_max: float = 70.0) -> dict:
-    """单票复用判定。全部条件过才 reuse=True;reasons 记第一批否决因(可多条)。"""
+                   price_tol: float = 0.05, conv_max: float = 70.0,
+                   pinned: bool = False) -> dict:
+    """单票复用判定。全部条件过才 reuse=True;reasons 记第一批否决因(可多条)。
+
+    `pinned=True`(`pinned.jsonc` 里的保送持仓)→ **永不复用**,与「≥OW 永不复用」对称:
+    买点必须重研,持仓的卖/持判断同样必须当日重研。2026-07-27 实锤:本模块此前对
+    「持仓」零认知,688766/601869 两只持仓吃了 07-24 的旧卡,连带**绕过 pinned SELL 双复核**
+    (那段只在本次真派发、卡判 SELL 时才触发);而 `force_full: true` 只覆盖哨兵档、
+    管不到 reuse —— 两者是独立的两道口子,当晚只能人工把两只从 details/ 移出重派。
+    缺省 False = 现行为(parity)。
+    """
     scan_dir = Path(scan_dir)
     code6 = str(code).split(".")[0].zfill(6)
     out = {"code": code6, "reuse": False, "prior_date": None, "prior_rating": None,
-           "age_days": None, "price_chg": None, "reasons": []}
+           "age_days": None, "price_chg": None, "price_excess": None, "reasons": []}
+    if pinned:
+        out["reasons"].append("📌 保送持仓(持仓判断必须当日重研,且复用会绕过 SELL 双复核)")
+        return out
     priors = sorted((p for p in scan_dir.parent.iterdir()
                      if p.is_dir() and p.name[:2] == "20" and p.name < scan_dir.name
                      and (p / "details" / f"{code6}.md").exists()), reverse=True)
@@ -136,10 +176,18 @@ def reuse_decision(code: str, scan_dir: Path | str, max_age_days: int = 4,
     if c_now is None or c_prev is None or not c_prev:
         out["reasons"].append("无价可比(两日 staging 缺 close)")
     else:
-        chg = abs(c_now / c_prev - 1.0)
-        out["price_chg"] = round(c_now / c_prev - 1.0, 4)
-        if chg > price_tol:
-            out["reasons"].append(f"Δ价 {chg:+.1%}>±{price_tol:.0%}")
+        raw = c_now / c_prev - 1.0
+        out["price_chg"] = round(raw, 4)
+        mkt = _market_move(scan_dir, pdir)
+        # 相对市场的超额位移才是「这票有没有动」的正确代理量(见 _market_move 注)。
+        # 基准不可得 → 回退绝对口径,并**在 reasons 里留痕**(降级不留痕才是真病)。
+        excess = raw if mkt is None else raw - mkt
+        out["price_excess"] = round(excess, 4)
+        if mkt is None:
+            out["reasons"].append("(市场基准不可得,价格门回退绝对口径)")
+        if abs(excess) > price_tol:
+            base = "" if mkt is None else f",市场 {mkt:+.1%}"
+            out["reasons"].append(f"Δ价超额 {excess:+.1%}>±{price_tol:.0%}(实际 {raw:+.1%}{base})")
     r_now, r_prev = _regime_of(scan_dir), _regime_of(pdir)
     if r_now and r_prev and r_now != r_prev:
         out["reasons"].append(f"regime 翻转({r_prev}→{r_now})")
@@ -172,18 +220,34 @@ def write_reused_card(code: str, scan_dir: Path | str, dec: dict,
     return dst
 
 
+def _pinned_codes(scan_dir: Path) -> set[str]:
+    """当日仍生效的保送持仓码集合(过期条目不算)。读不到 → 空集(不误伤,退回旧行为)。"""
+    try:
+        from autoresearch.scan.user_config import load_pinned
+        kept = load_pinned(Path(scan_dir).name).get("kept") or []
+    except Exception:  # noqa: BLE001 — 复用层是成本优化,配置读不到不该阻断
+        return set()
+    return {str(e.get("code", "")).split(".")[0].zfill(6) for e in kept if e.get("code")}
+
+
 def reuse_pass(scan_dir: Path | str, max_age_days: int = 4, price_tol: float = 0.05,
                conv_max: float = 70.0, apply: bool = False) -> pd.DataFrame:
-    """对全部 finalists 出复用决策表;apply=True 时给可复用票写卡。"""
+    """对全部 finalists 出复用决策表;apply=True 时给可复用票写卡。
+
+    保送持仓从 `pinned.jsonc` 真身读(Wave7 B′-f)——**生产者必须自己接线**:只给
+    `reuse_decision` 加形参而不在这里传,等于加了个零调用点的死参数(FN-1 家族前科)。
+    """
     scan_dir = Path(scan_dir)
     p = scan_dir / "finalists.csv"
     if not p.exists():
         return pd.DataFrame(columns=["code", "reuse", "prior_date", "prior_rating", "reasons"])
     fin = pd.read_csv(p, dtype={"code": str})
+    pinned = _pinned_codes(scan_dir)
     rows = []
     for code in fin["code"].astype(str).str.zfill(6):
         dec = reuse_decision(code, scan_dir, max_age_days=max_age_days,
-                             price_tol=price_tol, conv_max=conv_max)
+                             price_tol=price_tol, conv_max=conv_max,
+                             pinned=code in pinned)
         if apply and dec["reuse"]:
             dec["written"] = write_reused_card(code, scan_dir, dec, price_tol=price_tol) is not None
         rows.append({**dec, "reasons": ";".join(dec["reasons"]) or "—"})

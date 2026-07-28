@@ -159,3 +159,90 @@ def test_v3_card_reusable(tmp_path):
     (d / "details" / f"{_C}.md").unlink(missing_ok=True)
     out = reuse_decision(_C, d)
     assert not any("旧契约卡" in r for r in out["reasons"])
+
+
+# ══ Wave7 B′-f:持仓豁免 + 相对市场的价格门 ═══════════════════════════════════
+#
+# 2026-07-27 实锤(两处独立盲区,同一晚同时发作):
+#  ① 本模块对「持仓」零认知 —— `pinned` 在全文件零出现。它只对买入侧做了豁免
+#     (≥OW 永不复用,「买点必须重研」),持仓侧没有对称豁免,于是 688766/601869 两只持仓
+#     吃了 07-24 的旧卡,连带**绕过 pinned SELL 双复核**;`force_full: true` 只覆盖哨兵档,
+#     管不到 reuse —— 两者是独立的两道口子。
+#  ② 价格门量的是**绝对**涨跌幅:那天全市场中位 +2.67%、141 家涨停,688766 当日 -4.58%
+#     (相对跑输 7.3pp、资金三线全负),却因绝对值差 0.4pp 没碰 5% 阈值被判「没动、可复用」。
+#     普涨日里「没动」恰恰等于「大幅跑输」——代理量与被代理的东西反号。
+
+
+def _mk_market(d, *, n=200, close=10.0):
+    """给某日 staging 补一张全市场帧(_market_move 的基准来源)。"""
+    pd.DataFrame([{"code": f"{i:06d}", "close": close} for i in range(1, n + 1)]).to_csv(
+        d / "L1_scored_full.csv", index=False)
+
+
+def test_pinned_never_reuses_even_when_all_other_gates_pass(tmp_path):
+    """持仓永不复用 —— 与「≥OW 永不复用」对称:买点必须重研,卖/持判断同样必须当日重研。"""
+    _mk(tmp_path, "2026-06-30", card=HOLD)
+    d = _mk(tmp_path, "2026-07-02", close=102.0, anns=[])       # 其余条件全过(见 happy path)
+    (d / "details" / f"{_C}.md").unlink(missing_ok=True)
+
+    assert reuse_decision(_C, d)["reuse"] is True, "前提失效:这组条件本应可复用"
+
+    dec = reuse_decision(_C, d, pinned=True)
+    assert dec["reuse"] is False
+    assert any("保送持仓" in r for r in dec["reasons"]), "否决理由要说人话,便于报告转述"
+
+
+def test_underperformance_on_a_rally_day_breaks_reuse(tmp_path):
+    """普涨日跑输 = 「动了」。绝对口径看不见,相对口径必须看见(688766 的真实形状)。"""
+    prev = _mk(tmp_path, "2026-07-24", card=HOLD, close=100.0)
+    _mk_market(prev, close=10.0)
+    d = _mk(tmp_path, "2026-07-27", close=95.4, anns=[])        # 本票 -4.6%
+    _mk_market(d, close=10.267)                                  # 全市场 +2.67%
+    (d / "details" / f"{_C}.md").unlink(missing_ok=True)
+
+    dec = reuse_decision(_C, d)
+
+    assert dec["reuse"] is False, "普涨日跑输 7pp 仍判可复用 = 阈值量错了尺子"
+    assert abs(dec["price_chg"] + 0.046) < 5e-3      # 绝对 -4.6%,本身没碰 5% 门
+    assert dec["price_excess"] < -0.07               # 超额 ≈ -7.3pp,碰了
+    assert any("超额" in r for r in dec["reasons"])
+
+
+def test_moving_with_the_market_still_reuses(tmp_path):
+    """反向保护:随大盘同步涨跌(超额≈0)不该被当成「动了」而重烧一张 Opus 卡。"""
+    prev = _mk(tmp_path, "2026-07-24", card=HOLD, close=100.0)
+    _mk_market(prev, close=10.0)
+    d = _mk(tmp_path, "2026-07-27", close=106.0, anns=[])        # 本票 +6%(绝对已超 5%)
+    _mk_market(d, close=10.6)                                    # 全市场也 +6%
+    (d / "details" / f"{_C}.md").unlink(missing_ok=True)
+
+    dec = reuse_decision(_C, d)
+
+    assert dec["reuse"] is True, "绝对口径会误杀:+6% 超 5% 门,但它只是跟着大盘走"
+    assert abs(dec["price_excess"]) < 1e-3
+
+
+def test_missing_market_frame_falls_back_to_absolute_and_says_so(tmp_path):
+    """基准不可得 → 回退绝对口径,但必须留痕(降级不留痕才是真病)。"""
+    _mk(tmp_path, "2026-07-24", card=HOLD, close=100.0)          # 两日都不写 L1_scored_full
+    d = _mk(tmp_path, "2026-07-27", close=93.0, anns=[])         # -7%,绝对口径也该否决
+    (d / "details" / f"{_C}.md").unlink(missing_ok=True)
+
+    dec = reuse_decision(_C, d)
+
+    assert dec["reuse"] is False
+    assert any("回退绝对口径" in r for r in dec["reasons"]), "降级没记账"
+
+
+def test_reuse_pass_wires_pinned_from_config(tmp_path, monkeypatch):
+    """生产者接线:`reuse_pass` 必须自己去读 pinned 真身 —— 只加形参不接线 = 死参数(FN-1 家族)。"""
+    _mk(tmp_path, "2026-06-30", card=HOLD)
+    d = _mk(tmp_path, "2026-07-02", close=102.0, anns=[])
+    (d / "details" / f"{_C}.md").unlink(missing_ok=True)
+
+    monkeypatch.setattr("autoresearch.scan.user_config.load_pinned",
+                        lambda *a, **k: {"kept": [{"code": _C}], "expired": []})
+    df = reuse_pass(d)
+
+    assert list(df["reuse"]) == [False]
+    assert "保送持仓" in df.iloc[0]["reasons"]
