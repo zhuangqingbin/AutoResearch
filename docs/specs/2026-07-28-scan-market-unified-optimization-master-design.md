@@ -1245,7 +1245,7 @@ DOSSIER_DELTA_READY
 - `frame --json` 写 `run_contract.json`，market pack 仅携带短引用；
 - `run_health.json` 报告契约 `ABSENT / OK / INVALID`，暂不阻断；
 - `assemble` 把 contract 身份固化进 manifest；
-- 15 类关键产物进入 `artifact_index.json`，最终快照随 trace 发布；
+- 首批 15 类关键产物进入 `artifact_index.json`，最终快照随 trace 发布；
 - 历史 staging 缺少 contract 时保持兼容。
 
 尚未升级为生产硬门：
@@ -1253,7 +1253,23 @@ DOSSIER_DELTA_READY
 - Workflow 参数与 contract hash 的逐段回显；
 - GATE1 的 config/pinned/hash fail-fast；
 - 生产者级 `input_hash`；
-- `StageResult / DecisionRecord / outbox`。
+- `DecisionRecord / outbox`。
+
+#### 2026-07-28 第二批实现状态
+
+已进入影子双写：
+
+- `frame / prelude / gate1 / gate2 / assemble / gate4` 写统一 StageResult；
+- gate CLI 的旧 JSON 与退出码保持兼容；
+- 相同语义的重复结果逐字节幂等；
+- health 分列结果完整性与 `FAILED / DEGRADED / SKIPPED`；
+- StageResult collection 进入 ArtifactIndex 并随 trace 发布，注册表增至 16 类。
+
+仍待下一批：
+
+- Workflow 直接以 StageResult 作为分支输入；
+- L3/L4 单票级 StageResult；
+- `DecisionRecord / outbox`。
 
 ### Wave 2：0-BUY 可解释与研究闭环
 
