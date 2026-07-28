@@ -97,6 +97,46 @@ def test_gate2_cli_flags_bad_codes(tmp_path, monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out)["ok"] is False
 
 
+def test_gate_cli_writes_success_stage_result_without_changing_stdout(
+    tmp_path, monkeypatch, capsys,
+):
+    d = tmp_path / "context" / "scan" / "2026-07-28"
+    d.mkdir(parents=True)
+    pd.DataFrame({"code": ["000001"]}).to_csv(d / "finalists.csv", index=False)
+    monkeypatch.chdir(tmp_path)
+    from autoresearch.scan.gates import main
+    from autoresearch.scan.stage_result import load_stage_result
+
+    rc = main(["gate2", "2026-07-28", "--budget", "10"])
+    legacy = json.loads(capsys.readouterr().out)
+    result = load_stage_result(d / "stage_results" / "gate2.json")
+
+    assert rc == 0
+    assert legacy["ok"] is True and legacy["finalists"] == ["000001"]
+    assert "status" not in legacy
+    assert result.status == "SUCCEEDED"
+    assert result.artifacts == ["finalists"]
+    assert result.metrics == {"budget": 10, "n": 1}
+    assert result.error is None
+
+
+def test_gate_cli_writes_failed_stage_result_and_keeps_rc_one(tmp_path, monkeypatch, capsys):
+    d = tmp_path / "context" / "scan" / "2026-07-28"
+    d.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+    from autoresearch.scan.gates import main
+    from autoresearch.scan.stage_result import load_stage_result
+
+    rc = main(["gate1", "2026-07-28"])
+    legacy = json.loads(capsys.readouterr().out)
+    result = load_stage_result(d / "stage_results" / "gate1.json")
+
+    assert rc == 1 and legacy["ok"] is False
+    assert result.status == "FAILED"
+    assert result.artifacts == []
+    assert result.error == legacy["reason"]
+
+
 # ───────────────────────── L3.5 完全移除(2026-07-12 用户裁定):GATE2 只读校验 ─────────────────────────
 #
 # design: docs/specs/2026-07-12-funnel-replay-l35-removal-design.md §1

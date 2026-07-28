@@ -112,6 +112,41 @@ def gate4(scan_dir: Path) -> dict:
     return {"ok": True, "gate": "gate4", "reason": "self_review 通过", "n_checks": len(rows)}
 
 
+def record_gate_stage_result(scan_dir: Path, result: dict, *, budget: int | None = None):
+    """把旧 gate 返回适配为 StageResult；不改变 gate dict 或退出码。"""
+    from autoresearch.scan.stage_result import safe_record_stage_result
+
+    gate = str(result.get("gate", ""))
+    artifact_map = {
+        "gate1": ("l2", "L2_gbdt_top200.csv"),
+        "gate2": ("finalists", "finalists.csv"),
+        "gate4": ("gate_fires", "gate_fires.csv"),
+    }
+    artifact_name, filename = artifact_map[gate]
+    artifacts = [artifact_name] if (Path(scan_dir) / filename).exists() else []
+    if gate == "gate1":
+        metrics = {
+            key: result[key]
+            for key in ("sentinel_level", "l4_budget", "l2_n")
+            if key in result
+        }
+    elif gate == "gate2":
+        metrics = {"budget": int(budget if budget is not None else 30)}
+        if "n" in result:
+            metrics["n"] = int(result["n"])
+    else:
+        metrics = {"n_checks": int(result["n_checks"])} if "n_checks" in result else {}
+    return safe_record_stage_result(
+        scan_dir,
+        stage=gate,
+        status="SUCCEEDED" if result.get("ok") else "FAILED",
+        artifacts=artifacts,
+        metrics=metrics,
+        warnings=[],
+        error=None if result.get("ok") else str(result.get("reason", "gate failed")),
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
@@ -126,6 +161,11 @@ def main(argv: list[str] | None = None) -> int:
     res = {"gate1": lambda: gate1(scan_dir),
            "gate2": lambda: gate2(scan_dir, budget=a.budget),
            "gate4": lambda: gate4(scan_dir)}[a.gate]()
+    record_gate_stage_result(
+        scan_dir,
+        res,
+        budget=a.budget if a.gate == "gate2" else None,
+    )
     print(json.dumps(res, ensure_ascii=False))
     return 0 if res.get("ok") else 1
 
