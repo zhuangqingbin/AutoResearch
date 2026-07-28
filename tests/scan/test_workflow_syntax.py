@@ -88,3 +88,16 @@ def test_l4_workflow_records_success_and_failure_stage_results():
     assert "card_no_return" in src
     assert "catch (error)" in src
     assert "throw error" in src
+
+
+def test_earlystop_shadow_workflow_is_separate_and_shadow_only():
+    src = (WF / "earlystop-shadow.js").read_text(encoding="utf-8")
+    assert "shadow/earlystop_queue.json" in src
+    assert "shadow/earlystop_details/${code}.md" in src
+    assert "不得修改 production" in src
+    assert "details/${code}.md" not in src.replace(
+        "shadow/earlystop_details/${code}.md",
+        "",
+    )
+    production = (WF / "scan-market.js").read_text(encoding="utf-8")
+    assert "earlystop-shadow" not in production

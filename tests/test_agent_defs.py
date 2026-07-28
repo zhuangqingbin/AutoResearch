@@ -185,6 +185,20 @@ def test_l4_stock_workflow_dossier_summary_anchors():
         assert a in js, f"l4-stock.js 缺 intel 已知底消费锚「{a}」"
 
 
+def test_earlystop_shadow_workflow_forces_full_review_without_production_writes():
+    js = (
+        ROOT / ".claude" / "workflows" / "earlystop-shadow.js"
+    ).read_text(encoding="utf-8")
+    for anchor in (
+        "agentType: 'l4-card'",
+        "强制走完",
+        "Rubric",
+        "shadow/earlystop_details",
+        "不能改变正式评级",
+    ):
+        assert anchor in js, f"earlystop-shadow.js 缺影子深审锚「{anchor}」"
+
+
 def test_dossier_init_workflow_anchors():
     js = (ROOT / ".claude" / "workflows" / "dossier-init.js").read_text(encoding="utf-8")
     for a in ("dossier-init", "builder", "lint", "LLM:待首覆"):
