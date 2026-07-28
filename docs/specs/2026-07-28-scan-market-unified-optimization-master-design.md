@@ -1,6 +1,6 @@
 # scan-market 统一优化总纲：决策质量 × BUY 发现 × Token × 速度 × 架构
 
-> **状态**：设计已确认并进入实施；Wave 1–4 软件已完成，Wave 5 起继续开发\
+> **状态**：Wave 1–5 软件已完成；真实样本门与人工晋升仍持续运行\
 > **基线日期**：2026-07-28\
 > **代码基线**：`16463c0`\
 > **适用范围**：`scan-market` 主链 + 共享数据、研究闭环与编排层\
@@ -302,7 +302,7 @@ L0 → L1 → L2 → L3 → L4 → L5
 → 五项守卫
 → 人工裁决
 → 小流量上线
-→ 自动回滚观察窗
+→ 回滚守卫观察窗
 → 正式基线
 ```
 
@@ -1482,6 +1482,34 @@ ensemble trigger family 仍需至少 10 个成熟样本。任何门、阈值、�
 
 目标：只把已积累足够样本的研究 challenger 上线。
 
+#### 2026-07-28 实现状态（软件完成，challenger 仍为影子）
+
+已完成：
+
+- 独立 `learning/experiment_registry.py` 以 schema-versioned 原子 JSON
+  固化稳定基线、定义 hash、trial family、起止日、五项晋升/回滚守卫、样本门、
+  challenger/rollback 指针和全量审计；
+- 生命周期严格分离
+  `PREREGISTERED → RECOMMENDED → APPROVED → ACTIVE`，推荐、人工批准和
+  人工激活不能互相替代；同一 family 同时最多一个 ACTIVE；
+- `learning/promotion.py` 分开评估研究、决策、Token、速度、架构五项守卫；
+  样本不足为 `IMMATURE`，缺观测为 `UNKNOWN`，至少一项显式改善且无守卫失守
+  才能推荐；
+- `learning/rollback_watch.py` 对 ACTIVE 实验逐 run 幂等观察；任一失守只产生
+  `ROLLBACK_RECOMMENDED`，完整清洁窗口只产生 `STABLE_CANDIDATE`，均不自动
+  改生产；
+- 批准、激活、人工执行回滚、接受新稳定基线均记录人员/时间/依据；旧基线进入
+  可寻址历史；
+- 三个模块均有 `python -m` CLI；operator report 输出稳定基线、状态、成熟度、
+  五守卫、批准、回滚指针和审计。
+- 验收为 `1952 passed, 2 warnings`（两条既有 pandas FutureWarning）；165 个
+  `autoresearch` 模块零导入失败，生产 Workflow 语法/变异探针 18 项全绿；相对
+  Wave 4 基线，评级、门、召回评分、`fwd_2_oc` 与两个生产 Workflow 无差异。
+
+当前没有任何 challenger 因“治理软件完成”而被注册、批准或上线。统一真实门仍是
+至少 20 个前向扫描日、10 个关键成熟事件、召回 unique ≥30、覆盖两个 regime；
+不足时保持 `IMMATURE`/影子态。0 BUY 不作为失败或调松生产门的理由。
+
 候选：
 
 - value quota；
@@ -1505,7 +1533,7 @@ ensemble trigger family 仍需至少 10 个成熟样本。任何门、阈值、�
 | 产物契约 | artifact path/schema/hash | 扩展 `scan/artifacts.py` |
 | 决策事实 | rubric/gates/final rating | 从 `l4_card.py`、`assemble.py` 抽出 |
 | 阶段归因 | first rejection / abstention | `learning/stage_eval.py`、新 abstention ledger |
-| 实验登记 | challenger 生命周期 | `learning/feedback_store.py` 或独立 registry |
+| 实验登记 | challenger 生命周期 | `learning/experiment_registry.py`, `promotion.py`, `rollback_watch.py` |
 | Token | 主会话、输出、废弃调用 | `trace/usage_harvest.py` |
 | 速度 | 流式依赖与 presence gate | workflows + stage journal |
 | 报告 | 纯视图 | 从 `assemble.py` 抽出 |
@@ -1542,7 +1570,8 @@ ensemble trigger family 仍需至少 10 个成熟样本。任何门、阈值、�
   A/B；
 - pinned 与终评级读模型、nightly/retro consumer 的统一回执和可恢复补跑。
 
-后续只剩 Wave 5：实验登记、五守卫晋升、人审激活和回滚观察。
+Wave 1–5 的软件交付已经完成。后续是积累真实前向样本、让每个 challenger
+独立过五守卫，并在有证据时由人批准激活；尚未成熟的候选继续影子运行。
 
 ---
 

@@ -323,6 +323,36 @@ def test_scan_market_skill_documents_wave3_recovery_and_measurement_contract():
     assert "预算只告警" in stages
 
 
+def test_scan_market_skill_documents_wave5_experiment_governance_contract():
+    """实验治理必须进入当前 runbook，不能只存在于实现计划或单元测试。"""
+    skill = (SKILLS / "scan-market" / "SKILL.md").read_text(encoding="utf-8")
+    stages = (SKILLS / "scan-market" / "STAGES.md").read_text(encoding="utf-8")
+    for anchor in (
+        "autoresearch.learning.experiment_registry",
+        "autoresearch.learning.promotion",
+        "autoresearch.learning.rollback_watch",
+        "PREREGISTERED",
+        "RECOMMENDED",
+        "APPROVED",
+        "ACTIVE",
+        "STABLE_CANDIDATE",
+        "ROLLBACK_RECOMMENDED",
+        "人工批准",
+        "稳定基线",
+    ):
+        assert anchor in skill, f"SKILL.md 缺 Wave 5 治理契约:{anchor}"
+    for anchor in (
+        "研究、决策、Token、速度、架构",
+        "20 个真实扫描日",
+        "10 个成熟事件",
+        "2 个 regime",
+        "IMMATURE",
+        "UNKNOWN",
+        "不自动",
+    ):
+        assert anchor in stages, f"STAGES.md 缺 Wave 5 治理约束:{anchor}"
+
+
 def test_otel_path_retired_from_skill_docs():
     """OTEL 那条路已退役(Wave6 E1):文档不得再教用户跑一个已删除的 CLI。
 

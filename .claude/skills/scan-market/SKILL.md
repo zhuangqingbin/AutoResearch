@@ -146,6 +146,41 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
    - **prelude 会替你催**:📐 = 该报告期未对账、🕰️ = 档案 >90 日未全量刷新——解药是该票跑一次**成功的季度对账**(`dossier.reconcile <period>`,唯一写 `last_refresh` 的路径);要重做首覆需先 `builder --force`(**不是** `dossier-init --force`,该 flag 不存在;对已建档票重派 `dossier-init` 是 no-op,清不掉 🕰️)再派 `dossier-init`,注意 `builder --force` 会清空 `initiated`/`last_refresh`,该票期间会同时退出 🕰️ 与 `pending_init` 两个探针视野。
    - 未披露也会落痕(不是"没跑"),所以 📐 计数应随对账动作**下降**;天天恒定 = 探针坏了。
 
+## 实验治理(行为变更的唯一生产入口)
+
+涉及召回、L3、门、早停、ensemble、评级、Token 或速度的 challenger，先以
+`autoresearch.learning.experiment_registry` 登记不可变定义和**稳定基线**回滚
+指针，再由 `autoresearch.learning.promotion` 读取显式 measurement facts 检查
+研究、决策、Token、速度、架构五项守卫。状态只允许按
+`PREREGISTERED → RECOMMENDED → APPROVED → ACTIVE` 前进；观察窗通过后成为
+`STABLE_CANDIDATE`，任一守卫失守成为 `ROLLBACK_RECOMMENDED`。
+
+- `IMMATURE`、`UNKNOWN`、`FAIL` 均不能批准或激活；0 BUY 不是失败，也不是放松门
+  的理由。
+- `RECOMMENDED` 只是软件建议；`approve` 和 `activate` 必须分别记录**人工批准**
+  与操作者身份。观察器 `autoresearch.learning.rollback_watch` 也只推荐接受或
+  回滚，不自动改生产配置。
+- 每个 trial family 同时最多一个 `ACTIVE`；激活不覆盖稳定基线。人工执行生产
+  切换/回滚后，再用 `accept`/`rollback` 记审计事实。
+- 当前 challenger 的真实前向样本尚未达到统一晋升门，全部保持影子态；单测通过
+  只证明控制面可用，不证明研究效果成熟。
+
+最小操作序列（registry 默认落
+`context/learning/experiments/registry.json`，facts/spec 均为 JSON）：
+
+```bash
+python -m autoresearch.learning.experiment_registry baseline ...
+python -m autoresearch.learning.experiment_registry register --spec <spec.json>
+python -m autoresearch.learning.promotion evaluate <id> --facts <facts.json>
+python -m autoresearch.learning.experiment_registry approve <id> --approved-by <人>
+python -m autoresearch.learning.experiment_registry activate <id> --activated-by <人>
+python -m autoresearch.learning.rollback_watch observe <id> --facts <facts.json> --run-id <run>
+python -m autoresearch.learning.experiment_registry rollback|accept <id> ...
+python -m autoresearch.learning.experiment_registry report
+```
+
+完整字段、状态机、成熟门和回滚语义见 STAGES.md「实验晋升与回滚控制面」。
+
 ## 铁律
 - **确定性层零 LLM**:L0/L1/**L2**/L5 全 pandas,不在筛选里编数、不预测。
 - **召回宽、判断深**:L1 高召回 → L2 分层多样性采样收口(给均衡菜单,非 alpha);真正的多空取舍在 L3 holistic 精排 + L4 决策卡。

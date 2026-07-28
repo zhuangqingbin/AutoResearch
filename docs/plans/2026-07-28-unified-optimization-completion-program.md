@@ -183,9 +183,12 @@ Exit evidence:
 Detailed plan:
 `docs/plans/2026-07-28-wave5-experiment-governance-plan.md`.
 
-Status: **in progress 2026-07-28**.
+Status: **software completed 2026-07-28**. Full-suite acceptance is
+`1952 passed, 2 warnings`; the warnings are the same two pre-existing pandas
+`FutureWarning`s. All 165 `autoresearch` modules import without a failure.
+Current challengers remain shadow-only until their real sample gates mature.
 
-Planned components:
+Implemented components:
 
 - `autoresearch/learning/experiment_registry.py`
 - `autoresearch/learning/promotion.py`
@@ -201,6 +204,15 @@ Exit evidence:
   human approval.
 - An activated experiment that breaches a guard during its observation window
   emits a rollback recommendation and keeps the prior baseline addressable.
+- Registry, promotion, and rollback-watch CLIs are deterministic and produce an
+  operator report with lifecycle, five-guard, maturity, approval, rollback, and
+  audit evidence.
+- Focused governance/source-contract acceptance is `34 passed`; both production
+  Workflow files pass V8 syntax/mutation probes (`18 passed`).
+- Relative to Wave 4 baseline `6a06bc8`, rating, gates, recall scoring,
+  `fwd_2_oc`, and both production Workflow files have no diff.
+- No live experiment was created or promoted as part of software acceptance;
+  unit tests do not satisfy future evidence gates.
 
 ## Final verification
 

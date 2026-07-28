@@ -1,6 +1,7 @@
 # Wave 5 Experiment Promotion and Rollback Implementation Plan
 
-> **Status:** In progress on 2026-07-28.
+> **Status:** Software completed on 2026-07-28. Real challenger evidence
+> remains immature/shadow-only.
 >
 > **Execution:** Directly on `main`, explicitly authorized by the user. Every
 > behavior follows `superpowers:test-driven-development`; no current challenger
@@ -63,70 +64,85 @@ The registry does not edit scan config, weights, gates, prompts, or ratings.
 
 ## Task 1: Registry identity and stable baseline
 
-- [ ] Write failing schema/hash/idempotency tests.
-- [ ] Add atomic canonical JSON read/write and corruption fail-loud behavior.
-- [ ] Require a stable baseline before experiment registration.
-- [ ] Preregister immutable definition hash, start/expiry, trial family,
+- [x] Write failing schema/hash/idempotency tests.
+- [x] Add atomic canonical JSON read/write and corruption fail-loud behavior.
+- [x] Require a stable baseline before experiment registration.
+- [x] Preregister immutable definition hash, start/expiry, trial family,
   primary metric, five promotion guards, five rollback guards, challenger
   pointer, sample minima, rollback window, and stable rollback pointer.
-- [ ] Reject duplicate IDs with a changed definition; accept exact replay.
-- [ ] Add stable-baseline history so prior pointers remain addressable.
-- [ ] Commit registry independently.
+- [x] Reject duplicate IDs with a changed definition; accept exact replay.
+- [x] Add stable-baseline history so prior pointers remain addressable.
+- [x] Commit registry independently.
 
 ## Task 2: Five-guard promotion evaluation
 
-- [ ] Write failing maturity/UNKNOWN/FAIL/PASS tests.
-- [ ] Require minimum forward days, mature events, unique events, and regimes.
-- [ ] Evaluate research, decision, token, speed, and architecture separately.
-- [ ] Keep missing metrics `UNKNOWN`, never reinterpret them as `FAIL`.
-- [ ] Require at least one explicit improvement and no guard breach.
-- [ ] Disclose trial count and definition breakpoints.
-- [ ] Persist canonical evaluation and update only recommendation state.
-- [ ] Commit evaluator independently.
+- [x] Write failing maturity/UNKNOWN/FAIL/PASS tests.
+- [x] Require minimum forward days, mature events, unique events, and regimes.
+- [x] Evaluate research, decision, token, speed, and architecture separately.
+- [x] Keep missing metrics `UNKNOWN`, never reinterpret them as `FAIL`.
+- [x] Require at least one explicit improvement and no guard breach.
+- [x] Disclose trial count and definition breakpoints.
+- [x] Persist canonical evaluation and update only recommendation state.
+- [x] Commit evaluator independently.
 
 ## Task 3: Human approval and activation boundary
 
-- [ ] Write failing illegal-transition tests.
-- [ ] `approve` requires `RECOMMENDED`, approver identity, timestamp, and note.
-- [ ] `activate` requires an unexpired explicit approval and no other active
+- [x] Write failing illegal-transition tests.
+- [x] `approve` requires `RECOMMENDED`, approver identity, timestamp, and note.
+- [x] `activate` requires an unexpired explicit approval and no other active
   experiment in the same trial family.
-- [ ] Activation snapshots the rollback pointer and never overwrites the stable
+- [x] Activation snapshots the rollback pointer and never overwrites the stable
   baseline.
-- [ ] Reject any API/CLI attempt to activate directly from shadow states.
-- [ ] Commit transition boundary independently.
+- [x] Reject any API/CLI attempt to activate directly from shadow states.
+- [x] Commit transition boundary independently.
 
 ## Task 4: Rollback observation
 
-- [ ] Write failing observation-window and breach tests.
-- [ ] Accept observations only for `ACTIVE` experiments.
-- [ ] Evaluate the same five domains; missing observations stay `UNKNOWN`.
-- [ ] Any observed breach emits `ROLLBACK_RECOMMENDED` with guard evidence and
+- [x] Write failing observation-window and breach tests.
+- [x] Accept observations only for `ACTIVE` experiments.
+- [x] Evaluate the same five domains; missing observations stay `UNKNOWN`.
+- [x] Any observed breach emits `ROLLBACK_RECOMMENDED` with guard evidence and
   the stable rollback pointer; it does not mutate production automatically.
-- [ ] A clean complete window emits `STABLE_CANDIDATE`.
-- [ ] Explicit rollback and explicit stable-baseline acceptance require human
+- [x] A clean complete window emits `STABLE_CANDIDATE`.
+- [x] Explicit rollback and explicit stable-baseline acceptance require human
   identity and preserve audit history.
-- [ ] Commit rollback watch independently.
+- [x] Commit rollback watch independently.
 
 ## Task 5: Deterministic CLI and report
 
-- [ ] Add registry CLI for baseline/register/show/list/approve/activate/
+- [x] Add registry CLI for baseline/register/show/list/approve/activate/
   rollback/accept/report.
-- [ ] Add promotion and rollback-watch evaluate/observe CLIs with JSON input and
+- [x] Add promotion and rollback-watch evaluate/observe CLIs with JSON input and
   optional canonical JSON output.
-- [ ] Render `reports/learning/experiments.md` with stable baseline, lifecycle,
+- [x] Render `reports/learning/experiments.md` with stable baseline, lifecycle,
   latest five-guard verdicts, maturity, approval, rollback pointer, and audit.
-- [ ] Add source-contract and end-to-end CLI tests.
-- [ ] Commit integration independently.
+- [x] Add source-contract and end-to-end CLI tests.
+- [x] Commit integration independently.
 
 ## Task 6: Documentation and final acceptance
 
-- [ ] Update completion program, master design, SKILL, and STAGES.
-- [ ] Compile all Python modules and import-probe the package.
-- [ ] Run focused experiment-governance tests.
-- [ ] Prove rating/gate/recall/horizon and production Workflow parity.
-- [ ] Run the full suite and record exact count/warnings.
-- [ ] Mark software complete while leaving every unapproved/immature challenger
+- [x] Update completion program, master design, SKILL, and STAGES.
+- [x] Compile all Python modules and import-probe the package.
+- [x] Run focused experiment-governance tests.
+- [x] Prove rating/gate/recall/horizon and production Workflow parity.
+- [x] Run the full suite and record exact count/warnings.
+- [x] Mark software complete while leaving every unapproved/immature challenger
   shadow-only.
+
+## Acceptance record
+
+- Focused governance and source-contract tests: `34 passed`.
+- Full suite: `1952 passed, 2 warnings`; both warnings are the pre-existing
+  pandas `FutureWarning`s in L3 merge and temperature upsert tests.
+- Python compile succeeded; all 165 `autoresearch` modules import with zero
+  failures.
+- Both production Workflow files pass the repository's V8 `AsyncFunction`
+  probe and its mutation tests (`18 passed`).
+- Relative to the Wave 4 baseline `6a06bc8`, production rating, gates, recall
+  scoring, `fwd_2_oc`, and both production Workflow files have no diff.
+- No live registry, challenger approval, production activation, baseline
+  acceptance, rollback, BUY quota, or threshold relaxation was created during
+  software acceptance.
 
 ## Rollback
 

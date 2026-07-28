@@ -307,6 +307,38 @@ self_review 硬门 banner → regime+drift 行(+🌡情绪温度行) → 📈市
 
 ---
 
+## 实验晋升与回滚控制面
+
+所有会改变召回、研究、门、评级或编排行为的 challenger 都必须预注册。默认
+registry 为 `context/learning/experiments/registry.json`，schema 版本化、写入
+原子化；定义 hash 改变时不得复用旧实验 ID。注册前先固化稳定基线，激活期间
+不得覆盖它，确保回滚指针始终可寻址。
+
+统一成熟门：前向观察不少于 **20 个真实扫描日**、关键细分至少 **10 个成熟事件**、
+召回通道另需 unique 样本 ≥30，且至少覆盖 **2 个 regime**。未满足返回
+`IMMATURE`；缺观测返回 `UNKNOWN`，不得混作 `FAIL`。五项独立守卫是
+**研究、决策、Token、速度、架构**：至少一项显式改善，且五项都无 FAIL/UNKNOWN，
+才可从 `PREREGISTERED` 得到 `RECOMMENDED`。
+
+```text
+PREREGISTERED
+  └─ 五守卫 PASS → RECOMMENDED
+       └─ 人工 approve → APPROVED
+            └─ 人工 activate → ACTIVE
+                 ├─ 完整观察窗全 PASS → STABLE_CANDIDATE
+                 │    └─ 人工 accept → ACCEPTED / 新稳定基线
+                 └─ 任一守卫 FAIL → ROLLBACK_RECOMMENDED
+                      └─ 人工执行生产回滚并登记 → ROLLED_BACK
+```
+
+`promotion` 只写推荐，`rollback_watch` 只写观察与推荐，二者都**不自动**改门、
+权重、prompt、评级或生产配置。批准、激活、接受与回滚分别带人员、时间和审计
+记录；同一 trial family 同时最多一个 ACTIVE。trial 数和定义断点必须披露，实验
+过期则不得晋升。当前所有 challenger 真实样本仍未成熟，软件完成不等于研究结论
+通过。
+
+---
+
 ## 闭环层 —— `autoresearch/learning`(确定性度量 + Claude 诊断)
 
 | 件 | 现状 |
