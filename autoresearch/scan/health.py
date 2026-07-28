@@ -250,6 +250,69 @@ def ledger_freshness(scan_dir: Path, learning_root: Path | str | None = None) ->
             "buy_count_mismatches": mismatches}
 
 
+def _json_object(path: Path) -> dict | None:
+    if not path.exists():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def run_contract_health(scan_dir: Path) -> dict:
+    """影子校验运行身份与两份配置回显；本批只记账，不在此阻断。"""
+    from autoresearch.scan.run_contract import load_run_contract, sha256_json
+
+    scan = Path(scan_dir)
+    path = scan / "run_contract.json"
+    empty = {
+        "status": "ABSENT",
+        "run_id": None,
+        "contract_hash": None,
+        "errors": [],
+        "echo_config_match": None,
+        "market_pack_config_match": None,
+    }
+    if not path.exists():
+        return empty
+    try:
+        contract = load_run_contract(path)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        return {
+            **empty,
+            "status": "INVALID",
+            "errors": [f"run_contract unreadable: {exc}"],
+        }
+
+    errors: list[str] = []
+    if contract.analysis_date != scan.name:
+        errors.append(
+            f"analysis_date mismatch: contract={contract.analysis_date} dir={scan.name}"
+        )
+    echo = _json_object(scan / "user_config_echo.json")
+    pack = _json_object(scan / "market_pack.json")
+    echo_match = None if echo is None else sha256_json(echo) == contract.config_hash
+    pack_cfg = pack.get("user_config") if pack is not None else None
+    pack_match = (
+        None
+        if not isinstance(pack_cfg, dict)
+        else sha256_json(pack_cfg) == contract.config_hash
+    )
+    if echo_match is False:
+        errors.append("user_config_echo config_hash mismatch")
+    if pack_match is False:
+        errors.append("market_pack user_config config_hash mismatch")
+    return {
+        "status": "INVALID" if errors else "OK",
+        "run_id": contract.run_id,
+        "contract_hash": contract.contract_hash,
+        "errors": errors,
+        "echo_config_match": echo_match,
+        "market_pack_config_match": pack_match,
+    }
+
+
 def run_health(scan_dir: Path) -> dict:
     """一次 scan 的体检 dict(artifacts/counts/NaN 降级/churn/L4 阶段/meta 回显)。"""
     scan_dir = Path(scan_dir)
@@ -284,7 +347,8 @@ def run_health(scan_dir: Path) -> dict:
             "regime": meta.get("regime"), "l2_engine": meta.get("l2_engine"),
             "weights_source": meta.get("weights_source"),
             "churn": finalist_churn(scan_dir), "l4_phases": l4_phase_stats(scan_dir),
-            "ledger_freshness": ledger_freshness(scan_dir)}
+            "ledger_freshness": ledger_freshness(scan_dir),
+            "run_contract": run_contract_health(scan_dir)}
 
 
 def write_run_health(scan_dir: Path) -> Path:

@@ -5,6 +5,7 @@ spec: docs/specs/2026-07-02-scan-observability-design.md
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 import pandas as pd
 
@@ -17,6 +18,7 @@ from autoresearch.scan.health import (
     run_health,
     write_run_health,
 )
+from autoresearch.scan.run_contract import RunContract, write_run_contract
 
 CARD_OW = "# 决策卡\n**Rating**: Overweight\n进入P4倾向: Buy\n**一行多空**:多:强 ｜ 空:贵\n"
 CARD_STOP = "# 早停卡\n**Rating**: Hold\n早停因: 主力流出 → 停\n"
@@ -50,6 +52,59 @@ def test_run_health_core(tmp_path):
     assert h["counts"]["cards"] == 1 and h["counts"]["buys"] == 1
     p = write_run_health(d)
     assert json.loads(p.read_text(encoding="utf-8"))["counts"]["buys"] == 1
+
+
+def _write_contract(day, *, config=None):
+    contract = RunContract.build(
+        analysis_date=day.name,
+        user_config=config or {},
+        pinned={"kept": [], "expired": []},
+        data_policy={"source": "tushare"},
+        stage_budgets={"l3_finalist_max": 10},
+        artifact_schema_versions={"market_pack": 1},
+        git_sha="abc",
+        now=datetime(2026, 7, 28, tzinfo=timezone.utc),
+    )
+    write_run_contract(day / "run_contract.json", contract)
+    return contract
+
+
+def test_run_health_contract_absent_is_advisory(tmp_path):
+    d = _mk_day(tmp_path, "2026-07-28")
+    assert run_health(d)["run_contract"] == {
+        "status": "ABSENT",
+        "run_id": None,
+        "contract_hash": None,
+        "errors": [],
+        "echo_config_match": None,
+        "market_pack_config_match": None,
+    }
+
+
+def test_run_health_contract_ok_when_echoes_match(tmp_path):
+    d = _mk_day(tmp_path, "2026-07-28")
+    cfg = {"agents": {"l3_rank": {"effort": "high"}}}
+    contract = _write_contract(d, config=cfg)
+    (d / "user_config_echo.json").write_text(json.dumps(cfg), encoding="utf-8")
+    (d / "market_pack.json").write_text(json.dumps({"user_config": cfg}), encoding="utf-8")
+    result = run_health(d)["run_contract"]
+    assert result["status"] == "OK"
+    assert result["contract_hash"] == contract.contract_hash
+    assert result["echo_config_match"] is True
+    assert result["market_pack_config_match"] is True
+
+
+def test_run_health_contract_invalid_on_config_drift(tmp_path):
+    d = _mk_day(tmp_path, "2026-07-28")
+    _write_contract(d, config={"redteam_prob": 0.1})
+    (d / "user_config_echo.json").write_text(
+        json.dumps({"redteam_prob": 0.2}),
+        encoding="utf-8",
+    )
+    result = run_health(d)["run_contract"]
+    assert result["status"] == "INVALID"
+    assert result["echo_config_match"] is False
+    assert "user_config_echo config_hash mismatch" in result["errors"]
 
 
 def test_finalist_churn(tmp_path):
