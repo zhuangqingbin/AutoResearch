@@ -148,6 +148,11 @@ Exit evidence:
 
 ### Wave 4 — module boundaries
 
+Detailed plan:
+`docs/plans/2026-07-28-wave4-module-boundaries-plan.md`.
+
+Status: **in progress 2026-07-28**.
+
 Planned extractions preserve compatibility imports:
 
 - `scan/decision_finalize.py`
