@@ -61,7 +61,7 @@ def _numeric_loop_pass_map(scan_dir: Path) -> dict[str, bool] | None:
     供 workflow 打回自修用,不便反解逐票真假)。缺 `_l3_judged.json` → None(该日不可判定,
     调用方应把它当"该日全体 False"处理)。
     """
-    from autoresearch.scan.agents.l3_select import (
+    from autoresearch.scan.l3.validation import (
         _approx_in_pool,
         _row_numeric_pool,
         _thesis_number_tokens,
@@ -134,7 +134,12 @@ def compute_process_scores(scan_dir: Path | str) -> pd.DataFrame:
 
     from autoresearch.agents.utils.rating import parse_rating
     from autoresearch.learning import self_review
-    from autoresearch.scan.assemble import _DEV_RE, _RUBRIC_RE, _decision_text, _read_csv
+    from autoresearch.scan.l4.parsers import (
+        _DEV_RE,
+        _RUBRIC_RE,
+        _decision_text,
+        _read_csv,
+    )
 
     finals = _read_csv(scan_dir / "finalists.csv")
     if not finals:
@@ -175,7 +180,7 @@ def compute_process_scores(scan_dir: Path | str) -> pd.DataFrame:
 
         # slim 可用性:复用 GATE3 的单一事实源 `_slim_defect`(四个结构锚齐 ∧ Close 是真数值,
         # 体积只当垃圾地板)。列名 `chk_slim_size` 保留不改 —— retro/账本已在 join 它。
-        from autoresearch.scan.agents.l4_card import _slim_defect
+        from autoresearch.scan.l4.producers import _slim_defect
         sp = _slim_path(scan_dir, code, date)
         chk_slim = bool(sp is not None and _slim_defect(sp, _SLIM_FLOOR_BYTES)[1] is None)
 

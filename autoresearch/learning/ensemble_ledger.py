@@ -55,7 +55,7 @@ def fold_outcome(
 
 def load_fold_facts(scan_dir: Path | str) -> dict[str, dict]:
     """Read source/final ratings from structured decision and ensemble facts."""
-    from autoresearch.scan.assemble import (
+    from autoresearch.scan.decision_finalize import (
         _apply_ensemble_fold,
         _load_ensemble,
     )

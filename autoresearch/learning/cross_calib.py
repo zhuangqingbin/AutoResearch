@@ -118,7 +118,7 @@ def gate_stats(scan_root: Path | str | None = None, window: int = 30,
         target_hit_for,
     )
     from autoresearch.learning.rejection_attribution import decision_gate_bucket
-    from autoresearch.scan.assemble import gate_status
+    from autoresearch.scan.l4.parsers import gate_status
     from autoresearch.scan.decision_read_model import read_decisions
     from autoresearch.scan.health import final_ratings
     rows = []

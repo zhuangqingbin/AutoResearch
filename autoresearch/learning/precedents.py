@@ -153,7 +153,7 @@ def _parse_card(text: str, code: str) -> dict:
     整行;verdict_line = rating + 决策仪表盘『触发位』一句话摘要(缺 → 只留 rating)。
     """
     from autoresearch.agents.utils.rating import parse_rating  # lazy 防环
-    from autoresearch.scan.assemble import _clip, _get, _parse_dashboard  # lazy 防环
+    from autoresearch.scan.l4.parsers import _clip, _get, _parse_dashboard
 
     name = ""
     m = _HEADING_RE.search(text)
@@ -282,7 +282,7 @@ def _index_date(conn: sqlite3.Connection, scan_root: Path, date: str) -> int:
 
 def _index_lessons(conn: sqlite3.Connection, lessons_path: Path) -> int:
     """`lessons.jsonl` 逐行 upsert(kind='lesson');scope.kind=='industry' 才落 sector。"""
-    from autoresearch.scan.assemble import _clip  # lazy 防环
+    from autoresearch.scan.l4.parsers import _clip
 
     if not lessons_path.exists():
         return 0

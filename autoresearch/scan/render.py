@@ -40,7 +40,7 @@ def _view_menu_health(det: Path) -> str:
 
 
 def _view_gate_hist(det: Path) -> str:
-    from autoresearch.scan.assemble import gate_histogram
+    from autoresearch.scan.report_sections import gate_histogram
     from autoresearch.scan.health import final_ratings
     ratings = final_ratings(det)
     if not ratings:
@@ -69,7 +69,7 @@ def _view_timing(det: Path) -> str:
 def _view_funnel(det: Path) -> str:
     import pandas as pd
 
-    from autoresearch.scan.assemble import _funnel_rows
+    from autoresearch.scan.report_sections import _funnel_rows
 
     def _n(name: str) -> int:
         p = det / name

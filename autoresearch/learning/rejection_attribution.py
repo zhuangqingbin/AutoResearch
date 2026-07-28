@@ -138,12 +138,12 @@ def _codes(path: Path) -> set[str]:
 
 def _legacy_decisions(scan: Path) -> dict[str, _LegacyDecision]:
     from autoresearch.agents.utils.rating import parse_rating
-    from autoresearch.scan.assemble import (
-        _load_ensemble,
+    from autoresearch.scan.decision_finalize import _load_ensemble
+    from autoresearch.scan.l4.parsers import (
         gate_status,
         parse_early_stop,
     )
-    from autoresearch.scan.agents.l4_card import parse_ratings_from_details
+    from autoresearch.scan.l4.parsers import parse_ratings_from_details
 
     details = scan / "details"
     final = read_final_ratings(

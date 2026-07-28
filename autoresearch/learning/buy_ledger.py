@@ -53,7 +53,7 @@ def _target_ret(scan_dir: Path, code: str) -> float | None:
     p = scan_dir / "details" / f"{code}.md"
     if not p.exists():
         return None
-    from autoresearch.scan.assemble import _get, _parse_dashboard
+    from autoresearch.scan.l4.parsers import _get, _parse_dashboard
     dash = _parse_dashboard(p.read_text(encoding="utf-8"))
     m = _TARGET_RE.search(_get(dash, "EV目标", "目标") or "")
     if not m:

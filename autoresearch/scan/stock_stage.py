@@ -106,11 +106,11 @@ def record_l4_result(
     warnings = []
     if card_present:
         from autoresearch.agents.utils.rating import parse_rating
-        from autoresearch.scan.assemble import (
+        from autoresearch.scan.decision_finalize import (
             _apply_ensemble_fold,
             _load_ensemble,
-            parse_early_stop,
         )
+        from autoresearch.scan.l4.parsers import parse_early_stop
 
         source_rating = parse_rating(text)
         early_stop = parse_early_stop(text)

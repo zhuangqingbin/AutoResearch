@@ -547,10 +547,13 @@ def render_funnel_readout(scan_dir: Path | str) -> str:
 
     无决策卡 → 空串。verify 折回口径复用 assemble(降级=降一档、否决=至少 Hold)。
     """
-    from autoresearch.scan.agents.l4_card import (
+    from autoresearch.scan.l4.parsers import (
         parse_ratings_from_details,  # lazy:避免 import cycle
     )
-    from autoresearch.scan.assemble import _apply_verify_downgrade, _load_verify
+    from autoresearch.scan.decision_finalize import (
+        _apply_verify_downgrade,
+        _load_verify,
+    )
 
     scan_dir = Path(scan_dir)
     ratings = parse_ratings_from_details(scan_dir / "details")

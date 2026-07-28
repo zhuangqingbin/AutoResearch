@@ -39,7 +39,7 @@ def _card_fields(d: Path, code6: str) -> tuple[str | None, str | None]:
         if p.exists():
             text = p.read_text(encoding="utf-8")
             from autoresearch.agents.utils.rating import parse_rating
-            from autoresearch.scan.assemble import _l4_brief
+            from autoresearch.scan.l4.parsers import _l4_brief
             rating = parse_rating(text)
             return rating, _l4_brief(text, rating)
     return None, None

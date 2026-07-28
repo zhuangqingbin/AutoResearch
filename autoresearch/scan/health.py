@@ -155,7 +155,7 @@ def _legacy_final_ratings(scan_dir: Path) -> dict[str, str]:
     if fin is None or "code" not in fin.columns:
         return {}
     from autoresearch.agents.utils.rating import parse_rating  # lazy 防环
-    from autoresearch.scan.assemble import (
+    from autoresearch.scan.decision_finalize import (
         _apply_ensemble_fold,
         _apply_verify_downgrade,
         _load_ensemble,

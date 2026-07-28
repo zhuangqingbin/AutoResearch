@@ -353,7 +353,7 @@ def mark_success(
             )
         if missing:
             raise ValueError(f"L4 success missing artifacts:{','.join(missing)}")
-        from autoresearch.scan.agents.l4_card import _slim_defect
+        from autoresearch.scan.l4.producers import _slim_defect
 
         _, defect = _slim_defect(Path(refs["slim"]["path"]), 4096)
         if defect:
@@ -387,7 +387,7 @@ def prepare_slim(
     ticker = task["ticker"]
     slim_path = Path(task["artifacts"]["slim"]["path"])
     slim_path.parent.mkdir(parents=True, exist_ok=True)
-    from autoresearch.scan.agents.l4_card import _default_harvest_slim, _slim_defect
+    from autoresearch.scan.l4.producers import _default_harvest_slim, _slim_defect
 
     harvest = harvest_fn or (
         lambda symbol, date: _default_harvest_slim(symbol, date, slim_path.parent)
@@ -492,7 +492,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     caps = json.loads(args.caps_json) if args.caps_json else None
     if args.cmd == "init":
-        from autoresearch.scan.agents.l4_card import dispatch_plan
+        from autoresearch.scan.l4.dispatch import dispatch_plan
 
         if caps is None:
             from autoresearch.scan.user_config import load_user_config

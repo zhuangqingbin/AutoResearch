@@ -35,7 +35,7 @@ def _binding(scan_dir: Path, code: str) -> str:
     if not p.exists():
         return ""
     try:
-        from autoresearch.scan.assemble import gate_status
+        from autoresearch.scan.l4.parsers import gate_status
         gates = gate_status(p.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
         return ""
@@ -46,7 +46,7 @@ def _binding(scan_dir: Path, code: str) -> str:
 
 def record(scan_dir: Path | str, path: Path | str = _PATH, k: int = 3) -> int:
     """该 scan 日 top-k Hold(L3 conviction 序)入账;(date,code) 幂等。返回新增行数。"""
-    from autoresearch.scan.agents.l4_card import pick_opportunity_candidates
+    from autoresearch.scan.l4.parsers import pick_opportunity_candidates
     from autoresearch.scan.health import final_ratings
     scan_dir, path = Path(scan_dir), Path(path)
     ratings = final_ratings(scan_dir)

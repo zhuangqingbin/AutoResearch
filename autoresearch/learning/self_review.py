@@ -446,7 +446,7 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
     l4_phases = health.get("l4_phases")
     if fin_loaded and isinstance(l4_phases, dict) and "n_full" in l4_phases:
         with contextlib.suppress(Exception):
-            from autoresearch.scan.agents.l4_card import force_full_card
+            from autoresearch.scan.l4.rubric import force_full_card
             l2_priors: dict[str, dict] = {}
             with contextlib.suppress(Exception):
                 l2p = scan_dir / "L2_gbdt_top200.csv"
@@ -630,7 +630,7 @@ def dump_ow_gate_fires(scan_dir) -> int:
 
     import pandas as pd
 
-    from autoresearch.scan.assemble import gate_status
+    from autoresearch.scan.l4.parsers import gate_status
 
     scan_dir = Path(scan_dir)
     date = scan_dir.name
