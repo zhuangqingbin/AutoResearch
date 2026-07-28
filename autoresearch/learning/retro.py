@@ -556,9 +556,22 @@ def attribute(date: str, scan_root: Path | None = None, report_root: Path | None
     outdir.mkdir(parents=True, exist_ok=True)
     attr[[c for c in _KEEP if c in attr.columns]].to_csv(outdir / "attribution.csv", index=False)
     from autoresearch.learning.rejection_attribution import (
+        build_rejection_attribution,
         write_rejection_attribution,
     )
     write_rejection_attribution(sdir, attr)
+    from autoresearch.learning.abstention_ledger import (
+        write_abstention_verdict,
+    )
+    health = None
+    health_path = sdir / "run_health.json"
+    if health_path.exists():
+        health = json.loads(health_path.read_text(encoding="utf-8"))
+    write_abstention_verdict(
+        sdir,
+        build_rejection_attribution(sdir, attr),
+        health=health,
+    )
     pairs = build_retro_pairs(attr)                  # M1·同日 fail/success 对(成熟日才非空)
     if not pairs.empty:                              # presence-gated:未成熟日不落文件
         pairs.to_csv(outdir / "_retro_pairs.csv", index=False)

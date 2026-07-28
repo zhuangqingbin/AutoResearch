@@ -60,6 +60,33 @@ def test_empty_root_graceful(tmp_path):
     assert any("无" in ln for ln in render(df))
 
 
+def test_render_can_include_causal_verdict_summary():
+    legacy = pd.DataFrame(
+        [
+            {
+                "date": "2026-07-28",
+                "n_bought": 0,
+                "n_stocks": 2,
+                "mkt_fwd1": -0.01,
+                "mkt_fwd2": -0.02,
+                "mkt_fwd5": None,
+            }
+        ]
+    )
+    causal = pd.DataFrame(
+        [
+            {
+                "date": "2026-07-28",
+                "status": "FALSE",
+                "n_opportunities": 1,
+            }
+        ]
+    )
+    text = "\n".join(render(legacy, causal=causal))
+    assert "因果裁决" in text
+    assert "FALSE" in text
+
+
 def test_bought_mask_is_public_and_reused_by_journal(tmp_path):
     """D5 单一事实源:`bought_mask` 抽成可复用原语(journal.py 会同口径导入,见 test_journal.py)。
 

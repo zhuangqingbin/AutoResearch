@@ -25,7 +25,7 @@ Wave 2 answers five separate questions:
 ## Progress
 
 - [x] Task 1: candidate first-death attribution
-- [ ] Task 2: day abstention verdict and causal ledger
+- [x] Task 2: day abstention verdict and causal ledger
 - [ ] Task 3: tri-state unique-gate accountability
 - [ ] Task 4: L3 shadow audit basket
 - [ ] Task 5: early-stop shadow deep-review queue

@@ -52,7 +52,11 @@ def roll(scan_root: Path | None = None) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=_COLS).sort_values("date").reset_index(drop=True)
 
 
-def render(ledger: pd.DataFrame) -> list[str]:
+def render(
+    ledger: pd.DataFrame,
+    *,
+    causal: pd.DataFrame | None = None,
+) -> list[str]:
     """ledger → markdown(逐日表 + 0买日 vs 有买日市场后市对照)。"""
     out = ["# 0买日市场对照(纪律 vs 失明)", ""]
     if ledger is None or not len(ledger):
@@ -75,16 +79,31 @@ def render(ledger: pd.DataFrame) -> list[str]:
     if len(some):
         out.append(f"- **有买日**({len(some)} 日):市场 fwd_1 均值 {f(some['mkt_fwd1'].mean())}、"
                    f"fwd_2 均值 {f(some['mkt_fwd2'].mean())}、fwd_5 均值 {f(some['mkt_fwd5'].mean())}")
+    if causal is not None and len(causal):
+        counts = causal["status"].value_counts().to_dict()
+        out += [
+            "",
+            "## 因果裁决（详见 `abstention_ledger.md`）",
+            "- " + " · ".join(
+                f"{status} {counts.get(status, 0)}"
+                for status in ("CORRECT", "FALSE", "NEUTRAL", "IMMATURE")
+            ),
+        ]
     out.append("")
-    out.append("_口径:attribution.csv 全市场等权均值(与 channel_eval 同源);仅供研究。_")
+    out.append("_市场均值只作背景；正确/错误弃权以逐票、可交易、相对市场 +2pp 的因果账为准。_")
     return out
 
 
 def main() -> int:
+    from autoresearch.learning.abstention_ledger import roll as causal_roll
+
     ledger = roll()
     out = Path("reports/learning/zero_buy_ledger.md")
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text("\n".join(render(ledger)) + "\n", encoding="utf-8")
+    out.write_text(
+        "\n".join(render(ledger, causal=causal_roll())) + "\n",
+        encoding="utf-8",
+    )
     print(f"[zero_buy_ledger] {len(ledger)} 日 → {out}")
     return 0
 

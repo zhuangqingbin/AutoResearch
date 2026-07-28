@@ -31,6 +31,8 @@ def test_zero_buy_reports_early_stop_bucket(tmp_path):
     assert "早停 2" in out
     assert "满卡" in out
     assert "无一过" not in out          # 旧的不实判词必须消失
+    assert "日级弃权裁决: **IMMATURE**" in out
+    assert "非漏斗故障" not in out
 
 
 def test_zero_buy_without_early_stop_file_is_honest(tmp_path):
@@ -41,3 +43,37 @@ def test_zero_buy_without_early_stop_file_is_honest(tmp_path):
     assert "0 买" in out
     assert "无一过" not in out
     assert "口径未知" in out
+
+
+def test_zero_buy_rerun_can_show_verified_mature_verdict(tmp_path):
+    from datetime import datetime, timezone
+
+    import pandas as pd
+
+    from autoresearch.learning.abstention_ledger import (
+        write_abstention_verdict,
+    )
+
+    d = _day(tmp_path, {})
+    rows = pd.DataFrame(
+        [
+            {
+                "date": d.name,
+                "code": "000651",
+                "first_rejection_stage": "L4_RUBRIC_SCORE",
+                "final_action": "ABSTAIN",
+                "gate_state_quality": "COMPLETE",
+                "buyable": True,
+                "mature": True,
+                "excess_2": -0.03,
+                "opportunity": False,
+            }
+        ]
+    )
+    write_abstention_verdict(
+        d,
+        rows,
+        now=datetime(2026, 7, 28, tzinfo=timezone.utc),
+    )
+    out = render_funnel_readout(d)
+    assert "日级弃权裁决: **CORRECT**" in out
