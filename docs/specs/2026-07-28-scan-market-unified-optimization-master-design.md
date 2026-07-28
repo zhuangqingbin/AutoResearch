@@ -1238,6 +1238,23 @@ DOSSIER_DELTA_READY
 - 新控制面先影子双写；
 - 任一 parity 失败即继续读旧路径。
 
+#### 2026-07-28 第一批实现状态
+
+已进入影子双写：
+
+- `frame --json` 写 `run_contract.json`，market pack 仅携带短引用；
+- `run_health.json` 报告契约 `ABSENT / OK / INVALID`，暂不阻断；
+- `assemble` 把 contract 身份固化进 manifest；
+- 15 类关键产物进入 `artifact_index.json`，最终快照随 trace 发布；
+- 历史 staging 缺少 contract 时保持兼容。
+
+尚未升级为生产硬门：
+
+- Workflow 参数与 contract hash 的逐段回显；
+- GATE1 的 config/pinned/hash fail-fast；
+- 生产者级 `input_hash`；
+- `StageResult / DecisionRecord / outbox`。
+
 ### Wave 2：0-BUY 可解释与研究闭环
 
 目标：回答每个 0 BUY 是正确弃权还是漏判。
