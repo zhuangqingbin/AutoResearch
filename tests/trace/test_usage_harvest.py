@@ -19,6 +19,31 @@ def _row(mid, out, cr, cc, inp=0, agent="l4-card", effort="xhigh", model="claude
                                   "cache_creation_input_tokens": cc}}}
 
 
+def _terminal(mid, *, model="claude-opus-5", agent="l4-card"):
+    row = _row(mid, 10, 100, 10, agent=agent, model=model)
+    row["message"]["stop_reason"] = "end_turn"
+    return row
+
+
+def _error(mid="err", kind="rate_limit"):
+    return {
+        "type": "assistant",
+        "error": kind,
+        "isApiErrorMessage": True,
+        "message": {
+            "id": mid,
+            "model": "<synthetic>",
+            "stop_reason": "stop_sequence",
+            "usage": {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 0,
+            },
+        },
+    }
+
+
 def _write(d, name, rows):
     p = d / name
     p.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows), encoding="utf-8")
@@ -138,6 +163,7 @@ def test_model_family_normalizes_ids():
     assert U.model_family("claude-haiku-4-5-20251001") == "haiku"
     assert U.model_family("claude-opus-5") == "opus"
     assert U.model_family("claude-sonnet-5") == "sonnet"
+    assert U.model_family("claude-fable-5") == "fable"
     assert U.model_family("—") == "(未标注)"
     assert U.model_family(None) == "(未标注)"
 
@@ -155,6 +181,17 @@ def test_rollup_splits_by_model(tmp_path):
 
     assert "按模型汇总" in md
     assert "| haiku |" in md and "| opus |" in md
+
+
+def test_model_rollup_prices_fable_main_session(tmp_path):
+    p = _write(tmp_path, "main.jsonl", [
+        _terminal("main", model="claude-fable-5", agent=None),
+    ])
+
+    md = U.render([U.usage_of(p, role="main")])
+
+    assert "| fable |" in md
+    assert "估算成本" in md
 
 
 def test_transcripts_glob_mode(tmp_path):
@@ -218,3 +255,91 @@ def test_collect_dir_and_glob_agree(tmp_path):
 
     assert [(r["agent"], r["weighted_in"]) for r in front] == \
            [(r["agent"], r["weighted_in"]) for r in back]
+
+
+# ── Wave 3:主会话 + 失败/重试/废弃 + USD ─────────────────────────────────────
+
+
+def test_failed_transcript_marks_nonzero_work_discarded(tmp_path):
+    p = _write(tmp_path, "agent-failed.jsonl", [
+        _row("partial", 200, 1_000, 500),
+        _error(),
+    ])
+
+    got = U.usage_of(p)
+
+    assert got["status"] == "FAILED"
+    assert got["failure_count"] == 1
+    assert got["retry_count"] == 0
+    assert got["discarded"] is True
+    assert got["discarded_usd"] == got["estimated_usd"]
+    assert got["estimated_usd"] > 0
+
+
+def test_failure_followed_by_terminal_response_is_retried_success(tmp_path):
+    p = _write(tmp_path, "agent-retried.jsonl", [
+        _error(),
+        _terminal("ok"),
+    ])
+
+    got = U.usage_of(p)
+
+    assert got["status"] == "RETRIED_SUCCEEDED"
+    assert got["failure_count"] == 1
+    assert got["retry_count"] == 1
+    assert got["discarded"] is False
+
+
+def test_role_is_explicit_and_main_agent_name_is_not_fake_subagent(tmp_path):
+    p = _write(tmp_path, "session.jsonl", [_terminal("done", agent=None)])
+    got = U.usage_of(p, role="main")
+    assert got["role"] == "main"
+    assert got["agent"] == "(主会话)"
+
+
+def test_collect_session_includes_main_and_nested_subagents(tmp_path):
+    slug = tmp_path / "project"
+    session_id = "abc-123"
+    slug.mkdir()
+    _write(slug, f"{session_id}.jsonl", [_terminal("main", agent=None)])
+    wf = slug / session_id / "subagents" / "workflows" / "wf_x"
+    wf.mkdir(parents=True)
+    _write(wf, "agent-a.jsonl", [_terminal("sub", agent="l4-card")])
+
+    rows = U.collect_session(session_id, projects_root=tmp_path)
+
+    assert len(rows) == 2
+    assert {r["role"] for r in rows} == {"main", "subagent"}
+    assert {r["agent"] for r in rows} == {"(主会话)", "l4-card"}
+
+
+def test_build_ledger_separates_roles_failures_and_cost(tmp_path):
+    main = _write(tmp_path, "main.jsonl", [_terminal("main", agent=None)])
+    failed = _write(tmp_path, "agent-failed.jsonl", [
+        _row("partial", 100, 500, 100),
+        _error(),
+    ])
+    rows = [
+        U.usage_of(main, role="main"),
+        U.usage_of(failed, role="subagent"),
+    ]
+
+    ledger = U.build_ledger(rows, source="fixture")
+
+    assert ledger["schema_version"] == 1
+    assert ledger["totals"]["transcripts"] == 2
+    assert ledger["totals"]["main_transcripts"] == 1
+    assert ledger["totals"]["failure_count"] == 1
+    assert ledger["totals"]["discarded_usd"] > 0
+    assert ledger["totals"]["estimated_usd"] > ledger["totals"]["discarded_usd"]
+
+
+def test_render_full_session_reports_usd_and_no_main_coverage_gap(tmp_path):
+    p = _write(tmp_path, "main.jsonl", [_terminal("main", agent=None)])
+    rows = [U.usage_of(p, role="main")]
+
+    md = U.render(rows, sub_dir="fixture")
+
+    assert "估算成本" in md
+    assert "主会话" in md
+    assert "主会话自身的消耗不在内" not in md
