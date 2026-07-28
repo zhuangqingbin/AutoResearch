@@ -77,7 +77,7 @@ def test_assemble_refreshes_ledgers_whose_input_it_just_wrote():
     from pathlib import Path as _P
     from autoresearch.scan.post_run import SUBSCRIPTIONS
 
-    src = _P("autoresearch/scan/assemble.py").read_text(encoding="utf-8")
+    src = _P("autoresearch/scan/publisher.py").read_text(encoding="utf-8")
     assert "safe_emit_finalization_events" in src
     assert "safe_run_consumers" in src
     run_consumers = SUBSCRIPTIONS["RUN_FINALIZED"]
