@@ -18,6 +18,11 @@ def test_keep_whitelist_contains_bought():
     assert "bought" in retro._KEEP
 
 
+def test_keep_whitelist_contains_next_open_tradability_facts():
+    assert "buyable" in retro._KEEP
+    assert "tradable" in retro._KEEP
+
+
 def test_backfill_bought_idempotent(tmp_path):
     p = _fake_attr_csv(tmp_path, "2026-07-08", "Overweight")
     n1 = retro.backfill_bought(scan_root=tmp_path)

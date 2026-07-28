@@ -456,7 +456,8 @@ def pending_days(today: str | None = None, scan_root: Path | None = None,
 
 # ───────────────────────── 编排:attribute / retro_input / done ─────────────────────────
 
-_KEEP = ["code", "name", "industry", "bucket", "winner", "news_pop", "fwd_1_oo", "fwd_2_oc", "hi_2_oc",
+_KEEP = ["code", "name", "industry", "bucket", "winner", "news_pop",
+         "buyable", "tradable", "fwd_1_oo", "fwd_2_oc", "hi_2_oc",
          "fwd_5_oc", "fwd_10_oc", "hi_10_oc", "winner_5", "bucket_5",
          "gap_d1", "rank", "recalled_flag", "composite", "score_momentum", "score_fund_main",
          "score_chip", "pct_60d", "main_net_ratio", "winner_rate", "price_to_cost", "rsi6", "rating", "bought",
@@ -554,6 +555,10 @@ def attribute(date: str, scan_root: Path | None = None, report_root: Path | None
     outdir = sdir / "retro"
     outdir.mkdir(parents=True, exist_ok=True)
     attr[[c for c in _KEEP if c in attr.columns]].to_csv(outdir / "attribution.csv", index=False)
+    from autoresearch.learning.rejection_attribution import (
+        write_rejection_attribution,
+    )
+    write_rejection_attribution(sdir, attr)
     pairs = build_retro_pairs(attr)                  # M1·同日 fail/success 对(成熟日才非空)
     if not pairs.empty:                              # presence-gated:未成熟日不落文件
         pairs.to_csv(outdir / "_retro_pairs.csv", index=False)
