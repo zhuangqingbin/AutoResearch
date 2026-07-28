@@ -79,3 +79,12 @@ def test_scan_gate_branches_read_verified_stage_results():
     assert "g2.metrics.finalists" in src
     assert "g1.ok" not in src
     assert "g2.ok" not in src
+
+
+def test_l4_workflow_records_success_and_failure_stage_results():
+    src = (WF / "l4-stock.js").read_text(encoding="utf-8")
+    assert "autoresearch.scan.stock_stage l4" in src
+    assert "card_agent_exception" in src
+    assert "card_no_return" in src
+    assert "catch (error)" in src
+    assert "throw error" in src

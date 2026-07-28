@@ -11,6 +11,7 @@ import json
 import pandas as pd
 
 from autoresearch.scan.agents.l4_card import dispatch_plan
+from autoresearch.scan.stage_result import load_stage_result
 
 _DATE = "2026-07-07"
 
@@ -32,10 +33,15 @@ def _mk(root):
 
 
 def test_dispatch_plan(tmp_path):
-    _mk(tmp_path)
+    scan = _mk(tmp_path)
     res = dispatch_plan(_DATE, root=tmp_path / "context" / "scan")
     assert set(res["dispatch"]) == {"600584", "000063"}
     assert res["reused"] == [{"code": "000062", "rating": "Hold"}]
+    stage = load_stage_result(
+        scan / "stage_results" / "l4_000062.json"
+    )
+    assert stage.status == "SUCCEEDED"
+    assert stage.metrics["reused"] is True
 
 
 def test_dispatch_plan_no_finalists(tmp_path):

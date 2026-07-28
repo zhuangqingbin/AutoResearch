@@ -896,6 +896,11 @@ def write_finalists(date: str, budget: int = 30, root: Path | None = None,
     bench_n = int(len(bench))
     bench.to_csv(scan_dir / "_l3_bench.csv", index=False)
     fin.to_csv(scan_dir / "finalists.csv", index=False)
+    import contextlib
+    with contextlib.suppress(Exception):
+        from autoresearch.scan.stock_stage import record_l3_results
+
+        record_l3_results(scan_dir)
     return {"judged_n": int(len(jd)), "finalists_n": int(len(fin)),
             "finalist_n": finalist_n, "bench_n": bench_n}
 

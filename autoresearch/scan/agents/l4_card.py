@@ -820,6 +820,11 @@ def dispatch_plan(date: str, root: Path | str | None = None) -> dict:
         details = scan_dir / "details" / f"{code6}.md"
         if details.exists():
             reused.append({"code": code6, "rating": parse_rating(details.read_text(encoding="utf-8"))})
+            import contextlib
+            with contextlib.suppress(Exception):
+                from autoresearch.scan.stock_stage import record_l4_result
+
+                record_l4_result(scan_dir, code6, reused=True)
         else:
             dispatch.append(code6)   # 两者皆无(异常):兜底走正常派发,不静默丢票
             meta[code6] = {"name": _cell(r, "name"), "sector": _cell(r, "sector"),

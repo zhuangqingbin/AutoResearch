@@ -21,9 +21,15 @@ const cfg = A.cfg || {}
 const pinned = !!A.pinned   // dispatch-plan meta 透传;缺省 false = 现行为(parity)
 const dossierSummary = String(A.dossierSummary || '').trim()   // dispatch-plan meta 透传;缺省空 = parity(M-2:全函数防御,同款 !!A.pinned)
 const SD = `context/scan/${date}`
+const R = 'uv run --no-sync python -m'
 const CARD = { type: 'object', required: ['code', 'rating'],
   properties: { code: { type: 'string' }, rating: { type: 'string' },
     conviction: { type: 'number' }, proposal: { type: 'string' } } }
+const recordL4 = (errorCode = null) => agent(
+  `在仓库根目录执行:\`${R} autoresearch.scan.stock_stage l4 ${date} ${code}` +
+  `${errorCode ? ` --error ${errorCode}` : ''}\`。只回报退出码,不要判断或解释。`,
+  { agentType: 'general-purpose', model: 'haiku', effort: 'low', label: `stage:${code}` })
+  .catch((e) => { log(`⚠️ L4 StageResult 写入失败:${e && e.message ? e.message : e}`); return null })
 
 // ── Intel(结构性盲:prompt 只给码/名/行业/日期,防确认偏误)────────────────────
 phase('Intel')
@@ -47,12 +53,21 @@ if (intelOn) {
 
 // ── Card ────────────────────────────────────────────────────────
 phase('Card')
-const card = await agent(
-  `执行 ${SD}/_l4_prompt_${code}.md:先读整个任务包,再按其指令做渐进深度 DD + 早停,写决策卡到 ${SD}/details/${code}.md。最后返回该卡最终五档评级与 FINAL 行(code / rating / conviction / proposal=FINAL TRANSACTION PROPOSAL 的值,如 "SELL")。`,
-  { agentType: 'l4-card', effort: cfg.agents?.l4_card?.effort ?? 'xhigh',
-    ...(cfg.agents?.l4_card?.model ? { model: cfg.agents.l4_card.model } : {}),
-    label: `card:${code}`, phase: 'Card', schema: CARD })
-if (!card) return { code, name, rating: null, final: null, error: 'card 无返回 —— 单股失败只废单股,主会话单独重跑本 workflow 即可' }
+let card
+try {
+  card = await agent(
+    `执行 ${SD}/_l4_prompt_${code}.md:先读整个任务包,再按其指令做渐进深度 DD + 早停,写决策卡到 ${SD}/details/${code}.md。最后返回该卡最终五档评级与 FINAL 行(code / rating / conviction / proposal=FINAL TRANSACTION PROPOSAL 的值,如 "SELL")。`,
+    { agentType: 'l4-card', effort: cfg.agents?.l4_card?.effort ?? 'xhigh',
+      ...(cfg.agents?.l4_card?.model ? { model: cfg.agents.l4_card.model } : {}),
+      label: `card:${code}`, phase: 'Card', schema: CARD })
+} catch (error) {
+  await recordL4('card_agent_exception')
+  throw error
+}
+if (!card) {
+  await recordL4('card_no_return')
+  return { code, name, rating: null, final: null, error: 'card 无返回 —— 单股失败只废单股,主会话单独重跑本 workflow 即可' }
+}
 // pr_20260717_005:同一字段两种标度(07-14 实测一只回 0.62,其余 8 只是 60–78 整数)。
 // 下游 force_full_card 判据是 conviction>=70 —— 0.62 会被当成极低确信而静默失效。
 // <=1 视为比例口径,归一到 0-100;>1 原样(0-100 本身不会落进 (0,1])。
@@ -106,5 +121,5 @@ if (trigger) {
   }
   log(`🎭 复核 ✓ ${code} [${trigger}] runs=${JSON.stringify(ratings)} → 终评 ${final}${degraded ? '(degraded,报告强制人裁展示)' : ''}`)
 }
-
+await recordL4()
 return { code, name, rating: card.rating, final, conviction: card.conviction }

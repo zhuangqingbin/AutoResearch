@@ -538,7 +538,7 @@ git commit -m "feat(scan): branch workflow on stage results"
 
 ### Task 6: Per-stock L3/L4 StageResult
 
-- [ ] **Step 1: Write failing stock-stage tests**
+- [x] **Step 1: Write failing stock-stage tests**
 
 Create `tests/scan/test_stock_stage.py`:
 
@@ -564,7 +564,7 @@ def test_record_l4_missing_card_is_failed_not_inferred_success(tmp_path):
     assert result.status == "FAILED"
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run:
 
@@ -572,7 +572,7 @@ Run:
 uv run --no-sync python -m pytest tests/scan/test_stock_stage.py -q
 ```
 
-- [ ] **Step 3: Implement stock result writers**
+- [x] **Step 3: Implement stock result writers**
 
 Create `autoresearch/scan/stock_stage.py`:
 
@@ -592,7 +592,7 @@ def record_l4_result(
 
 Use existing parsers/read models; do not reimplement rating or early-stop rules.
 
-- [ ] **Step 4: Wire producers and Workflow**
+- [x] **Step 4: Wire producers and Workflow**
 
 - After deterministic finalists writing, call `record_l3_results()`.
 - Record already-reused L4 cards during dispatch-plan generation with
@@ -603,7 +603,7 @@ Use existing parsers/read models; do not reimplement rating or early-stop rules.
 - A completed stock may be retried independently; semantic StageResult
   idempotency preserves identical snapshots.
 
-- [ ] **Step 5: Verify**
+- [x] **Step 5: Verify**
 
 Run:
 
@@ -614,7 +614,7 @@ uv run --no-sync python -m pytest \
   tests/test_agent_defs.py -q
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add autoresearch/scan/stock_stage.py \
