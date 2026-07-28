@@ -1300,6 +1300,17 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
         with contextlib.suppress(Exception):           # 扫描日记刷新(失败不阻发布)
             from autoresearch.learning import journal as _journal
             _journal.main()
+        # Wave7 B′-d:**输入在本函数里刚写出来的账本,必须在这里再刷一次**。
+        # 这两个账本原先只在 prelude(跑前)刷,而它们的输入 `_early_stop.json`(上面
+        # `write_early_stop`)与 `gate_fires.csv`(`_self_review_banner` 里 `dump_gate_fires`)
+        # 都是本次 assemble 才落盘的 —— 于是账本恒定落后一个 run:2026-07-27 跑完 4 张早停卡,
+        # `earlystop_ledger.md` 仍写着「无早停记录」,Wave6 R3 验收④ 因此记 ✗。
+        # (journal/buy_ledger 读 finalists.csv 属另一类:它们本就是聚合历史,跑前刷拿到的是
+        # 截至昨日的全量,设计如此,不在此列。)幂等,失败不阻发布。
+        for _mod_name in ("earlystop_ledger", "gate_ledger"):
+            with contextlib.suppress(Exception):
+                import importlib
+                importlib.import_module(f"autoresearch.learning.{_mod_name}").main()
         with contextlib.suppress(Exception):           # P0-1(c):判例索引增量建库(precedents.build_index,失败不阻发布)
             from autoresearch.learning.precedents import build_index
             res = build_index()
