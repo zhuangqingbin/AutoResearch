@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import importlib
 import json
+import shutil
 import sys
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
@@ -40,6 +42,8 @@ SUBSCRIPTIONS = {
     "DOSSIER_DELTA_READY": {"dossier_delta"},
 }
 ConsumerHandler = Callable[[OutboxEvent, Path], object]
+OBSERVATION_START = "<!-- run-observation:start -->"
+OBSERVATION_END = "<!-- run-observation:end -->"
 
 
 @dataclass(frozen=True)
@@ -386,6 +390,273 @@ def safe_run_consumers(
         return None
 
 
+def _atomic_json(path: Path, payload: dict) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f"{path.name}.tmp")
+    temp.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temp.replace(path)
+    return path
+
+
+def _load_json(path: Path) -> dict:
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path.name} root must be an object")
+    return raw
+
+
+def _run_identity_and_budgets(scan: Path) -> tuple[str, dict | None]:
+    path = scan / "run_contract.json"
+    if not path.exists():
+        return scan.name, None
+    from autoresearch.scan.run_contract import load_run_contract
+
+    contract = load_run_contract(path)
+    return contract.run_id, contract.stage_budgets
+
+
+def _bool(value: object) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes"}
+
+
+def _effectiveness(scan: Path, estimated_usd: float | None) -> dict:
+    """成本分母只读领域事实；缺成熟前向样本时诚实为零/`None`。"""
+    decisions = {}
+    decision_path = scan / "decision_records.json"
+    if decision_path.exists():
+        from autoresearch.scan.decision_record import load_decision_records
+
+        decisions = load_decision_records(decision_path)
+    final_buys = sum(record.proposal == "BUY" for record in decisions.values())
+    mature_codes: set[str] = set()
+    correct_rejections = 0
+    retro_path = scan / "retro" / "rejection_attribution.csv"
+    if retro_path.exists():
+        with retro_path.open(encoding="utf-8", newline="") as handle:
+            for row in csv.DictReader(handle):
+                code = str(row.get("code") or "").zfill(6)
+                mature = _bool(row.get("mature"))
+                if mature and code in decisions:
+                    mature_codes.add(code)
+                try:
+                    excess = float(row.get("excess_2") or "")
+                except (TypeError, ValueError):
+                    excess = None
+                if (
+                    mature
+                    and _bool(row.get("buyable"))
+                    and row.get("first_rejection_stage") != "BOUGHT"
+                    and excess is not None
+                    and excess <= -0.02
+                ):
+                    correct_rejections += 1
+    denominators = {
+        "mature_decision_records": len(mature_codes),
+        "final_buy_candidates": final_buys,
+        "verified_correct_rejections": correct_rejections,
+    }
+
+    def per(name: str) -> float | None:
+        denominator = denominators[name]
+        if estimated_usd is None or denominator == 0:
+            return None
+        return round(float(estimated_usd) / denominator, 6)
+
+    return {
+        "denominators": denominators,
+        "usd_per_mature_decision_record": per("mature_decision_records"),
+        "usd_per_final_buy_candidate": per("final_buy_candidates"),
+        "usd_per_verified_correct_rejection": per(
+            "verified_correct_rejections"
+        ),
+        "verified_correct_rejection_definition": (
+            "mature & buyable & rejected & excess_2<=-2pp"
+        ),
+    }
+
+
+def _money(value: object) -> str:
+    return "—" if value is None else f"${float(value):.4f}"
+
+
+def render_run_observation(observation: dict) -> str:
+    """预算/成本视图；`—` 与 UNMEASURED 永不格式化成零。"""
+    maturity = observation.get("maturity") or {}
+    effectiveness = observation.get("effectiveness") or {}
+    denominators = effectiveness.get("denominators") or {}
+    cache = observation.get("cache_hit_rate")
+    wall = observation.get("interactive_wall_s")
+    lines = [
+        "## 💸 成本与时延观测",
+        "",
+        f"- 计量:{observation.get('measurement_status', 'UNMEASURED')} · "
+        f"预算状态:{observation.get('status', 'DEGRADED')} · "
+        f"晋升证据:{maturity.get('status', 'IMMATURE')}",
+        f"- 当前估算成本:{_money(observation.get('estimated_usd'))}"
+        "（Claude API 标准公开价估算，不等于实际账单） · "
+        + (
+            f"cache 命中率:{float(cache):.1%}"
+            if cache is not None
+            else "cache 命中率:—"
+        )
+        + " · "
+        + (f"交互墙钟:{int(wall)}s" if wall is not None else "交互墙钟:—"),
+    ]
+    if maturity.get("status") in {"PASS", "FAIL"}:
+        lines.append(
+            f"- {maturity['n_real_scans']} 次真实扫描:成本中位 "
+            f"{_money(maturity.get('median_cost_usd'))} · "
+            f"墙钟 P50/P90 {maturity.get('p50_minutes', '—')}/"
+            f"{maturity.get('p90_minutes', '—')} 分钟 · "
+            f"cache 中位 {float(maturity.get('median_cache_hit_rate')):.1%}"
+        )
+    else:
+        lines.append(
+            f"- 成熟度:{maturity.get('reason', '未计量')}；"
+            f"真实扫描 {maturity.get('n_real_scans', 0)}/"
+            f"{maturity.get('required_real_scans', 10)}，不以单次最佳 run 晋升。"
+        )
+    lines += [
+        "",
+        "| 成本效率分母 | 数量 | USD/单位 |",
+        "|---|---:|---:|",
+        f"| 成熟 DecisionRecord | {denominators.get('mature_decision_records', 0)}"
+        f" | {_money(effectiveness.get('usd_per_mature_decision_record'))} |",
+        f"| 最终 BUY 候选 | {denominators.get('final_buy_candidates', 0)}"
+        f" | {_money(effectiveness.get('usd_per_final_buy_candidate'))} |",
+        f"| 已验证正确拒绝 | {denominators.get('verified_correct_rejections', 0)}"
+        f" | {_money(effectiveness.get('usd_per_verified_correct_rejection'))} |",
+    ]
+    warnings = observation.get("warnings") or []
+    if warnings:
+        lines += ["", "> ⚠️ " + "；".join(str(value) for value in warnings)]
+    lines += [
+        "",
+        "_预算只告警/降级，不截断候选、卡片、查询或阶段；0 BUY 不会被成本分母改写。_",
+    ]
+    return "\n".join(lines)
+
+
+def inject_run_observation_section(summary: str, markdown: str) -> str:
+    managed = f"{OBSERVATION_START}\n{markdown.strip()}\n{OBSERVATION_END}"
+    if OBSERVATION_START in summary and OBSERVATION_END in summary:
+        before, rest = summary.split(OBSERVATION_START, 1)
+        _, after = rest.split(OBSERVATION_END, 1)
+        return before.rstrip() + "\n\n" + managed + after
+    marker = "\n## 诚实局限"
+    if marker in summary:
+        before, after = summary.split(marker, 1)
+        return before.rstrip() + "\n\n" + managed + "\n" + marker + after
+    return summary.rstrip() + "\n\n" + managed + "\n"
+
+
+def publish_run_observation(
+    scan_dir: Path | str,
+    *,
+    report_dir: Path | str | None = None,
+    usage_path: Path | str | None = None,
+    timing_path: Path | str | None = None,
+    budgets: dict | None = None,
+    real_scan: bool | None = None,
+    phase: int = 1,
+) -> dict:
+    """从 canonical cost/timing JSON 发布观测；不导入也不写任何评级逻辑。"""
+    scan = Path(scan_dir)
+    usage_file = Path(usage_path) if usage_path else scan / "_token_usage.json"
+    timing_file = Path(timing_path) if timing_path else scan / "_stage_timing.json"
+    external_warnings: list[str] = []
+    try:
+        usage = _load_json(usage_file) if usage_file.exists() else {}
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        usage = {}
+        external_warnings.append(f"成本 JSON 损坏:{type(exc).__name__}")
+    try:
+        timing = _load_json(timing_file) if timing_file.exists() else {}
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        timing = {}
+        external_warnings.append(f"时延 JSON 损坏:{type(exc).__name__}")
+    run_id, contract_budgets = _run_identity_and_budgets(scan)
+    policy = budgets if budgets is not None else contract_budgets
+    if real_scan is None:
+        real_scan = scan.resolve() == (
+            Path("context/scan") / scan.name
+        ).resolve()
+    from autoresearch.scan.budget import evaluate_history, observe_run
+
+    observation = observe_run(
+        scan,
+        usage,
+        timing,
+        budgets=policy,
+        run_id=run_id,
+        real_scan=real_scan,
+    )
+    observation["warnings"] = list(dict.fromkeys(
+        [*observation["warnings"], *external_warnings]
+    ))
+    history = []
+    for path in sorted(scan.parent.glob("*/_budget_observation.json")):
+        try:
+            history.append(_load_json(path))
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
+    observation["maturity"] = evaluate_history(
+        history,
+        phase=phase,
+        budgets=policy,
+    )
+    observation["effectiveness"] = _effectiveness(
+        scan,
+        observation.get("estimated_usd"),
+    )
+    observation["markdown"] = render_run_observation(observation)
+    _atomic_json(scan / "_budget_observation.json", observation)
+    from autoresearch.scan.stage_result import safe_record_stage_result
+
+    safe_record_stage_result(
+        scan,
+        stage="budget",
+        status=observation["status"],
+        artifacts=["budget_observation"],
+        metrics={
+            "truncated": False,
+            "measurement_status": observation["measurement_status"],
+            "estimated_usd": observation["estimated_usd"],
+            "interactive_wall_s": observation["interactive_wall_s"],
+            "cache_hit_rate": observation["cache_hit_rate"],
+            "maturity_status": observation["maturity"]["status"],
+            "denominators": observation["effectiveness"]["denominators"],
+        },
+        warnings=observation["warnings"],
+        error=None,
+    )
+    if report_dir is not None:
+        report = Path(report_dir)
+        summary = report / "summary.md"
+        if summary.exists():
+            summary.write_text(
+                inject_run_observation_section(
+                    summary.read_text(encoding="utf-8"),
+                    observation["markdown"],
+                ),
+                encoding="utf-8",
+            )
+        from autoresearch.scan.artifacts import write_artifact_index
+
+        index = write_artifact_index(scan, report_dir=report)
+        trace = report / "trace"
+        trace.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(index, trace / "artifact_index.json")
+        shutil.copy2(
+            scan / "_budget_observation.json",
+            trace / "_budget_observation.json",
+        )
+    return observation
+
+
 def _resolve_scan(value: str) -> Path:
     explicit = Path(value)
     return explicit if explicit.exists() else Path("context/scan") / value
@@ -399,12 +670,33 @@ def main(argv: list[str] | None = None) -> int:
     run_parser = sub.add_parser("run")
     run_parser.add_argument("--consumer", action="append", default=[])
     run_parser.add_argument("--retry-failed", action="store_true")
+    observe_parser = sub.add_parser("observe")
+    observe_parser.add_argument("--usage", default=None)
+    observe_parser.add_argument("--timing", default=None)
+    observe_parser.add_argument("--report-dir", default=None)
+    observe_parser.add_argument("--phase", type=int, choices=[1, 2], default=1)
     args = parser.parse_args(argv)
     scan = _resolve_scan(args.scan)
     try:
         if args.command == "status":
             result = consumer_status(scan)
             print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            return 0
+        if args.command == "observe":
+            result = publish_run_observation(
+                scan,
+                report_dir=args.report_dir,
+                usage_path=args.usage,
+                timing_path=args.timing,
+                phase=args.phase,
+            )
+            print(json.dumps({
+                "ok": True,
+                "status": result["status"],
+                "measurement_status": result["measurement_status"],
+                "maturity": result["maturity"],
+                "observation": str(scan / "_budget_observation.json"),
+            }, ensure_ascii=False, sort_keys=True))
             return 0
         result = run_consumers(
             scan,

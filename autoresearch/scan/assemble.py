@@ -1409,6 +1409,25 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
     (out_base / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
     md = build_summary(scan_dir, analysis_date, hhmm, folder, pinned_path=pinned_path)
+    try:
+        # usage_harvest 通常在 GATE4 后才完成：此刻无 JSON 就明确落 UNMEASURED；
+        # CP7 随后用 post_run observe 原位替换本 managed section。
+        from autoresearch.scan.post_run import (
+            inject_run_observation_section,
+            publish_run_observation,
+        )
+
+        observation = publish_run_observation(scan_dir, real_scan=is_real)
+        md = inject_run_observation_section(md, observation["markdown"])
+    except Exception as exc:  # noqa: BLE001 — 观测控制面不能阻断报告
+        from autoresearch.scan.post_run import inject_run_observation_section
+
+        md = inject_run_observation_section(
+            md,
+            "## 💸 成本与时延观测\n\n"
+            f"- 计量:UNMEASURED · 观测控制面异常:{type(exc).__name__}\n\n"
+            "_未计量不等于零成本；该异常不改变任何评级或候选。_",
+        )
     summary_path = out_base / "summary.md"
     summary_path.write_text(md, encoding="utf-8")
     from autoresearch.scan.stage_result import safe_record_stage_result
@@ -1474,6 +1493,13 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
             for outbox_file in sorted(outbox_source.glob("*.json")):
                 shutil.copy2(outbox_file, outbox_trace / outbox_file.name)
                 n_pipe += 1
+        budget_source = scan_dir / "_budget_observation.json"
+        if budget_source.exists():
+            shutil.copy2(
+                budget_source,
+                out_base / "trace" / "_budget_observation.json",
+            )
+            n_pipe += 1
         artifact_index_path = write_artifact_index(scan_dir, report_dir=out_base)
         trace_dir = out_base / "trace"
         trace_dir.mkdir(parents=True, exist_ok=True)

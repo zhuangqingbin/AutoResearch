@@ -172,9 +172,18 @@ def test_artifact_index_is_written_and_published(published):
     for name in (
         "run_contract", "l1_full", "l2", "finalists", "l4_cards",
         "final_ratings", "decision_records", "outbox_events",
-        "consumer_state", "gate_fires", "run_health", "summary", "manifest",
+        "consumer_state", "gate_fires", "run_health", "budget_observation",
+        "summary", "manifest",
     ):
         assert rows[name]["status"] == "PRESENT", name
+
+
+def test_summary_is_explicit_when_current_run_cost_is_not_yet_measured(published):
+    text = published["summary_path"].read_text(encoding="utf-8")
+    assert "## 💸 成本与时延观测" in text
+    assert "计量:UNMEASURED" in text
+    assert "成本 JSON 未计量" in text
+    assert "$0" not in text
 
 
 def test_trace_run_health_is_final_refresh(published):
@@ -215,7 +224,11 @@ def test_stage_results_are_published_and_indexed(published):
         (published["scan_dir"] / "run_health.json").read_text(encoding="utf-8")
     )
     assert health["stage_results"]["status"] == "OK"
-    assert health["stage_results"]["counts"] == {"FAILED": 1, "SUCCEEDED": 1}
+    assert health["stage_results"]["counts"] == {
+        "DEGRADED": 1,
+        "FAILED": 1,
+        "SUCCEEDED": 1,
+    }
     assert health["stage_results"]["failed"] == ["gate4"]
     assert health["decision_records"]["status"] == "OK"
     assert health["decision_records"]["n_records"] == 4

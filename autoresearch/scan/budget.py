@@ -92,8 +92,11 @@ def observe_run(
     warnings: list[str] = []
     hit = usage_ledger.get("cache_hit_rate")
     estimated = (usage_ledger.get("totals") or {}).get("estimated_usd")
+    measured = usage_ledger.get("schema_version") == 1 and estimated is not None
     total_wall = _wall_seconds(timing, "总计")
 
+    if not measured:
+        warnings.append("成本 JSON 未计量")
     if hit is None:
         warnings.append("cache_hit_rate 未计量")
     elif float(hit) < policy["cache_hit_min"]:
@@ -128,6 +131,7 @@ def observe_run(
         "run_id": run_id or scan.name,
         "analysis_date": scan.name,
         "real_scan": bool(real_scan),
+        "measurement_status": "MEASURED" if measured else "UNMEASURED",
         "status": status,
         "truncated": False,
         "estimated_usd": None if estimated is None else float(estimated),

@@ -34,6 +34,10 @@ def test_index_hashes_scan_and_report_artifacts(tmp_path):
         '{"schema_version":1,"tasks":{}}',
         encoding="utf-8",
     )
+    (scan / "_budget_observation.json").write_text(
+        '{"schema_version":1,"status":"SUCCEEDED"}',
+        encoding="utf-8",
+    )
     (scan / "outbox").mkdir()
     (scan / "outbox" / "events.json").write_text(
         '{"events":[]}',
@@ -81,6 +85,7 @@ def test_index_hashes_scan_and_report_artifacts(tmp_path):
     assert len(rows["stage_results"]["content_hash"]) == 64
     assert rows["decision_records"]["status"] == "PRESENT"
     assert rows["l4_task_book"]["status"] == "PRESENT"
+    assert rows["budget_observation"]["status"] == "PRESENT"
     assert len(rows["decision_records"]["content_hash"]) == 64
     assert rows["outbox_events"]["status"] == "PRESENT"
     assert rows["consumer_state"]["status"] == "PRESENT"
@@ -88,7 +93,7 @@ def test_index_hashes_scan_and_report_artifacts(tmp_path):
     assert rows["rejection_attribution"]["status"] == "PRESENT"
     assert rows["abstention_verdict"]["status"] == "PRESENT"
     assert rows["l3_audit_candidates"]["status"] == "PRESENT"
-    assert len(rows) == 27
+    assert len(rows) == 28
     assert rows["finalists"]["status"] == "MISSING"
     assert rows["finalists"]["content_hash"] is None
     assert rows["market_pack"]["input_hash"] is None
