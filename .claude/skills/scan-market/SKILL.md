@@ -21,7 +21,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 | **L4** | 研究 | 一只=一个Opus subagent渐进深度+早停 | 决策卡(P0简报→P1–P3表面→主早停②→P4陷阱核→P5;`rubric_rating`派生评级) | ~29卡 | 大头 |
 | **L5** | 整合 | 确定性 | summary(逐阶段表+token估算)+buy-list+漏斗溯源 | 1份 | 0 |
 
-本 skill 是**编排器**:确定性层(零 LLM)= L0/L1/L2(`autoresearch.scan.universe`,L2=`l2_stratify.select_l2` 分层多样性采样,ML-free)+ L5(`autoresearch.scan.assemble`),纯 pandas 不编数、不预测;AI 判断层 = L3(holistic 单 agent)+ L4(逐只决策卡,委托 **stock-research lite 档**——一只 finalist = 一个 Opus subagent 渐进深度 DD + 早停,P0简报定向→P1–P3表面→主早停②→P4陷阱核→③击杀→P5满卡),subagent 只回传紧凑结果。
+本 skill 是**编排器**:确定性层(零 LLM)= L0/L1/L2(`autoresearch.scan.universe`,L2=`l2_stratify.select_l2` 分层多样性采样,ML-free)+ L5(`autoresearch.scan.assemble` 兼容 CLI，内部由 `publisher`→`report_sections` / `decision_finalize` / `post_run` 分责),纯 pandas 不编数、不预测;AI 判断层 = L3(holistic 单 agent)+ L4(逐只决策卡,委托 **stock-research lite 档**——一只 finalist = 一个 Opus subagent 渐进深度 DD + 早停,P0简报定向→P1–P3表面→主早停②→P4陷阱核→③击杀→P5满卡),subagent 只回传紧凑结果。
 
 ## 何时用 / 不用
 - ✅ 用户想**一次扫全市场**、挖"值得买的票 / 强势板块"(A股)。
@@ -154,6 +154,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 - **中间名单全 staging**(L2_gbdt / L3_evidence / finalists),L5 发布到 `trace/` 留溯源;re-run 友好。
 - **诚实收尾**:召回/粗排是启发式 + fwd_2_oc 超短主尺 IC 校准/训练(2026-07-10 裁定;随 regime 漂移);L3/L4 是 Claude 推理产出;"仅供研究,非投资建议"。
 - **性能开关不拥有评级**:`performance.streaming_l4` 默认 true；`stable_context_blocks` 默认 false；`sector_brief_mode` 默认 `all`。回滚分别设 `streaming_l4=false`、`stable_context_blocks=false`、`sector_brief_mode="all"`；任何开关都不得改 finalist cap、rubric 三门、`fwd_2_oc` 或 BUY 数量。
+- **模块归属(Wave 4)**:`agents/l3_select.py`、`agents/l4_card.py`、`scan/assemble.py` 仅保留旧 import/CLI 兼容；新代码分别直连 `scan/l3/*`、`scan/l4/*`、`decision_finalize`、`report_sections`、`publisher`、`post_run`。不要把业务逻辑重新塞回适配器，也不要让 L3/L4 反向 import reporting。
 
 ## 常见坑
 - 必须 `uv run --no-sync`(不误删 venv-only 的 akshare/tushare/lightgbm)、仓库根目录。

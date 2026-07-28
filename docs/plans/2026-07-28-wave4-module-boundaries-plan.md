@@ -1,6 +1,8 @@
 # Wave 4 Module-Boundary Extraction Implementation Plan
 
-> **Status:** In progress on 2026-07-28.
+> **Status:** Software complete on 2026-07-28. Acceptance:
+> `1918 passed`, two pre-existing pandas `FutureWarning`s; 162 package modules
+> import with zero failures.
 >
 > **Execution:** Directly on `main`, explicitly authorized by the user. Apply
 > `superpowers:test-driven-development` to every extraction and preserve the old
@@ -50,62 +52,74 @@ tests, skills, and historical scripts keep working.
 
 ## Task 1: Boundary contracts and cycle guards
 
-- [ ] Add failing import/parity tests for every target module.
-- [ ] Assert old imports resolve to the exact new implementation objects.
-- [ ] Assert adapters stay below 250 lines and contain no implementation
+- [x] Add failing import/parity tests for every target module.
+- [x] Assert old imports resolve to the exact new implementation objects.
+- [x] Assert adapters stay below 250 lines and contain no implementation
   function body longer than the CLI dispatch.
-- [ ] Assert L3/L4 domain modules do not import `report_sections`, `publisher`,
+- [x] Assert L3/L4 domain modules do not import `report_sections`, `publisher`,
   or `assemble`.
-- [ ] Assert Workflow sources contain scheduling only and no rating/gate
+- [x] Assert Workflow sources contain scheduling only and no rating/gate
   function definitions.
 
 ## Task 2: Extract L4
 
-- [ ] Move parser and rubric pure functions first.
-- [ ] Move context, prompt, dispatch, and producer functions.
-- [ ] Replace `agents/l4_card.py` with compatibility exports plus unchanged CLI.
-- [ ] Run all L4/card/dispatch/context/producer tests and prompt goldens.
-- [ ] Commit the L4 boundary independently.
+- [x] Move parser and rubric pure functions first.
+- [x] Move context, prompt, dispatch, and producer functions.
+- [x] Replace `agents/l4_card.py` with compatibility exports plus unchanged CLI.
+- [x] Run all L4/card/dispatch/context/producer tests and prompt goldens.
+- [x] Commit the L4 boundary independently.
 
 ## Task 3: Extract L3
 
-- [ ] Move evidence and triage.
-- [ ] Move prompt/table preparation.
-- [ ] Move merge/finalist writing.
-- [ ] Move validation/repair.
-- [ ] Replace `agents/l3_select.py` with compatibility exports plus unchanged CLI.
-- [ ] Run all L3 tests, including narrow repair and historical lint fixtures.
-- [ ] Commit the L3 boundary independently.
+- [x] Move evidence and triage.
+- [x] Move prompt/table preparation.
+- [x] Move merge/finalist writing.
+- [x] Move validation/repair.
+- [x] Replace `agents/l3_select.py` with compatibility exports plus unchanged CLI.
+- [x] Run all L3 tests, including narrow repair and historical lint fixtures.
+- [x] Commit the L3 boundary independently.
 
 ## Task 4: Extract decision, report, and publisher
 
-- [ ] Move reusable L4 card parsing out of assemble.
-- [ ] Move verify/ensemble/final-rating/DecisionRecord logic to
+- [x] Move reusable L4 card parsing out of assemble.
+- [x] Move verify/ensemble/final-rating/DecisionRecord logic to
   `decision_finalize.py`.
-- [ ] Move summary helpers/composition to `report_sections.py`.
-- [ ] Move detail/trace publication and run orchestration to `publisher.py`.
-- [ ] Replace `assemble.py` with compatibility exports plus unchanged CLI.
-- [ ] Run assemble, health, learning, report-golden, and post-run tests.
-- [ ] Commit the L5 boundary independently.
+- [x] Move summary helpers/composition to `report_sections.py`.
+- [x] Move detail/trace publication and run orchestration to `publisher.py`.
+- [x] Replace `assemble.py` with compatibility exports plus unchanged CLI.
+- [x] Run assemble, health, learning, report-golden, and post-run tests.
+- [x] Commit the L5 boundary independently.
 
 ## Task 5: Migrate internal consumers
 
-- [ ] Replace learning/health/render/dossier/market/stock-stage imports from
+- [x] Replace learning/health/render/dossier/market/stock-stage imports from
   adapters with their owning domain modules.
-- [ ] Preserve third-party and test compatibility through adapter exports.
-- [ ] Run an import-cycle probe over all `autoresearch` modules.
-- [ ] Commit consumer migration independently.
+- [x] Preserve third-party and test compatibility through adapter exports.
+- [x] Run an import-cycle probe over all `autoresearch` modules.
+- [x] Commit consumer migration independently.
 
 ## Task 6: Documentation and acceptance
 
-- [ ] Update the unified completion program, master design, SKILL, and STAGES.
-- [ ] Compile all Python modules.
-- [ ] Run focused parity suites and Workflow syntax probes.
-- [ ] Diff production rating/gate/recall/horizon definitions against Wave 3.
-- [ ] Run the full test suite and record the exact count/warnings.
-- [ ] Mark software complete only after all evidence is green.
+- [x] Update the unified completion program, master design, SKILL, and STAGES.
+- [x] Compile all Python modules.
+- [x] Run focused parity suites and Workflow syntax probes.
+- [x] Diff production rating/gate/recall/horizon definitions against Wave 3.
+- [x] Run the full test suite and record the exact count/warnings.
+- [x] Mark software complete only after all evidence is green.
 
 ## Rollback
 
 Each extraction is one commit. A failed parity check reverts only the current
 boundary; old import paths and artifact schemas remain stable throughout.
+
+## Completion record
+
+- Implementation commits: `d136c16`, `27b8cc2`, `48b2e0d`, `5310b90`.
+- Legacy adapters: assemble 99 lines, L3 101 lines, L4 142 lines.
+- Focused acceptance: L4 183, L3 148, L5/report/learning 665, consumer
+  migration 90, boundary contract 6.
+- Eight critical rubric/finalization functions are AST-equivalent to Wave 3;
+  production rating/gate/recall sources have no diff.
+- Workflow syntax probes pass; all 162 `autoresearch` modules import.
+- Full-suite acceptance: `1918 passed`, with two pre-existing pandas
+  `FutureWarning`s.

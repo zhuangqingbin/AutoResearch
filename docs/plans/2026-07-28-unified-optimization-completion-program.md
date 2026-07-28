@@ -151,9 +151,11 @@ Exit evidence:
 Detailed plan:
 `docs/plans/2026-07-28-wave4-module-boundaries-plan.md`.
 
-Status: **in progress 2026-07-28**.
+Status: **software completed 2026-07-28**. Full-suite acceptance is
+`1918 passed`, with the same two pre-existing pandas `FutureWarning`s.
+All 162 `autoresearch` modules import without a cycle/failure.
 
-Planned extractions preserve compatibility imports:
+Implemented extractions preserve compatibility imports:
 
 - `scan/decision_finalize.py`
 - `scan/decision_read_model.py`
@@ -171,6 +173,10 @@ Exit evidence:
   compatible.
 - Domain modules do not import reporting; Workflow contains no rating/gate
   business rules.
+- The three legacy entrypoints are 99, 101, and 142 lines respectively and
+  contain only compatibility exports plus their CLI dispatch.
+- Eight critical rubric/finalization functions are AST-equivalent to the
+  pre-extraction baseline; production rating/gate/recall files have no diff.
 
 ### Wave 5 — experiment promotion and rollback
 

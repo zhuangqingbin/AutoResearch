@@ -261,7 +261,18 @@ P0 简报（市场地形+档案+解禁/披露旗+行业备忘+误读预警）
 
 ---
 
-## L5 · 整合 —— `scan/assemble.py`(确定性,零 LLM 铁律)
+## L5 · 整合 —— `scan/assemble.py` 兼容 CLI(确定性,零 LLM 铁律)
+
+Wave 4 后实现归属为单向链：
+
+```text
+l4/parsers → decision_finalize → report_sections → publisher → post_run
+```
+
+`assemble.py` 只兼容导出与 CLI；L3 的 evidence/triage/prompt/merge/validation
+和 L4 的 context/rubric/producers/prompts/dispatch/parsers 均由各自
+`scan/l3/*`、`scan/l4/*` 持有。仓内消费者必须直连 owner，禁止从三个兼容
+adapter 反向 import；Workflow 只调度，不持有 rating/gate 规则。
 
 **summary.md 节序**(所有新节都 presence-gated):
 

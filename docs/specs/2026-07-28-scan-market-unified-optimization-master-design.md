@@ -1,6 +1,6 @@
 # scan-market 统一优化总纲：决策质量 × BUY 发现 × Token × 速度 × 架构
 
-> **状态**：设计已确认并进入实施；Wave 1–3 软件已完成，Wave 4 起继续开发\
+> **状态**：设计已确认并进入实施；Wave 1–4 软件已完成，Wave 5 起继续开发\
 > **基线日期**：2026-07-28\
 > **代码基线**：`16463c0`\
 > **适用范围**：`scan-market` 主链 + 共享数据、研究闭环与编排层\
@@ -1433,6 +1433,25 @@ ensemble trigger family 仍需至少 10 个成熟样本。任何门、阈值、�
 
 目标：降低修改风险，不改变研究行为。
 
+#### 2026-07-28 实现状态（软件完成）
+
+已完成：
+
+- `agents/l3_select.py` 从 1,402 行收缩为 101 行兼容 adapter；实现按
+  evidence/triage/prompt/merge/validation 分属 `scan/l3/*`；
+- `agents/l4_card.py` 从 1,460 行收缩为 142 行兼容 adapter；实现按
+  context/rubric/producers/prompts/dispatch/parsers 分属 `scan/l4/*`；
+- `scan/assemble.py` 从 1,550 行收缩为 99 行兼容 adapter；终评级、报告纯视图、
+  发布编排、post-run 分属 `decision_finalize.py`、`report_sections.py`、
+  `publisher.py`、`post_run.py`；
+- learning/health/render/market/dossier/task/state 等仓内消费者全部直连 owner，
+  不再反向依赖兼容 adapter；
+- 162 个 `autoresearch` 模块逐一 import，0 个循环或导入失败；两个生产 Workflow
+  仍只调度，不拥有 rating/gate 函数；
+- 8 个关键 rubric/终评级函数与拆分前基线 AST 等价；生产评级、门、召回评分与
+  `fwd_2_oc` 无变化；全量验收 `1918 passed`，仅两条既有 pandas
+  FutureWarning。
+
 顺序：
 
 1. 抽 `l4/rubric.py` 与 parsers；
@@ -1523,10 +1542,7 @@ ensemble trigger family 仍需至少 10 个成熟样本。任何门、阈值、�
   A/B；
 - pinned 与终评级读模型、nightly/retro consumer 的统一回执和可恢复补跑。
 
-后续只剩：
-
-- Wave 4 核心模块边界拆分与兼容适配；
-- Wave 5 实验登记、五守卫晋升、人审激活和回滚观察。
+后续只剩 Wave 5：实验登记、五守卫晋升、人审激活和回滚观察。
 
 ---
 
