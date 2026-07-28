@@ -30,6 +30,30 @@ import contextlib
 import re
 
 _SENT_SPLIT = re.compile(r"[。;;\n]")
+# ── Wave7 B′-b(2026-07-27 实锤,4/4 假阳):引用/否决/负判句整句不认领 ──
+#
+# 本探针读的是**卡片正文**,而卡片正文里出现行情词的最常见场景恰恰不是自陈,而是三种
+# 「元话语」——转述、否决、否定。07-27 的四条 warn 100% 落在这三种上,其中两条卡片正
+# 在做我们要它做的事:
+#   · 600988:「〔转引标题〕intel 载"…赤峰黄金跌停"——slim OHLCV 显示 7/17 为 -8.3%,
+#     **非跌停,intel 该价格断言未对账**」= 卡片自己拿 OHLCV 否决了 intel,却被判成捏造;
+#   · 601211:「intel 称「07-27 证券板块 +4.82%…」与本股 verified -1.4% **未对账**,不采信」;
+#   · 601869:〔转引标题〕新闻标题里的日期 + 同句 fwd-EPS「隐含 +637% 跃升」(见 _FUND);
+#   · 601918:「兖矿/中煤涨停时『新集能源**未见于**当日龙头名单』」= 涨停属他票,句意恰是本股没涨停。
+# 真捏造在 intel 稿里(由 assemble 发布层的 🔎 块另行对账,该层工作正常),不在卡片正文。
+# 对假阳放任的代价不是多几行 warn,而是 P0 探针的公信力被磨掉(狼来了),之后真捏造也没人看。
+# 方向选择:整句跳过 = under-report,与本模块既有取舍一致(见文件头「已知简化」)——
+# 宁可漏报也不对着一张正在做对账的卡输出「分析师捏造股价」的自信误指控。
+_QUOTE_OR_REFUTE = (
+    "转引标题", "非本票行情自陈", "intel 称",          # 转述:引号里的别人的话
+    "未对账", "不采信", "未采信", "该价格断言",          # 否决:卡片已判它不可信
+    "非涨停", "非跌停", "未见于", "未涨停", "未跌停",     # 负判:句意是「没发生」
+)
+
+
+def _is_quote_or_refutation(sent: str) -> bool:
+    """整句属转述/否决/负判 → 句内行情词不是本卡的事实断言,不认领。"""
+    return any(m in sent for m in _QUOTE_OR_REFUTE)
 # 日期:2026-07-21 / 07-21 / 7/21 / 7月21日(可带年)
 _DATE = re.compile(r"(?:(20\d{2})[-/年])?(\d{1,2})[-/月](\d{1,2})日?")
 _PCT = re.compile(r"(?P<verb>上涨|大涨|涨|下跌|大跌|跌|涨幅|跌幅)[^%。;;\n]{0,12}?(?P<num>[+-]?\d+(?:\.\d+)?)\s*%"
@@ -51,7 +75,11 @@ _SCENARIO = ("Bull", "Base", "Bear", "bull", "base", "bear", "情景", "目标",
 #     ——「中报预告 +66%」是业绩预测%非股价%,同族)
 _FUND = ("营收", "收入", "净利", "利润", "毛利", "EPS", "业绩", "订单",
          "产能", "份额", "同比", "环比",
-         "预告", "预增", "预盈", "中报", "年报", "季报", "归母")
+         "预告", "预增", "预盈", "中报", "年报", "季报", "归母",
+         # Wave7 B′-b:一致预期派生量(长飞 601869「fwd-EPS 7.81 对 TTM 实际 EPS 1.06
+         # = 隐含 +637% 跃升」——"EPS" 离数字已超 8 字窗,靠 "隐含" 这一跳才抓得住)。
+         # 与 _QUOTE_OR_REFUTE 是两道独立防线:该句同时带〔转引标题〕,任一道都能拦。
+         "隐含", "一致预期", "预期差", "fwd")
 _CTX_BACK = 14      # 情景语境向前看的字符窗(延续至/目标/看至 通常紧邻 % 之前)
 _FUND_WIN = 8       # 基本面名词判定窗(brief:% 前后 8 字内)
 # W2-T1 复审验证指数黑名单修复时顺带隔离出的第二处遮蔽 bug(与 _INDEX_NAMES 碰撞同族不同因):
@@ -194,6 +222,8 @@ def extract_price_claims(text: str, *, name: str, code6: str, year_hint: int) ->
     for sent in _SENT_SPLIT.split(text or ""):
         if not sent.strip() or not _own_sentence(sent, name, code6):
             continue
+        if _is_quote_or_refutation(sent):        # Wave7 B′-b:转述/否决/负判句不认领
+            continue
         dates = list(_DATE.finditer(sent))
         if not dates:
             continue
@@ -219,8 +249,18 @@ def _limit_floor(code6: str) -> float:
 
 def reconcile_claims(claims: list[dict], bars: dict[str, float], *,
                      code6: str, tol_pp: float = 1.5) -> list[dict]:
+    """不符断言列表;**同一 (日期, 类型, 声称值) 只报一次**(Wave7 B′-b)。
+
+    同一条断言在一张卡里被复述多遍(摘要段 + 证据段 + 附录)时,逐条计数会让「3 条不符」
+    读起来像三次独立捏造,实际是一次 —— 计数本身就是读者判断严重性的依据,不能虚高。
+    """
     bad: list[dict] = []
+    seen: set[tuple] = set()
     for c in claims:
+        key = (c.get("date"), c.get("kind"), c.get("value"), c.get("dir"))
+        if key in seen:
+            continue
+        seen.add(key)
         actual = bars.get(c["date"])
         if actual is None:                      # nodata:非交易日/湖缺 → 跳过,不算失败
             continue

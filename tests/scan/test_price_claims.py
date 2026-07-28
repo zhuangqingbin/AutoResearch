@@ -217,3 +217,70 @@ def test_extract_keeps_claim_after_short_index_lead_in():
 def test_index_window_still_catches_hengsheng_distance():
     assert extract_price_claims("本股随恒生指数 7-21 上涨 2.1%。",
                                 name="协创数据", code6="300857", year_hint=2026) == []
+
+
+# ══ Wave7 B′-b:元话语句(转述/否决/负判)不认领 ══════════════════════════════
+#
+# 2026-07-27 实跑:self_review 的 price_claim_mismatch 报了 4 条,逐条核完 **4/4 是假阳**,
+# 且其中两条卡片正在做我们要它做的事(拿 OHLCV 对账并否决 intel 的断言)。真捏造在 intel
+# 稿里,由 assemble 发布层的 🔎 块另行对账(那一层工作正常)。下面四个向量是四张真卡的原句。
+
+
+def test_refutation_sentence_not_claimed_600988():
+    """卡片自己拿 OHLCV 否决 intel 的跌停断言 —— 却被判成卡片捏造(最讽刺的一例)。"""
+    t = ('〔转引标题〕intel 载"美银警告黄金跌势远未结束,赤峰黄金跌停"(新浪财经·2026-07-17)'
+         "——slim OHLCV 显示 7/17 为 34.62→31.74 = -8.3%,非跌停,intel 该价格断言未对账。")
+    assert extract_price_claims(t, name="赤峰黄金", code6="600988", year_hint=2026) == []
+
+
+def test_refutation_sentence_not_claimed_601211():
+    """「intel 称 X … 未对账,不采信」= 卡片在拒绝采信,不是在断言。"""
+    t = ("intel 称「07-27 证券板块 +4.82%、港股中资券商普涨」与本股 verified -1.4% "
+         "**未对账**,不采信。")
+    assert extract_price_claims(t, name="国泰海通", code6="601211", year_hint=2026) == []
+
+
+def test_quoted_headline_sentence_not_claimed_601869():
+    """〔转引标题〕里的日期 + 同句 fwd-EPS「隐含 +637%」—— 契约本就要求标记转引,审计器要认这个标记。"""
+    t = ("转引标题(非本票行情自陈):〔转引标题〕《7分钟封住涨停!601869,1年涨超15倍》"
+         "(华夏时报 2026-06-22)｜ **一致预期差**:fwd-EPS 7.81 对 TTM 实际 EPS 1.06 "
+         "= 隐含 +637% 跃升。")
+    assert extract_price_claims(t, name="长飞光纤", code6="601869", year_hint=2026) == []
+
+
+def test_other_stock_limit_with_negation_not_claimed_601918():
+    """涨停属他票(兖矿/中煤),且句意恰恰是本股「未见于」龙头名单 —— 不该记到本股头上。"""
+    t = ("07-20 板块午后发力、兖矿/中煤涨停时「新集能源未见于当日龙头名单」"
+         "(证券时报网 2026-07-20)。")
+    assert extract_price_claims(t, name="新集能源", code6="601918", year_hint=2026) == []
+
+
+def test_implied_eps_growth_is_not_a_price_claim():
+    """独立防线:即使没有〔转引标题〕标记,「隐含 +637%」也不是价格断言(EPS 离数字超 8 字窗)。"""
+    t = "长飞光纤 2026-06-22 fwd-EPS 7.81 对 TTM 实际 EPS 1.06 = 隐含 +637% 跃升。"
+    assert extract_price_claims(t, name="长飞光纤", code6="601869", year_hint=2026) == []
+
+
+# ── 反向保护:去假阳不能把真捏造一起放走(否则这刀就是把探针关了)──
+
+
+def test_real_own_claim_still_extracted_alongside_meta_talk():
+    """同一张卡里,元话语句被跳过,但另一句真正的自陈断言必须照常认领。"""
+    t = ("intel 称「证券板块 +4.82%」与本股 verified 不采信。"
+         "2026-07-27 金价跳空高开带动本股 +4.52%。")
+    claims = extract_price_claims(t, name="赤峰黄金", code6="600988", year_hint=2026)
+    assert [c["value"] for c in claims] == [4.52], "把真自陈也一起豁免了 = 探针被关掉"
+
+
+def test_plain_fabricated_limit_still_caught():
+    """不带任何转述/否决/负判标记的裸断言 —— 该报还得报。"""
+    t = "本股 2026-07-17 涨停,量能配合。"
+    claims = extract_price_claims(t, name="赤峰黄金", code6="600988", year_hint=2026)
+    assert [(c["date"], c["kind"], c["dir"]) for c in claims] == [("20260717", "limit", 1)]
+
+
+def test_reconcile_dedups_repeated_identical_claim():
+    """同一断言在卡里复述三遍 → 只报一次(计数是读者判断严重性的依据,不能虚高)。"""
+    claims = [{"date": "20260717", "kind": "limit", "value": None, "dir": 1, "snippet": "x"}] * 3
+    bad = reconcile_claims(claims, {"20260717": -8.32}, code6="600988")
+    assert len(bad) == 1

@@ -479,10 +479,14 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
                 bars_fn=price_claims.bars_for)
             if res["mismatches"]:
                 b = res["mismatches"][0]
+                # 措辞按 dir 分涨/跌停:原先 kind=='limit' 一律播「称 涨停」,于是 600988
+                # 那条**跌停**断言在汇总屏上显示成「称 涨停 实 -8.32%」——读者据此推的方向
+                # 与卡里写的正好相反(2026-07-27 实锤)。dir 缺失(旧契约手搭 dict)才回退。
+                kind_txt = ({1: "涨停", -1: "跌停"}.get(b.get("dir"), "涨停/跌停")
+                            if b["kind"] == "limit" else f"{b['claimed']}%")
                 add("price_claim_mismatch", "warn",
                     f"{len(res['mismatches'])} 条价格断言与 OHLCV 不符(首条 {b['date']} "
-                    f"称 {'涨停' if b['kind'] == 'limit' else str(b['claimed']) + '%'} "
-                    f"实 {b['actual']}%)——pr_20260714_006 型",
+                    f"称 {kind_txt} 实 {b['actual']}%)——pr_20260714_006 型",
                     code=code)
 
     # ── 9. pinned SELL 双复核 tripwire(final-review I-2):镜像 intel 稿数兜底(probe 3)──
