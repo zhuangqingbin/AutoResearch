@@ -161,11 +161,26 @@ if (l3lint && l3lint.ok === false) {
   // 只留一条 started 没有 result,workflow 若无其事地继续,56.9k 加权白烧且无人知晓;
   // 我是靠事后翻 <failures> 才发现的。这里显式接住:失败 → 说出来 → 带着未修的 judged 继续
   // (下游 GATE2/finalists 读的是 judged 本身,自修没跑只是数字措辞没优化,不影响正确性)。
-  const fix = await agent(
-    `你之前写的 ${SD}/_l3_judged.json 有 thesis 引用数字与 ${SD}/_l3_table.md 不符:\n${l3lint.reason}\n只修这些票的 thesis/数字(以表为准或删掉具体数字改定性措辞),其余票原样保留,用 Write 覆写同一文件。`,
+  const REPAIR = { type: 'object', required: ['ok', 'codes', 'n', 'prompt'],
+    properties: { ok: { type: 'boolean' }, codes: { type: 'array', items: { type: 'string' } },
+      n: { type: 'integer' }, prompt: { type: 'string' } } }
+  const repair = await gate('l3-repair-pack',
+    `${R} autoresearch.scan.agents.l3_select repair-pack ${date}`, REPAIR, 'L3')
+  const fix = repair && repair.n > 0 ? await agent(
+    `Read ${SD}/_l3_repair_prompt.md，只处理其中列出的失败票；按文件内 schema 用 Write 写 ${SD}/_l3_repair_patch.json。不要读取任何全量 L3 输入或输出文件。`,
     { agentType: 'l3-rank', effort: 'medium', label: 'L3-lint-fix', phase: 'L3' })
-    .catch((e) => { log(`⚠️ L3 自修 agent 异常:${e && e.message ? e.message : e}`); return null })
-  if (!fix) log('⚠️ L3 数字自修未完成(agent 无返回/断连)—— 带未修 judged 继续,machine-lint 结论已记在上一行')
+    .catch((e) => { log(`⚠️ L3 自修 agent 异常:${e && e.message ? e.message : e}`); return null }) : null
+  if (fix) {
+    const APPLY = { type: 'object', required: ['ok', 'patched', 'preserved', 'codes'],
+      properties: { ok: { type: 'boolean' }, patched: { type: 'integer' },
+        preserved: { type: 'integer' }, codes: { type: 'array', items: { type: 'string' } } } }
+    const applied = await gate('l3-repair-apply',
+      `${R} autoresearch.scan.agents.l3_select apply-repair ${date}`, APPLY, 'L3')
+    if (applied && applied.ok) log(`L3 局部修复 ✓ ${applied.patched} 票· 原样保留 ${applied.preserved} 票`)
+    else log('⚠️ L3 局部修复 patch 校验/merge 未完成—— 带原 judged 继续')
+  } else {
+    log('⚠️ L3 数字自修未完成(agent 无返回/断连)—— 带未修 judged 继续,machine-lint 结论已记在上一行')
+  }
 }
 // 确定性写 finalists(修前导零)+ GATE2,合并一个 gate(壳合并②,-1 spawn)
 const g2 = await stageGate('GATE2',

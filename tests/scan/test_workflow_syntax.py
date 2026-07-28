@@ -68,6 +68,18 @@ def test_l3_lint_fix_failure_is_caught_not_silent():
     assert "未完成" in tail[:600] or "异常" in tail[:600], "失败路径没有可见日志 = 降级不留痕"
 
 
+def test_l3_lint_fix_reads_narrow_pack_not_full_table():
+    src = (WF / "scan-market.js").read_text(encoding="utf-8")
+    head, _, tail = src.partition("label: 'L3-lint-fix'")
+    assert tail, "L3-lint-fix 调用点不见了"
+    prompt = head.rsplit("await agent(", 1)[-1] + tail[:500]
+    assert "_l3_repair_prompt.md" in prompt
+    assert "_l3_repair_patch.json" in prompt
+    assert "_l3_table.md" not in prompt
+    assert "_l3_judged.json 有 thesis" not in prompt
+    assert "apply-repair" in tail[:1200]
+
+
 def test_scan_gate_branches_read_verified_stage_results():
     """GATE1/2 的唯一分支事实来自 StageResult，不再重复解析 gate stdout。"""
     src = (WF / "scan-market.js").read_text(encoding="utf-8")

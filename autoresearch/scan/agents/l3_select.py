@@ -1156,6 +1156,39 @@ def _approx_in_pool(token_val: float, pool: list[float]) -> bool:
     return False
 
 
+def _lint_failures(picks: list[dict], scan_dir: Path) -> list[dict]:
+    """结构化 lint 失败；`lint_judged` 和 repair merge 共用同一谓词。"""
+    l2_by_code: dict[str, object] = {}
+    l2p = scan_dir / "L2_gbdt_top200.csv"
+    if l2p.exists():
+        l2 = pd.read_csv(l2p, dtype={"code": str})
+        l2["code"] = l2["code"].astype(str).str.zfill(6)
+        l2_by_code = {r["code"]: r for _, r in l2.iterrows()}
+    market_pool = _market_pool(scan_dir)
+    bad: list[dict] = []
+    for pick in picks:
+        code = str(pick.get("code", "")).zfill(6)
+        thesis = str(pick.get("thesis") or "")
+        catalyst = str(pick.get("catalyst") or "")
+        l2_row = l2_by_code.get(code)
+        pool = _row_numeric_pool(pick, l2_row) + _complement_pool(l2_row)
+        frac = _fraction_exempt_values(thesis)
+        norm_thesis = thesis.replace("−", "-")
+        for tok, pos in _thesis_number_tokens_pos(thesis):
+            try:
+                tv = float(tok)
+            except ValueError:
+                continue
+            if _approx_in_pool(tv, pool) or tok in catalyst:
+                continue
+            if any(abs(tv - f) <= 0.1 for f in frac):
+                continue
+            if _has_market_context(norm_thesis, pos) and _approx_in_pool(tv, market_pool):
+                continue
+            bad.append({"code": code, "token": tok, "position": pos})
+    return bad
+
+
 def lint_judged(date: str, root: Path | None = None) -> dict:
     """thesis 数字机检(确定性 lint,零 LLM):每条 thesis 的数字 token(过滤年份/代码/日期/
     N日窗口标签)须能在该票 L2 数值列(±1% 相对或 ±0.1 绝对容差,百分数/小数互认)或
@@ -1170,46 +1203,169 @@ def lint_judged(date: str, root: Path | None = None) -> dict:
     if not judged_path.exists():
         return {"ok": False, "reason": f"{judged_path} 缺失"}
     picks = json.loads(judged_path.read_text(encoding="utf-8"))
+    failures = _lint_failures(picks, scan_dir)
+    bad = [f"{row['code']}:{row['token']}" for row in failures]
+    if bad:
+        return {"ok": False, "reason": "; ".join(bad), "failures": failures}
+    return {"ok": True, "reason": "ok", "failures": []}
+
+
+def _atomic_json(path: Path, payload: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f"{path.name}.tmp")
+    temp.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temp.replace(path)
+
+
+def _json_safe_row(row: object) -> dict:
+    if row is None:
+        return {}
+    if isinstance(row, pd.Series):
+        values = row.to_dict()
+    else:
+        values = dict(row)
+    out = {}
+    for key, value in values.items():
+        if pd.isna(value):
+            out[str(key)] = None
+        elif hasattr(value, "item"):
+            out[str(key)] = value.item()
+        else:
+            out[str(key)] = value
+    return out
+
+
+def build_repair_pack(date: str, root: Path | None = None) -> dict:
+    """只把 lint 失败行和本票合法证据写入局部修复包。"""
+    base = Path(root) if root else Path("context/scan")
+    scan_dir = base / date
+    judged_path = scan_dir / "_l3_judged.json"
+    picks = json.loads(judged_path.read_text(encoding="utf-8"))
+    if not isinstance(picks, list):
+        raise ValueError("_l3_judged.json root must be a list")
+    failures = _lint_failures(picks, scan_dir)
+    codes = list(dict.fromkeys(row["code"] for row in failures))
+    picks_by_code = {
+        str(row.get("code", "")).zfill(6): row for row in picks
+    }
     l2_by_code: dict[str, object] = {}
     l2p = scan_dir / "L2_gbdt_top200.csv"
     if l2p.exists():
         l2 = pd.read_csv(l2p, dtype={"code": str})
         l2["code"] = l2["code"].astype(str).str.zfill(6)
         l2_by_code = {r["code"]: r for _, r in l2.iterrows()}
-    market_pool = _market_pool(scan_dir)     # 地形段数字(全市场/行业级)——合法跨文件引用
-    bad: list[str] = []
-    for pick in picks:
-        code = str(pick.get("code", "")).zfill(6)
-        thesis = str(pick.get("thesis") or "")
-        catalyst = str(pick.get("catalyst") or "")
-        l2_row = l2_by_code.get(code)
-        pool = _row_numeric_pool(pick, l2_row) + _complement_pool(l2_row)
-        frac = _fraction_exempt_values(thesis)
-        norm_thesis = thesis.replace("−", "-")            # 与 token 位置同一坐标系
-        for tok, pos in _thesis_number_tokens_pos(thesis):
-            try:
-                tv = float(tok)
-            except ValueError:
-                continue
-            if _approx_in_pool(tv, pool) or tok in catalyst:
-                continue
-            if any(abs(tv - f) <= 0.1 for f in frac):     # `a/b` 计数陈述,表内无对应列
-                continue
-            # 地形段引用(左窗有「全市场/行业/板块…」)才查市场池 —— 不设这道闸,lint 会被
-            # 126 个市场级数字稀释成橡皮图章(见 _MARKET_CTX 注)。
-            if _has_market_context(norm_thesis, pos) and _approx_in_pool(tv, market_pool):
-                continue
-            bad.append(f"{code}:{tok}")
-    if bad:
-        return {"ok": False, "reason": "; ".join(bad)}
-    return {"ok": True, "reason": "ok"}
+    rows = []
+    for code in codes:
+        original = picks_by_code[code]
+        rows.append({
+            "code": code,
+            "original": {
+                "code": code,
+                "thesis": original.get("thesis"),
+                "catalyst": original.get("catalyst"),
+            },
+            "invalid_tokens": [
+                row["token"] for row in failures if row["code"] == code
+            ],
+            "evidence": _json_safe_row(l2_by_code.get(code)),
+        })
+    pack = {
+        "schema_version": 1,
+        "date": date,
+        "codes": codes,
+        "rows": rows,
+        "patch_schema": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["code", "thesis"],
+                "additionalProperties": False,
+            },
+        },
+    }
+    _atomic_json(scan_dir / "_l3_repair_pack.json", pack)
+    prompt = "\n".join([
+        "# L3 thesis 局部修复包",
+        "",
+        "只修下列 JSON 中列出的失败行。不得读取或重写整份 `_l3_table.md` / "
+        "`_l3_judged.json`，不得改 conviction、finalist、risk、catalyst 或任何其它字段。",
+        "数字只能取自本行 `evidence`；拿不准就删掉具体数字改成定性措辞。",
+        f"输出必须写到 `context/scan/{date}/_l3_repair_patch.json`，根为数组，"
+        "每项严格只有 `code` 与 `thesis`。",
+        "",
+        "```json",
+        json.dumps({"codes": codes, "rows": rows}, ensure_ascii=False, indent=2),
+        "```",
+        "",
+    ])
+    (scan_dir / "_l3_repair_prompt.md").write_text(prompt, encoding="utf-8")
+    return {**pack, "prompt": prompt}
+
+
+def apply_repair_patch(date: str, root: Path | None = None) -> dict:
+    """验证局部 patch 后原子 merge；未请求行对象原样保留。"""
+    base = Path(root) if root else Path("context/scan")
+    scan_dir = base / date
+    pack = json.loads((scan_dir / "_l3_repair_pack.json").read_text(encoding="utf-8"))
+    patch = json.loads((scan_dir / "_l3_repair_patch.json").read_text(encoding="utf-8"))
+    if not isinstance(patch, list):
+        raise ValueError("repair patch root must be a list")
+    requested = {str(code).zfill(6) for code in pack.get("codes") or []}
+    seen: set[str] = set()
+    by_code: dict[str, str] = {}
+    for row in patch:
+        if not isinstance(row, dict) or set(row) != {"code", "thesis"}:
+            raise ValueError("repair patch fields must be exactly code/thesis")
+        code = str(row["code"]).zfill(6)
+        if code not in requested:
+            raise ValueError(f"unrequested repair code:{code}")
+        if code in seen:
+            raise ValueError(f"duplicate repair code:{code}")
+        if not isinstance(row["thesis"], str) or not row["thesis"].strip():
+            raise ValueError(f"empty thesis:{code}")
+        seen.add(code)
+        by_code[code] = row["thesis"].strip()
+    missing = requested - seen
+    if missing:
+        raise ValueError(f"missing requested repair codes:{sorted(missing)}")
+
+    judged_path = scan_dir / "_l3_judged.json"
+    original = json.loads(judged_path.read_text(encoding="utf-8"))
+    candidate = []
+    for row in original:
+        code = str(row.get("code", "")).zfill(6)
+        if code in by_code:
+            updated = dict(row)
+            updated["thesis"] = by_code[code]
+            candidate.append(updated)
+        else:
+            candidate.append(row)
+    remaining = [
+        row for row in _lint_failures(candidate, scan_dir)
+        if row["code"] in requested
+    ]
+    if remaining:
+        reason = "; ".join(f"{row['code']}:{row['token']}" for row in remaining)
+        raise ValueError(f"repair still fails lint:{reason}")
+    _atomic_json(judged_path, candidate)
+    return {
+        "patched": len(by_code),
+        "preserved": len(candidate) - len(by_code),
+        "codes": sorted(by_code),
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
     ap = argparse.ArgumentParser(prog="l3_select")
-    ap.add_argument("cmd", choices=["finalists", "prepare", "lint"])
+    ap.add_argument(
+        "cmd",
+        choices=["finalists", "prepare", "lint", "repair-pack", "apply-repair"],
+    )
     ap.add_argument("date")
     ap.add_argument("--budget", type=int, default=30)
     ap.add_argument("--root", default=None)
@@ -1221,10 +1377,24 @@ def main(argv: list[str] | None = None) -> int:
     elif a.cmd == "prepare":
         res = prepare_l3_table(a.date, root=a.root)
         print(f"[l3_select prepare] codes {res['codes']} → _l3_table.md {res['table_bytes']}B")
-    else:
+    elif a.cmd == "lint":
         res = lint_judged(a.date, root=a.root)
         print(json.dumps(res, ensure_ascii=False))
         return 0 if res.get("ok") else 1
+    elif a.cmd == "repair-pack":
+        res = build_repair_pack(a.date, root=a.root)
+        print(json.dumps({
+            "ok": True,
+            "codes": res["codes"],
+            "n": len(res["codes"]),
+            "prompt": str(
+                (Path(a.root) if a.root else Path("context/scan"))
+                / a.date / "_l3_repair_prompt.md"
+            ),
+        }, ensure_ascii=False))
+    else:
+        res = apply_repair_patch(a.date, root=a.root)
+        print(json.dumps({"ok": True, **res}, ensure_ascii=False))
     return 0
 
 
