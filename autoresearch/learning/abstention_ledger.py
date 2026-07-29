@@ -11,7 +11,8 @@ import pandas as pd
 
 from autoresearch.scan.run_contract import sha256_json
 
-ABSTENTION_VERDICT_SCHEMA_VERSION = 1
+ABSTENTION_VERDICT_SCHEMA_VERSION = 2
+_SUPPORTED_SCHEMA_VERSIONS = (1, 2)
 STATUSES = {
     "IMMATURE",
     "FALSE",
@@ -20,6 +21,12 @@ STATUSES = {
     "NOT_ABSTAINED",
 }
 DATA_QUALITIES = {"COMPLETE", "DEGRADED"}
+
+# v2 新增字段(Wave8 W8-11)。v1 记录的哈希锁的是**当时的事实**,不能因为加字段就
+# 重算 —— 故 `_hash_payload` 在 schema_version<2 时剔除这三个键,两代记录各按自己的
+# 版本校验哈希。`status_v2` 用 None 表示「无 shadow 数据」,**不新增 STATUSES 枚举值**
+# (枚举有 render/roll 等迭代消费方,新值会污染它们的分桶)。
+_V2_ONLY_FIELDS = ("status_v2", "shadow_opportunity_codes", "recall_ceiling_n")
 
 
 @dataclass(frozen=True)
@@ -35,10 +42,19 @@ class AbstentionVerdict:
     reasons: list[str]
     generated_at: str
     verdict_hash: str
+    # ── v2(Wave8 W8-11)──
+    status_v2: str | None = None          # shadow_buys 口径裁决;None = 无 shadow 数据
+    shadow_opportunity_codes: tuple[str, ...] = ()
+    recall_ceiling_n: int = 0             # 旧全市场口径降级来的诊断数(召回上限,非裁决)
 
     def _hash_payload(self) -> dict:
         payload = asdict(self)
         payload.pop("verdict_hash")
+        if int(self.schema_version) < 2:
+            for key in _V2_ONLY_FIELDS:
+                payload.pop(key, None)
+        else:
+            payload["shadow_opportunity_codes"] = list(self.shadow_opportunity_codes)
         return payload
 
     def semantic_payload(self) -> dict:
@@ -61,6 +77,9 @@ class AbstentionVerdict:
         data_quality: str,
         reasons: list[str],
         now: datetime | None = None,
+        status_v2: str | None = None,
+        shadow_opportunity_codes: list[str] | None = None,
+        recall_ceiling_n: int = 0,
     ) -> AbstentionVerdict:
         if status not in STATUSES:
             raise ValueError(f"invalid abstention status: {status!r}")
@@ -92,6 +111,11 @@ class AbstentionVerdict:
                 timespec="microseconds"
             ).replace("+00:00", "Z"),
             verdict_hash="",
+            status_v2=status_v2,
+            shadow_opportunity_codes=tuple(sorted(
+                {str(c).strip().split(".")[0].zfill(6)
+                 for c in (shadow_opportunity_codes or [])})),
+            recall_ceiling_n=int(recall_ceiling_n),
         )
         return replace(
             base,
@@ -100,12 +124,17 @@ class AbstentionVerdict:
 
     @classmethod
     def from_dict(cls, raw: dict) -> AbstentionVerdict:
-        verdict = cls(**raw)
-        if verdict.schema_version != ABSTENTION_VERDICT_SCHEMA_VERSION:
+        raw = dict(raw)
+        if int(raw.get("schema_version", 0)) not in _SUPPORTED_SCHEMA_VERSIONS:
             raise ValueError(
                 "unsupported abstention verdict schema_version="
-                f"{verdict.schema_version}"
+                f"{raw.get('schema_version')}"
             )
+        # v1 记录缺 v2 字段 → 补默认值(哈希仍按 v1 payload 校验,见 `_hash_payload`)
+        raw.setdefault("status_v2", None)
+        raw.setdefault("recall_ceiling_n", 0)
+        raw["shadow_opportunity_codes"] = tuple(raw.get("shadow_opportunity_codes") or ())
+        verdict = cls(**raw)
         if verdict.status not in STATUSES:
             raise ValueError("invalid abstention verdict status")
         if verdict.data_quality not in DATA_QUALITIES:
@@ -153,7 +182,20 @@ def classify_abstention(
     *,
     health: dict | None = None,
     now: datetime | None = None,
+    shadow_codes: list[str] | None = None,
 ) -> AbstentionVerdict:
+    """0 买日的因果裁决。过渡期出**两个**口径(Wave8 W8-11)。
+
+    - `status`(v1,保留):判据 = `rejection_attribution.csv` 里任一 tradable 票相对
+      市场中位 ≥+2pp。**那张表覆盖全市场**(07-24 实测 5,528 行、opportunity 命中
+      1,299 只)→ 5,000 只票的市场几乎天天恒真。它量的是**召回上限**,不是弃权决策,
+      与 paper_nav「门在挣钱」的读数长期互扇。
+    - `status_v2`(新):判据只看 `shadow_codes`(= 系统当日最想买的 K 只,
+      `shadow_buys.csv`)—— "如果门放行,我会买的东西"有没有真跑赢。
+      `shadow_codes` 为空(该日无 shadow 数据)→ `status_v2=None`,不入 v2 统计。
+
+    v1 口径不删,降级为 `recall_ceiling_n` 诊断数 + 双打印;≥10 个成熟日后再退旧 headline。
+    """
     rows = rejection_rows.copy()
     date = (
         str(rows["date"].iloc[0])
@@ -231,19 +273,42 @@ def classify_abstention(
         if "code" in rows.columns
         else []
     )
-    if opportunity_codes:
-        status = "FALSE"
-        reasons.append("market_relative_opportunity")
-    else:
-        realized = excess[eligible & excess.notna()]
+    realized = excess[eligible & excess.notna()]
+
+    def _verdict_from(hit_codes: list[str], hit_reason: str,
+                      realized_scope: pd.Series) -> tuple[str, list[str]]:
+        """同一套判定逻辑,只换**标的集** —— 两个口径必须问同一个问题、可比。
+
+        ⚠️ 「机会」与「全都跑输了吗」必须**同集**:v2 若只把 FALSE 换成 shadow 口径、
+        CORRECT 仍看全市场,就永远说不出 CORRECT(5,000 只票里总有人 ≥+2pp),
+        等于换了个方式继续恒真。
+        """
+        if hit_codes:
+            return "FALSE", [hit_reason]
         if degraded:
-            status = "NEUTRAL"
-        elif len(realized) and bool((realized <= -0.02).all()):
-            status = "CORRECT"
-            reasons.append("all_rejected_underperformed_band")
-        else:
-            status = "NEUTRAL"
-            reasons.append("inside_economic_band")
+            return "NEUTRAL", []
+        if len(realized_scope) and bool((realized_scope <= -0.02).all()):
+            return "CORRECT", ["all_rejected_underperformed_band"]
+        return "NEUTRAL", ["inside_economic_band"]
+
+    status, extra = _verdict_from(
+        opportunity_codes, "market_relative_opportunity", realized)
+    reasons += extra
+
+    # ── v2:机会只认 shadow_buys(系统当日最想买的 K 只)──
+    norm_shadow = {str(c).strip().split(".")[0].zfill(6) for c in (shadow_codes or [])}
+    if norm_shadow and "code" in rows.columns:
+        codes6 = rows["code"].astype(str).str.zfill(6)
+        in_shadow = codes6.isin(norm_shadow)
+        shadow_hit = opportunity & in_shadow
+        shadow_codes_hit = sorted(codes6[shadow_hit].tolist())
+        realized_shadow = excess[eligible & in_shadow & excess.notna()]
+        status_v2, extra_v2 = _verdict_from(
+            shadow_codes_hit, "shadow_buy_outperformed", realized_shadow)
+        reasons += [r for r in extra_v2 if r not in reasons]
+    else:
+        status_v2, shadow_codes_hit = None, []   # 无 shadow 数据:不判,不入统计
+
     return AbstentionVerdict.build(
         date=date,
         status=status,
@@ -252,6 +317,9 @@ def classify_abstention(
         opportunity_codes=opportunity_codes,
         data_quality=data_quality,
         reasons=reasons,
+        status_v2=status_v2,
+        shadow_opportunity_codes=shadow_codes_hit,
+        recall_ceiling_n=len(opportunity_codes),
         now=now,
     )
 
@@ -267,12 +335,28 @@ def load_abstention_verdict(path: Path | str) -> AbstentionVerdict:
     return AbstentionVerdict.from_dict(raw)
 
 
+def shadow_codes_for(date: str, path: Path | str | None = None) -> list[str]:
+    """该扫描日的影子买单代码(系统当日最想买的 K 只);无数据 → []。"""
+    src = Path(path or "context/learning/shadow_buys.csv")
+    if not src.exists():
+        return []
+    try:
+        df = pd.read_csv(src, dtype={"code": str})
+    except Exception:  # noqa: BLE001 — 读不动就是没有,不臆测
+        return []
+    if "date" not in df.columns or "code" not in df.columns:
+        return []
+    hit = df[df["date"].astype(str) == str(date)]
+    return hit["code"].astype(str).str.zfill(6).tolist()
+
+
 def write_abstention_verdict(
     scan_dir: Path | str,
     rejection_rows: pd.DataFrame,
     *,
     health: dict | None = None,
     now: datetime | None = None,
+    shadow_path: Path | str | None = None,
 ) -> Path:
     scan = Path(scan_dir)
     target = abstention_verdict_path(scan)
@@ -281,6 +365,7 @@ def write_abstention_verdict(
         rejection_rows,
         health=health,
         now=now,
+        shadow_codes=shadow_codes_for(scan.name, shadow_path),
     )
     if verdict.date != scan.name:
         verdict = AbstentionVerdict.build(
@@ -292,6 +377,9 @@ def write_abstention_verdict(
             data_quality=verdict.data_quality,
             reasons=verdict.reasons,
             now=now,
+            status_v2=verdict.status_v2,
+            shadow_opportunity_codes=list(verdict.shadow_opportunity_codes),
+            recall_ceiling_n=verdict.recall_ceiling_n,
         )
     if target.exists():
         existing = load_abstention_verdict(target)
@@ -317,10 +405,13 @@ def roll(scan_root: Path | str | None = None) -> pd.DataFrame:
             {
                 "date": verdict.date,
                 "status": verdict.status,
+                "status_v2": verdict.status_v2,
                 "n_bought": verdict.n_bought,
                 "n_rejected": verdict.n_rejected,
                 "n_opportunities": verdict.n_opportunities,
+                "recall_ceiling_n": verdict.recall_ceiling_n,
                 "opportunity_codes": "|".join(verdict.opportunity_codes),
+                "shadow_opportunity_codes": "|".join(verdict.shadow_opportunity_codes),
                 "data_quality": verdict.data_quality,
                 "reasons": "|".join(verdict.reasons),
             }
@@ -328,10 +419,13 @@ def roll(scan_root: Path | str | None = None) -> pd.DataFrame:
     columns = [
         "date",
         "status",
+        "status_v2",
         "n_bought",
         "n_rejected",
         "n_opportunities",
+        "recall_ceiling_n",
         "opportunity_codes",
+        "shadow_opportunity_codes",
         "data_quality",
         "reasons",
     ]
@@ -347,29 +441,43 @@ def render(ledger: pd.DataFrame) -> list[str]:
     ]
     if ledger is None or not len(ledger):
         return lines + ["_无弃权裁决；未成熟日不会被静默省略。_"]
+    order = ("CORRECT", "FALSE", "NEUTRAL", "IMMATURE")
     counts = ledger["status"].value_counts().to_dict()
+    v2 = ledger.get("status_v2")
+    n_v2 = int(v2.notna().sum()) if v2 is not None else 0
+    counts_v2 = v2.dropna().value_counts().to_dict() if n_v2 else {}
     lines.append(
-        "- 状态:"
-        + " · ".join(
-            f"{status} {counts.get(status, 0)}"
-            for status in ("CORRECT", "FALSE", "NEUTRAL", "IMMATURE")
-        )
+        "- **v2 状态(shadow_buys 口径,主)**:"
+        + (" · ".join(f"{s} {counts_v2.get(s, 0)}" for s in order)
+           if n_v2 else "_尚无 shadow 数据_")
+        + f"(已判 {n_v2}/{len(ledger)} 日)"
+    )
+    lines.append(
+        "- v1 状态(全市场口径,过渡期并存):"
+        + " · ".join(f"{s} {counts.get(s, 0)}" for s in order)
     )
     lines += [
         "",
-        "| 日期 | 裁决 | 被拒 | +2pp机会 | 数据质量 | 机会代码 |",
-        "|---|---|---:|---:|---|---|",
+        "| 日期 | **v2裁决** | v1裁决 | 被拒 | shadow机会 | 召回上限(全市场+2pp) | 数据质量 |",
+        "|---|---|---|---:|---|---:|---|",
     ]
     for row in ledger.itertuples(index=False):
+        s2 = getattr(row, "status_v2", None)
+        s2 = "—(no_shadow)" if s2 is None or (isinstance(s2, float) and pd.isna(s2)) else s2
+        shadow = getattr(row, "shadow_opportunity_codes", "") or "—"
+        ceiling = getattr(row, "recall_ceiling_n", row.n_opportunities)
         lines.append(
-            f"| {row.date} | {row.status} | {row.n_rejected} "
-            f"| {row.n_opportunities} | {row.data_quality} "
-            f"| {row.opportunity_codes or '—'} |"
+            f"| {row.date} | **{s2}** | {row.status} | {row.n_rejected} "
+            f"| {shadow} | {ceiling} | {row.data_quality} |"
         )
     lines += [
         "",
-        "_FALSE 只认次日开盘可交易且相对当日市场中位 ≥+2pp；"
-        "UNKNOWN/坏事实只能令裁决降级，不能伪装成正确弃权。_",
+        "_**v2(主口径)**:机会只认当日 `shadow_buys`(系统最想买的 K 只)—— "
+        "「如果门放行我会买的东西」有没有真跑赢。v1 的机会 = 全市场任一票 ≥+2pp，"
+        "5,000 只的市场里近乎恒真（07-24 实测命中 1,299 只），量的是**召回上限**"
+        "而非弃权决策，已降级为右侧诊断列，≥10 个成熟日后退役。_\n"
+        "_两口径共用同一判定逻辑，只换标的集；FALSE 均只认次日开盘可交易且相对当日"
+        "市场中位 ≥+2pp；UNKNOWN/坏事实只能令裁决降级，不能伪装成正确弃权。_",
     ]
     return lines
 
