@@ -349,8 +349,9 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
        保送票同走 l4-stock 链、同派 intel)− ♻️ 复用数(复用痕迹 = `details/<code>.md` 含
        ♻️ banner,l4_reuse.write_reused_card 所落;details/ 缺 → 期望=全行数,detail 注明
        口径)。0 份 intel = 未启用,本条不出。07-17 实测:10 行 − 1 复用 = 9 稿 ✓。
-    4. **anns 去伪**(info):`anns_empty_rate`==1.0 = expected/no-permission(公告面已由
-       news_em+intel 覆盖),明置非告警(线 D 退役配套)。
+    4. **anns 双源**(warn/info,Wave9 A-1):`anns_source_status.status`——`blind`(双源皆空)
+       = **warn**,公告面只剩 intel 单腿;`fallback` = info(兜底承载,显式记账);`ok` 不出条。
+       旧 run 无该键 → 回落 `anns_empty_rate` 旧 expected 口径,不追溯误报。
     5. **market_view 防锚定**(warn):market_pack.json 的 sector_healthy_top3 行业名出现在
        market_view.md 文本 → L5 专属看多读数泄漏进策略师稿(闭合 final-review I-1)。
     6. **intel 零URL**(warn):单份 intel 稿 `http(s)://` 计数==0 → 情报不可审计
@@ -481,14 +482,28 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
             add("产物形状·intel稿数不符", "warn",
                 f"intel 稿 {len(intel_codes)} 份 ≠ 期望 {expect}({cal})")
 
-    # 4) anns 去伪告警(线 D:expected 无权限 ≠ 当日故障)
-    rate = health.get("anns_empty_rate")
-    if rate is not None:
+    # 4) anns 双源探针(Wave9 A-1:存在性 ≠ 有效性 —— "无权限"曾与"当日故障"同形)
+    st = health.get("anns_source_status")
+    st = st if isinstance(st, dict) else {}   # 坏值(非 dict)按缺处理,回落旧口径,绝不抛
+    status = str(st.get("status", "")) if st else ""
+    if status == "blind":
+        add("产物形状·anns双源盲", "warn",
+            "公告面双源皆空(主源无权限 + 兜底源无料)—— 卡片公告证据仅剩 intel 单腿,"
+            "非 expected;查兜底源可达性")
+    elif status == "fallback":
+        from autoresearch.data.sources.anns_fallback import SOURCE_TAG as _FALLBACK_TAG
+        add("产物形状·anns兜底承载", "info",
+            f"主源空,兜底源({_FALLBACK_TAG})承载 {st.get('fallback_rows', 0)} 行"
+            " —— 公告面在场,已记账")
+    elif status == "" and health.get("anns_empty_rate") is not None:
+        # 旧 run(无 anns_source_status 键)回落旧口径,不误报。"no-permission" 措辞与旧探针
+        # 逐字保留(tests/learning/test_product_shape_lint.py::test_anns_expected_info 锁定这个
+        # 子串;新老口径共用同一条消息,历史 run 复盘时文案不会突变)。
         with contextlib.suppress(TypeError, ValueError):
-            if float(rate) == 1.0:
+            if float(health["anns_empty_rate"]) == 1.0:
                 add("产物形状·anns去伪", "info",
-                    "anns_empty_rate=1.0 = expected/no-permission(公告面已由 news_em+intel 覆盖)"
-                    ",非当日故障告警")
+                    "anns_empty_rate=1.0 = expected/no-permission(旧 run 无双源状态键,"
+                    "按旧 expected 口径回落)")
 
     # 5) market_view 防锚定(sector_healthy_top3 是 L5 专属,泄漏进策略师稿即锚定通道)
     with contextlib.suppress(Exception):

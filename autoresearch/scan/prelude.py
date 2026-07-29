@@ -110,6 +110,18 @@ def render_summary(date: str, results: list[dict], scan_root: Path | str | None 
     for r in results:
         mark = "✓" if r["ok"] else "✗"
         out.append(f"  {mark} {r['step']}: {r['note']}")
+    # 📡 公告主源无权限提醒(Wave9 A-1;presence-gated,只在 blind 才出,fallback/ok 不打扰)。
+    # 沿用本函数其余可选行的记账约定(try/except + stderr,不用 contextlib.suppress)——
+    # 本文件 write_summary 那段注释已有前车之鉴:静默吞异常曾让落盘失败在 workflow 侧
+    # 显示成"已生成",静默降级比响亮失败危险得多。
+    try:
+        from autoresearch.scan.health import anns_source_status
+        anns_dir = Path(scan_root or "context/scan") / date
+        if anns_source_status(anns_dir).get("status") == "blind":
+            out.append("  📡 公告双源皆空 —— 主源 anns_d 无权限且兜底源无料;"
+                       "查 `python -m autoresearch.data.sources.anns_fallback` 冒烟")
+    except Exception as e:  # noqa: BLE001 — 提醒行可选,缺了不挡前奏
+        print(f"[prelude] ✗ anns_source_status: {e}", file=sys.stderr)
     out.append(f"  {prewarm_line(date, scan_root)}")
     try:
         out.append(f"  {macro_state_line(date)}")

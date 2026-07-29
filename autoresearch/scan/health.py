@@ -73,6 +73,48 @@ def anns_empty_rate(scan_dir: Path) -> float | None:
     return round(empty / len(files), 3)
 
 
+def anns_source_status(scan_dir: Path) -> dict:
+    """公告流双源状态(Wave9 A-1)。
+
+    `anns_empty_rate` 只回答"空不空",回答不了"为什么空"——主源无权限与兜底也挂在产物
+    上长得一样。本函数按行内 `source` 标签拆源:
+      ok       = 有非兜底来源的行(主源活着)
+      fallback = 主源无料但兜底源(`source==SOURCE_TAG`,见 anns_fallback.SOURCE_TAG)扛住了
+      blind    = 双源皆空 → **这是 warn,不是 expected**
+    """
+    from autoresearch.data.sources.anns_fallback import SOURCE_TAG as _FALLBACK_TAG
+
+    d = Path(scan_dir) / "L3_news"
+    files = sorted(d.glob("*.json")) if d.is_dir() else []
+    if not files:
+        return {"primary_empty_rate": None, "fallback_rows": 0, "status": "blind"}
+
+    primary_rows = fallback_rows = 0
+    empty_files = 0
+    for p in files:
+        try:
+            v = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 — 坏 JSON 记空
+            v = []
+        rows = v if isinstance(v, list) else []
+        if not rows:
+            empty_files += 1
+        for r in rows:
+            if isinstance(r, dict) and str(r.get("source", "")) == _FALLBACK_TAG:
+                fallback_rows += 1
+            else:
+                primary_rows += 1
+
+    if primary_rows:
+        status = "ok"
+    elif fallback_rows:
+        status = "fallback"
+    else:
+        status = "blind"
+    return {"primary_empty_rate": round(empty_files / len(files), 3),
+            "fallback_rows": fallback_rows, "status": status}
+
+
 def northbound_probe(scan_dir: Path) -> dict | None:
     """northbound 召回通道空转读数:该路召回票数 + 其 hk_ratio NaN 率(=1.0 → quota 白占)。
 
@@ -713,6 +755,7 @@ def run_health(scan_dir: Path) -> dict:
             # anns_d 已退役(2026-07-18):=1.0 是 expected(no-permission·covered by
             # news_em+intel),非告警。键名/数值原样保留(下游兼容),expected 语义走并列布尔。
             "anns_empty_rate": anns_rate,
+            "anns_source_status": anns_source_status(scan_dir),
             "anns_expected": anns_rate is None or anns_rate >= 1.0,
             "northbound": northbound_probe(scan_dir),
             "regime": meta.get("regime"), "l2_engine": meta.get("l2_engine"),
