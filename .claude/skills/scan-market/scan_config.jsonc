@@ -36,7 +36,13 @@
   // 首跑冒烟三查(设计稿 §6,跑完必看):① WebSearch 并发限频(11–30 并发 searcher 会不会被限)
   //   ② 中文源可达率 ③ intel 空稿率。代价:每天多几百次网查、L4 段墙钟 ~14m → ~30m+。
   // 裁决:单变量 A/B,账本 ≥10–20 日再定去留(enabled 改回 false 即干净回滚)。
-  "l4_intel": { "enabled": true, "max_queries": 15 },   // 每票盲搜查询上限(首跑实测>8m 再拧,spec §P4③)
+  // max_queries 15→20(Wave8 W8-13):cap 15 从来没被遵守过 —— 07-24 十一稿 15–26、
+  // 07-27 两稿 18/16、07-28 十一稿 16–29(中位 ~18),**天天报警天天无视** = 狼来了,
+  // 把 P0 探针的公信力一起磨掉了。20 对齐实测中位,让 warn 重新变成信号。
+  // 真正有牙齿的是 `hard_cap`(见 `autoresearch/scan/l4/intel_guard.py`,默认 30):
+  // 自报超硬顶 → 稿件改名 .rejected.md,card 侧 presence-gate 自动回退卡内网查。
+  // 铁律:**只拒稿不拒票** —— 情报是辅助面,不得反噬决策主链。
+  "l4_intel": { "enabled": true, "max_queries": 20 },
 
   // ── Wave 3 性能调度(不改变 finalist/rubric/评级)──
   "performance": {

@@ -32,7 +32,11 @@ const SD = `context/scan/${date}`
 // 其中 7 个 2-消息壳 ≈287k 纯过路费。降 haiku;判断仍在确定性 CLI 里,行为不变。
 function bash(cmd, label, phaseName) {   // 形参勿叫 phase:会遮蔽全局 phase() 分组函数
   return agent(
-    `在仓库根目录精确执行下面这条命令,然后只回报:退出码 + stdout 末 15 行。不要做别的、不要判断、不要解释。\n\n\`\`\`\n${cmd}\n\`\`\``,
+    `在仓库根目录精确执行下面这条命令,然后只回报:退出码 + stdout 末 15 行。不要做别的、不要判断、不要解释。\n` +
+    `**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**` +
+    `若命令的 stdout 已被重定向,回报改用:退出码 + stderr 末 15 行。\n` +
+    `(2026-07-28 事故第一因:壳擅自把 \`frame --json > market_pack.json\` 改成 \`... 2>&1\`,` +
+    `stderr 日志灌进产物,门判据被骗过。)\n\n\`\`\`\n${cmd}\n\`\`\``,
     { agentType: 'general-purpose', model: 'haiku', effort: 'low', label, ...(phaseName ? { phase: phaseName } : {}) })
 }
 const OK = { type: 'object', required: ['ok'],
@@ -44,14 +48,18 @@ const STAGE_RESULT = { type: 'object', required: ['stage', 'status', 'metrics'],
 // 思考,effort high→low 且降 haiku。schema 校验仍在(格式错会被 harness 拒),门行为不变。
 function gate(label, cmd, schema, phaseName) {   // 同上:避免遮蔽全局 phase()
   return agent(
-    `执行:\`${cmd}\`\n它会向 stdout 打印 JSON。把它打印的最后一行 JSON 原样作为你的结构化返回(字段不改、不增删)。`,
+    `执行:\`${cmd}\`\n它会向 stdout 打印 JSON。把它打印的最后一行 JSON 原样作为你的结构化返回(字段不改、不增删)。\n` +
+    `**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向**` +
+    `(混入 stderr 会污染这行 JSON)。`,
     { agentType: 'general-purpose', model: 'haiku', effort: 'low', label, schema, ...(phaseName ? { phase: phaseName } : {}) })
 }
 // 业务门先保留原 stdout 供诊断，Workflow 只消费随后读取并验 hash/contract 的 StageResult。
 function stageGate(label, cmd, stage, phaseName) {
   return agent(
     `依次执行:\`${cmd}; ${R} autoresearch.scan.stage_result show ${SD} ${stage}\`\n` +
-    '前一条命令的 stdout 保留作诊断；把最后一行 StageResult JSON 原样作为结构化返回。',
+    '前一条命令的 stdout 保留作诊断；把最后一行 StageResult JSON 原样作为结构化返回。\n' +
+    '**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向**' +
+    '(混入 stderr 会污染这行 JSON)。',
     { agentType: 'general-purpose', model: 'haiku', effort: 'low', label,
       schema: STAGE_RESULT, ...(phaseName ? { phase: phaseName } : {}) })
 }
@@ -60,34 +68,41 @@ function stageGate(label, cmd, stage, phaseName) {
 phase('Prelude')
 // frame 先行:pack 存盘 + 取数入湖(prelude/universe 随后湖命中不重拉)
 log('Prelude 开始:frame → [universe 全市场取数 ∥ market_view](取数历史 ~10m,完成即 GATE1)')
-await bash(`mkdir -p ${SD} && ${R} autoresearch.scan.frame ${date} --json > ${SD}/market_pack.json`, 'frame', 'Prelude')
+await bash(`mkdir -p ${SD} && ${R} autoresearch.scan.frame ${date} --json-out ${SD}/market_pack.json`, 'frame', 'Prelude')
 // frame 与 universe 同样走 tushare 全市场取数,同样会 ChunkedEncodingError 半途而废 —— 但此前只有
-// universe 有重试守卫(见下方 l2-check),frame 这条裸奔。2026-07-27 实跑逮到:frame 在 11/12 端点
-// 处断线退出码 1,`>` 重定向只留下 **0 字节** market_pack.json;bash() 不看退出码 → 空 pack 一路
-// 流到 market_view。macro-brief 正确拒写(空壳比缺文件更坏:文件一旦存在就压掉 L5 的
+// universe 有重试守卫(见下方 l2-check),frame 这条裸奔。事故两代:
+//   2026-07-27:frame 在 11/12 端点断线退出码 1,`>` 重定向留下 **0 字节** pack;
+//   2026-07-28:执行壳擅自把命令改写成 `... > pack 2>&1`,stderr 日志 + tqdm 进度条灌进 pack
+//              (1,776B 无 JSON)—— **非空**,于是判据 `test -s` 放行、重试分支根本没触发。
+// 两代同一病灶:产物由 shell 重定向 + 进程 stdout 决定。W8-1 收回 writer 侧(`--json-out`
+// 先写 .tmp 再 os.replace),W8-2 把门判据从「非空」改成「JSON 可解析」——存在性 ≠ 有效性。
+// 空/垃圾 pack 的下游代价照旧:macro-brief 会拒写(空壳比缺文件更坏 —— 文件一旦存在就压掉 L5 的
 // render_fallback_pulse 回退,还经 l4_card.py 的 market_context_block 把无信息简报注入每张 L4 卡),
-// 于是 market_view.md 缺席、L3 在没有地形段的情况下精排 —— 静默降级,25 分钟后才被人眼发现。
-// 同族前科:空 pickle 永不重拉 / 空 slim 默认 Hold。判据用 `test -s`(非零字节),与 l2-check 同形。
+// 于是 market_view.md 缺席、L3 在没有地形段的情况下精排。同族前科:空 pickle 永不重拉 / 空 slim 默认 Hold。
 const packok = await gate('pack-check',
-  `test -s ${SD}/market_pack.json && echo '{"ok":true}' || echo '{"ok":false,"reason":"market_pack 0 字节(frame 崩)"}'`,
+  `${R.replace('python -m', 'python -c')} "import json,sys;json.load(open('${SD}/market_pack.json'))" 2>/dev/null && echo '{"ok":true}' || echo '{"ok":false,"reason":"market_pack 缺失或非合法 JSON(frame 崩 / 产物被污染)"}'`,
   OK, 'Prelude')
 if (!packok || !packok.ok) {
-  log('⚠️ market_pack 空(frame 半途失败)→ 重试一次')
-  await bash(`${R} autoresearch.scan.frame ${date} --json > ${SD}/market_pack.json`, 'frame-retry', 'Prelude')
+  log('⚠️ market_pack 缺失或非合法 JSON(frame 半途失败)→ 重试一次')
+  await bash(`${R} autoresearch.scan.frame ${date} --json-out ${SD}/market_pack.json`, 'frame-retry', 'Prelude')
   const packok2 = await gate('pack-recheck',
-    `test -s ${SD}/market_pack.json && echo '{"ok":true}' || echo '{"ok":false,"reason":"重试后仍空"}'`,
+    `${R.replace('python -m', 'python -c')} "import json,sys;json.load(open('${SD}/market_pack.json'))" 2>/dev/null && echo '{"ok":true}' || echo '{"ok":false,"reason":"重试后仍缺失/非法"}'`,
     OK, 'Prelude')
   // 不 throw:market_pack 是 B 级(缺了 L3 少地形段、L5 有确定性脉搏回退,持仓仍需当日卡)。
   // 但降级必须留痕 —— 这一行就是账,别让它再静默。
   if (!packok2 || !packok2.ok) {
-    log('🚨 market_pack 重试后仍空 → 本次 L3/L4 无市场地形段(B级降级·已记账);market_view 会拒写,L5 走确定性脉搏回退')
+    log('🚨 market_pack 重试后仍缺失/非法 → 本次 L3/L4 无市场地形段(B级降级·已记账);market_view 会拒写,L5 走确定性脉搏回退')
   } else {
     log('pack-check ✓(重试后)')
   }
 }
 // universe(确定性)∥ market_view(macro-lite 判断)—— barrier
 await parallel([
-  () => bash(`${R} autoresearch.scan.prelude ${date} && echo "SUMMARY_FILE=${SD}/_prelude_summary.md"`,
+  // W8-5:回显必须以**文件真在**为条件。原先 `prelude && echo SUMMARY_FILE=...` 只看 prelude
+  // 退出码,07-28 汇总屏写盘失败(被 suppress 吞)时照样回显路径 → agent 回报「Summary file
+  // generated」但文件不存在,CP1 转播落空。日志不得替不存在的文件背书。
+  () => bash(`${R} autoresearch.scan.prelude ${date}; test -s ${SD}/_prelude_summary.md ` +
+    `&& echo "SUMMARY_FILE=${SD}/_prelude_summary.md" || echo "SUMMARY_MISSING(见 stderr 的落盘失败行)"`,
     'prelude/universe', 'Prelude'),
   () => agent(
     `读 ${SD}/market_pack.json,按你的人设写 ${SD}/market_view.md(六小节;前3描述性地形、后2仅 L5)。数字只出自 pack,不编;个股不评级、不锚定卡片。pack 里的 sector_healthy_top3 键是 L5 专用的确定性产物,忽略它,不得把"看多行业"及其排名写进任何小节。`,

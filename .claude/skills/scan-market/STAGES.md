@@ -408,3 +408,77 @@ PREREGISTERED
 7. **2026-07-12 三波全部未实跑**:L3 两遍法+finalist tier(pass1 影子/bench 账本/守卫)、L4 情报站(config 默认关,启用即换 sonnet·max 盲搜)、自学习 P0 仪器(新鲜度行/过程分/收缩注入/lesson_yield/C18 红灯)——**下次真扫描=三波联合验收**,清单=`.superpowers/sdd/final-review-l3-merge.md`+`final-review-l4-intel.md`+各设计稿;07-07/08 复盘欠账由 nag 浮出;自学习 P0 波欠一轮正式终审(速审模式)。
 8. **2026-07-11 P0+P1 波新开线头**:温度计菜单/预算联动待相位判定质量复审(下一波);L3 pf 指纹/lint 打回/L4 中性前提/盲读/基率行/📐锚/ensemble 全部**未实跑**(确定性件测试绿,LLM 段脚手架就位,下次真扫描=正式验收);capfloor20 影子/新配额(value250/heat150/main_fund150)攒 channel_ledger 前向读数 ≥10 日再复盘;三门账本/tail_rate 攒 ≥20 日才裁雷分级(P2);07-09 冒烟发现 reversal_confirm/healthy 当日 0 召回(数据条件性,非接线故障——起爆硬门无人过/健康谓词依赖 cmf 列,留意后续真跑读数)。
 8. 仅供研究,非投资建议。
+
+---
+
+## 运维细节(Wave8 W8-10 自 SKILL 下沉;SKILL 只留指针)
+
+> 下沉理由:07-28 真计量首次把主会话计入 CP7 —— **$30.50 / 全场 48.7%**,双倍击穿
+> Wave6 定的 25% 挂账线。每次唤醒都按全上下文计 cache 读,SKILL 主文越长,整条流水线
+> 每一次派发/收通知都在为它付钱。这里收的是**跑动时不需要逐字读**的历史注与安装步骤。
+
+### 夜间预热(launchd)
+
+交易日 19:30 自动 `scripts/prewarm.sh`(= `python -m autoresearch.scan.prewarm`,湖预拉+
+温度;calibrate 默认不跑,防污染 changelog/DSR 计数)。安装:
+
+```bash
+sed "s|__REPO__|$PWD|" scripts/com.tradingagents.scan-prewarm.plist \
+  > ~/Library/LaunchAgents/com.tradingagents.scan-prewarm.plist \
+  && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tradingagents.scan-prewarm.plist
+launchctl list | grep scan-prewarm          # 验证
+launchctl kickstart -p gui/$(id -u)/com.tradingagents.scan-prewarm   # 手动触发
+```
+
+**2026-07-25 装载并实测**(此前一直没装 —— `_prewarm.json` 全历史只有 07-10/07-13,
+等于每次扫描白付 8–10min 取数):手动触发跑通(帧 3975 只入湖 + 21 次端点预拉 + 温度 +
+档案池预取 30/30,约 12min)。跑过预热的日子,开扫时 universe/L3 evidence 全湖命中
+(07-28 实测 L0L1L2 仅 6m36s)。**当天有没有预热看汇总屏第一屏的「预热(夜间):✓/✗」行**,
+不用事后考古。
+
+### user_config 传参事故(2026-07-21,fb_20260721_001)
+
+`frame --json` 回显的 `user_config` 必须随 Workflow `args.config` 传入,并在 L4 逐股
+作为 `args.cfg` 原样透传。**传 `{}` = 静默关 l4_intel + 全体 agent 掉回内建缺省 effort**。
+07-21 事故:配置真身是 `scan_config.jsonc`(**.jsonc 非 .json**),按旧名 `.json` 查无 →
+传空 → 12 只零情报稿 + 12 卡跑 xhigh(配置写的是 max)。GATE 探针提案 `pr_20260721_001`。
+优先级:**scan_config > workflow 内建 > agent def frontmatter**(缺配置/缺键 = 现硬编码值,parity)。
+
+### 哨兵 vs 持仓(2026-07-17 实测)
+
+哨兵判据只问「今天有没有值得买的」,**不含「持仓要不要动」**。有 pinned 持仓时哨兵档跳
+L3/L4 会让持仓拿不到当日决策卡 → 传 `force_full: true` 覆盖。07-17 实测:全市场健康上涨
+1.3%(哨兵开火)但 4 只持仓身处 192 只跌停的崩盘日,靠 `force_full` 才拿到 Sell/UW
+(协创 Sell·普冉/长飞/北方华创 UW)。哨兵说的「没得买」是对的,它只是不知道你有持仓要判。
+2026-07-28 同样走 `force_full`,三持仓当日 −12.26%/−16.62%/−10%(跌停),前一日卡上的
+三条止损位全部触发。
+
+### L4 派发节奏沿革
+
+- **2026-07-14 起**每股一个 `l4-stock` workflow(fb_20260714_003),粒度不变。
+- **2026-07-29(Wave8 W8-8)** 派发节奏由「批次间顺序 + 批次内并行」改**滑窗**:旧法每批
+  等最慢者,07-28 实测批 3 的普冉 40.6min 独自拖尾 15min+。桌演(07-28 每股实测 duration,
+  cap=4):批次串行 **80.0m** → 滑窗原序 74.9m → **滑窗+最长先行 66.2m**(省 13.8m/17%),
+  理论下界(总工时÷4)60.5m。最长先行序恰为三只 pinned 打头。
+
+### 活体情报站首跑冒烟(2026-07-14)
+
+空稿 0/13、中文源可达 ✓;但逮到**捏造涨停断言**(`pr_20260714_006`)与限频形同虚设 /
+零 URL(`pr_20260714_007`)。**铁律:卡片对 intel 的价格类断言必须与 verified OHLCV
+对账后才可采信。** 2026-07-28 复检:零 URL 已不复现(11 稿 2–8 URL),稿件会主动拒绝
+口径不符的数据;限频仍超(自报 16–29 vs cap 15)→ Wave8 W8-13 升格。
+
+### 0 买日播报口径(2026-07-21 实测)
+
+0 买日必须播**停因分桶**(早停 N 张〔按停因〕/ 满卡未达 OW M 张)。
+**不要说「无一过 ≥OW 三门」**——早停卡按定义不写三门段(07-21 实测 12 卡里 6 张早停、
+仅 2 张可解析三门),那句话不被数据支持。
+
+### 覆盖档案:重做首覆的正确姿势
+
+📐 = 该报告期未对账、🕰️ = 档案 >90 日未全量刷新。解药是该票跑一次**成功的季度对账**
+(`dossier.reconcile <period>`,唯一写 `last_refresh` 的路径)。要重做首覆须先
+`builder --force`(**不是** `dossier-init --force`,该 flag 不存在;对已建档票重派
+`dossier-init` 是 no-op,清不掉 🕰️)再派 `dossier-init`;注意 `builder --force` 会清空
+`initiated`/`last_refresh`,该票期间同时退出 🕰️ 与 `pending_init` 两个探针视野。
+未披露也会落痕(不是"没跑"),所以 📐 计数应随对账动作**下降**;天天恒定 = 探针坏了。

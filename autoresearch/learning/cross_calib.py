@@ -24,11 +24,27 @@ import pandas as pd
 
 from autoresearch.learning.shrink import MIN_N_INJECT, n_tag, shrink as _shrink_fn, shrink_config
 
-_FLIP_COLS = ["lane", "n", "n_hiconv", "flip_rate", "triage_n", "triage_hit", "thin"]
+_FLIP_COLS = ["lane", "n", "n_hiconv", "flip_rate", "triage_n", "triage_hit",
+              "lean_n", "lean_confirm", "lean_confirm_rate", "thin"]
 _GATE_COLS = ["gate", "n_blocked", "n_realized", "mean_ex2", "mean_ex5", "block_ok_rate",
               "misskill_n", "misskill_rate", "thin"]
 _LOW = ("Underweight", "Sell")
+_HIGH = ("Overweight", "Buy")
 _HICONV = 70
+
+# `triage_lean` 历史上有两套词表,消费方必须都认(2026-07-29 W8-12 逮到):
+#   中文期 06-18~07-03(12 日):看多 / 中性 / 回避 / 中性偏多 / 看多偏谨慎
+#   英文期 07-06 起(13 日起):OW / Hold / UW
+# 此前 `triage_hit` 只匹配 `== "回避"` → **对整个英文期全瞎**(07-28 的 healthy lane
+# triage_n=0,尽管当天 6 只 OW)。30 日窗口早已以英文期为主,那条读数其实一直是废的。
+# 同族病灶:「旗/口径在,但消费方不认识它」。
+_AVOID_LEAN = frozenset({"回避", "UW", "Underweight"})
+_BULLISH_LEAN = frozenset({"看多", "OW", "Overweight"})   # 「中性偏多/看多偏谨慎」样本共 9 条,不收
+
+# OW-lean 确认率的**鉴别力下限**:全 lane 池化确认率低于此,该指标就分不清
+# 「这条 lane 在乱报 OW」和「L4 本来就极少给 Overweight」——2026-07-29 实测全库
+# 496 个终评里 ≥Overweight 仅 9 个(1.8%)。低于门槛只出说明行,不出指控行。
+_LEAN_BASE_FLOOR = 0.10
 
 
 def _days(scan_root: Path | str | None, window: int) -> list[Path]:
@@ -80,11 +96,17 @@ def flip_stats(scan_root: Path | str | None = None, window: int = 30,
     hi_all = matched[conv_all >= _HICONV]
     p_global = float(hi_all["final"].isin(_LOW).mean()) if len(hi_all) else None
 
+    lean_all = matched[matched.get("triage_lean", pd.Series(dtype=str)).isin(_BULLISH_LEAN)] \
+        if "triage_lean" in matched.columns else matched.iloc[0:0]
+    p_lean_global = float(lean_all["final"].isin(_HIGH).mean()) if len(lean_all) else None
+
     out = []
     for lane, g in matched.groupby("lane"):
         conv = pd.to_numeric(g.get("conviction"), errors="coerce")
         hi = g[conv >= _HICONV]
-        tg = g[g["triage_lean"] == "回避"] if "triage_lean" in g.columns else g.iloc[0:0]
+        has_lean = "triage_lean" in g.columns
+        tg = g[g["triage_lean"].isin(_AVOID_LEAN)] if has_lean else g.iloc[0:0]
+        lg = g[g["triage_lean"].isin(_BULLISH_LEAN)] if has_lean else g.iloc[0:0]
         n_hi = len(hi)
         raw = float(hi["final"].isin(_LOW).mean()) if n_hi else None
         if raw is None or n_hi < MIN_N_INJECT:
@@ -94,10 +116,28 @@ def flip_stats(scan_root: Path | str | None = None, window: int = 30,
             flip_rate = round(float(shrunk), 3) if shrunk is not None else None
         else:
             flip_rate = round(raw, 3)
+        # OW-lean 确认率:L3 说看多、L4 终评 ≥Overweight 才算认。与 flip_rate 是**两个问题** ——
+        # flip 问「高确信被压没被压」(分母 conviction≥70),lean 问「看多倾向被认没被认」
+        # (分母 triage_lean 看多)。2026-07-28:6 只 OW-lean 全在 healthy lane、L4 确认 0 只,
+        # 而其中只有 1 只 conviction≥70 → 光看 flip_rate 完全看不见这场 0/6。
+        n_lean = len(lg)
+        lean_confirm = int(lg["final"].isin(_HIGH).sum()) if n_lean else 0
+        if not n_lean or n_lean < MIN_N_INJECT:
+            lean_rate = None                      # n<3 绝对禁注(与 flip_rate 同一条底线)
+        else:
+            raw_lean = lean_confirm / n_lean
+            if shrink:
+                shrunk = _shrink_fn(raw_lean, n_lean, p_lean_global, k)
+                lean_rate = round(float(shrunk), 3) if shrunk is not None else None
+            else:
+                lean_rate = round(raw_lean, 3)
         out.append({"lane": lane, "n": len(g), "n_hiconv": n_hi,
                     "flip_rate": flip_rate,
                     "triage_n": len(tg),
                     "triage_hit": round(float(tg["final"].isin(_LOW).mean()), 3) if len(tg) else None,
+                    "lean_n": n_lean,
+                    "lean_confirm": lean_confirm,
+                    "lean_confirm_rate": lean_rate,
                     "thin": n_hi < min_n})
     return (pd.DataFrame(out, columns=_FLIP_COLS)
             .sort_values("n_hiconv", ascending=False).reset_index(drop=True))
@@ -183,8 +223,17 @@ def gate_stats(scan_root: Path | str | None = None, window: int = 30,
             .sort_values("n_blocked", ascending=False).reset_index(drop=True))
 
 
+def lean_base_rate(flips: pd.DataFrame) -> float | None:
+    """全 lane 池化的 OW-lean 确认率(∑confirm / ∑lean_n)—— 建议行的鉴别力判据。"""
+    if flips is None or not len(flips) or "lean_n" not in flips.columns:
+        return None
+    n = float(pd.to_numeric(flips["lean_n"], errors="coerce").fillna(0).sum())
+    c = float(pd.to_numeric(flips["lean_confirm"], errors="coerce").fillna(0).sum())
+    return (c / n) if n else None
+
+
 def suggestion_lines(flips: pd.DataFrame, gates: pd.DataFrame,
-                     min_n: int = 10) -> list[str]:
+                     min_n: int = 10, lean_base: float | None = None) -> list[str]:
     """两条建议行(编排层手贴:🔁 → L3 校准块旁;🚪 → skeptic/PM 先验旁);thin → 禁注。
 
     🔁 行:`flip_stats` 已把 `flip_rate` 收缩且 n_hiconv<3 禁注(`flip_rate=None`),本函数
@@ -201,6 +250,34 @@ def suggestion_lines(flips: pd.DataFrame, gates: pd.DataFrame,
                          f"——该 lane 论点请先自证翻案主因")
         else:
             lines.append(f"🔁 L3校准:各 lane 高确信样本 <{MIN_N_INJECT} ⚠样本少·禁注,先积累")
+        # 第二条 🔁:OW-lean 确认率最差的 lane。与上一条问的不是同一件事 ——
+        # 上面问「高确信被压没被压」,这里问「看多倾向被 L4 认没认」。2026-07-28 的
+        # healthy lane 0/6 只有这条看得见(6 只里仅 1 只 conviction≥70)。
+        #
+        # ⚠️ **鉴别力闸(2026-07-29 实测后加)**:全库 496 个终评里 ≥Overweight 只有 9 个
+        # (**1.8%**)。基准这么低时,「某 lane 确认率 0%」几乎只是在复述「L4 本来就极少给
+        # Overweight」,不是那条 lane 的罪 —— 照这个数注入会推着 L3 别报 OW,**方向正好
+        # 反了**(买入侧本就是稀缺项)。所以基准 <`_LEAN_BASE_FLOOR` 时不出建议行,改出
+        # 一行诚实说明;出行时也必须把基准并排写上,让读者无法误读成 lane 特有缺陷。
+        # 承接教训:先问「这把尺子量的是不是他做的事」。
+        if "lean_confirm_rate" in flips.columns:
+            lean_ok = flips[flips["lean_confirm_rate"].notna()]
+            base = lean_base if lean_base is not None else lean_base_rate(flips)
+            base = float("nan") if base is None else base
+            if not len(lean_ok):
+                pass
+            elif pd.isna(base) or base < _LEAN_BASE_FLOOR:
+                lines.append(
+                    f"🔁 L3校准:OW-lean 确认率暂无鉴别力(全 lane 基准仅 "
+                    f"{0.0 if pd.isna(base) else base:.1%},<{_LEAN_BASE_FLOOR:.0%})"
+                    f"——L4 极少给 ≥Overweight,低确认率不构成对某条 lane 的指控,先积累")
+            else:
+                w = lean_ok.sort_values("lean_confirm_rate").iloc[0]
+                lines.append(
+                    f"🔁 L3校准:{w['lane']} lane 的 OW-lean 被 L4 确认率 "
+                    f"{w['lean_confirm_rate']:.0%}({int(w['lean_confirm'])}/{int(w['lean_n'])},"
+                    f"全 lane 基准 {base:.0%}){n_tag(w['lean_n'], min_n)}"
+                    f"——该 lane 报 OW 前请先自证与 L4 的分歧主因")
     if gates is not None and len(gates):
         ok = gates[(pd.to_numeric(gates["n_blocked"], errors="coerce") >= min_n)
                    & gates["misskill_rate"].notna()]
@@ -226,11 +303,13 @@ def render(flips: pd.DataFrame, gates: pd.DataFrame) -> list[str]:
     if flips is None or not len(flips):
         out.append("_无 L3_judged × 卡片数据_")
     else:
-        out += ["| lane | n | 高确信n | 翻案率 | 回避n | 回避命中 | |", "|---|---|---|---|---|---|---|"]
+        out += ["| lane | n | 高确信n | 翻案率 | 回避n | 回避命中 | OW-lean n | OW确认率 | |",
+                "|---|---|---|---|---|---|---|---|---|"]
         for r in flips.itertuples(index=False):
             thin = "⚠样本少" if r.thin else ""
             out.append(f"| {r.lane} | {r.n} | {r.n_hiconv} | {f(r.flip_rate)} "
-                       f"| {r.triage_n} | {f(r.triage_hit)} | {thin} |")
+                       f"| {r.triage_n} | {f(r.triage_hit)} "
+                       f"| {r.lean_n} | {f(r.lean_confirm_rate)} | {thin} |")
     out += ["", "## 🚪 rubric 门柱级拦对/错杀(binding=唯一✗门;ex2<0=拦对(主口径,T+2);"
             "错杀=ex2>0 且触价命中卡内目标——日期分界:v3 起 hi_2,旧卡 hi_10;ex5 列供参考)", ""]
     if gates is None or not len(gates):

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import date
 from pathlib import Path
@@ -151,6 +152,28 @@ def build_market_frame(analysis_date: str, *, cap_floor_yi: float = 30.0, includ
 # ───────────────────────── CLI:盘前哨兵预告(零 LLM) ─────────────────────────
 
 
+def _atomic_write_json(path: Path | str, payload: dict) -> Path:
+    """JSON 原子落盘:先写 `.tmp` 再 `os.replace`(同目录换名,POSIX 原子)。
+
+    产物文件从此由 writer 持有,不再由 shell 重定向 + 进程 stdout 决定内容 ——
+    2026-07-28 事故里执行壳多加一个 `2>&1` 就把日志灌进了 market_pack.json,
+    而 `>` 在进程半途崩时留下的半截文件同样非空、同样骗过 `test -s` 门。
+
+    失败语义:序列化抛异常 → 目标文件保持原样(或仍不存在),临时文件清掉,
+    绝不产生"非空但无效"的中间态。
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, path)          # 原子:要么旧内容,要么新内容,没有中间态
+    except BaseException:
+        tmp.unlink(missing_ok=True)    # 失败路径不留残渣
+        raise
+    return path
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="盘前市场帧:regime + 哨兵预告(确定性,零 LLM,不依赖 scan staging)")
     ap.add_argument("date", nargs="?", help="分析日 YYYY-MM-DD(缺省=今天)")
@@ -158,14 +181,20 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--exclude-bj", action="store_true", help="排除北交所(默认纳入)")
     ap.add_argument("--source", choices=["em", "tushare"], default="tushare")
     ap.add_argument("--json", action="store_true", help="另打印 market_pack JSON(宏观 lite / Stage 0 输入)")
+    ap.add_argument("--json-out", metavar="PATH",
+                    help="market_pack JSON 原子落盘到 PATH(先写 .tmp 再 os.replace)。"
+                         "**推荐替代 `--json > file`** —— 产物不再经 shell 重定向,"
+                         "壳误加 2>&1 或取数半途崩都污染不了它(2026-07-28 事故)")
     args = ap.parse_args(argv)
     analysis_date = args.date or date.today().isoformat()
+    want_pack = bool(args.json or args.json_out)
 
     import contextlib
 
-    # --json 时把整个构建段的 stdout 圈进 stderr:湖冷时取数层(tushare_source 等)会 print 进度行,
+    # 产 pack 时把整个构建段的 stdout 圈进 stderr:湖冷时取数层(tushare_source 等)会 print 进度行,
     # 只改本函数三行 info 挡不住(2026-07-09 market_pack 污染的完整根因)。JSON 是 stdout 唯一产出。
-    with contextlib.redirect_stdout(sys.stderr) if args.json else contextlib.nullcontext():
+    # (--json-out 下产物已不走 stdout,这层仍留着:让 --json/--json-out 的 stdout 语义保持一致。)
+    with contextlib.redirect_stdout(sys.stderr) if want_pack else contextlib.nullcontext():
         frame, counts = build_market_frame(analysis_date, cap_floor_yi=args.cap_floor,
                                            include_bj=not args.exclude_bj, source=args.source)
         # Wave5 ③A:资金面/指数估值取数落 `_macro_cn.json` —— 必须在 market_pack 之前跑,
@@ -189,7 +218,7 @@ def main(argv: list[str] | None = None) -> int:
         from autoresearch.macro.state import load_macro_state  # Phase 2:宏观 lite 的输入捆绑
         mstate, mnote = load_macro_state(analysis_date, regime_today=reg.get("label"))
         print(f"[macro_state] {mnote}", file=sys.stderr)
-    if args.json:
+    if want_pack:
         from autoresearch.scan.artifacts import artifact_schema_versions
         from autoresearch.scan.budget import normalize_budgets
         from autoresearch.scan.run_contract import RunContract, write_run_contract
@@ -238,13 +267,18 @@ def main(argv: list[str] | None = None) -> int:
             warnings=[],
             error=None,
         )
-        print(json.dumps({
+        payload = {
             **pack,
             "macro_state": mstate,
             "macro_state_note": mnote,
             "user_config": user_cfg,
             "run_contract": contract.short_ref(),
-        }, ensure_ascii=False, indent=2))
+        }
+        if args.json_out:
+            out = _atomic_write_json(args.json_out, payload)
+            print(f"[frame] market_pack → {out}(原子落盘)", file=sys.stderr)
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
 

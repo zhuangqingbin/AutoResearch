@@ -21,7 +21,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 | **L4** | 研究 | 一只=一个Opus subagent渐进深度+早停 | 决策卡(P0简报→P1–P3表面→主早停②→P4陷阱核→P5;`rubric_rating`派生评级) | ~29卡 | 大头 |
 | **L5** | 整合 | 确定性 | summary(逐阶段表+token估算)+buy-list+漏斗溯源 | 1份 | 0 |
 
-本 skill 是**编排器**:确定性层(零 LLM)= L0/L1/L2(`autoresearch.scan.universe`,L2=`l2_stratify.select_l2` 分层多样性采样,ML-free)+ L5(`autoresearch.scan.assemble` 兼容 CLI，内部由 `publisher`→`report_sections` / `decision_finalize` / `post_run` 分责),纯 pandas 不编数、不预测;AI 判断层 = L3(holistic 单 agent)+ L4(逐只决策卡,委托 **stock-research lite 档**——一只 finalist = 一个 Opus subagent 渐进深度 DD + 早停,P0简报定向→P1–P3表面→主早停②→P4陷阱核→③击杀→P5满卡),subagent 只回传紧凑结果。
+本 skill 是**编排器**:确定性层(零 LLM)= L0/L1/L2(`scan.universe`,L2 是 ML-free 分层采样)+ L5(`scan.assemble`,内部 `publisher`/`report_sections`/`decision_finalize`/`post_run` 分责),纯 pandas 不编数、不预测;AI 判断层 = L3(holistic 单 agent)+ L4(逐只决策卡,委托 **stock-research lite 档**:P0简报→P1–P3表面→早停②→P4陷阱核→P5满卡),subagent 只回传紧凑结果。
 
 ## 何时用 / 不用
 - ✅ 用户想**一次扫全市场**、挖"值得买的票 / 强势板块"(A股)。
@@ -38,15 +38,16 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 
 ## 流程(6 段)
 
-> **编排真身 = 两段 workflow + 主会话收尾**:① `.claude/workflows/scan-market.js`(Prelude→L3→L4-prep;默认流式 L4,返回 `{dispatch, dispatch_batches, task_book, reused, meta}`)→ ② 主会话必须按 `dispatch_batches` **批次间顺序执行、批次内并行**拉 `.claude/workflows/l4-stock.js`；每票先过 `_l4_tasks.json` preflight，再让 slim 与 intel 并行，随后 card→(≥OW)双复核。单票失败只改变本票状态，不重跑已成功票 → ③ 全部批次完成后跑步骤 5 的 assemble/GATE4/计量回填。`streaming_l4=false` 才回到旧批量 GATE3。**正常跑动直接用 workflow**;以下命令留作调参/单步重跑入口。操作模板分驻:市场研判在 `macro-research/macro-playbook.md` 末节、L4 决策卡在 stock-research 的 `lite-playbook.md`;**各阶段机制/参数/实证读数**见 `STAGES.md`。
+> **编排真身 = 两段 workflow + 主会话收尾**:① `.claude/workflows/scan-market.js`(Prelude→L3→L4-prep;默认流式 L4,返回 `{dispatch, dispatch_batches, task_book, reused, meta}`)→ ② 主会话按**滑窗**拉 `.claude/workflows/l4-stock.js`(保持 `effective_cap` 只在飞,每完成一只补派一只,📌pinned/最长者先行——详见步骤 4)；每票先过 `_l4_tasks.json` preflight，再让 slim 与 intel 并行，随后 card→(≥OW)双复核。单票失败只改变本票状态，不重跑已成功票 → ③ **task_book 全 SUCCEEDED** 后跑步骤 5 的 assemble/GATE4/计量回填。`streaming_l4=false` 才回到旧批量 GATE3。**正常跑动直接用 workflow**;以下命令留作调参/单步重跑入口。操作模板分驻:市场研判在 `macro-research/macro-playbook.md` 末节、L4 决策卡在 stock-research 的 `lite-playbook.md`;**各阶段机制/参数/实证读数**见 `STAGES.md`。
 >
-> **进度可视化(必做,2026-07-12 用户反馈"跑起来主对话一片空白")**:workflow 一落地就**同时**挂一个 Monitor 播报进度到主对话 ——
+> **进度可视化(必做,2026-07-12 用户反馈"跑起来主对话一片空白")**:L4 派发后挂一个 Monitor —— 
 > ```
-> Monitor(command: "uv run --no-sync python -m autoresearch.scan.progress <date> --watch",
->         description: "scan 漏斗进度", timeout_ms: 3600000, persistent: false)
+> Monitor(command: "uv run --no-sync python -m autoresearch.scan.l4_watch <date> --watch",
+>         description: "L4 逐股出卡", timeout_ms: 3600000, persistent: false)
 > ```
-> `autoresearch.scan.progress`(确定性读盘,零 LLM)从产物文件反推阶段+计数,**只在变化时**打一行(不刷屏):`⏳ L4 · finalists 11 · 🕵️ 情报 8 · 卡 7/11 · Hold 5·Overweight 1`。跑完自动退出。用户另可用 `/workflows` 看 spinner 级进度树。
-> ⚠️ **播报是「反推」不是「断言」**:它靠产物文件的存在性猜阶段,**不区分「在跑 / 被跳过 / 挂了」,也可能把某阶段的输入产物当成它已完成**(2026-07-17 实测误报两次:哨兵档已提前返回却报「L3 精排中」、把 l3-rank 的输入 `_l3_table.md` 当成「精排 ✓」)。真信号以 workflow 的 `journal.jsonl`(每 agent 一条 `started`/`result`)为准,别拿播报当阶段状态断言。代码侧修复在 `pr_20260717_004`。
+> `autoresearch.scan.l4_watch`(确定性读盘,零 LLM)**只认 `_l4_tasks.json`**:某票 status 进终态(SUCCEEDED 且 card hash 已记 / FAILED)才播一行 `🃏 k/N 代码 名称 → 评级`;全部终态自动退出,收尾附「ensemble 折回待结算」提示。这**就是 CP5**,不用再自己轮询卡片。
+> ⚠️ **它播的是卡片评级,不是终评**:`sell_review`/`ow_review` 的折回发生在 assemble 之后(2026-07-28:688766 卡片 UW、复核中位 Hold)——见到 `↩️` 行就等 assemble,别照卡片下结论。
+> ⚠️ **L4 之前的阶段没有 Monitor**:靠 CP0-CP4 的主动播报(下表)。前任 `scan.progress` 靠产物存在性猜阶段、分不清「在跑/被跳过/挂了」,累犯误报三次(2026-07-17 两次 + 07-28 GATE1 未过就报「L3 精排中」),已于 Wave8 退役。真信号一律以 workflow 的 `journal.jsonl`(每 agent 一条 `started`/`result`)为准。
 >
 > ### 过程直播契约(必做,2026-07-25 用户反馈"各环节展示不够优雅完整")
 >
@@ -59,31 +60,26 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 > | CP2 | 行业 brief 齐 | 每个行业一句地形定调 | 各 `sector_briefs/*.md` 地形段首句 |
 > | CP3 | GATE2 过 | **入围名单逐只**(代码/名称/行业)+ 被 pass1 切掉的影子名单 | workflow 的 `L3入围` 日志 + `_l3_pass1_cut.csv` |
 > | CP4 | L4 派发 | 派发 N 股 + 预算旗 + intel 开关 + 📌保送名单 | workflow 日志(含 `📌 保送票` 行) |
-> | CP5 | L4 进行中 | **每出一张卡播一行**:k/N 代码 名称 评级 | 轮询 `details/*.md`(见下方滚动表) |
+> | CP5 | L4 进行中 | **每出一张卡播一行**:k/N 代码 名称 评级 | `l4_watch` Monitor 自动播(上方),主会话不用管 |
 > | CP6 | L4 全完 | 评级分布 + 停因分桶 + OW三门直方图 | `uv run --no-sync python -m autoresearch.scan.render <date> --view gate_hist` |
 > | CP7 | GATE4 过 | 买单/0买判词 + 产物路径 + 分段耗时 + **token 真计量** | `summary.md` 摘录 + `--view timing` + `usage_harvest`(下方) |
 >
-> **CP7 的 token/成本计量**(替代 bytes÷2.8 估算):
-> `uv run --no-sync python -m autoresearch.trace.usage_harvest --session <本次 sessionId> --out reports/scan/<run_id>/token_usage.md --json-out context/scan/<date>/_token_usage.json`
-> 随后执行
-> `uv run --no-sync python -m autoresearch.scan.post_run <date> observe --report-dir reports/scan/<run_id>`，
-> 把 canonical JSON 回填进 `summary.md` 的成本/时延节、`_budget_observation.json` 与 ArtifactIndex。
-> 表覆盖可定位到的**主会话 + subagent**，按 message.id 去重，并分 input/output、cache read、5m/1h write、模型、effort、失败/重试/废弃及公开价估算；成本按相应公开计价倍率**加权**，不能拿原始 token 总数判断“贵在哪”。仍须连同覆盖声明一起报告，公开价估算不等于实际账单。缺 JSON 时报告必须写 `UNMEASURED`，不能写 `$0`。
+> **CP7 的 token/成本计量**:命令见步骤 5 的四条批次。表覆盖**主会话 + subagent**(按 message.id 去重,分 input/output、cache read、5m/1h write、模型、effort、失败/重试/废弃);成本按公开计价倍率**加权**——**别拿原始 token 总数判断"贵在哪"**(haiku 壳加权占比高但 $ 是 opus 零头)。播报须带覆盖声明,公开价估算 ≠ 实际账单;缺 JSON 写 `UNMEASURED`,**不能写 `$0`**。
 >
 > 随时可调(零 LLM,几秒):`uv run --no-sync python -m autoresearch.scan.render <date> --view menu_health|gate_hist|timing|funnel`。
 >
-> **CP5 滚动表做法**:l4-stock 全部拉起后,主会话每 60–90s 跑一次
-> `ls -t context/scan/<date>/details/*.md 2>/dev/null | head -20`,对**新出现**的卡 grep 其 `**Rating**` 行,播一行 `k/N <代码> <名称> → <评级>`;N 张齐或收到 workflow 完成通知即停。卡文件存在 = 该股确实完成(卡就是产物),这与 `progress.py` 按存在性猜**阶段**不同——后者分不清"在跑/被跳过/挂了",别拿它当阶段断言。
+> **唤醒纪律(Wave8 A4;07-28 实测主会话独占 $30.50 = 全场 48.7%,双倍击穿 25% 挂账线)**:每次唤醒的 cache 读都按全上下文计费,所以 —— 派发/收通知的回合**只做一件事**(领通知 → 补派一只),不产出分析文字;CP2 与 CP3 合并为一次播报;workflow 完成通知里的 args 回显(~2KB)不复述。CP0/CP1/CP4/CP6/CP7 照常播。
+>
+> **CP5 已由 `l4_watch` Monitor 承担,主会话不要再自己轮询卡片。** 旧做法(`ls -t details/*.md` + grep Rating)基于「卡文件存在 = 该股完成」——**该前提已被 2026-07-28 证伪**:601319 的卡先落草稿(UW)后改终稿(Hold),按存在性播报会播出一个从未成立的评级。完成态只由 `_l4_tasks.json` 定义(W8-6/W8-7 同一条纪律)。
 
 0. **前奏一键**(workflow Prelude 相位的确定性部分):
    ```bash
    uv run --no-sync python -m autoresearch.scan.prelude <YYYY-MM-DD>
    ```
    跑完全部确定性前奏(attribution 刷新/retro pending 列出/consensus 拉/universe/日历/菜单·L4预算·哨兵建议/journal 等 ledger 刷新,逐件见 STAGES.md 闭环层表;观察单日检已退役 fb_20260714_002)。各步失败不阻断,末尾汇总屏含 **📐/🔁/🚪 当日件建议行**(含「禁注」的行勿贴)。
-   - **夜间预热(可选,spec 2026-07-12 §P1)**:交易日 19:30 launchd 自动 `scripts/prewarm.sh`(= `python -m autoresearch.scan.prewarm`,湖预拉+温度;calibrate 默认不跑防污染 changelog/DSR 计数)。安装:
-     `sed "s|__REPO__|$PWD|" scripts/com.tradingagents.scan-prewarm.plist > ~/Library/LaunchAgents/com.tradingagents.scan-prewarm.plist && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tradingagents.scan-prewarm.plist`;验证 `launchctl list | grep scan-prewarm`。跑过预热的日子,开扫时 universe/L3 evidence 全湖命中。
-     **2026-07-25 已装载并实测**(此前一直没装 —— `_prewarm.json` 全历史只有 07-10/07-13,等于每次扫描白付 8–10min 取数):`launchctl list` 可见;`launchctl kickstart -p gui/$(id -u)/com.tradingagents.scan-prewarm` 手动触发跑通(帧 3975 只入湖 + 21 次端点预拉 + 温度 + 档案池预取 30/30,耗时约 12min)。**当天有没有预热,看 prelude 汇总屏第一屏的「预热(夜间):✓/✗」行**——不用再事后考古。
-0.5. **市场研判**(workflow Prelude 相位并行调用):`uv run --no-sync python -m autoresearch.scan.frame <日期> --json` 拿湖派生 market_pack → 一个 `Agent(subagent_type='macro-brief')` 写 `context/scan/<日期>/market_view.md`(模板见 macro-playbook 末节;地形段喂 L3/L4,操作基调/漏斗读数只进 L5)。该命令回显的 `user_config`(真身 **`.claude/skills/scan-market/scan_config.jsonc`**(.jsonc 非 .json!),白名单校验见 `autoresearch/scan/user_config.py`;回显同时落 `context/scan/<日期>/user_config_echo.json`)**必须**随 Workflow `args.config` 传入 `scan-market.js`,并在步骤 4 作为每股 `args.cfg` 原样传入 `l4-stock.js`——**传 `{}` = 静默关 l4_intel + 全体 agent 掉回内建缺省 effort**(2026-07-21 事故:按 .json 旧名查不到→传空→12 只零情报稿+12 卡 xhigh(配置 max);fb_20260721_001,GATE 探针提案 pr_20260721_001)。管控各 stage 的 agent model/effort,优先级 **scan_config > workflow 内建 > agent def frontmatter 默认**(缺配置/缺键 = 现硬编码值,parity)。
+   - **夜间预热**:交易日 19:30 launchd 自动跑(湖预拉+温度)。当天跑没跑看汇总屏的「预热(夜间):✓/✗」行;安装/实测见 STAGES.md『运维细节』。
+0.5. **市场研判**(workflow Prelude 相位并行调用):`uv run --no-sync python -m autoresearch.scan.frame <日期> --json-out context/scan/<日期>/market_pack.json` 拿湖派生 market_pack → 一个 `Agent(subagent_type='macro-brief')` 写 `market_view.md`(模板见 macro-playbook 末节;地形段喂 L3/L4,操作基调/漏斗读数只进 L5)。
+   ⚠️ **配置必传**:`user_config`(真身 `scan_config.jsonc`,**.jsonc 非 .json**;回显落 `user_config_echo.json`)必须随 Workflow `args.config` 传入,并在步骤 4 作为每股 `args.cfg` 原样透传。**传 `{}` = 静默关 intel + 全体 agent 掉回缺省 effort**(07-21 事故详情见 STAGES.md『运维细节』)。
 1. **L0 选集 + L1 召回 + L2 粗排**(全确定性,零 token;workflow Prelude 相位):
    ```bash
    uv run --no-sync python -m autoresearch.scan.universe [YYYY-MM-DD] --regime-aware [--source tushare] [--recall-n 1000] [--l2-n 200] [--cap-floor 30] [--exclude-bj] [--recall-mode multi|composite] [--recall-channels a,b,c] [--l2-sector-cap 0.20]
@@ -99,7 +95,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
    uv run --no-sync python -m autoresearch.scan.menu <date>
    ```
    打印 `[sentinel]` 行(判据见 STAGES.md L2 节);建议哨兵档时只跑日历+步骤 5(跳 L3+L4,省 ~70% token/~35 分钟)。
-   - ⚠️ **哨兵判据只问「今天有没有值得买的」,不含「持仓要不要动」**。当 `pinned.jsonc` 有保送持仓时,哨兵档跳 L3/L4 会让持仓拿不到当日卖/持决策卡 → 传 `force_full: true`(Workflow `args`)覆盖哨兵、照常跑 L3/L4(pinned 强注入 L3 → 每只出卡),scan-market.js 会诚实标注「确定性判据判材料枯竭、买单侧期望低」。**2026-07-17 实测**:全市场健康上涨 1.3%(哨兵开火)但 4 只持仓在 192 跌停的崩盘日,靠 `force_full` 才拿到 Sell/UW 决策(协创 Sell·普冉/长飞/北方华创 UW)。哨兵说的「没得买」是对的,它只是不知道你有持仓要判。
+   - ⚠️ **哨兵只问「今天有没有值得买的」,不含「持仓要不要动」**。`pinned.jsonc` 非空时必传 `force_full: true` 覆盖哨兵,否则持仓拿不到当日卖/持卡(07-17、07-28 两次实测见 STAGES.md『运维细节』)。
 2.5. **市场研判兜底**(仅当 0.5 未跑):同 0.5,读 `autoresearch.scan.market.market_pack(scan_dir)` 回退口径(L2 后)。
 2.7. **行业 brief**(与步骤 3 证据取数并发;workflow L3 相位):
    ```bash
@@ -107,22 +103,28 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
    uv run --no-sync python -m autoresearch.sector.pack <date>
    ```
    → 每行业一个 `Agent(subagent_type='sector-brief')`(机制/两段契约见 STAGES.md『旁路 · 行业 brief』节)。
-3. **L3 精排**(两遍法:pass1 确定性分诊 200→~40 + holistic 单 agent 深比较出 finalist tier 7–10;workflow L3 相位):`harvest_l3_evidence`+`harvest_l3_news` 补真证据 → `l3_table_md(date, delta=True, sector_terrain=True, dist_flag=True, reg_flag=True, cat_flag=True, misread_flag=True)` 压紧凑表(内含 pass1 分诊:`prepare_l3_table` 先用 `triage_l2_for_l3` 把 ~200 行收到 ~40(scan_config `pass1_target`,2026-07-18 影子验证后 60→40),被切部分是影子,落 `_l3_pass1_cut.csv`,不代表判死)→ 一个 `Agent(subagent_type='l3-rank')` 通看 ~40 只深比较,给出 **finalist tier:7–10 只**(按当天质量,`finalist:true`,宁缺毋滥不凑数)+ 其余判断过但未入选的 **bench**(`finalist:false`)→ `uv run --no-sync python -m autoresearch.scan.menu <date>` 拿 L4 预算(cap = min(10, 预算))→ `merge_l3_finalists_v3(judged, budget=预算)`(conviction≥75 误杀保险强制补入 / <55 剔除 / 健康画像比例守卫)→ `finalists.csv` + bench 落 `_l3_bench.csv`(rubric 维度/推荐旗/token 经济见 STAGES.md L3 节)。**L3.5 闸=passthrough 保留为回测 harness,收窄职能已并入 L3**(用户 2026-07-12 裁定)。
+3. **L3 精排**(两遍法;workflow L3 相位):证据取数(`harvest_l3_evidence`+`harvest_l3_news`)→ `l3_table_md(...)` 压紧凑表(内含 pass1 确定性分诊 200→~40,scan_config `pass1_target`;被切的是**影子**落 `_l3_pass1_cut.csv`,不代表判死)→ 一个 `Agent(subagent_type='l3-rank')` 通看 ~40 只深比较,出 **finalist tier 7–10 只**(`finalist:true`,按当天质量,宁缺毋滥不凑数)+ **bench**(`finalist:false`,仍全字段判断)→ `menu <date>` 拿 L4 预算(cap=min(10,预算))→ `merge_l3_finalists_v3`(conviction≥75 误杀保险补入 / <55 剔除 / 健康画像守卫)→ `finalists.csv` + `_l3_bench.csv`。参数/rubric 维度/token 经济见 STAGES.md L3 节。
 4. **L4 研究**(token 大头;默认流式、每股独立可恢复)——确定性准备(l4-prep)仍在 scan-market.js 的 L4-prep 相位:质押旗/TTL复用/席位·催化·日历生产者先行(机制见 STAGES.md L4 节)→ 落稿(单步重跑入口):
    ```bash
    uv run --no-sync python -m autoresearch.scan.agents.l4_card pledge <date>
    uv run --no-sync python -m autoresearch.scan.l4_reuse <date> --apply
    uv run --no-sync python -m autoresearch.scan.agents.l4_card prompts <date>
    ```
-   → scan-market.js 返回 `{dispatch, dispatch_batches, task_book, meta}` 后，主会话**按批次数组原序逐批推进，每一批内并行**拉
-   `Workflow({scriptPath: '.claude/workflows/l4-stock.js', args: {date, code, name, sector, cfg, pinned, dossierSummary}})`
+   → scan-market.js 返回 `{dispatch, dispatch_batches, task_book, meta}` 后，主会话按**滑窗**派发
+   `Workflow({scriptPath: '.claude/workflows/l4-stock.js', args: {date, code, name, sector, cfg, pinned, dossierSummary}})`：
+   - **首轮并行派 `effective_cap` 只**（取 `l4_tasks batches` 回显；现为 4）；
+   - 此后**每收到一股完成通知，立即补派下一只 pending**，始终保持 cap 只在飞；
+   - **派发顺序:📌 pinned 与预计最长者排最前**（pinned 强制满卡+双复核，07-28 实测 25–40min，非 pinned 12–20min；把长的留到最后 = 尾巴独自拖时间）；
+   - **完成判据 = task_book 全 SUCCEEDED**（`batches` 为空**不是**完成——可能都还在飞，见 `running` 数组）；
+   - 单票失败只改变本票状态，不重跑已成功票；重放只派 `l4_tasks batches` 回的未完成批。
+   > 滑窗只改派发节奏，**不改 workflow 粒度**（每股一个 l4-stock，fb_20260714_003 维持）。沿革与桌演读数见 STAGES.md『运维细节』。
    `pinned` 取自 dispatch-plan 的 `meta[code].pinned`。**派发前对照 workflow 打印的「📌 保送票 N 只」行逐一核对**:名单里的每只必须带 `pinned: true`。漏传 = 持仓 SELL 双复核整段不跑(2026-07-21 实测 300857/601869 中招);probe 9 `sell_review_missing` 只能事后 warn,拦不住。
    `dossierSummary` 取自 dispatch-plan 的 `meta[code].dossier_summary`(无档案=空串);漏传只退化为「intel 无已知底」= Wave3 前行为,不影响正确性。
    (**cfg = 步骤 0.5 frame 回显的 `user_config` 块原样透传,勿传 `{}`**——空 cfg 静默关 intel/降 effort,见 0.5 节 07-21 事故注)(degraded=复核 run 不齐时不折回、报告强制人裁)
    每股链内:**preflight → (本票 slim ∥ intel) → l4-card 决策卡 →(≥OW)2 独立复核 run 取中位只向下折回 → success hash 校验**。`_l4_tasks.json` 保存 prompt/slim/card hash 与尝试次数；只对 `RATE_LIMIT` / `CONNECTION` / `TIMEOUT` 瞬时错误给第 2 次尝试，schema/contract/data-integrity 错误直接阻断本票。重放先跑
    `uv run --no-sync python -m autoresearch.scan.l4_tasks batches <date>`，只派返回的未完成批次；不要删任务簿或重跑成功票。复核落
    `_ensemble_<code>.json`(assemble 合并读)。卡模板/契约烤进 `.claude/agents/l4-card.md`。
-   **活体情报站**(config `l4_intel.enabled`):l4-stock 的 Intel 相位,sonnet·max 结构性盲(prompt 只给码/名/行业/日期)盲搜六面落 `_l4_intel_<code>.md`;卡 P3 先读 intel、自发网查降 ≤1 验证,缺文件自动回退卡内网查(presence-gated)。⚠️ 2026-07-14 首跑冒烟:空稿 0/13、中文源可达 ✓,但逮到**捏造涨停断言**(pr_20260714_006 待裁)+ 限频形同虚设/零 URL(pr_20260714_007)——卡片对 intel 的价格类断言必须与 verified OHLCV 对账后才可采信。
+   **活体情报站**(config `l4_intel.enabled`):l4-stock 的 Intel 相位,sonnet·max 结构性盲(prompt 只给码/名/行业/日期)盲搜六面落 `_l4_intel_<code>.md`;卡 P3 先读 intel、自发网查降 ≤1 验证,缺文件自动回退卡内网查(presence-gated)。⚠️ **铁律:卡片对 intel 的价格类断言必须与 verified OHLCV 对账后才可采信**(捏造前科见 STAGES.md『运维细节』)。
 5. **L5 整合**(全部 l4-stock workflow 完成后,主会话直接跑;哨兵档跳过 L3/L4 后也走这里)。
    **四条在一个 shell 批次跑完再播 CP7**，其中 `<run_id>` 是 assemble 打印的报告目录名:
    ```bash
@@ -143,8 +145,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
    uv run --no-sync python -m autoresearch.dossier.reconcile <period>          # 季度对账(中报/年报披露后,如 20260630)
    ```
    - **建档队列**:`pending_init` 里的票逐只派 `.claude/workflows/dossier-init.js`(**≤3 只/晚**,每只 ~10-20min);新 agent def 落盘当会话派发会 `not found`(会话启动装载),等热载或换会话。
-   - **prelude 会替你催**:📐 = 该报告期未对账、🕰️ = 档案 >90 日未全量刷新——解药是该票跑一次**成功的季度对账**(`dossier.reconcile <period>`,唯一写 `last_refresh` 的路径);要重做首覆需先 `builder --force`(**不是** `dossier-init --force`,该 flag 不存在;对已建档票重派 `dossier-init` 是 no-op,清不掉 🕰️)再派 `dossier-init`,注意 `builder --force` 会清空 `initiated`/`last_refresh`,该票期间会同时退出 🕰️ 与 `pending_init` 两个探针视野。
-   - 未披露也会落痕(不是"没跑"),所以 📐 计数应随对账动作**下降**;天天恒定 = 探针坏了。
+   - **prelude 会替你催**:📐 = 该报告期未对账、🕰️ = 档案 >90 日未全量刷新;解药是跑一次**成功的季度对账**(唯一写 `last_refresh` 的路径)。重做首覆的正确姿势(`builder --force` 而非不存在的 `dossier-init --force`)与探针语义见 STAGES.md『运维细节』。
 
 ## 实验治理(行为变更的唯一生产入口)
 

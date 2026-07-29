@@ -383,9 +383,16 @@ def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()
     # 汇总屏:打印 + 落盘(Wave5 ①)。落盘是为了绕开 scan-market.js「只回报 stdout 末 15 行」
     # 的结构性截断 —— 12 步 ✓/✗ + 建议行 + 下一步放不进 15 行,workflow 改为指路该文件。
     print("\n" + render_summary(date, results))
-    import contextlib
-    with contextlib.suppress(Exception):      # 落盘可选,写不了不挡前奏(stdout 仍有全文)
+    # 落盘可选(写不了不挡前奏,stdout 仍有全文)—— 但**失败必须响亮**。
+    # 2026-07-28:这里原是 `contextlib.suppress(Exception)`,写盘异常被整个吞掉,
+    # 而 workflow 的 `prelude && echo "SUMMARY_FILE=..."` 照常回显路径 → agent 报
+    # 「Summary file generated」但文件根本不存在,CP1 转播落空,根因至今查不到。
+    # 静默降级比响亮失败危险得多(同族:空 pickle 永不重拉 / 空 slim 默认 Hold)。
+    try:
         print(f"  (汇总屏已落盘:{write_summary(date, results)})")
+    except Exception as e:  # noqa: BLE001 — 不阻断前奏,但把根因摆到 stderr 上
+        print(f"[prelude] ✗ 汇总屏落盘失败: {e!r}(前奏继续;stdout 上方有全文)",
+              file=sys.stderr)
     from autoresearch.scan.stage_result import safe_record_stage_result
 
     failed = [r for r in results if not r["ok"]]
