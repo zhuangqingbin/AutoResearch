@@ -60,21 +60,41 @@ def knife_rates(l1_df: pd.DataFrame, l2_df: pd.DataFrame, *,
 
 
 def audit(dates: list[str], root: Path | str = "context/scan") -> pd.DataFrame:
-    rows = []
+    """逐日读 L1/L2 算落刀率四联。读失败的日子跳过**但必须记账,不许静默**(本模块自己就是
+    为了消灭「静默偏差」而写的,不能自己留一条静默丢日子的口子):跳过原因存进返回帧的
+    `.attrs["skipped"]`(`[{"date","reason"}, ...]`),请求的总天数存 `.attrs["requested"]`,
+    供调用方(CLI/测试)核对「请求 vs 实际」是否有短缺。"""
+    rows: list[dict] = []
+    skipped: list[dict] = []
     for d in dates:
         sd = Path(root) / d
         try:
             l1 = pd.read_csv(sd / "L1_recall_top1000.csv", dtype={"code": str})
             l2 = pd.read_csv(sd / "L2_gbdt_top200.csv", dtype={"code": str})
-        except Exception:  # noqa: BLE001 — 缺日跳过,不阻断
+        except Exception as exc:  # noqa: BLE001 — 读失败跳过,但记账进 skipped,见上
+            skipped.append({"date": d, "reason": f"{type(exc).__name__}: {exc}"})
             continue
         rows.append({"date": d, **knife_rates(l1, l2)})
-    return pd.DataFrame(rows)
+    out = pd.DataFrame(rows)
+    out.attrs["requested"] = len(dates)
+    out.attrs["skipped"] = skipped
+    return out
+
+
+def _skip_line(df: pd.DataFrame) -> str:
+    skipped = df.attrs.get("skipped") or []
+    if not skipped:
+        return ""
+    detail = "; ".join(f"{s['date']}({s['reason']})" for s in skipped)
+    req = df.attrs.get("requested")
+    prefix = f"请求 {req} 天," if req is not None else ""
+    return (f"\n\n_{prefix}跳过 {len(skipped)} 个读取失败的扫描日(不计入上表,**非静默**,"
+            f"原因逐条列出):{detail}_")
 
 
 def render(df: pd.DataFrame) -> str:
     if not len(df):
-        return "# L2 落刀归因\n\n_无可用扫描日。_\n"
+        return "# L2 落刀归因\n\n_无可用扫描日。_" + _skip_line(df) + "\n"
     def _f(v):
         return "—" if v is None or pd.isna(v) else f"{float(v):.0%}"
     lines = ["# L2 菜单落刀归因(Wave9 A-3 取证 · 不改生产采样)", "",
@@ -91,7 +111,7 @@ def render(df: pd.DataFrame) -> str:
                   f"主排序 {_f(med['main'])} · floor {_f(med['floor'])}", "",
               "_读法:若 floor 桶落刀率显著高于主排序,偏斜来自风格桶定义;若两桶接近,",
               "则菜单落刀只是 L1 池本身的映射,**不构成对分层采样的指控**。_"]
-    return "\n".join(lines) + "\n"
+    return "\n".join(lines) + _skip_line(df) + "\n"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -112,7 +132,9 @@ def main(argv: list[str] | None = None) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(render(df), encoding="utf-8")
     df.to_csv(out.with_suffix(".csv"), index=False)
-    print(json.dumps({"ok": True, "days": len(df), "out": str(out)}, ensure_ascii=False))
+    skipped = df.attrs.get("skipped", [])
+    print(json.dumps({"ok": True, "requested": len(dates), "days": len(df),
+                      "skipped": skipped, "out": str(out)}, ensure_ascii=False))
     return 0
 
 
