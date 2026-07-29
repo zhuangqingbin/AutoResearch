@@ -28,6 +28,14 @@ import pandas as pd
 _INDEXES = {"000300.SH": "沪深300", "399006.SZ": "创业板指", "000905.SH": "中证500",
             "000001.SH": "上证指数"}
 
+# 当日行情用的宽基集合(比估值集合多**深成指**与**科创50**)。
+# 2026-07-28 情报稿引用的正是「创业板指 −7.35%」「深成指 −4.52%」「科创综指 −5.93%」,
+# 而湖里没有指数行情 → price_claims 只能拿个股 OHLCV 去对指数断言,真伪裁不出来,
+# warn 只能一直挂着。补齐后这类断言才可对账(W8-14)。
+_QUOTE_INDEXES = {**_INDEXES,
+                  "399001.SZ": "深证成指",
+                  "000688.SH": "科创50"}
+
 
 def _num(s):
     return pd.to_numeric(s, errors="coerce")
@@ -130,10 +138,38 @@ def index_val_data(pro, last: str) -> dict:
     return out
 
 
+def index_quote_data(pro, last: str) -> dict:
+    """指数**当日行情**(index_daily:close/pct_chg)。逐指数独立失败,不连坐。
+
+    存在的意义是让「创业板指跌 7.35%」这类断言**可对账** —— 此前湖里只有个股 OHLCV,
+    price_claims 拿个股涨跌硬对指数断言,真伪裁不出来(2026-07-28 实况)。
+
+    空返回 → `pct_chg=None` 且**留 error 痕**;绝不回退成 0.0 —— 0% 是一个断言,
+    空是没有断言,把后者写成前者就是凭空造事实(同族:空 pickle / 空 slim / 垃圾 pack)。
+    """
+    from autoresearch.data.tushare_source import _ts_call
+    out: dict[str, dict] = {}
+    for code, name in _QUOTE_INDEXES.items():
+        try:
+            d = _ts_call(lambda code=code: pro.index_daily(
+                ts_code=code, start_date=last, end_date=last,
+                fields="trade_date,close,pct_chg"))
+            if d is None or not len(d):
+                raise ValueError("空返回(该日无指数行情)")
+            row = d.sort_values("trade_date").iloc[-1]
+            out[code] = {"name": name, "close": _f(_num(pd.Series([row["close"]])).iloc[0]),
+                         "pct_chg": _f(_num(pd.Series([row["pct_chg"]])).iloc[0])}
+        except Exception as e:  # noqa: BLE001 — 单指数失败只缺该行
+            out[code] = {"name": name, "close": None, "pct_chg": None,
+                         "error": f"{type(e).__name__}: {e}"[:120]}
+    return out
+
+
 # ───────────────────────── 编排 + 落盘 ─────────────────────────
 
 _BLOCKS = (("northbound", northbound_data), ("margin", margin_data),
-           ("sector_flow", sector_flow_data), ("index_val", index_val_data))
+           ("sector_flow", sector_flow_data), ("index_val", index_val_data),
+           ("index_quote", index_quote_data))
 
 
 def fetch_macro_cn(date: str, pro=None) -> dict:
