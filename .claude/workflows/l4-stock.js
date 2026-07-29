@@ -38,6 +38,15 @@ const taskGate = (subcommand, schema, label) => agent(
   '把 stdout 最后一行 JSON 原样作为结构化返回；不要判断或增删字段。' +
   '**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**',
   { agentType: 'general-purpose', model: 'haiku', effort: 'low', label, schema })
+// 通用确定性 CLI 壳:跑一条命令、把它打印的最后一行 JSON 原样带回(零判断)。
+const gpJson = (cmd, label, schema) => agent(
+  `执行:\`${cmd}\`\n它会向 stdout 打印一行 JSON。把最后一行 JSON 原样作为结构化返回,` +
+  '不改、不增删字段。**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**',
+  { agentType: 'general-purpose', model: 'haiku', effort: 'low', label, schema })
+const INTEL_GUARD = { type: 'object', required: ['ok', 'code', 'action'],
+  properties: { ok: { type: 'boolean' }, code: { type: 'string' }, action: { type: 'string' },
+    claimed: {}, hard_cap: { type: 'integer' }, kept_as: { type: 'string' },
+    warn: { type: 'string' }, note: { type: 'string' } } }
 const TASK_ACTION = { type: 'object', required: ['ok', 'action'],
   properties: { ok: { type: 'boolean' }, action: { type: 'string' },
     attempt: { type: 'integer' }, reason: { type: 'string' } } }
@@ -104,6 +113,21 @@ if (!intelOn) {
   log(`intel 关(config l4_intel.enabled=false)→ 直接出卡`)
 } else {
   log(intelResult ? `🕵️ intel ✓ ${code}(events=${intelResult.events ?? '?'})` : `🕵️ intel ✗ ${code}(缺稿,卡自动回退卡内网查)`)
+  // W8-13:硬顶守卫。cap(20)是**指令级**约束、agent 想超就超(07-28 十一稿 16–29,
+  // 旧 cap 15 下 11/11 超限 = 天天报警天天无视,狼来了);硬顶 30 才有牙齿 ——
+  // 超顶把稿改名 .rejected.md,下面 card 的 presence-gate 自动回退卡内网查。
+  // 铁律:**只拒稿不拒票**,守卫失败一律不阻断本票。
+  if (intelResult) {
+    const g = await gpJson(
+      `${R} autoresearch.scan.l4.intel_guard ${date} ${code}`,
+      `intel-guard:${code}`, INTEL_GUARD)
+      .catch((e) => { log(`⚠️ intel-guard ✗ ${code}:${e && e.message ? e.message : e}(放行)`); return null })
+    if (g && g.action === 'REJECTED') {
+      log(`🚫 intel 拒稿 ${code}:自报 ${g.claimed} 条 > 硬顶(留档 ${g.kept_as});卡回退卡内网查`)
+    } else if (g && g.warn === 'unreported') {
+      log(`⚠️ intel ${code} 未自报查询数(无法对账,不拒稿)`)
+    }
+  }
 }
 if (slimResult && slimResult.action !== 'LEGACY' && !slimResult.ok) {
   await taskFailure('DATA_INTEGRITY')
