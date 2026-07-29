@@ -13,18 +13,26 @@ Step 5 真接口冒烟裁决记录(2026-07-29):
     `ok=false`(耗时 ~70s 翻 12 页仍拉不到可用行,`columns=[]`)—— **弃用**。该接口本身
     也不吃 `code6`(只能按日期拉全市场,得自己按代码过滤),契约上就比下面这个差。
   - 改用 `ak.stock_zh_a_disclosure_report_cninfo(symbol=code6, market="沪深京",
-    start_date, end_date)`(巨潮资讯个股公告查询)实测 **可用**:000651 一年窗口拉到
-    111 行。真实列名 = `['代码', '简称', '公告标题', '公告时间', '公告链接']`——
-    注意日期列是 **`公告时间`**,不是原猜的 `公告日期`(`_pick` 候选键已补上,`公告日期`
-    仍保留在候选表首位,兼容本文件单测夹具用的列名)。`market="沪深京"` 覆盖沪/深/京
-    三所全部 A 股(含北交所 92xxxx),不必按 code6 前缀分流。
+    start_date, end_date)`(巨潮资讯个股公告查询)实测 **可用**。真实列名 =
+    `['代码', '简称', '公告标题', '公告时间', '公告链接']`—— 注意日期列是
+    **`公告时间`**,不是原猜的 `公告日期`(`_pick` 候选键已补上,`公告日期` 仍保留在
+    候选表首位,兼容本文件单测夹具用的列名)。`market="沪深京"` 覆盖沪/深/京三所全部
+    A 股(含北交所 92xxxx),不必按 code6 前缀分流。000651 用生产同款 `_LOOKBACK_DAYS`
+    (90 天)窗口实测拉到 **22** 行(先前记录的「111 行」是一年窗口探查值,只用于确认
+    接口本身可用,和生产窗口不是同一量纲——复核 Minor 2 指出两个数字对不上,此处已
+    按生产窗口重新实测替换为真实数)。
+
+复核轮 1(2026-07-29):`SOURCE_TAG` 曾误取值 `"em"`——本仓库既有惯例里 `"em"` 专指
+东财(见 `scan/universe.py`/`scan/frame.py` 的 `--source` choices),而本模块实际连的
+是巨潮 cninfo,标签与实际供应商不符会污染未来"按供应商做数据质量归因"的场景,
+已改为 `"cninfo"`,与真实接口名一致。
 """
 from __future__ import annotations
 
 import contextlib
 from datetime import datetime, timedelta
 
-SOURCE_TAG = "em"
+SOURCE_TAG = "cninfo"
 
 _LOOKBACK_DAYS = 90   # 兜底源窗口:约一季度,够覆盖近期披露且不做无界历史查询
 
@@ -47,7 +55,7 @@ def _pick(row: dict, *keys: str) -> str:
 
 
 def fetch_anns(code6: str, date: str, *, limit: int = 20) -> list[dict]:
-    """→ `[{"ann_date": "YYYYMMDD", "title": str, "source": "em"}, ...]`,失败/无数据 → `[]`。
+    """→ `[{"ann_date": "YYYYMMDD", "title": str, "source": SOURCE_TAG}, ...]`,失败/无数据 → `[]`。
 
     as-of 铁律:`ann_date > date` 的行一律丢弃(前视污染)。
     """
