@@ -266,6 +266,15 @@ def tripwire_conflicts(scan_dir, analysis_date: str,
 
     评级键名:核实生产真实字段(`_finalist_row`/`_buylist_table_lines` 均取 `row["rating"]`,
     与本函数测试夹具的构造一致)—— 就是 `"rating"`,故不需要多键名兜底。
+
+    **同票多条价格线全部收录**(复核 Wave9 A-2 · Minor→must-fix,2026-07-30):一张卡可以
+    同时挂多条 `[价格线]`(实例:300857 07-28 卡同时有「跌破 210.01 清仓」+「跌破 196.73
+    已应清仓,若仍持有立即处置」),当日可能不止一条同时触发。旧版用 `out.setdefault`
+    只留 hits 里**先出现**的一条,会把更紧急的那条静默吞掉——这个框存在的全部意义就是
+    把材料摆给人裁,挑一条藏一条是本末倒置。现改为:`all_hits` 是该 code 全部 price 命中
+    的结构化列表(`[{"detail": str, "raw": str}, ...]`,按 hits 原始顺序,不排序不去重不
+    挑选);`tripwire_detail`/`tripwire_raw` 降级为**向后兼容的摘要字段**——全部命中按
+    " ｜ " 拼接(单条命中时与旧版逐字节相同,`_conflict_block` 等旧调用方不必改)。
     """
     rows = [r for r in (pinned_rows or []) if r.get("code")]
     if not rows:
@@ -284,7 +293,9 @@ def tripwire_conflicts(scan_dir, analysis_date: str,
         rating = rating_of.get(code, "")
         if not rating or rating == "Sell":
             continue
-        out.setdefault(code, {"tripwire_detail": str(h.get("detail", "")),
-                              "tripwire_raw": str(h.get("raw", "")),
-                              "rating": rating})
+        rec = out.setdefault(code, {"rating": rating, "all_hits": []})
+        rec["all_hits"].append({"detail": str(h.get("detail", "")), "raw": str(h.get("raw", ""))})
+    for rec in out.values():
+        rec["tripwire_detail"] = " ｜ ".join(h["detail"] for h in rec["all_hits"] if h["detail"])
+        rec["tripwire_raw"] = " ｜ ".join(h["raw"] for h in rec["all_hits"] if h["raw"])
     return out

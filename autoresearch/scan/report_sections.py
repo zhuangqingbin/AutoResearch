@@ -331,13 +331,21 @@ def _conflict_block(conflicts: dict[str, dict]) -> str:
 
     呈现契约,**不是**合并规则:确定性价格线与 LLM 基本面终评测的不是同一件事,
     系统把两边的判据、来源、失效条件并排摆出来,由人裁。
+
+    **同票多条价格线全部呈现**(复核 Minor→must-fix,2026-07-30):优先读 `all_hits`
+    (`tripwire_conflicts` 产出的结构化列表);缺该键(如手工构造的旧形状 dict——既有
+    单测 `test_conflict_block_renders_two_rulers` 就是这么构造的,兼容不改)则把单值
+    `tripwire_detail` 当唯一一条兜底。同一票多条命中在**同一单元格内**用「；」全部列出
+    ——不挑一条藏一条,这个框存在的意义就是把材料摆给人裁。
     """
     if not conflicts:
         return ""
     lines = ["", "### ⚖️ 两尺分歧(确定性盯梢线 vs LLM 终评)", "",
              "| 票 | tripwire(价格尺) | LLM 终评(基本面尺) |", "|---|---|---|"]
     for code, c in sorted(conflicts.items()):
-        lines.append(f"| {code} | {c['tripwire_detail']} | **{c['rating']}**"
+        hits = c.get("all_hits") or [{"detail": c.get("tripwire_detail", "")}]
+        cell = "；".join(h.get("detail", "") for h in hits if h.get("detail"))
+        lines.append(f"| {code} | {cell} | **{c['rating']}**"
                      f"(满卡 DD + 双复核折回) |")
     lines += ["", "| | 判据来源 | 失效条件 |", "|---|---|---|",
               "| 价格尺 | 你在决策卡写下的盯梢线,只看收盘价、不看基本面 | 收盘收复线上 |",
