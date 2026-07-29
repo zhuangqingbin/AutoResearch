@@ -32,7 +32,11 @@ const SD = `context/scan/${date}`
 // 其中 7 个 2-消息壳 ≈287k 纯过路费。降 haiku;判断仍在确定性 CLI 里,行为不变。
 function bash(cmd, label, phaseName) {   // 形参勿叫 phase:会遮蔽全局 phase() 分组函数
   return agent(
-    `在仓库根目录精确执行下面这条命令,然后只回报:退出码 + stdout 末 15 行。不要做别的、不要判断、不要解释。\n\n\`\`\`\n${cmd}\n\`\`\``,
+    `在仓库根目录精确执行下面这条命令,然后只回报:退出码 + stdout 末 15 行。不要做别的、不要判断、不要解释。\n` +
+    `**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**` +
+    `若命令的 stdout 已被重定向,回报改用:退出码 + stderr 末 15 行。\n` +
+    `(2026-07-28 事故第一因:壳擅自把 \`frame --json > market_pack.json\` 改成 \`... 2>&1\`,` +
+    `stderr 日志灌进产物,门判据被骗过。)\n\n\`\`\`\n${cmd}\n\`\`\``,
     { agentType: 'general-purpose', model: 'haiku', effort: 'low', label, ...(phaseName ? { phase: phaseName } : {}) })
 }
 const OK = { type: 'object', required: ['ok'],
@@ -44,14 +48,18 @@ const STAGE_RESULT = { type: 'object', required: ['stage', 'status', 'metrics'],
 // 思考,effort high→low 且降 haiku。schema 校验仍在(格式错会被 harness 拒),门行为不变。
 function gate(label, cmd, schema, phaseName) {   // 同上:避免遮蔽全局 phase()
   return agent(
-    `执行:\`${cmd}\`\n它会向 stdout 打印 JSON。把它打印的最后一行 JSON 原样作为你的结构化返回(字段不改、不增删)。`,
+    `执行:\`${cmd}\`\n它会向 stdout 打印 JSON。把它打印的最后一行 JSON 原样作为你的结构化返回(字段不改、不增删)。\n` +
+    `**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向**` +
+    `(混入 stderr 会污染这行 JSON)。`,
     { agentType: 'general-purpose', model: 'haiku', effort: 'low', label, schema, ...(phaseName ? { phase: phaseName } : {}) })
 }
 // 业务门先保留原 stdout 供诊断，Workflow 只消费随后读取并验 hash/contract 的 StageResult。
 function stageGate(label, cmd, stage, phaseName) {
   return agent(
     `依次执行:\`${cmd}; ${R} autoresearch.scan.stage_result show ${SD} ${stage}\`\n` +
-    '前一条命令的 stdout 保留作诊断；把最后一行 StageResult JSON 原样作为结构化返回。',
+    '前一条命令的 stdout 保留作诊断；把最后一行 StageResult JSON 原样作为结构化返回。\n' +
+    '**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向**' +
+    '(混入 stderr 会污染这行 JSON)。',
     { agentType: 'general-purpose', model: 'haiku', effort: 'low', label,
       schema: STAGE_RESULT, ...(phaseName ? { phase: phaseName } : {}) })
 }

@@ -28,13 +28,15 @@ const CARD = { type: 'object', required: ['code', 'rating'],
     conviction: { type: 'number' }, proposal: { type: 'string' } } }
 const recordL4 = (errorCode = null) => agent(
   `在仓库根目录执行:\`${R} autoresearch.scan.stock_stage l4 ${date} ${code}` +
-  `${errorCode ? ` --error ${errorCode}` : ''}\`。只回报退出码,不要判断或解释。`,
+  `${errorCode ? ` --error ${errorCode}` : ''}\`。只回报退出码,不要判断或解释。` +
+  `**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**`,
   { agentType: 'general-purpose', model: 'haiku', effort: 'low', label: `stage:${code}` })
   .catch((e) => { log(`⚠️ L4 StageResult 写入失败:${e && e.message ? e.message : e}`); return null })
 const taskGate = (subcommand, schema, label) => agent(
   `执行:\`if test -s ${TASK_BOOK}; then ${R} autoresearch.scan.l4_tasks ${subcommand}; ` +
   `else echo '{"ok":true,"action":"LEGACY"}'; fi\`\n` +
-  '把 stdout 最后一行 JSON 原样作为结构化返回；不要判断或增删字段。',
+  '把 stdout 最后一行 JSON 原样作为结构化返回；不要判断或增删字段。' +
+  '**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**',
   { agentType: 'general-purpose', model: 'haiku', effort: 'low', label, schema })
 const TASK_ACTION = { type: 'object', required: ['ok', 'action'],
   properties: { ok: { type: 'boolean' }, action: { type: 'string' },
@@ -178,7 +180,9 @@ if (trigger) {
     spread: sorted[sorted.length - 1] - sorted[0], degraded, trigger,
     n_runs: ratings.length, early_stopped: earlyStopped }
   await agent(
-    `在仓库根目录精确执行下面这条命令,然后只回报退出码。不要做别的、不要判断。\n\n\`\`\`\ncat > ${SD}/_ensemble_${code}.json << 'EOF'\n${JSON.stringify(rec)}\nEOF\n\`\`\``,
+    `在仓库根目录精确执行下面这条命令,然后只回报退出码。不要做别的、不要判断。\n` +
+    `**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向(heredoc 原样保留)。**` +
+    `\n\n\`\`\`\ncat > ${SD}/_ensemble_${code}.json << 'EOF'\n${JSON.stringify(rec)}\nEOF\n\`\`\``,
     // Wave6 T1:heredoc 写文件,零判断
     { agentType: 'general-purpose', model: 'haiku', effort: 'low', label: `ens-dump:${code}`, phase: 'Verify' })
   if (!degraded) {
