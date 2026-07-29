@@ -654,14 +654,21 @@ Expected: 全 passed
 
 `pinned_ledger.roll()` 读该文件填列。
 
-- [ ] **Step 7: 活体重放验收**
+- [ ] **Step 7: 活体重放(冒烟,非结果断言)**
 
 Run:
 ```bash
-uv run --no-sync python -m autoresearch.scan.assemble 2026-07-29 2>&1 | tail -3
-grep -A6 "两尺分歧" reports/scan/$(ls -t reports/scan | head -1)/summary.md
+uv run --no-sync python -m autoresearch.scan.assemble 2026-07-29 > /tmp/w9t3.log 2>&1; echo "EXIT=$?"
+cat context/scan/2026-07-29/_tripwire_conflicts.json
 ```
-Expected: 出现 300857 的冲突框(该日 tripwire 触发 + 终评 Underweight)。**若没出现**:先 `cat context/scan/2026-07-29/_tripwire_conflicts.json` 看判据是否空,再回查 `pinned_rows` 里 rating 字段的真实键名。
+Expected: `EXIT=0`,且 `_tripwire_conflicts.json` **存在且是合法 JSON**(内容可为 `{}`)。
+
+> 🚨 **不要把「出现 300857 冲突框」当验收断言**(计划原稿的错误,复核轮1 独立证伪):
+> `tripwire_watch.latest_card()` 取的是该票**最新**一张卡。07-29 扫描已写入新卡、盯梢线
+> 变成 `close < 194.73`,而当日收盘 205.00 不触发 —— 07-29 当天成立的那个冲突(旧卡线
+> 210.01)**在事后重放里结构性不可复现**。这不是实现缺陷。
+> 冲突渲染的正确性由 `tests/scan/test_tripwire_conflict.py` 的合成场景保证;本步只验
+> 「跑得通 + 判据真的落盘了」。
 
 - [ ] **Step 8: 全量测试 + 提交**
 
