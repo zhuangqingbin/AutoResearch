@@ -38,7 +38,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 
 ## 流程(6 段)
 
-> **编排真身 = 两段 workflow + 主会话收尾**:① `.claude/workflows/scan-market.js`(Prelude→L3→L4-prep;默认流式 L4,返回 `{dispatch, dispatch_batches, task_book, reused, meta}`)→ ② 主会话必须按 `dispatch_batches` **批次间顺序执行、批次内并行**拉 `.claude/workflows/l4-stock.js`；每票先过 `_l4_tasks.json` preflight，再让 slim 与 intel 并行，随后 card→(≥OW)双复核。单票失败只改变本票状态，不重跑已成功票 → ③ 全部批次完成后跑步骤 5 的 assemble/GATE4/计量回填。`streaming_l4=false` 才回到旧批量 GATE3。**正常跑动直接用 workflow**;以下命令留作调参/单步重跑入口。操作模板分驻:市场研判在 `macro-research/macro-playbook.md` 末节、L4 决策卡在 stock-research 的 `lite-playbook.md`;**各阶段机制/参数/实证读数**见 `STAGES.md`。
+> **编排真身 = 两段 workflow + 主会话收尾**:① `.claude/workflows/scan-market.js`(Prelude→L3→L4-prep;默认流式 L4,返回 `{dispatch, dispatch_batches, task_book, reused, meta}`)→ ② 主会话按**滑窗**拉 `.claude/workflows/l4-stock.js`(保持 `effective_cap` 只在飞,每完成一只补派一只,📌pinned/最长者先行——详见步骤 4)；每票先过 `_l4_tasks.json` preflight，再让 slim 与 intel 并行，随后 card→(≥OW)双复核。单票失败只改变本票状态，不重跑已成功票 → ③ **task_book 全 SUCCEEDED** 后跑步骤 5 的 assemble/GATE4/计量回填。`streaming_l4=false` 才回到旧批量 GATE3。**正常跑动直接用 workflow**;以下命令留作调参/单步重跑入口。操作模板分驻:市场研判在 `macro-research/macro-playbook.md` 末节、L4 决策卡在 stock-research 的 `lite-playbook.md`;**各阶段机制/参数/实证读数**见 `STAGES.md`。
 >
 > **进度可视化(必做,2026-07-12 用户反馈"跑起来主对话一片空白")**:L4 派发后挂一个 Monitor —— 
 > ```
@@ -72,6 +72,8 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 > 表覆盖可定位到的**主会话 + subagent**，按 message.id 去重，并分 input/output、cache read、5m/1h write、模型、effort、失败/重试/废弃及公开价估算；成本按相应公开计价倍率**加权**，不能拿原始 token 总数判断“贵在哪”。仍须连同覆盖声明一起报告，公开价估算不等于实际账单。缺 JSON 时报告必须写 `UNMEASURED`，不能写 `$0`。
 >
 > 随时可调(零 LLM,几秒):`uv run --no-sync python -m autoresearch.scan.render <date> --view menu_health|gate_hist|timing|funnel`。
+>
+> **唤醒纪律(Wave8 A4;07-28 实测主会话独占 $30.50 = 全场 48.7%,双倍击穿 25% 挂账线)**:每次唤醒的 cache 读都按全上下文计费,所以 —— 派发/收通知的回合**只做一件事**(领通知 → 补派一只),不产出分析文字;CP2 与 CP3 合并为一次播报;workflow 完成通知里的 args 回显(~2KB)不复述。CP0/CP1/CP4/CP6/CP7 照常播。
 >
 > **CP5 已由 `l4_watch` Monitor 承担,主会话不要再自己轮询卡片。** 旧做法(`ls -t details/*.md` + grep Rating)基于「卡文件存在 = 该股完成」——**该前提已被 2026-07-28 证伪**:601319 的卡先落草稿(UW)后改终稿(Hold),按存在性播报会播出一个从未成立的评级。完成态只由 `_l4_tasks.json` 定义(W8-6/W8-7 同一条纪律)。
 
@@ -114,8 +116,14 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
    uv run --no-sync python -m autoresearch.scan.l4_reuse <date> --apply
    uv run --no-sync python -m autoresearch.scan.agents.l4_card prompts <date>
    ```
-   → scan-market.js 返回 `{dispatch, dispatch_batches, task_book, meta}` 后，主会话**按批次数组原序逐批推进，每一批内并行**拉
-   `Workflow({scriptPath: '.claude/workflows/l4-stock.js', args: {date, code, name, sector, cfg, pinned, dossierSummary}})`
+   → scan-market.js 返回 `{dispatch, dispatch_batches, task_book, meta}` 后，主会话按**滑窗**派发
+   `Workflow({scriptPath: '.claude/workflows/l4-stock.js', args: {date, code, name, sector, cfg, pinned, dossierSummary}})`：
+   - **首轮并行派 `effective_cap` 只**（取 `l4_tasks batches` 回显；现为 4）；
+   - 此后**每收到一股完成通知，立即补派下一只 pending**，始终保持 cap 只在飞；
+   - **派发顺序:📌 pinned 与预计最长者排最前**（pinned 强制满卡+双复核，07-28 实测 25–40min，非 pinned 12–20min；把长的留到最后 = 尾巴独自拖时间）；
+   - **完成判据 = task_book 全 SUCCEEDED**（`batches` 为空**不是**完成——可能都还在飞，见 `running` 数组）；
+   - 单票失败只改变本票状态，不重跑已成功票；重放只派 `l4_tasks batches` 回的未完成批。
+   > 旧契约是「按 dispatch_batches 批次间顺序、批次内并行」——每批要等最慢者，07-28 实测批 3 的普冉 40.6min 独自拖尾 15min+。滑窗只改派发节奏，**不改 workflow 粒度**（每股一个 l4-stock，fb_20260714_003 维持）。
    `pinned` 取自 dispatch-plan 的 `meta[code].pinned`。**派发前对照 workflow 打印的「📌 保送票 N 只」行逐一核对**:名单里的每只必须带 `pinned: true`。漏传 = 持仓 SELL 双复核整段不跑(2026-07-21 实测 300857/601869 中招);probe 9 `sell_review_missing` 只能事后 warn,拦不住。
    `dossierSummary` 取自 dispatch-plan 的 `meta[code].dossier_summary`(无档案=空串);漏传只退化为「intel 无已知底」= Wave3 前行为,不影响正确性。
    (**cfg = 步骤 0.5 frame 回显的 `user_config` 块原样透传,勿传 `{}`**——空 cfg 静默关 intel/降 effort,见 0.5 节 07-21 事故注)(degraded=复核 run 不齐时不折回、报告强制人裁)
