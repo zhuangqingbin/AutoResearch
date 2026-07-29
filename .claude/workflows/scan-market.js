@@ -98,7 +98,11 @@ if (!packok || !packok.ok) {
 }
 // universe(确定性)∥ market_view(macro-lite 判断)—— barrier
 await parallel([
-  () => bash(`${R} autoresearch.scan.prelude ${date} && echo "SUMMARY_FILE=${SD}/_prelude_summary.md"`,
+  // W8-5:回显必须以**文件真在**为条件。原先 `prelude && echo SUMMARY_FILE=...` 只看 prelude
+  // 退出码,07-28 汇总屏写盘失败(被 suppress 吞)时照样回显路径 → agent 回报「Summary file
+  // generated」但文件不存在,CP1 转播落空。日志不得替不存在的文件背书。
+  () => bash(`${R} autoresearch.scan.prelude ${date}; test -s ${SD}/_prelude_summary.md ` +
+    `&& echo "SUMMARY_FILE=${SD}/_prelude_summary.md" || echo "SUMMARY_MISSING(见 stderr 的落盘失败行)"`,
     'prelude/universe', 'Prelude'),
   () => agent(
     `读 ${SD}/market_pack.json,按你的人设写 ${SD}/market_view.md(六小节;前3描述性地形、后2仅 L5)。数字只出自 pack,不编;个股不评级、不锚定卡片。pack 里的 sector_healthy_top3 键是 L5 专用的确定性产物,忽略它,不得把"看多行业"及其排名写进任何小节。`,
