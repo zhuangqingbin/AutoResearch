@@ -428,6 +428,17 @@ def prepare_slim(
     }
 
 
+def _age_minutes(started_at: str | None, now: datetime | None = None) -> int | None:
+    """在飞时长(分钟);缺 started_at(旧账本)返回 None —— 缺字段不等于不在飞。"""
+    started = _parse_stamp(started_at)
+    if started is None:
+        return None
+    ref = now or datetime.now(timezone.utc)
+    if ref.tzinfo is None:
+        ref = ref.replace(tzinfo=timezone.utc)
+    return max(0, int((ref - started).total_seconds() // 60))
+
+
 def dispatch_batches(
     book: Path | str,
     *,
@@ -443,9 +454,16 @@ def dispatch_batches(
             1, min(cap_values.values()) - int(payload.get("rate_limit_failures") or 0)
         )
         codes = []
+        running: list[dict] = []
         for code in payload.get("order") or payload["tasks"]:
             task = payload["tasks"].get(code)
             if not task:
+                continue
+            # W8-6:在飞的票必须可见。`batches` 为空有两种截然相反的含义 ——
+            # 「都跑完了」还是「都还在飞」;07-28 主会话把后者读成前者,提前派了下一批。
+            # 完成判据是 task_book 全 SUCCEEDED,不是 batches 为空。
+            if task["status"] == "RUNNING":
+                running.append({"code": code, "age_min": _age_minutes(task.get("started_at"), now)})
                 continue
             if task["status"] in {"PENDING", "FAILED"}:
                 if (
@@ -470,6 +488,7 @@ def dispatch_batches(
         "effective_cap": effective,
         "batches": batches,
         "pending": len(codes),
+        "running": running,   # 在飞票(code + age_min);空 batches ∧ 空 running 才是完成态
     }
 
 
