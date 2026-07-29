@@ -40,13 +40,14 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 
 > **编排真身 = 两段 workflow + 主会话收尾**:① `.claude/workflows/scan-market.js`(Prelude→L3→L4-prep;默认流式 L4,返回 `{dispatch, dispatch_batches, task_book, reused, meta}`)→ ② 主会话必须按 `dispatch_batches` **批次间顺序执行、批次内并行**拉 `.claude/workflows/l4-stock.js`；每票先过 `_l4_tasks.json` preflight，再让 slim 与 intel 并行，随后 card→(≥OW)双复核。单票失败只改变本票状态，不重跑已成功票 → ③ 全部批次完成后跑步骤 5 的 assemble/GATE4/计量回填。`streaming_l4=false` 才回到旧批量 GATE3。**正常跑动直接用 workflow**;以下命令留作调参/单步重跑入口。操作模板分驻:市场研判在 `macro-research/macro-playbook.md` 末节、L4 决策卡在 stock-research 的 `lite-playbook.md`;**各阶段机制/参数/实证读数**见 `STAGES.md`。
 >
-> **进度可视化(必做,2026-07-12 用户反馈"跑起来主对话一片空白")**:workflow 一落地就**同时**挂一个 Monitor 播报进度到主对话 ——
+> **进度可视化(必做,2026-07-12 用户反馈"跑起来主对话一片空白")**:L4 派发后挂一个 Monitor —— 
 > ```
-> Monitor(command: "uv run --no-sync python -m autoresearch.scan.progress <date> --watch",
->         description: "scan 漏斗进度", timeout_ms: 3600000, persistent: false)
+> Monitor(command: "uv run --no-sync python -m autoresearch.scan.l4_watch <date> --watch",
+>         description: "L4 逐股出卡", timeout_ms: 3600000, persistent: false)
 > ```
-> `autoresearch.scan.progress`(确定性读盘,零 LLM)从产物文件反推阶段+计数,**只在变化时**打一行(不刷屏):`⏳ L4 · finalists 11 · 🕵️ 情报 8 · 卡 7/11 · Hold 5·Overweight 1`。跑完自动退出。用户另可用 `/workflows` 看 spinner 级进度树。
-> ⚠️ **播报是「反推」不是「断言」**:它靠产物文件的存在性猜阶段,**不区分「在跑 / 被跳过 / 挂了」,也可能把某阶段的输入产物当成它已完成**(2026-07-17 实测误报两次:哨兵档已提前返回却报「L3 精排中」、把 l3-rank 的输入 `_l3_table.md` 当成「精排 ✓」)。真信号以 workflow 的 `journal.jsonl`(每 agent 一条 `started`/`result`)为准,别拿播报当阶段状态断言。代码侧修复在 `pr_20260717_004`。
+> `autoresearch.scan.l4_watch`(确定性读盘,零 LLM)**只认 `_l4_tasks.json`**:某票 status 进终态(SUCCEEDED 且 card hash 已记 / FAILED)才播一行 `🃏 k/N 代码 名称 → 评级`;全部终态自动退出,收尾附「ensemble 折回待结算」提示。这**就是 CP5**,不用再自己轮询卡片。
+> ⚠️ **它播的是卡片评级,不是终评**:`sell_review`/`ow_review` 的折回发生在 assemble 之后(2026-07-28:688766 卡片 UW、复核中位 Hold)——见到 `↩️` 行就等 assemble,别照卡片下结论。
+> ⚠️ **L4 之前的阶段没有 Monitor**:靠 CP0-CP4 的主动播报(下表)。前任 `scan.progress` 靠产物存在性猜阶段、分不清「在跑/被跳过/挂了」,累犯误报三次(2026-07-17 两次 + 07-28 GATE1 未过就报「L3 精排中」),已于 Wave8 退役。真信号一律以 workflow 的 `journal.jsonl`(每 agent 一条 `started`/`result`)为准。
 >
 > ### 过程直播契约(必做,2026-07-25 用户反馈"各环节展示不够优雅完整")
 >
@@ -59,7 +60,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 > | CP2 | 行业 brief 齐 | 每个行业一句地形定调 | 各 `sector_briefs/*.md` 地形段首句 |
 > | CP3 | GATE2 过 | **入围名单逐只**(代码/名称/行业)+ 被 pass1 切掉的影子名单 | workflow 的 `L3入围` 日志 + `_l3_pass1_cut.csv` |
 > | CP4 | L4 派发 | 派发 N 股 + 预算旗 + intel 开关 + 📌保送名单 | workflow 日志(含 `📌 保送票` 行) |
-> | CP5 | L4 进行中 | **每出一张卡播一行**:k/N 代码 名称 评级 | 轮询 `details/*.md`(见下方滚动表) |
+> | CP5 | L4 进行中 | **每出一张卡播一行**:k/N 代码 名称 评级 | `l4_watch` Monitor 自动播(上方),主会话不用管 |
 > | CP6 | L4 全完 | 评级分布 + 停因分桶 + OW三门直方图 | `uv run --no-sync python -m autoresearch.scan.render <date> --view gate_hist` |
 > | CP7 | GATE4 过 | 买单/0买判词 + 产物路径 + 分段耗时 + **token 真计量** | `summary.md` 摘录 + `--view timing` + `usage_harvest`(下方) |
 >
@@ -72,8 +73,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 >
 > 随时可调(零 LLM,几秒):`uv run --no-sync python -m autoresearch.scan.render <date> --view menu_health|gate_hist|timing|funnel`。
 >
-> **CP5 滚动表做法**:l4-stock 全部拉起后,主会话每 60–90s 跑一次
-> `ls -t context/scan/<date>/details/*.md 2>/dev/null | head -20`,对**新出现**的卡 grep 其 `**Rating**` 行,播一行 `k/N <代码> <名称> → <评级>`;N 张齐或收到 workflow 完成通知即停。卡文件存在 = 该股确实完成(卡就是产物),这与 `progress.py` 按存在性猜**阶段**不同——后者分不清"在跑/被跳过/挂了",别拿它当阶段断言。
+> **CP5 已由 `l4_watch` Monitor 承担,主会话不要再自己轮询卡片。** 旧做法(`ls -t details/*.md` + grep Rating)基于「卡文件存在 = 该股完成」——**该前提已被 2026-07-28 证伪**:601319 的卡先落草稿(UW)后改终稿(Hold),按存在性播报会播出一个从未成立的评级。完成态只由 `_l4_tasks.json` 定义(W8-6/W8-7 同一条纪律)。
 
 0. **前奏一键**(workflow Prelude 相位的确定性部分):
    ```bash

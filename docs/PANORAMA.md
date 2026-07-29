@@ -1016,7 +1016,7 @@ uv run --no-sync python -m autoresearch.scan.menu <date>             # 菜单体
 uv run --no-sync python -m autoresearch.scan.frame <date> --json     # market_pack(Stage 0)
 uv run --no-sync python -m autoresearch.scan.assemble <date>         # L5 整合
 uv run --no-sync python -m autoresearch.scan.gates gate4 <date>
-uv run --no-sync python -m autoresearch.scan.progress <date> --watch # 进度播报
+uv run --no-sync python -m autoresearch.scan.l4_watch <date> --watch # L4 逐股出卡播报(progress.py 已于 Wave8 退役)
 
 # ── 单标的 / 宏观 ──
 uv run --no-sync python -m autoresearch.analyze.harvest <ticker> [date] [stock|crypto] [PEERS] [--slim]
