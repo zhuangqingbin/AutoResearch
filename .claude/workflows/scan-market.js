@@ -60,27 +60,30 @@ function stageGate(label, cmd, stage, phaseName) {
 phase('Prelude')
 // frame 先行:pack 存盘 + 取数入湖(prelude/universe 随后湖命中不重拉)
 log('Prelude 开始:frame → [universe 全市场取数 ∥ market_view](取数历史 ~10m,完成即 GATE1)')
-await bash(`mkdir -p ${SD} && ${R} autoresearch.scan.frame ${date} --json > ${SD}/market_pack.json`, 'frame', 'Prelude')
+await bash(`mkdir -p ${SD} && ${R} autoresearch.scan.frame ${date} --json-out ${SD}/market_pack.json`, 'frame', 'Prelude')
 // frame 与 universe 同样走 tushare 全市场取数,同样会 ChunkedEncodingError 半途而废 —— 但此前只有
-// universe 有重试守卫(见下方 l2-check),frame 这条裸奔。2026-07-27 实跑逮到:frame 在 11/12 端点
-// 处断线退出码 1,`>` 重定向只留下 **0 字节** market_pack.json;bash() 不看退出码 → 空 pack 一路
-// 流到 market_view。macro-brief 正确拒写(空壳比缺文件更坏:文件一旦存在就压掉 L5 的
+// universe 有重试守卫(见下方 l2-check),frame 这条裸奔。事故两代:
+//   2026-07-27:frame 在 11/12 端点断线退出码 1,`>` 重定向留下 **0 字节** pack;
+//   2026-07-28:执行壳擅自把命令改写成 `... > pack 2>&1`,stderr 日志 + tqdm 进度条灌进 pack
+//              (1,776B 无 JSON)—— **非空**,于是判据 `test -s` 放行、重试分支根本没触发。
+// 两代同一病灶:产物由 shell 重定向 + 进程 stdout 决定。W8-1 收回 writer 侧(`--json-out`
+// 先写 .tmp 再 os.replace),W8-2 把门判据从「非空」改成「JSON 可解析」——存在性 ≠ 有效性。
+// 空/垃圾 pack 的下游代价照旧:macro-brief 会拒写(空壳比缺文件更坏 —— 文件一旦存在就压掉 L5 的
 // render_fallback_pulse 回退,还经 l4_card.py 的 market_context_block 把无信息简报注入每张 L4 卡),
-// 于是 market_view.md 缺席、L3 在没有地形段的情况下精排 —— 静默降级,25 分钟后才被人眼发现。
-// 同族前科:空 pickle 永不重拉 / 空 slim 默认 Hold。判据用 `test -s`(非零字节),与 l2-check 同形。
+// 于是 market_view.md 缺席、L3 在没有地形段的情况下精排。同族前科:空 pickle 永不重拉 / 空 slim 默认 Hold。
 const packok = await gate('pack-check',
-  `test -s ${SD}/market_pack.json && echo '{"ok":true}' || echo '{"ok":false,"reason":"market_pack 0 字节(frame 崩)"}'`,
+  `${R.replace('python -m', 'python -c')} "import json,sys;json.load(open('${SD}/market_pack.json'))" 2>/dev/null && echo '{"ok":true}' || echo '{"ok":false,"reason":"market_pack 缺失或非合法 JSON(frame 崩 / 产物被污染)"}'`,
   OK, 'Prelude')
 if (!packok || !packok.ok) {
-  log('⚠️ market_pack 空(frame 半途失败)→ 重试一次')
-  await bash(`${R} autoresearch.scan.frame ${date} --json > ${SD}/market_pack.json`, 'frame-retry', 'Prelude')
+  log('⚠️ market_pack 缺失或非合法 JSON(frame 半途失败)→ 重试一次')
+  await bash(`${R} autoresearch.scan.frame ${date} --json-out ${SD}/market_pack.json`, 'frame-retry', 'Prelude')
   const packok2 = await gate('pack-recheck',
-    `test -s ${SD}/market_pack.json && echo '{"ok":true}' || echo '{"ok":false,"reason":"重试后仍空"}'`,
+    `${R.replace('python -m', 'python -c')} "import json,sys;json.load(open('${SD}/market_pack.json'))" 2>/dev/null && echo '{"ok":true}' || echo '{"ok":false,"reason":"重试后仍缺失/非法"}'`,
     OK, 'Prelude')
   // 不 throw:market_pack 是 B 级(缺了 L3 少地形段、L5 有确定性脉搏回退,持仓仍需当日卡)。
   // 但降级必须留痕 —— 这一行就是账,别让它再静默。
   if (!packok2 || !packok2.ok) {
-    log('🚨 market_pack 重试后仍空 → 本次 L3/L4 无市场地形段(B级降级·已记账);market_view 会拒写,L5 走确定性脉搏回退')
+    log('🚨 market_pack 重试后仍缺失/非法 → 本次 L3/L4 无市场地形段(B级降级·已记账);market_view 会拒写,L5 走确定性脉搏回退')
   } else {
     log('pack-check ✓(重试后)')
   }
