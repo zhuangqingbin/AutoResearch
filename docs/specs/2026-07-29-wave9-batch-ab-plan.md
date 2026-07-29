@@ -44,6 +44,7 @@
 **修改:**
 | 文件 | 改什么 |
 |---|---|
+| `autoresearch/data/sources.py` → `sources/__init__.py` | **100% rename 转包**(0 行内容差异)——原计划误把 `data/sources` 当成包,它其实是平模块,不转包则 `sources/anns_fallback.py` 永远导不进来。4 处既有调用方(dossier/mainbz·prefetch·reconcile、data/cache)须回归验证 |
 | `autoresearch/scan/health.py:56` | `anns_empty_rate` 旁增 `anns_source_status()`;`run_health` 增键 |
 | `autoresearch/learning/self_review.py:333,484` | probe 4 改口三态 + docstring;新增研报体探针 |
 | `autoresearch/scan/report_sections.py:329` | `_pinned_section` 增冲突框 |
@@ -68,7 +69,10 @@
 
 **Interfaces:**
 - Produces: `fetch_anns(code6: str, date: str, *, limit: int = 20) -> list[dict]` —— 返回与 `L3_news/<code>.json` 同构的行 `{"ann_date": "YYYYMMDD", "title": str, "source": "em"}`;取数失败/无数据 → `[]`(B 级降级,不抛)。
-- Produces: `SOURCE_TAG = "em"`。
+- Produces: `SOURCE_TAG` —— **兜底源供应商标识**。值必须与实际连的接口一致:
+  巨潮 `stock_zh_a_disclosure_report_cninfo` → `"cninfo"`;东财 → `"em"`。
+  (本仓库既有惯例里 `"em"` 专指东财,见 `scan/universe.py` 的 `--source` choices;
+  标签写错等于给未来的供应商质量归因埋假数据。)
 
 - [ ] **Step 1: 写失败测试**
 
@@ -87,9 +91,10 @@ def test_normalizes_rows_to_l3news_shape(monkeypatch):
     ])
     monkeypatch.setattr(af, "_raw_notices", lambda code6, date: df)
     rows = af.fetch_anns("000651", "2026-07-29")
+    tag = af.SOURCE_TAG
     assert rows == [
-        {"ann_date": "20260729", "title": "关于回购股份的进展公告", "source": "em"},
-        {"ann_date": "20260728", "title": "2026 年半年度报告披露提示", "source": "em"},
+        {"ann_date": "20260729", "title": "关于回购股份的进展公告", "source": tag},
+        {"ann_date": "20260728", "title": "2026 年半年度报告披露提示", "source": tag},
     ]
 
 
@@ -260,8 +265,9 @@ def test_status_ok_when_primary_has_rows(tmp_path):
     assert st["status"] == "ok"
 
 
-def test_status_fallback_when_only_em_rows(tmp_path):
-    d = _mk(tmp_path, {"000651": [{"ann_date": "20260729", "title": "x", "source": "em"}],
+def test_status_fallback_when_only_fallback_rows(tmp_path):
+    from autoresearch.data.sources.anns_fallback import SOURCE_TAG
+    d = _mk(tmp_path, {"000651": [{"ann_date": "20260729", "title": "x", "source": SOURCE_TAG}],
                        "000333": []})
     st = health.anns_source_status(d)
     assert st["status"] == "fallback"
@@ -288,7 +294,8 @@ def test_probe_warns_on_blind_not_info(tmp_path):
 
 
 def test_probe_info_when_fallback_carries(tmp_path):
-    d = _mk(tmp_path, {"000651": [{"ann_date": "20260729", "title": "x", "source": "em"}]})
+    from autoresearch.data.sources.anns_fallback import SOURCE_TAG
+    d = _mk(tmp_path, {"000651": [{"ann_date": "20260729", "title": "x", "source": SOURCE_TAG}]})
     (d / "run_health.json").write_text(json.dumps({
         "anns_empty_rate": 0.0,
         "anns_source_status": {"primary_empty_rate": 1.0, "fallback_rows": 1,
@@ -319,6 +326,8 @@ def anns_source_status(scan_dir: Path) -> dict:
       fallback = 主源无料但兜底源(`source=="em"`)扛住了
       blind    = 双源皆空 → **这是 warn,不是 expected**
     """
+    from autoresearch.data.sources.anns_fallback import SOURCE_TAG as _FALLBACK_TAG
+
     d = Path(scan_dir) / "L3_news"
     files = sorted(d.glob("*.json")) if d.is_dir() else []
     if not files:
@@ -335,7 +344,7 @@ def anns_source_status(scan_dir: Path) -> dict:
         if not rows:
             empty_files += 1
         for r in rows:
-            if isinstance(r, dict) and str(r.get("source", "")) == "em":
+            if isinstance(r, dict) and str(r.get("source", "")) == _FALLBACK_TAG:
                 fallback_rows += 1
             else:
                 primary_rows += 1
