@@ -302,12 +302,24 @@ def test_usage_harvest_wired_in_skill():
 
 
 def test_scan_market_skill_documents_wave3_recovery_and_measurement_contract():
-    """Wave 3 不是只把代码接上：未来编排者必须知道批次、重放、回滚和计量回填。"""
+    """Wave 3 不是只把代码接上：未来编排者必须知道批次、重放、回滚和计量回填。
+
+    ⚠️ **锚更新(Wave8 W8-8)**:原锚 `批次内并行` 已换成 `滑窗` + `task_book 全 SUCCEEDED`。
+    派发契约由「批次间顺序 + 批次内并行」改为滑窗补派(每完成一只补派一只),完成判据
+    由「batches 为空」改为「task_book 全 SUCCEEDED」。
+
+    换锚时逮到本测试的一个失效模式:W8-8 改契约后它**仍然绿**,因为新文本里有一句
+    「旧契约是「按 dispatch_batches 批次间顺序、批次内并行」——每批要等最慢者」,
+    锚匹配到了这句**否定该契约的历史注**。子串锚分不清「契约在」和「契约被引用着否定」
+    (同族:price_claims 把卡片"引用并拒绝"的 intel 断言当成卡片自己的断言)。
+    所以锚要挑**只可能出现在活契约里**的词。
+    """
     skill = (SKILLS / "scan-market" / "SKILL.md").read_text(encoding="utf-8")
     stages = (SKILLS / "scan-market" / "STAGES.md").read_text(encoding="utf-8")
     for anchor in (
         "dispatch_batches",
-        "批次内并行",
+        "滑窗",
+        "task_book 全 SUCCEEDED",
         "RATE_LIMIT",
         "streaming_l4",
         "stable_context_blocks",
