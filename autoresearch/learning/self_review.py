@@ -349,8 +349,9 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
        保送票同走 l4-stock 链、同派 intel)− ♻️ 复用数(复用痕迹 = `details/<code>.md` 含
        ♻️ banner,l4_reuse.write_reused_card 所落;details/ 缺 → 期望=全行数,detail 注明
        口径)。0 份 intel = 未启用,本条不出。07-17 实测:10 行 − 1 复用 = 9 稿 ✓。
-    4. **anns 双源**(warn/info,Wave9 A-1):`anns_source_status.status`——`blind`(双源皆空)
-       = **warn**,公告面只剩 intel 单腿;`fallback` = info(兜底承载,显式记账);`ok` 不出条。
+    4. **anns 双源**(warn/info,Wave9 A-1 + 复核轮1):`anns_source_status.status`——
+       `blind`(有稿但双源皆空)= **warn**,公告面只剩 intel 单腿;`fallback` = info(兜底
+       承载,显式记账);`ok`/`pending`(L3 阶段还没跑到,不是"双源皆空"的证据)不出条。
        旧 run 无该键 → 回落 `anns_empty_rate` 旧 expected 口径,不追溯误报。
     5. **market_view 防锚定**(warn):market_pack.json 的 sector_healthy_top3 行业名出现在
        market_view.md 文本 → L5 专属看多读数泄漏进策略师稿(闭合 final-review I-1)。
@@ -486,7 +487,10 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
     st = health.get("anns_source_status")
     st = st if isinstance(st, dict) else {}   # 坏值(非 dict)按缺处理,回落旧口径,绝不抛
     status = str(st.get("status", "")) if st else ""
-    if status == "blind":
+    if status == "pending":
+        pass  # 复核轮1:L3 阶段还没跑到——既非已核实健康也非已核实故障,这天这件事还没
+              # 发生,不出条(既不是 warn 也不是 info)
+    elif status == "blind":
         add("产物形状·anns双源盲", "warn",
             "公告面双源皆空(主源无权限 + 兜底源无料)—— 卡片公告证据仅剩 intel 单腿,"
             "非 expected;查兜底源可达性")

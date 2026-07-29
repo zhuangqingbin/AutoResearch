@@ -236,8 +236,13 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: Task 1 的 `anns_fallback.SOURCE_TAG`。
-- Produces: `health.anns_source_status(scan_dir) -> dict` = `{"primary_empty_rate": float|None, "fallback_rows": int, "status": "ok"|"fallback"|"blind"}`。
-  - `ok` = 主源有料;`fallback` = 主源空但兜底行 >0;`blind` = 双源皆空。
+- Produces: `health.anns_source_status(scan_dir) -> dict` = `{"primary_empty_rate": float|None, "fallback_rows": int, "status": "ok"|"fallback"|"blind"|"pending"}`。
+  - `ok` = 主源有料;`fallback` = 主源空但兜底行 >0;`blind` = **有稿但双源皆空**;
+    `pending` = **`L3_news/` 目录不存在或无稿** = 该阶段尚未跑到,**不是**证据。
+  - 🚨 `pending` 与 `blind` 必须分开(复核轮1 Critical):`L3_news/` 只由 L3 阶段的
+    `harvest_l3_news()` 生成(调用点 `scan/l3/prompt.py`),而 prelude 跑在 L3 **之前** ——
+    把"还没跑"读成"已确认双源皆空"会让提醒无条件天天响,gate 形同虚设。
+    这是本 wave 主题「存在≠有效」的同型病:行存在,但它声称已核实的事那一刻还没发生。
 - Produces: `run_health` 新键 `anns_source_status`(同上 dict)。
 
 - [ ] **Step 1: 写失败测试**
@@ -275,10 +280,19 @@ def test_status_fallback_when_only_fallback_rows(tmp_path):
 
 
 def test_status_blind_when_both_empty(tmp_path):
+    """有稿但全空 = 真 blind(双源都没料)。"""
     d = _mk(tmp_path, {"000651": [], "000333": []})
     st = health.anns_source_status(d)
     assert st["status"] == "blind"
     assert st["primary_empty_rate"] == 1.0
+
+
+def test_status_pending_when_dir_absent(tmp_path):
+    """L3_news/ 不存在 = L3 还没跑到,必须是 pending 而**不是** blind ——
+    prelude 跑在 L3 之前,塌缩两者会让 📡 提醒无条件天天响(复核轮1 Critical)。"""
+    d = tmp_path / "2026-07-29"
+    d.mkdir(parents=True)
+    assert health.anns_source_status(d)["status"] == "pending"
 
 
 def test_probe_warns_on_blind_not_info(tmp_path):
@@ -331,7 +345,8 @@ def anns_source_status(scan_dir: Path) -> dict:
     d = Path(scan_dir) / "L3_news"
     files = sorted(d.glob("*.json")) if d.is_dir() else []
     if not files:
-        return {"primary_empty_rate": None, "fallback_rows": 0, "status": "blind"}
+        # 目录/稿件不存在 = L3 阶段还没跑到,**不是**"双源皆空"的证据(复核轮1 Critical)
+        return {"primary_empty_rate": None, "fallback_rows": 0, "status": "pending"}
 
     primary_rows = fallback_rows = 0
     empty_files = 0
@@ -412,13 +427,30 @@ Expected: **FAIL**。确认后改回。若不 FAIL → 测试零鉴别力,回 St
 `autoresearch/scan/prelude.py` 汇总屏行渲染处,在 dossier_pool 行附近加(presence-gated,`status=="blind"` 才出):
 
 ```python
-    # 📡 公告主源无权限提醒(Wave9 A-1;blind 才出,fallback/ok 不打扰)
-    with contextlib.suppress(Exception):
-        from autoresearch.scan.health import anns_source_status
-        if anns_source_status(scan_dir).get("status") == "blind":
-            lines.append("  📡 公告双源皆空 —— 主源 anns_d 无权限且兜底源无料;"
-                         "查 `python -m autoresearch.data.sources.anns_fallback` 冒烟")
+    # 📡 公告源无权限提醒(Wave9 A-1;复核轮1 改为**回看最近一个已完成扫描日**)
+    # 为什么不读当日:`L3_news/` 由 L3 阶段的 harvest_l3_news() 生成,而 prelude 跑在 L3
+    # **之前** —— 读当日必然拿到 pending,要么永不触发、要么(若把 pending 当 blind)天天误报。
+    # 回看模式与 prelude 既有的 retro_pending / dossier 对账提醒同款。
+    from autoresearch.scan.health import anns_source_status
+    try:
+        prior = sorted(p for p in Path(scan_dir).parent.iterdir()
+                       if p.is_dir() and p.name < Path(scan_dir).name)
+        for prev in reversed(prior[-5:]):          # 最近 5 日里找第一个跑到 L3 的
+            st = anns_source_status(prev).get("status")
+            if st == "pending":
+                continue
+            if st == "blind":
+                lines.append(f"  📡 公告双源皆空(最近已完成扫描日 {prev.name})—— 主源无权限"
+                             "且兜底源无料;查 `python -m autoresearch.data.sources.anns_fallback` 冒烟")
+            break
+    except Exception as e:      # noqa: BLE001 — 提醒层不得阻断 prelude,但**不静默**
+        print(f"[prelude] ⚠️ anns 提醒行跳过:{e!r}", file=sys.stderr)
 ```
+
+**测试要求(本步必须有自动化覆盖,不接受只做手工 smoke)**:至少三个用例 ——
+① 上一日 `blind` → 出 📡 行;② 上一日 `ok`/`fallback` → 不出;③ **当日目录只有 L2 产物、
+无 `L3_news/`(= prelude 跑完那一刻的真实现场)且无历史日** → 不出。
+用例 ③ 是这个 Critical 的回归钉子,缺它等于没修。
 
 - [ ] **Step 8: 全量测试 + 提交**
 
