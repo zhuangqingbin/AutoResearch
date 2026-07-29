@@ -8,6 +8,15 @@ edge?本模块逐买单落账(来源=attribution 已实现 fwd + 卡片目标价
 **评级基率**("本系统 OW 历史 T+5 胜率 X%")——样本 ≥min_n 后注入 skeptic/PM 当先验。
 
   uv run --no-sync python -m autoresearch.learning.buy_ledger   # → reports/learning/buy_ledger.md
+
+## 预定义裁决规则:OW 复核降档(Wave8 W8-17 落账;届时按数据裁,**人拍板**)
+
+**开裁条件**:买单 n≥10(2026-07-29 现 **n=9**,下一单即触发)。
+**规则**:与 SELL 侧同款救对率口径(定义见 `ensemble_ledger` 模块 docstring)——
+折回救对率 <50% → OW 复核由 2 跑降 1 跑;≥50% → 维持,再攒 5 折复裁。
+
+规则先于数据固定,防"读数出来后挑一个好看的门槛"。不自动执行:改生产要人批,
+且先经 `experiment_registry` 预注册(Wave5 治理边界)。
 """
 from __future__ import annotations
 
