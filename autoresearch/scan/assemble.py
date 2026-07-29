@@ -6,6 +6,7 @@ modules.  This path keeps historical imports and the CLI stable.
 """
 from __future__ import annotations
 
+import argparse
 from datetime import date
 
 from autoresearch.agents.utils.rating import RATINGS_5_TIER, parse_rating
