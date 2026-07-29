@@ -245,3 +245,46 @@ def _dump_decision_records(
 
 
 load_ensemble = _load_ensemble
+
+
+def _tripwire_hits(scan_dir, analysis_date: str, codes: list[str]) -> list[dict]:
+    """薄封装(测试 monkeypatch 此函数,不去 mock 整个 tripwire_watch)。"""
+    from autoresearch.learning import tripwire_watch
+    root = Path(scan_dir).parent if scan_dir else Path("context/scan")
+    return tripwire_watch.check(analysis_date, codes=codes, scan_root=root)
+
+
+def tripwire_conflicts(scan_dir, analysis_date: str,
+                       pinned_rows: list[dict]) -> dict[str, dict]:
+    """确定性尺(tripwire 价格线)与 LLM 终评的**冲突集**(Wave9 A-2)。
+
+    冲突 = 保送票当日 **价格线** tripwire 触发 ∧ 终评 ≠ Sell。
+    (2026-07-29 实测:300857 tripwire 判"清仓"、双复核终评 Underweight="减仓",
+     报告里两头各说各话、无裁决材料 —— 本函数只**判定并呈现**冲突,**绝不合并**。)
+
+    `date`/`event` 型命中是提醒(披露日临近/新闻旗),与评级不构成对立,不收。
+
+    评级键名:核实生产真实字段(`_finalist_row`/`_buylist_table_lines` 均取 `row["rating"]`,
+    与本函数测试夹具的构造一致)—— 就是 `"rating"`,故不需要多键名兜底。
+    """
+    rows = [r for r in (pinned_rows or []) if r.get("code")]
+    if not rows:
+        return {}
+    rating_of = {str(r["code"]).zfill(6): str(r.get("rating", "") or "") for r in rows}
+    try:
+        hits = _tripwire_hits(scan_dir, analysis_date, list(rating_of))
+    except Exception:  # noqa: BLE001 — advisory 层,坏了不挡发布
+        return {}
+
+    out: dict[str, dict] = {}
+    for h in hits:
+        if h.get("kind") != "price":
+            continue
+        code = str(h.get("code", "")).zfill(6)
+        rating = rating_of.get(code, "")
+        if not rating or rating == "Sell":
+            continue
+        out.setdefault(code, {"tripwire_detail": str(h.get("detail", "")),
+                              "tripwire_raw": str(h.get("raw", "")),
+                              "rating": rating})
+    return out

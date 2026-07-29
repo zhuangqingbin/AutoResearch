@@ -16,12 +16,14 @@ design: docs/specs/2026-07-28-wave7-unified-roadmap-design.md §6 P1
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
 
 _COLS = ["date", "code", "name", "rating", "fwd_2", "market_fwd_2", "excess", "verdict",
-         "fold_from", "fold_to", "fold_verdict", "trigger", "spread", "l3_conviction"]
+         "fold_from", "fold_to", "fold_verdict", "trigger", "spread", "l3_conviction",
+         "conflict"]
 
 # 卖飞线:看空判断(Sell/UW)之后该票**相对市场**还涨了这么多 → 判错。
 # 首版定值 +2pp。取值理由:比 0 宽一点,免得把"和大盘差不多"记成卖飞;又远小于一个
@@ -95,6 +97,23 @@ def fold_verdict_of(fold_from: str | None, fold_to: str | None,
     return "折平"
 
 
+def _read_conflicts(d: Path) -> dict:
+    """该 scan 日自己的两尺分歧判据(`_tripwire_conflicts.json`,assemble 运行期落盘;Wave9 A-2)。
+
+    跨日滚动语义:`roll()` 一次调用会遍历几十个历史 `scan_root/<date>/` 目录,每个历史日必须
+    读**它自己那天**落的文件 —— 不是"运行 roll() 这一刻"的当日文件(那份文件通常并不存在于
+    历史目录里)。缺文件/坏 json → {}(presence-gated,老路不破)。
+    """
+    p = d / "_tripwire_conflicts.json"
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def roll(scan_root: Path | str | None = None) -> pd.DataFrame:
     """逐 scan 日抽 lane=pinned 的持仓卡 × attribution 已实现 fwd_2 → 账本帧。"""
     from autoresearch.scan.health import final_ratings  # lazy 防环
@@ -118,6 +137,7 @@ def roll(scan_root: Path | str | None = None) -> pd.DataFrame:
         attr = _read_attr(d)
         mkt = market_fwd2(attr)
         ratings = final_ratings(d)
+        conflicts = _read_conflicts(d)
         from autoresearch.learning.ensemble_ledger import load_fold_facts
 
         fold_facts = load_fold_facts(d)
@@ -143,6 +163,7 @@ def roll(scan_root: Path | str | None = None) -> pd.DataFrame:
                 "fold_verdict": fold_verdict_of(fold_from, fold_to, excess),
                 "trigger": fold.get("trigger"), "spread": fold.get("spread"),
                 "l3_conviction": None if pd.isna(conv) else float(conv),
+                "conflict": "tripwire_vs_rating" if code in conflicts else "",
             })
     return pd.DataFrame(rows, columns=_COLS).sort_values(["date", "code"]).reset_index(drop=True)
 
