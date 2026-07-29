@@ -70,35 +70,31 @@
 - **验收**:四处 prompt 均含约束句(grep 断言可进 `tests/test_agent_defs.py` 同款文本锚)。
 - **回滚**:删句。**预估**:0.5h。
 
-### W8-4 · B4 全 CLI 入口冒烟测试
+### W8-4 · B4 全 CLI 入口冒烟测试 ✅ 已完成(2026-07-29)
 
-- **定位**:新 `tests/test_cli_entrypoints.py`。
-- **Sketch**:
-  ```python
-  CLI_MODULES = [  # grep -rl 'argparse' autoresearch/ 里带 __main__ 的模块,首版手工核列
-      "autoresearch.scan.universe", "autoresearch.scan.prelude", "autoresearch.scan.frame",
-      "autoresearch.scan.menu", "autoresearch.scan.calendar", "autoresearch.scan.assemble",
-      "autoresearch.scan.gates", "autoresearch.scan.render", "autoresearch.scan.post_run",
-      "autoresearch.scan.l4_reuse", "autoresearch.scan.l4_tasks", "autoresearch.scan.temperature",
-      "autoresearch.learning.retro", "autoresearch.learning.t1_review",
-      "autoresearch.learning.zero_buy_ledger", "autoresearch.learning.experiment_registry",
-      "autoresearch.learning.rollback_watch", "autoresearch.trace.usage_harvest",
-      "autoresearch.research.consensus", "autoresearch.dossier.pool",
-      "autoresearch.dossier.reconcile", "autoresearch.sector.reuse", "autoresearch.sector.pack",
-      # …建列时以实际 grep 结果为准,目标全覆盖
-  ]
-  @pytest.mark.parametrize("mod", CLI_MODULES)
-  def test_cli_help_exits_zero(mod):
-      r = subprocess.run([sys.executable, "-m", mod, "--help"],
-                         capture_output=True, timeout=60)
-      assert r.returncode == 0, r.stderr.decode()[-500:]
-  ```
-  注意:个别 CLI `--help` 若有 import 期副作用(取数/写盘)→ 该模块先修成 lazy import 再入列,
-  不豁免。
-- **变异探针**:临时删 `assemble.py` 的 `import argparse` → 对应参数化用例红(今晚真实缺陷
-  即测试原型)。
-- **验收**:全列表绿;CI 常跑集不排除。**回滚**:删测试文件。**预估**:2-3h(含 lazy import
-  清理)。
+> ⚠️ **实施时两条立案假设被实测推翻,契约已据此改写**(记录在此防将来重犯):
+> 1. 原文估「~25 个 CLI 模块」——实为 **77 个** `__main__` 入口。
+> 2. 原文验收「`--help` 一律 exit 0,有 import 期副作用的先改 lazy import」——**两条都错**:
+>    ①抽查 9 个"高危"模块(frame/universe/tushare_source/factor_lab/macro.harvest…)
+>    `--help` **全部 0 退出、全部 <1s**,零副作用,lazy import 清理这项工作**不存在**;
+>    ②全扫 77 个有 4 个非 0,逐个读源码确认全是 **sys.argv 风格 CLI**
+>    (`analyze.assemble`/`analyze.harvest`/`macro.assemble`/`macro.tushare_macro`),
+>    合法地不解析 `--help`(`tushare_macro:133` 把 `--help` 当日期喂 `int()`)——
+>    **不是缺陷**。"rc≠0 = 坏"是错判据。
+> 3. 分层判据也不能用「文件里有没有 argparse」:`learning.retro` 手写 `--help` 分支却不用
+>    argparse,按该启发式会被漏出 Tier 2。最终用**实测快照当回归锁**。
+
+- **落点**:`tests/test_cli_entrypoints.py`(152 用例)。
+- **两层契约**:
+  - **Tier 1(全部 77)**:`python -c "import <mod>"` exit 0 —— 逮 import 期断裂;
+  - **Tier 2(73 = 77 − 4 豁免)**:`python -m <mod> --help` exit 0 —— 逮 `main()` 体内断裂
+    (assemble 的 `import argparse` 缺失正落这层);
+  - `_NO_HELP_CLI` 豁免表逐条写明**为什么**合法不认 `--help`;另有两个自检用例:
+    发现逻辑失效(<60 个入口)即红(防「永不变红的绿灯」)、豁免表含已删模块即红(防僵尸豁免)。
+- **变异探针(已跑通)**:移除 `assemble.py` 的 `import argparse` →
+  `test_cli_help_exits_zero[autoresearch.scan.assemble]` 精确变红(NameError 原样回放);
+  还原 → 绿。
+- **验收**:152 passed / 62s。**回滚**:删测试文件。**实耗**:~1h(lazy import 清理不存在)。
 
 ### W8-5 · B5 prelude 汇总屏诚实失败
 
