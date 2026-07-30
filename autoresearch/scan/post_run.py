@@ -696,15 +696,28 @@ def enqueue_finalist_dossiers(scan_dir: Path | str, analysis_date: str) -> list[
     `autoresearch.dossier.pool._selections()` 的 `lane≠pinned` 口径保持一致;把持仓错标成
     "finalist" 优先没有意义(持仓本就通过 pinned 即入池的路径拿到 pending_init 曝光)。
 
-    `_dossier_present.json` 缺失或损坏:视为"无法判定谁已有档案",保守跳过(返回
-    `[]`,不写入任何条目)——插队只是 advisory 排序优化,过度激进(把当日全部 finalist 都当
-    "无档案"插队)会把整条队列的既有优先级搅乱,详见 task-9-report.md 歧义2。
+    `_dossier_present.json` 缺失、损坏、或**语法合法但形状不对**(如内容是一个 JSON 字符串
+    或对象而不是列表):视为"无法判定谁已有档案",保守跳过(返回 `[]`,不写入任何条目)——
+    插队只是 advisory 排序优化,过度激进(把当日全部 finalist 都当"无档案"插队)会把整条
+    队列的既有优先级搅乱,详见 task-9-report.md 歧义2。
+
+    形状检查必须显式做(`isinstance(present_raw, list)`):`set(json.loads(...))` 对"合法 JSON
+    但不是 list"这类输入**不会抛异常**——`set("000651 already有")` 按字符拆、`set({"a": 1})`
+    按 key 拆,两者都会产出语义完全错误却"看似正常"的集合,静默复活上面这段要避免的激进
+    分支(复核 Important-1,见 task-9-report.md「FIX-1」)。
+
+    列表内部分元素类型不是 `str`(如 `[651, None]`):逐个丢弃、不做整数→code 的猜测式强转,
+    不因为个别坏元素让其余已确认为字符串的合法条目也被牵连——每个字符串元素各自独立地
+    断言"这个 code 有档案",丢弃坏元素只是少一条断言,不是推翻其它断言。
     """
     sd = Path(scan_dir)
     try:
-        present = set(json.loads((sd / "_dossier_present.json").read_text(encoding="utf-8")))
+        present_raw = json.loads((sd / "_dossier_present.json").read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
         return []
+    if not isinstance(present_raw, list):
+        return []
+    present = {str(e).split(".")[0].zfill(6) for e in present_raw if isinstance(e, str)}
 
     codes: list[str] = []
     with contextlib.suppress(Exception), (sd / "finalists.csv").open(encoding="utf-8") as fh:

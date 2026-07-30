@@ -71,6 +71,59 @@ def test_corrupt_dossier_present_also_skips(tmp_path, monkeypatch):
     assert post_run.enqueue_finalist_dossiers(d, "2026-07-31") == []
 
 
+def test_present_json_valid_string_shape_skips_enqueue(tmp_path, monkeypatch):
+    """复核 Important-1 独立复现的场景:`_dossier_present.json` 内容是语法完全合法的 JSON
+    **字符串**(不是 list)——`set(json.loads(...))` 不会抛异常,而是把字符串按字符拆开,
+    产出一堆单字符的"集合",没有任何一个元素等于 6 位 code,于是 `code not in present`
+    对所有票恒为 True,静默复活歧义2 明确要避免的激进分支("当日全部当无档案插队")。
+    形状不对 = 未知,必须整体跳过,不能只是"运气好没崩溃就继续用"。"""
+    d = tmp_path / "2026-07-29"
+    d.mkdir(parents=True)
+    (d / "finalists.csv").write_text(
+        "code,name\n000651,格力电器\n601211,国泰海通\n", encoding="utf-8")
+    (d / "_dossier_present.json").write_text(
+        json.dumps("000651 already has one"), encoding="utf-8")
+    pool = tmp_path / "coverage_pool.json"
+    pool.write_text(json.dumps({"pending_init": []}), encoding="utf-8")
+    monkeypatch.setattr(post_run, "_pool_path", lambda: pool)
+
+    assert post_run.enqueue_finalist_dossiers(d, "2026-07-29") == []
+
+
+def test_present_json_valid_object_shape_skips_enqueue(tmp_path, monkeypatch):
+    """内容是语法合法的 JSON **对象**(dict,不是 list)——`set(json.loads(...))` 按 key 迭代,
+    同样不抛异常却语义全错,必须靠显式 `isinstance(..., list)` 挡住。"""
+    d = tmp_path / "2026-07-29"
+    d.mkdir(parents=True)
+    (d / "finalists.csv").write_text("code,name\n601211,国泰海通\n", encoding="utf-8")
+    (d / "_dossier_present.json").write_text(
+        json.dumps({"000651": True}), encoding="utf-8")
+    pool = tmp_path / "coverage_pool.json"
+    pool.write_text(json.dumps({"pending_init": []}), encoding="utf-8")
+    monkeypatch.setattr(post_run, "_pool_path", lambda: pool)
+
+    assert post_run.enqueue_finalist_dossiers(d, "2026-07-29") == []
+
+
+def test_present_json_list_with_non_string_elements_filters_them(tmp_path, monkeypatch):
+    """list 形状本身是对的,但内部元素类型混杂(int/None)——逐个丢弃,不做整数→code 的猜测
+    式强转,也不让这些坏元素拖累其它已确认为字符串的合法条目:`"000651"` 仍然正确地被认定
+    "已有档案"(不插队),`999999`/`None` 被静默忽略(既不会凭空让任何票被判定"已有档案",
+    也不会导致崩溃),`601211` 因为没有任何合法字符串条目覆盖它而正确插队。"""
+    d = tmp_path / "2026-07-29"
+    d.mkdir(parents=True)
+    (d / "finalists.csv").write_text(
+        "code,name\n000651,格力电器\n601211,国泰海通\n", encoding="utf-8")
+    (d / "_dossier_present.json").write_text(
+        json.dumps(["000651", 999999, None]), encoding="utf-8")
+    pool = tmp_path / "coverage_pool.json"
+    pool.write_text(json.dumps({"pending_init": []}), encoding="utf-8")
+    monkeypatch.setattr(post_run, "_pool_path", lambda: pool)
+
+    added = post_run.enqueue_finalist_dossiers(d, "2026-07-29")
+    assert added == ["601211"]
+
+
 def test_excludes_pinned_lane_from_finalist_priority(tmp_path, monkeypatch):
     """lane=pinned 是持仓强制注入 finalists.csv,不是 L3 真选的"入围"——与
     `autoresearch.dossier.pool._selections()` 的 `lane≠pinned` 口径一致。07-29 真实产物核实:
