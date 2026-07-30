@@ -16,6 +16,54 @@ def _safe_name(name: str) -> str:
     """股票名称 → 文件名安全(去 / \\ : * ? " < > | 与空白,*ST→ST);空则回退 未命名。"""
     return re.sub(r'[/\\:*?"<>|\s]', "", str(name)).strip() or "未命名"
 
+# 事件表格行:`| YYYY-MM-DD | <时效窗> | ...`。`re.MULTILINE` 必须带 —— 少了它 `^` 只
+# 锚定整段文本的开头(位置 0),对多行表格逐行 findall 会静默返回 [],T0/24h 永远数成 0
+# (已用真实 DRAFT 夹具验证过这个坑,不是理论顾虑)。
+_INTEL_ROW = re.compile(r"^\|\s*\d{4}-\d{2}-\d{2}\s*\|\s*([^|]+?)\s*\|", re.MULTILINE)
+
+
+def _news_headline(intel_path: Path) -> str:
+    """卡头 📰 导航行(Wave9 B-4):情报稿全文只附在卡**尾部**,读者投诉"detail 里看不到
+    新闻"其实是没翻到那节 —— 头部先给一句"今天有没有新料"的摘要,指向文末附录。
+
+    T0=收盘后到跑报这段时间的新信息(明天开盘唯一还没被定价的东西);24h 只数
+    `时效窗==24h` 的行,不含 T0(两者在事件表里是并列的两档,不叠加)。intel 稿
+    不存在(未启用 intel / 硬顶超限被整稿拒 `.rejected.md`)→ 明确说"情报缺席",
+    不伪装成"今天没消息"。
+    """
+    try:
+        text = intel_path.read_text(encoding="utf-8")
+    except OSError:
+        return "📰 情报缺席(未启用或已拒稿)—— 本卡新闻依据见卡内网查段"
+    wins = _INTEL_ROW.findall(text)
+    t0 = sum(1 for w in wins if w.strip() == "T0")
+    h24 = sum(1 for w in wins if w.strip() == "24h")
+    head = f"T0 增量:{t0} 条" if t0 else "T0 盘后无增量"
+    return f"📰 {head} · 24h {h24} 条 · 详见文末情报附录"
+
+
+def _inject_news_headline(body: str, head_line: str) -> str:
+    """把 📰 头行插在卡片"标题行"之后。
+
+    标题行定位用**文中第一条 `# ` 开头的行**,不假设它在 line 0 —— ♻️ 复用卡(TTL
+    复用已于 W9-B1a 退役,但历史 staging 卡如 601211 仍可能带这层壳)真正的标题前面
+    还顶着一段复用横幅 + 分隔线。若标题行下一行是契约版本戳(`〔卡契约 v3…〕`),
+    连同跳过再插入 —— 不拆散"标题+契约戳"这一对(现场核验:全部真实卡的契约戳都
+    紧跟标题行,插进两者中间既别扭也可能被误读成契约内容的一部分)。
+
+    找不到标题行(异常卡形)→ 原样返回,不猜测插入点,不破坏卡片。
+    """
+    lines = body.split("\n")
+    title_idx = next((i for i, ln in enumerate(lines) if ln.startswith("# ")), None)
+    if title_idx is None:
+        return body
+    insert_idx = title_idx + 1
+    if insert_idx < len(lines) and lines[insert_idx].startswith("〔"):
+        insert_idx += 1
+    lines[insert_idx:insert_idx] = ["", head_line]
+    return "\n".join(lines)
+
+
 def _publish_details(scan_dir: Path, detail_out: Path) -> int:
     """把 L4 staging 决策卡发布到 details/,文件名用**股票名称**(非 ticker);只发当前 finalists。
 
@@ -39,6 +87,12 @@ def _publish_details(scan_dir: Path, detail_out: Path) -> int:
             dst = detail_out / f"{name}_{code}.md"
         shutil.copy2(card, dst)
         intel = scan_dir / f"_l4_intel_{code}.md"
+        # 📰 头行(Wave9 B-4):插在标题行后,T0/24h 增量条数上浮到卡头,指向文末
+        # 情报附录 —— 见 _news_headline/_inject_news_headline 顶部注释。
+        with contextlib.suppress(Exception):
+            card_text = dst.read_text(encoding="utf-8")
+            dst.write_text(_inject_news_headline(card_text, _news_headline(intel)),
+                            encoding="utf-8")
         if intel.exists():
             try:
                 body = intel.read_text(encoding="utf-8").strip()
