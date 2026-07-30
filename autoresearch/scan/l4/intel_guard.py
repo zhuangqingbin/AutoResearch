@@ -23,6 +23,16 @@ card 侧 presence-gate 找不到 intel 就自动回退卡内网查)。问题是�
 红线不变:**只拒稿不拒票**。情报是辅助面,不得反噬决策主链 —— 无论 TRIMMED 还是
 REJECTED,进程退出码都是 0,本票照常出卡。自报缺失只 warn 不拒(无法对账 ≠ 违规,
 弱证据不当强证据用)。
+
+**复核回归修复(W9-B2-fix)**:TRIMMED 原地覆写会真删掉被砍的事件行,而
+`autoresearch/learning/self_review.py` 的两条 intel 质量 lint
+(`intel_future_dates_lint`/`intel_recency_lint`)靠裸读 `_l4_intel_*.md` 审计
+——旧 REJECTED 靠改名整稿保留全文,这两条 lint 一直能看到完整原稿;TRIMMED 真删行后
+它们会对被砍行永久失明,且被砍的(背景/>1周)恰是这两条 lint 最想抓的对象,审计
+覆盖率下降方向与探针敏感度负相关。修法:真发生裁剪时(`cut>0`)裁前把全文单独留档到
+`_l4_intel_<code>.pretrim`(**不带 `.md`**,故意让它对全仓所有 `_l4_intel_*.md`/
+`*.md` 裸 glob 不可见,不会被当成第二份独立情报稿重复计数/审计),两条 lint 改为
+存在留档时优先读留档。
 """
 from __future__ import annotations
 
@@ -87,7 +97,9 @@ def guard_intel(scan_dir: Path | str, code: str, *,
     """检查一份 intel 稿;超硬顶则按时效裁剪,裁无可裁才整拒。返回可直接 JSON 序列化的裁决。
 
     `action` ∈ `ABSENT`(无稿,presence-gated 安静通过)/ `KEPT`(未超顶)/
-    `TRIMMED`(超顶但事件段可解析,已按时效窗裁到 ≤10 行,T0/24h 增量保留)/
+    `TRIMMED`(超顶但事件段可解析,已按时效窗裁到 ≤10 行,T0/24h 增量保留;
+    `dropped_rows>0` 时裁前原文留档于 `pretrim_as` 指名的 `<code>.pretrim`,
+    供 intel 质量 lint 审计全稿用)/
     `REJECTED`(超顶且事件段一行都解析不出,结构不可信,裁无可裁,照旧整稿拒)。
     """
     src = intel_path(scan_dir, code)
@@ -117,12 +129,36 @@ def guard_intel(scan_dir: Path | str, code: str, *,
             return {"ok": False, "code": code, "action": "REJECTED",
                     "claimed": claimed, "hard_cap": hard_cap, "kept_as": dst.name,
                     "note": "事件段不可解析,整稿拒;card 回退卡内网查"}
+        pretrim_as = None
+        if cut:
+            # 复核发现的回归(W9-B2-fix):原地覆写会**真删掉**被砍的事件行 ——
+            # 不像旧 REJECTED 靠改名整稿保留全文,`autoresearch/learning/self_review.py`
+            # 的 intel_future_dates_lint / intel_recency_lint 两条质量 lint 若只读
+            # canonical 文件,会对被砍行永久失明。而 trim_by_recency 优先砍的(背景/
+            # >1周)恰好是这两条 lint 最想抓的对象(净分未衰减/前视穿越)——审计覆盖率
+            # 下降方向与探针敏感度负相关,不是正交。裁前把全文单独留档,供 lint 审计。
+            #
+            # 留档命名故意**不以 `.md` 结尾**(`_l4_intel_<code>.pretrim`,没有第二段
+            # `.md`)—— 已用真实 glob 验证:`_l4_intel_<code>.pretrim.md` 这种双后缀
+            # 命名会被 `glob("_l4_intel_*.md")` 顺带命中(`*` 吃得下中间的 `.pretrim`),
+            # 导致 self_review.py 的 intel_query_cap_lint / product_shape_lint 的
+            # 「intel零URL」探针、report_sections.py 的字节经济表把它当成第二份独立
+            # 情报稿重复计数/重复审计。不带 `.md` 的名字对上述所有裸 glob 天然不可见
+            # (已用 tests/learning/test_product_shape_lint.py::test_intel_pretrim_archive_not_counted
+            # 钉住),无需在每个消费方逐一打补丁。cut==0 时不留档:trimmed 与原文逐字节
+            # 相同,留一份内容相同的旁路文件没有审计价值。
+            archive = src.with_name(f"_l4_intel_{code}.pretrim")
+            archive.write_text(text, encoding="utf-8")
+            pretrim_as = archive.name
         stamp = (f"〔已裁剪·自报 {claimed} 超硬顶 {hard_cap}·"
                  f"按时效窗保留 T0/24h/催化挂,砍 {cut} 行〕\n")
         src.write_text(stamp + trimmed, encoding="utf-8")
         return {"ok": True, "code": code, "action": "TRIMMED",
                 "claimed": claimed, "hard_cap": hard_cap, "dropped_rows": cut,
-                "note": "T0/24h 增量保留;card 照常读 intel"}
+                "pretrim_as": pretrim_as,
+                "note": "T0/24h 增量保留;card 照常读 intel;"
+                        + (f"裁前原文留档 {pretrim_as}(lint 审计用)" if pretrim_as
+                           else "未真丢行,无需留档")}
     return {"ok": True, "code": code, "action": "KEPT", "claimed": claimed,
             "hard_cap": hard_cap}
 

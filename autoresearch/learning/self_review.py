@@ -210,6 +210,23 @@ def card_contract_lint(scan_dir) -> list[dict]:
     return out
 
 
+def _intel_audit_text(p) -> str:
+    """intel 稿的**审计用**全文 —— 若存在裁剪前留档(`<stem>.pretrim`)优先读它,
+    否则读 `p`(canonical,可能已被 TRIMMED 原地覆写砍掉部分事件行)本身。
+
+    W9-B2-fix:`autoresearch.scan.l4.intel_guard.guard_intel` 的 TRIMMED 分支会
+    原地覆写、真删掉被砍的事件行(不像旧 REJECTED 靠改名保留整稿全文)——
+    `intel_future_dates_lint`/`intel_recency_lint` 若只读 canonical 文件,会对被砍
+    行永久失明,而被砍的(背景/>1周)恰是这两条 lint 最想抓的对象。真发生裁剪时
+    (`dropped_rows>0`)`guard_intel` 会把裁前全文单独留档到 `<code>.pretrim`
+    (故意不带 `.md`,对本文件及全仓其他 `_l4_intel_*.md`/`*.md` 裸 glob 都不可见,
+    不会被当成第二份独立情报稿重复计数/审计——见
+    tests/learning/test_product_shape_lint.py::test_intel_pretrim_archive_not_counted)。
+    """
+    archive = p.with_name(f"{p.stem}.pretrim")
+    return archive.read_text(encoding="utf-8") if archive.exists() else p.read_text(encoding="utf-8")
+
+
 def intel_future_dates_lint(scan_dir, date_str: str) -> list[dict]:
     """intel as-of 前视机检(advisory;design: 2026-07-12-l4-intel-station-plan.md Task 6)。
 
@@ -219,6 +236,7 @@ def intel_future_dates_lint(scan_dir, date_str: str) -> list[dict]:
 
     scan_dir:通常 = `context/scan/<date>`;date_str 按 `dump_gate_fires` 同款惯例由调用方传
     `scan_dir.name`(数据日,`YYYY-MM-DD`)。缺 `_l4_intel_*.md`(未启用/未派发)→ 空列表。
+    审计文本经 `_intel_audit_text` 取(W9-B2-fix:TRIMMED 稿存在裁前留档时读留档)。
     """
     import re
     from pathlib import Path
@@ -230,7 +248,7 @@ def intel_future_dates_lint(scan_dir, date_str: str) -> list[dict]:
 
     for p in sorted(scan_dir.glob("_l4_intel_*.md")):
         in_events, future = False, []
-        for line in p.read_text(encoding="utf-8").splitlines():
+        for line in _intel_audit_text(p).splitlines():
             if line.startswith("## 事件段"):
                 in_events = True
                 continue
@@ -268,6 +286,9 @@ def intel_recency_lint(scan_dir, date_str: str) -> list[dict]:
     **旧契约稿 presence-gated 跳过**:事件段没有任何一行的第 2 列命中三窗词 → 判为
     Wave7 前的旧格式(表头是「2日内可发酵?」),整份跳过不报 —— 新探针不该对着历史存量稿
     刷屏(那是 07-27 十五连报的同一种病)。一切异常路径返回已积累结果,绝不抛。
+
+    审计文本经 `_intel_audit_text` 取(W9-B2-fix:TRIMMED 稿存在裁前留档时读留档,
+    否则本条 3 的净分未衰减检查恰好会对被优先砍掉的背景/>1周行永久失明)。
     """
     import re
     from datetime import datetime
@@ -288,7 +309,7 @@ def intel_recency_lint(scan_dir, date_str: str) -> list[dict]:
     for p in sorted(scan_dir.glob("_l4_intel_*.md")):
         code = p.stem.replace("_l4_intel_", "")
         try:
-            text = p.read_text(encoding="utf-8")
+            text = _intel_audit_text(p)  # W9-B2-fix:TRIMMED 稿存在裁前留档时读留档
         except Exception:  # noqa: BLE001
             continue
         rows, in_events = [], False

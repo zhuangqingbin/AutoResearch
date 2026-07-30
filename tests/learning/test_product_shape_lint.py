@@ -192,6 +192,24 @@ def test_intel_disabled_no_output(tmp_path):
     assert _by(product_shape_lint(d, DATE), "产物形状·intel稿数不符") == []
 
 
+def test_intel_pretrim_archive_not_counted(tmp_path):
+    """复核回归修复(W9-B2-fix):TRIMMED 裁前留档 `<code>.pretrim` 不计入 intel 稿数。
+
+    留档命名刻意不以 `.md` 结尾 —— 已用真实 `Path.glob` 验证过:带 `.md` 的双后缀
+    命名(如 `<code>.pretrim.md`)会被 `glob("_l4_intel_*.md")` 顺带命中,让这条探针
+    把留档当成第 3 份独立情报稿(600285/600519 之外)而虚报「intel 稿数不符」;不带
+    `.md` 的名字对这条裸 glob(以及同文件「intel零URL」探针用的同一份 `intel_files`)
+    天然不可见,不需要在探针里加任何特判。
+    """
+    d = _mk_clean(tmp_path)
+    assert _by(product_shape_lint(d, DATE), "产物形状·intel稿数不符") == []
+    (d / "_l4_intel_600285.pretrim").write_text(
+        "裁剪前留档全文(供 lint 审计,非独立情报稿)https://x.com/pretrim", encoding="utf-8")
+    out = product_shape_lint(d, DATE)
+    assert _by(out, "产物形状·intel稿数不符") == []
+    assert _by(out, "产物形状·intel零URL") == []      # 顺带验证:也不会被当成第二份稿重复审计
+
+
 # ── 4) anns 去伪 ──────────────────────────────────────────────────────────
 
 def test_anns_expected_info(tmp_path):

@@ -67,3 +67,64 @@ def test_guard_rejects_unparseable_draft(tmp_path):
     r = ig.guard_intel(tmp_path, "000333", hard_cap=30)
     assert r["action"] == "REJECTED"
     assert (tmp_path / "_l4_intel_000333.rejected.md").exists()
+
+
+# ── 复核回归修复(W9-B2-fix):原地覆写真删行,lint 会永久失明 → 裁前留档 ──────────
+#
+# `intel_future_dates_lint`/`intel_recency_lint`(autoresearch/learning/self_review.py)
+# 靠裸读 `_l4_intel_*.md` 审计事件段;旧 REJECTED 靠改名保留整稿全文,这两条 lint
+# 一直能看到完整原稿。TRIMMED 原地覆写会真删掉被砍行,且被砍的(背景/>1周)恰是这
+# 两条 lint 最想抓的对象——审计覆盖率下降方向与探针敏感度负相关。
+
+_OVER_KEEP_BODY = (
+    "# 活体情报 — 000777 @ 2026-07-29\n\n## 事件段\n"
+    "| 日期 | 时效窗 | 事件 | 源 | 净分 |\n|---|---|---|---|---|\n"
+    "| 2026-07-29 | T0 | 盘后重大合同签署 | http://t0 | 1.0 |\n"
+    "| 2026-07-28 | 24h | 行业政策利好 | http://h24 | 0.5 |\n"
+    "| 2026-09-01 | 催化挂 | 三季报预告 | http://cat | 0.0 |\n"
+    "| 2026-07-01 | 背景 | 背景事件一 | http://b1 | 0.0 |\n"
+    "| 2026-06-30 | 背景 | 背景事件二 | http://b2 | 0.0 |\n"
+    "| 2026-06-29 | 背景 | 背景事件三 | http://b3 | 0.0 |\n"
+    "| 2026-06-28 | 背景 | 背景事件四 | http://b4 | 0.0 |\n"
+    "| 2026-06-27 | 背景 | 背景事件五 | http://b5 | 0.0 |\n"
+    "| 2026-06-26 | 背景 | 背景事件六 | http://b6 | 0.0 |\n"
+    "| 2026-06-25 | 背景 | 背景事件七 | http://b7 | 0.0 |\n"
+    "| 2026-06-24 | 背景 | 超额背景事件八(应被砍) | http://b8 | 0.0 |\n"
+    "| 2026-06-23 | 背景 | 超额背景事件九(应被砍) | http://b9 | 0.0 |\n"
+    "\n## 声明行\n网查 33 条 ｜ T0面=有增量\n"
+)
+
+
+def test_guard_trims_archives_pretrim_when_rows_dropped(tmp_path):
+    """真的丢行时(cut>0)——裁前原文必须留档到 `<code>.pretrim`,内容含被砍的行。"""
+    (tmp_path / "_l4_intel_000777.md").write_text(_OVER_KEEP_BODY, encoding="utf-8")
+    r = ig.guard_intel(tmp_path, "000777", hard_cap=30)
+
+    assert r["action"] == "TRIMMED" and r["dropped_rows"] == 2
+    archive = tmp_path / "_l4_intel_000777.pretrim"
+    assert r["pretrim_as"] == archive.name == "_l4_intel_000777.pretrim"
+    assert archive.exists()
+    assert archive.read_text(encoding="utf-8") == _OVER_KEEP_BODY   # 逐字节保留裁前原文
+
+    trimmed_body = (tmp_path / "_l4_intel_000777.md").read_text(encoding="utf-8")
+    assert "应被砍" not in trimmed_body        # canonical 里两条最低优先级背景行已消失
+    assert "应被砍" in archive.read_text(encoding="utf-8")  # 但留档里还在
+
+
+def test_guard_trims_no_archive_when_nothing_dropped(tmp_path):
+    """cut==0(没什么可裁)不留档 —— 裁前裁后内容逐字节相同,留档没有审计价值。"""
+    (tmp_path / "_l4_intel_000651.md").write_text(DRAFT, encoding="utf-8")
+    r = ig.guard_intel(tmp_path, "000651", hard_cap=30)
+
+    assert r["action"] == "TRIMMED" and r["dropped_rows"] == 0
+    assert r["pretrim_as"] is None
+    assert not (tmp_path / "_l4_intel_000651.pretrim").exists()
+
+
+def test_pretrim_archive_name_invisible_to_intel_md_glob(tmp_path):
+    """留档命名故意不带 `.md`——不会被任何 `glob('_l4_intel_*.md')` 消费方顺带命中。"""
+    (tmp_path / "_l4_intel_000777.md").write_text(_OVER_KEEP_BODY, encoding="utf-8")
+    ig.guard_intel(tmp_path, "000777", hard_cap=30)
+    matches = sorted(p.name for p in tmp_path.glob("_l4_intel_*.md"))
+    assert matches == ["_l4_intel_000777.md"], (
+        "留档 _l4_intel_000777.pretrim 不该出现在 _l4_intel_*.md 的匹配结果里")

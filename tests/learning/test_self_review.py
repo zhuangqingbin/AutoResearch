@@ -163,3 +163,98 @@ def test_recency_does_not_double_report_future_dates(tmp_path):
     """前视由 intel_future_dates_lint 管,本探针不重复报。"""
     d = _intel(tmp_path, "| 2026-08-30 | T0 | 未来日期 | http://x | +1 |\n")
     assert [g["check"] for g in self_review.intel_recency_lint(d, "2026-07-27")] == []
+
+
+# ══ 复核回归修复(W9-B2-fix):TRIMMED 原地覆写真删行 → lint 靠留档补看全稿 ═══════
+#
+# guard_intel 的 TRIMMED 分支会把裁前全文单独留档到 `<code>.pretrim`(不带 `.md`)。
+# 两条 lint 应改为:留档存在时优先读它,而不是已经被砍掉部分行的 canonical 文件。
+
+
+def test_recency_reads_pretrim_archive_when_present(tmp_path):
+    """canonical 单独看是干净的(control,证明"有 archive 才报"不是巧合);
+    留档里补回一条 12 天前未衰减净分的违规行(trim_by_recency 最先砍的对象类型)后,
+    lint 必须仍然报出 intel_stale_score —— 证明它读的是留档,不是裁剪后的 canonical。
+    """
+    code = "000001"
+    canonical = (_NEW_HEAD +
+                 "| 2026-07-27 | T0 | 盘后公告中标 3.2 亿 | http://x | +2 |\n" + _DECL)
+    (tmp_path / f"_l4_intel_{code}.md").write_text(canonical, encoding="utf-8")
+    assert self_review.intel_recency_lint(tmp_path, "2026-07-27") == []
+
+    archived_full = (_NEW_HEAD +
+                      "| 2026-07-27 | T0 | 盘后公告中标 3.2 亿 | http://x | +2 |\n"
+                      "| 2026-07-15 | 背景 | 12 天前中标未衰减(已被裁掉) | http://y | +2 |\n"
+                      + _DECL)
+    (tmp_path / f"_l4_intel_{code}.pretrim").write_text(archived_full, encoding="utf-8")
+    got = self_review.intel_recency_lint(tmp_path, "2026-07-27")
+    checks = [g["check"] for g in got]
+    assert "intel_stale_score" in checks
+    assert all(g["code"] == code for g in got if g["check"] == "intel_stale_score")
+
+
+def test_recency_lint_survives_real_guard_intel_trim(tmp_path):
+    """端到端"钉子"测试:不手工摆 archive,让真实 `guard_intel` 完成裁剪。
+
+    构造一份 11 行事件表的超顶稿(claimed=33>hard_cap=30,keep=10):1 条 T0 + 9 条
+    干净背景填充行(时效窗/净分都合规,不触发任何 warn)+ 1 条"12 天前背景事件净分
+    未衰减"违规行(排最后,时效窗排序里以 rank/原始序号双 tie-break 必被裁掉)。
+    真调用 guard_intel 完成裁剪 → 断言违规行确实从 canonical 消失、`dropped_rows==1`
+    → intel_recency_lint 扫同一目录,断言仍能抓到 intel_stale_score(证明留档机制在
+    真实管线里生效,不是只在手工摆拍的单测里生效)。末尾负对照:删掉留档后同一探针
+    真的看不见这条违规了——证明上面的命中确实依赖留档存在,不是巧合。
+    """
+    from autoresearch.scan.l4.intel_guard import guard_intel
+
+    code = "000009"
+    draft = (
+        f"# 活体情报 — {code} @ 2026-07-27\n\n"
+        "## 事件段\n"
+        "| 日期 | 时效窗 | 事件 | 源 | 净分 |\n|---|---|---|---|---|\n"
+        "| 2026-07-27 | T0 | 盘后公告中标 3.2 亿 | http://x | +2 |\n"
+        "| 2026-07-26 | 背景 | 填充背景事件1 | http://f1 | 0.0 |\n"
+        "| 2026-07-25 | 背景 | 填充背景事件2 | http://f2 | 0.0 |\n"
+        "| 2026-07-24 | 背景 | 填充背景事件3 | http://f3 | 0.0 |\n"
+        "| 2026-07-23 | 背景 | 填充背景事件4 | http://f4 | 0.0 |\n"
+        "| 2026-07-22 | 背景 | 填充背景事件5 | http://f5 | 0.0 |\n"
+        "| 2026-07-21 | 背景 | 填充背景事件6 | http://f6 | 0.0 |\n"
+        "| 2026-07-20 | 背景 | 填充背景事件7 | http://f7 | 0.0 |\n"
+        "| 2026-07-26 | 背景 | 填充背景事件8 | http://f8 | 0.0 |\n"
+        "| 2026-07-25 | 背景 | 填充背景事件9 | http://f9 | 0.0 |\n"
+        "| 2026-07-15 | 背景 | 12天前中标未衰减(违规,应被裁掉) | http://stale | +2 |\n"
+        "\n## 声明行\n网查 33 条 ｜ T0面=有增量\n"
+    )
+    (tmp_path / f"_l4_intel_{code}.md").write_text(draft, encoding="utf-8")
+
+    r = guard_intel(tmp_path, code, hard_cap=30)
+    assert r["action"] == "TRIMMED" and r["dropped_rows"] == 1
+    archive = tmp_path / f"_l4_intel_{code}.pretrim"
+    assert archive.exists()
+
+    canonical_after = (tmp_path / f"_l4_intel_{code}.md").read_text(encoding="utf-8")
+    assert "12天前中标未衰减" not in canonical_after       # 违规行确实从 canonical 消失
+
+    got = self_review.intel_recency_lint(tmp_path, "2026-07-27")
+    assert any(g["check"] == "intel_stale_score" and g["code"] == code for g in got), (
+        "留档存在时,intel_recency_lint 必须仍能抓到已被真实 guard_intel 裁掉的净分未衰减行")
+
+    # 负对照:去掉留档,同一违规行从探针视野消失 —— 证明上面的命中真依赖留档存在。
+    archive.unlink()
+    got2 = self_review.intel_recency_lint(tmp_path, "2026-07-27")
+    assert not any(g["check"] == "intel_stale_score" and g["code"] == code for g in got2)
+
+
+def test_future_dates_reads_pretrim_archive_when_present(tmp_path):
+    """同上,针对 intel_future_dates_lint —— 留档里补回一条被裁掉的前视穿越行。"""
+    code = "000003"
+    canonical = ("# 活体情报 — 000003 @ 2026-07-09\n## 事件段(≤10 行)\n"
+                 "| 2026-07-05 | 历史事件 | x | 否 | 0 |\n## 题材段\n无\n")
+    (tmp_path / f"_l4_intel_{code}.md").write_text(canonical, encoding="utf-8")
+    assert self_review.intel_future_dates_lint(tmp_path, "2026-07-09") == []
+
+    archived_full = ("# 活体情报 — 000003 @ 2026-07-09\n## 事件段(≤10 行)\n"
+                      "| 2026-07-05 | 历史事件 | x | 否 | 0 |\n"
+                      "| 2026-07-20 | 被裁掉的未来穿越行 | x | 是 | +1 |\n## 题材段\n无\n")
+    (tmp_path / f"_l4_intel_{code}.pretrim").write_text(archived_full, encoding="utf-8")
+    out = self_review.intel_future_dates_lint(tmp_path, "2026-07-09")
+    assert any(c["check"] == "intel_future_dates" and c["code"] == code for c in out)
