@@ -135,7 +135,7 @@ def main(argv: list[str] | None = None) -> int:
         stable_context=args.stable_context,
     )
     print(f"[l4_card prompts] {res['n_prompts']} 份 prompt + _harvest_list({len(res['tickers'])} 票,"
-          f"已归一 yfinance 后缀);跳过已有卡 {res['n_skipped']}")
+          f"已归一 yfinance 后缀)")
     return 0
 
 
