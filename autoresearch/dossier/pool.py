@@ -58,9 +58,45 @@ def _selections(scan_root: Path, days: list[str]) -> dict[str, list[str]]:
     return hits
 
 
+def _pending_priority_meta(pool: dict) -> dict[str, dict]:
+    """把 `pending_init` 数组(Wave9 R6:`post_run.enqueue_finalist_dossiers` 写入的插队标注,
+    code → `{"priority", "last_seen", ...}`)规整成查表。既有条目可能是纯字符串(如
+    `"600018"`),两种形态都要容忍——不崩溃、不丢弃,只是没有优先级信息可查(视同未标注)。"""
+    meta: dict[str, dict] = {}
+    raw = pool.get("pending_init")
+    if not isinstance(raw, list):
+        return meta
+    for e in raw:
+        if isinstance(e, dict):
+            code = str(e.get("code", "") or "").strip().split(".")[0].zfill(6)
+            if code:
+                meta[code] = e
+        elif isinstance(e, str):
+            code = e.strip().split(".")[0].zfill(6)
+            if code:
+                meta.setdefault(code, {})
+    return meta
+
+
 def pending_init(pool: dict) -> list[str]:
-    return sorted(c for c, s in pool.get("stocks", {}).items()
-                  if s.get("status") == "active" and not schema.dossier_path(c).exists())
+    """常备覆盖池里"活跃但未建档"的 code 列表,按建档优先级排序。
+
+    排序键(Wave9 R6,B-3 续):`priority == "finalist"`(当日插队,见
+    `post_run.enqueue_finalist_dossiers`)优先,同级按 `last_seen` 升序(先来先建);
+    两者都缺时退化成原有的按 code 字典序——对没有任何插队标注的池(今天绝大多数情形)
+    逐字节等价于 Wave9 前的行为。候选集合本身(谁算"活跃且未建档")不变,只改顺序;
+    ≤3/晚的建档节奏是 `SKILL.md`/`STAGES.md` 里的人工派发约定,不是这里的代码切片,
+    本函数不做任何截断。
+    """
+    candidates = [c for c, s in pool.get("stocks", {}).items()
+                  if s.get("status") == "active" and not schema.dossier_path(c).exists()]
+    meta = _pending_priority_meta(pool)
+
+    def _key(c: str) -> tuple[int, str, str]:
+        e = meta.get(c, {})
+        return (0 if e.get("priority") == "finalist" else 1, e.get("last_seen", "") or "", c)
+
+    return sorted(candidates, key=_key)
 
 
 def refresh(today: str, *, scan_root: str | Path = "context/scan",
