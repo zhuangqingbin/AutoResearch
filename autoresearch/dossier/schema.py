@@ -18,6 +18,13 @@ SUMMARY_HEAD = "## 摘要(注入用)"
 SUMMARY_ANCHORS: tuple[str, ...] = ("业务:", "驱动:", "带位:", "风险:", "催化:", "判例:")
 SUMMARY_CAP = 3000    # 注入摘要 token 硬帽(spec ①;lint 与注入器同源引用)
 
+# 研报体素材(§1/§2/§3/§5 四节合计)token 硬帽(与 SUMMARY_CAP 同源单位 est_tokens)。
+# 复核 Important 2(2026-07-30)实测:31 份真实档案该四节合计 6.8–15.1KB(≈2.4k–5.4k
+# token,中位 ≈13.0KB≈4.6k token)——12000 留 >2x 头寸,当前无一份会被截。超限行为与
+# SUMMARY_CAP 刻意不同:SUMMARY_CAP 超限即弃(摘要六行,弃了不伤大局);这里四节是
+# 研报体叙事主体,弃了等于卡片啥也没有,`dossier_sections` 改为截断保留 + 显式标记。
+RESEARCH_BODY_CAP = 12000
+
 _META_KEYS = ("code", "name", "sector", "pool_status", "entered", "entry_reason",
               "initiated", "last_refresh", "last_delta")
 
@@ -70,7 +77,7 @@ def _summary_block(text: str) -> str:
     return _section_block(text, SUMMARY_HEAD)
 
 
-def dossier_sections(code6: str, keys: tuple[str, ...]) -> str:
+def dossier_sections(code6: str, keys: tuple[str, ...], *, cap: int = RESEARCH_BODY_CAP) -> str:
     """按 `§N` 简写拼接档案对应小节全文(研报体素材;Wave9 B-3)。
 
     `keys` 用 `"§N"` 简写(N=1..8),映射到 `SECTIONS[N-1]` 的真实标题字面量
@@ -83,6 +90,13 @@ def dossier_sections(code6: str, keys: tuple[str, ...]) -> str:
     的节读到的是 `<!-- LLM:待首覆 --> `占位,这本身就是对读者(agent)诚实的"未覆盖"
     信号而非垃圾;额外加 `initiated` 门只会制造"标记为有档案却啥也没注入"的缝。
     单节缺失/坏档 → 该节跳过或整体返回 "",不抛异常(派发不因档案层故障中断)。
+
+    `cap`(token,`est_tokens` 同源单位,默认 `RESEARCH_BODY_CAP`):按 `keys` 顺序整节
+    累加,一旦下一节会让累计超过 `cap` 就停(已收的整节保留,不砍到半截句子/半张表);
+    第一节即使单独超 `cap` 也强留(给读者一点东西,好过一个字都没有)。**截断不静默**——
+    末尾追加一行 `⚠️` 显式标记 + 档案路径指回全文(复核 2026-07-30 Important 2:与
+    `injectable_summary` 的"超帽即弃"刻意不同,四节是研报体叙事主体,弃了等于卡片
+    啥也没有)。
     """
     try:
         p = dossier_path(code6)
@@ -99,7 +113,21 @@ def dossier_sections(code6: str, keys: tuple[str, ...]) -> str:
             block = _section_block(text, SECTIONS[idx])
             if block:
                 blocks.append(block.strip())
-        return "\n\n".join(blocks)
+        kept: list[str] = []
+        budget = 0
+        truncated = False
+        for b in blocks:
+            bt = est_tokens(b)
+            if kept and budget + bt > cap:
+                truncated = True
+                break
+            kept.append(b)
+            budget += bt
+        out = "\n\n".join(kept)
+        if truncated:
+            marker = f"⚠️ 档案节选超 {cap} token 硬帽,已截断(原文按需 Read `{p}`)"
+            out = (out + "\n\n> " + marker) if out else "> " + marker
+        return out
     except Exception:  # noqa: BLE001 — 坏档=不可注入,不抛
         return ""
 

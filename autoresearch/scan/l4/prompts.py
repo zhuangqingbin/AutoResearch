@@ -287,7 +287,9 @@ def write_dispatch_pack(
             if history:
                 dossier_parts.append(history)
             # Wave9 B-3:研报体的素材侧 —— 摘要 600B 撑不起研报体,内联四节全文
-            # (业务模型/盈利驱动/估值带/风险矩阵;~4-8KB/票,相对 170KB slim 可忽略);
+            # (业务模型/盈利驱动/估值带/风险矩阵;复核 2026-07-30 实测 31 份真实档案
+            # 该四节合计 6.8–15.1KB/票、中位 ≈13.0KB,相对 170KB slim 可忽略;
+            # `dossier_sections` 自带 `RESEARCH_BODY_CAP` token 硬帽,超限截断非静默丢);
             # 选内联而非让 agent 自己 Read,读盘边界与工具调用方差都不动。
             with contextlib.suppress(Exception):
                 from autoresearch.dossier.schema import dossier_sections
@@ -423,8 +425,13 @@ def write_dispatch_pack(
         (scan_dir / "_dossier_present.json").write_text(
             json.dumps(sorted(with_dossier), ensure_ascii=False), encoding="utf-8")
     if stable_context:
-        import json
-
+        # `json` 是模块顶部 `import json`(line 5)——此处不得再 `import json`(哪怕只在这个
+        # if 分支里):Python 一旦在函数体任意处见到 `import json`/赋值,就把 `json` 判定为
+        # **整个函数**的局部名,连带炸穿上面那句更早执行的 `json.dumps(...)`(复核 2026-07-30
+        # Important 1 的生产侧集成测试实测揪出:`_dossier_present.json` 在默认
+        # `stable_context=False` 路径下 100% 抛 UnboundLocalError,又被下面缺失的
+        # `contextlib.suppress` 静默吞掉,2214 条回归里没有一条真正调用过
+        # `write_dispatch_pack` 再读文件内容,故此前从未被发现)。
         target = scan_dir / "_l4_prompt_manifest.json"
         temp = target.with_name(f"{target.name}.tmp")
         temp.write_text(
