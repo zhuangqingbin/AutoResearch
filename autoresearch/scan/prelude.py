@@ -134,8 +134,11 @@ def render_summary(date: str, results: list[dict], scan_root: Path | str | None 
             if st == "pending":
                 continue
             if st == "blind":
-                out.append(f"  📡 公告双源皆空(最近已完成扫描日 {prev.name})—— 主源无权限"
-                           "且兜底源无料;查 `python -m autoresearch.data.sources.anns_fallback` 冒烟")
+                # Wave9 final-fix C-1:兜底源已接线进 harvest_l3_news(不再是零生产调用点的
+                # 死码)——这行文案曾断言"兜底源无料"却从未真正查过它,诊断信息在说谎;
+                # 现在 blind 只会在兜底也**真的被查过**且仍无料时出现,措辞照实改。
+                out.append(f"  📡 公告双源皆空(最近已完成扫描日 {prev.name})—— 主源无权限,"
+                           "兜底源已查但仍无料;查 `python -m autoresearch.data.sources.anns_fallback` 冒烟")
             break
     except Exception as e:  # noqa: BLE001 — 提醒行可选(presence-gated),缺了不挡前奏
         print(f"[prelude] ⚠️ anns 提醒行跳过:{e!r}", file=sys.stderr)

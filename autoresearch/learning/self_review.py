@@ -519,8 +519,12 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
         pass  # 复核轮1:L3 阶段还没跑到——既非已核实健康也非已核实故障,这天这件事还没
               # 发生,不出条(既不是 warn 也不是 info)
     elif status == "blind":
+        # Wave9 final-fix C-1:兜底源(anns_fallback.fetch_anns)已接线进 harvest_l3_news——
+        # 走到这里的 blind 意味着**兜底也真的被查过**、只是同样没查到料,不是"从未接线、
+        # 诊断信息断言了没发生的事"那种旧病(修复前 fallback 全仓零生产调用点,此行文案
+        # 曾断言一件不可能发生的事)。
         add("产物形状·anns双源盲", "warn",
-            "公告面双源皆空(主源无权限 + 兜底源无料)—— 卡片公告证据仅剩 intel 单腿,"
+            "公告面双源皆空(主源无权限 + 兜底源已查但无料)—— 卡片公告证据仅剩 intel 单腿,"
             "非 expected;查兜底源可达性")
     elif status == "fallback":
         from autoresearch.data.sources.anns_fallback import SOURCE_TAG as _FALLBACK_TAG
