@@ -55,12 +55,53 @@ def parse_frontmatter(text: str) -> dict:
     return out
 
 
-def _summary_block(text: str) -> str:
-    i = text.find(SUMMARY_HEAD)
+def _section_block(text: str, head: str) -> str:
+    """`head`(原文标题字面量,如 `SUMMARY_HEAD` 或 `SECTIONS[i]`)到下一个 `## ` 标题
+    (或文末)的原文切片;找不到 `head` → ""。`_summary_block`/`dossier_sections` 共用。
+    """
+    i = text.find(head)
     if i < 0:
         return ""
-    j = text.find("\n## ", i + len(SUMMARY_HEAD))
+    j = text.find("\n## ", i + len(head))
     return text[i:j] if j > 0 else text[i:]
+
+
+def _summary_block(text: str) -> str:
+    return _section_block(text, SUMMARY_HEAD)
+
+
+def dossier_sections(code6: str, keys: tuple[str, ...]) -> str:
+    """按 `§N` 简写拼接档案对应小节全文(研报体素材;Wave9 B-3)。
+
+    `keys` 用 `"§N"` 简写(N=1..8),映射到 `SECTIONS[N-1]` 的真实标题字面量
+    `"## N. ..."`——档案节标题不是 `## §N` 字面量(真实格式见 `SECTIONS`),这里做
+    简写→真实标题的转译,供调用方少记一份手写映射。
+
+    gate 只认**文件存在**(与 `_dossier_present.json` 的生产口径同门:dispatch 侧只要
+    找到档案文件就算"有档案可注入"),不像 `injectable_summary` 那样额外要求
+    `initiated` 真——`build_skeleton` 阶段部分节(如估值带)已有确定性表格可用,未首覆
+    的节读到的是 `<!-- LLM:待首覆 --> `占位,这本身就是对读者(agent)诚实的"未覆盖"
+    信号而非垃圾;额外加 `initiated` 门只会制造"标记为有档案却啥也没注入"的缝。
+    单节缺失/坏档 → 该节跳过或整体返回 "",不抛异常(派发不因档案层故障中断)。
+    """
+    try:
+        p = dossier_path(code6)
+        if not p.exists():
+            return ""
+        text = p.read_text(encoding="utf-8")
+        blocks = []
+        for key in keys:
+            if not (key.startswith("§") and key[1:].isdigit()):
+                continue
+            idx = int(key[1:]) - 1
+            if not (0 <= idx < len(SECTIONS)):
+                continue
+            block = _section_block(text, SECTIONS[idx])
+            if block:
+                blocks.append(block.strip())
+        return "\n\n".join(blocks)
+    except Exception:  # noqa: BLE001 — 坏档=不可注入,不抛
+        return ""
 
 
 def injectable_summary(code6: str) -> str:

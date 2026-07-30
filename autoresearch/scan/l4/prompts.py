@@ -178,6 +178,7 @@ def write_dispatch_pack(
 
     tickers: list[str] = []
     pinned: list[str] = []
+    with_dossier: set[str] = set()   # Wave9 B-3:本次派发里"哪些票有档案可注入"(lint 探针 10 读)
     n_prompts = 0
     prompt_manifest = {
         "schema_version": 1,
@@ -217,6 +218,13 @@ def write_dispatch_pack(
         if not raw or raw == "nan":
             continue
         code6 = raw.split(".")[0].zfill(6)
+        # Wave9 B-3:档案存在性判据独立于 stable_context 分支(生产默认走 legacy,若只在
+        # stable_context 分支里判会让 _dossier_present.json 在默认配置下恒空)。
+        with contextlib.suppress(Exception):
+            from autoresearch.dossier.schema import dossier_path
+
+            if dossier_path(code6).is_file():
+                with_dossier.add(code6)
         # Wave9 R5(TTL 复用退役)后不再因 `details/<code>.md` 已存在而跳过写 prompt——
         # dispatch_plan 已无条件全票派发,"卡已存在"不再是跳过写 prompt 的正当理由
         # (旧跳过 + dispatch_plan 新语义组合会炸出 PENDING-但-prompt-不存在,详见函数 docstring)。
@@ -278,6 +286,15 @@ def write_dispatch_pack(
                 history = ""
             if history:
                 dossier_parts.append(history)
+            # Wave9 B-3:研报体的素材侧 —— 摘要 600B 撑不起研报体,内联四节全文
+            # (业务模型/盈利驱动/估值带/风险矩阵;~4-8KB/票,相对 170KB slim 可忽略);
+            # 选内联而非让 agent 自己 Read,读盘边界与工具调用方差都不动。
+            with contextlib.suppress(Exception):
+                from autoresearch.dossier.schema import dossier_sections
+
+                secs = dossier_sections(code6, keys=("§1", "§2", "§3", "§5"))
+                if secs:
+                    dossier_parts.append("### 档案节选(研报体素材)\n" + secs)
             dossier_content = "\n".join(dossier_parts)
 
             terrain = ""
@@ -402,6 +419,9 @@ def write_dispatch_pack(
         n_prompts += 1
     (scan_dir / "_harvest_list.txt").write_text(
         "\n".join(tickers) + ("\n" if tickers else ""), encoding="utf-8")
+    with contextlib.suppress(Exception):
+        (scan_dir / "_dossier_present.json").write_text(
+            json.dumps(sorted(with_dossier), ensure_ascii=False), encoding="utf-8")
     if stable_context:
         import json
 

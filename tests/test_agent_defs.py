@@ -55,6 +55,26 @@ def test_l4_card_contract_anchors_synced():
         assert a in playbook, f"lite-playbook 缺契约锚「{a}」(真值源被改,先同步 agent 定义)"
 
 
+def test_l4_card_research_body_anchors_synced():
+    """研报体段名/缺档声明与 `product_shape_lint` 探针 10 同源(Wave9 B-3)。
+
+    探针 10 用子串判"卡里有没有研报体/缺档声明";子串在 `self_review.py` 改名而
+    `l4-card.md` 模板不同步改 = 静默脱钩——agent 照旧写新名字的段,lint 永远读不到、
+    天天误报"缺失"(product_shape_lint 探针 10 docstring 已述同一条缝)。只对
+    l4-card.md 检查,不比照 lite-playbook.md ——研报体是 scan L4 专属(依赖档案四节
+    全文内联注入,只在 `autoresearch/scan/l4/prompts.py`/`context.py` 接线),不是
+    stock-research lite 独立单票用法的通用契约,两份 playbook 本就该在这一点上分叉。
+    """
+    from autoresearch.learning.self_review import (
+        _MICRO_REPORT_HDR,
+        _NO_DOSSIER_DECL,
+        _RESEARCH_BODY_HDR,
+    )
+    agent = _agent_text("l4-card")
+    for a in (_RESEARCH_BODY_HDR, _MICRO_REPORT_HDR, _NO_DOSSIER_DECL):
+        assert a in agent, f"l4-card 缺研报体契约锚「{a}」(与 product_shape_lint 探针10 脱钩)"
+
+
 def test_l3_rank_anchors_present():
     """l3-rank 契约锚:T+2 兑现机制维 + conviction 行为化重锚(≥70 限额)+ mechanism 输出字段
     + finalist tier 语义(finalist/bench 二分、≥75 误杀保险、宁缺毋滥不凑数)。

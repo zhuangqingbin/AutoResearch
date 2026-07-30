@@ -18,6 +18,13 @@ _BANNED = ("基本面良好", "前景广阔", "值得关注", "建议关注")
 _TIER = ("Buy", "Overweight", "Hold", "Underweight", "Sell")
 _RANK = {r: i for i, r in enumerate(_TIER)}  # 越小越多头
 
+# Wave9 B-3:研报体段名/缺档声明锚 —— product_shape_lint 探针 10 与 l4-card.md 模板措辞
+# 的单一事实源(tests/test_agent_defs.py::test_l4_card_research_body_anchors_synced 据此
+# 钉死两边不脱钩:模板改名而这里不同步改 = agent 照旧写新名字的段,lint 永远读不到)。
+_RESEARCH_BODY_HDR = "研报体(档案δ)"
+_MICRO_REPORT_HDR = "微研报"
+_NO_DOSSIER_DECL = "档案未建"
+
 
 def _num(v):
     try:
@@ -352,8 +359,8 @@ def intel_recency_lint(scan_dir, date_str: str) -> list[dict]:
 
 
 def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
-    """产物形状 lint(九探针,零 LLM;design: 2026-07-13-next-optimization-survey.md 线 C
-    + 2026-07-22 dossier design Wave1 ⑤ + 2026-07-23 终审 I-2)。
+    """产物形状 lint(十探针,零 LLM;design: 2026-07-13-next-optimization-survey.md 线 C
+    + 2026-07-22 dossier design Wave1 ⑤ + 2026-07-23 终审 I-2 + Wave9 B-3)。
 
     把停车场里"已知的产物形状病"装成每跑可见的机械断言(advisory 起步,攒够跑数再升):
 
@@ -386,6 +393,11 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
     9. **pinned SELL 双复核 sell_review_missing**(warn,逐码):保送(lane=pinned)持仓卡
        评级 Sell/Underweight 但缺 `_ensemble_<code>.json`(或 trigger≠sell_review)→ 持仓卖出
        双复核静默漏跑(final-review I-2;镜像 probe 3 intel 稿数兜底,防 args.pinned 漏传)。
+    10. **研报体缺失**(warn,逐码;Wave9 B-3):`_dossier_present.json`(dispatch 侧按
+        `dossier_path` 文件存在写的"本次哪些票有档案可注入"名单)记有档案的票,卡文缺
+        「研报体(档案δ)」(满卡)/「微研报」(早停卡)段;或无档案的票缺「档案未建」
+        缺档声明行——两侧口径与 `.claude/agents/l4-card.md` 模板措辞同批对齐(先补指令
+        后加检查:agent def 已写要求,这里才加检查)。
 
     全部 presence-gated:缺文件/缺键/坏文件 → 该条静默跳过,**绝不抛异常**。
     返回 [{check,severity,detail,code}](severity ∈ {warn,info});接线在 assemble
@@ -631,6 +643,24 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
             add("sell_review_missing", "warn",
                 f"{code} 保送持仓卡评级偏空(Sell/UW)但 _ensemble_{code}.json {why}"
                 " —— 持仓 SELL 双复核未跑(⑤-3:漏传 args.pinned?单 run 直出无兜底)", code=code)
+
+    # 10) 研报体在场(Wave9 B-3;先补指令后加检查 —— agent def 已写要求)
+    with contextlib.suppress(Exception):
+        present = set(json.loads(
+            (scan_dir / "_dossier_present.json").read_text(encoding="utf-8")))
+        for fr in fin_rows:
+            code = str(fr.get("code", "")).zfill(6)
+            card = scan_dir / "details" / f"{code}.md"
+            if not card.exists():
+                continue
+            txt = card.read_text(encoding="utf-8")
+            if code in present:
+                if _RESEARCH_BODY_HDR not in txt and _MICRO_REPORT_HDR not in txt:
+                    add("产物形状·研报体缺失", "warn",
+                        f"{code} 有档案却无研报体段 —— 素材已注入任务包但卡没写")
+            elif _NO_DOSSIER_DECL not in txt:
+                add("产物形状·研报体缺失", "warn",
+                    f"{code} 无档案且未写缺档声明行")
     return out
 
 
