@@ -73,7 +73,8 @@ def main(argv: list[str] | None = None) -> int:
                          "consensus = finalists 卖方一致预期修正 → consensus.csv"
                          "(+条件 fund_hold.csv 基金重仓;_inst_mark/_fund_mark 注简报);"
                          "harvest-slim = 按 _harvest_list.txt 批量 harvest slim;"
-                         "dispatch-plan = 派发感知 TTL 复用(dispatch/reused 分流)")
+                         "dispatch-plan = 派发计划(全部 finalist 进 dispatch;"
+                         "Wave9 R5 已退役 TTL 复用)")
     ap.add_argument("date", help="scan 日 YYYY-MM-DD")
     ap.add_argument("--root", default=None, help="scan 根目录(默认 context/scan)")
     ap.add_argument("--workers", type=int, default=4, help="slim 批量并发数(1=串行)")
@@ -134,7 +135,7 @@ def main(argv: list[str] | None = None) -> int:
         stable_context=args.stable_context,
     )
     print(f"[l4_card prompts] {res['n_prompts']} 份 prompt + _harvest_list({len(res['tickers'])} 票,"
-          f"已归一 yfinance 后缀);跳过已有卡 {res['n_skipped']}")
+          f"已归一 yfinance 后缀)")
     return 0
 
 

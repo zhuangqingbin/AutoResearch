@@ -41,6 +41,7 @@ def test_anns_permission_fast_fail(tmp_path, monkeypatch):
     import autoresearch.scan.agents.l3_news as ln
     monkeypatch.setattr(ln, "get_or_fetch", boom)
     monkeypatch.setattr(ln, "_trade_days_for", lambda date, lb: [f"202607{i:02d}" for i in range(1, 11)])
+    monkeypatch.setattr(ln, "_fallback_fetch_anns", lambda code6, date: [])  # 兜底也空:hermetic(Wave9 final-fix C-1)
     buckets = ln.harvest_l3_news("2026-07-10", ["000001", "600000"], root=tmp_path)
     assert n["calls"] == 1                                  # 权限错 → 首日即 break
     assert buckets == {"000001": [], "600000": []}
@@ -58,5 +59,6 @@ def test_anns_transient_fail_capped_at_3(tmp_path, monkeypatch):
     import autoresearch.scan.agents.l3_news as ln
     monkeypatch.setattr(ln, "get_or_fetch", flaky)
     monkeypatch.setattr(ln, "_trade_days_for", lambda date, lb: [f"202607{i:02d}" for i in range(1, 11)])
+    monkeypatch.setattr(ln, "_fallback_fetch_anns", lambda code6, date: [])  # 兜底也空:hermetic(Wave9 final-fix C-1)
     ln.harvest_l3_news("2026-07-10", ["000001"], root=tmp_path)
     assert n["calls"] == 3                                  # 任意异常有界:3 次封顶

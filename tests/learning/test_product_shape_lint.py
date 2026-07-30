@@ -169,16 +169,18 @@ def test_intel_count_mismatch_warn(tmp_path):
     assert len(rows2) == 1 and "1 份" in rows2[0]["detail"] and "期望 2" in rows2[0]["detail"]
 
 
-def test_intel_count_reuse_subtracted(tmp_path):
-    d = _mk_clean(tmp_path)                          # 3 行(含保送)、其一 ♻️ 复用 → 期望 2 = 实际 2
-    pd.DataFrame([
-        {"code": "600285", "name": "甲", "conviction": 70, "lane": "healthy"},
-        {"code": "000001", "name": "乙", "conviction": 60, "lane": "value"},
-        {"code": "600519", "name": "保", "conviction": 50, "lane": "pinned"},
-    ]).to_csv(d / "finalists.csv", index=False)
-    (d / "details" / "000001.md").write_text("♻️ **复用卡**(源 2026-07-16)", encoding="utf-8")
+def test_intel_probe_variant_not_counted(tmp_path):
+    """`_probe` 变体稿不计入 intel 稿数(600285 正稿 + probe 变体 → 仍算 1 份)。
+
+    Wave9 R5:本用例原名 test_intel_count_reuse_subtracted,锁的是"期望数按 ♻️
+    复用扣减"(TTL 复用已退役,该扣减已从 probe 3 删除,见 self_review.py)——但它
+    **同时**顺带锁住了一条无关的独立契约(`_probe` 变体不计数),删整个用例会静默
+    丢失后者的回归覆盖。这里只删复用前提(finalists 行数覆盖 + ♻️ 卡),保留
+    `_probe` 断言,改用 `_mk_clean` 默认的 2 行 baseline(期望数天然 = 2,
+    不依赖复用扣减也成立)。
+    """
+    d = _mk_clean(tmp_path)
     assert _by(product_shape_lint(d, DATE), "产物形状·intel稿数不符") == []
-    # `_probe` 变体不计入稿数(600285 正稿 + probe 变体 → 仍 1 份)
     (d / "_l4_intel_600285_probe.md").write_text("变体稿 https://x.com/p", encoding="utf-8")
     assert _by(product_shape_lint(d, DATE), "产物形状·intel稿数不符") == []
 
@@ -188,6 +190,24 @@ def test_intel_disabled_no_output(tmp_path):
     (d / "_l4_intel_600285.md").unlink()             # 0 份 intel = 未启用 → 本条不出
     (d / "_l4_intel_600519.md").unlink()
     assert _by(product_shape_lint(d, DATE), "产物形状·intel稿数不符") == []
+
+
+def test_intel_pretrim_archive_not_counted(tmp_path):
+    """复核回归修复(W9-B2-fix):TRIMMED 裁前留档 `<code>.pretrim` 不计入 intel 稿数。
+
+    留档命名刻意不以 `.md` 结尾 —— 已用真实 `Path.glob` 验证过:带 `.md` 的双后缀
+    命名(如 `<code>.pretrim.md`)会被 `glob("_l4_intel_*.md")` 顺带命中,让这条探针
+    把留档当成第 3 份独立情报稿(600285/600519 之外)而虚报「intel 稿数不符」;不带
+    `.md` 的名字对这条裸 glob(以及同文件「intel零URL」探针用的同一份 `intel_files`)
+    天然不可见,不需要在探针里加任何特判。
+    """
+    d = _mk_clean(tmp_path)
+    assert _by(product_shape_lint(d, DATE), "产物形状·intel稿数不符") == []
+    (d / "_l4_intel_600285.pretrim").write_text(
+        "裁剪前留档全文(供 lint 审计,非独立情报稿)https://x.com/pretrim", encoding="utf-8")
+    out = product_shape_lint(d, DATE)
+    assert _by(out, "产物形状·intel稿数不符") == []
+    assert _by(out, "产物形状·intel零URL") == []      # 顺带验证:也不会被当成第二份稿重复审计
 
 
 # ── 4) anns 去伪 ──────────────────────────────────────────────────────────

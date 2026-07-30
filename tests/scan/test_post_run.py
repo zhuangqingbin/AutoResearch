@@ -179,6 +179,66 @@ def test_status_cli_reports_corrupt_control_file(tmp_path, capsys):
     assert "JSONDecodeError" in result["error"]
 
 
+def test_observe_cli_enqueues_finalist_dossiers_without_dossier(tmp_path, monkeypatch, capsys):
+    """`observe` 子命令流程里接线的插队建档(Wave9 R6):无档案 finalist 落 pending_init,
+    且打印 `[dossier] 插队 N 只:...`。"""
+    from autoresearch.scan import post_run
+    from autoresearch.scan.post_run import main
+
+    scan = tmp_path / "2026-07-29"
+    scan.mkdir()
+    (scan / "finalists.csv").write_text(
+        "code,name,lane\n601211,国泰海通,healthy\n", encoding="utf-8")
+    (scan / "_dossier_present.json").write_text("[]", encoding="utf-8")
+    pool_path = tmp_path / "coverage_pool.json"
+    pool_path.write_text(json.dumps({"pending_init": []}), encoding="utf-8")
+    monkeypatch.setattr(post_run, "_pool_path", lambda: pool_path)
+
+    assert main([str(scan), "observe"]) == 0
+    out = capsys.readouterr().out
+    assert "[dossier] 插队 1 只:601211" in out
+    entries = json.loads(pool_path.read_text(encoding="utf-8"))["pending_init"]
+    assert entries[0]["code"] == "601211" and entries[0]["priority"] == "finalist"
+
+
+def test_observe_cli_silent_when_nothing_to_enqueue(tmp_path, monkeypatch, capsys):
+    from autoresearch.scan import post_run
+    from autoresearch.scan.post_run import main
+
+    scan = tmp_path / "2026-07-29"
+    scan.mkdir()
+    (scan / "finalists.csv").write_text(
+        "code,name,lane\n601211,国泰海通,healthy\n", encoding="utf-8")
+    (scan / "_dossier_present.json").write_text('["601211"]', encoding="utf-8")
+    pool_path = tmp_path / "coverage_pool.json"
+    pool_path.write_text(json.dumps({"pending_init": []}), encoding="utf-8")
+    monkeypatch.setattr(post_run, "_pool_path", lambda: pool_path)
+
+    assert main([str(scan), "observe"]) == 0
+    assert "[dossier]" not in capsys.readouterr().out
+
+
+def test_observe_cli_survives_enqueue_failure(tmp_path, monkeypatch, capsys):
+    """插队建档失败(如池路径解析炸掉)不该挡住成本观测本身的发布——观测才是 observe 的
+    主职责,插队只是顺带的 advisory 优化。"""
+    from autoresearch.scan import post_run
+    from autoresearch.scan.post_run import main
+
+    scan = tmp_path / "2026-07-29"
+    scan.mkdir()
+    (scan / "finalists.csv").write_text("code,name\n601211,国泰海通\n", encoding="utf-8")
+    (scan / "_dossier_present.json").write_text("[]", encoding="utf-8")
+
+    def _boom():
+        raise RuntimeError("pool path resolution exploded")
+
+    monkeypatch.setattr(post_run, "_pool_path", _boom)
+
+    assert main([str(scan), "observe"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["ok"] is True
+
+
 def test_retro_consumers_retry_independently_from_price_attribution(tmp_path):
     scan = tmp_path / "2026-07-28"
     scan.mkdir()

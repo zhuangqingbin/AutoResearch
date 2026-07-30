@@ -58,9 +58,54 @@ def _selections(scan_root: Path, days: list[str]) -> dict[str, list[str]]:
     return hits
 
 
+def _pending_priority_meta(pool: dict) -> dict[str, dict]:
+    """把 `pending_init` 数组(Wave9 R6:`post_run.enqueue_finalist_dossiers` 写入的插队标注,
+    code → `{"priority", "last_seen", ...}`)规整成查表。既有条目可能是纯字符串(如
+    `"600018"`),两种形态都要容忍——不崩溃、不丢弃,只是没有优先级信息可查(视同未标注)。"""
+    meta: dict[str, dict] = {}
+    raw = pool.get("pending_init")
+    if not isinstance(raw, list):
+        return meta
+    for e in raw:
+        if isinstance(e, dict):
+            code = str(e.get("code", "") or "").strip().split(".")[0].zfill(6)
+            if code:
+                meta[code] = e
+        elif isinstance(e, str):
+            code = e.strip().split(".")[0].zfill(6)
+            if code:
+                meta.setdefault(code, {})
+    return meta
+
+
 def pending_init(pool: dict) -> list[str]:
-    return sorted(c for c, s in pool.get("stocks", {}).items()
-                  if s.get("status") == "active" and not schema.dossier_path(c).exists())
+    """常备覆盖池里"活跃但未建档"的 code 列表,按建档优先级排序。
+
+    排序键(Wave9 R6,B-3 续):`priority == "finalist"`(当日插队,见
+    `post_run.enqueue_finalist_dossiers`)优先,同级按 `last_seen` 升序(先来先建);
+    两者都缺时退化成原有的按 code 字典序——对没有任何插队标注的池(今天绝大多数情形)
+    逐字节等价于 Wave9 前的行为。
+
+    **Wave9 final-fix I-1(2026-07-30)**:候选集合此前**只**来自 `pool["stocks"]`
+    (active ∧ 无档案)——但入池闸(见 `refresh()`)只放 `pinned` 或真选 ≥2 次的票进
+    `stocks`,首次入围的 finalist 插队(`enqueue_finalist_dossiers` 写进
+    `pending_init` 数组)永远进不了 `stocks`,于是插队对消费者(本函数)恒不可见,
+    「插队 N 只」的回执近乎 no-op(final-review Important-1,07-29 实测:入队 5 只,
+    消费者可见新增 0 只)。现在候选集合改为 `stocks` 活跃票 **并上** `pending_init`
+    数组里排队的码——只要还没建档,不管它是否"真正"在 `stocks` 里(队列本身就是
+    "这票该建档"的证据,不该被"是否也满足常备池准入"这个不相关的问题挡住)。
+    """
+    stocks = pool.get("stocks", {})
+    candidates = {c for c, s in stocks.items()
+                  if s.get("status") == "active" and not schema.dossier_path(c).exists()}
+    meta = _pending_priority_meta(pool)
+    candidates |= {c for c in meta if not schema.dossier_path(c).exists()}
+
+    def _key(c: str) -> tuple[int, str, str]:
+        e = meta.get(c, {})
+        return (0 if e.get("priority") == "finalist" else 1, e.get("last_seen", "") or "", c)
+
+    return sorted(candidates, key=_key)
 
 
 def refresh(today: str, *, scan_root: str | Path = "context/scan",

@@ -60,3 +60,46 @@ def test_pending_init_lists_active_without_dossier(tmp_path, monkeypatch):
     monkeypatch.setattr("autoresearch.dossier.schema.DOSSIER_DIR", tmp_path / "dossiers")
     p = {"cap": 30, "stocks": {"300857": {"status": "active"}, "601869": {"status": "retired"}}}
     assert pool.pending_init(p) == ["300857"]
+
+
+def test_pending_init_prioritizes_finalist_priority(tmp_path, monkeypatch):
+    """Wave9 R6:当日无档案 finalist 插队——priority=finalist 的条目排到最前,同级(都无
+    标注)按 code 字典序不变(逐字节等价于 Wave9 前的行为)。"""
+    monkeypatch.setattr("autoresearch.dossier.schema.DOSSIER_DIR", tmp_path / "dossiers")
+    p = {
+        "cap": 30,
+        "stocks": {
+            "300857": {"status": "active"},
+            "000651": {"status": "active"},
+            "920179": {"status": "active"},
+        },
+        "pending_init": [
+            {"code": "920179", "priority": "finalist", "last_seen": "2026-07-29"},
+        ],
+    }
+    assert pool.pending_init(p) == ["920179", "000651", "300857"]
+
+
+def test_pending_init_breaks_finalist_ties_by_last_seen_ascending(tmp_path, monkeypatch):
+    """同为 priority=finalist 时,`last_seen` 更旧(等得更久)的先建——「先来先建」。"""
+    monkeypatch.setattr("autoresearch.dossier.schema.DOSSIER_DIR", tmp_path / "dossiers")
+    p = {
+        "cap": 30,
+        "stocks": {"600018": {"status": "active"}, "600267": {"status": "active"}},
+        "pending_init": [
+            {"code": "600018", "priority": "finalist", "last_seen": "2026-07-29"},
+            {"code": "600267", "priority": "finalist", "last_seen": "2026-07-27"},
+        ],
+    }
+    assert pool.pending_init(p) == ["600267", "600018"]
+
+
+def test_pending_init_tolerates_legacy_string_entries(tmp_path, monkeypatch):
+    """`pending_init` 数组里的既有条目可能是纯字符串(非 dict)——不得崩溃,视同未标注。"""
+    monkeypatch.setattr("autoresearch.dossier.schema.DOSSIER_DIR", tmp_path / "dossiers")
+    p = {
+        "cap": 30,
+        "stocks": {"600018": {"status": "active"}},
+        "pending_init": ["600018"],
+    }
+    assert pool.pending_init(p) == ["600018"]

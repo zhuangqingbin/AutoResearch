@@ -110,6 +110,38 @@ def render_summary(date: str, results: list[dict], scan_root: Path | str | None 
     for r in results:
         mark = "✓" if r["ok"] else "✗"
         out.append(f"  {mark} {r['step']}: {r['note']}")
+    # 📡 公告主源无权限提醒(Wave9 A-1;复核轮1 Critical 修复)。presence-gated,只在
+    # 回看到的那一日确认是 blind 才出,pending/ok/fallback/无历史日都不打扰。
+    #
+    # 为什么不读当日:`L3_news/` 由 L3 阶段 `harvest_l3_news()` 生成,而这里(prelude,
+    # L0→L2)跑在 L3 之前 —— 读当日 `anns_source_status` 必然撞见"目录还不存在"
+    # (=pending),若把 pending 当 blind 处理就会天天无条件误报(复核轮1 实测:
+    # `L2_gbdt_top200.csv` mtime 与 `L3_news/` mtime 相差 9 分 36 秒,后者严格晚于
+    # prelude 收尾)。改为**回看最近一个已完成扫描日**(跳过仍是 pending 的日子),
+    # 与既有的 retro_pending / dossier 对账提醒同款"看历史"套路。
+    #
+    # 沿用本函数其余可选行的记账约定(try/except + stderr,不用 contextlib.suppress)——
+    # 本文件 write_summary 那段注释已有前车之鉴:静默吞异常曾让落盘失败在 workflow 侧
+    # 显示成"已生成",静默降级比响亮失败危险得多。
+    try:
+        from autoresearch.scan.health import anns_source_status
+        scan_root_dir = Path(scan_root or "context/scan")
+        prior = (sorted(p for p in scan_root_dir.iterdir()
+                        if p.is_dir() and p.name[:2] == "20" and p.name < date)
+                 if scan_root_dir.is_dir() else [])
+        for prev in reversed(prior[-5:]):          # 最近 5 日里找第一个跑到 L3 的
+            st = anns_source_status(prev).get("status")
+            if st == "pending":
+                continue
+            if st == "blind":
+                # Wave9 final-fix C-1:兜底源已接线进 harvest_l3_news(不再是零生产调用点的
+                # 死码)——这行文案曾断言"兜底源无料"却从未真正查过它,诊断信息在说谎;
+                # 现在 blind 只会在兜底也**真的被查过**且仍无料时出现,措辞照实改。
+                out.append(f"  📡 公告双源皆空(最近已完成扫描日 {prev.name})—— 主源无权限,"
+                           "兜底源已查但仍无料;查 `python -m autoresearch.data.sources.anns_fallback` 冒烟")
+            break
+    except Exception as e:  # noqa: BLE001 — 提醒行可选(presence-gated),缺了不挡前奏
+        print(f"[prelude] ⚠️ anns 提醒行跳过:{e!r}", file=sys.stderr)
     out.append(f"  {prewarm_line(date, scan_root)}")
     try:
         out.append(f"  {macro_state_line(date)}")

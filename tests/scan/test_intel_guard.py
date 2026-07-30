@@ -1,4 +1,4 @@
-"""intel 限频从 advisory 升格为有牙齿(Wave8 W8-13)。
+"""intel 限频从 advisory 升格为有牙齿(Wave8 W8-13);超顶后果改判(Wave9 W9-B2)。
 
 **沿革**:`pr_20260714_007`「限频形同虚设」挂了 15 天没人裁 —— 因为它一直只是 warn,
 而 cap 定在 15 又明显低于稿件实际需要,于是**天天报警、天天无视**,典型的狼来了。
@@ -7,8 +7,16 @@
 中位 ~18),Wave7 §4.3 预设的升格触发条件命中。双腿:
 
 - **cap 15 → 20**:对齐实测中位,消掉常态化警报(改配置,不在本文件);
-- **硬顶 30 = 拒稿**:超硬顶把稿件改名 `.rejected.md`,card 侧 presence-gate 找不到
-  intel 就自动回退卡内网查(现有机制零改动)。
+- **硬顶 30 = 有牙齿**:超硬顶必有后果(本文件锁的是这条,不是"必须整稿拒")。
+
+**Wave9 W9-B2 改判**:超硬顶的后果从"整稿拒"改成"按时效窗裁剪"—— 整稿拒会把
+T0 增量一并扔掉(2026-07-29 实测 002546/603893 两票中招)。`REJECTED` 收窄为只留给
+**事件段一行都解析不出**的稿(结构不可信);能解析的超顶稿一律 `TRIMMED`,原文件名
+不变,card 侧 presence-gate 照常读到(裁剪后的)它。本文件里两个原本断言 `REJECTED`
+的用例(`test_over_hard_cap_is_rejected` / `test_cli_emits_single_json_line`)其
+fixture 用的是无事件表的散文正文,新契约下这类稿仍然落在"不可解析→REJECTED"分支,
+断言原样成立,未改动;`TRIMMED` 路径的行为契约见 `tests/scan/test_intel_trim.py`
+与本文件新增的 `test_over_hard_cap_with_parseable_draft_is_trimmed_not_rejected`。
 
 红线:**只拒稿不拒票** —— 情报是辅助面,不得反噬决策主链。自报缺失照旧只 warn
 (无法对账 ≠ 违规,弱证据不当强证据用)。
@@ -36,13 +44,62 @@ def test_within_hard_cap_is_kept(tmp_path):
 
 
 def test_over_hard_cap_is_rejected(tmp_path):
-    """超硬顶 → 稿件改名;原名必须消失(否则 card 仍会读到它)。"""
+    """超硬顶 + 事件段不可解析 → 稿件改名;原名必须消失(否则 card 仍会读到它)。
+
+    Wave9 W9-B2 后 REJECTED 收窄为"事件段一行都解析不出"才触发 —— 本用例的
+    `_write` 默认 body="事件段…" 是无表格散文,天然落在这条分支,断言未改动。
+    "超顶但可解析→裁剪保留"的新路径见 `test_over_hard_cap_with_parseable_draft_is_trimmed_not_rejected`。
+    """
     _write(tmp_path, "601288", 31)
     out = guard_intel(tmp_path, "601288", hard_cap=30)
 
     assert out["ok"] is False and out["action"] == "REJECTED" and out["claimed"] == 31
     assert not (tmp_path / "_l4_intel_601288.md").exists(), "原名还在 = card 照样会读到超限稿"
     assert (tmp_path / "_l4_intel_601288.rejected.md").exists(), "证据必须留档,不是删除"
+
+
+def test_over_hard_cap_with_parseable_draft_is_trimmed_not_rejected(tmp_path):
+    """扩(Wave9 W9-B2):超顶但事件段可解析 → TRIMMED,不整稿拒。
+
+    与上一个用例对照:同样超顶(claimed=31 > hard_cap=30),但本用例的稿子有 12 行
+    合法事件表(T0/24h/催化挂各 1 行 + 背景 9 行),真的会发生裁剪(cut=2,不是
+    test_intel_trim.py 里 cut=0 的"精简稿"场景)—— 验证 `guard_intel` 端到端(读→
+    裁→写回原文件名→返回 dropped_rows)而不只是 `trim_by_recency` 本身。
+    """
+    body = (
+        "## 事件段\n"
+        "| 日期 | 时效窗 | 事件 | 源 | 净分 |\n"
+        "|---|---|---|---|---|\n"
+        "| 2026-07-28 | T0 | 盘后重大合同签署 | http://t0 | 1.0 |\n"
+        "| 2026-07-28 | 24h | 行业政策利好 | http://h24 | 0.5 |\n"
+        "| 2026-09-01 | 催化挂 | 三季报预告 | http://cat | 0.0 |\n"
+        "| 2026-07-01 | 背景 | 背景事件一 | http://b1 | 0.0 |\n"
+        "| 2026-06-30 | 背景 | 背景事件二 | http://b2 | 0.0 |\n"
+        "| 2026-06-29 | 背景 | 背景事件三 | http://b3 | 0.0 |\n"
+        "| 2026-06-28 | 背景 | 背景事件四 | http://b4 | 0.0 |\n"
+        "| 2026-06-27 | 背景 | 背景事件五 | http://b5 | 0.0 |\n"
+        "| 2026-06-26 | 背景 | 背景事件六 | http://b6 | 0.0 |\n"
+        "| 2026-06-25 | 背景 | 背景事件七 | http://b7 | 0.0 |\n"
+        "| 2026-06-24 | 背景 | 超额背景事件八(应被砍) | http://b8 | 0.0 |\n"
+        "| 2026-06-23 | 背景 | 超额背景事件九(应被砍) | http://b9 | 0.0 |\n"
+        "\n"
+    )
+    _write(tmp_path, "601288", 31, body=body)
+    out = guard_intel(tmp_path, "601288", hard_cap=30)
+
+    assert out["ok"] is True
+    assert out["action"] == "TRIMMED"
+    assert out["dropped_rows"] == 2
+    assert (tmp_path / "_l4_intel_601288.md").exists(), "TRIMMED 不改名,card 照常读到"
+    assert not (tmp_path / "_l4_intel_601288.rejected.md").exists()
+
+    kept = (tmp_path / "_l4_intel_601288.md").read_text(encoding="utf-8")
+    assert "已裁剪" in kept and "砍 2 行" in kept
+    assert "盘后重大合同签署" in kept   # T0 必须保住
+    assert "行业政策利好" in kept       # 24h 必须保住
+    assert "三季报预告" in kept         # 催化挂必须保住
+    assert "背景事件七" in kept         # 优先级排在被砍的两条之前,应保留
+    assert "应被砍" not in kept, "最低优先级的两条背景行应已被砍掉"
 
 
 def test_exactly_hard_cap_is_kept(tmp_path):

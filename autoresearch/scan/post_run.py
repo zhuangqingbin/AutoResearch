@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import importlib
 import json
@@ -657,6 +658,128 @@ def publish_run_observation(
     return observation
 
 
+def _pool_path() -> Path:
+    from autoresearch.dossier import pool
+
+    return Path(pool.POOL_PATH)
+
+
+def _pending_entry_code(entry: object) -> tuple[str, dict] | None:
+    """把 `pending_init` 数组里的一条既有条目规整成 (code6, dict)。
+
+    既有条目可能是纯字符串(如 `"600018"`),不是本波才有的 dict 形态(Wave9 R6 歧义3)——
+    两种形态都要容忍:既不能崩溃,也不能在刷新时把它悄悄弄丢。返回的 dict 对纯字符串条目
+    是空 `{}`(调用方据此判断"要不要就地升级成 dict"，而不是直接 `.get()` 崩在 str 上)。
+    """
+    if isinstance(entry, dict):
+        raw = str(entry.get("code", "") or "").strip()
+        meta: dict = entry
+    elif isinstance(entry, str):
+        raw = entry.strip()
+        meta = {}
+    else:
+        return None
+    if not raw:
+        return None
+    return raw.split(".")[0].zfill(6), meta
+
+
+def enqueue_finalist_dossiers(scan_dir: Path | str, analysis_date: str) -> list[str]:
+    """当日无档案的 finalist 插队进建档队列(Wave9 R6,B-3 续)。
+
+    总帽 ≤3 只/晚**不变**——该帽子本来就不是代码强制的,是
+    `.claude/skills/scan-market/SKILL.md`/`STAGES.md` 里人工逐票派发 `dossier-init.js` 的既定
+    约定(`pool.py` 从未有任何 `[:3]` 式硬切片);本函数只改**顺序**:高频入围票先覆盖,下次
+    再遇即有料。幂等:已在队列的票只刷新 `last_seen`,不重复入队。
+
+    `lane == "pinned"`(持仓强制注入 finalists.csv,不代表 L3 真选)不算这里的"入围"——与
+    `autoresearch.dossier.pool._selections()` 的 `lane≠pinned` 口径保持一致;把持仓错标成
+    "finalist" 优先没有意义(持仓本就通过 pinned 即入池的路径拿到 pending_init 曝光)。
+
+    `_dossier_present.json` 缺失、损坏、或**语法合法但形状不对**(如内容是一个 JSON 字符串
+    或对象而不是列表):视为"无法判定谁已有档案",保守跳过(返回 `[]`,不写入任何条目)——
+    插队只是 advisory 排序优化,过度激进(把当日全部 finalist 都当"无档案"插队)会把整条
+    队列的既有优先级搅乱,详见 task-9-report.md 歧义2。
+
+    形状检查必须显式做(`isinstance(present_raw, list)`):`set(json.loads(...))` 对"合法 JSON
+    但不是 list"这类输入**不会抛异常**——`set("000651 already有")` 按字符拆、`set({"a": 1})`
+    按 key 拆,两者都会产出语义完全错误却"看似正常"的集合,静默复活上面这段要避免的激进
+    分支(复核 Important-1,见 task-9-report.md「FIX-1」)。
+
+    列表内部分元素类型不是 `str`(如 `[651, None]`):逐个丢弃、不做整数→code 的猜测式强转,
+    不因为个别坏元素让其余已确认为字符串的合法条目也被牵连——每个字符串元素各自独立地
+    断言"这个 code 有档案",丢弃坏元素只是少一条断言,不是推翻其它断言。
+    """
+    sd = Path(scan_dir)
+    try:
+        present_raw = json.loads((sd / "_dossier_present.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return []
+    if not isinstance(present_raw, list):
+        return []
+    present = {str(e).split(".")[0].zfill(6) for e in present_raw if isinstance(e, str)}
+
+    codes: list[str] = []
+    with contextlib.suppress(Exception), (sd / "finalists.csv").open(encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            raw = str(row.get("code", "") or "").strip()
+            if not raw or str(row.get("lane", "") or "").strip() == "pinned":
+                continue
+            codes.append(raw.split(".")[0].zfill(6))
+
+    # 去重(同码可能在 finalists.csv 里以多个 lane 行出现),保留原序
+    want = [c for c in dict.fromkeys(codes) if c not in present]
+    if not want:
+        return []
+
+    p = _pool_path()
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return []
+    if not isinstance(data, dict):
+        return []
+
+    pend = data.setdefault("pending_init", [])
+    if not isinstance(pend, list):
+        return []
+
+    # Wave9 final-fix I-1 附带项(final-review 提):已建档的排队条目会永久占位、数组
+    # 无限累积(`pending_init()` 靠 `dossier_path().exists()` 在读时把它们过滤掉,但
+    # 写侧从不清理)。每次入队顺手扫一遍摘掉"确认已建档"的条目;认不出的元素(既不是
+    # dict 也不是非空 str)保守保留,不因看不懂形态就丢数据。
+    from autoresearch.dossier import schema as _schema  # lazy:与本文件其它 dossier 子模块导入同款风格
+    pend[:] = [e for e in pend
+               if (parsed := _pending_entry_code(e)) is None
+               or not _schema.dossier_path(parsed[0]).exists()]
+
+    have_idx: dict[str, int] = {}
+    for i, e in enumerate(pend):
+        parsed = _pending_entry_code(e)
+        if parsed is not None:
+            have_idx[parsed[0]] = i
+
+    added: list[str] = []
+    for c in want:
+        i = have_idx.get(c)
+        if i is None:
+            pend.append({"code": c, "priority": "finalist", "last_seen": analysis_date})
+            have_idx[c] = len(pend) - 1
+            added.append(c)
+            continue
+        existing = pend[i]
+        if isinstance(existing, dict):
+            existing["last_seen"] = analysis_date
+            existing.setdefault("priority", "finalist")
+            existing.setdefault("code", c)
+        else:
+            # 既有纯字符串条目——就地升级成 dict,不重复追加、不丢原有位置(歧义3)
+            pend[i] = {"code": c, "priority": "finalist", "last_seen": analysis_date}
+
+    _atomic_json(p, data)
+    return added
+
+
 def _resolve_scan(value: str) -> Path:
     explicit = Path(value)
     return explicit if explicit.exists() else Path("context/scan") / value
@@ -690,6 +813,10 @@ def main(argv: list[str] | None = None) -> int:
                 timing_path=args.timing,
                 phase=args.phase,
             )
+            with contextlib.suppress(Exception):  # 插队建档失败不挡成本观测发布(Wave9 R6)
+                queued = enqueue_finalist_dossiers(scan, scan.name)
+                if queued:
+                    print(f"[dossier] 插队 {len(queued)} 只:{', '.join(queued)}")
             print(json.dumps({
                 "ok": True,
                 "status": result["status"],

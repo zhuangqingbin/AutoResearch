@@ -44,6 +44,7 @@
 **修改:**
 | 文件 | 改什么 |
 |---|---|
+| `autoresearch/data/sources.py` → `sources/__init__.py` | **100% rename 转包**(0 行内容差异)——原计划误把 `data/sources` 当成包,它其实是平模块,不转包则 `sources/anns_fallback.py` 永远导不进来。4 处既有调用方(dossier/mainbz·prefetch·reconcile、data/cache)须回归验证 |
 | `autoresearch/scan/health.py:56` | `anns_empty_rate` 旁增 `anns_source_status()`;`run_health` 增键 |
 | `autoresearch/learning/self_review.py:333,484` | probe 4 改口三态 + docstring;新增研报体探针 |
 | `autoresearch/scan/report_sections.py:329` | `_pinned_section` 增冲突框 |
@@ -68,7 +69,10 @@
 
 **Interfaces:**
 - Produces: `fetch_anns(code6: str, date: str, *, limit: int = 20) -> list[dict]` —— 返回与 `L3_news/<code>.json` 同构的行 `{"ann_date": "YYYYMMDD", "title": str, "source": "em"}`;取数失败/无数据 → `[]`(B 级降级,不抛)。
-- Produces: `SOURCE_TAG = "em"`。
+- Produces: `SOURCE_TAG` —— **兜底源供应商标识**。值必须与实际连的接口一致:
+  巨潮 `stock_zh_a_disclosure_report_cninfo` → `"cninfo"`;东财 → `"em"`。
+  (本仓库既有惯例里 `"em"` 专指东财,见 `scan/universe.py` 的 `--source` choices;
+  标签写错等于给未来的供应商质量归因埋假数据。)
 
 - [ ] **Step 1: 写失败测试**
 
@@ -87,9 +91,10 @@ def test_normalizes_rows_to_l3news_shape(monkeypatch):
     ])
     monkeypatch.setattr(af, "_raw_notices", lambda code6, date: df)
     rows = af.fetch_anns("000651", "2026-07-29")
+    tag = af.SOURCE_TAG
     assert rows == [
-        {"ann_date": "20260729", "title": "关于回购股份的进展公告", "source": "em"},
-        {"ann_date": "20260728", "title": "2026 年半年度报告披露提示", "source": "em"},
+        {"ann_date": "20260729", "title": "关于回购股份的进展公告", "source": tag},
+        {"ann_date": "20260728", "title": "2026 年半年度报告披露提示", "source": tag},
     ]
 
 
@@ -231,8 +236,13 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: Task 1 的 `anns_fallback.SOURCE_TAG`。
-- Produces: `health.anns_source_status(scan_dir) -> dict` = `{"primary_empty_rate": float|None, "fallback_rows": int, "status": "ok"|"fallback"|"blind"}`。
-  - `ok` = 主源有料;`fallback` = 主源空但兜底行 >0;`blind` = 双源皆空。
+- Produces: `health.anns_source_status(scan_dir) -> dict` = `{"primary_empty_rate": float|None, "fallback_rows": int, "status": "ok"|"fallback"|"blind"|"pending"}`。
+  - `ok` = 主源有料;`fallback` = 主源空但兜底行 >0;`blind` = **有稿但双源皆空**;
+    `pending` = **`L3_news/` 目录不存在或无稿** = 该阶段尚未跑到,**不是**证据。
+  - 🚨 `pending` 与 `blind` 必须分开(复核轮1 Critical):`L3_news/` 只由 L3 阶段的
+    `harvest_l3_news()` 生成(调用点 `scan/l3/prompt.py`),而 prelude 跑在 L3 **之前** ——
+    把"还没跑"读成"已确认双源皆空"会让提醒无条件天天响,gate 形同虚设。
+    这是本 wave 主题「存在≠有效」的同型病:行存在,但它声称已核实的事那一刻还没发生。
 - Produces: `run_health` 新键 `anns_source_status`(同上 dict)。
 
 - [ ] **Step 1: 写失败测试**
@@ -260,8 +270,9 @@ def test_status_ok_when_primary_has_rows(tmp_path):
     assert st["status"] == "ok"
 
 
-def test_status_fallback_when_only_em_rows(tmp_path):
-    d = _mk(tmp_path, {"000651": [{"ann_date": "20260729", "title": "x", "source": "em"}],
+def test_status_fallback_when_only_fallback_rows(tmp_path):
+    from autoresearch.data.sources.anns_fallback import SOURCE_TAG
+    d = _mk(tmp_path, {"000651": [{"ann_date": "20260729", "title": "x", "source": SOURCE_TAG}],
                        "000333": []})
     st = health.anns_source_status(d)
     assert st["status"] == "fallback"
@@ -269,10 +280,19 @@ def test_status_fallback_when_only_em_rows(tmp_path):
 
 
 def test_status_blind_when_both_empty(tmp_path):
+    """有稿但全空 = 真 blind(双源都没料)。"""
     d = _mk(tmp_path, {"000651": [], "000333": []})
     st = health.anns_source_status(d)
     assert st["status"] == "blind"
     assert st["primary_empty_rate"] == 1.0
+
+
+def test_status_pending_when_dir_absent(tmp_path):
+    """L3_news/ 不存在 = L3 还没跑到,必须是 pending 而**不是** blind ——
+    prelude 跑在 L3 之前,塌缩两者会让 📡 提醒无条件天天响(复核轮1 Critical)。"""
+    d = tmp_path / "2026-07-29"
+    d.mkdir(parents=True)
+    assert health.anns_source_status(d)["status"] == "pending"
 
 
 def test_probe_warns_on_blind_not_info(tmp_path):
@@ -288,7 +308,8 @@ def test_probe_warns_on_blind_not_info(tmp_path):
 
 
 def test_probe_info_when_fallback_carries(tmp_path):
-    d = _mk(tmp_path, {"000651": [{"ann_date": "20260729", "title": "x", "source": "em"}]})
+    from autoresearch.data.sources.anns_fallback import SOURCE_TAG
+    d = _mk(tmp_path, {"000651": [{"ann_date": "20260729", "title": "x", "source": SOURCE_TAG}]})
     (d / "run_health.json").write_text(json.dumps({
         "anns_empty_rate": 0.0,
         "anns_source_status": {"primary_empty_rate": 1.0, "fallback_rows": 1,
@@ -319,10 +340,13 @@ def anns_source_status(scan_dir: Path) -> dict:
       fallback = 主源无料但兜底源(`source=="em"`)扛住了
       blind    = 双源皆空 → **这是 warn,不是 expected**
     """
+    from autoresearch.data.sources.anns_fallback import SOURCE_TAG as _FALLBACK_TAG
+
     d = Path(scan_dir) / "L3_news"
     files = sorted(d.glob("*.json")) if d.is_dir() else []
     if not files:
-        return {"primary_empty_rate": None, "fallback_rows": 0, "status": "blind"}
+        # 目录/稿件不存在 = L3 阶段还没跑到,**不是**"双源皆空"的证据(复核轮1 Critical)
+        return {"primary_empty_rate": None, "fallback_rows": 0, "status": "pending"}
 
     primary_rows = fallback_rows = 0
     empty_files = 0
@@ -335,7 +359,7 @@ def anns_source_status(scan_dir: Path) -> dict:
         if not rows:
             empty_files += 1
         for r in rows:
-            if isinstance(r, dict) and str(r.get("source", "")) == "em":
+            if isinstance(r, dict) and str(r.get("source", "")) == _FALLBACK_TAG:
                 fallback_rows += 1
             else:
                 primary_rows += 1
@@ -403,13 +427,30 @@ Expected: **FAIL**。确认后改回。若不 FAIL → 测试零鉴别力,回 St
 `autoresearch/scan/prelude.py` 汇总屏行渲染处,在 dossier_pool 行附近加(presence-gated,`status=="blind"` 才出):
 
 ```python
-    # 📡 公告主源无权限提醒(Wave9 A-1;blind 才出,fallback/ok 不打扰)
-    with contextlib.suppress(Exception):
-        from autoresearch.scan.health import anns_source_status
-        if anns_source_status(scan_dir).get("status") == "blind":
-            lines.append("  📡 公告双源皆空 —— 主源 anns_d 无权限且兜底源无料;"
-                         "查 `python -m autoresearch.data.sources.anns_fallback` 冒烟")
+    # 📡 公告源无权限提醒(Wave9 A-1;复核轮1 改为**回看最近一个已完成扫描日**)
+    # 为什么不读当日:`L3_news/` 由 L3 阶段的 harvest_l3_news() 生成,而 prelude 跑在 L3
+    # **之前** —— 读当日必然拿到 pending,要么永不触发、要么(若把 pending 当 blind)天天误报。
+    # 回看模式与 prelude 既有的 retro_pending / dossier 对账提醒同款。
+    from autoresearch.scan.health import anns_source_status
+    try:
+        prior = sorted(p for p in Path(scan_dir).parent.iterdir()
+                       if p.is_dir() and p.name < Path(scan_dir).name)
+        for prev in reversed(prior[-5:]):          # 最近 5 日里找第一个跑到 L3 的
+            st = anns_source_status(prev).get("status")
+            if st == "pending":
+                continue
+            if st == "blind":
+                lines.append(f"  📡 公告双源皆空(最近已完成扫描日 {prev.name})—— 主源无权限"
+                             "且兜底源无料;查 `python -m autoresearch.data.sources.anns_fallback` 冒烟")
+            break
+    except Exception as e:      # noqa: BLE001 — 提醒层不得阻断 prelude,但**不静默**
+        print(f"[prelude] ⚠️ anns 提醒行跳过:{e!r}", file=sys.stderr)
 ```
+
+**测试要求(本步必须有自动化覆盖,不接受只做手工 smoke)**:至少三个用例 ——
+① 上一日 `blind` → 出 📡 行;② 上一日 `ok`/`fallback` → 不出;③ **当日目录只有 L2 产物、
+无 `L3_news/`(= prelude 跑完那一刻的真实现场)且无历史日** → 不出。
+用例 ③ 是这个 Critical 的回归钉子,缺它等于没修。
 
 - [ ] **Step 8: 全量测试 + 提交**
 
@@ -613,14 +654,21 @@ Expected: 全 passed
 
 `pinned_ledger.roll()` 读该文件填列。
 
-- [ ] **Step 7: 活体重放验收**
+- [ ] **Step 7: 活体重放(冒烟,非结果断言)**
 
 Run:
 ```bash
-uv run --no-sync python -m autoresearch.scan.assemble 2026-07-29 2>&1 | tail -3
-grep -A6 "两尺分歧" reports/scan/$(ls -t reports/scan | head -1)/summary.md
+uv run --no-sync python -m autoresearch.scan.assemble 2026-07-29 > /tmp/w9t3.log 2>&1; echo "EXIT=$?"
+cat context/scan/2026-07-29/_tripwire_conflicts.json
 ```
-Expected: 出现 300857 的冲突框(该日 tripwire 触发 + 终评 Underweight)。**若没出现**:先 `cat context/scan/2026-07-29/_tripwire_conflicts.json` 看判据是否空,再回查 `pinned_rows` 里 rating 字段的真实键名。
+Expected: `EXIT=0`,且 `_tripwire_conflicts.json` **存在且是合法 JSON**(内容可为 `{}`)。
+
+> 🚨 **不要把「出现 300857 冲突框」当验收断言**(计划原稿的错误,复核轮1 独立证伪):
+> `tripwire_watch.latest_card()` 取的是该票**最新**一张卡。07-29 扫描已写入新卡、盯梢线
+> 变成 `close < 194.73`,而当日收盘 205.00 不触发 —— 07-29 当天成立的那个冲突(旧卡线
+> 210.01)**在事后重放里结构性不可复现**。这不是实现缺陷。
+> 冲突渲染的正确性由 `tests/scan/test_tripwire_conflict.py` 的合成场景保证;本步只验
+> 「跑得通 + 判据真的落盘了」。
 
 - [ ] **Step 8: 全量测试 + 提交**
 

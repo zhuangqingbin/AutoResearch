@@ -54,9 +54,15 @@ def nan_report(scan_dir: Path, thresh: float = 0.30) -> tuple[dict, list[str]]:
 
 
 def anns_empty_rate(scan_dir: Path) -> float | None:
-    """L3_news 空稿率。=1.0 为 **expected 非告警**(anns_d 已退役 2026-07-18:无接口权限,
-    结构化公告标题流由 stock_news_em 头条 + l4-intel 活体盲搜双重覆盖)。无目录 → None。
-    键与数值保留供下游消费,expected 语义见 `run_health` 并列布尔 `anns_expected`。
+    """L3_news 空稿率(旧口径)。无目录 → None。
+
+    ⚠️ Wave9 A-1 复核轮1:"=1.0 为 expected 非告警"是**已被推翻的旧判据**——本函数只
+    回答"空不空",答不了"为什么空"(主源无权限与当日故障在此长得一样)。**当前权威判据
+    以 `anns_source_status()` 的四态(ok/fallback/blind/pending)为准**:`blind`(有稿但
+    双源皆空)是 warn,不是 expected(详见该函数 docstring)。本键与并列布尔 `anns_expected`
+    仍保留,只服务两处遗留消费者:(a) `product_shape_lint` 在旧 run(无
+    `anns_source_status` 键)时的回落判定;(b) 下面 `index_md` 沿用的既有渲染行(未随
+    本次改动迁移判据,见该处注释)。
     Wave4 Task1:`index_md` 现会据此(`anns_expected`)渲染一行「公告标题流不可用」——
     此前只在 `run_health.json` 里挂 `anns_expected=True`,报告正文完全无感,断链留痕。"""
     d = Path(scan_dir) / "L3_news"
@@ -71,6 +77,53 @@ def anns_empty_rate(scan_dir: Path) -> float | None:
             return 0
     empty = sum(1 for p in files if _n(p) == 0)
     return round(empty / len(files), 3)
+
+
+def anns_source_status(scan_dir: Path) -> dict:
+    """公告流双源状态(Wave9 A-1 + 复核轮1 Critical 修复)。
+
+    `anns_empty_rate` 只回答"空不空",回答不了"为什么空"——主源无权限与兜底也挂在产物
+    上长得一样。本函数按行内 `source` 标签拆源,四态:
+      ok       = 有非兜底来源的行(主源活着)
+      fallback = 主源无料但兜底源(`source==SOURCE_TAG`,见 anns_fallback.SOURCE_TAG)扛住了
+      blind    = **有稿件但双源皆空** → **这是 warn,不是 expected**
+      pending  = `L3_news/` 目录/稿件根本不存在 —— **L3 阶段还没跑到,不是"双源皆空"的
+                 证据**(复核轮1 Critical:`L3_news/` 由 L3 阶段 `harvest_l3_news()` 生成,
+                 prelude 在 L0→L2 末尾就调用本函数时该目录结构性地必然还不存在;若把这种
+                 "还没发生"误判成 blind,会天天无条件误报——本 wave 的主题"存在≠有效"在
+                 我们自己新加的调用点上重演了一次)。
+    """
+    from autoresearch.data.sources.anns_fallback import SOURCE_TAG as _FALLBACK_TAG
+
+    d = Path(scan_dir) / "L3_news"
+    files = sorted(d.glob("*.json")) if d.is_dir() else []
+    if not files:
+        return {"primary_empty_rate": None, "fallback_rows": 0, "status": "pending"}
+
+    primary_rows = fallback_rows = 0
+    empty_files = 0
+    for p in files:
+        try:
+            v = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 — 坏 JSON 记空
+            v = []
+        rows = v if isinstance(v, list) else []
+        if not rows:
+            empty_files += 1
+        for r in rows:
+            if isinstance(r, dict) and str(r.get("source", "")) == _FALLBACK_TAG:
+                fallback_rows += 1
+            else:
+                primary_rows += 1
+
+    if primary_rows:
+        status = "ok"
+    elif fallback_rows:
+        status = "fallback"
+    else:
+        status = "blind"
+    return {"primary_empty_rate": round(empty_files / len(files), 3),
+            "fallback_rows": fallback_rows, "status": status}
 
 
 def northbound_probe(scan_dir: Path) -> dict | None:
@@ -710,9 +763,12 @@ def run_health(scan_dir: Path) -> dict:
                        "l2": _n("L2_gbdt_top200.csv"), "finalists": _n("finalists.csv"),
                        "cards": cards, "buys": buys},
             "nan_rates": rates, "degraded_fields": degraded,
-            # anns_d 已退役(2026-07-18):=1.0 是 expected(no-permission·covered by
-            # news_em+intel),非告警。键名/数值原样保留(下游兼容),expected 语义走并列布尔。
+            # 旧口径(Wave9 A-1 前):"=1.0 是 expected 非告警"已被推翻,当前权威判据是下面
+            # anns_source_status 的四态(blind=warn,pending=L3 还没跑到;详见该函数
+            # docstring)。键名/数值原样保留仅供下游兼容(product_shape_lint 旧 run 回落 +
+            # index_md 既有渲染行),不代表这仍是当前判据。
             "anns_empty_rate": anns_rate,
+            "anns_source_status": anns_source_status(scan_dir),
             "anns_expected": anns_rate is None or anns_rate >= 1.0,
             "northbound": northbound_probe(scan_dir),
             "regime": meta.get("regime"), "l2_engine": meta.get("l2_engine"),
@@ -767,7 +823,11 @@ def index_md(scan_dir: Path, report_dir: Path) -> str:
     if h["anns_expected"]:
         # anns_d 已退役(2026-07-18):此前只在 run_health.json 里挂 anns_expected=True,报告
         # 正文完全无感——这正是 news_n/news_sent/news_head 三个扫描日全为 0 却无人察觉的成因
-        # 之一(线 D 退役配套,断链必须留痕)。expected 语义不变,只是从"静默"改为显式一行。
+        # 之一(线 D 退役配套,断链必须留痕)。
+        # ⚠️ Wave9 A-1 复核轮1:"expected 语义不变"已过时——这行沿用的是 anns_empty_rate
+        # 旧口径(本次改动未迁移这里的判据,范围外)。**当前**权威判据是 anns_source_status
+        # 四态(blind=有稿双源皆空=warn,不是 expected;pending=L3 还没跑到)。这行文案不
+        # 代表 blind 仍算 expected,判"双源健康与否"请读 anns_source_status,不要读这里。
         lines.append("- **公告标题流**:不可用(anns_d 已退役,详见 `run_health.json` "
                      "`anns_empty_rate`)")
     return "\n".join(lines) + "\n"

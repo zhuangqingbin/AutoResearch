@@ -245,3 +245,75 @@ def _dump_decision_records(
 
 
 load_ensemble = _load_ensemble
+
+
+def _tripwire_hits(scan_dir, analysis_date: str, codes: list[str]) -> list[dict]:
+    """薄封装(测试 monkeypatch 此函数,不去 mock 整个 tripwire_watch)。
+
+    `card_before=analysis_date`(Wave9 final-fix I-2):两尺分歧框比的是"用户今天实际
+    在操作的那条线"(来自**前一交易日**及更早的卡),不能是本次 assemble 刚写完的
+    今日卡——那条线是 LLM 今天拿着今天收盘写的,几乎自洽,测不出真实分歧
+    (final-review Important-2,07-29/300857 实例:含今日时线=194.73~233.27 把
+    205.00 包在带内测不出冲突;严格早于今日时线=210.01,才是当时真实在用的那条)。
+    """
+    from autoresearch.learning import tripwire_watch
+    root = Path(scan_dir).parent if scan_dir else Path("context/scan")
+    return tripwire_watch.check(analysis_date, codes=codes, scan_root=root, card_before=analysis_date)
+
+
+def tripwire_conflicts(scan_dir, analysis_date: str,
+                       pinned_rows: list[dict]) -> dict[str, dict]:
+    """确定性尺(tripwire 价格线)与 LLM 终评的**冲突集**(Wave9 A-2)。
+
+    冲突 = 保送票**严格早于今天**的最新一张卡的 **价格线** tripwire,拿今日收盘一测,
+    触发 ∧ 今日终评 ≠ Sell。
+    (2026-07-29 实测:300857 用户当时**在用**的线来自 07-28 的卡(跌破 210.01 清仓),
+     07-29 双复核终评 Underweight="减仓",报告里两头各说各话、无裁决材料 —— 本函数只
+     **判定并呈现**冲突,**绝不合并**。)
+
+    **Wave9 final-fix I-2**:比对的必须是**前一交易日及更早**的卡(`_tripwire_hits`
+    → `tripwire_watch.check(..., card_before=analysis_date)`),不能是本次 assemble
+    刚写完的今日卡——否则比的是"LLM 今天拿着今天收盘写的线"(几乎自洽,测不出真实
+    分歧,final-review Important-2 实测活体产出≈0)。若该票此前从没写过卡(首次覆盖)
+    → `tripwire_watch.check` 对该 code 静默跳过(`latest_card` 返回 None),不报错、
+    不出条,自然汇入空结果。
+
+    `date`/`event` 型命中是提醒(披露日临近/新闻旗),与评级不构成对立,不收。
+
+    评级键名:核实生产真实字段(`_finalist_row`/`_buylist_table_lines` 均取 `row["rating"]`,
+    与本函数测试夹具的构造一致)—— 就是 `"rating"`,故不需要多键名兜底。
+
+    **同票多条价格线全部收录**(复核 Wave9 A-2 · Minor→must-fix,2026-07-30):一张卡可以
+    同时挂多条 `[价格线]`(实例:300857 07-28 卡同时有「跌破 210.01 清仓」+「跌破 196.73
+    已应清仓,若仍持有立即处置」),当日可能不止一条同时触发。旧版用 `out.setdefault`
+    只留 hits 里**先出现**的一条,会把更紧急的那条静默吞掉——这个框存在的全部意义就是
+    把材料摆给人裁,挑一条藏一条是本末倒置。现改为:`all_hits` 是该 code 全部 price 命中
+    的结构化列表(`[{"detail": str, "raw": str, "card_date": str}, ...]`,按 hits 原始
+    顺序,不排序不去重不挑选;`card_date` = 这条线来自哪一天的卡,给 `_conflict_block`
+    渲染用);`tripwire_detail`/`tripwire_raw` 降级为**向后兼容的摘要字段**——全部命中按
+    " ｜ " 拼接(单条命中时与旧版逐字节相同,`_conflict_block` 等旧调用方不必改)。
+    """
+    rows = [r for r in (pinned_rows or []) if r.get("code")]
+    if not rows:
+        return {}
+    rating_of = {str(r["code"]).zfill(6): str(r.get("rating", "") or "") for r in rows}
+    try:
+        hits = _tripwire_hits(scan_dir, analysis_date, list(rating_of))
+    except Exception:  # noqa: BLE001 — advisory 层,坏了不挡发布
+        return {}
+
+    out: dict[str, dict] = {}
+    for h in hits:
+        if h.get("kind") != "price":
+            continue
+        code = str(h.get("code", "")).zfill(6)
+        rating = rating_of.get(code, "")
+        if not rating or rating == "Sell":
+            continue
+        rec = out.setdefault(code, {"rating": rating, "all_hits": []})
+        rec["all_hits"].append({"detail": str(h.get("detail", "")), "raw": str(h.get("raw", "")),
+                                 "card_date": str(h.get("card_date", "") or "")})
+    for rec in out.values():
+        rec["tripwire_detail"] = " ｜ ".join(h["detail"] for h in rec["all_hits"] if h["detail"])
+        rec["tripwire_raw"] = " ｜ ".join(h["raw"] for h in rec["all_hits"] if h["raw"])
+    return out

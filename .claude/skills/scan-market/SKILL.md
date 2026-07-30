@@ -38,7 +38,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 
 ## 流程(6 段)
 
-> **编排真身 = 两段 workflow + 主会话收尾**:① `.claude/workflows/scan-market.js`(Prelude→L3→L4-prep;默认流式 L4,返回 `{dispatch, dispatch_batches, task_book, reused, meta}`)→ ② 主会话按**滑窗**拉 `.claude/workflows/l4-stock.js`(保持 `effective_cap` 只在飞,每完成一只补派一只,📌pinned/最长者先行——详见步骤 4)；每票先过 `_l4_tasks.json` preflight，再让 slim 与 intel 并行，随后 card→(≥OW)双复核。单票失败只改变本票状态，不重跑已成功票 → ③ **task_book 全 SUCCEEDED** 后跑步骤 5 的 assemble/GATE4/计量回填。`streaming_l4=false` 才回到旧批量 GATE3。**正常跑动直接用 workflow**;以下命令留作调参/单步重跑入口。操作模板分驻:市场研判在 `macro-research/macro-playbook.md` 末节、L4 决策卡在 stock-research 的 `lite-playbook.md`;**各阶段机制/参数/实证读数**见 `STAGES.md`。
+> **编排真身 = 两段 workflow + 主会话收尾**:① `.claude/workflows/scan-market.js`(Prelude→L3→L4-prep;默认流式 L4,返回 `{dispatch, dispatch_batches, task_book, meta}`)→ ② 主会话按**滑窗**拉 `.claude/workflows/l4-stock.js`(保持 `effective_cap` 只在飞,每完成一只补派一只,📌pinned/最长者先行——详见步骤 4)；每票先过 `_l4_tasks.json` preflight，再让 slim 与 intel 并行，随后 card→(≥OW)双复核。单票失败只改变本票状态，不重跑已成功票 → ③ **task_book 全 SUCCEEDED** 后跑步骤 5 的 assemble/GATE4/计量回填。`streaming_l4=false` 才回到旧批量 GATE3。**正常跑动直接用 workflow**;以下命令留作调参/单步重跑入口。操作模板分驻:市场研判在 `macro-research/macro-playbook.md` 末节、L4 决策卡在 stock-research 的 `lite-playbook.md`;**各阶段机制/参数/实证读数**见 `STAGES.md`。
 >
 > **进度可视化(必做,2026-07-12 用户反馈"跑起来主对话一片空白")**:L4 派发后挂一个 Monitor —— 
 > ```
@@ -104,10 +104,9 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
    ```
    → 每行业一个 `Agent(subagent_type='sector-brief')`(机制/两段契约见 STAGES.md『旁路 · 行业 brief』节)。
 3. **L3 精排**(两遍法;workflow L3 相位):证据取数(`harvest_l3_evidence`+`harvest_l3_news`)→ `l3_table_md(...)` 压紧凑表(内含 pass1 确定性分诊 200→~40,scan_config `pass1_target`;被切的是**影子**落 `_l3_pass1_cut.csv`,不代表判死)→ 一个 `Agent(subagent_type='l3-rank')` 通看 ~40 只深比较,出 **finalist tier 7–10 只**(`finalist:true`,按当天质量,宁缺毋滥不凑数)+ **bench**(`finalist:false`,仍全字段判断)→ `menu <date>` 拿 L4 预算(cap=min(10,预算))→ `merge_l3_finalists_v3`(conviction≥75 误杀保险补入 / <55 剔除 / 健康画像守卫)→ `finalists.csv` + `_l3_bench.csv`。参数/rubric 维度/token 经济见 STAGES.md L3 节。
-4. **L4 研究**(token 大头;默认流式、每股独立可恢复)——确定性准备(l4-prep)仍在 scan-market.js 的 L4-prep 相位:质押旗/TTL复用/席位·催化·日历生产者先行(机制见 STAGES.md L4 节)→ 落稿(单步重跑入口):
+4. **L4 研究**(token 大头;默认流式、每股独立可恢复)——确定性准备(l4-prep)仍在 scan-market.js 的 L4-prep 相位:质押旗/席位·催化·日历生产者先行(机制见 STAGES.md L4 节;**TTL 复用已于 2026-07-29 用户裁定 R5 整体退役**——不再有任何票跳过研究,评级稳定性改由昨卡回声承接)→ 落稿(单步重跑入口):
    ```bash
    uv run --no-sync python -m autoresearch.scan.agents.l4_card pledge <date>
-   uv run --no-sync python -m autoresearch.scan.l4_reuse <date> --apply
    uv run --no-sync python -m autoresearch.scan.agents.l4_card prompts <date>
    ```
    → scan-market.js 返回 `{dispatch, dispatch_batches, task_book, meta}` 后，主会话按**滑窗**派发

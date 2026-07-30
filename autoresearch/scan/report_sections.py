@@ -326,9 +326,48 @@ def _knowledge_note(rows: list[dict]) -> str:
             lines.append(f"- ({f.get('verdict')}) {str(f.get('note', ''))[:50]} — `{f.get('id')}`")
     return "\n".join(lines) + "\n"
 
+def _conflict_block(conflicts: dict[str, dict]) -> str:
+    """⚖️ 两尺分歧框(Wave9 A-2)——presence-gated,无冲突返回空串。
+
+    呈现契约,**不是**合并规则:确定性价格线与 LLM 基本面终评测的不是同一件事,
+    系统把两边的判据、来源、失效条件并排摆出来,由人裁。
+
+    **同票多条价格线全部呈现**(复核 Minor→must-fix,2026-07-30):优先读 `all_hits`
+    (`tripwire_conflicts` 产出的结构化列表);缺该键(如手工构造的旧形状 dict——既有
+    单测 `test_conflict_block_renders_two_rulers` 就是这么构造的,兼容不改)则把单值
+    `tripwire_detail` 当唯一一条兜底。同一票多条命中在**同一单元格内**用「；」全部列出
+    ——不挑一条藏一条,这个框存在的意义就是把材料摆给人裁。
+
+    **线出自哪一天**(Wave9 final-fix I-2):`tripwire_conflicts` 现在比对的是**严格
+    早于今日**的最新卡(不再是今日自己刚写的卡,见该函数 docstring),单元格附带
+    "(线出自 YYYY-MM-DD 卡)" 标注,不让读者误以为这是今天写的线;`all_hits` 缺
+    `card_date`(旧形状兜底)时不加标注,逐字节兼容既有单测。
+    """
+    if not conflicts:
+        return ""
+    lines = ["", "### ⚖️ 两尺分歧(确定性盯梢线 vs LLM 终评)", "",
+             "| 票 | tripwire(价格尺) | LLM 终评(基本面尺) |", "|---|---|---|"]
+    for code, c in sorted(conflicts.items()):
+        hits = c.get("all_hits") or [{"detail": c.get("tripwire_detail", "")}]
+        cell = "；".join(h.get("detail", "") for h in hits if h.get("detail"))
+        dates = sorted({h["card_date"] for h in hits if h.get("card_date")})
+        if dates:
+            cell += f"(线出自 {'/'.join(dates)} 卡)"
+        lines.append(f"| {code} | {cell} | **{c['rating']}**"
+                     f"(满卡 DD + 双复核折回) |")
+    lines += ["", "| | 判据来源 | 失效条件 |", "|---|---|---|",
+              "| 价格尺 | 你在**前一交易日(或更早)**卡里写下的盯梢线——非今日新卡,"
+              "只看收盘价、不看基本面 | 收盘收复线上 |",
+              "| 基本面尺 | 当日满卡尽调 + ≥OW/SELL 双复核中位 | 复核依据的驱动被证伪 |",
+              "",
+              "**两把尺子测的不是同一件事,系统不合并——人裁。**", ""]
+    return "\n".join(lines)
+
+
 def _pinned_section(scan_dir: Path, analysis_date: str, pinned_rows: list[dict],
                     l1_full: dict, l2_top: dict, ch_map: dict, vmap: dict, n_l1, n_l2,
-                    pinned_path: str | Path | None = None) -> str:
+                    pinned_path: str | Path | None = None,
+                    conflicts: dict | None = None) -> str:
     """📌 保送持仓节(design 2026-07-11 §4.1;feedback fb_20260714_001 改结构):保送持仓与真实
     精选**分列**——运行期 `lane=="pinned"` 行(`pinned_rows`,`finalists.csv` 烤入的那次跑的事实)
     渲染成与 §3 buy-list 同结构的完整表 + 「保送理由」列(不占 L3 名额、也不混进 buy-list)。
@@ -353,6 +392,7 @@ def _pinned_section(scan_dir: Path, analysis_date: str, pinned_rows: list[dict],
     if pinned_rows:
         lines += _buylist_table_lines(pinned_rows, l1_full, l2_top, ch_map, vmap,
                                       n_l1, n_l2, note_col=True)
+        lines.append(_conflict_block(conflicts or {}))
     else:
         lines += ["_本次运行内无强留的保送持仓(finalists 无 lane=pinned 行)。_"]
     if expired:
@@ -643,8 +683,15 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
     # (观察单日检节已退役 —— 用户裁定 fb_20260714_002:即便 watchlist_status.csv 在也不渲染。)
 
     # ── 📌 保送(pinned 直通;presence-gated:无 pinned.json/kept+expired 皆空 → 跳过)──
+    from autoresearch.scan.decision_finalize import tripwire_conflicts
+    _conf = tripwire_conflicts(scan_dir, analysis_date, pinned_rows)
+    import contextlib
+    with contextlib.suppress(Exception):   # 供 pinned_ledger.roll() 跨日读取(Wave9 A-2 §6);IO 失败不阻发布
+        (Path(scan_dir) / "_tripwire_conflicts.json").write_text(
+            json.dumps(_conf, ensure_ascii=False), encoding="utf-8")
     pin_sec = _pinned_section(scan_dir, analysis_date, pinned_rows, l1_full, l2_top,
-                              ch_map, vmap, n_l1, n_l2, pinned_path=pinned_path)
+                              ch_map, vmap, n_l1, n_l2, pinned_path=pinned_path,
+                              conflicts=_conf)
     if pin_sec:
         out += [pin_sec, ""]
 

@@ -18,6 +18,13 @@ _BANNED = ("基本面良好", "前景广阔", "值得关注", "建议关注")
 _TIER = ("Buy", "Overweight", "Hold", "Underweight", "Sell")
 _RANK = {r: i for i, r in enumerate(_TIER)}  # 越小越多头
 
+# Wave9 B-3:研报体段名/缺档声明锚 —— product_shape_lint 探针 10 与 l4-card.md 模板措辞
+# 的单一事实源(tests/test_agent_defs.py::test_l4_card_research_body_anchors_synced 据此
+# 钉死两边不脱钩:模板改名而这里不同步改 = agent 照旧写新名字的段,lint 永远读不到)。
+_RESEARCH_BODY_HDR = "研报体(档案δ)"
+_MICRO_REPORT_HDR = "微研报"
+_NO_DOSSIER_DECL = "档案未建"
+
 
 def _num(v):
     try:
@@ -210,6 +217,23 @@ def card_contract_lint(scan_dir) -> list[dict]:
     return out
 
 
+def _intel_audit_text(p) -> str:
+    """intel 稿的**审计用**全文 —— 若存在裁剪前留档(`<stem>.pretrim`)优先读它,
+    否则读 `p`(canonical,可能已被 TRIMMED 原地覆写砍掉部分事件行)本身。
+
+    W9-B2-fix:`autoresearch.scan.l4.intel_guard.guard_intel` 的 TRIMMED 分支会
+    原地覆写、真删掉被砍的事件行(不像旧 REJECTED 靠改名保留整稿全文)——
+    `intel_future_dates_lint`/`intel_recency_lint` 若只读 canonical 文件,会对被砍
+    行永久失明,而被砍的(背景/>1周)恰是这两条 lint 最想抓的对象。真发生裁剪时
+    (`dropped_rows>0`)`guard_intel` 会把裁前全文单独留档到 `<code>.pretrim`
+    (故意不带 `.md`,对本文件及全仓其他 `_l4_intel_*.md`/`*.md` 裸 glob 都不可见,
+    不会被当成第二份独立情报稿重复计数/审计——见
+    tests/learning/test_product_shape_lint.py::test_intel_pretrim_archive_not_counted)。
+    """
+    archive = p.with_name(f"{p.stem}.pretrim")
+    return archive.read_text(encoding="utf-8") if archive.exists() else p.read_text(encoding="utf-8")
+
+
 def intel_future_dates_lint(scan_dir, date_str: str) -> list[dict]:
     """intel as-of 前视机检(advisory;design: 2026-07-12-l4-intel-station-plan.md Task 6)。
 
@@ -219,6 +243,7 @@ def intel_future_dates_lint(scan_dir, date_str: str) -> list[dict]:
 
     scan_dir:通常 = `context/scan/<date>`;date_str 按 `dump_gate_fires` 同款惯例由调用方传
     `scan_dir.name`(数据日,`YYYY-MM-DD`)。缺 `_l4_intel_*.md`(未启用/未派发)→ 空列表。
+    审计文本经 `_intel_audit_text` 取(W9-B2-fix:TRIMMED 稿存在裁前留档时读留档)。
     """
     import re
     from pathlib import Path
@@ -230,7 +255,7 @@ def intel_future_dates_lint(scan_dir, date_str: str) -> list[dict]:
 
     for p in sorted(scan_dir.glob("_l4_intel_*.md")):
         in_events, future = False, []
-        for line in p.read_text(encoding="utf-8").splitlines():
+        for line in _intel_audit_text(p).splitlines():
             if line.startswith("## 事件段"):
                 in_events = True
                 continue
@@ -268,6 +293,9 @@ def intel_recency_lint(scan_dir, date_str: str) -> list[dict]:
     **旧契约稿 presence-gated 跳过**:事件段没有任何一行的第 2 列命中三窗词 → 判为
     Wave7 前的旧格式(表头是「2日内可发酵?」),整份跳过不报 —— 新探针不该对着历史存量稿
     刷屏(那是 07-27 十五连报的同一种病)。一切异常路径返回已积累结果,绝不抛。
+
+    审计文本经 `_intel_audit_text` 取(W9-B2-fix:TRIMMED 稿存在裁前留档时读留档,
+    否则本条 3 的净分未衰减检查恰好会对被优先砍掉的背景/>1周行永久失明)。
     """
     import re
     from datetime import datetime
@@ -288,7 +316,7 @@ def intel_recency_lint(scan_dir, date_str: str) -> list[dict]:
     for p in sorted(scan_dir.glob("_l4_intel_*.md")):
         code = p.stem.replace("_l4_intel_", "")
         try:
-            text = p.read_text(encoding="utf-8")
+            text = _intel_audit_text(p)  # W9-B2-fix:TRIMMED 稿存在裁前留档时读留档
         except Exception:  # noqa: BLE001
             continue
         rows, in_events = [], False
@@ -331,8 +359,8 @@ def intel_recency_lint(scan_dir, date_str: str) -> list[dict]:
 
 
 def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
-    """产物形状 lint(九探针,零 LLM;design: 2026-07-13-next-optimization-survey.md 线 C
-    + 2026-07-22 dossier design Wave1 ⑤ + 2026-07-23 终审 I-2)。
+    """产物形状 lint(十探针,零 LLM;design: 2026-07-13-next-optimization-survey.md 线 C
+    + 2026-07-22 dossier design Wave1 ⑤ + 2026-07-23 终审 I-2 + Wave9 B-3)。
 
     把停车场里"已知的产物形状病"装成每跑可见的机械断言(advisory 起步,攒够跑数再升):
 
@@ -346,11 +374,12 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
        warn「静默未生效」(FN-1 探针:死了也像活着);命中==0 → **info** 显式记账,非静默。
     3. **intel 稿数**(warn):`_l4_intel_*.md` >0 份(=intel 启用)时,稿数(只认
        `_l4_intel_<6位码>.md`,变体如 `*_probe` 不计)≠ 期望 = **全 finalist 行**(含保送——
-       保送票同走 l4-stock 链、同派 intel)− ♻️ 复用数(复用痕迹 = `details/<code>.md` 含
-       ♻️ banner,l4_reuse.write_reused_card 所落;details/ 缺 → 期望=全行数,detail 注明
-       口径)。0 份 intel = 未启用,本条不出。07-17 实测:10 行 − 1 复用 = 9 稿 ✓。
-    4. **anns 去伪**(info):`anns_empty_rate`==1.0 = expected/no-permission(公告面已由
-       news_em+intel 覆盖),明置非告警(线 D 退役配套)。
+       保送票同走 l4-stock 链、同派 intel;Wave9 R5 退役 TTL 复用后不再有复用扣减)。
+       0 份 intel = 未启用,本条不出。
+    4. **anns 双源**(warn/info,Wave9 A-1 + 复核轮1):`anns_source_status.status`——
+       `blind`(有稿但双源皆空)= **warn**,公告面只剩 intel 单腿;`fallback` = info(兜底
+       承载,显式记账);`ok`/`pending`(L3 阶段还没跑到,不是"双源皆空"的证据)不出条。
+       旧 run 无该键 → 回落 `anns_empty_rate` 旧 expected 口径,不追溯误报。
     5. **market_view 防锚定**(warn):market_pack.json 的 sector_healthy_top3 行业名出现在
        market_view.md 文本 → L5 专属看多读数泄漏进策略师稿(闭合 final-review I-1)。
     6. **intel 零URL**(warn):单份 intel 稿 `http(s)://` 计数==0 → 情报不可审计
@@ -364,6 +393,11 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
     9. **pinned SELL 双复核 sell_review_missing**(warn,逐码):保送(lane=pinned)持仓卡
        评级 Sell/Underweight 但缺 `_ensemble_<code>.json`(或 trigger≠sell_review)→ 持仓卖出
        双复核静默漏跑(final-review I-2;镜像 probe 3 intel 稿数兜底,防 args.pinned 漏传)。
+    10. **研报体缺失**(warn,逐码;Wave9 B-3):`_dossier_present.json`(dispatch 侧按
+        `dossier_path` 文件存在写的"本次哪些票有档案可注入"名单)记有档案的票,卡文缺
+        「研报体(档案δ)」(满卡)/「微研报」(早停卡)段;或无档案的票缺「档案未建」
+        缺档声明行——两侧口径与 `.claude/agents/l4-card.md` 模板措辞同批对齐(先补指令
+        后加检查:agent def 已写要求,这里才加检查)。
 
     全部 presence-gated:缺文件/缺键/坏文件 → 该条静默跳过,**绝不抛异常**。
     返回 [{check,severity,detail,code}](severity ∈ {warn,info});接线在 assemble
@@ -469,26 +503,43 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
                 add("产物形状·force_full零命中", "info",
                     f"{date_str} force_full 0 命中(显式记账,非静默)")
 
-    # 3) intel 稿数 = 全 finalist 行(含保送,皆走 l4-stock 链派 intel)− 复用(0 份 = 未启用,不出本条)
+    # 3) intel 稿数 = 全 finalist 行(含保送,皆走 l4-stock 链派 intel;Wave9 R5 退役 TTL 复用后无复用扣减)
     if intel_files and fin_loaded:
         n_rows = len(fin_rows)
-        if (scan_dir / "details").is_dir():
-            n_reuse = len({r["code"] for r in fin_rows} & reused)
-            expect, cal = n_rows - n_reuse, f"finalist 行 {n_rows}(含保送) − ♻️ 复用 {n_reuse}"
-        else:
-            expect, cal = n_rows, f"finalist 行 {n_rows}(含保送;details/ 缺,复用数不可得)"
+        expect, cal = n_rows, f"finalist 行 {n_rows}(含保送;R5 后无复用)"
         if len(intel_codes) != expect:
             add("产物形状·intel稿数不符", "warn",
                 f"intel 稿 {len(intel_codes)} 份 ≠ 期望 {expect}({cal})")
 
-    # 4) anns 去伪告警(线 D:expected 无权限 ≠ 当日故障)
-    rate = health.get("anns_empty_rate")
-    if rate is not None:
+    # 4) anns 双源探针(Wave9 A-1:存在性 ≠ 有效性 —— "无权限"曾与"当日故障"同形)
+    st = health.get("anns_source_status")
+    st = st if isinstance(st, dict) else {}   # 坏值(非 dict)按缺处理,回落旧口径,绝不抛
+    status = str(st.get("status", "")) if st else ""
+    if status == "pending":
+        pass  # 复核轮1:L3 阶段还没跑到——既非已核实健康也非已核实故障,这天这件事还没
+              # 发生,不出条(既不是 warn 也不是 info)
+    elif status == "blind":
+        # Wave9 final-fix C-1:兜底源(anns_fallback.fetch_anns)已接线进 harvest_l3_news——
+        # 走到这里的 blind 意味着**兜底也真的被查过**、只是同样没查到料,不是"从未接线、
+        # 诊断信息断言了没发生的事"那种旧病(修复前 fallback 全仓零生产调用点,此行文案
+        # 曾断言一件不可能发生的事)。
+        add("产物形状·anns双源盲", "warn",
+            "公告面双源皆空(主源无权限 + 兜底源已查但无料)—— 卡片公告证据仅剩 intel 单腿,"
+            "非 expected;查兜底源可达性")
+    elif status == "fallback":
+        from autoresearch.data.sources.anns_fallback import SOURCE_TAG as _FALLBACK_TAG
+        add("产物形状·anns兜底承载", "info",
+            f"主源空,兜底源({_FALLBACK_TAG})承载 {st.get('fallback_rows', 0)} 行"
+            " —— 公告面在场,已记账")
+    elif status == "" and health.get("anns_empty_rate") is not None:
+        # 旧 run(无 anns_source_status 键)回落旧口径,不误报。"no-permission" 措辞与旧探针
+        # 逐字保留(tests/learning/test_product_shape_lint.py::test_anns_expected_info 锁定这个
+        # 子串;新老口径共用同一条消息,历史 run 复盘时文案不会突变)。
         with contextlib.suppress(TypeError, ValueError):
-            if float(rate) == 1.0:
+            if float(health["anns_empty_rate"]) == 1.0:
                 add("产物形状·anns去伪", "info",
-                    "anns_empty_rate=1.0 = expected/no-permission(公告面已由 news_em+intel 覆盖)"
-                    ",非当日故障告警")
+                    "anns_empty_rate=1.0 = expected/no-permission(旧 run 无双源状态键,"
+                    "按旧 expected 口径回落)")
 
     # 5) market_view 防锚定(sector_healthy_top3 是 L5 专属,泄漏进策略师稿即锚定通道)
     with contextlib.suppress(Exception):
@@ -596,6 +647,24 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
             add("sell_review_missing", "warn",
                 f"{code} 保送持仓卡评级偏空(Sell/UW)但 _ensemble_{code}.json {why}"
                 " —— 持仓 SELL 双复核未跑(⑤-3:漏传 args.pinned?单 run 直出无兜底)", code=code)
+
+    # 10) 研报体在场(Wave9 B-3;先补指令后加检查 —— agent def 已写要求)
+    with contextlib.suppress(Exception):
+        present = set(json.loads(
+            (scan_dir / "_dossier_present.json").read_text(encoding="utf-8")))
+        for fr in fin_rows:
+            code = str(fr.get("code", "")).zfill(6)
+            card = scan_dir / "details" / f"{code}.md"
+            if not card.exists():
+                continue
+            txt = card.read_text(encoding="utf-8")
+            if code in present:
+                if _RESEARCH_BODY_HDR not in txt and _MICRO_REPORT_HDR not in txt:
+                    add("产物形状·研报体缺失", "warn",
+                        f"{code} 有档案却无研报体段 —— 素材已注入任务包但卡没写")
+            elif _NO_DOSSIER_DECL not in txt:
+                add("产物形状·研报体缺失", "warn",
+                    f"{code} 无档案且未写缺档声明行")
     return out
 
 

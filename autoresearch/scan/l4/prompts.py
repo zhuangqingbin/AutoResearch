@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -48,6 +49,73 @@ def write_shared_instructions(scan_dir: Path | str) -> int:
     p.write_text(text, encoding="utf-8")
     return len(text.encode("utf-8"))
 
+
+_ECHO_RATING = re.compile(r"^\*\*Rating\*\*:\s*(.+)$", re.M)
+_ECHO_LS = re.compile(r"^\*\*一行多空\*\*:\s*(.+)$", re.M)
+_ECHO_WIRE = re.compile(r"^-?\s*\[价格线\][^\n]*$", re.M)
+
+
+def yesterday_echo(code6: str, name: str, analysis_date: str, *,
+                   lookback_days: int = 5, reports_root="reports/scan") -> str:
+    """昨卡回声(Wave9 B-1b):最近 ≤N 日已发布卡的 3 行摘要,注入任务包逐票段。
+
+    R5 退役 TTL 复用后,"评级稳定性"不再靠**跳过研究**获得,而靠**记忆**:研究员知道
+    昨天怎么判,今天写增量。**防锚定**:回声是历史判断,不是今日默认值 —— 翻覆合法,
+    但必须写明触发翻覆的增量证据。
+
+    读**已发布**报告(`reports/<run>/manifest.json` 的 `analysis_date` + `details/<名称>.md`,
+    发布层用股票名称做文件名,同名冲突时 `<名称>_<code>.md`),不是当日 staging
+    `context/scan/`——昨天的判断只有发布过才算数。`lookback_days` 数的是**自然日**不是
+    交易日:长假后(如国庆/春节)窗口内可能没有任何已发布交易日,此时静默回退空串
+    (总比拿一个跨越长假、语境已过期的旧判断当"昨天"强)。
+    """
+    from datetime import datetime, timedelta
+    root = Path(reports_root)
+    if not root.is_dir():
+        return ""
+    try:
+        cut = datetime.strptime(analysis_date, "%Y-%m-%d") - timedelta(days=lookback_days)
+    except ValueError:
+        return ""
+
+    best: tuple[str, str] | None = None      # (data_date, card_text)
+    for run in sorted(root.iterdir(), reverse=True):
+        if not run.is_dir():
+            continue
+        try:
+            dd = str(json.loads((run / "manifest.json").read_text(
+                encoding="utf-8")).get("analysis_date", ""))
+            when = datetime.strptime(dd, "%Y-%m-%d")
+        except Exception:  # noqa: BLE001
+            continue
+        if when < cut or dd >= analysis_date:
+            continue
+        card = run / "details" / f"{name}.md"
+        if not card.exists():
+            card = run / "details" / f"{name}_{code6}.md"
+        if not card.exists():
+            continue
+        with contextlib.suppress(OSError):
+            text = card.read_text(encoding="utf-8")
+            if best is None or dd > best[0]:
+                best = (dd, text)
+    if best is None:
+        return ""
+
+    dd, text = best
+    rating = (_ECHO_RATING.search(text) or [None, "—"])[1].strip()
+    ls = (_ECHO_LS.search(text) or [None, "—"])[1].strip()
+    wires = _ECHO_WIRE.findall(text)[:2]
+    lines = [f"## 昨卡回声(最近一次已发布判断 @ {dd})",
+             f"- 评级:**{rating}**",
+             f"- 一行多空:{ls}"]
+    if wires:
+        lines.append(f"- 盯梢线:{' ｜ '.join(w.strip('- ').strip() for w in wires)}")
+    lines.append("> 历史判断**非今日默认值**;若今日翻覆,必须在卡里写明触发翻覆的"
+                 "**增量证据**(新数字/新事件),不得只换措辞。")
+    return "\n".join(lines) + "\n"
+
+
 def write_dispatch_pack(
     scan_dir: Path | str,
     *,
@@ -56,22 +124,29 @@ def write_dispatch_pack(
     """L4 派发包确定性落稿(零 LLM):`_harvest_list.txt`(yfinance 归一后缀,`.SH` 绝迹)
     + 每卡 `_l4_prompt_<code>.md`(共享指令 + 漏斗简报 + slim/卡路径指针)。
 
-    已有 `details/<code>.md`(♻️ 复用/已出卡)跳过。落稿契约从人肉变确定性:
+    Wave9 R5(TTL 复用退役,`l4/dispatch.py` 的 `dispatch_plan` 已改无条件把全部 finalists
+    排进 `dispatch`)后,**本函数不再因 `details/<code>.md` 已存在而跳过写 prompt**——旧的
+    "♻️ 已有卡跳过不重拉不派发"规则若继续存在,会与 dispatch_plan(不再检查文件存在性)
+    + `l4_tasks.initialize()`(未追踪码一律标 PENDING,不查磁盘)组合出真实故障:SKILL.md
+    背书的"单步重跑入口"场景下(`details/` 有残留卡、当日 `_l4_tasks.json` 是新建的),
+    某个已有卡的码被标 PENDING,但它的 prompt 因跳过从未写出,`l4-stock.js` 指示 Opus 去
+    读一个不存在的 `_l4_prompt_<code>.md` 必炸(Task5→Task6 转固定 Important 缺陷)。评级
+    稳定性改由**昨卡回声**(`yesterday_echo`,读已发布报告的最近判断,注入每票 prompt 的
+    差异段)承接,不再靠跳过研究省成本。落稿契约从人肉变确定性:
     ① token 表输入侧从此可计(assemble 估算器认 `_l4_prompt_*`);② 编排以 prompt 稿为
     派发正文(共享块在前 = prompt cache 前缀命中);③ 07-03 `.SH` 空 slim 双跑从清单源头消灭。
 
     pinned 票(finalists 行 `lane == "pinned"`,design 2026-07-11 §4.1;plan Task 4):
-    ♻️ 复用规则照常适用(已有卡照样跳过,不强制重派)——**只在确实要写新 prompt 时**,逐卡块
-    (共享前缀**之后**,不碰 cache 契约)插一行 📌 标记 + note,让 L4 subagent 知道这是用户
-    手工直通票、仍须真判不可走过场;跳过(♻️)的 pinned 票不计入本次 `pinned` 名单——它的
-    📌 可见性在 L5 assemble 独立的「📌 保送」节(读 pinned.json + 已有卡评级),不需要本函数
-    额外动作。返回 {n_prompts, n_skipped, tickers, pinned}(pinned = 本次新派发的 pinned 码)。
+    逐卡块(共享前缀**之后**,不碰 cache 契约)插一行 📌 标记 + note,让 L4 subagent 知道这是
+    用户手工直通票、仍须真判不可走过场。R5 后 pinned 票与普通票同规则同走全量派发,**全部**
+    进 `pinned` 名单(不再有"已有卡跳过、不计入本次名单"的例外)。返回
+    {n_prompts, tickers, pinned}(pinned = 本次派发的全部 pinned 码)。
     """
     scan_dir = Path(scan_dir)
     date = scan_dir.name
     fp = scan_dir / "finalists.csv"
     if not fp.exists():
-        return {"n_prompts": 0, "n_skipped": 0, "tickers": [], "pinned": []}
+        return {"n_prompts": 0, "tickers": [], "pinned": []}
     from autoresearch.dataflows.symbol_utils import normalize_symbol  # lazy,保持模块轻量
     fin = pd.read_csv(fp, dtype={"code": str})
     import contextlib
@@ -103,7 +178,8 @@ def write_dispatch_pack(
 
     tickers: list[str] = []
     pinned: list[str] = []
-    n_prompts = n_skipped = 0
+    with_dossier: set[str] = set()   # Wave9 B-3:本次派发里"哪些票有档案可注入"(lint 探针 10 读)
+    n_prompts = 0
     prompt_manifest = {
         "schema_version": 1,
         "mode": "stable_context" if stable_context else "legacy",
@@ -142,9 +218,16 @@ def write_dispatch_pack(
         if not raw or raw == "nan":
             continue
         code6 = raw.split(".")[0].zfill(6)
-        if (scan_dir / "details" / f"{code6}.md").exists():
-            n_skipped += 1                          # ♻️ 复用卡已就位:不重拉不派发(pinned 不例外)
-            continue
+        # Wave9 B-3:档案存在性判据独立于 stable_context 分支(生产默认走 legacy,若只在
+        # stable_context 分支里判会让 _dossier_present.json 在默认配置下恒空)。
+        with contextlib.suppress(Exception):
+            from autoresearch.dossier.schema import dossier_path
+
+            if dossier_path(code6).is_file():
+                with_dossier.add(code6)
+        # Wave9 R5(TTL 复用退役)后不再因 `details/<code>.md` 已存在而跳过写 prompt——
+        # dispatch_plan 已无条件全票派发,"卡已存在"不再是跳过写 prompt 的正当理由
+        # (旧跳过 + dispatch_plan 新语义组合会炸出 PENDING-但-prompt-不存在,详见函数 docstring)。
         ticker = normalize_symbol(code6)            # 6 位码 → .SS/.SZ/.BJ(单一后缀口径)
         tickers.append(ticker)
         is_pinned = str(r.get("lane", "") or "").strip() == "pinned"
@@ -203,6 +286,17 @@ def write_dispatch_pack(
                 history = ""
             if history:
                 dossier_parts.append(history)
+            # Wave9 B-3:研报体的素材侧 —— 摘要 600B 撑不起研报体,内联四节全文
+            # (业务模型/盈利驱动/估值带/风险矩阵;复核 2026-07-30 实测 31 份真实档案
+            # 该四节合计 6.8–15.1KB/票、中位 ≈13.0KB,相对 170KB slim 可忽略;
+            # `dossier_sections` 自带 `RESEARCH_BODY_CAP` token 硬帽,超限截断非静默丢);
+            # 选内联而非让 agent 自己 Read,读盘边界与工具调用方差都不动。
+            with contextlib.suppress(Exception):
+                from autoresearch.dossier.schema import dossier_sections
+
+                secs = dossier_sections(code6, keys=("§1", "§2", "§3", "§5"))
+                if secs:
+                    dossier_parts.append("### 档案节选(研报体素材)\n" + secs)
             dossier_content = "\n".join(dossier_parts)
 
             terrain = ""
@@ -287,6 +381,12 @@ def write_dispatch_pack(
             ])
         else:
             body.append(legacy_brief.rstrip())
+        # 昨卡回声(W9-B1b,逐卡块内、紧邻 dossier_content/差异段之后,共享前缀之后不破 cache
+        # 契约):读已发布报告的最近一次判断,不并入上面已落盘的 differential context block
+        # (该块的 source_paths 不含 reports/ 历史卡,回声混进去会让 hash 契约与实际来源脱节)。
+        echo = yesterday_echo(code6, str(r.get("name", "") or ""), date)
+        if echo:
+            body.append(echo.rstrip())
         if calib_line:                               # 逐卡块内(共享前缀之后,不破 cache 契约)
             body += ["", calib_line]
         prompt_parts = [
@@ -321,9 +421,17 @@ def write_dispatch_pack(
         n_prompts += 1
     (scan_dir / "_harvest_list.txt").write_text(
         "\n".join(tickers) + ("\n" if tickers else ""), encoding="utf-8")
+    with contextlib.suppress(Exception):
+        (scan_dir / "_dossier_present.json").write_text(
+            json.dumps(sorted(with_dossier), ensure_ascii=False), encoding="utf-8")
     if stable_context:
-        import json
-
+        # `json` 是模块顶部 `import json`(line 5)——此处不得再 `import json`(哪怕只在这个
+        # if 分支里):Python 一旦在函数体任意处见到 `import json`/赋值,就把 `json` 判定为
+        # **整个函数**的局部名,连带炸穿上面那句更早执行的 `json.dumps(...)`(复核 2026-07-30
+        # Important 1 的生产侧集成测试实测揪出:`_dossier_present.json` 在默认
+        # `stable_context=False` 路径下 100% 抛 UnboundLocalError,又被下面缺失的
+        # `contextlib.suppress` 静默吞掉,2214 条回归里没有一条真正调用过
+        # `write_dispatch_pack` 再读文件内容,故此前从未被发现)。
         target = scan_dir / "_l4_prompt_manifest.json"
         temp = target.with_name(f"{target.name}.tmp")
         temp.write_text(
@@ -334,7 +442,6 @@ def write_dispatch_pack(
         temp.replace(target)
     return {
         "n_prompts": n_prompts,
-        "n_skipped": n_skipped,
         "tickers": tickers,
         "pinned": pinned,
         "context_mode": prompt_manifest["mode"],

@@ -32,6 +32,7 @@ def test_harvest_degrades_when_fetch_empty(monkeypatch, tmp_path):
     monkeypatch.setattr(l3_news, "_trade_days_for", lambda date, n: ["20260620", "20260619"])
     monkeypatch.setattr(l3_news, "get_or_fetch",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no permission")))
+    monkeypatch.setattr(l3_news, "_fallback_fetch_anns", lambda code6, date: [])  # 兜底也空:hermetic
     out = harvest_l3_news("2026-06-20", ["000001", "600000"], root=tmp_path / "scan")
     assert out == {"000001": [], "600000": []}
     saved = json.loads((tmp_path / "scan" / "2026-06-20" / "L3_news" / "000001.json").read_text())
@@ -83,6 +84,7 @@ def test_harvest_l3_news_retired_endpoint_is_loud(capsys, tmp_path, monkeypatch)
         raise Exception("抱歉，您没有接口(anns_d)访问权限")
 
     monkeypatch.setattr(l3_news, "get_or_fetch", _boom)
+    monkeypatch.setattr(l3_news, "_fallback_fetch_anns", lambda code6, date: [])  # 兜底也空:hermetic
     out = l3_news.harvest_l3_news("2026-07-24", ["300857", "002371"], root=tmp_path)
     assert out == {"300857": [], "002371": []}
     assert calls["n"] <= 1, "权限错必然日日同错:不得逐日重试"
@@ -99,6 +101,7 @@ def test_harvest_l3_news_writes_empty_buckets_still(tmp_path, monkeypatch):
                         lambda date, n: ["20260722", "20260723", "20260724"])
     monkeypatch.setattr(l3_news, "get_or_fetch",
                         lambda *a, **k: (_ for _ in ()).throw(Exception("权限")))
+    monkeypatch.setattr(l3_news, "_fallback_fetch_anns", lambda code6, date: [])  # 兜底也空:hermetic
     l3_news.harvest_l3_news("2026-07-24", ["300857"], root=tmp_path)
     assert (tmp_path / "2026-07-24" / "L3_news" / "300857.json").exists()
 
@@ -116,6 +119,7 @@ def test_harvest_l3_news_flaky_error_not_labeled_as_retired(capsys, tmp_path, mo
         raise Exception("Connection reset by peer")
 
     monkeypatch.setattr(l3_news, "get_or_fetch", _flaky)
+    monkeypatch.setattr(l3_news, "_fallback_fetch_anns", lambda code6, date: [])  # 兜底也空:hermetic
     out = l3_news.harvest_l3_news("2026-07-24", ["300857"], root=tmp_path)
     assert out == {"300857": []}
     assert calls["n"] == 3, "瞬时错误累计 3 次即停,不烧满全部 lookback_days"
@@ -123,4 +127,79 @@ def test_harvest_l3_news_flaky_error_not_labeled_as_retired(capsys, tmp_path, mo
     combined = cap.out + cap.err
     assert "已退役" not in combined, "纯瞬时网络错不得贴「已退役」标签(允许如实提及'非…退役'的否定句式)"
     assert "Connection reset by peer" in combined, "文案须带 repr(e) 摘要,便于区分真实成因"
+
+
+# ───────────────────────── Wave9 final-fix C-1:兜底源真接线 ─────────────────────────
+# final-review 发现 anns_fallback.fetch_anns 全仓零生产调用点——三个"消费者"只 import
+# SOURCE_TAG 常量,`harvest_l3_news` 从不调用它,`health.anns_source_status` 因此恒判 blind。
+# 下面三条钉子对应 final-fix 任务书①②③,且②③各自端到端核对 health.anns_source_status,
+# 不只测 l3_news 自己的返回值——「接线」这件事只有连到消费方才算数。
+
+
+def test_harvest_falls_back_when_primary_has_no_permission(tmp_path, monkeypatch):
+    """钉子①:主源无权限 + 兜底源有料 → L3_news 行带 source==SOURCE_TAG,且
+    health.anns_source_status 真的判出 fallback(接线前此状态生产不可达,恒为 blind)。"""
+    from autoresearch.data.sources.anns_fallback import SOURCE_TAG
+    from autoresearch.scan.health import anns_source_status
+
+    monkeypatch.setattr(l3_news, "_trade_days_for",
+                        lambda date, n: ["20260722", "20260723", "20260724"])
+    monkeypatch.setattr(l3_news, "get_or_fetch",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            Exception("抱歉，您没有接口(anns_d)访问权限")))
+
+    def _fake_fallback(code6, date):
+        assert code6 == "300857" and date == "2026-07-24"
+        return [{"ann_date": "20260724", "title": "关于回购股份的进展公告", "source": SOURCE_TAG}]
+
+    monkeypatch.setattr(l3_news, "_fallback_fetch_anns", _fake_fallback)
+    out = l3_news.harvest_l3_news("2026-07-24", ["300857"], root=tmp_path)
+    assert out["300857"] and out["300857"][0]["source"] == SOURCE_TAG
+
+    saved = json.loads((tmp_path / "2026-07-24" / "L3_news" / "300857.json").read_text(encoding="utf-8"))
+    assert saved and saved[0]["source"] == SOURCE_TAG
+
+    st = anns_source_status(tmp_path / "2026-07-24")
+    assert st["status"] == "fallback"
+    assert st["fallback_rows"] == 1
+
+
+def test_harvest_still_blind_when_fallback_also_empty(tmp_path, monkeypatch):
+    """钉子②:主源无权限 + 兜底也查不到料 → 仍判 blind(接线不等于兜底一定有货,
+    不能因为线接上了就把「查过但真没有」误判成 fallback)。"""
+    from autoresearch.scan.health import anns_source_status
+
+    monkeypatch.setattr(l3_news, "_trade_days_for",
+                        lambda date, n: ["20260722", "20260723", "20260724"])
+    monkeypatch.setattr(l3_news, "get_or_fetch",
+                        lambda *a, **k: (_ for _ in ()).throw(Exception("无权限")))
+    monkeypatch.setattr(l3_news, "_fallback_fetch_anns", lambda code6, date: [])
+
+    out = l3_news.harvest_l3_news("2026-07-24", ["300857"], root=tmp_path)
+    assert out == {"300857": []}
+
+    st = anns_source_status(tmp_path / "2026-07-24")
+    assert st["status"] == "blind"
+    assert st["fallback_rows"] == 0
+
+
+def test_harvest_fallback_error_degrades_to_empty_not_raise(capsys, tmp_path, monkeypatch):
+    """钉子③:兜底源自己也炸了(违反自己的 B 级契约,防守性场景)—— harvest 必须再兜一道:
+    不阻断漏斗、该票保持空桶、且有降级记账(stderr),绝不能让异常冒穿到调用方。"""
+    monkeypatch.setattr(l3_news, "_trade_days_for",
+                        lambda date, n: ["20260722", "20260723", "20260724"])
+    monkeypatch.setattr(l3_news, "get_or_fetch",
+                        lambda *a, **k: (_ for _ in ()).throw(Exception("无权限")))
+
+    def _boom(code6, date):
+        raise RuntimeError("兜底源自己也挂了")
+
+    monkeypatch.setattr(l3_news, "_fallback_fetch_anns", _boom)
+    out = l3_news.harvest_l3_news("2026-07-24", ["300857"], root=tmp_path)
+    assert out == {"300857": []}
+    saved = json.loads((tmp_path / "2026-07-24" / "L3_news" / "300857.json").read_text(encoding="utf-8"))
+    assert saved == []
+    cap = capsys.readouterr()
+    combined = cap.out + cap.err
+    assert "兜底" in combined and "异常" in combined, "兜底本身失败也必须留痕(降级不留痕是本项目最忌的形态)"
 

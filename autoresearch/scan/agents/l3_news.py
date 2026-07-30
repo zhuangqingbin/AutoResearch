@@ -4,6 +4,12 @@
 design: docs/specs/2026-06-22-l3-opus-sentiment-design.md §架构。
 确定性、零 LLM:harvest 入湖(按 ann_date 不可变,L4 复用)+ 落 staging;digest 把每股近期公告
 压成「数 + 方向标签 + 最新标题」。情感方向最终由 Opus 在 holistic 内细化(标题可中性/反讽)。
+
+**Wave9 final-fix C-1(2026-07-30)**:主源(tushare `anns_d`)自 2026-07-18 起无权限,本文件
+此前只会写空桶 —— `autoresearch.data.sources.anns_fallback.fetch_anns`(akshare 兜底源)存在
+但全仓零生产调用点,`health.anns_source_status` 因此恒判 `blind`。现在 `harvest_l3_news` 在
+主源 harvest 结束后,对**仍是空桶的每一只票**补调一次兜底源(不管空桶是权限/瞬时故障/还是
+主源当天恰好真的没查到——B 级契约:兜底也失败就保持空桶 + stderr 记账,绝不抛异常阻断)。
 """
 from __future__ import annotations
 
@@ -13,6 +19,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from autoresearch.data.cache import get_or_fetch
+from autoresearch.data.sources.anns_fallback import (
+    SOURCE_TAG as _FALLBACK_SOURCE_TAG,
+    fetch_anns as _fallback_fetch_anns,
+)
 
 # 标题关键词 → 方向(粗;Claude 在 holistic 内细化)。覆盖 A 股最常见材料事件。
 _EVENT_TAGS = {
@@ -124,6 +134,12 @@ def harvest_l3_news(date: str, codes, root: Path | None = None, lookback_days: i
     ——**两类告警文案分叉**(Wave4 Task1 Minor-1):权限类才说"已退役",瞬时错误如实说"取数
     连续失败"并带 `repr(e)` 摘要,不把 unexpected 降级误报成 expected(那正是本 task 要治的病
     的镜像)。
+
+    **Wave9 final-fix C-1**:主源 harvest 结束后,对**每一只当前仍是空桶的票**(不管空桶是
+    因为权限/瞬时故障 break、还是主源当天就是恰好没查到——两种情况在产物上长得一样,这正是
+    本条要治的病)补调一次 `anns_fallback.fetch_anns`;有料就写进该票的桶(行自带
+    `source=="cninfo"`,`health.anns_source_status` 据此判 `fallback`)。B 级契约:兜底
+    本身炸了/仍空 → 保持空桶,不阻断、只记账(见下方 stderr)。已有主源真数据的桶不覆盖。
     """
     from autoresearch.data.tushare_source import _code6
     root = root or Path("context/scan")
@@ -167,6 +183,25 @@ def harvest_l3_news(date: str, codes, root: Path | None = None, lookback_days: i
         print(f"[l3_news] ⚠️ 公告取数连续失败({fails} 次,{last_err!r})→ 公告标题流为空"
               f"({len(want)} 只票的 news_n/news_sent/news_head 本日全为缺省值),疑为网络抖动,"
               f"非 anns_d 退役。", file=sys.stderr)
+
+    # Wave9 final-fix C-1:兜底源补桶 —— 只补仍是空桶的票,已有主源真数据的桶不覆盖/不重复查询。
+    fb_hits = fb_rows = fb_errors = 0
+    for c in want:
+        if buckets[c]:
+            continue
+        try:
+            fb = _fallback_fetch_anns(c, date)
+        except Exception:  # noqa: BLE001 — B 级契约:兜底本身炸了也不得阻断漏斗
+            fb_errors += 1
+            continue
+        if fb:
+            buckets[c] = fb
+            fb_hits += 1
+            fb_rows += len(fb)
+    if fb_hits or fb_errors:
+        extra = f"、{fb_errors} 只票兜底取数异常(已降级为空)" if fb_errors else ""
+        print(f"[l3_news] ℹ️ 兜底源({_FALLBACK_SOURCE_TAG})补桶:{fb_hits}/{len(want)} 只票有料"
+              f"(共 {fb_rows} 行){extra}。", file=sys.stderr)
 
     for c in want:
         (out_dir / f"{c}.json").write_text(json.dumps(buckets[c], ensure_ascii=False, default=str),

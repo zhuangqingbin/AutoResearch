@@ -33,17 +33,17 @@ def _mk(root):
 def test_write_dispatch_pack(tmp_path):
     d = _mk(tmp_path)
     res = write_dispatch_pack(d)
-    assert res["n_prompts"] == 2 and res["n_skipped"] == 1
+    assert res["n_prompts"] == 3 and "n_skipped" not in res      # Wave9 R5:复用退役,无跳过
 
     tickers = (d / "_harvest_list.txt").read_text(encoding="utf-8").split()
     assert "600584.SS" in tickers and "000001.SZ" in tickers     # 上交所必须 .SS(yfinance)
     assert not any(t.endswith(".SH") for t in tickers)
-    assert not any(t.startswith("300001") for t in tickers)      # 已有卡(复用)不重拉不派发
+    assert any(t.startswith("300001") for t in tickers)          # 已有卡(旧♻️复用码)照样重派
 
     p = (d / "_l4_prompt_600584.md").read_text(encoding="utf-8")
     assert "共享指令块" in p and "漏斗简报" in p
     assert f"600584.SS_{_DATE}_slim.md" in p                     # slim 指针带 .SS
-    assert not (d / "_l4_prompt_300001.md").exists()
+    assert (d / "_l4_prompt_300001.md").exists()
 
 
 def test_dispatch_pack_cli(tmp_path, monkeypatch, capsys):
@@ -52,7 +52,7 @@ def test_dispatch_pack_cli(tmp_path, monkeypatch, capsys):
     from autoresearch.scan.agents.l4_card import main
     assert main(["prompts", _DATE]) == 0
     assert (tmp_path / "context" / "scan" / _DATE / "_l4_prompt_600584.md").exists()
-    assert "2" in capsys.readouterr().out
+    assert "3 份 prompt" in capsys.readouterr().out               # 3 只 finalist 全派(无跳过)
 
 
 def test_dispatch_pack_cli_accepts_stable_context(tmp_path, monkeypatch):
@@ -114,14 +114,43 @@ def test_write_dispatch_pack_pinned_marker_after_shared_prefix(tmp_path):
     assert shared_idx < pin_idx
 
 
-def test_write_dispatch_pack_pinned_with_existing_card_still_skipped_for_reuse(tmp_path):
-    """♻️ 复用规则照常:pinned 码若已有 details/<code>.md,仍跳过(不重派),复用逻辑不因 pinned 改变。"""
+def test_write_dispatch_pack_pinned_with_existing_card_still_gets_prompt(tmp_path):
+    """🐛 回归(Task5→Task6 转固定,Important):本测原名
+    `..._still_skipped_for_reuse`,锁的是 TTL 复用时代"pinned 码若已有 details/<code>.md
+    仍跳过"的旧规则。Wave9 R5 退役复用后 dispatch_plan 已无条件全票派发,若本函数继续
+    对已有卡的 pinned 码跳过写 prompt,会跟 dispatch_plan + l4_tasks.initialize()(未追踪
+    码一律标 PENDING,不查磁盘)组合出"PENDING 但 prompt 不存在"的真实故障(SKILL.md 背书
+    的"单步重跑入口"场景)。本测倒转旧断言:即使 details/<code>.md 预先存在,pinned 码
+    仍必须获得新 prompt,且计入本次 pinned 名单(不再有"复用码不计入"的例外)。
+    """
     d = _mk_with_pinned(tmp_path)
     (d / "details" / "600000.md").write_text("♻️ 复用卡\n**Rating**: Hold\n", encoding="utf-8")
     res = write_dispatch_pack(d)
-    assert res["n_skipped"] == 1
-    assert not (d / "_l4_prompt_600000.md").exists()
-    assert res["pinned"] == []             # 复用码不计入本次「新派发」pinned 名单
+    assert "n_skipped" not in res
+    assert (d / "_l4_prompt_600000.md").exists()
+    p = (d / "_l4_prompt_600000.md").read_text(encoding="utf-8")
+    assert "📌 保送票" in p and "长期观察仓" in p    # 依旧走满标记/满卡路径,不因旧卡存在而降级
+    assert res["pinned"] == ["600000"]              # R5 后全部派发码计入 pinned 名单,无例外
+
+
+def test_write_dispatch_pack_prompt_written_even_if_card_already_exists(tmp_path):
+    """🐛 回归钉子(Task5→Task6 转固定 Important 缺陷,非 pinned 通路):Task5 把
+    `l4/dispatch.py` 的 `dispatch_plan` 改成无条件把每个 finalist 排进 `dispatch`,但本函数
+    (`write_dispatch_pack`)若仍按旧规则「`details/<code>.md` 已存在则跳过写 prompt」运作,
+    则 `l4_tasks.initialize()`(未追踪码一律标 PENDING,不检查磁盘)会把这类码标 PENDING,
+    而 `l4-stock.js` 指示 Opus 去读的 `_l4_prompt_<code>.md` 因跳过从未写出——SKILL.md 明确
+    背书的"单步重跑入口"(`details/` 有残留卡、当日 `_l4_tasks.json` 新建)必踩此坑。复用已
+    退役,"卡已存在"不再是跳过写 prompt 的正当理由:本测锁死 —— 即使 `details/300001.md`
+    预先存在(`_mk` fixture 预置的『残留卡』),`_l4_prompt_300001.md` 仍必须被写出,且内容
+    是正常派发正文(非空壳)。
+    """
+    d = _mk(tmp_path)
+    assert (d / "details" / "300001.md").exists()      # fixture 预置的『残留/旧♻️复用卡』
+    res = write_dispatch_pack(d)
+    assert (d / "_l4_prompt_300001.md").exists()
+    assert any(t.startswith("300001") for t in res["tickers"])
+    prompt = (d / "_l4_prompt_300001.md").read_text(encoding="utf-8")
+    assert "共享指令块" in prompt and "L4 派发 — 300001" in prompt
 
 
 def test_write_dispatch_pack_no_lane_column_is_parity(tmp_path):
