@@ -84,13 +84,22 @@ def pending_init(pool: dict) -> list[str]:
     排序键(Wave9 R6,B-3 续):`priority == "finalist"`(当日插队,见
     `post_run.enqueue_finalist_dossiers`)优先,同级按 `last_seen` 升序(先来先建);
     两者都缺时退化成原有的按 code 字典序——对没有任何插队标注的池(今天绝大多数情形)
-    逐字节等价于 Wave9 前的行为。候选集合本身(谁算"活跃且未建档")不变,只改顺序;
-    ≤3/晚的建档节奏是 `SKILL.md`/`STAGES.md` 里的人工派发约定,不是这里的代码切片,
-    本函数不做任何截断。
+    逐字节等价于 Wave9 前的行为。
+
+    **Wave9 final-fix I-1(2026-07-30)**:候选集合此前**只**来自 `pool["stocks"]`
+    (active ∧ 无档案)——但入池闸(见 `refresh()`)只放 `pinned` 或真选 ≥2 次的票进
+    `stocks`,首次入围的 finalist 插队(`enqueue_finalist_dossiers` 写进
+    `pending_init` 数组)永远进不了 `stocks`,于是插队对消费者(本函数)恒不可见,
+    「插队 N 只」的回执近乎 no-op(final-review Important-1,07-29 实测:入队 5 只,
+    消费者可见新增 0 只)。现在候选集合改为 `stocks` 活跃票 **并上** `pending_init`
+    数组里排队的码——只要还没建档,不管它是否"真正"在 `stocks` 里(队列本身就是
+    "这票该建档"的证据,不该被"是否也满足常备池准入"这个不相关的问题挡住)。
     """
-    candidates = [c for c, s in pool.get("stocks", {}).items()
-                  if s.get("status") == "active" and not schema.dossier_path(c).exists()]
+    stocks = pool.get("stocks", {})
+    candidates = {c for c, s in stocks.items()
+                  if s.get("status") == "active" and not schema.dossier_path(c).exists()}
     meta = _pending_priority_meta(pool)
+    candidates |= {c for c in meta if not schema.dossier_path(c).exists()}
 
     def _key(c: str) -> tuple[int, str, str]:
         e = meta.get(c, {})

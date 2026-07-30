@@ -4,6 +4,7 @@ spec: `.superpowers/sdd/2026-07-29-wave9-batch-ab-plan/task-9-brief.md`
 """
 import json
 
+from autoresearch.dossier import pool as pool_mod
 from autoresearch.scan import post_run
 
 
@@ -233,3 +234,71 @@ def test_no_finalists_csv_returns_empty(tmp_path, monkeypatch):
     monkeypatch.setattr(post_run, "_pool_path", lambda: pool)
 
     assert post_run.enqueue_finalist_dossiers(d, "2026-07-29") == []
+
+
+# ───────────────────────── Wave9 final-fix I-1:插队必须真的可见 ─────────────────────────
+# final-review 发现:`enqueue_finalist_dossiers` 只把码写进 `coverage_pool.json` 的
+# `pending_init` 数组,但消费侧 `pool.pending_init()` 的候选集只来自 `stocks`(入池闸只放
+# pinned/真选≥2 次)——首次入围的 finalist 永远进不去 `stocks`,插队对消费者恒不可见。
+# 07-29 真实复现:入队 5 只,消费者可见新增 0 只,而 `post_run.py` 照样打印"插队 5 只"。
+# 下面这条是那次真实复现的最小钉子——必须端到端跨两个函数验证,只测其中一个都测不出这条缺陷。
+
+
+def test_enqueue_then_pending_init_makes_new_codes_visible(tmp_path, monkeypatch):
+    """回归钉子(final-review Important-1,07-29 真实 pool 状态最小复刻):5 只入队
+    (601211/002546/002568/003013/000333),真实当时的 pool 里只有 601211 在
+    `stocks`(active),其余 4 只压根不在 `stocks`。修复前 `pending_init()` 的候选集
+    只读 `stocks`,4 只永远不可见——「插队 5 只」的回执是近乎 no-op 的假象。"""
+    d = tmp_path / "2026-07-29"
+    d.mkdir(parents=True)
+    codes = ["601211", "002546", "002568", "003013", "000333"]
+    body = "code,name\n" + "\n".join(f"{c},N{c}" for c in codes)
+    (d / "finalists.csv").write_text(body, encoding="utf-8")
+    (d / "_dossier_present.json").write_text("[]", encoding="utf-8")
+
+    pool = tmp_path / "coverage_pool.json"
+    pool.write_text(json.dumps({
+        "cap": 30,
+        "stocks": {"601211": {"status": "active"}},   # 真实 07-29:只有 601211 在池
+        "pending_init": [],
+    }), encoding="utf-8")
+    monkeypatch.setattr(post_run, "_pool_path", lambda: pool)
+
+    added = post_run.enqueue_finalist_dossiers(d, "2026-07-29")
+    assert set(added) == set(codes)
+
+    pool_dict = json.loads(pool.read_text(encoding="utf-8"))
+    visible = set(pool_mod.pending_init(pool_dict))
+    missing = set(codes) - visible
+    assert not missing, f"入队后仍不可见(修复前恒为 4 只):{missing}"
+
+
+def test_enqueue_prunes_pending_entries_that_already_have_a_dossier(tmp_path, monkeypatch):
+    """附带项(final-review 提):`pending_init` 数组只进不出——`pending_init()` 靠
+    `dossier_path().exists()` 在**读时**把已建档的码过滤掉,但**写侧**从不清理,数组会
+    无限累积。入队时顺手扫一遍,把"确认已建档"的旧条目摘掉,防止 `coverage_pool.json`
+    无限增长。"""
+    from autoresearch.dossier import schema
+
+    d = tmp_path / "2026-07-30"
+    d.mkdir(parents=True)
+    (d / "finalists.csv").write_text("code,name\n920179,凯德石英\n", encoding="utf-8")
+    (d / "_dossier_present.json").write_text("[]", encoding="utf-8")
+
+    # 600018 早先被插过队,如今已经建档(真实运行中这是常态:dossier-init 消化过它)。
+    # schema.DOSSIER_DIR 已被全局 autouse fixture(tests/conftest.py::_isolate_dossier_dir)
+    # 隔离到本测试专属 tmp 目录,这里写的不是真实 context/knowledge/dossiers/。
+    schema.DOSSIER_DIR.mkdir(parents=True, exist_ok=True)
+    schema.dossier_path("600018").write_text("# 已建档", encoding="utf-8")
+
+    pool = tmp_path / "coverage_pool.json"
+    pool.write_text(json.dumps({"pending_init": [
+        {"code": "600018", "priority": "finalist", "last_seen": "2026-07-20"}]}),
+        encoding="utf-8")
+    monkeypatch.setattr(post_run, "_pool_path", lambda: pool)
+
+    post_run.enqueue_finalist_dossiers(d, "2026-07-30")
+    entries = json.loads(pool.read_text(encoding="utf-8"))["pending_init"]
+    codes = {e.get("code") if isinstance(e, dict) else e for e in entries}
+    assert "600018" not in codes, "已建档的旧条目应被清理,不能无限累积"
+    assert "920179" in codes

@@ -743,6 +743,16 @@ def enqueue_finalist_dossiers(scan_dir: Path | str, analysis_date: str) -> list[
     pend = data.setdefault("pending_init", [])
     if not isinstance(pend, list):
         return []
+
+    # Wave9 final-fix I-1 附带项(final-review 提):已建档的排队条目会永久占位、数组
+    # 无限累积(`pending_init()` 靠 `dossier_path().exists()` 在读时把它们过滤掉,但
+    # 写侧从不清理)。每次入队顺手扫一遍摘掉"确认已建档"的条目;认不出的元素(既不是
+    # dict 也不是非空 str)保守保留,不因看不懂形态就丢数据。
+    from autoresearch.dossier import schema as _schema  # lazy:与本文件其它 dossier 子模块导入同款风格
+    pend[:] = [e for e in pend
+               if (parsed := _pending_entry_code(e)) is None
+               or not _schema.dossier_path(parsed[0]).exists()]
+
     have_idx: dict[str, int] = {}
     for i, e in enumerate(pend):
         parsed = _pending_entry_code(e)
