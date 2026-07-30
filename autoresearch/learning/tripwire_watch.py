@@ -57,12 +57,24 @@ def parse_tripwires(card_text: str) -> list[dict]:
     return out
 
 
-def latest_card(code6: str, scan_root: Path | str = "context/scan") -> tuple[str, str] | None:
-    """该票**最新一张**卡的 (日期, 正文);无卡 → None。盯梢盯的是最新判断,不是历史。"""
+def latest_card(code6: str, scan_root: Path | str = "context/scan", *,
+                before: str | None = None) -> tuple[str, str] | None:
+    """该票**最新一张**卡的 (日期, 正文);无卡 → None。盯梢盯的是最新判断,不是历史。
+
+    `before`(可选,Wave9 final-fix I-2):只考虑**严格早于**这个日期(`YYYY-MM-DD`
+    字符串序即日期序)的卡。默认 `None` = 不过滤,维持本函数原语义(日常持仓盯梢
+    ——prelude/CLI——今日卡若已存在也纳入候选,因为那正是"目前最新判断")。仅
+    `decision_finalize._tripwire_hits`(两尺分歧框专用)会传 `before=analysis_date`:
+    该框在 assemble **今日卡已写完之后**才被调用,若不排除今日自己刚写的卡,比对的
+    就是"LLM 今天拿着今天收盘写的线"而非"用户昨天在用的那条线",几乎只能测出卡片
+    自相矛盾(见 final-review Important-2)。
+    """
     root = Path(scan_root)
     if not root.is_dir():
         return None
     for d in sorted((p for p in root.iterdir() if p.is_dir() and p.name[:2] == "20"), reverse=True):
+        if before is not None and d.name >= before:
+            continue
         p = d / "details" / f"{code6}.md"
         if p.exists():
             try:
@@ -103,11 +115,16 @@ def _news_titles(code6: str, date: str) -> list[str] | None:
 
 
 def check(date: str, codes: list[str] | None = None,
-          scan_root: Path | str = "context/scan") -> list[dict]:
+          scan_root: Path | str = "context/scan", *,
+          card_before: str | None = None) -> list[dict]:
     """对给定持仓码逐条复核盯梢线 → 命中列表(每条含 code/kind/raw/detail)。
 
     codes 缺省 = `pinned.jsonc` 当日仍生效的保送持仓。任何异常路径都吞掉并继续下一条 ——
     盯梢是 advisory 提醒,不该有能力阻断 prelude。
+
+    `card_before`(Wave9 final-fix I-2,透传给 `latest_card` 同名参数 `before`):日常
+    持仓盯梢(prelude/CLI)不传,维持原语义;只有 `decision_finalize._tripwire_hits`
+    传自身的 `analysis_date`。
     """
     root = Path(scan_root)
     scan_dir = root / date
@@ -124,7 +141,7 @@ def check(date: str, codes: list[str] | None = None,
     except (ValueError, TypeError):
         return hits
     for code in codes:
-        got = latest_card(code, root)
+        got = latest_card(code, root, before=card_before)
         if not got:
             continue
         card_date, text = got

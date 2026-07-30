@@ -337,6 +337,11 @@ def _conflict_block(conflicts: dict[str, dict]) -> str:
     单测 `test_conflict_block_renders_two_rulers` 就是这么构造的,兼容不改)则把单值
     `tripwire_detail` 当唯一一条兜底。同一票多条命中在**同一单元格内**用「；」全部列出
     ——不挑一条藏一条,这个框存在的意义就是把材料摆给人裁。
+
+    **线出自哪一天**(Wave9 final-fix I-2):`tripwire_conflicts` 现在比对的是**严格
+    早于今日**的最新卡(不再是今日自己刚写的卡,见该函数 docstring),单元格附带
+    "(线出自 YYYY-MM-DD 卡)" 标注,不让读者误以为这是今天写的线;`all_hits` 缺
+    `card_date`(旧形状兜底)时不加标注,逐字节兼容既有单测。
     """
     if not conflicts:
         return ""
@@ -345,10 +350,14 @@ def _conflict_block(conflicts: dict[str, dict]) -> str:
     for code, c in sorted(conflicts.items()):
         hits = c.get("all_hits") or [{"detail": c.get("tripwire_detail", "")}]
         cell = "；".join(h.get("detail", "") for h in hits if h.get("detail"))
+        dates = sorted({h["card_date"] for h in hits if h.get("card_date")})
+        if dates:
+            cell += f"(线出自 {'/'.join(dates)} 卡)"
         lines.append(f"| {code} | {cell} | **{c['rating']}**"
                      f"(满卡 DD + 双复核折回) |")
     lines += ["", "| | 判据来源 | 失效条件 |", "|---|---|---|",
-              "| 价格尺 | 你在决策卡写下的盯梢线,只看收盘价、不看基本面 | 收盘收复线上 |",
+              "| 价格尺 | 你在**前一交易日(或更早)**卡里写下的盯梢线——非今日新卡,"
+              "只看收盘价、不看基本面 | 收盘收复线上 |",
               "| 基本面尺 | 当日满卡尽调 + ≥OW/SELL 双复核中位 | 复核依据的驱动被证伪 |",
               "",
               "**两把尺子测的不是同一件事,系统不合并——人裁。**", ""]
