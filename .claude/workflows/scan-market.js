@@ -129,7 +129,7 @@ log(`📋 前奏汇总屏全文:${SD}/_prelude_summary.md(主会话 Read 后全�
 // ── 哨兵档:材料枯竭 → 跳过 sector/L3/L4;assemble+GATE4 由主会话收尾 ──────────
 if (g1.metrics.sentinel_level === 'sentinel' && !forceFull) {
   log('哨兵档 → 跳过 L3/L4(日历已在 prelude 跑过);assemble+GATE4 由主会话收尾')
-  return { date, mode: 'sentinel', finalists: 0, dispatch: [], reused: [], meta: {},
+  return { date, mode: 'sentinel', finalists: 0, dispatch: [], meta: {},
     l4_budget: g1.metrics.l4_budget, published: false }
 }
 if (g1.metrics.sentinel_level === 'sentinel' && forceFull) {
@@ -242,13 +242,14 @@ const fmeta = g2.metrics.meta || {}
 // GATE3 差 16 字节毙掉 60min/1.6M token 全流水线的教训)。本 workflow 到 dispatch 交接为止,
 // assemble+GATE4 也随之上移主会话收尾。
 phase('L4-prep')
-log(`L4-prep:reuse→[四生产者并行]→prompts→${streamingL4 ? '单票 slim∥intel 流式交接' : '批量 slim legacy 交接'}`)
+log(`L4-prep:[四生产者并行]→prompts→${streamingL4 ? '单票 slim∥intel 流式交接' : '批量 slim legacy 交接'}`)
 const promptMode = stableContextBlocks ? ' --stable-context' : ''
 await bash(
   // shared 必须先于 prompts:_l4_shared_instructions.md 此前全仓无生产者(只有读者),
   // 当日 📐/🔁/🚪 校准行从未到达任何一张决策卡(Wave5 ④B)。
+  // TTL 复用(l4_reuse --apply)已于 2026-07-29 退役(用户裁定 R5「不要任何复用」)——
+  // 复用票不跑 intel、新闻冻在源卡日,评级稳定性改由昨卡回声承接(l4/prompts.py)。
   `${R} autoresearch.scan.agents.l4_card shared ${date}; ` +
-  `${R} autoresearch.scan.l4_reuse ${date} --apply; ` +
   `( ${R} autoresearch.scan.agents.l4_card pledge ${date} || true ) & ` +
   `( ${R} autoresearch.scan.agents.l4_card seats ${date} || true ) & ` +
   `( ${R} autoresearch.scan.calendar ${date} || true ) & ` +
@@ -257,9 +258,7 @@ await bash(
   `${R} autoresearch.scan.agents.l4_card prompts ${date}${promptMode}`, 'l4-prep', 'L4-prep')
 const PLAN = { type: 'object', required: ['dispatch'],
   properties: { dispatch: { type: 'array', items: { type: 'string' } },
-    meta: { type: 'object' },
-    reused: { type: 'array', items: { type: 'object',
-      properties: { code: { type: 'string' }, rating: { type: 'string' } } } } } }
+    meta: { type: 'object' } } }
 const plan = await gate('dispatch-plan', `${R} autoresearch.scan.agents.l4_card dispatch-plan ${date}`, PLAN, 'L4-prep')
 if (!plan) throw new Error('dispatch-plan 无返回')
 let dispatch = plan.dispatch
@@ -293,7 +292,7 @@ if (!streamingL4) {
   dispatchBatches = tasks.dispatch_batches || []
   log(`L4 流式任务簿 ✓ ${taskBook} · 批次宽度 ${tasks.effective_cap || '?'} · ${dispatchBatches.length} 批`)
 }
-log(`L4 交接:新派 ${dispatch.length} 股(每股一个 l4-stock workflow,主会话并行拉起)· 复用 ${(plan.reused || []).length} 张跳派发`)
+log(`L4 交接:新派 ${dispatch.length} 股(每股一个 l4-stock workflow,主会话并行拉起)`)
 // CP4(Wave5 ①):随时可调的确定性看板,不用等一小时后的 summary.md
 log(`🔎 随时可调:\`${R} autoresearch.scan.render ${date} --view menu_health\`(L2 成色)· \`--view gate_hist\`(L4 完成后看评级分布/停因分桶/门柱)· \`--view timing\`(分段耗时)`)
 // 📌 保送票在派发那一秒必须可见:07-21 漏传 args.pinned → 300857/601869 的持仓 SELL 双复核
@@ -308,5 +307,5 @@ if (pinnedCodes.length) {
 
 // meta(名称/行业)透传给 l4-stock 的 intel 盲搜 prompt;assemble+GATE4 由主会话在全部 l4-stock 完成后收尾。
 return { date, mode: 'l4-handoff', finalists: g2.metrics.n, dispatch, dispatch_batches: dispatchBatches,
-  task_book: taskBook, streaming_l4: streamingL4, reused: plan.reused || [],
+  task_book: taskBook, streaming_l4: streamingL4,
   meta: plan.meta || g2.metrics.meta || {}, l4_budget: g1.metrics.l4_budget, published: false }

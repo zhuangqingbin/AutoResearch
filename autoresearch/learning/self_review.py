@@ -346,9 +346,8 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
        warn「静默未生效」(FN-1 探针:死了也像活着);命中==0 → **info** 显式记账,非静默。
     3. **intel 稿数**(warn):`_l4_intel_*.md` >0 份(=intel 启用)时,稿数(只认
        `_l4_intel_<6位码>.md`,变体如 `*_probe` 不计)≠ 期望 = **全 finalist 行**(含保送——
-       保送票同走 l4-stock 链、同派 intel)− ♻️ 复用数(复用痕迹 = `details/<code>.md` 含
-       ♻️ banner,l4_reuse.write_reused_card 所落;details/ 缺 → 期望=全行数,detail 注明
-       口径)。0 份 intel = 未启用,本条不出。07-17 实测:10 行 − 1 复用 = 9 稿 ✓。
+       保送票同走 l4-stock 链、同派 intel;Wave9 R5 退役 TTL 复用后不再有复用扣减)。
+       0 份 intel = 未启用,本条不出。
     4. **anns 双源**(warn/info,Wave9 A-1 + 复核轮1):`anns_source_status.status`——
        `blind`(有稿但双源皆空)= **warn**,公告面只剩 intel 单腿;`fallback` = info(兜底
        承载,显式记账);`ok`/`pending`(L3 阶段还没跑到,不是"双源皆空"的证据)不出条。
@@ -471,14 +470,10 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
                 add("产物形状·force_full零命中", "info",
                     f"{date_str} force_full 0 命中(显式记账,非静默)")
 
-    # 3) intel 稿数 = 全 finalist 行(含保送,皆走 l4-stock 链派 intel)− 复用(0 份 = 未启用,不出本条)
+    # 3) intel 稿数 = 全 finalist 行(含保送,皆走 l4-stock 链派 intel;Wave9 R5 退役 TTL 复用后无复用扣减)
     if intel_files and fin_loaded:
         n_rows = len(fin_rows)
-        if (scan_dir / "details").is_dir():
-            n_reuse = len({r["code"] for r in fin_rows} & reused)
-            expect, cal = n_rows - n_reuse, f"finalist 行 {n_rows}(含保送) − ♻️ 复用 {n_reuse}"
-        else:
-            expect, cal = n_rows, f"finalist 行 {n_rows}(含保送;details/ 缺,复用数不可得)"
+        expect, cal = n_rows, f"finalist 行 {n_rows}(含保送;R5 后无复用)"
         if len(intel_codes) != expect:
             add("产物形状·intel稿数不符", "warn",
                 f"intel 稿 {len(intel_codes)} 份 ≠ 期望 {expect}({cal})")

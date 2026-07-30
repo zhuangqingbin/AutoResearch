@@ -169,16 +169,18 @@ def test_intel_count_mismatch_warn(tmp_path):
     assert len(rows2) == 1 and "1 份" in rows2[0]["detail"] and "期望 2" in rows2[0]["detail"]
 
 
-def test_intel_count_reuse_subtracted(tmp_path):
-    d = _mk_clean(tmp_path)                          # 3 行(含保送)、其一 ♻️ 复用 → 期望 2 = 实际 2
-    pd.DataFrame([
-        {"code": "600285", "name": "甲", "conviction": 70, "lane": "healthy"},
-        {"code": "000001", "name": "乙", "conviction": 60, "lane": "value"},
-        {"code": "600519", "name": "保", "conviction": 50, "lane": "pinned"},
-    ]).to_csv(d / "finalists.csv", index=False)
-    (d / "details" / "000001.md").write_text("♻️ **复用卡**(源 2026-07-16)", encoding="utf-8")
+def test_intel_probe_variant_not_counted(tmp_path):
+    """`_probe` 变体稿不计入 intel 稿数(600285 正稿 + probe 变体 → 仍算 1 份)。
+
+    Wave9 R5:本用例原名 test_intel_count_reuse_subtracted,锁的是"期望数按 ♻️
+    复用扣减"(TTL 复用已退役,该扣减已从 probe 3 删除,见 self_review.py)——但它
+    **同时**顺带锁住了一条无关的独立契约(`_probe` 变体不计数),删整个用例会静默
+    丢失后者的回归覆盖。这里只删复用前提(finalists 行数覆盖 + ♻️ 卡),保留
+    `_probe` 断言,改用 `_mk_clean` 默认的 2 行 baseline(期望数天然 = 2,
+    不依赖复用扣减也成立)。
+    """
+    d = _mk_clean(tmp_path)
     assert _by(product_shape_lint(d, DATE), "产物形状·intel稿数不符") == []
-    # `_probe` 变体不计入稿数(600285 正稿 + probe 变体 → 仍 1 份)
     (d / "_l4_intel_600285_probe.md").write_text("变体稿 https://x.com/p", encoding="utf-8")
     assert _by(product_shape_lint(d, DATE), "产物形状·intel稿数不符") == []
 
