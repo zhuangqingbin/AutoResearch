@@ -80,10 +80,45 @@
 ## B2 · 观察单残件族
 
 第一交付物是**逐文件身份分类**(`DEAD_READ` / `BACKWARD_COMPAT` / `LIVE_OTHER_PURPOSE`),
-不是先删。退役令 fb_20260714_002 不变;journal 恒 0 的「触发」列从新报告 schema 删除,
-历史 CSV/Markdown reader 继续兼容旧列、**不回写历史**。
+不是先删。退役令 fb_20260714_002 不变。
 
-_(待填:分类表)_
+### 前提核验(三条,全部实测)
+
+| 问题 | 实测 |
+|---|---|
+| 还有谁产生 `lane=watchlist_trigger`? | **零生产者**;历史 `finalists.csv` 里也**零命中** |
+| `context/watchlist.csv` 还活着吗? | **活着**:文件在(2026-07-06),`sector/pack.py:129` 真读它当行业选择器 |
+| journal 的「触发」列真恒 0 吗? | 30 个扫描日:非空 10 行、**非零 0 行、累计 0**;`watchlist_status.csv` 仍留在 10 个历史扫描日里 |
+
+### 逐文件分类
+
+| 文件 : 位置 | 用法 | 身份 | 动作 |
+|---|---|---|---|
+| `learning/journal.py:75` | 读 `watchlist_status.csv` 数「触发」 | **`DEAD_READ`** | **删**列 + 读取 |
+| `scan/gates.py:32,70,76` | `_EXEMPT_LANES` 含 `watchlist_trigger` | `DEAD_READ`(残迹) | **不删**,见下 |
+| `learning/retro.py:712` | 真选口径排除该 lane | `DEAD_READ`(残迹) | 不删 |
+| `learning/self_review.py:367,411` | 保送§2 空检查豁免该 lane | `DEAD_READ`(残迹) | 不删 |
+| `learning/t1_review.py:41` | `_NON_GENUINE_LANES` | `DEAD_READ`(残迹) | 不删 |
+| `learning/stage_eval.py:249` | 同上 | `DEAD_READ`(残迹) | 不删 |
+| `sector/pack.py:7,129` | 读 `context/watchlist.csv` 选行业 | **`LIVE_OTHER_PURPOSE`** | **不动** |
+| `learning/feedback_store.py:245` | `_MOOT_TERMS` 含「观察单/watchlist」= 检测引用已退役机制的 lesson | **`LIVE_OTHER_PURPOSE`** | **不动** |
+| `scan/menu.py:4`、`learning/zero_buy_ledger.py:4`、`scan/agents/l3_catalyst.py:4` | docstring 里的 design 引用 | `HISTORICAL_REFERENCE` | 不动 |
+| `scan/prelude.py:379`、`scan/health.py:20`、`scan/artifacts.py:8`、`scan/report_sections.py:687` | 退役说明注释 | `HISTORICAL_REFERENCE` | 不动 |
+
+### 为什么 5 处 `watchlist_trigger` 残迹**不删**
+
+它们是**排除集里的一个字符串**:`lane == "watchlist_trigger"` 永远不成立,所以既不改变
+行为、也不产生错读数。删它们要动 5 个文件的判断逻辑,而收益只是 grep 干净 —— §B2 明写
+「不为追求零 grep 强删」。**与 journal 那一列的区别是关键**:恒 0 的**列会显示给人看**,
+读者会以为「今天没触发」而不是「这条腿已经没人喂了」;排除集里的死字符串不显示给任何人。
+**会误导人的死码优先删,只是碍眼的死码留着。**
+
+### journal「触发」列的处置
+
+删列 + 删读取;渲染表头与汇总行同步。历史 `watchlist_status.csv`(10 个扫描日)**原样
+留在盘上,不回写、不删**;测试里保留一个「盘上仍有 stale watchlist_status.csv」的夹具 ——
+退役要退得干净,不是退成一颗雷。`journal.roll()` 的唯一生产消费者
+`evidence_manifest.py:252` 不读该列,schema 变更对它无影响。
 
 ---
 
@@ -135,17 +170,58 @@ _(待填:分类表)_
 
 ## B4 · 未启用路径身份重判
 
-_(待填:`stable_context_blocks` 离线 benchmark;`sector_brief_mode=finalist_only` 的
-research experiment 归属)_
+### B4-a `performance.stable_context_blocks` —— `ABANDONED`(收益 4.0% < 10% 门)
+
+零 LLM 零网络的离线 benchmark:对 **2026-07-31 真扫描日**在两个隔离副本里各重建一次
+全部 10 份 L4 prompt(`write_dispatch_pack(stable_context=True/False)`),逐项比对。
+
+| 判据(§B4) | 实测 | 结论 |
+|---|---|---|
+| prompt **事实等价** | 逐票数字多重集 **10/10 一致** | ✅ 等价 |
+| **manifest 完整性** | `_l4_prompt_manifest.json` 10 份 prompt、逐块 `content_sha256` | ✅ 完整 |
+| **共享前缀字节收益** | legacy 2,030 B → stable 2,468 B(+438 B/份) | — |
+| **预估节省** | 438 × 9 ≈ 3,942 B = L4 prompt 总输入 99,719 B 的 **4.0%** | ❌ **< 10%** |
+
+**判定 `ABANDONED`**:事实等价、manifest 也完整,但**收益不到门槛的一半**。它不是"坏",
+是"不值得"——留着就得永远双路维护 `prompts.py` 里那一串 `if stable_context:` 分支,
+而那是最不该有分叉的确定性路径(`context.py:447` 的注释正是在提醒"legacy 路要记得镜像
+stable 分支的 dossier_sections 调用",这种镜像义务本身就是双路的税)。
+
+⚠️ **过程留痕**:我第一次查 manifest 时找的是 `_l4_shared_manifest.json`,没找到就差点
+写成"manifest 未落=事实不完整"。真实文件名是 `_l4_prompt_manifest.json`。
+**「文件不存在」永远是弱证据 —— 断言缺失前先 grep 源码里的写盘路径。**
+
+### B4-b `performance.sector_brief_mode=finalist_only` —— `ABANDONED`
+
+按 §B4 铁律「性能开关不拥有评级」:它让 L3 看不到原本的判断型行业 brief,**可能改变
+finalists**,不能靠 dispatch 数离线证明评级等价。当前 registry(`context/learning/
+experiments/registry.json`)里只有一个 `exp_20260729_l3_hard_constraint_f`,**没有**任何
+获批的、覆盖本开关的 research experiment。§B4 明确不允许"继续维持默认 false"作第三选项。
+
+**判定 `ABANDONED`。**
+
+### ⏸️ 两项删除均**未执行** —— 阻塞原因
+
+两个开关都读自 `.claude/workflows/scan-market.js`(第 22/23 行 + 第 264 行的
+`--stable-context` 传参),而该文件里有用户未提交的 `stageMetrics` 修复,无法分开 stage。
+判定已定、证据已冻,**删除动作留给该文件空出后的独立 commit**(B0「每个 family 一个
+commit」)。在那之前两个开关维持现状(默认 false / `"all"`),生产行为不变。
 
 ---
 
 ## B5 · 回滚杆到期状态
 
-| 回滚杆 | `RETIRE_ELIGIBLE` 判据 | 当前进度 |
-|---|---|---|
-| `streaming_l4=false` 旧批量 GATE3 | 流式路径累计 10 次真实扫描且 `structural_failure_n=0` | _(待测)_ |
-| `_ensemble.json` 旧批量双读 | 与旧批量路径同生死 | 同上 |
-| abstention v1 | v2 达 10 个 mature day 且两日重跑一致 | v2 现 8 个 mature day |
+2026-08-01 实测,**三根全部未到期**:
+
+| 回滚杆 | `RETIRE_ELIGIBLE` 判据 | 实测进度 | 状态 |
+|---|---|---|---|
+| `streaming_l4=false` 旧批量 GATE3 | 流式路径累计 **10** 次真实扫描且 `structural_failure_n=0` | 带 task-book 的真实扫描日 **4** 个(07-28/29/30/31) | ❌ 还差 6 次 |
+| `_ensemble.json` 旧批量双读 | 与旧批量路径同生死 | 旧格式最后一次产出 2026-07-10;此后走逐票 `_ensemble_<code>.json` | ❌ 随上一条 |
+| abstention v1 | v2 达 **10** 个 mature day 且两日重跑一致 | v2 已裁决 **8** 日 | ❌ 还差 2 日 |
+
+**均只记条件,不删**(R2:证据不够只标 `RETIRE_ELIGIBLE` 条件)。
+`structural_failure_n` 目前**没有对应的落盘计量** —— 判据里写了这个量,但全仓无一处产出它。
+在第 10 次真实扫描到来之前必须先把它接上,否则到期那天只能靠人回忆"这 10 次有没有出过
+结构失败",那等于没有判据。**记为本波未做项。**
 
 代码不得在第 10 日 assemble 后自行修改/删除源码(R7)。

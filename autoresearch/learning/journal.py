@@ -4,7 +4,7 @@
 design: docs/specs/2026-07-02-scan-observability-design.md §2
 
 各 ledger 按仪器纵览(channel/gate/zero_buy/watchlist/changelog),本模块按日横切:
-regime / 菜单健康 / 漏斗出量 / 买单 / 触发 / 市场 fwd(retro 成熟后自动回填)。
+regime / 菜单健康 / 漏斗出量 / 买单 / 市场 fwd(retro 成熟后自动回填)。
 一个文件看完这个月的故事。
 
   uv run --no-sync python -m autoresearch.learning.journal   # → reports/learning/journal.md
@@ -17,8 +17,12 @@ from pathlib import Path
 
 import pandas as pd
 
+# Wave10 B2:「触发」列已随观察单退役(fb_20260714_002)删除 —— 30 个扫描日里非零 0 行、
+# 累计 0,它读的 `watchlist_status.csv` 已无生产者。恒 0 的列不是"没触发"的信息,
+# 是**一个不再有人喂的仪表**,留着只会让人以为这条腿还活着。
+# 历史 `watchlist_status.csv`(10 个扫描日)原样留在盘上,不回写、不删。
 _COLS = ["date", "regime", "knife", "healthy", "l2", "finalists", "cards", "buys",
-         "triggers", "mkt_fwd1", "mkt_fwd5", "retro_done"]
+         "mkt_fwd1", "mkt_fwd5", "retro_done"]
 
 
 def _count_buys(d: Path, attr: pd.DataFrame | None) -> int:
@@ -43,7 +47,7 @@ def _day_row(d: Path) -> dict:
     from autoresearch.scan.menu import _healthy, _knife_share
     row: dict = {"date": d.name, "regime": None, "knife": None, "healthy": None,
                  "l2": None, "finalists": None, "cards": None, "buys": None,
-                 "triggers": None, "mkt_fwd1": None, "mkt_fwd5": None,
+                 "mkt_fwd1": None, "mkt_fwd5": None,
                  "retro_done": (d / "retro" / "done.json").exists()}
     mp = d / "meta.json"
     if mp.exists():
@@ -72,13 +76,6 @@ def _day_row(d: Path) -> dict:
             attr = pd.read_csv(pa)
     if row["finalists"] is not None:
         row["buys"] = _count_buys(d, attr)
-    ws = d / "watchlist_status.csv"
-    if ws.exists():
-        try:
-            st = pd.read_csv(ws)
-            row["triggers"] = int(st["status"].astype(str).str.startswith("触发").sum())
-        except Exception:  # noqa: BLE001
-            pass
     if attr is not None:
         with contextlib.suppress(Exception):
             for src, dst in [("fwd_1_oo", "mkt_fwd1"), ("fwd_5_oc", "mkt_fwd5")]:
@@ -114,17 +111,16 @@ def render(df: pd.DataFrame) -> list[str]:
             return f"{x:.0%}"
         return str(int(x)) if isinstance(x, float) else str(x)
 
-    out += ["| 日期 | regime | 落刀 | 健康涨 | L2 | finalists | 卡 | 买 | 触发 | 市场fwd1 | fwd5 | retro |",
-            "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    out += ["| 日期 | regime | 落刀 | 健康涨 | L2 | finalists | 卡 | 买 | 市场fwd1 | fwd5 | retro |",
+            "|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in df.itertuples(index=False):
         out.append(f"| {r.date} | {r.regime or '—'} | {_p(r.knife, frac=True)} | {_p(r.healthy)} "
                    f"| {_p(r.l2)} | {_p(r.finalists)} | {_p(r.cards)} | {_p(r.buys)} "
-                   f"| {_p(r.triggers)} | {_p(r.mkt_fwd1, pct=True)} | {_p(r.mkt_fwd5, pct=True)} "
+                   f"| {_p(r.mkt_fwd1, pct=True)} | {_p(r.mkt_fwd5, pct=True)} "
                    f"| {'✅' if r.retro_done else '…'} |")
     buys = pd.to_numeric(df["buys"], errors="coerce").fillna(0)
     zero = int((buys == 0).sum())
-    out += ["", f"- **汇总**:{len(df)} 个 scan 日;0 买日 {zero};"
-            f"触发累计 {int(pd.to_numeric(df['triggers'], errors='coerce').fillna(0).sum())}。"
+    out += ["", f"- **汇总**:{len(df)} 个 scan 日;0 买日 {zero}。"
             "落刀/健康涨看菜单质量,fwd 列回答\"那天市场到底给不给钱\"。"]
     return out
 

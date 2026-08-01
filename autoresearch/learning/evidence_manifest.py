@@ -515,7 +515,11 @@ def _add_registry(manifest: Manifest, registry_path: Path | str | None) -> None:
         "experiments": {
             exp_id: {
                 "status": record.get("status"),
-                "family": (record.get("challenger_pointer") or {}).get("kind"),
+                # `trial_family` 才是 family —— §C2.0 的「同 family 不得并开」规则看的是它。
+                # 此前这里取的是 challenger_pointer.kind(如 "shadow_gate"),那是**载体类型**,
+                # 两个不同 family 的影子实验会显示成同一个 family,冲突检查形同虚设。
+                "family": record.get("trial_family"),
+                "pointer_kind": (record.get("challenger_pointer") or {}).get("kind"),
                 "primary_metric": record.get("primary_metric"),
                 "definition_hash": record.get("definition_hash"),
                 "expires_date": record.get("expires_date"),

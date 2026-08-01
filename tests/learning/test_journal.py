@@ -11,7 +11,7 @@ import pandas as pd
 from autoresearch.learning.journal import render, roll
 
 
-def _mk_day(root, date, regime="range", with_retro=False, trigger=False):
+def _mk_day(root, date, regime="range", with_retro=False, stale_watchlist=False):
     d = root / date
     (d / "details").mkdir(parents=True)
     (d / "meta.json").write_text(json.dumps({"regime": regime}), encoding="utf-8")
@@ -23,7 +23,9 @@ def _mk_day(root, date, regime="range", with_retro=False, trigger=False):
     pd.DataFrame([{"code": "000001", "name": "甲", "sector": "半导体"}]).to_csv(
         d / "finalists.csv", index=False)
     (d / "details" / "000001.md").write_text("**Rating**: Overweight\n", encoding="utf-8")
-    if trigger:
+    if stale_watchlist:
+        # Wave10 B2:历史扫描日里仍留着 watchlist_status.csv(10 个)。journal 已不再读它,
+        # 但它在盘上这件事不能让 roll 出错 —— 退役要退得干净,不是退成一颗雷。
         pd.DataFrame([{"code": "000009", "name": "乙", "status": "触发",
                        "detail": "", "narrative": "", "born": date, "expiry": ""}]).to_csv(
             d / "watchlist_status.csv", index=False)
@@ -36,15 +38,18 @@ def _mk_day(root, date, regime="range", with_retro=False, trigger=False):
 
 def test_journal_two_days(tmp_path):
     _mk_day(tmp_path, "2026-07-01", regime="risk_off", with_retro=True)
-    _mk_day(tmp_path, "2026-07-02", trigger=True)
+    _mk_day(tmp_path, "2026-07-02", stale_watchlist=True)
     df = roll(tmp_path)
     assert list(df["date"]) == ["2026-07-01", "2026-07-02"]
     r1, r2 = df.iloc[0], df.iloc[1]
     assert r1["regime"] == "risk_off" and r1["retro_done"] and r1["mkt_fwd1"] == 0.01
     assert r1["knife"] == 0.5 and r1["healthy"] == 1                    # 2 只 L2:1 落刀 1 健康
-    assert r2["buys"] == 1 and r2["triggers"] == 1 and not r2["retro_done"]
+    assert r2["buys"] == 1 and not r2["retro_done"]
+    # 触发列已随观察单退役删除:既不在 schema 里,也不在渲染里
+    assert "triggers" not in df.columns
     md = "\n".join(render(df))
     assert "2026-07-01" in md and "risk_off" in md and "汇总" in md
+    assert "触发" not in md
     assert "50%" in md and "200%" not in md      # 落刀=占比;计数列取整,别把 2 渲成 200%
 
 

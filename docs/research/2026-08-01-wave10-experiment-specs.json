@@ -1,0 +1,253 @@
+{
+  "experiments": [
+    {
+      "challenger_pointer": {
+        "content_hash": "5745e85b640ee50ab4445a45e5bf021c0abf99c1da5c1c170f444c9703a43ee5",
+        "kind": "shadow_gate",
+        "pointer": "autoresearch/learning/gate_attribution.py::gate_participation"
+      },
+      "definition": {
+        "T": "分析日;区间严格为**五个交易日**,非自然日",
+        "challenger": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+        "control": "当日口径(现行生产判据)",
+        "data_source": "moneyflow 日分区(lake);缺任一日 → UNMEASURED,assemble **不得**联网补",
+        "negative_result_policy": "不通过即记负结果并关闭,不重跑到通过为止",
+        "outcome_contract": "A11 v3(CORRECT/NEUTRAL/FALSE_KILL/UNMEASURED)",
+        "pairing": "control/challenger 绑定同一 run_id/candidate/date,paired delta",
+        "population": "gate_participation_v3.csv 中 gate=='主力真在' 的行 —— 即该门参与否决过的票;attribution 口径样本不足以支撑本实验",
+        "production_side_effects": "无 —— 只重算判据,不改门、不改评级、不改 BUY 数",
+        "statistics": "date cluster bootstrap;固定 minimum,不允许可选停止"
+      },
+      "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+      "expires_date": "2026-11-30",
+      "id": "exp_20260801_ow_gate_mainflow5d",
+      "minimums": {
+        "forward_days": 20,
+        "mature_events": 50,
+        "regimes": 2,
+        "unique_events": 50
+      },
+      "primary_metric": "false_kill_rate_delta_pp",
+      "promotion_guards": {
+        "architecture": [
+          {
+            "metric": "production_artifact_diff",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "decision": [
+          {
+            "metric": "correct_block_rate_delta_pp",
+            "op": "gte",
+            "value": -3
+          },
+          {
+            "metric": "mean_excess2_delta",
+            "op": "lte",
+            "value": 0
+          }
+        ],
+        "research": [
+          {
+            "metric": "false_kill_rate_delta_pp",
+            "op": "lte",
+            "value": -3
+          }
+        ],
+        "speed": [
+          {
+            "metric": "wall_delta_pct",
+            "op": "lte",
+            "value": 5
+          }
+        ],
+        "token": [
+          {
+            "metric": "token_delta_pct",
+            "op": "lte",
+            "value": 0
+          }
+        ]
+      },
+      "rollback_guards": {
+        "architecture": [
+          {
+            "metric": "production_artifact_diff",
+            "op": "gt",
+            "value": 0
+          }
+        ],
+        "decision": [
+          {
+            "metric": "correct_block_rate_delta_pp",
+            "op": "lt",
+            "value": -5
+          }
+        ],
+        "research": [
+          {
+            "metric": "false_kill_rate_delta_pp",
+            "op": "gt",
+            "value": 0
+          }
+        ],
+        "speed": [
+          {
+            "metric": "wall_delta_pct",
+            "op": "gt",
+            "value": 10
+          }
+        ],
+        "token": [
+          {
+            "metric": "token_delta_pct",
+            "op": "gt",
+            "value": 5
+          }
+        ]
+      },
+      "rollback_window_runs": 5,
+      "start_date": "2026-08-01",
+      "title": "OW『主力真在』门:5 日持续性影子口径 vs 当日口径",
+      "trial_family": "ow_gate_mainflow"
+    },
+    {
+      "challenger_pointer": {
+        "content_hash": "773523a487d1cf09c491749e1accf8633341cae3c2483b01debd16305b339fa3",
+        "kind": "shadow_channel",
+        "pointer": "autoresearch/scan/recall/registry.py::sector_momentum(shadow)"
+      },
+      "definition": {
+        "challenger": "上涨侧 sector momentum channel,只落 per_channel 长表",
+        "control": "现行召回 channel 组合",
+        "isolation": "floor=0 · 不占 quota · **不写生产 finalists** —— Wave4 教训:『默认不启用』必须连副作用一起不启用,加个 L2 floor 就天天改生产 LLM 输入",
+        "negative_result_policy": "不通过即退役并把负结果写进 lessons",
+        "phase_requirement": "每相位(regime)≥5 个扫描日,不足则 IMMATURE",
+        "shared_instrument": "与 pr_20260725_001 的 event 召回路共用 channel_audit 仪器,但 family/variant 分开,**不得混样本**",
+        "statistics": "date cluster bootstrap 的 unique excess T+2 下界"
+      },
+      "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+      "expires_date": "2026-11-30",
+      "id": "exp_20260801_recall_sector_momentum",
+      "minimums": {
+        "forward_days": 20,
+        "mature_events": 50,
+        "regimes": 2,
+        "unique_events": 50
+      },
+      "primary_metric": "unique_excess_t2_lcb",
+      "promotion_guards": {
+        "architecture": [
+          {
+            "metric": "production_artifact_diff",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "decision": [
+          {
+            "metric": "left_tail_rate_delta_pp",
+            "op": "lte",
+            "value": 0
+          }
+        ],
+        "research": [
+          {
+            "metric": "unique_excess_t2_lcb",
+            "op": "gt",
+            "value": 0
+          }
+        ],
+        "speed": [
+          {
+            "metric": "wall_delta_pct",
+            "op": "lte",
+            "value": 5
+          }
+        ],
+        "token": [
+          {
+            "metric": "token_delta_pct",
+            "op": "lte",
+            "value": 5
+          }
+        ]
+      },
+      "rollback_guards": {
+        "architecture": [
+          {
+            "metric": "production_artifact_diff",
+            "op": "gt",
+            "value": 0
+          }
+        ],
+        "decision": [
+          {
+            "metric": "left_tail_rate_delta_pp",
+            "op": "gt",
+            "value": 2
+          }
+        ],
+        "research": [
+          {
+            "metric": "unique_excess_t2_lcb",
+            "op": "lte",
+            "value": 0
+          }
+        ],
+        "speed": [
+          {
+            "metric": "wall_delta_pct",
+            "op": "gt",
+            "value": 10
+          }
+        ],
+        "token": [
+          {
+            "metric": "token_delta_pct",
+            "op": "gt",
+            "value": 10
+          }
+        ]
+      },
+      "rollback_window_runs": 5,
+      "start_date": "2026-08-01",
+      "title": "召回:上涨侧板块动量影子 channel(floor=0,不占 quota)",
+      "trial_family": "recall_channel"
+    }
+  ],
+  "frozen_for": "Wave10 §C2 预注册",
+  "monitors": [
+    {
+      "id": "mon_20260801_regime_flip",
+      "kind": "prospective_monitor",
+      "maturity": "每侧 ≥10 个 scan day 且每侧完整卡 ≥50;不足**自动延长**",
+      "records": [
+        "candidate_n",
+        "三门通过率",
+        "shadow_excess",
+        "BUY_n"
+      ],
+      "schema_version": 1,
+      "stopping_rule": "禁止选好看的第 5 日停 —— 固定成熟门",
+      "title": "regime 首次从 risk_off 转 range/risk_on 的前后对称窗",
+      "verdict_policy": "不产 RECOMMENDED。BUY>0 只作描述;结构问题升格需『通过率无提升 **且** shadow 有 FALSE_KILL』共同成立",
+      "window": "首次翻转后冻结前后对称窗口"
+    },
+    {
+      "id": "mon_20260801_target_calib_postcheck",
+      "kind": "postcheck_monitor",
+      "maturity": "mature_events ≥60 · forward_days ≥20 · regimes ≥2",
+      "records": [
+        "calibration_error",
+        "触达率",
+        "中位目标幅"
+      ],
+      "schema_version": 1,
+      "title": "目标价 hi_2×regime p60 锚的接线后验收(既有功能,非新 challenger)",
+      "verdict_policy": "只观察。calibration error 未改善 → 再另立 challenger;**本波不重复实现现有功能**(p60 锚与超锚硬理由已接线)"
+    }
+  ],
+  "note": "registry 本体在 context/(gitignored);本文件是可审计副本。definition_hash 与 registry 记录一致,事后改 spec 两边会对不上。"
+}
