@@ -33,51 +33,9 @@ def test_prompts_share_byte_identical_head(tmp_path):
     assert texts[0][:head_end] == texts[1][:head_end], "头部前缀不 byte-identical(cache 必 miss)"
 
 
-def test_legacy_mode_default_and_explicit_false_are_byte_identical(tmp_path):
-    sd = _fixture(tmp_path)
-    write_dispatch_pack(sd)
-    default_bytes = {
-        p.name: p.read_bytes() for p in sorted(sd.glob("_l4_prompt_*.md"))
-    }
-    for p in sd.glob("_l4_prompt_*.md"):
-        p.unlink()
-
-    write_dispatch_pack(sd, stable_context=False)
-
-    assert {
-        p.name: p.read_bytes() for p in sorted(sd.glob("_l4_prompt_*.md"))
-    } == default_bytes
-
-
-def test_stable_mode_puts_common_market_before_stock_specific_bytes(tmp_path):
-    sd = _fixture(tmp_path)
-    pd.DataFrame([
-        {"code": "000001", "name": "平安银行", "sector": "银行", "industry": "银行"},
-        {"code": "600519", "name": "贵州茅台", "sector": "食品饮料", "industry": "食品饮料"},
-    ]).to_csv(sd / "finalists.csv", index=False)
-    pd.DataFrame([
-        {"code": "000001", "name": "平安银行", "industry": "银行", "pct_60d": 8.0,
-         "above_ma60": 1.0, "pe": 6.0, "main_net_ratio": 0.01, "cmf_20": 0.2},
-        {"code": "600519", "name": "贵州茅台", "industry": "食品饮料", "pct_60d": 2.0,
-         "above_ma60": 1.0, "pe": 20.0, "main_net_ratio": 0.02, "cmf_20": 0.1},
-    ]).to_csv(sd / "L1_scored_full.csv", index=False)
-    pd.DataFrame([
-        {"industry": "银行", "median_pct_60d": 8.0, "median_composite": 60, "n_recall": 1},
-        {"industry": "食品饮料", "median_pct_60d": 2.0, "median_composite": 50, "n_recall": 1},
-    ]).to_csv(sd / "sectors.csv", index=False)
-
-    write_dispatch_pack(sd, stable_context=True)
-
-    texts = [
-        p.read_text(encoding="utf-8") for p in sorted(sd.glob("_l4_prompt_*.md"))
-    ]
-    assert all(t.index("## 市场地形") < t.index("## L4 派发 —") for t in texts)
-    assert texts[0].split("## L4 派发 —", 1)[0] == texts[1].split(
-        "## L4 派发 —", 1
-    )[0]
-    manifest = json.loads(
-        (sd / "_l4_prompt_manifest.json").read_text(encoding="utf-8")
-    )
-    assert manifest["mode"] == "stable_context"
-    assert set(manifest["prompts"]) == {"000001", "600519"}
-    assert manifest["prompts"]["000001"]["blocks"]["market"]["content_sha256"]
+# Wave10 B4:`stable_context` 参数退役,原两条用例随之删除 ——
+#   · `test_legacy_mode_default_and_explicit_false_are_byte_identical`:参数没了,
+#     「默认 == 显式 False」变成恒真的同义反复;
+#   · `test_stable_mode_puts_common_market_before_stock_specific_bytes`:测的是已删分支。
+# 它们顺带锁的「共享块必须在逐股字节之前 + 头部前缀 byte-identical」由上面那条
+# `test_prompts_share_byte_identical_head` 完整覆盖(legacy 现在是唯一的路),无孤儿契约。

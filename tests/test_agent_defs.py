@@ -332,8 +332,9 @@ def test_scan_market_skill_documents_wave3_recovery_and_measurement_contract():
         "task_book 全 SUCCEEDED",
         "RATE_LIMIT",
         "streaming_l4",
-        "stable_context_blocks",
-        "sector_brief_mode",
+        # Wave10 B4:另两个性能开关已退役 —— 锚改成"退役这件事本身"被写进契约文档,
+        # 否则下次有人照着旧文档去设一个不存在的开关。
+        "Wave10 B4 退役两个",
         "--json-out context/scan/<date>/_token_usage.json",
         "autoresearch.scan.post_run <date> observe",
         "IMMATURE",

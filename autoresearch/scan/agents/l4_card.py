@@ -78,11 +78,6 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("date", help="scan 日 YYYY-MM-DD")
     ap.add_argument("--root", default=None, help="scan 根目录(默认 context/scan)")
     ap.add_argument("--workers", type=int, default=4, help="slim 批量并发数(1=串行)")
-    ap.add_argument(
-        "--stable-context",
-        action="store_true",
-        help="共享市场/行业/档案块置前并写 hash manifest(缺省 legacy 字节路径)",
-    )
     args = ap.parse_args(argv)
     if args.cmd == "shared":
         import json
@@ -131,9 +126,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[l4_card consensus] {len(df)} 票落 consensus.csv(卖方一致预期修正,advisory){extra}")
         return 0
     res = write_dispatch_pack(
-        (Path(args.root) if args.root else Path("context/scan")) / args.date,
-        stable_context=args.stable_context,
-    )
+        (Path(args.root) if args.root else Path("context/scan")) / args.date)
     print(f"[l4_card prompts] {res['n_prompts']} 份 prompt + _harvest_list({len(res['tickers'])} 票,"
           f"已归一 yfinance 后缀)")
     return 0

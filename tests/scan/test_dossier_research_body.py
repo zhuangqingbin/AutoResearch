@@ -73,13 +73,15 @@ def _mk_dossier_for_dispatch(code, marker="DISPATCHTEST_MARKER"):
 
 
 def test_write_dispatch_pack_dossier_present_and_body_wired_legacy(tmp_path):
-    """生产默认路径(`stable_context=False`,今日/昨日真实 scan 产物证实的默认配置):
+    """唯一的 prompt 组装路径(Wave10 B4 起 stable_context 分支已删):
     ① `_dossier_present.json` 落盘内容与磁盘上"谁真的有档案文件"精确一致;
     ② 有档案票的 prompt 文件里**真的含四节正文**(distinctive marker),不只是
     「### 档案节选」这行标题;③ 无档案票两者皆无。
     """
     import json
+
     import pandas as pd
+
     from autoresearch.scan.agents.l4_card import write_dispatch_pack
 
     code_with, code_without = "999021", "999022"
@@ -105,23 +107,4 @@ def test_write_dispatch_pack_dossier_present_and_body_wired_legacy(tmp_path):
     assert "DISPATCHTEST_MARKER" not in text_without    # ③ 无档案票两者皆无
 
 
-def test_write_dispatch_pack_dossier_body_wired_stable_context(tmp_path):
-    """同上,但 `stable_context=True` 分支——`prompts.py` 里 `dossier_parts` 组装处
-    自己的 `dossier_sections` 调用点(与 legacy 分支走的 `context.py::compose_funnel_brief`
-    是两条独立代码路径,各自要有直接覆盖,不能只测其中一条就当两条都测了)。
-    """
-    import pandas as pd
-    from autoresearch.scan.agents.l4_card import write_dispatch_pack
-
-    code_with = "999023"
-    _mk_dossier_for_dispatch(code_with)
-
-    sd = tmp_path / "2026-07-29"
-    sd.mkdir()
-    pd.DataFrame({"code": [code_with], "name": ["甲"],
-                  "sector": ["测试行业"]}).to_csv(sd / "finalists.csv", index=False)
-
-    write_dispatch_pack(sd, stable_context=True)
-    text = (sd / f"_l4_prompt_{code_with}.md").read_text(encoding="utf-8")
-    assert "### 档案节选(研报体素材)" in text
-    assert "DISPATCHTEST_MARKER" in text
+# Wave10 B4:stable_context 分支已退役;legacy 那条用例保留 —— 它现在是**唯一**的路。

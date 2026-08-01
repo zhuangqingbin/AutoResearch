@@ -9,7 +9,6 @@ from pathlib import Path
 import pandas as pd
 
 from autoresearch.scan.l4.context import (
-    _dossier_summary_mark,
     _target_calib_mark,
     compose_funnel_brief,
     write_base_rates,
@@ -116,11 +115,7 @@ def yesterday_echo(code6: str, name: str, analysis_date: str, *,
     return "\n".join(lines) + "\n"
 
 
-def write_dispatch_pack(
-    scan_dir: Path | str,
-    *,
-    stable_context: bool = False,
-) -> dict:
+def write_dispatch_pack(scan_dir: Path | str) -> dict:
     """L4 派发包确定性落稿(零 LLM):`_harvest_list.txt`(yfinance 归一后缀,`.SH` 绝迹)
     + 每卡 `_l4_prompt_<code>.md`(共享指令 + 漏斗简报 + slim/卡路径指针)。
 
@@ -180,46 +175,13 @@ def write_dispatch_pack(
     pinned: list[str] = []
     with_dossier: set[str] = set()   # Wave9 B-3:本次派发里"哪些票有档案可注入"(lint 探针 10 读)
     n_prompts = 0
-    prompt_manifest = {
-        "schema_version": 1,
-        "mode": "stable_context" if stable_context else "legacy",
-        "prompts": {},
-    }
-    market_pack_data: dict = {}
-    common_market = ""
-    common_market_written = None
-    if stable_context:
-        from autoresearch.scan.context_blocks import write_context_block
-        from autoresearch.scan.market import market_context_parts, market_pack
-
-        try:
-            market_pack_data = market_pack(scan_dir)
-            if market_pack_data.get("regime"):
-                common_market = market_context_parts(market_pack_data)[0]
-        except Exception:  # noqa: BLE001 — 稳定块可选,与旧 _market_ctx 同降级语义
-            market_pack_data = {}
-            common_market = ""
-        market_sources = [
-            p for p in (
-                scan_dir / "market_pack.json",
-                scan_dir / "L1_scored_full.csv",
-                scan_dir / "sectors.csv",
-            ) if p.is_file()
-        ]
-        common_market_written = write_context_block(
-            scan_dir,
-            kind="market",
-            scope="all",
-            content=common_market,
-            source_paths=market_sources,
-        )
     for _, r in fin.iterrows():
         raw = str(r.get("code", "") or "").strip()
         if not raw or raw == "nan":
             continue
         code6 = raw.split(".")[0].zfill(6)
-        # Wave9 B-3:档案存在性判据独立于 stable_context 分支(生产默认走 legacy,若只在
-        # stable_context 分支里判会让 _dossier_present.json 在默认配置下恒空)。
+        # Wave9 B-3:档案存在性判据是**无条件**的 —— 它曾只在(已退役的)stable_context
+        # 分支里判,于是 `_dossier_present.json` 在默认配置下恒空。
         with contextlib.suppress(Exception):
             from autoresearch.dossier.schema import dossier_path
 
@@ -253,134 +215,9 @@ def write_dispatch_pack(
                      "「盈利质量」与「偿付(爆雷)」两维**不得**标『未核』,必须 Read "
                      "`_slim_deep.md` 取证后给分。评级仍由 rubric 三门定——强制满卡只保证"
                      "**核得够深**,不保证结论向好(照样可以是 Underweight/Sell)。", ""]
-        legacy_brief = compose_funnel_brief(code6, scan_dir)
-        stable_blocks = None
-        if stable_context:
-            from autoresearch.scan.context_blocks import (
-                manifest_ref,
-                write_context_block,
-            )
-            from autoresearch.scan.market import market_context_parts
-
-            industry = r.get("industry") or r.get("sector")
-            if pd.isna(industry):
-                industry = ""
-            industry = str(industry or "")
-            market_sector = ""
-            if market_pack_data.get("regime"):
-                market_sector = market_context_parts(
-                    market_pack_data, industry=industry
-                )[1]
-
-            dossier_parts: list[str] = []
-            dsum = _dossier_summary_mark(code6)
-            if dsum:
-                dossier_parts.append(dsum)
-            try:
-                from autoresearch.scan.dossier import render_dossier
-
-                history = render_dossier(
-                    code6, scan_root=scan_dir.parent, exclude=scan_dir.name
-                )
-            except Exception:  # noqa: BLE001
-                history = ""
-            if history:
-                dossier_parts.append(history)
-            # Wave9 B-3:研报体的素材侧 —— 摘要 600B 撑不起研报体,内联四节全文
-            # (业务模型/盈利驱动/估值带/风险矩阵;复核 2026-07-30 实测 31 份真实档案
-            # 该四节合计 6.8–15.1KB/票、中位 ≈13.0KB,相对 170KB slim 可忽略;
-            # `dossier_sections` 自带 `RESEARCH_BODY_CAP` token 硬帽,超限截断非静默丢);
-            # 选内联而非让 agent 自己 Read,读盘边界与工具调用方差都不动。
-            with contextlib.suppress(Exception):
-                from autoresearch.dossier.schema import dossier_sections
-
-                secs = dossier_sections(code6, keys=("§1", "§2", "§3", "§5"))
-                if secs:
-                    dossier_parts.append("### 档案节选(研报体素材)\n" + secs)
-            dossier_content = "\n".join(dossier_parts)
-
-            terrain = ""
-            try:
-                from autoresearch.sector.brief import render_terrain_block
-
-                terrain = render_terrain_block(industry, scan_dir)
-            except Exception:  # noqa: BLE001
-                terrain = ""
-            sector_content = "\n".join(
-                part.rstrip() for part in (market_sector, terrain) if part
-            )
-            if sector_content:
-                sector_content += "\n"
-
-            # 从 legacy 全量简报中精确摘掉已提升为 stable block 的前导/独立块；
-            # 余下就是逐股 differential。旧模式完全不走此分支，字节契约不变。
-            differential = legacy_brief
-            full_market = common_market + market_sector
-            if full_market and differential.startswith(full_market):
-                differential = differential[len(full_market):].lstrip("\n")
-            if dossier_content and differential.startswith(dossier_content):
-                differential = differential[len(dossier_content):].lstrip("\n")
-            if terrain and terrain in differential:
-                differential = differential.replace(terrain, "", 1)
-            differential = differential.strip() + "\n"
-
-            sector_sources = [
-                p for p in (
-                    scan_dir / "sectors.csv",
-                    scan_dir / "sector_briefs" / f"{industry}.md",
-                    Path("context/sector") / date / f"{industry}.json",
-                ) if p.is_file()
-            ]
-            dossier_sources: list[Path] = []
-            try:
-                from autoresearch.dossier.schema import dossier_path
-
-                dp = dossier_path(code6)
-                if dp.is_file():
-                    dossier_sources.append(dp)
-            except Exception:  # noqa: BLE001
-                pass
-            differential_sources = [
-                p for p in (
-                    fp,
-                    scan_dir / "L1_recall_top1000.csv",
-                    scan_dir / "L2_gbdt_top200.csv",
-                ) if p.is_file()
-            ]
-            sector_written = write_context_block(
-                scan_dir,
-                kind="sector",
-                scope=industry or "unknown",
-                content=sector_content,
-                source_paths=sector_sources,
-            )
-            dossier_written = write_context_block(
-                scan_dir,
-                kind="dossier",
-                scope=code6,
-                content=dossier_content,
-                source_paths=dossier_sources,
-            )
-            differential_written = write_context_block(
-                scan_dir,
-                kind="differential",
-                scope=code6,
-                content=differential,
-                source_paths=differential_sources,
-            )
-            stable_blocks = {
-                "market": manifest_ref(common_market_written),
-                "sector": manifest_ref(sector_written),
-                "dossier": manifest_ref(dossier_written),
-                "differential": manifest_ref(differential_written),
-            }
-            body.extend([
-                sector_content.rstrip(),
-                dossier_content.rstrip(),
-                differential.rstrip(),
-            ])
-        else:
-            body.append(legacy_brief.rstrip())
+        # Wave10 B4:stable_context 分支已退役(离线 benchmark 收益 4.0% < 10% 门),
+        # 只剩这一条 legacy 字节路 —— 原先的 if/else 二选一塌成无条件追加。
+        body.append(compose_funnel_brief(code6, scan_dir).rstrip())
         # 昨卡回声(W9-B1b,逐卡块内、紧邻 dossier_content/差异段之后,共享前缀之后不破 cache
         # 契约):读已发布报告的最近一次判断,不并入上面已落盘的 differential context block
         # (该块的 source_paths 不含 reports/ 历史卡,回声混进去会让 hash 契约与实际来源脱节)。
@@ -397,8 +234,6 @@ def write_dispatch_pack(
             shared or "_(共享指令稿缺:`_l4_shared_instructions.md` 未落——按 stock-research lite-playbook 执行)_",
             "",
         ]
-        if stable_context and common_market:
-            prompt_parts += [common_market.rstrip(), ""]
         prompt_parts += [
             "---",
             "",
@@ -413,36 +248,15 @@ def write_dispatch_pack(
             ""]
         prompt = "\n".join(prompt_parts)
         (scan_dir / f"_l4_prompt_{code6}.md").write_text(prompt, encoding="utf-8")
-        if stable_blocks is not None:
-            prompt_manifest["prompts"][code6] = {
-                "path": str(scan_dir / f"_l4_prompt_{code6}.md"),
-                "blocks": stable_blocks,
-            }
         n_prompts += 1
     (scan_dir / "_harvest_list.txt").write_text(
         "\n".join(tickers) + ("\n" if tickers else ""), encoding="utf-8")
     with contextlib.suppress(Exception):
         (scan_dir / "_dossier_present.json").write_text(
             json.dumps(sorted(with_dossier), ensure_ascii=False), encoding="utf-8")
-    if stable_context:
-        # `json` 是模块顶部 `import json`(line 5)——此处不得再 `import json`(哪怕只在这个
-        # if 分支里):Python 一旦在函数体任意处见到 `import json`/赋值,就把 `json` 判定为
-        # **整个函数**的局部名,连带炸穿上面那句更早执行的 `json.dumps(...)`(复核 2026-07-30
-        # Important 1 的生产侧集成测试实测揪出:`_dossier_present.json` 在默认
-        # `stable_context=False` 路径下 100% 抛 UnboundLocalError,又被下面缺失的
-        # `contextlib.suppress` 静默吞掉,2214 条回归里没有一条真正调用过
-        # `write_dispatch_pack` 再读文件内容,故此前从未被发现)。
-        target = scan_dir / "_l4_prompt_manifest.json"
-        temp = target.with_name(f"{target.name}.tmp")
-        temp.write_text(
-            json.dumps(prompt_manifest, ensure_ascii=False, sort_keys=True, indent=2)
-            + "\n",
-            encoding="utf-8",
-        )
-        temp.replace(target)
     return {
         "n_prompts": n_prompts,
         "tickers": tickers,
         "pinned": pinned,
-        "context_mode": prompt_manifest["mode"],
+        "context_mode": "legacy",   # Wave10 B4:stable_context 已退役,只剩这一条路
     }

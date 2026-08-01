@@ -262,8 +262,6 @@ def test_budgets_unknown_subkey_raises(tmp_path):
 def test_performance_switches_whitelisted_and_applied(tmp_path):
     raw = {
         "streaming_l4": True,
-        "stable_context_blocks": False,
-        "sector_brief_mode": "all",
     }
     p = tmp_path / "scan_config.jsonc"
     p.write_text(json.dumps({"performance": raw}), encoding="utf-8")
@@ -277,7 +275,7 @@ def test_performance_switches_whitelisted_and_applied(tmp_path):
 
 @pytest.mark.parametrize("raw", [
     {"streaming_l4": "yes"},
-    {"stable_context_blocks": 1},
+    {"streaming_l4": 1},
     {"sector_brief_mode": "selected"},
 ])
 def test_performance_switches_reject_invalid_values(tmp_path, raw):

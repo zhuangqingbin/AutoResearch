@@ -46,9 +46,9 @@
 
   // ── Wave 3 性能调度(不改变 finalist/rubric/评级)──
   "performance": {
-    "streaming_l4": true,             // true=每票 slim∥intel 就绪即出卡;false=回滚到整批 slim GATE3
-    "stable_context_blocks": false,   // false=legacy prompt 字节路径;true=共享块置前并写 hash manifest
-    "sector_brief_mode": "all"        // all=现生产路径;finalist_only=GATE2 后只写入围行业 brief
+    "streaming_l4": true              // true=每票 slim∥intel 就绪即出卡;false=回滚到整批 slim GATE3
+    // Wave10 B4 已删:`stable_context_blocks`(离线 benchmark 收益 4.0% < 10% 门)、
+    // `sector_brief_mode`(会改变 L3 上下文 → 可能改变 finalists,不是性能开关)。
   },
 
   // ── L1 召回漏斗 ──(recall_channels/channel_quotas 经 scan/cli.py → universe.recall_select 生效)

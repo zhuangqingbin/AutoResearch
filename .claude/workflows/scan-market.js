@@ -20,7 +20,6 @@ const cfg = (typeof args === 'string' && args ? JSON.parse(args).config : (args 
 // streaming 默认开；另外两项默认当前生产行为，均有显式回滚杆。
 const streamingL4 = cfg.performance?.streaming_l4 ?? true
 const stableContextBlocks = cfg.performance?.stable_context_blocks ?? false
-const sectorBriefMode = cfg.performance?.sector_brief_mode ?? 'all'
 // 哨兵档人工 override(SKILL 步骤 2.2:哨兵是「确定性建议,**人拍板**」,而本脚本原先硬编码直接跳 L3/L4
 // —— 判据只问"今天有没有值得买的",不知道用户还有"保送持仓该不该走"的问题挂着)。缺省 false = 现行为(parity)。
 const forceFull = !!(typeof args === 'string' && args ? JSON.parse(args).force_full : (args && args.force_full))
@@ -218,10 +217,11 @@ const sectorsRes = await gate('sector-pack+list',
   SECTORS, 'L3')
 if (!sectorsRes) throw new Error('sector-pack+list 无返回(schema/API 失败)—— 不静默降级为"无行业 brief"')
 const sectors = sectorsRes.sectors || []
-const preL3BriefSectors = sectorBriefMode === 'all' ? sectors : []
-log(sectorBriefMode === 'all'
-  ? `待写行业 brief:${sectors.length} 个${sectors.length ? ` (${sectors.join('、')})` : '(全部 TTL 复用)'}`
-  : `行业 brief A/B=finalist_only:L3 只读确定性全行业地形；${sectors.length} 个候选 brief 延后到 GATE2 后按入围行业生成`)
+// Wave10 B4:`sector_brief_mode=finalist_only` 已退役 —— 它让 L3 看不到判断型行业 brief、
+// **可能改变 finalists**,按「性能开关不拥有评级」铁律它不是性能开关;而它从未有获批的
+// research experiment 来证明评级等价(§B4)。现在只有 `all` 这一条路。
+const preL3BriefSectors = sectors
+log(`待写行业 brief:${sectors.length} 个${sectors.length ? ` (${sectors.join('、')})` : '(全部 TTL 复用)'}`)
 await parallel([
   () => bash(`${R} autoresearch.scan.agents.l3_select prepare ${date}`, 'l3-prepare', 'L3'),
   ...preL3BriefSectors.map((sec) => () => agent(
@@ -274,21 +274,6 @@ const g2 = await stageGate('GATE2',
   `${R} autoresearch.scan.gates gate2 ${date} --budget ${l3cap}`, 'gate2', 'L3')
 if (!g2 || !(g2.status === 'SUCCEEDED')) throw new Error(`GATE2 失败:${g2 ? g2.error : 'no return'}`)
 const g2m = stageMetrics(g2)   // 同 g1:haiku 壳可能多包一层,见 stageMetrics 注释
-// finalist_only 是纯调度 A/B：L3 输入仍有 deterministic sector terrain；只把昂贵的判断型
-// brief 延后，并且仅对实际入围票的唯一行业生成。卡片 prompt 落稿前有明确 barrier。
-const finalistBriefSectors = sectorBriefMode === 'finalist_only'
-  ? [...new Set(Object.values(g2m.meta || {}).map((m) => String((m && m.sector) || '')).filter(Boolean))]
-      .filter((sec) => sectors.includes(sec))
-  : []
-if (sectorBriefMode === 'finalist_only') {
-  log(`finalist-only 行业 brief:${finalistBriefSectors.length} 个 (${finalistBriefSectors.join('、') || '无'})`)
-  await parallel(finalistBriefSectors.map((sec) => () => agent(
-    `你是行业分析师。读 context/sector/${date}/${sec}.json 写 ${SD}/sector_briefs/${sec}.md,两段机器契约(## 地形段 喂 L3/L4 · ## 研判段 仅 L5,含 **行业方向** 行)。零新取数。`,
-    { agentType: 'sector-brief', effort: cfg.agents?.sector_brief?.effort ?? 'high',
-      ...(cfg.agents?.sector_brief?.model ? { model: cfg.agents.sector_brief.model } : {}),
-      label: `brief-finalist:${sec}`, phase: 'L3' })
-    .then((r) => { log(`brief ✓ ${sec}`); return r })))
-}
 // L3.5 闸已完全移除(2026-07-12 用户裁定"直接 L3 输出"):L3 finalist tier 即 L4 入选集。
 // CP3(Wave5 ①):整条漏斗最高光的一刻是"选出了哪几只",而不是"选出了几只"。
 // g2.meta 早就带着 name/sector(gates.py:95),此前被整段扔掉。

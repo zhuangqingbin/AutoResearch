@@ -443,9 +443,9 @@ def compose_funnel_brief(code: str, scan_dir: Path | str) -> str:
     except Exception:  # noqa: BLE001
         doss = ""
     dsecs = ""
-    try:                                     # Wave9 B-3:研报体素材(legacy 字节路径,镜像
-        # prompts.py stable_context 分支同一路 dossier_sections 调用 —— 生产默认
-        # stable_context_blocks=false 走的正是这条路,不镜像=研报体在生产环境永远不触发)
+    try:                                     # Wave9 B-3:研报体素材。
+        # (原注:此处曾需与 prompts.py 的 stable_context 分支互相镜像;该分支已于
+        #  Wave10 B4 退役,现在只有这一条路,不再有"两路要同步"的税。)
         from autoresearch.dossier.schema import dossier_sections
         secs = dossier_sections(code6, keys=("§1", "§2", "§3", "§5"))
         dsecs = "### 档案节选(研报体素材)\n" + secs if secs else ""

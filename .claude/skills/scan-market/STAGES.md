@@ -142,9 +142,9 @@ L2 之后、与 L3 证据取数**并发**:
 - → 剩余的 `sector.pack <date>`(红榜 top3 ∪ L2 集中度 top3 ∪ 存量 watchlist.csv 行业,K ≤ 6;观察单日检已退役,此处只读存量文件)
 - → 每个行业派一个 `Agent(subagent_type='sector-brief')`,写两段契约 brief:`## 地形段`(喂 L3/L4)、`## 研判段`(仅 L5,含 `**行业方向**` 这一 keyed 行)。
 - L4 派发前,对 ≥2 只同行业 finalist 的行业补漏。
-- **Wave 3 A/B 调度**:`performance.sector_brief_mode="all"` 保留上述生产路径；
-  `"finalist_only"` 时 L3 仍读同一份确定性全行业地形，但判断型 brief 延后到
-  GATE2，只为实际入围票的唯一行业生成。该开关不改 finalist、行业方向或评级。
+- **只有这一条路**(Wave10 B4):原 `performance.sector_brief_mode` A/B 开关已退役 ——
+  `finalist_only` 让 L3 看不到判断型行业 brief、**可能改变 finalists**,按「性能开关不拥有
+  评级」铁律它不是性能开关,而它从未有获批的 research experiment 证明评级等价。
 
 **消费与价值:**
 
@@ -217,9 +217,10 @@ L2 之后、与 L3 证据取数**并发**:
 ### 派发三步
 
 1. 落 `_l4_shared_instructions.md`→ `l4_card prompts <date>` 落 `_harvest_list.txt`+
-   `_l4_prompt_<code>.md`。`stable_context_blocks=false` 是 legacy 字节路径；
-   true 时共享 market/sector/dossier/differential 写 `_context_blocks/` 和 hash manifest，
-   共同市场块置于首个逐股字节前。证据不删，评级不变。
+   `_l4_prompt_<code>.md`。**只有 legacy 字节路径**:原 `stable_context_blocks=true`
+   分支(共享块置前 + hash manifest)已于 Wave10 B4 退役 —— 离线 benchmark(07-31 真扫描日
+   双副本重建 10 份 prompt)显示事实等价、manifest 完整,但共享前缀只从 2,030 B 涨到
+   2,468 B、预估节省 **4.0% < 10% 门**,不值得永远双路维护 prompts.py。
 2. 默认 `streaming_l4=true`：初始化 `_l4_tasks.json`，状态为
    `PENDING/RUNNING/SUCCEEDED/FAILED/BLOCKED`，逐票保存 prompt/slim/card hash、
    attempt、pinned、错误类和时间戳。四类并发帽 `tushare/web_search/web_fetch/l4_stock`

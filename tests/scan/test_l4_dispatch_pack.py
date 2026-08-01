@@ -55,17 +55,8 @@ def test_dispatch_pack_cli(tmp_path, monkeypatch, capsys):
     assert "3 份 prompt" in capsys.readouterr().out               # 3 只 finalist 全派(无跳过)
 
 
-def test_dispatch_pack_cli_accepts_stable_context(tmp_path, monkeypatch):
-    d = _mk(tmp_path)
-    monkeypatch.chdir(tmp_path)
-    from autoresearch.scan.agents.l4_card import main
-    assert main(["prompts", _DATE, "--stable-context"]) == 0
-    assert (d / "_l4_prompt_manifest.json").exists()
-
-
-# ══════════════════════════ 活体情报指针行(逐卡尾部指针区;L4 情报站 plan Task 2) ══════════════════════════
-
-
+# Wave10 B4:`test_dispatch_pack_cli_accepts_stable_context` 随 --stable-context
+# 旗标一并删除(该分支离线 benchmark 收益 4.0% < 10% 门,判 ABANDONED)。
 def test_prompt_has_intel_pointer(tmp_path):
     d = _mk(tmp_path)
     write_dispatch_pack(d)

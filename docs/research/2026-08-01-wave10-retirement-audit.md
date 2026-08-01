@@ -200,12 +200,30 @@ experiments/registry.json`)里只有一个 `exp_20260729_l3_hard_constraint_f`,*
 
 **判定 `ABANDONED`。**
 
-### ⏸️ 两项删除均**未执行** —— 阻塞原因
+### ✅ 两项删除已执行(2026-08-02)
 
-两个开关都读自 `.claude/workflows/scan-market.js`(第 22/23 行 + 第 264 行的
-`--stable-context` 传参),而该文件里有用户未提交的 `stageMetrics` 修复,无法分开 stage。
-判定已定、证据已冻,**删除动作留给该文件空出后的独立 commit**(B0「每个 family 一个
-commit」)。在那之前两个开关维持现状(默认 false / `"all"`),生产行为不变。
+**删除清单**:`scan/context_blocks.py` 与其 tests · `prompts.py` 的三处 `stable_context`
+分支 · `l4_card.py` 的 `--stable-context` 旗标 · `user_config` 的两个 performance 键 ·
+workflow 的两处开关与 `finalist_only` 分支 · `scan_config.jsonc` · STAGES/SKILL 文档。
+
+**parity 验收(这类删除唯一站得住的证据)**:删前先对 2026-07-31 真扫描日的 10 份 legacy
+prompt 取 sha256 基线,删后重建 → **10/10 字节完全一致**。生产输出一个字节都没变。
+
+**B0 ②查 test 双职**:
+- `test_l4_prompt_cache_prefix.py` 的两条(默认==显式False / stable 模式块序)随参数删除 ——
+  它们顺带锁的「共享块须在逐股字节之前 + 头部 byte-identical」由同文件
+  `test_prompts_share_byte_identical_head` 完整覆盖(legacy 现在是唯一的路),无孤儿;
+- `test_user_config` / `test_wave3_workflows` / `test_agent_defs` 的相关用例**保契约换载体**
+  (performance 白名单往返改用 `streaming_l4`;顺序契约改为断言「只有一条 brief 路」;
+  文档锚改为锚住「退役这件事本身」——否则下次有人照着旧文档去设一个不存在的开关)。
+
+**过程中的两次自伤(记下来,别再犯)**:
+1. 用 `ruff check --fix` 顺手修 lint,它把 `l4_card.py` 的**再导出面**(20 个 `from
+   l4.context import ...`)当未使用导入整块删掉 —— 而 `_OW_GATES` 等正被测试当**单一事实源**
+   import。本仓库 HEAD 本身就有 189 条同类告警(全是有意的再导出),**这个仓库不能跑 `--fix`**。
+2. 删 `scan_config.jsonc` 的 performance 尾项时留下**尾随逗号**,导致全仓配置加载崩溃、
+   33 个测试连坐 —— 而症状分布得毫无规律(CLI entrypoint、gate_ledger、cross_calib…),
+   差点被当成删除本身的回归去查。**改 jsonc 后必须立刻解析一次。**
 
 ---
 

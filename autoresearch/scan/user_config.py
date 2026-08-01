@@ -92,7 +92,7 @@ _SUB_WHITELIST = {
         "min_real_scans", "baseline_run",
     },
     "performance": {
-        "streaming_l4", "stable_context_blocks", "sector_brief_mode",
+        "streaming_l4",
     },
 }
 
@@ -122,15 +122,9 @@ def load_user_config(path: str | Path | None = None) -> dict:
     if performance is not None:
         if not isinstance(performance, dict):
             raise ValueError("scan_config.json 的 performance 必须是 object")
-        for key in ("streaming_l4", "stable_context_blocks"):
+        for key in ("streaming_l4",):
             if key in performance and not isinstance(performance[key], bool):
                 raise ValueError(f"scan_config.json performance.{key} 必须是 boolean")
-        mode = performance.get("sector_brief_mode")
-        if mode is not None and mode not in {"all", "finalist_only"}:
-            raise ValueError(
-                "scan_config.json performance.sector_brief_mode "
-                "必须是 all|finalist_only"
-            )
     return cfg
 
 
