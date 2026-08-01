@@ -162,3 +162,48 @@ def test_projection_of_the_live_pack_hides_the_leaderboard():
     assert validate(payload) == []
     assert "sector_healthy_top3" in pack, "真 pack 里本来就该有它,否则这条验收是空的"
     assert "sector_healthy_top3" not in payload["pack"]
+
+
+# ── Wave10 A4 接线守卫:数据级防锚定只有真接上才算数 ──────────────────────────
+
+def _workflow_src() -> str:
+    from pathlib import Path
+    return Path(".claude/workflows/scan-market.js").read_text(encoding="utf-8")
+
+
+def test_workflow_hands_the_strategist_only_the_projection():
+    """派发 prompt 必须指向投影,且**不得**再把 full market_pack 交给策略师。
+
+    这条是整个 A4 的价值所在:防锚定从「叮嘱它忽略 sector_healthy_top3」变成「它看不到」。
+    只写模块不接线 = 特性等于没做(而 07-30/31 已经连续两日复发过)。
+    """
+    src = _workflow_src()
+    dispatch = src.split("agentType: 'macro-brief'")[0].split("() => agent(")[-1]
+    assert "strategist_pack.json" in dispatch
+    assert "market_pack.json" not in dispatch, "策略师又能读到 full pack 了"
+
+
+def test_workflow_no_longer_relies_on_a_prompt_level_reminder():
+    """指令级约束已被数据级取代 —— 派发 prompt 里不该再出现那句叮嘱。
+
+    留着它无害但会误导:读的人会以为防线还在 prompt 上,从而在别处照抄这种写法。
+    """
+    src = _workflow_src()
+    dispatch = src.split("agentType: 'macro-brief'")[0].split("() => agent(")[-1]
+    assert "sector_healthy_top3" not in dispatch
+
+
+def test_workflow_gates_on_the_projection_being_present():
+    """投影缺失比 full pack 缺失更隐蔽(pack-check 会绿)—— 必须自己有一道闸。"""
+    src = _workflow_src()
+    assert "strategist-pack-check" in src
+    assert "strategist-pack-rebuild" in src or "strategist_pack " in src
+
+
+def test_macro_brief_agent_definition_points_at_the_projection():
+    """agent 定义里的路径也要跟上 —— 否则 agent 会按自己的说明去读 full pack。"""
+    from pathlib import Path
+
+    src = Path(".claude/agents/macro-brief.md").read_text(encoding="utf-8")
+    assert "strategist_pack.json" in src
+    assert "context/scan/<date>/market_pack.json" not in src

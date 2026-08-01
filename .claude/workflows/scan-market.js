@@ -105,6 +105,20 @@ if (!packok || !packok.ok) {
     log('pack-check ✓(重试后)')
   }
 }
+// Wave10 A4:投影缺失必须被发现 —— 策略师现在只读它,缺了就是**静默无输入**(比缺 full pack
+// 更隐蔽:pack-check 会绿,而 market_view 会写不出或凭空写)。缺则就地补投一次,仍缺则记账。
+const spok = await gate('strategist-pack-check',
+  `${R.replace('python -m', 'python -c')} "import json,sys;d=json.load(open('${SD}/strategist_pack.json'));sys.exit(0 if d.get('pack') else 1)" 2>/dev/null && echo '{"ok":true}' || echo '{"ok":false,"reason":"strategist_pack 缺失/空投影"}'`,
+  OK, 'Prelude')
+if (!spok || !spok.ok) {
+  await bash(`${R} autoresearch.scan.strategist_pack ${SD}/market_pack.json -o ${SD}/strategist_pack.json`,
+    'strategist-pack-rebuild', 'Prelude')
+  const spok2 = await gate('strategist-pack-recheck',
+    `${R.replace('python -m', 'python -c')} "import json,sys;d=json.load(open('${SD}/strategist_pack.json'));sys.exit(0 if d.get('pack') else 1)" 2>/dev/null && echo '{"ok":true}' || echo '{"ok":false,"reason":"补投后仍缺"}'`,
+    OK, 'Prelude')
+  log(spok2 && spok2.ok ? 'strategist-pack ✓(补投后)'
+    : '🚨 strategist_pack 补投后仍缺 → market_view 无输入(B级降级·已记账);L5 走确定性脉搏回退')
+}
 // universe(确定性)∥ market_view(macro-lite 判断)—— barrier
 await parallel([
   // W8-5:回显必须以**文件真在**为条件。原先 `prelude && echo SUMMARY_FILE=...` 只看 prelude
@@ -113,8 +127,14 @@ await parallel([
   () => bash(`${R} autoresearch.scan.prelude ${date}; test -s ${SD}/_prelude_summary.md ` +
     `&& echo "SUMMARY_FILE=${SD}/_prelude_summary.md" || echo "SUMMARY_MISSING(见 stderr 的落盘失败行)"`,
     'prelude/universe', 'Prelude'),
+  // Wave10 A4:策略师只拿**投影**(`strategist_pack.json`),不给 full pack。
+  // 此前防锚定写在这句 prompt 里(「pack 里的 sector_healthy_top3 …忽略它」)——
+  // 一句叮嘱管着一份就摆在眼前的数据,07-30/31 连续两日复发。指令级约束的失败率不为零,
+  // 数据级为零:看不见就写不出。投影由 `frame --json-out` 同步落盘,allowlist 之外的键
+  // (含 sector_healthy_top3 / run_contract / user_config 与**将来任何新增键**)默认进不来。
+  // full pack 仍是 L5 与 L3 数字 validator 的事实源,不受影响。
   () => agent(
-    `读 ${SD}/market_pack.json,按你的人设写 ${SD}/market_view.md(六小节;前3描述性地形、后2仅 L5)。数字只出自 pack,不编;个股不评级、不锚定卡片。pack 里的 sector_healthy_top3 键是 L5 专用的确定性产物,忽略它,不得把"看多行业"及其排名写进任何小节。`,
+    `读 ${SD}/strategist_pack.json 的 pack 段,按你的人设写 ${SD}/market_view.md(六小节;前3描述性地形、后2仅 L5)。数字只出自该文件,不编;个股不评级、不锚定卡片。`,
     { agentType: 'macro-brief', effort: cfg.agents?.strategist?.effort ?? 'high',
       ...(cfg.agents?.strategist?.model ? { model: cfg.agents.strategist.model } : {}),
       label: 'market_view', phase: 'Prelude' }),
