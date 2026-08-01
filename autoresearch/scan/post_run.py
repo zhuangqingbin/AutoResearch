@@ -746,7 +746,9 @@ def enqueue_finalist_dossiers(scan_dir: Path | str, analysis_date: str) -> list[
     # 无限累积(`pending_init()` 靠 `dossier_path().exists()` 在读时把它们过滤掉,但
     # 写侧从不清理)。每次入队顺手扫一遍摘掉"确认已建档"的条目;认不出的元素(既不是
     # dict 也不是非空 str)保守保留,不因看不懂形态就丢数据。
-    from autoresearch.dossier import schema as _schema  # lazy:与本文件其它 dossier 子模块导入同款风格
+    from autoresearch.dossier import (
+        schema as _schema,  # lazy:与本文件其它 dossier 子模块导入同款风格
+    )
     pend[:] = [e for e in pend
                if (parsed := _pending_entry_code(e)) is None
                or not _schema.dossier_path(parsed[0]).exists()]
@@ -776,6 +778,39 @@ def enqueue_finalist_dossiers(scan_dir: Path | str, analysis_date: str) -> list[
 
     _atomic_json(p, data)
     return added
+
+
+def enqueue_receipt(scan_dir: Path | str, analysis_date: str) -> dict:
+    """建档插队的**三数回执**(Wave10 A9):`requested / inserted / newly_visible`。
+
+    为什么必须是三个数:Wave9 I-1 的病灶正是「写进去了 ≠ 消费者看得见」——
+    `enqueue_finalist_dossiers` 往 `pending_init` 数组里写,而 `pool.pending_init()`
+    的候选集当时只看 `stocks`,于是回执报「新增 N 只」而消费者可见新增 0 只。
+    一个数说不清这件事:**报告只把 `newly_visible` 称「新增可见」**,另两个数用来
+    定位断在哪一段(想插几只 → 真写进去几只 → 消费者真看见几只)。
+
+    不改 `enqueue_finalist_dossiers` 的 `list[str]` 返回契约(20 个用例锁着它),
+    本函数是它的旁路读数。
+    """
+    from autoresearch.dossier import pool as _pool
+
+    sd = Path(scan_dir)
+    before = set(_pool.pending_init(_pool.load_pool()))
+    inserted = enqueue_finalist_dossiers(sd, analysis_date)
+    after = set(_pool.pending_init(_pool.load_pool()))
+
+    requested: list[str] = []
+    with contextlib.suppress(Exception), (sd / "finalists.csv").open(encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            raw = str(row.get("code", "") or "").strip()
+            if raw and str(row.get("lane", "") or "").strip() != "pinned":
+                requested.append(raw.split(".")[0].zfill(6))
+    return {
+        "requested": len(dict.fromkeys(requested)),
+        "inserted": len(inserted),
+        "newly_visible": len(after - before),
+        "inserted_codes": inserted,
+    }
 
 
 def _resolve_scan(value: str) -> Path:
@@ -812,7 +847,8 @@ def main(argv: list[str] | None = None) -> int:
                 phase=args.phase,
             )
             with contextlib.suppress(Exception):  # 插队建档失败不挡成本观测发布(Wave9 R6)
-                queued = enqueue_finalist_dossiers(scan, scan.name)
+                receipt = enqueue_receipt(scan, scan.name)
+                queued = receipt["inserted_codes"]
                 if queued:
                     print(f"[dossier] 插队 {len(queued)} 只:{', '.join(queued)}")
             print(json.dumps({

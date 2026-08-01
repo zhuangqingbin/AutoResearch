@@ -43,9 +43,23 @@ final-fix C-1(2026-07-30):本模块此前虽已写好,但**全仓零生产调用
 from __future__ import annotations
 
 import contextlib
+import json
+import time
 from datetime import datetime, timedelta
+from pathlib import Path
 
 SOURCE_TAG = "cninfo"
+CACHE_VERSION = 1
+NEGATIVE_TTL_SECONDS = 6 * 3600     # 负缓存有时限:6h
+
+# Wave10 A9:此前 203 只票是**串行**真调,实测 316.8s(1.56s/call)——L3 附加约 5min。
+# 两条腿一起上:
+#   ① 磁盘缓存,key = (code, 分析日, source, version)。**正缓存长期有效**:公告是
+#      as-of 固定的历史事实,同一分析日重跑不该再查一次网;
+#   ② **负缓存有时限**(6h)。这一条必须与正缓存分开 —— 把「这次没查到」永久缓存下来
+#      等于把一次网络抖动固化成「这只票没有公告」,而那正是本模块要治的病
+#      (「无权限」与「当日故障」在产物上长得一样)。
+_CACHE_ROOT = Path("context/cache/anns_fallback")
 
 _LOOKBACK_DAYS = 90   # 兜底源窗口:约一季度,够覆盖近期披露且不做无界历史查询
 
@@ -67,17 +81,85 @@ def _pick(row: dict, *keys: str) -> str:
     return ""
 
 
-def fetch_anns(code6: str, date: str, *, limit: int = 20) -> list[dict]:
+def _cache_path(code6: str, date: str) -> Path:
+    return _CACHE_ROOT / str(date) / f"{str(code6).zfill(6)}.v{CACHE_VERSION}.json"
+
+
+def _cache_read(code6: str, date: str) -> list[dict] | None:
+    """命中 → 行列表(可为空列表);未命中/负缓存过期 → None。"""
+    path = _cache_path(code6, date)
+    if not path.exists():
+        return None
+    with contextlib.suppress(Exception):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("source") != SOURCE_TAG or payload.get("version") != CACHE_VERSION:
+            return None
+        rows = payload.get("rows")
+        if not isinstance(rows, list):
+            return None
+        if rows:
+            return rows                                   # 正缓存:长期有效
+        age = time.time() - float(payload.get("at", 0))    # 负缓存:过期即重查
+        return rows if age < NEGATIVE_TTL_SECONDS else None
+    return None
+
+
+def _cache_write(code6: str, date: str, rows: list[dict]) -> None:
+    path = _cache_path(code6, date)
+    with contextlib.suppress(Exception):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_name(f"{path.name}.tmp")
+        temp.write_text(json.dumps(
+            {"source": SOURCE_TAG, "version": CACHE_VERSION, "at": time.time(),
+             "rows": rows}, ensure_ascii=False), encoding="utf-8")
+        temp.replace(path)
+
+
+def fetch_anns_batch(codes, date: str, *, limit: int = 20,
+                     workers: int = 8, cache: bool = True) -> dict[str, list[dict]]:
+    """有界并发批量取(Wave10 A9)。逐票仍走 `fetch_anns`(含缓存),只是不再排队等。
+
+    并发上界写死为**有界**:兜底源是别人的服务,无界并发既不礼貌也会触发限频 ——
+    那会把「慢」换成「被拒」,不是改进。
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    want = [str(c).zfill(6) for c in codes]
+    if not want:
+        return {}
+    out: dict[str, list[dict]] = {}
+    with ThreadPoolExecutor(max_workers=max(1, int(workers))) as pool:
+        for code, rows in zip(want, pool.map(
+                lambda c: fetch_anns(c, date, limit=limit, cache=cache), want),
+                strict=False):
+            out[code] = rows
+    return out
+
+
+def fetch_anns(code6: str, date: str, *, limit: int = 20,
+               cache: bool = False) -> list[dict]:
     """→ `[{"ann_date": "YYYYMMDD", "title": str, "source": SOURCE_TAG}, ...]`,失败/无数据 → `[]`。
 
     as-of 铁律:`ann_date > date` 的行一律丢弃(前视污染)。
+
+    `cache` **默认关**(Wave10 A9 复核实测):缓存写的是进程全局路径,如果这个纯取数函数
+    偷偷带上它,任何直调者(包括测试)都会读到别人留下的条目 —— 实测就让 5 条既有用例
+    读到真实缓存而不是自己的夹具。**取数是取数,缓存是效果**,由知道自己在批量跑的
+    调用方(`fetch_anns_batch`)显式打开。
     """
+    cached = _cache_read(code6, date) if cache else None
+    if cached is not None:
+        return cached
     cut = date.replace("-", "")
     try:
         df = _raw_notices(code6, date)
     except Exception:  # noqa: BLE001 — B 级源:取数失败降级为空,由调用方记账
+        # **不写缓存**:异常是"没查成",不是"没有公告"。把它记成负缓存会让一次网络抖动
+        # 在 6h 内一直伪装成"这只票没公告"——正是本模块存在要治的那类静默。
         return []
     if df is None or not len(df):
+        if cache:
+            _cache_write(code6, date, [])      # 真·无料 → 负缓存(有时限)
         return []
 
     rows: list[dict] = []
@@ -92,6 +174,8 @@ def fetch_anns(code6: str, date: str, *, limit: int = 20) -> list[dict]:
         rows.append({"ann_date": ann, "title": title, "source": SOURCE_TAG})
         if len(rows) >= limit:
             break
+    if cache:
+        _cache_write(code6, date, rows)
     return rows
 
 

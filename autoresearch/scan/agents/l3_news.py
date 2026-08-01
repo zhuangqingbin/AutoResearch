@@ -185,13 +185,27 @@ def harvest_l3_news(date: str, codes, root: Path | None = None, lookback_days: i
               f"非 anns_d 退役。", file=sys.stderr)
 
     # Wave9 final-fix C-1:兜底源补桶 —— 只补仍是空桶的票,已有主源真数据的桶不覆盖/不重复查询。
+    # Wave10 A9:此前是**串行** —— 203 只 × 1.56s/call 实测 316.8s,L3 附加约 5min。
+    # 改有界并发 + 逐票磁盘缓存(见 anns_fallback 模块头):同一分析日重跑几乎零网络。
     fb_hits = fb_rows = fb_errors = 0
-    for c in want:
-        if buckets[c]:
-            continue
+    # 并发放在**调用侧**、逐票仍走 `_fallback_fetch_anns` 这个模块级名字 ——
+    # 它是既有测试的 monkeypatch 点(直接 import 批量函数会绕过 patch,让那些锁住
+    # 「兜底真被调用 / 异常降级不抛」的用例静默失效)。
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _one(code):
         try:
-            fb = _fallback_fetch_anns(c, date)
-        except Exception:  # noqa: BLE001 — B 级契约:兜底本身炸了也不得阻断漏斗
+            return code, _fallback_fetch_anns(code, date), None
+        except Exception as exc:  # noqa: BLE001 — B 级契约:兜底炸了不得阻断漏斗
+            return code, None, exc
+
+    empty = [c for c in want if not buckets[c]]
+    results = []
+    if empty:
+        with ThreadPoolExecutor(max_workers=min(8, len(empty))) as pool:
+            results = list(pool.map(_one, empty))
+    for c, fb, err in results:
+        if err is not None or fb is None:
             fb_errors += 1
             continue
         if fb:

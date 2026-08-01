@@ -77,6 +77,9 @@ def run(today: str) -> list[tuple[str, bool, str]]:
         names = ["journal", "buy_ledger", "cross_calib", "catalyst_ledger", "paper_nav",
                  "channel_ledger", "gate_attribution", "gate_ledger", "zero_buy_ledger",
                  "changelog_ledger", "earlystop_ledger", "pinned_ledger",
+                 # Wave10:哨兵校准(A12/C4)与 L3→L4 对齐(C2.1)都是纯读账本,
+                 # 必须排在 gate_attribution 之后(对齐账本读它的 participation)。
+                 "sentinel_audit", "l3_l4_alignment",
                  "evidence_manifest"]
         ok = 0
         for n in names:
