@@ -171,36 +171,36 @@ def _finalist_row(scan_dir: Path, fr: dict) -> dict:
         "rubric_dev": bool(_DEV_RE.search(text)),                # 卡片有 **偏离** 说明 → 豁免
     }
 
+# Wave10 A11 复核实测(2026-08-01):`**` 强调号是**卡片里的主流写法**,而此前的跳过逻辑
+# 只跳空白。全语料 241 张带门柱段的卡里 **42 张(17.4%)** 因此被判成「三门全过」——
+# 方向还是单向的:**真失守被读成通过**。链路上的每一环都吃了这个错:
+#   decision_records 记 PASS → `decision_gate_bucket` 返回 None → 该票**根本不进门账本**;
+#   门柱直方图少数;`shadow_buys.binding` 空;`classify_first_death` 从 `L4_GATE_*` 掉到
+#   `L4_RUBRIC_SCORE`/`DATA_UNDECIDABLE`;A11 的门归因 v3 全盘继承。
+# 症状很像「这道门最近没怎么拦人」,而事实是「解析器看不懂加粗」。
+_EMPHASIS = "*_`"
+
+
+def _mark_after(seg: str, gate: str) -> str:
+    """门名之后的 ✓/✗ 标记(容错:「门」后缀、空白、markdown 强调号);没有 → ""。"""
+    i = seg.find(gate)
+    if i < 0:
+        return ""
+    j = i + len(gate)
+    if seg[j:j + 1] == "门":                    # 措辞容错:「主力真在门✗」
+        j += 1
+    while seg[j:j + 1] and (seg[j].isspace() or seg[j] in _EMPHASIS):
+        j += 1                                  # 空白 + `**`/`__`/`` ` `` 一并跳过
+    return seg[j:j + 1] if seg[j:j + 1] in ("✓", "✗") else ""
+
+
 def _parse_gate_seg(seg: str) -> dict[str, bool]:
-    """单段『OW三门…』文本 → {门: 是否✗};门名允许紧邻「门」后缀 + 空白再判标记,找不到判 False
-    (gate_status 的既有语义,供其挑出目标段后调用)。"""
-    out: dict[str, bool] = {}
-    for g in _GATES3:
-        i = seg.find(g)
-        if i < 0:
-            continue
-        j = i + len(g)
-        if seg[j:j + 1] == "门":                # 措辞容错:「主力真在门✗」
-            j += 1
-        while seg[j:j + 1].isspace():           # 措辞容错:门名与标记之间的空格(l4-card.md Rubric 行写法)
-            j += 1
-        out[g] = seg[j:j + 1] == "✗"
-    return out
+    """单段『OW三门…』文本 → {门: 是否✗};找不到标记判 False(gate_status 的既有语义)。"""
+    return {g: _mark_after(seg, g) == "✗" for g in _GATES3 if g in seg}
 
 def _seg_has_mark(seg: str) -> bool:
-    """段内是否至少一个门名紧邻(容许「门」后缀 + 空白)着实际 ✓/✗ 标记——用来判该段是否「可解析」。"""
-    for g in _GATES3:
-        i = seg.find(g)
-        if i < 0:
-            continue
-        j = i + len(g)
-        if seg[j:j + 1] == "门":
-            j += 1
-        while seg[j:j + 1].isspace():
-            j += 1
-        if seg[j:j + 1] in ("✓", "✗"):
-            return True
-    return False
+    """段内是否至少一个门名带着实际 ✓/✗ 标记——用来判该段是否「可解析」。"""
+    return any(_mark_after(seg, g) for g in _GATES3)
 
 def gate_status(text: str) -> dict[str, bool] | None:
     """解析卡文『OW三门…』段 → {门: 是否✗失守};无门柱段(如早停卡)→ None。

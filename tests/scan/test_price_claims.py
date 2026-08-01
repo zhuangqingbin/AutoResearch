@@ -91,8 +91,11 @@ def test_extract_skips_range_phrase():
 
 
 def test_audit_bad_date_noop():
-    assert audit_card_text("协创数据 07-21 大涨 11.4%。", name=NAME, code6=CODE,
-                           date="", bars_fn=lambda c, d, t: {}) == {"n_claims": 0, "mismatches": []}
+    # Wave10 A3 起返回值多带主语计数(`n_candidate/...`);断言仍锁死"不产断言、不报不符"
+    res = audit_card_text("协创数据 07-21 大涨 11.4%。", name=NAME, code6=CODE,
+                          date="", bars_fn=lambda c, d, t: {})
+    assert res["n_claims"] == 0 and res["mismatches"] == []
+    assert res["n_candidate"] == 0    # date 坏 → 连候选都不该数出来
 
 
 # ── C-1 修(2026-07-23 终审):三条真卡假阳向量,逐字用原文,各自不产错误断言 ──

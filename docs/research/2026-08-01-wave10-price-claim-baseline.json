@@ -1,0 +1,183 @@
+{
+  "days": [
+    "2026-07-15",
+    "2026-07-16",
+    "2026-07-17",
+    "2026-07-21",
+    "2026-07-24",
+    "2026-07-27",
+    "2026-07-28",
+    "2026-07-29",
+    "2026-07-30",
+    "2026-07-31"
+  ],
+  "n_candidate": 124,
+  "n_cards": 109,
+  "n_excluded": 88,
+  "n_own": 30,
+  "n_unknown": 6,
+  "per_day": {
+    "2026-07-15": {
+      "n_candidate": 2,
+      "n_cards": 12,
+      "n_excluded": 2,
+      "n_own": 0,
+      "n_unknown": 0,
+      "subjects": {
+        "fund_flow": 1,
+        "index": 1
+      },
+      "unknown_rate": 0.0
+    },
+    "2026-07-16": {
+      "n_candidate": 6,
+      "n_cards": 13,
+      "n_excluded": 3,
+      "n_own": 3,
+      "n_unknown": 0,
+      "subjects": {
+        "own_stock_price": 3,
+        "quoted_or_refuted": 3
+      },
+      "unknown_rate": 0.0
+    },
+    "2026-07-17": {
+      "n_candidate": 1,
+      "n_cards": 9,
+      "n_excluded": 0,
+      "n_own": 1,
+      "n_unknown": 0,
+      "subjects": {
+        "own_stock_price": 1
+      },
+      "unknown_rate": 0.0
+    },
+    "2026-07-21": {
+      "n_candidate": 12,
+      "n_cards": 12,
+      "n_excluded": 8,
+      "n_own": 4,
+      "n_unknown": 0,
+      "subjects": {
+        "cumulative_move": 4,
+        "forward_scenario": 2,
+        "index": 2,
+        "own_stock_price": 4
+      },
+      "unknown_rate": 0.0
+    },
+    "2026-07-24": {
+      "n_candidate": 13,
+      "n_cards": 11,
+      "n_excluded": 4,
+      "n_own": 7,
+      "n_unknown": 2,
+      "subjects": {
+        "UNKNOWN_SUBJECT": 2,
+        "cumulative_move": 1,
+        "forward_scenario": 2,
+        "own_stock_price": 7,
+        "quoted_or_refuted": 1
+      },
+      "unknown_rate": 0.1538
+    },
+    "2026-07-27": {
+      "n_candidate": 21,
+      "n_cards": 10,
+      "n_excluded": 14,
+      "n_own": 5,
+      "n_unknown": 2,
+      "subjects": {
+        "UNKNOWN_SUBJECT": 2,
+        "cumulative_move": 2,
+        "forward_scenario": 1,
+        "fundamental": 2,
+        "index": 1,
+        "own_stock_price": 5,
+        "quoted_or_refuted": 8
+      },
+      "unknown_rate": 0.0952
+    },
+    "2026-07-28": {
+      "n_candidate": 16,
+      "n_cards": 11,
+      "n_excluded": 13,
+      "n_own": 3,
+      "n_unknown": 0,
+      "subjects": {
+        "cumulative_move": 2,
+        "forward_scenario": 1,
+        "index": 1,
+        "own_stock_price": 3,
+        "quoted_or_refuted": 9
+      },
+      "unknown_rate": 0.0
+    },
+    "2026-07-29": {
+      "n_candidate": 17,
+      "n_cards": 10,
+      "n_excluded": 14,
+      "n_own": 1,
+      "n_unknown": 2,
+      "subjects": {
+        "UNKNOWN_SUBJECT": 2,
+        "cumulative_move": 2,
+        "forward_scenario": 3,
+        "own_stock_price": 1,
+        "quoted_or_refuted": 9
+      },
+      "unknown_rate": 0.1176
+    },
+    "2026-07-30": {
+      "n_candidate": 23,
+      "n_cards": 11,
+      "n_excluded": 19,
+      "n_own": 4,
+      "n_unknown": 0,
+      "subjects": {
+        "baseline_reference": 1,
+        "cumulative_move": 1,
+        "forward_scenario": 4,
+        "fund_flow": 1,
+        "fundamental": 1,
+        "index": 1,
+        "own_stock_price": 4,
+        "peer_or_other_stock": 1,
+        "quoted_or_refuted": 9
+      },
+      "unknown_rate": 0.0
+    },
+    "2026-07-31": {
+      "n_candidate": 13,
+      "n_cards": 10,
+      "n_excluded": 11,
+      "n_own": 2,
+      "n_unknown": 0,
+      "subjects": {
+        "forward_scenario": 1,
+        "fund_flow": 1,
+        "implausible_daily_move": 1,
+        "index": 1,
+        "own_stock_price": 2,
+        "quoted_or_refuted": 5,
+        "ratio_share": 2
+      },
+      "unknown_rate": 0.0
+    }
+  },
+  "subjects": {
+    "UNKNOWN_SUBJECT": 6,
+    "baseline_reference": 1,
+    "cumulative_move": 12,
+    "forward_scenario": 14,
+    "fund_flow": 3,
+    "fundamental": 3,
+    "implausible_daily_move": 1,
+    "index": 7,
+    "own_stock_price": 30,
+    "peer_or_other_stock": 1,
+    "quoted_or_refuted": 44,
+    "ratio_share": 2
+  },
+  "unknown_rate": 0.0484
+}

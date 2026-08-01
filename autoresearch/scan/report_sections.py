@@ -6,9 +6,9 @@ from collections import Counter
 from pathlib import Path
 
 from autoresearch.scan.decision_finalize import (
-    TIER_RANK,
     _PROPOSAL_BY_RATING,
     _VERDICT_BADGE,
+    TIER_RANK,
     _apply_ensemble_fold,
     _apply_verify_downgrade,
     _dump_decision_records,
@@ -18,6 +18,8 @@ from autoresearch.scan.decision_finalize import (
     _load_ensemble,
     _load_verify,
     _verify_badge,
+    build_dissent_records,
+    dump_dissent_records,
 )
 from autoresearch.scan.l4.parsers import (
     _GATES3,
@@ -629,6 +631,8 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
             r["ens_flag"] = True                # 🎭复核分歧:spread≥2 → 行 badge + 组合视角人裁提示
     _dump_final_ratings(scan_dir, rows)   # P0-2:两个 fold 循环已跑完 → rows["rating"] 即终评级,落盘供 retro 优先 join(含保送,retro 口径不变)
     _dump_decision_records(scan_dir, rows, vmap, emap)
+    # A1:复核分歧的结构化事实 —— 单向阀吃掉的持仓分歧此前在报告里零痕迹(920179 立案现场)
+    dump_dissent_records(scan_dir, build_dissent_records(rows, emap))
     rows.sort(key=_sortkey)
     # ── feedback fb_20260714_001:保送(lane==pinned)与真实精选分列 ──
     # lane 是运行期烤进 finalists.csv 的事实(_inject_pinned_finalists 强改判),比当前 pinned.jsonc
@@ -755,9 +759,23 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
     if cal:
         out += ["", cal]
     out += ["", "### 组合视角", _portfolio_note(genuine_rows)]
-    ens_lines = _ensemble_dissent_lines(emap)   # 🎭 spread≥2 人裁提示(presence-gated:无分歧 → [])
+    # A1:传 rows 后同时出「持仓保护规则」行(需要 lane 与卡面评级,只有 rows 里有)
+    ens_lines = _ensemble_dissent_lines(emap, rows)   # presence-gated:无分歧 → []
     if ens_lines:
         out += [""] + ens_lines
+    # C3:0买日的聚合「差一点」+ 弃权 banner 走正文;逐只读数只进文末附录(§R6:
+    # 只给个案不给分母会把读者推向绕门)。非 0买日 / 无 shadow → 全部 presence-gated 为空。
+    import contextlib as _ctx
+
+    from autoresearch.scan import near_miss  # 文件惯例:可选层在函数内 import
+    near_miss_facts = None
+    with _ctx.suppress(Exception):           # 证据层坏了不该阻断发布
+        near_miss_facts = near_miss.build(scan_dir, n_buys=len(
+            [r for r in genuine_rows if r.get("proposal") == "BUY"]))
+        for line in (near_miss.summary_line(near_miss_facts),
+                     near_miss.abstention_line(near_miss_facts)):
+            if line:
+                out += ["", line]
     chain = _same_chain_block(genuine_rows)  # Phase 3:同链 ≥2 卡并排(择链上最佳表达素材;保送不计)
     if chain:
         out += ["", chain]
@@ -768,6 +786,11 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
     kn = _knowledge_note(rows)
     if kn:
         out += [kn]
+    if near_miss_facts is not None:          # C3:逐只读数只在这里,与 buy-list 不同视觉层级
+        with _ctx.suppress(Exception):
+            appendix = near_miss.appendix_lines(near_miss_facts)
+            if appendix:
+                out += ["", *appendix]
     out += _stage_token_estimate(scan_dir)
     # ── ⏳ 待裁决提案 nag(presence-gated;仅真实现场注入,镜像 paper_nav 成绩单守卫防 tmp 测试污染)──
     if scan_dir == Path("context/scan") / analysis_date:

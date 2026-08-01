@@ -277,6 +277,15 @@ def main(argv: list[str] | None = None) -> int:
         if args.json_out:
             out = _atomic_write_json(args.json_out, payload)
             print(f"[frame] market_pack → {out}(原子落盘)", file=sys.stderr)
+            # A4:同时投影出策略师那份。full pack 仍是 L5/L3 validator 的事实源,
+            # 策略师只拿投影 —— 防锚定从"叮嘱它忽略 sector_healthy_top3"变成"它看不见"。
+            try:
+                from autoresearch.scan.strategist_pack import write as write_strategist
+                sp = write_strategist(payload, Path(out).with_name("strategist_pack.json"))
+                print(f"[frame] strategist_pack → {sp}(单向投影)", file=sys.stderr)
+            except Exception as e:  # noqa: BLE001 — 投影失败只让策略师少一份输入,不毁整帧
+                print(f"[warn] strategist_pack 投影失败(策略师将无输入): {e}",
+                      file=sys.stderr)
         if args.json:
             print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0

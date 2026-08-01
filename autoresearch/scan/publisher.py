@@ -42,6 +42,25 @@ def _news_headline(intel_path: Path) -> str:
     return f"📰 {head} · 24h {h24} 条 · 详见文末情报附录"
 
 
+def _dissent_head(record: dict) -> str:
+    """结构化分歧记录 → 卡头一行。三个评级字段全取自记录,渲染层不重判(A1)。"""
+    from autoresearch.scan.decision_finalize import DissentRecord, dissent_line
+
+    return dissent_line(DissentRecord(
+        schema_version=int(record.get("schema_version", 1)),
+        code=str(record.get("code", "")),
+        lane=str(record.get("lane", "")),
+        trigger=str(record.get("trigger", "")),
+        card_rating=str(record.get("card_rating", "—")),
+        median_rating=str(record.get("median_rating", "—")),
+        final_rating=str(record.get("final_rating", "—")),
+        ratings=tuple(record.get("ratings") or []),
+        spread=int(record.get("spread", 0)),
+        degraded=bool(record.get("degraded")),
+        kind=str(record.get("kind", "")),
+    ))
+
+
 def _inject_news_headline(body: str, head_line: str) -> str:
     """把 📰 头行插在卡片"标题行"之后。
 
@@ -75,6 +94,9 @@ def _publish_details(scan_dir: Path, detail_out: Path) -> int:
     src = scan_dir / "details"
     if not src.is_dir():
         return 0
+    # A1:decision_finalize 落的结构化分歧事实;缺文件 → {}(presence-gated,老路不破)
+    from autoresearch.scan.decision_finalize import load_dissent_records
+    dissent_map = load_dissent_records(scan_dir)
     n = 0
     for fr in _read_csv(scan_dir / "finalists.csv"):
         code = str(fr.get("code", "")).zfill(6)
@@ -93,6 +115,15 @@ def _publish_details(scan_dir: Path, detail_out: Path) -> int:
             card_text = dst.read_text(encoding="utf-8")
             dst.write_text(_inject_news_headline(card_text, _news_headline(intel)),
                             encoding="utf-8")
+        # A1:复核分歧行(结构化事实只渲染,不在这里重判)——单向阀吃掉的持仓分歧
+        # 此前在卡上零痕迹,读者看不到"三次复核有两次说 Sell"。
+        rec = dissent_map.get(code)
+        if rec:
+            with contextlib.suppress(Exception):
+                dst.write_text(
+                    _inject_news_headline(dst.read_text(encoding="utf-8"),
+                                          _dissent_head(rec)),
+                    encoding="utf-8")
         if intel.exists():
             try:
                 body = intel.read_text(encoding="utf-8").strip()
@@ -120,6 +151,12 @@ def _publish_details(scan_dir: Path, detail_out: Path) -> int:
                 else:
                     line = (f"\n\n---\n_🔎 价格断言对账(确定性·advisory):{res['n_claims']} 条可对账,"
                             f"0 条不符_\n")
+                # A3:主语分布同屏 —— 「只对了 N 条」与「另外 M 条被判成别人的主语」是两件事,
+                # 读者必须能看见分母,否则 0 条不符既可能是真干净、也可能是抽取器瞎了
+                if res.get("n_candidate"):
+                    line = line.rstrip("\n") + (
+                        f"\n_(候选 {res['n_candidate']} = 本票股价 {res['n_own']} + "
+                        f"他类主语 {res['n_excluded']} + 主语未定 {res['n_unknown']})_\n")
                 with dst.open("a", encoding="utf-8") as fh:
                     fh.write(line)
         n += 1

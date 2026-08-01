@@ -23,11 +23,92 @@
 
 **已知简化(终审遗留#1):每句只取首个可认领断言(under-report,非假阳)——上面四类先滤掉
 非价格 %,再取首个存活的 % 当断言;同句更靠后的第二条已实现移动会漏抽。**
+
+**Wave10 A3(2026-08-01)把默认翻了过来**:上面那套「默认认领 + 列举排除」的架构,词表漏
+一个词就多一条对读者说「分析师捏造股价」的自信误指控 —— 而词表永远补不完(具体指数名从
+科创50 补到创指、再到存储指数)。现在改成**先定主语**:每个 % 由 `subject_of_pct` 判出
+一个 `SUBJECTS` 里的主语,**只有 `own_stock_price` 进对账**;判不出主语记 `UNKNOWN_SUBJECT`
+计量(不告警、不静默丢)。上面四类排除全部保留,成为主语判定的前置规则。详见 `SUBJECTS`
+下方的立案注。
 """
 from __future__ import annotations
 
 import contextlib
 import re
+from dataclasses import dataclass, field
+from pathlib import Path
+
+# ── Wave10 A3(2026-08-01):先定主语,再抽数 ────────────────────────────────
+#
+# 立案现场(07-30/31 三张真卡,三个**不同**缺陷,不是一个):
+#   · 000651 `主力净额…8.04 亿/占比 +3.7%`  → 主语是**资金占比**,被判成本票股价;
+#   · 688766 `A股存储指数 +6.6%`           → 主语是**板块指数**;`存储指数` 不在市场指数
+#                                            黑名单里,而黑名单永远补不完具体指数名;
+#   · 600535 `(vs 7/29 收 15.95,-0.44%)`  → 主语**确实**是本票股价,但 `7/29` 是**基准日**
+#                                            不是主语日 —— −0.44% 说的是 7/30 的移动。
+#
+# 前两类的共性:此前的架构是「默认认领,列举排除」—— 词表漏一个词就多一条对读者说
+# 「分析师捏造股价」的自信误指控。本波把默认翻过来:**只有拿到本票股价的正面证据才认领**,
+# 拿不到就记 `UNKNOWN_SUBJECT` 计量(不告警、不静默丢),让漏抽变成一个**看得见的数**。
+#
+# 判定方式是**就近**而不是"左窗里有没有这个词"(见 `_nearest_subject` 的注):
+# 「板块普涨,本股涨 3%」里 `本股` 比 `板块` 近,那 3% 就是本股的。
+#
+# 收紧类改动必须同时量误排除率:本波在 542 张历史卡上做了双版回放 ——
+# 认领口径一致 24→31(找回 7 条此前被词表吞掉的真阳)、新增认领 0、不再认领 10 条
+# 且逐条人工判为真假阳(主力占比 / 概念板块资金 / 存储指数 / 基准日错配)。
+
+SUBJECTS = (
+    "own_stock_price",          # 唯一进对账的主语
+    "ratio_share",              # 占比/净比/仓位/持股/换手/市占
+    "fund_flow",                # 主力净额/净流入/融资余额…
+    "index",                    # 指数(含板块/行业指数)/板块/行业整体
+    "peer_or_other_stock",      # 他票(「4 家涨停」)
+    "fundamental",              # 营收/净利/业绩预告…
+    "forward_scenario",         # Bull/目标/看至/预告区间
+    "cumulative_move",          # 区间/累计移动
+    "baseline_reference",       # vs/较 某日 —— 该日是基准不是主语日
+    "quoted_or_refuted",        # 转述/否决/负判
+    "implausible_daily_move",   # 单日物理不可能
+    "parse_artifact",           # 日期与 % 抢同段字符
+    "UNKNOWN_SUBJECT",          # 定不出主语:不认领,但计量
+)
+_CLAIMED_SUBJECT = "own_stock_price"
+
+
+@dataclass
+class ClaimAudit:
+    """一张卡的抽取结果 + 主语分布。`counts` 让漏抽变成看得见的数,而不是静默。"""
+    claims: list[dict] = field(default_factory=list)
+    counts: dict[str, int] = field(default_factory=dict)
+    unknown_snippets: list[str] = field(default_factory=list)
+
+    @property
+    def n_candidate(self) -> int:
+        return sum(self.counts.values())
+
+    @property
+    def n_own(self) -> int:
+        return self.counts.get(_CLAIMED_SUBJECT, 0)
+
+    @property
+    def n_unknown(self) -> int:
+        return self.counts.get("UNKNOWN_SUBJECT", 0)
+
+    @property
+    def n_excluded(self) -> int:
+        return self.n_candidate - self.n_own - self.n_unknown
+
+    @property
+    def unknown_rate(self) -> float | None:
+        return None if not self.n_candidate else round(
+            self.n_unknown / self.n_candidate, 4)
+
+    def summary(self) -> dict:
+        return {"n_candidate": self.n_candidate, "n_own": self.n_own,
+                "n_excluded": self.n_excluded, "n_unknown": self.n_unknown,
+                "unknown_rate": self.unknown_rate, "subjects": dict(self.counts)}
+
 
 _SENT_SPLIT = re.compile(r"[。;;\n]")
 # ── Wave7 B′-b(2026-07-27 实锤,4/4 假阳):引用/否决/负判句整句不认领 ──
@@ -50,6 +131,11 @@ _QUOTE_OR_REFUTE = (
     "未对账", "对账", "不采信", "未采信", "该价格断言",           # 否决:卡片已判它不可信
     "非涨停", "非跌停", "未见于", "未涨停", "未跌停",            # 负判:句意是「没发生」
 )
+# ⚠️ Wave10 A3 试过把 `转引` 也收成**整句**裸词(卡里写的是 `〔情报站转引 财联社〕`,
+# 词表只有 `转引标题`)—— 全语料回放证明代价太大:601288 那句
+# 「本票今日 +3.57%(已核·verified OHLCV)对照【网查·〔转引〕】银行指数当日 +1.43%」
+# 里,**本票自陈和转引的指数行情在同一句**,整句豁免会把真自陈一起扔掉。
+# 所以转引类改走**逐 % 的就近判定**(见 `_QUOTE_LOCAL`):谁离这个数字更近,主语就是谁。
 # ⚠️ 2026-07-29(W8-14)加的四条,都是**词形差一点就漏网**的实例:
 #   卡里写 `非本票行情断言`,词表只有 `非本票行情自陈`;
 #   卡里写 `未与本票 OHLCV 对账`,词表只有 `未对账`(中间插了字,子串匹配不上)。
@@ -108,6 +194,91 @@ _INDEX_NAMES = ("科创50", "沪深300", "上证指数", "上证综指", "深证
                 # 写的是「创指当日跌7.35%」,而词表只有「创业板指」,左邻窗认不出,
                 # 于是那 −7.35% 被认领成农行自己的断言。同族补齐:沪指/深指/科创综指。
                 "创指", "沪指", "深指", "科创综指", "科创板指")
+
+
+# ── Wave10 A3:别人的主语(词表 + 一道「更近的本票标记优先」保护)──────────────
+_RATIO = ("占比", "净比", "比例", "仓位", "持股", "换手", "市占", "流通盘", "权重")
+_FUND_FLOW = ("主力", "净流入", "净流出", "净额", "北向", "融资余额", "融券",
+              "龙虎榜", "小单", "大单", "中单", "散户", "资金净")
+# 具体指数名永远补不完(科创50→创指→科创综指→存储指数…),所以再加一层**结构词**:
+# 「…指数 +X%」「…板块 +X%」「…行业 +X%」的主语一律不是本票。
+_INDEX_GENERIC = ("指数", "板块", "行业", "梯队", "同业")
+# 「4 家涨停」「3 只涨停」= 别的票的行情
+_PEER_MARKS = ("家涨停", "家跌停", "只涨停", "只跌停", "等涨停", "等跌停")
+# 逐 % 的转引判定(整句豁免代价太大,见 `_QUOTE_OR_REFUTE` 下的注)
+_QUOTE_LOCAL = ("转引", "转述", "据报", "网查", "intel 载", "intel 称")
+# `vs 7/29 收 15.95,-0.44%` —— 该日期是**基准**不是主语日(600535 07-30 实锤)
+_BASELINE_MARKS = ("vs", "VS", "较", "相对", "对比")
+_BASELINE_BACK = 5      # 基准标记紧邻日期之前的窗
+# `个股次日 -6%` —— 主语日是绝对日期的次日,不是它本身
+_RELATIVE_DATE_MARKS = ("次日", "翌日", "隔日", "前一日", "上一日", "前一个交易日")
+# 本票股价的**正面证据**:价格动作 / 已实现标记 / 本票指代
+_PRICE_EVIDENCE = ("上涨", "大涨", "涨", "下跌", "大跌", "跌", "涨幅", "跌幅",
+                   "涨停", "跌停", "高开", "低开", "跳空", "冲高", "冲低",
+                   "反抽", "反弹", "回吐", "收涨", "收跌", "收于", "收报",
+                   "报收", "后收", "收在", "收盘", "单日", "已实测", "实测",
+                   "实读", "verified", "OHLCV")
+_SCAN_BACK = 24         # 就近判定向前扫的字符窗
+_SCAN_FWD = 12          # 向后扫的字符窗(证据也可能在数字之后:「+16.4% 反抽」)
+_AFTER_PENALTY = 6      # 数字之后的命中加固定罚距 —— 中文修饰语通常前置
+
+
+def _alt(words) -> re.Pattern:
+    return re.compile("|".join(re.escape(w) for w in words if w))
+
+
+def _subject_patterns(name: str, code6: str) -> tuple[tuple[re.Pattern, str], ...]:
+    """就近判定用的 (模式, 主语) 表。本票指代含卡片自己的名称/代码。"""
+    own = [*_SELF_MARKS, *_PRICE_EVIDENCE, *(t for t in (name, code6) if t)]
+    return (
+        (_alt(_RATIO), "ratio_share"),
+        (_alt(_FUND_FLOW), "fund_flow"),
+        (_alt(_INDEX_GENERIC), "index"),
+        (_alt(_PEER_MARKS), "peer_or_other_stock"),
+        (_alt(_QUOTE_LOCAL), "quoted_or_refuted"),
+        (_alt(own), _CLAIMED_SUBJECT),
+    )
+
+
+def _nearest_subject(sent: str, npos: int, name: str, code6: str) -> str | None:
+    """**离这个数字最近的主语标记胜出**。够不到任何标记 → None(= UNKNOWN_SUBJECT)。
+
+    为什么不是"左窗里有没有某个词":固定窗口太脆,同一波回放里两种方向都踩到了 ——
+      · 证据在更左边:`…冲高 422.37 后收 389.64(**-4.36%**)` 的 `后收` 落在 12 字窗外;
+      · 证据在右边:  `那根 +16.4% 反抽后仍创新低` 的 `反抽` 根本在数字之后。
+    调窗口宽度是在两类错误之间来回搬运,而不是消除它们。就近判定直接问对了问题:
+    「这个百分号,离谁最近就是在说谁」——「板块普涨,本股涨 3%」里 `本股` 比 `板块` 近,
+    「A股存储指数 +6.6%」里 `指数` 比任何本票指代都近。
+
+    数字**之前**的标记优先(中文修饰语通常前置),故对数字之后的命中加一个固定罚距。
+    """
+    best: tuple[int, str] | None = None
+    window = sent[max(0, npos - _SCAN_BACK):min(len(sent), npos + _SCAN_FWD)]
+    offset = npos - max(0, npos - _SCAN_BACK)
+    for pattern, subject in _subject_patterns(name, code6):
+        for m in pattern.finditer(window):
+            if m.end() <= offset:
+                distance = offset - m.end()
+            else:
+                distance = m.start() - offset + _AFTER_PENALTY
+            if best is None or distance < best[0]:
+                best = (distance, subject)
+    return None if best is None else best[1]
+
+
+def _is_baseline_date(sent: str, dm: re.Match) -> bool:
+    """`vs 7/29 收 …` —— 日期前紧邻基准标记 ⇒ 它是参照系,不是断言的主语日。"""
+    return any(mark in sent[max(0, dm.start() - _BASELINE_BACK):dm.start()]
+               for mark in _BASELINE_MARKS)
+
+
+def _is_relative_date_claim(sent: str, npos: int) -> bool:
+    """`个股次日 -6% 回吐` —— 主语日是"某绝对日期的次日",不是那个绝对日期本身。
+
+    主语判对了、日期判错了,对账照样输出「捏造股价」的误指控 —— 所以宁可不认领。
+    """
+    return any(mark in sent[max(0, npos - _SCAN_BACK):npos]
+               for mark in _RELATIVE_DATE_MARKS)
 
 
 def _near_index_name(sent: str, pct_pos: int, name: str = "", window: int = 13) -> bool:
@@ -188,6 +359,45 @@ def _range_left(sent: str, dates: list[re.Match], dm: re.Match, npos: int, gap: 
     return start
 
 
+def subject_of_pct(sent: str, dm: re.Match, pm: re.Match, dates: list[re.Match],
+                   *, name: str = "", code6: str = "") -> str:
+    """这个 % 的**主语**是什么。`own_stock_price` 是唯一进对账的一类(Wave10 A3)。
+
+    顺序即优先级:先把"确定属于别人/别的量纲"的排掉,最后才问"有没有本票股价的正面证据"
+    —— 没有证据不等于是本票的,那叫 `UNKNOWN_SUBJECT`,计量但不认领。
+    """
+    if not _is_realized_price_pct(sent, dm, pm, dates, name=name):
+        return _rejection_subject(sent, dm, pm, dates, name=name)
+    npos = _num_pos(pm)
+    if _is_baseline_date(sent, dm) or _is_relative_date_claim(sent, npos):
+        return "baseline_reference"
+    subject = _nearest_subject(sent, npos, name, code6)
+    if subject is None:
+        return "UNKNOWN_SUBJECT"
+    if subject != _CLAIMED_SUBJECT:
+        return subject
+    if abs(_pct_value(pm)) > _MAX_DAILY_MOVE_PCT:
+        return "implausible_daily_move"
+    return _CLAIMED_SUBJECT
+
+
+def _rejection_subject(sent: str, dm: re.Match, pm: re.Match,
+                       dates: list[re.Match], name: str = "") -> str:
+    """`_is_realized_price_pct` 说不是 → 复算一遍它是**因为哪一类**被排掉的(只为计量)。"""
+    if _overlaps(dm.span(), pm.span()):
+        return "parse_artifact"
+    if any(_overlaps(pm.span(), rm.span()) for rm in _PCT_TILDE_RANGE.finditer(sent)):
+        return "forward_scenario"
+    npos = _num_pos(pm)
+    if any(r in sent[_range_left(sent, dates, dm, npos):npos] for r in _RANGE_MARKS):
+        return "cumulative_move"
+    if any(k in sent[max(0, npos - _CTX_BACK):npos] for k in _SCENARIO):
+        return "forward_scenario"
+    if _near_index_name(sent, npos, name=name):
+        return "index"
+    return "fundamental"
+
+
 def _is_realized_price_pct(sent: str, dm: re.Match, pm: re.Match, dates: list[re.Match],
                             name: str = "") -> bool:
     """pm(% 匹配)配 dm(其最近在前日期)是否为一条「已实现单日股价移动」。六类排除:
@@ -218,45 +428,104 @@ def _is_realized_price_pct(sent: str, dm: re.Match, pm: re.Match, dates: list[re
     return not any(k in fund_window for k in _FUND)
 
 
-def _first_realized_pct(sent: str, dates: list[re.Match], name: str = ""):
-    """句内首个「已实现单日股价移动」%:每个 % 配其最近在前日期(缺则退回首日期),先滤掉区间/
-    情景/基本面 %,取首个存活者。返回 (带号数值, 配对日期匹配) 或 None(每句只取首个=已知简化)。"""
-    for pm in _PCT.finditer(sent):
-        prev = [d for d in dates if d.end() <= pm.start()]
-        dm = prev[-1] if prev else dates[0]
-        if not _is_realized_price_pct(sent, dm, pm, dates, name=name):
-            continue
-        val = _pct_value(pm)
-        if abs(val) > _MAX_DAILY_MOVE_PCT:
-            # 物理上不可能是单日行情 → 是利润增速/区间累计/别家公司的数,不是本票日涨跌。
-            # 继续看下一个候选,而不是整句放弃(同句后面可能真有本票的日涨跌)。
-            continue
-        return val, dm
+_TRAILING_DATE_GAP = 3          # `+5.65%(7/20)` —— 只隔一个开括号
+_TRAILING_OPENERS = "(([【<〔"    # 后置日期必须被括起来
+
+
+def _trailing_date(sent: str, pm: re.Match,
+                   dates: list[re.Match]) -> re.Match | None:
+    """数字**紧后的括号里**是否跟着它自己的日期(`+5.65%(7/20)`)—— 有则以它为准。
+
+    配对模型默认"最近在前日期",但列举式写法把日期放在后面:
+    `近 5 个交易日实测单日振幅 +5.65%(7/20)、+6.38%(7/21)、-9.92%(7/22)`
+    —— 三个值会全被挂到句首那个日期上,于是一条真自陈变成三条假指控。
+
+    **必须要求括号**:688766 07-24 卡里写的是 `该股 07-21 单日实际 +17.5%、07-22 -7.45%`
+    —— 这里 `+17.5%` 后面跟的 `07-22` 是**下一个值**的日期。不卡括号就会把 07-21 的
+    +17.5% 挂到 07-22 头上(实为 −7.45%),修一条假指控的同时造出另一条。
+    """
+    for dm in dates:
+        gap = sent[pm.end():dm.start()]
+        if 0 <= len(gap) <= _TRAILING_DATE_GAP and any(
+                ch in _TRAILING_OPENERS for ch in gap):
+            return dm
     return None
 
 
-def extract_price_claims(text: str, *, name: str, code6: str, year_hint: int) -> list[dict]:
-    out: list[dict] = []
+def _first_realized_pct(sent: str, dates: list[re.Match], name: str = "",
+                        code6: str = "", tally: dict[str, int] | None = None,
+                        unknown: list[str] | None = None):
+    """句内首个主语为本票股价的 %。**每个**候选都记进 `tally`(漏抽必须看得见)。
+
+    返回 (带号数值, 配对日期匹配) 或 None(每句只取首个 = 本文件既有的已知简化)。
+    """
+    hit = None
+    for pm in _PCT.finditer(sent):
+        prev = [d for d in dates if d.end() <= pm.start()]
+        dm = prev[-1] if prev else dates[0]
+        subject = subject_of_pct(sent, dm, pm, dates, name=name, code6=code6)
+        if tally is not None:
+            tally[subject] = tally.get(subject, 0) + 1
+        if subject == "UNKNOWN_SUBJECT" and unknown is not None:
+            unknown.append(sent.strip()[:80])
+        if hit is None and subject == _CLAIMED_SUBJECT:
+            hit = (_pct_value(pm), _trailing_date(sent, pm, dates) or dm)
+    return hit
+
+
+def _limit_subject(sent: str, lm: re.Match, name: str, code6: str) -> str:
+    """涨停/跌停的主语。「7/30 板块政策日 4 家涨停而本票 −0.44%」里的涨停属别的票。"""
+    peer = sent[max(0, lm.start() - 4):lm.end()]     # 「4 家涨停」的量词紧贴涨停
+    if any(mark in peer for mark in _PEER_MARKS):
+        return "peer_or_other_stock"
+    # 涨停/跌停自己就在价格证据词表里,不遮掉的话它离自己永远最近 → 就近判定在本分支
+    # 形同虚设(变异测试逮到:把他票规则整个删掉,测试依旧全绿)。
+    masked = sent[:lm.start()] + " " * (lm.end() - lm.start()) + sent[lm.end():]
+    subject = _nearest_subject(masked, lm.start(), name, code6)
+    # 涨停/跌停本身就是股价事件,句子已过 `_own_sentence` 与转述豁免 →
+    # 够不到任何标记时保持既有认领口径(不把已有的真阳改成 UNKNOWN)
+    return subject or _CLAIMED_SUBJECT
+
+
+def classify_price_claims(text: str, *, name: str, code6: str,
+                          year_hint: int) -> ClaimAudit:
+    """抽取 + 主语分布。`extract_price_claims` 是它的薄封装(保持既有调用签名)。"""
+    audit = ClaimAudit()
     for sent in _SENT_SPLIT.split(text or ""):
         if not sent.strip() or not _own_sentence(sent, name, code6):
-            continue
-        if _is_quote_or_refutation(sent):        # Wave7 B′-b:转述/否决/负判句不认领
             continue
         dates = list(_DATE.finditer(sent))
         if not dates:
             continue
-        hit = _first_realized_pct(sent, dates, name=name)
+        if _is_quote_or_refutation(sent):        # Wave7 B′-b:转述/否决/负判句不认领
+            n_pct = sum(1 for _ in _PCT.finditer(sent)) or (
+                1 if _LIMIT.search(sent) else 0)
+            if n_pct:
+                audit.counts["quoted_or_refuted"] = audit.counts.get(
+                    "quoted_or_refuted", 0) + n_pct
+            continue
+        hit = _first_realized_pct(sent, dates, name=name, code6=code6,
+                                  tally=audit.counts, unknown=audit.unknown_snippets)
         if hit is not None:
             val, dm = hit
-            out.append({"date": _fmt_date(dm, year_hint), "kind": "pct",
-                        "value": val, "snippet": sent.strip()[:60]})
+            audit.claims.append({"date": _fmt_date(dm, year_hint), "kind": "pct",
+                                 "value": val, "snippet": sent.strip()[:60]})
             continue
         lm = _LIMIT.search(sent)
         if lm:
-            out.append({"date": _fmt_date(dates[0], year_hint), "kind": "limit", "value": None,
-                        "dir": 1 if lm.group() == "涨停" else -1,
-                        "snippet": sent.strip()[:60]})
-    return out
+            subject = _limit_subject(sent, lm, name, code6)
+            audit.counts[subject] = audit.counts.get(subject, 0) + 1
+            if subject == _CLAIMED_SUBJECT:
+                audit.claims.append({"date": _fmt_date(dates[0], year_hint),
+                                     "kind": "limit", "value": None,
+                                     "dir": 1 if lm.group() == "涨停" else -1,
+                                     "snippet": sent.strip()[:60]})
+    return audit
+
+
+def extract_price_claims(text: str, *, name: str, code6: str, year_hint: int) -> list[dict]:
+    return classify_price_claims(
+        text, name=name, code6=code6, year_hint=year_hint).claims
 
 
 # A 股单日涨跌幅的物理上限:主板 10cm、双创 20cm、北交所 30cm。留足余量取 32 ——
@@ -326,13 +595,115 @@ def bars_for(code6: str, dates: list[str], today: str) -> dict[str, float]:
     return out
 
 
+def _empty_audit() -> dict:
+    return {"n_claims": 0, "mismatches": [], **ClaimAudit().summary()}
+
+
 def audit_card_text(text: str, *, name: str, code6: str, date: str, bars_fn=bars_for) -> dict:
+    """对账结果 + 主语分布。返回值多出 `n_candidate/n_own/n_excluded/n_unknown/subjects`
+    ——漏抽从此是一个看得见的数,而不是静默(Wave10 A3)。"""
     try:
         year_hint = int(str(date)[:4])
     except (ValueError, TypeError):    # date 空/非数字(advisory 入口,禁止抛异常上溯)
-        return {"n_claims": 0, "mismatches": []}
-    claims = extract_price_claims(text or "", name=name, code6=code6, year_hint=year_hint)
-    if not claims:
-        return {"n_claims": 0, "mismatches": []}
-    bars = bars_fn(code6, [c["date"] for c in claims], date) or {}
-    return {"n_claims": len(claims), "mismatches": reconcile_claims(claims, bars, code6=code6)}
+        return _empty_audit()
+    audit = classify_price_claims(text or "", name=name, code6=code6,
+                                  year_hint=year_hint)
+    base = {"n_claims": len(audit.claims), "mismatches": [], **audit.summary()}
+    if not audit.claims:
+        return base
+    bars = bars_fn(code6, [c["date"] for c in audit.claims], date) or {}
+    base["mismatches"] = reconcile_claims(audit.claims, bars, code6=code6)
+    return base
+
+
+# ── 主语分布的跨卡聚合与回放(A3 验收:冻结 unknown-rate 基线,live 不得高于 +5pp)──
+UNKNOWN_RATE_TOLERANCE_PP = 0.05
+
+
+def merge_summaries(summaries: list[dict]) -> dict:
+    """逐卡 summary → 当日/跨日聚合。分母是候选数,不是卡数。"""
+    subjects: dict[str, int] = {}
+    for s in summaries:
+        for key, value in (s.get("subjects") or {}).items():
+            subjects[key] = subjects.get(key, 0) + int(value)
+    total = sum(subjects.values())
+    unknown = subjects.get("UNKNOWN_SUBJECT", 0)
+    own = subjects.get(_CLAIMED_SUBJECT, 0)
+    return {"n_cards": len(summaries), "n_candidate": total, "n_own": own,
+            "n_excluded": total - own - unknown, "n_unknown": unknown,
+            "unknown_rate": round(unknown / total, 4) if total else None,
+            "subjects": dict(sorted(subjects.items()))}
+
+
+def replay(scan_root=None, *, days: int | None = None) -> dict:
+    """回放历史卡片 → 跨日主语分布(零网络:只读已落盘的 details/*.md)。"""
+    import pandas as pd
+
+    root = Path(scan_root or "context/scan")
+    if not root.exists():
+        return merge_summaries([])
+    per_day: dict[str, list[dict]] = {}
+    for day in sorted(p for p in root.iterdir() if p.is_dir()):
+        details = day / "details"
+        if not details.exists():
+            continue
+        names: dict[str, str] = {}
+        with contextlib.suppress(Exception):
+            fin = pd.read_csv(day / "finalists.csv", dtype={"code": str})
+            names = {str(r.code).split(".")[0].zfill(6):
+                     ("" if pd.isna(r.name) else str(r.name)) for r in fin.itertuples()}
+        rows = []
+        for card in sorted(details.glob("*.md")):
+            code = card.stem
+            if not code.isdigit():
+                continue
+            with contextlib.suppress(Exception):
+                rows.append(classify_price_claims(
+                    card.read_text(encoding="utf-8"), name=names.get(code, ""),
+                    code6=code, year_hint=int(day.name[:4])).summary())
+        if rows:
+            per_day[day.name] = rows
+    chosen = sorted(per_day)[-days:] if days else sorted(per_day)
+    merged = merge_summaries([r for d in chosen for r in per_day[d]])
+    merged["days"] = chosen
+    merged["per_day"] = {d: merge_summaries(per_day[d]) for d in chosen}
+    return merged
+
+
+def check_unknown_rate(live: float | None, baseline: float | None) -> tuple[bool, str]:
+    """live unknown-rate 是否仍在冻结基线 +5pp 之内。缺任一侧 → 不判(不是"通过")。"""
+    if live is None or baseline is None:
+        return True, "UNMEASURED(缺 live 或基线,不作判定)"
+    ok = live <= baseline + UNKNOWN_RATE_TOLERANCE_PP
+    return ok, (f"live {live:.2%} vs 基线 {baseline:.2%} "
+                f"(+{UNKNOWN_RATE_TOLERANCE_PP:.0%} 容差)→ {'在容差内' if ok else '⚠️ 超出'}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+    import json
+
+    ap = argparse.ArgumentParser(description="价格断言主语分布回放(确定性,零网络)")
+    ap.add_argument("--scan-root", default=None)
+    ap.add_argument("--days", type=int, default=None, help="只回放最近 N 个扫描日")
+    ap.add_argument("--freeze", default=None, help="把基线冻结到该路径(进 git 的审计快照)")
+    args = ap.parse_args(argv)
+
+    result = replay(args.scan_root, days=args.days)
+    print(f"[price_claims] {len(result.get('days') or [])} 日 · {result['n_cards']} 卡 · "
+          f"候选 {result['n_candidate']} = 认领 {result['n_own']} + 排除 "
+          f"{result['n_excluded']} + 未知 {result['n_unknown']}")
+    print(f"  unknown_rate = {result['unknown_rate']}")
+    print(f"  主语分布 {json.dumps(result['subjects'], ensure_ascii=False)}")
+    if args.freeze:
+        target = Path(args.freeze)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8")
+        print(f"  → 冻结基线 {target}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

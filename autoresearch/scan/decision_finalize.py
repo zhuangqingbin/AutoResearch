@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextlib
 import json
 import sys
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from autoresearch.agents.utils.rating import RATINGS_5_TIER
@@ -110,8 +111,117 @@ def _apply_ensemble_fold(rating: str, rec: dict | None) -> str:
         return median if TIER_RANK[median] < TIER_RANK[rating] else rating
     return median if TIER_RANK[median] > TIER_RANK[rating] else rating
 
-def _ensemble_dissent_lines(emap: dict[str, dict]) -> list[str]:
-    """买单复核 spread≥2(3 run 评级分歧 ≥2 档)→ 组合视角节人裁提示行;无分歧 → []。"""
+# ── Wave10 A1:复核分歧的结构化事实 ────────────────────────────────────────
+#
+# 立案现场(2026-07-31,920179 凯德石英):`ensemble=[Underweight,Sell,Sell]`,median=Sell,
+# trigger=sell_review,spread=1。单向阀按设计**不**把持仓评级改得更悲观(Wave1 ⑤-3 救误卖),
+# 于是终评仍是卡面的 UW —— 这一步是对的。**错的是报告里一个字都没有**:
+# 三次独立复核有两次说 Sell,读者完全看不到。
+#
+# 修法不是改阀门(§7 非目标),是让这件事**有名字、有记录、有一行字**。措辞上不写「未折回」
+# ——那读起来像 bug;写「持仓保护规则……单向阀未加重终评」,因为它确实是有意行为。
+DISSENT_SCHEMA_VERSION = 1
+DISSENT_HUMAN_REVIEW = "HUMAN_REVIEW"                    # spread≥2 或 degraded:要人裁
+DISSENT_PINNED_SELL_PROTECTION = "PINNED_SELL_PROTECTION"  # 单向阀吃掉的持仓分歧:要可见
+_RATING_SHORT = {"Overweight": "OW", "Underweight": "UW"}
+
+
+def _short(rating: str) -> str:
+    return _RATING_SHORT.get(str(rating), str(rating))
+
+
+@dataclass(frozen=True)
+class DissentRecord:
+    """一次复核分歧的结构化事实。渲染层只读它,不许自己再从 emap 推一遍。"""
+    schema_version: int
+    code: str
+    lane: str
+    trigger: str
+    card_rating: str        # 卡面(复核之前)
+    median_rating: str      # 复核中位
+    final_rating: str       # 终评(阀门之后)
+    ratings: tuple[str, ...]
+    spread: int
+    degraded: bool
+    kind: str
+
+    def to_dict(self) -> dict:
+        return {**asdict(self), "ratings": list(self.ratings)}
+
+
+def build_dissent_records(
+    rows: list[dict],
+    emap: dict[str, dict],
+) -> list[DissentRecord]:
+    """折回循环跑完后的 `rows` × ensemble → 分歧事实。`rows` 必须已含终评级。"""
+    out: list[DissentRecord] = []
+    for row in sorted(rows, key=lambda r: str(r.get("code", ""))):
+        code = str(row.get("code", "") or "").zfill(6)
+        rec = emap.get(code)
+        if not rec:
+            continue
+        card = str(row.get("_source_rating", "—"))
+        median = str(rec.get("median", "—"))
+        final = str(row.get("rating", "—"))
+        lane = str(row.get("lane", "") or "").strip()
+        trigger = str(rec.get("trigger", "") or "")
+        if _ensemble_flag(rec):
+            kind = DISSENT_HUMAN_REVIEW
+        elif (lane == "pinned" and trigger == "sell_review"
+              and median != card and median in TIER_RANK and card in TIER_RANK):
+            kind = DISSENT_PINNED_SELL_PROTECTION
+        else:
+            continue        # 非持仓的 spread=1 仍然静默:那不是需要人看的事
+        out.append(DissentRecord(
+            schema_version=DISSENT_SCHEMA_VERSION, code=code, lane=lane,
+            trigger=trigger, card_rating=card, median_rating=median,
+            final_rating=final, ratings=tuple(rec.get("ratings") or []),
+            spread=int(rec.get("spread") or 0),
+            degraded=bool(rec.get("degraded")), kind=kind))
+    return out
+
+
+def dissent_line(rec: DissentRecord) -> str:
+    """一条分歧 → 一行报告文本。三个评级字段都取自记录,不在这里重新推导。"""
+    if rec.kind == DISSENT_PINNED_SELL_PROTECTION:
+        harsher = TIER_RANK[rec.median_rating] > TIER_RANK[rec.card_rating]
+        relation = "更悲观" if harsher else "更温和"
+        return (f"⚠️ 持仓保护规则:{rec.code} 复核中位 {_short(rec.median_rating)} "
+                f"比卡面 {_short(rec.card_rating)} {relation};"
+                f"单向阀未加重终评(终评 {_short(rec.final_rating)})")
+    return (f"🎭 买单复核分歧:{rec.code} {len(rec.ratings)} run={list(rec.ratings)},"
+            f"已按中位折回,建议人工复核")
+
+
+def dump_dissent_records(scan_dir: Path, records: list[DissentRecord]) -> None:
+    """落 `<scan_dir>/dissent_records.json` 供 publisher 卡头渲染。IO 失败不阻发布。"""
+    with contextlib.suppress(Exception):
+        (Path(scan_dir) / "dissent_records.json").write_text(
+            json.dumps([r.to_dict() for r in records], ensure_ascii=False, indent=2),
+            encoding="utf-8")
+
+
+def load_dissent_records(scan_dir: Path | str) -> dict[str, dict]:
+    """`{code: record}`;缺文件/坏文件 → {}(presence-gated,老路不破)。"""
+    path = Path(scan_dir) / "dissent_records.json"
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+    return {str(r.get("code", "")).zfill(6): r for r in raw if isinstance(r, dict)}
+
+
+def _ensemble_dissent_lines(emap: dict[str, dict],
+                            rows: list[dict] | None = None) -> list[str]:
+    """组合视角节的人裁提示行。
+
+    `rows` 缺省 → 只出 spread≥2 的 🎭 行(与 A1 之前逐字一致,老调用点不破);
+    传入 → 同时出持仓保护规则行(需要 lane / 卡面评级,只有 rows 里有)。
+    """
+    if rows is not None:
+        return [dissent_line(r) for r in build_dissent_records(rows, emap)]
     lines = []
     for code, e in sorted(emap.items()):
         if _ensemble_flag(e):

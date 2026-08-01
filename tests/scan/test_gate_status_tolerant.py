@@ -63,3 +63,43 @@ def test_gate_status_unchanged_when_no_segment_has_a_parseable_mark():
     也不得因为"取最后一段"而改变单段场景下的既有行为。"""
     assert gate_status("OW三门缺「主力真在」一门,待补充结构化判定。") == {"主力真在": False}
     assert gate_status("# 卡\n无门柱段\n") is None
+
+
+# ── Wave10 A11 复核(2026-08-01):同一缺陷族的**第三次**复发 ────────────────
+#
+# 前两次是「空格」与「多段」;这次是 **markdown 强调号**。卡片里写
+#   `OW三门 <主力真在 ✓·业绩真兑现 **✗**(营收/归母双降)·估值不透支 ✓> → **建议 Hold**`
+# 而跳过逻辑只跳空白,于是 `**` 挡住了 ✗,整卡被判成「三门全过」。
+#
+# 全语料实测:241 张带门柱段的卡里 **42 张(17.4%)** 中招,方向**单向** —— 真失守被读成
+# 通过。链路上每一环都吃了这个错:decision_records 记 PASS → 该票根本不进门账本 →
+# 门柱直方图少数 → `shadow_buys.binding` 空 → 门归因 v3 全盘继承。
+# 症状长得像「这道门最近没怎么拦人」,而事实是解析器看不懂加粗。
+
+def test_gate_status_tolerates_markdown_emphasis_around_marks():
+    """`**✗**` 是卡片里的主流写法,不是异常写法。"""
+    card = "OW三门 <主力真在 ✓·业绩真兑现 **✗**(营收/归母双降)·估值不透支 ✓> → **建议 Hold**"
+    assert gate_status(card) == {"主力真在": False, "业绩真兑现": True, "估值不透支": False}
+
+
+def test_gate_status_tolerates_emphasis_without_space():
+    """`主力真在**✗**`(无空格)与 `主力真在 **✗**`(有空格)必须同解。"""
+    assert gate_status("OW三门 主力真在**✗**·业绩真兑现**✓**·估值不透支**✓**") == {
+        "主力真在": True, "业绩真兑现": False, "估值不透支": False}
+
+
+def test_gate_status_tolerates_single_asterisk_and_backtick():
+    assert gate_status("OW三门 主力真在 *✗*·业绩真兑现 `✓`·估值不透支 ✓")["主力真在"] is True
+
+
+def test_emphasis_segment_counts_as_parseable_for_last_segment_pick():
+    """多段取最后可解析段:末段用加粗标记时,不能因"认不出标记"而退回首段。"""
+    card = ("正文先提一句 OW三门缺一门(无标记)\n\n"
+            "OW三门 <主力真在 **✗**·业绩真兑现 **✓**·估值不透支 **✓**> → 建议 Hold")
+    assert gate_status(card) == {"主力真在": True, "业绩真兑现": False, "估值不透支": False}
+
+
+def test_emphasis_without_a_real_mark_still_reads_as_not_failed():
+    """`主力真在**(数据缺)**` 没有 ✓/✗ → 与改动前同语义,判 False,不臆测。"""
+    assert gate_status("OW三门 主力真在**(数据缺)**·业绩真兑现 ✗·估值不透支 ✓") == {
+        "主力真在": False, "业绩真兑现": True, "估值不透支": False}

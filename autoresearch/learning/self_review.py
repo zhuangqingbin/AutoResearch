@@ -606,12 +606,15 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
         for _, r in fin.iterrows():
             c = str(r.get("code", "") or "").split(".")[0].zfill(6)
             name_by_code[c] = "" if pd.isna(r.get("name")) else str(r.get("name"))
+    claim_summaries: list[dict] = []
     for code, text in sorted(cards.items()):
         with contextlib.suppress(Exception):
             from autoresearch.scan import price_claims
             res = price_claims.audit_card_text(
                 text, name=name_by_code.get(code, ""), code6=code, date=date_str,
                 bars_fn=price_claims.bars_for)
+            if res.get("n_candidate"):
+                claim_summaries.append(res)
             if res["mismatches"]:
                 b = res["mismatches"][0]
                 # 措辞按 dir 分涨/跌停:原先 kind=='limit' 一律播「称 涨停」,于是 600988
@@ -623,6 +626,18 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
                     f"{len(res['mismatches'])} 条价格断言与 OHLCV 不符(首条 {b['date']} "
                     f"称 {kind_txt} 实 {b['actual']}%)——pr_20260714_006 型",
                     code=code)
+
+    # A3:当日主语分布落盘(不告警,只计量)——「n 条不符」这个数只有配上分母才有意义,
+    # 而漏抽(UNKNOWN_SUBJECT)不落盘就永远是静默的。
+    if claim_summaries:
+        with contextlib.suppress(Exception):
+            import json as _json
+
+            from autoresearch.scan import price_claims
+            merged = price_claims.merge_summaries(claim_summaries)
+            (scan_dir / "price_claim_subjects.json").write_text(
+                _json.dumps(merged, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8")
 
     # ── 9. pinned SELL 双复核 tripwire(final-review I-2):镜像 intel 稿数兜底(probe 3)──
     # 保送(lane=pinned)持仓卡评级 Sell/Underweight 但缺 _ensemble_<code>.json(或 trigger≠
