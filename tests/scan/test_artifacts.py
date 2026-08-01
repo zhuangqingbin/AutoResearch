@@ -93,7 +93,8 @@ def test_index_hashes_scan_and_report_artifacts(tmp_path):
     assert rows["rejection_attribution"]["status"] == "PRESENT"
     assert rows["abstention_verdict"]["status"] == "PRESENT"
     assert rows["l3_audit_candidates"]["status"] == "PRESENT"
-    assert len(rows) == 28
+    # Wave10 B3:earlystop_shadow_queue / earlystop_shadow_cards 两条随整族退役 28→26
+    assert len(rows) == 26
     assert rows["finalists"]["status"] == "MISSING"
     assert rows["finalists"]["content_hash"] is None
     assert rows["market_pack"]["input_hash"] is None

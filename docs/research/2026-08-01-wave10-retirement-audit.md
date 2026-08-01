@@ -87,9 +87,49 @@ _(待填:分类表)_
 
 ---
 
-## B3 · `earlystop_shadow` 整族
+## B3 · `earlystop_shadow` 整族 —— `ABANDONED`
 
-_(待填:引用分层 + producer 接线核验)_
+### 前提核验(设计稿 §B3 的四条,4/4 实测吻合)
+
+| 立案说法 | 实测 |
+|---|---|
+| 当前 scan root 零 `shadow/earlystop_queue.json` | ✅ `find context/scan -name "earlystop_queue*"` 无命中 |
+| `write_shadow_queue` 只有 CLI/tests 调用 | ✅ 生产侧唯一调用点是它自己的 `main()`(`earlystop_shadow.py:328`) |
+| 账本 0 reviews | ✅ `reports/learning/earlystop_shadow.md`:「已完成影子深审:0」 |
+| 无生产 producer | ✅ 见下 |
+
+**判定**:不是「队列有货没人取」,而是**消费者与账本接了、producer 从未接线**。
+
+    接了的:  health.py(读队列算 pending/completed)、post_run.py(RETRO_FINALIZED 消费者
+              + 账本刷新名单)、artifacts.py(两条 ArtifactSpec)、独立 workflow、账本渲染
+    没接的:  **往队列里写东西的那一步** —— 全仓没有任何生产路径调用 `write_shadow_queue`
+
+所以它从来没有产生过一条数据。不新增自动派发来拯救沉没成本(§B3)。
+
+### ②查 test 双职 —— 无
+
+6 个用例全部围绕影子队列本身;`sample_score`(sha256 稳定采样)在全仓**只服务本模块**,
+不构成通用采样契约。`tests/scan/test_workflow_syntax.py` 里那条顺带断言
+「scan-market.js 不得派发 earlystop-shadow」在 workflow 文件消失后已恒真,无迁移对象。
+
+### 删除清单
+
+| 文件 / 位置 | 动作 |
+|---|---|
+| `autoresearch/learning/earlystop_shadow.py` | 删 |
+| `.claude/workflows/earlystop-shadow.js` | 删 |
+| `tests/learning/test_earlystop_shadow.py`(6 例) | 删 |
+| `tests/scan/test_workflow_syntax.py::test_earlystop_shadow_workflow_is_separate_and_shadow_only` | 删(留一条说明注释) |
+| `tests/test_agent_defs.py::test_earlystop_shadow_workflow_forces_full_review_without_production_writes` | 删 |
+| `autoresearch/scan/artifacts.py` | 删两条 ArtifactSpec(索引 28→26,计数断言同步) |
+| `autoresearch/scan/post_run.py` | 从 `RETRO_FINALIZED` 消费者集与账本刷新名单里移除 |
+| `autoresearch/scan/health.py` | 删 `shadow/earlystop_queue.json` 读取块 |
+
+⚠️ **不连坐**:`autoresearch/learning/earlystop_ledger.py` 是**早停分桶账本**(nightly_close
+真跑),与影子深审无关,LIVE。
+
+历史设计与 commit 保留。lessons 记:**消费者与账本接了,producer 从未接线** —— 一个特性
+可以看起来"已建成"(有账本、有 workflow、有 health 读数)而其实一条数据都没产生过。
 
 ---
 

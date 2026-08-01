@@ -102,14 +102,6 @@ def test_l4_workflow_records_success_and_failure_stage_results():
     assert "throw error" in src
 
 
-def test_earlystop_shadow_workflow_is_separate_and_shadow_only():
-    src = (WF / "earlystop-shadow.js").read_text(encoding="utf-8")
-    assert "shadow/earlystop_queue.json" in src
-    assert "shadow/earlystop_details/${code}.md" in src
-    assert "不得修改 production" in src
-    assert "details/${code}.md" not in src.replace(
-        "shadow/earlystop_details/${code}.md",
-        "",
-    )
-    production = (WF / "scan-market.js").read_text(encoding="utf-8")
-    assert "earlystop-shadow" not in production
+# Wave10 B3:earlystop-shadow 整族退役(consumer/账本接了、producer 从未接线)——
+# 原 `test_earlystop_shadow_workflow_is_separate_and_shadow_only` 随 workflow 一并删除。
+# 它顺带锁的「scan-market.js 不得派发影子深审」在 workflow 文件消失后已恒真,无迁移对象。

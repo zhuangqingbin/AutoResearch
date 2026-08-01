@@ -670,36 +670,6 @@ def retro_health(scan_dir: Path) -> dict:
                 f"l3 audit queue {type(exc).__name__}: {exc}"
             )
 
-    early_queue = scan / "shadow" / "earlystop_queue.json"
-    if early_queue.exists():
-        try:
-            from autoresearch.learning.earlystop_shadow import (
-                load_shadow_queue,
-            )
-
-            queue = load_shadow_queue(scan)
-            completed = sum(
-                (
-                    scan
-                    / "shadow"
-                    / "earlystop_details"
-                    / f"{item['code']}.md"
-                ).exists()
-                for item in queue["items"]
-            )
-            total = len(queue["items"])
-            result["shadow_queues"].update(
-                {
-                    "earlystop_total": total,
-                    "earlystop_pending": total - completed,
-                    "earlystop_completed": completed,
-                }
-            )
-        except Exception as exc:  # noqa: BLE001
-            result["errors"].append(
-                f"early-stop shadow queue {type(exc).__name__}: {exc}"
-            )
-
     outbox = scan / "outbox" / "events.json"
     if outbox.exists():
         try:

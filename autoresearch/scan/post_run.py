@@ -34,7 +34,6 @@ SUBSCRIPTIONS = {
     "RETRO_FINALIZED": {
         "abstention_ledger",
         "cross_calib",
-        "earlystop_shadow",
         "ensemble_ledger",
         "gate_ledger",
         "l3_audit_ledger",
@@ -238,7 +237,6 @@ def default_registry() -> dict[str, ConsumerHandler]:
         "paper_nav",
         "gate_ledger",
         "earlystop_ledger",
-        "earlystop_shadow",
         "ensemble_ledger",
         "l3_audit_ledger",
         "pinned_ledger",

@@ -91,18 +91,6 @@ CRITICAL_ARTIFACTS = (
         "retro",
         "retro/l3_audit_ledger.json",
     ),
-    ArtifactSpec(
-        "earlystop_shadow_queue",
-        1,
-        "earlystop_shadow",
-        "shadow/earlystop_queue.json",
-    ),
-    ArtifactSpec(
-        "earlystop_shadow_cards",
-        1,
-        "earlystop_shadow",
-        "shadow/earlystop_details/*.md",
-    ),
     ArtifactSpec("run_health", 1, "health", "run_health.json"),
     ArtifactSpec("summary", 1, "assemble", "summary.md", root="report"),
     ArtifactSpec("manifest", 1, "assemble", "manifest.json", root="report"),
