@@ -139,7 +139,12 @@ def roll(scan_root: Path | None = None, shrink: bool | None = None,
     return out.sort_values("n_fires", ascending=False).reset_index(drop=True)
 
 
-def render(ledger: pd.DataFrame) -> list[str]:
+def render(ledger: pd.DataFrame, *, outcomes: pd.DataFrame | None = None) -> list[str]:
+    """`outcomes`(A11 v3 归因汇总)presence-gated:不传 → 输出与改动前逐字一致。
+
+    本表的口径**不是** v3:市场基准是全表均值、同票踩多门会在各单门重复计数。所以 v3
+    分布另起一节、另标 cohort,而不是往本表加两列 —— 两套口径混在一张表里是 §R5 点名的病。
+    """
     out = ["# 门审计 ledger(被拦票 vs 市场;ex<0 = 拦对)", ""]
     if ledger is None or not len(ledger):
         return out + ["_无 gate_fires × attribution 数据(需 assemble 留痕 + retro 归因)_"]
@@ -156,15 +161,37 @@ def render(ledger: pd.DataFrame) -> list[str]:
         out.append(f"| {r.check}{thin} | {int(r.n_days)} | {int(r.n_fires)} | "
                    f"{f(r.mean_ex1)} | {f(r.mean_ex2)} | {f(r.mean_ex5)} | {hr} | {tr} |")
     out += ["", "_某门持续 ex>0 → 提松阈/退役建议(proposals,人批);别让门无问责地累积。_"]
+    if outcomes is not None and len(outcomes):
+        out += [
+            "",
+            "## 门 outcome 分布(A11 v3 契约 —— 与上表**不是同一序列**)",
+            "",
+            "上表:全表均值基准 · 同票踩多门在各单门重复计数 · 不过滤可交易性。",
+            "下表:可交易成熟票中位基准 · 多门共拦收进 `MULTI_GATE` · 不可交易/不可判 →"
+            " `UNMEASURED`。**错杀率以下表为准**;上表的「左尾≤-5%」量的是左尾保护,不是错杀。",
+            "",
+            "| 门 | 天数 | 拦次 | CORRECT | NEUTRAL | FALSE_KILL | UNMEASURED | 错杀率 |",
+            "|---|---:|---:|---:|---:|---:|---:|---|",
+        ]
+        for r in outcomes.itertuples(index=False):
+            fk = "—" if r.false_kill_rate is None or pd.isna(r.false_kill_rate) \
+                else f"{r.false_kill_rate:.0%}"
+            out.append(f"| {r.gate} | {int(r.n_days)} | {int(r.n_fires)} | {int(r.CORRECT)} "
+                       f"| {int(r.NEUTRAL)} | {int(r.FALSE_KILL)} | {int(r.UNMEASURED)} | {fk} |")
+        out += ["", "_明细见 `gate_attribution.md`(含 legacy 迁移基线与 EXP-1 的 participation 人口)。_"]
     return out
 
 
 def main() -> int:
+    from autoresearch.learning import gate_attribution
+
     ledger = roll()
+    outcomes = gate_attribution.summarize(
+        gate_attribution.roll(cohort=gate_attribution.COHORT_V3))
     out = Path("reports/learning/gate_ledger.md")
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text("\n".join(render(ledger)) + "\n", encoding="utf-8")
-    print(f"[gate_ledger] {len(ledger)} 门 → {out}")
+    out.write_text("\n".join(render(ledger, outcomes=outcomes)) + "\n", encoding="utf-8")
+    print(f"[gate_ledger] {len(ledger)} 门 + v3 outcome {len(outcomes)} 门 → {out}")
     return 0
 
 

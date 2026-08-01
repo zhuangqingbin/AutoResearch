@@ -72,9 +72,12 @@ def run(today: str) -> list[tuple[str, bool, str]]:
 
     def _ledgers() -> str:
         import importlib
+        # 序有意义:gate_attribution 先于 gate_ledger(后者渲染前者的 v3 分布);
+        # evidence_manifest 收尾(它读所有账本,必须在它们刷新之后)。
         names = ["journal", "buy_ledger", "cross_calib", "catalyst_ledger", "paper_nav",
-                 "channel_ledger", "gate_ledger", "zero_buy_ledger", "changelog_ledger",
-                 "earlystop_ledger", "pinned_ledger"]
+                 "channel_ledger", "gate_attribution", "gate_ledger", "zero_buy_ledger",
+                 "changelog_ledger", "earlystop_ledger", "pinned_ledger",
+                 "evidence_manifest"]
         ok = 0
         for n in names:
             with contextlib.suppress(Exception):

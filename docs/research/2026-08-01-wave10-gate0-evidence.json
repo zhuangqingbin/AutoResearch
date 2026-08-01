@@ -1,0 +1,1433 @@
+{
+  "as_of": "20260731",
+  "cohorts": {
+    "experiment_eligible": "v3 门归因里 outcome≠UNMEASURED 的可交易成熟候选",
+    "legacy_migration": "仅供迁移复现的旧口径(gate_ledger 全表均值·不去重)——**不是研究 cohort**,不得与上面四个并列比较",
+    "raw_run": "journal 的每个 scan 日行 —— 含非交易日/缺卡/未成熟,**不得直接作收益或 0买比例的分母**",
+    "t2_mature": "retro/attribution 已回填 fwd_2_oc 的扫描日",
+    "valid_completed": "跑完且有 finalists 与决策卡的扫描日"
+  },
+  "conflicts": [],
+  "denominators": {
+    "abstention_v2_judged_days": {
+      "cohort": "t2_mature",
+      "definition": "abstention v2(shadow_buys 口径)已裁决的日",
+      "denominator_id": "abstention_v2_judged_days",
+      "value": 8
+    },
+    "gate_legacy.MULTI_GATE.measured_n": {
+      "cohort": "legacy_migration",
+      "definition": "MULTI_GATE 门被拦且 outcome 可测的候选数",
+      "denominator_id": "gate_legacy.MULTI_GATE.measured_n",
+      "value": 7
+    },
+    "gate_legacy.MULTI_GATE.tail_n": {
+      "cohort": "legacy_migration",
+      "definition": "MULTI_GATE 门被拦票中 fwd_2_oc 非空的观测数",
+      "denominator_id": "gate_legacy.MULTI_GATE.tail_n",
+      "value": 7
+    },
+    "gate_legacy.UNDECIDABLE.measured_n": {
+      "cohort": "legacy_migration",
+      "definition": "UNDECIDABLE 门被拦且 outcome 可测的候选数",
+      "denominator_id": "gate_legacy.UNDECIDABLE.measured_n",
+      "value": 8
+    },
+    "gate_legacy.UNDECIDABLE.tail_n": {
+      "cohort": "legacy_migration",
+      "definition": "UNDECIDABLE 门被拦票中 fwd_2_oc 非空的观测数",
+      "denominator_id": "gate_legacy.UNDECIDABLE.tail_n",
+      "value": 8
+    },
+    "gate_legacy.业绩真兑现.measured_n": {
+      "cohort": "legacy_migration",
+      "definition": "业绩真兑现 门被拦且 outcome 可测的候选数",
+      "denominator_id": "gate_legacy.业绩真兑现.measured_n",
+      "value": 40
+    },
+    "gate_legacy.业绩真兑现.tail_n": {
+      "cohort": "legacy_migration",
+      "definition": "业绩真兑现 门被拦票中 fwd_2_oc 非空的观测数",
+      "denominator_id": "gate_legacy.业绩真兑现.tail_n",
+      "value": 40
+    },
+    "gate_legacy.主力真在.measured_n": {
+      "cohort": "legacy_migration",
+      "definition": "主力真在 门被拦且 outcome 可测的候选数",
+      "denominator_id": "gate_legacy.主力真在.measured_n",
+      "value": 63
+    },
+    "gate_legacy.主力真在.tail_n": {
+      "cohort": "legacy_migration",
+      "definition": "主力真在 门被拦票中 fwd_2_oc 非空的观测数",
+      "denominator_id": "gate_legacy.主力真在.tail_n",
+      "value": 63
+    },
+    "gate_legacy.估值不透支.measured_n": {
+      "cohort": "legacy_migration",
+      "definition": "估值不透支 门被拦且 outcome 可测的候选数",
+      "denominator_id": "gate_legacy.估值不透支.measured_n",
+      "value": 34
+    },
+    "gate_legacy.估值不透支.tail_n": {
+      "cohort": "legacy_migration",
+      "definition": "估值不透支 门被拦票中 fwd_2_oc 非空的观测数",
+      "denominator_id": "gate_legacy.估值不透支.tail_n",
+      "value": 34
+    },
+    "gate_v3.MULTI_GATE.measured_n": {
+      "cohort": "experiment_eligible",
+      "definition": "MULTI_GATE 门被拦且 outcome 可测的候选数",
+      "denominator_id": "gate_v3.MULTI_GATE.measured_n",
+      "value": 54
+    },
+    "gate_v3.UNDECIDABLE.measured_n": {
+      "cohort": "experiment_eligible",
+      "definition": "UNDECIDABLE 门被拦且 outcome 可测的候选数",
+      "denominator_id": "gate_v3.UNDECIDABLE.measured_n",
+      "value": 0
+    },
+    "gate_v3.业绩真兑现.measured_n": {
+      "cohort": "experiment_eligible",
+      "definition": "业绩真兑现 门被拦且 outcome 可测的候选数",
+      "denominator_id": "gate_v3.业绩真兑现.measured_n",
+      "value": 4
+    },
+    "gate_v3.主力真在.measured_n": {
+      "cohort": "experiment_eligible",
+      "definition": "主力真在 门被拦且 outcome 可测的候选数",
+      "denominator_id": "gate_v3.主力真在.measured_n",
+      "value": 17
+    },
+    "journal_scan_days": {
+      "cohort": "raw_run",
+      "definition": "journal 的行数 —— 运营历史,不是收益分母",
+      "denominator_id": "journal_scan_days",
+      "value": 30
+    },
+    "paper_nav_market_equal_weight_trades": {
+      "cohort": "t2_mature",
+      "definition": "market_equal_weight 线成交笔数",
+      "denominator_id": "paper_nav_market_equal_weight_trades",
+      "value": 0
+    },
+    "paper_nav_real_trades": {
+      "cohort": "t2_mature",
+      "definition": "real 线成交笔数",
+      "denominator_id": "paper_nav_real_trades",
+      "value": 9
+    },
+    "paper_nav_shadow_sized_trades": {
+      "cohort": "t2_mature",
+      "definition": "shadow_sized 线成交笔数",
+      "denominator_id": "paper_nav_shadow_sized_trades",
+      "value": 81
+    },
+    "paper_nav_shadow_trades": {
+      "cohort": "t2_mature",
+      "definition": "shadow 线成交笔数",
+      "denominator_id": "paper_nav_shadow_trades",
+      "value": 81
+    },
+    "registry_experiments": {
+      "cohort": "raw_run",
+      "definition": "registry 内实验总数",
+      "denominator_id": "registry_experiments",
+      "value": 1
+    },
+    "valid_completed_days": {
+      "cohort": "valid_completed",
+      "definition": "有 finalists 且至少一张决策卡的扫描日",
+      "denominator_id": "valid_completed_days",
+      "value": 28
+    },
+    "zero_buy_mature_bought_days": {
+      "cohort": "t2_mature",
+      "definition": "上述成熟日中有买单的日",
+      "denominator_id": "zero_buy_mature_bought_days",
+      "value": 6
+    },
+    "zero_buy_mature_days": {
+      "cohort": "t2_mature",
+      "definition": "retro 已归因、可算 fwd 的扫描日",
+      "denominator_id": "zero_buy_mature_days",
+      "value": 26
+    },
+    "zero_buy_mature_zero_days": {
+      "cohort": "t2_mature",
+      "definition": "上述成熟日中买单为 0 的日",
+      "denominator_id": "zero_buy_mature_zero_days",
+      "value": 20
+    }
+  },
+  "metrics": {
+    "abstention_v2.correct_days": {
+      "as_of": "2026-07-29",
+      "cohort": "t2_mature",
+      "denominator_id": "abstention_v2_judged_days",
+      "metric_id": "abstention_v2.correct_days",
+      "note": null,
+      "numerator": 0,
+      "query_version": "wave10.a0.1",
+      "semantic": "abstention_verdict_count",
+      "source_field": "abstention_ledger.status_v2",
+      "source_hashes": {
+        "context/scan/2026-07-14/retro/abstention_verdict.json": "e312605f428adc85",
+        "context/scan/2026-07-15/retro/abstention_verdict.json": "c0c7714c37fb70b1",
+        "context/scan/2026-07-16/retro/abstention_verdict.json": "6ad33d1a5e01911f",
+        "context/scan/2026-07-17/retro/abstention_verdict.json": "21e65d46510509dc",
+        "context/scan/2026-07-21/retro/abstention_verdict.json": "bc1b8158fa7eee84",
+        "context/scan/2026-07-24/retro/abstention_verdict.json": "85da2cbc3dcb39e9",
+        "context/scan/2026-07-27/retro/abstention_verdict.json": "f58ff46286807c96",
+        "context/scan/2026-07-28/retro/abstention_verdict.json": "8bf24aed180879ae",
+        "context/scan/2026-07-29/retro/abstention_verdict.json": "f182b7ad82097c43"
+      },
+      "source_paths": [
+        "context/scan/2026-07-14/retro/abstention_verdict.json",
+        "context/scan/2026-07-15/retro/abstention_verdict.json",
+        "context/scan/2026-07-16/retro/abstention_verdict.json",
+        "context/scan/2026-07-17/retro/abstention_verdict.json",
+        "context/scan/2026-07-21/retro/abstention_verdict.json",
+        "context/scan/2026-07-24/retro/abstention_verdict.json",
+        "context/scan/2026-07-27/retro/abstention_verdict.json",
+        "context/scan/2026-07-28/retro/abstention_verdict.json",
+        "context/scan/2026-07-29/retro/abstention_verdict.json"
+      ],
+      "status": "OK",
+      "value": 0
+    },
+    "abstention_v2.degraded_days": {
+      "as_of": "2026-07-29",
+      "cohort": "t2_mature",
+      "denominator_id": "abstention_v2_judged_days",
+      "metric_id": "abstention_v2.degraded_days",
+      "note": null,
+      "numerator": 8,
+      "query_version": "wave10.a0.1",
+      "semantic": "abstention_degraded_count",
+      "source_field": "abstention_ledger.data_quality",
+      "source_hashes": {
+        "context/scan/2026-07-14/retro/abstention_verdict.json": "e312605f428adc85",
+        "context/scan/2026-07-15/retro/abstention_verdict.json": "c0c7714c37fb70b1",
+        "context/scan/2026-07-16/retro/abstention_verdict.json": "6ad33d1a5e01911f",
+        "context/scan/2026-07-17/retro/abstention_verdict.json": "21e65d46510509dc",
+        "context/scan/2026-07-21/retro/abstention_verdict.json": "bc1b8158fa7eee84",
+        "context/scan/2026-07-24/retro/abstention_verdict.json": "85da2cbc3dcb39e9",
+        "context/scan/2026-07-27/retro/abstention_verdict.json": "f58ff46286807c96",
+        "context/scan/2026-07-28/retro/abstention_verdict.json": "8bf24aed180879ae",
+        "context/scan/2026-07-29/retro/abstention_verdict.json": "f182b7ad82097c43"
+      },
+      "source_paths": [
+        "context/scan/2026-07-14/retro/abstention_verdict.json",
+        "context/scan/2026-07-15/retro/abstention_verdict.json",
+        "context/scan/2026-07-16/retro/abstention_verdict.json",
+        "context/scan/2026-07-17/retro/abstention_verdict.json",
+        "context/scan/2026-07-21/retro/abstention_verdict.json",
+        "context/scan/2026-07-24/retro/abstention_verdict.json",
+        "context/scan/2026-07-27/retro/abstention_verdict.json",
+        "context/scan/2026-07-28/retro/abstention_verdict.json",
+        "context/scan/2026-07-29/retro/abstention_verdict.json"
+      ],
+      "status": "OK",
+      "value": 8
+    },
+    "abstention_v2.false_days": {
+      "as_of": "2026-07-29",
+      "cohort": "t2_mature",
+      "denominator_id": "abstention_v2_judged_days",
+      "metric_id": "abstention_v2.false_days",
+      "note": null,
+      "numerator": 3,
+      "query_version": "wave10.a0.1",
+      "semantic": "abstention_verdict_count",
+      "source_field": "abstention_ledger.status_v2",
+      "source_hashes": {
+        "context/scan/2026-07-14/retro/abstention_verdict.json": "e312605f428adc85",
+        "context/scan/2026-07-15/retro/abstention_verdict.json": "c0c7714c37fb70b1",
+        "context/scan/2026-07-16/retro/abstention_verdict.json": "6ad33d1a5e01911f",
+        "context/scan/2026-07-17/retro/abstention_verdict.json": "21e65d46510509dc",
+        "context/scan/2026-07-21/retro/abstention_verdict.json": "bc1b8158fa7eee84",
+        "context/scan/2026-07-24/retro/abstention_verdict.json": "85da2cbc3dcb39e9",
+        "context/scan/2026-07-27/retro/abstention_verdict.json": "f58ff46286807c96",
+        "context/scan/2026-07-28/retro/abstention_verdict.json": "8bf24aed180879ae",
+        "context/scan/2026-07-29/retro/abstention_verdict.json": "f182b7ad82097c43"
+      },
+      "source_paths": [
+        "context/scan/2026-07-14/retro/abstention_verdict.json",
+        "context/scan/2026-07-15/retro/abstention_verdict.json",
+        "context/scan/2026-07-16/retro/abstention_verdict.json",
+        "context/scan/2026-07-17/retro/abstention_verdict.json",
+        "context/scan/2026-07-21/retro/abstention_verdict.json",
+        "context/scan/2026-07-24/retro/abstention_verdict.json",
+        "context/scan/2026-07-27/retro/abstention_verdict.json",
+        "context/scan/2026-07-28/retro/abstention_verdict.json",
+        "context/scan/2026-07-29/retro/abstention_verdict.json"
+      ],
+      "status": "OK",
+      "value": 3
+    },
+    "abstention_v2.immature_days": {
+      "as_of": "2026-07-29",
+      "cohort": "t2_mature",
+      "denominator_id": "abstention_v2_judged_days",
+      "metric_id": "abstention_v2.immature_days",
+      "note": null,
+      "numerator": 0,
+      "query_version": "wave10.a0.1",
+      "semantic": "abstention_verdict_count",
+      "source_field": "abstention_ledger.status_v2",
+      "source_hashes": {
+        "context/scan/2026-07-14/retro/abstention_verdict.json": "e312605f428adc85",
+        "context/scan/2026-07-15/retro/abstention_verdict.json": "c0c7714c37fb70b1",
+        "context/scan/2026-07-16/retro/abstention_verdict.json": "6ad33d1a5e01911f",
+        "context/scan/2026-07-17/retro/abstention_verdict.json": "21e65d46510509dc",
+        "context/scan/2026-07-21/retro/abstention_verdict.json": "bc1b8158fa7eee84",
+        "context/scan/2026-07-24/retro/abstention_verdict.json": "85da2cbc3dcb39e9",
+        "context/scan/2026-07-27/retro/abstention_verdict.json": "f58ff46286807c96",
+        "context/scan/2026-07-28/retro/abstention_verdict.json": "8bf24aed180879ae",
+        "context/scan/2026-07-29/retro/abstention_verdict.json": "f182b7ad82097c43"
+      },
+      "source_paths": [
+        "context/scan/2026-07-14/retro/abstention_verdict.json",
+        "context/scan/2026-07-15/retro/abstention_verdict.json",
+        "context/scan/2026-07-16/retro/abstention_verdict.json",
+        "context/scan/2026-07-17/retro/abstention_verdict.json",
+        "context/scan/2026-07-21/retro/abstention_verdict.json",
+        "context/scan/2026-07-24/retro/abstention_verdict.json",
+        "context/scan/2026-07-27/retro/abstention_verdict.json",
+        "context/scan/2026-07-28/retro/abstention_verdict.json",
+        "context/scan/2026-07-29/retro/abstention_verdict.json"
+      ],
+      "status": "OK",
+      "value": 0
+    },
+    "abstention_v2.neutral_days": {
+      "as_of": "2026-07-29",
+      "cohort": "t2_mature",
+      "denominator_id": "abstention_v2_judged_days",
+      "metric_id": "abstention_v2.neutral_days",
+      "note": null,
+      "numerator": 5,
+      "query_version": "wave10.a0.1",
+      "semantic": "abstention_verdict_count",
+      "source_field": "abstention_ledger.status_v2",
+      "source_hashes": {
+        "context/scan/2026-07-14/retro/abstention_verdict.json": "e312605f428adc85",
+        "context/scan/2026-07-15/retro/abstention_verdict.json": "c0c7714c37fb70b1",
+        "context/scan/2026-07-16/retro/abstention_verdict.json": "6ad33d1a5e01911f",
+        "context/scan/2026-07-17/retro/abstention_verdict.json": "21e65d46510509dc",
+        "context/scan/2026-07-21/retro/abstention_verdict.json": "bc1b8158fa7eee84",
+        "context/scan/2026-07-24/retro/abstention_verdict.json": "85da2cbc3dcb39e9",
+        "context/scan/2026-07-27/retro/abstention_verdict.json": "f58ff46286807c96",
+        "context/scan/2026-07-28/retro/abstention_verdict.json": "8bf24aed180879ae",
+        "context/scan/2026-07-29/retro/abstention_verdict.json": "f182b7ad82097c43"
+      },
+      "source_paths": [
+        "context/scan/2026-07-14/retro/abstention_verdict.json",
+        "context/scan/2026-07-15/retro/abstention_verdict.json",
+        "context/scan/2026-07-16/retro/abstention_verdict.json",
+        "context/scan/2026-07-17/retro/abstention_verdict.json",
+        "context/scan/2026-07-21/retro/abstention_verdict.json",
+        "context/scan/2026-07-24/retro/abstention_verdict.json",
+        "context/scan/2026-07-27/retro/abstention_verdict.json",
+        "context/scan/2026-07-28/retro/abstention_verdict.json",
+        "context/scan/2026-07-29/retro/abstention_verdict.json"
+      ],
+      "status": "OK",
+      "value": 5
+    },
+    "gate_legacy.MULTI_GATE.correct_rate": {
+      "as_of": "2026-07-29",
+      "cohort": "legacy_migration",
+      "denominator_id": "gate_legacy.MULTI_GATE.measured_n",
+      "metric_id": "gate_legacy.MULTI_GATE.correct_rate",
+      "note": null,
+      "numerator": 3,
+      "query_version": "wave10.a0.1",
+      "semantic": "correct_block_rate",
+      "source_field": "gate_attribution.correct_rate",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 0.4286
+    },
+    "gate_legacy.MULTI_GATE.false_kill_rate": {
+      "as_of": "2026-07-29",
+      "cohort": "legacy_migration",
+      "denominator_id": "gate_legacy.MULTI_GATE.measured_n",
+      "metric_id": "gate_legacy.MULTI_GATE.false_kill_rate",
+      "note": null,
+      "numerator": 2,
+      "query_version": "wave10.a0.1",
+      "semantic": "false_kill_rate",
+      "source_field": "gate_attribution.false_kill_rate",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 0.2857
+    },
+    "gate_legacy.MULTI_GATE.left_tail_protection_rate": {
+      "as_of": null,
+      "cohort": "legacy_migration",
+      "denominator_id": "gate_legacy.MULTI_GATE.tail_n",
+      "metric_id": "gate_legacy.MULTI_GATE.left_tail_protection_rate",
+      "note": "被拦票跌破 -5% 的占比;把它读成错杀率是 Wave10 立案时点名的误读",
+      "numerator": null,
+      "query_version": "wave10.a0.1",
+      "semantic": "left_tail_protection_rate",
+      "source_field": "gate_ledger.tail_rate",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 0.2925
+    },
+    "gate_legacy.MULTI_GATE.mean_excess_2": {
+      "as_of": "2026-07-29",
+      "cohort": "legacy_migration",
+      "denominator_id": "gate_legacy.MULTI_GATE.measured_n",
+      "metric_id": "gate_legacy.MULTI_GATE.mean_excess_2",
+      "note": null,
+      "numerator": null,
+      "query_version": "wave10.a0.1",
+      "semantic": "gate_mean_excess2",
+      "source_field": "gate_attribution.mean_excess_2",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 0.002927
+    },
+    "gate_legacy.MULTI_GATE.n_fires": {
+      "as_of": "2026-07-29",
+      "cohort": "legacy_migration",
+      "denominator_id": null,
+      "metric_id": "gate_legacy.MULTI_GATE.n_fires",
+      "note": "计数,不是比率 —— 别拿 measured_n 当它的分母",
+      "numerator": 7,
+      "query_version": "wave10.a0.1",
+      "semantic": "gate_block_count",
+      "source_field": "gate_attribution.n_fires",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 7
+    },
+    "gate_legacy.UNDECIDABLE.correct_rate": {
+      "as_of": "2026-07-29",
+      "cohort": "legacy_migration",
+      "denominator_id": "gate_legacy.UNDECIDABLE.measured_n",
+      "metric_id": "gate_legacy.UNDECIDABLE.correct_rate",
+      "note": null,
+      "numerator": 3,
+      "query_version": "wave10.a0.1",
+      "semantic": "correct_block_rate",
+      "source_field": "gate_attribution.correct_rate",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 0.375
+    },
+    "gate_legacy.UNDECIDABLE.false_kill_rate": {
+      "as_of": "2026-07-29",
+      "cohort": "legacy_migration",
+      "denominator_id": "gate_legacy.UNDECIDABLE.measured_n",
+      "metric_id": "gate_legacy.UNDECIDABLE.false_kill_rate",
+      "note": null,
+      "numerator": 3,
+      "query_version": "wave10.a0.1",
+      "semantic": "false_kill_rate",
+      "source_field": "gate_attribution.false_kill_rate",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 0.375
+    },
+    "gate_legacy.UNDECIDABLE.left_tail_protection_rate": {
+      "as_of": null,
+      "cohort": "legacy_migration",
+      "denominator_id": "gate_legacy.UNDECIDABLE.tail_n",
+      "metric_id": "gate_legacy.UNDECIDABLE.left_tail_protection_rate",
+      "note": "被拦票跌破 -5% 的占比;把它读成错杀率是 Wave10 立案时点名的误读",
+      "numerator": null,
+      "query_version": "wave10.a0.1",
+      "semantic": "left_tail_protection_rate",
+      "source_field": "gate_ledger.tail_rate",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 0.2797
+    },
+    "gate_legacy.UNDECIDABLE.mean_excess_2": {
+      "as_of": "2026-07-29",
+      "cohort": "legacy_migration",
+      "denominator_id": "gate_legacy.UNDECIDABLE.measured_n",
+      "metric_id": "gate_legacy.UNDECIDABLE.mean_excess_2",
+      "note": null,
+      "numerator": null,
+      "query_version": "wave10.a0.1",
+      "semantic": "gate_mean_excess2",
+      "source_field": "gate_attribution.mean_excess_2",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 0.000592
+    },
+    "gate_legacy.UNDECIDABLE.n_fires": {
+      "as_of": "2026-07-29",
+      "cohort": "legacy_migration",
+      "denominator_id": null,
+      "metric_id": "gate_legacy.UNDECIDABLE.n_fires",
+      "note": "计数,不是比率 —— 别拿 measured_n 当它的分母",
+      "numerator": 8,
+      "query_version": "wave10.a0.1",
+      "semantic": "gate_block_count",
+      "source_field": "gate_attribution.n_fires",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 8
+    },
+    "gate_legacy.业绩真兑现.correct_rate": {
+      "as_of": "2026-07-29",
+      "cohort": "legacy_migration",
+      "denominator_id": "gate_legacy.业绩真兑现.measured_n",
+      "metric_id": "gate_legacy.业绩真兑现.correct_rate",
+      "note": null,
+      "numerator": 18,
+      "query_version": "wave10.a0.1",
+      "semantic": "correct_block_rate",
+      "source_field": "gate_attribution.correct_rate",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 0.45
+    },
+    "gate_legacy.业绩真兑现.false_kill_rate": {
+      "as_of": "2026-07-29",
+      "cohort": "legacy_migration",
+      "denominator_id": "gate_legacy.业绩真兑现.measured_n",
+      "metric_id": "gate_legacy.业绩真兑现.false_kill_rate",
+      "note": null,
+      "numerator": 17,
+      "query_version": "wave10.a0.1",
+      "semantic": "false_kill_rate",
+      "source_field": "gate_attribution.false_kill_rate",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 0.425
+    },
+    "gate_legacy.业绩真兑现.left_tail_protection_rate": {
+      "as_of": null,
+      "cohort": "legacy_migration",
+      "denominator_id": "gate_legacy.业绩真兑现.tail_n",
+      "metric_id": "gate_legacy.业绩真兑现.left_tail_protection_rate",
+      "note": "被拦票跌破 -5% 的占比;把它读成错杀率是 Wave10 立案时点名的误读",
+      "numerator": null,
+      "query_version": "wave10.a0.1",
+      "semantic": "left_tail_protection_rate",
+      "source_field": "gate_ledger.tail_rate",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 0.3715
+    },
+    "gate_legacy.业绩真兑现.mean_excess_2": {
+      "as_of": "2026-07-29",
+      "cohort": "legacy_migration",
+      "denominator_id": "gate_legacy.业绩真兑现.measured_n",
+      "metric_id": "gate_legacy.业绩真兑现.mean_excess_2",
+      "note": null,
+      "numerator": null,
+      "query_version": "wave10.a0.1",
+      "semantic": "gate_mean_excess2",
+      "source_field": "gate_attribution.mean_excess_2",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": -0.001299
+    },
+    "gate_legacy.业绩真兑现.n_fires": {
+      "as_of": "2026-07-29",
+      "cohort": "legacy_migration",
+      "denominator_id": null,
+      "metric_id": "gate_legacy.业绩真兑现.n_fires",
+      "note": "计数,不是比率 —— 别拿 measured_n 当它的分母",
+      "numerator": 40,
+      "query_version": "wave10.a0.1",
+      "semantic": "gate_block_count",
+      "source_field": "gate_attribution.n_fires",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 40
+    },
+    "gate_legacy.主力真在.correct_rate": {
+      "as_of": "2026-07-29",
+      "cohort": "legacy_migration",
+      "denominator_id": "gate_legacy.主力真在.measured_n",
+      "metric_id": "gate_legacy.主力真在.correct_rate",
+      "note": null,
+      "numerator": 36,
+      "query_version": "wave10.a0.1",
+      "semantic": "correct_block_rate",
+      "source_field": "gate_attribution.correct_rate",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 0.5714
+    },
+    "gate_legacy.主力真在.false_kill_rate": {
+      "as_of": "2026-07-29",
+      "cohort": "legacy_migration",
+      "denominator_id": "gate_legacy.主力真在.measured_n",
+      "metric_id": "gate_legacy.主力真在.false_kill_rate",
+      "note": null,
+      "numerator": 20,
+      "query_version": "wave10.a0.1",
+      "semantic": "false_kill_rate",
+      "source_field": "gate_attribution.false_kill_rate",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 0.3175
+    },
+    "gate_legacy.主力真在.left_tail_protection_rate": {
+      "as_of": null,
+      "cohort": "legacy_migration",
+      "denominator_id": "gate_legacy.主力真在.tail_n",
+      "metric_id": "gate_legacy.主力真在.left_tail_protection_rate",
+      "note": "被拦票跌破 -5% 的占比;把它读成错杀率是 Wave10 立案时点名的误读",
+      "numerator": null,
+      "query_version": "wave10.a0.1",
+      "semantic": "left_tail_protection_rate",
+      "source_field": "gate_ledger.tail_rate",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 0.3902
+    },
+    "gate_legacy.主力真在.mean_excess_2": {
+      "as_of": "2026-07-29",
+      "cohort": "legacy_migration",
+      "denominator_id": "gate_legacy.主力真在.measured_n",
+      "metric_id": "gate_legacy.主力真在.mean_excess_2",
+      "note": null,
+      "numerator": null,
+      "query_version": "wave10.a0.1",
+      "semantic": "gate_mean_excess2",
+      "source_field": "gate_attribution.mean_excess_2",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": -0.013299
+    },
+    "gate_legacy.主力真在.n_fires": {
+      "as_of": "2026-07-29",
+      "cohort": "legacy_migration",
+      "denominator_id": null,
+      "metric_id": "gate_legacy.主力真在.n_fires",
+      "note": "计数,不是比率 —— 别拿 measured_n 当它的分母",
+      "numerator": 63,
+      "query_version": "wave10.a0.1",
+      "semantic": "gate_block_count",
+      "source_field": "gate_attribution.n_fires",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 63
+    },
+    "gate_legacy.估值不透支.correct_rate": {
+      "as_of": "2026-07-29",
+      "cohort": "legacy_migration",
+      "denominator_id": "gate_legacy.估值不透支.measured_n",
+      "metric_id": "gate_legacy.估值不透支.correct_rate",
+      "note": null,
+      "numerator": 24,
+      "query_version": "wave10.a0.1",
+      "semantic": "correct_block_rate",
+      "source_field": "gate_attribution.correct_rate",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 0.7059
+    },
+    "gate_legacy.估值不透支.false_kill_rate": {
+      "as_of": "2026-07-29",
+      "cohort": "legacy_migration",
+      "denominator_id": "gate_legacy.估值不透支.measured_n",
+      "metric_id": "gate_legacy.估值不透支.false_kill_rate",
+      "note": null,
+      "numerator": 8,
+      "query_version": "wave10.a0.1",
+      "semantic": "false_kill_rate",
+      "source_field": "gate_attribution.false_kill_rate",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 0.2353
+    },
+    "gate_legacy.估值不透支.left_tail_protection_rate": {
+      "as_of": null,
+      "cohort": "legacy_migration",
+      "denominator_id": "gate_legacy.估值不透支.tail_n",
+      "metric_id": "gate_legacy.估值不透支.left_tail_protection_rate",
+      "note": "被拦票跌破 -5% 的占比;把它读成错杀率是 Wave10 立案时点名的误读",
+      "numerator": null,
+      "query_version": "wave10.a0.1",
+      "semantic": "left_tail_protection_rate",
+      "source_field": "gate_ledger.tail_rate",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 0.4986
+    },
+    "gate_legacy.估值不透支.mean_excess_2": {
+      "as_of": "2026-07-29",
+      "cohort": "legacy_migration",
+      "denominator_id": "gate_legacy.估值不透支.measured_n",
+      "metric_id": "gate_legacy.估值不透支.mean_excess_2",
+      "note": null,
+      "numerator": null,
+      "query_version": "wave10.a0.1",
+      "semantic": "gate_mean_excess2",
+      "source_field": "gate_attribution.mean_excess_2",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": -0.034257
+    },
+    "gate_legacy.估值不透支.n_fires": {
+      "as_of": "2026-07-29",
+      "cohort": "legacy_migration",
+      "denominator_id": null,
+      "metric_id": "gate_legacy.估值不透支.n_fires",
+      "note": "计数,不是比率 —— 别拿 measured_n 当它的分母",
+      "numerator": 34,
+      "query_version": "wave10.a0.1",
+      "semantic": "gate_block_count",
+      "source_field": "gate_attribution.n_fires",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 34
+    },
+    "gate_v3.MULTI_GATE.correct_rate": {
+      "as_of": "2026-07-29",
+      "cohort": "experiment_eligible",
+      "denominator_id": "gate_v3.MULTI_GATE.measured_n",
+      "metric_id": "gate_v3.MULTI_GATE.correct_rate",
+      "note": null,
+      "numerator": 32,
+      "query_version": "wave10.a0.1",
+      "semantic": "correct_block_rate",
+      "source_field": "gate_attribution.correct_rate",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 0.5926
+    },
+    "gate_v3.MULTI_GATE.false_kill_rate": {
+      "as_of": "2026-07-29",
+      "cohort": "experiment_eligible",
+      "denominator_id": "gate_v3.MULTI_GATE.measured_n",
+      "metric_id": "gate_v3.MULTI_GATE.false_kill_rate",
+      "note": null,
+      "numerator": 16,
+      "query_version": "wave10.a0.1",
+      "semantic": "false_kill_rate",
+      "source_field": "gate_attribution.false_kill_rate",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 0.2963
+    },
+    "gate_v3.MULTI_GATE.mean_excess_2": {
+      "as_of": "2026-07-29",
+      "cohort": "experiment_eligible",
+      "denominator_id": "gate_v3.MULTI_GATE.measured_n",
+      "metric_id": "gate_v3.MULTI_GATE.mean_excess_2",
+      "note": null,
+      "numerator": null,
+      "query_version": "wave10.a0.1",
+      "semantic": "gate_mean_excess2",
+      "source_field": "gate_attribution.mean_excess_2",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": -0.020654
+    },
+    "gate_v3.MULTI_GATE.n_fires": {
+      "as_of": "2026-07-29",
+      "cohort": "experiment_eligible",
+      "denominator_id": null,
+      "metric_id": "gate_v3.MULTI_GATE.n_fires",
+      "note": "计数,不是比率 —— 别拿 measured_n 当它的分母",
+      "numerator": 54,
+      "query_version": "wave10.a0.1",
+      "semantic": "gate_block_count",
+      "source_field": "gate_attribution.n_fires",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 54
+    },
+    "gate_v3.UNDECIDABLE.correct_rate": {
+      "as_of": "2026-07-29",
+      "cohort": "experiment_eligible",
+      "denominator_id": "gate_v3.UNDECIDABLE.measured_n",
+      "metric_id": "gate_v3.UNDECIDABLE.correct_rate",
+      "note": null,
+      "numerator": 0,
+      "query_version": "wave10.a0.1",
+      "semantic": "correct_block_rate",
+      "source_field": "gate_attribution.correct_rate",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": null
+    },
+    "gate_v3.UNDECIDABLE.false_kill_rate": {
+      "as_of": "2026-07-29",
+      "cohort": "experiment_eligible",
+      "denominator_id": "gate_v3.UNDECIDABLE.measured_n",
+      "metric_id": "gate_v3.UNDECIDABLE.false_kill_rate",
+      "note": null,
+      "numerator": 0,
+      "query_version": "wave10.a0.1",
+      "semantic": "false_kill_rate",
+      "source_field": "gate_attribution.false_kill_rate",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": null
+    },
+    "gate_v3.UNDECIDABLE.mean_excess_2": {
+      "as_of": "2026-07-29",
+      "cohort": "experiment_eligible",
+      "denominator_id": "gate_v3.UNDECIDABLE.measured_n",
+      "metric_id": "gate_v3.UNDECIDABLE.mean_excess_2",
+      "note": null,
+      "numerator": null,
+      "query_version": "wave10.a0.1",
+      "semantic": "gate_mean_excess2",
+      "source_field": "gate_attribution.mean_excess_2",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": -0.007179
+    },
+    "gate_v3.UNDECIDABLE.n_fires": {
+      "as_of": "2026-07-29",
+      "cohort": "experiment_eligible",
+      "denominator_id": null,
+      "metric_id": "gate_v3.UNDECIDABLE.n_fires",
+      "note": "计数,不是比率 —— 别拿 measured_n 当它的分母",
+      "numerator": 8,
+      "query_version": "wave10.a0.1",
+      "semantic": "gate_block_count",
+      "source_field": "gate_attribution.n_fires",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 8
+    },
+    "gate_v3.业绩真兑现.correct_rate": {
+      "as_of": "2026-07-29",
+      "cohort": "experiment_eligible",
+      "denominator_id": "gate_v3.业绩真兑现.measured_n",
+      "metric_id": "gate_v3.业绩真兑现.correct_rate",
+      "note": null,
+      "numerator": 0,
+      "query_version": "wave10.a0.1",
+      "semantic": "correct_block_rate",
+      "source_field": "gate_attribution.correct_rate",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 0.0
+    },
+    "gate_v3.业绩真兑现.false_kill_rate": {
+      "as_of": "2026-07-29",
+      "cohort": "experiment_eligible",
+      "denominator_id": "gate_v3.业绩真兑现.measured_n",
+      "metric_id": "gate_v3.业绩真兑现.false_kill_rate",
+      "note": null,
+      "numerator": 2,
+      "query_version": "wave10.a0.1",
+      "semantic": "false_kill_rate",
+      "source_field": "gate_attribution.false_kill_rate",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 0.5
+    },
+    "gate_v3.业绩真兑现.mean_excess_2": {
+      "as_of": "2026-07-29",
+      "cohort": "experiment_eligible",
+      "denominator_id": "gate_v3.业绩真兑现.measured_n",
+      "metric_id": "gate_v3.业绩真兑现.mean_excess_2",
+      "note": null,
+      "numerator": null,
+      "query_version": "wave10.a0.1",
+      "semantic": "gate_mean_excess2",
+      "source_field": "gate_attribution.mean_excess_2",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 0.030089
+    },
+    "gate_v3.业绩真兑现.n_fires": {
+      "as_of": "2026-07-29",
+      "cohort": "experiment_eligible",
+      "denominator_id": null,
+      "metric_id": "gate_v3.业绩真兑现.n_fires",
+      "note": "计数,不是比率 —— 别拿 measured_n 当它的分母",
+      "numerator": 4,
+      "query_version": "wave10.a0.1",
+      "semantic": "gate_block_count",
+      "source_field": "gate_attribution.n_fires",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 4
+    },
+    "gate_v3.主力真在.correct_rate": {
+      "as_of": "2026-07-29",
+      "cohort": "experiment_eligible",
+      "denominator_id": "gate_v3.主力真在.measured_n",
+      "metric_id": "gate_v3.主力真在.correct_rate",
+      "note": null,
+      "numerator": 9,
+      "query_version": "wave10.a0.1",
+      "semantic": "correct_block_rate",
+      "source_field": "gate_attribution.correct_rate",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 0.5294
+    },
+    "gate_v3.主力真在.false_kill_rate": {
+      "as_of": "2026-07-29",
+      "cohort": "experiment_eligible",
+      "denominator_id": "gate_v3.主力真在.measured_n",
+      "metric_id": "gate_v3.主力真在.false_kill_rate",
+      "note": null,
+      "numerator": 5,
+      "query_version": "wave10.a0.1",
+      "semantic": "false_kill_rate",
+      "source_field": "gate_attribution.false_kill_rate",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 0.2941
+    },
+    "gate_v3.主力真在.mean_excess_2": {
+      "as_of": "2026-07-29",
+      "cohort": "experiment_eligible",
+      "denominator_id": "gate_v3.主力真在.measured_n",
+      "metric_id": "gate_v3.主力真在.mean_excess_2",
+      "note": null,
+      "numerator": null,
+      "query_version": "wave10.a0.1",
+      "semantic": "gate_mean_excess2",
+      "source_field": "gate_attribution.mean_excess_2",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 0.006256
+    },
+    "gate_v3.主力真在.n_fires": {
+      "as_of": "2026-07-29",
+      "cohort": "experiment_eligible",
+      "denominator_id": null,
+      "metric_id": "gate_v3.主力真在.n_fires",
+      "note": "计数,不是比率 —— 别拿 measured_n 当它的分母",
+      "numerator": 17,
+      "query_version": "wave10.a0.1",
+      "semantic": "gate_block_count",
+      "source_field": "gate_attribution.n_fires",
+      "source_hashes": {
+        "context/scan/2026-07-31/gate_fires.csv": "3a0d0b76b777b246"
+      },
+      "source_paths": [
+        "context/scan/2026-07-31/gate_fires.csv"
+      ],
+      "status": "OK",
+      "value": 17
+    },
+    "journal.scan_days": {
+      "as_of": "2026-07-31",
+      "cohort": "raw_run",
+      "denominator_id": "journal_scan_days",
+      "metric_id": "journal.scan_days",
+      "note": null,
+      "numerator": 30,
+      "query_version": "wave10.a0.1",
+      "semantic": "scan_day_count",
+      "source_field": "journal.date",
+      "source_hashes": {},
+      "source_paths": [
+        "context/scan"
+      ],
+      "status": "OK",
+      "value": 30
+    },
+    "journal.valid_completed_days": {
+      "as_of": "2026-07-31",
+      "cohort": "valid_completed",
+      "denominator_id": "valid_completed_days",
+      "metric_id": "journal.valid_completed_days",
+      "note": null,
+      "numerator": 28,
+      "query_version": "wave10.a0.1",
+      "semantic": "scan_day_count",
+      "source_field": "journal.date",
+      "source_hashes": {},
+      "source_paths": [
+        "context/scan"
+      ],
+      "status": "OK",
+      "value": 28
+    },
+    "journal.zero_buy_days": {
+      "as_of": "2026-07-31",
+      "cohort": "raw_run",
+      "denominator_id": "journal_scan_days",
+      "metric_id": "journal.zero_buy_days",
+      "note": "raw cohort —— 与 zero_buy_ledger 的成熟日计数不是同一个数,不得混用",
+      "numerator": 23,
+      "query_version": "wave10.a0.1",
+      "semantic": "zero_buy_day_count",
+      "source_field": "*.n_bought",
+      "source_hashes": {},
+      "source_paths": [
+        "context/scan"
+      ],
+      "status": "OK",
+      "value": 23
+    },
+    "paper_nav.market_equal_weight_return": {
+      "as_of": "20260731",
+      "cohort": "t2_mature",
+      "denominator_id": null,
+      "metric_id": "paper_nav.market_equal_weight_return",
+      "note": "hold=2 主表(报告内共 2 张成绩单);组合政策的观察差,**不能**归因到某一根门柱 —— 真实/影子的成交数与暴露不同",
+      "numerator": null,
+      "query_version": "wave10.a0.1",
+      "semantic": "portfolio_return",
+      "source_field": "paper_nav.total_return",
+      "source_hashes": {
+        "reports/learning/paper_nav.md": "6c1c4eef1142506a"
+      },
+      "source_paths": [
+        "reports/learning/paper_nav.md"
+      ],
+      "status": "OK",
+      "value": -0.0985
+    },
+    "paper_nav.market_equal_weight_trades": {
+      "as_of": "20260731",
+      "cohort": "t2_mature",
+      "denominator_id": null,
+      "metric_id": "paper_nav.market_equal_weight_trades",
+      "note": null,
+      "numerator": 0,
+      "query_version": "wave10.a0.1",
+      "semantic": "portfolio_trade_count",
+      "source_field": "paper_nav.n_trades",
+      "source_hashes": {
+        "reports/learning/paper_nav.md": "6c1c4eef1142506a"
+      },
+      "source_paths": [
+        "reports/learning/paper_nav.md"
+      ],
+      "status": "OK",
+      "value": 0
+    },
+    "paper_nav.real_return": {
+      "as_of": "20260731",
+      "cohort": "t2_mature",
+      "denominator_id": "paper_nav_real_trades",
+      "metric_id": "paper_nav.real_return",
+      "note": "hold=2 主表(报告内共 2 张成绩单);组合政策的观察差,**不能**归因到某一根门柱 —— 真实/影子的成交数与暴露不同",
+      "numerator": null,
+      "query_version": "wave10.a0.1",
+      "semantic": "portfolio_return",
+      "source_field": "paper_nav.total_return",
+      "source_hashes": {
+        "reports/learning/paper_nav.md": "6c1c4eef1142506a"
+      },
+      "source_paths": [
+        "reports/learning/paper_nav.md"
+      ],
+      "status": "OK",
+      "value": -0.0024
+    },
+    "paper_nav.real_trades": {
+      "as_of": "20260731",
+      "cohort": "t2_mature",
+      "denominator_id": null,
+      "metric_id": "paper_nav.real_trades",
+      "note": null,
+      "numerator": 9,
+      "query_version": "wave10.a0.1",
+      "semantic": "portfolio_trade_count",
+      "source_field": "paper_nav.n_trades",
+      "source_hashes": {
+        "reports/learning/paper_nav.md": "6c1c4eef1142506a"
+      },
+      "source_paths": [
+        "reports/learning/paper_nav.md"
+      ],
+      "status": "OK",
+      "value": 9
+    },
+    "paper_nav.shadow_return": {
+      "as_of": "20260731",
+      "cohort": "t2_mature",
+      "denominator_id": "paper_nav_shadow_trades",
+      "metric_id": "paper_nav.shadow_return",
+      "note": "hold=2 主表(报告内共 2 张成绩单);组合政策的观察差,**不能**归因到某一根门柱 —— 真实/影子的成交数与暴露不同",
+      "numerator": null,
+      "query_version": "wave10.a0.1",
+      "semantic": "portfolio_return",
+      "source_field": "paper_nav.total_return",
+      "source_hashes": {
+        "reports/learning/paper_nav.md": "6c1c4eef1142506a"
+      },
+      "source_paths": [
+        "reports/learning/paper_nav.md"
+      ],
+      "status": "OK",
+      "value": -0.0316
+    },
+    "paper_nav.shadow_sized_return": {
+      "as_of": "20260731",
+      "cohort": "t2_mature",
+      "denominator_id": "paper_nav_shadow_sized_trades",
+      "metric_id": "paper_nav.shadow_sized_return",
+      "note": "hold=2 主表(报告内共 2 张成绩单);组合政策的观察差,**不能**归因到某一根门柱 —— 真实/影子的成交数与暴露不同",
+      "numerator": null,
+      "query_version": "wave10.a0.1",
+      "semantic": "portfolio_return",
+      "source_field": "paper_nav.total_return",
+      "source_hashes": {
+        "reports/learning/paper_nav.md": "6c1c4eef1142506a"
+      },
+      "source_paths": [
+        "reports/learning/paper_nav.md"
+      ],
+      "status": "OK",
+      "value": -0.0586
+    },
+    "paper_nav.shadow_sized_trades": {
+      "as_of": "20260731",
+      "cohort": "t2_mature",
+      "denominator_id": null,
+      "metric_id": "paper_nav.shadow_sized_trades",
+      "note": null,
+      "numerator": 81,
+      "query_version": "wave10.a0.1",
+      "semantic": "portfolio_trade_count",
+      "source_field": "paper_nav.n_trades",
+      "source_hashes": {
+        "reports/learning/paper_nav.md": "6c1c4eef1142506a"
+      },
+      "source_paths": [
+        "reports/learning/paper_nav.md"
+      ],
+      "status": "OK",
+      "value": 81
+    },
+    "paper_nav.shadow_trades": {
+      "as_of": "20260731",
+      "cohort": "t2_mature",
+      "denominator_id": null,
+      "metric_id": "paper_nav.shadow_trades",
+      "note": null,
+      "numerator": 81,
+      "query_version": "wave10.a0.1",
+      "semantic": "portfolio_trade_count",
+      "source_field": "paper_nav.n_trades",
+      "source_hashes": {
+        "reports/learning/paper_nav.md": "6c1c4eef1142506a"
+      },
+      "source_paths": [
+        "reports/learning/paper_nav.md"
+      ],
+      "status": "OK",
+      "value": 81
+    },
+    "registry.experiment_count": {
+      "as_of": null,
+      "cohort": "raw_run",
+      "denominator_id": "registry_experiments",
+      "metric_id": "registry.experiment_count",
+      "note": null,
+      "numerator": 1,
+      "query_version": "wave10.a0.1",
+      "semantic": "experiment_count",
+      "source_field": "experiment_registry.experiments",
+      "source_hashes": {
+        "context/learning/experiments/registry.json": "0b5df3447fdd370d"
+      },
+      "source_paths": [
+        "context/learning/experiments/registry.json"
+      ],
+      "status": "OK",
+      "value": 1
+    },
+    "zero_buy.bought_day_market_fwd2_mean": {
+      "as_of": "2026-07-29",
+      "cohort": "t2_mature",
+      "denominator_id": "zero_buy_mature_bought_days",
+      "metric_id": "zero_buy.bought_day_market_fwd2_mean",
+      "note": null,
+      "numerator": null,
+      "query_version": "wave10.a0.1",
+      "semantic": "market_fwd2_mean",
+      "source_field": "zero_buy_ledger.mkt_fwd2",
+      "source_hashes": {
+        "context/scan/2026-07-29/retro/attribution.csv": "e084f8cc482e43d0"
+      },
+      "source_paths": [
+        "context/scan/2026-07-29/retro/attribution.csv"
+      ],
+      "status": "OK",
+      "value": -0.000105
+    },
+    "zero_buy.mature_days": {
+      "as_of": "2026-07-29",
+      "cohort": "t2_mature",
+      "denominator_id": "zero_buy_mature_days",
+      "metric_id": "zero_buy.mature_days",
+      "note": null,
+      "numerator": 26,
+      "query_version": "wave10.a0.1",
+      "semantic": "scan_day_count",
+      "source_field": "journal.date",
+      "source_hashes": {
+        "context/scan/2026-07-29/retro/attribution.csv": "e084f8cc482e43d0"
+      },
+      "source_paths": [
+        "context/scan/2026-07-29/retro/attribution.csv"
+      ],
+      "status": "OK",
+      "value": 26
+    },
+    "zero_buy.mature_zero_days": {
+      "as_of": "2026-07-29",
+      "cohort": "t2_mature",
+      "denominator_id": "zero_buy_mature_days",
+      "metric_id": "zero_buy.mature_zero_days",
+      "note": null,
+      "numerator": 20,
+      "query_version": "wave10.a0.1",
+      "semantic": "zero_buy_day_count",
+      "source_field": "*.n_bought",
+      "source_hashes": {
+        "context/scan/2026-07-29/retro/attribution.csv": "e084f8cc482e43d0"
+      },
+      "source_paths": [
+        "context/scan/2026-07-29/retro/attribution.csv"
+      ],
+      "status": "OK",
+      "value": 20
+    },
+    "zero_buy.zero_day_market_fwd2_mean": {
+      "as_of": "2026-07-29",
+      "cohort": "t2_mature",
+      "denominator_id": "zero_buy_mature_zero_days",
+      "metric_id": "zero_buy.zero_day_market_fwd2_mean",
+      "note": null,
+      "numerator": null,
+      "query_version": "wave10.a0.1",
+      "semantic": "market_fwd2_mean",
+      "source_field": "zero_buy_ledger.mkt_fwd2",
+      "source_hashes": {
+        "context/scan/2026-07-29/retro/attribution.csv": "e084f8cc482e43d0"
+      },
+      "source_paths": [
+        "context/scan/2026-07-29/retro/attribution.csv"
+      ],
+      "status": "OK",
+      "value": -0.009636
+    }
+  },
+  "registry_inventory": {
+    "active_by_family": {},
+    "experiments": {
+      "exp_20260729_l3_hard_constraint_f": {
+        "definition_hash": "185126191dc30010e6564cb74c053c6cea2718cf0701c9e228ae82d486d7e117",
+        "expires_date": "2026-09-30",
+        "family": "prompt",
+        "primary_metric": "l3_funding_flag_misuse_n",
+        "status": "PREREGISTERED"
+      }
+    },
+    "path": "context/learning/experiments/registry.json",
+    "stable_baseline": "wave8-production-baseline-20260729"
+  },
+  "schema_version": 1,
+  "scope": "cross_day"
+}
