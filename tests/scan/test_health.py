@@ -96,9 +96,9 @@ def test_run_health_contract_ok_when_echoes_match(tmp_path):
 
 def test_run_health_contract_invalid_on_config_drift(tmp_path):
     d = _mk_day(tmp_path, "2026-07-28")
-    _write_contract(d, config={"redteam_prob": 0.1})
+    _write_contract(d, config={"pinned": {"cap": 1}})
     (d / "user_config_echo.json").write_text(
-        json.dumps({"redteam_prob": 0.2}),
+        json.dumps({"pinned": {"cap": 2}}),
         encoding="utf-8",
     )
     result = run_health(d)["run_contract"]

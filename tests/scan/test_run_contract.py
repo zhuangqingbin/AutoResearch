@@ -30,8 +30,8 @@ def _build(user_config: dict | None = None) -> RunContract:
 
 
 def test_config_hash_is_canonical_but_contract_identity_is_explicit():
-    left = _build({"agents": {"l4_card": {"effort": "high"}}, "redteam_prob": 0.1})
-    right = _build({"redteam_prob": 0.1, "agents": {"l4_card": {"effort": "high"}}})
+    left = _build({"agents": {"l4_card": {"effort": "high"}}, "pinned": {"cap": 1}})
+    right = _build({"pinned": {"cap": 1}, "agents": {"l4_card": {"effort": "high"}}})
     assert left.config_hash == right.config_hash
     assert left.contract_hash == right.contract_hash
     assert left.run_id == "20260728T123456123456Z"

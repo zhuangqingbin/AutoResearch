@@ -74,8 +74,7 @@
   // shrink=true·shrink_k=15 = 新基线(本块是回滚杆:shrink 改 false 或删本块 = 退回各点原始 raw 计算)。
   "learning": { "shrink": true, "shrink_k": 15 }
 
-  // ── 以下 key 白名单已认但消费方尚未接线(预留,写了也暂不生效)──
-  // "pinned":       { "cap": 5, "ttl_days": 10 },              // 保送 cap/TTL(load_pinned 现用函数默认 5/10)
-  // "redteam_prob": 0.33,                                       // 0买日机会成本红队触发概率
-  // "reuse":        { "max_age_days": 4, "price_delta_pct": 5 } // L4 卡 TTL 复用参数
+  // "pinned":       { "cap": 5, "ttl_days": 10 }               // 保送 cap/TTL(frame.py 真读并烤进 run contract;缺省 5/10)
+  // Wave10 B1 已删:`redteam_prob`(全仓零消费者)、`reuse`(服务的 L4 卡 TTL 复用于
+  // 2026-07-29 按用户裁定退役)。见 docs/research/2026-08-01-wave10-retirement-audit.md
 }

@@ -59,8 +59,7 @@ _VALID_FULL = {
         "channel_floors": {"momentum": 40},
     },
     "pinned": {"cap": 5, "ttl_days": 10},
-    "redteam_prob": 0.33,
-    "reuse": {"max_age_days": 3, "price_delta_pct": 2.0},
+    "l4_intel": {"enabled": True, "max_queries": 20},
 }
 
 
@@ -86,7 +85,7 @@ def test_load_user_config_unknown_top_key_raises(tmp_path):
 @pytest.mark.parametrize("block,bad", [
     ("funnel", {"recall_channels": ["momentum"], "bogus_sub": 1}),
     ("pinned", {"cap": 5, "bogus_sub": 1}),
-    ("reuse", {"max_age_days": 3, "bogus_sub": 1}),
+    ("l4_intel", {"enabled": True, "bogus_sub": 1}),
 ])
 def test_load_user_config_unknown_sub_key_raises(tmp_path, block, bad):
     p = tmp_path / "scan_config.json"
@@ -121,8 +120,7 @@ def test_apply_to_scan_config_maps_new_fields():
     sc = apply_to_scan_config(_VALID_FULL, ScanConfig())
     assert sc.agents == _VALID_FULL["agents"]
     assert sc.pinned == _VALID_FULL["pinned"]
-    assert sc.redteam_prob == 0.33
-    assert sc.reuse == _VALID_FULL["reuse"]
+    assert sc.l4_intel == _VALID_FULL["l4_intel"]
 
 
 def test_apply_to_scan_config_partial_funnel_leaves_rest_default():
@@ -339,17 +337,18 @@ def test_frame_json_echo_reflects_real_config(monkeypatch, tmp_path, capsys):
     monkeypatch.chdir(tmp_path)
     cfg_dir = tmp_path / ".claude" / "skills" / "scan-market"
     cfg_dir.mkdir(parents=True)
-    (cfg_dir / "scan_config.jsonc").write_text(json.dumps({"redteam_prob": 0.2}), encoding="utf-8")
+    (cfg_dir / "scan_config.jsonc").write_text(
+        json.dumps({"pinned": {"cap": 3}}), encoding="utf-8")
     monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH",   # 显式指回本测试的真配置(冲销 conftest 隔离)
                         cfg_dir / "scan_config.jsonc")
 
     rc = scan_frame.main(["2026-07-12", "--json"])
     out = capsys.readouterr().out
     assert rc == 0
-    assert '"redteam_prob": 0.2' in out
+    assert '"cap": 3' in out
 
     echo = tmp_path / "context" / "scan" / "2026-07-12" / "user_config_echo.json"
-    assert json.loads(echo.read_text(encoding="utf-8")) == {"redteam_prob": 0.2}
+    assert json.loads(echo.read_text(encoding="utf-8")) == {"pinned": {"cap": 3}}
 
 
 def test_cli_main_prints_validated_json(tmp_path, monkeypatch, capsys):

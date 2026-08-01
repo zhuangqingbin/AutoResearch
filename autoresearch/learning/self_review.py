@@ -450,7 +450,8 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
             h = json.loads(hp.read_text(encoding="utf-8"))
             health = h if isinstance(h, dict) else {}
 
-    reused: set[str] = set()          # ♻️ 复用卡(l4_reuse banner;派发时被跳过的票)
+    reused: set[str] = set()          # ♻️ 复用卡 banner(L4 卡 TTL 复用已退役,
+                                      # 仅历史 staging 卡还带这层壳)
     with contextlib.suppress(Exception):
         for p in (scan_dir / "details").glob("*.md"):
             text = p.read_text(encoding="utf-8")

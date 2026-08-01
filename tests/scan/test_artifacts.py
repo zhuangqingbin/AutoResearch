@@ -121,3 +121,30 @@ def test_write_index_is_atomic_and_carries_contract_identity(tmp_path):
     assert index["run_id"] == "run-1"
     assert index["contract_hash"] == "a" * 64
     assert not (scan / "artifact_index.json.tmp").exists()
+
+
+# ── Wave10 B1(2026-08-01):从 `tests/scan/test_l4_reuse.py` **迁移**过来的活契约 ──
+#
+# `read_finalists` 的前导零契约此前**唯一**的锁在 test_l4_reuse.py 里(那个文件自己在
+# 第 111 行注明了这件事)。L4 卡 TTL 复用已于 2026-07-29 按用户裁定退役,整族要删 ——
+# 但 `read_finalists` 住在 live 的 artifacts.py。直接删测试文件 = 静默孤立这个契约,
+# 正是 [[deadcode-cleanup-wave-20260719]] 的教训。故先迁移,再删原文件。
+
+def test_read_finalists_preserves_ticker_leading_zeros(tmp_path):
+    """磁盘上代码列已丢前导零(002156→2156,如 int64 往返回写)→ 读口必须补回 6 位。"""
+    from autoresearch.scan.artifacts import read_finalists
+
+    fp = tmp_path / "finalists.csv"
+    fp.write_text("ticker,code,name\n2156,2156,x\n300476,300476,y\n", encoding="utf-8")
+    fin = read_finalists(fp)
+    assert set(fin["ticker"]) == {"002156", "300476"}
+    assert set(fin["code"]) == {"002156", "300476"}
+
+
+def test_read_finalists_keeps_codes_as_strings(tmp_path):
+    """补零只有在列本身是字符串时才成立 —— dtype 掉回 int64 会让 zfill 变成无声的 no-op。"""
+    from autoresearch.scan.artifacts import read_finalists
+
+    fp = tmp_path / "finalists.csv"
+    fp.write_text("code,name\n2156,x\n", encoding="utf-8")
+    assert read_finalists(fp)["code"].dtype == object

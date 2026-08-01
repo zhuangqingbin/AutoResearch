@@ -470,7 +470,7 @@ def add_proposal(kind: str, summary: str, rationale: str = "", diff_sketch: str 
 # ───────────────── prompt_patch(Plan B T1·经验 → 提示词补丁) ─────────────────
 # 锚集来自 grep -n "卡契约 v3|超短口径|机构面网查|FINAL TRANSACTION PROPOSAL|Rubric建议|进入P4倾向"
 # tests/test_agent_defs.py autoresearch/ —— l4-card 机器契约核心锚串:部分被 self_review/health/
-# assemble/l4_reuse 的正则原样解析(卡片契约),部分被 test_agent_defs.py 锁 agent↔playbook 同步;
+# assemble 的正则原样解析(卡片契约),部分被 test_agent_defs.py 锁 agent↔playbook 同步;
 # proposed_text 绝不能让它们从 target_file 消失,否则下游解析器或契约同步测试失明/失步。
 _CONTRACT_ANCHORS = (
     "卡契约 v3",

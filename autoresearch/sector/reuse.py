@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""sector-research · brief TTL 复用(镜像 l4_reuse;确定性判定,零 LLM)。
+"""sector-research · brief TTL 复用(确定性判定,零 LLM)。
+
+⚠️ 与 **L4 卡片** 的 TTL 复用不是一回事:后者已于 2026-07-29 按用户裁定「不要任何复用」
+退役,模块在 Wave10 B1 删除。本模块复用的是**行业 brief**,由 scan-market workflow 真调用。
 
 design: docs/specs/2026-07-03-research-skills-altitude-refactor-design.md §5.3(Phase 3)。
 
