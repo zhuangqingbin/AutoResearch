@@ -81,16 +81,33 @@ def test_l3_lint_fix_reads_narrow_pack_not_full_table():
 
 
 def test_scan_gate_branches_read_verified_stage_results():
-    """GATE1/2 的唯一分支事实来自 StageResult，不再重复解析 gate stdout。"""
+    """GATE1/2 的唯一分支事实来自 StageResult，不再重复解析 gate stdout。
+
+    2026-07-30 事故后 metrics 改经 `stageMetrics()` 解包(haiku 壳会把整条 StageResult
+    再包一层塞进 metrics，外层三字段仍匹配 schema、校验照常放行，于是
+    `g1.metrics.l4_budget` 静默变 undefined → `Math.min(10, undefined)=NaN` → L3 prompt
+    写成「7~NaN 只」→ GATE2 `--budget NaN` 被 argparse 毙)。契约不变、读法变，断言同步。
+    """
     src = (WF / "scan-market.js").read_text(encoding="utf-8")
     assert "autoresearch.scan.stage_result show" in src
     assert "STAGE_RESULT" in src
     assert "g1.status === 'SUCCEEDED'" in src
     assert "g2.status === 'SUCCEEDED'" in src
-    assert "g1.metrics.sentinel_level" in src
-    assert "g2.metrics.finalists" in src
+    assert "function stageMetrics(" in src          # schema 锁不住嵌套深度，得自己解包
+    assert "g1m.sentinel_level" in src
+    assert "g2m.finalists" in src
     assert "g1.ok" not in src
     assert "g2.ok" not in src
+
+
+def test_scan_refuses_to_run_on_an_unusable_l4_budget():
+    """NaN/undefined 曾一路无声流进 L3 prompt 与 GATE2 —— 判断核心的指令被污染却没人喊。
+
+    fail fast 优于带病继续:宁可整条停,也不让 L3 拿着「7~NaN 只」去判断。
+    """
+    src = (WF / "scan-market.js").read_text(encoding="utf-8")
+    assert "Number.isInteger(l4Budget)" in src
+    assert "throw new Error" in src.split("Number.isInteger(l4Budget)")[1][:400]
 
 
 def test_l4_workflow_records_success_and_failure_stage_results():

@@ -53,6 +53,15 @@ function gate(label, cmd, schema, phaseName) {   // 同上:避免遮蔽全局 ph
     `(混入 stderr 会污染这行 JSON)。`,
     { agentType: 'general-purpose', model: 'haiku', effort: 'low', label, schema, ...(phaseName ? { phase: phaseName } : {}) })
 }
+// StageResult 的 metrics 解包。2026-07-30 实跑事故:haiku 壳把整条 StageResult 记录**再包一层**
+// 塞进 metrics(`{stage,status,metrics:{...整条记录含自己的 metrics...}}`)—— 外层三字段仍匹配
+// STAGE_RESULT schema,校验照常放行,于是当时的 `g1.metrics.l4_budget` 静默变 undefined:
+//   Math.min(10, undefined) = NaN → L3 prompt 写成「7~NaN 只」→ GATE2 `--budget NaN` 被 argparse 毙。
+// 病灶是「schema 只锁外层形状,锁不住嵌套深度」。两种形状都接住:内层 metrics 优先,回退外层。
+function stageMetrics(g) {
+  const m = (g && g.metrics) || {}
+  return (m.metrics && typeof m.metrics === 'object') ? m.metrics : m
+}
 // 业务门先保留原 stdout 供诊断，Workflow 只消费随后读取并验 hash/contract 的 StageResult。
 function stageGate(label, cmd, stage, phaseName) {
   return agent(
@@ -121,18 +130,19 @@ if (!l2ok || !l2ok.ok) {
 }
 const g1 = await stageGate('GATE1', `${R} autoresearch.scan.gates gate1 ${date}`, 'gate1', 'Prelude')
 if (!g1 || !(g1.status === 'SUCCEEDED')) throw new Error(`GATE1 失败:${g1 ? g1.error : 'agent 无返回'}`)
-log(`GATE1 ✓ sentinel=${g1.metrics.sentinel_level} · L4预算=${g1.metrics.l4_budget}`)
+const g1m = stageMetrics(g1)
+log(`GATE1 ✓ sentinel=${g1m.sentinel_level} · L4预算=${g1m.l4_budget}`)
 // CP1(Wave5 ①):bash 回报只有 stdout 末 15 行,而汇总屏是 12 步 ✓/✗ + 预热状态 + 当日件
 // 建议行 + 下一步 —— 结构性放不下。指路文件,由主会话 Read 后全量转播给用户。
 log(`📋 前奏汇总屏全文:${SD}/_prelude_summary.md(主会话 Read 后全量转播 —— 回报的末 15 行装不下 12 步屏)`)
 
 // ── 哨兵档:材料枯竭 → 跳过 sector/L3/L4;assemble+GATE4 由主会话收尾 ──────────
-if (g1.metrics.sentinel_level === 'sentinel' && !forceFull) {
+if (g1m.sentinel_level === 'sentinel' && !forceFull) {
   log('哨兵档 → 跳过 L3/L4(日历已在 prelude 跑过);assemble+GATE4 由主会话收尾')
   return { date, mode: 'sentinel', finalists: 0, dispatch: [], meta: {},
-    l4_budget: g1.metrics.l4_budget, published: false }
+    l4_budget: g1m.l4_budget, published: false }
 }
-if (g1.metrics.sentinel_level === 'sentinel' && forceFull) {
+if (g1m.sentinel_level === 'sentinel' && forceFull) {
   log('⚠️ 哨兵档被人工 override(force_full)→ 照常跑 L3/L4。诚实标注:确定性判据判「材料枯竭」,买单侧期望低。')
 }
 
@@ -140,7 +150,14 @@ if (g1.metrics.sentinel_level === 'sentinel' && forceFull) {
 phase('L3')
 // finalist tier 上限(plan 2026-07-12-l3-merge-plan.md Task 4):L3.5 闸的收窄职能已并入 L3,
 // L3 直接出 7–10 只 finalist(宁缺毋滥,不强制凑到此数)——cap 而非目标。
-const l3cap = Math.min(10, g1.metrics.l4_budget)
+// 守卫(2026-07-30 事故):NaN/undefined 曾一路无声流进 L3 prompt(「7~NaN 只」)与 GATE2
+// `--budget NaN`。判断核心的指令被污染却没人喊 —— 这里 fail fast,宁可整条停也不带病判断。
+const l4Budget = Number(g1m.l4_budget)
+if (!Number.isInteger(l4Budget) || l4Budget <= 0) {
+  throw new Error(`GATE1 未给出可用的 l4_budget(得到 ${JSON.stringify(g1m.l4_budget)})——` +
+    `拒绝带 NaN 继续:它会污染 L3 prompt 与 GATE2 --budget。原始返回:${JSON.stringify(g1).slice(0, 400)}`)
+}
+const l3cap = Math.min(10, l4Budget)
 // 中观行业 pack(确定性)先行,再 [sector-briefs ∥ L3 表准备] barrier。sector-pack + 待写清单
 // 合并一个 gate(壳合并①,-1 spawn):schema 顶层必须是 object(API 拒 `type:'array'` → 400 →
 // agent 返回 null → `|| []` 静默吞掉,结果是一份行业 brief 都不写、L3 在没有行业地形段的情况下
@@ -210,10 +227,11 @@ const g2 = await stageGate('GATE2',
   `${R} autoresearch.scan.agents.l3_select finalists ${date} --budget ${l3cap} && ` +
   `${R} autoresearch.scan.gates gate2 ${date} --budget ${l3cap}`, 'gate2', 'L3')
 if (!g2 || !(g2.status === 'SUCCEEDED')) throw new Error(`GATE2 失败:${g2 ? g2.error : 'no return'}`)
+const g2m = stageMetrics(g2)   // 同 g1:haiku 壳可能多包一层,见 stageMetrics 注释
 // finalist_only 是纯调度 A/B：L3 输入仍有 deterministic sector terrain；只把昂贵的判断型
 // brief 延后，并且仅对实际入围票的唯一行业生成。卡片 prompt 落稿前有明确 barrier。
 const finalistBriefSectors = sectorBriefMode === 'finalist_only'
-  ? [...new Set(Object.values(g2.metrics.meta || {}).map((m) => String((m && m.sector) || '')).filter(Boolean))]
+  ? [...new Set(Object.values(g2m.meta || {}).map((m) => String((m && m.sector) || '')).filter(Boolean))]
       .filter((sec) => sectors.includes(sec))
   : []
 if (sectorBriefMode === 'finalist_only') {
@@ -228,11 +246,11 @@ if (sectorBriefMode === 'finalist_only') {
 // L3.5 闸已完全移除(2026-07-12 用户裁定"直接 L3 输出"):L3 finalist tier 即 L4 入选集。
 // CP3(Wave5 ①):整条漏斗最高光的一刻是"选出了哪几只",而不是"选出了几只"。
 // g2.meta 早就带着 name/sector(gates.py:95),此前被整段扔掉。
-log(`GATE2 ✓ finalists=${g2.metrics.n}`)
-const fmeta = g2.metrics.meta || {}
-;(g2.metrics.finalists || []).forEach((c, i) => {
+log(`GATE2 ✓ finalists=${g2m.n}`)
+const fmeta = g2m.meta || {}
+;(g2m.finalists || []).forEach((c, i) => {
   const m = fmeta[c] || {}
-  log(`  L3入围 ${i + 1}/${g2.metrics.n} ${c} ${m.name || ''}${m.sector ? `(${m.sector})` : ''}`)
+  log(`  L3入围 ${i + 1}/${g2m.n} ${c} ${m.name || ''}${m.sector ? `(${m.sector})` : ''}`)
 })
 
 // ── Phase L4-prep ───────────────────────────────────────────────
@@ -297,7 +315,7 @@ log(`L4 交接:新派 ${dispatch.length} 股(每股一个 l4-stock workflow,主�
 log(`🔎 随时可调:\`${R} autoresearch.scan.render ${date} --view menu_health\`(L2 成色)· \`--view gate_hist\`(L4 完成后看评级分布/停因分桶/门柱)· \`--view timing\`(分段耗时)`)
 // 📌 保送票在派发那一秒必须可见:07-21 漏传 args.pinned → 300857/601869 的持仓 SELL 双复核
 // 整段没跑(self_review 探针 9 sell_review_missing 只能事后 warn,拦不住)。
-const metaAll = plan.meta || g2.metrics.meta || {}
+const metaAll = plan.meta || g2m.meta || {}
 const pinnedCodes = dispatch.filter((c) => metaAll[c] && metaAll[c].pinned)
 if (pinnedCodes.length) {
   log(`📌 保送票 ${pinnedCodes.length} 只:${pinnedCodes.join('/')} —— 派发这些 l4-stock 必须传 args.pinned:true(漏传=持仓 SELL 双复核断链)`)
@@ -306,6 +324,6 @@ if (pinnedCodes.length) {
 }
 
 // meta(名称/行业)透传给 l4-stock 的 intel 盲搜 prompt;assemble+GATE4 由主会话在全部 l4-stock 完成后收尾。
-return { date, mode: 'l4-handoff', finalists: g2.metrics.n, dispatch, dispatch_batches: dispatchBatches,
+return { date, mode: 'l4-handoff', finalists: g2m.n, dispatch, dispatch_batches: dispatchBatches,
   task_book: taskBook, streaming_l4: streamingL4,
-  meta: plan.meta || g2.metrics.meta || {}, l4_budget: g1.metrics.l4_budget, published: false }
+  meta: plan.meta || g2m.meta || {}, l4_budget: g1m.l4_budget, published: false }
