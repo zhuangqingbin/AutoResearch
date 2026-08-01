@@ -73,8 +73,32 @@ def _retro_input_nag(scan_root: Path | str | None = None) -> str:
                      and not (p / "retro" / "done.json").exists())
     if not stalled:
         return ""
-    return ("retro_input 已备料但未收尾(无 done.json):" + "、".join(stalled)
+    # Wave10 A10:超 48h 的备料升红 —— 「欠了 3 天」和「昨天刚欠」不是同一件事,
+    # 用同一种语气报会让读者对这条提醒脱敏(而脱敏之后真的烂尾也没人看)。
+    aged = _stalled_over_48h(scan_root, stalled)
+    head = "🚨 retro_input 备料超 48h 未收尾" if aged else "retro_input 已备料但未收尾(无 done.json)"
+    detail = "、".join(f"{d}({_stall_age_h(scan_root, d)}h)" if d in aged else d
+                       for d in stalled)
+    return (f"{head}:{detail}"
             + " ← scan-retro 诊断烂尾,去补 mark_done 或重跑诊断,别让欠账攒着")
+
+
+_RETRO_STALE_HOURS = 48
+
+
+def _stall_age_h(scan_root: Path, day: str) -> int | None:
+    """备料落盘至今的小时数;取不到 → None(不猜)。"""
+    import time
+    path = Path(scan_root) / day / "retro" / "retro_input.md"
+    try:
+        return int((time.time() - path.stat().st_mtime) / 3600)
+    except OSError:
+        return None
+
+
+def _stalled_over_48h(scan_root: Path, stalled: list[str]) -> set[str]:
+    return {d for d in stalled
+            if (h := _stall_age_h(scan_root, d)) is not None and h >= _RETRO_STALE_HOURS}
 
 
 def prewarm_line(date: str, scan_root: Path | str | None = None) -> str:
@@ -193,22 +217,15 @@ def dossier_reconcile_nag(date: str, *, pool_path=None) -> str:
     period 用 `dossier.mainbz._recent_periods` 同款滞后逻辑取"最近应已披露的报告期"
     (年报 4/30、中报 8/31 披露截止后才算已披露)——该滞后判定本身就是"当前披露窗口"
     的判据。presence-gated:池空 / 无档案 / 未首覆 / 已对账 → ""(不打印)。
+
+    Wave10 A10 起,判定本体搬到 `dossier.debt_slo.reconcile_overdue`(SLO 的②要用同一个数)
+    —— 本函数只负责措辞。**不留两份实现**:同一条规则两处各写一套,迟早在某次改动后
+    给出两个不同的欠账数,而那时没人知道该信哪个。
     """
-    from autoresearch.dossier import delta as _delta, pool as _pool, schema as _schema
+    from autoresearch.dossier.debt_slo import reconcile_overdue
     from autoresearch.dossier.mainbz import _recent_periods
     period = _recent_periods(date, 1)[0]
-    todo: list[str] = []
-    for code, st in sorted(_pool.load_pool(pool_path).get("stocks", {}).items()):
-        if st.get("status") != "active":
-            continue
-        p = _schema.dossier_path(code)
-        if not p.exists():                       # 未建档 → 归 pending_init,不催对账
-            continue
-        text = p.read_text(encoding="utf-8")
-        if not _schema.parse_frontmatter(text).get("initiated"):
-            continue
-        if f"季度对账 {period}" not in _delta.section_body(text, 4):   # §5 风险矩阵
-            todo.append(code)
+    todo = reconcile_overdue(date, pool_path=pool_path)
     if not todo:
         return ""
     return (f"📐 季度对账待跑:{len(todo)} 只(period={period})"
@@ -395,13 +412,19 @@ def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()
         pend_txt = f"待建档 {len(pend)} 只({','.join(pend[:6])})" if pend else "待建档 0"
         moved = out["entered"] or out["retired"] or out["revived"]
         note = f"池 {out['n_active']} active · {delta if moved else '无变动'} · {pend_txt}"
+        slo = ""
+        with contextlib.suppress(Exception):   # A10:SLO 可选层,坏档不挡池日检
+            from autoresearch.dossier.debt_slo import compute, render
+            slo = render(compute(date))
         nag = ""
         with contextlib.suppress(Exception):   # 对账提醒可选,坏档不挡池日检
             nag = dossier_reconcile_nag(date)
         stale = ""
         with contextlib.suppress(Exception):   # 陈旧告警可选,坏档不挡池日检
             stale = dossier_staleness_nag(date)
-        extra = " · ".join(x for x in (nag, stale) if x)
+        # SLO 与对账提醒并存、不重复:前者是**判据**(这条流水线稳不稳),后者是**动作**
+        # (该敲哪条命令、哪个 period)。只留判据会让人知道欠账却不知道怎么还。
+        extra = " · ".join(x for x in (slo, nag, stale) if x)
         return f"{note} · {extra}" if extra else note
 
     all_steps = [("retro_refresh", _refresh), ("retro_pending", _pending),

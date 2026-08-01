@@ -47,6 +47,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 > ```
 > `autoresearch.scan.l4_watch`(确定性读盘,零 LLM)**只认 `_l4_tasks.json`**:某票 status 进终态(SUCCEEDED 且 card hash 已记 / FAILED)才播一行 `🃏 k/N 代码 名称 → 评级`;全部终态自动退出,收尾附「ensemble 折回待结算」提示。这**就是 CP5**,不用再自己轮询卡片。
 > ⚠️ **它播的是卡片评级,不是终评**:`sell_review`/`ow_review` 的折回发生在 assemble 之后(2026-07-28:688766 卡片 UW、复核中位 Hold)——见到 `↩️` 行就等 assemble,别照卡片下结论。
+> **重启只播增量**(Wave10 A8):消费进度记在 watcher 自己的 `outbox/l4_watch_cursor.json`(按 `--consumer-id` 分栏,默认 `l4_watch`),Monitor 被杀后重挂**不会**把已播的票再播一遍。要从头重播必须显式 `--replay-all`;游标损坏时程序**报错退出(rc=2)并要求人工选择**,不静默当空(静默当空 = 悄悄重播一整轮,而你以为那是新事件)。task_book 仍是任务状态的唯一事实源,播报不写它一个字节。
 > ⚠️ **L4 之前的阶段没有 Monitor**:靠 CP0-CP4 的主动播报(下表)。前任 `scan.progress` 靠产物存在性猜阶段、分不清「在跑/被跳过/挂了」,累犯误报三次(2026-07-17 两次 + 07-28 GATE1 未过就报「L3 精排中」),已于 Wave8 退役。真信号一律以 workflow 的 `journal.jsonl`(每 agent 一条 `started`/`result`)为准。
 >
 > ### 过程直播契约(必做,2026-07-25 用户反馈"各环节展示不够优雅完整")

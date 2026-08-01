@@ -14,9 +14,17 @@
 - FAILED 直接播错误类别;
 - 全部票进终态才算 done(FAILED 也是终态 —— 否则监视器永不退出)。
 
+**消费进度归 watcher 自己**(Wave10 A8):此前 `seen` 只活在内存里 —— 进程一重启就把
+所有已播事件再播一遍。修法**不是**往 task_book 里记「播过没有」:那本账是**任务状态**的
+唯一事实源,往里塞消费者的进度会让两个关注点纠缠(而且两个 watcher 会互相覆盖)。
+改为 watcher 自己维护 `outbox/l4_watch_cursor.json`:按 `consumer_id` 分栏记已确认的
+事件 id,重启只播未确认的;要重播必须显式 `--replay-all`。
+cursor 坏了 → **报错并要求人工选择**,不静默当空(静默当空 = 悄悄重播一整轮)。
+
 用法:
   uv run --no-sync python -m autoresearch.scan.l4_watch <date>            # 打一次增量
   uv run --no-sync python -m autoresearch.scan.l4_watch <date> --watch    # 轮询,全终态即退出
+  uv run --no-sync python -m autoresearch.scan.l4_watch <date> --replay-all  # 显式重播
 """
 from __future__ import annotations
 
@@ -29,6 +37,76 @@ from pathlib import Path
 SCAN_ROOT = Path("context/scan")
 _TERMINAL = {"SUCCEEDED", "FAILED"}
 _STALE_MIN_DEFAULT = 30
+
+CURSOR_SCHEMA_VERSION = 1
+DEFAULT_CONSUMER = "l4_watch"
+
+
+class CursorCorrupt(RuntimeError):
+    """cursor 读不懂。**不当空处理** —— 当空就等于悄悄重播一整轮。"""
+
+
+def cursor_path(scan_dir: Path | str) -> Path:
+    return Path(scan_dir) / "outbox" / "l4_watch_cursor.json"
+
+
+def event_id(code: str, status: str, card: dict | None = None) -> str:
+    """一次「进终态」事件的身份。
+
+    带上卡的 content_hash:同一票 FAILED→重跑→SUCCEEDED 是**两个**事件,都该播;
+    而同一份完稿被读两次是**同一个**事件,不该播两次。
+    """
+    digest = ((card or {}).get("content_hash") or "")[:12]
+    return f"{code}:{status}:{digest}" if digest else f"{code}:{status}"
+
+
+def load_cursor(scan_dir: Path | str, consumer_id: str = DEFAULT_CONSUMER) -> set[str]:
+    """该 consumer 已确认的事件 id。文件不存在 → 空集(首次运行,合法)。
+
+    文件存在但读不懂 → `CursorCorrupt`,让人决定是修还是 `--replay-all`。
+    """
+    path = cursor_path(scan_dir)
+    if not path.exists():
+        return set()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        raise CursorCorrupt(f"{path} 不是合法 JSON:{exc}") from exc
+    if not isinstance(payload, dict) or "consumers" not in payload:
+        raise CursorCorrupt(f"{path} 缺 consumers 段")
+    if payload.get("schema_version") != CURSOR_SCHEMA_VERSION:
+        raise CursorCorrupt(
+            f"{path} schema_version={payload.get('schema_version')},"
+            f"本程序只认 {CURSOR_SCHEMA_VERSION}")
+    acked = (payload.get("consumers") or {}).get(consumer_id)
+    if acked is None:
+        return set()
+    if not isinstance(acked, list):
+        raise CursorCorrupt(f"{path} 的 consumers.{consumer_id} 不是列表")
+    return {str(x) for x in acked}
+
+
+def ack_events(scan_dir: Path | str, event_ids, *,
+               consumer_id: str = DEFAULT_CONSUMER) -> Path:
+    """把已播事件写进 cursor(原子)。**只动本 consumer 那一栏**,不碰别人的。"""
+    path = cursor_path(scan_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"schema_version": CURSOR_SCHEMA_VERSION, "consumers": {}}
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(existing, dict) and isinstance(existing.get("consumers"), dict):
+                payload = existing
+                payload["schema_version"] = CURSOR_SCHEMA_VERSION
+        except Exception:  # noqa: BLE001 — 走到这儿说明调用方已决定覆盖(--replay-all)
+            pass
+    merged = set(payload["consumers"].get(consumer_id) or []) | {str(x) for x in event_ids}
+    payload["consumers"][consumer_id] = sorted(merged)
+    temp = path.with_name(f"{path.name}.tmp")
+    temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8")
+    temp.replace(path)
+    return path
 
 
 def _rating_of(card: Path) -> str | None:
@@ -95,6 +173,7 @@ def snapshot(scan_dir: Path | str) -> dict:
             "status": status,
             "rating": rating,
             "error": task.get("last_error_class"),
+            "event_id": event_id(code, status, card),
         })
 
     n_total = len(tasks)
@@ -109,13 +188,16 @@ def snapshot(scan_dir: Path | str) -> dict:
 
 
 def render_events(snap: dict, seen: set[str], *, stale_min: int = _STALE_MIN_DEFAULT) -> list[str]:
-    """把「本轮新进终态的票」渲染成播报行;已在 `seen` 里的不重播。"""
+    """把「本轮新进终态、且本 consumer 还没确认过的」事件渲染成播报行。
+
+    去重键是**事件 id** 而不是 code:同一票 FAILED→重跑→SUCCEEDED 是两个事件,都该播。
+    """
     if not snap.get("ready"):
         return []
     out: list[str] = []
     k = len(seen)
     for item in snap["terminal"]:
-        if item["code"] in seen:
+        if item.get("event_id", item["code"]) in seen:
             continue
         k += 1
         head = f"🃏 {k}/{snap['total']} {item['code']} {item['name']}".rstrip()
@@ -182,17 +264,37 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--stale-min", type=int, default=_STALE_MIN_DEFAULT,
                     help=f"在飞超过该分钟数提示一次,默认 {_STALE_MIN_DEFAULT}")
     ap.add_argument("--scan-root", default=str(SCAN_ROOT))
+    ap.add_argument("--consumer-id", default=DEFAULT_CONSUMER,
+                    help=f"消费者标识(多个 watcher 各记各的进度),默认 {DEFAULT_CONSUMER}")
+    ap.add_argument("--replay-all", action="store_true",
+                    help="忽略 cursor,从头重播(唯一的重播入口)")
     args = ap.parse_args(argv)
 
     scan_dir = Path(args.scan_root) / args.date
-    seen: set[str] = set()
     warned: set[str] = set()
+
+    if args.replay_all:
+        seen: set[str] = set()
+    else:
+        try:
+            seen = load_cursor(scan_dir, args.consumer_id)
+        except CursorCorrupt as exc:
+            # 不静默当空:当空就等于悄悄把一整轮重播一遍,而人以为这是新事件。
+            print(f"✗ 播报游标损坏:{exc}", file=sys.stderr)
+            print("  请人工选择:修好该文件,或用 --replay-all 显式从头重播。",
+                  file=sys.stderr)
+            return 2
 
     while True:
         snap = snapshot(scan_dir)
         for line in render_events(snap, seen, stale_min=args.stale_min):
             print(line, flush=True)
-        seen.update(item["code"] for item in snap.get("terminal", []))
+        fresh = [item.get("event_id", item["code"])
+                 for item in snap.get("terminal", [])
+                 if item.get("event_id", item["code"]) not in seen]
+        if fresh:
+            ack_events(scan_dir, fresh, consumer_id=args.consumer_id)
+            seen.update(fresh)
         for line in _stale_lines(snap, args.stale_min, warned, time.time()):
             print(line, flush=True)
         if snap.get("done"):
