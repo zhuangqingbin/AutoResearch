@@ -54,8 +54,16 @@ def gate1(scan_dir: Path) -> dict:
             "l4_budget": int(budget), "l2_n": int(len(df))}
 
 
-def gate2(scan_dir: Path, budget: int = 30) -> dict:
+def gate2(scan_dir: Path, budget: int = 30, *, skip_reason: str | None = None) -> dict:
+    """`skip_reason` 非空 → `SKIPPED_NOT_APPLICABLE`(Wave10 A2)。
+
+    哨兵·仅持仓档没有 L3,所以这道门**不适用**——不是"通过"。伪造通过会让
+    「L3 跑过且选空」与「L3 根本没跑」在账上长得一样,而它们对读者意义完全不同。
+    """
     scan_dir = Path(scan_dir)
+    if skip_reason:
+        return {"ok": True, "gate": "gate2", "status": "SKIPPED_NOT_APPLICABLE",
+                "reason": skip_reason, "finalists": [], "n": 0, "meta": {}}
     fp = scan_dir / "finalists.csv"
     if not fp.exists():
         return {"ok": False, "gate": "gate2", "reason": "finalists.csv 缺失"}
@@ -99,17 +107,31 @@ def gate2(scan_dir: Path, budget: int = 30) -> dict:
 
 
 def gate4(scan_dir: Path) -> dict:
+    """Wave10 A2:`has_selection_conclusion=false` 时不要求 buy-list,但**仍要求持仓卡完备**。
+
+    模式只认 `run_mode.json`,不从 finalists 空否反推(§R9)。
+    """
     scan_dir = Path(scan_dir)
+    from autoresearch.scan.run_mode import load as _load_mode
+    mode = _load_mode(scan_dir)
     gf = scan_dir / "gate_fires.csv"
     if not gf.exists():
         return {"ok": False, "gate": "gate4", "reason": "gate_fires.csv 缺失(assemble 未跑?)"}
     with gf.open(encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
     fails = [r for r in rows if r.get("severity") == "fail"]
+    if mode is not None and not mode.has_selection_conclusion:
+        # 哨兵档没有选股结论 → 「覆盖率不足」这类以 buy-list 为前提的 fail 不适用;
+        # 但持仓卡的完备性照查(那正是这个模式唯一要交付的东西)。
+        fails = [r for r in fails if r.get("check") != "覆盖率不足"]
     if fails:
         detail = "; ".join(f"{r['check']}:{r['detail']}" for r in fails)
         return {"ok": False, "gate": "gate4", "reason": f"self_review fail×{len(fails)} — {detail}"}
-    return {"ok": True, "gate": "gate4", "reason": "self_review 通过", "n_checks": len(rows)}
+    note = "self_review 通过"
+    if mode is not None and not mode.has_selection_conclusion:
+        note += f"({mode.mode}:无选股结论,只验持仓卡)"
+    return {"ok": True, "gate": "gate4", "reason": note, "n_checks": len(rows),
+            "run_mode": None if mode is None else mode.mode}
 
 
 def record_gate_stage_result(scan_dir: Path, result: dict, *, budget: int | None = None):
@@ -159,11 +181,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("date")
     ap.add_argument("--budget", type=int, default=30)
     ap.add_argument("--root", default=None)
+    ap.add_argument("--skip", default=None,
+                    help="gate2 专用:标 SKIPPED_NOT_APPLICABLE 并给出理由(如 sentinel_pinned_no_l3)")
     a = ap.parse_args(argv)
     base = Path(a.root) if a.root else Path("context/scan")
     scan_dir = base / a.date
     res = {"gate1": lambda: gate1(scan_dir),
-           "gate2": lambda: gate2(scan_dir, budget=a.budget),
+           "gate2": lambda: gate2(scan_dir, budget=a.budget, skip_reason=a.skip),
            "gate4": lambda: gate4(scan_dir)}[a.gate]()
     record_gate_stage_result(
         scan_dir,

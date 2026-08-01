@@ -763,6 +763,14 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
     ens_lines = _ensemble_dissent_lines(emap, rows)   # presence-gated:无分歧 → []
     if ens_lines:
         out += [""] + ens_lines
+    import contextlib as _ctx
+
+    # A2:运行模式醒目标注 —— 只读 run_mode.json,不从 finalists 数量猜(§R9)
+    with _ctx.suppress(Exception):
+        from autoresearch.scan.run_mode import load as _load_run_mode
+        _mode = _load_run_mode(scan_dir)
+        if _mode is not None and _mode.banner():
+            out += ["", _mode.banner()]
     # C3:0买日的聚合「差一点」+ 弃权 banner 走正文;逐只读数只进文末附录(§R6:
     # 只给个案不给分母会把读者推向绕门)。非 0买日 / 无 shadow → 全部 presence-gated 为空。
     import contextlib as _ctx

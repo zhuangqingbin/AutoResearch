@@ -132,8 +132,12 @@ def test_l4_intel_def():
     assert "WebSearch" in head and "WebFetch" in head and "Write" in head
     for banned in ("Read", "Grep", "Glob"):
         assert banned not in head, f"结构性盲:不得有 {banned}(可读/探索仓库)"
+    # Wave10 A5:cap 不再写死在角色里(此前 `≤15` 与当日配置 20 是**两个事实源**)。
+    # 锚随之从具体数字换成「唯一事实源」这件事本身 —— 锚的作用是钉住契约,不是钉住某个数。
+    assert "≤15" not in text and "≤ 15" not in text, "角色不得再硬写 cap"
     for a in ("事件段", "题材段", "机构段", "互动段", "负面增量段", "声明行",
-              "as-of", "六面全查", "≤15", "净分", "只报本票事实", "只攒料不判断", "不编", "盲",
+              "as-of", "六面全查", "runtime cap", "user_config_echo",
+              "净分", "只报本票事实", "只攒料不判断", "不编", "盲",
               "已知底",
               # Wave6 Q1:①来源必须是可点击链接 —— 旧铁律只要求「站点名」,所以 07-24
               # 11/11 稿零 URL 其实是**完全合规**的,罚它的 lint 才是孤儿;②本票行情数字

@@ -39,6 +39,8 @@ function bash(cmd, label, phaseName) {   // 形参勿叫 phase:会遮蔽全局 p
     `stderr 日志灌进产物,门判据被骗过。)\n\n\`\`\`\n${cmd}\n\`\`\``,
     { agentType: 'general-purpose', model: 'haiku', effort: 'low', label, ...(phaseName ? { phase: phaseName } : {}) })
 }
+const RUN_MODE = { type: 'object', required: ['mode'],
+  properties: { mode: { type: 'string' }, pinned_codes: { type: 'array', items: { type: 'string' } } } }
 const OK = { type: 'object', required: ['ok'],
   properties: { ok: { type: 'boolean' }, reason: { type: 'string' } } }
 const STAGE_RESULT = { type: 'object', required: ['stage', 'status', 'metrics'],
@@ -156,13 +158,37 @@ log(`GATE1 ✓ sentinel=${g1m.sentinel_level} · L4预算=${g1m.l4_budget}`)
 // 建议行 + 下一步 —— 结构性放不下。指路文件,由主会话 Read 后全量转播给用户。
 log(`📋 前奏汇总屏全文:${SD}/_prelude_summary.md(主会话 Read 后全量转播 —— 回报的末 15 行装不下 12 步屏)`)
 
-// ── 哨兵档:材料枯竭 → 跳过 sector/L3/L4;assemble+GATE4 由主会话收尾 ──────────
-if (g1m.sentinel_level === 'sentinel' && !forceFull) {
-  log('哨兵档 → 跳过 L3/L4(日历已在 prelude 跑过);assemble+GATE4 由主会话收尾')
-  return { date, mode: 'sentinel', finalists: 0, dispatch: [], meta: {},
+// ── Wave10 A2:运行模式四态 —— 事实落 run_mode.json,下游**只读它**,不从 finalists 空否反推
+// (「finalists 为空」可能是哨兵没选、L3 选空、或写盘失败,三者对读者意义完全不同)。
+// 中间档 SENTINEL_PINNED 补的是此前的缺口:材料枯竭的日子里**持仓复核也一起没了**,
+// 07-31 只能靠 force_full 手工拉满,代价是把全市场选股一并跑了($34.48/113min)。
+const rm = await gpJson(
+  `${R} autoresearch.scan.run_mode ${date} --decide --sentinel-level ${g1m.sentinel_level || 'full'}` +
+  `${forceFull ? ' --force-full' : ''}`,
+  'run-mode', RUN_MODE).catch(() => null)
+const runMode = (rm && rm.mode) || (g1m.sentinel_level === 'sentinel'
+  ? (forceFull ? 'FORCED_FULL' : 'SENTINEL_EMPTY') : 'FULL')
+log(`运行模式 = ${runMode}${rm && rm.pinned_codes ? `(持仓 ${rm.pinned_codes.length} 只)` : ''}`)
+
+if (runMode === 'SENTINEL_EMPTY') {
+  log('哨兵档且无持仓 → 跳过 L3/L4(日历已在 prelude 跑过);assemble+GATE4 由主会话收尾')
+  return { date, mode: 'sentinel', run_mode: runMode, finalists: 0, dispatch: [], meta: {},
     l4_budget: g1m.l4_budget, published: false }
 }
-if (g1m.sentinel_level === 'sentinel' && forceFull) {
+if (runMode === 'SENTINEL_PINNED') {
+  // 跳行业 brief、跳 L3、跳非持仓 L4;**持仓走完整 L4 链**(与 FULL 同一 l4-stock workflow、
+  // 同 rubric、同双复核)。prompt 因明确缺 L3/判断型行业 brief 而不会字节相同 ——
+  // 这个差异由 run_mode 与 `l3_judged=false` 公开,不伪装成等价上下文。
+  const codes = (rm && rm.pinned_codes) || []
+  log(`哨兵档·仅持仓复核:${codes.length} 只(${codes.join(',')})→ 跳 sector/L3/非持仓 L4`)
+  await bash(`${R} autoresearch.scan.gates gate2 ${date} --skip ${'sentinel_pinned_no_l3'}`,
+    'GATE2-skip', 'L3').catch(() => null)
+  await bash(`${R} autoresearch.scan.agents.l4_card prompts ${date}`, 'l4-prep-pinned', 'L4-prep')
+  return { date, mode: 'l4-handoff', run_mode: runMode, finalists: codes.length,
+    dispatch: codes.map((c) => ({ code: c, lane: 'pinned' })), dispatch_batches: [codes],
+    meta: {}, l4_budget: codes.length, published: false }
+}
+if (runMode === 'FORCED_FULL') {
   log('⚠️ 哨兵档被人工 override(force_full)→ 照常跑 L3/L4。诚实标注:确定性判据判「材料枯竭」,买单侧期望低。')
 }
 

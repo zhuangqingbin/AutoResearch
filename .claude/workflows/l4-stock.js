@@ -98,16 +98,41 @@ const knownBase = dossierSummary
   : ''
 let slimResult = null
 let intelResult = null
+let intelAttempts = 0
+let intelError = null
+// Wave10 A6:瞬时错(RATE_LIMIT/CONNECTION/TIMEOUT/ENOTFOUND)最多重试 2 次。
+// 07-31 实跑 ENOTFOUND ×3 —— presence-gate 让任务"完成"了,但两张卡情报面变薄
+// **而报告上看不出来**。非瞬时错(如 SCHEMA_ERROR)不重试:重试它只是把一次失败
+// 变成三次失败 + 三倍延迟。终失败 → 结构化 DEGRADED,不是静默变薄。
+const TRANSIENT = ['RATE_LIMIT', 'CONNECTION', 'TIMEOUT', 'ENOTFOUND']
+const errClass = (e) => {
+  const m = String((e && e.message) || e || '').toUpperCase()
+  return TRANSIENT.find((t) => m.includes(t)) || 'OTHER'
+}
+async function intelLeg() {
+  for (let i = 1; i <= 3; i++) {
+    intelAttempts = i
+    try {
+      return await agent(
+        `活体情报采集:${code} ${name}(${sector})· 分析日 ${date}。按你的人设六面全查(≤${maxQ} 条),写 ${SD}/_l4_intel_${code}.md;返回 code 与事件行数 events。${knownBase}`,
+        { agentType: 'l4-intel', effort: cfg.agents?.l4_intel?.effort ?? 'max',
+          ...(cfg.agents?.l4_intel?.model ? { model: cfg.agents.l4_intel.model } : {}),
+          label: i > 1 ? `intel:${code}#${i}` : `intel:${code}`, phase: 'Intel', schema: INTEL })
+    } catch (e) {
+      intelError = errClass(e)
+      if (!TRANSIENT.includes(intelError) || i === 3) {
+        log(`🕵️ intel ✗ ${code}:${intelError}(第 ${i} 次;${TRANSIENT.includes(intelError) ? '重试用尽' : '非瞬时错不重试'})→ 卡回退卡内网查`)
+        return null
+      }
+      log(`🕵️ intel ↻ ${code}:${intelError}(第 ${i} 次,重试)`)
+    }
+  }
+  return null
+}
 await parallel([
   () => taskGate(`prepare ${code} ${date}`, TASK_RESULT, `slim:${code}`)
     .then((r) => { slimResult = r; return r }),
-  ...(intelOn ? [() => agent(
-    `活体情报采集:${code} ${name}(${sector})· 分析日 ${date}。按你的人设六面全查(≤${maxQ} 条),写 ${SD}/_l4_intel_${code}.md;返回 code 与事件行数 events。${knownBase}`,
-    { agentType: 'l4-intel', effort: cfg.agents?.l4_intel?.effort ?? 'max',
-      ...(cfg.agents?.l4_intel?.model ? { model: cfg.agents.l4_intel.model } : {}),
-      label: `intel:${code}`, phase: 'Intel', schema: INTEL })
-    .then((r) => { intelResult = r; return r })
-    .catch((e) => { log(`🕵️ intel ✗ ${code}:${e && e.message ? e.message : e}(卡自动回退卡内网查)`); return null })] : []),
+  ...(intelOn ? [() => intelLeg().then((r) => { intelResult = r; return r })] : []),
 ])
 if (!intelOn) {
   log(`intel 关(config l4_intel.enabled=false)→ 直接出卡`)
@@ -129,6 +154,14 @@ if (!intelOn) {
     }
   }
 }
+// Wave10 A5:三正交字段落盘 + 直播 —— 此前只显式播 REJECTED/unreported,**TRIMMED 不播**,
+// 于是 07-31 的 000651「自报 39 条触发超硬顶审计」在报告里零痕迹。报告/直播/T1 从此读同一份
+// 结构化状态,谁也不许再解析稿头猜。A7 的旧事件净分归一化同批跑(--normalize)。
+await bash(
+  `${R} autoresearch.scan.l4.intel_status ${date} ${code} --normalize` +
+  `${intelOn ? '' : ' --disabled'}${intelAttempts > 1 ? ` --attempts ${intelAttempts}` : ''}` +
+  `${intelResult ? '' : (intelError ? ` --error-class ${intelError}` : '')}`,
+  `intel-status:${code}`, 'Intel').catch(() => null)
 if (slimResult && slimResult.action !== 'LEGACY' && !slimResult.ok) {
   await taskFailure('DATA_INTEGRITY')
   await recordL4('slim_data_integrity')

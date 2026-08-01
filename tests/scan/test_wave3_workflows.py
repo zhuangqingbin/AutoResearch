@@ -46,7 +46,9 @@ def test_finalist_only_sector_briefs_run_after_gate2_before_prompts():
     src = (WF / "scan-market.js").read_text(encoding="utf-8")
     gate2 = src.index("const g2 =")
     finalist_briefs = src.index("finalistBriefSectors")
-    prompts = src.index("autoresearch.scan.agents.l4_card prompts")
+    # Wave10 A2:哨兵·仅持仓档也会调 `l4_card prompts`(它跑持仓 L4 全链),位置在 GATE2 **之前**。
+    # 本用例测的是 **FULL 路**的顺序,所以从 GATE2 之后找 —— 用全文首个会量错分支。
+    prompts = src.index("autoresearch.scan.agents.l4_card prompts", gate2)
 
     assert gate2 < finalist_briefs < prompts
     assert "sectorBriefMode === 'all'" in src
