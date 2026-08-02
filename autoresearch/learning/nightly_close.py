@@ -86,7 +86,13 @@ def run(today: str) -> list[tuple[str, bool, str]]:
             with contextlib.suppress(Exception):
                 importlib.import_module(f"autoresearch.learning.{n}").main()
                 ok += 1
-        return f"{ok}/{len(names)} 刷新"
+        # B5 判据(§B5):结构失败账本住在 scan 侧(它读 task-book,不读学习账本),
+        # 但只有夜间踢它才有连续读数 —— 靠人回忆的判据等于没判据。
+        total = len(names) + 1
+        with contextlib.suppress(Exception):
+            importlib.import_module("autoresearch.scan.structural_audit").main([])
+            ok += 1
+        return f"{ok}/{total} 刷新"
 
     for name, fn in (("retro_refresh", _retro_refresh), ("t1_backfill", _t1_backfill),
                      ("tripwire", _tripwire), ("ledgers", _ledgers)):

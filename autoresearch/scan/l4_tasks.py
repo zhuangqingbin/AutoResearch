@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterator
 
+from autoresearch.scan import structural_audit
+
 SCHEMA_VERSION = 1
 MAX_ATTEMPTS = 2
 TRANSIENT_ERRORS = frozenset({"RATE_LIMIT", "CONNECTION", "TIMEOUT", "STALE_TASK"})
@@ -169,6 +171,10 @@ def initialize(
                 "created_at": _stamp(now),
                 "rate_limit_failures": 0,
                 "tasks": tasks,
+                # B5 判据的落脚点。**只在新建账本时写**：既有账本若无此键，说明它出生在
+                # 计量上线前，那天的活体事件早已丢失 —— 此时补建等于给它伪造「已计量」
+                # 身份，而 structural_audit 正是靠这个键把「没看」和「没有」分开。
+                structural_audit.EVENTS_KEY: structural_audit.new_log(),
             }
         metadata = meta or {}
         for code in ordered:
@@ -233,6 +239,12 @@ def preflight(
         status = task["status"]
         if status == "SUCCEEDED":
             if _verified(task):
+                # 守卫拦住了对已成功票的重派 —— 断点续跑的正常现象，记作观察量不进失败数。
+                # 真正的失败是这里被绕过、成功票又跑一遍（TERMINAL_RERUN，见 structural_audit）。
+                structural_audit.record(
+                    payload, code6, structural_audit.TERMINAL_REDISPATCH_BLOCKED,
+                    f"attempt={task['attempt']}", now=now)
+                _atomic_write(path, payload)
                 return {
                     "ok": True,
                     "code": code6,
@@ -245,6 +257,9 @@ def preflight(
             task["last_error_class"] = "ARTIFACT_CHANGED"
             task["last_error"] = "successful artifact hash no longer matches"
             reason = "ARTIFACT_CHANGED"
+            structural_audit.record(
+                payload, code6, structural_audit.ARTIFACT_HASH_MISMATCH,
+                "SUCCEEDED 票的产物指纹已变，降级重跑", now=now)
         if status == "RUNNING":
             started = _parse_stamp(task.get("started_at"))
             age = (current - started).total_seconds() if started else float("inf")
@@ -261,6 +276,10 @@ def preflight(
             task["last_error_class"] = "STALE_TASK"
             task["last_error"] = f"running for {int(age)}s"
             reason = "STALE_TASK"
+            # 一次执行悄悄蒸发了：既没 mark_success 也没 mark_failure，账本一直以为它在跑。
+            structural_audit.record(
+                payload, code6, structural_audit.COMPLETION_MISJUDGED,
+                f"RUNNING {int(age)}s 无终态回写", now=now)
         if status == "BLOCKED":
             return {
                 "ok": True,
@@ -351,12 +370,22 @@ def mark_success(
             refs[name] = _artifact(
                 artifact_path, content_hash=_sha256(artifact_path)
             )
+        # 调用方以为跑成了、账本查出没跑成 —— 这就是「完成态误判」。原先只抛异常，
+        # 异常一被上层吞掉这件事就再无痕迹，B5 的判据也就永远查不到它。
         if missing:
+            structural_audit.record(
+                payload, code6, structural_audit.COMPLETION_MISJUDGED,
+                f"mark_success 缺产物:{','.join(missing)}", now=now)
+            _atomic_write(path, payload)
             raise ValueError(f"L4 success missing artifacts:{','.join(missing)}")
         from autoresearch.scan.l4.producers import _slim_defect
 
         _, defect = _slim_defect(Path(refs["slim"]["path"]), 4096)
         if defect:
+            structural_audit.record(
+                payload, code6, structural_audit.COMPLETION_MISJUDGED,
+                f"mark_success slim 不合格:{defect}", now=now)
+            _atomic_write(path, payload)
             raise ValueError(f"L4 success invalid slim:{defect}")
         task["status"] = "SUCCEEDED"
         task["last_error_class"] = None
