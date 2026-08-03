@@ -1,14 +1,13 @@
 """L3 compact-table, delta, terrain, and prompt preparation."""
 from __future__ import annotations
 
-import contextlib
 import json
 from pathlib import Path
 
 import pandas as pd
 
 from autoresearch.scan.l3.evidence import harvest_l3_evidence, load_l3_input
-from autoresearch.scan.l3.triage import triage_l2_for_l3
+from autoresearch.scan.l3.triage import pass1_meta, triage_l2_for_l3
 
 _L3_COLS = ["code", "name", "pf", "industry", "composite", "gbdt_score",
             "pct_60d", "sector_mom", "vol_ratio", "cmf_20", "obv_mom_20",
@@ -394,9 +393,17 @@ def prepare_l3_table(date: str, root: Path | None = None, delta: bool = True,
         df_full = load_l3_input(date, root=base)
         kept, cut = triage_l2_for_l3(df_full, target=pass1_target)
         cut.to_csv(scan_dir / "_l3_pass1_cut.csv", index=False)
+        # `_l3_pass1_kept.csv` + meta(design 2026-08-03 §4.4):cut 只说"谁没进",
+        # 而 tier-1 反事实要的是"进来的这 K 只各自凭什么进" —— 没有 selection_reason
+        # 就无法在同一 choice set 内构造 lane/sector 匹配的 baseline。
+        kept.to_csv(scan_dir / "_l3_pass1_kept.csv", index=False)
+        meta = pass1_meta(df_full, kept, cut, pass1_target)
+        (scan_dir / "_l3_pass1_meta.json").write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         restrict_codes = set(kept["code"].astype(str).str.zfill(6))
         pass1_header = f"_pass1 分诊 {len(df_full)}→{len(kept)}(影子 `_l3_pass1_cut.csv`)_"
-        pass1_counts = {"pass1_kept": len(kept), "pass1_cut": len(cut)}
+        pass1_counts = {"pass1_kept": len(kept), "pass1_cut": len(cut),
+                        "pass1_meta": meta}
 
     md = l3_table_md(date, root=base, delta=delta, dist_flag=True, reg_flag=True,
                      cat_flag=True, sector_terrain=True, misread_flag=True,

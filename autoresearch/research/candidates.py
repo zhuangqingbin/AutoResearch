@@ -416,7 +416,7 @@ CANDIDATES: tuple[Candidate, ...] = (
     # ───────────────────────── §4 全景四件 ─────────────────────────
     Candidate(
         id="G41_gate_manifest_fix", title="「业绩真兑现」门 evidence_manifest 勘误",
-        section="§4.1", change_class="M", priority="P0", status="PLANNED",
+        section="§4.1", change_class="M", priority="P0", status="IMPLEMENTED",
         inheritance={"Wave9": "无关", "Wave10": "替代", "STAGES": "继承"},
         falsification_step="08-03 prelude 的「拦11/拦对25%/错杀60%」来自 cross_calib 的另一分组,"
                            "不是 A11 v3 单门 attribution —— 先把 manifest 钉死在 v3",
@@ -500,7 +500,7 @@ CANDIDATES: tuple[Candidate, ...] = (
     ),
     Candidate(
         id="G44_l3_marginal", title="L3 边际价值实验(排序价值计量)",
-        section="§4.4", change_class="M", priority="P0", status="PLANNED",
+        section="§4.4", change_class="M", priority="P0", status="IMPLEMENTED",
         inheritance={"Wave9": "无关", "Wave10": "继承", "STAGES": "替代"},
         falsification_step="先补可复原性:pass1 是 union/floor/round-robin 选择集,"
                            "`_l3_pass1_cut.csv` 不能天然定义 top-K 反事实",

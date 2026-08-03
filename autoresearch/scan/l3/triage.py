@@ -3,6 +3,21 @@ from __future__ import annotations
 
 import pandas as pd
 
+# selection_reason 词表 —— **与 L2 共用一套**(design 2026-08-03 §3.1/§4.4)。
+# 为什么共用:O1 的 SLO 守卫要按 selection_reason 切 L2,§4.4 的 tier-1 反事实要按同一套
+# 语义在 pass1 选择集内构造 lane/sector 匹配的 baseline;两层各造一套词表 = 两边的
+# 「lane」不是同一件事,反事实一开始就配错了对。
+#
+# 各值在本层的产生规则(L2 侧见 `recall/l2_stratify.py`):
+#   pinned            规则① 保送(全程直通,不占竞争名额)
+#   conviction_guard  规则② 多路共振(n_channels>=3)—— 强制补入,不是排序结果
+#   lane              规则③ healthy 全入 / 规则④ 通道轮询(detail 记具体通道名)
+#   backfill          填满收尾(无通道 / 通道队列耗尽后按分捡回)
+#   merit / sector    L2 侧才产生(sn-composite 核 / sector cap 回填),本层恒不出现
+SELECTION_REASONS = ("merit", "lane", "sector", "pinned", "conviction_guard", "backfill")
+PASS1_REASONS = ("pinned", "conviction_guard", "lane", "backfill")
+RULE_VERSION = "pass1.v2"        # v2 = 本波新增 selection_reason/detail;规则本身未变
+
 
 def triage_l2_for_l3(df: pd.DataFrame, target: int = 60) -> tuple[pd.DataFrame, pd.DataFrame]:
     """pass1 确定性分诊(零 LLM):L2 ~200 行 → kept(进 pass2/l3-rank 深比较,~target 行)+
@@ -41,10 +56,21 @@ def triage_l2_for_l3(df: pd.DataFrame, target: int = 60) -> tuple[pd.DataFrame, 
     `cut = df − kept`(按原始行序稳定输出,不重排;`kept`/`cut` 都保留 `df` 的**全部原始列**,
     不裁列——`_l3_pass1_cut.csv`/下游 attribution 都可能要用到里面的列)。
 
-    边界:`df` 为空 → 两个都空。`target >= len(df)` → kept=全量,cut=空。
+    **`kept` 另加两列**(design 2026-08-03 §4.4;`cut` 不加,它没有"为什么被选中"可言):
+    `selection_reason`(见 `PASS1_REASONS`)+ `selection_detail`(lane 记通道名、共振记
+    n_channels)。为什么必须留:pass1 是 **union/floor/round-robin 的选择集,不是一条确定性
+    排名** —— 只有 `_l3_pass1_cut.csv` 的话,根本无法构造"同样选 K 只、但按 lane/sector
+    匹配"的反事实基线(§4.4「现有 cut 不能天然定义 top-K 反事实」)。多规则同时命中时按
+    `pinned > conviction_guard > lane` 记**第一个**,理由与"占名额"的口径一致。
+
+    边界:`df` 为空 → 两个都空(kept 仍带两列,免得下游按列名读时炸)。
+    `target >= len(df)` → kept=全量,cut=空。
     """
     if df.empty:
-        return df.copy(), df.copy()
+        empty = df.copy()
+        empty["selection_reason"] = pd.Series(dtype=str)
+        empty["selection_detail"] = pd.Series(dtype=str)
+        return empty, df.copy()
 
     d = df.reset_index(drop=True).copy()
     if "code" in d.columns:
@@ -54,20 +80,34 @@ def triage_l2_for_l3(df: pd.DataFrame, target: int = 60) -> tuple[pd.DataFrame, 
     order = (pd.to_numeric(d[score_col], errors="coerce").fillna(-1e18)
             if score_col else pd.Series(0.0, index=d.index))
 
+    reasons: dict[int, tuple[str, str]] = {}     # 行 → (selection_reason, selection_detail)
+
+    def _mark(idx, reason: str, detail: str = "") -> None:
+        reasons.setdefault(idx, (reason, detail))   # 先到先得 = 优先级顺序,见 docstring
+
     is_pinned = pd.Series(False, index=d.index)                          # ① pinned 全入
     if "pinned" in d.columns:
         is_pinned |= d["pinned"].map(lambda v: bool(v) if pd.notna(v) else False)
     elif "recall_channels" in d.columns:
         is_pinned |= d["recall_channels"].astype(str) == "pinned"
     mandatory = is_pinned.copy()
+    for i in d.index[is_pinned]:
+        _mark(i, "pinned")
 
     if "n_channels" in d.columns:                                        # ② 多路共振全入
-        mandatory |= pd.to_numeric(d["n_channels"], errors="coerce").fillna(0) >= 3
+        n_ch = pd.to_numeric(d["n_channels"], errors="coerce").fillna(0)
+        resonant = n_ch >= 3
+        mandatory |= resonant
+        for i in d.index[resonant]:
+            _mark(i, "conviction_guard", f"n_channels={int(n_ch.loc[i])}")
 
     chan_sets = None
     if "recall_channels" in d.columns:                                   # ③ healthy lane 全入
         chan_sets = d["recall_channels"].fillna("").astype(str).map(lambda s: set(s.split("|")) - {""})
-        mandatory |= chan_sets.map(lambda s: "healthy" in s)
+        healthy = chan_sets.map(lambda s: "healthy" in s)
+        mandatory |= healthy
+        for i in d.index[healthy]:
+            _mark(i, "lane", "healthy")
 
     mandatory_idx = list(d.index[mandatory])
     if len(mandatory_idx) > target:
@@ -108,6 +148,7 @@ def triage_l2_for_l3(df: pd.DataFrame, target: int = 60) -> tuple[pd.DataFrame, 
                     p += 1
                 if p < len(q):
                     kept_set.add(q[p])
+                    _mark(q[p], "lane", c)
                     remaining -= 1
                     progressed = True
                     p += 1
@@ -115,10 +156,36 @@ def triage_l2_for_l3(df: pd.DataFrame, target: int = 60) -> tuple[pd.DataFrame, 
     if remaining > 0:                                                     # 填满收尾(无通道/耗尽的剩余票)
         leftover = [i for i in d.index if i not in kept_set]
         leftover.sort(key=lambda i: order.loc[i], reverse=True)
-        kept_set.update(leftover[:remaining])
+        for i in leftover[:remaining]:
+            kept_set.add(i)
+            _mark(i, "backfill")
 
     kept_idx = sorted(kept_set)
     cut_idx = [i for i in d.index if i not in kept_set]
     kept = d.loc[kept_idx].reset_index(drop=True)
+    # 理由按**原始行索引**取,不能按 reset 后的位置 —— 两者只在 kept 恰为前缀时才相等。
+    kept["selection_reason"] = [reasons.get(i, ("backfill", ""))[0] for i in kept_idx]
+    kept["selection_detail"] = [reasons.get(i, ("backfill", ""))[1] for i in kept_idx]
     cut = d.loc[cut_idx].reset_index(drop=True)
     return kept, cut
+
+
+def pass1_meta(df_in: pd.DataFrame, kept: pd.DataFrame, cut: pd.DataFrame,
+               target: int) -> dict:
+    """当日 pass1 的自描述元数据 —— §4.4「固定当日 K、quota、pinned 和强制补入语义」。
+
+    `n_kept` 与 `target` 可以不等(mandatory 超 target 时 pinned 优先保留,kept 允许略超),
+    所以两个都记:tier-1 反事实要用**实际 K**,不是配置里的 target。
+    """
+    counts = ({} if not len(kept) or "selection_reason" not in kept.columns
+              else kept["selection_reason"].value_counts().to_dict())
+    return {
+        "rule_version": RULE_VERSION,
+        "target": int(target),
+        "n_in": int(len(df_in)),
+        "n_kept": int(len(kept)),
+        "n_cut": int(len(cut)),
+        "reason_counts": {str(k): int(v) for k, v in counts.items()},
+        "forced_in": int(sum(int(v) for k, v in counts.items()
+                             if k in ("pinned", "conviction_guard"))),
+    }

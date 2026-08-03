@@ -43,6 +43,12 @@ COHORTS: dict[str, str] = {
     "experiment_eligible": "v3 门归因里 outcome≠UNMEASURED 的可交易成熟候选",
     "legacy_migration": "仅供迁移复现的旧口径(gate_ledger 全表均值·不去重)——"
                         "**不是研究 cohort**,不得与上面四个并列比较",
+    # 2026-08-03 §4.1 勘误新增。participation = 「这道门评过并否掉了谁」(多门共拦时三道门
+    # 各记一次),它是 EXP-1 这类换口径实验的**人口**;而单门错杀率的分母必须是 attribution
+    # (多门共拦 → MULTI_GATE 单列,不重复进单门分母)。两者混用会把单门分母系统性放大
+    # ——07-31 实测 legacy 路 65 个 (日,码) 里 47 个同时踩 ≥2 道门。
+    "gate_participation": "某道门 FAIL 名单的逐票人口 —— **不是单门因果分母**,"
+                          "不得用它算错杀率/拦对率",
 }
 
 
@@ -96,7 +102,48 @@ SEMANTICS: dict[str, Semantic] = {
     "experiment_count": Semantic(
         "registry 内实验计数", "experiment_registry.experiments",
         ("raw_run",)),
+    # §4.1 勘误:participation 计数只允许挂在 gate_participation cohort 上。语义绑定表
+    # 就是那句「participation 不能直接充当单门因果分母」的可执行形态 —— 想拿它当错杀率
+    # 的分母,`add()` 会当场抛错(见 `test_participation_cannot_be_a_false_kill_denominator`)。
+    "gate_participation_count": Semantic(
+        "该门 FAIL 名单的逐票人口计数(多门共拦时各门各记一次)",
+        "gate_attribution.participation_n", ("gate_participation",)),
 }
+
+# §4.1:A11 v3 单门归因的**口径指纹**。设计稿要求「先把 manifest 固定为 A11 v3、
+# tradable mature 中位基线、multi-gate collapse 和 FALSE_KILL=ex2≥+2pp,再谈实验」——
+# 写成常量并随 manifest 落盘,口径一旦被改,冻结快照的 hash 立刻不同。
+GATE_DEFINITION = {
+    "cohort_version": "v3",
+    "market_baseline": "median_tradable_mature",
+    "multi_gate_policy": "collapse_to_MULTI_GATE(不重复进单门分母)",
+    "false_kill_threshold": "excess_2 >= +0.02",
+    "correct_threshold": "excess_2 < 0",
+    "neutral_band": "0 <= excess_2 < +0.02",
+    "unmeasured": "缺 T+2 / 不可交易 / 门状态不可判",
+    # 反面清单同样重要:被点名不得混入的三个来源。
+    "not_derived_from": [
+        "cross_calib 的分组与 winner 条件(08-03 prelude 的「拦11/拦对25%/错杀60%」出自这里,"
+        "不是 gate_attribution 结论)",
+        "gate_participation(人口,不是单门因果分母)",
+        "learning.shrink 的收缩值(只服务 LLM 注入锚点,见 SHRINK_BOUNDARY)",
+    ],
+}
+
+# §4.1 原话:「`learning/shrink.py` 只用于 LLM 注入锚点,明确不能用来决定机制/门去留;
+# 『收缩后回均值』不是证伪」。`assert_not_shrink_derived` 把这句话变成一次会抛错的检查。
+SHRINK_BOUNDARY = ("shrink 是注入锚(喂 LLM 读的数字),不是裁决器。"
+                   "门的去留只能由 A11 v3 归因 + 预注册区间/功效决定;"
+                   "收缩把小样本拉回均值是它的**设计**,不是门无效的证据。")
+_SHRINK_SOURCES = ("shrink", "shrunk", "shrinkage")
+
+
+def assert_not_shrink_derived(source_field: str, *, context: str = "gate decision") -> None:
+    """裁门路径上出现收缩来源 → 抛错。§4.1「删除 shrink 裁门路径」的可执行形态。"""
+    text = str(source_field or "").lower()
+    if any(token in text for token in _SHRINK_SOURCES):
+        raise EvidenceError(
+            f"{context} 引用了收缩来源 {source_field!r} —— {SHRINK_BOUNDARY}")
 
 
 class EvidenceError(ValueError):
@@ -128,6 +175,10 @@ class Metric:
     # 由 semantic 反查填入(见 `Manifest.add`)。它存在的唯一理由是:让**事后**改
     # `semantic` 却不改来源的篡改能被 `validate` 逮住 —— 「39% 改叫错杀率」正是这个动作。
     source_field: str | None = None
+    # §4.1:比率必须带区间。n=6 的 33.3% 与 n=600 的 33.3% 是两回事,而清单里它们
+    # 长得一模一样 —— 这正是「拿 n=6 去裁门」得以发生的显示层条件。
+    interval: dict | None = None
+    maturity: dict | None = None
 
 
 @dataclass
@@ -140,6 +191,7 @@ class Manifest:
     metrics: dict[str, dict] = field(default_factory=dict)
     registry_inventory: dict = field(default_factory=dict)
     conflicts: list[dict] = field(default_factory=list)
+    gate_definition: dict = field(default_factory=lambda: dict(GATE_DEFINITION))
 
     # ── 写入侧契约(违反即抛,别指望读的人发现)────────────────────────────
     def declare_denominator(self, denom: Denominator) -> None:
@@ -423,8 +475,30 @@ def _parse_paper_nav(path: Path) -> dict:
     return out
 
 
+def _rate_interval(numerator: int, denominator: int) -> dict | None:
+    """比率的 Beta-Binomial 区间 —— §4.1「Beta-Binomial 或 date-cluster 区间」。"""
+    from autoresearch.common.stats import beta_binomial_interval
+
+    if denominator <= 0:
+        return None
+    return beta_binomial_interval(int(numerator), int(denominator)).as_dict()
+
+
+def _gate_maturity(measured_n: int, n_days: int) -> dict:
+    """单门归因的成熟度 —— §4.1「至少 20 个真实 binding 成熟事件且功效足够」。"""
+    from autoresearch.common.stats import maturity_verdict
+
+    return maturity_verdict(scan_days=int(n_days), subgroup_n=int(measured_n),
+                            min_subgroup=GATE_MIN_MATURE_EVENTS).as_dict()
+
+
+# §4.1:RECOMMENDED 的硬下限。n=6 的 33.3% 不是「门无效」,是 IMMATURE。
+GATE_MIN_MATURE_EVENTS = 20
+
+
 def _add_gates(manifest: Manifest, ga, root: Path) -> None:
-    """门归因:v3 进 experiment_eligible;legacy 只作迁移基线,cohort 另立。"""
+    """门归因:v3 进 experiment_eligible;legacy 只作迁移基线,cohort 另立;
+    participation 单列在自己的 cohort 里,**永远不当单门比率的分母**(§4.1)。"""
     paths, hashes = _hashes(sorted(root.glob("*/gate_fires.csv"))[-1:] or [root])
     for cohort, rows in (
         ("experiment_eligible", ga.roll(root, cohort=ga.COHORT_V3)),
@@ -433,17 +507,20 @@ def _add_gates(manifest: Manifest, ga, root: Path) -> None:
         if not len(rows):
             continue
         as_of = str(rows["date"].max())
+        n_days = int(rows["date"].nunique())
         prefix = "gate_v3" if cohort == "experiment_eligible" else "gate_legacy"
         for row in ga.summarize(rows).itertuples(index=False):
             slug = f"{prefix}.{row.gate}"
             denom_id = f"{slug}.measured_n"
+            measured_n = int(row.measured_n)
             manifest.declare_denominator(Denominator(
-                denom_id, int(row.measured_n), cohort,
+                denom_id, measured_n, cohort,
                 f"{row.gate} 门被拦且 outcome 可测的候选数"))
             manifest.add(Metric(
                 f"{slug}.n_fires", "gate_block_count", int(row.n_fires),
                 int(row.n_fires), None, cohort, as_of, paths, hashes,
                 note="计数,不是比率 —— 别拿 measured_n 当它的分母"))
+            maturity = _gate_maturity(measured_n, n_days)
             for metric_name, semantic, value, numerator in (
                 ("false_kill_rate", "false_kill_rate", row.false_kill_rate,
                  int(row.FALSE_KILL)),
@@ -453,14 +530,43 @@ def _add_gates(manifest: Manifest, ga, root: Path) -> None:
                 manifest.add(Metric(
                     f"{slug}.{metric_name}", semantic,
                     None if value is None or pd.isna(value) else float(value),
-                    numerator, denom_id, cohort, as_of, paths, hashes))
+                    numerator, denom_id, cohort, as_of, paths, hashes,
+                    interval=_rate_interval(numerator, measured_n),
+                    maturity=maturity,
+                    note=None if maturity["status"] == "MATURE" else
+                    f"IMMATURE({'、'.join(maturity['missing'])})—— "
+                    "不足以裁门去留,既不能读成「门有效」也不能读成「门无效」"))
             manifest.add(Metric(
                 f"{slug}.mean_excess_2", "gate_mean_excess2",
                 None if row.mean_excess_2 is None or pd.isna(row.mean_excess_2)
                 else float(row.mean_excess_2),
-                None, denom_id, cohort, as_of, paths, hashes))
+                None, denom_id, cohort, as_of, paths, hashes, maturity=maturity))
 
+    _add_gate_participation(manifest, ga, root, paths, hashes)
     _add_gate_left_tail(manifest, root, paths, hashes)
+
+
+def _add_gate_participation(manifest: Manifest, ga, root: Path,
+                            paths: list[str], hashes: dict[str, str]) -> None:
+    """participation 人口计数 —— 自己的 cohort、自己的分母,**不参与任何比率**。
+
+    它在清单里存在的理由恰恰是「让人看见它有多大」:08-03 的 49 条 participation 与
+    v3 单门的 n=6 差了一个数量级,把前者当后者的分母正是设计稿点名的那次误读。
+    """
+    rows = ga.roll_participation(root)
+    if not len(rows):
+        return
+    as_of = str(rows["date"].max())
+    for gate, group in rows.groupby("gate"):
+        denom_id = f"gate_participation.{gate}.n"
+        manifest.declare_denominator(Denominator(
+            denom_id, int(len(group)), "gate_participation",
+            f"{gate} 门 FAIL 名单的逐票人口(多门共拦时各门各记一次)"))
+        manifest.add(Metric(
+            f"gate_participation.{gate}.n", "gate_participation_count",
+            int(len(group)), int(len(group)), denom_id, "gate_participation",
+            as_of, paths, hashes,
+            note="人口,**不是**单门因果分母 —— 错杀率/拦对率只能用 attribution 的 measured_n"))
 
 
 def _add_gate_left_tail(manifest: Manifest, root: Path,
@@ -622,9 +728,20 @@ def render(manifest: Manifest | dict) -> list[str]:
             f"| `{denom['denominator_id']}` | {denom['value']} "
             f"| `{denom['cohort']}` | {denom['definition']} |"
         )
+    gate_def = payload.get("gate_definition") or {}
+    if gate_def:
+        lines += ["", "## 门归因口径(A11 v3 —— 改这里等于改事实定义)", "",
+                  "| 键 | 值 |", "|---|---|"]
+        for key, value in gate_def.items():
+            if key == "not_derived_from":
+                continue
+            lines.append(f"| `{key}` | {value} |")
+        lines += ["", "**不得混入的来源**:"]
+        lines += [f"- {item}" for item in gate_def.get("not_derived_from", [])]
+
     lines += ["", "## 指标", "",
-              "| metric_id | 值 | 分子 | 分母 | cohort | as_of | 状态 |",
-              "|---|---|---:|---|---|---|---|"]
+              "| metric_id | 值 | 区间 | 分子 | 分母 | cohort | as_of | 成熟度 | 状态 |",
+              "|---|---|---|---:|---|---|---|---|---|"]
     for metric in payload["metrics"].values():
         if "semantic" not in metric:
             continue
@@ -636,12 +753,16 @@ def render(manifest: Manifest | dict) -> list[str]:
         value = metric["value"]
         shown = "—" if value is None else (
             f"{value:.4f}" if isinstance(value, float) else str(value))
+        interval = metric.get("interval") or {}
+        band = ("—" if interval.get("lo") is None
+                else f"[{interval['lo']:.3f}, {interval['hi']:.3f}]")
+        maturity = (metric.get("maturity") or {}).get("status") or "—"
         lines.append(
-            f"| `{metric['metric_id']}` | {shown} "
+            f"| `{metric['metric_id']}` | {shown} | {band} "
             f"| {'—' if metric['numerator'] is None else metric['numerator']} "
             f"| {'—' if denom is None else f'`{denom}`={denom_value}'} "
             f"| `{metric['cohort']}` | {metric.get('as_of') or '—'} "
-            f"| {metric['status']} |"
+            f"| {maturity} | {metric['status']} |"
         )
     inventory = payload.get("registry_inventory") or {}
     if inventory.get("experiments"):
@@ -662,6 +783,7 @@ def render(manifest: Manifest | dict) -> list[str]:
     lines += [
         "",
         "_CONFLICT 的指标不得进入任何结论句;扫描不因此阻断。_",
+        f"_IMMATURE 的门指标既不能读成「门有效」也不能读成「门无效」;{SHRINK_BOUNDARY}_",
     ]
     return lines
 
@@ -698,6 +820,21 @@ def validate(payload: dict) -> list[str]:
                     f"{mid}: 跨 cohort 引用分母 {denom_id!r}")
         elif denom_id:
             problems.append(f"{mid}: 分母 {denom_id!r} 未登记")
+        # §4.1:裁门指标不得引用收缩来源
+        if metric["semantic"] in ("false_kill_rate", "correct_block_rate"):
+            try:
+                assert_not_shrink_derived(metric.get("source_field", ""),
+                                          context=f"{mid}")
+            except EvidenceError as exc:
+                problems.append(str(exc))
+
+    gate_def = payload.get("gate_definition")
+    if gate_def is not None and gate_def != GATE_DEFINITION:
+        drift = sorted(k for k in set(gate_def) | set(GATE_DEFINITION)
+                       if gate_def.get(k) != GATE_DEFINITION.get(k))
+        problems.append(
+            f"门归因口径漂移:{drift} —— 冻结快照的口径与当前 GATE_DEFINITION 不符,"
+            "两个 33.3% 可能量的根本不是同一件事")
     return problems
 
 

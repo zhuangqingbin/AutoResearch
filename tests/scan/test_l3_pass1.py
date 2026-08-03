@@ -143,11 +143,112 @@ def test_triage_kept_and_cut_partition_df_exactly():
 
 
 def test_triage_preserves_all_original_columns():
+    """原始列一列不少;`kept` 另加 provenance 两列(§4.4),`cut` 不加。
+
+    加列是本波**有意**的 schema 变更(tier-1 反事实要按理由分层),但"原始列不得丢"
+    这条不变量仍要守住 —— 所以这里断言的是"前缀相等 + 恰好多两列",不是"完全相等"。
+    """
     rows = [_row(f"{i:06d}", composite=float(i), gbdt_score=float(i)) for i in range(5)]
     df = pd.DataFrame(rows)
     kept, cut = triage_l2_for_l3(df, target=3)
-    assert list(kept.columns) == list(df.columns)
+    assert list(kept.columns) == [*df.columns, "selection_reason", "selection_detail"]
     assert list(cut.columns) == list(df.columns)
+
+
+# ───────────────────────── selection_reason(§4.4 可复原性) ─────────────────────────
+
+
+def test_selection_reason_pinned_beats_other_rules():
+    """同时是 pinned 又多路共振 → 记 pinned(优先级顺序与"占名额"口径一致)。"""
+    rows = [_row("000099", composite=1.0, gbdt_score=1.0, n_channels=3,
+                 recall_channels="momentum|value|healthy", pinned=True)]
+    rows += [_row(f"{i:06d}", composite=99.0 - i, gbdt_score=99.0 - i,
+                  recall_channels="momentum") for i in range(1, 6)]
+    kept, _ = triage_l2_for_l3(pd.DataFrame(rows), target=3)
+    reason = kept.set_index("code").loc["000099", "selection_reason"]
+    assert reason == "pinned"
+
+
+def test_selection_reason_marks_resonance_and_healthy_distinctly():
+    rows = [_row("000001", composite=1.0, gbdt_score=1.0, n_channels=3,
+                 recall_channels="momentum|value|growth"),
+            _row("000002", composite=2.0, gbdt_score=2.0, n_channels=1,
+                 recall_channels="healthy")]
+    kept, _ = triage_l2_for_l3(pd.DataFrame(rows), target=2)
+    by_code = kept.set_index("code")
+    assert by_code.loc["000001", "selection_reason"] == "conviction_guard"
+    assert by_code.loc["000001", "selection_detail"] == "n_channels=3"
+    assert by_code.loc["000002", "selection_reason"] == "lane"
+    assert by_code.loc["000002", "selection_detail"] == "healthy"
+
+
+def test_selection_reason_records_the_round_robin_channel():
+    rows = ([_row(f"m{i:05d}", composite=100.0 - i, gbdt_score=100.0 - i,
+                  recall_channels="momentum") for i in range(5)]
+            + [_row(f"v{i:05d}", composite=100.0 - i, gbdt_score=100.0 - i,
+                    recall_channels="value") for i in range(5)])
+    kept, _ = triage_l2_for_l3(pd.DataFrame(rows), target=4)
+    lanes = kept[kept["selection_reason"] == "lane"]
+    assert len(lanes) == 4
+    assert set(lanes["selection_detail"]) == {"momentum", "value"}
+
+
+def test_selection_reason_backfill_for_channelless_rows():
+    rows = [_row("bf0001", composite=95.0, gbdt_score=95.0, n_channels=0,
+                 recall_channels="(backfill)"),
+            _row("m00001", composite=10.0, gbdt_score=10.0, recall_channels="momentum")]
+    kept, _ = triage_l2_for_l3(pd.DataFrame(rows), target=2)
+    by_code = kept.set_index("code")
+    assert by_code.loc["bf0001", "selection_reason"] == "backfill"
+    assert by_code.loc["m00001", "selection_reason"] == "lane"
+
+
+def test_every_kept_row_has_a_reason_from_the_vocabulary():
+    """没有理由的行会让 tier-1 反事实无从构造 —— 这是 §4.4 点名的那个探针。"""
+    from autoresearch.scan.l3.triage import SELECTION_REASONS
+
+    rows = ([_row("p00001", composite=1.0, gbdt_score=1.0, pinned=True)]
+            + [_row(f"h{i:05d}", composite=float(i), gbdt_score=float(i),
+                    recall_channels="healthy") for i in range(5)]
+            + [_row(f"m{i:05d}", composite=float(i) + 50, gbdt_score=float(i) + 50,
+                    recall_channels="momentum") for i in range(20)]
+            + [_row(f"x{i:05d}", composite=float(i) + 5, gbdt_score=float(i) + 5,
+                    n_channels=0, recall_channels="") for i in range(10)])
+    kept, _ = triage_l2_for_l3(pd.DataFrame(rows), target=18)
+    assert kept["selection_reason"].notna().all()
+    assert set(kept["selection_reason"]) <= set(SELECTION_REASONS)
+    assert (kept["selection_reason"] != "").all()
+
+
+def test_reason_survives_index_reset():
+    """理由必须按**原始行索引**取:kept 不是 df 的前缀时,按位置取会整体错位。"""
+    rows = [_row(f"{i:06d}", composite=float(i), gbdt_score=float(i),
+                 recall_channels="momentum") for i in range(6)]
+    rows[5] = _row("000005", composite=0.0, gbdt_score=0.0, pinned=True,
+                   recall_channels="momentum")
+    kept, _ = triage_l2_for_l3(pd.DataFrame(rows), target=2)
+    assert kept.set_index("code").loc["000005", "selection_reason"] == "pinned"
+
+
+def test_empty_df_kept_still_carries_provenance_columns():
+    df = pd.DataFrame(columns=["code", "name", "composite", "gbdt_score"])
+    kept, cut = triage_l2_for_l3(df, target=60)
+    assert "selection_reason" in kept.columns and "selection_detail" in kept.columns
+    assert len(kept) == 0 and len(cut) == 0
+
+
+def test_pass1_meta_records_actual_k_not_just_target():
+    """mandatory 超 target 时 kept 会略超 —— tier-1 要用**实际 K**。"""
+    from autoresearch.scan.l3.triage import pass1_meta
+
+    rows = [_row(f"p{i:05d}", composite=float(i), gbdt_score=float(i), pinned=True)
+            for i in range(7)]
+    df = pd.DataFrame(rows)
+    kept, cut = triage_l2_for_l3(df, target=3)
+    meta = pass1_meta(df, kept, cut, 3)
+    assert meta["target"] == 3 and meta["n_kept"] == 7
+    assert meta["reason_counts"]["pinned"] == 7 and meta["forced_in"] == 7
+    assert meta["n_in"] == 7 and meta["n_cut"] == 0
 
 
 def test_triage_target_ge_len_df_keeps_all_cut_empty():
@@ -237,6 +338,40 @@ def test_prepare_two_pass_default_true_writes_cut_csv_and_header(tmp_path):
     text = (d / "_l3_table.md").read_text(encoding="utf-8")
     assert "pass1 分诊" in text and "_l3_pass1_cut.csv" in text
     assert res["pass1_kept"] == 5 and res["pass1_cut"] == 0     # 5 行 < pass1_target(60),全留
+
+
+def test_prepare_two_pass_writes_kept_csv_and_meta(tmp_path):
+    """§4.4 可复原性:kept 产物 + 自描述 meta 必须与 cut 一起落盘。"""
+    import json
+
+    base = tmp_path / "context" / "scan"
+    rows = [_row(f"{i:06d}", composite=90 - i, gbdt_score=90 - i,
+                 recall_channels="momentum") for i in range(5)]
+    d = _mk_l2(base, "2026-07-09", rows)
+
+    res = prepare_l3_table("2026-07-09", root=base, do_harvest=False)
+
+    kept_csv = pd.read_csv(d / "_l3_pass1_kept.csv", dtype={"code": str})
+    assert len(kept_csv) == 5
+    assert "selection_reason" in kept_csv.columns
+    assert kept_csv["selection_reason"].notna().all()
+
+    meta = json.loads((d / "_l3_pass1_meta.json").read_text(encoding="utf-8"))
+    assert meta["n_in"] == 5 and meta["n_kept"] == 5 and meta["target"] == 60
+    assert meta["rule_version"] and sum(meta["reason_counts"].values()) == 5
+    assert res["pass1_meta"] == meta
+
+
+def test_prepare_two_pass_false_writes_no_kept_artifacts(tmp_path):
+    """回滚杆同时管住新产物 —— two_pass=False 时一个新文件都不该出现。"""
+    base = tmp_path / "context" / "scan"
+    rows = [_row(f"{i:06d}", composite=90 - i, gbdt_score=90 - i) for i in range(3)]
+    d = _mk_l2(base, "2026-07-09", rows)
+
+    prepare_l3_table("2026-07-09", root=base, do_harvest=False, two_pass=False)
+
+    assert not (d / "_l3_pass1_kept.csv").exists()
+    assert not (d / "_l3_pass1_meta.json").exists()
 
 
 def test_prepare_two_pass_false_is_byte_identical_parity(tmp_path):
