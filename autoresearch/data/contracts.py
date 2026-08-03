@@ -135,6 +135,22 @@ CONTRACTS: dict[str, Contract] = {
     "stock_yjbb_em": _c(TIER_DEGRADE, note="业绩(报告期)"),
     "fina_mainbz": _c(TIER_DEGRADE, note="分业务收入/利润(dossier 业务模型;小票/金融股披露口径可缺)",
                       empty_ok=True),
+    # ── B 级:衍生品(design 2026-08-03 §2;I 类基建,消费者默认关闭)──
+    # 全部 B 级:期权/转债缺失时漏斗照常成立(它们不进 composite、不进 L0 硬门)。
+    "opt_daily": _c(TIER_DEGRADE, "ts_code trade_date vol oi",
+                    note="期权日行情:**无 IV/Greeks**,必须联结 opt_basic 元数据才有意义"),
+    "opt_basic": _c(TIER_DEGRADE, "ts_code exchange call_put",
+                    note="期权合约元数据:**首页恰 12,000 = 分页上限**,不是全量;"
+                         "必须强制分页 + coverage 对账"),
+    "cb_daily": _c(TIER_DEGRADE, "ts_code trade_date close", note="可转债日行情"),
+    "cb_basic": _c(TIER_DEGRADE, "ts_code stk_code",
+                   note="可转债基础表:`conv_price` 是**当前截面**,"
+                        "拿它重算历史转股价值会泄漏未来(F3 capability gate ①)"),
+    "cb_call": _c(TIER_DEGRADE, note="可转债强赎:强赎状态走本端点/公告,不是 cb_basic",
+                  empty_ok=True),
+    "cb_price_chg": _c(TIER_DEGRADE, note="转债价格变动:当前 token 无权限 → "
+                       "F3 历史溢价因子 BLOCKED_BY_DATA", empty_ok=True),
+
     "macro_china_cpi_monthly": _c(TIER_DEGRADE),
     "macro_china_ppi": _c(TIER_DEGRADE),
     "macro_china_pmi": _c(TIER_DEGRADE),

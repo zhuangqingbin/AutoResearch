@@ -56,6 +56,18 @@ ENDPOINTS: dict[str, dict] = {
     "stk_holdernumber": {"key": "as_of", "settle": "eod", "source": "tushare"}, # 股东户数(标的级)
     "pledge_stat": {"key": "as_of", "settle": "eod", "source": "tushare"},      # 质押统计(标的级)
 
+    # ── ① tushare 衍生品(design 2026-08-03 §2;**消费者默认关闭**,I 类数据基建)──
+    # opt_daily 按交易日切(收盘即结算);opt_basic 是合约元数据,内容随取数日增长
+    # (新合约挂牌)→ as_of 快照。**opt_basic 首页恰 12,000 行 = 分页上限,不是全量**,
+    # 取数侧必须强制分页(见 derivatives/options_lake.paginate)。
+    "opt_daily": {"key": "date", "settle": "eod", "source": "tushare"},
+    "opt_basic": {"key": "as_of", "settle": "eod", "source": "tushare"},
+    # 可转债:行情可达;`cb_price_chg` 当前 token 无权限 → F3 整线 BLOCKED_BY_DATA。
+    "cb_daily": {"key": "date", "settle": "eod", "source": "tushare"},
+    "cb_basic": {"key": "as_of", "settle": "eod", "source": "tushare"},
+    "cb_call": {"key": "date", "settle": "eod", "source": "tushare"},
+    "cb_price_chg": {"key": "date", "settle": "eod", "source": "tushare"},
+
     # ── ②' tushare 静态/日历 ──
     "stock_basic": {"key": "static", "settle": "eod", "source": "tushare"},
     "trade_cal": {"key": "static", "settle": "eod", "source": "tushare"},

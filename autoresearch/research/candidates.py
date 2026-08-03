@@ -292,7 +292,7 @@ CANDIDATES: tuple[Candidate, ...] = (
     # ───────────────────────── §2 衍生品 ─────────────────────────
     Candidate(
         id="F1_options_terrain", title="期权市场地形(PCR / 持仓结构)",
-        section="§2.2", change_class="I", priority="P1", status="PLANNED",
+        section="§2.2", change_class="I", priority="P1", status="IMPLEMENTED",
         inheritance={"Wave9": "替代", "Wave10": "无关", "STAGES": "新增"},
         falsification_step="lagged PCR/ΔPCR/zscore 对次日 breadth 或 regime transition 的**增量**;"
                            "同期相关不算领先证据",
@@ -319,7 +319,7 @@ CANDIDATES: tuple[Candidate, ...] = (
     ),
     Candidate(
         id="F2_style_spread", title="风格温差(MO 中证1000 vs IO 沪深300)",
-        section="§2.3", change_class="I", priority="P1", status="PLANNED",
+        section="§2.3", change_class="I", priority="P1", status="IMPLEMENTED",
         inheritance={"Wave9": "替代", "Wave10": "无关", "STAGES": "新增"},
         falsification_step="先分别构建期限匹配、换月调整的指标再比较;原始 PCR 差与成交额比"
                            "只能是探索特征",
