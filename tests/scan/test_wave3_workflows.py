@@ -42,6 +42,23 @@ def test_task_success_is_presence_gated_for_legacy_direct_invocations():
     assert "`success ${code} ${date}`" in src
 
 
+def test_stable_context_blocks_switch_is_gone_from_the_workflow_too():
+    """Wave10 B4 的另一半 —— 它的孪生兄弟有守卫,它没有,于是它在 JS 里活了下来。
+
+    B4 删净了 Python 侧(`context_blocks.py` + `prompts.py` 的 `--stable-context` 分支)
+    与 config 键,却漏了 workflow 里的 `const stableContextBlocks = cfg.performance?...`
+    与它拼出的 `promptMode`。当时无害(键已删 → false → 空串),但那是个**陷阱**:
+    谁把这个键加回 config,流水线就会给一个不认识该 flag 的 CLI 传 `--stable-context`。
+
+    退役没有守卫 = 删掉了还能悄悄回来。这条就是那个守卫。
+    """
+    src = (WF / "scan-market.js").read_text(encoding="utf-8")
+    code = "\n".join(ln for ln in src.splitlines() if not ln.strip().startswith("//"))
+    assert "stableContextBlocks" not in code and "promptMode" not in code
+    assert "stable_context_blocks" not in code
+    assert "--stable-context" not in code, "Python 侧已无此 flag,传了会直接报错"
+
+
 def test_sector_briefs_have_exactly_one_path():
     """Wave10 B4:`sector_brief_mode` 退役 —— brief 只剩 GATE2 **之前**全量生成这一条路。
 

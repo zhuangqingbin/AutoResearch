@@ -19,7 +19,10 @@ const cfg = (typeof args === 'string' && args ? JSON.parse(args).config : (args 
 // Wave 3 性能开关只改变调度/上下文布局，不拥有 finalist、rubric 或评级语义。
 // streaming 默认开；另外两项默认当前生产行为，均有显式回滚杆。
 const streamingL4 = cfg.performance?.streaming_l4 ?? true
-const stableContextBlocks = cfg.performance?.stable_context_blocks ?? false
+// Wave10 B4:`stable_context_blocks` 已退役(离线 benchmark 收益 4.0% < 10% 门)。
+// 这里连读都不再读 —— 留着 `cfg.performance?.stable_context_blocks` 就等于留了个陷阱:
+// Python 侧的 `--stable-context` 已随 context_blocks.py 一并删除,谁把这个键加回 config,
+// 这条流水线就会给一个不认识它的 CLI 传 flag。
 // 哨兵档人工 override(SKILL 步骤 2.2:哨兵是「确定性建议,**人拍板**」,而本脚本原先硬编码直接跳 L3/L4
 // —— 判据只问"今天有没有值得买的",不知道用户还有"保送持仓该不该走"的问题挂着)。缺省 false = 现行为(parity)。
 const forceFull = !!(typeof args === 'string' && args ? JSON.parse(args).force_full : (args && args.force_full))
@@ -292,7 +295,6 @@ const fmeta = g2m.meta || {}
 // assemble+GATE4 也随之上移主会话收尾。
 phase('L4-prep')
 log(`L4-prep:[四生产者并行]→prompts→${streamingL4 ? '单票 slim∥intel 流式交接' : '批量 slim legacy 交接'}`)
-const promptMode = stableContextBlocks ? ' --stable-context' : ''
 await bash(
   // shared 必须先于 prompts:_l4_shared_instructions.md 此前全仓无生产者(只有读者),
   // 当日 📐/🔁/🚪 校准行从未到达任何一张决策卡(Wave5 ④B)。
@@ -304,7 +306,7 @@ await bash(
   `( ${R} autoresearch.scan.calendar ${date} || true ) & ` +
   `( ${R} autoresearch.scan.agents.l4_card consensus ${date} || true ) & ` +
   `wait; ` +
-  `${R} autoresearch.scan.agents.l4_card prompts ${date}${promptMode}`, 'l4-prep', 'L4-prep')
+  `${R} autoresearch.scan.agents.l4_card prompts ${date}`, 'l4-prep', 'L4-prep')
 const PLAN = { type: 'object', required: ['dispatch'],
   properties: { dispatch: { type: 'array', items: { type: 'string' } },
     meta: { type: 'object' } } }
