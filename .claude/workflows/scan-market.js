@@ -57,6 +57,16 @@ function gate(label, cmd, schema, phaseName) {   // 同上:避免遮蔽全局 ph
     `(混入 stderr 会污染这行 JSON)。`,
     { agentType: 'general-purpose', model: 'haiku', effort: 'low', label, schema, ...(phaseName ? { phase: phaseName } : {}) })
 }
+// 通用确定性 CLI 壳:跑一条命令、把它打印的最后一行 JSON 原样带回(零判断)。
+// 2026-08-03 事故:Wave10 A2(99efe7d)把 run_mode 的**调用点**抄进本文件,却把这份定义
+// 落在了 l4-stock.js 里没一起搬过来 —— 每次全扫都在 GATE1 之后立刻 `gpJson is not defined`。
+// 调用点的 `.catch(() => null)` 兜不住:ReferenceError 是同步抛的,promise 压根没生成。
+// 与 l4-stock.js:42 保持同签名 (cmd, label, schema),phaseName 可选(缺省 = 沿用当前 phase())。
+const gpJson = (cmd, label, schema, phaseName) => agent(
+  `执行:\`${cmd}\`\n它会向 stdout 打印一行 JSON。把最后一行 JSON 原样作为结构化返回,` +
+  '不改、不增删字段。**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**',
+  { agentType: 'general-purpose', model: 'haiku', effort: 'low', label, schema,
+    ...(phaseName ? { phase: phaseName } : {}) })
 // StageResult 的 metrics 解包。2026-07-30 实跑事故:haiku 壳把整条 StageResult 记录**再包一层**
 // 塞进 metrics(`{stage,status,metrics:{...整条记录含自己的 metrics...}}`)—— 外层三字段仍匹配
 // STAGE_RESULT schema,校验照常放行,于是当时的 `g1.metrics.l4_budget` 静默变 undefined:

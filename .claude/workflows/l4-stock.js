@@ -43,6 +43,18 @@ const gpJson = (cmd, label, schema) => agent(
   `执行:\`${cmd}\`\n它会向 stdout 打印一行 JSON。把最后一行 JSON 原样作为结构化返回,` +
   '不改、不增删字段。**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**',
   { agentType: 'general-purpose', model: 'haiku', effort: 'low', label, schema })
+// 确定性命令壳:跑一条命令、只回报退出码 + stdout 末 15 行(零判断)。
+// 2026-08-03 事故(与 scan-market.js 的 gpJson 同族、同一个提交 99efe7d):Wave10 A5 把
+// intel_status 的**调用点**写进本文件(L160),却没带上这份定义 —— 每只票都会在 Intel 相位
+// 之后同步抛 `bash is not defined`,`.catch(() => null)` 接不住(ReferenceError 在 promise
+// 生成前就抛了),结果是一张决策卡都出不来。与 scan-market.js:35 的 bash() 同语义、同签名。
+const bash = (cmd, label, phaseName) => agent(
+  '在仓库根目录精确执行下面这条命令,然后只回报:退出码 + stdout 末 15 行。' +
+  '不要做别的、不要判断、不要解释。\n' +
+  '**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**\n\n' +
+  `\`\`\`\n${cmd}\n\`\`\``,
+  { agentType: 'general-purpose', model: 'haiku', effort: 'low', label,
+    ...(phaseName ? { phase: phaseName } : {}) })
 const INTEL_GUARD = { type: 'object', required: ['ok', 'code', 'action'],
   properties: { ok: { type: 'boolean' }, code: { type: 'string' }, action: { type: 'string' },
     claimed: {}, hard_cap: { type: 'integer' }, kept_as: { type: 'string' },
