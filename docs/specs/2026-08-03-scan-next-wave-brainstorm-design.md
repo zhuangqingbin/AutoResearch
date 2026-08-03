@@ -2,7 +2,8 @@
 
 > **性质:brainstorm 产物、候选池,非调度权威。** 现行总调度权威仍是 Wave10 设计稿
 > (`docs/specs/2026-08-01-wave10-report-ops-slimdown-zerobuy-design.md`);Wave9 C/D/E/F
-> 未清债仍归 Wave9 稿。本稿不授权任何行为变更 —— 一切生产接线走实验治理
+> 未清债仍归 Wave9 稿。本稿是对 Wave9/Wave10 的 **delta appendix**,只记录新增候选、
+> 勘误和需重新裁决的替代项,不重复授权既有 Wave。本稿不授权任何行为变更 —— 一切生产接线走实验治理
 > (`experiment_registry → promotion → 人工 approve/activate`),文中「方案」均指
 > 待立项候选,落地时另立 wave plan。
 >
@@ -10,8 +11,15 @@
 > 衍生品(§2)、L2(§3)+ 全景四件(§4.1–4.4:门审计 / 闭环债自动化 / L4 派发下沉 /
 > L3 边际实验);期权线 F1+F2+F3 全写;单文件总纲。
 >
-> 本稿所有「实测」标注均为 2026-08-03 晚探针/读码结果;所有引用读数注明出处
-> (STAGES.md / gate_ledger / 当日 prelude / token_usage)。
+> **⚠️ 2026-08-04 用户裁定取代上一条:「按本稿全部开发完,在 main 分支」。**
+> 实施计划与落地记录见 `docs/specs/2026-08-04-nextwave-implementation-plan.md`;
+> 候选状态的**单一事实源**是 `autoresearch/research/candidates.py`
+> (`python -m autoresearch.research.candidates --check`),不是本稿正文。
+> 落地形态:M 类 7/7、I 类 8/10 已实现且消费者默认关闭;**B 类 0 件激活**
+> —— 本稿 §5-1 的状态机未被绕过。
+>
+> 本稿「实测」标注以 2026-08-03 晚探针/读码为基准;2026-08-04 复核有更新的地方显式
+> 标注。所有统计结论必须带 cohort/definition/as-of,不得只引用 prelude 摘要数字。
 
 ---
 
@@ -39,8 +47,8 @@
   t=−11.91(2026-07-21 真湖实证)。任何新召回/事件设计不得用当日涨幅做入场。
 - **northbound 通道**:hk_ratio T+2 IC −0.108,已停用;**accumulation 通道**:unique 超额
   −0.21%,已停用。
-- **event 通道**:默认停用取证中(pr_20260725_001,首读边际 unique 40 只 −1.01pp t=−1.83,
-  ≥10 日 `unique_excess_t2` 累计 >0 才提启用)。本稿 §1.2 的事件类型学**不预设其结论**。
+- **event 通道**:默认停用取证中(pr_20260725_001,首读边际 unique 40 只 −1.01pp t=−1.83)。
+  旧「≥10 日累计>0」启用口径由统一成熟门取代(§1.2);事件类型学**不预设其结论**。
 - **裸事件计数**:`ev_pos` 裸加总=「被调研机构家数排行」(surv_n 占 64%,top10 全是纯调研),
   已用 `ev_hard` 修正(`scan/events.py` 注)。
 
@@ -55,6 +63,23 @@
 5. 收紧/放宽类改动先测误放行率;拆特性必须连 helper/接线一起搬(2026-08-03 当天判例:
    `gpJson`/`bash` 两个 workflow helper 漏搬,每次全扫必崩,commit 1ce5470 修)。
 
+### 0.4 权威、证据与变更分类
+
+每个候选立项前必须补齐两张表,缺任一项不得转 implementation plan:
+
+1. **继承矩阵**:`Wave9/Wave10/STAGES` × `继承 | 替代 | 新增 | 需用户重裁`。F1/F2 与
+   L4 workflow 下沉和 Wave9 有直接重叠,不能再写「与 Wave10/Wave9 无重叠」;若改变
+   Tushare-first、CFFEX 首发范围或 L4 调度语义,必须显式标为 supersede。
+2. **evidence_manifest**:每个数字写 `artifact_path / cohort_version / numerator /
+   denominator / as_of / definition_hash`;跨 cohort 的数只可并列,不可拼成一个比例。
+
+同时把候选拆成三类,优先级与风险等级分开:
+
+- **M 测量**:只新增 ledger/报表/探针,不进入提示词、名单或阻断路径;
+- **I 数据基建**:写湖/索引/回放契约,消费者默认关闭;
+- **B 生产行为**:改变名单、证据输入、评级、阻断或调度语义,必须走 registry + shadow
+  + rollback。所谓「展示/证据列」一旦进入 L3/L4 prompt 也属于 B,不是零行为变更。
+
 ---
 
 ## 1. 新闻能力强化(话题 2)
@@ -63,175 +88,188 @@
 
 | 层 | 现状 | 病 |
 |---|---|---|
-| L3 公告 | tushare `anns_d` 已退役(2026-07-18 起无权限)→ `anns_fallback`(cninfo)对空桶逐票补(Wave9 C-1;2026-08-03 实测兜底承载 3,119 行);标题关键词打方向 tag:利多/利空词表 + 否定词中性化 + 监管旗(`scan/agents/l3_news.py:29-44`) | 只有标题无正文;兜底源单点;无历史留存 |
-| L4 情报 | l4-intel(sonnet·max)六面盲搜 WebSearch/WebFetch;自报 cap 20 指令级天天超(08-03 实测 21–34 条);`hard_cap=30` 有强制力(`scan/l4/intel_guard.py`,超硬顶拒稿 `.rejected.md`);价格断言已有 OHLCV 对账(`price_claims.py`) | 捏造(pr_20260714_006)与日期焊接(pr_20260716_003)两条 P0 前科;每天几百次网查一次性用完即弃,无留存无复用 |
+| L3 公告 | tushare `anns_d` 已退役(2026-07-18 起无权限)→ `anns_fallback`(cninfo)对空桶逐票补(Wave9 C-1;2026-08-03 实测兜底承载 3,119 行);标题关键词打方向 tag:利多/利空词表 + 否定词中性化 + 监管旗(`scan/agents/l3_news.py:29-44`) | 只有标题无正文;fallback 主要是逐票近窗,默认生产调用并非全市场历史湖 |
+| L4 情报 | l4-intel(sonnet·max)六面盲搜 WebSearch/WebFetch;自报 cap 20 指令级天天超(08-03 实测 21–34 条);现 `intel_guard` 对可解析超额稿件是 trim,仅无法解析事件表时拒稿;价格断言已有 OHLCV 对账(`price_claims.py`) | 搜索数依赖稿件自报,不是工具调用事实;捏造与日期焊接有 P0 前科;搜索结果一次性使用 |
 | 事件端 | 回购/增持/调研三端点入湖(`scan/events.py` 复用 `l3_catalyst.catalyst_counts`);催化旗 24/203(08-03) | 覆盖窄(仅三类);event 通道停用取证中 |
 | 宏观/策略师 | 『实时网查』带 as-of 标注 | 同样不留存 |
-| 数据源探针(08-03 实测) | tushare `news` **无权限**;akshare `stock_news_em`(东财逐票搜索)**可达**(10 行/票);快讯族:`stock_info_global_em` ✅200 行(标题/摘要/发布时间/链接)、`stock_info_global_sina` ✅20 行、`stock_info_cjzc_em` ✅400 行、财联社 `stock_info_global_cls` ❌404;本版 akshare 无 `stock_telegraph_cls` | 全仓库**没有任何持久化新闻存储** |
+| 持久化现状(08-04 复核) | `stock_news_em` 已注册为 as-of lake,工作区已有约 1,891 个 parquet;公告另有通用 `anns_d` lake/fallback cache;快讯族三源可达,财联社接口 404 | 存储分散、字段和时间语义不统一;现有快照缺统一 `first_seen/stage/run` 清单,不能精确重放阶段输入 |
 
-**核心诊断**:新闻面三个结构性缺陷 —— ①**不可重放**(retro/t1 永远无法回答「当时新闻面
-有什么」,而「产物能证明跑过什么、不能证明没跑过什么」);②**每日重复劳动**(intel 网查
-数百次,次日全部重来);③**无源治理**(捏造/焊接靠事后 pr,无源级信誉记账)。
+**核心诊断修正**:问题不是「全仓无新闻存储」,而是 ①既有快照/公告/实时搜索之间没有统一
+观测清单,无法回答「某阶段截止时系统实际看到了什么」;②选择性逐票采集不能充当全市场
+新闻量;③claim→source 缺少可核验链路;④实时搜索缺实际调用 telemetry,复用与成本无法计量。
 
-### 1.1 D1 · 新闻湖 news_lake(核心件)
+### 1.1 D1 · 统一新闻观测目录 news_catalog(核心件)
 
-**目标**:夜间零 LLM 把「公告 + 逐票新闻 + 快讯流」拉进带双时间戳的只增湖;供复盘重放、
-intel 先读、L3 第二源。**非目标**:不进 L0–L2 打分(零 LLM 铁律)、不做盘中实时流、
-不做全文 NLP、不做情感模型。
+**目标**:复用 `stock_news_em`、`anns_d` 与 fallback 既有存储,增加统一、只增的事件/观测
+目录;夜间零 LLM 补快讯流与缺失元数据,供阶段级回放、intel 去重和 L3 第二源。
+**非目标**:不重造平行湖、不进 L0–L2 打分、不把选择性逐票抓取解释成市场新闻量、
+不做盘中流/全文情感模型。
 
-**数据模型**(`context/lake/news/` 下按 ingest 日分片,只增不改):
+**数据模型**(原始内容仍留各自湖;统一目录只保存身份、版本和可用性):
 
 ```
-news_items:
-  id            # sha1(url_norm | title | publish_date) —— 去重键
-  publish_ts    # 源标注的发布时间(可缺,缺则 NULL 并计数)
-  ingest_ts     # 我们拉到的时间(夜间批 = 全批一致;PIT 唯一可信锚)
-  source        # cninfo | em_search | global_* | ...(可插拔)
-  url, title, body(可空), codes[](ticker 链接), event_tags[](§1.2 复用词表)
+canonical_event:
+  canonical_event_id, event_ts?, title_norm, codes[]
+
+source_observation:
+  source_observation_id, canonical_event_id, source_item_id?, source, url
+  published_ts?, first_seen_ts, fetched_ts, content_hash, revision
+  first_seen_basis, scan_run_id?, available_stage, raw_artifact_path
+
+code_link:
+  source_observation_id, code, method, confidence, rule_version
 ```
 
-- **PIT 纪律**:复盘/回放/任何反事实只认 `ingest_ts ≤ 截点` 的行 —— `publish_ts` 是源
-  自报、可被回填篡改,只作展示。夜间批意味着「D 日湖」在 D 晚才齐,**当日扫描用的是
-  D−1 及以前的湖 + intel 实时网查增量**,两者角色写死:湖=底仓,网查=增量。
-- **lake 教训继承**:写湖剥掉窄 fields(lake-narrow-fields-poisoning);cache key 含全参。
-- **拉取范围**(关键设计选择,不追求全市场):全市场公告列表(cninfo,已是生产事实)+
-  逐票新闻仅拉「L2-203 ∪ dossier 池 ∪ pinned」(~250 只/日 × 10 条)+ 快讯流(实测
-  可达三源:`stock_info_global_em` 200 行 / `stock_info_global_sina` 20 行 /
-  `stock_info_cjzc_em` 400 行;财联社 404 不可达,放弃)。估算 <5MB/日、~100MB/月,
-  忽略不计;保留期默认 365 日。
-- **源契约分级**:全部 B 级(降级记账不阻断);每源记限频/增量键/当日行数,行数骤降
-  →prelude 汇总屏 ⚠(源可插拔,单源死不伤湖)。
+- **PIT 纪律**:回放必须传 `decision_cutoff_ts + stage`;只允许
+  `first_seen_ts ≤ decision_cutoff_ts` 且 `available_stage ≤ stage` 的观测。`published_ts`
+  只是来源陈述,不能替代 first-seen。D4 在 finalist 后抓到的全文不得进入同日 L3 回放。
+- **身份纪律**:`url|title|date` hash 只能当 observation 候选键,不能同时承担事件身份;
+  更正、转载、URL 变化保留 revision/来源观测,不可覆盖旧版本。
+- **既有资产优先**:先为约 1,891 个 `stock_news_em` 分片、`anns_d` 和 fallback 建 manifest,
+  再决定是否迁移物理文件;不得为同一内容另写第二份宽表。历史分片没有真实抓取时间时,
+  用持久化快照时间并标 `first_seen_basis=snapshot_inferred`,且不得回放到该快照之前;
+  新抓取必须标 `observed`。
+- **拉取范围**:全市场公告 + 固定口径的全局快讯 + `L2 ∪ dossier ∪ pinned` 逐票补充。
+  后者有选择偏差,只能做个股证据,不能计算市场「新闻热度」;全市场热度只能来自固定
+  feed 并按有效覆盖/freshness 归一。
+- **保留与成本**:热层 365 日可行,但 append-only 的实验/retro 清单不得随热层删除;
+  原文/PDF 走压缩对象冷存储与 hash 引用。容量以实测字节报表为准,不再写「忽略不计」。
+- **源契约**:B 级降级记账;记录限频、条款、freshness、非空率、schema hash。函数存在或
+  HTTP 200 不等于数据可用,必须做关键列非空与日期单调验证。
 
-**消费三接口**(各自独立立项,湖先行):
+**消费三接口**(各自独立立项,目录先行):
 
-1. **复盘重放**:`news_lake.replay(code, date)` → retro/t1 的诊断输入多一节「当时新闻面」。
-   纯增量,零行为变更。
-2. **intel 先读湖**:l4-intel prompt 注入「湖内该票近 10 日条目摘要」,指令改为「湖里已有
-   的不再网查」。**这是行为变更**(改 intel 输入)→ registry 影子:对比启用前后网查数/
-   耗时/卡质量,预期 cap 超限从「天天喊」变结构性缓解。
-3. **L3 公告第二源**:`l3_news` 空桶兜底顺序变为 湖 → cninfo 实时(湖命中免网络)。
+1. **复盘重放**:`news_catalog.replay(code, decision_cutoff_ts, stage)` → retro/t1 增加
+   「当时已可见新闻面」。仅写诊断 artifact 时是 M;一旦进入判断 prompt 就是 B。
+2. **intel 先读目录**:l4-intel prompt 注入近 10 日已知摘要,指令改为「先复用,对更正/
+   缺口再查」。这是 B 类变更→ registry 影子;网查数必须来自真实 tool-call telemetry,
+   不能使用稿件自报。比较调用数、耗时、覆盖、错引与终局质量。
+3. **L3 公告第二源**:`l3_news` 空桶兜底顺序变为目录 → cninfo 实时(命中免网络)。
 
-**最小证伪步**:用已实测可达的 3 个快讯源 + cninfo + `stock_news_em` 各拉 1 日真数据落
-一个原型分片,verify 去重率与 codes 链接命中率 —— 链接命中率 <70% 就先修词典再谈湖。
-**验收探针(会变红)**:湖日行数>0;`publish_ts` 缺失率<50%;重放接口对已知日吐已知行
-(fixture);intel 影子期网查中位数下降(会变的量)。
-**回滚**:湖是只读消费,拆接线即回退;湖本身留着无害。
+**最小证伪步**:先对既有分片生成 1 日 manifest,用同一条新闻的转载/更正 fixture 验证
+canonical/observation 分离,并验证 L3 与 L4 两个 cutoff 不互相污染。逐票 query code 可单独
+记关联,全局快讯允许 unmapped;不得用统一「codes 命中率 70%」阻断整个目录。
+**验收探针**:manifest 与原始分片逐源对账;first_seen 缺失率=0;同一 run+stage 回放稳定;
+late-arrival fixture 不泄漏;源非空率/freshness 和 intel 实际调用数有时序。
+**回滚**:目录消费者关闭即可;原始湖不迁毁、不覆盖。
 
 ### 1.2 D2 · 确定性事件类型学(typed events)
 
-现状词表已在 `l3_news.py`(利多/利空/`_NEGATORS`/`_STRONG`/`_REG_WORDS`),但只产出
-「方向 tag」。升级为 **typed event 记录**:`(code, ann_date, type, direction, strength)`,
-type ∈ {预增, 预亏, 回购实施, 回购预案, 增持, 减持, 中标/订单, 问询/关注函, 立案,
-重组/收购, 定增, 澄清}(词表起点=现 `_EVENT_TAGS`,规则纯确定性)。
+现状词表只产方向 tag。升级为**多标签事件记录**,主键引用 `source_observation_id`,至少包含
+`event_types[] / lifecycle_status / direction / strength / matched_spans / confidence /
+ambiguous / rule_version / first_seen_ts`。同一标题可同时是「问询回复+澄清」;回购、减持、
+重组必须区分预案/实施/完成/终止,不能用一个 `type` 覆盖生命周期。
 
-- **用途分层**:①L3/L4 证据列(展示,无行为变更,先行);②候选因子 —— **每 type 单独**
-  走 factor_lab(D 日信号 = 近 N 日该型事件有无/计数,forward=fwd_2_oc),入召回前置门
-  = 与 event 通道同一裁决框架(`channel_audit unique_excess_t2` 累计 ≥10 日 >0),
-  **不另立更松的标准**。
-- **假设纪律**(继承 §0.2):预告披露后追买已被否 → 业绩类事件的 H0 只能设在「披露前
-  预期变化」或直接不做;非业绩类(回购实施/增持/中标)才是主战场;一律不用当日涨幅。
-- **最小证伪步**:直接用湖内 cninfo 历史标题 + factor_lab 回填各 type 的 IC —— 零新数据、
-  零 LLM,一晚出结论;IC 全平则 D2 止步于「证据列」。
+- **用途分层**:①落结构化 artifact 是 I;②渲染到 L3/L4 prompt 已是 B;③每个 type 的
+  候选因子分别走 factor_lab。信号日期按扫描 cutoff/下一可交易日滚动,不能只用 ann_date。
+- **统一成熟门**:不得沿用局部「≥10 日累计>0」。统一使用 STAGES 当前门:≥20 个真实
+  扫描日、关键细分 ≥10、召回 unique ≥30、覆盖 ≥2 regime,并报告 date-cluster LCB、
+  多重检验/FDR 与锁定 OOS;不足即 `IMMATURE`。
+- **假设纪律**:业绩预告披露后追买已被否;业绩类不直接做追涨信号。非业绩类也一律
+  不用当日涨幅,必须单独预注册方向、窗口和 no-harm。
+- **最小证伪步**:先做 PIT 覆盖矩阵。当前 fallback 是逐票近窗,不能假设已有全市场历史
+  湖、更不能承诺「零新数据一晚回填」。只有覆盖和 first_seen 合格的 type 才进 factor_lab。
 
 ### 1.3 D3 · 情报治理 v2
 
-1. **引用契约 lint**(结构性,进 `intel_guard`):intel 稿每条事实 claim 行必须带
-   `[source|date|url]`;缺引用率超阈值(建议 30%)→ 拒稿改名 `.rejected.md`,card 侧
-   presence-gate 自动回退卡内网查(与 hard_cap 同通道,**只拒稿不拒票**)。
-2. **日期焊接检测**(依赖 D1):claim 内日期 × 湖 `publish_ts/ingest_ts` 对账,对不上打
-   ⚠ 注记(不拒稿 —— 湖覆盖不全时保守);治 pr_20260716_003「原子数字全真、组合为假」。
-3. **源信誉台账**:t1_review/retro 证伪某条 claim 时回写 `(source, verdict)`;月度聚合
-   per-source precision;低信誉源进 intel prompt 的「需二源确认」名单。**自动腿断言**:
-   台账行数必须随证伪事件增长(会变的量)。
-4. cap 数值不再动(15→20 已做过一次):结构性解法是 §1.1 消费②(先读湖少网查),
-  `hard_cap=30` 保持唯一牙齿。
+1. **先建 claim ledger**:每个原子 claim 有 `claim_id / subject / predicate / value /
+   effective_date / status / citation_observation_ids[]`;自然语言 `[source|date|url]` 只能作为
+   展示格式,不能充当真实性校验。
+2. **lint 分层**:先验 URL/date/主体/状态字段和抓取 artifact/hash,再记录「可访问、字段匹配、
+   内容支撑」三个 verdict。缺引用/错引只拒 intel 稿、不拒票;回退路径必须独立可测。
+3. **日期焊接检测**:claim 日期同时和 `published_ts/first_seen_ts/effective_date` 对账;
+   对不上先标 `UNVERIFIED`,覆盖不足时不自动判假。
+4. **源/模型责任分离**:retro 回写 claim-source edge 的 verdict 与原因,区分来源原文错误、
+   LLM 错引和过期事实。样本稀疏/选择性证伪时不发布伪精确的 source precision。
+5. **cap 改为可观测预算**:当前 guard 是 trim 而非「超 30 必拒」;用真实工具 telemetry
+   约束 search/fetch 次数和耗时,自报字段只作诊断。cap 调整和先读目录都属于 B 类实验。
 
 ### 1.4 D4 · finalist 公告正文(≤10 只/日)
 
-对当日 finalist(≤10)拉近 10 日**关键公告全文**(预告/问询/回购/增持;cninfo PDF/HTML
-→ 文本入湖),l4-card P2/P4 注入**限额摘录**(注入 cap 明确写死:每票 ≤2,000 字节、
-超限截断加 `[截断]` 标记 —— §0.3-3 预算条款)。
+对当日 finalist(≤10)拉近 10 日关键公告全文,保存 PDF/HTML hash、页码和抽取版本;
+l4-card P2/P4 只注入带 `source_observation_id + page + excerpt_hash` 的限额摘录。
 
-- **直接假设**:治「业绩真兑现门」错杀率 60%(§4.1)的证据薄之病 —— 门员现在只看得到
-  标题与预告数字,看不到扣非口径/有效期/前提条件。
-- **验收**:挂 §4.1 的错杀率曲线(D4 上线前后对比);卡片价格/事实断言对账通道复用现有
-  `price_claims`。
-- 成本:10 票 × ~3 份 PDF,取数分钟级;token 增量 = 注入 ≤2KB×10。
+- **预算按模型输入计量**:限额使用格式化后的字符/token,不使用「2,000 字节≈2KB token」;
+  先测中文 PDF 抽取后的实际 prompt delta,超限按证据优先级截断并显式标记。
+- **假设边界**:D4 是「L4 证据增强」,不是门直接读取全文。不能继续引用错误的「错杀 60%」。
+- **实验**:同一候选、同一门版本做有全文/无全文 paired shadow 或盲双卡;比较 claim
+  正确率、评级/门分歧及成熟 T+2,避免用上线前后两个时期作因果比较。
+- **核验分工**:`price_claims` 只核验价格/日期/涨跌幅;公告事实另建 excerpt/page/hash
+  verifier,不得复用价格对账器。
 
 ---
 
 ## 2. 期权/衍生品线(话题 3)
 
-### 2.0 结构性裁定
+### 2.0 当前产品集裁定(非永久结构断言)
 
-**A 股没有个股场内期权。** 场内衍生品 = ~10 只 ETF 期权(50/300/500/创业板/科创50 等)
-+ 中金所指数期权(IO 沪深300 / MO 中证1000 / HO 上证50);券商场外个股期权数据不公开
-(中证报价系统仅月度聚合)。→ **「期权信息做个股召回」结构性不可行,钉死。** 期权
-信息能落的三个真形态:市场地形(F1)、风格温差(F2)、以及**可转债作为个股级替身**(F3)。
+截至 2026-08-04 当前公开可用产品集,本项目能稳定获取的是 ETF/指数期权,未找到可用于
+全 A 个股召回的交易所个股期权数据。因此本 Wave **不做个股期权召回**;期权只作为市场
+地形/风格风险候选。该结论是「当前产品集不可行」,不是制度上永久钉死:上交所规则允许
+股票或 ETF 成为期权标的,故应按季度重检产品清单。
 
-**明确不做**:HK 个股期权代理(覆盖窄+数据费+映射稀)、场外期权、期权直开 L1 通道。
+官方核验:[上交所期权规则](https://www.sse.com.cn/lawandrules/sselawsrules2025/option/c/c_20250610_10781448.shtml)、
+[深交所期权产品页](https://www.szse.cn/option/)、
+[中金所 2026 合约挂牌](https://www.cffex.com.cn/jystz/20260320/47214.html)。
 
-### 2.1 数据可行性(2026-08-03 实测)
+**明确不做**:HK 个股期权代理、场外期权、期权直开 L1 通道。可转债是另一类证券,
+只能作为独立个股级候选信号,不能称为「期权替身」。
 
-| 探针 | 结果 | 备注 |
+### 2.1 数据可行性(2026-08-04 复核)
+
+| 探针 | 结果 | 裁定 |
 |---|---|---|
-| tushare `opt_basic`(SSE) | ✅ 12,000 张合约 | 元数据全 |
-| tushare `opt_daily`(20260731, SSE) | ✅ 752 行 | **无 IV/Greeks 列**(close/settle/vol/oi);全市场单日不带 exchange 会连接重置,按交易所分次拉 |
-| tushare `cb_basic` | ✅ 1,156 只 | 含 `stk_code` 正股映射 |
-| tushare `cb_daily`(20260731) | ✅ 308 行 | 转债日行情全通 |
-| akshare `option_finance_board` | ✅ 28 行(50ETF 单月) | keyless 兜底源 |
-| tushare `news` | ❌ 无权限 | 付费新闻接口不可用(§1 已绕开) |
+| tushare `opt_daily(20260731)` | SSE 752 / SZSE 492 / CFFEX 720 行 | CFFEX 权限已证,OPEN-Q-3 关闭;无 IV/Greeks,必须联结元数据 |
+| tushare `opt_basic` | SSE 首页恰 12,000;offset=12,000 仍有行;SZSE 7,944;CFFEX 10,114 | 12,000 是分页上限,不是完整;强制分页、去重、coverage 对账 |
+| AKShare QVIX | 50ETF/300ETF 有历史;科创接口可达;1000 指数末行关键列全 NaN | 函数存在≠有效覆盖;逐序列做日期、非空和极值契约 |
+| tushare `cb_basic/cb_daily` | 1,156 只基础表 / 20260731 日行情 308 行 | 行情可达,但 `conv_price` 是当前值,不能证明历史 PIT 转股价可得 |
+| tushare `cb_call` | 20260731 可返回强赎相关记录 | 强赎状态应走该端点/公告,不是 `cb_basic` |
+| tushare `cb_price_chg` | 端点存在,当前 token 无权限 | F3 历史溢价因子暂被数据权限阻断 |
 
 ### 2.2 F1 · 市场地形(PCR/持仓结构 → `market_pack.derivatives`)
 
-**一期(零模型,推荐先做)**:每晚从 `opt_daily` 算 —— 全市场及分品种 **PCR(成交量/
-持仓量两口径)**、总持仓 Δ、成交额结构(认沽/认购分布)。落
-`market_pack.derivatives` 新块(`frame.py` 生产,B 级契约:缺了不阻断、记账)。
+**一期是 I 类数据基建,不直接接 prompt**:分页拉 `opt_basic`,按 as-of 联结 `opt_daily`,先
+按 underlying/product/expiry bucket 计算成交量 PCR、持仓 PCR、成交额和换月调整 OI。
+不同 ETF/指数、合约乘数和期限不得直接裸加总;跨产品展示需名义金额/delta 归一,否则
+保持分品种面板。PCR 只能解释为「对冲/持仓压力」,不能区分买 put 与卖 put,不得直接标
+「看空」。
 
-**二期(IV 分位 / 25Δ skew / 期限结构)**:探针意外发现本版 akshare **有现成波指接口族**
-(`index_option_kcb_qvix` / `index_option_kcb_min_qvix` 实存于函数表;50ETF/300ETF 同族
-待探)—— 二期优先探 qvix 族,**可达则免 IV 自算**;不可达才落 BS 反解(r 取 SHIBOR-3M
-或固定 2%,q=0,假设写进代码注释 —— OPEN-Q-2)。**YAGNI:二期不预排,一期读数攒 ≥60 日
-且与 regime 转换有对齐迹象才立项。**
+**二期(IV 分位 / 25Δ skew / 期限结构)**:QVIX 只能提供波动率指数/分位,不能替代 25Δ
+skew 或期限结构。自算 IV 时优先用 put-call parity 推隐含远期/分红,不得固定 `q=0`;
+同时做 no-arbitrage、到期天数、流动性、solver 失败率和极值过滤。
 
-- **消费**:①温度 v2 的候选输入(展示先行,不碰决策);②策略师地形段。⚠ **接线注意**:
-  Wave10 A4 后策略师只读 `strategist_pack`(allowlist 投影,新键默认进不来)—— F1 要进
-  策略师视野必须显式加白名单,这是特性不是坑,加名单时同步核对防锚定条款(不得含
-  个股/行业方向指令性字段)。
-- **验收探针**:derivatives 块日日非空;PCR 时序与 regime 标签的对齐读数报表(≥60 日);
-  上线首月 L3/L4 prompt 字节 diff = 0(证明未泄漏进判断层)。
-- **最小证伪步**:拉 60 个历史交易日 opt_daily(湖化),离线算 PCR 与既有 regime 序列的
-  相关 —— 相关全无则 F1 降级为纯观赏,不接温度。
+- **消费**:进入 `market_pack.derivatives` 只算 I;加入 `strategist_pack` allowlist 或温度/
+  regime 即为 B,必须 registry。L3/L4 prompt diff 必须保持 0 直到行为实验批准。
+- **最小证伪步**:用所有满足稳定契约的历史,检验 lagged `PCR/ΔPCR/zscore` 对次日 breadth
+  或 regime transition 的增量价值;同期相关不算领先证据。按扫描日 walk-forward,
+  date-cluster/HAC 区间,对 breadth+momentum 基线报告增量。
+- **成熟门**:60 日不是自动充分条件;按转折事件数、到期周期和 regime 覆盖判成熟。
 
 ### 2.3 F2 · 风格温差(小票 vs 大票风险偏好)
 
-MO(中证1000)与 IO(沪深300)的 IV 差是理想口径,但依赖二期 IV;**一期代理**:两品种
-PCR 差 + 成交额比。定位 = regime 判定的**第四信号候选**(现 regime 只有 breadth+动量,
-`common/regime.py`)。路径:factor_lab 检验其对 regime 转换/次日 breadth 的先行性 →
-有据才提 regime 判定改版实验(regime 判定改版会改权重选块,是行为变更,registry 全流程)。
-**风险**:中金所数据源可达性未单测(opt_daily 覆盖 CFFEX 与否待验,OPEN-Q-3)。
+MO(中证1000)与 IO(沪深300)优先分别构建期限匹配、换月调整的指标,再比较 IV/skew 或
+PCR z-score;原始 PCR 差和成交额比只能是探索特征。CFFEX 数据权限已证,当前风险转为
+元数据分页、期限对齐、名义归一和样本长度。只有对次日 breadth/regime transition 有稳定
+增量且 no-harm 过线,才提 regime 第四信号;此前仅展示,不进入策略师判断。
 
-### 2.4 F3 · 可转债个股因子(期权信息落到个股的唯一真形态)
+### 2.4 F3 · 可转债个股候选(先过 capability gate)
 
-**探针已证数据全通**(tushare cb_basic 1,156 / cb_daily 308 行·日,`stk_code` 映射自带;
-keyless 兜底同样实测可达:akshare `bond_cb_jsl` 集思录截面含正股代码、`bond_zh_cov`
-1,047 只转债列表 —— 双源冗余,单点故障不伤线)。候选因子(均为「正股的衍生品市场信号」):
+当前只能确认日行情和正股映射可得,不能确认 120 日 PIT 历史转股价。`cb_basic.conv_price`
+是当前截面;拿它重算历史转股价值会泄漏未来调整。`cb_basic` 也不能判断实际强赎状态。
+因此「数据全通、一晚跑三因子」的原结论撤销,F3 先标 `BLOCKED_BY_DATA`。
 
-| 因子 | 定义 | 假设 |
-|---|---|---|
-| `cb_premium_delta` | 转股溢价率 5 日 Δ(需转股价,`cb_basic` 有) | 溢价率骤降=转债资金抢跑正股预期 |
-| `cb_turnover_ratio` | CB 成交额 / 正股成交额 | 转债端异动先于正股 |
-| `cb_mom` | CB 价格 5 日动量 − 正股 5 日动量 | 跨市场背离 |
+**capability gate**:
 
-- **覆盖诚实**:~300–500 只正股有存续 CB(全市场 ~5,500 的 6–9%)→ 因子只对子集有定义,
-  缺失=NaN 重归一(现有机制:「缺端点权限的富因子自动降级 NaN、打分重归一」同款)。
-- **风险**:覆盖偏中小盘(样本选择偏差);妖债炒作噪声(T+0、无涨跌停的转债投机盘);
-  强赎博弈期溢价率失真(强赎公告期需剔除,`cb_basic` 赎回条款字段可判)。
-- **入线路径**(与 consensus 同一门,不走后门):harvest 入 factor_lab → calibrate IC
-  @fwd_2_oc(两半稳 + 符号一致)→ 有据才二选一:入 composite 第 11 因子组(权重重校)
-  或注册新通道 `@channel("cb_signal", ...)` **默认停用**(与 event 同纪律,floor=0)。
-- **最小证伪步**:回填 120 个交易日 cb_daily(湖化,~4 万行),factor_lab 跑三因子 IC
-  —— 一晚出结论,IC 全平则整线止步,只留湖。
+1. 历史转股价调整序列或公告解析可得,并能按 `first_seen_ts` 回放;
+2. `cb_call`/公告能标强赎、到期、上市/退市和暂停窗口;
+3. 多债映射一只正股有确定聚合规则,成交额单位/合约口径完成对账;
+4. 新债、低流动性和妖债过滤预注册;缺失不与无转债股票直接横比。
+
+过 gate 后再研究三条**可分解**信号:CB return、underlying return、premium change。
+`premium_delta` 的符号并不天然代表「转债资金抢跑」,它可能只是正股上涨的机械结果;
+优先研究控制 underlying return、期限/转股价值和债底后的 residual。`CB mom−stock mom`
+与 premium change 高度重叠,不得同时以两个独立发现计数。统一走 factor_lab → 锁定 OOS
+→ replay → registry;能力门不过则整线停在数据可行性,不回填伪 PIT 因子。
 
 ---
 
@@ -256,23 +294,29 @@ trend 43/range 53/risk_off 11 日,risk_off 块样本仍薄)。
 
 ### 3.1 O1 · winner-capture@200 升格 SLO(纯计量,零风险)
 
-定义两条日曲线:`WC_L1 = |D日 fwd_2_oc 全市场 top-decile ∩ L1-1001| / |top-decile|`、
-`WC_L2 = ... ∩ L2-203`。数据源 = retro attribution 已有分桶(抓到/漏在L1/L0),缺的只是
-**命名指标 + 时序落盘 + 报警线**(20 日均线跌破自身历史 P25 → prelude 汇总屏 ⚠)。
-落 `learning/` 新 ledger 或并入 channel_ledger(实现时二选一,倾向后者少一个文件)。
-**这是 L2 唯一该被考核的指标** —— 菜单的职责是别把赢家漏掉,不是预测谁赢。
+先固定 winner 定义:主尺 `fwd_2_oc`,同时满足全市场 top-decile、绝对收益阈值和 D+1
+可买/可交易;明确并列、停牌/涨停和 pinned 口径。不得把现有 retro 的复合 winner 和「纯
+top-decile」混叫一个标签。
 
-### 3.2 O2 · 桶维度换代:52 周高距离族
+同时落三层曲线,用实际 K(含/不含 pinned 分列),不再写死 L1-1001/L2-203:
 
-`docs/research/2026-07-18-dist-high-252-ic.md` 已证:52 周高距离族因子家族内胜现用
-pct_60d(t≈+2.62),是 momentum 判据换代候选。两案:
+- 端到端 `WC_L1_all`、`WC_L2_all`;
+- 条件召回 `WC_L1_given_L0`、`WC_L2_given_L1`,避免把 L0/L1 漏失归责给 L2;
+- SLO 守卫:lane/sector 覆盖、集中度、selection_reason、日间稳定性和结果成熟度。
 
-- **(a) 换判据**:趋势桶成员资格从「momentum|heat 通道命中」改为 dist_high_252 门;
-- **(b) 增桶**:新增「新高邻域」桶 floor=10,趋势桶 20→15(Σfloor 不变,少动 merit_need)。
+报警线使用当日之前的 expanding history P25,并设最小历史/成熟日门、按 regime 展示;
+不得用全期分位造成未来泄漏。winner capture 是主 SLO,不是唯一指标,否则可通过扩大 K
+或集中追热点被动做高。
 
-**一律走漏斗回放器**(`research/replay.py`,权重 PIT 六条已建;`current` 权重有泄漏
-只准对拍)。裁决尺 = WC_L2(§3.1)+ 菜单健康四项;两半稳定才提 registry。倾向 (b)
-—— (a) 改变趋势桶语义,三个 `l2_lane_reserved` 消费者全被波及。
+### 3.2 O2 · 52 周高距离族:维持否决,仅保留可重开条件
+
+`docs/research/2026-07-18-dist-high-252-ic.md` 的正式结论是「不过线」:全样本 rank-IC
+−0.0023、两半反号、risk_off IC −0.082(t=−2.29)。`t≈+2.62` 只表示它优于更差的
+`pct_60d`,不表示绝对有效。故删除「替换判据/新增 floor 桶」的近期候选资格。
+
+未来只有满足以下条件才可作为 **reopen rejected hypothesis** 重启:预注册 top-decile
+阈值旗而非线性因子;使用新增 OOS;单列 risk_off no-harm;通过统一成熟门。未满足前 O2
+状态=`REJECTED`,不进 P1/replay 网格。
 
 ### 3.3 O3 · regime 化 —— 先清算既有半特性
 
@@ -281,25 +325,26 @@ pct_60d(t≈+2.62),是 momentum 判据换代候选。两案:
 `:283-346` 均未传)。这正是 §0.3-5 的「拆半个特性」形态 —— 挂着参数没人喂,下一个
 读代码的人会以为 regime 化已生效。
 
-**先做二选一(P0,清算债)**:接线(prelude 把当日 regime 传入,caps 表如
-`{risk_off: 0.15, trend: 0.25, range: 0.20}`,replay 验)**或**删参退役(git 可考古)。
-**再谈增量**:floors 的 regime 化(risk_off 日健康+5/趋势−5 之类)—— replay 对照
-winner-capture 与菜单健康,两半稳才提。风险:risk_off 样本 11 日太薄,floors regime 化
-的裁决可能长期 IMMATURE,**预期管理:这是慢变量**。
+**P0 只能删除未使用形参或补文档**,因为这不改变名单。真正把 `_regime`/caps 接入会改变
+L2 构成,属于 B 类 challenger:先补 variant contract,再 registry/replay,禁止把示例 cap
+当默认参数。risk_off 只有 11 日时只能 `IMMATURE`,不得通过全样本调参后声称分 regime 稳定。
 
 ### 3.4 O4 · cap/floor 参数扫描(replay 网格)
 
-`cap ∈ {0.15, 0.20, 0.25} × floor 全体缩放 ∈ {0.5, 1.0, 1.5}` 九格 replay(现值全是
-拍的);目标 = WC_L2,守卫 = 行业集中度/健康占比/落刀面;**两半 + 分 regime 段**分别报,
-只有全段同向才动参。已有近亲证据:`capfloor20` 影子变体在跑(cap_floor_yi=20 验市值
-地板),复用其对照框架。
+先补 replay `variant_spec + definition_hash + 独立输出根`,防止 staging 幂等逻辑误复用
+baseline。网格只可用于探索;正式裁决用 nested walk-forward/锁定 holdout,并对多重比较
+修正。目标 = §3.1 SLO 向量,守卫 = 行业集中度/健康占比/落刀面/稳定性。
 
-### 3.5 O6 · 新特征统一闸门(治理条款)
+`capfloor20` 测的是 L0 市值 floor,只能复用对照框架和产物契约,不能当 L2 sector cap/
+style floor 的近亲实证或参数先验。regime 子样本不足时明确报 `IMMATURE`,不要求伪造
+「全段同向」。
 
-任何新特征入 composite/新通道,唯一入口:factor_lab `harvest → calibrate`(IC 两半稳 +
-符号一致)→ replay 对照 → registry challenger。排队中:consensus(积累 ≥60 日自动触发,
-§4.5)、CB 三因子(§2.4)、typed-event 因子(§1.2)。**没有第二条路**(判例:rz 入组
-走的就是这条,pr_20260710_001)。
+### 3.5 O5 · 新特征统一闸门(治理条款)
+
+任何新特征入 composite/新通道,唯一入口:capability/PIT gate → factor_lab `harvest →
+calibrate`(锁定 OOS、符号稳定、date-cluster 区间和 no-harm)→ replay 对照 → registry
+challenger。排队中只有数据门已通过者;CB 当前被 capability gate 阻断,typed-event 先补
+覆盖矩阵。**没有第二条路**。
 
 ---
 
@@ -307,24 +352,27 @@ winner-capture 与菜单健康,两半稳才提。风险:risk_off 样本 11 日�
 
 ### 4.1 门审计 · 「业绩真兑现」门重标定
 
-**证据现状**(gate_ledger 双表,主尺 ex2=fwd_2_oc−市场中位;错杀率表来自
-`gate_attribution`,档位 CORRECT/NEUTRAL/FALSE_KILL/UNMEASURED):08-03 prelude 读数
-**拦 11 次、拦对率 25%、错杀率 60%** —— 全漏斗数据最难看的单件。但 n=11 极小。
+**口径勘误**:08-03 prelude 的「拦 11/拦对 25%/错杀 60%」来自 `cross_calib` 的另一
+分组与 winner 条件,不是 A11 v3 单门 attribution,不得标成 `gate_attribution` 结论。
+正式 v3 当前是「业绩真兑现」单门归因 `n=6`:CORRECT=2、NEUTRAL=2、FALSE_KILL=2,
+拦对率与错杀率均 33.3%;另有 participation cohort 49 条,但 participation 不能直接充当
+单门因果分母。legacy 口径也只能并列展示,不可混算。
 
-**最小证伪步(立即可做,零成本)**:按 `learning/shrink.py` 口径(shrink_k=15)重算
-—— p̂=(11×0.60+15×p_全局)/(11+15),若收缩后错杀率落回 ~40% 均值带,则「60%」是小样本
-噪声,本案降级为继续观察,**省掉整个实验**。
+**当前裁定=`IMMATURE`。** `learning/shrink.py` 只用于 LLM 注入锚点,明确不能用来决定
+机制/门去留;「收缩后回均值」不是证伪。先把 manifest 固定为 A11 v3、tradable mature
+中位基线、multi-gate collapse 和 FALSE_KILL=`ex2≥+2pp`,再谈实验。
 
-**若收缩后仍离群,实验设计**(registry family=`gate_true_delivery_recal`):
+实验拆成两个问题,避免把证据增强与门松紧混成一个 treatment:
 
-- A0 现门(基线);
-- A1 证据增强:D4 公告正文注入后同门重跑(先修证据薄,再谈门松紧 —— §0.3-5:收紧
-  放宽类先测误放行率);
-- A2 影子降级:门判 ✗ 时**影子记录**「若不拦会怎样」(shadow_buys 已有同款机制),
-  不改真实评级。
-- **裁决尺**:被拦票 ex2 分布 + FALSE_KILL 率,≥20 拦次才裁;**红线**:门总量价值
-  +4.35pp 与 Wave10 结论(主力门单独否决 17 次、被拦票平均仅跑赢 +0.63%,总量仍成立)
-  在案 —— **禁止直接放宽任何一门**,只允许影子取证后走 registry。
+1. `gate_true_delivery_evidence`:同一候选、同一门版本做 D4 有/无全文 paired shadow,
+   只裁证据是否改变 claim 正确率、门分歧和成熟结果;
+2. `gate_true_delivery_recal`:现门不变,在完整 gate participation cohort 上记录每个
+   binding/counterfactual 结果;禁止直接放宽,只生成 shadow verdict。
+
+**裁决**:预注册 hard minimum、等价/no-harm margin、Beta-Binomial 或 date-cluster 区间;
+至少 20 个真实 binding 成熟事件且功效足够才可 RECOMMENDED。样本不足或区间跨 margin
+均为 `IMMATURE/UNKNOWN`,不是「门有效」或「门无效」。门总量价值只能作为背景守卫,
+不能替代本门归因。
 
 ### 4.2 闭环债自动化(retro/t1/档案债)
 
@@ -332,41 +380,40 @@ winner-capture 与菜单健康,两半稳才提。风险:risk_off 样本 11 日�
 SLO;t1 欠 1 天;档案 SLO 三红(最老待建档 7d/≤2d、季度对账债 19、7 日消化 0<新增 7)。
 prelude 会列债但**不阻断**,还债靠人肉记得。
 
-**设计(两腿 + 一闸)**:
+**设计修正(加固现有 runner,不是从零新建)**:
 
-1. **确定性腿 → launchd**(本机已有 prewarm 先例,安装惯例见 STAGES『运维细节·夜间
-   预热』):夜间任务跑 `retro refresh` + t1 备料 + `dossier.reconcile` 批(全零 LLM)。
-   **自动腿断言**(§0.3-4):任务写心跳文件带产出行数,prelude 读心跳 —— 静默死亡
-   ≠ 没债。
-2. **LLM 诊断腿 → 三选一**(OPEN-Q-4):(a) schedule 云 routine 定时跑 scan-retro
-   (需验云环境有无 repo/TUSHARE_TOKEN);(b) 本机 cron + `claude -p` headless 跑
-   `/scan-retro`(需验 headless 权限模式);(c) 保持人肉但配下面的硬闸。**推荐先 (c)
-   +确定性腿,(a)(b) 作为增强探索** —— 诊断质量依赖判断,自动化收益弱于备料自动化。
-3. **债务硬闸**:`retro_pending > 3 日 或 备料烂尾 > 48h` → GATE1 从 ⚠ 升级为**拦断**
-   (`--force-debt` 可越,越闸记账进 run_contract)。一行判据,纯确定性。**债不还就
-   别开新扫描 —— 权重停在旧教训上,扫得越多错得越贵。**
+1. **确定性腿**:复用 `autoresearch.learning.nightly_close`,安装/加固 launchd;明确每个
+   subtask 的输入债务、period、开始/结束时间、状态、产出数和 error hash。`0 rows` 可能
+   是合法 NOOP,不能单靠行数判活。
+2. **运行安全**:交易日历/catch-up、互斥锁、幂等键、原子 heartbeat、超时、重试退避、
+   cwd/env/TUSHARE_TOKEN 校验;避免与当日 scan/retro 同时写 task book、T1 或 dossier。
+3. **LLM 诊断腿**仍保留 OPEN-Q-4 三选一,先验证环境、权限、成本和质量;不得因为备料
+   自动化成功就默认 LLM 诊断也可无人值守。
+4. **债务策略分级**:数据完整性/成熟标签污染可考虑 hard block;研究/LLM 诊断债先告警或
+   degraded policy。若确需「启动前阻断」,必须在 frame/universe/LLM 之前增 GATE0/preflight;
+   当前 GATE1 在 L2 之后,不能声称「不开始扫描」。override 记录 actor/reason/expiry。
+
+「债务导致权重停在旧教训、扫得越多错得越贵」目前无因果证据,从设计依据中删除。硬闸
+属于 B 类可用性变更,需要 availability SLO、故障演练和回滚,不进入零风险 P0。
 
 ### 4.3 L4 派发下沉(workflow 嵌套滑窗)
 
 **证据现状**(08-03 实测):主会话 $12.82 = 全场 32.7%(挂账线 25%);滑窗每股补派
 = 一次主会话唤醒回合(全上下文 cache 读计费),10 只 = 10+ 回合纯调度开销。
 
-**设计**:scan-market.js L4 相位内直接 `workflow({scriptPath:'l4-stock.js'}, args)` 逐股
-拉起(工具契约:嵌套恰好允许一层,父=scan-market、子=l4-stock,**每股一个 workflow 的
-fb_20260714_003 粒度不变**);JS 内 promise pool 维持 `effective_cap` 在飞,pinned/最长
-者先行排序照旧;单子失败 `catch` 住只废单股(07-14「16 字节毙 60min/1.6M token 全流水
-线」教训 —— 父绝不因单子 throw)。主会话职责缩为:起父 → 收一次完成通知 → assemble。
-预期主会话份额 32.7% → ~15%,并消掉 10+ 唤醒回合。
+**当前裁定**:嵌套 workflow 的基本调用、恢复和故障语义均未在本仓得到验证,不能先写成
+既定工具契约;主会话份额降至 15% 和每日节省 `$5–8` 也只是待测假设。该项与 Wave9 的
+L4 单工作流全链直接重叠,必须在继承矩阵标 `替代/需重裁`,不能并行拥有两套权威方案。
 
-**风险 / 最小证伪步(先桌演再立项)**:
+**最小 capability/chaos probe**:玩具父+两个子依次验证基本调用、args/result、并发上限、
+父取消、子失败、timeout、parent death、`resumeFromRunId`、task-book lease/heartbeat 和重复
+执行幂等。随后用固定候选集做 A/B telemetry,测 end-to-end prompt/cache/token/墙钟,而不是
+只看父会话账单。子返回必须有紧凑 result contract,防止结果重新灌满父上下文。
 
-- **OPEN-Q-5**:父 `resumeFromRunId` 对 `workflow()` 子调用的缓存语义未文档化(只讲了
-  agent() 缓存)→ 玩具父 + 两个玩具子,杀父重续,看子是否重跑。**重跑=断点恢复退化,
-  是本案最大反对票**(现行每股独立 workflow 的单股可恢复性是 07-14 事故换来的)。
-- 并发帽语义变化:现在 N 股 = N 个 workflow 各自有帽;下沉后共享父帽(min(16, cores−2))
-  —— 与 `l4_tasks` 的 `effective_cap=4` 对齐即可,反而更准。
-- `l4_watch`/CP5 不受影响(读 task_book,不读派发方式)。
-- 兜底:`dispatch_batches` 返回契约保留,失败随时退回现行主会话滑窗。
+**失败语义**:保持「每股一个可独立恢复单元」。单票失败先按 task book 重试;仍失败时默认
+阻断 assemble。若未来允许 degraded publication,必须另立策略并在报告显式列缺失票,
+不能 `catch` 后静默少一票。只有 capability、恢复性不劣和实测成本三门都过,才可进入
+registry challenger;否则保留现行主会话滑窗。
 
 ### 4.4 L3 边际价值实验(排序价值计量)
 
@@ -374,18 +421,24 @@ fb_20260714_003 粒度不变**);JS 内 promise pool 维持 `effective_cap` 在�
 t≈−1.2);但 L4 深核推翻 L3 高确信两次全对、trend lane 高确信被翻案 21% —— L3 的价值
 可能在**证据组装与防呆**,不在排序。值得计量,不值得拍脑袋撤。
 
-**两层设计(先零成本后花钱)**:
+**先补可复原性**:pass1 是 union/floor/round-robin 选择集,不是单一确定性排名;现有
+`_l3_pass1_cut.csv` 不能天然定义 top-K 反事实。新增 `_l3_pass1_kept.csv` 和
+`selection_reason=merit|lane|sector|pinned|conviction_guard|backfill`,固定当日 K、quota、
+pinned 和强制补入语义。
 
-- **tier-1(零 LLM,历史回填,立即可做)**:对过去 N 个扫描日,反事实集 = pass1 分诊
-  确定性序 top-K(K=当日 finalist 数)vs 实际 L3 finalist 集;比两集合的 fwd_2_oc 均值
-  / top-decile 命中率 / Jaccard。**产物已齐**(`_l3_pass1_cut.csv` + finalists.csv +
-  attribution),一晚出结论。若两集合统计不可分 → L3 排序价值≈0 实锤,tier-2 都省了,
-  后续动作变成「L3 瘦身」而非「L3 取舍」。
-- **tier-2(仅当 tier-1 显示差异,registry family=`l3_marginal_value`)**:live 影子日
-  对 divergent picks(L3 选而序没选/反之)各补 L4 卡比终局;token ≈ 每影子日 +2–6 张卡。
+**两层设计**:
 
-**防误读条款**:实验只裁「排序价值」;L3 还承担压缩(200→40 表)、红队、误杀保险
-(conviction≥75 补入)、论点生成 —— 结论不自动 = 撤 L3。
+- **tier-1(历史配对估计)**:在同一 pass1 choice set 内,以相同 K 做 lane/sector 匹配的
+  deterministic baseline,并用多次分层随机抽样形成参考分布;actual 与 baseline 按扫描日
+  paired/date-cluster bootstrap。主尺是 excess_2 和可买 winner capture;Jaccard 只量暴露
+  差异,不量价值。pinned/forced rows 分层或剔除。
+- **tier-2(live shadow)**:当 tier-1 有足够 divergence 但区间仍不确定时,对 divergent
+  picks 补 L4 卡并等待成熟 T+2。tier-2 用于补功效/验证分歧,不应只在 tier-1 已显著时触发。
+
+**判定规则**:预注册等价 margin 与 power gate。只有整个置信区间落入等价区间才可说
+「排序无增量」;未显著但区间宽=`UNKNOWN/IMMATURE`,绝不是「价值≈0 实锤」。历史比较
+称关联/反事实估计,不称因果实验。结论仍只裁排序价值,不自动撤销 L3 的证据组装、红队
+和压缩职责。
 
 ### 4.5 一段带过件
 
@@ -394,7 +447,8 @@ t≈−1.2);但 L4 深核推翻 L3 高确信两次全对、trend lane 高确信�
   自动腿断言:status 命令输出的 n 必须周周增长。
 - **档案债清偿排期**:季度对账 20251231 × 19 只 = 一次批跑(确定性);18 只待建档按
   ≤3/晚 ≈ 6 晚消化;不新建机制,纯排期(§4.2 确定性腿捎带)。
-- **温度 v2**:F1(PCR)与 D1(新闻量)落地后自然多两个候选输入 —— 跟随件,不单列。
+- **温度 v2**:F1 只能使用归一、换月调整且有领先性证据的衍生品读数;D1 只有固定全局
+  feed、覆盖/freshness 归一后的新闻量可作候选。选择性 L2 逐票抓取禁止进入市场温度。
 
 ---
 
@@ -402,46 +456,55 @@ t≈−1.2);但 L4 深核推翻 L3 高确信两次全对、trend lane 高确信�
 
 1. **一切行为变更走状态机**:`PREREGISTERED → RECOMMENDED → APPROVED → ACTIVE`,人工
    approve/activate 记操作者;IMMATURE/UNKNOWN/FAIL 不批;0 BUY 不是放松门的理由。
-2. **每案至少一个会变红的探针**(§0.3-4);纯观测件也要有「行数在涨」类断言。
-3. **成本汇总**(估算,加权 token 口径):
+2. **统一实验模板**:H0/H1、数据 cutoff、paired unit、聚类方式、最小样本/功效、等价或
+   no-harm margin、多重检验、停止规则、rollback。未显著与等价结论严格分开。
+3. **每案至少一个会变红的探针**;不能只断言「行数>0」,还要验证非空率、freshness、
+   definition hash、late-arrival、幂等和输出随真实输入债务变化。
+4. **成本分栏**:工程/审查成本、数据与存储、网络限频、LLM input/output/cache、墙钟、
+   运行失败风险分别估算。「确定性脚本=零成本」「20KB≈token 可忽略」均删除。4.3 的
+   `$5–8` 仅作为 A/B 待测假设;D4 用实测 tokenizer/prompt delta;PDF 冷存储单列。
+5. **权威冲突显式化**:4.1 依赖 Wave10 A11 口径;F1/F2 和 4.3 与 Wave9 期权/L4 调度
+   直接重叠。本稿只能通过 §0.4 继承矩阵引用、替代或申请重裁,不得再声明「无重叠」。
 
-| 案 | 一次性 | 日常增量 |
-|---|---|---|
-| D1 湖 | 源探针+原型 ~0 LLM | 取数分钟级,0 LLM;intel 影子期 +0 |
-| D2 类型学 | factor_lab 回填 0 LLM | 0(证据列渲染忽略) |
-| D3 治理 | lint 开发 0 LLM | 0 |
-| D4 正文 | — | +≤20KB 注入/日 ≈ 忽略 |
-| F1/F3 | 历史回填 0 LLM | 夜间取数 0 LLM |
-| O1–O4 | replay 跑批 0 LLM | 0 |
-| 4.1 门审计 | shrink 重算 0 | 影子记录 0 |
-| 4.2 闭环债 | launchd 装载 | 0 LLM(诊断腿另计) |
-| 4.3 派发下沉 | 桌演 ~$1 | **省** ~$5–8/扫描日 |
-| 4.4 L3 tier-1 | 回填 0 LLM | tier-2 每影子日 +2–6 卡(~$5–15) |
+## 6. 建议优先序(优先级 × 变更类别,仅建议)
 
-4. **与 Wave10 无重叠**(Wave10=报告优化×激进退役×0买归因×4影子实验;本稿全部新增面,
-   引用其结论不改其调度)。
+### P0 · 高信息增益的 M 类测量/勘误
 
-## 6. 建议优先序(仅建议,不排产;立项时另立 wave plan)
+1. 修正 4.1 gate v3 evidence_manifest,删除 shrink 裁门路径;
+2. 补 L2 `selection_reason`、条件/端到端 winner-capture SLO;
+3. 补 replay `variant_spec + definition_hash + 独立输出根`;
+4. 为既有新闻/公告湖生成 inventory + 1 日 manifest/PIT fixture;
+5. 固化期权分页/CFFEX/QVIX 非空契约,把 F3 标 `BLOCKED_BY_DATA`;
+6. 加固现有 nightly runner 的 heartbeat/lock/幂等观测,暂不加债务硬闸;
+7. 补 L3 pass1 kept/provenance 和等价性 power 设计。
 
-- **P0(零风险,一晚一件)**:4.1 shrink 重算 → 4.4 tier-1 回填 → 3.1 O1 SLO →
-  4.2 债务硬闸 + 确定性腿 → 3.3 regime_caps 半特性清算 → D1 原型分片(链接命中率验证)。
-  ——P0 六件全部零 LLM、零行为变更,却各自可能**直接终结**一条更贵的路(证伪即省)。
-- **P1(replay/影子/湖,1–2 周节奏)**:D1 新闻湖 → F3 CB 回填 IC → O2/O4 replay →
-  D3 引用契约 → F1 一期。
-- **P2(行为变更,registry 全流程)**:D1-消费②(intel 先读湖)→ D2 入召回 → O3 floors
-  → 4.3 派发下沉 → 4.1 A1/A2 → 4.4 tier-2 → F2。
+### P1 · I 类数据基建与影子取证
+
+- news_catalog 三时间+stage cutoff、claim ledger 与真实 tool telemetry;
+- 分品种/期限/名义归一的 options lake;
+- D4 同票 paired shadow;4.4 tier-1/tier-2 按功效触发;
+- O4 在锁定 variant contract 后做探索 replay;
+- 4.3 仅做 capability/chaos probe,不改生产调度。
+
+### P2 · B 类生产行为(registry 全流程)
+
+- intel 先读目录、typed-event/L3 证据注入;
+- regime cap/floor、PCR/F2 进入策略师或 regime;
+- 门重校准、债务 hard GATE0、nested L4 调度;
+- 任何新 composite/召回通道。O2 保持 REJECTED;F3 在历史转股价 PIT 门通过前不排产。
 
 ## 7. OPEN-Q 汇总
 
 | # | 问题 | 归属 |
 |---|---|---|
-| 1 | ~~快讯族可达性~~ **已解决**(em 200 行/sina 20 行/cjzc 400 行 ✅,财联社 404 ❌);残留:各源增量键与限频细化 | D1 |
-| 2 | IV 口径:优先探 akshare qvix 族(kcb 已证实存),不可达才 BS 自算(r/q 假设) | F1 二期 |
-| 3 | tushare opt_daily 对 CFFEX(IO/MO)的覆盖与权限未单测 | F2 |
-| 4 | LLM 诊断腿自动化路径:schedule 云(repo/token 可达?)vs `claude -p` headless vs 保持人肉 | 4.2 |
-| 5 | 父 workflow `resumeFromRunId` 对 `workflow()` 子调用的缓存/恢复语义 | 4.3 |
-| 6 | 新闻湖逐票源的长期稳定性(东财搜索接口与被封的 push2 同宿主风险) | D1 |
-| 7 | CB 因子的强赎期剔除规则细化(赎回条款字段口径) | F3 |
+| 1 | 快讯各源的增量键、条款、限频、first_seen 和 schema/freshness 契约 | D1 |
+| 2 | QVIX 各序列历史深度、关键列非空和异常值;自算 IV 的 forward/dividend/solver 契约 | F1 二期 |
+| 3 | ~~CFFEX opt_daily 覆盖~~ **已解决**(20260731:720 行);残留 opt_basic 分页与产品/期限映射 | F1/F2 |
+| 4 | LLM 诊断腿:schedule 云 vs headless vs 人工;环境、权限、成本和质量如何验收 | 4.2 |
+| 5 | nested workflow 的基本可调用性、取消/失败/恢复、task-book lease 与缓存语义 | 4.3 |
+| 6 | 东财逐票源长期稳定性及与 push2 同宿主风险;失败时只降级该源 | D1 |
+| 7 | 历史转股价 PIT 数据从何获得;`cb_price_chg` 权限或公告解析是否可行 | F3 |
+| 8 | degraded publication 是否允许缺失 L4 卡;默认答案仍是“不允许,assemble 阻断” | 4.3 |
 
 ---
 

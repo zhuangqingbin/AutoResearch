@@ -12,7 +12,8 @@ from autoresearch.scan.prelude import run_prelude
 # all_steps 除 dossier_pool 外的全部步名——从源码 autoresearch/scan/prelude.py:run_prelude
 # 现场抄录(2026-07-23,11 个):retro_refresh/retro_pending/t1_pending/learning_health/
 # consensus/temperature/universe/calendar/catalyst/menu/ledgers。
-_SKIP_ALL_BUT_DOSSIER_POOL = ("retro_refresh", "retro_pending", "t1_pending", "learning_health",
+_SKIP_ALL_BUT_DOSSIER_POOL = ("preflight",
+                              "retro_refresh", "retro_pending", "t1_pending", "learning_health",
                               "consensus", "temperature", "universe", "calendar", "catalyst",
                               "menu", "ledgers")
 

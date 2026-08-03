@@ -427,7 +427,24 @@ def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()
         extra = " · ".join(x for x in (slo, nag, stale) if x)
         return f"{note} · {extra}" if extra else note
 
-    all_steps = [("retro_refresh", _refresh), ("retro_pending", _pending),
+    def _preflight():
+        """GATE0 启动前体检(design 2026-08-03 §4.2-4)—— **默认只告警,不阻断**。
+
+        为什么挂在 prelude:它跑在 frame/universe/LLM **之前**,是本仓唯一一个「还没开始
+        花钱」的位置。GATE1 在 L2 之后,那时取数/打分/召回都已经花掉了 —— 设计稿点名的
+        正是这个勘误。真硬闸是 B 类(需 availability SLO + registry),本步不做。
+        """
+        from autoresearch.learning.nightly_runner import collect_debts
+        from autoresearch.scan.gate0 import ADVISORY, PASS, preflight
+
+        report = preflight(collect_debts(date), day=date, mode=ADVISORY)
+        if report["verdict"] == PASS:
+            return "无阻断级债务(数据完整性/成熟标签)"
+        return (f"⚠️ 应阻断级债务:{report['blocking_tiers']} ← 当前 advisory 只告警"
+                f"(硬闸是 B 类,需 registry)")
+
+    all_steps = [("preflight", _preflight),
+                 ("retro_refresh", _refresh), ("retro_pending", _pending),
                  ("t1_pending", _t1_pending), ("learning_health", _learning_health),
                  ("consensus", _consensus), ("temperature", _temperature),
                  ("universe", _universe), ("calendar", _calendar),

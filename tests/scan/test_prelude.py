@@ -163,6 +163,7 @@ def test_run_prelude_writes_succeeded_stage_result(tmp_path, monkeypatch):
 
     monkeypatch.chdir(tmp_path)
     results = run_prelude("2026-07-28", skip=(
+        "preflight",
         "retro_refresh", "retro_pending", "t1_pending", "learning_health",
         "consensus", "temperature", "universe", "calendar", "catalyst",
         "menu", "ledgers", "dossier_pool",
