@@ -457,7 +457,7 @@ CANDIDATES: tuple[Candidate, ...] = (
     ),
     Candidate(
         id="G42_nightly_hardening", title="闭环债自动化:nightly runner 加固",
-        section="§4.2", change_class="I", priority="P0", status="PLANNED",
+        section="§4.2", change_class="I", priority="P0", status="IMPLEMENTED",
         inheritance={"Wave9": "无关", "Wave10": "继承", "STAGES": "替代"},
         falsification_step="加固既有 nightly_close,不从零新建;`0 rows` 可能是合法 NOOP,"
                            "不能单靠行数判活",
@@ -513,7 +513,7 @@ CANDIDATES: tuple[Candidate, ...] = (
     ),
     Candidate(
         id="G45_consensus_prereg", title="consensus 自动预注册触发",
-        section="§4.5", change_class="M", priority="P1", status="PLANNED",
+        section="§4.5", change_class="M", priority="P1", status="IMPLEMENTED",
         inheritance={"Wave9": "无关", "Wave10": "继承", "STAGES": "继承"},
         falsification_step="触发条款写死:n≥60 且两半 IC 同号 且 |IC|>0.02 → 生成 "
                            "PREREGISTERED spec(人批才往前走)",
@@ -537,7 +537,7 @@ CANDIDATES: tuple[Candidate, ...] = (
     ),
     Candidate(
         id="G45_dossier_debt", title="档案债清偿排期(季度对账 + 待建档)",
-        section="§4.5", change_class="M", priority="P1", status="PLANNED",
+        section="§4.5", change_class="M", priority="P1", status="IMPLEMENTED",
         inheritance={"Wave9": "无关", "Wave10": "继承", "STAGES": "继承"},
         falsification_step="不新建机制,纯排期:季度对账 20251231 × 19 只一次批跑;"
                            "18 只待建档按 ≤3/晚 ≈ 6 晚消化",

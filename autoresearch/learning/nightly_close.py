@@ -80,6 +80,9 @@ def run(today: str) -> list[tuple[str, bool, str]]:
                  # Wave10:哨兵校准(A12/C4)与 L3→L4 对齐(C2.1)都是纯读账本,
                  # 必须排在 gate_attribution 之后(对齐账本读它的 participation)。
                  "sentinel_audit", "l3_l4_alignment",
+                 # 下一波(2026-08-03):门重标定影子账本与 L3 边际价值。两者都**只读**
+                 # 既有产物、只写自己的报表,排在 gate_attribution 之后(gate_recal 读它)。
+                 "gate_recal", "l3_marginal",
                  "evidence_manifest"]
         ok = 0
         for n in names:
@@ -88,10 +91,14 @@ def run(today: str) -> list[tuple[str, bool, str]]:
                 ok += 1
         # B5 判据(§B5):结构失败账本住在 scan 侧(它读 task-book,不读学习账本),
         # 但只有夜间踢它才有连续读数 —— 靠人回忆的判据等于没判据。
-        total = len(names) + 1
-        with contextlib.suppress(Exception):
-            importlib.import_module("autoresearch.scan.structural_audit").main([])
-            ok += 1
+        # 下一波:L2 winner-capture SLO 同理(scan 侧、纯读产物、需要连续读数才有报警线)。
+        scan_side = [("autoresearch.scan.structural_audit", []),
+                     ("autoresearch.scan.l2_slo", [])]
+        total = len(names) + len(scan_side)
+        for module, argv in scan_side:
+            with contextlib.suppress(Exception):
+                importlib.import_module(module).main(argv)
+                ok += 1
         return f"{ok}/{total} 刷新"
 
     for name, fn in (("retro_refresh", _retro_refresh), ("t1_backfill", _t1_backfill),
