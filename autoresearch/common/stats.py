@@ -1,0 +1,411 @@
+#!/usr/bin/env python3
+"""统计裁决原语 —— 区间、等价、多重检验、功效、成熟门(确定性,零 LLM,零 scipy)。
+
+design: docs/specs/2026-08-03-scan-next-wave-brainstorm-design.md §5-2/§5-3
+
+治的病只有一个,但它在全稿里反复出现:**「不显著」被当成「等价」讲**。
+
+  - §4.4:「未显著但区间宽 = `UNKNOWN/IMMATURE`,绝不是『价值≈0 实锤』」
+  - §4.1:「样本不足或区间跨 margin 均为 `IMMATURE/UNKNOWN`,不是『门有效』或『门无效』」
+  - §3.4:「regime 子样本不足时明确报 `IMMATURE`,不要求伪造『全段同向』」
+
+三句话是同一条纪律。所以本模块的 `equivalence_verdict` **不返回布尔**:它返回
+`DIFFERENT / EQUIVALENT / UNKNOWN` 三态,而 `UNKNOWN` 是区间跨了等价边界时的**唯一**
+出口 —— 调用方想把它读成「无差异」就得自己写死这句谎话,而不是从一个 `if not significant`
+里顺手滑出来。
+
+**为什么不用 scipy**:`pyproject.toml` 的运行依赖里没有它(当前环境有,是别人的传递依赖)。
+判据代码不能建在一个随时会消失的地基上,故正态/Beta 分位数在本模块内自带实现。
+
+**为什么 bootstrap 按日聚簇**:同一扫描日的几十只票共享当天的市场冲击,行级重采样会把
+「1 天 × 60 只」当成 60 个独立样本 → 区间窄到假。全稿的 paired unit 一律是**扫描日**。
+"""
+from __future__ import annotations
+
+import math
+from dataclasses import asdict, dataclass
+
+import numpy as np
+import pandas as pd
+
+# ── 统一成熟门(§1.2;event/typed-event/F1/F2/O 系列共用一把尺)────────────────
+MATURITY_MIN_SCAN_DAYS = 20        # 真实扫描日(不是自然日,不是回放日)
+MATURITY_MIN_SUBGROUP = 10         # 关键细分(regime / lane / gate)的最小样本
+MATURITY_MIN_UNIQUE = 30           # 召回 unique(只此一路召回的票)
+MATURITY_MIN_REGIMES = 2           # 覆盖的 regime 数
+
+DEFAULT_BOOT = 2000
+DEFAULT_ALPHA = 0.05
+DEFAULT_SEED = 20260803            # 固定种子:同输入同区间(判据不许每跑一次换个数)
+
+
+@dataclass(frozen=True)
+class Interval:
+    """一个点估计 + 它的区间 + 区间是怎么来的(方法与样本量必须随数一起走)。"""
+    point: float | None
+    lo: float | None
+    hi: float | None
+    n: int
+    n_clusters: int
+    method: str
+    alpha: float = DEFAULT_ALPHA
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+    @property
+    def excludes_zero(self) -> bool:
+        if self.lo is None or self.hi is None:
+            return False
+        return self.lo > 0 or self.hi < 0
+
+    @property
+    def width(self) -> float | None:
+        if self.lo is None or self.hi is None:
+            return None
+        return float(self.hi - self.lo)
+
+
+_EMPTY = Interval(None, None, None, 0, 0, "empty")
+
+
+# ───────────────────────── 正态 / Beta 分位数(无 scipy) ─────────────────────────
+
+
+def norm_cdf(x: float) -> float:
+    return 0.5 * (1.0 + math.erf(float(x) / math.sqrt(2.0)))
+
+
+def norm_ppf(p: float) -> float:
+    """标准正态分位数(Acklam 有理逼近 + 一步 Halley 修正,|误差| < 1e-12)。"""
+    p = float(p)
+    if not 0.0 < p < 1.0:
+        raise ValueError(f"norm_ppf 需要 0<p<1,收到 {p!r}")
+    a = (-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02,
+         1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00)
+    b = (-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02,
+         6.680131188771972e+01, -1.328068155288572e+01)
+    c = (-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00,
+         -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00)
+    d = (7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00,
+         3.754408661907416e+00)
+    plow, phigh = 0.02425, 1 - 0.02425
+    if p < plow:
+        q = math.sqrt(-2 * math.log(p))
+        x = (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / \
+            ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1)
+    elif p > phigh:
+        q = math.sqrt(-2 * math.log(1 - p))
+        x = -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / \
+            ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1)
+    else:
+        q, r = p - 0.5, (p - 0.5) ** 2
+        x = (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / \
+            (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1)
+    e = norm_cdf(x) - p                               # Halley 修正
+    u = e * math.sqrt(2 * math.pi) * math.exp(x * x / 2)
+    return x - u / (1 + x * u / 2)
+
+
+def _betacf(a: float, b: float, x: float) -> float:
+    """正则化不完全 Beta 的连分式(Lentz)—— `betainc` 的核心。"""
+    tiny = 1e-30
+    qab, qap, qam = a + b, a + 1.0, a - 1.0
+    c, d = 1.0, 1.0 - qab * x / qap
+    if abs(d) < tiny:
+        d = tiny
+    d = 1.0 / d
+    h = d
+    for m in range(1, 301):
+        m2 = 2 * m
+        aa = m * (b - m) * x / ((qam + m2) * (a + m2))
+        d = 1.0 + aa * d
+        if abs(d) < tiny:
+            d = tiny
+        c = 1.0 + aa / c
+        if abs(c) < tiny:
+            c = tiny
+        d = 1.0 / d
+        h *= d * c
+        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))
+        d = 1.0 + aa * d
+        if abs(d) < tiny:
+            d = tiny
+        c = 1.0 + aa / c
+        if abs(c) < tiny:
+            c = tiny
+        d = 1.0 / d
+        delta = d * c
+        h *= delta
+        if abs(delta - 1.0) < 3e-16:
+            break
+    return h
+
+
+def betainc(a: float, b: float, x: float) -> float:
+    """正则化不完全 Beta 函数 I_x(a,b) —— Beta 分布的 CDF。"""
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    lbeta = (math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b)
+             + a * math.log(x) + b * math.log1p(-x))
+    front = math.exp(lbeta)
+    if x < (a + 1.0) / (a + b + 2.0):
+        return front * _betacf(a, b, x) / a
+    return 1.0 - math.exp(
+        math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b)
+        + b * math.log1p(-x) + a * math.log(x)) * _betacf(b, a, 1.0 - x) / b
+
+
+def beta_ppf(p: float, a: float, b: float) -> float:
+    """Beta 分位数(对 `betainc` 二分;单调,60 次迭代 → 精度 ~1e-18)。"""
+    if p <= 0.0:
+        return 0.0
+    if p >= 1.0:
+        return 1.0
+    lo, hi = 0.0, 1.0
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        if betainc(a, b, mid) < p:
+            lo = mid
+        else:
+            hi = mid
+        if hi - lo < 1e-15:
+            break
+    return 0.5 * (lo + hi)
+
+
+def beta_binomial_interval(successes: int, n: int, *, prior_a: float = 1.0,
+                           prior_b: float = 1.0, mass: float = 0.95) -> Interval:
+    """比例的 Beta-Binomial 等尾可信区间(§4.1「Beta-Binomial 或 date-cluster 区间」)。
+
+    n=0 时**不返回 0.5**,返回空区间 —— 「没有观测」和「一半一半」是两件事,把前者渲染成
+    后者正是 §4.1 要禁的那类伪精确。
+    """
+    n = int(n)
+    successes = int(successes)
+    if n <= 0:
+        return Interval(None, None, None, 0, 0, "beta_binomial", 1 - mass)
+    if not 0 <= successes <= n:
+        raise ValueError(f"successes={successes} 不在 [0, n={n}]")
+    tail = (1.0 - mass) / 2.0
+    a, b = prior_a + successes, prior_b + (n - successes)
+    return Interval(
+        point=successes / n,
+        lo=beta_ppf(tail, a, b),
+        hi=beta_ppf(1.0 - tail, a, b),
+        n=n, n_clusters=n, method=f"beta_binomial(a={prior_a},b={prior_b})",
+        alpha=1 - mass,
+    )
+
+
+# ───────────────────────── date-cluster bootstrap ─────────────────────────
+
+
+def _clusters(frame: pd.DataFrame, value_col: str,
+              date_col: str) -> tuple[list[np.ndarray], int]:
+    values = pd.to_numeric(frame[value_col], errors="coerce")
+    keep = values.notna()
+    sub = frame.loc[keep]
+    vals = values.loc[keep].to_numpy(dtype=float)
+    if not len(vals):
+        return [], 0
+    keys = (sub[date_col].astype(str).to_numpy() if date_col in sub.columns
+            else np.array([str(i) for i in range(len(vals))]))
+    groups = [vals[keys == k] for k in pd.unique(keys)]
+    return groups, len(vals)
+
+
+def date_cluster_bootstrap(frame: pd.DataFrame, value_col: str, *,
+                           date_col: str = "date", n_boot: int = DEFAULT_BOOT,
+                           alpha: float = DEFAULT_ALPHA,
+                           seed: int = DEFAULT_SEED) -> Interval:
+    """按**扫描日**聚簇重采样的均值区间。
+
+    重采样的单位是日,不是行:同一天的票共享当天的市场冲击,行级 bootstrap 会把
+    「1 天 × 60 只」当 60 个独立样本,区间窄到假(§4.4「paired/date-cluster bootstrap」)。
+    单日的方差 → 区间恒为点(n_clusters=1),这是诚实的:一天的数据就是没有跨日方差。
+    """
+    groups, n = _clusters(frame, value_col, date_col)
+    if not groups:
+        return Interval(None, None, None, 0, 0, "date_cluster_bootstrap", alpha)
+    point = float(np.concatenate(groups).mean())
+    if len(groups) == 1:
+        return Interval(point, None, None, n, 1, "date_cluster_bootstrap(n_days=1)", alpha)
+    rng = np.random.default_rng(seed)
+    idx = np.arange(len(groups))
+    draws = np.empty(n_boot, dtype=float)
+    for i in range(n_boot):
+        pick = rng.choice(idx, size=len(groups), replace=True)
+        draws[i] = float(np.concatenate([groups[j] for j in pick]).mean())
+    lo, hi = np.quantile(draws, [alpha / 2.0, 1.0 - alpha / 2.0])
+    return Interval(point, float(lo), float(hi), n, len(groups),
+                    f"date_cluster_bootstrap(B={n_boot},seed={seed})", alpha)
+
+
+def paired_delta_interval(frame: pd.DataFrame, actual_col: str, baseline_col: str, *,
+                          date_col: str = "date", n_boot: int = DEFAULT_BOOT,
+                          alpha: float = DEFAULT_ALPHA,
+                          seed: int = DEFAULT_SEED) -> Interval:
+    """配对差(actual − baseline)的按日聚簇区间 —— §4.4 tier-1 与 §4.1 实验的主尺。
+
+    配对**必须先做**再聚合:同日同候选集的两个读数相减,把市场共同项消掉;先各自平均
+    再相减会把配对结构丢掉(两边的日集合一旦不同,差值就不是同一件事的差)。
+    """
+    work = frame.copy()
+    work["__delta"] = (pd.to_numeric(work[actual_col], errors="coerce")
+                       - pd.to_numeric(work[baseline_col], errors="coerce"))
+    return date_cluster_bootstrap(work, "__delta", date_col=date_col,
+                                  n_boot=n_boot, alpha=alpha, seed=seed)
+
+
+# ───────────────────────── 三态裁决:等价 / 不同 / 未知 ─────────────────────────
+
+DIFFERENT = "DIFFERENT"
+EQUIVALENT = "EQUIVALENT"
+UNKNOWN = "UNKNOWN"
+
+
+def equivalence_verdict(interval: Interval, margin: float,
+                        *, margin_lo: float | None = None) -> str:
+    """等价 / 不同 / 未知 —— **三态**,不是「显著 vs 不显著」。
+
+    `margin` = 预注册的等价边界(默认对称 ±margin;非对称场景传 `margin_lo`)。
+
+    - `EQUIVALENT`:整个区间落在等价带内 —— 只有这一种情况才可以说「无增量」。
+    - `DIFFERENT` :整个区间在等价带之外的同一侧(既排除 0,也排除等价带)。
+    - `UNKNOWN`   :其余全部 —— 含「区间跨 0 但很宽」「区间压着 margin」「无区间」。
+
+    §4.4 的原话:「只有整个置信区间落入等价区间才可说『排序无增量』;未显著但区间宽=
+    `UNKNOWN/IMMATURE`,绝不是『价值≈0 实锤』」。本函数是那句话的唯一实现点。
+    """
+    if margin < 0:
+        raise ValueError("margin 必须 ≥ 0")
+    lo_bound = -abs(margin) if margin_lo is None else float(margin_lo)
+    hi_bound = abs(margin)
+    if interval.lo is None or interval.hi is None:
+        return UNKNOWN
+    if lo_bound <= interval.lo and interval.hi <= hi_bound:
+        return EQUIVALENT
+    if interval.lo > hi_bound or interval.hi < lo_bound:
+        return DIFFERENT
+    return UNKNOWN
+
+
+def no_harm_verdict(interval: Interval, harm_margin: float) -> str:
+    """no-harm 单边判据:区间下界 ≥ −harm_margin → `EQUIVALENT`(没变差);
+    上界 < −harm_margin → `DIFFERENT`(确实变差);跨界 → `UNKNOWN`。"""
+    if harm_margin < 0:
+        raise ValueError("harm_margin 必须 ≥ 0")
+    if interval.lo is None or interval.hi is None:
+        return UNKNOWN
+    if interval.lo >= -abs(harm_margin):
+        return EQUIVALENT
+    if interval.hi < -abs(harm_margin):
+        return DIFFERENT
+    return UNKNOWN
+
+
+# ───────────────────────── 多重检验 / 功效 ─────────────────────────
+
+
+def bh_fdr(pvalues, alpha: float = DEFAULT_ALPHA) -> list[dict]:
+    """Benjamini-Hochberg。返回按**原始顺序**的 `[{i, p, q, rejected}]`。
+
+    §1.2/§3.4 都要求「多重检验/FDR 修正」:一次网格扫 20 个参数、一次事件类型学试 12 个
+    type,不修正的话必然刷出几个 p<0.05 的假发现。
+    """
+    ps = [float(p) for p in pvalues]
+    m = len(ps)
+    if not m:
+        return []
+    order = sorted(range(m), key=lambda i: ps[i])
+    q = [0.0] * m
+    running = 1.0
+    for rank in range(m, 0, -1):
+        i = order[rank - 1]
+        running = min(running, ps[i] * m / rank)
+        q[i] = running
+    return [{"i": i, "p": ps[i], "q": q[i], "rejected": q[i] <= alpha} for i in range(m)]
+
+
+def proportion_power(p0: float, p1: float, n: int, alpha: float = DEFAULT_ALPHA) -> float:
+    """两比例(独立、等样本)双侧检验的近似功效 —— 用于「功效是否足够」的门,不是判据本身。"""
+    if n <= 0:
+        return 0.0
+    p0, p1 = float(p0), float(p1)
+    pbar = (p0 + p1) / 2.0
+    se_null = math.sqrt(2.0 * pbar * (1.0 - pbar) / n) if 0 < pbar < 1 else 0.0
+    se_alt = math.sqrt((p0 * (1 - p0) + p1 * (1 - p1)) / n)
+    if se_alt <= 0:
+        return 1.0 if p0 != p1 else float(alpha)
+    z = norm_ppf(1.0 - alpha / 2.0)
+    delta = abs(p1 - p0)
+    return float(norm_cdf((delta - z * se_null) / se_alt))
+
+
+def min_n_for_proportion(p0: float, p1: float, *, power: float = 0.8,
+                         alpha: float = DEFAULT_ALPHA, cap: int = 100_000) -> int | None:
+    """达到目标功效所需的每组最小 n;`cap` 内达不到 → `None`(诚实地说「这个差做不出来」)。"""
+    if p0 == p1:
+        return None
+    n = 2
+    while n <= cap:
+        if proportion_power(p0, p1, n, alpha) >= power:
+            return n
+        n = n + 1 if n < 50 else int(n * 1.15) + 1
+    return None
+
+
+# ───────────────────────── 统一成熟门 ─────────────────────────
+
+MATURE = "MATURE"
+IMMATURE = "IMMATURE"
+
+
+@dataclass(frozen=True)
+class Maturity:
+    status: str
+    missing: tuple[str, ...]
+    observed: dict
+
+    def as_dict(self) -> dict:
+        return {"status": self.status, "missing": list(self.missing),
+                "observed": dict(self.observed)}
+
+
+def maturity_verdict(*, scan_days: int, subgroup_n: int | None = None,
+                     unique_n: int | None = None, regimes: int | None = None,
+                     min_scan_days: int = MATURITY_MIN_SCAN_DAYS,
+                     min_subgroup: int = MATURITY_MIN_SUBGROUP,
+                     min_unique: int = MATURITY_MIN_UNIQUE,
+                     min_regimes: int = MATURITY_MIN_REGIMES) -> Maturity:
+    """统一成熟门(§1.2)—— 取代各处自造的局部口径(如 event 通道的「≥10 日累计>0」)。
+
+    `None` = 该维度对本案不适用(如纯门归因没有「召回 unique」),跳过而不是当 0 判死。
+    """
+    observed = {"scan_days": scan_days, "subgroup_n": subgroup_n,
+                "unique_n": unique_n, "regimes": regimes}
+    missing: list[str] = []
+    for label, value, floor in (("scan_days", scan_days, min_scan_days),
+                                ("subgroup_n", subgroup_n, min_subgroup),
+                                ("unique_n", unique_n, min_unique),
+                                ("regimes", regimes, min_regimes)):
+        if value is not None and int(value) < floor:
+            missing.append(f"{label}={value}<{floor}")
+    return Maturity(IMMATURE if missing else MATURE, tuple(missing), observed)
+
+
+def expanding_p25(series, *, min_history: int = 10) -> list[float | None]:
+    """逐点「当日**之前**」的 expanding P25 报警线(§3.1)。
+
+    为什么不是全期分位:全期分位含未来 → 今天的报警线由明天的数据决定,回看时永远「没报警」。
+    历史不足 `min_history` → `None`(不报警,而不是拿 2 个点定分位)。
+    """
+    values = [float(v) for v in series]
+    out: list[float | None] = []
+    for i in range(len(values)):
+        prior = values[:i]
+        out.append(float(np.quantile(prior, 0.25)) if len(prior) >= min_history else None)
+    return out
