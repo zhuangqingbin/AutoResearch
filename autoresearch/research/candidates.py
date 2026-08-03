@@ -201,7 +201,7 @@ CANDIDATES: tuple[Candidate, ...] = (
     # ───────────────────────── §1 新闻 ─────────────────────────
     Candidate(
         id="D1_news_catalog", title="统一新闻观测目录 news_catalog",
-        section="§1.1", change_class="I", priority="P1", status="PLANNED",
+        section="§1.1", change_class="I", priority="P1", status="IMPLEMENTED",
         inheritance={"Wave9": "继承", "Wave10": "无关", "STAGES": "新增"},
         falsification_step="先对既有 stock_news_em/anns_d 分片生成 1 日 manifest,用转载/更正 "
                            "fixture 验 canonical/observation 分离,并验 L3 与 L4 两个 cutoff 不互污染",
@@ -215,7 +215,7 @@ CANDIDATES: tuple[Candidate, ...] = (
     ),
     Candidate(
         id="D1C1_replay_diagnostic", title="复盘重放:retro/t1 增「当时已可见新闻面」",
-        section="§1.1-消费1", change_class="M", priority="P1", status="PLANNED",
+        section="§1.1-消费1", change_class="M", priority="P1", status="IMPLEMENTED",
         inheritance={"Wave9": "无关", "Wave10": "继承", "STAGES": "新增"},
         falsification_step="只写诊断 artifact;一旦进入判断 prompt 即转 B 类重新立项",
         probe="同一 (run, stage) 回放两次结果必须逐值一致",
@@ -252,7 +252,7 @@ CANDIDATES: tuple[Candidate, ...] = (
     ),
     Candidate(
         id="D2_typed_events", title="确定性事件类型学(多标签 + 生命周期)",
-        section="§1.2", change_class="I", priority="P1", status="PLANNED",
+        section="§1.2", change_class="I", priority="P1", status="IMPLEMENTED",
         inheritance={"Wave9": "继承", "Wave10": "无关", "STAGES": "新增"},
         falsification_step="先做 PIT 覆盖矩阵:fallback 是逐票近窗,不得假设已有全市场历史湖",
         probe="生命周期分桶(预案/实施/完成/终止)必须能在 fixture 上分开;"
@@ -266,7 +266,7 @@ CANDIDATES: tuple[Candidate, ...] = (
     ),
     Candidate(
         id="D3_claim_ledger", title="情报治理 v2:claim ledger + lint 分层 + 日期焊接检测",
-        section="§1.3", change_class="I", priority="P1", status="PLANNED",
+        section="§1.3", change_class="I", priority="P1", status="IMPLEMENTED",
         inheritance={"Wave9": "继承", "Wave10": "继承", "STAGES": "替代"},
         falsification_step="先只做 ledger 与三段 verdict;缺引用/错引只拒 intel 稿、不拒票",
         probe="对不上日期的 claim 必须落 UNVERIFIED 而非 FALSE(覆盖不足时不得自动判假)",
@@ -278,7 +278,7 @@ CANDIDATES: tuple[Candidate, ...] = (
     ),
     Candidate(
         id="D4_finalist_fulltext", title="finalist 公告正文(≤10 只/日)",
-        section="§1.4", change_class="I", priority="P1", status="PLANNED",
+        section="§1.4", change_class="I", priority="P1", status="IMPLEMENTED",
         inheritance={"Wave9": "继承", "Wave10": "无关", "STAGES": "新增"},
         falsification_step="先测中文 PDF 抽取后的**实际 prompt delta**(真 tokenizer),"
                            "不用「2,000 字节≈2KB token」这类换算",
