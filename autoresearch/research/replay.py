@@ -41,8 +41,10 @@ design: docs/specs/2026-07-12-funnel-replay-l35-removal-design.md Part B。
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import pandas as pd
@@ -69,6 +71,115 @@ _MIN_N = 10             # 薄样本门(与 cross_calib/buy_ledger/channel_audit 
 # 因子帧完整性门(`frame_integrity`):每列 = 一个因子组的代表,缺它 = 该组整组失效、composite 失真。
 # cmf_20/obv_mom_20 = volprice 组(多日量价序列,最容易因 lake 缺列而静默降级——见 2026-07-12 事故)。
 _CRITICAL_COLS = ("composite", "cmf_20", "obv_mom_20", "pct_60d", "main_net_ratio")
+
+
+# ───────────────────────── variant 契约(design 2026-08-03 §3.4 P0-3) ─────────────────────────
+#
+# **治的病**:`replay_day` 的幂等判据是「`_STAGING` 全在场就跳过」。跑参数网格时,第二个
+# variant 落进同一个 root 会被判成"已完成"而直接复用**上一个 variant** 的 staging ——
+# 网格表上于是出现一排一模一样的读数,看起来像"参数不敏感",实际是根本没跑。
+#
+# 三件套缺一不可:
+#   variant_spec     参数的完整声明(不是散落在 CLI 里的几个 flag)
+#   definition_hash  spec 的规范化指纹 —— 改一个 cap 就换一个 hash
+#   独立输出根       `<root>/_v_<name>_<hash8>/` —— 物理隔离,幂等再也不会跨 variant 复用
+#
+# 另加一道:根目录里落 `_variant_spec.json`,重跑时对账。同名不同 hash → **抛错**,
+# 不是覆盖也不是静默复用(那正是这条修复要防的事)。
+
+VARIANT_SPEC_FILE = "_variant_spec.json"
+_BASELINE_NAME = "baseline"
+
+
+class VariantError(RuntimeError):
+    """variant 契约违约(同名不同定义 / 想往 baseline 根里塞变体)。"""
+
+
+@dataclass(frozen=True)
+class VariantSpec:
+    """一次回放的完整参数声明。**新增参数必须加到这里**,否则它不进 hash = 不隔离。"""
+    name: str
+    l2_n: int | None = None
+    floors: dict | None = None
+    sector_cap_frac: float | None = None
+    regime_caps: dict | None = None
+    weights: str = _PRIOR
+    regime_aware: bool = True
+    funnel: dict | None = None
+    note: str = ""
+    extras: dict = field(default_factory=dict)
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+    @property
+    def definition_hash(self) -> str:
+        """规范化指纹 —— `name` **不进** hash:改名不该换定义,改参数才该。"""
+        payload = {k: v for k, v in self.as_dict().items() if k not in ("name", "note")}
+        blob = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+    def output_root(self, base: Path | str | None = None) -> Path:
+        """该 variant 的独立输出根。baseline 仍用 `base` 本身(向后兼容既有产物)。"""
+        root = Path(base or DEFAULT_ROOT)
+        if self.name == _BASELINE_NAME:
+            return root
+        return root / f"_v_{self.name}_{self.definition_hash[:8]}"
+
+    def universe_kwargs(self) -> dict:
+        """spec → `universe.run` 的关键字实参(只传显式给定的,None 一律不传)。"""
+        out: dict = {}
+        if self.l2_n is not None:
+            out["l2_n"] = self.l2_n
+        if self.floors is not None:
+            out["l2_floors"] = self.floors
+        if self.sector_cap_frac is not None:
+            out["l2_sector_cap"] = self.sector_cap_frac
+        out.update(self.extras)
+        return out
+
+
+def baseline_spec(weights: str = _PRIOR, regime_aware: bool = True) -> VariantSpec:
+    return VariantSpec(name=_BASELINE_NAME, weights=weights, regime_aware=regime_aware)
+
+
+def bind_variant(spec: VariantSpec, base: Path | str | None = None) -> Path:
+    """建/校验 variant 的独立输出根,并落 `_variant_spec.json`。
+
+    根已存在且 hash 不同 → `VariantError`。为什么不覆盖:覆盖会把两次不同定义的产物
+    混在一个目录里,而 `_STAGING` 幂等判据只看文件在不在 —— 后果就是网格里悄悄出现
+    一半 A 参数、一半 B 参数的"结果"。
+    """
+    root = spec.output_root(base)
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / VARIANT_SPEC_FILE
+    payload = {"schema_version": 1, "spec": spec.as_dict(),
+               "definition_hash": spec.definition_hash}
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise VariantError(f"{path} 读不动:{exc}") from exc
+        if existing.get("definition_hash") != spec.definition_hash:
+            raise VariantError(
+                f"variant 根 {root} 已属于定义 "
+                f"{existing.get('definition_hash', '?')[:8]},不是 "
+                f"{spec.definition_hash[:8]} —— 同名不同定义不得共用输出根,"
+                "否则 staging 幂等会跨 variant 复用 baseline 的产物")
+        return root
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8")
+    return root
+
+
+def read_variant(root: Path | str) -> dict | None:
+    path = Path(root) / VARIANT_SPEC_FILE
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
 
 
 # ───────────────────────── PIT 卫兵 ─────────────────────────
@@ -201,7 +312,8 @@ def trade_days_iso(start: str, end: str) -> list[str]:
 def replay_day(date: str, root: Path | str | None = None, *, weights: str = _PRIOR,
                regime_aware: bool = True, source: str = "tushare", force: bool = False,
                attribute: bool = True, funnel: dict | None = None,
-               pinned_path: Path | str | None = None) -> dict:
+               pinned_path: Path | str | None = None,
+               variant: VariantSpec | None = None) -> dict:
     """回放单日:`universe.run(outdir=root/date)` + `retro.attribute(scan_root=root)`。
 
     幂等:`_STAGING` 全在场且非 `force` → 直接跳过(断点续跑的基石;500 日批任务中断后重跑
@@ -217,19 +329,32 @@ def replay_day(date: str, root: Path | str | None = None, *, weights: str = _PRI
     三桶照常 —— 这正是 R3 赢家验尸要的东西。
     """
     _assert_pit_source(source)
-    root = Path(root or DEFAULT_ROOT)
+    base = Path(root or DEFAULT_ROOT)
+    # variant 的输出根与 baseline **物理隔离** —— 幂等判据只看文件在不在,共用根会让
+    # 第二个 variant 直接复用第一个的 staging(design §3.4 P0-3)。
+    if variant is not None:
+        root = bind_variant(variant, base)
+        weights = variant.weights
+        regime_aware = variant.regime_aware
+        funnel = variant.funnel if variant.funnel is not None else funnel
+    else:
+        root = base
     sdir = root / date
     if not force and all((sdir / f).exists() for f in _STAGING):
-        return {"date": date, "status": "skip"}
+        return {"date": date, "status": "skip",
+                "variant": None if variant is None else variant.name}
 
     from autoresearch.scan.universe import run as universe_run
 
     res = universe_run(date, outdir=sdir, regime_aware=regime_aware, shadow=False, source=source,
                        weights_path=weights_path_for(weights, root),
                        **({"pinned_path": pinned_path} if pinned_path else {}),
+                       **(variant.universe_kwargs() if variant else {}),
                        **(funnel or {}))
     out = {"date": date, "status": "ok", "l2_n": res.get("l2_n"), "recall_n": res.get("recall_n"),
-           "universe": res.get("universe")}
+           "universe": res.get("universe"),
+           "variant": None if variant is None else variant.name,
+           "definition_hash": None if variant is None else variant.definition_hash}
     missing = frame_integrity(sdir)
     if missing:                       # 静默降级的因子组 = 被污染的读数(见 frame_integrity)
         out["degraded"] = missing
@@ -283,13 +408,21 @@ def backfill_attribution(root: Path | str | None = None) -> dict:
 
 def run(start: str, end: str, root: Path | str | None = None, *, weights: str = _PRIOR,
         regime_aware: bool = True, force: bool = False, attribute: bool = True,
-        temperature: bool = True, funnel: dict | None = None) -> dict:
+        temperature: bool = True, funnel: dict | None = None,
+        variant: VariantSpec | None = None) -> dict:
     """[start, end] 逐交易日回放。**单日失败不中断整段**(限频/权限/网络偶发 → 记 failed 继续)。
 
     段末一次性 `temperature.rollup(start, end)` 回填相位(幂等 upsert 到
     `context/learning/temperature.csv`;相位是全市场日频序列,与回放路径无关,故整段一次而非逐日)。
     """
-    root = Path(root or DEFAULT_ROOT)
+    base = Path(root or DEFAULT_ROOT)
+    if variant is not None:
+        root = bind_variant(variant, base)
+        # spec 是**唯一**事实源:weights/regime_aware 也从它取,免得 summary 记的是
+        # 调用方传的、而实际跑的是 spec 里的(两处不一致 = 报告说谎)。
+        weights, regime_aware = variant.weights, variant.regime_aware
+    else:
+        root = base
     days = trade_days_iso(start, end)
     if not days:
         return {"start": start, "end": end, "days": 0, "done": [], "skipped": [], "failed": []}
@@ -299,8 +432,8 @@ def run(start: str, end: str, root: Path | str | None = None, *, weights: str = 
     failed: list[dict] = []
     for i, d in enumerate(days, 1):
         try:
-            r = replay_day(d, root, weights=weights, regime_aware=regime_aware, force=force,
-                           attribute=attribute, funnel=funnel)
+            r = replay_day(d, base, weights=weights, regime_aware=regime_aware, force=force,
+                           attribute=attribute, funnel=funnel, variant=variant)
             (skipped if r["status"] == "skip" else done).append(d)
             print(f"[replay {i}/{len(days)}] {d} {r['status']}"
                   + (f" L2={r.get('l2_n')} winners={r.get('winners')}" if r["status"] == "ok" else ""),
@@ -320,6 +453,9 @@ def run(start: str, end: str, root: Path | str | None = None, *, weights: str = 
     bf = backfill_attribution(root) if attribute else {"done": [], "pending": []}
     summary = {"start": start, "end": end, "days": len(days), "weights": weights,
                "weights_leak": weights == _CURRENT,
+               "variant": None if variant is None else variant.name,
+               "definition_hash": None if variant is None else variant.definition_hash,
+               "output_root": str(root),
                "done": done, "skipped": skipped, "failed": failed,
                "attr_backfilled": bf["done"], "attr_pending": bf["pending"]}
     (root / "_run_summary.json").write_text(

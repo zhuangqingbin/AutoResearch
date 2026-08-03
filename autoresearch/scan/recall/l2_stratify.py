@@ -36,6 +36,22 @@ STYLE_CHANNELS: dict[str, tuple[str, ...]] = {
 DEFAULT_FLOORS: dict[str, int] = {"趋势": 20, "健康": 15, "反转": 12, "价值": 12,
                                   "成长": 12, "吸筹": 12, "主力": 10, "事件": 0}
 
+# selection_reason 词表 —— **与 L3 pass1 共用一套**(design 2026-08-03 §3.1/§4.4;
+# 定义点见 `scan/l3/triage.py`)。两层各造一套词表 = 两边的「lane」不是同一件事,
+# O1 的 SLO 切片与 §4.4 的反事实分层会各自量到不同的东西。
+#
+# 本层的产生规则:
+#   merit     ② sector-neutral composite 核(过 cap)
+#   lane      ③ 风格桶 floor 救回(detail 记桶名)
+#   backfill  ④ 回填到 l2_n(过 cap)
+#   sector    ④' cap 卡死后**松 cap** 才收进来的 —— 行业集中度约束被放开的那一批
+#   pinned    `select_l2` 的保送行(全程直通,不占竞争名额)
+#
+# 与既有 `l2_lane_reserved` 的关系:后者 = merit 核之外的**全部**(floor∪回填∪松cap∪保送),
+# 是个二值旗且有三个真消费者;`selection_reason` 把那一团拆成四种不同的进场方式。
+# 两者并存、语义不同,**不得互相替代**。
+L2_SELECTION_REASONS = ("merit", "lane", "sector", "pinned", "backfill")
+
 
 def sector_neutral(score: pd.Series, industry: pd.Series) -> pd.Series:
     """sector-neutral 分:composite − 申万一级组均值(去行业 beta;回测最优桶内口径)。"""
@@ -60,6 +76,19 @@ def stratified_l2(df: pd.DataFrame, l2_n: int = 200, floors: dict[str, int] | No
     算法:① sn = sector-neutral(score)② merit 核 = top(l2_n−Σfloor) by sn(过 sector cap)
     ③ 逐风格(floor 大的先)把不足 floor 的从线下按 sn 补 ④ 不足 l2_n → by sn 回填(必要时松 cap)。
     floors=None → DEFAULT_FLOORS;floors={} → 纯 sn top-N(无分层,parity 用)。
+
+    ⚠️ **`regime` / `regime_caps` 是「已建未接线」的半特性**(design 2026-08-03 §3.3 O3
+    清算)。函数体确实按 regime 调 sector cap(见下面 `cap_frac` 一行),单测也覆盖了它 ——
+    但 `scan/universe.py` 的**全部**生产调用点(`:301/313/328/346/458`)都不传这两个参数,
+    所以生产路径上它恒为 `None`,cap 恒等于 `sector_cap_frac`。
+
+    挂着参数没人喂,下一个读代码的人会以为 regime 化已生效 —— 这正是 §0.3-5 点名的形态
+    (同一波里 `gpJson`/`bash` 两个 workflow helper 漏搬也是它)。**P0 只补文档 + 探针,
+    不接线**:真把 `_regime`/caps 接进去会改变 L2 构成,属 B 类 challenger,必须先补
+    variant contract 再走 registry/replay(候选 `O3_regime_caps`)。
+    探针见 `tests/scan/test_l2_regime_wiring_probe.py` —— 生产调用点一旦开始传它、
+    而 registry 无对应 ACTIVE 实验,测试立刻变红。
+    risk_off 只有 11 日 → 该 regime 恒 `IMMATURE`,不得靠全样本调参后声称分 regime 稳定。
     """
     floors = DEFAULT_FLOORS if floors is None else floors
     r = df.reset_index(drop=True).copy()
@@ -73,6 +102,8 @@ def stratified_l2(df: pd.DataFrame, l2_n: int = 200, floors: dict[str, int] | No
     if n <= l2_n:
         out = r.copy()
         out["l2_lane_reserved"] = False
+        out["selection_reason"] = "merit"      # 没有竞争 → 全体都是有机进场
+        out["selection_detail"] = ""
         return out
     r["_sn"] = sector_neutral(r[score_col], ind).fillna(-1e18).to_numpy()
     chan = r["recall_channels"] if "recall_channels" in r.columns else pd.Series([""] * n, index=r.index)
@@ -84,13 +115,15 @@ def stratified_l2(df: pd.DataFrame, l2_n: int = 200, floors: dict[str, int] | No
     sel: list[int] = []
     sel_set: set[int] = set()
     sec_cnt: dict = {}
+    reasons: dict[int, tuple[str, str]] = {}
 
     def _ok(idx: int) -> bool:                       # sector cap 检查
         return sec_cnt.get(ind.iloc[idx], 0) < cap
 
-    def _add(idx: int) -> None:
+    def _add(idx: int, reason: str, detail: str = "") -> None:
         sel.append(idx)
         sel_set.add(idx)
+        reasons[idx] = (reason, detail)
         sec_cnt[ind.iloc[idx]] = sec_cnt.get(ind.iloc[idx], 0) + 1
 
     total_floor = sum(floors.values())
@@ -99,7 +132,7 @@ def stratified_l2(df: pd.DataFrame, l2_n: int = 200, floors: dict[str, int] | No
         if len(sel) >= merit_need:
             break
         if idx not in sel_set and _ok(idx):
-            _add(idx)
+            _add(idx, "merit")
 
     for st in sorted(floors, key=lambda s: -floors[s]):   # ③ floor 补(大 floor 先)
         m = masks[st]
@@ -109,7 +142,7 @@ def stratified_l2(df: pd.DataFrame, l2_n: int = 200, floors: dict[str, int] | No
             if need <= 0:
                 break
             if idx not in sel_set and m.iloc[idx] and _ok(idx):
-                _add(idx)
+                _add(idx, "lane", st)
                 need -= 1
 
     if len(sel) < l2_n:                              # ④ 回填到 l2_n(过 cap)
@@ -117,17 +150,22 @@ def stratified_l2(df: pd.DataFrame, l2_n: int = 200, floors: dict[str, int] | No
             if len(sel) >= l2_n:
                 break
             if idx not in sel_set and _ok(idx):
-                _add(idx)
+                _add(idx, "backfill")
     if len(sel) < l2_n:                              # cap 卡死 → 松 cap 兜底凑满
         for idx in order:
             if len(sel) >= l2_n:
                 break
             if idx not in sel_set:
-                _add(idx)
+                # 行业集中度约束被放开才收进来的一批 —— O1 的集中度守卫要单独看它们
+                _add(idx, "sector", str(ind.iloc[idx]))
 
     reserved = set(sel[merit_need:])                 # merit 核之外 = floor/回填救回
-    out = r.loc[sel[:l2_n]].copy()
+    kept = sel[:l2_n]
+    out = r.loc[kept].copy()
     out["l2_lane_reserved"] = out.index.isin(reserved)
+    # 按**原始行索引**取理由,不按 reset 后的位置 —— `kept` 是选择序不是行序,两者不相等。
+    out["selection_reason"] = [reasons[i][0] for i in kept]
+    out["selection_detail"] = [reasons[i][1] for i in kept]
     return out.drop(columns=["_sn"], errors="ignore").reset_index(drop=True)
 
 
@@ -162,6 +200,8 @@ def select_l2(recall: pd.DataFrame, l2_n: int, floors: dict[str, int] | None = N
     if has_pinned:
         pinned_rows.insert(0, "l2_rank", range(len(l2) + 1, len(l2) + 1 + len(pinned_rows)))
         pinned_rows["l2_lane_reserved"] = True
+        pinned_rows["selection_reason"] = "pinned"
+        pinned_rows["selection_detail"] = ""
         l2 = pd.concat([l2, pinned_rows], ignore_index=True, sort=False)
 
     if "composite" in l2.columns:                    # 显示分(两条管道列名各异,都填 composite)

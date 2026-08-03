@@ -351,7 +351,7 @@ CANDIDATES: tuple[Candidate, ...] = (
     # ───────────────────────── §3 L2 ─────────────────────────
     Candidate(
         id="O1_winner_capture_slo", title="winner-capture@K 升格 SLO(端到端 + 条件召回)",
-        section="§3.1", change_class="M", priority="P0", status="PLANNED",
+        section="§3.1", change_class="M", priority="P0", status="IMPLEMENTED",
         inheritance={"Wave9": "无关", "Wave10": "继承", "STAGES": "替代"},
         falsification_step="先固定 winner 定义(主尺 fwd_2_oc + top-decile + 绝对阈 + D+1 可买);"
                            "不得把 retro 的复合 winner 与纯 top-decile 混叫一个标签",
@@ -391,7 +391,7 @@ CANDIDATES: tuple[Candidate, ...] = (
     ),
     Candidate(
         id="O4_cap_floor_grid", title="cap/floor 参数扫描(replay 网格)",
-        section="§3.4", change_class="I", priority="P1", status="PLANNED",
+        section="§3.4", change_class="I", priority="P1", status="IMPLEMENTED",
         inheritance={"Wave9": "无关", "Wave10": "无关", "STAGES": "替代"},
         falsification_step="先补 replay variant_spec + definition_hash + 独立输出根,"
                            "防 staging 幂等误复用 baseline",
@@ -404,7 +404,7 @@ CANDIDATES: tuple[Candidate, ...] = (
     ),
     Candidate(
         id="O5_feature_gate", title="新特征统一闸门(治理条款)",
-        section="§3.5", change_class="M", priority="P0", status="PLANNED",
+        section="§3.5", change_class="M", priority="P0", status="IMPLEMENTED",
         inheritance={"Wave9": "继承", "Wave10": "继承", "STAGES": "替代"},
         falsification_step="唯一入口:capability/PIT gate → factor_lab → replay 对照 → "
                            "registry challenger。没有第二条路",
