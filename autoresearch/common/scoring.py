@@ -17,6 +17,7 @@ run_lenses / main / _selftest`。本模块只放可离线复现的打分数学�
 """
 from __future__ import annotations
 
+import contextlib
 import json
 from datetime import date
 from pathlib import Path
@@ -372,6 +373,16 @@ def _load_weights(path: str = "context/factor_lab/weights.json", regime: str | N
     `regime` 给定且文件含 `regimes[regime]["weights"]` → 返回该 regime 的权重块(meta 标 regime);
     否则返回 flat(现行为)。**parity 锚**:无 regimes 块 / regime=None / 未知 regime 一律退 flat,
     与改动前逐值一致(regime-aware 默认关时不破 golden)。
+
+    **2026-08-04 修**:回落 flat 这条路以前是**完全静默**的 —— 没有 warn、没有记账,而
+    `pick_weights` 仍然把 regime 标签原样返回。于是 `weights_used.json`/报告/replay 全都记成
+    「已按 risk_off 加权」,但实际用的是 flat。08-04 实测正是这个状态:生产 weights.json 的
+    `regimes` 是空的(最后一次校准跑的是 `calibrate` 而非 `calibrate-regimes`),
+    `regime_aware=True` 已经静默回落了不知道多久。
+
+    现在回落时:① 记一笔 B 级降级(`contracts.record_degradation`,进 `degraded.json`);
+    ② 在 meta 里把 `regime_requested` / `regime_applied` 分开写 —— **要的和给的不是一回事**,
+    这一点必须能被下游读出来。权重数值本身**逐值不变**(仍是 flat),故 parity 不破。
     """
     import sys
 
@@ -382,10 +393,25 @@ def _load_weights(path: str = "context/factor_lab/weights.json", regime: str | N
     data = json.loads(p.read_text(encoding="utf-8"))
     if regime:
         block = (data.get("regimes") or {}).get(regime)
+        meta = dict(data.get("meta", {}))
         if block and block.get("weights"):
-            meta = dict(data.get("meta", {}))
             meta["regime"] = regime
+            meta["regime_requested"] = regime
+            meta["regime_applied"] = regime
             return {"meta": meta, "weights": block["weights"]}
+        # 请求了 regime 却没有该块 —— 静默回落到此为止
+        present = sorted((data.get("regimes") or {}).keys())
+        reason = (f"请求 regime={regime!r} 但 weights.json 无该块"
+                  f"(现有 regimes={present or '空'})→ 回落 flat;"
+                  "补法:factor_lab calibrate-regimes(注意先过两半符号一致门)")
+        with contextlib.suppress(Exception):   # 记账失败不该挡打分
+            from autoresearch.data.contracts import record_degradation
+            record_degradation("weights_regime", reason, key=str(regime))
+        meta["regime_requested"] = regime
+        meta["regime_applied"] = None          # 要的和给的不是一回事
+        meta["regime_fallback"] = "flat"
+        meta["regimes_present"] = present
+        return {"meta": meta, "weights": data.get("weights", {})}
     return data
 
 
@@ -396,12 +422,26 @@ def pick_weights(frame: pd.DataFrame, regime_aware: bool, *,
     `regime_aware` 关(默认)→ flat 权重(regime=None,**parity**:不分类、与改动前一致);
     开 → `classify_regime(frame)` 得 regime → `_load_weights(regime=label)` 取该 regime 权重块。
     返回 (weights_dict, regime_label|None)。`load` 可注入(测试)。
+
+    **返回的 label 是「当日分类结果」,不是「实际生效的权重块」** —— 两者在回落时会分叉,
+    真相只在 `weights_dict["meta"]["regime_applied"]` 里(2026-08-04 修)。下游要判「这一跑
+    到底有没有按 regime 加权」,必须读 meta,不能看 label:label 恒非空,而 applied 会是 None。
     """
     if not regime_aware:
         return load(path), None
     from autoresearch.common.regime import classify_regime
     label = classify_regime(frame).label
     return load(path, regime=label), label
+
+
+def regime_weights_applied(weights: dict) -> bool:
+    """这一跑**真的**用上 regime 权重了吗 —— 供 meta/报告/replay 判活。
+
+    `pick_weights` 返回的 label 恒非空(它是分类结果),所以「有 label」不能当「已生效」。
+    唯一可信的是权重块自己的 `meta.regime_applied`。
+    """
+    meta = (weights or {}).get("meta") or {}
+    return bool(meta.get("regime_applied"))
 
 
 def _factor_groups(df: pd.DataFrame) -> dict[str, pd.Series]:
