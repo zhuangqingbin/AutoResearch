@@ -56,6 +56,12 @@
     // 启用的召回通道。整编后 9 路(2026-07-11 channel_audit 13日累计裁决):
     //   剔 accumulation(unique超额T2 −0.21%=唯一实数据负路)、northbound(hk_ratio T+2 IC −0.108);
     //   保 momentum(unique +0.75% 为正,单日 −1.35% 是噪声);reversal_confirm 与旧 reversal 并跑 A/B(≥10日再裁)。
+    //   ⚠️ 2026-08-04 勘误:上面那个「momentum unique +0.75% 为正」是 07-11 的 13 日读数,**已过期且符号已翻**。
+    //   26 日累计为 −1.07%;切开相位后是**混合物**(docs/research/2026-08-04-momentum-phase-conditional-ic.md):
+    //     回撤侧(退潮/冰点 n=14)+0.0000 [−0.0162,+0.0174] 跨 0 = UNKNOWN
+    //     上涨侧(发酵/高潮 n=12)−0.0232 [−0.0393,−0.0074] **整区间为负**
+    //   故「统一砍 momentum quota」是错处方(会砍掉回撤侧那条不亏钱的路)。正确处方是**相位条件 quota**,
+    //   属 B 类,须 registry。**本行 quota 因此维持不动** —— 改它需要先走实验治理。
     //   删掉本行 = 用全部注册通道(12 路,含未取证的 event —— 删本行会把它一并上线,违反 pr_20260725_001 的入场纪律)。
     "recall_channels": ["composite", "momentum", "reversal_confirm", "reversal", "value", "main_fund", "heat", "growth", "healthy"],
     // 各路配额覆盖(Task 8 起 recall_select 真消费,build/quota_union 都吃覆盖后的 effective spec)。
