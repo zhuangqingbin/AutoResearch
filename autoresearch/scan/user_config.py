@@ -157,9 +157,9 @@ def load_user_config(path: str | Path | None = None) -> dict:
             bad = sorted(set(spec) - {"model", "effort"})
             if bad:
                 raise ValueError(f"agents.{role} 含未知子键: {bad}(只认 model/effort)")
-            if "effort" in spec and spec["effort"] not in _EFFORTS:
+            if "effort" in spec and (not isinstance(spec["effort"], str) or spec["effort"] not in _EFFORTS):
                 raise ValueError(f"agents.{role}.effort={spec['effort']!r} 非法(∈{sorted(_EFFORTS)})")
-            if "model" in spec and spec["model"] not in _MODELS:
+            if "model" in spec and (not isinstance(spec["model"], str) or spec["model"] not in _MODELS):
                 raise ValueError(f"agents.{role}.model={spec['model']!r} 非法(∈{sorted(_MODELS)})")
     return cfg
 

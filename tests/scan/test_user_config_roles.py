@@ -36,6 +36,27 @@ def test_bad_model_raises(tmp_path):
         _load(tmp_path, {"l4_card": {"model": "gpt4"}})
 
 
+@pytest.mark.parametrize("field,bad_value", [
+    ("effort", ["max"]),
+    ("effort", {"a": 1}),
+    ("model", ["opus"]),
+    ("model", {"a": 1}),
+])
+def test_unhashable_field_value_raises_cleanly(tmp_path, field, bad_value):
+    """model/effort 的值若是不可哈希类型(list/dict)——同 bug class 的漏网(review
+    task-7-review.md「新发现 2」):`spec["effort"] not in _EFFORTS` 在值不可哈希时会
+    裸崩 `TypeError: unhashable type`,不是本文件一贯的干净 `ValueError`。
+
+    修法与 spec 本身的 `isinstance(spec, dict)` 同款——做集合成员判断前先校验值是
+    `str`,否则带 role 名 + 字段名 + 合法取值集合 raise。
+    """
+    with pytest.raises(ValueError) as excinfo:
+        _load(tmp_path, {"l4_card": {field: bad_value}})
+    msg = str(excinfo.value)
+    assert "l4_card" in msg
+    assert field in msg
+
+
 @pytest.mark.parametrize("bad_agents", ["oops", True, 5, ["a", "b"]])
 def test_agents_not_dict_raises(tmp_path, bad_agents):
     """agents 顶层值本身不是 object(字符串/布尔/数字/列表)→ 干净 ValueError,不是裸 TypeError。
