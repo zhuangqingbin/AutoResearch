@@ -248,3 +248,116 @@ def test_prepare_slim_tushare_k_floors_at_one(tmp_path, monkeypatch):
 
     assert got["ok"] is True
     assert seen["k"] == 1             # floor:max(1, 4-9) = 1,不是 0/负数
+
+
+def test_stats_counts_errors_and_wait(tmp_path):
+    _init(tmp_path, n=3)
+    book = tmp_path / "2026-08-06" / "_l4_tasks.json"
+    import json
+    p = json.loads(book.read_text())
+    codes = list(p["tasks"])
+    p["tasks"][codes[0]]["last_error_class"] = "RATE_LIMIT"
+    p["tasks"][codes[1]]["sem_wait_s"] = 42.0
+    book.write_text(json.dumps(p))
+    s = l4_tasks.stats(book)
+    assert s["error_classes"] == {"RATE_LIMIT": 1}
+    assert s["sem_wait_max_s"] == 42.0
+
+
+def test_stats_is_pure_read_and_does_not_touch_book(tmp_path):
+    """设计口径:stats() 纯读 —— 不得写任何文件、不得改任务簿一个字节。字节级 +
+    mtime 双重断言:光比内容相等测不出「原地重写成同样内容」这种打脸。"""
+    _init(tmp_path, n=2)
+    book = tmp_path / "2026-08-06" / "_l4_tasks.json"
+    before = book.read_bytes()
+    before_mtime_ns = book.stat().st_mtime_ns
+
+    l4_tasks.stats(book)
+
+    assert book.read_bytes() == before
+    assert book.stat().st_mtime_ns == before_mtime_ns
+    assert not book.with_name(f"{book.name}.tmp").exists()
+
+
+def test_stats_missing_sem_wait_is_absent_not_zero(tmp_path):
+    """老账本没有 sem_wait_s 是正常的(该键晚于任务簿本身上线)——缺失必须读作
+    「无该项」,不能被当 0 计入 max/均值,否则会伪造出一个不存在的「零等待」。"""
+    _init(tmp_path, n=2)
+    book = tmp_path / "2026-08-06" / "_l4_tasks.json"
+
+    s = l4_tasks.stats(book)
+
+    assert s["sem_wait_max_s"] is None
+    assert s["sem_wait_mean_s"] is None
+
+
+def test_stats_sem_wait_mean_averages_only_present_values(tmp_path):
+    """0.0(湖命中零等待)是「有记录」,必须计入均值;第三只缺字段的票不能被当 0
+    拉低均值 —— 均值应为 (0.0+10.0)/2=5.0,不是 (0+10+0)/3。"""
+    import json
+
+    _init(tmp_path, n=3)
+    book = tmp_path / "2026-08-06" / "_l4_tasks.json"
+    p = json.loads(book.read_text())
+    codes = list(p["tasks"])
+    p["tasks"][codes[0]]["sem_wait_s"] = 0.0
+    p["tasks"][codes[1]]["sem_wait_s"] = 10.0
+    # codes[2] 保持缺 sem_wait_s 字段(模拟未进 prepare_slim 或老账本)
+    book.write_text(json.dumps(p))
+
+    s = l4_tasks.stats(book)
+
+    assert s["sem_wait_max_s"] == 10.0
+    assert s["sem_wait_mean_s"] == 5.0
+
+
+def test_stats_slim_attempts_total_sums_across_tasks(tmp_path):
+    import json
+
+    _init(tmp_path, n=3)
+    book = tmp_path / "2026-08-06" / "_l4_tasks.json"
+    p = json.loads(book.read_text())
+    codes = list(p["tasks"])
+    p["tasks"][codes[0]]["slim_attempts"] = 2
+    p["tasks"][codes[1]]["slim_attempts"] = 1
+    book.write_text(json.dumps(p))
+
+    s = l4_tasks.stats(book)
+
+    assert s["slim_attempts_total"] == 3
+
+
+def test_stats_error_classes_counts_multiple_and_ignores_none(tmp_path):
+    """None(未失败过的正常票)不能被计进 error_classes,否则「零错误」的票会
+    污染计数,一眼看限频风暴的读数就失真了。"""
+    import json
+
+    _init(tmp_path, n=3)
+    book = tmp_path / "2026-08-06" / "_l4_tasks.json"
+    p = json.loads(book.read_text())
+    codes = list(p["tasks"])
+    p["tasks"][codes[0]]["last_error_class"] = "RATE_LIMIT"
+    p["tasks"][codes[1]]["last_error_class"] = "RATE_LIMIT"
+    p["tasks"][codes[2]]["last_error_class"] = None
+    book.write_text(json.dumps(p))
+
+    s = l4_tasks.stats(book)
+
+    assert s["error_classes"] == {"RATE_LIMIT": 2}
+
+
+def test_main_stats_prints_one_line_json(tmp_path, capsys):
+    """CLI 出口:`stats` 吃 DATE(同 batches 分支),打一行 JSON 到 stdout,退出码 0
+    —— 壳 agent 靠这一行原样带回,不能被 print 拆成多行或夹杂旁白。"""
+    import json
+
+    _init(tmp_path, n=2)
+    rc = l4_tasks.main(["stats", "2026-08-06", "--root", str(tmp_path)])
+    out = capsys.readouterr().out
+    lines = [line for line in out.splitlines() if line.strip()]
+
+    assert rc == 0
+    assert len(lines) == 1
+    payload = json.loads(lines[0])
+    assert payload["ok"] is True
+    assert payload["n_tasks"] == 2

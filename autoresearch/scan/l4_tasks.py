@@ -566,6 +566,38 @@ def dispatch_batches(
     }
 
 
+def stats(book: Path | str) -> dict:
+    """纯读账本:全并发首跑后一眼看限频/排队(Wave11 C4)。
+
+    聚合 `last_error_class` 计数、`sem_wait_s` 峰值/均值、`slim_attempts` 总数。
+    只读不写 —— 不落 `.tmp`、不改任务簿一个字节。老账本没有 `sem_wait_s`/
+    `last_error_class` 是正常现象(两者都晚于任务簿本身上线);缺失按「无该项」
+    处理,均值只对记录过该值的票取平均 —— 0.0(湖命中零等待)是记录,缺字段不是,
+    两者不可互相顶替(否则均值会被不存在的"零等待"稀释)。
+    """
+    _, payload = _read(book)
+    tasks = payload["tasks"]
+    error_classes: dict[str, int] = {}
+    sem_waits: list[float] = []
+    slim_attempts_total = 0
+    for task in tasks.values():
+        error_class = task.get("last_error_class")
+        if error_class:
+            error_classes[error_class] = error_classes.get(error_class, 0) + 1
+        sem_wait = task.get("sem_wait_s")
+        if sem_wait is not None:
+            sem_waits.append(float(sem_wait))
+        slim_attempts_total += int(task.get("slim_attempts") or 0)
+    return {
+        "ok": True,
+        "n_tasks": len(tasks),
+        "error_classes": error_classes,
+        "sem_wait_max_s": max(sem_waits) if sem_waits else None,
+        "sem_wait_mean_s": (sum(sem_waits) / len(sem_waits)) if sem_waits else None,
+        "slim_attempts_total": slim_attempts_total,
+    }
+
+
 def _book_path(date: str, root: str | None) -> Path:
     return (Path(root) if root else Path("context/scan")) / date / "_l4_tasks.json"
 
@@ -574,9 +606,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="l4_tasks")
     parser.add_argument(
         "cmd",
-        choices=["init", "preflight", "prepare", "success", "failure", "batches"],
+        choices=["init", "preflight", "prepare", "success", "failure", "batches", "stats"],
     )
-    parser.add_argument("first", help="init/batches:DATE；其余:CODE")
+    parser.add_argument("first", help="init/batches/stats:DATE；其余:CODE")
     parser.add_argument("second", nargs="?", help="preflight/prepare/success/failure:DATE")
     parser.add_argument("--root", default=None)
     parser.add_argument("--error-class", default=None)
@@ -605,6 +637,8 @@ def main(argv: list[str] | None = None) -> int:
         result["dispatch_batches"] = dispatch_batches(result["path"])["batches"]
     elif args.cmd == "batches":
         result = dispatch_batches(_book_path(args.first, args.root), caps=caps)
+    elif args.cmd == "stats":
+        result = stats(_book_path(args.first, args.root))
     else:
         if not args.second:
             parser.error(f"{args.cmd} requires CODE DATE")
