@@ -21,7 +21,10 @@ SCHEMA_VERSION = 1
 MAX_ATTEMPTS = 2
 TRANSIENT_ERRORS = frozenset({"RATE_LIMIT", "CONNECTION", "TIMEOUT", "STALE_TASK"})
 REQUIRED_CAPS = ("tushare", "web_search", "web_fetch", "l4_stock")
-DEFAULT_CAPS = {name: 4 for name in REQUIRED_CAPS}
+# l4_stock 退出「资源」语义,升为派发帽;缺省 64 = 事实无上限(Wave11 C1)。
+# tushare/web_search/web_fetch 仍是独立资源帽,但不再参与 effective_cap 的运算 ——
+# 它们喂的是 prepare_slim 的操作级信号量(T2),不是这里的批次切片宽度。
+DEFAULT_CAPS = {"tushare": 4, "web_search": 4, "web_fetch": 4, "l4_stock": 64}
 
 
 def _stamp(now: datetime | None = None) -> str:
@@ -190,9 +193,8 @@ def initialize(
         # 本次 dispatch 顺序是稳定批次的事实源；旧日残留任务不进入本次 order。
         payload["order"] = ordered
         payload["caps"] = cap_values
-        payload["effective_cap"] = max(
-            1, min(cap_values.values()) - int(payload.get("rate_limit_failures") or 0)
-        )
+        # 派发帽=caps.l4_stock;不再 min 四帽、不再被 rate_limit_failures 收窄(Wave11 C1)。
+        payload["effective_cap"] = max(1, int(cap_values["l4_stock"]))
         payload["updated_at"] = _stamp(now)
         _atomic_write(path, payload)
     return {
@@ -474,14 +476,13 @@ def dispatch_batches(
     caps: dict | None = None,
     now: datetime | None = None,
 ) -> dict:
-    """按四种独立资源帽的最小值稳定切批；限频事件只收窄调度宽度。"""
+    """派发帽=caps.l4_stock(一次全派);tushare/web 资源帽由 prepare_slim 的操作级信号量
+    执行(T2),限频事件收窄的是取数槽不是派发。"""
     path = Path(book)
     with _locked(path):
         _, payload = _read(path)
         cap_values = _normalize_caps(caps if caps is not None else payload.get("caps"))
-        effective = max(
-            1, min(cap_values.values()) - int(payload.get("rate_limit_failures") or 0)
-        )
+        effective = max(1, int(cap_values["l4_stock"]))
         codes = []
         running: list[dict] = []
         for code in payload.get("order") or payload["tasks"]:

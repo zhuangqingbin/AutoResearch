@@ -165,17 +165,18 @@ def test_prepare_slim_retries_only_target_stock_once(tmp_path):
     assert payload["tasks"]["000002"]["slim_attempts"] == 0
 
 
-def test_dispatch_batches_use_explicit_minimum_and_back_off_after_rate_limit(tmp_path):
+def test_dispatch_batches_effective_cap_is_l4_stock_and_ignores_rate_limit(tmp_path):
+    """Wave11 C1:派发帽=caps.l4_stock,不再 min 四帽、不再被 rate_limit_failures 收窄。"""
     book = _book(tmp_path)
     caps = {"tushare": 6, "web_search": 4, "web_fetch": 5, "l4_stock": 8}
 
     first = dispatch_batches(book["path"], caps=caps)
     assert first["caps"] == caps
-    assert first["effective_cap"] == 4
+    assert first["effective_cap"] == 8
     assert first["batches"] == [["000001", "000002", "000003"]]
 
     preflight(book["path"], "000001", now=NOW)
     mark_failure(book["path"], "000001", "RATE_LIMIT", now=NOW)
     second = dispatch_batches(book["path"])
-    assert second["effective_cap"] == 3
+    assert second["effective_cap"] == 8
     assert second["batches"] == [["000001", "000002", "000003"]]
