@@ -32,14 +32,27 @@ const SD = `context/scan/${date}`
 // 确定性命令 → general-purpose Bash-agent(只跑命令、回报退出码,不判断)
 // Wave6 T1:壳零判断,却背着 opus 系统前缀 —— 07-24 真计量 13 个 gp 共 798k 加权(全场 14.5%),
 // 其中 7 个 2-消息壳 ≈287k 纯过路费。降 haiku;判断仍在确定性 CLI 里,行为不变。
+// 🚨 2026-08-05 事故(GATE1 毙全线):haiku 壳**杀了生产作业**。`prelude` 真身跑 ~20min >
+// 前台 Bash 超时 → harness 自动转后台 → haiku 不会等异步任务,判定"卡住"→ `pkill -f
+// autoresearch.scan.prelude` → 重启 → 再杀,两个壳(prelude / prelude-retry)都这么干,
+// turn 预算烧光,L2_gbdt_top200.csv 始终不落 → GATE1 "universe 未跑?" 毙掉整条流水线。
+// 病灶两条,都补上:① 壳的 prompt **从没告诉过它这条命令要跑多久**,更没禁止 kill;
+// ② haiku 处理不了"后台任务 + 长等待"这个组合。model 升 sonnet + 显式禁杀纪律。
+// 成本:bash 壳仅 ~5 个/次扫描且零判断,升一档远小于毙掉一整条 60min 流水线的代价。
 function bash(cmd, label, phaseName) {   // 形参勿叫 phase:会遮蔽全局 phase() 分组函数
   return agent(
     `在仓库根目录精确执行下面这条命令,然后只回报:退出码 + stdout 末 15 行。不要做别的、不要判断、不要解释。\n` +
     `**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**` +
     `若命令的 stdout 已被重定向,回报改用:退出码 + stderr 末 15 行。\n` +
     `(2026-07-28 事故第一因:壳擅自把 \`frame --json > market_pack.json\` 改成 \`... 2>&1\`,` +
-    `stderr 日志灌进产物,门判据被骗过。)\n\n\`\`\`\n${cmd}\n\`\`\``,
-    { agentType: 'general-purpose', model: 'haiku', effort: 'low', label, ...(phaseName ? { phase: phaseName } : {}) })
+    `stderr 日志灌进产物,门判据被骗过。)\n\n` +
+    `⏳ **这条命令可能跑 5–30 分钟**(全市场取数)。铁律:\n` +
+    `- **绝对不许 kill / pkill / 中断它**,也不许"重启一次试试"。它没卡住,它在取数。\n` +
+    `- 若 harness 把它转成后台任务:安静等待完成通知即可。不要反复轮询、不要另起副本。\n` +
+    `- 只有拿到真实退出码才算完;拿不到就如实回报"未拿到退出码",**不要**自己动手"修"。\n` +
+    `(2026-08-05 事故:壳 pkill 了 prelude 两次,GATE1 因此毙掉整条流水线。)\n\n` +
+    `\`\`\`\n${cmd}\n\`\`\``,
+    { agentType: 'general-purpose', model: 'sonnet', effort: 'low', label, ...(phaseName ? { phase: phaseName } : {}) })
 }
 const RUN_MODE = { type: 'object', required: ['mode'],
   properties: { mode: { type: 'string' }, pinned_codes: { type: 'array', items: { type: 'string' } } } }

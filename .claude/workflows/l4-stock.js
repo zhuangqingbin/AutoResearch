@@ -32,12 +32,17 @@ const recordL4 = (errorCode = null) => agent(
   `**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**`,
   { agentType: 'general-purpose', model: 'haiku', effort: 'low', label: `stage:${code}` })
   .catch((e) => { log(`⚠️ L4 StageResult 写入失败:${e && e.message ? e.message : e}`); return null })
+// 🚨 2026-08-05 事故(同族,见 scan-market.js:35 注释):`prepare` 子命令内含单票 slim 取数,
+// 可能跑数分钟 → harness 转后台 → haiku 壳判定"卡住"并 pkill 生产作业。同样两条药:
+// 显式告知耗时 + 禁杀纪律,model 升 sonnet(每票仅 1 次调用,代价可忽略)。
 const taskGate = (subcommand, schema, label) => agent(
   `执行:\`if test -s ${TASK_BOOK}; then ${R} autoresearch.scan.l4_tasks ${subcommand}; ` +
   `else echo '{"ok":true,"action":"LEGACY"}'; fi\`\n` +
   '把 stdout 最后一行 JSON 原样作为结构化返回；不要判断或增删字段。' +
-  '**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**',
-  { agentType: 'general-purpose', model: 'haiku', effort: 'low', label, schema })
+  '**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**\n' +
+  '⏳ 这条命令可能跑数分钟(单票取数)。**绝对不许 kill / pkill / 中断 / 重启**它 —— ' +
+  '它没卡住,它在取数;被 harness 转后台就安静等完成通知。拿不到退出码就如实回报,不要自己"修"。',
+  { agentType: 'general-purpose', model: 'sonnet', effort: 'low', label, schema })
 // 通用确定性 CLI 壳:跑一条命令、把它打印的最后一行 JSON 原样带回(零判断)。
 const gpJson = (cmd, label, schema) => agent(
   `执行:\`${cmd}\`\n它会向 stdout 打印一行 JSON。把最后一行 JSON 原样作为结构化返回,` +
@@ -51,9 +56,11 @@ const gpJson = (cmd, label, schema) => agent(
 const bash = (cmd, label, phaseName) => agent(
   '在仓库根目录精确执行下面这条命令,然后只回报:退出码 + stdout 末 15 行。' +
   '不要做别的、不要判断、不要解释。\n' +
-  '**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**\n\n' +
+  '**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**\n' +
+  '⏳ 命令可能跑数分钟。**绝对不许 kill / pkill / 中断 / 重启**它(2026-08-05 事故:' +
+  '壳 pkill 了生产作业两次,整条流水线被毙)。被转后台就安静等完成通知。\n\n' +
   `\`\`\`\n${cmd}\n\`\`\``,
-  { agentType: 'general-purpose', model: 'haiku', effort: 'low', label,
+  { agentType: 'general-purpose', model: 'sonnet', effort: 'low', label,
     ...(phaseName ? { phase: phaseName } : {}) })
 const INTEL_GUARD = { type: 'object', required: ['ok', 'code', 'action'],
   properties: { ok: { type: 'boolean' }, code: { type: 'string' }, action: { type: 'string' },
