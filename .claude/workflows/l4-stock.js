@@ -22,12 +22,18 @@ const cfg = A.cfg || {}
 // 本表=缺键回退值。调用点禁止内联字面量(product_shape_lint 会查)。回退链:
 // config > 本表(AGENT_DEFAULTS) > agent .md frontmatter —— 非壳 role 本表不写 model 键,
 // 缺省即落那一层(l4_intel=l4-intel frontmatter sonnet;l4_card/ens_review=l4-card frontmatter opus)。
+// 08-06 review 修正:本表的 effort 只是"scan_config.jsonc 漏写该 role 键时"才会被吃到的
+// 代码兜底值,不代表生产实际值——ens_review 的生产配置显式给 "max"(与 l4_card 同档,见
+// scan_config.jsonc 的 ens_review 注),这里的 'xhigh' 只在配置文件缺这个键时才生效,平时
+// 不会。此前误把"代码兜底值 xhigh"当成"与生产一致的 parity"写进了 task-8-report.md,
+// 已在该报告追加更正(task-8-review.md Important,CONFIRMED)。
 const AGENT_DEFAULTS = {
   gp_shell:      { model: 'sonnet', effort: 'low' },
   gp_shell_json: { model: 'sonnet', effort: 'low' },
   l4_intel:      { effort: 'max' },
   l4_card:       { effort: 'xhigh' },
-  ens_review:    { effort: 'xhigh' },   // ≥OW/SELL 双复核 run2/3(此前借 l4_card 档;独立收口)
+  ens_review:    { effort: 'xhigh' },   // ≥OW/SELL 双复核 run2/3(此前借 l4_card 档;独立收口;
+                                         // 代码兜底,生产实际吃 scan_config.jsonc 的 "max")
 }
 const AG = (role) => ({ ...(AGENT_DEFAULTS[role] || {}), ...((cfg.agents || {})[role] || {}) })
 const pinned = !!A.pinned   // dispatch-plan meta 透传;缺省 false = 现行为(parity)

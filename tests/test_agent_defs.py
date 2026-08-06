@@ -278,6 +278,34 @@ def test_workflow_shell_wrappers_use_agent_defaults():
             f"{real} 是判断 agent,不得降 haiku"
 
 
+def test_l4_stock_card_and_ensemble_bind_to_distinct_roles():
+    """[task-8-review.md Minor,CONFIRMED] card 用 `l4_card` / rerun 用 `ens_review` 的
+    绑定关系必须被锁定,不能只查"两个 role 名字符串都在文件某处出现过"。
+
+    `test_workflow_shell_wrappers_use_agent_defaults` 只断言 `AG('l4_card')`/
+    `AG('ens_review')` 这两个子串在文件里存在,不追踪"哪一行用了哪一个"——如果有人手滑
+    把 `card` 调用点(渐进深度 DD 主卡)与 `rerun()`(≥OW/SELL 双复核 run2/3)的 role 互换,
+    或把其中一个错改成对方,这两个字符串依旧都在场,那条测试不会变红。这正是
+    brief 点名"最危险的失误"——本测试把绑定关系本身钉死。
+
+    与之呼应的生产事故(task-8-review.md Important):`ens_review` 与 `l4_card` 在
+    scan_config.jsonc 里是两个独立 role,若被静默接反,复核 run 与主卡谁用哪档 effort
+    会整个错位而没有任何报错。
+    """
+    src = (ROOT / ".claude" / "workflows" / "l4-stock.js").read_text(encoding="utf-8")
+    card_anchor = "label: `card:${code}`, phase: 'Card', schema: CARD"
+    ens_anchor = "label: `ens${i}:${code}`, phase: 'Verify', schema: CARD"
+    assert src.count(card_anchor) == 1, f"card 调用点锚点漂移或不唯一:{card_anchor!r},先更新本测试"
+    assert src.count(ens_anchor) == 1, f"ensemble rerun 调用点锚点漂移或不唯一:{ens_anchor!r},先更新本测试"
+
+    card_head = src.split(card_anchor)[0][-200:]
+    ens_head = src.split(ens_anchor)[0][-200:]
+    assert "AG('l4_card')" in card_head, f"card 调用点未使用 AG('l4_card'):{card_head!r}"
+    assert "AG('ens_review')" in ens_head, f"ensemble rerun 调用点未使用 AG('ens_review'):{ens_head!r}"
+    assert "AG('ens_review')" not in card_head, "card 调用点误用了 ens_review role(主卡吃了复核档位)"
+    assert "AG('l4_card')" not in ens_head, "ensemble rerun 调用点误用了 l4_card role(复核吃了主卡档位)"
+
+
 def test_scan_market_workflow_pinned_roster_log():
     """派发前必须逐只列出 pinned 名单(07-21 漏传 args.pinned → 持仓 SELL 双复核断链)。
 

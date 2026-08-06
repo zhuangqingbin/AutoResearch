@@ -17,7 +17,15 @@
     "t1_diag":      { "effort": "high" },    // 合诊(≤13 卡对比诊断;model 缺省=继承会话,要省钱可加 "model":"sonnet")
     "t1_synth":     { "effort": "high" },    // 综合官(model 缺省 = 继承会话模型)
     // ── Wave11-B 新收口的 5 个 role(缺键=用 workflow AGENT_DEFAULTS,语义见各注)──
-    "ens_review":   { "effort": "xhigh" },   // ≥OW/SELL 双复核 run2/3(此前借 l4_card 档;独立收口)
+    // 08-06 review 修正(task-8-review.md Important,CONFIRMED):这里曾经写 "xhigh",
+    // 在独立收口前 rerun()(≥OW/SELL 双复核 run2/3)读的是
+    // `cfg.agents?.l4_card?.effort ?? 'xhigh'`——生产 l4_card.effort 早就显式是 "max"
+    // (见下面 l4_card 行),那个 'xhigh' 兜底从未被生产吃到,即复核 run 实际一直以 max 跑。
+    // 独立收口成 ens_review role 后若仍写 "xhigh",会让复核 run 在生产环境真实降档
+    // (max→xhigh),这不是本 task(独立收口)的目标,是两个 task 拼接出的意外静默变更。
+    // 改成 "max" 才是与收口前生产实际行为一致的 parity;要不要把复核档位调得比主卡低,
+    // 应该是一次单独的、显式的决策(连同影响面一起评估),不能靠这一行悄悄发生。
+    "ens_review":   { "effort": "max" },     // ≥OW/SELL 双复核 run2/3——与 l4_card 同档(parity,见上注)
     "l3_repair":    { "effort": "medium" },  // L3 数字自修(可选增益,挂了不阻断)
     "dossier_init": { "effort": "max" },     // 档案首覆(≤3 只/晚,单票 10-20min)
     // 壳类缺省 sonnet·low:08-05 事故——haiku 壳遇长命令转后台会 pkill 生产作业;
