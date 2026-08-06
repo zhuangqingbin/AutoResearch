@@ -1,3 +1,5 @@
+import json
+
 from autoresearch.learning import self_review
 
 
@@ -258,3 +260,101 @@ def test_future_dates_reads_pretrim_archive_when_present(tmp_path):
     (tmp_path / f"_l4_intel_{code}.pretrim").write_text(archived_full, encoding="utf-8")
     out = self_review.intel_future_dates_lint(tmp_path, "2026-07-09")
     assert any(c["check"] == "intel_future_dates" and c["code"] == code for c in out)
+
+
+# ───────────────────────── usage_reconcile lint(Wave11 B4)─────────────────────────
+# 时序如实声明:本 check 读的是「最近一份既有」`_usage_reconcile.json`,不是当日结论
+# ——GATE4/self_review 跑在 usage_harvest(进而 usage_reconcile)之前,当日文件此刻还不
+# 存在。下面的 fixture 因此总是先手工落一份"上一次 run"的产物,再断言 lint 读到它。
+
+
+def _write_reconcile(scan_root, date, ok, **extra):
+    d = scan_root / date
+    d.mkdir(parents=True, exist_ok=True)
+    payload = {"date": date, "ok": ok, "mismatches": [] if ok else [{"agent": "x"}],
+              "wire_breaks": [], "checked": 5, **extra}
+    (d / "_usage_reconcile.json").write_text(json.dumps(payload), encoding="utf-8")
+    return payload
+
+
+def _write_ledger(path, *payloads):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(json.dumps(p) for p in payloads) + "\n", encoding="utf-8")
+
+
+def test_usage_reconcile_lint_no_history_returns_empty(tmp_path):
+    """从没跑过 usage_reconcile(全仓无 `_usage_reconcile.json`)→ presence-gated 空列表。"""
+    (tmp_path / "2026-08-01").mkdir()          # 有扫描日目录,但没有 _usage_reconcile.json
+    assert self_review.usage_reconcile_lint(tmp_path) == []
+
+
+def test_usage_reconcile_lint_missing_scan_root_returns_empty(tmp_path):
+    """scan_root 本身不存在(全新 checkout/测试环境)→ 同样静默返回空,不抛异常。"""
+    assert self_review.usage_reconcile_lint(tmp_path / "no-such-dir") == []
+
+
+def test_usage_reconcile_lint_latest_ok_returns_empty(tmp_path):
+    """最近一份对账干净(ok=true)→ 无话可说,不因为"存在旧记录"就习惯性报点什么。"""
+    _write_reconcile(tmp_path, "2026-08-05", ok=True)
+    assert self_review.usage_reconcile_lint(tmp_path) == []
+
+
+def test_usage_reconcile_lint_latest_bad_warns_by_default(tmp_path):
+    """最近一份 ok=false,且账本不够两行「连续」证据 → 只 warn,不越级成 fail。"""
+    _write_reconcile(tmp_path, "2026-08-05", ok=False)
+    out = self_review.usage_reconcile_lint(tmp_path, ledger_path=tmp_path / "no_ledger.jsonl")
+    assert len(out) == 1
+    assert out[0]["severity"] == "warn"
+    assert "2026-08-05" in out[0]["detail"]
+
+
+def test_usage_reconcile_lint_two_day_streak_escalates_to_fail(tmp_path):
+    """brief 验收原句:tmp fixture 两行 jsonl(末两行皆 ok=false)→ severity 升 fail
+    (连续两日 = 系统性偏差,承既有"warn 升 binding"惯例)。
+    """
+    _write_reconcile(tmp_path, "2026-08-06", ok=False)
+    ledger = tmp_path / "usage_reconcile.jsonl"
+    _write_ledger(ledger, {"date": "2026-08-05", "ok": False}, {"date": "2026-08-06", "ok": False})
+    out = self_review.usage_reconcile_lint(tmp_path, ledger_path=ledger)
+    assert len(out) == 1
+    assert out[0]["severity"] == "fail"
+    assert "连续两日" in out[0]["detail"] or "streak" in out[0]["detail"].lower()
+
+
+def test_usage_reconcile_lint_single_bad_ledger_line_stays_warn(tmp_path):
+    """账本只有一行(哪怕是 ok=false)不算"连续两日"——streak 至少要两行独立证据。"""
+    _write_reconcile(tmp_path, "2026-08-06", ok=False)
+    ledger = tmp_path / "usage_reconcile.jsonl"
+    _write_ledger(ledger, {"date": "2026-08-06", "ok": False})
+    out = self_review.usage_reconcile_lint(tmp_path, ledger_path=ledger)
+    assert out[0]["severity"] == "warn"
+
+
+def test_usage_reconcile_lint_streak_broken_by_a_good_day_stays_warn(tmp_path):
+    """末两行一好一坏(不是连续两日都坏)→ 不该被误判成系统性偏差,仍是 warn。"""
+    _write_reconcile(tmp_path, "2026-08-06", ok=False)
+    ledger = tmp_path / "usage_reconcile.jsonl"
+    _write_ledger(ledger, {"date": "2026-08-05", "ok": True}, {"date": "2026-08-06", "ok": False})
+    out = self_review.usage_reconcile_lint(tmp_path, ledger_path=ledger)
+    assert out[0]["severity"] == "warn"
+
+
+def test_usage_reconcile_lint_picks_most_recent_dated_dir_with_file(tmp_path):
+    """多个扫描日目录,只有部分落了 `_usage_reconcile.json`——必须挑「日期最大且文件在场」
+    的那份,不是目录遍历顺序里随便一个、也不是最新日期目录本身(它可能还没跑这一步)。
+    """
+    _write_reconcile(tmp_path, "2026-08-01", ok=True)     # 更早,ok
+    _write_reconcile(tmp_path, "2026-08-03", ok=False)    # 最近的「有文件」的一份
+    (tmp_path / "2026-08-05").mkdir()                      # 最新日期目录,但还没落 usage_reconcile
+    out = self_review.usage_reconcile_lint(tmp_path, ledger_path=tmp_path / "no_ledger.jsonl")
+    assert len(out) == 1 and "2026-08-03" in out[0]["detail"]
+
+
+def test_usage_reconcile_lint_corrupt_json_does_not_crash(tmp_path):
+    """最近一份文件损坏(非法 JSON)→ presence-gated 当缺失处理,不炸(与本文件其余 lint
+    容错惯例一致——坏文件与缺文件同等对待)。
+    """
+    d = tmp_path / "2026-08-05"
+    d.mkdir()
+    (d / "_usage_reconcile.json").write_text("{not json", encoding="utf-8")
+    assert self_review.usage_reconcile_lint(tmp_path) == []

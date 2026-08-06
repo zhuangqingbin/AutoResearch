@@ -684,6 +684,72 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
     return out
 
 
+# 与 usage_reconcile 产物同形的路径常量(避免两处各写一遍字面量走漂):streak 账本默认路径
+# 跟 `autoresearch.trace.usage_reconcile.LEDGER_PATH` 保持同一字符串,但故意不 import 该模块
+# 顶层(self_review 是纯 lint 层,不想给它添一条对 trace 包的硬依赖——这里只在函数体内按需读)。
+_USAGE_RECONCILE_LEDGER = "context/learning/usage_reconcile.jsonl"
+
+
+def usage_reconcile_lint(scan_root, ledger_path=None) -> list[dict]:
+    """token 真计量 × 配置回显对账 lint(Wave11 B4;design:
+    2026-08-05-wave11-ruler-config-l4concurrency-skills-design.md §B4)。
+
+    **时序如实声明(勿"修"成看似当日闭环)**:GATE4/self_review 跑在 `usage_harvest`
+    (进而 `autoresearch.trace.usage_reconcile`)**之前**——本次跑动自己的
+    `_usage_reconcile.json` 此刻还不存在。本 check 读的是 `scan_root` 下**最近一份既有**
+    结果(`context/scan/*/_usage_reconcile.json` 里 dirname 最大、且该文件确实存在的一份,
+    通常 = 上一次 run 的结论),**不是「今天」的结论**——今天的结论由 CP7 第五条命令
+    (`usage_reconcile <date>`)跑完直接打给人看,不经这里转手。
+
+    `ok=false`(最近一份对账有 mismatch/wire_break)→ 记一条 warn「配置-实测不符(<date>)」;
+    若 streak 账本(缺省 `context/learning/usage_reconcile.jsonl`,可用 `ledger_path` 覆盖,
+    测试用)**末两行皆 `ok=false`** → 该条 severity 升 `fail`(连续两日 = 系统性偏差,不是
+    单次抖动;承既有"warn 升 binding"惯例,不新开一套语义)。
+
+    presence-gated:两份产物(最近一份 `_usage_reconcile.json` / streak 账本)缺一个或都缺
+    → 按"还没有历史可查"处理,返回 `[]`,**绝不抛异常**——本函数只读不写,坏文件/缺文件
+    与"从未跑过"同等对待(与本文件其余 lint 函数的容错惯例一致)。
+    """
+    import contextlib
+    import json
+    from pathlib import Path
+
+    scan_root = Path(scan_root)
+    ledger = Path(ledger_path) if ledger_path else Path(_USAGE_RECONCILE_LEDGER)
+    out: list[dict] = []
+
+    latest, latest_date = None, None
+    with contextlib.suppress(Exception):
+        for d in sorted((p for p in scan_root.iterdir() if p.is_dir() and p.name[:2] == "20"),
+                        reverse=True):
+            f = d / "_usage_reconcile.json"
+            if f.exists():
+                latest = json.loads(f.read_text(encoding="utf-8"))
+                latest_date = latest.get("date", d.name)
+                break
+
+    if not latest or latest.get("ok", True):
+        return out                          # presence-gated,或最近一份本就干净 → 无话可说
+
+    severity = "warn"
+    streak = False
+    with contextlib.suppress(Exception):
+        lines = [ln for ln in ledger.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        last_two = lines[-2:]
+        if len(last_two) == 2 and all(json.loads(ln).get("ok") is False for ln in last_two):
+            severity, streak = "fail", True
+
+    out.append({
+        "check": "usage_reconcile·配置-实测不符",
+        "severity": severity,
+        "detail": f"配置-实测不符({latest_date})"
+                  + ("——streak 账本连续两日 ok=false,系统性偏差,非单次抖动" if streak else
+                     "(读的是最近一份既有结果,非今日结论——见 usage_reconcile 报表头时序声明)"),
+        "code": None,
+    })
+    return out
+
+
 def dump_gate_fires(scan_dir, result: dict, date: str):
     """R3·门审计地基:review 结果幂等落 <scan_dir>/gate_fires.csv(每次 assemble 覆写)。
 

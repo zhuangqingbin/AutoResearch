@@ -65,7 +65,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
 > | CP6 | L4 全完 | 评级分布 + 停因分桶 + OW三门直方图 | `uv run --no-sync python -m autoresearch.scan.render <date> --view gate_hist` |
 > | CP7 | GATE4 过 | 买单/0买判词 + 产物路径 + 分段耗时 + **token 真计量** | `summary.md` 摘录 + `--view timing` + `usage_harvest`(下方) |
 >
-> **CP7 的 token/成本计量**:命令见步骤 5 的四条批次。表覆盖**主会话 + subagent**(按 message.id 去重,分 input/output、cache read、5m/1h write、模型、effort、失败/重试/废弃);成本按公开计价倍率**加权**——**别拿原始 token 总数判断"贵在哪"**(haiku 壳加权占比高但 $ 是 opus 零头)。播报须带覆盖声明,公开价估算 ≠ 实际账单;缺 JSON 写 `UNMEASURED`,**不能写 `$0`**。
+> **CP7 的 token/成本计量**:命令见步骤 5 的五条批次(含配置生效对账 `usage_reconcile`)。表覆盖**主会话 + subagent**(按 message.id 去重,分 input/output、cache read、5m/1h write、模型、effort、失败/重试/废弃);成本按公开计价倍率**加权**——**别拿原始 token 总数判断"贵在哪"**(haiku 壳加权占比高但 $ 是 opus 零头)。播报须带覆盖声明,公开价估算 ≠ 实际账单;缺 JSON 写 `UNMEASURED`,**不能写 `$0`**。
 >
 > 随时可调(零 LLM,几秒):`uv run --no-sync python -m autoresearch.scan.render <date> --view menu_health|gate_hist|timing|funnel`。
 >
@@ -135,18 +135,21 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
    `_ensemble_<code>.json`(assemble 合并读)。卡模板/契约烤进 `.claude/agents/l4-card.md`。
    **活体情报站**(config `l4_intel.enabled`):l4-stock 的 Intel 相位,sonnet·max 结构性盲(prompt 只给码/名/行业/日期)盲搜六面落 `_l4_intel_<code>.md`;卡 P3 先读 intel、自发网查降 ≤1 验证,缺文件自动回退卡内网查(presence-gated)。⚠️ **铁律:卡片对 intel 的价格类断言必须与 verified OHLCV 对账后才可采信**(捏造前科见 STAGES.md『运维细节』)。
 5. **L5 整合**(全部 l4-stock workflow 完成后,主会话直接跑;哨兵档跳过 L3/L4 后也走这里)。
-   **四条在一个 shell 批次跑完再播 CP7**，其中 `<run_id>` 是 assemble 打印的报告目录名:
+   **五条在一个 shell 批次跑完再播 CP7**，其中 `<run_id>` 是 assemble 打印的报告目录名:
    ```bash
    uv run --no-sync python -m autoresearch.scan.assemble <date> && \
    uv run --no-sync python -m autoresearch.scan.gates gate4 <date> && \
    uv run --no-sync python -m autoresearch.trace.usage_harvest --session <本次 sessionId> \
      --out reports/scan/<run_id>/token_usage.md \
      --json-out context/scan/<date>/_token_usage.json && \
+   uv run --no-sync python -m autoresearch.trace.usage_reconcile <date> \
+     --json-out context/scan/<date>/_usage_reconcile.json && \
    uv run --no-sync python -m autoresearch.scan.post_run <date> observe \
      --report-dir reports/scan/<run_id>
    ```
    → **`reports/scan/<YYYYMMDD_HHMM>/`**:`summary.md`(含成本与时延观测)+ `details/`+ `token_usage.md`+ `trace/`。成本/墙钟晋升在 **10 次真实扫描**前恒为 `IMMATURE`；看中位成本与 P50/P90，禁止拿单次最佳 run 宣称达标。预算超线只写 warning/`DEGRADED`，不截断研究、不制造 BUY。
    **汇报(CP7)**:漏斗 + buy-list(评级/目标)+ 分段耗时表(`render --view timing`)+ 诚实局限;0 买日必须播**停因分桶**(早停 N 张〔按停因〕/ 满卡未达 OW M 张),**不要再说「无一过 ≥OW 三门」**——早停卡按定义不写三门段(07-21 实测 12 卡里 6 张早停、仅 2 张可解析三门),那句话不被数据支持。
+   **配置生效对账**(Wave11 B4,第五条命令的产物):`usage_reconcile` 把当日 `user_config_echo.json`(期望)× `_token_usage.json`(`usage_harvest` 实测)逐 role 对上,`ok=false` 时把 mismatch/wire_break 直接打进 CP7 播报的 stdout——**这就是当日结论**,不经 `self_review` 转手(`self_review` 的同名 check 时序上跑在 `usage_harvest` 之前,只能读**最近一份既有**结果,通常是上一次 run;三条精度边界——时序 / `general-purpose` 壳类只做集合断言 / effort 是请求参数不是推理深度——写在模块 docstring 与 `_usage_reconcile.json` 报表头,勿在播报时脑补掉)。exit 恒 0,不影响 `post_run` 是否执行。
 
 6. **覆盖档案维护**(盘后,不占扫描窗;presence-gated,池空则整段跳过)
    ```bash
