@@ -23,6 +23,12 @@
 - `ruler.MAIN_RULER` 换值**只发生在 T16**;之前所有 commit 保持 `fwd_2_oc` 行为逐字节不变。
 - commit 风格:`type(scope): 中文主旨`,尾行 `Co-Authored-By: Claude <noreply@anthropic.com>`。
 - 铁律不破:确定性层零 LLM;性能开关不拥有评级;L3/L4 必须 subagent。
+- **🚨 排序缺陷已坐实(2026-08-06 T5 review)**:CLAUDE.md 的「涉及召回/L3/门/早停/评级/
+  Token/速度的行为变更**必须先**登记 registry」没有例外条款,而本计划把批C 的登记(T5)排在
+  代码(T1-T3.5)之后 —— **批C 违了这条铁律**,已按用户裁定在 registry 条目里如实标注,代码
+  不回退。**后续任何波次:registry 登记必须排在第一个 task。** 本波剩余批次的豁免依据:
+  批A 换尺是**用户裁定**直接切(沿 07-10 先例,spec §A8 明写不设批准门);批B/D 不改
+  召回/评级/速度语义(B 的壳 model 变更已随 08-05 事故修复先行落地,属事故止血)。
 
 ---
 
