@@ -206,6 +206,51 @@ def test_stats_counts_errors_and_wait(tmp_path):
 - [ ] **Step 2: 跑红。Step 3: 实现**(纯读账本:遍历 tasks 聚合 `last_error_class` 计数、`sem_wait_s` max/均值、`slim_attempts` 总数,返回 dict;CLI 打一行 JSON)。**Step 4: 跑绿+全量绿。**
 - [ ] **Step 5: Commit** `feat(scan): Wave11-C4 l4_tasks stats —— 全并发首跑的限频/排队观测面`
 
+### Task 3.5: l4_watch 对 BLOCKED 失明(T4 review 挖出的计划外缺陷,2026-08-06 用户裁定加此 task)
+
+**Files:**
+- Modify: `autoresearch/scan/l4_watch.py`(`_TERMINAL` 集合;`snapshot()` 的 done 判据;播报行)
+- Test: `tests/scan/test_l4_watch.py`(存量文件则追加;`grep -rl l4_watch tests` 定位真身)
+
+**背景**:`_TERMINAL = {"SUCCEEDED", "FAILED"}` **不含 `BLOCKED`**,而 `mark_failure()` 对非瞬时
+错误(DATA_INTEGRITY / schema / contract)**直接**置 `status="BLOCKED"`,不经重试耗尽。后果:
+有票 BLOCKED 时 `snapshot()` 的 `done = n_terminal_all == n_total` **永远为 False** → Monitor
+一直挂到 `timeout_ms`(SKILL 里配 1 小时)才停,**永不播「全部终态」**。全并发(批C)之后主会话
+更依赖这个自动完成信号,该盲区必须先补上。
+
+**Interfaces(produces):** `_TERMINAL` 增 `"BLOCKED"`;播报行区分终态类型(SUCCEEDED 出评级、
+FAILED/BLOCKED 出错误类别),`snapshot()` 返回值增 `n_blocked`。
+
+- [ ] **Step 1: premise-check**:`grep -n "_TERMINAL\|def snapshot\|n_terminal" autoresearch/scan/l4_watch.py`
+  确认符号与判据现状;`grep -rn "BLOCKED" autoresearch/scan/l4_tasks.py` 确认置 BLOCKED 的真实路径。
+- [ ] **Step 2: 失败测试**
+
+```python
+# tests/scan/test_l4_watch.py(追加)
+"""Wave11 T3.5:BLOCKED 也是终态 —— 否则 watcher 永远等不到「全部终态」,静静挂到超时。"""
+
+
+def test_blocked_counts_as_terminal_and_done(tmp_path):
+    book = _make_book(tmp_path, {"000001": "SUCCEEDED", "000002": "BLOCKED"})
+    snap = l4_watch.snapshot(book)
+    assert snap["done"] is True          # 修复前:False,watcher 挂到超时
+    assert snap["n_blocked"] == 1
+
+
+def test_blocked_line_shows_error_not_rating(tmp_path):
+    book = _make_book(tmp_path, {"000002": "BLOCKED"}, error_class="DATA_INTEGRITY")
+    lines = l4_watch.render_new_lines(book, seen=set())
+    assert any("DATA_INTEGRITY" in ln for ln in lines)   # 不能伪装成一张有评级的卡
+```
+
+(`_make_book` 按该测试文件既有 fixture 手法写;函数名 `snapshot`/`render_new_lines` 以 Step 1
+读到的真身为准——若签名不同,按真身调整测试而不是臆造 API。)
+
+- [ ] **Step 3: 跑红 → 实现**:`_TERMINAL` 增 `"BLOCKED"`;播报行按终态类型分支;`snapshot()`
+  增 `n_blocked`。**不要**把 BLOCKED 当成功计数(它不是出了卡,是这票废了)。
+- [ ] **Step 4: 变异验证**:把 `"BLOCKED"` 从 `_TERMINAL` 去掉,确认两个新测试变红;复原。
+- [ ] **Step 5: 全量绿 + ruff 干净;Commit** `fix(scan): Wave11-T3.5 l4_watch 认 BLOCKED 为终态(否则有票阻断时 watcher 挂到超时)`
+
 ### Task 4: SKILL.md 派发协议改写(全派)
 
 **Files:** Modify `.claude/skills/scan-market/SKILL.md`(步骤 4 滑窗段);Modify `.claude/skills/scan-market/STAGES.md`(沿革注一行)。
@@ -218,7 +263,11 @@ def test_stats_counts_errors_and_wait(tmp_path):
      现返回单批全量 pending —— 主会话**一条消息 N 个 Workflow 调用**全部派出;📌 pinned 排
      列表最前只为 watch 可读性,无先后语义。tushare 取数由每票 prepare 内的 K 槽信号量排队
      (K=caps.tushare−限频扣减),intel/card 不排队即刻起跑。
-   - **完成判据 = task_book 全 SUCCEEDED**(不变;`batches` 空 ∧ `running` 空才是完成态);
+   - **完成判据 = task_book 全 SUCCEEDED**(不变)。`batches` 为空**不是**完成——可能都还在飞
+     (见 `running`),也可能有票停在 `BLOCKED`(非瞬时错误直接置该态,`batches`/`running`
+     两边都不放)。**不要**用「两个数组皆空」当完成态的充分条件;唯一权威判据是 task_book。
+     〔2026-08-06 勘误:本行原写「`batches` 空 ∧ `running` 空才是完成态」,是错的——BLOCKED
+     票会让它假成立。用户裁定退回只给必要条件的保守写法。〕
      收完成通知的回合只领不播(唤醒纪律不变)。单票失败只改本票状态;重放仍只派
      `l4_tasks batches` 返回的未完成票。
    - 回滚杆:`scan_config.jsonc` 设 `budgets.concurrency.l4_stock=4` 即回滑窗节奏
