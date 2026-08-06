@@ -871,8 +871,10 @@ CLI `pending` 输出含「归因欠账」「诊断欠账(已备料)」两段且�
 清账判据 = `retro pending` 的「诊断欠账」段为空。触发词:「补复盘欠账」。
 ```
 
-- [ ] **Step 4: 首验**:对现存 6 日欠账实跑一轮批量补诊断(两批:5+1),`retro pending` 诊断段清零。
-- [ ] **Step 5: 全量绿;Commit** `feat(learning): Wave11-A7 retro 欠账拆两账 + scan-retro 批量补诊断(首验清 6 日)`
+- [ ] **Step 4: ~~首验~~ 已摘出**(2026-08-06 用户裁定):对现存 6 日欠账实跑批量补诊断是**用法**不是实现,
+  且约等于一整轮 scan-retro 工作量 → 移入「合并后验收清单」。本 task 只交付代码+单测;
+  实施者**不要**跑真诊断。
+- [ ] **Step 5: 全量绿;Commit** `feat(learning): Wave11-A7 retro 欠账拆两账 + scan-retro 批量补诊断(首验推合并后)`
 
 ---
 
@@ -889,8 +891,10 @@ CLI `pending` 输出含「归因欠账」「诊断欠账(已备料)」两段且�
 - **scan-retro**:`Two review loops for prior scan-market days: FAST t1_review (D+1 initial + D+2 gap final verdict, per-card judgment accuracy via t1-review workflow) and SLOW retro (D+2, funnel recall attribution + auto weight recalibration + lessons). Triggers: /retro, 「复盘昨天的扫描」「为什么没选到X」, scan-market finding unreviewed days, or 「补复盘欠账」(batch diagnosis, ≤5 days/run). scan-market only. Project-local.`
 - **feedback**:`Capture user reactions to research output (correction/complaint/praise/「记住」「这个评级错了」「你漏了X」) into the closed-loop store, and adjudicate pending pr_* proposals (「裁决提案」) — distils lessons that feed future scans. Works across scan-market / stock-research / macro-research. Project-local.`
 
-- [ ] **Step 1: 逐文件替换;Step 2: 触发冒烟**:新开会话说「扫描全A股」「快速看一眼 600519」
-「补复盘欠账」各应命中对应 skill(记录在 commit message,人工验证)。
+- [ ] **Step 1: 逐文件替换**(frontmatter `description:` 单行;正文不动)。
+- [ ] **Step 2: ~~触发冒烟~~ 已摘出**(2026-08-06 用户裁定):子 agent 开不了新会话 → 移入
+  「合并后验收清单」。本 task 只交付文案;实施者自查=六个 SKILL.md 的 frontmatter 能被
+  `uv run --no-sync python -c "import re,pathlib;[print(p, bool(re.search(r'^description:', p.read_text(), re.M))) for p in pathlib.Path('.claude/skills').glob('*/SKILL.md')]"` 全 True。
 - [ ] **Step 3: Commit** `docs(skill): Wave11-D1 六 skill description 重写(触发/反触发/被调关系)`
 
 ### Task 21: SKILL.md 瘦身 + 退役标记处置台账
@@ -958,6 +962,16 @@ Modify `autoresearch/learning/nightly_close.py`(names 表加注)。
 | B | 拼错 role raise;CP7 第五条 reconcile 全 ✓;变异 config 被逮(测试);空 cfg throw(node 探针) |
 | A | 变异体 2/2 被逮;A2 parity 底片 byte 一致;抽样 gap 值手核 ✓;changelog 现 label_col=gap_c1_o2;对照报告落盘含「作废/待重验清单」;6 日诊断欠账清零;首个 v4 卡带标记行 |
 | D | 六 description 落稿+触发冒烟;台账 22/22;3 模块删净全测绿+nightly 真跑无新 ✗;lint 对已知退役符号能红 |
+
+## 合并后验收清单(2026-08-06 用户裁定摘出实施批;实施者勿跑)
+
+1. **T19-Step4 首验**:对 07-27/28/29/30/31、08-03 六日欠账实跑批量补诊断(两批 5+1),
+   验 `retro pending` 的「诊断欠账」段清零。
+2. **T20-Step2 触发冒烟**:新会话说「扫描全A股」「快速看一眼 600519」「补复盘欠账」
+   「研究半导体行业」,各应命中 scan-market / stock-research / scan-retro / sector-research。
+3. **批C 真实扫描验收**:下一次全扫时验「一条消息全派 + task_book 全 SUCCEEDED +
+   `l4_tasks stats` 无限频风暴 + L4 段墙钟 vs 76m51s 基线」。
+4. **批B CP7 对账**:同一次全扫的 CP7 跑 `usage_reconcile`,全 ✓ 即证配置真生效。
 
 ## 回滚杆速查
 
