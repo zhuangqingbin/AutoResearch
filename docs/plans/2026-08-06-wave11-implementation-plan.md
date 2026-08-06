@@ -14,6 +14,9 @@
 
 - 仓库根目录;一切 Python 走 `uv run --no-sync python -m …`(venv-only 的 akshare/tushare/lightgbm)。
 - 每次 commit 前全测绿:`uv run --no-sync python -m pytest -q`;**禁止 `pytest | tail`**(吞退出码前科)。
+- 每次 commit 前 lint 干净:`uv run --no-sync ruff check <本次改动的文件>`(T2 review 教训:
+  pytest 绿但 ruff 红,自查口径漏了 lint 这条腿)。**既有债务不算你的**(如 `l4_tasks.py` 的
+  `UP035`),只对本次改动的新增/改写行负责。
 - 改任何 `.claude/workflows/*.js` 后必跑 AsyncFunction 探针(T10 步骤 5 给出命令);`node --check` 对这类文件是假绿灯,**禁用作判据**。
 - 改任何 `.claude/skills|agents` 文档前先 Read 重读(会被外部改的前科)。
 - **premise-check**:每 task 开工先 grep 确认所引函数/行仍在(本 wave 设计期已两次靠它逮错:GATE1 误诊、D3 死码误判)。
@@ -97,8 +100,10 @@ tushare/web 资源帽由 prepare_slim 的操作级信号量执行(T2),限频事�
 
 ```python
 def test_tushare_slot_queues_when_full(tmp_path):
-    import fcntl, threading, time
-    sem_dir = tmp_path / "_sem"; sem_dir.mkdir()
+    import fcntl
+
+    sem_dir = tmp_path / "_sem"
+    sem_dir.mkdir()
     hold = (sem_dir / "tushare.0.lock").open("a+")
     fcntl.flock(hold, fcntl.LOCK_EX | fcntl.LOCK_NB)      # 外部占住 slot0
     got = {}
@@ -109,8 +114,12 @@ def test_tushare_slot_queues_when_full(tmp_path):
 
 
 def test_tushare_slot_waits_then_acquires(tmp_path, monkeypatch):
-    import fcntl, threading, time
-    sem_dir = tmp_path / "_sem"; sem_dir.mkdir()
+    import fcntl
+    import threading
+    import time
+
+    sem_dir = tmp_path / "_sem"
+    sem_dir.mkdir()
     fh = (sem_dir / "tushare.0.lock").open("a+")
     fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
     threading.Timer(0.3, lambda: (fcntl.flock(fh, fcntl.LOCK_UN), fh.close())).start()
@@ -253,7 +262,9 @@ uv run --no-sync python -m autoresearch.learning.experiment_registry report
 ```python
 # tests/scan/test_user_config_roles.py
 """Wave11 B1:agents 子键闭集 —— 拼写错必须 raise,这是 user_config 存在的唯一理由的补全。"""
-import json, pytest
+import json
+
+import pytest
 from autoresearch.scan import user_config as uc
 
 
@@ -419,7 +430,8 @@ ROWS = [
 
 
 def _run(tmp_path, echo, rows):
-    d = tmp_path / "context/scan/2026-08-06"; d.mkdir(parents=True)
+    d = tmp_path / "context/scan/2026-08-06"
+    d.mkdir(parents=True)
     (d / "user_config_echo.json").write_text(json.dumps(echo))
     (d / "_token_usage.json").write_text(json.dumps({"rows": rows}))
     return ur.reconcile("2026-08-06", root=tmp_path)
@@ -528,7 +540,8 @@ if (!Object.keys(cfg).length && !_allowEmpty) {
 ```python
 # tests/workflows/test_empty_config_guard.py
 """Wave11 B5:空 config 必须在任何 agent 派发前抛错 —— 用桩 agent 证明「先于一切派发」。"""
-import subprocess, textwrap
+import subprocess
+import textwrap
 
 _PROBE = textwrap.dedent("""
   const fs = require('fs');
