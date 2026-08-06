@@ -68,8 +68,10 @@ def _read_jsonc(p: Path):
     """读 JSONC 文件 → 去注释 → `json.loads`。"""
     return json.loads(_strip_jsonc(p.read_text(encoding="utf-8")))
 
-# 顶层白名单;funnel/pinned/reuse/l4_intel/l3 额外校验子键(agents 内部形状由消费方解释:
-# agents={stage: {model, effort}} 无固定 stage 集,workflow 直接按需取)。
+# 顶层白名单;funnel/pinned/reuse/l4_intel/l3 额外校验子键。agents 子键是 role 闭集
+# (Wave11 B1:_AGENT_ROLES,T7 的 jsonc 键/T8 的 AGENT_DEFAULTS/T9 的 reconcile 全都以它
+# 为词表)——每个 role 下只认 model/effort 两个子键,值也做枚举校验(见 load_user_config
+# 内 agents 校验块),不再是"消费方各自解释"的自由形状。
 # l3:两遍法分诊(design 2026-07-12-l3-merge-plan.md Task 1)——two_pass/pass1_target 由
 # `l3_select.prepare_l3_table` 消费;finalist_max 由 merge v3 消费(`write_finalists` 已接线,
 # cap=min(finalist_max, budget))。
@@ -95,6 +97,19 @@ _SUB_WHITELIST = {
         "streaming_l4",
     },
 }
+
+# agents={role: {model, effort}} 的 role 闭集(Wave11 B1)——白名单外一律 raise,防拼写错
+# 静默掉回缺省(如 t1_diag 拼成 t1diag,不会报错只会静默丢配置)。7 个现役(strategist/
+# sector_brief/l3_rank/l4_intel/l4_card/t1_diag/t1_synth,均已见于生产 scan_config.jsonc)
+# + 5 个下一波(ens_review/l3_repair/dossier_init/gp_shell/gp_shell_json)先占位入闭集,
+# 免得那几个 task 往配置里写 role 时被本校验拦住。
+_AGENT_ROLES = {
+    "strategist", "sector_brief", "l3_rank", "l4_intel", "l4_card",
+    "t1_diag", "t1_synth",
+    "ens_review", "l3_repair", "dossier_init", "gp_shell", "gp_shell_json",
+}
+_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
+_MODELS = {"haiku", "sonnet", "opus"}
 
 
 def load_user_config(path: str | Path | None = None) -> dict:
@@ -125,6 +140,23 @@ def load_user_config(path: str | Path | None = None) -> dict:
         for key in ("streaming_l4",):
             if key in performance and not isinstance(performance[key], bool):
                 raise ValueError(f"scan_config.json performance.{key} 必须是 boolean")
+
+    agents = cfg.get("agents")
+    if agents is not None:
+        if not isinstance(agents, dict):
+            raise ValueError("scan_config.json 的 agents 必须是 object")
+        unknown = sorted(set(agents) - _AGENT_ROLES)
+        if unknown:
+            raise ValueError(f"scan_config.json agents 含未知 role: {unknown}"
+                             f"(闭集={sorted(_AGENT_ROLES)})")
+        for role, spec in agents.items():
+            bad = sorted(set(spec or {}) - {"model", "effort"})
+            if bad:
+                raise ValueError(f"agents.{role} 含未知子键: {bad}(只认 model/effort)")
+            if "effort" in (spec or {}) and spec["effort"] not in _EFFORTS:
+                raise ValueError(f"agents.{role}.effort={spec['effort']!r} 非法(∈{sorted(_EFFORTS)})")
+            if "model" in (spec or {}) and spec["model"] not in _MODELS:
+                raise ValueError(f"agents.{role}.model={spec['model']!r} 非法(∈{sorted(_MODELS)})")
     return cfg
 
 

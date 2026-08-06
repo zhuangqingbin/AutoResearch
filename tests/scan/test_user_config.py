@@ -5,7 +5,8 @@ design: docs/specs/2026-07-11-recall-gate-pinned-config-design.md §4.2。
 plan: docs/plans/2026-07-11-pinned-config-plan.md Task 1(全波地基)。
 
 白名单外顶层键 / funnel·pinned·reuse 白名单外子键 → raise(防拼写错静默失效);缺文件 → {}
-(=现行为,parity)。`agents` 内部结构本层不校验(消费方 workflow 各自解释其形状)。
+(=现行为,parity)。`agents` 的 role 闭集 + model/effort 子键校验见 test_user_config_roles.py
+(Wave11 B1)。
 """
 from __future__ import annotations
 
