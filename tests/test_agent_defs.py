@@ -222,29 +222,56 @@ def test_dossier_init_agent_def():
         assert a in text, f"dossier-init.md 缺契约锚「{a}」"
 
 
-def test_workflow_shell_wrappers_use_haiku():
-    """纯壳 agent(跑命令 / 转述 JSON / 写文件)必须降 haiku(Wave6 T1)。
+def _agent_defaults_block(src: str, filename: str) -> str:
+    """切出 `const AGENT_DEFAULTS = {...}` 整块文本(含首尾大括号,`}` 独占一行)。"""
+    start = src.index("const AGENT_DEFAULTS = {")
+    end = src.index("\n}\n", start)
+    assert end > start, f"{filename}: AGENT_DEFAULTS 表未闭合(找不到独占一行的 `}}`)"
+    return src[start:end + 2]
 
-    07-24 真计量:13 个 general-purpose 吃掉 798k 加权(全场 14.5%),其中 7 个是 2 消息的
-    纯壳,各背 ~60k 的 opus 系统前缀 ≈287k 加权纯过路费。壳本身零判断 —— 门的判据全在
-    确定性 CLI 里,agent 只负责执行与转述。
 
-    锚取**承重行**(agentType 与 model 同现在一个 opts 对象里):注释里写了不算,
-    删掉任一 `model: 'haiku'` 本测试必须变红。
+def test_workflow_shell_wrappers_use_agent_defaults():
+    """纯壳 agent(跑命令 / 转述 JSON / 写文件)必须走 AGENT_DEFAULTS 单一事实源(Wave11-B2)。
+
+    原测试(`test_workflow_shell_wrappers_use_haiku`)锁的是「壳必须内联 `model: 'haiku'`」——
+    07-24 真计量:13 个 general-purpose 吃掉 798k 加权(全场 14.5%),其中 7 个 2-消息纯壳
+    ≈287k 加权纯过路费,降档省的就是这份 opus 系统前缀。2026-08-05 事故(haiku 壳遇长命令
+    转后台会 pkill 生产作业)后壳类缺省改 sonnet,Wave11-B2 又把 model/effort 单一事实源
+    收进每个 workflow 顶部的 `AGENT_DEFAULTS` 表 + `AG(role)` 解析器 —— 原测试按字面
+    `model: 'haiku'` 计数,与新架构互斥(该字符串在健康仓库里现在应该是 0 次,不再是 ≥5)。
+    这里改锁新契约的等价物:
+    ① 调用点不得有 AGENT_DEFAULTS 表外的内联 model 字面量(单一事实源不被绕过、不被 sed 漏改);
+    ② 壳类角色(gp_shell/gp_shell_json)缺省钉在 sonnet —— 防止有人删掉 model 键悄悄回落
+       到 opus 系统前缀(原测试保护的成本目标),也防止悄悄改回 haiku(08-05 事故的教训);
+    ③ 判断类 agentType 不得被误配 haiku(原测试第三条锁原样保留,防「顺手把整个文件 sed 一遍」)。
     """
     wf_dir = ROOT / ".claude" / "workflows"
     all_js = {p.name: p.read_text(encoding="utf-8") for p in wf_dir.glob("*.js")}
 
-    # 全量扫:**任何** workflow 里的 general-purpose 壳都必须带 haiku。
-    # 第一版只点名 scan-market/l4-stock 两个文件 → dossier-init.js 的两个壳漏网,
-    # 2026-07-27 实测一次建档 249.8k 加权里它们占 27%(67.2k 换 1.0k 输出)。
-    # 逐文件枚举的清单会漏掉新增文件;改成全量扫,新 workflow 一进来就被管住。
-    for name, src in sorted(all_js.items()):
-        bare = src.count("agentType: 'general-purpose', effort:")
-        assert bare == 0, f"{name} 有 {bare} 个 general-purpose 壳未降 haiku(纯壳零判断,应降档)"
-    assert sum(s.count("agentType: 'general-purpose', model: 'haiku'")
-               for s in all_js.values()) >= 5, "壳降档锚整体消失了?(应至少 5 处)"
-    # 判断 agent 不得被误降 —— 这条防的是「顺手把整个文件 sed 一遍」
+    # 只有这三个文件走 AGENT_DEFAULTS(t1-review.js 是独立的 cfg.agents.t1_diag/t1_synth
+    # 通道,不消费本文件的壳角色,见该文件顶部注 —— 不纳入①②检查,但仍受③约束)。
+    shell_using = {"scan-market.js", "l4-stock.js", "dossier-init.js"}
+    for name in sorted(shell_using):
+        assert name in all_js, f"{name} 不存在(workflow 被改名?同步更新本测试)"
+        src = all_js[name]
+        assert "const AG = (role) =>" in src, f"{name} 缺 AG(role) 解析器(Wave11-B2)"
+        block = _agent_defaults_block(src, name)
+        rest = src.replace(block, "", 1)
+        assert "model: '" not in rest, (
+            f"{name} 在 AGENT_DEFAULTS 表外仍有内联 model 字面量 —— 单一事实源被绕过,"
+            f"调用点应改用 `...AG(role)`")
+        assert "AG('gp_shell')" in src, f"{name} 没有调用点使用 AG('gp_shell')"
+        assert "AG('gp_shell_json')" in src, f"{name} 没有调用点使用 AG('gp_shell_json')"
+        for line in block.splitlines():
+            s = line.strip()
+            if s.startswith("gp_shell:") or s.startswith("gp_shell_json:"):
+                assert "'sonnet'" in s, (
+                    f"{name}: AGENT_DEFAULTS 的 {s!r} 未钉 sonnet —— "
+                    f"08-05 事故:壳类缺省不得静默回落到 opus/haiku")
+                assert "haiku" not in s and "opus" not in s, f"{name}: {s!r} 误写危险 model"
+
+    # 判断 agent 不得被误降 haiku(防「顺手把整个文件 sed 一遍」;原测试第三条锁原样保留,
+    # 联合扫全部 workflow —— t1-review.js 虽不走 AGENT_DEFAULTS,同样受此约束)。
     joined = "".join(all_js.values())
     for real in ("l3-rank", "l4-card", "l4-intel", "macro-brief", "sector-brief", "dossier-init"):
         assert f"agentType: '{real}', model: 'haiku'" not in joined, \

@@ -13,9 +13,21 @@ export const meta = {
 const date = (typeof args === 'string' && args ? JSON.parse(args).date : (args && args.date))
 if (!date) throw new Error('args.date 必填,如 {date:"2026-07-07"}')
 // scan_config.json 白名单校验后的 user_config(autoresearch/scan/user_config.py)经 frame --json
-// 回显、由调用方随 Workflow args.config 传入(本脚本无文件系统访问,不能自己读文件)。缺省 = {} →
-// 下游 `cfg.agents?.<stage>?.effort ?? '<现值>'` 全部落回硬编码现值(parity)。顶部取一次。
+// 回显、由调用方随 Workflow args.config 传入(本脚本无文件系统访问,不能自己读文件)。缺省 = {}。
 const cfg = (typeof args === 'string' && args ? JSON.parse(args).config : (args && args.config)) || {}
+// Wave11-B2:model/effort 单一事实源=scan_config.agents(闭集见 user_config._AGENT_ROLES);
+// 本表=缺键回退值。调用点禁止内联字面量(product_shape_lint 会查)。回退链:
+// config > 本表(AGENT_DEFAULTS) > agent .md frontmatter —— opus 类 role 本表不写 model 键,
+// 缺省即落那一层(strategist/sector_brief/l3_rank/l3_repair 皆是)。
+const AGENT_DEFAULTS = {
+  gp_shell:      { model: 'sonnet', effort: 'low' },
+  gp_shell_json: { model: 'sonnet', effort: 'low' },
+  l3_repair:     { effort: 'medium' },     // model 缺省=l3-rank frontmatter(opus)
+  strategist:    { effort: 'high' },       // model 缺省=macro-brief frontmatter(opus)
+  sector_brief:  { effort: 'high' },       // model 缺省=sector-brief frontmatter(opus)
+  l3_rank:       { effort: 'max' },        // model 缺省=l3-rank frontmatter(opus)
+}
+const AG = (role) => ({ ...(AGENT_DEFAULTS[role] || {}), ...((cfg.agents || {})[role] || {}) })
 // Wave 3 性能开关只改变调度/上下文布局，不拥有 finalist、rubric 或评级语义。
 // streaming 默认开；另外两项默认当前生产行为，均有显式回滚杆。
 const streamingL4 = cfg.performance?.streaming_l4 ?? true
@@ -52,7 +64,7 @@ function bash(cmd, label, phaseName) {   // 形参勿叫 phase:会遮蔽全局 p
     `- 只有拿到真实退出码才算完;拿不到就如实回报"未拿到退出码",**不要**自己动手"修"。\n` +
     `(2026-08-05 事故:壳 pkill 了 prelude 两次,GATE1 因此毙掉整条流水线。)\n\n` +
     `\`\`\`\n${cmd}\n\`\`\``,
-    { agentType: 'general-purpose', model: 'sonnet', effort: 'low', label, ...(phaseName ? { phase: phaseName } : {}) })
+    { agentType: 'general-purpose', ...AG('gp_shell'), label, ...(phaseName ? { phase: phaseName } : {}) })
 }
 const RUN_MODE = { type: 'object', required: ['mode'],
   properties: { mode: { type: 'string' }, pinned_codes: { type: 'array', items: { type: 'string' } } } }
@@ -62,13 +74,14 @@ const STAGE_RESULT = { type: 'object', required: ['stage', 'status', 'metrics'],
   properties: { stage: { type: 'string' }, status: { type: 'string' },
     metrics: { type: 'object' }, error: {} } }
 // Wave6 T1:门的判据 100% 在确定性 CLI 里,agent 只把它打印的 JSON 原样带回 —— 转述不需要
-// 思考,effort high→low 且降 haiku。schema 校验仍在(格式错会被 harness 拒),门行为不变。
+// 思考,effort high→low。schema 校验仍在(格式错会被 harness 拒),门行为不变。
+// model 走 AGENT_DEFAULTS.gp_shell_json(Wave11-B2;08-05 事故后壳类缺省统一 sonnet,见 bash() 注)。
 function gate(label, cmd, schema, phaseName) {   // 同上:避免遮蔽全局 phase()
   return agent(
     `执行:\`${cmd}\`\n它会向 stdout 打印 JSON。把它打印的最后一行 JSON 原样作为你的结构化返回(字段不改、不增删)。\n` +
     `**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向**` +
     `(混入 stderr 会污染这行 JSON)。`,
-    { agentType: 'general-purpose', model: 'haiku', effort: 'low', label, schema, ...(phaseName ? { phase: phaseName } : {}) })
+    { agentType: 'general-purpose', ...AG('gp_shell_json'), label, schema, ...(phaseName ? { phase: phaseName } : {}) })
 }
 // 通用确定性 CLI 壳:跑一条命令、把它打印的最后一行 JSON 原样带回(零判断)。
 // 2026-08-03 事故:Wave10 A2(99efe7d)把 run_mode 的**调用点**抄进本文件,却把这份定义
@@ -78,7 +91,7 @@ function gate(label, cmd, schema, phaseName) {   // 同上:避免遮蔽全局 ph
 const gpJson = (cmd, label, schema, phaseName) => agent(
   `执行:\`${cmd}\`\n它会向 stdout 打印一行 JSON。把最后一行 JSON 原样作为结构化返回,` +
   '不改、不增删字段。**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**',
-  { agentType: 'general-purpose', model: 'haiku', effort: 'low', label, schema,
+  { agentType: 'general-purpose', ...AG('gp_shell_json'), label, schema,
     ...(phaseName ? { phase: phaseName } : {}) })
 // StageResult 的 metrics 解包。2026-07-30 实跑事故:haiku 壳把整条 StageResult 记录**再包一层**
 // 塞进 metrics(`{stage,status,metrics:{...整条记录含自己的 metrics...}}`)—— 外层三字段仍匹配
@@ -96,7 +109,7 @@ function stageGate(label, cmd, stage, phaseName) {
     '前一条命令的 stdout 保留作诊断；把最后一行 StageResult JSON 原样作为结构化返回。\n' +
     '**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向**' +
     '(混入 stderr 会污染这行 JSON)。',
-    { agentType: 'general-purpose', model: 'haiku', effort: 'low', label,
+    { agentType: 'general-purpose', ...AG('gp_shell'), label,
       schema: STAGE_RESULT, ...(phaseName ? { phase: phaseName } : {}) })
 }
 
@@ -162,8 +175,7 @@ await parallel([
   // full pack 仍是 L5 与 L3 数字 validator 的事实源,不受影响。
   () => agent(
     `读 ${SD}/strategist_pack.json 的 pack 段,按你的人设写 ${SD}/market_view.md(六小节;前3描述性地形、后2仅 L5)。数字只出自该文件,不编;个股不评级、不锚定卡片。`,
-    { agentType: 'macro-brief', effort: cfg.agents?.strategist?.effort ?? 'high',
-      ...(cfg.agents?.strategist?.model ? { model: cfg.agents.strategist.model } : {}),
+    { agentType: 'macro-brief', ...AG('strategist'),
       label: 'market_view', phase: 'Prelude' }),
 ])
 // universe 走 tushare 全市场取数,偶发 ChunkedEncodingError 半途而废(prelude 内 ✗ 但不阻断),
@@ -252,8 +264,7 @@ await parallel([
   () => bash(`${R} autoresearch.scan.agents.l3_select prepare ${date}`, 'l3-prepare', 'L3'),
   ...preL3BriefSectors.map((sec) => () => agent(
     `你是行业分析师。读 context/sector/${date}/${sec}.json 写 ${SD}/sector_briefs/${sec}.md,两段机器契约(## 地形段 喂 L3/L4 · ## 研判段 仅 L5,含 **行业方向** 行)。零新取数。`,
-    { agentType: 'sector-brief', effort: cfg.agents?.sector_brief?.effort ?? 'high',
-      ...(cfg.agents?.sector_brief?.model ? { model: cfg.agents.sector_brief.model } : {}),
+    { agentType: 'sector-brief', ...AG('sector_brief'),
       label: `brief:${sec}`, phase: 'L3' })
     .then((r) => { log(`brief ✓ ${sec}`); return r })),
 ])
@@ -261,8 +272,7 @@ await parallel([
 log(`L3 精排开始:pass1 已分诊 200→~40(影子 _l3_pass1_cut.csv),l3-rank 深比较出 finalist tier 7~${l3cap} 只+bench(effort max,历史 60行~14-25m,40行待测)`)
 await agent(
   `L3 精排 · 日期 ${date} · finalist tier 按质 7~${l3cap} 只(judged 每元素带 finalist:true/false)+其余为 bench;宁缺毋滥。文件在 ${SD}/:_l3_table.md(~40 表,pass1 已分诊)、market_view.md(§1-3 地形)、sector_briefs/(地形段)。按你的人设(6 维 rubric + 硬约束 A-E)比较式精排,写 ${SD}/_l3_judged.json。`,
-  { agentType: 'l3-rank', effort: cfg.agents?.l3_rank?.effort ?? 'max',
-    ...(cfg.agents?.l3_rank?.model ? { model: cfg.agents.l3_rank.model } : {}),
+  { agentType: 'l3-rank', ...AG('l3_rank'),
     label: 'L3-rank', phase: 'L3' })
 // thesis 数字机检(确定性 lint):打回一次自修,修复后不再二检(防循环)
 const l3lint = await gate('l3-lint', `${R} autoresearch.scan.agents.l3_select lint ${date}`, OK, 'L3')
@@ -280,7 +290,7 @@ if (l3lint && l3lint.ok === false) {
     `${R} autoresearch.scan.agents.l3_select repair-pack ${date}`, REPAIR, 'L3')
   const fix = repair && repair.n > 0 ? await agent(
     `Read ${SD}/_l3_repair_prompt.md，只处理其中列出的失败票；按文件内 schema 用 Write 写 ${SD}/_l3_repair_patch.json。不要读取任何全量 L3 输入或输出文件。`,
-    { agentType: 'l3-rank', effort: 'medium', label: 'L3-lint-fix', phase: 'L3' })
+    { agentType: 'l3-rank', ...AG('l3_repair'), label: 'L3-lint-fix', phase: 'L3' })
     .catch((e) => { log(`⚠️ L3 自修 agent 异常:${e && e.message ? e.message : e}`); return null }) : null
   if (fix) {
     const APPLY = { type: 'object', required: ['ok', 'patched', 'preserved', 'codes'],

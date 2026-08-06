@@ -153,7 +153,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
    uv run --no-sync python -m autoresearch.dossier.pool <date> --status        # 看 pending_init 队列
    uv run --no-sync python -m autoresearch.dossier.reconcile <period>          # 季度对账(中报/年报披露后,如 20260630)
    ```
-   - **建档队列**:`pending_init` 里的票逐只派 `.claude/workflows/dossier-init.js`(**≤3 只/晚**,每只 ~10-20min);新 agent def 落盘当会话派发会 `not found`(会话启动装载),等热载或换会话。
+   - **建档队列**:`pending_init` 里的票逐只派 `.claude/workflows/dossier-init.js`(**≤3 只/晚**,每只 ~10-20min);新 agent def 落盘当会话派发会 `not found`(会话启动装载),等热载或换会话。可带 `args.cfg`(scan_config 的 `agents` 回显,透传 dossier_init/gp_shell/gp_shell_json 的 model/effort;省略 = 用 workflow 内 AGENT_DEFAULTS 缺省)。
    - **prelude 会替你催**:📐 = 该报告期未对账、🕰️ = 档案 >90 日未全量刷新;解药是跑一次**成功的季度对账**(唯一写 `last_refresh` 的路径)。重做首覆的正确姿势(`builder --force` 而非不存在的 `dossier-init --force`)与探针语义见 STAGES.md『运维细节』。
 
 ## 实验治理(行为变更的唯一生产入口)

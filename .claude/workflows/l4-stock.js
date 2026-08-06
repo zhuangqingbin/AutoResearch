@@ -18,6 +18,18 @@ if (!date || !code) throw new Error('args.date/args.code 必填,如 {date:"2026-
 const name = A.name || ''
 const sector = A.sector || '行业未知'
 const cfg = A.cfg || {}
+// Wave11-B2:model/effort 单一事实源=scan_config.agents(闭集见 user_config._AGENT_ROLES);
+// 本表=缺键回退值。调用点禁止内联字面量(product_shape_lint 会查)。回退链:
+// config > 本表(AGENT_DEFAULTS) > agent .md frontmatter —— 非壳 role 本表不写 model 键,
+// 缺省即落那一层(l4_intel=l4-intel frontmatter sonnet;l4_card/ens_review=l4-card frontmatter opus)。
+const AGENT_DEFAULTS = {
+  gp_shell:      { model: 'sonnet', effort: 'low' },
+  gp_shell_json: { model: 'sonnet', effort: 'low' },
+  l4_intel:      { effort: 'max' },
+  l4_card:       { effort: 'xhigh' },
+  ens_review:    { effort: 'xhigh' },   // ≥OW/SELL 双复核 run2/3(此前借 l4_card 档;独立收口)
+}
+const AG = (role) => ({ ...(AGENT_DEFAULTS[role] || {}), ...((cfg.agents || {})[role] || {}) })
 const pinned = !!A.pinned   // dispatch-plan meta 透传;缺省 false = 现行为(parity)
 const dossierSummary = String(A.dossierSummary || '').trim()   // dispatch-plan meta 透传;缺省空 = parity(M-2:全函数防御,同款 !!A.pinned)
 const SD = `context/scan/${date}`
@@ -30,7 +42,7 @@ const recordL4 = (errorCode = null) => agent(
   `在仓库根目录执行:\`${R} autoresearch.scan.stock_stage l4 ${date} ${code}` +
   `${errorCode ? ` --error ${errorCode}` : ''}\`。只回报退出码,不要判断或解释。` +
   `**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**`,
-  { agentType: 'general-purpose', model: 'haiku', effort: 'low', label: `stage:${code}` })
+  { agentType: 'general-purpose', ...AG('gp_shell'), label: `stage:${code}` })
   .catch((e) => { log(`⚠️ L4 StageResult 写入失败:${e && e.message ? e.message : e}`); return null })
 // 🚨 2026-08-05 事故(同族,见 scan-market.js:35 注释):`prepare` 子命令内含单票 slim 取数,
 // 可能跑数分钟 → harness 转后台 → haiku 壳判定"卡住"并 pkill 生产作业。同样两条药:
@@ -42,12 +54,12 @@ const taskGate = (subcommand, schema, label) => agent(
   '**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**\n' +
   '⏳ 这条命令可能跑数分钟(单票取数)。**绝对不许 kill / pkill / 中断 / 重启**它 —— ' +
   '它没卡住,它在取数;被 harness 转后台就安静等完成通知。拿不到退出码就如实回报,不要自己"修"。',
-  { agentType: 'general-purpose', model: 'sonnet', effort: 'low', label, schema })
+  { agentType: 'general-purpose', ...AG('gp_shell_json'), label, schema })
 // 通用确定性 CLI 壳:跑一条命令、把它打印的最后一行 JSON 原样带回(零判断)。
 const gpJson = (cmd, label, schema) => agent(
   `执行:\`${cmd}\`\n它会向 stdout 打印一行 JSON。把最后一行 JSON 原样作为结构化返回,` +
   '不改、不增删字段。**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**',
-  { agentType: 'general-purpose', model: 'haiku', effort: 'low', label, schema })
+  { agentType: 'general-purpose', ...AG('gp_shell_json'), label, schema })
 // 确定性命令壳:跑一条命令、只回报退出码 + stdout 末 15 行(零判断)。
 // 2026-08-03 事故(与 scan-market.js 的 gpJson 同族、同一个提交 99efe7d):Wave10 A5 把
 // intel_status 的**调用点**写进本文件(L160),却没带上这份定义 —— 每只票都会在 Intel 相位
@@ -60,7 +72,7 @@ const bash = (cmd, label, phaseName) => agent(
   '⏳ 命令可能跑数分钟。**绝对不许 kill / pkill / 中断 / 重启**它(2026-08-05 事故:' +
   '壳 pkill 了生产作业两次,整条流水线被毙)。被转后台就安静等完成通知。\n\n' +
   `\`\`\`\n${cmd}\n\`\`\``,
-  { agentType: 'general-purpose', model: 'sonnet', effort: 'low', label,
+  { agentType: 'general-purpose', ...AG('gp_shell'), label,
     ...(phaseName ? { phase: phaseName } : {}) })
 const INTEL_GUARD = { type: 'object', required: ['ok', 'code', 'action'],
   properties: { ok: { type: 'boolean' }, code: { type: 'string' }, action: { type: 'string' },
@@ -134,8 +146,7 @@ async function intelLeg() {
     try {
       return await agent(
         `活体情报采集:${code} ${name}(${sector})· 分析日 ${date}。按你的人设六面全查(≤${maxQ} 条),写 ${SD}/_l4_intel_${code}.md;返回 code 与事件行数 events。${knownBase}`,
-        { agentType: 'l4-intel', effort: cfg.agents?.l4_intel?.effort ?? 'max',
-          ...(cfg.agents?.l4_intel?.model ? { model: cfg.agents.l4_intel.model } : {}),
+        { agentType: 'l4-intel', ...AG('l4_intel'),
           label: i > 1 ? `intel:${code}#${i}` : `intel:${code}`, phase: 'Intel', schema: INTEL })
     } catch (e) {
       intelError = errClass(e)
@@ -199,8 +210,7 @@ let card
 try {
   card = await agent(
     `执行 ${SD}/_l4_prompt_${code}.md:先读整个任务包,再按其指令做渐进深度 DD + 早停,写决策卡到 ${SD}/details/${code}.md。最后返回该卡最终五档评级与 FINAL 行(code / rating / conviction / proposal=FINAL TRANSACTION PROPOSAL 的值,如 "SELL")。`,
-    { agentType: 'l4-card', effort: cfg.agents?.l4_card?.effort ?? 'xhigh',
-      ...(cfg.agents?.l4_card?.model ? { model: cfg.agents.l4_card.model } : {}),
+    { agentType: 'l4-card', ...AG('l4_card'),
       label: `card:${code}`, phase: 'Card', schema: CARD })
 } catch (error) {
   await taskFailure(classifyFailure(error))
@@ -234,7 +244,7 @@ if (trigger) {
   const tier = (r) => RANK[String(r || '').toLowerCase()] ?? 2
   const rerun = (i) => agent(
     `独立复核 run${i}(不知道其它 run 结论):执行 ${SD}/_l4_prompt_${code}.md 的任务包,按人设走渐进深度 DD,决策卡写到 ${SD}/ensemble/${code}.run${i}.md(先自行创建 ensemble/ 目录),返回 code/rating/conviction/proposal。`,
-    { agentType: 'l4-card', effort: cfg.agents?.l4_card?.effort ?? 'xhigh',
+    { agentType: 'l4-card', ...AG('ens_review'),
       label: `ens${i}:${code}`, phase: 'Verify', schema: CARD })
   // Wave6 T2 同档早止:run1==run2 时三票中位**数学上已定**(两票同档 → 排序中位恒为该档,
   // 第三票投什么都改不了),run3 是确定的冗余 → 跳过省一张满卡(07-24 的 601869 三票全 UW)。
@@ -260,7 +270,7 @@ if (trigger) {
     `**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向(heredoc 原样保留)。**` +
     `\n\n\`\`\`\ncat > ${SD}/_ensemble_${code}.json << 'EOF'\n${JSON.stringify(rec)}\nEOF\n\`\`\``,
     // Wave6 T1:heredoc 写文件,零判断
-    { agentType: 'general-purpose', model: 'haiku', effort: 'low', label: `ens-dump:${code}`, phase: 'Verify' })
+    { agentType: 'general-purpose', ...AG('gp_shell_json'), label: `ens-dump:${code}`, phase: 'Verify' })
   if (!degraded) {
     if (trigger === 'ow_review' && tier(rec.median) < tier(card.rating)) final = rec.median
     if (trigger === 'sell_review' && tier(rec.median) > tier(card.rating)) final = rec.median
