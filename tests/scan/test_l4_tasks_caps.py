@@ -25,3 +25,21 @@ def test_rate_limit_failures_no_longer_shrinks_dispatch(tmp_path):
     b = l4_tasks.dispatch_batches(book)
     assert b["effective_cap"] == 64            # 派发帽不缩;限频收窄的是 T2 的 tushare 槽
     assert len(b["batches"][0]) == 6
+
+
+def test_mark_failure_still_increments_rate_limit_failures(tmp_path):
+    """C1 只让 rate_limit_failures 退出 effective_cap 运算,mark_failure() 记账逻辑本身
+    不能跟着丢——T2 要靠这个计数收窄 tushare 信号量槽数。锁的是「自增」而非「置 1」,
+    否则把自增写错成赋值也测不出来。"""
+    r = _init(tmp_path, n=1)
+    code = r["codes"][0]
+    book = tmp_path / "2026-08-06" / "_l4_tasks.json"
+    import json
+
+    l4_tasks.preflight(book, code)
+    l4_tasks.mark_failure(book, code, "RATE_LIMIT")
+    assert json.loads(book.read_text())["rate_limit_failures"] == 1
+
+    l4_tasks.preflight(book, code)
+    l4_tasks.mark_failure(book, code, "RATE_LIMIT")
+    assert json.loads(book.read_text())["rate_limit_failures"] == 2
