@@ -1,0 +1,69 @@
+{
+  "id": "exp_l4_full_parallel",
+  "title": "L4 派发:全并发(dispatch_cap 缺省 64,tushare 操作级信号量)vs 滑窗 cap=4",
+  "trial_family": "l4_concurrency",
+  "definition": {
+    "hypothesis": "L4 全并发派发(dispatch_cap=∞事实上限 64,tushare 降为操作级信号量)使 L4 段墙钟 P50 下降≥30%,且不改变任何评级产物",
+    "control": "滑窗 cap=4(2026-07-28..08-05 实测:L4 段 76-113min)",
+    "challenger": "dispatch_cap=caps.l4_stock(缺省 64,一次性全派 batches,单批含全部 pending);tushare 降为操作级信号量 K=caps.tushare(缺省 4)在 prepare_slim 入口排队,intel/card/复核不经该信号量、即刻起跑;信号量 stale 锁按 mtime 回收",
+    "production_side_effects": "T1-T3.5 已实现并合入本分支(be50b25/75695a1/50a6fbb/062f511/f33ce84/16bebc9/0eca322):dispatch_cap 缺省值已从 4 改为 64、SKILL.md 派发协议已改一次性全派——本条目登记时代码已处于生产态;register 属事后补挂治理记账,先例见 exp_20260729_l3_hard_constraint_f(prompt 无法影子跑,同样先落地后登记)",
+    "measurement_instrument": "autoresearch.scan.l4_tasks.stats()(Wave11-C4 新增)读账本聚合 error_classes/sem_wait_max_s/slim_attempts,是 tushare_rate_limit_delta_n 与 l4_wall_p50_delta_pct 的原始读数来源",
+    "shadow_infeasibility_reason": "全并发与滑窗互斥于同一 dispatch_cap,同一扫描日不可能双跑两种派发模式;沿用 exp_20260729_l3_hard_constraint_f 先例——promotion 侧 maturity 改依人工事后回填 sample,真正把关落在 rollback_watch 事后观察窗(rollback_window_runs)",
+    "decision_note": "评级分布是否无系统位移为描述性对照项(同日无法双跑控制组,不设强数值门);仅完成率(l4_incomplete_n)与 schema/contract 错误(l4_contract_error_n)计入强 guard",
+    "research_note": "本实验不携带任何评级/选股假设——性能开关不拥有评级铁律;research guard 不设『信号是否变好』,只设『评级权威文件是否被本 challenger 触碰』的结构不变量,用以验证『无』这句话本身没有被违反",
+    "rollback_lever": "budgets.concurrency.l4_stock=4(user_config 一行,回滑窗;C1 解耦后 tushare/web_* 仍是独立资源帽,回滚派发帽不影响它们)"
+  },
+  "start_date": "2026-08-06",
+  "expires_date": "2026-09-30",
+  "primary_metric": "l4_wall_p50_delta_pct",
+  "promotion_guards": {
+    "research": [
+      {"metric": "rating_authority_files_touched_n", "op": "eq", "value": 0}
+    ],
+    "decision": [
+      {"metric": "l4_incomplete_n", "op": "eq", "value": 0},
+      {"metric": "l4_contract_error_n", "op": "eq", "value": 0}
+    ],
+    "token": [
+      {"metric": "l4_weighted_token_delta_pct", "op": "lte", "value": 0}
+    ],
+    "speed": [
+      {"metric": "l4_wall_p50_delta_pct", "op": "lte", "value": -30}
+    ],
+    "architecture": [
+      {"metric": "tushare_rate_limit_delta_n", "op": "lte", "value": 0},
+      {"metric": "semaphore_stale_false_evict_n", "op": "eq", "value": 0}
+    ]
+  },
+  "rollback_guards": {
+    "research": [
+      {"metric": "rating_authority_files_touched_n", "op": "eq", "value": 0}
+    ],
+    "decision": [
+      {"metric": "l4_incomplete_n", "op": "lte", "value": 1},
+      {"metric": "l4_contract_error_n", "op": "eq", "value": 0}
+    ],
+    "token": [
+      {"metric": "l4_weighted_token_delta_pct", "op": "lte", "value": 5}
+    ],
+    "speed": [
+      {"metric": "l4_wall_p50_delta_pct", "op": "lte", "value": -10}
+    ],
+    "architecture": [
+      {"metric": "tushare_rate_limit_delta_n", "op": "lte", "value": 3},
+      {"metric": "semaphore_stale_false_evict_n", "op": "eq", "value": 0}
+    ]
+  },
+  "challenger_pointer": {
+    "kind": "code",
+    "pointer": "autoresearch/scan/l4_tasks.py@0eca322bc543(dispatch_cap/tushare信号量;配套 .claude/skills/scan-market/SKILL.md@062f51189a04 派发协议、autoresearch/scan/l4_watch.py@0eca322bc543 BLOCKED 终态)",
+    "content_hash": "02ef5db1cae4e283860e180743992f1147988cd1d4daef5b1eab7cfb94fa8a89"
+  },
+  "minimums": {
+    "forward_days": 1,
+    "mature_events": 10,
+    "unique_events": 0,
+    "regimes": 1
+  },
+  "rollback_window_runs": 10
+}
