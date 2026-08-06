@@ -15,7 +15,15 @@
     // 装载:scan-retro 编排时 `python -m autoresearch.scan.user_config` 读本文件随 args.cfg 传入
     // (合诊 agent 自己跑 build CLI,没法从 pack 拿配置);综合官另有 pack.agents_cfg 兜底。
     "t1_diag":      { "effort": "high" },    // 合诊(≤13 卡对比诊断;model 缺省=继承会话,要省钱可加 "model":"sonnet")
-    "t1_synth":     { "effort": "high" }     // 综合官(model 缺省 = 继承会话模型)
+    "t1_synth":     { "effort": "high" },    // 综合官(model 缺省 = 继承会话模型)
+    // ── Wave11-B 新收口的 5 个 role(缺键=用 workflow AGENT_DEFAULTS,语义见各注)──
+    "ens_review":   { "effort": "xhigh" },   // ≥OW/SELL 双复核 run2/3(此前借 l4_card 档;独立收口)
+    "l3_repair":    { "effort": "medium" },  // L3 数字自修(可选增益,挂了不阻断)
+    "dossier_init": { "effort": "max" },     // 档案首覆(≤3 只/晚,单票 10-20min)
+    // 壳类缺省 sonnet·low:08-05 事故——haiku 壳遇长命令转后台会 pkill 生产作业;
+    // 要省钱显式改回 haiku,但那是你的选择不是缺省。
+    "gp_shell":      { "model": "sonnet", "effort": "low" },  // 命令壳(bash/stageGate/recordL4)
+    "gp_shell_json": { "model": "sonnet", "effort": "low" }   // JSON 壳(gate/gpJson/taskGate/ens-dump/lint)
   },
 
   // ── L3 两遍法:pass1 确定性分诊 200→~60 + pass2(l3-rank)深比较出 finalist tier ──
