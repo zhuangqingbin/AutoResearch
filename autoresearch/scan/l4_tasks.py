@@ -10,6 +10,7 @@ import argparse
 import fcntl
 import hashlib
 import json
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -97,6 +98,35 @@ def _locked(path: Path) -> Iterator[None]:
             yield
         finally:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def _tushare_slot(scan_dir: Path, k: int, *, poll_seconds: float = 5.0,
+                  heartbeat_seconds: int = 60) -> Iterator[int]:
+    """K 槽 fcntl 信号量:只限 slim 取数,不限派发。持有者进程死亡 flock 自动释放,
+    无需 mtime stale 回收。等待期每 heartbeat_seconds 打一行心跳 —— 08-05 事故的另一半药:
+    安静的长等待会被上层(人或壳)误判「卡住」。"""
+    sem_dir = scan_dir / "_sem"
+    sem_dir.mkdir(parents=True, exist_ok=True)
+    waited = 0.0
+    while True:
+        for slot in range(max(1, int(k))):
+            fh = (sem_dir / f"tushare.{slot}.lock").open("a+")
+            try:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                fh.close()
+                continue
+            try:
+                yield slot
+                return
+            finally:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+                fh.close()
+        time.sleep(poll_seconds)
+        waited += poll_seconds
+        if waited % heartbeat_seconds < poll_seconds:
+            print(f"[prepare_slim] 等 tushare 槽 {int(waited)}s(K={k})…", flush=True)
 
 
 def _read(path: Path | str) -> tuple[Path, dict]:
@@ -425,17 +455,23 @@ def prepare_slim(
     )
     size, defect = _slim_defect(slim_path, min_bytes)
     attempts = 0
+    sem_wait = 0.0
     if defect:
-        for _ in range(max(0, retries) + 1):
-            attempts += 1
-            try:
-                produced = Path(harvest(ticker, payload["date"]))
-                size, defect = _slim_defect(produced, min_bytes)
-                slim_path = produced
-            except Exception as exc:  # noqa: BLE001 — 转为单票失败事实
-                size, defect = 0, f"harvest 异常:{exc}"
-            if defect is None:
-                break
+        k = max(1, int((payload.get("caps") or DEFAULT_CAPS)["tushare"])
+                - int(payload.get("rate_limit_failures") or 0))
+        _t0 = time.monotonic()
+        with _tushare_slot(path.parent, k):
+            sem_wait = time.monotonic() - _t0
+            for _ in range(max(0, retries) + 1):
+                attempts += 1
+                try:
+                    produced = Path(harvest(ticker, payload["date"]))
+                    size, defect = _slim_defect(produced, min_bytes)
+                    slim_path = produced
+                except Exception as exc:  # noqa: BLE001 — 转为单票失败事实
+                    size, defect = 0, f"harvest 异常:{exc}"
+                if defect is None:
+                    break
     with _locked(path):
         _, latest = _read(path)
         current = latest["tasks"][code6]
@@ -445,6 +481,7 @@ def prepare_slim(
             content_hash=_sha256(slim_path) if defect is None else None,
         )
         current["updated_at"] = _stamp(now)
+        current["sem_wait_s"] = round(sem_wait, 1)
         if defect:
             current["last_error_class"] = "DATA_INTEGRITY"
             current["last_error"] = defect
@@ -456,6 +493,7 @@ def prepare_slim(
         "bytes": int(size),
         "attempts": attempts,
         "reason": defect or "ok",
+        "sem_wait_s": round(sem_wait, 1),
     }
 
 
