@@ -116,11 +116,15 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
      现返回单批全量 pending —— 主会话**一条消息 N 个 Workflow 调用**全部派出;📌 pinned 排
      列表最前只为 watch 可读性,无先后语义。tushare 取数由每票 prepare 内的 K 槽信号量排队
      (K=caps.tushare−限频扣减),intel/card 不排队即刻起跑。
-   - **完成判据 = task_book 全 SUCCEEDED**(不变;`batches` 空 ∧ `running` 空才是完成态);
-     收完成通知的回合只领不播(唤醒纪律不变)。单票失败只改本票状态;重放仍只派
-     `l4_tasks batches` 返回的未完成票。
-   - 回滚杆:`scan_config.jsonc` 设 `budgets.concurrency.l4_stock=4` 即回滑窗节奏
-     (旧滑窗操作法见 git 本段历史,勿在此保留操作细节)。
+   - **完成判据 = task_book 全 SUCCEEDED**(不变)。`batches` 为空**不是**完成——可能都
+     还在飞(见 `running`),也可能有票停在 `BLOCKED`(非瞬时错误直接置该态,
+     `batches`/`running` 两边都不放)。**不要**用「两个数组皆空」当完成态的充分
+     条件;唯一权威判据是 task_book。收完成通知的回合只领不播(唤醒纪律不变);
+     单票失败只改本票状态;重放仍只派 `l4_tasks batches` 返回的未完成票。
+   - 回滚杆:`scan_config.jsonc` 设 `budgets.concurrency.l4_stock=4` 只收窄单批容量——
+     `l4_tasks batches` 会重新按 4 只一批切,pending 较多时需分批取用逐批派发(回到
+     更早的「每批 ≤4、分批派」模型);它**不能**恢复「每完成一只补派一只」的真滑窗
+     节奏,那段调度逻辑在主会话侧,不受 config 控制、未随此次改动保留。
    - 首跑后必看:`uv run --no-sync python -m autoresearch.scan.l4_tasks stats <date>`
      (RATE_LIMIT/排队等待读数;429 率 >10% 才考虑 stagger,YAGNI)。
    `pinned` 取自 dispatch-plan 的 `meta[code].pinned`。**派发前对照 workflow 打印的「📌 保送票 N 只」行逐一核对**:名单里的每只必须带 `pinned: true`。漏传 = 持仓 SELL 双复核整段不跑(2026-07-21 实测 300857/601869 中招);probe 9 `sell_review_missing` 只能事后 warn,拦不住。
