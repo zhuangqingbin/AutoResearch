@@ -293,3 +293,49 @@ def test_cli_run_twice_only_broadcasts_once(scan_dir, capsys):
 
     assert main(argv) == 0                      # 模拟重启
     assert "601319" not in capsys.readouterr().out
+
+
+# ── Wave11 T3.5:BLOCKED 也是终态,否则 watcher 永远等不到「全部终态」───────────
+
+def test_blocked_counts_as_terminal_and_done(scan_dir):
+    """`mark_failure()` 对非瞬时错误(DATA_INTEGRITY/schema/contract)直接把票置成
+    BLOCKED,不经重试耗尽。`_TERMINAL` 若不认它,`done` 永远算不出 True,Monitor
+    会静静挂到 timeout_ms(1 小时)才停,永不播「全部终态」。
+    """
+    _write_card(scan_dir, "000001", "Hold")
+    _write_book(scan_dir, {
+        "000001": _task("SUCCEEDED", card_hash="abc"),
+        "000002": _task("BLOCKED", error="DATA_INTEGRITY"),
+    })
+
+    snap = snapshot(scan_dir)
+
+    assert snap["done"] is True          # 修复前:False,watcher 挂到超时
+    assert snap["n_blocked"] == 1
+
+
+def test_blocked_line_shows_error_not_rating(scan_dir):
+    """BLOCKED 是终态但不是成功 —— 播报必须让人一眼看出这票废了(出错误类别),
+    不能落进 SUCCEEDED 的展示分支、伪装成一张有评级的卡。
+    """
+    _write_book(scan_dir, {"000002": _task("BLOCKED", error="DATA_INTEGRITY")})
+
+    lines = render_events(snapshot(scan_dir), seen=set())
+
+    assert any("DATA_INTEGRITY" in ln for ln in lines)      # 出错误类别
+    assert not any("评级行读不到" in ln for ln in lines)      # 没有伪装成评级卡
+
+
+def test_cli_done_summary_reports_blocked_count(scan_dir, capsys):
+    """完工汇总行必须把「阻断」计数摆出来 —— 否则 `n_blocked` 是个没人读的字段,
+    一批里全是废票也会被 `✅ 全部进终态` 这行悄悄美化成岁月静好。
+    """
+    from autoresearch.scan.l4_watch import main
+
+    _write_book(scan_dir, {"000002": _task("BLOCKED", error="DATA_INTEGRITY")})
+
+    assert main([scan_dir.name, "--scan-root", str(scan_dir.parent)]) == 0
+
+    out = capsys.readouterr().out
+    assert "全部 1 票进终态" in out
+    assert "阻断 1" in out

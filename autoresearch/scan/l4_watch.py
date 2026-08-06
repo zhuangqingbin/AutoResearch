@@ -11,8 +11,10 @@
 
 - 只有 `_l4_tasks.json` 里 **status ∈ 终态** 的票才播;
 - SUCCEEDED 还要求 **card.content_hash 已记**(账本确认卡是完稿)才去读评级;
-- FAILED 直接播错误类别;
-- 全部票进终态才算 done(FAILED 也是终态 —— 否则监视器永不退出)。
+- FAILED / BLOCKED 直接播错误类别(BLOCKED 是非瞬时错误——DATA_INTEGRITY/schema/contract
+  ——的直接终局,不经重试耗尽;它不是成功,不许伪装成一张有评级的卡);
+- 全部票进终态才算 done(FAILED、BLOCKED 都是终态 —— 否则监视器永不退出;Wave11 T3.5
+  前 `_TERMINAL` 漏了 BLOCKED,有票阻断时 done 永远算不出 True,watcher 静静挂到超时)。
 
 **消费进度归 watcher 自己**(Wave10 A8):此前 `seen` 只活在内存里 —— 进程一重启就把
 所有已播事件再播一遍。修法**不是**往 task_book 里记「播过没有」:那本账是**任务状态**的
@@ -35,7 +37,7 @@ import time
 from pathlib import Path
 
 SCAN_ROOT = Path("context/scan")
-_TERMINAL = {"SUCCEEDED", "FAILED"}
+_TERMINAL = {"SUCCEEDED", "FAILED", "BLOCKED"}
 _STALE_MIN_DEFAULT = 30
 
 CURSOR_SCHEMA_VERSION = 1
@@ -141,11 +143,13 @@ def snapshot(scan_dir: Path | str) -> dict:
     scan_dir = Path(scan_dir)
     book = scan_dir / "_l4_tasks.json"
     if not book.exists():
-        return {"ready": False, "done": False, "total": 0, "terminal": [], "running": []}
+        return {"ready": False, "done": False, "total": 0, "terminal": [], "running": [],
+                "n_blocked": 0}
     try:
         payload = json.loads(book.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001 — 半写入的账本:这一轮当没读到,下一轮再看
-        return {"ready": False, "done": False, "total": 0, "terminal": [], "running": []}
+        return {"ready": False, "done": False, "total": 0, "terminal": [], "running": [],
+                "n_blocked": 0}
 
     tasks = payload.get("tasks") or {}
     names = _names(scan_dir)
@@ -178,12 +182,15 @@ def snapshot(scan_dir: Path | str) -> dict:
 
     n_total = len(tasks)
     n_terminal_all = sum(1 for t in tasks.values() if t.get("status") in _TERMINAL)
+    # BLOCKED 是终态但不是成功 —— 单独计数,好让「done」不等于「都出卡了」。
+    n_blocked = sum(1 for t in tasks.values() if t.get("status") == "BLOCKED")
     return {
         "ready": True,
         "done": bool(tasks) and n_terminal_all == n_total,
         "total": n_total,
         "terminal": terminal,
         "running": running,
+        "n_blocked": n_blocked,
     }
 
 
@@ -201,9 +208,11 @@ def render_events(snap: dict, seen: set[str], *, stale_min: int = _STALE_MIN_DEF
             continue
         k += 1
         head = f"🃏 {k}/{snap['total']} {item['code']} {item['name']}".rstrip()
-        if item["status"] == "FAILED":
+        if item["status"] in ("FAILED", "BLOCKED"):
+            # 两者都是「没出卡」的终态,播错误类别 —— 不许落进下面的评级分支,
+            # 那会把一票废票伪装成一张有评级的卡(Wave11 T3.5)。
             out.append(f"✗ {k}/{snap['total']} {item['code']} {item['name']} "
-                       f"→ FAILED({item['error'] or '未记错误类别'})".rstrip())
+                       f"→ {item['status']}({item['error'] or '未记错误类别'})".rstrip())
         else:
             out.append(f"{head} → {item['rating'] or '(评级行读不到)'}")
     return out
@@ -299,7 +308,12 @@ def main(argv: list[str] | None = None) -> int:
             print(line, flush=True)
         if snap.get("done"):
             n_fail = sum(1 for i in snap["terminal"] if i["status"] == "FAILED")
-            tail = f"(失败 {n_fail})" if n_fail else ""
+            n_blocked = snap.get("n_blocked", 0)
+            bits = [b for b in (
+                f"失败 {n_fail}" if n_fail else "",
+                f"阻断 {n_blocked}" if n_blocked else "",
+            ) if b]
+            tail = f"({'/'.join(bits)})" if bits else ""
             print(f"✅ L4 全部 {snap['total']} 票进终态{tail}", flush=True)
             for line in pending_fold_lines(scan_dir):
                 print(line, flush=True)
