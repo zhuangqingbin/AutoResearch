@@ -150,12 +150,16 @@ def load_user_config(path: str | Path | None = None) -> dict:
             raise ValueError(f"scan_config.json agents 含未知 role: {unknown}"
                              f"(闭集={sorted(_AGENT_ROLES)})")
         for role, spec in agents.items():
-            bad = sorted(set(spec or {}) - {"model", "effort"})
+            if spec is not None and not isinstance(spec, dict):
+                raise ValueError(f"agents.{role} 必须是 object,形如 "
+                                 f'{{"model": "...", "effort": "..."}}(实际={spec!r})')
+            spec = spec or {}
+            bad = sorted(set(spec) - {"model", "effort"})
             if bad:
                 raise ValueError(f"agents.{role} 含未知子键: {bad}(只认 model/effort)")
-            if "effort" in (spec or {}) and spec["effort"] not in _EFFORTS:
+            if "effort" in spec and spec["effort"] not in _EFFORTS:
                 raise ValueError(f"agents.{role}.effort={spec['effort']!r} 非法(∈{sorted(_EFFORTS)})")
-            if "model" in (spec or {}) and spec["model"] not in _MODELS:
+            if "model" in spec and spec["model"] not in _MODELS:
                 raise ValueError(f"agents.{role}.model={spec['model']!r} 非法(∈{sorted(_MODELS)})")
     return cfg
 
