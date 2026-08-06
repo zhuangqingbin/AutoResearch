@@ -1,7 +1,29 @@
 """Wave11 T1:派发帽与资源帽解耦 —— effective_cap 只由 l4_stock 决定,批次一次全派。
 Wave11 T2:tushare 操作级信号量 —— `_tushare_slot()` K 槽 fcntl 排队(带等待心跳)+
 `prepare_slim()` 集成(仅包 harvest 循环,湖命中零等待)。"""
+from contextlib import contextmanager
+
 from autoresearch.scan import l4_tasks
+
+
+def _harvest_ok(tmp_path):
+    """caps 相关测试不关心 harvest 本身对不对,只要它一调就能让 `_slim_defect` 判过。"""
+    def harvest(ticker, date):
+        target = tmp_path / "ctx" / f"{ticker}_{date}_slim.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            "\n".join([
+                "## Verified market snapshot",
+                "### Latest verified OHLCV row",
+                "| Close | 12.34 |",
+                "## Market context",
+                "## Fundamentals overview",
+                "x" * 5000,
+            ]),
+            encoding="utf-8",
+        )
+        return target
+    return harvest
 
 
 def _init(tmp_path, n=10, caps=None):
@@ -48,8 +70,10 @@ def test_mark_failure_still_increments_rate_limit_failures(tmp_path):
 
 
 def test_tushare_slot_queues_when_full(tmp_path):
-    import fcntl, threading, time
-    sem_dir = tmp_path / "_sem"; sem_dir.mkdir()
+    import fcntl
+
+    sem_dir = tmp_path / "_sem"
+    sem_dir.mkdir()
     hold = (sem_dir / "tushare.0.lock").open("a+")
     fcntl.flock(hold, fcntl.LOCK_EX | fcntl.LOCK_NB)      # 外部占住 slot0
     got = {}
@@ -60,8 +84,12 @@ def test_tushare_slot_queues_when_full(tmp_path):
 
 
 def test_tushare_slot_waits_then_acquires(tmp_path, monkeypatch):
-    import fcntl, threading, time
-    sem_dir = tmp_path / "_sem"; sem_dir.mkdir()
+    import fcntl
+    import threading
+    import time
+
+    sem_dir = tmp_path / "_sem"
+    sem_dir.mkdir()
     fh = (sem_dir / "tushare.0.lock").open("a+")
     fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
     threading.Timer(0.3, lambda: (fcntl.flock(fh, fcntl.LOCK_UN), fh.close())).start()
@@ -131,3 +159,92 @@ def test_prepare_slim_records_sem_wait_s_in_task_book_on_harvest_path(tmp_path):
     assert isinstance(got["sem_wait_s"], float)
     payload = json.loads(book.read_text())
     assert payload["tasks"][code]["sem_wait_s"] == got["sem_wait_s"]
+
+
+def test_prepare_slim_records_failure_when_caps_missing_tushare_key(tmp_path):
+    """Review Important-2:k 计算/信号量获取曾经落在记账块之外、无保护 —— caps 字典被
+    改坏(旧格式/手工改坏,缺 tushare 键)时 KeyError 会从 prepare_slim 顶层冒出,任务簿
+    永远到不了 `with _locked(path)` 那段,该票卡在 RUNNING 直到 stale_after_seconds 超时
+    才被拉回,期间账本上零失败痕迹——这正是本 task 本身要治的「静默卡住」的同类病。
+    修复后:异常必须转成 defect,照常流进记账块,写下 last_error_class/last_error,
+    且不进 harvest 循环(k 计算先炸,harvest_fn 压根不该被调用)。"""
+    import json
+
+    r = _init(tmp_path, n=1)
+    code = r["codes"][0]
+    book = tmp_path / "2026-08-06" / "_l4_tasks.json"
+    payload = json.loads(book.read_text())
+    payload["caps"] = {"web_search": 4, "web_fetch": 4, "l4_stock": 64}  # 缺 tushare 键
+    book.write_text(json.dumps(payload))
+
+    calls = []
+
+    def harvest(ticker, date):
+        calls.append(ticker)
+        raise AssertionError("k 计算应该先炸,不该走到 harvest")
+
+    got = l4_tasks.prepare_slim(book, code, harvest_fn=harvest, retries=0)
+
+    assert calls == []                 # 没进 harvest 循环
+    assert got["ok"] is False
+    assert got["attempts"] == 0
+
+    saved = json.loads(book.read_text())
+    task = saved["tasks"][code]
+    # 结构性失败,不是瞬时的——不能标 RATE_LIMIT/TIMEOUT 那类可重试的错误类别。
+    assert task["last_error_class"] == "DATA_INTEGRITY"
+    assert task["last_error"] == got["reason"]
+
+
+def test_prepare_slim_tushare_k_subtracts_rate_limit_failures(tmp_path, monkeypatch):
+    """Review Important-1:`k = caps.tushare - rate_limit_failures` 这条核心公式此前
+    零测试能观测到——两个 `_tushare_slot` 原语测试直接传字面量 k 绕过公式;湖命中测试
+    压根不进 `if defect:` 分支;唯一执行到公式的测试恰好 tushare=4、rate_limit_failures=0,
+    `4-0=4`,减法项在不在对断言零影响。这里 monkeypatch `_tushare_slot` 记录真正传入的
+    k,直接断言减法生效(而不是恰好等于 tushare 原值)。"""
+    r = _init(tmp_path, n=1)
+    code = r["codes"][0]
+    book = tmp_path / "2026-08-06" / "_l4_tasks.json"
+    import json
+    payload = json.loads(book.read_text())
+    payload["rate_limit_failures"] = 2          # caps.tushare 默认 4
+    book.write_text(json.dumps(payload))
+
+    seen = {}
+
+    @contextmanager
+    def fake_slot(scan_dir, k, **kwargs):
+        seen["k"] = k
+        yield 0
+
+    monkeypatch.setattr(l4_tasks, "_tushare_slot", fake_slot)
+    got = l4_tasks.prepare_slim(book, code, harvest_fn=_harvest_ok(tmp_path), retries=0)
+
+    assert got["ok"] is True
+    assert seen["k"] == 2            # 4 - 2 = 2,减法项生效
+
+
+def test_prepare_slim_tushare_k_floors_at_one(tmp_path, monkeypatch):
+    """rate_limit_failures 远大于 caps.tushare 时 k 必须下限 1,不能是 0 或负数——
+    `_tushare_slot` 内部对 k 自己也有 `max(1, int(k))` 兜底,但这里要锁的是 `prepare_slim`
+    这一层的公式本身有没有 floor,不能靠下游兜底掩盖上游漏洞(万一以后下游那层被改掉)。"""
+    r = _init(tmp_path, n=1)
+    code = r["codes"][0]
+    book = tmp_path / "2026-08-06" / "_l4_tasks.json"
+    import json
+    payload = json.loads(book.read_text())
+    payload["rate_limit_failures"] = 9          # caps.tushare 默认 4;4-9=-5
+    book.write_text(json.dumps(payload))
+
+    seen = {}
+
+    @contextmanager
+    def fake_slot(scan_dir, k, **kwargs):
+        seen["k"] = k
+        yield 0
+
+    monkeypatch.setattr(l4_tasks, "_tushare_slot", fake_slot)
+    got = l4_tasks.prepare_slim(book, code, harvest_fn=_harvest_ok(tmp_path), retries=0)
+
+    assert got["ok"] is True
+    assert seen["k"] == 1             # floor:max(1, 4-9) = 1,不是 0/负数

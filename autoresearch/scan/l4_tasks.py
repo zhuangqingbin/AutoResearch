@@ -457,21 +457,27 @@ def prepare_slim(
     attempts = 0
     sem_wait = 0.0
     if defect:
-        k = max(1, int((payload.get("caps") or DEFAULT_CAPS)["tushare"])
-                - int(payload.get("rate_limit_failures") or 0))
-        _t0 = time.monotonic()
-        with _tushare_slot(path.parent, k):
-            sem_wait = time.monotonic() - _t0
-            for _ in range(max(0, retries) + 1):
-                attempts += 1
-                try:
-                    produced = Path(harvest(ticker, payload["date"]))
-                    size, defect = _slim_defect(produced, min_bytes)
-                    slim_path = produced
-                except Exception as exc:  # noqa: BLE001 — 转为单票失败事实
-                    size, defect = 0, f"harvest 异常:{exc}"
-                if defect is None:
-                    break
+        try:
+            k = max(1, int((payload.get("caps") or DEFAULT_CAPS)["tushare"])
+                    - int(payload.get("rate_limit_failures") or 0))
+            _t0 = time.monotonic()
+            with _tushare_slot(path.parent, k):
+                sem_wait = time.monotonic() - _t0
+                for _ in range(max(0, retries) + 1):
+                    attempts += 1
+                    try:
+                        produced = Path(harvest(ticker, payload["date"]))
+                        size, defect = _slim_defect(produced, min_bytes)
+                        slim_path = produced
+                    except Exception as exc:  # noqa: BLE001 — 转为单票失败事实
+                        size, defect = 0, f"harvest 异常:{exc}"
+                    if defect is None:
+                        break
+        except Exception as exc:  # noqa: BLE001 — k 计算/信号量获取结构性失败,
+            # 必须转为 defect 落记账块,不能让异常从这里冒出去——那样任务簿永远到不了
+            # 下面的 with _locked(path),该票会卡 RUNNING 到 stale_after_seconds 超时才被
+            # 拉回,期间零失败痕迹(review Important-2:与本 task 要治的「静默卡住」同类病)。
+            size, defect = 0, f"tushare 信号量获取异常:{exc!r}"
     with _locked(path):
         _, latest = _read(path)
         current = latest["tasks"][code6]
