@@ -460,6 +460,10 @@ L3/L4 会让持仓拿不到当日决策卡 → 传 `force_full: true` 覆盖。0
   等最慢者,07-28 实测批 3 的普冉 40.6min 独自拖尾 15min+。桌演(07-28 每股实测 duration,
   cap=4):批次串行 **80.0m** → 滑窗原序 74.9m → **滑窗+最长先行 66.2m**(省 13.8m/17%),
   理论下界(总工时÷4)60.5m。最长先行序恰为三只 pinned 打头。
+- **2026-08-06(Wave11-C)** 派发节奏由**滑窗**改回**一次性全派**(恢复 fb_20260714_003「别
+  分 wave」原意):`l4_tasks batches` 改返回单批全量 pending,`effective_cap`=`caps.l4_stock`
+  (默认 64);tushare 并发改由 `prepare_slim` 内 K 槽信号量控制,不再靠派发节奏限流。回滚杆
+  (`budgets.concurrency.l4_stock=4`)与 `stats` 命令见 SKILL.md 步骤 4。
 
 ### 活体情报站首跑冒烟(2026-07-14)
 
