@@ -311,23 +311,29 @@ spec 草稿(实施时落 `docs/research/<实施日>-wave11-experiment-specs.json
   ②**纯沿革**(OTEL 退役、models 园区移除等)删句留 git;
   ③**引用已死符号的活指令**(若有)= bug,逐条改。实施时逐处登记处置表,不凭手感。
 
-### D3 死码清单(证据已核,删除归实施批)
+### D3 死码清单(2026-08-06 勘误后;删除归实施批)
 
-全仓(含 `-m` 调用)零引用的 learning 模块,2026-08-05 grep 实测:
+> **勘误(2026-08-06,出计划时协议第③步自逮)**:首版本表列 6 个"零引用"模块,但
+> `nightly_close._ledgers` 用 `importlib.import_module(f"autoresearch.learning.{n}")`
+> **字符串拼名动态调用**,`gate_recal`/`l3_marginal`/`sentinel_audit`(还有
+> `l3_l4_alignment`)都在它的 names 表里 —— 每晚都在跑,是活体。按
+> `autoresearch.learning.X` 模式做的 grep 逮不到这种调用面。这正是删除协议③存在的
+> 理由,也再次坐实:**"零引用"结论必须过裸名 grep,不是过一种引用模式**。
 
-| 模块 | 生产引用 | test 引用 | 处置 |
+| 模块 | 生产引用(含 -m 与裸名) | test 引用 | 处置 |
 |---|---|---|---|
-| `wave10_experiments.py` | 0 | test_wave10_experiments.py | 待删(连 test) |
-| `l3_marginal.py` | 0 | test_l3_marginal.py | 待删(连 test) |
-| `process_backfill.py` | 0 | test_process_backfill.py | 待删(连 test) |
-| `gate_recal.py` | 0 | test_gate_recal.py | 待删(连 test) |
-| `sentinel_audit.py` | 0 | test_wave10_ops.py(共享文件) | 待删(**拆文件删段**) |
-| `shrink_replay.py` | 仅旧 plan 文档 | test_shrink_replay.py | 待删(连 test) |
+| `wave10_experiments.py` | 0(裸名复核 ✓) | test_wave10_experiments.py | 待删(连 test) |
+| `process_backfill.py` | 0(裸名复核 ✓) | test_process_backfill.py | 待删(连 test) |
+| `shrink_replay.py` | 仅旧 plan 文档(裸名复核 ✓) | test_shrink_replay.py | 待删(连 test) |
+| `gate_recal.py` | **活体**:nightly_close 动态 import | test_gate_recal.py | **勿删** |
+| `l3_marginal.py` | **活体**:nightly_close 动态 import | test_l3_marginal.py | **勿删** |
+| `sentinel_audit.py` | **活体**:nightly_close 动态 import + fwd 消费 | test_wave10_ops.py | **勿删** |
 
 删除协议(每模块必过,承 2026-07-19 家训「删退役 test 会静默孤立它顺带锁的 live 契约」):
 ① 读 test docstring 查双职(test 是否顺带锁了别的活契约);② vulture 四类假阳口径复核;
-③ `git grep` 动态调用面(getattr/字符串拼模块名);④ 删后全测绿 + 一次真实 prelude 冒烟。
-**为什么今晚不删**(R2 的诚实执行):六个全部有 test 引用,①②④ 是实打实的开发动作。
+③ **裸名** `git grep`(getattr/importlib 字符串拼名/launchd plist);④ 删后全测绿 +
+一次真实 prelude/nightly 冒烟。附带动作:给 `nightly_close._ledgers` 的 names 表加一行注
+「动态调用面——删 learning 模块前先看这张表」,防下一次同样的假阳。
 
 ### D4 skill/workflow 文档 lint(product_shape_lint 家族新成员)
 
