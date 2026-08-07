@@ -280,7 +280,7 @@ spec 草稿(实施时落 `docs/research/<实施日>-wave11-experiment-specs.json
     "speed": "L4 段墙钟 P50 改善≥30%(未达即回滚,改善<10% 视为失败)",
     "arch": "tushare RATE_LIMIT 次数 ≤ 滑窗基线;信号量 stale 回收 0 次误杀"
   },
-  "rollback": "budgets.concurrency.l4_stock=4(config 一行,回滑窗)"
+  "rollback": "scan_config.jsonc 设 budgets.concurrency={tushare:4,web_fetch:4,web_search:4,l4_stock:4}(_normalize_caps 要四键全给,只写 l4_stock 会 ValueError)。只压 L4 派发帽,不恢复旧滑窗补派节奏——那是 SKILL.md 步骤 4 的主会话行为,config 管不到;真要回滑窗须同时 revert SKILL.md 步骤 4 与 STAGES.md L4 节。〔final-review 2026-08-08 C5 修正:原文「config 一行,回滑窗」与实施后 SKILL.md:103 的文案矛盾且拉不动〕"
 }
 ```
 

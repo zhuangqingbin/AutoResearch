@@ -276,8 +276,14 @@ def test_blocked_line_shows_error_not_rating(tmp_path):
      票会让它假成立。用户裁定退回只给必要条件的保守写法。〕
      收完成通知的回合只领不播(唤醒纪律不变)。单票失败只改本票状态;重放仍只派
      `l4_tasks batches` 返回的未完成票。
-   - 回滚杆:`scan_config.jsonc` 设 `budgets.concurrency.l4_stock=4` 即回滑窗节奏
-     (旧滑窗操作法见 git 本段历史,勿在此保留操作细节)。
+   - 回滚杆:`scan_config.jsonc` 设 `budgets.concurrency=
+     {tushare:4,web_fetch:4,web_search:4,l4_stock:4}`(`_normalize_caps` 要四键全给,只写
+     `l4_stock` 一行会 `ValueError`)。此杆**只压 L4 派发帽**(`effective_cap` 的 batches
+     分组从 1 变多),**不能**恢复旧滑窗补派节奏——派发协议(一次性全派)是本步骤的主会话
+     行为,config 管不到;真要回滑窗须同时 revert 本步骤与 STAGES.md L4 节(旧滑窗操作法
+     见 git 本段历史,勿在此保留操作细节)。〔final-review 2026-08-08 C5 修正:本行原写
+     「即回滑窗节奏」,与本步骤实际写进 SKILL.md 的文案(:103「回滚杆不能恢复旧滑窗节奏」)
+     矛盾,且原值缺 tushare/web_fetch/web_search 三键,`_normalize_caps` 会拒绝。〕
    - 首跑后必看:`uv run --no-sync python -m autoresearch.scan.l4_tasks stats <date>`
      (RATE_LIMIT/排队等待读数;429 率 >10% 才考虑 stagger,YAGNI)。
 ```
@@ -1045,7 +1051,7 @@ Modify `autoresearch/learning/nightly_close.py`(names 表加注)。
 
 | 批 | 杆 |
 |---|---|
-| C | `scan_config.budgets.concurrency.l4_stock=4` |
+| C | `scan_config.jsonc` 设 `budgets.concurrency={tushare:4,web_fetch:4,web_search:4,l4_stock:4}`(`_normalize_caps` 要四键全给,只写 `l4_stock` 一行会 `ValueError`)。**只压 L4 派发帽,不恢复旧滑窗补派节奏**——派发协议是 SKILL.md 步骤 4 的主会话行为,config 管不到;真要回滑窗须同时 revert SKILL.md 步骤 4 与 STAGES.md L4 节。〔final-review 2026-08-08 C5 修正:本行原写「回滑窗」+ 单键,与 SKILL.md:103 矛盾且拉不动〕 |
 | B | 删 scan_config roles 段(AGENT_DEFAULTS parity);reconcile/guard 独立 revert |
-| A | `ruler.MAIN_RULER="fwd_2_oc"` + weights 快照 sha 恢复 + `SCHEMA_SWITCH_V4="9999-12-31"` |
+| A | `ruler.MAIN_RULER="fwd_2_oc"` + weights 快照 sha 恢复(`fs.rollback_weights("543d67f8")`,对应 `context/factor_lab/weights.543d67f8.json`,flip 前快照,`meta.horizon=fwd_2_oc`)+ `SCHEMA_SWITCH_V4="9999-12-31"`。⚠ 快照文件在 gitignored 的 `context/` 下,工作树重建后不存在,回滚只能靠「改回常量 + 重跑 calibrate」。 |
 | D | 纯文档/删除各自 git revert |
