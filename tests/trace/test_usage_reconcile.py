@@ -119,12 +119,50 @@ def test_gp_shell_defaults_to_sonnet_low_when_unconfigured(tmp_path):
     assert any(m["agent"] == "general-purpose" for m in r_bad["mismatches"])
 
 
+# ───────────────────────── unknown_agent_types(2026-08-06 review Minor 2) ─────────────────────────
+
+
+def test_unknown_agent_type_reported_not_silently_dropped(tmp_path):
+    """既不在 `AGENTTYPE_TO_ROLE`、也不是 `general-purpose` 的 agentType——此前会静默跳过
+    (不判也不报,mismatches 里看不出任何痕迹);现在必须出现在 `unknown_agent_types` 里,
+    并且让 `ok` 翻假(与 `wire_breaks` 的"配置写了没人接"对称:这边是"来了个不认识的")。
+    """
+    rows = ROWS + [{"role": "subagent", "agent": "some-new-agent-type",
+                    "model": "claude-opus-5", "effort": "max", "status": "SUCCEEDED"}]
+    r = _run(tmp_path, ECHO, rows)
+    assert r["unknown_agent_types"] == ["some-new-agent-type"]
+    assert r["ok"] is False
+    # 不该被塞进 mismatches——unknown 是"判不了",不是"判出了具体哪个字段不符"
+    assert not any(m["agent"] == "some-new-agent-type" for m in r["mismatches"])
+
+
+def test_unknown_agent_types_deduped_across_rows(tmp_path):
+    """同一个未知 agentType 出现多行,只报一次(与 `wire_breaks` 按 role 去重的粒度一致)。"""
+    rows = [{"role": "subagent", "agent": "mystery-agent", "model": "claude-opus-5",
+            "effort": "max", "status": "SUCCEEDED"} for _ in range(3)]
+    r = _run(tmp_path, ECHO, rows)
+    assert r["unknown_agent_types"] == ["mystery-agent"]
+    assert r["checked"] == 3                    # 三行都真的被"看过"(checked 计数不受影响)
+
+
+def test_no_unknown_agent_types_key_stays_empty_on_clean_run(tmp_path):
+    """全部 agentType 都认识时,`unknown_agent_types` 是空列表而不是缺键——消费者可以
+    无条件 `result["unknown_agent_types"]`,不用先 `.get(..., [])` 防 KeyError。
+    """
+    r = _run(tmp_path, ECHO, ROWS)
+    assert r["unknown_agent_types"] == []
+    assert r["ok"] is True
+
+
 def test_main_role_rows_ignored(tmp_path):
-    """role=main(主会话自身)不受 agentType→role 规则约束,不该被拿去跟任何 role 期望比对。"""
+    """role=main(主会话自身)不受 agentType→role 规则约束,不该被拿去跟任何 role 期望比对;
+    `checked` 只数真正进了比对循环的行(2026-08-06 review Minor 1)—— role=main 那行虽然
+    在 rows 里,但从未被比对过,不该被算进"实测行 N 条"。
+    """
     rows = [{"role": "main", "agent": "(主会话)", "model": "claude-opus-5",
             "effort": "max", "status": "FAILED"}]
     r = _run(tmp_path, ECHO, rows)
-    assert r["checked"] == 1
+    assert r["checked"] == 0
     assert r["mismatches"] == []
 
 
@@ -233,6 +271,15 @@ def test_render_lists_mismatches_and_wire_breaks(tmp_path):
     assert "wire_breaks" in md
 
 
+def test_render_lists_unknown_agent_types(tmp_path):
+    rows = ROWS + [{"role": "subagent", "agent": "mystery-agent", "model": "claude-opus-5",
+                    "effort": "max", "status": "SUCCEEDED"}]
+    r = _run(tmp_path, ECHO, rows)
+    md = ur.render(r)
+    assert "unknown_agent_types" in md
+    assert "mystery-agent" in md
+
+
 # ───────────────────────── CLI:main() ─────────────────────────
 
 
@@ -307,13 +354,19 @@ class TestRealDataMutations:
         return echo, rows
 
     def test_baseline_is_not_trivially_clean(self):
-        """基线本身不是空跑 —— 44 条真实 mismatch(l3-rank 分叉 + gp haiku 壳)、0 wire_break。
-        这条锁住"真实数据长什么样",变异测试改的是这个基线之上的一处,不是从零构造。
+        """基线本身不是空跑 —— 44 条真实 mismatch(l3-rank 分叉 + gp haiku 壳)、0 wire_break、
+        0 unknown_agent_type。这条锁住"真实数据长什么样",变异测试改的是这个基线之上的
+        一处,不是从零构造。`checked` 只数 role=="subagent" 的行(2026-08-06 review Minor 1
+        修正后)——真实数据里有 1 行 role=="main"(主会话自身,状态 FAILED),不进比对循环,
+        所以 `checked` 比 `len(rows)` 少 1,不是相等。
         """
         echo, rows = self._load()
         base = ur._reconcile_core(echo, rows, date="2026-08-05")
-        assert base["checked"] == len(rows)
+        n_subagent_rows = sum(1 for r in rows if r.get("role") == "subagent")
+        assert base["checked"] == n_subagent_rows
+        assert base["checked"] == len(rows) - 1   # 真实数据里恰好 1 行 role=="main"
         assert base["wire_breaks"] == []
+        assert base["unknown_agent_types"] == []
         assert len(base["mismatches"]) >= 1     # 至少那条 l3-rank medium/max 真分叉
 
     def test_mutation_effort_wrong_in_echo_caught_against_real_harvest(self):

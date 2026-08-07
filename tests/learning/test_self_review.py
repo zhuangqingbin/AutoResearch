@@ -358,3 +358,61 @@ def test_usage_reconcile_lint_corrupt_json_does_not_crash(tmp_path):
     d.mkdir()
     (d / "_usage_reconcile.json").write_text("{not json", encoding="utf-8")
     assert self_review.usage_reconcile_lint(tmp_path) == []
+
+
+# ───────────────────────── 端到端接线回归(2026-08-06 review Important)─────────────────────────
+# task-9-review.md 逮到的真问题:usage_reconcile_lint 定义得再对,若 report_sections.py 不
+# 调它,它的 fail 升级永远进不了 gate_fires.csv,GATE4 就永远拦不住——"判据对但没生效"
+# 与本项目「生产者没接线 / 消费者读没人生产的产物」的成套前科同族。下面这条测试专门锁
+# 到 gate_fires.csv 与 gate4() 这两个终点产物,不是只测 usage_reconcile_lint 函数本身
+# (那部分上面一串 test_usage_reconcile_lint_* 已经测过了,不重复)。
+
+
+def _mk_usage_reconcile_wiring_fixture(tmp_path):
+    """按生产真实目录形状(`context/scan/<date>/`、`context/learning/...jsonl` 是
+    `context/scan/` 的兄弟目录)布置 fixture——`_self_review_banner` 的新接线块按
+    `scan_dir.parent.parent / "learning" / "usage_reconcile.jsonl"` 算账本路径,fixture
+    的目录层级必须真的对得上,不能偷懒拍平成一层。
+    """
+    scan_root = tmp_path / "context" / "scan"
+    scan_dir = scan_root / "2026-08-06"
+    scan_dir.mkdir(parents=True)
+    (scan_dir / "_usage_reconcile.json").write_text(json.dumps({
+        "date": "2026-08-06", "ok": False,
+        "mismatches": [{"agent": "l4-card", "field": "effort", "expected": "max", "actual": "low"}],
+        "wire_breaks": [], "unknown_agent_types": [], "checked": 5,
+    }), encoding="utf-8")
+    ledger = scan_dir.parent.parent / "learning" / "usage_reconcile.jsonl"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(
+        json.dumps({"date": "2026-08-05", "ok": False}) + "\n"
+        + json.dumps({"date": "2026-08-06", "ok": False}) + "\n",
+        encoding="utf-8")
+    return scan_dir
+
+
+def test_usage_reconcile_wired_into_banner_gate_fires_and_gate4(tmp_path):
+    """端到端:streak 账本连续两日 ok=false → banner 顶 🛑(不是 ⚠️)→ gate_fires.csv 真的
+    落一行 severity=fail → gate4() 真的判 not ok。四段缺一不可,只测其中一段测不出"接线
+    断了但每一段各自看起来都对"这种病。
+    """
+    from autoresearch.scan.assemble import _self_review_banner
+    from autoresearch.scan.gates import gate4
+
+    scan_dir = _mk_usage_reconcile_wiring_fixture(tmp_path)
+
+    banner = _self_review_banner(scan_dir, [], "")
+    assert "usage_reconcile" in banner
+    assert "🛑" in banner                       # fail 图标,不是 warn 的 ⚠️
+
+    import csv
+    gf = scan_dir / "gate_fires.csv"
+    assert gf.exists(), "dump_gate_fires 必须真的落盘"
+    rows = list(csv.DictReader(gf.open(encoding="utf-8")))
+    hit = [r for r in rows if r["check"].startswith("usage_reconcile")]
+    assert hit, "gate_fires.csv 里必须出现 usage_reconcile 那一行——这是本次 review 要锁的终点"
+    assert hit[0]["severity"] == "fail"
+
+    g = gate4(scan_dir)
+    assert g["ok"] is False
+    assert "usage_reconcile" in g["reason"]

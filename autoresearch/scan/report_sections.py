@@ -564,6 +564,21 @@ def _self_review_banner(scan_dir: Path, rows: list[dict], summary_text: str,
         if shape_extra:
             res["failures"].extend(shape_extra)
             res["n_warn"] = res.get("n_warn", 0) + sum(1 for x in shape_extra if x.get("severity") == "warn")
+    with contextlib.suppress(Exception):                            # 配置生效对账(Wave11 B4,usage_reconcile)
+        # ledger_path 显式算成 scan_dir 的兄弟目录(scan_dir.parent.parent / learning / ...),
+        # 不依赖 usage_reconcile_lint 的 cwd 相对缺省——scan_dir 在生产里本来就是
+        # `context/scan/<date>`(见上方 802 行前后 `scan_dir == Path("context/scan") / date`
+        # 的同款假设),这里算出来的路径与缺省值 byte-identical,但让本函数可以脱离 cwd
+        # 被 tmp_path 测试摆布,不用靠 monkeypatch.chdir。
+        usage_ledger = scan_dir.parent.parent / "learning" / "usage_reconcile.jsonl"
+        usage_extra = self_review.usage_reconcile_lint(scan_dir.parent, ledger_path=usage_ledger)
+        if usage_extra:
+            res["failures"].extend(usage_extra)
+            res["n_warn"] = res.get("n_warn", 0) + sum(1 for x in usage_extra if x.get("severity") == "warn")
+            n_fail_extra = sum(1 for x in usage_extra if x.get("severity") == "fail")
+            if n_fail_extra:               # 前 4 个 extra lint 只返回 warn/info,从不用管这两行;
+                res["n_fail"] = res.get("n_fail", 0) + n_fail_extra   # usage_reconcile_lint 是唯一
+                res["ok"] = False                                     # 会升 fail 的,补上防 banner 头失真
     with contextlib.suppress(Exception):
         self_review.dump_gate_fires(scan_dir, res, scan_dir.name)   # R3 留痕;IO 失败不阻发布
     with contextlib.suppress(Exception):

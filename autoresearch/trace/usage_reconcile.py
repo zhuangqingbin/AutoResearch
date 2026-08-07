@@ -119,13 +119,23 @@ def _reconcile_core(echo: dict, rows: list[dict], *, date: str) -> dict:
     「拿真实 harvest 数据、只手动改一处字段」这种变异验证不需要每次都先落临时文件——
     这正是本模块验收(mutation testing)最常做的操作,值得有一个不用碰磁盘的入口。
 
-    返回 `{date, ok, mismatches:[{agent,field,expected,actual}], wire_breaks:[role], checked}`。
+    返回 `{date, ok, mismatches:[{agent,field,expected,actual}], wire_breaks:[role],
+    unknown_agent_types:[agentType], checked}`。
 
     - `mismatches` 逐**实测行**记,不按 role 去重合并——同一 role 多行各自独立判(2026-08-05
       真实数据里 l3-rank 一次 `max` 一次 `medium`,就是两行各自的判断;合并会盖掉"这次跑
       到底哪几次跑偏"的信息)。
     - `wire_breaks` 逐 **role** 记:config 里配了该 role,但当日实测行里一次没见过对应
       agentType——像是"配置写了没人接"。
+    - `unknown_agent_types` 逐**去重后的 agentType** 记(2026-08-06 review Minor 2):
+      harvest 里出现的 agentType 若既不在 `AGENTTYPE_TO_ROLE`、也不是 `general-purpose`,
+      此前会静默跳过、不判也不报——与 `wire_breaks`"配置写了没人接"的方向不对称(一边
+      主动报断线,一边默默把看不懂的行扔掉)。现在这类行会被记进本字段并计入 `ok`——
+      分不清、判不了本身就是一种"这份对账不完整"的信号,不该被 0 mismatches 悄悄冲平。
+    - `checked` 只计 `role == "subagent"` 的行数(2026-08-06 review Minor 1 修正):此前
+      用 `len(rows)` 会把 `role == "main"`(主会话自身)的那一行也算进去,但比对循环一开
+      头就跳过了它——"实测行 N 条"这句话此前会让人以为 N 行都真的参与了对账,其实最多
+      N-1 行。
     """
     agents_cfg = echo.get("agents") or {}
 
@@ -136,9 +146,12 @@ def _reconcile_core(echo: dict, rows: list[dict], *, date: str) -> dict:
 
     mismatches: list[dict] = []
     seen_types: set[str] = set()
+    unknown_types: set[str] = set()
+    checked = 0
     for r in rows:
         if r.get("role") != "subagent":
             continue
+        checked += 1
         atype = r.get("agent") or ""
         seen_types.add(atype)
         got = (_norm_model(r.get("model")), r.get("effort") or "(unset)")
@@ -149,14 +162,19 @@ def _reconcile_core(echo: dict, rows: list[dict], *, date: str) -> dict:
                 if field in exp and exp[field] != got_val:
                     mismatches.append({"agent": atype, "field": field,
                                        "expected": exp[field], "actual": got_val})
-        elif atype == "general-purpose" and got not in gp_allowed:
-            mismatches.append({"agent": atype, "field": "model+effort",
-                               "expected": sorted(gp_allowed), "actual": list(got)})
+        elif atype == "general-purpose":
+            if got not in gp_allowed:
+                mismatches.append({"agent": atype, "field": "model+effort",
+                                   "expected": sorted(gp_allowed), "actual": list(got)})
+        else:
+            unknown_types.add(atype)          # 既不在映射表也不是 general-purpose——不装懂
 
     wire_breaks = [role for role in _EXPECT_PRESENT if role in agents_cfg
                    and not any(AGENTTYPE_TO_ROLE.get(t) == role for t in seen_types)]
-    return {"date": str(date), "ok": not mismatches and not wire_breaks,
-            "mismatches": mismatches, "wire_breaks": wire_breaks, "checked": len(rows)}
+    unknown_agent_types = sorted(unknown_types)
+    ok = not mismatches and not wire_breaks and not unknown_agent_types
+    return {"date": str(date), "ok": ok, "mismatches": mismatches, "wire_breaks": wire_breaks,
+            "unknown_agent_types": unknown_agent_types, "checked": checked}
 
 
 def reconcile(date: str, root: str | Path | None = None) -> dict:
@@ -192,12 +210,19 @@ def render(result: dict) -> str:
         f"- **结论**:{'✓ ok' if result['ok'] else '✗ 有差异'}"
         f" · 实测行 {result['checked']} 条"
         f" · mismatch {len(result['mismatches'])} 条"
-        f" · wire_break {len(result['wire_breaks'])} 个",
+        f" · wire_break {len(result['wire_breaks'])} 个"
+        f" · unknown_agent_type {len(result.get('unknown_agent_types') or [])} 个",
         "",
     ]
     if result["wire_breaks"]:
         lines.append("**wire_breaks**(config 写了该 role,当日实测行一次没见过——像是没接线):")
         lines += [f"- `{role}`" for role in result["wire_breaks"]]
+        lines.append("")
+    if result.get("unknown_agent_types"):
+        lines.append("**unknown_agent_types**(harvest 出现但本表不认识的 agentType——"
+                     "既不是 general-purpose、也不在 `AGENTTYPE_TO_ROLE` 映射里,判不了,"
+                     "不能算 0 mismatches 就当没事):")
+        lines += [f"- `{t}`" for t in result["unknown_agent_types"]]
         lines.append("")
     if result["mismatches"]:
         lines += ["| agent | field | expected | actual |", "|---|---|---|---|"]
