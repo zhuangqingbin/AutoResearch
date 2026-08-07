@@ -50,6 +50,7 @@ _COLUMNS = [
     "market_fwd_2",
     "excess_2",
     "verdict",
+    "ruler",   # fwd_2_oc/excess_2/verdict 取值来自哪个 MAIN_RULER(写入那一刻的真值)
 ]
 _MATURE_VERDICTS = {"FOLD_RIGHT", "FOLD_WRONG", "FOLD_NEUTRAL"}
 
@@ -202,6 +203,7 @@ def day_rows(scan_dir: Path | str) -> pd.DataFrame:
                     excess,
                     degraded=fact["degraded"],
                 ),
+                "ruler": MAIN_RULER,
             }
         )
     return pd.DataFrame(rows, columns=_COLUMNS)

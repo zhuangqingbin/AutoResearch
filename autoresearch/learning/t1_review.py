@@ -36,6 +36,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common.ruler import MAIN_RULER
+
 # 保送/观察单直通(已退役 fb_20260714_002)/菜单滞回(已退役 pr_20260716_006)——都不是
 # L3 当日选的票,不进判断层成绩;历史 scan 目录仍有后两种 lane 的存量行,故三者都留集合里。
 _NON_GENUINE_LANES = {"pinned", "watchlist_trigger", "carryover"}
@@ -310,7 +312,13 @@ def render_scorecard_md(res: dict) -> str:
 
 def append_ledger(res: dict, diagnoses: dict[str, dict] | None = None,
                   path: Path | str | None = None) -> int:
-    """逐票行落账本;按 T 日幂等(同日旧行整替,重跑安全)。diagnoses={code: {mechanism, why}}。"""
+    """逐票行落账本;按 T 日幂等(同日旧行整替,重跑安全)。diagnoses={code: {mechanism, why}}。
+
+    每行打 `ruler`(写入那一刻的 `MAIN_RULER` 真值)——本环主尺是 cc1/oc1(与 MAIN_RULER
+    无关),但账本族统一打标便于审计"这行是哪个主尺纪元写的"。历史行(本列上线前写的)
+    round-trip 经 json.loads→json.dumps 天然不获得这列(旧行不回写 tag);读侧
+    `row.get("ruler", "fwd_2_oc")` 兜底。
+    """
     path = Path(path or _LEDGER)
     path.parent.mkdir(parents=True, exist_ok=True)
     old = []
@@ -337,7 +345,7 @@ def append_ledger(res: dict, diagnoses: dict[str, dict] | None = None,
                     "limit": r.get("limit") or "",
                     "mechanism": d.get("mechanism"), "why": d.get("why"),
                     "stage": d.get("stage"),
-                    "diagnosed": bool(d), "ts": ts})
+                    "diagnosed": bool(d), "ts": ts, "ruler": MAIN_RULER})
     path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in old + new),
                     encoding="utf-8")
     return len(new)

@@ -211,7 +211,10 @@ def evaluate(date: str, scan_root: Path | None = None, report_root: Path | None 
         raise RuntimeError(f"{date} 的 fwd 未实现 / 无价格,暂不能逐段评估")
     realized = _code6(realized)
     n_main = pd.to_numeric(realized.get(_RET_MAIN, pd.Series(dtype=float)), errors="coerce")
-    res: dict = {"date": date, "n_realized": int(n_main.notna().sum()), "stages": {}}
+    # ruler:各段 edge(lift/IC/verdict_edge)都算在 _RET_MAIN(= MAIN_RULER)之上,写入那一刻
+    # 的真值随行入账;本函数单日、单次调用内部只可能有一种尺,不存在跨尺混合(见 refresh_
+    # attributions 的多日累积才是真正风险点),这里落盘只为审计"这份 stage_eval 是哪个尺算的"。
+    res: dict = {"date": date, "n_realized": int(n_main.notna().sum()), "ruler": MAIN_RULER, "stages": {}}
     outdir = sdir / "retro"
     outdir.mkdir(parents=True, exist_ok=True)
 
@@ -294,14 +297,20 @@ def evaluate(date: str, scan_root: Path | None = None, report_root: Path | None 
 
 
 def _flat_csv(res: dict) -> pd.DataFrame:
-    """各段 edge 摊平成一表(每段一行 metric),便于跨日累积/回看。"""
+    """各段 edge 摊平成一表(每段一行 metric),便于跨日累积/回看。
+
+    `ruler` 列(读侧兜底 `res.get("ruler", "fwd_2_oc")`,历史 res dict 无此键)标记这些
+    metric 是在哪个 MAIN_RULER 下算的 —— 若未来出现跨日拼接读这张表求汇总统计,分尺是
+    前提,不能把 fwd_2_oc 尺日子的 lift/IC 与 gap_c1_o2 尺日子的揉在一起算。
+    """
+    ruler = res.get("ruler", "fwd_2_oc")
     rows = []
     for stage, d in res.get("stages", {}).items():
         for k, val in d.items():
             if isinstance(val, dict):
                 continue
-            rows.append({"date": res["date"], "stage": stage, "metric": k, "value": val})
-    return pd.DataFrame(rows, columns=["date", "stage", "metric", "value"])
+            rows.append({"date": res["date"], "stage": stage, "metric": k, "value": val, "ruler": ruler})
+    return pd.DataFrame(rows, columns=["date", "stage", "metric", "value", "ruler"])
 
 
 def _pct(x) -> str:

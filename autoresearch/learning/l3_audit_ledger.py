@@ -144,6 +144,7 @@ def build_day_ledger(
                 "market_fwd_2": _round_or_none(market),
                 "excess_2": _round_or_none(excess),
                 "opportunity": bool(mature and excess is not None and excess >= 0.02),
+                "ruler": MAIN_RULER,   # fwd_2_oc/excess_2/opportunity 取值来自哪个 MAIN_RULER
             }
         )
 
@@ -200,6 +201,7 @@ def build_day_ledger(
         "minimum_forward_scan_days": MIN_FORWARD_SCAN_DAYS,
         "forward_scan_days": 1 if mature_n else 0,
         "sample_status": "IMMATURE",
+        "ruler": MAIN_RULER,   # 本日快照写入那一刻的 MAIN_RULER;历史文件(本键上线前)读侧兜底 "fwd_2_oc"
         "summary": summary,
         "candidates": rows,
     }
@@ -224,14 +226,32 @@ def write_day_ledger(
 
 
 def roll(scan_root: Path | str = "context/scan") -> tuple[pd.DataFrame, dict]:
-    """Aggregate immutable per-day ledgers without changing the cohort."""
+    """Aggregate immutable per-day ledgers without changing the cohort.
+
+    每日 JSON 是**冻结快照**——一旦写入,`fwd_2_oc`/`excess_2`/`opportunity` 的取值就
+    定格在当天写入时的 MAIN_RULER 下(不会随后续 flip 回填重算)。跨日 roll 因此是本表族
+    唯一真正"跨尺聚合"风险点:T16 flip 前写的日与 flip 后写的日混进同一批 `summaries` 求
+    和。`opportunity_n`(依赖 excess_2 是否 ≥2pp)受 ruler 影响,`candidate_n` 不受影响
+    (候选篮子成员资格与尺无关)。读侧对本列上线前的旧文件(无 "ruler" 键)兜底
+    `"fwd_2_oc"`(旧文件诚实标旧尺,不假装未知)。
+    """
     rows = []
     summaries = []
     for path in sorted(Path(scan_root).glob("*/retro/l3_audit_ledger.json")):
         payload = json.loads(path.read_text(encoding="utf-8"))
-        summaries.append(payload["summary"])
-        rows.extend({"date": payload["date"], **row} for row in payload["candidates"])
+        day_ruler = payload.get("ruler", "fwd_2_oc")
+        summaries.append({**payload["summary"], "ruler": day_ruler})
+        rows.extend(
+            {"date": payload["date"], "ruler": day_ruler, **row}
+            for row in payload["candidates"]
+        )
     frame = pd.DataFrame(rows)
+    if len(frame):
+        # 逐行本就带 ruler(见 build_day_ledger);旧文件的行没有 → 用日级兜底补齐,
+        # 而不是让同一 DataFrame 出现"部分行有、部分行 NaN"的半吊子状态。
+        frame["ruler"] = frame["ruler"].where(
+            frame.get("ruler", pd.Series(dtype=str)).notna(), "fwd_2_oc"
+        )
     forward_days = sum(
         int(summary.get("mature_n", 0)) > 0 for summary in summaries
     )
@@ -246,6 +266,16 @@ def roll(scan_root: Path | str = "context/scan") -> tuple[pd.DataFrame, dict]:
     summary["sample_status"] = (
         "MATURE" if forward_days >= MIN_FORWARD_SCAN_DAYS else "IMMATURE"
     )
+    # 按 ruler 分段的 mature_n/opportunity_n —— 禁止把 fwd_2_oc 尺与 gap_c1_o2 尺的
+    # "机会"计数悄悄揉进一个总数;单尺场景下这只是把同一个数字再报一遍(不改变行为)。
+    rulers = sorted({s.get("ruler", "fwd_2_oc") for s in summaries})
+    summary["ruler_breakdown"] = {
+        r: {
+            key: sum(int(item.get(key, 0)) for item in summaries if item.get("ruler", "fwd_2_oc") == r)
+            for key in ("candidate_n", "mature_n", "opportunity_n")
+        }
+        for r in rulers
+    }
     return frame, summary
 
 
@@ -264,6 +294,13 @@ def render(rows: pd.DataFrame, summary: dict) -> str:
     ]
     if status == "IMMATURE":
         lines.append("- ⚠ 未满 20 个前向扫描日，不得据此改 L3 选择规则。")
+    breakdown = summary.get("ruler_breakdown") or {}
+    if len(breakdown) > 1:      # 跨尺(T16 flip 前后的日子混进同一批)才现身,单尺场景零字节
+        parts = "；".join(
+            f"{r}:成熟{b.get('mature_n', 0)}/机会{b.get('opportunity_n', 0)}"
+            for r, b in sorted(breakdown.items())
+        )
+        lines.append(f"- ⚠️ 本表跨 {len(breakdown)} 种尺,以上总数由分尺相加而来,不可比较原始均值:{parts}")
     if len(rows):
         lines += [
             "",

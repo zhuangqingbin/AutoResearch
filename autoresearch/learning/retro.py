@@ -76,6 +76,10 @@ def attribute_frame(l1: pd.DataFrame, realized: pd.DataFrame, buylist: dict,
     hi = trad[MAIN_RULER].quantile(top_q) if len(trad) else float("nan")
     lo = trad[MAIN_RULER].quantile(bot_q) if len(trad) else float("nan")
     m["winner"] = m["tradable"] & (m[MAIN_RULER] >= hi) & (m[MAIN_RULER] >= abs_thresh)
+    # ruler tag(Wave11 头等大事):winner/bucket 用 MAIN_RULER 分类,写入那一刻的真值随行入账 ——
+    # 不然 T16 flip 后旧行(fwd_2_oc 尺分类)与新行(gap_c1_o2 尺分类)的 winner/bucket 语义
+    # 无法区分。历史行(本列上线前写的)没有这列,读侧按 `row.get("ruler", "fwd_2_oc")` 兜底。
+    m["ruler"] = MAIN_RULER
 
     def bucket(r) -> str:
         if r["winner"] and r["bought"]:
@@ -223,7 +227,8 @@ def build_retro_pairs(attr: pd.DataFrame, max_pairs: int = 20) -> pd.DataFrame:
                "fail_fwd2": round(float(f["_fwd2"]), 4), "win_code": w["code"], "win_name": w.get("name"),
                "win_bucket": w.get("bucket"), "win_fwd2": round(float(w["_fwd2"]), 4),
                "industry": f.get("industry"),
-               "matched_on": "industry" if (not same.empty) else "global"}
+               "matched_on": "industry" if (not same.empty) else "global",
+               "ruler": MAIN_RULER}      # fail_fwd2/win_fwd2 固定列名但取值来自 MAIN_RULER,同族陷阱,一并打标
         for dcol, src in _PAIR_DIFF_COLS:                    # 因子差 = fail − success(控制变量对比)
             if src in a.columns:
                 fv, wv = pd.to_numeric(pd.Series([f.get(src), w.get(src)]), errors="coerce")
@@ -400,12 +405,21 @@ def realized_returns(date: str, fwd: int = 10) -> pd.DataFrame:
     """全市场 D 的已实现 fwd_1_oo/fwd_2_oc/fwd_5_oc + buyable(复用 factor_lab;按需拉 D..D+fwd 的 daily)。
 
     fwd 未实现(D+2 交易日还没到)→ 返回空(供 pending 判定)。
+
+    Wave11-A3:`gap_c1_o2`/`buyable_c1`/`unsellable_o2`(隔夜尺三列,T11 已让
+    `factor_lab.forward_returns` 产出)此前被下面的白名单过滤掉,归因/回填两侧都读不到——
+    现在透传,是 `refresh_attributions` 历史回填 gap 列的唯一数据来源。
     """
     import autoresearch.research.factor_lab as fl
     from autoresearch.data.tushare_source import _trade_days
 
-    cols = ["code", "fwd_1_oo", "fwd_2_oc", "fwd_5_oc", "fwd_10_oc", "hi_2_oc", "hi_10_oc", "buyable", "gap_d1"]
+    cols = ["code", "fwd_1_oo", "fwd_2_oc", "fwd_5_oc", "fwd_10_oc", "hi_2_oc", "hi_10_oc", "buyable", "gap_d1",
+            "gap_c1_o2", "buyable_c1", "unsellable_o2"]
     # ↑ 全部历史/参考尺字面量列表(FWDS 同族),固定列名,勿随主尺漂移;fwd_10/hi_10 供买后管理(未成熟=NaN)
+    # gap_c1_o2/buyable_c1/unsellable_o2:隔夜尺三列(Wave11 批A);后两者是 pandas 可空
+    # boolean(<NA>=未知,见 factor_lab.forward_returns 2026-08-07 review fix),本函数只透传
+    # 原样返回,不在此处做任何布尔判读 —— 消费方若要用真值需自行绕开 `_bool_series` 族陷阱
+    # (T11 修的病:naive `.astype(str)` 把 `<NA>` 静默读成 "False")。
     pro = fl._pro()
     d0 = date.replace("-", "")
     today = datetime.now().strftime("%Y%m%d")
@@ -466,12 +480,16 @@ def pending_days(today: str | None = None, scan_root: Path | None = None,
 _KEEP = ["code", "name", "industry", "bucket", "winner", "news_pop",
          "buyable", "tradable", "fwd_1_oo", "fwd_2_oc", "hi_2_oc",
          "fwd_5_oc", "fwd_10_oc", "hi_10_oc", "winner_5", "bucket_5",
-         "gap_d1", "rank", "recalled_flag", "composite", "score_momentum", "score_fund_main",
+         "gap_d1", "gap_c1_o2", "buyable_c1", "unsellable_o2",
+         "rank", "recalled_flag", "composite", "score_momentum", "score_fund_main",
          "score_chip", "pct_60d", "main_net_ratio", "winner_rate", "price_to_cost", "rsi6", "rating", "bought",
-         "process_score"]   # P0-4:逐卡过程分(presence-gated join,见 _join_process_score)
+         "process_score", "ruler"]   # P0-4:逐卡过程分(presence-gated join,见 _join_process_score)
 # ↑ attribution.csv 的落盘 schema(FWDS 同族,fwd_2_oc 等列名固定,勿随主尺漂移):这是跨多日
 # 拼接读取的持久化 CSV 表头,若随 MAIN_RULER 改名,旧日期的历史行会与新日期错列、读出全 NaN
-# (T16 换尺需要新增列而非在此重命名,由该次改动自行处理落盘 schema 演进)。
+# (T16 换尺需要新增列而非在此重命名,由该次改动自行处理落盘 schema 演进)。gap_c1_o2/
+# buyable_c1/unsellable_o2:隔夜尺三列(Wave11 批A,历史回填见 refresh_attributions);
+# ruler:本行 winner/bucket 是在哪个 MAIN_RULER 下分类的(写入那一刻的真值),历史行缺此列
+# → 读侧 `row.get("ruler", "fwd_2_oc")` 兜底(旧行诚实标旧尺,不假装未知)。
 
 
 def refine_l3_bucket(attr: pd.DataFrame, sdir: Path) -> pd.DataFrame:
@@ -1025,12 +1043,46 @@ def recalibrate_and_log(retro_date: str, cap_floor: float = 30.0, k: float = 200
     return {"before_sha": before_sha, "after_sha": after_sha, "top_changes": tc, "n_dates": n_dates}
 
 
+_GAP_COLS = ("gap_c1_o2", "buyable_c1", "unsellable_o2")
+
+
+def _backfill_gap_columns(path: Path, attr: pd.DataFrame, date: str) -> bool:
+    """只追加隔夜尺三列(merge-on-code),旧列旧值/行数原样不动 —— 不走全量 `attribute()`
+    (那会重跑 attribute_frame + 一整串下游 consumer/事件,不是"只加列"的最小改动)。
+
+    `realized_returns(date)` 若连 `gap_c1_o2` 都没有(数据源太老/未算过)→ 无从回填,
+    返回 False(该日下次 refresh 仍会重试,不假装已处理)。成功追加 → 写盘 + True,
+    同时打 `ruler` tag(写入那一刻的 MAIN_RULER 真值;历史行本就没有这列,不必回改)。
+    """
+    realized = realized_returns(date)
+    if realized is None or not len(realized) or "code" not in realized.columns \
+            or "gap_c1_o2" not in realized.columns:
+        return False
+    realized = realized.copy()
+    realized["code"] = realized["code"].astype(str).str.zfill(6)
+    attr = attr.copy()
+    attr["code"] = attr["code"].astype(str).str.zfill(6)
+    add_cols = [c for c in _GAP_COLS if c in realized.columns and c not in attr.columns]
+    if not add_cols:
+        return False
+    merged = attr.merge(realized[["code", *add_cols]], on="code", how="left")
+    merged["ruler"] = MAIN_RULER
+    temp = path.with_name(f"{path.name}.tmp")
+    merged.to_csv(temp, index=False)
+    temp.replace(path)
+    return True
+
+
 def refresh_attributions(scan_root: Path | None = None, report_root: Path | None = None,
                          max_days: int = 20) -> list[str]:
     """对已复盘(done)但 fwd 未成熟即落账的老日重写 attribution(幂等,价格走 cache)。
 
-    需要刷新 = attribution 缺 `fwd_10_oc`/`hi_10_oc` 列,或 fwd_5/fwd_10 全 NaN。治"买单
-    ledger 永远 —"(attribution 原为 retro 时一次性落账)。design: run-reliability §3。
+    两条互不重叠的「需要刷新」判据:
+    - 缺 `fwd_10_oc`/`hi_10_oc` 列,或 fwd_5/fwd_10 全 NaN → 老路不变:全量 `attribute()`
+      重算(治"买单 ledger 永远 —",attribution 原为 retro 时一次性落账;design:
+      run-reliability §3)。该路自然带出 gap 列(`_KEEP` 已收编),此日无需再走下一条。
+    - 否则,若缺 `gap_c1_o2`(隔夜尺,Wave11 批A)→ 只追加新列(merge-on-code),不重跑
+      attribute_frame、不碰任何旧列的旧值、不改行数(见 `_backfill_gap_columns`)。
     """
     scan_root = scan_root or Path("context/scan")
     if not scan_root.exists():
@@ -1042,20 +1094,28 @@ def refresh_attributions(scan_root: Path | None = None, report_root: Path | None
                   and (p / "retro" / "attribution.csv").exists())[-max_days:]
     out: list[str] = []
     for d in days:
+        path = scan_root / d / "retro" / "attribution.csv"
         try:
-            attr = pd.read_csv(scan_root / d / "retro" / "attribution.csv")
+            attr = pd.read_csv(path, dtype={"code": str})
         except Exception:  # noqa: BLE001
             continue
-        need = ("fwd_10_oc" not in attr.columns or "hi_10_oc" not in attr.columns
-                or pd.to_numeric(attr.get("fwd_5_oc"), errors="coerce").isna().all()
-                or pd.to_numeric(attr.get("fwd_10_oc"), errors="coerce").isna().all())
-        if not need:
+        cols = set(attr.columns)
+        need_full = ("fwd_10_oc" not in cols or "hi_10_oc" not in cols
+                     or pd.to_numeric(attr.get("fwd_5_oc"), errors="coerce").isna().all()
+                     or pd.to_numeric(attr.get("fwd_10_oc"), errors="coerce").isna().all())
+        if need_full:
+            try:
+                attribute(d, scan_root=scan_root, report_root=report_root)
+                out.append(d)
+            except Exception as e:  # noqa: BLE001 — 单日失败不阻其余
+                print(f"[refresh] {d} 跳过: {e}", file=sys.stderr)
             continue
-        try:
-            attribute(d, scan_root=scan_root, report_root=report_root)
-            out.append(d)
-        except Exception as e:  # noqa: BLE001 — 单日失败不阻其余
-            print(f"[refresh] {d} 跳过: {e}", file=sys.stderr)
+        if "gap_c1_o2" not in cols:
+            try:
+                if _backfill_gap_columns(path, attr, d):
+                    out.append(d)
+            except Exception as e:  # noqa: BLE001 — 单日失败不阻其余
+                print(f"[refresh] {d} gap 回填跳过: {e}", file=sys.stderr)
     return out
 
 

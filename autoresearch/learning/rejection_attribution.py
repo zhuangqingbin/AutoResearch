@@ -51,6 +51,7 @@ _COLUMNS = [
     "excess_2",
     "opportunity",
     "evidence_ref",
+    "ruler",   # fwd_2_oc/excess_2/opportunity 取值来自哪个 MAIN_RULER(写入那一刻的真值)
 ]
 
 
@@ -297,6 +298,7 @@ def build_rejection_attribution(
                 "excess_2": excess,
                 "opportunity": opportunity,
                 "evidence_ref": _evidence_ref(stage, code),
+                "ruler": MAIN_RULER,
             }
         )
     return pd.DataFrame(rows, columns=_COLUMNS)

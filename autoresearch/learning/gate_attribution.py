@@ -54,18 +54,21 @@ _MARKET_BASELINE = {
 _COLUMNS = [
     "cohort_version", "date", "gate", "code", "tradable", "mature",
     "fwd_2_oc", "market_fwd_2", "market_baseline", "excess_2",  # fwd_2_oc:参考尺,固定列名,勿随主尺漂移(持久化 ledger 列)
-    "outcome", "outcome_reason", "source",
+    "outcome", "outcome_reason", "source", "ruler",   # ruler:fwd_2_oc/excess_2 取值来自哪个 MAIN_RULER(写入那一刻的真值)
 ]
 _PARTICIPATION_COLUMNS = [
     "cohort_version", "date", "gate", "code", "n_gates_failed", "sole_killer",
     "tradable", "mature", "fwd_2_oc", "market_fwd_2", "market_baseline",  # fwd_2_oc:参考尺,固定列名,勿随主尺漂移
-    "excess_2", "outcome", "outcome_reason", "source",
+    "excess_2", "outcome", "outcome_reason", "source", "ruler",
 ]
 _SUMMARY_COLUMNS = [
-    "cohort_version", "gate", "n_days", "n_fires",
+    "cohort_version", "gate", "ruler", "n_days", "n_fires",
     "CORRECT", "NEUTRAL", "FALSE_KILL", "UNMEASURED",
     "measured_n", "false_kill_rate", "correct_rate", "mean_excess_2",
 ]
+# ruler 分段是 summarize() 分组键的一部分(见下)——T16 flip 前后的行落进同一 (cohort,gate)
+# 时,mean_excess_2 绝不能把 fwd_2_oc 尺与 gap_c1_o2 尺的 excess_2 揉进一个均值里算;
+# 历史行(本列上线前写的)缺 ruler → 读侧 `row.get("ruler", "fwd_2_oc")` 兜底,见 `_day_facts`。
 
 
 def classify_outcome(
@@ -347,6 +350,7 @@ def build_day(
             "outcome": outcome,
             "outcome_reason": reason,
             "source": fire.source,
+            "ruler": MAIN_RULER,
         })
     return pd.DataFrame(rows, columns=_COLUMNS)
 
@@ -402,6 +406,7 @@ def build_participation_day(scan_dir: Path | str) -> pd.DataFrame:
             "outcome": outcome,
             "outcome_reason": reason,
             "source": fire.source,
+            "ruler": MAIN_RULER,
         })
     return pd.DataFrame(rows, columns=_PARTICIPATION_COLUMNS)
 
@@ -421,17 +426,31 @@ def roll_participation(scan_root: Path | str | None = None) -> pd.DataFrame:
 
 
 def summarize(rows: pd.DataFrame) -> pd.DataFrame:
-    """长表 → 每门 outcome 分布。比率分母是 `measured_n`(= 非 UNMEASURED),不是 `n_fires`。"""
+    """长表 → 每门 outcome 分布。比率分母是 `measured_n`(= 非 UNMEASURED),不是 `n_fires`。
+
+    分组键含 `ruler`(不只 cohort_version/gate)—— T16 flip 前后的拦截行落进同一
+    (cohort, gate) 时,`mean_excess_2` 绝不能把 fwd_2_oc 尺与 gap_c1_o2 尺的 excess_2
+    揉进一个均值算,那是算混合物。今天单一 MAIN_RULER 常量下每组自然仍是一行(不改变
+    现有单尺场景的行为),ruler 分裂只在真正跨尺时才显现出多行。
+    """
     if rows is None or not len(rows):
         return pd.DataFrame(columns=_SUMMARY_COLUMNS)
+    rows = rows.copy()
+    if "ruler" in rows.columns:
+        rows["ruler"] = rows["ruler"].fillna("fwd_2_oc")
+    else:
+        rows["ruler"] = "fwd_2_oc"
     out = []
-    for (cohort, gate), group in rows.groupby(["cohort_version", "gate"], sort=False):
+    for (cohort, gate, ruler), group in rows.groupby(
+        ["cohort_version", "gate", "ruler"], sort=False
+    ):
         counts = group["outcome"].value_counts().to_dict()
         measured = sum(counts.get(o, 0) for o in OUTCOMES if o != "UNMEASURED")
         excess = pd.to_numeric(group["excess_2"], errors="coerce").dropna()
         out.append({
             "cohort_version": cohort,
             "gate": gate,
+            "ruler": ruler,
             "n_days": int(group["date"].nunique()),
             "n_fires": int(len(group)),
             **{o: int(counts.get(o, 0)) for o in OUTCOMES},
@@ -462,16 +481,16 @@ def _summary_table(summary: pd.DataFrame, *, rates: bool = True) -> list[str]:
     rate_head = " 错杀率 | 拦对率 |" if rates else ""
     rate_sep = "---|---|" if rates else ""
     lines = [
-        "| 门 | 天数 | 拦次 | CORRECT | NEUTRAL | FALSE_KILL | UNMEASURED | "
+        "| 门 | 尺 | 天数 | 拦次 | CORRECT | NEUTRAL | FALSE_KILL | UNMEASURED | "
         f"可测分母 |{rate_head} 被拦ex2均值 |",
-        f"|---|---:|---:|---:|---:|---:|---:|---:|{rate_sep}---|",
+        f"|---|---|---:|---:|---:|---:|---:|---:|---:|{rate_sep}---|",
     ]
     for r in summary.itertuples(index=False):
         rate_cells = (
             f" {pct(r.false_kill_rate)} | {pct(r.correct_rate)} |" if rates else ""
         )
         lines.append(
-            f"| {r.gate} | {r.n_days} | {r.n_fires} | {r.CORRECT} | {r.NEUTRAL} "
+            f"| {r.gate} | {getattr(r, 'ruler', 'fwd_2_oc')} | {r.n_days} | {r.n_fires} | {r.CORRECT} | {r.NEUTRAL} "
             f"| {r.FALSE_KILL} | {r.UNMEASURED} | {r.measured_n} |"
             f"{rate_cells} {sig(r.mean_excess_2)} |"
         )

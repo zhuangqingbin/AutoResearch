@@ -17,7 +17,12 @@ def _mk_day(root, date, cols_full=False, fwd_nan=False):
            "fwd_5_oc": (None if fwd_nan else 0.05)}
     if cols_full:
         row.update(fwd_10_oc=(None if fwd_nan else 0.10),
-                   hi_10_oc=(None if fwd_nan else 0.12))
+                   hi_10_oc=(None if fwd_nan else 0.12),
+                   # Wave11-A3:"完整" 现在也意味着隔夜尺三列已在场,否则会额外触发
+                   # refresh_attributions 的 gap-only 轻量回填路径(见 test_gap_backfill.py),
+                   # 使这条「该刷才刷」的老测试跑到未 mock 的 realized_returns。
+                   gap_c1_o2=(None if fwd_nan else 0.03),
+                   buyable_c1=True, unsellable_o2=False)
     pd.DataFrame([row]).to_csv(d / "attribution.csv", index=False)
 
 
