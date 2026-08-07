@@ -9,4 +9,4 @@ GAP_CLIP = 0.31              # 单日板极值:主板10/创业科创20/北交所
 ENTRY_FLAG = "buyable_c1"    # T+1 收盘封涨停=买不进 → 剔样本
 EXIT_FLAG = "unsellable_o2"  # T+2 一字跌停开=卖不出 → 标旗不剔(剔了会美化)
 TOUCH_COL = "gap_c1_o2"      # 隔夜窗唯一实现价=T+2 开 → 触价尺=gap 本身(设计稿 touch_o2 的去重简化)
-SCHEMA_SWITCH_V4 = "9999-12-31"   # 卡契约 v4 日期分界;T17 执行日绑定真值,在那之前不影响任何旧卡判定
+SCHEMA_SWITCH_V4 = "2026-08-07"   # 卡契约 v4 日期分界(T17 绑执行日真值 `date +%F`);此前旧卡判定逐字节不受影响

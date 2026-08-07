@@ -26,30 +26,45 @@ from pathlib import Path
 
 import pandas as pd
 
-from autoresearch.common.ruler import MAIN_RULER
+from autoresearch.common.ruler import MAIN_RULER, SCHEMA_SWITCH_V4, TOUCH_COL
 from autoresearch.learning.shrink import MIN_N_INJECT, n_tag, shrink as _shrink_fn, shrink_config
 
 _COLS = ["date", "code", "name", "rating", "gap_open", "fwd_1", "fwd_2", "fwd_5", "fwd_10",
          "hi_10", "hi_2", "target_ret", "target_hit"]
 _TARGET_RE = re.compile(r"(\d+(?:\.\d+)?)")
-_SCHEMA_SWITCH = "2026-07-10"   # 卡契约 v3(超短)生效日:此前卡=10日语义按 hi_10 判,此后按 hi_2
+_SCHEMA_SWITCH = "2026-07-10"   # 卡契约 v3(超短)生效日:此前卡=10日语义按 hi_10 判
 _HI2_MIN_N = 10   # hi2 校准分组样本门槛(⚠禁注惯例:n<此值的分组丢弃/禁注,all/by_regime 共用)
 
 
 def _hi_col_for(day: str) -> str:
-    """日期分界唯一出处:switch 起 v3 超短卡按 `hi_2_oc`,旧 swing 卡按 `hi_10_oc`。"""
-    return "hi_2_oc" if str(day) >= _SCHEMA_SWITCH else "hi_10_oc"
+    """日期分界唯一出处(三段,边界含等号,T17):
+
+    - `< 2026-07-10` → `hi_10_oc`(v3 前旧 swing 卡,10 日语义);
+    - `< ruler.SCHEMA_SWITCH_V4` → `hi_2_oc`(v3 超短卡,2 日盘中触达);
+    - `>= ruler.SCHEMA_SWITCH_V4` → `ruler.TOUCH_COL`(v4 起隔夜卡,唯一实现价=T+2 开盘)。
+
+    分界日常量单一出处 = `ruler.py`,不在此处写死字面量(两处各写一遍走漂是复发坑)。
+    """
+    day = str(day)
+    if day < _SCHEMA_SWITCH:
+        return "hi_10_oc"
+    if day < SCHEMA_SWITCH_V4:
+        return "hi_2_oc"
+    return TOUCH_COL
 
 
-def target_hit_for(day: str, tr: float | None, row) -> bool | None:
-    """日期分界触价命中:目标幅(close_D 基)rebase 到 o1 基,与对应窗口 MFE 比。
+def target_hit_for(day: str, tr: float | None, row, col: str | None = None) -> bool | None:
+    """日期分界触价命中:目标幅(close_D 基)rebase 到 o1 基,与对应窗口 MFE/实现价比。
 
     switch 日(`_SCHEMA_SWITCH`)起卡契约 v3(超短)生效,窗口收窄到 2 日 → 按 `hi_2_oc` 判;
-    之前的卡是 10 日语义 → 按 `hi_10_oc` 判(不拿新窗口冤枉旧卡)。缺值 → None(诚实标未成熟)。
+    `ruler.SCHEMA_SWITCH_V4` 起卡契约 v4(隔夜)生效,唯一实现价=T+2 开盘 → 按
+    `ruler.TOUCH_COL` 判;更早的卡是 10 日语义 → 按 `hi_10_oc` 判(不拿新窗口冤枉旧卡)。
+    `col` 显式传入时跳过日期分界直接用该列(T17:`target_calibration` 算 v4 双列过渡的
+    `hi_2_oc` 参考读数用,不逐日期重判)。缺值 → None(诚实标未成熟)。
     """
     if tr is None:
         return None
-    col = _hi_col_for(day)
+    col = col or _hi_col_for(day)
     hi = pd.to_numeric(pd.Series([row.get(col)]), errors="coerce").iloc[0]
     if pd.isna(hi):
         return None
@@ -143,9 +158,12 @@ def target_calibration(scan_root: Path | str | None = None, window: int = 30,
     """全卡目标触达统计(近 window 个 scan 日,**全评级**非只 ≥OW —— 0 买期样本不断供)。
 
     只统计**看多目标**(tr>0;UW 向下目标负幅任何上涨都"触达",会稀释过乐观读数——
-    07-05 真数据冒烟发现)+ 已成熟行(有对应窗口 MFE 列);触价口径与 roll 同款 helper
-    (`target_hit_for`):目标幅(close_D 基)rebase 到 o1 基再与窗口最高比;日期分界:
-    v3 起 `hi_2_oc`(2日 MFE),旧卡 `hi_10_oc`。返回 None = 无现场。spec 2026-07-05 §6。
+    07-05 真数据冒烟发现)+ 已成熟行(有对应窗口 MFE/实现价列);触价口径与 roll 同款 helper
+    (`target_hit_for`):目标幅(close_D 基)rebase 到 o1 基再与窗口最高/实现价比;日期分界见
+    `_hi_col_for`(三段,T17):旧卡 `hi_10_oc` → v3 起 `hi_2_oc`(2日 MFE)→ v4 起
+    `ruler.TOUCH_COL`(T+2 开盘,唯一实现价)。v4 起额外并陈 `hi_2_oc` 参考读数
+    (`ref_hit_rate`/`ref_n`,双列过渡 ≥20 交易日不删旧读数,不与主口径混算)。
+    返回 None = 无现场。spec 2026-07-05 §6。
     """
     from autoresearch.scan.health import final_ratings  # lazy 防环
     scan_root = Path(scan_root or "context/scan")
@@ -157,6 +175,7 @@ def target_calibration(scan_root: Path | str | None = None, window: int = 30,
         return None
     n = 0
     targets, mfes, hits = [], [], []
+    ref_hits: list[bool] = []      # v4 双列过渡:hi_2_oc 参考读数(不删旧读数,不混进主口径)
     for d in days:
         attr = _read_attr(d)
         for code in final_ratings(d):
@@ -166,7 +185,8 @@ def target_calibration(scan_root: Path | str | None = None, window: int = 30,
             n += 1
             if attr is None or code not in attr.index:
                 continue
-            hit = target_hit_for(d.name, tr, attr.loc[code])
+            row = attr.loc[code]
+            hit = target_hit_for(d.name, tr, row)
             if hit is None:
                 continue
             col = _hi_col_for(d.name)
@@ -174,24 +194,42 @@ def target_calibration(scan_root: Path | str | None = None, window: int = 30,
             targets.append(tr)
             mfes.append(float(hi))
             hits.append(hit)
+            if col == TOUCH_COL and "hi_2_oc" in attr.columns:   # 仅 v4 起有区分意义
+                ref_hit = target_hit_for(d.name, tr, row, col="hi_2_oc")
+                if ref_hit is not None:
+                    ref_hits.append(ref_hit)
     n_mature = len(hits)
+    n_ref = len(ref_hits)
     return {"n": n, "n_mature": n_mature, "window": window, "min_n": min_n,
             "hit_rate": round(sum(hits) / n_mature, 3) if n_mature else None,
             "med_target": round(float(pd.Series(targets).median()), 4) if targets else None,
             "med_mfe": round(float(pd.Series(mfes).median()), 4) if mfes else None,
+            "ref_hit_rate": round(sum(ref_hits) / n_ref, 3) if n_ref else None,
+            "ref_n": n_ref,
             "thin": n_mature < min_n}
 
 
 def calibration_line(stats: dict | None) -> str | None:
-    """当日件建议行(编排层贴 `_l4_shared_instructions.md`);thin → 禁注文案。"""
+    """当日件建议行(编排层贴 `_l4_shared_instructions.md`);thin → 禁注文案。
+
+    T17:分界日(`ruler.SCHEMA_SWITCH_V4`)起触达口径改「目标带 vs T+2 开盘」(隔夜窗唯一
+    实现价);`hi_2_oc`(2 日盘中触达)读数降参考,双列并陈过渡 ≥20 交易日再议删(承
+    07-10 处理 fwd_5/fwd_10 同手法,不删旧读数)——`ref_n`>0(即窗口内已出现 v4 起的成熟
+    行)才附参考子句,纯 v3 窗口不显示空参考。
+    """
     if stats is None:
         return None
     if stats["thin"]:
         return (f"📐 目标价校准:成熟样本不足(n={stats['n_mature']}<{stats['min_n']})"
                 f"⚠样本少·禁注,先积累")
-    return (f"📐 目标价校准:近{stats['window']}scan日全卡触达率(v3 起 2 日窗) "
+    ref = ""
+    if stats.get("ref_n"):
+        rr = stats.get("ref_hit_rate")
+        ref = (f";参考(hi_2_oc·2日盘中触达) "
+               f"{'—' if rr is None else format(rr, '.0%')}(n={stats['ref_n']})")
+    return (f"📐 目标价校准:近{stats['window']}scan日触达率(目标带 vs T+2 开盘,v4) "
             f"{stats['hit_rate']:.0%}(成熟 n={stats['n_mature']};中位目标 "
-            f"{stats['med_target']:+.0%} vs 中位MFE {stats['med_mfe']:+.0%})"
+            f"{stats['med_target']:+.0%} vs 中位实现 {stats['med_mfe']:+.0%}{ref})"
             f"——目标幅>{stats['med_mfe']:+.0%} 需给出超额理由")
 
 

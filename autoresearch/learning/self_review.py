@@ -25,6 +25,11 @@ _RESEARCH_BODY_HDR = "研报体(档案δ)"
 _MICRO_REPORT_HDR = "微研报"
 _NO_DOSSIER_DECL = "档案未建"
 
+# T17(design: 2026-08-05-wave11-ruler-config-l4concurrency-skills-design.md §A5):卡契约 v4
+# 机器契约标记行 —— 标记行本体进模板是 T24 的事,这里只钉住检查读的字符串(单一事实源,
+# 防两处各写一遍走漂)。
+_CARD_V4_MARKER = "〔卡契约 v4·隔夜 c1→o2〕"
+
 
 def _num(v):
     try:
@@ -470,9 +475,49 @@ def workflow_literal_lint(root=".claude") -> list[dict]:
     return out
 
 
+def card_v4_marker_lint(scan_dir, date_str: str) -> list[dict]:
+    """v4 卡契约口径声明缺失 lint(T17;design A5)。
+
+    **直面语义坍缩**:隔夜窗内唯一实现价=T+2 开盘,盘中目标价/止损在这把尺下不会被系统
+    执行,从「预测窗内触达」降格为「入场论据」——这不是文字调整。分界日
+    (`ruler.SCHEMA_SWITCH_V4`)**起**产出的卡理应用机器契约标记行
+    `〔卡契约 v4·隔夜 c1→o2〕` 声明自己活在哪套口径下,逐 `details/*.md` 查缺失 → warn。
+
+    标记行本体进模板是下一个 task(T24)的事,本函数只加检查、不写模板。`date_str` 取
+    scan 目录日期(同 `dump_gate_fires`/`intel_future_dates_lint` 惯例,一次 scan 跑同一天,
+    不逐卡各自判断)——**分界日前的卡不触发**(旧卡没有这行,不是它的契约,不该被冤枉)。
+
+    presence-gated:`date_str` 早于分界日、无 `details/`、坏文件 → 静默跳过,绝不抛异常。
+    """
+    from pathlib import Path
+
+    from autoresearch.common.ruler import SCHEMA_SWITCH_V4
+
+    out: list[dict] = []
+    if str(date_str) < SCHEMA_SWITCH_V4:
+        return out
+    scan_dir = Path(scan_dir)
+    base = scan_dir / "details"
+    if not base.is_dir():
+        return out
+    for p in sorted(base.glob("*.md")):
+        try:
+            text = p.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001 — 读不了按缺声明处理,不炸
+            text = ""
+        if _CARD_V4_MARKER not in text:
+            code = p.stem.split(".")[0]
+            out.append({
+                "check": "卡契约v4·口径声明缺失", "severity": "warn", "code": code,
+                "detail": f"{code} 分界日({SCHEMA_SWITCH_V4})起的卡缺 `{_CARD_V4_MARKER}` "
+                          "标记行——隔夜口径未声明,读者分不清目标价是执行价还是入场论据",
+            })
+    return out
+
+
 def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
-    """产物形状 lint(十二探针,零 LLM;design: 2026-07-13-next-optimization-survey.md 线 C
-    + 2026-07-22 dossier design Wave1 ⑤ + 2026-07-23 终审 I-2 + Wave9 B-3 + Wave11 D4)。
+    """产物形状 lint(十三探针,零 LLM;design: 2026-07-13-next-optimization-survey.md 线 C
+    + 2026-07-22 dossier design Wave1 ⑤ + 2026-07-23 终审 I-2 + Wave9 B-3 + Wave11 D4 + T17)。
 
     把停车场里"已知的产物形状病"装成每跑可见的机械断言(advisory 起步,攒够跑数再升):
 
@@ -516,6 +561,9 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
     12. **workflow 内联字面量**(fail,Wave11 D4):`.claude/workflows/*.js` 的 `model:`/
         `effort:` 字面量出现在 `AGENT_DEFAULTS` 表之外——单一事实源被绕过,见
         `workflow_literal_lint`。
+    13. **v4 卡契约口径声明缺失**(warn,逐码;T17):分界日(`ruler.SCHEMA_SWITCH_V4`)起的
+        卡缺机器契约标记行 `〔卡契约 v4·隔夜 c1→o2〕`——隔夜口径(唯一实现价=T+2 开盘)
+        未声明,读者分不清目标价是执行价还是入场论据,见 `card_v4_marker_lint`。
 
     全部 presence-gated:缺文件/缺键/坏文件 → 该条静默跳过,**绝不抛异常**。
     返回 [{check,severity,detail,code}](severity ∈ {fail,warn,info});接线在 assemble
@@ -811,6 +859,10 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
         out.extend(retired_symbol_lint(claude_root))
     with contextlib.suppress(Exception):
         out.extend(workflow_literal_lint(claude_root))
+
+    # 13) v4 卡契约口径声明缺失(T17):标记行本体是 T24 的事,这里只加检查
+    with contextlib.suppress(Exception):
+        out.extend(card_v4_marker_lint(scan_dir, date_str))
     return out
 
 
