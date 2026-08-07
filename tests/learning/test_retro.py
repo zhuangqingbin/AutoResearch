@@ -360,13 +360,29 @@ def test_pending_split(tmp_path, monkeypatch):
 
 
 def test_cli_pending_prints_two_sections(monkeypatch, capsys):
-    """CLI `pending` 分两段打印:「归因欠账」「诊断欠账(已备料)」各列各的日期。"""
+    """CLI `pending` 分两段打印,且标签与内容严格对应——本测试按**段落 scope** 断言
+    (先按行定位到「归因欠账」/「诊断欠账」各自那一行,再只在该行内查日期),不是拿
+    整段 stdout 做无范围子串检查。
+
+    这条边界必须卡死:本 task 存在的全部意义就是把两种欠账分清楚。若 `attr_days`/
+    `diag_days` 在打印处被手滑对调(标签底下印错了组),旧的"整段 stdout 里查子串"写法
+    看不出来——两个标签、两组日期字面量都还在输出里,只是挂错了行,照样全绿(2026-08-07
+    review 抓到,reviewer 独立 probe 复现)。这里两组夹具日期特意**不相交**
+    (2026-08-01 vs 2026-08-10/11),使得"该行不该出现另一组独有日期"这条反向断言
+    有意义、能在对调时真的触发。
+    """
     monkeypatch.setattr(retro, "attribution_pending", lambda *a, **k: ["2026-08-01"])
-    monkeypatch.setattr(retro, "pending_days", lambda *a, **k: ["2026-08-01", "2026-08-02"])
+    monkeypatch.setattr(retro, "pending_days", lambda *a, **k: ["2026-08-10", "2026-08-11"])
     monkeypatch.setattr("sys.argv", ["retro.py", "pending"])
 
     assert retro.main() == 0
 
-    out = capsys.readouterr().out
-    assert "归因欠账" in out and "2026-08-01" in out
-    assert "诊断欠账(已备料)" in out and "2026-08-02" in out
+    lines = capsys.readouterr().out.splitlines()
+    attr_line = next(ln for ln in lines if ln.startswith("归因欠账"))
+    diag_line = next(ln for ln in lines if ln.startswith("诊断欠账"))
+
+    assert "2026-08-01" in attr_line
+    assert "2026-08-10" not in attr_line and "2026-08-11" not in attr_line
+
+    assert "2026-08-10" in diag_line and "2026-08-11" in diag_line
+    assert "2026-08-01" not in diag_line
