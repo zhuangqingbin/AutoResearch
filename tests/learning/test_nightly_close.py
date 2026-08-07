@@ -20,17 +20,19 @@ def test_step_records_success_note():
 
 
 def test_run_is_isolated_per_step(monkeypatch):
-    """一步炸掉,其余三步照常跑完 —— 这正是「不连坐」的可观测形式。"""
+    """一步炸掉,其余步骤照常跑完 —— 这正是「不连坐」的可观测形式。"""
     monkeypatch.setattr("autoresearch.learning.retro.pending_days",
                         lambda *a, **k: (_ for _ in ()).throw(OSError("湖挂了")))
     monkeypatch.setattr("autoresearch.learning.t1_review.pending_pairs", lambda *a, **k: [])
+    monkeypatch.setattr("autoresearch.learning.t1_review.gap_finalize_pending", lambda *a, **k: 0)
     monkeypatch.setattr("autoresearch.learning.tripwire_watch.check", lambda *a, **k: [])
     monkeypatch.setattr("importlib.import_module", lambda name: type(
         "M", (), {"main": staticmethod(lambda: None)})())
 
     res = N.run("2026-07-28")
 
-    assert [r[0] for r in res] == ["retro_refresh", "t1_backfill", "tripwire", "ledgers"]
+    assert [r[0] for r in res] == ["retro_refresh", "t1_backfill", "t1_gap_finalize",
+                                    "tripwire", "ledgers"]
     assert res[0][1] is False and "OSError" in res[0][2]
     assert all(r[1] for r in res[1:]), "一步失败把后续步骤也带崩了 = 连坐"
 
@@ -43,15 +45,18 @@ def test_run_reports_counts(monkeypatch):
     monkeypatch.setattr("autoresearch.learning.t1_review.pending_pairs",
                         lambda *a, **k: [{"t": "2026-07-24", "t1": "2026-07-27"}])
     monkeypatch.setattr("autoresearch.learning.t1_review.backfill_day", lambda t, *a, **k: {})
+    monkeypatch.setattr("autoresearch.learning.t1_review.gap_finalize_pending",
+                        lambda *a, **k: 1)
     monkeypatch.setattr("autoresearch.learning.tripwire_watch.check",
                         lambda *a, **k: [{"code": "601869"}])
     monkeypatch.setattr("importlib.import_module", lambda name: type(
         "M", (), {"main": staticmethod(lambda: None)})())
 
-    res = dict((r[0], r[2]) for r in N.run("2026-07-28"))
+    res = {r[0]: r[2] for r in N.run("2026-07-28")}
 
     assert "归因+备料 2/2 日" in res["retro_refresh"]
     assert "确定性回补 1/1 对" in res["t1_backfill"]
+    assert "gap 终判回填 1 日" in res["t1_gap_finalize"]
     assert "⚡ 1 条触发" in res["tripwire"]
 
 
@@ -59,14 +64,17 @@ def test_run_says_so_when_nothing_pending(monkeypatch):
     """无欠账要明说,不能静默 —— 「什么都没打印」和「跑了但没事做」得分得清。"""
     monkeypatch.setattr("autoresearch.learning.retro.pending_days", lambda *a, **k: [])
     monkeypatch.setattr("autoresearch.learning.t1_review.pending_pairs", lambda *a, **k: [])
+    monkeypatch.setattr("autoresearch.learning.t1_review.gap_finalize_pending",
+                        lambda *a, **k: 0)
     monkeypatch.setattr("autoresearch.learning.tripwire_watch.check", lambda *a, **k: [])
     monkeypatch.setattr("importlib.import_module", lambda name: type(
         "M", (), {"main": staticmethod(lambda: None)})())
 
-    res = dict((r[0], r[2]) for r in N.run("2026-07-28"))
+    res = {r[0]: r[2] for r in N.run("2026-07-28")}
 
     assert res["retro_refresh"] == "无待归因日"
     assert res["t1_backfill"] == "无待复盘对"
+    assert res["t1_gap_finalize"] == "无待终判日"
     assert res["tripwire"] == "无触发"
 
 
@@ -102,6 +110,8 @@ def test_retro_step_writes_input_not_just_attribution(monkeypatch):
     monkeypatch.setattr("autoresearch.learning.retro.write_retro_input",
                         lambda d, frame, **k: seen.update(input_day=d, frame=frame))
     monkeypatch.setattr("autoresearch.learning.t1_review.pending_pairs", lambda *a, **k: [])
+    monkeypatch.setattr("autoresearch.learning.t1_review.gap_finalize_pending",
+                        lambda *a, **k: 0)
     monkeypatch.setattr("autoresearch.learning.tripwire_watch.check", lambda *a, **k: [])
     monkeypatch.setattr("importlib.import_module", lambda name: type(
         "M", (), {"main": staticmethod(lambda: None)})())

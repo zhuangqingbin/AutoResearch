@@ -44,6 +44,10 @@ const d1 = await agent(
   `2. 对 rows 每一只:Read context/scan/${date}/details/<code>.md(当日决策卡;若存在 ` +
   `context/scan/${date}/_l4_intel_<code>.md 一并读),对照该票实现数字诊断。**判定尺 = z ` +
   `(行业中性超额/截面稳健σ,已剥大盘与板块共振)**——市场超额只是背景,别再把「没跟跌」当 alpha。\n` +
+  `**终评尺 = 隔夜 gap(T+1 收→T+2 开,2026-08-05 用户裁定)**:今晚看到的 cc1 判定只是 D+1 ` +
+  `初判,D+2 晚 nightly_close 会用 gap 回填 final_verdict 覆盖它——**准不准的对外口径以那时的 ` +
+  `final_verdict 为准**;若某票初判(cc1)与终判(gap)方向相反,诊断必须解释隔夜发生了什么` +
+  `(消息/情绪衰减/隔夜跳空),不能假装没这回事。\n` +
   `**分诊纪律(needs_diag 列)**:needs_diag=false 的票 = β/噪声区间,why 一句话 + mechanism 即可,` +
   `不展开;深度花在 needs_diag=true(不准 / ⚡惊奇 / 方向票 |z|≥1)上——**失败与意外样本的教训` +
   `价值实证高于成功样本,别把 token 花在给「准」写赞美诗**。🔒一字板 = 开盘买不到,论「可实现」时如实标。\n` +

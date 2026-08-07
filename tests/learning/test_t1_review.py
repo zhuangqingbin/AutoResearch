@@ -345,6 +345,72 @@ def test_ledger_report_expectancy_and_conviction(tmp_path):
 # 同因),但卡片正文一直写着定性档 —— 零新数据就能建曲线。
 
 
+# ───── D+2 gap 终判(2026-08-05 用户裁定:对外准不准口径 = 隔夜 gap,cc1 降初判) ─────
+
+
+def _gap_prices():
+    """T+1 收→T+2 开隔夜窗(同 `_prices()` 的 6 只市场票):600001 隔夜跳空 −5%,其余持平
+    → 市场隔夜均值 ≈ −0.83%,600001 超额 ≈ −4.17%(超 legacy 阈 1.5pp)——cc1 判「准」的
+    OW 票,gap 判「不准」。形状同 `_fetch_gap_prices` 返回(code/gap_c1_o2,无 industry)。
+    """
+    rows = [("600001", -0.05), ("000062", 0.0), ("300100", 0.0),
+            ("600519", 0.0), ("000001", 0.0), ("000002", 0.0)]
+    return pd.DataFrame(rows, columns=["code", "gap_c1_o2"])
+
+
+def test_gap_finalize_overrides_cc1_verdict_and_keeps_both(tmp_path):
+    """cc1 判「准」但隔夜 gap 判「不准」:final_verdict 覆盖 cc1 的 verdict 成为对外口径,
+    但两者在 scorecard 与账本里都看得见(不是把初判抹掉);gap 终判不冲掉既有诊断字段;
+    幂等重跑 0 改动。"""
+    _mk_scan(tmp_path)
+    lp = tmp_path / "ledger.jsonl"
+    t1.build_and_stage("2026-07-16", scan_root=tmp_path, prices=_prices(), cal=_CAL)
+    rd = tmp_path / "2026-07-16" / "t1_review"
+    (rd / "diagnoses.json").write_text(json.dumps(
+        [{"code": "600001", "mechanism": "卡内论点兑现", "why": "w"}]), encoding="utf-8")
+    (rd / "report.md").write_text("# 复盘\n", encoding="utf-8")
+    t1.finalize("2026-07-16", scan_root=tmp_path, ledger_path=lp)
+
+    sc_before = pd.read_csv(rd / "scorecard.csv", dtype={"code": str}).set_index("code")
+    assert sc_before.loc["600001", "verdict"] == "准"                  # cc1 初判(D+1 晚)
+
+    n = t1.gap_finalize_pending("2026-07-20", scan_root=tmp_path, ledger_path=lp,
+                                cal=_CAL, gap_prices={"2026-07-17": _gap_prices()})
+    assert n == 1
+
+    sc = pd.read_csv(rd / "scorecard.csv", dtype={"code": str}).set_index("code")
+    assert sc.loc["600001", "verdict"] == "准"                          # 初判仍在,未被抹除
+    assert sc.loc["600001", "final_verdict"] == "不准"                  # 终判覆盖对外口径
+    assert "gap_c1_o2" in sc.columns and "z_gap" in sc.columns
+    assert sc.loc["600001", "gap_c1_o2"] == pytest.approx(-0.05)
+
+    rows = {r["code"]: r for r in map(json.loads, lp.read_text(encoding="utf-8").splitlines())}
+    assert rows["600001"]["verdict"] == "准"                            # 账本双 verdict 都在
+    assert rows["600001"]["final_verdict"] == "不准"
+    assert rows["600001"]["mechanism"] == "卡内论点兑现"                 # gap 回填没冲掉既有诊断
+    assert rows["600001"]["diagnosed"] is True
+    assert rows["000062"]["final_verdict"] == "—"                      # Hold 无方向主张,gap 同理
+
+    before_csv = (rd / "scorecard.csv").read_text(encoding="utf-8")
+    before_ledger = lp.read_text(encoding="utf-8")
+    n2 = t1.gap_finalize_pending("2026-07-20", scan_root=tmp_path, ledger_path=lp,
+                                 cal=_CAL, gap_prices={"2026-07-17": _gap_prices()})
+    assert n2 == 0                                                     # 幂等:已终判过,重跑跳过
+    assert (rd / "scorecard.csv").read_text(encoding="utf-8") == before_csv
+    assert lp.read_text(encoding="utf-8") == before_ledger
+
+
+def test_gap_finalize_skips_when_t2_not_ready(tmp_path):
+    """T+2 未到 today(或价格未发布)→ 跳过,留给下次;返回 0,不产生 final_verdict 列。"""
+    _mk_scan(tmp_path)
+    t1.build_and_stage("2026-07-16", scan_root=tmp_path, prices=_prices(), cal=_CAL)
+    n = t1.gap_finalize_pending("2026-07-17", scan_root=tmp_path, cal=_CAL,
+                                gap_prices={"2026-07-17": _gap_prices()})
+    assert n == 0                                                      # today(07-17) < t2(07-20)
+    sc = pd.read_csv(tmp_path / "2026-07-16" / "t1_review" / "scorecard.csv")
+    assert "final_verdict" not in sc.columns
+
+
 def test_l4_confidence_parses_card(tmp_path):
     from autoresearch.learning.t1_review import _l4_confidence
     d = tmp_path / "2026-07-27"

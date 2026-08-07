@@ -65,6 +65,16 @@ def run(today: str) -> list[tuple[str, bool, str]]:
         return (f"确定性回补 {len(done)}/{len(pend)} 对({'、'.join(done) or '—'})"
                 if pend else "无待复盘对")
 
+    def _t1_gap_finalize() -> str:
+        """D+2 晚:隔夜 gap 终判回填(2026-08-05 用户裁定,对外准不准口径 = gap)。
+
+        `gap_finalize_pending` 内部逐日独立 try/except(T+2 daily 未发布是常态),
+        本函数不需要像 `_t1_backfill` 那样外层再循环一次。
+        """
+        from autoresearch.learning import t1_review
+        n = t1_review.gap_finalize_pending(today)
+        return f"gap 终判回填 {n} 日" if n else "无待终判日"
+
     def _tripwire() -> str:
         from autoresearch.learning.tripwire_watch import check
         hits = check(today)
@@ -103,6 +113,7 @@ def run(today: str) -> list[tuple[str, bool, str]]:
         return f"{ok}/{total} 刷新"
 
     for name, fn in (("retro_refresh", _retro_refresh), ("t1_backfill", _t1_backfill),
+                     ("t1_gap_finalize", _t1_gap_finalize),
                      ("tripwire", _tripwire), ("ledgers", _ledgers)):
         out.append(_step(name, fn))
     return out

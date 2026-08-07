@@ -12,13 +12,26 @@
   t1_review = 判断层精度(L3 选中 + L4 评级的票,次日兑现如何、为什么),D+1,
               喂 **prompt 侧**经验/提案(人批;诊断叙事由 t1-review workflow 的 agent 做)。
 
-两把尺(勿混,项目有尺子错配的疤):
-  本环主尺 = cc1(T 收盘 → T+1 收盘;判断对错的信息尺,= T+1 当日 pct_chg 口径);
-  参考尺   = oc1(T+1 开 → T+1 收;可实现口径,报告晚上出、最早 T+1 开盘才能建仓)。
-  持仓/权重校准主尺仍 = fwd_2_oc(2026-07-10 裁定),本环**不动它**。
+两把尺(勿混,项目有尺子错配的疤;2026-08-05 用户裁定后再分初判/终判两层):
+  D+1 初判尺 = cc1(T 收盘 → T+1 收盘;当晚就能算,判断层快环的速度优势全靠它,
+              = T+1 当日 pct_chg 口径)——`build_scorecard`/`finalize` 当晚写下的 `verdict`
+              列就是这把尺量出来的,**D+2 终判落地后仍原样留在 scorecard/账本里,不覆盖不抹除**。
+  D+2 终判尺 = gap_c1_o2(T+1 收盘 → T+2 开盘,隔夜;2026-08-05 用户裁定)——**准不准的
+              对外口径 = 这把尺**,由 `gap_finalize_pending` 在 T+2 晚(nightly_close 接线)
+              回填 `final_verdict`,cc1 的 `verdict` 降级为「D+1 初判」参考。初判/终判方向
+              相反的票,诊断必须说清隔夜发生了什么(不能假装没这回事)。
+  参考尺   = oc1(T+1 开 → T+1 收;可实现口径,报告晚上出、最早 T+1 开盘才能建仓;终判尺
+              换成 gap 后,oc1 仍只是辅助参考,不是本环任何 verdict 的判定尺)。
+  跟 MAIN_RULER 的关系(勿混为一谈):持仓/权重校准主尺(autoresearch.common.ruler.MAIN_RULER,
+  2026-08-05 裁定后同样指向 "gap_c1_o2")与本环的 D+2 终判尺**公式同源、计算路径独立**——
+  本环出于「当晚必须能跑」的速度约束,自建轻量 daily 抓取(`_fetch_gap_prices`)+ 独立
+  z 计算,不跑 ruler/factor_lab 的主帧管线,不读 MAIN_RULER 当前值。
 
 产物:context/scan/<T>/t1_review/{scorecard.csv,scorecard.md,diagnoses.json,report.md,done.json}
-账本:context/learning/t1_review.jsonl(逐票行,按 T 日幂等整替)
+  ── scorecard.csv 的 gap_c1_o2/z_gap/final_verdict 三列由 D+2 晚 `gap_finalize_pending`
+     回填(nightly_close 接线),D+1 `build` 时不产生;回填前 pd.read_csv 读不到这三列很正常。
+账本:context/learning/t1_review.jsonl(逐票行,按 T 日幂等整替;gap 回填只并入
+  gap_c1_o2/z_gap/final_verdict 三键,既有 diagnosed/mechanism/why 等字段原样保留)
 
   uv run --no-sync python -m autoresearch.learning.t1_review pending          # 待复盘对
   uv run --no-sync python -m autoresearch.learning.t1_review build 2026-07-16 --json
@@ -171,6 +184,24 @@ def _fetch_prices(t: str, t1: str) -> pd.DataFrame:
         out = out.merge(basic[["code", "industry"]], on="code", how="left")
     except Exception:  # noqa: BLE001
         pass
+    return out
+
+
+def _fetch_gap_prices(t1: str, t2: str) -> pd.DataFrame:
+    """T+1 收 → T+2 开 隔夜窗全市场帧 [code, close_t1, open_t2, gap_c1_o2, industry?]。
+
+    复用 `_fetch_prices`(通用两日 daily 抓取):把 (t1, t2) 当它的 (t, t1) 参数传入,
+    它返回的 close_t/open_t1 正好是本函数要的 close_t1(T+1 收)/open_t2(T+2 开);
+    但它算好的 cc1/oc1/hi_oc 口径不对(那三列是 close_t2 相关),本函数只取字段改名、
+    自算 gap_c1_o2,不沿用那三列——省一次抓取,不省口径。T+2 daily 未发布/未结算 →
+    复用 `_fetch_prices` 的 ValueError(诚实失败,同 D+1 cc1 一样不静默返回空帧)。
+    """
+    raw = _fetch_prices(t1, t2)
+    cols = ["code", "close_t", "open_t1"]
+    if "industry" in raw.columns:
+        cols.append("industry")
+    out = raw[cols].rename(columns={"close_t": "close_t1", "open_t1": "open_t2"})
+    out["gap_c1_o2"] = out["open_t2"] / out["close_t1"] - 1.0
     return out
 
 
@@ -668,6 +699,147 @@ def backfill_day(t: str, scan_root: Path | str | None = None,
                "wrong": int((sc["verdict"] == "不准").sum())}
     mark_done(t, "deterministic", summary, scan_root=scan_root)
     return summary
+
+
+def _industry_neutral_gap(frame: pd.DataFrame) -> pd.DataFrame:
+    """行业中性超额 + 截面稳健 z(gap 口径)。镜像 `build_scorecard` 里 cc1 的同一套算法
+    (行业均值退市场基准、n<3 小行业退场基准、`_robust_sigma` 稳健σ、z 盖帽 ±3)——**同法,
+    只换尺**,不发明新阈值(方向/惊奇判定仍由 `verdict()` 读 `_Z_DIR`/`_MIN_EXCESS` 常量)。
+
+    输入需含 code/gap_c1_o2(industry 可选);输出追加 `_resid_gap`(行业中性超额,喂
+    `verdict()` 的 excess 参数)与 `z_gap` 两列,原列不改。
+    """
+    out = frame.copy()
+    market_gap = float(pd.to_numeric(out["gap_c1_o2"], errors="coerce").mean())
+    if "industry" in out.columns and out["industry"].notna().any():
+        ind_cnt = out.groupby("industry")["code"].transform("count")
+        ind_mean = out.groupby("industry")["gap_c1_o2"].transform("mean")
+        bench = ind_mean.where(ind_cnt >= 3, market_gap)
+        out["_bench_gap"] = pd.to_numeric(bench, errors="coerce").fillna(market_gap)
+    else:
+        out["_bench_gap"] = market_gap
+    out["_resid_gap"] = pd.to_numeric(out["gap_c1_o2"], errors="coerce") - out["_bench_gap"]
+    sigma = _robust_sigma(out["_resid_gap"])
+    out["z_gap"] = (out["_resid_gap"] / sigma).clip(-3, 3) if pd.notna(sigma) else float("nan")
+    return out
+
+
+def _update_ledger_gap(t: str, merged: pd.DataFrame, path: Path | str | None = None) -> int:
+    """把 gap 终判字段并进账本既有行(整替当日行,幂等)。
+
+    按 code 合并:既有行(`finalize`/`backfill_day` 已写的)只追加/覆写
+    `gap_c1_o2`/`z_gap`/`final_verdict` 三键,其余字段原样保留——尤其
+    `diagnosed`/`mechanism`/`why`/`stage`:gap 终判发生在 D+1 诊断之后,绝不能把当晚
+    人工/LLM 诊断的产出覆写掉(整替的对象是"gap 那三键",不是整行)。
+    当日账本行缺失(理论不该发生——T 的 D+1 finalize/backfill 没跑过 gap 就没得终判;
+    防御性兜底)→ 新建一行(diagnosed=false)。
+    """
+    path = Path(path or _LEDGER)
+    old = []
+    if path.exists():
+        old = [json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    by_code = {r["code"]: r for r in old if r.get("t") == t}
+    others = [r for r in old if r.get("t") != t]
+
+    def _num(v, nd=5):
+        return None if v is None or pd.isna(v) else round(float(v), nd)
+
+    new_rows = []
+    covered = set()
+    for _, r in merged.iterrows():
+        code = str(r["code"])
+        covered.add(code)
+        base = dict(by_code.get(code) or {"t": t, "code": code, "diagnosed": False})
+        base.setdefault("ruler", MAIN_RULER)
+        base["gap_c1_o2"] = _num(r.get("gap_c1_o2"))
+        base["z_gap"] = _num(r.get("z_gap"), 3)
+        base["final_verdict"] = r.get("final_verdict")
+        new_rows.append(base)
+    new_rows += [r for c, r in by_code.items() if c not in covered]   # 防丢票
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in others + new_rows),
+                    encoding="utf-8")
+    return len(new_rows)
+
+
+def gap_finalize_pending(today: str | None = None, scan_root: Path | str | None = None,
+                         ledger_path: Path | str | None = None,
+                         cal: list[str] | None = None,
+                         gap_prices: dict[str, pd.DataFrame] | None = None) -> int:
+    """D+2 晚:回填隔夜 gap 终判(2026-08-05 用户裁定)。nightly_close 接线调用。
+
+    终评尺 = gap_c1_o2(T+1 收 → T+2 开);cc1 的既有 `verdict` 列降为 D+1 初判,**不覆盖、
+    不抹除**——两者在 scorecard.csv 与账本里并存。判定法复用既有 `verdict()` 纯函数与
+    v2 常量(行业中性 + 截面稳健 z,同法,尺换 gap;见 `_industry_neutral_gap`)。
+
+    扫描 `context/scan/*/t1_review/scorecard.csv`:已有非空 `final_verdict` 的日跳过
+    (幂等,不重复回填);0 行的日(当日真选 0 只)跳过,留给下次;否则取 build_meta 的
+    `t1`、算 `t2 = next_trade_day(t1)`,`t2` 未知或还没到 `today` → 跳过留给下次。
+    每日独立 try/except(T+2 daily 未发布是常态,不该挡住其余已就绪日——同
+    `nightly_close._t1_backfill`/`_retro_refresh`「单日失败不拖累其余日」的既有惯例)。
+
+    gap_prices 可注入(测试离线):{t1 日期: DataFrame},DataFrame 形状同
+    `_fetch_gap_prices` 返回(至少含 code/gap_c1_o2,industry 可选)。
+    返回:本次成功回填的日数。
+    """
+    today = today or datetime.now().strftime("%Y-%m-%d")
+    scan_root = Path(scan_root or "context/scan")
+    if not scan_root.exists():
+        return 0
+    if cal is None:
+        import autoresearch.research.factor_lab as fl
+        from autoresearch.data.tushare_source import _trade_days
+        end = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=10)).strftime("%Y%m%d")
+        cal = _trade_days(fl._pro(), _EPOCH.replace("-", ""), end)
+
+    n_done = 0
+    for dd in sorted(p for p in scan_root.iterdir() if p.is_dir()):
+        t = dd.name
+        if t < _EPOCH:
+            continue
+        rd = dd / "t1_review"
+        sc_path, meta_path = rd / "scorecard.csv", rd / "build_meta.json"
+        if not sc_path.exists() or not meta_path.exists():
+            continue
+        try:
+            sc = pd.read_csv(sc_path, dtype={"code": str})
+        except Exception:  # noqa: BLE001 — 坏 csv 留给人工排查,不阻塞其余日
+            continue
+        if "final_verdict" in sc.columns and len(sc) \
+                and sc["final_verdict"].fillna("").astype(str).ne("").all():
+            continue                                       # 幂等:已终判过
+        if not len(sc):
+            continue                                       # 当日真选 0 只,无票可终判
+        sc["code"] = sc["code"].str.zfill(6)
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        t1_date = meta["t1"]
+        t2 = next_trade_day(t1_date, cal)
+        if t2 is None or t2 > today:
+            continue                                       # T+2 未知或还没到
+        try:
+            gp = gap_prices[t1_date] if gap_prices is not None else _fetch_gap_prices(t1_date, t2)
+        except Exception:  # noqa: BLE001 — T+2 daily 未发布是常态,留给下次夜跑
+            continue
+        gp = gp.copy()
+        gp["code"] = gp["code"].astype(str).str.zfill(6)
+        gp = _industry_neutral_gap(gp)
+
+        merged = sc.merge(gp[["code", "gap_c1_o2", "_resid_gap", "z_gap"]], on="code", how="left")
+        merged["final_verdict"] = [
+            verdict(r, e, z) for r, e, z in
+            zip(merged["rating"], merged["_resid_gap"], merged["z_gap"], strict=True)]
+        merged = merged.drop(columns=["_resid_gap"])
+        merged.to_csv(sc_path, index=False)
+
+        meta["t2"] = t2
+        meta["market_gap"] = round(float(pd.to_numeric(gp["gap_c1_o2"], errors="coerce").mean()), 6)
+        sigma_gap = _robust_sigma(gp["_resid_gap"])
+        meta["sigma_gap"] = None if pd.isna(sigma_gap) else round(float(sigma_gap), 5)
+        meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+
+        _update_ledger_gap(t, merged, path=ledger_path)
+        n_done += 1
+    return n_done
 
 
 def render_ledger_report(k: int = 20, path: Path | str | None = None) -> str:
