@@ -16,7 +16,7 @@ description: Two-tier single-ticker research. FULL deep-dive report by default (
 |---|---|---|
 | **被 scan-market L4 调用**(finalists 批量出卡) | **恒 lite** | `lite-playbook.md` |
 | 用户单独触发(默认) | **full** | `engine-playbook.md` |
-| 用户说"快速 / 看一眼 / 出张卡 / lite / 不用全量" | **lite** | `lite-playbook.md` |
+| 用户说"快速 / 看一眼 / 出张卡 / lite / 不用全量",或问持仓"要不要动 / 要不要减 / 该不该走" | **lite** | `lite-playbook.md` |
 | lite 结论想下重注 | 对该票再跑 **full**(live 重取最全) | `engine-playbook.md` |
 
 - **首覆建档**(覆盖池 pending_init → dossier-init workflow):见 spec 2026-07-22 ②,agent 真值源 `.claude/agents/dossier-init.md`

@@ -237,6 +237,8 @@ L2 之后、与 L3 证据取数**并发**:
 **⛔ 强制满卡**(`force_full_card`,2026-07-12 接线):逐卡块内插「禁止早停」指令,两条独立通路任一成立即触发 —— ① **📌 保送票**(`lane == "pinned"`)恒强制:你真金白银持有的票,「盈利质量」「偿付(爆雷)」**不允许**标『未核』;② **强先验**:`conviction ≥ 70` ∧(`n_channels ≥ 4` ∨ L2 配额救回)。**强制满卡只保证核得够深,不保证结论向好**(照样可以 UW/Sell),评级仍由 rubric 三门定。
 > ⚠️ FN-1 史(第五例):本函数 2026-06-27 建成后**零生产调用点**(只有单测 + 从未勾选的 plan 复选框 T12),这道早停安全网**从没跑过** —— 07-10 实跑 11 张卡里 10 张早停,含 4 张持仓卡爆雷维「未核」。**新生产者必须 grep 调用链 + 真实命令冒烟。**
 
+**pinned 漏传事故**(2026-07-21):派发时 `meta[code].pinned` 未透传,300857(协创数据)/601869(长飞光纤)两只持仓漏掉 SELL 双复核整段;`probe 9 sell_review_missing` 只能事后 warn,拦不住漏传本身发生。铁律:派发前必须对照 workflow 打印的「📌 保送票 N 只」行逐一核对每只都带 `pinned: true`(SKILL.md 步骤 4 同一条纪律)。
+
 **活体情报**(与步骤 2 slim 预取并行派发):`l4-intel`(sonnet·max 盲搜六面)∥ slim 预取。**config `l4_intel.enabled` 2026-07-12 已开**(P1 波 07-10 实跑验收通过:38 agent / 0 error / 4 GATE 全绿)。首跑冒烟三查:① WebSearch 并发限频 ② 中文源可达率 ③ intel 空稿率。代价:每天多几百次网查、L4 段墙钟 ~14m → ~30m+;裁决走单变量 A/B、账本 ≥10–20 日。
 
 ### 渐进深度 + 早停
@@ -300,6 +302,7 @@ self_review 硬门 banner → regime+drift 行(+🌡情绪温度行) → 📈市
   - **成熟门**:至少 **10 次真实扫描**，且基线已定价、成本/墙钟/cache 齐全，才报告中位成本与 P50/P90 并判 PASS/FAIL；此前恒 `IMMATURE`，不拿单次最佳 run 晋升。
   - **效率分母**:USD/成熟 DecisionRecord、USD/最终 BUY、USD/已验证正确拒绝；分母 0 显示 `—`，不制造 BUY。
   - **2026-07-24 追溯首读**:50 agent · billed 22.4M / **加权 5.49M** / 输出 716.6k · cache 命中 85.6%。同一份报告的旧「落盘字节÷2.8」估算写 ~183.6k = **低估 30 倍**,且分布相反(L3 真占 7.8% 而非 37%;大头是主会话编排 27% / l4-card 23% / intel 20% / gp 壳 14.5%)。**按旧估算去砍会砍错地方** —— 报告侧估算列已随此发现退役。
+- **配置生效对账**(`usage_reconcile`,Wave11 B4,scan 步骤 5 第四条命令的产物):把当日 `user_config_echo.json`(期望)× `_token_usage.json`(`usage_harvest` 实测)逐 role 对上,`ok=false` 时把 mismatch/wire_break 直接打进 CP7 播报的 stdout——**这就是当日结论**,不经 `self_review` 转手。`self_review` 的同名 check 时序上跑在 `usage_harvest` 之前,只能读**最近一份既有**结果(通常是上一次 run)。三条精度边界——① 时序(`self_review` 落后一轮)② `general-purpose` 壳类只做集合断言,不逐字段核 ③ effort 是请求参数不是推理深度实测——写在模块 docstring 与 `_usage_reconcile.json` 报表头,勿在播报时脑补掉。exit 恒 0,不影响 `post_run` 是否执行。
 - **OTEL 遥测**:`trace/telemetry.py` 自 2026-07-05 建成起零生产调用点、全仓无一个 `token_telemetry.md`,已于 2026-07-27 **删除**。不要再配那五件 env(照旧文档跑会直接 ModuleNotFoundError)。
 - **跨层校准**:`python -m autoresearch.learning.cross_calib` → `reports/learning/cross_calib.md`。① L3→L4 翻案率 per lane(高确信 = conviction≥70、翻案 = L4≤UW);② rubric 门柱级拦对 / 错杀(错杀 = ex5>0 且 hi_10 触达目标)。
 - **触价校准**:`target_calibration` 统计全卡目标触达率 → `buy_ledger.md` 新节;首证 = 东方财富 hi10 6.3% vs 目标 28.8%(过乐观)。
@@ -336,6 +339,19 @@ PREREGISTERED
 记录；同一 trial family 同时最多一个 ACTIVE。trial 数和定义断点必须披露，实验
 过期则不得晋升。当前所有 challenger 真实样本仍未成熟，软件完成不等于研究结论
 通过。
+
+**最小操作序列**(registry 默认落 `context/learning/experiments/registry.json`，facts/spec 均为 JSON;SKILL.md 只留指针，命令原文在此):
+
+```bash
+python -m autoresearch.learning.experiment_registry baseline ...
+python -m autoresearch.learning.experiment_registry register --spec <spec.json>
+python -m autoresearch.learning.promotion evaluate <id> --facts <facts.json>
+python -m autoresearch.learning.experiment_registry approve <id> --approved-by <人>
+python -m autoresearch.learning.experiment_registry activate <id> --activated-by <人>
+python -m autoresearch.learning.rollback_watch observe <id> --facts <facts.json> --run-id <run>
+python -m autoresearch.learning.experiment_registry rollback|accept <id> ...
+python -m autoresearch.learning.experiment_registry report
+```
 
 ---
 
