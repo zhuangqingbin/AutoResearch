@@ -32,6 +32,26 @@ def test_winner_follows_fwd2_not_fwd1():
     assert set(w["code"]) == {"000001"}
 
 
+def test_tradable_follows_buyable_c1_not_legacy_buyable_after_t16_flip():
+    """C1 修复(final-review 2026-08-08):换尺后 tradable 必须按 `buyable_c1`(T+1 收盘旗)
+    判,不是旧 `buyable`(T+1 开盘一字板旗)。review 举的例:盘中开板、尾盘封死的票——
+    旧 buyable=True(不是全天一字板),新 buyable_c1=False(收盘封死买不进);这类票必须
+    从 tradable population 里剔除,C1 修复前它们会被误留在 winner/校准面板里。
+    """
+    n = 20
+    realized = pd.DataFrame({
+        "code": [f"{i:06d}" for i in range(n)],
+        "gap_c1_o2": [0.05] * n,
+        "buyable": [True] * n,          # 旧旗全放行
+        "buyable_c1": [True] * (n - 1) + [False],   # 最后一只:收盘封死,新旗拦下
+    })
+    l1 = pd.DataFrame({"code": realized["code"], "composite": 0.5, "recalled": False})
+    attr = retro.attribute_frame(l1, realized, buylist={})
+    sealed_row = attr[attr["code"] == "000019"].iloc[0]
+    assert sealed_row["tradable"] is np.False_ or bool(sealed_row["tradable"]) is False
+    assert bool(attr[attr["code"] == "000000"].iloc[0]["tradable"]) is True
+
+
 # ───────────────────────── L3 两遍法防漏归因(refine_l3_bucket/l3_bench_shadow/pass1_cut_winners,plan 2026-07-12 Task 5) ─────────────────────────
 #
 # design: docs/plans/2026-07-12-l3-merge-plan.md Task 5

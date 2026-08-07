@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from autoresearch.learning import stage_eval
 
@@ -15,6 +16,32 @@ def test_stage_eval_main_horizon_is_t2():
 
 def _realized(codes, fwd):
     return pd.DataFrame({"code": codes, "fwd_1_oo": fwd, "gap_c1_o2": fwd, "fwd_5_oc": fwd})
+
+
+def test_channel_edge_excludes_row_when_legacy_buyable_true_but_buyable_c1_false():
+    """C1 修复(final-review 2026-08-08)回归锁:`channel_edge` 的入场旗必须跟随 MAIN_RULER
+    选(entry_tradable),不是硬编码 "buyable"——旧旗(D+1 开盘)=True 但新旗 `buyable_c1`
+    (D+1 收盘)=False 的票,换尺(gap_c1_o2)后不得计入 `mean_excess_t2`/`unique_excess_t2`
+    这些均值分子(否则会把「收盘封死买不进」的票的超额收益错记成通道的功劳)。
+    """
+    recall = pd.DataFrame({
+        "code": ["000001", "000002"],
+        "recall_channels": ["momentum", "momentum"],
+    })
+    realized = pd.DataFrame({
+        "code": ["000001", "000002"],
+        "gap_c1_o2": [0.02, 0.50],
+        "fwd_5_oc": [0.0, 0.0],
+        "fwd_1_oo": [0.0, 0.0],
+        "buyable": [True, True],           # 旧旗全放行
+        "buyable_c1": [True, False],       # 000002:收盘封死,新旗拦下
+    })
+    out = stage_eval.channel_edge(recall, realized)
+    row = out.set_index("channel").loc["momentum"]
+    assert row["n_unbuyable"] == 1
+    # market 基准 = median(0.02, 0.50) = 0.26;修复后 mb 只剩 000001 → mean_excess_t2=-0.24。
+    # 若 C1 未修(旧 "buyable" 全放行),000002 会被计入 → mean 会被拉到 0.0(两者均值)。
+    assert row["mean_excess_t2"] == pytest.approx(-0.24)
 
 
 def test_l4_ratings_prefer_decision_record(tmp_path):

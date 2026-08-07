@@ -618,7 +618,10 @@ def evaluate(cap_floor: float, buyable_only: bool) -> None:
         for fwdcol in FWDS:
             ics = []
             for fr in frames:
-                sub = fr if not buyable_only else fr[fr["buyable"].fillna(True)]
+                # C1 修复(final-review 2026-08-08):入场旗跟随 fwdcol 本身选腿——IC 表对多个
+                # horizon 逐列算,gap_c1_o2 那一列的入场腿是 D+1 收盘,不是其余 horizon 共用
+                # 的 D+1 开盘;entry_flag_for 单点选旗,不写字面量。
+                sub = fr if not buyable_only else fr[ruler.entry_tradable(fr, ruler_name=fwdcol)]
                 if col not in sub or fwdcol not in sub:
                     continue
                 ic = _spearman(sub[col] * sign, sub[fwdcol])
@@ -643,7 +646,7 @@ def evaluate(cap_floor: float, buyable_only: bool) -> None:
     for col, sign in CANDIDATES:
         d1, d10, spreads = [], [], []
         for fr in frames:
-            sub = fr if not buyable_only else fr[fr["buyable"].fillna(True)]
+            sub = fr if not buyable_only else fr[ruler.entry_tradable(fr, ruler_name="fwd_2_oc")]
             if col not in sub.columns or "fwd_2_oc" not in sub.columns:
                 continue                            # 缺列帧跳过(与上方 IC 循环同护栏;旧帧可能缺新因子列)
             s = (sub[col] * sign)
@@ -669,7 +672,8 @@ def evaluate(cap_floor: float, buyable_only: bool) -> None:
     for col, sign in CANDIDATES:
         d1, d10, spreads = [], [], []
         for fr in frames:
-            sub = fr if not buyable_only else fr[fr["buyable"].fillna(True)]
+            # C1 修复:与 gap_c1_o2 配对的入场旗是 buyable_c1(T+1 收盘),不是 buyable(T+1 开盘)。
+            sub = fr if not buyable_only else fr[ruler.entry_tradable(fr, ruler_name="gap_c1_o2")]
             if col not in sub.columns or "gap_c1_o2" not in sub.columns:
                 continue                            # 缺列帧跳过(旧帧可能缺新隔夜尺列)
             s = (sub[col] * sign)
@@ -763,7 +767,11 @@ def _build_calib_panel(frames: list[pd.DataFrame], label_col: str = ruler.MAIN_R
         g["industry"] = fr["industry"].to_numpy()
         g["sector"] = g["industry"].map(super_sector)
         g["fwd"] = fr[label_col].to_numpy()
-        g["buyable"] = fr["buyable"].fillna(True).to_numpy()
+        # C1 修复(final-review 2026-08-08):入场旗跟随 label_col 选腿(gap_c1_o2 → buyable_c1,
+        # 其余 horizon 仍是 D+1 开盘 → buyable)。**这是 T16 重校准权重的样本口径**——旧代码
+        # 恒用 "buyable" 字面量,换尺后系统性高估动量/题材因子在 gap_c1_o2 下的 IC
+        # (review §9 实测:被误留样本 gap 均值 +1.23pp,winner 池 6.26% 实际买不进)。
+        g["buyable"] = ruler.entry_tradable(fr, ruler_name=label_col).to_numpy()
         g["date"] = fr["date"].to_numpy()
         rows.append(g)
         if len(fr):
@@ -1125,7 +1133,7 @@ def train_gbdt(cap_floor: float = 30.0, valid_dates: int = 5, out_path: str = GB
     weights = _load_weights()
     parts = []
     for fr in frames:
-        sub = fr[fr["buyable"].fillna(True)].copy()
+        sub = fr[ruler.entry_tradable(fr, ruler_name=GBDT_LABEL)].copy()
         y = _num(sub[GBDT_LABEL])
         m = y.notna()
         if m.sum() < 100:

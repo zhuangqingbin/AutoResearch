@@ -46,7 +46,7 @@ from pathlib import Path
 import pandas as pd
 
 from autoresearch.common import stats as st
-from autoresearch.common.ruler import MAIN_RULER
+from autoresearch.common.ruler import MAIN_RULER, entry_flag_for, entry_tradable
 
 SCHEMA_VERSION = 1
 DEFAULT_ROOT = Path("context/scan")
@@ -59,7 +59,7 @@ MIN_HISTORY = 10             # expanding P25 的最小历史日数
 
 WINNER_DEFINITION = (
     f"{MAIN_RULER} ≥ 全市场可交易成熟票 P{int(TOP_DECILE * 100)} "
-    f"∧ {MAIN_RULER} ≥ {ABS_THRESHOLD:+.2%} ∧ D+1 可买(buyable)∧ 可交易(tradable);"
+    f"∧ {MAIN_RULER} ≥ {ABS_THRESHOLD:+.2%} ∧ 入场腿可执行({entry_flag_for()})∧ 可交易(tradable);"
     "并列按 ≥ 一并计入。**不是** retro 的复合 winner,两者不得混叫一个标签")
 
 
@@ -87,8 +87,10 @@ def day_winners(attr: pd.DataFrame) -> tuple[pd.DataFrame, str]:
     a = attr.copy()
     a["code"] = a["code"].astype(str).str.zfill(6)
     a[MAIN_RULER] = pd.to_numeric(a.get(MAIN_RULER), errors="coerce")
-    buyable = a["buyable"].fillna(True).astype(bool) if "buyable" in a.columns \
-        else pd.Series(True, index=a.index)
+    # C1 修复(final-review 2026-08-08):入场腿旗跟随 MAIN_RULER 选(entry_tradable 单点),
+    # 不是硬编码 "buyable"——换尺后 fwd_2_oc 的旧旗(D+1 开盘)与 gap_c1_o2 的入场腿(D+1
+    # 收盘)不等价,旧旗会把「收盘封死买不进」的票误留在 winner 集合里。
+    buyable = entry_tradable(a)
     tradable = a["tradable"].fillna(True).astype(bool) if "tradable" in a.columns \
         else pd.Series(True, index=a.index)
     eligible = buyable & tradable & a[MAIN_RULER].notna()

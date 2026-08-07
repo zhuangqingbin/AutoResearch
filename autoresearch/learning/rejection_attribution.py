@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from autoresearch.common.ruler import MAIN_RULER
+from autoresearch.common.ruler import MAIN_RULER, entry_tradable
 from autoresearch.scan.decision_read_model import (
     read_decisions,
     read_final_ratings,
@@ -239,7 +239,11 @@ def build_rejection_attribution(
         attr.get(MAIN_RULER),
         errors="coerce",
     )
-    buyable = _bool_series(attr, "buyable", True)
+    # C1 修复(final-review 2026-08-08):入场旗跟随 MAIN_RULER 选(entry_tradable 单点),
+    # 不是硬编码 `_bool_series(attr, "buyable", True)`——那条换尺后仍读 D+1 开盘旗。这里的
+    # `buyable` 会原样写回 `rejection_attribution.csv` 的 `buyable` 列(下方 `is_buyable`),
+    # abstention_ledger 读的正是那一列,修复经此处透传,不必单独改 abstention_ledger。
+    buyable = entry_tradable(attr)
     tradable = _bool_series(attr, "tradable", True)
     mature = attr[MAIN_RULER].notna()
     eligible = buyable & tradable & mature

@@ -243,6 +243,22 @@ def test_build_joins_funnel_decisions_and_market_relative_returns(
     assert bool(by_code.at["000008", "opportunity"]) is False
 
 
+def test_build_excludes_opportunity_when_legacy_buyable_true_but_buyable_c1_false(tmp_path):
+    """C1 修复(final-review 2026-08-08)回归锁:旧 `buyable`(D+1 开盘旗)=True 但新
+    `buyable_c1`(D+1 收盘旗)=False(盘中开板、尾盘封死)的票,换尺(gap_c1_o2)后自身也
+    必须判定为不可买——`opportunity`(机会归因头条读数)不能再靠旧旗放行。这一行原是
+    `test_build_joins_funnel_decisions_and_market_relative_returns` 里 opportunity=True
+    的那一行(000007),这里只加 buyable_c1=False 做对照。
+    """
+    scan, attr = _scan_fixture(tmp_path)
+    attr = attr.copy()
+    attr["buyable_c1"] = [True] * 6 + [False, True]   # 000007(index 6)收盘封死,拦下
+    result = build_rejection_attribution(scan, attr)
+    by_code = result.set_index("code")
+    assert bool(by_code.at["000007", "buyable"]) is False
+    assert bool(by_code.at["000007", "opportunity"]) is False
+
+
 def test_write_is_atomic_and_invalid_decision_book_is_loud(tmp_path):
     scan, attr = _scan_fixture(tmp_path)
     path = write_rejection_attribution(scan, attr)

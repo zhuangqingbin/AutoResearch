@@ -33,7 +33,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from autoresearch.common.ruler import MAIN_RULER
+from autoresearch.common.ruler import MAIN_RULER, entry_tradable
 
 COHORT_LEGACY = "legacy_gate_ledger"
 COHORT_V3 = "v3"
@@ -277,7 +277,9 @@ def _day_facts(
     # 直接崩(AttributeError)。缺列应像"整列 NaN"一样静默降级,不是让整条 roll() 断链。
     fwd2 = pd.to_numeric(attr[MAIN_RULER], errors="coerce") if MAIN_RULER in attr.columns \
         else pd.Series(float("nan"), index=attr.index)
-    tradable = _bool_series(attr, "tradable", True) & _bool_series(attr, "buyable", True)
+    # C1 修复(final-review 2026-08-08):入场旗跟随 MAIN_RULER 选(entry_tradable 单点),
+    # 不是硬编码 `_bool_series(attr, "buyable", True)`——那条换尺后仍读 D+1 开盘旗。
+    tradable = _bool_series(attr, "tradable", True) & entry_tradable(attr)
 
     if cohort == COHORT_LEGACY:
         # gate_ledger 的基准:全表均值,不过滤可交易性 —— 复现用,别拿去做研究。

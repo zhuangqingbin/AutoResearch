@@ -72,11 +72,11 @@ def test_day_ledger_measures_market_relative_opportunities_and_main_finalists(
     ).to_csv(scan / "finalists.csv", index=False)
     attr = pd.DataFrame(
         [
-            {"code": "000001", "gap_c1_o2": 0.04, "buyable": True, "tradable": True},
-            {"code": "000002", "gap_c1_o2": -0.01, "buyable": True, "tradable": True},
-            {"code": "000010", "gap_c1_o2": 0.01, "buyable": True, "tradable": True},
-            {"code": "000011", "gap_c1_o2": 0.50, "buyable": True, "tradable": True},
-            {"code": "999999", "gap_c1_o2": 0.00, "buyable": True, "tradable": True},
+            {"code": "000001", "gap_c1_o2": 0.04, "buyable": True, "buyable_c1": True, "tradable": True},
+            {"code": "000002", "gap_c1_o2": -0.01, "buyable": True, "buyable_c1": True, "tradable": True},
+            {"code": "000010", "gap_c1_o2": 0.01, "buyable": True, "buyable_c1": True, "tradable": True},
+            {"code": "000011", "gap_c1_o2": 0.50, "buyable": True, "buyable_c1": True, "tradable": True},
+            {"code": "999999", "gap_c1_o2": 0.00, "buyable": True, "buyable_c1": True, "tradable": True},
         ]
     )
 
@@ -96,6 +96,30 @@ def test_day_ledger_measures_market_relative_opportunities_and_main_finalists(
 
     path = write_day_ledger(scan, attr)
     assert json.loads(path.read_text(encoding="utf-8")) == ledger
+
+
+def test_day_ledger_excludes_candidate_when_buyable_c1_false_even_if_legacy_buyable_true(
+    tmp_path,
+):
+    """C1 修复(final-review 2026-08-08):换尺后 `mature`/`market` 基准必须按 `buyable_c1`
+    (T+1 收盘旗)判——旧 `buyable`(D+1 开盘旗)=True 但 `buyable_c1`=False(盘中开板、尾盘
+    封死)的票必须被剔出可交易 population,不能再进 market 中位数或 mature 候选。
+    """
+    scan = tmp_path / "2026-07-28"
+    (scan / "shadow").mkdir(parents=True)
+    pd.DataFrame(
+        [{"code": "000001", "conviction": 80, "fragility": 40}]
+    ).to_csv(scan / "shadow" / "l3_audit_candidates.csv", index=False)
+    attr = pd.DataFrame(
+        [
+            {"code": "000001", "gap_c1_o2": 0.04, "buyable": True, "buyable_c1": True, "tradable": True},
+            {"code": "000002", "gap_c1_o2": 0.90, "buyable": True, "buyable_c1": False, "tradable": True},
+        ]
+    )
+    ledger = build_day_ledger(scan, attr)
+    assert ledger["summary"]["mature_n"] == 1
+    # 若 000002(buyable_c1=False)误被计入 market 基准,mean_excess_2 会被 0.90 拉高
+    assert ledger["summary"]["mean_excess_2"] == 0.0
 
 
 def test_day_ledger_is_immature_without_t2_values(tmp_path):

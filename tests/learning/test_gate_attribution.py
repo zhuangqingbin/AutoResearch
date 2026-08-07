@@ -163,6 +163,29 @@ def test_v3_marks_untradable_unmeasured_but_legacy_does_not(tmp_path):
     assert v3["outcome_reason"].iloc[0] == "not_tradable"
 
 
+def test_v3_marks_unmeasured_when_legacy_buyable_true_but_buyable_c1_false(tmp_path):
+    """C1 修复(final-review 2026-08-08)回归锁:旧 `buyable`(D+1 开盘旗)=True 但新
+    `buyable_c1`(D+1 收盘旗)=False(盘中开板、尾盘封死),换尺(gap_c1_o2)后 v3 必须判
+    UNMEASURED/not_tradable,不能被旧旗放行判成 FALSE_KILL。legacy 复现不受影响
+    (它从不看 tradable/buyable)——与上一个测试(tradable=False)是同一裁定的另一条腿。
+    """
+    _mk_day(
+        tmp_path, "2026-07-04",
+        fires=[_fire("2026-07-04", "主力真在", "000001")],
+        attr_rows=[
+            {"code": "000001", "gap_c1_o2": 0.09, "tradable": True,
+             "buyable": True, "buyable_c1": False},
+            {"code": "000002", "gap_c1_o2": 0.00, "tradable": True,
+             "buyable": True, "buyable_c1": True},
+        ],
+    )
+    assert build_day(tmp_path / "2026-07-04", cohort=COHORT_LEGACY)[
+        "outcome"].iloc[0] == "FALSE_KILL"
+    v3 = build_day(tmp_path / "2026-07-04", cohort=COHORT_V3)
+    assert v3["outcome"].iloc[0] == "UNMEASURED"
+    assert v3["outcome_reason"].iloc[0] == "not_tradable"
+
+
 def test_structured_decisions_supersede_csv_fires(tmp_path):
     """与 gate_ledger 同规则:有 decision_records 就不再读 CSV 的 OW 行(否则重复计数)。"""
     day = _mk_day(

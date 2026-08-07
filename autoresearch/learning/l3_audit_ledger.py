@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from autoresearch.common.ruler import MAIN_RULER
+from autoresearch.common.ruler import MAIN_RULER, entry_tradable
 from autoresearch.learning.t1_review import _NON_GENUINE_LANES
 
 AUDIT_SHARE = 0.20
@@ -105,7 +105,9 @@ def build_day_ledger(
         raise ValueError("attribution missing code")
     attr["code"] = attr["code"].astype(str).str.zfill(6)
     attr[MAIN_RULER] = pd.to_numeric(attr.get(MAIN_RULER), errors="coerce")
-    attr["buyable"] = _bool_column(attr, "buyable", True)
+    # C1 修复(final-review 2026-08-08):入场旗跟随 MAIN_RULER 选(entry_tradable 单点),
+    # 不走 `_bool_column(attr, "buyable", ...)`——那条硬编码字面量,换尺后仍读 D+1 开盘旗。
+    attr["buyable"] = entry_tradable(attr)
     attr["tradable"] = _bool_column(attr, "tradable", True)
     eligible = attr["buyable"] & attr["tradable"] & attr[MAIN_RULER].notna()
     market = (

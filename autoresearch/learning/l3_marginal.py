@@ -43,7 +43,7 @@ import numpy as np
 import pandas as pd
 
 from autoresearch.common import stats as st
-from autoresearch.common.ruler import MAIN_RULER
+from autoresearch.common.ruler import MAIN_RULER, entry_tradable
 from autoresearch.learning import experiment_template as et
 
 SCHEMA_VERSION = 1
@@ -128,8 +128,8 @@ def day_frame(scan_dir: Path | str) -> pd.DataFrame | None:
     a = attr.copy()
     a["code"] = a["code"].astype(str).str.zfill(6)
     a[MAIN_RULER] = pd.to_numeric(a.get(MAIN_RULER), errors="coerce")
-    buyable = a["buyable"].fillna(True).astype(bool) if "buyable" in a.columns \
-        else pd.Series(True, index=a.index)
+    # C1 修复(final-review 2026-08-08):入场腿旗跟随 MAIN_RULER 选(entry_tradable 单点)。
+    buyable = entry_tradable(a)
     tradable = a["tradable"].fillna(True).astype(bool) if "tradable" in a.columns \
         else pd.Series(True, index=a.index)
     eligible = buyable & tradable & a[MAIN_RULER].notna()

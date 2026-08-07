@@ -29,9 +29,13 @@ def _day(root, date, *, l0, l1, l2, attr, pinned=()):
     return d
 
 
-def _attr(code, fwd, *, buyable=True, tradable=True):
-    # gap_c1_o2:当前 MAIN_RULER(T16 flip)——l2_slo.py 按 MAIN_RULER 动态读源列。
-    return {"code": code, "gap_c1_o2": fwd, "buyable": buyable, "tradable": tradable}
+def _attr(code, fwd, *, buyable_c1=True, tradable=True, buyable=True):
+    # gap_c1_o2:当前 MAIN_RULER(T16 flip)——l2_slo.py 按 MAIN_RULER 动态读源列,资格过滤
+    # 经 ruler.entry_tradable() 读 "buyable_c1"(C1 修复,final-review 2026-08-08);"buyable"
+    # (旧旗,D+1 开盘)仍写进 fixture 供「旧旗放行、新旗拦下」的对照测试用,day_winners 本身
+    # 不再读它。
+    return {"code": code, "gap_c1_o2": fwd, "buyable": buyable,
+            "buyable_c1": buyable_c1, "tradable": tradable}
 
 
 def _market(n=20, base=0.0):
@@ -52,7 +56,18 @@ def test_winner_needs_both_top_decile_and_absolute_threshold():
 
 
 def test_winner_requires_buyable_and_tradable():
-    attr = pd.DataFrame(_market(19, 0.0) + [_attr("900001", 0.50, buyable=False)])
+    attr = pd.DataFrame(_market(19, 0.0) + [_attr("900001", 0.50, buyable_c1=False)])
+    winners, _ = l2_slo.day_winners(attr)
+    assert len(winners) == 0
+
+
+def test_winner_excludes_row_when_legacy_buyable_true_but_buyable_c1_false():
+    """C1 修复(final-review 2026-08-08)回归锁:「盘中开板、尾盘封死」的票——旧 `buyable`
+    (D+1 开盘一字板旗)=True,新 `buyable_c1`(D+1 收盘旗)=False。换尺(gap_c1_o2)后必须
+    被挡在 winner 集合外;C1 修复前 `day_winners` 仍读旧 `buyable`,会把这行误判为可交易。
+    """
+    attr = pd.DataFrame(_market(19, 0.0) +
+                        [_attr("900001", 0.50, buyable=True, buyable_c1=False)])
     winners, _ = l2_slo.day_winners(attr)
     assert len(winners) == 0
 

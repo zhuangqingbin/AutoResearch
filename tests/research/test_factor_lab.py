@@ -207,6 +207,40 @@ def test_ultrashort_label_defaults():
     assert fl.GBDT_LABEL == "gap_c1_o2"
 
 
+def test_build_calib_panel_buyable_follows_label_col_entry_flag(monkeypatch):
+    """C1 修复(final-review 2026-08-08):`_build_calib_panel` 的样本口径必须跟随
+    `label_col` 选入场旗——**这是 T16 重校准权重吃的那份面板**。gap_c1_o2 分支要用
+    `buyable_c1`(T+1 收盘旗),不是 `buyable`(T+1 开盘旗);修复前恒用 "buyable" 字面量,
+    换尺后系统性纳入"收盘封死买不进"的票(review §9 实测 +1.23pp 偏差)。fwd_2_oc 分支
+    (入场腿仍是 D+1 开盘)不受影响,用来做对照。
+    """
+    import autoresearch.common.regime as regime_mod
+    import autoresearch.common.scoring as scoring_mod
+
+    class _Regime:
+        label = "range"
+
+    monkeypatch.setattr(regime_mod, "classify_regime", lambda fr: _Regime())
+    monkeypatch.setattr(scoring_mod, "_factor_groups",
+                        lambda fr: {"a": pd.Series([0.1, 0.2, 0.3], index=fr.index)})
+
+    fr = pd.DataFrame({
+        "industry": ["半导体", "半导体", "半导体"],
+        "date": ["2026-08-01"] * 3,
+        "gap_c1_o2": [0.05, 0.06, 0.07],
+        "fwd_2_oc": [0.05, 0.06, 0.07],
+        "buyable": [True, True, True],           # 旧旗全放行
+        "buyable_c1": [True, True, False],       # 新旗:第三只收盘封死,拦下
+    })
+
+    panel_gap, _ = fl._build_calib_panel([fr], label_col="gap_c1_o2")
+    assert len(panel_gap) == 2, ("buyable_c1=False 的那只必须被剔出面板"
+                                 "(C1 修复前会被旧 buyable 误放行)")
+
+    panel_oc, _ = fl._build_calib_panel([fr], label_col="fwd_2_oc")
+    assert len(panel_oc) == 3, "fwd_2_oc 分支入场腿仍是 D+1 开盘(buyable),不受 buyable_c1 影响"
+
+
 def test_forward_returns_hi2_nan_when_d2_missing():
     """D+2 EOD 未发布 → hi_2_oc 必须 NaN(与 fwd_2_oc 成熟配对),不得用 high[D+1] 冒充。"""
     codes = ["000001", "600000"]

@@ -26,7 +26,7 @@ from pathlib import Path
 import pandas as pd
 
 from autoresearch.agents.utils.rating import RATINGS_5_TIER  # Buy>OW>Hold>UW>Sell
-from autoresearch.common.ruler import MAIN_RULER
+from autoresearch.common.ruler import MAIN_RULER, entry_tradable
 
 # 保送/观察单直通/菜单滞回——不是 L3 当日选的票,不进「L3 选股成绩」头条(pr_20260716_002,
 # 与 t1_review 同一裁定同一集合;后两种 lane 已退役但历史 scan 目录仍有存量行)。
@@ -116,14 +116,18 @@ def channel_edge(recall: pd.DataFrame, realized: pd.DataFrame) -> pd.DataFrame:
     rl = _code6(realized).copy()
     for c in (_RET_MAIN, _RET_T5, _RET_T1):
         rl[c] = pd.to_numeric(rl.get(c), errors="coerce")
-    if "buyable" not in rl.columns:
-        rl["buyable"] = True
+    # C1 修复(final-review 2026-08-08):入场旗跟随 MAIN_RULER 选(entry_tradable 单点),
+    # 不是硬编码 "buyable"——换尺后仍读 D+1 开盘旗会把「收盘封死买不进」的票错记进
+    # mean_excess_t2/unique_excess_t2/hit_rate_t2 的均值分子。
+    rl["buyable"] = entry_tradable(rl)
     mkt2, mkt5, mkt1 = rl[_RET_MAIN].median(), rl[_RET_T5].median(), rl[_RET_T1].median()
     m = r.merge(rl[["code", _RET_MAIN, _RET_T5, _RET_T1, "buyable"]], on="code", how="left")
     m["excess_t2"] = m[_RET_MAIN] - mkt2
     m["excess_t5"] = m[_RET_T5] - mkt5
     m["excess_t1"] = m[_RET_T1] - mkt1
-    m["buyable"] = _as_bool(m["buyable"].fillna(True))
+    # merge 未命中(recall 里有、realized 里没有的代码)→ NaN,按既有口径兜底可买;
+    # rl 自身的行已经过 entry_tradable 定值,这里的 fillna 不再是 C1 的可空布尔地雷。
+    m["buyable"] = m["buyable"].fillna(True).astype(bool)
     m["chans"] = m["recall_channels"].fillna("").map(lambda s: set(str(s).split("|")) - {""})
 
     def _mean(s):

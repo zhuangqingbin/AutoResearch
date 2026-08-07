@@ -32,10 +32,12 @@ def _kept(code, *, reason="lane", detail="momentum", score=50.0, industry="电�
             "gbdt_score": score, "composite": score, "industry": industry}
 
 
-def _attr(code, fwd, *, winner=False, buyable=True):
-    # gap_c1_o2:当前 MAIN_RULER(T16 flip)—— day_frame() 按 a[MAIN_RULER] 动态读源列。
-    return {"code": code, "gap_c1_o2": fwd, "buyable": buyable, "tradable": True,
-            "winner": winner}
+def _attr(code, fwd, *, winner=False, buyable_c1=True, buyable=True):
+    # gap_c1_o2:当前 MAIN_RULER(T16 flip)—— day_frame() 按 a[MAIN_RULER] 动态读源列,
+    # 资格过滤经 ruler.entry_tradable() 读 "buyable_c1"(C1 修复,final-review 2026-08-08);
+    # "buyable"(旧旗)仍写进 fixture 供「旧旗放行、新旗拦下」的对照测试用。
+    return {"code": code, "gap_c1_o2": fwd, "buyable": buyable, "buyable_c1": buyable_c1,
+            "tradable": True, "winner": winner}
 
 
 # ── day_frame:presence-gated + 基准口径 ───────────────────────────
@@ -76,7 +78,21 @@ def test_untradable_rows_excluded_from_market_baseline(tmp_path):
         kept_rows=[_kept(f"00000{i}") for i in range(1, 5)],
         finalists=["000001"],
         attr_rows=[_attr("000001", 0.01), _attr("000002", 0.03),
-                   _attr("000003", 0.05), _attr("000004", 9.99, buyable=False)])
+                   _attr("000003", 0.05), _attr("000004", 9.99, buyable_c1=False)])
+    frame = lm.day_frame(d)
+    assert frame.set_index("code").loc["000002", "excess_2"] == pytest.approx(0.0)
+
+
+def test_untradable_rows_excluded_when_legacy_buyable_true_but_buyable_c1_false(tmp_path):
+    """C1 修复(final-review 2026-08-08)回归锁:旧 `buyable`=True 但新 `buyable_c1`=False
+    (盘中开板、尾盘封死)的票,换尺(gap_c1_o2)后必须被剔出 market 基准,不能拉高中位数。
+    """
+    d = _write_day(
+        tmp_path, "2026-08-01",
+        kept_rows=[_kept(f"00000{i}") for i in range(1, 5)],
+        finalists=["000001"],
+        attr_rows=[_attr("000001", 0.01), _attr("000002", 0.03), _attr("000003", 0.05),
+                   _attr("000004", 9.99, buyable=True, buyable_c1=False)])
     frame = lm.day_frame(d)
     assert frame.set_index("code").loc["000002", "excess_2"] == pytest.approx(0.0)
 

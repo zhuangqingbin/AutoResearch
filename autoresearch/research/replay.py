@@ -49,6 +49,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common.ruler import entry_tradable
+
 DEFAULT_ROOT = Path("context/replay")
 REPORT_ROOT = Path("reports/research/replay")
 PROD_ROOT = Path("context/scan")
@@ -595,8 +597,9 @@ def winner_autopsy(root: Path | str | None = None,
             continue
         if not len(attr) or "winner" not in attr.columns:
             continue
-        if "buyable" in attr.columns:                    # PIT §5:一字板/停牌不可买 → 不算赢家
-            attr = attr[attr["buyable"].astype(bool)]
+        # C1 修复(final-review 2026-08-08):入场旗跟随 MAIN_RULER 选(entry_tradable 单点,
+        # 列缺席时同旧行为全体放行)——PIT §5:一字板/停牌不可买 → 不算赢家。
+        attr = attr[entry_tradable(attr)]
         w = attr[attr["winner"].astype(bool)]
         if not len(w):
             continue

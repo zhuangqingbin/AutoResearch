@@ -33,7 +33,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from autoresearch.common.ruler import MAIN_RULER
+from autoresearch.common.ruler import MAIN_RULER, entry_tradable
 
 _RET_MAIN = MAIN_RULER       # 超短主尺:D+1开→D+2收(2026-07-10 用户裁定);T16 换尺只改 ruler.py
 _THIN_DAYS = 10               # spec §2.3 门槛:n_days < 10 → ⚠薄样本
@@ -71,8 +71,10 @@ def day_channel_stats(channels: pd.DataFrame, attribution: pd.DataFrame) -> pd.D
     attr = attribution.copy()
     attr["code"] = _code6(attr["code"])
     attr[_RET_MAIN] = pd.to_numeric(attr.get(_RET_MAIN), errors="coerce")
-    attr["buyable"] = (attr["buyable"].fillna(True).astype(bool) if "buyable" in attr.columns
-                       else pd.Series(True, index=attr.index))
+    # C1 修复(final-review 2026-08-08):入场旗跟随 MAIN_RULER 选(entry_tradable 单点),
+    # 不是硬编码 "buyable"——换尺后仍读 D+1 开盘旗,会把「收盘封死买不进」的票错记进各路
+    # mean_excess_t2/unique_excess_t2 的均值分子。
+    attr["buyable"] = entry_tradable(attr)
     mkt = attr[_RET_MAIN].median()
     attr["excess_t2"] = attr[_RET_MAIN] - mkt
 

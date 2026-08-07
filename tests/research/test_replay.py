@@ -275,16 +275,21 @@ def test_phase_map_presence_gated(tmp_path):
     assert replay.phase_map(p) == {"2026-06-01": "冰点", "2026-06-02": "修复"}
 
 
-def _attr_day(root, date, winners_by_bucket: dict[str, int], buyable=True):
+def _attr_day(root, date, winners_by_bucket: dict[str, int], buyable=True, buyable_c1=None):
+    # buyable_c1 缺省(None)= 跟随 buyable(两旗同值,覆盖大多数场景);显式传入才分叉,
+    # 供「旧旗放行、新旗拦下」的 C1 回归测试用。
     d = root / date / "retro"
     d.mkdir(parents=True, exist_ok=True)
+    bc1 = buyable if buyable_c1 is None else buyable_c1
     rows = []
     i = 0
     for bucket, n in winners_by_bucket.items():
         for _ in range(n):
-            rows.append({"code": f"{i:06d}", "winner": True, "bucket": bucket, "buyable": buyable})
+            rows.append({"code": f"{i:06d}", "winner": True, "bucket": bucket,
+                        "buyable": buyable, "buyable_c1": bc1})
             i += 1
-    rows.append({"code": f"{i:06d}", "winner": False, "bucket": "", "buyable": True})
+    rows.append({"code": f"{i:06d}", "winner": False, "bucket": "",
+                "buyable": True, "buyable_c1": True})
     pd.DataFrame(rows).to_csv(d / "attribution.csv", index=False)
 
 
@@ -305,6 +310,15 @@ def test_winner_autopsy_groups_by_phase_and_computes_missed_l1_pct(tmp_path):
 def test_winner_autopsy_excludes_unbuyable_winners(tmp_path):
     """PIT §5:D+1 一字板/停牌不可买 → 不得计入赢家(否则捕获率是虚假的)。"""
     _attr_day(tmp_path, "2026-06-01", {"missed_l1": 5}, buyable=False)
+    assert replay.winner_autopsy(tmp_path, {"2026-06-01": "冰点"}).empty
+
+
+def test_winner_autopsy_excludes_when_legacy_buyable_true_but_buyable_c1_false(tmp_path):
+    """C1 修复(final-review 2026-08-08)回归锁:旧 `buyable`(D+1 开盘旗)=True 但新
+    `buyable_c1`(D+1 收盘旗)=False(盘中开板、尾盘封死),换尺(gap_c1_o2)后仍必须排除
+    在赢家之外——不能靠旧旗放行(与上一测试是同一裁定的另一条腿)。
+    """
+    _attr_day(tmp_path, "2026-06-01", {"missed_l1": 5}, buyable=True, buyable_c1=False)
     assert replay.winner_autopsy(tmp_path, {"2026-06-01": "冰点"}).empty
 
 

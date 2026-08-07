@@ -26,7 +26,7 @@ from pathlib import Path
 import pandas as pd
 
 from autoresearch.agents.utils.rating import RATINGS_5_TIER, parse_rating
-from autoresearch.common.ruler import MAIN_RULER
+from autoresearch.common.ruler import MAIN_RULER, entry_tradable
 
 # 保送/观察单直通/菜单滞回——不是 L3 当日选的票,不进「L3 选股成绩」头条(pr_20260716_002,
 # 与 t1_review 同一裁定同一集合;后两种 lane 已退役但历史 scan 目录仍有存量行)。
@@ -70,7 +70,10 @@ def attribute_frame(l1: pd.DataFrame, realized: pd.DataFrame, buylist: dict,
     m["recalled_flag"] = _as_bool(m["recalled"]) if "recalled" in m.columns else False
     m["rating"] = m["code"].map(bl)
     m["bought"] = m["rating"].isin(_BUY)
-    m["tradable"] = m["buyable"].fillna(True) & m[MAIN_RULER].notna()
+    # C1 修复(final-review 2026-08-08):入场旗必须跟随 MAIN_RULER 选腿 —— 旧 `buyable`
+    # 只测 D+1 开盘一字板(fwd_2_oc 的入场腿是 D+1 开盘);换尺到 gap_c1_o2 后入场腿是 D+1
+    # **收盘**,对应旗是 `buyable_c1`(entry_flag_for 单点选旗,不在此处写字面量)。
+    m["tradable"] = entry_tradable(m) & m[MAIN_RULER].notna()
 
     trad = m[m["tradable"]]
     hi = trad[MAIN_RULER].quantile(top_q) if len(trad) else float("nan")

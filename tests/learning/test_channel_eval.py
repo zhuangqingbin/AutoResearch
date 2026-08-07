@@ -18,12 +18,16 @@ def _recall():
 def _realized():
     # 全市场(含 2 只未召回 000006/000007 以定全市场中位);000002 不可买
     # fwd_2_oc 数值刻意与 fwd_5_oc 不同(证明 t2 是独立计算,非别名)。
+    # buyable_c1(C1 修复,final-review 2026-08-08):channel_edge 换尺后按 entry_tradable()
+    # 读 "buyable_c1"(T+1 收盘旗),不是旧 "buyable"(T+1 开盘旗)——旧列仍留着做字段存在性
+    # 对照,不是这条测试真正依赖的列。
     return pd.DataFrame({
         "code": ["000001", "000002", "000003", "000004", "000005", "000006", "000007"],
         "fwd_1_oo": [0.05, 0.03, -0.02, 0.01, 0.04, 0.00, -0.01],
         "gap_c1_o2": [0.04, 0.02, -0.01, 0.03, 0.06, 0.01, -0.02],
         "fwd_5_oc": [0.10, 0.06, -0.04, 0.02, 0.08, 0.00, -0.02],
         "buyable": [True, False, True, True, True, True, True],
+        "buyable_c1": [True, False, True, True, True, True, True],
     })
 
 

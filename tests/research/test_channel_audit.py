@@ -14,6 +14,7 @@ import inspect
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from autoresearch.research.channel_audit import (
     _load_day,
@@ -76,6 +77,26 @@ def test_day_channel_stats_excess_unique_hit():
     assert abs(b["mean_excess_t2"] - (-0.02)) < 1e-6
     assert abs(b["unique_excess_t2"] - (-0.04)) < 1e-6
     assert b["hit_rate_t2"] == 0.0
+
+
+def test_day_channel_stats_excludes_row_when_legacy_buyable_true_but_buyable_c1_false():
+    """C1 修复(final-review 2026-08-08)回归锁:入场旗必须跟随 MAIN_RULER 选(entry_tradable),
+    不是硬编码 "buyable"。旧旗(D+1 开盘)=True 但新旗 `buyable_c1`(D+1 收盘)=False
+    (盘中开板、尾盘封死)的票,不得计入 `mean_excess_t2` 的均值分子。
+    """
+    channels = pd.DataFrame([
+        {"channel": "chan_a", "code": "000001"},
+        {"channel": "chan_a", "code": "000002"},
+    ])
+    attr = pd.DataFrame([
+        {"code": "000001", "gap_c1_o2": 0.02, "buyable": True, "buyable_c1": True},
+        {"code": "000002", "gap_c1_o2": 0.50, "buyable": True, "buyable_c1": False},
+    ])
+    out = day_channel_stats(channels, attr)
+    row = out[out["channel"] == "chan_a"].iloc[0]
+    # market 基准 = median(0.02, 0.50) = 0.26(未按 buyable 过滤,生产口径如此);修复后
+    # mean_excess_t2 只应含 000001 → 0.02-0.26=-0.24。若 C1 未修,000002 会被计入,均值拉到 0.0。
+    assert row["mean_excess_t2"] == pytest.approx(-0.24)
 
 
 def test_day_channel_stats_empty_when_no_channel_column():
