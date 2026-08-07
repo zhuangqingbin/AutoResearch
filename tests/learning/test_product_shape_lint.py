@@ -10,13 +10,31 @@ import json
 
 import pandas as pd
 
-from autoresearch.learning.self_review import product_shape_lint
+from autoresearch.learning.self_review import (
+    product_shape_lint,
+    retired_symbol_lint,
+    workflow_literal_lint,
+)
 
 DATE = "2026-07-17"
 
 
 def _by(rows: list[dict], check: str) -> list[dict]:
     return [r for r in rows if r["check"] == check]
+
+
+def _mk_claude_root(tmp_path, **files):
+    """构造 `.claude/{skills,agents,workflows}` 形状的 fixture 根目录。
+
+    `files` 例:`{"skills/demo-skill/SKILL.md": "...", "workflows/demo.js": "..."}`
+    (相对路径 → 文件内容),自动建父目录。
+    """
+    root = tmp_path / ".claude"
+    for rel, content in files.items():
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+    return root
 
 
 def _write_health(d, *, n_full=1, anns=0.2):
@@ -298,3 +316,146 @@ def test_intel_query_cap_reads_echo_config(tmp_path):
         "源 https://e.com/a\n## 声明行\n网查 20 条\n", encoding="utf-8")
 
     assert _by(product_shape_lint(d, DATE), "产物形状·intel限频") == []
+
+
+# ── 11) 退役符号·指令性引用(Wave11 D4)─────────────────────────────────────
+# T21 台账(docs/research/2026-08-07-skill-tombstone-ledger.md)的自动守卫:文档不得再教人
+# 跑一个已经不存在的命令/开关。RETIRED_SYMBOLS/墓碑标记词表是给定契约,不在这里重新发明。
+
+def test_retired_symbol_instructive_reference_fails(tmp_path):
+    root = _mk_claude_root(tmp_path, **{
+        "skills/demo-skill/SKILL.md": "步骤:`python -m autoresearch.scan.progress <date>` 看进度。\n",
+    })
+    rows = retired_symbol_lint(root)
+    assert len(rows) == 1 and rows[0]["severity"] == "fail"
+    assert "scan.progress" in rows[0]["detail"] and "SKILL.md:1" in rows[0]["detail"]
+
+
+def test_retired_symbol_tombstone_same_line_passes(tmp_path):
+    """墓碑(同行有退役标记)→ pass —— brief 原句范例。"""
+    root = _mk_claude_root(tmp_path, **{
+        "skills/demo-skill/SKILL.md": "observe_watchlist 已退役,勿再跑。\n",
+    })
+    assert retired_symbol_lint(root) == []
+
+
+def test_retired_symbol_whitelist_is_per_line_not_per_file(tmp_path):
+    """墓碑白名单按行、不按文件:同一文档里墓碑行放行、活指令行仍拦下——不能因文件里有
+    一处墓碑就让全文件的同名符号都免检(否则退役符号提过一次「已退役」,后面几百行怎么
+    教人用它都会被放行)。
+    """
+    text = "observe_watchlist 已退役,勿再跑。\n补跑 observe_watchlist 一次看看。\n"
+    root = _mk_claude_root(tmp_path, **{"skills/demo-skill/SKILL.md": text})
+    rows = retired_symbol_lint(root)
+    assert len(rows) == 1
+    assert "SKILL.md:2" in rows[0]["detail"]          # 只拦第 2 行(活指令),第 1 行(墓碑)不报
+
+
+def test_retired_symbol_scans_agents_and_workflows_too(tmp_path):
+    """扫描域是 skills/agents/workflows 三处,不止 skills。"""
+    root = _mk_claude_root(tmp_path, **{
+        "agents/demo.md": "调用 l4_reuse 逻辑重放历史卡。\n",
+        "workflows/demo.js": "// 走 sector_brief_mode=finalist_only 通道\n",
+    })
+    rows = retired_symbol_lint(root)
+    hit_files = {r["detail"].split(":")[0] for r in rows}
+    assert hit_files == {"demo.md", "demo.js"}
+
+
+def test_retired_symbol_ignores_non_md_js_files(tmp_path):
+    """扫描域限定 .md(skills/agents)与 .js(workflows)—— jsonc 配置注释等不算文档,
+    不该把配置文件里的措辞差异(如「已删」而非五个给定标记词)误判成文档 bug。
+    """
+    root = _mk_claude_root(tmp_path, **{
+        "skills/demo-skill/scan_config.jsonc": "// l4_reuse 已删\n",
+    })
+    assert retired_symbol_lint(root) == []
+
+
+def test_retired_symbol_missing_root_no_crash(tmp_path):
+    assert retired_symbol_lint(tmp_path / "nope") == []
+    assert retired_symbol_lint(tmp_path) == []        # 存在但空(无 skills/agents/workflows 子目录)
+
+
+# ── 12) workflow AGENT_DEFAULTS 外内联字面量(Wave11 D4)────────────────────
+
+_AGENT_DEFAULTS_JS = (
+    "const cfg = {}\n"
+    "const AGENT_DEFAULTS = {\n"
+    "  gp_shell:      { model: 'sonnet', effort: 'low' },\n"
+    "  l3_repair:     { effort: 'medium' },\n"
+    "}\n"
+    "const AG = (role) => ({ ...(AGENT_DEFAULTS[role] || {}), ...((cfg.agents || {})[role] || {}) })\n"
+)
+
+
+def test_workflow_literal_outside_block_fails(tmp_path):
+    text = _AGENT_DEFAULTS_JS + "\nawait agent({ agentType: 'x', model: 'haiku' })\n"
+    root = _mk_claude_root(tmp_path, **{"workflows/demo.js": text})
+    rows = workflow_literal_lint(root)
+    assert len(rows) == 1 and rows[0]["severity"] == "fail"
+    assert "demo.js:8" in rows[0]["detail"]
+
+
+def test_workflow_literal_inside_block_passes(tmp_path):
+    root = _mk_claude_root(tmp_path, **{"workflows/demo.js": _AGENT_DEFAULTS_JS})
+    assert workflow_literal_lint(root) == []
+
+
+def test_workflow_literal_effort_outside_block_fails(tmp_path):
+    """规则同时管 `effort:`,不止 `model:`。"""
+    text = _AGENT_DEFAULTS_JS + "\nconst r = await rerun({ effort: 'max' })\n"
+    root = _mk_claude_root(tmp_path, **{"workflows/demo.js": text})
+    rows = workflow_literal_lint(root)
+    assert len(rows) == 1 and "demo.js:8" in rows[0]["detail"]
+
+
+def test_workflow_literal_no_agent_defaults_block_skipped(tmp_path):
+    """没有 AGENT_DEFAULTS 表的 workflow(如 t1-review.js 走独立的 cfg.agents.t1_diag/t1_synth
+    通道)天然不受本规则约束——presence-gated 跳过,不是本规则的检查对象。
+    """
+    text = "const r = { effort: AG.t1_diag?.effort ?? 'high', model: 'haiku' }\n"
+    root = _mk_claude_root(tmp_path, **{"workflows/demo.js": text})
+    assert workflow_literal_lint(root) == []
+
+
+def test_workflow_literal_cannot_be_filtered_by_grep_v_agent_defaults(tmp_path):
+    """回归 brief 点名的坑:表内的行本身不含 "AGENT_DEFAULTS" 这个词,不能靠字符串排除法
+    判块,必须真正算出块的起止行号区间——这里显式验证块内那行确实不含该词、但仍被正确
+    判定为「在块内」而 pass。
+    """
+    root = _mk_claude_root(tmp_path, **{"workflows/demo.js": _AGENT_DEFAULTS_JS})
+    src = (root / "workflows" / "demo.js").read_text(encoding="utf-8")
+    gp_shell_line = src.splitlines()[2]
+    assert "model: '" in gp_shell_line and "AGENT_DEFAULTS" not in gp_shell_line
+    assert workflow_literal_lint(root) == []
+
+
+def test_workflow_literal_missing_root_no_crash(tmp_path):
+    assert workflow_literal_lint(tmp_path / "nope") == []
+
+
+# ── 接线:product_shape_lint 经 scan_dir 祖先目录自动接上 11)/12)(Wave11 D4)────────
+
+def test_product_shape_lint_wires_retired_symbol_and_workflow_literal(tmp_path):
+    """product_shape_lint 用 `scan_dir.parent.parent.parent / ".claude"` 推导 .claude 根
+    (与 usage_reconcile_lint 同手法)——生产 scan_dir == context/scan/<date> 时上三级 ==
+    仓库根。这里摆一个同构的三级目录验证接线本身,不只测两个独立函数。
+    """
+    scan_dir = tmp_path / "context" / "scan" / DATE
+    scan_dir.mkdir(parents=True)
+    _mk_claude_root(tmp_path, **{
+        "skills/demo-skill/SKILL.md": "跑 `python -m autoresearch.scan.progress <date>`。\n",
+    })
+    rows = _by(product_shape_lint(scan_dir, DATE), "产物形状·退役符号指令性引用")
+    assert len(rows) == 1 and "scan.progress" in rows[0]["detail"]
+
+
+def test_product_shape_lint_existing_fixture_shape_unaffected_by_doc_lints(tmp_path):
+    """既有 `_mk_clean` 式 scan_dir(tmp_path 下 1 级)上三级不构成真 `.claude` ——presence-gated
+    静默跳过,新规则不会用仓库当前 `.claude` 内容污染单跑目录的产物形状断言(回归锁)。
+    """
+    d = _mk_clean(tmp_path)
+    rows = product_shape_lint(d, DATE)
+    assert _by(rows, "产物形状·退役符号指令性引用") == []
+    assert _by(rows, "产物形状·workflow内联字面量") == []

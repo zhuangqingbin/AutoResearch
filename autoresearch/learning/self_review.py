@@ -358,9 +358,121 @@ def intel_recency_lint(scan_dir, date_str: str) -> list[dict]:
     return out
 
 
+# Wave11 D4:给 T21 台账(docs/research/2026-08-07-skill-tombstone-ledger.md)装自动守卫——
+# 防止「文档还在教人跑一个已经不存在的命令/开关」这类回归。RETIRED_SYMBOLS 与墓碑标记词表
+# 是本波跨任务已核实的契约,这里不自行增删。
+RETIRED_SYMBOLS = ["observe_watchlist", "scan.progress", "l4_reuse",
+                   "stable_context_blocks", "sector_brief_mode", "redteam_prob",
+                   "analyze-ticker", "watchlist_trigger"]
+_DOC_LINT_SUBDIRS = (("skills", ".md"), ("agents", ".md"), ("workflows", ".js"))
+
+
+def retired_symbol_lint(root=".claude") -> list[dict]:
+    """退役符号「指令性引用」lint(Wave11 D4)。
+
+    `RETIRED_SYMBOLS` 逐个在 `.claude/{skills,agents,workflows}` 的 `.md`/`.js` 文件里找——
+    某行**含**退役符号 **且该行本身不含**退役标记(`已退役|已移除|勿再|已废弃|退役`)→ fail。
+
+    **墓碑白名单按行、不按文件**:同一份文档里可以既有「observe_watchlist 已退役,勿再跑」
+    (墓碑,放行)又有「跑 observe_watchlist」(活指令,拦下)——一处墓碑不得为全文件背书,
+    否则退役符号只要在文件任意角落提过一次「已退役」,后面几百行怎么教人用它都会被放行。
+
+    扫描域按扩展名限定为 `.md`(skills/agents)与 `.js`(workflows)——那两类才是「文档」,
+    `.jsonc` 配置注释、`.omc` 之类工具态文件不算(会把无关噪声当成文档 bug 报出来)。
+
+    presence-gated:root/子目录不存在、坏文件 → 静默跳过,绝不抛异常。
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(root)
+    mark_re = re.compile(r"已退役|已移除|勿再|已废弃|退役")
+    out: list[dict] = []
+    for sub, ext in _DOC_LINT_SUBDIRS:
+        d = root / sub
+        if not d.is_dir():
+            continue
+        for p in sorted(d.rglob(f"*{ext}")):
+            if not p.is_file():
+                continue
+            try:
+                text = p.read_text(encoding="utf-8")
+            except Exception:  # noqa: BLE001 — 读不了按无内容处理,不炸
+                continue
+            for i, line in enumerate(text.splitlines(), start=1):
+                hit = [s for s in RETIRED_SYMBOLS if s in line]
+                if hit and not mark_re.search(line):
+                    out.append({
+                        "check": "产物形状·退役符号指令性引用",
+                        "severity": "fail",
+                        "detail": f"{p.name}:{i} 含退役符号 {'/'.join(hit)} 但本行无退役标记"
+                                  "——疑似仍在教人跑/配置已退役对象(墓碑标记须同行)",
+                        "code": None,
+                    })
+    return out
+
+
+_AGENT_DEFAULTS_MARK = "const AGENT_DEFAULTS = {"
+
+
+def workflow_literal_lint(root=".claude") -> list[dict]:
+    """workflow `agent()` 调用点内联 model/effort 字面量 lint(Wave11 D4,承 Wave11-B2)。
+
+    Wave11-B2 把 scan-market.js/l4-stock.js/dossier-init.js 三个 workflow 的 model/effort
+    单一事实源收进各自顶部的 `const AGENT_DEFAULTS = {...}` 表 + `AG(role)` 解析器
+    (`tests/test_agent_defs.py::test_workflow_shell_wrappers_use_agent_defaults` 已用单测锁住
+    model 字面量不得溢出该表)。本探针把同一判据接进 product_shape_lint 做生产自动守卫
+    (不再只靠人主动跑单测),并补上 `effort:` 字面量。规则:`model:`/`effort:` 字面量出现在
+    `AGENT_DEFAULTS` 块**之外** → fail。
+
+    ⚠️ 判块不能靠 `grep -v AGENT_DEFAULTS` 之类的字符串排除法——表内每一行(如
+    `gp_shell: { model: 'sonnet', effort: 'low' },`)本身并不含 "AGENT_DEFAULTS" 这个词,
+    必须真正算出块的起止行号区间,再判目标行是否落在区间内。
+
+    没有 `const AGENT_DEFAULTS = {` 表的 workflow(如 t1-review.js 走独立的
+    `cfg.agents.t1_diag/t1_synth` 通道,见该文件顶部注)天然不受本规则约束——presence-gated
+    跳过,不是本规则的检查对象,防止跟另一套架构打架。
+
+    presence-gated:root/workflows 不存在、坏文件 → 静默跳过,绝不抛异常。
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(root) / "workflows"
+    out: list[dict] = []
+    if not root.is_dir():
+        return out
+    lit_re = re.compile(r"\b(?:model|effort)\s*:\s*['\"]")
+    for p in sorted(root.glob("*.js")):
+        try:
+            text = p.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            continue
+        start = text.find(_AGENT_DEFAULTS_MARK)
+        if start == -1:
+            continue                                  # 无该表 → 本规则不适用(如 t1-review.js)
+        close = text.find("\n}\n", start)
+        if close == -1:
+            continue                                  # 表未闭合,交给 test_agent_defs.py 的结构性测试抓
+        block_start_line = text.count("\n", 0, start) + 1
+        block_end_line = text.count("\n", 0, close + 1) + 1
+        for i, line in enumerate(text.splitlines(), start=1):
+            if block_start_line <= i <= block_end_line:
+                continue                              # 块内合法字面量
+            if lit_re.search(line):
+                out.append({
+                    "check": "产物形状·workflow内联字面量",
+                    "severity": "fail",
+                    "detail": f"{p.name}:{i} 在 AGENT_DEFAULTS 表外出现内联 model/effort 字面量"
+                              "——单一事实源被绕过,调用点应改用 `...AG(role)`",
+                    "code": None,
+                })
+    return out
+
+
 def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
-    """产物形状 lint(十探针,零 LLM;design: 2026-07-13-next-optimization-survey.md 线 C
-    + 2026-07-22 dossier design Wave1 ⑤ + 2026-07-23 终审 I-2 + Wave9 B-3)。
+    """产物形状 lint(十二探针,零 LLM;design: 2026-07-13-next-optimization-survey.md 线 C
+    + 2026-07-22 dossier design Wave1 ⑤ + 2026-07-23 终审 I-2 + Wave9 B-3 + Wave11 D4)。
 
     把停车场里"已知的产物形状病"装成每跑可见的机械断言(advisory 起步,攒够跑数再升):
 
@@ -398,9 +510,15 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
         「研报体(档案δ)」(满卡)/「微研报」(早停卡)段;或无档案的票缺「档案未建」
         缺档声明行——两侧口径与 `.claude/agents/l4-card.md` 模板措辞同批对齐(先补指令
         后加检查:agent def 已写要求,这里才加检查)。
+    11. **退役符号指令性引用**(fail,Wave11 D4):`.claude/{skills,agents,workflows}` 里某行
+        含 `RETIRED_SYMBOLS` 但本行无退役标记(墓碑白名单按行、不按文件)——文档还在教人跑
+        一个已经不存在的命令/开关,见 `retired_symbol_lint`。
+    12. **workflow 内联字面量**(fail,Wave11 D4):`.claude/workflows/*.js` 的 `model:`/
+        `effort:` 字面量出现在 `AGENT_DEFAULTS` 表之外——单一事实源被绕过,见
+        `workflow_literal_lint`。
 
     全部 presence-gated:缺文件/缺键/坏文件 → 该条静默跳过,**绝不抛异常**。
-    返回 [{check,severity,detail,code}](severity ∈ {warn,info});接线在 assemble
+    返回 [{check,severity,detail,code}](severity ∈ {fail,warn,info});接线在 assemble
     (与 card_contract_lint 同点),本函数纯读不写。
     """
     import contextlib
@@ -681,6 +799,18 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
             elif _NO_DOSSIER_DECL not in txt:
                 add("产物形状·研报体缺失", "warn",
                     f"{code} 无档案且未写缺档声明行")
+
+    # 11)+12) 退役符号指令性引用 + workflow AGENT_DEFAULTS 外字面量(Wave11 D4):与具体
+    # scan_dir 无关,查的是仓库 `.claude` 静态树。根按 scan_dir 的祖先目录推导(同
+    # usage_reconcile_lint 手法):生产 scan_dir == context/scan/<date> 时上三级 == 仓库根,
+    # 与 cwd 相对的 `.claude` 缺省值 byte-identical;测试用的假 scan_dir(tmp_path 下 1-2 级)
+    # 上三级自然没有 `.claude`,presence-gated 静默跳过——不靠 monkeypatch.chdir,也不会让
+    # 既有 tmp_path 用例被仓库当前 `.claude` 内容的变化摆布。
+    claude_root = scan_dir.parent.parent.parent / ".claude"
+    with contextlib.suppress(Exception):
+        out.extend(retired_symbol_lint(claude_root))
+    with contextlib.suppress(Exception):
+        out.extend(workflow_literal_lint(claude_root))
     return out
 
 
