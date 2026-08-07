@@ -121,10 +121,39 @@ uv run --no-sync python -c "import sys;sys.path.insert(0,'scripts');import autor
 ```
 用户可对 retro 报告再 `/feedback` → 二次校正(闭环)。
 
+## 批量补诊断(欠账 ≥2 日时)
+
+`retro.attribution_pending()`(欠归因)与 `retro.pending_days()`(欠诊断——`retro_input.md`
+已备料只差这步)是两笔不同的账(Wave11-A7,详见 `retro.py` 两函数 docstring 与 CLI
+`retro pending` 的两段输出)。**本节只管后者**:欠归因是确定性计算,`nightly_close` 每晚
+自动补,人不该也不用手动介入;真正要人(Claude session)接手的,是 `retro pending` 报出来的
+「诊断欠账(已备料)」段。
+
+```bash
+uv run --no-sync python -m autoresearch.learning.retro pending   # 先看「诊断欠账」段有几天
+```
+
+**合诊而非逐日重复**:一次诊断吃 **≤5 日**的 `retro_input.md`(同一个 context 通读,跨日
+对比更容易看出系统性病因——同一批门槛/权重/prompt 问题往往连续多日重现,拆开单日看只会把
+同一个病因诊断 N 遍;>5 日先分批,不要一次塞爆 context)。诊断内容仍是第 2 步的三段药(门槛/
+权重/AI)+ 分离消息脉冲,只是证据来源从 1 天变成 ≤5 天,与 t1-review 快环"合诊"同一哲学
+(跨卡模式只有通读全部才看得见)。
+
+**逐日收尾,不是批量收尾**:合诊归合诊,但落盘与 `mark_done` 仍按**每日**走——诊断完一天就
+把该日 retro 报告落到 `reports/scan/<该日 run_id>/retro_<HHMM>.md`(第 6 步同款),立刻对
+该日调用 `retro.mark_done(<该日>)`(触发 `decay_lessons` 记忆防腐),再处理批次里下一天。
+不要攒到整批诊断完再一次性 `mark_done`——那样任何一天中途出岔子都会连累已经诊断完的日子
+一起没留痕,`decay_lessons` 的幂等防腐节奏也会被平白拖后。
+
+**清账判据**:批量补完后重跑上面的 CLI,「诊断欠账(已备料)」段为空 = 清完;「归因欠账」段
+不是本流程的验收对象(那是 `nightly_close` 的活,见上)。
+
+**触发词**:「补复盘欠账」。
+
 ## 边界
 - 仅权重自动落地;门槛/因子/prompt **只出建议**。
 - 消息脉冲赢家不计入系统性结论与重标定。
-- 量大(多日积压)可用 **workflow** 并行各日(需用户显式开启);否则逐日 in-session。
+- 欠账 ≥2 日的批量诊断见上「批量补诊断」节(≤5 日/次合诊 + 逐日 `mark_done`);否则逐日 in-session。
 
 ## 双轨语义:注入锚用收缩值 / 裁决门槛用硬 n
 **两套语义不混**(P0-3/P0-7 拍板):

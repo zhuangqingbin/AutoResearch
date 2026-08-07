@@ -319,3 +319,54 @@ def test_attribute_runs_global_consumers_only_for_real_scan_path(
     retro.attribute(day.name)
 
     assert calls == [Path("context/scan") / day.name]
+
+
+# ───────────────────────── retro pending 拆两账(Wave11-A7:attribution_pending / pending_days) ─────────────────────────
+#
+# 真实判据(见 retro.py `_ready_scan_days`/`attribution_pending`/`pending_days` docstring,
+# 2026-08-07 通读源码确认):两函数共用一份候选集合(有 L1 面板 + 有报告 + fwd 已实现,靠交易
+# 日历判定,联网),只是各自再叠一层"具体欠什么"的过滤——欠归因看 retro/attribution.csv
+# 缺不缺,欠诊断(pending_days,名字/判据自 Wave7 起未变)看 retro/done.json 缺不缺。这里
+# monkeypatch 掉候选集合计算本身(避免真拉交易日历,同 tests/scan/test_health.py 的既有做法),
+# 只验证两个真实哨兵文件驱动的过滤逻辑。
+
+
+def _mk_retro_day(root: Path, day: str, *, attr: bool, done: bool) -> None:
+    """造一个候选 scan 日的 retro/ 哨兵文件:`attribution.csv`(真欠归因判据,`attribute()`
+    的真实落盘文件名)、`done.json`(真欠诊断判据,`mark_done()` 的真实落盘文件名)。"""
+    d = root / day / "retro"
+    d.mkdir(parents=True)
+    if attr:
+        (d / "attribution.csv").write_text("code\n000001\n", encoding="utf-8")
+    if done:
+        (d / "done.json").write_text("{}", encoding="utf-8")
+
+
+def test_pending_split(tmp_path, monkeypatch):
+    """三日夹具:①无归因 ②有归因无 done ③有归因有 done。
+
+    `attribution_pending()` = 真欠归因 → 只有①;`pending_days()` = 诊断欠账(判据不变)→
+    ①②(③已 done 被排除)。此前两笔账被 `pending_days()` 混成一份列表——已归因的②会跟①
+    一起被误读成"什么都没做"(2026-08-05 实测:6 日归因全补齐,`retro pending` 仍报欠 6 天),
+    这正是本测试要锁住的拆分。"""
+    monkeypatch.setattr(retro, "_ready_scan_days",
+                        lambda *a, **k: ["2026-08-01", "2026-08-02", "2026-08-03"])
+    _mk_retro_day(tmp_path, "2026-08-01", attr=False, done=False)
+    _mk_retro_day(tmp_path, "2026-08-02", attr=True, done=False)
+    _mk_retro_day(tmp_path, "2026-08-03", attr=True, done=True)
+
+    assert retro.attribution_pending(scan_root=tmp_path) == ["2026-08-01"]
+    assert retro.pending_days(scan_root=tmp_path) == ["2026-08-01", "2026-08-02"]
+
+
+def test_cli_pending_prints_two_sections(monkeypatch, capsys):
+    """CLI `pending` 分两段打印:「归因欠账」「诊断欠账(已备料)」各列各的日期。"""
+    monkeypatch.setattr(retro, "attribution_pending", lambda *a, **k: ["2026-08-01"])
+    monkeypatch.setattr(retro, "pending_days", lambda *a, **k: ["2026-08-01", "2026-08-02"])
+    monkeypatch.setattr("sys.argv", ["retro.py", "pending"])
+
+    assert retro.main() == 0
+
+    out = capsys.readouterr().out
+    assert "归因欠账" in out and "2026-08-01" in out
+    assert "诊断欠账(已备料)" in out and "2026-08-02" in out

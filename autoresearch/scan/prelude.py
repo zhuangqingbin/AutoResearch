@@ -59,7 +59,9 @@ def calib_suggestion_lines(scan_root=None, date: str | None = None) -> list[str]
 
 
 def _retro_input_nag(scan_root: Path | str | None = None) -> str:
-    """retro_input.md 已备料但未收尾(无 done.json)→ 提醒行(D1 清欠;仿 `assemble._proposals_nag` 语气)。
+    """诊断欠账(retro_input.md 已备料但未收尾,无 done.json)→ 提醒行(D1 清欠;仿
+    `assemble._proposals_nag` 语气)。措辞与 `retro.pending_days()`/CLI `pending` 的
+    「诊断欠账(已备料)」段同一套词汇(Wave11-A7:归因欠账/诊断欠账两笔账分开记,勿混报)。
 
     比既有 `retro_pending` 步骤(只看"够资格复盘")更进一步的欠账信号:这里专挑"scan-retro 已经
     跑过 write_retro_input 却从没 mark_done"——诊断会话烂尾比"还没开始"更该催办(勘察 D1:
@@ -76,7 +78,11 @@ def _retro_input_nag(scan_root: Path | str | None = None) -> str:
     # Wave10 A10:超 48h 的备料升红 —— 「欠了 3 天」和「昨天刚欠」不是同一件事,
     # 用同一种语气报会让读者对这条提醒脱敏(而脱敏之后真的烂尾也没人看)。
     aged = _stalled_over_48h(scan_root, stalled)
-    head = "🚨 retro_input 备料超 48h 未收尾" if aged else "retro_input 已备料但未收尾(无 done.json)"
+    # 头部同时留 "retro_input"/"done.json"(老断言依赖的字面量)与 "诊断欠账"(Wave11-A7
+    # 新词汇,跟 CLI `pending` 的「诊断欠账(已备料)」段对齐)——两套读者(既有测试 grep
+    # 字面量、人读新词汇)都不该因为这次纯措辞同步而读不懂。
+    head = ("🚨 诊断欠账超 48h 未收尾(retro_input 已备料)" if aged
+            else "诊断欠账(retro_input 已备料,无 done.json)")
     detail = "、".join(f"{d}({_stall_age_h(scan_root, d)}h)" if d in aged else d
                        for d in stalled)
     return (f"{head}:{detail}"

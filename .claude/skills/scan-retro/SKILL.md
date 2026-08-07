@@ -42,10 +42,13 @@ scan-market 出的报告是"事前判断";retro 用**当日已实现 T+1 涨跌*
 - ✅ `/retro` 或"复盘昨天的扫描"。
 - ✅ scan-market 开跑前发现未复盘日(自动补跑,见 scan-market SKILL)。
 - ✅ 用户问"为什么没选到 X(涨了的)"。
+- ✅ 用户说"补复盘欠账"(诊断欠账 ≥2 日的批量清账,见下「流程」)。
 - ❌ 当日报告 fwd 未实现(D+2 交易日没到)→ `retro.pending_days()` 不会返回它,跳过。
 
 ## 流程
 读 `retro-playbook.md` 跑完整 6 步:`pending_days` → `attribute`+`write_retro_input` → Claude 诊断(三段药 + 分离消息脉冲)→ 自动重标定 + changelog → 建议/经验 → retro 报告 + `mark_done`。
+
+**欠账 ≥2 日(触发词"补复盘欠账")**:`retro pending` 拆两段(Wave11-A7)——**归因欠账**(确定性计算未跑,`nightly_close` 每晚自动补,不用人管)与**诊断欠账(已备料)**(`retro_input.md` 已生成,只差这步的 Claude 诊断)。批量补诊断只清后者:见 `retro-playbook.md` §批量补诊断(≤5 日/次合诊,跨日看系统性病因;逐日诊断完立即 `mark_done`,不要攒到整批完了再一起标)。清账判据 = `retro pending` 的「诊断欠账」段为空。
 
 - **per-channel edge(L1 段)**:`stage_eval.evaluate` 已落 `retro/channel_eval.csv`(每路 T+2 截面**边际超额** `unique_excess_t2` = 这路独占票有没有赢;2026-07-10 裁定 fwd_2_oc 主尺,t5 列已退位为参考展示、不再驱动决策);跨日看 `uv run --no-sync python -m autoresearch.learning.channel_ledger`(→ `reports/learning/channel_ledger.md`)。某路 `unique_excess_t2` 持续为负且 `n_days≥3` → 建议下调其 quota(写 `proposals.jsonl`,**人工决定,不自动改**;提议基线自动读 scan_config.jsonc 的 channel_quotas,已实施的改动不会重复提议)。`n_days<3` 标 ⚠样本少,不下结论。
 

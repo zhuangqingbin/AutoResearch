@@ -9,7 +9,7 @@ D+2 收盘卖、剔 D+1 一字板;`fwd_1_oo` 仍留作参考)检验 D 的报告,
 用法:
   uv run --no-sync python -m autoresearch.learning.retro --selftest
   uv run --no-sync python -m autoresearch.learning.retro attribute 2026-06-19      # 单日(需 fwd 已实现)
-  uv run --no-sync python -m autoresearch.learning.retro pending                   # 列未复盘日
+  uv run --no-sync python -m autoresearch.learning.retro pending                   # 归因欠账+诊断欠账两段
   uv run --no-sync python -m autoresearch.learning.retro refresh                   # 补跑已成熟未归因日
   uv run --no-sync python -m autoresearch.learning.retro backfill-bought           # 历史 attribution 补 bought 列(幂等)
 """
@@ -449,17 +449,18 @@ def realized_returns(date: str, fwd: int = 10) -> pd.DataFrame:
     return fr[[c for c in cols if c in fr.columns]]
 
 
-def pending_days(today: str | None = None, scan_root: Path | None = None,
-                 report_root: Path | None = None) -> list[str]:
-    """未复盘 scan 日:有 L1 面板 + 有报告 + 无 retro/done.json + D 的 fwd 已实现。"""
+def _ready_scan_days(today: str, scan_root: Path, report_root: Path) -> list[str]:
+    """候选 scan 日:有 L1 面板 + 有报告 + D 的 fwd 已实现(不问 attribution/done 状态)。
+
+    `attribution_pending()`(欠归因)与 `pending_days()`(欠诊断)共用的候选集合基座——
+    Wave11-A7 拆账前两者被 `pending_days()` 一个函数混着算,现在只是同一份候选集合上
+    叠两层不同的"具体欠什么"过滤,判据本身(L1 面板/报告/fwd 成熟)不重复写第二遍。
+    """
+    if not scan_root.exists():
+        return []
     import autoresearch.research.factor_lab as fl
     from autoresearch.data.tushare_source import _trade_days
 
-    today = today or datetime.now().strftime("%Y-%m-%d")
-    scan_root = scan_root or Path("context/scan")
-    report_root = report_root or Path("reports/scan")
-    if not scan_root.exists():
-        return []
     pro = fl._pro()
     cal = _trade_days(pro, "20240101", today.replace("-", ""))   # 日历已截到 today
     pos = {d: i for i, d in enumerate(cal)}
@@ -468,14 +469,49 @@ def pending_days(today: str | None = None, scan_root: Path | None = None,
         date = dd.name
         if not (dd / "L1_scored_full.csv").exists():
             continue
-        if (dd / "retro" / "done.json").exists():
-            continue
         if _report_dir_for(date, report_root) is None:           # 无已发布报告(目录名=运行日,按 manifest 定位)
             continue
         i = pos.get(date.replace("-", ""))
         if i is not None and i + 2 < len(cal):                   # D+2 交易日 ≤ today → fwd 已实现
             out.append(date)
     return out
+
+
+def attribution_pending(today: str | None = None, scan_root: Path | None = None,
+                        report_root: Path | None = None) -> list[str]:
+    """真欠归因的 scan 日:候选日(有 L1 面板 + 有报告 + fwd 已实现)∧ 无 `retro/attribution.csv`。
+
+    这批日子需要跑一次 `attribute()`(确定性计算,零 LLM;`nightly_close._retro_refresh`
+    每晚会对候选集合幂等重跑,漏跑才会在这里露出来)。跟 `pending_days()`(诊断欠账——
+    归因已备料,只差人/LLM 看一眼)是两笔不同的账:2026-08-05 实测 07-27..08-03 六日的
+    确定性归因已全补齐,`retro pending` 却仍报欠 6 天,正是这两笔账被混成一份列表的代价
+    (task-19)。正常情况下(夜间批已跑过)这份列表应为空;非空说明夜间批漏跑、或刚发布
+    还没到夜间窗口。
+    """
+    today = today or datetime.now().strftime("%Y-%m-%d")
+    scan_root = scan_root or Path("context/scan")
+    report_root = report_root or Path("reports/scan")
+    days = _ready_scan_days(today, scan_root, report_root)
+    return [d for d in days if not (scan_root / d / "retro" / "attribution.csv").exists()]
+
+
+def pending_days(today: str | None = None, scan_root: Path | None = None,
+                 report_root: Path | None = None) -> list[str]:
+    """未复盘 scan 日 = 诊断欠账:候选日(有 L1 面板 + 有报告 + fwd 已实现)∧ 无 `retro/done.json`。
+
+    **名字与判据自 Wave7 起未变**——nightly_close/prelude 等既有调用点行为不受本次改动
+    影响,这里只是把语义写实(Wave11-A7):本函数从来只回答"有没有 done.json",不回答
+    "有没有 attribution.csv"(真正的归因欠账见 `attribution_pending()`)。之所以过去能被
+    当"诊断欠账"用而不出岔子,是因为 `nightly_close._retro_refresh` 每晚都会把候选日的
+    归因幂等补满——人早上看到这份列表时归因通常已经跑完,列表里剩的确实只是"还没人看"
+    (scan-retro 诊断 + `mark_done`)。若夜间批漏跑,这份列表会暂时把"欠归因"的日子也
+    带进来,此时应先查 `attribution_pending()`。
+    """
+    today = today or datetime.now().strftime("%Y-%m-%d")
+    scan_root = scan_root or Path("context/scan")
+    report_root = report_root or Path("reports/scan")
+    days = _ready_scan_days(today, scan_root, report_root)
+    return [d for d in days if not (scan_root / d / "retro" / "done.json").exists()]
 
 
 # ───────────────────────── 编排:attribute / retro_input / done ─────────────────────────
@@ -1216,7 +1252,12 @@ def main() -> int:
     if "--selftest" in sys.argv:
         return _selftest()
     if args and args[0] == "pending":
-        print("\n".join(pending_days()) or "(无待复盘日)")
+        # 拆两段(Wave11-A7):归因欠账(nightly_close 该补没补上)vs 诊断欠账(已备料,
+        # 只差人/LLM 看一眼)——此前混在一份列表里,已归因的日子会被误读成"什么都没做"。
+        attr_days = attribution_pending()
+        diag_days = pending_days()
+        print(f"归因欠账:{'、'.join(attr_days) if attr_days else '(无)'}")
+        print(f"诊断欠账(已备料):{'、'.join(diag_days) if diag_days else '(无)'}")
         return 0
     if args and args[0] == "refresh":
         done = refresh_attributions()
