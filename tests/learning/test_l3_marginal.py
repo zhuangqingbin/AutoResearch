@@ -33,7 +33,8 @@ def _kept(code, *, reason="lane", detail="momentum", score=50.0, industry="电�
 
 
 def _attr(code, fwd, *, winner=False, buyable=True):
-    return {"code": code, "fwd_2_oc": fwd, "buyable": buyable, "tradable": True,
+    # gap_c1_o2:当前 MAIN_RULER(T16 flip)—— day_frame() 按 a[MAIN_RULER] 动态读源列。
+    return {"code": code, "gap_c1_o2": fwd, "buyable": buyable, "tradable": True,
             "winner": winner}
 
 

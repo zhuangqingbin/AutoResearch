@@ -30,7 +30,8 @@ def _day(root, date, *, l0, l1, l2, attr, pinned=()):
 
 
 def _attr(code, fwd, *, buyable=True, tradable=True):
-    return {"code": code, "fwd_2_oc": fwd, "buyable": buyable, "tradable": tradable}
+    # gap_c1_o2:当前 MAIN_RULER(T16 flip)——l2_slo.py 按 MAIN_RULER 动态读源列。
+    return {"code": code, "gap_c1_o2": fwd, "buyable": buyable, "tradable": tradable}
 
 
 def _market(n=20, base=0.0):

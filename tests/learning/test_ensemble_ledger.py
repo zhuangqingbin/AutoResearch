@@ -65,7 +65,7 @@ def _write_day(tmp_path):
     attr = [
         {
             "code": f"9{i:05d}",
-            "fwd_2_oc": 0.0,
+            "gap_c1_o2": 0.0,
             "buyable": True,
             "tradable": True,
         }
@@ -99,7 +99,7 @@ def _write_day(tmp_path):
         attr.append(
             {
                 "code": code,
-                "fwd_2_oc": fwd,
+                "gap_c1_o2": fwd,
                 "buyable": True,
                 "tradable": True,
             }

@@ -747,7 +747,7 @@ def _all_frames(cap_floor: float) -> list[pd.DataFrame]:
     return frames
 
 
-def _build_calib_panel(frames: list[pd.DataFrame], label_col: str = "fwd_2_oc"):
+def _build_calib_panel(frames: list[pd.DataFrame], label_col: str = ruler.MAIN_RULER):
     """frames → 校准 panel(grp_* + industry/sector/fwd/date,buyable 过滤)+ regime_by_date。
 
     `label_col` 选前向标签(fwd_2_oc 超短主尺默认 / fwd_1_oo / fwd_5_oc / fwd_10_oc 多 horizon);
@@ -896,7 +896,7 @@ def render_ic_by_regime(df: pd.DataFrame, flat_ic: dict | None = None) -> str:
     return "\n".join(out)
 
 
-def run_ic_by_regime(cap_floor: float = 30.0, label_col: str = "fwd_2_oc",
+def run_ic_by_regime(cap_floor: float = 30.0, label_col: str = ruler.MAIN_RULER,
                      out_csv: str = "context/factor_lab/ic_by_regime.csv",
                      out_md: str = "reports/research/ic_by_regime.md") -> pd.DataFrame:
     """装载全历史成型日面板 → `ic_by_regime` 裁决表 → 落 csv + md。**只出读数,不改任何权重。**"""
@@ -918,7 +918,7 @@ def run_ic_by_regime(cap_floor: float = 30.0, label_col: str = "fwd_2_oc",
     return df
 
 
-def calibrate(cap_floor: float = 30.0, k: float = 200.0, label_col: str = "fwd_2_oc",
+def calibrate(cap_floor: float = 30.0, k: float = 200.0, label_col: str = ruler.MAIN_RULER,
               out_path: str = "context/factor_lab/weights.json") -> dict:
     """每"因子组"对前向收益的 rank-IC,按申万/东财行业 + 大类层级收缩 → weights.json(flat)。
 
@@ -948,7 +948,7 @@ def calibrate(cap_floor: float = 30.0, k: float = 200.0, label_col: str = "fwd_2
     return {"meta": meta, "weights": weights}
 
 
-def calibrate_regimes(cap_floor: float = 30.0, k: float = 200.0, label_col: str = "fwd_2_oc",
+def calibrate_regimes(cap_floor: float = 30.0, k: float = 200.0, label_col: str = ruler.MAIN_RULER,
                       min_dates: int = 5, out_path: str = "context/factor_lab/weights.json") -> dict:
     """逐日 regime 分桶校准 → weights.json 增 `regimes` 块(同时保留 flat 全样本权重)。
 
@@ -1003,7 +1003,7 @@ GBDT_RAW = [
     "rsi6", "rsi12", "pe", "pb", "dv_ratio",
     "cmf_20", "obv_mom_20", "ma_bull", "above_ma60",
 ]
-GBDT_LABEL = "fwd_2_oc"                          # 超短主尺,与 calibrate 同口径(可交易、无前视)
+GBDT_LABEL = ruler.MAIN_RULER                    # 超短主尺,与 calibrate 同口径(可交易、无前视)
 GBDT_MODEL = "context/factor_lab/gbdt_model.pkl"
 _GBDT_CACHE: dict = {}
 

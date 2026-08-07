@@ -29,8 +29,9 @@ def _day(root, date, *, pinned_rows, ratings, attribution, ensemble=None):
 
 
 def _attr(rows):
-    """rows = [(code, fwd_2_oc), ...] → attribution 帧(市场中位由全部行算)。"""
-    return [{"code": c, "fwd_2_oc": v} for c, v in rows]
+    """rows = [(code, gap_c1_o2), ...] → attribution 帧(市场中位由全部行算)。
+    gap_c1_o2:当前 MAIN_RULER(T16 flip)——market_fwd2()/roll() 按 MAIN_RULER 动态读源列。"""
+    return [{"code": c, "gap_c1_o2": v} for c, v in rows]
 
 
 # ── 判定口径 ──────────────────────────────────────────────────────────────

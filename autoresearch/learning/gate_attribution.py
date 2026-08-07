@@ -272,7 +272,11 @@ def _day_facts(
         return None
 
     attr["code"] = attr["code"].astype(str).str.zfill(6)
-    fwd2 = pd.to_numeric(attr.get(MAIN_RULER), errors="coerce")
+    # T16 硬化:老 scan 日(早于该主尺列存在)可能整列缺失 —— `attr.get(MAIN_RULER)` 缺列时
+    # 返回 None(标量),`pd.to_numeric(None)` 会退化成标量 NaN 而非 Series,下游 `.notna()`
+    # 直接崩(AttributeError)。缺列应像"整列 NaN"一样静默降级,不是让整条 roll() 断链。
+    fwd2 = pd.to_numeric(attr[MAIN_RULER], errors="coerce") if MAIN_RULER in attr.columns \
+        else pd.Series(float("nan"), index=attr.index)
     tradable = _bool_series(attr, "tradable", True) & _bool_series(attr, "buyable", True)
 
     if cohort == COHORT_LEGACY:

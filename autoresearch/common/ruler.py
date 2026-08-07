@@ -4,7 +4,7 @@
 gap_c1_o2 = open[D+2]/close[D+1] − 1(2026-08-05 用户裁定:T+1 收盘买 → T+2 开盘卖,隔夜)。
 沿革:fwd_2_oc(2026-07-10 裁定)→ gap_c1_o2(2026-08-05 裁定);旧列降参考不删。
 """
-MAIN_RULER = "fwd_2_oc"      # T16 换 "gap_c1_o2";在那之前保持 parity
+MAIN_RULER = "gap_c1_o2"     # T16(2026-08-05 用户裁定)换值;fwd_2_oc 降参考尺,不删
 GAP_CLIP = 0.31              # 单日板极值:主板10/创业科创20/北交所30cm,取最宽+容差
 ENTRY_FLAG = "buyable_c1"    # T+1 收盘封涨停=买不进 → 剔样本
 EXIT_FLAG = "unsellable_o2"  # T+2 一字跌停开=卖不出 → 标旗不剔(剔了会美化)

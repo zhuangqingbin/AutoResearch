@@ -642,12 +642,15 @@ def apply_proposal(pid: str) -> str:
 
 
 def log_change(retro_date: str, before_sha: str, after_sha: str, top_changes: list[dict],
-               panel_dates_n: int, ts: str | None = None, kind: str = "recalibrate") -> dict:
-    """自动重标定审计一条。"""
+               panel_dates_n: int, ts: str | None = None, kind: str = "recalibrate",
+               label_col: str = "") -> dict:
+    """自动重标定审计一条。`label_col`(T16 新增):这次校准实际喂给 factor_lab 的主尺列名
+    (写入那一刻的 MAIN_RULER 真值)——changelog_ledger.heartbeat 心跳行靠它验证「换尺真的
+    传到了权重腿」,而不是从 sha 变了就推断。旧记录没有此字段,读侧按 "" 兜底。"""
     ts = ts or _now_ts()
     rec = {"id": f"cl_{ts.replace(':', '').replace('-', '')}", "ts": ts, "kind": kind,
            "retro_date": retro_date, "before_sha": before_sha, "after_sha": after_sha,
-           "top_changes": top_changes, "panel_dates_n": panel_dates_n}
+           "top_changes": top_changes, "panel_dates_n": panel_dates_n, "label_col": label_col}
     _append_jsonl(_CHANGELOG, rec)
     return rec
 

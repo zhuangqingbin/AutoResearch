@@ -24,8 +24,8 @@ def _symmetric_day(field: str, sat_n: int, other_n: int, sat_fwd: float) -> pd.D
     """构造市场均值恒为 0 的单日 attr:sat_n 行 field=60(命中 guard,fwd=sat_fwd),
     other_n 行 field=10(不命中,fwd=-sat_fwd*sat_n/other_n,使全天均值精确为 0)。"""
     other_fwd = -sat_fwd * sat_n / other_n
-    rows = [{"code": f"{i:06d}", field: 60.0, "fwd_2_oc": sat_fwd} for i in range(sat_n)]
-    rows += [{"code": f"{i + sat_n:06d}", field: 10.0, "fwd_2_oc": other_fwd} for i in range(other_n)]
+    rows = [{"code": f"{i:06d}", field: 60.0, "gap_c1_o2": sat_fwd} for i in range(sat_n)]
+    rows += [{"code": f"{i + sat_n:06d}", field: 10.0, "gap_c1_o2": other_fwd} for i in range(other_n)]
     return pd.DataFrame(rows)
 
 
@@ -99,7 +99,7 @@ def test_positive_net_yield_not_nominated():
 def test_day_missing_guard_field_skipped_not_crash():
     """当日 attr 缺该 lesson guard 的 field 列 → 该日对该 lesson 无贡献(不崩,不计入 n_cum)。"""
     lsn = _lesson("ls_g", _GUARD_A)
-    day_no_field = pd.DataFrame({"code": ["000001", "000002"], "fwd_2_oc": [0.01, -0.01]})
+    day_no_field = pd.DataFrame({"code": ["000001", "000002"], "gap_c1_o2": [0.01, -0.01]})
     df = ly.compute_yield([lsn], [("2026-07-01", day_no_field)])
     row = df.set_index("id").loc["ls_g"]
     assert row["n_cum"] == 0 and row["n_days_hit"] == 0
@@ -131,7 +131,7 @@ def test_sorted_by_cum_delta_ascending():
 
     两个 lesson 各自的 guard field 只出现在各自专属的日子里(day_good 无 pct_60d 列、
     day_bad 无 winner_rate 列)→ 每日彼此的 guard 谓词天然 field-not-in-columns 跳过,
-    互不干扰(不能把两天 concat 成一天,否则重名 fwd_2_oc 列会踩坏 mtm_check_guards)。
+    互不干扰(不能把两天 concat 成一天,否则重名 gap_c1_o2 列会踩坏 mtm_check_guards)。
     """
     good = _lesson("ls_good", _GUARD_A)
     bad = _lesson("ls_bad", _GUARD_B)
@@ -148,12 +148,12 @@ def test_walk_attribution_sorted_and_skips_bad(tmp_path):
     for d, fwd in [("2026-07-03", 0.02), ("2026-07-01", 0.01), ("2026-07-02", -0.01)]:
         p = tmp_path / d / "retro"
         p.mkdir(parents=True)
-        pd.DataFrame({"code": ["000001"], "fwd_2_oc": [fwd]}).to_csv(p / "attribution.csv", index=False)
+        pd.DataFrame({"code": ["000001"], "gap_c1_o2": [fwd]}).to_csv(p / "attribution.csv", index=False)
     # 损坏文件:非 CSV 内容
     bad = tmp_path / "2026-07-04" / "retro"
     bad.mkdir(parents=True)
     (bad / "attribution.csv").write_bytes(b"\x00\x01not,a,csv\xffbroken")
-    # 缺 fwd_2_oc 列
+    # 缺 gap_c1_o2 列(当前 MAIN_RULER,T16 flip)
     nocol = tmp_path / "2026-07-05" / "retro"
     nocol.mkdir(parents=True)
     pd.DataFrame({"code": ["000001"]}).to_csv(nocol / "attribution.csv", index=False)

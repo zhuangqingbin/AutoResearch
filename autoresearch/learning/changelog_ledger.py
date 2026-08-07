@@ -97,13 +97,14 @@ def heartbeat(knowledge_dir: Path | str | None = None, k: int = 3) -> str:
     tail = recs[-k:]
     last = tail[-1]
     nd = last.get("panel_dates_n", last.get("n_dates"))   # 落盘键名 = panel_dates_n(log_change)
+    lc = last.get("label_col") or "?"          # T16:换尺真的传到权重腿的独立读数(缺=旧记录)
     if len(tail) >= k and len({r["after_sha"] for r in tail}) == 1 \
             and all(r.get("before_sha") == r.get("after_sha") for r in tail):
         return (f"🚨 权重自动腿疑似死亡:连续 {len(tail)} 次重标定 NO-OP"
-                f"(sha {last['after_sha']} 不变,面板 {nd} 日冻结)"
+                f"(sha {last['after_sha']} 不变,面板 {nd} 日冻结,label_col={lc})"
                 f" ← 会变的量没变=死了也像活着;查 calibrate 是否在消费冻结的 plan.pkl")
     return (f"权重自动腿心跳 ✓:最近 {last.get('ts', '')[:10]} "
-            f"{last.get('before_sha')}→{last['after_sha']}(面板 {nd} 日)")
+            f"{last.get('before_sha')}→{last['after_sha']}(面板 {nd} 日,label_col={lc})")
 
 
 def render(df: pd.DataFrame) -> list[str]:
@@ -137,10 +138,12 @@ def render(df: pd.DataFrame) -> list[str]:
 
 def main() -> int:
     df = roll()
+    hb = heartbeat()
     out = Path("reports/learning/changelog_ledger.md")
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text("\n".join(render(df)) + "\n", encoding="utf-8")
+    out.write_text("\n".join(render(df)) + f"\n\n## 心跳\n\n{hb}\n", encoding="utf-8")
     print(f"[changelog_ledger] {len(df)} 条 → {out}")
+    print(hb)
     return 0
 
 

@@ -147,7 +147,7 @@ def test_attribution_rating_equals_final_folded_rating_not_card_face(tmp_path):
 
     bl = retro._buylist("2026-07-08", report_root=report_root, scan_dir=scan_dir)
     l1 = pd.DataFrame({"code": ["300476"], "composite": [80.0]})
-    realized = pd.DataFrame({"code": ["300476"], "fwd_1_oo": [0.01], "fwd_2_oc": [0.01],
+    realized = pd.DataFrame({"code": ["300476"], "fwd_1_oo": [0.01], "gap_c1_o2": [0.01],
                              "fwd_5_oc": [0.02], "buyable": [True]})
 
     attr = retro.attribute_frame(l1, realized, bl)
@@ -166,7 +166,7 @@ def test_attribution_rating_reflects_maintained_ow_when_not_folded(tmp_path):
 
     bl = retro._buylist("2026-07-08", report_root=report_root, scan_dir=scan_dir)
     l1 = pd.DataFrame({"code": ["301117"], "composite": [80.0]})
-    realized = pd.DataFrame({"code": ["301117"], "fwd_1_oo": [0.01], "fwd_2_oc": [0.01],
+    realized = pd.DataFrame({"code": ["301117"], "fwd_1_oo": [0.01], "gap_c1_o2": [0.01],
                              "fwd_5_oc": [0.02], "buyable": [True]})
 
     attr = retro.attribute_frame(l1, realized, bl)

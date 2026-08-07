@@ -194,15 +194,16 @@ def test_forward_returns_fwd2_hi2():
 
 
 def test_ultrashort_label_defaults():
-    """主尺契约:校准/GBDT label 默认 fwd_2_oc(2026-07-10 用户裁定);IC 表主排序同尺。"""
+    """主尺契约:校准/GBDT label 默认跟随 MAIN_RULER —— 现 gap_c1_o2(2026-08-05 用户裁定
+    T16 换值,取代 2026-07-10 的 fwd_2_oc);IC 表主排序同尺。"""
     import inspect
 
     import autoresearch.research.factor_lab as fl
 
-    assert inspect.signature(fl.calibrate).parameters["label_col"].default == "fwd_2_oc"
-    assert inspect.signature(fl.calibrate_regimes).parameters["label_col"].default == "fwd_2_oc"
-    assert inspect.signature(fl._build_calib_panel).parameters["label_col"].default == "fwd_2_oc"
-    assert fl.GBDT_LABEL == "fwd_2_oc"
+    assert inspect.signature(fl.calibrate).parameters["label_col"].default == "gap_c1_o2"
+    assert inspect.signature(fl.calibrate_regimes).parameters["label_col"].default == "gap_c1_o2"
+    assert inspect.signature(fl._build_calib_panel).parameters["label_col"].default == "gap_c1_o2"
+    assert fl.GBDT_LABEL == "gap_c1_o2"
 
 
 def test_forward_returns_hi2_nan_when_d2_missing():

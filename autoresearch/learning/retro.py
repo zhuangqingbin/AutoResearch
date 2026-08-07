@@ -252,7 +252,10 @@ def mtm_check_guards(attr: pd.DataFrame, lessons: list[dict], day: str,
     import autoresearch.learning.feedback_store as fs
 
     out: list[dict] = []
-    mkt = pd.to_numeric(attr.get(MAIN_RULER), errors="coerce")
+    # T16 硬化(同 gate_attribution._day_facts 的修法):缺 MAIN_RULER 列时 `attr.get(...)`
+    # 返回 None,`pd.to_numeric(None)` 退化成标量 NaN 而非 Series,下游 `.notna()` 会崩。
+    mkt = pd.to_numeric(attr[MAIN_RULER], errors="coerce") if MAIN_RULER in attr.columns \
+        else pd.Series(float("nan"), index=attr.index)
     for lsn in lessons:
         gd = lsn.get("guard")
         if not isinstance(gd, dict) or gd.get("field") not in attr.columns:
@@ -1033,13 +1036,13 @@ def recalibrate_and_log(retro_date: str, cap_floor: float = 30.0, k: float = 200
     wp = Path("context/factor_lab/weights.json")
     before_raw = wp.read_bytes() if wp.exists() else b"{}"
     before_sha = fs.snapshot_weights() or _sha8(before_raw)   # 快照留底(Phase 3 回滚)
-    fl.calibrate(cap_floor=cap_floor, k=k)                    # 重写 weights.json(多日面板,绝非单日)
+    fl.calibrate(cap_floor=cap_floor, k=k, label_col=MAIN_RULER)  # 重写 weights.json(多日面板,绝非单日)
     after_raw = wp.read_bytes()
     before, after = json.loads(before_raw), json.loads(after_raw)
     tc = top_weight_changes(before.get("weights", {}).get("__global__", {}),
                             after.get("weights", {}).get("__global__", {}))
     after_sha, n_dates = _sha8(after_raw), int(after.get("meta", {}).get("n_dates", 0))
-    fs.log_change(retro_date, before_sha, after_sha, tc, n_dates)
+    fs.log_change(retro_date, before_sha, after_sha, tc, n_dates, label_col=MAIN_RULER)
     return {"before_sha": before_sha, "after_sha": after_sha, "top_changes": tc, "n_dates": n_dates}
 
 
@@ -1140,11 +1143,13 @@ def mark_done(date: str, summary: dict | None = None, scan_root: Path | None = N
 def _selftest() -> int:
     fails: list[str] = []
     # 构造全市场已实现:4 赢家(0.10)、1 误买(-0.09)、20 噪声(~0)
+    # 主尺列用 MAIN_RULER 真值(T16 flip 现为 gap_c1_o2)—— attribute_frame 按 m[MAIN_RULER]
+    # 动态读源,喂错列名会让主尺整体缺失,不是"退回旧尺"。
     rows = []
-    rows += [{"code": c, "fwd_1_oo": 0.10, "fwd_2_oc": 0.10, "fwd_5_oc": 0.12, "buyable": True}
+    rows += [{"code": c, "fwd_1_oo": 0.10, MAIN_RULER: 0.10, "fwd_5_oc": 0.12, "buyable": True}
              for c in ("000001", "000002", "000003", "000004")]
-    rows += [{"code": "000005", "fwd_1_oo": -0.09, "fwd_2_oc": -0.09, "fwd_5_oc": -0.10, "buyable": True}]
-    rows += [{"code": f"0001{i:02d}", "fwd_1_oo": (i - 10) * 0.002, "fwd_2_oc": (i - 10) * 0.002,
+    rows += [{"code": "000005", "fwd_1_oo": -0.09, MAIN_RULER: -0.09, "fwd_5_oc": -0.10, "buyable": True}]
+    rows += [{"code": f"0001{i:02d}", "fwd_1_oo": (i - 10) * 0.002, MAIN_RULER: (i - 10) * 0.002,
              "fwd_5_oc": 0.0, "buyable": True}
              for i in range(20)]
     realized = pd.DataFrame(rows)
@@ -1178,7 +1183,7 @@ def _selftest() -> int:
         fails.append(f"buckets 计数错: {st['buckets']}")
 
     # 边界:realized 为空 → attribute_frame 不崩(无赢家)
-    empty = attribute_frame(l1, pd.DataFrame(columns=["code", "fwd_1_oo", "fwd_2_oc", "fwd_5_oc", "buyable"]), {})
+    empty = attribute_frame(l1, pd.DataFrame(columns=["code", "fwd_1_oo", MAIN_RULER, "fwd_5_oc", "buyable"]), {})
     if len(empty[empty["winner"]]) != 0:
         fails.append("空 realized 不应有赢家")
 

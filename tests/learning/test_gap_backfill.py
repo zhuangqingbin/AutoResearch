@@ -77,9 +77,9 @@ def test_refresh_adds_gap_cols_without_touching_old_and_is_idempotent(tmp_path, 
     assert got["fwd_10_oc"].tolist() == [0.04, -0.03]
     # 不改行数
     assert len(got) == 2
-    # 新列取到了真值,ruler 打了写入那一刻的 MAIN_RULER
+    # 新列取到了真值,ruler 打了写入那一刻的 MAIN_RULER(T16 flip 现为 gap_c1_o2)
     assert got["gap_c1_o2"].tolist() == [0.05, -0.015]
-    assert (got["ruler"] == "fwd_2_oc").all()
+    assert (got["ruler"] == "gap_c1_o2").all()
 
     before = path.read_bytes()
     done2 = retro.refresh_attributions(scan_root=tmp_path)         # 幂等:第二跑零改动
@@ -152,25 +152,25 @@ def test_refresh_full_path_unaffected_by_gap_condition(tmp_path, monkeypatch):
 
 def test_attribute_frame_tags_every_row_with_current_ruler():
     realized = pd.DataFrame({
-        "code": ["000001", "000002"], "fwd_1_oo": [0.01, -0.01], "fwd_2_oc": [0.02, -0.02],
+        "code": ["000001", "000002"], "fwd_1_oo": [0.01, -0.01], "gap_c1_o2": [0.02, -0.02],
         "fwd_5_oc": [float("nan")] * 2, "buyable": [True, True],
     })
     l1 = pd.DataFrame({"code": realized["code"], "composite": 0.5, "recalled": False})
     attr = retro.attribute_frame(l1, realized, buylist={})
     assert "ruler" in attr.columns
-    assert (attr["ruler"] == "fwd_2_oc").all()          # 当前 MAIN_RULER 真值,本 task 结束仍是它
+    assert (attr["ruler"] == "gap_c1_o2").all()          # 当前 MAIN_RULER 真值(T16 flip)
 
 
 def test_build_retro_pairs_tags_ruler():
     attr = pd.DataFrame([
         {"code": "000001", "name": "买错", "industry": "半导体", "rating": "Overweight",
-         "fwd_2_oc": -0.06, "winner": False, "bucket": "other"},
+         "gap_c1_o2": -0.06, "winner": False, "bucket": "other"},
         {"code": "000002", "name": "漏赢", "industry": "半导体", "rating": "Underweight",
-         "fwd_2_oc": 0.15, "winner": True, "bucket": "missed_l1"},
+         "gap_c1_o2": 0.15, "winner": True, "bucket": "missed_l1"},
     ])
     pairs = retro.build_retro_pairs(attr)
     assert len(pairs) == 1
-    assert pairs.iloc[0]["ruler"] == "fwd_2_oc"
+    assert pairs.iloc[0]["ruler"] == "gap_c1_o2"
 
 
 def test_append_ledger_tags_new_rows_and_never_rewrites_legacy_rows(tmp_path):
@@ -199,7 +199,7 @@ def test_append_ledger_tags_new_rows_and_never_rewrites_legacy_rows(tmp_path):
     by_code = {r["code"]: r for r in rows}
     assert "ruler" not in by_code["600000"]              # 旧行没被"顺手"回填 tag
     assert by_code["600000"] == legacy_row               # 旧行字节级不变(round-trip 也没漂移其它字段)
-    assert by_code["600001"]["ruler"] == "fwd_2_oc"       # 新行:写入那一刻的 MAIN_RULER 真值
+    assert by_code["600001"]["ruler"] == "gap_c1_o2"       # 新行:写入那一刻的 MAIN_RULER 真值(T16 flip)
 
     # 读侧兜底契约:旧行用 .get("ruler","fwd_2_oc") 读,诚实标旧尺(不是"未知")
     assert by_code["600000"].get("ruler", "fwd_2_oc") == "fwd_2_oc"

@@ -1,4 +1,9 @@
-"""门归因 v3(A11):四态分类 / legacy 复现 / MULTI_GATE 去重 / participation 口径。合成,无网络。"""
+"""门归因 v3(A11):四态分类 / legacy 复现 / MULTI_GATE 去重 / participation 口径。合成,无网络。
+
+T16 注:下方 attr_rows 夹具的前瞻收益列统一用 "gap_c1_o2"(当前 MAIN_RULER)——`_day_facts()`
+按 `attr[MAIN_RULER]` 动态读源列,喂错列名会让 fwd2 整列 NaN、一切退化成 UNMEASURED。这与
+`gate_attribution.py` 自己输出的固定列 "fwd_2_oc"(不随主尺漂移的持久化字段名)是两回事,
+本文件不读那个输出列,只喂源输入,故整批安全重命名,数值不变。"""
 from __future__ import annotations
 
 import pandas as pd
@@ -102,9 +107,9 @@ def test_v3_collapses_multi_gate_but_legacy_double_counts(tmp_path):
                _fire("2026-07-01", "业绩真兑现", "000001"),
                _fire("2026-07-01", "估值不透支", "000002")],
         attr_rows=[
-            {"code": "000001", "fwd_2_oc": 0.05, "tradable": True, "buyable": True},
-            {"code": "000002", "fwd_2_oc": -0.05, "tradable": True, "buyable": True},
-            {"code": "000003", "fwd_2_oc": 0.00, "tradable": True, "buyable": True},
+            {"code": "000001", "gap_c1_o2": 0.05, "tradable": True, "buyable": True},
+            {"code": "000002", "gap_c1_o2": -0.05, "tradable": True, "buyable": True},
+            {"code": "000003", "gap_c1_o2": 0.00, "tradable": True, "buyable": True},
         ],
     )
     legacy = build_day(tmp_path / "2026-07-01", cohort=COHORT_LEGACY)
@@ -126,9 +131,9 @@ def test_legacy_and_v3_use_different_market_baselines(tmp_path):
         tmp_path, "2026-07-02",
         fires=[_fire("2026-07-02", "主力真在", "000001")],
         attr_rows=[
-            {"code": "000001", "fwd_2_oc": 0.01, "tradable": True, "buyable": True},
-            {"code": "000002", "fwd_2_oc": 0.00, "tradable": True, "buyable": True},
-            {"code": "000003", "fwd_2_oc": 0.50, "tradable": True, "buyable": True},
+            {"code": "000001", "gap_c1_o2": 0.01, "tradable": True, "buyable": True},
+            {"code": "000002", "gap_c1_o2": 0.00, "tradable": True, "buyable": True},
+            {"code": "000003", "gap_c1_o2": 0.50, "tradable": True, "buyable": True},
         ],
     )
     legacy = build_day(tmp_path / "2026-07-02", cohort=COHORT_LEGACY)
@@ -147,8 +152,8 @@ def test_v3_marks_untradable_unmeasured_but_legacy_does_not(tmp_path):
         tmp_path, "2026-07-03",
         fires=[_fire("2026-07-03", "主力真在", "000001")],
         attr_rows=[
-            {"code": "000001", "fwd_2_oc": 0.09, "tradable": False, "buyable": True},
-            {"code": "000002", "fwd_2_oc": 0.00, "tradable": True, "buyable": True},
+            {"code": "000001", "gap_c1_o2": 0.09, "tradable": False, "buyable": True},
+            {"code": "000002", "gap_c1_o2": 0.00, "tradable": True, "buyable": True},
         ],
     )
     assert build_day(tmp_path / "2026-07-03", cohort=COHORT_LEGACY)[
@@ -167,8 +172,8 @@ def test_structured_decisions_supersede_csv_fires(tmp_path):
                             {"主力真在": "FAIL", "业绩真兑现": "PASS",
                              "估值不透支": "PASS"}),
         attr_rows=[
-            {"code": "000001", "fwd_2_oc": -0.03, "tradable": True, "buyable": True},
-            {"code": "000009", "fwd_2_oc": 0.09, "tradable": True, "buyable": True},
+            {"code": "000001", "gap_c1_o2": -0.03, "tradable": True, "buyable": True},
+            {"code": "000009", "gap_c1_o2": 0.09, "tradable": True, "buyable": True},
         ],
     )
     fires = binding_fires(day)
@@ -183,8 +188,8 @@ def test_structured_undecidable_is_unmeasured(tmp_path):
                             {"主力真在": "PASS", "业绩真兑现": "UNKNOWN",
                              "估值不透支": "PASS"}),
         attr_rows=[
-            {"code": "000001", "fwd_2_oc": 0.09, "tradable": True, "buyable": True},
-            {"code": "000002", "fwd_2_oc": 0.00, "tradable": True, "buyable": True},
+            {"code": "000001", "gap_c1_o2": 0.09, "tradable": True, "buyable": True},
+            {"code": "000002", "gap_c1_o2": 0.00, "tradable": True, "buyable": True},
         ],
     )
     v3 = build_day(day, cohort=COHORT_V3)
@@ -202,8 +207,8 @@ def test_participation_counts_every_failing_gate(tmp_path):
         fires=[_fire("2026-07-08", "主力真在", "000001"),
                _fire("2026-07-08", "业绩真兑现", "000001")],
         attr_rows=[
-            {"code": "000001", "fwd_2_oc": 0.05, "tradable": True, "buyable": True},
-            {"code": "000002", "fwd_2_oc": 0.00, "tradable": True, "buyable": True},
+            {"code": "000001", "gap_c1_o2": 0.05, "tradable": True, "buyable": True},
+            {"code": "000002", "gap_c1_o2": 0.00, "tradable": True, "buyable": True},
         ],
     )
     part = build_participation_day(day)
@@ -220,8 +225,8 @@ def test_participation_from_structured_gate_states(tmp_path):
                             {"主力真在": "FAIL", "业绩真兑现": "FAIL",
                              "估值不透支": "PASS"}),
         attr_rows=[
-            {"code": "000001", "fwd_2_oc": -0.05, "tradable": True, "buyable": True},
-            {"code": "000002", "fwd_2_oc": 0.00, "tradable": True, "buyable": True},
+            {"code": "000001", "gap_c1_o2": -0.05, "tradable": True, "buyable": True},
+            {"code": "000002", "gap_c1_o2": 0.00, "tradable": True, "buyable": True},
         ],
     )
     part = gate_participation(day)
@@ -236,8 +241,8 @@ def test_participation_table_has_no_rate_columns(tmp_path):
         fires=[_fire("2026-07-10", "主力真在", "000001"),
                _fire("2026-07-10", "业绩真兑现", "000001")],
         attr_rows=[
-            {"code": "000001", "fwd_2_oc": 0.05, "tradable": True, "buyable": True},
-            {"code": "000002", "fwd_2_oc": 0.00, "tradable": True, "buyable": True},
+            {"code": "000001", "gap_c1_o2": 0.05, "tradable": True, "buyable": True},
+            {"code": "000002", "gap_c1_o2": 0.00, "tradable": True, "buyable": True},
         ],
     )
     md = render_migration(
@@ -267,10 +272,10 @@ def test_summarize_rate_denominator_excludes_unmeasured(tmp_path):
                _fire("2026-07-13", "主力真在", "000002"),
                _fire("2026-07-13", "主力真在", "000003")],
         attr_rows=[
-            {"code": "000001", "fwd_2_oc": 0.09, "tradable": True, "buyable": True},
-            {"code": "000002", "fwd_2_oc": -0.09, "tradable": True, "buyable": True},
-            {"code": "000003", "fwd_2_oc": 0.09, "tradable": False, "buyable": True},
-            {"code": "000004", "fwd_2_oc": 0.00, "tradable": True, "buyable": True},
+            {"code": "000001", "gap_c1_o2": 0.09, "tradable": True, "buyable": True},
+            {"code": "000002", "gap_c1_o2": -0.09, "tradable": True, "buyable": True},
+            {"code": "000003", "gap_c1_o2": 0.09, "tradable": False, "buyable": True},
+            {"code": "000004", "gap_c1_o2": 0.00, "tradable": True, "buyable": True},
         ],
     )
     row = summarize(roll(tmp_path, cohort=COHORT_V3)).set_index("gate").loc["主力真在"]
@@ -308,11 +313,11 @@ def test_check_against_gate_ledger_catches_divergence(tmp_path, monkeypatch):
         fires=[_fire("2026-07-15", "主力真在", "000001"),
                _fire("2026-07-15", "主力真在", "000002")],
         attr_rows=[
-            {"code": "000001", "fwd_1_oo": 0.0, "fwd_2_oc": -0.09,
+            {"code": "000001", "fwd_1_oo": 0.0, "gap_c1_o2": -0.09,
              "tradable": True, "buyable": True},
-            {"code": "000002", "fwd_1_oo": 0.0, "fwd_2_oc": -0.05,
+            {"code": "000002", "fwd_1_oo": 0.0, "gap_c1_o2": -0.05,
              "tradable": True, "buyable": True},
-            {"code": "000003", "fwd_1_oo": 0.0, "fwd_2_oc": 0.00,
+            {"code": "000003", "fwd_1_oo": 0.0, "gap_c1_o2": 0.00,
              "tradable": True, "buyable": True},
         ],
     )

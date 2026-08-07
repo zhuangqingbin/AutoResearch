@@ -14,10 +14,12 @@ def _day(root, date, stops: dict, attribution: str):
 
 
 def test_roll_joins_stops_to_forward_returns(tmp_path):
+    # attribution.csv 源列用当前 MAIN_RULER(gap_c1_o2,T16 flip)——roll() 按 adf[MAIN_RULER]
+    # 动态读源;ledger 自己的持久化输出列名固定叫 "fwd_2_oc"(见下方 row["fwd_2_oc"]),不随之改。
     _day(tmp_path, "2026-07-21",
          {"000651": {"phase": "P3", "reason": "涨停追高"},
           "300857": {"phase": "P3", "reason": "资金流出"}},
-         "code,fwd_2_oc\n000651,0.05\n300857,-0.02\n")
+         "code,gap_c1_o2\n000651,0.05\n300857,-0.02\n")
     df = el.roll(scan_root=tmp_path)
     assert len(df) == 2
     row = df[df["code"] == "000651"].iloc[0]
@@ -29,7 +31,7 @@ def test_render_buckets_by_reason(tmp_path):
     _day(tmp_path, "2026-07-21",
          {"000651": {"phase": "P3", "reason": "涨停追高"},
           "000002": {"phase": "P3", "reason": "涨停追高"}},
-         "code,fwd_2_oc\n000651,0.05\n000002,0.03\n")
+         "code,gap_c1_o2\n000651,0.05\n000002,0.03\n")
     md = "\n".join(el.render(el.roll(scan_root=tmp_path)))
     assert "涨停追高" in md
     assert "n=2" in md

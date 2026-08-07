@@ -64,7 +64,7 @@ def _seed(tmp_path: Path, rows: list[dict]) -> tuple[Path, Path]:
             (d / f"{r['code']}.md").write_text(text, encoding="utf-8")
             fin_rows.append({"code": r["code"], "name": r["name"], "sector": r["sector"]})
             if r.get("fwd_2") is not None:
-                attr_rows.append({"code": r["code"], "fwd_2_oc": r["fwd_2"]})
+                attr_rows.append({"code": r["code"], "gap_c1_o2": r["fwd_2"]})
         pd.DataFrame(fin_rows).to_csv(scan_root / date / "finalists.csv", index=False)
         if attr_rows:
             rd = scan_root / date / "retro"

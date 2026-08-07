@@ -212,7 +212,7 @@ def _scan_fixture(tmp_path):
             "code": codes,
             "buyable": [True] * 8,
             "tradable": [True] * 8,
-            "fwd_2_oc": [0.0] * 6 + [0.05, 0.01],
+            "gap_c1_o2": [0.0] * 6 + [0.05, 0.01],
             "rating": [""] * 7 + ["Overweight"],
             "bought": [False] * 7 + [True],
         }

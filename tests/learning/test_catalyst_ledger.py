@@ -19,8 +19,9 @@ def _mk_day(root, date, fwd2=None, fwd5=(0.05, -0.02, 0.01), include_fwd5=True):
     ]).to_csv(d / "L3_catalyst.csv", index=False)
     rows = [{"code": "000001"}, {"code": "000002"}, {"code": "000003"}]
     if fwd2 is not None:
+        # gap_c1_o2:当前 MAIN_RULER(T16 flip)—— catalyst_ledger.roll 按 MAIN_RULER/fwd_5_oc 并列读源。
         for r, v in zip(rows, fwd2, strict=False):
-            r["fwd_2_oc"] = v
+            r["gap_c1_o2"] = v
     if include_fwd5:
         for r, v in zip(rows, fwd5, strict=False):
             r["fwd_5_oc"] = v

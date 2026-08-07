@@ -29,7 +29,9 @@ def _fire(code, gate=gr.GATE):
 
 
 def _attr(code, fwd, *, buyable=True):
-    return {"code": code, "fwd_2_oc": fwd, "buyable": buyable, "tradable": True}
+    # gap_c1_o2:当前 MAIN_RULER(T16 flip)——_day_facts() 按 attr[MAIN_RULER] 动态读源列,
+    # 夹具必须喂这一列的真实名字,不是 gate_attribution 自己固定输出的 "fwd_2_oc" 那一列。
+    return {"code": code, "gap_c1_o2": fwd, "buyable": buyable, "tradable": True}
 
 
 def _n_days(root, n, *, false_kill_每日=1, other_每日=2):

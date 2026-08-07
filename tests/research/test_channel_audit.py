@@ -1,11 +1,12 @@
 """channel_audit 通道整编报告单测 —— 累计T+2账本 + 召回集Jaccard重叠矩阵。合成 staging,无网络。
 
 覆盖 spec docs/specs/2026-07-11-recall-gate-pinned-config-design.md §2.3:
-  - day_channel_stats:单日 L1_channels(长表)× attribution(fwd_2_oc)→ 每路 mean/unique_excess_t2 + hit_rate_t2
+  - day_channel_stats:单日 L1_channels(长表)× attribution(主尺列,当前 MAIN_RULER=gap_c1_o2,
+    T16 flip 取代 fwd_2_oc)→ 每路 mean/unique_excess_t2 + hit_rate_t2
   - cumulative_ledger:跨日简单日频均值(同 channel_ledger.roll 口径),n_days<10 标 thin(⚠薄样本)
   - jaccard_matrix:每路跨日 union 去重代码集合的两两 Jaccard(共同召回码/并集)
   - consolidation_notes:仅陈述数据(高重叠对 + 负 unique_excess_t2 路),不改配置
-  - audit():端到端读两日合成 staging 文件(真实列名 channel/code、code/fwd_2_oc)
+  - audit():端到端读两日合成 staging 文件(真实列名 channel/code、code/gap_c1_o2)
 """
 from __future__ import annotations
 
@@ -35,9 +36,9 @@ _DAY1_CHANNELS = pd.DataFrame([
     {"channel": "chan_b", "code": "000003", "channel_rank": 2, "channel_score": 6.0},
 ])
 _DAY1_ATTR = pd.DataFrame([
-    {"code": "000001", "fwd_2_oc": 0.05},
-    {"code": "000002", "fwd_2_oc": 0.09},
-    {"code": "000003", "fwd_2_oc": 0.01},
+    {"code": "000001", "gap_c1_o2": 0.05},
+    {"code": "000002", "gap_c1_o2": 0.09},
+    {"code": "000003", "gap_c1_o2": 0.01},
 ])
 _DAY2_CHANNELS = pd.DataFrame([
     {"channel": "chan_a", "code": "000001", "channel_rank": 1, "channel_score": 9.5},
@@ -46,9 +47,9 @@ _DAY2_CHANNELS = pd.DataFrame([
     {"channel": "chan_b", "code": "000005", "channel_rank": 2, "channel_score": 6.5},
 ])
 _DAY2_ATTR = pd.DataFrame([
-    {"code": "000001", "fwd_2_oc": 0.03},
-    {"code": "000004", "fwd_2_oc": 0.10},
-    {"code": "000005", "fwd_2_oc": -0.02},
+    {"code": "000001", "gap_c1_o2": 0.03},
+    {"code": "000004", "gap_c1_o2": 0.10},
+    {"code": "000005", "gap_c1_o2": -0.02},
 ])
 
 

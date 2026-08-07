@@ -72,11 +72,11 @@ def test_day_ledger_measures_market_relative_opportunities_and_main_finalists(
     ).to_csv(scan / "finalists.csv", index=False)
     attr = pd.DataFrame(
         [
-            {"code": "000001", "fwd_2_oc": 0.04, "buyable": True, "tradable": True},
-            {"code": "000002", "fwd_2_oc": -0.01, "buyable": True, "tradable": True},
-            {"code": "000010", "fwd_2_oc": 0.01, "buyable": True, "tradable": True},
-            {"code": "000011", "fwd_2_oc": 0.50, "buyable": True, "tradable": True},
-            {"code": "999999", "fwd_2_oc": 0.00, "buyable": True, "tradable": True},
+            {"code": "000001", "gap_c1_o2": 0.04, "buyable": True, "tradable": True},
+            {"code": "000002", "gap_c1_o2": -0.01, "buyable": True, "tradable": True},
+            {"code": "000010", "gap_c1_o2": 0.01, "buyable": True, "tradable": True},
+            {"code": "000011", "gap_c1_o2": 0.50, "buyable": True, "tradable": True},
+            {"code": "999999", "gap_c1_o2": 0.00, "buyable": True, "tradable": True},
         ]
     )
 
@@ -108,7 +108,7 @@ def test_day_ledger_is_immature_without_t2_values(tmp_path):
     ledger = build_day_ledger(
         scan,
         pd.DataFrame(
-            [{"code": "000001", "fwd_2_oc": None, "buyable": True}]
+            [{"code": "000001", "gap_c1_o2": None, "buyable": True}]
         ),
     )
     assert ledger["summary"]["mature_n"] == 0

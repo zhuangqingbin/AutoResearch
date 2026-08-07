@@ -84,7 +84,7 @@ def _seed_corpus(tmp_path: Path) -> tuple[Path, Path]:
                 gate_line="OW三门 主力真在 ✓·业绩真兑现 ✗·估值不透支 ✗(fwd PE 80x 透支)")
     _write_finalists(scan_root, "2026-07-01",
                       [{"code": "002049", "name": "紫光国微", "sector": "半导体"}])
-    _write_attribution(scan_root, "2026-07-01", [{"code": "002049", "fwd_2_oc": -0.031}])
+    _write_attribution(scan_root, "2026-07-01", [{"code": "002049", "gap_c1_o2": -0.031}])
 
     _write_card(scan_root, "2026-07-03", "600000", "浦发银行", "Hold",
                 gate_line="OW三门 主力真在 ✗·业绩真兑现 ✓·估值不透支 ✓")

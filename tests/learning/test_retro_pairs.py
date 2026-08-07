@@ -16,8 +16,9 @@ from autoresearch.learning.retro import build_retro_pairs
 
 def _row(code, name, industry, rating, fwd2, winner=False, bucket="other",
          composite=0.0, mom=0.0, main=0.0, wr=50.0, pct=0.0):
+    # gap_c1_o2:当前 MAIN_RULER(T16 flip)—— build_retro_pairs 按 MAIN_RULER 动态读源列。
     return {"code": code, "name": name, "industry": industry, "rating": rating,
-            "fwd_2_oc": fwd2, "winner": winner, "bucket": bucket,
+            "gap_c1_o2": fwd2, "winner": winner, "bucket": bucket,
             "composite": composite, "score_momentum": mom, "main_net_ratio": main,
             "winner_rate": wr, "pct_60d": pct}
 

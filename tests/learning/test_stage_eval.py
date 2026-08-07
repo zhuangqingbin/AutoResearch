@@ -8,12 +8,13 @@ def test_selftest():
 
 
 def test_stage_eval_main_horizon_is_t2():
-    """主口径契约(2026-07-10 用户裁定持仓 1~2 日):超短主尺 = fwd_2_oc。"""
-    assert stage_eval._RET_MAIN == "fwd_2_oc"
+    """主口径契约:超短主尺跟随 MAIN_RULER —— 现 gap_c1_o2(2026-08-05 裁定 T16 换值,
+    取代 2026-07-10 裁定的 fwd_2_oc;持仓 1~2 日的窗口本身不变)。"""
+    assert stage_eval._RET_MAIN == "gap_c1_o2"
 
 
 def _realized(codes, fwd):
-    return pd.DataFrame({"code": codes, "fwd_1_oo": fwd, "fwd_2_oc": fwd, "fwd_5_oc": fwd})
+    return pd.DataFrame({"code": codes, "fwd_1_oo": fwd, "gap_c1_o2": fwd, "fwd_5_oc": fwd})
 
 
 def test_l4_ratings_prefer_decision_record(tmp_path):

@@ -22,7 +22,8 @@ def _mk_day(root, date, with_attr=True, hi=None, fwd10=0.25, fwd2=0.05):
         d / "L1_scored_full.csv", index=False)
     if with_attr:
         (d / "retro").mkdir()
-        row = {"code": "000001", "fwd_1_oo": 0.01, "fwd_2_oc": fwd2, "fwd_5_oc": 0.08,
+        # gap_c1_o2:当前 MAIN_RULER(T16 flip)—— buy_ledger.roll 按 MAIN_RULER 动态读源列。
+        row = {"code": "000001", "fwd_1_oo": 0.01, "gap_c1_o2": fwd2, "fwd_5_oc": 0.08,
                "fwd_10_oc": fwd10, "gap_d1": 0.02}
         if hi is not None:
             row["hi_10_oc"] = hi
@@ -98,7 +99,7 @@ def test_base_rates_n_realized_follows_fwd2_not_fwd5(tmp_path):
     pd.DataFrame([{"code": "000002", "close": 100.0}]).to_csv(
         d2 / "L1_scored_full.csv", index=False)
     (d2 / "retro").mkdir()
-    pd.DataFrame([{"code": "000002", "fwd_1_oo": 0.01, "fwd_2_oc": 0.04,
+    pd.DataFrame([{"code": "000002", "fwd_1_oo": 0.01, "gap_c1_o2": 0.04,
                   "fwd_10_oc": 0.25, "gap_d1": 0.02}]).to_csv(     # 无 fwd_5_oc 列 → 该单 f5 未实现
         d2 / "retro" / "attribution.csv", index=False)
     ledger = roll(tmp_path)

@@ -55,7 +55,6 @@ import numpy as np
 import pandas as pd
 
 from autoresearch.common import ruler
-from autoresearch.common.ruler import MAIN_RULER
 
 LAKE_DAILY = Path("context/lake/daily")
 SCAN_ROOT = Path("context/scan")
@@ -63,6 +62,13 @@ SHADOW_BUYS = Path("context/learning/shadow_buys.csv")
 DEFAULT_OUT = Path("docs/research/2026-08-07-ruler-gap-vs-oc-baseline.md")
 
 GAP_COL = "gap_c1_o2"
+# T16 修复(2026-08-07 flip 后发现):此前这里用 `ruler.MAIN_RULER` 指代"oc 侧"列名——在
+# MAIN_RULER 仍是 "fwd_2_oc" 的年代恰好等价,但本模块存在的唯一目的就是把"旧主尺 fwd_2_oc"
+# 与"新主尺 gap_c1_o2"当两个永远不同的东西并列对照;flip 后 MAIN_RULER == GAP_COL,继续用
+# MAIN_RULER 会让两侧撞名(`{MAIN_RULER: ..., GAP_COL: ...}` 变成同一个 dict key 互相覆盖;
+# `day_universe` 的 merge 会把两侧都改名成 `gap_c1_o2_x`/`_y`)。固定字面量,不随 MAIN_RULER
+# 漂移 —— `attribution.csv` 的 schema 本就只产 fwd_2_oc(gap_c1_o2 由本模块从湖现算)。
+OC_COL = "fwd_2_oc"
 _OPP_THRESH = 0.02        # ≥+2pp = "机会"(与 rejection_attribution.build_rejection_attribution 同阈值)
 _CORRECT_THRESH = -0.02   # 全部 ≤−2pp 才判 CORRECT(与 abstention_ledger._verdict_from 同阈值)
 _THIN_DAYS = 10           # 门槛同 channel_audit._THIN_DAYS:样本天数 < 此值 → 报告里标 ⚠薄样本
@@ -195,16 +201,16 @@ def day_universe(attr: pd.DataFrame, gap: pd.DataFrame) -> pd.DataFrame:
     """
     a = attr.copy()
     a["code"] = _code6(a["code"])
-    a[MAIN_RULER] = pd.to_numeric(a.get(MAIN_RULER), errors="coerce")
+    a[OC_COL] = pd.to_numeric(a.get(OC_COL), errors="coerce")
     buyable_oc = _bool_col(a, "buyable", True)
-    a["elig_oc"] = buyable_oc & a[MAIN_RULER].notna()
+    a["elig_oc"] = buyable_oc & a[OC_COL].notna()
     a["bought"] = _bool_col(a, "bought", False)
     g = gap.copy()
     if len(g):
         g["code"] = _code6(g["code"])
     else:
         g = pd.DataFrame(columns=["code", GAP_COL, "buyable_c1", "eligible_gap"])
-    out = a[["code", MAIN_RULER, "elig_oc", "bought"]].merge(
+    out = a[["code", OC_COL, "elig_oc", "bought"]].merge(
         g[["code", GAP_COL, "eligible_gap"]], on="code", how="left")
     out = out.rename(columns={"eligible_gap": "elig_gap"})
     # gap 侧完全缺失时(空 gap_frame)合并出的是 object dtype 全 NaN 列;先转 pandas 可空
@@ -257,9 +263,9 @@ def gate_day_stats(universe: pd.DataFrame, shadow_codes: set[str]) -> dict:
     elig_gap = universe["elig_gap"].astype(bool)
     return {
         "n_real": int(bought.sum()), "n_shadow": int(shadow.sum()),
-        "real_oc": _masked_mean(bought, universe[MAIN_RULER]),
-        "shadow_oc": _masked_mean(shadow, universe[MAIN_RULER]),
-        "market_oc": _masked_mean(elig_oc, universe[MAIN_RULER]),
+        "real_oc": _masked_mean(bought, universe[OC_COL]),
+        "shadow_oc": _masked_mean(shadow, universe[OC_COL]),
+        "market_oc": _masked_mean(elig_oc, universe[OC_COL]),
         "real_gap": _masked_mean(bought, universe[GAP_COL]),
         "shadow_gap": _masked_mean(shadow, universe[GAP_COL]),
         "market_gap": _masked_mean(elig_gap, universe[GAP_COL]),
@@ -415,7 +421,7 @@ def channel_ranking(dates: list[str], scan_root: Path | None = None,
         if gap is None:
             gap = gap_frame(d, lake=lake)
         u = day_universe(attr, gap)
-        daily_oc[d] = channel_day_stats(channels, u, MAIN_RULER, "elig_oc")
+        daily_oc[d] = channel_day_stats(channels, u, OC_COL, "elig_oc")
         daily_gap[d] = channel_day_stats(channels, u, GAP_COL, "elig_gap")
         used.append(d)
     led_oc = _cumulative_channel(daily_oc).sort_values(
@@ -522,7 +528,7 @@ def l3_edge(dates: list[str], scan_root: Path | None = None,
         if gap is None:
             gap = gap_frame(d, lake=lake)
         u = day_universe(attr, gap)
-        s_oc = l3_day_stats(judged, u, MAIN_RULER, "elig_oc", pinned_codes=pinned)
+        s_oc = l3_day_stats(judged, u, OC_COL, "elig_oc", pinned_codes=pinned)
         s_gap = l3_day_stats(judged, u, GAP_COL, "elig_gap", pinned_codes=pinned)
         if s_oc is None or s_gap is None:
             continue
@@ -891,19 +897,19 @@ def _synthetic_universe(day: int) -> pd.DataFrame:
     """两日合成 universe(5 只/日,day∈{1,2})——数值见模块内 `_selftest()` 的手算注释。"""
     if day == 1:
         rows = [
-            {"code": "000001", MAIN_RULER: 0.05, GAP_COL: 0.03, "bought": True},
-            {"code": "000002", MAIN_RULER: 0.09, GAP_COL: -0.02, "bought": False},
-            {"code": "000003", MAIN_RULER: 0.01, GAP_COL: 0.01, "bought": False},
-            {"code": "000004", MAIN_RULER: -0.03, GAP_COL: 0.06, "bought": False},
-            {"code": "000005", MAIN_RULER: 0.02, GAP_COL: -0.01, "bought": False},
+            {"code": "000001", OC_COL: 0.05, GAP_COL: 0.03, "bought": True},
+            {"code": "000002", OC_COL: 0.09, GAP_COL: -0.02, "bought": False},
+            {"code": "000003", OC_COL: 0.01, GAP_COL: 0.01, "bought": False},
+            {"code": "000004", OC_COL: -0.03, GAP_COL: 0.06, "bought": False},
+            {"code": "000005", OC_COL: 0.02, GAP_COL: -0.01, "bought": False},
         ]
     else:
         rows = [
-            {"code": "000001", MAIN_RULER: 0.02, GAP_COL: 0.05, "bought": True},
-            {"code": "000002", MAIN_RULER: 0.03, GAP_COL: -0.02, "bought": False},
-            {"code": "000003", MAIN_RULER: -0.01, GAP_COL: 0.03, "bought": False},
-            {"code": "000006", MAIN_RULER: 0.06, GAP_COL: -0.04, "bought": False},
-            {"code": "000007", MAIN_RULER: 0.00, GAP_COL: 0.08, "bought": False},
+            {"code": "000001", OC_COL: 0.02, GAP_COL: 0.05, "bought": True},
+            {"code": "000002", OC_COL: 0.03, GAP_COL: -0.02, "bought": False},
+            {"code": "000003", OC_COL: -0.01, GAP_COL: 0.03, "bought": False},
+            {"code": "000006", OC_COL: 0.06, GAP_COL: -0.04, "bought": False},
+            {"code": "000007", OC_COL: 0.00, GAP_COL: 0.08, "bought": False},
         ]
     df = pd.DataFrame(rows)
     df["elig_oc"] = True
@@ -973,8 +979,8 @@ def _selftest() -> int:
         {"channel": "chan_a", "code": "000001"}, {"channel": "chan_a", "code": "000006"},
         {"channel": "chan_b", "code": "000001"}, {"channel": "chan_b", "code": "000007"},
     ])
-    day_a_oc = {"d1": channel_day_stats(ch1, u1, MAIN_RULER, "elig_oc"),
-                "d2": channel_day_stats(ch2, u2, MAIN_RULER, "elig_oc")}
+    day_a_oc = {"d1": channel_day_stats(ch1, u1, OC_COL, "elig_oc"),
+                "d2": channel_day_stats(ch2, u2, OC_COL, "elig_oc")}
     day_a_gap = {"d1": channel_day_stats(ch1, u1, GAP_COL, "elig_gap"),
                 "d2": channel_day_stats(ch2, u2, GAP_COL, "elig_gap")}
     led_oc, led_gap = _cumulative_channel(day_a_oc), _cumulative_channel(day_a_gap)
@@ -994,8 +1000,8 @@ def _selftest() -> int:
                        for c in u1["code"]])
     j2 = pd.DataFrame([{"code": c, "finalist": c in {"000001", "000006"}}
                        for c in u2["code"]])
-    l3_1_oc = l3_day_stats(j1, u1, MAIN_RULER, "elig_oc")
-    l3_2_oc = l3_day_stats(j2, u2, MAIN_RULER, "elig_oc")
+    l3_1_oc = l3_day_stats(j1, u1, OC_COL, "elig_oc")
+    l3_2_oc = l3_day_stats(j2, u2, OC_COL, "elig_oc")
     l3_1_gap = l3_day_stats(j1, u1, GAP_COL, "elig_gap")
     l3_2_gap = l3_day_stats(j2, u2, GAP_COL, "elig_gap")
     _check("l3.day1.edge_oc", l3_1_oc["edge"], 0.07)            # mean(0.05,0.09) - mean(0.01,-0.03,0.02)

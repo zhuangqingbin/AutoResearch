@@ -416,7 +416,7 @@ def _selftest() -> int:
         pd.DataFrame({"code": ["000001", "000002"], "verdict": ["维持", "降级"],
                       "bear": ["x", "y"]}).to_csv(sdir / "verify.csv", index=False)
         realized = pd.DataFrame({"code": ["000001", "000002", "000003"],
-                                 "fwd_1_oo": [0.05, -0.02, -0.01], "fwd_2_oc": [0.05, -0.02, -0.01],
+                                 "fwd_1_oo": [0.05, -0.02, -0.01], _RET_MAIN: [0.05, -0.02, -0.01],
                                  "fwd_5_oc": [0.09, -0.03, -0.02]})
         res = evaluate("2026-06-18", scan_root=Path(td), realized=realized)
         if "L3" not in res["stages"] or res["stages"]["L3"]["lift"] is None:

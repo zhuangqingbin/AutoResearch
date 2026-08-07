@@ -26,10 +26,10 @@ def _mk_day(root, date, cards, judged=None, attr_extra=()):
         (d / "details" / f"{code}.md").write_text(
             CARD.format(rating=rating, g1=g1, g2=g2, g3=g3, note="压 Hold"),
             encoding="utf-8")
-        attr_rows.append({"code": code, "fwd_1_oo": 0.01, "fwd_2_oc": fwd5, "fwd_5_oc": fwd5,
+        attr_rows.append({"code": code, "fwd_1_oo": 0.01, "gap_c1_o2": fwd5, "fwd_5_oc": fwd5,
                           "fwd_10_oc": fwd5, "hi_2_oc": hi, "hi_10_oc": hi, "gap_d1": 0.02})
     for i, fwd5 in enumerate(attr_extra):                     # 市场对照行(非 finalist)
-        attr_rows.append({"code": f"9{i:05d}", "fwd_1_oo": 0.0, "fwd_2_oc": fwd5, "fwd_5_oc": fwd5,
+        attr_rows.append({"code": f"9{i:05d}", "fwd_1_oo": 0.0, "gap_c1_o2": fwd5, "fwd_5_oc": fwd5,
                           "fwd_10_oc": fwd5, "hi_2_oc": 0.0, "hi_10_oc": 0.0, "gap_d1": 0.0})
     pd.DataFrame(attr_rows).to_csv(d / "retro" / "attribution.csv", index=False)
     if judged is not None:

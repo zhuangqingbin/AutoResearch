@@ -16,12 +16,12 @@ def _mk_day(root, date, fires, attr_rows):
 def test_roll_and_render(tmp_path):
     _mk_day(tmp_path, "2026-07-01",
             [{"date": "2026-07-01", "code": "000001", "check": "经验红线·获利盘满", "severity": "fail", "detail": "d"}],
-            [{"code": "000001", "fwd_1_oo": -0.05, "fwd_2_oc": -0.07, "fwd_5_oc": -0.10},
-             {"code": "000002", "fwd_1_oo": 0.01, "fwd_2_oc": 0.015, "fwd_5_oc": 0.02}])
+            [{"code": "000001", "fwd_1_oo": -0.05, "gap_c1_o2": -0.07, "fwd_5_oc": -0.10},
+             {"code": "000002", "fwd_1_oo": 0.01, "gap_c1_o2": 0.015, "fwd_5_oc": 0.02}])
     _mk_day(tmp_path, "2026-07-02",
             [{"date": "2026-07-02", "code": "000003", "check": "经验红线·获利盘满", "severity": "fail", "detail": "d"}],
-            [{"code": "000003", "fwd_1_oo": 0.06, "fwd_2_oc": 0.07, "fwd_5_oc": 0.08},
-             {"code": "000004", "fwd_1_oo": 0.0, "fwd_2_oc": 0.0, "fwd_5_oc": 0.0}])
+            [{"code": "000003", "fwd_1_oo": 0.06, "gap_c1_o2": 0.07, "fwd_5_oc": 0.08},
+             {"code": "000004", "fwd_1_oo": 0.0, "gap_c1_o2": 0.0, "fwd_5_oc": 0.0}])
     df = roll(tmp_path)
     row = df.set_index("check").loc["经验红线·获利盘满"]
     assert row["n_fires"] == 2 and row["n_days"] == 2
@@ -34,8 +34,8 @@ def test_hit_rate_computed_from_ex2(tmp_path):
     # 单门单次拦截:ex1(按 fwd_1)为正(拦错),ex2(按 fwd_2,主尺)为负(拦对) → hit_rate 应按 ex2 判对。
     _mk_day(tmp_path, "2026-07-01",
             [{"date": "2026-07-01", "code": "000001", "check": "门X", "severity": "fail", "detail": "d"}],
-            [{"code": "000001", "fwd_1_oo": 0.10, "fwd_2_oc": -0.05, "fwd_5_oc": 0.20},
-             {"code": "000002", "fwd_1_oo": 0.0, "fwd_2_oc": 0.05, "fwd_5_oc": 0.0}])
+            [{"code": "000001", "fwd_1_oo": 0.10, "gap_c1_o2": -0.05, "fwd_5_oc": 0.20},
+             {"code": "000002", "fwd_1_oo": 0.0, "gap_c1_o2": 0.05, "fwd_5_oc": 0.0}])
     df = roll(tmp_path)
     row = df.set_index("check").loc["门X"]
     # market mean: ex1=0.05→ex1=+0.05(m1=0.05); ex2 mean=0(m2=0)→ex2=-0.05<0 → hit_rate=1.0
@@ -48,14 +48,14 @@ def test_empty_graceful(tmp_path):
 
 
 def test_gate_ledger_tail_rate_raw_preserved(tmp_path):
-    """`tail_rate_raw` = 被拦票 fwd_2_oc ≤ -5% 占比的原始值(不收缩,供审计/回放对照)。"""
+    """`tail_rate_raw` = 被拦票 gap_c1_o2(当前 MAIN_RULER)≤ -5% 占比的原始值(不收缩,供审计/回放对照)。"""
     _mk_day(tmp_path, "2026-07-09",
             [{"date": "2026-07-09", "check": "OW三门·估值不透支", "code": "000002", "level": "binding"},
              {"date": "2026-07-09", "check": "OW三门·估值不透支", "code": "000003", "level": "binding"},
              {"date": "2026-07-09", "check": "OW三门·估值不透支", "code": "000004", "level": "binding"}],
-            [{"code": "000002", "fwd_1_oo": -0.06, "fwd_2_oc": -0.08, "fwd_5_oc": -0.1},
-             {"code": "000003", "fwd_1_oo": -0.06, "fwd_2_oc": -0.09, "fwd_5_oc": -0.1},
-             {"code": "000004", "fwd_1_oo": -0.06, "fwd_2_oc": -0.07, "fwd_5_oc": -0.1}])
+            [{"code": "000002", "fwd_1_oo": -0.06, "gap_c1_o2": -0.08, "fwd_5_oc": -0.1},
+             {"code": "000003", "fwd_1_oo": -0.06, "gap_c1_o2": -0.09, "fwd_5_oc": -0.1},
+             {"code": "000004", "fwd_1_oo": -0.06, "gap_c1_o2": -0.07, "fwd_5_oc": -0.1}])
     led = roll(tmp_path)
     assert "tail_rate" in led.columns and "tail_rate_raw" in led.columns
     assert led.iloc[0]["tail_rate_raw"] == 1.0            # 3/3 都 ≤ -5% 左尾
@@ -76,12 +76,12 @@ def test_gate_ledger_tail_rate_shrinks_toward_pooled_global(tmp_path):
              {"date": "2026-07-09", "check": "门B", "code": "000005", "level": "binding"},
              {"date": "2026-07-09", "check": "门B", "code": "000006", "level": "binding"},
              {"date": "2026-07-09", "check": "门B", "code": "000007", "level": "binding"}],
-            [{"code": "000002", "fwd_1_oo": -0.06, "fwd_2_oc": -0.08, "fwd_5_oc": -0.1},
-             {"code": "000003", "fwd_1_oo": -0.06, "fwd_2_oc": -0.09, "fwd_5_oc": -0.1},
-             {"code": "000004", "fwd_1_oo": -0.06, "fwd_2_oc": -0.07, "fwd_5_oc": -0.1},
-             {"code": "000005", "fwd_1_oo": 0.02, "fwd_2_oc": 0.01, "fwd_5_oc": 0.0},
-             {"code": "000006", "fwd_1_oo": 0.02, "fwd_2_oc": 0.02, "fwd_5_oc": 0.0},
-             {"code": "000007", "fwd_1_oo": 0.02, "fwd_2_oc": 0.0, "fwd_5_oc": 0.0}])
+            [{"code": "000002", "fwd_1_oo": -0.06, "gap_c1_o2": -0.08, "fwd_5_oc": -0.1},
+             {"code": "000003", "fwd_1_oo": -0.06, "gap_c1_o2": -0.09, "fwd_5_oc": -0.1},
+             {"code": "000004", "fwd_1_oo": -0.06, "gap_c1_o2": -0.07, "fwd_5_oc": -0.1},
+             {"code": "000005", "fwd_1_oo": 0.02, "gap_c1_o2": 0.01, "fwd_5_oc": 0.0},
+             {"code": "000006", "fwd_1_oo": 0.02, "gap_c1_o2": 0.02, "fwd_5_oc": 0.0},
+             {"code": "000007", "fwd_1_oo": 0.02, "gap_c1_o2": 0.0, "fwd_5_oc": 0.0}])
     led = roll(tmp_path, shrink=True, k=15).set_index("check")
     a, b = led.loc["门A"], led.loc["门B"]
     assert a["tail_n"] == 3 and b["tail_n"] == 3
@@ -97,7 +97,7 @@ def test_gate_ledger_tail_rate_below_floor_excluded(tmp_path):
     """tail_n<3(MIN_N_INJECT)→ tail_rate=None(绝对禁注,不受 shrink 开关影响)。"""
     _mk_day(tmp_path, "2026-07-09",
             [{"date": "2026-07-09", "check": "OW三门·估值不透支", "code": "000002", "level": "binding"}],
-            [{"code": "000002", "fwd_1_oo": -0.06, "fwd_2_oc": -0.08, "fwd_5_oc": -0.1}])
+            [{"code": "000002", "fwd_1_oo": -0.06, "gap_c1_o2": -0.08, "fwd_5_oc": -0.1}])
     led = roll(tmp_path)
     assert led.iloc[0]["tail_n"] == 1
     assert pd.isna(led.iloc[0]["tail_rate"])
@@ -109,8 +109,8 @@ def test_gate_ledger_tail_rate_shrink_false_returns_raw(tmp_path):
             [{"date": "2026-07-09", "check": "门A", "code": "000002", "level": "binding"},
              {"date": "2026-07-09", "check": "门A", "code": "000003", "level": "binding"},
              {"date": "2026-07-09", "check": "门A", "code": "000004", "level": "binding"}],
-            [{"code": "000002", "fwd_1_oo": -0.06, "fwd_2_oc": -0.08, "fwd_5_oc": -0.1},
-             {"code": "000003", "fwd_1_oo": -0.06, "fwd_2_oc": -0.09, "fwd_5_oc": -0.1},
-             {"code": "000004", "fwd_1_oo": -0.06, "fwd_2_oc": -0.07, "fwd_5_oc": -0.1}])
+            [{"code": "000002", "fwd_1_oo": -0.06, "gap_c1_o2": -0.08, "fwd_5_oc": -0.1},
+             {"code": "000003", "fwd_1_oo": -0.06, "gap_c1_o2": -0.09, "fwd_5_oc": -0.1},
+             {"code": "000004", "fwd_1_oo": -0.06, "gap_c1_o2": -0.07, "fwd_5_oc": -0.1}])
     led = roll(tmp_path, shrink=False)
     assert led.iloc[0]["tail_rate"] == 1.0

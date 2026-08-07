@@ -6,18 +6,23 @@ import pytest
 
 from autoresearch.learning import retro
 
+# T16 注:本文件的 attr/realized 夹具前瞻收益列统一用 "gap_c1_o2"(当前 MAIN_RULER,2026-08-05
+# flip)—— attribute_frame/l3_bench_shadow/write_retro_input/attribute() 都按 MAIN_RULER
+# 动态读源列,喂错列名会让该列整体缺失/NaN,不是回退到旧尺。
+
 
 def test_selftest():
     assert retro._selftest() == 0
 
 
 def test_winner_follows_fwd2_not_fwd1():
-    """主归因主尺=fwd_2_oc:T+1 大涨但 T+2 回吐的票不是赢家;反之才是。"""
+    """主归因主尺跟随 MAIN_RULER(现 gap_c1_o2,2026-08-05 裁定取代 fwd_2_oc):
+    T+1 大涨但 T+2 回吐的票不是赢家;反之才是。"""
     n = 40
     realized = pd.DataFrame({
         "code": [f"{i:06d}" for i in range(n)],
         "fwd_1_oo": [0.08] + [0.0] * (n - 1),            # 000000 只赢在 T+1
-        "fwd_2_oc": [0.0] + [0.06] + [0.001] * (n - 2),  # 000001 赢在 T+2(主尺)
+        "gap_c1_o2": [0.0] + [0.06] + [0.001] * (n - 2),  # 000001 赢在 T+2(主尺)
         "fwd_5_oc": [np.nan] * n,
         "buyable": [True] * n,
     })
@@ -78,7 +83,7 @@ def test_refine_l3_bucket_only_touches_recalled_cut_rows(tmp_path):
 
 
 def test_l3_bench_shadow_absent_file_returns_none(tmp_path):
-    assert retro.l3_bench_shadow(pd.DataFrame({"code": ["000001"], "fwd_2_oc": [0.1]}), tmp_path) is None
+    assert retro.l3_bench_shadow(pd.DataFrame({"code": ["000001"], "gap_c1_o2": [0.1]}), tmp_path) is None
 
 
 def test_l3_bench_shadow_top5_by_conviction_vs_finalists_mean(tmp_path):
@@ -90,7 +95,7 @@ def test_l3_bench_shadow_top5_by_conviction_vs_finalists_mean(tmp_path):
     attr = pd.DataFrame({
         "code": [f"{i:06d}" for i in range(1, 8)] + ["000010", "000011"],
         # 000006/000007(conviction 65/60)排在 top-5 外,给极端值确保没被算进均值
-        "fwd_2_oc": [0.10, 0.08, 0.06, 0.04, 0.02, 999.0, -999.0, 0.05, 0.03],
+        "gap_c1_o2": [0.10, 0.08, 0.06, 0.04, 0.02, 999.0, -999.0, 0.05, 0.03],
     })
     bs = retro.l3_bench_shadow(attr, tmp_path)
     assert bs["n_bench"] == 7 and bs["n_bench_top"] == 5 and bs["n_bench_top_realized"] == 5
@@ -102,7 +107,7 @@ def test_l3_bench_shadow_top5_by_conviction_vs_finalists_mean(tmp_path):
 def test_l3_bench_shadow_missing_conviction_degrades_to_file_order(tmp_path):
     """缺 conviction 列 → 不排序,退化为文件前 top_n 行。"""
     pd.DataFrame({"code": ["000001", "000002", "000003"]}).to_csv(tmp_path / "_l3_bench.csv", index=False)
-    attr = pd.DataFrame({"code": ["000001", "000002", "000003"], "fwd_2_oc": [0.10, 0.20, 0.30]})
+    attr = pd.DataFrame({"code": ["000001", "000002", "000003"], "gap_c1_o2": [0.10, 0.20, 0.30]})
     bs = retro.l3_bench_shadow(attr, tmp_path, top_n=2)
     assert bs["n_bench"] == 3 and bs["n_bench_top"] == 2
     assert bs["bench_top_mean_fwd2"] == round((0.10 + 0.20) / 2, 5)
@@ -111,7 +116,7 @@ def test_l3_bench_shadow_missing_conviction_degrades_to_file_order(tmp_path):
 def test_l3_bench_shadow_missing_finalists_reports_none_finalists_mean(tmp_path):
     """finalists.csv 缺失(纵深防御)→ finalists 侧 None,但 bench 侧读数仍照算不因此不渲染。"""
     pd.DataFrame({"code": ["000001"], "conviction": [80]}).to_csv(tmp_path / "_l3_bench.csv", index=False)
-    attr = pd.DataFrame({"code": ["000001"], "fwd_2_oc": [0.05]})
+    attr = pd.DataFrame({"code": ["000001"], "gap_c1_o2": [0.05]})
     bs = retro.l3_bench_shadow(attr, tmp_path)
     assert bs["bench_top_mean_fwd2"] == 0.05
     assert bs["finalists_mean_fwd2"] is None and bs["n_finalists_realized"] == 0
@@ -134,7 +139,7 @@ def test_l3_bench_shadow_splits_escort_lanes_from_headline(tmp_path):
                   "lane": ["healthy", "pinned", "carryover", "watchlist_trigger"]}
                  ).to_csv(tmp_path / "finalists.csv", index=False)
     attr = pd.DataFrame({"code": ["000001", "000010", "000011", "000012", "000013"],
-                         "fwd_2_oc": [0.05, 0.04, -0.10, -0.20, np.nan]})
+                         "gap_c1_o2": [0.05, 0.04, -0.10, -0.20, np.nan]})
     bs = retro.l3_bench_shadow(attr, tmp_path)
     assert bs["n_finalists_realized"] == 1 and bs["finalists_mean_fwd2"] == 0.04   # 真选头条不含保送
     assert bs["n_escorted"] == 3 and bs["n_escorted_realized"] == 2                # 000013 缺价不计 realized
@@ -163,7 +168,7 @@ def test_write_retro_input_includes_l3_shrink_section_when_bench_present(tmp_pat
     n = 20
     attr = pd.DataFrame({
         "code": [f"{i:06d}" for i in range(n)],
-        "fwd_1_oo": [0.0] * n, "fwd_2_oc": [0.0] * n, "fwd_5_oc": [np.nan] * n,
+        "fwd_1_oo": [0.0] * n, "gap_c1_o2": [0.0] * n, "fwd_5_oc": [np.nan] * n,
         "buyable": [True] * n, "winner": [False] * n, "bucket": [""] * n,
         "recalled_flag": [False] * n, "in_l1": [True] * n, "bought": [False] * n,
         "tradable": [True] * n,
@@ -182,7 +187,7 @@ def test_write_retro_input_partial_presence_only_pass1_cut_renders_that_line(tmp
     n = 20
     attr = pd.DataFrame({
         "code": [f"{i:06d}" for i in range(n)],
-        "fwd_1_oo": [0.0] * n, "fwd_2_oc": [0.0] * n, "fwd_5_oc": [np.nan] * n,
+        "fwd_1_oo": [0.0] * n, "gap_c1_o2": [0.0] * n, "fwd_5_oc": [np.nan] * n,
         "buyable": [True] * n, "winner": [i == 3 for i in range(n)], "bucket": [""] * n,
         "recalled_flag": [False] * n, "in_l1": [True] * n, "bought": [False] * n,
         "tradable": [True] * n,
@@ -201,7 +206,7 @@ def test_write_retro_input_omits_l3_shrink_section_when_both_absent(tmp_path):
     n = 20
     attr = pd.DataFrame({
         "code": [f"{i:06d}" for i in range(n)],
-        "fwd_1_oo": [0.0] * n, "fwd_2_oc": [0.0] * n, "fwd_5_oc": [np.nan] * n,
+        "fwd_1_oo": [0.0] * n, "gap_c1_o2": [0.0] * n, "fwd_5_oc": [np.nan] * n,
         "buyable": [True] * n, "winner": [False] * n, "bucket": [""] * n,
         "recalled_flag": [False] * n, "in_l1": [True] * n, "bought": [False] * n,
         "tradable": [True] * n,
@@ -229,7 +234,7 @@ def test_attribute_raises_when_main_ruler_all_nan(tmp_path, monkeypatch):
         d / "L1_scored_full.csv", index=False)
     # 有行,但主尺全 NaN(= D+2 收盘未发布的真实形状)
     monkeypatch.setattr(R, "realized_returns", lambda date, **k: pd.DataFrame(
-        {"code": [f"{i:06d}" for i in range(200)], "fwd_2_oc": [float("nan")] * 200}))
+        {"code": [f"{i:06d}" for i in range(200)], "gap_c1_o2": [float("nan")] * 200}))
 
     with pytest.raises(RuntimeError, match="未发布|fwd_2_oc"):
         R.attribute("2026-07-24", scan_root=tmp_path)
@@ -245,7 +250,7 @@ def test_attribute_message_names_the_wait(tmp_path, monkeypatch):
     pd.DataFrame([{"code": "000001", "close": 10.0}]).to_csv(
         d / "L1_scored_full.csv", index=False)
     monkeypatch.setattr(R, "realized_returns", lambda date, **k: pd.DataFrame(
-        {"code": ["000001"], "fwd_2_oc": [float("nan")]}))
+        {"code": ["000001"], "gap_c1_o2": [float("nan")]}))
 
     with pytest.raises(RuntimeError) as ei:
         R.attribute("2026-07-24", scan_root=tmp_path)
@@ -267,7 +272,7 @@ def _retro_event_fixture(scan_root, date="2026-07-24"):
         {
             "code": codes,
             "fwd_1_oo": [0.0] * 100,
-            "fwd_2_oc": [i / 10000 for i in range(100)],
+            "gap_c1_o2": [i / 10000 for i in range(100)],
             "fwd_5_oc": [np.nan] * 100,
             "buyable": [True] * 100,
         }

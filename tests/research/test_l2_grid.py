@@ -28,11 +28,11 @@ def _day(root, date, *, l2_codes, winners, industries=None, lanes=None,
                                          for i in range(len(all_codes))]
     frame["selection_reason"] = ["merit"] * len(all_codes)
     frame.to_csv(d / "L2_gbdt_top200.csv", index=False)
-    attr = [{"code": f"1{i:05d}", "fwd_2_oc": 0.0, "buyable": True, "tradable": True}
+    attr = [{"code": f"1{i:05d}", "gap_c1_o2": 0.0, "buyable": True, "tradable": True}
             for i in range(19)]
-    attr += [{"code": c, "fwd_2_oc": 0.0, "buyable": True, "tradable": True}
+    attr += [{"code": c, "gap_c1_o2": 0.0, "buyable": True, "tradable": True}
              for c in all_codes if c.startswith("3")]
-    attr += [{"code": c, "fwd_2_oc": 0.50, "buyable": True, "tradable": True}
+    attr += [{"code": c, "gap_c1_o2": 0.50, "buyable": True, "tradable": True}
              for c in winners]
     pd.DataFrame(attr).to_csv(d / "retro" / "attribution.csv", index=False)
 
