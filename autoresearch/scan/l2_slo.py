@@ -46,6 +46,7 @@ from pathlib import Path
 import pandas as pd
 
 from autoresearch.common import stats as st
+from autoresearch.common.ruler import MAIN_RULER
 
 SCHEMA_VERSION = 1
 DEFAULT_ROOT = Path("context/scan")
@@ -57,8 +58,8 @@ ABS_THRESHOLD = 0.02         # 绝对收益阈:光排进前 10% 但只涨 0.1% �
 MIN_HISTORY = 10             # expanding P25 的最小历史日数
 
 WINNER_DEFINITION = (
-    f"fwd_2_oc ≥ 全市场可交易成熟票 P{int(TOP_DECILE * 100)} "
-    f"∧ fwd_2_oc ≥ {ABS_THRESHOLD:+.2%} ∧ D+1 可买(buyable)∧ 可交易(tradable);"
+    f"{MAIN_RULER} ≥ 全市场可交易成熟票 P{int(TOP_DECILE * 100)} "
+    f"∧ {MAIN_RULER} ≥ {ABS_THRESHOLD:+.2%} ∧ D+1 可买(buyable)∧ 可交易(tradable);"
     "并列按 ≥ 一并计入。**不是** retro 的复合 winner,两者不得混叫一个标签")
 
 
@@ -85,16 +86,16 @@ def day_winners(attr: pd.DataFrame) -> tuple[pd.DataFrame, str]:
     """
     a = attr.copy()
     a["code"] = a["code"].astype(str).str.zfill(6)
-    a["fwd_2_oc"] = pd.to_numeric(a.get("fwd_2_oc"), errors="coerce")
+    a[MAIN_RULER] = pd.to_numeric(a.get(MAIN_RULER), errors="coerce")
     buyable = a["buyable"].fillna(True).astype(bool) if "buyable" in a.columns \
         else pd.Series(True, index=a.index)
     tradable = a["tradable"].fillna(True).astype(bool) if "tradable" in a.columns \
         else pd.Series(True, index=a.index)
-    eligible = buyable & tradable & a["fwd_2_oc"].notna()
+    eligible = buyable & tradable & a[MAIN_RULER].notna()
     if not eligible.any():
         return a.iloc[0:0], WINNER_DEFINITION
-    cutoff = float(a.loc[eligible, "fwd_2_oc"].quantile(TOP_DECILE))
-    is_winner = eligible & (a["fwd_2_oc"] >= cutoff) & (a["fwd_2_oc"] >= ABS_THRESHOLD)
+    cutoff = float(a.loc[eligible, MAIN_RULER].quantile(TOP_DECILE))
+    is_winner = eligible & (a[MAIN_RULER] >= cutoff) & (a[MAIN_RULER] >= ABS_THRESHOLD)
     return a[is_winner], WINNER_DEFINITION
 
 

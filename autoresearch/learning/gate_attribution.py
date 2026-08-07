@@ -33,6 +33,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common.ruler import MAIN_RULER
+
 COHORT_LEGACY = "legacy_gate_ledger"
 COHORT_V3 = "v3"
 COHORTS = (COHORT_LEGACY, COHORT_V3)
@@ -51,12 +53,12 @@ _MARKET_BASELINE = {
 }
 _COLUMNS = [
     "cohort_version", "date", "gate", "code", "tradable", "mature",
-    "fwd_2_oc", "market_fwd_2", "market_baseline", "excess_2",
+    "fwd_2_oc", "market_fwd_2", "market_baseline", "excess_2",  # fwd_2_oc:参考尺,固定列名,勿随主尺漂移(持久化 ledger 列)
     "outcome", "outcome_reason", "source",
 ]
 _PARTICIPATION_COLUMNS = [
     "cohort_version", "date", "gate", "code", "n_gates_failed", "sole_killer",
-    "tradable", "mature", "fwd_2_oc", "market_fwd_2", "market_baseline",
+    "tradable", "mature", "fwd_2_oc", "market_fwd_2", "market_baseline",  # fwd_2_oc:参考尺,固定列名,勿随主尺漂移
     "excess_2", "outcome", "outcome_reason", "source",
 ]
 _SUMMARY_COLUMNS = [
@@ -267,7 +269,7 @@ def _day_facts(
         return None
 
     attr["code"] = attr["code"].astype(str).str.zfill(6)
-    fwd2 = pd.to_numeric(attr.get("fwd_2_oc"), errors="coerce")
+    fwd2 = pd.to_numeric(attr.get(MAIN_RULER), errors="coerce")
     tradable = _bool_series(attr, "tradable", True) & _bool_series(attr, "buyable", True)
 
     if cohort == COHORT_LEGACY:
@@ -277,6 +279,8 @@ def _day_facts(
         eligible = tradable & fwd2.notna()
         market = float(fwd2[eligible].median()) if eligible.any() else None
 
+    # 内部定长字段名(下方 `_fact_row` 用 `.fwd_2_oc` 属性访问取值,属性名不能动态化)——
+    # 固定叫 fwd_2_oc,不随 MAIN_RULER 漂移;取值仍来自上面已按主尺读的 fwd2。
     facts = pd.DataFrame({
         "code": attr["code"],
         "fwd_2_oc": fwd2,
@@ -492,7 +496,7 @@ def render_migration(
         "",
         "## legacy cohort(仅供迁移复现)",
         "",
-        "市场基准 = 全表 `fwd_2_oc` 均值 · **不去重**(同票踩多门会重复进各单门分母)"
+        f"市场基准 = 全表 `{MAIN_RULER}` 均值 · **不去重**(同票踩多门会重复进各单门分母)"
         " · 不过滤可交易性。",
         "",
     ]
@@ -504,7 +508,7 @@ def render_migration(
         "",
         "## v3 cohort(EXP-1 与 C3 唯一读的契约)",
         "",
-        "市场基准 = 可交易且成熟票的 `fwd_2_oc` **中位**(与 `rejection_attribution` /"
+        f"市场基准 = 可交易且成熟票的 `{MAIN_RULER}` **中位**(与 `rejection_attribution` /"
         " abstention v2 同源) · 同日同票踩 ≥2 道门 → `MULTI_GATE` 单列 ·"
         " 不可交易/未成熟/门状态不可判 → `UNMEASURED`。",
         "",

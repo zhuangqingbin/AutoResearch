@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common.ruler import MAIN_RULER
 from autoresearch.learning.t1_review import _NON_GENUINE_LANES
 
 AUDIT_SHARE = 0.20
@@ -103,12 +104,12 @@ def build_day_ledger(
     if "code" not in attr.columns:
         raise ValueError("attribution missing code")
     attr["code"] = attr["code"].astype(str).str.zfill(6)
-    attr["fwd_2_oc"] = pd.to_numeric(attr.get("fwd_2_oc"), errors="coerce")
+    attr[MAIN_RULER] = pd.to_numeric(attr.get(MAIN_RULER), errors="coerce")
     attr["buyable"] = _bool_column(attr, "buyable", True)
     attr["tradable"] = _bool_column(attr, "tradable", True)
-    eligible = attr["buyable"] & attr["tradable"] & attr["fwd_2_oc"].notna()
+    eligible = attr["buyable"] & attr["tradable"] & attr[MAIN_RULER].notna()
     market = (
-        float(attr.loc[eligible, "fwd_2_oc"].median())
+        float(attr.loc[eligible, MAIN_RULER].median())
         if eligible.any()
         else None
     )
@@ -124,7 +125,7 @@ def build_day_ledger(
         if fact is not None:
             if isinstance(fact, pd.DataFrame):
                 fact = fact.iloc[0]
-            value = pd.to_numeric(pd.Series([fact.get("fwd_2_oc")]), errors="coerce").iloc[0]
+            value = pd.to_numeric(pd.Series([fact.get(MAIN_RULER)]), errors="coerce").iloc[0]
             fwd = None if pd.isna(value) else float(value)
             buyable = bool(fact.get("buyable", True))
             tradable = bool(fact.get("tradable", True))
@@ -139,7 +140,7 @@ def build_day_ledger(
                 "fragility": _round_or_none(candidate.get("fragility")),
                 "lane": str(candidate.get("lane") or ""),
                 "mature": mature,
-                "fwd_2_oc": _round_or_none(fwd),
+                "fwd_2_oc": _round_or_none(fwd),  # 参考尺,固定列名,勿随主尺漂移(持久化 ledger 列)
                 "market_fwd_2": _round_or_none(market),
                 "excess_2": _round_or_none(excess),
                 "opportunity": bool(mature and excess is not None and excess >= 0.02),
@@ -166,7 +167,7 @@ def build_day_ledger(
                     if isinstance(fact, pd.DataFrame):
                         fact = fact.iloc[0]
                     value = pd.to_numeric(
-                        pd.Series([fact.get("fwd_2_oc")]),
+                        pd.Series([fact.get(MAIN_RULER)]),
                         errors="coerce",
                     ).iloc[0]
                     if (

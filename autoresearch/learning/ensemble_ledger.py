@@ -31,6 +31,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common.ruler import MAIN_RULER
 from autoresearch.scan.decision_read_model import read_decisions
 
 ECONOMIC_BAND = 0.02
@@ -45,7 +46,7 @@ _COLUMNS = [
     "degraded",
     "spread",
     "final_rating",
-    "fwd_2_oc",
+    "fwd_2_oc",  # 参考尺,固定列名,勿随主尺漂移(持久化 ledger 列)
     "market_fwd_2",
     "excess_2",
     "verdict",
@@ -145,9 +146,9 @@ def _bool_value(value, default: bool = True) -> bool:
 
 
 def _market_fwd2(attr: pd.DataFrame | None) -> float | None:
-    if attr is None or "fwd_2_oc" not in attr.columns:
+    if attr is None or MAIN_RULER not in attr.columns:
         return None
-    values = pd.to_numeric(attr["fwd_2_oc"], errors="coerce")
+    values = pd.to_numeric(attr[MAIN_RULER], errors="coerce")
     buyable = (
         attr["buyable"].map(_bool_value)
         if "buyable" in attr.columns
@@ -170,12 +171,12 @@ def day_rows(scan_dir: Path | str) -> pd.DataFrame:
     rows = []
     for code, fact in facts.items():
         fwd = None
-        if attr is not None and code in attr.index and "fwd_2_oc" in attr.columns:
+        if attr is not None and code in attr.index and MAIN_RULER in attr.columns:
             row = attr.loc[code]
             if isinstance(row, pd.DataFrame):
                 row = row.iloc[0]
             value = pd.to_numeric(
-                pd.Series([row.get("fwd_2_oc")]),
+                pd.Series([row.get(MAIN_RULER)]),
                 errors="coerce",
             ).iloc[0]
             if (

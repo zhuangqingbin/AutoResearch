@@ -36,6 +36,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common.ruler import MAIN_RULER
+
 _SCAN_DEFAULT = Path("context/scan")
 _DB_DEFAULT = Path("context/knowledge/precedents.db")
 
@@ -425,8 +427,8 @@ def _fwd2_lookup(scan_root: Path, date: str, code: str | None, cache: dict) -> f
             try:
                 df = pd.read_csv(ap, dtype={"code": str})
                 df["code"] = df["code"].astype(str).str.zfill(6)
-                if "fwd_2_oc" in df.columns:
-                    series = df.set_index("code")["fwd_2_oc"]
+                if MAIN_RULER in df.columns:
+                    series = df.set_index("code")[MAIN_RULER]
             except Exception:
                 series = None
         cache[date] = series

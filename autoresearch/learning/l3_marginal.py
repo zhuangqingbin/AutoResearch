@@ -43,6 +43,7 @@ import numpy as np
 import pandas as pd
 
 from autoresearch.common import stats as st
+from autoresearch.common.ruler import MAIN_RULER
 from autoresearch.learning import experiment_template as et
 
 SCHEMA_VERSION = 1
@@ -126,18 +127,18 @@ def day_frame(scan_dir: Path | str) -> pd.DataFrame | None:
 
     a = attr.copy()
     a["code"] = a["code"].astype(str).str.zfill(6)
-    a["fwd_2_oc"] = pd.to_numeric(a.get("fwd_2_oc"), errors="coerce")
+    a[MAIN_RULER] = pd.to_numeric(a.get(MAIN_RULER), errors="coerce")
     buyable = a["buyable"].fillna(True).astype(bool) if "buyable" in a.columns \
         else pd.Series(True, index=a.index)
     tradable = a["tradable"].fillna(True).astype(bool) if "tradable" in a.columns \
         else pd.Series(True, index=a.index)
-    eligible = buyable & tradable & a["fwd_2_oc"].notna()
+    eligible = buyable & tradable & a[MAIN_RULER].notna()
     if not eligible.any():
         return None
-    market = float(a.loc[eligible, "fwd_2_oc"].median())
+    market = float(a.loc[eligible, MAIN_RULER].median())
     winner = (a["winner"].fillna(False).astype(bool) if "winner" in a.columns
               else pd.Series(False, index=a.index))
-    a["_excess_2"] = a["fwd_2_oc"] - market
+    a["_excess_2"] = a[MAIN_RULER] - market
     a["_buyable_winner"] = winner & buyable
 
     k = kept.copy()
@@ -146,7 +147,7 @@ def day_frame(scan_dir: Path | str) -> pd.DataFrame | None:
     k["_score"] = (pd.to_numeric(k[score_col], errors="coerce").fillna(-1e18)
                    if score_col else 0.0)
     merged = k.merge(
-        a[["code", "_excess_2", "_buyable_winner", "fwd_2_oc"]], on="code", how="left")
+        a[["code", "_excess_2", "_buyable_winner", MAIN_RULER]], on="code", how="left")
     merged = merged[merged["_excess_2"].notna()].copy()
     if not len(merged):
         return None

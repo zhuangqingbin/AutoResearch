@@ -16,6 +16,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from autoresearch.common.ruler import MAIN_RULER
 from autoresearch.data.tushare_source import _code6
 from autoresearch.research.factor_lab import (
     CACHE,
@@ -76,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
             rows.append({"date": D, "top3": "", "n_top3": 0})
             continue
         names = [r["industry"] for r in top3]
-        fr = forward_returns(piv, P, D, fwd=10)["fwd_2_oc"]
+        fr = forward_returns(piv, P, D, fwd=10)[MAIN_RULER]
         in_top3 = f["industry"].isin(names)
         top_ret = fr.reindex(f.loc[in_top3, "code"]).median() * 100
         mkt_ret = fr.reindex(f["code"]).median() * 100

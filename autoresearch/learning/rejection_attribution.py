@@ -7,11 +7,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from autoresearch.scan.decision_record import DecisionRecord
+from autoresearch.common.ruler import MAIN_RULER
 from autoresearch.scan.decision_read_model import (
     read_decisions,
     read_final_ratings,
 )
+from autoresearch.scan.decision_record import DecisionRecord
 
 BUY_RATINGS = {"Buy", "Overweight"}
 GATES = ("主力真在", "业绩真兑现", "估值不透支")
@@ -45,7 +46,7 @@ _COLUMNS = [
     "gate_state_quality",
     "buyable",
     "mature",
-    "fwd_2_oc",
+    "fwd_2_oc",  # 参考尺,固定列名,勿随主尺漂移(持久化 ledger 列)
     "market_fwd_2",
     "excess_2",
     "opportunity",
@@ -142,8 +143,8 @@ def _legacy_decisions(scan: Path) -> dict[str, _LegacyDecision]:
     from autoresearch.scan.l4.parsers import (
         gate_status,
         parse_early_stop,
+        parse_ratings_from_details,
     )
-    from autoresearch.scan.l4.parsers import parse_ratings_from_details
 
     details = scan / "details"
     final = read_final_ratings(
@@ -233,16 +234,16 @@ def build_rejection_attribution(
     if "code" not in attr.columns:
         raise ValueError("attribution missing code")
     attr["code"] = attr["code"].astype(str).str.zfill(6)
-    attr["fwd_2_oc"] = pd.to_numeric(
-        attr.get("fwd_2_oc"),
+    attr[MAIN_RULER] = pd.to_numeric(
+        attr.get(MAIN_RULER),
         errors="coerce",
     )
     buyable = _bool_series(attr, "buyable", True)
     tradable = _bool_series(attr, "tradable", True)
-    mature = attr["fwd_2_oc"].notna()
+    mature = attr[MAIN_RULER].notna()
     eligible = buyable & tradable & mature
     market = (
-        float(attr.loc[eligible, "fwd_2_oc"].median())
+        float(attr.loc[eligible, MAIN_RULER].median())
         if eligible.any()
         else None
     )
@@ -272,7 +273,7 @@ def build_rejection_attribution(
             if decision is not None
             else str(row.get("rating") or "")
         )
-        fwd = row["fwd_2_oc"]
+        fwd = row[MAIN_RULER]
         excess = None if market is None or pd.isna(fwd) else float(fwd) - market
         is_buyable = bool(buyable.loc[pos] and tradable.loc[pos])
         opportunity = (

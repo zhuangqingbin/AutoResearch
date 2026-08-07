@@ -5,6 +5,7 @@ import json
 from collections import Counter
 from pathlib import Path
 
+from autoresearch.common.ruler import MAIN_RULER
 from autoresearch.scan.decision_finalize import (
     _PROPOSAL_BY_RATING,
     _VERDICT_BADGE,
@@ -97,7 +98,7 @@ def _funnel_rows(meta: dict, n_l2, n_l3, n_cards, n_pinned: int = 0) -> list[str
     return [
         "| 阶段 | 名称 | 出量 | 引擎 | 卡点标准 |", "|---|---|---:|---|---|",
         f"| L0 | 选集 | {meta.get('universe', '?')} | 确定性 | 全A {meta.get('universe_raw', '?')} → 硬门(剔ST/退/停牌/次新, 市值地板, 含北交所) |",
-        f"| L1 | 召回 | {meta.get('recall_n', '?')} | 确定性 | 轻门 + 行业条件化复合分(fwd_2_oc 超短主尺 IC 校准) top |",
+        f"| L1 | 召回 | {meta.get('recall_n', '?')} | 确定性 | 轻门 + 行业条件化复合分({MAIN_RULER} 超短主尺 IC 校准) top |",
         f"| L2 | 粗排 | {n_l2} | 分层采样/{l2_eng} | 确定性分层采样(sn_composite 排序+风格桶 floor+sector cap;零模型零 LLM;文件名/列名 gbdt 为遗留别名) |",
         f"| L3 | 精排 | {l3_out} | Opus·max·holistic | 1 agent 通看 ~200 比较选 + 增量证据/论点/红队(保送票不占名额) |",
         f"| L4 | 研究 | {n_cards} 卡 | Opus·medium | 一只=一个 Opus subagent 渐进深度 DD + 早停 |",
@@ -821,7 +822,7 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
         if nag:
             out += [nag, ""]
     out += ["## 诚实局限",
-            "- 召回/粗排为启发式 + fwd_2_oc 超短主尺 IC 校准(L1 复合分、L2 sn_composite 同口径;T+1/T+5 参考),随 regime 漂移;L3/L4 为 Claude 推理产出。",
+            f"- 召回/粗排为启发式 + {MAIN_RULER} 超短主尺 IC 校准(L1 复合分、L2 sn_composite 同口径;T+1/T+5 参考),随 regime 漂移;L3/L4 为 Claude 推理产出。",
             "- 业绩/龙虎榜/预告有披露滞后;无权限端点降级标注。",
             "- A股涨跌停/停牌使名义止损未必可执行(见各决策卡执行段)。",
             f"\n_明细 + 漏斗溯源:`reports/scan/{folder}/`(summary.md + details/〈名称〉.md + trace/;目录名=运行时刻,数据日见 manifest.json)_"]

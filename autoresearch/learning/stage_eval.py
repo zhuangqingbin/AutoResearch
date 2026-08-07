@@ -26,12 +26,13 @@ from pathlib import Path
 import pandas as pd
 
 from autoresearch.agents.utils.rating import RATINGS_5_TIER  # Buy>OW>Hold>UW>Sell
+from autoresearch.common.ruler import MAIN_RULER
 
 # 保送/观察单直通/菜单滞回——不是 L3 当日选的票,不进「L3 选股成绩」头条(pr_20260716_002,
 # 与 t1_review 同一裁定同一集合;后两种 lane 已退役但历史 scan 目录仍有存量行)。
 from autoresearch.learning.t1_review import _NON_GENUINE_LANES
 
-_RET_MAIN = "fwd_2_oc"  # 超短主尺:D+1开→D+2收(2026-07-10 用户裁定持仓 1~2 日)
+_RET_MAIN = MAIN_RULER  # 超短主尺:D+1开→D+2收(2026-07-10 用户裁定持仓 1~2 日);T16 换尺只改 ruler.py
 _RET_T5 = "fwd_5_oc"    # 参考口径(降级保留,列名带 t5 的输出继续产)
 _RET_T1 = "fwd_1_oo"    # 副口径(更快、噪声大)
 

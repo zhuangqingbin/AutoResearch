@@ -41,6 +41,7 @@ import pandas as pd
 
 import autoresearch.learning.feedback_store as fs
 import autoresearch.learning.retro as retro
+from autoresearch.common.ruler import MAIN_RULER
 
 RETIRE_MIN_N = 20        # 裁决法:累计命中样本门槛(§4-P0-5 原文 "n≥20")
 _DAY_MIN_N = 5           # 逐日门槛:与 retro.mtm_check_guards 自身默认 min_n 一致(复用,不重开新阈值)
@@ -79,7 +80,7 @@ def _walk_attribution(scan_root: Path) -> list[tuple[str, pd.DataFrame]]:
             attr = pd.read_csv(p, dtype={"code": str})
         except Exception:  # noqa: BLE001
             continue
-        if len(attr) and "fwd_2_oc" in attr.columns:
+        if len(attr) and MAIN_RULER in attr.columns:
             out.append((p.parent.parent.name, attr))
     return out
 

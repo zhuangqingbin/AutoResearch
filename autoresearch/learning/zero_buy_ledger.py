@@ -41,6 +41,8 @@ def roll(scan_root: Path | None = None) -> pd.DataFrame:
         if "fwd_1_oo" not in df.columns or not len(df):
             continue
         bought = bought_mask(df)
+        # T+1/T+2/T+5 三档并列取市场均值(mkt_fwd1/2/5),不像 retro.attribute_frame 那样单挑
+        # 主尺 —— 下面 fwd_2_oc/fwd_5_oc 字面量固定,勿随主尺漂移。
         f1 = pd.to_numeric(df["fwd_1_oo"], errors="coerce")
         f2 = pd.to_numeric(df.get("fwd_2_oc"), errors="coerce") if "fwd_2_oc" in df.columns else pd.Series(dtype=float)
         f5 = pd.to_numeric(df.get("fwd_5_oc"), errors="coerce") if "fwd_5_oc" in df.columns else pd.Series(dtype=float)

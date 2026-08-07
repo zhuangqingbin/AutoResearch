@@ -33,7 +33,9 @@ from pathlib import Path
 
 import pandas as pd
 
-_RET_MAIN = "fwd_2_oc"       # 超短主尺:D+1开→D+2收(2026-07-10 用户裁定)
+from autoresearch.common.ruler import MAIN_RULER
+
+_RET_MAIN = MAIN_RULER       # 超短主尺:D+1开→D+2收(2026-07-10 用户裁定);T16 换尺只改 ruler.py
 _THIN_DAYS = 10               # spec §2.3 门槛:n_days < 10 → ⚠薄样本
 _LEDGER_COLS = ["channel", "n_days", "mean_excess_t2", "unique_excess_t2", "hit_rate_t2", "thin"]
 _JACCARD_COLS = ["channel_a", "channel_b", "common", "union", "jaccard"]

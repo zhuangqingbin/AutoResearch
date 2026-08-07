@@ -26,6 +26,7 @@ from pathlib import Path
 import pandas as pd
 
 from autoresearch.agents.utils.rating import RATINGS_5_TIER, parse_rating
+from autoresearch.common.ruler import MAIN_RULER
 
 # 保送/观察单直通/菜单滞回——不是 L3 当日选的票,不进「L3 选股成绩」头条(pr_20260716_002,
 # 与 t1_review 同一裁定同一集合;后两种 lane 已退役但历史 scan 目录仍有存量行)。
@@ -69,12 +70,12 @@ def attribute_frame(l1: pd.DataFrame, realized: pd.DataFrame, buylist: dict,
     m["recalled_flag"] = _as_bool(m["recalled"]) if "recalled" in m.columns else False
     m["rating"] = m["code"].map(bl)
     m["bought"] = m["rating"].isin(_BUY)
-    m["tradable"] = m["buyable"].fillna(True) & m["fwd_2_oc"].notna()
+    m["tradable"] = m["buyable"].fillna(True) & m[MAIN_RULER].notna()
 
     trad = m[m["tradable"]]
-    hi = trad["fwd_2_oc"].quantile(top_q) if len(trad) else float("nan")
-    lo = trad["fwd_2_oc"].quantile(bot_q) if len(trad) else float("nan")
-    m["winner"] = m["tradable"] & (m["fwd_2_oc"] >= hi) & (m["fwd_2_oc"] >= abs_thresh)
+    hi = trad[MAIN_RULER].quantile(top_q) if len(trad) else float("nan")
+    lo = trad[MAIN_RULER].quantile(bot_q) if len(trad) else float("nan")
+    m["winner"] = m["tradable"] & (m[MAIN_RULER] >= hi) & (m[MAIN_RULER] >= abs_thresh)
 
     def bucket(r) -> str:
         if r["winner"] and r["bought"]:
@@ -85,7 +86,7 @@ def attribute_frame(l1: pd.DataFrame, realized: pd.DataFrame, buylist: dict,
             return "missed_l1"
         if r["winner"] and not r["in_l1"]:
             return "missed_l0"
-        if r["bought"] and r["tradable"] and r["fwd_2_oc"] <= lo:
+        if r["bought"] and r["tradable"] and r[MAIN_RULER] <= lo:
             return "false_positive"
         return ""
 
@@ -152,7 +153,7 @@ def floor_experiment(l2df: pd.DataFrame, attr: pd.DataFrame) -> dict:
 def l3_miss_autopsy(attr: pd.DataFrame, l2df: pd.DataFrame, finalists: pd.DataFrame,
                     judged: pd.DataFrame, top_n: int = 10) -> pd.DataFrame:
     """L3 错杀验尸(spec §②):L2-keep ∧ 非 finalist ∧ winner(T+2 主尺) → join L3 判分(当时的红队理由)。纯函数。"""
-    cols = ["code", "name", "fwd_2_oc", "thesis", "risk", "triage_lean", "lane",
+    cols = ["code", "name", MAIN_RULER, "thesis", "risk", "triage_lean", "lane",
             "conviction", "fragility"]
     if judged is None or not len(judged) or attr is None or not len(attr):
         return pd.DataFrame(columns=cols)
@@ -168,7 +169,7 @@ def l3_miss_autopsy(attr: pd.DataFrame, l2df: pd.DataFrame, finalists: pd.DataFr
     w2 = a.get("winner", pd.Series(False, index=a.index)).fillna(False)
     miss = a[w2 & a["code"].isin(pool)]
     out = miss.merge(j, on="code", how="inner", suffixes=("", "_j"))
-    out = out.sort_values("fwd_2_oc", ascending=False).head(top_n)
+    out = out.sort_values(MAIN_RULER, ascending=False).head(top_n)
     return out[[c for c in cols if c in out.columns]].reset_index(drop=True)
 
 
@@ -182,10 +183,10 @@ def build_retro_pairs(attr: pd.DataFrame, max_pairs: int = 20) -> pd.DataFrame:
     fwd_2 与主归因同尺、D+2 即成熟 → 配对当日可产,不再等 T+5(缺 fail 或 success 侧仍返回空表,优雅)。
     """
     empty = pd.DataFrame()
-    if attr is None or attr.empty or "fwd_2_oc" not in attr.columns:
+    if attr is None or attr.empty or MAIN_RULER not in attr.columns:
         return empty
     a = attr.copy()
-    a["_fwd2"] = pd.to_numeric(a["fwd_2_oc"], errors="coerce")
+    a["_fwd2"] = pd.to_numeric(a[MAIN_RULER], errors="coerce")
     if a["_fwd2"].notna().sum() == 0:                        # fwd_2 未成熟
         return empty
     # fail 侧只在**真被 L4 评级过**的票里选(rating ∈ 五档);未评级 universe 票即便暴跌也非判断失败
@@ -246,7 +247,7 @@ def mtm_check_guards(attr: pd.DataFrame, lessons: list[dict], day: str,
     import autoresearch.learning.feedback_store as fs
 
     out: list[dict] = []
-    mkt = pd.to_numeric(attr.get("fwd_2_oc"), errors="coerce")
+    mkt = pd.to_numeric(attr.get(MAIN_RULER), errors="coerce")
     for lsn in lessons:
         gd = lsn.get("guard")
         if not isinstance(gd, dict) or gd.get("field") not in attr.columns:
@@ -271,7 +272,11 @@ def mtm_check_guards(attr: pd.DataFrame, lessons: list[dict], day: str,
 
 
 def gate_audit(attr: pd.DataFrame, scan_dir: Path | str) -> pd.DataFrame:
-    """R3·门审计:gate_fires.csv × 已实现 fwd → 被拦票后来怎么走(excess<0 = 拦对)。纯读。"""
+    """R3·门审计:gate_fires.csv × 已实现 fwd → 被拦票后来怎么走(excess<0 = 拦对)。纯读。
+
+    T+1/T+2/T+5 三档并列展示(ex1/ex2/ex5),不像 attribute_frame 那样单挑主尺——
+    此函数下方 fwd_2_oc/fwd_5_oc 字面量固定,勿随主尺漂移(与「主尺」无关的多档对照)。
+    """
     cols = ["code", "check", "severity", "fwd_1_oo", "ex1", "fwd_2_oc", "ex2", "fwd_5_oc", "ex5"]
     p = Path(scan_dir) / "gate_fires.csv"
     if not p.exists():
@@ -331,7 +336,7 @@ def stage_stats(attr: pd.DataFrame) -> dict:
     res["buylist_hitrate"] = round(res["buylist_hit"] / nB, 3) if nB else None
     sub = attr[attr["tradable"] & attr.get("composite", pd.Series(dtype=float)).notna()]
     if len(sub) >= 30:
-        res["day_ic_composite"] = round(sub["composite"].rank().corr(sub["fwd_2_oc"].rank()), 4)
+        res["day_ic_composite"] = round(sub["composite"].rank().corr(sub[MAIN_RULER].rank()), 4)
     else:
         res["day_ic_composite"] = None
     return res
@@ -399,7 +404,8 @@ def realized_returns(date: str, fwd: int = 10) -> pd.DataFrame:
     import autoresearch.research.factor_lab as fl
     from autoresearch.data.tushare_source import _trade_days
 
-    cols = ["code", "fwd_1_oo", "fwd_2_oc", "fwd_5_oc", "fwd_10_oc", "hi_2_oc", "hi_10_oc", "buyable", "gap_d1"]   # fwd_10/hi_10 供买后管理(未成熟=NaN)
+    cols = ["code", "fwd_1_oo", "fwd_2_oc", "fwd_5_oc", "fwd_10_oc", "hi_2_oc", "hi_10_oc", "buyable", "gap_d1"]
+    # ↑ 全部历史/参考尺字面量列表(FWDS 同族),固定列名,勿随主尺漂移;fwd_10/hi_10 供买后管理(未成熟=NaN)
     pro = fl._pro()
     d0 = date.replace("-", "")
     today = datetime.now().strftime("%Y%m%d")
@@ -463,6 +469,9 @@ _KEEP = ["code", "name", "industry", "bucket", "winner", "news_pop",
          "gap_d1", "rank", "recalled_flag", "composite", "score_momentum", "score_fund_main",
          "score_chip", "pct_60d", "main_net_ratio", "winner_rate", "price_to_cost", "rsi6", "rating", "bought",
          "process_score"]   # P0-4:逐卡过程分(presence-gated join,见 _join_process_score)
+# ↑ attribution.csv 的落盘 schema(FWDS 同族,fwd_2_oc 等列名固定,勿随主尺漂移):这是跨多日
+# 拼接读取的持久化 CSV 表头,若随 MAIN_RULER 改名,旧日期的历史行会与新日期错列、读出全 NaN
+# (T16 换尺需要新增列而非在此重命名,由该次改动自行处理落盘 schema 演进)。
 
 
 def refine_l3_bucket(attr: pd.DataFrame, sdir: Path) -> pd.DataFrame:
@@ -543,11 +552,11 @@ def attribute(date: str, scan_root: Path | None = None, report_root: Path | None
     # attribute_frame 一路算出 universe=0 / 赢家=0 的空归因,nightly_close 还报「归因 4/4 日 ✓」。
     # 隔壁 t1_review._fetch_prices 早就立了正确规矩(「T+1 daily 未结算 → ValueError,**绝不
     # 静默返回空帧**」),这里补齐同款:降级不留痕才是真病。
-    n_ruler = int(pd.to_numeric(realized.get("fwd_2_oc"), errors="coerce").notna().sum()) \
-        if "fwd_2_oc" in realized.columns else 0
+    n_ruler = int(pd.to_numeric(realized.get(MAIN_RULER), errors="coerce").notna().sum()) \
+        if MAIN_RULER in realized.columns else 0
     if n_ruler < 100:
         raise RuntimeError(
-            f"{date} 主尺 fwd_2_oc 仅 {n_ruler} 只有数(<100)——D+2 收盘多半未发布"
+            f"{date} 主尺 {MAIN_RULER} 仅 {n_ruler} 只有数(<100)——D+2 收盘多半未发布"
             "(通常 17:00 后可用),稍后再跑;**不产出空归因**")
     attr = attribute_frame(l1, realized, _buylist(date, report_root, scan_dir=sdir), abs_thresh=abs_thresh)
     attr = flag_news_pop(attr)                       # 标隔夜跳空脉冲(诊断/重标定排除)
@@ -733,8 +742,8 @@ def l3_bench_shadow(attr: pd.DataFrame, sdir: Path, top_n: int = 5) -> dict | No
 
     a = attr.copy()
     a["code"] = a["code"].astype(str).str.zfill(6)
-    fwd = (pd.to_numeric(a.set_index("code")["fwd_2_oc"], errors="coerce")
-          if "fwd_2_oc" in a.columns else pd.Series(dtype=float))
+    fwd = (pd.to_numeric(a.set_index("code")[MAIN_RULER], errors="coerce")
+          if MAIN_RULER in a.columns else pd.Series(dtype=float))
 
     top_fwd = fwd.reindex(top["code"]).dropna()
     fin_fwd = pd.Series(dtype=float)
@@ -835,7 +844,7 @@ def write_retro_input(date: str, attr: pd.DataFrame, scan_root: Path | None = No
              f"(到买单 {st['winner_to_buylist']})",
              f"- 买单 {st['buylist_n']} 只,命中赢家 {st['buylist_hit']}(命中率 {st['buylist_hitrate']}),"
              f"误买(跌入底10%){st['buylist_fp']}",
-             f"- 分桶:{st['buckets']};当日 composite IC(vs fwd_2_oc):{st['day_ic_composite']}\n"]
+             f"- 分桶:{st['buckets']};当日 composite IC(vs {MAIN_RULER}):{st['day_ic_composite']}\n"]
 
     def _tbl(df: pd.DataFrame, cols: list[str]) -> list[str]:
         cols = [c for c in cols if c in df.columns]
@@ -844,7 +853,7 @@ def write_retro_input(date: str, attr: pd.DataFrame, scan_root: Path | None = No
         rows = ["| " + " | ".join(str(r[c]) for c in cols) + " |" for _, r in df.iterrows()]
         return [head, sep, *rows]
 
-    fcols = ["code", "name", "industry", "fwd_2_oc", "rank", "composite", "score_momentum",
+    fcols = ["code", "name", "industry", MAIN_RULER, "rank", "composite", "score_momentum",
              "main_net_ratio", "winner_rate", "price_to_cost", "rsi6", "pct_60d"]
     for label, bk in [("漏在 L0(门槛误杀)", "missed_l0"), ("漏在 L1(权重压低)", "missed_l1"),
                       ("L2-L3 误判(召回了却 cut)", "recalled_cut"),
@@ -853,10 +862,10 @@ def write_retro_input(date: str, attr: pd.DataFrame, scan_root: Path | None = No
                       # 旧日期无影子文件 → 桶恒空 → 渲染 "_无_"(presence 天然)。
                       ("L3 bench 漏检(judged 未晋级)", "l3_bench"),
                       ("pass1 分诊漏检", "pass1_cut")]:
-        sub = attr[attr["bucket"] == bk].sort_values("fwd_2_oc", ascending=False).head(15)
+        sub = attr[attr["bucket"] == bk].sort_values(MAIN_RULER, ascending=False).head(15)
         lines += [f"\n## {label} — {len(attr[attr['bucket'] == bk])} 只(top 15)"]
         lines += _tbl(sub, fcols) if len(sub) else ["_无_"]
-    caught = attr[attr["bucket"] == "caught"].sort_values("fwd_2_oc", ascending=False).head(10)
+    caught = attr[attr["bucket"] == "caught"].sort_values(MAIN_RULER, ascending=False).head(10)
     lines += ["\n## 对照:抓到的赢家(caught, top 10)"]
     lines += _tbl(caught, fcols) if len(caught) else ["_无_"]
 

@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common.ruler import MAIN_RULER
+
 _COLS = ["date", "code", "name", "rating", "fwd_2", "market_fwd_2", "excess", "verdict",
          "fold_from", "fold_to", "fold_verdict", "trigger", "spread", "l3_conviction",
          "conflict"]
@@ -53,9 +55,9 @@ def market_fwd2(attr: pd.DataFrame | None) -> float | None:
     全市场)而不是 finalist 子集:后者是被漏斗挑过的偏置样本,拿它当"市场"会systematically
     低估超额。
     """
-    if attr is None or "fwd_2_oc" not in attr.columns:
+    if attr is None or MAIN_RULER not in attr.columns:
         return None
-    s = pd.to_numeric(attr["fwd_2_oc"], errors="coerce").dropna()
+    s = pd.to_numeric(attr[MAIN_RULER], errors="coerce").dropna()
     return None if not len(s) else float(s.median())
 
 
@@ -145,8 +147,8 @@ def roll(scan_root: Path | str | None = None) -> pd.DataFrame:
             code = str(r.get("code", "")).split(".")[0].zfill(6)
             rating = ratings.get(code) or ""
             fwd = None
-            if attr is not None and code in attr.index and "fwd_2_oc" in attr.columns:
-                v = pd.to_numeric(pd.Series([attr.at[code, "fwd_2_oc"]]), errors="coerce").iloc[0]
+            if attr is not None and code in attr.index and MAIN_RULER in attr.columns:
+                v = pd.to_numeric(pd.Series([attr.at[code, MAIN_RULER]]), errors="coerce").iloc[0]
                 fwd = None if pd.isna(v) else float(v)
             excess = None if (fwd is None or mkt is None) else fwd - mkt
             fold = fold_facts.get(code) or {}
@@ -169,7 +171,7 @@ def roll(scan_root: Path | str | None = None) -> pd.DataFrame:
 
 
 def render(ledger: pd.DataFrame) -> list[str]:
-    out = ["# 保送持仓判断账本(卖/持判对了没有 · 主尺 fwd_2_oc 相对全市场中位)", "",
+    out = [f"# 保送持仓判断账本(卖/持判对了没有 · 主尺 {MAIN_RULER} 相对全市场中位)", "",
            "_与选股复盘物理分表:2026-07-17「保送不算」裁定管的是漏斗选股口径,"
            "本表只问「持仓当天的判断事后看对不对」,两表永不互读。_", ""]
     if ledger is None or not len(ledger):

@@ -17,7 +17,9 @@ from pathlib import Path
 
 import pandas as pd
 
-_COLS = ["date", "code", "phase", "reason", "fwd_2_oc"]
+from autoresearch.common.ruler import MAIN_RULER
+
+_COLS = ["date", "code", "phase", "reason", "fwd_2_oc"]   # fwd_2_oc:参考尺,固定列名,勿随主尺漂移(持久化 ledger 列)
 _MIN_N = 10          # 停因桶 n<10 一律自标"样本不足",禁止据此改规则
 
 
@@ -38,10 +40,10 @@ def roll(scan_root: Path | str | None = None) -> pd.DataFrame:
         if ap.is_file():
             try:
                 adf = pd.read_csv(ap, dtype={"code": str})
-                if "code" in adf.columns and "fwd_2_oc" in adf.columns:
+                if "code" in adf.columns and MAIN_RULER in adf.columns:
                     adf["code"] = adf["code"].astype(str).str.zfill(6)
                     fwd = dict(zip(adf["code"],
-                                   pd.to_numeric(adf["fwd_2_oc"], errors="coerce"), strict=True))
+                                   pd.to_numeric(adf[MAIN_RULER], errors="coerce"), strict=True))
             except Exception:  # noqa: BLE001
                 fwd = {}
         for code, meta in stops.items():
@@ -56,9 +58,11 @@ def roll(scan_root: Path | str | None = None) -> pd.DataFrame:
 
 def render(ledger: pd.DataFrame) -> list[str]:
     """ledger → markdown(停因桶汇总 + 逐日计数);空 → 占位行。"""
-    out = ["# 早停账本(早停杀对了没有 · 主尺 fwd_2_oc)", ""]
+    out = [f"# 早停账本(早停杀对了没有 · 主尺 {MAIN_RULER})", ""]
     if ledger is None or not len(ledger):
         return out + ["_无早停记录(卡片 `**早停**` 行未落或尚未跑过带早停的扫描)_"]
+    # 下面读的是本 ledger 自己 `_COLS` 定的固定列 "fwd_2_oc"(见上),不是 attribution 源列,
+    # 勿改成 MAIN_RULER —— roll() 写入时已固定该名,ledger 历史行永远叫这个名字。
     mature = ledger[ledger["fwd_2_oc"].notna()]
     out += [f"- 累计早停 {len(ledger)} 张(其中 fwd 已成熟 {len(mature)} 张)", "",
             "| 停因 | n | fwd_2_oc 均值 | 已成熟 n | 裁决资格 |", "|---|---:|---:|---:|---|"]

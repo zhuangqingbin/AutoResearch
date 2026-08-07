@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common.ruler import MAIN_RULER
 from autoresearch.learning.shrink import MIN_N_INJECT, n_tag, shrink as _shrink_fn, shrink_config
 
 _COLS = ["date", "code", "name", "rating", "gap_open", "fwd_1", "fwd_2", "fwd_5", "fwd_10",
@@ -131,7 +132,7 @@ def roll(scan_root: Path | str | None = None) -> pd.DataFrame:
                    if (attr is not None and code in attr.index) else None)
             rows.append({"date": d.name, "code": code, "name": names.get(code, ""),
                          "rating": rating, "gap_open": gap, "fwd_1": _a("fwd_1_oo"),
-                         "fwd_2": _a("fwd_2_oc"),
+                         "fwd_2": _a(MAIN_RULER),
                          "fwd_5": f5, "fwd_10": f10, "hi_10": hi10, "hi_2": hi2,
                          "target_ret": tr, "target_hit": hit})
     return pd.DataFrame(rows, columns=_COLS)

@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common.ruler import MAIN_RULER
 from autoresearch.learning.shrink import MIN_N_INJECT, n_tag, shrink as _shrink_fn, shrink_config
 
 _COLS = ["check", "n_days", "n_fires", "mean_ex1", "mean_ex2", "mean_ex5", "hit_rate",
@@ -90,18 +91,18 @@ def roll(scan_root: Path | None = None, shrink: bool | None = None,
         fires["code"] = fires["code"].astype(str).str.zfill(6)
         attr["code"] = attr["code"].astype(str).str.zfill(6)
         f1 = pd.to_numeric(attr["fwd_1_oo"], errors="coerce")
-        f2 = pd.to_numeric(attr.get("fwd_2_oc"), errors="coerce") if "fwd_2_oc" in attr.columns \
+        f2 = pd.to_numeric(attr.get(MAIN_RULER), errors="coerce") if MAIN_RULER in attr.columns \
             else pd.Series(dtype=float)
         f5 = pd.to_numeric(attr.get("fwd_5_oc"), errors="coerce") if "fwd_5_oc" in attr.columns \
             else pd.Series(dtype=float)
         m1 = f1.mean()
         m2 = f2.mean() if len(f2) else float("nan")
         m5 = f5.mean() if len(f5) else float("nan")
-        j = fires.merge(attr[[c for c in ("code", "fwd_1_oo", "fwd_2_oc", "fwd_5_oc") if c in attr.columns]],
+        j = fires.merge(attr[[c for c in ("code", "fwd_1_oo", MAIN_RULER, "fwd_5_oc") if c in attr.columns]],
                         on="code", how="left")
-        j["fwd2_raw"] = pd.to_numeric(j.get("fwd_2_oc"), errors="coerce")   # 原始值(非超额)→ 左尾 KPI
+        j["fwd2_raw"] = pd.to_numeric(j.get(MAIN_RULER), errors="coerce")   # 原始值(非超额)→ 左尾 KPI
         j["ex1"] = pd.to_numeric(j.get("fwd_1_oo"), errors="coerce") - m1
-        j["ex2"] = (pd.to_numeric(j.get("fwd_2_oc"), errors="coerce") - m2) if "fwd_2_oc" in j.columns else None
+        j["ex2"] = (pd.to_numeric(j.get(MAIN_RULER), errors="coerce") - m2) if MAIN_RULER in j.columns else None
         j["ex5"] = (pd.to_numeric(j.get("fwd_5_oc"), errors="coerce") - m5) if "fwd_5_oc" in j.columns else None
         j["date"] = day.name
         rows.append(j)

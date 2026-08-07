@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common.ruler import MAIN_RULER
 from autoresearch.scan.run_contract import sha256_json
 
 ABSTENTION_VERDICT_SCHEMA_VERSION = 2
@@ -436,7 +437,7 @@ def roll(scan_root: Path | str | None = None) -> pd.DataFrame:
 
 def render(ledger: pd.DataFrame) -> list[str]:
     lines = [
-        "# 0-BUY 因果裁决账本（主尺 fwd_2_oc，相对市场中位）",
+        f"# 0-BUY 因果裁决账本（主尺 {MAIN_RULER}，相对市场中位）",
         "",
     ]
     if ledger is None or not len(ledger):

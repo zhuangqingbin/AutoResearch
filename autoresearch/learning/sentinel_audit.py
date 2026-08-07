@@ -24,6 +24,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common.ruler import MAIN_RULER
+
 SCHEMA_VERSION = 1
 UNMEASURED = "UNMEASURED"
 FALSE_NEGATIVE_MIN_EXCESS = 0.02      # +2pp,与 A11 的 FALSE_KILL 同一把尺
@@ -79,7 +81,7 @@ def _market_fwd2(scan_dir: Path) -> float | None:
         return None
     with contextlib.suppress(Exception):
         frame = pd.read_csv(path)
-        values = pd.to_numeric(frame.get("fwd_2_oc"), errors="coerce").dropna()
+        values = pd.to_numeric(frame.get(MAIN_RULER), errors="coerce").dropna()
         if len(values):
             return round(float(values.mean()), 6)
     return None

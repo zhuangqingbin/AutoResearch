@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common.ruler import MAIN_RULER
+
 _COLS = ["date", "n_flag", "n_unflag", "f2_flag", "f2_unflag", "f5_flag", "f5_unflag"]
 _POS = ["rep_impl", "rep_plan", "holder_in", "surv_n"]     # 正催化(减持不算)
 
@@ -27,16 +29,16 @@ def _day(d: Path) -> dict | None:
         attr = pd.read_csv(ap, dtype={"code": str})
     except Exception:  # noqa: BLE001
         return None
-    if (("fwd_2_oc" not in attr.columns and "fwd_5_oc" not in attr.columns)
+    if ((MAIN_RULER not in attr.columns and "fwd_5_oc" not in attr.columns)
             or "code" not in attr.columns or "code" not in cat.columns):
         return None
     cat["code"] = cat["code"].astype(str).str.zfill(6)
     attr["code"] = attr["code"].astype(str).str.zfill(6)
     pos_cols = [c for c in _POS if c in cat.columns]
     cat["_flag"] = cat[pos_cols].fillna(0).sum(axis=1) > 0 if pos_cols else False
-    fwd_cols = [c for c in ("fwd_2_oc", "fwd_5_oc") if c in attr.columns]
+    fwd_cols = [c for c in (MAIN_RULER, "fwd_5_oc") if c in attr.columns]
     m = cat.merge(attr[["code", *fwd_cols]], on="code", how="inner")
-    primary = "fwd_2_oc" if "fwd_2_oc" in fwd_cols else "fwd_5_oc"   # 成熟门:fwd_2 优先,无则退回 fwd_5
+    primary = MAIN_RULER if MAIN_RULER in fwd_cols else "fwd_5_oc"   # 成熟门:fwd_2 优先,无则退回 fwd_5
     for c in fwd_cols:
         m[c] = pd.to_numeric(m[c], errors="coerce")
     m = m.dropna(subset=[primary])
@@ -44,8 +46,8 @@ def _day(d: Path) -> dict | None:
         return None
     fl, un = m[m["_flag"]], m[~m["_flag"]]
     row = {"date": d.name, "n_flag": int(len(fl)), "n_unflag": int(len(un))}
-    row["f2_flag"] = round(float(fl["fwd_2_oc"].mean()), 6) if "fwd_2_oc" in fwd_cols and len(fl) else None
-    row["f2_unflag"] = round(float(un["fwd_2_oc"].mean()), 6) if "fwd_2_oc" in fwd_cols and len(un) else None
+    row["f2_flag"] = round(float(fl[MAIN_RULER].mean()), 6) if MAIN_RULER in fwd_cols and len(fl) else None
+    row["f2_unflag"] = round(float(un[MAIN_RULER].mean()), 6) if MAIN_RULER in fwd_cols and len(un) else None
     row["f5_flag"] = round(float(fl["fwd_5_oc"].mean()), 6) if "fwd_5_oc" in fwd_cols and len(fl) else None
     row["f5_unflag"] = round(float(un["fwd_5_oc"].mean()), 6) if "fwd_5_oc" in fwd_cols and len(un) else None
     return row

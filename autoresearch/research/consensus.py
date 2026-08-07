@@ -249,14 +249,15 @@ def prereg_trigger(ic_full: float | None, ic_first_half: float | None,
 
 def build_spec(trigger: dict, *, start: str, expires: str) -> dict:
     """触发结果 → registry spec(统一实验模板驱动)。`HOLD` 时抛错,不生成半个 spec。"""
+    from autoresearch.common.ruler import MAIN_RULER
     from autoresearch.learning import experiment_registry as reg, experiment_template as et
 
     if trigger["status"] != "TRIGGERED":
         raise ValueError(f"未触发({trigger['unmet']})—— 不生成 spec")
     template = et.ExperimentTemplate(
         experiment_id="consensus_eps_revision",
-        h0="卖方一致预期修正对主尺 fwd_2_oc 无增量",
-        h1="卖方一致预期修正对主尺 fwd_2_oc 有正增量",
+        h0=f"卖方一致预期修正对主尺 {MAIN_RULER} 无增量",
+        h1=f"卖方一致预期修正对主尺 {MAIN_RULER} 有正增量",
         data_cutoff="report_rc 按 report_date 滚动;只用已积累的交易日",
         paired_unit="scan_day", clustering="date_cluster",
         min_units=PREREG_MIN_DAYS, target_power=0.8,

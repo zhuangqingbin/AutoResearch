@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common.ruler import MAIN_RULER
 from autoresearch.learning.shrink import MIN_N_INJECT, n_tag, shrink as _shrink_fn, shrink_config
 
 _FLIP_COLS = ["lane", "n", "n_hiconv", "flip_rate", "triage_n", "triage_hit",
@@ -164,8 +165,8 @@ def gate_stats(scan_root: Path | str | None = None, window: int = 30,
     rows = []
     for d in _days(scan_root, window):
         attr = _read_attr(d)
-        m2 = (pd.to_numeric(attr["fwd_2_oc"], errors="coerce").mean()
-              if attr is not None and "fwd_2_oc" in attr.columns else None)
+        m2 = (pd.to_numeric(attr[MAIN_RULER], errors="coerce").mean()
+              if attr is not None and MAIN_RULER in attr.columns else None)
         m5 = (pd.to_numeric(attr["fwd_5_oc"], errors="coerce").mean()
               if attr is not None and "fwd_5_oc" in attr.columns else None)
         if (d / "decision_records.json").exists():
@@ -196,7 +197,7 @@ def gate_stats(scan_root: Path | str | None = None, window: int = 30,
                         return None
                     v = pd.to_numeric(pd.Series([attr.at[code, col]]), errors="coerce").iloc[0]
                     return None if pd.isna(v) else float(v)
-                f2, f5 = _num("fwd_2_oc"), _num("fwd_5_oc")
+                f2, f5 = _num(MAIN_RULER), _num("fwd_5_oc")
                 if f2 is not None and m2 is not None and not pd.isna(m2):
                     ex2 = f2 - float(m2)
                 if f5 is not None and m5 is not None and not pd.isna(m5):
