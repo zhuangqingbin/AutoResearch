@@ -1,6 +1,6 @@
 ---
 name: scan-retro
-description: Use when reviewing how a prior trading day's scan-market report actually played out — triggered by /retro, by the user asking "复盘昨天的扫描/为什么没选到涨的那些/昨天推的票准不准", or automatically when scan-market finds unreviewed days. Two loops - fast t1_review (D+1, per-card accuracy of genuine picks vs T+1 close, agent diagnosis via t1-review workflow) and slow retro (D+2, funnel recall attribution, auto-recalibrates factor weights, proposes structural fixes, distils lessons). scan-market only. Project-local.
+description: "Two review loops for prior scan-market days: FAST t1_review (D+1 initial + D+2 gap final verdict, per-card judgment accuracy via t1-review workflow) and SLOW retro (D+2, funnel recall attribution + auto weight recalibration + lessons). Triggers: /retro, 「复盘昨天的扫描」「为什么没选到X」, scan-market finding unreviewed days, or 「补复盘欠账」(batch diagnosis, ≤5 days/run). scan-market only. Project-local."
 ---
 
 # scan-retro — 用实际涨跌复盘 scan 报告,自迭代权重与经验

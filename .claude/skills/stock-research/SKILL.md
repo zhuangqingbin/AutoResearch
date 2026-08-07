@@ -1,6 +1,6 @@
 ---
 name: stock-research
-description: Use when the user wants to research or analyze a SINGLE stock/crypto ticker in THIS TradingAgents project without paying for an LLM API — full deep-dive report by default (e.g. "研究 NVDA", "分析 600519.SS", "给我一份 BUY/HOLD/SELL 报告"), or a FAST low-token decision card (5-tier rating + 3-scenario R:R + tripwires) when speed is asked ("快速看一眼", "出张决策卡") or when invoked by scan-market L4 as its workhorse over the ~30 finalists. Merges former analyze-ticker (full) + analyze-ticker-lite (lite). NOT for whole-market scans (use scan-market) or macro (use macro-research). Project-local skill.
+description: Two-tier single-ticker research. FULL deep-dive report by default (「研究 NVDA」「分析 600519.SS」, peers ok); LITE decision card (5-tier rating + 隔夜口径 R:R + tripwires) when speed is asked (「快速看一眼」「出张决策卡」) — lite is also the workhorse scan-market L4 invokes per finalist and the pinned-holdings review path on sentinel days. NOT for whole-market scans (→ scan-market) or macro (→ macro-research). Project-local.
 ---
 
 # stock-research — 单标的研究:full 全量报告 / lite 决策卡(一个 skill,两档)

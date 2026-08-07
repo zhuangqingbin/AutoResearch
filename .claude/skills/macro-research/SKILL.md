@@ -1,6 +1,6 @@
 ---
 name: macro-research
-description: Use when the user wants top-down GLOBAL + 中美 macro research that ends in cross-asset allocation tilts AND A股 sector/中观 read — e.g. "研究全球宏观", "中美宏观现在怎么看", "现在该超配什么资产", "A股哪些行业值得配", "give me a macro regime + asset allocation view". Also owns the LITE tier 市场研判(首席策略师 daily brief): invoked by scan-market (Stage 0, parallel with universe) or when the user asks "今天大盘怎么看" — writes market_view.md from the deterministic market_pack. NOT for one named ticker (use stock-research) or a full A-share stock screen (use scan-market). Project-local skill.
+description: "Top-down GLOBAL + 中美 macro → cross-asset tilts AND A股行业配置 read (「研究全球宏观」「现在该超配什么资产」). Also owns the LITE 市场研判 daily brief: invoked by scan-market Stage 0 or 「今天大盘怎么看」, writes market_view.md from the deterministic market_pack. NOT for one ticker (→ stock-research), a full A-share screen (→ scan-market), or single-industry depth (→ sector-research). Project-local."
 ---
 
 # macro-research — 在 session 内零付费 API 跑全球+中美宏观 + A股中观 → 配置

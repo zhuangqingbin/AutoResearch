@@ -1,6 +1,6 @@
 ---
 name: sector-research
-description: Use when the user wants to research a single A-share INDUSTRY/sector (申万一级) — 景气度、产业链结构、竞争格局、行业内估值/资金地形、龙头映射 — e.g. "研究一下半导体行业", "创新药板块现在怎么样", "军工景气到哪了", "光伏产业链值不值得配". Also owns the LITE tier 行业 brief that scan-market invokes at Stage 1 (hot sectors, TTL-cached, ~K≤6/day) feeding L3/L4 terrain and the L5 行业研判 section. NOT for one named ticker (use stock-research), whole-market screens (use scan-market), or cross-asset macro allocation (use macro-research). Project-local skill.
+description: "Single A-share INDUSTRY (申万一级) research — 景气度/产业链/竞争格局/资金地形/龙头映射 (「研究半导体行业」「创新药板块怎么样」). Also owns the LITE sector brief scan-market invokes at Stage 1: a two-段 machine contract (地形段喂 L3/L4;研判段仅 L5). NOT for one ticker (→ stock-research), whole-market (→ scan-market), cross-asset (→ macro-research). Project-local."
 ---
 
 # sector-research — 单行业研究:full 深研 / lite 行业 brief(一个 skill,两档)
