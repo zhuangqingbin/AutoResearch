@@ -19,7 +19,9 @@ import pytest
 
 from autoresearch.common import ruler
 from autoresearch.research.ruler_compare import (
+    _agg_column,
     _bool_col,
+    _gate_diff,
     _retirement_notes,
     _selftest,
     _verdict,
@@ -28,10 +30,13 @@ from autoresearch.research.ruler_compare import (
     day_universe,
     gap_frame,
     gate_day_stats,
+    gate_value,
     l3_day_stats,
+    l3_edge,
     lake_days,
     load_shadow_buys,
     main,
+    pinned_codes_from_finalists,
     render,
     scan_dates_with_attribution,
     shadow_codes_by_date,
@@ -198,6 +203,90 @@ def test_gate_day_stats_no_shadow_no_bought():
     assert abs(s["market_oc"] - 0.05) < 1e-9
 
 
+# ── _agg_column / _gate_diff(Important-3 review fix:①的生产聚合函数直接单测,
+#    不再只靠 _selftest() 里手写一遍的重复实现;三值夹具专门区分 mean vs median) ──
+
+
+def test_agg_column_mean_not_median_three_values():
+    table = pd.DataFrame({"x": [0.02, 0.05, 0.20]})   # median=0.05,mean=0.09—— 两者不同才有鉴别力
+    out = _agg_column(table, "x")
+    assert out["n_days"] == 3
+    assert abs(out["value"] - (0.02 + 0.05 + 0.20) / 3) < 1e-9
+    assert abs(out["value"] - 0.05) > 1e-6   # 不是中位数
+
+
+def test_agg_column_empty_table_returns_none_value():
+    out = _agg_column(pd.DataFrame(), "x")
+    assert out == {"value": None, "n_days": 0}
+
+
+def test_agg_column_missing_column_returns_none_value():
+    out = _agg_column(pd.DataFrame({"y": [0.1]}), "x")
+    assert out == {"value": None, "n_days": 0}
+
+
+def test_agg_column_drops_nan_independently():
+    table = pd.DataFrame({"x": [0.1, None, 0.3]})
+    out = _agg_column(table, "x")
+    assert out["n_days"] == 2
+    assert abs(out["value"] - 0.2) < 1e-9
+
+
+def test_gate_diff_is_real_minus_shadow_not_reversed():
+    real, shadow = {"value": 0.05, "n_days": 1}, {"value": 0.02, "n_days": 1}
+    assert abs(_gate_diff(real, shadow) - 0.03) < 1e-9
+    assert abs(_gate_diff(shadow, real) - (-0.03)) < 1e-9   # 参数顺序颠倒 → 结果反号
+
+
+def test_gate_diff_none_when_either_side_missing():
+    assert _gate_diff({"value": None, "n_days": 0}, {"value": 0.02, "n_days": 1}) is None
+    assert _gate_diff({"value": 0.02, "n_days": 1}, {"value": None, "n_days": 0}) is None
+
+
+def test_gate_value_paired_excludes_days_without_real_buys(tmp_path):
+    """Important-2 review fix:非配对(real 只在有买单日有数)与配对(限制到同一批买单日)
+    分母不同——用 3 天(2 天有买单、1 天没有)验证配对聚合真的只用了 2 天,而不是全 3 天。
+    `real_oc` 天然只在买单日有数(非配对聚合本身就已经是"只用买单日"),所以真正能证明
+    "配对 vs 非配对分母不同"的是 `shadow_oc`:它每天都有数,唯有配对聚合才会把第 3 天
+    (无买单)剔除——这正是 review Important-2 指出的"非配对相减混入选择效应"的病灶所在。
+    """
+    scan_root = tmp_path / "scan"
+    # 000002 每天都是 shadow(影子候选),000001 只在前两天被真实买入;第 3 天(无买单)
+    # 000002 的 fwd_2_oc 给一个极端值(0.50),如果配对聚合没有正确剔除第 3 天,均值会被这个
+    # 极端值显著拖动,断言就会失败——这就是本测试的鉴别力所在。
+    days = {
+        "2026-02-02": {"000001": (0.10, 0.05, True), "000002": (0.02, 0.01, False)},   # 有买单
+        "2026-02-03": {"000001": (0.06, 0.03, True), "000002": (0.04, 0.02, False)},   # 有买单
+        "2026-02-04": {"000001": (-0.20, 0.01, False), "000002": (0.50, 0.01, False)},  # 无买单
+    }
+    for d, rows in days.items():
+        dd = scan_root / d / "retro"
+        dd.mkdir(parents=True)
+        pd.DataFrame([{"code": c, "fwd_2_oc": oc, "buyable": True, "bought": bought}
+                     for c, (oc, _g, bought) in rows.items()]).to_csv(dd / "attribution.csv", index=False)
+    gap_cache = {d: pd.DataFrame([{"code": c, "gap_c1_o2": g, "buyable_c1": True, "eligible_gap": True}
+                                  for c, (_oc, g, _b) in rows.items()])
+                for d, rows in days.items()}
+    shadow_df = pd.DataFrame([{"date": d, "code": "000002"} for d in days])   # 每天都影子命中 000002
+    result = gate_value(sorted(days), scan_root=scan_root, shadow_df=shadow_df, gap_cache=gap_cache)
+    assert result["n_days"] == 3            # 全窗口三天都有 attribution.csv
+    assert result["n_paired_days"] == 2     # 但只有两天有买单 → 配对聚合只用这两天
+
+    # 配对:real_oc=(0.10+0.06)/2=0.08;shadow_oc 限同两天=(0.02+0.04)/2=0.03
+    assert abs(result["agg_paired"]["real_oc"]["value"] - 0.08) < 1e-6
+    assert abs(result["agg_paired"]["shadow_oc"]["value"] - 0.03) < 1e-6
+    assert result["agg_paired"]["shadow_oc"]["n_days"] == 2
+
+    # 非配对:shadow_oc 用全 3 天=(0.02+0.04+0.50)/3≈0.1867 —— 与配对版明显不同,证明
+    # 两者分母确实不同,不是同一个数字披了两层皮。
+    assert result["agg"]["shadow_oc"]["n_days"] == 3
+    assert abs(result["agg"]["shadow_oc"]["value"] - (0.02 + 0.04 + 0.50) / 3) < 1e-6
+    assert result["agg"]["shadow_oc"]["value"] > result["agg_paired"]["shadow_oc"]["value"] + 0.1
+
+    # 门的价值(配对)= 0.08 − 0.03 = 0.05,不是用非配对 shadow(0.1867)去减
+    assert abs(result["gate_value_paired_oc"] - 0.05) < 1e-6
+
+
 def test_channel_day_stats_empty_when_no_channel_column():
     u = pd.DataFrame([{"code": "000001", "fwd_2_oc": 0.05, "gap_c1_o2": 0.02,
                        "elig_oc": True, "elig_gap": True}])
@@ -217,6 +306,88 @@ def test_l3_day_stats_none_when_bench_side_empty():
     assert l3_day_stats(judged, u, "fwd_2_oc", "elig_oc") is None   # bench 侧空
 
 
+# ── pinned_codes_from_finalists / l3_day_stats(pinned_codes=...) ──
+# (Important-1 review fix:📌保送票必须从 bench(分母)剔除,同 l3_marginal.FORCED_REASONS
+# "两侧剔除"原则;真实数据交叉验证见 task-15-report.md v2 —— 剔除前 oc edge +1.59%,
+# 剔除后 +0.93%,与 reviewer 独立复算完全一致)
+
+
+def test_pinned_codes_from_finalists_reads_nonempty_pinned_note():
+    finalists = pd.DataFrame([
+        {"code": "000001", "pinned_note": "conviction_guard"},
+        {"code": "2", "pinned_note": ""},          # 空字符串 → 不算保送(且验证 zfill)
+        {"code": "3", "pinned_note": None},        # NaN → fillna("") 后不算保送
+        {"code": "000004", "pinned_note": "  "},   # 纯空白 strip 后也不算保送
+    ])
+    assert pinned_codes_from_finalists(finalists) == {"000001"}
+
+
+def test_pinned_codes_from_finalists_missing_column_or_empty():
+    assert pinned_codes_from_finalists(pd.DataFrame({"code": ["000001"]})) == set()
+    assert pinned_codes_from_finalists(pd.DataFrame()) == set()
+    assert pinned_codes_from_finalists(None) == set()
+
+
+def test_l3_day_stats_pinned_codes_excluded_from_both_buckets():
+    """000003 是保送票,原本 finalist=False(会被算进 bench)——剔除后 bench 均值应只剩 000004,
+    edge 应随之改变;若 000003 恰好 finalist=True,也不该被算进 finalist(两侧剔除)。"""
+    u = pd.DataFrame([
+        {"code": "000001", "fwd_2_oc": 0.10, "elig_oc": True},   # finalist
+        {"code": "000002", "fwd_2_oc": 0.20, "elig_oc": True},   # finalist(另一票,凑够分子)
+        {"code": "000003", "fwd_2_oc": -0.90, "elig_oc": True},  # bench,但是保送票——应被剔除
+        {"code": "000004", "fwd_2_oc": 0.04, "elig_oc": True},   # 干净的 bench
+    ])
+    judged = pd.DataFrame([
+        {"code": "000001", "finalist": True}, {"code": "000002", "finalist": True},
+        {"code": "000003", "finalist": False}, {"code": "000004", "finalist": False},
+    ])
+    without = l3_day_stats(judged, u, "fwd_2_oc", "elig_oc")
+    with_excl = l3_day_stats(judged, u, "fwd_2_oc", "elig_oc", pinned_codes={"000003"})
+    assert without["n_bench"] == 2 and abs(without["bench_mean"] - (-0.43)) < 1e-9   # mean(-0.90,0.04)
+    assert with_excl["n_bench"] == 1 and abs(with_excl["bench_mean"] - 0.04) < 1e-9   # 只剩 000004
+    assert with_excl["n_finalist"] == 2   # finalist 侧本就没有 000003,不受影响
+    # 剔除极端负值(-0.90)的保送票后 bench 均值从 -0.43 抬升到 0.04(变好了)——finalist 不变
+    # (0.15)时,finalist−bench 这个差反而**收窄**(0.58→0.11),与真实数据的方向一致
+    # (reviewer 独立复算:oc 头条从 +1.59% 剔除后降到 +0.93%)。
+    assert abs(without["edge"] - 0.58) < 1e-9
+    assert abs(with_excl["edge"] - 0.11) < 1e-9
+    assert with_excl["edge"] < without["edge"]
+
+
+def test_l3_edge_end_to_end_reads_pinned_from_finalists_csv(tmp_path):
+    """finalists.csv 存在且带 pinned_note → l3_edge() 真的读了它、真的剔除;
+    不给 finalists.csv(presence-gated)→ 退回不剔除的旧行为,不报错。"""
+    scan_root = tmp_path / "scan"
+    d = scan_root / "2026-03-02"
+    (d / "retro").mkdir(parents=True)
+    pd.DataFrame([
+        {"code": "000001", "fwd_2_oc": 0.10, "buyable": True, "bought": False},
+        {"code": "000002", "fwd_2_oc": 0.20, "buyable": True, "bought": False},
+        {"code": "000003", "fwd_2_oc": -0.90, "buyable": True, "bought": False},
+        {"code": "000004", "fwd_2_oc": 0.04, "buyable": True, "bought": False},
+    ]).to_csv(d / "retro" / "attribution.csv", index=False)
+    pd.DataFrame([
+        {"code": "000001", "finalist": True}, {"code": "000002", "finalist": True},
+        {"code": "000003", "finalist": False}, {"code": "000004", "finalist": False},
+    ]).to_csv(d / "L3_judged_full.csv", index=False)
+    # gap 侧给真实的四行(不能是空表——空表会让 elig_gap 全 False,gap 侧 l3_day_stats 返回
+    # None,进而让 l3_edge() 把整天跳过,oc 侧数字也就永远读不到,和本测试想验证的东西无关)。
+    gap = pd.DataFrame([{"code": c, "gap_c1_o2": 0.01, "buyable_c1": True, "eligible_gap": True}
+                       for c in ("000001", "000002", "000003", "000004")])
+
+    # 不给 finalists.csv → presence-gated 退回旧行为(bench 含 000003)
+    no_finalists = l3_edge(["2026-03-02"], scan_root=scan_root, gap_cache={"2026-03-02": gap})
+    assert abs(no_finalists["agg_oc"]["bench_mean"] - (-0.43)) < 1e-6
+    assert no_finalists["agg_oc"]["n_pinned_excluded_total"] == 0
+
+    # 给 finalists.csv 且 000003 是保送票 → bench 应剔除它
+    pd.DataFrame([{"code": "000003", "pinned_note": "conviction_guard"}]).to_csv(
+        d / "finalists.csv", index=False)
+    with_finalists = l3_edge(["2026-03-02"], scan_root=scan_root, gap_cache={"2026-03-02": gap})
+    assert abs(with_finalists["agg_oc"]["bench_mean"] - 0.04) < 1e-6
+    assert with_finalists["agg_oc"]["n_pinned_excluded_total"] == 1
+
+
 def test_verdict_empty_shadow_returns_none():
     codes = pd.Series(["000001"])
     s = pd.Series([True])
@@ -228,6 +399,41 @@ def test_verdict_degraded_forces_neutral_even_if_would_be_correct():
     elig = pd.Series([True])
     v = _verdict(pd.Series([False]), pd.Series([-0.05]), elig, codes, {"000001"}, True)
     assert v == "NEUTRAL"
+
+
+# ── M4/M5 边界回归(Important-3 review 实测变异:旧夹具的机会命中恰好都在 shadow 内、
+#    excess 都离 ±2pp 很远,两处漏检;这里专门构造"机会命中但不在 shadow"和"负但不够负"
+#    两类此前测不出来的反例) ──
+
+
+def test_verdict_opportunity_outside_shadow_does_not_trigger_false():
+    """000001 有机会(excess≥2pp)但**不在** shadow 里;shadow 唯一成员 000002 没机会且
+    excess≤-2pp → 应判 CORRECT,不应因为"某处存在机会"就误判 FALSE(v2 相对 v1 的核心
+    设计点就是只认 shadow 集合内的机会,见 abstention_ledger.py 自身 docstring)。"""
+    codes = pd.Series(["000001", "000002"])
+    elig = pd.Series([True, True])
+    opportunity = pd.Series([True, False])
+    excess = pd.Series([0.05, -0.05])
+    assert _verdict(opportunity, excess, elig, codes, {"000002"}, False) == "CORRECT"
+
+
+def test_verdict_correct_threshold_is_minus_2pp_not_plus():
+    """excess=-0.01 是负的,但没有 ≤-2pp —— 正确阈值下应是 NEUTRAL;若 `_CORRECT_THRESH`
+    符号被错写成 +0.02,`-0.01 <= 0.02` 恒真会误判 CORRECT。"""
+    codes = pd.Series(["000001"])
+    elig = pd.Series([True])
+    opportunity = pd.Series([False])
+    v = _verdict(opportunity, pd.Series([-0.01]), elig, codes, {"000001"}, False)
+    assert v == "NEUTRAL"
+
+
+def test_verdict_correct_threshold_boundary_inclusive():
+    """恰好等于 -2pp(闭区间边界,`<=`)应该算达标 → CORRECT。"""
+    codes = pd.Series(["000001"])
+    elig = pd.Series([True])
+    opportunity = pd.Series([False])
+    v = _verdict(opportunity, pd.Series([-0.02]), elig, codes, {"000001"}, False)
+    assert v == "CORRECT"
 
 
 def test_bool_col_default_when_column_missing():
@@ -314,9 +520,12 @@ def test_analyze_end_to_end_matches_hand_computed_selftest_numbers(tmp_path):
     gate = result["gate"]
     assert abs(gate["agg"]["real_oc"]["value"] - 0.035) < 1e-6
     assert abs(gate["agg"]["shadow_oc"]["value"] - 0.0475) < 1e-6
-    assert abs(gate["gate_value_oc"] - (-0.0125)) < 1e-6
-    assert abs(gate["gate_value_gap"] - 0.0575) < 1e-6
-    assert gate["gate_value_oc"] < 0 < gate["gate_value_gap"]           # 门的价值两尺符号相反
+    # 两日都有真实买单(000001) → 配对聚合与非配对聚合数值相同(配对没剔掉任何一天),
+    # 只是现在读的是"配对"字段(Important-2 review fix)。
+    assert gate["n_paired_days"] == 2
+    assert abs(gate["gate_value_paired_oc"] - (-0.0125)) < 1e-6
+    assert abs(gate["gate_value_paired_gap"] - 0.0575) < 1e-6
+    assert gate["gate_value_paired_oc"] < 0 < gate["gate_value_paired_gap"]   # 门的价值两尺符号相反
 
     compare = result["channels"]["compare"].set_index("channel")
     assert abs(compare.loc["chan_a", "unique_excess_oc"] - 0.055) < 1e-6
@@ -376,17 +585,20 @@ def test_retirement_notes_l3_edge_collapses_to_near_zero():
     result = {
         "channels": {"compare": pd.DataFrame(columns=["channel", "sign_flip"])},
         "abstention": {"n_days": 0, "flipped_dates": [], "n_reproduced": 0, "n_checked_reproduction": 0},
-        "l3": {"n_days": 14, "agg_oc": {"edge": 0.0159}, "agg_gap": {"edge": -0.0001}},
+        "l3": {"n_days": 14, "agg_oc": {"edge": 0.0159, "n_pinned_excluded_total": 49},
+              "agg_gap": {"edge": -0.0001, "n_pinned_excluded_total": 49}},
     }
     joined = "\n".join(_retirement_notes(result))
     assert "L3 真选 edge" in joined and "坍缩" in joined
+    assert "保送" in joined and "49" in joined   # Important-1 review fix:披露剔除的保送票数
 
 
 def test_retirement_notes_l3_edge_consistent_sign_no_warning():
     result = {
         "channels": {"compare": pd.DataFrame(columns=["channel", "sign_flip"])},
         "abstention": {"n_days": 0, "flipped_dates": [], "n_reproduced": 0, "n_checked_reproduction": 0},
-        "l3": {"n_days": 14, "agg_oc": {"edge": 0.02}, "agg_gap": {"edge": 0.015}},
+        "l3": {"n_days": 14, "agg_oc": {"edge": 0.02, "n_pinned_excluded_total": 0},
+              "agg_gap": {"edge": 0.015, "n_pinned_excluded_total": 0}},
     }
     joined = "\n".join(_retirement_notes(result))
     assert "符号一致" in joined and "作废" not in joined
@@ -422,6 +634,38 @@ def test_abstention_flip_end_to_end_false_to_neutral(tmp_path):
     assert row["status_gap"] == "NEUTRAL"
     assert bool(row["flipped"]) is True
     assert abst["flipped_dates"] == ["2026-01-05"]
+
+
+def test_abstention_flip_oc_side_honors_mature_not_phantom_tradable(tmp_path):
+    """Minor review fix:oc 侧 eligible 应该是 `buyable & mature`,不是 `buyable & tradable`
+    (`rejection_attribution.csv` 根本没有 `tradable` 列,该查找此前恒回退默认值 True,
+    等于从未真正过滤)。构造:shadow={A,B};A 数据不成熟(`mature=False`)且 excess=+0.10
+    (若被误当"已知"会破坏"shadow 集合全部 ≤-2pp"这个 CORRECT 判据);B 成熟且 excess=-0.05
+    (达标)。修复前(误读 mature 为恒真)→ A 被错误纳入 scope → NEUTRAL。修复后(正确剔除
+    未成熟的 A)→ scope 只剩 B → CORRECT。"""
+    import json as _json
+
+    lake, scan_root, shadow = _build_two_day_fixture(tmp_path)
+    d = scan_root / "2026-01-05"
+    rows = [
+        {"code": "000002", "final_action": "ABSTAIN", "buyable": True, "mature": False,
+         "excess_2": 0.10, "opportunity": False},
+        {"code": "000003", "final_action": "ABSTAIN", "buyable": True, "mature": True,
+         "excess_2": -0.05, "opportunity": False},
+        {"code": "000001", "final_action": "ABSTAIN", "buyable": True, "mature": True,
+         "excess_2": -0.03, "opportunity": False},
+    ]
+    pd.DataFrame(rows).to_csv(d / "retro" / "rejection_attribution.csv", index=False)
+    (d / "retro" / "abstention_verdict.json").write_text(
+        _json.dumps({"status_v2": "CORRECT", "data_quality": "COMPLETE"}), encoding="utf-8")
+    # shadow_buys.csv 里 2026-01-05 已固定是 {000002, 000003}(_build_two_day_fixture)
+
+    result = analyze(days=60, scan_root=scan_root, lake=lake, shadow_path=shadow)
+    row = result["abstention"]["table"].iloc[0]
+    assert row["status_oc_reproduced"] == "CORRECT", (
+        "elig_oc 应正确剔除 mature=False 的 000002,只剩 000003(-0.05≤-2pp)进 scope —— "
+        f"若又变回读 mature=False 视为已知/不存在的 tradable 列,000002(excess=+0.10)会"
+        f"混进来破坏 all≤-2pp,得到 NEUTRAL 而不是 CORRECT(got {row['status_oc_reproduced']})")
 
 
 def test_abstention_flip_skips_not_abstained_day(tmp_path):

@@ -266,6 +266,29 @@ def gate_day_stats(universe: pd.DataFrame, shadow_codes: set[str]) -> dict:
     }
 
 
+def _agg_column(table: pd.DataFrame, col: str) -> dict:
+    """跨日简单日频均值(同 `channel_audit.cumulative_ledger` 的"不按当日样本数加权"口径)。
+    纯函数,模块级(Important-3 review fix,2026-08-07:此前是 `gate_value()` 内的嵌套
+    closure,`--selftest` 从不调用 `gate_value()` 本身,导致这段聚合代码从未被 selftest
+    执行过——① 的 `real−shadow` 符号反写这类变异能悄悄通过。提到模块级后 `_selftest()`
+    直接调用它,变异会被抓)。`table` 空 / `col` 缺失 / 全 NaN → `{"value": None, "n_days": 0}`。
+    """
+    if table is None or not len(table) or col not in table.columns:
+        return {"value": None, "n_days": 0}
+    s = pd.to_numeric(table[col], errors="coerce").dropna()
+    return {"value": round(float(s.mean()), 6) if len(s) else None, "n_days": int(len(s))}
+
+
+def _gate_diff(real: dict, shadow: dict) -> float | None:
+    """`真实 − 影子`(门的价值单点差)。任一侧 `value` 为 None → None。模块级纯函数
+    (Important-3 review fix,理由同 `_agg_column`)——独立拆出来是为了让 selftest 能直接
+    锁定"是 real−shadow,不是 shadow−real"这个符号,不依赖对 `gate_value()` 的整体黑盒断言。
+    """
+    if real["value"] is None or shadow["value"] is None:
+        return None
+    return real["value"] - shadow["value"]
+
+
 def gate_value(dates: list[str], scan_root: Path | None = None,
                shadow_df: pd.DataFrame | None = None,
                gap_cache: dict[str, pd.DataFrame] | None = None,
@@ -273,6 +296,13 @@ def gate_value(dates: list[str], scan_root: Path | None = None,
     """逐日 `gate_day_stats` → 简单日频均值聚合(同 `channel_audit.cumulative_ledger` 的
     "不按当日样本数加权"口径)。真实/影子每日各自可能无数据(0买日无真实signal;shadow_buys
     理论上每日都有 top-k,但历史缺口不保证),聚合时各自独立 dropna,分别报 n_days。
+
+    **配对版(Important-2 review fix,2026-08-07)**:`agg`(全样本,`real` 只在有买单的
+    日子有数、`shadow`/`market` 在全窗口有数)分母不同,`real−shadow` 直接相减混入了"哪几天
+    下了单"的选择效应(review 实测:配对前 oc 侧 -3.09%,配对后收窄到 -0.92%,缩 3.3 倍)。
+    `agg_paired`/`gate_value_paired_*` 只用**同时有买单的那些日子**(`n_real>0`)计算 real 与
+    shadow,是真正同分母的配对差,**这是本函数现在唯一对外称"门的价值"的数字**——`agg`
+    仍返回(渲染层展示为"非配对,仅供参照",不再相减)。
     """
     scan_root = Path(scan_root or SCAN_ROOT)
     shadow_df = shadow_df if shadow_df is not None else load_shadow_buys()
@@ -295,19 +325,16 @@ def gate_value(dates: list[str], scan_root: Path | None = None,
         used.append(d)
     table = pd.DataFrame(rows)
 
-    def _agg(col: str) -> dict:
-        if not len(table):
-            return {"value": None, "n_days": 0}
-        s = pd.to_numeric(table[col], errors="coerce").dropna()
-        return {"value": round(float(s.mean()), 6) if len(s) else None, "n_days": int(len(s))}
+    cols = ("real_oc", "shadow_oc", "market_oc", "real_gap", "shadow_gap", "market_gap")
+    agg = {c: _agg_column(table, c) for c in cols}
 
-    agg = {c: _agg(c) for c in ("real_oc", "shadow_oc", "market_oc", "real_gap", "shadow_gap", "market_gap")}
-    gate_oc = (agg["real_oc"]["value"] - agg["shadow_oc"]["value"]
-               if agg["real_oc"]["value"] is not None and agg["shadow_oc"]["value"] is not None else None)
-    gate_gap = (agg["real_gap"]["value"] - agg["shadow_gap"]["value"]
-                if agg["real_gap"]["value"] is not None and agg["shadow_gap"]["value"] is not None else None)
+    paired = table[table["n_real"] > 0] if len(table) else table
+    agg_paired = {c: _agg_column(paired, c) for c in cols}
+    gate_paired_oc = _gate_diff(agg_paired["real_oc"], agg_paired["shadow_oc"])
+    gate_paired_gap = _gate_diff(agg_paired["real_gap"], agg_paired["shadow_gap"])
     return {"dates": used, "n_days": len(used), "table": table, "agg": agg,
-            "gate_value_oc": gate_oc, "gate_value_gap": gate_gap}
+            "agg_paired": agg_paired, "n_paired_days": int((table["n_real"] > 0).sum()) if len(table) else 0,
+            "gate_value_paired_oc": gate_paired_oc, "gate_value_paired_gap": gate_paired_gap}
 
 
 # ═══════════════════════════ ② 九路召回 unique 超额排序 ═══════════════════════════
@@ -410,20 +437,45 @@ def channel_ranking(dates: list[str], scan_root: Path | None = None,
 # ═══════════════════════════ ③ L3 真选 edge(finalist vs bench) ═══════════════════════════
 
 
-def l3_day_stats(judged: pd.DataFrame, universe: pd.DataFrame,
-                 ruler_col: str, elig_col: str) -> dict | None:
+def pinned_codes_from_finalists(finalists: pd.DataFrame) -> set[str]:
+    """`finalists.csv` 的 `pinned_note` 非空行 → 保送代码集合。口径同 `l3_marginal.day_frame`
+    (`note = finalists["pinned_note"].fillna("").astype(str).str.strip(); ... note != ""`)。
+    缺列/缺文件/空表 → 空集合(presence-gated,不是硬依赖)。
+
+    `fillna("")` 不能省:`read_csv` 把空单元读成 NaN,`str(nan)` 是 `"nan"` 不是 `""`——
+    漏这步会把每一行都误判成"有 pinned_note"(同 `l3_marginal.py` 踩过的坑)。
+    """
+    if finalists is None or not len(finalists) or not {"code", "pinned_note"}.issubset(finalists.columns):
+        return set()
+    note = finalists["pinned_note"].fillna("").astype(str).str.strip()
+    return set(_code6(finalists.loc[note != "", "code"]))
+
+
+def l3_day_stats(judged: pd.DataFrame, universe: pd.DataFrame, ruler_col: str, elig_col: str,
+                 pinned_codes: frozenset[str] | set[str] = frozenset()) -> dict | None:
     """单日 `L3_judged_full.csv`(`finalist` 布尔列)× universe → finalist/bench 均值差。
 
     **不是** `l3_marginal.day_estimate` 的分层匹配反事实(那套需要 `_l3_pass1_kept.csv`
     的 `selection_reason` provenance,本任务窗口内的历史日一个都没有)——这里是更朴素的
     "真选 vs 陪跑"直接对照,brief 原话"finalists 真选 vs bench"。只统计 eligible 子集
     (与②同一 elig_col 定义),finalist 或 bench 任一侧空 → None(presence-gated)。
+
+    **`pinned_codes`(Important-1 review fix,2026-08-07)**:📌保送票**两侧**剔除,同
+    `l3_marginal.py` 的 `FORCED_REASONS` 设计原则("pinned/conviction_guard 从两侧同时剔除"
+    ——它们不是 L3 排序的产物,留在 bench 就是拿"保送票恰好跑输"的收益去坐实排序有 edge,
+    历史判例 `retro-l3-edge-contaminated-by-pinned-20260716`)。`L3_judged_full.csv` 本身
+    在 pinned 注入**之前**落盘(`autoresearch/scan/l3/merge.py::write_finalists` 的
+    `jd.to_csv(...)` 先于 `_inject_pinned_finalists()`),所以 finalist 桶(分子)架构性地
+    已经干净;这个参数**主要**清理 bench 桶(分母)——保送票以 `finalist=False` 的身份留在
+    未剔除前的 bench 里,拉低/拉高 bench 均值,从而放大/缩小表观 edge。
     """
     if judged is None or not len(judged) or not {"code", "finalist"}.issubset(judged.columns):
         return None
     j = judged.copy()
     j["code"] = _code6(j["code"])
     j["finalist"] = _bool_col(j, "finalist", False)
+    if pinned_codes:
+        j = j[~j["code"].isin(pinned_codes)]
     u = universe.copy()
     ret = pd.to_numeric(u[ruler_col], errors="coerce")
     elig = u[elig_col].astype(bool)
@@ -447,7 +499,11 @@ def l3_day_stats(judged: pd.DataFrame, universe: pd.DataFrame,
 def l3_edge(dates: list[str], scan_root: Path | None = None,
            gap_cache: dict[str, pd.DataFrame] | None = None,
            lake: Path | None = None) -> dict:
-    """逐日两尺 `l3_day_stats` → 简单日频均值聚合(同②的跨日聚合口径)。"""
+    """逐日两尺 `l3_day_stats` → 简单日频均值聚合(同②的跨日聚合口径)。
+
+    每日额外读 `finalists.csv` 取 📌 保送代码集合(presence-gated:缺文件/缺列 → 空集合,
+    不阻断该日),两侧剔除后再算 finalist/bench(见 `l3_day_stats` docstring Important-1)。
+    """
     scan_root = Path(scan_root or SCAN_ROOT)
     rows_oc, rows_gap, used = [], [], []
     for d in dates:
@@ -459,26 +515,31 @@ def l3_edge(dates: list[str], scan_root: Path | None = None,
         judged = pd.read_csv(jp, dtype={"code": str})
         if attr.empty or judged.empty:
             continue
+        fp = scan_root / d / "finalists.csv"
+        finalists = pd.read_csv(fp, dtype={"code": str}) if fp.exists() else None
+        pinned = pinned_codes_from_finalists(finalists)
         gap = (gap_cache or {}).get(d)
         if gap is None:
             gap = gap_frame(d, lake=lake)
         u = day_universe(attr, gap)
-        s_oc = l3_day_stats(judged, u, MAIN_RULER, "elig_oc")
-        s_gap = l3_day_stats(judged, u, GAP_COL, "elig_gap")
+        s_oc = l3_day_stats(judged, u, MAIN_RULER, "elig_oc", pinned_codes=pinned)
+        s_gap = l3_day_stats(judged, u, GAP_COL, "elig_gap", pinned_codes=pinned)
         if s_oc is None or s_gap is None:
             continue
-        rows_oc.append({**s_oc, "date": d})
-        rows_gap.append({**s_gap, "date": d})
+        rows_oc.append({**s_oc, "date": d, "n_pinned_excluded": len(pinned)})
+        rows_gap.append({**s_gap, "date": d, "n_pinned_excluded": len(pinned)})
         used.append(d)
 
     def _agg(rows: list[dict]) -> dict:
         if not rows:
-            return {"n_days": 0, "finalist_mean": None, "bench_mean": None, "edge": None}
+            return {"n_days": 0, "finalist_mean": None, "bench_mean": None, "edge": None,
+                    "n_pinned_excluded_total": 0}
         df = pd.DataFrame(rows)
         return {"n_days": len(df),
                 "finalist_mean": round(float(df["finalist_mean"].mean()), 6),
                 "bench_mean": round(float(df["bench_mean"].mean()), 6),
-                "edge": round(float(df["edge"].mean()), 6)}
+                "edge": round(float(df["edge"].mean()), 6),
+                "n_pinned_excluded_total": int(df["n_pinned_excluded"].sum())}
 
     return {"dates": used, "n_days": len(used), "daily_oc": rows_oc, "daily_gap": rows_gap,
             "agg_oc": _agg(rows_oc), "agg_gap": _agg(rows_gap)}
@@ -541,7 +602,13 @@ def abstention_flip(dates: list[str], scan_root: Path | None = None,
         degraded = verdict.get("data_quality") == "DEGRADED"
         shadow_codes = shadow_map.get(d, set())
 
-        elig_oc = _bool_col(rej, "buyable", True) & _bool_col(rej, "tradable", True)
+        # Minor review fix(2026-08-07):production `classify_abstention` 的 eligible 定义是
+        # `rejected & mature & buyable`(见 abstention_ledger.py);此处 `rejected` 在本函数
+        # 语境下恒真(已过滤到全 ABSTAIN 日),故应为 `buyable & mature`。此前误写成
+        # `buyable & tradable`——`rejection_attribution.csv` 根本没有 `tradable` 列,
+        # `_bool_col` 缺列即回退默认值 True,恒真、从未真正过滤,漏了 `mature`。11 天自检
+        # 11/11 精确复现存量证明这个疏漏经验上不改变任何一天的判定,但口径应该写对。
+        elig_oc = _bool_col(rej, "buyable", True) & _bool_col(rej, "mature", True)
         excess_oc = pd.to_numeric(rej.get("excess_2"), errors="coerce")
         opp_oc = _bool_col(rej, "opportunity", False)
         v_oc_reproduced = _verdict(opp_oc, excess_oc, elig_oc, rej["code"], shadow_codes, degraded)
@@ -659,19 +726,22 @@ def _retirement_notes(result: dict) -> list[str]:
         notes.append("L3 真选 edge(finalist vs bench,本报告③节口径):窗口内数据不足,无法判定。")
     else:
         edge_oc, edge_gap = l3["agg_oc"]["edge"], l3["agg_gap"]["edge"]
+        pinned_note = (f"(📌保送票已两侧剔除,累计 {l3['agg_oc']['n_pinned_excluded_total']} "
+                       "票次;剔除前 oc 侧头条曾读 +1.59%,约 42% 来自 bench 被保送已知跑输"
+                       "仓位拉低——见 task-15-report.md v2 修订说明)")
         if abs(edge_gap) < _NEAR_ZERO <= abs(edge_oc):
             notes.append(
                 f"**L3 真选 edge(finalist vs bench)—— 待重验**:fwd_2_oc 下 {_fmt_pct(edge_oc)}"
                 f",gap_c1_o2 下坍缩到近乎 0({_fmt_pct(edge_gap)})——不是干净的符号翻转,是"
-                "「有意义的正 edge」在隔夜尺下消失,同样不能直接沿用旧尺读数。")
+                f"「有意义的正 edge」在隔夜尺下消失,同样不能直接沿用旧尺读数。{pinned_note}")
         elif (edge_oc > 0) != (edge_gap > 0):
             notes.append(
                 f"**L3 真选 edge(finalist vs bench)—— 作废/待重验**:fwd_2_oc {_fmt_pct(edge_oc)} "
-                f"vs gap_c1_o2 {_fmt_pct(edge_gap)}—— 符号相反。")
+                f"vs gap_c1_o2 {_fmt_pct(edge_gap)}—— 符号相反。{pinned_note}")
         else:
             notes.append(
                 f"L3 真选 edge(finalist vs bench)两尺**符号一致**:fwd_2_oc {_fmt_pct(edge_oc)} "
-                f"vs gap_c1_o2 {_fmt_pct(edge_gap)}。")
+                f"vs gap_c1_o2 {_fmt_pct(edge_gap)}。{pinned_note}")
     return notes
 
 
@@ -681,6 +751,16 @@ def render(result: dict) -> str:
     out = [
         "# 两尺对照报告(gap_c1_o2 vs fwd_2_oc)—— 换尺认知底片",
         "",
+        "> **v2 修订(2026-08-07,独立 reviewer 复核后)**:reviewer 独立只读复算四节数字"
+        "**零差异**,但指出 3 处 Important 口径问题,已全部修正——"
+        "①「门的价值」原是非配对相减(真实 6 日 vs 影子独立聚合的全窗口),现改为**配对**"
+        "(只用同一批买单日,见下方「非配对/配对」两张表);"
+        "③ L3 edge 的 bench(分母)桶原未剔除 📌 保送票,现两侧剔除"
+        "(`retro-l3-edge-contaminated-by-pinned-20260716` 判例——保送不是 L3 排序的产物),"
+        "oc 头条从 **+1.59% 修正为 +0.93%**(gap 侧 -0.01%→-0.06%,仍近零,方向性结论不变);"
+        "`--selftest` 补上此前 3 处鉴别力盲区(①聚合函数此前从未被调用、④shadow门槛/"
+        "CORRECT阈值符号此前无边界用例)并对 5 处已知变异逐一重跑确认现在全部报红。"
+        "v1 的具体数字(如 +1.59%)不应再被引用,详见 task-15-report.md 的 review 回复。", "",
         "> 2026-08-05 用户裁定:评判主尺从 `fwd_2_oc`(D+1开买→D+2收卖)改为隔夜尺 "
         "`gap_c1_o2`(D+1收买→D+2开卖)。**本报告不是论证新尺更优**,只回答:换尺之后,"
         "哪些基于旧尺的历史结论会翻?", "",
@@ -692,22 +772,35 @@ def render(result: dict) -> str:
 
     # ── ① 门的价值 ──
     gate = result["gate"]
-    out += ["## ① 门的价值(真实 vs 影子 vs 市场,简单日频均值)", ""]
+    out += ["## ① 门的价值(真实 vs 影子 vs 市场)", ""]
     if not gate["n_days"]:
         out += ["_窗口内无可用数据。_", ""]
     else:
         a = gate["agg"]
-        out += ["| 线 | fwd_2_oc 均值 | (n日) | gap_c1_o2 均值 | (n日) |", "|---|---:|---:|---:|---:|"]
+        out += ["**非配对(仅供参照,不构成可比差值)**:三条线各自独立聚合,分母不同——"
+               "「真实」只在有买单的日子有数,「影子」/「市场」是全窗口。**不要把这一段的"
+               "任意两行相减**(见下方配对版说明)。", "",
+               "| 线 | fwd_2_oc 均值 | (n日) | gap_c1_o2 均值 | (n日) |", "|---|---:|---:|---:|---:|"]
         for label, oc_k, gap_k in (("真实(bought)", "real_oc", "real_gap"),
-                                   ("影子(shadow_buys)", "shadow_oc", "shadow_gap"),
-                                   ("市场(eligible)", "market_oc", "market_gap")):
+                                   ("影子(shadow_buys),全窗口", "shadow_oc", "shadow_gap"),
+                                   ("市场(eligible),全窗口", "market_oc", "market_gap")):
             out.append(f"| {label} | {_fmt_pct(a[oc_k]['value'])} | {a[oc_k]['n_days']} | "
                       f"{_fmt_pct(a[gap_k]['value'])} | {a[gap_k]['n_days']} |")
-        out += ["", f"- **门的价值(真实−影子)**:fwd_2_oc {_fmt_pct(gate['gate_value_oc'])} "
-               f"vs gap_c1_o2 {_fmt_pct(gate['gate_value_gap'])}。"]
-        if a["real_oc"]["n_days"] < _THIN_DAYS:
-            out.append(f"- ⚠薄样本:「真实(bought)」只有 {a['real_oc']['n_days']} 个有买单的 scan 日"
-                      f"(0买日占绝大多数)——门的价值这两个数字统计功效弱,不建议直接当结论引用。")
+        ap_ = gate["agg_paired"]
+        out += ["",
+               f"**配对版(同 {gate['n_paired_days']} 个买单日,真正的门的价值 —— 本报告唯一"
+               "可引用的「门的价值」数字)**:", "",
+               "| 线(同一批日子) | fwd_2_oc 均值 | gap_c1_o2 均值 |", "|---|---:|---:|",
+               f"| 真实(bought) | {_fmt_pct(ap_['real_oc']['value'])} | {_fmt_pct(ap_['real_gap']['value'])} |",
+               f"| 影子(shadow_buys,限同 {gate['n_paired_days']} 日) | "
+               f"{_fmt_pct(ap_['shadow_oc']['value'])} | {_fmt_pct(ap_['shadow_gap']['value'])} |",
+               "", f"- **门的价值(真实−影子,配对)**:fwd_2_oc "
+               f"{_fmt_pct(gate['gate_value_paired_oc'])} vs gap_c1_o2 "
+               f"{_fmt_pct(gate['gate_value_paired_gap'])}。"]
+        if gate["n_paired_days"] < _THIN_DAYS:
+            out.append(f"- ⚠薄样本:仅 {gate['n_paired_days']} 个买单日(0买日占绝大多数)——"
+                      "即便是配对版本,这两个数字的统计功效依然弱,不建议直接当结论引用,只作"
+                      "方向性参考。")
         out.append("")
 
     # ── ② 九路召回 unique 超额排序 ──
@@ -730,12 +823,17 @@ def render(result: dict) -> str:
 
     # ── ③ L3 真选 edge ──
     l3 = result["l3"]
-    out += ["## ③ L3 真选 edge(finalist vs bench,两尺对照)", ""]
+    out += ["## ③ L3 真选 edge(finalist vs bench,两尺对照;📌保送票两侧已剔除)", ""]
     if not l3["n_days"]:
         out += ["_窗口内无 L3_judged_full.csv × attribution.csv 可配对数据。_", ""]
     else:
         oc, gap = l3["agg_oc"], l3["agg_gap"]
-        out += ["| 尺 | 天数 | finalist均值 | bench均值 | edge(finalist−bench) |",
+        out += [f"finalist(分子)桶因读取 pinned 注入前的 `L3_judged_full.csv` 架构性干净;"
+               f"bench(分母)桶另有 📌 保送票剔除(累计 {oc['n_pinned_excluded_total']} 票次,"
+               "同 `l3_marginal.py` 的 `FORCED_REASONS` 两侧剔除原则,`retro-l3-edge-"
+               "contaminated-by-pinned-20260716` 判例——保送票不是 L3 排序的产物,留着就是拿"
+               "它的收益去证明/证伪排序有 edge)。", "",
+               "| 尺 | 天数 | finalist均值 | bench均值 | edge(finalist−bench) |",
                "|---|---:|---:|---:|---:|",
                f"| fwd_2_oc | {oc['n_days']} | {_fmt_pct(oc['finalist_mean'])} | "
                f"{_fmt_pct(oc['bench_mean'])} | {_fmt_pct(oc['edge'])} |",
@@ -777,7 +875,12 @@ def render(result: dict) -> str:
            "理由与限制见模块 docstring。",
            "- ③节是 finalist-vs-bench 直接对照,不是 `l3_marginal.py` 的分层匹配反事实估计"
            "(窗口内历史日缺 `_l3_pass1_kept.csv` provenance,做不了那一套)。",
-           "- 样本量:见各节 n_days;不足的地方本报告如实标注,不外推。", ""]
+           "- 样本量:见各节 n_days;不足的地方本报告如实标注,不外推。",
+           "- **复现**:`uv run --no-sync python -m autoresearch.research.ruler_compare run "
+           "--days 60`(全量重算并覆盖本文件);`uv run --no-sync python -m "
+           "autoresearch.research.ruler_compare --selftest`(离线合成数据自测四节数值,"
+           "含①②③④共 5 处已知算法级变异的边界用例);`uv run --no-sync python -m pytest -q "
+           "tests/research/test_ruler_compare.py`(49 例,IO 层 + 端到端 + 边界情形)。", ""]
     return "\n".join(out)
 
 
@@ -831,16 +934,35 @@ def _selftest() -> int:
     _check("gate.day1.shadow_gap", g1["shadow_gap"], -0.005)  # mean(-0.02,0.01)
     _check("gate.day2.shadow_oc", g2["shadow_oc"], 0.045)     # mean(0.03,0.06)
     _check("gate.day2.shadow_gap", g2["shadow_gap"], -0.03)   # mean(-0.02,-0.04)
-    real_oc_agg = (g1["real_oc"] + g2["real_oc"]) / 2
-    shadow_oc_agg = (g1["shadow_oc"] + g2["shadow_oc"]) / 2
-    real_gap_agg = (g1["real_gap"] + g2["real_gap"]) / 2
-    shadow_gap_agg = (g1["shadow_gap"] + g2["shadow_gap"]) / 2
-    _check("gate.agg.real_oc", real_oc_agg, 0.035)
-    _check("gate.agg.shadow_oc", shadow_oc_agg, 0.0475)
-    _check("gate.agg.gate_value_oc", real_oc_agg - shadow_oc_agg, -0.0125)
-    _check("gate.agg.gate_value_gap", real_gap_agg - shadow_gap_agg, 0.0575)
-    if not (real_oc_agg - shadow_oc_agg < 0 < real_gap_agg - shadow_gap_agg):
-        fails.append("gate.agg: 期望本合成样例门的价值两尺符号相反(oc<0<gap),用于验证符号翻转检测")
+
+    # Important-3 review fix(2026-08-07,M1):此前这里手写了一遍聚合/相减,`gate_value()`
+    # 真正用的模块级聚合函数 `_agg_column`/`_gate_diff` 从未被 `--selftest` 调用过——
+    # "real−shadow 反写成 shadow−real" 这类符号变异因此漏检。现在直接调用被测函数本身。
+    # 三日(非两日)夹具:两日时 mean 恒等于 median,mean→median 这类变异也测不出来。
+    table3 = pd.DataFrame([
+        {"date": "d1", "real_oc": 0.05, "shadow_oc": 0.09, "real_gap": 0.03, "shadow_gap": -0.02, "n_real": 1},
+        {"date": "d2", "real_oc": 0.02, "shadow_oc": 0.03, "real_gap": 0.05, "shadow_gap": -0.02, "n_real": 1},
+        {"date": "d3", "real_oc": 0.20, "shadow_oc": 0.03, "real_gap": -0.10, "shadow_gap": 0.03, "n_real": 1},
+    ])
+    agg_real_oc = _agg_column(table3, "real_oc")
+    agg_shadow_oc = _agg_column(table3, "shadow_oc")
+    agg_real_gap = _agg_column(table3, "real_gap")
+    agg_shadow_gap = _agg_column(table3, "shadow_gap")
+    _check("agg_column.real_oc.n_days", agg_real_oc["n_days"], 3, tol=0)
+    _check("agg_column.real_oc.mean_not_median", agg_real_oc["value"], (0.05 + 0.02 + 0.20) / 3)
+    if abs(agg_real_oc["value"] - 0.05) < 1e-6:   # 0.05 恰是三值的中位数——若命中说明被换成了 median
+        fails.append("agg_column: real_oc 读数等于中位数 0.05,疑似 mean 被换成了 median")
+    _check("agg_column.shadow_oc.mean", agg_shadow_oc["value"], (0.09 + 0.03 + 0.03) / 3)
+    gate_diff_oc = _gate_diff(agg_real_oc, agg_shadow_oc)
+    gate_diff_gap = _gate_diff(agg_real_gap, agg_shadow_gap)
+    _check("gate_diff.oc", gate_diff_oc, (0.05 + 0.02 + 0.20) / 3 - (0.09 + 0.03 + 0.03) / 3)
+    _check("gate_diff.gap", gate_diff_gap,
+          (0.03 + 0.05 - 0.10) / 3 - (-0.02 - 0.02 + 0.03) / 3)
+    if not (gate_diff_oc > 0 > gate_diff_gap):
+        fails.append("gate_diff: 期望本合成样例门的价值两尺符号相反(oc>0>gap),用于验证符号翻转检测")
+    if _gate_diff(agg_shadow_oc, agg_real_oc) == gate_diff_oc:  # 顺序颠倒应给出不同(相反符号)的数
+        fails.append("gate_diff: real/shadow 参数顺序颠倒应改变结果符号,当前没有变化——疑似恒等函数")
+    _check("agg_column.empty_table.n_days", _agg_column(pd.DataFrame(), "real_oc")["n_days"], 0, tol=0)
 
     # ── ② 九路召回 unique 超额:chan_a/chan_b 两路,000001 两日皆双路重叠(非 unique) ──
     ch1 = pd.DataFrame([
@@ -904,13 +1026,43 @@ def _selftest() -> int:
     if _verdict(opp_oc, excess_oc, elig3, codes, shadow34, True) != "NEUTRAL":
         fails.append("abstention: degraded=True 应强制 NEUTRAL,不可判 CORRECT")
 
+    # Important-3 review fix(2026-08-07,M4):机会命中存在,但命中的那只**不在** shadow 里
+    # → 不该触发 FALSE。此前的夹具里 opp_gap 唯一为 True 的那行本来就在 shadow 集合内,
+    # 去掉 `_verdict()` 里的 `& in_shadow` 门槛后结果不变,漏检了 v2(shadow 口径)相对 v1
+    # (全市场口径)的核心设计点。这里 000001 有机会但不在 shadow(shadow 只含 000002)。
+    codes4 = pd.Series(["000001", "000002"])
+    elig4 = pd.Series([True, True])
+    opp4 = pd.Series([True, False])                 # 000001 有机会…
+    excess4 = pd.Series([0.05, -0.05])               # …但 000002(shadow 内)excess ≤ -0.02
+    v4 = _verdict(opp4, excess4, elig4, codes4, {"000002"}, False)
+    if v4 != "CORRECT":
+        fails.append(f"abstention: 机会命中但不在 shadow 内不应触发 FALSE(缺 `&in_shadow` 的"
+                     f"变异应在此报红),期望 CORRECT,got {v4}")
+
+    # Important-3 review fix(2026-08-07,M5):`_CORRECT_THRESH` 的符号边界。excess=-0.01
+    # 是负的但没有 ≤-0.02 那么负——正确阈值(-0.02)下应判 NEUTRAL;若阈值符号反写成 +0.02,
+    # -0.01 ≤ +0.02 恒真,会误判 CORRECT。此前夹具用 -0.05/-0.03(离 ±0.02 都很远),两种
+    # 阈值符号都得到同样的判定,测不出符号错误。
+    codes5 = pd.Series(["000001"])
+    elig5 = pd.Series([True])
+    opp5 = pd.Series([False])
+    excess5 = pd.Series([-0.01])
+    v5 = _verdict(opp5, excess5, elig5, codes5, {"000001"}, False)
+    if v5 != "NEUTRAL":
+        fails.append(f"abstention: excess=-0.01 未达 -0.02 门槛不应判 CORRECT(阈值符号反的"
+                     f"变异应在此报红),期望 NEUTRAL,got {v5}")
+    # 边界值本身(恰好 -0.02)应该算作"达标"(`<=`,闭区间)
+    if _verdict(opp5, pd.Series([-0.02]), elig5, codes5, {"000001"}, False) != "CORRECT":
+        fails.append("abstention: excess 恰好等于 -0.02(闭区间边界)应判 CORRECT")
+
     if fails:
         print("SELFTEST ❌")
         for x in fails:
             print("  -", x)
         return 1
-    print("SELFTEST ✅  ①门的价值(符号相反已捕获) ②九路召回(排名互换已捕获) "
-         "③L3edge(符号相反已捕获) ④弃权裁决(CORRECT→FALSE 翻转已捕获)")
+    print("SELFTEST ✅  ①门的价值(真调 _agg_column/_gate_diff·mean≠median 三日夹具·符号相反"
+         "已捕获) ②九路召回(排名互换已捕获) ③L3edge(符号相反已捕获) "
+         "④弃权裁决(CORRECT→FALSE 翻转·shadow门槛M4反例·CORRECT阈值符号M5边界已捕获)")
     return 0
 
 
