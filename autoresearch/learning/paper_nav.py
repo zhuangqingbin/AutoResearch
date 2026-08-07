@@ -11,6 +11,13 @@ W1(2026-07-12,S3 纸面 sizer):影子线之外并列一条"影子(sized)"——�
 仓位改用 `autoresearch.learning.sizer` 的分数 Kelly×波动率目标×流动性 cap 公式,而非固定
 10% 槽;presence-gated(无波动数据的票在该轨回退等权)。见 sizer.py 模块 docstring。
 
+Wave11批A9(2026-08-06,响应 2026-08-05 用户裁定隔夜主尺 gap_c1_o2):`simulate()`/`market_nav()`
+增 `mode="oc"|"gap"`。gap = signal+1 收盘买 → signal+2 开盘卖(区间外持币,exit 固定
+entry_i+1,与 `hold` 参数无关);market_nav 的 gap 变体 = 全市场 (open/pre_close−1) 均值
+(隔夜等权基线,与 gap 线口径同步,湖分区自带 pre_close 列)。**主表**改跑 mode="gap";旧主口径
+hold=2(2026-07-10 裁定)降为副表,与 hold=10 并列(两副表仍走 mode="oc",数值与改动前逐字
+一致,parity)。
+
   uv run --no-sync python -m autoresearch.learning.paper_nav   # → reports/learning/paper_nav.md
 """
 from __future__ import annotations
@@ -57,14 +64,20 @@ def load_prices(codes: set[str], days: list[str], lake: Path | None = None) -> d
 
 
 def simulate(signals: list[dict], prices: dict, days: list[str],
-             slot: float = _SLOT, hold: int = 2) -> tuple[pd.Series, list[str]]:
+             slot: float = _SLOT, hold: int = 2, mode: str = "oc"
+             ) -> tuple[pd.Series, list[str]]:
     """事件组合模拟(纯函数)。signals=[{date, code}](date 兼容 YYYY-MM-DD / YYYYMMDD)。
 
-    次日开盘建仓(slot×当时NAV,现金不足取剩余);exit=entry 后第 hold 个交易日开盘
-    (无 open 顺延);持仓按最新可得 close 估值(停牌沿用)。信号日非交易日 → 跳过并记行。
+    次日(signal+1)入场。mode="oc"(默认,parity——与改动前逐字一致):**开盘**建仓
+    (slot×当时NAV,现金不足取剩余),exit=entry 后第 hold 个交易日**开盘**(无 open 顺延)。
+    mode="gap"(隔夜尺,2026-08-05 裁定):**收盘**建仓,exit 固定 entry 后 1 个交易日**开盘**
+    (区间外持币;`hold` 参数不生效,忽略传入值)。两模式 exit 腿都读开盘价(唯一实现价,与
+    mode 无关);持仓按最新可得 close 估值(停牌沿用)。信号日非交易日 → 跳过并记行。
     signal 可选带 "weight" 键(0-1,NAV 占比,S3 sized 轨用)覆盖 slot;缺省仍用 slot
-    (等权轨,parity 不破——不带 weight 的信号与改动前行为逐字一致)。
+    (等权轨)。
     """
+    if mode not in ("oc", "gap"):
+        raise ValueError(f"simulate: 未知 mode={mode!r}(仅接受 'oc'/'gap')")
     idx = {d: i for i, d in enumerate(days)}
     entries: dict[int, list[tuple[str, float]]] = {}
     skipped: list[str] = []
@@ -93,8 +106,9 @@ def simulate(signals: list[dict], prices: dict, days: list[str],
                 keep.append(p)
         pos = keep
         for code, w in entries.get(i, ()):                 # ② 建仓(w=该信号权重,缺省 slot)
-            o = prices.get((d, code), (None, None))[0]
-            if o is None:
+            px = prices.get((d, code), (None, None))
+            entry_px = px[1] if mode == "gap" else px[0]   # gap:收盘入场;oc:开盘入场(现行)
+            if entry_px is None:
                 skipped.append(f"{d} {code}(入场日无价,跳过)")
                 continue
             cost = min(w * nav, cash)
@@ -102,7 +116,9 @@ def simulate(signals: list[dict], prices: dict, days: list[str],
                 skipped.append(f"{d} {code}(现金槽满,跳过)")
                 continue
             cash -= cost
-            pos.append({"code": code, "shares": cost / o, "exit_i": i + hold, "last_close": o})
+            exit_i = i + (1 if mode == "gap" else hold)    # gap:固定隔夜 1 日,hold 不生效
+            pos.append({"code": code, "shares": cost / entry_px,
+                        "exit_i": exit_i, "last_close": entry_px})
         mv = 0.0
         for p in pos:                                     # ③ 收盘估值(停牌沿用 last_close)
             c = prices.get((d, p["code"]), (None, None))[1]
@@ -122,8 +138,15 @@ def market_nav_from_returns(rets: list[float], days: list[str]) -> pd.Series:
     return pd.Series(navs, index=list(days), name="mkt")
 
 
-def market_nav(days: list[str], lake: Path | None = None) -> pd.Series:
-    """全市场等权日收益累乘(daily.pct_chg 均值;缺分区记 0)。"""
+def market_nav(days: list[str], lake: Path | None = None, mode: str = "oc") -> pd.Series:
+    """全市场等权收益累乘;缺分区/缺列记 0。
+
+    mode="oc"(默认,parity):daily.pct_chg 均值(收盘到收盘,与改动前逐字一致)。
+    mode="gap"(隔夜尺,2026-08-05 裁定,与 `simulate(mode="gap")` 口径同步):daily
+    (open/pre_close − 1) 均值(隔夜缺口,湖分区自带 pre_close 列,不必跨日拼接)。
+    """
+    if mode not in ("oc", "gap"):
+        raise ValueError(f"market_nav: 未知 mode={mode!r}(仅接受 'oc'/'gap')")
     lake = Path(lake or _LAKE_DAILY)
     rets = []
     for d in days:
@@ -131,9 +154,17 @@ def market_nav(days: list[str], lake: Path | None = None) -> pd.Series:
         r = 0.0
         if p.exists():
             try:
-                s = pd.to_numeric(pd.read_parquet(p, columns=["pct_chg"])["pct_chg"],
-                                  errors="coerce").dropna()
-                r = float(s.mean()) / 100.0 if len(s) else 0.0
+                if mode == "gap":
+                    df = pd.read_parquet(p, columns=["open", "pre_close"])
+                    o = pd.to_numeric(df["open"], errors="coerce")
+                    pc = pd.to_numeric(df["pre_close"], errors="coerce")
+                    valid = o.notna() & pc.notna() & (pc != 0)
+                    g = o[valid] / pc[valid] - 1.0
+                    r = float(g.mean()) if len(g) else 0.0
+                else:
+                    s = pd.to_numeric(pd.read_parquet(p, columns=["pct_chg"])["pct_chg"],
+                                      errors="coerce").dropna()
+                    r = float(s.mean()) / 100.0 if len(s) else 0.0
             except Exception:  # noqa: BLE001
                 r = 0.0
         rets.append(r)
@@ -188,9 +219,13 @@ def _fmt_sortino(s: float) -> str:
     return "∞" if s == float("inf") else f"{s:+.2f}"
 
 
-def risk_block(real: pd.Series, shadow: pd.Series, mkt: pd.Series) -> list[str]:
-    """风险调整对照块:三线 total/MDD/Sortino;市场等权 = buy&hold 基线(StockBench:多数跑不赢它)。"""
-    rows = [("真实", real), ("影子", shadow), ("市场(买入持有 buy&hold)", mkt)]
+def risk_block(real: pd.Series, shadow: pd.Series, mkt: pd.Series, mode: str = "oc") -> list[str]:
+    """风险调整对照块:三线 total/MDD/Sortino。市场线 mode="oc"(默认,parity)= buy&hold 基线
+    (StockBench:多数跑不赢它);mode="gap" = 隔夜等权基线(与 gap 主表口径同步,标签同步换)。
+    """
+    mkt_label = "市场(隔夜等权 gap_c1_o2)" if mode == "gap" else "市场(买入持有 buy&hold)"
+    verdict_label = "隔夜等权(市场)" if mode == "gap" else "buy&hold(市场等权)"  # oc:与改动前逐字一致
+    rows = [("真实", real), ("影子", shadow), (mkt_label, mkt)]
     out = ["## 风险调整对照(X3)", "", "| 线 | 总收益 | 最大回撤 | Sortino |", "|---|---|---|---|"]
     ms = {}
     for label, nav in rows:
@@ -199,19 +234,26 @@ def risk_block(real: pd.Series, shadow: pd.Series, mkt: pd.Series) -> list[str]:
         tot = "—" if m["total"] != m["total"] else f"{m['total']:+.2%}"
         mdd = "—" if m["mdd"] != m["mdd"] else f"{m['mdd']:+.2%}"
         out.append(f"| {label} | {tot} | {mdd} | {_fmt_sortino(m['sortino'])} |")
-    rs, ks = ms["真实"]["sortino"], ms["市场(买入持有 buy&hold)"]["sortino"]
-    if rs == rs and ks == ks:                     # 均非 NaN → 给一句 buy&hold 裁决
+    rs, ks = ms["真实"]["sortino"], ms[mkt_label]["sortino"]
+    if rs == rs and ks == ks:                     # 均非 NaN → 给一句基线裁决
         verdict = "跑赢" if rs > ks else ("打平" if rs == ks else "**跑输**")
-        out += ["", f"- 真实 vs buy&hold(市场等权)风险调整(Sortino):{verdict}"
+        out += ["", f"- 真实 vs {verdict_label}风险调整(Sortino):{verdict}"
                     f"({_fmt_sortino(rs)} vs {_fmt_sortino(ks)})。"]
     return out
 
 
 def render(days: list[str], real: pd.Series, shadow: pd.Series, mkt: pd.Series,
            n_real: int, n_shadow: int, skipped: list[str], hold: int = 2,
-           sized: pd.Series | None = None) -> list[str]:
-    """sized(S3 纸面 sizer 的影子轨,presence-gated)不传 → 输出与改动前逐字一致(parity)。"""
-    out = [f"# 影子组合成绩单(paper NAV;10% 固定槽·持{hold}交易日·次日开盘进出)", ""]
+           sized: pd.Series | None = None, mode: str = "oc") -> list[str]:
+    """sized(S3 纸面 sizer 的影子轨,presence-gated)不传、mode 不传(默认"oc")→ 输出与改动前
+    逐字一致(parity)。mode="gap"(主表,2026-08-05 裁定隔夜尺):标题走隔夜措辞,`hold` 不参与
+    显示(gap 交易结构固定 signal+1 收→signal+2 开,与 hold 无关)。
+    """
+    if mode == "gap":
+        out = ["# 影子组合成绩单(paper NAV;主表=隔夜尺 gap_c1_o2·signal+1 收盘买→"
+               "signal+2 开盘卖·区间外持币·2026-08-05 裁定)", ""]
+    else:
+        out = [f"# 影子组合成绩单(paper NAV;10% 固定槽·持{hold}交易日·次日开盘进出)", ""]
     if sized is not None:
         out += ["| 日期 | 真实线 | 影子线 | 影子(sized) | 市场等权 |", "|---|---|---|---|---|"]
         out += [f"| {d} | {real[d]:.4f} | {shadow[d]:.4f} | {sized[d]:.4f} | {mkt[d]:.4f} |"
@@ -227,7 +269,7 @@ def render(days: list[str], real: pd.Series, shadow: pd.Series, mkt: pd.Series,
             line += f" vs 影子(sized) {sized[last] - 1:+.2%}"
         line += f" vs 市场 {mkt[last] - 1:+.2%};`真实 − 影子` = 门的价值。"
         out += ["", line]
-        out += [""] + risk_block(real, shadow, mkt)     # X3·风险调整对照(MDD/Sortino vs buy&hold)
+        out += [""] + risk_block(real, shadow, mkt, mode=mode)  # X3·风险调整对照(MDD/Sortino)
     if skipped:
         out += ["", "## 未入组信号"] + [f"- {s}" for s in skipped]
     out += ["", "_涨跌停/停牌可成交性未模拟;仅供研究,非投资建议。_"]
@@ -265,26 +307,37 @@ def main() -> int:
     rs, ss = real_signals(), shadow_signals()
     codes = {s["code"] for s in rs} | {s["code"] for s in ss}
     prices = load_prices(codes, days)
-    mkt = market_nav(days)
+    mkt_oc = market_nav(days)                 # 副表(旧口径):收盘到收盘,parity
+    mkt_gap = market_nav(days, mode="gap")     # 主表(隔夜尺,2026-08-05 裁定)
     # W1·S3 sizer:同一批影子信号,仓位改按 sizer.size_weights 公式(presence-gated 回退等权)。
     from autoresearch.learning.sizer import size_shadow_signals
     ss_sized = size_shadow_signals(ss, equal_slot=_SLOT)
-    # 主表:hold=2(超短主口径,2026-07-10 裁定);副表:hold=10(旧口径连续性对照)。
+    # 主表:隔夜尺 gap(2026-08-05 裁定;signal+1 收买→signal+2 开卖,与 hold 无关)。
+    real_g, sk1_g = simulate(rs, prices, days, mode="gap")
+    shadow_g, sk2_g = simulate(ss, prices, days, mode="gap")
+    sized_g, sk3_g = simulate(ss_sized, prices, days, mode="gap")
+    # 副表:hold=2(旧主尺口径,2026-07-10 裁定,现降为对照)。
     real2, sk1_2 = simulate(rs, prices, days, hold=2)
     shadow2, sk2_2 = simulate(ss, prices, days, hold=2)
     sized2, sk3_2 = simulate(ss_sized, prices, days, hold=2)
+    # 副表:hold=10(旧口径连续性对照)。
     real10, sk1_10 = simulate(rs, prices, days, hold=10)
     shadow10, sk2_10 = simulate(ss, prices, days, hold=10)
     sized10, sk3_10 = simulate(ss_sized, prices, days, hold=10)
-    primary = render(days, real2, shadow2, mkt, len(rs), len(ss), sk1_2 + sk2_2 + sk3_2,
-                      hold=2, sized=sized2)
-    secondary = render(days, real10, shadow10, mkt, len(rs), len(ss), sk1_10 + sk2_10 + sk3_10,
-                        hold=10, sized=sized10)
-    full = primary + ["", "## 副表:hold=10(旧口径连续性对照)", ""] + secondary[2:]
+    primary = render(days, real_g, shadow_g, mkt_gap, len(rs), len(ss),
+                      sk1_g + sk2_g + sk3_g, sized=sized_g, mode="gap")
+    sec2 = render(days, real2, shadow2, mkt_oc, len(rs), len(ss), sk1_2 + sk2_2 + sk3_2,
+                  hold=2, sized=sized2)
+    sec10 = render(days, real10, shadow10, mkt_oc, len(rs), len(ss), sk1_10 + sk2_10 + sk3_10,
+                   hold=10, sized=sized10)
+    full = (primary
+            + ["", "## 副表:hold=2(旧主尺对照,2026-07-10 裁定)", ""] + sec2[2:]
+            + ["", "## 副表:hold=10(旧口径连续性对照)", ""] + sec10[2:])
     outp.write_text("\n".join(full) + "\n", encoding="utf-8")
-    line = summary_line(days, real2, shadow2, mkt, len(rs), len(ss), sized=sized2)
+    line = summary_line(days, real_g, shadow_g, mkt_gap, len(rs), len(ss), sized=sized_g)
     Path("reports/learning/paper_nav_summary.txt").write_text(line + "\n", encoding="utf-8")
-    print(f"[paper_nav] {len(days)} 日 × (真实{len(rs)}/影子{len(ss)}) hold=2 主表 → {outp}")
+    print(f"[paper_nav] {len(days)} 日 × (真实{len(rs)}/影子{len(ss)}) "
+          f"主表=隔夜尺(gap,08-05 裁定) → {outp}")
     return 0
 
 

@@ -10,8 +10,10 @@ import pandas as pd
 import pytest
 
 from autoresearch.learning.paper_nav import (
+    market_nav,
     market_nav_from_returns,
     render,
+    risk_block,
     shadow_signals,
     simulate,
     summary_line,
@@ -131,6 +133,110 @@ def test_shadow_signals_carries_conviction_for_sizer(tmp_path):
                    "2026-07-01,000001,N1,88.0,,10.0\n", encoding="utf-8")
     sig = shadow_signals(csv)
     assert sig == [{"date": "2026-07-01", "code": "000001", "conviction": 88.0}]
+
+
+
+# ───────────────────────── Wave11批A9:paper_nav 隔夜模式(mode="oc"|"gap",2026-08-05 裁定) ─────────────────────────
+
+# 同一份合成 fixture,供 gap/oc 两个测试共用(防「改了 gap 顺手弄坏 oc」)。
+# T=signal 日(2026-07-01,非交易日不入 _GAP_DAYS,次日=T+1 才是首个交易日)。
+# T+1(20260702):open=9.0(oc 入场腿) / close=10.0(gap 入场腿)。
+# T+2(20260703):open=10.5(gap 出场腿,两模式共用同一条 exit 代码路径) / close=11.0(oc mark-to-market 腿)。
+_GAP_DAYS = ["20260701", "20260702", "20260703"]
+_GAP_PRICES = {
+    ("20260702", "000001"): (9.0, 10.0),
+    ("20260703", "000001"): (10.5, 11.0),
+}
+_GAP_SIGNALS = [{"date": "2026-07-01", "code": "000001", "weight": 1.0}]  # 全仓,比例直读 NAV
+
+
+def test_simulate_gap_mode_entry_close_exit_open():
+    """gap(隔夜尺,2026-08-05 裁定):入场=T+1 收盘(10.0)、出场=T+2 开盘(10.5)→
+    NAV = o2/c1 = 10.5/10.0 = +5%(brief Step2 数值)。exit_i 固定 entry_i+1,与 hold 无关。
+    """
+    nav, skipped = simulate(_GAP_SIGNALS, _GAP_PRICES, _GAP_DAYS, mode="gap")
+    assert skipped == []
+    assert abs(nav.iloc[-1] - 1.05) < 1e-9
+
+
+def test_simulate_oc_mode_unchanged_on_same_gap_fixture():
+    """oc(现行,mode 默认 parity):同一份 fixture,hold=2 在 3 日窗内未到期(exit_i=3 越界)→
+    走收盘估值,NAV = c2/o1 = 11.0/9.0(brief Step2「oc 模式按现行=c2/o1」)。锁住「gap 的
+    实现不改 oc 的既有行为」——这是双断言的第二腿,必须与上面的 gap 测试同一份 fixture。
+    """
+    nav, skipped = simulate(_GAP_SIGNALS, _GAP_PRICES, _GAP_DAYS, hold=2)
+    assert skipped == []
+    assert abs(nav.iloc[-1] - (11.0 / 9.0)) < 1e-6
+
+
+def test_simulate_gap_mode_ignores_hold_param():
+    # gap 模式的 exit 固定 entry_i+1;即便调用方手滑传了 hold=10,也不改变出场时点。
+    nav_default, _ = simulate(_GAP_SIGNALS, _GAP_PRICES, _GAP_DAYS, mode="gap")
+    nav_hold10, _ = simulate(_GAP_SIGNALS, _GAP_PRICES, _GAP_DAYS, mode="gap", hold=10)
+    assert (nav_default == nav_hold10).all()
+
+
+def test_simulate_rejects_unknown_mode():
+    with pytest.raises(ValueError):
+        simulate([], {}, _GAP_DAYS, mode="bogus")
+
+
+def test_market_nav_gap_mode_uses_open_over_pre_close(tmp_path):
+    # gap 用 open/pre_close(逐行,单分区内完成,不必跨日拼接);oc(默认)仍走 pct_chg —— 两条公式
+    # 用故意不同的数字验证:若实现误把两种 mode 弄混,任一断言都会炸。
+    days = ["20260701", "20260702"]
+    pd.DataFrame([{"open": 10.5, "pre_close": 10.0, "pct_chg": 2.0}]
+                 ).to_parquet(tmp_path / "20260701.parquet")
+    pd.DataFrame([{"open": 9.0, "pre_close": 10.0, "pct_chg": -3.0}]
+                 ).to_parquet(tmp_path / "20260702.parquet")
+
+    nav_gap = market_nav(days, lake=tmp_path, mode="gap")
+    assert abs(nav_gap.iloc[0] - 1.05) < 1e-9             # 10.5/10.0 - 1 = +5%
+    assert abs(nav_gap.iloc[1] - 1.05 * 0.90) < 1e-9      # ×(9.0/10.0)
+
+    nav_oc = market_nav(days, lake=tmp_path)              # mode 默认 "oc",parity:走 pct_chg
+    assert abs(nav_oc.iloc[0] - 1.02) < 1e-9              # pct_chg=2.0%
+    assert abs(nav_oc.iloc[1] - 1.02 * 0.97) < 1e-9       # pct_chg=-3.0%
+
+
+def test_market_nav_rejects_unknown_mode(tmp_path):
+    with pytest.raises(ValueError):
+        market_nav(["20260701"], lake=tmp_path, mode="bogus")
+
+
+def test_render_default_mode_title_is_byte_identical_to_before():
+    # parity 硬锁:mode 不传(默认 "oc")→ 标题行与改动前逐字相同。
+    mkt = market_nav_from_returns([0.0, 0.0, 0.0], _DAYS)
+    flat = pd.Series([1.0, 1.0, 1.0], index=_DAYS)
+    out = render(_DAYS, flat, flat, mkt, n_real=1, n_shadow=3, skipped=[], hold=2)
+    assert out[0] == "# 影子组合成绩单(paper NAV;10% 固定槽·持2交易日·次日开盘进出)"
+
+
+def test_render_gap_mode_title_notes_overnight_ruling():
+    # 表头必须注明:主表=隔夜尺(2026-08-05 裁定)。
+    mkt = market_nav_from_returns([0.0, 0.0, 0.0], _DAYS)
+    flat = pd.Series([1.0, 1.0, 1.0], index=_DAYS)
+    out = render(_DAYS, flat, flat, mkt, n_real=1, n_shadow=3, skipped=[], mode="gap")
+    assert "隔夜尺" in out[0] and "2026-08-05" in out[0]
+
+
+def test_risk_block_default_mode_label_is_unchanged():
+    idx = ["d1", "d2", "d3"]
+    real = pd.Series([1.0, 1.03, 1.05], index=idx)
+    shadow = pd.Series([1.0, 0.98, 0.96], index=idx)
+    mkt = pd.Series([1.0, 1.01, 1.02], index=idx)
+    md = "\n".join(risk_block(real, shadow, mkt))
+    assert "真实 vs buy&hold(市场等权)风险调整" in md          # parity:与改动前逐字一致
+
+
+def test_risk_block_gap_mode_relabels_market_line():
+    idx = ["d1", "d2", "d3"]
+    real = pd.Series([1.0, 1.03, 1.05], index=idx)
+    shadow = pd.Series([1.0, 0.98, 0.96], index=idx)
+    mkt = pd.Series([1.0, 1.01, 1.02], index=idx)
+    md = "\n".join(risk_block(real, shadow, mkt, mode="gap"))
+    assert "隔夜等权" in md
+    assert "buy&hold" not in md.lower()                        # gap 模式不再冒用 buy&hold 标签
 
 
 def test_sized_nav_diverges_from_equal_weight_with_real_sizer(tmp_path):
