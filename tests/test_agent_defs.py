@@ -35,6 +35,7 @@ def test_agent_files_exist_with_frontmatter():
 
 def test_l4_card_contract_anchors_synced():
     """l4-card 与 lite-playbook 的机器契约锚一致(卡被 parse_rating/lint/stage_eval 直接读)。"""
+    from autoresearch.learning.self_review import _CARD_V4_MARKER  # 单一事实源(T17/T24)
     from autoresearch.scan.agents.l4_card import _OW_GATES  # 单一事实源
     agent = _agent_text("l4-card")
     playbook = (SKILLS / "stock-research" / "lite-playbook.md").read_text(encoding="utf-8")
@@ -43,7 +44,9 @@ def test_l4_card_contract_anchors_synced():
                "早停只向下", "Rubric建议", "一段话研判", "L3 论点裁决",
                "已核数字摘录", "多写不多读", "龙虎榜席位", "活体新闻",
                # 锚必须独有:"停因:" 曾被既有的 "早停因:" 整段吃掉 → 删了早停行测试照绿
-               "早停卡短格式", "**早停**: 停于", "卡契约 v3·超短 1~2 日", "超短口径",
+               # T24:卡契约标记行 v3→v4(隔夜口径)换代,锚随之从字面量改引 self_review 的
+               # 单一事实源(承 T17 docstring「标记行本体进模板是 T24 的事」的既定手法)。
+               "早停卡短格式", "**早停**: 停于", _CARD_V4_MARKER, "超短口径",
                "机构面网查", "先读数据后读论点", "活体情报", "持仓管理", "档案对账",
                # Wave6:①独立初判从散文铁律升格为**卡结构元素**(07-24 实测 0/11 卡含此串,
                # chk_blind_pass 全 fail —— 指令在、检查在,缺的是机器可核的标签行);
