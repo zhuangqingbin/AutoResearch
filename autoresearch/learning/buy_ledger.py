@@ -256,13 +256,22 @@ def calibration_line(stats: dict | None) -> str | None:
 
 def hi2_calibration(scan_root: Path | str | None = None, window: int = 30,
                     shrink: bool | None = None, k: float | None = None) -> dict:
-    """全 universe(非仅买单)`hi_2_oc` 分布基率锚:近 window 个 scan 日 attribution.csv 全量
-    `hi_2_oc` 有值行 concat,按当日 `meta.json` 的 regime 分组(缺文件/缺键该日只进 all,
-    不进分组)。分位用 `series.quantile(0.5/0.6)`;`touch8_rate` = hi_2_oc≥8% 占比(即"旧
-    中位目标在 2 日窗的真实触达率")。
+    """全 universe(非仅买单)目标带分布基率锚:近 window 个 scan 日 attribution.csv 全量
+    有值行 concat,按当日 `meta.json` 的 regime 分组(缺文件/缺键该日只进 all,不进分组)。
+    分位用 `series.quantile(0.5/0.6)`;`touch8_rate` = 目标带≥8% 占比(即"旧中位目标在该
+    窗口的真实触达率")。
+
+    C3 修复(final-review 2026-08-08):主口径逐日按 `_hi_col_for(day)` 选源列——**与
+    `target_calibration`/`calibration_line` 同一日期分界**,v4 起(`ruler.SCHEMA_SWITCH_V4`)
+    读 `ruler.TOUCH_COL`(T+2 开盘,隔夜窗唯一实现价),此前读 `hi_2_oc`(2 日盘中 MFE)。
+    修复前本函数恒读字面量 "hi_2_oc",与同一份 L4 prompt 里日级 `calibration_line` 的 v4
+    文案直接矛盾(review 原话:「喂进每张卡的那条仍是 v3 口径」)。window 横跨分界日时两代
+    数据诚实并存于 `all`(不强行统一成一种口径);v4 贡献的日子额外把 `hi_2_oc` 计入
+    `all_ref`(双列过渡,镜像 `target_calibration` 的 `ref_hit_rate`/`ref_n` 手法,不删旧
+    读数)。`by_regime` 的分组值同样取自逐日已选好的源列,不是重新硬编码 hi_2_oc。
 
     动机:全卡目标触达 43%、中位目标 +8% vs 中位 MFE +4% = 目标价系统性 2× 过乐观。本函数
-    给 L4 卡目标价一个**基于真实 2 日 MFE 分布**的基率锚(p60),而非拍脑袋。
+    给 L4 卡目标价一个**基于真实目标带分布**的基率锚(p60),而非拍脑袋。
 
     `by_regime` 的 `touch8_rate` 是**收缩估计**(design 2026-07-12-selflearning-optimization-
     brainstorm.md §4 P0-3,C9-C12):p̂=(n·p_regime+k·p_all)/(n+k),`p_all`=`all` 组的
@@ -287,16 +296,23 @@ def hi2_calibration(scan_root: Path | str | None = None, window: int = 30,
                 "touch8_rate": round(float((s >= 0.08).mean()), 4) if n else None}
 
     all_vals: list[float] = []
+    ref_vals: list[float] = []      # v4 起的 hi_2_oc 参考读数(双列过渡,不进主口径/不进分组)
     regime_vals: dict[str, list[float]] = {}
     for d in days:
         attr = _read_attr(d)
-        if attr is None or "hi_2_oc" not in attr.columns:
+        if attr is None:
             continue
-        s = pd.to_numeric(attr["hi_2_oc"], errors="coerce").dropna()
+        col = _hi_col_for(d.name)
+        if col not in attr.columns:
+            continue
+        s = pd.to_numeric(attr[col], errors="coerce").dropna()
         if not len(s):
             continue
         vals = s.tolist()
         all_vals.extend(vals)
+        if col == TOUCH_COL and "hi_2_oc" in attr.columns:   # 仅 v4 贡献的日子才有参考意义
+            rs = pd.to_numeric(attr["hi_2_oc"], errors="coerce").dropna()
+            ref_vals.extend(rs.tolist())
         regime = None
         mp = d / "meta.json"
         if mp.exists():
@@ -326,7 +342,10 @@ def hi2_calibration(scan_root: Path | str | None = None, window: int = 30,
             st["touch8_rate"] = round(float(shrunk), 4) if shrunk is not None else raw
         st["thin"] = n < _HI2_MIN_N
         by_regime[r] = st
-    return {"all": all_stats, "by_regime": by_regime}
+    out = {"all": all_stats, "by_regime": by_regime}
+    if ref_vals:
+        out["all_ref"] = _stats(ref_vals)
+    return out
 
 
 def write_target_calib(scan_root: Path | str | None = None, window: int = 30,
@@ -345,10 +364,17 @@ def write_target_calib(scan_root: Path | str | None = None, window: int = 30,
 
 def target_calib_line(calib: dict | None, regime: str | None,
                       min_n: int = _HI2_MIN_N) -> str | None:
-    """L4 逐卡块 📐 行(`hi_2_oc` 全 universe 分布基率锚)。presence-gated:全体 n<min_n →
-    None(⚠禁注惯例,整行不注);同 regime 分组若在 `by_regime` 出现(`hi2_calibration` 已按
+    """L4 逐卡块 📐 行(全 universe 分布基率锚)。presence-gated:全体 n<min_n → None
+    (⚠禁注惯例,整行不注);同 regime 分组若在 `by_regime` 出现(`hi2_calibration` 已按
     `MIN_N_INJECT`=3 过滤,n<10 仍会出现但 `n_tag` 标 ⚠)才追加第二段(p60 + 收缩后
     `touch8_rate`),否则只报全体。
+
+    C3 修复(final-review 2026-08-08):文案跟随 `hi2_calibration` 的日期分界口径——v4 起
+    (`ruler.SCHEMA_SWITCH_V4`)锚定隔夜窗唯一实现价(T+2 开盘),与同一份 prompt 里日级
+    `calibration_line` 的措辞对齐(此前这条逐卡块硬编码「2 日 MFE」,与日级共享指令的 v4
+    文案直接矛盾,L4 agent 会同时收到两个打架的目标约束)。`calib.get("all_ref")` 有数
+    (即窗口内已有 v4 贡献的日子)才附 `hi_2_oc` 参考子句(双列过渡,镜像
+    `calibration_line` 的 `ref` 手法,不删旧读数);纯 v3 窗口不显示空参考。
     """
     if not calib:
         return None
@@ -358,8 +384,14 @@ def target_calib_line(calib: dict | None, regime: str | None,
     if n_all < min_n or p60 is None:
         return None
     t8 = allg.get("touch8_rate")
-    line = f"📐 目标校准:全体 2 日 MFE p60={p60:+.1%}(n={n_all}"
-    line += f"·+8%目标历史触达 {t8:.0%})" if t8 is not None else ")"
+    ref = ""
+    refg = calib.get("all_ref") or {}
+    if refg.get("n"):
+        rp60 = refg.get("hi2_p60")
+        ref = (f";参考(hi_2_oc·2日盘中触达) "
+               f"{'—' if rp60 is None else format(rp60, '+.1%')}(n={refg['n']})")
+    line = f"📐 目标校准:全体隔夜窗(目标带 vs T+2 开盘,v4)p60={p60:+.1%}(n={n_all}"
+    line += (f"·+8%目标历史触达 {t8:.0%})" if t8 is not None else ")") + ref
     rg = (calib.get("by_regime") or {}).get(regime) if regime else None
     if rg and rg.get("hi2_p60") is not None:
         line += f"·同 regime p60={rg['hi2_p60']:+.1%}{n_tag(rg['n'], min_n)}"
