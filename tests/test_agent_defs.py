@@ -58,6 +58,33 @@ def test_l4_card_contract_anchors_synced():
         assert a in playbook, f"lite-playbook 缺契约锚「{a}」(真值源被改,先同步 agent 定义)"
 
 
+def test_l4_card_v4_marker_full_line_byte_identical():
+    """v4 标记行的『说明句』尾段此前只被前缀 `_CARD_V4_MARKER` 锚定(见上一测试)——
+    self_review.card_v4_marker_lint 只做前缀子串匹配,「目标带与 EV 均指 T+2 开盘;止损=
+    T+1 尾盘入场否决条件;开盘预案三分支……」这段尾巴从未被逐字节回归锁,两模板未来各自
+    漂移不会被任何测试察觉(Task 24 review 追加发现的缝)。
+
+    这里把「前缀 + 说明句,到行尾为止」整行纳入比对:①两文件必须逐字节相同;②每个文件内部
+    两处出现(早停卡/满卡模板)也必须彼此相同——用 `set()` 去重后长度须为 1,不是只挑一次
+    出现比对(否则一个文件内部两处早停卡/满卡说明句先各自漂移,这条测试也不会红)。
+    """
+    import re
+
+    from autoresearch.learning.self_review import _CARD_V4_MARKER
+
+    agent = _agent_text("l4-card")
+    playbook = (SKILLS / "stock-research" / "lite-playbook.md").read_text(encoding="utf-8")
+    pat = re.compile(re.escape(_CARD_V4_MARKER) + r".*")
+    agent_lines = set(pat.findall(agent))
+    playbook_lines = set(pat.findall(playbook))
+    assert agent_lines, "l4-card 未找到 v4 标记行"
+    assert playbook_lines, "lite-playbook 未找到 v4 标记行"
+    assert len(agent_lines) == 1, f"l4-card 内两处标记行说明句不一致:{agent_lines}"
+    assert len(playbook_lines) == 1, f"lite-playbook 内两处标记行说明句不一致:{playbook_lines}"
+    assert agent_lines == playbook_lines, (
+        f"两文件标记行说明句不一致:l4-card={agent_lines!r} ≠ playbook={playbook_lines!r}")
+
+
 def test_l4_card_research_body_anchors_synced():
     """研报体段名/缺档声明与 `product_shape_lint` 探针 10 同源(Wave9 B-3)。
 
