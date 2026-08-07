@@ -18,6 +18,11 @@ if (!date || !code) throw new Error('args.date/args.code 必填,如 {date:"2026-
 const name = A.name || ''
 const sector = A.sector || '行业未知'
 const cfg = A.cfg || {}
+// Wave11-B5(07-21 事故根治,同 scan-market.js):空 cfg = 静默关 intel + 全体掉回缺省 effort,
+// 且当时无人知晓。结构性拒绝替代文档叮嘱;确需空跑(离线试装)显式传 args.allow_empty_config=true。
+if (!Object.keys(cfg).length && !A.allow_empty_config) {
+  throw new Error('args.cfg 为空 —— 会静默关 intel/降 effort(07-21 事故)。传 allow_empty_config:true 才可空跑。')
+}
 // Wave11-B2:model/effort 单一事实源=scan_config.agents(闭集见 user_config._AGENT_ROLES);
 // 本表=缺键回退值。调用点禁止内联字面量(product_shape_lint 会查)。回退链:
 // config > 本表(AGENT_DEFAULTS) > agent .md frontmatter —— 非壳 role 本表不写 model 键,

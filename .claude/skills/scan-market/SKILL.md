@@ -80,7 +80,7 @@ description: Use when the user wants to scan the WHOLE A-share market (not one n
    跑完全部确定性前奏(attribution 刷新/retro pending 列出/consensus 拉/universe/日历/菜单·L4预算·哨兵建议/journal 等 ledger 刷新,逐件见 STAGES.md 闭环层表;观察单日检已退役 fb_20260714_002)。各步失败不阻断,末尾汇总屏含 **📐/🔁/🚪 当日件建议行**(含「禁注」的行勿贴)。
    - **夜间预热**:交易日 19:30 launchd 自动跑(湖预拉+温度)。当天跑没跑看汇总屏的「预热(夜间):✓/✗」行;安装/实测见 STAGES.md『运维细节』。
 0.5. **市场研判**(workflow Prelude 相位并行调用):`uv run --no-sync python -m autoresearch.scan.frame <日期> --json-out context/scan/<日期>/market_pack.json` 拿湖派生 market_pack → 一个 `Agent(subagent_type='macro-brief')` 写 `market_view.md`(模板见 macro-playbook 末节;地形段喂 L3/L4,操作基调/漏斗读数只进 L5)。
-   ⚠️ **配置必传**:`user_config`(真身 `scan_config.jsonc`,**.jsonc 非 .json**;回显落 `user_config_echo.json`)必须随 Workflow `args.config` 传入,并在步骤 4 作为每股 `args.cfg` 原样透传。**传 `{}` = 静默关 intel + 全体 agent 掉回缺省 effort**(07-21 事故详情见 STAGES.md『运维细节』)。
+   ⚠️ **配置必传**:`user_config`(真身 `scan_config.jsonc`,**.jsonc 非 .json**;回显落 `user_config_echo.json`)必须随 Workflow `args.config` 传入,并在步骤 4 作为每股 `args.cfg` 原样透传。**传 `{}` = 静默关 intel + 全体 agent 掉回缺省 effort**(07-21 事故详情见 STAGES.md『运维细节』)。Wave11 起为结构性强制:空 config 直接 throw,离线试装用 `allow_empty_config:true`。
 1. **L0 选集 + L1 召回 + L2 粗排**(全确定性,零 token;workflow Prelude 相位):
    ```bash
    uv run --no-sync python -m autoresearch.scan.universe [YYYY-MM-DD] --regime-aware [--source tushare] [--recall-n 1000] [--l2-n 200] [--cap-floor 30] [--exclude-bj] [--recall-mode multi|composite] [--recall-channels a,b,c] [--l2-sector-cap 0.20]

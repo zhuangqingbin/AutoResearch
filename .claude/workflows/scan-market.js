@@ -15,6 +15,13 @@ if (!date) throw new Error('args.date 必填,如 {date:"2026-07-07"}')
 // scan_config.json 白名单校验后的 user_config(autoresearch/scan/user_config.py)经 frame --json
 // 回显、由调用方随 Workflow args.config 传入(本脚本无文件系统访问,不能自己读文件)。缺省 = {}。
 const cfg = (typeof args === 'string' && args ? JSON.parse(args).config : (args && args.config)) || {}
+// Wave11-B5(07-21 事故根治):空 cfg = 静默关 intel + 全体掉回缺省 effort,且当时无人知晓。
+// 结构性拒绝替代文档叮嘱;确需空跑(离线试装)显式传 args.allow_empty_config=true。
+const _allowEmpty = !!(typeof args === 'string' && args ? JSON.parse(args).allow_empty_config
+                       : (args && args.allow_empty_config))
+if (!Object.keys(cfg).length && !_allowEmpty) {
+  throw new Error('args.config 为空 —— 会静默关 intel/降 effort(07-21 事故)。传 allow_empty_config:true 才可空跑。')
+}
 // Wave11-B2:model/effort 单一事实源=scan_config.agents(闭集见 user_config._AGENT_ROLES);
 // 本表=缺键回退值。调用点禁止内联字面量(product_shape_lint 会查)。回退链:
 // config > 本表(AGENT_DEFAULTS) > agent .md frontmatter —— opus 类 role 本表不写 model 键,
