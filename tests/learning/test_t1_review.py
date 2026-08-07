@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -13,6 +14,54 @@ import pytest
 from autoresearch.learning import t1_review as t1
 
 _CAL = ["20260716", "20260717", "20260720"]   # 周五 07-17 → 下一交易日隔周末 07-20
+
+# 真生产路径的**字面量**——刻意不读 `t1._LEDGER`/`t1._CAND_LEDGER` 当前值(见下方 fixture
+# docstring:`tests/learning/conftest.py` 的目录级 fixture 可能先一步把模块属性重定向到
+# 别的 tmp 路径,若这里改读模块属性,守卫就会去比对一个 tmp 文件而不是真账本,变成啥都测不出
+# 的假绿灯)。
+_REAL_LEDGER = Path("context/learning/t1_review.jsonl")
+_REAL_CAND_LEDGER = Path("context/learning/t1_candidates.jsonl")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_t1_ledgers(tmp_path, monkeypatch):
+    """结构性隔离生产账本(C4 修复,final-review 2026-08-08)。
+
+    事故:T18 曾有 3 处 `gap_finalize_pending(...)` 调用漏传 `ledger_path=`,回落到模块默认
+    `t1._LEDGER = context/learning/t1_review.jsonl`(**真生产账本**),写入 9 行合成数据
+    (含两个根本不是扫描日的假日期),导致 `t1_review report` 崩 `KeyError: 'rating'`(已人工
+    清洗)。更隐蔽的是**读侧**同款耦合:`build_and_stage()` 内部无条件调
+    `ledger_tail_summary()`(同样落到 `_LEDGER` 默认值)——本文件几乎每个测试都会经
+    `build_and_stage` 间接读生产账本,测试结果因此依赖开发机当时的真实数据形状,不是纯函数。
+
+    「记得传 `ledger_path=`」治不住这类错(3/N 处已经漏过一次);结构性修法是把**默认值
+    本身**移出生产路径——`_LEDGER`/`_CAND_LEDGER` 是模块级 `Path` 全局,函数体内一律
+    `path or _LEDGER` 惰性求值(不是烘进函数签名的默认参数),故 `monkeypatch.setattr` 在
+    这里确实生效:全文件、每个测试自动重定向,不必逐个测试记得传参。`tests/learning/conftest.py`
+    此后补了一份目录级的同款重定向(sweep 发现的结构性缺口,防下一个测试文件重蹈覆辙)——
+    两份 fixture 谁先谁后无所谓,反正最终都把 `t1._LEDGER` 指向 tmp,不冲突。
+
+    尾部再加一道读后断言:真账本的 mtime/size 必须原封不动——如果结构性隔离本身出现
+    绕过(比如未来新增了一个不经 `t1._LEDGER` 查找的写盘路径),这道断言应该先炸,而不是
+    让下一份假数据悄悄混进 `context/learning/t1_review.jsonl`。断言比对的是 `_REAL_LEDGER`
+    字面量路径,不是 `t1._LEDGER` 当前值——理由见上方模块级注释。
+    """
+    before = _REAL_LEDGER.stat() if _REAL_LEDGER.exists() else None
+    before_cand = _REAL_CAND_LEDGER.stat() if _REAL_CAND_LEDGER.exists() else None
+
+    monkeypatch.setattr(t1, "_LEDGER", tmp_path / "t1_review.jsonl")
+    monkeypatch.setattr(t1, "_CAND_LEDGER", tmp_path / "t1_candidates.jsonl")
+    yield
+    after = _REAL_LEDGER.stat() if _REAL_LEDGER.exists() else None
+    after_cand = _REAL_CAND_LEDGER.stat() if _REAL_CAND_LEDGER.exists() else None
+    assert (before is None) == (after is None), "真账本 t1_review.jsonl 的存在性被测试改变了"
+    if before is not None:
+        assert (before.st_mtime_ns, before.st_size) == (after.st_mtime_ns, after.st_size), \
+            "真账本 context/learning/t1_review.jsonl 被本测试文件写动了(C4 同款事故复发)"
+    assert (before_cand is None) == (after_cand is None), "真候选账本存在性被测试改变了"
+    if before_cand is not None:
+        assert (before_cand.st_mtime_ns, before_cand.st_size) == (after_cand.st_mtime_ns, after_cand.st_size), \
+            "真候选账本 context/learning/t1_candidates.jsonl 被本测试文件写动了"
 
 
 def _card(rating: str) -> str:
@@ -405,7 +454,8 @@ def test_gap_finalize_skips_when_t2_not_ready(tmp_path):
     (「还没到时候」不是失败,不进失败名单)。"""
     _mk_scan(tmp_path)
     t1.build_and_stage("2026-07-16", scan_root=tmp_path, prices=_prices(), cal=_CAL)
-    n, failed = t1.gap_finalize_pending("2026-07-17", scan_root=tmp_path, cal=_CAL,
+    n, failed = t1.gap_finalize_pending("2026-07-17", scan_root=tmp_path,
+                                        ledger_path=tmp_path / "ledger.jsonl", cal=_CAL,
                                         gap_prices={"2026-07-17": _gap_prices()})
     assert n == 0 and failed == []                                     # today(07-17) < t2(07-20)
     sc = pd.read_csv(tmp_path / "2026-07-16" / "t1_review" / "scorecard.csv")
@@ -433,8 +483,10 @@ def test_gap_finalize_isolates_write_failure_per_day(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pd.DataFrame, "to_csv", _boom_to_csv)
 
+    lp = tmp_path / "ledger.jsonl"
     gap_prices = {t1_date: _gap_prices() for _, t1_date in days}
-    n, failed = t1.gap_finalize_pending("2026-07-24", scan_root=tmp_path, cal=cal3,
+    n, failed = t1.gap_finalize_pending("2026-07-24", scan_root=tmp_path,
+                                        ledger_path=lp, cal=cal3,
                                         gap_prices=gap_prices)
 
     assert n == 2                                                      # 首尾两日正常终判
@@ -451,7 +503,8 @@ def test_gap_finalize_isolates_write_failure_per_day(tmp_path, monkeypatch):
     # 循环没有在中间日崩溃后中断——撤掉写盘故障、重跑一次:中间日这次能正常补上,
     # 且首尾两日已终判过、不重复计入(幂等与「不连坐」两条性质同时成立)。
     monkeypatch.setattr(pd.DataFrame, "to_csv", orig_to_csv)
-    n2, failed2 = t1.gap_finalize_pending("2026-07-24", scan_root=tmp_path, cal=cal3,
+    n2, failed2 = t1.gap_finalize_pending("2026-07-24", scan_root=tmp_path,
+                                          ledger_path=lp, cal=cal3,
                                           gap_prices=gap_prices)
     assert n2 == 1 and failed2 == []
     sc_b2 = pd.read_csv(boom_path)
