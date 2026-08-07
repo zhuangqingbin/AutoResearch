@@ -813,6 +813,56 @@ def _regimes_from_panel(panel: pd.DataFrame, k: float = 200.0, min_dates: int = 
     return out
 
 
+_SPLIT_HALF_THRESHOLD = 0.5   # 两半符号一致门:可比因子组里符号一致的占比须 >此值(严格多数)
+
+
+def split_half_regime_gate(panel: pd.DataFrame, k: float = 200.0, min_dates: int = 5,
+                           threshold: float = _SPLIT_HALF_THRESHOLD) -> tuple[set[str], dict]:
+    """两半符号一致门(T16 用户裁定后补的正式实现;此前只在 task-16 手工跑过一次,未留代码)。
+
+    按日期把 panel 对半切(前半/后半独立样本),各自跑 `_regimes_from_panel`——只有**两半都
+    达标**(各自 ≥min_dates)的 regime 才谈得上"稳健性检验";trend/risk_off 这类整桶落在
+    单一半区的 regime(regime 本身按时间聚簇,是数据的真实形状,不是门槛设太严),门**判不了**
+    它们,既不算过也不算不过,只是"尚未接受检验"。
+
+    达标的两半各自算 `__global__` 组的收缩后 signed IC,比较符号(0 视为不可比,不计入分母
+    ——growth 组 factor_lab 恒 0,比较 0 vs 0 无信息量)。一致率 > `threshold`(默认严格多数
+    >50%,不是要求全一致——小权重噪声因子偶尔翻号是预期内的)才判"过门"。
+
+    返回 `(validated, detail)`:`validated` = 过门的 regime 标签集合;`detail` = 每个"两半都
+    达标"的 regime → `{comparable, agree, rate}`(未过门的 regime 也会出现在这里,读数摆着,
+    不是被静默丢弃——只是没被纳入 `validated`)。两半都不达标的 regime 不出现在 `detail` 里
+    (门根本没法对它们计算,不是"计算后判定不过")。
+    """
+    dates_sorted = sorted(panel["date"].unique())
+    n = len(dates_sorted)
+    if n < 2 * min_dates:
+        return set(), {}
+    mid = n // 2
+    half1_dates = set(dates_sorted[:mid])
+    half2_dates = set(dates_sorted[mid:])
+    p1 = panel[panel["date"].isin(half1_dates)]
+    p2 = panel[panel["date"].isin(half2_dates)]
+    r1, r2 = _regimes_from_panel(p1, k, min_dates), _regimes_from_panel(p2, k, min_dates)
+    validated: set[str] = set()
+    detail: dict = {}
+    for reg in sorted(set(r1) & set(r2)):
+        w1 = r1[reg]["weights"].get("__global__", {})
+        w2 = r2[reg]["weights"].get("__global__", {})
+        total = agree = 0
+        for g in sorted(set(w1) & set(w2)):
+            v1, v2 = w1[g], w2[g]
+            if v1 == 0.0 or v2 == 0.0:      # 0 不可比(如 growth 组恒 0)
+                continue
+            total += 1
+            agree += int((v1 > 0) == (v2 > 0))
+        rate = (agree / total) if total else None
+        detail[reg] = {"comparable": total, "agree": agree, "rate": round(rate, 4) if rate is not None else None}
+        if total and rate > threshold:
+            validated.add(reg)
+    return validated, detail
+
+
 _IC_T_GATE = 2.0        # |t| ≥ 此值才有资格进入权重条件化提案(spec §2.A:先分桶裁决再动权重)
 _IC_MIN_DATES = 5       # 桶内成型日下限;不足只记账不裁决
 
@@ -949,12 +999,23 @@ def calibrate(cap_floor: float = 30.0, k: float = 200.0, label_col: str = ruler.
 
 
 def calibrate_regimes(cap_floor: float = 30.0, k: float = 200.0, label_col: str = ruler.MAIN_RULER,
-                      min_dates: int = 5, out_path: str = "context/factor_lab/weights.json") -> dict:
+                      min_dates: int = 5, out_path: str = "context/factor_lab/weights.json",
+                      require_split_half: bool = True,
+                      split_half_threshold: float = _SPLIT_HALF_THRESHOLD) -> dict:
     """逐日 regime 分桶校准 → weights.json 增 `regimes` 块(同时保留 flat 全样本权重)。
 
     flat `weights` = 全样本(向后兼容、regime_aware 关时用);`regimes[trend|range|risk_off].weights`
     = 该 regime 子样本 IC(趋势市 momentum 翻正等)。`meta.regime_calib` = 主导 regime(drift 基线)。
     线上 `_load_weights(regime=classify_regime(今日帧).label)` 取对应块。
+
+    **`require_split_half`(默认开,2026-08-07 用户裁定后补)**:单桶样本量够 `min_dates` 只是
+    "有数",不等于"这桶的权重方向在时间上稳定"——T16 上线当天就实测过 trend/risk_off 两桶各自
+    单桶样本量都不小(43/32 日),却是在**完全没做跨时间稳健性检验**的情况下被写进生产权重
+    文件的。默认开启后,只有同时通过 `split_half_regime_gate`(两半都达标 + 符号一致率过
+    `split_half_threshold`)的桶才写进 `regimes`;单桶达标但两半验不了/验了不过的桶记入
+    `meta.regimes_pending`(不是被吞掉,是显式记账"样本还不够 / 还没过门"),该 regime 被请求
+    时 `common.scoring._load_weights` 走既有的回落 flat + `record_degradation` 记账路径。
+    `require_split_half=False` 回到旧行为(仅供研究/对照用,不建议线上默认)。
     """
     import json
     from collections import Counter
@@ -967,18 +1028,27 @@ def calibrate_regimes(cap_floor: float = 30.0, k: float = 200.0, label_col: str 
     panel = panel.copy()
     panel["regime"] = panel["date"].map(regime_by_date)
     weights, ic_global = _weights_from_panel(panel, k)
-    regimes = _regimes_from_panel(panel, k, min_dates)
+    regimes_raw = _regimes_from_panel(panel, k, min_dates)
+    if require_split_half:
+        validated, gate_detail = split_half_regime_gate(panel, k, min_dates, split_half_threshold)
+        regimes = {r: v for r, v in regimes_raw.items() if r in validated}
+        pending = sorted(set(regimes_raw) - validated)
+    else:
+        regimes, gate_detail, pending = regimes_raw, {}, []
     dom = Counter(regime_by_date.values()).most_common(1)[0][0] if regime_by_date else "range"
     horizon = "fwd_2_oc(超短:D+1开→D+2收)" if label_col == "fwd_2_oc" else label_col
     meta = {"horizon": horizon, "k": k, "n_dates": int(panel["date"].nunique()),
             "n_rows": int(len(panel)), "n_industries": int(panel["industry"].nunique()),
             "ic_global": {c[4:]: round(_nz(v), 4) for c, v in ic_global.items()},
             "regime_calib": dom, "regimes_present": sorted(regimes.keys()),
+            "regimes_pending": pending,           # 单桶样本够但未过两半符号一致门,回落 flat
+            "split_half_gate": gate_detail,       # {regime: {comparable, agree, rate}}(仅两半都达标的桶有条目)
             "source": "factor_lab.calibrate_regimes"}
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     Path(out_path).write_text(json.dumps({"meta": meta, "weights": weights, "regimes": regimes},
                                          ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"[calibrate_regimes] → {out_path};regimes {meta['regimes_present']};主导 {dom}")
+    print(f"[calibrate_regimes] → {out_path};regimes {meta['regimes_present']}"
+         f"(pending {pending});主导 {dom}")
     return {"meta": meta, "weights": weights, "regimes": regimes}
 
 

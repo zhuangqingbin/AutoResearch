@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 
 import autoresearch.research.factor_lab as fl
+from autoresearch.common.sw_sector_map import super_sector
 
 
 def test_rank_ic_signal_vs_noise():
@@ -357,3 +358,105 @@ def test_recalibrate_and_log_calls_extend_before_calibrate(tmp_path, monkeypatch
     monkeypatch.setattr(fl, "extend_plan", lambda: (_ for _ in ()).throw(RuntimeError("网络断")))
     retro.recalibrate_and_log("2026-07-16")
     assert calls == ["calibrate", "log"]                                 # 退化但不死,探针兜底
+
+
+# ═══════════════ split_half_regime_gate / calibrate_regimes(require_split_half) ═══════════════
+#
+# T16 review 修复(2026-08-07 用户裁定):单桶样本量够 min_dates 不等于该桶权重方向在时间上
+# 稳定——trend/risk_off 两桶曾在未经两半符号一致门检验的情况下直接落盘。这里锁住两件事:
+# ①门函数本身对「两半都达标+符号一致」「只在单半出现」「两半都达标但符号翻多数」三种情形
+#   分别给出正确判定;②calibrate_regimes() 真的把门接上了(过门的桶落盘,没过/判不了的桶
+#   进 meta.regimes_pending,不出现在 weights.json 的 regimes 里)。
+
+
+def _day_rows(date: str, regime: str, sign_a: int, sign_b: int, n: int = 30) -> pd.DataFrame:
+    """单日 n 行(≥30,`_spearman` 的最小样本门槛):grp_a/grp_b 与 fwd 的相关性符号可独立指定
+    (grp_x = fwd 若 sign_x>0,否则 = 倒序 fwd)—— 保证当日 IC 恰好是 +1.0 或 -1.0,无噪声。
+    """
+    fwd = np.arange(n, dtype=float)
+    grp_a = fwd if sign_a > 0 else (n - 1 - fwd)
+    grp_b = fwd if sign_b > 0 else (n - 1 - fwd)
+    return pd.DataFrame({"grp_a": grp_a, "grp_b": grp_b, "fwd": fwd, "industry": "半导体",
+                         "sector": super_sector("半导体"), "date": date, "regime": regime})
+
+
+def _steady_and_onehalf_panel() -> pd.DataFrame:
+    """20 日面板:`onehalf`(5 日,全落最早日期→排序后整桶落前半)+ `steady`(15 日,横跨两半、
+    两半符号一致 a=+1/b=-1)。切半点 mid=10:前半= onehalf 全 5 日 + steady 前 5 日;
+    后半= steady 后 10 日。`onehalf` 在后半 0 日 → 两个规律都达标(≥5)的只有 `steady`。"""
+    rows = [_day_rows(f"2026010{i + 1}", "onehalf", sign_a=1, sign_b=1) for i in range(5)]
+    rows += [_day_rows(f"202602{i + 1:02d}", "steady", sign_a=1, sign_b=-1) for i in range(15)]
+    return pd.concat(rows, ignore_index=True)
+
+
+def test_split_half_regime_gate_validates_consistent_regime_and_ignores_single_half_regime():
+    panel = _steady_and_onehalf_panel()
+    validated, detail = fl.split_half_regime_gate(panel, k=200.0, min_dates=5)
+
+    assert validated == {"steady"}
+    assert "onehalf" not in detail, "两半里只有一半有数据的 regime,门判不了它,不该出现在 detail 里(不是判了不过)"
+    assert detail["steady"] == {"comparable": 2, "agree": 2, "rate": 1.0}
+
+
+def test_split_half_regime_gate_rejects_regime_when_majority_of_signs_flip():
+    """`flippy`:前 6 日 (a=+1,b=+1),后 6 日 (a=-1,b=+1) —— grp_a 翻号、grp_b 不翻,
+    一致率 1/2=50%,不满足严格多数(>50%)门槛 → 不过门,但读数如实留在 detail 里。"""
+    rows = [_day_rows(f"202603{i + 1:02d}", "flippy", sign_a=1, sign_b=1) for i in range(6)]
+    rows += [_day_rows(f"202604{i + 1:02d}", "flippy", sign_a=-1, sign_b=1) for i in range(6)]
+    panel = pd.concat(rows, ignore_index=True)
+
+    validated, detail = fl.split_half_regime_gate(panel, k=200.0, min_dates=5)
+
+    assert validated == set()
+    assert detail["flippy"] == {"comparable": 2, "agree": 1, "rate": 0.5}
+
+
+def test_split_half_regime_gate_too_few_total_dates_returns_empty():
+    """总日数 < 2×min_dates → 连切半都没意义,直接空(不是硬凑一个假门槛)。"""
+    panel = pd.concat([_day_rows(f"2026010{i + 1}", "steady", 1, 1) for i in range(4)], ignore_index=True)
+    validated, detail = fl.split_half_regime_gate(panel, k=200.0, min_dates=5)
+    assert validated == set() and detail == {}
+
+
+def test_calibrate_regimes_require_split_half_filters_unvalidated_into_pending(tmp_path, monkeypatch):
+    """calibrate_regimes(require_split_half=True,默认)真的把两半门接上了:
+    过门的桶(steady)落盘进 regimes;判不了/没过的桶(onehalf)不落盘,记进 meta.regimes_pending。
+    """
+    import json
+
+    panel = _steady_and_onehalf_panel()
+    regime_by_date = {d: sub["regime"].iloc[0] for d, sub in panel.groupby("date")}
+    panel_no_regime = panel.drop(columns=["regime"])
+
+    monkeypatch.setattr(fl, "_all_frames", lambda cap_floor: [pd.DataFrame({"x": [1]})])  # 只需非空
+    monkeypatch.setattr(fl, "_build_calib_panel",
+                        lambda frames, label_col: (panel_no_regime, regime_by_date))
+
+    out_path = tmp_path / "weights.json"
+    result = fl.calibrate_regimes(out_path=str(out_path), min_dates=5)
+
+    assert result["meta"]["regimes_present"] == ["steady"]
+    assert result["meta"]["regimes_pending"] == ["onehalf"]
+    assert set(result["regimes"]) == {"steady"}
+    assert result["meta"]["split_half_gate"]["steady"]["rate"] == 1.0
+    assert "onehalf" not in result["meta"]["split_half_gate"]
+
+    saved = json.loads(out_path.read_text(encoding="utf-8"))
+    assert set(saved["regimes"]) == {"steady"}, "写盘的 weights.json 不能含未过门的桶"
+
+
+def test_calibrate_regimes_require_split_half_false_keeps_old_behavior(tmp_path, monkeypatch):
+    """`require_split_half=False`(仅供研究/对照)退回旧行为:单桶达标即落盘,不经两半门。"""
+    panel = _steady_and_onehalf_panel()
+    regime_by_date = {d: sub["regime"].iloc[0] for d, sub in panel.groupby("date")}
+    panel_no_regime = panel.drop(columns=["regime"])
+
+    monkeypatch.setattr(fl, "_all_frames", lambda cap_floor: [pd.DataFrame({"x": [1]})])
+    monkeypatch.setattr(fl, "_build_calib_panel",
+                        lambda frames, label_col: (panel_no_regime, regime_by_date))
+
+    out_path = tmp_path / "weights.json"
+    result = fl.calibrate_regimes(out_path=str(out_path), min_dates=5, require_split_half=False)
+
+    assert set(result["regimes"]) == {"steady", "onehalf"}
+    assert result["meta"]["regimes_pending"] == []

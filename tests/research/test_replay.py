@@ -314,7 +314,19 @@ def test_winner_autopsy_empty_root(tmp_path):
 
 def test_channel_by_phase_splits_ledger_by_phase(tmp_path, monkeypatch):
     """R2:同一批日子按相位切成多份累计账本 + `__all__` 全窗账本(可与前向 13 日账本对照)。
-    单日口径复用生产 channel_audit.day_channel_stats —— 回放不重造通道口径。"""
+    单日口径复用生产 channel_audit.day_channel_stats —— 回放不重造通道口径。
+
+    T16 review 修复(危险模式③,「假灯」):fixture 前瞻收益列此前固定叫 `fwd_2_oc`,但
+    `day_channel_stats` 按 `channel_audit._RET_MAIN`(= `MAIN_RULER`,T16 flip 后为
+    `gap_c1_o2`)动态读源列——旧 fixture 喂错列名会让 `excess_t2` 全 NaN、`mean_excess_t2`/
+    `unique_excess_t2`/`hit_rate_t2` 全部静默变 `None`,但本测试原先只断言 `n_days`/
+    列是否存在这类结构性事实,从不检查这些字段的数值,于是 flip 后"数据已经空了、测试还是
+    绿的"——本次改动做两件事:①fixture 改喂当前 `MAIN_RULER` 的列名(不再硬编码字面量,
+    直接引用常量,防止未来再次漂移);②新增数值断言,让这条测试真的有能力在数据被算错/
+    算空时变红(这两天数据完全相同,`__all__`(2 日)与单相位(各 1 日)理应给出同一组数值)。
+    """
+    from autoresearch.common.ruler import MAIN_RULER
+
     for date in ("2026-06-01", "2026-06-02"):
         d = tmp_path / date
         (d / "retro").mkdir(parents=True, exist_ok=True)
@@ -322,13 +334,21 @@ def test_channel_by_phase_splits_ledger_by_phase(tmp_path, monkeypatch):
                       "channel_rank": [1, 1], "channel_score": [1.0, 1.0]}).to_csv(
             d / "L1_channels.csv", index=False)
         pd.DataFrame({"code": ["000001", "000002", "000003"],
-                      "fwd_2_oc": [0.05, -0.01, 0.0],
+                      MAIN_RULER: [0.05, -0.01, 0.0],
                       "buyable": [True, True, True]}).to_csv(d / "retro" / "attribution.csv", index=False)
     out = replay.channel_by_phase(tmp_path, phases={"2026-06-01": "冰点", "2026-06-02": "发酵"})
     assert set(out) == {"__all__", "冰点", "发酵"}
     assert out["__all__"]["n_days"].max() == 2      # 全窗两天
     assert out["冰点"]["n_days"].max() == 1          # 单相位各一天
     assert "unique_excess_t2" in out["__all__"].columns
+
+    # 数值断言(市场中位 = median(0.05, -0.01, 0.0) = 0.0;momentum/value 各自 unique 召回单票):
+    for label in ("__all__", "冰点", "发酵"):
+        ledger = out[label].set_index("channel")
+        mom, val = ledger.loc["momentum"], ledger.loc["value"]
+        assert abs(mom["unique_excess_t2"] - 0.05) < 1e-9, f"{label}: momentum 应为 0.05-0.0=0.05"
+        assert abs(val["unique_excess_t2"] - (-0.01)) < 1e-9, f"{label}: value 应为 -0.01-0.0=-0.01"
+        assert mom["hit_rate_t2"] == 1.0 and val["hit_rate_t2"] == 0.0
 
 
 def test_channel_by_phase_empty_root_returns_empty(tmp_path):

@@ -155,12 +155,20 @@ def test_applied_helper_tolerates_garbage():
 # ── 生产现状的活体断言 ───────────────────────────────────────
 
 
-def test_production_weights_file_is_currently_regime_blind():
-    """08-04 实测:生产 weights.json 无 regimes 块 → regime_aware 一直在静默回落。
+def test_production_weights_file_regimes_are_gate_validated_only():
+    """08-04 实测生产 weights.json 无 regimes 块(该状态本断言曾锁过,现已如约变红)。
 
-    这条会在有人真的跑对 `calibrate-regimes` 之后变红 —— 那正是它该变红的时候
-    (提醒:届时必须先过两半符号一致门,见
-    docs/research/2026-08-04-momentum-phase-conditional-ic.md §3)。
+    T16(2026-08-07,用户裁定后修复):`factor_lab.calibrate_regimes(require_split_half=True)`
+    现为默认行为——单桶样本量够 `min_dates` 不再直接落盘,必须**另外**通过
+    `split_half_regime_gate`(按日期切两半、`__global__` 组 signed IC 符号一致率 >50%)才写进
+    `regimes`;未过门的桶记入 `meta.regimes_pending`,请求时回落 flat 并走
+    `record_degradation("weights_regime", ...)` 记账(见 test_weights_regime.py 同族测试)。
+
+    08-07 实测:`range` 桶过门(77.8%,9 可比因子组 7 一致)落盘;`trend`/`risk_off` 两桶因
+    regime 本身按时间聚簇、各自整桶集中在单一半区,两半符号一致门"判不了"它们(不是"判定不
+    过"),留在 `regimes_pending`,不落盘。本断言因此从"必须为空"改为"只能是 range 的子集"
+    ——若未来出现 range 之外的桶,必须先确认它是通过同一道 `split_half_regime_gate` 落盘的
+    (`meta.split_half_gate[<regime>].rate > 0.5`),而不是又退回"单桶样本够就写"的旧行为。
     """
     from pathlib import Path
 
@@ -169,7 +177,13 @@ def test_production_weights_file_is_currently_regime_blind():
         pytest.skip("无生产 weights.json")
     data = json.loads(path.read_text(encoding="utf-8"))
     regimes = data.get("regimes") or {}
-    assert not regimes, (
+    meta = data.get("meta") or {}
+    assert set(regimes) <= {"range"}, (
         f"weights.json 现在有 regimes={sorted(regimes)} —— 若这是有意为之,"
-        "请确认已过两半符号一致门(08-04 的读数是 range 侧 4/4 反号、"
-        "trend 与 risk_off 时间上零重叠),并更新本断言")
+        "请确认新增的桶各自通过了 meta.split_half_gate 的两半符号一致门"
+        "(rate > 0.5),而不是绕过了 require_split_half 直接写入,并更新本断言")
+    if "range" in regimes:
+        gate = (meta.get("split_half_gate") or {}).get("range")
+        assert gate is not None and gate.get("rate", 0) > 0.5, (
+            "range 桶落盘了,但 meta.split_half_gate 里查不到它的过门读数"
+            "(> 0.5)——落盘与门验证脱钩了")
