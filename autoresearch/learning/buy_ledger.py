@@ -53,14 +53,32 @@ def _hi_col_for(day: str) -> str:
     return TOUCH_COL
 
 
-def target_hit_for(day: str, tr: float | None, row, col: str | None = None) -> bool | None:
-    """日期分界触价命中:目标幅(close_D 基)rebase 到 o1 基,与对应窗口 MFE/实现价比。
+def _rebase_col_for(col: str) -> str:
+    """触价列 `col` → 对应的 rebase 基列名(C2 修复,final-review 2026-08-08)。
 
-    switch 日(`_SCHEMA_SWITCH`)起卡契约 v3(超短)生效,窗口收窄到 2 日 → 按 `hi_2_oc` 判;
-    `ruler.SCHEMA_SWITCH_V4` 起卡契约 v4(隔夜)生效,唯一实现价=T+2 开盘 → 按
-    `ruler.TOUCH_COL` 判;更早的卡是 10 日语义 → 按 `hi_10_oc` 判(不拿新窗口冤枉旧卡)。
-    `col` 显式传入时跳过日期分界直接用该列(T17:`target_calibration` 算 v4 双列过渡的
-    `hi_2_oc` 参考读数用,不逐日期重判)。缺值 → None(诚实标未成熟)。
+    目标幅 `tr` 以 `close[D]` 为基;要跟 `col`(某个窗口的 MFE/实现价)比较,必须先把 `tr`
+    rebase 到该窗口自己的基:`hi_2_oc`/`hi_10_oc` 都以 `o1=open[D+1]` 为基 → 用 `gap_d1`
+    (=open[D+1]/close[D]−1);`ruler.TOUCH_COL`(v4 起,=`gap_c1_o2`)以 `c1=close[D+1]` 为基
+    → 用 `fwd_1_cc`(=close[D+1]/close[D]−1)。
+
+    修复前 v4 分支恒用 `gap_d1`(o1 基)去 rebase 一个 c1 基的窗口,差一个 D+1 日内涨跌幅
+    因子:D+1 日内上涨(卡看多时的常态)→ 门槛偏高 → 触达率偏低;D+1 日内下跌 → 反之。
+    三段分界各自的基不能串,故按 `col`(不是按 `day`)单点选基。
+    """
+    return "fwd_1_cc" if col == TOUCH_COL else "gap_d1"
+
+
+def target_hit_for(day: str, tr: float | None, row, col: str | None = None) -> bool | None:
+    """日期分界触价命中:目标幅(close_D 基)rebase 到对应窗口**自己的基**,再与该窗口 MFE/实现价比。
+
+    switch 日(`_SCHEMA_SWITCH`)起卡契约 v3(超短)生效,窗口收窄到 2 日 → 按 `hi_2_oc` 判
+    (rebase 基 = `gap_d1`,o1 基);`ruler.SCHEMA_SWITCH_V4` 起卡契约 v4(隔夜)生效,唯一
+    实现价=T+2 开盘 → 按 `ruler.TOUCH_COL` 判(rebase 基 = `fwd_1_cc`,c1 基——C2 修复,
+    此前误用 o1 基的 `gap_d1`,见 `_rebase_col_for`);更早的卡是 10 日语义 → 按 `hi_10_oc`
+    判(rebase 基同 v3,仍是 `gap_d1`;不拿新窗口冤枉旧卡)。`col` 显式传入时跳过日期分界
+    直接用该列(T17:`target_calibration` 算 v4 双列过渡的 `hi_2_oc` 参考读数用,不逐日期
+    重判;rebase 基仍按 `_rebase_col_for(col)` 跟 `col` 走,不是跟 `day` 走)。缺值 → None
+    (诚实标未成熟)。
     """
     if tr is None:
         return None
@@ -68,7 +86,7 @@ def target_hit_for(day: str, tr: float | None, row, col: str | None = None) -> b
     hi = pd.to_numeric(pd.Series([row.get(col)]), errors="coerce").iloc[0]
     if pd.isna(hi):
         return None
-    gap = pd.to_numeric(pd.Series([row.get("gap_d1")]), errors="coerce").iloc[0]
+    gap = pd.to_numeric(pd.Series([row.get(_rebase_col_for(col))]), errors="coerce").iloc[0]
     t_entry = (1 + tr) / (1 + gap) - 1 if not pd.isna(gap) else tr
     return bool(hi >= t_entry)
 
@@ -159,11 +177,11 @@ def target_calibration(scan_root: Path | str | None = None, window: int = 30,
 
     只统计**看多目标**(tr>0;UW 向下目标负幅任何上涨都"触达",会稀释过乐观读数——
     07-05 真数据冒烟发现)+ 已成熟行(有对应窗口 MFE/实现价列);触价口径与 roll 同款 helper
-    (`target_hit_for`):目标幅(close_D 基)rebase 到 o1 基再与窗口最高/实现价比;日期分界见
-    `_hi_col_for`(三段,T17):旧卡 `hi_10_oc` → v3 起 `hi_2_oc`(2日 MFE)→ v4 起
-    `ruler.TOUCH_COL`(T+2 开盘,唯一实现价)。v4 起额外并陈 `hi_2_oc` 参考读数
-    (`ref_hit_rate`/`ref_n`,双列过渡 ≥20 交易日不删旧读数,不与主口径混算)。
-    返回 None = 无现场。spec 2026-07-05 §6。
+    (`target_hit_for`):目标幅(close_D 基)rebase 到**对应窗口自己的基**再与窗口最高/实现价
+    比(v3/更早=o1 基,v4=c1 基,见 `_rebase_col_for`,C2 修复);日期分界见 `_hi_col_for`
+    (三段,T17):旧卡 `hi_10_oc` → v3 起 `hi_2_oc`(2日 MFE)→ v4 起 `ruler.TOUCH_COL`(T+2
+    开盘,唯一实现价)。v4 起额外并陈 `hi_2_oc` 参考读数(`ref_hit_rate`/`ref_n`,双列过渡
+    ≥20 交易日不删旧读数,不与主口径混算)。返回 None = 无现场。spec 2026-07-05 §6。
     """
     from autoresearch.scan.health import final_ratings  # lazy 防环
     scan_root = Path(scan_root or "context/scan")

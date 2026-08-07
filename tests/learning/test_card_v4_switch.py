@@ -61,7 +61,14 @@ def test_hi_col_old_cards_not_wronged():
 
 
 def _mk_calib_day(root, date, hi2=0.03, touch=0.25, rating="Hold"):
-    """一天一张卡:目标幅固定 0.20(close 基,120/100−1),gap_d1=0 → t_entry=0.20。
+    """一天一张卡:目标幅固定 0.20(close 基,120/100−1)。
+
+    rebase 基按 col 分岔(C2 修复,final-review 2026-08-08):v3 分支(hi_2_oc,o1 基)用
+    `gap_d1=0.0` → t_entry=0.20;v4 分支(`ruler.TOUCH_COL`,c1 基)用 `fwd_1_cc=0.05` →
+    t_entry=(1.20/1.05)-1≈0.1429(两列刻意给不同值,不是同一个数换个名字——防止这份
+    fixture 在"rebase 基选错了但数值凑巧一样"时看不出来)。两条都 < touch=0.25,故 v4
+    分支的 `hit_rate==1.0` 断言不受影响;想单独锁 rebase 基选择本身的用例见
+    `test_buy_ledger.test_target_hit_v4_rebases_with_fwd_1_cc_not_gap_d1`。
 
     同时落 `hi_2_oc` 与 `ruler.TOUCH_COL`(=gap_c1_o2)两列 —— 供 v4 双列过渡断言用;
     `_hi_col_for` 按 `date` 选列,不看行里有哪些列,pre-v4 日期即便本函数也写了 touch 列,
@@ -75,8 +82,8 @@ def _mk_calib_day(root, date, hi2=0.03, touch=0.25, rating="Hold"):
     pd.DataFrame([{"code": "000001", "close": 100.0}]).to_csv(
         d / "L1_scored_full.csv", index=False)
     (d / "retro").mkdir()
-    row = {"code": "000001", "fwd_1_oo": 0.01, "fwd_5_oc": 0.08, "fwd_10_oc": 0.10,
-           "gap_d1": 0.0, "hi_2_oc": hi2}
+    row = {"code": "000001", "fwd_1_oo": 0.01, "fwd_1_cc": 0.05, "fwd_5_oc": 0.08,
+           "fwd_10_oc": 0.10, "gap_d1": 0.0, "hi_2_oc": hi2}
     row[ruler.TOUCH_COL] = touch
     pd.DataFrame([row]).to_csv(d / "retro" / "attribution.csv", index=False)
     return d

@@ -58,6 +58,42 @@ def test_target_hit_schema_switch():
     assert bl.target_hit_for("2026-07-10", tr, pd.Series({"gap_d1": 0.0})) is None  # 缺 hi 列 → None
 
 
+def test_rebase_col_for_v4_uses_fwd_1_cc_others_use_gap_d1():
+    """C2 修复(final-review 2026-08-08):rebase 基的单点选择——v4(ruler.TOUCH_COL,c1 基)
+    用 fwd_1_cc;v3/更早(o1 基)用 gap_d1。"""
+    from autoresearch.common import ruler
+    from autoresearch.learning.buy_ledger import _rebase_col_for
+
+    assert _rebase_col_for(ruler.TOUCH_COL) == "fwd_1_cc"
+    assert _rebase_col_for("hi_2_oc") == "gap_d1"
+    assert _rebase_col_for("hi_10_oc") == "gap_d1"
+
+
+def test_target_hit_v4_rebases_with_fwd_1_cc_not_gap_d1():
+    """C2 修复(final-review 2026-08-08)回归锁:v4(col=ruler.TOUCH_COL)分支必须用 `fwd_1_cc`
+    (c1 基)rebase 目标幅,不是 `gap_d1`(o1 基)——两列故意给不同值,用错基连命中方向都会翻。
+
+    tr=0.20(目标);fwd_1_cc=0.10 → t_entry=(1.20/1.10)-1≈0.0909,hi=0.10≥0.0909 → 命中;
+    若误用 gap_d1=-0.05 → t_entry=(1.20/0.95)-1≈0.2632,hi=0.10<0.2632 → 不命中(方向反了)。
+    """
+    from autoresearch.common import ruler
+    from autoresearch.learning import buy_ledger as bl
+
+    row = pd.Series({ruler.TOUCH_COL: 0.10, "fwd_1_cc": 0.10, "gap_d1": -0.05})
+    assert bl.target_hit_for(ruler.SCHEMA_SWITCH_V4, 0.20, row) is True
+
+
+def test_target_hit_v3_still_rebases_with_gap_d1_not_fwd_1_cc():
+    """对照:v3(hi_2_oc,o1 基)分支不受 C2 修复影响,继续用 gap_d1——即便行里混进
+    一个不同值的 fwd_1_cc 也不该被拿来 rebase(选基跟 col 走,不是"随便挑一个能用的列")。
+    """
+    from autoresearch.learning import buy_ledger as bl
+
+    row = pd.Series({"hi_2_oc": 0.10, "fwd_1_cc": -0.05, "gap_d1": 0.10})
+    # gap_d1=0.10(正确基)→ t_entry=(1.20/1.10)-1≈0.0909,hi=0.10≥ → 命中
+    assert bl.target_hit_for("2026-07-15", 0.20, row) is True
+
+
 def test_target_hit_by_touch(tmp_path):
     """触价口径:收盘没到目标(fwd_10 0.10 < 0.20)但 10 日内最高摸到过 → 命中。"""
     _mk_day(tmp_path, "2026-07-01", hi=0.25, fwd10=0.10)

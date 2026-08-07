@@ -419,13 +419,16 @@ def realized_returns(date: str, fwd: int = 10) -> pd.DataFrame:
     import autoresearch.research.factor_lab as fl
     from autoresearch.data.tushare_source import _trade_days
 
-    cols = ["code", "fwd_1_oo", "fwd_2_oc", "fwd_5_oc", "fwd_10_oc", "hi_2_oc", "hi_10_oc", "buyable", "gap_d1",
-            "gap_c1_o2", "buyable_c1", "unsellable_o2"]
+    cols = ["code", "fwd_1_cc", "fwd_1_oo", "fwd_2_oc", "fwd_5_oc", "fwd_10_oc", "hi_2_oc", "hi_10_oc",
+            "buyable", "gap_d1", "gap_c1_o2", "buyable_c1", "unsellable_o2"]
     # ↑ 全部历史/参考尺字面量列表(FWDS 同族),固定列名,勿随主尺漂移;fwd_10/hi_10 供买后管理(未成熟=NaN)
     # gap_c1_o2/buyable_c1/unsellable_o2:隔夜尺三列(Wave11 批A);后两者是 pandas 可空
     # boolean(<NA>=未知,见 factor_lab.forward_returns 2026-08-07 review fix),本函数只透传
     # 原样返回,不在此处做任何布尔判读 —— 消费方若要用真值需自行绕开 `_bool_series` 族陷阱
     # (T11 修的病:naive `.astype(str)` 把 `<NA>` 静默读成 "False")。
+    # fwd_1_cc(C2 修复,final-review 2026-08-08):v4 触价 rebase 基——buy_ledger.target_hit_for
+    # 的 gap_c1_o2 分支要把目标幅(close[D] 基)rebase 到 c1=close[D+1] 基,用的正是这一列
+    # (=close[D+1]/close[D]−1);此前不在白名单里,该 bug 没法修就是因为这一列压根没落盘过。
     pro = fl._pro()
     d0 = date.replace("-", "")
     today = datetime.now().strftime("%Y%m%d")
@@ -520,7 +523,7 @@ def pending_days(today: str | None = None, scan_root: Path | None = None,
 # ───────────────────────── 编排:attribute / retro_input / done ─────────────────────────
 
 _KEEP = ["code", "name", "industry", "bucket", "winner", "news_pop",
-         "buyable", "tradable", "fwd_1_oo", "fwd_2_oc", "hi_2_oc",
+         "buyable", "tradable", "fwd_1_cc", "fwd_1_oo", "fwd_2_oc", "hi_2_oc",
          "fwd_5_oc", "fwd_10_oc", "hi_10_oc", "winner_5", "bucket_5",
          "gap_d1", "gap_c1_o2", "buyable_c1", "unsellable_o2",
          "rank", "recalled_flag", "composite", "score_momentum", "score_fund_main",
@@ -530,6 +533,11 @@ _KEEP = ["code", "name", "industry", "bucket", "winner", "news_pop",
 # 拼接读取的持久化 CSV 表头,若随 MAIN_RULER 改名,旧日期的历史行会与新日期错列、读出全 NaN
 # (T16 换尺需要新增列而非在此重命名,由该次改动自行处理落盘 schema 演进)。gap_c1_o2/
 # buyable_c1/unsellable_o2:隔夜尺三列(Wave11 批A,历史回填见 refresh_attributions);
+# fwd_1_cc:C2 修复(final-review 2026-08-08)v4 触价 rebase 基,新收编 —— 本次修复前写的
+# v4 日期历史行没有这一列;`target_hit_for` 缺列时 `gap` 读 NaN,退化成 `t_entry=tr`(不
+# rebase,直接拿 close 基目标幅比 c1 基触价列),不是拿 v3 分支的 `gap_d1` 冒充,也不会诚实
+# 标 None——这是历史行的已知过渡期 degradation(hi 本身早在 T11 就已收编,不缺;缺的只是
+# rebase 基),不追溯重算旧行,新写的行起就是对的。
 # ruler:本行 winner/bucket 是在哪个 MAIN_RULER 下分类的(写入那一刻的真值),历史行缺此列
 # → 读侧 `row.get("ruler", "fwd_2_oc")` 兜底(旧行诚实标旧尺,不假装未知)。
 
