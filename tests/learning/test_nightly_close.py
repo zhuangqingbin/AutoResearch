@@ -24,7 +24,8 @@ def test_run_is_isolated_per_step(monkeypatch):
     monkeypatch.setattr("autoresearch.learning.retro.pending_days",
                         lambda *a, **k: (_ for _ in ()).throw(OSError("湖挂了")))
     monkeypatch.setattr("autoresearch.learning.t1_review.pending_pairs", lambda *a, **k: [])
-    monkeypatch.setattr("autoresearch.learning.t1_review.gap_finalize_pending", lambda *a, **k: 0)
+    monkeypatch.setattr("autoresearch.learning.t1_review.gap_finalize_pending",
+                        lambda *a, **k: (0, []))
     monkeypatch.setattr("autoresearch.learning.tripwire_watch.check", lambda *a, **k: [])
     monkeypatch.setattr("importlib.import_module", lambda name: type(
         "M", (), {"main": staticmethod(lambda: None)})())
@@ -46,7 +47,7 @@ def test_run_reports_counts(monkeypatch):
                         lambda *a, **k: [{"t": "2026-07-24", "t1": "2026-07-27"}])
     monkeypatch.setattr("autoresearch.learning.t1_review.backfill_day", lambda t, *a, **k: {})
     monkeypatch.setattr("autoresearch.learning.t1_review.gap_finalize_pending",
-                        lambda *a, **k: 1)
+                        lambda *a, **k: (1, []))
     monkeypatch.setattr("autoresearch.learning.tripwire_watch.check",
                         lambda *a, **k: [{"code": "601869"}])
     monkeypatch.setattr("importlib.import_module", lambda name: type(
@@ -60,12 +61,28 @@ def test_run_reports_counts(monkeypatch):
     assert "⚡ 1 条触发" in res["tripwire"]
 
 
+def test_t1_gap_finalize_step_surfaces_failed_days(monkeypatch):
+    """`gap_finalize_pending` 返回的失败日名单必须原样拼进汇总行,不能悄悄消失
+    (中等严重度 review 发现:此前只有一个裸计数,补了几日就断了看不出来)。"""
+    monkeypatch.setattr("autoresearch.learning.retro.pending_days", lambda *a, **k: [])
+    monkeypatch.setattr("autoresearch.learning.t1_review.pending_pairs", lambda *a, **k: [])
+    monkeypatch.setattr("autoresearch.learning.t1_review.gap_finalize_pending",
+                        lambda *a, **k: (2, ["2026-07-20"]))
+    monkeypatch.setattr("autoresearch.learning.tripwire_watch.check", lambda *a, **k: [])
+    monkeypatch.setattr("importlib.import_module", lambda name: type(
+        "M", (), {"main": staticmethod(lambda: None)})())
+
+    res = {r[0]: r[2] for r in N.run("2026-07-28")}
+
+    assert res["t1_gap_finalize"] == "gap 终判回填 2 日;1 日失败(2026-07-20)"
+
+
 def test_run_says_so_when_nothing_pending(monkeypatch):
     """无欠账要明说,不能静默 —— 「什么都没打印」和「跑了但没事做」得分得清。"""
     monkeypatch.setattr("autoresearch.learning.retro.pending_days", lambda *a, **k: [])
     monkeypatch.setattr("autoresearch.learning.t1_review.pending_pairs", lambda *a, **k: [])
     monkeypatch.setattr("autoresearch.learning.t1_review.gap_finalize_pending",
-                        lambda *a, **k: 0)
+                        lambda *a, **k: (0, []))
     monkeypatch.setattr("autoresearch.learning.tripwire_watch.check", lambda *a, **k: [])
     monkeypatch.setattr("importlib.import_module", lambda name: type(
         "M", (), {"main": staticmethod(lambda: None)})())
@@ -111,7 +128,7 @@ def test_retro_step_writes_input_not_just_attribution(monkeypatch):
                         lambda d, frame, **k: seen.update(input_day=d, frame=frame))
     monkeypatch.setattr("autoresearch.learning.t1_review.pending_pairs", lambda *a, **k: [])
     monkeypatch.setattr("autoresearch.learning.t1_review.gap_finalize_pending",
-                        lambda *a, **k: 0)
+                        lambda *a, **k: (0, []))
     monkeypatch.setattr("autoresearch.learning.tripwire_watch.check", lambda *a, **k: [])
     monkeypatch.setattr("importlib.import_module", lambda name: type(
         "M", (), {"main": staticmethod(lambda: None)})())

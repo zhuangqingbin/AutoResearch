@@ -68,12 +68,18 @@ def run(today: str) -> list[tuple[str, bool, str]]:
     def _t1_gap_finalize() -> str:
         """D+2 晚:隔夜 gap 终判回填(2026-08-05 用户裁定,对外准不准口径 = gap)。
 
-        `gap_finalize_pending` 内部逐日独立 try/except(T+2 daily 未发布是常态),
-        本函数不需要像 `_t1_backfill` 那样外层再循环一次。
+        `gap_finalize_pending` 内部逐日独立 try/except(取数+计算+写盘整段纳入同一
+        per-day 边界),本函数不需要像 `_t1_backfill` 那样外层再循环一次;但仍要把它
+        返回的失败日名单如实拼进汇总行(不能让「补了几日就断了」悄悄消失)。
         """
         from autoresearch.learning import t1_review
-        n = t1_review.gap_finalize_pending(today)
-        return f"gap 终判回填 {n} 日" if n else "无待终判日"
+        n, failed = t1_review.gap_finalize_pending(today)
+        if not n and not failed:
+            return "无待终判日"
+        note = f"gap 终判回填 {n} 日"
+        if failed:
+            note += f";{len(failed)} 日失败({'、'.join(failed)})"
+        return note
 
     def _tripwire() -> str:
         from autoresearch.learning.tripwire_watch import check

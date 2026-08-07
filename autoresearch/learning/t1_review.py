@@ -765,7 +765,8 @@ def _update_ledger_gap(t: str, merged: pd.DataFrame, path: Path | str | None = N
 def gap_finalize_pending(today: str | None = None, scan_root: Path | str | None = None,
                          ledger_path: Path | str | None = None,
                          cal: list[str] | None = None,
-                         gap_prices: dict[str, pd.DataFrame] | None = None) -> int:
+                         gap_prices: dict[str, pd.DataFrame] | None = None,
+                         ) -> tuple[int, list[str]]:
     """D+2 晚:回填隔夜 gap 终判(2026-08-05 用户裁定)。nightly_close 接线调用。
 
     终评尺 = gap_c1_o2(T+1 收 → T+2 开);cc1 的既有 `verdict` 列降为 D+1 初判,**不覆盖、
@@ -774,18 +775,26 @@ def gap_finalize_pending(today: str | None = None, scan_root: Path | str | None 
 
     扫描 `context/scan/*/t1_review/scorecard.csv`:已有非空 `final_verdict` 的日跳过
     (幂等,不重复回填);0 行的日(当日真选 0 只)跳过,留给下次;否则取 build_meta 的
-    `t1`、算 `t2 = next_trade_day(t1)`,`t2` 未知或还没到 `today` → 跳过留给下次。
-    每日独立 try/except(T+2 daily 未发布是常态,不该挡住其余已就绪日——同
-    `nightly_close._t1_backfill`/`_retro_refresh`「单日失败不拖累其余日」的既有惯例)。
+    `t1`、算 `t2 = next_trade_day(t1)`,`t2` 未知或还没到 `today` → 跳过留给下次(以上三种
+    都是"这日还没到时候",不算失败,不进返回值的失败名单)。
+
+    真正进入处理的日子,**取数 + 计算 + 写盘整段纳入同一个 per-day 异常边界**——任一步
+    抛异常(T+2 daily 未发布/写盘 IO 错误等)都只放弃这一日、continue 到下一日,不连坐
+    (同 `nightly_close._t1_backfill`/`_retro_refresh`「单日失败不拖累其余日」的既有惯例;
+    早前版本只把 try/except 包在取数那一步,计算/写盘裸奔——单日写盘失败会中断整个循环,
+    后续待终判日全部漏跑且无声,已修)。写盘顺序刻意把 `scorecard.csv`(本函数的幂等判据
+    所在)放最后:账本/build_meta 写失败时 csv 仍是「未终判」的旧状态,下次夜跑会正确地
+    把这日判成待处理并重试,不会卡在半写状态。
 
     gap_prices 可注入(测试离线):{t1 日期: DataFrame},DataFrame 形状同
     `_fetch_gap_prices` 返回(至少含 code/gap_c1_o2,industry 可选)。
-    返回:本次成功回填的日数。
+    返回:`(本次成功回填的日数, 失败日期列表)`——失败列表如实列出被跳过的日子,不静默
+    少做(调用方 `nightly_close._t1_gap_finalize` 会把它拼进汇总行)。
     """
     today = today or datetime.now().strftime("%Y-%m-%d")
     scan_root = Path(scan_root or "context/scan")
     if not scan_root.exists():
-        return 0
+        return 0, []
     if cal is None:
         import autoresearch.research.factor_lab as fl
         from autoresearch.data.tushare_source import _trade_days
@@ -793,6 +802,7 @@ def gap_finalize_pending(today: str | None = None, scan_root: Path | str | None 
         cal = _trade_days(fl._pro(), _EPOCH.replace("-", ""), end)
 
     n_done = 0
+    failed: list[str] = []
     for dd in sorted(p for p in scan_root.iterdir() if p.is_dir()):
         t = dd.name
         if t < _EPOCH:
@@ -803,7 +813,7 @@ def gap_finalize_pending(today: str | None = None, scan_root: Path | str | None 
             continue
         try:
             sc = pd.read_csv(sc_path, dtype={"code": str})
-        except Exception:  # noqa: BLE001 — 坏 csv 留给人工排查,不阻塞其余日
+        except Exception:  # noqa: BLE001 — 坏 csv 留给人工排查,不阻塞其余日;非"进入处理"故不进 failed
             continue
         if "final_verdict" in sc.columns and len(sc) \
                 and sc["final_verdict"].fillna("").astype(str).ne("").all():
@@ -816,30 +826,32 @@ def gap_finalize_pending(today: str | None = None, scan_root: Path | str | None 
         t2 = next_trade_day(t1_date, cal)
         if t2 is None or t2 > today:
             continue                                       # T+2 未知或还没到
+
         try:
             gp = gap_prices[t1_date] if gap_prices is not None else _fetch_gap_prices(t1_date, t2)
-        except Exception:  # noqa: BLE001 — T+2 daily 未发布是常态,留给下次夜跑
+            gp = gp.copy()
+            gp["code"] = gp["code"].astype(str).str.zfill(6)
+            gp = _industry_neutral_gap(gp)
+
+            merged = sc.merge(gp[["code", "gap_c1_o2", "_resid_gap", "z_gap"]], on="code", how="left")
+            merged["final_verdict"] = [
+                verdict(r, e, z) for r, e, z in
+                zip(merged["rating"], merged["_resid_gap"], merged["z_gap"], strict=True)]
+            merged = merged.drop(columns=["_resid_gap"])
+
+            _update_ledger_gap(t, merged, path=ledger_path)
+            meta["t2"] = t2
+            meta["market_gap"] = round(
+                float(pd.to_numeric(gp["gap_c1_o2"], errors="coerce").mean()), 6)
+            sigma_gap = _robust_sigma(gp["_resid_gap"])
+            meta["sigma_gap"] = None if pd.isna(sigma_gap) else round(float(sigma_gap), 5)
+            meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+            merged.to_csv(sc_path, index=False)                # 幂等判据列所在,刻意放最后写
+        except Exception:  # noqa: BLE001 — 单日整段(取数/计算/写盘)失败不连坐,留给下次夜跑
+            failed.append(t)
             continue
-        gp = gp.copy()
-        gp["code"] = gp["code"].astype(str).str.zfill(6)
-        gp = _industry_neutral_gap(gp)
-
-        merged = sc.merge(gp[["code", "gap_c1_o2", "_resid_gap", "z_gap"]], on="code", how="left")
-        merged["final_verdict"] = [
-            verdict(r, e, z) for r, e, z in
-            zip(merged["rating"], merged["_resid_gap"], merged["z_gap"], strict=True)]
-        merged = merged.drop(columns=["_resid_gap"])
-        merged.to_csv(sc_path, index=False)
-
-        meta["t2"] = t2
-        meta["market_gap"] = round(float(pd.to_numeric(gp["gap_c1_o2"], errors="coerce").mean()), 6)
-        sigma_gap = _robust_sigma(gp["_resid_gap"])
-        meta["sigma_gap"] = None if pd.isna(sigma_gap) else round(float(sigma_gap), 5)
-        meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
-
-        _update_ledger_gap(t, merged, path=ledger_path)
         n_done += 1
-    return n_done
+    return n_done, failed
 
 
 def render_ledger_report(k: int = 20, path: Path | str | None = None) -> str:

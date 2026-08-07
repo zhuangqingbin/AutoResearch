@@ -374,9 +374,9 @@ def test_gap_finalize_overrides_cc1_verdict_and_keeps_both(tmp_path):
     sc_before = pd.read_csv(rd / "scorecard.csv", dtype={"code": str}).set_index("code")
     assert sc_before.loc["600001", "verdict"] == "准"                  # cc1 初判(D+1 晚)
 
-    n = t1.gap_finalize_pending("2026-07-20", scan_root=tmp_path, ledger_path=lp,
-                                cal=_CAL, gap_prices={"2026-07-17": _gap_prices()})
-    assert n == 1
+    n, failed = t1.gap_finalize_pending("2026-07-20", scan_root=tmp_path, ledger_path=lp,
+                                        cal=_CAL, gap_prices={"2026-07-17": _gap_prices()})
+    assert n == 1 and failed == []
 
     sc = pd.read_csv(rd / "scorecard.csv", dtype={"code": str}).set_index("code")
     assert sc.loc["600001", "verdict"] == "准"                          # 初判仍在,未被抹除
@@ -393,22 +393,69 @@ def test_gap_finalize_overrides_cc1_verdict_and_keeps_both(tmp_path):
 
     before_csv = (rd / "scorecard.csv").read_text(encoding="utf-8")
     before_ledger = lp.read_text(encoding="utf-8")
-    n2 = t1.gap_finalize_pending("2026-07-20", scan_root=tmp_path, ledger_path=lp,
-                                 cal=_CAL, gap_prices={"2026-07-17": _gap_prices()})
-    assert n2 == 0                                                     # 幂等:已终判过,重跑跳过
+    n2, failed2 = t1.gap_finalize_pending("2026-07-20", scan_root=tmp_path, ledger_path=lp,
+                                          cal=_CAL, gap_prices={"2026-07-17": _gap_prices()})
+    assert n2 == 0 and failed2 == []                                   # 幂等:已终判过,重跑跳过
     assert (rd / "scorecard.csv").read_text(encoding="utf-8") == before_csv
     assert lp.read_text(encoding="utf-8") == before_ledger
 
 
 def test_gap_finalize_skips_when_t2_not_ready(tmp_path):
-    """T+2 未到 today(或价格未发布)→ 跳过,留给下次;返回 0,不产生 final_verdict 列。"""
+    """T+2 未到 today(或价格未发布)→ 跳过,留给下次;返回 (0, []),不产生 final_verdict 列
+    (「还没到时候」不是失败,不进失败名单)。"""
     _mk_scan(tmp_path)
     t1.build_and_stage("2026-07-16", scan_root=tmp_path, prices=_prices(), cal=_CAL)
-    n = t1.gap_finalize_pending("2026-07-17", scan_root=tmp_path, cal=_CAL,
-                                gap_prices={"2026-07-17": _gap_prices()})
-    assert n == 0                                                      # today(07-17) < t2(07-20)
+    n, failed = t1.gap_finalize_pending("2026-07-17", scan_root=tmp_path, cal=_CAL,
+                                        gap_prices={"2026-07-17": _gap_prices()})
+    assert n == 0 and failed == []                                     # today(07-17) < t2(07-20)
     sc = pd.read_csv(tmp_path / "2026-07-16" / "t1_review" / "scorecard.csv")
     assert "final_verdict" not in sc.columns
+
+
+def test_gap_finalize_isolates_write_failure_per_day(tmp_path, monkeypatch):
+    """中等严重度 review 发现:早前版本 try/except 只包取数,计算/写盘裸奔——中间日写盘
+    抛异常会中断整个 for 循环,后续待终判日全部漏跑且无声。本测试构造三日待终判,让
+    **中间那日在写盘环节**抛异常:①首尾两日仍须正常终判 ②返回值如实反映失败 1 日
+    ③循环不中断(第三日不会因第二日炸而被漏跑)。"""
+    cal3 = ["20260716", "20260717", "20260720", "20260721", "20260722", "20260723", "20260724"]
+    days = [("2026-07-16", "2026-07-17"), ("2026-07-20", "2026-07-21"), ("2026-07-22", "2026-07-23")]
+    for t, _t1 in days:
+        _mk_scan(tmp_path, t)
+        t1.build_and_stage(t, scan_root=tmp_path, prices=_prices(), cal=cal3)
+
+    boom_path = tmp_path / "2026-07-20" / "t1_review" / "scorecard.csv"
+    orig_to_csv = pd.DataFrame.to_csv
+
+    def _boom_to_csv(self, path_or_buf=None, *a, **k):
+        if path_or_buf is not None and str(path_or_buf) == str(boom_path):
+            raise OSError("模拟中间日写盘失败")
+        return orig_to_csv(self, path_or_buf, *a, **k)
+
+    monkeypatch.setattr(pd.DataFrame, "to_csv", _boom_to_csv)
+
+    gap_prices = {t1_date: _gap_prices() for _, t1_date in days}
+    n, failed = t1.gap_finalize_pending("2026-07-24", scan_root=tmp_path, cal=cal3,
+                                        gap_prices=gap_prices)
+
+    assert n == 2                                                      # 首尾两日正常终判
+    assert failed == ["2026-07-20"]                                    # 中间日如实记失败,不静默
+
+    sc_a = pd.read_csv(tmp_path / "2026-07-16" / "t1_review" / "scorecard.csv")
+    sc_c = pd.read_csv(tmp_path / "2026-07-22" / "t1_review" / "scorecard.csv")
+    assert "final_verdict" in sc_a.columns and sc_a["final_verdict"].notna().all()
+    assert "final_verdict" in sc_c.columns and sc_c["final_verdict"].notna().all()
+
+    sc_b = pd.read_csv(boom_path)                                      # 中间日没被半写坏
+    assert "final_verdict" not in sc_b.columns
+
+    # 循环没有在中间日崩溃后中断——撤掉写盘故障、重跑一次:中间日这次能正常补上,
+    # 且首尾两日已终判过、不重复计入(幂等与「不连坐」两条性质同时成立)。
+    monkeypatch.setattr(pd.DataFrame, "to_csv", orig_to_csv)
+    n2, failed2 = t1.gap_finalize_pending("2026-07-24", scan_root=tmp_path, cal=cal3,
+                                          gap_prices=gap_prices)
+    assert n2 == 1 and failed2 == []
+    sc_b2 = pd.read_csv(boom_path)
+    assert "final_verdict" in sc_b2.columns and sc_b2["final_verdict"].notna().all()
 
 
 def test_l4_confidence_parses_card(tmp_path):
