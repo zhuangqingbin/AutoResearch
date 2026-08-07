@@ -35,6 +35,7 @@ import numpy as np
 import pandas as pd
 
 # 复用包内打分原语 + 真·动量透镜(验证"出厂逻辑"本身;与 scan/handler 同口径)
+from autoresearch.common import ruler
 from autoresearch.common.scoring import _factor_groups, _pct, _wsum, lens_momentum
 from autoresearch.common.sw_sector_map import super_sector
 from autoresearch.data.tushare_source import _moneyflow_struct_cols
@@ -271,6 +272,11 @@ def forward_returns(piv: dict, P: list[str], D: str, fwd: int) -> pd.DataFrame:
     """D 的前瞻收益(D+1 开盘进):cc=收盘到收盘;oo=次日开到再次日开;oc/ocN=开盘到第N日收盘;fwd_2_oc=超短主尺(2026-07-10 用户裁定持仓 1~2 日)。
 
     并标 D+1 一字涨停(open==close==high 且涨幅近板)= 买不到 → unbuyable。
+
+    另产**隔夜尺三列**(Wave11 批A;2026-08-05 裁定,gap_c1_o2 = open[D+2]/close[D+1] − 1,
+    T+1 收盘买 → T+2 开盘卖;单点常量见 `autoresearch.common.ruler`,本函数仍只加列不改主尺):
+    `gap_c1_o2`(隔夜前瞻收益)、`buyable_c1`(T+1 收盘未封涨停,买腿可执行→剔样本用)、
+    `unsellable_o2`(T+2 一字跌停开,卖腿受限→标旗不剔,剔了会美化账本)。
     """
     idx = P.index(D)
     c, o, h = piv["close"], piv["open"], piv["high"]
@@ -298,6 +304,16 @@ def forward_returns(piv: dict, P: list[str], D: str, fwd: int) -> pd.DataFrame:
     lim = pd.Series([_board_limit(x) for x in codes], index=codes)
     sealed = (pc1 >= lim * 0.98) & (c1 >= h1 - 1e-6) & (o1h >= h1 - 1e-6)
     res["buyable"] = ~sealed.fillna(False)
+
+    # 隔夜尺三列(Wave11 批A;复用既有 pc1/h1/lim/c1,只补 o2/l2;不动上面的旧 buyable/sealed)
+    o2, l2 = col(o, 2), col(piv["low"], 2)
+    res["gap_c1_o2"] = o2 / c1 - 1.0     # 隔夜主尺(2026-08-05 裁定):T+1 收买 → T+2 开卖
+    # 买腿可执行:T+1 收盘未封涨停(收盘≈日高 且 当日涨幅≈板)—— 封板收盘买不进
+    buy_sealed = (pc1 >= lim * 0.98) & (c1 >= h1 - 1e-6)
+    res["buyable_c1"] = ~buy_sealed.fillna(False)
+    # 卖腿受限:T+2 一字跌停开(开≈日低 且 开盘较 c1 跌≈板)—— 标旗不剔
+    open_limit_dn = (o2 <= l2 + 1e-6) & (o2 <= c1 * (1 - lim * 0.98 / 100.0))
+    res["unsellable_o2"] = open_limit_dn.fillna(False)
     return res
 
 
@@ -548,7 +564,7 @@ CANDIDATES = [
     # "衰竭企稳" → +1。
     ("vol_ratio_20", +1), ("dist_low_60", -1), ("days_no_new_low", +1),
 ]
-FWDS = ["fwd_1_cc", "fwd_1_oo", "fwd_2_oc", "fwd_5_oc", "fwd_10_oc"]
+FWDS = ["fwd_1_cc", "fwd_1_oo", "fwd_2_oc", "fwd_5_oc", "fwd_10_oc", "gap_c1_o2"]
 
 
 def _spearman(a: pd.Series, b: pd.Series) -> float:
@@ -637,9 +653,36 @@ def evaluate(cap_floor: float, buyable_only: bool) -> None:
                              "spread_t": round(np.mean(spreads) / (np.std(spreads) + 1e-9) * np.sqrt(len(spreads)), 2)})
     dec_tbl = pd.DataFrame(dec_rows)
 
+    # 十分位多空价差(隔夜尺 gap_c1_o2,并列一支不替换主尺;clip 用 ruler.GAP_CLIP=单日板极值+容差)
+    dec_rows_gap = []
+    for col, sign in CANDIDATES:
+        d1, d10, spreads = [], [], []
+        for fr in frames:
+            sub = fr if not buyable_only else fr[fr["buyable"].fillna(True)]
+            if col not in sub.columns or "gap_c1_o2" not in sub.columns:
+                continue                            # 缺列帧跳过(旧帧可能缺新隔夜尺列)
+            s = (sub[col] * sign)
+            r = sub["gap_c1_o2"].clip(-ruler.GAP_CLIP, ruler.GAP_CLIP)
+            m = s.notna() & r.notna()
+            if m.sum() < 100:
+                continue
+            q = pd.qcut(s[m].rank(method="first"), 10, labels=False)
+            top = r[m][q == 9].mean()
+            bot = r[m][q == 0].mean()
+            d1.append(top)
+            d10.append(bot)
+            spreads.append(top - bot)
+        if spreads:
+            dec_rows_gap.append({"factor": col, "top_decile_ret": round(np.mean(d1) * 100, 3),
+                                 "bot_decile_ret": round(np.mean(d10) * 100, 3),
+                                 "LS_spread_bps": round(np.mean(spreads) * 1e4, 1),
+                                 "spread_t": round(np.mean(spreads) / (np.std(spreads) + 1e-9) * np.sqrt(len(spreads)), 2)})
+    dec_tbl_gap = pd.DataFrame(dec_rows_gap)
+
     OUT.mkdir(parents=True, exist_ok=True)
     ic_tbl.to_csv(OUT / "ic_table.csv", index=False)
     dec_tbl.to_csv(OUT / "decile_table.csv", index=False)
+    dec_tbl_gap.to_csv(OUT / "decile_table_gap.csv", index=False)
 
     # 排序打印(按超短主尺 ICIR 降序;缺列的因子排末尾)
     sortcol = "ICIR_fwd_2_oc"
@@ -654,7 +697,12 @@ def evaluate(cap_floor: float, buyable_only: bool) -> None:
     print(show[cols].to_string(index=False))
     print("\n================ 十分位多空价差(超短主尺 fwd_2_oc:开→D+2收,±0.30 clip, bps;买得到的)================")
     print(dec_tbl.sort_values("LS_spread_bps", ascending=False).to_string(index=False))
-    print(f"\n[done] → {OUT}/ic_table.csv, decile_table.csv  (buyable_only={buyable_only})")
+    print(f"\n================ 十分位多空价差(隔夜尺 gap_c1_o2:T+1收→T+2开,±{ruler.GAP_CLIP} clip, bps;并列不替换主尺)================")
+    if len(dec_tbl_gap):
+        print(dec_tbl_gap.sort_values("LS_spread_bps", ascending=False).to_string(index=False))
+    else:
+        print("(空:frames 均缺 gap_c1_o2 列,需重跑 harvest/eval 后才有)")
+    print(f"\n[done] → {OUT}/ic_table.csv, decile_table.csv, decile_table_gap.csv  (buyable_only={buyable_only})")
 
 
 def _load_basic() -> pd.DataFrame:

@@ -114,7 +114,7 @@ def test_forward_returns_missing_future_column_degrades_to_nan():
     def piv_of(base):
         return pd.DataFrame({d: base + i for i, d in enumerate(have)}, index=codes)
 
-    piv = {"close": piv_of(10.0), "open": piv_of(9.8), "high": piv_of(10.5),
+    piv = {"close": piv_of(10.0), "open": piv_of(9.8), "high": piv_of(10.5), "low": piv_of(9.6),
            "pct_chg": pd.DataFrame(dict.fromkeys(have, 1.0), index=codes)}
     res = fl.forward_returns(piv, P, "20260625", 10)
     assert res["fwd_5_oc"].isna().all()      # 需 P[5]=20260702 close → 缺列 → NaN
@@ -179,6 +179,7 @@ def test_forward_returns_fwd2_hi2():
         "open":    _piv([[10, 10.5, 11.0, 11.5, 12, 12.5], [100, 101, 102, 103, 104, 105]]),
         "close":   _piv([[10.2, 10.8, 11.55, 11.6, 12.1, 12.6], [100.5, 101.5, 103, 103.5, 104.5, 105.5]]),
         "high":    _piv([[10.3, 11.0, 11.9, 11.7, 12.2, 12.7], [101, 102, 104, 104, 105, 106]]),
+        "low":     _piv([[9.8, 10.3, 10.8, 11.3, 11.8, 12.3], [99.5, 100.5, 101.5, 102.5, 103.5, 104.5]]),
         "pct_chg": _piv([[1, 2, 3, 1, 1, 1], [1, 1, 1, 1, 1, 1]]),
     }
     fr = fl.forward_returns(piv, P, "20260701", fwd=10)
@@ -188,7 +189,7 @@ def test_forward_returns_fwd2_hi2():
     assert np.isclose(fr.loc["600519", "fwd_2_oc"], 103 / 101 - 1.0)
     assert np.isclose(fr.loc["600519", "hi_2_oc"], 104 / 101 - 1.0)
     # 强化:检查 FWDS 成员与 hi_2_oc 不在 FWDS(触价指标不是收益,不得进 IC 循环)
-    assert fl.FWDS == ["fwd_1_cc", "fwd_1_oo", "fwd_2_oc", "fwd_5_oc", "fwd_10_oc"]
+    assert fl.FWDS == ["fwd_1_cc", "fwd_1_oo", "fwd_2_oc", "fwd_5_oc", "fwd_10_oc", "gap_c1_o2"]
     assert "hi_2_oc" not in fl.FWDS
 
 
@@ -213,7 +214,7 @@ def test_forward_returns_hi2_nan_when_d2_missing():
     def piv_of(base):
         return pd.DataFrame({d: base + i for i, d in enumerate(have)}, index=codes)
 
-    piv = {"close": piv_of(10.0), "open": piv_of(9.8), "high": piv_of(10.5),
+    piv = {"close": piv_of(10.0), "open": piv_of(9.8), "high": piv_of(10.5), "low": piv_of(9.6),
            "pct_chg": pd.DataFrame(dict.fromkeys(have, 1.0), index=codes)}
     # D=06-30 → D+1=07-01(有数)、D+2=07-02(缺)→ 两列必须整列 NaN,不得降级 1 日读数
     res = fl.forward_returns(piv, P, "20260630", 10)
