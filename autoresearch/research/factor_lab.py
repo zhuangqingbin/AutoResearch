@@ -275,8 +275,11 @@ def forward_returns(piv: dict, P: list[str], D: str, fwd: int) -> pd.DataFrame:
 
     另产**隔夜尺三列**(Wave11 批A;2026-08-05 裁定,gap_c1_o2 = open[D+2]/close[D+1] − 1,
     T+1 收盘买 → T+2 开盘卖;单点常量见 `autoresearch.common.ruler`,本函数仍只加列不改主尺):
-    `gap_c1_o2`(隔夜前瞻收益)、`buyable_c1`(T+1 收盘未封涨停,买腿可执行→剔样本用)、
-    `unsellable_o2`(T+2 一字跌停开,卖腿受限→标旗不剔,剔了会美化账本)。
+    `gap_c1_o2`(隔夜前瞻收益,float64,数缺→NaN)、`buyable_c1`(T+1 收盘未封涨停,买腿可
+    执行→剔样本用)、`unsellable_o2`(T+2 一字跌停开,卖腿受限→标旗不剔,剔了会美化账本)。
+    后两者是 pandas 可空 `boolean` dtype(2026-08-07 review fix):D+1/D+2 数据缺失时取
+    `pd.NA`(未知),不是 `False`——调用方要用 `.astype(bool)` 或布尔索引前必须先显式决定
+    如何处理 `<NA>`(如 `.fillna(...)`),不会被静默当成"确定可买/可卖"。
     """
     idx = P.index(D)
     c, o, h = piv["close"], piv["open"], piv["high"]
@@ -308,12 +311,20 @@ def forward_returns(piv: dict, P: list[str], D: str, fwd: int) -> pd.DataFrame:
     # 隔夜尺三列(Wave11 批A;复用既有 pc1/h1/lim/c1,只补 o2/l2;不动上面的旧 buyable/sealed)
     o2, l2 = col(o, 2), col(piv["low"], 2)
     res["gap_c1_o2"] = o2 / c1 - 1.0     # 隔夜主尺(2026-08-05 裁定):T+1 收买 → T+2 开卖
-    # 买腿可执行:T+1 收盘未封涨停(收盘≈日高 且 当日涨幅≈板)—— 封板收盘买不进
-    buy_sealed = (pc1 >= lim * 0.98) & (c1 >= h1 - 1e-6)
-    res["buyable_c1"] = ~buy_sealed.fillna(False)
-    # 卖腿受限:T+2 一字跌停开(开≈日低 且 开盘较 c1 跌≈板)—— 标旗不剔
-    open_limit_dn = (o2 <= l2 + 1e-6) & (o2 <= c1 * (1 - lim * 0.98 / 100.0))
-    res["unsellable_o2"] = open_limit_dn.fillna(False)
+    # review fix(2026-08-07):col() 对缺数返回全 NaN,但 <=/>= 对 NaN 操作数按 IEEE754/
+    # numpy 语义恒返回 False、不传染 —— 旧写法 fillna(False) 对一个本就不含 NaN 的纯 bool
+    # 列是无效兜底,会把"不知道"误读成"确定卖得出/买得进"(data-contracts-fail-fast 同族
+    # 反模式:降级不留痕)。转 pandas 可空 Float64 比较,&/~ 走三值逻辑,缺数正确传染成
+    # <NA> 而不是伪造的 False。
+    pc1n, c1n, h1n, o2n, l2n = (s.astype("Float64") for s in (pc1, c1, h1, o2, l2))
+    # 买腿可执行:T+1 收盘未封涨停(收盘≈日高 且 当日涨幅≈板)—— 封板收盘买不进;
+    # D+1 缺数 → <NA>(未知,不是"可买")
+    buy_sealed = (pc1n >= lim * 0.98) & (c1n >= h1n - 1e-6)
+    res["buyable_c1"] = ~buy_sealed
+    # 卖腿受限:T+2 一字跌停开(开≈日低 且 开盘较 c1 跌≈板)—— 标旗不剔;
+    # D+2 缺数 → <NA>(未知,不是"卖得出")
+    open_limit_dn = (o2n <= l2n + 1e-6) & (o2n <= c1n * (1 - lim * 0.98 / 100.0))
+    res["unsellable_o2"] = open_limit_dn
     return res
 
 
