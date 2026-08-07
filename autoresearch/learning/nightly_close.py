@@ -74,6 +74,7 @@ def run(today: str) -> list[tuple[str, bool, str]]:
         import importlib
         # 序有意义:gate_attribution 先于 gate_ledger(后者渲染前者的 v3 分布);
         # evidence_manifest 收尾(它读所有账本,必须在它们刷新之后)。
+        # ⚠️ 动态调用面:本表以字符串拼名 import —— 删任何 learning 模块前先查这张表(2026-08-06 D3 勘误教训)
         names = ["journal", "buy_ledger", "cross_calib", "catalyst_ledger", "paper_nav",
                  "channel_ledger", "gate_attribution", "gate_ledger", "zero_buy_ledger",
                  "changelog_ledger", "earlystop_ledger", "pinned_ledger",
