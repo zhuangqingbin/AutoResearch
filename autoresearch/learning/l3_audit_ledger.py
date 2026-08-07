@@ -276,12 +276,26 @@ def roll(scan_root: Path | str = "context/scan") -> tuple[pd.DataFrame, dict]:
         }
         for r in rulers
     }
+    # review task-13-review.md §3.2:新增 ruler_breakdown 不等于修好了 —— 上面顶层
+    # summary["mature_n"]/["opportunity_n"] 仍是跨 ruler 盲 sum(candidate_n 与 ruler 无关,
+    # 篮子成员资格不依赖 excess_2,盲 sum 本就正确,不受此标记影响)。`mixed_ruler` 是唯一
+    # 判据源,render() 据此决定:单尺 → 顶层数照旧当干净数字印;跨尺 → 顶层数改标"不可比",
+    # ruler_breakdown 优先展开,不是"旁边补一句脚注"。
+    summary["mixed_ruler"] = len(rulers) > 1
     return frame, summary
 
 
 def render(rows: pd.DataFrame, summary: dict) -> str:
-    """Render the aggregate measurement lane."""
+    """Render the aggregate measurement lane.
+
+    review task-13-review.md §3.2:跨 ruler 时,顶层 `mature_n`/`opportunity_n` 是把
+    fwd_2_oc 尺的日子与 gap_c1_o2 尺的日子盲加总(两种不同定义下的计数当同一个东西相加)——
+    不再把这两个数字当干净数字印成头条,改标"混合不可比",`ruler_breakdown` 优先展开。
+    `candidate_n`(篮子成员资格,与 excess_2/ruler 无关)不受影响,单尺/跨尺都照常印。
+    """
     status = summary.get("sample_status", "IMMATURE")
+    breakdown = summary.get("ruler_breakdown") or {}
+    mixed = bool(summary.get("mixed_ruler", len(breakdown) > 1))
     lines = [
         "# L3 影子审计篮",
         "",
@@ -289,18 +303,26 @@ def render(rows: pd.DataFrame, summary: dict) -> str:
         "",
         f"- 前向扫描日:{summary.get('forward_scan_days', 0)}/{MIN_FORWARD_SCAN_DAYS}"
         f"；样本状态:**{status}**",
-        f"- 候选:{summary.get('candidate_n', 0)}；成熟:{summary.get('mature_n', 0)}"
-        f"；捕获 +2pp 机会:{summary.get('opportunity_n', 0)}",
     ]
+    if mixed:
+        lines.append(
+            f"- 候选:{summary.get('candidate_n', 0)}"
+            f"；成熟/机会:⚠️ 混合 {len(breakdown)} 种尺,顶层加总不可比(分尺明细见下),"
+            "不得据此下结论"
+        )
+        lines.append(f"- 分尺明细({'、'.join(sorted(breakdown))}):")
+        for r, b in sorted(breakdown.items()):
+            lines.append(
+                f"  - `{r}`:候选 {b.get('candidate_n', 0)}；成熟 {b.get('mature_n', 0)}"
+                f"；捕获 +2pp 机会 {b.get('opportunity_n', 0)}"
+            )
+    else:
+        lines.append(
+            f"- 候选:{summary.get('candidate_n', 0)}；成熟:{summary.get('mature_n', 0)}"
+            f"；捕获 +2pp 机会:{summary.get('opportunity_n', 0)}"
+        )
     if status == "IMMATURE":
         lines.append("- ⚠ 未满 20 个前向扫描日，不得据此改 L3 选择规则。")
-    breakdown = summary.get("ruler_breakdown") or {}
-    if len(breakdown) > 1:      # 跨尺(T16 flip 前后的日子混进同一批)才现身,单尺场景零字节
-        parts = "；".join(
-            f"{r}:成熟{b.get('mature_n', 0)}/机会{b.get('opportunity_n', 0)}"
-            for r, b in sorted(breakdown.items())
-        )
-        lines.append(f"- ⚠️ 本表跨 {len(breakdown)} 种尺,以上总数由分尺相加而来,不可比较原始均值:{parts}")
     if len(rows):
         lines += [
             "",

@@ -18,6 +18,7 @@ import pandas as pd
 
 from autoresearch.learning import (
     earlystop_ledger as el,
+    ensemble_ledger as ens,
     gate_attribution as ga,
     l3_audit_ledger as lal,
     retro,
@@ -317,3 +318,122 @@ def test_l3_audit_ledger_roll_defaults_legacy_payload_ruler(tmp_path):
     assert frame.loc[frame["date"] == "2026-06-01", "ruler"].iloc[0] == "fwd_2_oc"
     assert summary["ruler_breakdown"]["fwd_2_oc"]["candidate_n"] == 1
     assert summary["ruler_breakdown"]["gap_c1_o2"]["candidate_n"] == 1
+
+
+# ═══════════════════════ ⑤ review 补丁(task-13-review.md §3.2/§3.3):两处仍是跨尺盲聚合 ═══════════════════════
+#
+# §3.2:l3_audit_ledger.roll() 的顶层 summary["mature_n"]/["opportunity_n"] 此前是对
+# summaries(逐日冻结快照列表)不分 ruler 的盲 sum —— ruler_breakdown 子字段分尺是对的,
+# 但顶层字段(render() 头条印的那两个数)原样未改,"新增字段不等于修好了原有聚合"。
+# §3.3:ensemble_ledger.trigger_summary() 按 trigger 汇总 fold_right/fold_wrong,不分
+# ruler —— 该表是人工"救对率 <50% → 降为 1 跑"裁决的直接输入,混跑期间人工手算救对率
+# 会不自知地把两把尺的折对/折错次数混一个分母,且 render() 此前零跨尺信号。
+
+
+def _l3_day_payload(date, ruler, candidates):
+    return {
+        "schema_version": 1, "date": date, "cohort": "L3_BENCH_SHADOW_AUDIT",
+        "production_effect": "NONE", "minimum_forward_scan_days": 20, "forward_scan_days": 1,
+        "sample_status": "IMMATURE", "ruler": ruler,
+        "summary": {
+            "candidate_n": len(candidates),
+            "mature_n": sum(1 for c in candidates if c["mature"]),
+            "opportunity_n": sum(1 for c in candidates if c["opportunity"]),
+            "mean_excess_2": None, "main_finalist_mature_n": 0,
+            "main_finalist_mean_excess_2": None,
+        },
+        "candidates": candidates,
+    }
+
+
+def _l3_candidate(code, excess, opportunity, ruler):
+    return {"code": code, "conviction": 80.0, "fragility": 20.0, "lane": "trend",
+            "mature": True, "fwd_2_oc": excess, "market_fwd_2": 0.0, "excess_2": excess,
+            "opportunity": opportunity, "ruler": ruler}
+
+
+def test_l3_audit_ledger_roll_flags_mixed_ruler_and_render_hides_blind_top_line(tmp_path):
+    """两天分别是 fwd_2_oc 尺(0 机会)、gap_c1_o2 尺(2 机会)—— 顶层 opportunity_n 若被当
+    干净数字印成头条,读者会看到"机会:2"却不知道这 2 个机会全部来自另一把尺、当天尺下
+    实际是 0。这正是 review §3.2 点名的"部分白做"。
+    """
+    day1 = tmp_path / "2026-07-01" / "retro"
+    day1.mkdir(parents=True)
+    (day1 / "l3_audit_ledger.json").write_text(json.dumps(_l3_day_payload(
+        "2026-07-01", "fwd_2_oc",
+        [_l3_candidate("000001", -0.01, False, "fwd_2_oc"),
+         _l3_candidate("000002", -0.02, False, "fwd_2_oc")]),
+        ensure_ascii=False), encoding="utf-8")
+
+    day2 = tmp_path / "2026-08-10" / "retro"
+    day2.mkdir(parents=True)
+    (day2 / "l3_audit_ledger.json").write_text(json.dumps(_l3_day_payload(
+        "2026-08-10", "gap_c1_o2",
+        [_l3_candidate("000003", 0.05, True, "gap_c1_o2"),
+         _l3_candidate("000004", 0.06, True, "gap_c1_o2")]),
+        ensure_ascii=False), encoding="utf-8")
+
+    frame, summary = lal.roll(scan_root=tmp_path)
+    assert summary["mixed_ruler"] is True
+    # 顶层字典的值仍是结构性的盲 sum(程序可读的事实,不是"修没修"的判据本身)
+    assert summary["mature_n"] == 4 and summary["opportunity_n"] == 2
+    assert summary["ruler_breakdown"]["fwd_2_oc"]["opportunity_n"] == 0
+    assert summary["ruler_breakdown"]["gap_c1_o2"]["opportunity_n"] == 2
+
+    md = lal.render(frame, summary)
+    assert "混合 2 种尺" in md and "顶层加总不可比" in md
+    assert "候选:4；成熟:4" not in md            # 旧版会印的干净头条,不该再出现
+    assert "机会:2" not in md                     # 旧版会把混合后的 2 印成"捕获 +2pp 机会:2"
+    assert "fwd_2_oc`:候选 2；成熟 2；捕获 +2pp 机会 0" in md
+    assert "gap_c1_o2`:候选 2；成熟 2；捕获 +2pp 机会 2" in md
+
+
+def test_l3_audit_ledger_roll_single_ruler_top_line_unaffected(tmp_path):
+    """单尺场景(现状)—— 顶层数照常当干净数字印,新判据不改变现行为。"""
+    day = tmp_path / "2026-07-01" / "retro"
+    day.mkdir(parents=True)
+    (day / "l3_audit_ledger.json").write_text(json.dumps(_l3_day_payload(
+        "2026-07-01", "fwd_2_oc", [_l3_candidate("000001", 0.05, True, "fwd_2_oc")]),
+        ensure_ascii=False), encoding="utf-8")
+    frame, summary = lal.roll(scan_root=tmp_path)
+    assert summary["mixed_ruler"] is False
+    md = lal.render(frame, summary)
+    assert "候选:1；成熟:1；捕获 +2pp 机会:1" in md
+    assert "混合" not in md
+
+
+def test_ensemble_trigger_summary_segments_by_ruler_not_blended():
+    """同一 trigger 下 fwd_2_oc 尺全 FOLD_RIGHT、gap_c1_o2 尺全 FOLD_WRONG —— 若聚合层
+    没分尺,会把两组各 2 的 fold_right/fold_wrong 算进同一行(看着像 50% 救对率),实际是
+    两把尺各自 100% 与 0%,方向完全相反的两个结论被平均成了一个假中间数。
+    """
+    rows = pd.DataFrame([
+        {"trigger": "ow_review", "verdict": "FOLD_RIGHT", "ruler": "fwd_2_oc"},
+        {"trigger": "ow_review", "verdict": "FOLD_RIGHT", "ruler": "fwd_2_oc"},
+        {"trigger": "ow_review", "verdict": "FOLD_WRONG", "ruler": "gap_c1_o2"},
+        {"trigger": "ow_review", "verdict": "FOLD_WRONG", "ruler": "gap_c1_o2"},
+    ])
+    summary = ens.trigger_summary(rows)
+    assert len(summary) == 2                          # 拆成两行,不是混一行
+    by_ruler = summary.set_index("ruler")
+    assert by_ruler.loc["fwd_2_oc", "fold_right"] == 2 and by_ruler.loc["fwd_2_oc", "fold_wrong"] == 0
+    assert by_ruler.loc["gap_c1_o2", "fold_wrong"] == 2 and by_ruler.loc["gap_c1_o2", "fold_right"] == 0
+    # 混合会算出的假象:同一行 fold_right=2 且 fold_wrong=2(看着 50% 救对率)不该出现在任何一行
+    assert not any(r.fold_right == 2 and r.fold_wrong == 2 for r in summary.itertuples())
+
+    rendered = ens.render(rows)
+    assert "fwd_2_oc" in rendered and "gap_c1_o2" in rendered
+    assert "折对/折错行合并成一个分母" in rendered
+
+
+def test_ensemble_trigger_summary_single_ruler_unaffected():
+    """单尺场景(既有测试同款 fixture,无 ruler 列)—— 分组结果与之前完全一致,不因新判据改变。"""
+    rows = pd.DataFrame(
+        [{"trigger": "ow_review", "verdict": "FOLD_RIGHT"} for _ in range(9)]
+        + [{"trigger": "sell_review", "verdict": "FOLD_WRONG"} for _ in range(10)]
+    )
+    assert "ruler" not in rows.columns
+    summary = ens.trigger_summary(rows).set_index("trigger")
+    assert summary.loc["ow_review", "status"] == "IMMATURE"
+    assert summary.loc["sell_review", "status"] == "MATURE"
+    assert (summary["ruler"] == "fwd_2_oc").all()      # 缺列兜底,不因此把行拆没了/报错

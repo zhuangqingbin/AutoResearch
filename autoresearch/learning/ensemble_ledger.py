@@ -231,8 +231,18 @@ def roll(scan_root: Path | str = "context/scan") -> pd.DataFrame:
 
 
 def trigger_summary(rows: pd.DataFrame) -> pd.DataFrame:
+    """按 trigger 汇总折回计数 —— 供人工"救对率 <50% → 降为 1 跑"裁决直接读数。
+
+    Wave11 review 发现(task-13-review.md §3.3):`verdict`(FOLD_RIGHT/WRONG/NEUTRAL)由
+    该行自己的 `excess_2` 判出,取值来自写入当天的 MAIN_RULER(冻结快照);旧实现只按
+    `trigger` 分组,T16 flip 后同一 trigger 下 fwd_2_oc 尺判出的折对/折错次数会与
+    gap_c1_o2 尺的直接相加 —— 人工手算救对率时会不自知地把两把尺的结果混一个分母。
+    分组键补 `ruler` 后,单尺场景(今天)每个 trigger 仍只出一行,不改变现行为;真正
+    跨尺时才会为同一 trigger 拆成多行,救对率必须分尺各算各的。
+    """
     columns = [
         "trigger",
+        "ruler",
         "n_records",
         "n_mature_folds",
         "fold_right",
@@ -242,12 +252,18 @@ def trigger_summary(rows: pd.DataFrame) -> pd.DataFrame:
     ]
     if rows is None or not len(rows):
         return pd.DataFrame(columns=columns)
+    rows = rows.copy()
+    if "ruler" in rows.columns:
+        rows["ruler"] = rows["ruler"].fillna("fwd_2_oc")
+    else:
+        rows["ruler"] = "fwd_2_oc"
     output = []
-    for trigger, group in rows.groupby("trigger"):
+    for (trigger, ruler), group in rows.groupby(["trigger", "ruler"]):
         mature = group[group["verdict"].isin(_MATURE_VERDICTS)]
         output.append(
             {
                 "trigger": trigger,
+                "ruler": ruler,
                 "n_records": len(group),
                 "n_mature_folds": len(mature),
                 "fold_right": int((mature["verdict"] == "FOLD_RIGHT").sum()),
@@ -263,7 +279,7 @@ def trigger_summary(rows: pd.DataFrame) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(output, columns=columns).sort_values(
-        "trigger"
+        ["trigger", "ruler"]
     ).reset_index(drop=True)
 
 
@@ -278,14 +294,21 @@ def render(rows: pd.DataFrame) -> str:
     if not len(summary):
         return "\n".join(lines + ["_无 ensemble 事实。_"]) + "\n"
     lines += [
-        "| trigger | records | 成熟折回 | 折对 | 折错 | 中性 | 状态 |",
-        "|---|---:|---:|---:|---:|---:|---|",
+        "| trigger | 尺 | records | 成熟折回 | 折对 | 折错 | 中性 | 状态 |",
+        "|---|---|---:|---:|---:|---:|---:|---|",
     ]
     for row in summary.itertuples(index=False):
         lines.append(
-            f"| {row.trigger} | {row.n_records} | {row.n_mature_folds}"
+            f"| {row.trigger} | {row.ruler} | {row.n_records} | {row.n_mature_folds}"
             f" | {row.fold_right} | {row.fold_wrong} | {row.fold_neutral}"
             f" | {row.status} |"
+        )
+    n_rulers = summary["ruler"].nunique()
+    if n_rulers > 1:
+        lines.append("")
+        lines.append(
+            f"- ⚠️ 本表跨 {n_rulers} 种尺,同一 trigger 已按尺拆行(见上)——手算"
+            "「救对率」时**不得**把不同尺的折对/折错行合并成一个分母,分母必须限定在同一尺内。"
         )
     lines += [
         "",
