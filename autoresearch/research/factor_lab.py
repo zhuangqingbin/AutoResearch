@@ -13,8 +13,10 @@ design: docs/specs/2026-06-20-scan-market-design.md(§4 打分)的实证回路�
 正是驱动 T+1 的因子。慢的季度基本面(成长/价值的 ROE)不驱动 T+1,留长周期另验。
 
 铁律(避免自欺):
-  * **无前视**:D 收盘算信号 → **D+1 开盘买入**(非 D 收盘),前瞻收益从 D+1 开盘起算。
-  * **A股可交易性**:剔除 D+1 一字涨停(买不到)——否则动量 IC 虚高。
+  * **无前视**:D 收盘算信号 → 次日起才建仓,前瞻收益从建仓腿起算(**主尺** `common.ruler.MAIN_RULER`
+    = 隔夜尺 `gap_c1_o2`:T+1 收盘买 → T+2 开盘卖;旧尺 `fwd_2_oc` = D+1 开盘买 → D+2 收盘卖,降参考)。
+  * **A股可交易性**:剔除买腿封板的票(买不到)——否则动量 IC 虚高;入场旗逐尺选腿,
+    走 `ruler.entry_tradable(ruler_name=…)` 单点,不写字面量。
   * **缓存**:每个(endpoint, date)落 pickle;拉一次,之后离线迭代打分逻辑零成本。
 
 用法:
@@ -596,31 +598,62 @@ def _shrink_weights(ic_ind: float, n_ind: int, ic_parent: float, ic_global: floa
     return lam1 * ic_ind + (1 - lam1) * parent
 
 
-def evaluate(cap_floor: float, buyable_only: bool) -> None:
-    plan = pd.read_pickle(OUT / "plan.pkl")
-    F, P, fwd = plan["F"], plan["P"], plan["fwd"]
-    basic = _load_basic()
-    piv = load_price_pivots(P)
-    frames = []
-    for D in F:
-        fr = factor_frame(D, piv, P, basic, cap_floor, fwd)
-        if fr is not None:
-            frames.append(fr)
-    if not frames:
-        print("无可用成型日(先 harvest)")
-        return
-    print(f"[eval] 成型日 {len(frames)}/{len(F)} 可用,横截面均值 ~{int(np.mean([len(x) for x in frames]))} 只/日")
+# 主尺沿革(新→旧):2026-07-10 裁定 fwd_2_oc → 2026-08-05 裁定 gap_c1_o2(`common.ruler`)。
+# 晋升判据族对**这两把**尺都产出:`ruler.MAIN_RULER` 占主位(无后缀列 + 主排序),另一把
+# 降为带尺后缀的并列参考(列名不删——历史产物与既有报告仍会读它们)。
+_RULER_LINEAGE = ("gap_c1_o2", "fwd_2_oc")
+_CLIP_DEFAULT = 0.30                              # D+1开→D+N收(≥2 日窗):容 10cm 两连板
+_CLIP_BY_RULER = {"gap_c1_o2": ruler.GAP_CLIP}    # 隔夜单日窗 → 单日板极值+容差(31%)
 
-    # 每日每因子 IC,再跨日聚合
+
+def judgment_rulers() -> tuple[str, ...]:
+    """产判据族的尺:主尺在前(主位),旧主尺随后(降参考)。随 `ruler.MAIN_RULER` 现算,
+    回滚杆(把 MAIN_RULER 改回 fwd_2_oc)一改即对称生效,不留第二处需要同步的名单。"""
+    return tuple(dict.fromkeys((ruler.MAIN_RULER, *_RULER_LINEAGE)))
+
+
+def promotion_sortcol() -> str:
+    """因子晋升主排序列(**单点**):`ICIR_<MAIN_RULER>`。排在前面 = 更该进 composite。"""
+    return f"ICIR_{ruler.MAIN_RULER}"
+
+
+def _return_clip(fwdcol: str) -> float:
+    """该前瞻收益列的截尾阈。窗口形状决定,不随"谁是主尺"漂移:隔夜(单日窗)用
+    `ruler.GAP_CLIP`,多日 open→close 用 ±0.30。"""
+    return _CLIP_BY_RULER.get(fwdcol, _CLIP_DEFAULT)
+
+
+def _promotion_stats(ics: np.ndarray) -> dict:
+    """日 IC 序列 → 晋升判据:t / 命中率 / 前后两半 IC(同号=稳健,反号=可能过拟合)/ 成型日数。"""
+    icir = ics.mean() / (ics.std() + 1e-9)
+    h = len(ics) // 2
+    return {"t": round(icir * np.sqrt(len(ics)), 2),
+            "hit": round((ics > 0).mean(), 2),
+            "IC_h1": round(ics[:h].mean(), 4) if h else None,   # n=1 时前半为空,不产假读数
+            "IC_h2": round(ics[h:].mean(), 4),
+            "n_days": len(ics)}
+
+
+def ic_promotion_table(frames: list[pd.DataFrame], buyable_only: bool = True) -> pd.DataFrame:
+    """因子晋升判据表 —— **决策面**:「某因子该不该进 composite 因子组」就看这张表。
+
+    `FWDS` 每把尺都出 `IC_<尺>` / `ICIR_<尺>`;**判据族**(`t`/`hit`/两半 `IC_h1`/`IC_h2`/
+    `n_days`)对 `judgment_rulers()` 各出一份带尺后缀的列,其中**主尺**那份同时挂到无后缀
+    的主位列上,并由 `ruler` 列自报取值来源。表按 `promotion_sortcol()` 降序返回。
+
+    2026-08-08 Wave12-T4 之前,这一族硬编码只对 `fwd_2_oc` 产出、主排序也写死
+    `ICIR_fwd_2_oc` —— 08-05 换尺后**因子晋升 100% 仍由旧尺裁决**(设计稿 A2)。
+    入场资格逐尺过 `ruler.entry_tradable(ruler_name=fwdcol)`:IC 表对多个 horizon 逐列算,
+    `gap_c1_o2` 的入场腿是 D+1 收盘,其余 horizon 是 D+1 开盘,不能共用一只旗(C1 家训)。
+    """
+    judged = judgment_rulers()
+    main = ruler.MAIN_RULER
     rows = []
     for col, sign in CANDIDATES:
-        rec = {"factor": col, "sign": sign}
+        rec = {"factor": col, "sign": sign, "ruler": main}
         for fwdcol in FWDS:
             ics = []
             for fr in frames:
-                # C1 修复(final-review 2026-08-08):入场旗跟随 fwdcol 本身选腿——IC 表对多个
-                # horizon 逐列算,gap_c1_o2 那一列的入场腿是 D+1 收盘,不是其余 horizon 共用
-                # 的 D+1 开盘;entry_flag_for 单点选旗,不写字面量。
                 sub = fr if not buyable_only else fr[ruler.entry_tradable(fr, ruler_name=fwdcol)]
                 if col not in sub or fwdcol not in sub:
                     continue
@@ -628,29 +661,38 @@ def evaluate(cap_floor: float, buyable_only: bool) -> None:
                 if not np.isnan(ic):
                     ics.append(ic)
             ics = np.array(ics)
-            if len(ics):
-                rec[f"IC_{fwdcol}"] = round(ics.mean(), 4)
-                rec[f"ICIR_{fwdcol}"] = round(ics.mean() / (ics.std() + 1e-9), 3)
-                if fwdcol == "fwd_2_oc":
-                    rec["t"] = round(ics.mean() / (ics.std() + 1e-9) * np.sqrt(len(ics)), 2)
-                    rec["hit"] = round((ics > 0).mean(), 2)
-                    h = len(ics) // 2  # 前半 vs 后半:regime 稳定性(同号=稳健,反号=可能过拟合)
-                    rec["IC_h1"] = round(ics[:h].mean(), 4)
-                    rec["IC_h2"] = round(ics[h:].mean(), 4)
-                    rec["n_days"] = len(ics)
+            if not len(ics):
+                continue
+            rec[f"IC_{fwdcol}"] = round(ics.mean(), 4)
+            rec[f"ICIR_{fwdcol}"] = round(ics.mean() / (ics.std() + 1e-9), 3)
+            if fwdcol in judged:
+                stats = _promotion_stats(ics)
+                rec.update({f"{k}_{fwdcol}": v for k, v in stats.items()})
+                if fwdcol == main:
+                    rec.update(stats)               # 主位(无后缀)= 主尺读数
         rows.append(rec)
-    ic_tbl = pd.DataFrame(rows)
+    tbl = pd.DataFrame(rows)
+    sortcol = promotion_sortcol()
+    if sortcol not in tbl:
+        tbl[sortcol] = np.nan                       # 面板还没这把尺的列 → 全 NaN 排末尾
+    return tbl.sort_values(sortcol, ascending=False, na_position="last").reset_index(drop=True)
 
-    # 十分位多空价差(超短主尺 fwd_2_oc,买得到的)
-    dec_rows = []
+
+def decile_table(frames: list[pd.DataFrame], fwdcol: str,
+                 buyable_only: bool = True) -> pd.DataFrame:
+    """单尺十分位多空价差(买得到的)。资格旗与截尾阈都跟尺走:
+    `ruler.entry_tradable(ruler_name=fwdcol)`(隔夜尺=T+1 收盘旗,其余=D+1 开盘旗)、
+    `_return_clip(fwdcol)`。`ruler` 列自报家门,免得两把尺的表混起来读不出是谁。"""
+    clip = _return_clip(fwdcol)
+    rows = []
     for col, sign in CANDIDATES:
         d1, d10, spreads = [], [], []
         for fr in frames:
-            sub = fr if not buyable_only else fr[ruler.entry_tradable(fr, ruler_name="fwd_2_oc")]
-            if col not in sub.columns or "fwd_2_oc" not in sub.columns:
-                continue                            # 缺列帧跳过(与上方 IC 循环同护栏;旧帧可能缺新因子列)
+            sub = fr if not buyable_only else fr[ruler.entry_tradable(fr, ruler_name=fwdcol)]
+            if col not in sub.columns or fwdcol not in sub.columns:
+                continue                            # 缺列帧跳过(旧帧可能缺新因子/新尺列)
             s = (sub[col] * sign)
-            r = sub["fwd_2_oc"].clip(-0.30, 0.30)  # 2 日容 10cm 两连板
+            r = sub[fwdcol].clip(-clip, clip)
             m = s.notna() & r.notna()
             if m.sum() < 100:
                 continue
@@ -661,63 +703,51 @@ def evaluate(cap_floor: float, buyable_only: bool) -> None:
             d10.append(bot)
             spreads.append(top - bot)
         if spreads:
-            dec_rows.append({"factor": col, "top_decile_ret": round(np.mean(d1) * 100, 3),
-                             "bot_decile_ret": round(np.mean(d10) * 100, 3),
-                             "LS_spread_bps": round(np.mean(spreads) * 1e4, 1),
-                             "spread_t": round(np.mean(spreads) / (np.std(spreads) + 1e-9) * np.sqrt(len(spreads)), 2)})
-    dec_tbl = pd.DataFrame(dec_rows)
+            rows.append({"factor": col, "ruler": fwdcol,
+                         "top_decile_ret": round(np.mean(d1) * 100, 3),
+                         "bot_decile_ret": round(np.mean(d10) * 100, 3),
+                         "LS_spread_bps": round(np.mean(spreads) * 1e4, 1),
+                         "spread_t": round(np.mean(spreads) / (np.std(spreads) + 1e-9) * np.sqrt(len(spreads)), 2)})
+    return pd.DataFrame(rows)
 
-    # 十分位多空价差(隔夜尺 gap_c1_o2,并列一支不替换主尺;clip 用 ruler.GAP_CLIP=单日板极值+容差)
-    dec_rows_gap = []
-    for col, sign in CANDIDATES:
-        d1, d10, spreads = [], [], []
-        for fr in frames:
-            # C1 修复:与 gap_c1_o2 配对的入场旗是 buyable_c1(T+1 收盘),不是 buyable(T+1 开盘)。
-            sub = fr if not buyable_only else fr[ruler.entry_tradable(fr, ruler_name="gap_c1_o2")]
-            if col not in sub.columns or "gap_c1_o2" not in sub.columns:
-                continue                            # 缺列帧跳过(旧帧可能缺新隔夜尺列)
-            s = (sub[col] * sign)
-            r = sub["gap_c1_o2"].clip(-ruler.GAP_CLIP, ruler.GAP_CLIP)
-            m = s.notna() & r.notna()
-            if m.sum() < 100:
-                continue
-            q = pd.qcut(s[m].rank(method="first"), 10, labels=False)
-            top = r[m][q == 9].mean()
-            bot = r[m][q == 0].mean()
-            d1.append(top)
-            d10.append(bot)
-            spreads.append(top - bot)
-        if spreads:
-            dec_rows_gap.append({"factor": col, "top_decile_ret": round(np.mean(d1) * 100, 3),
-                                 "bot_decile_ret": round(np.mean(d10) * 100, 3),
-                                 "LS_spread_bps": round(np.mean(spreads) * 1e4, 1),
-                                 "spread_t": round(np.mean(spreads) / (np.std(spreads) + 1e-9) * np.sqrt(len(spreads)), 2)})
-    dec_tbl_gap = pd.DataFrame(dec_rows_gap)
+
+def evaluate(cap_floor: float, buyable_only: bool) -> None:
+    """全历史成型日 → 晋升判据表 + 逐尺十分位表,落 csv 并打印(主尺在前,旧尺并列参考)。"""
+    frames = _all_frames(cap_floor)
+    if not frames:
+        print("无可用成型日(先 harvest)")
+        return
+    main = ruler.MAIN_RULER
+    refs = [r for r in judgment_rulers() if r != main]
+    print(f"[eval] 成型日 {len(frames)} 可用,横截面均值 "
+          f"~{int(np.mean([len(x) for x in frames]))} 只/日;主尺 {main}")
+
+    ic_tbl = ic_promotion_table(frames, buyable_only)
+    dec_tbls = {r: decile_table(frames, r, buyable_only) for r in judgment_rulers()}
 
     OUT.mkdir(parents=True, exist_ok=True)
     ic_tbl.to_csv(OUT / "ic_table.csv", index=False)
-    dec_tbl.to_csv(OUT / "decile_table.csv", index=False)
-    dec_tbl_gap.to_csv(OUT / "decile_table_gap.csv", index=False)
+    dec_tbls[main].to_csv(OUT / "decile_table.csv", index=False)          # 主表 = 主尺
+    for r in refs:
+        dec_tbls[r].to_csv(OUT / f"decile_table_{r}.csv", index=False)    # 并列参考(旧尺)
 
-    # 排序打印(按超短主尺 ICIR 降序;缺列的因子排末尾)
-    sortcol = "ICIR_fwd_2_oc"
-    if sortcol not in ic_tbl:
-        ic_tbl[sortcol] = np.nan
-    show = ic_tbl.sort_values(sortcol, ascending=False, na_position="last")
     pd.set_option("display.width", 200, "display.max_columns", 30)
-    print("\n================ rank IC(因子已按 sign 取向;正=看多有效)================")
-    cols = ["factor", "IC_fwd_2_oc", "ICIR_fwd_2_oc", "t", "hit", "IC_h1", "IC_h2",
-            "IC_fwd_5_oc", "IC_fwd_10_oc", "n_days"]
-    cols = [c for c in cols if c in show.columns]
-    print(show[cols].to_string(index=False))
-    print("\n================ 十分位多空价差(超短主尺 fwd_2_oc:开→D+2收,±0.30 clip, bps;买得到的)================")
-    print(dec_tbl.sort_values("LS_spread_bps", ascending=False).to_string(index=False))
-    print(f"\n================ 十分位多空价差(隔夜尺 gap_c1_o2:T+1收→T+2开,±{ruler.GAP_CLIP} clip, bps;并列不替换主尺)================")
-    if len(dec_tbl_gap):
-        print(dec_tbl_gap.sort_values("LS_spread_bps", ascending=False).to_string(index=False))
-    else:
-        print("(空:frames 均缺 gap_c1_o2 列,需重跑 harvest/eval 后才有)")
-    print(f"\n[done] → {OUT}/ic_table.csv, decile_table.csv, decile_table_gap.csv  (buyable_only={buyable_only})")
+    print(f"\n================ rank IC(因子已按 sign 取向;正=看多有效;"
+          f"主尺 {main},按 {promotion_sortcol()} 降序)================")
+    cols = (["factor", f"IC_{main}", f"ICIR_{main}", "t", "hit", "IC_h1", "IC_h2", "n_days"]
+            + [f"IC_{r}" for r in refs] + [f"ICIR_{r}" for r in refs]
+            + ["IC_fwd_5_oc", "IC_fwd_10_oc"])
+    cols = [c for c in cols if c in ic_tbl.columns]
+    print(ic_tbl[cols].to_string(index=False))
+    for r, tbl in dec_tbls.items():
+        tag = "主尺" if r == main else "参考尺(旧主尺,降参考不删)"
+        print(f"\n================ 十分位多空价差({tag} {r},±{_return_clip(r)} clip, bps;"
+              f"买得到的)================")
+        print(tbl.sort_values("LS_spread_bps", ascending=False).to_string(index=False)
+              if len(tbl) else f"(空:frames 均缺 {r} 列,需重跑 harvest/eval 后才有)")
+    ref_files = "".join(f", decile_table_{r}.csv" for r in refs)
+    print(f"\n[done] → {OUT}/ic_table.csv, decile_table.csv{ref_files}  "
+          f"(buyable_only={buyable_only}, 主尺={main})")
 
 
 def _load_basic() -> pd.DataFrame:
@@ -731,7 +761,7 @@ def _load_basic() -> pd.DataFrame:
     })
 
 
-# ───────────────────────── calibrate(fwd_2_oc 超短主尺 IC → 层级收缩 → weights.json) ─────────────────────────
+# ───────────────────── calibrate(主尺 `ruler.MAIN_RULER` IC → 层级收缩 → weights.json) ─────────────────────
 
 
 def _nz(x) -> float:
@@ -739,6 +769,7 @@ def _nz(x) -> float:
 
 
 def _all_frames(cap_floor: float) -> list[pd.DataFrame]:
+    """plan.pkl 的全部成型日 → factor_frame 列表(缓存命中即离线;`evaluate`/`calibrate` 共用)。"""
     plan = pd.read_pickle(OUT / "plan.pkl")
     F, P, fwd = plan["F"], plan["P"], plan["fwd"]
     basic = _load_basic()
@@ -754,8 +785,8 @@ def _all_frames(cap_floor: float) -> list[pd.DataFrame]:
 def _build_calib_panel(frames: list[pd.DataFrame], label_col: str = ruler.MAIN_RULER):
     """frames → 校准 panel(grp_* + industry/sector/fwd/date,buyable 过滤)+ regime_by_date。
 
-    `label_col` 选前向标签(fwd_2_oc 超短主尺默认 / fwd_1_oo / fwd_5_oc / fwd_10_oc 多 horizon);
-    regime 逐日由 `classify_regime(factor_frame)` 算(与线上 scan 同口径)。
+    `label_col` 选前向标签(默认 `ruler.MAIN_RULER` 主尺 / fwd_1_oo / fwd_2_oc / fwd_5_oc /
+    fwd_10_oc 多 horizon);regime 逐日由 `classify_regime(factor_frame)` 算(与线上 scan 同口径)。
     """
     from autoresearch.common.regime import classify_regime
     from autoresearch.common.scoring import _factor_groups
@@ -927,9 +958,16 @@ def ic_by_regime(panel: pd.DataFrame, min_dates: int = _IC_MIN_DATES,
     return pd.DataFrame(rows, columns=cols)
 
 
-def render_ic_by_regime(df: pd.DataFrame, flat_ic: dict | None = None) -> str:
-    """裁决表 → markdown。`flat_ic`(可选)= 全样本各组 IC,用于并列「分桶 vs 全样本」对照。"""
-    out = ["# 分 regime 因子 IC 裁决表(对 fwd_2_oc 超短主尺)", "",
+def render_ic_by_regime(df: pd.DataFrame, flat_ic: dict | None = None,
+                        ruler_name: str | None = None) -> str:
+    """裁决表 → markdown。`flat_ic`(可选)= 全样本各组 IC,用于并列「分桶 vs 全样本」对照。
+
+    `ruler_name` = 这批 IC 到底对哪把尺算的(缺省 `ruler.MAIN_RULER`);调用方**必须**把真正
+    喂给面板的 `label_col` 传进来 —— 标题此前是死字符串「对 fwd_2_oc 超短主尺」,08-05 换尺后
+    报表标着旧尺、数是新尺算的(受控语义表自身失控,设计稿 A2/A5 同族)。
+    """
+    rname = ruler_name or ruler.MAIN_RULER
+    out = [f"# 分 regime 因子 IC 裁决表(对主尺 {rname})", "",
            f"裁决口径:桶内成型日 ≥{_IC_MIN_DATES} 且 **|t| ≥ {_IC_T_GATE}** → 「可提案」"
            "(仅取得**呈报资格**,改生产权重仍须用户点头);否则「不显著」/「样本不足」。", "",
            "> 为什么分桶:全期 IC 为负有两种成因 —— 因子真没用 / risk_off 日把 trend 日的正信号"
@@ -970,7 +1008,8 @@ def run_ic_by_regime(cap_floor: float = 30.0, label_col: str = ruler.MAIN_RULER,
     Path(out_csv).parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out_csv, index=False)
     Path(out_md).parent.mkdir(parents=True, exist_ok=True)
-    Path(out_md).write_text(render_ic_by_regime(df, flat_ic=flat) + "\n", encoding="utf-8")
+    Path(out_md).write_text(render_ic_by_regime(df, flat_ic=flat, ruler_name=label_col) + "\n",
+                            encoding="utf-8")
     print(f"[ic_by_regime] → {out_csv} / {out_md}")
     print(df.to_string(index=False))
     return df
@@ -1317,7 +1356,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="factor_lab — scan-market 打分逻辑实证验证")
     ap.add_argument("mode", nargs="?",
                     choices=["harvest", "eval", "calibrate", "calibrate-regimes", "ic-by-regime", "train"],
-                    help="harvest=取数缓存;eval=离线评估;calibrate=主尺(fwd_2_oc)IC→weights.json;"
+                    help=f"harvest=取数缓存;eval=离线评估(判据族按主尺 {ruler.MAIN_RULER});"
+                         f"calibrate=主尺({ruler.MAIN_RULER})IC→weights.json;"
                          "calibrate-regimes=同尺+regime分块;"
                          "train=LightGBM 横截面排序→gbdt_model.pkl(历史遗留命名,非 L2 引擎;factor_lab 可选研究工具)")
     ap.add_argument("--valid-dates", type=int, default=5, help="train:留作 oos 验证/早停的末尾成型日数")

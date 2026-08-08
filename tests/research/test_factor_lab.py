@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 
 import autoresearch.research.factor_lab as fl
+from autoresearch.common import ruler
 from autoresearch.common.sw_sector_map import super_sector
 
 
@@ -196,7 +197,12 @@ def test_forward_returns_fwd2_hi2():
 
 def test_ultrashort_label_defaults():
     """主尺契约:校准/GBDT label 默认跟随 MAIN_RULER —— 现 gap_c1_o2(2026-08-05 用户裁定
-    T16 换值,取代 2026-07-10 的 fwd_2_oc);IC 表主排序同尺。"""
+    T16 换值,取代 2026-07-10 的 fwd_2_oc);IC 表主排序同尺。
+
+    末两行是 Wave12-T4 补的**真断言**:此前 docstring 就写着「IC 表主排序同尺」,测试体却
+    只锁了 4 个 label 默认值、一条都没锁排序列 —— 假锁,而 `evaluate` 里 sortcol 至今写死
+    `ICIR_fwd_2_oc`(因子晋升 100% 由旧尺裁决)。
+    """
     import inspect
 
     import autoresearch.research.factor_lab as fl
@@ -205,6 +211,8 @@ def test_ultrashort_label_defaults():
     assert inspect.signature(fl.calibrate_regimes).parameters["label_col"].default == "gap_c1_o2"
     assert inspect.signature(fl._build_calib_panel).parameters["label_col"].default == "gap_c1_o2"
     assert fl.GBDT_LABEL == "gap_c1_o2"
+    assert fl.promotion_sortcol() == "ICIR_gap_c1_o2", "IC 表主排序列必须是主尺的 ICIR"
+    assert fl.judgment_rulers()[0] == "gap_c1_o2", "判据族第一位(主位)必须是主尺"
 
 
 def test_build_calib_panel_buyable_follows_label_col_entry_flag(monkeypatch):
@@ -494,3 +502,181 @@ def test_calibrate_regimes_require_split_half_false_keeps_old_behavior(tmp_path,
 
     assert set(result["regimes"]) == {"steady", "onehalf"}
     assert result["meta"]["regimes_pending"] == []
+
+
+# ═════════════ 因子晋升判据族切主尺(Wave12-T4 / 设计稿 A2)═════════════
+#
+# 2026-08-05 用户裁定换尺(fwd_2_oc → gap_c1_o2)后,「某因子该不该进 composite」这一面
+# 的整族判据(IC 均值 / ICIR / t / hit / 前后两半同号)仍**只**对旧尺产出、主排序还写死
+# `ICIR_fwd_2_oc` —— 晋升 100% 由旧尺裁决。这里锁四件事:
+#   ① 判据族(含无后缀主位列 t/hit/IC_h1/IC_h2/n_days)绑 `ruler.MAIN_RULER`;
+#   ② 旧尺整族保留为**并列参考**(带尺后缀,列名不删,只是不在主位);
+#   ③ 主排序 sortcol 跟随 MAIN_RULER(回滚 MAIN_RULER 后排序真的翻过来);
+#   ④ 十分位主表的资格旗与截尾阈也跟尺走(entry_tradable(ruler_name=…) / GAP_CLIP)。
+
+
+def _dual_ruler_frames(n_days: int = 6, n: int = 120) -> list[pd.DataFrame]:
+    """双尺合成面板:`gap_c1_o2` 与 `fwd_2_oc` 次序**相反** → 同一因子在两尺下 IC 符号相反。
+
+    单调构造 → 每日 rank IC 精确 ±1.0(秩相关不受幅度影响),t/hit/两半的期望值可手算:
+      * `pct_60d`(sign +1,值=base):对 gap IC=+1.0、对 fwd_2_oc IC=−1.0
+      * `pe`(sign −1,取向后=−base):对 gap IC=−1.0、对 fwd_2_oc IC=+1.0
+    两只入场旗全放行(资格口径另有专测),免得与排序断言纠缠。
+    """
+    base = np.arange(n, dtype=float)
+    return [pd.DataFrame({
+        "code": [f"{600000 + i:06d}" for i in range(n)],
+        "pct_60d": base, "pe": base,
+        "gap_c1_o2": base / 1000.0, "fwd_2_oc": -base / 1000.0,
+        "buyable": True, "buyable_c1": True,
+        "date": f"2026070{d + 1}",
+    }) for d in range(n_days)]
+
+
+def test_eval_promotion_family_on_main_ruler():
+    """判据族(t/hit/两半/n_days)必须对主尺产出并占主位;旧尺同族降为带后缀的并列参考。"""
+    tbl = fl.ic_promotion_table(_dual_ruler_frames(), buyable_only=True).set_index("factor")
+    main = ruler.MAIN_RULER                      # 现 gap_c1_o2
+
+    for stat in ("t", "hit", "IC_h1", "IC_h2", "n_days"):
+        assert f"{stat}_{main}" in tbl.columns, f"{stat} 未对主尺 {main} 产出"
+    assert f"ICIR_{main}" in tbl.columns
+    assert (tbl["ruler"] == main).all(), "表未自报主尺(受控语义表必须自述取值来源)"
+
+    row = tbl.loc["pct_60d"]
+    # 主位无后缀列 = 主尺读数。切尺前它们是 fwd_2_oc 的读数(−1.0 / 0.0)→ 此处必红。
+    assert row["IC_h1"] == 1.0 and row["IC_h2"] == 1.0, "两半稳定性没绑主尺"
+    assert row["hit"] == 1.0 and row["n_days"] == 6
+    assert row["t"] > 0 and row["IC_gap_c1_o2"] == 1.0
+    # 旧尺整族保留(降参考不删):同一因子在旧尺下方向相反,读数照旧摆在表里
+    assert row["IC_fwd_2_oc"] == -1.0 and row["IC_h1_fwd_2_oc"] == -1.0
+    assert row["hit_fwd_2_oc"] == 0.0 and row["n_days_fwd_2_oc"] == 6
+
+    ordered = tbl.dropna(subset=[f"ICIR_{main}"]).index.tolist()
+    assert ordered[0] == "pct_60d" and ordered[-1] == "pe", "主排序不是按主尺 ICIR 降序"
+
+
+def test_eval_sortcol_follows_main_ruler(monkeypatch):
+    """回滚杆:`MAIN_RULER` 改回 fwd_2_oc → sortcol/主位/排序整体跟着回,新尺对称降参考。"""
+    monkeypatch.setattr(ruler, "MAIN_RULER", "fwd_2_oc")
+
+    assert fl.promotion_sortcol() == "ICIR_fwd_2_oc"
+    assert fl.judgment_rulers()[0] == "fwd_2_oc"
+
+    tbl = fl.ic_promotion_table(_dual_ruler_frames(), buyable_only=True)
+    ordered = tbl.dropna(subset=["ICIR_fwd_2_oc"])["factor"].tolist()
+    assert ordered[0] == "pe" and ordered[-1] == "pct_60d", "排序没跟着 MAIN_RULER 翻过来"
+
+    row = tbl.set_index("factor").loc["pct_60d"]
+    assert row["ruler"] == "fwd_2_oc" and row["IC_h1"] == -1.0
+    assert row["IC_h1_gap_c1_o2"] == 1.0, "回滚后新尺应对称降为并列参考,不是被删"
+
+
+def _leg_frames(n: int = 40) -> list[pd.DataFrame]:
+    """真价格面板 → `forward_returns` 出隔夜腿(不手写 gap 列)。
+
+    构造:开盘随 code 序**递增**、收盘随 code 序**递减**(逐日系数各异,免得出现零方差列)
+    → 正腿 `gap=o2/c1−1` 与因子同向(IC=+1.0),错腿 `c2/c1−1` 与因子反向 → 错腿变异探针在
+    **判据族这一层**必红。
+    """
+    codes = [f"{600000 + i:06d}" for i in range(n)]
+    b = np.arange(n, dtype=float) / 1000.0
+    P = ["D0", "D1", "D2", "D3"]
+    o = {"D0": 10.0 + 0 * b, "D1": 10.0 + 0 * b, "D2": 10.0 * (1 + b), "D3": 10.0 * (1 + 2 * b)}
+    c = {"D0": 10.0 + 0 * b, "D1": 10.0 * (1 + 0.1 * b), "D2": 10.0 * (1 - b),
+         "D3": 10.0 * (1 - 0.5 * b)}
+    piv = {
+        "open": pd.DataFrame(o, index=codes), "close": pd.DataFrame(c, index=codes),
+        "high": pd.DataFrame({d: np.maximum(o[d], c[d]) + 1.0 for d in P}, index=codes),
+        "low": pd.DataFrame({d: np.minimum(o[d], c[d]) - 1.0 for d in P}, index=codes),
+        "pct_chg": pd.DataFrame({d: np.zeros(n) for d in P}, index=codes),
+    }
+    frames = []
+    for D in ("D0", "D1"):
+        fr = pd.DataFrame({"pct_60d": np.arange(n, dtype=float)}, index=codes)
+        frames.append(fr.join(fl.forward_returns(piv, P, D, 10)))
+    return frames
+
+
+def test_promotion_family_reads_real_gap_leg():
+    """判据族吃的是**真隔夜腿**(open[D+2]/close[D+1]):把腿算成 close/close 则 IC 反号必红。"""
+    tbl = fl.ic_promotion_table(_leg_frames(), buyable_only=True).set_index("factor")
+    assert tbl.loc["pct_60d", "IC_gap_c1_o2"] == 1.0, "隔夜腿取错(c2/c1)→ 这里会翻成负号/消失"
+    assert tbl.loc["pct_60d", "IC_h2"] == 1.0 and tbl.loc["pct_60d", "n_days"] == 2
+
+
+def _decile_frames(n_days: int = 3, n: int = 120, *, outlier_unbuyable: bool = False,
+                   n_outliers: int = 12) -> list[pd.DataFrame]:
+    """十分位面板(≥100 只/日,过 `m.sum() < 100` 护栏):因子=base,最高的 `n_outliers` 只
+    前瞻收益 +0.9(远超两尺各自的截尾阈)。`outlier_unbuyable` = 让这些离群票「D+1 开盘买
+    得到、T+1 收盘封死买不进」(buyable=True / buyable_c1=False),用来验资格旗跟尺走。
+    """
+    base = np.arange(n, dtype=float)
+    ret = np.where(base >= n - n_outliers, 0.9, 0.001)
+    return [pd.DataFrame({
+        "code": [f"{600000 + i:06d}" for i in range(n)],
+        "pct_60d": base, "gap_c1_o2": ret, "fwd_2_oc": ret,
+        "buyable": True,
+        "buyable_c1": np.where(outlier_unbuyable & (base >= n - n_outliers), False, True),
+        "date": f"2026070{d + 1}",
+    }) for d in range(n_days)]
+
+
+def test_decile_clip_follows_ruler():
+    """截尾阈跟尺走:隔夜尺用 `ruler.GAP_CLIP`(单日板极值+容差),多日 open→close 尺用 ±0.30。"""
+    assert fl._return_clip("gap_c1_o2") == ruler.GAP_CLIP
+    assert fl._return_clip("fwd_2_oc") == 0.30
+
+    frames = _decile_frames()
+    gap = fl.decile_table(frames, "gap_c1_o2").set_index("factor")
+    oc = fl.decile_table(frames, "fwd_2_oc").set_index("factor")
+    assert gap.loc["pct_60d", "top_decile_ret"] == round(ruler.GAP_CLIP * 100, 3)   # 31.0
+    assert oc.loc["pct_60d", "top_decile_ret"] == 30.0
+    assert (gap["ruler"] == "gap_c1_o2").all() and (oc["ruler"] == "fwd_2_oc").all()
+
+
+def test_decile_entry_flag_follows_ruler():
+    """资格旗跟尺走:隔夜尺剔「收盘封死买不进」(buyable_c1),旧尺仍按 D+1 开盘旗(buyable)。"""
+    frames = _decile_frames(outlier_unbuyable=True, n_outliers=1)
+    gap = fl.decile_table(frames, "gap_c1_o2").set_index("factor")
+    oc = fl.decile_table(frames, "fwd_2_oc").set_index("factor")
+    assert gap.loc["pct_60d", "top_decile_ret"] == 0.1, "隔夜尺没剔掉收盘封死的那只(旧旗漏放行)"
+    assert oc.loc["pct_60d", "top_decile_ret"] > 2.0, "旧尺入场腿是 D+1 开盘,不该被 buyable_c1 拦"
+
+
+def test_evaluate_writes_main_ruler_tables(tmp_path, monkeypatch, capsys):
+    """接线(不只是有个纯函数):`evaluate()` 真把主尺判据表写进 ic_table.csv,
+    十分位主表=主尺、旧尺另存并列参考文件。"""
+    monkeypatch.setattr(fl, "OUT", tmp_path)
+    monkeypatch.setattr(fl, "_all_frames", lambda cap_floor: _dual_ruler_frames())
+
+    fl.evaluate(30.0, buyable_only=True)
+
+    ic = pd.read_csv(tmp_path / "ic_table.csv")
+    assert (ic["ruler"] == ruler.MAIN_RULER).all()
+    assert ic["factor"].iloc[0] == "pct_60d", "写盘的 ic_table 未按主尺 ICIR 降序"
+    assert "IC_h1_fwd_2_oc" in ic.columns, "旧尺判据族必须保留在产物里(降参考不删列)"
+
+    dec = pd.read_csv(tmp_path / "decile_table.csv")
+    assert (dec["ruler"] == ruler.MAIN_RULER).all(), "十分位主表未切主尺"
+    ref = pd.read_csv(tmp_path / "decile_table_fwd_2_oc.csv")
+    assert (ref["ruler"] == "fwd_2_oc").all(), "旧尺十分位表未作为并列参考产出"
+    assert ruler.MAIN_RULER in capsys.readouterr().out, "控制台读数未标尺"
+
+
+def test_render_ic_by_regime_title_carries_ruler(tmp_path, monkeypatch):
+    """`render_ic_by_regime` 标题不得再写死 fwd_2_oc;`run_ic_by_regime` 把真用的 label_col 传下去。"""
+    head = fl.render_ic_by_regime(pd.DataFrame()).splitlines()[0]
+    assert ruler.MAIN_RULER in head and "fwd_2_oc" not in head
+
+    panel = pd.concat([_day_rows(f"2026030{i + 1}", "steady", 1, -1) for i in range(6)],
+                      ignore_index=True)
+    regime_by_date = dict.fromkeys(panel["date"].unique(), "steady")
+    monkeypatch.setattr(fl, "_all_frames", lambda cap_floor: [pd.DataFrame({"x": [1]})])
+    monkeypatch.setattr(fl, "_build_calib_panel",
+                        lambda frames, label_col: (panel.drop(columns=["regime"]), regime_by_date))
+
+    fl.run_ic_by_regime(label_col="fwd_5_oc", out_csv=str(tmp_path / "ic.csv"),
+                        out_md=str(tmp_path / "ic.md"))
+    md_head = (tmp_path / "ic.md").read_text(encoding="utf-8").splitlines()[0]
+    assert "fwd_5_oc" in md_head, "报表标题没跟着真用的 label_col 走(死字符串又长回来了)"
