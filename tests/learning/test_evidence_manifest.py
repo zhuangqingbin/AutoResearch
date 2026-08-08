@@ -349,17 +349,22 @@ def test_registry_inventory_reports_family_not_pointer_kind(tmp_path):
 
 def test_semantics_definitions_no_longer_hardcode_fwd_2_oc():
     """A5(受控语义表自身失控):定义串写死 fwd_2_oc、取值多数早已随 MAIN_RULER 走
-    (gate_ledger.tail_rate 已用 MAIN_RULER,COHORTS["t2_mature"] 描述的是"回填成熟"这件
-    事本身)。唯一合法保留是 market_fwd2_mean —— 它绑定 zero_buy_ledger.mkt_fwd2,T6 明确
-    把这一列钉死为"参考尺,不随主尺漂移"(fwd_2/fwd_5 降参考列保留,不改语义)——定义句故意
-    不写字面量 fwd_2_oc(grep 也过不了),而是用 ruler 字段显式钉死它,不能靠插值 MAIN_RULER
-    去描述一个永远不等于 MAIN_RULER 的取值源(那才是真正的"定义串与取值源不一致")。
+    (gate_ledger.tail_rate 已用 MAIN_RULER)。唯一合法保留字面量的两处:
+    ①market_fwd2_mean —— 它绑定 zero_buy_ledger.mkt_fwd2,T6 明确把这一列钉死为
+    "参考尺,不随主尺漂移"(定义句故意不写字面量 fwd_2_oc,用 ruler 字段结构化钉死它);
+    ②COHORTS["t2_mature"] —— C-1 回归修复(review 2026-08-08):这里**不得**插值
+    MAIN_RULER,因为该 cohort 真正的准入门(`"fwd_1_oo" in df.columns`)与"哪把尺已回填"
+    无关,插值成 gap_c1_o2 后实测只有 28/31 个准入日真的有该列(vs 改动前 fwd_2_oc 是
+    31/31),是净回归——如实描述 fwd_2_oc(目前仍然为真),不能靠插值制造新的假话。
     """
     for name, semantic in SEMANTICS.items():
+        if name == "market_fwd2_mean":
+            continue   # 唯一允许裸写 fwd_2_oc 定义句的语义(见上)
         assert "fwd_2_oc" not in semantic.definition, (
             f"{name} 定义句仍裸写 fwd_2_oc 字面量")
-    assert "fwd_2_oc" not in COHORTS["t2_mature"]
-    assert MAIN_RULER in COHORTS["t2_mature"]
+    # C-1:t2_mature 如实描述 fwd_2_oc(31/31 真),不插值 MAIN_RULER(插值后只 28/31 真)
+    assert "fwd_2_oc" in COHORTS["t2_mature"]
+    assert MAIN_RULER not in COHORTS["t2_mature"]
     # gate_ledger.tail_rate 真的按 MAIN_RULER 计(gate_ledger.py 已用 MAIN_RULER),定义句必须带它
     assert MAIN_RULER in SEMANTICS["left_tail_protection_rate"].definition
     # market_fwd2_mean 是 T6 明确保留的冻结参考列——ruler 字段钉死为 fwd_2_oc,不随主尺漂移,
@@ -368,17 +373,91 @@ def test_semantics_definitions_no_longer_hardcode_fwd_2_oc():
     assert MAIN_RULER not in SEMANTICS["market_fwd2_mean"].definition
 
 
-def test_semantic_ruler_defaults_to_main_ruler():
-    """未显式覆盖的语义(绝大多数)ruler 默认追踪 MAIN_RULER——不用逐条改写。"""
-    assert SEMANTICS["scan_day_count"].ruler == MAIN_RULER
-    assert SEMANTICS["left_tail_protection_rate"].ruler == MAIN_RULER
+def test_t2_mature_cohort_claim_matches_real_column_coverage():
+    """C-1 回归锁(review 2026-08-08):COHORTS["t2_mature"] 声称"已回填 X 的扫描日"——
+    这句话必须对真实 context/scan 数据 100% 成立,否则就是本模块自己点名的第 1 号病
+    (手抄分母/定义脱钩)的翻版。实测:31 个 zero_buy_ledger 准入日里 fwd_2_oc 100% 覆盖,
+    gap_c1_o2 只有 28/31(缺 2026-06-18/06-22/07-07)——把这句话插值成 gap_c1_o2 是净
+    回归,已改回。本测试直接对真实数据验证当前文案的声称成立,防止再次静默漂移。
+    """
+    text = COHORTS["t2_mature"]
+    claimed = "fwd_2_oc" if "fwd_2_oc" in text else ("gap_c1_o2" if "gap_c1_o2" in text else None)
+    assert claimed is not None, "t2_mature 定义句没有指名具体尺,测试断言方式需要同步更新"
+
+    root = Path("context/scan")
+    if not root.exists():
+        pytest.skip("无真实 context/scan 数据")
+    total = covered = 0
+    for p in sorted(root.glob("*/retro/attribution.csv")):
+        try:
+            df = pd.read_csv(p)
+        except Exception:
+            continue
+        if "fwd_1_oo" not in df.columns or not len(df):   # 与 zero_buy_ledger.roll() 同一准入口径
+            continue
+        total += 1
+        if claimed in df.columns and pd.to_numeric(df[claimed], errors="coerce").notna().any():
+            covered += 1
+    if total == 0:
+        pytest.skip("无真实 context/scan 数据")
+    assert covered == total, (
+        f"t2_mature 文案声称已回填 {claimed!r},但真实只有 {covered}/{total} 个准入日覆盖"
+        "——定义句与实际取值脱钩")
+
+
+def test_source_has_no_bare_fwd_2_oc_literal_outside_known_pins():
+    """I-3 修复(review 2026-08-08):Step 1「grep 输出无裸 fwd_2_oc 定义句」此前只测了
+    SEMANTICS/COHORTS 常量字典,没盖住 `_add_gate_left_tail` 里运行时才拼出的分母定义
+    f-string(`:615`)——那条改对了但零测试覆盖,改回硬编码字面量是永不变红的绿灯。
+    直接对整份源码文本 grep,一次盖住所有当前与未来出现的定义句位置。唯二允许的字面量:
+    ①`market_fwd2_mean` 的 `ruler="fwd_2_oc"` 结构化覆盖;②`COHORTS["t2_mature"]` 的
+    定义句(C-1 回归修复,该处如实描述而非插值 MAIN_RULER)。
+    """
+    source = Path("autoresearch/learning/evidence_manifest.py").read_text(encoding="utf-8")
+    # 只看非 `#` 注释的代码行——注释里讨论"fwd_2_oc 这个概念"是合法的行文,不是「定义句」
+    # (定义句 = 真正被 validate()/render() 消费的字符串字面量),两者不能用同一把尺子量。
+    code_hits = [
+        (i, ln.strip()) for i, ln in enumerate(source.splitlines(), start=1)
+        if "fwd_2_oc" in ln and not ln.strip().startswith("#")
+    ]
+    allowed_markers = ('ruler="fwd_2_oc"', '"t2_mature":')
+    disallowed = [(i, ln) for i, ln in code_hits if not any(m in ln for m in allowed_markers)]
+    assert not disallowed, f"裸 fwd_2_oc 字面量(不在允许清单内):{disallowed}"
+    assert any('ruler="fwd_2_oc"' in ln for _, ln in code_hits), "market_fwd2_mean 的 ruler 覆盖丢失"
+    assert any('"t2_mature":' in ln for _, ln in code_hits), "t2_mature cohort 定义丢失"
+
+
+def test_semantic_ruler_is_none_unless_the_value_depends_on_a_return_column():
+    """I-1 修复(review 2026-08-08):默认值曾是 MAIN_RULER,给 19/65 个不依赖任何收益列
+    的生产指标(registry 实验计数/门开火次数/participation 人口/扫描日计数/0买日计数/
+    DEGRADED 旗计数)盖了一把它们根本没有的尺。默认改 None(未声明),只对真正读收益列
+    算出来的语义显式赋值(逐条核实取值源:gate_attribution.py/gate_ledger.py 已用
+    MAIN_RULER,paper_nav 当前主表=隔夜尺,abstention_ledger.py 已用 MAIN_RULER)。
+    """
+    # 不依赖收益列的语义:默认 None(未声明,不是假装追踪 MAIN_RULER)
+    for name in ("scan_day_count", "zero_buy_day_count", "abstention_degraded_count",
+                 "portfolio_trade_count", "gate_block_count", "experiment_count",
+                 "gate_participation_count"):
+        assert SEMANTICS[name].ruler is None, f"{name} 不该有 ruler(不依赖任何收益列)"
+    # 真依赖收益列的语义:显式声明 MAIN_RULER
+    for name in ("left_tail_protection_rate", "false_kill_rate", "correct_block_rate",
+                 "gate_mean_excess2", "portfolio_return", "abstention_verdict_count"):
+        assert SEMANTICS[name].ruler == MAIN_RULER, f"{name} 应显式声明 ruler=MAIN_RULER"
+    # 冻结参考语义:显式声明字面量,不随主尺漂移
+    assert SEMANTICS["market_fwd2_mean"].ruler == "fwd_2_oc"
 
 
 def test_metric_ruler_field_is_auto_filled_from_semantic():
     """每指标含 ruler 字段(镜像 source_field 的自动补全 + 一致性守卫)。"""
     manifest = Manifest()
+    # 不依赖收益列的语义:auto-fill 结果应为 None,不是 MAIN_RULER(I-1 修复)
     manifest.add(_metric(metric_id="m", semantic="scan_day_count"))
-    assert manifest.metrics["m"]["ruler"] == MAIN_RULER
+    assert manifest.metrics["m"]["ruler"] is None
+
+    # 真依赖收益列的语义:auto-fill 结果应为 MAIN_RULER
+    manifest.add(_metric(metric_id="m2", semantic="left_tail_protection_rate",
+                         cohort="legacy_migration"))
+    assert manifest.metrics["m2"]["ruler"] == MAIN_RULER
 
     # 冻结参考指标(market_fwd2_mean):自动补全应为 fwd_2_oc,不是当前 MAIN_RULER
     frozen_metric = Metric(
@@ -425,7 +504,14 @@ def test_frozen_gate0_snapshot_still_passes_validate_after_t8():
     """回归锁:T8 不得让 docs/research/2026-08-01-wave10-gate0-evidence.json 这份历史审计
     记录突然读不过 —— 与 test_wave10_gate0_freeze.py::test_frozen_snapshot_passes_its_own_validator
     是同一断言,这里在 T8 自己的测试文件内再钉一遍(防止未来有人只跑 test_evidence_manifest.py
-    就以为够了)。"""
+    就以为够了)。
+
+    M-5 修复(review 2026-08-08):裸相对路径读取此前无 pytest.skip 兜底,换 cwd 跑会
+    FileNotFoundError 而不是优雅跳过——镜像 tests/learning/test_wave10_gate0_freeze.py:27-36
+    的既有约定(文件缺失就 skip,不是炸)。
+    """
     path = Path("docs/research/2026-08-01-wave10-gate0-evidence.json")
+    if not path.exists():
+        pytest.skip(f"冻结快照不在:{path}")
     frozen = json.loads(path.read_text(encoding="utf-8"))
     assert validate(frozen) == []

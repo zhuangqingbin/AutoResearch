@@ -46,7 +46,11 @@ _COLUMNS = [
     "degraded",
     "spread",
     "final_rating",
-    "fwd_2_oc",  # 参考尺,固定列名,勿随主尺漂移(持久化 ledger 列)
+    # M-8 修复(review 2026-08-08):这不是"参考尺"——列名固定叫 fwd_2_oc(持久化 ledger
+    # 列,不因换尺改名),但**取值**实际来自 MAIN_RULER(见 day_rows() 的 value=MAIN_RULER
+    # 那一行),会随换尺漂移;真身靠下面 :53 的 `ruler` 列记账。旧注释说"勿随主尺漂移"
+    # 会让下一个人读反(以为这列的数是永远等于 fwd_2_oc 的旧尺,其实不是)。
+    "fwd_2_oc",  # 列名固定,取值随 MAIN_RULER 漂移(读数请配 `ruler` 列)
     "market_fwd_2",
     "excess_2",
     "verdict",

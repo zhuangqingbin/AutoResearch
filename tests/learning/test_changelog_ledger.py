@@ -144,3 +144,24 @@ def test_render_title_carries_main_ruler_name():
         "ic_before", "ic_after", "delta", "thin",
     ])))
     assert MAIN_RULER in text
+
+
+def test_heartbeat_carries_ruler_name(tmp_path):
+    """I-2 修复(review 2026-08-08):`render()` 标题带了尺名,但 `heartbeat()` 本体此前
+    一字未改——`autoresearch/scan/prelude.py:315-316` 的每日汇总屏只取 `heartbeat()`
+    这一行塞进 prelude(不读 `render()` 的 .md 报告标题),没人在日常屏上看到尺名。
+    心跳必须自己带上(07-16 家训:会变的量),两条分支(NO-OP 告警 / 正常 ✓)都要覆盖。
+    """
+    from autoresearch.learning.changelog_ledger import heartbeat
+
+    ok = tmp_path / "ok"
+    ok.mkdir()
+    (ok / "changelog.jsonl").write_text(json.dumps(_hb_rec("aaa", "bbb")) + "\n", encoding="utf-8")
+    assert MAIN_RULER in heartbeat(knowledge_dir=ok, k=1)
+
+    noop = tmp_path / "noop"
+    noop.mkdir()
+    (noop / "changelog.jsonl").write_text(
+        "".join(json.dumps(_hb_rec("72b3d0af", "72b3d0af")) + "\n" for _ in range(3)),
+        encoding="utf-8")
+    assert MAIN_RULER in heartbeat(knowledge_dir=noop, k=3)

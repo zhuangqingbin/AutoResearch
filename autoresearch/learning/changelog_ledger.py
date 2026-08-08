@@ -9,6 +9,11 @@ changelog.jsonl 记了每次权重重标定;本模块回答"标定之后 IC 真�
 比旧主尺 fwd_2_oc 还旧一代,而权重早已按 gap_c1_o2 校准——尺完全错配)。
 持续 delta≤0 = 校准在空转/过拟合,回头查 horizon/收缩参数。n<3 标 ⚠样本少。
 
+M-4(review 2026-08-08):切主尺后 `_day_ic` 的可用日面板从 31 日缩到 28 日(gap_c1_o2
+历史空洞 2026-06-18/06-22/07-07 三日 `_day_ic` 返回 None,不进 `day_ics()` 字典)——
+本模块每次重算不落盘,不会污染历史行,但读者不应假设 `n_before`/`n_after` 与切尺前
+连续可比;`ic_before`/`ic_after`/`delta` 的窗口构成也随之变化。
+
   uv run --no-sync python -m autoresearch.learning.changelog_ledger  # → reports/learning/changelog_ledger.md
 """
 from __future__ import annotations
@@ -97,6 +102,12 @@ def heartbeat(knowledge_dir: Path | str | None = None, k: int = 3) -> str:
 
     连续 ≥k 次 recalibrate 的 after_sha 全同 = NO-OP 空转(权重面板冻结,退出码 0 也照报)。
     复发病实证:2026-06-23~25 已有 349fa46d×3,07-13~16 又 72b3d0af×4——只修不监必然再死。
+
+    I-2 修复(review 2026-08-08):Wave12-T7 最初把"尺名"只插进了 `render()` 的标题,而
+    `autoresearch/scan/prelude.py:315-316` 的每日汇总屏只取本函数(`heartbeat()`)的返回
+    串塞进去,不读 `render()`——`_day_ic()` 评的 IC 尺(`MAIN_RULER`)与这里的 `label_col`
+    (权重校准腿自己记录的列,另一条独立信息链)是两回事,07-16 家训要的"会变的量"必须在
+    这个函数里也带上,才是真正每天被人看到的那行。
     """
     recs = [r for r in _read_jsonl(Path(knowledge_dir or "context/knowledge") / "changelog.jsonl")
             if r.get("kind") == "recalibrate" and r.get("after_sha")]
@@ -109,10 +120,12 @@ def heartbeat(knowledge_dir: Path | str | None = None, k: int = 3) -> str:
     if len(tail) >= k and len({r["after_sha"] for r in tail}) == 1 \
             and all(r.get("before_sha") == r.get("after_sha") for r in tail):
         return (f"🚨 权重自动腿疑似死亡:连续 {len(tail)} 次重标定 NO-OP"
-                f"(sha {last['after_sha']} 不变,面板 {nd} 日冻结,label_col={lc})"
+                f"(sha {last['after_sha']} 不变,面板 {nd} 日冻结,label_col={lc},"
+                f"IC尺={MAIN_RULER})"
                 f" ← 会变的量没变=死了也像活着;查 calibrate 是否在消费冻结的 plan.pkl")
     return (f"权重自动腿心跳 ✓:最近 {last.get('ts', '')[:10]} "
-            f"{last.get('before_sha')}→{last['after_sha']}(面板 {nd} 日,label_col={lc})")
+            f"{last.get('before_sha')}→{last['after_sha']}(面板 {nd} 日,label_col={lc},"
+            f"IC尺={MAIN_RULER})")
 
 
 def render(df: pd.DataFrame) -> list[str]:

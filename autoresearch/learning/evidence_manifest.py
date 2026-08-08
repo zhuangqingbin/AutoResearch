@@ -41,7 +41,15 @@ COHORTS: dict[str, str] = {
     "raw_run": "journal 的每个 scan 日行 —— 含非交易日/缺卡/未成熟,"
                "**不得直接作收益或 0买比例的分母**",
     "valid_completed": "跑完且有 finalists 与决策卡的扫描日",
-    "t2_mature": f"retro/attribution 已回填 {MAIN_RULER} 的扫描日",
+    # C-1 回归修复(review 2026-08-08):曾插值成 f"...已回填 {MAIN_RULER}..."(即 gap_c1_o2)
+    # ——净回归。真实 context/scan 数据实测:31 个 zero_buy_ledger 准入日 100% 有 fwd_2_oc,
+    # 只有 28 个有 gap_c1_o2(缺 2026-06-18/06-22/07-07)。而这个 cohort 真正的准入门
+    # (zero_buy_ledger.roll() 的 `"fwd_1_oo" in df.columns`、build_day 的 `attr.exists()`)
+    # 与"哪把尺已回填"完全无关——两者都不保证 fwd_2_oc 或 gap_c1_o2 任一列非空,31/31 只是
+    # 当前数据的经验巧合,不是代码保证。此处保留字面量 fwd_2_oc(维持插值前、目前仍然为真的
+    # 描述),不改判据本身;若未来要让这个 cohort 名实相符,需要新开一个按 gap 过滤的 cohort
+    # 或改 roll() 的准入门——两者都是行为变更,需要人批(见 fix 报告 C-1)。
+    "t2_mature": "retro/attribution 已回填 fwd_2_oc 的扫描日",
     "experiment_eligible": "v3 门归因里 outcome≠UNMEASURED 的可交易成熟候选",
     "legacy_migration": "仅供迁移复现的旧口径(gate_ledger 全表均值·不去重)——"
                         "**不是研究 cohort**,不得与上面四个并列比较",
@@ -58,16 +66,28 @@ COHORTS: dict[str, str] = {
 class Semantic:
     """一个受控语义 + 它唯一允许的来源字段。
 
-    Wave12-T8(A5):`ruler` 记录这个语义的取值**实际**由哪把尺产出——默认 `MAIN_RULER`
-    (动态追踪当前主尺,绝大多数语义属于这一类);少数语义绑定的是一个**永久冻结**的
-    参考列(如 `market_fwd2_mean` 绑 `zero_buy_ledger.mkt_fwd2`,T6 明确不随主尺漂移),
-    这类语义显式传字面量覆盖默认值,不能让 `MAIN_RULER` 的当前取值(现在恰好是
-    `gap_c1_o2`)偷偷冒充成它的定义。
+    Wave12-T8(A5):`ruler` 记录这个语义的取值**实际**由哪把尺产出。
+
+    I-1 修复(review 2026-08-08):默认值曾是 `MAIN_RULER`,给全部语义盖了同一把尺——
+    实测 65 个生产指标里有 19 个(registry 实验计数/门开火次数/participation 人口/扫描日
+    计数/0买日计数/DEGRADED 旗计数等 6 类)根本不读任何收益列,`ruler` 自己的文档说的是
+    「取值实际由哪把尺产出」,`len(registry["experiments"])` 不由任何尺产出——盖上
+    `gap_c1_o2` 是假陈述。更糟的是 `add()` 的守卫方向:旧默认值下,想诚实声明"这条没有
+    尺"反而会被拒绝(`ruler=None` 与默认 `MAIN_RULER` 不符 → 抛错)。
+
+    改为默认 `None`("未声明,不适用"),只对真正依赖收益列算出来的语义显式传字面量
+    (`left_tail_protection_rate`/`false_kill_rate`/`correct_block_rate`/`gate_mean_excess2`
+    读 `gate_attribution.py`/`gate_ledger.py`,两者均已用 `MAIN_RULER`;`portfolio_return`
+    读 `paper_nav.md` 当前主表=隔夜尺;`abstention_verdict_count` 读 `abstention_ledger.py`,
+    已用 `MAIN_RULER`);`market_fwd2_mean` 绑定的是一个**永久冻结**的参考列
+    (`zero_buy_ledger.mkt_fwd2`,T6 明确不随主尺漂移),显式钉死它自己的固定字面量
+    (见该条目的 `ruler=` 传参),不能让 `MAIN_RULER` 的当前取值(现在恰好是 `gap_c1_o2`)
+    偷偷冒充成它的定义。
     """
     definition: str
     source_field: str
     cohorts: tuple[str, ...]
-    ruler: str = MAIN_RULER
+    ruler: str | None = None
 
 
 # 语义 → 来源字段的绑定表。改这里等于改事实定义,必须过 review。
@@ -82,34 +102,34 @@ SEMANTICS: dict[str, Semantic] = {
         "zero_buy_ledger.mkt_fwd2", ("t2_mature",), ruler="fwd_2_oc"),
     "abstention_verdict_count": Semantic(
         "abstention v2(shadow_buys 口径)逐日裁决计数",
-        "abstention_ledger.status_v2", ("t2_mature",)),
+        "abstention_ledger.status_v2", ("t2_mature",), ruler=MAIN_RULER),
     "abstention_degraded_count": Semantic(
         "数据质量为 DEGRADED 的裁决日计数",
         "abstention_ledger.data_quality", ("t2_mature",)),
     "portfolio_return": Semantic(
         "组合累计收益(影子/真实各自口径)", "paper_nav.total_return",
-        ("t2_mature",)),
+        ("t2_mature",), ruler=MAIN_RULER),
     "portfolio_trade_count": Semantic(
         "组合成交笔数", "paper_nav.n_trades", ("t2_mature",)),
     "left_tail_protection_rate": Semantic(
         f"被拦票 {MAIN_RULER} ≤ -5% 的占比(收缩估计)—— 量的是**左尾保护**,"
         "**不是错杀率**,两者不得互相翻译",
-        "gate_ledger.tail_rate", ("legacy_migration",)),
+        "gate_ledger.tail_rate", ("legacy_migration",), ruler=MAIN_RULER),
     "gate_block_count": Semantic(
         "该门的拦截次数", "gate_attribution.n_fires",
         ("experiment_eligible", "legacy_migration")),
     "false_kill_rate": Semantic(
         "被拦票 excess_2 ≥ +2pp 的占比(A11 v3 归因口径)",
         "gate_attribution.false_kill_rate",
-        ("experiment_eligible", "legacy_migration")),
+        ("experiment_eligible", "legacy_migration"), ruler=MAIN_RULER),
     "correct_block_rate": Semantic(
         "被拦票 excess_2 < 0 的占比(A11 v3 归因口径)",
         "gate_attribution.correct_rate",
-        ("experiment_eligible", "legacy_migration")),
+        ("experiment_eligible", "legacy_migration"), ruler=MAIN_RULER),
     "gate_mean_excess2": Semantic(
         "被拦票相对市场基准的 T+2 超额均值",
         "gate_attribution.mean_excess_2",
-        ("experiment_eligible", "legacy_migration")),
+        ("experiment_eligible", "legacy_migration"), ruler=MAIN_RULER),
     "experiment_count": Semantic(
         "registry 内实验计数", "experiment_registry.experiments",
         ("raw_run",)),

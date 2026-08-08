@@ -36,8 +36,12 @@ def test_roll_and_render(tmp_path):
     assert "0买日" in md and "2026-06-24" in md and "有买日" in md
 
 
-def test_verdict_uses_fwd2(tmp_path):
-    # fwd_2(主尺)全为负、fwd_5(参考)为正 的 0 买日 → verdict 仍应判「空仓方向正确」
+def test_verdict_falls_back_to_fwd2_when_gap_absent(tmp_path):
+    """M-3 修复(review 2026-08-08):T6 后 gap 才是主判据,本测试没传 gap 列——测的是
+    "gap 整列缺失 → 回退到 fwd_2" 这条路径,不再是"fwd_2 是主尺"(旧名字/旧注释在 T6
+    之后已成假话,原名 test_verdict_uses_fwd2 已改)。
+    fwd_2(gap 缺失时的一级回退)全为负、fwd_5(参考)为正 的 0 买日 → verdict 仍应判
+    「空仓方向正确」。"""
     _mk_day(tmp_path, "2026-06-24", [False, False], [0.01, -0.02], [0.03, 0.05], fwd2=[-0.01, -0.02])
     led = roll(tmp_path)
     lines = render(led)
@@ -99,7 +103,29 @@ def test_verdict_follows_gap_not_fwd2_when_they_disagree(tmp_path):
     assert abs(led.iloc[0]["mkt_gap"] - (-0.015)) < 1e-9
     lines = "\n".join(render(led))
     assert "空仓方向正确" in lines
-    assert "(主尺)" in lines
+    # M-1 修复(review 2026-08-08,假绿灯):旧版渲染串同样含 "(主尺)" 子串(挂在 fwd_2
+    # 上,修复前恒真、零鉴别力)。改为定位到 "(主尺)" 实际挂的是哪个字段——必须是 gap,
+    # 不能是 fwd_2(用 "、" 分段,单独判断含"主尺"字样的那一段)。
+    zero_line = next(ln for ln in lines.split("\n") if ln.startswith("- **0买日**"))
+    main_ruler_segment = next(seg for seg in zero_line.split("、") if "主尺" in seg)
+    assert "gap" in main_ruler_segment
+    assert "fwd_2" not in main_ruler_segment
+
+
+def test_zero_buy_summary_labels_each_column_with_its_own_n(tmp_path):
+    """I-4 修复(review 2026-08-08):gap 与 fwd_1/2/5 的非空天数可能不同(gap_c1_o2 有
+    历史空洞,如实测 context/scan 里的 2026-07-07 缺该列)——四个均值不能共用一个
+    "(N 日)" 标签,分母必须各自标注(本仓库铁律:比率同时写分子/分母)。"""
+    _mk_day(tmp_path, "2026-06-24", [False, False], [0.01, -0.02], [0.03, 0.05],
+            fwd2=[-0.01, -0.02], gap=[-0.03, -0.01])         # 有 gap 列
+    _mk_day(tmp_path, "2026-06-25", [False], [0.02], [0.04], fwd2=[0.01])   # 无 gap 列
+    led = roll(tmp_path)
+    assert len(led) == 2 and (led["n_bought"] == 0).all()
+    assert pd.isna(led.iloc[1]["mkt_gap"])          # 06-25 无 gap_c1_o2 列 → mkt_gap 缺
+    lines = "\n".join(render(led))
+    zero_line = next(ln for ln in lines.split("\n") if ln.startswith("- **0买日**"))
+    assert "n=1" in zero_line       # gap 只有 06-24 这 1 天非空
+    assert "n=2" in zero_line       # fwd_1/fwd_2 两天都非空
 
 
 def test_bought_mask_is_public_and_reused_by_journal(tmp_path):

@@ -15,6 +15,13 @@ Wave12-T6(A3):verdict 主判据 2026-08-08 由 fwd_2_oc 切到 gap_c1_o2(隔夜�
 成功 run 不再产生 0买新行,本账本冻结为 legacy;新日级主账改记 `action_coverage`、
 relative BUY 收益与 BLOCKED 原因(见 Wave12 T22 `relative_ledger`)——本次改动只覆盖
 E6 activate 前的历史与 shadow 对照,不建冻结逻辑(activate 是 GATED task)。
+
+review fix round 1(2026-08-08):任务书「表补 2026-08-06 起行」本轮**未完成**——
+`context/scan/2026-08-06/` 无 `retro/` 子目录(2026-08-06 的 gap_c1_o2 需 T+2=
+2026-08-10 周一开盘才成熟,BLOCKED_BY_MATURITY,与 Wave12 progress.md 的 T0.1 记账
+一致);`2026-08-07` 当日未跑 scan(仅 `_prewarm.json`)。retro 归因待 08-10 后补跑,
+`roll()` 逐次全量重算 `context/scan/*/retro/attribution.csv`,届时会自动纳入新行,
+不需要手工回填。
 """
 from __future__ import annotations
 
@@ -81,7 +88,10 @@ def render(
     def f(x):
         return "—" if x is None or pd.isna(x) else f"{x * 100:+.2f}%"
 
-    out += ["| 日期 | 买单 | 全市场gap | 全市场fwd_1 | 全市场fwd_2 | 全市场fwd_5 |", "|---|---|---|---|---|---|"]
+    # M-3 修复(review 2026-08-08):逐日表头曾没有任何标尺(既没写 gap_c1_o2 也没写
+    # "(主尺)/(参考)"),与 Global Constraint「文案与产物一律标尺」不齐——补上。
+    out += ["| 日期 | 买单 | 全市场gap(主尺) | 全市场fwd_1(参考) | 全市场fwd_2(参考) | 全市场fwd_5(参考) |",
+            "|---|---|---|---|---|---|"]
     for r in ledger.itertuples(index=False):
         out.append(f"| {r.date} | {int(r.n_bought)} | {f(r.mkt_gap)} | {f(r.mkt_fwd1)} | {f(r.mkt_fwd2)} | {f(r.mkt_fwd5)} |")
     zero, some = ledger[ledger["n_bought"] == 0], ledger[ledger["n_bought"] > 0]
@@ -89,6 +99,15 @@ def render(
     if len(zero):
         vg, v1, v2, v5 = (zero["mkt_gap"].mean(), zero["mkt_fwd1"].mean(),
                           zero["mkt_fwd2"].mean(), zero["mkt_fwd5"].mean())
+        # I-4 修复(review 2026-08-08):gap 与 fwd_1/2/5 的非空天数可能不同(gap_c1_o2 有
+        # 历史空洞,如实测 2026-07-07 无该列)——四个均值此前共用一个 "(len(zero) 日)"
+        # 标签,把 N-1 日的 gap 均值和 N 日的 fwd 均值混进同一个分母标注,是本模块
+        # evidence_manifest docstring 点名的第 1 号病(手抄分母)的原样复刻。改为逐列
+        # 各自标注真实 notna 天数(本仓库铁律:比率同时写分子/分母/as-of)。
+        n_gap = int(zero["mkt_gap"].notna().sum())
+        n_fwd1 = int(zero["mkt_fwd1"].notna().sum())
+        n_fwd2 = int(zero["mkt_fwd2"].notna().sum())
+        n_fwd5 = int(zero["mkt_fwd5"].notna().sum())
         # Wave12-T6:verdict 主判据 gap(主尺)→ fwd_2(旧主尺,参考)→ fwd_1(参考)三级回退,
         # 只在更高优先级的列**整列缺失**(不是单行 NaN)时才降级,保持既有回退行为不变。
         verdict = "空仓方向正确" if (
@@ -96,12 +115,18 @@ def render(
             or (pd.isna(vg) and pd.notna(v2) and v2 < 0)
             or (pd.isna(vg) and pd.isna(v2) and pd.notna(v1) and v1 < 0)
         ) else "⚠️ 0买日后市为正——查召回/门(失明预警),别只归因纪律"
-        out.append(f"- **0买日**({len(zero)} 日):市场 **gap {f(vg)}(主尺)**、fwd_1 {f(v1)}(参考)、"
-                   f"fwd_2 {f(v2)}(参考)、fwd_5 {f(v5)}(参考)→ {verdict}")
+        out.append(f"- **0买日**({len(zero)} 日):市场 **gap {f(vg)}(主尺,n={n_gap})**、"
+                   f"fwd_1 {f(v1)}(参考,n={n_fwd1})、fwd_2 {f(v2)}(参考,n={n_fwd2})、"
+                   f"fwd_5 {f(v5)}(参考,n={n_fwd5})→ {verdict}")
     if len(some):
-        out.append(f"- **有买日**({len(some)} 日):市场 gap 均值 {f(some['mkt_gap'].mean())}、"
-                   f"fwd_1 均值 {f(some['mkt_fwd1'].mean())}、"
-                   f"fwd_2 均值 {f(some['mkt_fwd2'].mean())}、fwd_5 均值 {f(some['mkt_fwd5'].mean())}")
+        n_gap_b = int(some["mkt_gap"].notna().sum())
+        n_fwd1_b = int(some["mkt_fwd1"].notna().sum())
+        n_fwd2_b = int(some["mkt_fwd2"].notna().sum())
+        n_fwd5_b = int(some["mkt_fwd5"].notna().sum())
+        out.append(f"- **有买日**({len(some)} 日):市场 gap 均值 {f(some['mkt_gap'].mean())}(n={n_gap_b})、"
+                   f"fwd_1 均值 {f(some['mkt_fwd1'].mean())}(n={n_fwd1_b})、"
+                   f"fwd_2 均值 {f(some['mkt_fwd2'].mean())}(n={n_fwd2_b})、"
+                   f"fwd_5 均值 {f(some['mkt_fwd5'].mean())}(n={n_fwd5_b})")
     if causal is not None and len(causal):
         counts = causal["status"].value_counts().to_dict()
         out += [
