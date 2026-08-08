@@ -613,6 +613,13 @@ def publish_run_observation(
     )
     observation["markdown"] = render_run_observation(observation)
     _atomic_json(scan / "_budget_observation.json", observation)
+    # 候选护照(Wave12 T19):L1→L4 全轨迹的**纯派生**视图,零 LLM/零联网、byte 稳定。
+    # 挂在这里是因为 post_run observe 是 STAGES 步骤 5 的最后一条命令(assemble → gate4 →
+    # usage_harvest → usage_reconcile → 本命令),此刻 decision_records/早停/intel 状态
+    # 全部已定稿。失败只打一行:护照没有任何上游依赖它,不能反过来阻断发布。
+    from autoresearch.scan.passport import safe_write_passport
+
+    safe_write_passport(scan)
     from autoresearch.scan.stage_result import safe_record_stage_result
 
     safe_record_stage_result(
