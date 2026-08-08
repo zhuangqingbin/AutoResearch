@@ -31,6 +31,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common.ruler import MAIN_RULER
+
 SCHEMA_VERSION = 1
 QUERY_VERSION = "wave10.a0.1"
 
@@ -39,7 +41,7 @@ COHORTS: dict[str, str] = {
     "raw_run": "journal 的每个 scan 日行 —— 含非交易日/缺卡/未成熟,"
                "**不得直接作收益或 0买比例的分母**",
     "valid_completed": "跑完且有 finalists 与决策卡的扫描日",
-    "t2_mature": "retro/attribution 已回填 fwd_2_oc 的扫描日",
+    "t2_mature": f"retro/attribution 已回填 {MAIN_RULER} 的扫描日",
     "experiment_eligible": "v3 门归因里 outcome≠UNMEASURED 的可交易成熟候选",
     "legacy_migration": "仅供迁移复现的旧口径(gate_ledger 全表均值·不去重)——"
                         "**不是研究 cohort**,不得与上面四个并列比较",
@@ -54,10 +56,18 @@ COHORTS: dict[str, str] = {
 
 @dataclass(frozen=True)
 class Semantic:
-    """一个受控语义 + 它唯一允许的来源字段。"""
+    """一个受控语义 + 它唯一允许的来源字段。
+
+    Wave12-T8(A5):`ruler` 记录这个语义的取值**实际**由哪把尺产出——默认 `MAIN_RULER`
+    (动态追踪当前主尺,绝大多数语义属于这一类);少数语义绑定的是一个**永久冻结**的
+    参考列(如 `market_fwd2_mean` 绑 `zero_buy_ledger.mkt_fwd2`,T6 明确不随主尺漂移),
+    这类语义显式传字面量覆盖默认值,不能让 `MAIN_RULER` 的当前取值(现在恰好是
+    `gap_c1_o2`)偷偷冒充成它的定义。
+    """
     definition: str
     source_field: str
     cohorts: tuple[str, ...]
+    ruler: str = MAIN_RULER
 
 
 # 语义 → 来源字段的绑定表。改这里等于改事实定义,必须过 review。
@@ -67,8 +77,9 @@ SEMANTICS: dict[str, Semantic] = {
     "zero_buy_day_count": Semantic(
         "买单数为 0 的扫描日计数", "*.n_bought", ("raw_run", "t2_mature")),
     "market_fwd2_mean": Semantic(
-        "该日全市场 fwd_2_oc 均值,按日再取均值",
-        "zero_buy_ledger.mkt_fwd2", ("t2_mature",)),
+        "该日全市场参考尺(D+1开→D+2收,zero_buy_ledger 冻结列,固定不随主尺漂移)"
+        "均值,按日再取均值",
+        "zero_buy_ledger.mkt_fwd2", ("t2_mature",), ruler="fwd_2_oc"),
     "abstention_verdict_count": Semantic(
         "abstention v2(shadow_buys 口径)逐日裁决计数",
         "abstention_ledger.status_v2", ("t2_mature",)),
@@ -81,7 +92,7 @@ SEMANTICS: dict[str, Semantic] = {
     "portfolio_trade_count": Semantic(
         "组合成交笔数", "paper_nav.n_trades", ("t2_mature",)),
     "left_tail_protection_rate": Semantic(
-        "被拦票 fwd_2_oc ≤ -5% 的占比(收缩估计)—— 量的是**左尾保护**,"
+        f"被拦票 {MAIN_RULER} ≤ -5% 的占比(收缩估计)—— 量的是**左尾保护**,"
         "**不是错杀率**,两者不得互相翻译",
         "gate_ledger.tail_rate", ("legacy_migration",)),
     "gate_block_count": Semantic(
@@ -179,6 +190,9 @@ class Metric:
     # 长得一模一样 —— 这正是「拿 n=6 去裁门」得以发生的显示层条件。
     interval: dict | None = None
     maturity: dict | None = None
+    # Wave12-T8(A5):由 semantic.ruler 反查填入(同 source_field 的自动补全 + 一致性守卫)。
+    # 存在的理由同上:「定义串说的尺」与「取值源实际的尺」事后走样必须被 `validate` 逮住。
+    ruler: str | None = None
 
 
 @dataclass
@@ -225,6 +239,14 @@ class Manifest:
                 f"metric {metric.metric_id!r} 的来源字段 {metric.source_field!r} "
                 f"与 semantic {metric.semantic!r} 绑定的 "
                 f"{semantic.source_field!r} 不符"
+            )
+        if metric.ruler is None:
+            metric.ruler = semantic.ruler
+        elif metric.ruler != semantic.ruler:
+            raise EvidenceError(
+                f"metric {metric.metric_id!r} 声明 ruler {metric.ruler!r} "
+                f"与 semantic {metric.semantic!r} 绑定的 "
+                f"{semantic.ruler!r} 不符 —— 定义串描述的尺与取值来源的尺必须一致"
             )
         if metric.cohort not in COHORTS:
             raise EvidenceError(f"unknown cohort {metric.cohort!r}")
@@ -590,7 +612,7 @@ def _add_gate_left_tail(manifest: Manifest, root: Path,
         denom_id = f"gate_legacy.{gate}.tail_n"
         manifest.declare_denominator(Denominator(
             denom_id, int(row.tail_n), "legacy_migration",
-            f"{gate} 门被拦票中 fwd_2_oc 非空的观测数"))
+            f"{gate} 门被拦票中 {MAIN_RULER} 非空的观测数"))
         manifest.add(Metric(
             f"gate_legacy.{gate}.left_tail_protection_rate",
             "left_tail_protection_rate", float(row.tail_rate), None,
@@ -807,6 +829,15 @@ def validate(payload: dict) -> list[str]:
                 f"{mid}: 来源字段 {metric.get('source_field')!r} 与 semantic "
                 f"{metric['semantic']!r} 绑定的 {semantic.source_field!r} 不符 —— "
                 "改了标签没改来源 = 语义注入"
+            )
+        # Wave12-T8(A5):ruler 一致性 presence-gated —— T8 之前落盘的冻结快照(如
+        # docs/research/2026-08-01-wave10-gate0-evidence.json)完全没有这个键,缺失
+        # 不算违约(那是审计记录,不改写);只在**键存在且值不符**时才判定义串被篡改。
+        if "ruler" in metric and metric.get("ruler") != semantic.ruler:
+            problems.append(
+                f"{mid}: ruler {metric.get('ruler')!r} 与 semantic "
+                f"{metric['semantic']!r} 绑定的 {semantic.ruler!r} 不符 —— "
+                "定义串描述的尺与取值来源不一致"
             )
         if metric["cohort"] not in semantic.cohorts:
             problems.append(

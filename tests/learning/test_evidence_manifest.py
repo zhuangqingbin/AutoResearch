@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pandas as pd
 import pytest
 
+from autoresearch.common.ruler import MAIN_RULER
 from autoresearch.learning.evidence_manifest import (
     COHORTS,
     SEMANTICS,
@@ -340,3 +342,90 @@ def test_registry_inventory_reports_family_not_pointer_kind(tmp_path):
     assert record["family"] == "some_family"
     assert record["pointer_kind"] == "shadow_gate"
     assert record["family"] != record["pointer_kind"]
+
+
+# ────────────────────────── Wave12-T8:定义串插值主尺 + 每指标 ruler 字段 ──────────────────────────
+
+
+def test_semantics_definitions_no_longer_hardcode_fwd_2_oc():
+    """A5(受控语义表自身失控):定义串写死 fwd_2_oc、取值多数早已随 MAIN_RULER 走
+    (gate_ledger.tail_rate 已用 MAIN_RULER,COHORTS["t2_mature"] 描述的是"回填成熟"这件
+    事本身)。唯一合法保留是 market_fwd2_mean —— 它绑定 zero_buy_ledger.mkt_fwd2,T6 明确
+    把这一列钉死为"参考尺,不随主尺漂移"(fwd_2/fwd_5 降参考列保留,不改语义)——定义句故意
+    不写字面量 fwd_2_oc(grep 也过不了),而是用 ruler 字段显式钉死它,不能靠插值 MAIN_RULER
+    去描述一个永远不等于 MAIN_RULER 的取值源(那才是真正的"定义串与取值源不一致")。
+    """
+    for name, semantic in SEMANTICS.items():
+        assert "fwd_2_oc" not in semantic.definition, (
+            f"{name} 定义句仍裸写 fwd_2_oc 字面量")
+    assert "fwd_2_oc" not in COHORTS["t2_mature"]
+    assert MAIN_RULER in COHORTS["t2_mature"]
+    # gate_ledger.tail_rate 真的按 MAIN_RULER 计(gate_ledger.py 已用 MAIN_RULER),定义句必须带它
+    assert MAIN_RULER in SEMANTICS["left_tail_protection_rate"].definition
+    # market_fwd2_mean 是 T6 明确保留的冻结参考列——ruler 字段钉死为 fwd_2_oc,不随主尺漂移,
+    # 定义句也不该谎称它是 MAIN_RULER(此刻恰好是 gap_c1_o2,但概念上两者独立)
+    assert SEMANTICS["market_fwd2_mean"].ruler == "fwd_2_oc"
+    assert MAIN_RULER not in SEMANTICS["market_fwd2_mean"].definition
+
+
+def test_semantic_ruler_defaults_to_main_ruler():
+    """未显式覆盖的语义(绝大多数)ruler 默认追踪 MAIN_RULER——不用逐条改写。"""
+    assert SEMANTICS["scan_day_count"].ruler == MAIN_RULER
+    assert SEMANTICS["left_tail_protection_rate"].ruler == MAIN_RULER
+
+
+def test_metric_ruler_field_is_auto_filled_from_semantic():
+    """每指标含 ruler 字段(镜像 source_field 的自动补全 + 一致性守卫)。"""
+    manifest = Manifest()
+    manifest.add(_metric(metric_id="m", semantic="scan_day_count"))
+    assert manifest.metrics["m"]["ruler"] == MAIN_RULER
+
+    # 冻结参考指标(market_fwd2_mean):自动补全应为 fwd_2_oc,不是当前 MAIN_RULER
+    frozen_metric = Metric(
+        metric_id="mf", semantic="market_fwd2_mean", value=1, numerator=None,
+        denominator_id=None, cohort="t2_mature", as_of=None,
+        source_paths=[], source_hashes={},
+    )
+    manifest.add(frozen_metric)
+    assert manifest.metrics["mf"]["ruler"] == "fwd_2_oc"
+
+
+def test_metric_declaring_a_mismatched_ruler_is_rejected():
+    """写侧守卫:显式声明的 ruler 与 semantic 绑定的不符 → 当场抛错(镜像 source_field 同款)。"""
+    manifest = Manifest()
+    with pytest.raises(EvidenceError, match="ruler"):
+        manifest.add(_metric(semantic="scan_day_count", ruler="fwd_2_oc"))
+
+
+def test_validate_catches_ruler_inconsistent_with_semantic():
+    """注入「定义串(ruler)与取值源不一致」——A0 同款手法(仿既有 semantic 注入测试)。
+
+    读侧守卫必须 presence-gated:T8 之前落盘的冻结快照(如 docs/research/
+    2026-08-01-wave10-gate0-evidence.json)完全没有 ruler 键,不能因为"缺失"就被判违约,
+    否则会追溯性地判旧审计记录不合格(该文件不改写、validate() 必须继续放行它)。
+    """
+    manifest = Manifest()
+    manifest.add(_metric(metric_id="m", semantic="scan_day_count"))
+    payload = manifest.to_dict()
+    assert validate(payload) == []
+
+    # 缺失 ruler 键(模拟 T8 之前的旧快照)—— 不得被判违约
+    missing = json.loads(json.dumps(payload, ensure_ascii=False))
+    del missing["metrics"]["m"]["ruler"]
+    assert validate(missing) == []
+
+    # ruler 键存在但被篡改(谎称这条 scan_day_count 是旧尺算的)—— 必须被逮住
+    tampered = json.loads(json.dumps(payload, ensure_ascii=False))
+    tampered["metrics"]["m"]["ruler"] = "fwd_2_oc"
+    problems = validate(tampered)
+    assert problems and any("ruler" in p for p in problems)
+
+
+def test_frozen_gate0_snapshot_still_passes_validate_after_t8():
+    """回归锁:T8 不得让 docs/research/2026-08-01-wave10-gate0-evidence.json 这份历史审计
+    记录突然读不过 —— 与 test_wave10_gate0_freeze.py::test_frozen_snapshot_passes_its_own_validator
+    是同一断言,这里在 T8 自己的测试文件内再钉一遍(防止未来有人只跑 test_evidence_manifest.py
+    就以为够了)。"""
+    path = Path("docs/research/2026-08-01-wave10-gate0-evidence.json")
+    frozen = json.loads(path.read_text(encoding="utf-8"))
+    assert validate(frozen) == []
