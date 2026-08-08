@@ -8,7 +8,8 @@ import json
 
 import pandas as pd
 
-from autoresearch.learning.changelog_ledger import day_ics, render, roll
+from autoresearch.common.ruler import MAIN_RULER
+from autoresearch.learning.changelog_ledger import _day_ic, day_ics, render, roll
 
 
 def _attr_day(root, date, ic_pos: bool):
@@ -16,8 +17,11 @@ def _attr_day(root, date, ic_pos: bool):
     d.mkdir(parents=True)
     comp = list(range(20))
     fwd = [c * 0.001 for c in comp] if ic_pos else [-c * 0.001 for c in comp]
+    # Wave12-T7:_day_ic 已切主尺(MAIN_RULER),该 fixture 因此写 gap_c1_o2 列(不是
+    # 比旧主尺还旧一代的 fwd_1_oo)——列名字面量固定为当前 MAIN_RULER 的值,与生产代码的
+    # 动态 MAIN_RULER 引用是两回事(fixture 只需保证与"当下主尺"同名即可)。
     pd.DataFrame({"code": [f"{i:06d}" for i in comp], "composite": comp,
-                  "fwd_1_oo": fwd}).to_csv(d / "attribution.csv", index=False)
+                  MAIN_RULER: fwd}).to_csv(d / "attribution.csv", index=False)
 
 
 def _changelog(root, retro_date):
@@ -108,3 +112,35 @@ def test_heartbeat_ok_when_sha_changes(tmp_path):
 def test_heartbeat_empty_ledger(tmp_path):
     from autoresearch.learning.changelog_ledger import heartbeat
     assert "无 recalibrate 记录" in heartbeat(knowledge_dir=tmp_path)
+
+
+# ───────────────────── Wave12-T7:心跳 IC 切主尺(A4) ─────────────────────
+
+
+def test_day_ic_reads_main_ruler_column_not_fwd_1_oo():
+    """T7:_day_ic() 曾用 fwd_1_oo(比旧主尺 fwd_2_oc 还旧一代)评价重标定排序质量,而权重
+    已按 gap_c1_o2 校准——尺完全错配。改 MAIN_RULER 后:①只给 MAIN_RULER 列(无 fwd_1_oo)
+    仍应出 IC;②只给 fwd_1_oo(无 MAIN_RULER)应返回 None(旧列不再是判据来源)。"""
+    comp = list(range(20))
+    only_main_ruler = pd.DataFrame({
+        "code": [f"{i:06d}" for i in comp], "composite": comp,
+        MAIN_RULER: [c * 0.001 for c in comp],
+    })
+    assert "fwd_1_oo" not in only_main_ruler.columns
+    ic = _day_ic(only_main_ruler)
+    assert ic is not None and ic > 0.99   # 完全同序,rank correlation ≈ 1
+
+    only_legacy = pd.DataFrame({
+        "code": [f"{i:06d}" for i in comp], "composite": comp,
+        "fwd_1_oo": [c * 0.001 for c in comp],
+    })
+    assert _day_ic(only_legacy) is None    # 旧列不再被读
+
+
+def test_render_title_carries_main_ruler_name():
+    """心跳/IC 文案带尺名(会变的量断言,07-16 家训)——静态标题曾对哪把尺评的 IC 只字不提。"""
+    text = "\n".join(render(pd.DataFrame(columns=[
+        "id", "retro_date", "trial", "n_before", "n_after",
+        "ic_before", "ic_after", "delta", "thin",
+    ])))
+    assert MAIN_RULER in text

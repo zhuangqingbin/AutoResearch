@@ -4,7 +4,9 @@
 design: docs/specs/2026-07-02-scan-observability-design.md §3
 
 changelog.jsonl 记了每次权重重标定;本模块回答"标定之后 IC 真变好了吗":
-每条 recalibrate → 采纳日前后各 ≤k 个 retro 日的日度 composite rank-IC 均值对比。
+每条 recalibrate → 采纳日前后各 ≤k 个 retro 日的日度 composite rank-IC 均值对比
+(对主尺 `autoresearch.common.ruler.MAIN_RULER`;Wave12-T7 前硬编码 `fwd_1_oo`,
+比旧主尺 fwd_2_oc 还旧一代,而权重早已按 gap_c1_o2 校准——尺完全错配)。
 持续 delta≤0 = 校准在空转/过拟合,回头查 horizon/收缩参数。n<3 标 ⚠样本少。
 
   uv run --no-sync python -m autoresearch.learning.changelog_ledger  # → reports/learning/changelog_ledger.md
@@ -15,6 +17,8 @@ import json
 from pathlib import Path
 
 import pandas as pd
+
+from autoresearch.common.ruler import MAIN_RULER
 
 _COLS = ["id", "retro_date", "trial", "n_before", "n_after", "ic_before", "ic_after", "delta", "thin"]
 
@@ -34,11 +38,15 @@ def _read_jsonl(p: Path) -> list[dict]:
 
 
 def _day_ic(attr: pd.DataFrame) -> float | None:
-    """单日 composite vs fwd_1_oo 的 rank-IC(spearman);列缺/样本<10 → None。"""
-    if "composite" not in attr.columns or "fwd_1_oo" not in attr.columns:
+    """单日 composite vs 主尺(`MAIN_RULER`)的 rank-IC(spearman);列缺/样本<10 → None。
+
+    Wave12-T7(A4):此前硬编码 `fwd_1_oo` 评价"重标定有没有改善排序",而权重按
+    `MAIN_RULER`(gap_c1_o2)校准——尺完全错配,心跳看的是另一件事发生没发生。
+    """
+    if "composite" not in attr.columns or MAIN_RULER not in attr.columns:
         return None
     s = pd.to_numeric(attr["composite"], errors="coerce")
-    f = pd.to_numeric(attr["fwd_1_oo"], errors="coerce")
+    f = pd.to_numeric(attr[MAIN_RULER], errors="coerce")
     ok = s.notna() & f.notna()
     if ok.sum() < 10:
         return None
@@ -108,7 +116,8 @@ def heartbeat(knowledge_dir: Path | str | None = None, k: int = 3) -> str:
 
 
 def render(df: pd.DataFrame) -> list[str]:
-    out = ["# 重标定效果 ledger(采纳日前后日度 composite IC 对比)", ""]
+    # Wave12-T7:标题带尺名(会变的量断言,07-16 家训)——此前死字符串不说这是对哪把尺评的 IC。
+    out = [f"# 重标定效果 ledger(采纳日前后日度 composite vs {MAIN_RULER} 的 rank-IC 对比)", ""]
     if df is None or not len(df):
         return out + ["_无 recalibrate 记录或无已归因日_"]
 
