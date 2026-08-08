@@ -31,7 +31,8 @@
 (三门操作化:两半同号 = `IC_h1 × IC_h2 > 0`;"|ICIR| 排进前半" = `|ICIR| ≥` 全体因子 `|ICIR|` 中位;
 decile `spread_t ≥ 2`,取该尺自己的十分位表。)
 
-七个全是**反转/低位/筹码套牢**族,且在旧尺下全部接近 0:
+七个全是**反转/低位/筹码套牢**族,且在旧尺下全部接近 0
+(下表 IC/ICIR 均为**取向后**读数,即已乘 `sign` 列;要跟生产组内 blend 比方向请先按 §3 的方法学还原):
 
 | 因子 | sign | IC_gap | ICIR_gap | t | hit | IC_h1/h2(gap) | decile LS(gap) | ICIR_oc | decile LS(oc) |
 |---|---:|---:|---:|---:|---:|---|---:|---:|---:|
@@ -72,24 +73,47 @@ decile `spread_t ≥ 2`,取该尺自己的十分位表。)
 
 ## 3. 对 `_GROUPS` 的连带影响(**待 B 类另案**,本文不改)
 
-`autoresearch/common/scoring.py:_factor_groups` 的 10 组里,有三组在 gap 尺下**组内成员方向打架**——
-一个 blend 把 top-5 的信号和 bottom-10 的信号各按一半权重掺在一起,结果是互相抵消:
+> ### ⚠️ 方法学:比较组内方向前**必须先还原 sign**(本节曾在此翻车,2026-08-08 review 修正)
+>
+> 上文各表的 IC/ICIR 都是**取向后**读数 —— `factor_lab` 逐日算的是 `_spearman(col × sign, fwd)`,
+> `sign` 是 `CANDIDATES` 里的**先验方向**。但生产的 `scoring._factor_groups` 组内 blend 用的是
+> **原始朝向**(`_pct(col)` 默认 `ascending=True`,**不套 sign**;唯一例外是 `value` 走
+> `_pct_within(..., ascending=False)`)。
+>
+> 所以判断"组内两条腿方不方向一致",必须先还原到生产真正用的朝向:
+> **`raw = ICIR_signed × sign`**(秩取反 ⇒ 相关系数精确取反)。这条恒等式已在 132 日真面板上
+> 逐因子实证(6/6 精确吻合,不是推导):见本轮 fix 报告的 I-1 节。
+>
+> **初版本节漏了这一步**,把 `tech`(rsi6 sign=+1、rsi12 sign=−1)误判成"组内符号相反";
+> 还原后两条腿都是 −0.61 附近,**同号且量级几乎相同 = 互相加强**。下表已按 group 朝向重列。
 
-| 组 | 组成 | gap 尺下各成员 ICIR | 问题 |
-|---|---|---|---|
-| `chip` | `chip_concentration` 0.5 + `price_to_cost` 0.5 | **−0.532 / +0.611** | 组内符号相反,blend 后近乎相消 |
-| `tech` | `rsi6` 0.5 + `rsi12` 0.5 | **−0.614 / +0.605** | 同上,而且是两条 RSI 只差窗口长度 |
-| `fund_main` | `main_net_ratio`(缺则 `main_inflow_yi`) | **−0.500 / +0.139** | 主列与回落列在新尺下方向相反 → 该组含义随"哪列在场"漂移 |
+`autoresearch/common/scoring.py:_factor_groups` 的 10 组里,有**两组**在 gap 尺下组内成员方向打架
+—— blend 把一正一负掺在一起,互相抵消:
 
-方向一致、无组内冲突的:`momentum`(pct_60d −0.420 / pct_ytd −0.319,**两成员同为负**)、
-`volprice`(cmf_20 −0.425 / obv_mom_20 −0.552)、`value`(pe +0.290)、`north`(hk_ratio +0.085,弱)、
-`fund_retail`(retail_net_yi −0.226)、`rz`(rz_buy_intensity −0.008,≈0 且是唯一两半反号的因子)。
+| 组 | 组成 | 成员 sign | **group 朝向 ICIR**(生产口径) | 问题 |
+|---|---|---|---|---|
+| `chip` | `chip_concentration` 0.5 + `price_to_cost` 0.5 | −1 / −1 | **+0.532 / −0.611** | 组内符号相反,blend 后近乎相消 |
+| `fund_main` | `main_net_ratio`(缺则 `main_inflow_yi`) | +1 / +1 | **−0.500 / +0.139** | 主列与回落列方向相反 → 该组含义随"哪列在场"漂移 |
+
+方向一致、无组内冲突(同为 group 朝向):
+
+| 组 | 成员(group 朝向 ICIR) | 备注 |
+|---|---|---|
+| `tech` | rsi6 **−0.614** / rsi12 **−0.605** | ✅ 同号且量级几乎相同 —— blend 是**互相加强**,不是相消(review 修正) |
+| `momentum` | pct_60d −0.420 / pct_ytd −0.319 | 两成员同为负 |
+| `volprice` | cmf_20 −0.425 / obv_mom_20 −0.552 | 同上 |
+| `value` | pe **+0.290** | 单成员;`_pct_within(ascending=False)` 恰与 sign=−1 同向,故与取向后读数同值 |
+| `north` | hk_ratio +0.085 | 单成员,弱 |
+| `fund_retail` | retail_net_yi **+0.226** | 单成员;**注意 sign=−1**,取向后读数是 −0.226(初版本节误写了取向后值) |
+| `rz` | rz_buy_intensity −0.008 | ≈0,且是唯一两半反号的因子 |
+
 `growth` 在 factor_lab 帧里恒 NaN(无季度基本面),本表无读数。
 
 ## 4. 判读须知(防误读)
 
 1. **负 IC ≠ 该因子该删**。CANDIDATES 里的 `sign` 只是先验取向;`calibrate` 用的是 **signed IC**,
    负号会变成负权重。本表只回答"这条信息在新尺下有没有分辨力、稳不稳",不回答"该给多少权重"。
+   **且注意**:本文各表默认是取向后读数,与生产 `_factor_groups` 的原始朝向差一个 `sign` —— 见 §3 顶部方法学框。
 2. **本表是全市场、不分 regime 的**。生产权重走行业条件化 + 两级收缩(`_shrink_weights`),
    还有 `ic_by_regime` 的分桶裁决;三者口径不同,不能互相替代。已知先例:07-27 `ic_by_regime`
    推翻过"momentum 被 regime 掩埋"的立案前提。
@@ -101,10 +125,12 @@ decile `spread_t ≥ 2`,取该尺自己的十分位表。)
 
 ## 5. 建议(不执行,交调度)
 
-- **优先级 1**:`chip` / `tech` / `fund_main` 三组的组内方向冲突 → 走 experiment_registry 立影子实验
+- **优先级 1**:`chip` / `fund_main` **两组**的组内方向冲突 → 走 experiment_registry 立影子实验
   (拆组 or 换成员),**不要**在没有注册表记录的情况下直接改 `_GROUPS`。
+  (`tech` 已排除:还原 sign 后两条腿同号,不属于冲突组。)
 - **优先级 2**:`price_to_cost` 与 `cost_premium` 是同一条信息的两种写法,择一。
 - **优先级 3**:反转七因子在 gap 尺下是全表最强的一族,但生产 composite 里目前只有 `chip`(半条)
-  和 `tech`(半条)沾边 —— 是否新增"反转/低位"组是 B 类,需先有影子期账本。
+  和 `tech`(整组,方向为负 = 低 RSI 看多,已隐含反转)沾边 —— 是否新增"反转/低位"组是 B 类,
+  需先有影子期账本。
 - **不建议**:据本表调 `momentum` 权重方向。它在两把尺下都是负的,不是换尺带来的新信息,
   且与「板块轮动盲区」用户裁定(上涨板块侧未被否)相邻,应单独立案。

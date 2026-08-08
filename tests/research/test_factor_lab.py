@@ -541,7 +541,12 @@ def test_eval_promotion_family_on_main_ruler():
     for stat in ("t", "hit", "IC_h1", "IC_h2", "n_days"):
         assert f"{stat}_{main}" in tbl.columns, f"{stat} 未对主尺 {main} 产出"
     assert f"ICIR_{main}" in tbl.columns
-    assert (tbl["ruler"] == main).all(), "表未自报主尺(受控语义表必须自述取值来源)"
+    # 自述列只在主尺真有读数时才填(M-2):合成面板里只有 pct_60d/pe 两个因子有列,
+    # 其余 CANDIDATES 整行无读数 —— 它们不得自称"由主尺裁决"。
+    has_main = tbl[f"ICIR_{main}"].notna()
+    assert has_main.sum() == 2, "合成面板应只有 2 个因子有主尺读数"
+    assert (tbl.loc[has_main, "ruler"] == main).all(), "有读数的行未自报主尺"
+    assert tbl.loc[~has_main, "ruler"].isna().all(), "主位全空的行不得自称由主尺裁决"
 
     row = tbl.loc["pct_60d"]
     # 主位无后缀列 = 主尺读数。切尺前它们是 fwd_2_oc 的读数(−1.0 / 0.0)→ 此处必红。
@@ -652,9 +657,10 @@ def test_evaluate_writes_main_ruler_tables(tmp_path, monkeypatch, capsys):
 
     fl.evaluate(30.0, buyable_only=True)
 
-    ic = pd.read_csv(tmp_path / "ic_table.csv")
-    assert (ic["ruler"] == ruler.MAIN_RULER).all()
-    assert ic["factor"].iloc[0] == "pct_60d", "写盘的 ic_table 未按主尺 ICIR 降序"
+    ic = pd.read_csv(tmp_path / "ic_table.csv").set_index("factor")
+    assert ic.loc["pct_60d", "ruler"] == ruler.MAIN_RULER
+    assert pd.isna(ic.loc["turnover", "ruler"]), "无主尺读数的行不得自称由主尺裁决"
+    assert ic.index[0] == "pct_60d", "写盘的 ic_table 未按主尺 ICIR 降序"
     assert "IC_h1_fwd_2_oc" in ic.columns, "旧尺判据族必须保留在产物里(降参考不删列)"
 
     dec = pd.read_csv(tmp_path / "decile_table.csv")
@@ -665,9 +671,18 @@ def test_evaluate_writes_main_ruler_tables(tmp_path, monkeypatch, capsys):
 
 
 def test_render_ic_by_regime_title_carries_ruler(tmp_path, monkeypatch):
-    """`render_ic_by_regime` 标题不得再写死 fwd_2_oc;`run_ic_by_regime` 把真用的 label_col 传下去。"""
+    """标题按**实参**判定主尺/参考尺,且 `run_ic_by_regime` 把真用的 label_col 传下去。
+
+    断言一律由 `ruler.MAIN_RULER` 现算(M-6):写死 `"fwd_2_oc" not in head` 那种形式在回滚杆
+    (MAIN_RULER 改回 fwd_2_oc)下会自相矛盾必红 —— 测试不能自己造一个永远修不好的失败。
+    """
     head = fl.render_ic_by_regime(pd.DataFrame()).splitlines()[0]
-    assert ruler.MAIN_RULER in head and "fwd_2_oc" not in head
+    assert f"主尺 {ruler.MAIN_RULER}" in head
+
+    # 故意挑一把**不是**主尺的参考 horizon:标题必须标「参考尺」,不得冒充主尺
+    ref = "fwd_5_oc" if ruler.MAIN_RULER != "fwd_5_oc" else "fwd_10_oc"
+    ref_head = fl.render_ic_by_regime(pd.DataFrame(), ruler_name=ref).splitlines()[0]
+    assert f"参考尺 {ref}" in ref_head and "主尺" not in ref_head
 
     panel = pd.concat([_day_rows(f"2026030{i + 1}", "steady", 1, -1) for i in range(6)],
                       ignore_index=True)
@@ -676,7 +691,7 @@ def test_render_ic_by_regime_title_carries_ruler(tmp_path, monkeypatch):
     monkeypatch.setattr(fl, "_build_calib_panel",
                         lambda frames, label_col: (panel.drop(columns=["regime"]), regime_by_date))
 
-    fl.run_ic_by_regime(label_col="fwd_5_oc", out_csv=str(tmp_path / "ic.csv"),
+    fl.run_ic_by_regime(label_col=ref, out_csv=str(tmp_path / "ic.csv"),
                         out_md=str(tmp_path / "ic.md"))
     md_head = (tmp_path / "ic.md").read_text(encoding="utf-8").splitlines()[0]
-    assert "fwd_5_oc" in md_head, "报表标题没跟着真用的 label_col 走(死字符串又长回来了)"
+    assert f"参考尺 {ref}" in md_head, "报表标题没跟着真用的 label_col 走(死字符串又长回来了)"

@@ -645,12 +645,22 @@ def ic_promotion_table(frames: list[pd.DataFrame], buyable_only: bool = True) ->
     `ICIR_fwd_2_oc` —— 08-05 换尺后**因子晋升 100% 仍由旧尺裁决**(设计稿 A2)。
     入场资格逐尺过 `ruler.entry_tradable(ruler_name=fwdcol)`:IC 表对多个 horizon 逐列算,
     `gap_c1_o2` 的入场腿是 D+1 收盘,其余 horizon 是 D+1 开盘,不能共用一只旗(C1 家训)。
+
+    **`ruler` 列只在主尺真有读数时才填**(review 修复 M-2):面板缺主尺列 / 该因子样本不足时,
+    无后缀主位列整体缺席、排序也没真发生,此时自述列留空(`None`)——**不许一行主位全空的记录
+    自称"由主尺裁决"**,那是"降级不留痕"的同族反模式(data-contracts-fail-fast 家训)。
+
+    **IC/ICIR 是「取向后」读数**:逐日 IC 算的是 `_spearman(col × sign, fwd)`,`sign` 来自
+    `CANDIDATES` 的先验方向。而生产 `scoring._factor_groups` 的组内 blend 用的是**原始朝向**
+    (`_pct(col)` 默认 ascending=True,不套 `sign`)。拿本表读数去判"组内成员方不方向一致"时
+    **必须先还原**:`raw = ICIR × sign`(秩取反 → 相关系数精确取反,已在 132 日真面板上实证)。
+    2026-08-08 review 就是漏了这步,把 `tech` 组误判成"组内符号相反"。
     """
     judged = judgment_rulers()
     main = ruler.MAIN_RULER
     rows = []
     for col, sign in CANDIDATES:
-        rec = {"factor": col, "sign": sign, "ruler": main}
+        rec = {"factor": col, "sign": sign, "ruler": None}
         for fwdcol in FWDS:
             ics = []
             for fr in frames:
@@ -670,6 +680,7 @@ def ic_promotion_table(frames: list[pd.DataFrame], buyable_only: bool = True) ->
                 rec.update({f"{k}_{fwdcol}": v for k, v in stats.items()})
                 if fwdcol == main:
                     rec.update(stats)               # 主位(无后缀)= 主尺读数
+                    rec["ruler"] = main             # 真有主尺读数才自述,见下
         rows.append(rec)
     tbl = pd.DataFrame(rows)
     sortcol = promotion_sortcol()
@@ -965,9 +976,13 @@ def render_ic_by_regime(df: pd.DataFrame, flat_ic: dict | None = None,
     `ruler_name` = 这批 IC 到底对哪把尺算的(缺省 `ruler.MAIN_RULER`);调用方**必须**把真正
     喂给面板的 `label_col` 传进来 —— 标题此前是死字符串「对 fwd_2_oc 超短主尺」,08-05 换尺后
     报表标着旧尺、数是新尺算的(受控语义表自身失控,设计稿 A2/A5 同族)。
+
+    「主尺/参考尺」按实参判定:`run_ic_by_regime(label_col="fwd_5_oc")` 这类**故意跑参考
+    horizon** 的调用,标题不得把它冒充成主尺(review 修复 M-1)。
     """
     rname = ruler_name or ruler.MAIN_RULER
-    out = [f"# 分 regime 因子 IC 裁决表(对主尺 {rname})", "",
+    kind = "主尺" if rname == ruler.MAIN_RULER else "参考尺"
+    out = [f"# 分 regime 因子 IC 裁决表(对{kind} {rname})", "",
            f"裁决口径:桶内成型日 ≥{_IC_MIN_DATES} 且 **|t| ≥ {_IC_T_GATE}** → 「可提案」"
            "(仅取得**呈报资格**,改生产权重仍须用户点头);否则「不显著」/「样本不足」。", "",
            "> 为什么分桶:全期 IC 为负有两种成因 —— 因子真没用 / risk_off 日把 trend 日的正信号"
