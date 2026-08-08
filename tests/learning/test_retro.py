@@ -424,6 +424,35 @@ def test_unsellable_section_empty_when_none_flagged():
     assert retro.unsellable_section(attr) == []
 
 
+def test_write_retro_input_end_to_end_includes_unsellable_warning(tmp_path):
+    """I2 修复(final-review 2026-08-08):4 个既有 `unsellable_section` 测试全部直调纯函数,
+    从未经过 `write_retro_input` 这条真实接线(`lines += unsellable_section(attr)`)——若把
+    那一行整行删掉,生产 `retro_input.md` 里永远看不到旗,但那 4 个测试仍然全绿(FN-1 家族:
+    生产者没接线 / 接线点本身无测试锁)。本测试端到端跑 `write_retro_input`,直接读磁盘上
+    真实产出的 `retro_input.md`,断言旗真的到达了这份文件。"""
+    sdir = tmp_path / "context" / "scan" / "2026-07-12"
+    sdir.mkdir(parents=True)
+    n = 20
+    attr = pd.DataFrame({
+        "code": [f"{i:06d}" for i in range(n)],
+        "name": [f"票{i}" for i in range(n)],
+        "fwd_1_oo": [0.0] * n, "gap_c1_o2": [0.0] * n, "fwd_5_oc": [np.nan] * n,
+        "buyable": [True] * n, "winner": [False] * n, "bucket": [""] * n,
+        "recalled_flag": [False] * n, "in_l1": [True] * n, "bought": [False] * n,
+        "tradable": [True] * n, "rating": ["Hold"] * n,
+        "unsellable_o2": [False] * n,
+    })
+    attr.loc[3, "bought"] = True
+    attr.loc[3, "rating"] = "Overweight"
+    attr.loc[3, "unsellable_o2"] = True
+    attr.loc[3, "gap_c1_o2"] = -0.10
+
+    p = retro.write_retro_input("2026-07-12", attr, scan_root=tmp_path / "context" / "scan")
+    text = p.read_text(encoding="utf-8")
+    assert "⚠️卖不出预警" in text
+    assert "000003" in text
+
+
 def test_cli_pending_prints_two_sections(monkeypatch, capsys):
     """CLI `pending` 分两段打印,且标签与内容严格对应——本测试按**段落 scope** 断言
     (先按行定位到「归因欠账」/「诊断欠账」各自那一行,再只在该行内查日期),不是拿

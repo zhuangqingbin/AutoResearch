@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 
 from autoresearch.learning.paper_nav import (
+    load_prices,
     market_nav,
     market_nav_from_returns,
     render,
@@ -220,6 +221,31 @@ def test_render_gap_mode_title_notes_overnight_ruling():
     assert "隔夜尺" in out[0] and "2026-08-05" in out[0]
 
 
+# ───────────────────────── M1/M2 修复(final-review 2026-08-08,顺手清理) ─────────────────────────
+
+
+def test_render_gap_footnotes_are_separate_paragraphs_and_not_contradictory():
+    """M1:两条脚注(通用免责声明 + gap 顺延口径说明)必须分段(中间隔空行,不会被 markdown
+    渲染成同一段),且 gap 专属说明不能与紧邻的"涨跌停/停牌可成交性未模拟"字面矛盾——
+    gap 模式下 T+2 卖腿的一字跌停开**确实**被建模了(顺延结算),不是"未模拟"。"""
+    mkt = market_nav_from_returns([0.0, 0.0, 0.0], _DAYS)
+    flat = pd.Series([1.0, 1.0, 1.0], index=_DAYS)
+    out = render(_DAYS, flat, flat, mkt, n_real=1, n_shadow=3, skipped=[], mode="gap")
+    i = next(idx for idx, ln in enumerate(out) if "涨跌停/停牌可成交性未模拟" in ln)
+    j = next(idx for idx, ln in enumerate(out) if "顺延到下一个可卖开盘价" in ln)
+    assert j > i
+    assert out[j - 1] == "", "两条脚注之间必须有空行分段,否则会被渲染成同一段"
+
+
+def test_simulate_docstring_uses_neutral_wording_not_unproven_better_looking_claim():
+    """M2:`simulate()` docstring 里"强制卖飞会让纸面账本比真实情况更好看"是一个未经证明的
+    方向性因果断言,且被自己的测试反证
+    (test_simulate_gap_mode_unsellable_open_defers_exit_to_next_sellable_open 的读数是
+    强制卖飞 0.90 vs 顺延 0.95——顺延反而更好看,不是更差)。改成中性表述(不主张哪个更好看,
+    只说明不再假装能在成交不了的价位成交)。"""
+    assert "比真实情况更好看" not in simulate.__doc__
+
+
 def test_risk_block_default_mode_label_is_unchanged():
     idx = ["d1", "d2", "d3"]
     real = pd.Series([1.0, 1.03, 1.05], index=idx)
@@ -281,6 +307,47 @@ def test_simulate_oc_mode_unaffected_by_unsellable_open_on_same_fixture():
     # oc 模式:07-02 开盘(9.0)建仓,hold=1 → 07-03 开盘(9.0)平仓,不顺延。
     assert abs(nav.iloc[-1] - 1.0) < 1e-9              # 9.0/9.0 打平
     assert skipped == []
+
+
+# ───────────────────────── I1 修复(final-review 2026-08-08):load_prices 真实取数腿零覆盖 ─────────────────────────
+#
+# 三个新 `simulate` 测试全用手写 dict 字面量(`_UNSELLABLE_PRICES`),`load_prices()` 全仓零
+# 测试调用(唯一调用点是 `main()`,同样无测试跑它)。若把 `"low"` 从 `columns=[...]` 里删掉
+# (或写错列名),`load_prices` 退回二元组、`simulate` 的 `low = v[2] if len(v) > 2 else None`
+# 恒 None、`_unsellable_open` 恒 False——消费点②在生产里彻底死掉,而 26 个既有测试全绿看不
+# 出来。本测试端到端写一份真实 parquet 分区,断言 `load_prices` 真的把 `low` 读进了返回值。
+
+
+def test_load_prices_returns_low_as_third_element(tmp_path):
+    df = pd.DataFrame({"ts_code": ["600002.SH"], "open": [9.0], "close": [9.0], "low": [8.8]})
+    df.to_parquet(tmp_path / "20260703.parquet")
+    prices = load_prices({"600002"}, ["20260703"], lake=tmp_path)
+    assert prices[("20260703", "600002")] == pytest.approx((9.0, 9.0, 8.8))
+
+
+def test_load_prices_missing_low_column_degrades_to_none_not_crash(tmp_path):
+    """窄分区(缺 low 列)读取失败 → `except → continue` 整日静默跳过(M5 记账的既有行为,
+    这里只锁"不崩溃",不改动它)。"""
+    df = pd.DataFrame({"ts_code": ["600002.SH"], "open": [9.0], "close": [9.0]})  # 无 low 列
+    df.to_parquet(tmp_path / "20260703.parquet")
+    prices = load_prices({"600002"}, ["20260703"], lake=tmp_path)
+    assert prices == {}
+
+
+def test_simulate_end_to_end_with_load_prices_output_defers_on_unsellable_open(tmp_path):
+    """比手写字典更进一步:让 `load_prices()` 真的产出 `simulate()` 的输入,证明这条完整
+    的生产路径(parquet → load_prices → simulate)真的会触发顺延,不是只有手写 fixture 才行。"""
+    pd.DataFrame({"ts_code": ["600002.SH"], "open": [9.0], "close": [10.0], "low": [8.8]}
+                 ).to_parquet(tmp_path / "20260702.parquet")
+    pd.DataFrame({"ts_code": ["600002.SH"], "open": [9.0], "close": [9.0], "low": [9.0]}
+                 ).to_parquet(tmp_path / "20260703.parquet")     # 一字跌停开
+    pd.DataFrame({"ts_code": ["600002.SH"], "open": [9.5], "close": [9.6], "low": [9.0]}
+                 ).to_parquet(tmp_path / "20260704.parquet")     # 可卖
+    days = ["20260701", "20260702", "20260703", "20260704"]
+    prices = load_prices({"600002"}, days, lake=tmp_path)
+    signals = [{"date": "2026-07-01", "code": "600002", "weight": 1.0}]
+    nav, _ = simulate(signals, prices, days, mode="gap")
+    assert abs(nav.iloc[-1] - 0.95) < 1e-9      # 与手写 fixture 版本(test_simulate_gap_mode_...)同一读数
 
 
 def test_sized_nav_diverges_from_equal_weight_with_real_sizer(tmp_path):
