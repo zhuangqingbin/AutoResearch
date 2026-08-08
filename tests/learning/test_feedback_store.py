@@ -78,3 +78,67 @@ def test_render_calibration_block_hit_includes_ruler_tag(_tmp_know):
                                  day="2026-06-20")
     blk = feedback_store.render_calibration_block([("industry", "电子")])
     assert f"〔尺:{feedback_store.MAIN_RULER}〕" in blk
+
+
+# ───────────────────────── C1 修复(final-review 2026-08-08):纯标注不位移 ─────────────────────────
+#
+# `upsert_lesson()` 的强化路径专为"有新证据被当前尺吸收"设计——每次调用必定
+# `ruler=MAIN_RULER` + `confidence+0.05`。Wave12-T10 Step3 误用它给 4 条**内容仍是旧尺
+# 读数**的经验打「gap 尺待重验」注解,结果:①`ruler` 被错置成 gap_c1_o2(读者以为证据已被
+# 新尺复核过,实际一个字都没变);②注解追加在 evidence 末尾,被 `_lesson_bullet` 的
+# `evidence[:2]` 截断吃掉,注入 prompt 的产物里一个字都不出现;③confidence 无端上浮。三者
+# 叠加,产物比不打注解更误导——净回归。`mark_ruler_pending_reverify()` 是专用于这种"纯标注,
+# 不重新验证"场景的写入路径:只设 `ruler`(调用方给真值,不做任何推断)+ 一条无条件渲染、
+# 不受 evidence 截断影响的 `ruler_reverify_note`,其余字段(confidence/reinforce_count/
+# last_reinforced/rule/evidence)逐字节不动。
+
+
+def _seed_lesson(slug: str, *, confidence: float, evidence: list[str], day: str) -> dict:
+    """构造一条『多条 evidence + 早于换尺日』的经验(镜像 lessons.jsonl 真实存量条目形状)。"""
+    return feedback_store.upsert_lesson(slug, ("global", "*"), "示例旧尺规则", evidence,
+                                        confidence=confidence, day=day)
+
+
+def test_mark_ruler_pending_reverify_sets_ruler_without_side_effects(_tmp_know):
+    """只改 ruler + 注解字段;confidence/reinforce_count/last_reinforced/rule/evidence 逐字节不动。"""
+    before = _seed_lesson("probe4", confidence=0.69, evidence=["e1", "e2", "e3"], day="2026-07-08")
+    rec = feedback_store.mark_ruler_pending_reverify(
+        "probe4", "fwd_2_oc", "本条 evidence 全部产自 fwd_2_oc 旧尺,待 gap 尺复算")
+    assert rec["ruler"] == "fwd_2_oc"
+    assert rec["ruler_reverify_note"] == "本条 evidence 全部产自 fwd_2_oc 旧尺,待 gap 尺复算"
+    assert rec["confidence"] == before["confidence"] == 0.69      # 未上浮
+    assert rec["reinforce_count"] == before["reinforce_count"]
+    assert rec["last_reinforced"] == before["last_reinforced"] == "2026-07-08"
+    assert rec["rule"] == before["rule"]
+    assert rec["evidence"] == before["evidence"]                 # 未追加新条目
+
+
+def test_mark_ruler_pending_reverify_missing_lesson_returns_none(_tmp_know):
+    """target 不存在 → None,不新建、不报错(待重验是对已有经验的操作,不是写新经验)。"""
+    assert feedback_store.mark_ruler_pending_reverify("nope", "fwd_2_oc", "note") is None
+
+
+def test_lesson_bullet_renders_reverify_note_regardless_of_evidence_truncation():
+    """核心断言:注解必须在 `_lesson_bullet` 里无条件出现,不能靠"恰好排进 evidence 前两条"。"""
+    lsn = {"scope": {"kind": "global", "value": "*"}, "rule": "示例旧尺规则",
+           "evidence": ["e1", "e2", "e3", "e4", "e5"],  # 5 条,注解不在其中、也不在前两条
+           "confidence": 0.69, "ruler": "fwd_2_oc",
+           "ruler_reverify_note": "本条 evidence 全部产自 fwd_2_oc 旧尺,待 gap 尺复算"}
+    bullet = feedback_store._lesson_bullet(lsn)
+    assert "本条 evidence 全部产自 fwd_2_oc 旧尺,待 gap 尺复算" in bullet
+    assert "〔尺:fwd_2_oc〕" in bullet
+
+
+def test_lesson_bullet_no_reverify_field_unchanged_from_before_c1():
+    """parity:无 `ruler_reverify_note` 字段(绝大多数经验)→ 输出与 C1 修复前逐字一致。"""
+    lsn = {"scope": {"kind": "global", "value": "*"}, "rule": "示例规则", "evidence": ["e1"],
+           "confidence": 0.6, "ruler": "fwd_2_oc"}
+    assert "待重验" not in feedback_store._lesson_bullet(lsn)
+
+
+def test_render_calibration_block_surfaces_reverify_note_end_to_end(_tmp_know):
+    """端到端:mark_ruler_pending_reverify 打的注解真的能到达喂给 L3/L4 的校准块产物。"""
+    _seed_lesson("probe5", confidence=0.6, evidence=["e1", "e2", "e3"], day="2026-06-20")
+    feedback_store.mark_ruler_pending_reverify("probe5", "fwd_2_oc", "gap 尺待重验标记探针")
+    blk = feedback_store.render_calibration_block([("global", "*")])
+    assert "gap 尺待重验标记探针" in blk

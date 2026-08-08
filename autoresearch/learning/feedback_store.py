@@ -149,6 +149,14 @@ def upsert_lesson(slug: str, scope, rule: str, evidence: list[str],
     Wave12-T10:每次新建/强化都打 `ruler`(写入那一刻的 `MAIN_RULER` 真值)——镜像
     `retro.attribute_frame`/`t1_review.append_ledger` 同款 tag,供 `lesson_ruler()`/
     `_lesson_bullet()` 渲染〔尺:…〕标;历史行(本字段上线前写的)不回填,读侧按写入日期兜底。
+
+    **C1 家训(final-review 2026-08-08)**:`ruler` 字段的语义是"这条经验的实质内容
+    (rule+evidence)活在哪把尺",本函数每次调用都把它设成 `MAIN_RULER`——这对"有新证据被
+    当前尺吸收"（新建/真正补充证据的强化）是对的,但**不要**用本函数给"内容仍是旧尺读数、
+    只是想留个提醒"的经验打注解:会把 `ruler` 错置成当前尺(读者以为证据已被复核过,实际
+    没变),且 confidence 会无端 +0.05。这种"纯标注,不重新验证"场景改用
+    `mark_ruler_pending_reverify()`(不动 confidence/reinforce_count/rule/evidence,只设
+    `ruler` 真值 + 一条无条件渲染的待重验注解)。
     """
     day = day or _today()
     lid = slug if slug.startswith("ls_") else f"ls_{slug}"
@@ -183,6 +191,40 @@ def upsert_lesson(slug: str, scope, rule: str, evidence: list[str],
         if regimes is not None:               # 同理:None 保留原 regimes
             rec["regimes"] = list(regimes)
         recs[idx] = rec
+    _write_jsonl(_LESSONS, recs)
+    return rec
+
+
+def mark_ruler_pending_reverify(slug: str, ruler: str, note: str, day: str | None = None) -> dict | None:
+    """给经验打「待重验」注解——纯标注,不重新验证(C1 修复,final-review 2026-08-08)。
+
+    动机:`upsert_lesson()` 的强化路径专为"有新证据被当前尺吸收"设计,每次调用必定
+    `ruler=MAIN_RULER` + `confidence+0.05`。用它给"内容仍是旧尺读数、只是想留个提醒"的
+    经验打注解,会把 `ruler` 错置成当前尺(读者会误以为整条经验的证据已经在新尺下复核
+    过),且注解若追加进 `evidence` 列表会被 `_lesson_bullet` 的 `evidence[:2]` 截断吃掉、
+    confidence 却无端上浮——三个副作用叠加,结果比不打注解更误导(Wave12-T10 Step3 的
+    真实事故)。
+
+    本函数只做两件事,其余字段(confidence/reinforce_count/last_reinforced/rule/
+    evidence)逐字节不动:
+    ① `rec["ruler"] = ruler` —— 调用方给"这条经验的实质内容活在哪把尺"的真值,不是
+       `MAIN_RULER` 的自动镜像(旧尺内容就传 `"fwd_2_oc"`,不要图省事传当前 `MAIN_RULER`)。
+    ② `rec["ruler_reverify_note"] = note` —— 由 `_lesson_bullet` **无条件**渲染
+       (不受 `evidence[:2]` 截断影响,保证真的能到达喂给 L3/L4 的 prompt 产物)。
+
+    target 不存在 → `None`,不新建、不报错(待重验是对已有经验的操作,不是写新经验)。
+    """
+    day = day or _today()
+    lid = slug if slug.startswith("ls_") else f"ls_{slug}"
+    recs = _read_jsonl(_LESSONS)
+    idx = next((i for i, r in enumerate(recs) if r["id"] == lid), None)
+    if idx is None:
+        return None
+    rec = recs[idx]
+    rec["ruler"] = ruler
+    rec["ruler_reverify_note"] = note
+    rec["ruler_reverify_marked"] = day
+    recs[idx] = rec
     _write_jsonl(_LESSONS, recs)
     return rec
 
@@ -725,7 +767,9 @@ def _lesson_bullet(lsn: dict) -> str:
         g = lsn["guard"]
         guard = f" 〖硬门 {g.get('field')}{g.get('op')}{g.get('value')}〗"
     ruler_tag = f" 〔尺:{lesson_ruler(lsn)}〕"
-    return f"- {tag}{lsn['rule']}{guard}{ruler_tag}  _(conf {lsn.get('confidence', 0):.2f}; {ev})_"
+    # C1 修复:待重验注解无条件渲染,不受 evidence[:2] 截断影响(mark_ruler_pending_reverify 写入)。
+    reverify = f" ⚠️待重验:{lsn['ruler_reverify_note']}" if lsn.get("ruler_reverify_note") else ""
+    return f"- {tag}{lsn['rule']}{guard}{ruler_tag}{reverify}  _(conf {lsn.get('confidence', 0):.2f}; {ev})_"
 
 
 def _feedback_bullet(fb: dict) -> str:
