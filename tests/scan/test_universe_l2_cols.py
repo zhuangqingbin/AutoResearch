@@ -37,8 +37,7 @@ def run_universe(monkeypatch, tmp_path, *, l2_n=20, recall_n=60, n_uni=300, seed
 
     返回 outdir(含 L2_gbdt_top200.csv 等产物)。
     """
-    from autoresearch.scan import events as ev_mod
-    from autoresearch.scan import universe as U
+    from autoresearch.scan import events as ev_mod, universe as U
 
     uni = synth_universe(n=n_uni, seed=seed)
     monkeypatch.setattr(U, "build_market_frame",
