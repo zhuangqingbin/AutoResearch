@@ -349,9 +349,12 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
     #   ③ `run_health.json` 的 counts/churn —— 紧邻上一行刚刷成终值。
     # 放在 assemble 早段 = 读到半成品(FN-1 家族:探针读还没生成的产物)。
     # 失败不阻断发布(summary 仍是完整产物);缺 brief 由 self_review 的 brief lint 报 fail。
-    from autoresearch.scan.brief import safe_write as _safe_write_brief
+    # 同一份成品两处用:落 brief.md + 把 ①②③④ 注回 summary 的 🧭 managed 块(T26)——
+    # 各渲染一次等于给「两边不一致」开口子,而 T27 正要 lint 这件事。
+    from autoresearch.scan.brief import safe_publish as _publish_brief
 
-    _safe_write_brief(scan_dir, out_base, analysis_date=analysis_date, run_folder=folder)
+    _publish_brief(scan_dir, out_base, summary_path,
+                   analysis_date=analysis_date, run_folder=folder)
     with contextlib.suppress(Exception):
         # 最终快照必须等 manifest/summary/gate_fires/第二次 health 全部落盘后再 hash。
         # 同时覆盖 trace 里 assemble 前发布的旧 health，保证 staging/trace 同一事实。

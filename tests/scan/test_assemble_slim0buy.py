@@ -51,9 +51,16 @@ def test_market_view_h1_and_disclaimer_stripped(tmp_path):
 
 
 def test_l3_section_dedup(tmp_path):
-    """精排节只留 风险/催化(论点已在 buy-list 表 L3 列,不重复两遍)。"""
+    """精排节只留 风险/催化(论点已在 buy-list 表 L3 列,不重复两遍)。
+
+    ⚠️ 切片终点在 Wave12-T26 后**不能**再用 `## 3. 投资建议` —— 决策主线已前置,§3 现在排在
+    §2 之前,拿它当右边界会得到空串(切片恒空 = 恒绿的假灯)。改用「下一个 H2」。
+    """
     md = build_summary(_scan(tmp_path), _D, "1200", _F)
-    sec = md[md.find("精排(L3)入选"):md.find("## 3. 投资建议")]
+    start = md.find("精排(L3)入选")
+    end = md.find("\n## ", start)
+    sec = md[start:end] if end != -1 else md[start:]
+    assert sec.strip(), "精排节切片为空 —— 锚点失效,断言会变成恒绿"
     assert "风险:估值高" in sec and "催化:Q2 财报" in sec
     assert "AI 光模块需求超预期" not in sec, "论点不应在精排节重复(表里已有)"
     assert "论点见" in md[md.find("精排(L3)入选"):][:80]

@@ -380,6 +380,11 @@ def test_publisher_lands_brief_next_to_summary(tmp_path, monkeypatch):
     assert len(brief_path.read_bytes()) <= brief.MAX_BYTES
     assert "③ 结论" in brief_path.read_text(encoding="utf-8")
     assert (scan / brief.SOURCES_FILENAME).exists(), "sources 边表未落 staging"
+    # T26:同一份成品的 ①②③④ 必须已注回 summary 的 🧭 managed 块(两边同源)
+    md = summary.read_text(encoding="utf-8")
+    assert "此处为占位" not in md, "仪表盘注入未跑(summary 还留着占位文案)"
+    for line in brief.dashboard_block(brief.build(scan, run_folder="20260806_2308")).splitlines():
+        assert line in md, f"仪表盘与 brief 不同源:{line[:40]}"
 
 
 def test_pinned_section_lists_every_pinned_holding(scan):

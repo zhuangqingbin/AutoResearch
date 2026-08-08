@@ -604,9 +604,34 @@ def build(scan_dir: Path | str, *, analysis_date: str | None = None,
             "n_bytes": len(md.encode("utf-8"))}
 
 
-def write(scan_dir: Path | str, out_dir: Path | str, **kwargs) -> Path:
-    """brief.md → `out_dir`;`sources` 边表 → staging `_brief_sources.json`(供 T27 lint)。"""
-    out = build(scan_dir, **kwargs)
+#: 仪表盘块 = brief 的 ①②③④ 四节(T26 §C2「仪表盘 = brief 同源渲染」)。
+#: 切片锚用渲染出来的节标记本身,不另维护一份节名表(两处各写一遍必走漂)。
+_DASHBOARD_FROM, _DASHBOARD_TO = "**① 市场**", "**⑤ 风险哨**"
+
+
+def dashboard_block(built: dict) -> str:
+    """brief 成品 → summary 的 🧭 仪表盘正文(①②③④,逐字同源)。
+
+    **同源**是硬要求而不是修辞:T27 的「brief↔summary BUY 一致」lint 若两边各渲染一次,
+    对的就只是两个渲染器,不是两份事实。这里直接从 brief 的 markdown 里切 ①→⑤ 之间的段。
+    """
+    lines = built["markdown"].splitlines()
+    try:
+        start = next(i for i, ln in enumerate(lines) if ln.startswith(_DASHBOARD_FROM))
+        stop = next(i for i, ln in enumerate(lines) if ln.startswith(_DASHBOARD_TO))
+    except StopIteration:
+        return ""
+    return "\n".join(lines[start:stop]).strip()
+
+
+def write(scan_dir: Path | str, out_dir: Path | str, *, built: dict | None = None,
+          **kwargs) -> Path:
+    """brief.md → `out_dir`;`sources` 边表 → staging `_brief_sources.json`(供 T27 lint)。
+
+    `built` 显式传入时**不重算** —— 调用方(publisher)同一份成品既要落 brief.md 又要
+    切仪表盘注回 summary,重算两次等于给「两边可能不一致」开一道口子。
+    """
+    out = built or build(scan_dir, **kwargs)
     target = Path(out_dir) / BRIEF_FILENAME
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(out["markdown"], encoding="utf-8")
@@ -624,6 +649,27 @@ def safe_write(scan_dir: Path | str, out_dir: Path | str, **kwargs) -> Path | No
         return write(scan_dir, out_dir, **kwargs)
     except Exception as exc:  # noqa: BLE001
         print(f"[brief] 生成失败: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return None
+
+
+def safe_publish(scan_dir: Path | str, out_dir: Path | str, summary_path: Path | str,
+                 **kwargs) -> Path | None:
+    """一次算、两处用:落 brief.md + 把 ①②③④ 注回 summary 的 🧭 managed 块。
+
+    失败不阻断发布(summary 保留占位文案,自己会说「注入未跑」;缺 brief 由 T27 lint 报 fail)。
+    """
+    try:
+        from autoresearch.scan.report_sections import inject_dashboard
+        built = build(scan_dir, **kwargs)
+        target = write(scan_dir, out_dir, built=built)
+        summary = Path(summary_path)
+        if summary.exists():
+            summary.write_text(
+                inject_dashboard(summary.read_text(encoding="utf-8"),
+                                 dashboard_block(built)), encoding="utf-8")
+        return target
+    except Exception as exc:  # noqa: BLE001
+        print(f"[brief] 发布失败: {type(exc).__name__}: {exc}", file=sys.stderr)
         return None
 
 
