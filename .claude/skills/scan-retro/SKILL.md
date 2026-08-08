@@ -10,7 +10,7 @@ description: "Two review loops for prior scan-market days: FAST t1_review (D+1 i
 | 环 | 成熟期 | 量什么 | 尺 | 喂什么 |
 |---|---|---|---|---|
 | **快环 t1_review** | **D+1**(T+1 收盘当晚) | **判断层精度**:T 报告真选票次日兑现如何、为什么(**保送 pinned 不算**,用户裁定 2026-07-17) | **z**(行业中性超额/截面稳健σ,盖帽±3;cc1 为底,oc1 参考)| prompt 侧经验/提案候选(**人批**) |
-| **慢环 retro(下述 6 步)** | D+2 | 漏斗召回:全市场谁涨了没进池 | fwd_1_oo / fwd_2_oc | 权重重标定(**唯一自动腿**)+ 提案 |
+| **慢环 retro(下述 6 步)** | D+2 | 漏斗召回:全市场谁涨了没进池 | **`gap_c1_o2`**(主尺,`common.ruler.MAIN_RULER` 单点);`fwd_1_oo` / `fwd_2_oc` 降参考尺 | 权重重标定(**唯一自动腿**)+ 提案 |
 
 **快环用法**(只做 T→T+1 相邻交易日间隔,周末/节假日顺延;不看更长 horizon)。**判定尺 v2(2026-07-17 调研落地)**:行业中性超额(cc1 − 同业均值,先剥 β/板块共振)÷ 截面稳健σ(1.4826×MAD)= z,方向判定双门 |z|≥0.5 且 |超额|≥0.8pp,惊奇 |z|≥1.5;🔒一字开盘板不计可实现;needs_diag 分诊(不准/惊奇/|z|≥1 才烧诊断 token,ERL 实证失败样本教训价值>成功样本)。期望值口径 = 胜率×均赢/均亏 + conviction 校准桶(Tetlock)。
 
@@ -50,7 +50,7 @@ scan-market 出的报告是"事前判断";retro 用**当日已实现 T+1 涨跌*
 
 **欠账 ≥2 日(触发词"补复盘欠账")**:`retro pending` 拆两段(Wave11-A7)——**归因欠账**(确定性计算未跑,`nightly_close` 每晚自动补,不用人管)与**诊断欠账(已备料)**(`retro_input.md` 已生成,只差这步的 Claude 诊断)。批量补诊断只清后者:见 `retro-playbook.md` §批量补诊断(≤5 日/次合诊,跨日看系统性病因;逐日诊断完立即 `mark_done`,不要攒到整批完了再一起标)。清账判据 = `retro pending` 的「诊断欠账」段为空。
 
-- **per-channel edge(L1 段)**:`stage_eval.evaluate` 已落 `retro/channel_eval.csv`(每路 T+2 截面**边际超额** `unique_excess_t2` = 这路独占票有没有赢;2026-07-10 裁定 fwd_2_oc 主尺,t5 列已退位为参考展示、不再驱动决策);跨日看 `uv run --no-sync python -m autoresearch.learning.channel_ledger`(→ `reports/learning/channel_ledger.md`)。某路 `unique_excess_t2` 持续为负且 `n_days≥3` → 建议下调其 quota(写 `proposals.jsonl`,**人工决定,不自动改**;提议基线自动读 scan_config.jsonc 的 channel_quotas,已实施的改动不会重复提议)。`n_days<3` 标 ⚠样本少,不下结论。
+- **per-channel edge(L1 段)**:`stage_eval.evaluate` 已落 `retro/channel_eval.csv`(每路 T+2 截面**边际超额** `unique_excess_t2` = 这路独占票有没有赢;主尺现为 `gap_c1_o2`(2026-08-05 裁定,取代 2026-07-10 的 `fwd_2_oc`),t5 列已退位为参考展示、不再驱动决策;列名里的 `_t2` 字样是沿自旧尺的**历史命名**,取值随主尺现算,见 STAGES.md「账本定义断层」);跨日看 `uv run --no-sync python -m autoresearch.learning.channel_ledger`(→ `reports/learning/channel_ledger.md`)。某路 `unique_excess_t2` 持续为负且 `n_days≥3` → 建议下调其 quota(写 `proposals.jsonl`,**人工决定,不自动改**;提议基线自动读 scan_config.jsonc 的 channel_quotas,已实施的改动不会重复提议)。`n_days<3` 标 ⚠样本少,不下结论。
 
 ## 前置
 - 项目根目录;`.env` 有 `TUSHARE_TOKEN`;factor_lab cache 在(retro 会按需补拉 D+1/D+2 的 daily)。

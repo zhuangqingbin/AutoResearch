@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """闭环复盘 retro · 归因前一日 scan 报告 vs T+2 已实现涨跌(确定性,零 LLM)。
 
-仅挂 scan-market。用当日已实现 `fwd_2_oc`(超短主尺,复用 factor_lab 口径:D 收盘信号→D+1 开盘买、
-D+2 收盘卖、剔 D+1 一字板;`fwd_1_oo` 仍留作参考)检验 D 的报告,把每只股票分桶:抓到 / L2-L3 误判 /
+仅挂 scan-market。用当日已实现的**主尺** `ruler.MAIN_RULER`(现 `gap_c1_o2` = open[D+2]/close[D+1]−1,
+超短隔夜:D 收盘信号 → D+1 **收盘**买、D+2 **开盘**卖、剔 D+1 收盘封板 `buyable_c1`;沿革:2026-08-05
+换尺前是 `fwd_2_oc`(D+1 开盘买/D+2 收盘卖,旗 `buyable`),现与 `fwd_1_oo` 同为参考尺)检验 D 的报告,
+把每只股票分桶:抓到 / L2-L3 误判 /
 漏在 L1 / 漏在 L0 / 误买。产出 attribution.csv + retro_input.md,喂给 scan-retro skill 做 Claude 诊断
 (系统性病因 + 自动重标定 + 经验/建议)。归因数学纯函数、可离线自测;取数复用 factor_lab。
 
@@ -108,7 +110,7 @@ def attribute_frame(l1: pd.DataFrame, realized: pd.DataFrame, buylist: dict,
                     abs_thresh: float = 0.03, top_q: float = 0.9, bot_q: float = 0.1) -> pd.DataFrame:
     """全市场已实现收益 × L1 全打分面板 × 报告买单 → 每只一个 bucket。纯函数(无 IO)。
 
-    赢家 = 可交易 universe 内 fwd_2_oc(T+2 主尺)≥ 九分位 ∧ ≥ abs_thresh。
+    赢家 = 可交易 universe 内主尺(`ruler.MAIN_RULER`,现 `gap_c1_o2`)≥ 九分位 ∧ ≥ abs_thresh。
     """
     l1 = l1.copy()
     l1["code"] = l1["code"].astype(str).str.zfill(6)
@@ -834,14 +836,16 @@ def shadow_compare(attr: pd.DataFrame, sdir: Path) -> list[dict]:
 
 def l3_bench_shadow(attr: pd.DataFrame, sdir: Path, top_n: int = 5) -> dict | None:
     """L3 bench 防漏体检(design: plan 2026-07-12-l3-merge-plan.md Task 5):bench(l3-rank judged
-    但未晋级 finalist 的候选,`_l3_bench.csv`)按 conviction 取 top-N 的已实现 fwd_2_oc 均值,
-    对照 finalists(`finalists.csv`)的 fwd_2_oc 均值——「收窄没吃好票」的日常法庭:bench 头部
+    但未晋级 finalist 的候选,`_l3_bench.csv`)按 conviction 取 top-N 的已实现主尺
+    (`ruler.MAIN_RULER`,现 `gap_c1_o2`)均值,对照 finalists(`finalists.csv`)的同尺均值
+    ——「收窄没吃好票」的日常法庭:bench 头部
     若跑赢/持平 finalists,说明 finalist tier 收窄可能漏掉了够格票。
 
     无 `_l3_bench.csv`(旧日期/two_pass 关闭/Task2 bench 落地前)→ `None`(presence-gated,
     不进 retro_input,姿势同 `shadow_compare`)。缺 `conviction` 列 → 退化为文件前 N 行
     (不排序,不报错)。`finalists.csv` 缺失 → finalists 侧 mean 报 `None`(纵深防御,不因此
-    连 bench 侧读数也不渲染)。fwd_2_oc 未成熟/两侧样本皆空 → mean 为 `None`(不臆造数字)。
+    连 bench 侧读数也不渲染)。主尺未成熟/两侧样本皆空 → mean 为 `None`(不臆造数字)。
+    (输出键名 `*_mean_fwd2` 沿自 `fwd_2_oc` 年代,**取值随 `MAIN_RULER` 现算**,改键会破读者。)
 
     **真选口径**(pr_20260716_002):finalists 里 lane∈{pinned, watchlist_trigger, carryover}
     的行是保送/直通,L3 对它们没有选择权 → 头条 `finalists_mean_fwd2`/`n_finalists_realized`
@@ -906,7 +910,8 @@ def l3_bench_shadow(attr: pd.DataFrame, sdir: Path, top_n: int = 5) -> dict | No
 
 def pass1_cut_winners(attr: pd.DataFrame, sdir: Path) -> dict | None:
     """pass1 分诊即切(`_l3_pass1_cut.csv`)中的 T+2 赢家数(design: plan 2026-07-12-l3-merge-plan.md
-    Task 5):沿用本模块 `attribute_frame` 已算好的 `winner` 定义(fwd_2_oc 前10%分位∧≥abs_thresh,
+    Task 5):沿用本模块 `attribute_frame` 已算好的 `winner` 定义(主尺 `ruler.MAIN_RULER`
+    (现 `gap_c1_o2`)前10%分位 ∧ ≥abs_thresh,
     该模块现成赢家定义,不重算),数分诊环节切掉的票里事后有几只是赢家——「分诊有没有漏赢家」
     的日常法庭读数。
 

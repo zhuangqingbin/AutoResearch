@@ -9,8 +9,12 @@ design: docs/specs/2026-08-03-scan-next-wave-brainstorm-design.md §3.1 O1
 
 ## 三件必须先钉死的事
 
-1. **winner 定义**(§3.1 第一句)。主尺 `fwd_2_oc`,同时满足:全市场 top-decile、
-   绝对收益阈、D+1 可买/可交易。并列按 `>=` 一并计入;停牌/涨停不可买 → 不算 winner。
+1. **winner 定义**(§3.1 第一句)。主尺 = `ruler.MAIN_RULER`(现 `gap_c1_o2`;2026-08-05 换尺
+   前是 `fwd_2_oc`),同时满足:全市场 top-decile、绝对收益阈、**入场腿**可买/可交易
+   (旗随尺走,`entry_flag_for()` 单点选:`gap_c1_o2` → D+1 收盘 `buyable_c1`,`fwd_2_oc` →
+   D+1 开盘 `buyable`)。并列按 `>=` 一并计入;停牌/封板不可买 → 不算 winner。
+   落盘的 `winner_definition` 串由 `MAIN_RULER`/`entry_flag_for()` **现算**(见下方常量),
+   所以重跑报表即自动跟随换尺——旧报表里的旧串是当时的真值,不改写。
    `pinned` 分列不混算 —— **不得**把 retro 的复合 winner 和「纯 top-decile」混叫一个标签,
    所以两套口径在这里各有各的 `winner_definition` 字符串,随读数一起落盘。
 

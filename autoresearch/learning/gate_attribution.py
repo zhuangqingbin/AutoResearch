@@ -12,9 +12,13 @@ design: docs/specs/2026-08-01-wave10-report-ops-slimdown-zerobuy-design.md §A11
 
 两个 cohort **不是同一序列**,`cohort_version` 是每行必填字段,不得互相冒充(§R5):
 
-  legacy_gate_ledger  市场基准 = 全表 `fwd_2_oc` **均值**;**不去重**;不看可交易性。
+  (两者的"T+2 收益"都读**主尺** `ruler.MAIN_RULER`(现 `gap_c1_o2`);落盘列名 `fwd_2_oc`/
+   `excess_2` 沿自旧尺年代**固定不漂移**,每行另带 `ruler` 列记写入那一刻的真值 —— 跨尺行
+   禁止揉进同一个均值,见本文件 `_day_facts` 与 STAGES.md「账本定义断层」。)
+
+  legacy_gate_ledger  市场基准 = 全表主尺 **均值**;**不去重**;不看可交易性。
                       只为迁移复现 —— 主力门 36/7/20(总 63)是它的读数,不是 v3 的。
-  v3                  市场基准 = 可交易且成熟票的 `fwd_2_oc` **中位**(与
+  v3                  市场基准 = 可交易且成熟票的主尺 **中位**(与
                       `rejection_attribution` / abstention v2 / C3 同源);同日同票踩
                       ≥2 道门 → `MULTI_GATE` 单列,**不重复算进三个单门分母**;
                       不可交易 / 未成熟 / 门状态不可判 → `UNMEASURED`。

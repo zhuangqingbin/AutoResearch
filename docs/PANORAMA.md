@@ -682,6 +682,8 @@ def _lake_params(params):
 | `dist_low_60` | 对 `fwd_2_oc` **反预测**(decile spread_t=**−2.06**)—— **「光有前置低位 = 接刀」** |
 | **CMF-20 当日确认** | 窗口累积指标,对反转方向确认存在 **day-1/2 滞后** |
 
+> 📐 **尺注**:上表实证均在**参考尺** `fwd_2_oc`(D+1 开盘买→D+2 收盘卖)下测得,是当时的历史读数,**不改写**。现行主尺自 2026-08-05 用户裁定起为 `gap_c1_o2`(见 [§8.3](#83-换把尺子病与药互换));这些因子的剔除结论尚未在新尺下复测,重启任一因子前应先按 `gap_c1_o2` 重跑判据族。
+
 **`lens_reversal_confirm` 的三态设计**由此而来:①④ 缺列 → presence-gated 跳过;**③ 起爆确认缺值 → 整段判 False,不可跳(硬门)** —— **无量突破的票一律不入召回,不能降级成软加分让低位票混进来对冲低分**。
 
 #### 单一事实源(反复出现的模式)
@@ -701,13 +703,13 @@ def _lake_params(params):
 
 ### 7.1 环(2026-07-17 起为双环)
 
-**快环 t1_review(D+1,用户裁定 fb_20260717_001)**:T 报告的**真选**票(保送 pinned 不算)vs **T+1 收盘** —— 哪些准哪些不准、为什么、不准的如何优化、准的如何强化。只做 T→T+1 相邻交易日间隔(周末顺延);尺 = cc1(T收→T+1收)+ oc1 参考,**权重校准主尺仍 fwd_2_oc,两把尺勿混**。编排 = `t1-review.js` workflow:确定性记分卡 → 每票一个诊断 agent(**只依据卡片+实现数字,禁网查禁编造,无法解释就写无法解释**)→ 综合官对照账本查重复模式、出**候选**经验(立案仍人批)。账本 `context/learning/t1_review.jsonl`;prelude 每日催办欠账。
+**快环 t1_review(D+1,用户裁定 fb_20260717_001)**:T 报告的**真选**票(保送 pinned 不算)vs **T+1 收盘** —— 哪些准哪些不准、为什么、不准的如何优化、准的如何强化。只做 T→T+1 相邻交易日间隔(周末顺延);尺 = cc1(T收→T+1收)+ oc1 参考,**权重校准主尺是 `gap_c1_o2`(2026-08-05 用户裁定;`common.ruler.MAIN_RULER` 单点),与快环的 cc1/oc1 两把尺勿混**。编排 = `t1-review.js` workflow:确定性记分卡 → 每票一个诊断 agent(**只依据卡片+实现数字,禁网查禁编造,无法解释就写无法解释**)→ 综合官对照账本查重复模式、出**候选**经验(立案仍人批)。账本 `context/learning/t1_review.jsonl`;prelude 每日催办欠账。
 
 **慢环 retro(D+2)** —— 下图,漏斗召回归因,喂唯一的自动腿:
 
 ```mermaid
 flowchart TD
-    S["D 日的报告<br/>(事前判断)"] --> W["等 D+2 交易日<br/>fwd_2_oc 已实现"]
+    S["D 日的报告<br/>(事前判断)"] --> W["等 D+2 交易日<br/>gap_c1_o2 已实现"]
     W --> A["<b>attribute</b><br/>确定性归因"]
     A --> B["赢家分桶<br/>caught / recalled_cut<br/>missed_l1 / missed_l0<br/>false_positive"]
     B --> C["<b>Claude 诊断</b><br/>三段药 + 分离消息脉冲"]
@@ -726,7 +728,9 @@ flowchart TD
 ### 7.2 赢家定义与分桶
 
 ```python
-winner = tradable & (fwd_2_oc >= quantile(0.9)) & (fwd_2_oc >= 0.03)   # 前10% ∧ ≥3%
+# 主尺列名单点走 common.ruler.MAIN_RULER(现 gap_c1_o2);tradable 的入场旗随尺选腿
+# (entry_flag_for → buyable_c1)。真身 = autoresearch/learning/retro.py:127-134。
+winner = tradable & (gap_c1_o2 >= quantile(0.9)) & (gap_c1_o2 >= 0.03)   # 前10% ∧ ≥3%
 ```
 
 | bucket | 判据 | 指向 |
@@ -874,6 +878,20 @@ fwd_2_oc = close[D+2] / open[D+1] − 1            # D+1 开盘买、D+2 收盘�
 hi_2_oc  = max(high[D+1..D+2]) / open[D+1] − 1   # 2 日触价(MFE),配目标价校准
 ```
 
+> 📐 **本节是沿革(2026-07-10 那次换尺的记录),不是现行口径**。同一个「尺子错了」的教训在
+> 2026-08-05 又发生了一次:用户把主尺再次改为**隔夜尺** `gap_c1_o2`(T+1 **收盘**买 → T+2
+> **开盘**卖),`fwd_2_oc` 降为参考尺不删。
+>
+> ```
+> gap_c1_o2 = open[D+2] / close[D+1] − 1         # 现行主尺:T+1 收盘买、T+2 开盘卖(隔夜)
+> ```
+>
+> 换尺连带换的是**入场腿旗**:`fwd_2_oc` 的入场腿是 D+1 开盘(旗 `buyable`),`gap_c1_o2` 的
+> 入场腿是 D+1 收盘(旗 `buyable_c1`)—— 消费点一律经 `ruler.entry_flag_for()` 单点取,
+> 2026-08-08 final-review C1 抓到过 10 个消费点各自硬编码 `"buyable"` 字面量、换尺后全在读旧腿。
+> 单一事实源 = `autoresearch/common/ruler.py:12`(`MAIN_RULER`);本文其余出现的 `fwd_2_oc` 若无
+> 「现行」字样,一律读作**参考尺/历史读数**。
+
 **换尺之前**,「momentum 被压权重」是**病**(`pr_20260709_001` 提案要上调 quota);
 **换尺之后**,同一个现象变成**正确行为**,提案当场作废。
 
@@ -968,7 +986,7 @@ hi_2_oc  = max(high[D+1..D+2]) / open[D+1] − 1   # 2 日触价(MFE),配目标�
 
 **为什么两周没人发现**:退出码 0 + 打印一张**像模像样的全市场 IC 表** + changelog 照记一笔 = **降级不留痕**。单测测的是 `calibrate` 纯函数,**没测「面板会不会长」**。
 
-**勿盲修**:用旧参数(`form_span=24`)+ 今天 anchor 重跑 → **F 只剩 25 个**,比现有 107 **少 4 倍**。且 `fwd=10` holdback 与主尺 `fwd_2_oc`(只需 2 日)不匹配 → 面板永久晚 ~8 个交易日。
+**勿盲修**:用旧参数(`form_span=24`)+ 今天 anchor 重跑 → **F 只剩 25 个**,比现有 107 **少 4 倍**。且 `fwd=10` holdback 与当时的主尺 `fwd_2_oc`(只需 2 日)不匹配 → 面板永久晚 ~8 个交易日。**(沿革:2026-07-16 的诊断;现主尺 = `gap_c1_o2`,同样只需 D+2,该结论在新尺下逐字仍成立。)**
 
 > 📌 「半自动闭环」这个设计是对的,但**它的自动那一半在 2026-07-08 之后事实上没有运行**。这不是设计问题,是仪器问题 —— 而这恰恰印证了本项目自己的核心教训([§6.2](#62--数据契约--为什么降级不留痕才是真病))。
 >
@@ -979,7 +997,7 @@ hi_2_oc  = max(high[D+1..D+2]) / open[D+1] − 1   # 2 日触价(MFE),配目标�
 **✅ 2026-07-17 已修活(applied)**,修法与验收:
 
 - **机制真相补全**:F=107 是**跨多次 harvest 历史累积**的(107 日横跨 270 个交易日,而 `form_span=24, step=1` 单次只会生成 25 日)—— 所以「重跑 harvest」不是修复而是**用参数重造小面板把历史冲掉**。
-- **修** = `factor_lab.extend_plan()`:增量续(F 推进到 last−2,**holdback 对齐主尺 fwd_2_oc 只需 D+2**,不再被旧参 `fwd=10` 拖 8 个交易日;P 缓存洞逐夜自愈;全幂等),接在 `recalibrate_and_log` 的 calibrate 之前;extend 失败不阻断但 🚨 打 stderr。
+- **修** = `factor_lab.extend_plan()`:增量续(F 推进到 last−2,**holdback 对齐主尺只需 D+2** —— 当时主尺 `fwd_2_oc`,2026-08-05 换尺后 `gap_c1_o2` 同样只需 D+2,不再被旧参 `fwd=10` 拖 8 个交易日;P 缓存洞逐夜自愈;全幂等),接在 `recalibrate_and_log` 的 calibrate 之前;extend 失败不阻断但 🚨 打 stderr。
 - **监** = `changelog_ledger.heartbeat()` 进 prelude 每日汇总屏:连续 3 次 `after_sha` 不变 → 🚨。**必须修监同落**:6 月已有一段 `349fa46d`×3,这是复发病,只修不监必死第三次。
 - **真数据验收**:`72b3d0af → e560aeb5`,面板 **107 → 117 日**(F 尾 = 今天−2),value IC +0.0245 仍全组第一。
 
@@ -1040,4 +1058,4 @@ uv run --no-sync python -m autoresearch.research.factor_lab --selftest    # 离�
 
 ---
 
-> **诚实收尾**:召回/粗排是启发式 + `fwd_2_oc` 超短主尺 IC 校准(随 regime 漂移);L3/L4 是 Claude 推理产出。**仅供研究,非投资建议。**
+> **诚实收尾**:召回/粗排是启发式 + `gap_c1_o2` 超短主尺 IC 校准(随 regime 漂移);L3/L4 是 Claude 推理产出。**仅供研究,非投资建议。**

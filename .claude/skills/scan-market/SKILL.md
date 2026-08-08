@@ -148,8 +148,8 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
 - **每只 finalist 走 stock-research lite 档**——继承其铁律。
 - **中间名单全 staging**,L5 发布到 `trace/` 留溯源。
 - **报告双层**:`brief.md` = 入口(确定性模板、零 LLM、≤3,000B、同 run 重放 byte 稳定),`summary.md` = 详细版。**不设收编官 agent**(2026-08-08 裁定 R-C1):brief 的内容全是结构化结论/计数/评级/tripwire,让 LLM 再压一遍只增加编数面与对账成本。`t1_review`/`retro` **不解析** summary 正文,只读结构化文件——所以重排/瘦身 summary 不动任何机器契约。
-- **诚实收尾**:召回/粗排是启发式 + fwd_2_oc 超短主尺 IC 校准(随 regime 漂移);L3/L4 是 Claude 推理产出;"仅供研究,非投资建议"。
-- **性能开关不拥有评级**:现仅存 `performance.streaming_l4`(默认 true;回滚设 `false`)。任何开关都不得改 finalist cap、rubric 三门、`fwd_2_oc` 或 BUY 数量(Wave10 B4 退役两个越权开关,详情见 STAGES.md)。
+- **诚实收尾**:召回/粗排是启发式 + `gap_c1_o2` 超短主尺 IC 校准(随 regime 漂移);L3/L4 是 Claude 推理产出;"仅供研究,非投资建议"。
+- **性能开关不拥有评级**:现仅存 `performance.streaming_l4`(默认 true;回滚设 `false`)。任何开关都不得改 finalist cap、rubric 三门、**主尺**(`common.ruler.MAIN_RULER`,现 `gap_c1_o2`)或 BUY 数量(Wave10 B4 退役两个越权开关,详情见 STAGES.md)。
 - **模块归属**:`agents/l3_select.py`、`agents/l4_card.py`、`scan/assemble.py` 仅保留旧 import/CLI 兼容,新代码直连 `scan/l3/*`、`scan/l4/*` 等 owner 模块,不要塞回适配器。
 
 ## 常见坑

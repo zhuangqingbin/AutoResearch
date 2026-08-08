@@ -102,7 +102,8 @@ def day_frame(scan_dir: Path | str) -> pd.DataFrame | None:
     """单日 choice set 帧:pass1 kept × 当日已实现 → `[code, reason, lane, industry,
     score, excess_2, buyable_winner, actual]`。缺任一必需产物 → `None`(presence-gated)。
 
-    `excess_2` 的市场基准 = **当日可交易且成熟票的 fwd_2_oc 中位**(与
+    `excess_2` 的市场基准 = **当日可交易且成熟票的主尺(`ruler.MAIN_RULER`,现 `gap_c1_o2`;
+    键名 `excess_2` 沿自 `fwd_2_oc` 年代不改)中位**(与
     `rejection_attribution` / gate_attribution v3 / abstention v2 同源)。换基准就换了口径,
     跨模块比较立刻失真,所以这里不另造一个。
 

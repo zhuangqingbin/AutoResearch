@@ -102,8 +102,9 @@ def lens_momentum(df: pd.DataFrame) -> pd.DataFrame:
 
     量能项(原 15)经 factor_lab 实证剔除:vol_ratio 对 T+1 收益显著**负**相关(rank IC t=-2.31,
     样本前后半皆负)=放量滞涨/派发,turnover 近噪声;剔后复合 T+1 ICIR +32% 且 T+5/10 不降。
-    主力净流入对 T+1/T+2 近中性、对 T+5/10 最强;超短主尺(fwd_2_oc)下其权重由 calibrate 重定,
-    不再预设 swing 高权重。(见 factor_lab.py / spec §实证)
+    主力净流入对 T+1/T+2 近中性、对 T+5/10 最强;超短主尺(`ruler.MAIN_RULER`,现 `gap_c1_o2`;
+    本段实证在旧主尺 `fwd_2_oc` 下测得)下其权重由 calibrate 重定,不再预设 swing 高权重。
+    (见 factor_lab.py / spec §实证)
     """
     g = df.copy()
     gate = (g["pct_60d"].fillna(-1) > 0) | (g["pct_ytd"].fillna(-1) > 0)
@@ -193,8 +194,10 @@ def lens_reversal_confirm(df: pd.DataFrame) -> pd.DataFrame:
 
     与旧 `lens_reversal`(:167,困境反转:边际改善∨资金即放行,门内无企稳段、无量价确认,可召回
     仍在下跌途中的票)的本质区别、也是本通道价值所在——Plan A1-T2 用 107 个成型日真实回测坐实:
-    `dist_low_60` 对 fwd_2_oc **反预测**(decile spread_t=−2.06,方向与 IC 反号)——贴 60 日低点
-    一档 fwd_2_oc 反而显著**跑输**贴高点一档,即"光有『前置低位』=接刀"。故③必须是真 AND 硬门:
+    `dist_low_60` 对 `fwd_2_oc` **反预测**(decile spread_t=−2.06,方向与 IC 反号)——贴 60 日低点
+    一档 `fwd_2_oc` 反而显著**跑输**贴高点一档,即"光有『前置低位』=接刀"。**(该回测在**参考尺**
+    `fwd_2_oc` 下跑的;现主尺 = `gap_c1_o2`,结论未在新尺复测,重启该因子前须先复跑。)**
+    故③必须是真 AND 硬门:
     无量突破的票**一律不入召回**,不能降级成软加分让低位票混进来对冲低分。两路双路并跑(影子对照,
     不动旧 reversal),channel_eval 按 lane 分行裁决。
 

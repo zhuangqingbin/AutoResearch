@@ -5,7 +5,8 @@ design: docs/specs/2026-07-28-wave7-unified-roadmap-design.md §6 P1
 
 **与选股复盘物理分表(防火墙)**:2026-07-17 用户裁定「保送不算」——那是给 `retro` /
 `t1_review` / L3 edge 定的口径,防止手工保送票污染"漏斗自己选得准不准"的度量。本表是**另一
-个问题**:你手上这几只持仓,当天给的卖/持判断事后看对不对。两者共用主尺(`fwd_2_oc`)但
+个问题**:你手上这几只持仓,当天给的卖/持判断事后看对不对。两者共用主尺(`ruler.MAIN_RULER`,
+现 `gap_c1_o2`;2026-08-05 换尺前是 `fwd_2_oc`)但
 永不互读:选股复盘一行都不从这里取数,本表也不进权重重标定。
 
 **为什么必须有它**:保送票是全流程唯一"判断错了会真赔钱"的一档(选股判错只是没买),
@@ -49,7 +50,7 @@ def _read_attr(d: Path) -> pd.DataFrame | None:
 
 
 def market_fwd2(attr: pd.DataFrame | None) -> float | None:
-    """当日全市场 `fwd_2_oc` 中位 —— 判对错的基准。
+    """当日全市场主尺(`ruler.MAIN_RULER`,现 `gap_c1_o2`)中位 —— 判对错的基准。
 
     用中位不用均值(A 股单日涨停尾巴会把均值拽偏),用 attribution 全量(≈5.5k 行 = L0
     全市场)而不是 finalist 子集:后者是被漏斗挑过的偏置样本,拿它当"市场"会systematically
