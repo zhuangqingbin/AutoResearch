@@ -133,7 +133,16 @@ def _mk_ledgers_noop_chain(monkeypatch):
     monkeypatch.setattr("autoresearch.learning.tripwire_watch.check", lambda *a, **k: [])
 
 
-def test_ledgers_step_imports_shadow_buys_after_gate_attribution(monkeypatch):
+def test_ledgers_step_imports_shadow_buys_before_paper_nav(monkeypatch):
+    """I3 修复(final-review 2026-08-08):最初实现把 `shadow_buys` 排在 `gate_attribution`
+    之后(位置 8),照办了 T11 任务书 Step2 的字面指示——但任务书那句指示本身是错的:
+    `shadow_buys` 唯一的消费者是 `paper_nav`(`shadow_signals()` 读它的 csv),而
+    `paper_nav` 排在第 5 位、`gate_attribution` 第 7 位,把生产者排在第 8 位等于**同一晚**
+    先跑消费者、后跑生产者——当晚 `paper_nav` 的影子线仍读不到刚发布的信号,要等下一晚才
+    补上。`gate_attribution` 与 `shadow_buys` 之间没有任何依赖(`shadow_buys` 只读
+    `context/scan/` 原始产物),"排在 gate_attribution 之后"这条约束本身是多余且有害的
+    ——真正的约束是"排在 paper_nav 之前"。此修复反向断言:任何把 shadow_buys 排在
+    paper_nav 之后的实现都应该被这条测试挡下。"""
     calls: list[str] = []
 
     def _fake_import(name):
@@ -146,8 +155,10 @@ def test_ledgers_step_imports_shadow_buys_after_gate_attribution(monkeypatch):
     N.run("2026-07-28")
 
     learning_calls = [c.rsplit(".", 1)[-1] for c in calls if c.startswith("autoresearch.learning.")]
-    assert "shadow_buys" in learning_calls
-    assert learning_calls.index("shadow_buys") > learning_calls.index("gate_attribution")
+    assert "shadow_buys" in learning_calls and "paper_nav" in learning_calls
+    assert learning_calls.index("shadow_buys") < learning_calls.index("paper_nav"), (
+        "shadow_buys(生产者)必须先于 paper_nav(唯一消费者)跑,否则当晚发布的信号"
+        "要等下一晚才会被影子线看到")
 
 
 def test_ledgers_step_full_chain_19_plus_1_all_ok(monkeypatch):

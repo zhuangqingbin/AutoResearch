@@ -733,6 +733,16 @@ def _update_ledger_gap(t: str, merged: pd.DataFrame, path: Path | str | None = N
     人工/LLM 诊断的产出覆写掉(整替的对象是"gap 那三键",不是整行)。
     当日账本行缺失(理论不该发生——T 的 D+1 finalize/backfill 没跑过 gap 就没得终判;
     防御性兜底)→ 新建一行(diagnosed=false)。
+
+    I4 修复(final-review 2026-08-08):`ruler` **不在**"追加/覆写三键"之列——本函数曾经
+    额外 `setdefault("ruler", MAIN_RULER)`,对本字段上线前写的旧行(无 `ruler`)会反向
+    打上**今天的** `MAIN_RULER`,违反上面这句 docstring 自己的承诺,也违反"历史产物不
+    改写"家训(2026-08-08 活体验收实测把 103 条 07-10~08-04 的历史行改写成
+    `ruler=gap_c1_o2`,方向反了:离换尺最近的行标旧尺、最老的行标新尺)。既有行本来就带
+    `ruler`(`append_ledger` 写入那一刻打的)→ 保留不动;本来没有 → 继续没有,读侧按既有
+    惯例 `row.get("ruler", "fwd_2_oc")` 兜底(旧行诚实标旧尺,不是回改)。新建整行的兜底
+    分支(当日账本行缺失,理论不该发生)不受影响——那是一整行的**新写**,不是对旧行的
+    改写,`ruler` 打当前 `MAIN_RULER` 仍是正确的"写入那一刻的真值"。
     """
     path = Path(path or _LEDGER)
     old = []
@@ -749,8 +759,12 @@ def _update_ledger_gap(t: str, merged: pd.DataFrame, path: Path | str | None = N
     for _, r in merged.iterrows():
         code = str(r["code"])
         covered.add(code)
-        base = dict(by_code.get(code) or {"t": t, "code": code, "diagnosed": False})
-        base.setdefault("ruler", MAIN_RULER)
+        existing = by_code.get(code)
+        # I4 修复:existing 不是 None → 这是一条历史行(不论它有没有 ruler 字段),原样
+        # 复制,不碰 ruler(既不新增也不覆写)。existing 是 None 才是真正的"新建整行"分支
+        # (理论不该发生的防御性兜底),这才是唯一该打当前 MAIN_RULER 的地方。
+        base = dict(existing) if existing is not None else \
+            {"t": t, "code": code, "diagnosed": False, "ruler": MAIN_RULER}
         base["gap_c1_o2"] = _num(r.get("gap_c1_o2"))
         base["z_gap"] = _num(r.get("z_gap"), 3)
         base["final_verdict"] = r.get("final_verdict")

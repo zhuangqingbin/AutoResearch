@@ -91,14 +91,21 @@ def run(today: str) -> list[tuple[str, bool, str]]:
         # 序有意义:gate_attribution 先于 gate_ledger(后者渲染前者的 v3 分布);
         # evidence_manifest 收尾(它读所有账本,必须在它们刷新之后)。
         # ⚠️ 动态调用面:本表以字符串拼名 import —— 删任何 learning 模块前先查这张表(2026-08-06 D3 勘误教训)
-        names = ["journal", "buy_ledger", "cross_calib", "catalyst_ledger", "paper_nav",
-                 "channel_ledger", "gate_attribution",
+        names = ["journal", "buy_ledger", "cross_calib", "catalyst_ledger",
                  # Wave12-T11:shadow_buys(近 miss「差一点」节的数据源)此前不在这张表——
                  # 它的唯一写入路径是 publisher.py 的 is_real 门控块,失败即被
                  # contextlib.suppress 静默吞掉、无补救,是该节 5/6 run 静默缺席的根因
                  # (docs/specs/2026-08-08-wave12-seven-topics-design.md)。main()=backfill()
                  # 幂等补全部历史 scan 日,补在这里当夜间兜底重跑。
+                 # I3 修复(final-review 2026-08-08):首版排在 gate_attribution 之后(照办
+                 # T11 任务书 Step2 字面指示),但 shadow_buys 唯一的消费者是紧接着的
+                 # paper_nav(shadow_signals() 读它的 csv)——排在 paper_nav 之后等于同一晚
+                 # 生产者晚于消费者,当晚发布的信号要等下一晚才会被影子线看到。
+                 # gate_attribution 与 shadow_buys 无任何依赖,"排在 gate_attribution 之后"
+                 # 这条约束本身多余;真正且唯一的约束是"排在 paper_nav 之前",故移到此处。
                  "shadow_buys",
+                 "paper_nav",
+                 "channel_ledger", "gate_attribution",
                  "gate_ledger", "zero_buy_ledger",
                  "changelog_ledger", "earlystop_ledger", "pinned_ledger",
                  # Wave10:哨兵校准(A12/C4)与 L3→L4 对齐(C2.1)都是纯读账本,

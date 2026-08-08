@@ -449,6 +449,53 @@ def test_gap_finalize_overrides_cc1_verdict_and_keeps_both(tmp_path):
     assert lp.read_text(encoding="utf-8") == before_ledger
 
 
+# ───────────────────────── I4 修复(final-review 2026-08-08):历史行不得被反向改写 ruler ─────────────────────────
+#
+# `_update_ledger_gap` 自己的 docstring 承诺"既有行只追加/覆写 gap_c1_o2/z_gap/final_verdict
+# 三键,其余字段原样保留"——但代码里的 `base.setdefault("ruler", MAIN_RULER)` 碰了第四个键。
+# 对本字段上线前写的旧行(无 ruler 字段,本该按读侧惯例 `row.get("ruler","fwd_2_oc")`
+# 兜底成旧尺)这一行会**反向改写**成当前 MAIN_RULER——2026-08-08 活体验收真的把 103 条
+# 2026-07-10~08-04 的历史行改写成了 ruler=gap_c1_o2(方向反了:离换尺最近的行标旧尺、
+# 最老的行标新尺),违反仓库"历史产物不改写"家训。
+
+
+def test_update_ledger_gap_does_not_add_ruler_to_row_that_lacked_it(tmp_path):
+    """核心断言:旧行(无 ruler 字段)经 gap 终判后必须**仍然**没有 ruler 字段——docstring
+    承诺的"只追加/覆写三键"必须是真的,不能顺手加第四个键。"""
+    lp = tmp_path / "ledger.jsonl"
+    legacy_row = {"t": "2026-07-10", "code": "600001", "rating": "Overweight",
+                  "verdict": "准", "diagnosed": False}   # 本字段上线前的真实历史行形状,无 ruler
+    assert "ruler" not in legacy_row
+    lp.write_text(json.dumps(legacy_row, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    merged = pd.DataFrame([{"code": "600001", "gap_c1_o2": -0.05, "z_gap": -1.2,
+                            "final_verdict": "不准"}])
+    t1._update_ledger_gap("2026-07-10", merged, path=lp)
+
+    row = json.loads(lp.read_text(encoding="utf-8").splitlines()[0])
+    assert "ruler" not in row, "旧行不该被反向打上今天的 MAIN_RULER"
+    assert row["final_verdict"] == "不准"          # gap 终判该加的三键正常加
+    assert row["gap_c1_o2"] == pytest.approx(-0.05)
+    assert row["z_gap"] == pytest.approx(-1.2)
+    assert row["rating"] == "Overweight" and row["verdict"] == "准"   # 其余字段原样保留
+
+
+def test_update_ledger_gap_preserves_existing_ruler_on_row_that_had_it(tmp_path):
+    """既有行本来就带 ruler(如 append_ledger 写入那一刻打的)→ gap 终判不改写它
+    (`_update_ledger_gap` docstring 一直承诺的"其余字段原样保留",本测试锁住不回归)。"""
+    lp = tmp_path / "ledger.jsonl"
+    row_with_ruler = {"t": "2026-08-05", "code": "600018", "rating": "Hold",
+                      "verdict": "—", "diagnosed": False, "ruler": "fwd_2_oc"}
+    lp.write_text(json.dumps(row_with_ruler, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    merged = pd.DataFrame([{"code": "600018", "gap_c1_o2": 0.01, "z_gap": 0.3,
+                            "final_verdict": "—"}])
+    t1._update_ledger_gap("2026-08-05", merged, path=lp)
+
+    row = json.loads(lp.read_text(encoding="utf-8").splitlines()[0])
+    assert row["ruler"] == "fwd_2_oc"               # 未被 MAIN_RULER(gap_c1_o2)覆写
+
+
 def test_gap_finalize_skips_when_t2_not_ready(tmp_path):
     """T+2 未到 today(或价格未发布)→ 跳过,留给下次;返回 (0, []),不产生 final_verdict 列
     (「还没到时候」不是失败,不进失败名单)。"""
