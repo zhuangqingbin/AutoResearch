@@ -278,6 +278,22 @@ def test_normal_day_emits_exactly_one_relative_buy(tmp_path):
     assert buy["code"] == best["code"]
 
 
+def test_rule_version_is_pinned_and_reaches_the_written_product(tmp_path):
+    """产物 `rule_version` == 模块常量,**且**常量本身被钉住(两个漂移方向各锁一边)。
+
+    - 字面量断言挡"常量被人悄悄改了却没走治理流程";
+    - 落盘文件(不只是内存 dict)断言挡"常量改了但产物没跟"——下游 `relative_ledger`
+      与 `brief` 都是 `doc.get("rule_version")` 直取,产物漂了它们会静默记下错版本。
+
+    v1.1 = v1 + 两道硬门的 ABSENT 收紧;打分/选择语义与 v1 逐字相同(8 日回放零变化)。
+    """
+    assert RULE_VERSION == "e6.v1.1"
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    assert build_decision(scan)["rule_version"] == RULE_VERSION
+    written = json.loads(write_decision(scan).read_text(encoding="utf-8"))
+    assert written["rule_version"] == RULE_VERSION
+
+
 def test_ruler_is_bound_explicitly(tmp_path):
     """所有新读数列显式绑主尺 —— 报告里读到的相对分不能来路不明。"""
     doc = build_decision(_build_scan(tmp_path, _RANK_CANDS))

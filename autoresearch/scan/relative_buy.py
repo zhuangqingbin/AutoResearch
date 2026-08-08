@@ -26,6 +26,10 @@ GATED task(≥20 个真实扫描日影子 + 五守卫 + 人工批准),不在这�
 
 ## v1 规则(**观察前锁定**;任何改动 = 新 `RULE_VERSION` + experiment_registry)
 
+> 当前 `RULE_VERSION = "e6.v1.1"`。v1.1 只把两道硬门对"产物缺席"的静默放行堵上,
+> **打分与选择语义与 v1 逐字相同**(8 日回放零变化为证);下面这套规则原文因此仍然
+> 逐字有效,不需要按 v1.1 重读。差异见文件尾「修复轮 1」。
+
 边看结果边调参数 = 作弊。下面每条都是在看到任何一天的影子输出**之前**写死的。
 
 **候选集** = 当日 L4 派发过的票(护照 `l4.dispatched`)。L2 菜单里没走到 L4 的票不是
@@ -115,7 +119,14 @@ from autoresearch.common.ruler import MAIN_RULER, REL_MARKET, REL_SECTOR, entry_
 from autoresearch.scan.passport import build_passport
 
 SCHEMA_VERSION = 1
-RULE_VERSION = "e6.v1"
+RULE_VERSION = "e6.v1.1"
+# v1.1 = v1 + 两道硬门的 ABSENT 收紧(`data_a` 三个 status 一律要求 `== "OK"`;`contract`
+# 消费护照 `missing["l4.research_rating"]`)。**打分与选择语义与 v1 逐字相同** —— 四面算法 /
+# Borda 等权平均 / 并列决胜三级 / 第 2 只的门 / `expected_abs_gap` 一个字符未动。
+# 升版是**治理留痕**,不是作废重来:收紧的性质是堵住一处非预期放宽(产物缺席被静默当作
+# 通过),属恢复本意;8 日回放(2026-07-28..08-06)**零变化** —— 选票/分数/四面/合格数逐日
+# 全同 —— 即"已有观测未被污染、不需作废重跑"的实证(见 task-23-report 修复轮 §0.2)。
+# 2026-08-09 控制方裁定。
 DECISION_FILENAME = "_relative_buy_decision.json"
 MODE_SHADOW = "shadow"
 

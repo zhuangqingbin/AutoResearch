@@ -4,7 +4,19 @@
 > "有效/无效"都不成立。本文只做一件事:把 finalizer v1 在**已经发生过的日子**上会选谁、
 > 四面分怎么分布、事后三尺读数是多少,一次性钉在纸上,以后不许改口。
 
-- 上游:`autoresearch/scan/relative_buy.py`(T23,`rule_version=e6.v1`,规则**观察前锁定**)
+> **底片版本说明(2026-08-09 补,T23 修复轮 1)**:本底片产出于 `rule_version=e6.v1`。
+> 其后 finalizer 升到 **`e6.v1.1`** —— 该版只把两道硬门对"产物缺席"的静默放行堵上
+> (`data_a` 三个 status 一律要求 `== "OK"`;`contract` 消费护照
+> `missing["l4.research_rating"]`),**打分与选择语义与 v1 逐字相同**:四面算法 / Borda
+> 等权平均 / 并列决胜三级 / 第 2 只的门 / `expected_abs_gap` 一个字符未动。用 v1.1 重跑
+> 本底片这 8 天,**选票、score、四面分、候选/合格/排除数逐日全同**(只有 `rule_version`
+> 字符串本身从 `e6.v1` 变成 `e6.v1.1`)。**故本底片继续有效,下表不需重算、已有观测
+> 不作废。** 零变化的原因也已查明:v1.1 收紧的两条腿都要"产物缺席"才触发,而这 8 天
+> `core_missing=[]`、三个 status 全 `OK`、候选全部有终评级 —— 它堵的是**残局日**,这 8 天
+> 恰好都是完整日。
+
+- 上游:`autoresearch/scan/relative_buy.py`(T23,产出本底片时 `rule_version=e6.v1`;
+  现为 `e6.v1.1`,打分语义等价见上,规则**观察前锁定**)
 - 本轮产物:`context/learning/relative_buy.jsonl` + `reports/learning/relative_buy.md`
 - 主尺:`gap_c1_o2` = `open[D+2]/close[D+1]−1`;相对两列 `rel_gap_market`(主)/
   `rel_gap_sector`(辅),口径钉死 `ruler.REL_GAP_RULER`
