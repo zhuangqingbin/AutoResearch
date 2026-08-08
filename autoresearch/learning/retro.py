@@ -26,7 +26,14 @@ from pathlib import Path
 import pandas as pd
 
 from autoresearch.agents.utils.rating import RATINGS_5_TIER, parse_rating
-from autoresearch.common.ruler import EXIT_FLAG, MAIN_RULER, REL_MARKET, REL_SECTOR, entry_tradable
+from autoresearch.common.ruler import (
+    EXIT_FLAG,
+    MAIN_RULER,
+    REL_GAP_RULER,
+    REL_MARKET,
+    REL_SECTOR,
+    entry_tradable,
+)
 
 # 保送/观察单直通/菜单滞回——不是 L3 当日选的票,不进「L3 选股成绩」头条(pr_20260716_002,
 # 与 t1_review 同一裁定同一集合;后两种 lane 已退役但历史 scan 目录仍有存量行)。
@@ -59,19 +66,33 @@ def _rel_gap_cols(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
 
     T22(Wave12 E6-0,用户 2026-08-08 追加裁定的地基):系统对外只有一种 BUY——"今日可交易
     全集里相对最值得买"(不承诺绝对上涨)。相对基准 = 全市场可交易等权为主、行业中性超额
-    为辅,主评价尺仍是 `MAIN_RULER`(gap_c1_o2)。
+    为辅。
 
-    基准分母 = 当日通过入场旗的可交易票(`ruler.entry_tradable()`,C1 同款单点选旗)
-    ∧ `MAIN_RULER` 有数 —— **不是全市场所有行**(这是本列最容易做错的地方:含停牌/涨停
-    封死买不进的票会把"市场平均"算成不可执行的幻觉基准)。行业均值在同一分母内再按
-    `industry` 分组;票本身缺行业 / 该行业当日无可交易成员 → `rel_gap_sector` = NaN,
-    不猜(标签宁可留白,不像 `l2_stratify.sector_neutral` 那样为了打分连续性回退全局值)。
+    I-4(final-review 2026-08-08/09):口径钉死在字面量 `ruler.REL_GAP_RULER`("gap_c1_o2"),
+    **不**读动态 `MAIN_RULER`——批A 回滚杆把 `MAIN_RULER` 改回 `fwd_2_oc` 后这两列必须仍是
+    gap 口径,不能新旧行静默混尺(详细动机见 `ruler.py` REL_GAP_RULER 旁的长注释)。
 
-    注意:分子(每行自己的 `MAIN_RULER`)不要求该行自己可交易 —— 一只票哪怕当天买不进,
+    基准分母 = 当日通过入场旗的可交易票(`ruler.entry_tradable(frame, ruler_name=
+    REL_GAP_RULER)`,C1 同款单点选旗,但选旗口径同样钉死不随 MAIN_RULER 走)∧
+    `REL_GAP_RULER` 有数。
+
+    I-1(final-review 2026-08-08/09,人口裁定并留痕):分母是**全市场**可交易票(不区分是否
+    过 L0/L1/L2 门,只要当日真能买 ∧ 主尺有数就入分母),不是仅 L0 过门的子集——任务书
+    Interfaces 一度写「L0 可交易全集」,与用户裁定「全市场可交易等权」字面冲突,以用户裁定
+    为准(裁定与理由见 `ruler.py` REL_MARKET/REL_SECTOR 旁的 I-1 长注释)。这不是"全市场
+    所有行"(含停牌/涨停封死买不进的票仍会被 `entry_tradable` 剔出分母,C1 同款坑此列已经
+    绕开)。行业均值在同一分母内再按 `industry` 分组;票本身缺行业 / 该行业当日无可交易
+    成员 → `rel_gap_sector` = NaN,不猜(标签宁可留白,不像 `l2_stratify.sector_neutral`
+    那样为了打分连续性回退全局值)。
+
+    注意:分子(每行自己的 `REL_GAP_RULER`)不要求该行自己可交易 —— 一只票哪怕当天买不进,
     "它相对可执行市场基准表现如何"依然是有意义的读数(零买复盘/账本审计要看这个)。
+
+    I-2:与 `l3_marginal.day_frame` 的 `excess_2`(L3 内部反事实读数的市场基准,中位、跟随
+    MAIN_RULER)是两个刻意不同的市场基准,互指说明见 `ruler.py` 与 `l3_marginal.py` 两处。
     """
-    gap = pd.to_numeric(frame[MAIN_RULER], errors="coerce")
-    pool_mask = entry_tradable(frame) & gap.notna()
+    gap = pd.to_numeric(frame[REL_GAP_RULER], errors="coerce")
+    pool_mask = entry_tradable(frame, ruler_name=REL_GAP_RULER) & gap.notna()
     pool = gap[pool_mask]
     market_mean = float(pool.mean()) if len(pool) else float("nan")
     rel_market = gap - market_mean
@@ -1199,8 +1220,13 @@ def _backfill_rel_gap_columns(path: Path, attr: pd.DataFrame) -> bool:
 
     源列缺失(pre-Wave11-A3 的老文件,连 `gap_c1_o2`/`industry` 都没有)→ 无从回填,诚实
     返回 False,不碰文件。两列已存在 → 幂等跳过,返回 False。
+
+    I-4 修复(final-review 2026-08-08/09):存在性判据用字面量 `REL_GAP_RULER`,不用
+    `MAIN_RULER`——`_rel_gap_cols` 内部已钉死读 `REL_GAP_RULER`,若这里仍按动态 `MAIN_RULER`
+    判存在性,批A 回滚杆改回 `fwd_2_oc` 后,一份只有 `fwd_2_oc`、没有 `gap_c1_o2` 的老文件
+    会被误判"源列齐全"放行,实际调用 `_rel_gap_cols` 时 `frame[REL_GAP_RULER]` 直接 KeyError。
     """
-    if MAIN_RULER not in attr.columns or "industry" not in attr.columns:
+    if REL_GAP_RULER not in attr.columns or "industry" not in attr.columns:
         return False
     if REL_MARKET in attr.columns and REL_SECTOR in attr.columns:
         return False
