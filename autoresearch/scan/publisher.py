@@ -342,6 +342,16 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
         # Wave6 Q6:build_summary 内部才落 gate_fires.csv —— 上面那次快照必然把它记成
         # missing(07-24 实锤)。这里刷一次让 artifacts/missing 说真话;函数是纯快照,幂等。
         _health.write_run_health(scan_dir)
+    # ── brief.md(Wave12 T25 批C:报告双层的核心速读层;确定性、零 LLM)──
+    # **位置有讲究**,三个前置事实必须已经定稿才落 brief:
+    #   ① `_final_ratings.json` / `decision_records.json` / `gate_fires.csv` —— build_summary 内部才写;
+    #   ② `_relative_buy_decision.json` —— 上面 `publish_run_observation` 里 `safe_write_decision` 才写;
+    #   ③ `run_health.json` 的 counts/churn —— 紧邻上一行刚刷成终值。
+    # 放在 assemble 早段 = 读到半成品(FN-1 家族:探针读还没生成的产物)。
+    # 失败不阻断发布(summary 仍是完整产物);缺 brief 由 self_review 的 brief lint 报 fail。
+    from autoresearch.scan.brief import safe_write as _safe_write_brief
+
+    _safe_write_brief(scan_dir, out_base, analysis_date=analysis_date, run_folder=folder)
     with contextlib.suppress(Exception):
         # 最终快照必须等 manifest/summary/gate_fires/第二次 health 全部落盘后再 hash。
         # 同时覆盖 trace 里 assemble 前发布的旧 health，保证 staging/trace 同一事实。
