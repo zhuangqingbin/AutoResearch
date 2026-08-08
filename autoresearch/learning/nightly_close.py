@@ -92,7 +92,14 @@ def run(today: str) -> list[tuple[str, bool, str]]:
         # evidence_manifest 收尾(它读所有账本,必须在它们刷新之后)。
         # ⚠️ 动态调用面:本表以字符串拼名 import —— 删任何 learning 模块前先查这张表(2026-08-06 D3 勘误教训)
         names = ["journal", "buy_ledger", "cross_calib", "catalyst_ledger", "paper_nav",
-                 "channel_ledger", "gate_attribution", "gate_ledger", "zero_buy_ledger",
+                 "channel_ledger", "gate_attribution",
+                 # Wave12-T11:shadow_buys(近 miss「差一点」节的数据源)此前不在这张表——
+                 # 它的唯一写入路径是 publisher.py 的 is_real 门控块,失败即被
+                 # contextlib.suppress 静默吞掉、无补救,是该节 5/6 run 静默缺席的根因
+                 # (docs/specs/2026-08-08-wave12-seven-topics-design.md)。main()=backfill()
+                 # 幂等补全部历史 scan 日,补在这里当夜间兜底重跑。
+                 "shadow_buys",
+                 "gate_ledger", "zero_buy_ledger",
                  "changelog_ledger", "earlystop_ledger", "pinned_ledger",
                  # Wave10:哨兵校准(A12/C4)与 L3→L4 对齐(C2.1)都是纯读账本,
                  # 必须排在 gate_attribution 之后(对齐账本读它的 participation)。

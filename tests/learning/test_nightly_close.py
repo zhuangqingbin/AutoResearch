@@ -112,6 +112,56 @@ def test_main_exit_code_is_always_zero(monkeypatch, capsys):
     assert "✗ a" in capsys.readouterr().out
 
 
+# ───────────────────────── Wave12-T11 · shadow_buys 入 nightly 账本链 ─────────────────────────
+#
+# design: docs/specs/2026-08-08-wave12-seven-topics-design.md(2026-08-08 复核)——
+# `shadow_buys` 生成器不在 `_ledgers()` names 表,是 near-miss「差一点」节 5/6 run 静默
+# 缺席的根因:该节读 `context/learning/shadow_buys.csv` 当日行,唯一写入路径是
+# `publisher.py` 的 `is_real` 门控块(`contextlib.suppress(Exception)` 包裹,失败即静默无
+# 补救),夜间链此前没有任何兜底重跑。`_ledgers()` 的 names 是嵌套函数局部变量、不对外暴露,
+# 只能靠 mock `importlib.import_module` 捕获实际调用顺序来断言(不是读一个模块级常量)。
+
+
+def _mk_ledgers_noop_chain(monkeypatch):
+    """把 run() 前四步(retro/t1_backfill/t1_gap_finalize/tripwire)全部钉成「无待办」,
+    只留 `_ledgers()` 这一步的 `importlib.import_module` 调用可观测——与本文件其余测试的
+    既有 no-op 钉法同构。"""
+    monkeypatch.setattr("autoresearch.learning.retro.pending_days", lambda *a, **k: [])
+    monkeypatch.setattr("autoresearch.learning.t1_review.pending_pairs", lambda *a, **k: [])
+    monkeypatch.setattr("autoresearch.learning.t1_review.gap_finalize_pending",
+                        lambda *a, **k: (0, []))
+    monkeypatch.setattr("autoresearch.learning.tripwire_watch.check", lambda *a, **k: [])
+
+
+def test_ledgers_step_imports_shadow_buys_after_gate_attribution(monkeypatch):
+    calls: list[str] = []
+
+    def _fake_import(name):
+        calls.append(name)
+        return type("M", (), {"main": staticmethod(lambda *a: None)})()
+
+    _mk_ledgers_noop_chain(monkeypatch)
+    monkeypatch.setattr("importlib.import_module", _fake_import)
+
+    N.run("2026-07-28")
+
+    learning_calls = [c.rsplit(".", 1)[-1] for c in calls if c.startswith("autoresearch.learning.")]
+    assert "shadow_buys" in learning_calls
+    assert learning_calls.index("shadow_buys") > learning_calls.index("gate_attribution")
+
+
+def test_ledgers_step_full_chain_19_plus_1_all_ok(monkeypatch):
+    """mock 全链跑一遍:补 shadow_buys 后,学习侧 18 个 + scan 侧 2 个(structural_audit/
+    l2_slo)= 20 个模块全部 mock 成功 → 汇总行必须是 20/20(此前 19/19;19+1=20)。"""
+    _mk_ledgers_noop_chain(monkeypatch)
+    monkeypatch.setattr("importlib.import_module", lambda name: type(
+        "M", (), {"main": staticmethod(lambda *a: None)})())
+
+    res = {r[0]: r[2] for r in N.run("2026-07-28")}
+
+    assert res["ledgers"] == "20/20 刷新"
+
+
 def test_retro_step_writes_input_not_just_attribution(monkeypatch):
     """归因与备料必须成对:write_retro_input 吃的是 attribute() 的**内存帧**
     (CSV 落盘丢了 tradable 等派生列,从 CSV 重读会 KeyError)。首版只跑 attribute,
