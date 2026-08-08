@@ -31,7 +31,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from autoresearch.common.ruler import MAIN_RULER
+from autoresearch.common.ruler import MAIN_RULER, entry_tradable
 from autoresearch.scan.decision_read_model import read_decisions
 
 ECONOMIC_BAND = 0.02
@@ -150,11 +150,10 @@ def _market_fwd2(attr: pd.DataFrame | None) -> float | None:
     if attr is None or MAIN_RULER not in attr.columns:
         return None
     values = pd.to_numeric(attr[MAIN_RULER], errors="coerce")
-    buyable = (
-        attr["buyable"].map(_bool_value)
-        if "buyable" in attr.columns
-        else pd.Series(True, index=attr.index)
-    )
+    # C1 修复(Wave12-T5,final-review 2026-08-08 §A1):入场旗跟随 MAIN_RULER 选
+    # (entry_tradable 单点),不是硬编码 `attr["buyable"]`——那条换尺后仍读 D+1 开盘旗,
+    # 把「盘中开板、尾盘封死」的票误剔出折回分母。
+    buyable = entry_tradable(attr)
     tradable = (
         attr["tradable"].map(_bool_value)
         if "tradable" in attr.columns
@@ -169,6 +168,10 @@ def day_rows(scan_dir: Path | str) -> pd.DataFrame:
     facts = load_fold_facts(scan)
     attr = _read_attr(scan)
     market = _market_fwd2(attr)
+    # C1 修复(Wave12-T5,final-review 2026-08-08 §A1):入场旗跟随 MAIN_RULER 选
+    # (entry_tradable 单点),对整个 attr 帧一次性算好(镜像 `_market_fwd2`),循环内按 code
+    # 查——不是逐行硬编码 `row.get("buyable", True)`(那条换尺后仍读 D+1 开盘旗)。
+    entry_ok = entry_tradable(attr) if attr is not None else None
     rows = []
     for code, fact in facts.items():
         fwd = None
@@ -180,9 +183,12 @@ def day_rows(scan_dir: Path | str) -> pd.DataFrame:
                 pd.Series([row.get(MAIN_RULER)]),
                 errors="coerce",
             ).iloc[0]
+            ok = entry_ok.loc[code]
+            if isinstance(ok, pd.Series):
+                ok = ok.iloc[0]
             if (
                 not pd.isna(value)
-                and _bool_value(row.get("buyable", True))
+                and bool(ok)
                 and _bool_value(row.get("tradable", True))
             ):
                 fwd = float(value)

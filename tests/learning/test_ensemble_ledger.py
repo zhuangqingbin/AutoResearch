@@ -7,6 +7,8 @@ import pandas as pd
 import pytest
 
 from autoresearch.learning.ensemble_ledger import (
+    _market_fwd2,
+    day_rows,
     fold_outcome,
     roll,
     trigger_summary,
@@ -144,3 +146,49 @@ def test_present_corrupt_decision_book_is_loud(tmp_path):
     (scan / "decision_records.json").write_text("{", encoding="utf-8")
     with pytest.raises(Exception):
         roll(tmp_path)
+
+
+# ───────────────────────── Wave12-T5:入场旗随主尺(entry_tradable 单点,C1 唯一遗漏) ─────────────────────────
+
+
+def test_market_fwd2_includes_open_limit_but_close_unsealed_stock():
+    """C1 唯一遗漏(final-review 2026-08-08 §A1):D+1 开盘一字板(buyable=False)但 T+1 收盘
+    未封(buyable_c1=True)的票,在隔夜主尺 gap_c1_o2 下本应可交易——修复前按裸 'buyable'
+    误剔出 `_market_fwd2` 的分母。"""
+    attr = pd.DataFrame(
+        [
+            {"code": "000001", "gap_c1_o2": 0.05, "buyable": False,
+             "buyable_c1": True, "tradable": True},
+            {"code": "000002", "gap_c1_o2": -0.01, "buyable": True,
+             "buyable_c1": True, "tradable": True},
+        ]
+    ).set_index("code")
+    market = _market_fwd2(attr)
+    assert market is not None
+    assert abs(market - 0.02) < 1e-9   # median([0.05, -0.01]) —— 000001 必须留在样本内
+
+
+def test_day_rows_includes_open_limit_but_close_unsealed_stock(tmp_path):
+    """同上,端到端验证 `day_rows()` 逐票样本也吃到修复(不止 `_market_fwd2` 内部聚合)。"""
+    scan = tmp_path / "2026-07-28"
+    (scan / "details").mkdir(parents=True)
+    code = "000007"
+    record = _record(code, source="Overweight", final="Overweight",
+                     ratings=["Overweight", "Overweight"])
+    write_decision_records(scan, [record])
+    (scan / f"_ensemble_{code}.json").write_text(
+        json.dumps({
+            "code": code, "ratings": ["Overweight", "Overweight"],
+            "median": "Overweight", "spread": 0, "degraded": False,
+            "trigger": "ow_review", "n_runs": 2, "early_stopped": False,
+        }),
+        encoding="utf-8",
+    )
+    (scan / "details" / f"{code}.md").write_text("**Rating**: Overweight\n", encoding="utf-8")
+    (scan / "retro").mkdir()
+    pd.DataFrame([
+        {"code": code, "gap_c1_o2": 0.031, "buyable": False,
+         "buyable_c1": True, "tradable": True},
+    ]).to_csv(scan / "retro" / "attribution.csv", index=False)
+    rows = day_rows(scan).set_index("code")
+    assert rows.loc[code, "fwd_2_oc"] == pytest.approx(0.031)
