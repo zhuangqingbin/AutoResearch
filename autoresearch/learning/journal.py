@@ -17,13 +17,32 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common.ruler import EXIT_FLAG
+
 # Wave10 B2:「触发」列已随观察单退役(fb_20260714_002)删除 —— 30 个扫描日里非零 0 行、
 # 累计 0,它读的 `watchlist_status.csv` 已无生产者。恒 0 的列不是"没触发"的信息,
 # 是**一个不再有人喂的仪表**,留着只会让人以为这条腿还活着。
 # 历史 `watchlist_status.csv`(10 个扫描日)原样留在盘上,不回写、不删。
 # Wave12-T6(A3):补主尺列 mkt_gap(gap_c1_o2,历史回填、旧行 n 不清零——追加列不改旧值)。
+# Wave12-T9:补 EXIT_FLAG(unsellable_o2)聚合列 unsellable_n——消费点③(标旗不剔;
+# 另两处见 retro.unsellable_section 渲染 / paper_nav._unsellable_open 顺延结算)。
 _COLS = ["date", "regime", "knife", "healthy", "l2", "finalists", "cards", "buys",
-         "mkt_gap", "mkt_fwd1", "mkt_fwd5", "retro_done"]
+         "unsellable_n", "mkt_gap", "mkt_fwd1", "mkt_fwd5", "retro_done"]
+
+
+def _unsellable_n(attr: pd.DataFrame) -> int | None:
+    """当日「买了、且 T+2 卖不出」(EXIT_FLAG=`unsellable_o2`)行数。
+
+    presence-gated:缺 `bought`/EXIT_FLAG 列(旧 attribution)→ None(没法算,不是"确定
+    为 0")。CSV 往返后 `bought`/EXIT_FLAG 常是 object dtype 字符串,按 zero_buy_ledger.
+    `bought_mask` 同款三兼容(True/False bool、"True"/"1" 字符串)解析。
+    """
+    if "bought" not in attr.columns or EXIT_FLAG not in attr.columns:
+        return None
+    from autoresearch.learning.zero_buy_ledger import bought_mask
+    bought = bought_mask(attr)
+    flagged = attr[EXIT_FLAG].astype(str).str.lower().isin(("true", "1"))
+    return int((bought & flagged).sum())
 
 
 def _count_buys(d: Path, attr: pd.DataFrame | None) -> int:
@@ -48,7 +67,7 @@ def _day_row(d: Path) -> dict:
     from autoresearch.scan.menu import _healthy, _knife_share
     row: dict = {"date": d.name, "regime": None, "knife": None, "healthy": None,
                  "l2": None, "finalists": None, "cards": None, "buys": None,
-                 "mkt_gap": None, "mkt_fwd1": None, "mkt_fwd5": None,
+                 "unsellable_n": None, "mkt_gap": None, "mkt_fwd1": None, "mkt_fwd5": None,
                  "retro_done": (d / "retro" / "done.json").exists()}
     mp = d / "meta.json"
     if mp.exists():
@@ -78,6 +97,8 @@ def _day_row(d: Path) -> dict:
     if row["finalists"] is not None:
         row["buys"] = _count_buys(d, attr)
     if attr is not None:
+        with contextlib.suppress(Exception):
+            row["unsellable_n"] = _unsellable_n(attr)         # Wave12-T9:EXIT_FLAG 消费③
         with contextlib.suppress(Exception):
             # Wave12-T6:gap_c1_o2(隔夜主尺)→ mkt_gap 显式绑定,与 fwd_1_oo/fwd_5_oc
             # 参考列同一回填机制;字面量固定,勿随主尺漂移(镜像 zero_buy_ledger 同款)。
@@ -115,17 +136,19 @@ def render(df: pd.DataFrame) -> list[str]:
             return f"{x:.0%}"
         return str(int(x)) if isinstance(x, float) else str(x)
 
-    out += ["| 日期 | regime | 落刀 | 健康涨 | L2 | finalists | 卡 | 买 | 市场gap(主尺) | fwd1 | fwd5 | retro |",
-            "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    out += ["| 日期 | regime | 落刀 | 健康涨 | L2 | finalists | 卡 | 买 | ⚠️卖不出 | 市场gap(主尺) | fwd1 | fwd5 | retro |",
+            "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in df.itertuples(index=False):
         out.append(f"| {r.date} | {r.regime or '—'} | {_p(r.knife, frac=True)} | {_p(r.healthy)} "
                    f"| {_p(r.l2)} | {_p(r.finalists)} | {_p(r.cards)} | {_p(r.buys)} "
+                   f"| {_p(r.unsellable_n)} "
                    f"| {_p(r.mkt_gap, pct=True)} | {_p(r.mkt_fwd1, pct=True)} | {_p(r.mkt_fwd5, pct=True)} "
                    f"| {'✅' if r.retro_done else '…'} |")
     buys = pd.to_numeric(df["buys"], errors="coerce").fillna(0)
     zero = int((buys == 0).sum())
-    out += ["", f"- **汇总**:{len(df)} 个 scan 日;0 买日 {zero}。"
-            "落刀/健康涨看菜单质量,fwd 列回答\"那天市场到底给不给钱\"。"]
+    unsellable_total = int(pd.to_numeric(df["unsellable_n"], errors="coerce").fillna(0).sum())
+    out += ["", f"- **汇总**:{len(df)} 个 scan 日;0 买日 {zero};⚠️卖不出(EXIT_FLAG,标旗不剔)累计 "
+            f"{unsellable_total} 次。落刀/健康涨看菜单质量,fwd 列回答\"那天市场到底给不给钱\"。"]
     return out
 
 

@@ -239,6 +239,50 @@ def test_risk_block_gap_mode_relabels_market_line():
     assert "buy&hold" not in md.lower()                        # gap 模式不再冒用 buy&hold 标签
 
 
+# ───────────────────────── Wave12-T9 · EXIT_FLAG(unsellable_o2)消费②:gap 模式顺延结算 ─────────────────────────
+#
+# 用户裁定「标旗不剔」:卖不出(T+2 一字跌停开)不能被 paper_nav 假装能按跌停价强制卖飞——
+# 那会让纸面账本比真实情况更好看。实现口径锁定为「顺延到下一可卖开盘价」(镜像既有「入场日
+# 无价 → 顺延」的既有 None 兜底路径,同一套"继续持有、下一天再试"机制,只是判定条件从
+# "有没有价" 换成 "价是不是一字跌停开")。
+
+_UNSELLABLE_DAYS = ["20260701", "20260702", "20260703", "20260704"]
+# 600002(主板 10% 板):T+1(07-02)收盘 10.0 建仓;T+2(07-03)开=低=9.0=跌停开(卖不出,
+# 顺延);T+3(07-04)开 9.5(非一字板,可卖)→ 在这天以 9.5 结算。prices 三元组 = (open, close, low)。
+_UNSELLABLE_PRICES = {
+    ("20260702", "600002"): (9.0, 10.0, 8.8),
+    ("20260703", "600002"): (9.0, 9.0, 9.0),     # 一字跌停开:open==low 且较昨收 c1=10.0 跌 10%
+    ("20260704", "600002"): (9.5, 9.6, 9.0),     # 非一字板(open != low)→ 可卖
+}
+_UNSELLABLE_SIGNALS = [{"date": "2026-07-01", "code": "600002", "weight": 1.0}]
+
+
+def test_simulate_gap_mode_unsellable_open_defers_exit_to_next_sellable_open():
+    """T+2 一字跌停开 → 不在跌停价强制成交,顺延到 T+3 的可卖开盘价(9.5)结算。
+
+    若实现仍在跌停价(9.0)强制卖飞,nav 会定格在 0.1*9.0=0.90;顺延后应为 0.1*9.5=0.95。
+    """
+    nav, skipped = simulate(_UNSELLABLE_SIGNALS, _UNSELLABLE_PRICES, _UNSELLABLE_DAYS, mode="gap")
+    assert abs(nav.iloc[-1] - 0.95) < 1e-9
+    assert abs(nav.iloc[-1] - 0.90) > 1e-6            # 反证:不是在跌停价强制成交
+
+
+def test_simulate_gap_mode_unsellable_still_marks_to_market_while_held():
+    """顺延持仓期间仍按可得收盘价逐日估值(不是"卖不出就冻结净值")——07-03 当天 nav 应
+    反映持仓浮亏(0.1 股 × 收盘 9.0 = 0.9),而不是继续停在建仓日的 1.0。"""
+    nav, _ = simulate(_UNSELLABLE_SIGNALS, _UNSELLABLE_PRICES, _UNSELLABLE_DAYS, mode="gap")
+    assert abs(nav.loc["20260703"] - 0.90) < 1e-9
+
+
+def test_simulate_oc_mode_unaffected_by_unsellable_open_on_same_fixture():
+    """parity:顺延结算是 gap 模式专属口径(brief Step1 只锁 gap 腿),oc 模式沿用现行
+    "无价才顺延"规则,一字跌停开当天有价就照常在该价结算,不受本次改动影响。"""
+    nav, skipped = simulate(_UNSELLABLE_SIGNALS, _UNSELLABLE_PRICES, _UNSELLABLE_DAYS, hold=1)
+    # oc 模式:07-02 开盘(9.0)建仓,hold=1 → 07-03 开盘(9.0)平仓,不顺延。
+    assert abs(nav.iloc[-1] - 1.0) < 1e-9              # 9.0/9.0 打平
+    assert skipped == []
+
+
 def test_sized_nav_diverges_from_equal_weight_with_real_sizer(tmp_path):
     """端到端小样本:shadow_signals() 的 conviction → sizer.size_shadow_signals() 权重 →
     simulate() 双轨滚动——sized 轨与等权轨在同一信号下应产生不同(可解释)的 NAV 路径。

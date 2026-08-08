@@ -134,6 +134,42 @@ def test_journal_backfills_mkt_gap_from_attribution(tmp_path):
     assert abs(df.iloc[0]["mkt_gap"] - (-0.02)) < 1e-9   # mean(-0.015, -0.025)
 
 
+# ───────────────────────── Wave12-T9 · EXIT_FLAG(unsellable_o2)消费③:journal 聚合计数 ─────────────────────────
+
+
+def test_journal_cols_include_unsellable_n():
+    """标旗不剔的第三处消费点:journal 每日总账补 EXIT_FLAG(unsellable_o2)计数列。"""
+    assert "unsellable_n" in _COLS
+
+
+def test_journal_unsellable_n_counts_bought_and_flagged_only(tmp_path):
+    """只数「买了、且卖不出」的行 —— 没买的旗票 / 买了但能正常卖出的都不计入。"""
+    d = tmp_path / "2026-07-01"
+    (d / "details").mkdir(parents=True)
+    (d / "meta.json").write_text(json.dumps({"regime": "range"}), encoding="utf-8")
+    (d / "retro").mkdir()
+    pd.DataFrame([
+        {"code": "000001", "bought": True, "fwd_1_oo": -0.10, "unsellable_o2": True},    # 计入
+        {"code": "000002", "bought": False, "fwd_1_oo": 0.01, "unsellable_o2": True},    # 没买,不计
+        {"code": "000003", "bought": True, "fwd_1_oo": 0.02, "unsellable_o2": False},    # 卖得出,不计
+    ]).to_csv(d / "retro" / "attribution.csv", index=False)
+    df = roll(tmp_path)
+    assert df.iloc[0]["unsellable_n"] == 1
+
+
+def test_journal_unsellable_n_defaults_to_none_without_exit_flag_column(tmp_path):
+    """presence-gated:旧 attribution(无 unsellable_o2 列)→ 列存在但值缺席,不炸、不误判 0。"""
+    d = tmp_path / "2026-07-01"
+    (d / "details").mkdir(parents=True)
+    (d / "meta.json").write_text(json.dumps({"regime": "range"}), encoding="utf-8")
+    (d / "retro").mkdir()
+    pd.DataFrame([{"code": "000001", "bought": True, "fwd_1_oo": -0.10}]).to_csv(
+        d / "retro" / "attribution.csv", index=False)
+    df = roll(tmp_path)
+    assert "unsellable_n" in df.columns
+    assert pd.isna(df.iloc[0]["unsellable_n"])
+
+
 def test_journal_and_zero_buy_agree_on_same_attribution(tmp_path):
     """D5 收口验收:同一 attribution.csv 喂两本账,journal.buys 与 zero_buy_ledger.n_bought 现在同口径。
 

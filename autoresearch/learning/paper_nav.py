@@ -40,11 +40,16 @@ def trade_days(start: str = _START, lake: Path | None = None) -> list[str]:
 
 
 def load_prices(codes: set[str], days: list[str], lake: Path | None = None) -> dict:
-    """{(day, code6): (open, close)}——只读涉及票,NaN → None。"""
+    """{(day, code6): (open, close, low)}——只读涉及票,NaN → None。
+
+    `low`(Wave12-T9 新增第三元):`simulate(mode="gap")` 判定 EXIT_FLAG(T+2 一字跌停开=
+    卖不出)要用;向后兼容——旧调用方/旧测试 fixture 只喂/只解包 `(open, close)` 二元组仍
+    照常工作(`simulate` 对缺第三元的 value 按 `low=None` 处理,不判定为卖不出)。
+    """
     from autoresearch.data.tushare_source import _code6
     lake = Path(lake or _LAKE_DAILY)
     want = {str(c).zfill(6) for c in codes}
-    out: dict[tuple[str, str], tuple[float | None, float | None]] = {}
+    out: dict[tuple[str, str], tuple[float | None, float | None, float | None]] = {}
     if not want:
         return out
     for d in days:
@@ -52,15 +57,37 @@ def load_prices(codes: set[str], days: list[str], lake: Path | None = None) -> d
         if not p.exists():
             continue
         try:
-            df = pd.read_parquet(p, columns=["ts_code", "open", "close"])
+            df = pd.read_parquet(p, columns=["ts_code", "open", "close", "low"])
         except Exception:  # noqa: BLE001 — 坏分区跳过
             continue
         df = df.assign(_c=_code6(df["ts_code"]))
         for r in df[df["_c"].isin(want)].to_dict("records"):
             o = None if pd.isna(r["open"]) else float(r["open"])
             c = None if pd.isna(r["close"]) else float(r["close"])
-            out[(d, r["_c"])] = (o, c)
+            lo = None if pd.isna(r["low"]) else float(r["low"])
+            out[(d, r["_c"])] = (o, c, lo)
     return out
+
+
+def _unsellable_open(open_px: float | None, low_px: float | None,
+                     ref_close: float | None, code: str) -> bool:
+    """gap 模式卖腿是否撞上一字跌停开(EXIT_FLAG 口径的操作性镜像)。
+
+    公式对齐 `factor_lab.forward_returns` 生产 `unsellable_o2` 的判定(open≈全日最低 ∧
+    open 较前一交易日收盘≈跌停):`open_px<=low_px`(一字板:开盘就是当日最低)且
+    `open_px<=ref_close*(1-板幅*0.98/100)`。`ref_close` 传位置持仓当前的 `last_close`——
+    在被检查的这一天的估值步骤③运行**之前**读取,天然等于"上一个交易日的收盘价"(不论是
+    刚建仓当天还是顺延过 N 天后的某天,同一个字段递推着满足这个语义,不需要额外状态)。
+
+    缺任一价(open/low/ref_close)→ False(不确定不判定为卖不出——与既有"缺 open 才顺延"
+    路径同一保守方向:数据不全时照旧结算,不能让 low 数据缺失把整条 gap 主表都卡住;真正
+    的"未知"三态语义属于生产 `unsellable_o2` 那一层,这里只是操作决策,两层职责不同)。
+    """
+    if open_px is None or low_px is None or ref_close is None or ref_close <= 0:
+        return False
+    from autoresearch.research.factor_lab import _board_limit
+    lim = _board_limit(code)
+    return open_px <= low_px + 1e-6 and open_px <= ref_close * (1 - lim * 0.98 / 100.0)
 
 
 def simulate(signals: list[dict], prices: dict, days: list[str],
@@ -75,6 +102,13 @@ def simulate(signals: list[dict], prices: dict, days: list[str],
     mode 无关);持仓按最新可得 close 估值(停牌沿用)。信号日非交易日 → 跳过并记行。
     signal 可选带 "weight" 键(0-1,NAV 占比,S3 sized 轨用)覆盖 slot;缺省仍用 slot
     (等权轨)。
+
+    Wave12-T9(EXIT_FLAG `unsellable_o2` 消费②,实现口径就此锁定):mode="gap" 的到期平仓若
+    撞上**一字跌停开**(`_unsellable_open`:开=当日最低 且 较前收跌停)——**不**在跌停价强制
+    卖飞(那会让纸面账本比真实情况更好看,与用户"标旗不剔"裁定同一精神:卖不出=真实亏损
+    延续),而是**顺延到下一个可卖开盘价**结算,顺延期间持仓仍按当日可得收盘价逐日估值
+    (镜像既有"入场日无价→顺延"的兜底路径,同一套"继续持有、下一天再试"机制)。mode="oc"
+    不受影响(parity,该口径只锁 gap 腿——见 brief Step1)。
     """
     if mode not in ("oc", "gap"):
         raise ValueError(f"simulate: 未知 mode={mode!r}(仅接受 'oc'/'gap')")
@@ -98,9 +132,12 @@ def simulate(signals: list[dict], prices: dict, days: list[str],
     navs: list[float] = []
     for i, d in enumerate(days):
         keep = []
-        for p in pos:                                     # ① 到期平仓(无 open 顺延)
-            o = prices.get((d, p["code"]), (None, None))[0]
-            if p["exit_i"] <= i and o is not None:
+        for p in pos:                                     # ① 到期平仓(无价/一字跌停开 → 顺延)
+            v = prices.get((d, p["code"]), (None, None, None))
+            o = v[0]
+            low = v[2] if len(v) > 2 else None
+            blocked = mode == "gap" and _unsellable_open(o, low, p["last_close"], p["code"])
+            if p["exit_i"] <= i and o is not None and not blocked:
                 cash += p["shares"] * o
             else:
                 keep.append(p)
@@ -273,6 +310,10 @@ def render(days: list[str], real: pd.Series, shadow: pd.Series, mkt: pd.Series,
     if skipped:
         out += ["", "## 未入组信号"] + [f"- {s}" for s in skipped]
     out += ["", "_涨跌停/停牌可成交性未模拟;仅供研究,非投资建议。_"]
+    if mode == "gap":
+        out += ["_gap 卖腿撞上一字跌停开(EXIT_FLAG `unsellable_o2`)时不强制按跌停价卖飞,"
+                "顺延到下一个可卖开盘价结算(标旗不剔——卖不出=真实亏损延续,持仓期间仍按"
+                "当日可得收盘价估值)。_"]
     if sized is not None:
         out += ["", "_影子(sized) = S3 纸面仓位 sizer(分数 Kelly×波动率目标×流动性 cap;公式见 "
                     "`autoresearch/learning/sizer.py` docstring);presence-gated:无波动数据的"

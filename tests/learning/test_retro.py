@@ -379,6 +379,51 @@ def test_pending_split(tmp_path, monkeypatch):
     assert retro.pending_days(scan_root=tmp_path) == ["2026-08-01", "2026-08-02"]
 
 
+# ───────────────────────── Wave12-T9 · EXIT_FLAG(unsellable_o2)消费①:retro 渲染 ─────────────────────────
+#
+# 用户裁定「标旗不剔」(卖不出=真实亏损延续,剔了反而美化账本):unsellable_o2 此前生产/落盘
+# 齐全但零读侧消费(ruler.py 自己的注释都写着「A 建的字段 B 没消费」)。本节只锁"渲染出旗"
+# 这一件事——不改任何过滤/剔除行为。
+
+
+def test_unsellable_section_flags_bought_row_with_warning():
+    """构造 T+2 一字跌停开假票(unsellable_o2=True)且被买入 → 渲染出 ⚠️ 旗 + 代码。"""
+    attr = pd.DataFrame([
+        {"code": "600002", "name": "跌停出不去", "gap_c1_o2": -0.10, "bought": True,
+         "rating": "Overweight", "unsellable_o2": True},
+        {"code": "000001", "name": "正常卖出", "gap_c1_o2": 0.02, "bought": True,
+         "rating": "Overweight", "unsellable_o2": False},
+    ])
+    lines = retro.unsellable_section(attr)
+    text = "\n".join(lines)
+    assert "⚠️" in text
+    assert "600002" in text
+    assert "000001" not in text          # 只标真正卖不出的行,不是所有买单
+
+
+def test_unsellable_section_ignores_flagged_rows_that_were_not_bought():
+    """unsellable_o2=True 但当天没买(bought=False)→ 不进这一节(标旗对象是"要卖的仓位")。"""
+    attr = pd.DataFrame([
+        {"code": "600002", "name": "没买的跌停票", "gap_c1_o2": -0.10, "bought": False,
+         "rating": "Hold", "unsellable_o2": True},
+    ])
+    assert retro.unsellable_section(attr) == []
+
+
+def test_unsellable_section_empty_when_no_flag_column():
+    """presence-gated:旧 attribution(无 unsellable_o2 列)→ 空列表,不炸旧调用方。"""
+    attr = pd.DataFrame([{"code": "600002", "bought": True, "gap_c1_o2": -0.10}])
+    assert retro.unsellable_section(attr) == []
+
+
+def test_unsellable_section_empty_when_none_flagged():
+    attr = pd.DataFrame([
+        {"code": "600002", "name": "正常", "gap_c1_o2": 0.02, "bought": True,
+         "rating": "Overweight", "unsellable_o2": False},
+    ])
+    assert retro.unsellable_section(attr) == []
+
+
 def test_cli_pending_prints_two_sections(monkeypatch, capsys):
     """CLI `pending` 分两段打印,且标签与内容严格对应——本测试按**段落 scope** 断言
     (先按行定位到「归因欠账」/「诊断欠账」各自那一行,再只在该行内查日期),不是拿

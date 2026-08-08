@@ -26,7 +26,7 @@ from pathlib import Path
 import pandas as pd
 
 from autoresearch.agents.utils.rating import RATINGS_5_TIER, parse_rating
-from autoresearch.common.ruler import MAIN_RULER, entry_tradable
+from autoresearch.common.ruler import EXIT_FLAG, MAIN_RULER, entry_tradable
 
 # 保送/观察单直通/菜单滞回——不是 L3 当日选的票,不进「L3 选股成绩」头条(pr_20260716_002,
 # 与 t1_review 同一裁定同一集合;后两种 lane 已退役但历史 scan 目录仍有存量行)。
@@ -901,6 +901,34 @@ def _health_section(sdir: Path) -> list[str]:
     return out
 
 
+def unsellable_section(attr: pd.DataFrame) -> list[str]:
+    """`EXIT_FLAG`(`unsellable_o2`,T+2 一字跌停开=卖不出)消费点①:retro 渲染层。
+
+    Wave12-T9:该字段此前生产/落盘齐全但零读侧消费(`ruler.py` 自己的注释都写着「A 建的
+    字段 B 没消费」)。用户裁定「标旗不剔」——卖不出=真实亏损延续,把这些行从归因里剔除
+    反而会美化账本;所以这里只做**可见性**:单独点名"买了、且卖不出"的行,不过滤/不改
+    任何既有分桶(`caught`/`missed_l0`/… 等桶的成员资格完全不受影响)。
+
+    只标**买单**里的旗:`unsellable_o2` 对任意票(买或没买)都可能为真(跌停开是市场普遍
+    现象),但"标旗不剔=真实亏损延续"这句话字面意义上的对象只有已建仓的票——没买的旗票
+    不是"你的仓位卖不出",不进这一节。presence-gated:旧 attribution 缺 `bought`/
+    `EXIT_FLAG` 列 → 空列表,不新增章节(不炸旧调用方/旧产物)。
+    """
+    if "bought" not in attr.columns or EXIT_FLAG not in attr.columns:
+        return []
+    bought = _as_bool(attr["bought"])
+    flagged = _as_bool(attr[EXIT_FLAG])
+    hit = attr[(bought & flagged).to_numpy()]
+    if not len(hit):
+        return []
+    cols = [c for c in ("code", "name", MAIN_RULER, "rating") if c in hit.columns]
+    head = "| " + " | ".join(cols) + " |"
+    sep = "|" + "|".join(["---"] * len(cols)) + "|"
+    rows = ["| " + " | ".join(str(r[c]) for c in cols) + " |" for _, r in hit.iterrows()]
+    return [f"\n## ⚠️卖不出预警(`{EXIT_FLAG}`,T+2 一字跌停开;标旗不剔——卖不出=真实亏损延续,"
+            "不是过滤剔除)", head, sep, *rows]
+
+
 def write_retro_input(date: str, attr: pd.DataFrame, scan_root: Path | None = None) -> Path:
     """把 stage_stats + 漏判赢家 top(带因子行)+ 选中对照写成 retro_input.md(喂诊断)。"""
     scan_root = scan_root or Path("context/scan")
@@ -936,6 +964,8 @@ def write_retro_input(date: str, attr: pd.DataFrame, scan_root: Path | None = No
     caught = attr[attr["bucket"] == "caught"].sort_values(MAIN_RULER, ascending=False).head(10)
     lines += ["\n## 对照:抓到的赢家(caught, top 10)"]
     lines += _tbl(caught, fcols) if len(caught) else ["_无_"]
+
+    lines += unsellable_section(attr)          # Wave12-T9:EXIT_FLAG 消费①(标旗不剔,见函数 docstring)
 
     # ── T+5 盲区(swing 口径;spec 2026-07-02-scan-retro-depth-metrics)──
     if "winner_5" in attr.columns and attr["winner_5"].fillna(False).any():
