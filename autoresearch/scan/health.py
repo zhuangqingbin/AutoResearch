@@ -762,8 +762,17 @@ def index_md(scan_dir: Path, report_dir: Path) -> str:
     """报告目录导航页:summary/决策卡/trace 链接 + staging 在位 + 上一 run + 健康一行。"""
     scan_dir, report_dir = Path(scan_dir), Path(report_dir)
     h = run_health(scan_dir)
+    # Wave12-T28:入口切 brief —— 报告分两层,先读 ≤3KB 的确定性速读层,再按需下钻详细版。
+    # brief 缺席时**明说**(不静默回落到 summary):静默会让「brief 没生成」这件事不可见,
+    # 而 self_review 的 brief lint 正把它当 fail 处理。
+    brief_ok = (report_dir / "brief.md").exists()
     lines = [f"# 扫描现场索引 — 数据日 {h['date']}(run `{report_dir.name}`)\n",
-             "- **读我**:[summary.md](summary.md)(buy-list + 漏斗 + 各阶段概览)"]
+             ("- **读我(30 秒)**:[brief.md](brief.md)(≤3KB 确定性速读:市场/漏斗/BUY 结论"
+              "/持仓/风险哨/昨日 delta/欠账)" if brief_ok else
+              "- **读我(30 秒)**:`brief.md` **未生成** —— 速读层缺席(见 self_review 的 "
+              "`brief·缺失` 条目),先读详细版"),
+             "- **详细版**:[summary.md](summary.md)(buy-list + 漏斗 + 各阶段概览;"
+              "机器消费者 t1_review / retro **不读**本文正文,它们读结构化文件)"]
     cards = sorted((report_dir / "details").glob("*.md")) if (report_dir / "details").is_dir() else []
     if cards:
         lines.append(f"- **决策卡**({len(cards)} 张):" + "、".join(

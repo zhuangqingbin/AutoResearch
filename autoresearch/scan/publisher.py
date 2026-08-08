@@ -407,7 +407,10 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
         if refreshed_health.exists():
             shutil.copy2(refreshed_health, trace_dir / "run_health.json")
         n_pipe += 1
-    with contextlib.suppress(Exception):               # 现场导航页(第二天复盘入口)
+    # 现场导航页(第二天复盘入口)。**位置有讲究**(Wave12-T28):必须排在上面的
+    # `_publish_brief` 之后 —— `index_md` 的首行「读我」按 `brief.md` 是否在盘上分两种写法,
+    # 提前跑会永远写成「未生成」(FN-1 家族:探针读还没生成的产物)。
+    with contextlib.suppress(Exception):
         (out_base / "index.md").write_text(_health.index_md(scan_dir, out_base), encoding="utf-8")
     # 记账/刷新副作用共享同一条真实现场判据(resolve() 防相对/绝对路径假阴性)——
     # 测试 tmp 目录一律不触发,堵同类测试泄漏口(此前 sector_ledger 无门,曾单独裸奔)。

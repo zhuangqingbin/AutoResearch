@@ -371,6 +371,31 @@ def test_scan_market_skill_live_contract():
     assert "停因分桶" in md, "SKILL.md 收尾未要求 0买日播停因分桶(旧不实判词会复辟)"
 
 
+def test_cp7_broadcasts_brief_verbatim():
+    """Wave12-T28 入口切换:CP7 播报 = **读 brief.md 原文 + 附路径**。
+
+    brief 是确定性模板产物(≤3KB、零 LLM),主会话再复述一遍等于第二次编数面。锚同时钉
+    直播契约表的 CP7 行与步骤 5 的汇报段——只改一处会走漂。
+    """
+    md = (SKILLS / "scan-market" / "SKILL.md").read_text(encoding="utf-8")
+    # 契约表整块在 blockquote 里,行首是 "> " —— 用 startswith("| CP7 |") 会永远 StopIteration
+    cp7 = next(ln for ln in md.splitlines() if "| CP7 |" in ln)
+    assert "brief.md" in cp7, "CP7 行未切到 brief.md"
+    assert "原文" in cp7, "CP7 未写明「原文转播」(复述 = 第二次编数面)"
+    assert "brief.md" in md.split("**汇报(CP7)**")[1][:400], "步骤 5 汇报段未指向 brief"
+
+
+def test_skill_states_machine_consumers_do_not_read_summary():
+    """分层安全性的前提必须写在文档里:t1_review / retro **不解析 summary 正文**,
+    它们读结构化文件。不写下来,下一个人重排 summary 时会以为自己在动机器契约。"""
+    md = (SKILLS / "scan-market" / "SKILL.md").read_text(encoding="utf-8")
+    hits = [ln for ln in md.splitlines()
+            if "summary" in ln and ("t1" in ln or "retro" in ln)]
+    assert len(hits) >= 2, f"SKILL.md 需在两处写明机器消费者不读 summary,现 {len(hits)} 处"
+    for ln in hits[:2]:
+        assert "不读" in ln or "不解析" in ln, f"措辞不构成断言:{ln}"
+
+
 def test_macro_brief_consumes_new_pack_blocks():
     """Wave5 ③A:新接的 cross_money/index_val 必须有**消费者**契约。
 

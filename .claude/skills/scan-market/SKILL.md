@@ -57,8 +57,9 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
 > | CP4 | L4 派发 | 派发 N 股 + 预算旗 + intel 开关 + 📌保送名单 | workflow 日志 |
 > | CP5 | L4 进行中 | 每出一张卡播一行:k/N 代码 名称 评级 | `l4_watch` Monitor 自动播 |
 > | CP6 | L4 全完 | 评级分布 + 停因分桶 + OW三门直方图 | `autoresearch.scan.render <date> --view gate_hist` |
-> | CP7 | GATE4 过 | 买单/0买判词 + 产物路径 + 分段耗时 + **token 真计量** | `summary.md` + `--view timing` + `usage_harvest` |
+> | CP7 | GATE4 过 | **`brief.md` 原文全量转播** + 产物路径 + 分段耗时 + **token 真计量** | Read `reports/scan/<run_id>/brief.md`(≤3KB)+ `--view timing` + `usage_harvest` |
 >
+> **CP7 播报 = 读 brief 原文,不复述**:`brief.md` 是确定性模板产物(零 LLM,七节 ≤3,000B,同 run 重放 byte 稳定)——主会话再总结一遍只会新增编数面,还要多一次对账。原文贴出 + 附 `reports/scan/<run_id>/` 路径即可;要展开某一节再读 `summary.md`(详细版)。brief 缺席 = `self_review` 的 `brief·缺失` fail,如实播报,不要拿 summary 顶替。
 > **CP7 计量**:命令见步骤 5(含 `usage_reconcile`)。覆盖主会话+subagent,成本按公开计价倍率加权;缺 JSON 写 `UNMEASURED`,**不能写 `$0`**。
 > **唤醒纪律**(cache 读按全上下文计费,主会话曾独占近半全场成本):派发一次性全派、收通知只领不播,不出分析文字;CP2/CP3 合并播报,CP0/CP1/CP4/CP6/CP7 照常播。
 
@@ -122,8 +123,10 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
    uv run --no-sync python -m autoresearch.scan.post_run <date> observe \
      --report-dir reports/scan/<run_id>
    ```
-   → `reports/scan/<YYYYMMDD_HHMM>/`:`summary.md`+`details/`+`token_usage.md`+`trace/`。成本/墙钟成熟门(10 次真实扫描前恒 `IMMATURE`)见 STAGES.md『计量与跨层校准』;预算超线只写 warning/`DEGRADED`,不制造 BUY。
-   **汇报(CP7)**:漏斗 + buy-list + 分段耗时(`render --view timing`)+ 诚实局限;0 买日播**停因分桶**,**不要说「无一过 ≥OW 三门」**——早停卡按定义不写三门段(见 STAGES.md『运维细节』)。
+   → `reports/scan/<YYYYMMDD_HHMM>/`:**`brief.md`(≤3KB 速读,入口)**+`summary.md`(详细版)+`details/`+`token_usage.md`+`trace/`;`index.md` 首行即指 brief。成本/墙钟成熟门(10 次真实扫描前恒 `IMMATURE`)见 STAGES.md『计量与跨层校准』;预算超线只写 warning/`DEGRADED`,不制造 BUY。
+   **汇报(CP7)**:**先原文转播 `brief.md` 全文**(七节:市场/漏斗/BUY 结论/持仓/风险哨/昨日 delta/欠账),再补分段耗时(`render --view timing`)+ 产物路径;需要展开细节才引 `summary.md`。0 买日的**停因分桶**已由 brief ③ 自带,照贴即可,**不要说「无一过 ≥OW 三门」**——早停卡按定义不写三门段(见 STAGES.md『运维细节』)。
+   **报告分两层是安全的**:`t1_review` 与 `retro` **不解析 `summary.md` 正文**(它们读 `finalists.csv` / `decision_records.json` / `_final_ratings.json` / `retro/attribution.csv` 等结构化文件),所以重排/瘦身 summary 不影响任何机器消费者;红线文件 `details/*.md`、`finalists.csv`、`decision_records.json`、`shadow_buys.csv` 一字不动。
+   **brief 对账**:assemble 收尾自动跑 `self_review.brief_lint`(边表重算 + 正文锚在 + brief↔summary 同源 + active 期 BUY≥1 契约),结果追加进 `gate_fires.csv` 并打一行 `[brief lint] fail N`;**有 fail 先修根因再播**。
    **配置生效对账**:`usage_reconcile`(第四条命令)把配置期望×实测逐 role 对上,`ok=false` 直接打进 CP7 播报,不经 `self_review` 转手(见 STAGES.md『计量与跨层校准』)。
 
 6. **覆盖档案维护**(盘后,不占扫描窗;presence-gated,池空则整段跳过)
@@ -144,6 +147,7 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
 - **L3/L4 必须 subagent**(独立 context),只回传紧凑结果,否则撑爆主线。
 - **每只 finalist 走 stock-research lite 档**——继承其铁律。
 - **中间名单全 staging**,L5 发布到 `trace/` 留溯源。
+- **报告双层**:`brief.md` = 入口(确定性模板、零 LLM、≤3,000B、同 run 重放 byte 稳定),`summary.md` = 详细版。**不设收编官 agent**(2026-08-08 裁定 R-C1):brief 的内容全是结构化结论/计数/评级/tripwire,让 LLM 再压一遍只增加编数面与对账成本。`t1_review`/`retro` **不解析** summary 正文,只读结构化文件——所以重排/瘦身 summary 不动任何机器契约。
 - **诚实收尾**:召回/粗排是启发式 + fwd_2_oc 超短主尺 IC 校准(随 regime 漂移);L3/L4 是 Claude 推理产出;"仅供研究,非投资建议"。
 - **性能开关不拥有评级**:现仅存 `performance.streaming_l4`(默认 true;回滚设 `false`)。任何开关都不得改 finalist cap、rubric 三门、`fwd_2_oc` 或 BUY 数量(Wave10 B4 退役两个越权开关,详情见 STAGES.md)。
 - **模块归属**:`agents/l3_select.py`、`agents/l4_card.py`、`scan/assemble.py` 仅保留旧 import/CLI 兼容,新代码直连 `scan/l3/*`、`scan/l4/*` 等 owner 模块,不要塞回适配器。
