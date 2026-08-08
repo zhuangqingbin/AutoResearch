@@ -26,8 +26,14 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from autoresearch.common.ruler import MAIN_RULER
+
 # 真值根目录(可被 set_root 改向,供自测用 tempdir)
 KNOW = Path("context/knowledge")
+
+# Wave12-T10:MAIN_RULER 由 fwd_2_oc 换值 gap_c1_o2 的用户裁定日(见 autoresearch.common.
+# ruler 头部沿革)——lessons 无显式 `ruler` 字段的旧行,按写入日期与此分界推断活在哪把尺下。
+_RULER_SWITCH_DATE = "2026-08-05"
 
 _FEEDBACK = "feedback.jsonl"
 _LESSONS = "lessons.jsonl"
@@ -139,6 +145,10 @@ def upsert_lesson(slug: str, scope, rule: str, evidence: list[str],
     **确定性硬门**(发布买单触发即 fail)——经验反复强化后由 retro/feedback skill 给它写 guard 落地。
     regimes(可选,R1):经验只在这些 regime 生效(如 ["risk_off","range"]);缺省 = 全 regime
     (老记录兼容)。retro 写经验时标注当日 regime,防 regime 翻转后集体中毒。
+
+    Wave12-T10:每次新建/强化都打 `ruler`(写入那一刻的 `MAIN_RULER` 真值)——镜像
+    `retro.attribute_frame`/`t1_review.append_ledger` 同款 tag,供 `lesson_ruler()`/
+    `_lesson_bullet()` 渲染〔尺:…〕标;历史行(本字段上线前写的)不回填,读侧按写入日期兜底。
     """
     day = day or _today()
     lid = slug if slug.startswith("ls_") else f"ls_{slug}"
@@ -147,7 +157,8 @@ def upsert_lesson(slug: str, scope, rule: str, evidence: list[str],
     if idx is None:
         rec = {"id": lid, "scope": _norm_scope(scope), "rule": rule, "evidence": list(evidence),
                "confidence": round(float(confidence), 2), "created": day, "last_reinforced": day,
-               "reinforce_count": 1, "status": "active", "valid_from": day}   # M3·失效记账起点
+               "reinforce_count": 1, "status": "active", "valid_from": day,   # M3·失效记账起点
+               "ruler": MAIN_RULER}
         if guard is not None:
             rec["guard"] = guard
         if regimes:
@@ -166,6 +177,7 @@ def upsert_lesson(slug: str, scope, rule: str, evidence: list[str],
         rec["last_reinforced"] = day
         rec["reinforce_count"] = int(rec.get("reinforce_count", 1)) + 1
         rec["status"] = "active"
+        rec["ruler"] = MAIN_RULER
         if guard is not None:                 # 升/更新硬门(None 则保留原 guard,不误清)
             rec["guard"] = guard
         if regimes is not None:               # 同理:None 保留原 regimes
@@ -689,6 +701,21 @@ _TREND_BODY = "\n".join([
 _TREND_CALIBRATION = f"{_TREND_HEADER}\n{_TREND_INTRO}\n{_TREND_BODY}"
 
 
+def lesson_ruler(lsn: dict) -> str:
+    """经验行活在哪把尺下(Wave12-T10)。显式 `ruler` 字段优先;缺字段的旧行(本字段
+    上线前写的)按写入日期(`last_reinforced` 优先,兜底 `created`)与 `_RULER_SWITCH_DATE`
+    分界推断——早于切换日 → `fwd_2_oc`,晚于/等于 → 当前 `MAIN_RULER`(不是硬编码
+    `gap_c1_o2` 字面量,未来再换尺时随 `MAIN_RULER` 自动跟随)。两个日期字段都没有(理论
+    不该发生,防御性兜底)→ 诚实标旧尺,不抛异常——镜像 `retro.py` 对 `ruler` 缺列的读侧
+    兜底哲学(`row.get("ruler", "fwd_2_oc")`:旧行诚实标旧尺,不是"未知")。
+    """
+    r = lsn.get("ruler")
+    if r:
+        return r
+    written = lsn.get("last_reinforced") or lsn.get("created") or ""
+    return MAIN_RULER if written and written >= _RULER_SWITCH_DATE else "fwd_2_oc"
+
+
 def _lesson_bullet(lsn: dict) -> str:
     sc = lsn.get("scope", {})
     tag = "" if sc.get("kind") == "global" else f"[{sc.get('value')}] "
@@ -697,7 +724,8 @@ def _lesson_bullet(lsn: dict) -> str:
     if isinstance(lsn.get("guard"), dict):
         g = lsn["guard"]
         guard = f" 〖硬门 {g.get('field')}{g.get('op')}{g.get('value')}〗"
-    return f"- {tag}{lsn['rule']}{guard}  _(conf {lsn.get('confidence', 0):.2f}; {ev})_"
+    ruler_tag = f" 〔尺:{lesson_ruler(lsn)}〕"
+    return f"- {tag}{lsn['rule']}{guard}{ruler_tag}  _(conf {lsn.get('confidence', 0):.2f}; {ev})_"
 
 
 def _feedback_bullet(fb: dict) -> str:
