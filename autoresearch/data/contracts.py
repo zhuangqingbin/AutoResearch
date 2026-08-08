@@ -132,6 +132,12 @@ CONTRACTS: dict[str, Contract] = {
     "stock_restricted_release_queue_em": _c(TIER_DEGRADE, note="解禁队列"),
     "stock_news_em": _c(TIER_DEGRADE, note="个股新闻"),
     "stock_lhb_stock_statistic_em": _c(TIER_DEGRADE),
+    # 热度快照(Wave12 T2;design docs/research/2026-08-09-hot-rank-probe.md):爬虫式榜单接口
+    # 脆弱,一律 B 级——断采只损失当日、不阻断扫描,但必须记账(prewarm._hot_rank_snapshot 消费)。
+    # 快照型数据:今天不采,今天的历史就永远没有了(接口不接受历史参数,不能像 daily 那样事后
+    # 用 trade_date 回补)——这正是它排进夜间预热优先级最高的唯一理由。
+    "stock_hot_rank_em": _c(TIER_DEGRADE, note="东财人气榜:全市场TOP100热度快照,不可回填历史"),
+    "stock_hot_follow_xq": _c(TIER_DEGRADE, note="雪球关注度:全市场关注数快照,不可回填历史"),
     "stock_yjbb_em": _c(TIER_DEGRADE, note="业绩(报告期)"),
     "fina_mainbz": _c(TIER_DEGRADE, note="分业务收入/利润(dossier 业务模型;小票/金融股披露口径可缺)",
                       empty_ok=True),

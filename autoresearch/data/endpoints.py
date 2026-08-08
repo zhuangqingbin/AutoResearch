@@ -77,6 +77,14 @@ ENDPOINTS: dict[str, dict] = {
     "stock_restricted_release_queue_em": {"key": "as_of", "settle": "eod", "source": "akshare"},  # 解禁队列
     "stock_news_em": {"key": "as_of", "settle": "eod", "source": "akshare"},                   # 个股新闻
     "stock_lhb_stock_statistic_em": {"key": "as_of", "settle": "eod", "source": "akshare"},    # 龙虎榜统计
+    # 热度快照(Wave12 T2;design docs/research/2026-08-09-hot-rank-probe.md):两端点都是
+    # 全市场零 entity 快照(零参数或 symbol=分类选择器,非个股),不带日期列 —— 用 key="date"
+    # 会因 params 无 trade_date 类键而退化成字面量 "unkeyed"(每晚覆写同一文件,历史全丢);
+    # as_of 模式的原生兜底(entity 缺省 "all",as_of 缺省 today)才是正确的按天分区键。
+    # 调用方一律传空 params(见 T1 报告决策②:stock_news_em 先例把 as_of 塞进 params 会原样
+    # 透传进真实 akshare 调用并 TypeError,本组端点不重蹈)。
+    "stock_hot_rank_em": {"key": "as_of", "settle": "eod", "source": "akshare"},      # 东财人气榜(全市场TOP100快照)
+    "stock_hot_follow_xq": {"key": "as_of", "settle": "eod", "source": "akshare"},    # 雪球关注度(全市场快照)
     "stock_yjbb_em": {"key": "period", "settle": "eod", "source": "akshare"},                  # 业绩快报(报告期)
 
     # ── ② akshare 宏观(按取数日快照——月度序列,取一次留底) ──
