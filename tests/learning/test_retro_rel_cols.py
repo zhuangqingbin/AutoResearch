@@ -60,7 +60,7 @@ def test_rel_gap_cols_hand_computed_two_industries_four_tickers():
     market_mean = sum(gaps) / len(gaps)                 # 4 票全可交易 → 全体入分母
     elec_mean = (0.10 + 0.02) / 2
     pharma_mean = (-0.04 + 0.00) / 2
-    want_market = dict(zip(codes, [g - market_mean for g in gaps]))
+    want_market = dict(zip(codes, [g - market_mean for g in gaps], strict=True))
     want_sector = {"000001": gaps[0] - elec_mean, "000002": gaps[1] - elec_mean,
                    "000003": gaps[2] - pharma_mean, "000004": gaps[3] - pharma_mean}
 
