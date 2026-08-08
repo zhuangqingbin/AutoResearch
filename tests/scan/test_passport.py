@@ -42,6 +42,7 @@ _CHANNEL_ROWS = [
     ("momentum", "002345", 7, 63.25),
     ("value", "605088", 11, 55.5),
     ("heat", "300750", 6, 91.0),
+    ("growth", "600123", 9, 44.0),
 ]
 _L2_ROWS = [
     # l2_rank, code, name, industry, composite, recall_channels, n_channels,
@@ -58,20 +59,27 @@ _L2_ROWS = [
      False, True, "backfill", ""),
     (6, "300750", "宁德时代", "电池", 55.0, "heat", 1, 6,
      True, True, "pinned", ""),
+    # 600123 = finalist(guard=ins75 被救**进**)+ L4 派发过但没出评级(任务失败)
+    (7, "600123", "兰花科创", "煤炭开采", 52.4, "growth", 1, 9,
+     False, True, "backfill", ""),
 ]
 _KEPT = {  # code → (pass1 selection_reason, pass1 selection_detail)
     "600188": ("conviction_guard", "n_channels=3"),
     "002345": ("lane", "healthy"),
     "605088": ("lane", "value"),
     "300750": ("pinned", ""),
+    "600123": ("lane", "growth"),
 }
 _CUT = ["601112", "000034"]
 _JUDGED = {  # code → (conviction, mechanism, lane, triage_lean, finalist)
     "600188": (75, "板块轮动位:煤炭开采当日行业中位涨幅第一。", "healthy", "OW", True),
     "002345": (64, "题材梯队二线,D+1 买家是追热点的量能资金。", "healthy", "N", True),
     "605088": (48, "无接力资金,靠估值修复。", "value", "UW", False),
+    "600123": (78, "煤价见底,焦化毛利修复。", "growth", "OW", False),
 }
-_FINALIST_GUARD = {"600188": "", "002345": "", "300750": ""}
+# `guard` 是双向标记:`ins75` 记在被救**进** finalist 的行上(`merge.py:72-75`),
+# 它绝不是「为什么在 bench」。600123 就是这一侧。
+_FINALIST_GUARD = {"600188": "", "002345": "", "300750": "", "600123": "ins75"}
 _BENCH_GUARD = {"605088": "cap"}
 _L4 = {  # code → (final_rating, proposal, gate_states, early_stop, intel_avail)
     "600188": ("Hold", "HOLD",
@@ -129,8 +137,11 @@ def _build_scan(tmp_path: Path, *, with_selection_reason: bool = True) -> Path:
     _write_csv(scan / "_l3_pass1_cut.csv", ["code", "name", "gbdt_score"],
                [[code, _name_of(code), _score_of(code)] for code in _CUT])
 
+    # `_l3_judged.json` 是 **LLM 写的** —— code 完全可能落成 JSON 数字 `34` 而不是
+    # 字符串 `"000034"`(`merge.py:111` 就是为这个设的 zfill 防线)。fixture 故意用
+    # `int(code)` 写盘,让「护照读 JSON 时不 zfill」这种回归真的会红。
     (scan / "_l3_judged.json").write_text(json.dumps([
-        {"code": code, "name": _name_of(code), "sector": _sector_of(code),
+        {"code": int(code), "name": _name_of(code), "sector": _sector_of(code),
          "conviction": conviction, "mechanism": mechanism, "lane": lane,
          "triage_lean": lean, "sentiment": "看多", "finalist": finalist}
         for code, (conviction, mechanism, lane, lean, finalist) in _JUDGED.items()
@@ -164,15 +175,29 @@ def _build_scan(tmp_path: Path, *, with_selection_reason: bool = True) -> Path:
         )
         for code, (rating, proposal, gates, stop, _avail) in _L4.items()
     ])
+    # 同理:`_early_stop.json` 的 key 与 intel 状态的 `code` 也走 JSON 数字形态。
     (scan / "_early_stop.json").write_text(json.dumps(
-        {code: stop for code, (_r, _p, _g, stop, _a) in _L4.items() if stop},
+        {int(code): stop for code, (_r, _p, _g, stop, _a) in _L4.items() if stop},
         ensure_ascii=False), encoding="utf-8")
     for code, (_r, _p, _g, _stop, avail) in _L4.items():
         (scan / f"_l4_intel_status_{code}.json").write_text(json.dumps({
-            "schema_version": 1, "code": code, "acquisition": "FULL",
+            "schema_version": 1, "code": int(code), "acquisition": "FULL",
             "guard": "KEPT", "availability_for_card": avail,
         }, ensure_ascii=False), encoding="utf-8")
+
+    # task book:三只出了评级 + `600123` 派发过但任务失败(无卡无评级)。后者是
+    # `l4.dispatched` 唯一的用武之地 —— 它决定 `l4.research_rating` 进不进 `missing[]`。
+    (scan / "_l4_tasks.json").write_text(json.dumps({
+        "schema_version": 1, "date": DATE,
+        "tasks": {**{code: {"code": code, "status": "SUCCEEDED"} for code in _L4},
+                  "600123": {"code": "600123", "status": "FAILED"}},
+    }, ensure_ascii=False), encoding="utf-8")
     return scan
+
+
+def _rows_of(path: Path) -> list[dict]:
+    with path.open(encoding="utf-8", newline="") as handle:
+        return list(csv.DictReader(handle))
 
 
 def _name_of(code: str) -> str:
@@ -198,15 +223,38 @@ def test_every_l2_row_gets_a_passport(tmp_path):
     assert doc["counts"]["candidates"] == len(l2_codes)
 
 
-def test_leading_zero_codes_survive_the_csv_round_trip(tmp_path):
-    """`000034` 必须留住两个前导零 —— 本仓库 zfill(6) 事故的同族防线。"""
+def test_leading_zero_codes_survive_the_json_round_trip(tmp_path):
+    """`002345` → `2345` 是本仓库反复复发的坑,真实风险在 **JSON 侧**(LLM 写的
+    `_l3_judged.json` 会把 code 落成数字,`merge.py:111` 专门为它设过 zfill 防线)。
+
+    fixture 用 `int(code)` 写 judged / early_stop / intel_status 三处 —— 少一处 zfill,
+    对应的 L3/L4 事实就挂不到 `002345` 这一行上,下面的断言立刻红。
+    (旧版本这条测试只看 CSV 往返:两端都是 stdlib csv 读写字符串,零根本没机会丢,
+    复核者实跑证实删掉 zfill 后 19 条一条不红。)
+    """
     scan = _build_scan(tmp_path)
     doc = build_passport(scan)
-    assert "000034" in doc["candidates"]
+
     assert all(len(code) == 6 and code.isdigit() for code in doc["candidates"])
-    entry = doc["candidates"]["000034"]
-    assert entry["code"] == "000034"
-    assert entry["name"] == "神州数码"
+    assert {"000034", "002345"} <= set(doc["candidates"])
+    assert doc["candidates"]["000034"]["name"] == "神州数码"
+
+    # JSON 里写的是 2345,必须落到 002345 这一行,并且带上它的 L3/L4 事实
+    zero_led = doc["candidates"]["002345"]
+    assert zero_led["l3"]["judged"] is True, "judged JSON 的整数 code 没 zfill → 挂不上"
+    assert zero_led["l3"]["conviction"] == 64
+    assert zero_led["l4"]["earlystop_phase"] == "P3", "early_stop JSON 的整数 key 没 zfill"
+    assert zero_led["l4"]["intel_avail"] == "CARD_FALLBACK", "intel status 的整数 code 没 zfill"
+    # 反向:不许凭空冒出一个丢零的行
+    assert "2345" not in doc["candidates"]
+
+
+def test_pinned_rank_sentinel_matches_universe():
+    """哨兵值在两个模块各写一份 —— 上游一改,这条立刻红,不许悄悄漂移。"""
+    from autoresearch.scan import passport as mod
+    from autoresearch.scan.universe import _PINNED_RANK_SENTINEL
+
+    assert mod._PINNED_RANK_SENTINEL == _PINNED_RANK_SENTINEL
 
 
 # ── ② per_channel 名次与 L1_channels.csv 对得上 ─────────────────────────────
@@ -343,6 +391,24 @@ def test_repeated_build_is_byte_stable(tmp_path):
                                indent=2, sort_keys=True).encode("utf-8") + b"\n"
 
 
+def test_duplicate_channel_rows_resolve_order_independently(tmp_path):
+    """同 (channel, code) 重复出现是上游异常,但护照不能因为文件行序不同就产出两份
+    不同的护照。「后者胜」正是行序敏感的写法;取名次更好的那条才是行序无关的。"""
+    scan = _build_scan(tmp_path)
+    lines = (scan / "L1_channels.csv").read_text(encoding="utf-8").splitlines()
+    dup = ["healthy,002345,3,84.0"]              # 与既有 healthy,002345,1,88.0 重复
+    forward = lines + dup
+    backward = [lines[0], *dup, *lines[1:]]
+
+    (scan / "L1_channels.csv").write_text("\n".join(forward) + "\n", encoding="utf-8")
+    first = build_passport(scan)["candidates"]["002345"]["recall"]
+    (scan / "L1_channels.csv").write_text("\n".join(backward) + "\n", encoding="utf-8")
+    second = build_passport(scan)["candidates"]["002345"]["recall"]
+
+    assert first == second, "重复行的解析结果依赖了文件行序"
+    assert first["per_channel"]["healthy"]["rank"] == 1
+
+
 def test_build_is_insensitive_to_source_row_order(tmp_path):
     """同一批事实换个行序仍是同一份护照 —— 确定性不能靠源文件恰好有序。"""
     scan = _build_scan(tmp_path)
@@ -418,6 +484,184 @@ def test_empty_scan_dir_yields_empty_passport_without_raising(tmp_path):
     assert doc["candidates"] == {}
     assert doc["counts"]["candidates"] == 0
     assert doc["sources"]["l2"] == "ABSENT"
+
+
+# ── best_rank 不许把哨兵当名次(实测 8 个交易日真实命中)────────────────────
+def test_uncalled_pinned_gets_null_best_rank_not_the_sentinel(tmp_path):
+    """没被任何通道召回的 pinned 持仓,上游 `best_rank` 写 `10**9` 哨兵。
+
+    透出去的后果是 T23 拿它算横截面百分位 —— 而命中的恰恰是必须参与比较的持仓票
+    (实测 `920179` 连续 6 个交易日)。同一个块里 `n_channels=0` 已经说了"零通道",
+    `best_rank` 再给个可比大小的数就是自相矛盾。
+    """
+    from autoresearch.scan.universe import _PINNED_RANK_SENTINEL
+
+    scan = _build_scan(tmp_path)
+    # 300750 改成"保送但零通道":从 L1_channels 里抹掉它,L2 的 best_rank 换成哨兵
+    rows = (scan / "L1_channels.csv").read_text(encoding="utf-8").splitlines()
+    (scan / "L1_channels.csv").write_text(
+        "\n".join(r for r in rows if ",300750," not in f",{r},") + "\n",
+        encoding="utf-8")
+    l2 = (scan / "L2_gbdt_top200.csv").read_text(encoding="utf-8")
+    (scan / "L2_gbdt_top200.csv").write_text(
+        l2.replace(",heat,1,6,True,", f",heat,1,{_PINNED_RANK_SENTINEL},True,"),
+        encoding="utf-8")
+
+    recall = build_passport(scan)["candidates"]["300750"]["recall"]
+    assert recall["n_channels"] == 0
+    assert recall["channels"] == []
+    assert recall["best_rank"] is None, "哨兵 10**9 被当成真名次透出了"
+
+
+def test_best_rank_falls_back_but_still_filters_sentinel(tmp_path):
+    """`L1_channels.csv` 整个缺失时才回退 L2 列 —— 回退路径同样不许放哨兵过去。"""
+    from autoresearch.scan.universe import _PINNED_RANK_SENTINEL
+
+    scan = _build_scan(tmp_path)
+    (scan / "L1_channels.csv").unlink()
+    l2 = (scan / "L2_gbdt_top200.csv").read_text(encoding="utf-8")
+    (scan / "L2_gbdt_top200.csv").write_text(
+        l2.replace(",heat,1,6,True,", f",heat,1,{_PINNED_RANK_SENTINEL},True,"),
+        encoding="utf-8")
+
+    candidates = build_passport(scan)["candidates"]
+    assert candidates["300750"]["recall"]["best_rank"] is None
+    assert "recall.per_channel" in candidates["300750"]["missing"]
+    # 同一次回退里,正常的名次仍要读出来(否则这条测试可以靠"一律 None"作弊过关)
+    assert candidates["600188"]["recall"]["best_rank"] == 1
+
+
+# ── guard 是双向标记,bench_reason 只在 bench 那一侧才成立 ───────────────────
+def test_guard_on_a_finalist_is_not_a_bench_reason(tmp_path):
+    """`ins75` 是被强行救**进** finalist(`merge.py:72-75`),不是"为什么在 bench"。
+
+    `_swap_lane_quota` 更直接:给换进来的和被换出的**两边写同一个 guard 值**
+    (`merge.py:51-53`)。所以 `bench_reason` 必须以 tier 为门,否则字段名承诺了
+    它兑现不了的语义。
+    """
+    scan = _build_scan(tmp_path)
+    l3 = build_passport(scan)["candidates"]["600123"]["l3"]
+    assert l3["tier"] == "finalist"
+    assert l3["guard"] == "ins75", "raw guard 仍要留着,信息不能丢"
+    assert l3["bench_reason"] is None, "finalist 的 guard 被当成 bench 理由透出了"
+
+
+def test_guard_on_a_bench_row_is_the_bench_reason(tmp_path):
+    scan = _build_scan(tmp_path)
+    l3 = build_passport(scan)["candidates"]["605088"]["l3"]
+    assert l3["tier"] == "bench"
+    assert l3["guard"] == "cap"
+    assert l3["bench_reason"] == "cap"
+
+
+# ── 候选集外的 finalist 必须有对账信号,不许静默吞掉 ────────────────────────
+def test_finalists_outside_the_candidate_set_are_reported(tmp_path):
+    """实测 06-22/06-26/07-01 三天共 45 只 finalist 不在当日 L2 里。行集合口径不改
+    (spec 断言① 要求护照 = L2 全集),但差额必须报出来 —— 只读护照的下游否则会
+    以为它们不存在。"""
+    scan = _build_scan(tmp_path)
+    with (scan / "finalists.csv").open("a", encoding="utf-8", newline="") as handle:
+        csv.writer(handle).writerow(["999888.SZ", "999888", "幽灵", "测试", 70, "healthy", ""])
+
+    doc = build_passport(scan)
+    assert "999888" not in doc["candidates"], "行集合口径不该被改"
+    assert doc["orphans"]["finalists"] == ["999888"]
+    assert doc["counts"]["orphan_finalists"] == 1
+    assert doc["counts"]["orphan_rated"] == 0
+
+
+def test_no_orphans_on_a_consistent_run(tmp_path):
+    doc = build_passport(_build_scan(tmp_path))
+    assert doc["orphans"] == {"finalists": [], "rated": []}
+    assert doc["counts"]["orphan_finalists"] == 0
+
+
+# ── composite_pctl / dispatched:T23 的两个核心输入,必须有守卫 ──────────────
+def test_composite_pctl_values_and_direction(tmp_path):
+    """`composite_pctl` 是 T23 `target_align` 面的唯一来源。方向反了它整个决策就反了
+    —— 所以既锁逐值,也锁"综合分高的票分位必须更高"这个方向。"""
+    scan = _build_scan(tmp_path)
+    doc = build_passport(scan)
+
+    rows = _rows_of(scan / "L1_scored_full.csv")
+    total = len(rows)
+    assert total == len(_L2_ROWS)
+    for row in rows:
+        code, rank = row["code"].zfill(6), int(row["rank"])
+        assert doc["candidates"][code]["recall"]["composite_pctl"] == pytest.approx(
+            round((total - rank + 1) / total, 6)), code
+
+    # 方向:composite 最高的票分位最高,最低的最低(纯逐值断言挡不住整体取反)
+    ranked = sorted(_L2_ROWS, key=lambda r: -r[4])
+    top, bottom = ranked[0][1], ranked[-1][1]
+    assert doc["candidates"][top]["recall"]["composite_pctl"] == pytest.approx(1.0)
+    assert (doc["candidates"][top]["recall"]["composite_pctl"]
+            > doc["candidates"][bottom]["recall"]["composite_pctl"])
+
+
+def test_composite_pctl_absent_source_is_null_and_missing(tmp_path):
+    scan = _build_scan(tmp_path)
+    (scan / "L1_scored_full.csv").unlink()
+    doc = build_passport(scan)
+    entry = doc["candidates"]["600188"]
+    assert entry["recall"]["composite_pctl"] is None
+    assert "recall.composite_pctl" in entry["missing"]
+    assert doc["sources"]["l1_scored_full"] == "ABSENT"
+
+
+def test_dispatched_drives_the_missing_rating_alarm(tmp_path):
+    """`dispatched` 是 `l4.research_rating` 进不进 `missing[]` 的唯一开关,也是 T23 的
+    候选集口径。它坏掉的表现就是"报警永不响",所以必须两侧都断言。"""
+    scan = _build_scan(tmp_path)
+    doc = build_passport(scan)
+
+    # 派发过、任务失败没出评级 → 必须报警
+    failed = doc["candidates"]["600123"]["l4"]
+    assert failed["dispatched"] is True
+    assert failed["carded"] is False
+    assert failed["research_rating"] is None
+    assert "l4.research_rating" in doc["candidates"]["600123"]["missing"]
+
+    # 派发过且有评级 → 不报警
+    ok = doc["candidates"]["600188"]["l4"]
+    assert ok["dispatched"] is True and ok["carded"] is True
+    assert "l4.research_rating" not in doc["candidates"]["600188"]["missing"]
+
+    # 压根没派发 → 既不 dispatched 也不报警
+    never = doc["candidates"]["601112"]["l4"]
+    assert never["dispatched"] is False
+    assert doc["candidates"]["601112"]["missing"] == []
+
+
+def test_dispatched_reads_the_task_book_not_the_ratings(tmp_path):
+    """任务簿在场时就以它为准:抹掉任务簿里的一只,它的 dispatched 必须跟着变。"""
+    scan = _build_scan(tmp_path)
+    book = json.loads((scan / "_l4_tasks.json").read_text(encoding="utf-8"))
+    del book["tasks"]["600123"]
+    (scan / "_l4_tasks.json").write_text(json.dumps(book, ensure_ascii=False),
+                                         encoding="utf-8")
+    doc = build_passport(scan)
+    assert doc["candidates"]["600123"]["l4"]["dispatched"] is False
+    assert doc["candidates"]["600123"]["missing"] == []
+    assert doc["candidates"]["600188"]["l4"]["dispatched"] is True
+
+
+# ── judged JSON 形状不对必须回退,不许静默说"全体没被判过" ──────────────────
+def test_wrong_shaped_judged_json_falls_back_to_csv(tmp_path):
+    """`_l3_judged.json` 是 LLM 写的。写成 `{"judged":[...]}` 时若只认 list、
+    又不回退 CSV,结果是全体 `judged=false` 且 `missing[]` 全空 —— 静默说假话。"""
+    scan = _build_scan(tmp_path)
+    payload = json.loads((scan / "_l3_judged.json").read_text(encoding="utf-8"))
+    (scan / "_l3_judged.json").write_text(
+        json.dumps({"judged": payload}, ensure_ascii=False), encoding="utf-8")
+    _write_csv(scan / "L3_judged_full.csv",
+               ["code", "name", "conviction", "mechanism", "lane", "triage_lean"],
+               [[code, _name_of(code), conv, mech, lane, lean]
+                for code, (conv, mech, lane, lean, _fin) in _JUDGED.items()])
+
+    doc = build_passport(scan)
+    assert doc["candidates"]["600188"]["l3"]["judged"] is True
+    assert doc["candidates"]["600188"]["l3"]["conviction"] == 75
 
 
 # ── CLI + post_run 接线 ────────────────────────────────────────────────────

@@ -45,8 +45,21 @@ missing 会让这个数组每天都有 190 条噪音,真的缺列反而被淹掉
 
 - `risk_flags` ← `decision_records.gate_states`(非 PASS 的门)+ `early_stop`(停在哪相)
   + `IntelStatus.availability_for_card`(情报到底在不在场)。排序后输出。
-- `bench_reason` ← `finalists.csv` / `_l3_bench.csv` 的 `guard` 列
-  (`ins75|lt55|cap|healthy_quota|trend_quota|dup`,见 `l3/merge.py`)。
+- `guard` ← `finalists.csv` / `_l3_bench.csv` 的 `guard` 列原值
+  (`ins75|lt55|cap|healthy_quota|trend_quota|dup`,见 `l3/merge.py`)。它是**双向**标记:
+  `ins75` 是被救**进** finalist,`healthy_quota`/`trend_quota` 由 `_swap_lane_quota` 给
+  换进来的和被换出的**两边写同一个值**。
+- `bench_reason` = `guard`,但**只在 `tier=="bench"` 时给值**,finalist 行恒 `null`。
+  否则一个 `guard="ins75"` 的 finalist 会拿到 `bench_reason:"ins75"` —— 字段名承诺了
+  它兑现不了的语义。想看 finalist 被哪条守卫动过,读 `guard`。
+
+## 两个「不许拿数值冒充未知」的地方
+
+- `recall.best_rank`:没被任何通道召回的 pinned 持仓,上游写 `10**9` 哨兵
+  (`universe._PINNED_RANK_SENTINEL`)。护照一律转 `None` —— 实测 8 个交易日命中,
+  其中 `920179` 连续 6 日,恰恰是必须参与横截面比较的持仓票。
+- 根层 `orphans` / `counts.orphan_*`:行集合恒等于 L2 全集,但下游偶有 L2 之外的
+  finalist/评级(实测 3 天共 45 只)。不改行集合,但把差额显式报出来,不静默吞掉。
 
 ## 前导零
 
@@ -71,6 +84,13 @@ PASSPORT_FILENAME = "_candidate_passport.json"
 
 # `recall_channels` 里的哨兵 token —— 不是通道名(见 `l3/triage.py` 规则④的同款排除)
 _CHANNEL_SENTINELS = frozenset({"", "(backfill)", "pinned"})
+
+# `universe._inject_pinned_l1` 给「没被任何通道召回的 pinned 持仓」写的 best_rank 哨兵。
+# 它是「无名次」的编码,**不是**一个可比大小的名次:直接透出去,下游拿它算百分位会被
+# 10**9 整个拽偏。实测 8 个交易日命中(`688271` ×2、`920179` 连续 6 日),命中的恰是
+# 必须参与横截面比较的持仓票。这里只**认**它、不产生它;数值漂移由
+# `test_pinned_rank_sentinel_matches_universe` 盯着(那条测试直接 import 上游常量比对)。
+_PINNED_RANK_SENTINEL = 10**9
 
 
 # ── 读取原语(全部容忍缺文件;不容忍猜) ─────────────────────────────────────
@@ -142,12 +162,41 @@ def _recall_index(scan: Path) -> tuple[dict[str, dict[str, dict]], bool]:
     for row in rows:
         channel = str(row.get("channel") or "")
         rank = _int(row.get("channel_rank"))
-        index.setdefault(_code(row.get("code")), {})[channel] = {
+        entry = {
             "score": _float(row.get("channel_score")),
             "rank": rank,
             "pctl": _pctl(rank, sizes.get(channel, 0)),
         }
+        slot = index.setdefault(_code(row.get("code")), {})
+        prior = slot.get(channel)
+        # 同 (channel, code) 重复出现时取**名次更好的那条**,不是"后者胜"——后者胜让结果
+        # 依赖文件行序,与本模块的确定性承诺矛盾(重复行本身是上游异常,但护照不能因为
+        # 上游抖一下就产出两份不同的护照)。
+        if prior is None or (rank is not None
+                             and (prior["rank"] is None or rank < prior["rank"])):
+            slot[channel] = entry
     return index, True
+
+
+def _best_rank(ranks: list[int], row: dict, has_channels: bool) -> int | None:
+    """逐路名次里最好的一个;没有真名次就是 `None`,**不许拿哨兵冒充**。
+
+    三种情形:
+    ① 有逐路行 → `min(rank)`(真名次)。
+    ② `L1_channels.csv` 在、但这只票一行都没有 → 它**根本没被任何通道召回**
+       (pinned 直注 / `(backfill)` 补位)→ `None`。同一个 `recall` 块里
+       `n_channels=0`、`channels=[]` 已把这件事说清楚,`best_rank` 再给个数就是自相矛盾。
+       这不算 `missing[]`:没走过通道召回 ≠ 走了却读不到(见模块 docstring 的 missing 语义)。
+    ③ `L1_channels.csv` 整个缺失 → 退回 L2 的 `best_rank` 列,但**过滤哨兵**。
+    """
+    if ranks:
+        return min(ranks)
+    if has_channels:
+        return None
+    fallback = _int(row.get("best_rank"))
+    if fallback is None or fallback >= _PINNED_RANK_SENTINEL:
+        return None
+    return fallback
 
 
 def _composite_pctl_index(scan: Path) -> tuple[dict[str, float | None], bool]:
@@ -178,14 +227,20 @@ def _pass1_index(scan: Path) -> tuple[dict[str, dict], set[str], bool]:
 
 
 def _l3_index(scan: Path) -> tuple[dict[str, dict], dict[str, str], dict[str, str], bool]:
-    """judged 判断 + finalists/bench 的 `guard`(= 护照的 `bench_reason` 来源)。"""
+    """judged 判断 + finalists/bench 的 `guard` 列。
+
+    `_l3_judged.json` 是 **LLM 写的**:形状不合预期(如写成 `{"judged":[...]}`)必须落到
+    CSV 回退,而不是「认得出是 JSON 就当空名单收下」——后者会让全体 `judged=false` 且
+    `missing[]` 全空,静默说假话。故 `else` 而非 `elif judged_raw is None`。
+    同理 code 可能被 LLM 写成 JSON **数字** `34`,`_code()` 的 zfill 是唯一防线。
+    """
     judged_raw = _json(scan / "_l3_judged.json")
     judged: dict[str, dict] = {}
     if isinstance(judged_raw, list):
         for row in judged_raw:
-            if isinstance(row, dict) and row.get("code"):
+            if isinstance(row, dict) and row.get("code") is not None:
                 judged[_code(row["code"])] = row
-    elif judged_raw is None:
+    else:
         for row in _rows(scan / "L3_judged_full.csv") or []:
             judged[_code(row.get("code"))] = row
 
@@ -202,7 +257,7 @@ def _l4_index(scan: Path) -> dict:
     ratings = read_final_ratings(scan)
     records = {}
     if (scan / "decision_records.json").exists():
-        records = {code: record.to_dict()
+        records = {_code(code): record.to_dict()
                    for code, record in read_decisions(scan).items()}
     legacy_stop = _json(scan / "_early_stop.json")
     early_stop = {_code(code): value
@@ -284,7 +339,7 @@ def build_passport(scan_dir: Path | str) -> dict:
             "per_channel": {name: per_channel[name] for name in sorted(per_channel)},
             "unique": len(names) == 1,
             "n_channels": len(names),
-            "best_rank": min(ranks) if ranks else _int(row.get("best_rank")),
+            "best_rank": _best_rank(ranks, row, has_channels),
             "composite_pctl": composite_pctl.get(code),
         }
 
@@ -319,16 +374,23 @@ def build_passport(scan_dir: Path | str) -> dict:
         verdict = judged.get(code)
         is_finalist = code in finalists
         guard = finalists.get(code) or bench.get(code) or ""
+        tier = ("finalist" if is_finalist
+                else ("bench" if verdict is not None else None))
         l3 = {
             "judged": (None if not has_l3 else verdict is not None),
             "finalist": (None if not has_l3 else is_finalist),
-            "tier": ("finalist" if is_finalist
-                     else ("bench" if verdict is not None else None)),
+            "tier": tier,
             "conviction": _int(verdict.get("conviction")) if verdict else None,
             "mechanism": _text(verdict.get("mechanism")) if verdict else None,
             "lane": _text(verdict.get("lane")) if verdict else None,
             "triage_lean": _text(verdict.get("triage_lean")) if verdict else None,
-            "bench_reason": guard or None,
+            "guard": guard or None,
+            # `guard` 是**双向**守卫标记,不是「为什么在 bench」:`ins75` 是被强行救**进**
+            # finalist;`_swap_lane_quota` 对**换进来的和被换出的两边写同一个值**
+            # (`merge.py:51-53`)。所以只有落在 bench 那一侧时它才真是"落选理由"
+            # ——`bench_reason` 因此以 `tier=="bench"` 为门,finalist 行恒 null。
+            # 全部信息仍在 `guard` 里,想看 finalist 被哪条守卫动过就读它。
+            "bench_reason": (guard or None) if tier == "bench" else None,
         }
 
         # ── L4 决策卡 ──
@@ -367,10 +429,17 @@ def build_passport(scan_dir: Path | str) -> dict:
             "versions": {"rule": PASSPORT_RULE, "date": date},
         }
 
+    # 行集合 = L2 全集(spec 断言①)。下游更靠后的产物**偶尔会带 L2 之外的票**:实测
+    # 06-22 / 06-26 / 07-01 三天共 45 只 finalist 不在当日 L2 里(早期 run 的漏斗形态)。
+    # 不改行集合口径(那会破坏断言①),但**必须留一个对账信号**——静默少 45 只 finalist
+    # 而 counts 一切正常,下游(只读护照的 T21/T22/T25)会以为它们不存在。
+    orphan_finalists = sorted(set(finalists) - set(candidates))
+    orphan_rated = sorted(set(l4["ratings"]) - set(candidates))
     return {
         "schema_version": SCHEMA_VERSION,
         "rule": PASSPORT_RULE,
         "date": date,
+        "orphans": {"finalists": orphan_finalists, "rated": orphan_rated},
         "sources": {
             "l1_channels": "PRESENT" if has_channels else "ABSENT",
             "l1_scored_full": "PRESENT" if has_scored else "ABSENT",
@@ -388,6 +457,8 @@ def build_passport(scan_dir: Path | str) -> dict:
             "l3_finalists": sum(1 for e in candidates.values() if e["l3"]["finalist"]),
             "l4_carded": sum(1 for e in candidates.values() if e["l4"]["carded"]),
             "with_missing": sum(1 for e in candidates.values() if e["missing"]),
+            "orphan_finalists": len(orphan_finalists),
+            "orphan_rated": len(orphan_rated),
         },
         "candidates": {code: candidates[code] for code in sorted(candidates)},
     }
