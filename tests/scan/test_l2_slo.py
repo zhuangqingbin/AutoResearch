@@ -194,6 +194,26 @@ def test_guards_expose_concentration_and_lane_coverage(tmp_path):
     assert guards["selection_reason"] == {"merit": 1, "lane": 1, "backfill": 1}
 
 
+def test_guards_selection_reason_fires_on_real_universe_run_output(monkeypatch, tmp_path):
+    """T16 活转断言:此前 `universe.run` 写 `L2_gbdt_top200.csv` 时 `l2_cols` 白名单漏投影
+    `selection_reason`/`selection_detail`(见 test_universe_l2_cols.py),这条分布 guard 分支
+    (`_guards` 的 `if "selection_reason" in l2_frame.columns`)在**手搭 fixture**(本文件其余
+    测试,如 `test_guards_expose_concentration_and_lane_coverage`)上跑得通,但那些 fixture 都
+    是直接把这两列焊进 DataFrame——绕过了 `universe.run` 真实的落盘投影,盖不住"CSV 里根本
+    没有这一列"的洞。31 天扫描日的真实产物上,这条分支因此从未触发过。
+
+    这里直接跑一次 `universe.run`(mock 掉网络层)落真实 CSV,再原样喂给 `_guards`,锁住
+    "生产写盘 → guard 读到列 → 分支触发"这条链路真的接通,不是接口层面看着像通。
+    """
+    from tests.scan.test_universe_l2_cols import run_universe
+
+    outdir = run_universe(monkeypatch, tmp_path, l2_n=20)
+    l2_frame = pd.read_csv(outdir / "L2_gbdt_top200.csv", dtype={"code": str})
+    guards = l2_slo._guards(l2_frame)
+    assert "selection_reason" in guards, "guard 分支必须真的触发(31 天死分支活转)"
+    assert sum(guards["selection_reason"].values()) == len(l2_frame)
+
+
 def test_summary_warns_capture_is_not_the_only_metric(tmp_path):
     for i in range(1, 4):
         _day(tmp_path, f"2026-06-{i:02d}", l0=["900001"], l1=["900001"],

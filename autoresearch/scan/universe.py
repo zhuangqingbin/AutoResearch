@@ -456,7 +456,12 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
     # L2Rank stage 共用 select_l2 → golden parity。(design: 2026-06-25-l2-stratified-sampler)
     from autoresearch.scan.recall.l2_stratify import select_l2
     l2, l2_engine = select_l2(recall, l2_n, floors=l2_floors, sector_cap_frac=l2_sector_cap)
-    l2_cols = ["l2_rank", "gbdt_score", "l2_lane_reserved", "sector_mom", *keep]
+    # T16(Wave12 F1-3):select_l2 早算出 selection_reason/selection_detail(每票「因何进菜单」:
+    # merit 核/风格桶救回/行业 cap/保送/回填,见 l2_stratify.py),此前这两列漏投影进白名单——
+    # 内存里的 l2 有它们,CSV 却没有,导致 l2_slo._guards 的分布 guard 分支 31 天从未触发过
+    # (guards 自己的单测靠手搭 fixture 绕过了本落盘点,盖不住这个洞)。纯新增列,零名单影响。
+    l2_cols = ["l2_rank", "gbdt_score", "l2_lane_reserved", "sector_mom",
+              "selection_reason", "selection_detail", *keep]
     l2[[c for c in l2_cols if c in l2.columns]].to_csv(outdir / "L2_gbdt_top200.csv", index=False)
     print(f"[L2 粗排] recall {len(recall)} → {l2_engine} top {len(l2)}")
 
