@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from autoresearch.common.ruler import MAIN_RULER
 from autoresearch.learning.stage_eval import channel_edge
 
 
@@ -33,10 +34,14 @@ def _realized():
 
 def test_channel_edge_unique_membership_buyable_excess():
     ce = channel_edge(_recall(), _realized())
+    # Wave12-T12:补 ruler 列(写入那一刻的 MAIN_RULER,镜像 stage_eval.csv 的 _flat_csv
+    # 同款字段)——`*_t2` 系列列名本身不改,ruler 是唯一告诉读者"这些数字活在哪把尺下"的列。
     assert list(ce.columns) == ["channel", "n_recalled", "n_unique", "n_unbuyable",
                                 "mean_excess_t2", "unique_excess_t2", "hit_rate_t2",
-                                "mean_excess_t5", "unique_excess_t5", "mean_excess_t1", "hit_rate_t5"]
+                                "mean_excess_t5", "unique_excess_t5", "mean_excess_t1", "hit_rate_t5",
+                                "ruler"]
     heat = ce[ce["channel"] == "heat"].iloc[0]
+    assert heat["ruler"] == MAIN_RULER
     # 全市场 fwd_5_oc 中位 = 0.02。heat members=000001/000002/000005,000002 不可买被剔。
     assert heat["n_recalled"] == 3 and heat["n_unique"] == 2 and heat["n_unbuyable"] == 1
     # mean_excess_t5(heat,buyable 000001/000005)=((0.10-0.02)+(0.08-0.02))/2 = 0.07
@@ -93,6 +98,7 @@ def test_evaluate_writes_l1_channel_block(tmp_path):
     ce = pd.read_csv(sdir / "retro" / "channel_eval.csv")
     assert "unique_excess_t5" in ce.columns and "heat" in set(ce["channel"])
     assert "unique_excess_t2" in ce.columns
+    assert "ruler" in ce.columns and (ce["ruler"] == MAIN_RULER).all()
 
 
 def test_render_has_l1_channel_section():

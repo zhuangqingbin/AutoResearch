@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""P7 一次性回算:逐日 top3 → 成分等权 fwd_2_oc 中位 vs 合格宇宙中位 → 超额(零 LLM)。
+"""P7 一次性回算:逐日 top3 → 成分等权超额尺中位 vs 合格宇宙中位 → 超额(零 LLM)。
 
 design: docs/specs/2026-07-12-scan-speed-perimeter-design.md §P7 验收前置。
 一次性读数脚本(非常驻 harness——遵守 gate_backtest 已删的裁定);分数 = 生产同一函数
 `market.sector_healthy_top3`(单一事实源,带参改动自动同步)。数据 = factor_lab CACHE
 (daily/daily_basic/moneyflow 逐日 pkl + stock_basic/static.pkl 的 industry)。
+
+Wave12-T12 名实记档:超额尺跟随 `MAIN_RULER`(2026-08-05 起 `gap_c1_o2`,取代此前的
+`fwd_2_oc`——代码早已如此,`forward_returns(...)[MAIN_RULER]` 取数;此前本行文案与
+CSV 落盘列名 `top3_med_fwd2`/`mkt_med_fwd2`/`excess` 仍写死 "fwd2" 字样,读者会以为
+仍是旧尺。落盘列名本身不改(改名破读者),读数请对照当次跑的 MAIN_RULER 值)。
 
   uv run --no-sync python -m autoresearch.research.sector_top3_backtest --days 60
 """
@@ -57,8 +62,12 @@ def _day_frame(D: str, piv: dict, P: list[str], industry: pd.DataFrame) -> pd.Da
     return f.dropna(subset=["industry"])
 
 
+# Wave12-T12:抽成模块级常量,供测试直接断言(main() 主体依赖真实 factor_lab CACHE,不便测)。
+_DESC = f"P7 top3 一次性回算(超额尺跟随 MAIN_RULER,当前 {MAIN_RULER};原 fwd_2_oc)"
+
+
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="P7 top3 一次性回算(fwd_2_oc 超额)")
+    ap = argparse.ArgumentParser(description=_DESC)
     ap.add_argument("--days", type=int, default=60)
     args = ap.parse_args(argv)
     sb = pd.read_pickle(CACHE / "stock_basic" / "static.pkl")

@@ -115,6 +115,22 @@ def test_precedent_mark_renders_block_with_results(tmp_path):
     assert 1 <= n_items <= 3
 
 
+# ───────────────────────── Wave12-T12 · 名实记档:fwd_2 显示标签点名当前 ruler ─────────────────────────
+
+
+def test_precedent_mark_fwd2_label_names_current_ruler(tmp_path):
+    """`fwd_2` 这个逐条渲染标签沿用旧尺年代命名,但取数早已跟随 MAIN_RULER
+    (`_seed` 写的是 gap_c1_o2 列,-3.10% 那个读数就是 gap 尺算出来的)——展示文案须点名。"""
+    from autoresearch.common.ruler import MAIN_RULER
+    scan_root, _db = _seed(tmp_path, [
+        {"code": "002049", "name": "紫光国微", "date": "2026-07-01", "rating": "Hold", "sector": "半导体",
+         "gate_line": "OW三门 主力真在 ✓·业绩真兑现 ✗·估值不透支 ✗", "fwd_2": -0.031},
+    ])
+    base = _base_for(scan_root, "2026-07-10")
+    out = _precedent_mark(base, "000001", "半导体", None)
+    assert f"fwd_2({MAIN_RULER})" in out
+
+
 def test_precedent_mark_no_match_returns_empty(tmp_path):
     scan_root, _db = _seed(tmp_path, [
         {"code": "002049", "name": "紫光国微", "date": "2026-07-01", "rating": "Hold", "sector": "半导体"},

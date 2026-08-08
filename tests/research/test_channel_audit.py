@@ -316,6 +316,15 @@ def test_render_has_three_sections_and_thin_marker():
     assert "chan_a" in md and "chan_b" in md
 
 
+def test_render_title_notes_t2_column_name_ruler_lineage():
+    """Wave12-T12:不改列名(`*_t2` 沿用),但标题必须注明列名沿革——值现跟随 MAIN_RULER
+    (2026-08-05 起 gap_c1_o2),防读者把 `_t2` 字面当成仍是 fwd_2_oc。"""
+    from autoresearch.research.channel_audit import MAIN_RULER
+    md = "\n".join(render({"dates": [], "ledger": pd.DataFrame(), "jaccard": pd.DataFrame(), "notes": []}))
+    assert MAIN_RULER in md
+    assert "2026-08-05" in md
+
+
 def test_render_no_data_placeholder():
     md = "\n".join(render({"dates": [], "ledger": pd.DataFrame(), "jaccard": pd.DataFrame(), "notes": []}))
     assert "无数据" in md

@@ -106,10 +106,15 @@ def channel_edge(recall: pd.DataFrame, realized: pd.DataFrame) -> pd.DataFrame:
     recall:   L1_recall_top1000(需 code, recall_channels);realized:全市场(code, fwd_1_oo, fwd_2_oc, fwd_5_oc, buyable)。
     excess = 个股 fwd − 全市场截面中位;均值/命中只在 buyable 行;unique = recall_channels 仅此一路(边际 alpha)。
     返回列固定(t2 主 + t5/t1 参考保留、不删),按 unique_excess_t2 降序(None 殿后)。
+
+    Wave12-T12:落盘产物 `channel_eval.csv` 增 `ruler` 列(写入那一刻的 `MAIN_RULER` 真值,
+    镜像 `_flat_csv`/`retro.attribute_frame` 同款 tag)——`*_t2` 系列列名本身不改(改名破
+    全部读者),`ruler` 列是唯一告诉读者"这些 t2 数字现在活在哪把尺下"的字段。有/无数据
+    两分支 schema 一致(空表也带这一列),防 `to_csv` 因分支不同产出不同表头。
     """
     cols = ["channel", "n_recalled", "n_unique", "n_unbuyable",
             "mean_excess_t2", "unique_excess_t2", "hit_rate_t2",
-            "mean_excess_t5", "unique_excess_t5", "mean_excess_t1", "hit_rate_t5"]
+            "mean_excess_t5", "unique_excess_t5", "mean_excess_t1", "hit_rate_t5", "ruler"]
     if recall is None or not len(recall) or "recall_channels" not in recall.columns:
         return pd.DataFrame(columns=cols)
     r = _code6(recall)[["code", "recall_channels"]].copy()
@@ -153,6 +158,7 @@ def channel_edge(recall: pd.DataFrame, realized: pd.DataFrame) -> pd.DataFrame:
             "unique_excess_t5": _mean(ub["excess_t5"]),
             "mean_excess_t1": _mean(mb["excess_t1"]),
             "hit_rate_t5": round(float((ex5 > 0).mean()), 4) if len(ex5) else None,
+            "ruler": MAIN_RULER,
         })
     out = pd.DataFrame(rows, columns=cols)
     return out.sort_values("unique_excess_t2", ascending=False, na_position="last").reset_index(drop=True)
@@ -324,7 +330,8 @@ def _pct(x) -> str:
 def render_stage_eval(res: dict) -> list[str]:
     """逐段 edge → retro_input.md 区块(给 scan-retro skill 判断哪段该松/紧/重标定)。"""
     s = res.get("stages", {})
-    out = [f"\n## 各阶段 agent edge(已实现 {res.get('n_realized', '?')} 只;T+2 收口径主/T+5 参考,L2 用 T+1)"]
+    out = [f"\n## 各阶段 agent edge(已实现 {res.get('n_realized', '?')} 只;T+2 收口径主"
+           f"(=MAIN_RULER 当前值 {MAIN_RULER})/T+5 参考,L2 用 T+1)"]
     if not s:
         return out + ["_无可评估阶段(staging 缺失)_"]
     if "L1" in s:

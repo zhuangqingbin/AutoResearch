@@ -499,6 +499,21 @@ def test_cli_query_smoke(tmp_path, capsys):
     assert "002049" in out and "紫光国微" in out
 
 
+# ───────────────────────── Wave12-T12 · 名实记档:fwd_2 显示标签点名当前 ruler ─────────────────────────
+# `fwd_2` 这个 dict key/CLI 打印标签沿用旧尺年代的名字,但取数早已跟随 MAIN_RULER
+# (`_fwd2_lookup` 读 `df[MAIN_RULER]`,见上 test_query_matches_sector_and_gate_with_fwd2_join
+# 的 -0.031 读数就是 gap_c1_o2 fixture 算出的)——不改 dict key(改了要同步改全部消费点,
+# 含 scan/l4/context.py),只在人读的展示文案上点名当前尺。
+
+
+def test_cli_query_label_names_current_ruler(tmp_path, capsys):
+    from autoresearch.common.ruler import MAIN_RULER
+    _scan_root, db_path = _seed_corpus(tmp_path)
+    rc = prec.main(["query", "--sector", "半导体", "--gate", "估值不透支", "--db-path", str(db_path)])
+    assert rc == 0
+    assert f"fwd_2({MAIN_RULER})=" in capsys.readouterr().out
+
+
 def test_cli_query_flags_argument_wired(tmp_path, capsys):
     scan_root, db_path = _roots(tmp_path)
     _write_card(scan_root, "2026-07-01", "000111", "甲票", "Hold",

@@ -417,7 +417,8 @@ def _fetch_rows(conn: sqlite3.Connection, uids: list[str]) -> list[sqlite3.Row]:
 
 
 def _fwd2_lookup(scan_root: Path, date: str, code: str | None, cache: dict) -> float | None:
-    """best-effort join `retro/attribution.csv` 的 `fwd_2_oc`——缺文件/缺列/缺行 → None。"""
+    """best-effort join `retro/attribution.csv` 的 `MAIN_RULER` 列(2026-08-05 起 `gap_c1_o2`,
+    取代此前的 `fwd_2_oc`;返回值键名仍叫 `fwd_2`,见 `query()` 文档)——缺文件/缺列/缺行 → None。"""
     if not date or not code:
         return None
     if date not in cache:
@@ -444,8 +445,10 @@ def query(sector: str | None = None, gate: str | None = None,
           db_path: Path | str | None = None) -> list[dict]:
     """跨票同型判例检索——sector/gate/flags 全部 AND('同型' = 各维度都吻合,非任一命中)。
 
-    每条结果 `{date, code, name, verdict_line, fwd_2}`;fwd_2 best-effort join
-    attribution.csv(缺 → None,不硬依赖)。db 不存在/主表不存在/窗口内无数据 → `[]`。
+    每条结果 `{date, code, name, verdict_line, fwd_2}`;`fwd_2` 键名沿用旧尺年代(不改,
+    改了要同步改全部消费点,含 `scan/l4/context.py`),值 best-effort join
+    attribution.csv 的 `MAIN_RULER` 列(2026-08-05 起 `gap_c1_o2`;缺 → None,不硬依赖)。
+    db 不存在/主表不存在/窗口内无数据 → `[]`。
     FTS5 可用则用 fts5 镜像表 MATCH(bm25 rank 排序);不可用则对主表 LIKE(date DESC 排序)——
     两分支返回同一形状,调用方无感。
     """
@@ -520,7 +523,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     for r in rows:
         fwd = f"{r['fwd_2']:+.4f}" if r["fwd_2"] is not None else "—"
-        print(f"  {r['date']} {r['code'] or '—'} {r['name'] or '—'} | {r['verdict_line']} | fwd_2={fwd}")
+        # Wave12-T12:标签点名当前 MAIN_RULER(dict key `fwd_2` 本身不改,见 query() 文档)。
+        print(f"  {r['date']} {r['code'] or '—'} {r['name'] or '—'} | {r['verdict_line']} "
+              f"| fwd_2({MAIN_RULER})={fwd}")
     return 0
 
 

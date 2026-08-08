@@ -176,6 +176,18 @@ def test_render_and_suggestion_lines(tmp_path):
     assert "吸筹" in md and "业绩真兑现" in md
 
 
+# ───────────────────────── Wave12-T12 · 名实记档:门柱节标题点名当前 MAIN_RULER ─────────────────────────
+
+
+def test_render_gate_header_names_current_ruler():
+    """列名 `ex2`/`mean_ex2` 沿革自 fwd_2_oc 年代不改(改名破全部读者),但渲染标题必须
+    点名"T+2 到底是哪把尺"——不能让读者只看到裸的"T+2"就默认它仍是 fwd_2_oc。"""
+    from autoresearch.learning.cross_calib import MAIN_RULER, render
+    md = "\n".join(render(pd.DataFrame(), pd.DataFrame()))
+    assert MAIN_RULER in md
+    assert "门柱级拦对/错杀" in md            # 仍是原节,不是新起一节
+
+
 def test_suggestion_lines_flip_all_below_floor_falls_back_to_placeholder(tmp_path):
     """全部 lane 的高确信样本 <MIN_N_INJECT(=3)→ 🔁 行仍是"先积累"占位文案(真无信息可报)。"""
     from autoresearch.learning.cross_calib import flip_stats, gate_stats, suggestion_lines

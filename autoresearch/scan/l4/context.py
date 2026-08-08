@@ -192,12 +192,13 @@ def _precedent_mark(base: Path, code6: str, sector, gate_hint: str | None = None
         return ""
     if not rows:
         return ""
+    from autoresearch.common.ruler import MAIN_RULER   # Wave12-T12:标签点名当前尺(名实记档)
     out = ["- **📚 判例(跨票同型,advisory)**:近90日同型 top-3(仅供旁证,不进分不设门)"]
     for r in rows:
         fwd = r.get("fwd_2")
         fwd_txt = f"{fwd * 100:+.2f}%" if fwd is not None else "—"
         out.append(f"  - {r.get('date') or '—'} {r.get('code') or '—'} {r.get('name') or '—'}"
-                   f" | {r.get('verdict_line') or '—'} | fwd_2 {fwd_txt}")
+                   f" | {r.get('verdict_line') or '—'} | fwd_2({MAIN_RULER}) {fwd_txt}")
     return "\n".join(out)
 
 def _dossier_summary_text(code6: str) -> str:

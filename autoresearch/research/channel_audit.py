@@ -252,7 +252,9 @@ def render(result: dict) -> list[str]:
     """整编报告三节 markdown(纯函数)。"""
     dates = result.get("dates") or []
     span = f"{dates[0]} ~ {dates[-1]}({len(dates)} 日)" if dates else "无数据"
-    out = ["# 通道整编报告(证据件,零 LLM)", "", f"窗口:{span}", ""]
+    out = ["# 通道整编报告(证据件,零 LLM)", "", f"窗口:{span}",
+           f"_列名沿革:`*_t2` 列名不改(改名破全部读者),但值已跟随 `MAIN_RULER`"
+           f"(2026-08-05 起由 `fwd_2_oc` 切至 `{MAIN_RULER}`)。_", ""]
 
     out += [f"## ① 各路累计 T+2 账本(n_days < {_THIN_DAYS} 标 ⚠薄样本)", ""]
     ledger: pd.DataFrame = result.get("ledger", pd.DataFrame())

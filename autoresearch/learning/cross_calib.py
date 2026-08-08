@@ -7,7 +7,9 @@ design: docs/specs/2026-07-05-scan-metering-calibration-wave-design.md §7
 L3 校准块旁);② **rubric 门柱级拦对/错杀**(binding gate = 唯一✗门 × attribution 前向,
 机会成本红队的确定性对账面;口径对齐 gate_ledger:ex = 被拦票 fwd − 全市场均值,主口径 T+2
 (ex2<0=拦对,错杀 = ex2>0 且触价命中卡内目标——日期分界:v3 起 hi_2_oc,旧卡 hi_10_oc;
-ex5 保留供参考)。**校准不改门/权重/评级**——只给判断层"你自己的历史倾向"数字。
+ex5 保留供参考)。**「T+2」= 跟随 `MAIN_RULER` 的当前值**(2026-08-05 起 gap_c1_o2,取代
+此前 fwd_2_oc;Wave12-T12 名实记档——`ex2`/`mean_ex2` 等列名本身不改,只是列名沿革自旧尺
+年代,值已跟随换尺)。**校准不改门/权重/评级**——只给判断层"你自己的历史倾向"数字。
 
 `flip_stats` 的 `flip_rate` 是**收缩估计**(design 2026-07-12-selflearning-optimization-
 brainstorm.md §4 P0-3,C9-C12):p̂=(n·p_桶+k·p_全局)/(n+k),n_hiconv<3(`shrink.MIN_N_INJECT`)
@@ -148,7 +150,9 @@ def gate_stats(scan_root: Path | str | None = None, window: int = 30,
                min_n: int = 10) -> pd.DataFrame:
     """Gate bucket × attribution → 每门拦对率/错杀率。
 
-    主口径 T+2(`ex2`,fwd_2_oc);T+5(`ex5`)保留供参考。触价命中走卡契约日期分界
+    主口径 T+2(`ex2`,跟随 `MAIN_RULER`——2026-08-05 起 `gap_c1_o2`,取代此前 `fwd_2_oc`;
+    见 `f2 = _num(MAIN_RULER)` 取数,列名 `ex2` 本身不随尺改)。T+5(`ex5`)保留供参考。
+    触价命中走卡契约日期分界
     (`buy_ledger.target_hit_for`:switch 日起按 hi_2_oc 判,旧卡按 hi_10_oc 判)。
     DecisionRecord 存在时以结构化事实为准:唯一 FAIL、多个 FAIL、UNKNOWN 分别计入
     本门、"多门"、"不可判";仅历史日缺 DecisionRecord 时才解析 Markdown。
@@ -311,7 +315,8 @@ def render(flips: pd.DataFrame, gates: pd.DataFrame) -> list[str]:
             out.append(f"| {r.lane} | {r.n} | {r.n_hiconv} | {f(r.flip_rate)} "
                        f"| {r.triage_n} | {f(r.triage_hit)} "
                        f"| {r.lean_n} | {f(r.lean_confirm_rate)} | {thin} |")
-    out += ["", "## 🚪 rubric 门柱级拦对/错杀(binding=唯一✗门;ex2<0=拦对(主口径,T+2);"
+    out += ["", f"## 🚪 rubric 门柱级拦对/错杀(binding=唯一✗门;ex2<0=拦对"
+            f"(主口径,T+2=MAIN_RULER 当前值 {MAIN_RULER});"
             "错杀=ex2>0 且触价命中卡内目标——日期分界:v3 起 hi_2,旧卡 hi_10;ex5 列供参考)", ""]
     if gates is None or not len(gates):
         out.append("_无门柱 × attribution 数据_")

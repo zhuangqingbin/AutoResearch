@@ -44,6 +44,37 @@ def test_channel_edge_excludes_row_when_legacy_buyable_true_but_buyable_c1_false
     assert row["mean_excess_t2"] == pytest.approx(-0.24)
 
 
+# ───────────────────────── Wave12-T12 · channel_eval.csv 增 ruler 列 + 渲染标题记档 ─────────────────────────
+
+
+def test_channel_edge_output_includes_ruler_column():
+    """channel_eval.csv(channel_edge 的落盘产物)此前无 ruler 列——`*_t2` 列名不改,
+    但要能分辨这些超额值出自哪把尺(镜像 stage_eval.csv 的 _flat_csv 同款字段)。"""
+    recall = pd.DataFrame({"code": ["000001"], "recall_channels": ["momentum"]})
+    realized = pd.DataFrame({
+        "code": ["000001"], "gap_c1_o2": [0.02], "fwd_5_oc": [0.0], "fwd_1_oo": [0.0],
+        "buyable": [True], "buyable_c1": [True],
+    })
+    out = stage_eval.channel_edge(recall, realized)
+    assert "ruler" in out.columns
+    assert (out["ruler"] == stage_eval.MAIN_RULER).all()
+
+
+def test_channel_edge_empty_frame_still_has_ruler_column():
+    """空表(无 recall_channels 列/无行)也要带 ruler 列——schema 在有/无数据两分支下一致,
+    下游 `ce.to_csv()` 不会因为分支不同产出不同表头。"""
+    out = stage_eval.channel_edge(pd.DataFrame(columns=["code"]), pd.DataFrame())
+    assert "ruler" in out.columns
+    assert out.empty
+
+
+def test_render_stage_eval_title_names_current_ruler():
+    """T12:各阶段 agent edge 标题必须点名当前 MAIN_RULER,不能让"T+2"读者默认它是 fwd_2_oc。"""
+    lines = stage_eval.render_stage_eval({"date": "2026-07-01", "n_realized": 0, "stages": {}})
+    md = "\n".join(lines)
+    assert stage_eval.MAIN_RULER in md
+
+
 def test_l4_ratings_prefer_decision_record(tmp_path):
     from autoresearch.scan.decision_record import (
         DecisionRecord,
