@@ -21,8 +21,9 @@ import pandas as pd
 # 累计 0,它读的 `watchlist_status.csv` 已无生产者。恒 0 的列不是"没触发"的信息,
 # 是**一个不再有人喂的仪表**,留着只会让人以为这条腿还活着。
 # 历史 `watchlist_status.csv`(10 个扫描日)原样留在盘上,不回写、不删。
+# Wave12-T6(A3):补主尺列 mkt_gap(gap_c1_o2,历史回填、旧行 n 不清零——追加列不改旧值)。
 _COLS = ["date", "regime", "knife", "healthy", "l2", "finalists", "cards", "buys",
-         "mkt_fwd1", "mkt_fwd5", "retro_done"]
+         "mkt_gap", "mkt_fwd1", "mkt_fwd5", "retro_done"]
 
 
 def _count_buys(d: Path, attr: pd.DataFrame | None) -> int:
@@ -47,7 +48,7 @@ def _day_row(d: Path) -> dict:
     from autoresearch.scan.menu import _healthy, _knife_share
     row: dict = {"date": d.name, "regime": None, "knife": None, "healthy": None,
                  "l2": None, "finalists": None, "cards": None, "buys": None,
-                 "mkt_fwd1": None, "mkt_fwd5": None,
+                 "mkt_gap": None, "mkt_fwd1": None, "mkt_fwd5": None,
                  "retro_done": (d / "retro" / "done.json").exists()}
     mp = d / "meta.json"
     if mp.exists():
@@ -78,7 +79,10 @@ def _day_row(d: Path) -> dict:
         row["buys"] = _count_buys(d, attr)
     if attr is not None:
         with contextlib.suppress(Exception):
-            for src, dst in [("fwd_1_oo", "mkt_fwd1"), ("fwd_5_oc", "mkt_fwd5")]:
+            # Wave12-T6:gap_c1_o2(隔夜主尺)→ mkt_gap 显式绑定,与 fwd_1_oo/fwd_5_oc
+            # 参考列同一回填机制;字面量固定,勿随主尺漂移(镜像 zero_buy_ledger 同款)。
+            for src, dst in [("gap_c1_o2", "mkt_gap"), ("fwd_1_oo", "mkt_fwd1"),
+                             ("fwd_5_oc", "mkt_fwd5")]:
                 if src in attr.columns:
                     v = pd.to_numeric(attr[src], errors="coerce").dropna()
                     if len(v):
@@ -111,12 +115,12 @@ def render(df: pd.DataFrame) -> list[str]:
             return f"{x:.0%}"
         return str(int(x)) if isinstance(x, float) else str(x)
 
-    out += ["| 日期 | regime | 落刀 | 健康涨 | L2 | finalists | 卡 | 买 | 市场fwd1 | fwd5 | retro |",
-            "|---|---|---|---|---|---|---|---|---|---|---|"]
+    out += ["| 日期 | regime | 落刀 | 健康涨 | L2 | finalists | 卡 | 买 | 市场gap(主尺) | fwd1 | fwd5 | retro |",
+            "|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in df.itertuples(index=False):
         out.append(f"| {r.date} | {r.regime or '—'} | {_p(r.knife, frac=True)} | {_p(r.healthy)} "
                    f"| {_p(r.l2)} | {_p(r.finalists)} | {_p(r.cards)} | {_p(r.buys)} "
-                   f"| {_p(r.mkt_fwd1, pct=True)} | {_p(r.mkt_fwd5, pct=True)} "
+                   f"| {_p(r.mkt_gap, pct=True)} | {_p(r.mkt_fwd1, pct=True)} | {_p(r.mkt_fwd5, pct=True)} "
                    f"| {'✅' if r.retro_done else '…'} |")
     buys = pd.to_numeric(df["buys"], errors="coerce").fillna(0)
     zero = int((buys == 0).sum())

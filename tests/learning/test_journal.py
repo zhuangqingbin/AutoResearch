@@ -8,7 +8,7 @@ import json
 
 import pandas as pd
 
-from autoresearch.learning.journal import render, roll
+from autoresearch.learning.journal import _COLS, render, roll
 
 
 def _mk_day(root, date, regime="range", with_retro=False, stale_watchlist=False):
@@ -109,6 +109,29 @@ def test_journal_buys_falls_back_without_bought_column(tmp_path):
                      attribution_rows=[{"code": "000001", "fwd_1_oo": 0.01}])   # 无 bought 列
     df = roll(tmp_path)
     assert df.iloc[0]["buys"] == 1
+
+
+def test_journal_cols_include_mkt_gap():
+    """T6(A3):journal 每日总账补主尺列 mkt_gap(_COLS schema 断言)。"""
+    assert "mkt_gap" in _COLS
+
+
+def test_journal_backfills_mkt_gap_from_attribution(tmp_path):
+    """T6(A3):gap_c1_o2 → mkt_gap 的回填路径真的写值(不是只加了个恒 None 的空列)。"""
+    d = tmp_path / "2026-07-01"
+    (d / "details").mkdir(parents=True)
+    (d / "meta.json").write_text(json.dumps({"regime": "range"}), encoding="utf-8")
+    pd.DataFrame([{"code": "000001", "name": "甲", "sector": "半导体"}]).to_csv(
+        d / "finalists.csv", index=False)
+    (d / "details" / "000001.md").write_text("**Rating**: Hold\n", encoding="utf-8")
+    (d / "retro").mkdir()
+    pd.DataFrame([
+        {"code": "000001", "fwd_1_oo": 0.02, "fwd_5_oc": 0.03, "gap_c1_o2": -0.015},
+        {"code": "000002", "fwd_1_oo": -0.01, "fwd_5_oc": 0.01, "gap_c1_o2": -0.025},
+    ]).to_csv(d / "retro" / "attribution.csv", index=False)
+    df = roll(tmp_path)
+    assert "mkt_gap" in df.columns
+    assert abs(df.iloc[0]["mkt_gap"] - (-0.02)) < 1e-9   # mean(-0.015, -0.025)
 
 
 def test_journal_and_zero_buy_agree_on_same_attribution(tmp_path):

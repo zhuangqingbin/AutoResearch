@@ -10,13 +10,15 @@ import pandas as pd
 from autoresearch.learning.zero_buy_ledger import bought_mask, render, roll
 
 
-def _mk_day(root, date, bought_flags, fwd1, fwd5, fwd2=None):
+def _mk_day(root, date, bought_flags, fwd1, fwd5, fwd2=None, gap=None):
     d = root / date / "retro"
     d.mkdir(parents=True)
     data = {"code": [f"{i:06d}" for i in range(len(bought_flags))],
             "bought": bought_flags, "fwd_1_oo": fwd1, "fwd_5_oc": fwd5}
     if fwd2 is not None:
         data["fwd_2_oc"] = fwd2
+    if gap is not None:
+        data["gap_c1_o2"] = gap
     pd.DataFrame(data).to_csv(d / "attribution.csv", index=False)
 
 
@@ -85,6 +87,19 @@ def test_render_can_include_causal_verdict_summary():
     text = "\n".join(render(legacy, causal=causal))
     assert "因果裁决" in text
     assert "FALSE" in text
+
+
+def test_verdict_follows_gap_not_fwd2_when_they_disagree(tmp_path):
+    """T6(A3):gap(隔夜主尺)为负、fwd_2(降参考)为正的 0 买日 —— verdict 必须按 gap 出
+    「空仓方向正确」,不能再被 fwd_2 带偏(镜像§1.2 07-29 类日按 gap 翻转的现象)。"""
+    _mk_day(tmp_path, "2026-06-24", [False, False], [0.01, 0.02], [0.03, 0.05],
+            fwd2=[0.03, 0.04], gap=[-0.02, -0.01])
+    led = roll(tmp_path)
+    assert "mkt_gap" in led.columns
+    assert abs(led.iloc[0]["mkt_gap"] - (-0.015)) < 1e-9
+    lines = "\n".join(render(led))
+    assert "空仓方向正确" in lines
+    assert "(主尺)" in lines
 
 
 def test_bought_mask_is_public_and_reused_by_journal(tmp_path):
