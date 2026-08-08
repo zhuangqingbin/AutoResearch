@@ -6,7 +6,8 @@ design: docs/specs/2026-07-12-scan-speed-perimeter-design.md §P1。
 - 目标日 == 今天时设 LAKE_ASSUME_SETTLED=1(cache 层仅对 d==today 放行入湖,未来日恒拒;
   完整性守卫 = 既有契约层:get_or_fetch「拉取→check→原子写」,A 级空/残缺抛且拒写,湖零污染);
 - build_market_frame 全市场取数入湖(daily×20 + 快照端点)→ L3 evidence 三端点预拉(P2a 已走湖)
-  → temperature rollup → 写 _prewarm.json(stage_timing「预热」行消费);
+  → temperature rollup → 热度快照(东财人气/雪球关注,Wave12 T3;B 级断采不挡预热,见
+  `_hot_rank_snapshot`)→ 写 _prewarm.json(stage_timing「预热」行消费);
 - calibrate **默认不跑**:夜跑自动 recalibrate 会在不扫描的日子也改 weights + 记 changelog,
   污染 DSR-lite trial 计数(P0-6)——`--with-calibrate` 手动旋钮。
 幂等:湖已有该日数据 → 全程命中秒退。失败退出码非零、不阻断(晚间扫描回落现路径)。
@@ -79,6 +80,34 @@ def _dossier_prefetch(date: str) -> str:
     return f"池预取 {sum(1 for v in r.values() if v)}/{len(r)}"
 
 
+_HOT_RANK_ENDPOINTS = ("stock_hot_rank_em", "stock_hot_follow_xq")     # 东财人气榜 / 雪球关注度
+
+
+def _hot_rank_snapshot(date: str) -> str:
+    """热度快照(东财人气榜 + 雪球关注度;Wave12 T2/T3,design
+    docs/research/2026-08-09-hot-rank-probe.md)——**B 级,断采只损失当日、不阻断预热**。
+
+    快照型数据:今天不采,今天的历史就永远没有了(不像行情可以事后用 trade_date 回补)——
+    这是它在计划里排最优先的唯一理由,所以夜间必须每晚真的采一次。
+
+    两源各自 try/except(不是 `_prewarm_evidence` 那种整段 `except: pass` 静默吞掉的旧
+    模式):单源失败必须显式 `record_degradation`(降级记账,而不是只打一行没人看的
+    warn)——且不能让第一个源的异常拖累第二个源完全不被尝试("连续断采仅损失当日"这句话
+    依赖的正是这里的逐源隔离,不是外层 `_step()` 的整步兜底)。
+    """
+    from autoresearch.data import cache as _cache
+    from autoresearch.data.contracts import record_degradation
+    parts: list[str] = []
+    for ep in _HOT_RANK_ENDPOINTS:
+        try:
+            df = _cache.get_or_fetch(ep, {}, today=date)
+            parts.append(f"{ep}✓({len(df)}行)")
+        except Exception as e:  # noqa: BLE001 — B 级:单源断采不挡另一源、不挡预热
+            record_degradation(ep, f"{type(e).__name__}: {e}", key=date)
+            parts.append(f"{ep}✗({type(e).__name__})")
+    return " · ".join(parts)
+
+
 def run_prewarm(date: str | None = None, *, with_calibrate: bool = False,
                 now: datetime | None = None) -> dict:
     now = now or datetime.now()
@@ -103,6 +132,7 @@ def run_prewarm(date: str | None = None, *, with_calibrate: bool = False,
         _step("evidence_lake", _prewarm_evidence)
         _step("temperature", _temperature)
         _step("dossier_prefetch", _dossier_prefetch)
+        _step("hot_rank_snapshot", _hot_rank_snapshot)
         if with_calibrate:
             def _calib(d):
                 from autoresearch.learning.retro import recalibrate_and_log

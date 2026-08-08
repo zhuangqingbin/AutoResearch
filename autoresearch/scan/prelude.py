@@ -107,6 +107,23 @@ def _stalled_over_48h(scan_root: Path, stalled: list[str]) -> set[str]:
             if (h := _stall_age_h(scan_root, d)) is not None and h >= _RETRO_STALE_HOURS}
 
 
+def _hot_rank_snapshot_warning(p: Path) -> str:
+    """`_prewarm.json` 的 `hot_rank_snapshot` 步骤若含断采(note 里有 ✗)→ 告警片段。
+
+    Wave12 T3:`prewarm.py`(夜间)与本模块(次日开扫)是**两个独立进程**,
+    `contracts._DEGRADED` 是进程内列表、穿不透进程边界——落盘的 `_prewarm.json` 是
+    唯一穿透介质。presence-gated:文件读不了/无该 step/双源皆✓ → ""(不打扰)。
+    """
+    import json
+    try:
+        steps = json.loads(p.read_text(encoding="utf-8")).get("steps") or []
+    except Exception:  # noqa: BLE001 — 附加提示可选,读不了不挡主行
+        return ""
+    hot = next((s for s in steps if s.get("step") == "hot_rank_snapshot"), None)
+    note = str(hot.get("note", "")) if hot else ""
+    return f" · ⚠️ 热度快照断采:{note}" if "✗" in note else ""
+
+
 def prewarm_line(date: str, scan_root: Path | str | None = None) -> str:
     """夜间预热是否真跑过(Wave5 ④B:写了没装的优化必须当天可见,不靠事后考古)。"""
     import datetime as _dt
@@ -115,7 +132,8 @@ def prewarm_line(date: str, scan_root: Path | str | None = None) -> str:
         return ("预热(夜间):✗ 未跑 —— L0/L1/L2 本次全额取数(~8-10m)。"
                 "装载检查:`launchctl list | grep scan-prewarm`")
     ts = _dt.datetime.fromtimestamp(p.stat().st_mtime).strftime("%m-%d %H:%M")
-    return f"预热(夜间):✓ 已跑({ts})—— universe/evidence 应全湖命中"
+    return (f"预热(夜间):✓ 已跑({ts})—— universe/evidence 应全湖命中"
+            f"{_hot_rank_snapshot_warning(p)}")
 
 
 def macro_state_line(date: str) -> str:

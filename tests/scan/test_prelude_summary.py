@@ -32,6 +32,53 @@ def test_prewarm_line_detects_artifact(tmp_path):
     assert "✓" in prelude.prewarm_line("2026-07-25", scan_root=tmp_path)
 
 
+# ══════════ Wave12 T3:热度快照断采可见(prelude 汇总屏)══════════
+#
+# `prewarm.py`(夜间 19:30)与 `prelude.py`(次日开扫)是**两个独立进程**——
+# `contracts._DEGRADED` 是进程内模块级列表,穿不透进程边界。唯一穿透介质是落盘的
+# `_prewarm.json`;`prewarm_line()` 读它的 `steps[]`,把 hot_rank_snapshot 步骤的
+# 断采 note 追加成告警片段(T1 报告"移交决策"⑦已把这条精确化写清)。
+
+
+def test_prewarm_line_surfaces_hot_rank_failure(tmp_path):
+    import json
+
+    d = tmp_path / "2026-07-25"
+    d.mkdir(parents=True)
+    (d / "_prewarm.json").write_text(json.dumps({
+        "started_at": 1, "ended_at": 2,
+        "steps": [{"step": "hot_rank_snapshot", "ok": True,
+                   "note": "stock_hot_rank_em✓(100行) · stock_hot_follow_xq✗(RuntimeError)"}],
+    }), encoding="utf-8")
+    line = prelude.prewarm_line("2026-07-25", scan_root=tmp_path)
+    assert "✓" in line                          # 主行仍是"已跑"(prewarm 整体没失败)
+    assert "热度快照" in line and "✗" in line     # 但追加了断采告警片段
+
+
+def test_prewarm_line_silent_when_hot_rank_ok(tmp_path):
+    import json
+
+    d = tmp_path / "2026-07-25"
+    d.mkdir(parents=True)
+    (d / "_prewarm.json").write_text(json.dumps({
+        "started_at": 1, "ended_at": 2,
+        "steps": [{"step": "hot_rank_snapshot", "ok": True,
+                   "note": "stock_hot_rank_em✓(100行) · stock_hot_follow_xq✓(5619行)"}],
+    }), encoding="utf-8")
+    line = prelude.prewarm_line("2026-07-25", scan_root=tmp_path)
+    assert "热度快照" not in line                # 双源皆✓,不多贴告警
+
+
+def test_prewarm_line_backward_compatible_without_steps_key(tmp_path):
+    """旧 `_prewarm.json`(无 `steps` 字段,即 `test_prewarm_line_detects_artifact` 那份
+    fixture 的形态)不该因新逻辑报错或变化。"""
+    d = tmp_path / "2026-07-25"
+    d.mkdir(parents=True)
+    (d / "_prewarm.json").write_text('{"started_at": 1, "ended_at": 2}', encoding="utf-8")
+    line = prelude.prewarm_line("2026-07-25", scan_root=tmp_path)
+    assert "✓" in line and "热度快照" not in line
+
+
 def test_write_summary_file(tmp_path):
     (tmp_path / "2026-07-25").mkdir(parents=True)
     p = prelude.write_summary("2026-07-25", _results(), scan_root=tmp_path)
