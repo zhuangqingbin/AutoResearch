@@ -355,6 +355,17 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
 
     _publish_brief(scan_dir, out_base, summary_path,
                    analysis_date=analysis_date, run_folder=folder)
+    # ── brief 一致性 lint(Wave12 T27)——**必须在 brief 落盘之后**跑,而 `_self_review_banner`
+    # 跑在 build_summary 内部(那时 brief 与决策文档都还不存在),所以这条独立接在这里。
+    # 结果追加进 `gate_fires.csv`(与 R3 门审计同一本账),并打一行给 CP7 播报。
+    with contextlib.suppress(Exception):
+        from autoresearch.learning.self_review import append_gate_fires, brief_lint
+        _lint = brief_lint(out_base, scan_dir)
+        append_gate_fires(scan_dir, _lint, analysis_date)
+        _n_fail = sum(1 for x in _lint if x.get("severity") == "fail")
+        print(f"[brief lint] fail {_n_fail} / 共 {len(_lint)} 条"
+              + ("".join(f"\n  🛑 {x['check']}:{x['detail']}"
+                         for x in _lint if x.get("severity") == "fail") if _n_fail else ""))
     with contextlib.suppress(Exception):
         # 最终快照必须等 manifest/summary/gate_fires/第二次 health 全部落盘后再 hash。
         # 同时覆盖 trace 里 assemble 前发布的旧 health，保证 staging/trace 同一事实。

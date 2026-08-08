@@ -932,6 +932,168 @@ def usage_reconcile_lint(scan_root, ledger_path=None) -> list[dict]:
     return out
 
 
+# ── brief 一致性 lint(Wave12 T27 / 批C C3)──────────────────────────────────────
+#
+# **它对账的到底是什么**:brief.md 是确定性模板产物,`_brief_sources.json` 是同一次生成
+# 附出来的边表(逐行 field/value/file/locator/text)。这条 lint 做三件互不重叠的事:
+#   ① 边表**重算**:从白名单输入重新跑一遍 `brief.build`,与盘上边表逐行比 —— 抓「输入变了
+#      但产物没重生成」的过期;
+#   ② 正文**锚在**:每行的 `text`(该数字在 brief 里的完整渲染片段)必须真出现在 brief.md
+#      里 —— 抓「brief 被手改过」(篡改一个评级/基准读数即失配);
+#   ③ 跨层**同源**:四个决策字段的同一片段必须也出现在 summary.md 的 🧭 仪表盘块里 ——
+#      抓「两层报告各说各话」。
+# 三件事都不靠「lint 自己再渲染一遍然后跟自己比」,那种写法只证明渲染器等于自己。
+#
+# **为什么不挂在 `_self_review_banner` 里**:那个函数在 `build_summary` **内部**跑,而此刻
+# brief.md 与 `_relative_buy_decision.json` 都还不存在(见 report_sections 的 DASHBOARD 注)。
+# 接线点在 `publisher.run` 收尾,与 brief 落盘同一处。
+_BRIEF_DECISION_FIELDS = ("buys.production_n", "relative.code", "relative.rank",
+                          "relative.market_n")
+
+
+def brief_lint(report_dir, scan_dir=None) -> list[dict]:
+    """`brief.md` 一致性 lint(零 LLM;坏输入只报条目,**绝不抛**)。
+
+    `report_dir` = `reports/scan/<run>/`(brief.md + summary.md);
+    `scan_dir` = `context/scan/<date>/`(`_brief_sources.json` + `_relative_buy_decision.json`),
+    缺省 = `report_dir`(便于对同一目录的合成夹具跑)。返回 `[{check,severity,detail,code}]`。
+
+    ⑤ **BUY≥1 契约只在 active 模式生效**:`mode` 从 `_relative_buy_decision.json` 读;影子期
+    该检查跳过,但**出一条 info 留痕**——静默跳过会让「这道门什么时候开始管事」不可查
+    (recalibrate 空转 2 周的同族教训)。
+    """
+    import contextlib
+    import json
+    from pathlib import Path
+
+    out: list[dict] = []
+
+    def add(check, sev, detail, code=None):
+        out.append({"check": check, "severity": sev, "detail": detail, "code": code})
+
+    report = Path(report_dir)
+    scan = Path(scan_dir) if scan_dir is not None else report
+    try:
+        from autoresearch.scan import brief as _brief
+    except Exception as exc:  # noqa: BLE001 — 模块都装不上就只报一条,不炸
+        add("brief·lint不可用", "warn", f"brief 模块不可导入:{type(exc).__name__}")
+        return out
+
+    # ① 在场 + ② 预算
+    path = report / _brief.BRIEF_FILENAME
+    if not path.exists():
+        add("brief·缺失", "fail",
+            f"{path} 不存在 —— 报告双层的速读层没落盘(publisher 接线断了?)")
+        return out
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        add("brief·缺失", "fail", f"{path} 读不出:{type(exc).__name__}")
+        return out
+    n_bytes = len(text.encode("utf-8"))
+    if n_bytes > _brief.MAX_BYTES:
+        add("brief·超预算", "fail",
+            f"{n_bytes}B > 硬预算 {_brief.MAX_BYTES}B —— 速读层撑破了就不再是速读层")
+
+    # ③ sources 边表:重算 + 锚在 + 白名单
+    payload = None
+    with contextlib.suppress(Exception):
+        payload = json.loads((scan / _brief.SOURCES_FILENAME).read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or not isinstance(payload.get("rows"), list):
+        add("brief·边表缺失", "fail",
+            f"{scan / _brief.SOURCES_FILENAME} 缺失/损坏 —— 无边表则 brief 里的数字无法对账")
+        rows: list[dict] = []
+    else:
+        rows = [r for r in payload["rows"] if isinstance(r, dict)]
+        fresh = None
+        with contextlib.suppress(Exception):
+            fresh = _brief.build(scan, run_folder=payload.get("run_folder") or "")
+        if fresh is not None:
+            stale = [r["field"] for r, f in zip(rows, fresh["sources"], strict=False)
+                     if r != f]
+            if len(rows) != len(fresh["sources"]) or stale:
+                add("brief·边表过期", "fail",
+                    f"边表与白名单输入重算结果不符({len(rows)} vs "
+                    f"{len(fresh['sources'])} 行;首个差异 {stale[:3] or '行数'})"
+                    " —— 输入变了但产物没重生成")
+        bad_anchor = [r.get("field") for r in rows if str(r.get("text") or "") not in text]
+        if bad_anchor:
+            add("brief·数字对账", "fail",
+                f"{len(bad_anchor)} 个字段的渲染片段不在 brief 正文里:"
+                f"{'、'.join(str(f) for f in bad_anchor[:5])}"
+                " —— brief 被手改过,或渲染与边表脱钩")
+        outside = sorted({str(r.get("file")) for r in rows
+                          if r.get("file") not in _brief.INPUT_WHITELIST})
+        if outside:
+            add("brief·白名单外取数", "fail",
+                f"{outside} 不在 `brief.INPUT_WHITELIST` —— 生成器禁读 details 全文与 trace 大文件")
+
+    # ④ brief ↔ summary(四个决策字段的**同一片段**必须两边都在)
+    summary_path = report / "summary.md"
+    summary = ""
+    with contextlib.suppress(Exception):
+        summary = summary_path.read_text(encoding="utf-8")
+    if not summary:
+        add("brief↔summary不一致", "fail",
+            f"{summary_path} 缺失/空 —— 无法验证两层报告说的是同一件事")
+    else:
+        by_field = {str(r.get("field")): r for r in rows}
+        missing = [f for f in _BRIEF_DECISION_FIELDS
+                   if f in by_field and str(by_field[f].get("text") or "") not in summary]
+        if missing:
+            add("brief↔summary不一致", "fail",
+                f"决策字段在 summary 的 🧭 仪表盘块里对不上:{'、'.join(missing)}"
+                " —— 两层报告的 BUY 数/code/basis/基准读数必须同源同值")
+
+    # ⑤ active 期 BUY 契约(影子期跳过并留痕)
+    decision = None
+    with contextlib.suppress(Exception):
+        decision = json.loads((scan / _brief.DECISION_FILENAME).read_text(encoding="utf-8"))
+    mode = str((decision or {}).get("mode") or "ABSENT")
+    if mode != "active":
+        add("brief·BUY契约(active 期)", "info",
+            f"mode={mode} —— 非 active,「成功 run 必须至少 1 只 BUY」与「BLOCKED 不得渲染成"
+            "成功」两条跳过(影子期只观察,不拦发布);活体切换后本条自动生效")
+    else:
+        blocked = bool((decision or {}).get("blocked"))
+        n_buys = len((decision or {}).get("buys") or [])
+        if blocked:
+            if "BLOCKED" not in text:
+                add("brief·BUY契约(active 期)", "fail",
+                    "决策文档 blocked=true 但 brief 没渲染 BLOCKED —— 故障被写成了成功 run")
+        elif n_buys < 1:
+            add("brief·BUY契约(active 期)", "fail",
+                f"成功 run 的 BUY_n={n_buys}<1 —— active 期每个成功交易日至少一只(E6 裁定)")
+    return out
+
+
+def append_gate_fires(scan_dir, rows: list[dict], date: str) -> int:
+    """把额外 lint 条目**追加**进 `gate_fires.csv`(不覆写 —— `dump_gate_fires` 是覆写口径,
+    而本函数在它之后跑)。表头缺失时补写;IO 失败返回 0,不抛。"""
+    import csv
+    from pathlib import Path
+
+    if not rows:
+        return 0
+    path = Path(scan_dir) / "gate_fires.csv"
+    fields = ["date", "code", "check", "severity", "detail"]
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        exists = path.exists() and path.stat().st_size > 0
+        with path.open("a", encoding="utf-8", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
+            if not exists:
+                writer.writeheader()
+            for row in rows:
+                writer.writerow({"date": date, "code": row.get("code") or "",
+                                 "check": row.get("check", ""),
+                                 "severity": row.get("severity", ""),
+                                 "detail": row.get("detail", "")})
+    except OSError:
+        return 0
+    return len(rows)
+
+
 def dump_gate_fires(scan_dir, result: dict, date: str):
     """R3·门审计地基:review 结果幂等落 <scan_dir>/gate_fires.csv(每次 assemble 覆写)。
 
