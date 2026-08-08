@@ -16,6 +16,13 @@ EXIT_FLAG = "unsellable_o2"  # T+2 一字跌停开=卖不出 → 标旗不剔(�
 TOUCH_COL = "gap_c1_o2"      # 隔夜窗唯一实现价=T+2 开 → 触价尺=gap 本身(设计稿 touch_o2 的去重简化)
 SCHEMA_SWITCH_V4 = "2026-08-07"   # 卡契约 v4 日期分界(T17 绑执行日真值 `date +%F`);此前旧卡判定逐字节不受影响
 
+# T22(Wave12 E6-0,用户 2026-08-08 追加裁定的地基):系统对外只有一种 BUY——"今日可交易
+# 全集里相对最值得买"(不承诺绝对上涨)。相对基准 = 全市场可交易等权为主、行业中性超额为辅。
+# 两列都是 MAIN_RULER(gap_c1_o2)的超额,不是独立的第二把尺 —— 换主尺时这两列跟着重算,
+# 不需要各自再起一套 ENTRY_FLAG/entry_flag_for 选腿逻辑。
+REL_MARKET = "rel_gap_market"    # gap_c1_o2 − 当日全市场可交易(entry_tradable)等权均值
+REL_SECTOR = "rel_gap_sector"    # gap_c1_o2 − 同申万一级可交易等权均值(行业中性辅;缺行业/该行业当日无可交易成员→NaN,不猜)
+
 _LEGACY_ENTRY_FLAG = "buyable"   # fwd_2_oc(D+1 开盘买腿)对应旗;换尺前一直如此,不改名
 
 

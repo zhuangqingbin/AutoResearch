@@ -26,7 +26,7 @@ from pathlib import Path
 import pandas as pd
 
 from autoresearch.agents.utils.rating import RATINGS_5_TIER, parse_rating
-from autoresearch.common.ruler import EXIT_FLAG, MAIN_RULER, entry_tradable
+from autoresearch.common.ruler import EXIT_FLAG, MAIN_RULER, REL_MARKET, REL_SECTOR, entry_tradable
 
 # 保送/观察单直通/菜单滞回——不是 L3 当日选的票,不进「L3 选股成绩」头条(pr_20260716_002,
 # 与 t1_review 同一裁定同一集合;后两种 lane 已退役但历史 scan 目录仍有存量行)。
@@ -53,6 +53,36 @@ def _as_bool(s: pd.Series) -> pd.Series:
     return s.map(one)
 
 
+def _rel_gap_cols(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """rel_gap_market / rel_gap_sector(纯函数;`attribute_frame` 与历史回填共用同一算法,
+    不许两处各写一份 —— 漂移只会在某一天被人发现)。
+
+    T22(Wave12 E6-0,用户 2026-08-08 追加裁定的地基):系统对外只有一种 BUY——"今日可交易
+    全集里相对最值得买"(不承诺绝对上涨)。相对基准 = 全市场可交易等权为主、行业中性超额
+    为辅,主评价尺仍是 `MAIN_RULER`(gap_c1_o2)。
+
+    基准分母 = 当日通过入场旗的可交易票(`ruler.entry_tradable()`,C1 同款单点选旗)
+    ∧ `MAIN_RULER` 有数 —— **不是全市场所有行**(这是本列最容易做错的地方:含停牌/涨停
+    封死买不进的票会把"市场平均"算成不可执行的幻觉基准)。行业均值在同一分母内再按
+    `industry` 分组;票本身缺行业 / 该行业当日无可交易成员 → `rel_gap_sector` = NaN,
+    不猜(标签宁可留白,不像 `l2_stratify.sector_neutral` 那样为了打分连续性回退全局值)。
+
+    注意:分子(每行自己的 `MAIN_RULER`)不要求该行自己可交易 —— 一只票哪怕当天买不进,
+    "它相对可执行市场基准表现如何"依然是有意义的读数(零买复盘/账本审计要看这个)。
+    """
+    gap = pd.to_numeric(frame[MAIN_RULER], errors="coerce")
+    pool_mask = entry_tradable(frame) & gap.notna()
+    pool = gap[pool_mask]
+    market_mean = float(pool.mean()) if len(pool) else float("nan")
+    rel_market = gap - market_mean
+
+    industry = frame["industry"] if "industry" in frame.columns \
+        else pd.Series(pd.NA, index=frame.index, dtype=object)
+    sector_mean = pool.groupby(industry[pool_mask].astype(str)).mean()
+    rel_sector = (gap - industry.astype(str).map(sector_mean)).mask(industry.isna())
+    return rel_market, rel_sector
+
+
 def attribute_frame(l1: pd.DataFrame, realized: pd.DataFrame, buylist: dict,
                     abs_thresh: float = 0.03, top_q: float = 0.9, bot_q: float = 0.1) -> pd.DataFrame:
     """全市场已实现收益 × L1 全打分面板 × 报告买单 → 每只一个 bucket。纯函数(无 IO)。
@@ -74,6 +104,8 @@ def attribute_frame(l1: pd.DataFrame, realized: pd.DataFrame, buylist: dict,
     # 只测 D+1 开盘一字板(fwd_2_oc 的入场腿是 D+1 开盘);换尺到 gap_c1_o2 后入场腿是 D+1
     # **收盘**,对应旗是 `buyable_c1`(entry_flag_for 单点选旗,不在此处写字面量)。
     m["tradable"] = entry_tradable(m) & m[MAIN_RULER].notna()
+    # T22(E6-0):相对标签两列 —— 市场等权超额(主)+ 行业中性超额(辅)。纯函数,回填共用。
+    m[REL_MARKET], m[REL_SECTOR] = _rel_gap_cols(m)
 
     trad = m[m["tradable"]]
     hi = trad[MAIN_RULER].quantile(top_q) if len(trad) else float("nan")
@@ -526,6 +558,7 @@ _KEEP = ["code", "name", "industry", "bucket", "winner", "news_pop",
          "buyable", "tradable", "fwd_1_cc", "fwd_1_oo", "fwd_2_oc", "hi_2_oc",
          "fwd_5_oc", "fwd_10_oc", "hi_10_oc", "winner_5", "bucket_5",
          "gap_d1", "gap_c1_o2", "buyable_c1", "unsellable_o2",
+         REL_MARKET, REL_SECTOR,
          "rank", "recalled_flag", "composite", "score_momentum", "score_fund_main",
          "score_chip", "pct_60d", "main_net_ratio", "winner_rate", "price_to_cost", "rsi6", "rating", "bought",
          "process_score", "ruler"]   # P0-4:逐卡过程分(presence-gated join,见 _join_process_score)
@@ -540,6 +573,9 @@ _KEEP = ["code", "name", "industry", "bucket", "winner", "news_pop",
 # rebase 基),不追溯重算旧行,新写的行起就是对的。
 # ruler:本行 winner/bucket 是在哪个 MAIN_RULER 下分类的(写入那一刻的真值),历史行缺此列
 # → 读侧 `row.get("ruler", "fwd_2_oc")` 兜底(旧行诚实标旧尺,不假装未知)。
+# rel_gap_market/rel_gap_sector:T22(Wave12 E6-0)相对标签两列,`_rel_gap_cols` 现算,
+# 与 T16(selection_reason/detail)同一类洞——算出来不落白名单等于没算,历史回填见
+# `_backfill_rel_gap_columns`/`refresh_attributions`。
 
 
 def refine_l3_bucket(attr: pd.DataFrame, sdir: Path) -> pd.DataFrame:
@@ -1153,16 +1189,45 @@ def _backfill_gap_columns(path: Path, attr: pd.DataFrame, date: str) -> bool:
     return True
 
 
+def _backfill_rel_gap_columns(path: Path, attr: pd.DataFrame) -> bool:
+    """T22(Wave12 E6-0):只追加 rel_gap_market/rel_gap_sector 两列,旧列旧值/行数原样不动。
+
+    与 `_backfill_gap_columns` 不同的是**不必重取 `realized_returns()`**:算这两列所需的
+    全部原料(`MAIN_RULER`/`industry`/`buyable_c1`)早在 Wave11 批A 就已经进了 `_KEEP`
+    白名单,历史 `attribution.csv` 自身就带着——纯粹从已有列现算现追加(`_rel_gap_cols`,
+    与 `attribute_frame` 共用同一算法,不得两处各写一份)。
+
+    源列缺失(pre-Wave11-A3 的老文件,连 `gap_c1_o2`/`industry` 都没有)→ 无从回填,诚实
+    返回 False,不碰文件。两列已存在 → 幂等跳过,返回 False。
+    """
+    if MAIN_RULER not in attr.columns or "industry" not in attr.columns:
+        return False
+    if REL_MARKET in attr.columns and REL_SECTOR in attr.columns:
+        return False
+    out = attr.copy()
+    out["code"] = out["code"].astype(str).str.zfill(6)
+    out[REL_MARKET], out[REL_SECTOR] = _rel_gap_cols(out)
+    temp = path.with_name(f"{path.name}.tmp")
+    out.to_csv(temp, index=False)
+    temp.replace(path)
+    return True
+
+
 def refresh_attributions(scan_root: Path | None = None, report_root: Path | None = None,
                          max_days: int = 20) -> list[str]:
     """对已复盘(done)但 fwd 未成熟即落账的老日重写 attribution(幂等,价格走 cache)。
 
-    两条互不重叠的「需要刷新」判据:
+    三条互不重叠的「需要刷新」判据(顺序执行,同一天可以连中第二、三条):
     - 缺 `fwd_10_oc`/`hi_10_oc` 列,或 fwd_5/fwd_10 全 NaN → 老路不变:全量 `attribute()`
       重算(治"买单 ledger 永远 —",attribution 原为 retro 时一次性落账;design:
-      run-reliability §3)。该路自然带出 gap 列(`_KEEP` 已收编),此日无需再走下一条。
+      run-reliability §3)。该路自然带出 gap/rel_gap 列(`_KEEP` 已收编),此日无需再走
+      下面两条。
     - 否则,若缺 `gap_c1_o2`(隔夜尺,Wave11 批A)→ 只追加新列(merge-on-code),不重跑
-      attribute_frame、不碰任何旧列的旧值、不改行数(见 `_backfill_gap_columns`)。
+      attribute_frame、不碰任何旧列的旧值、不改行数(见 `_backfill_gap_columns`);成功后
+      就地从磁盘重读一次,让下一条判据看到刚落的 `gap_c1_o2`(同一遍 refresh 就能把 rel_gap
+      也补上,不必等下一次夜间批)。
+    - 否则,若缺 `rel_gap_market`/`rel_gap_sector`(T22)→ 只追加两列(自包含现算,见
+      `_backfill_rel_gap_columns`),同样不碰旧列/行数。
     """
     scan_root = scan_root or Path("context/scan")
     if not scan_root.exists():
@@ -1190,12 +1255,23 @@ def refresh_attributions(scan_root: Path | None = None, report_root: Path | None
             except Exception as e:  # noqa: BLE001 — 单日失败不阻其余
                 print(f"[refresh] {d} 跳过: {e}", file=sys.stderr)
             continue
+        changed = False
         if "gap_c1_o2" not in cols:
             try:
                 if _backfill_gap_columns(path, attr, d):
-                    out.append(d)
+                    attr = pd.read_csv(path, dtype={"code": str})   # 就地刷新:给下面 rel_gap 判据看到新列
+                    cols = set(attr.columns)
+                    changed = True
             except Exception as e:  # noqa: BLE001 — 单日失败不阻其余
                 print(f"[refresh] {d} gap 回填跳过: {e}", file=sys.stderr)
+        if REL_MARKET not in cols or REL_SECTOR not in cols:
+            try:
+                if _backfill_rel_gap_columns(path, attr):
+                    changed = True
+            except Exception as e:  # noqa: BLE001 — 单日失败不阻其余
+                print(f"[refresh] {d} rel_gap 回填跳过: {e}", file=sys.stderr)
+        if changed:
+            out.append(d)
     return out
 
 
