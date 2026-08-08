@@ -161,16 +161,22 @@ def test_ledgers_step_imports_shadow_buys_before_paper_nav(monkeypatch):
         "要等下一晚才会被影子线看到")
 
 
-def test_ledgers_step_full_chain_19_plus_1_all_ok(monkeypatch):
-    """mock 全链跑一遍:补 shadow_buys 后,学习侧 18 个 + scan 侧 2 个(structural_audit/
-    l2_slo)= 20 个模块全部 mock 成功 → 汇总行必须是 20/20(此前 19/19;19+1=20)。"""
+def test_ledgers_step_full_chain_all_modules_ok(monkeypatch):
+    """mock 全链跑一遍:学习侧 19 个 + scan 侧 2 个(structural_audit/l2_slo)= 21 个模块
+    全部 mock 成功 → 汇总行必须是 21/21。
+
+    沿革:19/19 → 20/20(Wave12-T11 补 `shadow_buys`)→ 21/21(Wave12-T24 补
+    `relative_ledger`)。**这个数字是个锁,不是个常数**:`_ledgers()` 的 names 是嵌套函数
+    局部变量、不对外暴露,往表里加名字/删名字都不会有任何静态报错;这条断言逼着每一次
+    改表的人来这里把数改对(顺便复核自己排的位置),这正是它存在的理由。
+    """
     _mk_ledgers_noop_chain(monkeypatch)
     monkeypatch.setattr("importlib.import_module", lambda name: type(
         "M", (), {"main": staticmethod(lambda *a: None)})())
 
     res = {r[0]: r[2] for r in N.run("2026-07-28")}
 
-    assert res["ledgers"] == "20/20 刷新"
+    assert res["ledgers"] == "21/21 刷新"
 
 
 def test_retro_step_writes_input_not_just_attribution(monkeypatch):

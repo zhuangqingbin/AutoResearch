@@ -114,6 +114,13 @@ def run(today: str) -> list[tuple[str, bool, str]]:
                  # 下一波(2026-08-03):门重标定影子账本与 L3 边际价值。两者都**只读**
                  # 既有产物、只写自己的报表,排在 gate_attribution 之后(gate_recal 读它)。
                  "gate_recal", "l3_marginal",
+                 # Wave12-T24(E6-2):relative BUY 影子账本。它的成熟回填读
+                 # `context/scan/*/retro/attribution.csv` 的 gap_c1_o2 与 rel_gap_* 两列,
+                 # 那份文件由**本函数之外**的 `_retro_refresh` 步骤(run() 里排在 ledgers
+                 # 之前)幂等刷新 —— 所以本表内它对谁都无依赖,唯一的硬约束是"排在
+                 # evidence_manifest 之前"(后者读所有账本)。旧 OW 基率经 buy_ledger 的
+                 # 单一事实源现读,不硬编码数字;两账在报表里分列并置(定义断层)。
+                 "relative_ledger",
                  "evidence_manifest"]
         ok = 0
         for n in names:

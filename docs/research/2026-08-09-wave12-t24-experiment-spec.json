@@ -1,0 +1,73 @@
+{
+  "id": "exp_relative_buy_owner",
+  "title": "E6 统一相对决策层:scan 路线唯一拥有最终 BUY 的组件(影子 → 人批 activate)",
+  "trial_family": "decision",
+  "definition": {
+    "note": "成熟门自**首条观测**起算,不是从预注册日起算。本仓库刚发生过 EXP-1/EXP-2 预注册后数据腿从未实现、observations 空转 6 天的事(FN-1 家族):按『预注册日 +N 天』计门,会让一条从没产生过任何观测的腿在第 N+1 天自动『成熟』。本实验的观测计数唯一读 context/learning/relative_buy.jsonl 的决策日行数(status ∈ {BUY, BLOCKED};NO_RUN 不计),首条观测 = 2026-07-28。",
+    "hypothesis": "把『今天全市场相对最值得买谁』单独立层(确定性 finalizer + 四类硬资格 + 四面等权 Borda),能在不放宽任何绝对门的前提下让每个成功完成的交易日都产出恰 1 只 BUY,且其 rel_gap_market 的均值与左尾不劣于旧 OW 决策线。",
+    "control": "旧系统:只回答『有没有绝对强到值得买』的 ≥Overweight 门(2026-07-15→08-06 连续 17 个扫描日 0 买单,178 张决策卡里 Overweight = 0);基率见 buy_ledger 的 ≥OW 行。",
+    "challenger": "autoresearch/scan/relative_buy.py 的 build_decision v1(rule_version=e6.v1,规则在看到任何一天影子输出之前锁定)+ autoresearch/learning/relative_ledger.py 的影子账本。",
+    "production_side_effects": "无。mode 只接受 shadow;不写 buy ledger、不改 publisher、不碰 decision_records.json、不改任何 prompt 字节、不动 DEFAULT_FLOORS/merit_need/lane 标签/生产 finalists。activate 是独立 GATED task,不在本条 register 的授权范围内。",
+    "population": "当日 L4 派发过的票(护照 l4.dispatched)。L2 菜单里没走到 L4 的票不是 BUY 候选,也不进 excluded。",
+    "primary_ruler": "gap_c1_o2 = open[D+2]/close[D+1]−1(2026-08-05 用户裁定的隔夜主尺)。相对标签两列 rel_gap_market / rel_gap_sector 口径钉死字面量 ruler.REL_GAP_RULER,不随 MAIN_RULER 漂移(I-4)。",
+    "benchmark_populations": "两个『基准 n』不可互换:决策文档 benchmark.market_n = 当日 L0 可交易全集(finalizer 算四面分位的分母);outcome.benchmark_n = rel_gap_market 真正的分母 = 全市场可交易(T22 I-1 人口裁定,含漏在 L0 的票)。2026-08-04 实测 4193 vs 5426。守卫读的是后者。",
+    "data_source": "context/scan/<date>/_relative_buy_decision.json(post_run observe 前向产出)+ context/scan/<date>/retro/attribution.csv 的 gap_c1_o2 / rel_gap_market / rel_gap_sector;缺任一 → PENDING/UNMEASURED,禁止补零。",
+    "measurement_instrument": "autoresearch.learning.relative_ledger.summarize() 产出 action_coverage / n_contract_errors / rel_gap_market 的 mean·median·worst·n_negative;守卫指标 rel_gap_market_mean_minus_legacy_pp 与 rel_gap_market_p10_minus_legacy_pp 的减数(legacy)读 buy_ledger.rating_base_rates 的 ≥OW 行 —— 单一事实源,不硬编码历史数字。legacy 样本仍 n<10(2026-08-09 现 n=9)时该指标 UNMEASURED → 守卫 UNKNOWN → 不可晋升。",
+    "statistics": "按扫描日配对(paired_unit=scan_day);date cluster;固定 minimum,不允许可选停止(跑到通过为止是作弊)。",
+    "negative_result_policy": "不通过即记负结果并关闭,不重跑到通过为止。0 BUY 不是放宽门的理由;本实验的动机是『一套绝对门被要求同时回答两个问题』这个结构性错配,不是『最近买得太少』。",
+    "observation_window": "预注册时账本已有 7 条回放观测(2026-07-28..2026-08-06,认知底片,已被作者看到)。因此守卫阈值一律锚在**独立于这 7 条**的旧 OW 线上(mean2/10 分位),不锚在观测到的影子分布上;且晋升评估要求 ≥20 个决策日中至少 13 条产生于本条 register 之后(样本外)。",
+    "rollback": "影子期无回滚对象(生产行为未变);activate 后按 rollback_guards 逐 run 观测,ROLLBACK_RECOMMENDED 由人执行,回滚指针 = 预注册时的稳定基线。"
+  },
+  "start_date": "2026-08-09",
+  "expires_date": "2026-12-31",
+  "primary_metric": "rel_gap_market_mean_minus_legacy_pp",
+  "promotion_guards": {
+    "research": [
+      {"metric": "rel_gap_market_mean_minus_legacy_pp", "op": "gte", "value": 0},
+      {"metric": "rel_gap_market_p10_minus_legacy_pp", "op": "gte", "value": 0}
+    ],
+    "decision": [
+      {"metric": "action_coverage", "op": "gte", "value": 1.0},
+      {"metric": "contract_error_n", "op": "lte", "value": 0}
+    ],
+    "token": [
+      {"metric": "token_delta_pct", "op": "lte", "value": 0}
+    ],
+    "speed": [
+      {"metric": "wall_delta_s", "op": "lte", "value": 5}
+    ],
+    "architecture": [
+      {"metric": "production_artifact_diff", "op": "eq", "value": 0}
+    ]
+  },
+  "rollback_guards": {
+    "research": [
+      {"metric": "rel_gap_market_mean_minus_legacy_pp", "op": "lt", "value": -1.0}
+    ],
+    "decision": [
+      {"metric": "action_coverage", "op": "lt", "value": 1.0},
+      {"metric": "contract_error_n", "op": "gt", "value": 0}
+    ],
+    "token": [
+      {"metric": "token_delta_pct", "op": "gt", "value": 5}
+    ],
+    "speed": [
+      {"metric": "wall_delta_s", "op": "gt", "value": 30}
+    ],
+    "architecture": [
+      {"metric": "production_artifact_diff", "op": "gt", "value": 0}
+    ]
+  },
+  "challenger_pointer": {
+    "kind": "decision_layer",
+    "pointer": "autoresearch/scan/relative_buy.py::build_decision + autoresearch/learning/relative_ledger.py",
+    "content_hash": "bad631b849b85ca36e1869e3ad142f91eee1a06b6a334f56ca1120b1dbb20586"
+  },
+  "minimums": {
+    "forward_days": 20,
+    "mature_events": 20,
+    "unique_events": 20,
+    "regimes": 2
+  },
+  "rollback_window_runs": 5
+}
