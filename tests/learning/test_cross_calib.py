@@ -181,11 +181,19 @@ def test_render_and_suggestion_lines(tmp_path):
 
 def test_render_gate_header_names_current_ruler():
     """列名 `ex2`/`mean_ex2` 沿革自 fwd_2_oc 年代不改(改名破全部读者),但渲染标题必须
-    点名"T+2 到底是哪把尺"——不能让读者只看到裸的"T+2"就默认它仍是 fwd_2_oc。"""
+    点名"T+2 到底是哪把尺"——不能让读者只看到裸的"T+2"就默认它仍是 fwd_2_oc。
+
+    M6 修复(final-review 2026-08-08):按**段落 scope** 断言(先定位到门柱节标题那一行,
+    再只在该行内查 MAIN_RULER),不是对整份 md 做无范围子串检查——镜像
+    `test_retro.py::test_cli_pending_prints_two_sections` 同款理由:整段检查看不出
+    MAIN_RULER 字样其实出现在别的地方(如另一节),标题行本身没点名。
+    """
     from autoresearch.learning.cross_calib import MAIN_RULER, render
-    md = "\n".join(render(pd.DataFrame(), pd.DataFrame()))
-    assert MAIN_RULER in md
-    assert "门柱级拦对/错杀" in md            # 仍是原节,不是新起一节
+    lines = render(pd.DataFrame(), pd.DataFrame())
+    # "门柱级拦对/错杀" 在模块总标题行(# 跨层校准环…)与门柱节标题行(## 🚪 …)里都出现,
+    # 用 "🚪" 精确定位到后者,不误中前者。
+    gate_header = next(ln for ln in lines if "🚪" in ln)
+    assert MAIN_RULER in gate_header
 
 
 def test_suggestion_lines_flip_all_below_floor_falls_back_to_placeholder(tmp_path):

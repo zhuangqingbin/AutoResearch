@@ -9,7 +9,8 @@ design: docs/specs/2026-07-11-recall-gate-pinned-config-design.md §2.3。
 `L1_recall_top1000.csv` provenance)——两条独立证据链互相印证,且 `L1_channels.csv` 是唯一
 带『某路当日实际召回了哪些代码』长表的文件,`channel_eval.csv` 只有聚合计数、算不出 Jaccard:
   - `context/scan/<date>/L1_channels.csv`(长表:channel, code, channel_rank, channel_score)
-  - `context/scan/<date>/retro/attribution.csv`(已实现前向收益,主尺 `fwd_2_oc`)
+  - `context/scan/<date>/retro/attribution.csv`(已实现前向收益,主尺跟随 `MAIN_RULER`——
+    2026-08-05 起为 `gap_c1_o2`,此前为 `fwd_2_oc`;见 `autoresearch.common.ruler`)
 
 三节输出(仅陈述数据,不自动改配置;人批见 spec §2.3 默认整编案表):
   ① 各路累计 T+2 账本 —— mean/unique_excess_t2、hit_rate_t2、n_days(简单日频均值,
@@ -35,7 +36,9 @@ import pandas as pd
 
 from autoresearch.common.ruler import MAIN_RULER, entry_tradable
 
-_RET_MAIN = MAIN_RULER       # 超短主尺:D+1开→D+2收(2026-07-10 用户裁定);T16 换尺只改 ruler.py
+_RET_MAIN = MAIN_RULER       # 超短主尺,跟随 autoresearch.common.ruler.MAIN_RULER(当前
+                              # gap_c1_o2·T+1收→T+2开,2026-08-05 裁定;此前 fwd_2_oc·
+                              # D+1开→D+2收,2026-07-10 裁定)——换尺只改 ruler.py,此行自动跟随
 _THIN_DAYS = 10               # spec §2.3 门槛:n_days < 10 → ⚠薄样本
 _LEDGER_COLS = ["channel", "n_days", "mean_excess_t2", "unique_excess_t2", "hit_rate_t2", "thin"]
 _JACCARD_COLS = ["channel_a", "channel_b", "common", "union", "jaccard"]
@@ -53,9 +56,10 @@ def _fmt_pct(x) -> str:
 
 
 def day_channel_stats(channels: pd.DataFrame, attribution: pd.DataFrame) -> pd.DataFrame:
-    """单日 L1_channels(长表 channel,code) × attribution(fwd_2_oc) → 每路一行,纯函数。
+    """单日 L1_channels(长表 channel,code) × attribution(MAIN_RULER 列)→ 每路一行,纯函数。
 
-    excess_t2 = 个股 fwd_2_oc − 当日全市场(attribution 全表)中位;unique = 当日仅被这一路召回
+    excess_t2 = 个股 MAIN_RULER 读数(当前 `gap_c1_o2`,此前 `fwd_2_oc`)− 当日全市场
+    (attribution 全表)中位;unique = 当日仅被这一路召回
     (从 `L1_channels.csv` 自身的 channel×code 计数直接推导,不依赖 `L1_recall_top1000.csv` 的
     `recall_channels` provenance——两条独立证据链)。attribution 无 `buyable` 列 → 全视为可买
     (与 `stage_eval.channel_edge` 同一降级口径,真实 attribution.csv 现无此列)。

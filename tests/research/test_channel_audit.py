@@ -322,7 +322,37 @@ def test_render_title_notes_t2_column_name_ruler_lineage():
     from autoresearch.research.channel_audit import MAIN_RULER
     md = "\n".join(render({"dates": [], "ledger": pd.DataFrame(), "jaccard": pd.DataFrame(), "notes": []}))
     assert MAIN_RULER in md
-    assert "2026-08-05" in md
+
+
+# ───────────────────────── I6 修复(final-review 2026-08-08):模块内旧尺文案与新标注打架 ─────────────────────────
+#
+# T12 在 render() 加了"值已跟随 MAIN_RULER"的新标题注,但同一文件的模块 docstring/`_RET_MAIN`
+# 行内注释仍硬写"主尺 fwd_2_oc"/"D+1开→D+2收"(fwd_2_oc 的交易结构,不是当前 gap_c1_o2 的
+# T+1收→T+2开)——一个文件同时说两件互斥的事,比改之前只说一件错事更难排查。
+
+
+def test_module_docstring_does_not_claim_fwd2_as_current_ruler():
+    import autoresearch.research.channel_audit as m
+    assert "主尺 `fwd_2_oc`" not in m.__doc__
+    assert "MAIN_RULER" in m.__doc__
+
+
+def test_ret_main_comment_describes_current_structure_not_stale_fwd2_legs():
+    """`_RET_MAIN` 那一行的行内注释不得硬写 fwd_2_oc 的交易结构(D+1开→D+2收)当作现状——
+    当前 MAIN_RULER=gap_c1_o2 的结构是 T+1收→T+2开,两者相反(收/开腿对调)。"""
+    import inspect
+
+    import autoresearch.research.channel_audit as m
+    src = inspect.getsource(m)
+    line = next(ln for ln in src.splitlines() if ln.startswith("_RET_MAIN"))
+    assert "D+1开→D+2收" not in line
+
+
+def test_day_channel_stats_docstring_does_not_hardcode_fwd2_oc_as_source_column():
+    import autoresearch.research.channel_audit as m
+    doc = m.day_channel_stats.__doc__
+    assert "attribution(fwd_2_oc)" not in doc
+    assert "excess_t2 = 个股 fwd_2_oc" not in doc
 
 
 def test_render_no_data_placeholder():

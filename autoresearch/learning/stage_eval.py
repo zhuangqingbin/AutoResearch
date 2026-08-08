@@ -32,7 +32,9 @@ from autoresearch.common.ruler import MAIN_RULER, entry_tradable
 # 与 t1_review 同一裁定同一集合;后两种 lane 已退役但历史 scan 目录仍有存量行)。
 from autoresearch.learning.t1_review import _NON_GENUINE_LANES
 
-_RET_MAIN = MAIN_RULER  # 超短主尺:D+1开→D+2收(2026-07-10 用户裁定持仓 1~2 日);T16 换尺只改 ruler.py
+_RET_MAIN = MAIN_RULER  # 超短主尺,跟随 autoresearch.common.ruler.MAIN_RULER(当前 gap_c1_o2·
+                         # T+1收→T+2开,2026-08-05 裁定;此前 fwd_2_oc·D+1开→D+2收,2026-07-10
+                         # 裁定,持仓 1~2 日的窗口本身不变)——换尺只改 ruler.py,此行自动跟随
 _RET_T5 = "fwd_5_oc"    # 参考口径(降级保留,列名带 t5 的输出继续产)
 _RET_T1 = "fwd_1_oo"    # 副口径(更快、噪声大)
 
@@ -103,7 +105,8 @@ def verdict_edge(df: pd.DataFrame, verdict_col: str = "verdict", ret_col: str = 
 def channel_edge(recall: pd.DataFrame, realized: pd.DataFrame) -> pd.DataFrame:
     """L1 多路召回 provenance × 已实现 fwd → 每路一行的前向归因(纯函数,零网络)。
 
-    recall:   L1_recall_top1000(需 code, recall_channels);realized:全市场(code, fwd_1_oo, fwd_2_oc, fwd_5_oc, buyable)。
+    recall:   L1_recall_top1000(需 code, recall_channels);realized:全市场(需 code, fwd_1_oo,
+    `MAIN_RULER` 列——当前 `gap_c1_o2`,此前 `fwd_2_oc`,fwd_5_oc, buyable)。
     excess = 个股 fwd − 全市场截面中位;均值/命中只在 buyable 行;unique = recall_channels 仅此一路(边际 alpha)。
     返回列固定(t2 主 + t5/t1 参考保留、不删),按 unique_excess_t2 降序(None 殿后)。
 

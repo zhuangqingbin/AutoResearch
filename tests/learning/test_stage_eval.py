@@ -44,6 +44,26 @@ def test_channel_edge_excludes_row_when_legacy_buyable_true_but_buyable_c1_false
     assert row["mean_excess_t2"] == pytest.approx(-0.24)
 
 
+# ───────────────────────── I6 修复(final-review 2026-08-08):模块内旧尺文案与新标注打架 ─────────────────────────
+
+
+def test_ret_main_comment_describes_current_structure_not_stale_fwd2_legs():
+    """`_RET_MAIN` 那一行的行内注释不得硬写 fwd_2_oc 的交易结构(D+1开→D+2收)当作现状——
+    当前 MAIN_RULER=gap_c1_o2 的结构是 T+1收→T+2开,两者相反(收/开腿对调)。"""
+    import inspect
+
+    src = inspect.getsource(stage_eval)
+    line = next(ln for ln in src.splitlines() if ln.startswith("_RET_MAIN"))
+    assert "D+1开→D+2收" not in line
+
+
+def test_channel_edge_docstring_does_not_hardcode_fwd2_oc_as_required_column():
+    """`channel_edge` 的入参列表跟随 MAIN_RULER(当前 gap_c1_o2),docstring 若硬写
+    "realized 需要 fwd_2_oc 列"会被 C1 系列同款读者误导成仍是旧尺。"""
+    doc = stage_eval.channel_edge.__doc__
+    assert "fwd_1_oo, fwd_2_oc, fwd_5_oc" not in doc
+
+
 # ───────────────────────── Wave12-T12 · channel_eval.csv 增 ruler 列 + 渲染标题记档 ─────────────────────────
 
 
