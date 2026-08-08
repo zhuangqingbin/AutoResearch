@@ -997,7 +997,7 @@ hi_2_oc  = max(high[D+1..D+2]) / open[D+1] − 1   # 2 日触价(MFE),配目标�
 **✅ 2026-07-17 已修活(applied)**,修法与验收:
 
 - **机制真相补全**:F=107 是**跨多次 harvest 历史累积**的(107 日横跨 270 个交易日,而 `form_span=24, step=1` 单次只会生成 25 日)—— 所以「重跑 harvest」不是修复而是**用参数重造小面板把历史冲掉**。
-- **修** = `factor_lab.extend_plan()`:增量续(F 推进到 last−2,**holdback 对齐主尺只需 D+2** —— 当时主尺 `fwd_2_oc`,2026-08-05 换尺后 `gap_c1_o2` 同样只需 D+2,不再被旧参 `fwd=10` 拖 8 个交易日;P 缓存洞逐夜自愈;全幂等),接在 `recalibrate_and_log` 的 calibrate 之前;extend 失败不阻断但 🚨 打 stderr。
+- **修** = `factor_lab.extend_plan()`:增量续(F 推进到 last−2,**holdback 对齐主尺只需 D+2** —— 沿革:当时是 `fwd_2_oc`,2026-08-05 换尺后 `gap_c1_o2` 同样只需 D+2,不再被旧参 `fwd=10` 拖 8 个交易日;P 缓存洞逐夜自愈;全幂等),接在 `recalibrate_and_log` 的 calibrate 之前;extend 失败不阻断但 🚨 打 stderr。
 - **监** = `changelog_ledger.heartbeat()` 进 prelude 每日汇总屏:连续 3 次 `after_sha` 不变 → 🚨。**必须修监同落**:6 月已有一段 `349fa46d`×3,这是复发病,只修不监必死第三次。
 - **真数据验收**:`72b3d0af → e560aeb5`,面板 **107 → 117 日**(F 尾 = 今天−2),value IC +0.0245 仍全组第一。
 

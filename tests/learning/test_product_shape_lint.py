@@ -13,6 +13,7 @@ import pandas as pd
 from autoresearch.learning.self_review import (
     product_shape_lint,
     retired_symbol_lint,
+    stale_ruler_lint,
     workflow_literal_lint,
 )
 
@@ -459,3 +460,168 @@ def test_product_shape_lint_existing_fixture_shape_unaffected_by_doc_lints(tmp_p
     rows = product_shape_lint(d, DATE)
     assert _by(rows, "产物形状·退役符号指令性引用") == []
     assert _by(rows, "产物形状·workflow内联字面量") == []
+
+
+# ── T14:旧尺(fwd_2_oc)裸写防复发 lint(新增文件粒度)──────────────────────────
+
+def _mk_git_repo(tmp_path, tracked: dict, new: dict):
+    """建一个真 git 仓库:`tracked` 先 commit(=存量文件),`new` 只写盘不 commit(=新增)。
+
+    lint 的「新增文件」判据走真 git plumbing,所以这里必须是真仓库——用注入的假名单测
+    等于把被测的那条腿换掉(变异探针会证明:注释掉 git 那腿,存量文件不追溯的用例立刻变红)。
+    """
+    import subprocess
+    root = tmp_path / "repo"
+    root.mkdir()
+    run = lambda *a: subprocess.run(["git", *a], cwd=root, check=True,
+                                    capture_output=True, text=True)
+    run("init", "-q")
+    run("config", "user.email", "t@t.t")
+    run("config", "user.name", "t")
+    for rel, content in tracked.items():
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+    if tracked:
+        run("add", "-A")
+        run("commit", "-qm", "base")
+    for rel, content in new.items():
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+    return root
+
+
+_STALE = "产物形状·旧尺裸写"
+
+
+def test_stale_ruler_new_file_bare_write_fails(tmp_path):
+    """新增模块裸写 `fwd_2_oc` 且无「参考尺」注记 → fail(本 lint 的存在理由)。"""
+    root = _mk_git_repo(tmp_path, {"keep.py": "x = 1\n"},
+                        {"autoresearch/scan/newmod.py": "COL = 'fwd_2_oc'\n"})
+    rows = _by(stale_ruler_lint(root), _STALE)
+    assert len(rows) == 1, rows
+    assert "newmod.py" in rows[0]["detail"] and rows[0]["severity"] == "fail"
+
+
+def test_stale_ruler_new_file_with_reference_mark_passes(tmp_path):
+    """同样是新增文件,但带「参考尺」注记 → 放行(合法情形要有一个合法的写法)。"""
+    root = _mk_git_repo(tmp_path, {"keep.py": "x = 1\n"}, {
+        "autoresearch/scan/newmod.py":
+            "# 参考尺 fwd_2_oc(旧主尺,降参考不删);主尺走 ruler.MAIN_RULER\n"
+            "REF = 'fwd_2_oc'\n",
+    })
+    assert _by(stale_ruler_lint(root), _STALE) == []
+
+
+def test_stale_ruler_existing_file_not_retroactive(tmp_path):
+    """存量(已 commit)文件裸写旧尺 → **不追溯**。286 处历史命中不得天天报警。"""
+    root = _mk_git_repo(tmp_path, {"autoresearch/old.py": "COL = 'fwd_2_oc'\n"}, {})
+    assert _by(stale_ruler_lint(root), _STALE) == []
+
+
+def test_stale_ruler_existing_file_edited_still_not_retroactive(tmp_path):
+    """存量文件被**改动**(非新增)仍不追溯——粒度确实是「新增文件」,不是「改动文件」。"""
+    root = _mk_git_repo(tmp_path, {"autoresearch/old.py": "COL = 'fwd_2_oc'\n"}, {})
+    (root / "autoresearch" / "old.py").write_text(
+        "COL = 'fwd_2_oc'\nEXTRA = 2\n", encoding="utf-8")
+    assert _by(stale_ruler_lint(root), _STALE) == []
+
+
+def test_stale_ruler_claude_live_main_ruler_claim_fails(tmp_path):
+    """`.claude/` 文本出现「主尺 fwd_2_oc」措辞 → fail,**不论文件新旧**。
+
+    这是 T13 治的那个病(PANORAMA:704「权重校准主尺仍 fwd_2_oc」)的复发探针:
+    活指令句式与「新增文件」无关,存量文件里写出来同样有害。
+    """
+    root = _mk_git_repo(tmp_path, {
+        ".claude/skills/demo/SKILL.md": "权重校准主尺仍 fwd_2_oc,两把尺勿混。\n",
+    }, {})
+    rows = _by(stale_ruler_lint(root), _STALE)
+    assert len(rows) == 1, rows
+    assert "主尺" in rows[0]["detail"] and rows[0]["severity"] == "fail"
+
+
+def test_stale_ruler_claude_lineage_wording_passes(tmp_path):
+    """`.claude/` 里的**沿革**写法(「当时是 fwd_2_oc,现 gap_c1_o2」)→ 放行。
+
+    没有这条,T13 刚写好的沿革注记会被自己的 lint 天天判违规(「先给合法情形一个标记」)。
+    """
+    root = _mk_git_repo(tmp_path, {
+        ".claude/skills/demo/SKILL.md":
+            "对齐主尺 `MAIN_RULER`——当时是 `fwd_2_oc`,现 `gap_c1_o2`,两者同样只需 D+2。\n",
+    }, {})
+    assert _by(stale_ruler_lint(root), _STALE) == []
+
+
+def test_stale_ruler_live_repo_is_clean():
+    """**活体验收**:T13 扫完后,本仓库真实 `.claude/` 树 + 未提交新增文件必须零命中。
+
+    这条是「探针有没有灯」的对手方——lint 若写得过宽(比如把沿革注记也判违规),
+    它会立刻在真实仓库上变红,而不是等到下一个人踩坑。
+    """
+    from pathlib import Path
+    repo = Path(__file__).resolve().parents[2]
+    assert _by(stale_ruler_lint(repo), _STALE) == []
+
+
+def test_stale_ruler_non_git_dir_no_crash(tmp_path):
+    """非 git 目录 / 无 git 可执行 → presence-gated 静默跳过,绝不抛异常。"""
+    assert stale_ruler_lint(tmp_path / "nope") == []
+    assert stale_ruler_lint(tmp_path) == []
+
+
+def test_product_shape_lint_wires_stale_ruler(tmp_path):
+    """接线锁:product_shape_lint 经 `scan_dir` 上三级推**仓库根**接上 14)。
+
+    与 11)/12) 不同,本探针要的是仓库根(它既查 `.claude` 也要在根上跑 git),接线写错一级
+    (传成 `.claude` 根)这条会立刻变红。
+    """
+    import subprocess
+    repo = tmp_path
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t.t"], cwd=repo, check=True,
+                   capture_output=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True,
+                   capture_output=True)
+    scan_dir = repo / "context" / "scan" / DATE
+    scan_dir.mkdir(parents=True)
+    (repo / ".claude" / "skills" / "demo").mkdir(parents=True)
+    (repo / ".claude" / "skills" / "demo" / "SKILL.md").write_text(
+        "权重校准主尺仍 fwd_2_oc,两把尺勿混。\n", encoding="utf-8")
+    rows = _by(product_shape_lint(scan_dir, DATE), "产物形状·旧尺裸写")
+    assert len(rows) >= 1 and any("主尺" in r["detail"] for r in rows), rows
+
+
+def test_stale_ruler_recall_on_real_pre_t13_offenders(tmp_path):
+    """**召回锁(反假绿灯)**:拿 T13 之前(commit 551d236)那 8 行真实违规原文回测,必须 8/8 逮到。
+
+    第一版判据写成 `主尺仍 fwd_2_oc` 一类的精巧正则,回测只逮到 3/8 —— 一个逮不住自己
+    那条病的探针就是假绿灯(家训:「绿灯不等于有灯」)。这条把召回钉死;判据若被改回
+    窄句式匹配,它立刻变红。
+
+    ⚠️ 本条**必须驱动 `stale_ruler_lint` 真身**:第一版写成"直接拿模块常量自己比对",
+    变异测试当场证明它零鉴别力——把 lint 体内的判据收窄回 3/8 的正则,它照样绿。
+    """
+    import subprocess
+    from autoresearch.learning.self_review import (
+        _STALE_RULER_LIVE_MARK, _STALE_RULER_TOKEN,
+    )
+    files = (".claude/skills/scan-market/SKILL.md", ".claude/skills/scan-retro/SKILL.md",
+             ".claude/skills/scan-retro/retro-playbook.md", "docs/PANORAMA.md")
+    hist = {}
+    for rel in files:
+        r = subprocess.run(["git", "show", f"551d236:{rel}"], capture_output=True, text=True)
+        if r.returncode != 0:                       # 浅克隆等拿不到旧对象 → 本条无从断言
+            return
+        hist[rel] = r.stdout
+    # 历史原文全部 **commit 进** tmp 仓库 = 存量文件 → 规则①(新增粒度)天然不开火,
+    # 命中数纯粹归功于规则②,这样才量得准。
+    root = _mk_git_repo(tmp_path, hist, {})
+    expected = sum(1 for text in hist.values() for ln in text.splitlines()
+                   if _STALE_RULER_TOKEN in ln and _STALE_RULER_LIVE_MARK in ln)
+    assert expected == 8, f"历史违规行数变了({expected}),基线需复核"
+    rows = _by(stale_ruler_lint(root), _STALE)
+    assert len(rows) == 8, f"召回 {len(rows)}/8 —— 判据太窄,会漏掉真实病灶写法:{rows}"
+    # PANORAMA 必须在扫描域内(本病最刺眼的 :704 就长在它身上,只守 .claude 等于守错门)
+    assert any("PANORAMA" in r["detail"] for r in rows), rows

@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import re
 import sys
 from collections import Counter
 
@@ -475,6 +476,141 @@ def workflow_literal_lint(root=".claude") -> list[dict]:
     return out
 
 
+#: 旧主尺字面量。2026-08-05 用户裁定换 `gap_c1_o2` 后它降为**参考尺**,不删——所以判据不是
+#: "出现即违规",而是"出现却没说清自己是参考尺/沿革"。
+_STALE_RULER_TOKEN = "fwd_2_oc"
+#: 合法写法的标记词(任一在场即放行)。**先给合法情形一个标记,再谈加严检查**——否则
+#: T13 刚写好的 16 处沿革/参考尺注记会被自己的 lint 天天判违规(2026-07-27 家训:修法
+#: 排序 = 补指令 > 给合法情形一个标记 > 才是加严检查)。
+_STALE_RULER_OK_MARKS = ("参考尺", "沿革", "旧尺", "旧主尺", "历史读数", "命名沿自",
+                         "降参考", "不改写", "未复测", "回滚杆", "勿随主尺漂移",
+                         "不随主尺漂移", "固定列名", "当时是", "当时的主尺", "取代")
+#: 「活指令」判据:同一行**既提旧尺又提「主尺」**,却不带任何合法标记 → 把旧尺当现行主尺讲。
+#:
+#: ⚠️ 判据故意是"共现",不是精巧句式匹配。第一版写成 `主尺仍 fwd_2_oc` 一类的正则,拿 T13
+#: **之前**的真实违规行回测,8 条只逮到 3 条(漏掉「fwd_2_oc 超短主尺 IC 校准」「裁定
+#: fwd_2_oc 主尺」「已实现 fwd_2_oc(事后,超短主尺」这类语序)——一个逮不住自己那条病的
+#: 探针就是假绿灯。`test_stale_ruler_recall_on_real_pre_t13_offenders` 把 8/8 召回钉死。
+_STALE_RULER_LIVE_MARK = "主尺"
+#: 扫描域:文档 + 代码。二进制/产物目录不在内(lint 只管人写的东西)。
+_STALE_RULER_EXTS = (".py", ".md", ".js", ".json", ".jsonc", ".yaml", ".yml", ".toml")
+#: 规则②的活文档域:`.claude/{skills,agents,workflows}` + `docs/PANORAMA.md`。PANORAMA 必须在
+#: 内 —— 本病最刺眼的那处(:704「权重校准主尺仍 fwd_2_oc」)就长在它身上,只守 `.claude/`
+#: 等于守错门。历史 specs/plans/research 报告**不在域内**(它们是审计记录,按 T13 裁定不改写)。
+_STALE_RULER_LIVE_DOCS = ("docs/PANORAMA.md",)
+
+
+def _git_new_files(root) -> list[str] | None:
+    """工作树里的**新增**文件(相对 root 的 posix 路径);非 git / git 不可用 → `None`。
+
+    `git status --porcelain` 的 `A`(已 add 未 commit)与 `??`(未跟踪)两档才算新增;
+    `M`/`R` 等**改动**不算——本 lint 的粒度是"新写的文件要按新尺写",不是"碰过的文件
+    都要回头改",否则 286 处历史命中会天天报警(存量不追溯是硬要求)。
+    """
+    import subprocess
+    from pathlib import Path
+
+    root = Path(root)
+    if not root.is_dir():
+        return None
+    try:
+        r = subprocess.run(["git", "status", "--porcelain", "--untracked-files=all"],
+                           cwd=root, capture_output=True, text=True, timeout=30)
+    except Exception:  # noqa: BLE001 — 无 git / 超时 → 按"判不了"处理,不炸
+        return None
+    if r.returncode != 0:
+        return None                      # 不是 git 仓库
+    out: list[str] = []
+    for line in r.stdout.splitlines():
+        if len(line) < 4:
+            continue
+        code, path = line[:2], line[3:].strip()
+        if code.strip() in ("A", "AM", "??"):
+            if " -> " in path:           # rename 形式,取目标
+                path = path.split(" -> ", 1)[1]
+            out.append(path.strip('"'))
+    return out
+
+
+def stale_ruler_lint(root=".") -> list[dict]:
+    """旧尺(`fwd_2_oc`)裸写防复发 lint(Wave12 T14,承 T13 大扫)。
+
+    T13 把文档层 286 处旧尺命中逐条归类完(历史审计记录 / 参考尺注记 / 沿革注记),但
+    **没有任何东西阻止下一个人重新写一处**——最刺眼的 PANORAMA:704「权重校准主尺仍
+    fwd_2_oc」正是这么长出来的。本探针补上那道门,两条判据:
+
+    **① 新增文件裸写**(`git status` 的 `A`/`??` 粒度):新写的文件里出现 `fwd_2_oc`
+    却没有任何 `_STALE_RULER_OK_MARKS` 标记 → fail。**存量文件一律不追溯**(已 commit
+    的、乃至被改动过的都不算)——否则 286 处历史命中会把这条 lint 变成天天响的噪声,
+    而"天天响的警报"等于没有警报。
+
+    **② `.claude/` 活指令句式**(不论文件新旧):把旧尺当**现行主尺**讲的句子
+    (`主尺仍 fwd_2_oc` / `fwd_2_oc 为主尺`)→ fail。这一条与"新增"无关:存量 skill 文档
+    里写出来同样是在指挥 agent 用错尺,而 skill 文档正是 agent 当契约读的东西。
+    沿革写法(「当时是 `fwd_2_oc`,现 `gap_c1_o2`」)带标记词,天然放行。
+
+    presence-gated:非 git 目录 / 无 git 可执行 / 坏文件 → 静默跳过,绝不抛异常
+    (与 `retired_symbol_lint` 同姿势)。
+    """
+    from pathlib import Path
+
+    root = Path(root)
+    out: list[dict] = []
+    if not root.is_dir():
+        return out
+
+    def _ok(text: str) -> bool:
+        return any(m in text for m in _STALE_RULER_OK_MARKS)
+
+    # ① 新增文件裸写
+    for rel in _git_new_files(root) or []:
+        if not rel.endswith(_STALE_RULER_EXTS):
+            continue
+        p = root / rel
+        try:
+            text = p.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001 — 读不了按无内容处理,不炸
+            continue
+        if _STALE_RULER_TOKEN not in text or _ok(text):
+            continue
+        line_no = next((i for i, ln in enumerate(text.splitlines(), start=1)
+                        if _STALE_RULER_TOKEN in ln), 1)
+        out.append({
+            "check": "产物形状·旧尺裸写",
+            "severity": "fail",
+            "detail": f"{Path(rel).name}:{line_no} 新增文件裸写 `{_STALE_RULER_TOKEN}` 却无"
+                      "「参考尺/沿革」注记——主尺自 2026-08-05 起是 `gap_c1_o2`"
+                      "(common.ruler.MAIN_RULER 单点);要么改用主尺,要么写明这是参考尺",
+            "code": None,
+        })
+
+    # ② 活文档里的「旧尺当主尺讲」(不论文件新旧)
+    targets: list = []
+    claude = root / ".claude"
+    if claude.is_dir():
+        for sub, ext in _DOC_LINT_SUBDIRS:
+            d = claude / sub
+            if d.is_dir():
+                targets.extend(p for p in sorted(d.rglob(f"*{ext}")) if p.is_file())
+    targets.extend(p for p in (root / rel for rel in _STALE_RULER_LIVE_DOCS) if p.is_file())
+    for p in targets:
+        try:
+            text = p.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            continue
+        for i, line in enumerate(text.splitlines(), start=1):
+            if _STALE_RULER_TOKEN in line and _STALE_RULER_LIVE_MARK in line and not _ok(line):
+                out.append({
+                    "check": "产物形状·旧尺裸写",
+                    "severity": "fail",
+                    "detail": f"{p.name}:{i} 同行既写 `{_STALE_RULER_TOKEN}` 又写「主尺」却无"
+                              "「参考尺/沿革」标记——疑似把旧尺当**现行主尺**讲(活指令);"
+                              "现主尺 `gap_c1_o2`(2026-08-05 用户裁定)。若在记沿革,同行标注即可",
+                    "code": None,
+                })
+    return out
+
+
 def card_v4_marker_lint(scan_dir, date_str: str) -> list[dict]:
     """v4 卡契约口径声明缺失 lint(T17;design A5)。
 
@@ -859,6 +995,10 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
         out.extend(retired_symbol_lint(claude_root))
     with contextlib.suppress(Exception):
         out.extend(workflow_literal_lint(claude_root))
+    # 14)旧尺裸写防复发(T14):同上按 scan_dir 祖先推**仓库根**(不是 .claude 根——本探针
+    # 既查 .claude 文档也查新增代码文件,且要在仓库根上跑 `git status`)。
+    with contextlib.suppress(Exception):
+        out.extend(stale_ruler_lint(claude_root.parent))
 
     # 13) v4 卡契约口径声明缺失(T17):标记行本体是 T24 的事,这里只加检查
     with contextlib.suppress(Exception):
