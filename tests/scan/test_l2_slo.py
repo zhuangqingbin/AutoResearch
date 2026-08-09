@@ -245,3 +245,301 @@ def test_cli_writes_artifacts(tmp_path):
     md = out_md.read_text(encoding="utf-8")
     assert "端到端" in md and "条件" in md and "不是唯一指标" in md
     assert json.loads(out_json.read_text(encoding="utf-8"))["n_days"] == 3
+
+
+# ══════════════════════════════════════════════════════════════════
+# T21(Wave12·F3):per-channel 端到端 capture 六跳漏斗
+#
+# 5 条纪律:
+# 5. 六跳位置齐(recall→L2→pass1→finalist→L4-qualified→E6-top1/BUY),存活集合逐跳嵌套;
+# 6. **条件** capture 的分母 = **上一跳存活集合**(不是端到端分母混算);
+# 7. winner 定义仍由 `MAIN_RULER` + `ruler.entry_flag_for()` 现算(不另立一套);
+# 8. 报警线用当日**之前**的 expanding P25(全期分位含未来);
+# 9. 每个比率同屏带分子/分母/as-of/ruler;E6 缺文件记 `—` 不是 0。
+# ══════════════════════════════════════════════════════════════════
+
+
+def _funnel_day(root, date, *, channels, l2, pass1_kept=(), finalists=(), rated=(),
+                attr, buys=None, write_buys=True):
+    """六跳齐全的一日 —— `channels` = {channel: [code...]}(L1_channels.csv 长表)。"""
+    d = root / date
+    (d / "retro").mkdir(parents=True, exist_ok=True)
+
+    rows = [{"channel": ch, "code": c, "channel_rank": i + 1, "channel_score": 10.0 - i}
+            for ch, codes in channels.items() for i, c in enumerate(codes)]
+    pd.DataFrame(rows, columns=["channel", "code", "channel_rank", "channel_score"]).to_csv(
+        d / "L1_channels.csv", index=False)
+
+    frame = pd.DataFrame({"code": list(l2)})
+    frame["name"] = frame["code"]
+    frame["industry"] = "电子"
+    frame["l2_rank"] = range(1, len(l2) + 1)
+    frame["recall_channels"] = "composite"
+    frame.to_csv(d / "L2_gbdt_top200.csv", index=False)
+    pd.DataFrame({"code": list(l2), "rank": range(1, len(l2) + 1)}).to_csv(
+        d / "L1_scored_full.csv", index=False)
+    pd.DataFrame({"code": list(l2)}).to_csv(d / "L1_recall_top1000.csv", index=False)
+
+    pd.DataFrame({"code": list(pass1_kept), "selection_reason": ["lane"] * len(pass1_kept),
+                  "selection_detail": [""] * len(pass1_kept)}).to_csv(
+        d / "_l3_pass1_kept.csv", index=False)
+    pd.DataFrame({"code": [c for c in l2 if c not in set(pass1_kept)]}).to_csv(
+        d / "_l3_pass1_cut.csv", index=False)
+    (d / "_l3_judged.json").write_text(json.dumps(
+        [{"code": c, "conviction": 7} for c in pass1_kept], ensure_ascii=False),
+        encoding="utf-8")
+    pd.DataFrame({"code": list(finalists), "guard": [""] * len(finalists)}).to_csv(
+        d / "finalists.csv", index=False)
+    (d / "_final_ratings.json").write_text(json.dumps(
+        {c: "Hold" for c in rated}, ensure_ascii=False), encoding="utf-8")
+    (d / "_l4_tasks.json").write_text(json.dumps(
+        {"tasks": {c: {} for c in finalists}}, ensure_ascii=False), encoding="utf-8")
+
+    if write_buys:
+        (d / "_relative_buy_decision.json").write_text(json.dumps(
+            {"buys": [{"code": c, "basis": "relative", "rank": 1} for c in (buys or [])]},
+            ensure_ascii=False), encoding="utf-8")
+
+    pd.DataFrame(attr).to_csv(d / "retro" / "attribution.csv", index=False)
+    return d
+
+
+# ── 纪律 5:六跳齐 + 存活集合逐跳嵌套 ──────────────────────────────
+
+
+def test_six_hops_are_all_present_and_nested(tmp_path):
+    attr = _market(16, 0.0) + [_attr(c, 0.50) for c in
+                               ("900001", "900002", "900003", "900004")]
+    d = _funnel_day(tmp_path, "2026-06-01",
+                    channels={"momentum": ["900001", "900002", "900003", "900004"]},
+                    l2=["900001", "900002", "900003"],
+                    pass1_kept=["900001", "900002"], finalists=["900001"],
+                    rated=["900001"], attr=attr, buys=["900001"])
+    got = l2_slo.day_channel_funnel(d)
+    hops = got["channels"]["momentum"]["hops"]
+    assert [h["hop"] for h in hops] == list(l2_slo.FUNNEL_HOPS)
+    assert [h["n"] for h in hops] == [4, 3, 2, 1, 1, 1], "存活集合必须逐跳单调不增"
+
+
+def test_a_cut_candidate_cannot_reappear_downstream(tmp_path):
+    """存活集合**逐跳嵌套**的活体锁:`900002` 在 pass1 被切,却因为下游产物的孤儿行
+    (护照 docstring 记的实测:3 天共 45 只 finalist 不在当日 L2/上游)出现在 finalists.csv 里。
+    嵌套口径下它**不能**在 finalist 跳复活;不嵌套(直接 `recall ∩ survivors[hop]`)会让漏斗
+    出现 n 变大的一跳 —— 那是数据异常,不是漏斗形态。
+
+    ⚠️ 这条是变异探针 N2 逼出来的:第一版全部 fixture 的存活集合本来就层层嵌套,
+    `alive ∩ survivors` 与 `recall ∩ survivors` 恒等 —— 把嵌套摘掉测试照样全绿 = 假绿灯。
+    """
+    attr = _market(18, 0.0) + [_attr("900001", 0.50), _attr("900002", 0.50)]
+    d = _funnel_day(tmp_path, "2026-06-01",
+                    channels={"momentum": ["900001", "900002"]},
+                    l2=["900001", "900002"], pass1_kept=["900001"],
+                    finalists=["900001", "900002"], rated=["900001", "900002"],
+                    attr=attr, buys=[])
+    hops = {h["hop"]: h for h in l2_slo.day_channel_funnel(d)["channels"]["momentum"]["hops"]}
+    assert hops["pass1"]["n"] == 1
+    assert hops["finalist"]["n"] == 1, "pass1 切掉的票不得在 finalist 跳复活"
+    assert hops["finalist"]["n_winners"] == 1
+    assert hops["l4"]["n"] == 1
+
+
+def test_l4_hop_reads_card_not_dispatch(tmp_path):
+    """L4-qualified = 真出了卡(有评级),不是"派发过" —— 派了没回卡不算过这一跳。"""
+    attr = _market(19, 0.0) + [_attr("900001", 0.50)]
+    d = _funnel_day(tmp_path, "2026-06-01", channels={"momentum": ["900001"]},
+                    l2=["900001"], pass1_kept=["900001"], finalists=["900001"],
+                    rated=[], attr=attr, buys=[])
+    hops = {h["hop"]: h for h in l2_slo.day_channel_funnel(d)["channels"]["momentum"]["hops"]}
+    assert hops["finalist"]["n"] == 1
+    assert hops["l4"]["n"] == 0
+
+
+# ── 纪律 6:条件 capture 的分母 = 上一跳存活集合 ──────────────────
+
+
+def test_conditional_denominator_is_the_previous_hop_not_end_to_end(tmp_path):
+    """4 只赢家全被 momentum 召回,L2 只留 2、pass1 只留 1。
+    L2 跳条件 capture = 2/4;pass1 跳条件 capture = 1/2(**不是** 1/4)。"""
+    attr = _market(16, 0.0) + [_attr(c, 0.50) for c in
+                               ("900001", "900002", "900003", "900004")]
+    d = _funnel_day(tmp_path, "2026-06-01",
+                    channels={"momentum": ["900001", "900002", "900003", "900004"]},
+                    l2=["900001", "900002"], pass1_kept=["900001"],
+                    finalists=[], rated=[], attr=attr, buys=[])
+    hops = {h["hop"]: h for h in l2_slo.day_channel_funnel(d)["channels"]["momentum"]["hops"]}
+    assert hops["l2"]["capture_cond"]["value"] == pytest.approx(0.5)
+    assert hops["l2"]["capture_cond"]["denom"] == 4
+    assert hops["pass1"]["capture_cond"]["value"] == pytest.approx(0.5)
+    assert hops["pass1"]["capture_cond"]["denom"] == 2, (
+        "分母必须是上一跳(L2)存活的赢家数 2,不是端到端的 4")
+
+
+def test_relative_capture_is_the_channel_share_of_surviving_winners(tmp_path):
+    """相对赢家 capture = 本路在该跳存活的赢家 / **全部通道**在该跳存活的赢家。"""
+    attr = _market(18, 0.0) + [_attr("900001", 0.50), _attr("900002", 0.50)]
+    d = _funnel_day(tmp_path, "2026-06-01",
+                    channels={"momentum": ["900001"], "value": ["900001", "900002"]},
+                    l2=["900001", "900002"], pass1_kept=["900001", "900002"],
+                    finalists=[], rated=[], attr=attr, buys=[])
+    chans = l2_slo.day_channel_funnel(d)["channels"]
+    mom = {h["hop"]: h for h in chans["momentum"]["hops"]}["l2"]
+    val = {h["hop"]: h for h in chans["value"]["hops"]}["l2"]
+    assert mom["capture_rel"]["value"] == pytest.approx(0.5)   # 1 / 2
+    assert val["capture_rel"]["value"] == pytest.approx(1.0)   # 2 / 2
+
+
+def test_zero_denominator_is_none_not_zero(tmp_path):
+    """那一跳上一层压根没有赢家 → 比率不存在,不是 0(与既有 `_capture` 同纪律)。"""
+    d = _funnel_day(tmp_path, "2026-06-01", channels={"momentum": ["100000"]},
+                    l2=["100000"], pass1_kept=[], finalists=[], rated=[],
+                    attr=_market(20, 0.0), buys=[])
+    hops = {h["hop"]: h for h in l2_slo.day_channel_funnel(d)["channels"]["momentum"]["hops"]}
+    assert hops["l2"]["capture_cond"]["value"] is None
+    assert hops["l2"]["capture_cond"]["denom"] == 0
+
+
+# ── 纪律 7:winner 定义引 MAIN_RULER + entry_flag_for() ────────────
+
+
+def test_winner_definition_is_the_shared_one_not_a_second_copy(tmp_path):
+    from autoresearch.common.ruler import MAIN_RULER, entry_flag_for
+
+    attr = _market(19, 0.0) + [_attr("900001", 0.50)]
+    d = _funnel_day(tmp_path, "2026-06-01", channels={"momentum": ["900001"]},
+                    l2=["900001"], pass1_kept=[], finalists=[], rated=[],
+                    attr=attr, buys=[])
+    got = l2_slo.day_channel_funnel(d)
+    assert got["winner_definition"] == l2_slo.WINNER_DEFINITION
+    assert got["ruler"] == MAIN_RULER
+    assert entry_flag_for() in got["winner_definition"]
+
+
+def test_entry_leg_flag_follows_the_ruler_in_the_funnel_too(tmp_path):
+    """C1 家族回归:旧旗 `buyable`=True 而新旗 `buyable_c1`=False 的票不得算赢家。"""
+    attr = _market(19, 0.0) + [_attr("900001", 0.50, buyable=True, buyable_c1=False)]
+    d = _funnel_day(tmp_path, "2026-06-01", channels={"momentum": ["900001"]},
+                    l2=["900001"], pass1_kept=[], finalists=[], rated=[],
+                    attr=attr, buys=[])
+    got = l2_slo.day_channel_funnel(d)
+    assert got["n_winners"] == 0
+
+
+# ── 纪律 8:报警线用当日之前的 expanding P25 ──────────────────────
+
+
+def test_channel_alarm_line_uses_only_prior_history():
+    daily = [{"date": f"2026-06-{i:02d}",
+              "channels": {"momentum": {"hops": [
+                  {"hop": "l2", "capture_cond": {"value": 0.5 if i < 14 else 0.01,
+                                                 "numer": 1, "denom": 2}}]}}}
+             for i in range(1, 15)]
+    alarm = l2_slo.channel_alarms(daily)
+    line = [row for row in alarm if row["channel"] == "momentum"]
+    assert all(r["p25"] is None for r in line[:l2_slo.MIN_HISTORY])
+    assert line[13]["p25"] == pytest.approx(0.5)
+    assert line[13]["alarm"] is True
+    assert line[12]["alarm"] is False
+
+
+def test_channel_alarm_is_none_before_min_history():
+    daily = [{"date": "2026-06-01",
+              "channels": {"momentum": {"hops": [
+                  {"hop": "l2", "capture_cond": {"value": 0.9, "numer": 9, "denom": 10}}]}}}]
+    assert [r["alarm"] for r in l2_slo.channel_alarms(daily)] == [None]
+
+
+# ── 纪律 9:分子/分母/as-of/ruler 同屏 + E6 缺文件记 `—` ────────────
+
+
+def test_every_ratio_carries_numer_denom_asof_ruler(tmp_path):
+    from autoresearch.common.ruler import MAIN_RULER
+
+    attr = _market(19, 0.0) + [_attr("900001", 0.50)]
+    d = _funnel_day(tmp_path, "2026-06-01", channels={"momentum": ["900001"]},
+                    l2=["900001"], pass1_kept=["900001"], finalists=["900001"],
+                    rated=["900001"], attr=attr, buys=["900001"])
+    for hop in l2_slo.day_channel_funnel(d)["channels"]["momentum"]["hops"]:
+        for key in ("capture_cond", "capture_rel"):
+            ratio = hop[key]
+            assert set(ratio) >= {"value", "numer", "denom", "as_of", "ruler"}
+            assert ratio["as_of"] == "2026-06-01" and ratio["ruler"] == MAIN_RULER
+
+
+def test_e6_hop_missing_file_is_dash_not_zero(tmp_path):
+    """E6 影子决策文件还没产出的日子:该跳记 `—`(status=ABSENT),**不是** 0 只 BUY。"""
+    attr = _market(19, 0.0) + [_attr("900001", 0.50)]
+    d = _funnel_day(tmp_path, "2026-06-01", channels={"momentum": ["900001"]},
+                    l2=["900001"], pass1_kept=["900001"], finalists=["900001"],
+                    rated=["900001"], attr=attr, write_buys=False)
+    got = l2_slo.day_channel_funnel(d)
+    e6 = {h["hop"]: h for h in got["channels"]["momentum"]["hops"]}["e6"]
+    assert e6["n"] is None and e6["status"] == "ABSENT"
+    assert e6["capture_cond"]["value"] is None
+    assert got["sources"]["e6"] == "ABSENT"
+
+
+def test_e6_hop_present_but_empty_is_zero_not_dash(tmp_path):
+    """文件在、`buys` 是空列表:那是真的「今天一只都没买」= 0,与「没这个文件」区分得开。"""
+    attr = _market(19, 0.0) + [_attr("900001", 0.50)]
+    d = _funnel_day(tmp_path, "2026-06-01", channels={"momentum": ["900001"]},
+                    l2=["900001"], pass1_kept=["900001"], finalists=["900001"],
+                    rated=["900001"], attr=attr, buys=[])
+    e6 = {h["hop"]: h for h in
+          l2_slo.day_channel_funnel(d)["channels"]["momentum"]["hops"]}["e6"]
+    assert e6["n"] == 0 and e6["status"] == "PRESENT"
+
+
+# ── 通道间赢家重叠矩阵 ────────────────────────────────────────────
+
+
+def test_winner_overlap_matrix_is_jaccard_on_recalled_winners(tmp_path):
+    """矩阵数的是**赢家**的重合,不是召回码的重合。
+
+    ⚠️ 变异探针 N9 逼出来的加料:第一版 fixture 里两路召回的**全部**代码恰好都是赢家,
+    于是"数赢家"和"数全部召回码"给出同一个答案 —— 把口径改成后者测试照样全绿 = 假绿灯。
+    现在给两路各塞一只共同的**非赢家**(`100777`):赢家口径下它不进分子也不进分母,
+    全码口径下 common/union 会变成 2/4。
+    """
+    attr = (_market(17, 0.0) + [_attr(c, 0.50) for c in ("900001", "900002", "900003")]
+            + [_attr("100777", 0.0)])
+    d = _funnel_day(tmp_path, "2026-06-01",
+                    channels={"momentum": ["900001", "900002", "100777"],
+                              "value": ["900002", "900003", "100777"]},
+                    l2=["900001", "900002", "900003", "100777"], pass1_kept=[],
+                    finalists=[], rated=[], attr=attr, buys=[])
+    matrix = {(r["channel_a"], r["channel_b"]): r
+              for r in l2_slo.day_channel_funnel(d)["winner_overlap"]}
+    row = matrix[("momentum", "value")]
+    assert (row["common"], row["union"]) == (1, 3), (
+        "共同赢家只有 900002、并集只有三只赢家;若口径退化成"
+        "「共同召回码」会变成 (2, 4)(非赢家 100777 混进来)")
+    assert row["jaccard"] == pytest.approx(1 / 3)
+    assert (row["n_a"], row["n_b"]) == (2, 2)
+
+
+# ── 缺件降级 + 报表接线 ───────────────────────────────────────────
+
+
+def test_missing_l1_channels_degrades_to_none(tmp_path):
+    d = tmp_path / "2026-06-01"
+    (d / "retro").mkdir(parents=True)
+    pd.DataFrame(_market(20, 0.0)).to_csv(d / "retro" / "attribution.csv", index=False)
+    assert l2_slo.day_channel_funnel(d) is None
+
+
+def test_funnel_section_lands_in_the_report(tmp_path):
+    attr = _market(18, 0.0) + [_attr("900001", 0.50), _attr("900002", 0.50)]
+    for i in range(1, 4):
+        _funnel_day(tmp_path, f"2026-06-{i:02d}",
+                    channels={"momentum": ["900001"], "value": ["900001", "900002"]},
+                    l2=["900001", "900002"], pass1_kept=["900001"],
+                    finalists=["900001"], rated=["900001"], attr=attr, buys=["900001"])
+    out_json, out_md = tmp_path / "o.json", tmp_path / "o.md"
+    assert l2_slo.main(["--scan-root", str(tmp_path), "--json-out", str(out_json),
+                        "--md-out", str(out_md)]) == 0
+    md = out_md.read_text(encoding="utf-8")
+    assert "per-channel" in md or "逐通道" in md
+    assert "momentum" in md and "value" in md
+    payload = json.loads(out_json.read_text(encoding="utf-8"))
+    assert payload["channel_funnel"]["n_days"] == 3
+    assert set(payload["channel_funnel"]["channels"]) == {"momentum", "value"}
