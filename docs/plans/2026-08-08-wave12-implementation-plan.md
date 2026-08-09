@@ -233,7 +233,8 @@
 ### T22 · E6-0 相对标签列(rel_gap_market / rel_gap_sector)
 
 **Files:** Modify: `autoresearch/common/ruler.py`(常量)、`autoresearch/learning/retro.py`(realized_returns/attribute 落列+历史回填);`tests/common/test_ruler.py`、`tests/learning/test_retro_rel_cols.py`(新)
-**Interfaces:** Produces: `ruler.REL_MARKET="rel_gap_market"`、`ruler.REL_SECTOR="rel_gap_sector"`;attribution.csv 增两列:`rel_gap_market = gap_c1_o2 − 当日 L0 可交易(entry_tradable)全集等权均值`;`rel_gap_sector = gap_c1_o2 − 同申万一级可交易等权均值`(行业列名以 L1 面板实测为准——premise-check,预期 `industry`)。E6/relative_ledger/F3 引用。
+**Interfaces:** Produces: `ruler.REL_MARKET="rel_gap_market"`、`ruler.REL_SECTOR="rel_gap_sector"`;attribution.csv 增两列:`rel_gap_market = gap_c1_o2 − 当日**全市场可交易**(entry_tradable)等权均值`;`rel_gap_sector = gap_c1_o2 − 同申万一级可交易等权均值`(行业列名以 L1 面板实测为准——premise-check,预期 `industry`)。E6/relative_ledger/F3 引用。
+  > **勘误(2026-08-09 全支终审 B-1)**:本行原写「当日 L0 可交易(entry_tradable)全集等权均值」,把两个不同的人口混成一句。以 I-1 用户裁定为准:`rel_gap_market` 的分母 = **全市场可交易**(不限于过 L0 门的票);「L0 可交易全集」是决策层分位/流动性门的分母(`benchmark.market.n`),**不可互换**(2026-08-04 实测 4193 vs 5426)。
 
 - [ ] Step 1(test first): 合成两行业×四票帧,手算两列断言逐票相等;缺行业票 `rel_gap_sector=NaN` 不猜;`ruler` 常量存在性断言。
 - [ ] Step 2: 红 → 实现(基准分母=当日全集,**不含**被 entry 旗剔除票;历史回填追加列不改旧值,与 A3 回填同手法)→ 绿。

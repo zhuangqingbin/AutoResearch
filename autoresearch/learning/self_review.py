@@ -1139,8 +1139,42 @@ def usage_reconcile_lint(scan_root, ledger_path=None) -> list[dict]:
 # **为什么不挂在 `_self_review_banner` 里**:那个函数在 `build_summary` **内部**跑,而此刻
 # brief.md 与 `_relative_buy_decision.json` 都还不存在(见 report_sections 的 DASHBOARD 注)。
 # 接线点在 `publisher.run` 收尾,与 brief 落盘同一处。
+#: **GATE4 语义二分**(B-2,2026-08-09 控制方裁定)—— 判据名 → severity 的**单一事实源**。
+#:
+#: 病灶:`publisher` 把本 lint 的结果 `append_gate_fires` 进 `gate_fires.csv`,而
+#: `scan.gates.gate4` 的判据是「任意一行 `severity=="fail"` 就不过」。于是**一份人类可读
+#: 摘要排版超限**(>3,000B)就能毙掉整条约 60 分钟的流水线 —— 本仓有「GATE3 差 16 字节毙
+#: 60min 流水线」的疤,同一形状。而本波自己两处写着「失败不阻断发布」(`publisher.run`
+#: 的 brief 段注释)、`brief.safe_publish` 刻意吞异常:一边为了不阻断而吞,另一边把吞下去
+#: 的结果变成门失败。
+#:
+#: **分法只有一问:报告是不是在说假话。**
+#:   `fail` —— 报告陈述与事实/自身矛盾,硬门必须拦(数字被手改、两层报告各说各话、
+#:              数字来自白名单外的源、active 期把 BLOCKED/0 BUY 渲染成成功 run);
+#:   `warn` —— 报告**畸形或缺失**,是展示层问题,不该毁掉一次已经跑完的扫描
+#:              (brief 没落盘、排版超限、对账夹具缺失或过期)。
+#:
+#: 一份人类可读摘要排版超限是展示层问题;**报告说假话才是硬门该拦的事**。
+#: 降级 ≠ 消音:warn 照样进 `gate_fires.csv`,也照样由 `brief_lint_banner` 播给 CP7。
+BRIEF_LINT_SEVERITY = {
+    # ── fail:报告在说假话 ──
+    "brief·数字对账": "fail",
+    "brief↔summary不一致": "fail",
+    "brief·白名单外取数": "fail",
+    "brief·BUY契约(active 期)": "fail",
+    # ── warn:报告畸形/缺失 ──
+    "brief·缺失": "warn",
+    "brief·超预算": "warn",
+    "brief·边表缺失": "warn",
+    "brief·边表过期": "warn",
+}
+
 _BRIEF_DECISION_FIELDS = ("buys.production_n", "relative.code", "relative.rank",
-                          "relative.market_n")
+                          # B-1(2026-08-09):原为 `relative.market_n` —— 那个名字同时
+                          # 可以指「L0 过门票」与「全市场可交易」两个人口,brief 已按
+                          # `decision_pool_n` / `eval_population` 拆开。跨层比对锚同一段
+                          # `text`,取其中一个即可,取的是有数的那个。
+                          "relative.decision_pool_n")
 
 
 def brief_lint(report_dir, scan_dir=None) -> list[dict]:
@@ -1153,6 +1187,9 @@ def brief_lint(report_dir, scan_dir=None) -> list[dict]:
     ⑤ **BUY≥1 契约只在 active 模式生效**:`mode` 从 `_relative_buy_decision.json` 读;影子期
     该检查跳过,但**出一条 info 留痕**——静默跳过会让「这道门什么时候开始管事」不可查
     (recalibrate 空转 2 周的同族教训)。
+
+    **severity 不在调用点各写各的**:一律由 `BRIEF_LINT_SEVERITY` 查表(B-2 裁定的单一
+    事实源;只有影子期那条 info 留痕显式传 `severity`)。GATE4 拦不拦这条,读那张表即知。
     """
     import contextlib
     import json
@@ -1160,31 +1197,33 @@ def brief_lint(report_dir, scan_dir=None) -> list[dict]:
 
     out: list[dict] = []
 
-    def add(check, sev, detail, code=None):
-        out.append({"check": check, "severity": sev, "detail": detail, "code": code})
+    def add(check, detail, code=None, *, severity=None):
+        out.append({"check": check,
+                    "severity": severity or BRIEF_LINT_SEVERITY.get(check, "fail"),
+                    "detail": detail, "code": code})
 
     report = Path(report_dir)
     scan = Path(scan_dir) if scan_dir is not None else report
     try:
         from autoresearch.scan import brief as _brief
     except Exception as exc:  # noqa: BLE001 — 模块都装不上就只报一条,不炸
-        add("brief·lint不可用", "warn", f"brief 模块不可导入:{type(exc).__name__}")
+        add("brief·lint不可用", f"brief 模块不可导入:{type(exc).__name__}", severity="warn")
         return out
 
     # ① 在场 + ② 预算
     path = report / _brief.BRIEF_FILENAME
     if not path.exists():
-        add("brief·缺失", "fail",
+        add("brief·缺失",
             f"{path} 不存在 —— 报告双层的速读层没落盘(publisher 接线断了?)")
         return out
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
-        add("brief·缺失", "fail", f"{path} 读不出:{type(exc).__name__}")
+        add("brief·缺失", f"{path} 读不出:{type(exc).__name__}")
         return out
     n_bytes = len(text.encode("utf-8"))
     if n_bytes > _brief.MAX_BYTES:
-        add("brief·超预算", "fail",
+        add("brief·超预算",
             f"{n_bytes}B > 硬预算 {_brief.MAX_BYTES}B —— 速读层撑破了就不再是速读层")
 
     # ③ sources 边表:重算 + 锚在 + 白名单
@@ -1192,7 +1231,7 @@ def brief_lint(report_dir, scan_dir=None) -> list[dict]:
     with contextlib.suppress(Exception):
         payload = json.loads((scan / _brief.SOURCES_FILENAME).read_text(encoding="utf-8"))
     if not isinstance(payload, dict) or not isinstance(payload.get("rows"), list):
-        add("brief·边表缺失", "fail",
+        add("brief·边表缺失",
             f"{scan / _brief.SOURCES_FILENAME} 缺失/损坏 —— 无边表则 brief 里的数字无法对账")
         rows: list[dict] = []
     else:
@@ -1204,20 +1243,20 @@ def brief_lint(report_dir, scan_dir=None) -> list[dict]:
             stale = [r["field"] for r, f in zip(rows, fresh["sources"], strict=False)
                      if r != f]
             if len(rows) != len(fresh["sources"]) or stale:
-                add("brief·边表过期", "fail",
+                add("brief·边表过期",
                     f"边表与白名单输入重算结果不符({len(rows)} vs "
                     f"{len(fresh['sources'])} 行;首个差异 {stale[:3] or '行数'})"
                     " —— 输入变了但产物没重生成")
         bad_anchor = [r.get("field") for r in rows if str(r.get("text") or "") not in text]
         if bad_anchor:
-            add("brief·数字对账", "fail",
+            add("brief·数字对账",
                 f"{len(bad_anchor)} 个字段的渲染片段不在 brief 正文里:"
                 f"{'、'.join(str(f) for f in bad_anchor[:5])}"
                 " —— brief 被手改过,或渲染与边表脱钩")
         outside = sorted({str(r.get("file")) for r in rows
                           if r.get("file") not in _brief.INPUT_WHITELIST})
         if outside:
-            add("brief·白名单外取数", "fail",
+            add("brief·白名单外取数",
                 f"{outside} 不在 `brief.INPUT_WHITELIST` —— 生成器禁读 details 全文与 trace 大文件")
 
     # ④ brief ↔ summary(四个决策字段的**同一片段**必须两边都在)
@@ -1226,14 +1265,14 @@ def brief_lint(report_dir, scan_dir=None) -> list[dict]:
     with contextlib.suppress(Exception):
         summary = summary_path.read_text(encoding="utf-8")
     if not summary:
-        add("brief↔summary不一致", "fail",
+        add("brief↔summary不一致",
             f"{summary_path} 缺失/空 —— 无法验证两层报告说的是同一件事")
     else:
         by_field = {str(r.get("field")): r for r in rows}
         missing = [f for f in _BRIEF_DECISION_FIELDS
                    if f in by_field and str(by_field[f].get("text") or "") not in summary]
         if missing:
-            add("brief↔summary不一致", "fail",
+            add("brief↔summary不一致",
                 f"决策字段在 summary 的 🧭 仪表盘块里对不上:{'、'.join(missing)}"
                 " —— 两层报告的 BUY 数/code/basis/基准读数必须同源同值")
 
@@ -1243,20 +1282,38 @@ def brief_lint(report_dir, scan_dir=None) -> list[dict]:
         decision = json.loads((scan / _brief.DECISION_FILENAME).read_text(encoding="utf-8"))
     mode = str((decision or {}).get("mode") or "ABSENT")
     if mode != "active":
-        add("brief·BUY契约(active 期)", "info",
+        # 唯一显式传 severity 的调用点:这不是**判据触发**,是「本判据今天没生效」的留痕。
+        add("brief·BUY契约(active 期)",
             f"mode={mode} —— 非 active,「成功 run 必须至少 1 只 BUY」与「BLOCKED 不得渲染成"
-            "成功」两条跳过(影子期只观察,不拦发布);活体切换后本条自动生效")
+            "成功」两条跳过(影子期只观察,不拦发布);活体切换后本条自动生效",
+            severity="info")
     else:
         blocked = bool((decision or {}).get("blocked"))
         n_buys = len((decision or {}).get("buys") or [])
         if blocked:
             if "BLOCKED" not in text:
-                add("brief·BUY契约(active 期)", "fail",
+                add("brief·BUY契约(active 期)",
                     "决策文档 blocked=true 但 brief 没渲染 BLOCKED —— 故障被写成了成功 run")
         elif n_buys < 1:
-            add("brief·BUY契约(active 期)", "fail",
+            add("brief·BUY契约(active 期)",
                 f"成功 run 的 BUY_n={n_buys}<1 —— active 期每个成功交易日至少一只(E6 裁定)")
     return out
+
+
+def brief_lint_banner(rows: list[dict]) -> str:
+    """brief lint 的 CP7 播报行(B-2)。
+
+    **降级不等于消音**:B-2 把四条判据从 fail 降到 warn 之后,只数 fail 的播报行会让
+    「brief 没落盘 / 撑破 3KB」变成一句「fail 0」——人再也看不见。所以 fail 与 warn
+    **两个计数都播**,并逐条列出(🛑 fail / ⚠️ warn),info 只计数不刷屏。
+    """
+    n_fail = sum(1 for x in rows if x.get("severity") == "fail")
+    n_warn = sum(1 for x in rows if x.get("severity") == "warn")
+    head = f"[brief lint] fail {n_fail} · warn {n_warn} / 共 {len(rows)} 条"
+    detail = "".join(
+        f"\n  {'🛑' if x.get('severity') == 'fail' else '⚠️'} {x.get('check')}:{x.get('detail')}"
+        for x in rows if x.get("severity") in ("fail", "warn"))
+    return head + detail
 
 
 def append_gate_fires(scan_dir, rows: list[dict], date: str) -> int:

@@ -376,14 +376,24 @@ def _run_publish(analysis_date: str, scan_dir: Path | None = None,
     # ── brief 一致性 lint(Wave12 T27)——**必须在 brief 落盘之后**跑,而 `_self_review_banner`
     # 跑在 build_summary 内部(那时 brief 与决策文档都还不存在),所以这条独立接在这里。
     # 结果追加进 `gate_fires.csv`(与 R3 门审计同一本账),并打一行给 CP7 播报。
+    #
+    # ⚠️ **这条追加会喂进 GATE4**(`gates.gate4` = gate_fires 里有任意 `severity=="fail"`
+    # 就不过),所以 severity 的选择就是「要不要毙掉这一整趟约 60 分钟的扫描」。B-2
+    # (2026-08-09 控制方裁定)据此把八条判据二分,单一事实源在
+    # `self_review.BRIEF_LINT_SEVERITY`:报告**说假话**才 fail(硬门该拦),报告**畸形或
+    # 缺失**只 warn(排版超限/没落盘是展示层问题,不该毁掉一次已跑完的扫描)。这也才与
+    # 上面「失败不阻断发布」和 `brief.safe_publish` 刻意吞异常的口径自洽 —— 否则一边为了
+    # 不阻断而吞,另一边把吞下去的结果变成门失败(「GATE3 差 16 字节毙 60min 流水线」同族)。
+    # 播报走 `brief_lint_banner`:fail 与 warn **都播**,降级不等于消音。
     with contextlib.suppress(Exception):
-        from autoresearch.learning.self_review import append_gate_fires, brief_lint
+        from autoresearch.learning.self_review import (
+            append_gate_fires,
+            brief_lint,
+            brief_lint_banner,
+        )
         _lint = brief_lint(out_base, scan_dir)
         append_gate_fires(scan_dir, _lint, analysis_date)
-        _n_fail = sum(1 for x in _lint if x.get("severity") == "fail")
-        print(f"[brief lint] fail {_n_fail} / 共 {len(_lint)} 条"
-              + ("".join(f"\n  🛑 {x['check']}:{x['detail']}"
-                         for x in _lint if x.get("severity") == "fail") if _n_fail else ""))
+        print(brief_lint_banner(_lint))
     with contextlib.suppress(Exception):
         # 最终快照必须等 manifest/summary/gate_fires/第二次 health 全部落盘后再 hash。
         # 同时覆盖 trace 里 assemble 前发布的旧 health，保证 staging/trace 同一事实。

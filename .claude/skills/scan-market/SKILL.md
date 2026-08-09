@@ -59,7 +59,7 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
 > | CP6 | L4 全完 | 评级分布 + 停因分桶 + OW三门直方图 | `autoresearch.scan.render <date> --view gate_hist` |
 > | CP7 | GATE4 过 | **`brief.md` 原文全量转播** + 产物路径 + 分段耗时 + **token 真计量** | Read `reports/scan/<run_id>/brief.md`(≤3KB)+ `--view timing` + `usage_harvest` |
 >
-> **CP7 播报 = 读 brief 原文,不复述**:`brief.md` 是确定性模板产物(零 LLM,七节 ≤3,000B,同 run 重放 byte 稳定)——主会话再总结一遍只会新增编数面,还要多一次对账。原文贴出 + 附 `reports/scan/<run_id>/` 路径即可;要展开某一节再读 `summary.md`(详细版)。brief 缺席 = `self_review` 的 `brief·缺失` fail,如实播报,不要拿 summary 顶替。
+> **CP7 播报 = 读 brief 原文,不复述**:`brief.md` 是确定性模板产物(零 LLM,七节 ≤3,000B,同 run 重放 byte 稳定)——主会话再总结一遍只会新增编数面,还要多一次对账。原文贴出 + 附 `reports/scan/<run_id>/` 路径即可;要展开某一节再读 `summary.md`(详细版)。brief 缺席 = `self_review` 的 `brief·缺失` **warn**(B-2 降级:GATE4 照过,但 warn 进 `gate_fires.csv` 且照样播),如实播报,**不要拿 summary 顶替**。
 > **CP7 计量**:命令见步骤 5(含 `usage_reconcile`)。覆盖主会话+subagent,成本按公开计价倍率加权;缺 JSON 写 `UNMEASURED`,**不能写 `$0`**。
 > **唤醒纪律**(cache 读按全上下文计费,主会话曾独占近半全场成本):派发一次性全派、收通知只领不播,不出分析文字;CP2/CP3 合并播报,CP0/CP1/CP4/CP6/CP7 照常播。
 
@@ -125,8 +125,9 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
    ```
    → `reports/scan/<YYYYMMDD_HHMM>/`:**`brief.md`(≤3KB 速读,入口)**+`summary.md`(详细版)+`details/`+`token_usage.md`+`trace/`;`index.md` 首行即指 brief。成本/墙钟成熟门(10 次真实扫描前恒 `IMMATURE`)见 STAGES.md『计量与跨层校准』;预算超线只写 warning/`DEGRADED`,不制造 BUY。
    **汇报(CP7)**:**先原文转播 `brief.md` 全文**(七节:市场/漏斗/BUY 结论/持仓/风险哨/昨日 delta/欠账),再补分段耗时(`render --view timing`)+ 产物路径;需要展开细节才引 `summary.md`。0 买日的**停因分桶**已由 brief ③ 自带,照贴即可,**不要说「无一过 ≥OW 三门」**——早停卡按定义不写三门段(见 STAGES.md『运维细节』)。
+   **GATE4 拦什么**(B-2,2026-08-09 控制方裁定):判据 = `gate_fires.csv` 里有任意一行 `severity=fail`。`brief_lint` 的八条按「**报告是不是在说假话**」二分 —— **fail(毙掉本趟)**:`brief·数字对账` / `brief↔summary不一致` / `brief·白名单外取数` / `brief·BUY契约(active 期)`;**warn(放行,但进账 + 播报)**:`brief·缺失` / `brief·超预算` / `brief·边表缺失` / `brief·边表过期`。**一份人类可读摘要排版超限是展示层问题;报告说假话才是硬门该拦的事**——别再让 3KB 预算毙掉一条 60 分钟的流水线(「GATE3 差 16 字节」同族)。播报行 `[brief lint] fail N · warn M / 共 K 条` 两个计数都要念。
    **报告分两层是安全的**:`t1_review` 与 `retro` **不解析 `summary.md` 正文**(它们读 `finalists.csv` / `decision_records.json` / `_final_ratings.json` / `retro/attribution.csv` 等结构化文件),所以重排/瘦身 summary 不影响任何机器消费者;红线文件 `details/*.md`、`finalists.csv`、`decision_records.json`、`shadow_buys.csv` 一字不动。
-   **brief 对账**:assemble 收尾自动跑 `self_review.brief_lint`(边表重算 + 正文锚在 + brief↔summary 同源 + active 期 BUY≥1 契约),结果追加进 `gate_fires.csv` 并打一行 `[brief lint] fail N`;**有 fail 先修根因再播**。
+   **brief 对账**:assemble 收尾自动跑 `self_review.brief_lint`(边表重算 + 正文锚在 + brief↔summary 同源 + active 期 BUY≥1 契约),结果追加进 `gate_fires.csv` 并打一行 `[brief lint] fail N · warn M / 共 K 条`;**有 fail 先修根因再播**,warn 照播不隐去(severity 二分见上「GATE4 拦什么」)。
    **配置生效对账**:`usage_reconcile`(第四条命令)把配置期望×实测逐 role 对上,`ok=false` 直接打进 CP7 播报,不经 `self_review` 转手(见 STAGES.md『计量与跨层校准』)。
 
 6. **覆盖档案维护**(盘后,不占扫描窗;presence-gated,池空则整段跳过)

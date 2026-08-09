@@ -52,7 +52,9 @@ def _decision(*, mode="shadow", blocked=False, abs_gap=None, buy_code="600018") 
         "benchmark": {
             "ruler": "gap_c1_o2", "entry_flag": "buyable_c1", "entry_flag_present": False,
             "market": {"definition": "决策层分位/流动性门的分母 = 当日 L0 可交易全集等权",
-                       "column": "rel_gap_market", "n": 4237, "members_sha256": "deadbeef"},
+                       "column": "rel_gap_market", "n": 4237, "members_sha256": "deadbeef",
+                       "eval_population": ("全市场可交易(entry_tradable,含漏在 L0 的票)"
+                                           "—— 与本块 n 不同,评分时由 relative_ledger 另算")},
             "sector": {"definition": "申万一级可交易等权", "column": "rel_gap_sector",
                        "source_column": "industry", "n_sectors": 129},
         },
@@ -263,6 +265,73 @@ def test_sources_expose_key_decision_fields(scan):
     for must in ("funnel.universe", "buys.production_n", "relative.code",
                  "relative.rank", "ow_base.n", "ow_base.win2"):
         assert must in fields, f"sources 缺关键字段 {must}"
+
+
+# ────── 相对基准的两个人口不可互换(B-1,2026-08-09 全支终审)──────
+#
+# **病灶**:brief ③ 曾把 `benchmark.market.n` —— **决策层**四面分位/P10 流动性门的分母
+# (= 当日 L0 过门票)—— 直接挂在 `rel_gap_market` 名下,写成
+# 「基准 rel_gap_market(L0 可交易 4237 等权)」。可 `rel_gap_market` 这一列的真实分母是
+# **全市场可交易**(`ruler.py` I-1 人口裁定,含漏在 L0 的票),两者常年不等
+# (2026-08-04 实测 4193 vs 5426)。`relative_ledger` 早写明「两个『基准 n』**不可互换**
+# ……引用时必须点名是哪一个」,`relative_buy` 的 I-2 也专门把 `definition`(L0)与
+# `eval_population`(全市场)拆成两个字段 —— T25 又把它们合回去了,而且合在**用户每天读的
+# brief ③ + summary 🧭 仪表盘**里。
+#
+# **守卫为什么必须写在这一层**:这行文本同时是 `sources` 边表 `relative.*` 的锚,T27 的
+# `brief_lint` 比对的是同一个错源 —— 错得再离谱它也永远开绿灯(「探针死了也像活着」同族)。
+
+def _benchmark_cell(md: str) -> str:
+    """③ 相对 BUY 行里 `基准 …` 那一格(到下一个 ` · ` 为止)。"""
+    assert "基准 " in md, "brief ③ 没有基准格 —— 断言的靶子不在了"
+    return md.split("基准 ", 1)[1].split(" · ", 1)[0]
+
+
+def test_l0_gate_n_is_not_labelled_as_rel_gap_market_population(scan):
+    """**变异探针**:把这格改回 `基准 {col}(L0 可交易 {n} 等权)` 必红。"""
+    cell = _benchmark_cell(brief.build(scan, run_folder=_RUN)["markdown"])
+    assert "rel_gap_market" in cell
+    assert "全市场可交易" in cell, \
+        f"没点名 rel_gap_market 的真人口(全市场可交易):{cell!r}"
+    assert "4237" not in cell or "决策层" in cell, \
+        f"L0 过门票的 n 被当成了 rel_gap_market 的人口:{cell!r}"
+
+
+def test_sources_distinguish_the_two_benchmark_populations(scan):
+    """验收:边表里这两个 n **能分得开** —— 字段名 + locator 各自点名是哪一个。"""
+    rows = {r["field"]: r for r in brief.build(scan, run_folder=_RUN)["sources"]}
+    assert "relative.market_n" not in rows, \
+        "含糊字段名 `relative.market_n` 复活了 —— 读的人无从知道是哪个 n"
+    pool = rows["relative.decision_pool_n"]
+    assert pool["value"] == "4237"
+    assert pool["locator"].startswith("benchmark.market.n")
+    assert "L0" in pool["locator"] and "决策层" in pool["locator"]
+    pop = rows["relative.eval_population"]
+    assert pop["locator"].startswith("benchmark.market.eval_population")
+    assert "全市场可交易" in pop["value"]
+    assert pool["value"] != pop["value"], "两行取到了同一个值 = 又合回去了"
+
+
+def test_eval_population_falls_back_when_decision_doc_predates_the_split(tmp_path):
+    """老决策文档(I-2 拆字段之前)没有 `eval_population` → 回落到常量,**不许**回落成
+    那个 L0 的 n(回落错就是把病换个地方复发)。"""
+    doc = _decision()
+    doc["benchmark"]["market"].pop("eval_population")
+    scan = _scan_dir(tmp_path, decision=doc)
+    out = brief.build(scan, run_folder=_RUN)
+    cell = _benchmark_cell(out["markdown"])
+    assert "全市场可交易" in cell
+    rows = {r["field"]: r for r in out["sources"]}
+    assert "全市场可交易" in rows["relative.eval_population"]["value"]
+    assert rows["relative.eval_population"]["value"] != rows["relative.decision_pool_n"]["value"]
+
+
+def test_ow_gap_reason_count_is_two_not_three(scan):
+    """X3:旧 OW 账断层是**两处**(决策对象/人口),尺是同一把(2026-08-09 复核 M-5 勘误)。
+    模块头曾是全仓最后一处还写「三处」的地方。"""
+    head = Path(brief.__file__).read_text(encoding="utf-8").split('"""', 2)[1]
+    assert "三处都不同" not in head, "brief 模块头还在说旧 OW 断层有三处"
+    assert "两处" in head
 
 
 def test_no_details_or_trace_in_whitelist():

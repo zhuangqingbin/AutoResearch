@@ -229,12 +229,20 @@ def _blend(parts: list[tuple[float, float]]) -> float | None:
     return sum(value * weight for value, weight in parts) / total
 
 
-# ── L0 可交易全集(基准人口 + 流动性分位的唯一分母)─────────────────────────
+# ── L0 可交易全集(**决策层**四面分位 + 流动性门的唯一分母)───────────────────
 def _universe(scan: Path) -> dict:
-    """`L1_scored_full.csv` → 可交易全集 + 排除计数 + 逐票成交额/行业。
+    """`L1_scored_full.csv` → L0 可交易全集 + 排除计数 + 逐票成交额/行业。
 
-    基准分母 = **可交易**票,不是全市场所有行(T22 `retro._rel_gap_cols` 同款口径:含
-    停牌 / 买不进的票会把"市场平均"算成不可执行的幻觉基准)。
+    **这不是 `rel_gap_market` 的人口**(B-1,2026-08-09 全支终审):本函数的 `members`
+    只含**过了 L0 门**的票(`L1_scored_full.csv` 的行),它是决策层自己算四面分位与 P10
+    流动性门用的分母;而 `rel_gap_market` 的真分母是**全市场可交易**(`ruler.py` I-1 人口
+    裁定,含漏在 L0/L1/L2 的票),由 `learning.relative_ledger.outcome_for` 在评分时另算。
+    两数常年不等(2026-08-04 实测 4193 vs 5426),`relative_ledger` 明文「不可互换……引用
+    时必须点名是哪一个」。产物里对应 `benchmark.market` 的 `definition` / `eval_population`
+    两个字段(I-2 已拆开,勿再合并)。
+
+    分母只取 **可交易** 票,不是 `L1_scored_full.csv` 的所有行(T22 `retro._rel_gap_cols`
+    同款口径:含停牌 / 买不进的票会把"市场平均"算成不可执行的幻觉基准)。
     """
     rows = _rows(scan / "L1_scored_full.csv")
     flag_col = entry_flag_for()
@@ -271,7 +279,11 @@ def _universe(scan: Path) -> dict:
 
 
 def tradable_universe(scan_dir: Path | str) -> list[str]:
-    """当日 L0 可交易全集(排序后的 6 位代码)—— 相对基准的人口。"""
+    """当日 **L0** 可交易全集(排序后的 6 位代码)—— **决策层**分位/流动性门的人口。
+
+    **不是** `rel_gap_market` 的评分人口(那是全市场可交易,见 `_universe` docstring 的
+    B-1 说明);两个人口不可互换,引用时必须点名是哪一个。
+    """
     return _universe(Path(scan_dir))["members"]
 
 

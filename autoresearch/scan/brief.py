@@ -17,7 +17,8 @@ brief 的内容全是**结构化结论、计数、评级、tripwire 与账本状
   ③ **BUY 结论区**——影子期**双行**:旧生产结论(近期恒 0 买)+「影子 relative BUY」行
      (显式标**非正式·不执行**);activate 后换成正式 BUY 行。第三行常驻
      **「旧 OW 基率」分账行**,与 relative 账**分列并置、不连成趋势线**(定义断层:
-     决策对象/人口/尺三处都不同,见 `docs/research/2026-08-09-e6-replay-baseline.md` §4)。
+     决策对象与人口**两处**不同 —— **尺是同一把**,原文的「③尺不同」已于 2026-08-09
+     复核 M-5 勘误删除,见 `docs/research/2026-08-09-e6-replay-baseline.md` §4)。
   ④ 持仓动作表(pinned 逐票:评级 + tripwire)
   ⑤ 风险哨(自检 fail/warn + 降级字段 + 卡覆盖)
   ⑥ 昨日 delta(finalist 重叠 + 评级变动)
@@ -50,6 +51,15 @@ from autoresearch.scan.relative_buy import DECISION_FILENAME, MODE_SHADOW
 SCHEMA_VERSION = 1
 #: 硬预算(字节)。T27 的 lint 用同一个常量量,不另写一份字面量。
 MAX_BYTES = 3000
+
+#: B-1(2026-08-09 全支终审)—— `rel_gap_market` 的**评分人口**短语。
+#: 决策文档的 `benchmark.market.eval_population` 是权威原文(往往一整句),brief ③ 只有
+#: ~3KB 预算装不下,所以正文渲染这个短语、边表 `value` 仍记原文。老决策文档(T23 的 I-2
+#: 把 `definition`/`eval_population` 拆开**之前**写的)没有该键 → 回落到本常量;
+#: **绝不回落到那个 L0 的 n**,否则病只是换了个地方复发。
+REL_MARKET_POPULATION = "全市场可交易"
+#: 与之并置的另一个人口:`benchmark.market.n` 的真身。它**不是** `rel_gap_market` 的分母。
+DECISION_POOL_LABEL = "L0 可交易"
 BRIEF_FILENAME = "brief.md"
 SOURCES_FILENAME = "_brief_sources.json"
 
@@ -503,7 +513,15 @@ def _relative_facts(decision: dict | None) -> dict:
         "n_eligible": (decision.get("counts") or {}).get("eligible"),
         "n_candidates": (decision.get("counts") or {}).get("candidates"),
         "market_column": market.get("column") or REL_MARKET,
-        "market_n": market.get("n"),
+        # B-1:**两个人口分成两个键**,不再共用一个含糊的 `market_n`。
+        #   `decision_pool_n`  = `benchmark.market.n` = 决策层四面分位 / P10 流动性门的分母
+        #                        (当日 **L0 过门票**);
+        #   `eval_population`  = `rel_gap_market` 这一列的真分母 = **全市场可交易**
+        #                        (`ruler.py` I-1 人口裁定,含漏在 L0 的票),评分时由
+        #                        `learning.relative_ledger.outcome_for` 另算,不在本产物里。
+        # 两数常年不等(2026-08-04 实测 4193 vs 5426),`relative_ledger` 明文「不可互换」。
+        "decision_pool_n": market.get("n"),
+        "eval_population": market.get("eval_population") or REL_MARKET_POPULATION,
         "sector_column": sector.get("column") or REL_SECTOR,
         "n_sectors": market.get("n_sectors") or sector.get("n_sectors"),
         "abs_gap_status": gap.get("status", "UNMEASURED"),
@@ -648,7 +666,9 @@ def _buy_lines(facts: dict, src: list[dict]) -> list[str]:
             f" · basis={rel.get('basis')} · 合格内 #{rel.get('rank')}"
             f"/{rel.get('n_eligible')}(候选 {rel.get('n_candidates')})"
             f" · 卡面 {rel.get('research_rating') or '—'}"
-            f" · 基准 {rel.get('market_column')}(L0 可交易 {rel.get('market_n')} 等权)"
+            f" · 基准 {rel.get('market_column')}(人口={REL_MARKET_POPULATION}等权;"
+            f"{DECISION_POOL_LABEL} {rel.get('decision_pool_n')} = 决策层分位/流动性门分母,"
+            f"非本列人口)"
             f"+{rel.get('sector_column')}"
             f" · 绝对 gap {gap_txt} · 硬否决 {rel.get('hard_reject')}"
             f" · 主尺 {rel.get('ruler')}"
@@ -656,8 +676,13 @@ def _buy_lines(facts: dict, src: list[dict]) -> list[str]:
     _src(src, "relative.code", rel.get("code"), DECISION_FILENAME, "buys[0].code", text)
     _src(src, "relative.rank", rel.get("rank"), DECISION_FILENAME,
          "candidates[code].rank", text)
-    _src(src, "relative.market_n", rel.get("market_n"), DECISION_FILENAME,
-         "benchmark.market.n", text)
+    # B-1:**两行,不是一行** —— 边表必须能把这两个 n/人口分开,否则 T27 的对账 lint
+    # 比对的是同一个错源(它锚的正是这段 `text`),错得再离谱也永远绿灯。
+    _src(src, "relative.decision_pool_n", rel.get("decision_pool_n"), DECISION_FILENAME,
+         f"benchmark.market.n({DECISION_POOL_LABEL} = 决策层分位/流动性门的分母)", text)
+    _src(src, "relative.eval_population", rel.get("eval_population"), DECISION_FILENAME,
+         f"benchmark.market.eval_population({REL_MARKET} 的真分母;评分时由 "
+         "relative_ledger 另算,不在本产物里)", text)
     _src(src, "relative.abs_gap_status", rel.get("abs_gap_status"), DECISION_FILENAME,
          "candidates[code].expected_abs_gap.status", text)
     lines.append("- " + text)

@@ -292,7 +292,8 @@ macro-brief/sector-brief 的 pack 增「当日快讯 top-N 确定性摘要行」
 - **对外只有一个信号**:`BUY`。不设「质量 BUY / 游资 BUY / 绝对 BUY / 相对 BUY」多套评级;来源差异只写在证据字段。
 - **每个成功完成的交易日扫描至少一只**。该契约自 E6 人工 activate 的 schema switch 日起生效;shadow 期旧生产线仍可 0 BUY,但 challenger 必须产至少一只。市场休市不产信号;A 级数据完整性失败、候选合同破坏或最终产物不完整时整个 run 进入 `BLOCKED`,不得以 0 BUY 冒充成功。
 - 每日第一只由横截面相对最优产生,元数据写 `basis=relative`。这表示「在今日可交易全集里相对最值得买」,**不承诺绝对上涨**。
-- 主评价尺仍是 `gap_c1_o2 = O(T+2)/C(T+1)-1`;主相对标签为 `rel_gap_market = gap_c1_o2 - 当日L0可交易全集等权gap`;辅助标签为 `rel_gap_sector = gap_c1_o2 - 同行业可交易全集等权gap`。所有阶段的 IC、capture、门归因、实验晋升和报告都必须显式绑定这三列中的一列,不得再用含糊的 `t2` 代称。
+- 主评价尺仍是 `gap_c1_o2 = O(T+2)/C(T+1)-1`;主相对标签为 `rel_gap_market = gap_c1_o2 - 当日**全市场可交易**(`entry_tradable`)等权gap`;辅助标签为 `rel_gap_sector = gap_c1_o2 - 同行业可交易全集等权gap`。
+  > **勘误(2026-08-09 全支终审 B-1)**:本行原写「当日L0可交易全集等权gap」—— **不成立**。人口以 T22 的 I-1 用户裁定为准 = **全市场可交易**(含漏在 L0/L1/L2 的票),见 `autoresearch/common/ruler.py` §I-1。L0 可交易全集是**另一个**分母(决策层四面分位 / P10 流动性门用,产物里是 `benchmark.market.n`),两者常年不等(2026-08-04 实测 4193 vs 5426),**不可互换**。所有阶段的 IC、capture、门归因、实验晋升和报告都必须显式绑定这三列中的一列,不得再用含糊的 `t2` 代称。
 - brief/summary 同屏显示相对基准和绝对 gap。`expected_abs_gap` 只能取锁定规则版本在 OOS 历史同 score bucket×regime 的均值/区间;样本不足写 `UNMEASURED`,不得让 agent 主观估数。绝对预期为负时固定标「弱市相对最优」,不能改写为绝对看涨。
 - 第 2 只及以后不是配额:只有其锁定的相对分数达到已验证阈值,且对应历史样本的绝对 gap 扣成本后为正,才追加同一个 `BUY` 信号。
 

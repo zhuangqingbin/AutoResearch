@@ -256,7 +256,7 @@ P0 简报（市场地形+档案+解禁/披露旗+行业备忘+误读预警）
 
 **2026-07-11 波(B1/B2/B4/B10 落地)**:
 - **防污染**:简报的 L3 论点改**中性前提清单**(前提 N 逐条核真,前提 2=兑现机制),conviction 挪到"L3 元数据"行且注明"读完 P1 数字后再看";l4-card 铁律加"先读数据后读论点"(P1 盲读微 pass:先写 3 行独立初判再读前提)。
-- **补基率**:逐卡块新增 🔁 基率行(`write_base_rates`:lane 翻案率 + 评级历史 T+2 胜率,n<10 ⚠禁注)+ 📐 目标价锚(`target_calib.json`:全市场 hi_2_oc p60≈+3.7%、+8% 目标历史触达仅 14%——目标超 p60 须写硬理由)。均在逐卡块,cache 前缀契约不破。
+- **补基率**:逐卡块新增 🔁 基率行(`write_base_rates`:lane 翻案率 + 评级历史 T+2 胜率,n<10 ⚠禁注)+ 📐 目标价锚(`target_calib.json`;**口径已随主尺换代到 v4 = 目标带 vs T+2 开盘**,2026-08-08 C3 修复,`bcb4c0c`——不再是 v3 的「2 日盘中 MFE」:2026-08-09 实跑 `target_calib_line` = 「全体隔夜窗(目标带 vs T+2 开盘,v4)p60=+5.0%(n=143550·+8%目标历史触达 21%)·同 regime p60=+4.8%(range,n=16566)·触达率22%」——目标价超 p60 须在卡内给硬理由)。均在逐卡块,cache 前缀契约不破。
 - **买单 ensemble(拍板 2,替代常设 skeptic)**:≥OW 新派卡各追加 2 独立 l4-card run(复核卡落 `ensemble/` 不进 details/),取中位、**只向下折回**;spread≥2 档 → 🎭 badge + 组合视角人裁行;`_ensemble.json` 缺 = parity。
 
 **阶段效能**:早停率随 regime 波动大(20%~100%),弱市高早停是纪律不是失灵,错杀率 ≈10% 与满卡组持平;P4 翻盘率零积累。纪律实证:紫光国微三度被 CFO/FCF 门封顶 Hold —— **别为了凑买单放宽资金 / 估值门**。
@@ -276,15 +276,29 @@ l4/parsers → decision_finalize → report_sections → publisher → post_run
 `scan/l3/*`、`scan/l4/*` 持有。仓内消费者必须直连 owner，禁止从三个兼容
 adapter 反向 import；Workflow 只调度，不持有 rating/gate 规则。
 
-**summary.md 节序**(所有新节都 presence-gated):
+**summary.md 节序**(**T26 决策主线前置**版;所有新节都 presence-gated。真身 = `report_sections.build_summary` 的节序注释块,改序先改那里):
 
 ```
-self_review 硬门 banner → regime+drift 行(+🌡情绪温度行) → 📈市场研判 → 漏斗数量
+self_review 硬门 banner → H1 → regime+drift 行(+🌡情绪温度行)
+→ 🧭 决策仪表盘(managed 块,= brief ①②③④ 逐字同源,publisher 收尾注入)
+→ §3 投资建议表(🎭复核分歧 badge)+ 组合视角(同板块告警 + 🎭人裁行 + 仓位 overlay:
+   risk_off 0–2 成 / range 3–5 / trend 5–8)+ 📅两周日历
+→ 📌 保送持仓 → 差一点/弃权 banner
+→ 📈市场研判 → 🎯看多行业 top3 → 🏭行业研判(一行一行业)
 → 📈影子组合成绩单行(即"纸面法庭":真实 vs 影子[若门不拦最想买3只] vs 市场,hold=2 主尺)
-→ 各阶段卡点&概览（+🍱菜单体检）→ 投资建议表(🎭复核分歧 badge) → 📅两周日历
-→ 组合视角（买单同板块告警 + 🎭人裁行 + 仓位 overlay:risk_off 0–2 成 / range 3–5 / trend 5–8）
-→ 经验浮出 → 分段耗时/落盘事实 → ⏳待裁决提案 → 💸成本与时延观测 → 诚实局限
+→ §1 漏斗数量 → 数据降级行 → §2 各阶段卡点&概览(+🍱菜单体检)
+→ 📌 经验/未决反馈(表格)→ 🕯️ 附录 → 分段耗时/落盘事实 → ⏳待裁决提案
+→ 💸成本与时延观测(managed,注入)→ 诚实局限
 ```
+
+- **入口是 `brief.md` 不是本表**:CP7 转播 brief 全文;要展开某一节才按上面的节序进 `summary.md`。
+- **GATE4 的 severity 口径**(B-2,2026-08-09 控制方裁定):`brief_lint` 结果会 append 进
+  `gate_fires.csv`,而 GATE4 = 「有任意一行 `severity=fail` 就不过」。八条判据按**「报告是不是
+  在说假话」**二分 —— **fail(拦)**:`数字对账` / `brief↔summary 不一致` / `白名单外取数` /
+  `active 期 BUY 契约`;**warn(不拦,但照样进账 + 照样播)**:`缺失` / `超预算` / `边表缺失` /
+  `边表过期`。理由:**一份人类可读摘要排版超限是展示层问题;报告说假话才是硬门该拦的事**
+  (本仓有「GATE3 差 16 字节毙 60min 流水线」的疤)。单一事实源 =
+  `learning.self_review.BRIEF_LINT_SEVERITY`,勿在别处另写一份。
 
 - **现场完备**:发布同时写 `run_health.json` + `index.md` 导航页(**第二天复盘从 index.md 进**);`weights_used.json` + meta.regime 固化,漏斗可复现。
 - **计量时序**:assemble 时 `_token_usage.json` 通常尚未生成，报告先明确
@@ -366,7 +380,7 @@ python -m autoresearch.learning.experiment_registry report
 | `channel_ledger` | 边际 alpha → quota 提议;momentum unique +9.2% |
 | `zero_buy_ledger` | 0买日 vs 有买日对照;买单口径 = attribution `bought` **单一事实源**(07-12 与 journal 统一,run_health 逐日核一致性) |
 | `temperature` | S1 情绪温度计五序列+五相位;回填 124 日,展示先行(菜单/预算联动=下一波) |
-| `target_calib` | hi_2_oc 分位校准 json(📐 目标锚);全市场 p60≈+3.7%,+8% 目标触达仅 14% |
+| `target_calib` | 目标带分位校准 json(📐 目标锚)。**v4 口径**(目标带 vs T+2 开盘,随主尺 `gap_c1_o2` 换代;v3 的「hi_2_oc 2 日盘中 MFE」降参考子句);2026-08-09 实跑:全市场 p60=+5.0%(n=143,550)、+8% 目标触达 21%;prelude 当日件行 `calibration_line` = 近 30 scan 日触达率 **59%**(成熟 n=17,中位目标 +4% vs 中位实现 +4%) |
 | `shrink` / `shrink_replay` | **基率收缩原语**(P0-3):四消费点(🔁基率/翻案率/📐细分格/tail_rate)注入收缩值 p̂=(n·p+k·p_g)/(n+k),n<3 仍禁注;`learning` 配置回滚杆;留一日回放 CLI 首读=翻案率 shrunk 优5.5%/左尾 raw 微优→默认开续攒 |
 | `process_score` / `process_backfill` | **过程分机检**(P0-4):逐卡 6 项确定性 checklist → `process_scores.csv` + attribution 列——0 买日也有日 n=10-30 过程标签;历史回填 355 卡,分布 {1:27,2:158,3:134,4:20,5:16} |
 | `lesson_yield` | **教训证伪器**(P0-5):逐条带 guard 教训的反事实 Δpp 累计 + MTM 计数;命中 n≥20 且累计 Δ≤0 自动提名 retire(只提名人批) |

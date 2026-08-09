@@ -1,9 +1,9 @@
 """brief 一致性 lint 回归(Wave12 T27 / 批C C3)。
 
-五条(任务书 Step 1):
-  ① brief 缺失 = fail
-  ② >3,000B = fail
-  ③ brief 数字与 `sources` 边表逐项对账 —— **篡改一个评级/基准读数必红**(变异验收)
+五条(任务书 Step 1;severity 按 B-2 二分,见 `self_review.BRIEF_LINT_SEVERITY`):
+  ① brief 缺失 = **warn**(B-2 降级)
+  ② >3,000B = **warn**(B-2 降级)
+  ③ brief 数字与 `sources` 边表逐项对账 —— **篡改一个评级/基准读数必红**(变异验收)= fail
   ④ brief 与 summary 的 BUY 数 / code / basis / 基准读数不一致 = fail
   ⑤ **仅 active 模式**:成功 run BUY_n<1 = fail;BLOCKED run 不得渲染成成功。
      影子期(mode=shadow)该检查**跳过并注明**——mode 从 `_relative_buy_decision.json` 读。
@@ -133,21 +133,24 @@ def test_shadow_mode_is_explicitly_noted_not_silently_skipped(published):
 
 # ───────────────────────────── ① 缺失 / ② 超预算 ─────────────────────────────
 
-def test_missing_brief_is_fail(published):
+def test_missing_brief_is_warn_not_fail(published):
+    """B-2:brief 没落盘 = 报告**畸形**,不是报告**说假话** —— 报出来但不毙掉整条流水线。"""
     report, scan = published
     (report / brief.BRIEF_FILENAME).unlink()
     rows = self_review.brief_lint(report, scan)
-    assert "brief·缺失" in _checks(rows)
-    assert _fails(rows)
+    hit = [r for r in rows if r["check"] == "brief·缺失"]
+    assert hit and hit[0]["severity"] == "warn"
+    assert not _fails(rows)
 
 
-def test_oversize_brief_is_fail(published):
+def test_oversize_brief_is_warn_not_fail(published):
+    """B-2:排版超限是**展示层**问题。「GATE3 差 16 字节毙 60min 流水线」同族,不再复发。"""
     report, scan = published
     path = report / brief.BRIEF_FILENAME
     path.write_text(path.read_text(encoding="utf-8") + "填" * 3000, encoding="utf-8")
     rows = self_review.brief_lint(report, scan)
     hit = [r for r in rows if r["check"] == "brief·超预算"]
-    assert hit and hit[0]["severity"] == "fail"
+    assert hit and hit[0]["severity"] == "warn"
     assert "3000" in hit[0]["detail"]
 
 
@@ -177,24 +180,27 @@ def test_tampered_benchmark_reading_turns_red(published):
     assert _fails(rows)
 
 
-def test_stale_sources_table_turns_red(published):
-    """边表自己过期(输入变了但没重生成)同样必红 —— lint **重算**一次,不只对自己。"""
+def test_stale_sources_table_is_reported_as_warn(published):
+    """边表自己过期(输入变了但没重生成)必须**报出来** —— lint 真**重算**一次,不只对自己。
+    B-2 把它降为 warn:边表是对账夹具、不是报告陈述,它坏了不等于 brief 在说假话。"""
     report, scan = published
     payload = json.loads((scan / brief.SOURCES_FILENAME).read_text(encoding="utf-8"))
     payload["rows"][0]["value"] = "篡改过的值"
     (scan / brief.SOURCES_FILENAME).write_text(json.dumps(payload, ensure_ascii=False),
                                                encoding="utf-8")
     rows = self_review.brief_lint(report, scan)
-    assert "brief·边表过期" in _checks(rows)
-    assert _fails(rows)
+    hit = [r for r in rows if r["check"] == "brief·边表过期"]
+    assert hit and hit[0]["severity"] == "warn"
+    assert not _fails(rows)
 
 
-def test_missing_sources_table_is_fail(published):
+def test_missing_sources_table_is_warn(published):
     report, scan = published
     (scan / brief.SOURCES_FILENAME).unlink()
     rows = self_review.brief_lint(report, scan)
-    assert "brief·边表缺失" in _checks(rows)
-    assert _fails(rows)
+    hit = [r for r in rows if r["check"] == "brief·边表缺失"]
+    assert hit and hit[0]["severity"] == "warn"
+    assert not _fails(rows)
 
 
 def test_source_outside_whitelist_is_fail(published):
@@ -288,6 +294,152 @@ def test_lint_is_wired_into_publisher(tmp_path, capsys):
     fired = list(csv.DictReader((scan / "gate_fires.csv").open(encoding="utf-8")))
     assert any(str(r.get("check", "")).startswith("brief·") for r in fired), \
         "lint 条目没进 gate_fires.csv —— 跑了等于没跑"
+
+
+# ═════════ B-2:GATE4 语义二分(2026-08-09 控制方裁定,`BRIEF_LINT_SEVERITY`)═════════
+#
+# **病灶**:`publisher` 把 brief_lint 的结果 `append_gate_fires` 进 `gate_fires.csv`,而
+# `gates.gate4` 的判据是「有任意一行 `severity=="fail"` 就不过」。于是一份人类可读摘要
+# **排版超限**就能毙掉整条约 60 分钟的流水线 —— 本仓有「GATE3 差 16 字节毙 60min 流水线」
+# 的疤,同一形状。而本波自己两处写着「失败不阻断发布」(`publisher`)、`brief.safe_publish`
+# 刻意吞异常:一边为了不阻断而吞,另一边把吞下去的结果变成门失败。
+#
+# **裁定的分法只有一问:报告是不是在说假话。**
+#   fail(硬门必须拦):数字对账 / brief↔summary 不一致 / 白名单外取数 / active 期 BUY 契约
+#   warn(不该毁掉一次已跑完的扫描):缺失 / 超预算 / 边表缺失 / 边表过期
+#
+# 下面把**八条判据逐条**接到真 `gates.gate4` 上验行为——不是验 severity 字符串,而是验
+# 「这条触发时那道门到底放不放行」。
+
+
+def _break_missing_brief(report, scan):
+    (report / brief.BRIEF_FILENAME).unlink()
+
+
+def _break_oversize(report, scan):
+    path = report / brief.BRIEF_FILENAME
+    path.write_text(path.read_text(encoding="utf-8") + "填" * 3000, encoding="utf-8")
+
+
+def _break_missing_sources(report, scan):
+    (scan / brief.SOURCES_FILENAME).unlink()
+
+
+def _break_stale_sources(report, scan):
+    payload = json.loads((scan / brief.SOURCES_FILENAME).read_text(encoding="utf-8"))
+    payload["rows"][0]["value"] = "篡改过的值"
+    (scan / brief.SOURCES_FILENAME).write_text(json.dumps(payload, ensure_ascii=False),
+                                               encoding="utf-8")
+
+
+def _break_tampered_number(report, scan):
+    path = report / brief.BRIEF_FILENAME
+    path.write_text(path.read_text(encoding="utf-8")
+                    .replace("华泰证券 601688 **Hold**", "华泰证券 601688 **Buy**"),
+                    encoding="utf-8")
+
+
+def _break_summary_mismatch(report, scan):
+    summary = report / "summary.md"
+    summary.write_text(summary.read_text(encoding="utf-8")
+                       .replace("生产 BUY 0 只", "生产 BUY 3 只"), encoding="utf-8")
+
+
+def _break_outside_whitelist(report, scan):
+    payload = json.loads((scan / brief.SOURCES_FILENAME).read_text(encoding="utf-8"))
+    payload["rows"][0]["file"] = "details/600018.md"
+    (scan / brief.SOURCES_FILENAME).write_text(json.dumps(payload, ensure_ascii=False),
+                                               encoding="utf-8")
+
+
+_SOFT_CHECKS = [("brief·缺失", _break_missing_brief),
+                ("brief·超预算", _break_oversize),
+                ("brief·边表缺失", _break_missing_sources),
+                ("brief·边表过期", _break_stale_sources)]
+_HARD_CHECKS = [("brief·数字对账", _break_tampered_number),
+                ("brief↔summary不一致", _break_summary_mismatch),
+                ("brief·白名单外取数", _break_outside_whitelist)]
+
+
+def _lint_then_gate4(report, scan) -> tuple[list[dict], dict, list[dict]]:
+    """生产同姿势:lint → `append_gate_fires` → 真 `gates.gate4`。"""
+    from autoresearch.scan import gates
+    rows = self_review.brief_lint(report, scan)
+    self_review.append_gate_fires(scan, rows, _DATE)
+    fired = list(csv.DictReader((scan / "gate_fires.csv").open(encoding="utf-8")))
+    return rows, gates.gate4(scan), fired
+
+
+def test_gate4_passes_on_a_clean_publish(published):
+    report, scan = published
+    _rows, gate, _fired = _lint_then_gate4(report, scan)
+    assert gate["ok"], gate
+
+
+@pytest.mark.parametrize(("check", "breaker"), _SOFT_CHECKS,
+                         ids=[c for c, _ in _SOFT_CHECKS])
+def test_display_layer_defects_warn_but_gate4_still_passes(published, check, breaker):
+    """降级四条:各自触发时 GATE4 **仍通过**,且 warn 在 `gate_fires.csv` 里**可见**。"""
+    report, scan = published
+    breaker(report, scan)
+    rows, gate, fired = _lint_then_gate4(report, scan)
+    assert check in _checks(rows), f"{check} 没触发 —— 这条用例量错了对象"
+    assert gate["ok"], f"{check} 把整条流水线毙了:{gate}"
+    assert any(r["check"] == check and r["severity"] == "warn" for r in fired), \
+        f"{check} 的 warn 没进 gate_fires.csv —— 降级变成了静默"
+
+
+@pytest.mark.parametrize(("check", "breaker"), _HARD_CHECKS,
+                         ids=[c for c, _ in _HARD_CHECKS])
+def test_lying_report_is_fail_and_gate4_blocks(published, check, breaker):
+    """保留四条之三:报告陈述与事实/自身矛盾 —— GATE4 **必须不过**。"""
+    report, scan = published
+    breaker(report, scan)
+    rows, gate, _fired = _lint_then_gate4(report, scan)
+    hit = [r for r in rows if r["check"] == check]
+    assert hit and hit[0]["severity"] == "fail"
+    assert not gate["ok"], f"{check} 触发了但 GATE4 放行:{gate}"
+    assert check in gate["reason"]
+
+
+def test_active_buy_contract_is_fail_and_gate4_blocks(tmp_path):
+    """保留四条之四:active 期成功 run 却 0 BUY = 报告在说假话,GATE4 不过。"""
+    scan = _scan(tmp_path, decision=_decision(mode="active", buys=0))
+    report = _publish(tmp_path, scan)
+    rows, gate, _fired = _lint_then_gate4(report, scan)
+    hit = [r for r in rows if r["check"] == "brief·BUY契约(active 期)"]
+    assert hit and hit[0]["severity"] == "fail"
+    assert not gate["ok"], gate
+
+
+def test_severity_table_covers_exactly_the_eight_criteria():
+    """裁定表 = 单一事实源。八条判据一条不多一条不少,且四硬四软。"""
+    table = self_review.BRIEF_LINT_SEVERITY
+    assert set(table) == {"brief·缺失", "brief·超预算", "brief·边表缺失", "brief·边表过期",
+                          "brief·数字对账", "brief↔summary不一致", "brief·白名单外取数",
+                          "brief·BUY契约(active 期)"}
+    assert sorted(k for k, v in table.items() if v == "fail") == sorted(
+        ["brief·数字对账", "brief↔summary不一致", "brief·白名单外取数",
+         "brief·BUY契约(active 期)"])
+    assert sorted(k for k, v in table.items() if v == "warn") == sorted(
+        ["brief·缺失", "brief·超预算", "brief·边表缺失", "brief·边表过期"])
+
+
+def test_warn_lines_are_printed_to_cp7(tmp_path, capsys):
+    """降级后 warn 必须**仍然播给人看** —— 只数 fail 的播报行会让降级等于消音。"""
+    from autoresearch.scan import assemble
+    scan = _scan(tmp_path)
+    report_root = tmp_path / "reports" / "scan"
+    assemble.run(_DATE, scan_dir=scan, out_root=report_root, hhmm="2308",
+                 run_date="2026-08-06")
+    run_dir = next(report_root.iterdir())
+    path = run_dir / brief.BRIEF_FILENAME
+    path.write_text(path.read_text(encoding="utf-8") + "填" * 3000, encoding="utf-8")
+    capsys.readouterr()
+    rows = self_review.brief_lint(run_dir, scan)
+    print(self_review.brief_lint_banner(rows))
+    out = capsys.readouterr().out
+    assert "warn 1" in out and "brief·超预算" in out
 
 
 def test_never_raises_on_garbage(tmp_path):
