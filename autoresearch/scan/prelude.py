@@ -527,9 +527,22 @@ def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()
             fresh = f"{hours:.1f}h"
         srcs = "/".join(f"{k}:{v}" for k, v in sorted(h["by_source"].items()))
         miss = h["first_seen_missing_rate"]
-        flag = "" if miss == 0 else f" · 🚨 first_seen 缺失率 {miss:.4f}(契约要求恒 0)"
+        flags = []
+        if miss:
+            flags.append(f"🚨 first_seen 缺失率 {miss:.4f}(契约要求恒 0)")
+        # I6 活体探针:整源 published 系统性超前 = 时区标错(上线首日 global_sina +7.7h)
+        if h.get("tz_suspect_sources"):
+            flags.append(f"🚨 时区可疑源 {h['tz_suspect_sources']}"
+                         f"(published 中位超前 {h.get('published_ahead_hours_max')}h,"
+                         f"≈+8 就是把北京时间当 UTC)")
+        basis = h.get("by_basis") or {}
+        # I5:历史分片走 snapshot_inferred、新抓取走 observed —— 两者**不可混用**,
+        # 分开显示才看得出"历史腿到底入没入目录"(首版就是这条腿整条缺席)。
+        basis_txt = "/".join(f"{k}:{v}" for k, v in sorted(basis.items())) or "—"
         return (f"{n} 观测 · 事件 {h['n_events']} · 市场口径 {len(wide)}"
-                f"(其余为逐票 selective,不得计入市场热度)· 最新 {fresh} 前 · {srcs}{flag}")
+                f"(其余为逐票 selective,不得计入市场热度)· 时间来源 {basis_txt}"
+                f" · 最新 {fresh} 前 · {srcs}"
+                + ("".join(" · " + f for f in flags)))
 
     def _preflight():
         """GATE0 启动前体检(design 2026-08-03 §4.2-4)—— **默认只告警,不阻断**。

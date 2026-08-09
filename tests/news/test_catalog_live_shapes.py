@@ -19,6 +19,7 @@ import pandas as pd
 import pytest
 
 from autoresearch.news import catalog as C
+from autoresearch.news.catalog import CST
 
 # ── 2026-08-09 真实首跑读数(逐字抄列名)───────────────────────────────
 #   stock_info_global_em   : 200 行 · ['标题', '摘要', '发布时间', '链接']
@@ -306,6 +307,11 @@ def test_prelude_step_is_wired_and_reads_catalog():
     src = inspect.getsource(prelude.run_prelude)
     assert '("news_catalog", _news_catalog)' in src
     assert "market_heat_eligible" in src, "报表行必须区分市场口径与 selective"
+    # I5:历史腿(snapshot_inferred)入没入目录必须在报表行上看得见 —— 首版整条缺席
+    # 而报表行照样绿,正是因为它只报总数、不报 basis 构成。
+    assert "by_basis" in src, "报表行必须显示 observed / snapshot_inferred 构成"
+    # I6:时区可疑源要报出来(探针长在数据上,不只长在测试里)
+    assert "tz_suspect_sources" in src
 
 
 def test_nightly_close_wires_flash_ingest():
@@ -318,12 +324,263 @@ def test_nightly_close_wires_flash_ingest():
     assert "ingest_flash" in src
 
 
-def test_flash_observations_recent_publish_still_gated_by_first_seen():
-    """即便来源自称"刚刚发布",可见性仍由 first_seen 决定(不能靠 published 抢跑)。"""
+def test_flash_observations_visibility_gated_by_first_seen_not_published():
+    """可见性由 first_seen 决定,不由 published 抢跑。
+
+    🚨 **本条是改写版**(Wave12-T35 修复轮 1 · I6)。原版叫
+    `test_flash_observations_recent_publish_still_gated_by_first_seen`,末行断言
+    `published_ts > first_seen_ts` 并注释成「来源陈述可以更晚,不影响可见性」——
+    那正是**给 bug 发合法身份证**的假绿灯:上线首日 `global_sina` **25/25** 条的
+    `published − first_seen` 落在 +7.44~+7.99h,是 UTC+8 被当 UTC 的签名,而这条测试
+    会把它一路放行。现在改成:仍然验"可见性看 first_seen",但**不再**给"published 超前"
+    背书 —— 超前由下面的 `test_published_never_far_ahead_of_first_seen` 专门盯。
+    """
     now = datetime(2026, 8, 9, 20, tzinfo=timezone.utc)
-    future_claim = pd.DataFrame([{"标题": "自称未来发布", "摘要": "x",
-                                  "发布时间": (now + timedelta(hours=5)).strftime("%Y-%m-%d %H:%M:%S"),
-                                  "链接": "u"}])
-    obs = C.flash_observations("global_em", future_claim, now=now.isoformat())
+    # 来源自称 08-07 发布(过去),我们现在才抓到 → 可见性从 now 起算
+    frame = pd.DataFrame([{"标题": "两天前的稿子", "摘要": "x",
+                           "发布时间": "2026-08-07 09:00:00", "链接": "u"}])
+    obs = C.flash_observations("global_em", frame, now=now.isoformat())
     assert obs[0].first_seen_ts == now.isoformat()
-    assert obs[0].published_ts > obs[0].first_seen_ts      # 来源陈述可以更晚,不影响可见性
+    assert obs[0].published_ts < obs[0].first_seen_ts
+
+
+def test_published_ts_parsed_as_beijing_time_not_utc():
+    """[I6] 来源自报墙钟是**北京时间**,必须按 CST 解析。
+
+    `2026-08-09 12:43:00` 是北京时间 → UTC 04:43。当 UTC 解析会得到 12:43Z,整体偏 +8h。
+    """
+    obs = C.flash_observations("global_em", _EM.head(1), now="2026-08-09T20:00:00+00:00")
+    pub = datetime.fromisoformat(obs[0].published_ts)
+    assert pub.utcoffset() == timedelta(hours=8), "published 必须带 +08:00"
+    assert pub.astimezone(timezone.utc).hour == 4, (
+        f"12:43 北京时间应 = 04:43 UTC,实际 {pub.astimezone(timezone.utc)}")
+
+
+def test_published_never_far_ahead_of_first_seen():
+    """[I6 真正的判据] 抓到的那一刻,来源自称的发布时间**不该在未来**。
+
+    这条才是能逮住时区错标的断言:sina 的稿子是"刚刚发布"的直播流,`published` 至多与
+    `first_seen` 齐平;一旦整源系统性超前(尤其 ≈+8h),就是时区标错。
+    原来的测试反而把这种超前断言成合法 —— 假绿灯的教科书形态。
+    """
+    now = datetime(2026, 8, 9, 13, 30, tzinfo=CST)          # 抓取时刻(北京时间 13:30)
+    for source, frame in (("global_em", _EM), ("global_sina", _SINA), ("cjzc_em", _CJZC)):
+        for o in C.flash_observations(source, frame, now=now.isoformat()):
+            if o.published_ts is None:
+                continue
+            ahead = (datetime.fromisoformat(o.published_ts) - now).total_seconds() / 3600
+            assert ahead <= 0.5, (
+                f"{source} 的 published 比抓取时刻超前 {ahead:.2f}h —— 时区错标的签名"
+                f"(published={o.published_ts} first_seen={o.first_seen_ts})")
+
+
+def test_health_flags_timezone_mislabelled_source(tmp_path):
+    """[I6 活体探针] `health()` 必须把整源系统性超前标成 `tz_suspect_sources`。
+
+    造 fixture 的单测锁不住"下一个源又写错时区",这个读数能 —— 探针要长在**数据**上。
+    """
+    cat = _cat(tmp_path)
+    seen = "2026-08-09T05:30:00+00:00"
+    cat.ingest([C.Observation(source="badtz", title="错标时区的源",
+                              published_ts="2026-08-09T13:20:00+00:00",   # 实为北京时间被当 UTC
+                              first_seen_ts=seen, url="u1"),
+                C.Observation(source="goodtz", title="正常的源",
+                              published_ts="2026-08-09T05:10:00+00:00",
+                              first_seen_ts=seen, url="u2")])
+    h = cat.health()
+    assert h["tz_suspect_sources"] == ["badtz"]
+    assert h["published_ahead_hours_max"] > 7
+
+
+# ═══ Wave12-T35 修复轮 1 · I5:历史湖分片入目录(snapshot_inferred)+ 逐源对账 ═══
+#
+# 首版把 Step 1 做成了「只数文件」:1,891 个 stock_news_em 分片一条都没进目录,
+# 生产 source_observation.csv 626 行 100% observed、snapshot_inferred 0 行。
+# 下面的 fixture 列名抄自 2026-08-09 实读的 `000012@20260625.parquet`。
+
+_SHARD_COLS = ["关键词", "新闻标题", "新闻内容", "发布时间", "文章来源", "新闻链接"]
+
+
+def _write_shard(root, code, date, rows):
+    d = root / "stock_news_em"
+    d.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows, columns=_SHARD_COLS).to_parquet(d / f"{code}@{date}.parquet")
+    return d / f"{code}@{date}.parquet"
+
+
+def _row(code, title, url="", ts="2026-06-22 10:53:00", body="正文"):
+    return {"关键词": code, "新闻标题": title, "新闻内容": body,
+            "发布时间": ts, "文章来源": "证券时报网", "新闻链接": url}
+
+
+def test_lake_shard_columns_match_real_parquet_shape():
+    """声明的列名必须与真实分片对得上(同 flash 那条契约测试的用意)。"""
+    spec = C._LAKE_SHARD_COLUMNS["stock_news_em"]
+    for key in ("title", "body", "ts", "url", "code"):
+        assert spec[key] in _SHARD_COLS, f"{key}={spec[key]!r} 不在真实列 {_SHARD_COLS}"
+
+
+def test_lake_shards_ingest_as_snapshot_inferred(tmp_path):
+    """[I5 核心] 历史分片必须标 `snapshot_inferred`,时间取分片 mtime。"""
+    lake = tmp_path / "lake"
+    _write_shard(lake, "000012", "20260625", [_row("000012", "今日149只个股突破五日均线", "u1")])
+    cat = _cat(tmp_path)
+    res = C.ingest_lake_shards(lake_root=lake, catalog=cat)
+
+    assert res["added"] == 1 and res["reconciled"] is True
+    obs = cat.observations()
+    assert obs.iloc[0]["first_seen_basis"] == C.BASIS_SNAPSHOT
+    assert obs.iloc[0]["scope"] == C.SCOPE_SELECTIVE, "逐票查回来的 → 不得算市场口径"
+    assert cat.health()["by_basis"] == {C.BASIS_SNAPSHOT: 1}
+    # code_link 用最强的关联方式(代码就是查询参数)
+    assert cat.links().iloc[0]["method"] == C.METHOD_QUERY_CODE
+
+
+def test_lake_snapshot_never_replays_before_its_snapshot_time(tmp_path):
+    """「**不得回放到该快照之前**」—— 设计稿对既有资产的硬约束。"""
+    lake = tmp_path / "lake"
+    path = _write_shard(lake, "000012", "20260625",
+                        [_row("000012", "标题A", "u1", ts="2026-06-22 10:53:00")])
+    cat = _cat(tmp_path)
+    C.ingest_lake_shards(lake_root=lake, catalog=cat)
+    snap = C._shard_snapshot_ts(path)
+
+    before = (datetime.fromisoformat(snap) - timedelta(seconds=1)).isoformat()
+    assert len(cat.replay(None, before, "L3")) == 0, "回放到快照之前竟然看得见"
+    assert len(cat.replay(None, snap, "L3")) == 1
+    # 来源自称 06-22 发布,但快照时间才是可见性起点(published 不能抢跑)
+    assert datetime.fromisoformat(snap) > datetime(2026, 6, 22, tzinfo=timezone.utc)
+
+
+def test_lake_same_article_across_codes_merges_and_keeps_all_links(tmp_path):
+    """同一篇稿子被多只票各抓一次 → **一条观测、多个 code_link**。
+
+    这条是 `ingest_lake_shards` 必须先聚合再入库的理由:逐行 ingest 时第二次会命中
+    `unchanged` 分支,而那个分支在 `code_link` 落库**之前**就 continue —— 第二只票的
+    关联会永远丢掉(实测:20 个分片 200 行里有 90 行是这种跨票重复)。
+    """
+    lake = tmp_path / "lake"
+    same = dict(title="今日149只个股突破五日均线", url="http://em/a/1", ts="2026-06-22 10:53:00")
+    _write_shard(lake, "000012", "20260625", [_row("000012", same["title"], same["url"], same["ts"])])
+    _write_shard(lake, "600000", "20260625", [_row("600000", same["title"], same["url"], same["ts"])])
+
+    cat = _cat(tmp_path)
+    res = C.ingest_lake_shards(lake_root=lake, catalog=cat)
+    assert res["n_rows_in_shards"] == 2
+    assert res["n_observations"] == 1 and res["merged_duplicate_rows"] == 1
+    assert len(cat.observations()) == 1
+    assert set(cat.links()["code"]) == {"000012", "600000"}, "跨票重复合并后两个关联都要在"
+    assert res["reconciled"] is True
+
+
+def test_lake_reconciliation_accounts_for_every_row(tmp_path):
+    """[I5 逐源对账] 分片里每一行都要有去处:入库/已在库/被拒/合并/无标题跳过。"""
+    lake = tmp_path / "lake"
+    _write_shard(lake, "000012", "20260625", [
+        _row("000012", "标题A", "u1"),
+        _row("000012", "", "u2"),                       # 无标题 → skipped
+        _row("000012", "标题B", "u3"),
+    ])
+    cat = _cat(tmp_path)
+    res = C.ingest_lake_shards(lake_root=lake, catalog=cat)
+    assert res["n_rows_in_shards"] == 3
+    assert res["skipped_no_title"] == 1
+    assert res["added"] == 2
+    assert res["reconciled"] is True
+    assert (res["n_rows_in_shards"]
+            == res["added"] + res["revised"] + res["unchanged"] + len(res["rejected"])
+            + res["merged_duplicate_rows"] + res["skipped_no_title"])
+
+
+def test_lake_ingest_is_idempotent(tmp_path):
+    """重跑 → 全部 unchanged(通电腿会被反复调用,不幂等就是灌水)。"""
+    lake = tmp_path / "lake"
+    _write_shard(lake, "000012", "20260625", [_row("000012", "标题A", "u1")])
+    cat = _cat(tmp_path)
+    first = C.ingest_lake_shards(lake_root=lake, catalog=cat)
+    second = C.ingest_lake_shards(lake_root=lake, catalog=cat)
+    assert first["added"] == 1
+    assert second["added"] == 0 and second["unchanged"] == 1
+    assert len(cat.observations()) == 1
+
+
+def test_lake_published_uses_beijing_time(tmp_path):
+    """[I6 同族] 分片里的 发布时间 同样是北京时间,不得当 UTC。"""
+    lake = tmp_path / "lake"
+    _write_shard(lake, "000012", "20260625",
+                 [_row("000012", "标题A", "u1", ts="2026-06-22 10:53:00")])
+    cat = _cat(tmp_path)
+    C.ingest_lake_shards(lake_root=lake, catalog=cat)
+    pub = datetime.fromisoformat(cat.observations().iloc[0]["published_ts"])
+    assert pub.utcoffset() == timedelta(hours=8)
+    assert pub.astimezone(timezone.utc).hour == 2      # 10:53 CST = 02:53 UTC
+
+
+def test_lake_bad_shard_is_recorded_not_fatal(tmp_path):
+    """坏分片记账跳过,不毁整次盘点(B 级)。"""
+    lake = tmp_path / "lake"
+    _write_shard(lake, "000012", "20260625", [_row("000012", "标题A", "u1")])
+    (lake / "stock_news_em" / "999999@20260625.parquet").write_bytes(b"not parquet")
+    res = C.ingest_lake_shards(lake_root=lake, catalog=_cat(tmp_path))
+    assert res["n_bad_shards"] == 1 and res["added"] == 1
+    assert res["bad_shards"][0]["shard"] == "999999@20260625.parquet"
+
+
+def test_lake_selective_scope_still_barred_from_market_heat(tmp_path):
+    """1,891 个分片全是逐票采集 → 一条都不能进市场热度口径。"""
+    lake = tmp_path / "lake"
+    _write_shard(lake, "000012", "20260625", [_row("000012", "标题A", "u1")])
+    cat = _cat(tmp_path)
+    C.ingest_lake_shards(lake_root=lake, catalog=cat)
+    assert len(cat.market_heat_eligible()) == 0
+    with pytest.raises(C.CatalogError, match="selective"):
+        cat.assert_not_selective(cat.observations(), context="市场新闻量")
+
+
+def test_lake_unknown_source_raises(tmp_path):
+    with pytest.raises(C.CatalogError, match="未知湖源"):
+        C.ingest_lake_shards("no_such_lake", lake_root=tmp_path, catalog=_cat(tmp_path))
+
+
+def test_lake_missing_root_is_empty_not_crash(tmp_path):
+    res = C.ingest_lake_shards(lake_root=tmp_path / "nope", catalog=_cat(tmp_path))
+    assert res["n_shards"] == 0 and res["added"] == 0 and res["reconciled"] is True
+
+
+def test_lake_same_url_different_code_window_is_not_a_revision(tmp_path):
+    """[首跑实测修正] 同一篇稿子的**跨票副本**不得被判成 revision。
+
+    `stock_news_em` 的 `新闻内容` 是以查询代码为中心截出的窗口:同一 url 被不同票查回来,
+    标题相同(实测 338/339)、正文不同。首版把正文算进 content_hash,于是这些副本变成
+    「同 lineage、内容变了」= 假"更正" —— 全量首跑真的造出了 **4,483 条**。
+    revision 的语义是「来源改了稿」,不是「我们截取的窗口不同」。
+    """
+    lake = tmp_path / "lake"
+    title, url, ts = "【盘中播报】70只个股突破年线", "http://em/a/1", "2026-06-22 10:53:00"
+    _write_shard(lake, "000012", "20260625", [_row("000012", title, url, ts, body="…000012 窗口…")])
+    _write_shard(lake, "000807", "20260630", [_row("000807", title, url, ts, body="…000807 窗口…")])
+
+    cat = _cat(tmp_path)
+    res = C.ingest_lake_shards(lake_root=lake, catalog=cat)
+    assert res["revised"] == 0, "跨票窗口差异被误判成了更正"
+    assert res["n_observations"] == 1 and res["added"] == 1
+    assert set(cat.links()["code"]) == {"000012", "000807"}
+    assert cat.health()["revisions"] == 0
+
+
+def test_lake_genuine_title_change_still_becomes_a_revision(tmp_path):
+    """对照:标题真的变了(来源改稿)→ 仍然记 revision,旧版本保留。
+
+    没有这条,上一条就可能是「把 revision 检测整个关掉」的假绿灯。
+    """
+    lake = tmp_path / "lake"
+    url, ts = "http://em/a/1", "2026-06-22 10:53:00"
+    _write_shard(lake, "000012", "20260625", [_row("000012", "原标题", url, ts)])
+    cat = _cat(tmp_path)
+    C.ingest_lake_shards(lake_root=lake, catalog=cat)
+
+    (lake / "stock_news_em" / "000012@20260625.parquet").unlink()
+    _write_shard(lake, "000012", "20260625", [_row("000012", "原标题(更正)", url, ts)])
+    res = C.ingest_lake_shards(lake_root=lake, catalog=cat)
+    assert res["revised"] == 1
+    assert len(cat.observations()) == 2, "旧版本必须留着"

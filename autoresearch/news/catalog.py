@@ -51,7 +51,7 @@ import hashlib
 import json
 import re
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -128,8 +128,21 @@ def content_hash(*parts: object) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:32]
 
 
-def _iso(value: object) -> str | None:
-    """任意时间输入 → ISO8601(带时区)。解析不了 → None(**不猜**)。"""
+#: 中国财经源的墙钟时区。**naive 时间必须按它解释**,不能当 UTC ——
+#: 上线首日实测:`global_sina` 25/25 条的 `published − first_seen` 全落在
+#: **+7.44~+7.99h**,正是「UTC+8 被当成 UTC」的签名(Wave12-T35 修复轮 1 · I6)。
+#: PIT 闸走 `first_seen`(我们自己生成的 aware 时间,没被污染),所以可见性判定一直是对的;
+#: 但 `published_ts` 存的**绝对时间是错的**,任何「发布延迟」「24h 内新闻」类消费都会偏 8 小时。
+CST = timezone(timedelta(hours=8))
+
+
+def _iso(value: object, *, assume_tz: timezone = timezone.utc) -> str | None:
+    """任意时间输入 → ISO8601(带时区)。解析不了 → None(**不猜**)。
+
+    `assume_tz` 只作用于 **naive** 输入(已带时区的原样保留,故重复调用幂等)。
+    缺省 UTC = 我们自己生成的时间戳;**来源自报的墙钟必须显式传 `CST`**
+    (中国财经源写的是北京时间,当 UTC 会整体偏 8 小时,见 `CST` 注释)。
+    """
     if value in (None, "", "nan"):
         return None
     if isinstance(value, datetime):
@@ -149,7 +162,7 @@ def _iso(value: object) -> str | None:
             except ValueError:
                 return None
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=assume_tz)      # naive → 按调用方声明的时区解释,不默认当 UTC
     return dt.isoformat()
 
 
@@ -398,7 +411,8 @@ class NewsCatalog:
         if not n:
             return {"n_observations": 0, "first_seen_missing_rate": 0.0,
                     "n_events": 0, "n_links": 0, "by_source": {}, "by_scope": {},
-                    "by_basis": {}, "revisions": 0}
+                    "by_basis": {}, "revisions": 0,
+                    "published_ahead_hours_max": None, "tz_suspect_sources": []}
         missing = int((obs["first_seen_ts"].astype(str).str.strip() == "").sum())
         return {
             "n_observations": n,
@@ -412,6 +426,33 @@ class NewsCatalog:
                          for k, v in obs["first_seen_basis"].value_counts().items()},
             "revisions": int((pd.to_numeric(obs["revision"], errors="coerce")
                               .fillna(0) > 0).sum()),
+            # I6 活体探针:`published − first_seen` 的最大值(小时)。来源自称"稍晚发布"
+            # 只会是 ~0;**整源集体 +8** 就是时区错标的签名(上线首日 global_sina 25/25
+            # 落在 +7.44~+7.99h)。造 fixture 的单测锁不住"下一个源又写错时区",
+            # 这个读数能 —— 探针要长在数据上,不是只长在测试里。
+            **self._tz_sanity(obs),
+        }
+
+    #: `published` 比 `first_seen` 晚多少小时算"可疑"。来源时钟漂个几分钟正常;
+    #: 半小时以上的系统性超前,只可能是时区标错(最常见 +8)或来源在发未来时间。
+    TZ_SUSPECT_HOURS = 0.5
+
+    def _tz_sanity(self, obs) -> dict:
+        """逐源算 `published − first_seen` 的中位超前小时数,超阈值的源列进 `tz_suspect_sources`。"""
+        ahead: dict[str, list[float]] = {}
+        for row in obs.itertuples(index=False):
+            pub, seen = _parse(row.published_ts), _parse(row.first_seen_ts)
+            if pub is None or seen is None:
+                continue
+            ahead.setdefault(str(row.source), []).append(
+                (pub - seen).total_seconds() / 3600.0)
+        if not ahead:
+            return {"published_ahead_hours_max": None, "tz_suspect_sources": []}
+        med = {src: sorted(v)[len(v) // 2] for src, v in ahead.items()}
+        return {
+            "published_ahead_hours_max": round(max(med.values()), 3),
+            "tz_suspect_sources": sorted(
+                src for src, h in med.items() if h > self.TZ_SUSPECT_HOURS),
         }
 
 
@@ -621,7 +662,7 @@ def flash_observations(source: str, frame: pd.DataFrame, *, now: str | None = No
         title = raw_title or flash_title(body)
         if not title:
             continue                       # 无标题无正文 = 没有可记的观测,跳过(不造空行)
-        published = _iso(row.get(spec["ts"]))
+        published = _iso(row.get(spec["ts"]), assume_tz=CST)   # 来源自报墙钟=北京时间(I6)
         items.append(Observation(
             source=source, title=title,
             url=str(row.get(spec["url"]) or "") if spec["url"] else "",
@@ -688,6 +729,153 @@ def ingest_flash(sources: list[str] | None = None, *, catalog: NewsCatalog | Non
     }
 
 
+# ─────────────── 历史湖分片入目录(snapshot_inferred)· Wave12-T35 修复轮 1 · I5 ───────────────
+#
+# 首版把 Step 1 做成了「只数文件」:`inventory()` 数了 1,891 个 `stock_news_em` 分片就收工,
+# **一条都没进目录** —— 生产 `source_observation.csv` 626 行 100% `observed`、
+# `snapshot_inferred` 0 行,带 snapshot 语义的 `manifest_day()` 一次都没被调用。
+# 任务书 Step 1 要的两件(历史分片标 `snapshot_inferred` + manifest 与分片逐源对账断言)
+# 整条缺席,而首版报告只给了计数读数、**没把「这半条腿没做」写在标题上** —— 不像 T31
+# 那样把「没做」当成结论本身。这一节补的就是那半条腿。
+
+#: `stock_news_em` 分片的列名(2026-08-09 实读:`000012@20260625.parquet` 10 行)。
+#: 关键词列存的就是查询用的股票代码 —— 所以这批观测是 **selective**(逐票查回来的),
+#: 不是市场口径,不得计入新闻热度。
+_LAKE_SHARD_COLUMNS = {
+    "stock_news_em": {"title": "新闻标题", "body": "新闻内容", "ts": "发布时间",
+                      "url": "新闻链接", "code": "关键词", "publisher": "文章来源"},
+}
+
+
+def _shard_snapshot_ts(path: Path) -> str:
+    """分片的**快照时间** = 文件 mtime。
+
+    历史分片没有真实抓取时间,这是设计稿点名的既有资产处置方式:
+    `first_seen_basis="snapshot_inferred"` + 用持久化快照时间,且**不得回放到该快照之前**。
+    后半句由 `replay()` 的 `first_seen_ts <= cutoff` 自动保证(first_seen 就是快照时间)。
+    """
+    return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
+
+
+def _latest_snapshot_ts(cat: NewsCatalog, source: str) -> str | None:
+    """目录里该源最新的 `snapshot_inferred` first_seen;没有 → None(=全量首跑)。"""
+    obs = cat.observations()
+    if not len(obs):
+        return None
+    sel = obs[(obs["source"] == source) & (obs["first_seen_basis"] == BASIS_SNAPSHOT)]
+    return max(sel["first_seen_ts"]) if len(sel) else None
+
+
+def ingest_lake_shards(source: str = "stock_news_em", *,
+                       lake_root: Path | str | None = None,
+                       catalog: NewsCatalog | None = None,
+                       stage: str = "L3", limit: int | None = None,
+                       only_new: bool = False) -> dict:
+    """把历史湖分片收进目录(`first_seen_basis=snapshot_inferred`)+ **逐源对账**。
+
+    `stage` 缺省 `L3`:`stock_news_em` 的媒体新闻在 L3 经 `harvest_l3_news`(prefix `med`)
+    进 `news_sent`,也在 L4 的 slim 里被读 —— 取**最早**被消费的那一档才不会让回放
+    看见它当时还看不见的东西(标晚了只是保守,标早了是泄漏)。
+
+    **跨分片合并**:同一篇稿子会被多只票的查询各抓回一次(同 url、同内容)。若逐行 ingest,
+    第二次会命中 `unchanged` 分支而**在 `code_link` 落库之前就 continue** —— 那只票的关联
+    就永远丢了。所以这里先按 `(lineage, content_hash)` 聚合、把 codes 取并集,再一次性 ingest;
+    快照时间取该组**最早**的 mtime(我们最早可能看见它的时刻)。
+
+    返回带 `reconciled` 的逐源对账:分片总行数 == added + revised + unchanged + rejected
+    + `merged_duplicate_rows`(跨票重复被合并掉的行)。
+    """
+    spec = _LAKE_SHARD_COLUMNS.get(source)
+    if spec is None:
+        raise CatalogError(f"未知湖源 {source!r};合法:{sorted(_LAKE_SHARD_COLUMNS)}")
+    from autoresearch.data.cache import LAKE
+
+    root = (Path(lake_root) if lake_root else LAKE) / source
+    shards = sorted(root.glob("*.parquet")) if root.exists() else []
+    n_all = len(shards)
+    if only_new:
+        # 增量:只读比"目录里最新的 snapshot 观测"还新的分片。新分片的 mtime 必然更晚,
+        # 所以这个判据不需要额外状态文件 —— 状态就在目录自己身上(少一个会漂的第二事实源)。
+        cutoff = _latest_snapshot_ts(catalog or NewsCatalog(), source)
+        if cutoff is not None:
+            shards = [p for p in shards if _shard_snapshot_ts(p) > cutoff]
+    if limit is not None:
+        shards = shards[:limit]
+
+    groups: dict[tuple[str, str], dict] = {}
+    n_rows = 0
+    n_skipped = 0
+    bad_shards: list[dict] = []
+    for path in shards:
+        try:
+            frame = pd.read_parquet(path)
+        except Exception as e:  # noqa: BLE001 — 坏分片记账跳过,不毁整次盘点
+            bad_shards.append({"shard": path.name, "error": f"{type(e).__name__}: {e}"[:120]})
+            continue
+        snapshot = _shard_snapshot_ts(path)
+        code = path.stem.split("@")[0].zfill(6)
+        for row in frame.to_dict("records"):
+            n_rows += 1
+            title = str(row.get(spec["title"]) or "").strip()
+            if not title:
+                n_skipped += 1                # 无标题 = 没有可记的观测(不造空行),但要记账
+                continue
+            url = str(row.get(spec["url"]) or "").strip()
+            published = _iso(row.get(spec["ts"]), assume_tz=CST)   # 来源墙钟=北京时间(I6)
+            lid = lineage_id(source, url, title)
+            # ⚠️ **正文不进身份哈希**(2026-08-09 首跑实测发现):`stock_news_em` 的
+            # `新闻内容` 是**以查询代码为中心截出来的窗口** —— 同一篇文章被不同票查回来,
+            # url 与标题相同(338/339)、正文却不同。若把正文算进 content_hash,同一篇稿子
+            # 的跨票副本会被判成「同 lineage、内容变了」= **revision**,首跑真的造出了
+            # 4,483 条假"更正"。revision 的语义是「来源改了稿」,不是「我们截取的窗口不同」。
+            # 代价:纯正文改动(标题与发布时间都没变)在本源检测不到 —— 对一个正文本身
+            # 就随查询变化的源来说,这是正确的取舍,写在这里免得以后被当成 bug 修回去。
+            chash = content_hash(title, "", published)
+            key = (lid, chash)
+            slot = groups.get(key)
+            row_code = str(row.get(spec["code"]) or code).split(".")[0].zfill(6)
+            if slot is None:
+                groups[key] = {
+                    "title": title, "url": url, "published": published,
+                    "snapshot": snapshot, "path": str(path), "codes": {row_code}}
+            else:
+                slot["codes"].add(row_code)
+                if snapshot < slot["snapshot"]:      # 取最早的快照时间(PIT 保守)
+                    slot["snapshot"], slot["path"] = snapshot, str(path)
+
+    items = [Observation(
+        source=source, title=g["title"], url=g["url"], published_ts=g["published"],
+        first_seen_ts=g["snapshot"], fetched_ts=g["snapshot"],
+        first_seen_basis=BASIS_SNAPSHOT,          # 历史分片:推断的时间,不是真抓取时刻
+        available_stage=stage,
+        scope=SCOPE_SELECTIVE,                    # 逐票查回来的 → 只能做个股证据
+        raw_artifact_path=g["path"],
+        event_date=(g["published"] or g["snapshot"])[:10],
+        codes=tuple(sorted(g["codes"])), code_method=METHOD_QUERY_CODE,
+        body_hash="") for g in groups.values()]   # 见上:正文不进身份哈希
+
+    cat = catalog or NewsCatalog()
+    result = cat.ingest(items)
+    accounted = (len(result["added"]) + len(result["revised"]) + result["unchanged"]
+                 + len(result["rejected"]))
+    merged = n_rows - n_skipped - len(items)
+    return {
+        "schema_version": SCHEMA_VERSION, "source": source,
+        "n_shards": len(shards), "n_shards_total": n_all,
+        "n_bad_shards": len(bad_shards), "bad_shards": bad_shards[:5],
+        "n_rows_in_shards": n_rows, "n_observations": len(items),
+        # 三个去处分开记,别混成一个"差额"——混起来就分不清"跨票重复"和"标题空"了
+        "merged_duplicate_rows": merged, "skipped_no_title": n_skipped,
+        "added": len(result["added"]), "revised": len(result["revised"]),
+        "unchanged": result["unchanged"], "rejected": result["rejected"],
+        # **逐源对账**:分片里的每一行都必须有去处 ——
+        # 入库(added/revised)/ 已在库(unchanged)/ 被拒(rejected)/ 跨票重复合并 / 无标题跳过。
+        # 对不上就说明这次盘点漏掉了什么,不能当"跑完了"。
+        "reconciled": n_rows == accounted + merged + n_skipped,
+        "health": cat.health(),
+    }
+
+
 def manifest_day(scan_dir: Path | str, *, catalog: NewsCatalog | None = None,
                  stage: str = "L3") -> dict:
     """单日 manifest(最小证伪步)—— 把该日 `L3_news/*.json` 收进目录并逐源对账。
@@ -718,7 +906,8 @@ def manifest_day(scan_dir: Path | str, *, catalog: NewsCatalog | None = None,
                 source=str(row.get("source") or "anns_snapshot"),
                 title=str(row.get("title") or ""),
                 url=str(row.get("url") or ""),
-                published_ts=row.get("ann_date") or row.get("date"),
+                # I6:公告日期同样是中国口径,naive 值按 CST 解释(当 UTC 会整体偏 8h)
+                published_ts=_iso(row.get("ann_date") or row.get("date"), assume_tz=CST),
                 # 历史分片没有真实抓取时间 → 用快照时间并标明这是推断
                 first_seen_ts=snapshot_ts, fetched_ts=snapshot_ts,
                 first_seen_basis=BASIS_SNAPSHOT,
@@ -776,6 +965,14 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("inventory", help="既有新闻/公告资产盘点(只读元数据)")
     sub.add_parser("health", help="目录健康(first_seen 缺失率必须为 0)")
 
+    lk = sub.add_parser("ingest-lake",
+                        help="历史湖分片入目录(snapshot_inferred)+ 逐源对账(I5)")
+    lk.add_argument("--source", default="stock_news_em", choices=sorted(_LAKE_SHARD_COLUMNS))
+    lk.add_argument("--stage", default="L3", choices=list(STAGES))
+    lk.add_argument("--limit", type=int, default=None, help="只处理前 N 个分片(冒烟用)")
+    lk.add_argument("--only-new", action="store_true",
+                    help="增量:只读比目录里最新 snapshot 观测更新的分片(夜间用)")
+
     f = sub.add_parser("ingest-flash", help="三源快讯 ingest(夜间;B 级,降级不阻断)")
     f.add_argument("--sources", default=None,
                    help=f"逗号分隔,缺省全部:{','.join(FLASH_SOURCES)}")
@@ -800,6 +997,11 @@ def main(argv: list[str] | None = None) -> int:
         health = cat.health()
         print(render_health(health))
         return 0 if health["first_seen_missing_rate"] == 0 else 1
+    if a.cmd == "ingest-lake":
+        res = ingest_lake_shards(a.source, catalog=cat, stage=a.stage, limit=a.limit,
+                                 only_new=a.only_new)
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 0 if res["reconciled"] else 1      # 对不上账就是没跑完,退出码要说实话
     if a.cmd == "ingest-flash":
         picked = [s.strip() for s in a.sources.split(",")] if a.sources else None
         res = ingest_flash(picked, catalog=cat, stage=a.stage)
