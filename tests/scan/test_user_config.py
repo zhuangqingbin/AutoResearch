@@ -14,10 +14,8 @@ import json
 
 import pytest
 
-from autoresearch.scan.config import ScanConfig
 from autoresearch.scan.user_config import (
     _strip_jsonc,
-    apply_to_scan_config,
     load_pinned,
     load_user_config,
 )
@@ -107,32 +105,33 @@ def test_load_user_config_default_path_missing_returns_empty(tmp_path, monkeypat
     assert load_user_config() == {}
 
 
-# ───────────────────────── apply_to_scan_config:funnel 映射既有字段,其余整块挂新字段 ─────────────────────────
+# ── Wave12-T33:`apply_to_scan_config` 已删除(生产零调用点,08-09 复核) ──
+#
+# 它自 2026-07-11 落地起就只有测试在调,却在 `config.py` 的 docstring 里被写成
+# 「现存消费方」—— 一处会让人误以为"配置已经喂进 ScanConfig 了"的文档-实现落差。
+# 真实路径是各消费点自己 `load_user_config()` 现读需要的块。
+# 原来那四条测试只是在测"这个映射函数把 dict 抄进 dataclass",随函数一并删;
+# 它们**顺带**锁着的"这些顶层键在白名单内"由下面各块的 `load_user_config` 断言继续锁
+# (删 test 会静默孤立它顺带锁的 live 契约 —— 2026-07-19 家训,所以逐条接管而不是一删了之)。
 
 
-def test_apply_to_scan_config_maps_funnel_to_existing_fields():
-    sc = apply_to_scan_config(_VALID_FULL, ScanConfig())
-    assert sc.recall_channels == ["composite", "momentum", "value"]
-    assert sc.channel_quotas == {"momentum": 200}
-    assert sc.channel_floors == {"momentum": 40}
+def test_whitelisted_top_level_keys_still_load(tmp_path):
+    """接管上面被删测试顺带锁着的契约:agents/funnel/pinned/l4_intel 顶层键仍在白名单内。"""
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps(_VALID_FULL), encoding="utf-8")
+    cfg = load_user_config(p)
+    assert cfg["funnel"]["recall_channels"] == ["composite", "momentum", "value"]
+    assert cfg["funnel"]["channel_quotas"] == {"momentum": 200}
+    assert cfg["funnel"]["channel_floors"] == {"momentum": 40}
+    assert cfg["agents"] == _VALID_FULL["agents"]
+    assert cfg["pinned"] == _VALID_FULL["pinned"]
+    assert cfg["l4_intel"] == _VALID_FULL["l4_intel"]
 
 
-def test_apply_to_scan_config_maps_new_fields():
-    sc = apply_to_scan_config(_VALID_FULL, ScanConfig())
-    assert sc.agents == _VALID_FULL["agents"]
-    assert sc.pinned == _VALID_FULL["pinned"]
-    assert sc.l4_intel == _VALID_FULL["l4_intel"]
-
-
-def test_apply_to_scan_config_partial_funnel_leaves_rest_default():
-    sc = apply_to_scan_config({"funnel": {"recall_channels": ["value"]}}, ScanConfig())
-    assert sc.recall_channels == ["value"]
-    assert sc.channel_quotas is None
-    assert sc.channel_floors is None
-
-
-def test_apply_to_scan_config_empty_cfg_is_parity():
-    assert apply_to_scan_config({}, ScanConfig()) == ScanConfig()
+def test_removed_mapper_stays_removed():
+    """回归锁:别把它加回来。要加回来必须先有真实生产调用点,否则又是一处文档-实现落差。"""
+    import autoresearch.scan.user_config as uc
+    assert not hasattr(uc, "apply_to_scan_config")
 
 
 # ───────────────────────── l4_intel:新顶层键白名单 + 透传 ScanConfig ─────────────────────────
@@ -152,10 +151,10 @@ def test_l4_intel_unknown_subkey_raises(tmp_path):
         load_user_config(p)
 
 
-def test_l4_intel_applies_to_scan_config():
-    sc = ScanConfig()
-    apply_to_scan_config({"l4_intel": {"enabled": True}}, sc)
-    assert sc.l4_intel == {"enabled": True}
+def test_l4_intel_block_survives_whitelist(tmp_path):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"l4_intel": {"enabled": True}}), encoding="utf-8")
+    assert load_user_config(p)["l4_intel"] == {"enabled": True}
 
 
 def test_l4_intel_max_queries_allowed(tmp_path):
@@ -195,10 +194,11 @@ def test_l3_unknown_subkey_raises(tmp_path):
         load_user_config(p)
 
 
-def test_l3_applies_to_scan_config():
-    sc = ScanConfig()
-    apply_to_scan_config({"l3": {"two_pass": True, "pass1_target": 60, "finalist_max": 10}}, sc)
-    assert sc.l3 == {"two_pass": True, "pass1_target": 60, "finalist_max": 10}
+def test_l3_block_survives_whitelist(tmp_path):
+    raw = {"two_pass": True, "pass1_target": 60, "finalist_max": 10}
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"l3": raw}), encoding="utf-8")
+    assert load_user_config(p)["l3"] == raw
 
 
 # ───────────────────────── learning:基率收缩估计新顶层键白名单 + 透传 ScanConfig(镜像 l3/l4_intel 三连) ─────────────────────────
@@ -219,10 +219,11 @@ def test_learning_unknown_subkey_raises(tmp_path):
         load_user_config(p)
 
 
-def test_learning_applies_to_scan_config():
-    sc = ScanConfig()
-    apply_to_scan_config({"learning": {"shrink": True, "shrink_k": 15}}, sc)
-    assert sc.learning == {"shrink": True, "shrink_k": 15}
+def test_learning_block_survives_whitelist(tmp_path):
+    raw = {"shrink": True, "shrink_k": 15}
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"learning": raw}), encoding="utf-8")
+    assert load_user_config(p)["learning"] == raw
 
 
 # ───────────────────────── budgets:只观测不截断 ─────────────────────────
@@ -246,8 +247,6 @@ def test_budgets_whitelisted_and_applied(tmp_path):
     p.write_text(json.dumps({"budgets": raw}), encoding="utf-8")
     cfg = load_user_config(p)
     assert cfg["budgets"] == raw
-    sc = apply_to_scan_config(cfg, ScanConfig())
-    assert sc.budgets == raw
 
 
 def test_budgets_unknown_subkey_raises(tmp_path):
@@ -268,10 +267,8 @@ def test_performance_switches_whitelisted_and_applied(tmp_path):
     p.write_text(json.dumps({"performance": raw}), encoding="utf-8")
 
     cfg = load_user_config(p)
-    sc = apply_to_scan_config(cfg, ScanConfig())
 
     assert cfg["performance"] == raw
-    assert sc.performance == raw
 
 
 @pytest.mark.parametrize("raw", [
@@ -351,13 +348,193 @@ def test_frame_json_echo_reflects_real_config(monkeypatch, tmp_path, capsys):
 
 
 def test_cli_main_prints_validated_json(tmp_path, monkeypatch, capsys):
-    """CLI 回显白名单校验后的 JSON(scan-retro 喂 t1-review workflow args.cfg 用)。"""
+    """CLI 回显白名单校验 **+ resolve** 后的 JSON(scan-retro 喂 t1-review workflow args.cfg 用)。
+
+    ⚠️ Wave12-T33 修复轮 1 改了契约:原版用**半份**配置(只有 `t1_diag`)断言原样回显。
+    现在 CLI 会对有 `agents` 的配置跑 `resolve_agent_config(require_all=True)`,半份配置
+    直接 raise(那条路径由 `test_user_config_cli_fails_loudly_on_partial_config` 单独锁)。
+    这里改用完整闭集,断言**两件事同时成立**:原始 `agents` 块原样保留(t1-review 的兜底链
+    还读它)+ 多出 `resolved_agents`(t1-review 的 resolved 优先分支靠它才不是死代码)。
+    """
     import json
 
     from autoresearch.scan import user_config as uc
+    agents = {role: {"effort": "high"} for role in sorted(uc._AGENT_ROLES)}
+    agents["gp_shell"] = {"model": "sonnet", "effort": "low"}
+    agents["gp_shell_json"] = {"model": "sonnet", "effort": "low"}
     p = tmp_path / "scan_config.jsonc"
-    p.write_text('{\n  // 注释\n  "agents": {"t1_diag": {"effort": "high"}}\n}', encoding="utf-8")
+    p.write_text("{\n  // 注释\n  \"agents\": " + json.dumps(agents) + "\n}", encoding="utf-8")
     monkeypatch.setattr(uc, "DEFAULT_PATH", p)
     assert uc.main() == 0
     out = json.loads(capsys.readouterr().out)
-    assert out == {"agents": {"t1_diag": {"effort": "high"}}}
+    assert out["agents"] == agents
+    assert set(out["resolved_agents"]) == uc._AGENT_ROLES
+
+
+# ── Wave12-T33:frame --json 必须 materialize resolved agent config ──
+
+
+def test_frame_json_materializes_resolved_agent_config(monkeypatch, tmp_path, capsys):
+    """接线锁(FN-1 家族):`frame --json` 要把 resolved 落盘 + 回显进 user_config。
+
+    没这一步,workflow 拿不到 `cfg.resolved_agents`,会永远吃自己那张 AGENT_DEFAULTS
+    兜底表 —— 单一事实源就只存在于文档里(「消费者读没人生产的产物」的镜像)。
+    """
+    from autoresearch.scan import frame as scan_frame
+    from autoresearch.scan.user_config import _AGENT_ROLES, RESOLVED_FILENAME
+    from tests.scan._synth_universe import synth_universe
+
+    df = synth_universe(n=30, seed=3)
+    monkeypatch.setattr(scan_frame, "build_market_frame",
+                        lambda d, **kw: (df, {"universe_raw": 30, "universe": 30, "after_gate_a": 30}))
+    monkeypatch.setattr("autoresearch.macro.state.load_macro_state",
+                        lambda today, regime_today=None, path=None:
+                        (None, "无 macro_state.json → 只用日频 pack"), raising=True)
+    monkeypatch.chdir(tmp_path)
+    cfg_dir = tmp_path / ".claude" / "skills" / "scan-market"
+    cfg_dir.mkdir(parents=True)
+    agents = {role: {"effort": "high"} for role in sorted(_AGENT_ROLES)}
+    agents["gp_shell"] = {"model": "sonnet", "effort": "low"}
+    agents["gp_shell_json"] = {"model": "sonnet", "effort": "low"}
+    (cfg_dir / "scan_config.jsonc").write_text(json.dumps({"agents": agents}), encoding="utf-8")
+    monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH",
+                        cfg_dir / "scan_config.jsonc")
+
+    assert scan_frame.main(["2026-08-09", "--json"]) == 0
+    out = capsys.readouterr().out
+
+    resolved_file = tmp_path / "context" / "scan" / "2026-08-09" / RESOLVED_FILENAME
+    assert resolved_file.exists(), "frame --json 没落 _resolved_agent_config.json"
+    assert set(json.loads(resolved_file.read_text(encoding="utf-8"))["roles"]) == _AGENT_ROLES
+    assert '"resolved_agents"' in out, "payload 的 user_config 块没带 resolved_agents(workflow 拿不到)"
+
+    echo = json.loads((tmp_path / "context" / "scan" / "2026-08-09"
+                       / "user_config_echo.json").read_text(encoding="utf-8"))
+    assert set(echo["resolved_agents"]) == _AGENT_ROLES
+    # echo / market_pack / run_contract 三处仍同哈希(health.py 的 config_hash 校验靠它)
+    from autoresearch.scan.health import run_contract_health
+    health = run_contract_health(tmp_path / "context" / "scan" / "2026-08-09")
+    assert health["errors"] == [], health["errors"]
+    assert health["echo_config_match"] is True
+
+
+def test_frame_json_without_agents_block_stays_parity(monkeypatch, tmp_path, capsys):
+    """parity:机器上根本没有配置文件(`{}`)→ 不落 resolved、不炸。
+
+    fail-fast 的靶子是"配了一半"和"配了但空",不是"这台机器上没这个文件"——
+    把这条也变成硬失败会毙掉离线/测试路径。
+    """
+    from autoresearch.scan import frame as scan_frame
+    from autoresearch.scan.user_config import RESOLVED_FILENAME
+    from tests.scan._synth_universe import synth_universe
+
+    df = synth_universe(n=30, seed=4)
+    monkeypatch.setattr(scan_frame, "build_market_frame",
+                        lambda d, **kw: (df, {"universe_raw": 30, "universe": 30, "after_gate_a": 30}))
+    monkeypatch.setattr("autoresearch.macro.state.load_macro_state",
+                        lambda today, regime_today=None, path=None:
+                        (None, "无 macro_state.json → 只用日频 pack"), raising=True)
+    monkeypatch.chdir(tmp_path)
+    assert scan_frame.main(["2026-08-09", "--json"]) == 0
+    assert not (tmp_path / "context" / "scan" / "2026-08-09" / RESOLVED_FILENAME).exists()
+
+
+# ── Wave12-T33 修复轮 1(I2):CLI 必须产出 resolved_agents,否则 t1-review 那条腿是拆半的 ──
+
+
+def test_user_config_cli_emits_resolved_agents(tmp_path, monkeypatch, capsys):
+    """生产者接线锁:`python -m autoresearch.scan.user_config` 必须吐出 `resolved_agents`。
+
+    这条是 I2 的直接验收。修复前实跑该 CLI,顶层键只有
+    `['agents','funnel','l3','l4_intel','learning','performance']` —— 没有 `resolved_agents`,
+    于是 `t1-review.js` 的 `RESOLVED = cfg.resolved_agents || {}` 在生产上恒空,
+    那条 resolved 优先分支是死代码(`.claude/skills/scan-retro/SKILL.md:22` 明写
+    t1-review 的 args.cfg 来自本 CLI)。
+    """
+    from autoresearch.scan.user_config import _AGENT_ROLES, main
+
+    cfg_dir = tmp_path / ".claude" / "skills" / "scan-market"
+    cfg_dir.mkdir(parents=True)
+    agents = {role: {"effort": "high"} for role in sorted(_AGENT_ROLES)}
+    agents["gp_shell"] = {"model": "sonnet", "effort": "low"}
+    agents["gp_shell_json"] = {"model": "sonnet", "effort": "low"}
+    (cfg_dir / "scan_config.jsonc").write_text(json.dumps({"agents": agents}), encoding="utf-8")
+    monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH",
+                        cfg_dir / "scan_config.jsonc")
+
+    assert main() == 0
+    out = json.loads(capsys.readouterr().out)
+    assert "resolved_agents" in out, "CLI 没产出 resolved_agents —— t1-review 路仍在自己解释默认值"
+    assert set(out["resolved_agents"]) == _AGENT_ROLES
+    assert out["agents"] == agents, "原始 agents 块必须原样保留(t1-review 的兜底链还读它)"
+
+
+def test_user_config_cli_fails_loudly_on_partial_config(tmp_path, monkeypatch):
+    """配了一半 → CLI **raise**(与 frame 主路同一把尺)。
+
+    主路 fail 而 retro 路静默降级,才是更糟的不一致 —— 所以这里不给"局部编排放宽"的后门。
+    """
+    from autoresearch.scan.user_config import main
+
+    cfg_dir = tmp_path / ".claude" / "skills" / "scan-market"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "scan_config.jsonc").write_text(
+        json.dumps({"agents": {"t1_diag": {"effort": "high"}}}), encoding="utf-8")
+    monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH",
+                        cfg_dir / "scan_config.jsonc")
+    with pytest.raises(ValueError, match="缺生产必填 role"):
+        main()
+
+
+def test_user_config_cli_without_config_file_stays_parity(tmp_path, monkeypatch, capsys):
+    """没有配置文件 → 原样输出(parity),不 resolve 也不炸。
+
+    这一层不炸的分工写在 `frame.py` 同款注释里:本层管"配坏了",workflow 管"根本没配"
+    (`t1-review.js:24-26` 的空 cfg throw 会当场拒跑)。
+    """
+    from autoresearch.scan.user_config import main
+
+    monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH",
+                        tmp_path / "nope.jsonc")
+    assert main() == 0
+    assert json.loads(capsys.readouterr().out) == {}
+
+
+def test_materialized_resolved_is_byte_identical_to_echoed_one(monkeypatch, tmp_path, capsys):
+    """对账真伪的前提:`_resolved_agent_config.json` 与 echo 里那份必须是**同一张表**。
+
+    `usage_reconcile` 读文件、workflow 读 echo —— 两边若各自重新解释一遍 config,
+    "对账"就只是两次独立计算碰巧相等,而不是对同一份事实源。这里逐字段比对钉死。
+    """
+    from autoresearch.scan import frame as scan_frame
+    from autoresearch.scan.user_config import _AGENT_ROLES, RESOLVED_FILENAME
+    from tests.scan._synth_universe import synth_universe
+
+    df = synth_universe(n=30, seed=7)
+    monkeypatch.setattr(scan_frame, "build_market_frame",
+                        lambda d, **kw: (df, {"universe_raw": 30, "universe": 30, "after_gate_a": 30}))
+    monkeypatch.setattr("autoresearch.macro.state.load_macro_state",
+                        lambda today, regime_today=None, path=None:
+                        (None, "无 macro_state.json → 只用日频 pack"), raising=True)
+    monkeypatch.chdir(tmp_path)
+    cfg_dir = tmp_path / ".claude" / "skills" / "scan-market"
+    cfg_dir.mkdir(parents=True)
+    agents = {role: {"effort": "high"} for role in sorted(_AGENT_ROLES)}
+    agents["l4_card"] = {"effort": "max"}
+    agents["gp_shell"] = {"model": "sonnet", "effort": "low"}
+    agents["gp_shell_json"] = {"model": "sonnet", "effort": "low"}
+    (cfg_dir / "scan_config.jsonc").write_text(json.dumps({"agents": agents}), encoding="utf-8")
+    monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH",
+                        cfg_dir / "scan_config.jsonc")
+
+    assert scan_frame.main(["2026-08-09", "--json"]) == 0
+    capsys.readouterr()
+
+    scan_dir = tmp_path / "context" / "scan" / "2026-08-09"
+    on_disk = json.loads((scan_dir / RESOLVED_FILENAME).read_text(encoding="utf-8"))["roles"]
+    echoed = json.loads((scan_dir / "user_config_echo.json").read_text(encoding="utf-8"))["resolved_agents"]
+    assert on_disk == echoed, "落盘的 resolved 与 echo 里那份不是同一张表 —— 对账是假的"
+
+    # 而且 usage_reconcile 真的读的是这一份(不是自己重新解释 config)
+    from autoresearch.scan.user_config import load_resolved_agent_config
+    assert load_resolved_agent_config(scan_dir) == echoed

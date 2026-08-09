@@ -143,16 +143,29 @@ def test_triage_kept_and_cut_partition_df_exactly():
 
 
 def test_triage_preserves_all_original_columns():
-    """原始列一列不少;`kept` 另加 provenance 两列(§4.4),`cut` 不加。
+    """原始列一列不少;`kept` 另加/覆盖 provenance 两列(§4.4),`cut` 不带这两列。
 
-    加列是本波**有意**的 schema 变更(tier-1 反事实要按理由分层),但"原始列不得丢"
-    这条不变量仍要守住 —— 所以这里断言的是"前缀相等 + 恰好多两列",不是"完全相等"。
+    M-1 修复(final-review 2026-08-08/09):旧版断言 `kept.columns == [*df.columns,
+    "selection_reason", "selection_detail"]`(**追加**在末尾)只在"df 本来没有这两列"这个
+    已经不真实的输入形状下成立 —— 真实 `load_l3_input(date)` 的 T16 之后产出**已经带**
+    L2 口径的这两列(`merit`/`sector` 等,见 triage.py 模块头注释),所以 `kept` 是**就地
+    覆盖**成 pass1 口径(列集合/顺序不变,只是值变了),不是追加新列。`cut` 侧则按 I-5
+    修复显式 drop 掉这两列(它没有 pass1 层面"为什么被选中"可言,不该借尸还魂 L2 口径的
+    旧值)。这里用手搭 df 显式模拟真实输入形状(预置两列 L2 口径旧值),把断言焊在这个
+    形状上,不再依赖"df 从不带这两列"的过时前提。
     """
+    from autoresearch.scan.l3.triage import PASS1_REASONS
+
     rows = [_row(f"{i:06d}", composite=float(i), gbdt_score=float(i)) for i in range(5)]
     df = pd.DataFrame(rows)
+    df["selection_reason"] = "merit"           # L2 口径旧值(load_l3_input 真实会带这两列)
+    df["selection_detail"] = "l2-detail"
     kept, cut = triage_l2_for_l3(df, target=3)
-    assert list(kept.columns) == [*df.columns, "selection_reason", "selection_detail"]
-    assert list(cut.columns) == list(df.columns)
+
+    assert list(kept.columns) == list(df.columns)             # 就地覆盖,不是追加新列
+    assert set(kept["selection_reason"]) <= set(PASS1_REASONS)  # 值已被 pass1 口径覆盖,不留 "merit"
+    assert list(cut.columns) == [c for c in df.columns
+                                 if c not in ("selection_reason", "selection_detail")]
 
 
 # ───────────────────────── selection_reason(§4.4 可复原性) ─────────────────────────

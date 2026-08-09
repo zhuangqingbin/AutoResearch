@@ -15,6 +15,7 @@ attribution 刷新 → retro pending 列出(**只备料不代跑诊断**)→ con
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -107,6 +108,70 @@ def _stalled_over_48h(scan_root: Path, stalled: list[str]) -> set[str]:
             if (h := _stall_age_h(scan_root, d)) is not None and h >= _RETRO_STALE_HOURS}
 
 
+def _parse_ts(value):
+    """ISO 时间串 → aware datetime;解析不了 → None(**不猜**,同 catalog 的纪律)。"""
+    from datetime import datetime, timezone
+    try:
+        dt = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+# `<endpoint>[<symbol>]✓(1234行…)` —— prewarm 热度快照 note 的逐源片段
+_HOT_SRC_RE = re.compile(r"([A-Za-z_][A-Za-z_0-9]*)(?:\[[^\]]*\])?([✓✗])\((\d+)行")
+
+
+def _hot_rank_thin(note: str) -> list[str]:
+    """从 note 的行数**现算**「0 行 / 行数腰斩」——不依赖上游写没写 ✗ 那个装饰字符。
+
+    Wave12 复核 I4:只认 ✗ 的判法有两个漏口——整步抛异常时 note 是
+    `f"{type(e).__name__}: {e}"`(**不含 ✗**),而半截返回在旧实现里写的是 `✓(3000行)`。
+    行数是结构化事实,拿契约的 `min_rows` 一比就是独立的第二道判据(上游 ✓/✗ 逻辑若回归,
+    这道仍然拦得住)。未登记的端点(历史 note 里的旧名字)只查 0 行,不猜下限。
+    """
+    from autoresearch.data.contracts import CONTRACTS
+    out = []
+    for ep, _mark, rows in _HOT_SRC_RE.findall(note):
+        n = int(rows)
+        con = CONTRACTS.get(ep)
+        floor = con.min_rows if con else 0
+        if n == 0 or (floor and n < floor):
+            out.append(f"{ep} {n} 行" + (f"(<{floor})" if floor else ""))
+    return out
+
+
+def _hot_rank_snapshot_warning(p: Path) -> str:
+    """`_prewarm.json` 的 `hot_rank_snapshot` 步骤若断采/空/半截 → 告警片段。
+
+    Wave12 T3:`prewarm.py`(夜间)与本模块(次日开扫)是**两个独立进程**,
+    `contracts._DEGRADED` 是进程内列表、穿不透进程边界——落盘的 `_prewarm.json` 是
+    唯一穿透介质。presence-gated:文件读不了/无该 step/全源皆足量✓ → ""(不打扰)。
+
+    三条判据(复核 I4:原来只认 note 里的 ✗ 一条,整步抛异常时反而静悄悄):
+      ① `ok=False`(整步异常;`_step()` 写的 note 里没有 ✗)
+      ② note 含 ✗(逐源断采)
+      ③ 行数 0 / 低于契约下限(半截返回——它在旧实现里长得跟成功一模一样)
+    """
+    import json
+    try:
+        steps = json.loads(p.read_text(encoding="utf-8")).get("steps") or []
+    except Exception:  # noqa: BLE001 — 附加提示可选,读不了不挡主行
+        return ""
+    hot = next((s for s in steps if s.get("step") == "hot_rank_snapshot"), None)
+    if hot is None:
+        return ""
+    note = str(hot.get("note", ""))
+    why = []
+    if not hot.get("ok", True):
+        why.append("整步异常")
+    if "✗" in note:
+        why.append("断采")
+    if thin := _hot_rank_thin(note):
+        why.append("半截/空(" + ", ".join(thin) + ")")
+    return f" · ⚠️ 热度快照{'+'.join(why)}:{note}" if why else ""
+
+
 def prewarm_line(date: str, scan_root: Path | str | None = None) -> str:
     """夜间预热是否真跑过(Wave5 ④B:写了没装的优化必须当天可见,不靠事后考古)。"""
     import datetime as _dt
@@ -115,7 +180,8 @@ def prewarm_line(date: str, scan_root: Path | str | None = None) -> str:
         return ("预热(夜间):✗ 未跑 —— L0/L1/L2 本次全额取数(~8-10m)。"
                 "装载检查:`launchctl list | grep scan-prewarm`")
     ts = _dt.datetime.fromtimestamp(p.stat().st_mtime).strftime("%m-%d %H:%M")
-    return f"预热(夜间):✓ 已跑({ts})—— universe/evidence 应全湖命中"
+    return (f"预热(夜间):✓ 已跑({ts})—— universe/evidence 应全湖命中"
+            f"{_hot_rank_snapshot_warning(p)}")
 
 
 def macro_state_line(date: str) -> str:
@@ -433,6 +499,51 @@ def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()
         extra = " · ".join(x for x in (slo, nag, stale) if x)
         return f"{note} · {extra}" if extra else note
 
+    def _news_catalog():
+        """Wave12-T35:news_catalog 覆盖 / freshness / 非空率报表行(**只看,不喂决策**)。
+
+        通电三步的第三步。前两步(inventory、夜间 ingest)让目录里有东西,这一步让它
+        **每天被人看见** —— 否则又是一个"跑过一次然后没人知道它死没死"的腿
+        (recalibrate 连续 4 次 NO-OP 空转两周的家训:自动的腿必须有一个会变的量做断言)。
+
+        ⚠️ 报的是**目录健康**,不是任何决策输入:三个 B 类消费接口(intel 先读目录 /
+        L3 第二源 / typed-event 进 prompt)本波仍全关。
+        """
+        from autoresearch.news.catalog import NewsCatalog
+
+        cat = NewsCatalog()
+        h = cat.health()
+        n = h["n_observations"]
+        if not n:
+            return "⚠️ 目录空(0 观测)—— 夜间 `news_flash` 步还没出过数"
+        wide = cat.market_heat_eligible()
+        # freshness:最近一条观测距今多久(first_seen 是我们**真的看到**的时刻)
+        obs = cat.observations()
+        seen = [t for t in (_parse_ts(v) for v in obs["first_seen_ts"]) if t is not None]
+        fresh = "—"
+        if seen:
+            from datetime import datetime, timezone
+            hours = (datetime.now(timezone.utc) - max(seen)).total_seconds() / 3600
+            fresh = f"{hours:.1f}h"
+        srcs = "/".join(f"{k}:{v}" for k, v in sorted(h["by_source"].items()))
+        miss = h["first_seen_missing_rate"]
+        flags = []
+        if miss:
+            flags.append(f"🚨 first_seen 缺失率 {miss:.4f}(契约要求恒 0)")
+        # I6 活体探针:整源 published 系统性超前 = 时区标错(上线首日 global_sina +7.7h)
+        if h.get("tz_suspect_sources"):
+            flags.append(f"🚨 时区可疑源 {h['tz_suspect_sources']}"
+                         f"(published 中位超前 {h.get('published_ahead_hours_max')}h,"
+                         f"≈+8 就是把北京时间当 UTC)")
+        basis = h.get("by_basis") or {}
+        # I5:历史分片走 snapshot_inferred、新抓取走 observed —— 两者**不可混用**,
+        # 分开显示才看得出"历史腿到底入没入目录"(首版就是这条腿整条缺席)。
+        basis_txt = "/".join(f"{k}:{v}" for k, v in sorted(basis.items())) or "—"
+        return (f"{n} 观测 · 事件 {h['n_events']} · 市场口径 {len(wide)}"
+                f"(其余为逐票 selective,不得计入市场热度)· 时间来源 {basis_txt}"
+                f" · 最新 {fresh} 前 · {srcs}"
+                + ("".join(" · " + f for f in flags)))
+
     def _preflight():
         """GATE0 启动前体检(design 2026-08-03 §4.2-4)—— **默认只告警,不阻断**。
 
@@ -455,7 +566,10 @@ def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()
                  ("consensus", _consensus), ("temperature", _temperature),
                  ("universe", _universe), ("calendar", _calendar),
                  ("catalyst", _catalyst), ("menu", _menu),
-                 ("ledgers", _ledgers), ("dossier_pool", _dossier_pool)]
+                 ("ledgers", _ledgers), ("dossier_pool", _dossier_pool),
+                 # Wave12-T35:纯读 news_catalog 出一行覆盖/freshness/非空率;
+                 # 不喂任何决策面(三个 B 类消费接口本波仍全关)。
+                 ("news_catalog", _news_catalog)]
     results = _run_steps([(n, f) for n, f in all_steps if n not in skip])
 
     # 汇总屏:打印 + 落盘(Wave5 ①)。落盘是为了绕开 scan-market.js「只回报 stdout 末 15 行」

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 AGENTS = ROOT / ".claude" / "agents"
 SKILLS = ROOT / ".claude" / "skills"
@@ -371,6 +373,31 @@ def test_scan_market_skill_live_contract():
     assert "停因分桶" in md, "SKILL.md 收尾未要求 0买日播停因分桶(旧不实判词会复辟)"
 
 
+def test_cp7_broadcasts_brief_verbatim():
+    """Wave12-T28 入口切换:CP7 播报 = **读 brief.md 原文 + 附路径**。
+
+    brief 是确定性模板产物(≤3KB、零 LLM),主会话再复述一遍等于第二次编数面。锚同时钉
+    直播契约表的 CP7 行与步骤 5 的汇报段——只改一处会走漂。
+    """
+    md = (SKILLS / "scan-market" / "SKILL.md").read_text(encoding="utf-8")
+    # 契约表整块在 blockquote 里,行首是 "> " —— 用 startswith("| CP7 |") 会永远 StopIteration
+    cp7 = next(ln for ln in md.splitlines() if "| CP7 |" in ln)
+    assert "brief.md" in cp7, "CP7 行未切到 brief.md"
+    assert "原文" in cp7, "CP7 未写明「原文转播」(复述 = 第二次编数面)"
+    assert "brief.md" in md.split("**汇报(CP7)**")[1][:400], "步骤 5 汇报段未指向 brief"
+
+
+def test_skill_states_machine_consumers_do_not_read_summary():
+    """分层安全性的前提必须写在文档里:t1_review / retro **不解析 summary 正文**,
+    它们读结构化文件。不写下来,下一个人重排 summary 时会以为自己在动机器契约。"""
+    md = (SKILLS / "scan-market" / "SKILL.md").read_text(encoding="utf-8")
+    hits = [ln for ln in md.splitlines()
+            if "summary" in ln and ("t1" in ln or "retro" in ln)]
+    assert len(hits) >= 2, f"SKILL.md 需在两处写明机器消费者不读 summary,现 {len(hits)} 处"
+    for ln in hits[:2]:
+        assert "不读" in ln or "不解析" in ln, f"措辞不构成断言:{ln}"
+
+
 def test_macro_brief_consumes_new_pack_blocks():
     """Wave5 ③A:新接的 cross_money/index_val 必须有**消费者**契约。
 
@@ -516,3 +543,88 @@ def test_run_health_refreshed_after_summary():
     assert len(after) == 2, "summary 写盘锚点漂移,先更新本测试"
     assert "_health.write_run_health(scan_dir)" in after[1], \
         "build_summary 之后没有补刷 run_health → missing 列表继续说假话"
+
+
+# ═══════ Wave12-T33:AGENT_DEFAULTS 三/四文件 + Python `_ROLE_FALLBACK` 的机器锁 ═══════
+
+
+def _parse_agent_defaults(src: str, name: str) -> dict:
+    """从 workflow js 里把 `const AGENT_DEFAULTS = {...}` 解析成 Python dict。
+
+    **不是** grep 计数,也不是正则抠值:整块取出来交给 node 求值再回 JSON —— 这样
+    "值改了没同步"才真的锁得住(数行数 ≠ 数事件,同波家训)。node 缺席则跳过,口径同
+    `test_workflow_js_syntax.py`。
+    """
+    import json
+    import shutil
+    import subprocess
+
+    if shutil.which("node") is None:
+        pytest.skip("本机无 node,跳过(口径同 test_workflow_js_syntax.py)")
+    block = _agent_defaults_block(src, name)
+    script = f"const AGENT_DEFAULTS = {block[block.index('{'):]};\nconsole.log(JSON.stringify(AGENT_DEFAULTS))"
+    r = subprocess.run(["node", "-e", script], capture_output=True, text=True,
+                       timeout=10, check=False)
+    assert r.returncode == 0, f"{name} 的 AGENT_DEFAULTS 块无法求值:{r.stderr}"
+    return json.loads(r.stdout)
+
+
+def test_shell_defaults_identical_across_workflows():
+    """壳类档位(gp_shell/gp_shell_json)在**所有**带表的 workflow 里必须逐字段相等。
+
+    Wave11 把它们抄进了每个 workflow 顶部;三份副本靠人记得同步 = 迟早漂移。
+    这里做**求值后相等**断言(不是字符串比对):任一文件改一个值,本测试必红。
+    """
+    wf_dir = ROOT / ".claude" / "workflows"
+    tables = {}
+    for p in sorted(wf_dir.glob("*.js")):
+        src = p.read_text(encoding="utf-8")
+        if "const AGENT_DEFAULTS = {" not in src:
+            continue
+        tables[p.name] = _parse_agent_defaults(src, p.name)
+    assert len(tables) >= 3, f"应至少三个 workflow 带 AGENT_DEFAULTS 表,实际 {sorted(tables)}"
+
+    shells = {name: {k: v for k, v in tbl.items() if k.startswith("gp_shell")}
+              for name, tbl in tables.items() if any(k.startswith("gp_shell") for k in tbl)}
+    assert len(shells) >= 3
+    ref_name, ref = sorted(shells.items())[0]
+    for name, tbl in shells.items():
+        assert tbl == ref, (f"{name} 的壳类缺省与 {ref_name} 不一致:{tbl} vs {ref} —— "
+                            f"三处副本必须同值,别靠人记得同步")
+
+
+def test_workflow_defaults_agree_with_python_role_fallback():
+    """workflow 兜底表 × Python `_ROLE_FALLBACK` 必须逐 role 相等(Wave12-T33 单一事实源)。
+
+    resolved 传到时 workflow 吃 resolved,传不到时吃自己那张表 —— 两条腿值不同,
+    就会出现"同一次跑,传没传 resolved 结果不一样"的幽灵差异。这条把它钉死。
+    """
+    from autoresearch.scan.user_config import _ROLE_FALLBACK
+
+    wf_dir = ROOT / ".claude" / "workflows"
+    checked = 0
+    for p in sorted(wf_dir.glob("*.js")):
+        src = p.read_text(encoding="utf-8")
+        if "const AGENT_DEFAULTS = {" not in src:
+            continue
+        for role, spec in _parse_agent_defaults(src, p.name).items():
+            assert role in _ROLE_FALLBACK, f"{p.name} 的 role {role!r} 不在 Python 兜底表里"
+            assert spec == _ROLE_FALLBACK[role], (
+                f"{p.name} 的 {role} 兜底={spec},Python `_ROLE_FALLBACK`={_ROLE_FALLBACK[role]} "
+                f"—— 两条腿必须同值")
+            checked += 1
+    assert checked >= 12, f"应至少核对 12 条 role 兜底,实际 {checked}"
+
+
+def test_all_workflows_consume_resolved_agent_config():
+    """四个 workflow 都必须**先看 resolved**,AGENT_DEFAULTS 只是兜底(Wave12-T33)。
+
+    少一个文件没接线,那个阶段就会绕过单一事实源继续用自己的解释 —— FN-1 家族的形状。
+    """
+    wf_dir = ROOT / ".claude" / "workflows"
+    for p in sorted(wf_dir.glob("*.js")):
+        src = p.read_text(encoding="utf-8")
+        if "const AGENT_DEFAULTS = {" not in src:
+            continue
+        assert "resolved_agents" in src, f"{p.name} 没消费 cfg.resolved_agents"
+        assert "RESOLVED[role]" in src, f"{p.name} 的 AG(role) 没有 resolved 优先分支"

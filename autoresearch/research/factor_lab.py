@@ -44,6 +44,9 @@ from autoresearch.data.tushare_source import _moneyflow_struct_cols
 
 CACHE = Path("context/factor_lab/cache")
 OUT = Path("context/factor_lab")
+# 隔夜因子第一批(Wave12-T29)要读 `limit_list_d`,该端点**只入湖、不进 factor_lab CACHE**
+# (温度计 S1 是它唯一的既有消费者)。零新采集:只读湖里已有的分区,缺分区 → 该日无此因子。
+LAKE_ROOT = Path("context/lake")
 
 
 # ───────────────────────── tushare 句柄 / 缓存 ─────────────────────────
@@ -372,6 +375,103 @@ def reversal_confirm_factors(piv: dict, P: list[str], D: str) -> pd.DataFrame:
     return out
 
 
+# ─────────────── 隔夜因子第一批(Wave12-T29 / 设计稿 E3;零新采集) ───────────────
+#
+# 三个信号侧因子,全部**只吃已在库的端点**,评估用主尺 `ruler.MAIN_RULER`(gap_c1_o2)。
+# 共同的人口纪律:三者都是**稀疏事件因子**(只有当日上榜/涨停/封板的票才有值),缺席一律
+# NaN 而不是 0 —— 把"没发生这件事"写成 0 会伪造出一个巨大的并列人口,秩相关的分辨力当场归零
+# (`lhb_inst_net` 既有列的语义也是如此,保持一致)。
+#
+# premise-check(2026-08-09 实测,与任务书所写不符,以真数据为准):设计稿把龙虎榜因子的源
+# 写成 `top_list`,但 `context/lake/top_list/` 只有 9 个分区、与 132 个成型日仅交出 8 天;
+# 真正全覆盖(132/132)的是 `top_inst` —— 且它的 `exalter` 列里**同时**有「机构专用」、北向
+# 通道与各家营业部全名,分腿所需的信息全在。故本批的龙虎榜腿改走 `top_inst`。
+
+_INST_SEAT = "机构专用"                       # 机构席位(既有 `lhb_inst_net` 的判据,原样沿用)
+_NORTH_SEATS = ("深股通专用", "沪股通专用", "港股通专用")   # 北向通道:既非机构也非营业部
+
+
+def lhb_seat_net(ti: pd.DataFrame) -> pd.DataFrame:
+    """`top_inst` 逐席位明细 → 每只票 `[code, inst_net, broker_net]`(净买额,单位同源=元)。
+
+    **分腿**(机构反指先例:`common/uzi_lenses.py:4-10` 实测机构上榜后 T+1~T+10 偏弱,
+    与营业部/游资腿混在一起会互相抵消,所以两腿必须分开):
+
+      * `inst_net` = Σ `net_buy`(`exalter` 含「机构专用」)—— 与既有 `lhb_inst_net` 的内联
+        口径**逐值相同**(有测试锁),本函数不改写它,只是把它和另一腿放到同一个可测的地方。
+      * `broker_net` = Σ `net_buy`(其余营业部席位)。**北向通道单独剔除**:「深/沪/港股通专用」
+        既不是机构专用席位、也不是营业部,把它并进营业部腿会让一笔北向大单直接冒充游资净买。
+
+    某类席位在该票**完全缺席** → 该腿 NaN(未知/不适用),不是 0 —— 语义与既有 `lhb_inst_net`
+    的 groupby+left-merge 一致;写 0 会把"这票上榜时没有机构席位"伪造成"机构净买恰好为 0"。
+    """
+    cols = ["code", "inst_net", "broker_net"]
+    if ti is None or not len(ti) or "exalter" not in ti.columns:
+        return pd.DataFrame(columns=cols)
+    t = pd.DataFrame({"code": _code6(ti["ts_code"]),
+                      "exalter": ti["exalter"].astype(str),
+                      "net_buy": _num(ti["net_buy"])})
+    is_inst = t["exalter"].str.contains(_INST_SEAT, na=False)
+    is_north = t["exalter"].str.contains("|".join(_NORTH_SEATS), na=False)
+    codes = pd.Index(pd.unique(t["code"]), name="code")
+    inst = t[is_inst].groupby("code")["net_buy"].sum().reindex(codes)
+    broker = t[~is_inst & ~is_north].groupby("code")["net_buy"].sum().reindex(codes)
+    return pd.DataFrame({"code": codes, "inst_net": inst.to_numpy(),
+                         "broker_net": broker.to_numpy()})
+
+
+def sealed_strength(piv: dict, D: str) -> pd.Series:
+    """D 日**封板强度**(仅当日封板票有值,其余 NaN)。价格面板自算,零新采集。
+
+    封板判据与 `forward_returns` 的 `buy_sealed` 同族:`pct_chg ≥ 板幅×0.98` ∧ `close ≥ high−1e-6`
+    (收盘价即当日最高价 = 尾盘没被砸开)。板幅逐票走 `_board_limit`(主板 10 / 创业科创 20 /
+    北交所 30)。
+
+    强度 = `1 − 当日振幅% / 板幅%`,其中振幅% = `(high − low) / 昨收 × 100`,昨收由
+    `close / (1 + pct_chg/100)` 还原(面板自带 `pct_chg`,不需要再取一列前收)。读法:
+
+      * 一字板(振幅 0)→ **1.0**(封得最死);
+      * 封板但盘中曾下探满一个板 → **−1.0**;
+      * 板幅归一保证 20cm/30cm 的票与 10cm 的票可比 —— 少了这一步,创业板会因为天然振幅大
+        而被系统性判成"封得不死"。
+    """
+    c, h, low, pc = piv["close"][D], piv["high"][D], piv["low"][D], piv["pct_chg"][D]
+    lim = pd.Series([_board_limit(x) for x in c.index], index=c.index, dtype=float)
+    sealed = (pc >= lim * 0.98) & (c >= h - 1e-6)
+    prev_close = c / (1.0 + pc / 100.0)
+    amp_pct = (h - low) / prev_close * 100.0
+    return (1.0 - amp_pct / lim).where(sealed.fillna(False))
+
+
+def limit_ladder_frame(D: str, lake_root: Path | None = None) -> pd.DataFrame:
+    """`limit_list_d` 湖分区 → `[code, limit_ladder]`(当日涨停票的**连板高度**,1=首板)。
+
+    人口 = `limit == "U"` 的行(涨停);炸板 `Z` / 跌停 `D` 行的 `limit_times` 本就是 NaN,
+    显式按 `limit` 过滤而不是靠 NaN 兜底 —— 端点哪天给 Z 行补上一个数,靠 NaN 过滤的写法会
+    悄悄把炸板票混进涨停人口。
+
+    同一票多行(端点偶发重复)→ 取最大值折成一行:下游 `factor_frame` 的 `amt_pos` 是按
+    合并前的行序取的 numpy 数组,merge 撑长帧会让它整列错位。
+
+    湖只覆盖部分成型日(2026-08-09 实测 78/132)——**缺分区安静返回空表**,该日无此因子;
+    这是"数据没有",不是"读失败",故不抛(A 级阻断的对象是当日必需品,本因子是研究候选)。
+    """
+    root = Path(lake_root or LAKE_ROOT)
+    empty = pd.DataFrame(columns=["code", "limit_ladder"])
+    p = root / "limit_list_d" / f"{D}.parquet"
+    if not p.exists():
+        return empty
+    try:
+        df = pd.read_parquet(p, columns=["ts_code", "limit", "limit_times"])
+    except Exception:  # noqa: BLE001 — 坏分区当缺失处理,不中断整条流水线
+        return empty
+    up = df[df["limit"].astype(str) == "U"]
+    if not len(up):
+        return empty
+    out = pd.DataFrame({"code": _code6(up["ts_code"]), "limit_ladder": _num(up["limit_times"])})
+    return out.groupby("code", as_index=False)["limit_ladder"].max()
+
+
 # ───────────────────────── 因子帧(每个成型日) ─────────────────────────
 
 
@@ -473,6 +573,17 @@ def factor_frame(D: str, piv: dict, P: list[str], basic: pd.DataFrame,
             gi.columns = ["code", "inst_net"]
             f = f.merge(gi, on="code", how="left")
             f["lhb_inst_net"] = _num(f["inst_net"]) / amt_pos          # 龙虎榜机构净买 / 当日成交额
+
+    # ── 隔夜因子第一批(Wave12-T29 / 设计稿 E3):龙虎榜营业部腿 / 连板高度 / 封板强度 ──
+    # 三者都是稀疏事件因子(未上榜/未涨停/未封板 → NaN,不是 0);评估尺 = ruler.MAIN_RULER。
+    # 机构腿沿用上面既有的 `lhb_inst_net`(公式逐字相同),此处只补另一腿,不造重复列。
+    if not ti.empty:
+        seats = lhb_seat_net(ti).rename(columns={"broker_net": "lhb_broker_net"})
+        f = f.merge(seats[["code", "lhb_broker_net"]], on="code", how="left")
+        f["lhb_net_ratio_broker"] = _num(f["lhb_broker_net"]) / amt_pos
+    ladder = limit_ladder_frame(D)
+    f = f.merge(ladder, on="code", how="left") if len(ladder) else f.assign(limit_ladder=np.nan)
+    f["sealed_strength"] = sealed_strength(piv, D).reindex(f["code"]).to_numpy()
 
     # 动量(从价格面板算 pct_60d / pct_ytd / 短动量)
     close_piv = piv["close"]
@@ -576,6 +687,11 @@ CANDIDATES = [
     # dist_low_60 距 60 日低点% 越小=越贴近低位反转候选 → -1;days_no_new_low 越多天未创新低=越
     # "衰竭企稳" → +1。
     ("vol_ratio_20", +1), ("dist_low_60", -1), ("days_no_new_low", +1),
+    # 隔夜因子第一批(Wave12-T29,设计稿 E3)。**方向是预注册假设,不是已知结论** ——
+    # 三条全部 +1,出处逐条写在 docs/research/2026-08-08-overnight-factors-batch1.md §0.3
+    # (先写后看:该节在跑任何读数之前落盘)。真符号/去留由 gap 判据族定;过门也**不**自动
+    # 入组(改 `_GROUPS` 是 B 类,走 experiment_registry)。
+    ("lhb_net_ratio_broker", +1), ("limit_ladder", +1), ("sealed_strength", +1),
 ]
 FWDS = ["fwd_1_cc", "fwd_1_oo", "fwd_2_oc", "fwd_5_oc", "fwd_10_oc", "gap_c1_o2"]
 

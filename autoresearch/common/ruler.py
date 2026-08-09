@@ -18,10 +18,39 @@ SCHEMA_SWITCH_V4 = "2026-08-07"   # 卡契约 v4 日期分界(T17 绑执行日�
 
 # T22(Wave12 E6-0,用户 2026-08-08 追加裁定的地基):系统对外只有一种 BUY——"今日可交易
 # 全集里相对最值得买"(不承诺绝对上涨)。相对基准 = 全市场可交易等权为主、行业中性超额为辅。
-# 两列都是 MAIN_RULER(gap_c1_o2)的超额,不是独立的第二把尺 —— 换主尺时这两列跟着重算,
-# 不需要各自再起一套 ENTRY_FLAG/entry_flag_for 选腿逻辑。
+#
+# I-1(final-review 2026-08-08/09,人口裁定并留痕):「全市场可交易」显式指**不区分是否
+# 过 L0 门**的全体可交易票(`entry_tradable()` 折叠后的全集,含漏在 L0/L1/L2 的票,只要
+# 当日真能买、`REL_GAP_RULER` 有数就入分母)——不是仅 L0 过门的子集。这与本任务书 Interfaces
+# 一度写的「L0 可交易全集」字面冲突;冲突以用户裁定为准(此处引用的正是用户裁定原文
+# "全市场可交易等权"),不是被忽略的差异。理由:①`l3_marginal.day_frame` 的 `excess_2`
+# 市场基准(见下方 I-2 互指)同样不限于 L0,两条线人口口径需要一致,否则连"漏在 L0 的票
+# 相对市场表现如何"这种最基本的复盘问题都答不出来;②`rel_gap_sector` 的分母天然只含
+# 有 `industry` 的行(≈L0 过门票),若 `rel_gap_market` 改采 L0-only,两列人口会重新对齐,
+# 但代价是丢失"漏在 L0 的票相对全市场基准表现"这个读数——这正是本列存在的意义之一
+# (零买复盘/账本审计要看这个,见 `_rel_gap_cols` docstring)。留痕:`test_retro_rel_cols.py`
+# 的 `test_missing_industry_makes_rel_gap_sector_nan_but_not_rel_gap_market` 断言了
+# L0-missing 但可交易的票确实会拉动市场均值(不是被静默排除),该断言即本裁定的可执行记录。
+#
+# I-4(final-review 2026-08-08/09,口径钉尺):两列口径钉死在字面量 `REL_GAP_RULER`
+# ("gap_c1_o2"),**不**跟随 `MAIN_RULER` 动态漂移——原注释曾声称"换主尺时这两列跟着
+# 重算",这是假的:`_backfill_rel_gap_columns` 的幂等门是"两列都在 → 直接 return False"
+# (不问口径是否已变);若真跟随 `MAIN_RULER`,批A 回滚杆把 `MAIN_RULER` 改回 `fwd_2_oc`
+# 后,老行仍是 gap 口径值、新写的行会变成 fwd_2_oc 口径值,同一列名下静默混存两把尺,且
+# 无 `ruler` 型标签区分(`_KEEP`/`ruler` 列那套是为兼容"同一账本存在多种口径历史行"设计
+# 的,这里选更简单的路:口径压根不随 `MAIN_RULER` 走,列名即口径,回滚杆不污染)。
 REL_MARKET = "rel_gap_market"    # gap_c1_o2 − 当日全市场可交易(entry_tradable)等权均值
 REL_SECTOR = "rel_gap_sector"    # gap_c1_o2 − 同申万一级可交易等权均值(行业中性辅;缺行业/该行业当日无可交易成员→NaN,不猜)
+REL_GAP_RULER = "gap_c1_o2"      # 字面量,REL_MARKET/REL_SECTOR 的唯一口径来源;不要改用 MAIN_RULER(I-4)
+
+# I-2(final-review 2026-08-08/09,docstring 互指):`autoresearch.learning.l3_marginal.day_frame`
+# 的 `excess_2` 是全仓另一个独立的市场基准(同一批可交易票的 MAIN_RULER **中位**,服务 L3
+# 内部反事实比较,跟随当前 MAIN_RULER),其 docstring 明文写"换基准就换了口径,跨模块比较
+# 立刻失真,所以这里不另造一个"——REL_MARKET/REL_SECTOR 确实是在造第二个,是刻意的:
+# 服务对象不同(E6 对外相对 BUY 账本 vs L3 内部反事实)、统计量不同(均值 vs 中位)、口径
+# 稳定性要求不同(钉死字面量 vs 跟随 MAIN_RULER)。两条线在同一天可能给出符号相反的
+# "相对表现"读数(均值/中位在右偏分布下相差 10-30bp 是常态),这是已知、记账在案的口径
+# 分裂,不是遗漏同步——跨模块比较前必须先确认在读同一条线。
 
 _LEGACY_ENTRY_FLAG = "buyable"   # fwd_2_oc(D+1 开盘买腿)对应旗;换尺前一直如此,不改名
 

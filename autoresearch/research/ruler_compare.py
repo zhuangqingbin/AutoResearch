@@ -734,7 +734,7 @@ def _retirement_notes(result: dict) -> list[str]:
         edge_oc, edge_gap = l3["agg_oc"]["edge"], l3["agg_gap"]["edge"]
         pinned_note = (f"(📌保送票已两侧剔除,累计 {l3['agg_oc']['n_pinned_excluded_total']} "
                        "票次;剔除前 oc 侧头条曾读 +1.59%,约 42% 来自 bench 被保送已知跑输"
-                       "仓位拉低——见 task-15-report.md v2 修订说明)")
+                       "仓位拉低——见本文顶部 v2 修订说明与 `git log 23ed1b2`)")
         if abs(edge_gap) < _NEAR_ZERO <= abs(edge_oc):
             notes.append(
                 f"**L3 真选 edge(finalist vs bench)—— 待重验**:fwd_2_oc 下 {_fmt_pct(edge_oc)}"
@@ -766,14 +766,17 @@ def render(result: dict) -> str:
         "oc 头条从 **+1.59% 修正为 +0.93%**(gap 侧 -0.01%→-0.06%,仍近零,方向性结论不变);"
         "`--selftest` 补上此前 3 处鉴别力盲区(①聚合函数此前从未被调用、④shadow门槛/"
         "CORRECT阈值符号此前无边界用例)并对 5 处已知变异逐一重跑确认现在全部报红。"
-        "v1 的具体数字(如 +1.59%)不应再被引用,详见 task-15-report.md 的 review 回复。", "",
+        "v1 的具体数字(如 +1.59%)不应再被引用;**review 记录见 `git log 23ed1b2`**"
+        "(Wave11-A8 task-15 review 修复:③剔保送票 / ①配对门的价值 / selftest 补盲区)"
+        "与 `git log f58c3cd`(Wave11-A3 review 修复:两处跨尺盲聚合)。", "",
         "> 2026-08-05 用户裁定:评判主尺从 `fwd_2_oc`(D+1开买→D+2收卖)改为隔夜尺 "
         "`gap_c1_o2`(D+1收买→D+2开卖)。**本报告不是论证新尺更优**,只回答:换尺之后,"
         "哪些基于旧尺的历史结论会翻?", "",
         f"窗口:{span}(有 `retro/attribution.csv` 的 scan 日;更晚的日期 T+2 尚未成熟)。"
         "`gap_c1_o2` 由 `context/lake/daily` 现算(attribution.csv 现无此列)——"
         "已用 2026-08-03/000001 逐位比特验证湖重算的 `fwd_2_oc` 与 attribution.csv 原值一致,"
-        "确认湖的交易日序列与 retro 同源、D+1/D+2 定位可信(细节见 task-15-report.md)。", "",
+        "确认湖的交易日序列与 retro 同源、D+1/D+2 定位可信"
+        "(细节见 `git log -p f58c3cd 23ed1b2` 的 review 记录)。", "",
     ]
 
     # ── ① 门的价值 ──

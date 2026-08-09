@@ -115,7 +115,14 @@ def observe(
     activated = registry._parse_timestamp(record["activated_at"], "activated_at")
     if at_dt < activated:
         raise registry.RegistryError("observation timestamp cannot predate activation")
-    prior = list(record.get("observations") or [])
+    # 只数**本函数自己写的** assessment(Wave12-T20)。`observations[]` 从 2026-08-09 起多了
+    # 第二种写者(`registry.append_observation` 的影子期观测,kind=SHADOW_OBSERVATION_KIND):
+    # 它们既没有 `status` 也没有 `run_id`,若混进 `prior`,`_assessment` 会用
+    # `len(prior)+1` 把回滚观察窗提前撑满、并让 `all_pass` 因为 `item.get("status") != "PASS"`
+    # 恒塌成 False —— 「加一条影子观测」这个动作顺手改掉了回滚判据,正是本仓库
+    # 「默认不启用必须连副作用一起不启用」要拦的形态。
+    prior = [item for item in (record.get("observations") or [])
+             if item.get("kind") != registry.SHADOW_OBSERVATION_KIND]
     input_hash = registry.canonical_hash(
         {
             "experiment_id": record["id"],

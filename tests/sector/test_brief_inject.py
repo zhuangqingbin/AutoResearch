@@ -115,14 +115,21 @@ def test_compose_funnel_brief_injects_sector_terrain(tmp_path):
 
 
 def test_sector_view_section(tmp_path):
+    """Wave12-T26 起契约改为**一行一行业**:地形首句 + 方向 + 原文链接。
+
+    旧契约(把研判段全文原文嵌进 summary)已退役 —— 那一节 13,379B / 全报告 28%,而
+    `sector_briefs/*.md` 本来就逐份发布在 `trace/`。减层不减料:行业一个不少,全文一键可达。
+    """
     d = tmp_path / DATE
     d.mkdir(parents=True)
     assert _sector_view_section(d) == ""                       # 无 briefs → 不加节(parity)
     _mk_brief(d)
     s = _sector_view_section(d)
     assert s.startswith("## 🏭 行业研判")
-    assert "半导体" in s and "方向:看多" in s and "磨底" in s
-    assert "景气读数" not in s                                 # 地形段不重复进 L5
+    assert "半导体" in s and "看多" in s                        # 行业 + 方向仍在
+    assert "trace/sector_briefs/半导体.md" in s                 # 原文可达
+    assert "磨底" not in s                                     # 研判段正文不再嵌入
+    assert len([ln for ln in s.splitlines() if ln.startswith("| 半导体 |")]) == 1
 
 
 def test_same_chain_block():

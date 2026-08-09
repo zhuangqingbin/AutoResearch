@@ -436,6 +436,34 @@ def test_index_md_links_and_prev_run(tmp_path):
     assert "20260701_0900" in s and "健康一行" in s
 
 
+def test_index_md_points_to_brief_first(tmp_path):
+    """Wave12-T28:入口切 brief —— 首个「读我」条目指 `brief.md`(≤3KB 速读层),
+    `summary.md` 降为「详细版」。两者都在,只是**读的顺序**变了。"""
+    d = _mk_day(tmp_path / "ctx", "2026-07-02", cards={"000001": CARD_OW})
+    rd = tmp_path / "reports" / "20260702_1200"
+    rd.mkdir(parents=True)
+    (rd / "brief.md").write_text("# 速读\n", encoding="utf-8")
+    s = index_md(d, rd)
+    read_lines = [ln for ln in s.splitlines() if "**读我" in ln or "**详细版" in ln]
+    assert read_lines, "index.md 没有读我/详细版导航行"
+    # 断言**可点的链接形式**,不是「出现过 brief.md 这个词」—— 后者在「未生成」文案里同样
+    # 成立,会让本条测试对「brief 在不在盘上」完全无鉴别力(变异探针 L 实测过)。
+    assert "[brief.md](brief.md)" in read_lines[0], f"首个导航行不是 brief 链接:{read_lines[0]}"
+    assert "未生成" not in s, "brief 在盘上却渲染成未生成"
+    assert s.index("brief.md") < s.index("summary.md"), "brief 必须排在 summary 之前"
+    assert any("summary.md" in ln for ln in read_lines), "summary 不能被摘掉(减层不减料)"
+
+
+def test_index_md_says_so_when_brief_missing(tmp_path):
+    """brief 缺席时**明说**,不静默回落到 summary —— 静默会让「brief 没生成」不可见。"""
+    d = _mk_day(tmp_path / "ctx", "2026-07-02", cards={"000001": CARD_OW})
+    rd = tmp_path / "reports" / "20260702_1200"
+    rd.mkdir(parents=True)
+    s = index_md(d, rd)
+    assert "brief.md" in s and "未生成" in s
+    assert "summary.md" in s
+
+
 def test_index_md_shows_anns_unavailable_line(tmp_path):
     """anns_d 已退役:index.md 不再对此静默——每次跑动都有一行显式标注(此前仅 JSON 里可查,
     肉眼看报告完全无感,正是三个扫描日 news 列全零无人察觉的成因之一)。此形态 = 目录压根

@@ -6,7 +6,8 @@ design: docs/specs/2026-07-12-scan-speed-perimeter-design.md §P1。
 - 目标日 == 今天时设 LAKE_ASSUME_SETTLED=1(cache 层仅对 d==today 放行入湖,未来日恒拒;
   完整性守卫 = 既有契约层:get_or_fetch「拉取→check→原子写」,A 级空/残缺抛且拒写,湖零污染);
 - build_market_frame 全市场取数入湖(daily×20 + 快照端点)→ L3 evidence 三端点预拉(P2a 已走湖)
-  → temperature rollup → 写 _prewarm.json(stage_timing「预热」行消费);
+  → temperature rollup → 热度快照(东财人气/雪球关注,Wave12 T3;B 级断采不挡预热,见
+  `_hot_rank_snapshot`)→ 写 _prewarm.json(stage_timing「预热」行消费);
 - calibrate **默认不跑**:夜跑自动 recalibrate 会在不扫描的日子也改 weights + 记 changelog,
   污染 DSR-lite trial 计数(P0-6)——`--with-calibrate` 手动旋钮。
 幂等:湖已有该日数据 → 全程命中秒退。失败退出码非零、不阻断(晚间扫描回落现路径)。
@@ -79,6 +80,63 @@ def _dossier_prefetch(date: str) -> str:
     return f"池预取 {sum(1 for v in r.values() if v)}/{len(r)}"
 
 
+# 热度快照的三个分片(endpoint, params)。雪球两个 symbol 各占一个分区(`symbol` 在
+# `cache._ENTITY_PARAM_KEYS` 里,原生兜底就给独立键):
+#   最热门   → 「关注」= **累计**关注数(做环比要自己按日做差)
+#   本周新增 → 同名「关注」列其实是 follow7d(7 日新增)= 任务书 Interfaces 想要的 follow_delta
+# 两者都不可回填,今天不采同样永远没有。
+_HOT_RANK_SOURCES = (
+    ("eastmoney_hot_rank", {}),
+    ("stock_hot_follow_xq", {}),
+    ("stock_hot_follow_xq", {"symbol": "本周新增"}),
+)
+
+
+def _snapshot_date(now: datetime | None = None) -> str:
+    """快照分区日 = **观测日(墙上时钟今天)**,不是预热的目标交易日。
+
+    Wave12 复核 I1:两者在正常交易日 19:30 相等,但**节假日 launchd 触发 / 补跑 / 手工传日期**
+    时不等 —— 那时 `date` 是上一个交易日,而快照接口给的永远是"此刻"的内容。按 `date` 分区
+    就会把今天的观测写成过去某天的假历史(工作树里那个 08-09 03:03 写成 `all@20260807` 的
+    分区正是这么来的),且事后不可甄别。cache 层的 `SnapshotDateError` 是同一件事的兜底。
+    """
+    return (now or datetime.now()).strftime("%Y-%m-%d")
+
+
+def _hot_rank_snapshot(date: str) -> str:
+    """热度快照(东财人气榜 + 雪球关注度 ×2;Wave12 T2/T3,design
+    docs/research/2026-08-09-hot-rank-probe.md)——**B 级,断采只损失当日、不阻断预热**。
+
+    快照型数据:今天不采,今天的历史就永远没有了(不像行情可以事后用 trade_date 回补)——
+    这是它在计划里排最优先的唯一理由,所以夜间必须每晚真的采一次。
+
+    逐源 try/except(不是 `_prewarm_evidence` 那种整段 `except: pass` 静默吞掉的旧模式):
+    单源失败必须显式 `record_degradation`(降级记账,而不是只打一行没人看的 warn)——且不能
+    让第一个源的异常拖累后面的源完全不被尝试("连续断采仅损失当日"这句话依赖的正是这里的
+    逐源隔离,不是外层 `_step()` 的整步兜底)。
+
+    **✓ 不等于拿到了完整的一份**(Wave12 复核 C2):雪球内部分 29 页,单页解析失败被 akshare
+    自己 `except TypeError` 吞掉 → 限流时静默返回 3000 行而**不抛异常**。所以这里在取数之后
+    还要再问一次契约(`violations`):半截/空一律记成 ✗,不然 note 会写着 `✓(3000行)`,
+    prelude 也就永远不告警。契约层已在 `check()` 里记过账,这里只负责让它在 note 里可见。
+    """
+    from autoresearch.data import cache as _cache
+    from autoresearch.data.contracts import record_degradation, violations
+    snap = _snapshot_date()
+    parts: list[str] = []
+    for ep, params in _HOT_RANK_SOURCES:
+        label = ep + (f"[{params['symbol']}]" if params.get("symbol") else "")
+        try:
+            df = _cache.get_or_fetch(ep, dict(params), today=snap)
+            v = violations(ep, df)
+            parts.append(f"{label}{'✗' if v else '✓'}({len(df)}行"
+                         + (f":{'; '.join(v)[:60]}" if v else "") + ")")
+        except Exception as e:  # noqa: BLE001 — B 级:单源断采不挡其余源、不挡预热
+            record_degradation(ep, f"{type(e).__name__}: {e}", key=snap)
+            parts.append(f"{label}✗({type(e).__name__})")
+    return " · ".join(parts) + f" · 观测日 {snap.replace('-', '')}"
+
+
 def run_prewarm(date: str | None = None, *, with_calibrate: bool = False,
                 now: datetime | None = None) -> dict:
     now = now or datetime.now()
@@ -103,6 +161,7 @@ def run_prewarm(date: str | None = None, *, with_calibrate: bool = False,
         _step("evidence_lake", _prewarm_evidence)
         _step("temperature", _temperature)
         _step("dossier_prefetch", _dossier_prefetch)
+        _step("hot_rank_snapshot", _hot_rank_snapshot)
         if with_calibrate:
             def _calib(d):
                 from autoresearch.learning.retro import recalibrate_and_log

@@ -86,6 +86,57 @@ def test_missing_industry_makes_rel_gap_sector_nan_but_not_rel_gap_market():
     assert not pd.isna(by_code.loc["000003", ruler.REL_MARKET])    # market 基准与行业无关
 
 
+def test_rel_gap_market_population_includes_tickers_missing_from_l0_not_just_l0_passed():
+    """I-1(final-review 2026-08-08/09,人口裁定并留痕):基准人口 = **全市场**可交易票,
+    不是仅 L0 过门的子集 —— 000003 漏在 L0(不在 l1 里)但可交易,它的 gap 必须真的拉动
+    市场均值,不能被静默排除出分母。这条断言就是该项裁定的可执行记录(见 ruler.py 里
+    REL_MARKET/REL_SECTOR 旁的 I-1 长注释:任务书 Interfaces 一度写「L0 可交易全集」,
+    与用户裁定「全市场可交易等权」冲突,以用户裁定为准)。
+    """
+    codes = ["000001", "000002", "000003"]
+    l1 = pd.DataFrame({"code": ["000001", "000002"], "name": ["a", "b"],
+                       "industry": ["电子", "电子"], "composite": 50.0, "recalled": True})
+    gaps = [0.10, 0.02, 0.30]                          # 000003(漏在 L0)gap 明显偏离,便于判别
+    realized = _realized(codes, gaps, buyable_c1=[True, True, True])
+    attr = retro.attribute_frame(l1, realized, buylist={})
+    by_code = attr.set_index("code")
+
+    full_market_mean = sum(gaps) / len(gaps)            # 正确:三票全可交易,全部入分母
+    l0_only_mean = (gaps[0] + gaps[1]) / 2               # 错腿:若误采 L0-only 人口(漏 000003)
+    assert by_code.loc["000001", ruler.REL_MARKET] == pytest.approx(gaps[0] - full_market_mean)
+    assert by_code.loc["000001", ruler.REL_MARKET] != pytest.approx(gaps[0] - l0_only_mean)
+
+
+def test_rel_gap_cols_pinned_to_gap_c1_o2_literal_survives_main_ruler_rollback(monkeypatch):
+    """I-4(final-review 2026-08-08/09,口径钉尺):`rel_gap_market`/`rel_gap_sector` 必须
+    按字面量 `ruler.REL_GAP_RULER`("gap_c1_o2")计算,即便批A 回滚杆把 `MAIN_RULER` 改回
+    `fwd_2_oc` 也不能跟着变 —— 否则同一列名下新旧行会静默混两把尺(动机见 ruler.py 里
+    REL_GAP_RULER 旁的长注释)。fixture 让 gap_c1_o2 与 fwd_2_oc 取明显不同的值,若实现
+    误读了(回滚后的)MAIN_RULER,断言会直接对不上。
+    """
+    import autoresearch.learning.retro as retro_mod
+    from autoresearch.common import ruler as ruler_mod
+
+    codes = ["000001", "000002"]
+    gap_values = [0.10, -0.05]          # REL_GAP_RULER 钉死要读的列
+    fwd2_values = [0.50, 0.50]          # 假装 MAIN_RULER 被回滚指向这一列(取显著不同的数)
+    l1 = _l1(codes, ["电子", "电子"])
+    realized = pd.DataFrame({
+        "code": codes, "name": codes, "gap_c1_o2": gap_values, "fwd_2_oc": fwd2_values,
+        "buyable": True, "buyable_c1": [True, True],
+    })
+    monkeypatch.setattr(retro_mod, "MAIN_RULER", "fwd_2_oc")   # 模拟回滚杆(retro.py 是 from-import)
+    monkeypatch.setattr(ruler_mod, "MAIN_RULER", "fwd_2_oc")   # ruler.entry_tradable 内部兜底同源
+
+    attr = retro.attribute_frame(l1, realized, buylist={})
+    by_code = attr.set_index("code")
+    market_mean = sum(gap_values) / len(gap_values)             # 仍应按 gap_c1_o2 计算
+    wrong_mean = sum(fwd2_values) / len(fwd2_values)             # 错腿:误随回滚后的 MAIN_RULER
+    for c, g in zip(codes, gap_values, strict=True):
+        assert by_code.loc[c, ruler.REL_MARKET] == pytest.approx(g - market_mean), c
+        assert by_code.loc[c, ruler.REL_MARKET] != pytest.approx(g - wrong_mean), c
+
+
 def test_industry_with_zero_tradable_members_is_nan_not_a_guess():
     """某行业当日全体不可交易(涨停封死)—— 该行业分母为空,不得回退成猜一个数。"""
     codes = ["000001", "000002", "000003"]
@@ -154,6 +205,13 @@ def test_attribute_writes_rel_gap_cols_to_csv(tmp_path, monkeypatch):
 
     fixture 镜像 test_retro.py::_retro_event_fixture(同款 100 码,绕开 `attribute()` 自己的
     `n_ruler >= 100` 生产门槛;不足 100 会被判"D+2 收盘多半未发布"直接 RuntimeError)。
+
+    `report_root=tmp_path` 必传(final-review 2026-08-08 I-3 事故修复):`attribute()` 漏传
+    此参数会回落内联字面量默认值 `Path("reports/scan")`——若日期恰好命中某个真实已发布
+    报告的 `analysis_date`("2026-07-24" 当时就命中了 `reports/scan/20260725_1316`),
+    `_publish_retro_control_state` 会把本测试的合成 fixture 真的 `shutil.copy2` 进那份
+    报告的 `trace/`,覆写生产数据。conftest.py 的 `_forbid_production_report_writes` 现在
+    会在任何测试漏传时直接抛 `PermissionError` 拦下来,但显式传参仍是第一道防线。
     """
     sdir = tmp_path / "2026-07-24"
     sdir.mkdir(parents=True)
@@ -169,7 +227,7 @@ def test_attribute_writes_rel_gap_cols_to_csv(tmp_path, monkeypatch):
     })
     monkeypatch.setattr(retro, "realized_returns", lambda *a, **k: realized)
 
-    retro.attribute("2026-07-24", scan_root=tmp_path)
+    retro.attribute("2026-07-24", scan_root=tmp_path, report_root=tmp_path)
     got = pd.read_csv(sdir / "retro" / "attribution.csv", dtype={"code": str})
     assert {ruler.REL_MARKET, ruler.REL_SECTOR}.issubset(got.columns)
 
@@ -211,6 +269,22 @@ def test_backfill_rel_gap_columns_returns_false_when_source_cols_missing(tmp_pat
     不touch 文件(判定发生在读盘之后、写盘之前,path 存不存在都不重要,只测判定本身)。
     """
     attr = pd.DataFrame({"code": ["000001"], "bucket": ["caught"]})
+    assert retro._backfill_rel_gap_columns(tmp_path / "attribution.csv", attr) is False
+    assert not (tmp_path / "attribution.csv").exists()
+
+
+def test_backfill_rel_gap_columns_stays_honest_when_main_ruler_rolled_back_but_gap_col_missing(
+    tmp_path, monkeypatch,
+):
+    """I-4 存在性判据修复(final-review 2026-08-08/09):批A 回滚杆把 `MAIN_RULER` 改回
+    `fwd_2_oc` 后,一份只有 `fwd_2_oc`(没有 `gap_c1_o2`)的老文件必须仍然诚实返回 False——
+    判据要读字面量 `REL_GAP_RULER`,不能读动态 `MAIN_RULER`(否则会被"fwd_2_oc 列在场"
+    误判成"源列齐全",调用 `_rel_gap_cols` 时 `frame['gap_c1_o2']` 直接 KeyError)。
+    """
+    import autoresearch.learning.retro as retro_mod
+
+    monkeypatch.setattr(retro_mod, "MAIN_RULER", "fwd_2_oc")   # 模拟回滚杆
+    attr = pd.DataFrame({"code": ["000001"], "industry": ["电子"], "fwd_2_oc": [0.05]})
     assert retro._backfill_rel_gap_columns(tmp_path / "attribution.csv", attr) is False
     assert not (tmp_path / "attribution.csv").exists()
 

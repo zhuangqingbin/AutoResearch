@@ -54,7 +54,8 @@ def triage_l2_for_l3(df: pd.DataFrame, target: int = 60) -> tuple[pd.DataFrame, 
        第 5 条规则。
 
     `cut = df − kept`(按原始行序稳定输出,不重排;`kept`/`cut` 都保留 `df` 的**全部原始列**,
-    不裁列——`_l3_pass1_cut.csv`/下游 attribution 都可能要用到里面的列)。
+    不裁列——`_l3_pass1_cut.csv`/下游 attribution 都可能要用到里面的列)—— **除了**
+    `selection_reason`/`selection_detail` 这两列本身(见下段 I-5)。
 
     **`kept` 另加两列**(design 2026-08-03 §4.4;`cut` 不加,它没有"为什么被选中"可言):
     `selection_reason`(见 `PASS1_REASONS`)+ `selection_detail`(lane 记通道名、共振记
@@ -62,6 +63,16 @@ def triage_l2_for_l3(df: pd.DataFrame, target: int = 60) -> tuple[pd.DataFrame, 
     排名** —— 只有 `_l3_pass1_cut.csv` 的话,根本无法构造"同样选 K 只、但按 lane/sector
     匹配"的反事实基线(§4.4「现有 cut 不能天然定义 top-K 反事实」)。多规则同时命中时按
     `pinned > conviction_guard > lane` 记**第一个**,理由与"占名额"的口径一致。
+
+    I-5(final-review 2026-08-08/09):`df`(= `load_l3_input(date)` 的输出)T16 之后自带
+    **L2 口径**的 `selection_reason`/`selection_detail`(`merit`/`sector` 等,L2 侧词表,
+    见模块头注释)——若不处理,`kept` 侧会被本函数就地覆盖成 pass1 口径(`:167-168`,正确),
+    但 `cut = d.loc[cut_idx]` 会**原样带出**L2 口径的旧值,与本段"cut 不加"的说明矛盾:
+    `cut` 侧凭空多出一列 L2 语义的 reason,`pd.concat([kept, cut])` 按 `selection_reason`
+    分组会把两层语义(`merit`/`sector` 只可能来自 L2、`pinned`/`conviction_guard`/`lane`/
+    `backfill` 只可能来自 pass1)混成一个分布。修法:落盘前把这两列从 `cut` 显式 drop
+    掉(不改名保留——L2 口径对 cut 侧消费者当前无场景价值,drop 让代码与本段文档字面
+    一致,比新发明一套 `l2_selection_reason` 列名更省心)。
 
     边界:`df` 为空 → 两个都空(kept 仍带两列,免得下游按列名读时炸)。
     `target >= len(df)` → kept=全量,cut=空。
@@ -166,7 +177,12 @@ def triage_l2_for_l3(df: pd.DataFrame, target: int = 60) -> tuple[pd.DataFrame, 
     # 理由按**原始行索引**取,不能按 reset 后的位置 —— 两者只在 kept 恰为前缀时才相等。
     kept["selection_reason"] = [reasons.get(i, ("backfill", ""))[0] for i in kept_idx]
     kept["selection_detail"] = [reasons.get(i, ("backfill", ""))[1] for i in kept_idx]
-    cut = d.loc[cut_idx].reset_index(drop=True)
+    # I-5(final-review 2026-08-08/09):`d`(= df)T16 之后可能自带 L2 口径的
+    # selection_reason/selection_detail(见上方 docstring)——cut 侧显式 drop,不带出去,
+    # 保持"cut 没有『为什么被选中』可言"这句文档字面为真。`errors="ignore"`:df 本身没有
+    # 这两列(旧 load_l3_input / 合成测试帧)时不报错,drop 是纯粹的防御性清理。
+    cut = d.loc[cut_idx].reset_index(drop=True).drop(
+        columns=["selection_reason", "selection_detail"], errors="ignore")
     return kept, cut
 
 

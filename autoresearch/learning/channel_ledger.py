@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """跨日聚合各 scan 日的 retro/channel_eval.csv → 每路滚动边际超额(单日是噪声,跨日才是信号)。零 LLM。
 
-主尺 = T+2(2026-07-10 用户裁定:持仓超短 1~2 日,`fwd_2_oc` 为主尺,T+5 作废退位为参考列)
+主尺 = T+2 隔夜 `ruler.MAIN_RULER`(现 `gap_c1_o2`;沿革:2026-07-10 用户裁定持仓超短 1~2 日、
+`fwd_2_oc` 为主尺 → 2026-08-05 用户裁定换隔夜尺,`fwd_2_oc` 降参考;T+5 一直是作废退位的参考列)
 —— 排序与 quota 提议(`propose_quota_adjustments`)全部由 `unique_excess_t2` 驱动,t5 列仅保留
 展示不再驱动任何决策(2026-07-17 起,此前提议仍按 t5 是裁定后的漏改)。
 quota 提议基线 = registry 默认 ⊕ scan_config.jsonc 的 funnel.channel_quotas 覆盖
@@ -100,8 +101,9 @@ def propose_quota_adjustments(ledger: pd.DataFrame, quotas: dict[str, int], *, m
                               step_frac: float = 0.25) -> list[dict]:
     """ledger(roll 输出)+ 当前 quotas → 调整提议(**advisory,不改线上**)。
 
-    主尺 = `mean_unique_excess_t2`(2026-07-10 用户裁定持仓超短 1~2 日、fwd_2_oc 为主尺;
-    t5 列仍在 ledger 展示但不再驱动提议)。持续负边际超额(< neg_thresh,n_days≥min_days)
+    主尺 = `mean_unique_excess_t2`(列名里的 `_t2` 沿自 `fwd_2_oc` 年代,**取值随
+    `ruler.MAIN_RULER` 现算**,现 `gap_c1_o2`;改列名会破全部读者故不改,见 STAGES.md
+    「账本定义断层」。t5 列仍在 ledger 展示但不再驱动提议)。持续负边际超额(< neg_thresh,n_days≥min_days)
     → 提议降 quota;持续正(> pos_thresh)→ 提议升;中性带 (neg, pos) / 样本不足 → 不提议。
     单步 ±step_frac。
     """

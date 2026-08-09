@@ -353,7 +353,8 @@ CANDIDATES: tuple[Candidate, ...] = (
         id="O1_winner_capture_slo", title="winner-capture@K 升格 SLO(端到端 + 条件召回)",
         section="§3.1", change_class="M", priority="P0", status="IMPLEMENTED",
         inheritance={"Wave9": "无关", "Wave10": "继承", "STAGES": "替代"},
-        falsification_step="先固定 winner 定义(主尺 fwd_2_oc + top-decile + 绝对阈 + D+1 可买);"
+        falsification_step="先固定 winner 定义(主尺 ruler.MAIN_RULER,现 gap_c1_o2 + top-decile "
+                           "+ 绝对阈 + 入场腿可买 entry_flag_for());"
                            "不得把 retro 的复合 winner 与纯 top-decile 混叫一个标签",
         probe="报警线必须用当日**之前**的 expanding P25;拿全期分位会让回看时永远不报警",
         rollback="账本无消费者,删报告即可",

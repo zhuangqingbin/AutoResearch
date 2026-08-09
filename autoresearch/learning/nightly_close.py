@@ -114,6 +114,13 @@ def run(today: str) -> list[tuple[str, bool, str]]:
                  # 下一波(2026-08-03):门重标定影子账本与 L3 边际价值。两者都**只读**
                  # 既有产物、只写自己的报表,排在 gate_attribution 之后(gate_recal 读它)。
                  "gate_recal", "l3_marginal",
+                 # Wave12-T24(E6-2):relative BUY 影子账本。它的成熟回填读
+                 # `context/scan/*/retro/attribution.csv` 的 gap_c1_o2 与 rel_gap_* 两列,
+                 # 那份文件由**本函数之外**的 `_retro_refresh` 步骤(run() 里排在 ledgers
+                 # 之前)幂等刷新 —— 所以本表内它对谁都无依赖,唯一的硬约束是"排在
+                 # evidence_manifest 之前"(后者读所有账本)。旧 OW 基率经 buy_ledger 的
+                 # 单一事实源现读,不硬编码数字;两账在报表里分列并置(定义断层)。
+                 "relative_ledger",
                  "evidence_manifest"]
         ok = 0
         for n in names:
@@ -132,9 +139,57 @@ def run(today: str) -> list[tuple[str, bool, str]]:
                 ok += 1
         return f"{ok}/{total} 刷新"
 
+    def _exp_observe() -> str:
+        """Wave12-T20 修复轮 1(复核 C1):EXP-1/EXP-2 影子观测的**夜间腿**。
+
+        首版把 `observe_day` 写好了却**没有任何调用点** —— 20 条观测是一次性手工回填、
+        永不增长;而回填还抹掉了 `observations == []` 这个本该暴露 FN-1 的信号,
+        比它要修的原病更隐蔽。这就是「生产者写好了但没人调用」,与本 task 的立案理由
+        (「预注册了但没人生产」)是同一族。
+
+        **必须排在 `_ledgers` 之后**:待观测日来自 `gate_participation_v3.csv`,那份文件由
+        `_ledgers` 里的 `gate_attribution.main()` 刷新 —— 排在它前面,今晚新成熟的日子要
+        等到明晚才会被观测到(与 shadow_buys/paper_nav 的生产者-消费者顺序同一道理)。
+
+        `observe_pending` 幂等且自愈:漏跑一晚,第二晚自动补齐。
+        """
+        from autoresearch.learning import mainflow5d
+        res = mainflow5d.observe_pending(today)
+        note = (f"补 {len(res['observed'])} 日(待观测 {res['pending']});"
+                f"累计观测 {res['n_observations']} 日")
+        if res["failed"]:
+            note += f";{len(res['failed'])} 日失败: {res['failed'][0]['error']}"
+        return note
+
+    def _news_flash() -> str:
+        """Wave12-T35:三源快讯 ingest —— news_catalog「通电」的夜间腿。
+
+        **消费者仍然全关**(intel 先读目录 / L3 第二源 / typed-event 进 prompt 都是 B 类,
+        要走 experiment_registry)。本步只让目录里有数据、让"连续 5 晚非空"这条验收
+        开始有读数可数 —— 没有夜间踢它,就永远只有"跑过一次"的手工读数
+        (同 §B5 判据的道理:靠人回忆的判据等于没判据)。
+
+        B 级:任一源挂了只降级记账;三源全挂时 `any_ok=False`,本步记 ✗ 但**不连坐**
+        后面的步骤(`_step` 已保证)。
+        """
+        from autoresearch.news.catalog import ingest_flash
+        res = ingest_flash()
+        srcs = "、".join(f"{s['source']}:{s['status']}" for s in res["per_source"])
+        note = (f"新增 {res['added']} · 修订 {res['revised']} · 未变 {res['unchanged']}"
+                f"(累计 {res['health']['n_observations']} 条){srcs and ';' + srcs}")
+        if not res["any_ok"]:
+            raise RuntimeError(f"三源快讯全部未出数 —— {note}")   # 记 ✗ 但不连坐
+        return note
+
     for name, fn in (("retro_refresh", _retro_refresh), ("t1_backfill", _t1_backfill),
                      ("t1_gap_finalize", _t1_gap_finalize),
-                     ("tripwire", _tripwire), ("ledgers", _ledgers)):
+                     ("tripwire", _tripwire), ("ledgers", _ledgers),
+                     # Wave12-T20 修复轮 1:影子实验观测。**必须在 ledgers 之后**
+                     # (人口文件 gate_participation_v3.csv 由 gate_attribution 在那步刷新)。
+                     ("exp_observe", _exp_observe),
+                     # 排在最后:纯增量写自己的目录,对上面任何一步都无依赖;
+                     # 挂了也不该影响账本刷新(新闻是 B 级增强面)。
+                     ("news_flash", _news_flash)):
         out.append(_step(name, fn))
     return out
 

@@ -59,12 +59,41 @@ def test_l2_csv_header_contains_selection_reason_and_detail(monkeypatch, tmp_pat
 
 
 def test_l2_csv_row_count_is_unaffected_by_the_two_new_columns(monkeypatch, tmp_path):
-    """纯新增列:零名单影响 —— 行数恰是请求的 l2_n,不因多投影两列而增删任何一行。"""
+    """纯新增列:零名单影响 —— 行数恰是请求的 l2_n,不因多投影两列而增删任何一行。
+
+    M-2 修复(final-review 2026-08-08/09):旧版只断言 `len==l2_n` + `code` 唯一——这两条
+    哪怕把整个 L2 选择算法换掉也照样绿(任何产出 l2_n 个不重复码的实现都能通过),对本测试
+    名字承诺的"零名单影响"没有鉴别力(实施者自己的变异探针这条也确实没变红)。这里改成
+    真的比码集 + 顺序:跑两遍 `universe.run`(同 seed/参数)——一遍是当前真实代码(`select_l2`
+    产出的 `l2` 帧带 `selection_reason`/`selection_detail`);另一遍把 `select_l2` 的返回值
+    原地砍掉这两列,模拟"T16 这次投影改动从未发生"时的内存形状。`l2_cols` 白名单那行是
+    纯列投影(`l2[[c for c in l2_cols if c in l2.columns]]`),结构上不可能倒过来改变选中
+    哪些行/什么顺序,所以两遍的 code 列表必须逐项相等——如果不等,说明有人把这条投影线
+    改成了非纯列操作(例如夹带了排序/去重/过滤),这条测试就是拦这个的探针。
+    """
+    from autoresearch.scan.recall import l2_stratify
+
     l2_n = 20
-    outdir = run_universe(monkeypatch, tmp_path, l2_n=l2_n)
-    l2 = pd.read_csv(outdir / "L2_gbdt_top200.csv", dtype={"code": str})
+    outdir_with = run_universe(monkeypatch, tmp_path, l2_n=l2_n)
+    l2 = pd.read_csv(outdir_with / "L2_gbdt_top200.csv", dtype={"code": str})
     assert len(l2) == l2_n
     assert l2["code"].is_unique
+    with_codes = l2["code"].tolist()
+
+    real_select_l2 = l2_stratify.select_l2
+
+    def _select_l2_without_new_cols(*a, **k):
+        frame, engine = real_select_l2(*a, **k)
+        return frame.drop(columns=["selection_reason", "selection_detail"], errors="ignore"), engine
+
+    monkeypatch.setattr(l2_stratify, "select_l2", _select_l2_without_new_cols)
+    outdir_without = run_universe(monkeypatch, tmp_path / "without-new-cols", l2_n=l2_n)
+    without_header = pd.read_csv(outdir_without / "L2_gbdt_top200.csv", nrows=0).columns
+    assert not {"selection_reason", "selection_detail"} & set(without_header)   # 前提:确实模拟成功
+    without_codes = pd.read_csv(outdir_without / "L2_gbdt_top200.csv",
+                                dtype={"code": str})["code"].tolist()
+
+    assert with_codes == without_codes    # 码集 + 顺序逐项相等,不只是"行数/唯一性"
 
 
 def test_l2_csv_still_has_the_pre_existing_columns(monkeypatch, tmp_path):

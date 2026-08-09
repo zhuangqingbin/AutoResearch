@@ -166,32 +166,218 @@ def test_main_role_rows_ignored(tmp_path):
     assert r["mismatches"] == []
 
 
-# ───────────────────────── 已知局限:ens_review/l3_repair 复用父 role 的 agentType ─────────────────────────
+# ───── Wave12-T34:ens_review/l3_repair 复用父 agentType 的归因(原「已知局限」已转正）─────
+
+# 两 role effort 分开调参的 echo —— 这是本组测试的全部意义:配置值相同的时候
+# 老实现"蒙混"得过去,只有分开调参才照得出归因到底对不对。
+ECHO_SPLIT = {"agents": {"l4_card": {"effort": "max"}, "ens_review": {"effort": "medium"}}}
 
 
-def test_known_gap_ens_review_row_misjudged_against_l4_card_expectation(tmp_path):
-    """记录一个已知局限(不是本 task 要修的范围,但必须有测试证明"风险是真的"而不是
-    臆测):`ens_review`(l4-card 双复核 run2/3)复用 `agentType: 'l4-card'` 派发(见
-    `.claude/workflows/l4-stock.js` `rerun()`),harvest 分不出一行到底是主卡还是复核。
+def _l4card_row(effort):
+    return {"role": "subagent", "agent": "l4-card", "model": "claude-opus-5",
+            "effort": effort, "status": "SUCCEEDED"}
 
-    只要生产配置里 `ens_review.effort` 与 `l4_card.effort` 恰好相同,这条 gap 不会显影;
-    一旦分开调参(这正是 Task 8 把 ens_review 独立成 role 的目的),本表就会对着
-    ens_review 的真实行为误判——本测试构造这个场景,证明误判确实发生,而不是空口描述。
+
+def test_ens_review_compliant_row_no_longer_misjudged_as_l4_card(tmp_path):
+    """[Wave12-T34] 原 `test_known_gap_ens_review_row_misjudged_against_l4_card_expectation`
+    的**转正版**(按那条测试自己写的处置意见改写,不是删除)。
+
+    场景:主卡 1 次(max,合规)+ ens_review 复核 1 次(medium,同样合规)。
+    census 说了"ens_review 派了 1 次",所以那一行归 ens_review,按 medium 判 → 不再有
+    mismatch。老实现会把它当成 l4_card 的违规(假阳)。
     """
-    echo = {"agents": {"l4_card": {"effort": "max"}, "ens_review": {"effort": "medium"}}}
-    rows = [
-        {"role": "subagent", "agent": "l4-card", "model": "claude-opus-5",
-         "effort": "max", "status": "SUCCEEDED"},             # 真实是主卡调用,配置合规
-        {"role": "subagent", "agent": "l4-card", "model": "claude-opus-5",
-         "effort": "medium", "status": "SUCCEEDED"},           # 真实是 ens_review 复核,配置也合规(medium)
-    ]
-    r = ur._reconcile_core(echo, rows, date="2026-08-06")
-    # 现状:第二行被误判成"l4_card mismatch"(expected max,actual medium)——它其实是
-    # ens_review 的合规行为,本表目前分不清,把它当成了 l4_card 的违规。这就是已知局限。
-    bad = [m for m in r["mismatches"] if m["agent"] == "l4-card" and m["field"] == "effort"]
-    assert len(bad) == 1 and bad[0]["actual"] == "medium", (
-        "本测试锁定已知局限的现状表现;若未来实现了 ens_review 并集豁免(仿 gp_shell),"
-        "这条断言应该改写成'不再误判',而不是被删除——删除会让这个局限重新变回没人知道")
+    r = ur._reconcile_core(ECHO_SPLIT, [_l4card_row("max"), _l4card_row("medium")],
+                           date="2026-08-06", census={"ens_review": 1})
+    assert r["mismatches"] == [], "ens_review 的合规行不该再被冤枉成 l4_card mismatch"
+
+
+def test_ens_review_real_deviation_reported_on_its_own_row(tmp_path):
+    """[Wave12-T34 验收] 造 ens_review 与 l4_card effort 不同的 echo,reconcile 必须**分行报**。
+
+    场景:census 说主卡 1 次 + 复核 1 次,但两行**都**是 max —— 即复核没按 medium 跑。
+    要求:恰好 1 条 mismatch,且 `role == "ens_review"`(不是 l4_card)。
+    这正是老实现的**假阴**:两行都 max,l4_card 期望也是 max → 老实现 0 mismatch,
+    ens_review 的真实偏差被完全掩盖。
+    """
+    r = ur._reconcile_core(ECHO_SPLIT, [_l4card_row("max"), _l4card_row("max")],
+                           date="2026-08-06", census={"ens_review": 1})
+    assert not r["ok"]
+    bad = [m for m in r["mismatches"] if m["field"] == "effort"]
+    assert len(bad) == 1, f"应恰好 1 条 effort mismatch,实际 {r['mismatches']}"
+    assert bad[0]["role"] == "ens_review", "必须归到 ens_review 这一行,不能算在 l4_card 头上"
+    assert bad[0]["expected"] == "medium" and bad[0]["actual"] == "max"
+
+
+def test_old_behaviour_would_have_been_silent_here_mutation_probe(tmp_path):
+    """变异探针:把归因**关掉**(census 缺)→ 上一条测试的 mismatch 必须消失或变形。
+
+    这条是上一条的对手方:如果把 T34 的修复反向(不传 census),同一份输入下
+    `role == "ens_review"` 的精确定位就没了。它不红,说明上一条根本没在测归因。
+    """
+    r = ur._reconcile_core(ECHO_SPLIT, [_l4card_row("max"), _l4card_row("max")],
+                           date="2026-08-06", census={})
+    ens_rows = [m for m in r["mismatches"] if m.get("role") == "ens_review"]
+    assert not ens_rows, "census 缺时不可能精确定位到 ens_review —— 若这里还能定位,说明归因是假的"
+
+
+def test_missing_census_falls_back_to_union_set_assertion(tmp_path):
+    """[Wave12-T34 兜底] census 缺、但两 role 期望不同 → 退回并集集合断言(role=None)。
+
+    合规行(max ∈ 并集、medium ∈ 并集)一律放过——**不再**拿主 role 的期望冤枉次级 role;
+    真正落在并集外的(low)才报,且如实标 `role=None`(分不清就不装分得清)。
+    """
+    ok = ur._reconcile_core(ECHO_SPLIT, [_l4card_row("max"), _l4card_row("medium")],
+                            date="2026-08-06", census={})
+    assert ok["mismatches"] == [], "并集内的行不该报"
+
+    bad = ur._reconcile_core(ECHO_SPLIT, [_l4card_row("low")], date="2026-08-06", census={})
+    assert len(bad["mismatches"]) == 1
+    assert bad["mismatches"][0]["role"] is None
+    assert bad["mismatches"][0]["field"] == "model+effort"
+
+
+def test_census_shortfall_is_reported_not_swallowed(tmp_path):
+    """census 说派了 2 次复核,实测行只有 1 条 → 少的那次必须留痕(不是 0 mismatch)。"""
+    r = ur._reconcile_core(ECHO_SPLIT, [_l4card_row("medium")],
+                           date="2026-08-06", census={"ens_review": 2})
+    short = [m for m in r["mismatches"] if m["field"] == "dispatch_count"]
+    assert len(short) == 1 and short[0]["role"] == "ens_review"
+
+
+def test_l3_repair_split_from_l3_rank(tmp_path):
+    """同族第二例:`l3_repair` 复用 `agentType: 'l3-rank'`,census 给 1 次 → 分行报。"""
+    echo = {"agents": {"l3_rank": {"effort": "max"}, "l3_repair": {"effort": "medium"}}}
+
+    def _rows(*efforts):
+        return [{"role": "subagent", "agent": "l3-rank", "model": "claude-opus-5",
+                 "effort": e, "status": "SUCCEEDED"} for e in efforts]
+
+    # 各按各的档跑 → 干净(老实现会把 medium 那行当成 l3_rank 违规)
+    clean = ur._reconcile_core(echo, _rows("max", "medium"), date="2026-08-06",
+                               census={"l3_repair": 1})
+    assert clean["mismatches"] == []
+
+    # 自修没按 medium 跑(两行都 max)→ 恰好 1 条,归 l3_repair(老实现 0 条,假阴)
+    bad = ur._reconcile_core(echo, _rows("max", "max"), date="2026-08-06",
+                             census={"l3_repair": 1})
+    hits = [m for m in bad["mismatches"] if m["field"] == "effort"]
+    assert len(hits) == 1 and hits[0]["role"] == "l3_repair" and hits[0]["actual"] == "max"
+
+
+def test_unconfigured_secondary_role_does_not_blunt_primary_detection(tmp_path):
+    """回归锁:次级 role **没被配置**时不得参与并集 —— 否则父 role 的 mismatch 会被放过。
+
+    实测教训(本 task 首版):`live` 门没加时,`ECHO`(只配 l4_card)下 ens_review 拿
+    frontmatter 的 xhigh 撑起并集,`test_effort_mutation_caught` 等 4 条既有探针集体失明。
+    """
+    r = ur._reconcile_core({"agents": {"l4_card": {"effort": "max"}}},
+                           [_l4card_row("low")], date="2026-08-06", census={})
+    bad = [m for m in r["mismatches"] if m["field"] == "effort"]
+    assert len(bad) == 1 and bad[0]["role"] == "l4_card" and bad[0]["actual"] == "low"
+
+
+def test_same_effort_config_still_clean_parity(tmp_path):
+    """parity:生产当前 `ens_review.effort == l4_card.effort == max` → 有无 census 都干净。
+
+    T34 不该改变"今天这份配置"的对账结论 —— 它只改变"分开调参之后"的结论。
+    """
+    echo = {"agents": {"l4_card": {"effort": "max"}, "ens_review": {"effort": "max"}}}
+    rows = [_l4card_row("max"), _l4card_row("max")]
+    assert ur._reconcile_core(echo, rows, date="2026-08-06", census={"ens_review": 1})["mismatches"] == []
+    assert ur._reconcile_core(echo, rows, date="2026-08-06", census={})["mismatches"] == []
+
+
+# ───────────────────────── dispatch_census:产物普查 ─────────────────────────
+
+
+def test_l4_stock_workflow_writes_ens_review_dispatch_subrecord():
+    """生产者接线锁(FN-1 家族):`dispatch_census` 读的 `role`/`n_dispatch` 必须真的有人写。
+
+    普查器写得再好,`l4-stock.js` 不往 `_ensemble_<code>.json` 里写这两个键,ens_review
+    就永远退回并集兜底 —— 「消费者读没人生产的产物」正是本仓 FN-1 的原形。
+    另锁 `n_dispatch` 取的是**派发数**(sameTier ? 1 : 2)而不是成功数:失败的复核 run
+    一样烧 token、一样在 harvest 留一行,数成功数会让 census 系统性少数。
+    """
+    src = (Path(__file__).resolve().parents[2]
+           / ".claude" / "workflows" / "l4-stock.js").read_text(encoding="utf-8")
+    assert "role: 'ens_review'" in src, "l4-stock.js 的 ens-dump 未写 role 子记录"
+    assert "n_dispatch: ensDispatched" in src, "l4-stock.js 未写 n_dispatch"
+    assert "const ensDispatched = sameTier ? 1 : 2" in src, (
+        "n_dispatch 必须是派发数(r2 恒派 + 分歧时加派 r3),不是 reruns.length 那种成功数")
+
+
+def test_scan_market_workflow_documents_l3_repair_census_contract():
+    """`l3_repair` 的普查靠 `_l3_repair_prompt.md` 在场 —— 这条隐式契约必须写在改动现场。
+
+    契约没写在代码旁边,下一个改 repair-pack 的人不会知道自己动的是归因的地基。
+    """
+    src = (Path(__file__).resolve().parents[2]
+           / ".claude" / "workflows" / "scan-market.js").read_text(encoding="utf-8")
+    assert "dispatch_census" in src and "_l3_repair_prompt.md" in src
+
+
+def test_dispatch_census_reads_explicit_ens_record(tmp_path):
+    (tmp_path / "_ensemble_000651.json").write_text(json.dumps(
+        {"code": "000651", "n_runs": 3, "role": "ens_review", "n_dispatch": 2}))
+    assert ur.dispatch_census(tmp_path) == {"ens_review": 2}
+
+
+def test_dispatch_census_infers_from_n_runs_for_legacy_records(tmp_path):
+    """老产物没有 role/n_dispatch → 由 `n_runs - 1` 推断(主卡 1 次 + 复核 n-1 次)。"""
+    (tmp_path / "_ensemble_000651.json").write_text(json.dumps({"code": "000651", "n_runs": 2}))
+    (tmp_path / "_ensemble_600000.json").write_text(json.dumps({"code": "600000", "n_runs": 3}))
+    assert ur.dispatch_census(tmp_path) == {"ens_review": 3}
+
+
+def test_dispatch_census_counts_l3_repair_from_prompt_artifact(tmp_path):
+    """`l3_repair` 靠 repair prompt 判定 —— **agent 死掉也数得到**(07-27 教训)。
+
+    ⚠️ 修复轮 1(M1)收紧了判据:原版写个 `"x"` 就算一次派发,而 `build_repair_pack`
+    是**无条件**写这个文件的(`l3/validation.py:291`),空 codes 的陈旧 prompt 会被记成
+    派发 → 假 mismatch → `ok=false`。现在要求 prompt 真的列出 ≥1 个 code。
+    本条保留原意(不读 agent 自己写的 patch,所以 agent 死了照样数得到),只是喂一份
+    **真实形状**的 prompt。
+    """
+    assert "l3_repair" not in ur.dispatch_census(tmp_path)
+    (tmp_path / "_l3_repair_prompt.md").write_text(
+        '# L3 thesis 局部修复包\n```json\n{"codes": ["000651"], "rows": []}\n```\n',
+        encoding="utf-8")
+    assert ur.dispatch_census(tmp_path)["l3_repair"] == 1
+    # agent 没写 patch(死了)也照样算数 —— 这才是本条存在的理由
+    assert not (tmp_path / "_l3_repair_patch.json").exists()
+
+
+def test_dispatch_census_survives_corrupt_artifacts(tmp_path):
+    """坏产物不抛异常(本模块是报表,不毙人)。"""
+    (tmp_path / "_ensemble_bad.json").write_text("{not json")
+    (tmp_path / "_ensemble_list.json").write_text("[1,2,3]")
+    assert ur.dispatch_census(tmp_path) == {}
+    assert ur.dispatch_census(tmp_path / "does-not-exist") == {}
+
+
+def test_reconcile_wires_census_from_scan_dir(tmp_path):
+    """接线验收:`reconcile()` 必须真的把 census 读进来(不是只有 `_reconcile_core` 支持)。
+
+    ⚠️ 本测试的**第一版没有鉴别力**(实测):它用「两行分别是 max/medium」断言
+    `mismatches == []` —— 可那两行在**无 census** 的并集兜底下同样全过,把 `reconcile()`
+    里的 census 实参删掉,测试照样绿。这正是 FN-1 家族(生产者没接线)最爱藏身的形状,
+    也是"绿灯不等于有灯"的教科书例子。
+
+    改用**只有接了线才会出现**的读数:两行都是 max,census 说其中一次是 ens_review
+    (期望 medium)→ 接了线 = 1 条 role=ens_review 的 mismatch;没接线 = 走并集,
+    (opus,max) 落在 l4_card 的期望里 → 0 条。两种结局不同,测试才真的在测接线。
+    """
+    d = tmp_path / "context/scan/2026-08-06"
+    d.mkdir(parents=True)
+    (d / "user_config_echo.json").write_text(json.dumps(ECHO_SPLIT))
+    (d / "_token_usage.json").write_text(json.dumps(
+        {"rows": [_l4card_row("max"), _l4card_row("max")]}))
+    (d / "_ensemble_000651.json").write_text(json.dumps(
+        {"code": "000651", "n_runs": 2, "role": "ens_review", "n_dispatch": 1}))
+    r = ur.reconcile("2026-08-06", root=tmp_path)
+    hits = [m for m in r["mismatches"] if m.get("role") == "ens_review"]
+    assert len(hits) == 1, f"reconcile() 没把 dispatch_census 接进来:{r['mismatches']}"
+    assert hits[0]["expected"] == "medium" and hits[0]["actual"] == "max"
 
 
 # ───────────────────────── presence-gated:产物缺失 ─────────────────────────
@@ -403,3 +589,136 @@ class TestRealDataMutations:
         result = ur._reconcile_core(mutated_echo, rows_dropped, date="2026-08-05")
         assert any(m["agent"] == "l4-card" and m["field"] == "effort" for m in result["mismatches"])
         assert "sector_brief" in result["wire_breaks"]
+
+
+# ═══════════ Wave12-T33:对 resolved 对账 + 缺派发 role 直接 ok=false ═══════════
+
+_RESOLVED = {"l4_card": {"effort": "max"}, "l4_intel": {"effort": "max"},
+             "l3_rank": {"effort": "max"}, "strategist": {"effort": "high"},
+             "sector_brief": {"effort": "high"},
+             "gp_shell": {"model": "sonnet", "effort": "low"},
+             "gp_shell_json": {"model": "sonnet", "effort": "low"}}
+
+
+def test_resolved_is_preferred_over_raw_agents_block():
+    """resolved 在场时,期望取 resolved —— 它才是 workflow 真正吃的那一份。
+
+    造一个"raw agents 说 low、resolved 说 max"的分歧局面:实测 max 时必须判过
+    (跟着 resolved 走),否则说明还在读 raw。
+    """
+    echo = {"agents": {"l4_card": {"effort": "low"}},
+            "resolved_agents": {"l4_card": {"effort": "max"}}}
+    r = ur._reconcile_core(echo, [_l4card_row("max")], date="2026-08-09")
+    assert [m for m in r["mismatches"] if m["field"] == "effort"] == []
+
+
+def test_missing_resolved_role_forces_ok_false():
+    """今天真派过这个 role,resolved 里却没有它 → ok=false(不能被 0 mismatch 冲平)。"""
+    # 只留 l4_card:其余 `_EXPECT_PRESENT` role 若也在 resolved 里、当日又无实测行,
+    # 会额外触发 wire_breaks,把本条要看的信号混进去。
+    resolved = {"l4_card": {"effort": "max"}}
+    rows = [_l4card_row("max"),
+            {"role": "subagent", "agent": "l4-intel", "model": "claude-sonnet-5",
+             "effort": "max", "status": "SUCCEEDED"}]
+    r = ur._reconcile_core({"resolved_agents": resolved}, rows, date="2026-08-09")
+    assert r["mismatches"] == [] and not r["wire_breaks"]
+    assert r["missing_resolved_roles"] == ["l4_intel"]
+    assert r["ok"] is False, "0 mismatch 也不该算过 —— 有一整个 role 无从对账"
+
+
+def test_missing_resolved_role_covers_shell_roles():
+    """`general-purpose` 分不清是哪个壳 → 两个壳 role 都必须在 resolved 里。"""
+    resolved = {"gp_shell": {"model": "sonnet", "effort": "low"}}
+    rows = [{"role": "subagent", "agent": "general-purpose", "model": "claude-sonnet-5",
+             "effort": "low", "status": "SUCCEEDED"}]
+    r = ur._reconcile_core({"resolved_agents": resolved}, rows, date="2026-08-09")
+    assert r["missing_resolved_roles"] == ["gp_shell_json"] and r["ok"] is False
+
+
+def test_no_resolved_artifact_does_not_report_missing_roles():
+    """presence-gated:压根没有 resolved(老 run)→ 不报 missing,那是"还没上线"不是"漏了"。"""
+    r = ur._reconcile_core(ECHO, ROWS, date="2026-08-06")
+    assert r["missing_resolved_roles"] == []
+    assert r["ok"] is True
+
+
+def test_reconcile_reads_resolved_artifact_file(tmp_path):
+    """接线锁:`reconcile()` 必须读 `_resolved_agent_config.json`,不是只认 echo 里的键。
+
+    鉴别力检查:echo 的 raw agents 故意写 low、resolved 文件写 max,实测 max ——
+    读了文件 = 0 mismatch;没读 = 报一条 l4_card effort mismatch。
+    """
+    d = tmp_path / "context/scan/2026-08-09"
+    d.mkdir(parents=True)
+    (d / "user_config_echo.json").write_text(json.dumps({"agents": {"l4_card": {"effort": "low"}}}))
+    (d / "_token_usage.json").write_text(json.dumps({"rows": [_l4card_row("max")]}))
+    (d / "_resolved_agent_config.json").write_text(json.dumps(
+        {"schema_version": 1, "date": "2026-08-09", "roles": _RESOLVED}))
+    r = ur.reconcile("2026-08-09", root=tmp_path)
+    assert [m for m in r["mismatches"] if m["field"] == "effort"] == [], (
+        f"reconcile() 没读 _resolved_agent_config.json:{r['mismatches']}")
+
+
+def test_render_lists_missing_resolved_roles():
+    r = ur._reconcile_core({"resolved_agents": {"l4_card": {"effort": "max"}}},
+                           [_l4card_row("max"),
+                            {"role": "subagent", "agent": "l4-intel",
+                             "model": "claude-sonnet-5", "effort": "max"}],
+                           date="2026-08-09")
+    md = ur.render(r)
+    assert "missing_resolved_roles" in md and "l4_intel" in md
+
+
+# ── 修复轮 1(M1):l3_repair 普查判据收紧 —— prompt 在场 ≠ 派过 ──
+
+
+def test_l3_repair_counted_only_when_prompt_lists_codes(tmp_path):
+    """`build_repair_pack` 无条件写 prompt(`l3/validation.py:291`),但只有
+    `repair.n > 0` 才真派 agent。空 codes 的陈旧 prompt 不得记成一次派发。
+    """
+    (tmp_path / "_l3_repair_prompt.md").write_text(
+        '# L3 thesis 局部修复包\n```json\n{"codes": [], "rows": []}\n```\n', encoding="utf-8")
+    assert "l3_repair" not in ur.dispatch_census(tmp_path)
+
+    (tmp_path / "_l3_repair_prompt.md").write_text(
+        '# L3 thesis 局部修复包\n```json\n{"codes": ["000651", "600000"], "rows": []}\n```\n',
+        encoding="utf-8")
+    assert ur.dispatch_census(tmp_path)["l3_repair"] == 1
+
+
+def test_stale_empty_prompt_does_not_manufacture_a_false_mismatch(tmp_path):
+    """M1 的**后果**面:陈旧空 prompt 若被记成派发,会从 l3-rank 行里抢一行按
+    l3_repair 的档位判 → 假 mismatch → `ok=false`,而 `usage_reconcile_lint` 对
+    连续两日 ok=false 升 fail。一个会自己制造报警的探针,比没有探针更糟。
+    """
+    d = tmp_path / "context/scan/2026-08-09"
+    d.mkdir(parents=True)
+    (d / "user_config_echo.json").write_text(json.dumps(
+        {"agents": {"l3_rank": {"effort": "max"}, "l3_repair": {"effort": "medium"}}}))
+    (d / "_token_usage.json").write_text(json.dumps({"rows": [
+        {"role": "subagent", "agent": "l3-rank", "model": "claude-opus-5",
+         "effort": "max", "status": "SUCCEEDED"}]}))
+    (d / "_l3_repair_prompt.md").write_text(
+        '```json\n{"codes": [], "rows": []}\n```\n', encoding="utf-8")
+
+    r = ur.reconcile("2026-08-09", root=tmp_path)
+    assert [m for m in r["mismatches"] if m.get("role") == "l3_repair"] == [], (
+        "空 codes 的陈旧 prompt 制造了假 mismatch")
+
+
+def test_l3_repair_census_survives_unreadable_prompt(tmp_path):
+    (tmp_path / "_l3_repair_prompt.md").write_text("没有 json 块", encoding="utf-8")
+    assert "l3_repair" not in ur.dispatch_census(tmp_path)
+
+
+def test_real_repo_repair_prompts_all_list_codes():
+    """活体对照:现存 8 个 `_l3_repair_prompt.md` 全都列了 codes(即当日确实派过)。
+
+    收紧判据**不该**改变历史读数 —— 这条证明它没有(造 fixture 能红不代表生产没被误伤)。
+    """
+    from pathlib import Path as _P
+    prompts = sorted(_P("context/scan").glob("*/_l3_repair_prompt.md"))
+    if not prompts:
+        pytest.skip("本机无历史 scan 目录")
+    for p in prompts:
+        assert ur._l3_repair_dispatched(p.parent), f"{p} 被新判据误判成'没派过'"

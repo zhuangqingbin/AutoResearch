@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import re
 import sys
 from collections import Counter
 
@@ -420,6 +421,49 @@ def retired_symbol_lint(root=".claude") -> list[dict]:
 _AGENT_DEFAULTS_MARK = "const AGENT_DEFAULTS = {"
 
 
+#: skill 文档里的 agent 档位字面量判据(Wave12-T33)。只认 `Agent(` 调用形态里的
+#: `model=`/`effort=` 字面量 —— 散文里提一句 "effort" 不算违规,写成调用形态才算。
+_SKILL_LITERAL_PATTERN = r"Agent\s*\([^)\n]*\b(?:model|effort)\s*=\s*['\"]"
+#: 合法写法的标记词(同一行任一在场即放行)。**先给合法情形一个标记,再谈加严检查**
+#: ——否则"这里就是要举个调用的例子"这种正当写法会被天天判违规(2026-07-27 家训)。
+_SKILL_LITERAL_OK_MARKS = ("档位见 scan_config", "仅作示意", "测试 fixture",
+                           "lint-exempt", "沿革", "历史写法", "已退役")
+
+
+def _skill_agent_literal_lint(base) -> list[dict]:
+    """`.claude/skills/**/*.md` 的 `Agent(model=…)` 字面量探针(Wave12-T33)。
+
+    presence-gated:目录不存在 / 坏文件 → 静默跳过,绝不抛异常。
+    """
+    from pathlib import Path
+
+    skills = Path(base) / "skills"
+    out: list[dict] = []
+    if not skills.is_dir():
+        return out
+    pat = re.compile(_SKILL_LITERAL_PATTERN)
+    for p in sorted(skills.rglob("*.md")):
+        try:
+            text = p.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            continue
+        for i, line in enumerate(text.splitlines(), start=1):
+            if not pat.search(line):
+                continue
+            if any(mark in line for mark in _SKILL_LITERAL_OK_MARKS):
+                continue                                  # 带注记的合法写法
+            out.append({
+                "check": "产物形状·skill内联字面量",
+                "severity": "fail",
+                "detail": f"{p.relative_to(Path(base).parent) if Path(base).name == '.claude' else p}"
+                          f":{i} skill 文档里写死 agent model/effort 字面量 —— "
+                          f"单一事实源是 scan_config.agents(见 user_config._AGENT_ROLES);"
+                          f"确需举例请在同一行注明 {list(_SKILL_LITERAL_OK_MARKS)[:3]} 之一",
+                "code": None,
+            })
+    return out
+
+
 def workflow_literal_lint(root=".claude") -> list[dict]:
     """workflow `agent()` 调用点内联 model/effort 字面量 lint(Wave11 D4,承 Wave11-B2)。
 
@@ -434,17 +478,26 @@ def workflow_literal_lint(root=".claude") -> list[dict]:
     `gp_shell: { model: 'sonnet', effort: 'low' },`)本身并不含 "AGENT_DEFAULTS" 这个词,
     必须真正算出块的起止行号区间,再判目标行是否落在区间内。
 
-    没有 `const AGENT_DEFAULTS = {` 表的 workflow(如 t1-review.js 走独立的
-    `cfg.agents.t1_diag/t1_synth` 通道,见该文件顶部注)天然不受本规则约束——presence-gated
-    跳过,不是本规则的检查对象,防止跟另一套架构打架。
+    没有 `const AGENT_DEFAULTS = {` 表的 workflow 天然不受①约束——presence-gated 跳过,
+    不是本规则的检查对象,防止跟另一套架构打架。(Wave12-T33 起 t1-review.js 也有了这张表,
+    所以现在四个 workflow 全在网内。)
 
-    presence-gated:root/workflows 不存在、坏文件 → 静默跳过,绝不抛异常。
+    **Wave12-T33 扩面**:`.claude/skills/**/*.md` 里的 `Agent(model=…)`/`Agent(effort=…)`
+    字面量同样 fail。理由:skill 文档是**给 Claude 读的活指令**,写死一个档位等于在
+    单一事实源之外开第二个口子(`lite-playbook.md` 那处写着 `Agent(model='opus')`,而
+    生产早就走 `l4-stock.js` + `scan_config.agents.l4_card`,文档在按过时事实指挥人)。
+    合法情形给标记不给例外:同一行带 `_SKILL_LITERAL_OK_MARKS` 任一注记即放行
+    (2026-07-27 家训:修法排序 = 补指令 > 给合法情形一个标记 > 才是加严检查)。
+
+    presence-gated:目录不存在、坏文件 → 静默跳过,绝不抛异常。
     """
     import re
     from pathlib import Path
 
-    root = Path(root) / "workflows"
+    base = Path(root)
     out: list[dict] = []
+    out.extend(_skill_agent_literal_lint(base))
+    root = base / "workflows"
     if not root.is_dir():
         return out
     lit_re = re.compile(r"\b(?:model|effort)\s*:\s*['\"]")
@@ -470,6 +523,141 @@ def workflow_literal_lint(root=".claude") -> list[dict]:
                     "severity": "fail",
                     "detail": f"{p.name}:{i} 在 AGENT_DEFAULTS 表外出现内联 model/effort 字面量"
                               "——单一事实源被绕过,调用点应改用 `...AG(role)`",
+                    "code": None,
+                })
+    return out
+
+
+#: 旧主尺字面量。2026-08-05 用户裁定换 `gap_c1_o2` 后它降为**参考尺**,不删——所以判据不是
+#: "出现即违规",而是"出现却没说清自己是参考尺/沿革"。
+_STALE_RULER_TOKEN = "fwd_2_oc"
+#: 合法写法的标记词(任一在场即放行)。**先给合法情形一个标记,再谈加严检查**——否则
+#: T13 刚写好的 16 处沿革/参考尺注记会被自己的 lint 天天判违规(2026-07-27 家训:修法
+#: 排序 = 补指令 > 给合法情形一个标记 > 才是加严检查)。
+_STALE_RULER_OK_MARKS = ("参考尺", "沿革", "旧尺", "旧主尺", "历史读数", "命名沿自",
+                         "降参考", "不改写", "未复测", "回滚杆", "勿随主尺漂移",
+                         "不随主尺漂移", "固定列名", "当时是", "当时的主尺", "取代")
+#: 「活指令」判据:同一行**既提旧尺又提「主尺」**,却不带任何合法标记 → 把旧尺当现行主尺讲。
+#:
+#: ⚠️ 判据故意是"共现",不是精巧句式匹配。第一版写成 `主尺仍 fwd_2_oc` 一类的正则,拿 T13
+#: **之前**的真实违规行回测,8 条只逮到 3 条(漏掉「fwd_2_oc 超短主尺 IC 校准」「裁定
+#: fwd_2_oc 主尺」「已实现 fwd_2_oc(事后,超短主尺」这类语序)——一个逮不住自己那条病的
+#: 探针就是假绿灯。`test_stale_ruler_recall_on_real_pre_t13_offenders` 把 8/8 召回钉死。
+_STALE_RULER_LIVE_MARK = "主尺"
+#: 扫描域:文档 + 代码。二进制/产物目录不在内(lint 只管人写的东西)。
+_STALE_RULER_EXTS = (".py", ".md", ".js", ".json", ".jsonc", ".yaml", ".yml", ".toml")
+#: 规则②的活文档域:`.claude/{skills,agents,workflows}` + `docs/PANORAMA.md`。PANORAMA 必须在
+#: 内 —— 本病最刺眼的那处(:704「权重校准主尺仍 fwd_2_oc」)就长在它身上,只守 `.claude/`
+#: 等于守错门。历史 specs/plans/research 报告**不在域内**(它们是审计记录,按 T13 裁定不改写)。
+_STALE_RULER_LIVE_DOCS = ("docs/PANORAMA.md",)
+
+
+def _git_new_files(root) -> list[str] | None:
+    """工作树里的**新增**文件(相对 root 的 posix 路径);非 git / git 不可用 → `None`。
+
+    `git status --porcelain` 的 `A`(已 add 未 commit)与 `??`(未跟踪)两档才算新增;
+    `M`/`R` 等**改动**不算——本 lint 的粒度是"新写的文件要按新尺写",不是"碰过的文件
+    都要回头改",否则 286 处历史命中会天天报警(存量不追溯是硬要求)。
+    """
+    import subprocess
+    from pathlib import Path
+
+    root = Path(root)
+    if not root.is_dir():
+        return None
+    try:
+        r = subprocess.run(["git", "status", "--porcelain", "--untracked-files=all"],
+                           cwd=root, capture_output=True, text=True, timeout=30)
+    except Exception:  # noqa: BLE001 — 无 git / 超时 → 按"判不了"处理,不炸
+        return None
+    if r.returncode != 0:
+        return None                      # 不是 git 仓库
+    out: list[str] = []
+    for line in r.stdout.splitlines():
+        if len(line) < 4:
+            continue
+        code, path = line[:2], line[3:].strip()
+        if code.strip() in ("A", "AM", "??"):
+            if " -> " in path:           # rename 形式,取目标
+                path = path.split(" -> ", 1)[1]
+            out.append(path.strip('"'))
+    return out
+
+
+def stale_ruler_lint(root=".") -> list[dict]:
+    """旧尺(`fwd_2_oc`)裸写防复发 lint(Wave12 T14,承 T13 大扫)。
+
+    T13 把文档层 286 处旧尺命中逐条归类完(历史审计记录 / 参考尺注记 / 沿革注记),但
+    **没有任何东西阻止下一个人重新写一处**——最刺眼的 PANORAMA:704「权重校准主尺仍
+    fwd_2_oc」正是这么长出来的。本探针补上那道门,两条判据:
+
+    **① 新增文件裸写**(`git status` 的 `A`/`??` 粒度):新写的文件里出现 `fwd_2_oc`
+    却没有任何 `_STALE_RULER_OK_MARKS` 标记 → fail。**存量文件一律不追溯**(已 commit
+    的、乃至被改动过的都不算)——否则 286 处历史命中会把这条 lint 变成天天响的噪声,
+    而"天天响的警报"等于没有警报。
+
+    **② `.claude/` 活指令句式**(不论文件新旧):把旧尺当**现行主尺**讲的句子
+    (`主尺仍 fwd_2_oc` / `fwd_2_oc 为主尺`)→ fail。这一条与"新增"无关:存量 skill 文档
+    里写出来同样是在指挥 agent 用错尺,而 skill 文档正是 agent 当契约读的东西。
+    沿革写法(「当时是 `fwd_2_oc`,现 `gap_c1_o2`」)带标记词,天然放行。
+
+    presence-gated:非 git 目录 / 无 git 可执行 / 坏文件 → 静默跳过,绝不抛异常
+    (与 `retired_symbol_lint` 同姿势)。
+    """
+    from pathlib import Path
+
+    root = Path(root)
+    out: list[dict] = []
+    if not root.is_dir():
+        return out
+
+    def _ok(text: str) -> bool:
+        return any(m in text for m in _STALE_RULER_OK_MARKS)
+
+    # ① 新增文件裸写
+    for rel in _git_new_files(root) or []:
+        if not rel.endswith(_STALE_RULER_EXTS):
+            continue
+        p = root / rel
+        try:
+            text = p.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001 — 读不了按无内容处理,不炸
+            continue
+        if _STALE_RULER_TOKEN not in text or _ok(text):
+            continue
+        line_no = next((i for i, ln in enumerate(text.splitlines(), start=1)
+                        if _STALE_RULER_TOKEN in ln), 1)
+        out.append({
+            "check": "产物形状·旧尺裸写",
+            "severity": "fail",
+            "detail": f"{Path(rel).name}:{line_no} 新增文件裸写 `{_STALE_RULER_TOKEN}` 却无"
+                      "「参考尺/沿革」注记——主尺自 2026-08-05 起是 `gap_c1_o2`"
+                      "(common.ruler.MAIN_RULER 单点);要么改用主尺,要么写明这是参考尺",
+            "code": None,
+        })
+
+    # ② 活文档里的「旧尺当主尺讲」(不论文件新旧)
+    targets: list = []
+    claude = root / ".claude"
+    if claude.is_dir():
+        for sub, ext in _DOC_LINT_SUBDIRS:
+            d = claude / sub
+            if d.is_dir():
+                targets.extend(p for p in sorted(d.rglob(f"*{ext}")) if p.is_file())
+    targets.extend(p for p in (root / rel for rel in _STALE_RULER_LIVE_DOCS) if p.is_file())
+    for p in targets:
+        try:
+            text = p.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            continue
+        for i, line in enumerate(text.splitlines(), start=1):
+            if _STALE_RULER_TOKEN in line and _STALE_RULER_LIVE_MARK in line and not _ok(line):
+                out.append({
+                    "check": "产物形状·旧尺裸写",
+                    "severity": "fail",
+                    "detail": f"{p.name}:{i} 同行既写 `{_STALE_RULER_TOKEN}` 又写「主尺」却无"
+                              "「参考尺/沿革」标记——疑似把旧尺当**现行主尺**讲(活指令);"
+                              "现主尺 `gap_c1_o2`(2026-08-05 用户裁定)。若在记沿革,同行标注即可",
                     "code": None,
                 })
     return out
@@ -859,6 +1047,10 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
         out.extend(retired_symbol_lint(claude_root))
     with contextlib.suppress(Exception):
         out.extend(workflow_literal_lint(claude_root))
+    # 14)旧尺裸写防复发(T14):同上按 scan_dir 祖先推**仓库根**(不是 .claude 根——本探针
+    # 既查 .claude 文档也查新增代码文件,且要在仓库根上跑 `git status`)。
+    with contextlib.suppress(Exception):
+        out.extend(stale_ruler_lint(claude_root.parent))
 
     # 13) v4 卡契约口径声明缺失(T17):标记行本体是 T24 的事,这里只加检查
     with contextlib.suppress(Exception):
@@ -930,6 +1122,225 @@ def usage_reconcile_lint(scan_root, ledger_path=None) -> list[dict]:
         "code": None,
     })
     return out
+
+
+# ── brief 一致性 lint(Wave12 T27 / 批C C3)──────────────────────────────────────
+#
+# **它对账的到底是什么**:brief.md 是确定性模板产物,`_brief_sources.json` 是同一次生成
+# 附出来的边表(逐行 field/value/file/locator/text)。这条 lint 做三件互不重叠的事:
+#   ① 边表**重算**:从白名单输入重新跑一遍 `brief.build`,与盘上边表逐行比 —— 抓「输入变了
+#      但产物没重生成」的过期;
+#   ② 正文**锚在**:每行的 `text`(该数字在 brief 里的完整渲染片段)必须真出现在 brief.md
+#      里 —— 抓「brief 被手改过」(篡改一个评级/基准读数即失配);
+#   ③ 跨层**同源**:四个决策字段的同一片段必须也出现在 summary.md 的 🧭 仪表盘块里 ——
+#      抓「两层报告各说各话」。
+# 三件事都不靠「lint 自己再渲染一遍然后跟自己比」,那种写法只证明渲染器等于自己。
+#
+# **为什么不挂在 `_self_review_banner` 里**:那个函数在 `build_summary` **内部**跑,而此刻
+# brief.md 与 `_relative_buy_decision.json` 都还不存在(见 report_sections 的 DASHBOARD 注)。
+# 接线点在 `publisher.run` 收尾,与 brief 落盘同一处。
+#: **GATE4 语义二分**(B-2,2026-08-09 控制方裁定)—— 判据名 → severity 的**单一事实源**。
+#:
+#: 病灶:`publisher` 把本 lint 的结果 `append_gate_fires` 进 `gate_fires.csv`,而
+#: `scan.gates.gate4` 的判据是「任意一行 `severity=="fail"` 就不过」。于是**一份人类可读
+#: 摘要排版超限**(>3,000B)就能毙掉整条约 60 分钟的流水线 —— 本仓有「GATE3 差 16 字节毙
+#: 60min 流水线」的疤,同一形状。而本波自己两处写着「失败不阻断发布」(`publisher.run`
+#: 的 brief 段注释)、`brief.safe_publish` 刻意吞异常:一边为了不阻断而吞,另一边把吞下去
+#: 的结果变成门失败。
+#:
+#: **分法只有一问:报告是不是在说假话。**
+#:   `fail` —— 报告陈述与事实/自身矛盾,硬门必须拦(数字被手改、两层报告各说各话、
+#:              数字来自白名单外的源、active 期把 BLOCKED/0 BUY 渲染成成功 run);
+#:   `warn` —— 报告**畸形或缺失**,是展示层问题,不该毁掉一次已经跑完的扫描
+#:              (brief 没落盘、排版超限、对账夹具缺失或过期)。
+#:
+#: 一份人类可读摘要排版超限是展示层问题;**报告说假话才是硬门该拦的事**。
+#: 降级 ≠ 消音:warn 照样进 `gate_fires.csv`,也照样由 `brief_lint_banner` 播给 CP7。
+BRIEF_LINT_SEVERITY = {
+    # ── fail:报告在说假话 ──
+    "brief·数字对账": "fail",
+    "brief↔summary不一致": "fail",
+    "brief·白名单外取数": "fail",
+    "brief·BUY契约(active 期)": "fail",
+    # ── warn:报告畸形/缺失 ──
+    "brief·缺失": "warn",
+    "brief·超预算": "warn",
+    "brief·边表缺失": "warn",
+    "brief·边表过期": "warn",
+}
+
+_BRIEF_DECISION_FIELDS = ("buys.production_n", "relative.code", "relative.rank",
+                          # B-1(2026-08-09):原为 `relative.market_n` —— 那个名字同时
+                          # 可以指「L0 过门票」与「全市场可交易」两个人口,brief 已按
+                          # `decision_pool_n` / `eval_population` 拆开。跨层比对锚同一段
+                          # `text`,取其中一个即可,取的是有数的那个。
+                          "relative.decision_pool_n")
+
+
+def brief_lint(report_dir, scan_dir=None) -> list[dict]:
+    """`brief.md` 一致性 lint(零 LLM;坏输入只报条目,**绝不抛**)。
+
+    `report_dir` = `reports/scan/<run>/`(brief.md + summary.md);
+    `scan_dir` = `context/scan/<date>/`(`_brief_sources.json` + `_relative_buy_decision.json`),
+    缺省 = `report_dir`(便于对同一目录的合成夹具跑)。返回 `[{check,severity,detail,code}]`。
+
+    ⑤ **BUY≥1 契约只在 active 模式生效**:`mode` 从 `_relative_buy_decision.json` 读;影子期
+    该检查跳过,但**出一条 info 留痕**——静默跳过会让「这道门什么时候开始管事」不可查
+    (recalibrate 空转 2 周的同族教训)。
+
+    **severity 不在调用点各写各的**:一律由 `BRIEF_LINT_SEVERITY` 查表(B-2 裁定的单一
+    事实源;只有影子期那条 info 留痕显式传 `severity`)。GATE4 拦不拦这条,读那张表即知。
+    """
+    import contextlib
+    import json
+    from pathlib import Path
+
+    out: list[dict] = []
+
+    def add(check, detail, code=None, *, severity=None):
+        out.append({"check": check,
+                    "severity": severity or BRIEF_LINT_SEVERITY.get(check, "fail"),
+                    "detail": detail, "code": code})
+
+    report = Path(report_dir)
+    scan = Path(scan_dir) if scan_dir is not None else report
+    try:
+        from autoresearch.scan import brief as _brief
+    except Exception as exc:  # noqa: BLE001 — 模块都装不上就只报一条,不炸
+        add("brief·lint不可用", f"brief 模块不可导入:{type(exc).__name__}", severity="warn")
+        return out
+
+    # ① 在场 + ② 预算
+    path = report / _brief.BRIEF_FILENAME
+    if not path.exists():
+        add("brief·缺失",
+            f"{path} 不存在 —— 报告双层的速读层没落盘(publisher 接线断了?)")
+        return out
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        add("brief·缺失", f"{path} 读不出:{type(exc).__name__}")
+        return out
+    n_bytes = len(text.encode("utf-8"))
+    if n_bytes > _brief.MAX_BYTES:
+        add("brief·超预算",
+            f"{n_bytes}B > 硬预算 {_brief.MAX_BYTES}B —— 速读层撑破了就不再是速读层")
+
+    # ③ sources 边表:重算 + 锚在 + 白名单
+    payload = None
+    with contextlib.suppress(Exception):
+        payload = json.loads((scan / _brief.SOURCES_FILENAME).read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or not isinstance(payload.get("rows"), list):
+        add("brief·边表缺失",
+            f"{scan / _brief.SOURCES_FILENAME} 缺失/损坏 —— 无边表则 brief 里的数字无法对账")
+        rows: list[dict] = []
+    else:
+        rows = [r for r in payload["rows"] if isinstance(r, dict)]
+        fresh = None
+        with contextlib.suppress(Exception):
+            fresh = _brief.build(scan, run_folder=payload.get("run_folder") or "")
+        if fresh is not None:
+            stale = [r["field"] for r, f in zip(rows, fresh["sources"], strict=False)
+                     if r != f]
+            if len(rows) != len(fresh["sources"]) or stale:
+                add("brief·边表过期",
+                    f"边表与白名单输入重算结果不符({len(rows)} vs "
+                    f"{len(fresh['sources'])} 行;首个差异 {stale[:3] or '行数'})"
+                    " —— 输入变了但产物没重生成")
+        bad_anchor = [r.get("field") for r in rows if str(r.get("text") or "") not in text]
+        if bad_anchor:
+            add("brief·数字对账",
+                f"{len(bad_anchor)} 个字段的渲染片段不在 brief 正文里:"
+                f"{'、'.join(str(f) for f in bad_anchor[:5])}"
+                " —— brief 被手改过,或渲染与边表脱钩")
+        outside = sorted({str(r.get("file")) for r in rows
+                          if r.get("file") not in _brief.INPUT_WHITELIST})
+        if outside:
+            add("brief·白名单外取数",
+                f"{outside} 不在 `brief.INPUT_WHITELIST` —— 生成器禁读 details 全文与 trace 大文件")
+
+    # ④ brief ↔ summary(四个决策字段的**同一片段**必须两边都在)
+    summary_path = report / "summary.md"
+    summary = ""
+    with contextlib.suppress(Exception):
+        summary = summary_path.read_text(encoding="utf-8")
+    if not summary:
+        add("brief↔summary不一致",
+            f"{summary_path} 缺失/空 —— 无法验证两层报告说的是同一件事")
+    else:
+        by_field = {str(r.get("field")): r for r in rows}
+        missing = [f for f in _BRIEF_DECISION_FIELDS
+                   if f in by_field and str(by_field[f].get("text") or "") not in summary]
+        if missing:
+            add("brief↔summary不一致",
+                f"决策字段在 summary 的 🧭 仪表盘块里对不上:{'、'.join(missing)}"
+                " —— 两层报告的 BUY 数/code/basis/基准读数必须同源同值")
+
+    # ⑤ active 期 BUY 契约(影子期跳过并留痕)
+    decision = None
+    with contextlib.suppress(Exception):
+        decision = json.loads((scan / _brief.DECISION_FILENAME).read_text(encoding="utf-8"))
+    mode = str((decision or {}).get("mode") or "ABSENT")
+    if mode != "active":
+        # 唯一显式传 severity 的调用点:这不是**判据触发**,是「本判据今天没生效」的留痕。
+        add("brief·BUY契约(active 期)",
+            f"mode={mode} —— 非 active,「成功 run 必须至少 1 只 BUY」与「BLOCKED 不得渲染成"
+            "成功」两条跳过(影子期只观察,不拦发布);活体切换后本条自动生效",
+            severity="info")
+    else:
+        blocked = bool((decision or {}).get("blocked"))
+        n_buys = len((decision or {}).get("buys") or [])
+        if blocked:
+            if "BLOCKED" not in text:
+                add("brief·BUY契约(active 期)",
+                    "决策文档 blocked=true 但 brief 没渲染 BLOCKED —— 故障被写成了成功 run")
+        elif n_buys < 1:
+            add("brief·BUY契约(active 期)",
+                f"成功 run 的 BUY_n={n_buys}<1 —— active 期每个成功交易日至少一只(E6 裁定)")
+    return out
+
+
+def brief_lint_banner(rows: list[dict]) -> str:
+    """brief lint 的 CP7 播报行(B-2)。
+
+    **降级不等于消音**:B-2 把四条判据从 fail 降到 warn 之后,只数 fail 的播报行会让
+    「brief 没落盘 / 撑破 3KB」变成一句「fail 0」——人再也看不见。所以 fail 与 warn
+    **两个计数都播**,并逐条列出(🛑 fail / ⚠️ warn),info 只计数不刷屏。
+    """
+    n_fail = sum(1 for x in rows if x.get("severity") == "fail")
+    n_warn = sum(1 for x in rows if x.get("severity") == "warn")
+    head = f"[brief lint] fail {n_fail} · warn {n_warn} / 共 {len(rows)} 条"
+    detail = "".join(
+        f"\n  {'🛑' if x.get('severity') == 'fail' else '⚠️'} {x.get('check')}:{x.get('detail')}"
+        for x in rows if x.get("severity") in ("fail", "warn"))
+    return head + detail
+
+
+def append_gate_fires(scan_dir, rows: list[dict], date: str) -> int:
+    """把额外 lint 条目**追加**进 `gate_fires.csv`(不覆写 —— `dump_gate_fires` 是覆写口径,
+    而本函数在它之后跑)。表头缺失时补写;IO 失败返回 0,不抛。"""
+    import csv
+    from pathlib import Path
+
+    if not rows:
+        return 0
+    path = Path(scan_dir) / "gate_fires.csv"
+    fields = ["date", "code", "check", "severity", "detail"]
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        exists = path.exists() and path.stat().st_size > 0
+        with path.open("a", encoding="utf-8", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
+            if not exists:
+                writer.writeheader()
+            for row in rows:
+                writer.writerow({"date": date, "code": row.get("code") or "",
+                                 "check": row.get("check", ""),
+                                 "severity": row.get("severity", ""),
+                                 "detail": row.get("detail", "")})
+    except OSError:
+        return 0
+    return len(rows)
 
 
 def dump_gate_fires(scan_dir, result: dict, date: str):

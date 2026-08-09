@@ -19,7 +19,27 @@ export const meta = {
 const A = (typeof args === 'string' && args ? JSON.parse(args) : args) || {}
 const date = A.date
 if (!date) throw new Error('args.date 必填(T 报告日),如 {date:"2026-07-16"}')
-const AG = (A.cfg && (A.cfg.agents || A.cfg)) || {}
+const cfg = A.cfg || {}
+// Wave12-T33(补齐 07-21 事故的最后一个游离点,比照 scan-market.js / l4-stock.js):
+// 此前本文件没有空 cfg 守卫 —— 编排忘传 `args.cfg`,两个 agent 会**静默**吃下 'high',
+// 报告上一点看不出来。那正是 07-21 事故的形状(配置查无 → 全体掉回缺省 → 无人知晓)。
+// 确需空跑(离线试装)显式传 args.allow_empty_config=true。
+if (!Object.keys(cfg).length && !A.allow_empty_config) {
+  throw new Error('args.cfg 为空 —— t1_diag/t1_synth 会静默掉回缺省 effort(07-21 事故同族)。传 allow_empty_config:true 才可空跑。')
+}
+// Wave12-T33:model/effort 的解释收在 Python 侧(`user_config.resolve_agent_config`),
+// 本表只是 resolved 没传到时的兜底;值与 `_ROLE_FALLBACK` 由测试机器锁同步。
+const AGENT_DEFAULTS = {
+  t1_diag:  { effort: 'high' },
+  t1_synth: { effort: 'high' },
+}
+const RESOLVED = cfg.resolved_agents || {}
+// 综合官阶段的最后兜底(pack.agents_cfg):d1 回来之后才有,故用可变量而非常量。
+let LATE = {}
+const AG = (role) => (RESOLVED[role]
+  ? { ...RESOLVED[role] }
+  : { ...(AGENT_DEFAULTS[role] || {}),
+      ...(((cfg.agents || cfg)[role]) || LATE[role] || {}) })
 const R = 'uv run --no-sync python -m'
 const TD = `context/scan/${date}/t1_review`
 const MECHS = '市场β(随大盘)/行业β(随板块)/卡内论点兑现/卡内风险兑现/卡内论点未兑现/判断错误(卡内证据当时就该给出不同评级)/无法解释(疑消息/盘面,需人工)'
@@ -61,8 +81,7 @@ const d1 = await agent(
   `3. Write ${TD}/diagnoses.json —— 全部诊断的 JSON 数组(机器契约,finalize 要读)。\n` +
   `返回:build 包的 t/t1/n/market_cc_pct/excluded/scorecard_md/agents_cfg/open_candidates/` +
   `ledger_tail **原样透传** + diagnoses 数组。`,
-  { effort: AG.t1_diag?.effort ?? 'high', ...(AG.t1_diag?.model ? { model: AG.t1_diag.model } : {}),
-    label: `diagnose:${date}`, phase: 'Diagnose', schema: PACK })
+  { ...AG('t1_diag'), label: `diagnose:${date}`, phase: 'Diagnose', schema: PACK })
 if (!d1) throw new Error('合诊失败(常见:T+1 daily 未结算,17:00 后再跑;或 T 无 finalists)')
 if (!d1.n) return { t: d1.t, t1: d1.t1, n: 0, note: '真选 0 只(哨兵/全保送日),无从复盘' }
 const diags = d1.diagnoses || []
@@ -70,7 +89,9 @@ log(`🩺 合诊 ✓ ${d1.t} → ${d1.t1}:${diags.length}/${d1.n} 票,市场基�
 
 // ── Synthesize(综合官:第二双独立的眼睛——对照账本查重复、写候选与报告、finalize 落账)──
 phase('Synthesize')
-const AG2 = Object.keys(AG).length ? AG : (d1.agents_cfg || {})
+// pack 兜底(合诊 agent 透传的 agents_cfg):resolved / args.cfg 都没给 t1_synth 时才用到。
+LATE = (d1.agents_cfg && (d1.agents_cfg.agents || d1.agents_cfg)) || {}
+if (d1.agents_cfg && d1.agents_cfg.resolved_agents) Object.assign(RESOLVED, d1.agents_cfg.resolved_agents)
 const SYNTH = { type: 'object', required: ['right', 'wrong', 'candidates'],
   properties: { right: { type: 'integer' }, wrong: { type: 'integer' }, neutral: { type: 'integer' },
     surprises: { type: 'integer' }, unexplained: { type: 'integer' },
@@ -98,9 +119,7 @@ const synth = await agent(
   `4. Bash 执行 \`${R} autoresearch.learning.t1_review finalize ${date}\`(它会验 report.md → 诊断入账本 → ` +
   `候选入账本+重复自动立案 → 标 done),把它打印的 JSON(含 promoted)如实并入返回。\n` +
   `返回:{right, wrong, neutral, surprises, unexplained, candidates:[候选一句话,...]}`,
-  { effort: AG2.t1_synth?.effort ?? 'high',
-    ...(AG2.t1_synth?.model ? { model: AG2.t1_synth.model } : {}),
-    label: `synth:${date}`, phase: 'Synthesize', schema: SYNTH })
+  { ...AG('t1_synth'), label: `synth:${date}`, phase: 'Synthesize', schema: SYNTH })
 if (!synth) throw new Error('综合阶段失败:report.md/finalize 未完成,本日仍 pending,可单独重跑本 workflow')
 log(`✅ 快环 ✓ ${d1.t}→${d1.t1}:准 ${synth.right}/不准 ${synth.wrong};候选经验 ${synth.candidates.length} 条(人批)`)
 return { t: d1.t, t1: d1.t1, n: d1.n, summary: synth, report: `${TD}/report.md` }

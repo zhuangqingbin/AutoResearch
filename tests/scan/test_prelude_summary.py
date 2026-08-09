@@ -32,6 +32,71 @@ def test_prewarm_line_detects_artifact(tmp_path):
     assert "✓" in prelude.prewarm_line("2026-07-25", scan_root=tmp_path)
 
 
+# ══════════ Wave12 T3:热度快照断采可见(prelude 汇总屏)══════════
+#
+# `prewarm.py`(夜间 19:30)与 `prelude.py`(次日开扫)是**两个独立进程**——
+# `contracts._DEGRADED` 是进程内模块级列表,穿不透进程边界。唯一穿透介质是落盘的
+# `_prewarm.json`;`prewarm_line()` 读它的 `steps[]`,把 hot_rank_snapshot 步骤的
+# 断采 note 追加成告警片段(T1 报告"移交决策"⑦已把这条精确化写清)。
+
+
+def _prewarm_json(tmp_path, note, ok=True):
+    import json
+
+    d = tmp_path / "2026-07-25"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "_prewarm.json").write_text(json.dumps({
+        "started_at": 1, "ended_at": 2,
+        "steps": [{"step": "hot_rank_snapshot", "ok": ok, "note": note}],
+    }), encoding="utf-8")
+    return prelude.prewarm_line("2026-07-25", scan_root=tmp_path)
+
+
+def test_prewarm_line_surfaces_hot_rank_failure(tmp_path):
+    line = _prewarm_json(
+        tmp_path, "eastmoney_hot_rank✓(100行) · stock_hot_follow_xq✗(RuntimeError)")
+    assert "✓" in line                          # 主行仍是"已跑"(prewarm 整体没失败)
+    assert "热度快照" in line and "✗" in line     # 但追加了断采告警片段
+
+
+def test_prewarm_line_surfaces_whole_step_exception(tmp_path):
+    """I4:整步抛异常时 `_step()` 写的 note 是 `f"{type(e).__name__}: {e}"` —— **不含 ✗**。
+    只认装饰字符的旧判法会让"预热 ✓ 已跑"照常显示、热度告警片段完全不出现。"""
+    line = _prewarm_json(tmp_path, "SnapshotDateError: as-of 键 20260807 ≠ 今天", ok=False)
+    assert "热度快照" in line and "整步异常" in line
+
+
+def test_prewarm_line_surfaces_half_return_that_looks_successful(tmp_path):
+    """I4/C2:半截返回在旧实现里写成 `✓(3000行)`,ok=True、note 无 ✗ —— 两条旧判据全瞎。
+    行数是结构化事实,拿契约下限一比就现原形(prelude 独立于 prewarm 的第二道判据)。"""
+    line = _prewarm_json(
+        tmp_path, "eastmoney_hot_rank✓(100行) · stock_hot_follow_xq✓(3000行)")
+    assert "热度快照" in line and "半截/空" in line and "3000" in line
+
+
+def test_prewarm_line_surfaces_zero_row_snapshot(tmp_path):
+    line = _prewarm_json(tmp_path, "eastmoney_hot_rank✓(0行) · stock_hot_follow_xq✓(5619行)")
+    assert "热度快照" in line and "半截/空" in line
+
+
+def test_prewarm_line_silent_when_hot_rank_ok(tmp_path):
+    line = _prewarm_json(
+        tmp_path,
+        "eastmoney_hot_rank✓(100行) · stock_hot_follow_xq✓(5619行) · "
+        "stock_hot_follow_xq[本周新增]✓(5619行) · 观测日 20260809")
+    assert "热度快照" not in line                # 全源足量✓,不多贴告警
+
+
+def test_prewarm_line_backward_compatible_without_steps_key(tmp_path):
+    """旧 `_prewarm.json`(无 `steps` 字段,即 `test_prewarm_line_detects_artifact` 那份
+    fixture 的形态)不该因新逻辑报错或变化。"""
+    d = tmp_path / "2026-07-25"
+    d.mkdir(parents=True)
+    (d / "_prewarm.json").write_text('{"started_at": 1, "ended_at": 2}', encoding="utf-8")
+    line = prelude.prewarm_line("2026-07-25", scan_root=tmp_path)
+    assert "✓" in line and "热度快照" not in line
+
+
 def test_write_summary_file(tmp_path):
     (tmp_path / "2026-07-25").mkdir(parents=True)
     p = prelude.write_summary("2026-07-25", _results(), scan_root=tmp_path)

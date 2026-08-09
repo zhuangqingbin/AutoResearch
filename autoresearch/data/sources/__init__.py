@@ -27,6 +27,8 @@ def fetch(endpoint: str, params: dict) -> pd.DataFrame:
         return _fetch_tushare(endpoint, params)
     if src == "akshare":
         return _fetch_akshare(endpoint, params)
+    if src == "eastmoney":
+        return _fetch_eastmoney(endpoint, params)
     if src == "fred":
         return _fetch_fred(endpoint, params)
     if src == "yfinance":
@@ -49,6 +51,20 @@ def _fetch_akshare(endpoint: str, params: dict) -> pd.DataFrame:
     fn = getattr(ak, endpoint)
     df = fn(**params)
     return df if df is not None else pd.DataFrame()
+
+
+def _fetch_eastmoney(endpoint: str, params: dict) -> pd.DataFrame:
+    """东财**自采**端点(不经 akshare 封装)。
+
+    `eastmoney_hot_rank`:akshare 的 `stock_hot_rank_em` 走两跳,第二跳是 push2
+    (记忆判例点名的被封主机,2026-08-09 实测 502)——它只补最新价/涨跌幅,却会把完好的
+    榜单本体连坐丢掉。本仓只取第一跳,见 `sources/eastmoney_hot_rank.py`。
+    """
+    from autoresearch.data.sources.eastmoney_hot_rank import fetch_hot_rank
+
+    if endpoint == "eastmoney_hot_rank":
+        return fetch_hot_rank(**params)
+    raise ValueError(f"unknown eastmoney endpoint {endpoint!r}")
 
 
 def _fetch_fred(endpoint: str, params: dict) -> pd.DataFrame:

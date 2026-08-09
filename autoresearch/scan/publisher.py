@@ -233,6 +233,24 @@ def _publish_pipeline(scan_dir: Path, out_base: Path, analysis_date: str) -> int
 def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None = None,
         hhmm: str | None = None, run_date: str | None = None,
         pinned_path: str | Path | None = None) -> Path:
+    """L5 发布入口。薄壳:只负责开一个**单次发布**的 `buy_ledger` 缓存窗(M-10),
+    真身在 `_run_publish`。
+
+    写成外壳而不是把 `with` 塞进函数体,是为了让「窗的生命周期 == 一次发布」这件事**由
+    结构保证**:异常从 `_run_publish` 抛出时 `finally` 照样销毁,不会把上一份账本的读数
+    漏给下一次发布(nightly 连跑多天时这就是错数)。窗外调用一律不缓存。
+    """
+    from autoresearch.scan.brief import ow_base_cache
+
+    with ow_base_cache():
+        return _run_publish(analysis_date, scan_dir=scan_dir, out_root=out_root,
+                            hhmm=hhmm, run_date=run_date, pinned_path=pinned_path)
+
+
+def _run_publish(analysis_date: str, scan_dir: Path | None = None,
+                 out_root: Path | None = None, hhmm: str | None = None,
+                 run_date: str | None = None,
+                 pinned_path: str | Path | None = None) -> Path:
     scan_dir = scan_dir or Path("context/scan") / analysis_date
     out_root = out_root or Path("reports/scan")
     is_real = Path(scan_dir).resolve() == (
@@ -342,6 +360,40 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
         # Wave6 Q6:build_summary 内部才落 gate_fires.csv —— 上面那次快照必然把它记成
         # missing(07-24 实锤)。这里刷一次让 artifacts/missing 说真话;函数是纯快照,幂等。
         _health.write_run_health(scan_dir)
+    # ── brief.md(Wave12 T25 批C:报告双层的核心速读层;确定性、零 LLM)──
+    # **位置有讲究**,三个前置事实必须已经定稿才落 brief:
+    #   ① `_final_ratings.json` / `decision_records.json` / `gate_fires.csv` —— build_summary 内部才写;
+    #   ② `_relative_buy_decision.json` —— 上面 `publish_run_observation` 里 `safe_write_decision` 才写;
+    #   ③ `run_health.json` 的 counts/churn —— 紧邻上一行刚刷成终值。
+    # 放在 assemble 早段 = 读到半成品(FN-1 家族:探针读还没生成的产物)。
+    # 失败不阻断发布(summary 仍是完整产物);缺 brief 由 self_review 的 brief lint 报 fail。
+    # 同一份成品两处用:落 brief.md + 把 ①②③④ 注回 summary 的 🧭 managed 块(T26)——
+    # 各渲染一次等于给「两边不一致」开口子,而 T27 正要 lint 这件事。
+    from autoresearch.scan.brief import safe_publish as _publish_brief
+
+    _publish_brief(scan_dir, out_base, summary_path,
+                   analysis_date=analysis_date, run_folder=folder)
+    # ── brief 一致性 lint(Wave12 T27)——**必须在 brief 落盘之后**跑,而 `_self_review_banner`
+    # 跑在 build_summary 内部(那时 brief 与决策文档都还不存在),所以这条独立接在这里。
+    # 结果追加进 `gate_fires.csv`(与 R3 门审计同一本账),并打一行给 CP7 播报。
+    #
+    # ⚠️ **这条追加会喂进 GATE4**(`gates.gate4` = gate_fires 里有任意 `severity=="fail"`
+    # 就不过),所以 severity 的选择就是「要不要毙掉这一整趟约 60 分钟的扫描」。B-2
+    # (2026-08-09 控制方裁定)据此把八条判据二分,单一事实源在
+    # `self_review.BRIEF_LINT_SEVERITY`:报告**说假话**才 fail(硬门该拦),报告**畸形或
+    # 缺失**只 warn(排版超限/没落盘是展示层问题,不该毁掉一次已跑完的扫描)。这也才与
+    # 上面「失败不阻断发布」和 `brief.safe_publish` 刻意吞异常的口径自洽 —— 否则一边为了
+    # 不阻断而吞,另一边把吞下去的结果变成门失败(「GATE3 差 16 字节毙 60min 流水线」同族)。
+    # 播报走 `brief_lint_banner`:fail 与 warn **都播**,降级不等于消音。
+    with contextlib.suppress(Exception):
+        from autoresearch.learning.self_review import (
+            append_gate_fires,
+            brief_lint,
+            brief_lint_banner,
+        )
+        _lint = brief_lint(out_base, scan_dir)
+        append_gate_fires(scan_dir, _lint, analysis_date)
+        print(brief_lint_banner(_lint))
     with contextlib.suppress(Exception):
         # 最终快照必须等 manifest/summary/gate_fires/第二次 health 全部落盘后再 hash。
         # 同时覆盖 trace 里 assemble 前发布的旧 health，保证 staging/trace 同一事实。
@@ -383,7 +435,10 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
         if refreshed_health.exists():
             shutil.copy2(refreshed_health, trace_dir / "run_health.json")
         n_pipe += 1
-    with contextlib.suppress(Exception):               # 现场导航页(第二天复盘入口)
+    # 现场导航页(第二天复盘入口)。**位置有讲究**(Wave12-T28):必须排在上面的
+    # `_publish_brief` 之后 —— `index_md` 的首行「读我」按 `brief.md` 是否在盘上分两种写法,
+    # 提前跑会永远写成「未生成」(FN-1 家族:探针读还没生成的产物)。
+    with contextlib.suppress(Exception):
         (out_base / "index.md").write_text(_health.index_md(scan_dir, out_base), encoding="utf-8")
     # 记账/刷新副作用共享同一条真实现场判据(resolve() 防相对/绝对路径假阴性)——
     # 测试 tmp 目录一律不触发,堵同类测试泄漏口(此前 sector_ledger 无门,曾单独裸奔)。

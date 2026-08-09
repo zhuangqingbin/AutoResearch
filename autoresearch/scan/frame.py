@@ -222,9 +222,29 @@ def main(argv: list[str] | None = None) -> int:
         from autoresearch.scan.artifacts import artifact_schema_versions
         from autoresearch.scan.budget import normalize_budgets
         from autoresearch.scan.run_contract import RunContract, write_run_contract
-        from autoresearch.scan.user_config import load_pinned, load_user_config
+        from autoresearch.scan.user_config import (
+            load_pinned,
+            load_user_config,
+            materialize_agent_config,
+            resolve_agent_config,
+        )
 
         user_cfg = load_user_config()
+        # Wave12-T33:agent 档位的**解释**收进 user_config 一处 → resolved 随 user_cfg
+        # 一起进 run_contract / echo / market_pack,workflow 从 `args.config.resolved_agents`
+        # 直接吃、不再各自解释缺省;`usage_reconcile` 对同一份 resolved 对账。
+        # 放在 RunContract.build 之前 = config_hash 覆盖 resolved(它本来就是"这次跑用了
+        # 什么档位"的一部分),echo/pack/contract 三处仍然同哈希。
+        # ⚠️ 只在真有 agents 配置时才 materialize:缺配置文件(`{}`)是既有 parity 路径
+        # (离线/测试),不该被本条改成硬失败——fail-fast 的靶子是"配了一半"和"配了但空",
+        # 不是"这台机器上根本没这个文件"。
+        # **这一层不炸,不代表没人炸**(修复轮 1 M6 澄清):07-21 事故的真实形状恰恰是
+        # 「`.jsonc` 按 `.json` 查无 → `{}`」,而它在本层只会安静地不 materialize。
+        # 真正拦住它的是下游 workflow 的结构性 throw(`scan-market.js:22-26`、
+        # `l4-stock.js:22-25`、`t1-review.js:24-26`)—— 分工是**本层管"配坏了"、
+        # workflow 管"根本没配"**。删任一侧之前先读另一侧。
+        if user_cfg.get("agents"):
+            user_cfg = {**user_cfg, "resolved_agents": resolve_agent_config(user_cfg)}
         pinned_cfg = user_cfg.get("pinned") or {}
         pinned_cap = int(pinned_cfg.get("cap", 5))
         pinned_ttl = int(pinned_cfg.get("ttl_days", 10))
@@ -252,6 +272,13 @@ def main(argv: list[str] | None = None) -> int:
         write_run_contract(echo_dir / "run_contract.json", contract)
         (echo_dir / "user_config_echo.json").write_text(
             json.dumps(user_cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        if user_cfg.get("resolved_agents"):
+            # 落盘的与 echo/pack 里那份是**同一个对象**(不重算)——`usage_reconcile` 读文件、
+            # workflow 读 echo,两边必须是同一张表,否则对账本身就是假的(修复轮 1)。
+            mp_resolved = materialize_agent_config(
+                analysis_date, user_cfg, root=Path("."),
+                resolved=user_cfg["resolved_agents"])
+            print(f"[frame] resolved agent config → {mp_resolved}", file=sys.stderr)
         from autoresearch.scan.stage_result import safe_record_stage_result
         safe_record_stage_result(
             echo_dir,

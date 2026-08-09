@@ -102,9 +102,19 @@ def day_frame(scan_dir: Path | str) -> pd.DataFrame | None:
     """单日 choice set 帧:pass1 kept × 当日已实现 → `[code, reason, lane, industry,
     score, excess_2, buyable_winner, actual]`。缺任一必需产物 → `None`(presence-gated)。
 
-    `excess_2` 的市场基准 = **当日可交易且成熟票的 fwd_2_oc 中位**(与
+    `excess_2` 的市场基准 = **当日可交易且成熟票的主尺(`ruler.MAIN_RULER`,现 `gap_c1_o2`;
+    键名 `excess_2` 沿自 `fwd_2_oc` 年代不改)中位**(与
     `rejection_attribution` / gate_attribution v3 / abstention v2 同源)。换基准就换了口径,
     跨模块比较立刻失真,所以这里不另造一个。
+
+    I-2 互指(final-review 2026-08-08/09):`autoresearch.common.ruler.REL_MARKET`/
+    `REL_SECTOR`(`retro._rel_gap_cols`,T22)确实是**另一个**市场基准——均值(不是中位)、
+    人口不要求"成熟"(只要求 `entry_tradable`)、口径钉死在字面量 `REL_GAP_RULER`(不像
+    `excess_2` 这样跟随当前 `MAIN_RULER`)。这不是本段警告失效——`excess_2` 仍是"L3 反
+    事实读数"这条线唯一的市场基准;`rel_gap_*` 服务的是完全不同的读者(E6/相对 BUY 对外
+    账本,截至本次修复尚无消费者)。两条线在同一天可能给出符号相反的"相对表现"读数(均值/
+    中位在右偏分布下相差 10-30bp 是常态),这是已知、记账在案的口径分裂,不是遗漏同步——
+    跨模块比较前必须先确认在读同一条线,不要假设两者可互换。
     """
     day = Path(scan_dir)
     kept = _read_csv(day / "_l3_pass1_kept.csv")

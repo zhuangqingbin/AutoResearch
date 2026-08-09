@@ -111,6 +111,8 @@ def _write_csv(path: Path, header: list[str], rows: list[list]) -> None:
 def _build_scan(tmp_path: Path, cands: list[Cand], *,
                 run_health: dict | None = None,
                 with_run_health: bool = True,
+                with_decision_records: bool = True,
+                orphan_rated: dict[str, str] | None = None,
                 with_task_book: bool = True,
                 st_filler: bool = False,
                 untradable_filler: bool = False,
@@ -188,15 +190,26 @@ def _build_scan(tmp_path: Path, cands: list[Cand], *,
         now=datetime(2026, 8, 6, 14, 0, tzinfo=timezone.utc),
     )
     write_run_contract(scan / "run_contract.json", contract)
-    write_decision_records(scan, [
-        DecisionRecord.build(
-            analysis_date=date, contract_hash=contract.contract_hash, code=c.code,
-            source_rating=c.rating, rubric_rating=c.rating,
-            gate_states=c.gate_states, early_stop=c.early_stop, ensemble_ratings=[],
-            final_rating=c.rating, proposal="HOLD", reason="rubric",
-            evidence_refs=[f"finalists.csv#{c.code}"],
-            first_rejection_stage="L4_RUBRIC",
-        ) for c in cands if c.carded])
+    if with_decision_records:
+        records = [
+            DecisionRecord.build(
+                analysis_date=date, contract_hash=contract.contract_hash, code=c.code,
+                source_rating=c.rating, rubric_rating=c.rating,
+                gate_states=c.gate_states, early_stop=c.early_stop,
+                ensemble_ratings=[], final_rating=c.rating, proposal="HOLD",
+                reason="rubric", evidence_refs=[f"finalists.csv#{c.code}"],
+                first_rejection_stage="L4_RUBRIC",
+            ) for c in cands if c.carded]
+        # 评过级但**不在 L2 菜单**里的票 —— 护照的 `orphans.rated` 就是为它们造的
+        records += [
+            DecisionRecord.build(
+                analysis_date=date, contract_hash=contract.contract_hash, code=code,
+                source_rating=rating, rubric_rating=rating, gate_states={},
+                early_stop=None, ensemble_ratings=[], final_rating=rating,
+                proposal="HOLD", reason="rubric", evidence_refs=[],
+                first_rejection_stage="L4_RUBRIC",
+            ) for code, rating in (orphan_rated or {}).items()]
+        write_decision_records(scan, records)
     (scan / "_early_stop.json").write_text(json.dumps(
         {c.code: c.early_stop for c in cands if c.carded and c.early_stop},
         ensure_ascii=False), encoding="utf-8")
@@ -263,6 +276,22 @@ def test_normal_day_emits_exactly_one_relative_buy(tmp_path):
     assert len(eligible) == 4
     best = max(eligible.values(), key=lambda r: r["relative_decision_score"])
     assert buy["code"] == best["code"]
+
+
+def test_rule_version_is_pinned_and_reaches_the_written_product(tmp_path):
+    """产物 `rule_version` == 模块常量,**且**常量本身被钉住(两个漂移方向各锁一边)。
+
+    - 字面量断言挡"常量被人悄悄改了却没走治理流程";
+    - 落盘文件(不只是内存 dict)断言挡"常量改了但产物没跟"——下游 `relative_ledger`
+      与 `brief` 都是 `doc.get("rule_version")` 直取,产物漂了它们会静默记下错版本。
+
+    v1.1 = v1 + 两道硬门的 ABSENT 收紧;打分/选择语义与 v1 逐字相同(8 日回放零变化)。
+    """
+    assert RULE_VERSION == "e6.v1.1"
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    assert build_decision(scan)["rule_version"] == RULE_VERSION
+    written = json.loads(write_decision(scan).read_text(encoding="utf-8"))
+    assert written["rule_version"] == RULE_VERSION
 
 
 def test_ruler_is_bound_explicitly(tmp_path):
@@ -430,6 +459,91 @@ def test_data_contract_anomaly_fails_data_a_for_every_candidate(tmp_path):
 
 
 # ── ③ 全否决日 → blocked=true 且零 BUY ──────────────────────────────────────
+# ── 修复轮 I-1:产物「在场且 OK」与「缺席」必须走两条路 ──────────────────────
+@pytest.mark.parametrize(("status", "expect_pass"), [
+    ("OK", True),
+    ("ABSENT", False),
+    ("INVALID", False),
+])
+def test_stage_results_absent_is_not_the_same_as_ok(tmp_path, status, expect_pass):
+    """`ABSENT` ≠ 通过。产物缺席时"A 级契约无未解决异常"这句话根本无从断言。"""
+    scan = _build_scan(tmp_path / status, _RANK_CANDS, run_health={
+        "core_missing": [],
+        "run_contract": {"status": "OK"},
+        "stage_results": {"status": status, "failed": []},
+        "decision_records": {"status": "OK"},
+    })
+    doc = build_decision(scan)
+    assert all(row["hard_gate"]["data_a"] is expect_pass
+               for row in doc["candidates"])
+    assert (doc["buys"] != []) is expect_pass
+
+
+@pytest.mark.parametrize(("status", "expect_pass"), [
+    ("OK", True),
+    ("ABSENT", False),
+    ("MISMATCH", False),
+    ("INVALID", False),
+])
+def test_decision_records_absent_is_not_the_same_as_ok(tmp_path, status, expect_pass):
+    scan = _build_scan(tmp_path / status, _RANK_CANDS, run_health={
+        "core_missing": [],
+        "run_contract": {"status": "OK"},
+        "stage_results": {"status": "OK", "failed": []},
+        "decision_records": {"status": status},
+    })
+    doc = build_decision(scan)
+    assert all(row["hard_gate"]["data_a"] is expect_pass
+               for row in doc["candidates"])
+    assert (doc["buys"] != []) is expect_pass
+
+
+def test_rating_absent_breaks_the_contract_gate(tmp_path):
+    """复核 I-1 的原始失败场景:assemble 半途崩 —— task-book 已 SUCCEEDED、卡产物在盘、
+    `run_contract.json` OK,但 `decision_records.json` 没写出来 → 全体 `research_rating`
+    为 `None`。旧口径下四门全过、`blocked=false`、`excluded_rows=0`,把一只**没有评级**的
+    票发成当日唯一 BUY。护照专门为这件事写了 `missing:["l4.research_rating"]`,决策层必须消费它。
+    """
+    scan = _build_scan(tmp_path, _RANK_CANDS, with_decision_records=False)
+    doc = build_decision(scan)
+    assert all(row["research_rating"] is None for row in doc["candidates"])
+    assert all(row["hard_gate"]["contract"] is False for row in doc["candidates"])
+    assert all(not row["eligible"] for row in doc["candidates"])
+    assert doc["buys"] == []
+    assert doc["blocked"] is True
+    assert {row["reason"] for row in doc["blocked_reasons"]} == {"hard_gate.contract"}
+    assert all("l4.research_rating" in e["detail"]
+               for e in doc["excluded"] if e["reason"] == "hard_gate.contract")
+
+
+def test_data_a_can_be_fooled_by_stale_health_but_contract_still_catches_it(tmp_path):
+    """两道门是独立防线:run_health 说一切 OK(写得早/写得乐观)时 `data_a` 会被骗过,
+    但 `contract` 仍然拦得住 —— 这正是 I-1 要求的"两条路径"。"""
+    scan = _build_scan(tmp_path, _RANK_CANDS, with_decision_records=False)
+    doc = build_decision(scan)
+    assert all(row["hard_gate"]["data_a"] is True for row in doc["candidates"])
+    assert doc["buys"] == []
+
+
+# ── 修复轮 I-3:护照 orphans 透传(静默丢票必须有对账计数)──────────────────
+def test_orphan_rated_tickers_are_counted_not_silently_dropped(tmp_path):
+    """有评级但不在 L2 菜单的票永远当不成相对 BUY —— 那就必须在产物里留一个数,
+    否则「候选池静默缩水」在"每个成功日至少一只"的裁定下是看不见的病。"""
+    scan = _build_scan(tmp_path, _RANK_CANDS,
+                       orphan_rated={"000001": "Hold", "688271": "Overweight"})
+    doc = build_decision(scan)
+    assert doc["orphans"]["rated"] == ["000001", "688271"]
+    assert doc["counts"]["orphan_rated"] == 2
+    assert {row["code"] for row in doc["candidates"]}.isdisjoint({"000001", "688271"})
+
+
+def test_orphans_are_empty_on_a_clean_day(tmp_path):
+    doc = build_decision(_build_scan(tmp_path, _RANK_CANDS))
+    assert doc["orphans"] == {"finalists": [], "rated": []}
+    assert doc["counts"]["orphan_rated"] == 0
+    assert doc["counts"]["orphan_finalists"] == 0
+
+
 def test_all_rejected_day_is_blocked_with_zero_buys(tmp_path):
     cands = [Cand(code="30075" + str(i), name=f"票{i}", rating="Sell",
                   composite_rank=i + 1, n_channels=2, best_channel_rank=i + 1)
@@ -681,11 +795,17 @@ _REAL = Path("context/scan/2026-08-06")
 @pytest.mark.skipif(not (_REAL / "decision_records.json").exists(),
                     reason="真实 run 产物不在工作树里")
 def test_real_run_20260806_is_deterministic_and_side_effect_free():
+    # I-4(修复轮):想断言的是「`build_decision` 只读不落盘」,**不是**「生产目录里
+    # 不存在这个文件」——后者会被合法操作打破(报告 §8 给的 CLI 命令、以及 T24 把
+    # `safe_write_decision` 挂进 `post_run.observe` 之后的每一次正常发布),跑一次文档
+    # 命令就赔进一轮排障。改成对目录取前后 diff(与 `test_writer_touches_nothing_but_
+    # its_own_file` 同一配方),观测量换成真正想守的那个。
+    before = sorted(p.name for p in _REAL.iterdir())
     doc = build_decision(_REAL)
     assert doc["date"] == "2026-08-06"
     assert doc["rule_version"] == RULE_VERSION
     assert len(doc["candidates"]) == 11              # 当日 11 张卡
     assert doc == build_decision(_REAL)
-    assert not (_REAL / DECISION_FILENAME).exists()  # build 只读,不落盘
+    assert sorted(p.name for p in _REAL.iterdir()) == before
     # 当日 4 只 Underweight,评级不是 Sell,故 no_redflag 不因评级否决
     assert all(row["hard_gate"]["data_a"] for row in doc["candidates"])

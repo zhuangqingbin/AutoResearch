@@ -7,9 +7,17 @@ design: docs/specs/2026-07-11-recall-gate-pinned-config-design.md §4.2。
 model/effort、召回旋钮、保送参数、红队触发率、卡片复用参数——**白名单外的键一律
 raise**(防拼写错静默失效,是本文件存在的唯一理由);缺文件 = 现行为(`{}`,一切默认关=parity)。
 
-装载链(技术约束:workflow 脚本无文件系统访问):`frame --json`(Stage 0)读入本模块 → 回显进
-market_pack/run meta(trace 记录本次跑用的配置=可复现)→ workflow 经 `args` 消费(Task 2)→
-Python 侧 `apply_to_scan_config` 喂 `ScanConfig`(L1/L2/L4 各消费点)。
+装载链(技术约束:workflow 脚本无文件系统访问):`frame --json`(Stage 0)读入本模块 →
+`resolve_agent_config` 解释成 resolved spec → `materialize_agent_config` 落
+`context/scan/<date>/_resolved_agent_config.json` + 回显进 market_pack/run meta
+(trace 记录本次跑用的配置=可复现)→ workflow 经 `args.config.resolved_agents` 消费 →
+`autoresearch.trace.usage_reconcile` 对**同一份 resolved** 对账。
+
+**Wave12-T33**:model/effort 的"解释"从三个 workflow 各抄一份 `AGENT_DEFAULTS`
+收敛到本模块的 `_ROLE_FALLBACK` 一处;workflow 侧的表降为「resolved 没传到时」的兜底。
+同波删掉 `apply_to_scan_config()`——它自 2026-07-11 落地起**生产零调用点**(08-09 复核:
+全仓非测试引用只有两处 docstring),是一处会让人误以为"配置已经喂进 ScanConfig 了"的
+文档-实现落差;真实消费路径是各消费点自己 `load_user_config()` 取需要的块。
 """
 from __future__ import annotations
 
@@ -17,8 +25,6 @@ import json
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
-
-from autoresearch.scan.config import ScanConfig
 
 DEFAULT_PATH = Path(".claude/skills/scan-market/scan_config.jsonc")
 DEFAULT_PINNED_PATH = Path(".claude/skills/scan-market/pinned.jsonc")
@@ -111,6 +117,46 @@ _AGENT_ROLES = {
 _EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 _MODELS = {"haiku", "sonnet", "opus"}
 
+# ─────────────── Wave12-T33:resolved agent config(单一事实源 materialize)───────────────
+#
+# 背景:此前 model/effort 的"生效值"是三方拼出来的 —— config > 各 workflow 顶部的
+# `AGENT_DEFAULTS` > `.claude/agents/*.md` frontmatter。三个 workflow **各自**抄一份
+# AGENT_DEFAULTS,谁也不是权威;`usage_reconcile` 又内联第三份缺省(`_GP_SHELL_DEFAULT`)。
+# 「配置的单一事实源」当时只做到了"用户面只有一处",没做到"解释也只有一处"。
+#
+# 本块把**解释**收进来:`resolve_agent_config()` 产出逐 role 的 resolved spec,
+# `materialize_agent_config()` 落 `context/scan/<date>/_resolved_agent_config.json`,
+# workflow 只消费 resolved、不再各自解释缺省,`usage_reconcile` 对同一份 resolved 对账。
+#
+# ⚠️ `model` 键的在场与否是**有语义的**,不能"补全"成好看的样子:
+# 判断类 role(l3_rank/l4_card/…)故意不给 model 缺省,好让它落到 agent def frontmatter
+# 那一层;resolved 里给它硬塞一个 model,workflow 就会显式传 model,**回退链第三层从此
+# 永远吃不到**——那是行为变更,不是重构。所以下表里判断类 role 只有 effort。
+_ROLE_FALLBACK: dict[str, dict] = {
+    # 壳类(执行壳机械参数,不是 agent 档位):08-05 事故后钉 sonnet,不得静默回落
+    "gp_shell":      {"model": "sonnet", "effort": "low"},
+    "gp_shell_json": {"model": "sonnet", "effort": "low"},
+    # 判断类:只给 effort,model 留空 → 落各自 agent def frontmatter
+    "strategist":    {"effort": "high"},
+    "sector_brief":  {"effort": "high"},
+    "l3_rank":       {"effort": "max"},
+    "l3_repair":     {"effort": "medium"},
+    "l4_intel":      {"effort": "max"},
+    "l4_card":       {"effort": "xhigh"},
+    "ens_review":    {"effort": "xhigh"},
+    "dossier_init":  {"effort": "max"},
+    "t1_diag":       {"effort": "high"},
+    "t1_synth":      {"effort": "high"},
+}
+
+#: 生产必填 role —— 生产 `scan_config.jsonc` 必须**显式列全**(12 个)。缺一即 fail-fast。
+#: 为什么是"全部"而不是某个子集:闭集的意义就是"这张表就是全集";允许缺就等于允许
+#: "写了一半、剩下的靠猜",而 07-21 事故的全部教训就是**猜出来的缺省没人看得见**。
+_REQUIRED_AGENT_ROLES = frozenset(_AGENT_ROLES)
+
+RESOLVED_FILENAME = "_resolved_agent_config.json"
+RESOLVED_SCHEMA_VERSION = 1
+
 
 def load_user_config(path: str | Path | None = None) -> dict:
     """读 scan_config.json → 白名单校验后的 dict;缺文件 → `{}`(=现行为,parity)。
@@ -164,28 +210,102 @@ def load_user_config(path: str | Path | None = None) -> dict:
     return cfg
 
 
-def apply_to_scan_config(cfg: dict, sc: ScanConfig) -> ScanConfig:
-    """把 `load_user_config()` 出的白名单 dict 映射进既有 `ScanConfig`(原地改,返回同一实例)。
+def resolve_agent_config(cfg: dict, *, require_all: bool = True) -> dict:
+    """`scan_config.jsonc` → 逐 role 的 **resolved** spec(`{role: {model?, effort}}`)。
 
-    `funnel` 拆到既有字段(recall_channels/channel_quotas/channel_floors);其余键(agents/
-    pinned/l4_intel 等)整块挂同名新字段。cfg 中未出现的键保留 sc 原值不动
-    (缺配置=parity,不用 None 覆盖已设值)。
+    这是 model/effort 唯一的"解释点":config 覆盖在 `_ROLE_FALLBACK` 之上,产出的东西
+    workflow 直接吃,不再各自解释缺省。
+
+    **四条 fail-fast**(不是洁癖,是 2026-07-21 事故的结构性防线 —— 那天配置真身是
+    `.jsonc` 却按 `.json` 去找,查无 → 传了空 config → intel 被静默关掉、全体 agent 掉回
+    缺省 effort,而**报告上看不出来**,事后翻记录才发现):
+
+    1. `agents` 为空 / 整个 cfg 为 `{}` → `ValueError`。"什么都没配"必须炸,不能悄悄全用缺省。
+    2. 未知 role → `ValueError`(拼写错静默失效是同一类病:`t1_diag` 写成 `t1diag` 不报错,
+       只是那行配置从此不存在)。
+    3. role 下未知字段 / 非法 model / 非法 effort → `ValueError`。
+    4. `require_all`(生产默认)时缺任一必填 role → `ValueError`,消息列出缺哪几个。
+
+    `require_all=False` 供**局部编排**用(如 scan-retro 只拉 t1-review):它仍然校验写了的
+    那些,只是不要求写全 —— 但那样产出的 resolved 是**残表**,不该落盘冒充当日全量。
     """
-    funnel = cfg.get("funnel")
-    if funnel:
-        if "recall_channels" in funnel:
-            sc.recall_channels = funnel["recall_channels"]
-        if "channel_quotas" in funnel:
-            sc.channel_quotas = funnel["channel_quotas"]
-        if "channel_floors" in funnel:
-            sc.channel_floors = funnel["channel_floors"]
-    for key in (
-        "agents", "pinned", "l4_intel", "l3",
-        "learning", "budgets", "performance",
-    ):
-        if key in cfg:
-            setattr(sc, key, cfg[key])
-    return sc
+    if not isinstance(cfg, dict) or not cfg:
+        raise ValueError(
+            "scan_config 为空 —— 空配置会静默关 intel + 全体掉回缺省 effort 且报告上看不出来"
+            "(2026-07-21 事故)。要么给一份显式配置,要么显式走 allow_empty 的离线路径。")
+    agents = cfg.get("agents")
+    if not isinstance(agents, dict) or not agents:
+        raise ValueError("scan_config.agents 为空 —— 同上,agent 档位必须显式声明,不接受"
+                         "「不写=用缺省」(那正是 07-21 事故看不见的那一半)")
+
+    unknown = sorted(set(agents) - _AGENT_ROLES)
+    if unknown:
+        raise ValueError(f"scan_config agents 含未知 role: {unknown}(闭集={sorted(_AGENT_ROLES)})")
+
+    resolved: dict[str, dict] = {}
+    for role in sorted(_AGENT_ROLES):
+        if role not in agents:
+            continue          # 缺项交给下面汇总一次报全,别一个一个抛(读的人要一眼看到缺哪几个)
+        spec = agents[role]
+        if spec is not None and not isinstance(spec, dict):
+            raise ValueError(f"agents.{role} 必须是 object,形如 "
+                             f'{{"model": "...", "effort": "..."}}(实际={spec!r})')
+        spec = spec or {}
+        bad = sorted(set(spec) - {"model", "effort"})
+        if bad:
+            raise ValueError(f"agents.{role} 含未知子键: {bad}(只认 model/effort)")
+        if "effort" in spec and spec["effort"] not in _EFFORTS:
+            raise ValueError(f"agents.{role}.effort={spec['effort']!r} 非法(∈{sorted(_EFFORTS)})")
+        if "model" in spec and spec["model"] not in _MODELS:
+            raise ValueError(f"agents.{role}.model={spec['model']!r} 非法(∈{sorted(_MODELS)})")
+        resolved[role] = {**_ROLE_FALLBACK.get(role, {}), **spec}
+
+    if require_all:
+        missing = sorted(_REQUIRED_AGENT_ROLES - set(resolved))
+        if missing:
+            raise ValueError(
+                f"scan_config agents 缺生产必填 role: {missing} —— 闭集必须显式列全,"
+                f"「不写=用缺省」的那一半永远没人看得见(07-21 事故)")
+    return resolved
+
+
+def materialize_agent_config(date: str, cfg: dict | None = None, *,
+                             root: str | Path | None = None,
+                             require_all: bool = True,
+                             resolved: dict | None = None) -> Path:
+    """把 resolved spec 落 `<root>/context/scan/<date>/_resolved_agent_config.json`。
+
+    这份产物是 **workflow 与 `usage_reconcile` 共同的事实源**:前者照着它派发,后者
+    照着它对账 —— 「期望」与「实测」终于在比同一张表,而不是各自重新解释一遍缺省。
+
+    **`resolved` 形参(Wave12-T33 修复轮 1)**:传进来就直接落盘,不再自己重算一遍。
+    `resolve_agent_config` 是纯函数,重算两次结果必然相同 —— 但"必然相同"是一句**推理**,
+    而这份文件与 echo 里那份是不是同一张表,是 `usage_reconcile` 对账**是否为真**的前提。
+    把同一个对象传下来,这件事就从推理变成构造性事实(并有测试逐字节比对)。
+    """
+    if resolved is None:
+        resolved = resolve_agent_config(load_user_config() if cfg is None else cfg,
+                                        require_all=require_all)
+    base = Path(root) if root is not None else Path(".")
+    out = base / "context" / "scan" / str(date) / RESOLVED_FILENAME
+    out.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"schema_version": RESOLVED_SCHEMA_VERSION, "date": str(date),
+               "roles": resolved}
+    tmp = out.with_name(out.name + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(out)
+    return out
+
+
+def load_resolved_agent_config(scan_dir: str | Path) -> dict:
+    """读 resolved 产物 → `{role: spec}`;缺文件/坏文件 → `{}`(presence-gated,由调用方决定要不要炸)。"""
+    path = Path(scan_dir) / RESOLVED_FILENAME
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {}
+    roles = payload.get("roles")
+    return roles if isinstance(roles, dict) else {}
 
 
 # ───────────────────────── pinned.json:保送票 loader(cap/TTL) ─────────────────────────
@@ -269,13 +389,31 @@ def load_pinned(today: str, path: str | Path | None = None,
 
 
 def main() -> int:
-    """CLI:打印白名单校验后的 scan_config JSON 一行。
+    """CLI:打印白名单校验 **+ resolve** 后的 scan_config JSON 一行(含 `resolved_agents`)。
 
     给不经 `frame --json` 的编排场景(如 scan-retro 拉 t1-review workflow)喂 `args.cfg` 用
     ——workflow 脚本无文件系统访问,配置必须由编排会话读出随 args 传入(装载链同 scan-market)。
     配置文件写坏(白名单外键)→ 沿用 load_user_config 的 fail-fast raise,非零退出。
+
+    **Wave12-T33 修复轮 1(I2)**:此前这里只 `print(load_user_config())`,**不 resolve** ——
+    于是 `t1-review.js` 里的 `RESOLVED = cfg.resolved_agents || {}` 在生产上恒空,那条
+    resolved 优先分支是**死代码**,t1_diag/t1_synth 的档位仍由 workflow 自己那张
+    `AGENT_DEFAULTS` 解释。结果是「model/effort 的解释从此只有一处」这句话对 scan 主路成立、
+    对 t1-review **不成立**,而本模块 docstring 的装载链却写成了普适的 —— 典型的**拆半特性**:
+    消费者接了线、生产者没接,读代码的人以为全都收口了。
+    (`.claude/skills/scan-retro/SKILL.md:22` 明写 t1-review 的 `args.cfg` 来自本 CLI。)
+
+    **谓词与 `frame.py` 逐字对齐**(`if user_cfg.get("agents")`):
+    - 有 `agents` → resolve(`require_all=True`,与主路同一把尺)。配了一半 → **raise**,
+      非零退出,编排当场看见 —— 主路会 fail 而 retro 路静默降级,才是更糟的不一致。
+    - 无配置文件 / 无 `agents` → 原样输出(parity)。这一层不炸的理由见 `frame.py` 同款注释:
+      fail-fast 的靶子是"配了一半"和"配了但空",不是"这台机器上根本没这个文件";
+      真出现空 cfg,下游 `t1-review.js:24-26` 的结构性 throw 会当场拒跑。
     """
-    print(json.dumps(load_user_config(), ensure_ascii=False))
+    cfg = load_user_config()
+    if cfg.get("agents"):
+        cfg = {**cfg, "resolved_agents": resolve_agent_config(cfg)}
+    print(json.dumps(cfg, ensure_ascii=False))
     return 0
 
 

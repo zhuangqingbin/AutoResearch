@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""9 路内置 channel —— 全复用 common.scoring(零新因子数学)。
+"""内置 channel 注册表 —— 全复用 common.scoring(零新因子数学)。
+
+注册数 ≠ 启用数:生产启用路以 `scan_config.funnel.recall_channels` 为准(现 9 路),
+`event` / `sector_momentum` 两路**默认不启用**,只在影子变体里跑并各自攒
+`unique_excess_t2` 累计证据(见各自 docstring)。
 
 design: docs/specs/2026-06-22-l1-multi-recall-design.md §9 路 channel 表。
 每路:对 scored 帧(已含 composite + 因子列)过门 + 按策略信号降序 + 截 top-k。
@@ -132,6 +136,59 @@ def heat(frame, date, k):
         kicker = kicker + 0.10 * _pct(g["vol_ratio"]).fillna(0.0)
     g["heat_score"] = _num(g["amount_yi"]).fillna(0.0) * kicker
     return gate_rank(g, None, "heat_score", k)
+
+
+@channel("sector_momentum", quota=150, floor=0,
+         desc="板块动量上涨侧(行业 pct_60d 中位 > 0,按板块排序、板块内按 composite;"
+              "**影子专用**:floor=0、不在 scan_config.recall_channels)")
+def sector_momentum(frame, date, k):
+    """EXP-2 `exp_20260801_recall_sector_momentum` 的 challenger 数据腿(Wave12-T20)。
+
+    预注册于 2026-08-01,但**通道本身一直不存在**(`registered_channels()` 里查无此名),
+    于是 registry 的 `observations` 空转 —— 消费者在等一个没人生产的产物(FN-1 家族)。
+
+    **信号**:板块动量 = 同行业 `pct_60d` 的**中位**,与 `l2_stratify.stratified_l2` 里
+    `sector_mom` 列**同一事实源、同一公式**(那一列在 L2 阶段才生成,L1 帧里没有,所以这里
+    自己算,不是另造一个口径)。上涨侧硬门 `sector_mom > 0`:板块动量非正的行业整体不召回。
+
+    **绝不用当日个股涨幅**(`pct_1d`)——2026-07-24 实证「追当日大涨是负价值」(07-21 当日
+    ≥9.5% 的 350 只票超额 −3.67pp,t=−11.91;那是旧尺读数,此处只作历史沿革引用)。本路
+    连**并列层的第二键**都不许是当日涨幅:同一板块内所有成员的 `sector_mom` 完全相同(它是
+    板块级的量广播到成员),若第二键取涨幅,「板块动量选行业、当日涨幅选个股」等于把铁律从
+    后门放回来。故第二键 = `composite`(缺列则退回代码升序,确定性但不带信号)。
+
+    **排序实现**:`gate_rank` 只有一个排序键且 `kind="stable"`,所以并列层的顺序 = 传进去的
+    帧行序(与 `event` 路 I-3 同一个坑)。这里**先**按 `(sector_mom desc, 第二键 desc)`
+    预排,再把 `sector_mom` 交给 `gate_rank` —— stable 排序保留预排序,等价于严格的字典序,
+    且不需要发明一个"两个量加权求和"的复合分(权重一旦选错就会让第二键翻掉第一键)。
+
+    **零副作用**(「默认不启用必须连副作用一起不启用」,Wave4 事件桶 floor=10 判例):
+    `floor=0` ⇒ `quota_union` 里本路一票都不受保护;`STYLE_CHANNELS` 没有映射到本路的桶
+    ⇒ 不进 `DEFAULT_FLOORS`、不改 `merit_need`、不产 `l2_lane_reserved` 标签;不在
+    `scan_config.funnel.recall_channels` 里 ⇒ 生产召回逐字节不变。它只在
+    `universe.write_shadow_variants` 的 `plus_sectormom` 反事实里跑,产物是
+    `shadow/L1_channels_plus_sectormom.csv`,由 `channel_audit --variant plus_sectormom`
+    按与 accumulation 2026-07-11 退役同一套 `unique_excess_t2` 裁决。
+
+    **`quota` 不是 0**:预注册 spec 的「不占 quota」说的是**不挤生产名额**(=floor=0),
+    而本仓库的 `quota` 是每路 top-k 截断,写 0 会让 `gate_rank(...).head(0)` 恒返回空表 ——
+    仪器天天产出「什么都没有」,正是本 task 要修的那个病。取 150(与 healthy/growth 同量级)。
+
+    缺 `industry` / `pct_60d` → 空帧降级(与其余各路同契约)。
+    """
+    if "industry" not in frame.columns or "pct_60d" not in frame.columns:
+        return empty_result()
+    g = frame.copy()
+    mom = _num(g["pct_60d"])
+    g["sector_mom"] = mom.groupby(g["industry"].astype(str).to_numpy()).transform("median")
+    mask = g["sector_mom"] > 0
+    if not bool(mask.any()):
+        return empty_result()                          # 无上涨侧板块 → 不召回
+    tiebreak = "composite" if "composite" in g.columns else "code"
+    # composite 降序(分越高越靠前);退化到 code 时升序(小代码在前 = 确定性,不带信号)。
+    g = g.sort_values(["sector_mom", tiebreak], ascending=[False, tiebreak == "code"],
+                      kind="stable")
+    return gate_rank(g, mask.reindex(g.index), "sector_mom", k)
 
 
 @channel("event", quota=80, floor=20,

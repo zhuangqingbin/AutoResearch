@@ -292,7 +292,8 @@ macro-brief/sector-brief 的 pack 增「当日快讯 top-N 确定性摘要行」
 - **对外只有一个信号**:`BUY`。不设「质量 BUY / 游资 BUY / 绝对 BUY / 相对 BUY」多套评级;来源差异只写在证据字段。
 - **每个成功完成的交易日扫描至少一只**。该契约自 E6 人工 activate 的 schema switch 日起生效;shadow 期旧生产线仍可 0 BUY,但 challenger 必须产至少一只。市场休市不产信号;A 级数据完整性失败、候选合同破坏或最终产物不完整时整个 run 进入 `BLOCKED`,不得以 0 BUY 冒充成功。
 - 每日第一只由横截面相对最优产生,元数据写 `basis=relative`。这表示「在今日可交易全集里相对最值得买」,**不承诺绝对上涨**。
-- 主评价尺仍是 `gap_c1_o2 = O(T+2)/C(T+1)-1`;主相对标签为 `rel_gap_market = gap_c1_o2 - 当日L0可交易全集等权gap`;辅助标签为 `rel_gap_sector = gap_c1_o2 - 同行业可交易全集等权gap`。所有阶段的 IC、capture、门归因、实验晋升和报告都必须显式绑定这三列中的一列,不得再用含糊的 `t2` 代称。
+- 主评价尺仍是 `gap_c1_o2 = O(T+2)/C(T+1)-1`;主相对标签为 `rel_gap_market = gap_c1_o2 - 当日**全市场可交易**(`entry_tradable`)等权gap`;辅助标签为 `rel_gap_sector = gap_c1_o2 - 同行业可交易全集等权gap`。
+  > **勘误(2026-08-09 全支终审 B-1)**:本行原写「当日L0可交易全集等权gap」—— **不成立**。人口以 T22 的 I-1 用户裁定为准 = **全市场可交易**(含漏在 L0/L1/L2 的票),见 `autoresearch/common/ruler.py` §I-1。L0 可交易全集是**另一个**分母(决策层四面分位 / P10 流动性门用,产物里是 `benchmark.market.n`),两者常年不等(2026-08-04 实测 4193 vs 5426),**不可互换**。所有阶段的 IC、capture、门归因、实验晋升和报告都必须显式绑定这三列中的一列,不得再用含糊的 `t2` 代称。
 - brief/summary 同屏显示相对基准和绝对 gap。`expected_abs_gap` 只能取锁定规则版本在 OOS 历史同 score bucket×regime 的均值/区间;样本不足写 `UNMEASURED`,不得让 agent 主观估数。绝对预期为负时固定标「弱市相对最优」,不能改写为绝对看涨。
 - 第 2 只及以后不是配额:只有其锁定的相对分数达到已验证阈值,且对应历史样本的绝对 gap 扣成本后为正,才追加同一个 `BUY` 信号。
 
@@ -329,7 +330,7 @@ macro-brief/sector-brief 的 pack 增「当日快讯 top-N 确定性摘要行」
 
 ### E4 热度/游资影子召回通道族(Q5 正面回答)
 
-- **E4a 快照数据即刻积累(P0,时间敏感,可先于一切独立上线)**:东财人气榜(`stock_hot_rank_em` 族)+ 雪球关注(`stock_hot_follow_xq` 族)新登记 endpoints+contracts(B 级),**as-of lake 每晚快照,`first_seen_basis=observed`**。快照型数据不可回填——**每晚不采就永远没有历史**;即使后续通道被证伪,快照湖也是低成本保险。验收:连续 5 晚非空+日期单调;断采在 prelude B 级降级可见。
+- **E4a 快照数据即刻积累(P0,时间敏感,可先于一切独立上线)**:东财人气榜(⚠️ 2026-08-09 复核改写:akshare 封装 `stock_hot_rank_em` **不可用**——第二跳走被封的 push2;改自采第一跳 `eastmoney_hot_rank`)+ 雪球关注(`stock_hot_follow_xq` 族,含 `symbol=本周新增` 的 follow7d)新登记 endpoints+contracts(B 级,**带 min_rows/required_cols 且违约不入湖**),**as-of lake 每晚快照,`first_seen_basis=observed`**。快照型数据不可回填——**每晚不采就永远没有历史**;即使后续通道被证伪,快照湖也是低成本保险。验收:连续 5 晚非空+日期单调;断采在 prelude B 级降级可见。
 - **E4b 影子通道注册**(依赖 E2 结论与 E3 首读,逐条 registry):`youzi_lhb`(龙虎榜净买,排除机构席位反指腿)、`limit_ladder`(连板梯队)、`pop_surge`(人气排名跃升Δ,依赖 E4a ≥20 日)。**全部 floor=0 影子,零生产副作用**(E1 同款自查清单);裁决=channel_audit unique 超额(gap)+ 统一成熟门(≥20 真实扫描日/关键细分 ≥10/unique ≥30/≥2 regime)。
 - **E4c 与既有 heat 通道的关系**:heat(成交额×换手分位)gap 尺 −0.14%,是「拥挤度」不是「情绪方向」;新通道与它做 Jaccard 重叠审计(channel_audit 现成),高重叠(≥0.3)时二选一,不并存计数。
 - **召回不需要 agent(Q5 后半句的定论)**:五类数据端点全部自带 ts_code、字段结构化,分类逻辑确定性(Wave4 判例:事件端点自带代码,LLM 无事可做);零 LLM 层铁律不破。**LLM 在热度线的位置只有两个**:L4 端已有的 intel 题材梯队面(已在跑),以及(可选、默认不做)批D D5 的快讯摘要行。

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -62,9 +63,24 @@ def _verify_detail(vmap: dict[str, dict]) -> list[str]:
         lines.append("- 全部维持:多空辩论后空头未拿出证伪买点的硬证据。")
     return lines
 
+#: 「本行口径」标注(fix-1,复核 I-5)。**两个门柱生产者同屏,必须各自自报口径**:
+#: 本节走 `gate_status` 解析**卡片自由文本**,🧭 仪表盘 ③ 走 `decision_records.gate_states`
+#: **结构化字段**,人口(可解析卡 vs 满卡)与解析方式都不同,数会不等。
+#: `gate_status` 正是 memory 里「读不懂加粗 `**✗**` → 17.4% 的卡被判三门全过」的同族解析器,
+#: 已复发三次 —— 所以标注里直接写明**以结构化那侧为准**,不让读者随机相信一个。
+GATE_HIST_BASIS_NOTE = ("_口径:本行由 `gate_status` 解析**卡片自由文本**得来,分母=可解析卡;"
+                        "🧭 仪表盘 ③ 的门柱走 `decision_records.gate_states` **结构化字段**、"
+                        "分母=满卡,**两个数不等是正常的,以结构化那侧为准**"
+                        "(自由文本解析器有漏读加粗 `**✗**` 的前科)。_")
+
+
 def gate_histogram(scan_dir: Path, rows: list[dict]) -> str:
     """OW三门失守分布一行(确定性,逐卡数 `OW三门 …` 段的 ✗)。0买日一行看懂"今天为什么没买"
-    ——胜过读 30 格被截断的结论;有买日同样给出门柱形状。无可解析卡 → ''。"""
+    ——胜过读 30 格被截断的结论;有买日同样给出门柱形状。无可解析卡 → ''。
+
+    **必须带 `GATE_HIST_BASIS_NOTE`**(I-5):T26 把 brief ③ 注进 summary 的仪表盘后,
+    同一页会同时印两个门柱数(实测 08-06:本行「主力真在✗ 4」vs 仪表盘「主力真在 5」)。
+    """
     cnt = dict.fromkeys(_GATES3, 0)
     parsed = 0
     for r in rows:
@@ -80,7 +96,8 @@ def gate_histogram(scan_dir: Path, rows: list[dict]) -> str:
         return ""
     parts = " · ".join(f"{g}✗ {cnt[g]}" for g in _GATES3)
     return (f"**OW三门失守分布**({parsed} 卡可解析):{parts}"
-            f"(任一门✗ 即压 ≤Hold;门柱即当日 0买/有买的结构性原因)")
+            f"(任一门✗ 即压 ≤Hold;门柱即当日 0买/有买的结构性原因)\n\n"
+            f"{GATE_HIST_BASIS_NOTE}")
 
 _gate_histogram = gate_histogram
 
@@ -250,6 +267,64 @@ def _stage_overview(label: str, rows: list[dict], reason: str) -> list[str]:
     reps = ", ".join(str(r.get("name", "")) for r in rows[:6])
     return [f"\n**{label}** — {reason}", f"- 行业分布 top5:{top}", f"- 代表股:{reps}"]
 
+# ── 🧭 决策仪表盘(managed 块;T26 §C2「仪表盘 = brief ①②③④ 同源渲染」)────────────
+#
+# **为什么是 managed 占位而不是就地渲染**:③ BUY 结论区要读 `_relative_buy_decision.json`,
+# 而那份文件由 `post_run.publish_run_observation` → `relative_buy.safe_write_decision` 写,
+# 它**必须**排在 `build_summary` 之后 —— finalizer 现算护照,护照要读 `decision_records.json`,
+# 而 decision_records 恰恰是 build_summary 内部才落的(顺序颠倒会让 finalizer 判 BLOCKED,
+# 见 relative_buy.py I-1)。所以 assemble 只落占位,publisher 收尾用**与 brief.md 同一份
+# facts** 注入 —— 两边同源,T27 的「brief↔summary BUY 一致」lint 才不是自己跟自己对账。
+DASHBOARD_START = "<!-- SCAN_DASHBOARD_START -->"
+DASHBOARD_END = "<!-- SCAN_DASHBOARD_END -->"
+DASHBOARD_HEADER = "## 🧭 决策仪表盘(与 `brief.md` ①②③④ 同源)"
+
+
+def dashboard_placeholder() -> str:
+    return (f"{DASHBOARD_START}\n{DASHBOARD_HEADER}\n\n"
+            "_仪表盘由 assemble 收尾注入(与 brief.md 同源);此处为占位——"
+            f"看到本行说明注入未跑,读 `brief.md`。_\n{DASHBOARD_END}")
+
+
+def inject_dashboard(summary: str, block: str) -> str:
+    """把仪表盘正文原位替换进 managed 块(幂等)。缺标记 → 原样返回,不猜插入点。"""
+    if DASHBOARD_START not in summary or DASHBOARD_END not in summary:
+        return summary
+    before, rest = summary.split(DASHBOARD_START, 1)
+    _, after = rest.split(DASHBOARD_END, 1)
+    return (f"{before}{DASHBOARD_START}\n{DASHBOARD_HEADER}\n\n{block.strip()}\n"
+            f"{DASHBOARD_END}{after}")
+
+
+def _ow_base_rate_for(scan_root: Path):
+    """旧 OW 基率(与 brief ③ 第三行**同一函数**,不另写一份口径)。缺依赖 → None。"""
+    try:
+        from autoresearch.scan.brief import _ow_base_rate
+        return _ow_base_rate(Path(scan_root))
+    except Exception:  # noqa: BLE001 — 账本层可选,坏了不阻发布
+        return None
+
+
+def _ow_base_line(scan_root: Path) -> str:
+    """组合视角里的「旧 OW 基率」**分账行**(spec E5①)。
+
+    与新 relative 账**分列并置、不连成一条趋势线**。**两处不同,不是三处**(fix-1,复核
+    M-5 更正):①决策对象(绝对『值得买』vs 相对『最值得买』);②人口(≥OW 的卡 vs 当日
+    全部 L4 候选的相对冠军)。原文第三条「尺不同」**不成立** —— `buy_ledger.roll()` 的
+    `fwd_2 = _a(MAIN_RULER)` 是现算的,两账同为 `gap_c1_o2`。结论不变,理由少一条。
+    样本随 `buy_ledger` 自动更新,不写死。
+    """
+    ow = _ow_base_rate_for(scan_root)
+    if not ow:
+        return ""
+    win = "—" if ow["win2"] is None else f"{ow['win2']:.0%}"
+    mean = "—" if ow["mean2"] is None else f"{ow['mean2'] * 100:+.2f}%"
+    return (f"📊 **旧 OW 基率(分账·定义断层·不连线)**:{ow['n']} 笔"
+            f"(已实现 {ow['n_realized']})· {MAIN_RULER} 胜率 {win} · 均值 {mean}"
+            f" —— 这是**旧绝对门**(≥Overweight)的账;与影子 relative 账**决策对象与人口**"
+            f"两处不同(尺相同,同为 {MAIN_RULER}),分列并置,**不得接成一条曲线读**。")
+
+
 def _portfolio_note(rows: list[dict]) -> str:
     secs = Counter((r.get("sector") or r.get("industry") or "?") for r in rows)
     top = "、".join(f"{k}×{v}" for k, v in secs.most_common(5))
@@ -289,15 +364,24 @@ def _position_overlay(scan_dir: Path, rows: list[dict]) -> str:
             else f"{n_buys} 只买单在区间内按评级×置信度分配。")
     return (f"**仓位建议(overlay,非个股)**:regime={regime} → 总仓位基准 **{band}**{sick};{tail}")
 
-def _knowledge_note(rows: list[dict]) -> str:
-    """浮出与 buy-list 标的/行业相关的 active 经验 + 未决反馈(闭环记忆注回报告骨架)。
+#: 经验节「一句话」的字符上限(全文留 `context/knowledge/`,summary 只放锚)。
+LESSON_GIST_CHARS = 46
+#: 经验正文里的【勘误/边界扩展/证据勘误】类**旁注块** —— 它们是 lesson 的修订史,不是
+#: 规则本身。整块剥掉后再取首句,否则首行恰好整行都是旁注的条目会渲染成空(实测
+#: `ls_l2_cuts_oversold_sector_rotation` 就是这种形状)。跨行也要剥,故用 DOTALL。
+_LESSON_ANNOT = re.compile(r"【[^】]*】", re.S)
 
-    store 空 / feedback_store 不可用 → 返回空串(向后兼容,老路径不破)。
+
+def _lessons_and_open_feedback(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    """与 buy-list 标的/行业相关的 active 经验 + 未决反馈。库不可用/坏 → ([], [])。
+
+    抽成独立函数是为了让渲染层(`_knowledge_note`)可被测试直接摆布——旧版把取数和渲染
+    焊在一起,测「表格长什么样」就必须准备一整套真知识库。
     """
     try:
         import autoresearch.learning.feedback_store as fs
     except Exception:  # noqa: BLE001 — 知识库是可选层,缺了不影响出报告
-        return ""
+        return [], []
     codes = {str(r.get("code")) for r in rows if r.get("code")}
     scopes: list = [("global", "*")]
     for r in rows:
@@ -313,20 +397,71 @@ def _knowledge_note(rows: list[dict]) -> str:
                    and (f.get("scope", {}).get("kind") == "global"
                         or f.get("scope", {}).get("value") in codes)]
     except Exception:  # noqa: BLE001
-        return ""
+        return [], []
+    return lessons, open_fb
+
+
+def _gist(text: str, limit: int = LESSON_GIST_CHARS) -> str:
+    """自由文本 → 一句话锚:剥【勘误/边界扩展】类前缀标注 → 取首行首句 → 硬截断。
+
+    表格单元格里不能出现裸 `|`(会把一行劈成多列)与换行,统一替换。
+    """
+    stripped = _LESSON_ANNOT.sub("", str(text or ""))
+    body = next((ln.strip() for ln in stripped.splitlines() if ln.strip()), "")
+    for stop in ("。", ";", ";", " —— "):
+        idx = body.find(stop)
+        if 0 < idx <= limit:
+            body = body[:idx]
+            break
+    body = body.replace("|", "/").replace("\n", " ")
+    return (body[:limit] + "…") if len(body) > limit else (body or "—")
+
+
+def _guard_cell(lsn: dict) -> str:
+    """经验的 guard 状态 —— **硬门真身**:带 {field,op,value} 的经验会被 self_review 当
+    fail 级红线执行;没有的用 `guard_na_reason` 说明为什么不可机检,不留空白让人猜。"""
+    gd = lsn.get("guard")
+    if isinstance(gd, dict) and gd.get("field"):
+        return f"`{gd.get('field')}{gd.get('op', '')}{gd.get('value', '')}`"
+    reason = str(lsn.get("guard_na_reason") or "").strip()
+    return f"—({_gist(reason, 16)})" if reason else "—"
+
+
+def _knowledge_note(rows: list[dict]) -> str:
+    """经验 / 未决反馈节(Wave12 T26:**表格化**,8.0KB → ~1KB)。
+
+    旧版把每条 lesson 的 `rule` **整段原文**倒进 summary(单条最长 1.5KB,整节 17.6%),
+    而 summary 的读者需要的是「哪几条在生效、哪几条是硬门、可信度多少」——原文是查证时
+    才要看的东西,它本来就完整存在 `context/knowledge/lessons.jsonl` 里。这里换成
+    id / 一句话 / guard / conf / MTM 五列,**减层不减料**:条目一条不少,全文给出去处。
+
+    store 空 / feedback_store 不可用 → 返回空串(向后兼容,老路径不破)。
+    """
+    lessons, open_fb = _lessons_and_open_feedback(rows)
     if not lessons and not open_fb:
         return ""
     lines = ["## 📌 经验 / 未决反馈(闭环记忆)"]
     if lessons:
-        lines.append("**生效经验**(已注入 L2/L3 校准 + 本次研判):")
-        for lsn in lessons[:8]:
+        lines += ["", f"**生效经验**({len(lessons)} 条,已注入 L2/L3 校准 + 本次研判;"
+                  "`guard` 非空 = self_review 硬门真身)",
+                  "| lesson | 一句话 | guard | conf | MTM |", "|---|---|---|---:|---:|"]
+        for lsn in lessons:
             sc = lsn.get("scope", {})
             tag = "" if sc.get("kind") == "global" else f"[{sc.get('value')}] "
-            lines.append(f"- {tag}{lsn['rule']}  _(conf {lsn.get('confidence', 0):.2f})_")
+            mtm = lsn.get("mtm") or {}
+            mtm_cell = (f"{mtm.get('support', 0)}/{mtm.get('refute', 0)}"
+                        if mtm else "—")
+            lines.append(f"| `{lsn.get('id', '?')}` | {tag}{_gist(lsn.get('rule'))} "
+                         f"| {_guard_cell(lsn)} | {float(lsn.get('confidence', 0)):.2f} "
+                         f"| {mtm_cell} |")
     if open_fb:
-        lines.append("**未决反馈**(待 retro / 后续消化):")
-        for f in open_fb[:6]:
-            lines.append(f"- ({f.get('verdict')}) {str(f.get('note', ''))[:50]} — `{f.get('id')}`")
+        lines += ["", f"**未决反馈**({len(open_fb)} 条,待 retro / 后续消化)",
+                  "| id | verdict | 一句话 |", "|---|---|---|"]
+        for f in open_fb:
+            lines.append(f"| `{f.get('id')}` | {f.get('verdict')} "
+                         f"| {_gist(f.get('note'), 40)} |")
+    lines += ["", "_经验全文 / 证据链 / mtm 明细见 `context/knowledge/lessons.jsonl` 与 "
+              "`feedback.jsonl`(本表只给锚,不再嵌原文)。MTM = support/refute。_"]
     return "\n".join(lines) + "\n"
 
 def _conflict_block(conflicts: dict[str, dict]) -> str:
@@ -405,26 +540,80 @@ def _pinned_section(scan_dir: Path, analysis_date: str, pinned_rows: list[dict],
             lines.append(f"- {e['code']}{note}(已于 {e.get('expires', '—')} 过期)")
     return "\n".join(lines)
 
+#: summary 总字节回归锁(T26 Step 2 硬验收;fix-1 补,复核 I-3)。
+#:
+#: 08-06 真 run 回放实测 **47,814B → 30,951B(−35.3%)**,任务书门槛 ≤38KB。
+#: **这个常量不是运行期截断阈值** —— 报告不许因为超预算就丢内容(减层不减料)。它是
+#: `tests/scan/test_report_sections.py::test_summary_total_bytes_regression_lock` 的**断言基准**:
+#: 下一个人往 summary 加一节把字节顶回 47KB 时,那条测试会红,而不是 2300 条测试全绿。
+SUMMARY_MAX_BYTES = 38 * 1024
+
+#: 行业研判节字节上限(T26)。旧版原文嵌研判段 = 13,379B / 全报告 28%。
+SECTOR_SECTION_MAX_BYTES = 2000
+#: 单行地形首句的字符上限;超预算时按 `_SECTOR_GIST_LADDER` 逐级收紧(确定性)。
+_SECTOR_GIST_LADDER = (56, 44, 34, 24, 16)
+
+
+def _terrain_gist(text: str, limit: int) -> str:
+    """地形段**首句** —— 首个 bullet,剥 `- ` 与 `**键**:` 前缀,取到首个分句符,硬截断。"""
+    body = ""
+    for line in str(text or "").splitlines():
+        line = line.strip()
+        if line.startswith("- "):
+            body = line[2:].strip()
+            break
+    if not body:
+        body = str(text or "").strip().split("\n", 1)[0].strip()
+    body = re.sub(r"^\*\*[^*]+\*\*\s*[::]\s*", "", body)
+    for stop in ("。", ";", ";", " —— "):
+        idx = body.find(stop)
+        if 0 < idx <= limit:
+            body = body[:idx]
+            break
+    body = body.replace("|", "/").strip()
+    return (body[:limit] + "…") if len(body) > limit else (body or "—")
+
+
 def _sector_view_section(scan_dir: Path) -> str:
-    """行业 brief 研判段汇总(Phase 3;方向性内容只在整合层——地形段已注 L3/L4)。无 briefs → ''。"""
+    """行业研判节(Wave12 T26 降级:**每行业一行**地形首句 + 方向 + 原文链接)。
+
+    旧版把每份 brief 的**研判段全文**原样嵌进 summary —— 8 个行业 13,379B、占全报告
+    28%,而这些文件本来就逐份单独发布在 `trace/sector_briefs/<行业>.md`(见
+    `publisher._publish_pipeline`)。**减层不减料**:行业一个不少、方向字段保留、
+    全文一键可达,只是不再在 summary 里复制一遍。
+
+    节字节硬上限 `SECTOR_SECTION_MAX_BYTES`;超了按 `_SECTOR_GIST_LADDER` 收紧首句长度
+    (确定性,不随机、不丢行业)。无 briefs → ''(presence-gated,老路不破)。
+    """
     d = scan_dir / "sector_briefs"
     if not d.is_dir():
         return ""
     try:
-        from autoresearch.sector.brief import extract_view, parse_direction
+        from autoresearch.sector.brief import extract_terrain, extract_view, parse_direction
     except Exception:  # noqa: BLE001
         return ""
-    parts: list[str] = []
+    rows: list[tuple[str, str, str, str]] = []
     for p in sorted(d.glob("*.md")):
         try:
-            view = extract_view(p.read_text(encoding="utf-8"))
+            text = p.read_text(encoding="utf-8")
         except Exception:  # noqa: BLE001
             continue
-        if view:
-            parts.append(f"**{p.stem}**(方向:{parse_direction(view) or '—'})\n\n{view}")
-    if not parts:
+        rows.append((p.stem, parse_direction(extract_view(text)) or "—",
+                     extract_terrain(text), p.name))
+    if not rows:
         return ""
-    return "## 🏭 行业研判(sector-research lite · 仅整合层)\n\n" + "\n\n".join(parts)
+    head = ["## 🏭 行业研判(sector-research lite · 仅整合层)", "",
+            "_每行业一行地形首句 + 方向;**研判段全文不再嵌入**,原文见 "
+            "`trace/sector_briefs/<行业>.md`(减层不减料)。_", "",
+            "| 行业 | 方向 | 地形首句 | 原文 |", "|---|---|---|---|"]
+    for limit in _SECTOR_GIST_LADDER:
+        body = [f"| {ind} | {direction} | {_terrain_gist(terrain, limit)} "
+                f"| [brief](trace/sector_briefs/{name}) |"
+                for ind, direction, terrain, name in rows]
+        out = "\n".join(head + body)
+        if len(out.encode("utf-8")) <= SECTOR_SECTION_MAX_BYTES:
+            return out
+    return out
 
 def _same_chain_block(rows) -> str:
     """同申万一级 ≥2 只 finalist → 并排一行(择链上最佳表达,同链多买=1 个 bet)。<2 → ''。"""
@@ -661,6 +850,15 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
     ch_map = {c: (r.get("recall_channels") or "") for c, r in l2_top.items()}   # 命中队列(随 keep 流到 L2 表)
     regime_line, regime_drift = regime_and_drift(scan_dir)
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # T26 节序(§C2 决策主线前置):
+    #   头(H1/regime/温度)→ 🧭 仪表盘占位 → §3 投资建议 → 📌 保送持仓 → 差一点/弃权 banner
+    #   → 📈 市场 → 🎯 top3 → 🏭 行业研判(降级为一行一行业)→ §1 漏斗 → §2 各阶段
+    #   → 📌 经验(表格)→ 🕯️ 附录 → 耗时 → ⏳ 提案 → 💸 成本(注入)→ 诚实局限
+    # **只改顺序与两节的呈现密度,不删任何一类内容**(减层不减料)。
+    # ══════════════════════════════════════════════════════════════════════════
+    import contextlib as _ctx
+
     out = [f"# A股扫描 v2 · Buy-List & 漏斗 — {analysis_date} {hhmm[:2]}:{hhmm[2:]}\n",
            "_六段漏斗:选集→召回→粗排(分层采样)→精排→研究→整合。L0/L1/L2 确定性,L3/L4 Claude 为引擎,"
            "**仅供研究,非投资建议。**_\n"]
@@ -672,6 +870,75 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
     temp_line = render_temperature_line(analysis_date)
     if temp_line:
         out.append(temp_line + "\n")
+
+    # ── 🧭 决策仪表盘(managed 占位;publisher 收尾用 brief 同源 facts 注入)──
+    out += [dashboard_placeholder(), ""]
+
+    # ── 3. 投资建议 ──(vmap 已在上方加载并折回评级;保送持仓已分列进「📌 保送持仓」节,这里只含真实精选)
+    xref = ";保送持仓见「📌 保送持仓」节" if pinned_rows else ""   # 无保送时不留悬空引用
+    out += [f"## 3. 投资建议(buy-list, {len(genuine_rows)} 只真实精选,按 评级 → 确信度 排序;"
+            f"逐阶段结论{xref})\n"]
+    out += _buylist_table_lines(genuine_rows, l1_full, l2_top, ch_map, vmap, n_l1, n_l2)
+    out.append(f"\n_列注:**L1召回** #复合分名次/{n_l1}·命中队列(越小越强;低复合分票靠某条队列召回→名次很大);"
+               f"**L2粗排** #分层重排名次/{n_l2}·gbdt分(遗留列名);**L3精排** = Opus holistic 论点 + conviction;"
+               f"**L4研究·结论** = 决策卡深核后的关键定级依据(≥OW 取多头驱动,否则取空头/早停因);"
+               f"置信度见各决策卡(30 行全『中』的列已删)。_")
+    gh = _gate_histogram(scan_dir, genuine_rows)
+    if gh:
+        out += ["", gh]
+    out += _verify_detail(vmap)
+    from autoresearch.scan.calendar import calendar_section  # lazy:日历块,缺 staging 自 ""
+    cal = calendar_section(scan_dir)
+    if cal:
+        out += ["", cal]
+    out += ["", "### 组合视角", _portfolio_note(genuine_rows)]
+    ow_line = _ow_base_line(Path(scan_dir).parent)   # E5①:旧 OW 基率**分账行**(与 brief ③ 同源)
+    if ow_line:
+        out += ["", ow_line]
+    # A1:传 rows 后同时出「持仓保护规则」行(需要 lane 与卡面评级,只有 rows 里有)
+    ens_lines = _ensemble_dissent_lines(emap, rows)   # presence-gated:无分歧 → []
+    if ens_lines:
+        out += [""] + ens_lines
+    # A2:运行模式醒目标注 —— 只读 run_mode.json,不从 finalists 数量猜(§R9)
+    with _ctx.suppress(Exception):
+        from autoresearch.scan.run_mode import load as _load_run_mode
+        _mode = _load_run_mode(scan_dir)
+        if _mode is not None and _mode.banner():
+            out += ["", _mode.banner()]
+    chain = _same_chain_block(genuine_rows)  # Phase 3:同链 ≥2 卡并排(择链上最佳表达素材;保送不计)
+    if chain:
+        out += ["", chain]
+    pos = _position_overlay(scan_dir, genuine_rows)
+    if pos:
+        out += ["", pos]
+    out += [""]
+
+    # ── 📌 保送(pinned 直通;presence-gated:无 pinned.json/kept+expired 皆空 → 跳过)──
+    from autoresearch.scan.decision_finalize import tripwire_conflicts
+    _conf = tripwire_conflicts(scan_dir, analysis_date, pinned_rows)
+    with _ctx.suppress(Exception):   # 供 pinned_ledger.roll() 跨日读取(Wave9 A-2 §6);IO 失败不阻发布
+        (Path(scan_dir) / "_tripwire_conflicts.json").write_text(
+            json.dumps(_conf, ensure_ascii=False), encoding="utf-8")
+    pin_sec = _pinned_section(scan_dir, analysis_date, pinned_rows, l1_full, l2_top,
+                              ch_map, vmap, n_l1, n_l2, pinned_path=pinned_path,
+                              conflicts=_conf)
+    if pin_sec:
+        out += [pin_sec, ""]
+
+    # C3:0买日的聚合「差一点」+ 弃权 banner **前置到决策主线尾**;逐只读数仍只进文末附录
+    # (§R6:只给个案不给分母会把读者推向绕门)。非 0买日 / 无 shadow → presence-gated 为空。
+    from autoresearch.scan import near_miss  # 文件惯例:可选层在函数内 import
+    near_miss_facts = None
+    with _ctx.suppress(Exception):           # 证据层坏了不该阻断发布
+        near_miss_facts = near_miss.build(scan_dir, n_buys=len(
+            [r for r in genuine_rows if r.get("proposal") == "BUY"]))
+        for line in (near_miss.summary_line(near_miss_facts),
+                     near_miss.abstention_line(near_miss_facts)):
+            if line:
+                out += ["", line]
+    out += [""]
+
+    # ══════════ 以下为背景与溯源(决策已在上面给完;这里是「为什么」与「怎么来的」)══════════
 
     # ── 市场研判(首席策略师视角;策略师未写 → 回退确定性脉搏)──
     mv = _load_market_view(scan_dir)
@@ -702,19 +969,6 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
 
     # (观察单日检节已退役 —— 用户裁定 fb_20260714_002:即便 watchlist_status.csv 在也不渲染。)
 
-    # ── 📌 保送(pinned 直通;presence-gated:无 pinned.json/kept+expired 皆空 → 跳过)──
-    from autoresearch.scan.decision_finalize import tripwire_conflicts
-    _conf = tripwire_conflicts(scan_dir, analysis_date, pinned_rows)
-    import contextlib
-    with contextlib.suppress(Exception):   # 供 pinned_ledger.roll() 跨日读取(Wave9 A-2 §6);IO 失败不阻发布
-        (Path(scan_dir) / "_tripwire_conflicts.json").write_text(
-            json.dumps(_conf, ensure_ascii=False), encoding="utf-8")
-    pin_sec = _pinned_section(scan_dir, analysis_date, pinned_rows, l1_full, l2_top,
-                              ch_map, vmap, n_l1, n_l2, pinned_path=pinned_path,
-                              conflicts=_conf)
-    if pin_sec:
-        out += [pin_sec, ""]
-
     # ── 🎯 看多行业 top3(P7:确定性零 LLM;presence-gated,失败不挡发布)──
     try:
         from autoresearch.scan.market import market_pack as _mp2, render_sector_top3
@@ -724,7 +978,7 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
     if top3_sec:
         out += [top3_sec, ""]
 
-    sect = _sector_view_section(scan_dir)   # Phase 3:行业研判(briefs 研判段,方向性只在整合层)
+    sect = _sector_view_section(scan_dir)   # T26:一行一行业 + 原文链接(研判段全文不再嵌)
     if sect:
         out += [sect, ""]
 
@@ -757,56 +1011,6 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
         out.append("_无 finalists.csv_")
     out.append("")
 
-    # ── 3. 投资建议 ──(vmap 已在上方加载并折回评级;保送持仓已分列进「📌 保送持仓」节,这里只含真实精选)
-    xref = ";保送持仓见「📌 保送持仓」节" if pinned_rows else ""   # 无保送时不留悬空引用
-    out += [f"## 3. 投资建议(buy-list, {len(genuine_rows)} 只真实精选,按 评级 → 确信度 排序;"
-            f"逐阶段结论{xref})\n"]
-    out += _buylist_table_lines(genuine_rows, l1_full, l2_top, ch_map, vmap, n_l1, n_l2)
-    out.append(f"\n_列注:**L1召回** #复合分名次/{n_l1}·命中队列(越小越强;低复合分票靠某条队列召回→名次很大);"
-               f"**L2粗排** #分层重排名次/{n_l2}·gbdt分(遗留列名);**L3精排** = Opus holistic 论点 + conviction;"
-               f"**L4研究·结论** = 决策卡深核后的关键定级依据(≥OW 取多头驱动,否则取空头/早停因);"
-               f"置信度见各决策卡(30 行全『中』的列已删)。_")
-    gh = _gate_histogram(scan_dir, genuine_rows)
-    if gh:
-        out += ["", gh]
-    out += _verify_detail(vmap)
-    from autoresearch.scan.calendar import calendar_section  # lazy:日历块,缺 staging 自 ""
-    cal = calendar_section(scan_dir)
-    if cal:
-        out += ["", cal]
-    out += ["", "### 组合视角", _portfolio_note(genuine_rows)]
-    # A1:传 rows 后同时出「持仓保护规则」行(需要 lane 与卡面评级,只有 rows 里有)
-    ens_lines = _ensemble_dissent_lines(emap, rows)   # presence-gated:无分歧 → []
-    if ens_lines:
-        out += [""] + ens_lines
-    import contextlib as _ctx
-
-    # A2:运行模式醒目标注 —— 只读 run_mode.json,不从 finalists 数量猜(§R9)
-    with _ctx.suppress(Exception):
-        from autoresearch.scan.run_mode import load as _load_run_mode
-        _mode = _load_run_mode(scan_dir)
-        if _mode is not None and _mode.banner():
-            out += ["", _mode.banner()]
-    # C3:0买日的聚合「差一点」+ 弃权 banner 走正文;逐只读数只进文末附录(§R6:
-    # 只给个案不给分母会把读者推向绕门)。非 0买日 / 无 shadow → 全部 presence-gated 为空。
-    import contextlib as _ctx
-
-    from autoresearch.scan import near_miss  # 文件惯例:可选层在函数内 import
-    near_miss_facts = None
-    with _ctx.suppress(Exception):           # 证据层坏了不该阻断发布
-        near_miss_facts = near_miss.build(scan_dir, n_buys=len(
-            [r for r in genuine_rows if r.get("proposal") == "BUY"]))
-        for line in (near_miss.summary_line(near_miss_facts),
-                     near_miss.abstention_line(near_miss_facts)):
-            if line:
-                out += ["", line]
-    chain = _same_chain_block(genuine_rows)  # Phase 3:同链 ≥2 卡并排(择链上最佳表达素材;保送不计)
-    if chain:
-        out += ["", chain]
-    pos = _position_overlay(scan_dir, genuine_rows)
-    if pos:
-        out += ["", pos]
-    out += [""]
     kn = _knowledge_note(rows)
     if kn:
         out += [kn]

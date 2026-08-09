@@ -34,7 +34,16 @@ const AGENT_DEFAULTS = {
   sector_brief:  { effort: 'high' },       // model 缺省=sector-brief frontmatter(opus)
   l3_rank:       { effort: 'max' },        // model 缺省=l3-rank frontmatter(opus)
 }
-const AG = (role) => ({ ...(AGENT_DEFAULTS[role] || {}), ...((cfg.agents || {})[role] || {}) })
+// Wave12-T33:**resolved 优先**。`cfg.resolved_agents` 是 Python 侧
+// (`autoresearch.scan.user_config.resolve_agent_config`,落 `_resolved_agent_config.json`)
+// 解释好的逐 role 生效值 —— model/effort 的解释从此只有一处,本文件不再参与解释。
+// 本表(AGENT_DEFAULTS)降为**兜底**:只在 resolved 没随 args 传到时才吃(离线试装、
+// 老编排、单 workflow 手动重跑)。两条腿的值必须一致,`tests/test_agent_defs.py` 用
+// AST 相等断言机器锁住,不靠人记得同步。
+const RESOLVED = (cfg.resolved_agents) || {}
+const AG = (role) => (RESOLVED[role]
+  ? { ...RESOLVED[role] }
+  : { ...(AGENT_DEFAULTS[role] || {}), ...((cfg.agents || {})[role] || {}) })
 // Wave 3 性能开关只改变调度/上下文布局，不拥有 finalist、rubric 或评级语义。
 // streaming 默认开；另外两项默认当前生产行为，均有显式回滚杆。
 const streamingL4 = cfg.performance?.streaming_l4 ?? true
@@ -295,6 +304,14 @@ if (l3lint && l3lint.ok === false) {
       n: { type: 'integer' }, prompt: { type: 'string' } } }
   const repair = await gate('l3-repair-pack',
     `${R} autoresearch.scan.agents.l3_select repair-pack ${date}`, REPAIR, 'L3')
+  // Wave12-T34 归因契约(改这段前先读):`l3_repair` 复用 `agentType: 'l3-rank'` 派发,
+  // harvest 分不清一行是主排还是自修。归因靠的是**产物**——`repair-pack` 在派发之前写下的
+  // `_l3_repair_prompt.md` 在场即"本日派过一次 l3_repair"
+  // (`autoresearch.trace.usage_reconcile.dispatch_census`)。
+  // 故意不让这个 agent 自己写标记:2026-07-27 它死于 `Connection closed mid-response`,
+  // 烧掉 56.9k 加权却没留下任何自报记录 —— 让"它自己承认跑过"当唯一事实源,恰好会在
+  // 它死掉时丢掉那一行的归属,而那正是最需要看清成本的时刻。
+  // ⚠️ 若以后改成"prompt 不在场也可能派发"或"n==0 也写 prompt",必须同步改 dispatch_census。
   const fix = repair && repair.n > 0 ? await agent(
     `Read ${SD}/_l3_repair_prompt.md，只处理其中列出的失败票；按文件内 schema 用 Write 写 ${SD}/_l3_repair_patch.json。不要读取任何全量 L3 输入或输出文件。`,
     { agentType: 'l3-rank', ...AG('l3_repair'), label: 'L3-lint-fix', phase: 'L3' })

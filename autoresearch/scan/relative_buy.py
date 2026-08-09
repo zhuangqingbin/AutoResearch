@@ -26,6 +26,10 @@ GATED task(≥20 个真实扫描日影子 + 五守卫 + 人工批准),不在这�
 
 ## v1 规则(**观察前锁定**;任何改动 = 新 `RULE_VERSION` + experiment_registry)
 
+> 当前 `RULE_VERSION = "e6.v1.1"`。v1.1 只把两道硬门对"产物缺席"的静默放行堵上,
+> **打分与选择语义与 v1 逐字相同**(8 日回放零变化为证);下面这套规则原文因此仍然
+> 逐字有效,不需要按 v1.1 重读。差异见文件尾「修复轮 1」。
+
 边看结果边调参数 = 作弊。下面每条都是在看到任何一天的影子输出**之前**写死的。
 
 **候选集** = 当日 L4 派发过的票(护照 `l4.dispatched`)。L2 菜单里没走到 L4 的票不是
@@ -44,11 +48,16 @@ BUY 候选,也不进 `excluded`——把 190 只 pass1 被切的票记成"被排
    这不是替代判据,是同一函数在两种输入下的既定行为。
 2. `data_a` —— 当日 A 级数据契约无未解决异常。**日级**判定(全体候选同值),结构化读
    `run_health.json`:`core_missing` 空 ∧ `run_contract.status == "OK"` ∧
-   `stage_results.status != "INVALID"` ∧ `stage_results.failed` 空 ∧
-   `decision_records.status ∉ {"INVALID","MISMATCH"}`。`run_health.json` 缺失 → 判 **False**
-   (A 级契约无从判定时按阻断处理,与 `contracts.py` "A 级空即抛异常阻断"同向)。
+   `stage_results.status == "OK"` ∧ `stage_results.failed` 空 ∧
+   `decision_records.status == "OK"`。三个 status 一律**要求等于 `"OK"`**,不是"不等于坏
+   值"——`health.py` 的真实取值域含 `"ABSENT"`(产物根本没写),而"产物缺席"时
+   「A 级契约无未解决异常」这句话无从断言,放行它等于把没查过当查过了(复核 I-1:这是
+   第 6 处放宽,原版未列入 premise 偏差、也未留痕)。`run_health.json` 整个缺失同样判
+   **False**(与 `contracts.py`"A 级空即抛异常阻断"同向)。
 3. `contract` —— 该票 slim/卡/价格断言契约完整:task-book(`_l4_tasks.json`)该票
-   `status == "SUCCEEDED"` ∧ `artifacts.slim/card` 均 `PRESENT` ∧ 价格断言无 fail。
+   `status == "SUCCEEDED"` ∧ `artifacts.slim/card` 均 `PRESENT` ∧ **护照没把
+   `l4.research_rating` 记进 `missing[]`**(卡在盘上却读不出终评级 = 卡契约不完整)
+   ∧ 价格断言无 fail。
    ⚠️ **premise 偏差(实测)**:**逐票**价格断言状态在 `context/scan/<date>/` 里没有任何
    生产者——`price_claim_subjects.json` 是日级聚合(无 code),发布层只往
    `reports/scan/<run_id>/details/<中文名>.md` 追一行文字。故本模块读一份 presence-gated 的
@@ -110,7 +119,14 @@ from autoresearch.common.ruler import MAIN_RULER, REL_MARKET, REL_SECTOR, entry_
 from autoresearch.scan.passport import build_passport
 
 SCHEMA_VERSION = 1
-RULE_VERSION = "e6.v1"
+RULE_VERSION = "e6.v1.1"
+# v1.1 = v1 + 两道硬门的 ABSENT 收紧(`data_a` 三个 status 一律要求 `== "OK"`;`contract`
+# 消费护照 `missing["l4.research_rating"]`)。**打分与选择语义与 v1 逐字相同** —— 四面算法 /
+# Borda 等权平均 / 并列决胜三级 / 第 2 只的门 / `expected_abs_gap` 一个字符未动。
+# 升版是**治理留痕**,不是作废重来:收紧的性质是堵住一处非预期放宽(产物缺席被静默当作
+# 通过),属恢复本意;8 日回放(2026-07-28..08-06)**零变化** —— 选票/分数/四面/合格数逐日
+# 全同 —— 即"已有观测未被污染、不需作废重跑"的实证(见 task-23-report 修复轮 §0.2)。
+# 2026-08-09 控制方裁定。
 DECISION_FILENAME = "_relative_buy_decision.json"
 MODE_SHADOW = "shadow"
 
@@ -213,12 +229,20 @@ def _blend(parts: list[tuple[float, float]]) -> float | None:
     return sum(value * weight for value, weight in parts) / total
 
 
-# ── L0 可交易全集(基准人口 + 流动性分位的唯一分母)─────────────────────────
+# ── L0 可交易全集(**决策层**四面分位 + 流动性门的唯一分母)───────────────────
 def _universe(scan: Path) -> dict:
-    """`L1_scored_full.csv` → 可交易全集 + 排除计数 + 逐票成交额/行业。
+    """`L1_scored_full.csv` → L0 可交易全集 + 排除计数 + 逐票成交额/行业。
 
-    基准分母 = **可交易**票,不是全市场所有行(T22 `retro._rel_gap_cols` 同款口径:含
-    停牌 / 买不进的票会把"市场平均"算成不可执行的幻觉基准)。
+    **这不是 `rel_gap_market` 的人口**(B-1,2026-08-09 全支终审):本函数的 `members`
+    只含**过了 L0 门**的票(`L1_scored_full.csv` 的行),它是决策层自己算四面分位与 P10
+    流动性门用的分母;而 `rel_gap_market` 的真分母是**全市场可交易**(`ruler.py` I-1 人口
+    裁定,含漏在 L0/L1/L2 的票),由 `learning.relative_ledger.outcome_for` 在评分时另算。
+    两数常年不等(2026-08-04 实测 4193 vs 5426),`relative_ledger` 明文「不可互换……引用
+    时必须点名是哪一个」。产物里对应 `benchmark.market` 的 `definition` / `eval_population`
+    两个字段(I-2 已拆开,勿再合并)。
+
+    分母只取 **可交易** 票,不是 `L1_scored_full.csv` 的所有行(T22 `retro._rel_gap_cols`
+    同款口径:含停牌 / 买不进的票会把"市场平均"算成不可执行的幻觉基准)。
     """
     rows = _rows(scan / "L1_scored_full.csv")
     flag_col = entry_flag_for()
@@ -255,7 +279,11 @@ def _universe(scan: Path) -> dict:
 
 
 def tradable_universe(scan_dir: Path | str) -> list[str]:
-    """当日 L0 可交易全集(排序后的 6 位代码)—— 相对基准的人口。"""
+    """当日 **L0** 可交易全集(排序后的 6 位代码)—— **决策层**分位/流动性门的人口。
+
+    **不是** `rel_gap_market` 的评分人口(那是全市场可交易,见 `_universe` docstring 的
+    B-1 说明);两个人口不可互换,引用时必须点名是哪一个。
+    """
     return _universe(Path(scan_dir))["members"]
 
 
@@ -270,13 +298,13 @@ def _data_contract_ok(scan: Path) -> tuple[bool, str]:
     if str(contract.get("status") or "") != "OK":
         return False, f"run_contract.status={contract.get('status')!r}"
     stages = health.get("stage_results") or {}
-    if str(stages.get("status") or "") == "INVALID":
-        return False, "stage_results.status=INVALID"
+    if str(stages.get("status") or "") != "OK":
+        return False, f"stage_results.status={stages.get('status')!r}(非 OK)"
     if stages.get("failed"):
         return False, f"stage_results.failed={sorted(stages['failed'])}"
     records = health.get("decision_records") or {}
-    if str(records.get("status") or "") in {"INVALID", "MISMATCH"}:
-        return False, f"decision_records.status={records.get('status')!r}"
+    if str(records.get("status") or "") != "OK":
+        return False, f"decision_records.status={records.get('status')!r}(非 OK)"
     return True, ""
 
 
@@ -436,6 +464,15 @@ def _hard_gate(entry: dict, ctx: dict) -> tuple[dict[str, bool], list[dict]]:
             fail("contract", f"task-book status={status!r}(非 SUCCEEDED)")
         elif missing:
             fail("contract", f"产物缺席:{'/'.join(missing)}")
+        elif "l4.research_rating" in (entry.get("missing") or []):
+            # I-1(复核轮):护照专为这件事写了 `missing.append("l4.research_rating")`
+            # (`passport.py`,语义 = "到了这一站、却读不到那个字段")。卡在盘上但读不出
+            # 终评级 = 卡契约**不完整**,正是本门要挡的东西。不消费它的后果已被探针实证:
+            # `decision_records.json` 缺席(assemble 半途崩)时全体 rating 为 None,
+            # `None != "Sell"` 让 no_redflag 也放行,于是四门全过、`blocked=false`、
+            # `excluded_rows=0`,一只没有评级的票被发成当日唯一 BUY,并被 T24 的回放
+            # 收进影子账本污染 ≥20 日成熟门的观测。
+            fail("contract", "护照记 missing:l4.research_rating(卡在盘但读不出终评级)")
         elif claim == "MISMATCH":
             fail("contract", "价格断言与 OHLCV 不符(price_claim=MISMATCH)")
         else:
@@ -551,6 +588,10 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
                                for reason in sorted(buckets)]
 
     market_members = universe["members"]
+    raw_orphans = passport.get("orphans") or {}
+    orphans = {"finalists": sorted(_code(c) for c in
+                                   (raw_orphans.get("finalists") or [])),
+               "rated": sorted(_code(c) for c in (raw_orphans.get("rated") or []))}
     return {
         "schema_version": SCHEMA_VERSION,
         "rule_version": RULE_VERSION,
@@ -562,8 +603,16 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
             "entry_flag": universe["entry_flag_column"],
             "entry_flag_present": universe["entry_flag_present"],
             "market": {
-                "definition": "L0 可交易全集等权 gap_c1_o2",
+                # I-2(复核轮)把这句话改对了。原文写的是「L0 可交易全集等权 gap_c1_o2」
+                # 并把它挂在 `rel_gap_market` 名下 —— 那是**两个不同人口**:本块的 `n`
+                # 是决策层自己算四面分位与 P10 流动性门用的分母(L0 过门票),而
+                # `rel_gap_market` 的真分母是**全市场可交易**(`ruler.py` T22 I-1 人口
+                # 裁定,含漏在 L0 的票;2026-08-04 实测 4193 vs 5426)。事后评分那个分母
+                # 由 `learning/relative_ledger.outcome_for` 在评分时另算,不在本产物里。
+                "definition": "决策层分位/流动性门的分母 = 当日 L0 可交易全集等权",
                 "column": REL_MARKET,
+                "eval_population": ("全市场可交易(entry_tradable,含漏在 L0 的票)"
+                                    "—— 与本块 n 不同,评分时由 relative_ledger 另算"),
                 "n": len(market_members),
                 "members_sha256": hashlib.sha256(
                     "\n".join(market_members).encode("utf-8")).hexdigest(),
@@ -574,6 +623,9 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
                 "source_column": "industry",     # 实为 tushare「所处行业」,见文件尾 ⑤
                 "n_sectors": len(universe["sectors"]),
             },
+            # 红灯词表进产物(复核 Minor):源码里标了三处「监管/审计红灯 是死条件」,
+            # 但只读 JSON 的人看不见这一支是死的。导出词表 = 让它自己说话。
+            "redflag_early_stop_reasons": sorted(REDFLAG_EARLY_STOP_REASONS),
             "excluded_from_benchmark": universe["excluded"],
         },
         "inputs": {
@@ -584,12 +636,19 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
             "run_health": ("PRESENT" if (scan / "run_health.json").exists()
                            else "ABSENT"),
         },
+        # I-3(复核轮):护照的 `orphans` 原样透传。护照 docstring 点名「下游只读护照的
+        # 消费者会以为它们不存在」—— 有评级却不在 L2 菜单里的票永远当不成相对 BUY,而
+        # 在「每个成功日至少一只」的裁定下,候选池静默缩水正是要防的病型。不改候选集
+        # 口径(那是护照的断言①),只把差额报出来。
+        "orphans": orphans,
         "counts": {
             "candidates": len(candidates),
             "eligible": len(eligible),
             "excluded_rows": len(excluded),
             "buys": len(buys),
             "with_missing_face": sum(1 for row in candidates if row["faces_missing"]),
+            "orphan_finalists": len(orphans["finalists"]),
+            "orphan_rated": len(orphans["rated"]),
         },
         "candidates": candidates,
         "buys": buys,
@@ -639,6 +698,22 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+# ── 修复轮 1(2026-08-09,复核 4 条 Important)──────────────────────────────
+#
+# 四条都是**堵放宽/补留痕**,一个字都没动 v1 规则语义(四面算法 / Borda 等权平均 /
+# 并列决胜三级 / 第 2 只的门 / expected_abs_gap)——8 日回放逐日比对**零变化**可证。
+#   I-1 `data_a` 三个 status 一律要求 `== "OK"`(`"ABSENT"` 不再当通过)+ `contract`
+#       消费护照 `missing["l4.research_rating"]`(卡在盘却读不出评级 = 契约不完整)。
+#       两道门是独立防线:run_health 写得早/写得乐观时 data_a 会被骗过,contract 仍拦得住。
+#   I-2 `benchmark.market.definition` 原文把决策层分母说成了 `rel_gap_market` 的分母
+#       (两个人口,08-04 实测 4193 vs 5426),改对并补 `eval_population`;
+#       `column`/`n`/`members_sha256`/`n_sectors` 逐字保留 —— T24 `relative_ledger`
+#       正在读它们。
+#   I-3 护照 `orphans` + `counts.orphan_*` 透传(静默丢票从此有对账计数)。
+#   I-4 真实 run 的副作用断言从「生产目录里不存在该文件」改成目录前后 diff —— 前者会被
+#       合法操作打破(文档给的 CLI 命令、T24 挂进 `post_run.observe` 的 `safe_write_decision`),
+#       是个会自己变红的假红灯。
+#
 # ── v1 已知问题(不在本轮改;改 = 新 rule_version + registry)────────────────
 #
 # 1. `REDFLAG_EARLY_STOP_REASONS` 里的 `"监管/审计红灯"` 在现行早停词表(`l4/parsers.py`

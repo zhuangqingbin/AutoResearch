@@ -620,6 +620,15 @@ def publish_run_observation(
     from autoresearch.scan.passport import safe_write_passport
 
     safe_write_passport(scan)
+    # 统一相对决策层 finalizer(Wave12 T23/T24,E6):**同点**挂在护照之后 —— 它现算护照
+    # (`build_passport`)再判四门四面,所以必须等 decision_records/早停/intel 全部定稿,
+    # 与护照是同一个时刻的两个派生视图。本轮仍是**影子**:只写
+    # `_relative_buy_decision.json`,不写 buy ledger、不改 publisher、不碰
+    # decision_records;失败只打一行(`safe_write_decision` 自带),不能反过来阻断发布。
+    # 前向观测的消费者是 `autoresearch.learning.relative_ledger`(夜间 `_ledgers`)。
+    from autoresearch.scan.relative_buy import safe_write_decision
+
+    safe_write_decision(scan)
     from autoresearch.scan.stage_result import safe_record_stage_result
 
     safe_record_stage_result(

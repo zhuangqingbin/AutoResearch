@@ -4,8 +4,13 @@
 design: docs/specs/2026-06-22-autoresearch-arch-redesign-design.md §A。
 
 把漏斗关键字参数(recall_n / l2_n / cap_floor / include_bj / source)收成一个 dataclass。
-现存消费方 = `user_config.apply_to_scan_config`(scan_config.jsonc 白名单映射);typed-trace
-平行实现(Pipeline/RunContext/cli)已于 2026-07-13 移除(生产真身一直是 prelude→universe.run 直调)。
+
+**消费方勘误(Wave12-T33,2026-08-09)**:这里原先写着「现存消费方 =
+`user_config.apply_to_scan_config`」——那是一句**过时且误导**的话。该函数自落地起生产零
+调用点(只有测试调它),本波已删除。本 dataclass 的真实消费路径是 `universe.run` 等直接
+按字段取值;`scan_config.jsonc` 的各块由各消费点自己 `load_user_config()` 现读,
+从来没有真的经由一个"映射函数"喂进来过。typed-trace 平行实现(Pipeline/RunContext/cli)
+已于 2026-07-13 移除(生产真身一直是 prelude→universe.run 直调)。
 """
 from __future__ import annotations
 

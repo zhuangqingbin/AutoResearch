@@ -175,4 +175,4 @@ _Claude 推理产出,非全量报告;仅供研究,非投资建议。要完整证
 
 ## 与 scan-market 的衔接
 
-scan-market L4 对 `finalists.csv` **每只一个 `Agent(model='opus')`** 调本 skill(渐进深度 + 早停);产物写 staging `context/scan/<date>/details/<ticker>.md`,由 `autoresearch.scan.assemble` 发布并汇成 buy-list。**~29 个 subagent 一条消息并发派发**,每只独立 context、只回传 评级/目标/R:R/早停与否。最终 ≥OW 的买单在发布前由 assemble 把关:self_review 硬门 + Tier-3 辩论折回评级(verify.csv,presence-gated;独立买单 skeptic 已于 07-06 移除)。
+scan-market L4 对 `finalists.csv` **每只一个 `l4-stock` workflow** 调本 skill(渐进深度 + 早停);卡片那一步派的是 `agentType: 'l4-card'`,**model/effort 档位见 scan_config.jsonc 的 `agents.l4_card`**(经 `user_config.resolve_agent_config` 解释成 `_resolved_agent_config.json`,workflow 照它派发)——本文档不写死档位,写死就成了单一事实源之外的第二个口子(Wave12-T33)。产物写 staging `context/scan/<date>/details/<ticker>.md`,由 `autoresearch.scan.assemble` 发布并汇成 buy-list。**每只独立 context、一条消息全并发派发**,只回传 评级/目标/R:R/早停与否。最终 ≥OW 的买单在发布前由 assemble 把关:self_review 硬门 + Tier-3 辩论折回评级(verify.csv,presence-gated;独立买单 skeptic 已于 07-06 移除)。
