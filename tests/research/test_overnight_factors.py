@@ -259,6 +259,9 @@ def _synth_cache(tmp_path, n: int = 320, n_days: int = 15):
             "exalter": ["机构专用", "某某证券营业部", "深股通专用", "另一家证券营业部"],
             "buy": [10.0, 20.0, 999.0, 5.0], "sell": [4.0, 5.0, 0.0, 1.0],
             "net_buy": [6.0, 15.0, 999.0, 4.0]}),
+        # 两融(既有 `rz_buy_intensity` 的源;供其 PIT 断言用)
+        "margin_detail": pd.DataFrame({"ts_code": ts, "rzye": 1e7, "rqye": 0.0,
+                                       "rzmre": 2.5e7, "rzche": 0.0, "rzrqye": 1e7}),
     }.items():
         (cache / ep).mkdir(parents=True, exist_ok=True)
         frame.to_pickle(cache / ep / f"{D}.pkl")
@@ -310,3 +313,25 @@ def test_factor_frame_survives_absent_optional_sources(tmp_path, monkeypatch):
     assert fr is not None
     assert fr["limit_ladder"].isna().all()
     assert "lhb_net_ratio_broker" not in fr.columns or fr["lhb_net_ratio_broker"].isna().all()
+
+
+def test_rz_buy_intensity_pit_next_day_margin_is_invisible(tmp_path, monkeypatch):
+    """**PIT · `rz_buy_intensity`**(任务书 Step 1 说的是「每因子」,上轮漏了这个既有列)。
+
+    D+1 的 `margin_detail` 快照写成极端值,D 的读数必须逐位不变 —— 它是**重验**对象而不是
+    新建列,但「只重验」不等于「不必证明它无前视」。
+    """
+    cache, piv, P, D, basic = _synth_cache(tmp_path)
+    monkeypatch.setattr(fl, "CACHE", cache)
+    monkeypatch.setattr(fl, "LAKE_ROOT", tmp_path / "lake")
+    before = fl.factor_frame(D, piv, P, basic, cap_floor=30.0, fwd=10)
+    assert before is not None
+    base = before.set_index("code")["rz_buy_intensity"].copy()
+    # 手算:rzmre 2.5e7 / (成交额 5e5 千元 = 5e8 元) = 0.05
+    assert base.loc["000001"] == pytest.approx(0.05)
+    nxt = f"{int(D) + 1}"
+    poison = pd.read_pickle(cache / "margin_detail" / f"{D}.pkl").assign(rzmre=9.9e12)
+    poison.to_pickle(cache / "margin_detail" / f"{nxt}.pkl")
+    after = fl.factor_frame(D, piv, P, basic, cap_floor=30.0, fwd=10)
+    pd.testing.assert_series_equal(base, after.set_index("code")["rz_buy_intensity"],
+                                   check_names=False)

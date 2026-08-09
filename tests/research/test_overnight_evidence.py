@@ -146,6 +146,84 @@ def test_bucket_intervals_ci_excludes_zero_only_when_it_should():
 # ───────────────────────── ② 通道 × 相位 ─────────────────────────
 
 
+def _attr(with_gap: bool) -> pd.DataFrame:
+    base = {"code": ["000001", "000002", "000003"], "fwd_2_oc": [0.01, -0.02, 0.03]}
+    if with_gap:
+        base["gap_c1_o2"] = [0.01, -0.01, 0.02]
+        base["buyable_c1"] = [True, True, True]
+    return pd.DataFrame(base)
+
+
+def test_repair_attribution_native_when_main_ruler_present():
+    out, status = oe.repair_attribution("2026-07-01", _attr(True))
+    assert status == "native"
+    assert out["gap_c1_o2"].notna().all()
+
+
+def test_repair_attribution_fills_from_lake_when_column_absent(monkeypatch):
+    """**C1 修复的核心**:历史 attribution 缺主尺列 → 用湖现算补齐,而不是整天丢掉。
+
+    实测 3 天(2026-06-18 / 06-22 / 07-07)只有旧尺列,retro 回填漏了它们。
+    """
+    gap = pd.DataFrame({"code": ["000001", "000002", "000003"],
+                        "gap_c1_o2": [0.05, -0.05, 0.0],
+                        "buyable_c1": [True, False, True],
+                        "eligible_gap": [True, False, True]})
+    monkeypatch.setattr(oe.rc, "gap_frame", lambda d, days=None, lake=None: gap)
+    out, status = oe.repair_attribution("2026-06-18", _attr(False))
+    assert status == "lake_filled"
+    assert list(out["gap_c1_o2"]) == [0.05, -0.05, 0.0]
+    assert "buyable_c1" in out.columns
+
+
+def test_repair_attribution_unusable_when_lake_also_empty(monkeypatch):
+    """湖也补不出来 → `unusable`,**显式计数**,不静默跳过。"""
+    monkeypatch.setattr(oe.rc, "gap_frame",
+                        lambda d, days=None, lake=None: pd.DataFrame(columns=["code"]))
+    _, status = oe.repair_attribution("2026-06-18", _attr(False))
+    assert status == "unusable"
+
+
+def test_repair_attribution_does_not_mutate_input(monkeypatch):
+    """历史产物只在内存里补,输入帧不得被就地改(铁律:历史产物不改写)。
+
+    code 故意用 **ts_code 形态**(`000001.SZ`)—— 用已经规范化的 6 位码写这条测试是没有
+    鉴别力的:`code` 列的规范化对它们是恒等变换,就地改与拷贝改**结果一样**,探针照过。
+    (这条正是被变异探针 R2 逮到的自曝盲区。)
+    """
+    gap = pd.DataFrame({"code": ["000001"], "gap_c1_o2": [0.05],
+                        "buyable_c1": [True], "eligible_gap": [True]})
+    monkeypatch.setattr(oe.rc, "gap_frame", lambda d, days=None, lake=None: gap)
+    src = pd.DataFrame({"code": ["000001.SZ", "000002.SZ"], "fwd_2_oc": [0.01, -0.02]})
+    before = src.copy()
+    out, status = oe.repair_attribution("2026-06-18", src)
+    assert status == "lake_filled"
+    pd.testing.assert_frame_equal(src, before), "输入帧被就地改了"
+    assert list(out["code"]) == ["000001", "000002"], "拷贝上才做规范化"
+
+
+def test_channel_phase_rows_accounts_for_every_day(monkeypatch, tmp_path):
+    """② 的人口必须有分母:native / lake_filled / unusable 逐类计数,丢弃的日子点名。
+
+    这是 C1 的回归锁 —— 原实现靠末尾 `dropna` 把缺主尺列的整天抹掉,零告警零计数,
+    报告却写「覆盖 28 个扫描日」像是普查。
+    """
+    ca = pytest.importorskip("autoresearch.research.channel_audit")
+    ch = pd.DataFrame({"channel": ["momentum", "momentum"], "code": ["000001", "000002"]})
+    loaded = {"2026-06-18": (ch, _attr(False)), "2026-06-23": (ch, _attr(True))}
+    monkeypatch.setattr(ca, "_scan_dates", lambda root, days: list(loaded))
+    monkeypatch.setattr(ca, "_load_day", lambda root, d, variant=None: loaded[d])
+    monkeypatch.setattr(oe.rc, "lake_days", lambda lake=None: [])
+    monkeypatch.setattr(oe.rc, "gap_frame",
+                        lambda d, days=None, lake=None: pd.DataFrame(columns=["code"]))
+    cov: dict = {}
+    oe.channel_phase_rows(tmp_path, phases={"2026-06-18": "高潮", "2026-06-23": "退潮"}, cov=cov)
+    assert cov["n_dirs"] == 2 and cov["n_loaded"] == 2
+    assert cov["n_native"] == 1
+    assert cov["n_unusable"] == 1
+    assert cov["dropped"] == ["2026-06-18"], "补不出来的日子必须被点名,不是静默消失"
+
+
 def test_phase_side_partition_matches_0804_recipe():
     """相位归属**逐字照抄** 2026-08-04 报告口径 A:发酵/高潮/修复=上涨侧,退潮/冰点=回撤侧。"""
     assert oe.phase_side("发酵") == "上涨" and oe.phase_side("高潮") == "上涨"
@@ -272,16 +350,112 @@ def test_side_verdict_immature_blocks_any_conclusion():
     assert oe._side_verdict(recs)[0] == "IMMATURE"
 
 
-def test_thermo_verdict_needs_two_non_overlapping_mature_intervals():
-    """③节判据**不设人造阈值**:成熟相位的 CI 两两重叠 → 分辨不开 → `NOT_CONDITIONAL`。"""
-    overlap = [{"phase": "高潮", "point": -0.0019, "lo": -0.0036, "hi": -0.0002,
-                "n_days": 22, "maturity": "MATURE"},
-               {"phase": "退潮", "point": -0.0004, "lo": -0.0018, "hi": 0.0011,
-                "n_days": 67, "maturity": "MATURE"}]
-    assert oe._thermo_verdict(overlap)[0] == "NOT_CONDITIONAL"
-    disjoint = [dict(overlap[0], lo=-0.02, hi=-0.01),
-                dict(overlap[1], lo=0.01, hi=0.02)]
-    assert oe._thermo_verdict(disjoint)[0] == "CONDITIONAL"
+def _phase_rows(spec: dict) -> pd.DataFrame:
+    """{phase: [逐日 market_gap]} → 逐日长表。"""
+    out = []
+    for ph, vals in spec.items():
+        for i, v in enumerate(vals):
+            out.append({"date": f"{ph}{i}", "phase": ph, "market_gap": v})
+    return pd.DataFrame(out)
+
+
+def _phase_recs(spec: dict) -> list[dict]:
+    return [{"phase": ph, "point": float(np.mean(v)), "lo": -0.05, "hi": 0.05,
+             "n_days": len(v), "maturity": "MATURE" if len(v) >= 10 else "IMMATURE"}
+            for ph, v in spec.items()]
+
+
+def test_thermo_verdict_uses_difference_interval_not_ci_overlap():
+    """③节判据 = **两两均值差**的区间是否含 0,不是边际 CI 重不重叠。
+
+    构造:两组边际区间被我**故意写成大幅重叠**([-0.05, 0.05]),但两组真值分离很远
+    → 差值区间不含 0 → 必须判 `CONDITIONAL`。旧的重叠判据在这里会误判成「分辨不开」。
+    """
+    spec = {"高潮": [0.05] * 14, "退潮": [-0.05] * 14}
+    v, txt = oe._thermo_verdict(_phase_recs(spec), _phase_rows(spec))
+    assert v == "CONDITIONAL", txt
+
+
+def test_thermo_verdict_unknown_not_a_positive_negative_label():
+    """分辨不开 → `UNKNOWN`(证据不足),**不得**是 `NOT_CONDITIONAL` 这种肯定式否定标签。
+
+    本文件方法论写死「不显著 ≠ 等价」,②节对 heat 严格照办;③节不能有第二套标准。
+    """
+    rng = np.random.default_rng(5)
+    spec = {"高潮": list(rng.normal(0, 0.02, 22)), "退潮": list(rng.normal(0, 0.02, 30))}
+    v, txt = oe._thermo_verdict(_phase_recs(spec), _phase_rows(spec))
+    assert v == "UNKNOWN"
+    assert "NOT_CONDITIONAL" not in v
+    assert "证据不足" in txt or "功效不足" in txt
+
+
+def test_thermo_verdict_never_cites_point_spread_as_evidence():
+    """**不许**用「点估计极差仅 X」当分辨不开的理由 —— 同一份报告①节把 0.14pp 当显著效应,
+    ③节拿 0.15pp 当「小到不必管」,是同一文档内自相矛盾(review I2c)。"""
+    rng = np.random.default_rng(5)
+    spec = {"高潮": list(rng.normal(0, 0.02, 22)), "退潮": list(rng.normal(0, 0.02, 30))}
+    _, txt = oe._thermo_verdict(_phase_recs(spec), _phase_rows(spec))
+    assert "极差" not in txt
+
+
+def test_phase_delta_interval_hand_checked_separation():
+    """差值区间:两组常数 → 点估计 = 差,区间退化且不含 0。"""
+    rows = _phase_rows({"a": [0.02] * 12, "b": [-0.01] * 12})
+    d = oe.phase_delta_interval(rows, "a", "b")
+    assert d["point"] == pytest.approx(0.03)
+    assert d["crosses_zero"] is False
+
+
+def test_phase_delta_interval_too_few_days_is_none():
+    rows = _phase_rows({"a": [0.02], "b": [-0.01] * 12})
+    assert oe.phase_delta_interval(rows, "a", "b")["crosses_zero"] is None
+
+
+def test_bucket_intervals_keeps_unknown_bucket_labels():
+    """未知桶标签**必须被追加**,不能静默丢弃 —— 这条修复此前只有一个用例靠 IndexError
+    间接守着,谁把那个用例的 `bucket` 改成合法值,修复就静默失去测试(review M3)。"""
+    rows = pd.DataFrame({"date": ["d1", "d2"], "bucket": ["≥9.5%", "天外飞仙"],
+                         "rel_gap_market": [0.01, 0.02]})
+    tbl = oe.bucket_intervals(rows)
+    assert set(tbl["bucket"]) == {"≥9.5%", "天外飞仙"}
+    assert list(tbl["bucket"])[0] == "≥9.5%", "已知桶在前,未知桶追加在后"
+
+
+def test_phase_gap_table_keeps_unknown_phase_labels():
+    """同款未知相位追加逻辑此前**完全没有测试**(review M3)。"""
+    rows = pd.DataFrame({"date": ["d1", "d2", "d3"], "phase": ["高潮", "妖股期", "退潮"],
+                         "market_gap": [0.01, 0.02, -0.01]})
+    tbl = oe.phase_gap_table(rows)
+    assert set(tbl["phase"]) == {"高潮", "妖股期", "退潮"}
+    assert list(tbl["phase"])[-1] == "妖股期", "未知相位追加在固定序之后"
+
+
+def test_interval_row_marks_crosses_zero_unknown_when_no_interval():
+    """**数据层**修复(review M4):没有区间时 `crosses_zero` 必须是 None(未知),
+    不是 `True`。`--json` 导出的字段会被下游直接读,修在展示层不算修。"""
+    one = pd.DataFrame({"date": ["d1"] * 5, "v": [0.01] * 5})
+    row = oe._interval_row(one, "v")
+    assert row["n_days"] == 1
+    assert row["lo"] is None and row["hi"] is None
+    assert row["crosses_zero"] is None
+
+
+def test_side_verdict_immature_when_a_side_has_no_interval():
+    """某侧无区间 → IMMATURE,不得因为 `crosses_zero=None` 是假值就滑进 CONFIRMED。"""
+    recs = [{"side": "回撤", "point": 0.0, "lo": None, "hi": None, "n_days": 14,
+             "crosses_zero": None, "maturity": "MATURE"},
+            {"side": "上涨", "point": -0.005, "lo": -0.009, "hi": -0.002, "n_days": 14,
+             "crosses_zero": False, "maturity": "MATURE"}]
+    assert oe._side_verdict(recs)[0] == "IMMATURE"
+
+
+def test_side_thin_uses_scan_day_floor_not_subgroup_floor():
+    """薄样本判据是 ≥20 真实扫描日(`MATURITY_MIN_SCAN_DAYS`),不是细分门的 10 ——
+    过 10 只说明「可以有读数」,不等于「够格改生产配额」(review I1)。"""
+    thin = _sides(-0.005, -0.009, -0.002, -0.002, 0.002, n=14)
+    assert oe._side_thin(thin) is True
+    ok = _sides(-0.005, -0.009, -0.002, -0.002, 0.002, n=25)
+    assert oe._side_thin(ok) is False
 
 
 def test_thermo_verdict_ignores_interval_less_phases():
