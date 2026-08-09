@@ -295,6 +295,14 @@ if (l3lint && l3lint.ok === false) {
       n: { type: 'integer' }, prompt: { type: 'string' } } }
   const repair = await gate('l3-repair-pack',
     `${R} autoresearch.scan.agents.l3_select repair-pack ${date}`, REPAIR, 'L3')
+  // Wave12-T34 归因契约(改这段前先读):`l3_repair` 复用 `agentType: 'l3-rank'` 派发,
+  // harvest 分不清一行是主排还是自修。归因靠的是**产物**——`repair-pack` 在派发之前写下的
+  // `_l3_repair_prompt.md` 在场即"本日派过一次 l3_repair"
+  // (`autoresearch.trace.usage_reconcile.dispatch_census`)。
+  // 故意不让这个 agent 自己写标记:2026-07-27 它死于 `Connection closed mid-response`,
+  // 烧掉 56.9k 加权却没留下任何自报记录 —— 让"它自己承认跑过"当唯一事实源,恰好会在
+  // 它死掉时丢掉那一行的归属,而那正是最需要看清成本的时刻。
+  // ⚠️ 若以后改成"prompt 不在场也可能派发"或"n==0 也写 prompt",必须同步改 dispatch_census。
   const fix = repair && repair.n > 0 ? await agent(
     `Read ${SD}/_l3_repair_prompt.md，只处理其中列出的失败票；按文件内 schema 用 Write 写 ${SD}/_l3_repair_patch.json。不要读取任何全量 L3 输入或输出文件。`,
     { agentType: 'l3-rank', ...AG('l3_repair'), label: 'L3-lint-fix', phase: 'L3' })

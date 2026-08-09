@@ -263,6 +263,9 @@ if (trigger) {
   const r2 = await rerun(2)
   const sameTier = !!r2 && tier(r2.rating) === tier(card.rating)
   const r3 = sameTier ? null : await rerun(3)
+  // Wave12-T34:**派发次数**(不是成功次数)——失败的 run 一样烧了 token、一样在
+  // harvest 里留一行,所以归因普查要数"派了几次"。r2 恒派;r3 仅在分歧时派。
+  const ensDispatched = sameTier ? 1 : 2
   const earlyStopped = sameTier
   const reruns = [r2, r3].filter(Boolean)
   if (earlyStopped) log(`🎭 同档早止:${code} run2 与 run1 同为 ${card.rating} —— 中位已定,跳过 run3`)
@@ -273,9 +276,15 @@ if (trigger) {
   const degraded = earlyStopped ? false : ratings.length < 3
   const medianTier = sorted[Math.floor(sorted.length / 2)]
   const names = ['Sell', 'Underweight', 'Hold', 'Overweight', 'Buy']
+  // Wave12-T34:`role`/`n_dispatch` = 本票 ens_review 的**派发子记录**。
+  // 复核 run 复用 `agentType: 'l4-card'` 派发,harvest 的 attributionAgent 只记 agentType,
+  // 于是 usage_reconcile 此前分不清一行是主卡还是复核,靠「两者 effort 恰好同为 max」蒙混。
+  // 这两个键让它有据可归行(`autoresearch.trace.usage_reconcile.dispatch_census`)。
+  // 零新增派发:搭既有 ens-dump 的便车,只多两个 JSON 字段。
   const rec = { code, ratings, median: names[medianTier],
     spread: sorted[sorted.length - 1] - sorted[0], degraded, trigger,
-    n_runs: ratings.length, early_stopped: earlyStopped }
+    n_runs: ratings.length, early_stopped: earlyStopped,
+    role: 'ens_review', n_dispatch: ensDispatched }
   await agent(
     `在仓库根目录精确执行下面这条命令,然后只回报退出码。不要做别的、不要判断。\n` +
     `**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向(heredoc 原样保留)。**` +

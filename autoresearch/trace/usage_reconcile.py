@@ -21,6 +21,14 @@ design: docs/specs/2026-08-05-wave11-ruler-config-l4concurrency-skills-design.md
    `attributionAgent` 只记到 Agent 工具的 `subagent_type`,分不清某一行到底是 `gp_shell`
    还是 `gp_shell_json` 派的。本模块把两者期望 spec 的**并集**当合法集合,实测
    `(model, effort)` ∈ 并集即算过;**分不清具体是哪一个,不装作分得清**。
+
+   **Wave12-T34 例外**:`ens_review`(复用 `l4-card`)与 `l3_repair`(复用 `l3-rank`)
+   两个复用父 agentType 的 role **不再**走这条兜底。它们的派发次数由 `dispatch_census()`
+   从产物普查出来(`_ensemble_<code>.json` 的 `role`/`n_dispatch`、`_l3_repair_prompt.md`
+   在场),次级 role 认领自己的行、主 role 吸收其余 → mismatch **逐 role 分行报**。
+   此前它们被一律按父 role 的期望判,能过关纯属巧合(生产里两者 effort 恰好同为 `max`),
+   一旦分开调参就会既产生假阳(冤枉 l4_card)又产生假阴(掩盖 ens_review 自己的偏差)。
+   只有普查也拿不到时,才退回并集断言(`role=None`)。
 3. **effort 是请求参数,不是推理深度**:harvest 记录的是「发出的请求」携带的 model/effort
    参数——它证明「配置到达了调用点」,**不证明模型真的按这个深度推理**。这已经是
    本对账能做到的最深层。
@@ -35,30 +43,34 @@ import json
 from pathlib import Path
 
 # agentType(usage_harvest 的 `row["agent"]`,即派发时 Agent 工具的 `subagent_type`)→
-# scan_config.jsonc `agents.<role>` 闭集里的 role 名(见 `autoresearch.scan.user_config
-# ._AGENT_ROLES`)。`general-purpose` 故意不在这张表里——它没有 role label,走下面
-# 「壳类集合断言」分支(见模块 docstring 边界 2)。
+# 该 agentType 底下可能的 role **有序**元组:**第 0 位是主 role**(吸收剩余行),
+# 其后是复用同一 agentType 派发的次级 role。`general-purpose` 故意不在这张表里——
+# 它没有 role label,走下面「壳类集合断言」分支(见模块 docstring 边界 2)。
 #
-# ⚠️ 已知局限(2026-08-06 核实,未在本轮修——见 task-9-report.md「已知局限」节):
-# `ens_review`(l4-card 双复核 run2/3)与 `l3_repair`(L3 lint-fix 补跑)两个 role **复用**
-# 父 role 同一个 agentType 派发(`.claude/workflows/l4-stock.js` 253 行 `rerun()`、
-# `.claude/workflows/scan-market.js` 293 行 `L3-lint-fix` 均写 `agentType: 'l4-card'`/
-# `'l3-rank'`,与主调用同名)——harvest 的 `attributionAgent` 只记 agentType,记不到
-# 是主调用还是复核/补跑,与 `general-purpose` 分不清 `gp_shell`/`gp_shell_json` 是同一类
-# 结构性盲。本表仍按「一个 agentType → 一个 role」处理(只映到父 role),**没有**对
-# ens_review/l3_repair 做类似 `gp_shell` 的并集豁免——现状能蒙混过关纯属巧合:生产配置
-# 里 `ens_review.effort` 与 `l4_card.effort` 当前碰巧同为 `max`(2026-08 起)。一旦两者
-# 效果值被分开调参,本表会对着 ens_review 的行误判成"l4_card mismatch"(假阳)或反过来
-# 让 ens_review 自己的真实偏差被 l4_card 的期望值掩盖(假阴)。修法应比照 `gp_shell` 的
-# 并集断言,但改动会影响 mismatch 的精确定位语义,留作独立后续 task,不在本轮展开。
-AGENTTYPE_TO_ROLE = {
-    "l3-rank": "l3_rank",
-    "l4-card": "l4_card",
-    "l4-intel": "l4_intel",
-    "macro-brief": "strategist",
-    "sector-brief": "sector_brief",
-    "dossier-init": "dossier_init",
+# Wave12-T34(2026-08-09):此前本表是「一个 agentType → 一个 role」,`ens_review`
+# (l4-card 双复核 run2/3,`.claude/workflows/l4-stock.js` `rerun()`)与 `l3_repair`
+# (L3 lint-fix 补跑,`.claude/workflows/scan-market.js` `L3-lint-fix`)复用父 agentType
+# 派发,harvest 的 `attributionAgent` 只记 agentType,于是这两类行**一律被按父 role 的
+# 期望值判**。它此前没显影纯属巧合:生产配置里 `ens_review.effort` 与 `l4_card.effort`
+# 当时碰巧同为 `max` —— 靠「两者配置值恰好相同」蒙混。一旦分开调参,本表会把 ens_review
+# 的合规行误判成 l4_card mismatch(假阳),或让 ens_review 自己的真实偏差被 l4_card 的
+# 期望值掩盖(假阴)。
+#
+# 修法**不是**照抄 `gp_shell` 的并集豁免(那会把精确定位一起丢掉,ens_review 跑偏时
+# 只要落在并集里就永远查不出来),而是引入**派发人口普查**(`dispatch_census`):
+# 次级 role 派了几次由**产物**说了算,主 role 吸收其余行 → 每一行都能落到具体 role 上,
+# mismatch 因此**逐 role 分行报**(带 `role` 字段)。拿不到 census 时才退回集合断言兜底。
+AGENTTYPE_ROLES: dict[str, tuple[str, ...]] = {
+    "l3-rank": ("l3_rank", "l3_repair"),
+    "l4-card": ("l4_card", "ens_review"),
+    "l4-intel": ("l4_intel",),
+    "macro-brief": ("strategist",),
+    "sector-brief": ("sector_brief",),
+    "dossier-init": ("dossier_init",),
 }
+
+#: 兼容既有导入方(只给主 role)。新代码请用 `AGENTTYPE_ROLES`。
+AGENTTYPE_TO_ROLE = {atype: roles[0] for atype, roles in AGENTTYPE_ROLES.items()}
 
 # 全扫描日「应在场」的 role——t1_diag/t1_synth 属 t1-review 快环、dossier_init 属首覆
 # workflow,均非每个 scan-market 全扫日必跑;放进来会对着正常运作的当日报假 wire_break。
@@ -112,15 +124,142 @@ def _norm_model(raw: str | None) -> str:
     return raw or "?"
 
 
-def _reconcile_core(echo: dict, rows: list[dict], *, date: str) -> dict:
+#: 次级 role 的派发次数从哪些产物读出来(Wave12-T34)。**只数次级 role**——主 role
+#: 吸收剩余行,所以不需要(也不该)去数它:数主 role 会引入第二个可能错的计数。
+_SECONDARY_ROLES = ("ens_review", "l3_repair")
+
+
+def dispatch_census(scan_dir: Path | str) -> dict[str, int]:
+    """逐**次级** role 的实际派发次数 —— 产物说了算,不靠 agent 自报。
+
+    两个来源,都**只读既有产物、零新增派发**:
+
+    - `ens_review`:`_ensemble_<code>.json`。优先读显式子记录 `role`/`n_dispatch`
+      (Wave12-T34 起 `l4-stock.js` 的 ens-dump 一并写进去);老产物无这两个键 →
+      由 `n_runs - 1` 推断(主卡 1 次 + 复核 n-1 次,`rerun()` 的定义)。
+    - `l3_repair`:`_l3_repair_prompt.md` 在场即 1 次。**故意用产物推断而不是让 agent
+      自己写标记**:2026-07-27 实跑过 L3 自修 agent 死于 `Connection closed mid-response`
+      ——它烧掉了 56.9k 加权却没留下任何自报记录。让"它自己承认跑过"当唯一事实源,
+      恰好会在它死掉时丢掉那一行的归属,而那正是最需要看清成本的时刻。
+      prompt 由 `repair-pack` 在派发**之前**写下,agent 死不死它都在。
+
+    presence-gated:目录不存在 / 产物坏 → 该源计 0,**绝不抛异常**(本模块是报表,不毙人)。
+    """
+    scan = Path(scan_dir)
+    out: dict[str, int] = {}
+    for path in sorted(scan.glob("_ensemble*.json")):
+        try:
+            rec = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(rec, dict):
+            continue
+        if rec.get("role") == "ens_review" and rec.get("n_dispatch") is not None:
+            try:
+                n = max(int(rec["n_dispatch"]), 0)
+            except (TypeError, ValueError):
+                n = 0
+        else:
+            try:
+                n = max(int(rec.get("n_runs") or 1) - 1, 0)
+            except (TypeError, ValueError):
+                n = 0
+        if n:
+            out["ens_review"] = out.get("ens_review", 0) + n
+    if (scan / "_l3_repair_prompt.md").exists():
+        out["l3_repair"] = out.get("l3_repair", 0) + 1
+    return out
+
+
+def _spec_of(atype: str, role: str, agents_cfg: dict) -> dict:
+    """某 role 的期望 spec = agent def frontmatter 垫底 + config override 覆盖。"""
+    return {**_frontmatter(atype), **(agents_cfg.get(role) or {})}
+
+
+def _fits(exp: dict, got: tuple[str, str]) -> bool:
+    """实测 `(model, effort)` 是否**逐字段**满足期望(期望里没有的字段不判)。"""
+    return all(exp[f] == g for f, g in (("model", got[0]), ("effort", got[1])) if f in exp)
+
+
+def _judge_multi_role(atype: str, roles: tuple[str, ...], got_rows: list[tuple[str, str]],
+                      agents_cfg: dict, census: dict[str, int]) -> list[dict] | None:
+    """同 agentType 多 role 的归行判定 —— 每一行落到具体 role 上,mismatch **分行报**。
+
+    返回 mismatch 列表;`None` = 拿不到 census(次级 role 一次都没派 → 调用方按单 role
+    老路走;这不是兜底失败,是"今天确实只有主 role 在跑")。
+
+    算法(贪心两趟,小 N 下够用且可读):
+      ① 先让每个次级 role 从实测行里**认领它认得出的行**(逐字段满足其 spec 的),
+         认领上限 = census 说它派了几次;
+      ② 还欠着的次级 role 名额,从剩余行里按序取一行来判 —— 判不过就记它自己的
+         mismatch(**这一行归它,不再冤枉主 role**);
+      ③ 剩下的行全部归主 role,按主 role 的 spec 判。
+
+    为什么①要先"认领得上的":配置分开调参后,ens_review 的合规行长得和 l4_card 的
+    不一样,先把长得对的挑走,剩下的才是真跑偏的 —— 反过来(先按顺序切前 k 行给
+    ens_review)会随机制造假阳。
+    """
+    secondary = [r for r in roles[1:] if int(census.get(r, 0)) > 0]
+    if not secondary:
+        return None
+    primary = roles[0]
+    specs = {r: _spec_of(atype, r, agents_cfg) for r in roles}
+    need = {r: int(census.get(r, 0)) for r in secondary}
+
+    remaining = list(got_rows)
+    for role in secondary:                       # ① 认领长得对的
+        keep: list[tuple[str, str]] = []
+        for got in remaining:
+            if need[role] and _fits(specs[role], got):
+                need[role] -= 1
+            else:
+                keep.append(got)
+        remaining = keep
+
+    mismatches: list[dict] = []
+    for role in secondary:                       # ② 欠着的名额从剩余行里认，判不过记它自己
+        while need[role] and remaining:
+            got = remaining.pop(0)
+            exp = specs[role]
+            for field, got_val in (("model", got[0]), ("effort", got[1])):
+                if field in exp and exp[field] != got_val:
+                    mismatches.append({"agent": atype, "role": role, "field": field,
+                                       "expected": exp[field], "actual": got_val})
+            need[role] -= 1
+
+    for got in remaining:                        # ③ 剩下的归主 role
+        exp = specs[primary]
+        for field, got_val in (("model", got[0]), ("effort", got[1])):
+            if field in exp and exp[field] != got_val:
+                mismatches.append({"agent": atype, "role": primary, "field": field,
+                                   "expected": exp[field], "actual": got_val})
+
+    # census 说派了、实测行却不够 → 不当没发生:少的那几次要么没被 harvest 到,
+    # 要么根本没派成。两种都是"这份对账不完整",按 wire 语义单列一条。
+    for role in secondary:
+        if need[role]:
+            mismatches.append({"agent": atype, "role": role, "field": "dispatch_count",
+                               "expected": f"census {census.get(role)} 次",
+                               "actual": f"实测行少 {need[role]} 次"})
+    return mismatches
+
+
+def _reconcile_core(echo: dict, rows: list[dict], *, date: str,
+                    census: dict[str, int] | None = None) -> dict:
     """纯函数核心:输入已经是内存里的 `echo`/`rows` dict,不碰文件系统。
 
     `reconcile()` 是它的文件 I/O 外壳(读两份产物后转手调用这里)。拆出这一层是为了让
     「拿真实 harvest 数据、只手动改一处字段」这种变异验证不需要每次都先落临时文件——
     这正是本模块验收(mutation testing)最常做的操作,值得有一个不用碰磁盘的入口。
 
-    返回 `{date, ok, mismatches:[{agent,field,expected,actual}], wire_breaks:[role],
+    返回 `{date, ok, mismatches:[{agent,role,field,expected,actual}], wire_breaks:[role],
     unknown_agent_types:[agentType], checked}`。
+
+    `census`(Wave12-T34)= 次级 role 的实际派发次数(`dispatch_census()` 的产物);
+    给了它,同 agentType 的多 role 才分得开、mismatch 才带得上 `role` 字段。**不给**
+    (或次级 role 今天一次没派)时:两 role 的期望 spec 若不同,退回**并集集合断言**
+    (仿 `gp_shell`,`role=None`)——分不清就不装分得清,但也绝不再拿主 role 的期望去
+    冤枉次级 role 的行(那是 Wave12-T34 之前的假阳/假阴根因)。
 
     - `mismatches` 逐**实测行**记,不按 role 去重合并——同一 role 多行各自独立判(2026-08-05
       真实数据里 l3-rank 一次 `max` 一次 `medium`,就是两行各自的判断;合并会盖掉"这次跑
@@ -138,6 +277,7 @@ def _reconcile_core(echo: dict, rows: list[dict], *, date: str) -> dict:
       N-1 行。
     """
     agents_cfg = echo.get("agents") or {}
+    census = dict(census or {})
 
     gp_allowed: set[tuple[str, str]] = set()
     for shell in ("gp_shell", "gp_shell_json"):
@@ -147,6 +287,7 @@ def _reconcile_core(echo: dict, rows: list[dict], *, date: str) -> dict:
     mismatches: list[dict] = []
     seen_types: set[str] = set()
     unknown_types: set[str] = set()
+    by_type: dict[str, list[tuple[str, str]]] = {}
     checked = 0
     for r in rows:
         if r.get("role") != "subagent":
@@ -155,22 +296,48 @@ def _reconcile_core(echo: dict, rows: list[dict], *, date: str) -> dict:
         atype = r.get("agent") or ""
         seen_types.add(atype)
         got = (_norm_model(r.get("model")), r.get("effort") or "(unset)")
-        if atype in AGENTTYPE_TO_ROLE:
-            role = AGENTTYPE_TO_ROLE[atype]
-            exp = {**_frontmatter(atype), **(agents_cfg.get(role) or {})}
-            for field, got_val in (("model", got[0]), ("effort", got[1])):
-                if field in exp and exp[field] != got_val:
-                    mismatches.append({"agent": atype, "field": field,
-                                       "expected": exp[field], "actual": got_val})
+        if atype in AGENTTYPE_ROLES:
+            by_type.setdefault(atype, []).append(got)   # 同 agentType 攒齐再判(多 role 需要全局视野)
         elif atype == "general-purpose":
             if got not in gp_allowed:
-                mismatches.append({"agent": atype, "field": "model+effort",
+                mismatches.append({"agent": atype, "role": None, "field": "model+effort",
                                    "expected": sorted(gp_allowed), "actual": list(got)})
         else:
             unknown_types.add(atype)          # 既不在映射表也不是 general-purpose——不装懂
 
+    for atype, got_rows in by_type.items():
+        roles = AGENTTYPE_ROLES[atype]
+        judged = (_judge_multi_role(atype, roles, got_rows, agents_cfg, census)
+                  if len(roles) > 1 else None)
+        if judged is not None:
+            mismatches.extend(judged)
+            continue
+        # 兜底只在次级 role **确实被配置了**时才启用。没配 = 没人在管这个档位,它的
+        # "期望"不过是父 agent def 的 frontmatter,拿它去撑并集会把父 role 本来逮得住的
+        # mismatch 一并放过(实测:那会让 test_effort_mutation_caught 这类探针集体失明)。
+        live = [role for role in roles if role == roles[0] or role in agents_cfg]
+        specs = {role: _spec_of(atype, role, agents_cfg) for role in live}
+        distinct = {tuple(sorted(spec.items())) for spec in specs.values()}
+        if len(live) > 1 and len(distinct) > 1:
+            # 兜底(census 缺,但两 role 期望确实不同):只断言实测 ∈ 并集,**不指认**是哪个
+            # role —— 分不清就不装分得清(同 gp_shell 边界 2)。想要精确定位,把 census 补上。
+            for got in got_rows:
+                if not any(_fits(specs[role], got) for role in live):
+                    mismatches.append({
+                        "agent": atype, "role": None, "field": "model+effort",
+                        "expected": sorted(f"{role}:{specs[role]}" for role in live),
+                        "actual": list(got)})
+            continue
+        role = roles[0]                     # 单 role,或多 role 但期望完全一致 → 逐行直判
+        exp = specs[role]
+        for got in got_rows:
+            for field, got_val in (("model", got[0]), ("effort", got[1])):
+                if field in exp and exp[field] != got_val:
+                    mismatches.append({"agent": atype, "role": role, "field": field,
+                                       "expected": exp[field], "actual": got_val})
+
     wire_breaks = [role for role in _EXPECT_PRESENT if role in agents_cfg
-                   and not any(AGENTTYPE_TO_ROLE.get(t) == role for t in seen_types)]
+                   and not any(role in AGENTTYPE_ROLES.get(t, ()) for t in seen_types)]
     unknown_agent_types = sorted(unknown_types)
     ok = not mismatches and not wire_breaks and not unknown_agent_types
     return {"date": str(date), "ok": ok, "mismatches": mismatches, "wire_breaks": wire_breaks,
@@ -191,7 +358,9 @@ def reconcile(date: str, root: str | Path | None = None) -> dict:
     scan = base / "context" / "scan" / str(date)
     echo = json.loads((scan / "user_config_echo.json").read_text(encoding="utf-8"))
     rows = json.loads((scan / "_token_usage.json").read_text(encoding="utf-8")).get("rows") or []
-    return _reconcile_core(echo, rows, date=str(date))
+    # census 是 presence-gated 的**增益**:有它 ens_review/l3_repair 才分得开;
+    # 没它(老 run 目录)照常出表,只是多 role 那几个 agentType 退回集合断言。
+    return _reconcile_core(echo, rows, date=str(date), census=dispatch_census(scan))
 
 
 def render(result: dict) -> str:
@@ -203,7 +372,10 @@ def render(result: dict) -> str:
         "`self_review` 的对应 check 读到的是**最近一份既有**结果(通常是上一次 run),"
         "不是「当日」结论。",
         "> 2. **壳类只做集合断言**:`general-purpose` 不带 role label,分不清是 `gp_shell` "
-        "还是 `gp_shell_json`——下表这类行只断言实测 ∈ 两者期望的并集,不指认具体是哪一个。",
+        "还是 `gp_shell_json`——下表这类行只断言实测 ∈ 两者期望的并集,不指认具体是哪一个。"
+        "复用父 agentType 的 `ens_review`/`l3_repair` 自 Wave12-T34 起**不再**走这条兜底:"
+        "派发次数由产物普查(`dispatch_census`)给出,mismatch 逐 role 分行报;只有普查拿不到"
+        "时才退回并集断言(那时 role 列显示 `—`)。",
         "> 3. **effort 是请求参数**:harvest 证明「配置到达了调用点」(发出的请求带什么参数),"
         "不证明模型真的按这个深度推理——这是本对账能做到的最深层。",
         "",
@@ -225,9 +397,10 @@ def render(result: dict) -> str:
         lines += [f"- `{t}`" for t in result["unknown_agent_types"]]
         lines.append("")
     if result["mismatches"]:
-        lines += ["| agent | field | expected | actual |", "|---|---|---|---|"]
+        lines += ["| agent | role | field | expected | actual |", "|---|---|---|---|---|"]
         for m in result["mismatches"]:
-            lines.append(f"| {m['agent']} | {m['field']} | {m['expected']} | {m['actual']} |")
+            lines.append(f"| {m['agent']} | {m.get('role') or '—'} | {m['field']} "
+                         f"| {m['expected']} | {m['actual']} |")
         lines.append("")
     else:
         lines.append("_无 mismatch。_")
