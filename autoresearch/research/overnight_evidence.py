@@ -116,11 +116,18 @@ def _interval_row(sub: pd.DataFrame, value_col: str, **extra) -> dict:
     `crosses_zero` 在**没有区间**时是 `None`(未知),不是 `True` —— `Interval.excludes_zero`
     对 lo/hi=None 返回 `False`,直接取 `not` 会把「压根没算出区间」记成「算过了,跨 0」。
     这个字段会随 `--json` 导出给下游,修在展示层不算修(M4,review 2026-08-09)。
+
+    `n_days`/`n_obs` 取的是**区间真正用到的**样本(`Interval.n_clusters`/`Interval.n`),
+    不是"有行的日子/行数"(修复轮2 根因):`date_cluster_bootstrap` 先丢 NaN 再按日聚簇,
+    而本函数原来数的是 `sub["date"].nunique()` —— **整天全 NaN 的日子也被算进去**。
+    于是一行可以自称 `n_days=15 · MATURE`,而区间其实只由 1 天产生;成熟度标签因此失真,
+    也正是这条让 `_chase_verdict` 在"无区间"上仍拿到 `MATURE` 从而吐出方向性裁决。
+    三条聚合路径里只有 `bucket_intervals`(①节)不预过滤 NaN,所以这条路只有它可达。
     """
     iv = st.date_cluster_bootstrap(sub, value_col, date_col="date")
-    n_days = int(sub["date"].nunique())
+    n_days = int(iv.n_clusters)
     has_iv = iv.lo is not None and iv.hi is not None
-    return {**extra, "n_days": n_days, "n_obs": int(len(sub)),
+    return {**extra, "n_days": n_days, "n_obs": int(iv.n),
             "point": None if iv.point is None else round(iv.point, 5),
             "lo": None if iv.lo is None else round(iv.lo, 5),
             "hi": None if iv.hi is None else round(iv.hi, 5),
@@ -415,10 +422,25 @@ def _missing(x) -> bool:
     return x is None or (isinstance(x, float) and pd.isna(x))
 
 
+def crosses_zero_of(r: dict) -> bool | None:
+    """一行读数是否跨 0 —— **由 lo/hi 现算**,`None` = 没有区间(未知)。
+
+    这是「跨没跨 0」在本模块的**唯一**判定点(修复轮2 自查的收尾)。此前 `crosses_zero`
+    这个**字段**同时存在于产出与消费两端,于是每个消费者都得自己记得加 `_missing` 守卫 ——
+    `_side_verdict` 加了、`_chase_verdict` 忘了,而后者产出的正是①节那个唯一被判「可以引用」
+    的裁决。同一件事有两个真相来源,就一定会有人只更新其中一个:字段保留(`--json` 下游要读),
+    但**模块内一律走本函数**,不再各自读字段。
+    """
+    lo, hi = r.get("lo"), r.get("hi")
+    if _missing(lo) or _missing(hi):
+        return None
+    return bool(lo <= 0.0 <= hi)
+
+
 def _iv(r: dict) -> str:
-    if _missing(r.get("lo")) or _missing(r.get("hi")):
+    if crosses_zero_of(r) is None:
         return f"{_pct(r.get('point'))}(n_days={r.get('n_days')},**无跨日方差,不产区间**)"
-    mark = "跨 0" if r.get("crosses_zero") else "**整区间同号**"
+    mark = "跨 0" if crosses_zero_of(r) else "**整区间同号**"
     return f"{_pct(r.get('point'))} [{_pct(r.get('lo'))}, {_pct(r.get('hi'))}] {mark}"
 
 
@@ -434,14 +456,15 @@ def _side_verdict(records: list[dict]) -> tuple[str, str]:
         return "IMMATURE", "两侧读数不全。"
     if up.get("maturity") != "MATURE" or down.get("maturity") != "MATURE":
         return "IMMATURE", f"两侧 n_days={up.get('n_days')}/{down.get('n_days')},未过细分成熟门。"
-    if _missing(up.get("crosses_zero")) or _missing(down.get("crosses_zero")):
+    up_x, down_x = crosses_zero_of(up), crosses_zero_of(down)
+    if up_x is None or down_x is None:
         return "IMMATURE", "某一侧没有区间(无跨日方差),不下结论。"
-    if up.get("crosses_zero"):
+    if up_x:
         return "UNKNOWN", (f"上涨侧 {_iv(up)} —— **区间跨 0**,旧尺的「上涨侧有害」在隔夜尺上"
                            "既没被证实也没被证伪,**不得直接搬运**。")
     if (up.get("point") or 0) >= 0:
         return "REFUTED", f"上涨侧 {_iv(up)},方向与旧结论相反。"
-    if not down.get("crosses_zero"):
+    if not down_x:
         return "PARTIAL", f"上涨侧 {_iv(up)} 为负,但回撤侧 {_iv(down)} 也不跨 0 —— 不是相位条件性,是全时为负。"
     return "CONFIRMED", f"上涨侧 {_iv(up)};回撤侧 {_iv(down)} —— 与旧尺同形。"
 
@@ -539,7 +562,14 @@ def _chase_verdict(records: list[dict]) -> tuple[str, str]:
         return "UNKNOWN", "最高桶无读数。"
     if top.get("maturity") != "MATURE":
         return "IMMATURE", f"最高桶仅 {top.get('n_days')} 日,样本不足,不下结论。"
-    if top.get("crosses_zero"):
+    top_x = crosses_zero_of(top)
+    if top_x is None:
+        # **没有区间就不许给方向性裁决**(修复轮2 的 Important)。缺了这道守卫,一个
+        # MATURE 但无跨日方差的行会拿到自信的 NEGATIVE,渲染出的句子同时写着「无跨日
+        # 方差,不产区间」和「NEGATIVE」—— 而本函数产出的正是①节那个唯一被判「可以
+        # 引用去指导生产」的裁决。
+        return "UNKNOWN", "最高桶**没有区间**(无跨日方差)—— 无证据,不给方向性裁决。"
+    if top_x:
         return "UNKNOWN", "最高桶 95% CI 跨 0 —— **不显著 ≠ 等价**,不构成「追涨无害」的证据。"
     return ("NEGATIVE" if (top.get("point") or 0) < 0 else "POSITIVE",
             f"最高桶 {_iv(top)}(相对 `{REL}`)。")

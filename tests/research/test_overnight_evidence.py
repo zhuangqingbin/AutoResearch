@@ -430,6 +430,98 @@ def test_phase_gap_table_keeps_unknown_phase_labels():
     assert list(tbl["phase"])[-1] == "妖股期", "未知相位追加在固定序之后"
 
 
+def _mature_but_no_interval() -> pd.DataFrame:
+    """15 个日子有行,但**只有 1 天有非空值** —— 区间只能由那 1 天产生。
+
+    这是 ①节独有的可达路径:`bucket_intervals` 是三条聚合路径里**唯一不预过滤 NaN** 的
+    (`side_intervals` / `phase_gap_table` 都先 `dropna`),所以「行的日子」与「有值的日子」
+    在这里会分家。
+    """
+    return pd.DataFrame({"date": [f"d{i}" for i in range(15)],
+                         "bucket": [oe.CHASE_LABELS[0]] * 15,
+                         "rel_gap_market": [-0.05] + [np.nan] * 14})
+
+
+def test_chase_verdict_refuses_direction_without_an_interval():
+    """**无区间 → 不得给方向性裁决**(修复轮2 的唯一 Important)。
+
+    `_chase_verdict` 产出的正是 ①节那个 `NEGATIVE` —— 三个结论里唯一被判「可以引用去
+    指导生产」的那个。修复前它会在没有任何跨日方差的情况下吐出自信的 `NEGATIVE`,
+    渲染出的句子自相矛盾:同一句既写「无跨日方差,不产区间」又写 NEGATIVE。
+    这违反本报告自己立的家规「不显著 ≠ 等价」。
+    """
+    rec = oe.bucket_intervals(_mature_but_no_interval()).to_dict("records")
+    v, txt = oe._chase_verdict(rec)
+    assert v != "NEGATIVE", f"无区间却给了方向性裁决:{v} / {txt}"
+    assert v in ("UNKNOWN", "IMMATURE")
+
+
+def test_chase_verdict_guards_a_mature_row_that_has_no_interval():
+    """直接喂 `_chase_verdict` 一个 **MATURE 但无区间** 的记录 → 必须是 `UNKNOWN`。
+
+    为什么这条不能只靠上面那个端到端用例:根因修好之后,`bucket_intervals` **再也造不出**
+    这种行(n_days 现在数的是区间真正用到的日子),端到端用例会走 IMMATURE 分支,
+    于是守卫本身**一个测试都没有** —— 变异探针 S1 首轮正是这么活下来的。
+
+    而这个形状**真实可达**:`render()` 会被喂 JSON 载入的 result,由**旧代码**产出的
+    `result.json` 里就是 `n_days=15 / maturity=MATURE / lo=null`。守卫护的是这条路。
+    """
+    stale = [{"bucket": oe.CHASE_LABELS[0], "n_days": 15, "n_obs": 15, "point": -0.05,
+              "lo": None, "hi": None, "crosses_zero": None, "maturity": "MATURE"}]
+    v, txt = oe._chase_verdict(stale)
+    assert v == "UNKNOWN", f"MATURE 但无区间却给了 {v}"
+    assert "没有区间" in txt
+    # JSON 往返把 None 变成 NaN 的那一版也必须挡住
+    nan_ver = [dict(stale[0], lo=float("nan"), hi=float("nan"))]
+    assert oe._chase_verdict(nan_ver)[0] == "UNKNOWN"
+
+
+def test_chase_verdict_still_negative_on_a_real_interval():
+    """守卫不得误伤:有真区间且整区间为负 → 仍是 `NEGATIVE`(防"修成一律 UNKNOWN")。"""
+    rows = pd.DataFrame({"date": [f"d{i}" for i in range(15)],
+                         "bucket": [oe.CHASE_LABELS[0]] * 15,
+                         "rel_gap_market": [-0.05] * 15})
+    assert oe._chase_verdict(oe.bucket_intervals(rows).to_dict("records"))[0] == "NEGATIVE"
+
+
+def test_interval_row_reports_the_sample_the_interval_actually_used():
+    """`n_days`/`n_obs` 必须是**区间真正用到的**样本,不是"有行的日子"。
+
+    根因锁:修复前 `n_days` 数的是 `sub["date"].nunique()`(含整天全 NaN 的日子),于是
+    一行可以自称 `n_days=15 · MATURE`,而区间其实只由 1 天产生 —— 成熟度标签因此失真,
+    也正是这条让 `_chase_verdict` 的缺口变得可达。
+    """
+    rec = oe.bucket_intervals(_mature_but_no_interval()).to_dict("records")[0]
+    assert rec["n_days"] == 1, "只有 1 天有值,不能自称 15 天"
+    assert rec["n_obs"] == 1
+    assert rec["maturity"] == "IMMATURE", "1 天的证据不得挂 MATURE"
+
+
+def test_crosses_zero_of_boundary_touching_interval_counts_as_crossing():
+    """区间**端点恰好是 0** → 算跨 0(不能排除 0)。
+
+    这一条与 `stats.Interval.excludes_zero`(`lo > 0 or hi < 0`)**逐例等价** —— 判定
+    「跨没跨 0」在仓库里只应有一套语义;写成严格不等号会在端点上与 `stats` 打架。
+    (变异探针 S7 首轮存活正是因为没有端点用例。)
+    """
+    from autoresearch.common.stats import Interval
+
+    for lo, hi in [(0.0, 0.02), (-0.02, 0.0), (0.0, 0.0),
+                   (-0.02, 0.03), (0.01, 0.02), (-0.03, -0.01)]:
+        mine = oe.crosses_zero_of({"lo": lo, "hi": hi})
+        theirs = not Interval(0.0, lo, hi, 9, 9, "t").excludes_zero
+        assert mine is theirs, f"[{lo}, {hi}] 与 stats 不一致:{mine} vs {theirs}"
+
+
+def test_iv_derives_crossing_from_bounds_not_from_the_field():
+    """渲染的「跨 0 / 整区间同号」由 lo/hi 现算,**不信** `crosses_zero` 字段 ——
+    同一件事两个真相来源迟早打架(自查:该语义的最后一处冗余,已消除)。"""
+    lying = {"point": -0.01, "lo": -0.02, "hi": -0.005, "n_days": 12, "crosses_zero": True}
+    assert "整区间同号" in oe._iv(lying)
+    lying2 = {"point": 0.0, "lo": -0.02, "hi": 0.02, "n_days": 12, "crosses_zero": False}
+    assert "跨 0" in oe._iv(lying2)
+
+
 def test_interval_row_marks_crosses_zero_unknown_when_no_interval():
     """**数据层**修复(review M4):没有区间时 `crosses_zero` 必须是 None(未知),
     不是 `True`。`--json` 导出的字段会被下游直接读,修在展示层不算修。"""
