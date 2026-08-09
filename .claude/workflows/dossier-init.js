@@ -25,7 +25,16 @@ const AGENT_DEFAULTS = {
   gp_shell_json: { model: 'sonnet', effort: 'low' },
   dossier_init:  { effort: 'max' },
 }
-const AG = (role) => ({ ...(AGENT_DEFAULTS[role] || {}), ...((cfg.agents || {})[role] || {}) })
+// Wave12-T33:**resolved 优先**。`cfg.resolved_agents` 是 Python 侧
+// (`autoresearch.scan.user_config.resolve_agent_config`,落 `_resolved_agent_config.json`)
+// 解释好的逐 role 生效值 —— model/effort 的解释从此只有一处,本文件不再参与解释。
+// 本表(AGENT_DEFAULTS)降为**兜底**:只在 resolved 没随 args 传到时才吃(离线试装、
+// 老编排、单 workflow 手动重跑)。两条腿的值必须一致,`tests/test_agent_defs.py` 用
+// AST 相等断言机器锁住,不靠人记得同步。
+const RESOLVED = (cfg.resolved_agents) || {}
+const AG = (role) => (RESOLVED[role]
+  ? { ...RESOLVED[role] }
+  : { ...(AGENT_DEFAULTS[role] || {}), ...((cfg.agents || {})[role] || {}) })
 const R = 'uv run --no-sync python -m'
 const DP = `context/knowledge/dossiers/${code}.md`
 

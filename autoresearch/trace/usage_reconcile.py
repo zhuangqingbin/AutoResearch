@@ -245,7 +245,8 @@ def _judge_multi_role(atype: str, roles: tuple[str, ...], got_rows: list[tuple[s
 
 
 def _reconcile_core(echo: dict, rows: list[dict], *, date: str,
-                    census: dict[str, int] | None = None) -> dict:
+                    census: dict[str, int] | None = None,
+                    resolved: dict | None = None) -> dict:
     """纯函数核心:输入已经是内存里的 `echo`/`rows` dict,不碰文件系统。
 
     `reconcile()` 是它的文件 I/O 外壳(读两份产物后转手调用这里)。拆出这一层是为了让
@@ -276,7 +277,11 @@ def _reconcile_core(echo: dict, rows: list[dict], *, date: str,
       头就跳过了它——"实测行 N 条"这句话此前会让人以为 N 行都真的参与了对账,其实最多
       N-1 行。
     """
-    agents_cfg = echo.get("agents") or {}
+    # Wave12-T33:期望的事实源优先取 **resolved**(`_resolved_agent_config.json`)——
+    # 它已经把 config 覆盖在 `_ROLE_FALLBACK` 之上解释完了,与 workflow 吃的是同一份。
+    # 拿不到 resolved(老 run 目录)才退回 echo 的原始 `agents` 块。
+    resolved = resolved if resolved is not None else (echo.get("resolved_agents") or {})
+    agents_cfg = resolved or (echo.get("agents") or {})
     census = dict(census or {})
 
     gp_allowed: set[tuple[str, str]] = set()
@@ -339,9 +344,26 @@ def _reconcile_core(echo: dict, rows: list[dict], *, date: str,
     wire_breaks = [role for role in _EXPECT_PRESENT if role in agents_cfg
                    and not any(role in AGENTTYPE_ROLES.get(t, ()) for t in seen_types)]
     unknown_agent_types = sorted(unknown_types)
-    ok = not mismatches and not wire_breaks and not unknown_agent_types
+
+    # Wave12-T33 ⑤:resolved 产物**缺任一实际派发 role** → 直接 ok=false。
+    # 「今天真派过这个 role,但单一事实源里没有它」= 那次派发的档位无从对账,
+    # 等于对账表自称干净却漏掉了一整个角色 —— 不该被 0 mismatches 冲平。
+    dispatched: set[str] = set()
+    for atype in seen_types:
+        roles_t = AGENTTYPE_ROLES.get(atype)
+        if roles_t:
+            dispatched.add(roles_t[0])          # 主 role:见到该 agentType 就一定跑过
+            dispatched.update(r for r in roles_t[1:] if int(census.get(r, 0)) > 0)
+        elif atype == "general-purpose":
+            dispatched.update(("gp_shell", "gp_shell_json"))   # 分不清哪个,两个都要求在场
+    # presence-gated:压根没有 resolved(老 run)时不报 —— 那是"还没上线",不是"漏了"。
+    missing_resolved_roles = sorted(dispatched - set(resolved)) if resolved else []
+
+    ok = (not mismatches and not wire_breaks and not unknown_agent_types
+          and not missing_resolved_roles)
     return {"date": str(date), "ok": ok, "mismatches": mismatches, "wire_breaks": wire_breaks,
-            "unknown_agent_types": unknown_agent_types, "checked": checked}
+            "unknown_agent_types": unknown_agent_types,
+            "missing_resolved_roles": missing_resolved_roles, "checked": checked}
 
 
 def reconcile(date: str, root: str | Path | None = None) -> dict:
@@ -360,7 +382,10 @@ def reconcile(date: str, root: str | Path | None = None) -> dict:
     rows = json.loads((scan / "_token_usage.json").read_text(encoding="utf-8")).get("rows") or []
     # census 是 presence-gated 的**增益**:有它 ens_review/l3_repair 才分得开;
     # 没它(老 run 目录)照常出表,只是多 role 那几个 agentType 退回集合断言。
-    return _reconcile_core(echo, rows, date=str(date), census=dispatch_census(scan))
+    from autoresearch.scan.user_config import load_resolved_agent_config
+    return _reconcile_core(echo, rows, date=str(date), census=dispatch_census(scan),
+                           resolved=load_resolved_agent_config(scan)
+                           or (echo.get("resolved_agents") or {}))
 
 
 def render(result: dict) -> str:
@@ -383,12 +408,18 @@ def render(result: dict) -> str:
         f" · 实测行 {result['checked']} 条"
         f" · mismatch {len(result['mismatches'])} 条"
         f" · wire_break {len(result['wire_breaks'])} 个"
-        f" · unknown_agent_type {len(result.get('unknown_agent_types') or [])} 个",
+        f" · unknown_agent_type {len(result.get('unknown_agent_types') or [])} 个"
+        f" · resolved 缺 role {len(result.get('missing_resolved_roles') or [])} 个",
         "",
     ]
     if result["wire_breaks"]:
         lines.append("**wire_breaks**(config 写了该 role,当日实测行一次没见过——像是没接线):")
         lines += [f"- `{role}`" for role in result["wire_breaks"]]
+        lines.append("")
+    if result.get("missing_resolved_roles"):
+        lines.append("**missing_resolved_roles**(今天真派过这个 role,但 "
+                     "`_resolved_agent_config.json` 里没有它 —— 那次派发的档位无从对账):")
+        lines += [f"- `{role}`" for role in result["missing_resolved_roles"]]
         lines.append("")
     if result.get("unknown_agent_types"):
         lines.append("**unknown_agent_types**(harvest 出现但本表不认识的 agentType——"

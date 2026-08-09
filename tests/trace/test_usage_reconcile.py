@@ -578,3 +578,81 @@ class TestRealDataMutations:
         result = ur._reconcile_core(mutated_echo, rows_dropped, date="2026-08-05")
         assert any(m["agent"] == "l4-card" and m["field"] == "effort" for m in result["mismatches"])
         assert "sector_brief" in result["wire_breaks"]
+
+
+# ═══════════ Wave12-T33:对 resolved 对账 + 缺派发 role 直接 ok=false ═══════════
+
+_RESOLVED = {"l4_card": {"effort": "max"}, "l4_intel": {"effort": "max"},
+             "l3_rank": {"effort": "max"}, "strategist": {"effort": "high"},
+             "sector_brief": {"effort": "high"},
+             "gp_shell": {"model": "sonnet", "effort": "low"},
+             "gp_shell_json": {"model": "sonnet", "effort": "low"}}
+
+
+def test_resolved_is_preferred_over_raw_agents_block():
+    """resolved 在场时,期望取 resolved —— 它才是 workflow 真正吃的那一份。
+
+    造一个"raw agents 说 low、resolved 说 max"的分歧局面:实测 max 时必须判过
+    (跟着 resolved 走),否则说明还在读 raw。
+    """
+    echo = {"agents": {"l4_card": {"effort": "low"}},
+            "resolved_agents": {"l4_card": {"effort": "max"}}}
+    r = ur._reconcile_core(echo, [_l4card_row("max")], date="2026-08-09")
+    assert [m for m in r["mismatches"] if m["field"] == "effort"] == []
+
+
+def test_missing_resolved_role_forces_ok_false():
+    """今天真派过这个 role,resolved 里却没有它 → ok=false(不能被 0 mismatch 冲平)。"""
+    # 只留 l4_card:其余 `_EXPECT_PRESENT` role 若也在 resolved 里、当日又无实测行,
+    # 会额外触发 wire_breaks,把本条要看的信号混进去。
+    resolved = {"l4_card": {"effort": "max"}}
+    rows = [_l4card_row("max"),
+            {"role": "subagent", "agent": "l4-intel", "model": "claude-sonnet-5",
+             "effort": "max", "status": "SUCCEEDED"}]
+    r = ur._reconcile_core({"resolved_agents": resolved}, rows, date="2026-08-09")
+    assert r["mismatches"] == [] and not r["wire_breaks"]
+    assert r["missing_resolved_roles"] == ["l4_intel"]
+    assert r["ok"] is False, "0 mismatch 也不该算过 —— 有一整个 role 无从对账"
+
+
+def test_missing_resolved_role_covers_shell_roles():
+    """`general-purpose` 分不清是哪个壳 → 两个壳 role 都必须在 resolved 里。"""
+    resolved = {"gp_shell": {"model": "sonnet", "effort": "low"}}
+    rows = [{"role": "subagent", "agent": "general-purpose", "model": "claude-sonnet-5",
+             "effort": "low", "status": "SUCCEEDED"}]
+    r = ur._reconcile_core({"resolved_agents": resolved}, rows, date="2026-08-09")
+    assert r["missing_resolved_roles"] == ["gp_shell_json"] and r["ok"] is False
+
+
+def test_no_resolved_artifact_does_not_report_missing_roles():
+    """presence-gated:压根没有 resolved(老 run)→ 不报 missing,那是"还没上线"不是"漏了"。"""
+    r = ur._reconcile_core(ECHO, ROWS, date="2026-08-06")
+    assert r["missing_resolved_roles"] == []
+    assert r["ok"] is True
+
+
+def test_reconcile_reads_resolved_artifact_file(tmp_path):
+    """接线锁:`reconcile()` 必须读 `_resolved_agent_config.json`,不是只认 echo 里的键。
+
+    鉴别力检查:echo 的 raw agents 故意写 low、resolved 文件写 max,实测 max ——
+    读了文件 = 0 mismatch;没读 = 报一条 l4_card effort mismatch。
+    """
+    d = tmp_path / "context/scan/2026-08-09"
+    d.mkdir(parents=True)
+    (d / "user_config_echo.json").write_text(json.dumps({"agents": {"l4_card": {"effort": "low"}}}))
+    (d / "_token_usage.json").write_text(json.dumps({"rows": [_l4card_row("max")]}))
+    (d / "_resolved_agent_config.json").write_text(json.dumps(
+        {"schema_version": 1, "date": "2026-08-09", "roles": _RESOLVED}))
+    r = ur.reconcile("2026-08-09", root=tmp_path)
+    assert [m for m in r["mismatches"] if m["field"] == "effort"] == [], (
+        f"reconcile() 没读 _resolved_agent_config.json:{r['mismatches']}")
+
+
+def test_render_lists_missing_resolved_roles():
+    r = ur._reconcile_core({"resolved_agents": {"l4_card": {"effort": "max"}}},
+                           [_l4card_row("max"),
+                            {"role": "subagent", "agent": "l4-intel",
+                             "model": "claude-sonnet-5", "effort": "max"}],
+                           date="2026-08-09")
+    md = ur.render(r)
+    assert "missing_resolved_roles" in md and "l4_intel" in md

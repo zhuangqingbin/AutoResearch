@@ -40,7 +40,16 @@ const AGENT_DEFAULTS = {
   ens_review:    { effort: 'xhigh' },   // ≥OW/SELL 双复核 run2/3(此前借 l4_card 档;独立收口;
                                          // 代码兜底,生产实际吃 scan_config.jsonc 的 "max")
 }
-const AG = (role) => ({ ...(AGENT_DEFAULTS[role] || {}), ...((cfg.agents || {})[role] || {}) })
+// Wave12-T33:**resolved 优先**。`cfg.resolved_agents` 是 Python 侧
+// (`autoresearch.scan.user_config.resolve_agent_config`,落 `_resolved_agent_config.json`)
+// 解释好的逐 role 生效值 —— model/effort 的解释从此只有一处,本文件不再参与解释。
+// 本表(AGENT_DEFAULTS)降为**兜底**:只在 resolved 没随 args 传到时才吃(离线试装、
+// 老编排、单 workflow 手动重跑)。两条腿的值必须一致,`tests/test_agent_defs.py` 用
+// AST 相等断言机器锁住,不靠人记得同步。
+const RESOLVED = (cfg.resolved_agents) || {}
+const AG = (role) => (RESOLVED[role]
+  ? { ...RESOLVED[role] }
+  : { ...(AGENT_DEFAULTS[role] || {}), ...((cfg.agents || {})[role] || {}) })
 const pinned = !!A.pinned   // dispatch-plan meta 透传;缺省 false = 现行为(parity)
 const dossierSummary = String(A.dossierSummary || '').trim()   // dispatch-plan meta 透传;缺省空 = parity(M-2:全函数防御,同款 !!A.pinned)
 const SD = `context/scan/${date}`

@@ -92,3 +92,23 @@ def test_l4_stock_allow_empty_config_escape_hatch():
     """离线试装:args.allow_empty_config=true 必须真的放行到 agent 派发点,不是被别处拦截。"""
     r = _probe(_PROBE_ESCAPE, L4_STOCK)
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+# ── Wave12-T33:t1-review.js 补上同一道守卫(Wave11-B5 时漏掉的第三个 workflow)──
+#
+# 漏的后果与 07-21 事故同形:scan-retro 编排忘传 `args.cfg` → t1_diag/t1_synth **静默**
+# 吃下 'high',报告上一点看不出来。所以这里的两条测试是"假阴转正",不是新增覆盖面。
+
+T1_REVIEW = ROOT / ".claude" / "workflows" / "t1-review.js"
+
+
+@pytest.mark.skipif(_NODE is None, reason="本机无 node,跳过(与 test_workflow_js_syntax.py 口径一致)")
+def test_t1_review_guards_empty_config():
+    r = _probe(_PROBE_BLOCKS, T1_REVIEW)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+@pytest.mark.skipif(_NODE is None, reason="本机无 node,跳过(与 test_workflow_js_syntax.py 口径一致)")
+def test_t1_review_allow_empty_config_escape_hatch():
+    r = _probe(_PROBE_ESCAPE, T1_REVIEW)
+    assert r.returncode == 0, r.stdout + r.stderr

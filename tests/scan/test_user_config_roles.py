@@ -90,3 +90,124 @@ def test_role_spec_none_still_means_use_defaults(tmp_path):
     """spec=None(JSON null)不是本次修复的目标场景——`spec or {}` 早就防住,行为保持不变。"""
     cfg = _load(tmp_path, {"l4_card": None})
     assert cfg["agents"]["l4_card"] is None
+
+
+# ═══════════ Wave12-T33:resolved agent config(materialize + 四条 fail-fast)═══════════
+#
+# 这一组的靶子是 2026-07-21 事故:配置真身是 `.jsonc` 却按 `.json` 去找,查无 → 传了空
+# config → intel 被静默关掉、全体 agent 掉回缺省 effort,而**报告上看不出来**。
+# 所以下面每一条"该 raise"的断言都不是洁癖,是那次事故的结构性防线。
+
+_FULL_AGENTS = {role: {"effort": "high"} for role in sorted(uc._AGENT_ROLES)}
+
+
+def _full(**over):
+    agents = {k: dict(v) for k, v in _FULL_AGENTS.items()}
+    agents.update(over)
+    return {"agents": agents}
+
+
+def test_resolved_lists_all_twelve_roles():
+    resolved = uc.resolve_agent_config(_full())
+    assert set(resolved) == uc._AGENT_ROLES
+    assert len(resolved) == 12, f"闭集应为 12 role,实际 {len(resolved)}"
+
+
+def test_resolved_empty_cfg_raises():
+    """空 `{}` 一律 raise —— 「什么都没配」不能悄悄全用缺省(07-21 事故的那一半)。"""
+    with pytest.raises(ValueError, match="为空"):
+        uc.resolve_agent_config({})
+
+
+def test_resolved_empty_agents_block_raises():
+    with pytest.raises(ValueError, match="agents 为空"):
+        uc.resolve_agent_config({"funnel": {}})
+
+
+def test_resolved_unknown_role_raises():
+    cfg = _full()
+    cfg["agents"]["t1diag"] = {"effort": "high"}      # 拼写错:t1_diag → t1diag
+    with pytest.raises(ValueError, match="未知 role"):
+        uc.resolve_agent_config(cfg)
+
+
+def test_resolved_unknown_field_raises():
+    with pytest.raises(ValueError, match="未知子键"):
+        uc.resolve_agent_config(_full(l4_card={"effort": "max", "temperature": 0.7}))
+
+
+@pytest.mark.parametrize("bad", [{"effort": "ultra"}, {"model": "gpt"}])
+def test_resolved_illegal_enum_raises(bad):
+    with pytest.raises(ValueError, match="非法"):
+        uc.resolve_agent_config(_full(l4_card={**bad}))
+
+
+def test_resolved_missing_required_role_raises_and_names_it():
+    cfg = _full()
+    cfg["agents"].pop("ens_review")
+    cfg["agents"].pop("gp_shell_json")
+    with pytest.raises(ValueError) as e:
+        uc.resolve_agent_config(cfg)
+    msg = str(e.value)
+    assert "缺生产必填 role" in msg
+    assert "ens_review" in msg and "gp_shell_json" in msg, "必须一次报全缺哪几个,别一个一个抛"
+
+
+def test_resolved_partial_mode_allows_missing_for_local_orchestration():
+    """`require_all=False`(scan-retro 只拉 t1-review 这种局部编排)仍校验写了的、不要求写全。"""
+    resolved = uc.resolve_agent_config({"agents": {"t1_diag": {"effort": "max"}}},
+                                        require_all=False)
+    assert resolved == {"t1_diag": {"effort": "max"}}
+
+
+def test_resolved_model_key_absent_for_judgement_roles_is_load_bearing():
+    """判断类 role **不得**被补出 model 键 —— 补了 workflow 就会显式传 model,
+    回退链第三层(agent def frontmatter)从此永远吃不到。那是行为变更,不是重构。"""
+    resolved = uc.resolve_agent_config(_full())
+    for role in ("l3_rank", "l4_card", "l4_intel", "strategist", "sector_brief",
+                 "ens_review", "l3_repair", "dossier_init", "t1_diag", "t1_synth"):
+        assert "model" not in resolved[role], f"{role} 不该有 model 键(要落 frontmatter)"
+    for role in ("gp_shell", "gp_shell_json"):
+        assert resolved[role]["model"] == "sonnet", "壳类缺省必须钉 sonnet(08-05 事故)"
+
+
+def test_resolved_config_overrides_fallback():
+    resolved = uc.resolve_agent_config(_full(l4_card={"effort": "max"},
+                                              gp_shell={"model": "haiku", "effort": "low"}))
+    assert resolved["l4_card"] == {"effort": "max"}
+    assert resolved["gp_shell"] == {"model": "haiku", "effort": "low"}
+
+
+def test_materialize_writes_resolved_artifact(tmp_path):
+    out = uc.materialize_agent_config("2026-08-09", _full(), root=tmp_path)
+    assert out == tmp_path / "context" / "scan" / "2026-08-09" / uc.RESOLVED_FILENAME
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == uc.RESOLVED_SCHEMA_VERSION
+    assert payload["date"] == "2026-08-09"
+    assert set(payload["roles"]) == uc._AGENT_ROLES
+    assert uc.load_resolved_agent_config(out.parent) == payload["roles"]
+
+
+def test_load_resolved_is_presence_gated(tmp_path):
+    """缺文件 / 坏文件 → `{}`(由调用方决定要不要炸),绝不抛。"""
+    assert uc.load_resolved_agent_config(tmp_path) == {}
+    (tmp_path / uc.RESOLVED_FILENAME).write_text("{not json", encoding="utf-8")
+    assert uc.load_resolved_agent_config(tmp_path) == {}
+
+
+def test_production_scan_config_resolves_cleanly():
+    """活体验收:真的生产 `scan_config.jsonc` 必须能通过全部四条 fail-fast。
+
+    这条是本组唯一读真文件的测试 —— 前面那些都在造 fixture,造得出来不代表生产那份合格。
+    生产文件真缺了某个 role,这条会红,而不是等到扫描当天才发现。
+
+    ⚠️ 必须显式给路径:`tests/scan/conftest.py` 有个 autouse fixture 把 `DEFAULT_PATH`
+    指向 tmp,不给路径读到的是空配置,这条测试就会变成"测了个寂寞"(首跑实测已撞到)。
+    """
+    from pathlib import Path as _Path
+    prod = (_Path(__file__).resolve().parents[2]
+            / ".claude" / "skills" / "scan-market" / "scan_config.jsonc")
+    resolved = uc.resolve_agent_config(uc.load_user_config(prod))
+    assert set(resolved) == uc._AGENT_ROLES
+    assert resolved["l4_card"]["effort"] == "max"
+    assert resolved["gp_shell"] == {"model": "sonnet", "effort": "low"}

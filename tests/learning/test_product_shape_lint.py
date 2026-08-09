@@ -625,3 +625,60 @@ def test_stale_ruler_recall_on_real_pre_t13_offenders(tmp_path):
     assert len(rows) == 8, f"召回 {len(rows)}/8 —— 判据太窄,会漏掉真实病灶写法:{rows}"
     # PANORAMA 必须在扫描域内(本病最刺眼的 :704 就长在它身上,只守 .claude 等于守错门)
     assert any("PANORAMA" in r["detail"] for r in rows), rows
+
+
+# ── 12b) Wave12-T33:lint 扩面到 `.claude/skills/**/*.md` 的 Agent(model=…) 字面量 ──
+
+
+def test_skill_agent_model_literal_fails(tmp_path):
+    """`lite-playbook.md:178` 型字面量必红 —— skill 文档是活指令,写死档位=第二个事实源。"""
+    md = "## 与 scan-market 的衔接\n\nL4 每只一个 `Agent(model='opus')` 调本 skill。\n"
+    root = _mk_claude_root(tmp_path, **{"skills/stock-research/lite-playbook.md": md})
+    rows = workflow_literal_lint(root)
+    hits = [r for r in rows if r["check"] == "产物形状·skill内联字面量"]
+    assert len(hits) == 1 and hits[0]["severity"] == "fail"
+    assert "lite-playbook.md:3" in hits[0]["detail"]
+
+
+def test_skill_agent_effort_literal_fails(tmp_path):
+    md = "派发时写 `Agent(agentType='l4-card', effort=\"max\")`。\n"
+    root = _mk_claude_root(tmp_path, **{"skills/x/SKILL.md": md})
+    hits = [r for r in workflow_literal_lint(root)
+            if r["check"] == "产物形状·skill内联字面量"]
+    assert len(hits) == 1
+
+
+def test_skill_literal_with_exemption_mark_passes(tmp_path):
+    """加豁免注记必绿 —— 先给合法情形一个标记,再谈加严检查(2026-07-27 家训)。"""
+    md = "示例(仅作示意):`Agent(model='opus')`。\n"
+    root = _mk_claude_root(tmp_path, **{"skills/x/SKILL.md": md})
+    assert [r for r in workflow_literal_lint(root)
+            if r["check"] == "产物形状·skill内联字面量"] == []
+
+
+def test_skill_prose_mentioning_effort_is_not_flagged(tmp_path):
+    """散文里提 effort/model 不算违规 —— 判据是 `Agent(` 调用形态,不是关键词。
+
+    这条是探针的**误报对照**:没有它,规则很容易被写成"出现 effort 就报",
+    然后天天报警天天被无视(狼来了,把探针公信力一起磨掉)。
+    """
+    md = "各 stage 的 effort 与 model 见 scan_config.jsonc;l4_card 当前 effort=max。\n"
+    root = _mk_claude_root(tmp_path, **{"skills/x/SKILL.md": md})
+    assert [r for r in workflow_literal_lint(root)
+            if r["check"] == "产物形状·skill内联字面量"] == []
+
+
+def test_skill_lint_missing_dir_no_crash(tmp_path):
+    root = _mk_claude_root(tmp_path, **{"workflows/demo.js": _AGENT_DEFAULTS_JS})
+    assert [r for r in workflow_literal_lint(root)
+            if r["check"] == "产物形状·skill内联字面量"] == []
+
+
+def test_real_repo_skills_are_clean_of_agent_literals():
+    """活体验收:真的 `.claude/skills/**` 现在必须一条不剩(lite-playbook 已随本波修正)。
+
+    造 fixture 能红不代表生产干净 —— 这条读真目录,退化了会当场红。
+    """
+    hits = [r for r in workflow_literal_lint(".claude")
+            if r["check"] == "产物形状·skill内联字面量"]
+    assert hits == [], f"生产 skill 文档仍有内联档位字面量:{[h['detail'] for h in hits]}"

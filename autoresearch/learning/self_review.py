@@ -421,6 +421,49 @@ def retired_symbol_lint(root=".claude") -> list[dict]:
 _AGENT_DEFAULTS_MARK = "const AGENT_DEFAULTS = {"
 
 
+#: skill 文档里的 agent 档位字面量判据(Wave12-T33)。只认 `Agent(` 调用形态里的
+#: `model=`/`effort=` 字面量 —— 散文里提一句 "effort" 不算违规,写成调用形态才算。
+_SKILL_LITERAL_PATTERN = r"Agent\s*\([^)\n]*\b(?:model|effort)\s*=\s*['\"]"
+#: 合法写法的标记词(同一行任一在场即放行)。**先给合法情形一个标记,再谈加严检查**
+#: ——否则"这里就是要举个调用的例子"这种正当写法会被天天判违规(2026-07-27 家训)。
+_SKILL_LITERAL_OK_MARKS = ("档位见 scan_config", "仅作示意", "测试 fixture",
+                           "lint-exempt", "沿革", "历史写法", "已退役")
+
+
+def _skill_agent_literal_lint(base) -> list[dict]:
+    """`.claude/skills/**/*.md` 的 `Agent(model=…)` 字面量探针(Wave12-T33)。
+
+    presence-gated:目录不存在 / 坏文件 → 静默跳过,绝不抛异常。
+    """
+    from pathlib import Path
+
+    skills = Path(base) / "skills"
+    out: list[dict] = []
+    if not skills.is_dir():
+        return out
+    pat = re.compile(_SKILL_LITERAL_PATTERN)
+    for p in sorted(skills.rglob("*.md")):
+        try:
+            text = p.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            continue
+        for i, line in enumerate(text.splitlines(), start=1):
+            if not pat.search(line):
+                continue
+            if any(mark in line for mark in _SKILL_LITERAL_OK_MARKS):
+                continue                                  # 带注记的合法写法
+            out.append({
+                "check": "产物形状·skill内联字面量",
+                "severity": "fail",
+                "detail": f"{p.relative_to(Path(base).parent) if Path(base).name == '.claude' else p}"
+                          f":{i} skill 文档里写死 agent model/effort 字面量 —— "
+                          f"单一事实源是 scan_config.agents(见 user_config._AGENT_ROLES);"
+                          f"确需举例请在同一行注明 {list(_SKILL_LITERAL_OK_MARKS)[:3]} 之一",
+                "code": None,
+            })
+    return out
+
+
 def workflow_literal_lint(root=".claude") -> list[dict]:
     """workflow `agent()` 调用点内联 model/effort 字面量 lint(Wave11 D4,承 Wave11-B2)。
 
@@ -435,17 +478,26 @@ def workflow_literal_lint(root=".claude") -> list[dict]:
     `gp_shell: { model: 'sonnet', effort: 'low' },`)本身并不含 "AGENT_DEFAULTS" 这个词,
     必须真正算出块的起止行号区间,再判目标行是否落在区间内。
 
-    没有 `const AGENT_DEFAULTS = {` 表的 workflow(如 t1-review.js 走独立的
-    `cfg.agents.t1_diag/t1_synth` 通道,见该文件顶部注)天然不受本规则约束——presence-gated
-    跳过,不是本规则的检查对象,防止跟另一套架构打架。
+    没有 `const AGENT_DEFAULTS = {` 表的 workflow 天然不受①约束——presence-gated 跳过,
+    不是本规则的检查对象,防止跟另一套架构打架。(Wave12-T33 起 t1-review.js 也有了这张表,
+    所以现在四个 workflow 全在网内。)
 
-    presence-gated:root/workflows 不存在、坏文件 → 静默跳过,绝不抛异常。
+    **Wave12-T33 扩面**:`.claude/skills/**/*.md` 里的 `Agent(model=…)`/`Agent(effort=…)`
+    字面量同样 fail。理由:skill 文档是**给 Claude 读的活指令**,写死一个档位等于在
+    单一事实源之外开第二个口子(`lite-playbook.md` 那处写着 `Agent(model='opus')`,而
+    生产早就走 `l4-stock.js` + `scan_config.agents.l4_card`,文档在按过时事实指挥人)。
+    合法情形给标记不给例外:同一行带 `_SKILL_LITERAL_OK_MARKS` 任一注记即放行
+    (2026-07-27 家训:修法排序 = 补指令 > 给合法情形一个标记 > 才是加严检查)。
+
+    presence-gated:目录不存在、坏文件 → 静默跳过,绝不抛异常。
     """
     import re
     from pathlib import Path
 
-    root = Path(root) / "workflows"
+    base = Path(root)
     out: list[dict] = []
+    out.extend(_skill_agent_literal_lint(base))
+    root = base / "workflows"
     if not root.is_dir():
         return out
     lit_re = re.compile(r"\b(?:model|effort)\s*:\s*['\"]")
