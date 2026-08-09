@@ -271,14 +271,21 @@ def resolve_agent_config(cfg: dict, *, require_all: bool = True) -> dict:
 
 def materialize_agent_config(date: str, cfg: dict | None = None, *,
                              root: str | Path | None = None,
-                             require_all: bool = True) -> Path:
+                             require_all: bool = True,
+                             resolved: dict | None = None) -> Path:
     """把 resolved spec 落 `<root>/context/scan/<date>/_resolved_agent_config.json`。
 
     这份产物是 **workflow 与 `usage_reconcile` 共同的事实源**:前者照着它派发,后者
     照着它对账 —— 「期望」与「实测」终于在比同一张表,而不是各自重新解释一遍缺省。
+
+    **`resolved` 形参(Wave12-T33 修复轮 1)**:传进来就直接落盘,不再自己重算一遍。
+    `resolve_agent_config` 是纯函数,重算两次结果必然相同 —— 但"必然相同"是一句**推理**,
+    而这份文件与 echo 里那份是不是同一张表,是 `usage_reconcile` 对账**是否为真**的前提。
+    把同一个对象传下来,这件事就从推理变成构造性事实(并有测试逐字节比对)。
     """
-    resolved = resolve_agent_config(load_user_config() if cfg is None else cfg,
-                                    require_all=require_all)
+    if resolved is None:
+        resolved = resolve_agent_config(load_user_config() if cfg is None else cfg,
+                                        require_all=require_all)
     base = Path(root) if root is not None else Path(".")
     out = base / "context" / "scan" / str(date) / RESOLVED_FILENAME
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -382,13 +389,31 @@ def load_pinned(today: str, path: str | Path | None = None,
 
 
 def main() -> int:
-    """CLI:打印白名单校验后的 scan_config JSON 一行。
+    """CLI:打印白名单校验 **+ resolve** 后的 scan_config JSON 一行(含 `resolved_agents`)。
 
     给不经 `frame --json` 的编排场景(如 scan-retro 拉 t1-review workflow)喂 `args.cfg` 用
     ——workflow 脚本无文件系统访问,配置必须由编排会话读出随 args 传入(装载链同 scan-market)。
     配置文件写坏(白名单外键)→ 沿用 load_user_config 的 fail-fast raise,非零退出。
+
+    **Wave12-T33 修复轮 1(I2)**:此前这里只 `print(load_user_config())`,**不 resolve** ——
+    于是 `t1-review.js` 里的 `RESOLVED = cfg.resolved_agents || {}` 在生产上恒空,那条
+    resolved 优先分支是**死代码**,t1_diag/t1_synth 的档位仍由 workflow 自己那张
+    `AGENT_DEFAULTS` 解释。结果是「model/effort 的解释从此只有一处」这句话对 scan 主路成立、
+    对 t1-review **不成立**,而本模块 docstring 的装载链却写成了普适的 —— 典型的**拆半特性**:
+    消费者接了线、生产者没接,读代码的人以为全都收口了。
+    (`.claude/skills/scan-retro/SKILL.md:22` 明写 t1-review 的 `args.cfg` 来自本 CLI。)
+
+    **谓词与 `frame.py` 逐字对齐**(`if user_cfg.get("agents")`):
+    - 有 `agents` → resolve(`require_all=True`,与主路同一把尺)。配了一半 → **raise**,
+      非零退出,编排当场看见 —— 主路会 fail 而 retro 路静默降级,才是更糟的不一致。
+    - 无配置文件 / 无 `agents` → 原样输出(parity)。这一层不炸的理由见 `frame.py` 同款注释:
+      fail-fast 的靶子是"配了一半"和"配了但空",不是"这台机器上根本没这个文件";
+      真出现空 cfg,下游 `t1-review.js:24-26` 的结构性 throw 会当场拒跑。
     """
-    print(json.dumps(load_user_config(), ensure_ascii=False))
+    cfg = load_user_config()
+    if cfg.get("agents"):
+        cfg = {**cfg, "resolved_agents": resolve_agent_config(cfg)}
+    print(json.dumps(cfg, ensure_ascii=False))
     return 0
 
 

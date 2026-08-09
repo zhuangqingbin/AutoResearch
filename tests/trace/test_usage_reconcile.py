@@ -330,10 +330,21 @@ def test_dispatch_census_infers_from_n_runs_for_legacy_records(tmp_path):
 
 
 def test_dispatch_census_counts_l3_repair_from_prompt_artifact(tmp_path):
-    """`l3_repair` 靠 `_l3_repair_prompt.md` 在场判定 —— agent 死掉也数得到(07-27 教训)。"""
+    """`l3_repair` 靠 repair prompt 判定 —— **agent 死掉也数得到**(07-27 教训)。
+
+    ⚠️ 修复轮 1(M1)收紧了判据:原版写个 `"x"` 就算一次派发,而 `build_repair_pack`
+    是**无条件**写这个文件的(`l3/validation.py:291`),空 codes 的陈旧 prompt 会被记成
+    派发 → 假 mismatch → `ok=false`。现在要求 prompt 真的列出 ≥1 个 code。
+    本条保留原意(不读 agent 自己写的 patch,所以 agent 死了照样数得到),只是喂一份
+    **真实形状**的 prompt。
+    """
     assert "l3_repair" not in ur.dispatch_census(tmp_path)
-    (tmp_path / "_l3_repair_prompt.md").write_text("x")
+    (tmp_path / "_l3_repair_prompt.md").write_text(
+        '# L3 thesis 局部修复包\n```json\n{"codes": ["000651"], "rows": []}\n```\n',
+        encoding="utf-8")
     assert ur.dispatch_census(tmp_path)["l3_repair"] == 1
+    # agent 没写 patch(死了)也照样算数 —— 这才是本条存在的理由
+    assert not (tmp_path / "_l3_repair_patch.json").exists()
 
 
 def test_dispatch_census_survives_corrupt_artifacts(tmp_path):
@@ -656,3 +667,58 @@ def test_render_lists_missing_resolved_roles():
                            date="2026-08-09")
     md = ur.render(r)
     assert "missing_resolved_roles" in md and "l4_intel" in md
+
+
+# ── 修复轮 1(M1):l3_repair 普查判据收紧 —— prompt 在场 ≠ 派过 ──
+
+
+def test_l3_repair_counted_only_when_prompt_lists_codes(tmp_path):
+    """`build_repair_pack` 无条件写 prompt(`l3/validation.py:291`),但只有
+    `repair.n > 0` 才真派 agent。空 codes 的陈旧 prompt 不得记成一次派发。
+    """
+    (tmp_path / "_l3_repair_prompt.md").write_text(
+        '# L3 thesis 局部修复包\n```json\n{"codes": [], "rows": []}\n```\n', encoding="utf-8")
+    assert "l3_repair" not in ur.dispatch_census(tmp_path)
+
+    (tmp_path / "_l3_repair_prompt.md").write_text(
+        '# L3 thesis 局部修复包\n```json\n{"codes": ["000651", "600000"], "rows": []}\n```\n',
+        encoding="utf-8")
+    assert ur.dispatch_census(tmp_path)["l3_repair"] == 1
+
+
+def test_stale_empty_prompt_does_not_manufacture_a_false_mismatch(tmp_path):
+    """M1 的**后果**面:陈旧空 prompt 若被记成派发,会从 l3-rank 行里抢一行按
+    l3_repair 的档位判 → 假 mismatch → `ok=false`,而 `usage_reconcile_lint` 对
+    连续两日 ok=false 升 fail。一个会自己制造报警的探针,比没有探针更糟。
+    """
+    d = tmp_path / "context/scan/2026-08-09"
+    d.mkdir(parents=True)
+    (d / "user_config_echo.json").write_text(json.dumps(
+        {"agents": {"l3_rank": {"effort": "max"}, "l3_repair": {"effort": "medium"}}}))
+    (d / "_token_usage.json").write_text(json.dumps({"rows": [
+        {"role": "subagent", "agent": "l3-rank", "model": "claude-opus-5",
+         "effort": "max", "status": "SUCCEEDED"}]}))
+    (d / "_l3_repair_prompt.md").write_text(
+        '```json\n{"codes": [], "rows": []}\n```\n', encoding="utf-8")
+
+    r = ur.reconcile("2026-08-09", root=tmp_path)
+    assert [m for m in r["mismatches"] if m.get("role") == "l3_repair"] == [], (
+        "空 codes 的陈旧 prompt 制造了假 mismatch")
+
+
+def test_l3_repair_census_survives_unreadable_prompt(tmp_path):
+    (tmp_path / "_l3_repair_prompt.md").write_text("没有 json 块", encoding="utf-8")
+    assert "l3_repair" not in ur.dispatch_census(tmp_path)
+
+
+def test_real_repo_repair_prompts_all_list_codes():
+    """活体对照:现存 8 个 `_l3_repair_prompt.md` 全都列了 codes(即当日确实派过)。
+
+    收紧判据**不该**改变历史读数 —— 这条证明它没有(造 fixture 能红不代表生产没被误伤)。
+    """
+    from pathlib import Path as _P
+    prompts = sorted(_P("context/scan").glob("*/_l3_repair_prompt.md"))
+    if not prompts:
+        pytest.skip("本机无历史 scan 目录")
+    for p in prompts:
+        assert ur._l3_repair_dispatched(p.parent), f"{p} 被新判据误判成'没派过'"

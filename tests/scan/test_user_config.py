@@ -348,16 +348,27 @@ def test_frame_json_echo_reflects_real_config(monkeypatch, tmp_path, capsys):
 
 
 def test_cli_main_prints_validated_json(tmp_path, monkeypatch, capsys):
-    """CLI 回显白名单校验后的 JSON(scan-retro 喂 t1-review workflow args.cfg 用)。"""
+    """CLI 回显白名单校验 **+ resolve** 后的 JSON(scan-retro 喂 t1-review workflow args.cfg 用)。
+
+    ⚠️ Wave12-T33 修复轮 1 改了契约:原版用**半份**配置(只有 `t1_diag`)断言原样回显。
+    现在 CLI 会对有 `agents` 的配置跑 `resolve_agent_config(require_all=True)`,半份配置
+    直接 raise(那条路径由 `test_user_config_cli_fails_loudly_on_partial_config` 单独锁)。
+    这里改用完整闭集,断言**两件事同时成立**:原始 `agents` 块原样保留(t1-review 的兜底链
+    还读它)+ 多出 `resolved_agents`(t1-review 的 resolved 优先分支靠它才不是死代码)。
+    """
     import json
 
     from autoresearch.scan import user_config as uc
+    agents = {role: {"effort": "high"} for role in sorted(uc._AGENT_ROLES)}
+    agents["gp_shell"] = {"model": "sonnet", "effort": "low"}
+    agents["gp_shell_json"] = {"model": "sonnet", "effort": "low"}
     p = tmp_path / "scan_config.jsonc"
-    p.write_text('{\n  // 注释\n  "agents": {"t1_diag": {"effort": "high"}}\n}', encoding="utf-8")
+    p.write_text("{\n  // 注释\n  \"agents\": " + json.dumps(agents) + "\n}", encoding="utf-8")
     monkeypatch.setattr(uc, "DEFAULT_PATH", p)
     assert uc.main() == 0
     out = json.loads(capsys.readouterr().out)
-    assert out == {"agents": {"t1_diag": {"effort": "high"}}}
+    assert out["agents"] == agents
+    assert set(out["resolved_agents"]) == uc._AGENT_ROLES
 
 
 # ── Wave12-T33:frame --json 必须 materialize resolved agent config ──
@@ -426,3 +437,104 @@ def test_frame_json_without_agents_block_stays_parity(monkeypatch, tmp_path, cap
     monkeypatch.chdir(tmp_path)
     assert scan_frame.main(["2026-08-09", "--json"]) == 0
     assert not (tmp_path / "context" / "scan" / "2026-08-09" / RESOLVED_FILENAME).exists()
+
+
+# ── Wave12-T33 修复轮 1(I2):CLI 必须产出 resolved_agents,否则 t1-review 那条腿是拆半的 ──
+
+
+def test_user_config_cli_emits_resolved_agents(tmp_path, monkeypatch, capsys):
+    """生产者接线锁:`python -m autoresearch.scan.user_config` 必须吐出 `resolved_agents`。
+
+    这条是 I2 的直接验收。修复前实跑该 CLI,顶层键只有
+    `['agents','funnel','l3','l4_intel','learning','performance']` —— 没有 `resolved_agents`,
+    于是 `t1-review.js` 的 `RESOLVED = cfg.resolved_agents || {}` 在生产上恒空,
+    那条 resolved 优先分支是死代码(`.claude/skills/scan-retro/SKILL.md:22` 明写
+    t1-review 的 args.cfg 来自本 CLI)。
+    """
+    from autoresearch.scan.user_config import _AGENT_ROLES, main
+
+    cfg_dir = tmp_path / ".claude" / "skills" / "scan-market"
+    cfg_dir.mkdir(parents=True)
+    agents = {role: {"effort": "high"} for role in sorted(_AGENT_ROLES)}
+    agents["gp_shell"] = {"model": "sonnet", "effort": "low"}
+    agents["gp_shell_json"] = {"model": "sonnet", "effort": "low"}
+    (cfg_dir / "scan_config.jsonc").write_text(json.dumps({"agents": agents}), encoding="utf-8")
+    monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH",
+                        cfg_dir / "scan_config.jsonc")
+
+    assert main() == 0
+    out = json.loads(capsys.readouterr().out)
+    assert "resolved_agents" in out, "CLI 没产出 resolved_agents —— t1-review 路仍在自己解释默认值"
+    assert set(out["resolved_agents"]) == _AGENT_ROLES
+    assert out["agents"] == agents, "原始 agents 块必须原样保留(t1-review 的兜底链还读它)"
+
+
+def test_user_config_cli_fails_loudly_on_partial_config(tmp_path, monkeypatch):
+    """配了一半 → CLI **raise**(与 frame 主路同一把尺)。
+
+    主路 fail 而 retro 路静默降级,才是更糟的不一致 —— 所以这里不给"局部编排放宽"的后门。
+    """
+    from autoresearch.scan.user_config import main
+
+    cfg_dir = tmp_path / ".claude" / "skills" / "scan-market"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "scan_config.jsonc").write_text(
+        json.dumps({"agents": {"t1_diag": {"effort": "high"}}}), encoding="utf-8")
+    monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH",
+                        cfg_dir / "scan_config.jsonc")
+    with pytest.raises(ValueError, match="缺生产必填 role"):
+        main()
+
+
+def test_user_config_cli_without_config_file_stays_parity(tmp_path, monkeypatch, capsys):
+    """没有配置文件 → 原样输出(parity),不 resolve 也不炸。
+
+    这一层不炸的分工写在 `frame.py` 同款注释里:本层管"配坏了",workflow 管"根本没配"
+    (`t1-review.js:24-26` 的空 cfg throw 会当场拒跑)。
+    """
+    from autoresearch.scan.user_config import main
+
+    monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH",
+                        tmp_path / "nope.jsonc")
+    assert main() == 0
+    assert json.loads(capsys.readouterr().out) == {}
+
+
+def test_materialized_resolved_is_byte_identical_to_echoed_one(monkeypatch, tmp_path, capsys):
+    """对账真伪的前提:`_resolved_agent_config.json` 与 echo 里那份必须是**同一张表**。
+
+    `usage_reconcile` 读文件、workflow 读 echo —— 两边若各自重新解释一遍 config,
+    "对账"就只是两次独立计算碰巧相等,而不是对同一份事实源。这里逐字段比对钉死。
+    """
+    from autoresearch.scan import frame as scan_frame
+    from autoresearch.scan.user_config import _AGENT_ROLES, RESOLVED_FILENAME
+    from tests.scan._synth_universe import synth_universe
+
+    df = synth_universe(n=30, seed=7)
+    monkeypatch.setattr(scan_frame, "build_market_frame",
+                        lambda d, **kw: (df, {"universe_raw": 30, "universe": 30, "after_gate_a": 30}))
+    monkeypatch.setattr("autoresearch.macro.state.load_macro_state",
+                        lambda today, regime_today=None, path=None:
+                        (None, "无 macro_state.json → 只用日频 pack"), raising=True)
+    monkeypatch.chdir(tmp_path)
+    cfg_dir = tmp_path / ".claude" / "skills" / "scan-market"
+    cfg_dir.mkdir(parents=True)
+    agents = {role: {"effort": "high"} for role in sorted(_AGENT_ROLES)}
+    agents["l4_card"] = {"effort": "max"}
+    agents["gp_shell"] = {"model": "sonnet", "effort": "low"}
+    agents["gp_shell_json"] = {"model": "sonnet", "effort": "low"}
+    (cfg_dir / "scan_config.jsonc").write_text(json.dumps({"agents": agents}), encoding="utf-8")
+    monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH",
+                        cfg_dir / "scan_config.jsonc")
+
+    assert scan_frame.main(["2026-08-09", "--json"]) == 0
+    capsys.readouterr()
+
+    scan_dir = tmp_path / "context" / "scan" / "2026-08-09"
+    on_disk = json.loads((scan_dir / RESOLVED_FILENAME).read_text(encoding="utf-8"))["roles"]
+    echoed = json.loads((scan_dir / "user_config_echo.json").read_text(encoding="utf-8"))["resolved_agents"]
+    assert on_disk == echoed, "落盘的 resolved 与 echo 里那份不是同一张表 —— 对账是假的"
+
+    # 而且 usage_reconcile 真的读的是这一份(不是自己重新解释 config)
+    from autoresearch.scan.user_config import load_resolved_agent_config
+    assert load_resolved_agent_config(scan_dir) == echoed

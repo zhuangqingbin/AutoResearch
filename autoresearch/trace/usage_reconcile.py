@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 # agentType(usage_harvest 的 `row["agent"]`,即派发时 Agent 工具的 `subagent_type`)→
@@ -166,9 +167,37 @@ def dispatch_census(scan_dir: Path | str) -> dict[str, int]:
                 n = 0
         if n:
             out["ens_review"] = out.get("ens_review", 0) + n
-    if (scan / "_l3_repair_prompt.md").exists():
+    if _l3_repair_dispatched(scan):
         out["l3_repair"] = out.get("l3_repair", 0) + 1
     return out
+
+
+def _l3_repair_dispatched(scan: Path) -> bool:
+    """本日是否真派过一次 `l3_repair` —— 判据 = repair prompt **列出了至少一个 code**。
+
+    为什么不是"prompt 文件在场"(修复轮 1 M1 收紧):`build_repair_pack` 在
+    `autoresearch/scan/l3/validation.py:291` **无条件**写这个文件,而 `scan-market.js`
+    只在 `repair.n > 0` 时才真派 agent。当前接线下两个谓词同源,单次跑动内一致;但
+    **同日重跑**(第一次 lint 失败写了 prompt、第二次 lint 通过不再派发)会留下陈旧文件
+    → census 记 1 → 从 `l3-rank` 行里抢一行按 `l3_repair` 的档位判 → 报一条**假 mismatch**
+    → `ok=false`,而 `self_review.usage_reconcile_lint` 对**连续两日 ok=false 升 fail**。
+    一个会自己制造报警的探针,比没有探针更糟。
+
+    仍然**不读** `_l3_repair_patch.json`(那是 agent 自己写的):2026-07-27 该 agent 死于
+    `Connection closed mid-response`,烧掉 56.9k 加权却没留下任何自报记录 —— 用"它承认跑过"
+    当判据,恰好会在它死掉时丢掉归属,而那正是最需要看清成本的时刻。prompt 由 repair-pack
+    在派发**之前**写下,codes 非空即"这一票确实被派出去了",agent 死不死都算数。
+
+    presence-gated:缺文件 / 读不动 / 解析不出 codes → `False`(不猜)。
+    """
+    path = scan / "_l3_repair_prompt.md"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    # prompt 里嵌着 ```json {"codes": [...], "rows": [...]} ``` —— 只取 codes 判空
+    m = re.search(r'"codes"\s*:\s*\[(.*?)\]', text, re.S)
+    return bool(m and m.group(1).strip())
 
 
 def _spec_of(atype: str, role: str, agents_cfg: dict) -> dict:
