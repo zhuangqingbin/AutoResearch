@@ -268,6 +268,8 @@ def write_shadow_variants(outdir: Path, scored: pd.DataFrame, recall: pd.DataFra
     - plus_event:**当日实际启用路 + event 通道的反事实**(pre_healthy 的镜像:少一路 vs 多一路)——
       给事件驱动召回路(Wave4,默认不启用)攒 `unique_excess_t2` 累计证据,判它是否够格转正。
       仅当日路未含 event 时有意义(已启用则无反事实可比)。
+    - plus_sectormom:同形,给 `sector_momentum` 影子路(Wave12-T20,EXP-2 的 challenger)
+      攒同一套证据。两条影子路各落各的长表,**样本不得混**(预注册 spec `shared_instrument`)。
     - capfloor20:cap_floor_yi=20(默认 30)重跑 L0→L1→L2——验证 pr_20260624_001(小盘/北交所
       领涨日 30亿地板系统性漏判赢家)是否值得放宽。**唯一非零成本变体**:前面几个都在本次已取好
       的 `scored`/`recall` 上重组,capfloor20 要真重新拉取 universe(网络/湖),故单独 try/except
@@ -331,6 +333,23 @@ def write_shadow_variants(outdir: Path, scored: pd.DataFrame, recall: pd.DataFra
                 # 是 event 路唯一的 unique_excess_t2 证据源,它悄悄不落盘 = 十日审批的账本
                 # 缺日而无人知(下面 capfloor20 早就是"告警后继续",这里对齐)。
                 print(f"[warn] shadow plus_event 失败(event 路当日无影子读数): {e!r}",
+                      file=sys.stderr)
+
+        # plus_sectormom(Wave12-T20):EXP-2 `exp_20260801_recall_sector_momentum` 的
+        # challenger 数据腿。与 plus_event 同形、同纪律、**独立文件**——预注册 spec 明写两条
+        # 影子路「共用 channel_audit 仪器,但 family/variant 分开,不得混样本」。
+        if "sector_momentum" not in base_names:
+            plus_s = [*base_names, "sector_momentum"]
+            (sh / "L1_channels_plus_sectormom.csv").unlink(missing_ok=True)   # m-3 同款:清残留
+            try:
+                re_s, pc_s = recall_select(scored, analysis_date, recall_n, "multi", plus_s,
+                                           channel_quotas=channel_quotas,
+                                           channel_floors=channel_floors)
+                _dump_per_channel("plus_sectormom", pc_s)      # m-4 同款:仪器本体先落盘
+                variants["plus_sectormom"], _ = select_l2(re_s, l2_n, floors=l2_floors,
+                                                          sector_cap_frac=l2_sector_cap)
+            except Exception as e:  # noqa: BLE001 — 同 plus_event:兜底可以,静默不行
+                print(f"[warn] shadow plus_sectormom 失败(sector_momentum 路当日无影子读数): {e!r}",
                       file=sys.stderr)
     # m-3:capfloor20 同形(见上 plus_event 注释)——重跑前清掉上次残留,防陈旧长表被读进账本。
     (sh / "L1_channels_capfloor20.csv").unlink(missing_ok=True)

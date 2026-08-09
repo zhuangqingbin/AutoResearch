@@ -406,6 +406,107 @@ def update_experiment(
     return _copy(record), result
 
 
+#: 影子观测的判别键 —— `observations[]` 此前**只有一种写者**(`rollback_watch.observe` 的
+#: post-activation assessment,它按 `len(prior)+1` 数观察窗、按 `all_pass` 决定能否
+#: ACCEPT_BASELINE)。影子期的观测必须能被它一眼认出来并跳过,否则「加一条观测」这个动作会
+#: 顺手把回滚观察窗提前撑满 —— 那就是本仓库最贵的一类 bug(「默认不启用必须连副作用一起
+#: 不启用」)。判别靠这个字面量,不靠"assessment 有没有某个字段"这种脆弱推断。
+SHADOW_OBSERVATION_KIND = "shadow_observation"
+
+#: 成熟门起算口径 —— 写进 registry 记录本身(不写进 `definition`:那块进 `definition_hash`,
+#: 改一个字就会让 `register_experiment` 的幂等复注册报 "definition hash changed")。
+MATURITY_CLOCK_NOTE = (
+    "成熟门(minimums:forward_days / mature_events / unique_events / regimes)自**首条观测**"
+    "起算,**不是**从预注册日起算。2026-08-01 预注册的 EXP-1/EXP-2 数据腿从未实现、"
+    "observations 空转 6 天(FN-1 家族:消费者在等一个没人生产的产物)——按「预注册日 +N 天」"
+    "计门,会让一条从没产生过任何观测的腿在第 N+1 天自动『成熟』。"
+)
+
+
+def append_observation(
+    path: Path | str,
+    experiment_id: str,
+    *,
+    facts: dict,
+    key: str,
+    kind: str = SHADOW_OBSERVATION_KIND,
+    observed_at: str | None = None,
+) -> dict:
+    """影子期观测的幂等追加(本仓库此前**没有**这个 API,Wave12-T20 补)。
+
+    与 `rollback_watch.observe` 的分工:那个是 **post-activation** 的五守卫评估(要求
+    `status == "ACTIVE"`、会改 status、会推荐 ROLLBACK/ACCEPT);本函数是 **影子期**的
+    纯记账 —— 任何 status 都能追加(PREREGISTERED 正是它的主场),**永不**改 status、
+    永不碰 `latest_rollback_assessment` / `active_by_family` / `stable_baseline`。
+
+    幂等:同一 `(kind, key)` 重复追加 → 返回既有那条,不产生第二条;同一 key 但 facts 变了
+    → `RegistryError`(与 `observe` 对同 run_id 不同 facts 的处理同姿势 —— 静默覆盖会让
+    「今天到底观测到什么」变成谁最后跑谁说了算)。
+
+    副作用只有两处,都是 append-only:`observations[]` 追加一条、`audit[]` 追加一条,外加
+    `maturity_clock` 这个**派生**块(首条观测时间 + 计数 + 起算口径原文,见
+    `MATURITY_CLOCK_NOTE`)。
+    """
+    exp_key = _nonempty(key, "observation key")
+    exp_kind = _nonempty(kind, "observation kind")
+    if not isinstance(facts, dict):
+        raise RegistryError("observation facts must be an object")
+    at = observed_at or datetime.now().astimezone().isoformat(timespec="seconds")
+
+    record = get_experiment(path, experiment_id)
+    input_hash = canonical_hash({
+        "experiment_id": record["id"],
+        "definition_hash": record["definition_hash"],
+        "kind": exp_kind,
+        "key": exp_key,
+        "facts": facts,
+    })
+    prior = list(record.get("observations") or [])
+    replay = next((item for item in prior
+                   if item.get("kind") == exp_kind and item.get("key") == exp_key), None)
+    if replay is not None:
+        if replay.get("input_hash") != input_hash:
+            raise RegistryError(
+                f"observation {exp_kind}:{exp_key} already recorded with different facts"
+            )
+        return _copy(replay)
+
+    observation = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": exp_kind,
+        "experiment_id": record["id"],
+        "definition_hash": record["definition_hash"],
+        "key": exp_key,
+        "observed_at": at,
+        "input_hash": input_hash,
+        "facts": _copy(facts),
+    }
+
+    def mutate(payload: dict, current: dict):
+        items = current.setdefault("observations", [])
+        items.append(observation)
+        shadow = [item for item in items if item.get("kind") == exp_kind]
+        current["maturity_clock"] = {
+            "note": MATURITY_CLOCK_NOTE,
+            "minimums": _copy(current["minimums"]),
+            "first_observation_at": shadow[0]["observed_at"],
+            "first_observation_key": shadow[0]["key"],
+            "n_observations": len(shadow),
+        }
+        _audit(
+            payload,
+            event="SHADOW_OBSERVATION_APPENDED",
+            at=at,
+            actor="system",
+            experiment_id=experiment_id,
+            details={"kind": exp_kind, "key": exp_key, "input_hash": input_hash},
+        )
+        return None
+
+    update_experiment(path, experiment_id, mutate)
+    return _copy(observation)
+
+
 def approve_experiment(
     path: Path | str,
     experiment_id: str,
