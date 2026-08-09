@@ -15,6 +15,7 @@ attribution 刷新 → retro pending 列出(**只备料不代跑诊断**)→ con
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -117,12 +118,40 @@ def _parse_ts(value):
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+# `<endpoint>[<symbol>]✓(1234行…)` —— prewarm 热度快照 note 的逐源片段
+_HOT_SRC_RE = re.compile(r"([A-Za-z_][A-Za-z_0-9]*)(?:\[[^\]]*\])?([✓✗])\((\d+)行")
+
+
+def _hot_rank_thin(note: str) -> list[str]:
+    """从 note 的行数**现算**「0 行 / 行数腰斩」——不依赖上游写没写 ✗ 那个装饰字符。
+
+    Wave12 复核 I4:只认 ✗ 的判法有两个漏口——整步抛异常时 note 是
+    `f"{type(e).__name__}: {e}"`(**不含 ✗**),而半截返回在旧实现里写的是 `✓(3000行)`。
+    行数是结构化事实,拿契约的 `min_rows` 一比就是独立的第二道判据(上游 ✓/✗ 逻辑若回归,
+    这道仍然拦得住)。未登记的端点(历史 note 里的旧名字)只查 0 行,不猜下限。
+    """
+    from autoresearch.data.contracts import CONTRACTS
+    out = []
+    for ep, _mark, rows in _HOT_SRC_RE.findall(note):
+        n = int(rows)
+        con = CONTRACTS.get(ep)
+        floor = con.min_rows if con else 0
+        if n == 0 or (floor and n < floor):
+            out.append(f"{ep} {n} 行" + (f"(<{floor})" if floor else ""))
+    return out
+
+
 def _hot_rank_snapshot_warning(p: Path) -> str:
-    """`_prewarm.json` 的 `hot_rank_snapshot` 步骤若含断采(note 里有 ✗)→ 告警片段。
+    """`_prewarm.json` 的 `hot_rank_snapshot` 步骤若断采/空/半截 → 告警片段。
 
     Wave12 T3:`prewarm.py`(夜间)与本模块(次日开扫)是**两个独立进程**,
     `contracts._DEGRADED` 是进程内列表、穿不透进程边界——落盘的 `_prewarm.json` 是
-    唯一穿透介质。presence-gated:文件读不了/无该 step/双源皆✓ → ""(不打扰)。
+    唯一穿透介质。presence-gated:文件读不了/无该 step/全源皆足量✓ → ""(不打扰)。
+
+    三条判据(复核 I4:原来只认 note 里的 ✗ 一条,整步抛异常时反而静悄悄):
+      ① `ok=False`(整步异常;`_step()` 写的 note 里没有 ✗)
+      ② note 含 ✗(逐源断采)
+      ③ 行数 0 / 低于契约下限(半截返回——它在旧实现里长得跟成功一模一样)
     """
     import json
     try:
@@ -130,8 +159,17 @@ def _hot_rank_snapshot_warning(p: Path) -> str:
     except Exception:  # noqa: BLE001 — 附加提示可选,读不了不挡主行
         return ""
     hot = next((s for s in steps if s.get("step") == "hot_rank_snapshot"), None)
-    note = str(hot.get("note", "")) if hot else ""
-    return f" · ⚠️ 热度快照断采:{note}" if "✗" in note else ""
+    if hot is None:
+        return ""
+    note = str(hot.get("note", ""))
+    why = []
+    if not hot.get("ok", True):
+        why.append("整步异常")
+    if "✗" in note:
+        why.append("断采")
+    if thin := _hot_rank_thin(note):
+        why.append("半截/空(" + ", ".join(thin) + ")")
+    return f" · ⚠️ 热度快照{'+'.join(why)}:{note}" if why else ""
 
 
 def prewarm_line(date: str, scan_root: Path | str | None = None) -> str:

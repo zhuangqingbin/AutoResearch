@@ -8,7 +8,10 @@ design: docs/specs/2026-06-22-autoresearch-arch-redesign-design.md §B。
            的按取数日快照;static→单文件 "static";None→不入湖(live)。
   settle : "eod" | "live"
            eod → 收盘后结算、可入湖永不重取(过去日);live → 盘中实时、总取新不缓存。
-  source : "tushare" | "akshare" | "fred" | "yfinance"  —— 路由到 sources.fetch 的取数后端。
+  source : "tushare" | "akshare" | "eastmoney" | "fred" | "yfinance"
+           —— 路由到 sources.fetch 的取数后端("eastmoney" = 本仓自采,不经 akshare 封装)。
+  snapshot(可选,默认 False):**不可回填的观测型端点**(接口只有"此刻",没有历史参数)。
+           cache 层据此 ① 强制 as-of 键 == 真实今天(防 PIT 错标)② 落盘打观测戳。
 
 分桶(对齐 spec §B):
   ① 入湖·永不重取(settle=eod, key=date/period):全市场历史快照、按交易日切。
@@ -83,8 +86,19 @@ ENDPOINTS: dict[str, dict] = {
     # as_of 模式的原生兜底(entity 缺省 "all",as_of 缺省 today)才是正确的按天分区键。
     # 调用方一律传空 params(见 T1 报告决策②:stock_news_em 先例把 as_of 塞进 params 会原样
     # 透传进真实 akshare 调用并 TypeError,本组端点不重蹈)。
-    "stock_hot_rank_em": {"key": "as_of", "settle": "eod", "source": "akshare"},      # 东财人气榜(全市场TOP100快照)
-    "stock_hot_follow_xq": {"key": "as_of", "settle": "eod", "source": "akshare"},    # 雪球关注度(全市场快照)
+    #
+    # `snapshot: True` = **不可回填的观测型端点**(接口只返回"此刻",没有历史参数)。两条后果
+    # 由 cache 层强制(2026-08-09 复核 I1/I3):
+    #   ① as-of 键**必须等于真实今天** —— 补跑/节假日 launchd/手工触发若传过去某个交易日,
+    #      会把今天的快照写成那天的"历史",且事后不可甄别(工作树里那个 08-09 03:03 写成
+    #      `all@20260807.parquet` 的分区就是这么来的)→ 取数前 `SnapshotDateError` 拒绝;
+    #   ② 落盘前打观测戳(`first_seen_ts` + `first_seen_basis="observed"`)。
+    # 东财走**自采第一跳**(source=eastmoney):akshare 封装 `stock_hot_rank_em` 的第二跳是
+    # push2(记忆判例点名的被封主机,实测 502),会把完好的榜单本体连坐丢掉。
+    "eastmoney_hot_rank": {"key": "as_of", "settle": "eod", "source": "eastmoney",
+                           "snapshot": True},                                          # 东财人气榜(TOP100 快照)
+    "stock_hot_follow_xq": {"key": "as_of", "settle": "eod", "source": "akshare",
+                            "snapshot": True},                                         # 雪球关注度(全市场快照)
     "stock_yjbb_em": {"key": "period", "settle": "eod", "source": "akshare"},                  # 业绩快报(报告期)
 
     # ── ② akshare 宏观(按取数日快照——月度序列,取一次留底) ──

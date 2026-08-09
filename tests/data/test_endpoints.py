@@ -47,7 +47,13 @@ def test_every_entry_is_wellformed():
     for name, pol in endpoints.ENDPOINTS.items():
         assert pol["key"] in {"date", "period", "as_of", "static", None}, name
         assert pol["settle"] in {"eod", "live"}, name
-        assert pol["source"] in {"tushare", "akshare", "fred", "yfinance"}, name
+        assert pol["source"] in {"tushare", "akshare", "eastmoney", "fred", "yfinance"}, name
         # live endpoints must not be keyed (they are never written to the lake)
         if pol["settle"] == "live":
             assert pol["key"] is None, name
+        # snapshot(不可回填的观测型端点):只对入湖端点有意义,且必须是 as_of 键
+        # ——按天留底才谈得上"今天的观测只能写今天"(cache 的 SnapshotDateError 守门)。
+        if pol.get("snapshot"):
+            assert pol["key"] == "as_of", name
+            assert pol["settle"] == "eod", name
+        assert set(pol) <= {"key", "settle", "source", "snapshot"}, name

@@ -3,24 +3,59 @@
 日期:2026-08-09。akshare 版本:`1.18.64`(`uv run --no-sync python -c "import akshare; print(akshare.__version__)"`)。
 
 探针脚本(scratch,不入库):`/private/tmp/claude-503/.../scratchpad/probe_hot_rank.py`,
-依次实调 4 个候选端点,记录真实返回。**结论:两源均可用,不触发 BLOCKED_BY_DATA。**
+依次实调 4 个候选端点,记录真实返回。
 
-## 结论表
+> ## 🚨 2026-08-09 复核改写(本节优先于下方原始记录)
+>
+> **裁定改为:东财人气榜「榜单本体可用 / akshare 封装 `stock_hot_rank_em` 不可用」。**
+>
+> `ak.stock_hot_rank_em()` 走**两跳**,拆开实测:
+>
+> | 跳 | URL | 实测 | 它负责什么 |
+> |---|---|---|---|
+> | ① | `POST emappdata.eastmoney.com/stockrank/getAllCurrentList` | **200 / 100 行 / keys `['sc','rk','rc','hisRc']`** | **榜单本体**(代码 + 排名 + 排名变化) |
+> | ② | `GET push2.eastmoney.com/api/qt/ulist.np/get` | **502**(08-09 两次实测,间隔 11.5h) | 只补**最新价 / 涨跌幅** |
+>
+> 第二跳一挂,`data_json["data"]["diff"]` 直接 `JSONDecodeError`,**完好的榜单被连坐丢掉**。
+> 而 `push2.eastmoney.com` 正是本项目记忆判例点名的被封主机(「A股数据走 tushare,东财
+> push2 被封」)——价格列本仓早有 tushare `daily`,第二跳对我们零价值。
+>
+> **处置**:本仓改为**自采第一跳**,新端点 `eastmoney_hot_rank`
+> (`autoresearch/data/sources/eastmoney_hot_rank.py`,source=`eastmoney`),原
+> `stock_hot_rank_em` 登记**撤销**(`tests/data/test_hot_rank_endpoints.py::
+> test_akshare_hot_rank_em_wrapper_is_not_registered` 锁死不得复登)。落湖列为原始
+> `sc`/`rk`/`rc`/`hisRc`(不译),价格列不要。
+>
+> **显式撤回的错误诊断**:T1 首轮把「1 次成功 + 4 次连败」解释成**服务端 15 分钟限频**,
+> 并据此判断「端点本身长期可用、多跑几晚即可」。该解释**已被证伪**——复核者 11.5 小时后
+> 复跑仍 502,且拆跳后可见失败点恒定在第二跳(与调用频次无关)。首轮 premise-check 的
+> 真实缺陷是**漏查项目自己已有的 push2 判例**,不是限频。同期实况:湖里 **0 个分区**,
+> 「每晚都在积累」这句话当时并不成立。
+
+## 结论表(⚠️ 第一行已被上方复核改写)
 
 | 函数 | 行数 | 关键列非空率 | 日期语义 | 裁定 |
 |---|---|---|---|---|
-| `stock_hot_rank_em()` | 100 | 全部列 100% | 快照(当前时刻榜单,无历史参数) | **可用**——东财人气榜,全市场 TOP100 快照,零参数调用 |
+| ~~`stock_hot_rank_em()`~~ | 100 | 全部列 100% | 快照(当前时刻榜单,无历史参数) | ~~**可用**~~ → **不可用**(第二跳 push2 502);改用自采 `eastmoney_hot_rank` 只取第一跳 |
 | `stock_hot_follow_xq(symbol="最热门")` | 5619 | 股票代码/简称/最新价 100%,关注 99.9% | 快照(累计关注数,无历史参数) | **可用**——雪球全市场关注度快照(`symbol` 是分类选择器,默认值即目标分类,非个股代码) |
 | `stock_hot_rank_detail_em(symbol=...)` | 366(单只股票 366 天) | 时间/排名/证券代码 100%,新晋/铁杆粉丝 99.7% | **历史**(该股逐日排名序列,366 天) | 不适用——个股维度(entity-scoped)钻取接口,非全市场快照;覆盖全市场需 ~5,400 次调用,不满足夜间一次性采集目标 |
 | `stock_hot_rank_latest_em(symbol=...)` | 10 | 全部列 100% | 快照(单只股票的排名元数据,含 `calcTime`) | 不适用——**不是榜单**,是单只股票的 key-value 元数据查询(`item`/`value` 两列,10 个字段:`marketType`/`marketAllCount`/`calcTime`/`innerCode`/`srcSecurityCode`/`rank`/`rankChange`/`hisRankChange`/`hisRankChange_rank`/`flag`);函数名"latest"具有误导性,`symbol` 是**必需的个股定位参数**,不接受空调用 |
 
-**裁定:两源(东财人气榜 / 雪球关注度)均可用,不进入 BLOCKED_BY_DATA 分支。** T2/T3 按计划实施。
+**裁定(2026-08-09 复核后):东财人气榜「榜单可用(自采第一跳)/ akshare 封装不可用」、
+雪球关注度可用;两源都不进 BLOCKED_BY_DATA 分支。** T2/T3 按此实施。
+
+雪球侧同日追加 `symbol="本周新增"` 分片(实测 5,619 行,同结构):它就是任务书 Interfaces
+想要的 `follow_delta`(follow7d = 7 日新增关注)。**注意 akshare 把两个 symbol 的数值列
+都改名成「关注」**——最热门 = 累计数,本周新增 = 7 日增量,靠 lake 分区键区分,勿混读
+(契约 note 已钉死这条)。
 
 ## 逐源详情
 
-### 1. `stock_hot_rank_em()` —— 东财人气榜(采用)
+### 1. `stock_hot_rank_em()` —— 东财人气榜(⚠️ 封装已弃用,改自采第一跳;见顶部复核)
 
-零参数,~1 秒返回。真实样本:
+零参数,~1 秒返回。**下面这份样本是 08-09 首跑那一次侥幸成功的返回**——其中「最新价/涨跌额/
+涨跌幅」来自已被封的第二跳 push2,此后每次调用都 `JSONDecodeError`。自采路径落湖的是第一跳
+的原始四列 `sc`/`rk`/`rc`/`hisRc`(价格列不要,本仓有 tushare `daily`)。真实样本:
 
 ```
    当前排名        代码  股票名称     最新价        涨跌额    涨跌幅
@@ -72,7 +107,7 @@ tushare 后缀式 `603259.SH`,也不是裸 6 位数字)、`股票名称`、`最�
 
 ## 移交 T2 的设计决策(premise-check 发现,写清差异)
 
-1. **端点注册键必须是 akshare 真实函数名**,不是任务书里写的概念名 `hot_rank_em`/`hot_follow_xq`。
+1. **(⚠️ 复核后只对 akshare 源成立)端点注册键必须是 akshare 真实函数名**,不是任务书里写的概念名 `hot_rank_em`/`hot_follow_xq`。
    `autoresearch/data/sources/__init__.py:_fetch_akshare` 用 `getattr(ak, endpoint)` 路由,
    endpoint 字符串必须逐字节等于 `ak.` 后的函数名——即 `"stock_hot_rank_em"` /
    `"stock_hot_follow_xq"`,与 `stock_news_em`/`stock_lhb_stock_statistic_em` 等既有登记同一约定。
@@ -132,6 +167,31 @@ tushare 后缀式 `603259.SH`,也不是裸 6 位数字)、`股票名称`、`最�
    成功/失败结果写进 `_prewarm.json` 的 `steps[]`(复用既有 `_step()` 包装,零新增机制);
    ②`prewarm_line()` 读该 step 的 `note`,失败时追加告警片段。这是对任务书"已有机制"表述的
    精确化,不是另起炉灶。
+
+## 2026-08-09 复核后追加的落地契约(C2 / I1 / I3)
+
+首轮实施把「取到了」与「取全了」混为一谈,三条补丁(每条配运行时变异探针,实跑变红):
+
+1. **C2 · 空/半截不得钉进湖**。雪球内部分 29 页,**每页解析失败被 akshare 自己
+   `except TypeError` 吞掉**并继续拼下一页 → 中途限流时**静默返回 3000 行且不抛异常**。
+   两端点因此都设 `min_rows`(人气榜 100 / 雪球 5,000)+ `required_cols`,并新增契约位
+   `persist_violations=False`:B 级仍不阻断漏斗,但**违约帧拒绝落盘**——落了
+   `path.exists()` 就恒命中,这一天永远残缺、重跑也自愈不了(「cache 空 pickle 永不重拉」
+   家训的 parquet 同族)。残余风险:只掉最后 1 页(≤200 行)仍在线上——端点侧拿不到
+   API 自报的 `count` 做逐页对账。
+2. **I1 · 分区键 = 观测日**。`policy` 新增 `snapshot: True`,cache 层在取数前守门:
+   as-of 键 ≠ 真实今天 → `SnapshotDateError`(历史分区的**读**不受影响)。生产侧
+   `prewarm._hot_rank_snapshot` 也改用墙上时钟今天,不再跟随预热的目标交易日——两者
+   在节假日 launchd 触发/补跑时不等,那正是 `all@20260807.parquet` 被 08-09 03:03 的
+   快照写脏的成因。该错标分区已移出湖(见 `context/lake_quarantine/`)。
+3. **I3 · 观测出处入列**。快照落盘前打 `first_seen_ts`(带时区)+ `first_seen_basis="observed"`
+   (任务书 Interfaces 逐字要求;列名与取值沿用 `autoresearch/news/catalog.py` 既有的
+   first_seen 词汇表,不另起一套)。没有它,「这份分片什么时候抓的 / 是不是半截」永久不可
+   回答;也正因为 `observed` 与 `snapshot_inferred` 不可混用,隔离区那个错标分区不能靠改名
+   洗白(它的时间只能是"落盘时刻"的推断)。
+4. **I4 · 断采可见不认装饰字符**。`prelude._hot_rank_snapshot_warning` 从「note 里有 ✗」
+   改为三判据:`ok=False`(整步抛异常时 note 根本不含 ✗)、note 含 ✗、**行数 0/低于契约下限**
+   (行数是结构化事实,构成独立于上游 ✓/✗ 逻辑的第二道判据)。
 
 ## 实测复现(`stock_news_em` as_of 泄漏,佐证决策 2)
 

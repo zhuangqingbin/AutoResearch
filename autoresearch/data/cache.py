@@ -36,6 +36,44 @@ _PERIOD_PARAM_KEYS = ("period", "date", "end_date")
 _ENTITY_PARAM_KEYS = ("ts_code", "symbol", "code", "exchange_id", "exchange")
 
 
+# 快照型端点(`policy(...)["snapshot"]`)落盘时补的**观测出处**两列(Wave12 T2 Interfaces
+# 逐字要求 `first_seen_basis="observed"`)。没有观测时刻,"这份分片到底什么时候抓的、是不是
+# 半截、跟哪个交易日对齐"永久不可回答 —— 而快照数据事后无从复查(接口没有历史参数)。
+#
+# 列名/取值沿用本仓既有的 first_seen 词汇表(`autoresearch/news/catalog.py`:
+# `BASIS_OBSERVED="observed"` / `BASIS_SNAPSHOT="snapshot_inferred"`)。这里恒为
+# **observed**:值是我们**亲眼在那一刻抓到**的。事后拿旧分片的 mtime 反推只能算
+# `snapshot_inferred`,两者不可混用 —— 隔离区里那个错标分区正因如此不能一改名了事。
+# 不 import catalog 是刻意的:data 是最底层,不该反向依赖 news。
+FIRST_SEEN_TS_COL = "first_seen_ts"
+FIRST_SEEN_BASIS_COL = "first_seen_basis"
+_BASIS_OBSERVED = "observed"
+
+
+class SnapshotDateError(RuntimeError):
+    """快照端点的 as-of 键 ≠ 真实今天 —— 拒绝把**今天**的观测写成过去某天的"历史"。
+
+    快照接口只返回"此刻"(没有日期参数),所以任何"补跑 2026-08-07 的快照"在物理上都不成立:
+    它拿到的是今天的内容,却会落成 `all@20260807.parquet`,**且事后不可甄别**
+    (工作树里那个 mtime 08-09 03:03 的 08-07 分区正是这么来的)。
+    """
+
+
+def _real_today() -> str:
+    """真实墙上时钟的今天(YYYYMMDD)——快照守门的唯一基准,测试 monkeypatch 此函数。"""
+    return date.today().strftime("%Y%m%d")
+
+
+def _stamp_observed(df: pd.DataFrame) -> pd.DataFrame:
+    """给快照帧补观测出处两列(带时区的观测时刻 + `first_seen_basis="observed"`)。"""
+    from datetime import datetime
+
+    out = df.copy()
+    out[FIRST_SEEN_TS_COL] = datetime.now().astimezone().isoformat(timespec="seconds")
+    out[FIRST_SEEN_BASIS_COL] = _BASIS_OBSERVED
+    return out
+
+
 def _first(params: dict, keys) -> str | None:
     for k in keys:
         v = params.get(k)
@@ -139,7 +177,8 @@ def get_or_fetch(
     if fetch is None:
         from autoresearch.data.sources import fetch as fetch  # 延迟导入,避开取数依赖
 
-    from autoresearch.data.contracts import check  # 延迟导入:契约表是纯数据,无取数依赖
+    # 延迟导入:契约表是纯数据,无取数依赖
+    from autoresearch.data.contracts import check, refuses_lake
 
     pol = policy(endpoint)
     t = _today_compact(today)
@@ -154,6 +193,15 @@ def get_or_fetch(
     # 已结算(date < today)且文件存在 → 命中,零取数。**命中也要校验**(湖里可能躺着毒源)。
     if path.exists():
         return check(endpoint, _read(path), key=str(key), source="lake")
+
+    # 快照端点的 PIT 守门(Wave12 复核 I1):只挡**写新分区**,历史读在上一行已经放行。
+    # 快照接口只有"此刻",所以 as-of 键必须等于真实今天;否则这次取数会把今天的观测钉成
+    # 过去某天的假历史(补跑 / 节假日 launchd 触发 / 手工传日期都会撞上),事后不可甄别。
+    if pol.get("snapshot") and t != _real_today():
+        raise SnapshotDateError(
+            f"[快照 PIT] {endpoint} 的 as-of 键 {t} ≠ 今天 {_real_today()}:"
+            f"快照接口只返回「此刻」,补不出 {t} 的历史 —— 强行取数会把**今天**的观测写成 "
+            f"{t} 的假历史且事后不可甄别。要今天的快照就用今天的日期;要 {t} 的,它已经永远没有了。")
 
     # date 键:date >= today(盘中未结算)→ 拉新但不写(明天结算后才入湖)。**只查空、不查列**
     # (`cols=False`):这份数据不入湖、只服务当次调用,调用方要哪几列是它自己的事(温度计只要
@@ -173,5 +221,11 @@ def get_or_fetch(
     if df is None:
         df = pd.DataFrame()
     df = check(endpoint, df, key=str(key), source="fetch")   # A 级违约 → 抛,下一行不执行 = 不入湖
+    if pol.get("snapshot"):
+        df = _stamp_observed(df)                             # 观测出处(I3):落盘前打戳
+    # B 级快照端点的空/半截**同样不入湖**(C2):落了就 `path.exists()` 恒命中,这一天永远残缺;
+    # 不落 → 同日重跑(或下一次夜采)还能救回来。契约已在上面 check() 里记过账,这里只管别钉死。
+    if refuses_lake(endpoint, df):
+        return df
     _atomic_write(path, df)
     return df

@@ -59,6 +59,13 @@ TIER_DEGRADE = "B"      # 增强:缺失 → 降级 + 记账,不阻断
 # (ChunkedEncodingError 半途而废是已知偶发,见 workflow 的 universe 重试),不是"今天股票变少了"。
 _MARKET_MIN_ROWS = 3000
 
+# 热度快照的行数腰斩线(同一手法,只是"正常行数"由接口形态而非市场规模决定):
+# 东财人气榜 = 固定一页 TOP100(pageSize=100,少一行就是截断);雪球全市场关注榜实测 5,619 行
+# (内部 29 页 × 200),中途限流会掉到几千 —— 5,000 这条线专治"拉了一半就断了"。
+# 残余风险:只掉最后 1 页(≤200 行)仍在线上,端点侧拿不到 API 自报的 `count` 做逐页对账。
+_HOT_RANK_MIN_ROWS = 100
+_XQ_FOLLOW_MIN_ROWS = 5000
+
 # **规模性检查开关**(行数腰斩)。生产恒开;`tests/conftest.py` 全局关掉 —— 单测用合成小 fixture
 # (几十~几百只)是常态,拿生产的全市场行数线去卡它是误报。
 #
@@ -81,11 +88,18 @@ class Contract:
     # 记账仍留痕(审计不丢),但不进告警渲染(`render`)——降级告警面只留"无权限/报错"类真降级
     # (Minor-1,survey 2026-07-13 线 D)。
     empty_ok: bool = False
+    # **违约帧是否允许入湖**(2026-08-09 复核 C2)。默认 True = 现行为(B 级违约照样落盘,
+    # 因为 date 键端点的"这天就是这样"是真事实,重拉也一样)。
+    # 快照型端点必须置 False:它们的违约形态是**半截/空**(雪球 29 页中途限流 → akshare 自己
+    # `except TypeError` 吞掉 → 静默返回 3000 行而不抛),一旦落盘 `path.exists()` 恒命中,
+    # 这一天永远残缺、**重跑也自愈不了** —— 与 A 级"拒绝入湖"同一条理由,但不必阻断漏斗。
+    persist_violations: bool = True
 
 
 def _c(tier: str, cols: str = "", min_rows: int = 0, note: str = "",
-       empty_ok: bool = False) -> Contract:
-    return Contract(tier, frozenset(cols.split()) if cols else frozenset(), min_rows, note, empty_ok)
+       empty_ok: bool = False, persist_violations: bool = True) -> Contract:
+    return Contract(tier, frozenset(cols.split()) if cols else frozenset(), min_rows, note,
+                    empty_ok, persist_violations)
 
 
 # ───────────────────────── 契约表 ─────────────────────────
@@ -136,8 +150,19 @@ CONTRACTS: dict[str, Contract] = {
     # 脆弱,一律 B 级——断采只损失当日、不阻断扫描,但必须记账(prewarm._hot_rank_snapshot 消费)。
     # 快照型数据:今天不采,今天的历史就永远没有了(接口不接受历史参数,不能像 daily 那样事后
     # 用 trade_date 回补)——这正是它排进夜间预热优先级最高的唯一理由。
-    "stock_hot_rank_em": _c(TIER_DEGRADE, note="东财人气榜:全市场TOP100热度快照,不可回填历史"),
-    "stock_hot_follow_xq": _c(TIER_DEGRADE, note="雪球关注度:全市场关注数快照,不可回填历史"),
+    #
+    # **行数下限 + 关键列 + 违约不入湖**(2026-08-09 复核 C2):这两个端点的行数是恒定的
+    # (人气榜 = TOP100 固定页;雪球全市场 ≈5,600),是全仓最适合设行数下限的两个端点。
+    # 没有下限时,雪球中途限流静默返回的 3000 行会被判"合规"→ 记成 ✓ → 永久钉死半截。
+    "eastmoney_hot_rank": _c(TIER_DEGRADE, "sc rk", _HOT_RANK_MIN_ROWS,
+                             note="东财人气榜:TOP100 热度快照(自采第一跳,绕开被封的 push2),"
+                                  "不可回填历史;sc=前缀式代码 rk=当前排名",
+                             persist_violations=False),
+    "stock_hot_follow_xq": _c(TIER_DEGRADE, "股票代码 关注", _XQ_FOLLOW_MIN_ROWS,
+                              note="雪球关注度:全市场关注数快照,不可回填历史;"
+                                   "symbol=最热门→「关注」是**累计**数,symbol=本周新增→同名"
+                                   "「关注」列其实是 follow7d(7 日新增),按分区键区分,勿混读",
+                              persist_violations=False),
     "stock_yjbb_em": _c(TIER_DEGRADE, note="业绩(报告期)"),
     "fina_mainbz": _c(TIER_DEGRADE, note="分业务收入/利润(dossier 业务模型;小票/金融股披露口径可缺)",
                       empty_ok=True),
@@ -243,6 +268,19 @@ def violations(endpoint: str, df: pd.DataFrame | None, *, cols: bool = True) -> 
         if missing and len(df):                     # 空帧已报过,不重复刷列缺失
             out.append(f"缺列 {missing}")
     return out
+
+
+def refuses_lake(endpoint: str, df: pd.DataFrame | None) -> bool:
+    """这份帧**是否必须被拒之湖外**(B 级快照端点的空/半截)。`cache.get_or_fetch` 消费。
+
+    2026-08-09 复核 C2:B 级违约照样落盘对 date 键端点没问题(那天就是那样),但对**快照型**
+    端点是灾难 —— 落盘后 `path.exists()` 恒命中,这一天永远是半截/空,重跑也自愈不了
+    (「cache 空 pickle 永不重拉」家训的 parquet 同族)。不落盘 = 同日重跑还能救回来。
+    """
+    con = CONTRACTS.get(endpoint)
+    if con is None or con.persist_violations:
+        return False
+    return bool(violations(endpoint, df))
 
 
 def check(endpoint: str, df: pd.DataFrame | None, *, key: str = "", source: str = "fetch",
