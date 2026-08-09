@@ -107,6 +107,16 @@ def _stalled_over_48h(scan_root: Path, stalled: list[str]) -> set[str]:
             if (h := _stall_age_h(scan_root, d)) is not None and h >= _RETRO_STALE_HOURS}
 
 
+def _parse_ts(value):
+    """ISO 时间串 → aware datetime;解析不了 → None(**不猜**,同 catalog 的纪律)。"""
+    from datetime import datetime, timezone
+    try:
+        dt = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
 def _hot_rank_snapshot_warning(p: Path) -> str:
     """`_prewarm.json` 的 `hot_rank_snapshot` 步骤若含断采(note 里有 ✗)→ 告警片段。
 
@@ -451,6 +461,38 @@ def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()
         extra = " · ".join(x for x in (slo, nag, stale) if x)
         return f"{note} · {extra}" if extra else note
 
+    def _news_catalog():
+        """Wave12-T35:news_catalog 覆盖 / freshness / 非空率报表行(**只看,不喂决策**)。
+
+        通电三步的第三步。前两步(inventory、夜间 ingest)让目录里有东西,这一步让它
+        **每天被人看见** —— 否则又是一个"跑过一次然后没人知道它死没死"的腿
+        (recalibrate 连续 4 次 NO-OP 空转两周的家训:自动的腿必须有一个会变的量做断言)。
+
+        ⚠️ 报的是**目录健康**,不是任何决策输入:三个 B 类消费接口(intel 先读目录 /
+        L3 第二源 / typed-event 进 prompt)本波仍全关。
+        """
+        from autoresearch.news.catalog import NewsCatalog
+
+        cat = NewsCatalog()
+        h = cat.health()
+        n = h["n_observations"]
+        if not n:
+            return "⚠️ 目录空(0 观测)—— 夜间 `news_flash` 步还没出过数"
+        wide = cat.market_heat_eligible()
+        # freshness:最近一条观测距今多久(first_seen 是我们**真的看到**的时刻)
+        obs = cat.observations()
+        seen = [t for t in (_parse_ts(v) for v in obs["first_seen_ts"]) if t is not None]
+        fresh = "—"
+        if seen:
+            from datetime import datetime, timezone
+            hours = (datetime.now(timezone.utc) - max(seen)).total_seconds() / 3600
+            fresh = f"{hours:.1f}h"
+        srcs = "/".join(f"{k}:{v}" for k, v in sorted(h["by_source"].items()))
+        miss = h["first_seen_missing_rate"]
+        flag = "" if miss == 0 else f" · 🚨 first_seen 缺失率 {miss:.4f}(契约要求恒 0)"
+        return (f"{n} 观测 · 事件 {h['n_events']} · 市场口径 {len(wide)}"
+                f"(其余为逐票 selective,不得计入市场热度)· 最新 {fresh} 前 · {srcs}{flag}")
+
     def _preflight():
         """GATE0 启动前体检(design 2026-08-03 §4.2-4)—— **默认只告警,不阻断**。
 
@@ -473,7 +515,10 @@ def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()
                  ("consensus", _consensus), ("temperature", _temperature),
                  ("universe", _universe), ("calendar", _calendar),
                  ("catalyst", _catalyst), ("menu", _menu),
-                 ("ledgers", _ledgers), ("dossier_pool", _dossier_pool)]
+                 ("ledgers", _ledgers), ("dossier_pool", _dossier_pool),
+                 # Wave12-T35:纯读 news_catalog 出一行覆盖/freshness/非空率;
+                 # 不喂任何决策面(三个 B 类消费接口本波仍全关)。
+                 ("news_catalog", _news_catalog)]
     results = _run_steps([(n, f) for n, f in all_steps if n not in skip])
 
     # 汇总屏:打印 + 落盘(Wave5 ①)。落盘是为了绕开 scan-market.js「只回报 stdout 末 15 行」

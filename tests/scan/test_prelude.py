@@ -167,6 +167,7 @@ def test_run_prelude_writes_succeeded_stage_result(tmp_path, monkeypatch):
         "retro_refresh", "retro_pending", "t1_pending", "learning_health",
         "consensus", "temperature", "universe", "calendar", "catalyst",
         "menu", "ledgers", "dossier_pool",
+        "news_catalog",              # Wave12-T35 新步骤;本测试要的是"零步骤"的形状
     ))
     stage = load_stage_result(
         tmp_path / "context" / "scan" / "2026-07-28" / "stage_results" / "prelude.json"

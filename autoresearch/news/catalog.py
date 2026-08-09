@@ -492,6 +492,22 @@ def check_source(contract: SourceContract, frame: pd.DataFrame | None,
 
 _KNOWN_LAKE_SOURCES = ("stock_news_em", "anns_d")
 
+#: 已退役的源 —— 0 分片是**预期**,不是"数据没了"。`anns_d` 自 2026-07-18 起 tushare
+#: 无权限(见 `data/contracts.py` 与 `scan/health.py:803`),公告面改走 cninfo 兜底。
+#: 不标出来的话,盘点里那个 0 会被读成"该有却没有",下一个人又要重查一遍。
+_RETIRED_LAKE_SOURCES = {"anns_d": "2026-07-18 起 tushare 无权限,已退役;公告面走 anns_fallback(cninfo)"}
+
+#: 湖分片名形如 `<code>@<YYYYMMDD>`。**排序键是字符串**,所以 `first_key/last_key`
+#: 是**代码序**的头尾,不是日期跨度 —— 首跑实测:first=`000012@20260625`、
+#: last=`920982@20260624`,后者日期反而更早。日期跨度必须另算(见 `_shard_date_span`)。
+_SHARD_DATE_RE = re.compile(r"@(\d{8})$")
+
+
+def _shard_date_span(keys: list[str]) -> tuple[str | None, str | None]:
+    """从分片名尾部的 `@YYYYMMDD` 解析真实日期跨度;解析不出 → `(None, None)`(**不猜**)。"""
+    dates = sorted(m.group(1) for m in (_SHARD_DATE_RE.search(k) for k in keys) if m)
+    return (dates[0], dates[-1]) if dates else (None, None)
+
 
 def inventory(lake_root: Path | str | None = None,
               fallback_cache: Path | str | None = None) -> dict:
@@ -499,6 +515,16 @@ def inventory(lake_root: Path | str | None = None,
 
     只读文件系统元数据(分片数、字节数、日期跨度),**不解析内容**:盘点本身不该是
     一次全量重算。字节数以实测为准 —— 设计稿明令删掉「容量忽略不计」的说法。
+
+    **2026-08-09 首跑修出的两处真问题**(Wave12-T35,「建好的仓库没通电」第一次通电):
+
+    1. `first_key/last_key` 是**代码序**头尾,却被 docstring 说成"日期跨度" —— 实测
+       first=`000012@20260625`、last=`920982@20260624`,末尾那份日期反而更早。
+       现在另出 `date_min/date_max`,并把两个 key 改名成 `first_key_by_code` 之意保留原名
+       但注明含义,免得下一个人再读错一次。
+    2. `anns_fallback` 的 glob 写的是 `*.json`,而真实布局是 `<date>/<code>.v1.json`
+       (见 `data/sources/anns_fallback._cache_path`)—— 顶层一个 json 都没有,
+       **这条腿从写下那天起就恒为 0**,而 0 长得和"没缓存"一模一样。改 `rglob`。
     """
     from autoresearch.data.cache import LAKE
 
@@ -510,25 +536,156 @@ def inventory(lake_root: Path | str | None = None,
         shards = sorted(folder.glob("*.parquet")) if folder.exists() else []
         size = sum(p.stat().st_size for p in shards)
         keys = [p.stem for p in shards]
-        out["sources"][source] = {
+        date_min, date_max = _shard_date_span(keys)
+        entry = {
             "path": str(folder), "n_shards": len(shards), "bytes": size,
+            # ⚠️ 这两个是**代码序**头尾(分片名按字符串排),不是最早/最晚
             "first_key": keys[0] if keys else None,
             "last_key": keys[-1] if keys else None,
+            "date_min": date_min, "date_max": date_max,
         }
+        if source in _RETIRED_LAKE_SOURCES:
+            entry["retired"] = _RETIRED_LAKE_SOURCES[source]
+        out["sources"][source] = entry
         out["total_bytes"] += size
         out["total_shards"] += len(shards)
 
     cache = Path(fallback_cache) if fallback_cache else Path("context/cache/anns_fallback")
-    files = sorted(cache.glob("*.json")) if cache.exists() else []
+    # rglob:真实布局是 `<date>/<code>.v{N}.json`,顶层 glob 恒空(2026-08-09 首跑发现)
+    files = sorted(cache.rglob("*.json")) if cache.exists() else []
     size = sum(p.stat().st_size for p in files)
     out["sources"]["anns_fallback"] = {
         "path": str(cache), "n_shards": len(files), "bytes": size,
         "first_key": files[0].stem if files else None,
         "last_key": files[-1].stem if files else None,
+        "layout": "<date>/<code>.v<N>.json(嵌套一层日期目录)",
+        "note": ("`fetch_anns` 的 `cache` 形参默认 **False**(Wave10 A9 裁定),"
+                 "所以这个目录多半根本不存在 —— 0 是预期,不是丢数据"),
     }
     out["total_bytes"] += size
     out["total_shards"] += len(files)
     return out
+
+
+# ───────────────────────── 夜间快讯 ingest(B 级:降级不阻断,但必须记账)─────────────────────────
+#
+# Wave12-T35「通电」第二步。这三条是**全市场固定口径 feed**(不是逐票查回来的),
+# 所以 scope=market_wide —— 它们是目前唯一有资格进"市场新闻量/热度"的观测。
+#
+# **消费者仍然全关**:intel 先读目录、L3 第二源、typed-event 进 prompt 都是 B 类,
+# 要走 experiment_registry。本步只让目录里**有数据**,不让任何决策面读它。
+
+FLASH_SOURCES: dict[str, dict] = {
+    # 东财全球财经快讯:标题/摘要/发布时间/链接(2026-08-09 实测 200 行)
+    "global_em": {"endpoint": "stock_info_global_em", "title": "标题",
+                  "body": "摘要", "ts": "发布时间", "url": "链接"},
+    # 新浪财经全球直播:**只有 时间/内容 两列**,没有独立标题也没有 url
+    # (2026-08-09 实测 20 行)—— 标题只能从内容里取,url 缺失走 lineage 的标题退路。
+    "global_sina": {"endpoint": "stock_info_global_sina", "title": None,
+                    "body": "内容", "ts": "时间", "url": None},
+    # 东财财经早餐:同 EM 四列(2026-08-09 实测 400 行)
+    "cjzc_em": {"endpoint": "stock_info_cjzc_em", "title": "标题",
+                "body": "摘要", "ts": "发布时间", "url": "链接"},
+}
+
+_BRACKET_TITLE = re.compile(r"^\s*【([^】]{2,80})】")
+
+
+def flash_title(text: str, fallback_len: int = 60) -> str:
+    """快讯正文 → 标题。带 `【…】` 头的取括号内(中文快讯的事实标题就在那里),否则截前 N 字。
+
+    **不做同义改写**(同 `normalize_title` 的纪律):宁可多一个事件,也不要把两件事焊死。
+    """
+    text = str(text or "").strip()
+    m = _BRACKET_TITLE.match(text)
+    return m.group(1).strip() if m else text[:fallback_len]
+
+
+def flash_observations(source: str, frame: pd.DataFrame, *, now: str | None = None,
+                       stage: str = "L1") -> list[Observation]:
+    """一份快讯 DataFrame → `Observation` 列表(纯函数,不碰网络也不碰目录)。
+
+    `first_seen_ts = now`(=本次 ingest 的时刻),**不是** `published_ts`:
+    一条 08-01 发布、今晚才被我们抓到的快讯,在 08-02 的决策里不存在(§1.1 PIT 纪律)。
+    """
+    spec = FLASH_SOURCES.get(source)
+    if spec is None:
+        raise CatalogError(f"未知快讯源 {source!r};合法:{sorted(FLASH_SOURCES)}")
+    seen = _iso(now) or datetime.now(timezone.utc).isoformat()
+    items: list[Observation] = []
+    if frame is None or not len(frame):
+        return items
+    for row in frame.to_dict("records"):
+        body = str(row.get(spec["body"]) or "").strip()
+        raw_title = str(row.get(spec["title"]) or "").strip() if spec["title"] else ""
+        title = raw_title or flash_title(body)
+        if not title:
+            continue                       # 无标题无正文 = 没有可记的观测,跳过(不造空行)
+        published = _iso(row.get(spec["ts"]))
+        items.append(Observation(
+            source=source, title=title,
+            url=str(row.get(spec["url"]) or "") if spec["url"] else "",
+            published_ts=published,
+            first_seen_ts=seen, fetched_ts=seen,
+            first_seen_basis=BASIS_OBSERVED,      # 新抓取一律 observed(§1.1)
+            available_stage=stage,
+            scope=SCOPE_MARKET_WIDE,              # 固定口径全局 feed → 可算市场热度
+            raw_artifact_path=f"akshare:{spec['endpoint']}",
+            event_date=(published or seen)[:10],
+            codes=(), code_method=METHOD_SOURCE_FIELD,
+            body_hash=content_hash(body)))
+    return items
+
+
+def _fetch_flash(endpoint: str):
+    """akshare 端点调用(单独一层,好让测试 patch 掉——测试禁挂真网)。"""
+    import akshare as ak
+    return getattr(ak, endpoint)()
+
+
+def ingest_flash(sources: list[str] | None = None, *, catalog: NewsCatalog | None = None,
+                 fetch=None, now: str | None = None, stage: str = "L1") -> dict:
+    """三源快讯 → 目录(**B 级**:任一源挂了只降级记账,不抛、不连坐其它源)。
+
+    B 级的两条纪律都要:①不阻断(新闻是增强面,缺了漏斗仍成立);②**降级必须留痕**
+    ——「降级不留痕」才是真病,所以每个源都有一行 `status`,不管成没成。
+    """
+    cat = catalog or NewsCatalog()
+    fetcher = fetch or _fetch_flash
+    picked = list(sources or FLASH_SOURCES)
+    per_source: list[dict] = []
+    all_items: list[Observation] = []
+    for source in picked:
+        spec = FLASH_SOURCES.get(source)
+        if spec is None:
+            per_source.append({"source": source, "status": "UNKNOWN_SOURCE", "rows": 0})
+            continue
+        try:
+            frame = fetcher(spec["endpoint"])
+        except Exception as e:  # noqa: BLE001 — B 级:一个源挂了不该毁掉整晚
+            per_source.append({"source": source, "status": "FETCH_FAILED", "rows": 0,
+                               "error": f"{type(e).__name__}: {e}"[:200]})
+            continue
+        try:
+            items = flash_observations(source, frame, now=now, stage=stage)
+        except Exception as e:  # noqa: BLE001 — 列名变了(schema drift)也只降级
+            per_source.append({"source": source, "status": "SHAPE_ERROR", "rows": 0,
+                               "error": f"{type(e).__name__}: {e}"[:200]})
+            continue
+        all_items.extend(items)
+        per_source.append({"source": source,
+                           "status": "OK" if items else "EMPTY",
+                           "rows": int(len(frame)), "observations": len(items)})
+    result = cat.ingest(all_items)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "per_source": per_source,
+        "added": len(result["added"]), "revised": len(result["revised"]),
+        "unchanged": result["unchanged"], "rejected": result["rejected"],
+        # 「至少有一个源真出了数」——全挂时这里是 False,报表据此报警而不是显示"一切正常"
+        "any_ok": any(s["status"] == "OK" for s in per_source),
+        "health": cat.health(),
+    }
 
 
 def manifest_day(scan_dir: Path | str, *, catalog: NewsCatalog | None = None,
@@ -619,6 +776,11 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("inventory", help="既有新闻/公告资产盘点(只读元数据)")
     sub.add_parser("health", help="目录健康(first_seen 缺失率必须为 0)")
 
+    f = sub.add_parser("ingest-flash", help="三源快讯 ingest(夜间;B 级,降级不阻断)")
+    f.add_argument("--sources", default=None,
+                   help=f"逗号分隔,缺省全部:{','.join(FLASH_SOURCES)}")
+    f.add_argument("--stage", default="L1", choices=list(STAGES))
+
     m = sub.add_parser("manifest", help="把某扫描日的 L3_news 分片收进目录并对账")
     m.add_argument("date")
     m.add_argument("--scan-root", default="context/scan")
@@ -638,6 +800,13 @@ def main(argv: list[str] | None = None) -> int:
         health = cat.health()
         print(render_health(health))
         return 0 if health["first_seen_missing_rate"] == 0 else 1
+    if a.cmd == "ingest-flash":
+        picked = [s.strip() for s in a.sources.split(",")] if a.sources else None
+        res = ingest_flash(picked, catalog=cat, stage=a.stage)
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        # exit 恒 0:B 级不毙人。全挂的信号在 `any_ok=false` 与 prelude 报表行里,
+        # 不靠退出码 —— 夜间批任何一步非零都会连累后面的步骤(nightly_close 的教训)。
+        return 0
     if a.cmd == "manifest":
         result = manifest_day(Path(a.scan_root) / a.date, catalog=cat, stage=a.stage)
         print(json.dumps(result, ensure_ascii=False, indent=2))

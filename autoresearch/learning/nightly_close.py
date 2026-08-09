@@ -139,9 +139,32 @@ def run(today: str) -> list[tuple[str, bool, str]]:
                 ok += 1
         return f"{ok}/{total} 刷新"
 
+    def _news_flash() -> str:
+        """Wave12-T35:三源快讯 ingest —— news_catalog「通电」的夜间腿。
+
+        **消费者仍然全关**(intel 先读目录 / L3 第二源 / typed-event 进 prompt 都是 B 类,
+        要走 experiment_registry)。本步只让目录里有数据、让"连续 5 晚非空"这条验收
+        开始有读数可数 —— 没有夜间踢它,就永远只有"跑过一次"的手工读数
+        (同 §B5 判据的道理:靠人回忆的判据等于没判据)。
+
+        B 级:任一源挂了只降级记账;三源全挂时 `any_ok=False`,本步记 ✗ 但**不连坐**
+        后面的步骤(`_step` 已保证)。
+        """
+        from autoresearch.news.catalog import ingest_flash
+        res = ingest_flash()
+        srcs = "、".join(f"{s['source']}:{s['status']}" for s in res["per_source"])
+        note = (f"新增 {res['added']} · 修订 {res['revised']} · 未变 {res['unchanged']}"
+                f"(累计 {res['health']['n_observations']} 条){srcs and ';' + srcs}")
+        if not res["any_ok"]:
+            raise RuntimeError(f"三源快讯全部未出数 —— {note}")   # 记 ✗ 但不连坐
+        return note
+
     for name, fn in (("retro_refresh", _retro_refresh), ("t1_backfill", _t1_backfill),
                      ("t1_gap_finalize", _t1_gap_finalize),
-                     ("tripwire", _tripwire), ("ledgers", _ledgers)):
+                     ("tripwire", _tripwire), ("ledgers", _ledgers),
+                     # 排在最后:纯增量写自己的目录,对上面任何一步都无依赖;
+                     # 挂了也不该影响账本刷新(新闻是 B 级增强面)。
+                     ("news_flash", _news_flash)):
         out.append(_step(name, fn))
     return out
 

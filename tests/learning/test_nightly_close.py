@@ -6,7 +6,27 @@
 """
 from __future__ import annotations
 
+import pytest
+
 from autoresearch.learning import nightly_close as N
+
+_FLASH_STUB = {"per_source": [{"source": "global_em", "status": "OK", "rows": 2,
+                               "observations": 2}],
+               "added": 2, "revised": 0, "unchanged": 0, "rejected": [],
+               "any_ok": True, "health": {"n_observations": 2}}
+
+
+@pytest.fixture(autouse=True)
+def _no_live_news(monkeypatch):
+    """禁挂真网(Wave12-T35):`news_flash` 步会真调 akshare 三个端点。
+
+    ⚠️ 这个 fixture 是**必须**的,不是洁癖:接线首版没有它,本文件每条跑 `N.run` 的测试
+    都会真的去拉 620 条快讯(实测整轮从 ~1s 涨到 ~2 分钟),而且结果随行情变化 ——
+    既慢又不稳。`_news_flash` 用的是 `from ... import ingest_flash`(函数内 import),
+    所以要 patch **catalog 模块上的名字**,patch `importlib.import_module` 拦不住它。
+    """
+    monkeypatch.setattr("autoresearch.news.catalog.ingest_flash",
+                        lambda *a, **k: dict(_FLASH_STUB))
 
 
 def test_step_captures_failure_without_raising():
@@ -33,7 +53,7 @@ def test_run_is_isolated_per_step(monkeypatch):
     res = N.run("2026-07-28")
 
     assert [r[0] for r in res] == ["retro_refresh", "t1_backfill", "t1_gap_finalize",
-                                    "tripwire", "ledgers"]
+                                    "tripwire", "ledgers", "news_flash"]
     assert res[0][1] is False and "OSError" in res[0][2]
     assert all(r[1] for r in res[1:]), "一步失败把后续步骤也带崩了 = 连坐"
 
@@ -205,3 +225,46 @@ def test_retro_step_writes_input_not_just_attribution(monkeypatch):
     assert seen["attr"] == "2026-07-24"
     assert seen["input_day"] == "2026-07-24", "只归因没备料 = 自动化只省了半步"
     assert seen["frame"] == "FRAME", "备料必须吃内存帧,不是从 CSV 重读"
+
+
+# ── Wave12-T35:news_flash 夜间腿 ──
+
+
+def test_news_flash_step_reports_counts(monkeypatch):
+    """接线 + 记账:步骤跑通时把新增/未变/累计如实写进 note(不是只回一个 ✓)。"""
+    monkeypatch.setattr("autoresearch.learning.retro.pending_days", lambda *a, **k: [])
+    monkeypatch.setattr("autoresearch.learning.t1_review.pending_pairs", lambda *a, **k: [])
+    monkeypatch.setattr("autoresearch.learning.t1_review.gap_finalize_pending",
+                        lambda *a, **k: (0, []))
+    monkeypatch.setattr("autoresearch.learning.tripwire_watch.check", lambda *a, **k: [])
+    monkeypatch.setattr("importlib.import_module", lambda name: type(
+        "M", (), {"main": staticmethod(lambda *a: None)})())
+    note = {r[0]: r[2] for r in N.run("2026-07-28")}["news_flash"]
+    assert "新增 2" in note and "累计 2" in note and "global_em:OK" in note
+
+
+def test_news_flash_step_fails_loudly_when_all_sources_down(monkeypatch):
+    """三源全挂 → 本步记 ✗(而不是"跑了但 0 条"的静默绿),但**不连坐**其它步骤。
+
+    「降级不留痕」才是真病 —— 一个恒绿的 ingest 腿和一个死掉的 ingest 腿长得一样。
+    """
+    monkeypatch.setattr("autoresearch.learning.retro.pending_days", lambda *a, **k: [])
+    monkeypatch.setattr("autoresearch.learning.t1_review.pending_pairs", lambda *a, **k: [])
+    monkeypatch.setattr("autoresearch.learning.t1_review.gap_finalize_pending",
+                        lambda *a, **k: (0, []))
+    monkeypatch.setattr("autoresearch.learning.tripwire_watch.check", lambda *a, **k: [])
+    # ⚠️ 顺序有意义:pytest 的 `monkeypatch.setattr("a.b.c", ...)` 内部要靠
+    # `importlib.import_module` 解析模块路径 —— 先把 importlib 打成桩,这行就会去
+    # 假模块上找 `news` 属性而报 AttributeError(首版实测撞到)。
+    monkeypatch.setattr("autoresearch.news.catalog.ingest_flash", lambda *a, **k: {
+        "per_source": [{"source": s, "status": "FETCH_FAILED", "rows": 0}
+                       for s in ("global_em", "global_sina", "cjzc_em")],
+        "added": 0, "revised": 0, "unchanged": 0, "rejected": [],
+        "any_ok": False, "health": {"n_observations": 0}})
+    monkeypatch.setattr("importlib.import_module", lambda name: type(
+        "M", (), {"main": staticmethod(lambda *a: None)})())
+
+    res = N.run("2026-07-28")
+    by = {r[0]: r for r in res}
+    assert by["news_flash"][1] is False and "全部未出数" in by["news_flash"][2]
+    assert all(r[1] for r in res if r[0] != "news_flash"), "不连坐"
