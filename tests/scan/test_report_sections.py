@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import csv
 import json
 
 import pandas as pd
@@ -213,3 +214,143 @@ def test_no_content_class_is_dropped(tmp_path):
     md = build_summary(d, _D, "1200", _F)
     for name in ("甲", "乙", "持仓票"):
         assert name in md
+
+
+# ─────────────── I-3:summary 总字节回归锁(T26 的**全部产出理由**) ───────────────
+#
+# 第一版把 47,814B → 30,951B 只写在报告里、没有任何测试守着 —— 下一个人加一节顶回 47KB,
+# 2300 条测试全绿。下面这条把它焊成断言,并且**自带鉴别力证明**:同一份 fixture 先用
+# 「旧口径」(行业节嵌研判段全文 + 经验节倒 rule 原文)渲染一次,断言它确实 >38KB,
+# 再断言现口径 ≤38KB。只断言后半句的话,合成盘天然只有几 KB,这条会是恒绿的假灯。
+
+def _old_style_sector_section(scan_dir) -> str:
+    """T26 之前的行业节:每行业**原文嵌研判段全文**。"""
+    from autoresearch.sector.brief import extract_view, parse_direction
+    parts = []
+    for p in sorted((scan_dir / "sector_briefs").glob("*.md")):
+        view = extract_view(p.read_text(encoding="utf-8"))
+        if view:
+            parts.append(f"**{p.stem}**(方向:{parse_direction(view) or '—'})\n\n{view}")
+    return "## 🏭 行业研判(sector-research lite · 仅整合层)\n\n" + "\n\n".join(parts)
+
+
+def _old_style_knowledge_note(rows) -> str:
+    """T26 之前的经验节:逐条倒 `rule` **整段原文**。"""
+    lessons, open_fb = rs._lessons_and_open_feedback(rows)
+    lines = ["## 📌 经验 / 未决反馈(闭环记忆)", "**生效经验**:"]
+    lines += [f"- {lsn['rule']}  _(conf {lsn.get('confidence', 0):.2f})_" for lsn in lessons]
+    lines += ["**未决反馈**:"] + [f"- ({f.get('verdict')}) {f.get('note', '')}" for f in open_fb]
+    return "\n".join(lines) + "\n"
+
+
+_FAT_LESSON = ("【2026-07-15 机制勘误 —— 原文把病因记成「L2 是动量训练的 GBDT champion」,"
+               "该模块已于 2026-07-13 整簇删除,L2 现为确定性分层采样器。现象仍在,归因需改口。】\n"
+               + "漏斗对「深跌 + 主力净出」的超卖反转票有逐级收紧的拒绝梯度,"
+                 "且梯度是判据叠加的结果而非某一个模块。" * 12)
+
+
+def _fat_scan(tmp_path):
+    """按真 08-06 run 的量级造:8 个行业 brief + 12 条长 lesson + 12 只 finalist。"""
+    d = _scan(tmp_path, n_industries=8)
+    rows = list(csv.DictReader((d / "finalists.csv").open(encoding="utf-8")))
+    extra = [dict(rows[0], code=f"{300000 + i:06d}", name=f"测试票{i}", lane="value")
+             for i in range(10)]
+    with (d / "finalists.csv").open("w", encoding="utf-8", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=list(rows[0]))
+        w.writeheader()
+        w.writerows(rows + extra)
+    for r in extra:
+        (d / "details" / f"{r['code']}.md").write_text(
+            "# 决策卡\n**Rubric建议**: 净分-1 ｜ OW三门 主力真在✗ → 压Hold\n**Rating**: Hold\n",
+            encoding="utf-8")
+    return d
+
+
+def test_summary_total_bytes_regression_lock(tmp_path, monkeypatch):
+    """T26 Step 2 硬验收落成断言:summary 总字节 ≤ `rs.SUMMARY_MAX_BYTES`(38KB)。"""
+    lessons = [{"id": f"ls_{i}", "scope": {"kind": "global", "value": "*"},
+                "confidence": 0.8, "rule": _FAT_LESSON, "mtm": {"support": 9, "refute": 0}}
+               for i in range(12)]
+    fb = [{"id": f"fb_{i}", "verdict": "process", "note": "用户反馈" * 30} for i in range(9)]
+    monkeypatch.setattr(rs, "_lessons_and_open_feedback", lambda rows: (lessons, fb))
+    d = _fat_scan(tmp_path)
+
+    # ① 鉴别力证明:同一份 fixture 用旧口径渲染,必须真的撑破 38KB
+    md_new = build_summary(d, _D, "1200", _F)
+    old_extra = (len(_old_style_sector_section(d).encode("utf-8"))
+                 - len(rs._sector_view_section(d).encode("utf-8"))
+                 + len(_old_style_knowledge_note([{"code": "300476"}]).encode("utf-8"))
+                 - len(rs._knowledge_note([{"code": "300476"}]).encode("utf-8")))
+    old_bytes = len(md_new.encode("utf-8")) + old_extra
+    assert old_bytes > rs.SUMMARY_MAX_BYTES, \
+        f"探针失效:旧口径只有 {old_bytes}B,压不到 {rs.SUMMARY_MAX_BYTES}B 门槛"
+
+    # ② 契约本体
+    assert len(md_new.encode("utf-8")) <= rs.SUMMARY_MAX_BYTES, \
+        f"summary {len(md_new.encode('utf-8'))}B > {rs.SUMMARY_MAX_BYTES}B(T26 交付量回退)"
+    # ③ 减层不减料:12 条 lesson / 9 条反馈 / 8 个行业一条不少
+    for i in range(12):
+        assert f"`ls_{i}`" in md_new
+    for i in range(9):
+        assert f"`fb_{i}`" in md_new
+    for i in range(8):
+        assert f"测试行业{i}" in md_new
+
+
+def test_summary_max_bytes_is_the_task_book_number():
+    """常量钉字面量 —— 否则「把门槛调大」也能让上面那条变绿(常量同漂型假灯)。"""
+    assert rs.SUMMARY_MAX_BYTES == 38 * 1024
+
+
+# ─────────────── I-5:两个门柱生产者同屏必须各自打标 ───────────────
+
+def test_gate_histogram_declares_its_basis(md):
+    """summary 的门柱行由 `gate_status` 解析卡片自由文本,与 🧭 仪表盘 ③ 的结构化读数
+    **不是同一个数**。同屏不打标 = 读者随机相信一个。"""
+    assert "OW三门失守分布" in md
+    assert rs.GATE_HIST_BASIS_NOTE in md, "门柱行缺口径标注"
+    assert "以结构化那侧为准" in md
+    assert md.index("OW三门失守分布") < md.index(rs.GATE_HIST_BASIS_NOTE)
+
+
+def test_gate_hist_basis_note_pins_both_producer_names():
+    """标注必须点名两个生产者,否则读者不知道「另一个数」在哪、为什么不同。"""
+    note = rs.GATE_HIST_BASIS_NOTE
+    assert "gate_status" in note and "decision_records.gate_states" in note
+
+
+# ─────────────── M-12:任务书 ④ 点名的保留件补断言 ───────────────
+
+def test_near_miss_banner_is_front_loaded_and_appendix_stays_at_tail(tmp_path, monkeypatch):
+    """①「差一点/弃权 banner 前置」+ ④「near_miss 附录原样保留」。
+
+    banner 必须排在背景节(📈 市场)**之前**,逐只附录仍留在文末 —— §R6:只给个案不给分母
+    会把读者推向绕门,两者的视觉层级不能合并。
+    """
+    from autoresearch.scan import near_miss
+    facts = near_miss.NearMissFacts(
+        date=_D, is_zero_buy=True,
+        shadow=[{"code": "300476", "name": "甲", "conviction": 72,
+                 "binding": ["主力真在"], "close": 5.2}],
+        gate_counts={"主力真在": 1, "业绩真兑现": 0, "估值不透支": 0},
+        gate_history={}, abstention=None, as_of_days=[_D])
+    monkeypatch.setattr(near_miss, "build", lambda *a, **k: facts)
+    md = build_summary(_scan(tmp_path), _D, "1200", _F)
+    banner_at, appendix_at = md.find("🎯 差一点"), md.find("🕯️ 影子观察附录")
+    assert banner_at > 0 and appendix_at > 0, "差一点 banner / 影子附录 丢了"
+    # 锚取必然在场的背景节(`## 📈 今日 A 股市场` 在合成盘 presence-gated 不出,拿它当锚
+    # 会 find→-1、断言恒真,又是一个假灯)
+    funnel_at = md.find("## 1. 漏斗(数量)")
+    assert funnel_at > 0
+    assert banner_at < funnel_at, "弃权 banner 未前置到决策主线"
+    assert appendix_at > md.find("## 📌 经验"), "逐只附录不该爬到决策主线"
+    assert near_miss.DISCLAIMER in md, "附录的「未过门,非建议」免责被丢了"
+
+
+def test_observation_anchor_survives_for_cost_section(md):
+    """④「💸 成本观测」由 `post_run.inject_run_observation_section` 注在 `## 诚实局限` 之前;
+    重排必须保住那个锚(锚没了 → 成本节会被追到文末、脱离上下文)。"""
+    assert "\n## 诚实局限" in md
+    from autoresearch.scan.post_run import inject_run_observation_section
+    out = inject_run_observation_section(md, "## 💸 成本与时延观测\n\n- 计量:UNMEASURED")
+    assert out.index("💸 成本与时延观测") < out.index("## 诚实局限")

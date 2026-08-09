@@ -110,6 +110,10 @@ def _scan_dir(root: Path, *, with_decision=True, decision=None) -> Path:
     (scan / "run_mode.json").write_text(json.dumps({
         "schema_version": 1, "mode": "FORCED_FULL", "sentinel_reason": None,
         "pinned_codes": ["300750", "300857", "601688"]}, ensure_ascii=False), encoding="utf-8")
+    # 真实 run 必有(策略师 Stage 0 写);brief ① 的定调句读它 —— 白名单 ⊆ 不变量靠它落地
+    (scan / "market_view.md").write_text(
+        "# 市场研判 — 2026-08-06\n\n1. **一句话定调**:**range 区间市 · 哑铃分化**"
+        "——涨停 101 家。\n", encoding="utf-8")
     (scan / "run_health.json").write_text(json.dumps({
         "date": _DATE,
         "counts": {"l1_full": 4237, "recall": 1000, "l2": 203, "finalists": 6,
@@ -269,6 +273,106 @@ def test_no_details_or_trace_in_whitelist():
         assert "attribution.csv" not in name or name.startswith("retro/")
 
 
+# ─────────────── 白名单双向不变量(fix-1,复核 I-2/M-2) ───────────────
+#
+# 复核 I-2 的病根不是「漏了一个文件」,而是**没有任何东西守着「白名单 = 实际读取集」**:
+#   - 缺 ⊇ 方向 → 可以偷偷读白名单外的文件(`_tripwire_conflicts.json` 就这么读了一轮);
+#   - 缺 ⊆ 方向 → 可以往表里挂一条从没接线的「许愿项」冒充契约(`market_view.md` 躺了一轮)。
+# 下面两条把双向都焊住。⊇ 用 AST 抽本模块的文件名字面量,不靠人肉 grep。
+
+def _file_literals_in_brief() -> set[str]:
+    """brief.py 里所有以 .json/.csv/.md 结尾的字符串字面量 → **basename**。
+
+    取 basename 而不是原串:路径常由 `a / "b" / "c.csv"` 拼出、或嵌在 f-string 的散文里
+    (`"…均无 retro/attribution.csv"`),原串比对会把这些误判成越权读取。
+    """
+    import ast
+    tree = ast.parse(Path(brief.__file__).read_text(encoding="utf-8"))
+    return {Path(n.value).name for n in ast.walk(tree)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)
+            and n.value.endswith((".json", ".csv", ".md"))}
+
+
+def _whitelisted(name: str) -> bool:
+    return (name in brief.INPUT_WHITELIST
+            or any(w.endswith("/" + name) for w in brief.INPUT_WHITELIST)
+            or name in brief.OUTPUT_FILENAMES)
+
+
+def test_whitelist_covers_every_file_read():
+    """⊇:模块里出现的每个文件名字面量都必须在白名单(或是本模块的产出)。"""
+    stray = sorted(n for n in _file_literals_in_brief() if not _whitelisted(n))
+    assert not stray, f"这些文件被 brief 碰到却不在 INPUT_WHITELIST:{stray}"
+
+
+def test_no_details_or_trace_path_literal_in_brief():
+    """禁读 `details/` 全文与 `trace/` 大文件 —— 这条查的是**源码里有没有这种路径**,
+    与只查白名单内容的 `test_no_details_or_trace_in_whitelist` 是互补的两条。"""
+    import ast
+    tree = ast.parse(Path(brief.__file__).read_text(encoding="utf-8"))
+    lits = [n.value for n in ast.walk(tree)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+    bad = [s for s in lits if s.startswith(("details/", "trace/")) or s in ("details", "trace")]
+    assert not bad, f"brief 出现 details/trace 路径字面量:{bad}"
+
+
+def test_whitelist_has_no_dead_entry(scan):
+    """⊆:表内每一项都必须真被读过。判据不是「代码里提过」而是「**sources 边表用过它**」
+    —— 前者可以靠一句死注释满足,后者必须真的渲染出一个数。
+
+    三个虚拟项(`buy_ledger`/`menu_health`/`feedback_store`)与 `temperature.csv` 同理:
+    它们也各自出边表行。`retro/attribution.csv` 的 R-X1 行是三态常驻的,必然在场。
+    """
+    files = {r["file"] for r in brief.build(scan, run_folder=_RUN)["sources"]}
+    dead = sorted(set(brief.INPUT_WHITELIST) - files)
+    # temperature.csv 在 tests/scan/conftest 里被隔离成不存在 → 该行 presence-gated 不出
+    assert dead == ["temperature.csv"], f"白名单死条目(从没被读过):{dead}"
+
+
+def test_tripwire_number_is_sourced_to_its_own_file(tmp_path):
+    """I-2 本体:④ 里的 `⚠️tripwire N` 来自 `_tripwire_conflicts.json`,
+    **不得**被标成 `_final_ratings.json`(sources 误标会让 T27 对着错误来源比对)。"""
+    scan = _scan_dir(tmp_path)
+    (scan / "_tripwire_conflicts.json").write_text(json.dumps({
+        "601688": {"all_hits": [{"detail": "破线"}, {"detail": "破量"}],
+                   "rating": "Hold"}}, ensure_ascii=False), encoding="utf-8")
+    out = brief.build(scan, run_folder=_RUN)
+    assert "⚠️tripwire 2" in out["markdown"]
+    row = next(r for r in out["sources"] if r["field"] == "pinned.601688.tripwire")
+    assert row["file"] == "_tripwire_conflicts.json", f"tripwire 来源被误标成 {row['file']}"
+    assert row["value"] == "2"
+    assert row["text"] in out["markdown"]
+
+
+def test_delta_detail_is_fully_anchored(tmp_path):
+    """M-1:⑥ 的**整行**(含逐只评级变动)进边表 —— 只锚 head 前缀 = 半条对账。"""
+    scan = _scan_dir(tmp_path)
+    prev = scan.parent / "2026-08-05"
+    prev.mkdir(parents=True, exist_ok=True)
+    (prev / "_final_ratings.json").write_text(
+        json.dumps({"600018": "Underweight", "601688": "Hold"}), encoding="utf-8")
+    out = brief.build(scan, run_folder=_RUN)
+    row = next(r for r in out["sources"] if r["field"] == "delta.changes")
+    assert "600018 Underweight→Hold" in row["text"], "逐只变动明细不在锚里"
+    assert row["text"] in out["markdown"]
+
+
+def test_market_tone_and_menu_flag_are_wired(tmp_path):
+    """M-2:`market_view.md`(定调句)与 `menu_health`(菜单病旗)必须真接线,不是白名单许愿项。"""
+    scan = _scan_dir(tmp_path)
+    (scan / "market_view.md").write_text(
+        "# 市场研判 — 2026-08-06\n\n1. **一句话定调**:**range 区间市 · 哑铃分化**"
+        "——涨停 101 家,全市场中位 −0.13%。\n", encoding="utf-8")
+    out = brief.build(scan, run_folder=_RUN)
+    md = out["markdown"]
+    assert "定调「" in md and "区间市" in md
+    assert "涨停 101 家" not in md, "定调句必须截断,不许把整段倒进 brief"
+    tone = next(r for r in out["sources"] if r["field"] == "market.tone")
+    assert tone["file"] == "market_view.md" and tone["text"] in md
+    menu = next(r for r in out["sources"] if r["field"] == "risk.menu_sick")
+    assert menu["file"] == "menu_health" and menu["text"] in md
+
+
 # ───────────────────────────── ⑤ 影子期双行 ─────────────────────────────
 
 def test_shadow_mode_renders_two_lines_with_informal_mark(scan):
@@ -331,6 +435,171 @@ def test_missing_decision_file_is_explicit(tmp_path):
     md = brief.build(scan, run_folder=_RUN)["markdown"]
     shadow = next(ln for ln in md.splitlines() if "影子 relative BUY" in ln)
     assert "未生成" in shadow, "决策文件缺席必须显式说,不得静默省行"
+
+
+# ─────────────── R-X1 两尺分歧日提示(fix-1,复核 I-4) ───────────────
+#
+# 设计稿点名要进 brief 的一条,第一版**零测试**。而且第一版「同向」与「读不到」都返回 None、
+# 都渲染成什么都不显示 —— 探针死了也像活着(本仓最常复发的一类病)。现在三态各有用例,
+# 且 ALIGNED 与 UNMEASURED 的措辞必须不同。
+
+def _attr(root: Path, day: str, gap: float, oc: float, *, cols=("gap_c1_o2", "fwd_2_oc")):
+    d = root / day / "retro"
+    d.mkdir(parents=True, exist_ok=True)
+    with (d / "attribution.csv").open("w", encoding="utf-8", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=["code", *cols])
+        w.writeheader()
+        w.writerow({"code": "000001", cols[0]: gap, cols[1]: oc})
+        w.writerow({"code": "000002", cols[0]: gap, cols[1]: oc})
+    return d / "attribution.csv"
+
+
+def test_divergence_opposite_signs_renders_full_hint(tmp_path):
+    scan = _scan_dir(tmp_path)
+    _attr(scan.parent, "2026-08-05", gap=-0.0005, oc=0.0182)
+    md = brief.build(scan, run_folder=_RUN)["markdown"]
+    line = next(ln for ln in md.splitlines() if "① 市场" in ln)
+    assert "两尺分歧(2026-08-05 已成熟)" in line
+    assert "-0.05%" in line and "+1.82%" in line
+    assert "日内那段不在本系统授权内" in line
+
+
+def test_divergence_same_signs_says_aligned_not_silence(tmp_path):
+    """同向 → **明说「同向,无分歧」**(已量过),不是什么都不显示。"""
+    scan = _scan_dir(tmp_path)
+    _attr(scan.parent, "2026-08-05", gap=0.0031, oc=0.0182)
+    line = next(ln for ln in brief.build(scan, run_folder=_RUN)["markdown"].splitlines()
+                if "① 市场" in ln)
+    assert "同向,无分歧" in line
+    assert "两尺分歧" not in line and "UNMEASURED" not in line
+
+
+def test_divergence_missing_columns_says_unmeasured(tmp_path):
+    """列名换了 = 探针瞎了 → **UNMEASURED + 原因**,绝不能画成「今天没分歧」。
+
+    这正是复核 I-4 点名的失败场景:`retro` 改列名 → 第一版永远静默不出行。
+    """
+    scan = _scan_dir(tmp_path)
+    _attr(scan.parent, "2026-08-05", gap=0.1, oc=0.2, cols=("gap_c1_o2_v2", "fwd_2_oc_v2"))
+    line = next(ln for ln in brief.build(scan, run_folder=_RUN)["markdown"].splitlines()
+                if "① 市场" in ln)
+    assert "UNMEASURED" in line and "缺列" in line
+    assert "没量到,不等于没分歧" in line
+    assert "同向" not in line
+
+
+def test_divergence_no_prior_day_says_unmeasured(scan):
+    line = next(ln for ln in brief.build(scan, run_folder=_RUN)["markdown"].splitlines()
+                if "① 市场" in ln)
+    assert "UNMEASURED" in line and "无更早扫描日" in line
+
+
+def test_divergence_ignores_today_and_future(tmp_path):
+    """**严格早于今日**:今日自己的 attribution 在决策当晚不存在;即便盘上有也不许用
+    (那是从未来读数)。这里给今日与未来日各造一份,断言仍判 UNMEASURED。"""
+    scan = _scan_dir(tmp_path)
+    _attr(scan.parent, _DATE, gap=-0.5, oc=0.5)
+    _attr(scan.parent, "2026-08-07", gap=-0.5, oc=0.5)
+    line = next(ln for ln in brief.build(scan, run_folder=_RUN)["markdown"].splitlines()
+                if "① 市场" in ln)
+    assert "UNMEASURED" in line, f"用了今日/未来的读数:{line}"
+
+
+def test_divergence_picks_the_latest_prior_day(tmp_path):
+    scan = _scan_dir(tmp_path)
+    _attr(scan.parent, "2026-08-03", gap=-0.01, oc=0.01)     # 更早:分歧
+    _attr(scan.parent, "2026-08-05", gap=0.01, oc=0.01)      # 最近:同向
+    line = next(ln for ln in brief.build(scan, run_folder=_RUN)["markdown"].splitlines()
+                if "① 市场" in ln)
+    assert "2026-08-05" in line and "同向" in line, f"没取最近的那一天:{line}"
+
+
+def test_divergence_status_is_in_sources(tmp_path):
+    """三态都要能被 T27 对账 —— 边表里必须有这一行,且 text 真在正文。"""
+    scan = _scan_dir(tmp_path)
+    _attr(scan.parent, "2026-08-05", gap=-0.0005, oc=0.0182)
+    out = brief.build(scan, run_folder=_RUN)
+    row = next(r for r in out["sources"] if r["field"] == "market.divergence")
+    assert row["value"] == brief.DIVERGENT
+    assert row["file"] == "retro/attribution.csv"
+    assert row["text"] in out["markdown"]
+
+
+# ─────────────── M-10:buy_ledger.roll 单次发布只跑一次 ───────────────
+#
+# 病灶:一次 `publisher.run` 里 `roll(context/scan)` 被跑三次(build_summary 的 _ow_base_line /
+# brief 生成 / T27 lint 的边表重算),各 ~0.28s,而 registry 的 speed 守卫是 `wall_delta_s ≤ 5`。
+# 共享的前提「三次之间 ledger 输入没被写过」已用 tmp 拷贝实跑确认(见 `ow_base_cache` docstring)。
+# 硬约束:**只在单次发布生命周期内复用,绝不跨发布**——下面三条把两个方向都焊住。
+
+def _count_rolls(monkeypatch) -> list:
+    from autoresearch.learning import buy_ledger
+    calls: list = []
+    real = buy_ledger.roll
+
+    def traced(scan_root=None):
+        calls.append(str(scan_root))
+        return real(scan_root)
+
+    monkeypatch.setattr(buy_ledger, "roll", traced)
+    return calls
+
+
+def test_ow_base_rate_rolls_once_per_publish(tmp_path, monkeypatch):
+    from autoresearch.scan import assemble
+    scan = _scan_dir(tmp_path)
+    calls = _count_rolls(monkeypatch)
+    assemble.run(_DATE, scan_dir=scan, out_root=tmp_path / "reports" / "scan",
+                 hhmm="2308", run_date="2026-08-06")
+    assert len(calls) == 1, f"一次发布跑了 {len(calls)} 次 buy_ledger.roll:{calls}"
+
+
+def test_ow_base_cache_does_not_leak_across_publishes(tmp_path, monkeypatch):
+    """**跨发布必须重算**:窗在 `run()` 外壳里开关,两次发布 = 两次 roll。
+    漏到下一次发布就是把昨天的账本读数印在今天的报告上。"""
+    from autoresearch.scan import assemble
+    scan = _scan_dir(tmp_path)
+    calls = _count_rolls(monkeypatch)
+    for hhmm in ("2308", "2330"):
+        assemble.run(_DATE, scan_dir=scan, out_root=tmp_path / "reports" / "scan",
+                     hhmm=hhmm, run_date="2026-08-06")
+    assert len(calls) == 2, f"两次发布共 {len(calls)} 次 roll(期望 2)"
+    assert brief._OW_CACHE is None, "发布结束后缓存窗必须已销毁"
+
+
+def test_ow_base_cache_is_off_outside_a_publish(tmp_path, monkeypatch):
+    """窗外一律不缓存 —— nightly runner / retro / 单测直调不受影响。"""
+    calls = _count_rolls(monkeypatch)
+    root = _scan_dir(tmp_path).parent
+    brief._ow_base_rate(root)
+    brief._ow_base_rate(root)
+    assert len(calls) == 2, "窗外不该有缓存"
+    assert brief._OW_CACHE is None
+
+
+def test_ow_base_cache_is_destroyed_even_on_exception(tmp_path, monkeypatch):
+    """异常从发布真身抛出时,窗也必须关 —— 否则下一次发布读的是上一份账本。"""
+    from autoresearch.scan import publisher
+    monkeypatch.setattr(publisher, "_run_publish",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    with pytest.raises(RuntimeError):
+        publisher.run(_DATE, scan_dir=tmp_path, out_root=tmp_path)
+    assert brief._OW_CACHE is None, "异常路径漏了缓存窗"
+
+
+def test_ow_win_rate_denominator_only_counts_contributing_rows(monkeypatch):
+    """M-8:加权平均的分母只能是**有贡献**的行。老账本缺 fwd_2 列(win2=None)时,
+    旧式分母(全部 n_realized)会把胜率系统性低估。"""
+    import pandas as pd
+    from autoresearch.learning import buy_ledger
+    monkeypatch.setattr(buy_ledger, "roll", lambda root=None: pd.DataFrame())
+    monkeypatch.setattr(buy_ledger, "rating_base_rates", lambda _l, **k: [
+        {"rating": "Overweight", "n": 4, "n_realized": 4, "win2": 0.5, "mean2": 0.01},
+        {"rating": "Buy", "n": 6, "n_realized": 6, "win2": None, "mean2": None},
+    ])
+    out = brief._ow_base_rate_uncached(Path("/nonexistent"))
+    assert out["n"] == 10 and out["n_realized"] == 10
+    assert out["win2"] == 0.5, f"分母掺了无贡献行 → {out['win2']}(旧式会算成 0.2)"
 
 
 # ───────────────────────────── 七节骨架 + 落盘 ─────────────────────────────

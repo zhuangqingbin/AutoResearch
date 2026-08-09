@@ -63,9 +63,24 @@ def _verify_detail(vmap: dict[str, dict]) -> list[str]:
         lines.append("- 全部维持:多空辩论后空头未拿出证伪买点的硬证据。")
     return lines
 
+#: 「本行口径」标注(fix-1,复核 I-5)。**两个门柱生产者同屏,必须各自自报口径**:
+#: 本节走 `gate_status` 解析**卡片自由文本**,🧭 仪表盘 ③ 走 `decision_records.gate_states`
+#: **结构化字段**,人口(可解析卡 vs 满卡)与解析方式都不同,数会不等。
+#: `gate_status` 正是 memory 里「读不懂加粗 `**✗**` → 17.4% 的卡被判三门全过」的同族解析器,
+#: 已复发三次 —— 所以标注里直接写明**以结构化那侧为准**,不让读者随机相信一个。
+GATE_HIST_BASIS_NOTE = ("_口径:本行由 `gate_status` 解析**卡片自由文本**得来,分母=可解析卡;"
+                        "🧭 仪表盘 ③ 的门柱走 `decision_records.gate_states` **结构化字段**、"
+                        "分母=满卡,**两个数不等是正常的,以结构化那侧为准**"
+                        "(自由文本解析器有漏读加粗 `**✗**` 的前科)。_")
+
+
 def gate_histogram(scan_dir: Path, rows: list[dict]) -> str:
     """OW三门失守分布一行(确定性,逐卡数 `OW三门 …` 段的 ✗)。0买日一行看懂"今天为什么没买"
-    ——胜过读 30 格被截断的结论;有买日同样给出门柱形状。无可解析卡 → ''。"""
+    ——胜过读 30 格被截断的结论;有买日同样给出门柱形状。无可解析卡 → ''。
+
+    **必须带 `GATE_HIST_BASIS_NOTE`**(I-5):T26 把 brief ③ 注进 summary 的仪表盘后,
+    同一页会同时印两个门柱数(实测 08-06:本行「主力真在✗ 4」vs 仪表盘「主力真在 5」)。
+    """
     cnt = dict.fromkeys(_GATES3, 0)
     parsed = 0
     for r in rows:
@@ -81,7 +96,8 @@ def gate_histogram(scan_dir: Path, rows: list[dict]) -> str:
         return ""
     parts = " · ".join(f"{g}✗ {cnt[g]}" for g in _GATES3)
     return (f"**OW三门失守分布**({parsed} 卡可解析):{parts}"
-            f"(任一门✗ 即压 ≤Hold;门柱即当日 0买/有买的结构性原因)")
+            f"(任一门✗ 即压 ≤Hold;门柱即当日 0买/有买的结构性原因)\n\n"
+            f"{GATE_HIST_BASIS_NOTE}")
 
 _gate_histogram = gate_histogram
 
@@ -292,9 +308,11 @@ def _ow_base_rate_for(scan_root: Path):
 def _ow_base_line(scan_root: Path) -> str:
     """组合视角里的「旧 OW 基率」**分账行**(spec E5①)。
 
-    与新 relative 账**分列并置、不连成一条趋势线**:决策对象(绝对『值得买』vs 相对
-    『最值得买』)、人口(≥OW 的卡 vs 当日全部 L4 候选)、尺(旧行跨越 T16 换尺、口径混存
-    vs 新账钉死主尺)三处都不同。样本随 `buy_ledger` 自动更新,不写死。
+    与新 relative 账**分列并置、不连成一条趋势线**。**两处不同,不是三处**(fix-1,复核
+    M-5 更正):①决策对象(绝对『值得买』vs 相对『最值得买』);②人口(≥OW 的卡 vs 当日
+    全部 L4 候选的相对冠军)。原文第三条「尺不同」**不成立** —— `buy_ledger.roll()` 的
+    `fwd_2 = _a(MAIN_RULER)` 是现算的,两账同为 `gap_c1_o2`。结论不变,理由少一条。
+    样本随 `buy_ledger` 自动更新,不写死。
     """
     ow = _ow_base_rate_for(scan_root)
     if not ow:
@@ -303,8 +321,8 @@ def _ow_base_line(scan_root: Path) -> str:
     mean = "—" if ow["mean2"] is None else f"{ow['mean2'] * 100:+.2f}%"
     return (f"📊 **旧 OW 基率(分账·定义断层·不连线)**:{ow['n']} 笔"
             f"(已实现 {ow['n_realized']})· {MAIN_RULER} 胜率 {win} · 均值 {mean}"
-            f" —— 这是**旧绝对门**(≥Overweight)的账;与影子 relative 账**决策对象/人口/尺**"
-            f"三处都不同,分列并置,**不得接成一条曲线读**。")
+            f" —— 这是**旧绝对门**(≥Overweight)的账;与影子 relative 账**决策对象与人口**"
+            f"两处不同(尺相同,同为 {MAIN_RULER}),分列并置,**不得接成一条曲线读**。")
 
 
 def _portfolio_note(rows: list[dict]) -> str:
@@ -521,6 +539,14 @@ def _pinned_section(scan_dir: Path, analysis_date: str, pinned_rows: list[dict],
             note = f" ——{e['note']}" if e.get("note") else ""
             lines.append(f"- {e['code']}{note}(已于 {e.get('expires', '—')} 过期)")
     return "\n".join(lines)
+
+#: summary 总字节回归锁(T26 Step 2 硬验收;fix-1 补,复核 I-3)。
+#:
+#: 08-06 真 run 回放实测 **47,814B → 30,951B(−35.3%)**,任务书门槛 ≤38KB。
+#: **这个常量不是运行期截断阈值** —— 报告不许因为超预算就丢内容(减层不减料)。它是
+#: `tests/scan/test_report_sections.py::test_summary_total_bytes_regression_lock` 的**断言基准**:
+#: 下一个人往 summary 加一节把字节顶回 47KB 时,那条测试会红,而不是 2300 条测试全绿。
+SUMMARY_MAX_BYTES = 38 * 1024
 
 #: 行业研判节字节上限(T26)。旧版原文嵌研判段 = 13,379B / 全报告 28%。
 SECTOR_SECTION_MAX_BYTES = 2000

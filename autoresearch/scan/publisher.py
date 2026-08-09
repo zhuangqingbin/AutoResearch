@@ -233,6 +233,24 @@ def _publish_pipeline(scan_dir: Path, out_base: Path, analysis_date: str) -> int
 def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None = None,
         hhmm: str | None = None, run_date: str | None = None,
         pinned_path: str | Path | None = None) -> Path:
+    """L5 发布入口。薄壳:只负责开一个**单次发布**的 `buy_ledger` 缓存窗(M-10),
+    真身在 `_run_publish`。
+
+    写成外壳而不是把 `with` 塞进函数体,是为了让「窗的生命周期 == 一次发布」这件事**由
+    结构保证**:异常从 `_run_publish` 抛出时 `finally` 照样销毁,不会把上一份账本的读数
+    漏给下一次发布(nightly 连跑多天时这就是错数)。窗外调用一律不缓存。
+    """
+    from autoresearch.scan.brief import ow_base_cache
+
+    with ow_base_cache():
+        return _run_publish(analysis_date, scan_dir=scan_dir, out_root=out_root,
+                            hhmm=hhmm, run_date=run_date, pinned_path=pinned_path)
+
+
+def _run_publish(analysis_date: str, scan_dir: Path | None = None,
+                 out_root: Path | None = None, hhmm: str | None = None,
+                 run_date: str | None = None,
+                 pinned_path: str | Path | None = None) -> Path:
     scan_dir = scan_dir or Path("context/scan") / analysis_date
     out_root = out_root or Path("reports/scan")
     is_real = Path(scan_dir).resolve() == (
