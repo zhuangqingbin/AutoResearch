@@ -341,3 +341,41 @@ def test_shadow_observations_do_not_shorten_the_rollback_window(tmp_path):
     assert got["window"]["observed"] == 1, (
         "rollback 观察窗只数 rollback assessment;4 条影子观测不得把它顶到 5")
     assert got["window"]["all_pass"] is True, "影子行不带 status,不得让 all_pass 塌成 False"
+
+
+# ── 修复轮 1(复核 C1):`observe_pending` 的逐日隔离 ──────────────────────────
+
+
+def test_observe_pending_does_not_let_one_bad_day_block_the_rest(tmp_path, monkeypatch):
+    """一天的湖分区坏了,**其余日照常观测** —— 单日失败不连坐。
+
+    ⚠️ 变异探针 F6 逼出来的:把 `observe_pending` 里的逐日 try/except 摘掉之后,既有测试
+    **全绿**——因为没有任何一条用例让"某一天失败、另外几天该成功"这件事真的发生
+    (`test_exp_observe_failure_does_not_block_later_steps` 打的是整个 `observe_pending`,
+    量的是 `_step` 那一层的隔离,不是这一层)。没有这条,一天坏分区就能让整条腿停摆,
+    而它停摆的样子和"今晚没有新东西"一模一样。
+    """
+    lake = _lake(tmp_path, {"000001": [1.0] * 7})
+    pop = _population(tmp_path, [("2026-08-03", "000001"), ("2026-08-04", "000001"),
+                                 ("2026-08-05", "000001")])
+    scan_root = _scan_root(tmp_path, {d: {"000001": (0.05, 1.2)}
+                                      for d in ("2026-08-03", "2026-08-04", "2026-08-05")})
+    reg = _seed_registry(tmp_path)
+    ledger = tmp_path / "exp1.jsonl"
+
+    real = mainflow5d.observe_day
+
+    def flaky(date, **kwargs):
+        if date == "2026-08-04":
+            raise RuntimeError("湖分区坏了")
+        return real(date, **kwargs)
+
+    monkeypatch.setattr(mainflow5d, "observe_day", flaky)
+    got = mainflow5d.observe_pending("2026-08-05", population_path=pop,
+                                     scan_root=scan_root, lake=lake,
+                                     registry_path=reg, ledger_path=ledger)
+
+    assert got["observed"] == ["2026-08-03", "2026-08-05"], "坏的那天不该拖垮其余日"
+    assert [f["date"] for f in got["failed"]] == ["2026-08-04"]
+    assert "RuntimeError" in got["failed"][0]["error"], "失败原因要如实记账,不能只记个计数"
+    assert len(registry.get_experiment(reg, EXP1)["observations"]) == 2

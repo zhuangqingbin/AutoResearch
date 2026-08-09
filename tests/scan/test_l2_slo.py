@@ -260,8 +260,14 @@ def test_cli_writes_artifacts(tmp_path):
 
 
 def _funnel_day(root, date, *, channels, l2, pass1_kept=(), finalists=(), rated=(),
-                attr, buys=None, write_buys=True):
-    """六跳齐全的一日 —— `channels` = {channel: [code...]}(L1_channels.csv 长表)。"""
+                attr, buys=None, write_buys=True, write_pass1=True, write_l4=True):
+    """六跳齐全的一日 —— `channels` = {channel: [code...]}(L1_channels.csv 长表)。
+
+    `write_pass1=False` / `write_l4=False`:造「该跳的产物那天根本不存在」的日子。
+    **这两个开关是修复轮补的**(复核 C2):首版 fixture 无条件写 `_l3_pass1_kept.csv`,
+    36 条用例里没有一条造过缺件场景 —— 而真数据里 pass1 在 30 天里缺 15 天(07-10
+    two-pass 上线前那段,该阶段压根不存在)。测试盲区正是伪影能进报告的原因。
+    """
     d = root / date
     (d / "retro").mkdir(parents=True, exist_ok=True)
 
@@ -280,20 +286,23 @@ def _funnel_day(root, date, *, channels, l2, pass1_kept=(), finalists=(), rated=
         d / "L1_scored_full.csv", index=False)
     pd.DataFrame({"code": list(l2)}).to_csv(d / "L1_recall_top1000.csv", index=False)
 
-    pd.DataFrame({"code": list(pass1_kept), "selection_reason": ["lane"] * len(pass1_kept),
-                  "selection_detail": [""] * len(pass1_kept)}).to_csv(
-        d / "_l3_pass1_kept.csv", index=False)
-    pd.DataFrame({"code": [c for c in l2 if c not in set(pass1_kept)]}).to_csv(
-        d / "_l3_pass1_cut.csv", index=False)
+    if write_pass1:
+        pd.DataFrame({"code": list(pass1_kept),
+                      "selection_reason": ["lane"] * len(pass1_kept),
+                      "selection_detail": [""] * len(pass1_kept)}).to_csv(
+            d / "_l3_pass1_kept.csv", index=False)
+        pd.DataFrame({"code": [c for c in l2 if c not in set(pass1_kept)]}).to_csv(
+            d / "_l3_pass1_cut.csv", index=False)
     (d / "_l3_judged.json").write_text(json.dumps(
-        [{"code": c, "conviction": 7} for c in pass1_kept], ensure_ascii=False),
-        encoding="utf-8")
+        [{"code": c, "conviction": 7} for c in (pass1_kept if write_pass1 else l2)],
+        ensure_ascii=False), encoding="utf-8")
     pd.DataFrame({"code": list(finalists), "guard": [""] * len(finalists)}).to_csv(
         d / "finalists.csv", index=False)
-    (d / "_final_ratings.json").write_text(json.dumps(
-        {c: "Hold" for c in rated}, ensure_ascii=False), encoding="utf-8")
-    (d / "_l4_tasks.json").write_text(json.dumps(
-        {"tasks": {c: {} for c in finalists}}, ensure_ascii=False), encoding="utf-8")
+    if write_l4:
+        (d / "_final_ratings.json").write_text(json.dumps(
+            {c: "Hold" for c in rated}, ensure_ascii=False), encoding="utf-8")
+        (d / "_l4_tasks.json").write_text(json.dumps(
+            {"tasks": {c: {} for c in finalists}}, ensure_ascii=False), encoding="utf-8")
 
     if write_buys:
         (d / "_relative_buy_decision.json").write_text(json.dumps(
@@ -428,10 +437,14 @@ def test_entry_leg_flag_follows_the_ruler_in_the_funnel_too(tmp_path):
 
 
 def test_channel_alarm_line_uses_only_prior_history():
+    # `status` 是**必填**的(修复轮 1 / I1):报警序列只收 `status=="PRESENT"` 的日子,
+    # 「该路当日没跑」不得被伪造成一次 capture=0 的观测。生产 `day_channel_funnel` 恒写
+    # 这个字段;这里的手搭 fixture 首版漏了它,补齐才是对生产形状的忠实描述。
     daily = [{"date": f"2026-06-{i:02d}",
               "channels": {"momentum": {"hops": [
-                  {"hop": "l2", "capture_cond": {"value": 0.5 if i < 14 else 0.01,
-                                                 "numer": 1, "denom": 2}}]}}}
+                  {"hop": "l2", "status": "PRESENT",
+                   "capture_cond": {"value": 0.5 if i < 14 else 0.01,
+                                    "numer": 1, "denom": 2}}]}}}
              for i in range(1, 15)]
     alarm = l2_slo.channel_alarms(daily)
     line = [row for row in alarm if row["channel"] == "momentum"]
@@ -444,8 +457,20 @@ def test_channel_alarm_line_uses_only_prior_history():
 def test_channel_alarm_is_none_before_min_history():
     daily = [{"date": "2026-06-01",
               "channels": {"momentum": {"hops": [
-                  {"hop": "l2", "capture_cond": {"value": 0.9, "numer": 9, "denom": 10}}]}}}]
+                  {"hop": "l2", "status": "PRESENT",
+                   "capture_cond": {"value": 0.9, "numer": 9, "denom": 10}}]}}}]
     assert [r["alarm"] for r in l2_slo.channel_alarms(daily)] == [None]
+
+
+def test_hop_without_explicit_status_is_not_silently_admitted():
+    """`status` 缺席 → 该日**不进**报警序列(不猜"大概是在场的")。
+
+    生产恒写此字段;放宽成"缺席即视为 PRESENT"会让 I1 那条纪律留一个后门:
+    任何一个忘了带 status 的上游又能把缺件伪装成一次真观测。
+    """
+    daily = [{"date": "2026-06-01", "channels": {"momentum": {"hops": [
+        {"hop": "l2", "capture_cond": {"value": 0.9, "numer": 9, "denom": 10}}]}}}]
+    assert l2_slo.channel_alarms(daily) == []
 
 
 # ── 纪律 9:分子/分母/as-of/ruler 同屏 + E6 缺文件记 `—` ────────────
@@ -543,3 +568,206 @@ def test_funnel_section_lands_in_the_report(tmp_path):
     payload = json.loads(out_json.read_text(encoding="utf-8"))
     assert payload["channel_funnel"]["n_days"] == 3
     assert set(payload["channel_funnel"]["channels"]) == {"momentum", "value"}
+
+
+# ══════════════════════════════════════════════════════════════════
+# 修复轮 1(复核 C2 / I1 / M2):ABSENT 纪律必须对**每一跳**成立
+#
+# C2 病灶:`absent` 判据曾硬绑 `hop == "e6"`,其余四跳一律 `alive & survivors[hop]`。
+# 而 pass1 在真数据 30 天里**缺 15 天**(07-10 two-pass 上线之前该阶段根本不存在),
+# 护照给出 `pass1.kept = None` ⇒ `survivors["pass1"] = ∅` ⇒ 被读成「全被切了」,
+# 并**级联清零 finalist / l4 / e6 三跳**。伪影曾被当作「pass1 是最陡的一跳」写进报告。
+# ══════════════════════════════════════════════════════════════════
+
+
+def _hops(day_dir, channel="momentum"):
+    return {h["hop"]: h for h in
+            l2_slo.day_channel_funnel(day_dir)["channels"][channel]["hops"]}
+
+
+def test_pass1_artifact_absent_is_dash_not_wiped_out(tmp_path):
+    """pass1 产物缺席 → 该跳记 `—`(ABSENT),**不是**「赢家全被切」。"""
+    attr = _market(18, 0.0) + [_attr("900001", 0.50), _attr("900002", 0.50)]
+    d = _funnel_day(tmp_path, "2026-06-01",
+                    channels={"momentum": ["900001", "900002"]},
+                    l2=["900001", "900002"], pass1_kept=[],
+                    finalists=["900001"], rated=["900001"], attr=attr, buys=["900001"],
+                    write_pass1=False)
+    hops = _hops(d)
+    assert hops["pass1"]["status"] == "ABSENT"
+    assert hops["pass1"]["n"] is None and hops["pass1"]["n_winners"] is None
+    assert hops["pass1"]["capture_cond"]["value"] is None
+
+
+def test_absent_hop_does_not_cascade_zero_the_downstream(tmp_path):
+    """**C2 的真正代价**:pass1 缺件曾把 finalist/l4/e6 一起清零。
+    缺件那跳只该「量不到」,不该把它**下游**的可测量读数也一并毁掉。"""
+    attr = _market(18, 0.0) + [_attr("900001", 0.50), _attr("900002", 0.50)]
+    d = _funnel_day(tmp_path, "2026-06-01",
+                    channels={"momentum": ["900001", "900002"]},
+                    l2=["900001", "900002"], pass1_kept=[],
+                    finalists=["900001"], rated=["900001"], attr=attr, buys=["900001"],
+                    write_pass1=False)
+    hops = _hops(d)
+    assert hops["l2"]["n_winners"] == 2
+    # pass1 量不到 → alive 原样穿过 → finalist 仍以 L2 的存活集合为分母,真量得出来
+    assert hops["finalist"]["status"] == "PRESENT"
+    assert hops["finalist"]["n"] == 1 and hops["finalist"]["n_winners"] == 1
+    assert hops["finalist"]["capture_cond"]["denom"] == 2, (
+        "分母必须是最后一次**观测到**的存活赢家数(L2 跳的 2),不是被清零的 0")
+    assert hops["l4"]["n"] == 1
+    assert hops["e6"]["n"] == 1
+
+
+def test_l4_artifact_absent_is_dash(tmp_path):
+    """L4 那跳的产物(decision_records / _final_ratings)缺席 → 同样记 `—`。"""
+    attr = _market(19, 0.0) + [_attr("900001", 0.50)]
+    d = _funnel_day(tmp_path, "2026-06-01", channels={"momentum": ["900001"]},
+                    l2=["900001"], pass1_kept=["900001"], finalists=["900001"],
+                    rated=["900001"], attr=attr, buys=["900001"], write_l4=False)
+    hops = _hops(d)
+    assert hops["l4"]["status"] == "ABSENT" and hops["l4"]["n"] is None
+    assert hops["e6"]["n"] == 1, "L4 缺件同样不得级联清零 E6"
+
+
+def test_hop_sources_are_reported_per_hop(tmp_path):
+    attr = _market(19, 0.0) + [_attr("900001", 0.50)]
+    d = _funnel_day(tmp_path, "2026-06-01", channels={"momentum": ["900001"]},
+                    l2=["900001"], pass1_kept=[], finalists=[], rated=[],
+                    attr=attr, write_buys=False, write_pass1=False)
+    got = l2_slo.day_channel_funnel(d)
+    assert got["hop_sources"]["pass1"] == "ABSENT"
+    assert got["hop_sources"]["e6"] == "ABSENT"
+    assert got["hop_sources"]["l2"] == "PRESENT"
+
+
+def test_absent_days_stay_out_of_the_cumulative_denominator(tmp_path):
+    """缺件日不进累计分子/分母(与 E6 既有口径一致)—— 否则 15 个缺件日会把
+    `composite` 的 pass1 capture 从 1/86 稀释成 1/138 那种伪影。"""
+    attr = _market(18, 0.0) + [_attr("900001", 0.50), _attr("900002", 0.50)]
+    _funnel_day(tmp_path, "2026-06-01", channels={"momentum": ["900001", "900002"]},
+                l2=["900001", "900002"], pass1_kept=["900001"], finalists=["900001"],
+                rated=["900001"], attr=attr, buys=[])
+    _funnel_day(tmp_path, "2026-06-02", channels={"momentum": ["900001", "900002"]},
+                l2=["900001", "900002"], pass1_kept=[], finalists=["900001"],
+                rated=["900001"], attr=attr, buys=[], write_pass1=False)
+    payload = l2_slo.build_channel_funnel(tmp_path)
+    hops = {h["hop"]: h for h in payload["channels"]["momentum"]["hops"]}
+    assert hops["pass1"]["n_days"] == 1, "只有 06-01 那天 pass1 在场"
+    assert hops["pass1"]["capture_cond"] == pytest.approx(
+        {"value": 0.5, "numer": 1, "denom": 2}, rel=1e-6) or (
+        hops["pass1"]["capture_cond"]["numer"] == 1
+        and hops["pass1"]["capture_cond"]["denom"] == 2)
+    assert hops["finalist"]["n_days"] == 2, "finalist 两天都在场,不因 pass1 缺件而少一天"
+
+
+# ── I1:报警序列不许把「该路当日没跑」伪造成 capture=0.0 ──────────
+
+
+def test_alarm_series_excludes_days_the_channel_did_not_run():
+    """伪造 0 会把稀疏通道的 P25 线钉死在 0 ⇒ 报警器永远不响(假阴);
+    也会把「那天没参赛」误报成「跌破 P25」(假阳)。缺席日必须**剔除**。"""
+    def day(date, value=None, with_channel=True):
+        chans = {}
+        if with_channel:
+            chans["momentum"] = {"hops": [
+                {"hop": "l2", "status": "PRESENT",
+                 "capture_cond": {"value": value, "numer": 1, "denom": 2}}]}
+        chans["composite"] = {"hops": [
+            {"hop": "l2", "status": "PRESENT",
+             "capture_cond": {"value": 0.5, "numer": 1, "denom": 2}}]}
+        return {"date": date, "channels": chans}
+
+    # momentum 只在 12 天里跑过,另外 8 天整个通道缺席
+    daily = ([day(f"2026-06-{i:02d}", 0.40) for i in range(1, 13)]
+             + [day(f"2026-06-{i:02d}", with_channel=False) for i in range(13, 21)])
+    rows = [r for r in l2_slo.channel_alarms(daily) if r["channel"] == "momentum"]
+    assert len(rows) == 12, "缺席的 8 天不得出现在报警序列里"
+    assert all(r["capture_cond"] == pytest.approx(0.40) for r in rows)
+    assert all(r["p25"] is None or r["p25"] == pytest.approx(0.40) for r in rows), (
+        "P25 线只能由这条路真跑过的日子定,不得被伪造的 0 拉到 0")
+
+
+def test_sparse_channel_alarm_still_fires_when_it_really_drops():
+    """假阴回归锁:一条只跑过 11 天的路,第 12 天真崩了 → 必须报警。
+    伪造 0 的写法下它的 P25 线是 0,`value < 0` 恒 False,永远不响。"""
+    def day(date, value):
+        return {"date": date, "channels": {"momentum": {"hops": [
+            {"hop": "l2", "status": "PRESENT",
+             "capture_cond": {"value": value, "numer": 1, "denom": 2}}]}}}
+
+    daily = ([{"date": f"2026-05-{i:02d}", "channels": {}} for i in range(1, 10)]
+             + [day(f"2026-06-{i:02d}", 0.40) for i in range(1, 12)]
+             + [day("2026-06-12", 0.01)])
+    rows = [r for r in l2_slo.channel_alarms(daily) if r["channel"] == "momentum"]
+    assert rows[-1]["date"] == "2026-06-12"
+    assert rows[-1]["alarm"] is True, "真崩了必须响"
+
+
+def test_absent_hop_day_is_not_counted_as_zero_capture_in_alarms(tmp_path):
+    """同一条纪律的活体版:pass1 缺件那天,`l2` 跳仍在场 ⇒ 仍进序列;
+    但若报警跳本身 ABSENT,该日必须剔除。"""
+    daily = [{"date": "2026-06-01", "channels": {"momentum": {"hops": [
+        {"hop": "l2", "status": "ABSENT",
+         "capture_cond": {"value": None, "numer": 0, "denom": 0}}]}}}]
+    assert l2_slo.channel_alarms(daily) == []
+
+
+# ── M2:展示层要分得开「产物缺席」与「上一跳没有赢家」 ──────────
+
+
+def test_render_distinguishes_absent_artifact_from_no_winners(tmp_path):
+    attr = _market(18, 0.0) + [_attr("900001", 0.50), _attr("900002", 0.50)]
+    for i in range(1, 4):
+        _funnel_day(tmp_path, f"2026-06-{i:02d}",
+                    channels={"momentum": ["900001", "900002"]},
+                    l2=["900001", "900002"], pass1_kept=["900001"],
+                    finalists=[], rated=[], attr=attr,
+                    write_buys=False)          # E6 恒缺件
+    md = "\n".join(l2_slo.render_channel_funnel(l2_slo.build_channel_funnel(tmp_path)))
+    assert "—(缺件)" in md, "产物缺席要有自己的记号"
+    assert "— (0/0)" in md, "「上一跳没有赢家」仍是 — (0/0),两者不得混为一谈"
+
+
+def test_absent_hop_does_not_zero_the_relative_capture_denominator(tmp_path):
+    """`all_alive`(相对 capture 的**分母**)在缺件跳同样要原样穿过。
+
+    ⚠️ 变异探针 F9 逼出来的:`all_alive[hop] = prev & survivors[hop]`(不穿过)时,
+    pass1 缺件那天全通道存活集合被清空 ⇒ 下游 `capture_rel` 分母变 0 ⇒ 比率整列变 `—`。
+    首版测试全是单通道、或分子恰等于分母的场景,分母被清零看不出来 —— 这里用**两条通道
+    各捞不同赢家**,让分母必须是 2 才对得上。
+    """
+    attr = _market(18, 0.0) + [_attr("900001", 0.50), _attr("900002", 0.50)]
+    d = _funnel_day(tmp_path, "2026-06-01",
+                    channels={"momentum": ["900001"], "value": ["900002"]},
+                    l2=["900001", "900002"], pass1_kept=[],
+                    finalists=["900001", "900002"], rated=["900001", "900002"],
+                    attr=attr, buys=[], write_pass1=False)
+    chans = l2_slo.day_channel_funnel(d)["channels"]
+    mom = {h["hop"]: h for h in chans["momentum"]["hops"]}["finalist"]
+    val = {h["hop"]: h for h in chans["value"]["hops"]}["finalist"]
+    assert mom["capture_rel"]["denom"] == 2, (
+        "全通道在 finalist 跳存活的赢家是 2 只;pass1 缺件不得把这个分母清零")
+    assert val["capture_rel"]["denom"] == 2
+    assert mom["capture_rel"]["numer"] == 1 and val["capture_rel"]["numer"] == 1
+
+
+def test_present_hop_with_undefined_ratio_is_also_excluded_from_alarms():
+    """`status=PRESENT` 但比率**不存在**(上一跳没有赢家 ⇒ 分母 0 ⇒ value=None)的日子,
+    同样不得进报警序列。
+
+    ⚠️ 变异探针 F13 逼出来的「半修」:只挡 `status != PRESENT`、却把 `value=None` 折成
+    0.0 —— 既有测试全绿,可 07-07 那种「当日 0 赢家」的日子又会被记成一次 capture=0 的
+    观测,P25 线照样被拉低(I1 的假阴换个入口原样复发)。
+    """
+    def day(date, value):
+        return {"date": date, "channels": {"momentum": {"hops": [
+            {"hop": "l2", "status": "PRESENT",
+             "capture_cond": {"value": value,
+                              "numer": 0 if value is None else 1,
+                              "denom": 0 if value is None else 2}}]}}}
+
+    daily = [day(f"2026-06-{i:02d}", 0.40) for i in range(1, 12)] + [day("2026-06-12", None)]
+    rows = [r for r in l2_slo.channel_alarms(daily) if r["channel"] == "momentum"]
+    assert len(rows) == 11, "比率不存在的那天必须被剔除,而不是记成 capture=0"
+    assert all(r["capture_cond"] == pytest.approx(0.40) for r in rows)

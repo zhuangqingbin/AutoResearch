@@ -139,6 +139,28 @@ def run(today: str) -> list[tuple[str, bool, str]]:
                 ok += 1
         return f"{ok}/{total} 刷新"
 
+    def _exp_observe() -> str:
+        """Wave12-T20 修复轮 1(复核 C1):EXP-1/EXP-2 影子观测的**夜间腿**。
+
+        首版把 `observe_day` 写好了却**没有任何调用点** —— 20 条观测是一次性手工回填、
+        永不增长;而回填还抹掉了 `observations == []` 这个本该暴露 FN-1 的信号,
+        比它要修的原病更隐蔽。这就是「生产者写好了但没人调用」,与本 task 的立案理由
+        (「预注册了但没人生产」)是同一族。
+
+        **必须排在 `_ledgers` 之后**:待观测日来自 `gate_participation_v3.csv`,那份文件由
+        `_ledgers` 里的 `gate_attribution.main()` 刷新 —— 排在它前面,今晚新成熟的日子要
+        等到明晚才会被观测到(与 shadow_buys/paper_nav 的生产者-消费者顺序同一道理)。
+
+        `observe_pending` 幂等且自愈:漏跑一晚,第二晚自动补齐。
+        """
+        from autoresearch.learning import mainflow5d
+        res = mainflow5d.observe_pending(today)
+        note = (f"补 {len(res['observed'])} 日(待观测 {res['pending']});"
+                f"累计观测 {res['n_observations']} 日")
+        if res["failed"]:
+            note += f";{len(res['failed'])} 日失败: {res['failed'][0]['error']}"
+        return note
+
     def _news_flash() -> str:
         """Wave12-T35:三源快讯 ingest —— news_catalog「通电」的夜间腿。
 
@@ -162,6 +184,9 @@ def run(today: str) -> list[tuple[str, bool, str]]:
     for name, fn in (("retro_refresh", _retro_refresh), ("t1_backfill", _t1_backfill),
                      ("t1_gap_finalize", _t1_gap_finalize),
                      ("tripwire", _tripwire), ("ledgers", _ledgers),
+                     # Wave12-T20 修复轮 1:影子实验观测。**必须在 ledgers 之后**
+                     # (人口文件 gate_participation_v3.csv 由 gate_attribution 在那步刷新)。
+                     ("exp_observe", _exp_observe),
                      # 排在最后:纯增量写自己的目录,对上面任何一步都无依赖;
                      # 挂了也不该影响账本刷新(新闻是 B 级增强面)。
                      ("news_flash", _news_flash)):

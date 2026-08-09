@@ -294,6 +294,36 @@ def _stage_survivors(scan: Path) -> tuple[dict[str, set[str]], dict]:
     }, doc["sources"]
 
 
+def _hop_source_status(scan: Path, sources: dict, e6_status: str) -> dict[str, str]:
+    """**每一跳各自**的源产物在场与否(修复轮 1,复核 C2)。
+
+    首版把 ABSENT 纪律硬绑在 E6 一跳上(`absent = hop == "e6" and ...`),其余四跳一律
+    `alive & survivors[hop]`。可是护照对"这一站的产物根本不存在"给的也是空集合
+    (`pass1["kept"]` 全 `None` ⇒ `survivors["pass1"] = ∅`),于是**缺件被读成「全被切了」**,
+    还级联把 finalist/l4/e6 一起清零。
+
+    真数据实测(30 个可配对日):`pass1` **缺 15 天** —— 分界线正是 2026-07-10,two-pass
+    分诊上线日,那 15 天这个阶段**压根不存在**。伪影因此被当成「pass1 是最陡的一跳」写进了
+    T21 报告(已在报告里显式撤回)。
+
+    `sources` 一直就在手上(`_stage_survivors` 早就返回它、`day_channel_funnel` 也早就把它
+    写进输出),只是从没被用来 gate 任何一跳 —— 这正是「A 建的字段 B 没消费」的又一例。
+
+    l4 那跳护照没有单独的 source 键(`read_final_ratings` 走 `decision_records.json` →
+    `_final_ratings.json` 两级回退),故在这里按同一组文件的在场与否自己判。
+    """
+    return {
+        "recall": "PRESENT",                       # 到这里必然在场(否则 day_channel_funnel 已返回 None)
+        "l2": sources.get("l2", "ABSENT"),
+        "pass1": sources.get("pass1", "ABSENT"),
+        # finalist 跳的源 = `_l3_judged.json` ∪ `finalists.csv`,护照的 `l3_judged` 已合并两者
+        "finalist": sources.get("l3_judged", "ABSENT"),
+        "l4": ("PRESENT" if ((scan / "decision_records.json").exists()
+                             or (scan / "_final_ratings.json").exists()) else "ABSENT"),
+        "e6": e6_status,
+    }
+
+
 def day_channel_funnel(scan_dir: Path | str) -> dict | None:
     """单日 per-channel 六跳漏斗。缺 attribution / 缺 `L1_channels.csv` → `None`。"""
     scan = Path(scan_dir)
@@ -311,13 +341,16 @@ def day_channel_funnel(scan_dir: Path | str) -> dict | None:
     survivors, sources = _stage_survivors(scan)
     buys, e6_status = _e6_buys(scan)
     survivors["e6"] = buys if buys is not None else set()
+    hop_status = _hop_source_status(scan, sources, e6_status)
 
     # 各跳的**全通道**存活集合(相对赢家 capture 的分母)—— 只在被某路召回过的票里算,
     # 免得把 pinned 直注/backfill 补位这类"没走过通道召回"的票算进通道的分母。
+    # ABSENT 的跳**原样穿过**(不与空集合相交),否则分母也跟着被清零(C2 同源)。
     recalled_all: set[str] = set().union(*recall_sets.values()) if recall_sets else set()
     all_alive: dict[str, set[str]] = {"recall": recalled_all}
-    for hop in FUNNEL_HOPS[1:]:
-        all_alive[hop] = all_alive[FUNNEL_HOPS[FUNNEL_HOPS.index(hop) - 1]] & survivors[hop]
+    for i, hop in enumerate(FUNNEL_HOPS[1:], start=1):
+        prev = all_alive[FUNNEL_HOPS[i - 1]]
+        all_alive[hop] = prev if hop_status[hop] == "ABSENT" else prev & survivors[hop]
 
     channels: dict[str, dict] = {}
     for name in sorted(recall_sets):
@@ -335,7 +368,10 @@ def day_channel_funnel(scan_dir: Path | str) -> dict | None:
                                   as_of=date),
         }]
         for hop in FUNNEL_HOPS[1:]:
-            absent = hop == "e6" and e6_status == "ABSENT"
+            # 修复轮 1(C2):ABSENT 判据泛化到**每一跳**,不再硬绑 e6。
+            # 缺件那跳只记「量不到」(`—`),`alive` 原样穿过 —— 下游各跳因此仍以**最后
+            # 一次真观测到**的存活集合为分母,不被级联清零。
+            absent = hop_status[hop] == "ABSENT"
             nxt = alive & survivors[hop]
             here = len(winners & nxt)
             hops.append({
@@ -359,6 +395,9 @@ def day_channel_funnel(scan_dir: Path | str) -> dict | None:
         "winner_definition": definition,
         "n_winners": len(winners),
         "sources": {**sources, "l1_channels": "PRESENT", "e6": e6_status},
+        # 逐跳源在场表 —— 与 `sources`(按**产物**列)不同,这张按**跳**列,是 ABSENT 纪律
+        # 真正 gate 的那份;读表的人据此知道某一跳的 `—` 是"没这个产物"而不是"没赢家"。
+        "hop_sources": hop_status,
         "channels": channels,
         "winner_overlap": _winner_overlap(recall_sets, winners, date),
     }
@@ -401,8 +440,20 @@ def channel_alarms(daily: list[dict], hop: str = FUNNEL_ALARM_HOP) -> list[dict]
         series, dates = [], []
         for day in daily:
             got = _hop_of(day, name, hop)
-            value = (got or {}).get("capture_cond", {}).get("value")
-            series.append(0.0 if value is None else float(value))
+            # 修复轮 1(复核 I1):**该路当日没跑 / 该跳缺件的日子直接剔除**,
+            # 不再 `0.0 if value is None`。伪造 0 有两种失效,窗口内都真发生了:
+            #   假阴 —— `accumulation` 只出现 14/30 天,16 个伪造的 0 把它自己的 expanding
+            #           P25 线拉到 0.0 ⇒ `value < 0` 恒 False ⇒ 这条路的报警器永远不响;
+            #   假阳 —— 一条平时 0.4–0.8 的路某天没跑 → 记 0.0、线在 0.4 → 报「跌破 P25」,
+            #           可它那天压根没参赛。
+            # 口径与 `build_channel_funnel` 的 `status != PRESENT → continue` 对齐:
+            # 缺席不进历史、不判报警,而不是被当成一次「表现极差」的观测。
+            if not got or got.get("status") != "PRESENT":
+                continue
+            value = (got.get("capture_cond") or {}).get("value")
+            if value is None:            # 上一跳没有赢家 ⇒ 比率不存在,同样不是 0
+                continue
+            series.append(float(value))
             dates.append(day.get("date"))
         line = st.expanding_p25(series, min_history=MIN_HISTORY)
         for date, value, threshold in zip(dates, series, line, strict=True):
@@ -447,6 +498,9 @@ def build_channel_funnel(scan_root: Path | str | None = None) -> dict:
                 denom_r += got["capture_rel"]["denom"]
             hops.append({
                 "hop": hop, "label": FUNNEL_HOP_LABELS[hop], "n_days": n_days, "n": n,
+                # `n_days == 0` = 窗口内**没有任何一天**这一跳的产物在场 ⇒ 该格是「缺件」,
+                # 与「上一跳没有赢家」(n_days>0 但 denom==0)是两回事(复核 M2)。
+                "status": "PRESENT" if n_days else "ABSENT",
                 "capture_cond": _ratio(numer_c, denom_c, as_of=f"{len(daily)}日累计"),
                 "capture_rel": _ratio(numer_r, denom_r, as_of=f"{len(daily)}日累计"),
             })
@@ -497,9 +551,17 @@ def render_channel_funnel(payload: dict) -> list[str]:
     if not payload["n_days"] or not payload["channels"]:
         return lines + ["_窗口内无 `L1_channels.csv` × `retro/attribution.csv` 可配对数据_", ""]
 
-    def cell(ratio: dict) -> str:
+    def cell(hop: dict, key: str) -> str:
+        """`—(缺件)` = 这一跳的产物窗口内一天都不在场;`— (0/0)` = 在场但上一跳没有赢家。
+
+        两者在 JSON 里靠 `status` 区分,展示层此前一律印 `— (0/0)`,读表的人分不开
+        「没这个产物」和「没赢家活到这」(复核 M2)。
+        """
+        if hop.get("status") == "ABSENT":
+            return "—(缺件)"
+        ratio = hop[key]
         if ratio["denom"] == 0:
-            return f"— (0/0)"
+            return "— (0/0)"
         return f"{ratio['value']:.3f} ({ratio['numer']}/{ratio['denom']})"
 
     header = ("| 路 | 日数 | " + " | ".join(FUNNEL_HOP_LABELS[h] for h in FUNNEL_HOPS) + " |",
@@ -508,14 +570,14 @@ def render_channel_funnel(payload: dict) -> list[str]:
     for name in sorted(payload["channels"]):
         hops = payload["channels"][name]["hops"]
         lines.append(f"| `{name}` | {hops[0]['n_days']} | "
-                     + " | ".join(cell(h["capture_cond"]) for h in hops) + " |")
+                     + " | ".join(cell(h, "capture_cond") for h in hops) + " |")
 
     lines += ["", "### ② 相对赢家 capture(本路 / 全通道在该跳存活的赢家)+ 存活票数(累计)",
               "", *header]
     for name in sorted(payload["channels"]):
         hops = payload["channels"][name]["hops"]
         lines.append(f"| `{name}` | {hops[0]['n_days']} | "
-                     + " | ".join(f"{cell(h['capture_rel'])} · n={h['n']}" for h in hops) + " |")
+                     + " | ".join(f"{cell(h, 'capture_rel')} · n={h['n']}" for h in hops) + " |")
 
     lines += ["", f"### ③ 通道间**赢家**重叠矩阵(Jaccard ≥ {OVERLAP_MIN_JACCARD} 才点名)", ""]
     hot = [r for r in payload.get("winner_overlap") or []

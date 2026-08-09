@@ -197,6 +197,100 @@ def _distortion_index(date: str, scan_root: Path | str | None = None) -> dict[st
     return out
 
 
+def population_dates(population_path: Path | str | None = None) -> list[str]:
+    """人口文件里出现过 `gate=='主力真在'` 的全部日期(升序去重)。
+
+    `observe_pending` 用它决定"哪些日子该有一条 EXP-1 观测"。人口文件由
+    `gate_attribution` 在夜间刷新,所以这张表会**随时间增长** —— 这正是本腿"会变的量"
+    的源头。
+    """
+    path = Path(population_path or DEFAULT_POPULATION)
+    if not path.exists():
+        return []
+    try:
+        frame = pd.read_csv(path, dtype={"code": str})
+    except Exception:  # noqa: BLE001
+        return []
+    if not {"date", "gate"}.issubset(frame.columns):
+        return []
+    hit = frame[frame["gate"].astype(str) == GATE_NAME]
+    return sorted({str(d) for d in hit["date"] if str(d).strip()})
+
+
+def shadow_dates(scan_root: Path | str | None = None) -> list[str]:
+    """落了 `shadow/L1_channels_plus_sectormom.csv` 的扫描日(EXP-2 的观测日)。
+
+    EXP-2 的**长表**腿本来就是自动的(每次真扫描 `write_shadow_variants` 都跑),断的只是
+    registry 的观测计数。所以待观测日要取"人口日 ∪ 影子长表日"的并集:某天门一个都没否
+    (EXP-1 人口为 0)不代表 EXP-2 那天没东西可记。
+    """
+    root = Path(scan_root or DEFAULT_SCAN_ROOT)
+    if not root.exists():
+        return []
+    return sorted(
+        d.name for d in root.iterdir()
+        if d.is_dir() and d.name[:2] == "20"
+        and (d / "shadow" / f"L1_channels_{SHADOW_VARIANT}.csv").exists())
+
+
+def observed_dates(registry_path: Path | str | None = None,
+                   experiment_id: str = EXP1_ID) -> set[str]:
+    """registry 里已记过观测的日期键。读不到该实验 → 空集(不炸)。"""
+    try:
+        record = registry.get_experiment(
+            Path(registry_path or registry.DEFAULT_REGISTRY), experiment_id)
+    except registry.RegistryError:
+        return set()
+    return {str(o.get("key")) for o in (record.get("observations") or [])
+            if o.get("kind") == registry.SHADOW_OBSERVATION_KIND}
+
+
+def observe_pending(today: str | None = None, *,
+                    population_path: Path | str | None = None,
+                    scan_root: Path | str | None = None,
+                    lake: Path | str | None = None,
+                    registry_path: Path | str | None = None,
+                    ledger_path: Path | str | None = None,
+                    limit: int | None = None) -> dict:
+    """**尚未观测的日子 → 逐日 `observe_day`**(夜间腿的真身,Wave12-T20 修复轮 1)。
+
+    ## 为什么需要这个函数(复核 C1)
+
+    首版只写了 `observe_day` 和一个手工 CLI,**零自动调用点** —— 于是那 20 条观测是一次性
+    回填、**永远不会增长**。更糟:回填顺手抹掉了 `observations == []` 这个信号,而它正是当初
+    暴露「EXP-1/EXP-2 预注册后数据腿从没实现」的唯一线索。registry 看起来有 20 条观测、
+    一切正常,实际腿仍然没在跑 —— **比它要修的原病更难被发现**。本仓库家训:自动腿必须有
+    一个会变的量做断言,否则它死了也像活着。
+
+    ## 语义
+
+    待观测日 = (人口日 ∪ 影子长表日) − 已观测日,再按 `today` 截断(不观测未来)。
+    **幂等 + 自愈**:漏跑一晚,第二晚自动把欠的补上(同 `_retro_refresh` 的姿势);
+    重复跑不产生第二条(`append_observation` 按 `(kind, key)` 去重)。
+
+    单日失败**不连坐**其余日(逐日 try:某天的湖分区坏了不该让整条腿停摆),失败日计入
+    `failed` 如实返回。
+    """
+    reg = Path(registry_path or registry.DEFAULT_REGISTRY)
+    wanted = set(population_dates(population_path)) | set(shadow_dates(scan_root))
+    if today:
+        wanted = {d for d in wanted if d <= str(today)}
+    todo = sorted(wanted - observed_dates(reg))
+    if limit is not None:
+        todo = todo[:limit]
+
+    done, failed = [], []
+    for date in todo:
+        try:
+            observe_day(date, population_path=population_path, scan_root=scan_root,
+                        lake=lake, registry_path=reg, ledger_path=ledger_path)
+            done.append(date)
+        except Exception as exc:  # noqa: BLE001 — 单日失败不连坐,如实记账
+            failed.append({"date": date, "error": f"{type(exc).__name__}: {exc}"})
+    return {"pending": len(todo), "observed": done, "failed": failed,
+            "n_observations": len(observed_dates(reg))}
+
+
 def population(date: str, population_path: Path | str | None = None) -> list[str]:
     """人口 = `gate_participation_v3.csv` 中当日 `gate == '主力真在'` 的票(spec 原文:
     「即该门参与否决过的票;attribution 口径样本不足以支撑本实验」)。去重、升序。"""
