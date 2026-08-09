@@ -37,7 +37,7 @@ def _doc(date: str, *, buy: str | None = "688766", candidates: int = 3,
          mode: str = "shadow", extra_buys: list[str] | None = None,
          name: str = "普冉股份", sector: str = "半导体", pinned: bool = False,
          rating: str = "Hold", score: float = 0.79,
-         task_book: str = "PRESENT") -> dict:
+         task_book: str = "PRESENT", rule_version: str = "e6.v1") -> dict:
     """真 `_relative_buy_decision.json` 的最小同构件(字段名照抄 T23 产物,不发明)。"""
     codes = [buy] if buy else []
     codes += list(extra_buys or [])
@@ -56,7 +56,7 @@ def _doc(date: str, *, buy: str | None = "688766", candidates: int = 3,
             "expected_abs_gap": {"value": None, "status": "UNMEASURED", "n": 0},
         })
     return {
-        "schema_version": 1, "rule_version": "e6.v1", "mode": mode, "date": date,
+        "schema_version": 1, "rule_version": rule_version, "mode": mode, "date": date,
         "ruler": REL_GAP_RULER,
         "benchmark": {"ruler": REL_GAP_RULER, "entry_flag": "buyable_c1",
                       "entry_flag_present": False,
@@ -185,6 +185,105 @@ def test_roll_is_idempotent_byte_stable_replace_not_append(paths):
     assert len(rl.load_ledger(paths["ledger_path"])) == 1
 
 
+# ── I-6:已登记的观测不可被重算静默改写 ────────────────────────────────────
+def test_rule_version_change_does_not_rewrite_a_recorded_observation(paths):
+    """规则一升版,每晚 `roll()` 的回放会把预注册期观测整体替换 —— 已实测发生过一次
+    (底片产出于 `e6.v1`,真账本 8 行事后全变成 `e6.v1.1`)。
+
+    这本账**唯一**的存在理由是给 `exp_relative_buy_owner` 攒可信观测;「已汇集的观测
+    不可被悄悄改写」是 registry 那条「definition hash 变了就得换实验 id」的同一条铁律。
+    结果一样时没人发现,结果不一样时已经晚了 —— 所以拒绝覆写,不看新旧值是否相等。
+    """
+    _put_decision(paths["scan_root"], _doc(DATE_A, rule_version="e6.v1"))
+    first = rl.roll(scan_root=paths["scan_root"], ledger_path=paths["ledger_path"])
+    assert first[0]["rule_version"] == "e6.v1"
+    assert "superseded" not in first[0]
+
+    # 规则升版 + 换了个人:重算结果与已登记的那条不是同一个决策
+    _put_decision(paths["scan_root"],
+                  _doc(DATE_A, rule_version="e6.v2", buy="000776", name="广发证券"))
+    rows = rl.roll(scan_root=paths["scan_root"], ledger_path=paths["ledger_path"])
+
+    assert rows[0]["rule_version"] == "e6.v1", "已登记观测被重算结果覆写了"
+    assert rows[0]["code"] == "688766"
+    assert rows[0]["superseded"]["recomputed_rule_version"] == "e6.v2"
+    assert rows[0]["superseded"]["recomputed_code"] == "000776"
+    assert any(err.startswith(rl.FROZEN_ERROR_PREFIX)
+               for err in rows[0]["contract_errors"])
+    summary = rl.summarize(rows)
+    assert summary["n_frozen_observations"] == 1
+    assert summary["n_contract_errors"] == 1   # 契约错 → registry 守卫立刻不可晋升
+
+
+def test_rule_version_only_drift_is_still_frozen(paths):
+    """**真实事故的形状**:v1 → v1.1 语义等价、选的还是同一只票,只有版本串变了。
+
+    正因为"结果一样"才最危险 —— 没有任何人会发现预注册期观测被换了版本标签,而
+    registry 的样本外承诺是按 `rule_version` 分代的。所以判据里必须含 `rule_version`,
+    不能只比选了谁。
+    """
+    _put_decision(paths["scan_root"], _doc(DATE_A, rule_version="e6.v1"))
+    rl.roll(scan_root=paths["scan_root"], ledger_path=paths["ledger_path"])
+    _put_decision(paths["scan_root"], _doc(DATE_A, rule_version="e6.v1.1"))
+    row = rl.roll(scan_root=paths["scan_root"], ledger_path=paths["ledger_path"])[0]
+    assert row["rule_version"] == "e6.v1"
+    assert row["code"] == "688766"                      # 票没变
+    assert row["superseded"]["recomputed_rule_version"] == "e6.v1.1"
+
+
+def test_frozen_row_still_backfills_its_own_outcome(paths):
+    """冻结的是**决策**(选了谁、什么规则),不是**前向读数**。
+
+    outcome 从 PENDING 变 MATURE 是这条观测在按预期成熟,不是改写;把它一起冻住会让
+    冻结那天之后的所有 gap 永远读不到,等于把观测腿掐死。
+    """
+    _put_decision(paths["scan_root"], _doc(DATE_A, rule_version="e6.v1"))
+    rl.roll(scan_root=paths["scan_root"], ledger_path=paths["ledger_path"])
+    _put_decision(paths["scan_root"], _doc(DATE_A, rule_version="e6.v2", buy="000776"))
+    _put_attribution(paths["scan_root"], DATE_A, [
+        {"code": "688766", "name": "普冉股份", "industry": "半导体",
+         REL_GAP_RULER: -0.0638, "buyable_c1": True},
+        *_market(gap=0.01),
+    ])
+    row = rl.roll(scan_root=paths["scan_root"], ledger_path=paths["ledger_path"])[0]
+    assert row["code"] == "688766"                       # 决策冻住
+    assert row["outcome"]["status"] == "MATURE"          # 读数继续回填
+    assert row["outcome"]["gap_c1_o2"] == pytest.approx(-0.0638)
+
+
+def test_freeze_is_idempotent_and_does_not_pile_up_contract_errors(paths):
+    _put_decision(paths["scan_root"], _doc(DATE_A, rule_version="e6.v1"))
+    rl.roll(scan_root=paths["scan_root"], ledger_path=paths["ledger_path"])
+    _put_decision(paths["scan_root"], _doc(DATE_A, rule_version="e6.v2", buy="000776"))
+    rl.roll(scan_root=paths["scan_root"], ledger_path=paths["ledger_path"])
+    once = paths["ledger_path"].read_bytes()
+    rl.roll(scan_root=paths["scan_root"], ledger_path=paths["ledger_path"])
+    rows = rl.roll(scan_root=paths["scan_root"], ledger_path=paths["ledger_path"])
+    assert paths["ledger_path"].read_bytes() == once
+    assert len([e for e in rows[0]["contract_errors"]
+                if e.startswith(rl.FROZEN_ERROR_PREFIX)]) == 1
+
+
+def test_identical_recompute_is_not_flagged_as_a_rewrite(paths):
+    """反向锁:同规则同结果重跑不许报冻结(否则守卫天天红 = 没人再看它)。"""
+    _put_decision(paths["scan_root"], _doc(DATE_A))
+    rl.roll(scan_root=paths["scan_root"], ledger_path=paths["ledger_path"])
+    rows = rl.roll(scan_root=paths["scan_root"], ledger_path=paths["ledger_path"])
+    assert "superseded" not in rows[0]
+    assert rows[0]["contract_errors"] == []
+    assert rl.summarize(rows)["n_frozen_observations"] == 0
+
+
+def test_frozen_rows_are_named_in_the_report(paths):
+    _put_decision(paths["scan_root"], _doc(DATE_A, rule_version="e6.v1"))
+    rl.roll(scan_root=paths["scan_root"], ledger_path=paths["ledger_path"])
+    _put_decision(paths["scan_root"], _doc(DATE_A, rule_version="e6.v2", buy="000776"))
+    text = rl.render(rl.roll(scan_root=paths["scan_root"],
+                             ledger_path=paths["ledger_path"]))
+    assert rl.FROZEN_ERROR_PREFIX in text
+    assert "e6.v2" in text
+
+
 def test_roll_keeps_history_whose_decision_file_disappeared(paths):
     """账本追加列不清零 —— 决策文件被清掉不等于那天没发生过。"""
     _put_decision(paths["scan_root"], _doc(DATE_A))
@@ -252,6 +351,29 @@ def test_gap_nan_stays_pending_even_though_attribution_exists(paths):
                    ledger_path=paths["ledger_path"])[0]["outcome"]["status"] == "PENDING"
 
 
+def test_missing_industry_column_keeps_the_absolute_gap(paths):
+    """M-13:缺 `industry` 只让**相对两列**算不出来,绝对主尺照样成熟。
+
+    修复前整行返回 PENDING —— 已经在盘上的 `gap_c1_o2` 被一起丢掉,外观与「还没到
+    T+2」逐字节相同。把「行业列缺失」伪装成「数据未成熟」正是本仓库最忌讳的名实不符
+    (读者会以为再等一天就有,其实永远不会有)。
+    """
+    _put_decision(paths["scan_root"], _doc(DATE_A))
+    _put_attribution(paths["scan_root"], DATE_A, [
+        {"code": "688766", "name": "普冉股份", REL_GAP_RULER: -0.0638,
+         "buyable_c1": True},
+        *[{k: v for k, v in row.items() if k != "industry"} for row in _market()],
+    ])
+    outcome = rl.roll(scan_root=paths["scan_root"],
+                      ledger_path=paths["ledger_path"])[0]["outcome"]
+    assert outcome["status"] == "MATURE"
+    assert outcome["gap_c1_o2"] == pytest.approx(-0.0638)
+    assert outcome["rel_source"] == "NO_INDUSTRY_COLUMN"   # 说清为什么没有,不装 PENDING
+    assert outcome["rel_gap_market"] is None
+    assert outcome["rel_gap_sector"] is None
+    assert outcome["benchmark_n"] == 21                    # 分母仍数得出来
+
+
 def test_leading_zero_code_survives_the_attribution_join(paths):
     """`002345` 在 pandas 里会被读成 `2345`;join 处丢前导零 = 静默 PENDING。"""
     _put_decision(paths["scan_root"], _doc(DATE_A, buy="002345", name="潮宏基"))
@@ -277,18 +399,50 @@ def _mature_rows(paths, gap: float) -> list[dict]:
     return rl.roll(scan_root=paths["scan_root"], ledger_path=paths["ledger_path"])
 
 
+def test_semantic_constants_are_pinned_literals():
+    """措辞常量本身钉死字面量(I-1 修复,2026-08-09 复核)。
+
+    原先 `test_negative_gap_renders_weak_market_note` 写的是
+    `assert rl.WEAK_MARKET_NOTE in text` —— **引常量的断言会跟着常量一起漂**:把
+    `WEAK_MARKET_NOTE` 改成「短期波动」,27 例全绿。而模块第 66 行自称「改这句必须有
+    测试跟着变红」,那个承诺当时是假的。这是本仓库「`node --check` 型永不变红的绿灯」
+    家族(2026-07-24 变异测试家训),同波 T25 的 `WEAK_MARKET_PHRASE` 已按同款修法处理。
+
+    「绝对 gap 为负时必须写『弱市相对最优』」是用户 2026-08-08 裁定的语义纪律
+    (相对 BUY 不承诺绝对上涨),不是文风偏好 —— 所以钉的是**字面量**。
+    """
+    assert rl.WEAK_MARKET_NOTE == "弱市相对最优(绝对 gap 为负;相对 BUY 从不承诺绝对收益为正)"
+    assert rl.RULER_WINDOW == "open[D+2]/close[D+1]-1"
+    assert rl.MATURE_MIN_OBSERVATIONS == 20
+    assert rl.FROZEN_ERROR_PREFIX == "已登记观测被重算结果改写(已拒绝)"
+    assert rl.BASIS == "relative"
+
+
 def test_negative_gap_renders_weak_market_note(paths):
-    """绝对 gap 为负 = 「弱市相对最优」,不得被改写成绝对看涨(变异探针②)。"""
+    """绝对 gap 为负 = 「弱市相对最优」,不得被改写成绝对看涨(变异探针②)。
+
+    断言**字面量**不引 `rl.WEAK_MARKET_NOTE`(I-1):引常量 = 改常量时断言跟着漂。
+    """
     text = rl.render(_mature_rows(paths, -0.0638))
-    assert rl.WEAK_MARKET_NOTE in text
-    assert "不承诺绝对上涨" in text
-    for forbidden in ("绝对看涨", "预计上涨", "看多"):
+    assert "弱市相对最优" in text
+    assert "绝对 gap 为负" in text
+    for forbidden in ("绝对看涨", "预计上涨", "看多", "必涨", "短期波动"):
         assert forbidden not in text
 
 
 def test_positive_gap_does_not_claim_weak_market(paths):
     text = rl.render(_mature_rows(paths, 0.0212))
-    assert rl.WEAK_MARKET_NOTE not in text
+    assert "弱市相对最优" not in text
+    for forbidden in ("绝对看涨", "预计上涨", "看多", "必涨"):
+        assert forbidden not in text
+
+
+def test_report_always_states_no_absolute_promise(paths):
+    """这一句是**无条件**渲染的(不随 gap 正负变),所以单独立一条 —— 把它混在
+    上面那条负 gap 用例里会伪装成"负 gap 才有的行为",是零鉴别力的假断言(I-1 同族)。
+    """
+    for gap in (-0.0638, 0.0212):
+        assert "不承诺绝对上涨" in rl.render(_mature_rows(paths, gap))
 
 
 def test_report_states_numerator_denominator_asof_and_ruler(paths):

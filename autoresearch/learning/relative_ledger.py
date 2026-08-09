@@ -29,10 +29,15 @@ design: Wave12 E6(用户 2026-08-08 裁定)。上游 = T23 决策层
 
 ## 不与旧账混算(定义断层)
 
-旧 OW 买单账(`buy_ledger`,历史 9 笔、T+2 胜率 0%)与本账**分列并置,不连成一条趋势
-线**:①决策对象不同(绝对"值得买" vs 相对"最值得买");②人口不同(≥Overweight 的卡
-vs 当日全部 L4 候选的相对冠军);③尺不同(旧行的 `fwd_2` 列在 T16 换尺前后混口径,本账
-钉死 `REL_GAP_RULER`)。把两段接成一条曲线会读出一个从来没存在过的"改善"。
+旧 OW 买单账(`buy_ledger`,历史 9 笔、胜率 0%)与本账**分列并置,不连成一条趋势线**:
+①决策对象不同(绝对"值得买" vs 相对"最值得买");②人口不同(≥Overweight 的卡 vs 当日
+全部 L4 候选的相对冠军)。把两段接成一条曲线会读出一个从来没存在过的"改善"。
+
+**勘误(2026-08-09 复核 M-5)**:此处原先还写着"③尺不同(旧行 `fwd_2` 在 T16 换尺前后
+混口径)"—— **不成立**。`buy_ledger.roll()` 的 `fwd_2` 是 `_a(MAIN_RULER)` 每次现算
+(`buy_ledger.py:168`;该账没有持久化 CSV,每次 roll 都从 attribution 重新读),三条已
+实现旧行与本账同为 `gap_c1_o2`。结论不变但理由要对:两账**可比但不可续** —— 同一把尺,
+量的是两个不同的决策问题。
 
 ## 幂等
 
@@ -45,6 +50,7 @@ byte 稳定:不写时间戳、不写随机序,`sort_keys=True`,浮点一律 `rou
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -68,6 +74,16 @@ WEAK_MARKET_NOTE = "弱市相对最优(绝对 gap 为负;相对 BUY 从不承诺
 
 #: 主尺的实现窗口,写进每行 `outcome.as_of`(as-of 是"这个数在哪一刻才存在",不是跑批时间)。
 RULER_WINDOW = "open[D+2]/close[D+1]-1"
+
+#: 已登记观测被重算结果改写时的契约错前缀(见 `_freeze`)。前缀固定 = 幂等去重的键。
+FROZEN_ERROR_PREFIX = "已登记观测被重算结果改写(已拒绝)"
+
+#: 「决策身份」= 这一行记的**是哪一个决策**。`roll()` 拿它判断重算结果与已登记的那条
+#: 是不是同一件事;不同 → 保留已登记的那条(见 `_freeze`)。
+#: 只收**决策期**就已定死的字段;`outcome` 不在内(前向读数本来就该随时间成熟)。
+_DECISION_IDENTITY_FIELDS = ("rule_version", "mode", "status", "code", "n_buys",
+                             "relative_decision_score", "faces", "faces_missing",
+                             "n_candidates", "n_eligible")
 
 _STATUS_BUY = "BUY"
 _STATUS_BLOCKED = "BLOCKED"
@@ -188,18 +204,25 @@ def outcome_for(date: str, code: str | None, scan_root: Path) -> dict:
         return blank
     frame["code"] = frame["code"].map(_code)
     on_disk = REL_MARKET in frame.columns and REL_SECTOR in frame.columns
+    # M-13 修复(2026-08-09 复核):缺 `industry` 只让**相对两列**算不出来,绝对主尺
+    # 照样成熟。修复前这里整行 `return blank` —— 已经在盘上的 `gap_c1_o2` 被一起丢掉,
+    # 外观与"还没到 T+2"逐字节相同,读者会以为再等一天就有(其实永远不会有)。
+    # 把"行业列缺失"伪装成"数据未成熟"是本仓库最忌讳的名实不符。
+    rel_source = "ON_DISK" if on_disk else "COMPUTED"
     if not on_disk:
         if "industry" not in frame.columns:
-            return blank
-        frame[REL_MARKET], frame[REL_SECTOR] = _rel_gap_cols(frame)
+            rel_source = "NO_INDUSTRY_COLUMN"
+        else:
+            frame[REL_MARKET], frame[REL_SECTOR] = _rel_gap_cols(frame)
     row = frame[frame["code"] == _code(code)]
     if row.empty:
         return blank
     gap = _round(row.iloc[0][REL_GAP_RULER])
     if gap is None:
         return blank
-    rel_market = _round(row.iloc[0][REL_MARKET])
-    rel_sector = _round(row.iloc[0][REL_SECTOR])
+    degraded = rel_source == "NO_INDUSTRY_COLUMN"
+    rel_market = None if degraded else _round(row.iloc[0][REL_MARKET])
+    rel_sector = None if degraded else _round(row.iloc[0][REL_SECTOR])
     gaps = pd.to_numeric(frame[REL_GAP_RULER], errors="coerce")
     pool = entry_tradable(frame, ruler_name=REL_GAP_RULER) & gaps.notna()
     return {
@@ -209,7 +232,7 @@ def outcome_for(date: str, code: str | None, scan_root: Path) -> dict:
         "rel_gap_sector": rel_sector,
         "market_mean_gap": None if rel_market is None else _round(gap - rel_market),
         "benchmark_n": int(pool.sum()),
-        "rel_source": "ON_DISK" if on_disk else "COMPUTED",
+        "rel_source": rel_source,
         "as_of": as_of,
     }
 
@@ -318,12 +341,69 @@ def replay(scan_root: Path | str | None = None,
     return rows
 
 
+def decision_identity(row: dict) -> str:
+    """一行账的「决策身份」哈希 —— 同身份 = 同一个决策,可以放心用新算的那份覆盖。
+
+    只吃 `_DECISION_IDENTITY_FIELDS`(决策当日就已定死的字段),**不吃 `outcome`**:
+    前向读数从 PENDING 变 MATURE 是这条观测在按预期成熟,不是改写。
+
+    对**已存在的老行**同样成立(直接读它自己的字段现算),所以不需要给账本加
+    `decision_hash` 列、也不需要迁移 —— 新旧行走同一条算式。
+    """
+    payload = {name: row.get(name) for name in _DECISION_IDENTITY_FIELDS}
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+def _freeze(prior: dict, fresh: dict, scan: Path) -> dict:
+    """已登记观测 vs 重算结果不一致 → **保留已登记的那条**,把冲突写在明面上。
+
+    I-6 修复(2026-08-09 复核;已实测发生过一次:底片产出于 `rule_version=e6.v1`,
+    其后 finalizer 升 `e6.v1.1`,某晚 `roll()` 的回放把 8 行预注册期观测整体改写成
+    v1.1)。这本账**唯一**的存在理由是给 `exp_relative_buy_owner` 攒可信观测,而
+    registry 那条「definition hash 变了就必须换实验 id、不能边跑边改」的铁律,精神就是
+    **已汇集的观测不可被悄悄改写** —— 否则将来看晋升证据的人分不清哪些数是原始记录、
+    哪些是后来重跑覆盖的,spec 里「≥20 个决策日中至少 13 条产生于 register 之后」这条
+    样本外承诺会静默失效。
+
+    不拿"反正回放结果一样"放过:结果一样时没人发现,结果不一样时已经晚了。
+
+    冻的是**决策**,不是**读数**:`outcome` 照常按冻结下来的那只票回填(把它一起冻住
+    等于把观测腿掐死)。契约错按 `FROZEN_ERROR_PREFIX` 去重后重写,连跑 N 次不堆积。
+    """
+    kept = json.loads(json.dumps(prior, ensure_ascii=False))
+    kept["outcome"] = outcome_for(str(kept.get("date") or ""), kept.get("code"), scan)
+    kept["superseded"] = {
+        "recorded_decision_hash": decision_identity(prior),
+        "recomputed_decision_hash": decision_identity(fresh),
+        "recorded_rule_version": prior.get("rule_version"),
+        "recomputed_rule_version": fresh.get("rule_version"),
+        "recorded_code": prior.get("code"),
+        "recomputed_code": fresh.get("code"),
+        "recomputed_status": fresh.get("status"),
+        "recomputed_score": fresh.get("relative_decision_score"),
+    }
+    errors = [error for error in (prior.get("contract_errors") or [])
+              if not str(error).startswith(FROZEN_ERROR_PREFIX)]
+    errors.append(
+        f"{FROZEN_ERROR_PREFIX}:已登记 rule_version={prior.get('rule_version')!r}"
+        f"/BUY={prior.get('code')!r},重算得 {fresh.get('rule_version')!r}"
+        f"/{fresh.get('code')!r} —— 保留已登记值,新结果只记在 `superseded`")
+    kept["contract_errors"] = errors
+    return kept
+
+
 def roll(scan_root: Path | str | None = None, ledger_path: Path | str | None = None,
          *, replay_missing: bool = True, max_replay_days: int = 20) -> list[dict]:
     """全量重建 + 按 `date` 与既有账本合并 + 落盘。返回按日期排序的全部行。
 
-    合并语义(幂等整替):同日 → 用本次重建的行覆写;本次看不到的旧日 → 原样保留
-    (Global Constraint「账本追加列不清零」的同族:决策文件被清掉不等于那天没发生过)。
+    合并语义(幂等整替 + **观测冻结**):
+    - 本次看不到的旧日 → 原样保留(「账本追加列不清零」同族:决策文件被清掉不等于
+      那天没发生过);
+    - 同日、`decision_identity` 相同 → 用本次重建的行(读数得以继续成熟);
+    - 同日、`decision_identity` **不同** → **保留已登记的那条** + 记 `superseded` +
+      记一条契约错(I-6,见 `_freeze`)。
     """
     scan = Path(scan_root or SCAN_ROOT)
     fresh: dict[str, dict] = {}
@@ -337,7 +417,11 @@ def roll(scan_root: Path | str | None = None, ledger_path: Path | str | None = N
     for row in replay(scan, replay_days[-max_replay_days:] if max_replay_days else replay_days):
         fresh[row["date"]] = row
     merged = {row.get("date"): row for row in load_ledger(ledger_path)}
-    merged.update(fresh)
+    for date, row in fresh.items():
+        prior = merged.get(date)
+        merged[date] = (row if prior is None
+                        or decision_identity(prior) == decision_identity(row)
+                        else _freeze(prior, row, scan))
     rows = [merged[date] for date in sorted(merged) if date]
     write_ledger(rows, ledger_path)
     return rows
@@ -382,6 +466,14 @@ def summarize(rows: list[dict]) -> dict:
         "n_no_run_days": sum(1 for row in rows if row.get("status") == _STATUS_NO_RUN),
         "action_coverage": (round(len(buy_days) / len(decision), 6) if decision else None),
         "n_contract_errors": sum(1 for row in rows if row.get("contract_errors")),
+        # I-6:已登记观测拒绝被重算改写的行数。它同时计进 n_contract_errors,所以
+        # registry 的 `contract_error_n ≤ 0` 守卫会立刻把实验判成不可晋升 —— 这是故意的:
+        # 存在未对账的改写时,晋升证据本来就不该被采信。
+        "n_frozen_observations": sum(1 for row in rows if row.get("superseded")),
+        # rel 两列因缺 `industry` 算不出来、但绝对主尺已成熟的行(M-13);不是 PENDING。
+        "n_rel_degraded": sum(
+            1 for row in rows
+            if (row.get("outcome") or {}).get("rel_source") == "NO_INDUSTRY_COLUMN"),
         "n_mature": len(mature),
         "n_pending": sum(1 for row in buy_days
                          if (row.get("outcome") or {}).get("status") == "PENDING"),
@@ -422,9 +514,14 @@ def _legacy_block(legacy: dict | None) -> list[str]:
         f"{'—' if legacy.get('win2') is None else format(legacy['win2'], '.0%')} | "
         f"{_pct(legacy.get('mean2'))} |",
         "",
-        "> **定义断层**:旧账与本账**不连成一条趋势线**。三处不同 —— ①决策对象(绝对"
-        "「值得买」 vs 相对「最值得买」);②人口(≥OW 的卡 vs 当日全部 L4 候选的相对冠军);"
-        "③尺(旧行 `fwd_2` 列在 T16 换尺前后混口径,本账钉死 `gap_c1_o2`)。",
+        "> **定义断层**:旧账与本账**不连成一条趋势线**。两处不同 —— ①决策对象(绝对"
+        "「值得买」 vs 相对「最值得买」);②人口(≥OW 的卡 vs 当日全部 L4 候选的相对冠军)。",
+        "",
+        "> **尺是同一把**(勘误,2026-08-09 复核 M-5):本行此前称「③尺不同(旧行 `fwd_2` "
+        "在 T16 换尺前后混口径)」—— **不成立**。`buy_ledger.roll()` 的 `fwd_2` 列是"
+        "`_a(MAIN_RULER)` 每次现算(`buy_ledger.py:168`,该账无持久化 CSV),三条已实现"
+        f"旧行与本账同为 `{REL_GAP_RULER}`。所以两账**可比但不可续**:同一把尺,量的是"
+        "两个不同的决策问题 —— 不连线的理由是 ① 和 ②,不是尺。",
     ]
 
 
@@ -452,6 +549,11 @@ def render(rows: list[dict], *, legacy_ow: dict | None = None) -> str:
         f"待成熟 {summary['n_pending']} · 影子 BUY 落在持仓(📌)上 "
         f"{summary['n_pinned_buys']} 次",
     ]
+    if summary["n_frozen_observations"]:
+        lines.append(
+            f"- 🧊 **已冻结观测 {summary['n_frozen_observations']} 条**:重算结果与已登记的"
+            "那条不是同一个决策,账本**保留已登记值**、把新结果只记进 `superseded`"
+            "(已汇集的观测不可被悄悄改写)。这些行同时计进契约错 —— 未对账前实验不可晋升。")
     if summary["n_mature"] < MATURE_MIN_OBSERVATIONS:
         lines += [
             f"- ⚠️ **IMMATURE**:成熟观测 n={summary['n_mature']} < "
@@ -514,6 +616,14 @@ def render(rows: list[dict], *, legacy_ow: dict | None = None) -> str:
         f"`outcome.benchmark_n`;as-of = 该分析日的 {RULER_WINDOW},源 "
         "`context/scan/<date>/retro/attribution.csv`。",
     ]
+    if summary["n_rel_degraded"]:
+        lines += [
+            "",
+            f"- ⚠️ {summary['n_rel_degraded']} 行的 attribution 缺 `industry` 列 → 相对两列"
+            "算不出来(`outcome.rel_source = NO_INDUSTRY_COLUMN`),但绝对 "
+            f"`{REL_GAP_RULER}` 已成熟、照常入表。**这不是 PENDING**:再等一天也不会有,"
+            "要补的是行业列(M-13)。",
+        ]
     if weak_days:
         lines += [
             "",
