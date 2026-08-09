@@ -15,7 +15,8 @@ from autoresearch.scan.prelude import run_prelude
 _SKIP_ALL_BUT_DOSSIER_POOL = ("preflight",
                               "retro_refresh", "retro_pending", "t1_pending", "learning_health",
                               "consensus", "temperature", "universe", "calendar", "catalyst",
-                              "menu", "ledgers")
+                              "menu", "ledgers",
+                              "news_catalog")   # Wave12-T35 新步骤
 
 
 def test_prelude_has_dossier_pool_step(tmp_path, monkeypatch):
