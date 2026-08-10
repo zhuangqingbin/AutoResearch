@@ -28,6 +28,10 @@ def _harvest_ok(tmp_path):
 
 def _init(tmp_path, n=10, caps=None):
     codes = [f"{600000+i}" for i in range(n)]
+    scan = tmp_path / "2026-08-06"
+    scan.mkdir(parents=True, exist_ok=True)
+    for c in codes:                                # C1a 硬门:prompts 必须在场
+        (scan / f"_l4_prompt_{c}.md").write_text("# 任务包\n", encoding="utf-8")
     return l4_tasks.initialize("2026-08-06", codes, root=tmp_path,
                                context_root=tmp_path / "ctx", caps=caps)
 

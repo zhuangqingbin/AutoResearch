@@ -62,6 +62,13 @@ def _artifact(path: Path, *, content_hash: str | None = None) -> dict:
     }
 
 
+def _prompt_file_ok(scan_dir: Path, code: str) -> bool:
+    """prompt 任务包在且非空 —— C1 硬门的唯一判据(直接 stat 文件,不信账本旧记录)。"""
+    code6 = str(code).split(".")[0].zfill(6)
+    p = Path(scan_dir) / f"_l4_prompt_{code6}.md"
+    return p.is_file() and p.stat().st_size > 0
+
+
 def _normalize_caps(caps: dict | None) -> dict[str, int]:
     raw = DEFAULT_CAPS if caps is None else caps
     missing = sorted(set(REQUIRED_CAPS) - set(raw))
@@ -192,6 +199,22 @@ def initialize(
     path = scan_dir / "_l4_tasks.json"
     cap_values = _normalize_caps(caps)
     ordered = list(dict.fromkeys(str(code).split(".")[0].zfill(6) for code in codes))
+    # C1a(design 2026-08-10):prompts 是每张卡的任务包 —— 缺着派发 = 整轮盲跑
+    # (2026-08-09 实跑 12 股 ≈$23 全废)。init 是派发前最后一个确定性闸口,在这里拒绝,
+    # 一个 LLM token 都还没花。prompts 幂等(实测 3.5s),修复 = 重跑 prompts 再 init。
+    missing_prompts = [c for c in ordered if not _prompt_file_ok(scan_dir, c)]
+    if missing_prompts:
+        return {
+            "ok": False,
+            "path": str(path),
+            "n": len(ordered),
+            "codes": ordered,
+            "reason": (f"prompts 缺失 {len(missing_prompts)} 票 —— 拒绝初始化任务簿;"
+                       f"先跑 `python -m autoresearch.scan.agents.l4_card prompts {date}`"),
+            "missing_prompts": missing_prompts,
+            "effective_cap": 0,
+            "dispatch_batches": [],
+        }
     with _locked(path):
         if path.exists():
             _, payload = _read(path)
@@ -634,7 +657,8 @@ def main(argv: list[str] | None = None) -> int:
             meta=plan.get("meta") or {},
             caps=caps,
         )
-        result["dispatch_batches"] = dispatch_batches(result["path"])["batches"]
+        if result.get("ok"):
+            result["dispatch_batches"] = dispatch_batches(result["path"])["batches"]
     elif args.cmd == "batches":
         result = dispatch_batches(_book_path(args.first, args.root), caps=caps)
     elif args.cmd == "stats":

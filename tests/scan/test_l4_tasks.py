@@ -43,6 +43,10 @@ def _book(tmp_path, codes=("000001", "000002", "000003")):
         "000002": {"ticker": "000002.SZ", "pinned": True},
         "000003": {"ticker": "000003.SZ", "pinned": False},
     }
+    scan = tmp_path / DATE
+    scan.mkdir(parents=True, exist_ok=True)
+    for c in codes:
+        (scan / f"_l4_prompt_{c}.md").write_text("# 任务包\n", encoding="utf-8")
     return initialize(
         DATE,
         list(codes),
