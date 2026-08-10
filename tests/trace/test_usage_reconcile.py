@@ -591,6 +591,115 @@ class TestRealDataMutations:
         assert "sector_brief" in result["wire_breaks"]
 
 
+# ═══════════ I-1(2026-08-10 终审必修):limit-killed 行不得被判成 model/effort mismatch ═══════════
+#
+# 背景:C4-1(d4f91e0)给 usage_harvest 加了 meta.json agentType 兜底,把 limit-killed
+# transcript 的 `agent` 从 "(未标注)" 改成真实 agentType(如 l4-card/general-purpose)。
+# 但这类行的 `model`/`effort` 两个字段本来就是 "—"(transcript 死得太早,从没等到一条带
+# usage 的消息,连"发出的请求带什么参数"都没记下)。真实 agentType 一旦落地,这些行就不再
+# 走 unknown_agent_types 分支,而是流进 `by_type`/`gp_allowed` 判定——判的不是"配置有没有
+# 生效",而是"这份 transcript 死没死"。2026-08-07 真实数据(39 行,31 general-purpose +
+# 8 l4-card)证实:不加这道口子会凭空造出 47 条假 mismatch(见 final-review.md I-1)。
+
+
+def test_unmeasured_l4_card_row_produces_no_mismatch(tmp_path):
+    """评审指定探针:喂一行 (agent='l4-card', model='—', effort='—') 不得产生 mismatch。"""
+    rows = [{"role": "subagent", "agent": "l4-card", "model": "—", "effort": "—",
+            "status": "FAILED"}] + ROWS[1:]
+    r = _run(tmp_path, ECHO, rows)
+    assert not any(m["agent"] == "l4-card" for m in r["mismatches"])
+    assert r["unmeasured"] == 1
+
+
+def test_unmeasured_general_purpose_row_produces_no_mismatch(tmp_path):
+    """真实数据里占多数的那一类(31/39)——壳类兜底也不能被这些死行误判。"""
+    rows = ROWS + [{"role": "subagent", "agent": "general-purpose", "model": "—",
+                    "effort": "—", "status": "FAILED"}]
+    r = _run(tmp_path, ECHO, rows)
+    assert r["mismatches"] == []
+    assert r["unmeasured"] == 1
+
+
+def test_unmeasured_row_not_silently_dropped(tmp_path):
+    """铁律「降级不留痕才是真病」:这类行必须在返回体里可数,不能只是从 mismatches 里消失。"""
+    rows = [{"role": "subagent", "agent": "l4-card", "model": "—", "effort": "—",
+            "status": "FAILED"},
+            {"role": "subagent", "agent": "general-purpose", "model": None, "effort": "",
+             "status": "FAILED"}] + ROWS[1:]
+    r = _run(tmp_path, ECHO, rows)
+    assert r["unmeasured"] == 2
+    assert r["checked"] == len(rows)          # 仍然是"被看过"的行,只是判不了
+
+
+def test_partially_unmeasured_row_still_judged(tmp_path):
+    """精度边界:只有 model **和** effort 都是 unmeasured 才豁免——只缺一个字段的行仍是
+    真实信号(比如 effort 请求参数确实没打上),不能被这个兜底连带放过。
+    """
+    rows = [{"role": "subagent", "agent": "l4-card", "model": "claude-opus-5",
+            "effort": "—", "status": "SUCCEEDED"}] + ROWS[1:]
+    r = _run(tmp_path, ECHO, rows)
+    hit = [m for m in r["mismatches"] if m["agent"] == "l4-card" and m["field"] == "effort"]
+    assert hit, "只缺 effort 一个字段的行被误当成 unmeasured 放过了"
+    assert r["unmeasured"] == 0
+
+
+def test_unmeasured_row_still_counts_as_seen_for_wire_break(tmp_path):
+    """即使当日唯一一行是 unmeasured,也不该被判"这个 role 今天没人接线"——agent 确实
+    跑过,只是没能留下 model/effort 参数,这两件事不能混为一谈。
+    """
+    rows = [{"role": "subagent", "agent": "l4-card", "model": "—", "effort": "—",
+            "status": "FAILED"}]
+    r = _run(tmp_path, ECHO, rows)
+    assert "l4_card" not in r["wire_breaks"]
+
+
+def test_unmeasured_only_run_is_still_ok(tmp_path):
+    """全天只跑出限速夭折的行,`ok` 不该翻假——unmeasured 是"记账"信号,不是失败信号
+    (与 wire_break/unknown_agent_type/missing_resolved_role 那几个真失败信号不同)。
+    """
+    d = tmp_path / "context/scan/2026-08-06"
+    d.mkdir(parents=True)
+    echo = {"agents": {"l4_card": {"effort": "max"}}}
+    rows = [{"role": "subagent", "agent": "l4-card", "model": "—", "effort": "—",
+            "status": "FAILED"}]
+    (d / "user_config_echo.json").write_text(json.dumps(echo))
+    (d / "_token_usage.json").write_text(json.dumps({"rows": rows}))
+    r = ur.reconcile("2026-08-06", root=tmp_path)
+    assert r["ok"] is True
+    assert r["unmeasured"] == 1
+
+
+def test_render_shows_unmeasured_count(tmp_path):
+    """render() 也要把它摆出来——不是只有 JSON 里有,人读的 markdown 里看不见同样是白记账。"""
+    rows = [{"role": "subagent", "agent": "l4-card", "model": "—", "effort": "—",
+            "status": "FAILED"}] + ROWS[1:]
+    r = _run(tmp_path, ECHO, rows)
+    md = ur.render(r)
+    assert "unmeasured 1 行" in md
+
+
+_REAL_0807_DIR = Path("context/scan/2026-08-07")
+_real_0807_present = (_REAL_0807_DIR / "user_config_echo.json").exists() and \
+    (_REAL_0807_DIR / "_token_usage.json").exists()
+
+
+@pytest.mark.skipif(not _real_0807_present, reason="真实 2026-08-07 产物不在场(gitignored,新 checkout 正常缺失)")
+def test_real_20260807_data_has_no_unknown_type_from_dash_rows():
+    """对真实事故日数据的轻量回归:39 行 limit-killed(model=effort='—')此前会被判成
+    `unknown_agent_types` 里的 `(未标注)`(修复前的磁盘快照就是这个状态,见 final-review.md
+    I-1 引用的 BEFORE 读数)——现在这类行在 model/effort 都缺失时直接被 unmeasured 分支
+    截住,不再流到 unknown_types 判定,不依赖 `agent` 字段究竟写的是"(未标注)"还是真实
+    agentType(两者本条测试跑的磁盘现状都覆盖到)。
+    """
+    echo = json.loads((_REAL_0807_DIR / "user_config_echo.json").read_text())
+    rows = json.loads((_REAL_0807_DIR / "_token_usage.json").read_text())["rows"]
+    dash_rows = [r for r in rows if r.get("model") == "—" and r.get("effort") == "—"]
+    assert len(dash_rows) >= 1, "真实数据的前提(limit-killed 行)不在场,本测试没测到东西"
+    result = ur._reconcile_core(echo, rows, date="2026-08-07")
+    assert "(未标注)" not in (result.get("unknown_agent_types") or [])
+    assert result["unmeasured"] >= len(dash_rows)
+
+
 # ═══════════ Wave12-T33:对 resolved 对账 + 缺派发 role 直接 ok=false ═══════════
 
 _RESOLVED = {"l4_card": {"effort": "max"}, "l4_intel": {"effort": "max"},
