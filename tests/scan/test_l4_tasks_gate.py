@@ -77,3 +77,25 @@ def test_preflight_run_path_unchanged(tmp_path):
     book = tmp_path / DATE / "_l4_tasks.json"
     r = l4_tasks.preflight(book, "600000")
     assert r["action"] == "RUN" and r["attempt"] == 1      # 既有认领行为不变
+
+
+def test_preflight_run_carries_intel_resume(tmp_path):
+    from autoresearch.scan.l4.intel_status import IntelStatus, write_status
+    _write_prompt(tmp_path, "600000")
+    _init(tmp_path, ["600000"])
+    scan = tmp_path / DATE
+    write_status(scan, IntelStatus(code="600000", acquisition="FULL", guard="KEPT",
+                                   availability_for_card="INTEL", attempts=1))
+    (scan / "_l4_intel_600000.md").write_text("| 稿 |", encoding="utf-8")
+    r = l4_tasks.preflight(scan / "_l4_tasks.json", "600000")
+    assert r["action"] == "RUN" and r["intel_resume"] is True
+    # 披露:被消费的续传要在 status 里留痕
+    from autoresearch.scan.l4.intel_status import load_status
+    assert load_status(scan, "600000").resumed is True
+
+
+def test_preflight_intel_resume_false_when_no_status(tmp_path):
+    _write_prompt(tmp_path, "600000")
+    _init(tmp_path, ["600000"])
+    r = l4_tasks.preflight(tmp_path / DATE / "_l4_tasks.json", "600000")
+    assert r["action"] == "RUN" and r["intel_resume"] is False   # 正常首跑 parity

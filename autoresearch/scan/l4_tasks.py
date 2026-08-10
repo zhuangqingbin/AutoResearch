@@ -10,6 +10,7 @@ import argparse
 import fcntl
 import hashlib
 import json
+import sys
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -288,11 +289,28 @@ def preflight(
     if not _prompt_file_ok(scan_dir, code6):
         return {"ok": True, "code": code6, "action": "BLOCKED",
                 "attempt": 0, "reason": "PROMPT_MISSING"}
+
+    def _intel_resume() -> bool:
+        # 续传是省钱件不是正确性件:判定失败一律不续传(失败闭合)。但**降级必须留痕** ——
+        # 项目铁律「降级不留痕才是真病」:裸 except Exception 会把 resumable() 里的真 bug
+        # (打错字/schema 变更)吞成"今天恰好没得续传",省不到钱还没人知道。故只吞 IO/解析类,
+        # 且吞之前先喊一声。
+        from autoresearch.scan.l4.intel_status import mark_resumed, resumable
+        try:
+            if not resumable(scan_dir, code6):
+                return False
+            mark_resumed(scan_dir, code6)   # 披露先于消费;幂等
+            return True
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            print(f"[l4_tasks] intel 续传判定失败({type(exc).__name__}: {exc})→ 本票照常盲搜",
+                  file=sys.stderr)
+            return False
+
     # bookless(直接单独重跑单股 workflow / SENTINEL_PINNED):python 接管原壳命令里的
     # `else echo LEGACY` 分支(壳零判断铁律)——行为与旧壳逐字节等价。
     if not path.exists():
         return {"ok": True, "code": code6, "action": "LEGACY",
-                "attempt": 0, "reason": "NO_TASK_BOOK"}
+                "attempt": 0, "reason": "NO_TASK_BOOK", "intel_resume": _intel_resume()}
     stamp = _stamp(now)
     current = now or datetime.now(timezone.utc)
     if current.tzinfo is None:
@@ -380,6 +398,7 @@ def preflight(
             "action": "RUN",
             "attempt": task["attempt"],
             "reason": reason or "PENDING",
+            "intel_resume": _intel_resume(),
         }
 
 
