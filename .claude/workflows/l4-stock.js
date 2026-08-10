@@ -189,6 +189,15 @@ await parallel([
 ])
 if (!intelOn) {
   log(`intel 关(config l4_intel.enabled=false)→ 直接出卡`)
+  // 复核修复轮1(2026-08-10 Important):这条落盘不能只在"跑过 intel"的分支才做——DISABLED
+  // 是三态之一(vs DEGRADED/缺状态),`--disabled` 这个 flag 存在的唯一理由就是让报告侧分清
+  // "情报面被主动关掉"与"情报面出事了/根本没有"。值与迁移前逐字节一致:本分支从不派 intelLeg,
+  // intelAttempts 恒 0、intelResult/intelError 恒 null → 只带 --normalize --disabled。
+  await bash(
+    `${R} autoresearch.scan.l4.intel_status ${date} ${code} --normalize` +
+    `${intelOn ? '' : ' --disabled'}${intelAttempts > 1 ? ` --attempts ${intelAttempts}` : ''}` +
+    `${intelResult ? '' : (intelError ? ` --error-class ${intelError}` : '')}`,
+    `intel-status:${code}`, 'Intel').catch(() => null)
 } else if (intelResume) {
   // C3:同日 crash-resume —— 稿 + status 已在盘上且 ≤24h(preflight 验过并已 mark_resumed),
   // 重盲搜只是把同一晚的六面查询再付一遍(2026-08-09 实测 34 次里 22 次是重复 ≈$15)。
