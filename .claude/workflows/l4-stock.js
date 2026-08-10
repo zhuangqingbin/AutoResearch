@@ -100,7 +100,8 @@ const INTEL_GUARD = { type: 'object', required: ['ok', 'code', 'action'],
     warn: { type: 'string' }, note: { type: 'string' } } }
 const TASK_ACTION = { type: 'object', required: ['ok', 'action'],
   properties: { ok: { type: 'boolean' }, action: { type: 'string' },
-    attempt: { type: 'integer' }, reason: { type: 'string' } } }
+    attempt: { type: 'integer' }, reason: { type: 'string' },
+    intel_resume: { type: 'boolean' } } }
 const TASK_RESULT = { type: 'object', required: ['ok'],
   properties: { ok: { type: 'boolean' }, action: { type: 'string' },
     status: { type: 'string' }, reason: { type: 'string' }, attempts: { type: 'integer' } } }
@@ -118,11 +119,12 @@ const taskFailure = (errorClass) => taskGate(
   `task-failure:${code}`,
 ).catch(() => null)
 
-// 任务簿存在时先领取本票；直接单独调用旧 workflow 时走 LEGACY，不强迫历史调用者补状态文件。
-const taskPreflight = await taskGate(
-  `preflight ${code} ${date}`,
-  TASK_ACTION,
+// C1b(2026-08-10):bookless 的 LEGACY 分支移入 python(壳零判断)——preflight 现在
+// 无论有无任务簿都能回答,且缺 prompt 一律 BLOCKED(盲卡在这里绝育)。
+const taskPreflight = await gpJson(
+  `${R} autoresearch.scan.l4_tasks preflight ${code} ${date}`,
   `task-preflight:${code}`,
+  TASK_ACTION,
 )
 if (!taskPreflight) {
   await recordL4('task_preflight_no_return')
@@ -137,6 +139,7 @@ if (taskPreflight && ['BLOCKED', 'WAIT'].includes(taskPreflight.action)) {
     error: `task ${taskPreflight.action}:${taskPreflight.reason || ''}` }
 }
 const trackedTask = !!taskPreflight && taskPreflight.action === 'RUN'
+const intelResume = !!(taskPreflight && taskPreflight.intel_resume)
 
 // ── Slim ∥ Intel(结构性盲:prompt 只给码/名/行业/日期,防确认偏误)────────────
 phase('Intel')
@@ -182,10 +185,24 @@ async function intelLeg() {
 await parallel([
   () => taskGate(`prepare ${code} ${date}`, TASK_RESULT, `slim:${code}`)
     .then((r) => { slimResult = r; return r }),
-  ...(intelOn ? [() => intelLeg().then((r) => { intelResult = r; return r })] : []),
+  ...(intelOn && !intelResume ? [() => intelLeg().then((r) => { intelResult = r; return r })] : []),
 ])
 if (!intelOn) {
   log(`intel 关(config l4_intel.enabled=false)→ 直接出卡`)
+  // 复核修复轮1(2026-08-10 Important):这条落盘不能只在"跑过 intel"的分支才做——DISABLED
+  // 是三态之一(vs DEGRADED/缺状态),`--disabled` 这个 flag 存在的唯一理由就是让报告侧分清
+  // "情报面被主动关掉"与"情报面出事了/根本没有"。值与迁移前逐字节一致:本分支从不派 intelLeg,
+  // intelAttempts 恒 0、intelResult/intelError 恒 null → 只带 --normalize --disabled。
+  await bash(
+    `${R} autoresearch.scan.l4.intel_status ${date} ${code} --normalize` +
+    `${intelOn ? '' : ' --disabled'}${intelAttempts > 1 ? ` --attempts ${intelAttempts}` : ''}` +
+    `${intelResult ? '' : (intelError ? ` --error-class ${intelError}` : '')}`,
+    `intel-status:${code}`, 'Intel').catch(() => null)
+} else if (intelResume) {
+  // C3:同日 crash-resume —— 稿 + status 已在盘上且 ≤24h(preflight 验过并已 mark_resumed),
+  // 重盲搜只是把同一晚的六面查询再付一遍(2026-08-09 实测 34 次里 22 次是重复 ≈$15)。
+  // guard/intel-status 也跳过:它们的产物就是上一轮落的那两份,重写只会抹掉 attempts 痕迹。
+  log(`🕵️ intel ♻ ${code} 同日续传(稿+status 验证通过,盲搜跳过;status.resumed=true 已披露)`)
 } else {
   log(intelResult ? `🕵️ intel ✓ ${code}(events=${intelResult.events ?? '?'})` : `🕵️ intel ✗ ${code}(缺稿,卡自动回退卡内网查)`)
   // W8-13:硬顶守卫。cap(20)是**指令级**约束、agent 想超就超(07-28 十一稿 16–29,
@@ -203,15 +220,15 @@ if (!intelOn) {
       log(`⚠️ intel ${code} 未自报查询数(无法对账,不拒稿)`)
     }
   }
+  // Wave10 A5:三正交字段落盘 + 直播 —— 此前只显式播 REJECTED/unreported,**TRIMMED 不播**,
+  // 于是 07-31 的 000651「自报 39 条触发超硬顶审计」在报告里零痕迹。报告/直播/T1 从此读同一份
+  // 结构化状态,谁也不许再解析稿头猜。A7 的旧事件净分归一化同批跑(--normalize)。
+  await bash(
+    `${R} autoresearch.scan.l4.intel_status ${date} ${code} --normalize` +
+    `${intelOn ? '' : ' --disabled'}${intelAttempts > 1 ? ` --attempts ${intelAttempts}` : ''}` +
+    `${intelResult ? '' : (intelError ? ` --error-class ${intelError}` : '')}`,
+    `intel-status:${code}`, 'Intel').catch(() => null)
 }
-// Wave10 A5:三正交字段落盘 + 直播 —— 此前只显式播 REJECTED/unreported,**TRIMMED 不播**,
-// 于是 07-31 的 000651「自报 39 条触发超硬顶审计」在报告里零痕迹。报告/直播/T1 从此读同一份
-// 结构化状态,谁也不许再解析稿头猜。A7 的旧事件净分归一化同批跑(--normalize)。
-await bash(
-  `${R} autoresearch.scan.l4.intel_status ${date} ${code} --normalize` +
-  `${intelOn ? '' : ' --disabled'}${intelAttempts > 1 ? ` --attempts ${intelAttempts}` : ''}` +
-  `${intelResult ? '' : (intelError ? ` --error-class ${intelError}` : '')}`,
-  `intel-status:${code}`, 'Intel').catch(() => null)
 if (slimResult && slimResult.action !== 'LEGACY' && !slimResult.ok) {
   await taskFailure('DATA_INTEGRITY')
   await recordL4('slim_data_integrity')

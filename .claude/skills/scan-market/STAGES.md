@@ -223,7 +223,8 @@ L2 之后、与 L3 证据取数**并发**:
    2,468 B、预估节省 **4.0% < 10% 门**,不值得永远双路维护 prompts.py。
 2. 默认 `streaming_l4=true`：初始化 `_l4_tasks.json`，状态为
    `PENDING/RUNNING/SUCCEEDED/FAILED/BLOCKED`，逐票保存 prompt/slim/card hash、
-   attempt、pinned、错误类和时间戳。四类并发帽 `tushare/web_search/web_fetch/l4_stock`
+   attempt、pinned、错误类和时间戳。init 前置 prompts 落稿并对其做硬门校验(缺→ok:false
+   整线停在派发前,2026-08-10 C1/C2)。四类并发帽 `tushare/web_search/web_fetch/l4_stock`
    取显式最小值形成 `dispatch_batches`；主会话批次间顺序执行、批次内并行。发生
    `RATE_LIMIT` 后下一批降宽一档，最低 1；只改调度，不改查询 cap 或评级。
 3. 每股 `l4-stock` 先 preflight；本票 slim 与 intel 并行，二者终态后出卡。
@@ -517,3 +518,16 @@ L3/L4 会让持仓拿不到当日决策卡 → 传 `force_full: true` 覆盖。0
 `dossier-init` 是 no-op,清不掉 🕰️)再派 `dossier-init`;注意 `builder --force` 会清空
 `initiated`/`last_refresh`,该票期间同时退出 🕰️ 与 `pending_init` 两个探针视野。
 未披露也会落痕(不是"没跑"),所以 📐 计数应随对账动作**下降**;天天恒定 = 探针坏了。
+
+### l4_tasks 子命令语义(2026-08-10)
+
+- **`preflight` 是认领不是只读探针**:调用即可能把该票置 RUNNING 抢锁(2026-08-09 主会话
+  误用作"验证"抢走 600276,靠 `failure --error-class TIMEOUT` 释放)。人工看状态用
+  `l4_tasks stats <date>`(纯读)或直接读 `_l4_tasks.json`。
+- **prompt 硬门**(C1,design 2026-08-10-token-regression-remediation-design.md):
+  `init` 见任一 `_l4_prompt_*.md` 缺失/空 → `ok:false` 拒建任务簿(修复=重跑
+  `l4_card prompts` 再 init,幂等 ~3.5s);`preflight` 缺 prompt → `BLOCKED/PROMPT_MISSING`
+  不认领。救火杆:没有 `--allow-missing-prompts` 这种口子,**修产物,别修门**。
+- **intel 同日续传**(C3):事故重派时 preflight 对「稿+status 完好且 ≤24h」的票返回
+  `intel_resume:true`,l4-stock 跳过重盲搜并在 status 落 `resumed:true` 披露。跨日/重放
+  历史日不满足条件 → 照常盲搜;强制重搜 = 删该票 `_l4_intel_*` 两个文件。

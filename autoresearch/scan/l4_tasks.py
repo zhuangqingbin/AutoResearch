@@ -10,6 +10,7 @@ import argparse
 import fcntl
 import hashlib
 import json
+import sys
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -60,6 +61,13 @@ def _artifact(path: Path, *, content_hash: str | None = None) -> dict:
         "status": "PRESENT" if path.is_file() and path.stat().st_size else "MISSING",
         "content_hash": content_hash,
     }
+
+
+def _prompt_file_ok(scan_dir: Path, code: str) -> bool:
+    """prompt 任务包在且非空 —— C1 硬门的唯一判据(直接 stat 文件,不信账本旧记录)。"""
+    code6 = str(code).split(".")[0].zfill(6)
+    p = Path(scan_dir) / f"_l4_prompt_{code6}.md"
+    return p.is_file() and p.stat().st_size > 0
 
 
 def _normalize_caps(caps: dict | None) -> dict[str, int]:
@@ -192,6 +200,22 @@ def initialize(
     path = scan_dir / "_l4_tasks.json"
     cap_values = _normalize_caps(caps)
     ordered = list(dict.fromkeys(str(code).split(".")[0].zfill(6) for code in codes))
+    # C1a(design 2026-08-10):prompts 是每张卡的任务包 —— 缺着派发 = 整轮盲跑
+    # (2026-08-09 实跑 12 股 ≈$23 全废)。init 是派发前最后一个确定性闸口,在这里拒绝,
+    # 一个 LLM token 都还没花。prompts 幂等(实测 3.5s),修复 = 重跑 prompts 再 init。
+    missing_prompts = [c for c in ordered if not _prompt_file_ok(scan_dir, c)]
+    if missing_prompts:
+        return {
+            "ok": False,
+            "path": str(path),
+            "n": len(ordered),
+            "codes": ordered,
+            "reason": (f"prompts 缺失 {len(missing_prompts)} 票 —— 拒绝初始化任务簿;"
+                       f"先跑 `python -m autoresearch.scan.agents.l4_card prompts {date}`"),
+            "missing_prompts": missing_prompts,
+            "effective_cap": 0,
+            "dispatch_batches": [],
+        }
     with _locked(path):
         if path.exists():
             _, payload = _read(path)
@@ -258,6 +282,35 @@ def preflight(
     """为一票领取一次执行权；SUCCEEDED 只在三件产物指纹仍匹配时可复用。"""
     path = Path(book)
     code6 = str(code).split(".")[0].zfill(6)
+    # C1b(design 2026-08-10):prompt 任务包是出卡的前提 —— 缺着认领 = 盲卡。
+    # 无论有无任务簿都在这里拦(SENTINEL_PINNED 路不建账本,这是它唯一的每股闸口)。
+    # 不认领、不写盘:BLOCK 是「别跑」,不是一次失败。
+    scan_dir = path.parent
+    if not _prompt_file_ok(scan_dir, code6):
+        return {"ok": True, "code": code6, "action": "BLOCKED",
+                "attempt": 0, "reason": "PROMPT_MISSING"}
+
+    def _intel_resume() -> bool:
+        # 续传是省钱件不是正确性件:判定失败一律不续传(失败闭合)。但**降级必须留痕** ——
+        # 项目铁律「降级不留痕才是真病」:裸 except Exception 会把 resumable() 里的真 bug
+        # (打错字/schema 变更)吞成"今天恰好没得续传",省不到钱还没人知道。故只吞 IO/解析类,
+        # 且吞之前先喊一声。
+        from autoresearch.scan.l4.intel_status import mark_resumed, resumable
+        try:
+            if not resumable(scan_dir, code6):
+                return False
+            mark_resumed(scan_dir, code6)   # 披露先于消费;幂等
+            return True
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            print(f"[l4_tasks] intel 续传判定失败({type(exc).__name__}: {exc})→ 本票照常盲搜",
+                  file=sys.stderr)
+            return False
+
+    # bookless(直接单独重跑单股 workflow / SENTINEL_PINNED):python 接管原壳命令里的
+    # `else echo LEGACY` 分支(壳零判断铁律)——行为与旧壳逐字节等价。
+    if not path.exists():
+        return {"ok": True, "code": code6, "action": "LEGACY",
+                "attempt": 0, "reason": "NO_TASK_BOOK", "intel_resume": _intel_resume()}
     stamp = _stamp(now)
     current = now or datetime.now(timezone.utc)
     if current.tzinfo is None:
@@ -345,6 +398,7 @@ def preflight(
             "action": "RUN",
             "attempt": task["attempt"],
             "reason": reason or "PENDING",
+            "intel_resume": _intel_resume(),
         }
 
 
@@ -634,7 +688,8 @@ def main(argv: list[str] | None = None) -> int:
             meta=plan.get("meta") or {},
             caps=caps,
         )
-        result["dispatch_batches"] = dispatch_batches(result["path"])["batches"]
+        if result.get("ok"):
+            result["dispatch_batches"] = dispatch_batches(result["path"])["batches"]
     elif args.cmd == "batches":
         result = dispatch_batches(_book_path(args.first, args.root), caps=caps)
     elif args.cmd == "stats":

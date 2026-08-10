@@ -38,6 +38,9 @@ def _files(tmp_path, code: str, ticker: str) -> None:
 
 
 def _book(tmp_path, code="000001"):
+    scan = tmp_path / DATE
+    scan.mkdir(parents=True, exist_ok=True)
+    (scan / f"_l4_prompt_{code}.md").write_text("# 任务包\n", encoding="utf-8")
     return initialize(DATE, [code], root=tmp_path, context_root=tmp_path / "context",
                       meta={code: {"ticker": f"{code}.SZ", "pinned": False}}, now=NOW)
 

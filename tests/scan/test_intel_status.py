@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 
 import pytest
 
@@ -13,7 +15,9 @@ from autoresearch.scan.l4.intel_status import (
     from_guard,
     is_transient,
     load_status,
+    mark_resumed,
     normalize_stale_scores,
+    resumable,
     runtime_cap,
     trimmed_note,
     write_normalization,
@@ -226,3 +230,51 @@ def test_workflow_retries_transient_intel_errors_and_records_status():
     src = Path(".claude/workflows/l4-stock.js").read_text(encoding="utf-8")
     for anchor in ("ENOTFOUND", "非瞬时错不重试", "intel_status", "--normalize"):
         assert anchor in src, anchor
+
+
+# ────────────────────── C3:同日断点续传(design 2026-08-10)──────────────────────
+
+def _resume_fixture(tmp_path, code="600000", acquisition="FULL",
+                    availability="INTEL", error=None, draft=True):
+    st = IntelStatus(code=code, acquisition=acquisition, guard="KEPT",
+                     availability_for_card=availability, attempts=1, error_class=error)
+    write_status(tmp_path, st)
+    if draft:
+        (tmp_path / f"_l4_intel_{code}.md").write_text("| 稿 |", encoding="utf-8")
+    return st
+
+
+def test_resumable_happy_path(tmp_path):
+    _resume_fixture(tmp_path)
+    assert resumable(tmp_path, "600000") is True
+
+
+def test_resumable_rejects_missing_draft(tmp_path):
+    _resume_fixture(tmp_path, draft=False)          # 只有 status 没有稿(如 .rejected.md 改名后)
+    assert resumable(tmp_path, "600000") is False
+
+
+def test_resumable_rejects_degraded_or_error(tmp_path):
+    _resume_fixture(tmp_path, acquisition="DEGRADED", availability="CARD_FALLBACK")
+    assert resumable(tmp_path, "600000") is False
+
+
+def test_resumable_rejects_stale_over_24h(tmp_path):
+    _resume_fixture(tmp_path)
+    old = time.time() - 25 * 3600                    # 「隔了几天重放同一历史扫描日」场景
+    for name in ("_l4_intel_600000.md", "_l4_intel_status_600000.json"):
+        os.utime(tmp_path / name, (old, old))
+    assert resumable(tmp_path, "600000") is False
+
+
+def test_mark_resumed_roundtrip_and_backward_compat(tmp_path):
+    _resume_fixture(tmp_path)
+    mark_resumed(tmp_path, "600000")
+    st = load_status(tmp_path, "600000")
+    assert st is not None and st.resumed is True
+    # 旧文件无 resumed 键 → 默认 False(load_status 不得因新字段挂掉)
+    raw = json.loads((tmp_path / "_l4_intel_status_600000.json").read_text())
+    raw.pop("resumed")
+    (tmp_path / "_l4_intel_status_600000.json").write_text(json.dumps(raw))
+    st2 = load_status(tmp_path, "600000")
+    assert st2 is not None and st2.resumed is False

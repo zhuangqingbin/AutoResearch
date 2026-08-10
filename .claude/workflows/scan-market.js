@@ -362,8 +362,7 @@ await bash(
   `( ${R} autoresearch.scan.agents.l4_card seats ${date} || true ) & ` +
   `( ${R} autoresearch.scan.calendar ${date} || true ) & ` +
   `( ${R} autoresearch.scan.agents.l4_card consensus ${date} || true ) & ` +
-  `wait; ` +
-  `${R} autoresearch.scan.agents.l4_card prompts ${date}`, 'l4-prep', 'L4-prep')
+  `wait`, 'l4-prep', 'L4-prep')
 const PLAN = { type: 'object', required: ['dispatch'],
   properties: { dispatch: { type: 'array', items: { type: 'string' } },
     meta: { type: 'object' } } }
@@ -378,7 +377,7 @@ if (!streamingL4) {
     properties: { ok: { type: 'boolean' }, reason: { type: 'string' },
       failures: { type: 'array', items: { type: 'object',
         properties: { ticker: { type: 'string' }, bytes: { type: 'integer' }, why: { type: 'string' } } } } } }
-  const g3 = await gate('GATE3', `${R} autoresearch.scan.agents.l4_card harvest-slim ${date}`, G3, 'L4-prep')
+  const g3 = await gate('GATE3', `${R} autoresearch.scan.agents.l4_card prompts ${date} && ${R} autoresearch.scan.agents.l4_card harvest-slim ${date}`, G3, 'L4-prep')
   if (!g3) throw new Error('GATE3 无返回')
   if (!g3.ok) {
     const bad = new Set((g3.failures || []).map((f) => String(f.ticker || '').slice(0, 6)))
@@ -393,9 +392,22 @@ if (!streamingL4) {
   const TASKS = { type: 'object', required: ['ok', 'path', 'dispatch_batches'],
     properties: { ok: { type: 'boolean' }, path: { type: 'string' },
       effective_cap: { type: 'integer' },
-      dispatch_batches: { type: 'array', items: { type: 'array', items: { type: 'string' } } } } }
-  const tasks = await gate('l4-tasks-init', `${R} autoresearch.scan.l4_tasks init ${date}`, TASKS, 'L4-prep')
-  if (!tasks || !tasks.ok) throw new Error('L4 task book 初始化失败')
+      dispatch_batches: { type: 'array', items: { type: 'array', items: { type: 'string' } } },
+      // I-2(2026-08-10 终审必修):C1a 拒绝路径(prompts 缺失)靠这两个键把 python 明确的
+      // 拒绝理由带到人眼前。不在 properties 声明过的键,结构化输出按 schema 归一时有被
+      // 丢掉的现实可能——一旦丢,下面 throw 读到的 tasks.reason 是 undefined,C1a 拦下
+      // 缺 prompt 的那一刻,人看到的会是"agent 无返回",而不是"缺哪票"。不放进 required:
+      // 成功路径(ok:true)不带这两个键。
+      reason: { type: 'string' },
+      missing_prompts: { type: 'array', items: { type: 'string' } } } }
+  const tasks = await gate('l4-tasks-init',
+    `${R} autoresearch.scan.agents.l4_card prompts ${date} && ${R} autoresearch.scan.l4_tasks init ${date}`,
+    TASKS, 'L4-prep')
+  if (!tasks || !tasks.ok) throw new Error(
+    `L4 task book 初始化失败:${tasks
+      ? (tasks.reason || 'ok:false 但未带 reason(检查 prompts 是否非 0 退出)')
+      : 'agent 无返回'}` +
+    `${tasks && tasks.missing_prompts ? ` missing=${tasks.missing_prompts.join('/')}` : ''}`)
   taskBook = tasks.path
   dispatchBatches = tasks.dispatch_batches || []
   log(`L4 流式任务簿 ✓ ${taskBook} · 批次宽度 ${tasks.effective_cap || '?'} · ${dispatchBatches.length} 批`)

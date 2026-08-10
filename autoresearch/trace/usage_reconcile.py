@@ -81,6 +81,12 @@ _EXPECT_PRESENT = ("l3_rank", "l4_card", "l4_intel", "strategist", "sector_brief
 # AGENT_DEFAULTS 的意图一致(B2);本模块不解析 workflow JS,直接内联同一对缺省值。
 _GP_SHELL_DEFAULT = {"model": "sonnet", "effort": "low"}
 
+# I-1(2026-08-10 终审):limit-killed transcript 经 usage_harvest 的 meta.json 兜底
+# (d4f91e0)后,`model`/`effort` 两个请求参数字段会是字面 `"—"`(harvest 从没等到任何
+# 带 usage 的消息行,连"发出的请求带什么参数"都没记下)。拿这两个 "—" 去跟期望比,
+# 判的不是"配置有没有生效",而是"这份 transcript 死没死"——本模块的职责边界不含后者。
+_UNMEASURED = (None, "", "—")
+
 _AGENTS_DIR = Path(".claude/agents")
 LEDGER_PATH = Path("context/learning/usage_reconcile.jsonl")
 
@@ -283,7 +289,7 @@ def _reconcile_core(echo: dict, rows: list[dict], *, date: str,
     这正是本模块验收(mutation testing)最常做的操作,值得有一个不用碰磁盘的入口。
 
     返回 `{date, ok, mismatches:[{agent,role,field,expected,actual}], wire_breaks:[role],
-    unknown_agent_types:[agentType], checked}`。
+    unknown_agent_types:[agentType], missing_resolved_roles:[role], checked, unmeasured}`。
 
     `census`(Wave12-T34)= 次级 role 的实际派发次数(`dispatch_census()` 的产物);
     给了它,同 agentType 的多 role 才分得开、mismatch 才带得上 `role` 字段。**不给**
@@ -305,6 +311,14 @@ def _reconcile_core(echo: dict, rows: list[dict], *, date: str,
       用 `len(rows)` 会把 `role == "main"`(主会话自身)的那一行也算进去,但比对循环一开
       头就跳过了它——"实测行 N 条"这句话此前会让人以为 N 行都真的参与了对账,其实最多
       N-1 行。
+    - `unmeasured`(I-1,2026-08-10 终审修复)计 `model`/`effort` **两个字段都**是
+      `_UNMEASURED`(空/`"—"`)的行数——limit-killed transcript 死得太早,连一次请求参数
+      都没记下,不参与 model/effort 判定(既不落进 `mismatches`,也不落进
+      `unknown_agent_types`),但仍计入 `seen_types`/`checked`(agent 确实跑过,只是没
+      留下参数)。**别静默丢**:这类行的存在本身是"这份对账不完整"的信号,单列计数,
+      不冲平也不隐藏。真实数据(2026-08-07,39 份 limit-killed transcript)显示:不排除
+      这条会把"配置没生效"误判成"死得太早"——判它们会凭空造出 47 条假 model/effort
+      mismatch(见 `final-review.md` I-1)。
     """
     # Wave12-T33:期望的事实源优先取 **resolved**(`_resolved_agent_config.json`)——
     # 它已经把 config 覆盖在 `_ROLE_FALLBACK` 之上解释完了,与 workflow 吃的是同一份。
@@ -323,12 +337,18 @@ def _reconcile_core(echo: dict, rows: list[dict], *, date: str,
     unknown_types: set[str] = set()
     by_type: dict[str, list[tuple[str, str]]] = {}
     checked = 0
+    unmeasured = 0
     for r in rows:
         if r.get("role") != "subagent":
             continue
         checked += 1
         atype = r.get("agent") or ""
         seen_types.add(atype)
+        if r.get("model") in _UNMEASURED and r.get("effort") in _UNMEASURED:
+            # limit-killed(I-1):两个请求参数字段都没记下 —— 判不了,不装判得了。
+            # 仍计入 seen_types(agent 确实跑过),不计入 mismatches/unknown_types。
+            unmeasured += 1
+            continue
         got = (_norm_model(r.get("model")), r.get("effort") or "(unset)")
         if atype in AGENTTYPE_ROLES:
             by_type.setdefault(atype, []).append(got)   # 同 agentType 攒齐再判(多 role 需要全局视野)
@@ -392,7 +412,8 @@ def _reconcile_core(echo: dict, rows: list[dict], *, date: str,
           and not missing_resolved_roles)
     return {"date": str(date), "ok": ok, "mismatches": mismatches, "wire_breaks": wire_breaks,
             "unknown_agent_types": unknown_agent_types,
-            "missing_resolved_roles": missing_resolved_roles, "checked": checked}
+            "missing_resolved_roles": missing_resolved_roles, "checked": checked,
+            "unmeasured": unmeasured}
 
 
 def reconcile(date: str, root: str | Path | None = None) -> dict:
@@ -438,7 +459,9 @@ def render(result: dict) -> str:
         f" · mismatch {len(result['mismatches'])} 条"
         f" · wire_break {len(result['wire_breaks'])} 个"
         f" · unknown_agent_type {len(result.get('unknown_agent_types') or [])} 个"
-        f" · resolved 缺 role {len(result.get('missing_resolved_roles') or [])} 个",
+        f" · resolved 缺 role {len(result.get('missing_resolved_roles') or [])} 个"
+        f" · unmeasured {result.get('unmeasured') or 0} 行"
+        "(limit-killed,判不了 model/effort,不计入 mismatch——见 I-1)",
         "",
     ]
     if result["wire_breaks"]:

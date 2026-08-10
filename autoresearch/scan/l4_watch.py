@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -50,6 +51,44 @@ class CursorCorrupt(RuntimeError):
 
 def cursor_path(scan_dir: Path | str) -> Path:
     return Path(scan_dir) / "outbox" / "l4_watch_cursor.json"
+
+
+def watch_lock_path(scan_dir: Path | str) -> Path:
+    return Path(scan_dir) / "outbox" / "l4_watch.lock"
+
+
+def acquire_watch_lock(scan_dir: Path | str) -> Path:
+    """同日只许一个活 watcher:双挂共用 cursor 会把同一事件播两遍(= 双倍主会话唤醒)。
+
+    锁 = `{"pid": ...}`;pid 已死(ProcessLookupError)→ 残骸,接管;pid 活着(含
+    PermissionError = 别人的活进程)→ SystemExit(2),要求先停旧的。
+    """
+    import contextlib
+    path = watch_lock_path(scan_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        pid = 0
+        with contextlib.suppress(Exception):
+            pid = int((json.loads(path.read_text(encoding="utf-8")) or {}).get("pid") or 0)
+        if pid > 0:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                pass                                  # 死锁残骸 → 接管
+            except PermissionError:
+                raise SystemExit(2) from None          # 别人的活进程,同样拒绝
+            else:
+                print(f"✗ 已有活 watcher(pid={pid})—— 拒绝双挂;先 TaskStop 旧 Monitor 再挂新的。",
+                      file=sys.stderr)
+                raise SystemExit(2)
+    path.write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
+    return path
+
+
+def release_watch_lock(path: Path) -> None:
+    import contextlib
+    with contextlib.suppress(FileNotFoundError):
+        Path(path).unlink()
 
 
 def event_id(code: str, status: str, card: dict | None = None) -> str:
@@ -294,35 +333,40 @@ def main(argv: list[str] | None = None) -> int:
                   file=sys.stderr)
             return 2
 
-    while True:
-        snap = snapshot(scan_dir)
-        for line in render_events(snap, seen, stale_min=args.stale_min):
-            print(line, flush=True)
-        fresh = [item.get("event_id", item["code"])
-                 for item in snap.get("terminal", [])
-                 if item.get("event_id", item["code"]) not in seen]
-        if fresh:
-            ack_events(scan_dir, fresh, consumer_id=args.consumer_id)
-            seen.update(fresh)
-        for line in _stale_lines(snap, args.stale_min, warned, time.time()):
-            print(line, flush=True)
-        if snap.get("done"):
-            n_fail = sum(1 for i in snap["terminal"] if i["status"] == "FAILED")
-            n_blocked = snap.get("n_blocked", 0)
-            bits = [b for b in (
-                f"失败 {n_fail}" if n_fail else "",
-                f"阻断 {n_blocked}" if n_blocked else "",
-            ) if b]
-            tail = f"({'/'.join(bits)})" if bits else ""
-            print(f"✅ L4 全部 {snap['total']} 票进终态{tail}", flush=True)
-            for line in pending_fold_lines(scan_dir):
+    lock = acquire_watch_lock(scan_dir) if args.watch else None
+    try:
+        while True:
+            snap = snapshot(scan_dir)
+            for line in render_events(snap, seen, stale_min=args.stale_min):
                 print(line, flush=True)
-            return 0
-        if not args.watch:
-            if not snap.get("ready"):
-                print("⏳ task_book 未就绪(L4-prep 尚未落盘)", flush=True)
-            return 0
-        time.sleep(args.interval)
+            fresh = [item.get("event_id", item["code"])
+                     for item in snap.get("terminal", [])
+                     if item.get("event_id", item["code"]) not in seen]
+            if fresh:
+                ack_events(scan_dir, fresh, consumer_id=args.consumer_id)
+                seen.update(fresh)
+            for line in _stale_lines(snap, args.stale_min, warned, time.time()):
+                print(line, flush=True)
+            if snap.get("done"):
+                n_fail = sum(1 for i in snap["terminal"] if i["status"] == "FAILED")
+                n_blocked = snap.get("n_blocked", 0)
+                bits = [b for b in (
+                    f"失败 {n_fail}" if n_fail else "",
+                    f"阻断 {n_blocked}" if n_blocked else "",
+                ) if b]
+                tail = f"({'/'.join(bits)})" if bits else ""
+                print(f"✅ L4 全部 {snap['total']} 票进终态{tail}", flush=True)
+                for line in pending_fold_lines(scan_dir):
+                    print(line, flush=True)
+                return 0
+            if not args.watch:
+                if not snap.get("ready"):
+                    print("⏳ task_book 未就绪(L4-prep 尚未落盘)", flush=True)
+                return 0
+            time.sleep(args.interval)
+    finally:
+        if lock is not None:
+            release_watch_lock(lock)
 
 
 if __name__ == "__main__":

@@ -63,6 +63,7 @@ class IntelStatus:
     attempts: int = 0
     error_class: str | None = None
     note: str = ""
+    resumed: bool = False   # C3:同日 crash-resume 消费过本稿(披露用,不改任何判定)
 
     def __post_init__(self) -> None:
         for value, allowed, label in (
@@ -355,6 +356,47 @@ def load_status(scan_dir: Path | str, code: str) -> IntelStatus | None:
     with contextlib.suppress(Exception):
         return IntelStatus(**json.loads(path.read_text(encoding="utf-8")))
     return None
+
+
+# ────────────────────── C3:同日断点续传(design 2026-08-10)──────────────────────
+RESUME_MAX_AGE_S = 24 * 3600   # 同 analysis_date 且 ≤24h;跨日/重放历史日 → 必须重盲搜
+
+
+def _draft_path(scan_dir: Path | str, code: str) -> Path:
+    code6 = str(code).split(".")[0].zfill(6)
+    return Path(scan_dir) / f"_l4_intel_{code6}.md"
+
+
+def resumable(scan_dir: Path | str, code: str, *, now: float | None = None) -> bool:
+    """同日 crash-resume 判定:稿在 + status 说这稿可用 + 两者都不陈旧。
+
+    与 R5(跨日卡 TTL 复用退役)的边界:这里只认「本 analysis_date 目录里、24h 内、
+    guard 未拒」的稿 —— 语义与任务簿对卡的 VERIFIED_SUCCESS 跳过同族(crash-resume),
+    不是跨日新鲜度妥协。条件不满足一律 False(重盲搜),失败闭合。
+    """
+    st = load_status(scan_dir, code)
+    if st is None or st.acquisition != "FULL":
+        return False
+    if st.availability_for_card != "INTEL" or st.error_class:
+        return False
+    draft = _draft_path(scan_dir, code)
+    if not draft.is_file() or draft.stat().st_size == 0:
+        return False
+    import time as _time
+    ref = _time.time() if now is None else now
+    for p in (draft, status_path(scan_dir, code)):
+        if ref - p.stat().st_mtime > RESUME_MAX_AGE_S:
+            return False
+    return True
+
+
+def mark_resumed(scan_dir: Path | str, code: str) -> None:
+    """把「这稿被续传消费过」落进 status(报告/T1 可见,不伪装成新鲜盲搜)。"""
+    st = load_status(scan_dir, code)
+    if st is None:
+        return
+    st.resumed = True
+    write_status(scan_dir, st)
 
 
 def main(argv: list[str] | None = None) -> int:
