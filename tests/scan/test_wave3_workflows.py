@@ -23,7 +23,9 @@ def test_scan_workflow_has_streaming_and_byte_compatible_legacy_branches():
 
 def test_l4_stock_preflights_then_runs_slim_and_intel_in_parallel():
     src = (WF / "l4-stock.js").read_text(encoding="utf-8")
-    preflight_at = src.index("`preflight ${code} ${date}`")
+    # C1b(2026-08-10):preflight 从 taskGate(壳内 if-else)换 gpJson 直调 python CLI ——
+    # 子命令不再是裸 `preflight ${code} ${date}`,而是完整命令行的一段。
+    preflight_at = src.index("l4_tasks preflight ${code} ${date}")
     card_at = src.index("phase('Card')")
     success_at = src.index("`success ${code} ${date}`")
 
