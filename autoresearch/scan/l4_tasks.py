@@ -281,6 +281,18 @@ def preflight(
     """为一票领取一次执行权；SUCCEEDED 只在三件产物指纹仍匹配时可复用。"""
     path = Path(book)
     code6 = str(code).split(".")[0].zfill(6)
+    # C1b(design 2026-08-10):prompt 任务包是出卡的前提 —— 缺着认领 = 盲卡。
+    # 无论有无任务簿都在这里拦(SENTINEL_PINNED 路不建账本,这是它唯一的每股闸口)。
+    # 不认领、不写盘:BLOCK 是「别跑」,不是一次失败。
+    scan_dir = path.parent
+    if not _prompt_file_ok(scan_dir, code6):
+        return {"ok": True, "code": code6, "action": "BLOCKED",
+                "attempt": 0, "reason": "PROMPT_MISSING"}
+    # bookless(直接单独重跑单股 workflow / SENTINEL_PINNED):python 接管原壳命令里的
+    # `else echo LEGACY` 分支(壳零判断铁律)——行为与旧壳逐字节等价。
+    if not path.exists():
+        return {"ok": True, "code": code6, "action": "LEGACY",
+                "attempt": 0, "reason": "NO_TASK_BOOK"}
     stamp = _stamp(now)
     current = now or datetime.now(timezone.utc)
     if current.tzinfo is None:
