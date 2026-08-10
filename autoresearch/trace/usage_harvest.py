@@ -51,6 +51,22 @@ def _iter_rows(path: Path):
 _W_READ, _W_WRITE_5M, _W_WRITE_1H = 0.1, 1.25, 2.0
 
 
+def _meta_agent(path: Path) -> str | None:
+    """transcript 旁的 `agent-X.meta.json`(harness 派发时落)→ agentType。
+
+    limit-killed 的稿 jsonl 里连一行带 attributionAgent 的记录都没有(2026-08-09
+    实测 39 份),但 meta.json 是派发时写的、必在 —— 账目身份不该跟着 API 死亡一起丢。
+    """
+    meta = path.with_name(path.name.replace(".jsonl", ".meta.json"))
+    if not meta.is_file():
+        return None
+    import contextlib
+    import json as _json
+    with contextlib.suppress(Exception):
+        return (_json.loads(meta.read_text(encoding="utf-8")) or {}).get("agentType") or None
+    return None
+
+
 def usage_of(path: Path, role: str = "subagent") -> dict:
     """单份 transcript → 去重后的 usage 合计 + agent 身份。
 
@@ -109,7 +125,8 @@ def usage_of(path: Path, role: str = "subagent") -> dict:
     discarded = status == "FAILED"
     retry_count = failure_count if terminal_after_failure else max(failure_count - 1, 0)
     tot["role"] = role
-    tot["agent"] = "(主会话)" if role == "main" else (agent or "(未标注)")
+    tot["agent"] = ("(主会话)" if role == "main"
+                    else (agent or _meta_agent(path) or "(未标注)"))
     tot["effort"] = effort or "—"
     tot["model"] = model or "—"
     tot["speed"] = speed

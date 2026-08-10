@@ -343,3 +343,27 @@ def test_render_full_session_reports_usd_and_no_main_coverage_gap(tmp_path):
     assert "估算成本" in md
     assert "主会话" in md
     assert "主会话自身的消耗不在内" not in md
+
+
+# ── Task 5 / C4-1:killed-early transcript 的 role 兜底 ──────────────────────
+
+
+def test_usage_of_falls_back_to_meta_json_agent_type(tmp_path):
+    """limit-killed 稿:jsonl 无任何 attributionAgent 行 → 从旁 sibling meta.json 取 agentType。"""
+    import json as _json
+
+    from autoresearch.trace.usage_harvest import usage_of
+    p = tmp_path / "agent-abc123.jsonl"
+    p.write_text("", encoding="utf-8")                       # 被杀在首次 API 响应前:空稿
+    (tmp_path / "agent-abc123.meta.json").write_text(
+        _json.dumps({"agentType": "l4-card", "spawnDepth": 1, "model": "opus"}),
+        encoding="utf-8")
+    row = usage_of(p)
+    assert row["agent"] == "l4-card"
+
+
+def test_usage_of_unlabeled_when_no_meta(tmp_path):
+    from autoresearch.trace.usage_harvest import usage_of
+    p = tmp_path / "agent-nometa.jsonl"
+    p.write_text("", encoding="utf-8")
+    assert usage_of(p)["agent"] == "(未标注)"                 # 兜底的兜底不变
