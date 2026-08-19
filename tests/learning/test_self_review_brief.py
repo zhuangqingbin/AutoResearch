@@ -1,12 +1,16 @@
-"""brief 一致性 lint 回归(Wave12 T27 / 批C C3)。
+"""brief 一致性 lint 回归(Wave12 T27 / 批C C3;E4 补第⑥条)。
 
-五条(任务书 Step 1;severity 按 B-2 二分,见 `self_review.BRIEF_LINT_SEVERITY`):
+六条(任务书 Step 1;severity 按 B-2 二分,见 `self_review.BRIEF_LINT_SEVERITY`):
   ① brief 缺失 = **warn**(B-2 降级)
   ② >3,000B = **warn**(B-2 降级)
   ③ brief 数字与 `sources` 边表逐项对账 —— **篡改一个评级/基准读数必红**(变异验收)= fail
   ④ brief 与 summary 的 BUY 数 / code / basis / 基准读数不一致 = fail
   ⑤ **仅 active 模式**:成功 run BUY_n<1 = fail;BLOCKED run 不得渲染成成功。
      影子期(mode=shadow)该检查**跳过并注明**——mode 从 `_relative_buy_decision.json` 读。
+  ⑥ ③ 段相对 BUY 与决策文件同源(E4,2026-08-18 设计稿 §3)—— 08-17 事故:brief 读到了
+     `_relative_buy_decision.json` 早 25 秒的半成品,把本该 rank1 的 BUY 印成了 BLOCKED,
+     两层报告一起错、lint 一起绿。顺序(决策文件 mtime ≤ brief.md)∧ 同源(brief ③ 段渲染
+     出的六位代码集合 == `buys[].code` 集合,含空对空)任一违反 = fail。
 
 零网络;所有产物写 tmp_path(`conftest._forbid_production_report_writes` 护栏下必须通过)。
 """
@@ -14,6 +18,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -281,6 +286,76 @@ def test_shadow_zero_buy_is_not_fail(tmp_path):
     assert not _fails(rows), f"影子期不该因 0 BUY 变红:{_fails(rows)}"
 
 
+# ───────── ⑥ ③ 段相对 BUY 与决策文件同源(E4,08-17 事故:brief 读到半成品决策) ─────────
+
+_E6_CHECK = "brief③相对BUY与决策文件不同源"
+
+
+def test_relative_buy_code_mismatch_is_fail(tmp_path):
+    """同源断言:brief ③ 印 600188,决策文件 `buys[0].code` 却是 000001 → fail。"""
+    decision = _decision(mode="shadow", blocked=False, buys=1)
+    decision["candidates"][0]["code"] = "000001"
+    decision["buys"][0]["code"] = "000001"
+    scan = _scan(tmp_path, decision=decision)
+    report = _publish(tmp_path, scan)
+    path = report / brief.BRIEF_FILENAME
+    text = path.read_text(encoding="utf-8")
+    assert "000001" in text, "锚点没先出现,后面的篡改是空操作"
+    path.write_text(text.replace("000001", "600188"), encoding="utf-8")
+    rows = self_review.brief_lint(report, scan)
+    hit = [r for r in rows if r["check"] == _E6_CHECK]
+    assert hit, f"两边代码不同源(600188 vs 000001)没有报警:{rows}"
+    assert hit[0]["severity"] == "fail"
+    assert "600188" in hit[0]["detail"] and "000001" in hit[0]["detail"]
+
+
+def test_relative_buy_code_match_is_not_flagged(published):
+    """同源断言:两边都是同一个六位代码(干净盘)→ 不生成该 check。"""
+    rows = self_review.brief_lint(*published)
+    assert _E6_CHECK not in _checks(rows)
+
+
+def test_relative_buy_blocked_empty_vs_empty_is_not_flagged(tmp_path):
+    """空对空:决策 blocked=true/buys=[] ∧ brief 印 BLOCKED(无六位代码)—— 两边都是空集,
+    不该被判「不同源」。"""
+    scan = _scan(tmp_path, decision=_decision(mode="shadow", blocked=True))
+    report = _publish(tmp_path, scan)
+    rows = self_review.brief_lint(report, scan)
+    assert _E6_CHECK not in _checks(rows)
+
+
+def test_relative_buy_decision_has_buy_but_brief_prints_blocked_is_fail(published):
+    """08-17 事故的真实形状:决策文件 buys[0] 是真 BUY(600018),但 brief ③ 段被
+    (半成品/篡改)渲染成了 BLOCKED,没印出任何六位代码 → fail。"""
+    report, scan = published
+    path = report / brief.BRIEF_FILENAME
+    text = path.read_text(encoding="utf-8")
+    old = ("上港集团 600018 · basis=relative · 合格内 #1/1(候选 1) · 卡面 Hold")
+    new = "**BLOCKED**(全部候选被硬资格否决:hard_gate.no_redflag×1;候选 1 / 合格 0)"
+    assert old in text, "锚点没先出现,后面的篡改是空操作"
+    path.write_text(text.replace(old, new), encoding="utf-8")
+    rows = self_review.brief_lint(report, scan)
+    hit = [r for r in rows if r["check"] == _E6_CHECK]
+    assert hit, f"决策文件有真 BUY 但 brief 印成 BLOCKED 没有报警:{rows}"
+    assert hit[0]["severity"] == "fail"
+    assert "600018" in hit[0]["detail"]
+
+
+def test_decision_file_newer_than_brief_is_fail(published):
+    """顺序断言:决策文件比 brief 新 = brief 渲染时读到的必是旧版本(08-17 事故的时序病,
+    本用例反向构造同一形状)。构造:发布完之后把决策文件的 mtime 调到 brief 之后。"""
+    report, scan = published
+    brief_path = report / brief.BRIEF_FILENAME
+    decision_path = scan / brief.DECISION_FILENAME
+    newer = brief_path.stat().st_mtime + 5
+    os.utime(decision_path, (newer, newer))
+    rows = self_review.brief_lint(report, scan)
+    hit = [r for r in rows if r["check"] == _E6_CHECK]
+    assert hit, f"决策文件 mtime 晚于 brief 没有报警:{rows}"
+    assert hit[0]["severity"] == "fail"
+    assert "mtime" in hit[0]["detail"]
+
+
 # ───────────────────────────── 容错 ─────────────────────────────
 
 def test_lint_is_wired_into_publisher(tmp_path, capsys):
@@ -412,15 +487,15 @@ def test_active_buy_contract_is_fail_and_gate4_blocks(tmp_path):
     assert not gate["ok"], gate
 
 
-def test_severity_table_covers_exactly_the_eight_criteria():
-    """裁定表 = 单一事实源。八条判据一条不多一条不少,且四硬四软。"""
+def test_severity_table_covers_exactly_the_nine_criteria():
+    """裁定表 = 单一事实源。九条判据一条不多一条不少,五硬四软(E4 新增第九条同属 fail)。"""
     table = self_review.BRIEF_LINT_SEVERITY
     assert set(table) == {"brief·缺失", "brief·超预算", "brief·边表缺失", "brief·边表过期",
                           "brief·数字对账", "brief↔summary不一致", "brief·白名单外取数",
-                          "brief·BUY契约(active 期)"}
+                          "brief·BUY契约(active 期)", "brief③相对BUY与决策文件不同源"}
     assert sorted(k for k, v in table.items() if v == "fail") == sorted(
         ["brief·数字对账", "brief↔summary不一致", "brief·白名单外取数",
-         "brief·BUY契约(active 期)"])
+         "brief·BUY契约(active 期)", "brief③相对BUY与决策文件不同源"])
     assert sorted(k for k, v in table.items() if v == "warn") == sorted(
         ["brief·缺失", "brief·超预算", "brief·边表缺失", "brief·边表过期"])
 

@@ -1164,6 +1164,7 @@ BRIEF_LINT_SEVERITY = {
     "brief↔summary不一致": "fail",
     "brief·白名单外取数": "fail",
     "brief·BUY契约(active 期)": "fail",
+    "brief③相对BUY与决策文件不同源": "fail",
     # ── warn:报告畸形/缺失 ──
     "brief·缺失": "warn",
     "brief·超预算": "warn",
@@ -1190,11 +1191,18 @@ def brief_lint(report_dir, scan_dir=None) -> list[dict]:
     该检查跳过,但**出一条 info 留痕**——静默跳过会让「这道门什么时候开始管事」不可查
     (recalibrate 空转 2 周的同族教训)。
 
+    ⑥ **③ 段相对 BUY 与决策文件同源**(E4):`_relative_buy_decision.json` 的 mtime 必须
+    ≤ `brief.md`(顺序)∧ brief ③ 段渲染出的六位代码集合必须等于 `buys[].code` 集合
+    (同源,含空对空)——08-17 事故:brief 读到了决策文件早 25 秒的半成品,把本该 rank1
+    的 BUY 印成了 BLOCKED,两层报告一起错、lint 一起绿。decision 缺失时跳过(缺席由
+    ⑤ 的 mode=ABSENT 留痕负责)。
+
     **severity 不在调用点各写各的**:一律由 `BRIEF_LINT_SEVERITY` 查表(B-2 裁定的单一
     事实源;只有影子期那条 info 留痕显式传 `severity`)。GATE4 拦不拦这条,读那张表即知。
     """
     import contextlib
     import json
+    import re
     from pathlib import Path
 
     out: list[dict] = []
@@ -1299,6 +1307,37 @@ def brief_lint(report_dir, scan_dir=None) -> list[dict]:
         elif n_buys < 1:
             add("brief·BUY契约(active 期)",
                 f"成功 run 的 BUY_n={n_buys}<1 —— active 期每个成功交易日至少一只(E6 裁定)")
+
+    # ⑥ ③ 段相对 BUY 与决策文件同源(E4,2026-08-18 设计稿 §3)—— 08-17 事故:brief 读到了
+    # `_relative_buy_decision.json` 早 25 秒的半成品,把本该 rank1 的 BUY 印成了「BLOCKED·
+    # 合格 0」,两层报告一起错、lint 一起绿。两条断言,任一违反都算「报告在说假话」= fail:
+    #   顺序 —— 决策文件必须先落盘(mtime ≤ brief.md);反之说明 brief 渲染时读到的是旧版本;
+    #   同源 —— brief ③ 段渲染出的六位代码集合必须等于决策文件 `buys[].code` 集合
+    #            (含空对空:decision 无 buys/blocked 时,brief 也不得印出任何六位代码)。
+    # decision 缺失时整条跳过 —— 缺席已由 ⑤ 的 mode=ABSENT 留痕负责,这里只管「两边都在但
+    # 对不上」。check 名刻意不带 `产物形状·`/`usage_reconcile·` 前缀 —— 那两个在
+    # `common.failclass.EXEMPT_PREFIXES` 里被判 hygiene/metering,会被豁免出 data 类;
+    # 说假话就是数据不可信,必须落 data 类、连坐当日决策(`fail_class` 未登记前缀一律 data,
+    # fail-safe 默认)。
+    if isinstance(decision, dict):
+        decision_path = scan / _brief.DECISION_FILENAME
+        with contextlib.suppress(OSError):
+            if decision_path.stat().st_mtime > path.stat().st_mtime:
+                add("brief③相对BUY与决策文件不同源",
+                    f"{_brief.DECISION_FILENAME} 的 mtime 晚于 {_brief.BRIEF_FILENAME}"
+                    " —— 决策文件比 brief 新,brief 渲染时读到的必是旧版本决策"
+                    "(08-17 事故同形:brief 读到了早 25 秒的半成品)")
+
+        decision_codes = {str(row.get("code")) for row in (decision.get("buys") or [])
+                          if isinstance(row, dict) and row.get("code")}
+        buy_line = next((ln for ln in text.splitlines()
+                         if "relative BUY" in ln and ("🕶" in ln or "✅" in ln)), None)
+        brief_codes = set(re.findall(r"\b\d{6}\b", buy_line)) if buy_line else set()
+        if brief_codes != decision_codes:
+            add("brief③相对BUY与决策文件不同源",
+                f"brief ③ 段渲染代码 {sorted(brief_codes) or ['无']} != 决策文件 "
+                f"buys[].code {sorted(decision_codes) or ['无']}"
+                " —— 相对 BUY 必须两边同源(含空对空);08-17 事故同形")
     return out
 
 

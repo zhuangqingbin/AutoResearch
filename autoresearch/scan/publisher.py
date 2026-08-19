@@ -380,7 +380,7 @@ def _run_publish(analysis_date: str, scan_dir: Path | None = None,
     #
     # ⚠️ **这条追加会喂进 GATE4**(`gates.gate4` = gate_fires 里有任意 `severity=="fail"`
     # 就不过),所以 severity 的选择就是「要不要毙掉这一整趟约 60 分钟的扫描」。B-2
-    # (2026-08-09 控制方裁定)据此把八条判据二分,单一事实源在
+    # (2026-08-09 控制方裁定)据此把九条判据二分(E4 08-18 补第九条同属 fail),单一事实源在
     # `self_review.BRIEF_LINT_SEVERITY`:报告**说假话**才 fail(硬门该拦),报告**畸形或
     # 缺失**只 warn(排版超限/没落盘是展示层问题,不该毁掉一次已跑完的扫描)。这也才与
     # 上面「失败不阻断发布」和 `brief.safe_publish` 刻意吞异常的口径自洽 —— 否则一边为了
