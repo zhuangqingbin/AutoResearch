@@ -33,6 +33,16 @@ REJECTED,进程退出码都是 0,本票照常出卡。自报缺失只 warn 不�
 `_l4_intel_<code>.pretrim`(**不带 `.md`**,故意让它对全仓所有 `_l4_intel_*.md`/
 `*.md` 裸 glob 不可见,不会被当成第二份独立情报稿重复计数/审计),两条 lint 改为
 存在留档时优先读留档。
+
+**D13/A9(2026-08-19,用户裁决:intel 可信度硬化)**:情报编造已复发 3 次——
+07-14 涨停捏造(P0 事故,据此打了 +2 净分)、07-16 日期焊接(原子数字全真但组合为假)、
+08-13 五条断言三条编造——此前每次都靠事后人工发现。`lint_claims` 补一道**确定性、
+零 LLM** 的对账:他票涨停/连板断言缺原文 URL,或带 URL 但与湖收盘数据不符,行尾标
+`〔未核·…〕`。串接在 `guard_intel` 的 KEPT/TRIMMED 落盘路径上(REJECTED 稿件已
+整体不可信、ABSENT 无稿可标,两者都不需要再标);标注前若改动了正文,覆写前把原文
+存 `_l4_intel_<code>.orig` 侧车(同 `.pretrim` 惯例,不带 `.md`,对 glob 不可见)。
+红线不变:**只标注、不拒稿**——机检抓到的是"未核",不是"假",举证责任从"读者
+肉眼核对"挪到"机器标注",不越权替代下游判断。
 """
 from __future__ import annotations
 
@@ -41,7 +51,10 @@ import json
 import re
 from pathlib import Path
 
+import pandas as pd
+
 from autoresearch.common import workspace as ws
+from autoresearch.dataflows.symbol_utils import to_ts_code
 
 HARD_CAP_DEFAULT = 30
 _CLAIM_RE = re.compile(r"网查\s*(\d+)\s*条")
@@ -94,6 +107,121 @@ def trim_by_recency(text: str, *, keep: int = 10) -> tuple[str, int]:
     return "\n".join(out) + ("\n" if text.endswith("\n") else ""), len(drop)
 
 
+# ── D13/A9:他票涨停/连板断言确定性对账(用户裁决,2026-08-19)───────────────────
+#
+# 他票走势编不出来会被本票 slim 拆穿(price_claim_mismatch 已挡本票),但"XX票今天
+# 涨停"这种关于**他票**的描述性断言,agent 自己是唯一的事实来源——这正是三次情报
+# 编造复发共同的可乘之隙。lint_claims 用湖里已结算的 daily 收盘数据把这道口子钉上。
+
+_CLAIM_WORDS = ("涨停", "连板")
+# 不用 `\b`:Python 3 的 `\w`(进而 `\b`)按 Unicode 语义把中文视为"词字符",代码紧贴中文
+# 时(常见写法,如「隆基绿能601012今日涨停」无分隔符)`\b\d{6}\b` 会**匹配不到**(已实测
+# 验证)。改用数字邻接负向环视:只要求"恰好 6 位、前后都不是数字",与中文/括号/空格/
+# 标点相邻都算数,同时仍拒绝匹配更长数字串(日期/金额)中间的 6 位子串。
+_CODE_RE = re.compile(r"(?<!\d)\d{6}(?!\d)")
+_MISMATCH_PCT_FLOOR = 9.0    # 真涨停(含 ST 5%/主板 10%/创业板科创板 20%)必然 ≥ 此值
+_TAG_NO_URL = "〔未核·缺URL〕"
+_TAG_MISMATCH = "〔未核·与湖不符〕"
+
+
+def _lake_pct_chg(code: str, trade_date: str) -> float | None:
+    """`lint_claims` 缺省的湖查询:`lake/daily/<trade_date>.parquet` 取 `ts_code`/`pct_chg`。
+
+    缺分区/缺列/缺该票 → `None`(无从对账,不当"不符"用——弱证据不当强证据,
+    与 `guard_intel` 对「缺自报」的一贯立场同一原则)。
+    """
+    path = ws.lake_root() / "daily" / f"{trade_date}.parquet"
+    if not path.exists():
+        return None
+    try:
+        df = pd.read_parquet(path, columns=["ts_code", "pct_chg"])
+    except Exception:  # noqa: BLE001 — 坏分区/缺列 = 无从对账,不是"不符"
+        return None
+    hit = df.loc[df["ts_code"] == to_ts_code(code), "pct_chg"]
+    if hit.empty or pd.isna(hit.iloc[0]):
+        return None
+    return float(hit.iloc[0])
+
+
+def lint_claims(text: str, *, self_code: str, trade_date: str,
+                pct_lookup=None) -> tuple[str, dict]:
+    """他票涨停/连板断言确定性对账 —— 只标注、不拒稿(红线:不 raise,不改变退出码)。
+
+    逐行扫描:含「涨停」或「连板」**且**行内出现 ≠ `self_code` 的六位代码(判定为
+    在断言"他票")才处理——**本票**的行情断言不归本函数管(`l4-intel.md` 另有硬要求
+    本票不自报行情数字,那是 `price_claim_mismatch` 的地盘)。
+
+    - 行内没有 `http://`/`https://` → 行尾追加 `〔未核·缺URL〕`,`no_url` 计数 +1。
+    - 有 URL 但湖里该他票当日 `pct_chg < 9`(不是真涨停)→ 行尾追加
+      `〔未核·与湖不符〕`,`mismatch` 计数 +1。一行提到多个他票代码时,任一对不上
+      即标(聚合断言里有一个查不实,整行举证就不成立)。
+    - 有 URL 但湖查不到(缺分区/缺该票,`pct_lookup` 返回 `None`)→ 无从对账,
+      不标——弱证据不当强证据。
+    - 有 URL 且湖数据吻合(`pct_chg >= 9`)→ 原样保留,不标。
+
+    `pct_lookup(code, trade_date) -> float | None` 可注入(测试用,绕开真实湖 I/O);
+    缺省用 `_lake_pct_chg` 读 `lake/daily/<trade_date>.parquet`。
+
+    **幂等**:`l4-stock.js` 会对同一份稿跑两趟 `guard_intel`(先直调 `intel_guard`
+    CLI,`intel_status --normalize` 内部又调一次)——已带标记的行原样透传、不再重标,
+    否则第二趟会在行尾再叠一层〔未核〕,且 `_apply_claims_lint` 会把"已标一次"的
+    文本误当新原文存进 `.orig`,真原文永久丢失。
+
+    返回 `(标注后的全文, {"no_url": 缺URL行数, "mismatch": 与湖不符行数})`(计数按
+    **当前**文本里的标记行数算,不是本次新增行数——重跑幂等场景下两者才会不同)。
+    """
+    lookup = pct_lookup or _lake_pct_chg
+    self6 = str(self_code).strip().zfill(6)
+    no_url = mismatch = 0
+    out: list[str] = []
+    for line in text.splitlines():
+        if line.endswith(_TAG_NO_URL):        # 幂等:已标过,原样透传,不再重标/重数
+            out.append(line)
+            no_url += 1
+            continue
+        if line.endswith(_TAG_MISMATCH):
+            out.append(line)
+            mismatch += 1
+            continue
+        if not any(w in line for w in _CLAIM_WORDS):
+            out.append(line)
+            continue
+        others = [c for c in _CODE_RE.findall(line) if c != self6]
+        if not others:                    # 没提他票(或只提了本票)→ 不归本函数管
+            out.append(line)
+            continue
+        if "http://" not in line and "https://" not in line:
+            out.append(line + _TAG_NO_URL)
+            no_url += 1
+            continue
+        pcts = [lookup(c, trade_date) for c in others]
+        if any(p is not None and p < _MISMATCH_PCT_FLOOR for p in pcts):
+            out.append(line + _TAG_MISMATCH)
+            mismatch += 1
+        else:
+            out.append(line)              # 湖吻合,或查不到(无从对账)→ 不标
+    new_text = "\n".join(out) + ("\n" if text.endswith("\n") else "")
+    return new_text, {"no_url": no_url, "mismatch": mismatch}
+
+
+def _apply_claims_lint(src: Path, text: str, *, self_code: str, trade_date: str) -> dict:
+    """对 `src` 当前落盘内容跑 `lint_claims`;真发生标注时,覆写前把原文存 `.orig` 侧车。
+
+    与 `guard_intel` TRIMMED 分支的 `pretrim` 同一惯例(见上方模块 docstring D13/A9
+    段):侧车文件名刻意不以 `.md` 结尾(`_l4_intel_<code>.orig`),对全仓
+    `glob("_l4_intel_*.md")`/`glob("*.md")` 天然不可见,不会被误当成第二份独立情报稿
+    重复计数/审计。未标注(标注前后文本逐字节相同)时不写侧车、不覆写 —— 没有变化
+    就没有审计价值(同 `guard_intel` 对 `cut==0` 时不留 `.pretrim` 的立场)。
+    """
+    linted, meta = lint_claims(text, self_code=self_code, trade_date=trade_date)
+    if linted == text:
+        return {**meta, "orig_as": None}
+    orig = src.with_name(f"_l4_intel_{self_code}.orig")
+    orig.write_text(text, encoding="utf-8")
+    src.write_text(linted, encoding="utf-8")
+    return {**meta, "orig_as": orig.name}
+
+
 def guard_intel(scan_dir: Path | str, code: str, *,
                 hard_cap: int = HARD_CAP_DEFAULT) -> dict:
     """检查一份 intel 稿;超硬顶则按时效裁剪,裁无可裁才整拒。返回可直接 JSON 序列化的裁决。
@@ -103,8 +231,14 @@ def guard_intel(scan_dir: Path | str, code: str, *,
     `dropped_rows>0` 时裁前原文留档于 `pretrim_as` 指名的 `<code>.pretrim`,
     供 intel 质量 lint 审计全稿用)/
     `REJECTED`(超顶且事件段一行都解析不出,结构不可信,裁无可裁,照旧整稿拒)。
+
+    KEPT/TRIMMED 的返回额外带 `claims_lint`(D13/A9,见模块 docstring):
+    `lint_claims` 的 `{no_url, mismatch}` 计数 + 真发生标注时的 `.orig` 侧车名
+    (`orig_as`,未标注则 `None`)。REJECTED(稿件已整体不可信)与 ABSENT(无稿)
+    不再需要标注,没有此字段。
     """
     src = intel_path(scan_dir, code)
+    trade_date = Path(scan_dir).name.replace("-", "")   # 'YYYY-MM-DD' → 'YYYYMMDD'
     if not src.exists():
         return {"ok": True, "code": code, "action": "ABSENT", "claimed": None}
     try:
@@ -116,8 +250,9 @@ def guard_intel(scan_dir: Path | str, code: str, *,
     claimed = claimed_queries(text)
     if claimed is None:
         # 缺自报 = 无法对账,照旧只 warn。以"缺"推断"违规"是把弱证据当强证据。
+        claims_lint = _apply_claims_lint(src, text, self_code=code, trade_date=trade_date)
         return {"ok": True, "code": code, "action": "KEPT", "claimed": None,
-                "warn": "unreported"}
+                "warn": "unreported", "claims_lint": claims_lint}
     if claimed > hard_cap:
         trimmed, cut = trim_by_recency(text)
         if not _event_rows(text):
@@ -154,15 +289,20 @@ def guard_intel(scan_dir: Path | str, code: str, *,
             pretrim_as = archive.name
         stamp = (f"〔已裁剪·自报 {claimed} 超硬顶 {hard_cap}·"
                  f"按时效窗保留 T0/24h/催化挂,砍 {cut} 行〕\n")
-        src.write_text(stamp + trimmed, encoding="utf-8")
+        final_text = stamp + trimmed
+        src.write_text(final_text, encoding="utf-8")
+        # D13/A9:对裁剪后**最终**落盘的正文跑他票断言对账(不是裁前原文——已被砍掉
+        # 的行不再是稿件的一部分,没有再标注的意义)。
+        claims_lint = _apply_claims_lint(src, final_text, self_code=code, trade_date=trade_date)
         return {"ok": True, "code": code, "action": "TRIMMED",
                 "claimed": claimed, "hard_cap": hard_cap, "dropped_rows": cut,
-                "pretrim_as": pretrim_as,
+                "pretrim_as": pretrim_as, "claims_lint": claims_lint,
                 "note": "T0/24h 增量保留;card 照常读 intel;"
                         + (f"裁前原文留档 {pretrim_as}(lint 审计用)" if pretrim_as
                            else "未真丢行,无需留档")}
+    claims_lint = _apply_claims_lint(src, text, self_code=code, trade_date=trade_date)
     return {"ok": True, "code": code, "action": "KEPT", "claimed": claimed,
-            "hard_cap": hard_cap}
+            "hard_cap": hard_cap, "claims_lint": claims_lint}
 
 
 def main(argv: list[str] | None = None) -> int:
