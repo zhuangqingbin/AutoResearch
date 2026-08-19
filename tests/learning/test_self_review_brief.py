@@ -369,10 +369,23 @@ def test_decision_file_newer_than_brief_with_matching_content_is_not_flagged(pub
 
 # ───────────────────────────── 容错 ─────────────────────────────
 
-def test_lint_is_wired_into_publisher(tmp_path, capsys):
+def test_lint_is_wired_into_publisher(tmp_path, capsys, monkeypatch):
     """接线真身断言(FN-1:生产者没接线 = 死码)。走 `assemble.run`,lint 结果必须
-    进 `gate_fires.csv`(与 R3 门审计同一本账)并打给 CP7。"""
+    进 `gate_fires.csv`(与 R3 门审计同一本账)并打给 CP7。
+
+    2026-08-19(task-2.5b,E6 转正后实测发现):`assemble.run` 内部经
+    `post_run.publish_run_observation`(writer-1 语义)用**生产** `scan_config.jsonc`
+    的 `relative_buy` 现算并覆盖这份合成夹具预置的决策文件;`brief.build()` 在覆盖
+    **之后**才跑。这份夹具没配 L4 派发护照,active 期现算恒得
+    `blocked=true/no_candidates`,brief.md 因此天然渲染成同一个 BLOCKED——两边一致,
+    ⑤/⑥两条 lint 检查零发现(不是没接线,是这一天真的没什么可报)。本测试要锁的是
+    接线本身,不是某个 mode 下的具体判据结果,故显式钉死 shadow(⑤ 的 info 留痕在
+    shadow 期恒无条件触发),与生产 `relative_buy.mode` 当前是 shadow 还是 active 解耦
+    (同一手法见 `test_configured_relative_buy_defaults_to_shadow_without_config`)。"""
     from autoresearch.scan import assemble
+
+    monkeypatch.setattr("autoresearch.scan.relative_buy.configured_relative_buy",
+                        lambda: ("shadow", False, None))
     scan = _scan(tmp_path)
     assemble.run(_DATE, scan_dir=scan, out_root=tmp_path / "reports" / "scan",
                  hhmm="2308", run_date="2026-08-06")
