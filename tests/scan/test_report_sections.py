@@ -97,7 +97,7 @@ def test_decision_line_comes_before_context_sections(md):
     idx = [md.find(x) for x in order]
     assert all(i >= 0 for i in idx), f"节缺失:{dict(zip(order, idx))}"
     assert idx == sorted(idx), f"决策主线节序错:{dict(zip(order, idx))}"
-    for background in ("## 🏭 行业研判", "## 1. 漏斗(数量)", "## 2. 各阶段卡点"):
+    for background in ("## 1. 漏斗(数量)", "## 2. 各阶段卡点"):
         assert md.find(background) > idx[-1], f"{background} 应排在决策主线之后"
 
 
@@ -115,37 +115,12 @@ def test_inject_dashboard_replaces_managed_block(md):
     assert rs.inject_dashboard(out, "**① 市场**:趋势").count(rs.DASHBOARD_START) == 1
 
 
-# ───────────────────────────── ② 行业研判降级 ─────────────────────────────
-
-def test_sector_section_is_one_row_per_industry_with_link(tmp_path):
-    d = _scan(tmp_path, n_industries=3)
-    sec = rs._sector_view_section(d)
-    assert sec.startswith("## 🏭 行业研判")
-    for i in range(3):
-        assert f"测试行业{i}" in sec
-        assert f"trace/sector_briefs/测试行业{i}.md" in sec, "必须给出原文链接(减层不减料)"
-    assert "最大证伪点" not in sec, "研判段全文不得再嵌入 summary"
-    assert "格局与表达" not in sec
-    assert "看多" in sec, "行业方向(一个字段)仍留在 summary"
-    body = [ln for ln in sec.splitlines() if ln.startswith("| 测试行业")]
-    assert len(body) == 3, "每行业恰一行"
-
-
-def test_sector_section_byte_cap_beats_raw_embed(tmp_path):
-    """**有鉴别力**:先证明旧口径(原文嵌研判段)确实 >2,000B,再断言新节 ≤2,000B。"""
-    d = _scan(tmp_path, n_industries=8)
-    raw = sum(len(p.read_bytes()) for p in sorted((d / "sector_briefs").glob("*.md")))
-    assert raw > rs.SECTOR_SECTION_MAX_BYTES, f"探针失效:原文只有 {raw}B"
-    sec = rs._sector_view_section(d)
-    assert len(sec.encode("utf-8")) <= rs.SECTOR_SECTION_MAX_BYTES, \
-        f"行业节 {len(sec.encode('utf-8'))}B > {rs.SECTOR_SECTION_MAX_BYTES}B"
-    assert sec.count("\n| 测试行业") == 8, "8 个行业一个都不能少(减层不减料)"
-
-
-def test_sector_section_absent_without_briefs(tmp_path):
-    d = _scan(tmp_path, n_industries=0)
-    assert rs._sector_view_section(d) == ""     # presence-gated,老路不破
-
+# ───────────────────────────── ② 行业研判节(D6 已整段退役)─────────────────────────────
+#
+# `_sector_view_section` 与其字节预算机制(`SECTOR_SECTION_MAX_BYTES`/`_terrain_gist`)已随
+# 2026-08-19 D6(⚖A6,用户裁定)整段删除:brief 研判段本身被砍除,summary 不再有任何行业
+# 研判节,行业方向叙事完全由确定性 top3(`render_sector_top3`)独扛。原三条用例(逐行链接/
+# 字节预算鉴别力/presence-gated 空态)测的对象已不存在,随之摘除,不留占位测试。
 
 # ───────────────────────────── ③ 经验节表格化 ─────────────────────────────
 
@@ -224,13 +199,34 @@ def test_no_content_class_is_dropped(tmp_path):
 # 再断言现口径 ≤38KB。只断言后半句的话,合成盘天然只有几 KB,这条会是恒绿的假灯。
 
 def _old_style_sector_section(scan_dir) -> str:
-    """T26 之前的行业节:每行业**原文嵌研判段全文**。"""
-    from autoresearch.sector.brief import extract_view, parse_direction
+    """T26 之前的行业节:每行业**原文嵌研判段全文**。
+
+    `brief.py` 的 `extract_view`/`parse_direction` 已随 D6(⚖A6)退役——研判段本身
+    被整段砍除,现行代码不再有任何函数产出这类内容。这里就地内联等价的历史抽取逻辑
+    (纯字符串处理,不依赖已删除的符号),只为下面 ①「旧口径确实撑破 38KB」的鉴别力
+    证明服务,不代表当前契约。
+    """
+    import re as _re
+    _dir_re = _re.compile(r"\*\*行业方向\*\*\s*[::]\s*(看多|中性|看空)")
+
+    def _old_extract_view(text: str) -> str:
+        out, on = [], False
+        for ln in text.splitlines():
+            if ln.strip().startswith("## 研判段"):
+                on = True
+                continue
+            if on and ln.startswith("## "):
+                break
+            if on:
+                out.append(ln)
+        return "\n".join(out).strip()
+
     parts = []
     for p in sorted((scan_dir / "sector_briefs").glob("*.md")):
-        view = extract_view(p.read_text(encoding="utf-8"))
+        view = _old_extract_view(p.read_text(encoding="utf-8"))
         if view:
-            parts.append(f"**{p.stem}**(方向:{parse_direction(view) or '—'})\n\n{view}")
+            m = _dir_re.search(view)
+            parts.append(f"**{p.stem}**(方向:{m.group(1) if m else '—'})\n\n{view}")
     return "## 🏭 行业研判(sector-research lite · 仅整合层)\n\n" + "\n\n".join(parts)
 
 
@@ -276,9 +272,10 @@ def test_summary_total_bytes_regression_lock(tmp_path, monkeypatch):
     d = _fat_scan(tmp_path)
 
     # ① 鉴别力证明:同一份 fixture 用旧口径渲染,必须真的撑破 38KB
+    #   D6(⚖A6)后行业研判节的新口径贡献 = 0 字节(整节退役,不是"降级成一行"),
+    #   所以 old_extra 只剩「旧行业节全部字节」+「经验节新旧差」两项。
     md_new = build_summary(d, _D, "1200", _F)
     old_extra = (len(_old_style_sector_section(d).encode("utf-8"))
-                 - len(rs._sector_view_section(d).encode("utf-8"))
                  + len(_old_style_knowledge_note([{"code": "300476"}]).encode("utf-8"))
                  - len(rs._knowledge_note([{"code": "300476"}]).encode("utf-8")))
     old_bytes = len(md_new.encode("utf-8")) + old_extra
@@ -288,13 +285,13 @@ def test_summary_total_bytes_regression_lock(tmp_path, monkeypatch):
     # ② 契约本体
     assert len(md_new.encode("utf-8")) <= rs.SUMMARY_MAX_BYTES, \
         f"summary {len(md_new.encode('utf-8'))}B > {rs.SUMMARY_MAX_BYTES}B(T26 交付量回退)"
-    # ③ 减层不减料:12 条 lesson / 9 条反馈 / 8 个行业一条不少
+    # ③ 减层不减料:12 条 lesson / 9 条反馈一条不少。
+    #   (8 个行业的名字曾在此断言过"一条不少"——D6 后行业研判节整节退役,sector_briefs
+    #   的内容不再进入 summary 正文,该断言随契约本身一起作废,不是遗漏。)
     for i in range(12):
         assert f"`ls_{i}`" in md_new
     for i in range(9):
         assert f"`fb_{i}`" in md_new
-    for i in range(8):
-        assert f"测试行业{i}" in md_new
 
 
 def test_summary_max_bytes_is_the_task_book_number():

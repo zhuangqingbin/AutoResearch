@@ -715,73 +715,6 @@ def _pinned_section(scan_dir: Path, analysis_date: str, pinned_rows: list[dict],
 #: 下一个人往 summary 加一节把字节顶回 47KB 时,那条测试会红,而不是 2300 条测试全绿。
 SUMMARY_MAX_BYTES = 38 * 1024
 
-#: 行业研判节字节上限(T26)。旧版原文嵌研判段 = 13,379B / 全报告 28%。
-SECTOR_SECTION_MAX_BYTES = 2000
-#: 单行地形首句的字符上限;超预算时按 `_SECTOR_GIST_LADDER` 逐级收紧(确定性)。
-_SECTOR_GIST_LADDER = (56, 44, 34, 24, 16)
-
-
-def _terrain_gist(text: str, limit: int) -> str:
-    """地形段**首句** —— 首个 bullet,剥 `- ` 与 `**键**:` 前缀,取到首个分句符,硬截断。"""
-    body = ""
-    for line in str(text or "").splitlines():
-        line = line.strip()
-        if line.startswith("- "):
-            body = line[2:].strip()
-            break
-    if not body:
-        body = str(text or "").strip().split("\n", 1)[0].strip()
-    body = re.sub(r"^\*\*[^*]+\*\*\s*[::]\s*", "", body)
-    for stop in ("。", ";", ";", " —— "):
-        idx = body.find(stop)
-        if 0 < idx <= limit:
-            body = body[:idx]
-            break
-    body = body.replace("|", "/").strip()
-    return (body[:limit] + "…") if len(body) > limit else (body or "—")
-
-
-def _sector_view_section(scan_dir: Path) -> str:
-    """行业研判节(Wave12 T26 降级:**每行业一行**地形首句 + 方向 + 原文链接)。
-
-    旧版把每份 brief 的**研判段全文**原样嵌进 summary —— 8 个行业 13,379B、占全报告
-    28%,而这些文件本来就逐份单独发布在 `trace/sector_briefs/<行业>.md`(见
-    `publisher._publish_pipeline`)。**减层不减料**:行业一个不少、方向字段保留、
-    全文一键可达,只是不再在 summary 里复制一遍。
-
-    节字节硬上限 `SECTOR_SECTION_MAX_BYTES`;超了按 `_SECTOR_GIST_LADDER` 收紧首句长度
-    (确定性,不随机、不丢行业)。无 briefs → ''(presence-gated,老路不破)。
-    """
-    d = scan_dir / "sector_briefs"
-    if not d.is_dir():
-        return ""
-    try:
-        from autoresearch.sector.brief import extract_terrain, extract_view, parse_direction
-    except Exception:  # noqa: BLE001
-        return ""
-    rows: list[tuple[str, str, str, str]] = []
-    for p in sorted(d.glob("*.md")):
-        try:
-            text = p.read_text(encoding="utf-8")
-        except Exception:  # noqa: BLE001
-            continue
-        rows.append((p.stem, parse_direction(extract_view(text)) or "—",
-                     extract_terrain(text), p.name))
-    if not rows:
-        return ""
-    head = ["## 🏭 行业研判(sector-research lite · 仅整合层)", "",
-            "_每行业一行地形首句 + 方向;**研判段全文不再嵌入**,原文见 "
-            "`trace/sector_briefs/<行业>.md`(减层不减料)。_", "",
-            "| 行业 | 方向 | 地形首句 | 原文 |", "|---|---|---|---|"]
-    for limit in _SECTOR_GIST_LADDER:
-        body = [f"| {ind} | {direction} | {_terrain_gist(terrain, limit)} "
-                f"| [brief](trace/sector_briefs/{name}) |"
-                for ind, direction, terrain, name in rows]
-        out = "\n".join(head + body)
-        if len(out.encode("utf-8")) <= SECTOR_SECTION_MAX_BYTES:
-            return out
-    return out
-
 def _same_chain_block(rows) -> str:
     """同申万一级 ≥2 只 finalist → 并排一行(择链上最佳表达,同链多买=1 个 bet)。<2 → ''。"""
     by_sec: dict[str, list[dict]] = {}
@@ -1166,9 +1099,7 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
     if top3_sec:
         out += [top3_sec, ""]
 
-    sect = _sector_view_section(scan_dir)   # T26:一行一行业 + 原文链接(研判段全文不再嵌)
-    if sect:
-        out += [sect, ""]
+    # (行业研判节已随 D6 退役 —— 研判段整段砍除,行业方向叙事由上面的确定性 top3 独扛。)
 
     # ── 1. 漏斗数量 ──
     out += ["## 1. 漏斗(数量)"] + _funnel_rows(meta, len(keep) or "?", len(genuine_rows),

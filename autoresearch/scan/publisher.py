@@ -456,16 +456,13 @@ def _run_publish(analysis_date: str, scan_dir: Path | None = None,
     # 记账/刷新副作用共享同一条真实现场判据(resolve() 防相对/绝对路径假阴性)——
     # 测试 tmp 目录一律不触发,堵同类测试泄漏口(此前 sector_ledger 无门,曾单独裸奔)。
     if is_real:
-        with contextlib.suppress(Exception):           # Phase 4:行业方向记账(sector_ledger,失败不阻发布)
-            from autoresearch.learning.sector_ledger import record_calls
-            n_calls = record_calls(scan_dir, analysis_date)
-            if n_calls:
-                print(f"[sector_ledger] 记 {n_calls} 条行业方向 → context/knowledge/sector_calls.jsonl")
-        with contextlib.suppress(Exception):       # P7:top3 看多记账(分账,失败不阻发布)
+        # (Phase 4 的 `record_calls` 挂点已随 D6 退役 —— brief 研判段整段砍除,
+        #  行业方向记账现只剩下面这条确定性 top3 来源。)
+        with contextlib.suppress(Exception):       # P7:top3 看多记账(失败不阻发布)
             from autoresearch.learning.sector_ledger import record_top3
             from autoresearch.scan.market import market_pack as _mp3
             inds3 = [r["industry"] for r in (_mp3(scan_dir).get("sector_healthy_top3") or [])]
-            n3 = record_top3(analysis_date, inds3)      # date 变量名与相邻 record_calls 调用一致,以现场为准
+            n3 = record_top3(analysis_date, inds3)
             if n3:
                 print(f"[sector_ledger] 记 top3 看多 {n3} 条(source=deterministic_top3)")
         with contextlib.suppress(Exception):           # 影子买单记账(spec 2026-07-05 wave §A2,失败不阻发布)

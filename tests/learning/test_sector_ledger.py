@@ -1,47 +1,19 @@
-"""Phase 4 —— sector_ledger:方向记账(幂等)× 行业中位成熟 × 报告纪律(n<10 ⚠)。NO network。"""
-from __future__ import annotations
+"""Phase 4 —— sector_ledger:行业中位成熟 × 报告纪律(n<10 ⚠)。NO network。
 
-import json
+`record_calls`(brief 研判段方向记账)已随 2026-08-19 D6(⚖A6,用户裁定)退役——brief
+研判段整段砍除,行业方向记账现只剩 `record_top3`(见 tests/scan/test_sector_top3.py)。
+"""
+from __future__ import annotations
 
 import pandas as pd
 
 from autoresearch.learning.sector_ledger import (
     backfill,
     mature_call,
-    record_calls,
     render_report,
 )
 
 DATE = "2026-07-03"
-
-BRIEF = """# 行业 brief — 半导体 @ 2026-07-03
-
-## 地形段(喂 L3/L4 · 描述性)
-- 景气读数:x
-
-## 研判段(仅 L5)
-**行业方向**: 看多 — 依据
-"""
-
-
-def _mk_briefs(tmp_path):
-    d = tmp_path / DATE
-    (d / "sector_briefs").mkdir(parents=True)
-    (d / "sector_briefs" / "半导体.md").write_text(BRIEF, encoding="utf-8")
-    (d / "sector_briefs" / "无方向.md").write_text("# x\n\n## 研判段(仅 L5)\n没写方向行\n",
-                                                   encoding="utf-8")
-    return d
-
-
-def test_record_calls_idempotent(tmp_path):
-    d = _mk_briefs(tmp_path)
-    ledger = tmp_path / "sector_calls.jsonl"
-    assert record_calls(d, DATE, path=ledger) == 1             # 无方向行的 brief 不记
-    assert record_calls(d, DATE, path=ledger) == 0             # 幂等
-    rows = [json.loads(x) for x in ledger.read_text(encoding="utf-8").splitlines()]
-    assert rows[0] == {"date": DATE, "industry": "半导体", "direction": "看多",
-                       "source": "brief", "realized_pct": None, "horizon": None}
-    assert record_calls(tmp_path / "nope", DATE, path=ledger) == 0   # 无 briefs 目录 → 0
 
 
 def test_mature_call_and_backfill():

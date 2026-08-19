@@ -8,12 +8,10 @@ import pandas as pd
 
 from autoresearch.scan.agents.l3_select import l3_table_md
 from autoresearch.scan.agents.l4_card import compose_funnel_brief
-from autoresearch.scan.assemble import _same_chain_block, _sector_view_section
+from autoresearch.scan.assemble import _same_chain_block
 from autoresearch.sector.brief import (
     brief_path,
     extract_terrain,
-    extract_view,
-    parse_direction,
     render_terrain_block,
 )
 
@@ -41,12 +39,15 @@ def _mk_brief(scan_dir, industry="半导体", text=BRIEF):
 # ───────────────────────── 契约抽取 ─────────────────────────
 
 
-def test_extract_two_sections_and_direction():
-    terr, view = extract_terrain(BRIEF), extract_view(BRIEF)
-    assert "景气读数" in terr and "行业方向" not in terr        # 地形段不含方向(三层同律)
-    assert "看多" in view and "磨底" in view
-    assert parse_direction(view) == "看多"
-    assert parse_direction("无方向文本") is None
+def test_extract_terrain_stops_before_next_header():
+    """地形段抽取只到下一个 `## ` 为止,不含方向(三层同律)。
+
+    `extract_view`/`parse_direction` 已随 2026-08-19 D6(⚖A6)退役——研判段整段砍除,
+    brief 现在只产出地形段;fixture 仍保留一个尾随的 `## 研判段` 标题只是为了证明
+    `_section()` 的 stop-prefix 行为(遇到下一个 `## ` 就停)依然成立,不代表契约复活。
+    """
+    terr = extract_terrain(BRIEF)
+    assert "景气读数" in terr and "行业方向" not in terr
 
 
 def test_render_terrain_block(tmp_path):
@@ -111,25 +112,11 @@ def test_compose_funnel_brief_injects_sector_terrain(tmp_path):
     assert "估值地形" in withb and "行业方向" not in withb     # 只注地形段,研判段不进卡
 
 
-# ───────────────────────── L5:行业研判节 + 同链对比(presence-gated) ─────────────────────────
-
-
-def test_sector_view_section(tmp_path):
-    """Wave12-T26 起契约改为**一行一行业**:地形首句 + 方向 + 原文链接。
-
-    旧契约(把研判段全文原文嵌进 summary)已退役 —— 那一节 13,379B / 全报告 28%,而
-    `sector_briefs/*.md` 本来就逐份发布在 `trace/`。减层不减料:行业一个不少,全文一键可达。
-    """
-    d = tmp_path / DATE
-    d.mkdir(parents=True)
-    assert _sector_view_section(d) == ""                       # 无 briefs → 不加节(parity)
-    _mk_brief(d)
-    s = _sector_view_section(d)
-    assert s.startswith("## 🏭 行业研判")
-    assert "半导体" in s and "看多" in s                        # 行业 + 方向仍在
-    assert "trace/sector_briefs/半导体.md" in s                 # 原文可达
-    assert "磨底" not in s                                     # 研判段正文不再嵌入
-    assert len([ln for ln in s.splitlines() if ln.startswith("| 半导体 |")]) == 1
+# ───────────────────────── L5:同链对比(presence-gated) ─────────────────────────
+#
+# 行业研判节(`_sector_view_section`,Wave12-T26 的"一行一行业"降级契约)已随
+# 2026-08-19 D6(⚖A6,用户裁定)整段退役——brief 研判段本身被砍除,summary 不再有任何
+# 行业研判节,行业方向叙事完全由确定性 top3 独扛。原用例测的对象已不存在,随之摘除。
 
 
 def test_same_chain_block():

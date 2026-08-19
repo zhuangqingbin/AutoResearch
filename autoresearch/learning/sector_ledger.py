@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""sector_ledger —— 行业嘴的 MTM(Phase 4):brief 研判段方向 × 行业成分中位已实现收益。
+"""sector_ledger —— 行业嘴的 MTM(Phase 4):行业方向 call × 行业成分中位已实现收益。
 
 design: docs/specs/2026-07-03-research-skills-altitude-refactor-design.md §7 Phase 4。
+2026-08-19 D6(⚖A6,用户裁定):brief 研判段整段砍除,靠解析研判段方向行记账的
+`record_calls` 随之退役——行业方向叙事与记账全部收拢到 `record_top3`(唯一 source)。
 
-- `record_calls(scan_dir, date)`:当日 sector_briefs 的 `**行业方向**` keyed 行 →
-  `context/knowledge/sector_calls.jsonl`(按 date+industry 幂等;♻️复用 brief 照记——嘴每天都在说话)。
-  assemble 发布时自动调(失败不阻报告)。
+- `record_top3(date, industries)`:确定性 healthy top3 行业 → 看多 call
+  (`source=deterministic_top3`)→ `context/knowledge/sector_calls.jsonl`
+  (按 date+industry+source 三元组幂等)。assemble 发布时自动调(失败不阻报告)。
 - `mature_call(frame0, frame1, industry)`:两日成分帧(code/industry/close,如两日 L1_scored_full)
   → 行业**同代码交集**中位 close→close 收益(纯函数;retro 侧数据成熟后 `backfill` 回填)。
 - CLI 报告:按方向聚合命中率;**已成熟 n<10 只记账不下结论**(薄样本先验比没有更坏——与评级基率同纪律)。
@@ -35,33 +37,6 @@ def _load(path: Path | str) -> list[dict]:
         except Exception:  # noqa: BLE001 — 坏行跳过
             continue
     return out
-
-
-def record_calls(scan_dir: Path | str, date: str, path: Path | str = LEDGER_PATH) -> int:
-    """当日 briefs 的方向行 → jsonl(date+industry 幂等)。无 briefs/无方向行 → 0。"""
-    from autoresearch.sector.brief import extract_view, parse_direction
-    d = Path(scan_dir) / "sector_briefs"
-    if not d.is_dir():
-        return 0
-    path = Path(path)
-    seen = {(c.get("date"), c.get("industry"), c.get("source", "brief")) for c in _load(path)}
-    rows: list[dict] = []
-    for p in sorted(d.glob("*.md")):
-        try:
-            text = p.read_text(encoding="utf-8")
-        except Exception:  # noqa: BLE001
-            continue
-        dirn = parse_direction(extract_view(text)) or parse_direction(text)
-        if not dirn or (date, p.stem, "brief") in seen:
-            continue
-        rows.append({"date": date, "industry": p.stem, "direction": dirn,
-                     "source": "brief", "realized_pct": None, "horizon": None})
-    if rows:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as f:
-            for r in rows:
-                f.write(json.dumps(r, ensure_ascii=False) + "\n")
-    return len(rows)
 
 
 def record_top3(date: str, industries: list[str], path: Path | str = LEDGER_PATH) -> int:

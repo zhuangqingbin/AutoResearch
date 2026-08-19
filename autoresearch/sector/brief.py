@@ -1,24 +1,23 @@
 #!/usr/bin/env python3
-"""sector-research · brief 契约(两段结构)与确定性抽取。
+"""sector-research · brief 契约(单段结构)与确定性抽取。
 
 design: docs/specs/2026-07-03-research-skills-altitude-refactor-design.md §5.3(Phase 3)。
+2026-08-19 D6(⚖A6,用户裁定):研判段整段砍除(旧版最终只在 summary 落一行方向+链接,
+分析最重的半段落只值一行字)——brief 现在**只产出地形段**,行业方向叙事改由确定性
+top3(`autoresearch/scan/market.py` 的 `sector_healthy_top3`/`render_sector_top3`)独扛。
 
 brief 文件 = `context/scan/<date>/sector_briefs/<行业>.md`,由 lite subagent 按
-`sector-playbook.md` 模板产出,**两段**(标题即机器契约,勿改字):
-  `## 地形段(喂 L3/L4 · 描述性)` ← extract_terrain → 注 L3 表头 + L4 简报
-  `## 研判段(仅 L5)`             ← extract_view → 只进 assemble 行业研判节;
-                                    内含 `**行业方向**: 看多|中性|看空` 行(sector_ledger 记账)。
-**三层同律**:地形段只许数字/事实/日历;方向性内容只在研判段(=只进 L5)。
+`sector-playbook.md` 模板产出,**单段**(标题即机器契约,勿改字):
+  `## 地形段(喂 L3/L4 · 描述性)` ← extract_terrain → 注 L3 表头 + L4 简报。
+地形段只许数字/事实/日历,不带方向——个股评级只由本股 rubric 三门决定,行业方向不再由
+本模块判断。
 """
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 BRIEF_DIRNAME = "sector_briefs"
 TERRAIN_HDR = "## 地形段"
-VIEW_HDR = "## 研判段"
-_DIR_RE = re.compile(r"\*\*行业方向\*\*\s*[::]\s*(看多|中性|看空)")
 
 
 def brief_path(scan_dir: Path | str, industry) -> Path:
@@ -43,16 +42,6 @@ def _section(text: str, start_hdr: str, stop_prefix: str = "## ") -> str:
 
 def extract_terrain(text: str) -> str:
     return _section(text, TERRAIN_HDR)
-
-
-def extract_view(text: str) -> str:
-    return _section(text, VIEW_HDR)
-
-
-def parse_direction(text: str) -> str | None:
-    """研判段的 `**行业方向**` keyed 行 → 看多|中性|看空;无 → None。"""
-    m = _DIR_RE.search(text or "")
-    return m.group(1) if m else None
 
 
 def render_terrain_block(industry, scan_dir: Path | str) -> str:

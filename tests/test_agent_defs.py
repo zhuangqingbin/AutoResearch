@@ -120,10 +120,14 @@ def test_l3_rank_anchors_present():
 
 
 def test_sector_brief_anchors_synced():
-    """sector-brief 两段标题/方向行与 brief.py 机器契约同源(extract_terrain/extract_view/记账)。"""
-    from autoresearch.sector.brief import TERRAIN_HDR, VIEW_HDR  # 单一事实源
+    """sector-brief 单段标题与 brief.py 机器契约同源(extract_terrain)。
+
+    2026-08-19 D6(⚖A6,用户裁定):研判段整段砍除,`VIEW_HDR`/`**行业方向**` 已随之
+    退役(brief 不再判断方向)——契约锚收窄为只剩地形段标题。
+    """
+    from autoresearch.sector.brief import TERRAIN_HDR  # 单一事实源
     agent = _agent_text("sector-brief")
-    for a in (TERRAIN_HDR, VIEW_HDR, "**行业方向**", "不编", "实时网查"):
+    for a in (TERRAIN_HDR, "不编", "实时网查"):
         assert a in agent, f"sector-brief 缺契约锚「{a}」"
     assert "WebSearch" in agent.split("---", 2)[1], "sector-brief frontmatter 缺 WebSearch tool"
     playbook = (SKILLS / "sector-research" / "sector-playbook.md").read_text(encoding="utf-8")
@@ -280,8 +284,8 @@ def test_workflow_shell_wrappers_use_agent_defaults():
     wf_dir = ROOT / ".claude" / "workflows"
     all_js = {p.name: p.read_text(encoding="utf-8") for p in wf_dir.glob("*.js")}
 
-    # 只有这三个文件走 AGENT_DEFAULTS(t1-review.js 是独立的 cfg.agents.t1_diag/t1_synth
-    # 通道,不消费本文件的壳角色,见该文件顶部注 —— 不纳入①②检查,但仍受③约束)。
+    # 只有这三个文件走 AGENT_DEFAULTS(t1-review.js 已于 D3(2026-08-19)随 t1-review LLM
+    # 腿一并退役——独立的 cfg.agents.t1_diag/t1_synth 通道不再存在)。
     shell_using = {"scan-market.js", "l4-stock.js", "dossier-init.js"}
     for name in sorted(shell_using):
         assert name in all_js, f"{name} 不存在(workflow 被改名?同步更新本测试)"
@@ -303,7 +307,7 @@ def test_workflow_shell_wrappers_use_agent_defaults():
                 assert "haiku" not in s and "opus" not in s, f"{name}: {s!r} 误写危险 model"
 
     # 判断 agent 不得被误降 haiku(防「顺手把整个文件 sed 一遍」;原测试第三条锁原样保留,
-    # 联合扫全部 workflow —— t1-review.js 虽不走 AGENT_DEFAULTS,同样受此约束)。
+    # 联合扫全部 workflow)。
     joined = "".join(all_js.values())
     for real in ("l3-rank", "l4-card", "l4-intel", "macro-brief", "sector-brief", "dossier-init"):
         assert f"agentType: '{real}', model: 'haiku'" not in joined, \
@@ -464,34 +468,46 @@ def test_scan_market_skill_documents_wave3_recovery_and_measurement_contract():
     assert "预算只告警" in stages
 
 
-def test_scan_market_skill_documents_wave5_experiment_governance_contract():
-    """实验治理必须进入当前 runbook，不能只存在于实现计划或单元测试。"""
+def test_experiment_registry_governance_retired_from_skill_docs():
+    """D1(2026-08-19,用户裁决 A3):experiment_registry 家族的状态机已整删,文档不得
+    再教用户跑一个已删除的 CLI —— 镜像下面 `test_otel_path_retired_from_skill_docs`
+    的判例(同一族病:文档教已删代码,后人照做直接 ModuleNotFoundError)。
+
+    变异验证:把 `autoresearch.learning.experiment_registry` 这类命令写回任一文档,
+    本测试变红。
+    """
     skill = (SKILLS / "scan-market" / "SKILL.md").read_text(encoding="utf-8")
     stages = (SKILLS / "scan-market" / "STAGES.md").read_text(encoding="utf-8")
-    for anchor in (
-        "autoresearch.learning.experiment_registry",
-        "autoresearch.learning.promotion",
-        "autoresearch.learning.rollback_watch",
-        "PREREGISTERED",
-        "RECOMMENDED",
-        "APPROVED",
-        "ACTIVE",
-        "STABLE_CANDIDATE",
-        "ROLLBACK_RECOMMENDED",
-        "人工批准",
-        "稳定基线",
-    ):
-        assert anchor in skill, f"SKILL.md 缺 Wave 5 治理契约:{anchor}"
-    for anchor in (
-        "研究、决策、Token、速度、架构",
-        "20 个真实扫描日",
-        "10 个成熟事件",
-        "2 个 regime",
-        "IMMATURE",
-        "UNKNOWN",
-        "不自动",
-    ):
-        assert anchor in stages, f"STAGES.md 缺 Wave 5 治理约束:{anchor}"
+    for doc, nm in ((skill, "SKILL.md"), (stages, "STAGES.md")):
+        assert "autoresearch.learning.experiment_registry" not in doc, \
+            f"{nm} 仍在教已删除的 experiment_registry CLI"
+        assert "autoresearch.learning.promotion" not in doc, \
+            f"{nm} 仍在教已删除的 promotion CLI"
+        assert "autoresearch.learning.rollback_watch" not in doc, \
+            f"{nm} 仍在教已删除的 rollback_watch CLI"
+    # 新治理模型的三段式必须都在场,不能只删旧的不写新的
+    for anchor in ("影子账本", "proposal", "人批", "开发会话"):
+        assert anchor in stages, f"STAGES.md 缺新治理模型关键词:{anchor}"
+        assert anchor in skill, f"SKILL.md 缺新治理模型关键词:{anchor}"
+
+
+def test_experiment_registry_family_modules_are_gone():
+    """模块真删了(不是只改文档)—— 否则「退役」只是叙事(镜像 test_telemetry_module_is_gone)。
+
+    `experiment_template.py` **不**在此列:D1 执行时发现它是 `gate_recal.py`/
+    `l3_marginal.py` 核心裁决逻辑的真实依赖(方法学,非治理状态机),用户裁决 A3
+    确认保留 —— 断言它仍然存在,防止未来有人顺手把它也删了。
+    """
+    import importlib.util
+
+    for mod in ("autoresearch.learning.experiment_registry",
+                "autoresearch.learning.promotion",
+                "autoresearch.learning.rollback_watch",
+                "autoresearch.learning.mainflow5d"):
+        assert importlib.util.find_spec(mod) is None, \
+            f"{mod} 仍在:文档说退役、代码还在 = 又一个只存在于叙事里的改动"
+    assert importlib.util.find_spec("autoresearch.learning.experiment_template") is not None, \
+        "experiment_template 应保留(gate_recal/l3_marginal 的真实依赖,用户裁决 A3)"
 
 
 def test_otel_path_retired_from_skill_docs():

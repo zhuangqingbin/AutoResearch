@@ -282,7 +282,7 @@ log(`待写行业 brief:${sectors.length} 个${sectors.length ? ` (${sectors.joi
 await parallel([
   () => bash(`${R} autoresearch.scan.agents.l3_select prepare ${date}`, 'l3-prepare', 'L3'),
   ...preL3BriefSectors.map((sec) => () => agent(
-    `你是行业分析师。读 ${CTX}/sector/${date}/${sec}.json 写 ${SD}/sector_briefs/${sec}.md,两段机器契约(## 地形段 喂 L3/L4 · ## 研判段 仅 L5,含 **行业方向** 行)。零新取数。`,
+    `你是行业分析师。读 ${CTX}/sector/${date}/${sec}.json 写 ${SD}/sector_briefs/${sec}.md,单段机器契约(## 地形段 喂 L3/L4;纯事实性,不含方向判断)。零新取数。`,
     { agentType: 'sector-brief', ...AG('sector_brief'),
       label: `brief:${sec}`, phase: 'L3' })
     .then((r) => { log(`brief ✓ ${sec}`); return r })),

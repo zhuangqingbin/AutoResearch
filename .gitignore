@@ -231,6 +231,10 @@ lake_quarantine/
 # zoo champion store (binary artifacts, regenerable via autoresearch.models.zoo train)
 models/store/
 
+# D11 知识资产 nightly 备份(precedents.db/dossier/jsonl 账本/factor_lab 权重的
+# tar.gz 打包,autoresearch.ops.backup 生成;资产本身不可重算但备份是本地衍生物,不入库)
+backups/
+
 # 项目级 zsh 运行时缓存（.cursor-zsh/.zshrc 本身可提交）
 .cursor-zsh/.zsh_history
 .cursor-zsh/.zcompdump*

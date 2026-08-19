@@ -73,7 +73,6 @@ from autoresearch.scan.report_sections import _portfolio_note  # noqa: F401 — 
 from autoresearch.scan.report_sections import _position_overlay  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 from autoresearch.scan.report_sections import _proposals_nag  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 from autoresearch.scan.report_sections import _same_chain_block  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
-from autoresearch.scan.report_sections import _sector_view_section  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 from autoresearch.scan.report_sections import _self_review_banner  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 from autoresearch.scan.report_sections import _sortkey  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 from autoresearch.scan.report_sections import _stage_overview  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
