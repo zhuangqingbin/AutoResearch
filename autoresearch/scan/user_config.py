@@ -152,13 +152,13 @@ _KNOB_TYPES: dict[tuple[str, str], tuple] = {
 }
 
 # agents={role: {model, effort}} 的 role 闭集(Wave11 B1)——白名单外一律 raise,防拼写错
-# 静默掉回缺省(如 t1_diag 拼成 t1diag,不会报错只会静默丢配置)。7 个现役(strategist/
-# sector_brief/l3_rank/l4_intel/l4_card/t1_diag/t1_synth,均已见于生产 scan_config.jsonc)
-# + 5 个下一波(ens_review/l3_repair/dossier_init/gp_shell/gp_shell_json)先占位入闭集,
-# 免得那几个 task 往配置里写 role 时被本校验拦住。
+# 静默掉回缺省(如 l3_rank 拼成 l3rank,不会报错只会静默丢配置)。10 role 现役,均已见于
+# 生产 scan_config.jsonc(strategist/sector_brief/l3_rank/l4_intel/l4_card/ens_review/
+# l3_repair/dossier_init/gp_shell/gp_shell_json)。
+# D3(2026-08-19,用户裁定 A5)t1-review LLM 腿退役后 role 收口 12→10——t1_diag/t1_synth
+# 两名已随之从闭集摘除(该二 role 唯一消费者 t1-review.js 已整文件删除)。
 _AGENT_ROLES = {
     "strategist", "sector_brief", "l3_rank", "l4_intel", "l4_card",
-    "t1_diag", "t1_synth",
     "ens_review", "l3_repair", "dossier_init", "gp_shell", "gp_shell_json",
 }
 _EFFORTS = {"low", "medium", "high", "xhigh", "max"}
@@ -192,11 +192,9 @@ _ROLE_FALLBACK: dict[str, dict] = {
     "l4_card":       {"effort": "xhigh"},
     "ens_review":    {"effort": "xhigh"},
     "dossier_init":  {"effort": "max"},
-    "t1_diag":       {"effort": "high"},
-    "t1_synth":      {"effort": "high"},
 }
 
-#: 生产必填 role —— 生产 `scan_config.jsonc` 必须**显式列全**(12 个)。缺一即 fail-fast。
+#: 生产必填 role —— 生产 `scan_config.jsonc` 必须**显式列全**(10 个)。缺一即 fail-fast。
 #: 为什么是"全部"而不是某个子集:闭集的意义就是"这张表就是全集";允许缺就等于允许
 #: "写了一半、剩下的靠猜",而 07-21 事故的全部教训就是**猜出来的缺省没人看得见**。
 _REQUIRED_AGENT_ROLES = frozenset(_AGENT_ROLES)
@@ -299,13 +297,15 @@ def resolve_agent_config(cfg: dict, *, require_all: bool = True) -> dict:
     缺省 effort,而**报告上看不出来**,事后翻记录才发现):
 
     1. `agents` 为空 / 整个 cfg 为 `{}` → `ValueError`。"什么都没配"必须炸,不能悄悄全用缺省。
-    2. 未知 role → `ValueError`(拼写错静默失效是同一类病:`t1_diag` 写成 `t1diag` 不报错,
+    2. 未知 role → `ValueError`(拼写错静默失效是同一类病:`l3_repair` 写成 `l3repair` 不报错,
        只是那行配置从此不存在)。
     3. role 下未知字段 / 非法 model / 非法 effort → `ValueError`。
     4. `require_all`(生产默认)时缺任一必填 role → `ValueError`,消息列出缺哪几个。
 
-    `require_all=False` 供**局部编排**用(如 scan-retro 只拉 t1-review):它仍然校验写了的
-    那些,只是不要求写全 —— 但那样产出的 resolved 是**残表**,不该落盘冒充当日全量。
+    `require_all=False` 供**局部编排**用(它仍然校验写了的那些,只是不要求写全 —— 但那样
+    产出的 resolved 是**残表**,不该落盘冒充当日全量)。历史上唯一的调用场景是 scan-retro
+    拉 t1-review workflow;t1-review 已于 D3(2026-08-19,用户裁定 A5)退役,本参数暂无
+    生产调用点,机制原样保留供未来局部编排复用。
     """
     if not isinstance(cfg, dict) or not cfg:
         raise ValueError(
@@ -469,24 +469,21 @@ def load_pinned(today: str, path: str | Path | None = None,
 def main() -> int:
     """CLI:打印白名单校验 **+ resolve** 后的 scan_config JSON 一行(含 `resolved_agents`)。
 
-    给不经 `frame --json` 的编排场景(如 scan-retro 拉 t1-review workflow)喂 `args.cfg` 用
-    ——workflow 脚本无文件系统访问,配置必须由编排会话读出随 args 传入(装载链同 scan-market)。
-    配置文件写坏(白名单外键)→ 沿用 load_user_config 的 fail-fast raise,非零退出。
-
-    **Wave12-T33 修复轮 1(I2)**:此前这里只 `print(load_user_config())`,**不 resolve** ——
-    于是 `t1-review.js` 里的 `RESOLVED = cfg.resolved_agents || {}` 在生产上恒空,那条
-    resolved 优先分支是**死代码**,t1_diag/t1_synth 的档位仍由 workflow 自己那张
-    `AGENT_DEFAULTS` 解释。结果是「model/effort 的解释从此只有一处」这句话对 scan 主路成立、
-    对 t1-review **不成立**,而本模块 docstring 的装载链却写成了普适的 —— 典型的**拆半特性**:
-    消费者接了线、生产者没接,读代码的人以为全都收口了。
-    (`.claude/skills/scan-retro/SKILL.md:22` 明写 t1-review 的 `args.cfg` 来自本 CLI。)
+    给不经文件系统访问的编排场景喂 `args.cfg` 用——workflow 脚本读不到本地文件,配置必须
+    由编排会话读出随 args 传入(装载链同 scan-market 的 `frame --json`)。配置文件写坏
+    (白名单外键)→ 沿用 load_user_config 的 fail-fast raise,非零退出。
 
     **谓词与 `frame.py` 逐字对齐**(`if user_cfg.get("agents")`):
     - 有 `agents` → resolve(`require_all=True`,与主路同一把尺)。配了一半 → **raise**,
-      非零退出,编排当场看见 —— 主路会 fail 而 retro 路静默降级,才是更糟的不一致。
+      非零退出,编排当场看见。
     - 无配置文件 / 无 `agents` → 原样输出(parity)。这一层不炸的理由见 `frame.py` 同款注释:
-      fail-fast 的靶子是"配了一半"和"配了但空",不是"这台机器上根本没这个文件";
-      真出现空 cfg,下游 `t1-review.js:24-26` 的结构性 throw 会当场拒跑。
+      fail-fast 的靶子是"配了一半"和"配了但空",不是"这台机器上根本没这个文件"。
+
+    历史沿革:本 CLI 的直接动机是 Wave12-T33(I2)修复 t1-review workflow「resolved 优先
+    分支是死代码」的拆半特性——`resolve_agent_config()` 必须真跑起来,`resolved_agents`
+    才进得了输出。t1-review 已于 D3(2026-08-19,用户裁定 A5)整文件删除,本 CLI 现无
+    生产调用点;保留是因为它是「白名单校验 + resolve」这条职责唯一的独立入口,未来任何
+    读不到本地配置文件的局部编排场景仍可直接复用。
     """
     cfg = load_user_config()
     if cfg.get("agents"):

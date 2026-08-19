@@ -1,34 +1,28 @@
 ---
 name: scan-retro
-description: "Two review loops for prior scan-market days: FAST t1_review (D+1 initial + D+2 gap final verdict, per-card judgment accuracy via t1-review workflow) and SLOW retro (D+2, funnel recall attribution + auto weight recalibration + lessons). Triggers: /retro, 「复盘昨天的扫描」「为什么没选到X」, scan-market finding unreviewed days, or 「补复盘欠账」(batch diagnosis, ≤5 days/run). scan-market only. Project-local."
+description: "Two review loops for prior scan-market days: FAST t1_review (D+1 initial + D+2 gap final verdict, per-card judgment accuracy; nightly automatic deterministic backfill, no LLM diagnosis leg since 2026-08-19) and SLOW retro (D+2, funnel recall attribution + auto weight recalibration + lessons). Triggers: /retro, 「复盘昨天的扫描」「为什么没选到X」, scan-market finding unreviewed days, or 「补复盘欠账」(batch diagnosis, ≤5 days/run). scan-market only. Project-local."
 ---
 
 > **路径约定**:`$CTX`/`$RPT` = 本引擎工作区根(Claude→`context_claude`/`reports_claude`,Codex→`context_codex`/`reports_codex`;shell 里 `CTX=context_${AUTORESEARCH_ENGINE:-claude}`,`RPT=reports_${AUTORESEARCH_ENGINE:-claude}`)。数据湖 `lake/` 两引擎共享。Read/Write 工具调用时把 `$CTX`/`$RPT` 代入具体目录名。
 
 # scan-retro — 用实际涨跌复盘 scan 报告,自迭代权重与经验
 
-## 双环结构(2026-07-17 起)
+## 双环结构(2026-07-17 起;**快环 LLM 段 2026-08-19 用户裁定 A5 退役**)
 
 | 环 | 成熟期 | 量什么 | 尺 | 喂什么 |
 |---|---|---|---|---|
-| **快环 t1_review** | **D+1**(T+1 收盘当晚) | **判断层精度**:T 报告真选票次日兑现如何、为什么(**保送 pinned 不算**,用户裁定 2026-07-17) | **z**(行业中性超额/截面稳健σ,盖帽±3;cc1 为底,oc1 参考)| prompt 侧经验/提案候选(**人批**) |
+| **快环 t1_review** | **D+1**(初判)/**D+2**(gap 终判) | **判断层精度**:T 报告真选票次日兑现如何(**保送 pinned 不算**,用户裁定 2026-07-17) | **z**(行业中性超额/截面稳健σ,盖帽±3;cc1=D+1 初判尺,gap_c1_o2=D+2 终判尺) | 🔄 校准块注入 L3/L4 prompt(账本派生数据,非指令;**不再产出新经验/提案**) |
 | **慢环 retro(下述 6 步)** | D+2 | 漏斗召回:全市场谁涨了没进池 | **`gap_c1_o2`**(主尺,`common.ruler.MAIN_RULER` 单点);`fwd_1_oo` / `fwd_2_oc` 降参考尺 | 权重重标定(**唯一自动腿**)+ 提案 |
 
-**快环用法**(只做 T→T+1 相邻交易日间隔,周末/节假日顺延;不看更长 horizon)。**判定尺 v2(2026-07-17 调研落地)**:行业中性超额(cc1 − 同业均值,先剥 β/板块共振)÷ 截面稳健σ(1.4826×MAD)= z,方向判定双门 |z|≥0.5 且 |超额|≥0.8pp,惊奇 |z|≥1.5;🔒一字开盘板不计可实现;needs_diag 分诊(不准/惊奇/|z|≥1 才烧诊断 token,ERL 实证失败样本教训价值>成功样本)。期望值口径 = 胜率×均赢/均亏 + conviction 校准桶(Tetlock)。
+**快环 = nightly 自动确定性回补(`t1_backfill` / `t1_gap_finalize`),无人工 LLM 段**(2026-08-19 用户裁定 A5:t1-review LLM workflow 与自动立案链已整体退役——22 日仅 8 个合格终判、全 UW 侧,08-11 后已实质停摆)。`nightly_close` 每晚自动补 D+1 记分卡+账本行、回填 D+2 隔夜 gap 终判(`final_verdict`),**不需要人工触发,也不再有逐票诊断 agent**。判定尺 v2(2026-07-17 调研落地):行业中性超额(cc1/gap_c1_o2 − 同业均值,先剥 β/板块共振)÷ 截面稳健σ(1.4826×MAD)= z,方向判定双门 |z|≥0.5 且 |超额|≥0.8pp,惊奇 |z|≥1.5;🔒一字开盘板不计可实现。
 
+按需人工查看(deep-diagnosis 靠人自己读盘,不再有 workflow 自动派发):
 ```bash
-uv run --no-sync python -m autoresearch.learning.t1_review pending    # 待复盘 (T,T+1) 对
+uv run --no-sync python -m autoresearch.learning.t1_review pending    # 待复盘 (T,T+1) 对(nightly 已自动清,恒空是常态)
+uv run --no-sync python -m autoresearch.learning.t1_review report     # 账本累计视图(准率/机制直方图/conviction·置信度校准)
+uv run --no-sync python -m autoresearch.learning.t1_review build <T>  # 手动补一日记分卡(离线核对用,不写诊断)
 ```
-→ **最新一对**跑(先读配置再拉 workflow,两条命令):
-```bash
-uv run --no-sync python -m autoresearch.scan.user_config     # 白名单校验后的配置 JSON(含 agents.t1_*)
-```
-→ `Workflow({scriptPath: '.claude/workflows/t1-review.js', args: {date: '<T>', cfg: <上面的 JSON>}})`。
-**2 个 agent**(2026-07-17 用户裁定勿每票 fan-out):**合诊**(跑 build CLI + 一个 context 通读全部真选卡对比诊断——真选 ≤13 只装得下,且「4/5 随大盘」这类跨票模式只有合诊看得见,同 L3 holistic 哲学)+ **综合官**(独立复核合诊、写候选/report、finalize 落账)。产出 `$CTX/scan/<T>/t1_review/report.md` + 账本。**更早的对**逐日 `... t1_review backfill <T>`(确定性回补,只进账本不烧诊断 token)。累计视图:`... t1_review report`。T+1 当晚 daily 未发布(~17:00 前)build 会诚实报错,晚点再跑。
-
-**agent 配置**:合诊/综合官的 model/effort 由 `scan_config.jsonc` 的 `agents.t1_diag` / `agents.t1_synth` 管控,经上面 user_config CLI 随 `args.cfg` 传入(综合官另有 pack.agents_cfg 兜底;都缺 = 内建默认 继承会话模型·high)。
-
-**自我迭代腿(2026-07-17,不止步于复盘文档)**:综合官写 `candidates.json`(稳定 key,跨日复用)→ `finalize` 记入候选账本 `$CTX/learning/t1_candidates.jsonl` → **次日 L3 表自动注入**「🔄 T+1 快环校准」块(`prepare_l3_table` 表尾,账本派生数据非指令,含准率/机制直方图/复盘观察)→ 同 key 累计 **≥2 个 T 日自动立案** `proposals.jsonl`(prompt_rule,一键人批)→ 人批成 lesson 后经 `feedback_store.render_calibration_block` 注入(同日已接线,pr_20260716_005 闭)。**半自动边界不变:自动的是观察注入与提案起草,改规则/prompt 文件仍人批。**
+逐票「为什么准/不准」的诊断叙事已不再自动产出;需要深挖某日,人工对照 `$CTX/scan/<T>/t1_review/scorecard.md` 与当日 `details/*.md` 自行比对。**自我迭代腿(候选账本 → 自动立案 proposals.jsonl)随 LLM 段一并退役**:`t1_candidates.jsonl` 已归档(`archive/20260819/`);同类规则的沉淀今后一律改经 **feedback skill** 人工立案。spec:`docs/specs/2026-08-18-e6-activation-learning-slimdown-design.md` §4 D3。
 
 > **复盘不动刀(2026-08-13 用户裁定)**:复盘/反馈流程一律不得编辑 .claude/ 与 CLAUDE.md/AGENTS.md;skill/prompt/agent/workflow 文本只在用户显式发起的开发会话中修改。本 skill 两环的产出止于账本 / 经验 / 权重 / 提案 / 复盘报告。spec:`docs/specs/2026-08-13-retro-skill-selfmodify-removal-design.md`。
 

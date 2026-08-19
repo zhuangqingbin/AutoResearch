@@ -33,9 +33,9 @@
   //   .claude/skills/scan-market/pinned.jsonc,cap=截断条数、ttl_days=缺 expires 时的失效窗)。
   "pinned": { "cap": 5, "ttl_days": 10 },
 
-  // ── Stage 0 · agent 档位(model/effort;12 role 闭集,**必须列全**,缺一 fail-fast)──
+  // ── Stage 0 · agent 档位(model/effort;10 role 闭集,**必须列全**,缺一 fail-fast)──
   // 【生效点】user_config.resolve_agent_config(唯一解释点)→ _resolved_agent_config.json →
-  //   scan-market.js / l4-stock.js / t1-review.js 的 AG() + usage_reconcile 逐 role 对账。
+  //   scan-market.js / l4-stock.js / dossier-init.js 的 AG() + usage_reconcile 逐 role 对账。
   //   effort ∈ low/medium/high/xhigh/max;判断类 role 不写 model 键 = 落 agent def frontmatter
   //   (l3_rank/l4_card=opus、l4_intel=sonnet)。按流程出场顺序排列。
   "agents": {
@@ -47,8 +47,6 @@
     "l4_card":      { "effort": "max" },     // L4 决策卡(逐只渐进深度 DD)
     "ens_review":   { "effort": "max" },     // ≥OW/SELL 双复核 run2/3——与 l4_card 同档(08-06 review:
                                              // 写 xhigh 会让复核在生产静默降档,parity=max;要降档须显式决策)
-    "t1_diag":      { "effort": "high" },    // T+1 快环合诊(≤13 卡一个 context 对比;2026-07-17 裁定勿 fan-out)
-    "t1_synth":     { "effort": "high" },    // T+1 快环综合官
     "dossier_init": { "effort": "max" },     // 档案首覆(≤3 只/晚,盘后)
     // 壳类缺省 sonnet·low:08-05 事故——haiku 壳遇长命令转后台会 pkill 生产作业;省钱可显式
     // 改 haiku,但那是你的选择不是缺省。

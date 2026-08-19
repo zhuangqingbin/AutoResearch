@@ -9,12 +9,15 @@
 
 与慢环 retro 的分工(勿混,也勿建平行实现——本模块复用 factor_lab 取数/日历原语):
   retro     = 漏斗召回归因(全市场谁涨了没进池),D+2,喂**权重**重标定(唯一自动腿)。
-  t1_review = 判断层精度(L3 选中 + L4 评级的票,次日兑现如何、为什么),D+1,
-              喂 **prompt 侧**经验/提案(人批;诊断叙事由 t1-review workflow 的 agent 做)。
+  t1_review = 判断层精度(L3 选中 + L4 评级的票,次日兑现如何)。D3(2026-08-19,用户裁定 A5)
+              退役 LLM 逐票诊断/候选自动立案链后,本环收窄为**确定性**记分卡(D+1 初判)+
+              隔夜 gap 终判(D+2,`gap_finalize_pending`,nightly_close 接线)+ 账本派生的
+              🔄 校准块注入 L3/L4 prompt(`render_t1_calibration_block`);不再产出 prompt
+              侧新经验/自动立案,同类规则改经 feedback skill 人工立案。
 
 两把尺(勿混,项目有尺子错配的疤;2026-08-05 用户裁定后再分初判/终判两层):
   D+1 初判尺 = cc1(T 收盘 → T+1 收盘;当晚就能算,判断层快环的速度优势全靠它,
-              = T+1 当日 pct_chg 口径)——`build_scorecard`/`finalize` 当晚写下的 `verdict`
+              = T+1 当日 pct_chg 口径)——`build_scorecard`/`append_ledger` 当晚写下的 `verdict`
               列就是这把尺量出来的,**D+2 终判落地后仍原样留在 scorecard/账本里,不覆盖不抹除**。
   D+2 终判尺 = gap_c1_o2(T+1 收盘 → T+2 开盘,隔夜;2026-08-05 用户裁定)——**准不准的
               对外口径 = 这把尺**,由 `gap_finalize_pending` 在 T+2 晚(nightly_close 接线)
@@ -27,15 +30,16 @@
   本环出于「当晚必须能跑」的速度约束,自建轻量 daily 抓取(`_fetch_gap_prices`)+ 独立
   z 计算,不跑 ruler/factor_lab 的主帧管线,不读 MAIN_RULER 当前值。
 
-产物:context/scan/<T>/t1_review/{scorecard.csv,scorecard.md,diagnoses.json,report.md,done.json}
+产物:context/scan/<T>/t1_review/{scorecard.csv,scorecard.md,build_meta.json,done.json}
   ── scorecard.csv 的 gap_c1_o2/z_gap/final_verdict 三列由 D+2 晚 `gap_finalize_pending`
      回填(nightly_close 接线),D+1 `build` 时不产生;回填前 pd.read_csv 读不到这三列很正常。
+     (diagnoses.json/report.md 曾由已退役的 t1-review LLM workflow 产出,D3 后不再生成;
+     历史日盘上的这两个文件仍可读,不回收)
 账本:context/learning/t1_review.jsonl(逐票行,按 T 日幂等整替;gap 回填只并入
   gap_c1_o2/z_gap/final_verdict 三键,既有 diagnosed/mechanism/why 等字段原样保留)
 
   uv run --no-sync python -m autoresearch.learning.t1_review pending          # 待复盘对
-  uv run --no-sync python -m autoresearch.learning.t1_review build 2026-07-16 --json
-  uv run --no-sync python -m autoresearch.learning.t1_review finalize 2026-07-16
+  uv run --no-sync python -m autoresearch.learning.t1_review build 2026-07-16
   uv run --no-sync python -m autoresearch.learning.t1_review backfill 2026-07-14
   uv run --no-sync python -m autoresearch.learning.t1_review report
 """
@@ -401,16 +405,19 @@ def ledger_tail_summary(k: int = 10, path: Path | str | None = None) -> dict:
             "mechanisms": dict(sorted(mech.items(), key=lambda kv: -kv[1]))}
 
 
-# ───────────────────── 自我迭代腿(2026-07-17 用户裁定:不能止步于复盘文档) ─────────────────────
+# ───────────────────── T+1 快环校准块(账本读侧) ─────────────────────
 #
-# 全链:综合官写 candidates.json(稳定 key)→ finalize 记入候选账本(逐日计 n_days)
-#   → 次日 L3 表自动注入「复盘观察(n=…)」(render_t1_calibration_block,advisory 数据非指令)
-#   → 同 key 累计 n_days≥2 自动立案 proposals.jsonl(prompt_rule,一键人批)
-#   → 人批成 lesson 后由 feedback_store.render_calibration_block 注入(pr_20260716_005 同波接线)。
-# 半自动边界不变:自动的是「观察的注入」与「提案的起草」,改规则/prompt 文件仍人批。
+# 历史沿革(2026-07-17 用户裁定建的「自我迭代腿」):综合官写 candidates.json(稳定 key)→
+# finalize 记入候选账本 → 同 key 累计 n_days≥2 自动立案 proposals.jsonl(prompt_rule)→
+# 人批成 lesson 后经 feedback_store.render_calibration_block 注入。
+# **D3(2026-08-19,用户裁定 A5)退役**:t1-review LLM workflow(合诊+综合官)与写侧/自动
+# 立案链(`upsert_candidates`/`promote_candidates`/`finalize`)已删除——候选账本不再有
+# 新数据写入,`t1_candidates.jsonl` 已归档(archive/20260819/)。未来同类规则须人工经
+# feedback skill 立案,不再有自动通道。
+# `load_candidates` 只作为下面 `render_t1_calibration_block` 的只读依赖保留(读历史/
+# 测试注入的候选账本;账本本体已归档后,生产默认路径下天然返回 []——presence-gated 零字节)。
 
 _CAND_LEDGER = ws.context_root() / "learning/t1_candidates.jsonl"
-_PROMOTE_N_DAYS = 2      # 同 key 出现 ≥2 个 T 日 → 自动立案(防单日噪声直通提案板)
 
 
 def load_candidates(path: Path | str | None = None) -> list[dict]:
@@ -418,67 +425,6 @@ def load_candidates(path: Path | str | None = None) -> list[dict]:
     if not p.exists():
         return []
     return [json.loads(ln) for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()]
-
-
-def upsert_candidates(t: str, items: list[dict], path: Path | str | None = None) -> list[dict]:
-    """把某日综合官的候选并进账本(按 key upsert;同日重跑幂等——days 集合去重)。
-
-    items = [{"key": 短横线稳定slug, "text": 一句话}];key 由综合官起,prompt 会把既有
-    open key 喂回去促其复用(跨日收敛靠这个)。返回更新后的全账本。
-    """
-    p = Path(path or _CAND_LEDGER)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    recs = {r["key"]: r for r in load_candidates(p)}
-    for it in items or []:
-        key = str(it.get("key", "")).strip()
-        if not key:
-            continue
-        r = recs.get(key) or {"key": key, "days": [], "texts": [], "filed_pr": None,
-                              "stage": None}
-        if t not in r["days"]:
-            r["days"] = sorted(set(r["days"]) | {t})
-        txt = str(it.get("text", "")).strip()
-        if txt and txt not in r["texts"]:
-            r["texts"] = (r["texts"] + [txt])[-3:]          # 只留最近 3 版表述
-        if it.get("stage"):                                  # 归责路由:L3/L4/intel/gate/process
-            r["stage"] = str(it["stage"])
-        recs[key] = r
-    out = sorted(recs.values(), key=lambda r: (-len(r["days"]), r["key"]))
-    p.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in out), encoding="utf-8")
-    return out
-
-
-def promote_candidates(path: Path | str | None = None, add_proposal=None) -> list[str]:
-    """候选 → 提案的自动起草:同 key 累计 ≥_PROMOTE_N_DAYS 个 T 日且未立案 → add_proposal。
-
-    只起草不裁决(kind=prompt_rule,status=open 等人批);立案后回写 filed_pr 防重复起草。
-    """
-    p = Path(path or _CAND_LEDGER)
-    recs = load_candidates(p)
-    if add_proposal is None:
-        from autoresearch.learning.feedback_store import add_proposal as _ap
-        add_proposal = _ap
-    filed: list[str] = []
-    for r in recs:
-        if r.get("filed_pr") or len(r.get("days", [])) < _PROMOTE_N_DAYS:
-            continue
-        rec = add_proposal(
-            kind="prompt_rule",
-            summary=f"T1快环·重复模式自动立案:{r['key']}(已在 {len(r['days'])} 个 T 日独立出现)",
-            rationale=("T+1 判断层复盘快环(fb_20260717_001)跨日收敛的候选经验,自动起草待人批。\n"
-                       f"出现日:{('、'.join(r['days']))}\n最近表述:\n"
-                       + "\n".join(f"  - {t}" for t in r.get("texts", []))),
-            diff_sketch="人批后走 lesson 裁决(ADD);经验注入面 = "
-                        "feedback_store.render_calibration_block(L3 表已接线)。"
-                        "若病在 prompt 文案本身,落地只在用户显式发起的开发会话中做"
-                        "(2026-08-13 裁定:复盘不动刀)。",
-        )
-        r["filed_pr"] = rec["id"]
-        filed.append(rec["id"])
-    if filed:
-        p.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in recs),
-                     encoding="utf-8")
-    return filed
 
 
 def render_t1_calibration_block(k: int = 10, path: Path | str | None = None,
@@ -590,101 +536,20 @@ def _stage(res: dict, scan_root: Path | str | None = None) -> Path:
     return out_dir
 
 
-def _load_staged(t: str, scan_root: Path | str | None = None) -> dict:
-    """从 staging 复原 res(finalize 不重建、不碰网络——build 后数据修订也不会让数字漂)。"""
-    sdir = Path(scan_root or ws.scan_root()) / t / "t1_review"
-    meta = json.loads((sdir / "build_meta.json").read_text(encoding="utf-8"))
-    sc = pd.read_csv(sdir / "scorecard.csv", dtype={"code": str})
-    sc["code"] = sc["code"].str.zfill(6)
-    for c in ("conviction", "close_t", "close_t1", "cc1", "oc1", "hi_oc",
-              "excess", "excess_ind", "z"):
-        if c in sc.columns:
-            sc[c] = pd.to_numeric(sc[c], errors="coerce")
-    # csv 往返 bool 变串 → 重推导(z 在场用 z 口径,老 staging 退 legacy)
-    zs = pd.to_numeric(sc.get("z"), errors="coerce") if "z" in sc.columns else None
-    if zs is not None and zs.notna().any():
-        sc["surprise"] = zs.abs().ge(_Z_SURPRISE).fillna(False)
-    else:
-        sc["surprise"] = sc["excess"].abs() >= _SURPRISE_THR
-    for bcol in ("sealed", "needs_diag"):
-        if bcol in sc.columns:
-            sc[bcol] = sc[bcol].astype(str).str.lower().eq("true")
-    sc["limit"] = sc.get("limit", pd.Series("", index=sc.index)).fillna("")
-    return {"t": meta["t"], "t1": meta["t1"], "market_cc": meta["market_cc"],
-            "sigma": meta.get("sigma"), "excluded": meta["excluded"], "scorecard": sc}
-
-
 def build_and_stage(t: str, scan_root: Path | str | None = None,
                     prices: pd.DataFrame | None = None, cal: list[str] | None = None) -> dict:
-    """build + 写盘(scorecard.csv/md/build_meta)→ 返回 workflow 用的整包 JSON(含 ledger 近况)。"""
+    """build + 写盘(scorecard.csv/md/build_meta)→ 返回 CLI `build` 播报用的摘要 dict。
+
+    D3(2026-08-19,用户裁定 A5)退役 t1-review LLM 腿后,本函数不再打包逐票 rows/
+    agents_cfg/open_candidates/ledger_tail(那是喂 t1-review.js 合诊/综合官 agent 的
+    schema,workflow 已删除)——只留 CLI `build` 一行播报要用的摘要字段。
+    """
     res = build_scorecard(t, scan_root=scan_root, prices=prices, cal=cal)
     out_dir = _stage(res, scan_root=scan_root)
-    sc = res["scorecard"]
-    def _pctv(v):
-        return None if v is None or pd.isna(v) else round(float(v) * 100, 2)
-
-    rows = []
-    for _, r in sc.iterrows():
-        rows.append({"code": str(r["code"]), "name": r.get("name"), "rating": r["rating"],
-                     "conviction": None if pd.isna(r.get("conviction")) else float(r["conviction"]),
-                     "l4_conf": r.get("l4_conf", ""),
-                     "cc_pct": _pctv(r["cc1"]), "oc_pct": _pctv(r.get("oc1")),
-                     "excess_pct": _pctv(r["excess"]), "excess_ind_pct": _pctv(r.get("excess_ind")),
-                     "z": None if pd.isna(r.get("z")) else round(float(r["z"]), 2),
-                     "verdict": r["verdict"], "surprise": bool(r["surprise"]),
-                     "sealed": bool(r.get("sealed", False)),
-                     "needs_diag": bool(r.get("needs_diag", True)),
-                     "limit": r.get("limit") or ""})
-    cfg: dict = {}
-    try:                                     # agent 模型/effort 统一由 scan_config.jsonc 管控
-        from autoresearch.scan.user_config import load_user_config
-        cfg = load_user_config().get("agents") or {}
-    except Exception:  # noqa: BLE001 — 配置坏了不挡复盘(workflow 用内建默认)
-        cfg = {}
-    open_cands = [{"key": r["key"], "n_days": len(r["days"]),
-                   "text": (r.get("texts") or [""])[-1], "filed_pr": r.get("filed_pr")}
-                  for r in load_candidates()[:8]]
     return _sanitize({"t": res["t"], "t1": res["t1"],
                       "market_cc_pct": round(res["market_cc"] * 100, 2),
-                      "n": len(sc), "excluded": res["excluded"], "rows": rows,
-                      "dir": str(out_dir), "scorecard_md": str(out_dir / "scorecard.md"),
-                      "ledger_tail": ledger_tail_summary(),
-                      "agents_cfg": cfg, "open_candidates": open_cands})
-
-
-def finalize(t: str, scan_root: Path | str | None = None,
-             ledger_path: Path | str | None = None,
-             cand_path: Path | str | None = None, add_proposal=None) -> dict:
-    """综合稿收尾:验 report.md 在场 → diagnoses.json 并进账本 → 候选账本 upsert +
-    重复模式自动立案(自我迭代腿)→ done(mode=full)。
-
-    report.md 缺 → SystemExit(2):综合稿没写就不算复盘完(防「跑了一半像跑完」)。
-    candidates.json 缺 = 当日无候选,合法(不是失败)。
-    """
-    sdir = Path(scan_root or ws.scan_root()) / t / "t1_review"
-    if not (sdir / "report.md").exists():
-        raise SystemExit(f"[t1_review] {sdir / 'report.md'} 缺失:综合稿未写,拒绝 finalize")
-    diagnoses = {}
-    dp = sdir / "diagnoses.json"
-    if dp.exists():
-        raw = json.loads(dp.read_text(encoding="utf-8"))
-        items = raw if isinstance(raw, list) else raw.get("diagnoses", [])
-        diagnoses = {str(d["code"]).zfill(6): d for d in items if d.get("code")}
-    res = _load_staged(t, scan_root=scan_root)
-    n = append_ledger(res, diagnoses=diagnoses, path=ledger_path)
-    cp = sdir / "candidates.json"
-    filed: list[str] = []
-    if cp.exists():
-        cand_items = json.loads(cp.read_text(encoding="utf-8"))
-        upsert_candidates(t, cand_items if isinstance(cand_items, list) else [], path=cand_path)
-        filed = promote_candidates(path=cand_path, add_proposal=add_proposal)
-    sc = res["scorecard"]
-    summary = {"n": n, "diagnosed": len(diagnoses),
-               "right": int((sc["verdict"] == "准").sum()),
-               "wrong": int((sc["verdict"] == "不准").sum()),
-               "promoted": filed}
-    mark_done(t, "full", summary, scan_root=scan_root)
-    return summary
+                      "n": len(res["scorecard"]), "excluded": res["excluded"],
+                      "dir": str(out_dir), "scorecard_md": str(out_dir / "scorecard.md")})
 
 
 def backfill_day(t: str, scan_root: Path | str | None = None,
@@ -730,11 +595,11 @@ def _industry_neutral_gap(frame: pd.DataFrame) -> pd.DataFrame:
 def _update_ledger_gap(t: str, merged: pd.DataFrame, path: Path | str | None = None) -> int:
     """把 gap 终判字段并进账本既有行(整替当日行,幂等)。
 
-    按 code 合并:既有行(`finalize`/`backfill_day` 已写的)只追加/覆写
+    按 code 合并:既有行(`append_ledger`/`backfill_day` 已写的)只追加/覆写
     `gap_c1_o2`/`z_gap`/`final_verdict` 三键,其余字段原样保留——尤其
     `diagnosed`/`mechanism`/`why`/`stage`:gap 终判发生在 D+1 诊断之后,绝不能把当晚
-    人工/LLM 诊断的产出覆写掉(整替的对象是"gap 那三键",不是整行)。
-    当日账本行缺失(理论不该发生——T 的 D+1 finalize/backfill 没跑过 gap 就没得终判;
+    人工诊断的产出覆写掉(整替的对象是"gap 那三键",不是整行)。
+    当日账本行缺失(理论不该发生——T 的 D+1 build/backfill 没跑过 gap 就没得终判;
     防御性兜底)→ 新建一行(diagnosed=false)。
 
     I4 修复(final-review 2026-08-08):`ruler` **不在**"追加/覆写三键"之列——本函数曾经
@@ -948,9 +813,6 @@ def main() -> int:
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("build", help="构建记分卡并落 staging")
     p.add_argument("date")
-    p.add_argument("--json", action="store_true", help="打印 workflow 用整包 JSON")
-    p = sub.add_parser("finalize", help="综合稿收尾(验 report.md → 账本 → done)")
-    p.add_argument("date")
     p = sub.add_parser("backfill", help="确定性回补一日(无诊断叙事)")
     p.add_argument("date")
     p = sub.add_parser("report", help="账本累计视图")
@@ -962,11 +824,8 @@ def main() -> int:
               ("\n".join(f"{p['t']} → {p['t1']}" for p in pairs) or "无待复盘对"))
     elif a.cmd == "build":
         pack = build_and_stage(a.date)
-        print(json.dumps(pack, ensure_ascii=False) if a.json else
-              f"[t1_review] {a.date}→{pack['t1']} 记分卡 {pack['n']} 只(剔除 {pack['excluded']})"
+        print(f"[t1_review] {a.date}→{pack['t1']} 记分卡 {pack['n']} 只(剔除 {pack['excluded']})"
               f" → {pack['scorecard_md']}")
-    elif a.cmd == "finalize":
-        print(json.dumps(finalize(a.date), ensure_ascii=False))
     elif a.cmd == "backfill":
         print(json.dumps(backfill_day(a.date), ensure_ascii=False))
     elif a.cmd == "report":

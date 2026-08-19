@@ -75,8 +75,10 @@ AGENTTYPE_ROLES: dict[str, tuple[str, ...]] = {
 #: 兼容既有导入方(只给主 role)。新代码请用 `AGENTTYPE_ROLES`。
 AGENTTYPE_TO_ROLE = {atype: roles[0] for atype, roles in AGENTTYPE_ROLES.items()}
 
-# 全扫描日「应在场」的 role——t1_diag/t1_synth 属 t1-review 快环、dossier_init 属首覆
-# workflow,均非每个 scan-market 全扫日必跑;放进来会对着正常运作的当日报假 wire_break。
+# 全扫描日「应在场」的 role——dossier_init 属首覆 workflow,非每个 scan-market 全扫日
+# 必跑;放进来会对着正常运作的当日报假 wire_break。
+# (t1_diag/t1_synth 曾属 t1-review 快环,随 D3(2026-08-19,用户裁定 A5)t1-review LLM
+# 腿退役、role 收口 12→10 一并摘除,不再是本表要考虑的 role。)
 _EXPECT_PRESENT = ("l3_rank", "l4_card", "l4_intel", "strategist", "sector_brief")
 
 # gp_shell / gp_shell_json 未在 scan_config.jsonc 显式配置时的缺省 spec——与 workflow 侧

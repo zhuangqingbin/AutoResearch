@@ -223,37 +223,17 @@ self_review 硬门 banner → H1 → regime+drift 行(+🌡情绪温度行)
 
 ---
 
-## 实验晋升与回滚控制面
+## 实验治理
 
-所有会改变召回、研究、门、评级或编排行为的 challenger 都必须预注册。默认 registry 为 `$CTX/learning/experiments/registry.json`,schema 版本化、写入原子化;定义 hash 改变时不得复用旧实验 ID。注册前先固化稳定基线,激活期间不得覆盖它,确保回滚指针始终可寻址。
+D1(2026-08-19,用户裁决 A3):原「预注册 → 五守卫 → 人工 approve/activate → 观察窗 → accept/rollback」状态机(`experiment_registry`/`promotion`/`rollback_watch`/`mainflow5d`)已整删——5 个实验全冻在 `PREREGISTERED`、零 `ACTIVE`;其中 2 个有 38 条 shadow 观测但 `promotion`/`rollback_watch` 从无生产调用点(=从未被评估),另 3 个 0 观测(shadow 腿没接线)。`experiment_template.py` 的方法学部分(H0/H1/cutoff/配对单位/聚类/五态裁决 `conclude()`/0 BUY 不得当动机)**保留**,供 `gate_recal.py`(E1a 门失败分级)与 `l3_marginal.py` 的核心裁决逻辑直接调用,只删除它面向 registry 的胶水函数(`to_registry_definition`/`minimums_for`)。
 
-统一成熟门:前向观察不少于 **20 个真实扫描日**、关键细分至少 **10 个成熟事件**、召回通道另需 unique 样本 ≥30,且至少覆盖 **2 个 regime**。未满足返回 `IMMATURE`;缺观测返回 `UNKNOWN`,不得混作 `FAIL`。五项独立守卫是**研究、决策、Token、速度、架构**:至少一项显式改善且五项都无 FAIL/UNKNOWN,才可从 `PREREGISTERED` 得到 `RECOMMENDED`。
+现行治理链条(涉及召回、L3、门、早停、ensemble、评级、Token 或速度的改动):
 
-```text
-PREREGISTERED
-  └─ 五守卫 PASS → RECOMMENDED
-       └─ 人工 approve → APPROVED
-            └─ 人工 activate → ACTIVE
-                 ├─ 完整观察窗全 PASS → STABLE_CANDIDATE
-                 │    └─ 人工 accept → ACCEPTED / 新稳定基线
-                 └─ 任一守卫 FAIL → ROLLBACK_RECOMMENDED
-                      └─ 人工执行生产回滚并登记 → ROLLED_BACK
-```
+1. **影子账本直接呈证**——既有 `shadow/` 产物与各学习账本(gate_ledger/channel_ledger/relative_ledger/gate_recal/l3_marginal 等)的观测本身就是证据,不再需要预注册。
+2. **写成 proposal 交用户人批**——走 `feedback` skill 的裁决通道(`裁决提案`),证据与建议一次性列清。
+3. **人批后由开发会话改 `scan_config.jsonc`/代码落地**——无状态机、无 `PREREGISTERED→ACTIVE` 流转、无自动激活机器。
 
-`promotion` 只写推荐,`rollback_watch` 只写观察与推荐,二者都**不自动**改门、权重、prompt、评级或生产配置。批准/激活/接受/回滚分别带人员、时间与审计记录;同一 trial family 同时最多一个 ACTIVE;trial 数与定义断点必须披露,实验过期不得晋升。当前所有 challenger 真实样本仍未成熟,软件完成不等于研究结论通过。
-
-**最小操作序列**(registry/facts/spec 均 JSON;SKILL.md 只留指针,命令原文在此):
-
-```bash
-python -m autoresearch.learning.experiment_registry baseline ...
-python -m autoresearch.learning.experiment_registry register --spec <spec.json>
-python -m autoresearch.learning.promotion evaluate <id> --facts <facts.json>
-python -m autoresearch.learning.experiment_registry approve <id> --approved-by <人>
-python -m autoresearch.learning.experiment_registry activate <id> --activated-by <人>
-python -m autoresearch.learning.rollback_watch observe <id> --facts <facts.json> --run-id <run>
-python -m autoresearch.learning.experiment_registry rollback|accept <id> ...
-python -m autoresearch.learning.experiment_registry report
-```
+E6 相对 BUY 转正(`scan_config.jsonc` 的 `relative_buy.mode` 一行翻 `active`)是这套模式的首个实例,详见 `docs/specs/2026-08-18-e6-activation-learning-slimdown-design.md` §3 E2。
 
 ---
 
@@ -273,7 +253,7 @@ python -m autoresearch.learning.experiment_registry report
 | `lesson_yield` | 教训证伪器:逐条带 guard 教训的反事实 Δpp 累计 + MTM;命中 n≥20 且累计 Δ≤0 自动提名 retire(只提名人批) |
 | `feedback_store` | lessons(regime 域+MTM,cap=8)/ proposals / changelog / 权重回滚 |
 | `gate_ledger` | 门 MTM 拦对率;OW 三门建账(assemble 逐满卡解析失守 → gate_fires binding 行)+ `tail_rate` 左尾 ≤−5% KPI(门=避雷器);读数:三门 mean_ex2 为正但 tail_rate 36-46% |
-| `t1_review` | T+1 快环:T 报告真选票 vs T+1 收盘(保送不算/只相邻交易日;判定尺=行业中性超额÷截面稳健σ 的 z,双门+分诊+一字板剔除);CLI + `t1-review.js`(2 agent:合诊+综合,model/effort 走 scan_config `agents.t1_diag/t1_synth`);prelude `t1_pending` 催办;账本 `$CTX/learning/t1_review.jsonl`。自我迭代腿:candidates.json → 候选账本 → 次日 L3 表自动注入 🔄 校准块(数据非指令)→ 同 key ≥2 T 日自动立案(人批) |
+| `t1_review` | T+1 快环:T 报告真选票 vs T+1 收盘(保送不算/只相邻交易日;判定尺=行业中性超额÷截面稳健σ 的 z,双门+一字板剔除);**LLM 逐票诊断/候选自动立案链已于 D3(2026-08-19,用户裁定 A5)退役**,确定性侧全保留——CLI(`pending`/`build`/`backfill`/`report`)+ nightly_close 自动 `t1_backfill`/`t1_gap_finalize`;prelude `t1_pending` 催办;账本 `$CTX/learning/t1_review.jsonl`;🔄 校准块仍注入 L3/L4 prompt(账本派生数据非指令,不再有新经验/自动立案) |
 | `changelog_ledger.heartbeat` | 自动腿心跳探针:连续 3 次重标定 sha 不变 → 🚨 进 prelude 汇总屏。**自动学习的腿必须有一个会变的量做断言**;`recalibrate_and_log` 前置 `factor_lab.extend_plan()` 增量续面板(勿重跑 harvest——会按 form_span 重造小面板冲掉历史累积) |
 | `scan/dossier.py` | **前科卡**(跨日入围史)注入 L4,强制"变化项"节;与覆盖档案是两回事,并存不互替 |
 | `dossier/*`(覆盖档案链) | 常备覆盖模型:`coverage_pool.json` 池(prelude 日检:进=pinned/20日真选≥2、退=20日未选、cap30 LRU)→ `$CTX/knowledge/dossiers/<code>.md` 八节档案(`dossier-init` workflow 首覆)→ L4 prompt 注入「📚 覆盖档案摘要」(`schema.injectable_summary` 四门=注入器与卡 lint 单一事实源)+ intel prompt 内嵌已知底(情报员无 Read=结构性盲)→ 卡写「档案对账」节(`self_review` 分档探针)→ assemble 尾 `delta.record_scan_deltas` 按**终评级**回写 §8 + 刷新 §2/§3/§4/§6/§7 与摘要机算行 → 季度对账 `python -m autoresearch.dossier.reconcile <period>`(express 优先/forecast 兜底/未披露也落痕;prelude 📐 提醒 + 🕰️ 90 日陈旧告警)。全链 presence-gated:无档案 = 注入前行为逐字节不变 |
