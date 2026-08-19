@@ -490,12 +490,25 @@ def mark_success(
 
 
 def reconcile(book: Path | str, *, now: datetime | None = None) -> dict:
-    """收尾自愈(E1b):卡已在盘而 book 仍非 SUCCEEDED 的票,按盘上事实补记。
+    """收尾自愈(E1b):卡已在盘而 book 卡在 RUNNING 的票,按盘上事实补记 SUCCEEDED。
+
+    只处理 `status == "RUNNING"` 的票(设计稿 `2026-08-18-e6-activation-learning-
+    slimdown-design.md` §3 E1b 原文:「对 status=RUNNING 的票…补记 SUCCEEDED」)——
+    **不碰 FAILED/BLOCKED/PENDING**,尤其不碰 FAILED。FAILED 是一次已经给出理由的
+    显式判断(`last_error_class`/`last_error` 记着为什么失败,含 `preflight` 从
+    SUCCEEDED 降级来的 `ARTIFACT_CHANGED`、从 RUNNING 降级来的 `STALE_TASK`,以及
+    `mark_failure` 直接判的瞬时错误);仅凭"产物碰巧还在盘上"就把它翻回 SUCCEEDED,
+    等于用文件推翻一个已经有理由的失败判断,会放一张不该放的票进买入候选——
+    contract 门拦它本来就是拦对的。08-12 事故的真实形态是**卡死在 RUNNING**
+    (workflow 认领后崩溃,`mark_success` 从未执行,任务簿没能力知道执行其实已经
+    完成),收窄到只处理 RUNNING 不影响目标场景。
 
     只认盘上产物:prompt/slim/card 三件齐 + slim 合格才补记(content_hash 现算,
     绝不编造);缺产物的票原样保留 —— contract 门拦它拦得对。补记行打
-    `recovered=True`,账目可辨。幂等:SUCCEEDED 行直接跳过。
-    立案:2026-08-12 九票卡全在盘、book 全 RUNNING → E6 contract 团灭(spec §2.1)。
+    `recovered=True`,账目可辨。SUCCEEDED/FAILED/BLOCKED/PENDING 均直接跳过(幂等)。
+    立案:2026-08-12 九票卡全在盘、book 全 RUNNING → E6 contract 门团灭(spec §2.1)。
+    复核修复轮 1(2026-08-19):原实现「非 SUCCEEDED 皆自愈」范围过宽(会把显式
+    FAILED/BLOCKED 的票也翻成 SUCCEEDED),按设计稿收窄到仅 RUNNING。
     """
     from autoresearch.scan.l4.producers import _slim_defect
 
@@ -506,7 +519,7 @@ def reconcile(book: Path | str, *, now: datetime | None = None) -> dict:
         _, payload = _read(path)
         for code6 in sorted(payload["tasks"]):
             task = payload["tasks"][code6]
-            if task.get("status") == "SUCCEEDED":
+            if task.get("status") != "RUNNING":
                 continue
             refs = task.get("artifacts") or {}
             missing = []

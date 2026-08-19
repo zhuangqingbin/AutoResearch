@@ -228,3 +228,20 @@ def test_reconcile_idempotent_on_succeeded(tmp_path):
     from autoresearch.scan import l4_tasks
 
     assert l4_tasks.reconcile(book["path"], now=NOW)["recovered"] == []
+
+
+def test_reconcile_does_not_revive_failed_task(tmp_path):
+    """复核修复轮 1(设计稿 §3 E1b:只自愈 RUNNING)—— 显式 mark_failure 过的票,
+    即使三件产物齐全且 slim 合格,也不得被 reconcile 用盘上文件推翻显式失败判断。
+    """
+    book = _book(tmp_path, ("000001",))
+    _files(tmp_path, "000001", "000001.SZ")
+    preflight(book["path"], "000001", now=NOW)
+    mark_failure(book["path"], "000001", "RATE_LIMIT", now=NOW)  # 瞬时错误 → FAILED
+
+    from autoresearch.scan import l4_tasks
+
+    got = l4_tasks.reconcile(book["path"], now=NOW)
+    assert "000001" not in got["recovered"]
+    _, payload = l4_tasks._read(book["path"])
+    assert payload["tasks"]["000001"]["status"] == "FAILED"
