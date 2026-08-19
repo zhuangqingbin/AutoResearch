@@ -561,7 +561,12 @@ def test_post_run_observe_writes_the_decision_file(tmp_path):
     publish_run_observation(scan, real_scan=False)
     assert (scan / DECISION_FILENAME).exists()
     doc = json.loads((scan / DECISION_FILENAME).read_text(encoding="utf-8"))
-    assert doc["mode"] == "shadow"           # 影子:不写 buy ledger / 不碰 publisher
+    # 2026-08-19 E6 转正(裁决表 A1/A2,task-2.5b):这条测试故意不 monkeypatch 配置,就是
+    # 要验证 publish_run_observation 真的读了 configured_relative_buy() 的当前生产值——
+    # 生产 scan_config.jsonc 已从 mode=shadow/exclude_pinned=false 翻 active/true,断言
+    # 随裁决表翻转是预期行为(不是回归;旧断言硬编码了翻转前的默认值)。
+    assert doc["mode"] == "active"
+    assert doc["exclude_pinned"] is True
 
 
 def test_default_paths_are_the_shadow_pair():

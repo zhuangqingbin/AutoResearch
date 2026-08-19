@@ -52,7 +52,7 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
 | L4 | `l4_intel` | enabled·max_queries | `l4-stock.js`(intelOn/maxQ;**缺块=intel 关**)+ `scan/l4/intel_status.py` |
 | L4 | `performance` | streaming_l4 | `scan-market.js`(任务簿流式 vs 旧批量 GATE3) |
 | 闭环 | `learning` | shrink·shrink_k | `learning/shrink.py shrink_config`(4 消费点) |
-| 收尾 | `relative_buy` | mode·exclude_pinned | `scan/post_run.py publish_run_observation` → `relative_buy.write_decision`/`verify_decision`(mode 默认 shadow=影子只记账,翻 active 需裁决表批准) |
+| 收尾 | `relative_buy` | mode·exclude_pinned·activate_date | `scan/post_run.py publish_run_observation` → `relative_buy.write_decision`/`verify_decision`(2026-08-19 裁决表 A1/A2:mode=active 正式接管 BUY、exclude_pinned=true 剔📌;activate_date=2026-08-19 起 `learning/legacy_freeze` 冻结 buy_ledger/zero_buy_ledger 两本旧账,三键同一 commit 落地) |
 
 **防漂移铁律:**
 1. **白名单外的键 load 即 raise**(`user_config.py`)——写错键名当场炸,不静默失效;错型同样 raise(`_KNOB_TYPES`)。

@@ -148,16 +148,24 @@
   "learning": { "shrink": true, "shrink_k": 15 },
 
   // ── 收尾 · 相对 BUY(E6)──【生效点:scan/post_run.publish_run_observation → relative_buy.write_decision/verify_decision】
-  // mode: shadow=影子只记账;active=正式接管 BUY(裁决表 A1 批 GO 后才可翻,翻回即回滚)
-  //   【消费侧生效点(task-2.4)】relative_buy.is_active() → scan/report_sections(组合视角/仓位
-  //   overlay 改 managed 占位+收尾注入)· scan/health.count_buys(改读决策文件)· scan/brief(③ 旧
-  //   OW 行降为研究评级分布)。翻 active 前请先跑 `python -m autoresearch.scan.relative_buy preflight`。
-  // exclude_pinned: 📌 持仓是否不参与当日 BUY 选择(保送不算判例)。**裁决表 A2 待用户批准前
-  //   保持 false** —— 开了会让影子账本按未获批规则记账(08-18 影子 BUY 688766 普冉本身就是📌)
+  // 2026-08-19 用户裁决表(docs/specs/2026-08-18-e6-activation-learning-slimdown-design.md §6)
+  // A1/A2 一次性拍板:下面三键是**同一个裁定**的产物,同一 commit 落地,不得分次改。
+  // mode: shadow=影子只记账;active=正式接管 BUY。**A1=GO,本次已翻 active**(翻回 shadow
+  //   即回滚)。【消费侧生效点(task-2.4)】relative_buy.is_active() → scan/report_sections
+  //   (组合视角/仓位 overlay 改 managed 占位+收尾注入)· scan/health.count_buys(改读决策
+  //   文件)· scan/brief(③ 旧 OW 行降为研究评级分布)。翻前已跑过
+  //   `python -m autoresearch.scan.relative_buy preflight` 体检(契约错按 task-2.5b 分类后
+  //   real=0,详见该 task 报告)。
+  // exclude_pinned: 📌 持仓是否不参与当日 BUY 选择(保送不算判例)。**A2=是,本次已翻
+  //   true** —— BUY 只从非📌合格候选取 rank1;📌 持仓不再抢当日 BUY,走各自的 pinned
+  //   复核路(08-18 影子 BUY 688766 普冉本身就是📌,正是这条裁定要堵住的形状)。
   // activate_date: legacy 账本(buy_ledger / zero_buy_ledger)的冻结日,YYYY-MM-DD 或 null。
-  //   【生效点】learning/buy_ledger.roll + learning/zero_buy_ledger.roll —— **该日(含)起不再产生
-  //   新行**,历史行与渲染原样保留(E3 表:旧 OW 买单账冻结 legacy / 0买日账按 activate 日切断)。
-  //   null = 不冻结 = 现行为。**翻 mode 到 active 的那一次改动必须同时填这里**(同一 commit),
-  //   否则两本 legacy 账会继续按旧绝对门记新行,与 relative_ledger 混成一条趋势线。
-  "relative_buy": { "mode": "shadow", "exclude_pinned": false, "activate_date": null }
+  //   【生效点】learning/legacy_freeze.frozen(day, cut) = bool(cut) and day >= cut(含冻结
+  //   日当天)→ learning/buy_ledger.roll + learning/zero_buy_ledger.roll 据此跳过该日起的
+  //   新行,历史行与渲染原样保留(E3:旧 OW 买单账冻结 legacy / 0买日账按 activate 日切断,
+  //   render 顶部出 legacy 横幅)。null = 不冻结 = 旧行为(parity)。**翻 mode 到 active 的
+  //   那一次改动必须同时填这里**(同一 commit,本次即是)——否则两本 legacy 账会继续按旧
+  //   绝对门记新行,与 relative_ledger 混成一条趋势线。取 "2026-08-19" 的语义:最后一个
+  //   扫描日是 08-18,故 ≤08-18 的历史全部保留,08-19(含)起归 E6。
+  "relative_buy": { "mode": "active", "exclude_pinned": true, "activate_date": "2026-08-19" }
 }
