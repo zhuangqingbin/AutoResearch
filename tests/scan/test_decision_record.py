@@ -124,3 +124,39 @@ def test_record_rejects_invalid_domain_values(field, value):
     kwargs[field] = value
     with pytest.raises(ValueError):
         DecisionRecord.build(**kwargs)
+
+
+# ── E3b 裁定 1(task-2.4):`proposal` 语义降格,但**仍旧读评级** ──────────────────
+#
+# active 期 `proposal` 是「研究评级派生的提案」,不是 BUY 决策(BUY 只在
+# `_relative_buy_decision.json` 里)。**故意不改成读决策文件**:`decision_records.json`
+# 正是 `relative_buy.build_decision` 的输入,反向依赖 = 循环。下面这条锁的就是这件事 ——
+# 谁把 decision_finalize 改成读决策文件,它立刻变红(两个断言各堵一种改法)。
+
+
+def test_proposal_stays_rating_derived_and_never_reads_the_decision_file(
+    tmp_path, monkeypatch,
+):
+    from autoresearch.scan import relative_buy
+    from autoresearch.scan.decision_finalize import _build_decision_records
+
+    scan = tmp_path / "2026-08-19"
+    (scan / "details").mkdir(parents=True)
+    (scan / "details" / "600000.md").write_text(
+        "# 决策卡\n**Rating**: Overweight\n", encoding="utf-8")
+    # 当日决策文件说 BLOCKED(零 BUY)——若 decision_finalize 去读它,proposal 会变成 HOLD/—
+    (scan / relative_buy.DECISION_FILENAME).write_text(json.dumps(
+        {"date": "2026-08-19", "mode": "active", "buys": [], "blocked": True},
+        ensure_ascii=False), encoding="utf-8")
+
+    def _boom(*_a, **_k):                    # ② 连"读一下"都不许:循环依赖必须结构性不存在
+        raise AssertionError("decision_finalize 不得读决策文件(E3b 裁定 1:反向依赖即循环)")
+
+    monkeypatch.setattr(relative_buy, "load_decision", _boom)
+
+    rows = [{"code": "600000", "rating": "Overweight", "_source_rating": "Overweight",
+             "_post_verify_rating": "Overweight"}]
+    records = _build_decision_records(scan, rows, {}, {})
+
+    assert [r.proposal for r in records] == ["BUY"]        # ① 仍由评级派生
+    assert [r.final_rating for r in records] == ["Overweight"]

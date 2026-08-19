@@ -21,6 +21,12 @@ from autoresearch.scan.l4.parsers import (
 
 TIER_RANK = {r: i for i, r in enumerate(RATINGS_5_TIER)}
 _VERDICT_BADGE = {"维持": "✅维持", "降级": "⚠️降级", "否决": "🛑否决"}
+#: 研究评级 → 提案的五档→三档投影。**E6 转正后这不是买入决策**(2026-08-19 E3b 裁定 1):
+#: `proposal == "BUY"` 只说明「这张卡的研究评级 ≥Overweight」,正式 BUY 由
+#: `_relative_buy_decision.json` 的 `buys[]` 独家拥有。本模块**故意不读**决策文件 ——
+#: 它产的 `decision_records.json` 正是 `relative_buy.build_decision` 的输入,反向依赖即循环。
+#: 详见 `decision_record._PROPOSALS` 旁注与 `docs/specs/2026-08-18-e6-activation-learning-
+#: slimdown-design.md` §3 E3b。
 _PROPOSAL_BY_RATING = {
     "Buy": "BUY",
     "Overweight": "BUY",

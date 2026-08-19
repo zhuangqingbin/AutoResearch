@@ -14,6 +14,14 @@ DECISION_RECORD_SCHEMA_VERSION = 1
 DECISION_BOOK_SCHEMA_VERSION = 1
 _CODE_RE = re.compile(r"^\d{6}$")
 _RATINGS = {"Buy", "Overweight", "Hold", "Underweight", "Sell", "—"}
+#: ⚠️ `proposal` 的语义自 E6 转正起**降格**(2026-08-19 E3b 裁定 1):它是
+#: **研究评级派生的提案**(`final_rating` 的五档→三档投影),**不是** BUY 决策。
+#: 正式 BUY 只存在于 `_relative_buy_decision.json` 的 `buys[]` 里(Wave12 `:466`
+#: 「research_rating 仅作证据字段,不得独立渲染成买入建议」的同一精神)。
+#:
+#: **为什么这里不改成读决策文件**:`decision_records.json` 是 `relative_buy.build_decision`
+#: 的**输入**(它现算护照要读评级),让它反过来依赖决策文件 = 循环依赖,无解 —— 所以
+#: 保持读评级,只降语义 + 改文档。谁想拿 `proposal == "BUY"` 当买入建议渲染,先读这段。
 _PROPOSALS = {"BUY", "HOLD", "SELL", "—"}
 _GATE_STATES = {"PASS", "FAIL", "UNKNOWN"}
 
