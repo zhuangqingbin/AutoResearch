@@ -232,7 +232,64 @@ def rs_load(scan: Path):
     return load_decision(scan)
 
 
-# ── 5. 接线回归(FN-1 家训:生产者没接线 = 特性只活在单测里)────────────────────
+# ── 5. health.count_buys(E3b 裁定 3)─────────────────────────────────────────
+
+
+def _final_ratings(scan: Path) -> None:
+    """build_summary 会落这份;单测 count_buys 时直接写,免得跑整个 assemble。"""
+    (scan / "_final_ratings.json").write_text(
+        json.dumps({"600000": "Overweight", "688766": "Hold"}), encoding="utf-8")
+
+
+def test_shadow_count_buys_is_the_rating_count_without_a_source_key(tmp_path):
+    """影子期:≥OW 计数(现行为)+ run_health 里**没有** buys_source 键(逐字节不变)。"""
+    from autoresearch.scan.health import count_buys, count_buys_with_source, run_health
+
+    scan = _scan_dir(tmp_path)
+    _final_ratings(scan)
+    _decision(scan, date=DATE, buys=["688766"])
+
+    assert count_buys(scan) == 1
+    assert count_buys_with_source(scan) == (1, None)
+    assert "buys_source" not in run_health(scan)["counts"]
+
+
+def test_active_count_buys_reads_the_decision_file(tmp_path, activate):
+    from autoresearch.scan.health import BUYS_SOURCE_DECISION, count_buys_with_source, run_health
+
+    scan = _scan_dir(tmp_path)
+    _final_ratings(scan)                                  # ≥OW 是 1 只(600000)
+    _decision(scan, date=DATE, buys=["688766", "600000"])  # 决策文件是 2 只 —— 两数必须分得开
+
+    assert count_buys_with_source(scan) == (2, BUYS_SOURCE_DECISION)
+    assert run_health(scan)["counts"]["buys_source"] == BUYS_SOURCE_DECISION
+
+
+def test_active_count_buys_falls_back_loudly_on_a_stale_file(tmp_path, activate):
+    """E3b 验收 ①(count_buys 侧):前一日的文件不得被采信,回退必须**留标记**。"""
+    from autoresearch.scan.health import BUYS_SOURCE_FALLBACK, count_buys_with_source, run_health
+
+    scan = _scan_dir(tmp_path)
+    _final_ratings(scan)
+    _decision(scan, date=PREV, buys=["688766", "600000"])   # 昨天的 2 只 BUY
+
+    n, source = count_buys_with_source(scan)
+
+    assert (n, source) == (1, BUYS_SOURCE_FALLBACK)         # 1 = ≥OW 回退,不是昨天的 2
+    assert run_health(scan)["counts"]["buys_source"] == BUYS_SOURCE_FALLBACK
+
+
+def test_active_count_buys_marks_fallback_when_the_file_is_absent(tmp_path, activate):
+    """决策文件缺席(writer-1 之前的早期快照就是这个形态)→ 同样是**带标记**的回退。"""
+    from autoresearch.scan.health import BUYS_SOURCE_FALLBACK, count_buys_with_source
+
+    scan = _scan_dir(tmp_path)
+    _final_ratings(scan)
+
+    assert count_buys_with_source(scan) == (1, BUYS_SOURCE_FALLBACK)
+
+
+# ── 6. 接线回归(FN-1 家训:生产者没接线 = 特性只活在单测里)────────────────────
 
 
 def test_safe_publish_is_the_real_injector(tmp_path, activate):

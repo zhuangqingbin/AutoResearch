@@ -242,9 +242,38 @@ def final_ratings(scan_dir: Path) -> dict[str, str]:
     )
 
 
+#: `count_buys` 的口径标签(进 `run_health.counts.buys_source`,只在 active 期出现)。
+BUYS_SOURCE_DECISION = "decision_file.buys"
+BUYS_SOURCE_FALLBACK = "rating≥OW(回退:决策文件缺席/日期不符)"
+
+
+def count_buys_with_source(scan_dir: Path) -> tuple[int, str | None]:
+    """最终买单数 + **口径来源**(E3b 裁定 3,task-2.4)。
+
+    - shadow 期 → `(≥OW 张数, None)` = 现行为逐字不变(source 为 None = 不进 run_health);
+    - active 期 → 决策文件在场且**日期相符**就读它的 `buys[]`;缺席/过期则回退 ≥OW 计数
+      并**显式标记回退**(不静默,否则「这个数今天到底算的什么」不可查)。
+
+    时序诚实(E3b 原文):`run_health.json` 在一次发布里被写多次,`publisher.py:273`/`:320`
+    那两次都早于/紧贴 writer-1,那时盘上要么没有当日决策文件、要么还是前一日的 → 本函数
+    如实走回退分支;**最后一次 `:375` 在决策文件已在盘之后**,所以落盘的终版快照是对的,
+    早期快照的该字段本就只是中间态。这是刻意接受的,不是漏网。
+    """
+    from autoresearch.scan.relative_buy import is_active, load_decision
+
+    legacy = sum(1 for r in final_ratings(scan_dir).values()
+                 if r in ("Buy", "Overweight"))
+    if not is_active():
+        return legacy, None
+    doc = load_decision(scan_dir)
+    if not isinstance(doc, dict):
+        return legacy, BUYS_SOURCE_FALLBACK
+    return len(doc.get("buys") or []), BUYS_SOURCE_DECISION
+
+
 def count_buys(scan_dir: Path) -> int:
-    """最终买单数(≥OW,verify 折回后)。"""
-    return sum(1 for r in final_ratings(scan_dir).values() if r in ("Buy", "Overweight"))
+    """最终买单数。shadow 期 = ≥OW(verify 折回后);active 期见 `count_buys_with_source`。"""
+    return count_buys_with_source(scan_dir)[0]
 
 
 # D3 清欠(spec 2026-07-12 P0-1):这四本"存在但不会自己长大"的账本现已纳入 prelude._ledgers()
@@ -758,15 +787,19 @@ def run_health(scan_dir: Path) -> dict:
     cards = len(list((scan_dir / "details").glob("*.md"))) if (scan_dir / "details").is_dir() else 0
     rates, degraded = nan_report(scan_dir)
     anns_rate = anns_empty_rate(scan_dir)
+    buys_source = None
     try:
-        buys = count_buys(scan_dir)
+        buys, buys_source = count_buys_with_source(scan_dir)
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         buys = None
+    counts = {"l1_full": _n("L1_scored_full.csv"), "recall": _n("L1_recall_top1000.csv"),
+              "l2": _n("L2_gbdt_top200.csv"), "finalists": _n("finalists.csv"),
+              "cards": cards, "buys": buys}
+    if buys_source is not None:      # active 期才有这个键 —— shadow 期 run_health 逐字节不变
+        counts["buys_source"] = buys_source
     return {"date": scan_dir.name, "artifacts": arts, "missing": missing,
             "core_missing": sorted(_CORE & set(missing)),
-            "counts": {"l1_full": _n("L1_scored_full.csv"), "recall": _n("L1_recall_top1000.csv"),
-                       "l2": _n("L2_gbdt_top200.csv"), "finalists": _n("finalists.csv"),
-                       "cards": cards, "buys": buys},
+            "counts": counts,
             "nan_rates": rates, "degraded_fields": degraded,
             # 旧口径(Wave9 A-1 前):"=1.0 是 expected 非告警"已被推翻,当前权威判据是下面
             # anns_source_status 的四态(blind=warn,pending=L3 还没跑到;详见该函数
