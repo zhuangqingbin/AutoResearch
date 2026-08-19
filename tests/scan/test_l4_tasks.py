@@ -184,3 +184,47 @@ def test_dispatch_batches_effective_cap_is_l4_stock_and_ignores_rate_limit(tmp_p
     second = dispatch_batches(book["path"])
     assert second["effective_cap"] == 8
     assert second["batches"] == [["000001", "000002", "000003"]]
+
+
+# ── E1b:reconcile 收尾自愈(2026-08-12 九票卡全在盘、book 全 RUNNING → contract 团灭)──
+def test_reconcile_recovers_running_with_artifacts_on_disk(tmp_path):
+    """一票 status=RUNNING,prompt/slim/card 三产物齐且 slim 合格 → 按盘上事实补记 SUCCEEDED。"""
+    book = _book(tmp_path, ("000001",))
+    _files(tmp_path, "000001", "000001.SZ")
+    preflight(book["path"], "000001", now=NOW)  # PENDING → RUNNING(卡在盘、book 没收尾)
+
+    from autoresearch.scan import l4_tasks
+
+    got = l4_tasks.reconcile(book["path"], now=NOW)
+    assert got["ok"] and got["recovered"] == ["000001"]
+    _, payload = l4_tasks._read(book["path"])
+    task = payload["tasks"]["000001"]
+    assert task["status"] == "SUCCEEDED" and task["recovered"] is True
+    assert task["artifacts"]["card"]["content_hash"]
+
+
+def test_reconcile_skips_when_card_missing(tmp_path):
+    """缺产物的票原样保留 —— contract 门拦它拦得对,不得被静默补记。"""
+    book = _book(tmp_path, ("000001",))
+    _files(tmp_path, "000001", "000001.SZ")
+    (tmp_path / DATE / "details" / "000001.md").unlink()  # card 缺席
+    preflight(book["path"], "000001", now=NOW)
+
+    from autoresearch.scan import l4_tasks
+
+    got = l4_tasks.reconcile(book["path"], now=NOW)
+    assert got["recovered"] == [] and got["skipped"][0]["missing"] == ["card"]
+    _, payload = l4_tasks._read(book["path"])
+    assert payload["tasks"]["000001"]["status"] == "RUNNING"
+
+
+def test_reconcile_idempotent_on_succeeded(tmp_path):
+    """幂等:SUCCEEDED 行直接跳过,不重跑一次不必要的补记。"""
+    book = _book(tmp_path, ("000001",))
+    _files(tmp_path, "000001", "000001.SZ")
+    preflight(book["path"], "000001", now=NOW)
+    mark_success(book["path"], "000001", now=NOW)
+
+    from autoresearch.scan import l4_tasks
+
+    assert l4_tasks.reconcile(book["path"], now=NOW)["recovered"] == []

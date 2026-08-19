@@ -489,6 +489,52 @@ def mark_success(
     }
 
 
+def reconcile(book: Path | str, *, now: datetime | None = None) -> dict:
+    """收尾自愈(E1b):卡已在盘而 book 仍非 SUCCEEDED 的票,按盘上事实补记。
+
+    只认盘上产物:prompt/slim/card 三件齐 + slim 合格才补记(content_hash 现算,
+    绝不编造);缺产物的票原样保留 —— contract 门拦它拦得对。补记行打
+    `recovered=True`,账目可辨。幂等:SUCCEEDED 行直接跳过。
+    立案:2026-08-12 九票卡全在盘、book 全 RUNNING → E6 contract 团灭(spec §2.1)。
+    """
+    from autoresearch.scan.l4.producers import _slim_defect
+
+    path = Path(book)
+    recovered: list[str] = []
+    skipped: list[dict] = []
+    with _locked(path):
+        _, payload = _read(path)
+        for code6 in sorted(payload["tasks"]):
+            task = payload["tasks"][code6]
+            if task.get("status") == "SUCCEEDED":
+                continue
+            refs = task.get("artifacts") or {}
+            missing = []
+            for name in ("prompt", "slim", "card"):
+                p = Path(str((refs.get(name) or {}).get("path") or ""))
+                if not p.is_file() or p.stat().st_size == 0:
+                    missing.append(name)
+            if not missing:
+                _, defect = _slim_defect(Path(refs["slim"]["path"]), 4096)
+                if defect:
+                    missing = [f"slim:{defect}"]
+            if missing:
+                skipped.append({"code": code6, "missing": missing})
+                continue
+            for name in ("prompt", "slim", "card"):
+                p = Path(refs[name]["path"])
+                refs[name] = _artifact(p, content_hash=_sha256(p))
+            task["status"] = "SUCCEEDED"
+            task["recovered"] = True
+            task["last_error_class"] = None
+            task["last_error"] = None
+            task["updated_at"] = _stamp(now)
+            recovered.append(code6)
+        if recovered:
+            _atomic_write(path, payload)
+    return {"ok": True, "recovered": recovered, "skipped": skipped}
+
+
 def prepare_slim(
     book: Path | str,
     code: str,
@@ -663,9 +709,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="l4_tasks")
     parser.add_argument(
         "cmd",
-        choices=["init", "preflight", "prepare", "success", "failure", "batches", "stats"],
+        choices=["init", "preflight", "prepare", "success", "failure", "batches", "stats",
+                 "reconcile"],
     )
-    parser.add_argument("first", help="init/batches/stats:DATE；其余:CODE")
+    parser.add_argument("first", help="init/batches/stats/reconcile:DATE；其余:CODE")
     parser.add_argument("second", nargs="?", help="preflight/prepare/success/failure:DATE")
     parser.add_argument("--root", default=None)
     parser.add_argument("--error-class", default=None)
@@ -697,6 +744,8 @@ def main(argv: list[str] | None = None) -> int:
         result = dispatch_batches(_book_path(args.first, args.root), caps=caps)
     elif args.cmd == "stats":
         result = stats(_book_path(args.first, args.root))
+    elif args.cmd == "reconcile":
+        result = reconcile(_book_path(args.first, args.root))
     else:
         if not args.second:
             parser.error(f"{args.cmd} requires CODE DATE")
