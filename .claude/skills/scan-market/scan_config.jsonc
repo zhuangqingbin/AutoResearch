@@ -86,9 +86,15 @@
     // conditional-ic.md)——「统一砍 momentum quota」是错处方,相位条件 quota 属 B 类须 registry,
     // 故 quota 维持不动。
     "recall_channels": ["composite", "momentum", "reversal_confirm", "reversal", "value", "main_fund", "heat", "growth", "healthy"],
-    // 各路配额覆盖(channel_ledger advisory 档,2026-07-11 拍板:value 200→250 / heat 200→150 /
-    // main_fund 200→150)。删本行 = 注册表默认 quota。floor 覆盖同名 "channel_floors":{}(未用)。
-    "channel_quotas": { "value": 250, "heat": 150, "main_fund": 150 }
+    // 各路配额覆盖(channel_ledger advisory 档,36 日版累计裁决 2026-08-19 拍板,取代 2026-07-11
+    // 的 18 日版:value 250→312(57.6%胜率/+0.9%最优,加码)、momentum 250→188、heat 150→112、
+    // healthy 150→112、growth 150→112(三路 unique 超额持续为负,减码);main_fund 保持 150。
+    // 六键全写(逐一核对:六个目标值均不等于各路 @channel 注册表默认 momentum250/growth150/
+    // value200/main_fund200/healthy150/heat200,任一键缺省都会回落注册表默认而非维持原覆盖值,
+    // 故不可只写变动键)。accumulation 120→90 未随本次拍板落地——该路已于 2026-07-11 退役出
+    // recall_channels(见下方 recall_channels 键),调 quota 无生效点,是幽灵行。
+    // 删本行 = 注册表默认 quota。floor 覆盖同名 "channel_floors":{}(未用)。
+    "channel_quotas": { "value": 312, "momentum": 188, "heat": 112, "healthy": 112, "growth": 112, "main_fund": 150 }
   },
 
   // ── L2 · 粗排(确定性分层采样,不预测)────────────────────────────────────
