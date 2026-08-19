@@ -209,6 +209,21 @@ def test_non_gate4_failed_always_data(tmp_path):
     assert got["failed"] == ["assemble"] and got["failed_data"] == ["assemble"]
 
 
+def test_gate4_failed_with_fires_present_but_zero_fail_rows_is_data(tmp_path):
+    # gate_fires.csv 在场但只有 warn 行 —— 「查不到 data 类 fail」≠「确认没有 data fail」,
+    # 必须按 data 连坐(fail-safe)。删掉 health.py 的 `if not fails: return None` 会打红本条。
+    from autoresearch.scan.stage_result import record_stage_result
+
+    d = _mk_day(tmp_path, "2026-07-28")
+    record_stage_result(d, stage="gate4", status="FAILED", artifacts=[], metrics={},
+                        warnings=[], error="boom")
+    _mk_fires(d, [{"date": "2026-07-28", "code": "", "severity": "warn",
+                   "check": "产物形状·退役符号指令性引用", "detail": "x"}])
+    got = stage_results_health(d)
+    assert "gate4" in got["failed"]
+    assert "gate4" in got["failed_data"]      # 查不到 fail 行 → 连坐,不是放行
+
+
 def test_run_health_flags_stage_contract_mismatch_and_corruption(tmp_path):
     from autoresearch.scan.stage_result import (
         StageResult,
