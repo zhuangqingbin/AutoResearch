@@ -93,6 +93,10 @@ _TOP_WHITELIST = {
     # 2026-08-11 配置单一事实源波:L0/L2/行业 brief 运行旋钮入白名单(消费点=knob() 解析,
     # 见各块注;jsonc 里每键必须标【生效点】,SKILL.md「配置」节列全表)。
     "l0", "l2", "sector",
+    # 2026-08-19 E6 转正瘦身波(task-2.1):相对 BUY 决策层的 mode/exclude_pinned 开关——
+    # 默认值仍是 shadow/False(=现行为,parity);翻 active 是用户裁决表批准后的独立动作,
+    # 白名单本身只负责「开关存在且类型对」,不隐含已经打开。
+    "relative_buy",
 }
 _SUB_WHITELIST = {
     "l0": {"cap_floor_yi", "include_bj", "source", "min_amount_yi", "min_list_days"},
@@ -111,6 +115,7 @@ _SUB_WHITELIST = {
     "performance": {
         "streaming_l4",
     },
+    "relative_buy": {"mode", "exclude_pinned"},
 }
 
 # ── 运行旋钮类型校验(2026-08-11)——错型静默生效比缺键更难查,一律 raise ──
@@ -121,6 +126,7 @@ def _t_nonneg(v): return _t_num(v) and v >= 0
 def _t_nonneg_int(v): return isinstance(v, int) and not isinstance(v, bool) and v >= 0
 def _t_source(v): return v in {"em", "tushare"}
 def _t_dict(v): return isinstance(v, dict)
+def _t_rbmode(v): return v in {"shadow", "active"}
 
 
 _KNOB_TYPES: dict[tuple[str, str], tuple] = {
@@ -136,6 +142,8 @@ _KNOB_TYPES: dict[tuple[str, str], tuple] = {
     ("l2", "floors"): (_t_dict, "object"),
     ("sector", "reuse_ttl_days"): (_t_posint, "正整数"),
     ("sector", "max_briefs"): (_t_posint, "正整数"),
+    ("relative_buy", "mode"): (_t_rbmode, "shadow|active"),
+    ("relative_buy", "exclude_pinned"): (_t_bool, "boolean"),
 }
 
 # agents={role: {model, effort}} 的 role 闭集(Wave11 B1)——白名单外一律 raise,防拼写错

@@ -135,5 +135,10 @@
   // 【生效点】learning/shrink.py shrink_config → 四消费点(l4_card 🔁基率 / cross_calib 翻案率 /
   //   buy_ledger 📐目标校准 / gate_ledger 左尾率)。p̂=(n·p+k·p_g)/(n+k);n<3 绝对禁注不受此开关
   //   影响。本块是回滚杆:shrink=false 或删块 = 各点退回 raw 计算。
-  "learning": { "shrink": true, "shrink_k": 15 }
+  "learning": { "shrink": true, "shrink_k": 15 },
+
+  // ── 收尾 · 相对 BUY(E6)──【生效点:scan/post_run.publish_run_observation → relative_buy.write_decision/verify_decision】
+  // mode: shadow=影子只记账;active=正式接管 BUY(裁决表 A1 批 GO 后才可翻,翻回即回滚)
+  // exclude_pinned: true=📌 持仓不参与当日 BUY 选择(保送不算判例;裁决表 A2)
+  "relative_buy": { "mode": "shadow", "exclude_pinned": true }
 }

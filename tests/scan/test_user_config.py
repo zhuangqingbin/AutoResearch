@@ -294,6 +294,46 @@ def test_performance_unknown_subkey_raises(tmp_path):
         load_user_config(p)
 
 
+# ───────────────────────── relative_buy(E6):mode/exclude_pinned 三件套 ─────────────────────────
+# design: .superpowers/sdd/2026-08-18-e6-activation-slimdown-implementation-plan/task-2.1-brief.md。
+# 本任务只把开关**装上**(白名单+类型校验),默认值仍是 mode=shadow(=现行为,parity)——翻
+# active 是用户逐项过完裁决表后的独立动作,不在这三个 task 的范围内。
+
+
+def load_from(tmp_path, raw: dict) -> dict:
+    """写临时 scan_config.jsonc → 加载校验后的 dict。本文件目前没有同类既有 helper,按
+    brief 要求补一个 3 行版本(其余测试沿用各自内联的 `p.write_text(...)` 写法)。"""
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps(raw), encoding="utf-8")
+    return load_user_config(p)
+
+
+def test_relative_buy_block_accepted(tmp_path):
+    cfg = load_from(tmp_path, {"relative_buy": {"mode": "shadow", "exclude_pinned": True}})
+    assert cfg["relative_buy"]["mode"] == "shadow"
+
+
+def test_relative_buy_active_mode_accepted(tmp_path):
+    """mode 白名单是 {shadow, active} 双值集合,不是只认 shadow 的字面量钉死。"""
+    cfg = load_from(tmp_path, {"relative_buy": {"mode": "active"}})
+    assert cfg["relative_buy"]["mode"] == "active"
+
+
+def test_relative_buy_bad_mode_raises(tmp_path):
+    with pytest.raises(ValueError):
+        load_from(tmp_path, {"relative_buy": {"mode": "live"}})
+
+
+def test_relative_buy_unknown_subkey_raises(tmp_path):
+    with pytest.raises(ValueError):
+        load_from(tmp_path, {"relative_buy": {"mode": "shadow", "ttl": 3}})
+
+
+def test_relative_buy_exclude_pinned_bad_type_raises(tmp_path):
+    with pytest.raises(ValueError, match="非法"):
+        load_from(tmp_path, {"relative_buy": {"exclude_pinned": "yes"}})
+
+
 # ───────────────────────── frame --json:user_config 回显 + run meta 落盘 ─────────────────────────
 
 
