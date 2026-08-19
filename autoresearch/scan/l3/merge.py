@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
+
 
 def _swap_lane_quota(m: pd.DataFrame, conv: pd.Series, fin_idx: set, lane_val: str,
                      target: int, guard_name: str, qualify_conv: float = 65.0,
@@ -296,7 +298,7 @@ def write_finalists(date: str, budget: int = 30, root: Path | None = None,
     行数,含 pinned 追加);新增 `finalist_n`(v3 产出的 finalist tier 行数,**pinned 注入前**,
     即当日 L3 finalist tier 的真实大小)、`bench_n`(bench 行数)。
     """
-    base = Path(root) if root else Path("context/scan")
+    base = Path(root) if root else ws.scan_root()
     scan_dir = base / date
     picks = json.loads((scan_dir / "_l3_judged.json").read_text(encoding="utf-8"))
     jd = pd.DataFrame(picks)
@@ -339,7 +341,6 @@ def write_finalists(date: str, budget: int = 30, root: Path | None = None,
         finalist_max=finalist_max,
     )
     audit_n = len(pd.read_csv(audit_path, dtype={"code": str}))
-    import contextlib
     with contextlib.suppress(Exception):
         from autoresearch.scan.stock_stage import record_l3_results
 

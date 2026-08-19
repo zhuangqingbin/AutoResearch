@@ -3,8 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from autoresearch.learning import experiment_registry as registry
-from autoresearch.learning import promotion
+from autoresearch.learning import experiment_registry as registry, promotion
 
 
 def _guards():

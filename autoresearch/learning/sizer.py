@@ -57,6 +57,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
+
 _EDGE_FLOOR = 55.0              # conviction 映射下限(≤ 此值 edge=0)
 _EDGE_SPAN = 45.0                # (conviction-55)/45 归一到 [0,1]
 _KELLY_FRAC = 0.25               # 1/4 Kelly 分数
@@ -71,7 +73,7 @@ _ASSUMED_AUM = 10_000_000.0      # v1 硬编码假设纸面组合规模(RMB 1000
                                  # 通常不 binding(让 40% 硬顶接管)——与"纸面小盘"的定位一致。
 _EQUAL_SLOT = 0.10               # presence-gated 回退目标 = 与 paper_nav 等权轨相同的固定槽
 
-_LAKE_DAILY = Path("context/lake/daily")
+_LAKE_DAILY = ws.lake_root() / "daily"
 
 
 def edge(conviction: object) -> float:

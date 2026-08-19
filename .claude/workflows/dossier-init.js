@@ -36,7 +36,10 @@ const AG = (role) => (RESOLVED[role]
   ? { ...RESOLVED[role] }
   : { ...(AGENT_DEFAULTS[role] || {}), ...((cfg.agents || {})[role] || {}) })
 const R = 'uv run --no-sync python -m'
-const DP = `context/knowledge/dossiers/${code}.md`
+// 引擎隔离根:engine 随 args.engine 下发(缺省 claude;只有 Claude 会执行本 js)
+const ENGINE = (A.engine || 'claude')
+const CTX = `context_${ENGINE}`
+const DP = `${CTX}/knowledge/dossiers/${code}.md`
 
 function bash(cmd, label, ph) {
   return agent(
@@ -57,7 +60,7 @@ const INIT = { type: 'object', required: ['code'],
   properties: { code: { type: 'string' }, initiated: { type: 'boolean' },
     summary_tokens: { type: 'number' }, uncertainty: { type: 'string' } } }
 const r = await agent(
-  `首覆建档:${code} ${name}(${sector})· 分析日 ${date}。骨架:${DP};prefetch:context/knowledge/dossiers/_prefetch/${code}.json;slim 若在:context/${code}.*_${date}_slim.md(Glob 找,含 _slim_deep)。按你的人设只填四个 LLM 节(<!-- LLM:待首覆 --> 处)与摘要叙事锚,不改确定性节。返回 code/initiated/summary_tokens/uncertainty。`,
+  `首覆建档:${code} ${name}(${sector})· 分析日 ${date}。骨架:${DP};prefetch:${CTX}/knowledge/dossiers/_prefetch/${code}.json;slim 若在:${CTX}/${code}.*_${date}_slim.md(Glob 找,含 _slim_deep)。按你的人设只填四个 LLM 节(<!-- LLM:待首覆 --> 处)与摘要叙事锚,不改确定性节。返回 code/initiated/summary_tokens/uncertainty。`,
   { agentType: 'dossier-init', ...AG('dossier_init'), label: `init:${code}`, phase: 'Initiate', schema: INIT })
 if (!r || !r.initiated) return { code, initiated: false, issues: ['agent 未完成或未回传'] }
 

@@ -43,7 +43,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from autoresearch.common import stats as st
+from autoresearch.common import stats as st, workspace as ws
 from autoresearch.learning import experiment_template as et
 from autoresearch.learning.evidence_manifest import (
     GATE_DEFINITION,
@@ -53,9 +53,9 @@ from autoresearch.learning.evidence_manifest import (
 
 SCHEMA_VERSION = 1
 GATE = "业绩真兑现"
-DEFAULT_ROOT = Path("context/scan")
-OUT_JSON = Path("reports/learning/gate_recal.json")
-OUT_MD = Path("reports/learning/gate_recal.md")
+DEFAULT_ROOT = ws.scan_root()
+OUT_JSON = ws.reports_root() / "learning/gate_recal.json"
+OUT_MD = ws.reports_root() / "learning/gate_recal.md"
 
 EVIDENCE_FAMILY = "gate_true_delivery_evidence"
 RECAL_FAMILY = "gate_true_delivery_recal"

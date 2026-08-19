@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.scan.stage_result import (
     StageResult,
     contract_hash_for,
@@ -154,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
     l4 = sub.add_parser("l4")
     l4.add_argument("date")
     l4.add_argument("code")
-    l4.add_argument("--root", default="context/scan")
+    l4.add_argument("--root", default=str(ws.scan_root()))
     l4.add_argument("--error")
     l4.add_argument("--reused", action="store_true")
     args = parser.parse_args(argv)

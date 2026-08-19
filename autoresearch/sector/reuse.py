@@ -19,8 +19,11 @@ import json
 from datetime import date as _date
 from pathlib import Path
 
+from autoresearch.common import workspace as ws
 from autoresearch.sector.brief import brief_path
 from autoresearch.sector.pack import _num, _read_csv
+
+_WS_SCAN_ROOT = ws.scan_root()  # B008 修法:默认值须为模块级单例(def 时求值,与旧字面量常量同语义)
 
 
 def _regime(scan_dir: Path) -> str | None:
@@ -45,7 +48,7 @@ def _ind_mom(scan_dir: Path, industry: str) -> float | None:
     return float(m.median()) if len(m) else None
 
 
-def find_reusable(date: str, industries, root: Path | str = Path("context/scan"),
+def find_reusable(date: str, industries, root: Path | str = _WS_SCAN_ROOT,
                   ttl_days: int = 5, mom_shift_pp: float = 3.0) -> dict[str, dict]:
     """逐行业找最近可复用 brief → {行业: {src, prev, shift_pp}};判不中 → 不入结果。"""
     root = Path(root)
@@ -76,7 +79,7 @@ def find_reusable(date: str, industries, root: Path | str = Path("context/scan")
     return out
 
 
-def apply_reuse(date: str, found: dict[str, dict], root: Path | str = Path("context/scan")) -> int:
+def apply_reuse(date: str, found: dict[str, dict], root: Path | str = _WS_SCAN_ROOT) -> int:
     """把可复用 brief 拷到今日 sector_briefs/,顶部 ♻️banner(带失效条件)。返回份数。"""
     n = 0
     for ind, info in found.items():
@@ -96,15 +99,19 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("date", help="scan 日 YYYY-MM-DD")
     ap.add_argument("--industries", default=None, help="逗号分隔;缺省 = 自动选(同 sector.pack)")
     ap.add_argument("--apply", action="store_true", help="真拷贝(缺省只打印判定)")
-    ap.add_argument("--ttl", type=int, default=5, help="回看天数,默认 5")
+    ap.add_argument("--ttl", type=int, default=None,
+                    help="回看天数;缺省=scan_config sector.reuse_ttl_days→5")
     args = ap.parse_args(argv)
-    root = Path("context/scan")
+    # 2026-08-11 配置单一事实源波:CLI 显式 --ttl > scan_config sector.reuse_ttl_days > 内建 5。
+    from autoresearch.scan.user_config import knob
+    ttl = int(knob("sector", "reuse_ttl_days", args.ttl, 5))
+    root = ws.scan_root()
     if args.industries:
         inds = [s.strip() for s in args.industries.split(",") if s.strip()]
     else:
         from autoresearch.sector.pack import select_briefing_sectors
         inds, _ = select_briefing_sectors(root / args.date)
-    found = find_reusable(args.date, inds, root=root, ttl_days=args.ttl)
+    found = find_reusable(args.date, inds, root=root, ttl_days=ttl)
     for ind in inds:
         if ind in found:
             print(f"[sector.reuse] ♻️ {ind} ← {found[ind]['prev']}(动量位移 {found[ind]['shift_pp']}pp)")

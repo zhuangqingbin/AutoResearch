@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
+
 SCHEMA_VERSION = 1
 MATURE_DAYS_REQUIRED = 20         # §C2.1 的固定成熟门
 UNMEASURED = "UNMEASURED"
@@ -123,7 +125,7 @@ def build_day(scan_dir: Path | str) -> pd.DataFrame:
 
 
 def roll(scan_root: Path | str | None = None) -> pd.DataFrame:
-    root = Path(scan_root or "context/scan")
+    root = Path(scan_root or ws.scan_root())
     if not root.exists():
         return pd.DataFrame(columns=_COLS)
     frames = [f for day in sorted(p for p in root.iterdir() if p.is_dir())
@@ -189,10 +191,10 @@ def render(ledger: pd.DataFrame) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     ledger = roll()
-    target = Path("reports/learning/l3_l4_alignment.md")
+    target = ws.reports_root() / "learning/l3_l4_alignment.md"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("\n".join(render(ledger)) + "\n", encoding="utf-8")
-    table = Path("context/learning/l3_l4_alignment.csv")
+    table = ws.context_root() / "learning/l3_l4_alignment.csv"
     table.parent.mkdir(parents=True, exist_ok=True)
     ledger.to_csv(table, index=False)
     print(f"[l3_l4_alignment] {len(ledger)} 行 / {ledger['date'].nunique() if len(ledger) else 0} 日 "

@@ -37,6 +37,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import MAIN_RULER, entry_tradable
 
 COHORT_LEGACY = "legacy_gate_ledger"
@@ -371,7 +372,7 @@ def roll(
     cohort: str = COHORT_V3,
 ) -> pd.DataFrame:
     """跨日逐票归因长表。"""
-    root = Path(scan_root or "context/scan")
+    root = Path(scan_root or ws.scan_root())
     if not root.exists():
         return pd.DataFrame(columns=_COLUMNS)
     days = sorted(p for p in root.iterdir() if p.is_dir())
@@ -423,7 +424,7 @@ def build_participation_day(scan_dir: Path | str) -> pd.DataFrame:
 
 def roll_participation(scan_root: Path | str | None = None) -> pd.DataFrame:
     """跨日 participation 长表(每道门各自的 FAIL 名单)。"""
-    root = Path(scan_root or "context/scan")
+    root = Path(scan_root or ws.scan_root())
     if not root.exists():
         return pd.DataFrame(columns=_PARTICIPATION_COLUMNS)
     days = sorted(p for p in root.iterdir() if p.is_dir())
@@ -622,14 +623,14 @@ def main(argv: list[str] | None = None) -> int:
     legacy = summarize(roll(args.scan_root, cohort=COHORT_LEGACY))
     v3_rows = roll(args.scan_root, cohort=COHORT_V3)
     part_rows = roll_participation(args.scan_root)
-    report = Path("reports/learning/gate_attribution.md")
+    report = ws.reports_root() / "learning/gate_attribution.md"
     report.parent.mkdir(parents=True, exist_ok=True)
     report.write_text(
         "\n".join(render_migration(
             legacy, summarize(v3_rows), summarize(part_rows))) + "\n",
         encoding="utf-8",
     )
-    out_dir = Path("context/learning")
+    out_dir = ws.learning_root()
     out_dir.mkdir(parents=True, exist_ok=True)
     v3_rows.to_csv(out_dir / "gate_attribution_v3.csv", index=False)
     part_rows.to_csv(out_dir / "gate_participation_v3.csv", index=False)

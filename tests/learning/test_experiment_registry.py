@@ -7,7 +7,6 @@ import pytest
 
 from autoresearch.learning import experiment_registry as registry
 
-
 FIVE_GUARDS = {
     "research": [
         {"metric": "research.excess_t2_delta", "op": "gt", "value": 0.0},

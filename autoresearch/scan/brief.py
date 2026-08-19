@@ -45,6 +45,7 @@ import re
 import sys
 from pathlib import Path
 
+from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import MAIN_RULER, REL_MARKET, REL_SECTOR
 from autoresearch.scan.relative_buy import DECISION_FILENAME, MODE_SHADOW
 
@@ -893,7 +894,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--run-folder", default="")
     args = ap.parse_args(argv)
     explicit = Path(args.date)
-    scan = explicit if explicit.exists() else Path("context/scan") / args.date
+    scan = explicit if explicit.exists() else ws.scan_root() / args.date
     out = build(scan, run_folder=args.run_folder)
     if args.out:
         write(scan, args.out, run_folder=args.run_folder)

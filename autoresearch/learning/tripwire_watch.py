@@ -25,6 +25,10 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
+
+_WS_SCAN_ROOT = ws.scan_root()  # B008 修法:默认值须为模块级单例(def 时求值,与旧字面量常量同语义)
+
 _PRICE_RE = re.compile(r"\[价格线\]\s*close\s*(<=|>=|<|>)\s*(-?\d+(?:\.\d+)?)\s*(?:→\s*(.*))?")
 _DATE_RE = re.compile(r"\[日期线\]\s*(\d{4}-\d{2}-\d{2})\s*(.*)")
 _EVENT_RE = re.compile(r"\[事件旗\]\s*([^→\n]+?)\s*(?:→\s*(.*))?$")
@@ -57,7 +61,7 @@ def parse_tripwires(card_text: str) -> list[dict]:
     return out
 
 
-def latest_card(code6: str, scan_root: Path | str = "context/scan", *,
+def latest_card(code6: str, scan_root: Path | str = _WS_SCAN_ROOT, *,
                 before: str | None = None) -> tuple[str, str] | None:
     """该票**最新一张**卡的 (日期, 正文);无卡 → None。盯梢盯的是最新判断,不是历史。
 
@@ -115,7 +119,7 @@ def _news_titles(code6: str, date: str) -> list[str] | None:
 
 
 def check(date: str, codes: list[str] | None = None,
-          scan_root: Path | str = "context/scan", *,
+          scan_root: Path | str = _WS_SCAN_ROOT, *,
           card_before: str | None = None) -> list[dict]:
     """对给定持仓码逐条复核盯梢线 → 命中列表(每条含 code/kind/raw/detail)。
 

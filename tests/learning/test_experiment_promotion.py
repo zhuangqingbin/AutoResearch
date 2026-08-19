@@ -3,8 +3,7 @@ from __future__ import annotations
 
 import json
 
-from autoresearch.learning import experiment_registry as registry
-from autoresearch.learning import promotion
+from autoresearch.learning import experiment_registry as registry, promotion
 
 
 def _guards(primary_op="gt", primary_value=0.0):

@@ -192,7 +192,7 @@ def _precedent_mark(base: Path, code6: str, sector, gate_hint: str | None = None
         return ""
     if not rows:
         return ""
-    from autoresearch.common.ruler import MAIN_RULER   # Wave12-T12:标签点名当前尺(名实记档)
+    from autoresearch.common.ruler import MAIN_RULER  # Wave12-T12:标签点名当前尺(名实记档)
     out = ["- **📚 判例(跨票同型,advisory)**:近90日同型 top-3(仅供旁证,不进分不设门)"]
     for r in rows:
         fwd = r.get("fwd_2")
@@ -334,7 +334,6 @@ def write_base_rates(scan_dir: Path | str, min_n: int = 10) -> Path | None:
         return None
     scan_dir.mkdir(parents=True, exist_ok=True)
     out = scan_dir / "_l4_base_rates.json"
-    import json
     out.write_text(json.dumps({"by_lane": by_lane, "by_rating": by_rating},
                               ensure_ascii=False, indent=2), encoding="utf-8")
     return out

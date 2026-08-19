@@ -6,6 +6,7 @@ import re
 from collections import Counter
 from pathlib import Path
 
+from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import MAIN_RULER
 from autoresearch.scan.decision_finalize import (
     _PROPOSAL_BY_RATING,
@@ -957,8 +958,8 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
     # ── 影子组合成绩单一行(spec 2026-07-05 wave §A1;presence-gated:文件缺 → 不加)──
     # 只在真实现场注入(与 run() 的 is_real 判据同姿势):tmp 测试目录从此不受开发机全局
     # reports/learning/paper_nav_summary.txt 污染(该文件由真实 prelude 跑动落盘,与 tmp scan_dir 无关)。
-    if scan_dir == Path("context/scan") / analysis_date:
-        pn = Path("reports/learning/paper_nav_summary.txt")
+    if scan_dir == ws.scan_root() / analysis_date:
+        pn = ws.reports_root() / "learning/paper_nav_summary.txt"
         if pn.exists():
             try:
                 nav_line = pn.read_text(encoding="utf-8").strip()
@@ -1021,7 +1022,7 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
                 out += ["", *appendix]
     out += _stage_token_estimate(scan_dir)
     # ── ⏳ 待裁决提案 nag(presence-gated;仅真实现场注入,镜像 paper_nav 成绩单守卫防 tmp 测试污染)──
-    if scan_dir == Path("context/scan") / analysis_date:
+    if scan_dir == ws.scan_root() / analysis_date:
         nag = _proposals_nag()
         if nag:
             out += [nag, ""]

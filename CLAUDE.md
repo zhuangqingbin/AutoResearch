@@ -5,19 +5,19 @@
 本项目支持用 **Claude 当引擎**在 session 内跑完整的多 agent 交易分析，**不依赖付费 LLM API**：
 
 - **数据层**走项目自己的免费工具（yfinance / FRED / akshare / tushare，keyless + `FRED_API_KEY` / `TUSHARE_TOKEN`）；**LLM 层由 Claude（本 session）替代**框架原本计费的多 agent 调用。
-- 所有取数/组装是确定性脚本（零 LLM），统一收进 `autoresearch` 包，用 `uv run --no-sync python -m autoresearch.<...>` 调用。产物落 `reports/`、`context/`（均已 gitignore）。
+- 所有取数/组装是确定性脚本（零 LLM），统一收进 `autoresearch` 包，用 `uv run --no-sync python -m autoresearch.<...>` 调用。**产物按引擎分根**（2026-08-11 裁定）：Claude 会话落 `reports_claude/`、`context_claude/`，Codex 落 `reports_codex/`、`context_codex/`（python 侧按 `AUTORESEARCH_ENGINE`/`CLAUDECODE` 自动判定，Claude 下无需设置）；**唯一共享的是数据湖 `lake/`**。均已 gitignore。
 
 ### 研究入口（skill 自动触发）
 
 - **单标的**：`stock-research` skill（原 analyze-ticker + analyze-ticker-lite 合并，**full/lite 两档 prompt 路由**）—— 说"研究 NVDA" / "分析 600519.SS"即触发 full 全量报告（可带同业，如 `AMD,AVGO`；6 步流程 + **决策主线 / 证据附录** 骨架 v4）；"快速看一眼 / 出张卡"或被 scan-market L4 调用 → lite 决策卡。
   - 取数：`python -m autoresearch.analyze.harvest <ticker> [date] [stock|crypto] [PEER1,PEER2]`（`--slim` = lite 档轻量取数）。
-  - 组装：`python -m autoresearch.analyze.assemble context/analyze/<TICKER>_<date>`（用项目 `parse_rating` 校验五档评级）。
+  - 组装：`python -m autoresearch.analyze.assemble context_claude/analyze/<TICKER>_<date>`（用项目 `parse_rating` 校验五档评级）。
 - **全 A 扫描**：`scan-market` skill —— "扫描全 A 股 / 全市场选股 / 哪些板块值得买"。确定性漏斗 L0→L1→L2 + Claude 在 L3/L4/L5 做研究/辩论/整合。
-  - 漏斗：`python -m autoresearch.scan.prelude <date>`（确定性前奏一键：L0→L2 + 日历/观察单/菜单/账本；staging `context/scan/<date>/*.csv`；发布产物 `reports/scan/<run_id>/` 由 assemble 生成）。
+  - 漏斗：`python -m autoresearch.scan.prelude <date>`（确定性前奏一键：L0→L2 + 日历/观察单/菜单/账本；staging `context_claude/scan/<date>/*.csv`；发布产物 `reports_claude/scan/<run_id>/` 由 assemble 生成）。
   - 整合：`python -m autoresearch.scan.assemble <date>`。复盘：`python -m autoresearch.learning.retro pending`（`scan-retro` skill）。
-  - 常备覆盖档案（`context/knowledge/dossiers/`）：池日检在 prelude 内；首覆走 `dossier-init` skill；**中报/年报披露后**跑季度对账 `python -m autoresearch.dossier.reconcile <period>`（如 `20260630`；prelude 的 dossier_pool 行会在该期未对账时打 📐 提醒）。
+  - 常备覆盖档案（`context_claude/knowledge/dossiers/`）：池日检在 prelude 内；首覆走 `dossier-init` skill；**中报/年报披露后**跑季度对账 `python -m autoresearch.dossier.reconcile <period>`（如 `20260630`；prelude 的 dossier_pool 行会在该期未对账时打 📐 提醒）。
 - **宏观**：`macro-research` skill（**full/lite 两档**）—— full："研究全球宏观 / 现在该超配什么资产 / A股哪些行业值得配";lite = **市场研判**(原首席策略师,scan-market Stage 0 调用或"今天大盘怎么看",读 `python -m autoresearch.scan.frame <date> --json` 的湖派生 market_pack 写 market_view.md)。
-  - 取数：`python -m autoresearch.macro.harvest [date]`；组装：`python -m autoresearch.macro.assemble context/macro/<date>`。
+  - 取数：`python -m autoresearch.macro.harvest [date]`；组装：`python -m autoresearch.macro.assemble context_claude/macro/<date>`。
 
 ### 包结构（`autoresearch/`）
 

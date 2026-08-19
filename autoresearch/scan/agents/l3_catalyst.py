@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
+
 # endpoint → (日期参数名, 计数规则见 catalyst_counts)
 _ENDPOINTS = {"stk_holdertrade": "ann_date", "repurchase": "ann_date", "stk_surv": "trade_date"}
 _COLS = ["code", "rep_impl", "rep_plan", "holder_in", "holder_de", "surv_n"]
@@ -71,7 +73,7 @@ def harvest_catalyst(date: str, codes, root: Path | None = None, lookback_days: 
     """
     from autoresearch.data.cache import get_or_fetch
     from autoresearch.scan.agents.l3_news import _trade_days_for
-    root = root or Path("context/scan")
+    root = root or ws.scan_root()
     want = {str(c).zfill(6) for c in codes}
     days = days if days is not None else _trade_days_for(date, lookback_days)
     frames: dict[str, list[pd.DataFrame]] = {ep: [] for ep in _ENDPOINTS}

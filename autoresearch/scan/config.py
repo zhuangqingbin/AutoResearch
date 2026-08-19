@@ -44,7 +44,11 @@ class ScanConfig:
     l3: dict | None = None            # {two_pass,pass1_target,finalist_max}
     learning: dict | None = None      # {shrink,shrink_k}
     budgets: dict | None = None       # 成本/墙钟/并发观测预算；不拥有截断权限
-    performance: dict | None = None   # 流式调度/稳定上下文/行业 brief A/B；不拥有评级语义
+    performance: dict | None = None   # 流式调度/稳定上下文/行业 brief A/B;不拥有评级语义
+    # 2026-08-11 配置单一事实源波(消费点 = user_config.knob() 各接线,见 SKILL「配置」节)
+    l0: dict | None = None            # {cap_floor_yi,include_bj,source,min_amount_yi,min_list_days}
+    l2: dict | None = None            # {sector_cap,floors}
+    sector: dict | None = None        # {reuse_ttl_days,max_briefs} 行业 brief 旁路旋钮
 
     def to_dict(self) -> dict:
         """落 manifest 的纯 dict(可 JSON 序列化)。"""

@@ -38,6 +38,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from autoresearch.common import workspace as ws
+
 # ── Wave10 A3(2026-08-01):先定主语,再抽数 ────────────────────────────────
 #
 # 立案现场(07-30/31 三张真卡,三个**不同**缺陷,不是一个):
@@ -639,7 +641,7 @@ def replay(scan_root=None, *, days: int | None = None) -> dict:
     """回放历史卡片 → 跨日主语分布(零网络:只读已落盘的 details/*.md)。"""
     import pandas as pd
 
-    root = Path(scan_root or "context/scan")
+    root = Path(scan_root or ws.scan_root())
     if not root.exists():
         return merge_summaries([])
     per_day: dict[str, list[dict]] = {}

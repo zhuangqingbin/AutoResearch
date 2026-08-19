@@ -59,7 +59,6 @@ def pick_opportunity_candidates(ratings: dict[str, str], scan_dir, k: int = 2) -
     """
     from pathlib import Path
 
-    import pandas as pd
     f = Path(scan_dir) / "finalists.csv"
     holds = {str(c).zfill(6) for c, r in ratings.items() if r == "Hold"}
     if not holds or not f.exists():

@@ -41,7 +41,10 @@ const AG = (role) => (RESOLVED[role]
   : { ...(AGENT_DEFAULTS[role] || {}),
       ...(((cfg.agents || cfg)[role]) || LATE[role] || {}) })
 const R = 'uv run --no-sync python -m'
-const TD = `context/scan/${date}/t1_review`
+// 引擎隔离根:engine 随 args.engine 或 cfg.engine 下发(缺省 claude)
+const ENGINE = (A.engine || cfg.engine || 'claude')
+const CTX = `context_${ENGINE}`
+const TD = `${CTX}/scan/${date}/t1_review`
 const MECHS = '市场β(随大盘)/行业β(随板块)/卡内论点兑现/卡内风险兑现/卡内论点未兑现/判断错误(卡内证据当时就该给出不同评级)/无法解释(疑消息/盘面,需人工)'
 
 // ── Diagnose(合诊:CLI + 通读全部卡;诚实铁律:只依据给定材料,无法解释就说无法解释)──
@@ -61,8 +64,8 @@ const d1 = await agent(
   `1. Bash 执行 \`${R} autoresearch.learning.t1_review build ${date} --json\`,读 stdout 的 JSON` +
   `(rows = 逐票实现数字;命令失败如「T+1 未结算」→ 把错误原样报出,不要试别的命令)。` +
   `n=0 → 直接返回 {t, t1, n: 0},别的都不做。\n` +
-  `2. 对 rows 每一只:Read context/scan/${date}/details/<code>.md(当日决策卡;若存在 ` +
-  `context/scan/${date}/_l4_intel_<code>.md 一并读),对照该票实现数字诊断。**判定尺 = z ` +
+  `2. 对 rows 每一只:Read ${CTX}/scan/${date}/details/<code>.md(当日决策卡;若存在 ` +
+  `${CTX}/scan/${date}/_l4_intel_<code>.md 一并读),对照该票实现数字诊断。**判定尺 = z ` +
   `(行业中性超额/截面稳健σ,已剥大盘与板块共振)**——市场超额只是背景,别再把「没跟跌」当 alpha。\n` +
   `**终评尺 = 隔夜 gap(T+1 收→T+2 开,2026-08-05 用户裁定)**:今晚看到的 cc1 判定只是 D+1 ` +
   `初判,D+2 晚 nightly_close 会用 gap 回填 final_verdict 覆盖它——**准不准的对外口径以那时的 ` +

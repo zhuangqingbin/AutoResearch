@@ -1,10 +1,12 @@
 # macro-playbook — agent 蒸馏参考 + 报告骨架(Phase 1)
 
+> **路径约定**:`$CTX`/`$RPT` = 本引擎工作区根(Claude→`context_claude`/`reports_claude`,Codex→`context_codex`/`reports_codex`;shell 里 `CTX=context_${AUTORESEARCH_ENGINE:-claude}`,`RPT=reports_${AUTORESEARCH_ENGINE:-claude}`)。数据湖 `lake/` 两引擎共享。Read/Write 工具调用时把 `$CTX`/`$RPT` 代入具体目录名。
+
 > 读完这份就不用回翻代码。报告 = 决策主线 + 中观落地 + 证据附录三层。
 
 ## 输出文件映射(须与 autoresearch/macro/assemble.py 一致)
 ```
-context/macro/<date>/        # 分节草稿(gitignored);assemble → reports/macro/<YYYYMMDD>/<HHMM>_summary.md
+$CTX/macro/<date>/        # 分节草稿(gitignored);assemble → $RPT/macro/<YYYYMMDD>/<HHMM>_summary.md
   1_spine/      decision.md  variant.md  crossfire.md  calendar.md  premortem.md  debate.md(opt)
   2_meso/       sector_map.md  flows.md  sentiment.md  themes.md
   3_regional/   us.md  china.md  global.md
@@ -69,7 +71,7 @@ context/macro/<date>/        # 分节草稿(gitignored);assemble → reports/mac
 
 > 自 scan-market `screening-playbook.md` 迁入(2026-07-03 海拔重构,design:
 > `docs/specs/2026-07-03-research-skills-altitude-refactor-design.md` §5.2:市场层=宏观能力 lite 档)。
-> **一次产出、三处复用**:写 `context/scan/<date>/market_view.md` → scan 的 L3 prompt 地形段 +
+> **一次产出、三处复用**:写 `$CTX/scan/<date>/market_view.md` → scan 的 L3 prompt 地形段 +
 > 每张 L4 卡简报(`market_context_block` 自动注入)+ L5 置顶;缺文件 → L5 回退确定性脉搏(parity 不破)。
 
 **输入(全确定性,数字不可编造)**:
@@ -77,7 +79,7 @@ context/macro/<date>/        # 分节草稿(gitignored);assemble → reports/mac
   它是后者的**单向投影**(Wave10 A4),allowlist 之外的键(`sector_healthy_top3` / `run_contract` /
   `user_config`,以及将来任何新增键)默认进不来。`frame --json-out` 落 market_pack 时同步落投影。
 - full `market_pack` JSON(L5 / L3 数字 validator 的事实源,策略师**不读**)—— **Stage 0**(与 universe 并行,推荐):`uv run --no-sync python -m autoresearch.scan.frame <date> --json`(湖派生帧 → `market_pack_from_frame`);或 **L2 后**:`autoresearch.scan.market.market_pack(scan_dir)`。两口径同字段(帧口径的 sectors 无打分列,描述性可缺)。
-- `context/macro/macro_state.json`(本 skill **full 档** assemble 自动落的机读产物,**presence-gated**):存在 **且** 未过期(`today − as_of ≤ 7天` 且 当日 regime == `regime_at_run`,双失效由 `autoresearch.macro.state.load_macro_state` 判)才注入;缺/过期 → 只用 pack,研判中标一句"无新鲜宏观视图(仅日频 pack)"。**`frame <date> --json` 已把失效判定后的 `macro_state`(+`macro_state_note`)捆绑进同一份 JSON——Stage 0 一条命令拿全输入。**
+- `$CTX/macro/macro_state.json`(本 skill **full 档** assemble 自动落的机读产物,**presence-gated**):存在 **且** 未过期(`today − as_of ≤ 7天` 且 当日 regime == `regime_at_run`,双失效由 `autoresearch.macro.state.load_macro_state` 判)才注入;缺/过期 → 只用 pack,研判中标一句"无新鲜宏观视图(仅日频 pack)"。**`frame <date> --json` 已把失效判定后的 `macro_state`(+`macro_state_note`)捆绑进同一份 JSON——Stage 0 一条命令拿全输入。**
 
 **首席策略师 prompt(模板)**:
 > 你是一名**资深 A 股投资大师 / 首席策略师**。下面是今日全市场确定性数据包(`market_pack`,数字不可编造)[,及最近一次全球宏观研究的机读摘要 `macro_state`]。写一段 ~300–400 字的市场研判 `market_view.md`,**6 小节**:

@@ -2,10 +2,10 @@
 """scan 阶段结果的有限状态、完整性校验和原子快照。"""
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import sys
-import argparse
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum

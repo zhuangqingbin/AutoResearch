@@ -3,6 +3,8 @@ name: macro-research
 description: "Top-down GLOBAL + 中美 macro → cross-asset tilts AND A股行业配置 read (「研究全球宏观」「现在该超配什么资产」). Also owns the LITE 市场研判 daily brief: invoked by scan-market Stage 0 or 「今天大盘怎么看」, writes market_view.md from the deterministic market_pack. NOT for one ticker (→ stock-research), a full A-share screen (→ scan-market), or single-industry depth (→ sector-research). Project-local."
 ---
 
+> **路径约定**:`$CTX`/`$RPT` = 本引擎工作区根(Claude→`context_claude`/`reports_claude`,Codex→`context_codex`/`reports_codex`;shell 里 `CTX=context_${AUTORESEARCH_ENGINE:-claude}`,`RPT=reports_${AUTORESEARCH_ENGINE:-claude}`)。数据湖 `lake/` 两引擎共享。Read/Write 工具调用时把 `$CTX`/`$RPT` 代入具体目录名。
+
 # macro-research — 在 session 内零付费 API 跑全球+中美宏观 + A股中观 → 配置
 
 ## 核心原理
@@ -10,7 +12,7 @@ description: "Top-down GLOBAL + 中美 macro → cross-asset tilts AND A股行�
 
 ## 档位路由(一个 skill 两档)
 - **full(默认,用户触发)**:全球宏观 6 步流程(下节)→ 两张配置表报告。
-- **lite = 市场研判(首席策略师)**:被 **scan-market 调用**(Stage 0,与 universe 并行跑)或用户要日频大盘 brief。输入 = 确定性 `market_pack`(盘前帧入口 `uv run --no-sync python -m autoresearch.scan.frame <date> --json`;或 L2 后 `autoresearch.scan.market.market_pack(scan_dir)`,两口径同字段)+ `macro_state.json`(full 档机读产物,presence-gated:缺/过期只用 pack);产出 `context/scan/<date>/market_view.md`。**prompt 模板与防锚定铁律见 `macro-playbook.md` 末节「lite 档:市场研判」**(自 scan-market 迁入,2026-07-03 海拔重构:市场层 = 宏观能力的 lite 档)。
+- **lite = 市场研判(首席策略师)**:被 **scan-market 调用**(Stage 0,与 universe 并行跑)或用户要日频大盘 brief。输入 = 确定性 `market_pack`(盘前帧入口 `uv run --no-sync python -m autoresearch.scan.frame <date> --json`;或 L2 后 `autoresearch.scan.market.market_pack(scan_dir)`,两口径同字段)+ `macro_state.json`(full 档机读产物,presence-gated:缺/过期只用 pack);产出 `$CTX/scan/<date>/market_view.md`。**prompt 模板与防锚定铁律见 `macro-playbook.md` 末节「lite 档:市场研判」**(自 scan-market 迁入,2026-07-03 海拔重构:市场层 = 宏观能力的 lite 档)。
 
 ## 何时用 / 不用
 - ✅ 自上而下的宏观/中美/中观研究,收在跨资产 + A股行业的超-中-低配(full)。
@@ -21,11 +23,11 @@ description: "Top-down GLOBAL + 中美 macro → cross-asset tilts AND A股行�
 - 仓库根目录运行;`.env` 需 `FRED_API_KEY`(免费)。A股中观需 `uv add akshare`。报告默认中文。
 
 ## 流程(6 步)
-1. **取数(零 LLM)**:`uv run python -m autoresearch.macro.harvest [YYYY-MM-DD]` → `context/macro/<date>/data.md`(区域宏观 US/China/Global + 跨资产 basket + A股中观骨架)。日期默认今天。
-2. **读 context**:分页读 `context/macro/<date>/data.md`(文件较大,用 offset/limit 或 grep 定位),锁定 US/China/Global 宏观、跨资产价(含 USD/CNY/JPY/黄金/大宗/BTC)、A股中观(tushare 优先:北向官方汇总/**两融余额**/行业资金净流入(亿)/涨停情绪/**指数估值分位** + akshare 补游资龙虎榜)。
+1. **取数(零 LLM)**:`uv run python -m autoresearch.macro.harvest [YYYY-MM-DD]` → `$CTX/macro/<date>/data.md`(区域宏观 US/China/Global + 跨资产 basket + A股中观骨架)。日期默认今天。
+2. **读 context**:分页读 `$CTX/macro/<date>/data.md`(文件较大,用 offset/limit 或 grep 定位),锁定 US/China/Global 宏观、跨资产价(含 USD/CNY/JPY/黄金/大宗/BTC)、A股中观(tushare 优先:北向官方汇总/**两融余额**/行业资金净流入(亿)/涨停情绪/**指数估值分位** + akshare 补游资龙虎榜)。
 3. **读 playbook**:读本目录 `macro-playbook.md` 拿报告骨架 + 各 agent 角色/输出格式 + 两张配置表的机器可读约定 + 数据坑,**不要回翻代码**。
-4. **扮演各 agent**:按 playbook 顺序逐段产出到 `context/macro/<date>/`(分节草稿,gitignored;目录结构见 playbook)。**每个数字必出 context;判断性内容(情景概率/政策路径/央行反应函数)显式标『判断』或『实时网查』。** 两张配置表(跨资产 `decision.md`、A股行业 `sector_map.md`)每行带 keyed `**Rating**` 行。
-5. **组装+校验**:`uv run python -m autoresearch.macro.assemble context/macro/<date>` → `reports/macro/<YYYYMMDD>/<HHMM>_summary.md`,并对跨资产表 + A股行业表逐行打印 `parse_rating` 信号(校验你的配置能被框架原生解析)。若 `[MISSING]`,补齐缺的必需分段再跑。
+4. **扮演各 agent**:按 playbook 顺序逐段产出到 `$CTX/macro/<date>/`(分节草稿,gitignored;目录结构见 playbook)。**每个数字必出 context;判断性内容(情景概率/政策路径/央行反应函数)显式标『判断』或『实时网查』。** 两张配置表(跨资产 `decision.md`、A股行业 `sector_map.md`)每行带 keyed `**Rating**` 行。
+5. **组装+校验**:`uv run python -m autoresearch.macro.assemble $CTX/macro/<date>` → `$RPT/macro/<YYYYMMDD>/<HHMM>_summary.md`,并对跨资产表 + A股行业表逐行打印 `parse_rating` 信号(校验你的配置能被框架原生解析)。若 `[MISSING]`,补齐缺的必需分段再跑。
 6. **汇报**:regime 判断 + 两张配置表(关键超/低配 + 表达 + 触发位)+ 诚实局限。
 
 ## 铁律(防幻觉,违反即作废重来)

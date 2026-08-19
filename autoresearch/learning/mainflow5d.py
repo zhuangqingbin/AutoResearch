@@ -57,6 +57,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import MAIN_RULER
 from autoresearch.learning import experiment_registry as registry
 
@@ -67,10 +68,10 @@ WINDOW_DAYS = 5                       # 「区间严格为**五个交易日**,�
 MIN_POSITIVE_DAYS = 3                 # positive_days >= 3
 GATE_NAME = "主力真在"                 # 人口 = gate_participation_v3.csv 里这道门的行
 
-DEFAULT_LAKE = Path("context/lake/moneyflow")
-DEFAULT_SCAN_ROOT = Path("context/scan")
-DEFAULT_POPULATION = Path("context/learning/gate_participation_v3.csv")
-DEFAULT_LEDGER = Path("context/learning/exp1_mainflow5d.jsonl")
+DEFAULT_LAKE = ws.lake_root() / "moneyflow"
+DEFAULT_SCAN_ROOT = ws.scan_root()
+DEFAULT_POPULATION = ws.context_root() / "learning/gate_participation_v3.csv"
+DEFAULT_LEDGER = ws.context_root() / "learning/exp1_mainflow5d.jsonl"
 SHADOW_VARIANT = "plus_sectormom"
 SHADOW_CHANNEL = "sector_momentum"
 

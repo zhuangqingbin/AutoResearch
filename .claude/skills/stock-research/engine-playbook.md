@@ -1,5 +1,7 @@
 # engine-playbook (v4) — agent 蒸馏参考 + 报告骨架
 
+> **路径约定**:`$CTX`/`$RPT` = 本引擎工作区根(Claude→`context_claude`/`reports_claude`,Codex→`context_codex`/`reports_codex`;shell 里 `CTX=context_${AUTORESEARCH_ENGINE:-claude}`,`RPT=reports_${AUTORESEARCH_ENGINE:-claude}`)。数据湖 `lake/` 两引擎共享。Read/Write 工具调用时把 `$CTX`/`$RPT` 代入具体目录名。
+
 > 读完这一份就不用回翻 `tradingagents/agents/**` 源码。
 > 演进：v3 重平衡(17→15,合并冗余辩论+加证据 lens)；v3.1 并出 **定位&资金流**(15→14);v3.4 市场棒加**市场环境**。
 > **v4(本版)**：报告从「组织架构序」重排为「**决策论证序**」,拆成 **决策主线 / 证据附录** 两层;新增 **预期差 / 催化剂日历 / 持仓监控 / 偿付&再融资** 四维度 + **决策仪表盘 / 维度评分卡 / 多空对撞表** 三速览件;A股加 **股东户数(散户数量)**。
@@ -8,7 +10,7 @@
 
 ## 报告结构（v4 核心：决策主线 + 证据附录）
 
-`autoresearch.analyze.assemble` 把各段拼成 `reports/analyze/<YYYYMMDD_HHMM>/<名称|TICKER>.md`(目录名=运行时刻;A股→中文名、其他市场→TICKER;数据日见同目录 manifest.json),顺序 = **目录 → 决策主线 → 证据附录**。
+`autoresearch.analyze.assemble` 把各段拼成 `$RPT/analyze/<YYYYMMDD_HHMM>/<名称|TICKER>.md`(目录名=运行时刻;A股→中文名、其他市场→TICKER;数据日见同目录 manifest.json),顺序 = **目录 → 决策主线 → 证据附录**。
 **决策主线 = 读它就能下单(目标 ~2 页);证据附录 = 读它来核实(按需下钻)。** 14+ 个 agent 照常产出全部明细,只是**分析师重活沉到附录**。
 
 ```
@@ -37,7 +39,7 @@
 
 ## 输出文件映射（须与 `autoresearch/analyze/assemble.py` 一致）
 ```
-context/analyze/<TICKER>_<分析日YYYYMMDD>/  # 分节草稿(gitignored);assemble → reports/analyze/<YYYYMMDD_HHMM>/<名称|TICKER>.md
+$CTX/analyze/<TICKER>_<分析日YYYYMMDD>/  # 分节草稿(gitignored);assemble → $RPT/analyze/<YYYYMMDD_HHMM>/<名称|TICKER>.md
   1_analysts/  market.md  news.md  fundamentals.md  quality.md  valuation.md
                positioning.md  peer.md  solvency.md(新)
   2_research/  reality_check.md  variant.md(新)  bull.md  bear.md  faceoff.md(新)  manager.md
@@ -192,7 +194,7 @@ FINAL TRANSACTION PROPOSAL: **<BUY|HOLD|SELL>**
 美股无后缀；**A股可省略后缀**(裸 6 位:6/9→`.SS`,0/2/3→`.SZ`,4/8→`.BJ`;也可显式 `600519.SS`);港股 `.HK`;东京 `.T`/伦敦 `.L`/印度 `.NS`/加拿大 `.TO`/澳洲 `.AX`;加密 `-USD`(第3参=crypto)。同业(第4参,可选):逗号分隔,如 `AMD,AVGO,MU,TSM`。
 
 ## 首覆建档(dossier)扩展
-full 档的另一种产出形态:不写一次性报告,直接建**常备覆盖档案**(`context/knowledge/dossiers/<code>.md`,券商 standing coverage 的 initiation)。
+full 档的另一种产出形态:不写一次性报告,直接建**常备覆盖档案**(`$CTX/knowledge/dossiers/<code>.md`,券商 standing coverage 的 initiation)。
 编排:`.claude/workflows/dossier-init.js`(单票一 workflow,与 l4-stock 同型)—— 确定性骨架 `autoresearch.dossier.builder` 幂等生成八节+prefetch 素材 → `dossier-init` agent 首覆 → `schema.lint_dossier` 校验。
 `dossier-init` agent 只填四个 `<!-- LLM:待首覆 -->` 节,**不改确定性节**(§3估值带/§4筹码资金史/§6催化剂日历/§7判例账本/§8变化项日志全出自确定性脚本):
 - **§1 业务模型**叙事:收入驱动公式 + 产业链上下游映射(供应商/客户/竞品)。

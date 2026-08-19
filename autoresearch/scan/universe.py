@@ -36,6 +36,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from autoresearch.common import workspace as ws
+
 # 纯打分原语(autoresearch.common.scoring),scan/factor_lab/handler 三处同口径复用。
 from autoresearch.common.scoring import (
     _GROUPS,
@@ -392,14 +394,14 @@ def _funnel_overlay(recall_channels, channel_quotas, channel_floors):
     return recall_channels, channel_quotas, channel_floors
 
 
-def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
-        recall_n: int = 1000, l2_n: int = 200, outdir: Path | None = None,
-        source: str = "tushare", recall_mode: str = "multi", recall_channels=None,
+def run(analysis_date: str, cap_floor_yi: float | None = None, include_bj: bool | None = None,
+        recall_n: int | None = None, l2_n: int | None = None, outdir: Path | None = None,
+        source: str | None = None, recall_mode: str = "multi", recall_channels=None,
         pinned_path=None,                                                # 保送 pinned.json 路径(None=默认路径;缺文件→kept=[]→no-op parity)
-        regime_aware: bool = False,                                      # L1 权重按 regime 选(默认关=parity)
+        regime_aware: bool | None = None,                                # L1 权重按 regime 选(None→config funnel.regime_aware;内建 False)
         shadow: bool = True,                                              # 影子漏斗变体 L2(纯增量文件,可 --no-shadow 关)
-        l0_min_amount_yi: float = 0.0, l0_min_list_days: int = 0,         # L0 流动性/次新硬门(默认 0=关=parity)
-        l2_floors: dict | None = None, l2_sector_cap: float = 0.20,
+        l0_min_amount_yi: float | None = None, l0_min_list_days: int | None = None,  # L0 流动性/次新硬门(内建 0=关=parity)
+        l2_floors: dict | None = None, l2_sector_cap: float | None = None,
         channel_quotas: dict[str, int] | None = None,                     # 覆盖各路 quota(None=CHANNEL_DEFAULTS,parity)
         channel_floors: dict[str, int] | None = None,                     # 覆盖各路 floor(None=CHANNEL_DEFAULTS,parity)
         weights_path: str | None = None) -> dict:                         # L1 权重文件(None=默认路径=parity;回放器注入 as-of 快照防前视)
@@ -419,6 +421,27 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
     # 166e4d1 的"默认路径在 run 本体读"先例)。坏配置响亮警告后按默认跑,不让扫描失败。
     recall_channels, channel_quotas, channel_floors = _funnel_overlay(
         recall_channels, channel_quotas, channel_floors)
+    # 运行旋钮兜底(2026-08-11 配置单一事实源波,同 _funnel_overlay 语义):None 的形参从
+    # scan_config 补,显式恒优先;缺文件/缺键 = 内建值(parity)。在 run 本体解析(而非只在
+    # build_market_frame 里)是因为 meta/weights_used 要记**实际生效值**(可复现凭据)。
+    # ⚠️ regime_aware 内建缺省两处不同:直调 run()/universe CLI 历史缺省 False(此处),
+    # prelude 生产路缺省 True(在 run_prelude 入口回填后传进来的是具体值)——两处 parity 各自成立。
+    from autoresearch.scan.user_config import knob, load_user_config as _luc
+    try:
+        _ucfg = _luc() or {}
+    except Exception as e:  # noqa: BLE001 — 配置层故障不挡确定性扫描,但必须留痕
+        print(f"[warn] scan_config 读取失败({e!r})→ 运行旋钮全用内建默认", file=sys.stderr)
+        _ucfg = {}
+    cap_floor_yi = float(knob("l0", "cap_floor_yi", cap_floor_yi, 30.0, cfg=_ucfg))
+    include_bj = bool(knob("l0", "include_bj", include_bj, True, cfg=_ucfg))
+    source = str(knob("l0", "source", source, "tushare", cfg=_ucfg))
+    l0_min_amount_yi = float(knob("l0", "min_amount_yi", l0_min_amount_yi, 0.0, cfg=_ucfg))
+    l0_min_list_days = int(knob("l0", "min_list_days", l0_min_list_days, 0, cfg=_ucfg))
+    recall_n = int(knob("funnel", "recall_n", recall_n, 1000, cfg=_ucfg))
+    l2_n = int(knob("funnel", "l2_n", l2_n, 200, cfg=_ucfg))
+    regime_aware = bool(knob("funnel", "regime_aware", regime_aware, False, cfg=_ucfg))
+    l2_sector_cap = float(knob("l2", "sector_cap", l2_sector_cap, 0.20, cfg=_ucfg))
+    l2_floors = knob("l2", "floors", l2_floors, None, cfg=_ucfg)
     # L0 取数 + L1 轻门 + 多日量价富化 → 全市场因子帧(scan.frame 单一代码路径,Phase 0 抽取)
     uni, _counts = build_market_frame(analysis_date, cap_floor_yi=cap_floor_yi, include_bj=include_bj,
                                       source=source, l0_min_amount_yi=l0_min_amount_yi,
@@ -448,7 +471,7 @@ def run(analysis_date: str, cap_floor_yi: float = 30.0, include_bj: bool = True,
     print(f"[L1 召回] L0 {n_l0} → 轻门 {len(uni)} → {recall_mode} top {len(recall)}")
     sectors = aggregate_sectors_overview(recall, uni)
 
-    outdir = outdir or Path("context/scan") / analysis_date
+    outdir = outdir or ws.scan_root() / analysis_date
     outdir.mkdir(parents=True, exist_ok=True)
     keep = (["code", "name", "industry", "composite"] + [f"score_{g}" for g in _GROUPS]
             + ["mktcap_yi", "close", "amount_yi", "vol_ratio", "turnover", "cmf_20", "obv_mom_20",
@@ -640,19 +663,24 @@ def _selftest() -> int:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="scan-market L0 选集 + L1 召回(确定性,零 LLM)")
     ap.add_argument("date", nargs="?", help="分析日 YYYY-MM-DD(缺省=今天)")
-    ap.add_argument("--cap-floor", type=float, default=30.0, help="市值地板(亿),默认 30")
-    ap.add_argument("--exclude-bj", action="store_true", help="排除北交所(默认纳入)")
-    ap.add_argument("--recall-n", type=int, default=1000, help="召回数(复合分 top N),默认 1000")
-    ap.add_argument("--l2-n", type=int, default=200, help="L2 粗排数(分层采样 top N),默认 200")
-    ap.add_argument("--source", choices=["em", "tushare"], default="tushare",
-                    help="universe 取数源:tushare=默认(push2 常被封);em=东财 push2")
+    ap.add_argument("--cap-floor", type=float, default=None,
+                    help="市值地板(亿);缺省=scan_config l0.cap_floor_yi→30")
+    ap.add_argument("--exclude-bj", action="store_true", help="排除北交所(缺省=scan_config l0.include_bj→纳入)")
+    ap.add_argument("--recall-n", type=int, default=None,
+                    help="召回数(top N);缺省=scan_config funnel.recall_n→1000")
+    ap.add_argument("--l2-n", type=int, default=None,
+                    help="L2 粗排数(分层采样 top N);缺省=scan_config funnel.l2_n→200")
+    ap.add_argument("--source", choices=["em", "tushare"], default=None,
+                    help="universe 取数源;缺省=scan_config l0.source→tushare(push2 常被封)")
     ap.add_argument("--recall-mode", choices=["multi", "composite"], default="multi",
                     help="L1 召回:multi=多路策略召回(默认)| composite=单复合分(对拍/回退)")
-    ap.add_argument("--recall-channels", default=None, help="启用 channel 子集(逗号分隔;缺省=全 9 路)")
-    ap.add_argument("--l2-sector-cap", type=float, default=0.20,
-                    help="L2 分层采样:任一申万一级 ≤ 此比例,默认 0.20(=40/200);≥1.0=关")
+    ap.add_argument("--recall-channels", default=None, help="启用 channel 子集(逗号分隔;缺省=scan_config funnel.recall_channels)")
+    ap.add_argument("--l2-sector-cap", type=float, default=None,
+                    help="L2 分层采样:任一申万一级 ≤ 此比例;缺省=scan_config l2.sector_cap→0.20;≥1.0=关")
     ap.add_argument("--regime-aware", action="store_true",
-                    help="L1 权重按当日 regime 选(需 weights.json regimes 块;默认关=parity)")
+                    help="L1 权重按当日 regime 选(需 weights.json regimes 块;缺省=scan_config funnel.regime_aware→关)")
+    ap.add_argument("--no-regime-aware", action="store_true",
+                    help="强制关 regime 权重(覆盖 scan_config)")
     ap.add_argument("--no-shadow", action="store_true",
                     help="关掉影子漏斗变体 L2(默认开;纯增量文件,retro 做确定性 A/B)")
     ap.add_argument("--selftest", action="store_true", help="离线验证打分逻辑(无网络)")
@@ -662,11 +690,14 @@ def main(argv: list[str] | None = None) -> int:
         return _selftest()
 
     analysis_date = args.date or date.today().isoformat()
-    res = run(analysis_date, cap_floor_yi=args.cap_floor, include_bj=not args.exclude_bj,
+    res = run(analysis_date, cap_floor_yi=args.cap_floor,
+              include_bj=(False if args.exclude_bj else None),
               recall_n=args.recall_n, l2_n=args.l2_n, source=args.source,
               recall_mode=args.recall_mode, l2_sector_cap=args.l2_sector_cap,
               recall_channels=(args.recall_channels.split(",") if args.recall_channels else None),
-              regime_aware=args.regime_aware, shadow=not args.no_shadow)
+              regime_aware=(True if args.regime_aware
+                            else (False if args.no_regime_aware else None)),
+              shadow=not args.no_shadow)
     print(f"\nL0 universe={res['universe']} → 轻门 {res['after_gate_a']} → 召回 top{res['recall_n']} "
           f"→ L2 {res['l2_engine']} top{res['l2_n']} (板块概览 {res['sectors']} 个)"
           f"\n→ {res['outdir']}/L2_gbdt_top200.csv")

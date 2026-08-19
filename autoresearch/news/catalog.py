@@ -56,8 +56,10 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
+
 SCHEMA_VERSION = 1
-DEFAULT_ROOT = Path("context/news_catalog")
+DEFAULT_ROOT = ws.context_root() / "news_catalog"
 RULE_VERSION = "catalog.v1"
 
 # ── 阶段序:回放只允许 available_stage ≤ 请求 stage ────────────────────
@@ -591,7 +593,7 @@ def inventory(lake_root: Path | str | None = None,
         out["total_bytes"] += size
         out["total_shards"] += len(shards)
 
-    cache = Path(fallback_cache) if fallback_cache else Path("context/cache/anns_fallback")
+    cache = Path(fallback_cache) if fallback_cache else ws.context_root() / "cache/anns_fallback"
     # rglob:真实布局是 `<date>/<code>.v{N}.json`,顶层 glob 恒空(2026-08-09 首跑发现)
     files = sorted(cache.rglob("*.json")) if cache.exists() else []
     size = sum(p.stat().st_size for p in files)
@@ -980,7 +982,7 @@ def main(argv: list[str] | None = None) -> int:
 
     m = sub.add_parser("manifest", help="把某扫描日的 L3_news 分片收进目录并对账")
     m.add_argument("date")
-    m.add_argument("--scan-root", default="context/scan")
+    m.add_argument("--scan-root", default=str(ws.scan_root()))
     m.add_argument("--stage", default="L3", choices=list(STAGES))
 
     r = sub.add_parser("replay", help="PIT 回放:某票在某 cutoff/stage 时可见的新闻面")

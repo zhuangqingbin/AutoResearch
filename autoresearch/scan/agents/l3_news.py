@@ -18,6 +18,7 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from autoresearch.common import workspace as ws
 from autoresearch.data.cache import get_or_fetch
 from autoresearch.data.sources.anns_fallback import (
     SOURCE_TAG as _FALLBACK_SOURCE_TAG,
@@ -142,7 +143,7 @@ def harvest_l3_news(date: str, codes, root: Path | None = None, lookback_days: i
     本身炸了/仍空 → 保持空桶,不阻断、只记账(见下方 stderr)。已有主源真数据的桶不覆盖。
     """
     from autoresearch.data.tushare_source import _code6
-    root = root or Path("context/scan")
+    root = root or ws.scan_root()
     out_dir = root / date / "L3_news"
     out_dir.mkdir(parents=True, exist_ok=True)
     want = {str(c).zfill(6) for c in codes}

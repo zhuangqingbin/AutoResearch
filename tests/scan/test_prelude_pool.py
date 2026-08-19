@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import pytest
 
+from autoresearch.common import workspace as ws
 from autoresearch.scan import prelude
 from autoresearch.scan.prelude import run_prelude
 
@@ -162,7 +163,7 @@ def test_prelude_dossier_pool_note_carries_reconcile_nag(tmp_path, monkeypatch):
     from tests.dossier.test_delta import _mk_dossier
     monkeypatch.chdir(tmp_path)
     _mk_dossier(code="300857")
-    _write_pool(tmp_path / "context" / "knowledge" / "coverage_pool.json", ["300857"])
+    _write_pool(tmp_path / ws.knowledge_root() / "coverage_pool.json", ["300857"])
 
     def fake_refresh(today, **kw):
         return {"entered": [], "retired": [], "revived": [],
@@ -260,7 +261,7 @@ def test_prelude_dossier_pool_note_carries_staleness_nag(tmp_path, monkeypatch):
     from tests.dossier.test_delta import _mk_dossier
     monkeypatch.chdir(tmp_path)
     _mk_dossier(code="300857", today="2026-01-01")
-    _write_pool(tmp_path / "context" / "knowledge" / "coverage_pool.json", ["300857"])
+    _write_pool(tmp_path / ws.knowledge_root() / "coverage_pool.json", ["300857"])
 
     def fake_refresh(today, **kw):
         return {"entered": [], "retired": [], "revived": [],

@@ -50,13 +50,13 @@ from pathlib import Path
 
 import pandas as pd
 
-from autoresearch.common import stats as st
+from autoresearch.common import stats as st, workspace as ws
 from autoresearch.common.ruler import MAIN_RULER, entry_flag_for, entry_tradable
 
 SCHEMA_VERSION = 1
-DEFAULT_ROOT = Path("context/scan")
-OUT_JSON = Path("reports/scan/l2_slo.json")
-OUT_MD = Path("reports/scan/l2_slo.md")
+DEFAULT_ROOT = ws.scan_root()
+OUT_JSON = ws.reports_root() / "scan/l2_slo.json"
+OUT_MD = ws.reports_root() / "scan/l2_slo.md"
 
 TOP_DECILE = 0.90            # 全市场 top-decile(与 retro.attribute_frame 同源)
 ABS_THRESHOLD = 0.02         # 绝对收益阈:光排进前 10% 但只涨 0.1% 不算赢

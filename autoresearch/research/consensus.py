@@ -23,7 +23,9 @@ from pathlib import Path
 
 import pandas as pd
 
-_DEFAULT_CACHE = Path("context/factor_lab/cache")
+from autoresearch.common import workspace as ws
+
+_DEFAULT_CACHE = ws.factor_lab_root() / "cache"
 
 
 def _dir(cache_root: Path | None) -> Path:

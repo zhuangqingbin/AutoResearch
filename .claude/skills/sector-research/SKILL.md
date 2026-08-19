@@ -3,6 +3,8 @@ name: sector-research
 description: "Single A-share INDUSTRY (申万一级) research — 景气度/产业链/竞争格局/资金地形/龙头映射 (「研究半导体行业」「创新药板块怎么样」). Also owns the LITE sector brief scan-market invokes at Stage 1: a two-段 machine contract (地形段喂 L3/L4;研判段仅 L5). NOT for one ticker (→ stock-research), whole-market (→ scan-market), cross-asset (→ macro-research). Project-local."
 ---
 
+> **路径约定**:`$CTX`/`$RPT` = 本引擎工作区根(Claude→`context_claude`/`reports_claude`,Codex→`context_codex`/`reports_codex`;shell 里 `CTX=context_${AUTORESEARCH_ENGINE:-claude}`,`RPT=reports_${AUTORESEARCH_ENGINE:-claude}`)。数据湖 `lake/` 两引擎共享。Read/Write 工具调用时把 `$CTX`/`$RPT` 代入具体目录名。
+
 # sector-research — 单行业研究:full 深研 / lite 行业 brief(一个 skill,两档)
 
 ## 核心原理
@@ -16,12 +18,12 @@ description: "Single A-share INDUSTRY (申万一级) research — 景气度/产�
 | 用户说"快速 / 一句话 / brief" | **lite** |
 
 ## lite 档(行业 brief;模板见 `sector-playbook.md`)
-1. **确定性件(零 LLM)**:`uv run --no-sync python -m autoresearch.sector.reuse <date> --apply`(TTL≤5 日♻️复用:regime 同 + 行业中位 60 日动量位移 ≤3pp)→ 剩余行业 `uv run --no-sync python -m autoresearch.sector.pack <date>`(自动选:红榜 top3 ∪ L2 集中度 top3 ∪ 观察单行业,K≤6;→ `context/sector/<date>/<行业>.json`)。
-2. **brief subagent(每行业一个,可并发)**:读 pack JSON(数字不可编造)+ sector_memo 行(若有),写 `context/scan/<date>/sector_briefs/<行业>.md`——**两段契约**(标题即机器接口,勿改字):`## 地形段(喂 L3/L4 · 描述性)` + `## 研判段(仅 L5)`(内含 `**行业方向**: 看多|中性|看空` keyed 行)。
+1. **确定性件(零 LLM)**:`uv run --no-sync python -m autoresearch.sector.reuse <date> --apply`(TTL≤5 日♻️复用:regime 同 + 行业中位 60 日动量位移 ≤3pp)→ 剩余行业 `uv run --no-sync python -m autoresearch.sector.pack <date>`(自动选:红榜 top3 ∪ L2 集中度 top3 ∪ 观察单行业,K≤6;→ `$CTX/sector/<date>/<行业>.json`)。
+2. **brief subagent(每行业一个,可并发)**:读 pack JSON(数字不可编造)+ sector_memo 行(若有),写 `$CTX/scan/<date>/sector_briefs/<行业>.md`——**两段契约**(标题即机器接口,勿改字):`## 地形段(喂 L3/L4 · 描述性)` + `## 研判段(仅 L5)`(内含 `**行业方向**: 看多|中性|看空` keyed 行)。
 3. **消费自动发生(零编排)**:L3 表 `sector_terrain=True` 前置全行业地形行;L4 简报注入该行业 brief 地形段(无 brief 回退 memo 行);L5 assemble 自动嵌 🏭 行业研判节 + 🔗 同链对比表;发布时 `sector_ledger.record_calls` 自动记方向。
 
 ## full 档(单行业深研,standalone;6 节结构见 `sector-playbook.md`)
-`python -m autoresearch.sector.pack <date> --industries <行业>` 取包 → 深研(链上下游 WebSearch 产业证据标『实时网查』、格局与龙头映射、景气位置、行业内估值分布)→ 报告落 `reports/sector/<date>/<行业>.md`(两段结构同 lite,研判段更厚)→ 收尾 **`sector_memo.upsert_memo` 回写**(记忆从"卡片共性蒸馏"升级为"研究结论")+ `sector_ledger.record_calls`。
+`python -m autoresearch.sector.pack <date> --industries <行业>` 取包 → 深研(链上下游 WebSearch 产业证据标『实时网查』、格局与龙头映射、景气位置、行业内估值分布)→ 报告落 `$RPT/sector/<date>/<行业>.md`(两段结构同 lite,研判段更厚)→ 收尾 **`sector_memo.upsert_memo` 回写**(记忆从"卡片共性蒸馏"升级为"研究结论")+ `sector_ledger.record_calls`。
 
 ## 铁律(防锚定,违反即作废)
 - **三层同律**:地形段只许数字/事实/日历(会喂 L3/L4);方向性判断(看多空/超低配语言)只在研判段 = 只进 L5/standalone 报告。**个股评级只由本股 rubric 三门决定。**

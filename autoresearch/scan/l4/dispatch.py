@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.scan.l4.context import _dossier_summary_text
 
 
@@ -23,7 +24,7 @@ def dispatch_plan(date: str, root: Path | str | None = None) -> dict:
     用名称/行业,不查 finalists.csv 即可读到),直取 finalists.csv 的 `name`/`sector` 列,
     缺列容错为 `""`。
     """
-    base = Path(root) if root else Path("context/scan")
+    base = Path(root) if root else ws.scan_root()
     scan_dir = base / date
     fp = scan_dir / "finalists.csv"
     dispatch: list[str] = []

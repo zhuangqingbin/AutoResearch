@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
+
 _INDEXES = {"000300.SH": "沪深300", "399006.SZ": "创业板指", "000905.SH": "中证500",
             "000001.SH": "上证指数"}
 
@@ -195,7 +197,7 @@ def fetch_macro_cn(date: str, pro=None) -> dict:
 
 def write_macro_cn(date: str, root: Path | str | None = None, pro=None) -> Path:
     """取数落 `<root>/<date>/_macro_cn.json`(pack 的输入);返回路径。"""
-    det = Path(root or "context/scan") / date
+    det = Path(root or ws.scan_root()) / date
     det.mkdir(parents=True, exist_ok=True)
     p = det / "_macro_cn.json"
     p.write_text(json.dumps(fetch_macro_cn(date, pro=pro), ensure_ascii=False, indent=1),

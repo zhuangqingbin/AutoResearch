@@ -22,7 +22,10 @@ from pathlib import Path
 
 import pandas as pd
 
-PACK_ROOT = Path("context/sector")
+from autoresearch.common import workspace as ws
+
+PACK_ROOT = ws.context_root() / "sector"
+_WS_WATCHLIST = ws.context_root() / "watchlist.csv"  # B008:默认值须为模块级单例
 
 
 def _read_csv(p: Path) -> pd.DataFrame | None:
@@ -126,7 +129,7 @@ def sector_pack(industry: str, scan_dir: Path | str) -> dict:
 
 
 def select_briefing_sectors(scan_dir: Path | str, k: int = 6,
-                            wl_path: Path | str = Path("context/watchlist.csv"),
+                            wl_path: Path | str = _WS_WATCHLIST,
                             ) -> tuple[list[str], dict[str, str]]:
     """brief 该给哪几个行业:红榜 top3 ∪ L2 集中度 top3 ∪ 观察单行业,保序去重 cap=k。
 
@@ -232,14 +235,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("date", help="scan 日 YYYY-MM-DD(staging 需已就绪 = L2 后)")
     ap.add_argument("--industries", default=None, help="逗号分隔;缺省 = 自动选(红榜∪集中度∪观察单)")
     ap.add_argument("--scan-dir", default=None, help="缺省 context/scan/<date>")
-    ap.add_argument("--k", type=int, default=6, help="自动选行业数上限,默认 6")
+    ap.add_argument("--k", type=int, default=None,
+                    help="自动选行业数上限;缺省=scan_config sector.max_briefs→6")
     args = ap.parse_args(argv)
-    scan_dir = Path(args.scan_dir) if args.scan_dir else Path("context/scan") / args.date
+    # 2026-08-11 配置单一事实源波:CLI 显式 --k > scan_config sector.max_briefs > 内建 6。
+    from autoresearch.scan.user_config import knob
+    k = int(knob("sector", "max_briefs", args.k, 6))
+    scan_dir = Path(args.scan_dir) if args.scan_dir else ws.scan_root() / args.date
     if args.industries:
         inds = [s.strip() for s in args.industries.split(",") if s.strip()]
         prov: dict[str, str] = {}
     else:
-        inds, prov = select_briefing_sectors(scan_dir, k=args.k)
+        inds, prov = select_briefing_sectors(scan_dir, k=k)
     if not inds:
         print("[sector.pack] 无可选行业(staging 缺/空)—— presence-gated 跳过", file=sys.stderr)
         return 0

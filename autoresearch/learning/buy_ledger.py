@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import MAIN_RULER, SCHEMA_SWITCH_V4, TOUCH_COL
 from autoresearch.learning.shrink import MIN_N_INJECT, n_tag, shrink as _shrink_fn, shrink_config
 
@@ -134,7 +135,7 @@ def _read_attr(d: Path) -> pd.DataFrame | None:
 def roll(scan_root: Path | str | None = None) -> pd.DataFrame:
     """逐 scan 日抽 ≥OW 买单 × attribution 已实现 fwd → ledger 帧。无买单日自然无行。"""
     from autoresearch.scan.health import final_ratings  # lazy 防环
-    scan_root = Path(scan_root or "context/scan")
+    scan_root = Path(scan_root or ws.scan_root())
     rows = []
     if not scan_root.exists():
         return pd.DataFrame(columns=_COLS)
@@ -184,7 +185,7 @@ def target_calibration(scan_root: Path | str | None = None, window: int = 30,
     ≥20 交易日不删旧读数,不与主口径混算)。返回 None = 无现场。spec 2026-07-05 §6。
     """
     from autoresearch.scan.health import final_ratings  # lazy 防环
-    scan_root = Path(scan_root or "context/scan")
+    scan_root = Path(scan_root or ws.scan_root())
     if not scan_root.exists():
         return None
     days = sorted(p for p in scan_root.iterdir() if p.is_dir() and p.name[:2] == "20")
@@ -281,7 +282,7 @@ def hi2_calibration(scan_root: Path | str | None = None, window: int = 30,
     (分位,非"率")本函数不收缩,原始值不变。`all` 组恒返回(即便 n=0),是否据此注入简报由
     调用方 `target_calib_line` 按 `min_n` 把关。
     """
-    scan_root = Path(scan_root or "context/scan")
+    scan_root = Path(scan_root or ws.scan_root())
     days: list[Path] = []
     if scan_root.exists():
         days = sorted(p for p in scan_root.iterdir() if p.is_dir() and p.name[:2] == "20")
@@ -355,7 +356,7 @@ def write_target_calib(scan_root: Path | str | None = None, window: int = 30,
     一次性:`python -c "from autoresearch.learning.buy_ledger import write_target_calib as w; w()"`。
     """
     calib = hi2_calibration(scan_root=scan_root, window=window)
-    out = Path(out_dir) if out_dir else Path("context/learning")
+    out = Path(out_dir) if out_dir else ws.learning_root()
     out.mkdir(parents=True, exist_ok=True)
     (out / "target_calib.json").write_text(
         json.dumps(calib, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -475,7 +476,7 @@ def render(ledger: pd.DataFrame, calib: dict | None = None) -> list[str]:
 def main() -> int:
     ledger = roll()
     calib = target_calibration()
-    out = Path("reports/learning/buy_ledger.md")
+    out = ws.reports_root() / "learning/buy_ledger.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("\n".join(render(ledger, calib=calib)) + "\n", encoding="utf-8")
     line = calibration_line(calib)

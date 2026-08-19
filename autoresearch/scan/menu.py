@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
+
 
 def _num(df: pd.DataFrame, col: str) -> pd.Series | None:
     return pd.to_numeric(df[col], errors="coerce") if col in df.columns else None
@@ -226,7 +228,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="L2 菜单体检 + L4 预算 + 哨兵建议(确定性,零 LLM)")
     ap.add_argument("date", help="scan 日 YYYY-MM-DD")
     args = ap.parse_args(argv)
-    d = Path("context/scan") / args.date
+    d = ws.scan_root() / args.date
     print(menu_health(d) or "(菜单体检:staging 缺)")
     n, why = l4_budget(d)
     print(f"[l4_budget] target={n} —— {why}")

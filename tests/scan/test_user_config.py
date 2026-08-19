@@ -14,6 +14,7 @@ import json
 
 import pytest
 
+from autoresearch.common import workspace as ws
 from autoresearch.scan.user_config import (
     _strip_jsonc,
     load_pinned,
@@ -314,7 +315,7 @@ def test_frame_json_echoes_user_config_block(monkeypatch, tmp_path, capsys):
     assert rc == 0
     assert '"user_config"' in out
 
-    echo = tmp_path / "context" / "scan" / "2026-07-11" / "user_config_echo.json"
+    echo = tmp_path / ws.scan_root() / "2026-07-11" / "user_config_echo.json"
     assert echo.exists()
     assert json.loads(echo.read_text(encoding="utf-8")) == {}
 
@@ -343,8 +344,9 @@ def test_frame_json_echo_reflects_real_config(monkeypatch, tmp_path, capsys):
     assert rc == 0
     assert '"cap": 3' in out
 
-    echo = tmp_path / "context" / "scan" / "2026-07-12" / "user_config_echo.json"
-    assert json.loads(echo.read_text(encoding="utf-8")) == {"pinned": {"cap": 3}}
+    echo = tmp_path / ws.scan_root() / "2026-07-12" / "user_config_echo.json"
+    assert json.loads(echo.read_text(encoding="utf-8")) == {"pinned": {"cap": 3},
+                                                            "engine": ws.ENGINE}
 
 
 def test_cli_main_prints_validated_json(tmp_path, monkeypatch, capsys):
@@ -403,17 +405,17 @@ def test_frame_json_materializes_resolved_agent_config(monkeypatch, tmp_path, ca
     assert scan_frame.main(["2026-08-09", "--json"]) == 0
     out = capsys.readouterr().out
 
-    resolved_file = tmp_path / "context" / "scan" / "2026-08-09" / RESOLVED_FILENAME
+    resolved_file = tmp_path / ws.scan_root() / "2026-08-09" / RESOLVED_FILENAME
     assert resolved_file.exists(), "frame --json 没落 _resolved_agent_config.json"
     assert set(json.loads(resolved_file.read_text(encoding="utf-8"))["roles"]) == _AGENT_ROLES
     assert '"resolved_agents"' in out, "payload 的 user_config 块没带 resolved_agents(workflow 拿不到)"
 
-    echo = json.loads((tmp_path / "context" / "scan" / "2026-08-09"
+    echo = json.loads((tmp_path / ws.scan_root() / "2026-08-09"
                        / "user_config_echo.json").read_text(encoding="utf-8"))
     assert set(echo["resolved_agents"]) == _AGENT_ROLES
     # echo / market_pack / run_contract 三处仍同哈希(health.py 的 config_hash 校验靠它)
     from autoresearch.scan.health import run_contract_health
-    health = run_contract_health(tmp_path / "context" / "scan" / "2026-08-09")
+    health = run_contract_health(tmp_path / ws.scan_root() / "2026-08-09")
     assert health["errors"] == [], health["errors"]
     assert health["echo_config_match"] is True
 
@@ -436,7 +438,7 @@ def test_frame_json_without_agents_block_stays_parity(monkeypatch, tmp_path, cap
                         (None, "无 macro_state.json → 只用日频 pack"), raising=True)
     monkeypatch.chdir(tmp_path)
     assert scan_frame.main(["2026-08-09", "--json"]) == 0
-    assert not (tmp_path / "context" / "scan" / "2026-08-09" / RESOLVED_FILENAME).exists()
+    assert not (tmp_path / ws.scan_root() / "2026-08-09" / RESOLVED_FILENAME).exists()
 
 
 # ── Wave12-T33 修复轮 1(I2):CLI 必须产出 resolved_agents,否则 t1-review 那条腿是拆半的 ──
@@ -530,7 +532,7 @@ def test_materialized_resolved_is_byte_identical_to_echoed_one(monkeypatch, tmp_
     assert scan_frame.main(["2026-08-09", "--json"]) == 0
     capsys.readouterr()
 
-    scan_dir = tmp_path / "context" / "scan" / "2026-08-09"
+    scan_dir = tmp_path / ws.scan_root() / "2026-08-09"
     on_disk = json.loads((scan_dir / RESOLVED_FILENAME).read_text(encoding="utf-8"))["roles"]
     echoed = json.loads((scan_dir / "user_config_echo.json").read_text(encoding="utf-8"))["resolved_agents"]
     assert on_disk == echoed, "落盘的 resolved 与 echo 里那份不是同一张表 —— 对账是假的"

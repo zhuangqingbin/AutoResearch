@@ -1,7 +1,6 @@
 import pandas as pd
 
-from autoresearch.scan import decision_finalize as df
-from autoresearch.scan import report_sections as rs
+from autoresearch.scan import decision_finalize as df, report_sections as rs
 
 
 def test_conflict_when_tripwire_fires_and_rating_not_sell(monkeypatch):

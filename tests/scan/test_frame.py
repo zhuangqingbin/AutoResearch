@@ -10,6 +10,7 @@ import json
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.scan import frame as scan_frame
 from autoresearch.scan.market import market_pack, market_pack_from_frame
 from autoresearch.scan.menu import sentinel_advice, sentinel_advice_from_frame
@@ -146,7 +147,7 @@ def test_frame_cli_smoke(monkeypatch, capsys, tmp_path):
     assert '"macro_state_note"' in out   # 捆绑进 JSON,缺文件 → null + note(presence-gated)
     assert '"user_config"' in out        # Plan A3 T1:用户配置层回显(缺文件 → {})
     contract = json.loads(
-        (tmp_path / "context" / "scan" / DATE / "run_contract.json").read_text(
+        (tmp_path / ws.scan_root() / DATE / "run_contract.json").read_text(
             encoding="utf-8"
         )
     )

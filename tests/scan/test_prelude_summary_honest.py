@@ -20,8 +20,7 @@ from __future__ import annotations
 
 import pytest
 
-from autoresearch.scan import prelude as prelude_mod
-from autoresearch.scan import stage_result as stage_result_mod
+from autoresearch.scan import prelude as prelude_mod, stage_result as stage_result_mod
 
 
 @pytest.fixture

@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import MAIN_RULER
 
 SCHEMA_VERSION = 1
@@ -136,7 +137,7 @@ def audit_day(scan_dir: Path | str, *, next_scan_dir: Path | None = None,
 
 def roll(scan_root: Path | str | None = None,
          shadow_path: Path | str | None = None) -> pd.DataFrame:
-    root = Path(scan_root or "context/scan")
+    root = Path(scan_root or ws.scan_root())
     if not root.exists():
         return pd.DataFrame(columns=_COLS)
     days = sorted(p for p in root.iterdir() if p.is_dir() and p.name[:2] == "20")
@@ -203,7 +204,7 @@ def render(ledger: pd.DataFrame) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     ledger = roll()
-    target = Path("reports/learning/sentinel_audit.md")
+    target = ws.reports_root() / "learning/sentinel_audit.md"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("\n".join(render(ledger)) + "\n", encoding="utf-8")
     print(f"[sentinel_audit] {len(ledger)} 哨兵日 → {target}")

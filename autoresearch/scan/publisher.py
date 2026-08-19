@@ -8,6 +8,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
+from autoresearch.common import workspace as ws
 from autoresearch.scan.l4.parsers import _load_json, _read_csv
 from autoresearch.scan.report_sections import _funnel_rows, build_summary
 
@@ -215,7 +216,7 @@ def _publish_pipeline(scan_dir: Path, out_base: Path, analysis_date: str) -> int
         if p.exists():
             shutil.copy2(p, pdir / dst)
             n += 1
-    wp = Path("context/factor_lab/weights.json")
+    wp = ws.factor_lab_root() / "weights.json"
     if wp.exists():
         shutil.copy2(wp, pdir / "L1_weights.json")
         n += 1
@@ -251,10 +252,10 @@ def _run_publish(analysis_date: str, scan_dir: Path | None = None,
                  out_root: Path | None = None, hhmm: str | None = None,
                  run_date: str | None = None,
                  pinned_path: str | Path | None = None) -> Path:
-    scan_dir = scan_dir or Path("context/scan") / analysis_date
-    out_root = out_root or Path("reports/scan")
+    scan_dir = scan_dir or ws.scan_root() / analysis_date
+    out_root = out_root or ws.reports_root() / "scan"
     is_real = Path(scan_dir).resolve() == (
-        Path("context/scan") / analysis_date
+        ws.scan_root() / analysis_date
     ).resolve()
     now = datetime.now()
     hhmm = hhmm or now.strftime("%H%M")

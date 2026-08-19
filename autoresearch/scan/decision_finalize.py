@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from autoresearch.agents.utils.rating import RATINGS_5_TIER
+from autoresearch.common import workspace as ws
 from autoresearch.scan.l4.parsers import (
     _GATES3,
     _decision_text,
@@ -367,7 +368,7 @@ def _tripwire_hits(scan_dir, analysis_date: str, codes: list[str]) -> list[dict]
     205.00 包在带内测不出冲突;严格早于今日时线=210.01,才是当时真实在用的那条)。
     """
     from autoresearch.learning import tripwire_watch
-    root = Path(scan_dir).parent if scan_dir else Path("context/scan")
+    root = Path(scan_dir).parent if scan_dir else ws.scan_root()
     return tripwire_watch.check(analysis_date, codes=codes, scan_root=root, card_before=analysis_date)
 
 

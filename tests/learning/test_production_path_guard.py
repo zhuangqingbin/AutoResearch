@@ -11,13 +11,14 @@ from __future__ import annotations
 
 import pytest
 
+from autoresearch.common import workspace as ws
 from tests.learning.conftest import _REPO_ROOT, PRODUCTION_PATH_GUARD_MARKER
 
 _CANARY_NAME = "_guardrail_canary_should_never_persist"
-_CANARY_REPORTS_DIR = _REPO_ROOT / "reports" / _CANARY_NAME
-_CANARY_SCAN_DIR = _REPO_ROOT / "context" / "scan" / _CANARY_NAME
-_CANARY_REPORTS_FILE = _REPO_ROOT / "reports" / f"{_CANARY_NAME}.txt"
-_CANARY_SCAN_FILE = _REPO_ROOT / "context" / "scan" / f"{_CANARY_NAME}.txt"
+_CANARY_REPORTS_DIR = _REPO_ROOT / ws.reports_root() / _CANARY_NAME
+_CANARY_SCAN_DIR = _REPO_ROOT / ws.scan_root() / _CANARY_NAME
+_CANARY_REPORTS_FILE = _REPO_ROOT / ws.reports_root() / f"{_CANARY_NAME}.txt"
+_CANARY_SCAN_FILE = _REPO_ROOT / ws.scan_root() / f"{_CANARY_NAME}.txt"
 _ALL_CANARIES = (_CANARY_REPORTS_DIR, _CANARY_SCAN_DIR, _CANARY_REPORTS_FILE, _CANARY_SCAN_FILE)
 
 
@@ -91,7 +92,7 @@ def test_guardrail_reproduces_the_original_incident_shape_via_shutil_copy2(tmp_p
 
 def test_guardrail_does_not_block_reads_of_real_production_files():
     """护栏只挡写,不挡读——真实历史产物必须仍然可读(否则会误伤大量正常测试)。"""
-    real_file = _REPO_ROOT / "reports" / "scan" / "20260725_1316" / "manifest.json"
+    real_file = _REPO_ROOT / ws.reports_root() / "scan" / "20260725_1316" / "manifest.json"
     assert real_file.exists(), "前提断言:这份真实产物应当存在,若不存在说明测试环境变了"
     text = real_file.read_text(encoding="utf-8")
     assert text                                    # 读得到内容,未被拦

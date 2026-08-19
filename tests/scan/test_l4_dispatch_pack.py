@@ -6,13 +6,14 @@ from __future__ import annotations
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.scan.agents.l4_card import write_dispatch_pack
 
 _DATE = "2026-07-03"
 
 
 def _mk(root):
-    d = root / "context" / "scan" / _DATE
+    d = root / ws.scan_root() / _DATE
     (d / "details").mkdir(parents=True)
     pd.DataFrame([
         {"code": "600584", "name": "长电科技", "sector": "半导体", "conviction": 50},
@@ -51,7 +52,7 @@ def test_dispatch_pack_cli(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     from autoresearch.scan.agents.l4_card import main
     assert main(["prompts", _DATE]) == 0
-    assert (tmp_path / "context" / "scan" / _DATE / "_l4_prompt_600584.md").exists()
+    assert (tmp_path / ws.scan_root() / _DATE / "_l4_prompt_600584.md").exists()
     assert "3 份 prompt" in capsys.readouterr().out               # 3 只 finalist 全派(无跳过)
 
 
@@ -71,7 +72,7 @@ def test_prompt_has_intel_pointer(tmp_path):
 
 def _mk_with_pinned(root):
     """mirror _mk 但 finalists 多一只 lane=pinned + pinned_note 的手工票(600000)。"""
-    d = root / "context" / "scan" / _DATE
+    d = root / ws.scan_root() / _DATE
     (d / "details").mkdir(parents=True)
     pd.DataFrame([
         {"code": "600584", "name": "长电科技", "sector": "半导体", "conviction": 50, "lane": "trend"},
@@ -155,7 +156,7 @@ def test_write_dispatch_pack_no_lane_column_is_parity(tmp_path):
 
 def _mk_full(root):
     """强先验票(conv 78 + 4 路共振)+ 保送持仓票 + 普通弱先验票。"""
-    d = root / "context" / "scan" / _DATE
+    d = root / ws.scan_root() / _DATE
     (d / "details").mkdir(parents=True)
     pd.DataFrame([
         {"code": "600584", "name": "强先验", "sector": "半导体", "conviction": 78, "lane": "healthy"},

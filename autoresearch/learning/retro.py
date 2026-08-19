@@ -28,6 +28,7 @@ from pathlib import Path
 import pandas as pd
 
 from autoresearch.agents.utils.rating import RATINGS_5_TIER, parse_rating
+from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import (
     EXIT_FLAG,
     MAIN_RULER,
@@ -450,7 +451,7 @@ def _buylist(date: str, report_root: Path | None = None,
         ratings = read_final_ratings(scan_dir)
         if ratings:
             return ratings
-    rdir = _report_dir_for(date, report_root or Path("reports/scan"))
+    rdir = _report_dir_for(date, report_root or ws.reports_root() / "scan")
     if rdir is None:
         return {}
     out: dict[str, str] = {}
@@ -550,8 +551,8 @@ def attribution_pending(today: str | None = None, scan_root: Path | None = None,
     还没到夜间窗口。
     """
     today = today or datetime.now().strftime("%Y-%m-%d")
-    scan_root = scan_root or Path("context/scan")
-    report_root = report_root or Path("reports/scan")
+    scan_root = scan_root or ws.scan_root()
+    report_root = report_root or ws.reports_root() / "scan"
     days = _ready_scan_days(today, scan_root, report_root)
     return [d for d in days if not (scan_root / d / "retro" / "attribution.csv").exists()]
 
@@ -569,8 +570,8 @@ def pending_days(today: str | None = None, scan_root: Path | None = None,
     带进来,此时应先查 `attribution_pending()`。
     """
     today = today or datetime.now().strftime("%Y-%m-%d")
-    scan_root = scan_root or Path("context/scan")
-    report_root = report_root or Path("reports/scan")
+    scan_root = scan_root or ws.scan_root()
+    report_root = report_root or ws.reports_root() / "scan"
     days = _ready_scan_days(today, scan_root, report_root)
     return [d for d in days if not (scan_root / d / "retro" / "done.json").exists()]
 
@@ -667,7 +668,7 @@ def _join_process_score(attr: pd.DataFrame, sdir: Path) -> pd.DataFrame:
 def attribute(date: str, scan_root: Path | None = None, report_root: Path | None = None,
               abs_thresh: float = 0.03) -> pd.DataFrame:
     """单日归因 → 写 context/scan/<date>/retro/attribution.csv,返回全帧。"""
-    scan_root = scan_root or Path("context/scan")
+    scan_root = scan_root or ws.scan_root()
     sdir = scan_root / date
     l1 = pd.read_csv(sdir / "L1_scored_full.csv", dtype={"code": str})
     realized = realized_returns(date)
@@ -725,13 +726,13 @@ def attribute(date: str, scan_root: Path | None = None, report_root: Path | None
     if safe_emit_retro_finalized_event(sdir) is not None:
         initialize_consumer_state(sdir)
         is_real = sdir.resolve() == (
-            Path("context/scan") / date
+            ws.scan_root() / date
         ).resolve()
         if is_real:
             safe_run_consumers(sdir)
     _publish_retro_control_state(
         sdir,
-        report_root=report_root or Path("reports/scan"),
+        report_root=report_root or ws.reports_root() / "scan",
     )
     return attr
 
@@ -792,7 +793,7 @@ def backfill_bought(scan_root: Path | str | None = None) -> int:
     修复:`_KEEP` 曾漏 `bought`(attribute_frame 算好但落盘白名单未收),导致老 attribution.csv
     无此列 → zero_buy_ledger.roll() 容错读成全 False → 真实买单日被记成 0 买(台账污染)。
     """
-    root = Path(scan_root) if scan_root else Path("context/scan")
+    root = Path(scan_root) if scan_root else ws.scan_root()
     n = 0
     for p in sorted(root.glob("*/retro/attribution.csv")):
         df = pd.read_csv(p, dtype={"code": str})
@@ -993,7 +994,7 @@ def unsellable_section(attr: pd.DataFrame) -> list[str]:
 
 def write_retro_input(date: str, attr: pd.DataFrame, scan_root: Path | None = None) -> Path:
     """把 stage_stats + 漏判赢家 top(带因子行)+ 选中对照写成 retro_input.md(喂诊断)。"""
-    scan_root = scan_root or Path("context/scan")
+    scan_root = scan_root or ws.scan_root()
     st = stage_stats(attr)
     lines = [f"# retro 输入 — {date}\n", "## 漏斗命中(对赢家)",
              f"- 当日可交易 universe:{st['n_universe_realized']};**赢家(T+2 前10%∧≥3%):{st['n_winners']}**",
@@ -1172,7 +1173,7 @@ def recalibrate_and_log(retro_date: str, cap_floor: float = 30.0, k: float = 200
     except Exception as e:  # noqa: BLE001
         print(f"🚨 [recalibrate] extend_plan 失败({e})→ 本次退化为冻结面板校准"
               f"(= 旧 NO-OP 行为);若心跳探针连日报警即是它", file=sys.stderr)
-    wp = Path("context/factor_lab/weights.json")
+    wp = ws.factor_lab_root() / "weights.json"
     before_raw = wp.read_bytes() if wp.exists() else b"{}"
     before_sha = fs.snapshot_weights() or _sha8(before_raw)   # 快照留底(Phase 3 回滚)
     fl.calibrate(cap_floor=cap_floor, k=k, label_col=MAIN_RULER)  # 重写 weights.json(多日面板,绝非单日)
@@ -1260,7 +1261,7 @@ def refresh_attributions(scan_root: Path | None = None, report_root: Path | None
     - 否则,若缺 `rel_gap_market`/`rel_gap_sector`(T22)→ 只追加两列(自包含现算,见
       `_backfill_rel_gap_columns`),同样不碰旧列/行数。
     """
-    scan_root = scan_root or Path("context/scan")
+    scan_root = scan_root or ws.scan_root()
     if not scan_root.exists():
         return []
     today = datetime.now().strftime("%Y-%m-%d")
@@ -1307,7 +1308,7 @@ def refresh_attributions(scan_root: Path | None = None, report_root: Path | None
 
 
 def mark_done(date: str, summary: dict | None = None, scan_root: Path | None = None) -> None:
-    scan_root = scan_root or Path("context/scan")
+    scan_root = scan_root or ws.scan_root()
     p = scan_root / date / "retro" / "done.json"
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps({"date": date, "ts": datetime.now().isoformat(timespec="seconds"),

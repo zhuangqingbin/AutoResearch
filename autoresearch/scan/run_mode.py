@@ -30,6 +30,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from autoresearch.common import workspace as ws
+
 SCHEMA_VERSION = 1
 
 FULL = "FULL"
@@ -209,7 +211,7 @@ def main(argv: list[str] | None = None) -> int:
 
     ap = argparse.ArgumentParser(description="运行模式四态判定(确定性)")
     ap.add_argument("date")
-    ap.add_argument("--scan-root", default="context/scan")
+    ap.add_argument("--scan-root", default=str(ws.scan_root()))
     ap.add_argument("--sentinel-level", default="full")
     ap.add_argument("--sentinel-reason", default=None)
     ap.add_argument("--force-full", action="store_true")

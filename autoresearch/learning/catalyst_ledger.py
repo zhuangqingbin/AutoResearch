@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import MAIN_RULER
 
 _COLS = ["date", "n_flag", "n_unflag", "f2_flag", "f2_unflag", "f5_flag", "f5_unflag"]
@@ -54,7 +55,7 @@ def _day(d: Path) -> dict | None:
 
 
 def roll(scan_root: Path | str | None = None) -> pd.DataFrame:
-    scan_root = Path(scan_root or "context/scan")
+    scan_root = Path(scan_root or ws.scan_root())
     if not scan_root.exists():
         return pd.DataFrame(columns=_COLS)
     rows = [r for d in sorted(p for p in scan_root.iterdir()
@@ -90,7 +91,7 @@ def render(df: pd.DataFrame, min_n: int = 30) -> list[str]:
 
 def main() -> int:
     df = roll()
-    out = Path("reports/learning/catalyst_ledger.md")
+    out = ws.reports_root() / "learning/catalyst_ledger.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("\n".join(render(df)) + "\n", encoding="utf-8")
     print(f"[catalyst_ledger] {len(df)} 日 → {out}")

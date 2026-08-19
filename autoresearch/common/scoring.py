@@ -25,6 +25,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from autoresearch.common import workspace as ws
+
 # ───────────────────────── 归一化 helpers ─────────────────────────
 
 
@@ -370,7 +372,7 @@ _PRIOR_WEIGHTS = {"meta": {"source": "prior(无 weights.json)"}, "weights": {"__
     "north": 0.03, "tech": -0.03, "growth": 0.03, "value": 0.03, "volprice": 0.04, "rz": 0.02}}}
 
 
-def _load_weights(path: str = "context/factor_lab/weights.json", regime: str | None = None) -> dict:
+def _load_weights(path: str = str(ws.factor_lab_root() / "weights.json"), regime: str | None = None) -> dict:
     """读 factor_lab 校准产物;缺失则回落内置先验(并提示)。
 
     `regime` 给定且文件含 `regimes[regime]["weights"]` → 返回该 regime 的权重块(meta 标 regime);
@@ -419,7 +421,7 @@ def _load_weights(path: str = "context/factor_lab/weights.json", regime: str | N
 
 
 def pick_weights(frame: pd.DataFrame, regime_aware: bool, *,
-                 path: str = "context/factor_lab/weights.json", load=_load_weights):
+                 path: str = str(ws.factor_lab_root() / "weights.json"), load=_load_weights):
     """L1 权重选择(L1Recall stage 与 universe.run 共用 → 两路一致)。
 
     `regime_aware` 关(默认)→ flat 权重(regime=None,**parity**:不分类、与改动前一致);

@@ -37,16 +37,16 @@ import numpy as np
 import pandas as pd
 
 # 复用包内打分原语 + 真·动量透镜(验证"出厂逻辑"本身;与 scan/handler 同口径)
-from autoresearch.common import ruler
+from autoresearch.common import ruler, workspace as ws
 from autoresearch.common.scoring import _factor_groups, _pct, _wsum, lens_momentum
 from autoresearch.common.sw_sector_map import super_sector
 from autoresearch.data.tushare_source import _moneyflow_struct_cols
 
-CACHE = Path("context/factor_lab/cache")
-OUT = Path("context/factor_lab")
+CACHE = ws.factor_lab_root() / "cache"
+OUT = ws.factor_lab_root()
 # 隔夜因子第一批(Wave12-T29)要读 `limit_list_d`,该端点**只入湖、不进 factor_lab CACHE**
 # (温度计 S1 是它唯一的既有消费者)。零新采集:只读湖里已有的分区,缺分区 → 该日无此因子。
-LAKE_ROOT = Path("context/lake")
+LAKE_ROOT = ws.lake_root()
 
 
 # ───────────────────────── tushare 句柄 / 缓存 ─────────────────────────
@@ -1124,8 +1124,8 @@ def render_ic_by_regime(df: pd.DataFrame, flat_ic: dict | None = None,
 
 
 def run_ic_by_regime(cap_floor: float = 30.0, label_col: str = ruler.MAIN_RULER,
-                     out_csv: str = "context/factor_lab/ic_by_regime.csv",
-                     out_md: str = "reports/research/ic_by_regime.md") -> pd.DataFrame:
+                     out_csv: str = str(ws.factor_lab_root() / "ic_by_regime.csv"),
+                     out_md: str = str(ws.reports_root() / "research/ic_by_regime.md")) -> pd.DataFrame:
     """装载全历史成型日面板 → `ic_by_regime` 裁决表 → 落 csv + md。**只出读数,不改任何权重。**"""
     frames = _all_frames(cap_floor)
     if not frames:
@@ -1147,7 +1147,7 @@ def run_ic_by_regime(cap_floor: float = 30.0, label_col: str = ruler.MAIN_RULER,
 
 
 def calibrate(cap_floor: float = 30.0, k: float = 200.0, label_col: str = ruler.MAIN_RULER,
-              out_path: str = "context/factor_lab/weights.json") -> dict:
+              out_path: str = str(ws.factor_lab_root() / "weights.json")) -> dict:
     """每"因子组"对前向收益的 rank-IC,按申万/东财行业 + 大类层级收缩 → weights.json(flat)。
 
     组定义复用 autoresearch.common.scoring._factor_groups(校准与线上同口径)。factor_lab 无季度基本面 →
@@ -1177,7 +1177,7 @@ def calibrate(cap_floor: float = 30.0, k: float = 200.0, label_col: str = ruler.
 
 
 def calibrate_regimes(cap_floor: float = 30.0, k: float = 200.0, label_col: str = ruler.MAIN_RULER,
-                      min_dates: int = 5, out_path: str = "context/factor_lab/weights.json",
+                      min_dates: int = 5, out_path: str = str(ws.factor_lab_root() / "weights.json"),
                       require_split_half: bool = True,
                       split_half_threshold: float = _SPLIT_HALF_THRESHOLD) -> dict:
     """逐日 regime 分桶校准 → weights.json 增 `regimes` 块(同时保留 flat 全样本权重)。
@@ -1252,7 +1252,7 @@ GBDT_RAW = [
     "cmf_20", "obv_mom_20", "ma_bull", "above_ma60",
 ]
 GBDT_LABEL = ruler.MAIN_RULER                    # 超短主尺,与 calibrate 同口径(可交易、无前视)
-GBDT_MODEL = "context/factor_lab/gbdt_model.pkl"
+GBDT_MODEL = str(ws.factor_lab_root() / "gbdt_model.pkl")
 _GBDT_CACHE: dict = {}
 
 
@@ -1458,7 +1458,7 @@ def _selftest_gbdt() -> int:
     exp_cols = len(GBDT_GROUPS) + len(GBDT_RAW) + 1   # +1 = composite 锚定特征
     if feat.shape != (n, exp_cols):
         fails.append(f"gbdt_features 形状 {feat.shape} 期望 ({n},{exp_cols})")
-    if predict_scores(df, model_path="context/factor_lab/__nonexistent__.pkl") is not None:
+    if predict_scores(df, model_path=str(ws.factor_lab_root() / "__nonexistent__.pkl")) is not None:
         fails.append("缺模型时 predict_scores 应回落 None")
     if importlib.util.find_spec("lightgbm"):
         import lightgbm as lgb

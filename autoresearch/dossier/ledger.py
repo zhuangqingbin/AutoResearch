@@ -11,7 +11,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-_T1_LEDGER = Path("context/learning/t1_review.jsonl")
+from autoresearch.common import workspace as ws
+
+_WS_SCAN_ROOT = ws.scan_root()  # B008 修法:默认值须为模块级单例(def 时求值,与旧字面量常量同语义)
+
+_T1_LEDGER = ws.context_root() / "learning/t1_review.jsonl"
 _DIR_SIGN = {"Overweight": 1.0, "Buy": 1.0, "Underweight": -1.0, "Sell": -1.0}
 _RETRO_WINDOW = 20
 
@@ -54,7 +58,7 @@ def code_track_record(code6: str, *, ledger_path: Path | str | None = None) -> d
     return out
 
 
-def retro_buckets(code6: str, *, scan_root: str | Path = "context/scan",
+def retro_buckets(code6: str, *, scan_root: str | Path = _WS_SCAN_ROOT,
                   max_days: int = _RETRO_WINDOW) -> dict[str, int]:
     """retro 归因按票聚合:近 max_days 个有归因的扫描日,该票的桶计数(空桶不计)。"""
     import pandas as pd
@@ -96,7 +100,7 @@ def render_precedent_value(precedent_n: int, rec: dict) -> str:
     return base + tail
 
 
-def render_track_block(code6: str, *, scan_root: str | Path = "context/scan",
+def render_track_block(code6: str, *, scan_root: str | Path = _WS_SCAN_ROOT,
                        ledger_path: Path | str | None = None) -> str:
     """§7 尾部「覆盖战绩」确定性块;无任何读数 → ""(presence-gated)。"""
     rec = code_track_record(code6, ledger_path=ledger_path)

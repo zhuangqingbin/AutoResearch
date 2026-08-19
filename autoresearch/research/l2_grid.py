@@ -40,12 +40,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from autoresearch.common import stats as st
+from autoresearch.common import stats as st, workspace as ws
 from autoresearch.research.replay import VariantSpec, bind_variant, read_variant
 
 SCHEMA_VERSION = 1
-OUT_JSON = Path("reports/research/l2_grid.json")
-OUT_MD = Path("reports/research/l2_grid.md")
+OUT_JSON = ws.reports_root() / "research/l2_grid.json"
+OUT_MD = ws.reports_root() / "research/l2_grid.md"
 
 DECISION_POLICY = (
     "网格只可用于**探索**。正式裁决必须走 nested walk-forward 或锁定 holdout,"
@@ -260,13 +260,13 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("plan", help="建各格点的独立输出根并落 spec")
-    p.add_argument("--root", default="context/replay")
+    p.add_argument("--root", default=str(ws.context_root() / "replay"))
     p.add_argument("--caps", default="0.15,0.20,0.25")
     p.add_argument("--floor-scales", default="1.0")
     p.add_argument("--l2-n", type=int, default=None)
 
     s = sub.add_parser("score", help="扫各格点根 → SLO + 配对差 + BH-FDR")
-    s.add_argument("--root", default="context/replay")
+    s.add_argument("--root", default=str(ws.context_root() / "replay"))
     s.add_argument("--metric", default="wc_l2_all")
     s.add_argument("--json-out", default=str(OUT_JSON))
     s.add_argument("--md-out", default=str(OUT_MD))

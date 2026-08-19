@@ -3,9 +3,9 @@
 背景:情报稿全文只附在 detail 卡**尾部**,用户投诉"detail 为什么没看到新闻" ——
 其实是没翻到那节。本行在卡**头部**注入一句摘要,先让人知道"今天有没有新料"。
 """
-from pathlib import Path
 
 from autoresearch.scan import publisher
+from pathlib import Path  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 
 DRAFT = """# 活体情报 — 000651 @ 2026-07-29
 | 日期 | 时效窗 | 事件 | 源 | 净分 |

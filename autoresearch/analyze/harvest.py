@@ -24,6 +24,8 @@ import traceback
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from autoresearch.common import workspace as ws
+
 ROOT = Path(__file__).resolve().parents[2]  # repo root (autoresearch/analyze/ → ../../)
 
 
@@ -877,7 +879,7 @@ def _load_l1_row(ticker: str, trade_date: str, root: Path | None = None) -> dict
     fallback L1_recall_top1000). None when no scan ran that date / code absent →
     caller falls back to the live tushare fetch (standalone lite / 全量 analyze)。"""
     code = normalize_symbol(ticker).split(".")[0].zfill(6)
-    base = (root or (ROOT / "context" / "scan")) / trade_date
+    base = (root or (ROOT / ws.scan_root())) / trade_date
     for fname in ("L1_scored_full.csv", "L1_recall_top1000.csv"):
         fp = base / fname
         if not fp.exists():
@@ -1218,7 +1220,7 @@ def main() -> int:
     if not slim:
         parts.append(_section("Peer-relative valuation & strength (v2)", peer_relative, ticker, peers, end))
 
-    out_dir = ROOT / "context"
+    out_dir = ROOT / ws.context_root()
     out_dir.mkdir(exist_ok=True)
     if slim:
         out_path = _write_slim_files(out_dir, ticker, trade_date, parts)

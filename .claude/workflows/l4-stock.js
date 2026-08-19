@@ -52,7 +52,9 @@ const AG = (role) => (RESOLVED[role]
   : { ...(AGENT_DEFAULTS[role] || {}), ...((cfg.agents || {})[role] || {}) })
 const pinned = !!A.pinned   // dispatch-plan meta 透传;缺省 false = 现行为(parity)
 const dossierSummary = String(A.dossierSummary || '').trim()   // dispatch-plan meta 透传;缺省空 = parity(M-2:全函数防御,同款 !!A.pinned)
-const SD = `context/scan/${date}`
+// 引擎隔离根:engine 随每股 args.engine 或 cfg 透传(缺省 claude;只有 Claude 会执行本 js)
+const ENGINE = (A.engine || (A.cfg && A.cfg.engine) || 'claude')
+const SD = `context_${ENGINE}/scan/${date}`
 const R = 'uv run --no-sync python -m'
 const TASK_BOOK = `${SD}/_l4_tasks.json`
 const CARD = { type: 'object', required: ['code', 'rating'],

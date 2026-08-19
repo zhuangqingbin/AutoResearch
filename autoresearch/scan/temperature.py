@@ -38,12 +38,13 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.data.contracts import DataContractError
 
 # 数据落盘根(测试/Task 5 消费端以 monkeypatch 改向)。读写一律在函数体内读"现值"
 # (`CSV_PATH` 或 `temperature.CSV_PATH`),不要把它绑进函数默认参数——default 在函数定义时
 # 就绑定求值,monkeypatch 模块属性后不会再生效,会悄悄读到改前的旧值。
-CSV_PATH = Path("context/learning/temperature.csv")
+CSV_PATH = ws.context_root() / "learning/temperature.csv"
 
 _COLS = ["date", "n_limit_up", "n_limit_down", "n_fried", "max_streak",
          "promote_rate", "fried_rate", "yesterday_premium", "score", "phase"]

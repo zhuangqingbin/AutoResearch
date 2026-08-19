@@ -23,10 +23,11 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from autoresearch.common import workspace as ws
 from autoresearch.data.endpoints import policy
 
 # 数据湖根目录(测试 monkeypatch 此常量以重定向到 tmp）。
-LAKE = Path("context/lake")
+LAKE = ws.lake_root()
 
 _COMPRESSION = "zstd"
 

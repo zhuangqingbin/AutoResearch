@@ -220,9 +220,13 @@ __marimo__/
 
 # Enterprise env file (secrets) and generated run reports
 .env.enterprise
-reports/
-# Claude-as-engine harvested data context (regenerable via scripts/harvest_context.py)
-context/
+reports_*/
+# 引擎隔离工作区(2026-08-11):context_claude|context_codex + reports_* 按引擎分根;
+# lake/ = 数据湖(唯一跨引擎共享)。故意不再 ignore 裸 context// reports/ ——
+# 它们若重新出现 = 有代码绕过了 workspace 单一事实源,让 git status 当漏网探测器。
+context_*/
+lake/
+lake_quarantine/
 
 # zoo champion store (binary artifacts, regenerable via autoresearch.models.zoo train)
 models/store/

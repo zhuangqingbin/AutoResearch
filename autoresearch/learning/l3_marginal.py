@@ -42,14 +42,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from autoresearch.common import stats as st
+from autoresearch.common import stats as st, workspace as ws
 from autoresearch.common.ruler import MAIN_RULER, entry_tradable
 from autoresearch.learning import experiment_template as et
 
 SCHEMA_VERSION = 1
-DEFAULT_ROOT = Path("context/scan")
-OUT_JSON = Path("reports/learning/l3_marginal.json")
-OUT_MD = Path("reports/learning/l3_marginal.md")
+DEFAULT_ROOT = ws.scan_root()
+OUT_JSON = ws.reports_root() / "learning/l3_marginal.json"
+OUT_MD = ws.reports_root() / "learning/l3_marginal.md"
 
 # 强制补入的理由 —— 不是 L3 排序的产物,两侧同时剔除(§4.4「pinned/forced rows 分层或剔除」)
 FORCED_REASONS = ("pinned", "conviction_guard")

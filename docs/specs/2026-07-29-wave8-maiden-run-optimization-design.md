@@ -259,6 +259,13 @@ L3 prompt 属治理清单「L3 行为变更」,但 prompt 无法影子跑(不能
 
 prompt_patch 流程与实验治理从两套平行账合流;registry 从零条目变为有第一个活案例。
 
+> **2026-08-13 时点注记(沿革)**:`prompt_patch` 载体已随「复盘不动刀」裁定退役,§4.2 的
+> 人批通道与 §4.3「L3 prompt 改动必须走 prompt_patch 人批」条款由
+> `docs/specs/2026-08-13-retro-skill-selfmodify-removal-design.md` §4.4 承接:L3 prompt
+> 改动只在**用户显式发起的开发会话**中进行,**experiment_registry 登记(`approved_by` 必填)
+> 与契约锚测试/doc-lint 要求逐字不变**。§4.2 锁的补丁草案原文(硬约束 F)仍是有效的待办内容,
+> 只是落地路径改走开发会话。
+
 ### 4.4 C2 cross_calib 增「OW-lean 确认率」per lane
 
 现状:`cross_calib.flip_stats` 已 per-lane 计算(groupby lane),但 flip 定义 =

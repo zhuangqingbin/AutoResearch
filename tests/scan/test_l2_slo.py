@@ -300,7 +300,7 @@ def _funnel_day(root, date, *, channels, l2, pass1_kept=(), finalists=(), rated=
         d / "finalists.csv", index=False)
     if write_l4:
         (d / "_final_ratings.json").write_text(json.dumps(
-            {c: "Hold" for c in rated}, ensure_ascii=False), encoding="utf-8")
+            dict.fromkeys(rated, "Hold"), ensure_ascii=False), encoding="utf-8")
         (d / "_l4_tasks.json").write_text(json.dumps(
             {"tasks": {c: {} for c in finalists}}, ensure_ascii=False), encoding="utf-8")
 

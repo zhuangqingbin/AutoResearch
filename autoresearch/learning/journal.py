@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import EXIT_FLAG
 
 # Wave10 B2:「触发」列已随观察单退役(fb_20260714_002)删除 —— 30 个扫描日里非零 0 行、
@@ -112,7 +113,7 @@ def _day_row(d: Path) -> dict:
 
 
 def roll(scan_root: Path | str | None = None) -> pd.DataFrame:
-    scan_root = Path(scan_root or "context/scan")
+    scan_root = Path(scan_root or ws.scan_root())
     if not scan_root.exists():
         return pd.DataFrame(columns=_COLS)
     days = sorted(p for p in scan_root.iterdir() if p.is_dir() and p.name[:2] == "20")
@@ -154,7 +155,7 @@ def render(df: pd.DataFrame) -> list[str]:
 
 def main() -> int:
     df = roll()
-    out = Path("reports/learning/journal.md")
+    out = ws.reports_root() / "learning/journal.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("\n".join(render(df)) + "\n", encoding="utf-8")
     print(f"[journal] {len(df)} 日 → {out}")

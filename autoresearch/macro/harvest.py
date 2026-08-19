@@ -17,6 +17,8 @@ import traceback
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from autoresearch.common import workspace as ws
+
 ROOT = Path(__file__).resolve().parents[2]  # repo root (autoresearch/macro/ → ../../)
 
 
@@ -340,7 +342,7 @@ def main() -> int:
     parts.append(_section("A股中观 (北向/两融/行业资金/涨停/指数估值 — tushare 优先;akshare 补龙虎榜游资)",
                           meso_ashare_best, end))
 
-    out_dir = ROOT / "context" / "macro" / trade_date
+    out_dir = ROOT / ws.context_root() / "macro" / trade_date
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "data.md"
     out_path.write_text("".join(parts), encoding="utf-8")

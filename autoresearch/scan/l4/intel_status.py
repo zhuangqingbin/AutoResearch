@@ -30,6 +30,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import date as _date
 from pathlib import Path
 
+from autoresearch.common import workspace as ws
+
 SCHEMA_VERSION = 1
 
 ACQUISITION = ("FULL", "RETRIED_FULL", "DEGRADED", "DISABLED")
@@ -413,7 +415,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--normalize", action="store_true", help="同时跑 A7 旧事件净分归一化")
     args = ap.parse_args(argv)
 
-    scan_dir = Path(args.scan_dir) if args.scan_dir else Path("context/scan") / args.date
+    scan_dir = Path(args.scan_dir) if args.scan_dir else ws.scan_root() / args.date
     result = None
     if not args.disabled and args.error_class is None:
         from autoresearch.scan.l4.intel_guard import guard_intel

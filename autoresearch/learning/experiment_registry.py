@@ -12,14 +12,18 @@ import hashlib
 import json
 import re
 import sys
-from copy import deepcopy
+from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable
 
+from autoresearch.common import workspace as ws
+from copy import deepcopy  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from typing import Callable  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+
+_WS_REPORTS_ROOT = ws.reports_root()  # B008 修法:默认值须为模块级单例(def 时求值,与旧字面量常量同语义)
 
 SCHEMA_VERSION = 1
-DEFAULT_REGISTRY = Path("context/learning/experiments/registry.json")
+DEFAULT_REGISTRY = ws.context_root() / "learning/experiments/registry.json"
 GUARD_DOMAINS = ("research", "decision", "token", "speed", "architecture")
 OPS = {"gt", "gte", "lt", "lte", "eq"}
 STATUSES = {
@@ -892,7 +896,7 @@ def render_report(payload: dict) -> str:
 
 def write_report(
     registry_path: Path | str = DEFAULT_REGISTRY,
-    out_path: Path | str = "reports/learning/experiments.md",
+    out_path: Path | str = str(_WS_REPORTS_ROOT / "learning/experiments.md"),
 ) -> Path:
     target = Path(out_path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -965,7 +969,7 @@ def _parser() -> argparse.ArgumentParser:
     accept.add_argument("--note", default="")
 
     report = commands.add_parser("report", help="write the governance report")
-    report.add_argument("--out", default="reports/learning/experiments.md")
+    report.add_argument("--out", default=str(ws.reports_root() / "learning/experiments.md"))
     return parser
 
 

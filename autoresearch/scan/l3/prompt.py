@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.scan.l3.evidence import harvest_l3_evidence, load_l3_input
 from autoresearch.scan.l3.triage import pass1_meta, triage_l2_for_l3
 
@@ -111,7 +112,7 @@ def compact_table(df: pd.DataFrame, cols: list[str] | None = None) -> str:
 
 def _prev_l3_day(date: str, root: Path | None = None) -> Path | None:
     """最近一个有 L3 现场(L3_judged_full + L2)的更早 scan 日;无 → None。"""
-    root = root or Path("context/scan")
+    root = root or ws.scan_root()
     if not root.exists():
         return None
     cands = sorted((p for p in root.iterdir()
@@ -264,14 +265,14 @@ def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
                    "(07-03 实证:该型 finalist 深核全数翻案)。_", ""]
     if reg_flag and "code" in df.columns:
         from autoresearch.scan.agents.l3_news import reg_hits_for_code
-        day_dir = (root or Path("context/scan")) / date
+        day_dir = (root or ws.scan_root()) / date
         df["news_reg"] = [reg_hits_for_code(day_dir, c) for c in df["code"]]
         cols = [*cols, "news_reg"]
         header += ["_⚠监管旗(news_reg):近 10 日公告命中 立案/问询/关注函/处罚/违规/诉讼/"
                    "监管/证监会/交易所。旗票论点**必须显式回应监管事项**,不得无视;独立检测器,"
                    "情感列口径不变(非利空词表变更)。_", ""]
     if cat_flag and "code" in df.columns:
-        catp = (root or Path("context/scan")) / date / "L3_catalyst.csv"
+        catp = (root or ws.scan_root()) / date / "L3_catalyst.csv"
         if catp.exists():
             from autoresearch.scan.agents.l3_catalyst import cat_label
             try:
@@ -287,7 +288,7 @@ def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
                            "≠方向确认)。催化须与资金/基本面共振才可作论点支柱;**减持≥2 的票"
                            "论点必须显式回应**。_", ""]
     if rc_flag and "code" in df.columns:
-        rcp = (root or Path("context/scan")) / date / "consensus.csv"
+        rcp = (root or ws.scan_root()) / date / "consensus.csv"
         if rcp.exists():
             try:
                 rf = pd.read_csv(rcp, dtype={"code": str})
@@ -336,7 +337,7 @@ def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
     if sector_terrain:                      # Phase 3:全行业地形段前置(默认关 = 逐字 parity)
         try:
             from autoresearch.sector.pack import sector_terrain_md
-            terr = sector_terrain_md((root or Path("context/scan")) / date, top200_only=True)
+            terr = sector_terrain_md((root or ws.scan_root()) / date, top200_only=True)
             if terr:
                 body = terr + "\n\n" + body
         except Exception:  # noqa: BLE001 — 地形可选,缺 staging 不挡表
@@ -369,7 +370,7 @@ def prepare_l3_table(date: str, root: Path | None = None, delta: bool = True,
     `None`(默认)= 跟随 two_pass(two_pass 显式 False 时同关,保住上面「逐字节不变」的
     回滚承诺);显式 True/False 独立强制。两块注入各自 suppress:炸了只丢块不挡 L3。
     """
-    base = Path(root) if root else Path("context/scan")
+    base = Path(root) if root else ws.scan_root()
     scan_dir = base / date
     l2 = pd.read_csv(scan_dir / "L2_gbdt_top200.csv", dtype={"code": str})
     codes = l2["code"].astype(str).str.zfill(6).tolist()

@@ -11,6 +11,7 @@ import json
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.scan import frame
 
 DATE = "2026-07-09"
@@ -85,7 +86,7 @@ def test_json_mode_writes_contract_and_short_ref(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr("autoresearch.scan.run_contract.resolve_git_sha", lambda root=".": "deadbeef")
     rc = frame.main([DATE, "--json"])
     payload = json.loads(capsys.readouterr().out)
-    contract_path = tmp_path / "context" / "scan" / DATE / "run_contract.json"
+    contract_path = tmp_path / ws.scan_root() / DATE / "run_contract.json"
     contract = json.loads(contract_path.read_text(encoding="utf-8"))
 
     assert rc == 0
@@ -120,7 +121,7 @@ def test_json_mode_writes_contract_and_short_ref(monkeypatch, capsys, tmp_path):
     }
     from autoresearch.scan.stage_result import load_stage_result
     stage = load_stage_result(
-        tmp_path / "context" / "scan" / DATE / "stage_results" / "frame.json"
+        tmp_path / ws.scan_root() / DATE / "stage_results" / "frame.json"
     )
     assert stage.status == "SUCCEEDED"
     assert stage.artifacts == ["run_contract"]

@@ -20,6 +20,7 @@ from datetime import datetime
 from pathlib import Path
 
 from autoresearch.agents.utils.rating import parse_rating
+from autoresearch.common import workspace as ws
 
 DECISION_REL = "1_spine/decision.md"
 SECTOR_MAP_REL = "2_meso/sector_map.md"
@@ -146,7 +147,7 @@ def main() -> int:
             out.append(_anchored("###", name, _read(root, rel)))
 
     hhmm = datetime.now().strftime("%H%M")
-    out_dir = Path("reports/macro") / root.name.replace("-", "")
+    out_dir = ws.reports_root() / "macro" / root.name.replace("-", "")
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{hhmm}_summary.md"
     out_path.write_text("\n".join(out), encoding="utf-8")

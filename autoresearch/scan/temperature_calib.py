@@ -21,6 +21,10 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
+
+_WS_SCAN_ROOT = ws.scan_root()  # B008 修法:默认值须为模块级单例(def 时求值,与旧字面量常量同语义)
+
 _MIN_N = 10
 _PHASE_ORDER = ["冰点", "修复", "发酵", "高潮", "退潮", "未知"]
 
@@ -60,7 +64,7 @@ def forward_returns(dates_iso: list[str]) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=cols)
 
 
-def regime_by_date(scan_root: Path | str = "context/scan") -> pd.DataFrame:
+def regime_by_date(scan_root: Path | str = _WS_SCAN_ROOT) -> pd.DataFrame:
     """各 scan 日('YYYY-MM-DD' 目录名)→ `meta.json` 里的 regime(缺 meta/regime 字段 → 跳过)。"""
     root = Path(scan_root)
     cols = ["date", "regime"]
@@ -157,7 +161,7 @@ def render(phase_tbl: pd.DataFrame, cross_tbl: pd.DataFrame, n_days: int) -> lis
 def main() -> int:
     from autoresearch.scan import temperature as T
     path = Path(T.CSV_PATH)
-    out_path = Path("reports/research/temperature_calib.md")
+    out_path = ws.reports_root() / "research/temperature_calib.md"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
         out_path.write_text(

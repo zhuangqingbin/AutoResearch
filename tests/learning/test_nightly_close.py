@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from autoresearch.learning import nightly_close as N
+import json  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 
 _FLASH_STUB = {"per_source": [{"source": "global_em", "status": "OK", "rows": 2,
                                "observations": 2}],
@@ -303,11 +304,12 @@ def test_news_flash_step_fails_loudly_when_all_sources_down(monkeypatch):
 # `nightly_close.run()`,连跑两晚,断言观测计数**真的从 0 长到 1 再长到 2**。
 # ══════════════════════════════════════════════════════════════════
 
-import json                                                     # noqa: E402
-import pandas as pd                                             # noqa: E402
+import pandas as pd  # noqa: E402
 
-from autoresearch.learning import experiment_registry as R      # noqa: E402
-from autoresearch.learning import mainflow5d as MF              # noqa: E402
+from autoresearch.learning import (  # noqa: E402
+    experiment_registry as R,
+    mainflow5d as MF,
+)
 
 _LAKE_DAYS = ["20260728", "20260729", "20260730", "20260731", "20260803",
               "20260804", "20260805"]

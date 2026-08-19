@@ -54,11 +54,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from autoresearch.common import ruler
+from autoresearch.common import ruler, workspace as ws
 
-LAKE_DAILY = Path("context/lake/daily")
-SCAN_ROOT = Path("context/scan")
-SHADOW_BUYS = Path("context/learning/shadow_buys.csv")
+LAKE_DAILY = ws.lake_root() / "daily"
+SCAN_ROOT = ws.scan_root()
+SHADOW_BUYS = ws.context_root() / "learning/shadow_buys.csv"
 DEFAULT_OUT = Path("docs/research/2026-08-07-ruler-gap-vs-oc-baseline.md")
 
 GAP_COL = "gap_c1_o2"

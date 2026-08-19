@@ -48,14 +48,17 @@ const AG = (role) => (RESOLVED[role]
 // streaming 默认开；另外两项默认当前生产行为，均有显式回滚杆。
 const streamingL4 = cfg.performance?.streaming_l4 ?? true
 // Wave10 B4:`stable_context_blocks` 已退役(离线 benchmark 收益 4.0% < 10% 门)。
-// 这里连读都不再读 —— 留着 `cfg.performance?.stable_context_blocks` 就等于留了个陷阱:
+// 这里连读都不再读 —— 留着已退役的 `cfg.performance?.stable_context_blocks` 键就等于留了个陷阱:
 // Python 侧的 `--stable-context` 已随 context_blocks.py 一并删除,谁把这个键加回 config,
 // 这条流水线就会给一个不认识它的 CLI 传 flag。
 // 哨兵档人工 override(SKILL 步骤 2.2:哨兵是「确定性建议,**人拍板**」,而本脚本原先硬编码直接跳 L3/L4
 // —— 判据只问"今天有没有值得买的",不知道用户还有"保送持仓该不该走"的问题挂着)。缺省 false = 现行为(parity)。
 const forceFull = !!(typeof args === 'string' && args ? JSON.parse(args).force_full : (args && args.force_full))
 const R = 'uv run --no-sync python -m'
-const SD = `context/scan/${date}`
+// 引擎隔离根(2026-08-11):context_<engine>,engine 随 args.config.engine 下发(frame 注入)
+const ENGINE = ((typeof args === 'string' && args ? JSON.parse(args).engine : (args && args.engine)) || cfg.engine || 'claude')
+const CTX = `context_${ENGINE}`
+const SD = `${CTX}/scan/${date}`
 
 // 确定性命令 → general-purpose Bash-agent(只跑命令、回报退出码,不判断)
 // Wave6 T1:壳零判断,却背着 opus 系统前缀 —— 07-24 真计量 13 个 gp 共 798k 加权(全场 14.5%),
@@ -265,7 +268,7 @@ const SECTORS = { type: 'object', required: ['ok', 'sectors'],
   properties: { ok: { type: 'boolean' }, sectors: { type: 'array', items: { type: 'string' } } } }
 const sectorsRes = await gate('sector-pack+list',
   `${R} autoresearch.sector.reuse ${date} --apply; ${R} autoresearch.sector.pack ${date}; ` +
-  `uv run --no-sync python -c "import json,glob,os;d='context/sector/${date}';b='${SD}/sector_briefs';` +
+  `uv run --no-sync python -c "import json,glob,os;d='${CTX}/sector/${date}';b='${SD}/sector_briefs';` +
   `print(json.dumps({'ok':True,'sectors':sorted(os.path.splitext(os.path.basename(p))[0] ` +
   `for p in glob.glob(d+'/*.json') if not os.path.exists(os.path.join(b,os.path.splitext(os.path.basename(p))[0]+'.md')))}))"`,
   SECTORS, 'L3')
@@ -279,7 +282,7 @@ log(`待写行业 brief:${sectors.length} 个${sectors.length ? ` (${sectors.joi
 await parallel([
   () => bash(`${R} autoresearch.scan.agents.l3_select prepare ${date}`, 'l3-prepare', 'L3'),
   ...preL3BriefSectors.map((sec) => () => agent(
-    `你是行业分析师。读 context/sector/${date}/${sec}.json 写 ${SD}/sector_briefs/${sec}.md,两段机器契约(## 地形段 喂 L3/L4 · ## 研判段 仅 L5,含 **行业方向** 行)。零新取数。`,
+    `你是行业分析师。读 ${CTX}/sector/${date}/${sec}.json 写 ${SD}/sector_briefs/${sec}.md,两段机器契约(## 地形段 喂 L3/L4 · ## 研判段 仅 L5,含 **行业方向** 行)。零新取数。`,
     { agentType: 'sector-brief', ...AG('sector_brief'),
       label: `brief:${sec}`, phase: 'L3' })
     .then((r) => { log(`brief ✓ ${sec}`); return r })),

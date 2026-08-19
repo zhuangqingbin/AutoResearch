@@ -7,7 +7,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-DOSSIER_DIR = Path("context/knowledge/dossiers")
+from autoresearch.common import workspace as ws
+
+DOSSIER_DIR = ws.knowledge_root() / "dossiers"
 
 SECTIONS: tuple[str, ...] = (
     "## 1. 业务模型", "## 2. 盈利驱动与预测留档", "## 3. 估值带",

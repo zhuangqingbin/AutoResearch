@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
+
 _CAL_COLS = ["code", "kind", "event_date", "detail", "ratio"]
 
 
@@ -35,7 +37,7 @@ def harvest_calendar(date: str, codes, root: Path | None = None,
                      horizon_days: int = 35) -> pd.DataFrame:
     """拉解禁(≤14 天分块防 6000 行分页截断)+ 预约披露,过滤 codes → calendar.csv。网络。"""
     from autoresearch.data.tushare_source import _code6, _pro, _ts_call
-    root = root or Path("context/scan")
+    root = root or ws.scan_root()
     outdir = root / date
     outdir.mkdir(parents=True, exist_ok=True)
     pro = _pro()
@@ -156,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("date", help="scan 日 YYYY-MM-DD")
     ap.add_argument("--horizon", type=int, default=35, help="解禁前瞻天数,默认 35")
     args = ap.parse_args(argv)
-    d = Path("context/scan") / args.date
+    d = ws.scan_root() / args.date
     codes: set[str] = set()
     for fname in ("L2_gbdt_top200.csv", "finalists.csv"):
         p = d / fname

@@ -11,7 +11,6 @@ from pathlib import Path
 from autoresearch.learning import experiment_registry as registry
 from autoresearch.learning.promotion import evaluate_guards
 
-
 SCHEMA_VERSION = 1
 
 

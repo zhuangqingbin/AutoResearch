@@ -8,12 +8,15 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.scan.l4.context import (
     _target_calib_mark,
     compose_funnel_brief,
     write_base_rates,
 )
 from autoresearch.scan.l4.rubric import force_full_card
+
+_WS_REPORTS_SCAN = ws.reports_root() / "scan"  # B008 修法:默认值须为模块级单例(def 时求值,与旧字面量常量同语义)
 
 
 def write_shared_instructions(scan_dir: Path | str) -> int:
@@ -55,7 +58,7 @@ _ECHO_WIRE = re.compile(r"^-?\s*\[价格线\][^\n]*$", re.M)
 
 
 def yesterday_echo(code6: str, name: str, analysis_date: str, *,
-                   lookback_days: int = 5, reports_root="reports/scan") -> str:
+                   lookback_days: int = 5, reports_root=_WS_REPORTS_SCAN) -> str:
     """昨卡回声(Wave9 B-1b):最近 ≤N 日已发布卡的 3 行摘要,注入任务包逐票段。
 
     R5 退役 TTL 复用后,"评级稳定性"不再靠**跳过研究**获得,而靠**记忆**:研究员知道

@@ -12,8 +12,11 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import MAIN_RULER, entry_tradable
 from autoresearch.learning.t1_review import _NON_GENUINE_LANES
+
+_WS_SCAN_ROOT = ws.scan_root()  # B008 修法:默认值须为模块级单例(def 时求值,与旧字面量常量同语义)
 
 AUDIT_SHARE = 0.20
 MIN_FORWARD_SCAN_DAYS = 20
@@ -227,7 +230,7 @@ def write_day_ledger(
     return target
 
 
-def roll(scan_root: Path | str = "context/scan") -> tuple[pd.DataFrame, dict]:
+def roll(scan_root: Path | str = _WS_SCAN_ROOT) -> tuple[pd.DataFrame, dict]:
     """Aggregate immutable per-day ledgers without changing the cohort.
 
     每日 JSON 是**冻结快照**——一旦写入,`fwd_2_oc`/`excess_2`/`opportunity` 的取值就
@@ -342,7 +345,7 @@ def render(rows: pd.DataFrame, summary: dict) -> str:
 
 def main() -> int:
     rows, summary = roll()
-    output = Path("reports/learning/l3_audit_ledger.md")
+    output = ws.reports_root() / "learning/l3_audit_ledger.md"
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(render(rows, summary), encoding="utf-8")
     print(f"[l3_audit_ledger] {summary['candidate_n']} 候选 → {output}")

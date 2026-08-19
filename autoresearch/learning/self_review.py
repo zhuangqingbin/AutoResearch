@@ -14,6 +14,8 @@ import re
 import sys
 from collections import Counter
 
+from autoresearch.common import workspace as ws
+
 _BUY = ("Overweight", "Buy")
 _BANNED = ("基本面良好", "前景广阔", "值得关注", "建议关注")
 _TIER = ("Buy", "Overweight", "Hold", "Underweight", "Sell")
@@ -1061,7 +1063,7 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
 # 与 usage_reconcile 产物同形的路径常量(避免两处各写一遍字面量走漂):streak 账本默认路径
 # 跟 `autoresearch.trace.usage_reconcile.LEDGER_PATH` 保持同一字符串,但故意不 import 该模块
 # 顶层(self_review 是纯 lint 层,不想给它添一条对 trace 包的硬依赖——这里只在函数体内按需读)。
-_USAGE_RECONCILE_LEDGER = "context/learning/usage_reconcile.jsonl"
+_USAGE_RECONCILE_LEDGER = ws.learning_root() / "usage_reconcile.jsonl"
 
 
 def usage_reconcile_lint(scan_root, ledger_path=None) -> list[dict]:

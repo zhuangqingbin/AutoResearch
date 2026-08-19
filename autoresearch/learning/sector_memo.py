@@ -15,7 +15,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-_DEFAULT = Path("context/knowledge/sector_memos.jsonl")
+from autoresearch.common import workspace as ws
+
+_DEFAULT = ws.knowledge_root() / "sector_memos.jsonl"
 
 
 def _p(path) -> Path:

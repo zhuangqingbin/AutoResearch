@@ -37,7 +37,9 @@ import sys
 import time
 from pathlib import Path
 
-SCAN_ROOT = Path("context/scan")
+from autoresearch.common import workspace as ws
+
+SCAN_ROOT = ws.scan_root()
 _TERMINAL = {"SUCCEEDED", "FAILED", "BLOCKED"}
 _STALE_MIN_DEFAULT = 30
 

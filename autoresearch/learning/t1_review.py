@@ -49,6 +49,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import MAIN_RULER
 
 # 保送/观察单直通(已退役 fb_20260714_002)/菜单滞回(已退役 pr_20260716_006)——都不是
@@ -64,7 +65,7 @@ _Z_DIR = 0.5           # 方向判定:|z| ≥ 0.5 且 |行业超额| ≥ 0.8pp(�
 _Z_SURPRISE = 1.5      # 惊奇:|z| ≥ 1.5 必诊
 _MIN_EXCESS = 0.008    # 方向判定的绝对 pp 地板
 _EPOCH = "2026-07-10"  # 卡契约 v3 起点;更早的旧 swing 语义卡不回补(尺子语义不同)
-_LEDGER = Path("context/learning/t1_review.jsonl")
+_LEDGER = ws.context_root() / "learning/t1_review.jsonl"
 
 
 # ───────────────────────── 纯函数:判定 ─────────────────────────
@@ -218,7 +219,7 @@ def build_scorecard(t: str, scan_root: Path | str | None = None,
     - 基准 = 全市场等权 cc1 均值(prices 帧全量算,再筛真选行)。
     prices/cal 可注入(测试离线);prices 需含全市场行(基准要全量)。
     """
-    scan_root = Path(scan_root or "context/scan")
+    scan_root = Path(scan_root or ws.scan_root())
     sdir = scan_root / t
     fp = sdir / "finalists.csv"
     if not fp.exists():
@@ -408,7 +409,7 @@ def ledger_tail_summary(k: int = 10, path: Path | str | None = None) -> dict:
 #   → 人批成 lesson 后由 feedback_store.render_calibration_block 注入(pr_20260716_005 同波接线)。
 # 半自动边界不变:自动的是「观察的注入」与「提案的起草」,改规则/prompt 文件仍人批。
 
-_CAND_LEDGER = Path("context/learning/t1_candidates.jsonl")
+_CAND_LEDGER = ws.context_root() / "learning/t1_candidates.jsonl"
 _PROMOTE_N_DAYS = 2      # 同 key 出现 ≥2 个 T 日 → 自动立案(防单日噪声直通提案板)
 
 
@@ -467,8 +468,10 @@ def promote_candidates(path: Path | str | None = None, add_proposal=None) -> lis
             rationale=("T+1 判断层复盘快环(fb_20260717_001)跨日收敛的候选经验,自动起草待人批。\n"
                        f"出现日:{('、'.join(r['days']))}\n最近表述:\n"
                        + "\n".join(f"  - {t}" for t in r.get("texts", []))),
-            diff_sketch="人批后走 lesson 裁决(ADD)或 prompt_patch;经验注入面 = "
-                        "feedback_store.render_calibration_block(L3 表已接线)。",
+            diff_sketch="人批后走 lesson 裁决(ADD);经验注入面 = "
+                        "feedback_store.render_calibration_block(L3 表已接线)。"
+                        "若病在 prompt 文案本身,落地只在用户显式发起的开发会话中做"
+                        "(2026-08-13 裁定:复盘不动刀)。",
         )
         r["filed_pr"] = rec["id"]
         filed.append(rec["id"])
@@ -524,7 +527,7 @@ def pending_pairs(today: str | None = None, scan_root: Path | str | None = None,
     T+1 == today 也算(当晚数据结算后即可复盘;未结算 build 会诚实失败)。
     """
     today = today or datetime.now().strftime("%Y-%m-%d")
-    scan_root = Path(scan_root or "context/scan")
+    scan_root = Path(scan_root or ws.scan_root())
     if not scan_root.exists():
         return []
     if cal is None:
@@ -554,7 +557,7 @@ def pending_pairs(today: str | None = None, scan_root: Path | str | None = None,
 
 def mark_done(t: str, mode: str, summary: dict | None = None,
               scan_root: Path | str | None = None) -> Path:
-    p = Path(scan_root or "context/scan") / t / "t1_review" / "done.json"
+    p = Path(scan_root or ws.scan_root()) / t / "t1_review" / "done.json"
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps({"date": t, "mode": mode, "ts": datetime.now().isoformat(timespec="seconds"),
                              "summary": summary or {}}, ensure_ascii=False), encoding="utf-8")
@@ -576,7 +579,7 @@ def _sanitize(o):
 
 def _stage(res: dict, scan_root: Path | str | None = None) -> Path:
     """记分卡落 staging(csv + md + build_meta.json);build 只发生一次,后续步骤读盘。"""
-    out_dir = Path(scan_root or "context/scan") / res["t"] / "t1_review"
+    out_dir = Path(scan_root or ws.scan_root()) / res["t"] / "t1_review"
     out_dir.mkdir(parents=True, exist_ok=True)
     res["scorecard"].to_csv(out_dir / "scorecard.csv", index=False)
     (out_dir / "scorecard.md").write_text(render_scorecard_md(res), encoding="utf-8")
@@ -589,7 +592,7 @@ def _stage(res: dict, scan_root: Path | str | None = None) -> Path:
 
 def _load_staged(t: str, scan_root: Path | str | None = None) -> dict:
     """从 staging 复原 res(finalize 不重建、不碰网络——build 后数据修订也不会让数字漂)。"""
-    sdir = Path(scan_root or "context/scan") / t / "t1_review"
+    sdir = Path(scan_root or ws.scan_root()) / t / "t1_review"
     meta = json.loads((sdir / "build_meta.json").read_text(encoding="utf-8"))
     sc = pd.read_csv(sdir / "scorecard.csv", dtype={"code": str})
     sc["code"] = sc["code"].str.zfill(6)
@@ -658,7 +661,7 @@ def finalize(t: str, scan_root: Path | str | None = None,
     report.md 缺 → SystemExit(2):综合稿没写就不算复盘完(防「跑了一半像跑完」)。
     candidates.json 缺 = 当日无候选,合法(不是失败)。
     """
-    sdir = Path(scan_root or "context/scan") / t / "t1_review"
+    sdir = Path(scan_root or ws.scan_root()) / t / "t1_review"
     if not (sdir / "report.md").exists():
         raise SystemExit(f"[t1_review] {sdir / 'report.md'} 缺失:综合稿未写,拒绝 finalize")
     diagnoses = {}
@@ -806,7 +809,7 @@ def gap_finalize_pending(today: str | None = None, scan_root: Path | str | None 
     少做(调用方 `nightly_close._t1_gap_finalize` 会把它拼进汇总行)。
     """
     today = today or datetime.now().strftime("%Y-%m-%d")
-    scan_root = Path(scan_root or "context/scan")
+    scan_root = Path(scan_root or ws.scan_root())
     if not scan_root.exists():
         return 0, []
     if cal is None:

@@ -31,6 +31,10 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
+
+_WS_SCAN_ROOT = ws.scan_root()  # B008 修法:默认值须为模块级单例(def 时求值,与旧字面量常量同语义)
+
 _KNIFE = -20.0
 
 
@@ -59,7 +63,7 @@ def knife_rates(l1_df: pd.DataFrame, l2_df: pd.DataFrame, *,
     return out
 
 
-def audit(dates: list[str], root: Path | str = "context/scan") -> pd.DataFrame:
+def audit(dates: list[str], root: Path | str = _WS_SCAN_ROOT) -> pd.DataFrame:
     """逐日读 L1/L2 算落刀率四联。读失败的日子跳过**但必须记账,不许静默**(本模块自己就是
     为了消灭「静默偏差」而写的,不能自己留一条静默丢日子的口子):跳过原因存进返回帧的
     `.attrs["skipped"]`(`[{"date","reason"}, ...]`),请求的总天数存 `.attrs["requested"]`,
@@ -117,8 +121,8 @@ def render(df: pd.DataFrame) -> str:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="L2 菜单落刀归因取证(只出报表,不改采样)")
     ap.add_argument("--days", type=int, default=20, help="回看最近 N 个有产物的扫描日")
-    ap.add_argument("--root", default="context/scan")
-    ap.add_argument("--out", default="reports/learning/l2_knife_audit.md")
+    ap.add_argument("--root", default=str(ws.scan_root()))
+    ap.add_argument("--out", default=str(ws.reports_root() / "learning/l2_knife_audit.md"))
     args = ap.parse_args(argv)
 
     root = Path(args.root)

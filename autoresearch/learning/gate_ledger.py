@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import MAIN_RULER
 from autoresearch.learning.shrink import MIN_N_INJECT, n_tag, shrink as _shrink_fn, shrink_config
 
@@ -38,7 +39,7 @@ def roll(scan_root: Path | None = None, shrink: bool | None = None,
     from autoresearch.learning.rejection_attribution import decision_gate_bucket
     from autoresearch.scan.decision_read_model import read_decisions
 
-    scan_root = Path(scan_root or "context/scan")
+    scan_root = Path(scan_root or ws.scan_root())
     rows = []
     days = {
         path.parent for pattern in ("*/gate_fires.csv", "*/decision_records.json")
@@ -189,7 +190,7 @@ def main() -> int:
     ledger = roll()
     outcomes = gate_attribution.summarize(
         gate_attribution.roll(cohort=gate_attribution.COHORT_V3))
-    out = Path("reports/learning/gate_ledger.md")
+    out = ws.reports_root() / "learning/gate_ledger.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("\n".join(render(ledger, outcomes=outcomes)) + "\n", encoding="utf-8")
     print(f"[gate_ledger] {len(ledger)} 门 + v3 outcome {len(outcomes)} 门 → {out}")

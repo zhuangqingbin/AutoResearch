@@ -49,17 +49,17 @@ Run via `python -m autoresearch.*` (always `uv run --no-sync`):
 
 ```bash
 # Full A-share scan: deterministic prelude (L0→L2 + calendar/watchlist/menu/ledgers)
-#   → staging context/scan/<date>/*.csv ; published reports/scan/<run_id>/ come from assemble
+#   → staging context_claude/scan/<date>/*.csv ; published reports_claude/scan/<run_id>/ (engine-suffixed roots; lake/ shared)
 uv run --no-sync python -m autoresearch.scan.prelude 2026-06-20
 uv run --no-sync python -m autoresearch.scan.assemble 2026-06-20      # L5 整合 summary + trace
 
 # Single-ticker deep-dive
 uv run --no-sync python -m autoresearch.analyze.harvest NVDA 2026-06-20 stock AMD,AVGO
-uv run --no-sync python -m autoresearch.analyze.assemble context/analyze/NVDA_20260620
+uv run --no-sync python -m autoresearch.analyze.assemble context_claude/analyze/NVDA_20260620
 
 # Top-down macro
 uv run --no-sync python -m autoresearch.macro.harvest 2026-06-20
-uv run --no-sync python -m autoresearch.macro.assemble context/macro/2026-06-20
+uv run --no-sync python -m autoresearch.macro.assemble context_claude/macro/2026-06-20
 ```
 
 Optional extras: `uv sync --extra data` (pyarrow lake), `--extra models` (lightgbm — factor_lab 可选 GBDT).

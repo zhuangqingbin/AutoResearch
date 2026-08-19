@@ -41,6 +41,8 @@ import json
 import re
 from pathlib import Path
 
+from autoresearch.common import workspace as ws
+
 HARD_CAP_DEFAULT = 30
 _CLAIM_RE = re.compile(r"网查\s*(\d+)\s*条")
 
@@ -173,7 +175,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--scan-dir", default=None, help="覆盖 context/scan/<date>")
     args = ap.parse_args(argv)
 
-    scan_dir = Path(args.scan_dir) if args.scan_dir else Path("context/scan") / args.date
+    scan_dir = Path(args.scan_dir) if args.scan_dir else ws.scan_root() / args.date
     print(json.dumps(guard_intel(scan_dir, args.code, hard_cap=args.hard_cap),
                      ensure_ascii=False))
     return 0          # 拒稿不是进程失败 —— 只拒稿不拒票

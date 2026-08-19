@@ -49,9 +49,11 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
+
 SCHEMA_VERSION = 1
 RULE_VERSION = "typed_events.v1"
-OUT_JSON = Path("reports/research/typed_events_coverage.json")
+OUT_JSON = ws.reports_root() / "research/typed_events_coverage.json"
 
 # ── 生命周期(顺序有意义:后面的覆盖前面的)────────────────────────
 PLAN = "plan"            # 预案 / 拟

@@ -8,9 +8,12 @@ import shutil
 import sys
 from pathlib import Path
 
+from autoresearch.common import workspace as ws
 from autoresearch.dossier import schema
 
-POOL_PATH = Path("context/knowledge/coverage_pool.json")
+_WS_SCAN_ROOT = ws.scan_root()  # B008 修法:默认值须为模块级单例(def 时求值,与旧字面量常量同语义)
+
+POOL_PATH = ws.knowledge_root() / "coverage_pool.json"
 
 
 def load_pool(path: Path | None = None) -> dict:
@@ -108,7 +111,7 @@ def pending_init(pool: dict) -> list[str]:
     return sorted(candidates, key=_key)
 
 
-def refresh(today: str, *, scan_root: str | Path = "context/scan",
+def refresh(today: str, *, scan_root: str | Path = _WS_SCAN_ROOT,
             pool_path: Path | None = None, pinned_path: Path | None = None) -> dict:
     scan_root = Path(scan_root)
     pool = load_pool(pool_path)

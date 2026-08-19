@@ -26,7 +26,10 @@ from pathlib import Path
 
 import pandas as pd
 
-_LAKE_DAILY = Path("context/lake/daily")
+from autoresearch.common import workspace as ws
+
+_LAKE_DAILY = ws.lake_root() / "daily"
+_WS_SHADOW_BUYS = ws.learning_root() / "shadow_buys.csv"  # B008:默认值须为模块级单例
 _START = "20260618"          # 首个 scan 日;之前的湖数据不进成绩单
 _SLOT = 0.10                  # 等权轨固定槽(= simulate() 默认 slot;sized 轨回退目标同此值)
 
@@ -213,7 +216,7 @@ def market_nav(days: list[str], lake: Path | None = None, mode: str = "oc") -> p
 def real_signals(scan_root: Path | str | None = None) -> list[dict]:
     """≥OW 买单信号(verify 折回后,与 buy_ledger 同口径)。"""
     from autoresearch.scan.health import final_ratings
-    scan_root = Path(scan_root or "context/scan")
+    scan_root = Path(scan_root or ws.scan_root())
     sig: list[dict] = []
     if not scan_root.exists():
         return sig
@@ -223,7 +226,7 @@ def real_signals(scan_root: Path | str | None = None) -> list[dict]:
     return sig
 
 
-def shadow_signals(path: Path | str = "context/learning/shadow_buys.csv") -> list[dict]:
+def shadow_signals(path: Path | str = _WS_SHADOW_BUYS) -> list[dict]:
     """conviction 随信号带出(S3 sizer 的输入;`simulate()` 本身忽略多余键,老调用方不受影响)。"""
     p = Path(path)
     if not p.exists():
@@ -343,12 +346,12 @@ def summary_line(days, real, shadow, mkt, n_real, n_shadow, sized=None) -> str:
 
 def main() -> int:
     days = trade_days()
-    outp = Path("reports/learning/paper_nav.md")
+    outp = ws.reports_root() / "learning/paper_nav.md"
     outp.parent.mkdir(parents=True, exist_ok=True)
     if not days:
         outp.write_text("# 影子组合成绩单\n\n_湖 daily 分区缺,无法结算_\n", encoding="utf-8")
         # 同步清空 summary 行(存在即覆盖)——不然 assemble 会把上一次(湖尚在时)的旧行当今日读数幽灵注入。
-        Path("reports/learning/paper_nav_summary.txt").write_text("", encoding="utf-8")
+        (ws.reports_root() / "learning/paper_nav_summary.txt").write_text("", encoding="utf-8")
         print("[paper_nav] 湖 daily 缺 → 空稿")
         return 0
     rs, ss = real_signals(), shadow_signals()
@@ -382,7 +385,7 @@ def main() -> int:
             + ["", "## 副表:hold=10(旧口径连续性对照)", ""] + sec10[2:])
     outp.write_text("\n".join(full) + "\n", encoding="utf-8")
     line = summary_line(days, real_g, shadow_g, mkt_gap, len(rs), len(ss), sized=sized_g)
-    Path("reports/learning/paper_nav_summary.txt").write_text(line + "\n", encoding="utf-8")
+    (ws.reports_root() / "learning/paper_nav_summary.txt").write_text(line + "\n", encoding="utf-8")
     print(f"[paper_nav] {len(days)} 日 × (真实{len(rs)}/影子{len(ss)}) "
           f"主表=隔夜尺(gap,08-05 裁定) → {outp}")
     return 0

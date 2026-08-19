@@ -34,6 +34,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import MAIN_RULER, entry_tradable
 
 _RET_MAIN = MAIN_RULER       # 超短主尺,跟随 autoresearch.common.ruler.MAIN_RULER(当前
@@ -234,7 +235,7 @@ def audit(scan_root: Path | None = None, days: int = 30, variant: str | None = N
     裁决影子召回路(如 `plus_event`)。返回 `{dates, ledger, jaccard, notes}`;窗口内无可用日 →
     dates=[]、ledger/jaccard 皆空表。
     """
-    scan_root = scan_root or Path("context/scan")
+    scan_root = scan_root or ws.scan_root()
     daily: dict[str, pd.DataFrame] = {}
     for d in _scan_dates(scan_root, days):
         loaded = _load_day(scan_root, d, variant=variant)
@@ -311,7 +312,7 @@ def main(argv: list[str] | None = None) -> int:
     tag = dates[-1] if dates else _date.today().isoformat()
     # 变体报告落独立文件名,不与主漏斗的 channel_audit_<tag>.md 互相覆盖(未给 --variant → 逐字节 parity)。
     fname = f"channel_audit_{args.variant}_{tag}.md" if args.variant else f"channel_audit_{tag}.md"
-    outp = Path("reports") / fname
+    outp = ws.reports_root() / fname
     outp.parent.mkdir(parents=True, exist_ok=True)
     outp.write_text(body, encoding="utf-8")
     print(body)

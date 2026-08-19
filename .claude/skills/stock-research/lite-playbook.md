@@ -1,5 +1,7 @@
 # lite-playbook — 决策卡模板(stock-research **lite 档** · 渐进深度 + 早停)
 
+> **路径约定**:`$CTX`/`$RPT` = 本引擎工作区根(Claude→`context_claude`/`reports_claude`,Codex→`context_codex`/`reports_codex`;shell 里 `CTX=context_${AUTORESEARCH_ENGINE:-claude}`,`RPT=reports_${AUTORESEARCH_ENGINE:-claude}`)。数据湖 `lake/` 两引擎共享。Read/Write 工具调用时把 `$CTX`/`$RPT` 代入具体目录名。
+
 > 沿用同目录 `engine-playbook.md` 的**数据坑 + 铁律 + 五档评级**;本文定义**渐进深度 DD + 早停**的单张卡。
 > **核心**:一只票 = 一个 Opus subagent;读够真数据才判,**判断不好就早停、不再深挖**——省 token,质量不掉。
 
@@ -19,7 +21,7 @@
 
 ## 输入
 
-`context/<ticker>_<date>_slim.md`(`autoresearch.analyze.harvest --slim` 产;被 scan L4 调用时顶部已前置**漏斗简报**)。块清单见 SKILL.md。
+`$CTX/<ticker>_<date>_slim.md`(`autoresearch.analyze.harvest --slim` 产;被 scan L4 调用时顶部已前置**漏斗简报**)。块清单见 SKILL.md。
 **slim 没取的块(宏观/做空/同业全表/期权/资产负债+现金流全表)不得在卡里引用数字**——没取就是没取,不编、不靠记忆补。
 **UZI 增量块(A股 slim 已含,可引用)**:`A股原生财报`(5y ROE/毛利/负债率/分红)、`融资余额趋势`、`龙虎榜席位(机构/游资净买聚合,presence-gated via seats.csv)`、`杀猪盘/派发风险(复用L1)`、`量价形态/吸筹·多日资金流(复用L1)`——后两块被 scan L4 调用时复用 L1 因子行、零取数。`bias=吸筹`(底部放量/地量企稳/缩量回调/量增价涨)进多头(**底部放量须基本面背书,>70% 无支撑会败**)、`bias=派发`(高位放量净出)进风险压级;多日 `cmf_20`/`obv_mom_20`(>0=资金净进侧)与快照位置共振更可信。**龙虎榜席位**(简报若带「龙虎榜近窗口上榜」行):机构上榜净买按 Phase A 实测默认**反指**(后续 T+1~10 偏弱,勿当强利好);游资/营业部净买作接力信号。席位只作**技术·资金维校准**,不单独定方向、不越过 rubric 三门。更深的叙事式席位识别 DD 与 DCF 仍只在 **full 档**(engine-playbook)。
 
@@ -50,7 +52,7 @@
 
 ## 输出:两张卡(同落点)
 
-独立跑 → `reports/analyze/<YYYYMMDD>_<HHMM>/<名称|TICKER>_lite.md`(A股→中文名、其他→TICKER);被 scan L4 调用 → staging `context/scan/<date>/details/<ticker>.md`(`autoresearch.scan.assemble` 发布)。**两张卡都被 `parse_rating`/`assemble` 直接读**,故 `**Rating**` + `FINAL TRANSACTION PROPOSAL` 行必须在。
+独立跑 → `$RPT/analyze/<YYYYMMDD>_<HHMM>/<名称|TICKER>_lite.md`(A股→中文名、其他→TICKER);被 scan L4 调用 → staging `$CTX/scan/<date>/details/<ticker>.md`(`autoresearch.scan.assemble` 发布)。**两张卡都被 `parse_rating`/`assemble` 直接读**,故 `**Rating**` + `FINAL TRANSACTION PROPOSAL` 行必须在。
 
 ### A. 早停卡(②/① 触发;~1.2–1.8K 输出,零深 WebSearch、零三档建模;**多写不多读**)
 
@@ -175,4 +177,4 @@ _Claude 推理产出,非全量报告;仅供研究,非投资建议。要完整证
 
 ## 与 scan-market 的衔接
 
-scan-market L4 对 `finalists.csv` **每只一个 `l4-stock` workflow** 调本 skill(渐进深度 + 早停);卡片那一步派的是 `agentType: 'l4-card'`,**model/effort 档位见 scan_config.jsonc 的 `agents.l4_card`**(经 `user_config.resolve_agent_config` 解释成 `_resolved_agent_config.json`,workflow 照它派发)——本文档不写死档位,写死就成了单一事实源之外的第二个口子(Wave12-T33)。产物写 staging `context/scan/<date>/details/<ticker>.md`,由 `autoresearch.scan.assemble` 发布并汇成 buy-list。**每只独立 context、一条消息全并发派发**,只回传 评级/目标/R:R/早停与否。最终 ≥OW 的买单在发布前由 assemble 把关:self_review 硬门 + Tier-3 辩论折回评级(verify.csv,presence-gated;独立买单 skeptic 已于 07-06 移除)。
+scan-market L4 对 `finalists.csv` **每只一个 `l4-stock` workflow** 调本 skill(渐进深度 + 早停);卡片那一步派的是 `agentType: 'l4-card'`,**model/effort 档位见 scan_config.jsonc 的 `agents.l4_card`**(经 `user_config.resolve_agent_config` 解释成 `_resolved_agent_config.json`,workflow 照它派发)——本文档不写死档位,写死就成了单一事实源之外的第二个口子(Wave12-T33)。产物写 staging `$CTX/scan/<date>/details/<ticker>.md`,由 `autoresearch.scan.assemble` 发布并汇成 buy-list。**每只独立 context、一条消息全并发派发**,只回传 评级/目标/R:R/早停与否。最终 ≥OW 的买单在发布前由 assemble 把关:self_review 硬门 + Tier-3 辩论折回评级(verify.csv,presence-gated;独立买单 skeptic 已于 07-06 移除)。

@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+"""运行旋钮 knob() + l0/l2/sector/funnel 新键(2026-08-11 配置单一事实源波)。
+
+三件套之三(白名单 `load_user_config` + 消费点接线 + 本测试锁)。优先级恒为
+**显式 CLI/形参 > scan_config > 内建默认**;白名单外键/错型 load 即 raise。
+消费点:`frame.build_market_frame`(L0 单一代码路径)、`universe.run`(meta 记实际生效值)、
+`prelude.run_prelude`(regime_aware,生产路缺省 True)、`sector/reuse|pack.main`。
+"""
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from autoresearch.scan.user_config import knob, load_user_config
+
+# ───────────────────────── knob():解析优先级 ─────────────────────────
+
+
+def test_knob_explicit_wins_over_config():
+    assert knob("l0", "cap_floor_yi", 25.0, 30.0, cfg={"l0": {"cap_floor_yi": 20}}) == 25.0
+
+
+def test_knob_config_fills_none():
+    assert knob("l0", "cap_floor_yi", None, 30.0, cfg={"l0": {"cap_floor_yi": 20}}) == 20
+
+
+def test_knob_default_when_block_or_key_missing():
+    assert knob("l0", "cap_floor_yi", None, 30.0, cfg={}) == 30.0
+    assert knob("l0", "cap_floor_yi", None, 30.0, cfg={"l0": {}}) == 30.0
+
+
+def test_knob_false_zero_are_valid_config_values():
+    """falsy ≠ 缺省:include_bj=false / min_amount_yi=0 必须原样生效,不得被 or 链吞掉。"""
+    assert knob("l0", "include_bj", None, True, cfg={"l0": {"include_bj": False}}) is False
+    assert knob("l0", "min_amount_yi", None, 1.0, cfg={"l0": {"min_amount_yi": 0}}) == 0
+
+
+def test_knob_reads_default_path(monkeypatch, tmp_path):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"sector": {"reuse_ttl_days": 3}}), encoding="utf-8")
+    monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH", p)
+    assert knob("sector", "reuse_ttl_days", None, 5) == 3
+
+
+def test_knob_bad_config_falls_back_with_warning(monkeypatch, tmp_path, capsys):
+    """坏配置 → 响亮警告 + 内建默认(配置层故障不挡确定性扫描,但降级必须留痕)。"""
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text('{"bogus_top": 1}', encoding="utf-8")
+    monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH", p)
+    assert knob("l0", "cap_floor_yi", None, 30.0) == 30.0
+    assert "scan_config 读取失败" in capsys.readouterr().err
+
+
+# ───────────────────────── 白名单:新块 ─────────────────────────
+
+
+def test_new_blocks_whitelisted(tmp_path):
+    raw = {"l0": {"cap_floor_yi": 30, "include_bj": True, "source": "tushare",
+                  "min_amount_yi": 0, "min_list_days": 0},
+           "l2": {"sector_cap": 0.20},
+           "sector": {"reuse_ttl_days": 5, "max_briefs": 6},
+           "funnel": {"regime_aware": True, "recall_n": 1000, "l2_n": 200}}
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps(raw), encoding="utf-8")
+    assert load_user_config(p) == raw
+
+
+@pytest.mark.parametrize("block,bad", [
+    ("l0", {"cap_floor": 30}),          # 拼写错(少 _yi)
+    ("l2", {"cap": 0.2}),
+    ("sector", {"ttl": 5}),
+    ("funnel", {"regimeaware": True}),
+])
+def test_new_blocks_unknown_subkey_raises(tmp_path, block, bad):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({block: bad}), encoding="utf-8")
+    with pytest.raises(ValueError, match=block):
+        load_user_config(p)
+
+
+@pytest.mark.parametrize("raw", [
+    {"l0": {"cap_floor_yi": "30"}},
+    {"l0": {"include_bj": 1}},
+    {"l0": {"source": "akshare"}},
+    {"l0": {"min_list_days": -1}},
+    {"funnel": {"regime_aware": "yes"}},
+    {"funnel": {"recall_n": 0}},
+    {"sector": {"reuse_ttl_days": -1}},
+    {"l2": {"sector_cap": True}},        # bool 不是 number
+])
+def test_knob_type_violations_raise(tmp_path, raw):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="非法"):
+        load_user_config(p)
+
+
+# ───────────────────────── universe.run 接线(spy,不跑真漏斗) ─────────────────────────
+
+
+def _patch_cfg(monkeypatch, cfg):
+    monkeypatch.setattr("autoresearch.scan.user_config.load_user_config",
+                        lambda path=None: cfg)
+
+
+def test_run_resolves_l0_knobs_from_config(monkeypatch):
+    """None 形参从 config 补齐,并以**具体值**传给 build_market_frame(meta 可复现凭据)。"""
+    from autoresearch.scan import universe
+    seen: dict = {}
+
+    def _spy_bmf(d, **kw):
+        seen.update(kw)
+        raise RuntimeError("stop-after-l0")
+
+    monkeypatch.setattr(universe, "build_market_frame", _spy_bmf)
+    _patch_cfg(monkeypatch, {"l0": {"cap_floor_yi": 20, "include_bj": False},
+                             "funnel": {"regime_aware": True}})
+    with pytest.raises(RuntimeError, match="stop-after-l0"):
+        universe.run("2026-01-05")
+    assert seen["cap_floor_yi"] == 20.0
+    assert seen["include_bj"] is False
+    assert seen["source"] == "tushare"          # 缺键 → 内建默认
+
+
+def test_run_explicit_args_beat_config(monkeypatch):
+    from autoresearch.scan import universe
+    seen: dict = {}
+
+    def _spy_bmf(d, **kw):
+        seen.update(kw)
+        raise RuntimeError("stop-after-l0")
+
+    monkeypatch.setattr(universe, "build_market_frame", _spy_bmf)
+    _patch_cfg(monkeypatch, {"l0": {"cap_floor_yi": 20, "include_bj": False}})
+    with pytest.raises(RuntimeError, match="stop-after-l0"):
+        universe.run("2026-01-05", cap_floor_yi=25.0, include_bj=True)
+    assert seen["cap_floor_yi"] == 25.0
+    assert seen["include_bj"] is True
+
+
+def test_run_parity_without_config(monkeypatch):
+    """缺文件 = 内建默认(30 亿/纳北交所/tushare/门关)——逐字节 parity 的根。"""
+    from autoresearch.scan import universe
+    seen: dict = {}
+
+    def _spy_bmf(d, **kw):
+        seen.update(kw)
+        raise RuntimeError("stop-after-l0")
+
+    monkeypatch.setattr(universe, "build_market_frame", _spy_bmf)
+    _patch_cfg(monkeypatch, {})
+    with pytest.raises(RuntimeError, match="stop-after-l0"):
+        universe.run("2026-01-05")
+    assert seen == {"cap_floor_yi": 30.0, "include_bj": True, "source": "tushare",
+                    "l0_min_amount_yi": 0.0, "l0_min_list_days": 0}
+
+
+# ───────────────────────── prelude:regime_aware 生产路缺省 True ─────────────────────────
+
+
+def test_prelude_regime_fallback_is_true(monkeypatch):
+    """prelude 生产路:缺配置/缺键 → True(历史缺省);config false → 关;CLI False 恒优先。"""
+    _patch_cfg(monkeypatch, {})
+    assert knob("funnel", "regime_aware", None, True) is True
+    _patch_cfg(monkeypatch, {"funnel": {"regime_aware": False}})
+    assert knob("funnel", "regime_aware", None, True) is False
+    assert knob("funnel", "regime_aware", False, True) is False   # CLI --no-regime-aware

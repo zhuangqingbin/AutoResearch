@@ -25,6 +25,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.learning.gate_attribution import COHORT_V3, SINGLE_GATES
 
 MATURITY_SCAN_DAYS = 2      # T+2 主尺:信号日与报告日之间至少隔 2 个扫描日才算已成熟
@@ -76,7 +77,7 @@ def _shadow_rows(date: str, path: Path | str | None = None,
     `shadow_buys.binding` 全是空串。历史产物是当时的事实、不该改写,但**渲染时重算**
     既不改历史也能让这一节说真话。
     """
-    src = Path(path or "context/learning/shadow_buys.csv")
+    src = Path(path or ws.learning_root() / "shadow_buys.csv")
     if not src.exists():
         return []
     try:
@@ -322,7 +323,7 @@ def main(argv: list[str] | None = None) -> int:
 
     ap = argparse.ArgumentParser(description="near-miss 报告出口(确定性)")
     ap.add_argument("date")
-    ap.add_argument("--scan-root", default="context/scan")
+    ap.add_argument("--scan-root", default=str(ws.scan_root()))
     ap.add_argument("--report-date", default=None,
                     help="模拟在该日发布(前视隔离验收用);缺省 = 扫描日当天")
     args = ap.parse_args(argv)

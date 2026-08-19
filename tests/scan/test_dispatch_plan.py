@@ -12,13 +12,14 @@ import json
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.scan.agents.l4_card import dispatch_plan
 
 _DATE = "2026-07-07"
 
 
 def _mk(root):
-    d = root / "context" / "scan" / _DATE
+    d = root / ws.scan_root() / _DATE
     (d / "details").mkdir(parents=True)
     pd.DataFrame([
         {"code": "600584", "name": "长电科技"},
@@ -41,13 +42,13 @@ def test_dispatch_plan_has_no_reuse_key(tmp_path):
     现在也照样进 dispatch。
     """
     _mk(tmp_path)
-    res = dispatch_plan(_DATE, root=tmp_path / "context" / "scan")
+    res = dispatch_plan(_DATE, root=tmp_path / ws.scan_root())
     assert "reused" not in res
     assert set(res["dispatch"]) == {"600584", "000062", "000063"}
 
 
 def test_dispatch_plan_no_finalists(tmp_path):
-    d = tmp_path / "context" / "scan" / _DATE
+    d = tmp_path / ws.scan_root() / _DATE
     d.mkdir(parents=True)
     res = dispatch_plan(_DATE, root=d.parent)
     assert res == {"dispatch": [], "meta": {}}
@@ -68,7 +69,7 @@ def test_dispatch_plan_cli(tmp_path, monkeypatch, capsys):
 
 def _mk_with_sector(root):
     """mirror `_mk` 但 finalists 多一列 `sector`,验 `meta` 落 name/sector(仅 dispatch 码)。"""
-    d = root / "context" / "scan" / _DATE
+    d = root / ws.scan_root() / _DATE
     (d / "details").mkdir(parents=True)
     pd.DataFrame([
         {"code": "600584", "name": "长电科技", "sector": "半导体"},
@@ -84,7 +85,7 @@ def _mk_with_sector(root):
 
 def test_dispatch_plan_meta_names(tmp_path):
     _mk_with_sector(tmp_path)
-    plan = dispatch_plan(_DATE, root=tmp_path / "context" / "scan")
+    plan = dispatch_plan(_DATE, root=tmp_path / ws.scan_root())
     assert set(plan["dispatch"]) == {"600584", "000062", "000063"}
     for code in plan["dispatch"]:
         assert plan["meta"][code]["name"] and "sector" in plan["meta"][code]

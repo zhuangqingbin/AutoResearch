@@ -16,15 +16,19 @@ import re
 from datetime import date as _date
 from pathlib import Path
 
+from autoresearch.common import workspace as ws
+
+_WS_SCAN_ROOT = ws.scan_root()  # B008 修法:默认值须为模块级单例(def 时求值,与旧字面量常量同语义)
+
 STATE_NAME = "macro_state.json"
-DEFAULT_ROOT = Path("context/macro")
+DEFAULT_ROOT = ws.context_root() / "macro"
 DEFAULT_TTL_DAYS = 7
 
 _RISK_MAP = {"Buy": "risk_on", "Overweight": "risk_on", "Hold": "neutral",
              "Underweight": "risk_off", "Sell": "risk_off"}
 
 
-def _regime_from_scan_meta(as_of: str, scan_root: Path | str = Path("context/scan")) -> str | None:
+def _regime_from_scan_meta(as_of: str, scan_root: Path | str = _WS_SCAN_ROOT) -> str | None:
     """当日 scan staging 的 meta.regime(universe 落的同一标签);缺 → None(失效判据只剩 age)。"""
     p = Path(scan_root) / as_of / "meta.json"
     if not p.exists():
@@ -64,7 +68,7 @@ def _key_risks(premortem_text: str | None, cap: int = 3) -> list[str]:
 
 def write_macro_state(root: Path | str, report_path: Path | str | None = None,
                       out_dir: Path | str | None = None,
-                      scan_root: Path | str = Path("context/scan")) -> dict:
+                      scan_root: Path | str = _WS_SCAN_ROOT) -> dict:
     """从 macro context 目录(`context/macro/<date>`)抽机读摘要 → `<out_dir>/macro_state.json`。
 
     out_dir 缺省 = `context/macro`(assemble 传 root.parent,测试传 tmp);返回写入的 dict。

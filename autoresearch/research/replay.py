@@ -49,11 +49,12 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import entry_tradable
 
-DEFAULT_ROOT = Path("context/replay")
-REPORT_ROOT = Path("reports/research/replay")
-PROD_ROOT = Path("context/scan")
+DEFAULT_ROOT = ws.context_root() / "replay"
+REPORT_ROOT = ws.reports_root() / "research/replay"
+PROD_ROOT = ws.scan_root()
 
 _PRIOR = "prior"        # 内置先验权重(零校准=零泄漏)——回放默认
 _CURRENT = "current"    # 现 weights.json(**有泄漏**)——只用于 M1 对拍/对照

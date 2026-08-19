@@ -39,6 +39,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
+
 _CHECKS = ["chk_numeric_loop", "chk_blind_pass", "chk_base_rate_or_target",
            "chk_card_contract", "chk_rubric_consistent", "chk_slim_size"]
 # 真垃圾地板(空稿/截断),与 GATE3 的 `harvest_slim_batch(min_bytes=4_096)` 同值。
@@ -215,7 +217,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m autoresearch.learning.process_score",
                                  description="P0-4 逐卡过程分 checklist(单日,零 LLM)")
     ap.add_argument("date", help="分析日 YYYY-MM-DD")
-    ap.add_argument("--root", default="context/scan", help="scan 根目录(默认 context/scan)")
+    ap.add_argument("--root", default=str(ws.scan_root()), help="scan 根目录(默认 context/scan)")
     args = ap.parse_args(argv)
 
     scan_dir = Path(args.root) / args.date

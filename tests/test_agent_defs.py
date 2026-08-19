@@ -452,7 +452,8 @@ def test_scan_market_skill_documents_wave3_recovery_and_measurement_contract():
         # Wave10 B4:另两个性能开关已退役 —— 锚改成"退役这件事本身"被写进契约文档,
         # 否则下次有人照着旧文档去设一个不存在的开关。
         "Wave10 B4 退役两个",
-        "--json-out context/scan/<date>/_token_usage.json",
+        # 引擎隔离(2026-08-11):doc 命令统一 $CTX 记号(= context_<engine>,bash 块顶行取值)
+        "--json-out $CTX/scan/<date>/_token_usage.json",
         "autoresearch.scan.post_run <date> observe",
         "IMMATURE",
         "10 次真实扫描",

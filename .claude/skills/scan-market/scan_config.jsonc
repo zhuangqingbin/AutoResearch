@@ -1,102 +1,139 @@
 {
-  // ═══ scan-market 全流程用户配置(直接生效;支持 // 注释)═══
-  // 优先级:CLI 显式 flag > 本文件 > 代码内建默认。删掉某 key = 用其默认(=无此文件时的 parity 行为)。
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // scan-market 全流程用户配置 —— **唯一**参数事实源(按漏斗阶段顺序排;支持 // 注释)
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // 契约(防漂移,详见 SKILL.md「配置单一事实源」节):
+  //   优先级:CLI 显式 flag / 显式形参 > 本文件 > 代码内建默认;删 key = 内建默认(parity)。
+  //   每个 key 必须标【生效点】=真实消费代码;白名单在 autoresearch/scan/user_config.py,
+  //   **白名单外的键 load 即 raise**(写错键名当场炸,不静默失效)。
+  //   新增参数三件套:白名单 + 消费点(grep 调用链)+ 测试锁(tests/scan/test_config_knobs.py)。
+  //   ⚠️ 改值 ≠ 无害:召回/L3/L4/评级类旋钮属行为变更,先走实验治理(STAGES.md 控制面),
+  //   config 是放参数的地方,不是绕过治理的后门。
+  //   装载链:frame --json 白名单校验后回显 → Workflow args.config →(L4 每股 args.cfg 透传);
+  //   确定性 CLI(universe/prelude/frame/sector.*)在入口经 user_config.knob() 读同一文件兜底。
+  //   保送票**清单**在 pinned.jsonc(此处只管 cap/TTL 策略);L1 因子权重在
+  //   context_<引擎>/factor_lab/weights.json(factor_lab calibrate 产,retro 自动重标定,不入本文件)。
 
-  // ── 各 stage 的 AI agent 模型/effort ──(覆盖 .claude/agents/*.md frontmatter 默认;经 workflow 生效)
-  // effort ∈ low/medium/high/xhigh/max;省略某 stage 或 model 字段 = 用其默认。
+  // ── 全局 · 预算/并发(观测与派发,不拥有截断权)─────────────────────────────
+  // 【生效点】autoresearch/scan/budget.py resolve_budget_policy(post_run 预算告警:超线只写
+  //   warning/DEGRADED,不截候选/查询/卡);concurrency 由 scan/l4_tasks.py init 读取形成
+  //   L4 派发帽(l4_stock=派发宽度,缺省 64=事实无上限 Wave11-C1;tushare/web_search/web_fetch
+  //   为资源帽,tushare 由 prepare_slim K 槽信号量执行)。回滚杆:l4_stock 改 4 = 旧滑窗宽度。
+  "budgets": {
+    "cache_hit_min": 0.85,             // cache 命中率红线(低于只告警)
+    "stage_cost_usd": {},              // 每阶段成本上限(空=不设;如 {"l4-card": 20})
+    "stage_wall_seconds": {},          // 每阶段墙钟上限(空=不设)
+    "concurrency": { "tushare": 4, "web_search": 4, "web_fetch": 4, "l4_stock": 64 },
+    "min_real_scans": 10,              // 成本/墙钟成熟门:不满此数恒 IMMATURE
+    "baseline_run": "20260727_2140"    // 成本基线 run(成熟门对照)
+  },
+
+  // ── Stage 0 · 保送持仓策略 ─────────────────────────────────────────────────
+  // 【生效点】autoresearch/scan/frame.py(load_pinned → 烤进 run_contract;票单读
+  //   .claude/skills/scan-market/pinned.jsonc,cap=截断条数、ttl_days=缺 expires 时的失效窗)。
+  "pinned": { "cap": 5, "ttl_days": 10 },
+
+  // ── Stage 0 · agent 档位(model/effort;12 role 闭集,**必须列全**,缺一 fail-fast)──
+  // 【生效点】user_config.resolve_agent_config(唯一解释点)→ _resolved_agent_config.json →
+  //   scan-market.js / l4-stock.js / t1-review.js 的 AG() + usage_reconcile 逐 role 对账。
+  //   effort ∈ low/medium/high/xhigh/max;判断类 role 不写 model 键 = 落 agent def frontmatter
+  //   (l3_rank/l4_card=opus、l4_intel=sonnet)。按流程出场顺序排列。
   "agents": {
-    "strategist":   { "effort": "max" },     // 市场研判(macro lite 档,Stage 0)——07-12 用户拍板 high→max
-    "sector_brief": { "effort": "xhigh" },   // 行业 brief 写手——07-12 用户拍板:sonnet 下沉试点回滚(删 model 键 → 回 opus)+ effort high→xhigh
-    "l3_rank":      { "effort": "max" },     // L3 精排(200只 holistic 比较=判断核心,给最高 effort)
-    "l4_intel":     { "effort": "max" },     // 活体情报员(盲搜六面,sonnet 由 agent 定义默认)
-    "l4_card":      { "effort": "max" },     // L4 决策卡(逐只渐进深度 DD)
-    // T+1 快环(t1-review.js,fb_20260717_001):2 agent = 合诊 + 综合(2026-07-17 用户裁定
-    // 勿每票 fan-out——真选 ≤13 只一个 context 装得下,且跨票模式合诊才看得见)。
-    // 装载:scan-retro 编排时 `python -m autoresearch.scan.user_config` 读本文件随 args.cfg 传入
-    // (合诊 agent 自己跑 build CLI,没法从 pack 拿配置);综合官另有 pack.agents_cfg 兜底。
-    "t1_diag":      { "effort": "high" },    // 合诊(≤13 卡对比诊断;model 缺省=继承会话,要省钱可加 "model":"sonnet")
-    "t1_synth":     { "effort": "high" },    // 综合官(model 缺省 = 继承会话模型)
-    // ── Wave11-B 新收口的 5 个 role(缺键=用 workflow AGENT_DEFAULTS,语义见各注)──
-    // 08-06 review 修正(task-8-review.md Important,CONFIRMED):这里曾经写 "xhigh",
-    // 在独立收口前 rerun()(≥OW/SELL 双复核 run2/3)读的是
-    // `cfg.agents?.l4_card?.effort ?? 'xhigh'`——生产 l4_card.effort 早就显式是 "max"
-    // (见下面 l4_card 行),那个 'xhigh' 兜底从未被生产吃到,即复核 run 实际一直以 max 跑。
-    // 独立收口成 ens_review role 后若仍写 "xhigh",会让复核 run 在生产环境真实降档
-    // (max→xhigh),这不是本 task(独立收口)的目标,是两个 task 拼接出的意外静默变更。
-    // 改成 "max" 才是与收口前生产实际行为一致的 parity;要不要把复核档位调得比主卡低,
-    // 应该是一次单独的、显式的决策(连同影响面一起评估),不能靠这一行悄悄发生。
-    "ens_review":   { "effort": "max" },     // ≥OW/SELL 双复核 run2/3——与 l4_card 同档(parity,见上注)
+    "strategist":   { "effort": "max" },     // 市场研判(Stage0 旁路)——07-12 用户拍板 high→max
+    "sector_brief": { "effort": "xhigh" },   // 行业 brief(L2 后旁路)——07-12 拍板 sonnet 试点回滚+high→xhigh
+    "l3_rank":      { "effort": "max" },     // L3 精排(holistic 比较=判断核心,最高档)
     "l3_repair":    { "effort": "medium" },  // L3 数字自修(可选增益,挂了不阻断)
-    "dossier_init": { "effort": "max" },     // 档案首覆(≤3 只/晚,单票 10-20min)
-    // 壳类缺省 sonnet·low:08-05 事故——haiku 壳遇长命令转后台会 pkill 生产作业;
-    // 要省钱显式改回 haiku,但那是你的选择不是缺省。
-    "gp_shell":      { "model": "sonnet", "effort": "low" },  // 命令壳(bash/stageGate/recordL4)
-    "gp_shell_json": { "model": "sonnet", "effort": "low" }   // JSON 壳(gate/gpJson/taskGate/ens-dump/lint)
+    "l4_intel":     { "effort": "max" },     // 活体情报员(盲搜六面;model=sonnet 由 agent def 定)
+    "l4_card":      { "effort": "max" },     // L4 决策卡(逐只渐进深度 DD)
+    "ens_review":   { "effort": "max" },     // ≥OW/SELL 双复核 run2/3——与 l4_card 同档(08-06 review:
+                                             // 写 xhigh 会让复核在生产静默降档,parity=max;要降档须显式决策)
+    "t1_diag":      { "effort": "high" },    // T+1 快环合诊(≤13 卡一个 context 对比;2026-07-17 裁定勿 fan-out)
+    "t1_synth":     { "effort": "high" },    // T+1 快环综合官
+    "dossier_init": { "effort": "max" },     // 档案首覆(≤3 只/晚,盘后)
+    // 壳类缺省 sonnet·low:08-05 事故——haiku 壳遇长命令转后台会 pkill 生产作业;省钱可显式
+    // 改 haiku,但那是你的选择不是缺省。
+    "gp_shell":      { "model": "sonnet", "effort": "low" },   // 命令壳(bash/stageGate)
+    "gp_shell_json": { "model": "sonnet", "effort": "low" }    // JSON 壳(gate/gpJson/taskGate)
   },
 
-  // ── L3 两遍法:pass1 确定性分诊 200→~60 + pass2(l3-rank)深比较出 finalist tier ──
-  // (design: 2026-07-12-l3-merge-plan.md;用户裁定即新基线,下列值 = 本波后默认行为,
-  // 本 key 是回滚杆而非 opt-in——删掉本块或把 two_pass 改 false 都退回"L3 单遍读全表"旧行为)。
-  "l3": {
-    "two_pass": true,        // false = 回滚:prepare_l3_table 现行为逐字节不变(不 triage/不切表/不读本块)
-    "pass1_target": 40,      // pass1 分诊后喂 pass2(l3-rank)的行数(全入规则命中多时可能略多于此数)
-                             // 60→40(2026-07-18 线A):影子回放 20 日 mandatory 0漏;two-pass 时代(07-10起)6日
-                             // 仅丢 1 个非赢家 finalist(07-13 000999,target=50 也保不住);delta 20 行赢家率 8.9%
-                             // vs 本就被切的 140 行 7.6%=无富集(<1se)。回滚:改回 60 或 two_pass=false。
-                             // 前向守卫:retro.pass1_cut_winners 日常盯 cut 吃赢家。读数:scratchpad pass1_shadow_results_v2
-    "finalist_max": 10       // finalist tier 上限(merge v3 已接线消费——cap=min(此值,l4_budget))
+  // ── L0 · 选集硬门 ──────────────────────────────────────────────────────────
+  // 【生效点】autoresearch/scan/frame.py build_market_frame(L0 单一代码路径,universe.run 与
+  //   frame CLI 共用——market_pack 的 regime/宽度统计与漏斗用同一把地板)+ universe.run
+  //   (meta/weights_used 记实际生效值)。CLI:--cap-floor/--exclude-bj/--source 恒优先。
+  //   ⚠️ 哲学:每加一条硬门=一块永久盲区(missed_l0≈赢家 9%);收紧属召回行为变更,走实验治理。
+  "l0": {
+    "cap_floor_yi": 30,        // 市值地板(亿);capfloor20 影子变体在验 20 的反事实,勿在此直接改
+    "include_bj": true,        // 纳入北交所(false=剔;92xxxx 历史坑见 pledge 记忆)
+    "source": "tushare",       // 取数源:tushare=默认(东财 push2 常被网络封,用户裁定);em=push2
+    "min_amount_yi": 0,        // L0 流动性门(日成交额亿 >;0=关=parity)
+    "min_list_days": 0         // L0 次新门(上市天数 ≥;0=关=parity)
   },
 
-  // ── L4 活体情报站 ──(sonnet·max 盲搜情报员 ∥ slim 预取;卡侧缺文件自动回退卡内网查)
-  // ✅ 2026-07-12 开启:P1 波真跑验收已过(07-10 实跑 38 agent / 0 error / 4 GATE 全绿)。
-  // 首跑冒烟三查(设计稿 §6,跑完必看):① WebSearch 并发限频(11–30 并发 searcher 会不会被限)
-  //   ② 中文源可达率 ③ intel 空稿率。代价:每天多几百次网查、L4 段墙钟 ~14m → ~30m+。
-  // 裁决:单变量 A/B,账本 ≥10–20 日再定去留(enabled 改回 false 即干净回滚)。
-  // max_queries 15→20(Wave8 W8-13):cap 15 从来没被遵守过 —— 07-24 十一稿 15–26、
-  // 07-27 两稿 18/16、07-28 十一稿 16–29(中位 ~18),**天天报警天天无视** = 狼来了,
-  // 把 P0 探针的公信力一起磨掉了。20 对齐实测中位,让 warn 重新变成信号。
-  // 真正有牙齿的是 `hard_cap`(见 `autoresearch/scan/l4/intel_guard.py`,默认 30):
-  // 自报超硬顶 → 稿件改名 .rejected.md,card 侧 presence-gate 自动回退卡内网查。
-  // 铁律:**只拒稿不拒票** —— 情报是辅助面,不得反噬决策主链。
-  "l4_intel": { "enabled": true, "max_queries": 20 },
-
-  // ── Wave 3 性能调度(不改变 finalist/rubric/评级)──
-  "performance": {
-    "streaming_l4": true              // true=每票 slim∥intel 就绪即出卡;false=回滚到整批 slim GATE3
-    // Wave10 B4 已删:`stable_context_blocks`(离线 benchmark 收益 4.0% < 10% 门)、
-    // `sector_brief_mode`(会改变 L3 上下文 → 可能改变 finalists,不是性能开关)。
-  },
-
-  // ── L1 召回漏斗 ──(recall_channels/channel_quotas 经 scan/cli.py → universe.recall_select 生效)
+  // ── L1 · 召回(多路 → quota_union → top recall_n)──────────────────────────
+  // 【生效点】universe.run(_funnel_overlay + knob;prelude 生产路与 universe 直跑 CLI 同源)。
+  //   regime_aware 另生效于 prelude.run_prelude(生产路缺省 true;universe 直跑 CLI 内建缺省
+  //   false,--regime-aware/--no-regime-aware 恒优先)。
   "funnel": {
-    // 启用的召回通道。整编后 9 路(2026-07-11 channel_audit 13日累计裁决):
-    //   剔 accumulation(unique超额T2 −0.21%=唯一实数据负路)、northbound(hk_ratio T+2 IC −0.108);
-    //   保 momentum(unique +0.75% 为正,单日 −1.35% 是噪声);reversal_confirm 与旧 reversal 并跑 A/B(≥10日再裁)。
-    //   ⚠️ 2026-08-04 勘误:上面那个「momentum unique +0.75% 为正」是 07-11 的 13 日读数,**已过期且符号已翻**。
-    //   26 日累计为 −1.07%;切开相位后是**混合物**(docs/research/2026-08-04-momentum-phase-conditional-ic.md):
-    //     回撤侧(退潮/冰点 n=14)+0.0000 [−0.0162,+0.0174] 跨 0 = UNKNOWN
-    //     上涨侧(发酵/高潮 n=12)−0.0232 [−0.0393,−0.0074] **整区间为负**
-    //   故「统一砍 momentum quota」是错处方(会砍掉回撤侧那条不亏钱的路)。正确处方是**相位条件 quota**,
-    //   属 B 类,须 registry。**本行 quota 因此维持不动** —— 改它需要先走实验治理。
-    //   删掉本行 = 用全部注册通道(12 路,含未取证的 event —— 删本行会把它一并上线,违反 pr_20260725_001 的入场纪律)。
+    "regime_aware": true,      // L1 权重按当日 regime 选块(weights.json regimes;07-02 校准开启)
+    "recall_n": 1000,          // L1 召回收口数
+    "l2_n": 200,               // L2 粗排收口数
+    // 启用的召回通道。整编后 9 路(2026-07-11 channel_audit 13 日累计裁决):剔 accumulation
+    // (unique超额T2 −0.21%)、northbound(hk_ratio T+2 IC −0.108);reversal_confirm 与旧
+    // reversal 并跑 A/B。⚠️ **删掉本行 = 用全部注册 12 路,会把默认停用·取证中的 event 一并
+    // 上线,违反 pr_20260725_001 入场纪律** —— 要动通道先走实验治理。
+    // ⚠️ momentum 勘误(2026-08-04):07-11 的「unique +0.75%」已过期且符号翻负(26 日 −1.07%);
+    // 切相位后=混合物(回撤侧≈0/上涨侧整区间为负,docs/research/2026-08-04-momentum-phase-
+    // conditional-ic.md)——「统一砍 momentum quota」是错处方,相位条件 quota 属 B 类须 registry,
+    // 故 quota 维持不动。
     "recall_channels": ["composite", "momentum", "reversal_confirm", "reversal", "value", "main_fund", "heat", "growth", "healthy"],
-    // 各路配额覆盖(Task 8 起 recall_select 真消费,build/quota_union 都吃覆盖后的 effective spec)。
-    // heat 200→150:pr_20260711_003 提案 200→100(unique超额T2 全表最弱正值+与 momentum Jaccard
-    //   0.27 最高重叠),本 task 拍板取 advisory 档 150、非提案的 100(折中,floor 不动)。
-    // value 200→250、main_fund 200→150:同一波 channel_audit 累计账本的 advisory 结论,随本 task
-    //   一并应用(proposals.jsonl 无独立 pr_id,归入本 task 的整编批次)。
-    // 删掉本行 = 用 CHANNEL_DEFAULTS(注册表默认 quota)。
+    // 各路配额覆盖(channel_ledger advisory 档,2026-07-11 拍板:value 200→250 / heat 200→150 /
+    // main_fund 200→150)。删本行 = 注册表默认 quota。floor 覆盖同名 "channel_floors":{}(未用)。
     "channel_quotas": { "value": 250, "heat": 150, "main_fund": 150 }
-    // "channel_floors":  {}                 // 各路保底覆盖 —— 同一形参已接线,本波无需覆盖,维持默认
   },
 
-  // ── 基率收缩估计(shrinkage)──(design: 2026-07-12-selflearning-optimization-brainstorm.md §4 P0-3)
-  // 四消费点(l4_card 🔁基率/cross_calib 翻案率/buy_ledger 📐目标校准/gate_ledger 左尾率)注入锚
-  // 从"n<10 二值禁注"改"p̂=(n·p_桶+k·p_全局)/(n+k) 收缩值 + ⚠标记",n<3 仍绝对禁注不受本开关影响。
-  // shrink=true·shrink_k=15 = 新基线(本块是回滚杆:shrink 改 false 或删本块 = 退回各点原始 raw 计算)。
-  "learning": { "shrink": true, "shrink_k": 15 }
+  // ── L2 · 粗排(确定性分层采样,不预测)────────────────────────────────────
+  // 【生效点】universe.run → recall/l2_stratify.select_l2。风格桶 floors 明细(趋势20/健康15/…)
+  //   =行为归属,留在 l2_stratify.DEFAULT_FLOORS,想调先立实验;此处只放行业集中度帽。
+  "l2": {
+    "sector_cap": 0.20         // 任一申万一级 ≤ 20%(=40/200);≥1.0=关
+  },
 
-  // "pinned":       { "cap": 5, "ttl_days": 10 }               // 保送 cap/TTL(frame.py 真读并烤进 run contract;缺省 5/10)
-  // Wave10 B1 已删:`redteam_prob`(全仓零消费者)、`reuse`(服务的 L4 卡 TTL 复用于
-  // 2026-07-29 按用户裁定退役)。见 docs/research/2026-08-01-wave10-retirement-audit.md
+  // ── 旁路 · 行业 brief(L2 后并发)──────────────────────────────────────────
+  // 【生效点】sector/reuse.py main(--ttl 恒优先)/ sector/pack.py main(--k 恒优先)。
+  "sector": {
+    "reuse_ttl_days": 5,       // brief TTL 复用回看天数(♻️ 复用判据之一)
+    "max_briefs": 6            // 每日行业 brief 上限 K(红榜top3 ∪ L2集中度top3 ∪ watchlist 行业)
+  },
+
+  // ── L3 · 精排(两遍法:pass1 确定性分诊 + pass2 holistic 深比较)────────────
+  // 【生效点】scan/l3/prompt.py prepare_l3_table(two_pass/pass1_target)、
+  //   scan/l3/merge.py write_finalists(finalist_max,cap=min(finalist_max, 当日 l4_budget))。
+  //   本块是**回滚杆**非 opt-in:two_pass 改 false / 删块 = 回「单遍读全表」旧行为。
+  "l3": {
+    "two_pass": true,
+    "pass1_target": 40,        // 60→40(2026-07-18 线A:影子回放 20 日 mandatory 0 漏、delta 无赢家
+                               // 富集);回滚=改回 60 或 two_pass=false;前向守卫=retro.pass1_cut_winners
+    "finalist_max": 10         // finalist tier 上限
+  },
+
+  // ── L4 · 活体情报站(sonnet 盲搜 ∥ slim 预取)──────────────────────────────
+  // 【生效点】.claude/workflows/l4-stock.js(intelOn/maxQ;**缺块=intel 关**)+
+  //   scan/l4/intel_status.py + self_review 超查探针。真硬顶 hard_cap=30 在
+  //   scan/l4/intel_guard.py(超顶稿件 .rejected 弃用,只拒稿不拒票)=代码常量不入 config。
+  "l4_intel": {
+    "enabled": true,           // 2026-07-12 开启(P1 波验收过);false=干净回滚(卡内网查兜底)
+    "max_queries": 20          // 15→20(Wave8 W8-13):对齐实测中位,让 warn 重新变信号
+  },
+
+  // ── L4 · 调度性能(只改调度/上下文布局,**不拥有评级**)─────────────────────
+  // 【生效点】.claude/workflows/scan-market.js(streamingL4 分支:任务簿流式 vs 旧批量 GATE3)。
+  "performance": {
+    "streaming_l4": true       // false=回滚到整批 slim GATE3
+  },
+
+  // ── 闭环 · 基率收缩(shrinkage)────────────────────────────────────────────
+  // 【生效点】learning/shrink.py shrink_config → 四消费点(l4_card 🔁基率 / cross_calib 翻案率 /
+  //   buy_ledger 📐目标校准 / gate_ledger 左尾率)。p̂=(n·p+k·p_g)/(n+k);n<3 绝对禁注不受此开关
+  //   影响。本块是回滚杆:shrink=false 或删块 = 各点退回 raw 计算。
+  "learning": { "shrink": true, "shrink_k": 15 }
 }

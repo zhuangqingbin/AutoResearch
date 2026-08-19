@@ -26,9 +26,8 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from autoresearch.scan.l4.intel_guard import guard_intel
+import pytest  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 
 
 def _write(scan_dir, code: str, claimed: int | None, body: str = "事件段…") -> None:

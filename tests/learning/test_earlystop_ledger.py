@@ -77,6 +77,7 @@ def test_assemble_refreshes_ledgers_whose_input_it_just_wrote():
     避免重新出现「产物对、账本没人重刷」。
     """
     from pathlib import Path as _P
+
     from autoresearch.scan.post_run import SUBSCRIPTIONS
 
     src = _P("autoresearch/scan/publisher.py").read_text(encoding="utf-8")

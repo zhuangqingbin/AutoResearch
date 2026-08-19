@@ -3,8 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from autoresearch.learning import experiment_registry as registry
-from autoresearch.learning import promotion, rollback_watch
+from autoresearch.learning import experiment_registry as registry, promotion, rollback_watch
 
 
 def _guards(*, rollback=False):

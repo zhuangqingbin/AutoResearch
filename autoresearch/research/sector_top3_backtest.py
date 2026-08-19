@@ -16,11 +16,11 @@ CSV 落盘列名 `top3_med_fwd2`/`mkt_med_fwd2`/`excess` 仍写死 "fwd2" 字样
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import MAIN_RULER
 from autoresearch.data.tushare_source import _code6
 from autoresearch.research.factor_lab import (
@@ -30,6 +30,7 @@ from autoresearch.research.factor_lab import (
     load_price_pivots,
 )
 from autoresearch.scan.market import sector_healthy_top3
+from pathlib import Path  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 
 
 def _num(s):
@@ -95,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
                      "mkt_med_fwd2": round(float(mkt_ret), 3),
                      "excess": round(float(top_ret - mkt_ret), 3)})
     out = pd.DataFrame(rows)
-    dst = Path("reports/research/sector_top3_backtest.csv")
+    dst = ws.reports_root() / "research/sector_top3_backtest.csv"
     dst.parent.mkdir(parents=True, exist_ok=True)
     out.to_csv(dst, index=False)
     m = out.dropna(subset=["excess"]) if "excess" in out.columns else out.iloc[0:0]

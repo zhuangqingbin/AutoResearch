@@ -660,6 +660,7 @@ def test_ow_win_rate_denominator_only_counts_contributing_rows(monkeypatch):
     """M-8:加权平均的分母只能是**有贡献**的行。老账本缺 fwd_2 列(win2=None)时,
     旧式分母(全部 n_realized)会把胜率系统性低估。"""
     import pandas as pd
+
     from autoresearch.learning import buy_ledger
     monkeypatch.setattr(buy_ledger, "roll", lambda root=None: pd.DataFrame())
     monkeypatch.setattr(buy_ledger, "rating_base_rates", lambda _l, **k: [

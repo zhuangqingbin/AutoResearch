@@ -31,8 +31,11 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import MAIN_RULER, entry_tradable
 from autoresearch.scan.decision_read_model import read_decisions
+
+_WS_SCAN_ROOT = ws.scan_root()  # B008 修法:默认值须为模块级单例(def 时求值,与旧字面量常量同语义)
 
 ECONOMIC_BAND = 0.02
 MIN_TRIGGER_FOLDS = 10
@@ -219,7 +222,7 @@ def day_rows(scan_dir: Path | str) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=_COLUMNS)
 
 
-def roll(scan_root: Path | str = "context/scan") -> pd.DataFrame:
+def roll(scan_root: Path | str = _WS_SCAN_ROOT) -> pd.DataFrame:
     root = Path(scan_root)
     frames = []
     days = sorted(
@@ -330,7 +333,7 @@ def render(rows: pd.DataFrame) -> str:
 
 def main() -> int:
     rows = roll()
-    output = Path("reports/learning/ensemble_ledger.md")
+    output = ws.reports_root() / "learning/ensemble_ledger.md"
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(render(rows), encoding="utf-8")
     detail = output.with_suffix(".json")

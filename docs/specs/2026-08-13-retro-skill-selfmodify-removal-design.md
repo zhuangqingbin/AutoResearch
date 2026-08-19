@@ -146,6 +146,12 @@ wave8 §4.3「L3 prompt 改动必须同时走 prompt_patch 人批 + experiment_r
 
 wave8 设计稿 §4.3 处加一行时点注记：「2026-08-13 起 prompt_patch 载体退役，本条治理由 `2026-08-13-retro-skill-selfmodify-removal-design.md` §4.4 承接」（本仓有更正旧稿先例：08-04 §6）。
 
+> **实施期发现（2026-08-13，未解决，需裁定）**：wave8 §4.3 写的「人批 `approve` + `activate` 同日」**在 `experiment_registry` 状态机里做不到**。`approve_experiment` 硬要求 `status == RECOMMENDED`（`experiment_registry.py:547`），而抵达 RECOMMENDED 的唯一路径是 `promotion.evaluate_experiment` 喂真实 facts 且 PASS（`promotion.py:236`）；本实验（`exp_20260729_l3_hard_constraint_f`，07-29 登记）的 promotion_guards 全是**前向指标**（`l3_funding_flag_misuse_n` / `finalist_n_delta` / `l3_wall_delta_pct` / token delta），`minimums.forward_days=5`、`mature_events=5`——这些数只有改动**已上线跑满 5 个前向扫描日**才存在。登记时想同日激活 → 被证据门挡住；想过证据门 → 必须先上线。该实验因此在 PREREGISTERED 卡了 15 天（07-29→08-13）。
+>
+> 连带后果：`rollback_watch.observe` 要求 `status == ACTIVE`（`rollback_watch.py:110`），所以在实验转 ACTIVE 之前，**事后守卫这条腿根本不起转**——wave8 承诺的「≥5 个前向扫描日再 accept/rollback」目前无人执行。
+>
+> 本波**不擅自绕过**（不 `update_experiment` 硬改状态、不喂造出来的 facts——那会把治理账本变成摆设）。三条候选出路待裁定：① 给 shadow 不可行类实验加合法路径（如「先激活后取证」态，rollback_watch 照常起转）；② 承认 prompt 类改动不进 registry，另立轻量台账；③ 维持现状 = 先上线跑满 5 日、再补 evaluate→approve→activate，接受 ACTIVE 语义是「事后正式采纳」而非「改动已上线」。
+
 ## 5. 实施计划（3 批，单 commit/批，均含探针）
 
 > 本稿只规划不实施。每批「验收」列的是可机检命令；mutation 概念见 §6。
@@ -201,6 +207,22 @@ wave8 设计稿 §4.3 处加一行时点注记：「2026-08-13 起 prompt_patch 
 ## 9. 开放问题
 
 无阻塞项。一处实施期核对点：`test_proposals_kanban.py` 与 `annotate_open_proposals` 对 kind 是否穷举（若是，补 `graduation`；§4.2 已列）。
+
+## 10. 实施记录（2026-08-13 当日全量实施完毕）
+
+用户在设计稿落盘同日追加裁定「开始开发」，三批全部实施，TDD 走完（每条新行为先写测试看它因正确原因失败，再最小实现转绿）。
+
+| 批 | 内容 | 实测 |
+|---|---|---|
+| A | `add_graduation_nomination` + 禁令锚句四落点 + scan-market 引用 + 3 条正锚探针 | `test_graduation.py` 10 项先红后绿 |
+| B | prompt_patch 六符号 + show/apply 补丁分支删除；retro-playbook 4.5 节改写；`t1_review` 文案；旧测试双职审计后移植为 `test_proposals_apply.py`；3 条负锚探针 | 净 −227 行；负锚先红后绿 |
+| C | wave8 §4.3 时点注记；扫尾 grep（活文档零残留）；全量回归 | **3994 passed / 6 skipped**（跳过均为既有无生产数据项） |
+
+**实施期偏差（与 §5 计划不同，据实记录）**：
+
+1. **提交策略改变**。§5 规划三个独立 commit；实际发现工作区有一个 **182 文件的未提交大波**（08-11 双裁定落地：引擎隔离 `reports_<engine>` + 配置单一事实源），且本波改动**长在该波之上**（如禁令节锚定的 `$CTX/knowledge/` 记号即来自该波），逐 hunk 分离会因上下文不匹配失败。首次提交曾误把该波 7 个文件的片段卷入，经用户裁定已 `git reset --mixed` 撤回；本波全部改动现留在工作区，交由用户随大波一并切分提交。设计稿 commit `d62a500`（纯新增文件）保留。
+2. **探针实测有鉴别力**：`.claude` 零活指令负锚在实施中真的逮到一次自己人——退役注记因折行使「退役」豁免标记落到下一行而被判为活指令，改文案后转绿（证明它不是「永不变红的绿灯」）。
+3. **存量提案 `pr_20260729_001` 经用户裁定采纳**：硬约束 F（`main_dist` 反号/背离旗的票，主力资金不得作为入选/OW 论点）已落 `.claude/agents/l3-rank.md`，契约验门（`test_agent_defs.py` + doc-lint）44 项绿，提案置 `applied`，看板零残留 open prompt_patch。**但 registry 登记卡住**——见 §4.4「实施期发现」的状态机死锁，实验仍停 PREREGISTERED，事后守卫未起转，三条出路待裁定。
 
 ---
 > 设计沿革：P1/P2 诞生于 `e8a789a`（设计 `2026-07-11-recall-gate-pinned-config-design.md` §5.1，plan `2026-07-11-hermes-selfimprove-plan.md`）；治理前置 `2026-07-29-wave8-maiden-run-optimization-design.md` §4.3；本稿由 2026-08-13 用户裁定（B 档）驱动，调研实证同日全仓快照。

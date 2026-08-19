@@ -40,8 +40,10 @@ from dataclasses import asdict, dataclass, field
 from datetime import date as _date, datetime, timezone
 from pathlib import Path
 
+from autoresearch.common import workspace as ws
+
 SCHEMA_VERSION = 1
-DEFAULT_STATE = Path("context/learning/nightly")
+DEFAULT_STATE = ws.context_root() / "learning/nightly"
 LOCK_NAME = "nightly.lock"
 HEARTBEAT_NAME = "nightly.heartbeat.json"
 LEDGER_NAME = "nightly_runs.jsonl"

@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
+
 _CODE_RE = re.compile(r"^\d{6}$")
 
 # GATE2 exempt 记账契约(终审 C-1;原 L3.5 闸 exempt 契约收编,闸删记账留):这些 lane 不占
@@ -191,7 +193,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--skip", default=None,
                     help="gate2 专用:标 SKIPPED_NOT_APPLICABLE 并给出理由(如 sentinel_pinned_no_l3)")
     a = ap.parse_args(argv)
-    base = Path(a.root) if a.root else Path("context/scan")
+    base = Path(a.root) if a.root else ws.scan_root()
     scan_dir = base / a.date
     res = {"gate1": lambda: gate1(scan_dir),
            "gate2": lambda: gate2(scan_dir, budget=a.budget, skip_reason=a.skip),

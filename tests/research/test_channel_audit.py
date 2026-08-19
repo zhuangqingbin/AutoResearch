@@ -11,11 +11,11 @@
 from __future__ import annotations
 
 import inspect
-from pathlib import Path
 
 import pandas as pd
 import pytest
 
+from autoresearch.common import workspace as ws
 from autoresearch.research.channel_audit import (
     _load_day,
     audit,
@@ -26,6 +26,7 @@ from autoresearch.research.channel_audit import (
     main,
     render,
 )
+from pathlib import Path  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 
 # ── 两日合成数据(两路 chan_a/chan_b:000001 两日皆重叠,其余各自独占)──
 #   day1 median(0.05,0.09,0.01)=0.05 → excess: 000001=0.00 000002=+0.04 000003=-0.04
@@ -397,13 +398,13 @@ def test_main_variant_flag_wires_through_to_audit_and_report(tmp_path, monkeypat
     却假装读了 variant"(Review Round 1 原话:文件名分支和值透传分支是两条独立的线)。
     """
     monkeypatch.chdir(tmp_path)
-    _write_main_and_shadow_day(Path("context/scan"), "2026-06-20",
+    _write_main_and_shadow_day(ws.scan_root(), "2026-06-20",
                                _MAIN_ONLY_CHANNELS, _DAY2_CHANNELS, _DAY2_ATTR, "plus_event")
 
     rc = main(["--variant", "plus_event"])
     assert rc == 0
 
-    outp = Path("reports/channel_audit_plus_event_2026-06-20.md")
+    outp = ws.reports_root() / "channel_audit_plus_event_2026-06-20.md"
     assert outp.exists(), "报告文件名须含 --variant 后缀"
     body = outp.read_text(encoding="utf-8")
     assert "chan_a" in body and "+7.00%" in body, \
@@ -422,7 +423,7 @@ def test_main_no_variant_report_filename_and_body_unchanged(tmp_path, monkeypatc
     (该注记由 `if args.variant:` 严格守卫)。
     """
     monkeypatch.chdir(tmp_path)
-    d = Path("context/scan/2026-06-20")
+    d = ws.scan_root() / "2026-06-20"
     d.mkdir(parents=True)
     _DAY1_CHANNELS.to_csv(d / "L1_channels.csv", index=False)
     (d / "retro").mkdir()
@@ -430,7 +431,7 @@ def test_main_no_variant_report_filename_and_body_unchanged(tmp_path, monkeypatc
 
     rc = main([])
     assert rc == 0
-    outp = Path("reports/channel_audit_2026-06-20.md")
+    outp = ws.reports_root() / "channel_audit_2026-06-20.md"
     assert outp.exists()
     body = outp.read_text(encoding="utf-8")
     assert "不逐格可比" not in body and "非数据打架" not in body
@@ -442,7 +443,7 @@ def test_main_variant_empty_window_stderr_names_shadow_file(tmp_path, monkeypatc
     (首次取证必然命中这条:历史 scan 日一个影子长表都没有,Review Round 1 原话)。
     """
     monkeypatch.chdir(tmp_path)
-    Path("context/scan").mkdir(parents=True)   # 空目录 → _scan_dates 返回 []
+    ws.scan_root().mkdir(parents=True)   # 空目录 → _scan_dates 返回 []
     rc = main(["--variant", "plus_event"])
     assert rc == 1
     err = capsys.readouterr().err

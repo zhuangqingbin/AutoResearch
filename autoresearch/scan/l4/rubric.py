@@ -26,7 +26,6 @@ def rubric_rating(dims: dict, gates: dict) -> tuple[str, str]:
     gates: {主力真在|业绩真兑现|估值不透支: bool}(缺按 False 保守)。
     返回 (建议评级, 约束因)。
     """
-    from autoresearch.agents.utils.rating import RATINGS_5_TIER  # Buy>OW>Hold>UW>Sell
     nd = {_norm_dim(k): v for k, v in (dims or {}).items()}
     net = sum(_DIM_SCORE.get(str(nd.get(d, "中")).strip(), 0) for d in _RUBRIC_DIMS)
     if net >= 4:

@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
+
 _SLIM_ANCHORS = (
     "## Verified market snapshot",
     "### Latest verified OHLCV row",
@@ -331,9 +333,9 @@ def harvest_slim_batch(date: str, root: Path | None = None, min_bytes: int = 4_0
     workers=4 默认并发(spec §P3);subprocess 取数为 I/O 密集,限频靠 per-ticker retries
     串行重试承担。workers<=1 退化原串行 for 循环(兼容旧行为/便于对串行时序敏感的测试)。
     """
-    base = Path(root) if root else Path("context/scan")
+    base = Path(root) if root else ws.scan_root()
     scan_dir = base / date
-    ctx = ctx_root or Path("context")
+    ctx = ctx_root or ws.context_root()
     tickers = [t for t in (scan_dir / "_harvest_list.txt").read_text(encoding="utf-8").split() if t]
     hv = harvest_fn or (lambda t, dt: _default_harvest_slim(t, dt, ctx))
 

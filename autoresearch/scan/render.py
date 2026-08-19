@@ -17,11 +17,13 @@ import argparse
 import json
 from pathlib import Path
 
+from autoresearch.common import workspace as ws
+
 VIEWS = ("menu_health", "gate_hist", "timing", "funnel")
 
 
 def _scan_dir(date: str, root: Path | str | None = None) -> Path:
-    return Path(root or "context/scan") / date
+    return Path(root or ws.scan_root()) / date
 
 
 def _fmt_wall(v) -> str:
@@ -40,8 +42,8 @@ def _view_menu_health(det: Path) -> str:
 
 
 def _view_gate_hist(det: Path) -> str:
-    from autoresearch.scan.report_sections import gate_histogram
     from autoresearch.scan.health import final_ratings
+    from autoresearch.scan.report_sections import gate_histogram
     ratings = final_ratings(det)
     if not ratings:
         return "(门直方图:details/ 无决策卡 —— L4 未跑或全失败)"

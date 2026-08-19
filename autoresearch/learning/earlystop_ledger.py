@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import MAIN_RULER
 
 _COLS = ["date", "code", "phase", "reason", "fwd_2_oc", "ruler"]
@@ -27,7 +28,7 @@ _MIN_N = 10          # 停因桶 n<10 一律自标"样本不足",禁止据此改
 
 def roll(scan_root: Path | str | None = None) -> pd.DataFrame:
     """聚合 context/scan/*/_early_stop.json × retro/attribution.csv → 逐票早停行。"""
-    scan_root = Path(scan_root or "context/scan")
+    scan_root = Path(scan_root or ws.scan_root())
     rows: list[dict] = []
     for p in sorted(scan_root.glob("*/_early_stop.json")):
         try:
@@ -96,7 +97,7 @@ def render(ledger: pd.DataFrame) -> list[str]:
 
 def main() -> int:
     df = roll()
-    p = Path("reports/learning/earlystop_ledger.md")
+    p = ws.reports_root() / "learning/earlystop_ledger.md"
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("\n".join(render(df)) + "\n", encoding="utf-8")
     print(f"[earlystop_ledger] {len(df)} 行 → {p}")

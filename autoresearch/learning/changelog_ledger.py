@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import MAIN_RULER
 
 _COLS = ["id", "retro_date", "trial", "n_before", "n_after", "ic_before", "ic_after", "delta", "thin"]
@@ -60,7 +61,7 @@ def _day_ic(attr: pd.DataFrame) -> float | None:
 
 def day_ics(scan_root: Path | str | None = None) -> dict[str, float]:
     """{scan日: 日度IC},来源 retro/attribution.csv(已归因日才有)。"""
-    scan_root = Path(scan_root or "context/scan")
+    scan_root = Path(scan_root or ws.scan_root())
     out: dict[str, float] = {}
     if not scan_root.exists():
         return out
@@ -76,7 +77,7 @@ def day_ics(scan_root: Path | str | None = None) -> dict[str, float]:
 
 def roll(knowledge_dir: Path | str | None = None, scan_root: Path | str | None = None,
          k: int = 5) -> pd.DataFrame:
-    recs = [r for r in _read_jsonl(Path(knowledge_dir or "context/knowledge") / "changelog.jsonl")
+    recs = [r for r in _read_jsonl(Path(knowledge_dir or ws.knowledge_root()) / "changelog.jsonl")
             if r.get("kind") == "recalibrate" and r.get("retro_date")]
     ics = day_ics(scan_root)
     dates = sorted(ics)
@@ -109,7 +110,7 @@ def heartbeat(knowledge_dir: Path | str | None = None, k: int = 3) -> str:
     (权重校准腿自己记录的列,另一条独立信息链)是两回事,07-16 家训要的"会变的量"必须在
     这个函数里也带上,才是真正每天被人看到的那行。
     """
-    recs = [r for r in _read_jsonl(Path(knowledge_dir or "context/knowledge") / "changelog.jsonl")
+    recs = [r for r in _read_jsonl(Path(knowledge_dir or ws.knowledge_root()) / "changelog.jsonl")
             if r.get("kind") == "recalibrate" and r.get("after_sha")]
     if not recs:
         return "权重自动腿:无 recalibrate 记录(还没跑过)"
@@ -161,7 +162,7 @@ def render(df: pd.DataFrame) -> list[str]:
 def main() -> int:
     df = roll()
     hb = heartbeat()
-    out = Path("reports/learning/changelog_ledger.md")
+    out = ws.reports_root() / "learning/changelog_ledger.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("\n".join(render(df)) + f"\n\n## 心跳\n\n{hb}\n", encoding="utf-8")
     print(f"[changelog_ledger] {len(df)} 条 → {out}")

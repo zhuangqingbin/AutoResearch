@@ -115,6 +115,7 @@ import sys
 from bisect import bisect_left, bisect_right
 from pathlib import Path
 
+from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import MAIN_RULER, REL_MARKET, REL_SECTOR, entry_flag_for
 from autoresearch.scan.passport import build_passport
 
@@ -688,7 +689,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("scan", help="分析日(YYYY-MM-DD)或 scan 目录")
     args = parser.parse_args(argv)
     explicit = Path(args.scan)
-    scan = explicit if explicit.exists() else Path("context/scan") / args.scan
+    scan = explicit if explicit.exists() else ws.scan_root() / args.scan
     target = write_decision(scan)
     doc = json.loads(target.read_text(encoding="utf-8"))
     print(json.dumps({"ok": True, "path": str(target), "mode": doc["mode"],

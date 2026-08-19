@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
+
 _NUM_RE = re.compile(r"-?\d+(?:\.\d+)?")
 _DATE_TOKEN_RE = re.compile(r"\d{4}-\d{1,2}-\d{1,2}|\d{1,2}-\d{1,2}")
 _YEAR_TOKEN_RE = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
@@ -187,7 +189,7 @@ def lint_judged(date: str, root: Path | None = None) -> dict:
 
     CLI(GATE 惯例):`python -m autoresearch.scan.agents.l3_select lint <date>` 打一行 JSON。
     """
-    base = Path(root) if root else Path("context/scan")
+    base = Path(root) if root else ws.scan_root()
     scan_dir = base / date
     judged_path = scan_dir / "_l3_judged.json"
     if not judged_path.exists():
@@ -227,7 +229,7 @@ def _json_safe_row(row: object) -> dict:
 
 def build_repair_pack(date: str, root: Path | None = None) -> dict:
     """只把 lint 失败行和本票合法证据写入局部修复包。"""
-    base = Path(root) if root else Path("context/scan")
+    base = Path(root) if root else ws.scan_root()
     scan_dir = base / date
     judged_path = scan_dir / "_l3_judged.json"
     picks = json.loads(judged_path.read_text(encoding="utf-8"))
@@ -293,7 +295,7 @@ def build_repair_pack(date: str, root: Path | None = None) -> dict:
 
 def apply_repair_patch(date: str, root: Path | None = None) -> dict:
     """验证局部 patch 后原子 merge；未请求行对象原样保留。"""
-    base = Path(root) if root else Path("context/scan")
+    base = Path(root) if root else ws.scan_root()
     scan_dir = base / date
     pack = json.loads((scan_dir / "_l3_repair_pack.json").read_text(encoding="utf-8"))
     patch = json.loads((scan_dir / "_l3_repair_patch.json").read_text(encoding="utf-8"))

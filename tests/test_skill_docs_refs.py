@@ -55,6 +55,81 @@ def test_no_dangling_local_doc_refs():
     assert not dangling, "悬空的本地文档引用:\n" + "\n".join(dangling)
 
 
+# ───────── 复盘不动刀禁令(2026-08-13 用户裁定 B 档;spec §3/§4.3/§6) ─────────
+# 靶子:复盘/反馈流程曾有两条通往 .claude/** 的写路径——lesson「毕业」直写 playbook 正文
+# (全仓唯一无人批门的直写指令)与 prompt_patch 施工处方。下线后靠这组正/负锚探针防复辟:
+# 指令被删、被改回直写、或函数被悄悄加回来,任一发生这里就红。
+
+_NO_SELFMODIFY_ANCHOR = (
+    "复盘/反馈流程一律不得编辑 .claude/ 与 CLAUDE.md/AGENTS.md;"
+    "skill/prompt/agent/workflow 文本只在用户显式发起的开发会话中修改。"
+)
+
+# 禁令约束的四个闭环文档(逐字带锚句);scan-market 只需引用,单列见下一个测试。
+_LOOP_DOCS = (
+    ".claude/skills/scan-retro/retro-playbook.md",
+    ".claude/skills/scan-retro/SKILL.md",
+    ".claude/skills/feedback/feedback-playbook.md",
+    ".claude/skills/feedback/SKILL.md",
+)
+
+
+def test_no_selfmodify_anchor_present_in_loop_docs():
+    """禁令锚句在四个闭环文档逐字存在——有人删掉禁令段,这里就红。"""
+    missing = [d for d in _LOOP_DOCS
+               if _NO_SELFMODIFY_ANCHOR not in (ROOT / d).read_text(encoding="utf-8")]
+    assert not missing, ("复盘不动刀禁令锚句缺失(spec 2026-08-13 §4.3):\n"
+                         + "\n".join(missing) + f"\n锚句原文:{_NO_SELFMODIFY_ANCHOR}")
+
+
+def test_scan_market_prelude_references_the_ban():
+    """scan-market 的「开跑前补跑复盘」段须引用禁令——补复盘会话同受约束,别从这个口子绕。"""
+    txt = (ROOT / ".claude/skills/scan-market/SKILL.md").read_text(encoding="utf-8")
+    assert "复盘不动刀" in txt, "scan-market SKILL.md 补复盘段缺禁令引用(spec 2026-08-13 §4.3)"
+
+
+def test_graduation_section_is_nomination_not_direct_write():
+    """毕业出口是提名制:有人把它改回「直接写进 playbook」,这里就红。"""
+    txt = (ROOT / ".claude/skills/feedback/feedback-playbook.md").read_text(encoding="utf-8")
+    assert "毕业提名" in txt and "add_graduation_nomination" in txt, \
+        "feedback-playbook 毕业节应为提名制(spec 2026-08-13 §4.1)"
+
+
+def test_no_prompt_patch_instructions_in_claude_tree():
+    """prompt_patch 管线已退役(spec §4.2):`.claude/` 全树不得再教这招。
+
+    沿革/退役/历史标记行豁免(照本文件 `_LEGACY_OK` 同款哲学)——历史注可以提它,
+    活指令不行。
+    """
+    claude = ROOT / ".claude"
+    hits: list[str] = []
+    for p in sorted(claude.rglob("*")):
+        if p.suffix not in (".md", ".js", ".jsonc") or not p.is_file():
+            continue
+        for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
+            if "prompt_patch" in line and not any(t in line for t in ("沿革", "退役", "历史")):
+                hits.append(f"{p.relative_to(ROOT)}:{i}: {line.strip()[:90]}")
+    assert not hits, "prompt_patch 已退役,`.claude/` 不应再有活指令:\n" + "\n".join(hits)
+
+
+def test_feedback_store_has_no_prompt_patch_api():
+    """代码侧同步退役:函数还在就是诱饵——未来 session 会绕过文档直接调它。
+
+    (代码探针放在 doc-lint 文件里是有意的:五条『复盘不动刀』锚句集中一处,
+    读者一眼看全禁令边界,不必在两个文件间跳。)
+    """
+    import autoresearch.learning.feedback_store as fs
+    for sym in ("add_prompt_patch", "_CONTRACT_ANCHORS", "_MAX_OPEN_PROMPT_PATCH",
+                "_prompt_patch_payload", "_is_contract_file", "_CONTRACT_FILE_BASENAMES"):
+        assert not hasattr(fs, sym), f"prompt_patch 管线残留符号 {sym}(spec 2026-08-13 §4.2 已退役)"
+
+
+def test_graduation_section_has_no_direct_write_instruction():
+    """毕业节不得复辟成直写:出现「固化写进」式指令即红。"""
+    txt = (ROOT / ".claude/skills/feedback/feedback-playbook.md").read_text(encoding="utf-8")
+    assert "固化写进" not in txt, "毕业节出现直写 playbook 的指令(spec 2026-08-13 §4.1 已改提名制)"
+
+
 def test_skill_doc_modules_importable():
     """skill 文档教用户跑的 `python -m autoresearch.*` 模块必须真实存在(防命令漂移)。"""
     pat = re.compile(r"python -m (autoresearch(?:\.\w+)+)")

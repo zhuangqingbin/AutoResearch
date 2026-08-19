@@ -36,10 +36,11 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import MAIN_RULER
 
-_SCAN_DEFAULT = Path("context/scan")
-_DB_DEFAULT = Path("context/knowledge/precedents.db")
+_SCAN_DEFAULT = ws.scan_root()
+_DB_DEFAULT = ws.knowledge_root() / "precedents.db"
 
 # "# 决策卡 — 002049 紫光国微 @ 2026-07-08" / "# L4 决策卡 — 600601 方正科技 @ 2026-06-25"
 # (两种历史卡片 schema 都支持;heading 里的日期不采信——date 一律用目录名,见 spec)。

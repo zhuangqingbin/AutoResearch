@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from autoresearch.common import workspace as ws
 from autoresearch.scan import user_config as uc
 
 
@@ -180,7 +181,7 @@ def test_resolved_config_overrides_fallback():
 
 def test_materialize_writes_resolved_artifact(tmp_path):
     out = uc.materialize_agent_config("2026-08-09", _full(), root=tmp_path)
-    assert out == tmp_path / "context" / "scan" / "2026-08-09" / uc.RESOLVED_FILENAME
+    assert out == tmp_path / ws.scan_root() / "2026-08-09" / uc.RESOLVED_FILENAME
     payload = json.loads(out.read_text(encoding="utf-8"))
     assert payload["schema_version"] == uc.RESOLVED_SCHEMA_VERSION
     assert payload["date"] == "2026-08-09"

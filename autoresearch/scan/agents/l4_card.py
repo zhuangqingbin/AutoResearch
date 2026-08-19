@@ -10,37 +10,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from autoresearch.scan.l4.context import (
-    _BASE_RATE_THIN_N,
-    _base_rate_mark,
-    _cat_mark,
-    _dist_mark,
-    _dossier_summary_mark,
-    _dossier_summary_text,
-    _fund_mark,
-    _inst_mark,
-    _market_ctx,
-    _misread_mark,
-    _pledge_mark,
-    _precedent_mark,
-    _seat_mark,
-    _target_calib_mark,
-    compose_funnel_brief,
-    write_base_rates,
-)
+from autoresearch.common import workspace as ws
 from autoresearch.scan.l4.dispatch import dispatch_plan
-from autoresearch.scan.l4.parsers import (
-    parse_ratings_from_details,
-    pick_opportunity_candidates,
-)
 from autoresearch.scan.l4.producers import (
-    _SLIM_ANCHORS,
-    _SLIM_CLOSE_RE,
-    _default_harvest_slim,
-    _slim_defect,
-    _tushare_fund_hold,
-    _tushare_pledge,
-    _tushare_seats_by_date,
     fetch_consensus,
     fetch_fund_hold,
     fetch_pledge,
@@ -51,14 +23,37 @@ from autoresearch.scan.l4.prompts import (
     write_dispatch_pack,
     write_shared_instructions,
 )
-from autoresearch.scan.l4.rubric import (
-    _DIM_SCORE,
-    _OW_GATES,
-    _RUBRIC_DIMS,
-    _norm_dim,
-    force_full_card,
-    rubric_rating,
-)
+from autoresearch.scan.l4.context import _BASE_RATE_THIN_N  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l4.context import _base_rate_mark  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l4.context import _cat_mark  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l4.context import _dist_mark  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l4.context import _dossier_summary_mark  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l4.context import _dossier_summary_text  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l4.context import _fund_mark  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l4.context import _inst_mark  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l4.context import _market_ctx  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l4.context import _misread_mark  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l4.context import _pledge_mark  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l4.context import _precedent_mark  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l4.context import _seat_mark  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l4.context import _target_calib_mark  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l4.context import compose_funnel_brief  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l4.context import write_base_rates  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l4.parsers import parse_ratings_from_details  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l4.parsers import pick_opportunity_candidates  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l4.producers import _SLIM_ANCHORS  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l4.producers import _SLIM_CLOSE_RE  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l4.producers import _default_harvest_slim  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l4.producers import _slim_defect  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l4.producers import _tushare_fund_hold  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l4.producers import _tushare_pledge  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l4.producers import _tushare_seats_by_date  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l4.rubric import _DIM_SCORE  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l4.rubric import _OW_GATES  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l4.rubric import _RUBRIC_DIMS  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l4.rubric import _norm_dim  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l4.rubric import force_full_card  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l4.rubric import rubric_rating  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -81,7 +76,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     if args.cmd == "shared":
         import json
-        base = Path(args.root) if args.root else Path("context/scan")
+        base = Path(args.root) if args.root else ws.scan_root()
         n = write_shared_instructions(base / args.date)
         print(json.dumps({"ok": True, "bytes": n}, ensure_ascii=False))
         return 0
@@ -100,20 +95,20 @@ def main(argv: list[str] | None = None) -> int:
                           "failures": res["failures"]}, ensure_ascii=False))
         return 0 if res["ok"] else 1
     if args.cmd == "pledge":
-        base = Path(args.root) if args.root else Path("context/scan")
+        base = Path(args.root) if args.root else ws.scan_root()
         df = fetch_pledge(base / args.date)
         n_flag = int((pd.to_numeric(df.get("pledge_ratio"), errors="coerce") > 20).sum()) if len(df) else 0
         print(f"[l4_card pledge] {len(df)} 票落 pledge.csv(>20% 偏高/红旗 {n_flag} 票);"
               f"派发前跑,简报自动注 ⚠质押旗")
         return 0
     if args.cmd == "seats":
-        base = Path(args.root) if args.root else Path("context/scan")
+        base = Path(args.root) if args.root else ws.scan_root()
         df = fetch_seats(base / args.date)
         n_inst = int((df["inst_net_wan"] > 0).sum()) if len(df) else 0
         print(f"[l4_card seats] {len(df)} 票落 seats.csv(机构净买>0 {n_inst} 票=Phase A 反指候选)")
         return 0
     if args.cmd == "consensus":
-        base = Path(args.root) if args.root else Path("context/scan")
+        base = Path(args.root) if args.root else ws.scan_root()
         sd = base / args.date
         fp = sd / "finalists.csv"
         codes = pd.read_csv(fp, dtype={"code": str})["code"].tolist() if fp.exists() else None
@@ -126,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[l4_card consensus] {len(df)} 票落 consensus.csv(卖方一致预期修正,advisory){extra}")
         return 0
     res = write_dispatch_pack(
-        (Path(args.root) if args.root else Path("context/scan")) / args.date)
+        (Path(args.root) if args.root else ws.scan_root()) / args.date)
     print(f"[l4_card prompts] {res['n_prompts']} 份 prompt + _harvest_list({len(res['tickers'])} 票,"
           f"已归一 yfinance 后缀)")
     return 0

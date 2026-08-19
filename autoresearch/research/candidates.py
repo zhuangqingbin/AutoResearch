@@ -34,9 +34,11 @@ import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from autoresearch.common import workspace as ws
+
 SCHEMA_VERSION = 1
-DEFAULT_OUT = Path("reports/research/next_wave_candidates.md")
-DEFAULT_JSON = Path("reports/research/next_wave_candidates.json")
+DEFAULT_OUT = ws.reports_root() / "research/next_wave_candidates.md"
+DEFAULT_JSON = ws.reports_root() / "research/next_wave_candidates.json"
 
 # ── §0.4-1 继承矩阵:三个权威 × 四种关系 ──────────────────────────────
 AUTHORITIES = ("Wave9", "Wave10", "STAGES")

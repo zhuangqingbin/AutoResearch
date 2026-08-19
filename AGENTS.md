@@ -13,7 +13,7 @@
 | scan-retro | 复盘某日扫描(/retro;漏斗归因+权重再校准) | `.claude/skills/scan-retro/SKILL.md` |
 | feedback | 用户对报告的纠错/表扬/"记住X" → 闭环知识库 | `.claude/skills/feedback/SKILL.md` |
 
-这六个技能已软链进 `~/.codex/skills/`(codex 原生 skill 发现同构于 `<name>/SKILL.md`)。换机重建:
+**全部项目技能一律软链**进 `~/.codex/skills/`(codex 原生 skill 发现同构于 `<name>/SKILL.md`;软链 = 两边改任一侧即同步,勿复制)。换机重建 / 新增技能后把名字补进循环再跑:
 
 ```bash
 for s in feedback macro-research scan-market scan-retro sector-research stock-research; do
@@ -23,10 +23,11 @@ done
 
 ## 非 Claude harness 的适配规则
 
-1. **确定性层原样可用**:所有 `uv run --no-sync python -m autoresearch.<...>` 命令(取数/漏斗/组装/校验门/预热)与 harness 无关,照 SKILL.md 跑即可。产物落 `reports/`、`context/`(已 gitignore)。
-2. **LLM 编排层自行代偿**:SKILL.md 里的 `Workflow`/`Agent(subagent_type=...)` 派发是 Claude Code 专有。codex 等价做法 = 按同一顺序**自己在会话内**完成各角色的判断(策略师 market_view → 行业 brief → L3 精排 `_l3_judged.json` → 每票 L4 决策卡 → assemble),每步的输入文件、输出契约、校验门(`python -m autoresearch.scan.gates gate1/2/4`)与 SKILL.md 完全一致——**门必须跑,产物契约不许改**。
-3. **不变量(与 harness 无关,一律遵守)**:持仓尺度=超短 1~2 日(fwd_2_oc 主尺,勿推 swing);0 买日 ≠ 门过严,勿松门凑单;喂 L3/L4 的只能是描述性地形(market_pack 里的 `sector_healthy_top3` 是 L5 专用,不得写进地形/卡片);评级只由本股 rubric 三门定。
-4. **数据源**:A 股走 tushare(东财 push2 被封),需 `TUSHARE_TOKEN`;湖(`context/lake`)命中即零网络,数据契约层(A 级空帧抛异常拒入湖)不得绕过。
+1. **引擎隔离(2026-08-11 用户裁定,最高优先)**:会话第一件事 `export AUTORESEARCH_ENGINE=codex`(必做——沙箱外的自动检测不可靠,忘了会写进 Claude 的目录)。产物根按引擎分:你只写 `context_codex/` + `reports_codex/`,Claude 写 `context_claude/` + `reports_claude/`,**唯一共享的是数据湖 `lake/`**(确定性行情数据,引擎无关)。skill 文档里的 `$CTX`/`$RPT` = `context_${AUTORESEARCH_ENGINE:-claude}` / `reports_${AUTORESEARCH_ENGINE:-claude}`。两边闭环状态(账本/权重/档案/知识库)互不相通——codex 侧首跑 `weights.json`/档案缺失 = 从零积累,属预期,勿去 Claude 目录借。**禁止读写 `context_claude/`、`reports_claude/`。**(保送票单 `pinned.jsonc` 在 skills 树里,随软链共享,是输入不是产物。)
+2. **确定性层原样可用**:所有 `uv run --no-sync python -m autoresearch.<...>` 命令(取数/漏斗/组装/校验门/预热)与 harness 无关,照 SKILL.md 跑即可;python 侧路径按 `AUTORESEARCH_ENGINE` 自动落对根。产物落 `$RPT/`、`$CTX/`(已 gitignore)。
+3. **LLM 编排层自行代偿**:SKILL.md 里的 `Workflow`/`Agent(subagent_type=...)` 派发是 Claude Code 专有。codex 等价做法 = 按同一顺序**自己在会话内**完成各角色的判断(策略师 market_view → 行业 brief → L3 精排 `_l3_judged.json` → 每票 L4 决策卡 → assemble),每步的输入文件、输出契约、校验门(`python -m autoresearch.scan.gates gate1/2/4`)与 SKILL.md 完全一致——**门必须跑,产物契约不许改**。
+4. **不变量(与 harness 无关,一律遵守)**:持仓尺度=超短 1~2 日(隔夜主尺 `gap_c1_o2`,T+1收买→T+2开卖,勿推 swing);0 买日 ≠ 门过严,勿松门凑单;喂 L3/L4 的只能是描述性地形(market_pack 里的 `sector_healthy_top3` 是 L5 专用,不得写进地形/卡片);评级只由本股 rubric 三门定。
+5. **数据源**:A 股走 tushare(东财 push2 被封),需 `TUSHARE_TOKEN`;湖(`lake/`)命中即零网络,数据契约层(A 级空帧抛异常拒入湖)不得绕过。
 
 ## 常用入口速查
 

@@ -4,6 +4,7 @@ spec: docs/specs/2026-07-03-scan-run-reliability-design.md §2
 """
 from __future__ import annotations
 
+from autoresearch.common import workspace as ws
 from autoresearch.scan.prelude import _run_steps
 
 
@@ -149,7 +150,7 @@ def test_run_prelude_prints_retro_input_nag(tmp_path, monkeypatch, capsys):
     """集成:run_prelude 汇总屏真的把 nag 行打印出来(仿 proposals nag 挂在汇总屏的方式)。"""
     from autoresearch.scan.prelude import run_prelude
     monkeypatch.chdir(tmp_path)
-    stalled = tmp_path / "context" / "scan" / "2026-07-07" / "retro"
+    stalled = tmp_path / ws.scan_root() / "2026-07-07" / "retro"
     stalled.mkdir(parents=True)
     (stalled / "retro_input.md").write_text("x", encoding="utf-8")
     run_prelude("2026-07-09", skip=_SKIP_ALL_BUT_LEDGERS + ("ledgers",))
@@ -170,7 +171,7 @@ def test_run_prelude_writes_succeeded_stage_result(tmp_path, monkeypatch):
         "news_catalog",              # Wave12-T35 新步骤;本测试要的是"零步骤"的形状
     ))
     stage = load_stage_result(
-        tmp_path / "context" / "scan" / "2026-07-28" / "stage_results" / "prelude.json"
+        tmp_path / ws.scan_root() / "2026-07-28" / "stage_results" / "prelude.json"
     )
     assert results == []
     assert stage.status == "SUCCEEDED"
@@ -189,7 +190,7 @@ def test_run_prelude_writes_degraded_stage_result(tmp_path, monkeypatch):
     ])
     prelude.run_prelude("2026-07-28", skip=())
     stage = load_stage_result(
-        tmp_path / "context" / "scan" / "2026-07-28" / "stage_results" / "prelude.json"
+        tmp_path / ws.scan_root() / "2026-07-28" / "stage_results" / "prelude.json"
     )
     assert stage.status == "DEGRADED"
     assert stage.metrics == {"n_failed": 1, "n_steps": 2}

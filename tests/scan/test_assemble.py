@@ -16,14 +16,15 @@ from __future__ import annotations
 import csv
 import json
 from datetime import datetime, timezone
-from pathlib import Path
 
 import pandas as pd
 import pytest
 
+from autoresearch.common import workspace as ws
 from autoresearch.scan import assemble
 from autoresearch.scan.artifacts import ARTIFACT_INDEX_SCHEMA_VERSION
 from autoresearch.scan.run_contract import RunContract, write_run_contract
+from pathlib import Path  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 
 _DATA_DATE = "2026-06-20"
 _RUN_DATE = "2026-06-21"
@@ -33,7 +34,7 @@ _RUN_FOLDER = "20260621_0930"   # 目录名 = 运行日_HHMM(非数据日)
 
 def _build_scan_dir(root):
     """造与原 assemble_scan._selftest() 等价的 staging scan dir。返回 scan_dir Path。"""
-    scan = root / "context/scan" / _DATA_DATE
+    scan = root / ws.scan_root() / _DATA_DATE
     (scan / "details").mkdir(parents=True)
     (scan / "meta.json").write_text(json.dumps({
         "universe": 5483, "recall_n": 1000, "l2_n": 200, "l2_engine": "gbdt", "source": "tushare",
@@ -119,9 +120,9 @@ def published(tmp_path_factory):
     """跑 assemble.run 一次,返回 (out_base, summary_md, trace_dir)。run_date≠数据日,验证解耦。"""
     root = tmp_path_factory.mktemp("scan_l5")
     scan = _build_scan_dir(root)
-    summary_path = assemble.run(_DATA_DATE, scan_dir=scan, out_root=root / "reports/scan",
+    summary_path = assemble.run(_DATA_DATE, scan_dir=scan, out_root=root / ws.reports_root() / "scan",
                                 hhmm=_HHMM, run_date=_RUN_DATE)
-    out_base = root / "reports/scan" / _RUN_FOLDER
+    out_base = root / ws.reports_root() / "scan" / _RUN_FOLDER
     md = summary_path.read_text(encoding="utf-8")
     return {
         "summary_path": summary_path,
@@ -505,10 +506,9 @@ def test_buylist_header_drops_confidence(published):
 
 def test_run_does_not_touch_real_shadow_csv(tmp_path):
     """assemble.run(tmp_scan_dir) 不应创建或修改真实 context/learning/shadow_buys.csv。"""
-    from pathlib import Path
 
     # 记录真实 CSV 的初始状态
-    real_csv = Path("context/learning/shadow_buys.csv")
+    real_csv = ws.learning_root() / "shadow_buys.csv"
     if real_csv.exists():
         original_mtime = real_csv.stat().st_mtime
         original_lines = len(real_csv.read_text(encoding="utf-8").splitlines())
@@ -519,7 +519,7 @@ def test_run_does_not_touch_real_shadow_csv(tmp_path):
     # 在 tmp_path 运行 assemble
     root = tmp_path / "scan_l5"
     scan = _build_scan_dir(root)
-    assemble.run(_DATA_DATE, scan_dir=scan, out_root=root / "reports/scan",
+    assemble.run(_DATA_DATE, scan_dir=scan, out_root=root / ws.reports_root() / "scan",
                  hhmm=_HHMM, run_date=_RUN_DATE)
 
     # 验证真实 CSV 未被修改
@@ -553,7 +553,7 @@ def test_decision_text_zfills_short_ticker(tmp_path):
 def test_final_ratings_json_written_after_publish(tmp_path):
     root = tmp_path / "scan_l5_fr"
     scan = _build_scan_dir(root)
-    assemble.run(_DATA_DATE, scan_dir=scan, out_root=root / "reports/scan",
+    assemble.run(_DATA_DATE, scan_dir=scan, out_root=root / ws.reports_root() / "scan",
                 hhmm=_HHMM, run_date=_RUN_DATE)
     fp = scan / "_final_ratings.json"
     assert fp.exists()
@@ -568,7 +568,7 @@ def test_final_ratings_json_reflects_verify_downgrade_not_card_face(tmp_path):
     scan = _build_scan_dir(root)
     card_text = (scan / "details" / "300476.md").read_text(encoding="utf-8")
     assert "**Overweight**" in card_text, "夹具前提:甲卡面应仍是 Overweight(折回前)"
-    assemble.run(_DATA_DATE, scan_dir=scan, out_root=root / "reports/scan",
+    assemble.run(_DATA_DATE, scan_dir=scan, out_root=root / ws.reports_root() / "scan",
                 hhmm=_HHMM, run_date=_RUN_DATE)
     data = json.loads((scan / "_final_ratings.json").read_text(encoding="utf-8"))
     assert data["300476"] == "Hold"
@@ -578,7 +578,7 @@ def test_final_ratings_json_maintained_ow_keeps_overweight(tmp_path):
     """301117(丁)verify.csv 判『维持』→ 终评级仍是 Overweight,不误折。"""
     root = tmp_path / "scan_l5_fr3"
     scan = _build_scan_dir(root)
-    assemble.run(_DATA_DATE, scan_dir=scan, out_root=root / "reports/scan",
+    assemble.run(_DATA_DATE, scan_dir=scan, out_root=root / ws.reports_root() / "scan",
                 hhmm=_HHMM, run_date=_RUN_DATE)
     data = json.loads((scan / "_final_ratings.json").read_text(encoding="utf-8"))
     assert data["301117"] == "Overweight"
@@ -592,7 +592,7 @@ def test_process_scores_csv_present_in_fresh_publish(tmp_path):
     finalists.csv 在场即写)。"""
     root = tmp_path / "scan_l5_ps"
     scan = _build_scan_dir(root)
-    assemble.run(_DATA_DATE, scan_dir=scan, out_root=root / "reports/scan",
+    assemble.run(_DATA_DATE, scan_dir=scan, out_root=root / ws.reports_root() / "scan",
                 hhmm=_HHMM, run_date=_RUN_DATE)
     p = scan / "process_scores.csv"
     assert p.exists()
@@ -607,12 +607,12 @@ def test_process_scores_csv_present_in_fresh_publish(tmp_path):
 def test_run_does_not_touch_real_precedents_db(tmp_path):
     """assemble.run(tmp_scan_dir) 不应创建或修改真实 context/knowledge/precedents.db
     (is_real=False 时不触发 precedents.build_index;镜像 test_run_does_not_touch_real_shadow_csv)。"""
-    real_db = Path("context/knowledge/precedents.db")
+    real_db = ws.knowledge_root() / "precedents.db"
     original_mtime = real_db.stat().st_mtime if real_db.exists() else None
 
     root = tmp_path / "scan_l5_prec"
     scan = _build_scan_dir(root)
-    assemble.run(_DATA_DATE, scan_dir=scan, out_root=root / "reports/scan",
+    assemble.run(_DATA_DATE, scan_dir=scan, out_root=root / ws.reports_root() / "scan",
                 hhmm=_HHMM, run_date=_RUN_DATE)
 
     if original_mtime is not None:
@@ -625,7 +625,7 @@ def test_is_real_publish_calls_precedents_build_index(tmp_path, monkeypatch):
     """is_real 分支(scan_dir 解析为 context/scan/<date> 本尊)应调用一次
     `precedents.build_index`(P0-1(c))。
 
-    `is_real` 判据硬编码相对路径比较(`Path("context/scan")/analysis_date`),无参数可覆盖,
+    `is_real` 判据硬编码相对路径比较(`ws.scan_root()/analysis_date`),无参数可覆盖,
     只能靠 chdir 到全新 tmp_path 触发正分支(全沙盒,不碰真实仓库;对照上面的负分支测试)。
     build_index 本体替换为计数桩,避免真建 sqlite 索引、不受环境 FTS5 差异影响。
     """
@@ -635,7 +635,7 @@ def test_is_real_publish_calls_precedents_build_index(tmp_path, monkeypatch):
     monkeypatch.setattr("autoresearch.learning.precedents.build_index",
                         lambda *a, **k: calls.append((a, k)) or {"dates_indexed": ["x"]})
 
-    assemble.run(_DATA_DATE, scan_dir=scan, out_root=tmp_path / "reports/scan",
+    assemble.run(_DATA_DATE, scan_dir=scan, out_root=tmp_path / ws.reports_root() / "scan",
                 hhmm=_HHMM, run_date=_RUN_DATE)
 
     assert calls, "is_real 发布应调用 precedents.build_index 一次"
@@ -666,7 +666,7 @@ def test_is_real_publish_prints_dossier_sections_skipped(tmp_path, monkeypatch, 
         } if code == "300476" else {"code": code, "skipped": "no_dossier"},
     )
 
-    assemble.run(_DATA_DATE, scan_dir=scan, out_root=tmp_path / "reports/scan",
+    assemble.run(_DATA_DATE, scan_dir=scan, out_root=tmp_path / ws.reports_root() / "scan",
                 hhmm=_HHMM, run_date=_RUN_DATE)
 
     out = capsys.readouterr().out

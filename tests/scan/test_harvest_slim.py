@@ -1,5 +1,6 @@
 import json
 
+from autoresearch.common import workspace as ws
 from autoresearch.scan.agents.l4_card import harvest_slim_batch
 
 
@@ -27,7 +28,7 @@ def _setup(tmp_path, tickers):
 
 def _setup_cli(tmp_path, tickers):
     """CLI 测试用:建 context/scan/<date>/_harvest_list.txt"""
-    d = tmp_path / "context" / "scan" / "2026-07-07"
+    d = tmp_path / ws.scan_root() / "2026-07-07"
     d.mkdir(parents=True)
     (d / "_harvest_list.txt").write_text("\n".join(tickers), encoding="utf-8")
     return d

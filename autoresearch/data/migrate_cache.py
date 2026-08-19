@@ -21,8 +21,10 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-_DEFAULT_CACHE = Path("context/factor_lab/cache")
-_DEFAULT_LAKE = Path("context/lake")
+from autoresearch.common import workspace as ws
+
+_DEFAULT_CACHE = ws.factor_lab_root() / "cache"
+_DEFAULT_LAKE = ws.lake_root()
 _COMPRESSION = "zstd"
 
 

@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
+
 # 关键产物在位表(缺 = 流程段没跑/失败;market_view 是可选段,缺了只提示不报错。
 # watchlist_status.csv 随观察单日检退役摘除,fb_20260714_002)
 _ARTIFACTS = ["L1_scored_full.csv", "L1_recall_top1000.csv", "L2_gbdt_top200.csv",
@@ -275,7 +277,7 @@ def ledger_freshness(scan_dir: Path, learning_root: Path | str | None = None) ->
                      if (p / "retro" / "attribution.csv").exists()
                      and not (p / "retro" / "done.json").exists())
 
-    troot = Path(learning_root) if learning_root else Path("reports/learning")
+    troot = Path(learning_root) if learning_root else ws.reports_root() / "learning"
     lag: dict[str, int | None] = {}
     for name in _D3_LEDGERS:
         p = troot / f"{name}.md"

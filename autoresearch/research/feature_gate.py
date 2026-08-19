@@ -40,8 +40,10 @@ import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from autoresearch.common import workspace as ws
+
 SCHEMA_VERSION = 1
-DEFAULT_LEDGER = Path("context/research/feature_gate.json")
+DEFAULT_LEDGER = ws.context_root() / "research/feature_gate.json"
 
 # 有序 —— 索引即先后,不得跳段
 STAGES = ("capability", "factor_lab", "replay", "registry", "production")
@@ -236,7 +238,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--verdict", default=PENDING, choices=[PASS, PENDING, BLOCKED])
     ap.add_argument("--description", default="")
     ap.add_argument("--evidence", default="")
-    ap.add_argument("--out", default="reports/research/feature_gate.md")
+    ap.add_argument("--out", default=str(ws.reports_root() / "research/feature_gate.md"))
     a = ap.parse_args(argv)
 
     if a.feature:

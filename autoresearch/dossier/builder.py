@@ -20,7 +20,10 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.dossier import prefetch, schema
+
+_WS_SCAN_ROOT = ws.scan_root()  # B008 修法:默认值须为模块级单例(def 时求值,与旧字面量常量同语义)
 
 _LLM_ANCHOR = "<!-- LLM:待首覆 -->"
 _NARRATIVE_PENDING = "(待首覆)"
@@ -215,7 +218,7 @@ def _summary_lines(calc: dict[str, str]) -> list[str]:
 
 
 def build_skeleton(code6: str, today: str, *, name: str = "", sector: str = "",
-                   scan_root: str | Path = "context/scan", force: bool = False) -> dict:
+                   scan_root: str | Path = _WS_SCAN_ROOT, force: bool = False) -> dict:
     """确定性建档骨架。档案已存在且非 force → 原文不动(`created=False`)。"""
     code6 = str(code6).split(".")[0].zfill(6)
     path = schema.dossier_path(code6)

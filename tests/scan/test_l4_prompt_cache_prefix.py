@@ -3,10 +3,10 @@
 全断、cache 全 miss。本测试冻结现状;若它红了 = 真实前缀断裂,按 bug 处理勿放宽断言。"""
 from pathlib import Path
 
-import json
 import pandas as pd
 
 from autoresearch.scan.agents.l4_card import write_dispatch_pack
+import json  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 
 SHARED = "# 当日共享指令\n地形X · 校准Y\n"
 

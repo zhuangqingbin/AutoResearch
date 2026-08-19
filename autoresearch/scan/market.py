@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.common.regime import classify_regime
 
 _REGIME_ZH = {"trend": "趋势", "range": "震荡", "risk_off": "避险"}
@@ -424,7 +425,7 @@ def _macro_cn_block(date: str, root: Path | str | None = None) -> dict | None:
     此前 market_pack 只有 24 个标量、且全部来自全 A 个股快照的横截面自聚合 —— 零真宏观
     变量(无利率/汇率/北向/两融/指数估值分位)。这里补上资金面与指数估值两块。
     """
-    p = Path(root or "context/scan") / date / "_macro_cn.json"
+    p = Path(root or ws.scan_root()) / date / "_macro_cn.json"
     if not p.is_file():
         return None
     try:
@@ -547,12 +548,12 @@ def render_funnel_readout(scan_dir: Path | str) -> str:
 
     无决策卡 → 空串。verify 折回口径复用 assemble(降级=降一档、否决=至少 Hold)。
     """
-    from autoresearch.scan.l4.parsers import (
-        parse_ratings_from_details,  # lazy:避免 import cycle
-    )
     from autoresearch.scan.decision_finalize import (
         _apply_verify_downgrade,
         _load_verify,
+    )
+    from autoresearch.scan.l4.parsers import (
+        parse_ratings_from_details,  # lazy:避免 import cycle
     )
 
     scan_dir = Path(scan_dir)

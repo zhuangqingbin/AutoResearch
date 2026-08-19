@@ -16,7 +16,9 @@ import json
 import statistics
 from pathlib import Path
 
-LEDGER_PATH = Path("context/knowledge/sector_calls.jsonl")
+from autoresearch.common import workspace as ws
+
+LEDGER_PATH = ws.knowledge_root() / "sector_calls.jsonl"
 
 
 def _load(path: Path | str) -> list[dict]:
@@ -144,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--path", default=str(LEDGER_PATH))
     args = ap.parse_args(argv)
     rpt = render_report(_load(args.path))
-    out = Path("reports/learning/sector_ledger.md")
+    out = ws.reports_root() / "learning/sector_ledger.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(rpt, encoding="utf-8")
     print(rpt)

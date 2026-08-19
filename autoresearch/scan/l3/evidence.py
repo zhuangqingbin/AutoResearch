@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
+
 
 def load_l3_input(date: str, root: Path | None = None) -> pd.DataFrame:
     """读 L2 粗排产物(L2_gbdt_top200.csv)+ 合并已 harvest 的 L3 增量证据摘要 → L3 选股输入帧。
@@ -13,8 +15,7 @@ def load_l3_input(date: str, root: Path | None = None) -> pd.DataFrame:
     证据摘要列(表内一眼可见,不必逐 json 翻):lhb_n(龙虎榜上榜条数)、has_forecast/has_express
     (预告/快报有无)。证据未 harvest → 三列缺省 0/False。
     """
-    import json
-    root = root or Path("context/scan")
+    root = root or ws.scan_root()
     df = pd.read_csv(root / date / "L2_gbdt_top200.csv", dtype={"code": str})
     df["code"] = df["code"].astype(str).str.zfill(6)
     ev_dir = root / date / "L3_evidence"
@@ -46,11 +47,10 @@ def harvest_l3_evidence(date: str, codes: list[str], root: Path | None = None) -
     失败/无权限降级标注。产出 context/scan/<date>/L3_evidence/<code>.json,返回 {code: evidence}。
     2026-07-12 P2a:三端点改走 get_or_fetch(policy 早已注册)——已结算日湖命中零网络,预热(P1)可预拉。
     """
-    import json
 
     from autoresearch.data import cache as _cache  # 经模块属性调用,测试可 monkeypatch
     from autoresearch.data.tushare_source import _code6, _pro, resolve_momentum_dates
-    root = root or Path("context/scan")
+    root = root or ws.scan_root()
     out_dir = root / date / "L3_evidence"
     out_dir.mkdir(parents=True, exist_ok=True)
     pro = _pro()

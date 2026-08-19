@@ -34,8 +34,10 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from autoresearch.common import workspace as ws
+
 SCHEMA_VERSION = 1
-DEFAULT_LEDGER = Path("context/research/nested_probe.json")
+DEFAULT_LEDGER = ws.context_root() / "research/nested_probe.json"
 REGISTRY_FAMILY = "l4_dispatch_topology"
 
 PASS, FAIL, UNTESTED = "PASS", "FAIL", "UNTESTED"

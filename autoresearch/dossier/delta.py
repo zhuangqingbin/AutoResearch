@@ -12,7 +12,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from autoresearch.common import workspace as ws
 from autoresearch.dossier import builder, schema
+
+_WS_SCAN_ROOT = ws.scan_root()  # B008 修法:默认值须为模块级单例(def 时求值,与旧字面量常量同语义)
 
 _DELTA_KEEP = 20      # §8 滚动窗(spec ①:append-only,近 20 条滚动)
 _ANCHOR_BAND = schema.SUMMARY_ANCHORS[2]   # "带位:"(SUMMARY_ANCHORS=业务/驱动/带位/风险/催化/判例)
@@ -254,7 +257,7 @@ def _refresh_staging_sections(text: str, code6: str, date: str,
 
 
 def record_scan_delta(code6: str, date: str, *, rating: str, conviction=None,
-                      scan_root: str | Path = "context/scan") -> dict:
+                      scan_root: str | Path = _WS_SCAN_ROOT) -> dict:
     """单票 δ 回写:§8 入围行 + §3 带位刷新 + §2 快照 + §4/§6 staging 刷新 + 摘要机算行 + last_delta。
 
     返回 dict 的 `sections_skipped`(Wave3.5 review I-2):本次因素材缺而跳过刷新的
@@ -320,7 +323,9 @@ def record_scan_deltas(scan_dir: Path | str, date: str) -> dict:
     的 §4/§6 跳过标签逐票收进来,非空才落码,不被这层批量 suppress 吞掉。
     """
     import contextlib
+
     import pandas as pd
+
     from autoresearch.scan.decision_read_model import read_final_ratings
 
     out: dict = {"updated": 0, "issues": {}, "sections_skipped": {}}

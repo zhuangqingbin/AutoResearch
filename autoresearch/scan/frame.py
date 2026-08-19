@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.data.contracts import check_market_frame
 
 
@@ -116,16 +117,33 @@ def _harvest_vol_series(codes, analysis_date: str, lookback: int = 20) -> pd.Dat
     return out
 
 
-def build_market_frame(analysis_date: str, *, cap_floor_yi: float = 30.0, include_bj: bool = True,
-                       source: str = "tushare", l0_min_amount_yi: float = 0.0,
-                       l0_min_list_days: int = 0, vol_series: bool = True,
+def build_market_frame(analysis_date: str, *, cap_floor_yi: float | None = None,
+                       include_bj: bool | None = None,
+                       source: str | None = None, l0_min_amount_yi: float | None = None,
+                       l0_min_list_days: int | None = None, vol_series: bool = True,
                        ) -> tuple[pd.DataFrame, dict]:
     """L0 取数 + L1 轻门 + 多日量价富化 → (全市场因子帧, 计数)。零打分零召回零 LLM。
 
     与 `universe.run` 前半段逐值一致(run 调本函数;golden parity 由 tests/scan/test_parity.py 锁)。
     counts:`universe_raw`(源头全量)/ `universe`(L0 硬门后)/ `after_gate_a`(轻门后=帧行数)。
     `vol_series=False` 跳过多日量价拉取(盘前只要 regime/哨兵、healthy 谓词缺 cmf 会降级时可省时)。
+
+    **L0 旋钮解析(2026-08-11 配置单一事实源波)**:形参 `None` → 从 scan_config `l0` 块补
+    (`knob()`,显式恒优先)→ 缺文件/缺键 = 内建值(30 亿 / 纳北交所 / tushare / 门关,parity)。
+    本函数是 L0 的**单一代码路径**(universe.run 与 frame CLI 共用),旋钮收在这里,
+    market_pack 的 regime/宽度统计与漏斗的市值地板才不会各吃各的。
     """
+    from autoresearch.scan.user_config import knob, load_user_config as _luc
+    try:
+        _ucfg = _luc() or {}
+    except Exception as e:  # noqa: BLE001 — 配置层故障不挡确定性扫描,但必须留痕
+        print(f"[warn] scan_config 读取失败({e!r})→ L0 旋钮用内建默认", file=sys.stderr)
+        _ucfg = {}
+    cap_floor_yi = float(knob("l0", "cap_floor_yi", cap_floor_yi, 30.0, cfg=_ucfg))
+    include_bj = bool(knob("l0", "include_bj", include_bj, True, cfg=_ucfg))
+    source = str(knob("l0", "source", source, "tushare", cfg=_ucfg))
+    l0_min_amount_yi = float(knob("l0", "min_amount_yi", l0_min_amount_yi, 0.0, cfg=_ucfg))
+    l0_min_list_days = int(knob("l0", "min_list_days", l0_min_list_days, 0, cfg=_ucfg))
     if source == "tushare":
         from autoresearch.data.tushare_source import (  # 默认源(东财 push2 常被封)
             _RAW_COUNT,
@@ -177,9 +195,11 @@ def _atomic_write_json(path: Path | str, payload: dict) -> Path:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="盘前市场帧:regime + 哨兵预告(确定性,零 LLM,不依赖 scan staging)")
     ap.add_argument("date", nargs="?", help="分析日 YYYY-MM-DD(缺省=今天)")
-    ap.add_argument("--cap-floor", type=float, default=30.0, help="市值地板(亿),默认 30(与 universe 同)")
-    ap.add_argument("--exclude-bj", action="store_true", help="排除北交所(默认纳入)")
-    ap.add_argument("--source", choices=["em", "tushare"], default="tushare")
+    ap.add_argument("--cap-floor", type=float, default=None,
+                    help="市值地板(亿);缺省=scan_config l0.cap_floor_yi→30(与 universe 同)")
+    ap.add_argument("--exclude-bj", action="store_true", help="排除北交所(缺省=scan_config l0.include_bj→纳入)")
+    ap.add_argument("--source", choices=["em", "tushare"], default=None,
+                    help="缺省=scan_config l0.source→tushare")
     ap.add_argument("--json", action="store_true", help="另打印 market_pack JSON(宏观 lite / Stage 0 输入)")
     ap.add_argument("--json-out", metavar="PATH",
                     help="market_pack JSON 原子落盘到 PATH(先写 .tmp 再 os.replace)。"
@@ -195,8 +215,15 @@ def main(argv: list[str] | None = None) -> int:
     # 只改本函数三行 info 挡不住(2026-07-09 market_pack 污染的完整根因)。JSON 是 stdout 唯一产出。
     # (--json-out 下产物已不走 stdout,这层仍留着:让 --json/--json-out 的 stdout 语义保持一致。)
     with contextlib.redirect_stdout(sys.stderr) if want_pack else contextlib.nullcontext():
-        frame, counts = build_market_frame(analysis_date, cap_floor_yi=args.cap_floor,
-                                           include_bj=not args.exclude_bj, source=args.source)
+        # 运行旋钮在 CLI 层就解析成**具体值**(2026-08-11):run_contract.data_policy 是可复现
+        # 凭据,必须记实际生效值,不能记 None(「配置生效对账」对的就是这份)。
+        from autoresearch.scan.user_config import knob
+        cap_floor = float(knob("l0", "cap_floor_yi", args.cap_floor, 30.0))
+        include_bj = bool(knob("l0", "include_bj",
+                               (False if args.exclude_bj else None), True))
+        source = str(knob("l0", "source", args.source, "tushare"))
+        frame, counts = build_market_frame(analysis_date, cap_floor_yi=cap_floor,
+                                           include_bj=include_bj, source=source)
         # Wave5 ③A:资金面/指数估值取数落 `_macro_cn.json` —— 必须在 market_pack 之前跑,
         # pack 读的就是这份文件(prewarm 跑过则本次多半是湖/缓存命中)。失败只降级不阻断。
         try:
@@ -230,6 +257,12 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         user_cfg = load_user_config()
+        # 引擎隔离(2026-08-11):engine 随 echo 下发 —— workflow js 无 env/文件系统,
+        # 只能从 args.config.engine 拼 context_<engine> 根(缺省 claude)。
+        # ⚠️ 只对非空 config 注入:空 config 必须保持 `{}` 原样,否则 workflow 的
+        # 「空 config 结构性 throw」护栏(07-21 事故防线)会被一个 meta 键静默绕过。
+        if user_cfg:
+            user_cfg = {**user_cfg, "engine": ws.ENGINE}
         # Wave12-T33:agent 档位的**解释**收进 user_config 一处 → resolved 随 user_cfg
         # 一起进 run_contract / echo / market_pack,workflow 从 `args.config.resolved_agents`
         # 直接吃、不再各自解释缺省;`usage_reconcile` 对同一份 resolved 对账。
@@ -255,9 +288,9 @@ def main(argv: list[str] | None = None) -> int:
             user_config=user_cfg,
             pinned=pinned,
             data_policy={
-                "source": args.source,
-                "cap_floor_yi": args.cap_floor,
-                "include_bj": not args.exclude_bj,
+                "source": source,            # 记实际生效值(CLI>config>内建),不记 argparse 原始 None
+                "cap_floor_yi": cap_floor,
+                "include_bj": include_bj,
             },
             stage_budgets={
                 **normalize_budgets(user_cfg.get("budgets")),
@@ -267,7 +300,7 @@ def main(argv: list[str] | None = None) -> int:
             },
             artifact_schema_versions=artifact_schema_versions(),
         )
-        echo_dir = Path("context/scan") / analysis_date
+        echo_dir = ws.scan_root() / analysis_date
         echo_dir.mkdir(parents=True, exist_ok=True)
         write_run_contract(echo_dir / "run_contract.json", contract)
         (echo_dir / "user_config_echo.json").write_text(

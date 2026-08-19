@@ -14,7 +14,6 @@ from pathlib import Path
 
 from autoresearch.learning import experiment_registry as registry
 
-
 SCHEMA_VERSION = 1
 _MISSING = object()
 

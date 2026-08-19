@@ -22,7 +22,9 @@ import os
 import sys
 import time
 from datetime import datetime, timedelta
-from pathlib import Path
+
+from autoresearch.common import workspace as ws
+from pathlib import Path  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 
 _SETTLE_HHMM = 19 * 60 + 15    # 当日 EOD 视为已结算的最早本地时刻(19:15;spec §P1 依据)
 
@@ -141,7 +143,7 @@ def run_prewarm(date: str | None = None, *, with_calibrate: bool = False,
                 now: datetime | None = None) -> dict:
     now = now or datetime.now()
     date = date or latest_settled_trade_date(now)
-    scan_dir = Path("context/scan") / date
+    scan_dir = ws.scan_root() / date
     scan_dir.mkdir(parents=True, exist_ok=True)
     started = time.time()
     steps: list[dict] = []

@@ -12,12 +12,11 @@
 store 空时**逐字回退**到现有手写基线,老路径不破。
 
 用法:uv run --no-sync python -m autoresearch.learning.feedback_store --selftest
-     uv run --no-sync python -m autoresearch.learning.feedback_store show <pid>   # 打印提案 diff+evidence
-     uv run --no-sync python -m autoresearch.learning.feedback_store apply <pid>  # 打印施工指引(不改文件)
+     uv run --no-sync python -m autoresearch.learning.feedback_store show <pid>   # 打印提案 + evidence
+     uv run --no-sync python -m autoresearch.learning.feedback_store apply <pid>  # 打印处置指引(不改文件)
 """
 from __future__ import annotations
 
-import difflib
 import hashlib
 import json
 import re
@@ -26,10 +25,11 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import MAIN_RULER
 
 # 真值根目录(可被 set_root 改向,供自测用 tempdir)
-KNOW = Path("context/knowledge")
+KNOW = ws.knowledge_root()
 
 # Wave12-T10:MAIN_RULER 由 fwd_2_oc 换值 gap_c1_o2 的用户裁定日(见 autoresearch.common.
 # ruler 头部沿革)——lessons 无显式 `ruler` 字段的旧行,按写入日期与此分界推断活在哪把尺下。
@@ -282,6 +282,49 @@ def mtm_update(slug: str, verdict: str, day: str | None = None, note: str = "") 
     return rec
 
 
+def add_graduation_nomination(slug: str, target_hint: str = "", day: str | None = None) -> dict:
+    """毕业提名(2026-08-13 用户裁定 B 档):经验反复兑现 → 提名把 rule 固化进 playbook 正文。
+
+    **本函数只起草提案:不改任何文件、不退役经验**(spec:
+    `docs/specs/2026-08-13-retro-skill-selfmodify-removal-design.md` §4.1)。施工与
+    `retire_lesson` 都只在用户显式发起的开发会话内做——复盘/反馈会话一律不碰 `.claude/`。
+
+    **时序不变量(勿"优化")**:提名时经验保持 active,继续占 `render_calibration_block`
+    的注入名额,直到固化落地后才退役。若改成提名即退役,等待人批期间这条经验既不在
+    playbook 也不在注入名单,两头落空。
+
+    去重:同一 lesson 已有 open 的毕业提名 → 原样返回该条(retro 日复日跑不堆重复);
+    已裁决(rejected/applied)的不占名额,可再次提名。target 不存在或非 active → `ValueError`。
+    """
+    day = day or _today()
+    lid = slug if slug.startswith("ls_") else f"ls_{slug}"
+    rec = next((r for r in _read_jsonl(_LESSONS) if r.get("id") == lid), None)
+    if rec is None:
+        raise ValueError(f"add_graduation_nomination: 经验不存在: {lid}")
+    if rec.get("status") != "active":
+        raise ValueError(
+            f"add_graduation_nomination: 经验 {lid} 状态为 {rec.get('status')},只有 active 的能提名毕业")
+
+    summary = f"毕业提名: {lid}"
+    existing = next((p for p in _read_jsonl(_PROPOSALS)
+                     if p.get("kind") == "graduation" and p.get("status") == "open"
+                     and p.get("summary") == summary), None)
+    if existing is not None:
+        return existing
+
+    mtm = rec.get("mtm", {}) or {}
+    rationale = (f"MTM support={int(mtm.get('support', 0))}/refute={int(mtm.get('refute', 0))};"
+                 f"reinforce_count={int(rec.get('reinforce_count', 1))};"
+                 f"confidence={rec.get('confidence')};提名日 {day}")
+    diff_sketch = "\n".join([
+        f"rule 原文(固化时照抄):{rec.get('rule', '')}",
+        f"建议目标:{target_hint or '(未指定,裁决时定)'}",
+        "施工=人批后在用户显式发起的开发会话内固化进 playbook 正文,再 retire_lesson(毕业退休,"
+        "非失效);本提案不改文件、不退役,提名期间该经验继续注入。",
+    ])
+    return add_proposal("graduation", summary, rationale=rationale, diff_sketch=diff_sketch)
+
+
 def open_proposals(today: str | None = None) -> list[dict]:
     """R4·看板:open 状态 proposals + 天龄,age 降序(积压最久的最先看见)。"""
     today = today or _today()
@@ -511,7 +554,11 @@ def adjudicate(op: str, candidate: dict, target_id: str | None = None, day: str 
 
 def add_proposal(kind: str, summary: str, rationale: str = "", diff_sketch: str = "",
                  ts: str | None = None) -> dict:
-    """结构性改动建议(待批)。kind ∈ {factor,gate,prompt_rule,prompt_patch}。"""
+    """结构性改动建议(待批)。kind ∈ {factor,gate,prompt_rule,lesson,graduation}。
+
+    `lesson` = MTM 反驳达阈的摘 guard/退休提名(`mtm_update`);`graduation` = 经验毕业提名
+    (`add_graduation_nomination`)。两者都只起草待人批,不自动动门、不自动改文件。
+    """
     ts = ts or _now_ts()
     day = ts[:10].replace("-", "")
     seq = sum(1 for r in _read_jsonl(_PROPOSALS) if r.get("id", "").startswith(f"pr_{day}_")) + 1
@@ -519,64 +566,6 @@ def add_proposal(kind: str, summary: str, rationale: str = "", diff_sketch: str 
            "rationale": rationale, "diff_sketch": diff_sketch, "status": "open"}
     _append_jsonl(_PROPOSALS, rec)
     return rec
-
-
-# ───────────────── prompt_patch(Plan B T1·经验 → 提示词补丁) ─────────────────
-# 锚集来自 grep -n "卡契约 v3|超短口径|机构面网查|FINAL TRANSACTION PROPOSAL|Rubric建议|进入P4倾向"
-# tests/test_agent_defs.py autoresearch/ —— l4-card 机器契约核心锚串:部分被 self_review/health/
-# assemble 的正则原样解析(卡片契约),部分被 test_agent_defs.py 锁 agent↔playbook 同步;
-# proposed_text 绝不能让它们从 target_file 消失,否则下游解析器或契约同步测试失明/失步。
-_CONTRACT_ANCHORS = (
-    "卡契约 v3",
-    "超短口径",
-    "机构面网查",
-    "FINAL TRANSACTION PROPOSAL",
-    "Rubric建议",
-    "进入P4倾向",
-)
-_MAX_OPEN_PROMPT_PATCH = 5   # open 状态 prompt_patch 计数上限;防无节制堆积无人处理
-
-
-def add_prompt_patch(target_file: str, anchor_text: str, current_text: str,
-                     proposed_text: str, evidence: list[str]) -> dict:
-    """经验 → 提示词补丁提案:对某 playbook/agent 文案的改写建议,只出建议不自动改文件。
-
-    三重校验(核心安全,任一不过直接 raise,不静默降级/不部分写入):
-    ① `target_file` 必须存在,否则 `FileNotFoundError`。
-    ② `proposed_text` 不得让 `_CONTRACT_ANCHORS` 任何一个契约锚从 target_file 消失,否则
-       `ValueError`——模拟把 target_file 现有全文里的 `current_text` 换成 `proposed_text`,
-       原文里有的锚若换后不在了就是删锚,直接拒(`current_text` 为空 = 纯追加,不模拟替换)。
-    ③ 当前 open 状态、kind=prompt_patch 的提案数已达 `_MAX_OPEN_PROMPT_PATCH` 时拒绝新起草,
-       否则 `RuntimeError`——先清积压(批准/拒绝)再写新的,防看板堆成摆设无人处理。
-
-    起草门槛(见 retro-playbook「起草 prompt_patch」节):同型失误 ≥2 次 + 账本读数支撑才起草,
-    不是每次诊断都升级到改提示词文案。`evidence` 拼进 rationale;target_file/anchor_text/
-    current_text/proposed_text 打包 JSON 存 diff_sketch,供 Task2 `show` 复原成人读 diff。
-    """
-    p = Path(target_file)
-    if not p.exists():
-        raise FileNotFoundError(f"add_prompt_patch: target_file 不存在: {target_file}")
-
-    original = p.read_text(encoding="utf-8")
-    after = original.replace(current_text, proposed_text) if current_text else original
-    for anchor in _CONTRACT_ANCHORS:
-        if anchor in original and anchor not in after:
-            raise ValueError(
-                f"add_prompt_patch: proposed_text 会让契约锚「{anchor}」从 {target_file} 消失,禁止起草")
-
-    open_n = sum(1 for r in _read_jsonl(_PROPOSALS)
-                if r.get("status") == "open" and r.get("kind") == "prompt_patch")
-    if open_n >= _MAX_OPEN_PROMPT_PATCH:
-        raise RuntimeError(
-            f"add_prompt_patch: open 状态 prompt_patch 已有 {open_n} 条"
-            f"(上限 {_MAX_OPEN_PROMPT_PATCH}),先批复/拒绝积压再起草新的")
-
-    diff_sketch = json.dumps({
-        "target_file": target_file, "anchor_text": anchor_text,
-        "current_text": current_text, "proposed_text": proposed_text,
-    }, ensure_ascii=False)
-    return add_proposal("prompt_patch", f"{anchor_text}({target_file})"[:120],
-                        rationale="\n".join(str(e) for e in evidence), diff_sketch=diff_sketch)
 
 
 def set_proposal_status(pid: str, status: str) -> bool:
@@ -592,22 +581,12 @@ def set_proposal_status(pid: str, status: str) -> bool:
     return hit
 
 
-# ───────────── Plan B T2 · proposals show/apply 辅助流(prompt_patch 施工辅助) ─────────────
-# show = 只读打印 diff+evidence;apply = 只读打印施工指引 + set_proposal_status 收尾。
-# 两者都**绝不 Edit/Write target_file**——实际改文件永远是人批后的会话内手改动作(见
-# retro-playbook.md「4.5 起草 prompt_patch」节)。
-
-_CONTRACT_FILE_BASENAMES = ("l4-card.md", "lite-playbook.md", "SKILL.md", "STAGES.md")
-
-
-def _is_contract_file(target_file: str) -> bool:
-    """target_file 是否属机器契约文件集(按 basename 命中,不看目录)。
-
-    l4-card.md(agent 定义)/ lite-playbook.md(stock-research 真值源)/ 任意 SKILL.md / STAGES.md
-    (各 skill 文档)——命中即由 `test_agent_defs.py`/`test_skill_docs_refs.py` 之一锁着契约锚或
-    接线,施工后必须重跑二者(`apply_proposal` 据此在指引末尾强制列出验门命令)。
-    """
-    return Path(target_file).name in _CONTRACT_FILE_BASENAMES
+# ───────────── proposals show/apply 辅助流(人读 + 收尾,零副作用) ─────────────
+# show = 只读打印提案字段;apply = 只读打印处置指引 + set_proposal_status 收尾。
+# 两者都**绝不 Edit/Write 任何文件**——这是安全边界(测试锁死,见
+# tests/learning/test_proposals_apply.py)。2026-08-13 起 prompt_patch 管线退役,
+# 提案不再携带 target_file 补丁载荷;改 skill/prompt 文本只在用户显式发起的开发会话中做
+# (spec: docs/specs/2026-08-13-retro-skill-selfmodify-removal-design.md §4.2)。
 
 
 def _get_proposal(pid: str) -> dict:
@@ -617,81 +596,44 @@ def _get_proposal(pid: str) -> dict:
     return rec
 
 
-def _prompt_patch_payload(rec: dict) -> dict | None:
-    """rec 是合法 prompt_patch 载体(kind 对且 diff_sketch 可解出 target_file)→ payload dict;否则 None。"""
-    if rec.get("kind") != "prompt_patch":
-        return None
-    try:
-        payload = json.loads(rec.get("diff_sketch") or "{}")
-    except (json.JSONDecodeError, TypeError):
-        return None
-    return payload if isinstance(payload, dict) and "target_file" in payload else None
-
-
 def show_proposal(pid: str) -> str:
-    """`show <pid>`:prompt_patch 提案 → 人读 target_file + current→proposed diff + evidence。
+    """`show <pid>`:人读一条提案 —— summary / diff_sketch / evidence。
 
-    kind != prompt_patch 或 diff_sketch 不是预期 JSON payload → 退化打印 summary/rationale/
-    diff_sketch 原文(不崩溃,仍可读)。只读 proposals.jsonl,零副作用。pid 不存在 → KeyError。
+    只读 proposals.jsonl,零副作用。历史 prompt_patch 行(diff_sketch 是 JSON payload)不迁移
+    不改写,原文照打仍可读。pid 不存在 → KeyError。
     """
     rec = _get_proposal(pid)
     lines = [f"# 提案 {rec['id']} · kind={rec.get('kind')} · status={rec.get('status')}",
-             f"summary: {rec.get('summary', '')}"]
-    payload = _prompt_patch_payload(rec)
-    if payload:
-        lines.append(f"target_file: {payload.get('target_file', '')}")
-        if payload.get("anchor_text"):
-            lines.append(f"anchor: {payload['anchor_text']}")
-        current = str(payload.get("current_text", ""))
-        proposed = str(payload.get("proposed_text", ""))
-        diff = list(difflib.unified_diff(current.splitlines(), proposed.splitlines(),
-                                         fromfile="current", tofile="proposed", lineterm=""))
-        lines += ["", "```diff", *diff, "```"]
-    else:
-        lines.append(f"diff_sketch: {rec.get('diff_sketch', '')}")
-    lines += ["", "evidence:"]
+             f"summary: {rec.get('summary', '')}",
+             f"diff_sketch: {rec.get('diff_sketch', '')}",
+             "", "evidence:"]
     ev_lines = [ln for ln in str(rec.get("rationale", "")).splitlines() if ln.strip()]
     lines += ([f"- {ln}" for ln in ev_lines] if ev_lines else ["- (无)"])
     return "\n".join(lines)
 
 
 def apply_proposal(pid: str) -> str:
-    """`apply <pid>`:**不自动改文件**——只打印施工指引,实际编辑永远是人批后的会话内手改。
+    """`apply <pid>`:打印处置指引 + `set_proposal_status(pid,"applied")` 收尾(退出看板)。
 
-    target_file 命中 `_is_contract_file` → 指引末尾强制列出必跑命令(test_agent_defs.py +
-    doc-lint=test_skill_docs_refs.py);随后 `set_proposal_status(pid, "applied")` 收尾
-    (退出 `open_proposals` 看板)。
-
-    **硬约束**:本函数从不 Edit/Write target_file、甚至不重新读它——指引里的 current_text/
-    proposed_text 全部来自 proposals.jsonl 里已存的 diff_sketch,调用前后 target_file 磁盘内容
-    逐字不变(这是安全边界,不是实现细节——测试锁死)。
+    **硬约束**:本函数从不 Edit/Write 任何文件——打印的内容全部来自 proposals.jsonl 已存字段,
+    调用前后磁盘逐字不变(这是安全边界,不是实现细节——测试锁死)。参数类提案(门槛/quota/
+    因子)由人逐条批后改 `scan_config.jsonc`;skill/prompt/agent/workflow 文本只在用户显式
+    发起的开发会话中修改,复盘/反馈会话一律不动刀(2026-08-13 用户裁定)。
     """
     rec = _get_proposal(pid)
-    lines = [f"# 施工指引 · 提案 {rec['id']}({rec.get('kind')})",
-             "以下步骤须在人批后于会话内手工编辑完成——本命令不改任何文件:"]
-    payload = _prompt_patch_payload(rec)
-    target_file = payload.get("target_file") if payload else None
-    if payload and target_file:
-        lines += [
-            f"1. 打开 target_file: {target_file}",
-            "2. 把 current_text 原样替换为 proposed_text(契约锚字符串已由 add_prompt_patch 校验保留):",
-            f"   current_text  = {payload.get('current_text', '')!r}",
-            f"   proposed_text = {payload.get('proposed_text', '')!r}",
-            "3. 保存后人工核对改动与本提案 evidence 一致。",
-        ]
-        if _is_contract_file(target_file):
-            lines += [
-                "",
-                "**契约文件命中 —— 施工后必跑(强制,勿跳过)**:",
-                "    uv run --no-sync python -m pytest tests/test_agent_defs.py "
-                "tests/test_skill_docs_refs.py   # test_skill_docs_refs.py = doc-lint",
-            ]
-    else:
-        lines += [f"summary: {rec.get('summary', '')}", f"diff_sketch: {rec.get('diff_sketch', '')}",
-                  "(非 prompt_patch 结构或缺 target_file——按 summary/rationale 人工处理,无处方级指引)"]
-    lines += ["", f"evidence/rationale: {rec.get('rationale', '')}"]
+    lines = [f"# 处置指引 · 提案 {rec['id']}({rec.get('kind')})",
+             "以下动作须在人批后手工完成——本命令不改任何文件:",
+             f"summary: {rec.get('summary', '')}",
+             f"diff_sketch: {rec.get('diff_sketch', '')}",
+             "",
+             "· 参数类(gate/factor/quota):人批后改 .claude/skills/scan-market/scan_config.jsonc。",
+             "· 文本类(prompt_rule/graduation):**只在用户显式发起的开发会话中**落地;"
+             "契约文件(agent 定义/lite-playbook/SKILL.md/STAGES.md)改动后必跑",
+             "    uv run --no-sync python -m pytest tests/test_agent_defs.py "
+             "tests/test_skill_docs_refs.py   # 锚同步 + doc-lint",
+             "", f"evidence/rationale: {rec.get('rationale', '')}"]
     set_proposal_status(pid, "applied")
-    lines += ["", f"→ 提案 {pid} 状态已置为 applied(收尾;第 2 步手工编辑仍需你确认已完成)。"]
+    lines += ["", f"→ 提案 {pid} 状态已置为 applied(收尾;实际落地仍需你确认已完成)。"]
     return "\n".join(lines)
 
 
@@ -848,7 +790,7 @@ def decay_lessons(today: str | None = None, stale_days: int = 30, step: float = 
     return changed
 
 
-def snapshot_weights(path: str = "context/factor_lab/weights.json") -> str | None:
+def snapshot_weights(path: str = str(ws.factor_lab_root() / "weights.json")) -> str | None:
     """快照 weights.json → weights.<sha8>.json,返回 sha(供 retro 重标定前留底、回滚)。"""
     p = Path(path)
     if not p.exists():
@@ -858,7 +800,7 @@ def snapshot_weights(path: str = "context/factor_lab/weights.json") -> str | Non
     return sha
 
 
-def rollback_weights(sha: str, path: str = "context/factor_lab/weights.json",
+def rollback_weights(sha: str, path: str = str(ws.factor_lab_root() / "weights.json"),
                      ts: str | None = None) -> bool:
     """把 weights.<sha>.json 覆盖回 weights.json,并记一条 rollback 审计。"""
     p = Path(path)
@@ -882,7 +824,7 @@ def _selftest() -> int:
         set_root(Path(td) / "knowledge")
 
         # 1) 反馈 round-trip
-        fb = record_feedback("scan-market", ("global", "*"), "reports/x.md",
+        fb = record_feedback("scan-market", ("global", "*"), str(ws.reports_root() / "x.md"),
                              "winner_rate 高被当利好,错了", "wrong_rating",
                              "高获利盘=抛压", "winner_rate>90 视为见顶风险", ts="2026-06-19T10:00:00")
         if fb["id"] != "fb_20260619_001" or fb["status"] != "open":
@@ -988,7 +930,7 @@ def _selftest() -> int:
         if "ls_ripe" not in cand or "ls_wr_guard" in cand:
             fails.append(f"promotion_candidates 错(应含 ripe、不含已带guard的): {cand}")
         # 检索式反馈:open + 同域 + verdict 命中,with_feedback 注入;默认不注入(老路径不破)
-        record_feedback("scan-market", ("industry", "电子"), "reports/y.md", "买了电子高位票次日跌",
+        record_feedback("scan-market", ("industry", "电子"), str(ws.reports_root() / "y.md"), "买了电子高位票次日跌",
                         "false_positive", "高位追涨", "电子高位不追", ts="2026-06-21T09:00:00")
         rf = recent_feedback_for([("industry", "电子")])
         if not rf or rf[0]["verdict"] != "false_positive":

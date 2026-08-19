@@ -29,6 +29,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
+
 _COLS = ["date", "n_bought", "n_stocks", "mkt_gap", "mkt_fwd1", "mkt_fwd2", "mkt_fwd5"]
 
 
@@ -45,7 +47,7 @@ def bought_mask(df: pd.DataFrame) -> pd.Series:
 
 def roll(scan_root: Path | None = None) -> pd.DataFrame:
     """聚合 context/scan/*/retro/attribution.csv → 每日 [date,n_bought,n_stocks,mkt_fwd1,mkt_fwd2,mkt_fwd5]。"""
-    scan_root = scan_root or Path("context/scan")
+    scan_root = scan_root or ws.scan_root()
     rows = []
     for p in sorted(Path(scan_root).glob("*/retro/attribution.csv")):
         try:
@@ -146,7 +148,7 @@ def main() -> int:
     from autoresearch.learning.abstention_ledger import roll as causal_roll
 
     ledger = roll()
-    out = Path("reports/learning/zero_buy_ledger.md")
+    out = ws.reports_root() / "learning/zero_buy_ledger.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(
         "\n".join(render(ledger, causal=causal_roll())) + "\n",

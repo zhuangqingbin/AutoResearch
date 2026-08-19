@@ -16,6 +16,10 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
+
+_WS_SCAN_ROOT = ws.scan_root()  # B008 修法:默认值须为模块级单例(def 时求值,与旧字面量常量同语义)
+
 
 def _finalist_row(d: Path, code6: str) -> dict | None:
     p = d / "finalists.csv"
@@ -60,7 +64,7 @@ def _verify_row(d: Path, code6: str) -> dict | None:
     return {"verdict": str(r.get("verdict", "")), "trigger": str(r.get("trigger", ""))}
 
 
-def stock_dossier(code: str, scan_root: Path | str = "context/scan",
+def stock_dossier(code: str, scan_root: Path | str = _WS_SCAN_ROOT,
                   max_days: int = 10, exclude: str | None = None) -> list[dict]:
     """最近 max_days 个 scan 日里该票的入围史(exclude 当日;档案=历史)。日期升序。"""
     code6 = str(code).split(".")[0].zfill(6)
@@ -81,7 +85,7 @@ def stock_dossier(code: str, scan_root: Path | str = "context/scan",
     return sorted(out, key=lambda e: e["date"])
 
 
-def render_dossier(code: str, scan_root: Path | str = "context/scan",
+def render_dossier(code: str, scan_root: Path | str = _WS_SCAN_ROOT,
                    max_days: int = 10, exclude: str | None = None) -> str:
     """前科卡 markdown;无历史 → ""(presence-gated)。"""
     entries = stock_dossier(code, scan_root=scan_root, max_days=max_days, exclude=exclude)

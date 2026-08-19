@@ -48,7 +48,11 @@ import pytest
 # 落在 forbidden root 下的调用;读不受影响(历史真实产物允许被读,只是不能被测试写坏),
 # tmp_path 下的写入也不受影响(见 `test_production_path_guard.py` 的反向校验)。
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_FORBIDDEN_ROOTS = (_REPO_ROOT / "reports", _REPO_ROOT / "context" / "scan")
+# 引擎隔离后护两套真实工作区(claude+codex);湖不在此列(测试另有 LAKE monkeypatch)。
+from autoresearch.common import workspace as ws  # noqa: E402
+
+_FORBIDDEN_ROOTS = tuple(_REPO_ROOT / f"reports_{e}" for e in ws.ENGINES) + tuple(
+    _REPO_ROOT / f"context_{e}" / "scan" for e in ws.ENGINES)
 PRODUCTION_PATH_GUARD_MARKER = "PRODUCTION-PATH-GUARD"
 
 

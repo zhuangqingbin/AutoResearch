@@ -43,6 +43,8 @@ import json
 import re
 from pathlib import Path
 
+from autoresearch.common import workspace as ws
+
 # agentType(usage_harvest 的 `row["agent"]`,即派发时 Agent 工具的 `subagent_type`)→
 # 该 agentType 底下可能的 role **有序**元组:**第 0 位是主 role**(吸收剩余行),
 # 其后是复用同一 agentType 派发的次级 role。`general-purpose` 故意不在这张表里——
@@ -87,8 +89,14 @@ _GP_SHELL_DEFAULT = {"model": "sonnet", "effort": "low"}
 # 判的不是"配置有没有生效",而是"这份 transcript 死没死"——本模块的职责边界不含后者。
 _UNMEASURED = (None, "", "—")
 
+# 2026-08-10:Workflow harness 自带的包装 agent 类型 —— 不来自 scan_config,没有任何 role
+# 对它有档位期望;当 unknown 报会制造永久假警(08-05/08-07/08-10 连续 ok=false 的 streak
+# 报警,08-10 那次的真身就是它)。计入 seen/checked(确实跑过、确实花钱),单列
+# `harness_types` 留痕(降级不留痕才是真病),不进 `unknown_agent_types`。
+_HARNESS_TYPES = frozenset({"workflow-subagent"})
+
 _AGENTS_DIR = Path(".claude/agents")
-LEDGER_PATH = Path("context/learning/usage_reconcile.jsonl")
+LEDGER_PATH = ws.context_root() / "learning/usage_reconcile.jsonl"
 
 
 def _frontmatter(agent_type: str) -> dict:
@@ -356,6 +364,8 @@ def _reconcile_core(echo: dict, rows: list[dict], *, date: str,
             if got not in gp_allowed:
                 mismatches.append({"agent": atype, "role": None, "field": "model+effort",
                                    "expected": sorted(gp_allowed), "actual": list(got)})
+        elif atype in _HARNESS_TYPES:
+            continue                          # harness 包装类型:无配置面可对账,单列留痕
         else:
             unknown_types.add(atype)          # 既不在映射表也不是 general-purpose——不装懂
 
@@ -412,6 +422,7 @@ def _reconcile_core(echo: dict, rows: list[dict], *, date: str,
           and not missing_resolved_roles)
     return {"date": str(date), "ok": ok, "mismatches": mismatches, "wire_breaks": wire_breaks,
             "unknown_agent_types": unknown_agent_types,
+            "harness_types": sorted(t for t in seen_types if t in _HARNESS_TYPES),
             "missing_resolved_roles": missing_resolved_roles, "checked": checked,
             "unmeasured": unmeasured}
 
@@ -427,7 +438,7 @@ def reconcile(date: str, root: str | Path | None = None) -> dict:
     真实缺失,而不是被静默吞成一个查不出因由的空结果。
     """
     base = Path(root) if root is not None else Path(".")
-    scan = base / "context" / "scan" / str(date)
+    scan = base / ws.scan_root() / str(date)
     echo = json.loads((scan / "user_config_echo.json").read_text(encoding="utf-8"))
     rows = json.loads((scan / "_token_usage.json").read_text(encoding="utf-8")).get("rows") or []
     # census 是 presence-gated 的**增益**:有它 ens_review/l3_repair 才分得开;

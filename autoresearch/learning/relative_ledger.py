@@ -55,14 +55,15 @@ import json
 import sys
 from pathlib import Path
 
+from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import REL_GAP_RULER, REL_MARKET, REL_SECTOR
 from autoresearch.scan.relative_buy import DECISION_FILENAME, MODE_SHADOW
 
 SCHEMA_VERSION = 1
 BASIS = "relative"
-SCAN_ROOT = Path("context/scan")
-LEDGER_PATH = Path("context/learning/relative_buy.jsonl")
-REPORT_PATH = Path("reports/learning/relative_buy.md")
+SCAN_ROOT = ws.scan_root()
+LEDGER_PATH = ws.context_root() / "learning/relative_buy.jsonl"
+REPORT_PATH = ws.reports_root() / "learning/relative_buy.md"
 
 #: 成熟门:≥20 个决策日,**自首条观测起算**(不是从预注册日起算)。
 #: EXP-1/EXP-2 预注册后数据腿从未实现、observations 空转 6 天(FN-1 家族)——按"预注册

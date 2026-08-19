@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from autoresearch.common import workspace as ws
 from autoresearch.trace import usage_reconcile as ur
 
 ECHO = {"agents": {"l4_card": {"effort": "max"}, "l4_intel": {"effort": "max"},
@@ -29,7 +30,7 @@ ROWS = [
 
 
 def _run(tmp_path, echo, rows, date="2026-08-06"):
-    d = tmp_path / "context/scan" / date
+    d = tmp_path / ws.scan_root() / date
     d.mkdir(parents=True)
     (d / "user_config_echo.json").write_text(json.dumps(echo))
     (d / "_token_usage.json").write_text(json.dumps({"rows": rows}))
@@ -367,7 +368,7 @@ def test_reconcile_wires_census_from_scan_dir(tmp_path):
     (期望 medium)→ 接了线 = 1 条 role=ens_review 的 mismatch;没接线 = 走并集,
     (opus,max) 落在 l4_card 的期望里 → 0 条。两种结局不同,测试才真的在测接线。
     """
-    d = tmp_path / "context/scan/2026-08-06"
+    d = tmp_path / ws.scan_root() / "2026-08-06"
     d.mkdir(parents=True)
     (d / "user_config_echo.json").write_text(json.dumps(ECHO_SPLIT))
     (d / "_token_usage.json").write_text(json.dumps(
@@ -384,7 +385,7 @@ def test_reconcile_wires_census_from_scan_dir(tmp_path):
 
 
 def test_missing_echo_raises(tmp_path):
-    d = tmp_path / "context/scan/2026-08-06"
+    d = tmp_path / ws.scan_root() / "2026-08-06"
     d.mkdir(parents=True)
     (d / "_token_usage.json").write_text(json.dumps({"rows": ROWS}))
     with pytest.raises(FileNotFoundError):
@@ -392,7 +393,7 @@ def test_missing_echo_raises(tmp_path):
 
 
 def test_missing_token_usage_raises(tmp_path):
-    d = tmp_path / "context/scan/2026-08-06"
+    d = tmp_path / ws.scan_root() / "2026-08-06"
     d.mkdir(parents=True)
     (d / "user_config_echo.json").write_text(json.dumps(ECHO))
     with pytest.raises(FileNotFoundError):
@@ -470,19 +471,19 @@ def test_render_lists_unknown_agent_types(tmp_path):
 
 
 def test_cli_writes_json_ledger_and_always_exits_zero(tmp_path, capsys):
-    d = tmp_path / "context/scan/2026-08-06"
+    d = tmp_path / ws.scan_root() / "2026-08-06"
     d.mkdir(parents=True)
     (d / "user_config_echo.json").write_text(json.dumps(ECHO))
     rows = [dict(ROWS[0], effort="low")] + ROWS[1:]         # 故意留一个 mismatch
     (d / "_token_usage.json").write_text(json.dumps({"rows": rows}))
-    json_out = tmp_path / "context/scan/2026-08-06/_usage_reconcile.json"
+    json_out = tmp_path / ws.scan_root() / "2026-08-06/_usage_reconcile.json"
 
     code = ur.main(["2026-08-06", "--root", str(tmp_path), "--json-out", str(json_out)])
 
     assert code == 0                                        # exit 恒 0,即便 ok=false
     written = json.loads(json_out.read_text())
     assert written["ok"] is False and written["mismatches"]
-    ledger_path = tmp_path / "context/learning/usage_reconcile.jsonl"
+    ledger_path = tmp_path / ws.learning_root() / "usage_reconcile.jsonl"
     lines = [ln for ln in ledger_path.read_text().splitlines() if ln.strip()]
     assert len(lines) == 1
     assert json.loads(lines[0])["date"] == "2026-08-06"
@@ -491,12 +492,12 @@ def test_cli_writes_json_ledger_and_always_exits_zero(tmp_path, capsys):
 def test_cli_ledger_appends_across_runs(tmp_path):
     """streak 账本 append-only:两次 CLI 调用 → 两行(self_review 的连续两日判据靠这个)。"""
     for date in ("2026-08-05", "2026-08-06"):
-        d = tmp_path / "context/scan" / date
+        d = tmp_path / ws.scan_root() / date
         d.mkdir(parents=True)
         (d / "user_config_echo.json").write_text(json.dumps(ECHO))
         (d / "_token_usage.json").write_text(json.dumps({"rows": ROWS}))
         ur.main([date, "--root", str(tmp_path)])
-    ledger_path = tmp_path / "context/learning/usage_reconcile.jsonl"
+    ledger_path = tmp_path / ws.learning_root() / "usage_reconcile.jsonl"
     lines = [ln for ln in ledger_path.read_text().splitlines() if ln.strip()]
     assert len(lines) == 2
     assert [json.loads(ln)["date"] for ln in lines] == ["2026-08-05", "2026-08-06"]
@@ -511,12 +512,12 @@ def test_cli_missing_product_still_exits_zero(tmp_path, capsys):
 
 
 def test_cli_no_ledger_flag_skips_append(tmp_path):
-    d = tmp_path / "context/scan/2026-08-06"
+    d = tmp_path / ws.scan_root() / "2026-08-06"
     d.mkdir(parents=True)
     (d / "user_config_echo.json").write_text(json.dumps(ECHO))
     (d / "_token_usage.json").write_text(json.dumps({"rows": ROWS}))
     ur.main(["2026-08-06", "--root", str(tmp_path), "--no-ledger"])
-    assert not (tmp_path / "context/learning/usage_reconcile.jsonl").exists()
+    assert not (tmp_path / ws.learning_root() / "usage_reconcile.jsonl").exists()
 
 
 # ───────────────────────── 变异验证 · 对真实 2026-08-05 数据 ─────────────────────────
@@ -524,7 +525,7 @@ def test_cli_no_ledger_flag_skips_append(tmp_path):
 # 自证。`context/scan/2026-08-05/` 是 gitignored 的真实产物,新 checkout 可能没有——
 # 缺失时跳过而不是失败(这两条是"锦上添花"的真数据回归,不是核心契约测试)。
 
-_REAL_DIR = Path("context/scan/2026-08-05")
+_REAL_DIR = ws.scan_root() / "2026-08-05"
 _real_data_present = (_REAL_DIR / "user_config_echo.json").exists() and \
     (_REAL_DIR / "_token_usage.json").exists()
 
@@ -657,7 +658,7 @@ def test_unmeasured_only_run_is_still_ok(tmp_path):
     """全天只跑出限速夭折的行,`ok` 不该翻假——unmeasured 是"记账"信号,不是失败信号
     (与 wire_break/unknown_agent_type/missing_resolved_role 那几个真失败信号不同)。
     """
-    d = tmp_path / "context/scan/2026-08-06"
+    d = tmp_path / ws.scan_root() / "2026-08-06"
     d.mkdir(parents=True)
     echo = {"agents": {"l4_card": {"effort": "max"}}}
     rows = [{"role": "subagent", "agent": "l4-card", "model": "—", "effort": "—",
@@ -678,7 +679,7 @@ def test_render_shows_unmeasured_count(tmp_path):
     assert "unmeasured 1 行" in md
 
 
-_REAL_0807_DIR = Path("context/scan/2026-08-07")
+_REAL_0807_DIR = ws.scan_root() / "2026-08-07"
 _real_0807_present = (_REAL_0807_DIR / "user_config_echo.json").exists() and \
     (_REAL_0807_DIR / "_token_usage.json").exists()
 
@@ -757,7 +758,7 @@ def test_reconcile_reads_resolved_artifact_file(tmp_path):
     鉴别力检查:echo 的 raw agents 故意写 low、resolved 文件写 max,实测 max ——
     读了文件 = 0 mismatch;没读 = 报一条 l4_card effort mismatch。
     """
-    d = tmp_path / "context/scan/2026-08-09"
+    d = tmp_path / ws.scan_root() / "2026-08-09"
     d.mkdir(parents=True)
     (d / "user_config_echo.json").write_text(json.dumps({"agents": {"l4_card": {"effort": "low"}}}))
     (d / "_token_usage.json").write_text(json.dumps({"rows": [_l4card_row("max")]}))
@@ -800,7 +801,7 @@ def test_stale_empty_prompt_does_not_manufacture_a_false_mismatch(tmp_path):
     l3_repair 的档位判 → 假 mismatch → `ok=false`,而 `usage_reconcile_lint` 对
     连续两日 ok=false 升 fail。一个会自己制造报警的探针,比没有探针更糟。
     """
-    d = tmp_path / "context/scan/2026-08-09"
+    d = tmp_path / ws.scan_root() / "2026-08-09"
     d.mkdir(parents=True)
     (d / "user_config_echo.json").write_text(json.dumps(
         {"agents": {"l3_rank": {"effort": "max"}, "l3_repair": {"effort": "medium"}}}))
@@ -826,7 +827,7 @@ def test_real_repo_repair_prompts_all_list_codes():
     收紧判据**不该**改变历史读数 —— 这条证明它没有(造 fixture 能红不代表生产没被误伤)。
     """
     from pathlib import Path as _P
-    prompts = sorted(_P("context/scan").glob("*/_l3_repair_prompt.md"))
+    prompts = sorted(_P(ws.scan_root()).glob("*/_l3_repair_prompt.md"))
     if not prompts:
         pytest.skip("本机无历史 scan 目录")
     for p in prompts:

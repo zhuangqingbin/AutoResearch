@@ -14,8 +14,12 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
+
+_WS_SCAN_ROOT = ws.scan_root()  # B008 修法:默认值须为模块级单例(def 时求值,与旧字面量常量同语义)
+
 _COLS = ["date", "code", "name", "conviction", "binding", "close"]
-_PATH = Path("context/learning/shadow_buys.csv")
+_PATH = ws.context_root() / "learning/shadow_buys.csv"
 
 
 def _load(path: Path) -> pd.DataFrame:
@@ -46,8 +50,8 @@ def _binding(scan_dir: Path, code: str) -> str:
 
 def record(scan_dir: Path | str, path: Path | str = _PATH, k: int = 3) -> int:
     """该 scan 日 top-k Hold(L3 conviction 序)入账;(date,code) 幂等。返回新增行数。"""
-    from autoresearch.scan.l4.parsers import pick_opportunity_candidates
     from autoresearch.scan.health import final_ratings
+    from autoresearch.scan.l4.parsers import pick_opportunity_candidates
     scan_dir, path = Path(scan_dir), Path(path)
     ratings = final_ratings(scan_dir)
     picks = pick_opportunity_candidates(ratings, scan_dir, k=k)
@@ -85,7 +89,7 @@ def record(scan_dir: Path | str, path: Path | str = _PATH, k: int = 3) -> int:
     return len(rows)
 
 
-def backfill(scan_root: Path | str = "context/scan", path: Path | str = _PATH) -> int:
+def backfill(scan_root: Path | str = _WS_SCAN_ROOT, path: Path | str = _PATH) -> int:
     """对全部历史 scan 日 record(幂等)——上线即让影子线有 13 日底仓数据。
 
     单日故障隔离:坏历史日(e.g. 损坏 L1_scored_full.csv 等)跳过,不中断整个回填。

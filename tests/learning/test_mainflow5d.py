@@ -25,8 +25,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from autoresearch.learning import experiment_registry as registry
-from autoresearch.learning import mainflow5d
+from autoresearch.learning import experiment_registry as registry, mainflow5d
 
 EXP1 = "exp_20260801_ow_gate_mainflow5d"
 EXP2 = "exp_20260801_recall_sector_momentum"

@@ -31,6 +31,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import MAIN_RULER
 
 SCHEMA_VERSION = 1
@@ -346,7 +347,7 @@ def build(scan_root: Path | str | None = None,
     from autoresearch.learning.journal import roll as journal_roll
     from autoresearch.learning.zero_buy_ledger import roll as zero_buy_roll
 
-    root = Path(scan_root or "context/scan")
+    root = Path(scan_root or ws.scan_root())
     manifest = Manifest()
 
     _add_journal(manifest, journal_roll(root), root)
@@ -456,7 +457,7 @@ def _add_abstention(manifest: Manifest, ledger: pd.DataFrame, root: Path) -> Non
 
 def _add_paper_nav(manifest: Manifest) -> None:
     """paper_nav 只读它已落盘的汇总 —— 本模块不重算收益(§A0 边界)。"""
-    summary = Path("reports/learning/paper_nav.md")
+    summary = ws.reports_root() / "learning/paper_nav.md"
     paths, hashes = _hashes([summary])
     lanes = _parse_paper_nav(summary)
     if not lanes:
@@ -909,7 +910,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  —— {'通过' if not problems else f'{len(problems)} 处违约'}")
         return 0 if not problems else 1
 
-    root = Path(args.scan_root or "context/scan")
+    root = Path(args.scan_root or ws.scan_root())
     if args.freeze:
         # reports/ 与 context/ 都 gitignore,审计快照必须落在进版本控制的 docs/ 下
         manifest = build(root)
@@ -935,12 +936,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     manifest = build(root)
-    out_json = Path("reports/learning/wave10_evidence.json")
+    out_json = ws.reports_root() / "learning/wave10_evidence.json"
     out_json.parent.mkdir(parents=True, exist_ok=True)
     out_json.write_text(
         json.dumps(manifest.to_dict(), ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8")
-    out_md = Path("reports/learning/wave10_evidence.md")
+    out_md = ws.reports_root() / "learning/wave10_evidence.md"
     out_md.write_text("\n".join(render(manifest)) + "\n", encoding="utf-8")
     print(f"[evidence_manifest] {len(manifest.metrics)} 指标 · "
           f"{len(manifest.denominators)} 分母 · {len(manifest.conflicts)} 冲突 "

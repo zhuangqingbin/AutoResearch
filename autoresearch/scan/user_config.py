@@ -26,6 +26,8 @@ import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from autoresearch.common import workspace as ws
+
 DEFAULT_PATH = Path(".claude/skills/scan-market/scan_config.jsonc")
 DEFAULT_PINNED_PATH = Path(".claude/skills/scan-market/pinned.jsonc")
 
@@ -88,9 +90,16 @@ def _read_jsonc(p: Path):
 _TOP_WHITELIST = {
     "agents", "funnel", "pinned", "l4_intel", "l3",
     "learning", "budgets", "performance",
+    # 2026-08-11 配置单一事实源波:L0/L2/行业 brief 运行旋钮入白名单(消费点=knob() 解析,
+    # 见各块注;jsonc 里每键必须标【生效点】,SKILL.md「配置」节列全表)。
+    "l0", "l2", "sector",
 }
 _SUB_WHITELIST = {
-    "funnel": {"recall_channels", "channel_quotas", "channel_floors"},
+    "l0": {"cap_floor_yi", "include_bj", "source", "min_amount_yi", "min_list_days"},
+    "funnel": {"recall_channels", "channel_quotas", "channel_floors",
+               "regime_aware", "recall_n", "l2_n"},
+    "l2": {"sector_cap", "floors"},
+    "sector": {"reuse_ttl_days", "max_briefs"},
     "pinned": {"cap", "ttl_days"},
     "l4_intel": {"enabled", "max_queries"},
     "l3": {"two_pass", "pass1_target", "finalist_max"},
@@ -102,6 +111,31 @@ _SUB_WHITELIST = {
     "performance": {
         "streaming_l4",
     },
+}
+
+# ── 运行旋钮类型校验(2026-08-11)——错型静默生效比缺键更难查,一律 raise ──
+def _t_num(v): return isinstance(v, (int, float)) and not isinstance(v, bool)
+def _t_bool(v): return isinstance(v, bool)
+def _t_posint(v): return isinstance(v, int) and not isinstance(v, bool) and v > 0
+def _t_nonneg(v): return _t_num(v) and v >= 0
+def _t_nonneg_int(v): return isinstance(v, int) and not isinstance(v, bool) and v >= 0
+def _t_source(v): return v in {"em", "tushare"}
+def _t_dict(v): return isinstance(v, dict)
+
+
+_KNOB_TYPES: dict[tuple[str, str], tuple] = {
+    ("l0", "cap_floor_yi"): (_t_nonneg, "number≥0"),
+    ("l0", "include_bj"): (_t_bool, "boolean"),
+    ("l0", "source"): (_t_source, "em|tushare"),
+    ("l0", "min_amount_yi"): (_t_nonneg, "number≥0"),
+    ("l0", "min_list_days"): (_t_nonneg_int, "int≥0"),
+    ("funnel", "regime_aware"): (_t_bool, "boolean"),
+    ("funnel", "recall_n"): (_t_posint, "正整数"),
+    ("funnel", "l2_n"): (_t_posint, "正整数"),
+    ("l2", "sector_cap"): (_t_num, "number"),
+    ("l2", "floors"): (_t_dict, "object"),
+    ("sector", "reuse_ttl_days"): (_t_posint, "正整数"),
+    ("sector", "max_briefs"): (_t_posint, "正整数"),
 }
 
 # agents={role: {model, effort}} 的 role 闭集(Wave11 B1)——白名单外一律 raise,防拼写错
@@ -187,6 +221,11 @@ def load_user_config(path: str | Path | None = None) -> dict:
             if key in performance and not isinstance(performance[key], bool):
                 raise ValueError(f"scan_config.json performance.{key} 必须是 boolean")
 
+    for (blk, key), (ok_fn, want) in _KNOB_TYPES.items():   # 运行旋钮错型 raise(2026-08-11)
+        block = cfg.get(blk)
+        if isinstance(block, dict) and key in block and not ok_fn(block[key]):
+            raise ValueError(f"scan_config.json {blk}.{key}={block[key]!r} 非法(须为 {want})")
+
     agents = cfg.get("agents")
     if agents is not None:
         if not isinstance(agents, dict):
@@ -208,6 +247,32 @@ def load_user_config(path: str | Path | None = None) -> dict:
             if "model" in spec and (not isinstance(spec["model"], str) or spec["model"] not in _MODELS):
                 raise ValueError(f"agents.{role}.model={spec['model']!r} 非法(∈{sorted(_MODELS)})")
     return cfg
+
+
+def knob(block: str, key: str, cli_value, default, cfg: dict | None = None):
+    """单键运行旋钮解析(2026-08-11 配置单一事实源波):**显式值 > scan_config > 内建默认**。
+
+    - `cli_value is not None` → 原样返回(CLI flag/显式形参恒优先,同 `_funnel_overlay` 语义)。
+    - `cfg` 形参供调用方注入已 `load_user_config()` 的 dict(省重复 IO / 测试注入);
+      `None` → 现读 `DEFAULT_PATH`。
+    - 配置层故障(文件坏/白名单外键)→ **stderr 留痕后回 default**——配置层故障不挡确定性
+      扫描,但降级必须可见(「降级不留痕」才是真病,数据契约家训)。
+
+    这是新增运行旋钮的唯一解析原语:接线 = 形参默认改 `None` + 入口一行 `knob(...)`;
+    白名单 + 类型校验在 `load_user_config`(`_KNOB_TYPES`),测试锁在
+    `tests/scan/test_config_knobs.py`。三件套缺一不许上生产(SKILL.md「配置」节)。
+    """
+    if cli_value is not None:
+        return cli_value
+    if cfg is None:
+        try:
+            cfg = load_user_config() or {}
+        except Exception as e:  # noqa: BLE001 — 坏配置响亮警告后按默认跑,不让扫描失败
+            print(f"[warn] scan_config 读取失败({e!r})→ {block}.{key} 用内建默认 {default!r}",
+                  file=sys.stderr)
+            return default
+    v = (cfg.get(block) or {}).get(key)
+    return default if v is None else v
 
 
 def resolve_agent_config(cfg: dict, *, require_all: bool = True) -> dict:
@@ -287,7 +352,7 @@ def materialize_agent_config(date: str, cfg: dict | None = None, *,
         resolved = resolve_agent_config(load_user_config() if cfg is None else cfg,
                                         require_all=require_all)
     base = Path(root) if root is not None else Path(".")
-    out = base / "context" / "scan" / str(date) / RESOLVED_FILENAME
+    out = base / ws.scan_root() / str(date) / RESOLVED_FILENAME
     out.parent.mkdir(parents=True, exist_ok=True)
     payload = {"schema_version": RESOLVED_SCHEMA_VERSION, "date": str(date),
                "roles": resolved}

@@ -20,13 +20,13 @@ md 渲染 `—(no_shadow)` 且不计入 v2 统计。
 from __future__ import annotations
 
 import pandas as pd
-import pytest
 
 from autoresearch.learning.abstention_ledger import (
     ABSTENTION_VERDICT_SCHEMA_VERSION,
     AbstentionVerdict,
     classify_abstention,
 )
+import pytest  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 
 
 def _rows(records: list[dict]) -> pd.DataFrame:

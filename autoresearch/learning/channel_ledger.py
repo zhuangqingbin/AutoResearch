@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
+
 _COLS = ["channel", "n_days", "sum_unique",
          "mean_unique_excess_t2", "mean_excess_t2", "mean_hit_rate_t2",
          "mean_unique_excess_t5", "mean_excess_t5", "mean_hit_rate_t5"]
@@ -24,7 +26,7 @@ _COLS = ["channel", "n_days", "sum_unique",
 
 def roll(scan_root: Path | None = None) -> pd.DataFrame:
     """聚合 context/scan/*/retro/channel_eval.csv 跨日 → 每路滚动汇总(按边际超额降序)。"""
-    scan_root = scan_root or Path("context/scan")
+    scan_root = scan_root or ws.scan_root()
     frames = []
     for p in sorted(scan_root.glob("*/retro/channel_eval.csv")):
         try:
@@ -140,7 +142,7 @@ def main() -> int:
         body += "\n\n## quota 调整提议(advisory,人工 gate)\n"
         body += "\n".join(f"- {p['channel']}: {p['cur_quota']} → {p['proposed_quota']}({p['reason']})"
                           for p in props)
-    outp = Path("reports/learning/channel_ledger.md")
+    outp = ws.reports_root() / "learning/channel_ledger.md"
     outp.parent.mkdir(parents=True, exist_ok=True)
     outp.write_text(body, encoding="utf-8")
     print(body)

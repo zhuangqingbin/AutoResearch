@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from autoresearch.common import workspace as ws
 from autoresearch.learning import retro
 
 # T16 注:本文件的 attr/realized 夹具前瞻收益列统一用 "gap_c1_o2"(当前 MAIN_RULER,2026-08-05
@@ -181,7 +182,7 @@ def test_pass1_cut_winners_counts_using_module_winner_definition(tmp_path):
 
 def test_write_retro_input_includes_l3_shrink_section_when_bench_present(tmp_path):
     """presence-gated 端到端:_l3_bench.csv 在场 → retro_input.md 含「L3 收窄防漏体检」节 + bench 行。"""
-    sdir = tmp_path / "context" / "scan" / "2026-07-12"
+    sdir = tmp_path / ws.scan_root() / "2026-07-12"
     sdir.mkdir(parents=True)
     pd.DataFrame({"code": ["000001"], "conviction": [80]}).to_csv(sdir / "_l3_bench.csv", index=False)
     pd.DataFrame({"code": ["000002"]}).to_csv(sdir / "finalists.csv", index=False)
@@ -193,7 +194,7 @@ def test_write_retro_input_includes_l3_shrink_section_when_bench_present(tmp_pat
         "recalled_flag": [False] * n, "in_l1": [True] * n, "bought": [False] * n,
         "tradable": [True] * n,
     })
-    p = retro.write_retro_input("2026-07-12", attr, scan_root=tmp_path / "context" / "scan")
+    p = retro.write_retro_input("2026-07-12", attr, scan_root=tmp_path / ws.scan_root())
     text = p.read_text(encoding="utf-8")
     assert "## L3 收窄防漏体检" in text
     assert "L3 bench top-1" in text
@@ -201,7 +202,7 @@ def test_write_retro_input_includes_l3_shrink_section_when_bench_present(tmp_pat
 
 def test_write_retro_input_partial_presence_only_pass1_cut_renders_that_line(tmp_path):
     """部分在场:只有 _l3_pass1_cut.csv(bench 未落地/旧日期)→ 该节仍渲染,只含 pass1_cut 那一行。"""
-    sdir = tmp_path / "context" / "scan" / "2026-07-12"
+    sdir = tmp_path / ws.scan_root() / "2026-07-12"
     sdir.mkdir(parents=True)
     pd.DataFrame({"code": ["000003", "000004"]}).to_csv(sdir / "_l3_pass1_cut.csv", index=False)
     n = 20
@@ -212,7 +213,7 @@ def test_write_retro_input_partial_presence_only_pass1_cut_renders_that_line(tmp
         "recalled_flag": [False] * n, "in_l1": [True] * n, "bought": [False] * n,
         "tradable": [True] * n,
     })
-    p = retro.write_retro_input("2026-07-12", attr, scan_root=tmp_path / "context" / "scan")
+    p = retro.write_retro_input("2026-07-12", attr, scan_root=tmp_path / ws.scan_root())
     text = p.read_text(encoding="utf-8")
     assert "## L3 收窄防漏体检" in text
     assert "pass1_cut 中 T+2 赢家数:1/2" in text
@@ -221,7 +222,7 @@ def test_write_retro_input_partial_presence_only_pass1_cut_renders_that_line(tmp
 
 def test_write_retro_input_omits_l3_shrink_section_when_both_absent(tmp_path):
     """presence-gated 反向:两影子文件都缺 → retro_input.md 不含该节(老路不破)。"""
-    sdir = tmp_path / "context" / "scan" / "2026-07-12"
+    sdir = tmp_path / ws.scan_root() / "2026-07-12"
     sdir.mkdir(parents=True)
     n = 20
     attr = pd.DataFrame({
@@ -231,7 +232,7 @@ def test_write_retro_input_omits_l3_shrink_section_when_both_absent(tmp_path):
         "recalled_flag": [False] * n, "in_l1": [True] * n, "bought": [False] * n,
         "tradable": [True] * n,
     })
-    p = retro.write_retro_input("2026-07-12", attr, scan_root=tmp_path / "context" / "scan")
+    p = retro.write_retro_input("2026-07-12", attr, scan_root=tmp_path / ws.scan_root())
     assert "L3 收窄防漏体检" not in p.read_text(encoding="utf-8")
 
 
@@ -327,7 +328,7 @@ def test_attribute_runs_global_consumers_only_for_real_scan_path(
     monkeypatch,
 ):
     monkeypatch.chdir(tmp_path)
-    scan_root = tmp_path / "context" / "scan"
+    scan_root = tmp_path / ws.scan_root()
     day, realized = _retro_event_fixture(scan_root)
     monkeypatch.setattr(retro, "realized_returns", lambda _date: realized)
     calls = []
@@ -338,7 +339,7 @@ def test_attribute_runs_global_consumers_only_for_real_scan_path(
 
     retro.attribute(day.name)
 
-    assert calls == [Path("context/scan") / day.name]
+    assert calls == [ws.scan_root() / day.name]
 
 
 # ───────────────────────── retro pending 拆两账(Wave11-A7:attribution_pending / pending_days) ─────────────────────────
@@ -430,7 +431,7 @@ def test_write_retro_input_end_to_end_includes_unsellable_warning(tmp_path):
     那一行整行删掉,生产 `retro_input.md` 里永远看不到旗,但那 4 个测试仍然全绿(FN-1 家族:
     生产者没接线 / 接线点本身无测试锁)。本测试端到端跑 `write_retro_input`,直接读磁盘上
     真实产出的 `retro_input.md`,断言旗真的到达了这份文件。"""
-    sdir = tmp_path / "context" / "scan" / "2026-07-12"
+    sdir = tmp_path / ws.scan_root() / "2026-07-12"
     sdir.mkdir(parents=True)
     n = 20
     attr = pd.DataFrame({
@@ -447,7 +448,7 @@ def test_write_retro_input_end_to_end_includes_unsellable_warning(tmp_path):
     attr.loc[3, "unsellable_o2"] = True
     attr.loc[3, "gap_c1_o2"] = -0.10
 
-    p = retro.write_retro_input("2026-07-12", attr, scan_root=tmp_path / "context" / "scan")
+    p = retro.write_retro_input("2026-07-12", attr, scan_root=tmp_path / ws.scan_root())
     text = p.read_text(encoding="utf-8")
     assert "⚠️卖不出预警" in text
     assert "000003" in text

@@ -76,6 +76,7 @@ import json
 import sys
 from pathlib import Path
 
+from autoresearch.common import workspace as ws
 from autoresearch.scan.decision_read_model import read_decisions, read_final_ratings
 
 SCHEMA_VERSION = 1
@@ -491,7 +492,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("scan", help="分析日(YYYY-MM-DD)或 scan 目录")
     args = parser.parse_args(argv)
     explicit = Path(args.scan)
-    scan = explicit if explicit.exists() else Path("context/scan") / args.scan
+    scan = explicit if explicit.exists() else ws.scan_root() / args.scan
     target = write_passport(scan)
     doc = json.loads(target.read_text(encoding="utf-8"))
     print(json.dumps({"ok": True, "path": str(target), "counts": doc["counts"],

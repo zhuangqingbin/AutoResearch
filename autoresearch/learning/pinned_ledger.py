@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import MAIN_RULER
 
 _COLS = ["date", "code", "name", "rating", "fwd_2", "market_fwd_2", "excess", "verdict",
@@ -120,7 +121,7 @@ def _read_conflicts(d: Path) -> dict:
 def roll(scan_root: Path | str | None = None) -> pd.DataFrame:
     """逐 scan 日抽 lane=pinned 的持仓卡 × attribution 已实现 fwd_2 → 账本帧。"""
     from autoresearch.scan.health import final_ratings  # lazy 防环
-    scan_root = Path(scan_root or "context/scan")
+    scan_root = Path(scan_root or ws.scan_root())
     rows: list[dict] = []
     if not scan_root.exists():
         return pd.DataFrame(columns=_COLS)
@@ -206,7 +207,7 @@ def render(ledger: pd.DataFrame) -> list[str]:
 
 def main() -> int:
     df = roll()
-    p = Path("reports/learning/pinned_ledger.md")
+    p = ws.reports_root() / "learning/pinned_ledger.md"
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("\n".join(render(df)) + "\n", encoding="utf-8")
     print(f"[pinned_ledger] {len(df)} 行 → {p}")

@@ -12,12 +12,15 @@ import hashlib
 import json
 import sys
 import time
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Iterator
 
+from autoresearch.common import workspace as ws
 from autoresearch.scan import structural_audit
+from typing import Callable  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from typing import Iterator  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 
 SCHEMA_VERSION = 1
 MAX_ATTEMPTS = 2
@@ -194,9 +197,9 @@ def initialize(
     now: datetime | None = None,
 ) -> dict:
     """初始化或合并 `_l4_tasks.json`；既有单票状态不被其它票重置。"""
-    base = Path(root) if root is not None else Path("context/scan")
+    base = Path(root) if root is not None else ws.scan_root()
     scan_dir = base / date
-    ctx = Path(context_root) if context_root is not None else Path("context")
+    ctx = Path(context_root) if context_root is not None else ws.context_root()
     path = scan_dir / "_l4_tasks.json"
     cap_values = _normalize_caps(caps)
     ordered = list(dict.fromkeys(str(code).split(".")[0].zfill(6) for code in codes))
@@ -653,7 +656,7 @@ def stats(book: Path | str) -> dict:
 
 
 def _book_path(date: str, root: str | None) -> Path:
-    return (Path(root) if root else Path("context/scan")) / date / "_l4_tasks.json"
+    return (Path(root) if root else ws.scan_root()) / date / "_l4_tasks.json"
 
 
 def main(argv: list[str] | None = None) -> int:

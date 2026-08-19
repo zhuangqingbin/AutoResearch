@@ -604,8 +604,10 @@ def test_stale_ruler_recall_on_real_pre_t13_offenders(tmp_path):
     变异测试当场证明它零鉴别力——把 lint 体内的判据收窄回 3/8 的正则,它照样绿。
     """
     import subprocess
+
     from autoresearch.learning.self_review import (
-        _STALE_RULER_LIVE_MARK, _STALE_RULER_TOKEN,
+        _STALE_RULER_LIVE_MARK,
+        _STALE_RULER_TOKEN,
     )
     files = (".claude/skills/scan-market/SKILL.md", ".claude/skills/scan-retro/SKILL.md",
              ".claude/skills/scan-retro/retro-playbook.md", "docs/PANORAMA.md")

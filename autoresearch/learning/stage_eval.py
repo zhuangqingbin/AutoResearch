@@ -26,6 +26,7 @@ from pathlib import Path
 import pandas as pd
 
 from autoresearch.agents.utils.rating import RATINGS_5_TIER  # Buy>OW>Hold>UW>Sell
+from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import MAIN_RULER, entry_tradable
 
 # 保送/观察单直通/菜单滞回——不是 L3 当日选的票,不进「L3 选股成绩」头条(pr_20260716_002,
@@ -179,7 +180,7 @@ def _ratings_from_details(date: str, scan_root: Path | None = None) -> dict[str,
 
     正则取 `**Rating**` 行(半/全角冒号);非五档 / 无文件 / 无目录 → 跳过该只。
     """
-    scan_root = scan_root or Path("context/scan")
+    scan_root = scan_root or ws.scan_root()
     scan_dir = scan_root / date
     from autoresearch.scan.decision_read_model import read_final_ratings
 
@@ -215,7 +216,7 @@ def evaluate(date: str, scan_root: Path | None = None, report_root: Path | None 
     realized 显式传入(测试用 stub 注入)则不取数;否则 `retro.realized_returns(date)`(网络)。
     fwd 未实现 → RuntimeError(供上游 try/except 跳过)。
     """
-    scan_root = scan_root or Path("context/scan")
+    scan_root = scan_root or ws.scan_root()
     sdir = scan_root / date
     if realized is None:
         import autoresearch.learning.retro as retro  # 延迟导入,避免与 retro 的循环 import

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import MAIN_RULER
 from autoresearch.scan.run_contract import sha256_json
 
@@ -338,7 +339,7 @@ def load_abstention_verdict(path: Path | str) -> AbstentionVerdict:
 
 def shadow_codes_for(date: str, path: Path | str | None = None) -> list[str]:
     """该扫描日的影子买单代码(系统当日最想买的 K 只);无数据 → []。"""
-    src = Path(path or "context/learning/shadow_buys.csv")
+    src = Path(path or ws.learning_root() / "shadow_buys.csv")
     if not src.exists():
         return []
     try:
@@ -396,7 +397,7 @@ def write_abstention_verdict(
 
 
 def roll(scan_root: Path | str | None = None) -> pd.DataFrame:
-    root = Path(scan_root or "context/scan")
+    root = Path(scan_root or ws.scan_root())
     rows = []
     for path in sorted(root.glob("*/retro/abstention_verdict.json")):
         verdict = load_abstention_verdict(path)
@@ -485,7 +486,7 @@ def render(ledger: pd.DataFrame) -> list[str]:
 
 def main() -> int:
     ledger = roll()
-    target = Path("reports/learning/abstention_ledger.md")
+    target = ws.reports_root() / "learning/abstention_ledger.md"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("\n".join(render(ledger)) + "\n", encoding="utf-8")
     print(f"[abstention_ledger] {len(ledger)} 日 → {target}")

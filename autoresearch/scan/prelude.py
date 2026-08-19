@@ -19,6 +19,8 @@ import re
 import sys
 from pathlib import Path
 
+from autoresearch.common import workspace as ws
+
 
 def _run_steps(steps) -> list[dict]:
     """[(name, fn)] 顺序执行,单步异常不阻断 → [{'step','ok','note'}]。骨架可单测。"""
@@ -53,7 +55,7 @@ def calib_suggestion_lines(scan_root=None, date: str | None = None) -> list[str]
             from autoresearch.learning.tripwire_watch import check, render_line
             from autoresearch.scan.user_config import load_pinned
             n = len([e for e in (load_pinned(date).get("kept") or []) if e.get("code")])
-            ln = render_line(check(date, scan_root=scan_root or "context/scan"), n)
+            ln = render_line(check(date, scan_root=scan_root or ws.scan_root()), n)
             if ln:
                 lines.append(ln)
     return lines
@@ -68,7 +70,7 @@ def _retro_input_nag(scan_root: Path | str | None = None) -> str:
     跑过 write_retro_input 却从没 mark_done"——诊断会话烂尾比"还没开始"更该催办(勘察 D1:
     07-07/07-08 两日就是这个状态)。presence-gated:无 context/scan / 无烂尾日 → ""。
     """
-    scan_root = Path(scan_root or "context/scan")
+    scan_root = Path(scan_root or ws.scan_root())
     if not scan_root.exists():
         return ""
     stalled = sorted(p.name for p in scan_root.iterdir()
@@ -175,7 +177,7 @@ def _hot_rank_snapshot_warning(p: Path) -> str:
 def prewarm_line(date: str, scan_root: Path | str | None = None) -> str:
     """夜间预热是否真跑过(Wave5 ④B:写了没装的优化必须当天可见,不靠事后考古)。"""
     import datetime as _dt
-    p = Path(scan_root or "context/scan") / date / "_prewarm.json"
+    p = Path(scan_root or ws.scan_root()) / date / "_prewarm.json"
     if not p.is_file():
         return ("预热(夜间):✗ 未跑 —— L0/L1/L2 本次全额取数(~8-10m)。"
                 "装载检查:`launchctl list | grep scan-prewarm`")
@@ -221,7 +223,7 @@ def render_summary(date: str, results: list[dict], scan_root: Path | str | None 
     # 显示成"已生成",静默降级比响亮失败危险得多。
     try:
         from autoresearch.scan.health import anns_source_status
-        scan_root_dir = Path(scan_root or "context/scan")
+        scan_root_dir = Path(scan_root or ws.scan_root())
         prior = (sorted(p for p in scan_root_dir.iterdir()
                         if p.is_dir() and p.name[:2] == "20" and p.name < date)
                  if scan_root_dir.is_dir() else [])
@@ -272,7 +274,7 @@ def render_summary(date: str, results: list[dict], scan_root: Path | str | None 
 def write_summary(date: str, results: list[dict],
                   scan_root: Path | str | None = None) -> Path:
     """汇总屏落 `context/scan/<date>/_prelude_summary.md`,返回路径(目录缺则建)。"""
-    det = Path(scan_root or "context/scan") / date
+    det = Path(scan_root or ws.scan_root()) / date
     det.mkdir(parents=True, exist_ok=True)
     p = det / "_prelude_summary.md"
     p.write_text(render_summary(date, results, scan_root=scan_root) + "\n", encoding="utf-8")
@@ -351,8 +353,13 @@ def _write_t0(scan_dir: Path) -> None:
         pass
 
 
-def run_prelude(date: str, regime_aware: bool = True, skip: tuple[str, ...] = ()) -> list[dict]:
-    scan_dir = Path("context/scan") / date
+def run_prelude(date: str, regime_aware: bool | None = None, skip: tuple[str, ...] = ()) -> list[dict]:
+    # 生产路(scan-market.js → prelude)的历史缺省 = True;scan_config funnel.regime_aware 可覆盖,
+    # CLI --no-regime-aware 恒优先(2026-08-11 配置单一事实源波;universe 直调 CLI 的内建缺省
+    # 仍是 False,两处 parity 各自成立,见 universe.run 同款注)。
+    from autoresearch.scan.user_config import knob
+    regime_aware = bool(knob("funnel", "regime_aware", regime_aware, True))
+    scan_dir = ws.scan_root() / date
     _write_t0(scan_dir)
 
     def _refresh():
@@ -614,7 +621,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-regime-aware", action="store_true", help="关 regime 权重(默认开)")
     ap.add_argument("--skip", default="", help="跳过步骤(逗号分隔:universe,consensus,...)")
     args = ap.parse_args(argv)
-    results = run_prelude(args.date, regime_aware=not args.no_regime_aware,
+    results = run_prelude(args.date,
+                          regime_aware=(False if args.no_regime_aware else None),
                           skip=tuple(s for s in args.skip.split(",") if s))
     return 0 if all(r["ok"] for r in results) else 1
 

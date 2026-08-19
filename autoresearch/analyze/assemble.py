@@ -31,6 +31,7 @@ from datetime import datetime
 from pathlib import Path
 
 from autoresearch.agents.utils.rating import parse_rating
+from autoresearch.common import workspace as ws
 
 # The PM decision — required, rendered FIRST as the executive summary. v4: the PM
 # prepends a 决策仪表盘 (one-row dashboard) + 维度评分卡 (scorecard) at its top.
@@ -210,7 +211,7 @@ def main() -> int:
             out.append(_anchored("###", name, _read(root, rel)))
 
     now = datetime.now()
-    out_dir = Path("reports/analyze") / now.strftime("%Y%m%d_%H%M")   # 目录名=运行时刻(与 scan 一致)
+    out_dir = ws.reports_root() / "analyze" / now.strftime("%Y%m%d_%H%M")   # 目录名=运行时刻(与 scan 一致)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{fname}.md"
     out_path.write_text("\n".join(out), encoding="utf-8")

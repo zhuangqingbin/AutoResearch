@@ -41,6 +41,7 @@ import pandas as pd
 
 import autoresearch.learning.feedback_store as fs
 import autoresearch.learning.retro as retro
+from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import MAIN_RULER
 
 RETIRE_MIN_N = 20        # 裁决法:累计命中样本门槛(§4-P0-5 原文 "n≥20")
@@ -139,7 +140,7 @@ def roll(scan_root: Path | str | None = None, lessons: list[dict] | None = None,
     `lessons=None` → 走生产口径(`active_guard_lessons()`,读真实 `context/knowledge`);
     传显式 `lessons` 供测试注入合成经验,绕开 feedback_store 读写。
     """
-    scan_root = Path(scan_root or "context/scan")
+    scan_root = Path(scan_root or ws.scan_root())
     lessons = active_guard_lessons() if lessons is None else lessons
     days = _walk_attribution(scan_root)
     return compute_yield(lessons, days, day_min_n=day_min_n)
@@ -195,7 +196,7 @@ def main() -> int:
     df = roll(lessons=lessons)
     total = len(fs.lessons_for([("global", "*")]))
     body = "\n".join(render(df, n_lessons_total=total))
-    out = Path("reports/learning/lesson_yield.md")
+    out = ws.reports_root() / "learning/lesson_yield.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(body + "\n", encoding="utf-8")
     print(body)

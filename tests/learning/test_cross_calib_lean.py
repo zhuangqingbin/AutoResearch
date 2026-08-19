@@ -17,9 +17,9 @@
 from __future__ import annotations
 
 import pandas as pd
-import pytest
 
 from autoresearch.learning.cross_calib import flip_stats, suggestion_lines
+import pytest  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 
 
 def _day(root, name: str, rows: list[dict]):

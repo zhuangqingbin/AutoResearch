@@ -25,6 +25,7 @@ from pathlib import Path
 
 import pytest
 
+from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import REL_GAP_RULER, REL_MARKET, REL_SECTOR
 from autoresearch.learning import relative_ledger as rl
 
@@ -556,9 +557,9 @@ def test_post_run_observe_writes_the_decision_file(tmp_path):
 
 def test_default_paths_are_the_shadow_pair():
     """默认落点写死成契约:影子账本 + 影子报表,**不是**生产 buy ledger。"""
-    assert str(rl.LEDGER_PATH) == "context/learning/relative_buy.jsonl"
-    assert str(rl.REPORT_PATH) == "reports/learning/relative_buy.md"
-    assert str(rl.SCAN_ROOT) == "context/scan"
+    assert ws.learning_root() / "relative_buy.jsonl" == rl.LEDGER_PATH
+    assert ws.reports_root() / "learning" / "relative_buy.md" == rl.REPORT_PATH
+    assert ws.scan_root() == rl.SCAN_ROOT
 
 
 def test_nightly_names_table_contains_relative_ledger():

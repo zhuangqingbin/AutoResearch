@@ -36,6 +36,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from autoresearch.common import workspace as ws
+
 SCHEMA_VERSION = 1
 
 # —— 失败类 kind:计入 structural_failure_n ——
@@ -172,7 +174,7 @@ def audit_day(scan_dir: Path | str, *, expect_book: bool = False) -> DayAudit | 
 
 
 def roll(scan_root: Path | str | None = None) -> list[DayAudit]:
-    root = Path(scan_root or "context/scan")
+    root = Path(scan_root or ws.scan_root())
     if not root.exists():
         return []
     out = []
@@ -246,7 +248,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--required", type=int, default=10)
     a = ap.parse_args(argv)
     audits = roll()
-    target = Path("reports/learning/structural_audit.md")
+    target = ws.reports_root() / "learning/structural_audit.md"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("\n".join(render(audits, required=a.required)) + "\n",
                       encoding="utf-8")

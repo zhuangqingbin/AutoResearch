@@ -3,13 +3,15 @@ name: stock-research
 description: Two-tier single-ticker research. FULL deep-dive report by default (「研究 NVDA」「分析 600519.SS」, peers ok); LITE decision card (5-tier rating + 隔夜口径 R:R + tripwires) when speed is asked (「快速看一眼」「出张决策卡」) — lite is also the workhorse scan-market L4 invokes per finalist and the pinned-holdings review path on sentinel days. NOT for whole-market scans (→ scan-market) or macro (→ macro-research). Project-local.
 ---
 
+> **路径约定**:`$CTX`/`$RPT` = 本引擎工作区根(Claude→`context_claude`/`reports_claude`,Codex→`context_codex`/`reports_codex`;shell 里 `CTX=context_${AUTORESEARCH_ENGINE:-claude}`,`RPT=reports_${AUTORESEARCH_ENGINE:-claude}`)。数据湖 `lake/` 两引擎共享。Read/Write 工具调用时把 `$CTX`/`$RPT` 代入具体目录名。
+
 # stock-research — 单标的研究:full 全量报告 / lite 决策卡(一个 skill,两档)
 
 ## 核心原理
 同一免费数据层(yfinance/FRED/akshare/tushare)+ Claude(本 session)当引擎,零 LLM API。
 - **full 档** = v4 全量报告(决策主线+证据附录;`harvest` 全量 ~90KB context)。
 - **lite 档** = 一张决策卡(`harvest --slim` 只取决策驱动块;渐进深度 DD + 早停;~20–30% token)。lite 卡=超短交易语义(1~2 日窗);full 深研报告不受此限。
-原 analyze-ticker(full)/ analyze-ticker-lite(lite)合并于此(design: `docs/specs/2026-07-03-research-skills-altitude-refactor-design.md` §5.4)。
+沿革:原 analyze-ticker(full)/ analyze-ticker-lite(lite)已退役、合并于此(design: `docs/specs/2026-07-03-research-skills-altitude-refactor-design.md` §5.4)。
 
 ## 档位路由(先定档,再进对应 playbook)
 | 情形 | 档 | playbook |
@@ -25,16 +27,16 @@ description: Two-tier single-ticker research. FULL deep-dive report by default (
 在**项目根目录**运行;`.env` 有 `FRED_API_KEY`;A股需 akshare/tushare(venv-only,**务必 `uv run --no-sync`**)。默认报告语言中文。TICKER 带交易所后缀(**A股可只传 6 位代码**;规则见 engine-playbook 末节)。
 
 ## full 档流程(6 步;报告骨架/各 agent 角色/数据坑全在 `engine-playbook.md`,不回读源码)
-1. **取数(零 LLM)**:`uv run --no-sync python -m autoresearch.analyze.harvest TICKER [YYYY-MM-DD] [stock|crypto] [PEER1,PEER2,...]` → `context/<TICKER>_<DATE>.md`(~90KB;v4 含 可交易性·涨跌停/偿付再融资/(A股)股东户数·解禁)。日期默认今天;第 4 参=同业(可选)。
+1. **取数(零 LLM)**:`uv run --no-sync python -m autoresearch.analyze.harvest TICKER [YYYY-MM-DD] [stock|crypto] [PEER1,PEER2,...]` → `$CTX/<TICKER>_<DATE>.md`(~90KB;v4 含 可交易性·涨跌停/偿付再融资/(A股)股东户数·解禁)。日期默认今天;第 4 参=同业(可选)。
 2. **读 context**:分页读(offset/limit 或 Grep 定位);锁定 验证快照/新闻/8×FRED/4 张财报。
 3. **读 `engine-playbook.md`**:拿 **决策主线/证据附录** 报告骨架 + 各 agent 顺序/输出格式/五档评级。
-4. **扮演各 agent**:按 LangGraph 顺序逐段产出到 `context/analyze/<TICKER>_<分析日YYYYMMDD>/`(子结构/必需文件清单见 playbook;每段结尾 `置信度:` 行)。
-5. **组装+校验**:`uv run --no-sync python -m autoresearch.analyze.assemble context/analyze/<TICKER>_<分析日YYYYMMDD> [--name <A股中文简称>]` → `reports/analyze/<YYYYMMDD_HHMM>/<名称|TICKER>.md` + `parse_rating` 校验五档。**A股务必带 `--name`**;`[MISSING]` = 第 4 步漏写,补齐再跑。
+4. **扮演各 agent**:按 LangGraph 顺序逐段产出到 `$CTX/analyze/<TICKER>_<分析日YYYYMMDD>/`(子结构/必需文件清单见 playbook;每段结尾 `置信度:` 行)。
+5. **组装+校验**:`uv run --no-sync python -m autoresearch.analyze.assemble $CTX/analyze/<TICKER>_<分析日YYYYMMDD> [--name <A股中文简称>]` → `$RPT/analyze/<YYYYMMDD_HHMM>/<名称|TICKER>.md` + `parse_rating` 校验五档。**A股务必带 `--name`**;`[MISSING]` = 第 4 步漏写,补齐再跑。
 6. **汇报**:评级 + 目标价/持有期/仓位/止损 + 诚实局限。
 
 ## lite 档流程(3 步;卡模板/早停规则全在 `lite-playbook.md`)
-1. **slim 取数(零 LLM)**:`uv run --no-sync python -m autoresearch.analyze.harvest <ticker> <date> --slim` → `context/<ticker>_<date>_slim.md`(技术快照/指标、市场资金、可交易性、个股新闻、(A股)股东户数、估值概况、利润表、盈利质量、偿付、卖方目标、财报/解禁日历;已重排「表面块前 / 深核块后 + `<!-- P4 深核分界 -->`」;被 scan L4 调用时顶部前置漏斗简报)。
-2. **渐进 DD + 早停**:P0 简报定向 → P1–P3 表面 4 维 →【主早停②:非买点 → 早停卡止】→ survivor P4 陷阱核 →【③击杀】→ P5 满卡(三档 EV/R:R + 多空自压)。**早停只向下,≥OW 必走 P4+P5**。落点:独立跑 → `reports/analyze/<YYYYMMDD>_<HHMM>/<名称|TICKER>_lite.md`;被 scan L4 调用 → staging `context/scan/<date>/details/<ticker>.md`。
+1. **slim 取数(零 LLM)**:`uv run --no-sync python -m autoresearch.analyze.harvest <ticker> <date> --slim` → `$CTX/<ticker>_<date>_slim.md`(技术快照/指标、市场资金、可交易性、个股新闻、(A股)股东户数、估值概况、利润表、盈利质量、偿付、卖方目标、财报/解禁日历;已重排「表面块前 / 深核块后 + `<!-- P4 深核分界 -->`」;被 scan L4 调用时顶部前置漏斗简报)。
+2. **渐进 DD + 早停**:P0 简报定向 → P1–P3 表面 4 维 →【主早停②:非买点 → 早停卡止】→ survivor P4 陷阱核 →【③击杀】→ P5 满卡(三档 EV/R:R + 多空自压)。**早停只向下,≥OW 必走 P4+P5**。落点:独立跑 → `$RPT/analyze/<YYYYMMDD>_<HHMM>/<名称|TICKER>_lite.md`;被 scan L4 调用 → staging `$CTX/scan/<date>/details/<ticker>.md`。
 3. **(可选)校验**:`autoresearch.scan.assemble` / `parse_rating` 直接读卡。
 
 ## 铁律(两档共;违反即作废重来)
@@ -46,6 +48,6 @@ description: Two-tier single-ticker research. FULL deep-dive report by default (
 - 收尾写明:**Claude 推理产出、非自动引擎;仅供研究,非投资建议。**
 
 ## 常见坑
-- 必须 `uv run --no-sync` + 仓库根目录,否则 .env/依赖加载不到;`context/`、`reports/` 已 gitignore。
+- 必须 `uv run --no-sync` + 仓库根目录,否则 .env/依赖加载不到;`context_*/`、`reports_*/` 已 gitignore(引擎根,见顶部路径约定)。
 - **A股**:个股新闻走 akshare 东财/WebSearch 兜底;insider 金额是 yfinance 单位 bug 只看方向;OHLCV 价格真值走 tushare 前复权(含北交所);主力资金流要落**逐日表**读模式(拉高出货);股东户数看趋势;质押 >40% 爆雷红旗——细则全在 engine-playbook 数据坑 #10–16。
 - 非美/A股标的:英文新闻/社交近乎空 → 降级照实说明;同业基准自动换沪深300/创业板指。

@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
+from autoresearch.common import workspace as ws
 from autoresearch.scan.outbox import OutboxEvent, load_events, outbox_path
 from autoresearch.scan.run_contract import sha256_json
 
@@ -581,7 +582,7 @@ def publish_run_observation(
     policy = budgets if budgets is not None else contract_budgets
     if real_scan is None:
         real_scan = scan.resolve() == (
-            Path("context/scan") / scan.name
+            ws.scan_root() / scan.name
         ).resolve()
     from autoresearch.scan.budget import evaluate_history, observe_run
 
@@ -831,7 +832,7 @@ def enqueue_receipt(scan_dir: Path | str, analysis_date: str) -> dict:
 
 def _resolve_scan(value: str) -> Path:
     explicit = Path(value)
-    return explicit if explicit.exists() else Path("context/scan") / value
+    return explicit if explicit.exists() else ws.scan_root() / value
 
 
 def main(argv: list[str] | None = None) -> int:

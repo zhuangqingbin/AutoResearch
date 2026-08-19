@@ -11,6 +11,7 @@ import json
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.scan.market import market_pack, market_pack_from_frame
 
 _MACRO_CN = {
@@ -43,7 +44,7 @@ def _write(tmp_path, payload=None, date="2026-07-25"):
 def test_frame_entry_attaches_cross_money_and_index_val(tmp_path, monkeypatch):
     """帧入口用默认根 `context/scan` —— 建真目录 + chdir,别用 monkeypatch 把被测函数换掉
     (换掉了就等于没测它)。"""
-    _write(tmp_path / "context" / "scan")
+    _write(tmp_path / ws.scan_root())
     monkeypatch.chdir(tmp_path)
     pack = market_pack_from_frame(_frame(), date="2026-07-25")
     assert pack["cross_money"]["north_cum5_yi"] == 30.0

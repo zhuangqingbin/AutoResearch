@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import MAIN_RULER
 from autoresearch.learning.shrink import MIN_N_INJECT, n_tag, shrink as _shrink_fn, shrink_config
 
@@ -51,7 +52,7 @@ _LEAN_BASE_FLOOR = 0.10
 
 
 def _days(scan_root: Path | str | None, window: int) -> list[Path]:
-    scan_root = Path(scan_root or "context/scan")
+    scan_root = Path(scan_root or ws.scan_root())
     if not scan_root.exists():
         return []
     days = sorted(p for p in scan_root.iterdir() if p.is_dir() and p.name[:2] == "20")
@@ -163,9 +164,9 @@ def gate_stats(scan_root: Path | str | None = None, window: int = 30,
         target_hit_for,
     )
     from autoresearch.learning.rejection_attribution import decision_gate_bucket
-    from autoresearch.scan.l4.parsers import gate_status
     from autoresearch.scan.decision_read_model import read_decisions
     from autoresearch.scan.health import final_ratings
+    from autoresearch.scan.l4.parsers import gate_status
     rows = []
     for d in _days(scan_root, window):
         attr = _read_attr(d)
@@ -336,7 +337,7 @@ def render(flips: pd.DataFrame, gates: pd.DataFrame) -> list[str]:
 
 def main() -> int:
     flips, gates = flip_stats(), gate_stats()
-    out = Path("reports/learning/cross_calib.md")
+    out = ws.reports_root() / "learning/cross_calib.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("\n".join(render(flips, gates)) + "\n", encoding="utf-8")
     lines = suggestion_lines(flips, gates)

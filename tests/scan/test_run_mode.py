@@ -23,7 +23,6 @@ from autoresearch.scan.run_mode import (
     write_pinned_finalists,
 )
 
-
 # ────────────────────────── 四态判定 ──────────────────────────
 
 @pytest.mark.parametrize("level,force,codes,expect", [

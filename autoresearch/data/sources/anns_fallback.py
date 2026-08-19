@@ -48,6 +48,8 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from autoresearch.common import workspace as ws
+
 SOURCE_TAG = "cninfo"
 CACHE_VERSION = 1
 NEGATIVE_TTL_SECONDS = 6 * 3600     # 负缓存有时限:6h
@@ -59,7 +61,7 @@ NEGATIVE_TTL_SECONDS = 6 * 3600     # 负缓存有时限:6h
 #   ② **负缓存有时限**(6h)。这一条必须与正缓存分开 —— 把「这次没查到」永久缓存下来
 #      等于把一次网络抖动固化成「这只票没有公告」,而那正是本模块要治的病
 #      (「无权限」与「当日故障」在产物上长得一样)。
-_CACHE_ROOT = Path("context/cache/anns_fallback")
+_CACHE_ROOT = ws.context_root() / "cache/anns_fallback"
 
 _LOOKBACK_DAYS = 90   # 兜底源窗口:约一季度,够覆盖近期披露且不做无界历史查询
 

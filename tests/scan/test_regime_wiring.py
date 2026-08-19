@@ -37,7 +37,12 @@ def test_config_default_regime_aware_off():
 
 
 def test_universe_cli_regime_aware_flag(monkeypatch):
-    """universe.py CLI 暴露 --regime-aware 并透传 run(regime_aware=…);缺省 False(parity)。"""
+    """universe.py CLI 暴露 --regime-aware/--no-regime-aware 并透传 run(regime_aware=…)。
+
+    2026-08-11 配置单一事实源波改了边界契约:CLI 缺 flag → 传 **None**(交 run 内
+    `knob("funnel","regime_aware",…,False)` 解析:config 可覆盖,缺配置=内建 False,
+    parity 断言由 tests/scan/test_config_knobs.py 的 run 级测试锁);显式 flag 恒优先。
+    """
     from autoresearch.scan import universe as smu
     seen = {}
 
@@ -50,5 +55,7 @@ def test_universe_cli_regime_aware_flag(monkeypatch):
     monkeypatch.setattr(smu, "run", fake_run)
     smu.main(["2026-07-01", "--regime-aware"])
     assert seen["regime_aware"] is True
+    smu.main(["2026-07-01", "--no-regime-aware"])
+    assert seen["regime_aware"] is False          # 强制关,覆盖 scan_config
     smu.main(["2026-07-01"])
-    assert seen["regime_aware"] is False
+    assert seen["regime_aware"] is None           # 缺 flag → 交 config 层解析(新契约)

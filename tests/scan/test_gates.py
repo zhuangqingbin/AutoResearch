@@ -3,6 +3,7 @@ import json
 
 import pandas as pd
 
+from autoresearch.common import workspace as ws
 from autoresearch.scan.gates import gate1, gate2, gate4
 
 
@@ -87,7 +88,7 @@ def test_gate4_missing_file(tmp_path):
 
 def test_gate2_cli_flags_bad_codes(tmp_path, monkeypatch, capsys):
     # workflow 经 Bash-agent 调 main() 读 JSON+退出码;坏码必须 rc=1 且 JSON.ok=False
-    d = tmp_path / "context" / "scan" / "2026-07-07"
+    d = tmp_path / ws.scan_root() / "2026-07-07"
     d.mkdir(parents=True)
     pd.DataFrame({"code": ["62", "600584"]}).to_csv(d / "finalists.csv", index=False)
     monkeypatch.chdir(tmp_path)
@@ -100,7 +101,7 @@ def test_gate2_cli_flags_bad_codes(tmp_path, monkeypatch, capsys):
 def test_gate_cli_writes_success_stage_result_without_changing_stdout(
     tmp_path, monkeypatch, capsys,
 ):
-    d = tmp_path / "context" / "scan" / "2026-07-28"
+    d = tmp_path / ws.scan_root() / "2026-07-28"
     d.mkdir(parents=True)
     pd.DataFrame({"code": ["000001"]}).to_csv(d / "finalists.csv", index=False)
     monkeypatch.chdir(tmp_path)
@@ -126,7 +127,7 @@ def test_gate_cli_writes_success_stage_result_without_changing_stdout(
 
 
 def test_gate_cli_writes_failed_stage_result_and_keeps_rc_one(tmp_path, monkeypatch, capsys):
-    d = tmp_path / "context" / "scan" / "2026-07-28"
+    d = tmp_path / ws.scan_root() / "2026-07-28"
     d.mkdir(parents=True)
     monkeypatch.chdir(tmp_path)
     from autoresearch.scan.gates import main

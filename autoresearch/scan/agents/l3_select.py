@@ -9,52 +9,54 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from autoresearch.scan.l3.evidence import harvest_l3_evidence, load_l3_input
+from autoresearch.common import workspace as ws
 from autoresearch.scan.l3.merge import (
-    _inject_pinned_finalists,
-    _swap_lane_quota,
-    merge_l3_finalists_v3,
     write_finalists,
 )
 from autoresearch.scan.l3.prompt import (
-    _L3_COLS,
-    _delta_filter,
-    _fmt,
-    _prev_l3_day,
-    _render_lane_blocks,
-    _row_lane,
-    compact_table,
-    l3_table_md,
     prepare_l3_table,
-    row_profile,
 )
-from autoresearch.scan.l3.triage import triage_l2_for_l3
 from autoresearch.scan.l3.validation import (
-    _CODE_TOKEN_RE,
-    _COUNT_SUFFIX,
-    _DATE_TOKEN_RE,
-    _FRACTION_RE,
-    _IDENT_CHAR_RE,
-    _MARKET_CTX,
-    _MARKET_CTX_BACK,
-    _NUM_RE,
-    _PERIOD_SUFFIX,
-    _YEAR_TOKEN_RE,
-    _approx_in_pool,
-    _atomic_json,
-    _complement_pool,
-    _fraction_exempt_values,
-    _has_market_context,
-    _json_safe_row,
-    _lint_failures,
-    _market_pool,
-    _row_numeric_pool,
-    _thesis_number_tokens,
-    _thesis_number_tokens_pos,
     apply_repair_patch,
     build_repair_pack,
     lint_judged,
 )
+from autoresearch.scan.l3.evidence import harvest_l3_evidence  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.evidence import load_l3_input  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.merge import _inject_pinned_finalists  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.merge import _swap_lane_quota  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.merge import merge_l3_finalists_v3  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.prompt import _L3_COLS  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.prompt import _delta_filter  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.prompt import _fmt  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.prompt import _prev_l3_day  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.prompt import _render_lane_blocks  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.prompt import _row_lane  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.prompt import compact_table  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.prompt import l3_table_md  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.prompt import row_profile  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.triage import triage_l2_for_l3  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.validation import _CODE_TOKEN_RE  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.validation import _COUNT_SUFFIX  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.validation import _DATE_TOKEN_RE  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.validation import _FRACTION_RE  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.validation import _IDENT_CHAR_RE  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.validation import _MARKET_CTX  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.validation import _MARKET_CTX_BACK  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.validation import _NUM_RE  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.validation import _PERIOD_SUFFIX  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.validation import _YEAR_TOKEN_RE  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.validation import _approx_in_pool  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.validation import _atomic_json  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.validation import _complement_pool  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.validation import _fraction_exempt_values  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.validation import _has_market_context  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.validation import _json_safe_row  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.validation import _lint_failures  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.validation import _market_pool  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.validation import _row_numeric_pool  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.validation import _thesis_number_tokens  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from autoresearch.scan.l3.validation import _thesis_number_tokens_pos  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -87,7 +89,7 @@ def main(argv: list[str] | None = None) -> int:
             "codes": res["codes"],
             "n": len(res["codes"]),
             "prompt": str(
-                (Path(a.root) if a.root else Path("context/scan"))
+                (Path(a.root) if a.root else ws.scan_root())
                 / a.date / "_l3_repair_prompt.md"
             ),
         }, ensure_ascii=False))

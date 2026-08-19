@@ -5,6 +5,8 @@ from datetime import datetime
 
 import pytest
 
+from autoresearch.common import workspace as ws
+
 
 def _patch_tradedays(monkeypatch):
     import autoresearch.data.tushare_source as ts
@@ -33,7 +35,7 @@ def test_run_prewarm_writes_manifest_and_env_lifecycle(tmp_path, monkeypatch):
     res = pw.run_prewarm(now=datetime(2026, 7, 10, 19, 30))
     assert res["date"] == "2026-07-10" and res["ok"]
     assert os.environ.get("LAKE_ASSUME_SETTLED") is None            # 收尾必清
-    j = json.loads((tmp_path / "context/scan/2026-07-10/_prewarm.json").read_text(encoding="utf-8"))
+    j = json.loads((tmp_path / ws.scan_root() / "2026-07-10/_prewarm.json").read_text(encoding="utf-8"))
     assert j["ended_at"] >= j["started_at"]
     assert [s["step"] for s in j["steps"]] == \
         ["frame_lake", "evidence_lake", "temperature", "dossier_prefetch", "hot_rank_snapshot"]
