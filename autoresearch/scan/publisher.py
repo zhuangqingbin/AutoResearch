@@ -311,6 +311,14 @@ def _run_publish(analysis_date: str, scan_dir: Path | None = None,
             publish_run_observation,
         )
 
+        # 决策文件(writer-1)读的是 run_health 里的 decision_records.status,而 :273 那份快照拍
+        # 于 build_summary 之前 —— 当日首跑时它报 ABSENT,导致 data_a 团灭、brief 被印成
+        # BLOCKED,而事后 `post_run observe` 重算又得到 BUY(2026-08-13 实证:4/8 份 brief 与
+        # 决策文件不一致)。这里补拍一次,让 writer-1 读到与 writer-2 同样的事实。
+        # 详见 docs/research/2026-08-19-decision-file-two-writers-and-taskbook-hash.md §2
+        with contextlib.suppress(Exception):
+            _health.write_run_health(scan_dir)
+
         observation = publish_run_observation(scan_dir, real_scan=is_real)
         md = inject_run_observation_section(md, observation["markdown"])
     except Exception as exc:  # noqa: BLE001 — 观测控制面不能阻断报告
