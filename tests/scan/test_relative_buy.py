@@ -38,6 +38,7 @@ from autoresearch.scan.relative_buy import (
     _data_contract_ok,
     build_decision,
     main,
+    preflight_report,
     safe_verify_decision,
     tradable_universe,
     verify_decision,
@@ -1076,3 +1077,72 @@ def test_write_and_verify_decision_propagate_mode_and_exclude_pinned(tmp_path):
 
     result = verify_decision(scan, mode=MODE_ACTIVE, exclude_pinned=True)
     assert result == {"match": True, "action": "noop", "path": str(target)}
+
+
+# ══ E2.3(task-2.3,2026-08-19):preflight 体检 CLI(转正前人读)═══════════════════════
+#
+# 用途:用户在批准 scan_config.jsonc 的 relative_buy.mode 由 shadow 翻 active 之前,
+# 人读一眼这份体检——不接线进任何自动化门,纯只读汇总。三个键:`summary`(=
+# relative_ledger.summarize() 原样返回)、`last_3`(账本尾 3 行的 date/status/code ——
+# 注意账本 schema 是扁平化单票字段,**没有** buys 数组)、`contract_errors_recent`
+# (尾 14 行里 contract_errors 非空的行数)。
+
+
+def _write_ledger_fixture(path: Path) -> None:
+    """4 行账本(升序日期),第 3 行留一个契约错,供 preflight 冒烟断言。"""
+    from autoresearch.learning.relative_ledger import write_ledger
+
+    rows = [
+        {"date": "2026-08-01", "status": "BUY", "code": "000001",
+         "contract_errors": [], "outcome": {}},
+        {"date": "2026-08-02", "status": "BLOCKED", "code": None,
+         "contract_errors": [], "outcome": {}},
+        {"date": "2026-08-03", "status": "BUY", "code": "000002",
+         "contract_errors": ["mode='live' 不在合法集合 ['active', 'shadow'] 内"],
+         "outcome": {}},
+        {"date": "2026-08-04", "status": "BUY", "code": "000003",
+         "contract_errors": [], "outcome": {}},
+    ]
+    write_ledger(rows, path)
+
+
+def test_preflight_reports_summary_last3_and_contract_errors(tmp_path, capsys):
+    """冒烟:preflight verb 输出三个键在场、类型对、取值对(fixture 账本,不碰真实 scan_root)。"""
+    ledger = tmp_path / "relative_buy.jsonl"
+    _write_ledger_fixture(ledger)
+
+    assert main(["preflight", "--ledger", str(ledger)]) == 0
+
+    out = json.loads(capsys.readouterr().out)
+    assert set(out) == {"summary", "last_3", "contract_errors_recent"}
+    assert isinstance(out["summary"], dict)
+    assert "n_decision_days" in out["summary"]          # summarize() 的真实字段
+    assert out["summary"]["n_rows"] == 4
+    assert isinstance(out["last_3"], list) and len(out["last_3"]) == 3
+    assert out["last_3"] == [
+        {"date": "2026-08-02", "status": "BLOCKED", "code": None},
+        {"date": "2026-08-03", "status": "BUY", "code": "000002"},
+        {"date": "2026-08-04", "status": "BUY", "code": "000003"},
+    ]
+    assert isinstance(out["contract_errors_recent"], int)
+    assert out["contract_errors_recent"] == 1
+
+
+def test_preflight_report_is_callable_without_the_cli(tmp_path):
+    """`preflight_report` 本身可直接调用(不必经 argv),供其它编排代码复用。"""
+    ledger = tmp_path / "relative_buy.jsonl"
+    _write_ledger_fixture(ledger)
+
+    report = preflight_report(ledger)
+
+    assert report["contract_errors_recent"] == 1
+    assert report["last_3"][-1]["code"] == "000003"
+
+
+def test_preflight_survives_an_empty_or_missing_ledger(tmp_path):
+    """空/缺账本 → 不炸,三个键仍在场且是空/零值(preflight 是人读体检,不该在没数据
+    时崩——它恰恰是转正前第一次跑、账本可能还很短的那个场景)。"""
+    report = preflight_report(tmp_path / "nope.jsonl")
+    assert report["last_3"] == []
+    assert report["contract_errors_recent"] == 0
+    assert report["summary"]["n_rows"] == 0

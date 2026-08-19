@@ -111,6 +111,10 @@ gap 扣成本为正 —— **v1 影子期无已验证阈值(`SECOND_BUY_THRESHOL
 (pandas 会把 `001283` 读成 `1283`)。
 
   uv run --no-sync python -m autoresearch.scan.relative_buy <date>
+
+转正前体检(task-2.3,人读,不接线进任何自动化门):
+
+  uv run --no-sync python -m autoresearch.scan.relative_buy preflight
 """
 from __future__ import annotations
 
@@ -848,11 +852,68 @@ def safe_verify_decision(scan_dir: Path | str, date: str | None = None,
         return None
 
 
+#: preflight 只往回看几行契约错(近期健康度,不是全历史)。与 `summarize()` 的
+#: `n_contract_errors`(全账本)是两个不同的窗口,读的人不能混着比。
+PREFLIGHT_RECENT_N = 14
+#: preflight `last_3` 亮几行最近决策日(纯人读一眼,不是统计窗口)。
+PREFLIGHT_LAST_N = 3
+
+
+def preflight_report(ledger_path: str | Path | None = None) -> dict:
+    """转正前体检(task-2.3):`{"summary", "last_3", "contract_errors_recent"}`。
+
+    用途:用户在批准 `scan_config.jsonc` 的 `relative_buy.mode` 由 `shadow` 翻
+    `active` 之前,人读一眼这份体检——**不接线进任何自动化门**,纯只读汇总,不影响
+    scan-market 主链任何一步。
+
+    - `summary` = `relative_ledger.summarize()` 的原样返回(全账本口径)。
+    - `last_3` = 账本(按日期升序落盘)尾 `PREFLIGHT_LAST_N` 行的 `{date, status,
+      code}`——⚠️ 账本 schema 是**扁平化**的单票字段(`status`/`code`),**没有**
+      `buys` 数组,消费时不得按数组读。
+    - `contract_errors_recent` = 尾 `PREFLIGHT_RECENT_N` 行里 `contract_errors`
+      **非空的行数**(与 `summarize()["n_contract_errors"]` 同一"行计数"口径,只是把
+      窗口收到最近 N 行,专看"最近是不是又开始出契约错了")。
+
+    空/缺账本 → 不炸,三个键仍在场(`summary` 全零、`last_3=[]`、
+    `contract_errors_recent=0`)——preflight 恰恰可能在账本还很短的早期就被跑起来。
+    """
+    from autoresearch.learning.relative_ledger import load_ledger, summarize
+
+    rows = load_ledger(ledger_path)
+    last_n = rows[-PREFLIGHT_LAST_N:] if PREFLIGHT_LAST_N else []
+    last_3 = [{"date": row.get("date"), "status": row.get("status"),
+               "code": row.get("code")} for row in last_n]
+    recent = rows[-PREFLIGHT_RECENT_N:] if PREFLIGHT_RECENT_N else []
+    contract_errors_recent = sum(1 for row in recent if row.get("contract_errors"))
+    return {"summary": summarize(rows), "last_3": last_3,
+            "contract_errors_recent": contract_errors_recent}
+
+
+def _main_preflight(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        description="E6 转正前体检(preflight):人读 relative_buy 账本 summarize + "
+                    f"尾{PREFLIGHT_LAST_N}行 + 近{PREFLIGHT_RECENT_N}行契约错计数")
+    parser.add_argument("--ledger", default=None,
+                        help="账本路径覆盖(缺省 = relative_ledger.LEDGER_PATH)")
+    args = parser.parse_args(argv)
+    print(json.dumps(preflight_report(args.ledger), ensure_ascii=False, sort_keys=True))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
+    """CLI:默认动作(无 verb)构建并写入当日决策文档;`preflight` verb 出体检 JSON。
+
+    向后兼容锁:`main([<scan>])`(没有 verb 的旧唯一形态)必须继续原样工作——第一个
+    词只要不是已知 verb 就当作隐式的默认动作,不强改成子命令结构逼旧调用方都加前缀。
+    """
+    raw = list(argv if argv is not None else sys.argv[1:])
+    if raw[:1] == ["preflight"]:
+        return _main_preflight(raw[1:])
+
     parser = argparse.ArgumentParser(
         description="统一相对决策层 finalizer v1(影子;确定性、零 LLM、零联网)")
     parser.add_argument("scan", help="分析日(YYYY-MM-DD)或 scan 目录")
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw)
     explicit = Path(args.scan)
     scan = explicit if explicit.exists() else ws.scan_root() / args.scan
     target = write_decision(scan)
@@ -891,9 +952,11 @@ def main(argv: list[str] | None = None) -> int:
 #    的生产者之前,`evidence` 面的 "+0.2 干净" 分量对全体候选恒不给分 = 零鉴别力,
 #    硬门 ③ 的价格断言这一支同样恒不触发。
 # 3. `tripwire` 严重度只覆盖保送(pinned)票,非保送票恒 0。
-# 4. 保送(pinned)持仓**不**被排除在 BUY 候选之外(v1 规则没这一条)。若某天相对 BUY
-#    落在自己已持有的票上,读数会与"新开仓"混在一起——`candidates[].pinned` 已逐票留痕,
-#    影子期用它做分层统计即可,不改规则(retro 的 L3 edge 曾被📌保送污染,同族前科)。
+# 4. 保送(pinned)持仓**默认不**被排除在 BUY 候选之外(v1 规则默认值;`exclude_pinned`
+#    缺省 `False`)。若某天相对 BUY 落在自己已持有的票上,读数会与"新开仓"混在
+#    一起——`candidates[].pinned` 已逐票留痕,可做分层统计(retro 的 L3 edge 曾被📌
+#    保送污染,同族前科)。v2.0(task-2.2)起可用 `exclude_pinned=True` 显式排除;生产
+#    `scan_config.jsonc` 默认仍是 `False`,真要打开是裁决表 A2 批准后的独立动作。
 # 5. 行业基准的口径名叫"申万一级",但可用的 `industry` 列是 tushare「所处行业」
 #    (2026-08-06 实测 129 个组、带 "Ⅱ" 后缀 = 申万二级粒度)。这个名实不符**不是本模块
 #    引入的**:T22 `retro._rel_gap_cols` 生产 `rel_gap_sector` 时按同一列分组、docstring
