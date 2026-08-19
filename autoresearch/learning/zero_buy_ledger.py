@@ -11,10 +11,13 @@ design: docs/specs/2026-07-02-scan-watchlist-and-health-metrics-design.md §2.3
 
 Wave12-T6(A3):verdict 主判据 2026-08-08 由 fwd_2_oc 切到 gap_c1_o2(隔夜主尺,见
 `autoresearch.common.ruler.MAIN_RULER`)——fwd_1/fwd_2/fwd_5 三档降参考列保留,不删
-(旧行历史读数原样留存)。**定义断层预告**:E6(统一相对决策层)人批 activate 日起,
+(旧行历史读数原样留存)。**定义断层**:E6(统一相对决策层)人批 activate 日起,
 成功 run 不再产生 0买新行,本账本冻结为 legacy;新日级主账改记 `action_coverage`、
-relative BUY 收益与 BLOCKED 原因(见 Wave12 T22 `relative_ledger`)——本次改动只覆盖
-E6 activate 前的历史与 shadow 对照,不建冻结逻辑(activate 是 GATED task)。
+relative BUY 收益与 BLOCKED 原因(见 Wave12 T22 `relative_ledger`)。
+
+2026-08-19(task-2.4):上面这条预告**已落地** —— `roll()` 跳过
+`relative_buy.activate_date`(含)起的 scan 日,`render()` 顶部出 legacy 横幅;冻结日
+未配置时全量,与本段落地前逐字相同。实现见 `autoresearch/learning/legacy_freeze.py`。
 
 review fix round 1(2026-08-08):任务书「表补 2026-08-06 起行」本轮**未完成**——
 `context/scan/2026-08-06/` 无 `retro/` 子目录(2026-08-06 的 gap_c1_o2 需 T+2=
@@ -46,10 +49,20 @@ def bought_mask(df: pd.DataFrame) -> pd.Series:
 
 
 def roll(scan_root: Path | None = None) -> pd.DataFrame:
-    """聚合 context/scan/*/retro/attribution.csv → 每日 [date,n_bought,n_stocks,mkt_fwd1,mkt_fwd2,mkt_fwd5]。"""
+    """聚合 context/scan/*/retro/attribution.csv → 每日 [date,n_bought,n_stocks,mkt_fwd1,mkt_fwd2,mkt_fwd5]。
+
+    **legacy 冻结**(E6 转正,task-2.4 —— 本模块 docstring 自 2026-08-08 预告的那件事):
+    `relative_buy.activate_date`(含)起的 scan 日不再产生新行。成功 run 自那天起至少一只
+    BUY,「0买日」这个问题本身就不再由本账本回答;新日级主账 = `relative_ledger`。
+    未配置冻结日 → 全量(现行为,parity)。
+    """
+    from autoresearch.learning import legacy_freeze
     scan_root = scan_root or ws.scan_root()
+    cut = legacy_freeze.cutoff()
     rows = []
     for p in sorted(Path(scan_root).glob("*/retro/attribution.csv")):
+        if legacy_freeze.frozen(p.parent.parent.name, cut):
+            continue
         try:
             df = pd.read_csv(p)
         except Exception:
@@ -77,9 +90,16 @@ def render(
     ledger: pd.DataFrame,
     *,
     causal: pd.DataFrame | None = None,
+    freeze: str | None = "__config__",
 ) -> list[str]:
-    """ledger → markdown(逐日表 + 0买日 vs 有买日市场后市对照)。"""
+    """ledger → markdown(逐日表 + 0买日 vs 有买日市场后市对照)。
+
+    `freeze` 缺省现读 config(横幅不能靠调用方"记得传");显式传 `None` = 无横幅。"""
+    from autoresearch.learning import legacy_freeze
+    if freeze == "__config__":
+        freeze = legacy_freeze.cutoff()
     out = ["# 0买日市场对照(纪律 vs 失明)", ""]
+    out += legacy_freeze.banner(freeze, what="(旧绝对门口径的 0买日对照)")
     if ledger is None or not len(ledger):
         return out + ["_无 retro attribution 数据(先跑 scan-retro)_"]
     if "mkt_gap" not in ledger.columns:

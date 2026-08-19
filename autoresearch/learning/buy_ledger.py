@@ -133,13 +133,22 @@ def _read_attr(d: Path) -> pd.DataFrame | None:
 
 
 def roll(scan_root: Path | str | None = None) -> pd.DataFrame:
-    """逐 scan 日抽 ≥OW 买单 × attribution 已实现 fwd → ledger 帧。无买单日自然无行。"""
+    """逐 scan 日抽 ≥OW 买单 × attribution 已实现 fwd → ledger 帧。无买单日自然无行。
+
+    **legacy 冻结**(E6 转正,task-2.4):`relative_buy.activate_date`(含)起的 scan 日
+    一律不入账 —— 那之后「≥OW 张数」不再是买单数,继续记新行等于把两种定义接成一条
+    趋势线。未配置冻结日 → 全量(现行为,parity)。历史行不动。
+    """
+    from autoresearch.learning import legacy_freeze
     from autoresearch.scan.health import final_ratings  # lazy 防环
     scan_root = Path(scan_root or ws.scan_root())
+    cut = legacy_freeze.cutoff()
     rows = []
     if not scan_root.exists():
         return pd.DataFrame(columns=_COLS)
     for d in sorted(p for p in scan_root.iterdir() if p.is_dir() and p.name[:2] == "20"):
+        if legacy_freeze.frozen(d.name, cut):
+            continue
         ratings = {c: r for c, r in final_ratings(d).items() if r in ("Buy", "Overweight")}
         if not ratings:
             continue
@@ -438,8 +447,15 @@ def _calib_section(calib: dict | None) -> list[str]:
             f"- 当日件建议行:{line}"]
 
 
-def render(ledger: pd.DataFrame, calib: dict | None = None) -> list[str]:
+def render(ledger: pd.DataFrame, calib: dict | None = None,
+           freeze: str | None = "__config__") -> list[str]:
+    """ledger → markdown。`freeze` 缺省现读 config(横幅不能靠调用方"记得传",
+    否则冻结了但报表不说 = 读者拿着一本停止更新的账当活账读)。显式传 `None` = 无横幅。"""
+    from autoresearch.learning import legacy_freeze
+    if freeze == "__config__":
+        freeze = legacy_freeze.cutoff()
     out = ["# 买单 ledger(买后 T+1/5/10 + 目标命中 + 开盘 gap;评级基率供 skeptic 先验)", ""]
+    out += legacy_freeze.banner(freeze, what="(旧绝对门 ≥Overweight 买单账)")
     if ledger is None or not len(ledger):
         return out + ["_尚无 ≥OW 买单入账(0 买期,机制就绪等首单)_"] + _calib_section(calib)
 

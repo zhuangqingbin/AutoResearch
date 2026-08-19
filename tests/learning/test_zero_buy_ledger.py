@@ -137,3 +137,60 @@ def test_bought_mask_is_public_and_reused_by_journal(tmp_path):
     m = bought_mask(df)
     assert list(m) == [True, False, True, False, True, False]
     assert list(bought_mask(pd.DataFrame({"code": ["000001"]}))) == [False]
+
+
+# ── legacy 冻结(E6 转正,task-2.4;本模块 docstring 自 2026-08-08 预告的那件事)──
+
+
+def test_roll_is_unfrozen_without_an_activate_date(tmp_path, monkeypatch):
+    """未配置冻结日 → 全量(parity:与冻结逻辑落地之前逐字相同)。"""
+    from autoresearch.learning import legacy_freeze
+    monkeypatch.setattr(legacy_freeze, "cutoff", lambda: None)
+    _mk_day(tmp_path, "2026-08-18", [True], [0.01], [0.02], fwd2=[0.02])
+    _mk_day(tmp_path, "2026-08-20", [False], [0.03], [0.04], fwd2=[0.04])
+
+    assert list(roll(tmp_path)["date"]) == ["2026-08-18", "2026-08-20"]
+
+
+def test_roll_stops_at_the_activate_date_inclusive(tmp_path, monkeypatch):
+    """冻结日**当天**已由 E6 拥有 BUY → 该日起不再记新行(边界含等号)。"""
+    from autoresearch.learning import legacy_freeze
+    monkeypatch.setattr(legacy_freeze, "cutoff", lambda: "2026-08-20")
+    _mk_day(tmp_path, "2026-08-18", [True], [0.01], [0.02], fwd2=[0.02])
+    _mk_day(tmp_path, "2026-08-20", [False], [0.03], [0.04], fwd2=[0.04])
+    _mk_day(tmp_path, "2026-08-21", [False], [0.05], [0.06], fwd2=[0.06])
+
+    assert list(roll(tmp_path)["date"]) == ["2026-08-18"]     # 历史行照旧在场
+
+
+def test_render_carries_a_legacy_banner_when_frozen(tmp_path, monkeypatch):
+    """冻结了却不说 = 读者拿一本停止更新的账当活账读。横幅由 render 自己读 config,
+    不靠调用方"记得传"。"""
+    from autoresearch.learning import legacy_freeze
+    monkeypatch.setattr(legacy_freeze, "cutoff", lambda: "2026-08-20")
+    _mk_day(tmp_path, "2026-08-18", [True], [0.01], [0.02], fwd2=[0.02])
+
+    md = "\n".join(render(roll(tmp_path)))
+
+    assert "legacy 冻结" in md and "2026-08-20" in md
+    assert "不得接成一条曲线读" in md
+    monkeypatch.setattr(legacy_freeze, "cutoff", lambda: None)
+    assert "legacy 冻结" not in "\n".join(render(roll(tmp_path)))   # 未冻结 → 报表逐字不变
+
+
+def test_cutoff_really_reads_scan_config(tmp_path, monkeypatch):
+    """接线回归:`legacy_freeze.cutoff()` 的事实源是 `scan_config.jsonc` 的
+    `relative_buy.activate_date`(2026-08-11 裁定:config = 全流程唯一参数事实源)。
+    上面几条都 monkeypatch 掉了 `cutoff`,这条锁的是 `cutoff` 自己没坏。"""
+    import json
+
+    from autoresearch.learning import legacy_freeze
+
+    cfg = tmp_path / "scan_config.jsonc"
+    cfg.write_text(json.dumps({"relative_buy": {"activate_date": "2026-08-20"}}),
+                   encoding="utf-8")
+    monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH", cfg)
+    assert legacy_freeze.cutoff() == "2026-08-20"
+
+    monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH", tmp_path / "nope.jsonc")
+    assert legacy_freeze.cutoff() is None                    # 缺配置 → 不冻结(parity)

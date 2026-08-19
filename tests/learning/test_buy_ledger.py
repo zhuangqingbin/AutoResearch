@@ -231,3 +231,38 @@ def test_render_calibration_section_presence_gated(tmp_path):
     assert "全卡目标校准" not in "\n".join(render(ledger))               # 不传 → 无节(parity)
     md = "\n".join(render(ledger, calib=target_calibration(tmp_path, min_n=1)))
     assert "全卡目标校准" in md and "触达率" in md
+
+
+# ── legacy 冻结(E6 转正,task-2.4):旧 OW 买单账停止长大,历史照旧 ────────────
+
+
+def test_roll_is_unfrozen_without_an_activate_date(tmp_path, monkeypatch):
+    from autoresearch.learning import legacy_freeze
+    monkeypatch.setattr(legacy_freeze, "cutoff", lambda: None)
+    _mk_day(tmp_path, "2026-08-18")
+    _mk_day(tmp_path, "2026-08-20")
+
+    assert list(roll(tmp_path)["date"]) == ["2026-08-18", "2026-08-20"]
+
+
+def test_roll_stops_at_the_activate_date_inclusive(tmp_path, monkeypatch):
+    """冻结后「≥OW 张数」不再是买单数 —— 继续记新行就是把两种定义接成一条趋势线。"""
+    from autoresearch.learning import legacy_freeze
+    monkeypatch.setattr(legacy_freeze, "cutoff", lambda: "2026-08-20")
+    _mk_day(tmp_path, "2026-08-18")
+    _mk_day(tmp_path, "2026-08-20")
+    _mk_day(tmp_path, "2026-08-21")
+
+    assert list(roll(tmp_path)["date"]) == ["2026-08-18"]
+
+
+def test_render_carries_a_legacy_banner_when_frozen(tmp_path, monkeypatch):
+    from autoresearch.learning import legacy_freeze
+    monkeypatch.setattr(legacy_freeze, "cutoff", lambda: "2026-08-20")
+    _mk_day(tmp_path, "2026-08-18")
+
+    md = "\n".join(render(roll(tmp_path)))
+
+    assert "legacy 冻结" in md and "旧绝对门 ≥Overweight 买单账" in md
+    monkeypatch.setattr(legacy_freeze, "cutoff", lambda: None)
+    assert "legacy 冻结" not in "\n".join(render(roll(tmp_path)))
