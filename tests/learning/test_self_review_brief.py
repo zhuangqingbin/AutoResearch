@@ -7,10 +7,14 @@
   ④ brief 与 summary 的 BUY 数 / code / basis / 基准读数不一致 = fail
   ⑤ **仅 active 模式**:成功 run BUY_n<1 = fail;BLOCKED run 不得渲染成成功。
      影子期(mode=shadow)该检查**跳过并注明**——mode 从 `_relative_buy_decision.json` 读。
-  ⑥ ③ 段相对 BUY 与决策文件同源(E4,2026-08-18 设计稿 §3)—— 08-17 事故:brief 读到了
-     `_relative_buy_decision.json` 早 25 秒的半成品,把本该 rank1 的 BUY 印成了 BLOCKED,
-     两层报告一起错、lint 一起绿。顺序(决策文件 mtime ≤ brief.md)∧ 同源(brief ③ 段渲染
-     出的六位代码集合 == `buys[].code` 集合,含空对空)任一违反 = fail。
+  ⑥ ③ 段相对 BUY 与决策文件同源(E4,`docs/specs/2026-08-18-e6-activation-learning-
+     slimdown-design.md` §3 E4)—— 08-17 事故:brief 读到了 `_relative_buy_decision.json`
+     早 25 秒的半成品,把本该 rank1 的 BUY 印成了 BLOCKED,两层报告一起错、lint 一起绿。
+     brief ③ 段渲染出的六位代码集合 == `buys[].code` 集合(含空对空)违反 = fail。
+     **不做 mtime 顺序检查**(2026-08-19 复核 Critical 修复轮 1 删除):决策文件有两个
+     合法写者(`publisher._run_publish` 在 brief 之前;`post_run observe` 在 brief 之后
+     无条件重写),mtime 顺序在健康日也会颠倒 —— 08-17 真实归档实证(22:15:36 vs
+     22:15:33、内容同源)。
 
 零网络;所有产物写 tmp_path(`conftest._forbid_production_report_writes` 护栏下必须通过)。
 """
@@ -286,7 +290,14 @@ def test_shadow_zero_buy_is_not_fail(tmp_path):
     assert not _fails(rows), f"影子期不该因 0 BUY 变红:{_fails(rows)}"
 
 
-# ───────── ⑥ ③ 段相对 BUY 与决策文件同源(E4,08-17 事故:brief 读到半成品决策) ─────────
+# ───── ⑥ ③ 段相对 BUY 与决策文件**内容**同源(E4,08-17 事故:brief 读到半成品决策) ─────
+#
+# **不设 mtime 顺序判据**(2026-08-19 复核 Critical,修复轮 1 删除):`_relative_buy_decision.json`
+# 有两个合法写者 —— `publisher._run_publish`(brief 之前)与 `post_run observe`
+# (STAGES 步骤 5,brief 之后无条件重写)。08-17 真实归档:决策文件 mtime 22:15:36 晚于
+# brief.md 的 22:15:33,但两边内容同源(000779)—— mtime 顺序在健康日也会颠倒,一条
+# 「决策比 brief 新就 fail」的判据在此会对健康 run 误报,比没有这条判据更糟(data 类的存在
+# 意义是「说假话才连坐」)。真正要防的「brief 读了半成品」由下面的**内容同源**判据直接抓。
 
 _E6_CHECK = "brief③相对BUY与决策文件不同源"
 
@@ -341,19 +352,19 @@ def test_relative_buy_decision_has_buy_but_brief_prints_blocked_is_fail(publishe
     assert "600018" in hit[0]["detail"]
 
 
-def test_decision_file_newer_than_brief_is_fail(published):
-    """顺序断言:决策文件比 brief 新 = brief 渲染时读到的必是旧版本(08-17 事故的时序病,
-    本用例反向构造同一形状)。构造:发布完之后把决策文件的 mtime 调到 brief 之后。"""
+def test_decision_file_newer_than_brief_with_matching_content_is_not_flagged(published):
+    """回归锁(2026-08-19 复核 Critical):`post_run observe` 在 brief 之后无条件重写决策
+    文件是**健康日的正常序**(STAGES 步骤 5,08-17 真实归档同形)——mtime 颠倒本身不是
+    「说假话」,内容依旧同源就不该 fail。这条防的是「将来有人把 mtime 顺序判据补回来」;
+    若 self_review.py 重新长出该判据,本用例会先红。"""
     report, scan = published
     brief_path = report / brief.BRIEF_FILENAME
     decision_path = scan / brief.DECISION_FILENAME
     newer = brief_path.stat().st_mtime + 5
     os.utime(decision_path, (newer, newer))
     rows = self_review.brief_lint(report, scan)
-    hit = [r for r in rows if r["check"] == _E6_CHECK]
-    assert hit, f"决策文件 mtime 晚于 brief 没有报警:{rows}"
-    assert hit[0]["severity"] == "fail"
-    assert "mtime" in hit[0]["detail"]
+    assert _E6_CHECK not in _checks(rows), \
+        f"决策文件比 brief 新(内容仍同源)不该 fail —— mtime 顺序判据已被裁定删除:{rows}"
 
 
 # ───────────────────────────── 容错 ─────────────────────────────

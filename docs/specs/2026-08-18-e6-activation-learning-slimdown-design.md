@@ -111,7 +111,17 @@
 
 ### E4 顺序契约验收（只验不改）
 
-侦察证实 publisher 内顺序已是：build_summary → **decision 写盘**（`publisher.py:314`）→ brief 渲染（`:373-376`）→ brief_lint（`:389-397`），且 brief_lint 无 mtime 判据（记忆 `brief-reads-provisional-relative-buy` 所述病灶在现行代码中不成立，疑已被 B档波修复）。本项收一个**顺序探针**：断言 decision 文件 mtime ≤ brief.md mtime 且 brief ③ 的 BUY 与 decision 文件一致（进 brief_lint data 类）。
+侦察证实 publisher 内顺序已是：build_summary → **decision 写盘**（`publisher.py:314`）→ brief 渲染（`:373-376`）→ brief_lint（`:389-397`），且 brief_lint 无 mtime 判据（记忆 `brief-reads-provisional-relative-buy` 所述病灶在现行代码中不成立，疑已被 B档波修复）。本项收一个**内容同源探针**：断言 brief ③ 的 BUY 与 decision 文件一致（进 brief_lint data 类）。
+
+> **2026-08-19 复核 Critical 更正（修复轮 1）**：本节原文曾在上一句之后另收一条 mtime 顺序判据
+> （「decision 文件 mtime ≤ brief.md mtime」），已删除，不再实施。理由：`_relative_buy_decision.json`
+> 有**两个合法写者**——`publisher._run_publish`（brief 渲染之前）与 `post_run observe`
+> （`.claude/skills/scan-market/SKILL.md` STAGES 步骤 5，brief 落盘之后**无条件原子重写**该文件）。
+> 立案侦察只查到写者 1，漏了写者 2，故当初误判「mtime 顺序 = 生成先后」。真实归档为证：
+> `context_claude/scan/2026-08-17/_relative_buy_decision.json`（mtime 22:15:36）晚于
+> `reports_claude/scan/20260817_2215/brief.md`（mtime 22:15:33）整整 3 秒，但两边内容同源
+> （代码 000779 一致）——这是 `post_run observe` 跑过之后的**健康日**，mtime 顺序判据会对它
+> 误报 fail。内容同源判据不受影响，继续照收。
 
 ### E5 转正后的记分册与诚实呈现
 
