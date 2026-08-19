@@ -139,6 +139,7 @@
 
   // ── 收尾 · 相对 BUY(E6)──【生效点:scan/post_run.publish_run_observation → relative_buy.write_decision/verify_decision】
   // mode: shadow=影子只记账;active=正式接管 BUY(裁决表 A1 批 GO 后才可翻,翻回即回滚)
-  // exclude_pinned: true=📌 持仓不参与当日 BUY 选择(保送不算判例;裁决表 A2)
-  "relative_buy": { "mode": "shadow", "exclude_pinned": true }
+  // exclude_pinned: 📌 持仓是否不参与当日 BUY 选择(保送不算判例)。**裁决表 A2 待用户批准前
+  //   保持 false** —— 开了会让影子账本按未获批规则记账(08-18 影子 BUY 688766 普冉本身就是📌)
+  "relative_buy": { "mode": "shadow", "exclude_pinned": false }
 }
