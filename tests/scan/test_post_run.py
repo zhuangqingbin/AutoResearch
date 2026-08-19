@@ -354,3 +354,82 @@ def test_publish_run_observation_survives_reconcile_failure(tmp_path, capsys):
 
     assert "reconcile 失败" in capsys.readouterr().err
     assert (scan / "_relative_buy_decision.json").exists()  # 下游未被挡住
+
+
+# ── P0-2:`decision_write` 显式模式参数(writer-1 write / writer-2 verify)──────────
+def test_publish_run_observation_rejects_an_unknown_decision_write_mode(tmp_path):
+    """合法值只有 {"write","verify"};非法值是调用方的编程契约违规,必须立即报错,不能
+    被 `publish_run_observation` 的一堆内部 `contextlib.suppress` 悄悄吞掉。"""
+    scan = tmp_path / "2026-08-01"
+    scan.mkdir()
+    with pytest.raises(ValueError, match="decision_write"):
+        publish_run_observation(scan, real_scan=False, decision_write="clobber")
+
+
+def test_publish_run_observation_write_mode_still_overwrites_unconditionally(tmp_path):
+    """默认/显式 write 模式必须保持 P0-2 之前的行为:无条件原子覆盖(writer-1 的姿势),
+    即便盘上那份和现算的不一样——这条守住向后兼容,防止改造 verify 时手滑把 write 也
+    改成了幂等比较。"""
+    from autoresearch.scan.relative_buy import DECISION_FILENAME
+    from tests.scan.test_relative_buy import _RANK_CANDS, _build_scan
+
+    scan = _build_scan(tmp_path, _RANK_CANDS, date="2026-08-02")
+    stale = json.dumps({"stale": True, "blocked": True, "buys": []}, ensure_ascii=False)
+    (scan / DECISION_FILENAME).write_text(stale, encoding="utf-8")
+
+    publish_run_observation(scan, real_scan=False, decision_write="write")
+
+    doc = json.loads((scan / DECISION_FILENAME).read_text(encoding="utf-8"))
+    assert doc.get("stale") is None                 # 陈旧占位内容被真实覆盖
+    assert doc["blocked"] is False
+    assert not (scan / "_relative_buy_decision.mismatch.json").exists()
+
+
+def test_publish_run_observation_verify_mode_never_overwrites_a_mismatch(tmp_path):
+    """端到端穿线:`decision_write="verify"` 真的从 CLI 参数一路传到
+    `relative_buy.safe_verify_decision`,而不是在半路被哪一层默认值悄悄吃掉。"""
+    from autoresearch.scan.relative_buy import DECISION_FILENAME
+    from tests.scan.test_relative_buy import _RANK_CANDS, _build_scan
+
+    scan = _build_scan(tmp_path, _RANK_CANDS, date="2026-08-03")
+    publish_run_observation(scan, real_scan=False, decision_write="write")  # writer-1
+    original = (scan / DECISION_FILENAME).read_bytes()
+    assert json.loads(original)["blocked"] is False
+
+    # writer-2 之前,输入被换成会翻转 blocked 的状态(同 relative_buy 侧的造法)
+    (scan / "run_health.json").write_text(json.dumps({
+        "core_missing": ["L1_scored_full.csv"],
+        "run_contract": {"status": "OK"},
+        "stage_results": {"status": "OK", "failed": []},
+        "decision_records": {"status": "OK"},
+    }, ensure_ascii=False), encoding="utf-8")
+
+    publish_run_observation(scan, real_scan=False, decision_write="verify")  # writer-2
+
+    assert (scan / DECISION_FILENAME).read_bytes() == original   # 盘上那份分毫未动
+    assert (scan / "_relative_buy_decision.mismatch.json").exists()
+    with (scan / "gate_fires.csv").open(encoding="utf-8", newline="") as fh:
+        import csv as _csv
+        rows = list(_csv.DictReader(fh))
+    assert any(r["check"] == "相对BUY决策文件·两次现算不一致" and r["severity"] == "fail"
+               for r in rows)
+
+
+def test_observe_cli_uses_verify_not_write(tmp_path, monkeypatch):
+    """CLI `observe` 子命令是 writer-2(STAGES 步骤 5 最后一条命令,brief 落盘之后)——
+    必须显式传 `decision_write="verify"`,不能悄悄退回默认的 write(P0-2)。"""
+    from autoresearch.scan import post_run
+    from autoresearch.scan.post_run import main
+
+    scan = tmp_path / "2026-08-04"
+    scan.mkdir()
+    captured = {}
+
+    def _fake_publish(_scan_dir, **kwargs):
+        captured.update(kwargs)
+        return {"status": "OK", "measurement_status": "OK", "maturity": {}}
+
+    monkeypatch.setattr(post_run, "publish_run_observation", _fake_publish)
+
+    assert main([str(scan), "observe"]) == 0
+    assert captured.get("decision_write") == "verify"

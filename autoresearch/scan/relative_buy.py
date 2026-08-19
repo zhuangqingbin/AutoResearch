@@ -137,6 +137,14 @@ RULE_VERSION = "e6.v1.2"
 # 数据类失败照旧团灭。历史 run_health 无 failed_data 键 → 回退旧口径,历史判定不改写。
 # 打分/选择语义零改动。
 DECISION_FILENAME = "_relative_buy_decision.json"
+#: P0-2(`docs/research/2026-08-19-decision-file-two-writers-and-taskbook-hash.md` §4)—— 并排
+#: 证据侧车:writer-2(`post_run observe`)现算与盘上不一致时,两份的关键字段 + sha256 落这里,
+#: 供人核对「两次现算为什么不一样」;它不影响任何门,纯留痕。
+MISMATCH_FILENAME = "_relative_buy_decision.mismatch.json"
+#: 同一天两次现算给出不同答案 = 数据不可信,必须落 data 类(不带 `产物形状·`/
+#: `usage_reconcile·` 前缀 —— 那两个在 `common.failclass.EXEMPT_PREFIXES` 里被判
+#: hygiene/metering,会被豁免出 data 类;这条要连坐当日 `data_a`)。
+MISMATCH_CHECK_NAME = "相对BUY决策文件·两次现算不一致"
 MODE_SHADOW = "shadow"
 
 # ── v1 锁定的常量(改这里 = 改规则 = 必须换 RULE_VERSION 并走 registry)────────
@@ -671,16 +679,21 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
     }
 
 
+def _serialize_decision(doc: dict) -> bytes:
+    """`build_decision` 输出 → byte-stable 契约的 bytes。`write_decision` 与 `verify_decision`
+    共用这一个函数 —— 两处各写各的序列化会让「逐字节比较」变成两套口径,防止未来漂移。"""
+    return (json.dumps(doc, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
 def write_decision(scan_dir: Path | str, date: str | None = None,
                    mode: str = MODE_SHADOW) -> Path:
     """构建并原子落盘。`sort_keys=True` 是 byte 稳定契约的一半,另一半是构建本身无时序量。"""
     scan = Path(scan_dir)
     target = scan / DECISION_FILENAME
-    payload = json.dumps(build_decision(scan, date, mode), ensure_ascii=False,
-                         indent=2, sort_keys=True) + "\n"
+    payload = _serialize_decision(build_decision(scan, date, mode))
     target.parent.mkdir(parents=True, exist_ok=True)
     temp = target.with_name(f"{target.name}.tmp")
-    temp.write_text(payload, encoding="utf-8")
+    temp.write_bytes(payload)
     temp.replace(target)
     return target
 
@@ -691,6 +704,109 @@ def safe_write_decision(scan_dir: Path | str, date: str | None = None) -> Path |
         return write_decision(scan_dir, date)
     except Exception as exc:  # noqa: BLE001 — 纯影子件失败只记一行,不连累主链
         print(f"[relative_buy] 构建失败: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return None
+
+
+def _decision_digest(doc: dict, raw: bytes) -> dict:
+    """决策文档 → 用于并排对比的精简摘要(至少 blocked/buys/counts/blocked_reasons + sha256)。"""
+    return {
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "blocked": doc.get("blocked"),
+        "buys": doc.get("buys"),
+        "counts": doc.get("counts"),
+        "blocked_reasons": doc.get("blocked_reasons"),
+    }
+
+
+def verify_decision(scan_dir: Path | str, date: str | None = None) -> dict:
+    """P0-2:writer-2(`post_run observe`)的第二次「写」改成幂等校验,不再无条件覆盖。
+
+    `docs/research/2026-08-19-decision-file-two-writers-and-taskbook-hash.md` §2.1/§2.5:
+    `_relative_buy_decision.json` 的两个合法写者(`publisher._run_publish` 与
+    `post_run observe`)分处一次发布的两个不同时刻;P0-1 已经让两者读到的 `run_health`
+    快照同源,但**没有**东西担保它们永远一致 —— 万一某天两次现算真的不同(比如中途
+    `decision_records.json` 被别的进程改写),writer-2 原来的做法是**无条件原子重写**,
+    把这件事静默抹掉:盘上文件从此变成了「brief 从未印过的答案」,`relative_ledger`
+    读盘上文件记账,于是记账与发布分家 —— 这正是本文件双写者问题的成因,不能让「装了
+    护栏」本身重新引入同一种静默改写。
+
+    行为(不覆盖是硬约束,其余是留痕):
+      - 现算(`build_decision`,参数与 `write_decision` 一致)并与盘上那份逐字节比较。
+      - 相等 → 什么都不做(不重写、不留痕 —— 正常路径必须是安静的)。
+      - 盘上文件缺席 → 没有「已发布答案」可比,不是「两次不一致」而是「还没发布过」,
+        照写(等价于 write 模式);这不会掩盖任何东西,因为压根没有旧答案被覆盖。
+      - 内容不等 → **绝不覆盖盘上那份**:另落一份并排证据 `_relative_buy_decision.
+        mismatch.json`,往 `gate_fires.csv` 追加一条 data 类 fail 行(check 名故意不带
+        `产物形状·`/`usage_reconcile·` 前缀,不被 `failclass.EXEMPT_PREFIXES` 豁免出
+        data 类),并打一行 stderr。`gate_fires.csv` 是「当日发布了什么」的记账本 ——
+        同一天两次现算给出不同答案本身就是必须报警的事实,不是可以悄悄了结的噪音。
+
+    返回 `{"match": bool, "action": str, ...}`,便于调用方/测试内省;调用方若只关心
+    副作用可以忽略返回值(与 `write_decision` 返回 `Path` 同一习惯,只是这里多一个字段)。
+    """
+    scan = Path(scan_dir)
+    target = scan / DECISION_FILENAME
+    fresh_doc = build_decision(scan, date, MODE_SHADOW)
+    fresh_bytes = _serialize_decision(fresh_doc)
+    resolved_date = str(fresh_doc.get("date") or date or scan.name)
+
+    if not target.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temp = target.with_name(f"{target.name}.tmp")
+        temp.write_bytes(fresh_bytes)
+        temp.replace(target)
+        return {"match": True, "action": "write_absent", "path": str(target)}
+
+    on_disk_bytes = target.read_bytes()
+    if on_disk_bytes == fresh_bytes:
+        return {"match": True, "action": "noop", "path": str(target)}
+
+    # ── 不等:绝不覆盖,留证据 + 报警 ──
+    try:
+        on_disk_doc = json.loads(on_disk_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        on_disk_doc = {}
+    on_disk_digest = _decision_digest(on_disk_doc, on_disk_bytes)
+    fresh_digest = _decision_digest(fresh_doc, fresh_bytes)
+    mismatch_path = scan / MISMATCH_FILENAME
+    mismatch_payload = {
+        "schema_version": 1,
+        "date": resolved_date,
+        "decision_filename": DECISION_FILENAME,
+        "on_disk": on_disk_digest,
+        "recomputed": fresh_digest,
+    }
+    mismatch_path.write_text(_serialize_decision(mismatch_payload).decode("utf-8"),
+                             encoding="utf-8")
+
+    detail = (f"盘上 blocked={on_disk_digest['blocked']} "
+              f"buys={[b.get('code') for b in (on_disk_digest['buys'] or [])]} "
+              f"(sha256={on_disk_digest['sha256'][:12]}) != 现算 "
+              f"blocked={fresh_digest['blocked']} "
+              f"buys={[b.get('code') for b in (fresh_digest['buys'] or [])]} "
+              f"(sha256={fresh_digest['sha256'][:12]}) —— 见 {mismatch_path.name}")
+    print(f"[relative_buy] verify 不一致(盘上那份保持不变): {detail}", file=sys.stderr)
+
+    from autoresearch.learning.self_review import append_gate_fires
+
+    append_gate_fires(scan, [{
+        "check": MISMATCH_CHECK_NAME,
+        "severity": "fail",
+        "detail": detail,
+        "code": None,
+    }], resolved_date)
+
+    return {"match": False, "action": "mismatch", "path": str(target),
+            "mismatch_path": str(mismatch_path)}
+
+
+def safe_verify_decision(scan_dir: Path | str, date: str | None = None) -> dict | None:
+    """`verify_decision` 的失败纪律版:出异常只打一行,与 `safe_write_decision` 同一姿势
+    (决策件本身从不阻断发布);但内部真正的「不一致」分支不算异常,是正常返回路径。"""
+    try:
+        return verify_decision(scan_dir, date)
+    except Exception as exc:  # noqa: BLE001 — 纯影子件失败只记一行,不连累主链
+        print(f"[relative_buy] verify 失败: {type(exc).__name__}: {exc}", file=sys.stderr)
         return None
 
 

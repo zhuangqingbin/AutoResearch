@@ -562,8 +562,24 @@ def publish_run_observation(
     budgets: dict | None = None,
     real_scan: bool | None = None,
     phase: int = 1,
+    decision_write: str = "write",
 ) -> dict:
-    """从 canonical cost/timing JSON 发布观测；不导入也不写任何评级逻辑。"""
+    """从 canonical cost/timing JSON 发布观测；不导入也不写任何评级逻辑。
+
+    `decision_write`(P0-2,`docs/research/2026-08-19-decision-file-two-writers-and-
+    taskbook-hash.md` §4)—— `_relative_buy_decision.json` 有两个合法调用点(writer-1
+    `publisher._run_publish`,brief 之前;writer-2 `post_run observe` CLI,brief 之后),
+    显式声明各自要哪种写入语义,**不**从「文件是否已存在」隐式猜:同日重跑 assemble 是
+    合法操作,那时文件必须被重写,存在与否分不出这两种场景。
+      - `"write"`  —— 现算并原子覆盖(`relative_buy.safe_write_decision`,writer-1 用)。
+      - `"verify"` —— 现算并与盘上逐字节比较,相等静默、不等绝不覆盖只留证据+报警
+        (`relative_buy.safe_verify_decision`,writer-2 用)。
+    非法值立即 `ValueError`——这是调用方的编程契约,不是运行期可以吞掉的异常。
+    """
+    if decision_write not in {"write", "verify"}:
+        raise ValueError(
+            "decision_write 必须是 'write' 或 'verify'(P0-2 显式模式参数,不接受隐式推断);"
+            f"收到 {decision_write!r}")
     scan = Path(scan_dir)
     usage_file = Path(usage_path) if usage_path else scan / "_token_usage.json"
     timing_file = Path(timing_path) if timing_path else scan / "_stage_timing.json"
@@ -636,11 +652,18 @@ def publish_run_observation(
     # (`build_passport`)再判四门四面,所以必须等 decision_records/早停/intel 全部定稿,
     # 与护照是同一个时刻的两个派生视图。本轮仍是**影子**:只写
     # `_relative_buy_decision.json`,不写 buy ledger、不改 publisher、不碰
-    # decision_records;失败只打一行(`safe_write_decision` 自带),不能反过来阻断发布。
-    # 前向观测的消费者是 `autoresearch.learning.relative_ledger`(夜间 `_ledgers`)。
-    from autoresearch.scan.relative_buy import safe_write_decision
+    # decision_records;失败只打一行(`safe_write_decision`/`safe_verify_decision` 自带),
+    # 不能反过来阻断发布。前向观测的消费者是 `autoresearch.learning.relative_ledger`
+    # (夜间 `_ledgers`)。P0-2:`decision_write` 显式选写入语义 —— write 原子覆盖
+    # (writer-1);verify 现算校验,不一致时绝不覆盖、只留证据+报警(writer-2)。
+    if decision_write == "write":
+        from autoresearch.scan.relative_buy import safe_write_decision
 
-    safe_write_decision(scan)
+        safe_write_decision(scan)
+    else:
+        from autoresearch.scan.relative_buy import safe_verify_decision
+
+        safe_verify_decision(scan)
     from autoresearch.scan.stage_result import safe_record_stage_result
 
     safe_record_stage_result(
@@ -867,12 +890,15 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(result, ensure_ascii=False, sort_keys=True))
             return 0
         if args.command == "observe":
+            # P0-2:CLI `observe` 是 writer-2(STAGES 步骤 5 最后一条命令,brief 落盘之后)——
+            # 必须传 verify,不能重犯「无条件原子重写」那个旧毛病(§4 P0-2)。
             result = publish_run_observation(
                 scan,
                 report_dir=args.report_dir,
                 usage_path=args.usage,
                 timing_path=args.timing,
                 phase=args.phase,
+                decision_write="verify",
             )
             with contextlib.suppress(Exception):  # 插队建档失败不挡成本观测发布(Wave9 R6)
                 receipt = enqueue_receipt(scan, scan.name)

@@ -319,7 +319,11 @@ def _run_publish(analysis_date: str, scan_dir: Path | None = None,
         with contextlib.suppress(Exception):
             _health.write_run_health(scan_dir)
 
-        observation = publish_run_observation(scan_dir, real_scan=is_real)
+        # P0-2(同文档 §4):`decision_write="write"` 显式声明 —— 这里是 writer-1,brief
+        # 渲染前的原子写,现行为不变;显式传参而非依赖默认值,是这道护栏本身要求的
+        # 「意图必须写在调用点、不能靠猜」。
+        observation = publish_run_observation(
+            scan_dir, real_scan=is_real, decision_write="write")
         md = inject_run_observation_section(md, observation["markdown"])
     except Exception as exc:  # noqa: BLE001 — 观测控制面不能阻断报告
         from autoresearch.scan.post_run import inject_run_observation_section

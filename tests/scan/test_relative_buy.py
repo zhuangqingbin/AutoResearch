@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -23,17 +24,22 @@ from pathlib import Path
 
 import pytest
 
+from autoresearch.common.failclass import fail_class
 from autoresearch.common.ruler import MAIN_RULER, entry_flag_for
 from autoresearch.scan.decision_record import DecisionRecord, write_decision_records
 from autoresearch.scan.relative_buy import (
     DECISION_FILENAME,
     EXPECTED_ABS_GAP_MIN_N,
+    MISMATCH_CHECK_NAME,
+    MISMATCH_FILENAME,
     RULE_VERSION,
     SCHEMA_VERSION,
     _data_contract_ok,
     build_decision,
     main,
+    safe_verify_decision,
     tradable_universe,
+    verify_decision,
     write_decision,
 )
 from autoresearch.scan.run_contract import RunContract, write_run_contract
@@ -845,3 +851,142 @@ def test_data_fail_blocks(tmp_path):
 def test_legacy_health_without_failed_data_keeps_old_semantics(tmp_path):
     _health(tmp_path, {"status": "OK", "failed": ["gate4"]})
     assert not _data_contract_ok(tmp_path)[0]  # 回退旧口径:failed 非空即拒
+
+
+# ══ P0-2(`docs/research/2026-08-19-decision-file-two-writers-and-taskbook-hash.md`
+# §4):writer-2(`post_run observe`)改成幂等校验,不再无条件覆盖 ═══════════════════
+#
+# 三件事逐条锁:①两次现算一致 → verify 绝对安静(无侧车/无新 gate_fires 行/原文件
+# 字节不变);②盘上还没有已发布答案 → 照写(不是「不一致」,是「还没发布过」);
+# ③两次现算真的不一样(mutation) → 绝不覆盖 + 并排证据侧车 + gate_fires data 类
+# fail 行,三者缺一都算测试失败。
+
+
+def _gate_fires_rows(scan: Path) -> list[dict]:
+    path = scan / "gate_fires.csv"
+    if not path.exists():
+        return []
+    with path.open(encoding="utf-8", newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
+def test_verify_is_silent_when_two_computations_agree(tmp_path):
+    """反向测试:两次现算一致 → verify 不重写、不留痕(正常路径必须是安静的)。"""
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    written = write_decision(scan)                     # writer-1 时刻
+    before_bytes = written.read_bytes()
+    before_mtime_ns = written.stat().st_mtime_ns
+
+    result = verify_decision(scan)                      # writer-2 时刻:输入没变
+
+    assert result == {"match": True, "action": "noop", "path": str(written)}
+    assert written.read_bytes() == before_bytes
+    assert written.stat().st_mtime_ns == before_mtime_ns   # 真没被重写,不只是内容凑巧相同
+    assert not (scan / MISMATCH_FILENAME).exists()
+    assert not (scan / "gate_fires.csv").exists()
+
+
+def test_verify_writes_when_nothing_was_published_yet(tmp_path):
+    """盘上没有已发布答案:不是「两次不一致」,是「还没发布过」——照写,等价于 write 模式。"""
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    target = scan / DECISION_FILENAME
+    assert not target.exists()
+
+    result = verify_decision(scan)
+
+    assert result["match"] is True
+    assert result["action"] == "write_absent"
+    assert target.exists()
+    assert json.loads(target.read_text(encoding="utf-8"))["blocked"] is False
+    assert not (scan / MISMATCH_FILENAME).exists()
+    assert not (scan / "gate_fires.csv").exists()
+
+
+def test_verify_never_overwrites_on_mismatch_and_leaves_evidence(tmp_path):
+    """核心变异探针:writer-1 写完之后,输入被换成会翻转 blocked 的状态,verify 必须
+    (1) 盘上原文件字节丝毫不变;(2) 落一份并排证据侧车,内容含两份的差异;
+    (3) `gate_fires.csv` 出现一条 data 类 fail 行(`fail_class(check) == "data"`)。
+    """
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    written = write_decision(scan)                      # writer-1 时刻:BUY 002345
+    original_bytes = written.read_bytes()
+    original_doc = json.loads(original_bytes)
+    assert original_doc["blocked"] is False
+    assert [b["code"] for b in original_doc["buys"]] == ["002345"]
+    assert not (scan / "gate_fires.csv").exists()
+
+    # writer-2 时刻之前,run_health 被换成数据契约异常(与
+    # test_data_contract_anomaly_fails_data_a_for_every_candidate 同一造法)——
+    # 现算会把 blocked 从 False 现算成 True,candidates 全灭。
+    (scan / "run_health.json").write_text(json.dumps({
+        "core_missing": ["L1_scored_full.csv"],
+        "run_contract": {"status": "OK"},
+        "stage_results": {"status": "OK", "failed": []},
+        "decision_records": {"status": "OK"},
+    }, ensure_ascii=False), encoding="utf-8")
+    assert build_decision(scan)["blocked"] is True      # 造夹具的前提条件先自证
+
+    result = verify_decision(scan)
+
+    # ① 盘上原决策文件字节未变(绝不覆盖)
+    assert written.read_bytes() == original_bytes
+    assert result["match"] is False
+    assert result["action"] == "mismatch"
+
+    # ② 并排证据侧车出现,内容含两份的关键字段差异 + 两份的 sha256
+    mismatch_path = scan / MISMATCH_FILENAME
+    assert mismatch_path.exists()
+    mismatch = json.loads(mismatch_path.read_text(encoding="utf-8"))
+    assert mismatch["on_disk"]["blocked"] is False
+    assert mismatch["on_disk"]["buys"] == original_doc["buys"]
+    assert mismatch["on_disk"]["counts"] == original_doc["counts"]
+    assert mismatch["on_disk"]["blocked_reasons"] == original_doc["blocked_reasons"]
+    assert mismatch["recomputed"]["blocked"] is True
+    assert mismatch["recomputed"]["buys"] == []
+    assert mismatch["on_disk"]["sha256"] == hashlib.sha256(original_bytes).hexdigest()
+    assert mismatch["recomputed"]["sha256"] != mismatch["on_disk"]["sha256"]
+
+    # ③ gate_fires.csv 出现且恰一条 data 类 fail 行
+    rows = _gate_fires_rows(scan)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["check"] == MISMATCH_CHECK_NAME
+    assert row["severity"] == "fail"
+    assert fail_class(row["check"]) == "data"
+    assert MISMATCH_FILENAME in row["detail"]
+
+
+def test_safe_verify_decision_never_raises_and_still_leaves_evidence(tmp_path):
+    """`safe_verify_decision` 是生产调用点用的失败纪律版:同一变异下行为与
+    `verify_decision` 一致(内部真「不一致」不算异常,是正常返回路径),只是外壳吞异常。"""
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    write_decision(scan)
+    (scan / "run_health.json").write_text(json.dumps({
+        "core_missing": ["L1_scored_full.csv"],
+        "run_contract": {"status": "OK"},
+        "stage_results": {"status": "OK", "failed": []},
+        "decision_records": {"status": "OK"},
+    }, ensure_ascii=False), encoding="utf-8")
+
+    result = safe_verify_decision(scan)
+
+    assert result is not None and result["match"] is False
+    assert (scan / MISMATCH_FILENAME).exists()
+    assert len(_gate_fires_rows(scan)) == 1
+
+
+def test_safe_verify_decision_survives_build_failure(tmp_path, monkeypatch, capsys):
+    """影子件失败纪律:verify 内部出异常(如 `build_decision` 炸了)不得向上抛,只打一行
+    stderr——与 `safe_write_decision` 同一姿势(纯影子件失败不连累主链)。"""
+    import autoresearch.scan.relative_buy as relative_buy_mod
+
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    write_decision(scan)
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("build exploded")
+
+    monkeypatch.setattr(relative_buy_mod, "build_decision", _boom)
+
+    assert safe_verify_decision(scan) is None
+    assert "verify 失败" in capsys.readouterr().err
