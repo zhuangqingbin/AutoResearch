@@ -378,8 +378,33 @@ def run_contract_health(scan_dir: Path) -> dict:
     }
 
 
+def _gate4_has_data_fail(scan: Path) -> bool | None:
+    """gate4 FAILED 时查 gate_fires.csv 是否有 data 类 fail 行;查不到 → None(按 data 处理)。"""
+    import csv as _csv
+
+    from autoresearch.common.failclass import fail_class
+
+    path = Path(scan) / "gate_fires.csv"
+    if not path.is_file():
+        return None
+    try:
+        with path.open(encoding="utf-8", newline="") as fh:
+            rows = list(_csv.DictReader(fh))
+    except (OSError, _csv.Error):
+        return None
+    fails = [r for r in rows if str(r.get("severity") or "") == "fail"]
+    if not fails:
+        return None
+    return any(fail_class(r.get("check")) == "data" for r in fails)
+
+
 def stage_results_health(scan_dir: Path) -> dict:
-    """汇总 StageResult 完整性与业务状态；FAILED 本身不是文件损坏。"""
+    """汇总 StageResult 完整性与业务状态；FAILED 本身不是文件损坏。
+
+    `failed_data` 是 `failed` 的子集(E1a,2026-08-18 设计稿 §3):gate4 FAILED 时再查
+    `gate_fires.csv` 的 fail 行分类,hygiene/metering 类不连坐当日 `relative_buy` 的
+    data_a 硬门;非 gate4 stage 的 FAILED 一律原样计入(那本账只归 gate4 一家写)。
+    """
     from collections import Counter
 
     from autoresearch.scan.stage_result import load_stage_result
@@ -390,6 +415,7 @@ def stage_results_health(scan_dir: Path) -> dict:
         "status": "ABSENT",
         "counts": {},
         "failed": [],
+        "failed_data": [],
         "degraded": [],
         "skipped": [],
         "invalid_files": [],
@@ -416,10 +442,17 @@ def stage_results_health(scan_dir: Path) -> dict:
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             invalid.append(path.name)
     counts = Counter(result.status for result in results)
+    failed = sorted(r.stage for r in results if r.status == "FAILED")
+    failed_data = []
+    for stage in failed:
+        if stage == "gate4" and _gate4_has_data_fail(scan) is False:
+            continue
+        failed_data.append(stage)
     return {
         "status": "INVALID" if invalid or mismatches else "OK",
         "counts": dict(sorted(counts.items())),
-        "failed": sorted(r.stage for r in results if r.status == "FAILED"),
+        "failed": failed,
+        "failed_data": failed_data,
         "degraded": sorted(r.stage for r in results if r.status == "DEGRADED"),
         "skipped": sorted(r.stage for r in results if r.status == "SKIPPED"),
         "invalid_files": sorted(invalid),

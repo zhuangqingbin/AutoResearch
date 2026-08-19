@@ -4,6 +4,7 @@ spec: docs/specs/2026-07-02-scan-observability-design.md
 """
 from __future__ import annotations
 
+import csv
 import json
 from datetime import datetime, timezone
 
@@ -16,6 +17,7 @@ from autoresearch.scan.health import (
     l4_phase_stats,
     ledger_freshness,
     run_health,
+    stage_results_health,
     write_run_health,
 )
 from autoresearch.scan.run_contract import RunContract, write_run_contract
@@ -37,6 +39,15 @@ def _mk_day(root, date, codes=("000001",), cards=None, l1_rows=None, meta=None):
     if meta is not None:
         (d / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
     return d
+
+
+def _mk_fires(scan, rows):
+    """`gate_fires.csv` 的最小合法写法(字段名同 `learning.self_review.dump_gate_fires`)。"""
+    with (scan / "gate_fires.csv").open("w", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=["date", "code", "check", "severity", "detail"])
+        w.writeheader()
+        for r in rows:
+            w.writerow(r)
 
 
 def test_run_health_core(tmp_path):
@@ -114,6 +125,7 @@ def test_run_health_stage_results_absent_is_advisory(tmp_path):
         "status": "ABSENT",
         "counts": {},
         "failed": [],
+        "failed_data": [],
         "degraded": [],
         "skipped": [],
         "invalid_files": [],
@@ -138,6 +150,63 @@ def test_run_health_summarizes_valid_stage_results(tmp_path):
     assert result["counts"] == {"DEGRADED": 1, "FAILED": 1}
     assert result["failed"] == ["gate1"]
     assert result["degraded"] == ["prelude"]
+
+
+# ══ E1a(2026-08-18 设计稿 §3):gate4 的 hygiene/metering 失败不连坐 data_a ═══════
+#
+# gate4 = self_review 硬门,`gate_fires.csv` 只要有一行 severity=fail 就把整个 stage 判
+# FAILED——但 08-07/10/11 三天证实,混进这本账的失败里有文档卫生 lint(引用退役符号)和
+# token 计量对账问题,与「当日市场数据可信度」无关。`failed_data` 是 `failed` 的子集:
+# gate4 FAILED 时再查 `gate_fires.csv` 的 fail 行分类,非 gate4 stage 的 FAILED 一律原样计入
+# (不查 fires——那本账只归 gate4 一家写)。
+
+
+def test_gate4_hygiene_only_not_in_failed_data(tmp_path):
+    from autoresearch.scan.stage_result import record_stage_result
+
+    d = _mk_day(tmp_path, "2026-07-28")
+    record_stage_result(d, stage="gate4", status="FAILED", artifacts=[], metrics={},
+                        warnings=[], error="boom")
+    _mk_fires(d, [{"date": "2026-07-28", "code": "", "severity": "fail",
+                   "check": "产物形状·退役符号指令性引用", "detail": "x"}])
+    got = stage_results_health(d)
+    assert "gate4" in got["failed"]           # 原义不动:发布卫生照旧 FAILED
+    assert "gate4" not in got["failed_data"]  # 但不连坐 data_a
+
+
+def test_gate4_with_data_fail_in_failed_data(tmp_path):
+    from autoresearch.scan.stage_result import record_stage_result
+
+    d = _mk_day(tmp_path, "2026-07-28")
+    record_stage_result(d, stage="gate4", status="FAILED", artifacts=[], metrics={},
+                        warnings=[], error="boom")
+    _mk_fires(d, [
+        {"date": "2026-07-28", "code": "", "severity": "fail",
+         "check": "产物形状·旧尺裸写", "detail": "x"},
+        {"date": "2026-07-28", "code": "600188", "severity": "fail",
+         "check": "价格断言与OHLCV不符", "detail": "y"},
+    ])
+    assert "gate4" in stage_results_health(d)["failed_data"]
+
+
+def test_gate4_failed_but_fires_missing_is_data(tmp_path):
+    """fail-safe:gate4 FAILED 却查不到 fire 行(文件缺失/无 fail 行) → 按 data 连坐。"""
+    from autoresearch.scan.stage_result import record_stage_result
+
+    d = _mk_day(tmp_path, "2026-07-28")
+    record_stage_result(d, stage="gate4", status="FAILED", artifacts=[], metrics={},
+                        warnings=[], error="boom")
+    assert "gate4" in stage_results_health(d)["failed_data"]
+
+
+def test_non_gate4_failed_always_data(tmp_path):
+    from autoresearch.scan.stage_result import record_stage_result
+
+    d = _mk_day(tmp_path, "2026-07-28")
+    record_stage_result(d, stage="assemble", status="FAILED", artifacts=[], metrics={},
+                        warnings=[], error="boom")
+    got = stage_results_health(d)
+    assert got["failed"] == ["assemble"] and got["failed_data"] == ["assemble"]
 
 
 def test_run_health_flags_stage_contract_mismatch_and_corruption(tmp_path):
