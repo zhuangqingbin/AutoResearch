@@ -732,3 +732,42 @@ def test_pinned_section_lists_every_pinned_holding(scan):
     for name in ("华泰证券", "宁德时代", "协创数据"):
         assert name in line
     assert "上港集团" not in line, "非保送票不进持仓动作区"
+
+
+# ── E3(task-2.4):active 期 ③ 段的旧 OW 行降为「研究评级分布」────────────────
+
+
+def test_active_mode_demotes_the_legacy_ow_line_to_a_rating_distribution(tmp_path):
+    """active 期「生产 BUY N 只」这个名字必须消失 —— 它会把研究评级张数读成买入建议。
+
+    变异校验:把 `_buy_lines` 里的 active 分支删掉,本条立刻变红。
+    """
+    scan = _scan_dir(tmp_path, decision=_decision(mode="active"))
+    md = brief.build(scan, run_folder=_RUN)["markdown"]
+
+    assert "生产 BUY" not in md
+    assert "**研究评级分布**" in md
+    assert "证据不是决策" in md
+    assert "✅ **relative BUY**" in md                      # 两行同源:一个正式另一个也正式
+    assert "🕶" not in md
+
+
+def test_active_mode_renames_the_why_line(tmp_path):
+    """active 期「为什么没买」改叫「为什么没有 ≥OW 卡」—— BUY 在场的日子不能同屏
+    出现「✅ relative BUY 600018」和「为什么没买」。"""
+    scan = _scan_dir(tmp_path, decision=_decision(mode="active"))
+    md = brief.build(scan, run_folder=_RUN)["markdown"]
+
+    assert "为什么没买" not in md
+    line = next(ln for ln in md.splitlines() if "为什么没有 ≥OW 卡" in ln)
+    assert "两类不混算" in line
+
+
+def test_shadow_mode_keeps_the_legacy_wording(tmp_path):
+    """parity:影子期两行措辞逐字不变。"""
+    scan = _scan_dir(tmp_path)
+    md = brief.build(scan, run_folder=_RUN)["markdown"]
+
+    assert "**生产 BUY 0 只**(旧绝对门 ≥Overweight;" in md
+    assert "└ 为什么没买:" in md
+    assert "研究评级分布" not in md

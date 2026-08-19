@@ -635,22 +635,30 @@ def _sections(facts: dict, *, pinned_cap: int, delta_cap: int) -> tuple[list[str
 def _buy_lines(facts: dict, src: list[dict]) -> list[str]:
     lines: list[str] = []
     buys = facts["buys"]
+    rel = facts["relative"]
+    # E3(task-2.4):active 期这一行**不再叫「生产 BUY」** —— 那个名字会让读者把研究评级
+    # 的张数读成买入建议,而 active 期 BUY 由下一行的决策文件独家拥有。口径源同 `tag`
+    # (决策文件的 `mode`,brief 渲染时它已定稿),两行不会一个说影子一个说正式。
+    active = rel.get("mode", MODE_SHADOW) == "active"
     dist = "、".join(f"{r} {buys['dist'][r]}" for r in _RATING_ORDER if r in buys["dist"])
-    prod_text = (f"**生产 BUY {buys['production_n']} 只**(旧绝对门 ≥Overweight;"
-                 f"评级分布 {dist or '—'};run_mode {buys['run_mode']})")
+    prod_text = (
+        (f"**研究评级分布**(≥Overweight {buys['production_n']} 只 —— "
+         f"**证据不是决策**,BUY 见下一行;评级分布 {dist or '—'};run_mode {buys['run_mode']})")
+        if active else
+        (f"**生产 BUY {buys['production_n']} 只**(旧绝对门 ≥Overweight;"
+         f"评级分布 {dist or '—'};run_mode {buys['run_mode']})"))
     _src(src, "buys.production_n", buys["production_n"], "_final_ratings.json",
          "count(rating in Buy/Overweight)", prod_text)
     _src(src, "buys.run_mode", buys["run_mode"], "run_mode.json", "mode", prod_text)
     lines.append("- " + prod_text)
-    why = _why_text(buys)
+    why = _why_text(buys, active=active)
     if why:
         _src(src, "buys.why_no_buy", buys.get("n_early"), "decision_records.json",
              "records[].early_stop.reason + gate_states==FAIL", why)
         lines.append("  " + why)
 
-    rel = facts["relative"]
     tag = ("🕶 **影子 relative BUY(非正式·不执行)**"
-           if rel.get("mode", MODE_SHADOW) != "active" else "✅ **relative BUY**")
+           if not active else "✅ **relative BUY**")
     if not rel.get("present"):
         lines.append(f"- {tag}:—(`{DECISION_FILENAME}` 未生成 —— 缺证据不等于没候选)")
         return lines + [_ow_line(facts, src)]
@@ -690,8 +698,13 @@ def _buy_lines(facts: dict, src: list[dict]) -> list[str]:
     return lines + [_ow_line(facts, src)]
 
 
-def _why_text(buys: dict) -> str:
-    """0 买日的「为什么」一行:**早停分桶与门柱分列**(两类原因不搅在一起)。有买日不出。"""
+def _why_text(buys: dict, *, active: bool = False) -> str:
+    """0 买日的「为什么」一行:**早停分桶与门柱分列**(两类原因不搅在一起)。有买日不出。
+
+    active 期措辞改成「为什么没有 ≥OW 卡」:那时「没买」是决策文件说了算,而这一行讲的
+    是研究评级为什么没到 ≥OW —— 两件事,不能共用「为什么没买」这个名字(否则 BUY 在场
+    的日子会同屏出现「✅ relative BUY 600000」和「为什么没买」)。
+    """
     if buys.get("production_n"):
         return ""
     stops = buys.get("early_stop") or {}
@@ -705,7 +718,8 @@ def _why_text(buys: dict) -> str:
     # 口径必须自报(复核 I-5):summary 的「OW三门失守分布」由 `gate_histogram` 解析**卡片
     # 自由文本**得来,与这一行的**结构化** `decision_records.gate_states` 是两个生产者、数会不等。
     # T26 把本行注进 summary 的 🧭 仪表盘后两者首次同屏,不打标读者会随机相信一个。
-    return ("└ 为什么没买:" + " · ".join(bits)
+    head = "└ 为什么没有 ≥OW 卡:" if active else "└ 为什么没买:"
+    return (head + " · ".join(bits)
             + "(口径:`decision_records.gate_states` 结构化读数;早停卡不写三门段,两类不混算)")
 
 
