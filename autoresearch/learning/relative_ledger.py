@@ -154,6 +154,49 @@ def _contract_errors(doc: dict) -> list[str]:
     return errors
 
 
+#: `contract_error_kind()` 返回值:结构性契约违规(preflight 读它标「真」,需人核实)。
+CONTRACT_ERROR_KIND_REAL = "real"
+#: `contract_error_kind()` 返回值:I-6 冻结的版本时序留痕(preflight 读它标「良性」)。
+CONTRACT_ERROR_KIND_VERSION_SKEW_SUPERSEDE = "version_skew_supersede"
+#: `contract_error_kind()` 返回值:该行没有契约错。
+CONTRACT_ERROR_KIND_NONE = "none"
+
+
+def contract_error_kind(row: dict) -> str:
+    """一行账的 `contract_errors` → `CONTRACT_ERROR_KIND_*` 之一。
+
+    背景(2026-08-19 preflight 实测):I-6 冻结保护(`_freeze`)在 `rule_version` 升版时
+    正确拒绝了重算结果覆写已登记观测,并把这一事实记成一条 `FROZEN_ERROR_PREFIX` 契约
+    错——这是**治理留痕**,不是**真违规**:同一个 BUY 决策没有变,只是版本标签升了(真实
+    账本 `n_contract_errors=8` 全部同族:`e6.v1.1`→`e6.v2.0`,BUY 代码逐条相同)。但它与
+    结构性契约违规(mode 非法/basis 错/同日多只 BUY/BUY 不在候选表内,见 `_contract_errors`)
+    混进同一个计数,会让转正前人读体检看起来像一堆吓人的假警报——这个函数就是拆开这
+    两类的判据(preflight 消费它,不接线进任何自动化门)。
+
+    判 `CONTRACT_ERROR_KIND_VERSION_SKEW_SUPERSEDE`(良性)当且仅当:
+    - 该行**全部**契约错误都带 `FROZEN_ERROR_PREFIX` 前缀(没有夹杂别的违规);
+    - 且 `superseded` 在场、`recorded_code == recomputed_code`(BUY 决策本身没变,只是
+      `rule_version` 换了标签)。
+
+    否则判 `CONTRACT_ERROR_KIND_REAL`,包括两种情形:①任何非冻结类契约错(结构性违规,
+    `_contract_errors` 产的那些);②冻结了、但 BUY 代码本身也变了(重算换了一只票,如
+    `test_rule_version_change_does_not_rewrite_a_recorded_observation`)——那才是真正
+    可能丢观测、需要人工核实的情形。`superseded` 缺失/不是 dict 时同样判 `REAL`:拿不出
+    「代码没变」的证据就不能算良性(宁可假阳,不可假阴)。
+    """
+    errors = row.get("contract_errors") or []
+    if not errors:
+        return CONTRACT_ERROR_KIND_NONE
+    if not all(str(error).startswith(FROZEN_ERROR_PREFIX) for error in errors):
+        return CONTRACT_ERROR_KIND_REAL
+    superseded = row.get("superseded")
+    if not isinstance(superseded, dict) or not superseded:
+        return CONTRACT_ERROR_KIND_REAL
+    if _code(superseded.get("recorded_code")) != _code(superseded.get("recomputed_code")):
+        return CONTRACT_ERROR_KIND_REAL
+    return CONTRACT_ERROR_KIND_VERSION_SKEW_SUPERSEDE
+
+
 def _status(doc: dict) -> str:
     """BUY / BLOCKED / NO_RUN。
 

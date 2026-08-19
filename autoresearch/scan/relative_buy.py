@@ -934,7 +934,8 @@ PREFLIGHT_LAST_N = 3
 
 
 def preflight_report(ledger_path: str | Path | None = None) -> dict:
-    """转正前体检(task-2.3):`{"summary", "last_3", "contract_errors_recent"}`。
+    """转正前体检(task-2.3/2.5b):`{"summary", "last_3", "contract_errors_recent",
+    "contract_errors"}`。
 
     用途:用户在批准 `scan_config.jsonc` 的 `relative_buy.mode` 由 `shadow` 翻
     `active` 之前,人读一眼这份体检——**不接线进任何自动化门**,纯只读汇总,不影响
@@ -946,12 +947,29 @@ def preflight_report(ledger_path: str | Path | None = None) -> dict:
       `buys` 数组,消费时不得按数组读。
     - `contract_errors_recent` = 尾 `PREFLIGHT_RECENT_N` 行里 `contract_errors`
       **非空的行数**(与 `summarize()["n_contract_errors"]` 同一"行计数"口径,只是把
-      窗口收到最近 N 行,专看"最近是不是又开始出契约错了")。
+      窗口收到最近 N 行,专看"最近是不是又开始出契约错了")。**未分类总数,保留字段
+      不删**,供既有消费者/测试兼容。
+    - `contract_errors`(task-2.5b 新增)= 按 `relative_ledger.contract_error_kind()`
+      分类后的计数 `{"real", "version_skew_supersede", "recent_real",
+      "recent_version_skew_supersede"}`。前两者是全账本口径(`real +
+      version_skew_supersede == summary["n_contract_errors"]`),后两者是近
+      `PREFLIGHT_RECENT_N` 行口径(`recent_real + recent_version_skew_supersede ==
+      contract_errors_recent`)——两条恒等式在测试里锁死。分类动机:2026-08-19 实测
+      真实账本 `n_contract_errors=8` 全部是同一种 I-6 良性留痕(`rule_version` 时序
+      错位,BUY 代码不变),混在一个未分类计数里会让人读体检把治理留痕误判成 8 条真
+      违规——`real` 才是需要人工核实的数字,`version_skew_supersede` 不是。
 
-    空/缺账本 → 不炸,三个键仍在场(`summary` 全零、`last_3=[]`、
-    `contract_errors_recent=0`)——preflight 恰恰可能在账本还很短的早期就被跑起来。
+    空/缺账本 → 不炸,四个键仍在场(`summary` 全零、`last_3=[]`、
+    `contract_errors_recent=0`、`contract_errors` 四值皆 0)——preflight 恰恰可能在
+    账本还很短的早期就被跑起来。
     """
-    from autoresearch.learning.relative_ledger import load_ledger, summarize
+    from autoresearch.learning.relative_ledger import (
+        CONTRACT_ERROR_KIND_REAL,
+        CONTRACT_ERROR_KIND_VERSION_SKEW_SUPERSEDE,
+        contract_error_kind,
+        load_ledger,
+        summarize,
+    )
 
     rows = load_ledger(ledger_path)
     last_n = rows[-PREFLIGHT_LAST_N:] if PREFLIGHT_LAST_N else []
@@ -959,8 +977,18 @@ def preflight_report(ledger_path: str | Path | None = None) -> dict:
                "code": row.get("code")} for row in last_n]
     recent = rows[-PREFLIGHT_RECENT_N:] if PREFLIGHT_RECENT_N else []
     contract_errors_recent = sum(1 for row in recent if row.get("contract_errors"))
+    kinds_full = [contract_error_kind(row) for row in rows]
+    kinds_recent = [contract_error_kind(row) for row in recent]
+    contract_errors = {
+        "real": kinds_full.count(CONTRACT_ERROR_KIND_REAL),
+        "version_skew_supersede": kinds_full.count(CONTRACT_ERROR_KIND_VERSION_SKEW_SUPERSEDE),
+        "recent_real": kinds_recent.count(CONTRACT_ERROR_KIND_REAL),
+        "recent_version_skew_supersede":
+            kinds_recent.count(CONTRACT_ERROR_KIND_VERSION_SKEW_SUPERSEDE),
+    }
     return {"summary": summarize(rows), "last_3": last_3,
-            "contract_errors_recent": contract_errors_recent}
+            "contract_errors_recent": contract_errors_recent,
+            "contract_errors": contract_errors}
 
 
 def _main_preflight(argv: list[str]) -> int:

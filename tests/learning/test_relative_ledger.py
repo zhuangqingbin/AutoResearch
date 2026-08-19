@@ -274,6 +274,73 @@ def test_freeze_is_idempotent_and_does_not_pile_up_contract_errors(paths):
                 if e.startswith(rl.FROZEN_ERROR_PREFIX)]) == 1
 
 
+# ── task-2.5b:contract_error_kind() 分类判据(治理留痕 vs 真违规)──────────────
+#
+# preflight 用它把 I-6 冻结留痕(良性)与结构性契约违规(真)分开计数,防止转正前人读
+# 体检把治理留痕误报成一堆吓人的假警报(2026-08-19 实测:真实账本 n_contract_errors=8,
+# 逐条查证全部是同一种良性留痕)。
+
+
+def test_contract_error_kind_is_none_when_no_errors():
+    assert rl.contract_error_kind({"contract_errors": []}) == rl.CONTRACT_ERROR_KIND_NONE
+    assert rl.contract_error_kind({}) == rl.CONTRACT_ERROR_KIND_NONE
+
+
+def test_contract_error_kind_real_when_rewrite_also_changed_the_buy_code(paths):
+    """冻结时 BUY 代码本身也变了(重算换了一只票)→ 真违规,不能算良性留痕——这才是
+    可能真丢观测、需要人工核实的情形(与真实事故 `test_rule_version_change_does_not_
+    rewrite_a_recorded_observation` 同一形状)。"""
+    _put_decision(paths["scan_root"], _doc(DATE_A, rule_version="e6.v1"))
+    rl.roll(scan_root=paths["scan_root"], ledger_path=paths["ledger_path"])
+    _put_decision(paths["scan_root"],
+                  _doc(DATE_A, rule_version="e6.v2", buy="000776", name="广发证券"))
+    row = rl.roll(scan_root=paths["scan_root"], ledger_path=paths["ledger_path"])[0]
+
+    assert row["superseded"]["recorded_code"] != row["superseded"]["recomputed_code"]
+    assert rl.contract_error_kind(row) == rl.CONTRACT_ERROR_KIND_REAL
+
+
+def test_contract_error_kind_benign_when_only_rule_version_drifted(paths):
+    """真实事故的形状:v1 → v1.1 语义等价、选的还是同一只票,只有版本串变了 → 良性。"""
+    _put_decision(paths["scan_root"], _doc(DATE_A, rule_version="e6.v1"))
+    rl.roll(scan_root=paths["scan_root"], ledger_path=paths["ledger_path"])
+    _put_decision(paths["scan_root"], _doc(DATE_A, rule_version="e6.v1.1"))
+    row = rl.roll(scan_root=paths["scan_root"], ledger_path=paths["ledger_path"])[0]
+
+    assert row["superseded"]["recorded_code"] == row["superseded"]["recomputed_code"]
+    assert rl.contract_error_kind(row) == rl.CONTRACT_ERROR_KIND_VERSION_SKEW_SUPERSEDE
+
+
+def test_contract_error_kind_real_for_structural_violations_not_frozen():
+    """结构性契约违规(如同日 2 只 BUY)不带 FROZEN_ERROR_PREFIX → 恒 real,与是否
+    `superseded` 无关。"""
+    row = {"contract_errors": ["v1 契约是每日恰 1 只 BUY(第 2 只恒不出),实收 2 只"]}
+    assert rl.contract_error_kind(row) == rl.CONTRACT_ERROR_KIND_REAL
+
+
+def test_contract_error_kind_real_when_superseded_metadata_is_missing():
+    """冻结前缀在,但 `superseded` 缺失/不是 dict → 拿不出「代码没变」的证据,判 real
+    (宁可假阳不可假阴,防御性分支——正常 `_freeze()` 产的行不会走到这里)。"""
+    frozen_only = {"contract_errors": [f"{rl.FROZEN_ERROR_PREFIX}:测试用最小复现"]}
+    assert rl.contract_error_kind(frozen_only) == rl.CONTRACT_ERROR_KIND_REAL
+
+    empty_superseded = {"contract_errors": [f"{rl.FROZEN_ERROR_PREFIX}:测试用最小复现"],
+                        "superseded": {}}
+    assert rl.contract_error_kind(empty_superseded) == rl.CONTRACT_ERROR_KIND_REAL
+
+
+def test_contract_error_kind_mixed_errors_in_one_row_is_real():
+    """一行里如果混了「冻结留痕」与「别的违规」(全体必须都带前缀才算良性)→ real。"""
+    row = {
+        "contract_errors": [
+            f"{rl.FROZEN_ERROR_PREFIX}:已登记 …",
+            "mode='live' 不在合法集合 ['active', 'shadow'] 内",
+        ],
+        "superseded": {"recorded_code": "688766", "recomputed_code": "688766"},
+    }
+    assert rl.contract_error_kind(row) == rl.CONTRACT_ERROR_KIND_REAL
+
+
 def test_identical_recompute_is_not_flagged_as_a_rewrite(paths):
     """反向锁:同规则同结果重跑不许报冻结(否则守卫天天红 = 没人再看它)。"""
     _put_decision(paths["scan_root"], _doc(DATE_A))
