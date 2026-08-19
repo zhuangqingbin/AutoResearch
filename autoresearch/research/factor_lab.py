@@ -690,7 +690,7 @@ CANDIDATES = [
     # 隔夜因子第一批(Wave12-T29,设计稿 E3)。**方向是预注册假设,不是已知结论** ——
     # 三条全部 +1,出处逐条写在 docs/research/2026-08-08-overnight-factors-batch1.md §0.3
     # (先写后看:该节在跑任何读数之前落盘)。真符号/去留由 gap 判据族定;过门也**不**自动
-    # 入组(改 `_GROUPS` 是 B 类,走 experiment_registry)。
+    # 入组(改 `_GROUPS` 是行为变更,经影子账本呈证 + proposal 人批,不是随手改)。
     ("lhb_net_ratio_broker", +1), ("limit_ladder", +1), ("sealed_strength", +1),
 ]
 FWDS = ["fwd_1_cc", "fwd_1_oo", "fwd_2_oc", "fwd_5_oc", "fwd_10_oc", "gap_c1_o2"]

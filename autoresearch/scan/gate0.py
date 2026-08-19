@@ -19,7 +19,11 @@ design: docs/specs/2026-08-03-scan-next-wave-brainstorm-design.md §4.2-4
 availability SLO、故障演练与回滚,**不进零风险 P0**。本模块因此:
 
 - 默认 `ADVISORY` —— 只产 preflight 报告,不阻断;
-- `BLOCKING` 模式存在且可测,但需显式开启 + registry ACTIVE 实验(`assert_may_block`);
+- `BLOCKING` 模式的**治理闸**(`assert_may_block`)与 CLI `--mode BLOCKING` 分支已于
+  2026-08-19(用户裁决 A3,随 experiment_registry 家族)整删——该模式此前需 registry
+  ACTIVE 实验才能开启,而 registry 永远不存在 ACTIVE 实验,是结构性不可达的死路径。
+  `preflight(mode=BLOCKING)` 本身作为纯函数仍保留(供测试/编排代码直调模拟硬闸场景),
+  只是不再有 CLI/治理入口能触发它;
 - override 记 `actor / reason / expiry`,**过期即失效**(不是永久豁免)。
 
   uv run --no-sync python -m autoresearch.scan.gate0 check 2026-08-04
@@ -109,23 +113,6 @@ def preflight(debts: dict, *, day: str | None = None, mode: str = ADVISORY,
     }
 
 
-def assert_may_block(registry_path: Path | str | None = None) -> None:
-    """开硬闸前的治理检查:registry 必须有 ACTIVE 的 `scan_preflight_gate` 实验。"""
-    from autoresearch.learning.experiment_registry import (
-        DEFAULT_REGISTRY,
-        RegistryError,
-        load_registry,
-    )
-
-    try:
-        payload = load_registry(Path(registry_path or DEFAULT_REGISTRY))
-    except RegistryError as exc:
-        raise Gate0Error(f"registry 读不动({exc})—— 无授权即不得开硬闸") from exc
-    if payload.get("active_by_family", {}).get(REGISTRY_FAMILY) is None:
-        raise Gate0Error(
-            f"registry 无 ACTIVE 的 `{REGISTRY_FAMILY}` 实验 —— {AVAILABILITY_REQUIREMENT}")
-
-
 def render(report: dict) -> str:
     mark = {PASS: "✅", WARN: "⚠️", BLOCK: "🚨"}[report["verdict"]]
     lines = [f"# GATE0 preflight —— {mark} **{report['verdict']}**", "",
@@ -151,19 +138,16 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="GATE0 preflight(§4.2-4;默认 advisory)")
     ap.add_argument("cmd", choices=["check"])
     ap.add_argument("date", nargs="?", default=None)
-    ap.add_argument("--mode", default=ADVISORY, choices=list(MODES))
+    # D1(2026-08-19,用户裁决 A3):BLOCKING 的治理闸(assert_may_block)已随
+    # experiment_registry 整删,CLI 不再暴露该模式(结构性不可达即一并退役);
+    # `preflight(mode=gate0.BLOCKING)` 仍可编程直调(见 tests/learning/test_nightly_runner.py)。
+    ap.add_argument("--mode", default=ADVISORY, choices=[ADVISORY])
     ap.add_argument("--json-out", default=None)
     a = ap.parse_args(argv)
 
     from autoresearch.learning.nightly_runner import collect_debts
 
     day = a.date or _date.today().isoformat()
-    if a.mode == BLOCKING:
-        try:
-            assert_may_block()
-        except Gate0Error as exc:
-            print(f"  ✗ {exc}")
-            return 2
     report = preflight(collect_debts(day), day=day, mode=a.mode)
     if a.json_out:
         out = Path(a.json_out)
@@ -171,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
         out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n",
                        encoding="utf-8")
     print(render(report))
-    # advisory 恒 0;BLOCK 才非 0(而 BLOCK 需要治理授权才可能出现)
+    # advisory 恒 0;BLOCK 在 CLI 侧结构性不可达(--mode 只接受 ADVISORY)
     return 1 if report["verdict"] == BLOCK else 0
 
 

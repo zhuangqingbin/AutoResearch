@@ -24,8 +24,9 @@ design: Wave12 E6(用户 2026-08-08 裁定)。上游 = T23 决策层
 ## 本轮仍是影子
 
 只写自己这两份产物:**不写生产 buy ledger、不改 publisher、不碰 `decision_records.json`、
-不改任何评级**。活体切换是独立的 GATED task(≥20 个决策日影子 + 五守卫 + 人批),登记在
-`experiment_registry` 的 `exp_relative_buy_owner`(family=decision,PREREGISTERED)。
+不改任何评级**(注:本段描述的是 E6 转正前的历史状态——`exp_relative_buy_owner` 当年
+登记进 `experiment_registry`,该模块已于 2026-08-19 用户裁决 A3 随家族整删;E6 实际
+转正走的是人批 + config `relative_buy.mode` 翻 `active`,不是这条 registry 状态机)。
 
 ## 不与旧账混算(定义断层)
 
@@ -686,9 +687,8 @@ def render(rows: list[dict], *, legacy_ow: dict | None = None) -> str:
         "## 诚实局限",
         "",
         "- 本账全部行 `mode=shadow`:**不写生产 buy ledger、不改 publisher、不碰 "
-        "`decision_records.json`**。活体切换是独立 GATED task(≥"
-        f"{MATURE_MIN_OBSERVATIONS} 个决策日 + 五守卫 + 人批),登记在 "
-        "`experiment_registry` 的 `exp_relative_buy_owner`。",
+        "`decision_records.json`**。活体切换经人批 + config `relative_buy.mode` "
+        "翻 `active`(不再经 `experiment_registry`——已随家族整删)。",
         "- `PENDING` = 主尺尚未成熟(需 T+2 开盘)或该日 retro 归因未跑,**不是 0**。",
         "- 两个「基准 n」**不可互换**:决策文档的 `benchmark.market_n` 是当日 **L0 可交易"
         "全集**(finalizer 自己算四面分位用的分母);`outcome.benchmark_n` 才是 "

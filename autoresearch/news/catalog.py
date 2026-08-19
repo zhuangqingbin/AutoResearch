@@ -615,8 +615,8 @@ def inventory(lake_root: Path | str | None = None,
 # Wave12-T35「通电」第二步。这三条是**全市场固定口径 feed**(不是逐票查回来的),
 # 所以 scope=market_wide —— 它们是目前唯一有资格进"市场新闻量/热度"的观测。
 #
-# **消费者仍然全关**:intel 先读目录、L3 第二源、typed-event 进 prompt 都是 B 类,
-# 要走 experiment_registry。本步只让目录里**有数据**,不让任何决策面读它。
+# **消费者仍然全关**:intel 先读目录、L3 第二源、typed-event 进 prompt 都是行为变更,
+# 要经影子账本呈证 + proposal 人批。本步只让目录里**有数据**,不让任何决策面读它。
 
 FLASH_SOURCES: dict[str, dict] = {
     # 东财全球财经快讯:标题/摘要/发布时间/链接(2026-08-09 实测 200 行)

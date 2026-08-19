@@ -175,7 +175,7 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
 
 ## 实验治理(行为变更的唯一生产入口)
 
-涉及召回、L3、门、早停、ensemble、评级、Token 或速度的改动,先以 `autoresearch.learning.experiment_registry` 登记不可变定义+**稳定基线**,再由 `autoresearch.learning.promotion` 检查研究/决策/Token/速度/架构五项守卫。状态机 `PREREGISTERED → RECOMMENDED → APPROVED → ACTIVE`,观察窗通过成 `STABLE_CANDIDATE`,守卫失守成 `ROLLBACK_RECOMMENDED`。`approve`/`activate` 须**人工批准**留痕;`autoresearch.learning.rollback_watch` 只推荐,不自动改生产配置。命令序列/完整字段/成熟门见 STAGES.md「实验晋升与回滚控制面」。
+涉及召回、L3、门、早停、ensemble、评级、Token 或速度的改动,现行治理链条(2026-08-19 用户裁决 A3;`experiment_registry`/`promotion`/`rollback_watch`/`mainflow5d` 已整删,无自动晋升机器、无 PREREGISTERED→ACTIVE 状态机):**影子账本直接呈证**(既有 `shadow/` 产物与各学习账本自身的观测本身即证据)→ **写成 proposal 交用户人批**(`feedback` skill 的裁决通道)→ **人批后由开发会话改 `scan_config.jsonc`/代码落地**。E6 相对 BUY 转正即此模式的首个实例。完整说明见 STAGES.md「实验治理」节。
 
 ## 铁律
 - **确定性层零 LLM**:L0/L1/**L2**/L5 全 pandas,不在筛选里编数、不预测。

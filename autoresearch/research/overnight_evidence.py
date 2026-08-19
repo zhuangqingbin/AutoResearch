@@ -716,7 +716,7 @@ def render(result: dict) -> str:
             f"| **E4b** 热度/游资影子通道设计空间 | ①追涨 gap 结论 | `{verdict}` — {verdict_txt} "
             f"{flip} 引用须连带①节两条限定(样本无最强连板票 / 量的是第二个夜晚)。"
             "无论正负都**只开影子**(floor=0、不占 quota、不进生产 finalists),"
-            "注册走 `experiment_registry` |",
+            "转正走 proposal 人批 |",
             f"| **F4** 相位条件 quota challenger 预注册 | ②相位 gap 结论 | {_f4()} |",
             f"| **E3** 隔夜因子是否做成相位条件特征 | ③温度计结论 | `{tv}` — {tv_txt} "
             + ("**动作:因子维持全时、不加相位条件维**——这是稳妥默认,"

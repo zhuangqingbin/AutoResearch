@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "monitors": [
+    {
+      "id": "mon_20260801_regime_flip",
+      "schema_version": 1,
+      "title": "regime 首次从 risk_off 转 range/risk_on 的前后对称窗",
+      "kind": "prospective_monitor",
+      "records": [
+        "candidate_n",
+        "三门通过率",
+        "shadow_excess",
+        "BUY_n"
+      ],
+      "window": "首次翻转后冻结前后对称窗口",
+      "maturity": "每侧 ≥10 个 scan day 且每侧完整卡 ≥50;不足**自动延长**",
+      "stopping_rule": "禁止选好看的第 5 日停 —— 固定成熟门",
+      "verdict_policy": "不产 RECOMMENDED。BUY>0 只作描述;结构问题升格需『通过率无提升 **且** shadow 有 FALSE_KILL』共同成立"
+    },
+    {
+      "id": "mon_20260801_target_calib_postcheck",
+      "schema_version": 1,
+      "title": "目标价 hi_2×regime p60 锚的接线后验收(既有功能,非新 challenger)",
+      "kind": "postcheck_monitor",
+      "records": [
+        "calibration_error",
+        "触达率",
+        "中位目标幅"
+      ],
+      "maturity": "mature_events ≥60 · forward_days ≥20 · regimes ≥2",
+      "verdict_policy": "只观察。calibration error 未改善 → 再另立 challenger;**本波不重复实现现有功能**(p60 锚与超锚硬理由已接线)"
+    }
+  ]
+}

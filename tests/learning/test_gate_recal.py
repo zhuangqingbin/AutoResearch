@@ -76,19 +76,6 @@ def test_recal_template_forbids_optional_stopping():
     assert "跑到通过为止" in gr.recal_template().stopping_rule
 
 
-def test_register_writes_two_preregistered_specs(tmp_path):
-    from autoresearch.learning import experiment_registry as reg
-
-    path = tmp_path / "registry.json"
-    reg.set_stable_baseline(path, name="base", pointer="p", approved_by="qa",
-                            content_hash="a" * 64)
-    records = gr.register(path)
-    assert len(records) == 2
-    assert {r["status"] for r in records} == {"PREREGISTERED"}
-    families = {r["trial_family"] for r in records}
-    assert families == {gr.RECAL_FAMILY, gr.EVIDENCE_FAMILY}
-
-
 # ── 纪律 2:小样本 = IMMATURE,不是结论 ─────────────────────────
 
 

@@ -174,62 +174,6 @@ def test_observed_dims_below_floor_are_immature():
     assert v["verdict"] == "IMMATURE"
 
 
-def test_minimums_block_reflects_declared_floors():
-    t = _t(maturity_minimums={"unique_n": 30, "regimes": 3, "subgroup_n": 14})
-    m = et.minimums_for(t)
-    assert m["unique_events"] == 30 and m["regimes"] == 3 and m["mature_events"] == 14
-
-
-# ── registry 咬合 ───────────────────────────────────────────────────
-
-
-def test_definition_hash_changes_when_margin_moves():
-    """中途把 margin 放宽到刚好通过 → definition_hash 变 → registry 拒绝沿用旧 id。"""
-    from autoresearch.learning.experiment_registry import canonical_hash
-
-    a = canonical_hash(et.to_registry_definition(_t(equivalence_margin=0.02)))
-    b = canonical_hash(et.to_registry_definition(_t(equivalence_margin=0.20)))
-    assert a != b
-
-
-def test_definition_is_stable_for_same_template():
-    from autoresearch.learning.experiment_registry import canonical_hash
-
-    assert canonical_hash(et.to_registry_definition(_t())) == \
-        canonical_hash(et.to_registry_definition(_t()))
-
-
-def test_minimums_block_is_registry_shaped():
-    from autoresearch.learning.experiment_registry import _validate_minimums
-
-    assert _validate_minimums(et.minimums_for(_t()))
-
-
-def test_template_flows_into_a_registerable_spec(tmp_path):
-    """端到端:模板 → spec → register_experiment 真的能过 registry 校验。"""
-    from autoresearch.learning import experiment_registry as reg
-
-    path = tmp_path / "registry.json"
-    reg.set_stable_baseline(path, name="base", pointer="p", approved_by="qa",
-                            content_hash="a" * 64)
-    t = _t(experiment_id="exp_flow")
-    spec = {
-        "id": t.experiment_id, "title": "模板端到端", "trial_family": "template_demo",
-        "definition": et.to_registry_definition(t),
-        "start_date": "2026-08-04", "expires_date": "2026-12-31",
-        "primary_metric": t.primary_metric,
-        "promotion_guards": {d: [{"metric": t.primary_metric, "op": "gt", "value": 0.02}]
-                             for d in reg.GUARD_DOMAINS},
-        "rollback_guards": {d: [{"metric": t.primary_metric, "op": "gt", "value": -0.02}]
-                            for d in reg.GUARD_DOMAINS},
-        "challenger_pointer": {"kind": "shadow", "pointer": "x", "content_hash": "b" * 64},
-        "minimums": et.minimums_for(t), "rollback_window_runs": 5,
-    }
-    record = reg.register_experiment(path, spec)
-    assert record["status"] == "PREREGISTERED"
-    assert record["definition"]["equivalence_margin"] == 0.02
-
-
 # ── 渲染 / CLI ──────────────────────────────────────────────────────
 
 

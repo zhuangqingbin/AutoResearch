@@ -3,9 +3,17 @@
 
 design: docs/specs/2026-08-03-scan-next-wave-brainstorm-design.md §5-1 / §5-2
 
-`experiment_registry` 管的是**权威与状态机**(谁批的、能不能激活、回滚指向哪);本模块管
-**方法学**:一个实验开工前必须先写清 H0/H1、cutoff、配对单位、聚类方式、最小样本与功效、
+本模块管的是**方法学**(与「谁批的、能不能激活、回滚指向哪」这类权威/状态机问题分开):
+一个实验开工前必须先写清 H0/H1、cutoff、配对单位、聚类方式、最小样本与功效、
 等价或 no-harm margin、多重检验、停止规则、rollback —— §5-2 的原话是「统一实验模板」。
+
+D1(2026-08-19,用户裁决 A3):原权威/状态机侧的 `experiment_registry` 家族(连同
+`promotion`/`rollback_watch`/`mainflow5d`)已整删,行为变更现走「影子账本呈证 →
+proposal 人批 → 开发会话改 config/代码」(见 SKILL.md「实验治理」节)。本模块两条
+方法学纪律(五态裁决 `conclude()`、0 BUY 不得当动机)对**该消费者仍是活跃依赖**:
+`gate_recal.py`(E1a 门失败分级)与 `l3_marginal.py` 的核心裁决逻辑都直接调用本模块,
+因此**保留**,不随治理家族一并退役——原设计稿把它并入「整删」是审计侦察的盲区
+(只看到它挂在 `register()` 流程上,没查到这两个真实消费者)。
 
 两条纪律做成代码:
 
@@ -226,45 +234,6 @@ def _verdict(t: ExperimentTemplate, interval: st.Interval, verdict: str,
     }
 
 
-def to_registry_definition(t: ExperimentTemplate) -> dict:
-    """模板 → registry spec 的 `definition` 块(方法学随 definition_hash 一起被钉死)。
-
-    钉死的价值在于:改了 margin、改了 min_units、改了聚类方式,`definition_hash` 就变,
-    registry 会拒绝沿用旧 id —— 「中途把 margin 放宽到刚好通过」这条路被堵死。
-    """
-    require_valid(t)
-    return {
-        "template_schema_version": SCHEMA_VERSION,
-        "H0": t.h0,
-        "H1": t.h1,
-        "data_cutoff": t.data_cutoff,
-        "paired_unit": t.paired_unit,
-        "clustering": t.clustering,
-        "min_units": int(t.min_units),
-        "target_power": float(t.target_power),
-        "primary_metric": t.primary_metric,
-        "direction": t.direction,
-        "equivalence_margin": float(t.equivalence_margin),
-        "no_harm": bool(t.no_harm),
-        "multiple_testing": t.multiple_testing,
-        "n_hypotheses": int(t.n_hypotheses),
-        "stopping_rule": t.stopping_rule,
-        "rollback": t.rollback,
-        "motivation": t.motivation,
-    }
-
-
-def minimums_for(t: ExperimentTemplate) -> dict:
-    """模板 → registry spec 的 `minimums` 块(与统一成熟门 §1.2 对齐)。"""
-    dims = t.maturity_minimums or {}
-    return {
-        "forward_days": int(t.min_units),
-        "mature_events": int(dims.get("subgroup_n") or st.MATURITY_MIN_SUBGROUP),
-        "unique_events": int(dims.get("unique_n") or 0),
-        "regimes": int(dims.get("regimes") or st.MATURITY_MIN_REGIMES),
-    }
-
-
 def render(verdict: dict) -> str:
     lines = [f"### {verdict['experiment_id']} —— **{verdict['verdict']}**",
              "",
@@ -303,7 +272,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  ✗ {t.experiment_id}: {p}", file=sys.stderr)
     if problems:
         return 1
-    print(json.dumps(to_registry_definition(t), ensure_ascii=False, indent=2))
+    print(json.dumps(t.as_dict(), ensure_ascii=False, indent=2))
     return 0
 
 

@@ -132,7 +132,11 @@ SEMANTICS: dict[str, Semantic] = {
         "gate_attribution.mean_excess_2",
         ("experiment_eligible", "legacy_migration"), ruler=MAIN_RULER),
     "experiment_count": Semantic(
-        "registry 内实验计数", "experiment_registry.experiments",
+        # D1(2026-08-19,用户裁决 A3):唯一生产者 `_add_registry` 已随 experiment_registry
+        # 家族整删,本条目**故意保留**——`docs/research/2026-08-01-wave10-gate0-evidence.json`
+        # 这份冻结审计快照里仍有一条 semantic="experiment_count" 的历史指标,`validate()`
+        # 必须继续认得它(历史产物不改写,见 test_frozen_gate0_snapshot_still_passes_validate_after_t8)。
+        "registry 内实验计数(生产者已退役,仅供历史快照校验)", "experiment_registry.experiments",
         ("raw_run",)),
     # §4.1 勘误:participation 计数只允许挂在 gate_participation cohort 上。语义绑定表
     # 就是那句「participation 不能直接充当单门因果分母」的可执行形态 —— 想拿它当错杀率
@@ -224,7 +228,6 @@ class Manifest:
     cohorts: dict[str, str] = field(default_factory=lambda: dict(COHORTS))
     denominators: dict[str, dict] = field(default_factory=dict)
     metrics: dict[str, dict] = field(default_factory=dict)
-    registry_inventory: dict = field(default_factory=dict)
     conflicts: list[dict] = field(default_factory=list)
     gate_definition: dict = field(default_factory=lambda: dict(GATE_DEFINITION))
 
@@ -339,8 +342,7 @@ def _rate(numerator: int, denominator: int) -> float | None:
 
 # ────────────────────────── 跨日清单 ──────────────────────────
 
-def build(scan_root: Path | str | None = None,
-          registry_path: Path | str | None = None) -> Manifest:
+def build(scan_root: Path | str | None = None) -> Manifest:
     """跨日证据清单 —— 设计稿 §1.1 的每个数字都由本函数再生。"""
     from autoresearch.learning import gate_attribution as ga
     from autoresearch.learning.abstention_ledger import roll as abstention_roll
@@ -355,7 +357,6 @@ def build(scan_root: Path | str | None = None,
     _add_abstention(manifest, abstention_roll(root), root)
     _add_paper_nav(manifest)
     _add_gates(manifest, ga, root)
-    _add_registry(manifest, registry_path)
     _cross_check_buys(manifest, journal_roll(root), zero_buy_roll(root))
 
     dates = [
@@ -641,48 +642,6 @@ def _add_gate_left_tail(manifest: Manifest, root: Path,
             note="被拦票跌破 -5% 的占比;把它读成错杀率是 Wave10 立案时点名的误读"))
 
 
-def _add_registry(manifest: Manifest, registry_path: Path | str | None) -> None:
-    """registry inventory —— 后续实验不得绕开已在册的 family 另开冲突实验(§1.3-5)。"""
-    from autoresearch.learning.experiment_registry import (
-        DEFAULT_REGISTRY,
-        RegistryError,
-        load_registry,
-    )
-
-    path = Path(registry_path or DEFAULT_REGISTRY)
-    paths, hashes = _hashes([path])
-    try:
-        payload = load_registry(path)
-    except RegistryError as exc:
-        manifest.flag_conflict("registry_unreadable", path=str(path), error=str(exc))
-        return
-    experiments = payload.get("experiments", {})
-    manifest.registry_inventory = {
-        "path": str(path),
-        "stable_baseline": (payload.get("stable_baseline") or {}).get("name"),
-        "active_by_family": payload.get("active_by_family", {}),
-        "experiments": {
-            exp_id: {
-                "status": record.get("status"),
-                # `trial_family` 才是 family —— §C2.0 的「同 family 不得并开」规则看的是它。
-                # 此前这里取的是 challenger_pointer.kind(如 "shadow_gate"),那是**载体类型**,
-                # 两个不同 family 的影子实验会显示成同一个 family,冲突检查形同虚设。
-                "family": record.get("trial_family"),
-                "pointer_kind": (record.get("challenger_pointer") or {}).get("kind"),
-                "primary_metric": record.get("primary_metric"),
-                "definition_hash": record.get("definition_hash"),
-                "expires_date": record.get("expires_date"),
-            }
-            for exp_id, record in experiments.items()
-        },
-    }
-    manifest.declare_denominator(Denominator(
-        "registry_experiments", len(experiments), "raw_run", "registry 内实验总数"))
-    manifest.add(Metric(
-        "registry.experiment_count", "experiment_count", len(experiments),
-        len(experiments), "registry_experiments", "raw_run", None, paths, hashes))
-
-
 def _cross_check_buys(manifest: Manifest, journal: pd.DataFrame,
                       zero_buy: pd.DataFrame) -> None:
     """journal 与 zero_buy 对同一天的买单数必须一致(spec 2026-07-12 P0-1 的 D5 病)。
@@ -715,7 +674,6 @@ def build_day(scan_dir: Path | str) -> Manifest:
     attr = day / "retro" / "attribution.csv"
     paths, hashes = _hashes([day / "gate_fires.csv",
                              day / "decision_records.json", attr])
-    manifest.registry_inventory = {}
     manifest.metrics["day.cohort_membership"] = {
         "metric_id": "day.cohort_membership",
         "raw_run": True,
@@ -807,15 +765,6 @@ def render(manifest: Manifest | dict) -> list[str]:
             f"| `{metric['cohort']}` | {metric.get('as_of') or '—'} "
             f"| {maturity} | {metric['status']} |"
         )
-    inventory = payload.get("registry_inventory") or {}
-    if inventory.get("experiments"):
-        lines += ["", "## registry inventory", "",
-                  "| 实验 | 状态 | family | 主判据 | 到期 |", "|---|---|---|---|---|"]
-        for exp_id, record in inventory["experiments"].items():
-            lines.append(
-                f"| `{exp_id}` | {record['status']} | {record['family']} "
-                f"| {record['primary_metric']} | {record['expires_date']} |"
-            )
     conflicts = payload.get("conflicts") or []
     lines += ["", "## 冲突", ""]
     lines += (

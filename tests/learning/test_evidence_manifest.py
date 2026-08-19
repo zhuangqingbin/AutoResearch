@@ -297,53 +297,6 @@ def test_manifest_roundtrips_through_json():
     assert payload["schema_version"] == 1
 
 
-# ────────────────────────── registry inventory(family vs pointer_kind)──────────────────────────
-
-def test_registry_inventory_reports_family_not_pointer_kind(tmp_path):
-    """`_add_registry` 曾经把 `family` 报成 `challenger_pointer.kind`(如 "shadow_gate")——
-
-    两个不同 trial_family 的影子实验会显示成同一个 pointer_kind,§C2.0「同 family 不得
-    并开」的冲突检查因此形同虚设。这条回归锁原住在 test_wave10_experiments.py(借
-    wave10 的 exp1_spec 顺带验证),该模块 2026-08-06 D3 删除时以协议①迁移到此处并改用
-    自建合成 registry(不再依赖已删模块,也不再依赖生产 registry.json 是否已注册)。
-    """
-    from autoresearch.learning import experiment_registry as reg
-
-    path = tmp_path / "registry.json"
-    reg.set_stable_baseline(
-        path, name="base", pointer="git:x", content_hash="a" * 64,
-        approved_by="test", approved_at="2026-08-01T00:00:00+08:00", note="",
-    )
-    metric_names = ["m_research", "m_decision", "m_token", "m_speed", "m_arch"]
-    guards = {
-        domain: [{"metric": metric, "op": "gt", "value": 0}]
-        for domain, metric in zip(
-            ("research", "decision", "token", "speed", "architecture"), metric_names,
-            strict=True)
-    }
-    spec = {
-        "id": "exp_regress_family_field",
-        "title": "regression: family must not read as pointer_kind",
-        "trial_family": "some_family",
-        "definition": {"kind": "config_patch", "patch": {}},
-        "start_date": "2026-08-01",
-        "expires_date": "2026-11-30",
-        "primary_metric": "m_research",
-        "promotion_guards": guards,
-        "rollback_guards": guards,
-        "challenger_pointer": {"kind": "shadow_gate", "pointer": "x", "content_hash": "b" * 64},
-        "minimums": {"forward_days": 1, "mature_events": 1, "unique_events": 0, "regimes": 1},
-        "rollback_window_runs": 1,
-    }
-    reg.register_experiment(path, spec, registered_at="2026-08-01T00:00:00+08:00")
-
-    inventory = build(scan_root=tmp_path / "no_scan_data", registry_path=path).registry_inventory
-    record = inventory["experiments"][spec["id"]]
-    assert record["family"] == "some_family"
-    assert record["pointer_kind"] == "shadow_gate"
-    assert record["family"] != record["pointer_kind"]
-
-
 # ────────────────────────── Wave12-T8:定义串插值主尺 + 每指标 ruler 字段 ──────────────────────────
 
 
@@ -433,6 +386,11 @@ def test_semantic_ruler_is_none_unless_the_value_depends_on_a_return_column():
     DEGRADED 旗计数)盖了一把它们根本没有的尺。默认改 None(未声明),只对真正读收益列
     算出来的语义显式赋值(逐条核实取值源:gate_attribution.py/gate_ledger.py 已用
     MAIN_RULER,paper_nav 当前主表=隔夜尺,abstention_ledger.py 已用 MAIN_RULER)。
+
+    D1(2026-08-19,用户裁决 A3):`experiment_count` 唯一生产者 `_add_registry` 已随
+    experiment_registry 家族整删,但 SEMANTICS 条目本身**故意保留**(历史冻结快照
+    `docs/research/2026-08-01-wave10-gate0-evidence.json` 里仍有该 semantic 的指标,
+    `validate()` 必须继续认得它)——下方断言列表因此不变。
     """
     # 不依赖收益列的语义:默认 None(未声明,不是假装追踪 MAIN_RULER)
     for name in ("scan_day_count", "zero_buy_day_count", "abstention_degraded_count",

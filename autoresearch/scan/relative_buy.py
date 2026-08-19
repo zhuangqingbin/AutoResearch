@@ -26,7 +26,7 @@ design: Wave12 E6-1(用户 2026-08-08 六条裁定)。产物
 publisher、不动 `decision_records.json`、不改任何 prompt**;活体真正接管仍要求 ≥20 个
 真实扫描日影子 + 五守卫 + 人工批准——"默认不启用"必须连副作用一起不启用。
 
-## v1 规则(**观察前锁定**;任何改动 = 新 `RULE_VERSION` + experiment_registry)
+## v1 规则(**观察前锁定**;任何改动 = 新 `RULE_VERSION`,经影子账本呈证 + proposal 人批)
 
 > 当前 `RULE_VERSION = "e6.v2.0"`。v1.1 只把两道硬门对"产物缺席"的静默放行堵上,
 > v1.2 只把 `data_a` 第 4 判改读 `stage_results.failed_data`(gate4 的 hygiene/metering

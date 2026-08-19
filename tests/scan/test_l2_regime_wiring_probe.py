@@ -4,8 +4,15 @@
 调 sector cap,但 `scan/universe.py` 的全部生产调用点都不传它 → 生产路径上恒为 None。
 
 这个探针守的不是「参数存在」,而是**「有人开始喂它却没走治理」**:
-接了线 = L2 构成会变 = B 类行为变更 = 必须先有 registry 里 ACTIVE 的 `l2_regime_caps`
-实验。两个条件不同时满足 → 变红。
+接了线 = L2 构成会变 = B 类行为变更 = 必须有显式治理留痕。两个条件不同时满足 → 变红。
+
+D1(2026-08-19,用户裁决 A3):原判据「registry 里 ACTIVE 的 `l2_regime_caps` 实验」
+随 experiment_registry 家族整删而失效(registry 不复存在)。证据源换成本项目现行的
+「配置单一事实源」纪律(2026-08-11 裁定):`scan_config.jsonc` 是全流程参数事实源,
+新键必须显式提交(不是悄悄改默认值)。新判据 = `funnel.regime_aware` 键在场
+(config 侧确有一处显式登记的 regime 相关治理键)**且** `scan_config.jsonc` 本身有
+真实 git 提交痕(不是未纳入版本控制的本地改动)——两条都满足才算「有治理留痕」;
+`regime_caps` 一旦真被接线却仍缺这层留痕,探针必须变红,道理与retired前完全一致。
 
 为什么用 AST 而不是 grep:`regime_caps=` 出现在注释、docstring 或字符串里都不算接线,
 只有**真实关键字实参**才算。grep 会把这份文档自己的引用也数进去。
@@ -13,16 +20,17 @@
 from __future__ import annotations
 
 import ast
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from autoresearch.scan.recall.l2_stratify import select_l2, stratified_l2
+from autoresearch.scan.user_config import DEFAULT_PATH as SCAN_CONFIG_PATH, _read_jsonc
 
 PRODUCER = Path("autoresearch/scan/universe.py")
 L2_CALLEES = {"select_l2", "stratified_l2"}
 REGIME_KWARGS = {"regime", "regime_caps"}
-REGISTRY_FAMILY = "l2_regime_caps"
 
 
 def _wired_call_lines(source: str) -> list[int]:
@@ -40,30 +48,39 @@ def _wired_call_lines(source: str) -> list[int]:
     return out
 
 
-def _has_active_experiment() -> bool:
-    from autoresearch.learning.experiment_registry import (
-        DEFAULT_REGISTRY,
-        RegistryError,
-        load_registry,
-    )
+def _regime_config_has_governance_trace() -> bool:
+    """新证据源(D1,2026-08-19 用户裁决 A3):config 单一事实源里 `funnel.regime_aware`
+    键在场,且该文件本身有真实 git 提交痕 —— 两条都满足才算「有治理留痕」。
 
+    不可读 / 无提交历史一律按**没有留痕**处理(不臆断放行,镜像被替换掉的
+    `_has_active_experiment` 遇 registry 不可读时返回 False 的保守精神)。
+    """
     try:
-        payload = load_registry(DEFAULT_REGISTRY)
-    except RegistryError:
+        cfg = _read_jsonc(SCAN_CONFIG_PATH)
+    except (OSError, ValueError):
         return False
-    return payload.get("active_by_family", {}).get(REGISTRY_FAMILY) is not None
+    if "regime_aware" not in (cfg.get("funnel") or {}):
+        return False
+    try:
+        out = subprocess.run(
+            ["git", "log", "--oneline", "-1", "--", str(SCAN_CONFIG_PATH)],
+            capture_output=True, text=True, timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return bool(out.stdout.strip())
 
 
 def test_regime_caps_is_not_wired_into_production_without_governance():
-    """接线了但没走 registry → 红。没接线 → 绿(当前状态)。"""
+    """接线了但没有治理留痕 → 红。没接线 → 绿(当前状态)。"""
     if not PRODUCER.exists():
         pytest.skip(f"{PRODUCER} 不在(非仓库根目录运行)")
     wired = _wired_call_lines(PRODUCER.read_text(encoding="utf-8"))
-    if wired and not _has_active_experiment():
+    if wired and not _regime_config_has_governance_trace():
         pytest.fail(
-            f"{PRODUCER} 第 {wired} 行开始给 L2 传 regime/regime_caps,但 registry 里"
-            f" `{REGISTRY_FAMILY}` 没有 ACTIVE 实验 —— 这会改变 L2 名单构成(B 类行为变更),"
-            "必须先补 variant contract 并走 registry/replay(候选 O3_regime_caps)")
+            f"{PRODUCER} 第 {wired} 行开始给 L2 传 regime/regime_caps,但 "
+            f"{SCAN_CONFIG_PATH} 缺 `funnel.regime_aware` 键或缺显式 git 提交痕 —— "
+            "这会改变 L2 名单构成(B 类行为变更),必须先补 variant contract 并在"
+            "config 单一事实源里显式登记(候选 O3_regime_caps)")
 
 
 def test_probe_would_go_red_on_a_wired_call():

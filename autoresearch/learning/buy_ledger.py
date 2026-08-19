@@ -15,8 +15,9 @@ edge?本模块逐买单落账(来源=attribution 已实现 fwd + 卡片目标价
 **规则**:与 SELL 侧同款救对率口径(定义见 `ensemble_ledger` 模块 docstring)——
 折回救对率 <50% → OW 复核由 2 跑降 1 跑;≥50% → 维持,再攒 5 折复裁。
 
-规则先于数据固定,防"读数出来后挑一个好看的门槛"。不自动执行:改生产要人批,
-且先经 `experiment_registry` 预注册(Wave5 治理边界)。
+规则先于数据固定,防"读数出来后挑一个好看的门槛"。不自动执行:改生产要人批
+(D1 之后的治理链条 = 影子账本呈证 → proposal 人批 → 开发会话改 config/代码,
+不再经 `experiment_registry` 预注册——该模块已于 2026-08-19 用户裁决 A3 整删)。
 """
 from __future__ import annotations
 

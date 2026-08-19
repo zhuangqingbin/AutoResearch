@@ -62,24 +62,14 @@ def test_non_b_class_with_registry_family_is_rejected():
     assert any("其实是 B 类" in p for p in bad)
 
 
-def test_b_class_implemented_without_registry_experiment_is_rejected(tmp_path):
-    registry = tmp_path / "registry.json"
-    registry.write_text(json.dumps({
-        "schema_version": 1, "stable_baseline": None, "baseline_history": [],
-        "experiments": {}, "active_by_family": {}, "audit": [],
-    }), encoding="utf-8")
+def test_b_class_implemented_with_registry_family_passes_without_a_live_registry(tmp_path):
+    """D1(2026-08-19,用户裁决 A3):registry 交叉检查已随 experiment_registry 家族整删 ——
+    `registry_family` 只是文档性标签,B 类 IMPLEMENTED 不再需要对照一个活的 registry。
+    """
     item = _ok(change_class="B", status="IMPLEMENTED", registry_family="ghost_family")
-    result = cd.validate([item], registry_path=registry)
-    assert result["checked_registry"] is True
-    assert any("状态机没走过" in p for p in result["problems"]["x1"])
-
-
-def test_registry_unreadable_skips_check_without_passing_silently(tmp_path):
-    broken = tmp_path / "broken.json"
-    broken.write_text("{ not json", encoding="utf-8")
-    item = _ok(change_class="B", status="IMPLEMENTED", registry_family="ghost")
-    result = cd.validate([item], registry_path=broken)
-    assert result["checked_registry"] is False        # 明说跳过了,不是"通过"
+    result = cd.validate([item])
+    assert result["ok"], result["problems"]
+    assert "checked_registry" not in result       # 该键随交叉检查一起摘除,不留半个约定
 
 
 # ── REJECTED / BLOCKED_BY_DATA 的额外义务 ───────────────────────────

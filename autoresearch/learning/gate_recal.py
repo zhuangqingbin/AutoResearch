@@ -33,7 +33,6 @@ n=6 的 33.3% 与 n=600 的 33.3% 在报表里长得一样 —— 本模块给�
 3. `learning.shrink` 不得出现在裁门路径(复用 `evidence_manifest.assert_not_shrink_derived`)。
 
   uv run --no-sync python -m autoresearch.learning.gate_recal
-  uv run --no-sync python -m autoresearch.learning.gate_recal --register   # 写 PREREGISTERED spec
 """
 from __future__ import annotations
 
@@ -395,53 +394,12 @@ def render(payload: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def register(registry_path: Path | str | None = None,
-             *, start: str = "2026-08-04", expires: str = "2026-12-31") -> list[dict]:
-    """把两个模板注册成 PREREGISTERED spec(人批才往前走)。"""
-    from autoresearch.learning import experiment_registry as reg
-
-    path = Path(registry_path or reg.DEFAULT_REGISTRY)
-    out = []
-    for template, family, metric, op, value in (
-        (recal_template(), RECAL_FAMILY, "false_kill_rate_delta_vs_margin", "lt", -0.0),
-        (evidence_template(), EVIDENCE_FAMILY, "claim_correct_rate_delta", "gt", 0.0),
-    ):
-        spec = {
-            "id": f"exp_{start.replace('-', '')}_{family}",
-            "title": template.h1,
-            "trial_family": family,
-            "definition": et.to_registry_definition(template),
-            "start_date": start, "expires_date": expires,
-            "primary_metric": metric,
-            "promotion_guards": {d: [{"metric": metric, "op": op, "value": value}]
-                                 for d in reg.GUARD_DOMAINS},
-            "rollback_guards": {d: [{"metric": metric, "op": "gt", "value": -1.0}]
-                                for d in reg.GUARD_DOMAINS},
-            "challenger_pointer": {
-                "kind": "shadow_gate", "pointer": f"gate_recal:{family}",
-                "content_hash": reg.canonical_hash(et.to_registry_definition(template)),
-            },
-            "minimums": et.minimums_for(template),
-            "rollback_window_runs": 5,
-        }
-        out.append(reg.register_experiment(path, spec))
-    return out
-
-
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="「业绩真兑现」门重标定(§4.1)")
     ap.add_argument("--scan-root", default=None)
     ap.add_argument("--json-out", default=str(OUT_JSON))
     ap.add_argument("--md-out", default=str(OUT_MD))
-    ap.add_argument("--register", action="store_true", help="写两个 PREREGISTERED spec")
-    ap.add_argument("--registry", default=None)
     a = ap.parse_args(argv)
-
-    if a.register:
-        records = register(a.registry)
-        for record in records:
-            print(f"[gate_recal] {record['id']} → {record['status']}")
-        return 0
 
     payload = build(a.scan_root)
     for path, text in ((Path(a.json_out),

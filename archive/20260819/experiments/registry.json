@@ -1,0 +1,3253 @@
+{
+  "active_by_family": {},
+  "audit": [
+    {
+      "actor": "qingbin",
+      "at": "2026-07-29T12:56:15+08:00",
+      "details": {
+        "baseline": {
+          "approved_at": "2026-07-29T12:56:15+08:00",
+          "approved_by": "qingbin",
+          "content_hash": "9ed173338cd4b7ed01c86cd22a9b952b438eee9e3fb0849986d42e458001e086",
+          "name": "wave8-production-baseline-20260729",
+          "note": "Wave8 首次上膛:登记当前生产态三件(L3 人设 git sha / 召回权重 / scan_config)作为稳定基线与回滚指针。此前 registry.json 从不存在 = 控制面造好了但没装弹(Wave5 记账原话:软件完成 ≠ 研究成熟)。",
+          "pointer": "l3-rank.md@2fd6117eb6f7 + weights.json@040f620260e8 + scan_config.jsonc@eeb5cac6a338"
+        },
+        "previous": null
+      },
+      "event": "STABLE_BASELINE_SET",
+      "experiment_id": null,
+      "seq": 1
+    },
+    {
+      "actor": "system",
+      "at": "2026-07-29T12:58:08+08:00",
+      "details": {
+        "definition_hash": "185126191dc30010e6564cb74c053c6cea2718cf0701c9e228ae82d486d7e117",
+        "rollback_pointer": {
+          "approved_at": "2026-07-29T12:56:15+08:00",
+          "approved_by": "qingbin",
+          "content_hash": "9ed173338cd4b7ed01c86cd22a9b952b438eee9e3fb0849986d42e458001e086",
+          "name": "wave8-production-baseline-20260729",
+          "note": "Wave8 首次上膛:登记当前生产态三件(L3 人设 git sha / 召回权重 / scan_config)作为稳定基线与回滚指针。此前 registry.json 从不存在 = 控制面造好了但没装弹(Wave5 记账原话:软件完成 ≠ 研究成熟)。",
+          "pointer": "l3-rank.md@2fd6117eb6f7 + weights.json@040f620260e8 + scan_config.jsonc@eeb5cac6a338"
+        }
+      },
+      "event": "EXPERIMENT_PREREGISTERED",
+      "experiment_id": "exp_20260729_l3_hard_constraint_f",
+      "seq": 2
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-01T22:08:22+08:00",
+      "details": {
+        "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+        "rollback_pointer": {
+          "approved_at": "2026-07-29T12:56:15+08:00",
+          "approved_by": "qingbin",
+          "content_hash": "9ed173338cd4b7ed01c86cd22a9b952b438eee9e3fb0849986d42e458001e086",
+          "name": "wave8-production-baseline-20260729",
+          "note": "Wave8 首次上膛:登记当前生产态三件(L3 人设 git sha / 召回权重 / scan_config)作为稳定基线与回滚指针。此前 registry.json 从不存在 = 控制面造好了但没装弹(Wave5 记账原话:软件完成 ≠ 研究成熟)。",
+          "pointer": "l3-rank.md@2fd6117eb6f7 + weights.json@040f620260e8 + scan_config.jsonc@eeb5cac6a338"
+        }
+      },
+      "event": "EXPERIMENT_PREREGISTERED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 3
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-01T22:08:22+08:00",
+      "details": {
+        "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+        "rollback_pointer": {
+          "approved_at": "2026-07-29T12:56:15+08:00",
+          "approved_by": "qingbin",
+          "content_hash": "9ed173338cd4b7ed01c86cd22a9b952b438eee9e3fb0849986d42e458001e086",
+          "name": "wave8-production-baseline-20260729",
+          "note": "Wave8 首次上膛:登记当前生产态三件(L3 人设 git sha / 召回权重 / scan_config)作为稳定基线与回滚指针。此前 registry.json 从不存在 = 控制面造好了但没装弹(Wave5 记账原话:软件完成 ≠ 研究成熟)。",
+          "pointer": "l3-rank.md@2fd6117eb6f7 + weights.json@040f620260e8 + scan_config.jsonc@eeb5cac6a338"
+        }
+      },
+      "event": "EXPERIMENT_PREREGISTERED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 4
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-06T18:04:03+08:00",
+      "details": {
+        "definition_hash": "4a2d5aca900671cf9b4fc67a2ec378236863fe30d6936567377521081e3f3ac1",
+        "rollback_pointer": {
+          "approved_at": "2026-07-29T12:56:15+08:00",
+          "approved_by": "qingbin",
+          "content_hash": "9ed173338cd4b7ed01c86cd22a9b952b438eee9e3fb0849986d42e458001e086",
+          "name": "wave8-production-baseline-20260729",
+          "note": "Wave8 首次上膛:登记当前生产态三件(L3 人设 git sha / 召回权重 / scan_config)作为稳定基线与回滚指针。此前 registry.json 从不存在 = 控制面造好了但没装弹(Wave5 记账原话:软件完成 ≠ 研究成熟)。",
+          "pointer": "l3-rank.md@2fd6117eb6f7 + weights.json@040f620260e8 + scan_config.jsonc@eeb5cac6a338"
+        }
+      },
+      "event": "EXPERIMENT_PREREGISTERED",
+      "experiment_id": "exp_l4_full_parallel",
+      "seq": 5
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T02:30:00+08:00",
+      "details": {
+        "definition_hash": "66a3cb58fecc23a22518947029acc968bcf5a4e3f8ba5ebd78e8fdee2aeea9d1",
+        "rollback_pointer": {
+          "approved_at": "2026-07-29T12:56:15+08:00",
+          "approved_by": "qingbin",
+          "content_hash": "9ed173338cd4b7ed01c86cd22a9b952b438eee9e3fb0849986d42e458001e086",
+          "name": "wave8-production-baseline-20260729",
+          "note": "Wave8 首次上膛:登记当前生产态三件(L3 人设 git sha / 召回权重 / scan_config)作为稳定基线与回滚指针。此前 registry.json 从不存在 = 控制面造好了但没装弹(Wave5 记账原话:软件完成 ≠ 研究成熟)。",
+          "pointer": "l3-rank.md@2fd6117eb6f7 + weights.json@040f620260e8 + scan_config.jsonc@eeb5cac6a338"
+        }
+      },
+      "event": "EXPERIMENT_PREREGISTERED",
+      "experiment_id": "exp_relative_buy_owner",
+      "seq": 6
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:13:16+08:00",
+      "details": {
+        "input_hash": "babdb47095269730f7973249d838cd5dbda9a35e01e5b20ef9099e33cce40b69",
+        "key": "2026-08-05",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 7
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:13:16+08:00",
+      "details": {
+        "input_hash": "d337c310079769b3f289a0853158700e3d4ca8988797392b4157e1d6e0911101",
+        "key": "2026-08-05",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 8
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "fd36f252a5f3146eae66f9eddd9ba55dce9ca4b9d51729bf5dd7562841c884dd",
+        "key": "2026-07-02",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 9
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "ec510ed9b34e076ba71685a4bc5f82888d053fd0b0fe3e2d3b37806f410e88a7",
+        "key": "2026-07-02",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 10
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "4b1eb32ddd48122c7e6296ed0f20c8b03dbfa2b8ab91f9bf6759ed6fd42bf51c",
+        "key": "2026-07-03",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 11
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "16e21d72bf80c7ed6a82fe5ee2fe8c3672207848e6670a58c2186dbbcb29408c",
+        "key": "2026-07-03",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 12
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "08d7c06705b43d0907f0b33a23ef0dd50724f90917bbc97d2cdbc021bc02bda4",
+        "key": "2026-07-06",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 13
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "aadb34449c854426c34ea0f295bb53332ebded78c2cfe4977a9e52a432220a21",
+        "key": "2026-07-06",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 14
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "9f1af6e65b5fa22d79bc61a4ea6e69ab973bf007d15cf836575063132cc26f90",
+        "key": "2026-07-09",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 15
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "bb3d174f43282712c7a53b69129c2277cceb2c581054785b3e25d9665ec1456c",
+        "key": "2026-07-09",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 16
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "04784dd3a1eb6fc31757169d4589625378a3f235d1dad1e2b7ff01b894c80849",
+        "key": "2026-07-10",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 17
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "5a16135b6858e553e687383258022b33988c8b4b9ae54b12555f8ab152f27870",
+        "key": "2026-07-10",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 18
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "f2ca47d5722e62963f4542765d025895542ba9262cd7165ecd0b64a5d4c0ff79",
+        "key": "2026-07-13",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 19
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "fd3b768120e79a9357f722a1c6625330e522cafb8f540441d525d130bd86945c",
+        "key": "2026-07-13",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 20
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "cf4ad9b476e4df5681e223f34515095b783f7c08bc8616411c59be19440db0c7",
+        "key": "2026-07-14",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 21
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "3031055215e21c175dbcb017c9407f08668cbb5797b8a79b8917473f7b93e75d",
+        "key": "2026-07-14",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 22
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "bb7b97434ceb905e64190f8c26a36b5edbf0d0da3ff229cc42ea196cc6ed1ab2",
+        "key": "2026-07-15",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 23
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "3072fbbe5c1d6a8c04fb9a1c60ec7e992539364dcf1daf3a03f1197e21cb50df",
+        "key": "2026-07-15",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 24
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "beac3e59ee5c923c54404e1aa8e595f6a61328f81bc8cf749dd58a3fcc85bb25",
+        "key": "2026-07-16",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 25
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "d674df0ea5d6c7af4aea91360847cbb678a7f103489b18363a6bfe560a5ca5c7",
+        "key": "2026-07-16",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 26
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "55259b7940a589e907da1a93693e25ad82eb50054c22f402d1d4991e6a1e68d8",
+        "key": "2026-07-17",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 27
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "c87661c9723226dbbc2e152cbcb54bdbcbf6fddba7a1f3efbd14a4878310adcc",
+        "key": "2026-07-17",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 28
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "5543d13cf6716879f87beb84d448e34e63ce897fbe9342ae3a3268f1dd8bd4b1",
+        "key": "2026-07-21",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 29
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "dcae2cce8f685440141208c17d721e351ab135dbe64058574c606713cad196fa",
+        "key": "2026-07-21",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 30
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "918d9c7520a687b6b9606b03a063d1573118c01feb10f90aadd612cbb49462ae",
+        "key": "2026-07-24",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 31
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "fe01b89191f9bf98ec78922ca0d79b3142f7f72184cf270d6124871b40071556",
+        "key": "2026-07-24",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 32
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "e54a46e54c3a3cca1decd1b1ae5b474057d44767a48af40ba99ec8e989671d4e",
+        "key": "2026-07-27",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 33
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "fa2decdd5df1d451e5211ab048f2f3111031013002115d33e35bf3de201aebea",
+        "key": "2026-07-27",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 34
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "373160010aba0883b5550bfac9a5fae937a78512c78a81dd8c99d2a796765d59",
+        "key": "2026-07-28",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 35
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "214bb75092bb1325ec4c9a09488b97eb18327f51dfc0d600351f9a6617e485a4",
+        "key": "2026-07-28",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 36
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "2d73fc2f8f2cfb8637f5fd48ed34e9db5ed604616824c02b8b3f0b946ad15986",
+        "key": "2026-07-29",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 37
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "108c438e9ff8dbd3aaf3c1bf842e419a071bf47bba09c500f51fb3b1993ce87a",
+        "key": "2026-07-29",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 38
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "f465e4fabce6832514b14a3edefa4c400b2139cb01c45001b6a50afa578c1841",
+        "key": "2026-07-30",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 39
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:03+08:00",
+      "details": {
+        "input_hash": "71bc98ca0ba5f5c415fcb764eab9e99830c4b74439db007f4dd84d92ef4c2d91",
+        "key": "2026-07-30",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 40
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:04+08:00",
+      "details": {
+        "input_hash": "543047558d1a0316310c7bf572010ef1205dcfbd1ecd38c549d7bb884afdb361",
+        "key": "2026-07-31",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 41
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:04+08:00",
+      "details": {
+        "input_hash": "a8a9290c6b35fbf60b784d5ba02ae9fe228aeef0d8ee8dc1b9866862ee26e5ff",
+        "key": "2026-07-31",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 42
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:04+08:00",
+      "details": {
+        "input_hash": "c866eb9b5f81728e61c65a50097607ad833b0893ccd8e59cbb56d9e5f6eb1368",
+        "key": "2026-08-03",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 43
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:04+08:00",
+      "details": {
+        "input_hash": "5e73ae124f76101635af31ab0f0124deec72a77a1f52a50a6e9e113b43d019e8",
+        "key": "2026-08-03",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 44
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:04+08:00",
+      "details": {
+        "input_hash": "806dfb1f7a8af9a8141656c5aa3419012a8c84783d48d1b08f423c40c18b3c5c",
+        "key": "2026-08-04",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 45
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T12:14:04+08:00",
+      "details": {
+        "input_hash": "2a129e16fdf696255bd38fb3fb073fe4f0e8b5e1913cce11154d01b734601a2f",
+        "key": "2026-08-04",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 46
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T17:37:14+08:00",
+      "details": {
+        "input_hash": "4d1ff45ef8b85cd20e868658f6ee6c2bae87ff9d2b08b2f6a0566483714d63ff",
+        "key": "2026-06-22",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 47
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T17:37:14+08:00",
+      "details": {
+        "input_hash": "f176069d39c9aeb8862e51f3d53f5c501ca51c12ce389d14139d88cf7b1183f6",
+        "key": "2026-06-22",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 48
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T17:37:14+08:00",
+      "details": {
+        "input_hash": "6ed4f45e0fafc0d380ffe4fbca11f1c3dd3b46d128c60c437750d5736eb48395",
+        "key": "2026-06-23",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 49
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T17:37:14+08:00",
+      "details": {
+        "input_hash": "25559ca82382257f63b9ebf849c9abcbd6d1df33a3741ce66ff3734c02c945ed",
+        "key": "2026-06-23",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 50
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T17:37:14+08:00",
+      "details": {
+        "input_hash": "db8faa0ab8f6d9a9cc1aa3e90ad1ec3a6d628c7ac2f636f28e417ea1b480fa16",
+        "key": "2026-06-24",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 51
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T17:37:14+08:00",
+      "details": {
+        "input_hash": "91c4a708e433b9ba80d433e45394d65d4a1062976e94df5be787c379d07e9224",
+        "key": "2026-06-24",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 52
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T17:37:14+08:00",
+      "details": {
+        "input_hash": "f19d7f3185d0e07ba138eff61694cd039d5330bb37b53e00078a464f2b4764c4",
+        "key": "2026-06-25",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 53
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T17:37:14+08:00",
+      "details": {
+        "input_hash": "a224b2befc31e1b7990c854eb3ad3c287e817d880bf30b620670978e2e21734b",
+        "key": "2026-06-25",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 54
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T17:37:14+08:00",
+      "details": {
+        "input_hash": "38d10540f23c35d2d493c2f2c21d7bfa2030bce532a4486e28b53466648b5134",
+        "key": "2026-06-26",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 55
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T17:37:14+08:00",
+      "details": {
+        "input_hash": "d500b43f6302ba036c5eae84f4a51c03a99a8d0a1ffe36d06f4d84ef50496987",
+        "key": "2026-06-26",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 56
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T17:37:14+08:00",
+      "details": {
+        "input_hash": "678020179cfd1e80dc79c5b731fc7ef4548dac1a0497bb13370a100f03ee1fd7",
+        "key": "2026-06-29",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 57
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T17:37:14+08:00",
+      "details": {
+        "input_hash": "2f8ea66cb76eebf3205f24cb246675c1a01fd194d29893f3ffdc56a2936cd458",
+        "key": "2026-06-29",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 58
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T17:37:14+08:00",
+      "details": {
+        "input_hash": "ec32558e7b53f5486f131eeaa69d07a8d1038bf32b897b5a70d0990e0000365b",
+        "key": "2026-06-30",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 59
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T17:37:14+08:00",
+      "details": {
+        "input_hash": "3ea3b132e48d6eeaf32955e51e9f2b472d11abebce27f4ceb17b0a0644c9e2c7",
+        "key": "2026-06-30",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 60
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T17:37:14+08:00",
+      "details": {
+        "input_hash": "41be4d354e72a77a8223e417f6f98f2f780819fc5ce047cd948dadd7e0a6443d",
+        "key": "2026-07-01",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 61
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T17:37:14+08:00",
+      "details": {
+        "input_hash": "dc5ca92231fa3f1ba5addf5878d904ee73d58ecc9ef134cff5991319c18d4f7b",
+        "key": "2026-07-01",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 62
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T17:37:14+08:00",
+      "details": {
+        "input_hash": "e39039609198d309d56b48e982ce418c7993262cd5cec5141b4f46d0a03aade2",
+        "key": "2026-07-07",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 63
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T17:37:14+08:00",
+      "details": {
+        "input_hash": "685d5206bcdbe05d6cc91c067aad156b7325c82432a4fac0f2a2e1996669132c",
+        "key": "2026-07-07",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 64
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T17:37:14+08:00",
+      "details": {
+        "input_hash": "7c06571ef2da5b2bc5ed0de304c8f517c1d232b1b91da7245f54e55279d9f6b9",
+        "key": "2026-07-08",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 65
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T17:37:14+08:00",
+      "details": {
+        "input_hash": "eaea5f7d77d8e43da063a7cc60fc5680ad7234df363e7845294a043ae96986cf",
+        "key": "2026-07-08",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 66
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T17:39:47+08:00",
+      "details": {
+        "input_hash": "16d6528e015b7f18d105069242b1cf5fd6cc6239d08e998ec422e1803aac09a9",
+        "key": "2026-08-06",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 67
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-09T17:39:47+08:00",
+      "details": {
+        "input_hash": "4f6094b7e9fb292db00c584bea554f737eb64d54219a72f8e99a401c39380bc9",
+        "key": "2026-08-06",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 68
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-10T20:46:46+08:00",
+      "details": {
+        "input_hash": "8c4ac7eb6328810486d9ebaf8b2b1201f1b533b4d309684dd2126217ad054f64",
+        "key": "2026-08-07",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 69
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-10T20:46:46+08:00",
+      "details": {
+        "input_hash": "310a0efea65efb3837d7bf48974e74ab90cbe662e6754980e61010e97c2994f7",
+        "key": "2026-08-07",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 70
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-10T20:46:46+08:00",
+      "details": {
+        "input_hash": "d3e13dcb17f7d06c6fb4f760e8b5e42e830c07d0d26ba22d90a32ebfa980d43e",
+        "key": "2026-08-10",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 71
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-10T20:46:46+08:00",
+      "details": {
+        "input_hash": "8ca25740bfff5c29c3b78d67736f41a6b6d3daca0fbe99ab3fc1f884ebf80792",
+        "key": "2026-08-10",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 72
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-11T20:46:40+08:00",
+      "details": {
+        "input_hash": "bf0db8d4af494dff931c9fe7e2887cd6a0c14c751fee6bf8eeedf260e31cca29",
+        "key": "2026-08-11",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 73
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-11T20:46:40+08:00",
+      "details": {
+        "input_hash": "893fc53610b1defec124c34d184f9b166e416584e153acccbafdfcad00603e08",
+        "key": "2026-08-11",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 74
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-12T20:46:53+08:00",
+      "details": {
+        "input_hash": "fadd608fb80540b509e59c530e81a79b071b8d08e5ce356222260b89e1da4c00",
+        "key": "2026-08-12",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 75
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-12T20:46:53+08:00",
+      "details": {
+        "input_hash": "6e5fa7ed576d7b1ff72c3ba64f67aba269b23abf1914dff6b6dda88f542f4e3b",
+        "key": "2026-08-12",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 76
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-14T20:48:43+08:00",
+      "details": {
+        "input_hash": "e114c74f728783cf12bd68fde0c34dc78c4de76698eba5a65e23e826effb9210",
+        "key": "2026-08-13",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 77
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-14T20:48:43+08:00",
+      "details": {
+        "input_hash": "e6a38cbef7f10fcca2140dbe02e2524cc76150382db994f35636a4ad4a5a4878",
+        "key": "2026-08-13",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 78
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-17T20:47:09+08:00",
+      "details": {
+        "input_hash": "24be1e006f32391ac7a5225740b9cf48a5b9584a80944b3fa27c12807db28f13",
+        "key": "2026-08-17",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 79
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-17T20:47:09+08:00",
+      "details": {
+        "input_hash": "1ea82d0628d52ddaad085ae4811e7c0643a7357314852893e4b4b57d378a6f38",
+        "key": "2026-08-17",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 80
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-18T20:47:29+08:00",
+      "details": {
+        "input_hash": "82ead9d421ee2222060120edd476f68ce456b3b1f06defdc14fd012555a39d47",
+        "key": "2026-08-18",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+      "seq": 81
+    },
+    {
+      "actor": "system",
+      "at": "2026-08-18T20:47:29+08:00",
+      "details": {
+        "input_hash": "ca571175c9e8c0fa8960ad439ff415881214739272265a2859db4356e94a64c6",
+        "key": "2026-08-18",
+        "kind": "shadow_observation"
+      },
+      "event": "SHADOW_OBSERVATION_APPENDED",
+      "experiment_id": "exp_20260801_recall_sector_momentum",
+      "seq": 82
+    }
+  ],
+  "baseline_history": [],
+  "experiments": {
+    "exp_20260729_l3_hard_constraint_f": {
+      "activated_at": null,
+      "approval": null,
+      "challenger_pointer": {
+        "content_hash": "785b58a9560721a6c4e24c6cac9b791b29afb040d3f6f09e38606d3c4077939b",
+        "kind": "prompt",
+        "pointer": ".claude/agents/l3-rank.md@baseline:2fd6117eb6f7+pr_20260729_001"
+      },
+      "closed_at": null,
+      "definition": {
+        "change": "追加硬约束 F —— 表内 main_dist 标『反号』或 misread 亮『背离』旗的票,主力资金一律不得作为入选/OW 论点;凭其它证据入选时 thesis 必须显式写『资金证据不可用』并给替代论据。",
+        "human_gate": "approve 与 activate 分别人批并记录操作者;推荐 ≠ 批准 ≠ 激活。",
+        "patch_proposal": "pr_20260729_001",
+        "section": "选股硬约束(来自用户反馈,违反即失败)",
+        "shadow_feasible": false,
+        "shadow_infeasibility_reason": "prompt 无法影子跑:同一日不能双跑 L3(成本与 context 均不允许,两份 judged 还会污染下游 finalists 与账本)。故守卫改为事后 rollback_watch,激活后 ≥5 个前向扫描日再裁。",
+        "target_file": ".claude/agents/l3-rank.md",
+        "trigger_evidence": "2026-07-28 601918:_l3_table.md:115 已渲染 `-0.66 | 反号`,thesis 仍写『main_net_ratio 0.108 全表最高』当核心多头论点 → L4 压 UW。同会话 bench 侧拒兴业/华泰/中信/中金时全部正确引用该旗 = 指令可执行性自证。"
+      },
+      "definition_hash": "185126191dc30010e6564cb74c053c6cea2718cf0701c9e228ae82d486d7e117",
+      "expires_date": "2026-09-30",
+      "id": "exp_20260729_l3_hard_constraint_f",
+      "latest_evaluation": null,
+      "latest_rollback_assessment": null,
+      "minimums": {
+        "forward_days": 5,
+        "mature_events": 5,
+        "regimes": 1,
+        "unique_events": 0
+      },
+      "observations": [],
+      "primary_metric": "l3_funding_flag_misuse_n",
+      "promotion_guards": {
+        "architecture": [
+          {
+            "metric": "contract_anchors_intact",
+            "op": "eq",
+            "value": 1
+          }
+        ],
+        "decision": [
+          {
+            "metric": "finalist_n_delta",
+            "op": "eq",
+            "value": 0
+          },
+          {
+            "metric": "ow_gate_semantics_changed",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "research": [
+          {
+            "metric": "l3_funding_flag_misuse_n",
+            "op": "lte",
+            "value": 0
+          }
+        ],
+        "speed": [
+          {
+            "metric": "l3_wall_delta_pct",
+            "op": "lte",
+            "value": 5
+          }
+        ],
+        "token": [
+          {
+            "metric": "l3_weighted_token_delta_pct",
+            "op": "lte",
+            "value": 5
+          }
+        ]
+      },
+      "registered_at": "2026-07-29T12:58:08+08:00",
+      "rollback_guards": {
+        "architecture": [
+          {
+            "metric": "contract_anchors_intact",
+            "op": "lt",
+            "value": 1
+          }
+        ],
+        "decision": [
+          {
+            "metric": "finalist_n_delta_abs",
+            "op": "gte",
+            "value": 3
+          }
+        ],
+        "research": [
+          {
+            "metric": "l3_funding_flag_misuse_n",
+            "op": "gte",
+            "value": 2
+          }
+        ],
+        "speed": [
+          {
+            "metric": "l3_wall_delta_pct",
+            "op": "gte",
+            "value": 20
+          }
+        ],
+        "token": [
+          {
+            "metric": "l3_weighted_token_delta_pct",
+            "op": "gte",
+            "value": 20
+          }
+        ]
+      },
+      "rollback_pointer": {
+        "approved_at": "2026-07-29T12:56:15+08:00",
+        "approved_by": "qingbin",
+        "content_hash": "9ed173338cd4b7ed01c86cd22a9b952b438eee9e3fb0849986d42e458001e086",
+        "name": "wave8-production-baseline-20260729",
+        "note": "Wave8 首次上膛:登记当前生产态三件(L3 人设 git sha / 召回权重 / scan_config)作为稳定基线与回滚指针。此前 registry.json 从不存在 = 控制面造好了但没装弹(Wave5 记账原话:软件完成 ≠ 研究成熟)。",
+        "pointer": "l3-rank.md@2fd6117eb6f7 + weights.json@040f620260e8 + scan_config.jsonc@eeb5cac6a338"
+      },
+      "rollback_window_runs": 5,
+      "start_date": "2026-07-29",
+      "status": "PREREGISTERED",
+      "title": "L3 硬约束 F:main_dist 反号/背离旗的票,主力资金不得作为入选或 OW 论点",
+      "trial_family": "l3_prompt"
+    },
+    "exp_20260801_ow_gate_mainflow5d": {
+      "activated_at": null,
+      "approval": null,
+      "challenger_pointer": {
+        "content_hash": "5745e85b640ee50ab4445a45e5bf021c0abf99c1da5c1c170f444c9703a43ee5",
+        "kind": "shadow_gate",
+        "pointer": "autoresearch/learning/gate_attribution.py::gate_participation"
+      },
+      "closed_at": null,
+      "definition": {
+        "T": "分析日;区间严格为**五个交易日**,非自然日",
+        "challenger": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+        "control": "当日口径(现行生产判据)",
+        "data_source": "moneyflow 日分区(lake);缺任一日 → UNMEASURED,assemble **不得**联网补",
+        "negative_result_policy": "不通过即记负结果并关闭,不重跑到通过为止",
+        "outcome_contract": "A11 v3(CORRECT/NEUTRAL/FALSE_KILL/UNMEASURED)",
+        "pairing": "control/challenger 绑定同一 run_id/candidate/date,paired delta",
+        "population": "gate_participation_v3.csv 中 gate=='主力真在' 的行 —— 即该门参与否决过的票;attribution 口径样本不足以支撑本实验",
+        "production_side_effects": "无 —— 只重算判据,不改门、不改评级、不改 BUY 数",
+        "statistics": "date cluster bootstrap;固定 minimum,不允许可选停止"
+      },
+      "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+      "expires_date": "2026-11-30",
+      "id": "exp_20260801_ow_gate_mainflow5d",
+      "latest_evaluation": null,
+      "latest_rollback_assessment": null,
+      "maturity_clock": {
+        "first_observation_at": "2026-08-09T12:13:16+08:00",
+        "first_observation_key": "2026-08-05",
+        "minimums": {
+          "forward_days": 20,
+          "mature_events": 50,
+          "regimes": 2,
+          "unique_events": 50
+        },
+        "n_observations": 38,
+        "note": "成熟门(minimums:forward_days / mature_events / unique_events / regimes)自**首条观测**起算,**不是**从预注册日起算。2026-08-01 预注册的 EXP-1/EXP-2 数据腿从未实现、observations 空转 6 天(FN-1 家族:消费者在等一个没人生产的产物)——按「预注册日 +N 天」计门,会让一条从没产生过任何观测的腿在第 N+1 天自动『成熟』。"
+      },
+      "minimums": {
+        "forward_days": 20,
+        "mature_events": 50,
+        "regimes": 2,
+        "unique_events": 50
+      },
+      "observations": [
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-08-05",
+            "n_challenger_pass": 1,
+            "n_challenger_reject": 4,
+            "n_measured": 5,
+            "n_population": 6,
+            "n_unmeasured": 1,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "babdb47095269730f7973249d838cd5dbda9a35e01e5b20ef9099e33cce40b69",
+          "key": "2026-08-05",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:13:16+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-07-02",
+            "n_challenger_pass": 0,
+            "n_challenger_reject": 2,
+            "n_measured": 2,
+            "n_population": 2,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "fd36f252a5f3146eae66f9eddd9ba55dce9ca4b9d51729bf5dd7562841c884dd",
+          "key": "2026-07-02",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-07-03",
+            "n_challenger_pass": 2,
+            "n_challenger_reject": 15,
+            "n_measured": 17,
+            "n_population": 17,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "4b1eb32ddd48122c7e6296ed0f20c8b03dbfa2b8ab91f9bf6759ed6fd42bf51c",
+          "key": "2026-07-03",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-07-06",
+            "n_challenger_pass": 0,
+            "n_challenger_reject": 1,
+            "n_measured": 1,
+            "n_population": 1,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "08d7c06705b43d0907f0b33a23ef0dd50724f90917bbc97d2cdbc021bc02bda4",
+          "key": "2026-07-06",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-07-09",
+            "n_challenger_pass": 0,
+            "n_challenger_reject": 1,
+            "n_measured": 1,
+            "n_population": 1,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "9f1af6e65b5fa22d79bc61a4ea6e69ab973bf007d15cf836575063132cc26f90",
+          "key": "2026-07-09",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-07-10",
+            "n_challenger_pass": 0,
+            "n_challenger_reject": 6,
+            "n_measured": 6,
+            "n_population": 6,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "04784dd3a1eb6fc31757169d4589625378a3f235d1dad1e2b7ff01b894c80849",
+          "key": "2026-07-10",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-07-13",
+            "n_challenger_pass": 1,
+            "n_challenger_reject": 2,
+            "n_measured": 3,
+            "n_population": 3,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "f2ca47d5722e62963f4542765d025895542ba9262cd7165ecd0b64a5d4c0ff79",
+          "key": "2026-07-13",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-07-14",
+            "n_challenger_pass": 1,
+            "n_challenger_reject": 3,
+            "n_measured": 4,
+            "n_population": 4,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "cf4ad9b476e4df5681e223f34515095b783f7c08bc8616411c59be19440db0c7",
+          "key": "2026-07-14",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-07-15",
+            "n_challenger_pass": 0,
+            "n_challenger_reject": 4,
+            "n_measured": 4,
+            "n_population": 4,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "bb7b97434ceb905e64190f8c26a36b5edbf0d0da3ff229cc42ea196cc6ed1ab2",
+          "key": "2026-07-15",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-07-16",
+            "n_challenger_pass": 1,
+            "n_challenger_reject": 1,
+            "n_measured": 2,
+            "n_population": 2,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "beac3e59ee5c923c54404e1aa8e595f6a61328f81bc8cf749dd58a3fcc85bb25",
+          "key": "2026-07-16",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-07-17",
+            "n_challenger_pass": 0,
+            "n_challenger_reject": 4,
+            "n_measured": 4,
+            "n_population": 4,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "55259b7940a589e907da1a93693e25ad82eb50054c22f402d1d4991e6a1e68d8",
+          "key": "2026-07-17",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-07-21",
+            "n_challenger_pass": 0,
+            "n_challenger_reject": 3,
+            "n_measured": 3,
+            "n_population": 3,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "5543d13cf6716879f87beb84d448e34e63ce897fbe9342ae3a3268f1dd8bd4b1",
+          "key": "2026-07-21",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-07-24",
+            "n_challenger_pass": 1,
+            "n_challenger_reject": 6,
+            "n_measured": 7,
+            "n_population": 7,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "918d9c7520a687b6b9606b03a063d1573118c01feb10f90aadd612cbb49462ae",
+          "key": "2026-07-24",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-07-27",
+            "n_challenger_pass": 0,
+            "n_challenger_reject": 7,
+            "n_measured": 7,
+            "n_population": 7,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "e54a46e54c3a3cca1decd1b1ae5b474057d44767a48af40ba99ec8e989671d4e",
+          "key": "2026-07-27",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-07-28",
+            "n_challenger_pass": 0,
+            "n_challenger_reject": 4,
+            "n_measured": 4,
+            "n_population": 4,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "373160010aba0883b5550bfac9a5fae937a78512c78a81dd8c99d2a796765d59",
+          "key": "2026-07-28",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-07-29",
+            "n_challenger_pass": 1,
+            "n_challenger_reject": 2,
+            "n_measured": 3,
+            "n_population": 4,
+            "n_unmeasured": 1,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "2d73fc2f8f2cfb8637f5fd48ed34e9db5ed604616824c02b8b3f0b946ad15986",
+          "key": "2026-07-29",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-07-30",
+            "n_challenger_pass": 1,
+            "n_challenger_reject": 0,
+            "n_measured": 1,
+            "n_population": 2,
+            "n_unmeasured": 1,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "f465e4fabce6832514b14a3edefa4c400b2139cb01c45001b6a50afa578c1841",
+          "key": "2026-07-30",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-07-31",
+            "n_challenger_pass": 0,
+            "n_challenger_reject": 5,
+            "n_measured": 5,
+            "n_population": 6,
+            "n_unmeasured": 1,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "543047558d1a0316310c7bf572010ef1205dcfbd1ecd38c549d7bb884afdb361",
+          "key": "2026-07-31",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:04+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-08-03",
+            "n_challenger_pass": 1,
+            "n_challenger_reject": 2,
+            "n_measured": 3,
+            "n_population": 4,
+            "n_unmeasured": 1,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "c866eb9b5f81728e61c65a50097607ad833b0893ccd8e59cbb56d9e5f6eb1368",
+          "key": "2026-08-03",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:04+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-08-04",
+            "n_challenger_pass": 1,
+            "n_challenger_reject": 5,
+            "n_measured": 6,
+            "n_population": 7,
+            "n_unmeasured": 1,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "806dfb1f7a8af9a8141656c5aa3419012a8c84783d48d1b08f423c40c18b3c5c",
+          "key": "2026-08-04",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:04+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-06-22",
+            "n_challenger_pass": 0,
+            "n_challenger_reject": 0,
+            "n_measured": 0,
+            "n_population": 0,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "4d1ff45ef8b85cd20e868658f6ee6c2bae87ff9d2b08b2f6a0566483714d63ff",
+          "key": "2026-06-22",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T17:37:14+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-06-23",
+            "n_challenger_pass": 0,
+            "n_challenger_reject": 0,
+            "n_measured": 0,
+            "n_population": 0,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "6ed4f45e0fafc0d380ffe4fbca11f1c3dd3b46d128c60c437750d5736eb48395",
+          "key": "2026-06-23",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T17:37:14+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-06-24",
+            "n_challenger_pass": 0,
+            "n_challenger_reject": 0,
+            "n_measured": 0,
+            "n_population": 0,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "db8faa0ab8f6d9a9cc1aa3e90ad1ec3a6d628c7ac2f636f28e417ea1b480fa16",
+          "key": "2026-06-24",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T17:37:14+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-06-25",
+            "n_challenger_pass": 0,
+            "n_challenger_reject": 0,
+            "n_measured": 0,
+            "n_population": 0,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "f19d7f3185d0e07ba138eff61694cd039d5330bb37b53e00078a464f2b4764c4",
+          "key": "2026-06-25",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T17:37:14+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-06-26",
+            "n_challenger_pass": 0,
+            "n_challenger_reject": 0,
+            "n_measured": 0,
+            "n_population": 0,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "38d10540f23c35d2d493c2f2c21d7bfa2030bce532a4486e28b53466648b5134",
+          "key": "2026-06-26",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T17:37:14+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-06-29",
+            "n_challenger_pass": 0,
+            "n_challenger_reject": 0,
+            "n_measured": 0,
+            "n_population": 0,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "678020179cfd1e80dc79c5b731fc7ef4548dac1a0497bb13370a100f03ee1fd7",
+          "key": "2026-06-29",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T17:37:14+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-06-30",
+            "n_challenger_pass": 0,
+            "n_challenger_reject": 0,
+            "n_measured": 0,
+            "n_population": 0,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "ec32558e7b53f5486f131eeaa69d07a8d1038bf32b897b5a70d0990e0000365b",
+          "key": "2026-06-30",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T17:37:14+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-07-01",
+            "n_challenger_pass": 0,
+            "n_challenger_reject": 0,
+            "n_measured": 0,
+            "n_population": 0,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "41be4d354e72a77a8223e417f6f98f2f780819fc5ce047cd948dadd7e0a6443d",
+          "key": "2026-07-01",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T17:37:14+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-07-07",
+            "n_challenger_pass": 0,
+            "n_challenger_reject": 0,
+            "n_measured": 0,
+            "n_population": 0,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "e39039609198d309d56b48e982ce418c7993262cd5cec5141b4f46d0a03aade2",
+          "key": "2026-07-07",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T17:37:14+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-07-08",
+            "n_challenger_pass": 0,
+            "n_challenger_reject": 0,
+            "n_measured": 0,
+            "n_population": 0,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "7c06571ef2da5b2bc5ed0de304c8f517c1d232b1b91da7245f54e55279d9f6b9",
+          "key": "2026-07-08",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T17:37:14+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-08-06",
+            "n_challenger_pass": 0,
+            "n_challenger_reject": 0,
+            "n_measured": 0,
+            "n_population": 0,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "16d6528e015b7f18d105069242b1cf5fd6cc6239d08e998ec422e1803aac09a9",
+          "key": "2026-08-06",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T17:39:47+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-08-07",
+            "n_challenger_pass": 0,
+            "n_challenger_reject": 0,
+            "n_measured": 0,
+            "n_population": 0,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "8c4ac7eb6328810486d9ebaf8b2b1201f1b533b4d309684dd2126217ad054f64",
+          "key": "2026-08-07",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-10T20:46:46+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-08-10",
+            "n_challenger_pass": 0,
+            "n_challenger_reject": 0,
+            "n_measured": 0,
+            "n_population": 0,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "d3e13dcb17f7d06c6fb4f760e8b5e42e830c07d0d26ba22d90a32ebfa980d43e",
+          "key": "2026-08-10",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-10T20:46:46+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-08-11",
+            "n_challenger_pass": 0,
+            "n_challenger_reject": 0,
+            "n_measured": 0,
+            "n_population": 0,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "bf0db8d4af494dff931c9fe7e2887cd6a0c14c751fee6bf8eeedf260e31cca29",
+          "key": "2026-08-11",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-11T20:46:40+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-08-12",
+            "n_challenger_pass": 0,
+            "n_challenger_reject": 0,
+            "n_measured": 0,
+            "n_population": 0,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "fadd608fb80540b509e59c530e81a79b071b8d08e5ce356222260b89e1da4c00",
+          "key": "2026-08-12",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-12T20:46:53+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-08-13",
+            "n_challenger_pass": 0,
+            "n_challenger_reject": 0,
+            "n_measured": 0,
+            "n_population": 0,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "e114c74f728783cf12bd68fde0c34dc78c4de76698eba5a65e23e826effb9210",
+          "key": "2026-08-13",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-14T20:48:43+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-08-17",
+            "n_challenger_pass": 0,
+            "n_challenger_reject": 0,
+            "n_measured": 0,
+            "n_population": 0,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "24be1e006f32391ac7a5225740b9cf48a5b9584a80944b3fa27c12807db28f13",
+          "key": "2026-08-17",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-17T20:47:09+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "a375664f5026a97e5d1fecc42ff7e794ca57f6bb1138ee7bedd49e4e8981f5d2",
+          "experiment_id": "exp_20260801_ow_gate_mainflow5d",
+          "facts": {
+            "date": "2026-08-18",
+            "n_challenger_pass": 0,
+            "n_challenger_reject": 0,
+            "n_measured": 0,
+            "n_population": 0,
+            "n_unmeasured": 0,
+            "population": "gate_participation_v3.csv · gate==主力真在",
+            "rule": "sum(main_net_yi, T-4..T) > 0 ∧ positive_days >= 3 ∧ main_distortion == false",
+            "ruler": "gap_c1_o2",
+            "window_days": 5
+          },
+          "input_hash": "82ead9d421ee2222060120edd476f68ce456b3b1f06defdc14fd012555a39d47",
+          "key": "2026-08-18",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-18T20:47:29+08:00",
+          "schema_version": 1
+        }
+      ],
+      "primary_metric": "false_kill_rate_delta_pp",
+      "promotion_guards": {
+        "architecture": [
+          {
+            "metric": "production_artifact_diff",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "decision": [
+          {
+            "metric": "correct_block_rate_delta_pp",
+            "op": "gte",
+            "value": -3
+          },
+          {
+            "metric": "mean_excess2_delta",
+            "op": "lte",
+            "value": 0
+          }
+        ],
+        "research": [
+          {
+            "metric": "false_kill_rate_delta_pp",
+            "op": "lte",
+            "value": -3
+          }
+        ],
+        "speed": [
+          {
+            "metric": "wall_delta_pct",
+            "op": "lte",
+            "value": 5
+          }
+        ],
+        "token": [
+          {
+            "metric": "token_delta_pct",
+            "op": "lte",
+            "value": 0
+          }
+        ]
+      },
+      "registered_at": "2026-08-01T22:08:22+08:00",
+      "rollback_guards": {
+        "architecture": [
+          {
+            "metric": "production_artifact_diff",
+            "op": "gt",
+            "value": 0
+          }
+        ],
+        "decision": [
+          {
+            "metric": "correct_block_rate_delta_pp",
+            "op": "lt",
+            "value": -5
+          }
+        ],
+        "research": [
+          {
+            "metric": "false_kill_rate_delta_pp",
+            "op": "gt",
+            "value": 0
+          }
+        ],
+        "speed": [
+          {
+            "metric": "wall_delta_pct",
+            "op": "gt",
+            "value": 10
+          }
+        ],
+        "token": [
+          {
+            "metric": "token_delta_pct",
+            "op": "gt",
+            "value": 5
+          }
+        ]
+      },
+      "rollback_pointer": {
+        "approved_at": "2026-07-29T12:56:15+08:00",
+        "approved_by": "qingbin",
+        "content_hash": "9ed173338cd4b7ed01c86cd22a9b952b438eee9e3fb0849986d42e458001e086",
+        "name": "wave8-production-baseline-20260729",
+        "note": "Wave8 首次上膛:登记当前生产态三件(L3 人设 git sha / 召回权重 / scan_config)作为稳定基线与回滚指针。此前 registry.json 从不存在 = 控制面造好了但没装弹(Wave5 记账原话:软件完成 ≠ 研究成熟)。",
+        "pointer": "l3-rank.md@2fd6117eb6f7 + weights.json@040f620260e8 + scan_config.jsonc@eeb5cac6a338"
+      },
+      "rollback_window_runs": 5,
+      "start_date": "2026-08-01",
+      "status": "PREREGISTERED",
+      "title": "OW『主力真在』门:5 日持续性影子口径 vs 当日口径",
+      "trial_family": "ow_gate_mainflow"
+    },
+    "exp_20260801_recall_sector_momentum": {
+      "activated_at": null,
+      "approval": null,
+      "challenger_pointer": {
+        "content_hash": "773523a487d1cf09c491749e1accf8633341cae3c2483b01debd16305b339fa3",
+        "kind": "shadow_channel",
+        "pointer": "autoresearch/scan/recall/registry.py::sector_momentum(shadow)"
+      },
+      "closed_at": null,
+      "definition": {
+        "challenger": "上涨侧 sector momentum channel,只落 per_channel 长表",
+        "control": "现行召回 channel 组合",
+        "isolation": "floor=0 · 不占 quota · **不写生产 finalists** —— Wave4 教训:『默认不启用』必须连副作用一起不启用,加个 L2 floor 就天天改生产 LLM 输入",
+        "negative_result_policy": "不通过即退役并把负结果写进 lessons",
+        "phase_requirement": "每相位(regime)≥5 个扫描日,不足则 IMMATURE",
+        "shared_instrument": "与 pr_20260725_001 的 event 召回路共用 channel_audit 仪器,但 family/variant 分开,**不得混样本**",
+        "statistics": "date cluster bootstrap 的 unique excess T+2 下界"
+      },
+      "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+      "expires_date": "2026-11-30",
+      "id": "exp_20260801_recall_sector_momentum",
+      "latest_evaluation": null,
+      "latest_rollback_assessment": null,
+      "maturity_clock": {
+        "first_observation_at": "2026-08-09T12:13:16+08:00",
+        "first_observation_key": "2026-08-05",
+        "minimums": {
+          "forward_days": 20,
+          "mature_events": 50,
+          "regimes": 2,
+          "unique_events": 50
+        },
+        "n_observations": 38,
+        "note": "成熟门(minimums:forward_days / mature_events / unique_events / regimes)自**首条观测**起算,**不是**从预注册日起算。2026-08-01 预注册的 EXP-1/EXP-2 数据腿从未实现、observations 空转 6 天(FN-1 家族:消费者在等一个没人生产的产物)——按「预注册日 +N 天」计门,会让一条从没产生过任何观测的腿在第 N+1 天自动『成熟』。"
+      },
+      "minimums": {
+        "forward_days": 20,
+        "mature_events": 50,
+        "regimes": 2,
+        "unique_events": 50
+      },
+      "observations": [
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-08-05",
+            "n_channels_in_variant": 9,
+            "n_recalled": 8,
+            "n_unique": 3,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "d337c310079769b3f289a0853158700e3d4ca8988797392b4157e1d6e0911101",
+          "key": "2026-08-05",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:13:16+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-07-02",
+            "n_channels_in_variant": 9,
+            "n_recalled": 150,
+            "n_unique": 90,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "ec510ed9b34e076ba71685a4bc5f82888d053fd0b0fe3e2d3b37806f410e88a7",
+          "key": "2026-07-02",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-07-03",
+            "n_channels_in_variant": 10,
+            "n_recalled": 150,
+            "n_unique": 93,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "16e21d72bf80c7ed6a82fe5ee2fe8c3672207848e6670a58c2186dbbcb29408c",
+          "key": "2026-07-03",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-07-06",
+            "n_channels_in_variant": 10,
+            "n_recalled": 150,
+            "n_unique": 76,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "aadb34449c854426c34ea0f295bb53332ebded78c2cfe4977a9e52a432220a21",
+          "key": "2026-07-06",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-07-09",
+            "n_channels_in_variant": 10,
+            "n_recalled": 150,
+            "n_unique": 87,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "bb3d174f43282712c7a53b69129c2277cceb2c581054785b3e25d9665ec1456c",
+          "key": "2026-07-09",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-07-10",
+            "n_channels_in_variant": 9,
+            "n_recalled": 150,
+            "n_unique": 89,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "5a16135b6858e553e687383258022b33988c8b4b9ae54b12555f8ab152f27870",
+          "key": "2026-07-10",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-07-13",
+            "n_channels_in_variant": 9,
+            "n_recalled": 150,
+            "n_unique": 86,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "fd3b768120e79a9357f722a1c6625330e522cafb8f540441d525d130bd86945c",
+          "key": "2026-07-13",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-07-14",
+            "n_channels_in_variant": 9,
+            "n_recalled": 150,
+            "n_unique": 93,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "3031055215e21c175dbcb017c9407f08668cbb5797b8a79b8917473f7b93e75d",
+          "key": "2026-07-14",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-07-15",
+            "n_channels_in_variant": 9,
+            "n_recalled": 150,
+            "n_unique": 92,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "3072fbbe5c1d6a8c04fb9a1c60ec7e992539364dcf1daf3a03f1197e21cb50df",
+          "key": "2026-07-15",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-07-16",
+            "n_channels_in_variant": 9,
+            "n_recalled": 150,
+            "n_unique": 71,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "d674df0ea5d6c7af4aea91360847cbb678a7f103489b18363a6bfe560a5ca5c7",
+          "key": "2026-07-16",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-07-17",
+            "n_channels_in_variant": 9,
+            "n_recalled": 150,
+            "n_unique": 94,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "c87661c9723226dbbc2e152cbcb54bdbcbf6fddba7a1f3efbd14a4878310adcc",
+          "key": "2026-07-17",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-07-21",
+            "n_channels_in_variant": 9,
+            "n_recalled": 47,
+            "n_unique": 28,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "dcae2cce8f685440141208c17d721e351ab135dbe64058574c606713cad196fa",
+          "key": "2026-07-21",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-07-24",
+            "n_channels_in_variant": 9,
+            "n_recalled": 13,
+            "n_unique": 5,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "fe01b89191f9bf98ec78922ca0d79b3142f7f72184cf270d6124871b40071556",
+          "key": "2026-07-24",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-07-27",
+            "n_channels_in_variant": 9,
+            "n_recalled": 13,
+            "n_unique": 6,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "fa2decdd5df1d451e5211ab048f2f3111031013002115d33e35bf3de201aebea",
+          "key": "2026-07-27",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-07-28",
+            "n_channels_in_variant": 9,
+            "n_recalled": 8,
+            "n_unique": 3,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "214bb75092bb1325ec4c9a09488b97eb18327f51dfc0d600351f9a6617e485a4",
+          "key": "2026-07-28",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-07-29",
+            "n_channels_in_variant": 9,
+            "n_recalled": 8,
+            "n_unique": 3,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "108c438e9ff8dbd3aaf3c1bf842e419a071bf47bba09c500f51fb3b1993ce87a",
+          "key": "2026-07-29",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-07-30",
+            "n_channels_in_variant": 9,
+            "n_recalled": 50,
+            "n_unique": 11,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "71bc98ca0ba5f5c415fcb764eab9e99830c4b74439db007f4dd84d92ef4c2d91",
+          "key": "2026-07-30",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:03+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-07-31",
+            "n_channels_in_variant": 9,
+            "n_recalled": 50,
+            "n_unique": 13,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "a8a9290c6b35fbf60b784d5ba02ae9fe228aeef0d8ee8dc1b9866862ee26e5ff",
+          "key": "2026-07-31",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:04+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-08-03",
+            "n_channels_in_variant": 9,
+            "n_recalled": 50,
+            "n_unique": 8,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "5e73ae124f76101635af31ab0f0124deec72a77a1f52a50a6e9e113b43d019e8",
+          "key": "2026-08-03",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:04+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-08-04",
+            "n_channels_in_variant": 8,
+            "n_recalled": 0,
+            "n_unique": 0,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "2a129e16fdf696255bd38fb3fb073fe4f0e8b5e1913cce11154d01b734601a2f",
+          "key": "2026-08-04",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T12:14:04+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-06-22",
+            "n_channels_in_variant": 9,
+            "n_recalled": 150,
+            "n_unique": 87,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "f176069d39c9aeb8862e51f3d53f5c501ca51c12ce389d14139d88cf7b1183f6",
+          "key": "2026-06-22",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T17:37:14+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-06-23",
+            "n_channels_in_variant": 9,
+            "n_recalled": 150,
+            "n_unique": 98,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "25559ca82382257f63b9ebf849c9abcbd6d1df33a3741ce66ff3734c02c945ed",
+          "key": "2026-06-23",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T17:37:14+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-06-24",
+            "n_channels_in_variant": 9,
+            "n_recalled": 150,
+            "n_unique": 94,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "91c4a708e433b9ba80d433e45394d65d4a1062976e94df5be787c379d07e9224",
+          "key": "2026-06-24",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T17:37:14+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-06-25",
+            "n_channels_in_variant": 9,
+            "n_recalled": 150,
+            "n_unique": 93,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "a224b2befc31e1b7990c854eb3ad3c287e817d880bf30b620670978e2e21734b",
+          "key": "2026-06-25",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T17:37:14+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-06-26",
+            "n_channels_in_variant": 9,
+            "n_recalled": 150,
+            "n_unique": 92,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "d500b43f6302ba036c5eae84f4a51c03a99a8d0a1ffe36d06f4d84ef50496987",
+          "key": "2026-06-26",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T17:37:14+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-06-29",
+            "n_channels_in_variant": 9,
+            "n_recalled": 150,
+            "n_unique": 90,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "2f8ea66cb76eebf3205f24cb246675c1a01fd194d29893f3ffdc56a2936cd458",
+          "key": "2026-06-29",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T17:37:14+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-06-30",
+            "n_channels_in_variant": 9,
+            "n_recalled": 150,
+            "n_unique": 93,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "3ea3b132e48d6eeaf32955e51e9f2b472d11abebce27f4ceb17b0a0644c9e2c7",
+          "key": "2026-06-30",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T17:37:14+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-07-01",
+            "n_channels_in_variant": 9,
+            "n_recalled": 150,
+            "n_unique": 95,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "dc5ca92231fa3f1ba5addf5878d904ee73d58ecc9ef134cff5991319c18d4f7b",
+          "key": "2026-07-01",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T17:37:14+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-07-07",
+            "n_channels_in_variant": 10,
+            "n_recalled": 150,
+            "n_unique": 68,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "685d5206bcdbe05d6cc91c067aad156b7325c82432a4fac0f2a2e1996669132c",
+          "key": "2026-07-07",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T17:37:14+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-07-08",
+            "n_channels_in_variant": 10,
+            "n_recalled": 150,
+            "n_unique": 64,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "eaea5f7d77d8e43da063a7cc60fc5680ad7234df363e7845294a043ae96986cf",
+          "key": "2026-07-08",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T17:37:14+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-08-06",
+            "n_channels_in_variant": 9,
+            "n_recalled": 8,
+            "n_unique": 3,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "4f6094b7e9fb292db00c584bea554f737eb64d54219a72f8e99a401c39380bc9",
+          "key": "2026-08-06",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-09T17:39:47+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-08-07",
+            "n_channels_in_variant": 9,
+            "n_recalled": 55,
+            "n_unique": 27,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "310a0efea65efb3837d7bf48974e74ab90cbe662e6754980e61010e97c2994f7",
+          "key": "2026-08-07",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-10T20:46:46+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-08-10",
+            "n_channels_in_variant": 9,
+            "n_recalled": 68,
+            "n_unique": 30,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "8ca25740bfff5c29c3b78d67736f41a6b6d3daca0fbe99ab3fc1f884ebf80792",
+          "key": "2026-08-10",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-10T20:46:46+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-08-11",
+            "n_channels_in_variant": 9,
+            "n_recalled": 79,
+            "n_unique": 41,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "893fc53610b1defec124c34d184f9b166e416584e153acccbafdfcad00603e08",
+          "key": "2026-08-11",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-11T20:46:40+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-08-12",
+            "n_channels_in_variant": 9,
+            "n_recalled": 68,
+            "n_unique": 39,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "6e5fa7ed576d7b1ff72c3ba64f67aba269b23abf1914dff6b6dda88f542f4e3b",
+          "key": "2026-08-12",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-12T20:46:53+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-08-13",
+            "n_channels_in_variant": 9,
+            "n_recalled": 133,
+            "n_unique": 45,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "e6a38cbef7f10fcca2140dbe02e2524cc76150382db994f35636a4ad4a5a4878",
+          "key": "2026-08-13",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-14T20:48:43+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-08-17",
+            "n_channels_in_variant": 9,
+            "n_recalled": 150,
+            "n_unique": 92,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "1ea82d0628d52ddaad085ae4811e7c0643a7357314852893e4b4b57d378a6f38",
+          "key": "2026-08-17",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-17T20:47:09+08:00",
+          "schema_version": 1
+        },
+        {
+          "definition_hash": "dbe8504750e86c9d5bda3d23e75ad36a58da92d7a47d3e1cd1e864b41e38f8b8",
+          "experiment_id": "exp_20260801_recall_sector_momentum",
+          "facts": {
+            "channel": "sector_momentum",
+            "date": "2026-08-18",
+            "n_channels_in_variant": 9,
+            "n_recalled": 150,
+            "n_unique": 78,
+            "ruler": "gap_c1_o2",
+            "source": "PRESENT",
+            "variant": "plus_sectormom"
+          },
+          "input_hash": "ca571175c9e8c0fa8960ad439ff415881214739272265a2859db4356e94a64c6",
+          "key": "2026-08-18",
+          "kind": "shadow_observation",
+          "observed_at": "2026-08-18T20:47:29+08:00",
+          "schema_version": 1
+        }
+      ],
+      "primary_metric": "unique_excess_t2_lcb",
+      "promotion_guards": {
+        "architecture": [
+          {
+            "metric": "production_artifact_diff",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "decision": [
+          {
+            "metric": "left_tail_rate_delta_pp",
+            "op": "lte",
+            "value": 0
+          }
+        ],
+        "research": [
+          {
+            "metric": "unique_excess_t2_lcb",
+            "op": "gt",
+            "value": 0
+          }
+        ],
+        "speed": [
+          {
+            "metric": "wall_delta_pct",
+            "op": "lte",
+            "value": 5
+          }
+        ],
+        "token": [
+          {
+            "metric": "token_delta_pct",
+            "op": "lte",
+            "value": 5
+          }
+        ]
+      },
+      "registered_at": "2026-08-01T22:08:22+08:00",
+      "rollback_guards": {
+        "architecture": [
+          {
+            "metric": "production_artifact_diff",
+            "op": "gt",
+            "value": 0
+          }
+        ],
+        "decision": [
+          {
+            "metric": "left_tail_rate_delta_pp",
+            "op": "gt",
+            "value": 2
+          }
+        ],
+        "research": [
+          {
+            "metric": "unique_excess_t2_lcb",
+            "op": "lte",
+            "value": 0
+          }
+        ],
+        "speed": [
+          {
+            "metric": "wall_delta_pct",
+            "op": "gt",
+            "value": 10
+          }
+        ],
+        "token": [
+          {
+            "metric": "token_delta_pct",
+            "op": "gt",
+            "value": 10
+          }
+        ]
+      },
+      "rollback_pointer": {
+        "approved_at": "2026-07-29T12:56:15+08:00",
+        "approved_by": "qingbin",
+        "content_hash": "9ed173338cd4b7ed01c86cd22a9b952b438eee9e3fb0849986d42e458001e086",
+        "name": "wave8-production-baseline-20260729",
+        "note": "Wave8 首次上膛:登记当前生产态三件(L3 人设 git sha / 召回权重 / scan_config)作为稳定基线与回滚指针。此前 registry.json 从不存在 = 控制面造好了但没装弹(Wave5 记账原话:软件完成 ≠ 研究成熟)。",
+        "pointer": "l3-rank.md@2fd6117eb6f7 + weights.json@040f620260e8 + scan_config.jsonc@eeb5cac6a338"
+      },
+      "rollback_window_runs": 5,
+      "start_date": "2026-08-01",
+      "status": "PREREGISTERED",
+      "title": "召回:上涨侧板块动量影子 channel(floor=0,不占 quota)",
+      "trial_family": "recall_channel"
+    },
+    "exp_l4_full_parallel": {
+      "activated_at": null,
+      "approval": null,
+      "challenger_pointer": {
+        "content_hash": "02ef5db1cae4e283860e180743992f1147988cd1d4daef5b1eab7cfb94fa8a89",
+        "kind": "code",
+        "pointer": "autoresearch/scan/l4_tasks.py@0eca322bc543(dispatch_cap/tushare信号量;配套 .claude/skills/scan-market/SKILL.md@062f51189a04 派发协议、autoresearch/scan/l4_watch.py@0eca322bc543 BLOCKED 终态)"
+      },
+      "closed_at": null,
+      "definition": {
+        "challenger": "dispatch_cap=caps.l4_stock(缺省 64,一次性全派 batches,单批含全部 pending);tushare 降为操作级信号量 K=caps.tushare(缺省 4)在 prepare_slim 入口排队,intel/card/复核不经该信号量、即刻起跑;信号量 stale 锁按 mtime 回收",
+        "control": "滑窗 cap=4(2026-07-28..08-05 实测:L4 段 76-113min)",
+        "decision_note": "完成率(l4_incomplete_n)、schema/contract 错误(l4_contract_error_n)、评级分布位移(rating_dist_tvd_vs_baseline)三项均为强 guard,不是旁白。后者的指标选择与阈值依据见 rating_metric_rationale;三者在 approve 前的可求值现状见 producer_status。",
+        "hypothesis": "L4 全并发派发(dispatch_cap=∞事实上限 64,tushare 降为操作级信号量)使 L4 段墙钟 P50 下降≥30%,且不改变任何评级产物",
+        "measurement_instrument": "autoresearch.scan.l4_tasks.stats()(Wave11-C4 新增)是 tushare_rate_limit_delta_n 与 l4_wall_p50_delta_pct 的原始素材来源(error_classes/sem_wait_max_s/slim_attempts;stats() 到这两个 _delta 指标之间还缺一层换算脚本,未写);rating_dist_tvd_vs_baseline 的原始素材是当日 finalists/决策卡产物的五档评级计数,口径与阈值依据见 rating_metric_rationale",
+        "producer_status": "如实标注(2026-08-06 二次 review 后补,查实此前缺失):本实验 6 个 guard 指标(l4_wall_p50_delta_pct/l4_incomplete_n/l4_contract_error_n/tushare_rate_limit_delta_n/semaphore_stale_false_evict_n/rating_dist_tvd_vs_baseline)全部还没有接线的量算脚本——全仓库 grep 只在本 spec 文件自身命中;approve 前需要补一个仿本仓库既有 wave10_experiments.py 模式的脚本,把 l4_tasks.stats() 等原始产物换算成这些指标写进 facts.json 再喂 promotion evaluate/rollback_watch observe。promotion 控制面对缺失指标的真实行为(2026-08-06 实测,非读码推断):用一个结构相同的最小 probe 实验跑通 promotion.evaluate_experiment()→approve_experiment()→(clean 激活后)rollback_watch.observe() 全链路,facts.metrics 故意缺一个指标——promotion 侧该条件判 UNKNOWN,UNKNOWN 顶到整条 evaluation status=UNKNOWN/recommendation=CONTINUE_SHADOW(不会 PROMOTE),registry status 停在 PREREGISTERED,随后 approve 被拒(要求 RECOMMENDED,拿到的是 PREREGISTERED);post-activation 场景同理,rollback_watch.observe() 缺指标→UNKNOWN→CONTINUE_OBSERVATION(既不 ACCEPT_BASELINE 也不误 ROLLBACK)。结论:fail-safe——指标没接线时这道门是拿不到数就卡住,不是拿不到数就放行。",
+        "production_side_effects": "T1-T3.5 已实现并合入本分支(be50b25/75695a1/50a6fbb/062f511/f33ce84/16bebc9/0eca322):dispatch_cap 缺省值已从 4 改为 64、SKILL.md 派发协议已改一次性全派。代码已先于本条 register 进入生产态,违反本项目的治理铁律——涉及召回/L3/门/早停/评级/Token/速度的行为变更,必须先在实验注册表登记不可变定义与稳定基线回滚指针,再由 promotion 控制面按守卫评估;该铁律没有例外条款。本条目的 register 是事后补挂的治理记账。(引用更正,2026-08-06 二次 review 后补:上一句铁律表述出自本任务开工指令,不是 CLAUDE.md 逐字引文——CLAUDE.md 全文仅 28 行,不含这句话,此前误标『CLAUDE.md』直引号来源已更正;其治理实质独立见 autoresearch/learning/buy_ledger.py docstring:『不自动执行:改生产要人批,且先经 experiment_registry 预注册』,并非杜撰规则。)",
+        "rating_metric_rationale": "2026-08-06 第三版更正(前两版的口径均被查实有误,方法与可复现脚本见 task-5-report.md §12,本字段只写结论)。原 rating_buy_rate_delta_pp 被独立核验为结构性失效——本实验自选基线窗口(07-28..08-05)经真实产物核验(reports/learning/zero_buy_ledger.md;context/scan/{2026-07-28,2026-07-29,2026-07-30,2026-07-31,2026-08-03}/retro/attribution.csv 逐日 bought 列直接核数,均为 0)买单率逐日 0%,是系统近 3 周常态。BUY 占比不可能为负,baseline=0% 时 delta=current−0=current≥0 恒成立,双边带下界数学上不可能触发——换用五档(Buy/Overweight/Hold/Underweight/Sell)占比向量相对 control 同一基线窗口的总变差距离:rating_dist_tvd_vs_baseline = 0.5·Σ|p_i−q_i|,恒∈[0,1]、恒≥0,无此退化,只需单边门。这一层判断第二版就是对的,第二版错在下面的口径与因此算出的阈值。第二版曾误称『07-28/07-29 无汇总 summary 未纳入』——已核实两个文件均存在,是事实错误,已更正;第二版还曾用全文件 grep 统计评级,把『📌 保送持仓』(非漏斗选出)、『⚖️ 两尺分歧』(旧卡盯梢复核)、『🔗 同链对比』(对已展示票的重复呈现)三处也计入,同一只票被重复/错误计入,是未披露的口径污染,已更正。**口径(第三版)**:只取每份 summary.md『## 3. 投资建议(buy-list…)』一节的表格(从该标题行到下一个『#』标题行之前),已用脚本核对 9 份报告里提取到的评级条数与各自标题行自称的『N 只真实精选』逐一相等(8/7/7/7/8/7/7/6/7 全部吻合)。**覆盖 07-28..08-05 全部 9 次跑批**(20260728_2319 Hold5/UW3、20260729_2105 Hold7、20260730_0116 Hold7、20260730_2132 Hold7、20260731_1441 Hold7/UW1、20260731_2132 Hold4/UW3、20260803_2209 Hold6/UW1、20260804_2233 Hold6、20260805_2251 Hold6/UW1;Buy/Overweight/Sell 九次计数均为 0,与买单率证据互证)。**修正后的相邻跑批 TVD(8 组,按时序)**:0.375(07-28→07-29)、0.000(07-29→07-30早)、0.000(07-30早→晚,同日)、0.125(07-30晚→07-31早)、0.304(07-31早→晚,同日)、0.286(07-31晚→08-03)、0.143(08-03→08-04)、0.143(08-04→08-05)——观测区间[0.000,0.375],均值 0.172(第二版声称的『上限 0.345』是口径污染后的假数,已废弃)。**阈值(不再声称有安全边际)**:n=8、仅 7 个日历日、单次跑批 finalist 数 6-8,样本薄到不足以拟合统计上可信的分位数——如实标注依据不足。给保守占位值 promotion<=0.55、rollback<=0.70,取法是观测上限(0.375)的约 1.5x/1.9x,是留足 margin 的圆整数,不是精确拟合。局限如实标注:当前『几乎只有 Hold/UW 两档有量』的 regime 下 TVD 对中等幅度位移分辨力有限——若基线 85%Hold/15%UW 漂移到 50%/50%(相当可观的搬家),TVD 只有 0.35,仍低于 0.55 不会触发;能被 0.55/0.70 逮到的是『大半盘面翻转』量级(85%/15%→20%/80% 得 0.65;完全反转→15%/85% 得 0.70)。也就是说这道 guard 目前只能可靠捕捉严重位移,对中等位移基本无感,这是诚实的局限,不是已修好的病。approve 前必须用真实 10 天观察窗数据重新校准这两个数字,不能继续沿用这 8 组稀疏单点 pair 当代理。",
+        "research_note": "本实验不携带任何评级/选股假设——性能开关不拥有评级铁律;research guard 不设『信号是否变好』,只设『评级权威文件是否被本 challenger 触碰』的结构不变量,用以验证『无』这句话本身没有被违反",
+        "rollback_lever": "scan_config.jsonc 设 budgets.concurrency={tushare:4,web_fetch:4,web_search:4,l4_stock:4}(_normalize_caps 要求四键全给,只给 l4_stock 会 ValueError:concurrency caps mismatch,故不能只写一行)。此杆只压 L4 派发帽(effective_cap 的 batches 分组从 1 变多),不能恢复旧滑窗补派节奏——派发协议『一次性全派』是 SKILL.md 步骤 4 的主会话行为,config 管不到;真要回滑窗须同时 revert SKILL.md 步骤 4 与 STAGES.md L4 节。C1 解耦后 tushare/web_* 仍是独立资源帽,回滚派发帽不影响它们。(final-review 2026-08-08 C5 修正:原文声称『回滑窗』且遗漏另三个必填键,均与 SKILL.md:103『回滚杆不能恢复旧滑窗节奏』矛盾且与 _normalize_caps 实测行为不符。)",
+        "shadow_infeasibility_reason": "全并发与滑窗互斥于同一 dispatch_cap,同一扫描日不可能双跑两种派发模式;promotion 侧 maturity 因此改依人工事后回填 sample,真正把关落在 rollback_watch 事后观察窗(rollback_window_runs 次数)"
+      },
+      "definition_hash": "4a2d5aca900671cf9b4fc67a2ec378236863fe30d6936567377521081e3f3ac1",
+      "expires_date": "2026-09-30",
+      "id": "exp_l4_full_parallel",
+      "latest_evaluation": null,
+      "latest_rollback_assessment": null,
+      "minimums": {
+        "forward_days": 10,
+        "mature_events": 10,
+        "regimes": 1,
+        "unique_events": 0
+      },
+      "observations": [],
+      "primary_metric": "l4_wall_p50_delta_pct",
+      "promotion_guards": {
+        "architecture": [
+          {
+            "metric": "tushare_rate_limit_delta_n",
+            "op": "lte",
+            "value": 0
+          },
+          {
+            "metric": "semaphore_stale_false_evict_n",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "decision": [
+          {
+            "metric": "l4_incomplete_n",
+            "op": "eq",
+            "value": 0
+          },
+          {
+            "metric": "l4_contract_error_n",
+            "op": "eq",
+            "value": 0
+          },
+          {
+            "metric": "rating_dist_tvd_vs_baseline",
+            "op": "lte",
+            "value": 0.55
+          }
+        ],
+        "research": [
+          {
+            "metric": "rating_authority_files_touched_n",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "speed": [
+          {
+            "metric": "l4_wall_p50_delta_pct",
+            "op": "lte",
+            "value": -30
+          }
+        ],
+        "token": [
+          {
+            "metric": "l4_weighted_token_delta_pct",
+            "op": "lte",
+            "value": 0
+          }
+        ]
+      },
+      "registered_at": "2026-08-06T18:04:03+08:00",
+      "rollback_guards": {
+        "architecture": [
+          {
+            "metric": "tushare_rate_limit_delta_n",
+            "op": "lte",
+            "value": 3
+          },
+          {
+            "metric": "semaphore_stale_false_evict_n",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "decision": [
+          {
+            "metric": "l4_incomplete_n",
+            "op": "lte",
+            "value": 1
+          },
+          {
+            "metric": "l4_contract_error_n",
+            "op": "eq",
+            "value": 0
+          },
+          {
+            "metric": "rating_dist_tvd_vs_baseline",
+            "op": "lte",
+            "value": 0.7
+          }
+        ],
+        "research": [
+          {
+            "metric": "rating_authority_files_touched_n",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "speed": [
+          {
+            "metric": "l4_wall_p50_delta_pct",
+            "op": "lte",
+            "value": -10
+          }
+        ],
+        "token": [
+          {
+            "metric": "l4_weighted_token_delta_pct",
+            "op": "lte",
+            "value": 5
+          }
+        ]
+      },
+      "rollback_pointer": {
+        "approved_at": "2026-07-29T12:56:15+08:00",
+        "approved_by": "qingbin",
+        "content_hash": "9ed173338cd4b7ed01c86cd22a9b952b438eee9e3fb0849986d42e458001e086",
+        "name": "wave8-production-baseline-20260729",
+        "note": "Wave8 首次上膛:登记当前生产态三件(L3 人设 git sha / 召回权重 / scan_config)作为稳定基线与回滚指针。此前 registry.json 从不存在 = 控制面造好了但没装弹(Wave5 记账原话:软件完成 ≠ 研究成熟)。",
+        "pointer": "l3-rank.md@2fd6117eb6f7 + weights.json@040f620260e8 + scan_config.jsonc@eeb5cac6a338"
+      },
+      "rollback_window_runs": 10,
+      "start_date": "2026-08-06",
+      "status": "PREREGISTERED",
+      "title": "L4 派发:全并发(dispatch_cap 缺省 64,tushare 操作级信号量)vs 滑窗 cap=4",
+      "trial_family": "l4_concurrency"
+    },
+    "exp_relative_buy_owner": {
+      "activated_at": null,
+      "approval": null,
+      "challenger_pointer": {
+        "content_hash": "bad631b849b85ca36e1869e3ad142f91eee1a06b6a334f56ca1120b1dbb20586",
+        "kind": "decision_layer",
+        "pointer": "autoresearch/scan/relative_buy.py::build_decision + autoresearch/learning/relative_ledger.py"
+      },
+      "closed_at": null,
+      "definition": {
+        "benchmark_populations": "两个『基准 n』不可互换:决策文档 benchmark.market_n = 当日 L0 可交易全集(finalizer 算四面分位的分母);outcome.benchmark_n = rel_gap_market 真正的分母 = 全市场可交易(T22 I-1 人口裁定,含漏在 L0 的票)。2026-08-04 实测 4193 vs 5426。守卫读的是后者。",
+        "challenger": "autoresearch/scan/relative_buy.py 的 build_decision v1(rule_version=e6.v1.1,规则在看到任何一天影子输出之前锁定)+ autoresearch/learning/relative_ledger.py 的影子账本。v1.1 = v1 + 两道硬门(data_a / contract)对『产物缺席』的静默放行收紧;打分与选择语义与 v1 逐字相同(2026-07-28..08-06 共 8 日回放零变化实证)。本次 challenger 描述更新发生在 observations=0(activated_at=null / approval=null)时,无任何已汇集观测受影响,属预注册期的合法更正,故不另立实验 id —— 另立会白白切断可追溯链(2026-08-09 控制方裁定)。",
+        "control": "旧系统:只回答『有没有绝对强到值得买』的 ≥Overweight 门(2026-07-15→08-06 连续 17 个扫描日 0 买单,178 张决策卡里 Overweight = 0);基率见 buy_ledger 的 ≥OW 行。",
+        "data_source": "context/scan/<date>/_relative_buy_decision.json(post_run observe 前向产出)+ context/scan/<date>/retro/attribution.csv 的 gap_c1_o2 / rel_gap_market / rel_gap_sector;缺任一 → PENDING/UNMEASURED,禁止补零。",
+        "hypothesis": "把『今天全市场相对最值得买谁』单独立层(确定性 finalizer + 四类硬资格 + 四面等权 Borda),能在不放宽任何绝对门的前提下让每个成功完成的交易日都产出恰 1 只 BUY,且其 rel_gap_market 的均值与左尾不劣于旧 OW 决策线。",
+        "measurement_instrument": "autoresearch.learning.relative_ledger.summarize() 产出 action_coverage / n_contract_errors / rel_gap_market 的 mean·median·worst·n_negative;守卫指标 rel_gap_market_mean_minus_legacy_pp 与 rel_gap_market_p10_minus_legacy_pp 的减数(legacy)读 buy_ledger.rating_base_rates 的 ≥OW 行 —— 单一事实源,不硬编码历史数字。legacy 样本仍 n<10(2026-08-09 现 n=9)时该指标 UNMEASURED → 守卫 UNKNOWN → 不可晋升。",
+        "negative_result_policy": "不通过即记负结果并关闭,不重跑到通过为止。0 BUY 不是放宽门的理由;本实验的动机是『一套绝对门被要求同时回答两个问题』这个结构性错配,不是『最近买得太少』。",
+        "note": "成熟门自**首条观测**起算,不是从预注册日起算。本仓库刚发生过 EXP-1/EXP-2 预注册后数据腿从未实现、observations 空转 6 天的事(FN-1 家族):按『预注册日 +N 天』计门,会让一条从没产生过任何观测的腿在第 N+1 天自动『成熟』。本实验的观测计数唯一读 context/learning/relative_buy.jsonl 的决策日行数(status ∈ {BUY, BLOCKED};NO_RUN 不计),首条观测 = 2026-07-28。",
+        "observation_window": "预注册时账本已有 7 条回放观测(2026-07-28..2026-08-06,认知底片,已被作者看到)。因此守卫阈值一律锚在**独立于这 7 条**的旧 OW 线上(mean2/10 分位),不锚在观测到的影子分布上;且晋升评估要求 ≥20 个决策日中至少 13 条产生于本条 register 之后(样本外)。",
+        "population": "当日 L4 派发过的票(护照 l4.dispatched)。L2 菜单里没走到 L4 的票不是 BUY 候选,也不进 excluded。",
+        "primary_ruler": "gap_c1_o2 = open[D+2]/close[D+1]−1(2026-08-05 用户裁定的隔夜主尺)。相对标签两列 rel_gap_market / rel_gap_sector 口径钉死字面量 ruler.REL_GAP_RULER,不随 MAIN_RULER 漂移(I-4)。",
+        "production_side_effects": "无。mode 只接受 shadow;不写 buy ledger、不改 publisher、不碰 decision_records.json、不改任何 prompt 字节、不动 DEFAULT_FLOORS/merit_need/lane 标签/生产 finalists。activate 是独立 GATED task,不在本条 register 的授权范围内。",
+        "rollback": "影子期无回滚对象(生产行为未变);activate 后按 rollback_guards 逐 run 观测,ROLLBACK_RECOMMENDED 由人执行,回滚指针 = 预注册时的稳定基线。",
+        "statistics": "按扫描日配对(paired_unit=scan_day);date cluster;固定 minimum,不允许可选停止(跑到通过为止是作弊)。"
+      },
+      "definition_hash": "cb6da0208a76f4833baaa4e02827c056c06206e35aa8a884fe463cb9c702791b",
+      "expires_date": "2026-12-31",
+      "id": "exp_relative_buy_owner",
+      "latest_evaluation": null,
+      "latest_rollback_assessment": null,
+      "minimums": {
+        "forward_days": 20,
+        "mature_events": 20,
+        "regimes": 2,
+        "unique_events": 20
+      },
+      "observations": [],
+      "primary_metric": "rel_gap_market_mean_minus_legacy_pp",
+      "promotion_guards": {
+        "architecture": [
+          {
+            "metric": "production_artifact_diff",
+            "op": "eq",
+            "value": 0
+          }
+        ],
+        "decision": [
+          {
+            "metric": "action_coverage",
+            "op": "gte",
+            "value": 1.0
+          },
+          {
+            "metric": "contract_error_n",
+            "op": "lte",
+            "value": 0
+          }
+        ],
+        "research": [
+          {
+            "metric": "rel_gap_market_mean_minus_legacy_pp",
+            "op": "gte",
+            "value": 0
+          },
+          {
+            "metric": "rel_gap_market_p10_minus_legacy_pp",
+            "op": "gte",
+            "value": 0
+          }
+        ],
+        "speed": [
+          {
+            "metric": "wall_delta_s",
+            "op": "lte",
+            "value": 5
+          }
+        ],
+        "token": [
+          {
+            "metric": "token_delta_pct",
+            "op": "lte",
+            "value": 0
+          }
+        ]
+      },
+      "registered_at": "2026-08-09T02:30:00+08:00",
+      "rollback_guards": {
+        "architecture": [
+          {
+            "metric": "production_artifact_diff",
+            "op": "gt",
+            "value": 0
+          }
+        ],
+        "decision": [
+          {
+            "metric": "action_coverage",
+            "op": "lt",
+            "value": 1.0
+          },
+          {
+            "metric": "contract_error_n",
+            "op": "gt",
+            "value": 0
+          }
+        ],
+        "research": [
+          {
+            "metric": "rel_gap_market_mean_minus_legacy_pp",
+            "op": "lt",
+            "value": -1.0
+          }
+        ],
+        "speed": [
+          {
+            "metric": "wall_delta_s",
+            "op": "gt",
+            "value": 30
+          }
+        ],
+        "token": [
+          {
+            "metric": "token_delta_pct",
+            "op": "gt",
+            "value": 5
+          }
+        ]
+      },
+      "rollback_pointer": {
+        "approved_at": "2026-07-29T12:56:15+08:00",
+        "approved_by": "qingbin",
+        "content_hash": "9ed173338cd4b7ed01c86cd22a9b952b438eee9e3fb0849986d42e458001e086",
+        "name": "wave8-production-baseline-20260729",
+        "note": "Wave8 首次上膛:登记当前生产态三件(L3 人设 git sha / 召回权重 / scan_config)作为稳定基线与回滚指针。此前 registry.json 从不存在 = 控制面造好了但没装弹(Wave5 记账原话:软件完成 ≠ 研究成熟)。",
+        "pointer": "l3-rank.md@2fd6117eb6f7 + weights.json@040f620260e8 + scan_config.jsonc@eeb5cac6a338"
+      },
+      "rollback_window_runs": 5,
+      "start_date": "2026-08-09",
+      "status": "PREREGISTERED",
+      "title": "E6 统一相对决策层:scan 路线唯一拥有最终 BUY 的组件(影子 → 人批 activate)",
+      "trial_family": "decision"
+    }
+  },
+  "schema_version": 1,
+  "stable_baseline": {
+    "approved_at": "2026-07-29T12:56:15+08:00",
+    "approved_by": "qingbin",
+    "content_hash": "9ed173338cd4b7ed01c86cd22a9b952b438eee9e3fb0849986d42e458001e086",
+    "name": "wave8-production-baseline-20260729",
+    "note": "Wave8 首次上膛:登记当前生产态三件(L3 人设 git sha / 召回权重 / scan_config)作为稳定基线与回滚指针。此前 registry.json 从不存在 = 控制面造好了但没装弹(Wave5 记账原话:软件完成 ≠ 研究成熟)。",
+    "pointer": "l3-rank.md@2fd6117eb6f7 + weights.json@040f620260e8 + scan_config.jsonc@eeb5cac6a338"
+  }
+}

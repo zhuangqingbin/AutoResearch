@@ -1,7 +1,6 @@
 """夜间跑批加固单测 —— §4.2 的运行安全 + 两条容易写错的判活。"""
 from __future__ import annotations
 
-import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -291,15 +290,6 @@ def test_override_expires():
     allowed = gate0.preflight({"attribution_missing": 1}, day="2026-07-30",
                               mode=gate0.BLOCKING, override=ov)
     assert allowed["verdict"] == gate0.WARN and allowed["override_applied"] is True
-
-
-def test_blocking_mode_needs_registry_authorization(tmp_path):
-    registry = tmp_path / "r.json"
-    registry.write_text(json.dumps({
-        "schema_version": 1, "stable_baseline": None, "baseline_history": [],
-        "experiments": {}, "active_by_family": {}, "audit": []}), encoding="utf-8")
-    with pytest.raises(gate0.Gate0Error, match="ACTIVE"):
-        gate0.assert_may_block(registry)
 
 
 def test_unknown_mode_raises():

@@ -143,10 +143,12 @@ def backfill(start: str, end: str, cache_root: Path | None = None,
     return {"pulled": pulled, "skipped": skipped, "stopped_by": stopped_by}
 
 
-# ───────────────────────── 自动预注册触发(design 2026-08-03 §4.5)─────────────────────────
+# ───────────────────────── 预注册触发信号(design 2026-08-03 §4.5)─────────────────────────
 #
-# 设计稿写死的触发条款:`n≥60 且 两半 IC 同号 且 |IC|>0.02` → 自动生成 PREREGISTERED spec
-# (**人批才往前走**)。自动腿断言:status 输出的 n 必须**周周增长**。
+# 触发条款(写死,不可临场放宽):`n≥60 且 两半 IC 同号 且 |IC|>0.02` → TRIGGERED。
+# D1(2026-08-19,用户裁决 A3):不再自动生成 registry spec(`build_spec` 已随
+# experiment_registry 家族整删)——触发只是信号,推进与否走人批 proposal 通道。
+# 自动腿断言:status 输出的 n 必须**周周增长**。
 #
 # 为什么要那条断言:§0.3-4 的判例是「权重自动重标定连续 4 次 NO-OP,闭环唯一自动腿空转
 # 两周无人察觉」。自动的腿必须有一个**会变的量**做断言,否则它死了也像活着。
@@ -221,8 +223,9 @@ def prereg_trigger(ic_full: float | None, ic_first_half: float | None,
                    cache_root: Path | None = None) -> dict:
     """触发条款(写死,不可临场放宽):`n≥60 ∧ 两半 IC 同号 ∧ |IC|>0.02`。
 
-    任一条不满足 → `HOLD` 并列出缺哪一条。满足 → `TRIGGERED`,由 `build_spec` 生成
-    **PREREGISTERED** spec;**人批才往前走**(注册 ≠ 激活)。
+    任一条不满足 → `HOLD` 并列出缺哪一条。满足 → `TRIGGERED` —— 这只是一次信号,
+    是否推进由人写成 proposal 交人批(D1,2026-08-19 用户裁决 A3:不再自动生成
+    registry spec,治理链条见 `.claude/skills/scan-market/SKILL.md`「实验治理」节)。
     """
     n_days = int(status(cache_root).get("n_days", 0))
     reasons: list[str] = []
@@ -245,45 +248,7 @@ def prereg_trigger(ic_full: float | None, ic_first_half: float | None,
                        "halves_same_sign": True},
         "growth_assertion": growth,
         "human_approval_required": True,
-        "note": "触发只生成 PREREGISTERED spec —— 注册 ≠ 激活,人批才往前走",
-    }
-
-
-def build_spec(trigger: dict, *, start: str, expires: str) -> dict:
-    """触发结果 → registry spec(统一实验模板驱动)。`HOLD` 时抛错,不生成半个 spec。"""
-    from autoresearch.common.ruler import MAIN_RULER
-    from autoresearch.learning import experiment_registry as reg, experiment_template as et
-
-    if trigger["status"] != "TRIGGERED":
-        raise ValueError(f"未触发({trigger['unmet']})—— 不生成 spec")
-    template = et.ExperimentTemplate(
-        experiment_id="consensus_eps_revision",
-        h0=f"卖方一致预期修正对主尺 {MAIN_RULER} 无增量",
-        h1=f"卖方一致预期修正对主尺 {MAIN_RULER} 有正增量",
-        data_cutoff="report_rc 按 report_date 滚动;只用已积累的交易日",
-        paired_unit="scan_day", clustering="date_cluster",
-        min_units=PREREG_MIN_DAYS, target_power=0.8,
-        primary_metric="consensus_ic_delta", direction=et.HIGHER_IS_BETTER,
-        equivalence_margin=PREREG_MIN_ABS_IC, no_harm=False,
-        multiple_testing="single_hypothesis", n_hypotheses=1,
-        stopping_rule=f"固定 ≥{PREREG_MIN_DAYS} 个交易日;不可提前停",
-        rollback="未接线 —— 停止实验即回到现状",
-        motivation="前向积累已达触发条款(n≥60 ∧ 两半同号 ∧ |IC|>0.02)")
-    definition = et.to_registry_definition(template)
-    return {
-        "id": f"exp_{start.replace('-', '')}_consensus_eps_revision",
-        "title": template.h1, "trial_family": "l1_composite_factor",
-        "definition": definition, "start_date": start, "expires_date": expires,
-        "primary_metric": template.primary_metric,
-        "promotion_guards": {d: [{"metric": template.primary_metric, "op": "gt",
-                                  "value": PREREG_MIN_ABS_IC}]
-                             for d in reg.GUARD_DOMAINS},
-        "rollback_guards": {d: [{"metric": template.primary_metric, "op": "gt",
-                                 "value": -1.0}] for d in reg.GUARD_DOMAINS},
-        "challenger_pointer": {"kind": "shadow_factor",
-                               "pointer": "consensus:eps_revision",
-                               "content_hash": reg.canonical_hash(definition)},
-        "minimums": et.minimums_for(template), "rollback_window_runs": 5,
+        "note": "触发只是信号 —— 是否推进由人写成 proposal 交人批,不再自动生成 registry spec",
     }
 
 

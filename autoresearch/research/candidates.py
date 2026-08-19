@@ -12,16 +12,16 @@ design: docs/specs/2026-08-03-scan-next-wave-brainstorm-design.md §0.4 / §5 / 
 所以本模块把那两张表做成**数据结构 + 校验器**:
 
 - 缺继承矩阵任一权威 → `CandidateError`,不是「review 时提醒一下」;
-- B 类(改名单/证据/评级/阻断/调度)没有 `registry_family` → 抛错;
-- B 类标 `IMPLEMENTED` 却在 registry 里查无此 family → 抛错(§5-1「一切行为变更走状态机」
-  的可执行形态:声称上线 ≠ 走过流程);
+- B 类(改名单/证据/评级/阻断/调度)没有 `registry_family` → 抛错(D1 之后,该字段是
+  文档性标签,不再有活的 registry 去交叉核验它 —— 2026-08-19 用户裁决 A3);
 - `REJECTED` 没写重开条件 → 抛错(§3.2 O2 的教训:否决必须带可重开的门,否则半年后
   又有人拿同一个 t 值来提一遍);
 - `BLOCKED_BY_DATA` 没写 capability gate → 抛错(§2.4 F3);
 - 成本分栏缺列、或写了「零成本 / 可忽略」这类被 §5-4 点名删除的措辞 → 抛错。
 
-**边界**:本账本记录**意图与权威**,和 `experiment_registry` 一样,它不改任何配置、
-名单、权重或提示词。它唯一的权力是「拒绝让一个没补齐表的候选自称已立项」。
+**边界**:本账本记录**意图与权威**,它不改任何配置、名单、权重或提示词。它唯一的
+权力是「拒绝让一个没补齐表的候选自称已立项」。行为变更的实际治理链条(D1 之后):
+影子账本直接呈证 → proposal 交人批 → 开发会话改 config/代码,详见 SKILL.md「实验治理」节。
 
   uv run --no-sync python -m autoresearch.research.candidates            # 渲染报告
   uv run --no-sync python -m autoresearch.research.candidates --check    # CI 门(违约 → 退出码 1)
@@ -143,26 +143,13 @@ def validate_one(c: Candidate) -> list[str]:
     return bad
 
 
-def _registry_families(registry_path: Path | str | None) -> set[str] | None:
-    """registry 里在册的 trial_family 集合;registry 不可读 → `None`(跳过该检查,不臆断)。"""
-    from autoresearch.learning.experiment_registry import (
-        DEFAULT_REGISTRY,
-        RegistryError,
-        load_registry,
-    )
+def validate(candidates=None) -> dict:
+    """全账本校验 → `{ok, problems: {id: [...]}, n}`。
 
-    try:
-        payload = load_registry(Path(registry_path or DEFAULT_REGISTRY))
-    except RegistryError:
-        return None
-    return {str(r.get("trial_family")) for r in payload.get("experiments", {}).values()}
-
-
-def validate(candidates=None, *, registry_path: Path | str | None = None) -> dict:
-    """全账本校验 → `{ok, problems: {id: [...]}, checked_registry}`。
-
-    B 类标 `IMPLEMENTED` 却在 registry 查无此 family = §5-1 的硬违规(「声称上线」不等于
-    「走过状态机」)。registry 读不动时该项**跳过而非放行**,并在返回里标出来。
+    D1(2026-08-19,用户裁决 A3):B 类 `IMPLEMENTED` 对照 registry 的交叉检查已随
+    experiment_registry 家族整删而摘除 —— registry 不复存在,无从核对「是否真走过状态机」。
+    `registry_family` 字段本身**保留**:它仍是 B 类候选「挂在哪个 trial family 下」的
+    文档性标签(见 `validate_one`),只是不再有一个活的 registry 去交叉核验。
     """
     items = list(CANDIDATES if candidates is None else candidates)
     problems: dict[str, list[str]] = {}
@@ -175,16 +162,7 @@ def validate(candidates=None, *, registry_path: Path | str | None = None) -> dic
         if bad:
             problems[c.id] = bad
 
-    families = _registry_families(registry_path)
-    if families is not None:
-        for c in items:
-            if c.change_class == "B" and c.status == "IMPLEMENTED" \
-                    and c.registry_family not in families:
-                problems.setdefault(c.id, []).append(
-                    f"B 类标 IMPLEMENTED,但 registry 无 trial_family="
-                    f"{c.registry_family!r} 的实验 —— §5-1 状态机没走过")
-    return {"ok": not problems, "problems": problems,
-            "checked_registry": families is not None, "n": len(items)}
+    return {"ok": not problems, "problems": problems, "n": len(items)}
 
 
 # ══════════════════════════ 候选池(设计稿全文的机器可读投影)══════════════════════════
@@ -564,15 +542,13 @@ def render(candidates=None, result: dict | None = None) -> str:
     result = result or validate(items)
     # 嵌套引号的 f-string 是 3.12+ 语法,而本项目 requires-python = ">=3.10" —— 先算好再插值。
     verdict = "通过" if result["ok"] else f"{len(result['problems'])} 条违约"
-    registry_note = "已做" if result["checked_registry"] else "跳过(registry 不可读)"
     lines = [
         "# 下一波候选账本(§0.4 两张强制表的机器可读投影)",
         "",
         "> 本账本记录**意图与权威**,不改任何配置、名单、权重或提示词。"
         "它唯一的权力是拒绝让没补齐表的候选自称已立项。",
         "",
-        f"- schema_version `{SCHEMA_VERSION}` · 候选 {len(items)} 条 · "
-        f"校验 {verdict} · registry 交叉检查 {registry_note}",
+        f"- schema_version `{SCHEMA_VERSION}` · 候选 {len(items)} 条 · 校验 {verdict}",
         "",
         "## 变更类别",
         "",
@@ -625,10 +601,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--check", action="store_true", help="只校验;有违约 → 退出码 1")
     ap.add_argument("--out", default=str(DEFAULT_OUT))
     ap.add_argument("--json", dest="json_out", default=str(DEFAULT_JSON))
-    ap.add_argument("--registry", default=None)
     a = ap.parse_args(argv)
 
-    result = validate(registry_path=a.registry)
+    result = validate()
     if a.check:
         for cid, problems in sorted(result["problems"].items()):
             for p in problems:
