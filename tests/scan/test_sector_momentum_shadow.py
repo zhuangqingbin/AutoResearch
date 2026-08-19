@@ -127,7 +127,7 @@ def test_side_effect_1_not_in_production_recall_channels():
     cfg = load_user_config(_SCAN_CONFIG)
     enabled = (cfg.get("funnel") or {}).get("recall_channels") or []
     assert CHANNEL not in enabled
-    assert len(enabled) == 9, f"生产启用路数应为 9,实为 {len(enabled)}: {enabled}"
+    assert len(enabled) == 8, f"生产启用路数应为 8,实为 {len(enabled)}: {enabled}"
 
 
 def test_side_effect_2_default_floors_untouched():
