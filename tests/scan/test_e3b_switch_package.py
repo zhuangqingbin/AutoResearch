@@ -315,3 +315,25 @@ def test_safe_publish_is_the_real_injector(tmp_path, activate):
     text = summary.read_text(encoding="utf-8")
     assert "BUY(相对决策层) **1** 只" in text
     assert "看到本行说明注入未跑,读 `brief.md` ③" not in text
+
+
+def test_injection_counts_pinned_buys_too(tmp_path, activate):
+    """📌持仓被选成 BUY 时不许静默数成 0 —— 2026-08-19 真产物实跑逮到的缺陷。
+
+    `rows` 是 genuine(lane≠pinned),而 08-18 的相对 BUY 688766 本身就是📌持仓:按
+    「能在 rows 里匹配上几行」渲染会得到「BUY 0 只」,同屏 overlay 却说「1 只买单」。
+    变异校验:把 `_portfolio_note_active` 的 `n_buys=len(codes)` 改回 `len(buys)`,本条变红。
+    """
+    scan = _scan_dir(tmp_path)
+    (scan / "finalists.csv").write_text(                  # 688766 改成📌保送
+        "ticker,code,name,sector,lane\n"
+        "600000,600000,甲,银行,healthy\n"
+        "688766,688766,乙,半导体,pinned\n", encoding="utf-8")
+    md = build_summary(scan, DATE, "1200", "20260819_1200")
+    _decision(scan, date=DATE, buys=["688766"])
+
+    out = rs.inject_deferred_blocks(md, scan, rs_load(scan))
+
+    assert "BUY(相对决策层) **1** 只" in out               # 不是 0
+    assert "688766 不在本节的真实精选行内" in out          # 且显式说明为什么板块分布里没有它
+    assert "1 只买单在区间内" in out                       # 与 overlay 同屏一致

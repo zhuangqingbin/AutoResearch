@@ -427,12 +427,19 @@ def _ow_base_line(scan_root: Path) -> str:
             f"两处不同(尺相同,同为 {MAIN_RULER}),分列并置,**不得接成一条曲线读**。")
 
 
-def _portfolio_note_from(rows: list[dict], buys: list[dict], label: str) -> str:
+def _portfolio_note_from(rows: list[dict], buys: list[dict], label: str,
+                         n_buys: int | None = None) -> str:
     """组合视角一行的**唯一**成型口径。legacy(≥OW)与 active(决策文件 buys[])共用它 ——
-    两处各写一份渲染,「买单同板块=1个bet」这类告警必然只在一边生效。"""
+    两处各写一份渲染,「买单同板块=1个bet」这类告警必然只在一边生效。
+
+    `n_buys` 显式覆盖买单**只数**(active 用):买单数的事实源是决策文件,不是"能在
+    `rows` 里匹配上几行" —— 匹配只用来算板块分布。两者不是一回事,见
+    `_portfolio_note_active` 的📌案例。
+    """
     secs = Counter((r.get("sector") or r.get("industry") or "?") for r in rows)
     top = "、".join(f"{k}×{v}" for k, v in secs.most_common(5))
-    note = (f"{label} **{len(buys)}** 只;板块集中度:{top or '—'}。"
+    n = len(buys) if n_buys is None else n_buys
+    note = (f"{label} **{n}** 只;板块集中度:{top or '—'}。"
             "注意单板块过度集中的相关性风险;按评级×置信度分配仓位,催化日历做节奏。")
     if len(buys) >= 2:                       # 买单同板块 = 1 个 bet 不是 N 个(组合视角告警)
         bsec = Counter((r.get("sector") or r.get("industry") or "?") for r in buys)
@@ -449,12 +456,23 @@ def _portfolio_note(rows: list[dict]) -> str:
 
 
 def _portfolio_note_active(rows: list[dict], decision: dict | None) -> str:
-    """active 口径:买单 = 决策文件 `buys[]`,**不是**评级 ≥OW 的张数。"""
+    """active 口径:买单 = 决策文件 `buys[]`,**不是**评级 ≥OW 的张数。
+
+    ⚠️ 只数**决策文件**里的只数,不数"在 `rows` 里匹配上几行"。2026-08-19 真产物实跑逮到:
+    08-18 的相对 BUY 688766 本身是📌持仓,而 `rows` 是 genuine(lane≠pinned)—— 按匹配数
+    渲染会得到「BUY 0 只」,同屏的 overlay 却说「1 只买单」。这是「下游丢弃上游成果」的
+    原样复刻。匹配只服务于板块分布/同板块告警;匹配不上时**显式说出来**,不静默降数。
+    """
     if not isinstance(decision, dict):
         return _DECISION_UNAVAILABLE
     codes = _decision_buy_codes(decision)
     buys = [r for r in rows if str(r.get("code", "")).zfill(6) in codes]
-    note = _portfolio_note_from(rows, buys, "BUY(相对决策层)")
+    note = _portfolio_note_from(rows, buys, "BUY(相对决策层)", n_buys=len(codes))
+    missing = sorted(codes - {str(r.get("code", "")).zfill(6) for r in buys})
+    if missing:
+        note += (f" **⚠️ {'、'.join(missing)} 不在本节的真实精选行内**"
+                 "(📌保送持仓 / 或 finalists 与决策文件人口不一致)——"
+                 "板块分布未计入它,买单只数以决策文件为准。")
     if decision.get("blocked"):
         note += (" **🛑 当日 BLOCKED**:全部候选被硬资格否决 —— 这不是"
                  "「今天没好票」,是数据/资格不成立,别当成空仓信号读。")
