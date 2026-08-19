@@ -6,7 +6,8 @@ design: docs/specs/2026-08-01-wave10-report-ops-slimdown-zerobuy-design.md §B5
 才允许退役兜底」,但**全仓没有任何地方落盘 `structural_failure_n`** —— 到第 10 次时只能靠人
 回忆有没有出过结构失败,等于没判据。判据不可回忆,只可计量。
 
-四种结构失败(口径固定,见 §B5):
+五种结构失败(口径固定,见 §B5;`TASK_STUCK_RUNNING` 是 2026-08-19 取证追加,见下方
+「P1-1」节):
 
 | kind | 模式 | 检测点 | 快照可判 |
 |---|---|---|---|
@@ -14,6 +15,7 @@ design: docs/specs/2026-08-01-wave10-report-ops-slimdown-zerobuy-design.md §B5
 | `TERMINAL_RERUN`      | 错误重跑成功票     | `preflight` | ❌ 仅活体 |
 | `COMPLETION_MISJUDGED`| 完成态误判         | `mark_success` / STALE | ❌ 仅活体 |
 | `ARTIFACT_HASH_MISMATCH` | 产物 hash 失配  | `preflight` + 事后重验 | ✅ |
+| `TASK_STUCK_RUNNING`  | run 已发布但票卡死非终态 | 事后快照 | ✅ |
 
 **两条纪律,写死在结构里**:
 
@@ -24,6 +26,26 @@ design: docs/specs/2026-08-01-wave10-report-ops-slimdown-zerobuy-design.md §B5
    本来就会重派),记作观察量 `TERMINAL_REDISPATCH_BLOCKED`,不进失败数;真正的失败是
    守卫被绕过、成功票**真的又跑了一遍**(`TERMINAL_RERUN`)。后者在现行代码里结构上不可达,
    所以这个计数器的职责是**逮未来的回归**,常态恒 0 才是对的。
+
+## P1-1(2026-08-19 取证):判官必须看得见「卡死在 RUNNING」
+
+`_rehash_findings` 只查 `status=="SUCCEEDED"` 的票(非终态票的产物本来就允许在变,这条
+判据没错)。但它的副作用是:**全票卡死非终态的那一天,一条事后重验 finding 都不会产生**
+—— 2026-08-12(9 票全卡 `RUNNING`、`mark_success` 从未执行、E6 contract 门团灭当天全部
+候选;设计稿 §2.1 点名的事故日)因此被评成 `failure_n=0`「无事件」,这个假干净日正躺在
+B5 回滚杆①的连续干净 streak 里。判据不可信,streak 就不可信。
+
+`TASK_STUCK_RUNNING` 补的正是这个盲区:**run 已发布**(`stage_results/assemble.json`
+在场,即 L5 assemble 阶段已经跑完并落过 `StageResult`)**而票仍非终态**。终态集合由
+`l4_tasks.py` 的状态机确认(`PENDING → RUNNING → {SUCCEEDED, FAILED → BLOCKED}` 五态):
+`SUCCEEDED` / `FAILED` / `BLOCKED` 三个是终态(各自有明确了结 —— 成功、可重试的失败已
+定性、或不可重试已拍板);`PENDING` / `RUNNING` 两个不是(前者从未认领,后者认领后没有
+回写终态)。run 都发布了,票却还停在这两态之一,唯一解释是执行悄悄蒸发而账本不知道
+——`preflight` 的 `STALE_TASK` 分支本该逮住这个,但那是**下一次**认领时才触发的活体检测;
+如果这票再也没人认领(比如那天就它们几个卡死),账本会**永远**停在 RUNNING,只有事后
+快照能看见。
+
+详见 `docs/research/2026-08-19-decision-file-two-writers-and-taskbook-hash.md` §1.5、§4 P1-1。
 
   uv run --no-sync python -m autoresearch.scan.structural_audit [--days N]
 """
@@ -45,8 +67,15 @@ TASK_BOOK_MISSING = "TASK_BOOK_MISSING"
 TERMINAL_RERUN = "TERMINAL_RERUN"
 COMPLETION_MISJUDGED = "COMPLETION_MISJUDGED"
 ARTIFACT_HASH_MISMATCH = "ARTIFACT_HASH_MISMATCH"
+TASK_STUCK_RUNNING = "TASK_STUCK_RUNNING"
 FAILURE_KINDS = (TASK_BOOK_MISSING, TERMINAL_RERUN,
-                 COMPLETION_MISJUDGED, ARTIFACT_HASH_MISMATCH)
+                 COMPLETION_MISJUDGED, ARTIFACT_HASH_MISMATCH, TASK_STUCK_RUNNING)
+
+# `l4_tasks.py` 状态机的终态集合(P1-1):`SUCCEEDED`(完成)/`FAILED`(可重试的失败已
+# 定性,`preflight` 会在 `MAX_ATTEMPTS` 内再次认领或转 `BLOCKED`)/`BLOCKED`(不可重试,
+# 已拍板)。`PENDING`(从未认领)与 `RUNNING`(认领后未回写终态)不在其中 ——
+# 详见模块文档「P1-1」节与 `l4_tasks.preflight`/`mark_success`/`mark_failure`。
+_TERMINAL_TASK_STATUSES = frozenset({"SUCCEEDED", "FAILED", "BLOCKED"})
 
 # —— 观察类 kind:守卫正常工作 / 已知良性的证据,**不进失败数** ——
 TERMINAL_REDISPATCH_BLOCKED = "TERMINAL_REDISPATCH_BLOCKED"
@@ -182,6 +211,33 @@ def _rehash_findings(payload: dict) -> list[dict]:
     return out
 
 
+def _published(scan: Path) -> bool:
+    """run 是否已发布 —— 判据 = L5 assemble 阶段落过 `StageResult`(P1-1)。
+
+    不用 `finalists.csv`/`summary.md` 等更早或更晚的产物:`stage_results/assemble.json`
+    是 `publisher._run_publish` 收尾时才写(`stage_result.safe_record_stage_result(...,
+    stage="assemble", ...)`),精确对应"这次 run 走到头了"这件事,不早不晚。
+    """
+    return (scan / "stage_results" / "assemble.json").is_file()
+
+
+def _stuck_running_findings(scan: Path, payload: dict) -> list[dict]:
+    """事后重验(P1-1):run 已发布,但票仍停在非终态 —— `_rehash_findings` 对这类票是瞎的
+    (它只查 `SUCCEEDED`),而这正是 2026-08-12 事故(9 票全卡 `RUNNING`、contract 门团灭)
+    的真实形态。run 还没发布时非终态票是正常在跑,不算异常 —— 只在**已发布**之后仍非终态
+    才计一条失败;终态集合见 `_TERMINAL_TASK_STATUSES` 旁注。
+    """
+    if not _published(scan):
+        return []
+    out = []
+    for code, task in sorted((payload.get("tasks") or {}).items()):
+        status = str(task.get("status") or "")
+        if status not in _TERMINAL_TASK_STATUSES:
+            out.append({"code": code, "kind": TASK_STUCK_RUNNING,
+                        "detail": f"run 已发布但票仍 {status or '(无 status)'}(非终态)"})
+    return out
+
+
 def audit_day(scan_dir: Path | str, *, expect_book: bool = False) -> DayAudit | None:
     """单日结构审计。非流式日(无 task-book 且不强求)→ None,不入账。"""
     scan = Path(scan_dir)
@@ -203,6 +259,8 @@ def audit_day(scan_dir: Path | str, *, expect_book: bool = False) -> DayAudit | 
         kind = str(event.get("kind") or "")
         kinds[kind] = kinds.get(kind, 0) + 1
     for finding in _rehash_findings(payload):         # 事后重验,与活体事件合并去重前先分类
+        kinds[finding["kind"]] = kinds.get(finding["kind"], 0) + 1
+    for finding in _stuck_running_findings(scan, payload):   # P1-1:run 已发布但票卡死非终态
         kinds[finding["kind"]] = kinds.get(finding["kind"], 0) + 1
 
     observation_n = sum(n for k, n in kinds.items() if k in OBSERVATION_KINDS)

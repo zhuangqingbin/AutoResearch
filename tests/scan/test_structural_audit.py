@@ -13,7 +13,8 @@ import pytest
 
 from autoresearch.common import workspace as ws
 from autoresearch.scan import structural_audit as sa
-from autoresearch.scan.l4_tasks import initialize, mark_success, preflight
+from autoresearch.scan.l4_tasks import initialize, mark_failure, mark_success, preflight
+from autoresearch.scan.stage_result import safe_record_stage_result
 
 DATE = "2026-07-28"
 NOW = datetime(2026, 7, 28, 8, 0, tzinfo=timezone.utc)
@@ -241,6 +242,92 @@ def test_non_terminal_tasks_are_not_rehashed(tmp_path):
     _files(tmp_path, "000001", "000001.SZ")
     audit = sa.audit_day(tmp_path / DATE)             # 从未 mark_success
     assert audit.failure_n == 0
+
+
+# ── P1-1(2026-08-19 取证):判官必须看见「卡死在 RUNNING」──────────────────
+
+def _mark_published(tmp_path, *, date=DATE) -> None:
+    """模拟 L5 assemble 阶段已落过 StageResult(P1-1『run 已发布』的判据本体)。"""
+    safe_record_stage_result(tmp_path / date, stage="assemble", status="SUCCEEDED",
+                             artifacts=[], metrics={}, warnings=[], error=None)
+
+
+def test_stuck_running_task_is_invisible_before_the_run_is_published(tmp_path):
+    """未发布(无 `stage_results/assemble.json`)时,非终态票是正常在跑,不算异常
+    ——`test_non_terminal_tasks_are_not_rehashed` 已经锁了旧判据的这条边界,这里
+    显式点名一次,证明 P1-1 新判据同样尊重「还没跑完 ≠ 卡死」。"""
+    _book(tmp_path)                       # 000001 初始 status=PENDING,从未认领
+    audit = sa.audit_day(tmp_path / DATE)
+    assert audit.failure_n == 0
+    assert sa.TASK_STUCK_RUNNING not in audit.kinds
+
+
+def test_stuck_running_task_is_a_failure_once_the_run_is_published(tmp_path):
+    """P1-1 核心断言:run 已发布(assemble StageResult 在场)而票仍非终态 → 计失败。
+
+    复现 2026-08-12 真实形态的缩小版(9 票全卡 RUNNING、`mark_success` 从未执行、
+    E6 contract 门团灭当天全部候选,但旧 `_rehash_findings` 只查 `SUCCEEDED`,把
+    那天评成 `failure_n=0`「无事件」)。
+
+    变异校验(task-1.9 report 贴了完整命令与输出):把 `audit_day` 里那次
+    `_stuck_running_findings(scan, payload)` 调用摘掉,本测试必红 ——
+    `failure_n` 会掉回 0,`clean` 会掉回 `True`,08-12 那天又变回「假干净日」。
+    """
+    book = _book(tmp_path)
+    preflight(book["path"], "000001", now=NOW)      # PENDING → RUNNING(认领后失联,再无终态回写)
+    _mark_published(tmp_path)
+
+    audit = sa.audit_day(tmp_path / DATE)
+    assert audit.failure_n == 1
+    assert audit.kinds == {sa.TASK_STUCK_RUNNING: 1}
+    assert audit.clean is False
+
+
+def test_pending_task_after_publish_is_also_stuck(tmp_path):
+    """`PENDING`(从未认领)与 `RUNNING`(认领未回写)同属非终态 —— 票从未被 `preflight`
+    碰过、run 却已发布,同样是异常,不能只逮 RUNNING 漏了 PENDING。"""
+    _book(tmp_path)                       # 从未 preflight,status 仍是初始 PENDING
+    _mark_published(tmp_path)
+
+    audit = sa.audit_day(tmp_path / DATE)
+    assert audit.failure_n == 1
+    assert audit.kinds == {sa.TASK_STUCK_RUNNING: 1}
+
+
+def test_blocked_task_after_publish_is_not_stuck_running(tmp_path):
+    """`BLOCKED` 是终态(已有明确了结的失败判断),发布后仍是 BLOCKED 不该被
+    `TASK_STUCK_RUNNING` 二次计失败 —— 它已经被 `mark_failure` 记过一次理由了,
+    这里只验证它不被新判据误伤,不重复验证 `mark_failure` 自身的记账。"""
+    book = _book(tmp_path)
+    mark_failure(book["path"], "000001", "NON_TRANSIENT_KIND", now=NOW)   # → BLOCKED
+    _mark_published(tmp_path)
+
+    audit = sa.audit_day(tmp_path / DATE)
+    assert audit.kinds.get(sa.TASK_STUCK_RUNNING) is None
+    assert audit.failure_n == 0
+
+
+def test_succeeded_and_stuck_tasks_are_both_visible_in_the_same_book(tmp_path):
+    """混合票本(部分正常收尾、部分卡死)—— 两类判据互不掩盖:SUCCEEDED 票走
+    `_rehash_findings` 的干净路径,RUNNING 票被 `TASK_STUCK_RUNNING` 单独逮住,
+    `failure_n` 只数后者那一票,不该把前者也牵连进去。"""
+    scan = tmp_path / DATE
+    scan.mkdir(parents=True, exist_ok=True)
+    (scan / "_l4_prompt_000001.md").write_text("# 任务包\n", encoding="utf-8")
+    (scan / "_l4_prompt_000002.md").write_text("# 任务包\n", encoding="utf-8")
+    book = initialize(DATE, ["000001", "000002"], root=tmp_path,
+                      context_root=tmp_path / "context",
+                      meta={"000001": {"ticker": "000001.SZ", "pinned": False},
+                            "000002": {"ticker": "000002.SZ", "pinned": False}},
+                      now=NOW)
+    _files(tmp_path, "000001", "000001.SZ")
+    mark_success(book["path"], "000001", now=NOW)
+    preflight(book["path"], "000002", now=NOW)       # PENDING → RUNNING,再无终态回写
+    _mark_published(tmp_path)
+
+    audit = sa.audit_day(tmp_path / DATE)
+    assert audit.failure_n == 1
+    assert audit.kinds == {sa.TASK_STUCK_RUNNING: 1}
 
 
 # ── 活体接线:四个检测点真的会落盘 ────────────────────────────────────────
