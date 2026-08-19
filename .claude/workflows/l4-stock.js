@@ -59,7 +59,7 @@ const R = 'uv run --no-sync python -m'
 const TASK_BOOK = `${SD}/_l4_tasks.json`
 const CARD = { type: 'object', required: ['code', 'rating'],
   properties: { code: { type: 'string' }, rating: { type: 'string' },
-    conviction: { type: 'number' }, proposal: { type: 'string' } } }
+    conviction: { type: 'number', minimum: 0, maximum: 100 }, proposal: { type: 'string' } } }
 const recordL4 = (errorCode = null) => agent(
   `在仓库根目录执行:\`${R} autoresearch.scan.stock_stage l4 ${date} ${code}` +
   `${errorCode ? ` --error ${errorCode}` : ''}\`。只回报退出码,不要判断或解释。` +
