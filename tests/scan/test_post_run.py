@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -10,6 +11,7 @@ from autoresearch.scan.post_run import (
     consumer_status,
     initialize_consumer_state,
     load_consumer_receipts,
+    publish_run_observation,
     run_consumers,
 )
 
@@ -288,3 +290,67 @@ def test_retro_consumers_retry_independently_from_price_attribution(tmp_path):
     )
     assert status["status"] == "OK"
     assert status["expected"] == 2
+
+
+# ── E1b:publish_run_observation 在护照/决策现算前先 reconcile task-book ──────────
+def _l4_book_with_running_task(tmp_path, date: str, code: str = "000001") -> tuple:
+    """最小 task-book 夹具:一票 RUNNING、prompt/slim/card 三产物齐且 slim 合格 ——
+    2026-08-12 型事故复现(卡已在盘,book 没收尾)。"""
+    from autoresearch.scan.l4_tasks import initialize, preflight
+
+    scan = tmp_path / date
+    scan.mkdir(parents=True)
+    ticker = f"{code}.SZ"
+    (scan / f"_l4_prompt_{code}.md").write_text("# 任务包\n", encoding="utf-8")
+    ctx = tmp_path / "context"
+    ctx.mkdir()
+    (ctx / f"{ticker}_{date}_slim.md").write_text(
+        "\n".join([
+            "## Verified market snapshot",
+            "### Latest verified OHLCV row",
+            "| Close | 12.34 |",
+            "## Market context",
+            "## Fundamentals overview",
+            "x" * 5000,
+        ]),
+        encoding="utf-8",
+    )
+    (scan / "details").mkdir()
+    (scan / "details" / f"{code}.md").write_text("# card", encoding="utf-8")
+
+    book = initialize(
+        date, [code], root=tmp_path, context_root=ctx,
+        meta={code: {"ticker": ticker, "pinned": False}},
+    )
+    assert book["ok"], book
+    preflight(book["path"], code)  # PENDING → RUNNING
+    return scan, Path(book["path"])
+
+
+def test_publish_run_observation_reconciles_task_book_before_decision(tmp_path):
+    """挂点验证:调用后 book 中卡已在盘的 RUNNING 票翻 SUCCEEDED(recovered 标记) ——
+    证明 reconcile 真在护照/决策**现算之前**跑了(不是没接线、也不是接在了下游)。
+    contract 门是否因此放行由 Task 1.4 的 reconcile 用例覆盖。
+    """
+    scan, book_path = _l4_book_with_running_task(tmp_path, "2026-07-30")
+
+    publish_run_observation(scan, real_scan=False)
+
+    payload = json.loads(book_path.read_text(encoding="utf-8"))
+    task = payload["tasks"]["000001"]
+    assert task["status"] == "SUCCEEDED"
+    assert task["recovered"] is True
+
+
+def test_publish_run_observation_survives_reconcile_failure(tmp_path, capsys):
+    """影子件失败纪律:reconcile 炸了也不能挡住护照/决策发布本身,只打一行 stderr。"""
+    scan = tmp_path / "2026-07-31"
+    scan.mkdir()
+    # schema_version 不受支持 → reconcile 内部 _read() 必抛,验证 except 真包住了它
+    (scan / "_l4_tasks.json").write_text(
+        json.dumps({"schema_version": 999, "tasks": {}}), encoding="utf-8")
+
+    publish_run_observation(scan, real_scan=False)  # 不得向上抛出
+
+    assert "reconcile 失败" in capsys.readouterr().err
+    assert (scan / "_relative_buy_decision.json").exists()  # 下游未被挡住

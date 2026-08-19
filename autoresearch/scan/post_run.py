@@ -614,6 +614,17 @@ def publish_run_observation(
     )
     observation["markdown"] = render_run_observation(observation)
     _atomic_json(scan / "_budget_observation.json", observation)
+    # E1b(2026-08-18 设计稿):护照/相对决策**现算**之前先对 task-book 做收尾自愈 ——
+    # 卡在盘而 book 停 RUNNING 的票按盘上事实补记(recovered 标记),防 08-12 型
+    # contract 团灭。失败只打一行,不阻断发布(与护照/决策同一失败纪律)。
+    try:
+        from autoresearch.scan.l4_tasks import reconcile
+        _rec = reconcile(scan / "_l4_tasks.json")
+        if _rec.get("recovered"):
+            print(f"[l4_tasks] reconcile 补记 {len(_rec['recovered'])} 票: "
+                  f"{','.join(_rec['recovered'])}", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[l4_tasks] reconcile 失败: {type(exc).__name__}: {exc}", file=sys.stderr)
     # 候选护照(Wave12 T19):L1→L4 全轨迹的**纯派生**视图,零 LLM/零联网、byte 稳定。
     # 挂在这里是因为 post_run observe 是 STAGES 步骤 5 的最后一条命令(assemble → gate4 →
     # usage_harvest → usage_reconcile → 本命令),此刻 decision_records/早停/intel 状态
