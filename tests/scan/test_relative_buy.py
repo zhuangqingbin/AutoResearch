@@ -30,6 +30,7 @@ from autoresearch.scan.relative_buy import (
     EXPECTED_ABS_GAP_MIN_N,
     RULE_VERSION,
     SCHEMA_VERSION,
+    _data_contract_ok,
     build_decision,
     main,
     tradable_universe,
@@ -285,9 +286,10 @@ def test_rule_version_is_pinned_and_reaches_the_written_product(tmp_path):
     - 落盘文件(不只是内存 dict)断言挡"常量改了但产物没跟"——下游 `relative_ledger`
       与 `brief` 都是 `doc.get("rule_version")` 直取,产物漂了它们会静默记下错版本。
 
-    v1.1 = v1 + 两道硬门的 ABSENT 收紧;打分/选择语义与 v1 逐字相同(8 日回放零变化)。
+    v1.1 = v1 + 两道硬门的 ABSENT 收紧;v1.2 = v1.1 + data_a 第 4 判改读
+    `stage_results.failed_data`(E1a)。打分/选择语义与 v1 逐字相同(8 日回放零变化)。
     """
-    assert RULE_VERSION == "e6.v1.1"
+    assert RULE_VERSION == "e6.v1.2"
     scan = _build_scan(tmp_path, _RANK_CANDS)
     assert build_decision(scan)["rule_version"] == RULE_VERSION
     written = json.loads(write_decision(scan).read_text(encoding="utf-8"))
@@ -809,3 +811,37 @@ def test_real_run_20260806_is_deterministic_and_side_effect_free():
     assert sorted(p.name for p in _REAL.iterdir()) == before
     # 当日 4 只 Underweight,评级不是 Sell,故 no_redflag 不因评级否决
     assert all(row["hard_gate"]["data_a"] for row in doc["candidates"])
+
+
+# ══ E1a(2026-08-18 设计稿 §3):data_a 改读 stage_results.failed_data ════════════
+#
+# `_data_contract_ok` 的第 4 判此前直接看 `stage_results.failed`(非空即拒,不分青红皂
+# 白)。`failed_data` 是 `run_health.stage_results_health` 新增的子集(task 1.2):gate4
+# FAILED 时按 fail_class 分类,hygiene/metering 类不连坐。本节验证 `_data_contract_ok`
+# 改读这个新键,且对**没有**这个键的历史 run_health(v1.1 之前生成)回退旧口径——历史
+# 判定不改写。
+
+
+def _health(tmp_path, stages):
+    (tmp_path / "run_health.json").write_text(json.dumps({
+        "core_missing": [],
+        "run_contract": {"status": "OK"},
+        "stage_results": stages,
+        "decision_records": {"status": "OK"},
+    }), encoding="utf-8")
+
+
+def test_hygiene_only_gate4_passes_data_a(tmp_path):
+    _health(tmp_path, {"status": "OK", "failed": ["gate4"], "failed_data": []})
+    ok, why = _data_contract_ok(tmp_path)
+    assert ok, why
+
+
+def test_data_fail_blocks(tmp_path):
+    _health(tmp_path, {"status": "OK", "failed": ["gate4"], "failed_data": ["gate4"]})
+    assert not _data_contract_ok(tmp_path)[0]
+
+
+def test_legacy_health_without_failed_data_keeps_old_semantics(tmp_path):
+    _health(tmp_path, {"status": "OK", "failed": ["gate4"]})
+    assert not _data_contract_ok(tmp_path)[0]  # 回退旧口径:failed 非空即拒

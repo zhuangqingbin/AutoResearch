@@ -26,9 +26,11 @@ GATED task(≥20 个真实扫描日影子 + 五守卫 + 人工批准),不在这�
 
 ## v1 规则(**观察前锁定**;任何改动 = 新 `RULE_VERSION` + experiment_registry)
 
-> 当前 `RULE_VERSION = "e6.v1.1"`。v1.1 只把两道硬门对"产物缺席"的静默放行堵上,
-> **打分与选择语义与 v1 逐字相同**(8 日回放零变化为证);下面这套规则原文因此仍然
-> 逐字有效,不需要按 v1.1 重读。差异见文件尾「修复轮 1」。
+> 当前 `RULE_VERSION = "e6.v1.2"`。v1.1 只把两道硬门对"产物缺席"的静默放行堵上,
+> v1.2 只把 `data_a` 第 4 判改读 `stage_results.failed_data`(gate4 的 hygiene/metering
+> 类失败不再连坐当日 BUY)。**打分与选择语义与 v1 逐字相同**(8 日回放零变化为证);
+> 下面这套规则原文因此仍然逐字有效,不需要按 v1.1/v1.2 重读。差异见文件尾「修复轮 1」
+> 与 `RULE_VERSION` 常量旁注。
 
 边看结果边调参数 = 作弊。下面每条都是在看到任何一天的影子输出**之前**写死的。
 
@@ -48,12 +50,14 @@ BUY 候选,也不进 `excluded`——把 190 只 pass1 被切的票记成"被排
    这不是替代判据,是同一函数在两种输入下的既定行为。
 2. `data_a` —— 当日 A 级数据契约无未解决异常。**日级**判定(全体候选同值),结构化读
    `run_health.json`:`core_missing` 空 ∧ `run_contract.status == "OK"` ∧
-   `stage_results.status == "OK"` ∧ `stage_results.failed` 空 ∧
+   `stage_results.status == "OK"` ∧ `stage_results.failed_data` 空 ∧
    `decision_records.status == "OK"`。三个 status 一律**要求等于 `"OK"`**,不是"不等于坏
    值"——`health.py` 的真实取值域含 `"ABSENT"`(产物根本没写),而"产物缺席"时
    「A 级契约无未解决异常」这句话无从断言,放行它等于把没查过当查过了(复核 I-1:这是
    第 6 处放宽,原版未列入 premise 偏差、也未留痕)。`run_health.json` 整个缺失同样判
-   **False**(与 `contracts.py`"A 级空即抛异常阻断"同向)。
+   **False**(与 `contracts.py`"A 级空即抛异常阻断"同向)。`failed_data` 是 `failed` 的
+   data 类子集(v1.2/E1a):gate4 因文档卫生/计量对账失败不再连坐;历史 `run_health.json`
+   无此键时回退读 `failed`。
 3. `contract` —— 该票 slim/卡/价格断言契约完整:task-book(`_l4_tasks.json`)该票
    `status == "SUCCEEDED"` ∧ `artifacts.slim/card` 均 `PRESENT` ∧ **护照没把
    `l4.research_rating` 记进 `missing[]`**(卡在盘上却读不出终评级 = 卡契约不完整)
@@ -120,7 +124,7 @@ from autoresearch.common.ruler import MAIN_RULER, REL_MARKET, REL_SECTOR, entry_
 from autoresearch.scan.passport import build_passport
 
 SCHEMA_VERSION = 1
-RULE_VERSION = "e6.v1.1"
+RULE_VERSION = "e6.v1.2"
 # v1.1 = v1 + 两道硬门的 ABSENT 收紧(`data_a` 三个 status 一律要求 `== "OK"`;`contract`
 # 消费护照 `missing["l4.research_rating"]`)。**打分与选择语义与 v1 逐字相同** —— 四面算法 /
 # Borda 等权平均 / 并列决胜三级 / 第 2 只的门 / `expected_abs_gap` 一个字符未动。
@@ -128,6 +132,10 @@ RULE_VERSION = "e6.v1.1"
 # 通过),属恢复本意;8 日回放(2026-07-28..08-06)**零变化** —— 选票/分数/四面/合格数逐日
 # 全同 —— 即"已有观测未被污染、不需作废重跑"的实证(见 task-23-report 修复轮 §0.2)。
 # 2026-08-09 控制方裁定。
+# v1.2 = v1.1 + data_a 第 4 判改读 `stage_results.failed_data`(E1a,2026-08-18 设计稿 §3):
+# 文档卫生(产物形状·*)与计量病(usage_reconcile·*)类 gate4 失败不再连坐当日 BUY;
+# 数据类失败照旧团灭。历史 run_health 无 failed_data 键 → 回退旧口径,历史判定不改写。
+# 打分/选择语义零改动。
 DECISION_FILENAME = "_relative_buy_decision.json"
 MODE_SHADOW = "shadow"
 
@@ -301,8 +309,11 @@ def _data_contract_ok(scan: Path) -> tuple[bool, str]:
     stages = health.get("stage_results") or {}
     if str(stages.get("status") or "") != "OK":
         return False, f"stage_results.status={stages.get('status')!r}(非 OK)"
-    if stages.get("failed"):
-        return False, f"stage_results.failed={sorted(stages['failed'])}"
+    failed_data = stages.get("failed_data")
+    if failed_data is None:            # 历史 run_health 无此键 → 保持 v1.1 旧口径
+        failed_data = stages.get("failed")
+    if failed_data:
+        return False, f"stage_results.failed_data={sorted(failed_data)}"
     records = health.get("decision_records") or {}
     if str(records.get("status") or "") != "OK":
         return False, f"decision_records.status={records.get('status')!r}(非 OK)"
