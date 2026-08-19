@@ -227,7 +227,7 @@
 |---|---|---|
 | `streaming_l4=false` 旧批量 GATE3 | 流式路径累计 10 次真实扫描,`structural_failure_n=0`;结构失败定义固定为 task-book 丢失/错误重跑成功票/完成态误判/产物 hash 失配 | health 标 eligible;独立 commit 删除旧路 |
 | `_ensemble.json` 旧批量双读 | 与旧批量路径同生死 | 同 commit 联动删;历史文件仍可由离线 migration reader 读取,生产 reader 不背永久兼容 |
-| abstention v1 | v2 达 10 个 mature day 且两日重跑一致 | ledger 标 eligible;独立 commit 删除 v1 生产列/代码,保留历史报告 |
+| abstention v1 | v2 达 10 个 mature day 且两日重跑一致 | ledger 标 eligible;独立 commit 删除 v1 生产列/代码,保留历史报告 —— **已拔（2026-08-19，v2 19/19 成熟 + 两日重跑一致）**:2026-07-16/2026-08-06 两天各重跑两遍 `abstention_ledger`,`reports_claude/learning/abstention_ledger.md` 对应行与全文逐字一致(diff 为空);19/19 全部成熟裁决(FALSE×5、NEUTRAL×14)。`render()` 的 v1 headline 与 `recall_ceiling_n` 右侧诊断列已从 `abstention_ledger.md` 退役;`status`/`recall_ceiling_n` 字段与计算本身**未删**(`scan/market.py`/`scan/health.py`/`learning/zero_buy_ledger.py` 三个下游消费点仍直接读取),历史报告未改写 |
 
 代码不得在第 10 日 assemble 后自行修改/删除源码。
 

@@ -12,7 +12,11 @@
 里有没有真跑赢 +2pp 且次开可交易的 —— 这才是"如果门放行,我会买的东西"。
 全市场口径降级为 `recall_ceiling_n` 诊断字段(信息保留,撤出裁决 headline)。
 
-过渡期两个 status 并存(v1 `status` + v2 `status_v2`),≥10 个成熟日后旧口径退役。
+过渡期两个 status 并存(v1 `status` + v2 `status_v2`);2026-08-19 判据达成(v2 达
+≥10 个 mature day 且两日重跑一致,实测 19/19 全成熟)——v1 **headline** 已从
+`abstention_ledger.md` 退役,但 `status` 字段/计算本身不删(`market.py`/`health.py`/
+`zero_buy_ledger.py` 三个下游消费点仍读它),故本文件的计算层断言(`classify_abstention`
+仍双算 v1/v2)继续成立,不受影响。
 缺 shadow 数据的日子 `status_v2=None`(**不新增枚举值** —— STATUSES 有迭代消费方),
 md 渲染 `—(no_shadow)` 且不计入 v2 统计。
 """

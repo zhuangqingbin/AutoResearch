@@ -186,17 +186,21 @@ def classify_abstention(
     now: datetime | None = None,
     shadow_codes: list[str] | None = None,
 ) -> AbstentionVerdict:
-    """0 买日的因果裁决。过渡期出**两个**口径(Wave8 W8-11)。
+    """0 买日的因果裁决(Wave8 W8-11 引入 v2,2026-08-19 v1 headline 拔杆退役)。
 
-    - `status`(v1,保留):判据 = `rejection_attribution.csv` 里任一 tradable 票相对
-      市场中位 ≥+2pp。**那张表覆盖全市场**(07-24 实测 5,528 行、opportunity 命中
-      1,299 只)→ 5,000 只票的市场几乎天天恒真。它量的是**召回上限**,不是弃权决策,
-      与 paper_nav「门在挣钱」的读数长期互扇。
-    - `status_v2`(新):判据只看 `shadow_codes`(= 系统当日最想买的 K 只,
-      `shadow_buys.csv`)—— "如果门放行,我会买的东西"有没有真跑赢。
-      `shadow_codes` 为空(该日无 shadow 数据)→ `status_v2=None`,不入 v2 统计。
-
-    v1 口径不删,降级为 `recall_ceiling_n` 诊断数 + 双打印;≥10 个成熟日后再退旧 headline。
+    - `status_v2`(**主口径,唯一 ledger headline**):判据只看 `shadow_codes`(=
+      系统当日最想买的 K 只,`shadow_buys.csv`)—— "如果门放行,我会买的东西"有没有
+      真跑赢。`shadow_codes` 为空(该日无 shadow 数据)→ `status_v2=None`,不入统计。
+    - `status`(v1,**schema 字段保留但 headline 已退役**):判据 = `rejection_attribution.csv`
+      里任一 tradable 票相对市场中位 ≥+2pp。**那张表覆盖全市场**(07-24 实测 5,528 行、
+      opportunity 命中 1,299 只)→ 5,000 只票的市场几乎天天恒真。它量的是**召回上限**,
+      不是弃权决策,与 paper_nav「门在挣钱」的读数长期互扇——这正是 v1 headline 被拔的
+      原因(判据:v2 达 ≥10 个 mature day 且两日重跑一致,2026-08-19 实测 19/19 全成熟,
+      Wave10 §B5 回滚杆③判据达成)。字段/计算**不删**——`scan/market.py::_abstention_verdict_line`
+      (逐日弃权裁决行)、`scan/health.py`(健康检查 payload)、`learning/zero_buy_ledger.py`
+      (因果裁决小节)三个下游消费点仍直接读 `verdict.status`/`roll()` 的 `status` 列,
+      本次改动**只退役 `render()`(本模块自己的 `abstention_ledger.md` 表)里的 v1 headline
+      与 `recall_ceiling_n` 诊断列**,不动 schema、不动上述三个消费点。
     """
     rows = rejection_rows.copy()
     date = (
@@ -444,42 +448,39 @@ def render(ledger: pd.DataFrame) -> list[str]:
     if ledger is None or not len(ledger):
         return lines + ["_无弃权裁决；未成熟日不会被静默省略。_"]
     order = ("CORRECT", "FALSE", "NEUTRAL", "IMMATURE")
-    counts = ledger["status"].value_counts().to_dict()
     v2 = ledger.get("status_v2")
     n_v2 = int(v2.notna().sum()) if v2 is not None else 0
     counts_v2 = v2.dropna().value_counts().to_dict() if n_v2 else {}
     lines.append(
-        "- **v2 状态(shadow_buys 口径,主)**:"
+        "- **状态(shadow_buys 口径)**:"
         + (" · ".join(f"{s} {counts_v2.get(s, 0)}" for s in order)
            if n_v2 else "_尚无 shadow 数据_")
         + f"(已判 {n_v2}/{len(ledger)} 日)"
     )
-    lines.append(
-        "- v1 状态(全市场口径,过渡期并存):"
-        + " · ".join(f"{s} {counts.get(s, 0)}" for s in order)
-    )
     lines += [
         "",
-        "| 日期 | **v2裁决** | v1裁决 | 被拒 | shadow机会 | 召回上限(全市场+2pp) | 数据质量 |",
-        "|---|---|---|---:|---|---:|---|",
+        "| 日期 | 裁决 | 被拒 | shadow机会 | 数据质量 |",
+        "|---|---|---:|---|---|",
     ]
     for row in ledger.itertuples(index=False):
         s2 = getattr(row, "status_v2", None)
         s2 = "—(no_shadow)" if s2 is None or (isinstance(s2, float) and pd.isna(s2)) else s2
         shadow = getattr(row, "shadow_opportunity_codes", "") or "—"
-        ceiling = getattr(row, "recall_ceiling_n", row.n_opportunities)
         lines.append(
-            f"| {row.date} | **{s2}** | {row.status} | {row.n_rejected} "
-            f"| {shadow} | {ceiling} | {row.data_quality} |"
+            f"| {row.date} | {s2} | {row.n_rejected} "
+            f"| {shadow} | {row.data_quality} |"
         )
     lines += [
         "",
-        "_**v2(主口径)**:机会只认当日 `shadow_buys`(系统最想买的 K 只)—— "
-        "「如果门放行我会买的东西」有没有真跑赢。v1 的机会 = 全市场任一票 ≥+2pp，"
-        "5,000 只的市场里近乎恒真（07-24 实测命中 1,299 只），量的是**召回上限**"
-        "而非弃权决策，已降级为右侧诊断列，≥10 个成熟日后退役。_\n"
-        "_两口径共用同一判定逻辑，只换标的集；FALSE 均只认次日开盘可交易且相对当日"
-        "市场中位 ≥+2pp；UNKNOWN/坏事实只能令裁决降级，不能伪装成正确弃权。_",
+        "_机会只认当日 `shadow_buys`(系统最想买的 K 只)—— 「如果门放行我会买的东西」"
+        "有没有真跑赢。FALSE 只认次日开盘可交易且相对当日市场中位 ≥+2pp；"
+        "UNKNOWN/坏事实只能令裁决降级，不能伪装成正确弃权。_\n"
+        "_v1(全市场任一票 ≥+2pp 口径)已于 2026-08-19 从本表退役"
+        "（判据：v2 达 ≥10 个 mature day 且两日重跑一致，实测 19/19 全成熟且两次"
+        "重跑逐字一致，Wave10 §B5 回滚杆③判据达成）——5,000 只的市场里近乎恒真"
+        "（07-24 实测命中 1,299 只），量的是召回上限而非弃权决策。v1 字段仍在 schema"
+        "里供下游消费（`market.py` 逐日弃权裁决行 / `health.py` 健康检查 /"
+        "`zero_buy_ledger.py` 因果裁决小节），只是不再是本表的 headline。_",
     ]
     return lines
 

@@ -115,6 +115,12 @@ def test_verdict_round_trip_is_atomic_idempotent_and_tamper_loud(
 
 
 def test_roll_and_render_separate_maturity_from_outcome(tmp_path):
+    """v1 headline 已退役(2026-08-19);本测试用隔离的 shadow fixture(不再依赖真实
+    项目 `context_claude/learning/shadow_buys.csv`,那会让断言随生产数据漂移)让成熟日
+    拿到确定的 v2 裁决,验证 roll()/render() 仍正确区分"未成熟"与"已裁决"。"""
+    shadow_csv = tmp_path / "shadow_buys.csv"
+    shadow_csv.write_text("date,code\n2026-07-28,000001\n", encoding="utf-8")
+
     for date, excess in (
         ("2026-07-27", [None]),
         ("2026-07-28", [0.03]),
@@ -126,8 +132,20 @@ def test_roll_and_render_separate_maturity_from_outcome(tmp_path):
             mature=excess[0] is not None,
         )
         rows["date"] = date
-        write_abstention_verdict(scan, rows, now=NOW)
+        write_abstention_verdict(scan, rows, now=NOW, shadow_path=shadow_csv)
     ledger = roll(tmp_path)
+    # v1 字段(status)在 roll() 内部仍完整——render() 之外的下游消费点(market.py/
+    # health.py/zero_buy_ledger.py)仍靠它,故这里继续断言它没被误删。
     assert list(ledger["status"]) == ["IMMATURE", "FALSE"]
+    # v2(唯一 ledger headline)只在成熟日给出裁决;未成熟日不得伪装成任何裁决。
+    assert pd.isna(ledger["status_v2"].iloc[0])
+    assert ledger["status_v2"].iloc[1] == "FALSE"
+
     text = "\n".join(render(ledger))
-    assert "IMMATURE" in text and "FALSE" in text
+    assert "| 2026-07-27 | —(no_shadow) | " in text
+    assert "| 2026-07-28 | FALSE | " in text
+    # v1 headline("- v1 状态...")与召回上限诊断列已退役,不应再出现在表格本身里
+    # (脚注仍会提一句"量的是召回上限"解释退役缘由,那是文字不是列,不在此断言范围)。
+    assert "v1 状态" not in text
+    assert "召回上限(全市场+2pp)" not in text
+    assert "v1裁决" not in text
