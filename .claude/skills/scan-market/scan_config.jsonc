@@ -149,7 +149,15 @@
 
   // ── 收尾 · 相对 BUY(E6)──【生效点:scan/post_run.publish_run_observation → relative_buy.write_decision/verify_decision】
   // mode: shadow=影子只记账;active=正式接管 BUY(裁决表 A1 批 GO 后才可翻,翻回即回滚)
+  //   【消费侧生效点(task-2.4)】relative_buy.is_active() → scan/report_sections(组合视角/仓位
+  //   overlay 改 managed 占位+收尾注入)· scan/health.count_buys(改读决策文件)· scan/brief(③ 旧
+  //   OW 行降为研究评级分布)。翻 active 前请先跑 `python -m autoresearch.scan.relative_buy preflight`。
   // exclude_pinned: 📌 持仓是否不参与当日 BUY 选择(保送不算判例)。**裁决表 A2 待用户批准前
   //   保持 false** —— 开了会让影子账本按未获批规则记账(08-18 影子 BUY 688766 普冉本身就是📌)
-  "relative_buy": { "mode": "shadow", "exclude_pinned": false }
+  // activate_date: legacy 账本(buy_ledger / zero_buy_ledger)的冻结日,YYYY-MM-DD 或 null。
+  //   【生效点】learning/buy_ledger.roll + learning/zero_buy_ledger.roll —— **该日(含)起不再产生
+  //   新行**,历史行与渲染原样保留(E3 表:旧 OW 买单账冻结 legacy / 0买日账按 activate 日切断)。
+  //   null = 不冻结 = 现行为。**翻 mode 到 active 的那一次改动必须同时填这里**(同一 commit),
+  //   否则两本 legacy 账会继续按旧绝对门记新行,与 relative_ledger 混成一条趋势线。
+  "relative_buy": { "mode": "shadow", "exclude_pinned": false, "activate_date": null }
 }

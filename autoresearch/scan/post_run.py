@@ -662,16 +662,13 @@ def publish_run_observation(
     # parity)——**两个写者必须用同一份开关**:writer-1 若按 config 用 active 算、
     # writer-2 却永远拿 shadow 去比,"两次现算是否一致"就会天天误报。配置层故障(文件坏/
     # 白名单外键)不得阻断影子决策发布,但降级必须留痕(同 `user_config.knob` 纪律)。
-    try:
-        from autoresearch.scan.user_config import load_user_config
+    #
+    # task-2.4:解析下沉到 `relative_buy.configured_relative_buy()`(消费侧同一入口)——
+    # 写者与消费者用两份各自解析的 config,就会出现「渲染层以为在 shadow、写者按 active 写」
+    # 这种半开状态,那是本波要防的分家的另一种形状。
+    from autoresearch.scan.relative_buy import configured_relative_buy
 
-        _rb = load_user_config().get("relative_buy") or {}
-    except Exception as exc:  # noqa: BLE001 — 配置层故障不挡决策发布,但降级必须可见
-        _rb = {}
-        print(f"[relative_buy] scan_config 读取失败({exc!r})→ mode/exclude_pinned 用内建默认",
-              file=sys.stderr)
-    _rb_mode = str(_rb.get("mode") or "shadow")
-    _rb_exclude_pinned = bool(_rb.get("exclude_pinned", False))
+    _rb_mode, _rb_exclude_pinned, _ = configured_relative_buy()
     if decision_write == "write":
         from autoresearch.scan.relative_buy import safe_write_decision
 

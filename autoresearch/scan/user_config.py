@@ -22,12 +22,15 @@ raise**(防拼写错静默失效,是本文件存在的唯一理由);缺文件 = 
 from __future__ import annotations
 
 import json
+import re
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from autoresearch.common import workspace as ws
 
+#: `relative_buy.activate_date` 的形状校验(YYYY-MM-DD);错型静默生效比缺键更难查。
+_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 DEFAULT_PATH = Path(".claude/skills/scan-market/scan_config.jsonc")
 DEFAULT_PINNED_PATH = Path(".claude/skills/scan-market/pinned.jsonc")
 
@@ -115,7 +118,7 @@ _SUB_WHITELIST = {
     "performance": {
         "streaming_l4",
     },
-    "relative_buy": {"mode", "exclude_pinned"},
+    "relative_buy": {"mode", "exclude_pinned", "activate_date"},
 }
 
 # ── 运行旋钮类型校验(2026-08-11)——错型静默生效比缺键更难查,一律 raise ──
@@ -127,6 +130,7 @@ def _t_nonneg_int(v): return isinstance(v, int) and not isinstance(v, bool) and 
 def _t_source(v): return v in {"em", "tushare"}
 def _t_dict(v): return isinstance(v, dict)
 def _t_rbmode(v): return v in {"shadow", "active"}
+def _t_date_or_null(v): return v is None or (isinstance(v, str) and _DATE_RE.fullmatch(v) is not None)
 
 
 _KNOB_TYPES: dict[tuple[str, str], tuple] = {
@@ -144,6 +148,7 @@ _KNOB_TYPES: dict[tuple[str, str], tuple] = {
     ("sector", "max_briefs"): (_t_posint, "正整数"),
     ("relative_buy", "mode"): (_t_rbmode, "shadow|active"),
     ("relative_buy", "exclude_pinned"): (_t_bool, "boolean"),
+    ("relative_buy", "activate_date"): (_t_date_or_null, "YYYY-MM-DD 或 null"),
 }
 
 # agents={role: {model, effort}} 的 role 闭集(Wave11 B1)——白名单外一律 raise,防拼写错

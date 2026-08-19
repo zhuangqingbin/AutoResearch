@@ -37,6 +37,10 @@ from autoresearch.scan.relative_buy import (
     SCHEMA_VERSION,
     _data_contract_ok,
     build_decision,
+    activate_date,
+    configured_relative_buy,
+    is_active,
+    load_decision,
     main,
     preflight_report,
     safe_verify_decision,
@@ -1146,3 +1150,93 @@ def test_preflight_survives_an_empty_or_missing_ledger(tmp_path):
     assert report["last_3"] == []
     assert report["contract_errors_recent"] == 0
     assert report["summary"]["n_rows"] == 0
+
+
+# ── E3b 消费侧盘读 helper(task-2.4)────────────────────────────────────────────
+#
+# 这组测试锁的是「消费者不许自己现算」:`load_decision` 是纯盘读,过期文件一律判 None。
+# 变异校验:把 `load_decision` 里的日期判据删掉,`test_load_decision_rejects_a_stale_file`
+# 立刻变红(它造的正是「昨天的文件躺在今天的目录里」)。
+
+
+def _write_decision_file(scan: Path, payload: dict) -> Path:
+    scan.mkdir(parents=True, exist_ok=True)
+    target = scan / DECISION_FILENAME
+    target.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return target
+
+
+def test_load_decision_reads_the_file_on_disk(tmp_path):
+    scan = tmp_path / "2026-08-18"
+    _write_decision_file(scan, {"date": "2026-08-18", "mode": "active",
+                                "buys": [{"code": "600000"}]})
+
+    doc = load_decision(scan)
+
+    assert doc is not None
+    assert [row["code"] for row in doc["buys"]] == ["600000"]
+
+
+def test_load_decision_rejects_a_stale_file(tmp_path):
+    """**本 task 的核心判据**:scan 目录里躺着前一日的决策文件 → 判 None,不许当今天的。
+
+    E3b 的三个消费点都跑在 writer-1 之前,那一刻盘上那份多半是昨天的;采信它 =
+    把昨天的 BUY 印成今天的。"""
+    scan = tmp_path / "2026-08-19"
+    _write_decision_file(scan, {"date": "2026-08-18", "mode": "active",
+                                "buys": [{"code": "600000"}]})
+
+    assert load_decision(scan) is None
+
+
+def test_load_decision_survives_absent_and_corrupt_files(tmp_path):
+    scan = tmp_path / "2026-08-19"
+    scan.mkdir()
+    assert load_decision(scan) is None                       # 缺席
+    (scan / DECISION_FILENAME).write_text("{不是 json", encoding="utf-8")
+    assert load_decision(scan) is None                       # 坏 JSON
+    (scan / DECISION_FILENAME).write_text("[1, 2]", encoding="utf-8")
+    assert load_decision(scan) is None                       # 不是 dict
+
+
+def test_load_decision_accepts_an_explicit_expected_date(tmp_path):
+    """目录名与数据日解耦的场景(回放/自测)可显式传期望日。"""
+    scan = tmp_path / "whatever"
+    _write_decision_file(scan, {"date": "2026-08-18", "buys": []})
+
+    assert load_decision(scan, date="2026-08-18") is not None
+    assert load_decision(scan, date="2026-08-17") is None
+
+
+def _write_config(tmp_path, block: dict, monkeypatch) -> None:
+    cfg = tmp_path / "scan_config.jsonc"
+    cfg.write_text(json.dumps({"relative_buy": block}), encoding="utf-8")
+    monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH", cfg)
+
+
+def test_configured_relative_buy_defaults_to_shadow_without_config(tmp_path, monkeypatch):
+    """缺配置 → shadow/False/None = 内建默认 = 现行为(parity)。"""
+    monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH", tmp_path / "nope.jsonc")
+
+    assert configured_relative_buy() == ("shadow", False, None)
+    assert is_active() is False
+    assert activate_date() is None
+
+
+def test_configured_relative_buy_reads_all_three_knobs(tmp_path, monkeypatch):
+    _write_config(tmp_path, {"mode": "active", "exclude_pinned": True,
+                             "activate_date": "2026-08-20"}, monkeypatch)
+
+    assert configured_relative_buy() == ("active", True, "2026-08-20")
+    assert is_active() is True
+    assert activate_date() == "2026-08-20"
+
+
+def test_configured_relative_buy_degrades_loudly_on_broken_config(tmp_path, monkeypatch, capsys):
+    """配置层故障不挡发布,但降级必须留痕(同 user_config.knob 纪律)。"""
+    cfg = tmp_path / "scan_config.jsonc"
+    cfg.write_text(json.dumps({"relative_buy": {"mode": "nonsense"}}), encoding="utf-8")
+    monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH", cfg)
+
+    assert configured_relative_buy() == ("shadow", False, None)
+    assert "scan_config 读取失败" in capsys.readouterr().err

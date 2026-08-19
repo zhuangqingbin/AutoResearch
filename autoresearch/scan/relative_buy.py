@@ -719,6 +719,80 @@ def _serialize_decision(doc: dict) -> bytes:
     return (json.dumps(doc, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
 
+# ── E3b 消费侧唯一入口(2026-08-19 task-2.4)────────────────────────────────────
+#
+# **只读盘、不现算**是这两个函数存在的全部理由。消费者若各自 `build_decision()` 现算,
+# 盘上那份(= brief 印给用户的那份)与自己算的那份就会分家 —— 这正是
+# `docs/research/2026-08-19-decision-file-two-writers-and-taskbook-hash.md` §2 实测到的
+# 病(08-10 起 8 份 brief 里 4 份与决策文件不一致)。发布出去的答案只有一个,消费者一律
+# 读它;读不到就诚实降级,不许自己再算一个出来。
+
+
+def load_decision(scan_dir: Path | str, *, date: str | None = None) -> dict | None:
+    """盘读 `_relative_buy_decision.json`。缺席 / 坏 JSON / **过期** → `None`。
+
+    「过期」判据 = 文件里的 `date` 字段 ≠ 期望日(缺省取 `scan_dir` 的目录名)。E3b 的三个
+    消费点全部跑在 `build_summary`(`publisher.py:305`)内部,比 writer-1 写决策文件
+    (`:325`)**早一站** —— 那一刻 scan 目录里躺着的很可能是**上一日/上一跑**的文件。
+    读日期不符的那份 = 把昨天的 BUY 当成今天的,比没有还坏,所以这里直接判 `None` 让
+    调用方走「占位符 / 显式回退」路径。
+
+    同一天**上一跑**的文件日期是对的、本函数无法分辨 —— 那是 E3b 裁定 3 明确接受的:
+    `run_health.json` 一次发布写多次,最后一次(`publisher.py:375`)在决策文件已在盘之后,
+    终版快照因此是对的,早期快照的该字段本就只是中间态。
+    """
+    scan = Path(scan_dir)
+    try:
+        doc = json.loads((scan / DECISION_FILENAME).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(doc, dict):
+        return None
+    if str(doc.get("date") or "") != str(date or scan.name):
+        return None
+    return doc
+
+
+def configured_relative_buy() -> tuple[str, bool, str | None]:
+    """`scan_config.jsonc` 的 `relative_buy` 块 → `(mode, exclude_pinned, activate_date)`。
+
+    **消费侧的 mode 事实源是 config,不是决策文件**:E3b 的渲染点要在决策文件写出来**之前**
+    就决定"要不要落占位符",那时盘上那份要么不存在要么是过期的,拿它的 `mode` 反推等于让
+    昨天的开关决定今天的渲染。config 才是 writer-1 待会儿要用的那份开关(`post_run.py:673`
+    同一处读取),两边同源才不会一个落占位、另一个不注入。
+
+    缺文件 / 缺块 / 配置层故障 → `("shadow", False, None)` = 内建默认 = 现行为(parity)。
+    故障降级必须留痕(同 `user_config.knob` 纪律),所以异常路径打一行 stderr。
+    """
+    try:
+        from autoresearch.scan.user_config import load_user_config
+
+        block = load_user_config().get("relative_buy") or {}
+    except Exception as exc:  # noqa: BLE001 — 配置层故障不挡决策发布,但降级必须可见
+        print(f"[relative_buy] scan_config 读取失败({exc!r})→ mode/exclude_pinned 用内建默认",
+              file=sys.stderr)
+        block = {}
+    activate = block.get("activate_date")
+    return (str(block.get("mode") or MODE_SHADOW),
+            bool(block.get("exclude_pinned", False)),
+            str(activate) if activate else None)
+
+
+def configured_mode() -> str:
+    """薄封装:只要 mode 的调用点用这个,别自己再解析一遍 config。"""
+    return configured_relative_buy()[0]
+
+
+def is_active() -> bool:
+    """config 的 `relative_buy.mode == "active"`。消费侧一律用它做 active 分支的判据。"""
+    return configured_mode() == MODE_ACTIVE
+
+
+def activate_date() -> str | None:
+    """legacy 账本冻结日(`relative_buy.activate_date`);未配置 → `None` = 不冻结(parity)。"""
+    return configured_relative_buy()[2]
+
+
 def write_decision(scan_dir: Path | str, date: str | None = None,
                    mode: str = MODE_SHADOW, exclude_pinned: bool = False) -> Path:
     """构建并原子落盘。`sort_keys=True` 是 byte 稳定契约的一半,另一半是构建本身无时序量。"""
