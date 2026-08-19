@@ -536,7 +536,7 @@ def test_user_config_cli_fails_loudly_on_partial_config(tmp_path, monkeypatch):
     cfg_dir = tmp_path / ".claude" / "skills" / "scan-market"
     cfg_dir.mkdir(parents=True)
     (cfg_dir / "scan_config.jsonc").write_text(
-        json.dumps({"agents": {"t1_diag": {"effort": "high"}}}), encoding="utf-8")
+        json.dumps({"agents": {"l4_card": {"effort": "high"}}}), encoding="utf-8")
     monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH",
                         cfg_dir / "scan_config.jsonc")
     with pytest.raises(ValueError, match="缺生产必填 role"):

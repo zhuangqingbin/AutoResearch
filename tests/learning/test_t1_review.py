@@ -165,24 +165,6 @@ def test_pending_pairs_filters(tmp_path):
     assert pairs == [{"t": "2026-07-16", "t1": "2026-07-17"}]
 
 
-def test_finalize_requires_report_and_marks_done(tmp_path):
-    _mk_scan(tmp_path)
-    lp = tmp_path / "ledger.jsonl"
-    t1.build_and_stage("2026-07-16", scan_root=tmp_path, prices=_prices(), cal=_CAL)
-    with pytest.raises(SystemExit):                                # 综合稿没写 → 拒绝收尾
-        t1.finalize("2026-07-16", scan_root=tmp_path, ledger_path=lp)
-    rd = tmp_path / "2026-07-16" / "t1_review"
-    (rd / "diagnoses.json").write_text(json.dumps(
-        [{"code": "600001", "mechanism": "卡内论点兑现", "why": "w"}]), encoding="utf-8")
-    (rd / "report.md").write_text("# 复盘\n", encoding="utf-8")
-    s = t1.finalize("2026-07-16", scan_root=tmp_path, ledger_path=lp)
-    assert s == {"n": 3, "diagnosed": 1, "right": 2, "wrong": 0, "promoted": []}
-    done = json.loads((rd / "done.json").read_text(encoding="utf-8"))
-    assert done["mode"] == "full"
-    rows = {r["code"]: r for r in map(json.loads, lp.read_text(encoding="utf-8").splitlines())}
-    assert rows["000062"]["code"] == "000062"                      # csv 往返前导零不丢
-
-
 def test_backfill_deterministic_mode(tmp_path):
     _mk_scan(tmp_path)
     lp = tmp_path / "ledger.jsonl"
@@ -195,47 +177,17 @@ def test_backfill_deterministic_mode(tmp_path):
                             cal=["20260716", "20260717"]) == []    # done 后不再 pending
 
 
-def test_build_and_stage_pack_shape(tmp_path):
-    _mk_scan(tmp_path)
-    pack = t1.build_and_stage("2026-07-16", scan_root=tmp_path, prices=_prices(), cal=_CAL)
-    assert pack["n"] == 3 and pack["t1"] == "2026-07-17"
-    assert {r["code"] for r in pack["rows"]} == {"600001", "000062", "300100"}
-    r6 = next(r for r in pack["rows"] if r["code"] == "600001")
-    assert r6["verdict"] == "准" and r6["excess_pct"] == pytest.approx(4.83, abs=0.02)
-    json.dumps(pack)                                               # 整包可序列化(NaN 已清)
-    assert (tmp_path / "2026-07-16" / "t1_review" / "build_meta.json").exists()
-
-
 # ───────────────── 自我迭代腿(2026-07-17:候选账本 → 注入 → 自动立案) ─────────────────
+#
+# D3(2026-08-19,用户裁定 A5)退役写侧/自动立案链(upsert_candidates/promote_candidates/
+# finalize)——下面测试直接写候选账本 JSONL(镜像已退役 upsert_candidates 曾经写出的记录
+# 形状:{key, days, texts, filed_pr, stage}),只验证仍存活的读侧 render_t1_calibration_block。
 
 
-def test_upsert_candidates_merges_by_key_and_dedupes_days(tmp_path):
-    cp = tmp_path / "cand.jsonl"
-    t1.upsert_candidates("2026-07-16", [{"key": "beta-strip", "text": "先剔β再归因"}], path=cp)
-    t1.upsert_candidates("2026-07-16", [{"key": "beta-strip", "text": "先剔β再归因"}], path=cp)  # 同日重跑幂等
-    t1.upsert_candidates("2026-07-17", [{"key": "beta-strip", "text": "剔β归因 v2"},
-                                        {"key": "", "text": "无key丢弃"}], path=cp)
-    recs = t1.load_candidates(cp)
-    assert len(recs) == 1 and recs[0]["days"] == ["2026-07-16", "2026-07-17"]
-    assert recs[0]["texts"] == ["先剔β再归因", "剔β归因 v2"]
-
-
-def test_promote_candidates_threshold_and_no_refile(tmp_path):
-    """≥2 个 T 日才自动立案;立案回写 filed_pr 后不重复起草。"""
-    cp = tmp_path / "cand.jsonl"
-    filed_calls = []
-
-    def fake_add(**kw):
-        filed_calls.append(kw)
-        return {"id": f"pr_test_{len(filed_calls):03d}"}
-
-    t1.upsert_candidates("2026-07-16", [{"key": "beta-strip", "text": "x"}], path=cp)
-    assert t1.promote_candidates(path=cp, add_proposal=fake_add) == []       # n_days=1 不立案
-    t1.upsert_candidates("2026-07-17", [{"key": "beta-strip", "text": "x"}], path=cp)
-    assert t1.promote_candidates(path=cp, add_proposal=fake_add) == ["pr_test_001"]
-    assert "T1快环" in filed_calls[0]["summary"] and filed_calls[0]["kind"] == "prompt_rule"
-    assert t1.promote_candidates(path=cp, add_proposal=fake_add) == []       # 已立案不重复
-    assert t1.load_candidates(cp)[0]["filed_pr"] == "pr_test_001"
+def _write_cand(path, recs):
+    """候选账本 JSONL 写测试夹具(镜像已退役 upsert_candidates 的记录形状)。"""
+    path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in recs),
+                    encoding="utf-8")
 
 
 def test_render_t1_calibration_block(tmp_path):
@@ -244,41 +196,11 @@ def test_render_t1_calibration_block(tmp_path):
     _mk_scan(tmp_path)
     res = t1.build_scorecard("2026-07-16", scan_root=tmp_path, prices=_prices(), cal=_CAL)
     t1.append_ledger(res, diagnoses={"600001": {"mechanism": "卡内论点兑现", "why": "w"}}, path=lp)
-    t1.upsert_candidates("2026-07-16", [{"key": "beta-strip", "text": "先剔β再归因"}], path=cp)
+    _write_cand(cp, [{"key": "beta-strip", "days": ["2026-07-16"],
+                      "texts": ["先剔β再归因"], "filed_pr": None, "stage": None}])
     blk = t1.render_t1_calibration_block(path=lp, cand_path=cp)
     assert "T+1 快环校准" in blk and "数据非指令" in blk
     assert "卡内论点兑现×1" in blk and "n=1 日,观察中" in blk and "先剔β再归因" in blk
-
-
-def test_finalize_ingests_candidates_and_promotes(tmp_path):
-    """finalize 全链:candidates.json → 候选账本 → 已有 1 日历史时今日并入即触发自动立案。"""
-    _mk_scan(tmp_path)
-    lp, cp = tmp_path / "ledger.jsonl", tmp_path / "cand.jsonl"
-    t1.upsert_candidates("2026-07-15", [{"key": "beta-strip", "text": "旧日观察"}], path=cp)
-    t1.build_and_stage("2026-07-16", scan_root=tmp_path, prices=_prices(), cal=_CAL)
-    rd = tmp_path / "2026-07-16" / "t1_review"
-    (rd / "report.md").write_text("# r\n", encoding="utf-8")
-    (rd / "candidates.json").write_text(json.dumps(
-        [{"key": "beta-strip", "text": "今日再现"}]), encoding="utf-8")
-    def fake(**kw):
-        return {"id": "pr_test_001"}
-
-    s = t1.finalize("2026-07-16", scan_root=tmp_path, ledger_path=lp,
-                    cand_path=cp, add_proposal=fake)
-    assert s["promoted"] == ["pr_test_001"]
-    assert t1.load_candidates(cp)[0]["days"] == ["2026-07-15", "2026-07-16"]
-
-
-def test_build_pack_carries_agents_cfg_and_open_candidates(tmp_path, monkeypatch):
-    """pack 透传 agents 配置与既有候选(workflow 消费;schema 剪键的教训=键必须显式在场)。"""
-    monkeypatch.setattr(t1, "_CAND_LEDGER", tmp_path / "cand.jsonl")
-    t1.upsert_candidates("2026-07-16", [{"key": "beta-strip", "text": "x"}])
-    monkeypatch.setattr("autoresearch.scan.user_config.load_user_config",
-                        lambda path=None: {"agents": {"t1_diag": {"model": "sonnet"}}})
-    _mk_scan(tmp_path)
-    pack = t1.build_and_stage("2026-07-16", scan_root=tmp_path, prices=_prices(), cal=_CAL)
-    assert pack["agents_cfg"] == {"t1_diag": {"model": "sonnet"}}
-    assert pack["open_candidates"] == [{"key": "beta-strip", "n_days": 1, "text": "x", "filed_pr": None}]
 
 
 # ───────────── v2 尺(2026-07-17 调研落地:行业中性 + 截面稳健 z + 分诊) ─────────────
@@ -352,10 +274,10 @@ def test_needs_diag_triage(tmp_path):
 def test_calibration_block_stage_routing(tmp_path):
     """ERL 教训:相关性>数量——L3 只看 L3/gate/process/无标,L4 只看 L4/intel。"""
     lp, cp = tmp_path / "l.jsonl", tmp_path / "c.jsonl"
-    t1.upsert_candidates("2026-07-16", [
-        {"key": "a-l3", "text": "L3观察", "stage": "L3"},
-        {"key": "b-l4", "text": "L4观察", "stage": "L4"},
-        {"key": "c-none", "text": "无标观察"}], path=cp)
+    _write_cand(cp, [
+        {"key": "a-l3", "days": ["2026-07-16"], "texts": ["L3观察"], "filed_pr": None, "stage": "L3"},
+        {"key": "b-l4", "days": ["2026-07-16"], "texts": ["L4观察"], "filed_pr": None, "stage": "L4"},
+        {"key": "c-none", "days": ["2026-07-16"], "texts": ["无标观察"], "filed_pr": None, "stage": None}])
     b3 = t1.render_t1_calibration_block(path=lp, cand_path=cp, stage="L3")
     b4 = t1.render_t1_calibration_block(path=lp, cand_path=cp, stage="L4")
     assert "L3观察" in b3 and "无标观察" in b3 and "L4观察" not in b3
@@ -415,10 +337,10 @@ def test_gap_finalize_overrides_cc1_verdict_and_keeps_both(tmp_path):
     lp = tmp_path / "ledger.jsonl"
     t1.build_and_stage("2026-07-16", scan_root=tmp_path, prices=_prices(), cal=_CAL)
     rd = tmp_path / "2026-07-16" / "t1_review"
-    (rd / "diagnoses.json").write_text(json.dumps(
-        [{"code": "600001", "mechanism": "卡内论点兑现", "why": "w"}]), encoding="utf-8")
-    (rd / "report.md").write_text("# 复盘\n", encoding="utf-8")
-    t1.finalize("2026-07-16", scan_root=tmp_path, ledger_path=lp)
+    # finalize()(D3 已退役)曾经的收尾工作在这里改用其内部原本调的原语直接复现:
+    # 重算 res(build_scorecard 纯函数,同参数幂等)+ append_ledger 写入诊断字段。
+    res = t1.build_scorecard("2026-07-16", scan_root=tmp_path, prices=_prices(), cal=_CAL)
+    t1.append_ledger(res, diagnoses={"600001": {"mechanism": "卡内论点兑现", "why": "w"}}, path=lp)
 
     sc_before = pd.read_csv(rd / "scorecard.csv", dtype={"code": str}).set_index("code")
     assert sc_before.loc["600001", "verdict"] == "准"                  # cc1 初判(D+1 晚)

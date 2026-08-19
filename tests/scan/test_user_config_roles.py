@@ -108,10 +108,10 @@ def _full(**over):
     return {"agents": agents}
 
 
-def test_resolved_lists_all_twelve_roles():
+def test_resolved_lists_all_ten_roles():
     resolved = uc.resolve_agent_config(_full())
     assert set(resolved) == uc._AGENT_ROLES
-    assert len(resolved) == 12, f"闭集应为 12 role,实际 {len(resolved)}"
+    assert len(resolved) == 10, f"闭集应为 10 role,实际 {len(resolved)}"
 
 
 def test_resolved_empty_cfg_raises():
@@ -155,10 +155,11 @@ def test_resolved_missing_required_role_raises_and_names_it():
 
 
 def test_resolved_partial_mode_allows_missing_for_local_orchestration():
-    """`require_all=False`(scan-retro 只拉 t1-review 这种局部编排)仍校验写了的、不要求写全。"""
-    resolved = uc.resolve_agent_config({"agents": {"t1_diag": {"effort": "max"}}},
+    """`require_all=False`(局部编排场景;历史唯一场景 scan-retro 拉 t1-review 已于 D3 退役,
+    机制原样保留供未来局部编排复用)仍校验写了的、不要求写全。"""
+    resolved = uc.resolve_agent_config({"agents": {"l3_repair": {"effort": "max"}}},
                                         require_all=False)
-    assert resolved == {"t1_diag": {"effort": "max"}}
+    assert resolved == {"l3_repair": {"effort": "max"}}
 
 
 def test_resolved_model_key_absent_for_judgement_roles_is_load_bearing():
@@ -166,7 +167,7 @@ def test_resolved_model_key_absent_for_judgement_roles_is_load_bearing():
     回退链第三层(agent def frontmatter)从此永远吃不到。那是行为变更,不是重构。"""
     resolved = uc.resolve_agent_config(_full())
     for role in ("l3_rank", "l4_card", "l4_intel", "strategist", "sector_brief",
-                 "ens_review", "l3_repair", "dossier_init", "t1_diag", "t1_synth"):
+                 "ens_review", "l3_repair", "dossier_init"):
         assert "model" not in resolved[role], f"{role} 不该有 model 键(要落 frontmatter)"
     for role in ("gp_shell", "gp_shell_json"):
         assert resolved[role]["model"] == "sonnet", "壳类缺省必须钉 sonnet(08-05 事故)"
