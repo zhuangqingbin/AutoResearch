@@ -78,14 +78,18 @@
     "recall_n": 1000,          // L1 召回收口数
     "l2_n": 200,               // L2 粗排收口数
     // 启用的召回通道。整编后 9 路(2026-07-11 channel_audit 13 日累计裁决):剔 accumulation
-    // (unique超额T2 −0.21%)、northbound(hk_ratio T+2 IC −0.108);reversal_confirm 与旧
-    // reversal 并跑 A/B。⚠️ **删掉本行 = 用全部注册 12 路,会把默认停用·取证中的 event 一并
+    // (unique超额T2 −0.21%)、northbound(hk_ratio T+2 IC −0.108)。
+    // ⚠️ **删掉本行 = 用全部注册 12 路,会把默认停用·取证中的 event 一并
     // 上线,违反 pr_20260725_001 入场纪律** —— 要动通道先走实验治理。
     // ⚠️ momentum 勘误(2026-08-04):07-11 的「unique +0.75%」已过期且符号翻负(26 日 −1.07%);
     // 切相位后=混合物(回撤侧≈0/上涨侧整区间为负,docs/research/2026-08-04-momentum-phase-
     // conditional-ic.md)——「统一砍 momentum quota」是错处方,相位条件 quota 属 B 类须 registry,
     // 故 quota 维持不动。
-    "recall_channels": ["composite", "momentum", "reversal_confirm", "reversal", "value", "main_fund", "heat", "growth", "healthy"],
+    // 2026-08-19 摘 reversal_confirm(第 9→8 路):名义启用实际恒空 4 周+——其起爆硬门
+    // vol_ratio_20 从未接入生产 L1 帧(common/scoring.py:214-217,presence-gated 对此硬门不生效,
+    // 缺列即整段判 False),与旧 reversal 的 A/B 对照组全程空转。reopen 条件见 STAGES.md
+    // 「开放线头」节:vol_ratio_20 接入生产 L1 帧后重开 A/B。
+    "recall_channels": ["composite", "momentum", "reversal", "value", "main_fund", "heat", "growth", "healthy"],
     // 各路配额覆盖(channel_ledger advisory 档,36 日版累计裁决 2026-08-19 拍板,取代 2026-07-11
     // 的 18 日版:value 250→312(57.6%胜率/+0.9%最优,加码)、momentum 250→188、heat 150→112、
     // healthy 150→112、growth 150→112(三路 unique 超额持续为负,减码);main_fund 保持 150。

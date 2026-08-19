@@ -44,20 +44,20 @@ L0 选集  →  L1 召回  →  L2 粗排  →  L3 精排(两遍法)      →  L
 
 多路策略并行:每路"过门 → 按信号排序 → 截 top-quota" → `quota_union` 合并(各路 floor 保底多样性),带 provenance。
 
-**已注册 12 路,当前默认启用 9 路**(由 `scan_config.jsonc` 的 `funnel.recall_channels` 决定;⚠️ **该 key 缺省 = 用全部 12 路**,删掉整行会把默认停用的 `event` 一并上线,违反其入场纪律 `pr_20260725_001`):
+**已注册 12 路,当前默认启用 8 路**(由 `scan_config.jsonc` 的 `funnel.recall_channels` 决定;⚠️ **该 key 缺省 = 用全部 12 路**,删掉整行会把默认停用的 `event` 一并上线,违反其入场纪律 `pr_20260725_001`):
 
 | 通道 | quota/floor | 信号 |
 |---|---|---|
 | composite | 400/100 | IC 校准复合分 |
 | momentum | 250→188/50 | 趋势龙头(36 日版 quota 下调,unique 超额持续为负) |
-| reversal | 200/50 | 困境反转(旧路,与 reversal_confirm 并跑 A/B) |
-| **reversal_confirm** | 200/50 | 反转确认四段:低位+企稳缩量+**放量突破硬门**+可交易;无量突破不召回 |
+| reversal | 200/50 | 困境反转(旧路;与 reversal_confirm 的 A/B 已于 2026-08-19 结束,见下方 reversal_confirm 行) |
+| **reversal_confirm** | 200/50 | 反转确认四段:低位+企稳缩量+**放量突破硬门**+可交易;无量突破不召回。**2026-08-19 摘出 `recall_channels`,默认停用**(名义启用实际恒空 4 周+——起爆硬门 `vol_ratio_20` 从未接入生产 L1 帧,`common/scoring.py:214-217`;reopen 条件见「开放线头」节) |
 | value | 200→312/50 | 行业内低估(36 日版 quota 上调,胜率 57.6%/+0.9% 全路最优) |
 | main_fund | 200→150/50 | 主力净流入 |
 | heat | 200→112/50 | 成交额量级(捞巨额龙头;36 日版 quota 下调,unique 超额持续为负) |
 | growth | 150→112/40 | 成长加速(36 日版 quota 下调,unique 超额持续为负) |
 | healthy | 150→112/40 | 质量上涨(0<pct60<40 且主力净流入>0 且 cmf>0;36 日版 quota 下调,unique 超额持续为负) |
-| accumulation | 120/30 | 底部吸筹 —— **默认停用**(unique 超额 −0.21%,并入 reversal_confirm) |
+| accumulation | 120/30 | 底部吸筹 —— **默认停用**(unique 超额 −0.21%,原并入 reversal_confirm;reversal_confirm 本身已于 2026-08-19 停用) |
 | northbound | 120/30 | 北向持股 —— **默认停用**(hk_ratio T+2 IC −0.108,信息已在 L4 简报行) |
 | **event** | 80/20 | 公告事件(回购/增持按公告去重、调研只作有无;信号来自 `scan/events.py`,排序键 `ev_hard`+composite 决胜,**不用当日涨幅**——追当日大涨实证为负价值)。**默认停用·取证中**:裁决判据 = `channel_audit --variant plus_event` 的 `unique_excess_t2` 累计 ≥10 日 >0 才提启用,维持为负则退役;L2「事件」桶 floor **=0**(未启用通道不得改生产 L2 分布) |
 
@@ -315,7 +315,7 @@ python -m autoresearch.learning.experiment_registry report
 ## 开放线头(诚实局限)
 
 1. regime 块 horizon 之争(`pr_20260702_001`)待 T+5 数据裁决;risk_off 块样本薄(11 日)。
-2. reversal_confirm 与旧 reversal 的 A/B、healthy 通道反事实(`pre_healthy` 影子)、capfloor20 影子——都在攒 channel_ledger 前向读数,≥10 日再裁。36 日版新配额(value312/momentum188/heat112/healthy112/growth112/main_fund150)已按 `channel_ledger` 36 日累计读数于 2026-08-19 拍板生效,不再是开放线头。
+2. healthy 通道反事实(`pre_healthy` 影子)、capfloor20 影子——仍在攒 channel_ledger 前向读数,≥10 日再裁。**reversal_confirm 与旧 reversal 的 A/B 已于 2026-08-19 结束**(reversal_confirm 摘出 `recall_channels`:名义启用实际恒空 4 周+,起爆硬门 `vol_ratio_20` 从未接入生产 L1 帧,`common/scoring.py:214-217` presence-gated 对该硬门不生效、缺列即整段判 False)——**reopen 条件:`vol_ratio_20` 接入生产 L1 帧后重开 A/B**,在此之前不再是开放线头。36 日版新配额(value312/momentum188/heat112/healthy112/growth112/main_fund150)已按 `channel_ledger` 36 日累计读数于同日拍板生效,同样不再是开放线头。
 3. attribution 孤儿:非交易日键 fwd 永远无法结算,保持 "—";评级基率 n<10 禁注。
 4. consensus 积累 <60 日不入线上;anns_d 无接口权限 → 公告情感列空、监管旗恒空(`anns_empty_rate`=1.0 即该态,index/L3 表头有显式标注)。
 5. 三门账本/tail_rate 攒 ≥20 日才裁雷分级;温度计菜单/预算联动待相位判定质量复审。
