@@ -870,17 +870,33 @@ def safe_publish(scan_dir: Path | str, out_dir: Path | str, summary_path: Path |
                  **kwargs) -> Path | None:
     """一次算、两处用:落 brief.md + 把 ①②③④ 注回 summary 的 🧭 managed 块。
 
+    E3b(task-2.4)起**同一次注入**还回填另两个 managed 块(组合视角 / 仓位 overlay):
+    它们与仪表盘同病同治 —— BUY 数出自 `_relative_buy_decision.json`,而那份文件由
+    writer-1 在 `publisher.py:325` 才写,比 `build_summary`(`:305`)晚一站。本函数跑在
+    `publisher.py:387`(决策文件已在盘),是全流程里第一个能同时看到"报告"和"决策"的点,
+    所以三块必须在这里一起回填 —— 分两次注入 = 两个时刻 = 又一个"两边可能不一致"的口子。
+    影子期报告里根本没有那两个标记,`inject_deferred_blocks` 因此是结构性 no-op(parity)。
+
     失败不阻断发布(summary 保留占位文案,自己会说「注入未跑」;缺 brief 由 T27 lint 报 fail)。
     """
     try:
-        from autoresearch.scan.report_sections import inject_dashboard
+        from autoresearch.scan.relative_buy import load_decision
+        from autoresearch.scan.report_sections import (
+            inject_dashboard,
+            inject_deferred_blocks,
+        )
         built = build(scan_dir, **kwargs)
         target = write(scan_dir, out_dir, built=built)
         summary = Path(summary_path)
         if summary.exists():
-            summary.write_text(
-                inject_dashboard(summary.read_text(encoding="utf-8"),
-                                 dashboard_block(built)), encoding="utf-8")
+            text = inject_dashboard(summary.read_text(encoding="utf-8"),
+                                    dashboard_block(built))
+            # 盘读、不现算:brief ③ 印的与这里注入的必须是**同一份**决策文件
+            # (现算会再造一个"记账与发布分家"的写者)。
+            text = inject_deferred_blocks(text, scan_dir,
+                                          load_decision(scan_dir,
+                                                        date=built["facts"].get("date")))
+            summary.write_text(text, encoding="utf-8")
         return target
     except Exception as exc:  # noqa: BLE001
         print(f"[brief] 发布失败: {type(exc).__name__}: {exc}", file=sys.stderr)

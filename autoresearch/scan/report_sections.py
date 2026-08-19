@@ -33,6 +33,7 @@ from autoresearch.scan.l4.parsers import (
     _strip,
     gate_status,
 )
+from autoresearch.scan.relative_buy import DECISION_FILENAME, is_active
 
 _CH_ZH = {
     "composite": "复合",
@@ -281,20 +282,120 @@ DASHBOARD_END = "<!-- SCAN_DASHBOARD_END -->"
 DASHBOARD_HEADER = "## 🧭 决策仪表盘(与 `brief.md` ①②③④ 同源)"
 
 
+def _managed_block(start: str, end: str, header: str | None, body: str) -> str:
+    """managed 块的**唯一**成型口径(header 为空 → 不出标题行)。"""
+    head = f"{header}\n\n" if header else ""
+    return f"{start}\n{head}{body}\n{end}"
+
+
+def _inject_block(summary: str, start: str, end: str, header: str | None, body: str) -> str:
+    """把正文原位替换进 managed 块(幂等)。缺标记 → 原样返回,不猜插入点。
+
+    **缺标记即 no-op 是 shadow parity 的结构性保证**:影子期报告根本不落这些标记,所以
+    收尾注入对它一个字节都改不了 —— parity 不靠"记得别调用",靠"调了也没东西可改"。
+    """
+    if start not in summary or end not in summary:
+        return summary
+    before, rest = summary.split(start, 1)
+    _, after = rest.split(end, 1)
+    head = f"{header}\n\n" if header else ""
+    return f"{before}{start}\n{head}{body.strip()}\n{end}{after}"
+
+
 def dashboard_placeholder() -> str:
-    return (f"{DASHBOARD_START}\n{DASHBOARD_HEADER}\n\n"
-            "_仪表盘由 assemble 收尾注入(与 brief.md 同源);此处为占位——"
-            f"看到本行说明注入未跑,读 `brief.md`。_\n{DASHBOARD_END}")
+    return _managed_block(
+        DASHBOARD_START, DASHBOARD_END, DASHBOARD_HEADER,
+        "_仪表盘由 assemble 收尾注入(与 brief.md 同源);此处为占位——"
+        "看到本行说明注入未跑,读 `brief.md`。_")
 
 
 def inject_dashboard(summary: str, block: str) -> str:
     """把仪表盘正文原位替换进 managed 块(幂等)。缺标记 → 原样返回,不猜插入点。"""
-    if DASHBOARD_START not in summary or DASHBOARD_END not in summary:
+    return _inject_block(summary, DASHBOARD_START, DASHBOARD_END, DASHBOARD_HEADER, block)
+
+
+# ── E3b:active 期的两个 BUY 数渲染点 → managed 占位 + 收尾注入(task-2.4)──────────
+#
+# 病灶与仪表盘**同源**:「组合视角」的买单数与「仓位 overlay」的 0买判断,active 期都该
+# 出自 `_relative_buy_decision.json` 的 `buys[]`,而那份文件由 writer-1 在
+# `publisher.py:325` 才写 —— 比 `build_summary`(`:305`)晚一站。就地读盘 = 读到上一日/
+# 上一跑那份(2026-08-19 取证文档 §2:8 份 brief 里 4 份与决策文件不一致就是这个形状)。
+# 所以这两处照仪表盘的成方:assemble 只落**自证占位**,`brief.safe_publish`(跑在
+# `publisher.py:387`,决策文件已在盘)在**同一次注入**里回填。
+#
+# 占位文案必须自证(「看到本行说明注入未跑」):注入断链要立刻可见,而不是静默给旧数 ——
+# 静默给旧数正是本波要根治的病,不能让防它的机制自己复刻一遍。
+PORTFOLIO_START = "<!-- SCAN_PORTFOLIO_START -->"
+PORTFOLIO_END = "<!-- SCAN_PORTFOLIO_END -->"
+OVERLAY_START = "<!-- SCAN_OVERLAY_START -->"
+OVERLAY_END = "<!-- SCAN_OVERLAY_END -->"
+
+
+def portfolio_placeholder() -> str:
+    return _managed_block(
+        PORTFOLIO_START, PORTFOLIO_END, None,
+        "_组合视角的 BUY 数由 assemble 收尾注入(源=`_relative_buy_decision.json` 的 "
+        "`buys[]`);此处为占位——看到本行说明注入未跑,读 `brief.md` ③。_")
+
+
+def overlay_placeholder() -> str:
+    return _managed_block(
+        OVERLAY_START, OVERLAY_END, None,
+        "_仓位 overlay 由 assemble 收尾注入(0买判断源=`_relative_buy_decision.json`);"
+        "此处为占位——看到本行说明注入未跑,读 `brief.md` ③。_")
+
+
+def _rows_for_injection(scan_dir: Path) -> list[dict]:
+    """收尾注入用的 genuine rows(lane≠pinned)。**只读盘上已定稿的产物**,与 build_summary 同源:
+
+    - `sector`/`lane` 出自 `finalists.csv`(运行期烤进去的事实);
+    - `rating` 出自 `_final_ratings.json` —— 那正是 `build_summary` 里两个 fold 循环跑完后
+      `_dump_final_ratings` 落的**同一份终评级**,不是重新解析卡片再折一遍(重算=给两边
+      不一致开口子,与 `brief.dashboard_block` 同源纪律一致)。
+    """
+    import contextlib
+
+    scan = Path(scan_dir)
+    ratings: dict = {}
+    with contextlib.suppress(Exception):
+        ratings = _load_json(scan / "_final_ratings.json") or {}
+    ratings = {str(k).zfill(6): v for k, v in ratings.items()}
+    rows = []
+    for fr in _read_csv(scan / "finalists.csv"):
+        if str(fr.get("lane", "")).strip() == "pinned":
+            continue
+        code = str(fr.get("code") or fr.get("ticker") or "").strip().zfill(6)
+        rows.append({**fr, "code": code, "rating": ratings.get(code, "—")})
+    return rows
+
+
+def _decision_buy_codes(decision: dict) -> set[str]:
+    return {str(row.get("code")).zfill(6) for row in (decision.get("buys") or [])
+            if isinstance(row, dict) and row.get("code")}
+
+
+#: 注入时决策文件缺席/过期的**显式回退标记**。这里刻意**不**退回旧 ≥OW 计数 —— 那等于把
+#: 研究评级冒充成买入决策(Wave12 `:466` 明令禁止),宁可让报告说「这个数现在不可用」。
+_DECISION_UNAVAILABLE = ("⚠️ **BUY 数不可用**:收尾注入时 `_relative_buy_decision.json` "
+                         "缺席或日期不符 —— 本行**不回退到旧 ≥OW 计数**(研究评级不是买入决策),"
+                         "请查 writer-1 是否跑过。")
+
+
+def inject_deferred_blocks(summary: str, scan_dir: Path | str,
+                           decision: dict | None) -> str:
+    """回填 E3b 的两个 active 占位块(组合视角 / 仓位 overlay)。
+
+    缺标记 → 原样返回:影子期报告里根本没有这两个标记,所以本函数在 shadow 期是结构性
+    no-op(parity)。`decision` 为 None(缺席/过期)→ 两处都渲染显式回退标记,不给旧数。
+    """
+    if PORTFOLIO_START not in summary and OVERLAY_START not in summary:
         return summary
-    before, rest = summary.split(DASHBOARD_START, 1)
-    _, after = rest.split(DASHBOARD_END, 1)
-    return (f"{before}{DASHBOARD_START}\n{DASHBOARD_HEADER}\n\n{block.strip()}\n"
-            f"{DASHBOARD_END}{after}")
+    scan = Path(scan_dir)
+    rows = _rows_for_injection(scan)
+    summary = _inject_block(summary, PORTFOLIO_START, PORTFOLIO_END, None,
+                            _portfolio_note_active(rows, decision))
+    return _inject_block(summary, OVERLAY_START, OVERLAY_END, None,
+                         _position_overlay_active(scan, decision))
 
 
 def _ow_base_rate_for(scan_root: Path):
@@ -326,11 +427,12 @@ def _ow_base_line(scan_root: Path) -> str:
             f"两处不同(尺相同,同为 {MAIN_RULER}),分列并置,**不得接成一条曲线读**。")
 
 
-def _portfolio_note(rows: list[dict]) -> str:
+def _portfolio_note_from(rows: list[dict], buys: list[dict], label: str) -> str:
+    """组合视角一行的**唯一**成型口径。legacy(≥OW)与 active(决策文件 buys[])共用它 ——
+    两处各写一份渲染,「买单同板块=1个bet」这类告警必然只在一边生效。"""
     secs = Counter((r.get("sector") or r.get("industry") or "?") for r in rows)
     top = "、".join(f"{k}×{v}" for k, v in secs.most_common(5))
-    buys = [r for r in rows if r.get("rating") in ("Buy", "Overweight")]
-    note = (f"买入/超配 **{len(buys)}** 只;板块集中度:{top or '—'}。"
+    note = (f"{label} **{len(buys)}** 只;板块集中度:{top or '—'}。"
             "注意单板块过度集中的相关性风险;按评级×置信度分配仓位,催化日历做节奏。")
     if len(buys) >= 2:                       # 买单同板块 = 1 个 bet 不是 N 个(组合视角告警)
         bsec = Counter((r.get("sector") or r.get("industry") or "?") for r in buys)
@@ -339,11 +441,29 @@ def _portfolio_note(rows: list[dict]) -> str:
             note += f" **⚠️ {v}/{len(buys)} 只买单同属{k} = 相关性上是 1 个 bet,仓位按 1 个算。**"
     return note
 
-def _position_overlay(scan_dir: Path, rows: list[dict]) -> str:
-    """仓位建议(组合 overlay,确定性):regime 档位 + 菜单病取下沿 + 0 买一致性。缺 regime → ""。
 
-    只作用于总仓位,不改单票评级(与策略师"方向只进 L5"同一铁律)。
-    """
+def _portfolio_note(rows: list[dict]) -> str:
+    """legacy 口径(≥Overweight 绝对门)。**active 期不再由它渲染** → `_portfolio_note_active`。"""
+    return _portfolio_note_from(
+        rows, [r for r in rows if r.get("rating") in ("Buy", "Overweight")], "买入/超配")
+
+
+def _portfolio_note_active(rows: list[dict], decision: dict | None) -> str:
+    """active 口径:买单 = 决策文件 `buys[]`,**不是**评级 ≥OW 的张数。"""
+    if not isinstance(decision, dict):
+        return _DECISION_UNAVAILABLE
+    codes = _decision_buy_codes(decision)
+    buys = [r for r in rows if str(r.get("code", "")).zfill(6) in codes]
+    note = _portfolio_note_from(rows, buys, "BUY(相对决策层)")
+    if decision.get("blocked"):
+        note += (" **🛑 当日 BLOCKED**:全部候选被硬资格否决 —— 这不是"
+                 "「今天没好票」,是数据/资格不成立,别当成空仓信号读。")
+    return note + ("\n\n_口径:BUY 出自 `" + DECISION_FILENAME + "` 的 `buys[]`"
+                   "(E6 相对决策层独家拥有);研究评级 ≥OW 的张数是证据不是决策,见 `brief.md` ③。_")
+
+
+def _overlay_band(scan_dir: Path) -> str:
+    """仓位 overlay 的前半段(regime 档位 + 菜单病),**与买单数无关**。缺 regime → ""。"""
     try:
         meta = _load_json(scan_dir / "meta.json")
         regime = meta.get("regime")
@@ -352,7 +472,6 @@ def _position_overlay(scan_dir: Path, rows: list[dict]) -> str:
     band = {"risk_off": "0–2 成", "range": "3–5 成", "trend": "5–8 成"}.get(regime or "")
     if not band:
         return ""
-    n_buys = sum(1 for r in rows if r.get("rating") in ("Buy", "Overweight"))
     sick = ""
     try:
         from autoresearch.scan.menu import l4_budget
@@ -361,9 +480,38 @@ def _position_overlay(scan_dir: Path, rows: list[dict]) -> str:
             sick = "(菜单病 → 取区间下沿)"
     except Exception:  # noqa: BLE001
         pass
-    tail = ("今日 0 买 → 空仓/底仓与系统读数一致,别为凑单加仓。" if n_buys == 0
+    return f"**仓位建议(overlay,非个股)**:regime={regime} → 总仓位基准 **{band}**{sick};"
+
+
+def _overlay_tail(n_buys: int) -> str:
+    return ("今日 0 买 → 空仓/底仓与系统读数一致,别为凑单加仓。" if n_buys == 0
             else f"{n_buys} 只买单在区间内按评级×置信度分配。")
-    return (f"**仓位建议(overlay,非个股)**:regime={regime} → 总仓位基准 **{band}**{sick};{tail}")
+
+
+def _position_overlay(scan_dir: Path, rows: list[dict]) -> str:
+    """仓位建议(组合 overlay,确定性):regime 档位 + 菜单病取下沿 + 0 买一致性。缺 regime → ""。
+
+    只作用于总仓位,不改单票评级(与策略师"方向只进 L5"同一铁律)。
+    **legacy 口径**(0买判断数 ≥OW);active 期改由 `_position_overlay_active` 收尾注入。
+    """
+    head = _overlay_band(scan_dir)
+    if not head:
+        return ""
+    n_buys = sum(1 for r in rows if r.get("rating") in ("Buy", "Overweight"))
+    return head + _overlay_tail(n_buys)
+
+
+def _position_overlay_active(scan_dir: Path, decision: dict | None) -> str:
+    """active 口径:0买判断的 n_buys = 决策文件 `buys[]` 的只数。"""
+    head = _overlay_band(scan_dir)
+    if not isinstance(decision, dict):
+        return (head + _DECISION_UNAVAILABLE) if head else _DECISION_UNAVAILABLE
+    if not head:
+        return ""
+    if decision.get("blocked"):
+        return head + ("今日 **BLOCKED**(硬资格否决,非择时空仓)→ 不开新仓;"
+                       "这是系统说「今天这道题算不出来」,不是说「今天该空仓」。")
+    return head + _overlay_tail(len(_decision_buy_codes(decision)))
 
 #: 经验节「一句话」的字符上限(全文留 `context/knowledge/`,summary 只放锚)。
 LESSON_GIST_CHARS = 46
@@ -726,10 +874,24 @@ def _self_review_banner(scan_dir: Path, rows: list[dict], summary_text: str,
         lessons = fs.lessons_for([("global", "*")])
     except Exception:  # noqa: BLE001
         pass
+    # E3b(task-2.4)· `flow.buys_n` 的口径:
+    # shadow 期 = ≥OW 张数(现行为,逐字不变);active 期这个数**不再是买单数** ——
+    # 买单只存在于 `_relative_buy_decision.json`,而本函数跑在 `build_summary` 内部,比
+    # writer-1 早一站,盘上那份多半还是前一日的。所以 active 期 `buys_n=None` +
+    # `buys_n_source` 显式标记「本刻不可知」,**不拿 ≥OW 张数冒充**。
+    # ⚠️ 唯一消费者是下方 self_review.review 里那条**已注释停用**的「买单未过 skeptic」lint
+    # (`self_review.py:169-171`);将来恢复它时必须先解决"这个数在本刻不可知"这件事
+    # (要么把那条 lint 移到 brief_lint 那一层,要么读收尾注入后的决策文件),不能直接
+    # 把 buys_n 当买单数用。
+    buys_n = sum(1 for r in rows if r.get("rating") in ("Buy", "Overweight"))
+    buys_src = "rating≥OW(legacy 绝对门)"
+    if is_active():
+        buys_n, buys_src = None, "deferred:决策文件在 build_summary 之后才写,本刻不可知"
     ctx = {"finalists": finals, "n_cards_expected": len(rows), "n_cards_present": n_present,
            "summary_text": summary_text, "lessons": lessons, "regime_drift": regime_drift,
            "flow": {                                       # 编排完备性 lint(LLM 段可能被静默跳过)
-               "buys_n": sum(1 for r in rows if r.get("rating") in ("Buy", "Overweight")),
+               "buys_n": buys_n,
+               "buys_n_source": buys_src,
                "verify_n": len(_load_verify(scan_dir)),
                "has_market_view": (scan_dir / "market_view.md").exists(),
                "finalists_n": len(rows)}}
@@ -892,7 +1054,11 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
     cal = calendar_section(scan_dir)
     if cal:
         out += ["", cal]
-    out += ["", "### 组合视角", _portfolio_note(genuine_rows)]
+    # E3b(task-2.4):active 期这两处的 BUY 数出自决策文件,而决策文件比本函数晚一站写盘
+    # → 只落自证占位,`brief.safe_publish` 收尾注入。shadow 期走原路,逐字节不变。
+    active = is_active()
+    out += ["", "### 组合视角",
+            portfolio_placeholder() if active else _portfolio_note(genuine_rows)]
     ow_line = _ow_base_line(Path(scan_dir).parent)   # E5①:旧 OW 基率**分账行**(与 brief ③ 同源)
     if ow_line:
         out += ["", ow_line]
@@ -909,7 +1075,10 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
     chain = _same_chain_block(genuine_rows)  # Phase 3:同链 ≥2 卡并排(择链上最佳表达素材;保送不计)
     if chain:
         out += ["", chain]
-    pos = _position_overlay(scan_dir, genuine_rows)
+    # active 期用 `_overlay_band` 判「这一行本来会不会出」(它与买单数无关,可在此刻定)——
+    # 缺 regime 时原行为是整行消失,那就连占位也不落,否则报告里会多出一个永远填不满的块。
+    pos = (overlay_placeholder() if _overlay_band(scan_dir) else "") if active \
+        else _position_overlay(scan_dir, genuine_rows)
     if pos:
         out += ["", pos]
     out += [""]

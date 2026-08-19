@@ -166,6 +166,10 @@ def review(ctx: dict) -> dict:
     if fl:  # noqa: SIM102 — 外层 guard 留作恢复买单 skeptic lint(届时块内会有多个 if)
         # 买单 skeptic 已按用户决定移除(2026-07-06)——原 fail lint「买单>0 而 verify.csv 空」停用。
         # 恢复:取消下方三行注释,即恢复"每只 ≥OW 买单发布前必须独立 skeptic 证伪"硬门。
+        # ⚠️ E3b(2026-08-19)· 恢复前必读:`flow.buys_n` 在 **active 期是 `None`**,并由
+        # `flow.buys_n_source` 标明原因(决策文件比 `build_summary` 晚一站写盘,此刻真买单数
+        # 不可知)——直接恢复上面三行,active 期这条 lint 会静默永不触发(「记进 lessons ≠
+        # 会生效」同族)。要恢复就得先把它挪到 `brief_lint` 那一层(决策文件已在盘)。
         # if fl.get("buys_n") and not fl.get("verify_n"):
         #     add("流程完备性·买单未过skeptic", "fail",
         #         f"{fl['buys_n']} 只 ≥OW 买单但 verify.csv 空——每只买单发布前必须独立 skeptic 证伪")
