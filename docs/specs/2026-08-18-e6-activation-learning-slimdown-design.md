@@ -123,6 +123,28 @@
 > （代码 000779 一致）——这是 `post_run observe` 跑过之后的**健康日**，mtime 顺序判据会对它
 > 误报 fail。内容同源判据不受影响，继续照收。
 
+### E3b P0-3 · 早于 writer-1 的三个消费点怎么办（2026-08-19 控制方裁定）
+
+**问题**：E3 表里的三个消费点——`decision_finalize.py:24-30,264`、`report_sections.py:332,355,732`、`health.py:245-247`——**全部跑在 `build_summary`（`publisher.py:305`）内部**，即比 writer-1 写决策文件（`:322`）**早一站**。active 模式下它们若直接读 `_relative_buy_decision.json`，读到的是**上一跑/上一日**的文件。不处理就是把 §2.1 的「发布与记账分家」问题从 1 处扩散到 4 处（Task 1.7 线② 已实测该分家真实发生过 4/8 天）。
+
+**为什么不能靠「把 writer-1 提前」解决**：`build_decision` 现算需要 `decision_records.json`，而那份文件正是 `build_summary` 创建的 —— 循环依赖，提前无解。
+
+**裁定（三分而治，各按其性质）**：
+
+1. **`decision_finalize`（产 `decision_records.json`）—— 保持读评级，不读决策文件。**
+   它是 `build_decision` 的**输入**，让它反过来依赖决策文件即制造循环。active 期它的 `proposal` 字段语义**降格并改写文档**为「研究评级派生的提案」，**不是** BUY 决策。BUY 只存在于决策文件里（Wave12 `:466`「research_rating 仅作证据字段，不得独立渲染成买入建议」的同一精神）。
+
+2. **`report_sections` 的三处渲染（组合视角 `:332`、仓位 overlay `:355`、self_review banner `:732`）—— 改为 managed 占位 + 收尾注入。**
+   复用**已验证可用**的既有机制：`report_sections.dashboard_placeholder()` / `inject_dashboard()`（`:279-297`）在 `build_summary` 期只落占位符，由 `brief.safe_publish`（`brief.py:869-887`，跑在 `publisher.py:385`、**决策文件已写之后**）统一回填。把这三处按同款做成 managed 块，与仪表盘在**同一次注入**里完成。占位符文案必须自证（「看到本行说明注入未跑」），这样注入断链会立刻可见而不是静默给出旧数。
+
+3. **`health.count_buys`（`:245-247`）—— 读决策文件，但只有终版快照算数。**
+   `run_health.json` 在一次发布里被写多次，**最后一次在 `:363`**（决策文件已在盘）。故 count_buys 改为「决策文件在场则读它，缺席则回退评级计数并显式标记回退」——终版快照因此是对的，早期快照的该字段不作数（它们本就只是中间态）。
+
+**验收（三条，缺一不可）**：
+- 造「scan 目录里放着**前一日**决策文件」的夹具 → active 模式跑 `build_summary` → 断言这三类消费点**不得**采信过期文件（渲染出占位符或显式回退标记，而**不是**前一日的 BUY）。
+- 注入断链探针：人为跳过 `safe_publish` 的注入 → summary 里必须留下自证占位符文案，且 brief_lint 能看见（变异校验：把占位符文案改成空字符串，该探针必须变红）。
+- 活体：转正后首个成功日，summary 的组合视角/仓位 overlay/banner 三处的 BUY 数必须与 brief ③ 和决策文件**三方一致**。
+
 ### E5 转正后的记分册与诚实呈现
 
 - 记分册 = `context_claude/learning/relative_buy.jsonl` + `reports_claude/learning/relative_buy.md`（U6）。**新增分层**：📌/非📌 两栏汇总并排（剔📌均值 −0.46% 的教训固化为永久栏目），MATURE_MIN_OBSERVATIONS=20 的 IMMATURE 横幅保留至满 20 决策日。
