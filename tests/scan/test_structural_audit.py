@@ -4,12 +4,14 @@ design: docs/specs/2026-08-01-wave10-report-ops-slimdown-zerobuy-design.md §B5
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
+from autoresearch.common import workspace as ws
 from autoresearch.scan import structural_audit as sa
 from autoresearch.scan.l4_tasks import initialize, mark_success, preflight
 
@@ -160,6 +162,77 @@ def test_post_hoc_card_rewrite_is_a_real_failure(tmp_path):
     audit = sa.audit_day(tmp_path / DATE)
     assert audit.failure_n == 1
     assert audit.kinds.get(sa.ARTIFACT_HASH_MISMATCH) == 1
+
+
+def _legacy_path_book(tmp_path, monkeypatch, *, body: str = "# card") -> Path:
+    """造一份「路径串停留在分根前、文件在现根下」的成功票账本(08-11 及之前的真实形状)。
+
+    路径必须是**相对**的(生产账本记的就是相对根),所以整个用例在 tmp_path 下跑。
+    """
+    monkeypatch.chdir(tmp_path)
+    ctx = Path(ws.context_root())                      # context_<engine>/
+    (ctx / "scan" / DATE / "details").mkdir(parents=True, exist_ok=True)
+    legacy_root = ws.context_root().name.split("_")[0]
+    refs = {}
+    for name, rel in (("prompt", f"scan/{DATE}/_l4_prompt_000001.md"),
+                      ("slim", f"000001.SZ_{DATE}_slim.md"),
+                      ("card", f"scan/{DATE}/details/000001.md")):
+        real = ctx / rel
+        real.parent.mkdir(parents=True, exist_ok=True)
+        real.write_text(body if name == "card" else f"# {name}", encoding="utf-8")
+        refs[name] = {                                  # ← 账本记的是**旧根**下的那个串
+            "path": f"{legacy_root}/{rel}",
+            "content_hash": hashlib.sha256(real.read_bytes()).hexdigest(),
+        }
+    scan = ctx / "scan" / DATE
+    (scan / "_l4_tasks.json").write_text(json.dumps({
+        "schema_version": 1, "date": DATE, "order": ["000001"],
+        sa.EVENTS_KEY: [],
+        "tasks": {"000001": {"code": "000001", "ticker": "000001.SZ",
+                             "status": "SUCCEEDED", "artifacts": refs}},
+    }, ensure_ascii=False), encoding="utf-8")
+    return scan
+
+
+def test_pre_engine_split_paths_are_an_observation_not_a_failure(tmp_path, monkeypatch):
+    """引擎分根(2026-08-11 裁定)把 `<legacy>/…` 搬成 `context_<engine>/…`;路径串失效
+    **不是**产物失配 —— 迁移后逐字节同 hash 的,记观察不记失败。
+
+    变异校验:把 `_resolve` 的别名分支删掉,本用例必红(3 条会全判 ARTIFACT_HASH_MISMATCH,
+    failure_n 变 3)。实测依据:08-03..08-11 七个可测日 216 条"失败"全属此类,332/339 条
+    历史 legacy 路径在迁移位置上 hash 逐条相符。
+    """
+    scan = _legacy_path_book(tmp_path, monkeypatch)
+    audit = sa.audit_day(scan)
+
+    assert audit.failure_n == 0
+    assert audit.kinds.get(sa.ARTIFACT_PATH_MIGRATED) == 3
+    assert sa.ARTIFACT_HASH_MISMATCH not in audit.kinds
+    assert audit.observation_n == 3                     # 观察量必须**可见**,不是静默豁免
+
+
+def test_migrated_path_with_changed_content_is_still_a_real_failure(tmp_path, monkeypatch):
+    """别名只解释迁移,不替内容变更打掩护:card 在迁移后的位置上被改过 → 照旧算失败。"""
+    scan = _legacy_path_book(tmp_path, monkeypatch)
+    (Path(ws.context_root()) / "scan" / DATE / "details" / "000001.md").write_text(
+        "# 被改了", encoding="utf-8")
+
+    audit = sa.audit_day(scan)
+    assert audit.failure_n == 1
+    assert audit.kinds.get(sa.ARTIFACT_HASH_MISMATCH) == 1
+    assert audit.kinds.get(sa.ARTIFACT_PATH_MIGRATED) == 2   # 另两件仍只是迁移
+
+
+def test_truly_missing_artifact_is_still_a_failure(tmp_path, monkeypatch):
+    """两次都找不到 → 老实判失败。别名不得把真正丢失的产物洗白。"""
+    scan = _legacy_path_book(tmp_path, monkeypatch)
+    (Path(ws.context_root()) / "scan" / DATE / "details" / "000001.md").unlink()
+
+    audit = sa.audit_day(scan)
+    assert audit.failure_n == 1
+    assert any(f["detail"].endswith("产物已不在盘上")
+               for f in sa._rehash_findings(json.loads(
+                   (scan / "_l4_tasks.json").read_text(encoding="utf-8"))))
 
 
 def test_non_terminal_tasks_are_not_rehashed(tmp_path):

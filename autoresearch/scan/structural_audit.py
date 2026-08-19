@@ -51,7 +51,9 @@ FAILURE_KINDS = (TASK_BOOK_MISSING, TERMINAL_RERUN,
 # —— 观察类 kind:守卫正常工作 / 已知良性的证据,**不进失败数** ——
 TERMINAL_REDISPATCH_BLOCKED = "TERMINAL_REDISPATCH_BLOCKED"
 PROMPT_REBUILT = "PROMPT_REBUILT"
-OBSERVATION_KINDS = (TERMINAL_REDISPATCH_BLOCKED, PROMPT_REBUILT)
+ARTIFACT_PATH_MIGRATED = "ARTIFACT_PATH_MIGRATED"
+OBSERVATION_KINDS = (TERMINAL_REDISPATCH_BLOCKED, PROMPT_REBUILT,
+                     ARTIFACT_PATH_MIGRATED)
 
 # 事后重验里，`prompt` 与 `slim`/`card` 的地位**不对称**：
 #   · prompt 是**可重建的输入**，开发期重跑 `write_dispatch_pack` 会原地覆写它。实测
@@ -61,6 +63,40 @@ OBSERVATION_KINDS = (TERMINAL_REDISPATCH_BLOCKED, PROMPT_REBUILT)
 # 活体那条路不受此影响：真在运行中变了的 prompt 由 `preflight._verified` 当场逮住并记
 # ARTIFACT_HASH_MISMATCH（失败类）。这里只是不让开发期噪音把事后账淹掉。
 REBUILDABLE_ARTIFACTS = ("prompt",)
+
+# 事后重验的第二个已知良性来源:**引擎分根迁移**(2026-08-11 用户裁定,`common/workspace.py`)。
+# 08-11 及之前的 task-book 把产物路径记成分根前的根名(`<legacy>/scan/...`),而盘上的文件在
+# 迁移里被整体搬进 `context_<engine>/`。路径串失效 ≠ 产物失配:2026-08-19 取证实测,332/339
+# 条历史 legacy 路径在迁移后的位置上**逐字节等于账本记的 hash**(唯一 7 处不等的全是 07-29
+# 的 prompt,即上面 PROMPT_REBUILT 说的那次 write_dispatch_pack 重写)。旧口径把这 332 条
+# 全判成 `ARTIFACT_HASH_MISMATCH:产物已不在盘上`,把 08-03..08-11 七个可测日累计 216 次
+# "结构失败"凭空造了出来,并把 B5 回滚杆①的连续计数清零 —— 量错了对象。
+# 详见 docs/research/2026-08-19-decision-file-two-writers-and-taskbook-hash.md 线①。
+def _legacy_context_root() -> str:
+    """分根前的 context 根名 —— 由现根去掉引擎后缀**现算**。
+
+    刻意不写字面量:`tests/common/test_workspace.py` ③ 的裸根 grep 探针对生产代码零容忍,
+    而这里恰恰要谈那个根 —— 唯一合规的谈法就是从唯一事实源反推。
+    """
+    return ws.context_root().name.split("_")[0]
+
+
+def _resolve(recorded: str) -> tuple[Path, bool]:
+    """账本记的路径 → (盘上路径, 是否经由迁移别名解析)。
+
+    先认账本原样(现役 book 一律直接命中);只有原样不在盘上、且首段正是分根前的旧根名时,
+    才把它重挂到当前引擎根下试一次。**两次都不存在就老实返回原路径**,由调用方判失败 ——
+    别名只解释已知的迁移,不替真正丢失的产物打掩护。
+    """
+    path = Path(recorded)
+    if path.is_file():
+        return path, False
+    parts = path.parts
+    if parts and parts[0] == _legacy_context_root():
+        migrated = ws.context_root().joinpath(*parts[1:])
+        if migrated.is_file():
+            return migrated, True
+    return path, False
 
 EVENTS_KEY = "structural_events"      # 无此键 = 计量上线前的账本 = 活体类不可测
 UNMEASURED = "UNMEASURED"
@@ -124,7 +160,7 @@ def _rehash_findings(payload: dict) -> list[dict]:
         for name in ("prompt", "slim", "card"):
             ref = (task.get("artifacts") or {}).get(name) or {}
             recorded = ref.get("content_hash")
-            path = Path(str(ref.get("path") or ""))
+            path, migrated = _resolve(str(ref.get("path") or ""))
             if not recorded:
                 out.append({"code": code, "kind": COMPLETION_MISJUDGED,
                             "detail": f"{name}:SUCCEEDED 但无 content_hash"})
@@ -132,10 +168,17 @@ def _rehash_findings(payload: dict) -> list[dict]:
                 out.append({"code": code, "kind": ARTIFACT_HASH_MISMATCH,
                             "detail": f"{name}:产物已不在盘上"})
             elif _sha256(path) != recorded:
+                # 内容真的变了 —— 迁移与否都不豁免,只按 prompt/结果的固有不对称分类。
                 kind = (PROMPT_REBUILT if name in REBUILDABLE_ARTIFACTS
                         else ARTIFACT_HASH_MISMATCH)
                 out.append({"code": code, "kind": kind,
                             "detail": f"{name}:hash 与账本不符"})
+            elif migrated:
+                # hash 逐字节一致、只是路径串停留在分根前 —— 记成观察量而非失败。
+                # **不静默**:静默等于让「迁移过的日子」和「本来就干净的日子」在账上
+                # 长得一样,而 B5 的两条纪律第一条正是不许这种混同(不判 ≠ 通过)。
+                out.append({"code": code, "kind": ARTIFACT_PATH_MIGRATED,
+                            "detail": f"{name}:分根前路径,迁移后同 hash"})
     return out
 
 
@@ -238,6 +281,9 @@ def render(audits: list[DayAudit], *, required: int = 10) -> list[str]:
         "_守卫拦截(`TERMINAL_REDISPATCH_BLOCKED`)是断点续跑的正常现象,**不进失败数**;"
         "真失败是守卫被绕过、成功票又跑一遍(`TERMINAL_RERUN`,现行代码结构上不可达,"
         "该计数器只为逮未来回归)。_",
+        "_`ARTIFACT_PATH_MIGRATED` = 账本路径串停留在引擎分根前(2026-08-11 裁定),产物在"
+        "迁移后的位置上逐字节同 hash —— 路径失效不是产物失配,记观察不记失败"
+        "(取证:`docs/research/2026-08-19-decision-file-two-writers-and-taskbook-hash.md`)。_",
     ]
     return out
 
