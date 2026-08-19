@@ -433,3 +433,76 @@ def test_observe_cli_uses_verify_not_write(tmp_path, monkeypatch):
 
     assert main([str(scan), "observe"]) == 0
     assert captured.get("decision_write") == "verify"
+
+
+# ── E2(task-2.2,2026-08-19):relative_buy 的 mode/exclude_pinned 从 scan_config 解析后
+# 透传给两个写者 —— 装开关必须真的接得到配置,不能永远拿内建默认 ──────────────────────
+
+
+def test_publish_run_observation_write_passes_relative_buy_config(tmp_path, monkeypatch):
+    """writer-1(write 模式):config 里的 relative_buy.mode/exclude_pinned 必须原样传给
+    `safe_write_decision`。"""
+    scan = tmp_path / "2026-08-05"
+    scan.mkdir()
+    cfg_dir = tmp_path / ".claude" / "skills" / "scan-market"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "scan_config.jsonc").write_text(
+        json.dumps({"relative_buy": {"mode": "active", "exclude_pinned": True}}),
+        encoding="utf-8")
+    monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH",
+                        cfg_dir / "scan_config.jsonc")
+    captured: dict = {}
+
+    def _fake_safe_write(_scan_dir, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("autoresearch.scan.relative_buy.safe_write_decision", _fake_safe_write)
+
+    publish_run_observation(scan, real_scan=False, decision_write="write")
+
+    assert captured == {"mode": "active", "exclude_pinned": True}
+
+
+def test_publish_run_observation_verify_passes_relative_buy_config(tmp_path, monkeypatch):
+    """writer-2(verify 模式):同一份 config 必须同样传给 `safe_verify_decision`——两个
+    写者用不同规则重算,「两次现算是否一致」这句话就没有意义。"""
+    scan = tmp_path / "2026-08-06"
+    scan.mkdir()
+    cfg_dir = tmp_path / ".claude" / "skills" / "scan-market"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "scan_config.jsonc").write_text(
+        json.dumps({"relative_buy": {"mode": "active", "exclude_pinned": True}}),
+        encoding="utf-8")
+    monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH",
+                        cfg_dir / "scan_config.jsonc")
+    captured: dict = {}
+
+    def _fake_safe_verify(_scan_dir, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("autoresearch.scan.relative_buy.safe_verify_decision", _fake_safe_verify)
+
+    publish_run_observation(scan, real_scan=False, decision_write="verify")
+
+    assert captured == {"mode": "active", "exclude_pinned": True}
+
+
+def test_publish_run_observation_defaults_relative_buy_to_shadow_without_config(
+    tmp_path, monkeypatch,
+):
+    """没有 scan_config.jsonc(或没有 relative_buy 块)→ mode=shadow/exclude_pinned=False
+    (parity,现行为不变)。"""
+    scan = tmp_path / "2026-08-07"
+    scan.mkdir()
+    monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH",
+                        tmp_path / "nope.jsonc")
+    captured: dict = {}
+
+    def _fake_safe_write(_scan_dir, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("autoresearch.scan.relative_buy.safe_write_decision", _fake_safe_write)
+
+    publish_run_observation(scan, real_scan=False, decision_write="write")
+
+    assert captured == {"mode": "shadow", "exclude_pinned": False}

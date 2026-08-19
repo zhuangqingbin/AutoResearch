@@ -57,7 +57,11 @@ from pathlib import Path
 
 from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import REL_GAP_RULER, REL_MARKET, REL_SECTOR
-from autoresearch.scan.relative_buy import DECISION_FILENAME, MODE_SHADOW
+from autoresearch.scan.relative_buy import DECISION_FILENAME, MODE_ACTIVE, MODE_SHADOW
+
+#: 账本合法的 `mode` 值——v2.0(task-2.2)前只认 `MODE_SHADOW`;U6 用户裁定「转正后记
+#: 分册就是这本账本」,active 期必须能继续记账,不被契约校验拒收。
+_LEGAL_MODES = frozenset({MODE_SHADOW, MODE_ACTIVE})
 
 SCHEMA_VERSION = 1
 BASIS = "relative"
@@ -132,8 +136,9 @@ def _contract_errors(doc: dict) -> list[str]:
     finalizer 抛异常会被 `safe_write_decision` 吞成一行 stderr,过后谁也说不清哪天错过。
     """
     errors: list[str] = []
-    if str(doc.get("mode") or "") != MODE_SHADOW:
-        errors.append(f"mode={doc.get('mode')!r} 非 {MODE_SHADOW}(影子期不得活体出单)")
+    if str(doc.get("mode") or "") not in _LEGAL_MODES:
+        errors.append(f"mode={doc.get('mode')!r} 不在合法集合 {sorted(_LEGAL_MODES)} 内"
+                      f"(账本只认 {MODE_SHADOW}/{MODE_ACTIVE} 两态)")
     buys = doc.get("buys") or []
     if len(buys) > 1:
         errors.append(f"v1 契约是每日恰 1 只 BUY(第 2 只恒不出),实收 {len(buys)} 只")

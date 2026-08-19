@@ -650,20 +650,36 @@ def publish_run_observation(
     safe_write_passport(scan)
     # 统一相对决策层 finalizer(Wave12 T23/T24,E6):**同点**挂在护照之后 —— 它现算护照
     # (`build_passport`)再判四门四面,所以必须等 decision_records/早停/intel 全部定稿,
-    # 与护照是同一个时刻的两个派生视图。本轮仍是**影子**:只写
+    # 与护照是同一个时刻的两个派生视图。生产默认仍是**影子**(mode=shadow):只写
     # `_relative_buy_decision.json`,不写 buy ledger、不改 publisher、不碰
     # decision_records;失败只打一行(`safe_write_decision`/`safe_verify_decision` 自带),
     # 不能反过来阻断发布。前向观测的消费者是 `autoresearch.learning.relative_ledger`
     # (夜间 `_ledgers`)。P0-2:`decision_write` 显式选写入语义 —— write 原子覆盖
     # (writer-1);verify 现算校验,不一致时绝不覆盖、只留证据+报警(writer-2)。
+    #
+    # E6 转正瘦身波 task-2.2(2026-08-19):mode/exclude_pinned 从 `scan_config.jsonc` 的
+    # `relative_buy` 块解析(缺文件/缺块 = shadow/False = 内建默认,与代码形参默认一致 =
+    # parity)——**两个写者必须用同一份开关**:writer-1 若按 config 用 active 算、
+    # writer-2 却永远拿 shadow 去比,"两次现算是否一致"就会天天误报。配置层故障(文件坏/
+    # 白名单外键)不得阻断影子决策发布,但降级必须留痕(同 `user_config.knob` 纪律)。
+    try:
+        from autoresearch.scan.user_config import load_user_config
+
+        _rb = load_user_config().get("relative_buy") or {}
+    except Exception as exc:  # noqa: BLE001 — 配置层故障不挡决策发布,但降级必须可见
+        _rb = {}
+        print(f"[relative_buy] scan_config 读取失败({exc!r})→ mode/exclude_pinned 用内建默认",
+              file=sys.stderr)
+    _rb_mode = str(_rb.get("mode") or "shadow")
+    _rb_exclude_pinned = bool(_rb.get("exclude_pinned", False))
     if decision_write == "write":
         from autoresearch.scan.relative_buy import safe_write_decision
 
-        safe_write_decision(scan)
+        safe_write_decision(scan, mode=_rb_mode, exclude_pinned=_rb_exclude_pinned)
     else:
         from autoresearch.scan.relative_buy import safe_verify_decision
 
-        safe_verify_decision(scan)
+        safe_verify_decision(scan, mode=_rb_mode, exclude_pinned=_rb_exclude_pinned)
     from autoresearch.scan.stage_result import safe_record_stage_result
 
     safe_record_stage_result(

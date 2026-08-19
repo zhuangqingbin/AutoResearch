@@ -17,20 +17,23 @@ design: Wave12 E6-1(用户 2026-08-08 六条裁定)。产物
 - 相对基准 = 全市场可交易等权为主(`rel_gap_market`)、行业中性超额为辅(`rel_gap_sector`),
   两列都是主尺 `MAIN_RULER`(gap_c1_o2)的超额,不是第二把尺。
 
-## 本轮是影子(shadow)
+## 影子 / 活体开关(v2.0 起装好,默认仍关)
 
-只写自己那一份 JSON:**不改任何生产发布行为、不写 buy ledger、不碰 publisher、不动
-`decision_records.json`、不改任何 prompt**。`mode` 只接受 `"shadow"`;活体切换是独立的
-GATED task(≥20 个真实扫描日影子 + 五守卫 + 人工批准),不在这里开后门——"默认不启用"
-必须连副作用一起不启用。
+`mode` 形参(默认 `MODE_SHADOW`)v2.0 起接受 `{"shadow", "active"}`——但这只是把开关
+**装上**,不是把它**打开**:生产 `scan_config.jsonc` 的 `relative_buy.mode` 默认仍是
+`"shadow"`,真正翻到 `"active"` 是用户逐项过完裁决表后的独立批准动作,不由本模块内部
+触发。影子期本模块只写自己那一份 JSON:**不改任何生产发布行为、不写 buy ledger、不碰
+publisher、不动 `decision_records.json`、不改任何 prompt**;活体真正接管仍要求 ≥20 个
+真实扫描日影子 + 五守卫 + 人工批准——"默认不启用"必须连副作用一起不启用。
 
 ## v1 规则(**观察前锁定**;任何改动 = 新 `RULE_VERSION` + experiment_registry)
 
-> 当前 `RULE_VERSION = "e6.v1.2"`。v1.1 只把两道硬门对"产物缺席"的静默放行堵上,
+> 当前 `RULE_VERSION = "e6.v2.0"`。v1.1 只把两道硬门对"产物缺席"的静默放行堵上,
 > v1.2 只把 `data_a` 第 4 判改读 `stage_results.failed_data`(gate4 的 hygiene/metering
-> 类失败不再连坐当日 BUY)。**打分与选择语义与 v1 逐字相同**(8 日回放零变化为证);
-> 下面这套规则原文因此仍然逐字有效,不需要按 v1.1/v1.2 重读。差异见文件尾「修复轮 1」
-> 与 `RULE_VERSION` 常量旁注。
+> 类失败不再连坐当日 BUY),v2.0 只把 `mode` 形参开放接受 `"active"` + 加 `exclude_pinned`
+> 过滤(生产默认仍 `shadow`/`False`)。**打分与选择语义与 v1 逐字相同**(8 日回放零变化
+> 为证);下面这套规则原文因此仍然逐字有效,不需要按 v1.1/v1.2/v2.0 重读。差异见文件尾
+> 「修复轮 1」与 `RULE_VERSION` 常量旁注。
 
 边看结果边调参数 = 作弊。下面每条都是在看到任何一天的影子输出**之前**写死的。
 
@@ -124,7 +127,7 @@ from autoresearch.common.ruler import MAIN_RULER, REL_MARKET, REL_SECTOR, entry_
 from autoresearch.scan.passport import build_passport
 
 SCHEMA_VERSION = 1
-RULE_VERSION = "e6.v1.2"
+RULE_VERSION = "e6.v2.0"
 # v1.1 = v1 + 两道硬门的 ABSENT 收紧(`data_a` 三个 status 一律要求 `== "OK"`;`contract`
 # 消费护照 `missing["l4.research_rating"]`)。**打分与选择语义与 v1 逐字相同** —— 四面算法 /
 # Borda 等权平均 / 并列决胜三级 / 第 2 只的门 / `expected_abs_gap` 一个字符未动。
@@ -136,6 +139,13 @@ RULE_VERSION = "e6.v1.2"
 # 文档卫生(产物形状·*)与计量病(usage_reconcile·*)类 gate4 失败不再连坐当日 BUY;
 # 数据类失败照旧团灭。历史 run_health 无 failed_data 键 → 回退旧口径,历史判定不改写。
 # 打分/选择语义零改动。
+# v2.0 = v1.2 + E6 转正瘦身波 task-2.2(2026-08-19):`build_decision` 的 `mode` 形参开放
+# 接受 `MODE_ACTIVE`(生产 `scan_config.jsonc` 的 `relative_buy.mode` 默认仍是 `shadow`,
+# 真正翻至 `active` 是用户裁决表批准后的独立动作,本次只是把开关**装上**);新增
+# `exclude_pinned` 形参 + 输出顶层键(`True` 时 BUY 只在非📌 eligible 内选,被跳过的
+# 📌 eligible 票记入 `excluded`[reason=pinned_holding],仍留在候选表与排名内,`rank`
+# 字段不因排除而重排)。**打分算法 / 四面 Borda 等权平均 / 并列决胜三级 / 第 2 只的门 /
+# `expected_abs_gap` 逐字未动**——升版理由是形参/输出契约扩容,不是规则改写。
 DECISION_FILENAME = "_relative_buy_decision.json"
 #: P0-2(`docs/research/2026-08-19-decision-file-two-writers-and-taskbook-hash.md` §4)—— 并排
 #: 证据侧车:writer-2(`post_run observe`)现算与盘上不一致时,两份的关键字段 + sha256 落这里,
@@ -146,6 +156,9 @@ MISMATCH_FILENAME = "_relative_buy_decision.mismatch.json"
 #: hygiene/metering,会被豁免出 data 类;这条要连坐当日 `data_a`)。
 MISMATCH_CHECK_NAME = "相对BUY决策文件·两次现算不一致"
 MODE_SHADOW = "shadow"
+#: v2.0 起 `build_decision`/`write_decision`/`verify_decision` 接受的第二个合法 `mode`
+#: 值——装开关不是翻开关,生产 config 默认仍 `MODE_SHADOW`(见文件头「影子 / 活体开关」)。
+MODE_ACTIVE = "active"
 
 # ── v1 锁定的常量(改这里 = 改规则 = 必须换 RULE_VERSION 并走 registry)────────
 #: 第 2 只 BUY 的已验证阈值。影子期**没有**——所以第 2 只恒不出。
@@ -519,15 +532,22 @@ def _hard_gate(entry: dict, ctx: dict) -> tuple[dict[str, bool], list[dict]]:
 
 # ── 主构建 ─────────────────────────────────────────────────────────────────
 def build_decision(scan_dir: Path | str, date: str | None = None,
-                   mode: str = MODE_SHADOW) -> dict:
+                   mode: str = MODE_SHADOW, exclude_pinned: bool = False) -> dict:
     """`context/scan/<date>` → 统一相对决策文档(确定性、零 LLM、零联网、只读)。
 
     护照**现算**(`passport.build_passport`),不读盘上那份 `_candidate_passport.json`:
     它是同一函数的派生视图,现算才保证决策与当日真实产物同源,不被一份过期文件摆布。
+
+    `exclude_pinned`(v2.0,task-2.2):`True` 时 BUY 只在**非📌**合格候选里选 rank1;
+    📌 票仍进 `candidates`(全量,观测语义不变),只是不当 BUY——每个被跳过的📌合格票往
+    `excluded` 追加一条 `reason="pinned_holding"`。`rank` 字段照旧按**全体** eligible 排,
+    不因排除而重排(观测语义不变)。若当日非📌合格为 0 → 诚实 `blocked=True`,不退回去
+    选📌票。缺省 `False` = 现行为(parity)。
     """
-    if mode != MODE_SHADOW:
+    if mode not in {MODE_SHADOW, MODE_ACTIVE}:
         raise ValueError(
-            f"v1 只接受 mode={MODE_SHADOW!r}(活体切换是独立的 GATED task);收到 {mode!r}")
+            f"mode 只接受 {MODE_SHADOW!r}/{MODE_ACTIVE!r}(装开关不是翻开关,翻 active 之外"
+            f"的值一律非法);收到 {mode!r}")
     scan = Path(scan_dir)
     date = date or scan.name
 
@@ -588,9 +608,18 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
     for rank, row in enumerate(eligible, start=1):
         by_code[row["code"]]["rank"] = rank
 
+    # exclude_pinned(v2.0):BUY 池排掉📌持仓(保送不算判例);rank 字段照旧按**全体**
+    # eligible 排(上面那个循环),这里只影响谁能当 buys[0]——不重排、不从候选表摘除。
+    buy_pool = ([row for row in eligible if not row["pinned"]]
+                if exclude_pinned else eligible)
+    for row in eligible:
+        if exclude_pinned and row["pinned"]:
+            excluded.append({"code": row["code"], "reason": "pinned_holding",
+                             "detail": "📌 持仓不参与相对 BUY(保送不算判例)"})
+
     # 第 2 只起的门:v1 影子期无已验证阈值 → 恒不满足,恒只出 1 只。
-    buys = ([{"code": eligible[0]["code"], "basis": "relative", "rank": 1}]
-            if eligible else [])
+    buys = ([{"code": buy_pool[0]["code"], "basis": "relative", "rank": 1}]
+            if buy_pool else [])
     second_buy = {"fired": SECOND_BUY_THRESHOLD is not None,
                   "reason": SECOND_BUY_BLOCK_REASON,
                   "threshold": SECOND_BUY_THRESHOLD}
@@ -616,6 +645,7 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
         "schema_version": SCHEMA_VERSION,
         "rule_version": RULE_VERSION,
         "mode": mode,
+        "exclude_pinned": exclude_pinned,
         "date": date,
         "ruler": MAIN_RULER,
         "benchmark": {
@@ -686,11 +716,11 @@ def _serialize_decision(doc: dict) -> bytes:
 
 
 def write_decision(scan_dir: Path | str, date: str | None = None,
-                   mode: str = MODE_SHADOW) -> Path:
+                   mode: str = MODE_SHADOW, exclude_pinned: bool = False) -> Path:
     """构建并原子落盘。`sort_keys=True` 是 byte 稳定契约的一半,另一半是构建本身无时序量。"""
     scan = Path(scan_dir)
     target = scan / DECISION_FILENAME
-    payload = _serialize_decision(build_decision(scan, date, mode))
+    payload = _serialize_decision(build_decision(scan, date, mode, exclude_pinned))
     target.parent.mkdir(parents=True, exist_ok=True)
     temp = target.with_name(f"{target.name}.tmp")
     temp.write_bytes(payload)
@@ -698,10 +728,11 @@ def write_decision(scan_dir: Path | str, date: str | None = None,
     return target
 
 
-def safe_write_decision(scan_dir: Path | str, date: str | None = None) -> Path | None:
+def safe_write_decision(scan_dir: Path | str, date: str | None = None,
+                        mode: str = MODE_SHADOW, exclude_pinned: bool = False) -> Path | None:
     """影子件失败不得阻断任何东西(本轮没有任何生产消费者依赖它)。"""
     try:
-        return write_decision(scan_dir, date)
+        return write_decision(scan_dir, date, mode, exclude_pinned)
     except Exception as exc:  # noqa: BLE001 — 纯影子件失败只记一行,不连累主链
         print(f"[relative_buy] 构建失败: {type(exc).__name__}: {exc}", file=sys.stderr)
         return None
@@ -718,8 +749,14 @@ def _decision_digest(doc: dict, raw: bytes) -> dict:
     }
 
 
-def verify_decision(scan_dir: Path | str, date: str | None = None) -> dict:
+def verify_decision(scan_dir: Path | str, date: str | None = None,
+                    mode: str = MODE_SHADOW, exclude_pinned: bool = False) -> dict:
     """P0-2:writer-2(`post_run observe`)的第二次「写」改成幂等校验,不再无条件覆盖。
+
+    `mode`/`exclude_pinned`(v2.0,task-2.2)与 `write_decision` 同参、原样透传给现算的
+    `build_decision`——两个写者必须用**同一套**规则重算同一天的决策,否则"两次现算是否
+    一致"这句话本身就没有意义(writer-1 用 active 算、writer-2 却永远拿 shadow 去比,
+    每天都会误报"不一致")。
 
     `docs/research/2026-08-19-decision-file-two-writers-and-taskbook-hash.md` §2.1/§2.5:
     `_relative_buy_decision.json` 的两个合法写者(`publisher._run_publish` 与
@@ -746,7 +783,7 @@ def verify_decision(scan_dir: Path | str, date: str | None = None) -> dict:
     """
     scan = Path(scan_dir)
     target = scan / DECISION_FILENAME
-    fresh_doc = build_decision(scan, date, MODE_SHADOW)
+    fresh_doc = build_decision(scan, date, mode, exclude_pinned)
     fresh_bytes = _serialize_decision(fresh_doc)
     resolved_date = str(fresh_doc.get("date") or date or scan.name)
 
@@ -800,11 +837,12 @@ def verify_decision(scan_dir: Path | str, date: str | None = None) -> dict:
             "mismatch_path": str(mismatch_path)}
 
 
-def safe_verify_decision(scan_dir: Path | str, date: str | None = None) -> dict | None:
+def safe_verify_decision(scan_dir: Path | str, date: str | None = None,
+                         mode: str = MODE_SHADOW, exclude_pinned: bool = False) -> dict | None:
     """`verify_decision` 的失败纪律版:出异常只打一行,与 `safe_write_decision` 同一姿势
     (决策件本身从不阻断发布);但内部真正的「不一致」分支不算异常,是正常返回路径。"""
     try:
-        return verify_decision(scan_dir, date)
+        return verify_decision(scan_dir, date, mode, exclude_pinned)
     except Exception as exc:  # noqa: BLE001 — 纯影子件失败只记一行,不连累主链
         print(f"[relative_buy] verify 失败: {type(exc).__name__}: {exc}", file=sys.stderr)
         return None

@@ -168,6 +168,15 @@ def test_non_shadow_mode_is_a_contract_error(paths):
     assert any("shadow" in err for err in rows[0]["contract_errors"])
 
 
+def test_active_mode_is_not_a_contract_error(paths):
+    """U6 裁定(task-2.2):转正后记分册就是本账本——active 期必须能继续记账,不被契约
+    校验拒收(只有 shadow/active 之外的值,如上面的 "live",才该被拦)。"""
+    _put_decision(paths["scan_root"], _doc(DATE_A, mode="active"))
+    rows = rl.roll(scan_root=paths["scan_root"], ledger_path=paths["ledger_path"])
+    assert rows[0]["mode"] == "active"
+    assert rows[0]["contract_errors"] == []
+
+
 # ── 2. basis / 幂等整替 ─────────────────────────────────────────────────────
 def test_every_row_carries_basis_relative_and_the_ruler(paths):
     _put_decision(paths["scan_root"], _doc(DATE_A))

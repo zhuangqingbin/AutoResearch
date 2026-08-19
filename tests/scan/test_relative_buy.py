@@ -18,7 +18,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -32,6 +32,7 @@ from autoresearch.scan.relative_buy import (
     EXPECTED_ABS_GAP_MIN_N,
     MISMATCH_CHECK_NAME,
     MISMATCH_FILENAME,
+    MODE_ACTIVE,
     RULE_VERSION,
     SCHEMA_VERSION,
     _data_contract_ok,
@@ -293,9 +294,11 @@ def test_rule_version_is_pinned_and_reaches_the_written_product(tmp_path):
       与 `brief` 都是 `doc.get("rule_version")` 直取,产物漂了它们会静默记下错版本。
 
     v1.1 = v1 + 两道硬门的 ABSENT 收紧;v1.2 = v1.1 + data_a 第 4 判改读
-    `stage_results.failed_data`(E1a)。打分/选择语义与 v1 逐字相同(8 日回放零变化)。
+    `stage_results.failed_data`(E1a)。v2.0(task-2.2,2026-08-19)= `mode` 形参开放接受
+    `"active"` + 新增 `exclude_pinned` 过滤(生产默认仍 shadow/False,翻 active 是独立的
+    裁决表批准动作)。**打分与选择语义与 v1 逐字相同**(8 日回放零变化)。
     """
-    assert RULE_VERSION == "e6.v1.2"
+    assert RULE_VERSION == "e6.v2.0"
     scan = _build_scan(tmp_path, _RANK_CANDS)
     assert build_decision(scan)["rule_version"] == RULE_VERSION
     written = json.loads(write_decision(scan).read_text(encoding="utf-8"))
@@ -990,3 +993,86 @@ def test_safe_verify_decision_survives_build_failure(tmp_path, monkeypatch, caps
 
     assert safe_verify_decision(scan) is None
     assert "verify 失败" in capsys.readouterr().err
+
+
+# ══ E2(task-2.2,2026-08-19):build_decision 支持 active + exclude_pinned,RULE_VERSION
+# e6.v2.0 ═══════════════════════════════════════════════════════════════════════════
+#
+# 三条锁住的行为:①mode 白名单从 {shadow} 扩到 {shadow, active},非法值(如历史 "live")
+# 仍拒;②exclude_pinned=True 时 BUY 只在非📌 eligible 里选,被跳过的📌 eligible 票记入
+# excluded(reason=pinned_holding)但仍留在候选表/排名内(rank 字段照旧按全体 eligible 排,
+# 不因排除而重排);③当日非📌合格为 0 → 诚实 blocked=True,不退回去选📌票。
+# 这一整节仍是**装开关**,不是翻开关:生产 `scan_config.jsonc` 默认仍 mode=shadow。
+
+
+def test_active_mode_accepted(tmp_path):
+    doc = build_decision(_build_scan(tmp_path, _RANK_CANDS), mode=MODE_ACTIVE)
+    assert doc["mode"] == "active" and doc["rule_version"] == "e6.v2.0"
+
+
+def test_mode_still_rejects_illegal_values(tmp_path):
+    """扩容不是敞开:{shadow,active} 之外的值(历史 "live"、拼写错)仍必须拒。"""
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    with pytest.raises(ValueError):
+        build_decision(scan, mode="live")
+
+
+# 变异探针 ④:exclude_pinned 跳过📌选下一只(两只合格,rank1 pinned / rank2 非 pinned)
+def test_exclude_pinned_picks_first_nonpinned(tmp_path):
+    """`exclude_pinned=True` 时 BUY 跳到 rank2;rank1(📌)仍留在候选表/排名内,只是记进
+    `excluded`(reason=pinned_holding),不参与 BUY 选择。"""
+    top = replace(_RANK_CANDS[0], pinned=True)     # 002345——不排除时的 rank1
+    second = _RANK_CANDS[1]                         # 000034——不排除时的 rank2
+    scan = _build_scan(tmp_path, [top, second])
+    baseline = build_decision(scan)
+    assert baseline["buys"][0]["code"] == "002345"  # 前提自证:不排除时确是 rank1
+
+    doc = build_decision(scan, exclude_pinned=True)
+    assert doc["exclude_pinned"] is True
+    assert doc["buys"][0]["code"] == "000034"
+    assert any(row["code"] == "002345" and row["reason"] == "pinned_holding"
+               for row in doc["excluded"])
+
+    by_code = _by_code(doc)
+    assert by_code["002345"]["eligible"] is True    # 仍合格,只是不当 BUY
+    assert by_code["002345"]["rank"] == 1            # rank 照旧按全体 eligible 排,不因排除重排
+    assert by_code["000034"]["rank"] == 2
+
+
+# 变异探针 ⑤:全部合格票都是📌 → 诚实 blocked,不退回去选📌票
+def test_exclude_pinned_all_pinned_blocks(tmp_path):
+    top = replace(_RANK_CANDS[0], pinned=True)
+    second = replace(_RANK_CANDS[1], pinned=True)
+    scan = _build_scan(tmp_path, [top, second])
+    doc = build_decision(scan, exclude_pinned=True)
+    assert doc["blocked"] is True
+    assert doc["buys"] == []
+    pinned_excluded = {row["code"] for row in doc["excluded"]
+                       if row["reason"] == "pinned_holding"}
+    assert pinned_excluded == {"002345", "000034"}
+    buckets = {row["reason"]: row["n"] for row in doc["blocked_reasons"]}
+    assert buckets.get("pinned_holding") == 2
+
+
+def test_exclude_pinned_false_is_parity_default(tmp_path):
+    """`exclude_pinned` 缺省 `False` = 现行为(parity):哪怕最高分是📌票也照常当 BUY,
+    `excluded` 里不出现 pinned_holding 行。"""
+    top = replace(_RANK_CANDS[0], pinned=True)
+    scan = _build_scan(tmp_path, [top, _RANK_CANDS[1]])
+    doc = build_decision(scan)
+    assert doc["exclude_pinned"] is False
+    assert doc["buys"][0]["code"] == "002345"
+    assert not any(row["reason"] == "pinned_holding" for row in doc["excluded"])
+
+
+def test_write_and_verify_decision_propagate_mode_and_exclude_pinned(tmp_path):
+    """`write_decision`/`verify_decision` 真的透传两参,不是只有 `build_decision` 认它们。"""
+    top = replace(_RANK_CANDS[0], pinned=True)
+    scan = _build_scan(tmp_path, [top, _RANK_CANDS[1]])
+    target = write_decision(scan, mode=MODE_ACTIVE, exclude_pinned=True)
+    doc = json.loads(target.read_text(encoding="utf-8"))
+    assert doc["mode"] == "active" and doc["exclude_pinned"] is True
+    assert doc["buys"][0]["code"] == "000034"
+
+    result = verify_decision(scan, mode=MODE_ACTIVE, exclude_pinned=True)
+    assert result == {"match": True, "action": "noop", "path": str(target)}
