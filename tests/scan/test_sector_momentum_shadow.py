@@ -127,7 +127,11 @@ def test_side_effect_1_not_in_production_recall_channels():
     cfg = load_user_config(_SCAN_CONFIG)
     enabled = (cfg.get("funnel") or {}).get("recall_channels") or []
     assert CHANNEL not in enabled
-    assert len(enabled) == 8, f"生产启用路数应为 8,实为 {len(enabled)}: {enabled}"
+    # 绊线:启用路数是**有意变更**才该动的数。8 → 9 由 2026-08-21 低位转强波重开
+    # `reversal_confirm`(design docs/specs/2026-08-21-lowturn-recall-l3-picture-display-design.md
+    # §5.2,配额 150,与旧 reversal 活体 A/B)。改这个数字必须同时说得出是哪一波、哪张设计稿;
+    # 只为了让测试变绿而改它 = 把绊线拆了。
+    assert len(enabled) == 9, f"生产启用路数应为 9,实为 {len(enabled)}: {enabled}"
 
 
 def test_side_effect_2_default_floors_untouched():
