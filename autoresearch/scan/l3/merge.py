@@ -94,6 +94,13 @@ def merge_l3_finalists_v3(judged: pd.DataFrame, budget: int,
        Important-2;修复前:healthy 恰达标日,trend 缺口会把候选集里 conviction 最低的
        healthy 行当"最弱尾部票"换出,④白跑)。
 
+    ⑥ **lowturn soft 1 席**(2026-08-21 低位转强波 §6.4):同④⑤机制(`_swap_lane_quota`),
+       `lane=="lowturn"`、`target=1`(固定)、`guard="lowturn_quota"`、**`qualify_conv=55`**
+       (与守卫②同阈,不用④⑤的默认 65 —— 低位转强票 conviction 天然偏低,65 会让本守卫恒
+       空转,那是"探针死了也像活着"的同族)、`protect_lanes={"healthy","trend"}`(soft 不得
+       吃掉④刚满足的健康硬约束,也不该击穿⑤)。prompt(l3-rank 硬约束 G)允许至多 2 席,
+       确定性层只兜底 1 席;有够格候选才凑,无则 0。
+
     **缺 `finalist` 列**(向后兼容:T3 之前落的旧 `_l3_judged.json` 没有这个字段)→ 全体行
     视为初始候选(等价"先假设全选"),同样跑①–⑤(①在此情形恒无操作对象——全体已是候选;
     ②③④⑤照常运行),等效于"全体按 conviction 排序取 cap,同守卫"。
@@ -167,6 +174,8 @@ def merge_l3_finalists_v3(judged: pd.DataFrame, budget: int,
                                math.ceil(n / 3) if n else 0, "healthy_quota")
     fin_idx = _swap_lane_quota(m, conv, fin_idx, "trend", 2, "trend_quota",   # 守卫⑤
                                protect_lanes={"healthy"})   # I-2:不可换出健康配额行
+    fin_idx = _swap_lane_quota(m, conv, fin_idx, "lowturn", 1, "lowturn_quota",   # 守卫⑥
+                               qualify_conv=55.0, protect_lanes={"healthy", "trend"})
 
     fin_order = sorted(fin_idx, key=lambda i: conv.loc[i], reverse=True)
     fin = m.loc[fin_order].copy()

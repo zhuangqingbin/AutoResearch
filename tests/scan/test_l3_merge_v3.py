@@ -288,3 +288,40 @@ def test_dup_codes_dropped_to_bench_with_guard():
     assert list(fin["code"]).count("000001") == 1
     dup_rows = bench[bench["guard"] == "dup"]
     assert len(dup_rows) == 1 and dup_rows.iloc[0]["code"] == "000001"
+
+
+# ═══════════════════════ ⑥ lowturn soft 1 席(2026-08-21 低位转强波) ═══════════════════════
+
+
+def test_lowturn_soft_quota_swaps_in_qualified_bench_candidate():
+    """finalists 无 lowturn、bench 有 conviction≥55 的 lowturn → 换入,guard='lowturn_quota';
+    不得吃掉 healthy/trend 行(protect_lanes)。"""
+    judged = pd.DataFrame([
+        _pick("HHHHHH", 60, lane="healthy", finalist=True),
+        _pick("TTTTTT", 58, lane="trend", finalist=True),
+        _pick("VVVVVV", 57, lane="value", finalist=True),
+        _pick("LLLLLL", 56, lane="lowturn", finalist=False),
+    ])
+    fin, bench = merge_l3_finalists_v3(judged, budget=30, finalist_max=10)
+    assert "LLLLLL" in set(fin["code"])
+    assert fin[fin["code"] == "LLLLLL"].iloc[0]["guard"] == "lowturn_quota"
+    assert set(bench["code"]) == {"VVVVVV"}            # 被换出的是 value 尾票,不是 healthy/trend
+
+
+def test_lowturn_quota_not_forced_below_55():
+    judged = pd.DataFrame([
+        _pick("AAAAAA", 70, lane="value", finalist=True),
+        _pick("LLLLLL", 50, lane="lowturn", finalist=False),     # <55 不够格(守卫②同阈)
+    ])
+    fin, _ = merge_l3_finalists_v3(judged, budget=30, finalist_max=10)
+    assert set(fin["code"]) == {"AAAAAA"}
+
+
+def test_lowturn_already_present_no_swap():
+    judged = pd.DataFrame([
+        _pick("LLLLLL", 66, lane="lowturn", finalist=True),
+        _pick("AAAAAA", 60, lane="value", finalist=True),
+        _pick("MMMMMM", 58, lane="lowturn", finalist=False),
+    ])
+    fin, _ = merge_l3_finalists_v3(judged, budget=30, finalist_max=10)
+    assert set(fin["code"]) == {"LLLLLL", "AAAAAA"} and (fin["guard"] == "").all()
