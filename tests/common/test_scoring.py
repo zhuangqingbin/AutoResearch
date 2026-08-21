@@ -168,7 +168,9 @@ def _confirm_row(**overrides) -> dict:
         "code": "600001", "name": "股票甲",
         "pct_60d": -30.0, "dist_low_60": 8.0,
         "days_no_new_low": 15.0, "rsi6": 35.0,
-        "vol_ratio_20": 2.0, "ma_bull": 1.0,
+        "vol_ma5_prev": 1.0, "vol_ma20_prev": 1.5,        # 起爆前缩量(D−1 截止)
+        "vol_ratio_20": 2.0, "above_ma20": 1.0, "ma5_gt_ma10": 1.0,
+        "ma_bull": 0.0,                                    # 60 日跌 30% 的票起爆日不可能全多头排列——门不得再要它
     }
     row.update(overrides)
     return row
@@ -192,9 +194,44 @@ def test_reversal_confirm_rejects_no_volume_breakout_hard_gate():
 
 
 def test_reversal_confirm_rejects_no_trend_break_hard_gate():
-    """①②④全过、只③的 ma_bull=0(未站上均线/未破高)→ 硬门同样必拒(AND 的另一半也不可绕过)。"""
-    g = lens_reversal_confirm(_confirm_frame([_confirm_row(ma_bull=0.0)]))
+    """①②④全过、只③的 above_ma20=0(未站回 20 日线)→ 硬门同样必拒(AND 的另一半也不可绕过)。"""
+    g = lens_reversal_confirm(_confirm_frame([_confirm_row(above_ma20=0.0)]))
     assert bool(g["reversal_confirm_gate"].iloc[0]) is False
+
+
+def test_reversal_confirm_does_not_require_full_ma_bull_alignment():
+    """2026-08-21 修门:旧③用 ma_bull(MA5>MA10>MA20>MA60)当『站上 MA20』代理,与①(60 日跌≥25%)
+    定义互斥 → 通道即使接上 vol_ratio_20 也恒近空。新③只要求站回 MA20 ∧ MA5>MA10。"""
+    g = lens_reversal_confirm(_confirm_frame([_confirm_row(ma_bull=0.0)]))
+    assert bool(g["reversal_confirm_gate"].iloc[0]) is True
+
+
+def test_reversal_confirm_rejects_when_short_ma_not_turned():
+    g = lens_reversal_confirm(_confirm_frame([_confirm_row(ma5_gt_ma10=0.0)]))
+    assert bool(g["reversal_confirm_gate"].iloc[0]) is False
+
+
+def test_reversal_confirm_shrink_measured_before_breakout_day():
+    """②缩量看 D−1 截止的 5/20 日均量:起爆日巨量不再把『缩量企稳』顶成 False;前 5 日没缩量 → 拒。"""
+    g = lens_reversal_confirm(_confirm_frame([_confirm_row(vol_ma5_prev=2.0, vol_ma20_prev=1.0)]))
+    assert bool(g["reversal_confirm_gate"].iloc[0]) is False
+    g2 = lens_reversal_confirm(
+        _confirm_frame([_confirm_row()]).drop(columns=["vol_ma5_prev", "vol_ma20_prev"]))
+    assert bool(g2["reversal_confirm_gate"].iloc[0]) is True    # 缺列 presence-gated 不拦(与①②既有约定一致)
+
+
+def test_reversal_confirm_rsi_band_20_to_85():
+    hi = lens_reversal_confirm(_confirm_frame([_confirm_row(rsi6=70.0)]))
+    assert bool(hi["reversal_confirm_gate"].iloc[0]) is True
+    over = lens_reversal_confirm(_confirm_frame([_confirm_row(rsi6=90.0)]))
+    assert bool(over["reversal_confirm_gate"].iloc[0]) is False
+    under = lens_reversal_confirm(_confirm_frame([_confirm_row(rsi6=15.0)]))
+    assert bool(under["reversal_confirm_gate"].iloc[0]) is False
+
+
+def test_reversal_confirm_missing_above_ma20_column_rejects_all():
+    frame = _confirm_frame([_confirm_row()]).drop(columns=["above_ma20"])
+    assert not lens_reversal_confirm(frame)["reversal_confirm_gate"].any()
 
 
 def test_reversal_confirm_rejects_still_making_new_lows():

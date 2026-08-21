@@ -207,14 +207,19 @@ def lens_reversal_confirm(df: pd.DataFrame) -> pd.DataFrame:
       ① 前置低位:pct_60d≤−25 或 dist_low_60≤15(后者 Plan A1-T2 新因子,尚未接入现场 L1 帧,
          presence-gated;两条本是 OR,pct_60d 视作恒在核心列,同 lens_momentum/lens_reversal
          的既有用法不做存在性判断)。
-      ② 衰竭企稳:days_no_new_low≥10(presence-gated)∧ 5日均量<20日均量(`vol_ma5`/`vol_ma20`,
-         现场尚无此列,presence-gated 跳过,接入前恒放行)∧ RSI6 从超卖回升——本帧只有『当日』
-         RSI6 快照、无逐日序列做不了真"从…回升",用 presence-gated 代理:已脱离本代码库既定的
-         超卖线(rsi6<20,见 analyze/harvest.py "超卖"判词)但仍处 20–50 的低位回升带。
-      ③ 确认起爆硬门:vol_ratio_20≥1.5(Plan A1-T2 新因子)∧ ma_bull>0(现场无逐日『破20日高/
-         站上MA20』专列,用既有『多头排列』ma_bull 作最近似代理)。**两者任一缺列/缺值 →
-         该段整段判 False**——硬门不可 presence-gated 跳过:vol_ratio_20 若尚未接入现场,本通道
-         会诚实地空召回,而不是悄悄放行凑数(这正是"无量突破不入池"延伸到"没证据也不入池")。
+      ② 衰竭企稳:days_no_new_low≥10(presence-gated)∧ **起爆前**缩量(`vol_ma5_prev`<
+         `vol_ma20_prev`,均截止 D−1,presence-gated)∧ RSI6 在 20–85 的回升带——本帧只有
+         『当日』RSI6 快照、无逐日序列做不了真"从…回升",故用区间代理:下限 20 挡「还在超卖里
+         往下掉」,上限 85 对齐 `lens_momentum` 的过热线(:119)。
+         **2026-08-21 修门**:缩量原读含 D 日的 `vol_ma5`/`vol_ma20`,起爆日巨量会把 5 日均量
+         顶上去、恰在起爆日判 False;RSI 上限原为 50,而放量起爆日 RSI6 常在 55~80 —— 两处都
+         与③在定义上自相矛盾(design 2026-08-21 §2.3)。
+      ③ 确认起爆硬门:vol_ratio_20≥1.5 ∧ `above_ma20`>0 ∧ `ma5_gt_ma10`>0(站回 20 日线且短
+         均线拐头)。**三者任一缺列/缺值 → 该段整段判 False**——硬门不可 presence-gated 跳过:
+         列若尚未接入现场,本通道会诚实地空召回,而不是悄悄放行凑数(这正是"无量突破不入池"
+         延伸到"没证据也不入池")。**2026-08-21 修门**:旧代理 `ma_bull`(MA5>MA10>MA20>MA60
+         全多头排列)对 60 日跌 ≥25% 的票在起爆当日结构上不可满足(MA20 还在 MA60 下方),
+         ①与③互斥 → 通道恒近空 4 周+,是它 2026-08-19 被摘出 `recall_channels` 的真因。
       ④ 可交易:镜像 `lens_reversal`(:167)既有的 `~name.str.contains("退")` 过滤,叠加
          presence-gated 的既有『涨跌停可交易性』`buyable` 列(factor_lab.forward_returns /
          data.handler 同源,列缺→默认可交易不拦)。
@@ -241,25 +246,35 @@ def lens_reversal_confirm(df: pd.DataFrame) -> pd.DataFrame:
     days_ok = (_num(g["days_no_new_low"]) >= 10) if has_days else pd.Series(True, index=g.index)
     days_sc = _pct(g["days_no_new_low"]) if has_days else nan
 
-    has_vol_ma = {"vol_ma5", "vol_ma20"} <= set(g.columns)
-    shrink_ok = (_num(g["vol_ma5"]) < _num(g["vol_ma20"])) if has_vol_ma else pd.Series(True, index=g.index)
+    # 缩量看 **D−1 截止**的 vol_ma5_prev/vol_ma20_prev(2026-08-21 修门:两者若含 D 日,起爆日
+    # 巨量会把 5 日均量顶上去,恰好在起爆日把「缩量企稳」判 False —— ②③在定义上自相矛盾)。
+    has_vol_ma = {"vol_ma5_prev", "vol_ma20_prev"} <= set(g.columns)
+    shrink_ok = ((_num(g["vol_ma5_prev"]) < _num(g["vol_ma20_prev"])) if has_vol_ma
+                 else pd.Series(True, index=g.index))
 
     has_rsi = "rsi6" in g.columns
     rsi = _num(g["rsi6"]) if has_rsi else nan
-    rebound_ok = ((rsi >= 20) & (rsi <= 50)) if has_rsi else pd.Series(True, index=g.index)
-    rebound_sc = ((rsi >= 20) & (rsi <= 50)).astype(float) if has_rsi else nan
+    # 20~85:下限仍挡「还在超卖里掉」,上限对齐 lens_momentum 过热线 85(:119)——放量起爆日
+    # RSI6 常在 55~80,旧上限 50 与③起爆日硬门互斥(2026-08-21 修门)。
+    rebound_ok = ((rsi >= 20) & (rsi <= 85)) if has_rsi else pd.Series(True, index=g.index)
+    rebound_sc = ((rsi >= 20) & (rsi <= 85)).astype(float) if has_rsi else nan
 
     stabilize_gate = days_ok & shrink_ok & rebound_ok
     stabilize_sc = _blend((days_sc, 0.5), (rebound_sc, 0.5))
 
-    # ③ 确认起爆硬门(40):vol_ratio_20/ma_bull 缺列或缺值 → 比较天然 NaN→False,硬门自动
-    # "不可跳"(与①②故意不同,这里不写 presence-gated 的 else 分支去放行)。
+    # ③ 确认起爆硬门(40):vol_ratio_20 ≥1.5 ∧ 站回 MA20 ∧ MA5>MA10。三列任一缺列/缺值 →
+    # 比较天然 NaN→False,硬门自动"不可跳"(与①②故意不同,不写 presence-gated 的 else 分支放行)。
+    # 2026-08-21 修门:旧代理 `ma_bull`(MA5>MA10>MA20>**MA60** 全多头排列)对 60 日跌 ≥25% 的
+    # 票在起爆日结构上不可满足(MA20 还在 MA60 下面),①与③互斥 → 通道即使接上 vol_ratio_20
+    # 也恒近空(design 2026-08-21 §2.3)。三列均由 `common.turnup` 的 60 日 close 面板算出
+    # (`scan/frame._harvest_vol_series`),同序列同口径,不与 tushare 复权 MA 混用。
     vol20 = _num(g["vol_ratio_20"]) if "vol_ratio_20" in g.columns else nan
-    has_ma_bull = "ma_bull" in g.columns
-    ma_bull = _num(g["ma_bull"]) if has_ma_bull else nan
-    confirm_gate = (vol20 >= 1.5) & (ma_bull > 0)
-    ma_bull_sc = (ma_bull > 0).astype(float) if has_ma_bull else nan
-    confirm_sc = _blend((_pct(vol20), 0.5), (ma_bull_sc, 0.5))
+    above20 = _num(g["above_ma20"]) if "above_ma20" in g.columns else nan
+    m5gt10 = _num(g["ma5_gt_ma10"]) if "ma5_gt_ma10" in g.columns else nan
+    confirm_gate = (vol20 >= 1.5) & (above20 > 0) & (m5gt10 > 0)
+    has_turn = {"above_ma20", "ma5_gt_ma10"} <= set(g.columns)
+    turn_sc = ((above20 > 0) & (m5gt10 > 0)).astype(float) if has_turn else nan
+    confirm_sc = _blend((_pct(vol20), 0.5), (turn_sc, 0.5))
 
     # ④ 可交易:镜像 lens_reversal(:167)既有过滤 + presence-gated 现有『buyable』涨跌停可交易性列。
     tradable = ~g["name"].fillna("").str.contains("退")

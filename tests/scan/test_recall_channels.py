@@ -97,7 +97,9 @@ def test_heat_degrades_without_heat_columns():
 
 def _perfect_confirm_row(code="600001", **overrides):
     row = {"code": code, "name": "股票甲", "pct_60d": -30.0, "dist_low_60": 8.0,
-           "days_no_new_low": 15.0, "rsi6": 35.0, "vol_ratio_20": 2.0, "ma_bull": 1.0}
+           "days_no_new_low": 15.0, "rsi6": 35.0,
+           "vol_ma5_prev": 1.0, "vol_ma20_prev": 1.5,       # 起爆前缩量(D−1 截止)
+           "vol_ratio_20": 2.0, "above_ma20": 1.0, "ma5_gt_ma10": 1.0, "ma_bull": 0.0}
     row.update(overrides)
     return row
 
