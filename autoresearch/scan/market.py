@@ -543,6 +543,33 @@ def _abstention_verdict_line(scan_dir: Path | str) -> str:
     )
 
 
+def _e6_readout_line(scan_dir: Path, *, n_ow: int) -> str | None:
+    """E6 active 且当日决策文件在场 → 「研究评级(证据)· 相对 BUY(决策)」一行;否则 None(走 legacy)。
+
+    读模型与 brief ③ 同源(`relative_facts`),措辞同受 `BANNED_RELATIVE_PHRASES` 约束(测试锁)。
+    决策文件缺席/过期(`load_decision` 判 None)= 不能断言今天的 BUY → 诚实走 legacy 段,不编。
+
+    2026-08-21 低位转强波 P0:E6 于 08-19 转 active 后,brief ③ 印 ✅ relative BUY、本段却仍按
+    旧绝对门(卡面 ≥OW)印「0 买·空仓观望」,同一份报告自相矛盾(08-20 实跑:金螳螂)。
+    """
+    from autoresearch.scan.relative_buy import is_active, load_decision
+    from autoresearch.scan.relative_facts import relative_facts
+
+    if not is_active():
+        return None
+    doc = load_decision(scan_dir)
+    rel = relative_facts(doc if isinstance(doc, dict) else None)
+    if not rel.get("present") or rel.get("mode") != "active":
+        return None
+    evidence = f"**研究评级 ≥OW {n_ow} 只**(证据,非决策)"
+    if rel.get("blocked"):
+        why = "、".join(rel.get("blocked_reasons") or []) or "无分桶"
+        return f"- **相对 BUY BLOCKED**(全部候选被硬资格否决:{why})· {evidence}"
+    return (f"- {evidence} · **相对 BUY 1 只**:{rel.get('name') or '—'} {rel.get('code') or '—'}"
+            f"(卡面 {rel.get('research_rating') or '—'};basis={rel.get('basis')},"
+            f"只承诺「当日全集内相对最优」,不承诺绝对收益为正)—— 决策口径见 🧭 ③")
+
+
 def render_funnel_readout(scan_dir: Path | str) -> str:
     """L5 确定性漏斗读数尾注:今日买单(≥OW,含 verify 折回)/ 观察单(skeptic 降级)。
 
@@ -568,7 +595,13 @@ def render_funnel_readout(scan_dir: Path | str) -> str:
                        if v and v["verdict"] in ("降级", "否决") else r)
     buys = [c for c, r in final.items() if r in ("Buy", "Overweight")]
     lines = ["", "### 📉 今日漏斗读数"]
-    if buys:
+    e6_line = _e6_readout_line(scan_dir, n_ow=len(buys))
+    if e6_line is not None:                 # E6 active:BUY 由决策文件独家拥有,研究评级只是证据
+        lines.append(e6_line)
+        if not buys:
+            lines.append(f"  - 为什么没有 ≥OW 卡:{_zero_buy_mechanism(scan_dir, len(final))}")
+            lines.append(f"  - {_abstention_verdict_line(scan_dir)}")
+    elif buys:
         lines.append(f"- **{len(buys)} 买**(≥OW):{_names(scan_dir, buys)}")
     else:
         reg = (market_pack(scan_dir).get("regime") or {}).get("label")
