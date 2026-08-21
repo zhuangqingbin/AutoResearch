@@ -73,24 +73,33 @@ def aggregate(days: list[dict]) -> dict:
             "mean_pp": float(np.mean([d["mean"] for d in days]) * 100)}
 
 
-def group_masks(frame: pd.DataFrame, cfg: dict | None = None) -> dict[str, pd.Series]:
-    """四组掩码(全部走生产同一份谓词/门,不在本文件重写判据)。缺列 → 该组全 False。"""
+def group_masks(frame: pd.DataFrame, cfg: dict | None = None) -> dict[str, pd.Series | None]:
+    """四组掩码(全部走生产同一份谓词/门,不在本文件重写判据)。
+
+    **判据算不出 → `None`(UNMEASURABLE),不是全 False**:本面板缺 `np_yoy/np_qoq/np_yoy_prev`
+    等基本面列时 `lens_reversal` 会 KeyError,若折成全 False,报告里会印出「n_days 0 / nan」——
+    读起来像「这条门一只都不召回」,而真相是「这块面板压根量不了它」。UNMEASURED ≠ CLEAN
+    (同 `scan/structural_audit.py` §纪律 1)。调用方须显式区分并在报告里点名。
+    """
     from autoresearch.common import scoring, turnup
-    false = pd.Series(False, index=frame.index)
+    masks: dict[str, pd.Series | None] = {}
     lt = turnup.lowturn_mask(frame, cfg)
-    masks = {"lowturn": lt.reindex(frame.index).fillna(False).astype(bool) if len(lt) else false}
+    masks["lowturn"] = (lt.reindex(frame.index).fillna(False).astype(bool) if len(lt)
+                        else pd.Series(False, index=frame.index))
     h = scoring.healthy_riser_mask(frame)
-    masks["healthy"] = (h if h is not None else false).fillna(False).astype(bool)
-    try:
-        masks["reversal_old"] = scoring.lens_reversal(frame)["reversal_gate"].fillna(False).astype(bool)
-    except (KeyError, ValueError):
-        masks["reversal_old"] = false
-    try:
-        masks["reversal_confirm"] = (scoring.lens_reversal_confirm(frame)["reversal_confirm_gate"]
-                                     .fillna(False).astype(bool))
-    except (KeyError, ValueError):
-        masks["reversal_confirm"] = false
+    masks["healthy"] = None if h is None else h.fillna(False).astype(bool)
+    for name, lens, col in (("reversal_old", scoring.lens_reversal, "reversal_gate"),
+                            ("reversal_confirm", scoring.lens_reversal_confirm, "reversal_confirm_gate")):
+        try:
+            masks[name] = lens(frame)[col].fillna(False).astype(bool)
+        except (KeyError, ValueError) as exc:
+            masks[name] = None                      # 算不出 ≠ 全不过门
+            _UNMEASURABLE.setdefault(name, f"{type(exc).__name__}: {exc}")
     return masks
+
+
+#: 本次 run 里算不出判据的组 → 原因(进报告 UNMEASURABLE 节;模块级,run_precheck 每次先清空)。
+_UNMEASURABLE: dict[str, str] = {}
 
 
 def enrich_frames(frames: list[pd.DataFrame], piv: dict, P: list[str]) -> list[pd.DataFrame]:
@@ -109,18 +118,21 @@ def enrich_frames(frames: list[pd.DataFrame], piv: dict, P: list[str]) -> list[p
 
 
 def run_precheck(cap_floor: float = 30.0, cfg: dict | None = None):
-    """→ (主表 四组×三尺, 停机裁决, lowturn×主尺 分 regime 表[只读,不进停机规则])。"""
+    """→ (主表 四组×三尺, 停机裁决, lowturn×主尺 分 regime 表[只读], UNMEASURABLE 组→原因)。"""
     from autoresearch.common.regime import classify_regime
     from autoresearch.research import factor_lab as fl
     plan = pd.read_pickle(fl.OUT / "plan.pkl")
     P = plan["P"]
     piv = fl.load_price_pivots(P)
     frames = enrich_frames(fl._all_frames(cap_floor), piv, P)
+    _UNMEASURABLE.clear()
     per_day: dict[tuple[str, str], list[dict]] = {(g, r): [] for g in GROUPS for r in RULERS}
     per_regime: dict[str, list[dict]] = {}
     for fr in frames:
         masks = group_masks(fr, cfg)
         for g in GROUPS:
+            if masks[g] is None:                    # UNMEASURABLE:不生成读数行,交给报告点名
+                continue
             for r in RULERS:
                 if r not in fr.columns:
                     continue
@@ -131,13 +143,15 @@ def run_precheck(cap_floor: float = 30.0, cfg: dict | None = None):
             regime = classify_regime(fr).label          # 研究帧带 pct_60d/above_ma60,同生产判据
         except Exception:  # noqa: BLE001 — 分桶只读,算不出记 NA
             regime = "NA"
-        st_lt = daily_stats(fr, masks["lowturn"], "gap_c1_o2") if "gap_c1_o2" in fr.columns else None
+        st_lt = (daily_stats(fr, masks["lowturn"], "gap_c1_o2")
+                 if (masks["lowturn"] is not None and "gap_c1_o2" in fr.columns) else None)
         if st_lt:
             per_regime.setdefault(regime, []).append(st_lt)
     table = pd.DataFrame([{"group": g, "ruler": r, **aggregate(days)}
-                          for (g, r), days in per_day.items()])
+                          for (g, r), days in per_day.items()
+                          if g not in _UNMEASURABLE])          # 算不出的组不占表行(见 render 的 UNMEASURABLE 节)
     regime_table = pd.DataFrame([{"regime": k, **aggregate(v)} for k, v in sorted(per_regime.items())])
-    return table, stop_rule(table), regime_table
+    return table, stop_rule(table), regime_table, dict(_UNMEASURABLE)
 
 
 def stop_rule(table: pd.DataFrame) -> dict:
@@ -164,7 +178,8 @@ def stop_rule(table: pd.DataFrame) -> dict:
             **base}
 
 
-def render(table: pd.DataFrame, verdict: dict, regime_table: pd.DataFrame | None = None) -> str:
+def render(table: pd.DataFrame, verdict: dict, regime_table: pd.DataFrame | None = None,
+           unmeasurable: dict[str, str] | None = None) -> str:
     lines = ["# 低位转强 · Gate 0 读数", "",
              f"**裁决:{verdict.get('verdict')}** —— {verdict.get('why', '')}", "",
              "| 组 | 尺 | n_days | 每日 n 中位 | 组内均值 pp | 相对超额 pp | t | 胜率 |",
@@ -179,6 +194,9 @@ def render(table: pd.DataFrame, verdict: dict, regime_table: pd.DataFrame | None
         for row in regime_table.itertuples(index=False):
             lines.append(f"| {row.regime} | {row.n_days} | {row.n_med_per_day:.0f} | "
                          f"{row.excess_mean_pp:+.2f} | {row.t:.2f} | {row.hit_mean:.0%} |")
+    if unmeasurable:
+        lines += ["", "## UNMEASURABLE(本面板算不出判据的组 —— **不是**「量过了、是 0」)", ""]
+        lines += [f"- `{g}`:{why}" for g, why in sorted(unmeasurable.items())]
     lines += ["", FOOTNOTE, "",
               f"_停机规则(先写后看):相对超额 ≤{STOP_EXCESS_PP}pp ∧ t ≤{STOP_T} ∧ n_days "
               f"≥{STOP_MIN_DAYS} → STOP_P3;每日旗亮中位 <{SPARSE_MED} → SPARSE;其余 PROCEED。_"]
@@ -233,8 +251,8 @@ def main(argv: list[str] | None = None) -> int:
         md = render(table, {"verdict": "LIVE", "why": note})
         out = Path(a.out) if a.out else ws.reports_root() / "research" / "lowturn_live.md"
     else:
-        table, verdict, regime_table = run_precheck(a.cap_floor, cfg)
-        md = render(table, verdict, regime_table)
+        table, verdict, regime_table, unmeasurable = run_precheck(a.cap_floor, cfg)
+        md = render(table, verdict, regime_table, unmeasurable)
         out = Path(a.out) if a.out else ws.reports_root() / "research" / "lowturn_precheck.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(md, encoding="utf-8")

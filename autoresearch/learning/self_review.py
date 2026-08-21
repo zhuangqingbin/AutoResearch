@@ -709,6 +709,69 @@ def card_v4_marker_lint(scan_dir, date_str: str) -> list[dict]:
     return out
 
 
+LIVENESS_CHECK = "通道活性·名义启用实际空召回"
+LIVENESS_ESCALATE_STREAK = 3
+
+
+def _channel_rows(path) -> dict[str, int] | None:
+    """L1_channels.csv → {channel: 行数};缺/坏文件 → None。"""
+    import contextlib
+
+    import pandas as pd
+    with contextlib.suppress(Exception):
+        if path.exists():
+            df = pd.read_csv(path, dtype={"code": str})
+            if "channel" in df.columns:
+                return df["channel"].astype(str).value_counts().to_dict()
+    return None
+
+
+def channel_liveness_lint(scan_dir, date_str: str, *, recall_channels=None,
+                          history_days: int = LIVENESS_ESCALATE_STREAK) -> list[dict]:
+    """启用通道 0 召回探针(2026-08-21 低位转强波 §5.3)。
+
+    `reversal_confirm` 名义启用实际恒空 4 周+无人发现(起爆硬门列从未接入 L1 帧)——这类死法
+    没有任何报错,只有 `L1_channels.csv` 里那一路恒 0 行。探针:config `funnel.recall_channels`
+    里的每一路在当日 `L1_channels.csv` 计行,0 行 → **warn**(恒 warn:`fail` 会触发 GATE4 阻断
+    发布,探针职责是可见性不是停机);连续 ≥`history_days` 个扫描日 0 行 → detail 加 🔴 前缀。
+    `recall_channels=None` → 读 config;config 缺/空 → 不知道谁启用,返回 []。全部 presence-gated,
+    绝不抛异常。
+
+    同族前科:「自动学习的腿必须有一个会变的量做断言,否则它死了也像活着」(权重自动重标定
+    连续 4 次 NO-OP 空转 2 周)。
+    """
+    from pathlib import Path
+    scan_dir = Path(scan_dir)
+    if recall_channels is None:
+        try:
+            from autoresearch.scan.user_config import load_user_config
+            recall_channels = (load_user_config().get("funnel") or {}).get("recall_channels")
+        except Exception:  # noqa: BLE001 — 配置层故障不挡自检
+            recall_channels = None
+    if not recall_channels:
+        return []
+    today = _channel_rows(scan_dir / "L1_channels.csv")
+    if today is None:
+        return []
+    prior_days = sorted((p for p in scan_dir.parent.iterdir()
+                         if p.is_dir() and p.name < scan_dir.name), reverse=True)
+    out: list[dict] = []
+    for ch in recall_channels:
+        if int(today.get(ch, 0)) > 0:
+            continue
+        streak = 1
+        for day in prior_days:
+            counts = _channel_rows(day / "L1_channels.csv")
+            if counts is None or int(counts.get(ch, 0)) > 0:
+                break
+            streak += 1
+        prefix = "🔴" if streak >= history_days else ""
+        out.append({"check": LIVENESS_CHECK, "severity": "warn", "code": ch,
+                    "detail": f"{prefix}{ch} 当日 L1_channels.csv 0 行(连续 {streak} 个扫描日)"
+                              "—— 名义启用实际空召回:列没接上/门写死/取数坏,先查再谈 edge"})
+    return out
+
+
 def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
     """产物形状 lint(十三探针,零 LLM;design: 2026-07-13-next-optimization-survey.md 线 C
     + 2026-07-22 dossier design Wave1 ⑤ + 2026-07-23 终审 I-2 + Wave9 B-3 + Wave11 D4 + T17)。

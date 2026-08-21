@@ -65,3 +65,19 @@ def test_render_has_fixed_observation_footnote_and_optional_regime_section():
                          "t": 0.8, "hit_mean": 0.52, "mean_pp": 0.1}])
     md2 = lp.render(table, lp.stop_rule(table), reg)
     assert "分 regime" in md2 and "| range |" in md2
+
+
+def test_unmeasurable_group_is_reported_not_silently_zero():
+    """判据缺列算不出的组必须显式标 UNMEASURABLE,**不得**渲染成一行 nan 冒充「量过了、是 0」。
+
+    真事故:factor_lab 研究面板无 np_yoy/np_qoq/np_yoy_prev → lens_reversal KeyError → 旧实现
+    把该组静默折成全 False,报告里印出「n_days 0 / nan」,读起来像「旧 reversal 门一只都不召回」,
+    而真相是「这块面板压根量不了它」。同族家训:UNMEASURED ≠ CLEAN(structural_audit §纪律1)。"""
+    df = pd.DataFrame({"code": ["000001"], "pct_60d": [-30.0], "gap_c1_o2": [0.01]})
+    masks = lp.group_masks(df)
+    assert masks["reversal_old"] is None                   # 缺 np_yoy 家族 → 算不出,不是 False
+    table = pd.DataFrame([{"group": "lowturn", "ruler": "gap_c1_o2", "n_days": 60,
+                           "n_med_per_day": 4.0, "excess_mean_pp": 0.1, "t": 0.4,
+                           "hit_mean": 0.5, "mean_pp": 0.0}])
+    md = lp.render(table, lp.stop_rule(table), None, unmeasurable={"reversal_old": "缺列 np_yoy"})
+    assert "UNMEASURABLE" in md and "reversal_old" in md and "缺列 np_yoy" in md

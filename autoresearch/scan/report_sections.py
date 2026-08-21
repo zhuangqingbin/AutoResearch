@@ -868,6 +868,11 @@ def _self_review_banner(scan_dir: Path, rows: list[dict], summary_text: str,
         if shape_extra:
             res["failures"].extend(shape_extra)
             res["n_warn"] = res.get("n_warn", 0) + sum(1 for x in shape_extra if x.get("severity") == "warn")
+    with contextlib.suppress(Exception):                            # 通道活性探针(2026-08-21 低位转强波 §5.3,恒 warn)
+        live_extra = self_review.channel_liveness_lint(scan_dir, scan_dir.name)
+        if live_extra:
+            res["failures"].extend(live_extra)
+            res["n_warn"] = res.get("n_warn", 0) + len(live_extra)
     with contextlib.suppress(Exception):                            # 配置生效对账(Wave11 B4,usage_reconcile)
         # ledger_path 显式算成 scan_dir 的兄弟目录(scan_dir.parent.parent / learning / ...),
         # 不依赖 usage_reconcile_lint 的 cwd 相对缺省——scan_dir 在生产里本来就是
