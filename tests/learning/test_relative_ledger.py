@@ -653,3 +653,35 @@ def test_nightly_names_table_contains_relative_ledger():
                                else nightly_close.run)
     assert '"relative_ledger"' in source
     assert source.index('"relative_ledger"') < source.index('"evidence_manifest"')
+
+
+# ───────────────────────── lane 分账列(2026-08-21 低位转强波 §9) ─────────────────────────
+
+
+def test_row_carries_l3_lane_when_judged_present(tmp_path):
+    from autoresearch.learning import relative_ledger as rl
+    scan = tmp_path / "scan"
+    day = scan / "2026-08-20"
+    day.mkdir(parents=True)
+    (day / "_l3_judged.json").write_text(json.dumps(
+        [{"code": "002081", "lane": "lowturn", "finalist": True, "conviction": 60}]),
+        encoding="utf-8")
+    doc = {"date": "2026-08-20", "mode": "active", "rule_version": "e6.v2.0", "ruler": "gap_c1_o2",
+           "buys": [{"code": "002081", "basis": "relative", "rank": 1}],
+           "candidates": [{"code": "002081", "name": "金螳螂", "eligible": True, "rank": 1,
+                           "relative_decision_score": 0.7, "research_rating": "Underweight"}],
+           "counts": {"candidates": 9, "eligible": 6}, "benchmark": {"market": {}, "sector": {}}}
+    row = rl.row_from_decision(doc, scan)
+    assert row["lane"] == "lowturn"
+    assert "lane" not in rl._DECISION_IDENTITY_FIELDS      # 身份不变 → 不触发冻结
+    md = rl.render([row])
+    assert "| lane |" in md and "| lowturn |" in md
+
+
+def test_row_lane_none_without_judged(tmp_path):
+    from autoresearch.learning import relative_ledger as rl
+    scan = tmp_path / "scan"
+    (scan / "2026-08-20").mkdir(parents=True)
+    doc = {"date": "2026-08-20", "mode": "active", "buys": [], "candidates": [],
+           "counts": {}, "benchmark": {}}
+    assert rl.row_from_decision(doc, scan)["lane"] is None

@@ -305,6 +305,8 @@ E6 相对 BUY 转正(`scan_config.jsonc` 的 `relative_buy.mode` 一行翻 `acti
 
 ## 运维细节(SKILL 只留指针;跑动时不需要逐字读)
 
+- **低位转强活体双尺观察**(只读,手动):`uv run --no-sync python -m autoresearch.research.lowturn_precheck --live` → `reports_claude/research/lowturn_live.md`(lane=lowturn 的 finalist × `retro/attribution.csv`,主尺与 `fwd_5_oc`/`fwd_10_oc` 并列)。≥10 个有 lowturn finalist 的成熟日后,与 `channel_ledger`(reversal_confirm lane)一起提裁决提案。**参考尺只观察,决策尺不变**(2026-07-10 / 08-05 裁定)。回测侧同一命令去掉 `--live` = Gate 0 复跑。
+
 ### 夜间预热(launchd)
 
 交易日 19:30 自动 `scripts/prewarm.sh`(= `python -m autoresearch.scan.prewarm`,湖预拉+温度;calibrate 默认不跑防污染 changelog/DSR 计数)。跑过预热的日子开扫全湖命中(L0-L2 ~6.5m);**当天有没有预热看汇总屏「预热(夜间):✓/✗」行**。安装:

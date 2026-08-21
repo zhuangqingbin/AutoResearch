@@ -288,6 +288,24 @@ def outcome_for(date: str, code: str | None, scan_root: Path) -> dict:
 
 
 # ── 一份决策文档 → 一行账 ──────────────────────────────────────────────────
+def _l3_lane(scan: Path, date: str, code: str | None) -> str | None:
+    """当日 `_l3_judged.json` 里该码的 L3 lane(分账用;缺文件/缺码 → None)。
+
+    2026-08-21 低位转强波 §9:让「BUY 落在哪个画像上」可分账(healthy / lowturn / value…)。
+    **只读、不进 `_DECISION_IDENTITY_FIELDS`** —— 决策身份不变,旧行不会因新增本列被 `_freeze`
+    判成「已登记观测被改写」。
+    """
+    if not code:
+        return None
+    doc = _json_doc(scan / date / "_l3_judged.json")
+    if not isinstance(doc, list):
+        return None
+    for entry in doc:
+        if isinstance(entry, dict) and _code(entry.get("code")) == code:
+            return str(entry.get("lane") or "") or None
+    return None
+
+
 def row_from_decision(doc: dict, scan_root: Path | str | None = None) -> dict:
     """纯派生:决策文档(+ 成熟后的 attribution)→ 一行账。无时序量,byte 稳定。"""
     scan = Path(scan_root or SCAN_ROOT)
@@ -316,6 +334,7 @@ def row_from_decision(doc: dict, scan_root: Path | str | None = None) -> dict:
         "pinned": bool((pick or {}).get("pinned")),
         "rank": (pick or {}).get("rank"),
         "research_rating": (pick or {}).get("research_rating"),
+        "lane": _l3_lane(scan, date, code),      # L3 画像分账(只读;不进决策身份)
         "relative_decision_score": _round((pick or {}).get("relative_decision_score")),
         "faces": {face: _round(((pick or {}).get("faces") or {}).get(face))
                   for face in _FACES} if pick else {},
@@ -622,9 +641,9 @@ def render(rows: list[dict], *, legacy_ow: dict | None = None) -> str:
         "",
         "## 逐日",
         "",
-        "| 日期 | 状态 | 影子 BUY | 评级 | 📌 | score | 四面(目标/召回/证据/风险) | "
+        "| 日期 | 状态 | 影子 BUY | 评级 | lane | 📌 | score | 四面(目标/召回/证据/风险) | "
         f"`{REL_GAP_RULER}` | `{REL_MARKET}` | `{REL_SECTOR}` | 成熟 | 备注 |",
-        "|---|---|---|---|---|---:|---|---:|---:|---:|---|---|",
+        "|---|---|---|---|---|---|---:|---|---:|---:|---:|---|---|",
     ]
     weak_days: list[str] = []
     for row in rows:
@@ -642,7 +661,8 @@ def render(rows: list[dict], *, legacy_ow: dict | None = None) -> str:
         pick = (f"{row.get('name') or '—'}({row.get('code')})" if row.get("code") else "—")
         lines.append(
             f"| {row.get('date')} | {row.get('status')} | {pick} | "
-            f"{row.get('research_rating') or '—'} | {'📌' if row.get('pinned') else ''} | "
+            f"{row.get('research_rating') or '—'} | {row.get('lane') or '—'} | "
+            f"{'📌' if row.get('pinned') else ''} | "
             f"{_num(row.get('relative_decision_score'))} | {_faces_cell(row)} | "
             f"{_pct(gap)} | {_pct(outcome.get(REL_MARKET))} | "
             f"{_pct(outcome.get(REL_SECTOR))} | {outcome.get('status', '—')} | {note} |")
