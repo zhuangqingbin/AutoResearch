@@ -27,15 +27,16 @@ tools: Read, Write, Grep, Glob
 
 ## 选股硬约束(来自用户反馈,违反即失败)
 - **A. finalist 中「健康上涨」画像占比 ≥ 1/3(比例制,有够格候选才凑,无则不硬凑)**:pct_60d 温和正(0~40%)+ main_net>0 + cmf/obv 同向正 + 估值不透支。健康上涨稀缺时**优先纳入并排前列**;够格候选不足 1/3 时不得为凑比例塞入不合格票。judged 总量仍 ~20–28 只(finalist+bench);**bench 判断质量不许摆烂**——bench 里每只仍按 6 维 rubric 认真判断,账本会追踪 bench 里有没有藏该进 finalist 的够格票。
-- **B. 绝不选「下跌趋势的票」当 pick(即便只想给 Hold)**:死叉 / 价在所有均线下 / main_net<0,**即便高股息·低 PE·防御**,只要没有「真吸筹(底部放量 + 主力转正 + cmf/obv 转正)」且没有「带日期催化」,一律不选入。深跌落刀(pct_60d<−20 且无主力)直接弃。用户不想在报告里看到任何下跌趋势票被当 pick。
+- **B. 绝不选「下跌趋势的票」当 pick(即便只想给 Hold)**:死叉 / 价在所有均线下 / main_net<0,**即便高股息·低 PE·防御**,只要没有「真吸筹(底部放量 + 主力转正 + cmf/obv 转正)」且没有「带日期催化」,一律不选入。深跌落刀(pct_60d<−20 且无主力)直接弃。用户不想在报告里看到任何下跌趋势票被当 pick。**例外(2026-08-21)**:表内 `lowturn` 旗亮的票**不算下跌趋势票**——它已被确定性核过「跌过(距 60 日高 ≥15% 且 60 日涨幅 <10)∧ 站回 MA20 ∧ MA5>MA10 ∧ 近 5 日为正 ∧ 放量 ∧ 主力或 CMF 转正 ∧ 非健康上涨」,B 条对其不适用;但仍须过②资金真与⑥兑现机制,thesis 必须写明「低位转强」并回答 D+1 谁来买。
 - **C. 保护超卖反转簇**:某板块成簇出现且 composite 高但被动量压制(超卖),可保留 1–2 只龙头,但仍须满足 B 的吸筹/催化门槛。
+- **G. 低位转强席位(2026-08-21)**:finalist 中 `lowturn` 旗亮且 conviction≥55 的票 **1–2 席**(有够格候选才给,**无则 0,不硬凑**;确定性层只兜底 1 席)。这类票 `lane` 必须写 `lowturn`(与健康上涨分账追踪,两者定义互斥)。**证据边界,写 thesis 时必须清楚**:该画像在本系统的决策尺(隔夜 gap_c1_o2)上历史相对超额为 **−0.24pp**(132 日,显著)——它进 finalist 的理由是「现任 healthy 画像同样为负(−0.17pp)、而它打开了候选池形状」,**不是**「它隔夜能赚」;它的正超额出现在 5~10 日尺(+0.63/+0.99pp)。所以旗亮**不等于**看多:仍按 6 维 rubric 独立判,写不出两日内兑现机制的照样不选。
 - **D. trend lane 高确信(conviction≥70)历史被 L4 翻案 33%(n=52)**——给 trend lane 高分前,先在 thesis 里自证"为什么这次不会被深核翻案"(主力真实/估值可消化/催化确切)。
 - **E(误读预警)**:表有 misread 列时,以成长/资金/空间为核心论点且对应旗亮(低基/背离/套牢)的票,thesis 必须一句自证为何非陷阱;无法自证 → 不得入选。
 - **F(资金口径失真)**:表内 `main_dist` 列标「反号」(主力净额与净占比符号相反)或 misread 列亮「背离」旗的票,**主力资金一律不得作为入选/OW 论点** —— 占比看着好而绝对净额为负,说明当日主力在流出,那个占比是窗口放大出来的假象。若凭其它证据(催化/估值/技术)仍要入选,thesis 必须显式写一句「资金证据不可用」并给出替代论据;把反号旗当多头论点用 = 直接失败。
 
 ## 输出
 把判断过的 ~20–28 只(finalist + bench)写成 **JSON 数组**,用 Write 落 `context_claude/scan/<date>/_l3_judged.json`。每元素字段(严格):
-`code`(表内原样,保前导零)、`name`、`sector`(表内 industry)、`lenses`(命中的 5 维,逗号分隔)、`conviction`(0-100)、`fragility`(最大脆弱点一句)、`thesis`(多头论点一句,数字出自表)、`mechanism`(一句,兑现机制,necessity 与 thesis 同级)、`risk`(红队一句)、`catalyst`(催化,带日期最好)、`triage_lean`(OW|Hold|UW)、`lane`(trend|growth|reversion|accumulation|main|value|healthy)、`pct_60d`(表内数字)、`sentiment`(看多|中性|看空)、**`finalist`**(true|false,新字段)。
+`code`(表内原样,保前导零)、`name`、`sector`(表内 industry)、`lenses`(命中的 5 维,逗号分隔)、`conviction`(0-100)、`fragility`(最大脆弱点一句)、`thesis`(多头论点一句,数字出自表)、`mechanism`(一句,兑现机制,necessity 与 thesis 同级)、`risk`(红队一句)、`catalyst`(催化,带日期最好)、`triage_lean`(OW|Hold|UW)、`lane`(trend|growth|reversion|accumulation|main|value|healthy|lowturn)、`pct_60d`(表内数字)、`sentiment`(看多|中性|看空)、**`finalist`**(true|false,新字段)。
 
 `finalist:true` 者 **7–10 只**(数量看当天质量):**conviction≥75 必须 true**(误杀保险,确定性层会强制补入)——除非命中硬约束 B/E(此时在 thesis/risk 里写明为何不选,即便 conviction 高);**conviction<55 禁止 true**;够格不足 7 只就出更少,**禁止凑数**(宁缺毋滥)。`finalist:false` 即 **bench**——不是弃权,仍要按 6 维 rubric 认真判断,账本会追踪 bench 里有没有藏该进 finalist 的够格票。
 

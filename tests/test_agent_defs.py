@@ -115,7 +115,8 @@ def test_l3_rank_anchors_present():
     存在性检查,不做双侧同步(与 test_l4_card_contract_anchors_synced 的双文件模式不同)。
     """
     agent = _agent_text("l3-rank")
-    for a in ("兑现机制", "≥70", "mechanism", "finalist", "bench", "≥75", "宁缺毋滥"):
+    for a in ("兑现机制", "≥70", "mechanism", "finalist", "bench", "≥75", "宁缺毋滥",
+              "lowturn", "低位转强"):     # 2026-08-21:B 条例外 + G 条席位 + lane 枚举
         assert a in agent, f"l3-rank 缺契约锚「{a}」"
 
 
