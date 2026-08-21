@@ -21,6 +21,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from autoresearch.common import workspace as ws
@@ -42,12 +43,22 @@ def _recall_gate_a(df: pd.DataFrame, min_amount_yi: float = 0.0, min_list_days: 
 
 
 _VOL_MIN_DAYS = 10          # 少于 10 个交易日算不出 20 日 CMF/OBV —— 与原 `len(days) < 10` 同阈值
+_PANEL_LOOKBACK = 60        # 2026-08-21 低位转强波:20→60。20 日组**仍只喂最后 20 列**(等值锁见 tests/scan/test_frame.py)
+_TURNUP_MIN_DAYS = 40       # 低位转强面板列(turnup.PANEL_COLS)的 B 级底线:不足 → 整列 NaN + record_degradation,不阻断
 
 
-def _harvest_vol_series(codes, analysis_date: str, lookback: int = 20) -> pd.DataFrame:
+def _harvest_vol_series(codes, analysis_date: str, lookback: int = _PANEL_LOOKBACK) -> pd.DataFrame:
     """拉近 ~lookback 交易日 daily(high/low/close/amount)→ vol_series 算多日量价因子 per code。
 
     供 L1 召回的 **volprice 组**(快照层本来无序列)。tushare bulk by date(~lookback 次)→ pivot。
+
+    **2026-08-21 起 lookback 60**(低位转强波 §4.2):四个 20 日因子(cmf_20/obv_mom_20/
+    price_vs_vwap_20/breakout_vol_20)窗口**仍是最后 20 列**、逐元素不变(等值锁在
+    `tests/scan/test_frame.py::test_harvest_vol_series_lookback60_keeps_20d_factors_identical`);
+    多出来的历史只喂 `turnup.PANEL_COLS`(dist_low/high_60、days_no_new_low、vol_ma*_prev、
+    pct_5d/20d、above_ma20、ma5_gt_ma10)。已结算日全部湖命中零网络。**面板列是 B 级**:
+    不足 `_TURNUP_MIN_DAYS` 个交易日 → 整列 NaN + `record_degradation`,**不抛**(A 级只有
+    20 日 volprice 组那一道,见下)。
 
     **失败即抛 `DataContractError`,不再静默返回空帧**(2026-07-12 用户裁定 + 事故复盘)。
     原实现三层吞异常 → 任何失败都退化成空帧 → cmf_20/obv_mom_20 **整列不落盘** →
@@ -108,12 +119,24 @@ def _harvest_vol_series(codes, analysis_date: str, lookback: int = 20) -> pd.Dat
     piv = {f: long.pivot_table(index="code", columns="date", values=f)
            for f in ("high", "low", "close", "amount")}
     win = sorted(piv["close"].columns)
-    H, L, C, A = (piv[f][win] for f in ("high", "low", "close", "amount"))
+    win20 = win[-20:]                                   # 20 日组窗口不变(byte-identical 契约)
+    H, L, C, A = (piv[f][win20] for f in ("high", "low", "close", "amount"))
     out = pd.DataFrame({"code": list(C.index)})
-    out["cmf_20"] = vol_series.cmf(H, L, C, A, win).to_numpy()
-    out["obv_mom_20"] = vol_series.obv_momentum(C, A, win).to_numpy()
-    out["price_vs_vwap_20"] = vol_series.price_vs_vwap(H, L, C, A, win).to_numpy()
-    out["breakout_vol_20"] = vol_series.breakout_on_volume(C, A, win).to_numpy()
+    out["cmf_20"] = vol_series.cmf(H, L, C, A, win20).to_numpy()
+    out["obv_mom_20"] = vol_series.obv_momentum(C, A, win20).to_numpy()
+    out["price_vs_vwap_20"] = vol_series.price_vs_vwap(H, L, C, A, win20).to_numpy()
+    out["breakout_vol_20"] = vol_series.breakout_on_volume(C, A, win20).to_numpy()
+    from autoresearch.common import turnup
+    if len(win) >= _TURNUP_MIN_DAYS:                    # 低位转强面板列(B 级增强,不进 A 级出帧契约)
+        tp = turnup.panel_factors(piv, win)
+        out = out.merge(tp, left_on="code", right_index=True, how="left")
+    else:
+        from autoresearch.data.contracts import record_degradation
+        record_degradation("daily", f"低位转强面板仅 {len(win)} 个交易日(<{_TURNUP_MIN_DAYS}),"
+                           f"{'/'.join(turnup.PANEL_COLS[:3])}… 整列缺省(B 级,不阻断)",
+                           key="turnup_panel")
+        for c in turnup.PANEL_COLS:
+            out[c] = np.nan
     return out
 
 

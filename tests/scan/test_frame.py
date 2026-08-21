@@ -154,3 +154,66 @@ def test_frame_cli_smoke(monkeypatch, capsys, tmp_path):
     assert contract["stage_budgets"]["cache_hit_min"] == 0.85
     assert contract["stage_budgets"]["min_real_scans"] == 10
     assert contract["stage_budgets"]["concurrency"]["tushare"] == 4
+
+
+# ───────────────────────── _harvest_vol_series:60 日面板(P1 低位转强波) ─────────────────────────
+
+
+def _fake_daily_world(monkeypatch, n_days: int, n_codes: int = 8, seed: int = 0):
+    """伪造 tushare 日历 + 湖:`get_or_fetch('daily', {'trade_date': d})` 返回当日全市场日线。"""
+    import numpy as np
+
+    from datetime import date as _date, timedelta as _td
+
+    rng = np.random.default_rng(seed)
+    # 真实连续日历日(生产 `_harvest_vol_series` 会对 `last` 做 strptime 反推 start 窗口,
+    # 假日期串如 20260332 会炸进 A 级契约异常 —— 夹具必须给合法日期)
+    d0 = _date(2026, 3, 1)
+    days = [(d0 + _td(days=i)).strftime("%Y%m%d") for i in range(n_days)]
+    codes = [f"{600000 + i:06d}" for i in range(n_codes)]
+    world = {}
+    for d in days:
+        close = rng.uniform(5, 50, n_codes)
+        world[d] = pd.DataFrame({"ts_code": [f"{c}.SH" for c in codes], "trade_date": d,
+                                 "high": close * 1.02, "low": close * 0.98, "close": close,
+                                 "amount": rng.uniform(1e4, 1e6, n_codes)})
+    monkeypatch.setattr("autoresearch.data.tushare_source._pro", lambda: object(), raising=True)
+    monkeypatch.setattr("autoresearch.data.tushare_source.resolve_momentum_dates",
+                        lambda pro, d: (days[-1], days[0], days[0]), raising=True)
+    monkeypatch.setattr("autoresearch.data.tushare_source._trade_days",
+                        lambda pro, start, last: days, raising=True)
+    monkeypatch.setattr("autoresearch.data.cache.get_or_fetch",
+                        lambda endpoint, params, today=None: world[params["trade_date"]].copy(),
+                        raising=True)
+    return codes
+
+
+def test_harvest_vol_series_lookback60_keeps_20d_factors_identical(monkeypatch):
+    """lookback 20→60 后,cmf_20/obv_mom_20/price_vs_vwap_20/breakout_vol_20 逐元素不变(byte 契约),
+    且追加 turnup.PANEL_COLS 十列。"""
+    from autoresearch.common import turnup
+    from autoresearch.data import contracts
+
+    codes = _fake_daily_world(monkeypatch, n_days=70)
+    contracts.clear_degradations()
+    a = scan_frame._harvest_vol_series(codes, "2026-05-20", lookback=60).set_index("code")
+    b = scan_frame._harvest_vol_series(codes, "2026-05-20", lookback=20).set_index("code")
+    for col in ("cmf_20", "obv_mom_20", "price_vs_vwap_20", "breakout_vol_20"):
+        pd.testing.assert_series_equal(a[col], b[col], check_names=False)
+    assert set(turnup.PANEL_COLS) <= set(a.columns)
+    assert a["vol_ratio_20"].notna().all() and a["above_ma20"].isin([0.0, 1.0]).all()
+    assert scan_frame._PANEL_LOOKBACK == 60 and scan_frame._harvest_vol_series.__defaults__[0] == 60
+
+
+def test_harvest_vol_series_short_panel_degrades_not_raises(monkeypatch):
+    """面板 <_TURNUP_MIN_DAYS:十列整列 NaN + B 级降级记账(key=turnup_panel),不抛、四个 20 日列照算。"""
+    from autoresearch.common import turnup
+    from autoresearch.data import contracts
+
+    codes = _fake_daily_world(monkeypatch, n_days=25)
+    contracts.clear_degradations()
+    out = scan_frame._harvest_vol_series(codes, "2026-05-20", lookback=60)
+    assert out["cmf_20"].notna().any()
+    assert out[list(turnup.PANEL_COLS)].isna().all().all()
+    keys = [d.get("key") for d in contracts.degradations()]
+    assert "turnup_panel" in keys
