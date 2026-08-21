@@ -51,7 +51,7 @@ L0 选集  →  L1 召回  →  L2 粗排  →  L3 精排(两遍法)      →  L
 | composite | 400/100 | IC 校准复合分 |
 | momentum | 250→188/50 | 趋势龙头(36 日版 quota 下调,unique 超额持续为负) |
 | reversal | 200/50 | 困境反转(旧路;与 reversal_confirm 的 A/B 已于 2026-08-19 结束,见下方 reversal_confirm 行) |
-| **reversal_confirm** | 200/50 | 反转确认四段:低位+企稳缩量+**放量突破硬门**+可交易;无量突破不召回。**2026-08-19 摘出 `recall_channels`,默认停用**(名义启用实际恒空 4 周+——起爆硬门 `vol_ratio_20` 从未接入生产 L1 帧,`common/scoring.py:214-217`;reopen 条件见「开放线头」节) |
+| **reversal_confirm** | 150/50 | 反转确认四段:低位 + 企稳(**D−1 截止**缩量、RSI 20~85)+ **放量起爆硬门**(`vol_ratio_20`≥1.5 ∧ 站回 MA20 ∧ MA5>MA10)+ 可交易;无量突破不召回。**2026-08-21 重开**(08-19 曾因恒空 4 周摘出;数据腿 = `frame` 60 日面板 + `common/turnup.py` 十列,门修法与理由见 design 2026-08-21 §2.3/§5.1 —— 旧③代理 `ma_bull` 与①前置低位定义互斥,只接列不改门仍近空)。与旧 `reversal` 同时活体 A/B,裁决见「开放线头」 |
 | value | 200→312/50 | 行业内低估(36 日版 quota 上调,胜率 57.6%/+0.9% 全路最优) |
 | main_fund | 200→150/50 | 主力净流入 |
 | heat | 200→112/50 | 成交额量级(捞巨额龙头;36 日版 quota 下调,unique 超额持续为负) |
@@ -295,7 +295,7 @@ E6 相对 BUY 转正(`scan_config.jsonc` 的 `relative_buy.mode` 一行翻 `acti
 ## 开放线头(诚实局限)
 
 1. regime 块 horizon 之争(`pr_20260702_001`)待 T+5 数据裁决;risk_off 块样本薄(11 日)。
-2. healthy 通道反事实(`pre_healthy` 影子)、capfloor20 影子——仍在攒 channel_ledger 前向读数,≥10 日再裁。**reversal_confirm 与旧 reversal 的 A/B 已于 2026-08-19 结束**(reversal_confirm 摘出 `recall_channels`:名义启用实际恒空 4 周+,起爆硬门 `vol_ratio_20` 从未接入生产 L1 帧,`common/scoring.py:214-217` presence-gated 对该硬门不生效、缺列即整段判 False)——**reopen 条件:`vol_ratio_20` 接入生产 L1 帧后重开 A/B**,在此之前不再是开放线头。36 日版新配额(value312/momentum188/heat112/healthy112/growth112/main_fund150)已按 `channel_ledger` 36 日累计读数于同日拍板生效,同样不再是开放线头。
+2. healthy 通道反事实(`pre_healthy` 影子)、capfloor20 影子——仍在攒 channel_ledger 前向读数,≥10 日再裁。**reversal_confirm 与旧 reversal 的 A/B 于 2026-08-19 结束、2026-08-21 重开**:08-19 摘出的原因是名义启用实际恒空 4 周+(起爆硬门 `vol_ratio_20` 从未接入生产 L1 帧,缺列即整段判 False);08-21 低位转强波把两件事都做了 —— ① `vol_ratio_20` 等十列经 `frame._harvest_vol_series` 60 日面板 + `common/turnup.py` 接入 L1 帧并入 `keep` 白名单;② 起爆硬门③由 `ma_bull` 改为 `above_ma20 ∧ ma5_gt_ma10`(旧代理含 MA20>MA60,与①「60 日跌 ≥25%」定义互斥,只接列不改门通道仍会近空)。**A/B 重新计时**:配额 150,≥10 扫描日后按 `channel_ledger` 的 `unique_excess_t2` 分 lane 裁决(新路 ≥ 旧路且 ≥0 → 旧路提退役;新路 <0 且旧路 ≥0 → 新路回影子;两路皆负 → 皆提退役)。`self_review.channel_liveness_lint` 逐日盯「启用通道 0 行」,防同族复发。36 日版新配额(value312/momentum188/heat112/healthy112/growth112/main_fund150)已按 `channel_ledger` 36 日累计读数于同日拍板生效,同样不再是开放线头。
 3. attribution 孤儿:非交易日键 fwd 永远无法结算,保持 "—";评级基率 n<10 禁注。
 4. consensus 积累 <60 日不入线上;anns_d 无接口权限 → 公告情感列空、监管旗恒空(`anns_empty_rate`=1.0 即该态,index/L3 表头有显式标注)。
 5. 三门账本/tail_rate 攒 ≥20 日才裁雷分级;温度计菜单/预算联动待相位判定质量复审。

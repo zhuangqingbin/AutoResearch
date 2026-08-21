@@ -83,11 +83,17 @@
     // 切相位后=混合物(回撤侧≈0/上涨侧整区间为负,docs/research/2026-08-04-momentum-phase-
     // conditional-ic.md)——「统一砍 momentum quota」是错处方,相位条件 quota 属 B 类须 registry,
     // 故 quota 维持不动。
-    // 2026-08-19 摘 reversal_confirm(第 9→8 路):名义启用实际恒空 4 周+——其起爆硬门
-    // vol_ratio_20 从未接入生产 L1 帧(common/scoring.py:214-217,presence-gated 对此硬门不生效,
-    // 缺列即整段判 False),与旧 reversal 的 A/B 对照组全程空转。reopen 条件见 STAGES.md
-    // 「开放线头」节:vol_ratio_20 接入生产 L1 帧后重开 A/B。
-    "recall_channels": ["composite", "momentum", "reversal", "value", "main_fund", "heat", "growth", "healthy"],
+    // reversal_confirm 沿革:2026-08-19 摘出(第 9→8 路,名义启用实际恒空 4 周+——起爆硬门
+    // vol_ratio_20 从未接入生产 L1 帧,缺列即整段判 False,与旧 reversal 的 A/B 全程空转);
+    // **2026-08-21 重开(第 8→9 路)**,reopen 条件已满足且门已修:
+    //   ① 数据腿 —— frame._harvest_vol_series 拉 60 日面板 + common/turnup.py 十列(vol_ratio_20/
+    //      above_ma20/ma5_gt_ma10/vol_ma*_prev…)入 keep 白名单,L1 帧真有这些列了;
+    //   ② 门修法 —— ③ 起爆硬门由 ma_bull(MA5>MA10>MA20>MA60 全多头)改为 above_ma20 ∧ ma5_gt_ma10:
+    //      60 日跌 ≥25% 的票起爆当日 MA20 不可能在 MA60 上方,旧代理与①前置低位**定义互斥**,
+    //      只接列不改门通道仍会近空(design 2026-08-21 §2.3);② 缩量改看 D−1 截止、RSI 上限 50→85。
+    // 与旧 reversal **两路同时活体 A/B**:channel_ledger 按 lane 分行,≥10 扫描日后人批裁决去留
+    // (判据见 STAGES.md「开放线头」)。self_review「通道活性」探针盯它 0 行,防同族复发。
+    "recall_channels": ["composite", "momentum", "reversal", "reversal_confirm", "value", "main_fund", "heat", "growth", "healthy"],
     // 各路配额覆盖(channel_ledger advisory 档,36 日版累计裁决 2026-08-19 拍板,取代 2026-07-11
     // 的 18 日版:value 250→312(57.6%胜率/+0.9%最优,加码)、momentum 250→188、heat 150→112、
     // healthy 150→112、growth 150→112(三路 unique 超额持续为负,减码);main_fund 保持 150。
@@ -96,7 +102,8 @@
     // 故不可只写变动键)。accumulation 120→90 未随本次拍板落地——该路已于 2026-07-11 退役出
     // recall_channels(见下方 recall_channels 键),调 quota 无生效点,是幽灵行。
     // 删本行 = 注册表默认 quota。floor 覆盖同名 "channel_floors":{}(未用)。
-    "channel_quotas": { "value": 312, "momentum": 188, "heat": 112, "healthy": 112, "growth": 112, "main_fund": 150 }
+    "channel_quotas": { "value": 312, "momentum": 188, "heat": 112, "healthy": 112, "growth": 112, "main_fund": 150,
+                        "reversal_confirm": 150 }   // 2026-08-21 重开:中档起步(design R6),10 日后按账本调
   },
 
   // ── L2 · 粗排(确定性分层采样,不预测)────────────────────────────────────
