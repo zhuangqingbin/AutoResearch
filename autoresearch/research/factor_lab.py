@@ -336,59 +336,20 @@ def forward_returns(piv: dict, P: list[str], D: str, fwd: int) -> pd.DataFrame:
 def reversal_confirm_factors(piv: dict, P: list[str], D: str) -> pd.DataFrame:
     """反转确认三因子(Plan A1-T2):`vol_ratio_20` / `dist_low_60` / `days_no_new_low`。
 
-    供 `lens_reversal_confirm`(common/scoring.py,Task 3)的起爆日硬门 + 前置低位判定候选,也是
-    本文件 CANDIDATES 的 IC 验证对象。三者共用 piv["low"]/["close"]/["amount"] 的 code×date
-    pivot,窗口严格 ≤D(无前视)。
+    2026-08-21 起**委托 `common.turnup.panel_factors`**(L1 帧、研究面板、L3 旗共用的单一实现);
+    定义与 2026-07-11 原实现逐元素相同(`tests/research/test_factor_lab.py::
+    test_reversal_confirm_factors_delegation_is_value_identical` 锁)。窗口严格 ≤D(无前视):
 
-      * `vol_ratio_20` = D 日成交额 / 近 20 个交易日(含 D)成交额均值(量能倍数;窗口口径镜像
-        既有 cmf_20/breakout_vol_20 等多日量价因子的 `win`;分母 0/NaN → NaN)。
-      * `dist_low_60` = D 收盘价相对「≤D 全部可得历史中 60 日滚动最低价」的溢价 %
-        ((close[D]/low60[D] − 1) × 100)。低点用 `low`(非 close)算,现价用 close;现价恒不低于
-        该滚动最低价 → 结果恒 ≥0。历史不足 60 日(窗口早期)→ 用已有天数的最低价
-        (rolling min_periods=1),量仍良定义,不强制 NaN。
-      * `days_no_new_low` = 截至 D 连续未创 60 日新低的天数:从 D 倒数,数到最近一次「当日 low
-        等于当时 60 日滚动最低价」(即真正创出新低/平历史低点的那天)为止,中间隔了几天;D 当日
-        本身创新低 → 0。**边界**:纳入统计区间里最早一个可得交易日,因 rolling(min_periods=1)
-        平凡地"等于自己的滚动最低价" → 天然是一次"新低"事件,从而给整条 streak 封顶(不会因窗口
-        不够长就误判成"无穷多天未创新低",也不会在 argmax 上越界/崩溃)。
+      * `vol_ratio_20` = D 日成交额 / 近 20 个交易日(含 D)成交额均值(分母 0/NaN → NaN)。
+      * `dist_low_60` = (close[D] / 「≤D 全部可得历史的 60 日滚动最低 low」− 1)×100,恒 ≥0。
+      * `days_no_new_low` = 截至 D 连续未创 60 日新低的天数(D 当日创新低 → 0;窗口首日平凡
+        创新低,给整条 streak 封顶)。
     """
+    from autoresearch.common import turnup
     idx = P.index(D)
-    A, L, C = piv["amount"], piv["low"], piv["close"]
-    codes = C.index
-    out = pd.DataFrame(index=codes)
-
-    win20 = P[max(0, idx - 19):idx + 1]
-    denom20 = A.reindex(columns=win20).mean(axis=1).replace(0, np.nan)
-    amtD = A.reindex(columns=[D]).iloc[:, 0]
-    out["vol_ratio_20"] = amtD / denom20
-
-    hist = P[:idx + 1]
-    low_hist = L.reindex(columns=hist)
-    roll_min60 = low_hist.T.rolling(60, min_periods=1).min().T
-    low60_D = roll_min60.reindex(columns=[D]).iloc[:, 0]
-    closeD = C.reindex(columns=[D]).iloc[:, 0]
-    out["dist_low_60"] = (closeD / low60_D - 1.0) * 100
-
-    is_new_low = (low_hist <= roll_min60 + 1e-9).to_numpy()
-    rev = is_new_low[:, ::-1]
-    out["days_no_new_low"] = rev.argmax(axis=1).astype(float)
-    return out
-
-
-# ─────────────── 隔夜因子第一批(Wave12-T29 / 设计稿 E3;零新采集) ───────────────
-#
-# 三个信号侧因子,全部**只吃已在库的端点**,评估用主尺 `ruler.MAIN_RULER`(gap_c1_o2)。
-# 共同的人口纪律:三者都是**稀疏事件因子**(只有当日上榜/涨停/封板的票才有值),缺席一律
-# NaN 而不是 0 —— 把"没发生这件事"写成 0 会伪造出一个巨大的并列人口,秩相关的分辨力当场归零
-# (`lhb_inst_net` 既有列的语义也是如此,保持一致)。
-#
-# premise-check(2026-08-09 实测,与任务书所写不符,以真数据为准):设计稿把龙虎榜因子的源
-# 写成 `top_list`,但 `context/lake/top_list/` 只有 9 个分区、与 132 个成型日仅交出 8 天;
-# 真正全覆盖(132/132)的是 `top_inst` —— 且它的 `exalter` 列里**同时**有「机构专用」、北向
-# 通道与各家营业部全名,分腿所需的信息全在。故本批的龙虎榜腿改走 `top_inst`。
-
-_INST_SEAT = "机构专用"                       # 机构席位(既有 `lhb_inst_net` 的判据,原样沿用)
-_NORTH_SEATS = ("深股通专用", "沪股通专用", "港股通专用")   # 北向通道:既非机构也非营业部
+    sub = {k: piv[k] for k in ("high", "low", "close", "amount") if k in piv}
+    out = turnup.panel_factors(sub, P[:idx + 1])
+    return out[["vol_ratio_20", "dist_low_60", "days_no_new_low"]]
 
 
 def lhb_seat_net(ti: pd.DataFrame) -> pd.DataFrame:

@@ -695,3 +695,41 @@ def test_render_ic_by_regime_title_carries_ruler(tmp_path, monkeypatch):
                         out_md=str(tmp_path / "ic.md"))
     md_head = (tmp_path / "ic.md").read_text(encoding="utf-8").splitlines()[0]
     assert f"参考尺 {ref}" in md_head, "报表标题没跟着真用的 label_col 走(死字符串又长回来了)"
+
+
+def _legacy_reversal_confirm_factors(piv: dict, P: list[str], D: str) -> pd.DataFrame:
+    """2026-08-21 前的实现,逐字复制作对照(委托 turnup 后数值不得漂移)。"""
+    idx = P.index(D)
+    A, L, C = piv["amount"], piv["low"], piv["close"]
+    codes = C.index
+    out = pd.DataFrame(index=codes)
+    win20 = P[max(0, idx - 19):idx + 1]
+    denom20 = A.reindex(columns=win20).mean(axis=1).replace(0, np.nan)
+    amtD = A.reindex(columns=[D]).iloc[:, 0]
+    out["vol_ratio_20"] = amtD / denom20
+    hist = P[:idx + 1]
+    low_hist = L.reindex(columns=hist)
+    roll_min60 = low_hist.T.rolling(60, min_periods=1).min().T
+    low60_D = roll_min60.reindex(columns=[D]).iloc[:, 0]
+    closeD = C.reindex(columns=[D]).iloc[:, 0]
+    out["dist_low_60"] = (closeD / low60_D - 1.0) * 100
+    is_new_low = (low_hist <= roll_min60 + 1e-9).to_numpy()
+    rev = is_new_low[:, ::-1]
+    out["days_no_new_low"] = rev.argmax(axis=1).astype(float)
+    return out
+
+
+def test_reversal_confirm_factors_delegation_is_value_identical():
+    """委托 turnup.panel_factors 后三因子逐元素等于旧实现(含 NaN 位置;80 日 × 30 码随机面板)。"""
+    rng = np.random.default_rng(7)
+    P = [f"{20260101 + i}" for i in range(80)]
+    codes = [f"{600000 + i:06d}" for i in range(30)]
+    close = pd.DataFrame(rng.uniform(5, 50, (30, 80)), index=codes, columns=P)
+    low = close * rng.uniform(0.95, 1.0, (30, 80))
+    amount = pd.DataFrame(rng.uniform(0, 1e6, (30, 80)), index=codes, columns=P)
+    amount.iloc[3, 70:] = np.nan                     # 缺值位置也要一致
+    piv = {"close": close, "low": low, "amount": amount}
+    for D in (P[0], P[19], P[59], P[79]):
+        old = _legacy_reversal_confirm_factors(piv, P, D)
+        new = fl.reversal_confirm_factors(piv, P, D)
+        pd.testing.assert_frame_equal(new[old.columns], old, check_names=False)
