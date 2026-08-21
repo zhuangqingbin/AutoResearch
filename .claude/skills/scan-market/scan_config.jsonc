@@ -128,7 +128,31 @@
     "two_pass": true,
     "pass1_target": 40,        // 60→40(2026-07-18 线A:影子回放 20 日 mandatory 0 漏、delta 无赢家
                                // 富集);回滚=改回 60 或 two_pass=false;前向守卫=retro.pass1_cut_winners
-    "finalist_max": 10         // finalist tier 上限
+    "finalist_max": 10,        // finalist tier 上限
+    // ── 低位转强第三画像(2026-08-21 低位转强波;design §6.1)────────────────────
+    // 【生效点】scan/l3/prompt.py prepare_l3_table → l3_table_md(lowturn_flag, lowturn_cfg)
+    //   (表内 lowturn 旗列 + 图例)+ scan/l3/triage.py triage_l2_for_l3(lowturn_cap, lowturn_cfg)
+    //   (pass1 强留 ≤pass1_cap)。谓词真身 = common/turnup.lowturn_flag(单一事实源,L1/研究/L3 共用)。
+    //   `enabled: false` 或删本块 = **逐字 parity**(旗列与 pass1 强留同关;merge 守卫⑥在无
+    //   lowturn lane 时天然无操作)——这就是本特性的回滚杆,改一行即可。
+    // ⚖️ **上线理由与证据边界(必须连读)**:Gate 0 132 成型日实测,本画像在**决策尺**
+    //   `gap_c1_o2` 的相对超额 **−0.24pp(t=−6.36)= 显著为负**;之所以仍上线,是因为**现任
+    //   healthy 画像同样显著为负**(−0.17pp,t=−5.74)且量级相当 —— 理由是「不比现任差 +
+    //   打开候选池形状」,**不是**「隔夜能赚」。它在周级尺 fwd_5/fwd_10 才翻正且显著
+    //   (+0.63 / +0.99pp),即兑现窗口 5~10 日 ≠ 隔夜。读数全文:
+    //   docs/research/2026-08-21-lowturn-precheck.md。≥10 扫描日后按 l3_audit/lane 账裁决去留。
+    "lowturn": {
+      "enabled": true,
+      "max_dist_high_60": -15.0,  // 低位:距 60 日高 ≥15%(仍在水下)
+      "max_pct_60d": 10.0,        //   且 60 日涨幅 <10(没涨回去)
+      "min_vol_ratio_20": 1.2,    // 放量(通道硬门 1.5 的放宽档;L3 还有 agent 复核)
+      "min_pct_5d": 0.0,          // 近 5 日为正(转强)
+      "require_above_ma20": true, // 站回 MA20
+      "require_ma5_gt_ma10": true,// 短均线拐头
+      "fund": "main_or_cmf",      // 主力净额>0 或 cmf_20>0;可选 main | cmf
+      "knife_pct_60d": -35.0,     // 落刀:60 日跌超此值且主力不为正 → 不接
+      "pass1_cap": 8              // pass1 强留上限(保护 40 席预算)
+    }
   },
 
   // ── L4 · 活体情报站(sonnet 盲搜 ∥ slim 预取)──────────────────────────────

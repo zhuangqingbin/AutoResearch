@@ -595,3 +595,17 @@ def test_materialized_resolved_is_byte_identical_to_echoed_one(monkeypatch, tmp_
     # 而且 usage_reconcile 真的读的是这一份(不是自己重新解释 config)
     from autoresearch.scan.user_config import load_resolved_agent_config
     assert load_resolved_agent_config(scan_dir) == echoed
+
+
+def test_l3_lowturn_dict_whitelisted(tmp_path):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"l3": {"lowturn": {"enabled": True, "min_vol_ratio_20": 1.2}}}),
+                 encoding="utf-8")
+    assert load_user_config(p)["l3"]["lowturn"] == {"enabled": True, "min_vol_ratio_20": 1.2}
+
+
+def test_l3_lowturn_wrong_type_raises(tmp_path):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"l3": {"lowturn": True}}), encoding="utf-8")   # 应为 object
+    with pytest.raises(ValueError, match="lowturn"):
+        load_user_config(p)

@@ -48,7 +48,7 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
 | L1 | `funnel` | regime_aware·recall_n·l2_n·recall_channels(9路,2026-08-21 重开 reversal_confirm)·channel_quotas(现值 value312·momentum188·heat112·healthy112·growth112·main_fund150·reversal_confirm150)·channel_floors | `universe.run`(`_funnel_overlay`+`knob`);regime_aware 另生效 `prelude.run_prelude`(生产路缺省 true) |
 | L2 | `l2` | sector_cap·(floors) | `universe.run` → `l2_stratify.select_l2` |
 | 旁路 | `sector` | reuse_ttl_days·max_briefs | `sector/reuse.py main` / `sector/pack.py main` |
-| L3 | `l3` | two_pass·pass1_target·finalist_max | `scan/l3/prompt.py prepare_l3_table` / `scan/l3/merge.py write_finalists` |
+| L3 | `l3` | two_pass·pass1_target·finalist_max·lowturn{enabled,阈值×8,pass1_cap} | `scan/l3/prompt.py prepare_l3_table`(旗列)/ `scan/l3/triage.py`(pass1 强留)/ `scan/l3/merge.py write_finalists`(守卫⑥);谓词真身 `common/turnup.lowturn_flag` |
 | L4 | `l4_intel` | enabled·max_queries | `l4-stock.js`(intelOn/maxQ;**缺块=intel 关**)+ `scan/l4/intel_status.py` |
 | L4 | `performance` | streaming_l4 | `scan-market.js`(任务簿流式 vs 旧批量 GATE3) |
 | 闭环 | `learning` | shrink·shrink_k | `learning/shrink.py shrink_config`(4 消费点) |

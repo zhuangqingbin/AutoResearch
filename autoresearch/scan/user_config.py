@@ -109,7 +109,7 @@ _SUB_WHITELIST = {
     "sector": {"reuse_ttl_days", "max_briefs"},
     "pinned": {"cap", "ttl_days"},
     "l4_intel": {"enabled", "max_queries"},
-    "l3": {"two_pass", "pass1_target", "finalist_max"},
+    "l3": {"two_pass", "pass1_target", "finalist_max", "lowturn"},
     "learning": {"shrink", "shrink_k"},
     "budgets": {
         "cache_hit_min", "stage_cost_usd", "stage_wall_seconds", "concurrency",
@@ -146,6 +146,7 @@ _KNOB_TYPES: dict[tuple[str, str], tuple] = {
     ("l2", "floors"): (_t_dict, "object"),
     ("sector", "reuse_ttl_days"): (_t_posint, "正整数"),
     ("sector", "max_briefs"): (_t_posint, "正整数"),
+    ("l3", "lowturn"): (_t_dict, "object"),   # 低位转强阈值块(2026-08-21;键义见 common/turnup.LOWTURN_DEFAULTS)
     ("relative_buy", "mode"): (_t_rbmode, "shadow|active"),
     ("relative_buy", "exclude_pinned"): (_t_bool, "boolean"),
     ("relative_buy", "activate_date"): (_t_date_or_null, "YYYY-MM-DD 或 null"),
