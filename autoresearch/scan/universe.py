@@ -37,6 +37,7 @@ import numpy as np
 import pandas as pd
 
 from autoresearch.common import workspace as ws
+from autoresearch.common.turnup import PANEL_COLS
 
 # 纯打分原语(autoresearch.common.scoring),scan/factor_lab/handler 三处同口径复用。
 from autoresearch.common.scoring import (
@@ -480,7 +481,8 @@ def run(analysis_date: str, cap_floor_yi: float | None = None, include_bj: bool 
                "main_inflow_yi", "main_net_ratio",
                "retail_net_yi", "winner_rate", "chip_concentration", "price_to_cost", "hk_ratio",
                "rsi6", "rsi12", "pe", "pb", "dv_ratio", "np_yoy", "rev_yoy", "roe",
-               "ma_bull", "above_ma60"])
+               "ma_bull", "above_ma60",
+               *PANEL_COLS])          # 2026-08-21 低位转强波:turnup 十列(B 级;缺列在下一行被过滤掉=parity)
     keep = keep + [c for c in ("recall_channels", "n_channels", "best_rank",
                                "pinned", "pinned_note") if c in recall.columns]  # pinned 列 presence-gated:无保送不出现=parity
     recall[[c for c in keep if c in recall.columns]].to_csv(outdir / "L1_recall_top1000.csv", index=False)

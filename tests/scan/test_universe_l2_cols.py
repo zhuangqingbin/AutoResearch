@@ -109,3 +109,13 @@ def test_l2_csv_selection_reason_values_are_from_the_known_vocabulary(monkeypatc
     outdir = run_universe(monkeypatch, tmp_path)
     l2 = pd.read_csv(outdir / "L2_gbdt_top200.csv", dtype={"code": str})
     assert set(l2["selection_reason"].dropna().unique()).issubset(set(L2_SELECTION_REASONS))
+
+
+def test_l1_and_l2_csv_carry_turnup_panel_cols(monkeypatch, tmp_path):
+    """2026-08-21 低位转强波:turnup.PANEL_COLS 十列算了就必须落盘(keep 白名单是唯一出口;
+    price_vs_vwap_20/breakout_vol_20 至今『算了没落』就是反例)。L2 csv 复用 keep,随之带出。"""
+    from autoresearch.common.turnup import PANEL_COLS
+    outdir = run_universe(monkeypatch, tmp_path)
+    for fname in ("L1_scored_full.csv", "L1_recall_top1000.csv", "L2_gbdt_top200.csv"):
+        header = set(pd.read_csv(outdir / fname, nrows=0).columns)
+        assert set(PANEL_COLS) <= header, f"{fname} 缺 {set(PANEL_COLS) - header}"

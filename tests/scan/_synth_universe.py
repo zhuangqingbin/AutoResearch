@@ -27,5 +27,11 @@ def synth_universe(n: int = 400, seed: int = 0) -> pd.DataFrame:
         "chip_concentration": rng.uniform(0.1, 2.0, n), "price_to_cost": rng.uniform(0.7, 1.5, n),
         "hk_ratio": rng.uniform(0, 30, n), "cmf_20": rng.uniform(-0.5, 0.5, n),
         "obv_mom_20": rng.uniform(-1, 1, n), "is_st": False,
+        # 2026-08-21 低位转强波:turnup.PANEL_COLS(生产由 frame._harvest_vol_series 60 日面板算出)
+        "vol_ratio_20": rng.uniform(0.3, 3.0, n), "dist_low_60": rng.uniform(0, 60, n),
+        "dist_high_60": rng.uniform(-60, 0, n), "days_no_new_low": rng.integers(0, 60, n).astype(float),
+        "vol_ma5_prev": rng.uniform(1e4, 1e6, n), "vol_ma20_prev": rng.uniform(1e4, 1e6, n),
+        "pct_5d": rng.uniform(-15, 15, n), "pct_20d": rng.uniform(-30, 30, n),
+        "above_ma20": rng.integers(0, 2, n).astype(float), "ma5_gt_ma10": rng.integers(0, 2, n).astype(float),
     })
     return df

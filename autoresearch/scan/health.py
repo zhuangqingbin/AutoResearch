@@ -27,7 +27,8 @@ _CORE = {"L1_scored_full.csv", "L1_recall_top1000.csv", "L2_gbdt_top200.csv", "f
 
 # NaN 体检的关键因子列(L1_recall 口径;降级 = 该组权限缺/端点挂,IC 读数打折扣)
 _FACTOR_COLS = ["composite", "main_net_ratio", "winner_rate", "chip_concentration",
-                "hk_ratio", "rsi6", "cmf_20", "pe", "np_yoy", "pct_60d"]
+                "hk_ratio", "rsi6", "cmf_20", "pe", "np_yoy", "pct_60d",
+                "vol_ratio_20"]   # 2026-08-21:低位转强面板腿的体检代表列(整组 NaN = 60 日面板没算出来)
 
 _P4_RE = re.compile(r"进入P4倾向[:：]\s*\**(Buy|Overweight|Hold|Underweight|Sell)", re.IGNORECASE)
 
