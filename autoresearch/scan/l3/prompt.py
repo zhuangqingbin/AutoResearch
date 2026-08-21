@@ -415,7 +415,10 @@ def prepare_l3_table(date: str, root: Path | None = None, delta: bool = True,
     if two_pass:
         pass1_target = int(l3_cfg.get("pass1_target", 60))
         df_full = load_l3_input(date, root=base)
-        kept, cut = triage_l2_for_l3(df_full, target=pass1_target)
+        kept, cut = triage_l2_for_l3(
+            df_full, target=pass1_target,
+            lowturn_cap=int(lt_cfg.get("pass1_cap", 8)) if lowturn_on else 0,
+            lowturn_cfg=lt_cfg)
         cut.to_csv(scan_dir / "_l3_pass1_cut.csv", index=False)
         # `_l3_pass1_kept.csv` + meta(design 2026-08-03 §4.4):cut 只说"谁没进",
         # 而 tier-1 反事实要的是"进来的这 K 只各自凭什么进" —— 没有 selection_reason

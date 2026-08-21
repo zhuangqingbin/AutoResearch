@@ -19,7 +19,8 @@ PASS1_REASONS = ("pinned", "conviction_guard", "lane", "backfill")
 RULE_VERSION = "pass1.v2"        # v2 = 本波新增 selection_reason/detail;规则本身未变
 
 
-def triage_l2_for_l3(df: pd.DataFrame, target: int = 60) -> tuple[pd.DataFrame, pd.DataFrame]:
+def triage_l2_for_l3(df: pd.DataFrame, target: int = 60, *, lowturn_cap: int = 0,
+                     lowturn_cfg: dict | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
     """pass1 确定性分诊(零 LLM):L2 ~200 行 → kept(进 pass2/l3-rank 深比较,~target 行)+
     cut(影子,写 `_l3_pass1_cut.csv`,供 attribution 证明分诊没吃掉赢家)。design: plan
     2026-07-12-l3-merge-plan.md Task 1。
@@ -39,6 +40,10 @@ def triage_l2_for_l3(df: pd.DataFrame, target: int = 60) -> tuple[pd.DataFrame, 
        贡献 0 行,不报错。
     ② 多路共振全入:`n_channels >= 3`(真实列,直接可用)。列缺失(如 `recall_mode="composite"`
        的 L2,无 provenance 列)→ 跳过本规则,不报错。
+    ③b lowturn 强留(2026-08-21 低位转强波 §6.2):`lowturn_cap>0` 时,`turnup.lowturn_mask`
+       为真且尚未 mandatory 的行按 `order` 降序取前 `cap` 入 mandatory(`selection_reason=lane`、
+       `selection_detail=lowturn`);`cap<=0`(默认)= 现行为逐字 parity。谓词/阈值真身在
+       `common/turnup.py`,不在这里重造判据。
     ③ healthy lane 全入:`recall_channels` 按 `"|"` 拆分后的集合包含 `"healthy"`(已注册召回
        通道名,见 `recall/channels.py`;集合 membership 判定——镜像 `l2_stratify._style_masks`
        的写法,**不是** `_row_lane` 的"仅取首通道"渲染判据,那是防重复渲染用的、语义不同)。
@@ -119,6 +124,19 @@ def triage_l2_for_l3(df: pd.DataFrame, target: int = 60) -> tuple[pd.DataFrame, 
         mandatory |= healthy
         for i in d.index[healthy]:
             _mark(i, "lane", "healthy")
+
+    if lowturn_cap > 0:                                                  # ③b lowturn 强留(≤cap)
+        from autoresearch.common.turnup import LOWTURN_DEFAULTS, lowturn_mask
+        try:
+            lt = lowturn_mask(d, {**LOWTURN_DEFAULTS, **(lowturn_cfg or {})})
+        except Exception:  # noqa: BLE001 — 旗算不出(列缺/坏值)就不强留,不挡 pass1
+            lt = pd.Series(False, index=d.index)
+        cand = [i for i in d.index[lt.reindex(d.index).fillna(False).astype(bool)]
+                if not mandatory.loc[i]]
+        cand.sort(key=lambda i: order.loc[i], reverse=True)
+        for i in cand[:int(lowturn_cap)]:
+            mandatory.loc[i] = True
+            _mark(i, "lane", "lowturn")
 
     mandatory_idx = list(d.index[mandatory])
     if len(mandatory_idx) > target:

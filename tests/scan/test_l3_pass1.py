@@ -451,3 +451,49 @@ def test_prepare_two_pass_explicit_true_overrides_config_false(tmp_path, monkeyp
 
     prepare_l3_table("2026-07-09", root=base, do_harvest=False, two_pass=True)
     assert (d / "_l3_pass1_cut.csv").exists()
+
+
+# ───────────────────────── ③b lowturn 强留(2026-08-21) ─────────────────────────
+
+
+def _lt_row(code, composite, *, turn=True, **kw):
+    # recall_channels 与其它行同为 composite:否则规则④的通道轮询会把它当「reversal 队列唯一
+    # 成员」第一轮就捞进来,测不出③b 的作用;这里要测的是**分数最低也被强留**。
+    r = _row(code, composite=composite, gbdt_score=composite, n_channels=1,
+             recall_channels="composite")
+    r.update({"pct_60d": -12.0, "dist_high_60": -22.0, "pct_5d": 4.0,
+              "above_ma20": 1.0 if turn else 0.0, "ma5_gt_ma10": 1.0, "vol_ratio_20": 1.6,
+              "main_inflow_yi": 0.8, "cmf_20": 0.05, "main_net_ratio": -0.01, "name": "甲"})
+    r.update(kw)
+    return r
+
+
+def test_triage_lowturn_rows_forced_in_up_to_cap():
+    rows = [_lt_row(f"{i:06d}", 1.0 + i) for i in range(5)]            # 5 只旗亮、分数极低
+    rows += [_row(f"{100 + i:06d}", composite=99.0 - i, gbdt_score=99.0 - i) for i in range(40)]
+    kept, cut = triage_l2_for_l3(pd.DataFrame(rows), target=20, lowturn_cap=3)
+    forced = kept[kept["selection_detail"] == "lowturn"]
+    assert len(forced) == 3 and set(forced["code"]) == {"000004", "000003", "000002"}
+    assert (forced["selection_reason"] == "lane").all()
+
+
+def test_triage_lowturn_cap_zero_is_parity():
+    rows = [_lt_row("000001", 1.0)]
+    rows += [_row(f"{100 + i:06d}", composite=99.0 - i, gbdt_score=99.0 - i) for i in range(30)]
+    a, _ = triage_l2_for_l3(pd.DataFrame(rows), target=10)
+    b, _ = triage_l2_for_l3(pd.DataFrame(rows), target=10, lowturn_cap=0)
+    pd.testing.assert_frame_equal(a, b)
+    assert "000001" not in set(a["code"])
+
+
+def test_triage_lowturn_respects_cfg_and_missing_cols():
+    rows = [_lt_row("000001", 1.0, vol_ratio_20=1.1)]
+    rows += [_row(f"{100 + i:06d}", composite=99.0 - i, gbdt_score=99.0 - i) for i in range(30)]
+    kept, _ = triage_l2_for_l3(pd.DataFrame(rows), target=10, lowturn_cap=3)
+    assert "000001" not in set(kept["code"])                       # 1.1 < 1.2 不亮
+    kept2, _ = triage_l2_for_l3(pd.DataFrame(rows), target=10, lowturn_cap=3,
+                                lowturn_cfg={"min_vol_ratio_20": 1.0})
+    assert "000001" in set(kept2["code"])
+    bare = pd.DataFrame([_row(f"{i:06d}", composite=99.0 - i, gbdt_score=99.0 - i) for i in range(30)])
+    kept3, _ = triage_l2_for_l3(bare, target=10, lowturn_cap=3)     # 缺旗列:不炸,不强留
+    assert len(kept3) == 10
