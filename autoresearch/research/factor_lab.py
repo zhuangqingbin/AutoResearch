@@ -352,6 +352,22 @@ def reversal_confirm_factors(piv: dict, P: list[str], D: str) -> pd.DataFrame:
     return out[["vol_ratio_20", "dist_low_60", "days_no_new_low"]]
 
 
+# ─────────────── 隔夜因子第一批(Wave12-T29 / 设计稿 E3;零新采集) ───────────────
+#
+# 三个信号侧因子,全部**只吃已在库的端点**,评估用主尺 `ruler.MAIN_RULER`(gap_c1_o2)。
+# 共同的人口纪律:三者都是**稀疏事件因子**(只有当日上榜/涨停/封板的票才有值),缺席一律
+# NaN 而不是 0 —— 把"没发生这件事"写成 0 会伪造出一个巨大的并列人口,秩相关的分辨力当场归零
+# (`lhb_inst_net` 既有列的语义也是如此,保持一致)。
+#
+# premise-check(2026-08-09 实测,与任务书所写不符,以真数据为准):设计稿把龙虎榜因子的源
+# 写成 `top_list`,但 `context/lake/top_list/` 只有 9 个分区、与 132 个成型日仅交出 8 天;
+# 真正全覆盖(132/132)的是 `top_inst` —— 且它的 `exalter` 列里**同时**有「机构专用」、北向
+# 通道与各家营业部全名,分腿所需的信息全在。故本批的龙虎榜腿改走 `top_inst`。
+
+_INST_SEAT = "机构专用"                       # 机构席位(既有 `lhb_inst_net` 的判据,原样沿用)
+_NORTH_SEATS = ("深股通专用", "沪股通专用", "港股通专用")   # 北向通道:既非机构也非营业部
+
+
 def lhb_seat_net(ti: pd.DataFrame) -> pd.DataFrame:
     """`top_inst` 逐席位明细 → 每只票 `[code, inst_net, broker_net]`(净买额,单位同源=元)。
 
