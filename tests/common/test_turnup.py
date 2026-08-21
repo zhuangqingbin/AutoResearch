@@ -88,3 +88,70 @@ def test_panel_cols_contract_and_empty_dates_raise():
     assert list(out.columns) == list(turnup.PANEL_COLS) and out.index.name == "code"
     with pytest.raises(ValueError):
         turnup.panel_factors(_piv({"A": [1.0, 2.0]}, P), [])
+
+
+# ───────────────────────── lowturn 画像谓词 ─────────────────────────
+
+
+def _lt_row(**kw):
+    base = {"name": "甲", "dist_high_60": -22.0, "pct_60d": -12.0, "pct_5d": 4.0,
+            "above_ma20": 1.0, "ma5_gt_ma10": 1.0, "vol_ratio_20": 1.6,
+            "main_inflow_yi": 0.8, "cmf_20": 0.05, "main_net_ratio": 0.03}
+    base.update(kw)
+    return base
+
+
+def test_lowturn_perfect_row_is_flagged():
+    assert turnup.lowturn_flag(_lt_row()) is True
+    assert turnup.lowturn_label(_lt_row()) == "转强"
+
+
+@pytest.mark.parametrize("kw", [
+    {"dist_high_60": -8.0},            # 离高点太近 = 没跌过
+    {"pct_60d": 12.0},                 # 60 日已涨回去
+    {"pct_5d": -1.0},                  # 近 5 日不是正
+    {"above_ma20": 0.0},               # 没站回 MA20
+    {"ma5_gt_ma10": 0.0},              # 短均线没拐头
+    {"vol_ratio_20": 1.1},             # 没放量
+    {"main_inflow_yi": -0.2, "cmf_20": -0.01},   # 资金两腿皆负
+    {"pct_60d": -40.0, "main_inflow_yi": 0.0, "cmf_20": 0.1},   # 落刀:深跌且无主力
+    {"name": "ST甲"}, {"name": "甲退"},
+    {"vol_ratio_20": float("nan")}, {"dist_high_60": None},
+])
+def test_lowturn_single_violation_unflags(kw):
+    assert turnup.lowturn_flag(_lt_row(**kw)) is False
+
+
+def test_lowturn_excludes_healthy_riser():
+    """与健康上涨互斥(分账干净):0<pct_60d<40 ∧ main_net_ratio>0 ∧ cmf_20>0 的票归 healthy。"""
+    row = _lt_row(pct_60d=5.0, dist_high_60=-16.0)            # 60 日正、主力占比正、cmf 正 = 健康上涨
+    assert turnup.lowturn_flag(row) is False
+    assert turnup.lowturn_flag(_lt_row(pct_60d=5.0, dist_high_60=-16.0, main_net_ratio=-0.01)) is True
+
+
+def test_lowturn_thresholds_come_from_cfg():
+    assert turnup.lowturn_flag(_lt_row(vol_ratio_20=1.1), {"min_vol_ratio_20": 1.0}) is True
+    assert turnup.lowturn_flag(_lt_row(above_ma20=0.0), {"require_above_ma20": False}) is True
+    assert turnup.lowturn_flag(_lt_row(main_inflow_yi=-1.0), {"fund": "cmf"}) is True
+    assert turnup.lowturn_flag(_lt_row(cmf_20=-1.0), {"fund": "main"}) is True
+    with pytest.raises(ValueError):
+        turnup.lowturn_flag(_lt_row(), {"fund": "bogus"})
+
+
+def test_lowturn_mask_matches_rowwise_and_healthy_agrees_with_scoring():
+    from autoresearch.common.scoring import healthy_riser_mask
+    from tests.scan._synth_universe import synth_universe
+    df = synth_universe(n=300, seed=5)
+    rng = np.random.default_rng(5)
+    df["dist_high_60"] = rng.uniform(-60, 0, len(df))
+    df["pct_5d"] = rng.uniform(-10, 10, len(df))
+    df["above_ma20"] = rng.integers(0, 2, len(df)).astype(float)
+    df["ma5_gt_ma10"] = rng.integers(0, 2, len(df)).astype(float)
+    df["vol_ratio_20"] = rng.uniform(0.3, 3, len(df))
+    mask = turnup.lowturn_mask(df)
+    assert mask.dtype == bool and len(mask) == len(df)
+    assert mask.tolist() == [turnup.lowturn_flag(r) for _, r in df.iterrows()]
+    healthy = healthy_riser_mask(df)
+    assert not (mask & healthy).any()                         # 互斥
+    rowwise = pd.Series([turnup._is_healthy_row(r) for _, r in df.iterrows()], index=df.index)
+    assert rowwise.equals(healthy.astype(bool))               # 行级判定与 scoring 同阈值

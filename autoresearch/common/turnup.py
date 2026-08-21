@@ -81,3 +81,81 @@ def panel_factors(piv: dict, dates: list[str]) -> pd.DataFrame:
     out["above_ma20"] = (close_d > ma20).where(ma20.notna() & close_d.notna()).astype(float)
     out["ma5_gt_ma10"] = (ma5 > ma10).where(ma5.notna() & ma10.notna()).astype(float)
     return out[list(PANEL_COLS)]
+
+
+# ───────────────────────── 画像谓词:低位转强 ─────────────────────────
+
+#: 代码内建默认;jsonc `l3.lowturn` 覆盖(白名单见 scan/user_config.py)。`enabled` 内建 False = parity。
+LOWTURN_DEFAULTS: dict = {
+    "enabled": False,
+    "max_dist_high_60": -15.0,     # 低位:距 60 日高 ≥15%(仍在水下)
+    "max_pct_60d": 10.0,           #   且 60 日涨幅 <10(没涨回去)
+    "min_vol_ratio_20": 1.2,       # 放量(通道硬门 1.5 的放宽档;L3 还有 agent 复核)
+    "min_pct_5d": 0.0,             # 近 5 日为正(转强)
+    "require_above_ma20": True,    # 站回 MA20
+    "require_ma5_gt_ma10": True,   # 短均线拐头
+    "fund": "main_or_cmf",         # 主力净额>0 或 cmf_20>0(资金转正);可选 main | cmf
+    "knife_pct_60d": -35.0,        # 落刀:60 日跌超此值且主力不为正 → 不接
+    "pass1_cap": 8,                # L3 pass1 强留上限(保护 40 席预算;消费点 l3/triage.py)
+}
+LOWTURN_LABEL = "转强"
+_FUND_RULES = ("main_or_cmf", "main", "cmf")
+
+
+def _f(row, key: str) -> float | None:
+    v = row.get(key) if hasattr(row, "get") else None
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if v != v else v          # NaN → None
+
+
+def _is_healthy_row(row) -> bool:
+    """健康上涨(行级)—— 与 `scoring.healthy_riser_mask` **同阈值**:0<pct_60d<40 ∧ main_net_ratio>0
+    ∧ cmf_20>0。(测试锁:tests/common/test_turnup.py 对随机帧逐行比对两者相等。)"""
+    p, m, c = _f(row, "pct_60d"), _f(row, "main_net_ratio"), _f(row, "cmf_20")
+    return p is not None and m is not None and c is not None and 0 < p < 40 and m > 0 and c > 0
+
+
+def lowturn_flag(row, cfg: dict | None = None) -> bool:
+    """低位转强 = 低位 ∧ 转强 ∧ 放量 ∧ 资金 ∧ ¬健康上涨 ∧ ¬落刀 ∧ 非 ST/退。必需字段缺/NaN → False。"""
+    c = {**LOWTURN_DEFAULTS, **(cfg or {})}
+    if c["fund"] not in _FUND_RULES:
+        raise ValueError(f"lowturn.fund 未知取值 {c['fund']!r}(可选 {'|'.join(_FUND_RULES)})")
+    name = str(row.get("name") or "") if hasattr(row, "get") else ""
+    if "ST" in name.upper() or "退" in name:
+        return False
+    dh, p60 = _f(row, "dist_high_60"), _f(row, "pct_60d")
+    if dh is None or p60 is None or dh > c["max_dist_high_60"] or p60 >= c["max_pct_60d"]:
+        return False                                            # 低位:跌过且没涨回去
+    inflow, cmf = _f(row, "main_inflow_yi"), _f(row, "cmf_20")
+    if p60 < c["knife_pct_60d"] and (inflow is None or inflow <= 0):
+        return False                                            # 落刀:深跌且无主力,不接
+    p5 = _f(row, "pct_5d")
+    if p5 is None or p5 <= c["min_pct_5d"]:
+        return False                                            # 转强:近 5 日为正
+    if c["require_above_ma20"] and (_f(row, "above_ma20") or 0.0) <= 0:
+        return False
+    if c["require_ma5_gt_ma10"] and (_f(row, "ma5_gt_ma10") or 0.0) <= 0:
+        return False
+    vr = _f(row, "vol_ratio_20")
+    if vr is None or vr < c["min_vol_ratio_20"]:
+        return False                                            # 放量
+    fund_ok = {"main_or_cmf": (inflow or 0.0) > 0 or (cmf or 0.0) > 0,
+               "main": (inflow or 0.0) > 0,
+               "cmf": (cmf or 0.0) > 0}[c["fund"]]
+    if not fund_ok:
+        return False                                            # 资金转正
+    return not _is_healthy_row(row)                             # 与健康上涨互斥(分账干净)
+
+
+def lowturn_label(row, cfg: dict | None = None) -> str:
+    return LOWTURN_LABEL if lowturn_flag(row, cfg) else ""
+
+
+def lowturn_mask(frame: pd.DataFrame, cfg: dict | None = None) -> pd.Series:
+    """帧级旗(pass1 强留 / 回测用);空帧 → 空 bool Series。"""
+    if frame is None or not len(frame):
+        return pd.Series(dtype=bool)
+    return frame.apply(lambda r: lowturn_flag(r, cfg), axis=1).astype(bool)
