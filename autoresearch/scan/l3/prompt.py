@@ -202,7 +202,8 @@ def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
                 dist_flag: bool = False, reg_flag: bool = False, cat_flag: bool = False,
                 misread_flag: bool = False, rc_flag: bool = False,
                 pinned_flag: bool = False, pinned_path: Path | str | None = None,
-                lane_blocks: bool = False, restrict_codes=None) -> str:
+                lane_blocks: bool = False, restrict_codes=None,
+                lowturn_flag: bool = False, lowturn_cfg: dict | None = None) -> str:
     """L3 holistic 选股 subagent 的完整输入表(~200 行紧凑表 + 证据摘要列)。
 
     delta=True:略去「昨判弃 ∧ 今无变化」行 + prev_l3 标记(design: l4-economy §3;
@@ -221,6 +222,12 @@ def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
     spec 2026-07-05 wave §B2。
     misread_flag=True:加 misread 预警列(低基/背离/套牢,谓词=scoring.l3_misread_flags
     单一事实源)+图例禁则;默认 False = 逐字 parity。
+    lowturn_flag=True(2026-08-21 低位转强波 §6.2):加 `lowturn` 低位转强旗列(谓词
+    =`common.turnup.lowturn_flag` **单一事实源**,阈值 `lowturn_cfg` 覆盖 `LOWTURN_DEFAULTS`)
+    + 图例(含今日旗亮只数;**旗亮票不算「下跌趋势票」,l3-rank 硬约束 B 对其不适用**);
+    默认 False = 逐字 parity。证据边界见 scan_config.jsonc 的 `l3.lowturn` 块注释:
+    该画像在决策尺 gap_c1_o2 上显著为负(−0.24pp t=−6.36),上线理由是「不比现任 healthy
+    画像差(−0.17pp)+ 打开候选池形状」,**不是**「隔夜能赚」。
     rc_flag=True:加 `rc` 列(卖方一致预期 FY EPS 近窗修正 %,staging `consensus.csv`——
     `l4_card.fetch_consensus` 产出——在才生效)+ 图例禁则,镜像 cat_flag 接线;
     默认 False = 逐字 parity。
@@ -330,6 +337,18 @@ def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
         header.append(
             "misread 预警:低基=净利暴增但 ROE 极低(低基数幻觉,勿当真成长);背离=cmf/obv 正但当日主力净流出"
             "(拉高派发嫌疑);套牢=低获利盘·非多头排列·60日已涨(反弹撞套牢盘≠上行空间)。**旗亮仍以对应论点入选者,thesis 必须一句自证非陷阱**。")
+    if lowturn_flag:
+        from autoresearch.common.turnup import LOWTURN_DEFAULTS, LOWTURN_LABEL, lowturn_label
+        lt_cfg = {**LOWTURN_DEFAULTS, **(lowturn_cfg or {})}
+        df["lowturn"] = df.apply(lambda r: lowturn_label(r, lt_cfg), axis=1)
+        cols = [*cols, "lowturn"]
+        n_lt = int((df["lowturn"] == LOWTURN_LABEL).sum())
+        header.append(
+            f"lowturn 低位转强(确定性旗):距 60 日高 ≥{abs(lt_cfg['max_dist_high_60']):g}% 且 60 日涨幅 "
+            f"<{lt_cfg['max_pct_60d']:g} ∧ 站回 MA20 且 MA5>MA10 ∧ 近 5 日为正 ∧ vol_ratio_20≥"
+            f"{lt_cfg['min_vol_ratio_20']:g} ∧ 主力或 CMF 转正,且非健康上涨。**旗亮票不算「下跌趋势票」,"
+            f"硬约束 B 不适用**;仍须过②资金真与⑥兑现机制,thesis 写明『低位转强』并答 D+1 买家。"
+            f"今日旗亮 {n_lt} 只。")
     if shuffle_seed is not None:
         df = df.sample(frac=1, random_state=int(shuffle_seed)).reset_index(drop=True)
     table = _render_lane_blocks(df, cols) if lane_blocks else compact_table(df, cols=cols)
@@ -380,11 +399,15 @@ def prepare_l3_table(date: str, root: Path | None = None, delta: bool = True,
         harvest_l3_news(date, codes, root=base)   # anns_d 退役 → 一次性 stderr 告警(不逐日重试)
 
     l3_cfg: dict = {}
+    lt_cfg: dict = {}
+    lowturn_on = False
     if two_pass is not False:              # 显式 False = 纯回滚杆,连 load_user_config 都不碰
         from autoresearch.scan.user_config import load_user_config
         l3_cfg = load_user_config().get("l3") or {}
         if two_pass is None:
             two_pass = bool(l3_cfg.get("two_pass", True))
+        lt_cfg = dict(l3_cfg.get("lowturn") or {})
+        lowturn_on = bool(lt_cfg.get("enabled", False))
 
     restrict_codes = None
     pass1_header = ""
@@ -409,7 +432,14 @@ def prepare_l3_table(date: str, root: Path | None = None, delta: bool = True,
     md = l3_table_md(date, root=base, delta=delta, dist_flag=True, reg_flag=True,
                      cat_flag=True, sector_terrain=True, misread_flag=True,
                      pinned_flag=True, pinned_path=pinned_path, lane_blocks=True,
-                     restrict_codes=restrict_codes)
+                     restrict_codes=restrict_codes,
+                     lowturn_flag=lowturn_on, lowturn_cfg=lt_cfg)
+    lowturn_counts: dict = {}
+    if lowturn_on:
+        # 旗亮只数**重算**,不从 markdown 里数字符串(图例/表头会误伤计数)
+        from autoresearch.common.turnup import LOWTURN_DEFAULTS, lowturn_mask
+        base_df = kept if two_pass else load_l3_input(date, root=base)
+        lowturn_counts = {"lowturn_n": int(lowturn_mask(base_df, {**LOWTURN_DEFAULTS, **lt_cfg}).sum())}
     if pass1_header:
         md = pass1_header + "\n\n" + md
 
@@ -433,4 +463,4 @@ def prepare_l3_table(date: str, root: Path | None = None, delta: bool = True,
             md = md + "\n\n" + render_calibration_block(regime=regime, with_feedback=True)
 
     (scan_dir / "_l3_table.md").write_text(md, encoding="utf-8")
-    return {"codes": len(codes), "table_bytes": len(md), **pass1_counts}
+    return {"codes": len(codes), "table_bytes": len(md), **pass1_counts, **lowturn_counts}
