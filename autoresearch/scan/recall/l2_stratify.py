@@ -17,7 +17,7 @@ import pandas as pd
 # 健康桶(2026-07-03):healthy 通道的票再由桶 floor 保底进 L2——通道进池、桶上菜,两级都补。
 STYLE_CHANNELS: dict[str, tuple[str, ...]] = {
     "趋势": ("momentum", "heat"),
-    "反转": ("reversal",),
+    "反转": ("reversal", "reversal_confirm"),   # 2026-08-21 重开:两路共用 floor 12(独有召回也要有 floor 保护)
     "价值": ("value",),
     "成长": ("growth",),
     "吸筹": ("accumulation",),

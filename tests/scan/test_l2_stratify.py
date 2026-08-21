@@ -117,3 +117,10 @@ def test_sector_neutral_demeans_within_industry():
     # 每个行业组内 sn 均值 ≈ 0
     g = pd.DataFrame({"sn": sn.to_numpy(), "ind": df["industry"].to_numpy()}).groupby("ind")["sn"].mean()
     assert g.abs().max() < 1e-9
+
+
+def test_reversal_confirm_feeds_reversal_bucket():
+    """重开 reversal_confirm(2026-08-21)后它的独有召回必须入「反转」桶,否则零 floor 保护——
+    侦察实测的真缺口(design §5.2)。"""
+    from autoresearch.scan.recall.l2_stratify import STYLE_CHANNELS
+    assert set(STYLE_CHANNELS["反转"]) == {"reversal", "reversal_confirm"}
