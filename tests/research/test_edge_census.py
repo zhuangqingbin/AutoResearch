@@ -219,3 +219,47 @@ def test_render_has_h0_line_and_fixed_footnote():
     assert "H0(无家族有正证据):被推翻" in md and "只观察" in md and "不显著 ≠ 有 alpha" in md
     md2 = ec.render(table.assign(verdict="未证"), {}, {"scan_days": 30, "computable_days": 25, "main_ruler": "gap_c1_o2"})
     assert "未被推翻" in md2
+
+
+# ── 拒绝价值日读(2026-08-22 批 (c))──────────────────────────────────────────
+
+def test_rejection_readout_on_synthetic_history(tmp_path):
+    planted = {c: 0.03 for c in CODES[:5]}
+    lake = _lake(tmp_path, planted=planted)
+    scan = tmp_path / "scan"
+    for day in ["2026-08-05", "2026-08-06", "2026-08-07", "2026-08-11", "2026-08-12", "2026-08-13", "2026-08-14"]:
+        _scan_day(scan, day, finalists=CODES[:5], bench=CODES[5:9],
+                  ratings={**{c: "Overweight" for c in CODES[:5]}, **{c: "Hold" for c in CODES[5:9]}})
+    d = ec.rejection_readout(scan_root=scan, lake_daily=lake, today="2026-08-15")
+    assert d["status"] == "OK" and d["computable_days"] >= 5
+    assert d["rank_ic"]["ic_mean"] > 0.5 and d["ge_ow_days"] >= 5
+    assert d["finalist"]["excess_pp"] > 2.0
+    line = ec.rejection_line(d)
+    assert "评级 rank-IC" in line and "≥OW 出现" in line and "不喂任何 agent" in line
+
+
+def test_rejection_readout_excludes_today_and_respects_lookback(tmp_path):
+    lake = _lake(tmp_path)
+    scan = tmp_path / "scan"
+    for day in ["2026-08-05", "2026-08-06", "2026-08-07", "2026-08-11", "2026-08-12", "2026-08-13"]:
+        _scan_day(scan, day, finalists=CODES[:3], ratings={c: "Hold" for c in CODES[:3]})
+    d = ec.rejection_readout(scan_root=scan, lake_daily=lake, lookback=3, today="2026-08-13")
+    assert d["since"] == "2026-08-07"                         # 不含 today,往前数 3 个扫描日
+    assert d["status"] in ("OK", "INSUFFICIENT")
+
+
+def test_rejection_readout_states_and_lines(tmp_path):
+    lake = _lake(tmp_path)
+    assert ec.rejection_readout(scan_root=tmp_path / "nope", lake_daily=lake)["status"] == "NO_DATA"
+    assert ec.rejection_line({"status": "NO_DATA"}) == "无历史扫描日"
+    scan = tmp_path / "scan"
+    _scan_day(scan, "2026-08-05", finalists=CODES[:3], ratings={c: "Hold" for c in CODES[:3]})
+    d = ec.rejection_readout(scan_root=scan, lake_daily=lake, today="2026-08-15")
+    assert d["status"] == "INSUFFICIENT" and "样本不足" in ec.rejection_line(d)
+    full = {"status": "OK", "lookback": 40, "computable_days": 35,
+            "rank_ic": {"ic_mean": 0.13, "t": 1.6, "hit": 0.59, "n_days": 29}, "ge_ow_days": 3,
+            "gates": {"主力真在": {"pass": {"n_days": 11}, "fail": {"n_days": 14}, "pass_minus_fail_pp": -0.30},
+                      "业绩真兑现": {"pass": None, "fail": None, "pass_minus_fail_pp": None}},
+            "finalist": {"excess_pp": -0.28, "t": -3.8, "n_days": 34}}
+    line = ec.rejection_line(full)
+    assert "主力 -0.30(11/14)" in line and "业绩 —" in line and "finalist -0.28pp" in line and "≥OW 出现 3 日" in line

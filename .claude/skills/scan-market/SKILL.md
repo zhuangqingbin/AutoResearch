@@ -95,7 +95,7 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
    ```bash
    uv run --no-sync python -m autoresearch.scan.prelude <YYYY-MM-DD>
    ```
-   跑全部确定性前奏(一致预期/温度/L0-L2/日历/催化/菜单预算哨兵/覆盖池日检/新闻目录体检 **7 步**);末尾汇总屏含 **⚡tripwire 持仓盯梢行(仅人看,勿贴给任何 agent)**。
+   跑全部确定性前奏(一致预期/温度/L0-L2/日历/催化/菜单预算哨兵/**L4 拒绝价值日读**(2026-08-22:滚动 40 日评级 rank-IC·≥OW 出现日数·三门 PASS−FAIL·finalist 超额,只给人看不喂 agent)/覆盖池日检/新闻目录体检 **9 步**);末尾汇总屏含 **⚡tripwire 持仓盯梢行(仅人看,勿贴给任何 agent)**。
    (2026-08-21 learning 层退役同批删掉 6 步:attribution 刷新 / retro 欠账 / t1 欠账 / 学习环健康三查 / 十本账本刷新 / GATE0 preflight。)
    - **夜间预热**:交易日 19:30 launchd 自动跑;看汇总屏「预热(夜间)」行,安装见 STAGES.md『运维细节』。
 0.5. **市场研判**:

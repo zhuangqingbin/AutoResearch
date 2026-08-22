@@ -453,9 +453,25 @@ def run_prelude(date: str, regime_aware: bool | None = None, skip: tuple[str, ..
                 f" · 最新 {fresh} 前 · {srcs}"
                 + ("".join(" · " + f for f in flags)))
 
+    def _l4_rejection():
+        """L4 拒绝价值日读(2026-08-22 批 (c)):滚动 40 日评级 rank-IC / ≥OW 出现日数 / 三门 PASS−FAIL
+        超额 / finalist 超额。零 LLM、只读湖与历史 staging、**不进 brief、不喂任何 agent**。
+        立案:≥OW 卡 40 天只出 4 天,「门的价值」在现尺不可测,改用每天都量得到的读数。"""
+        import json as _json
+        from autoresearch.research.edge_census import rejection_line, rejection_readout
+        d = rejection_readout(today=date)
+        try:
+            (scan_dir / "_l4_rejection_readout.json").write_text(
+                _json.dumps(d, ensure_ascii=False, indent=1), encoding="utf-8")
+        except Exception as e:  # noqa: BLE001 — 落盘失败不挡前奏,但要响亮
+            print(f"[prelude] ✗ _l4_rejection_readout.json 落盘失败: {e!r}", file=sys.stderr)
+        return rejection_line(d)
+
     all_steps = [("consensus", _consensus), ("temperature", _temperature),
                  ("universe", _universe), ("calendar", _calendar),
                  ("catalyst", _catalyst), ("menu", _menu),
+                 # 2026-08-22 批 (c):拒绝价值日读(menu 之后;读历史不读当日;--skip l4_rejection 可跳)
+                 ("l4_rejection", _l4_rejection),
                  ("dossier_pool", _dossier_pool),
                  # Wave12-T35:纯读 news_catalog 出一行覆盖/freshness/非空率;
                  # 不喂任何决策面(三个 B 类消费接口本波仍全关)。

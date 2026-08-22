@@ -381,6 +381,78 @@ def run_census(since: str | None = None, scan_root: Path | None = None,
     return table, ic_row, meta
 
 
+# ───────────────────────── 拒绝价值日读(prelude 汇总屏一行;2026-08-22 批 (c)) ─────────────────────────
+# 立案:L4 ≥OW 卡 40 天只出 4 天,「门的价值(真实−影子)」在现尺上不可测;旧尺那张「+4.35pp /
+# rank-IC +0.55」没有替代品。改用每天都量得到的读数:评级 rank-IC(评级序数 vs gap)+ 三门
+# PASS−FAIL 超额 + finalist 超额。只给人看(prelude 汇总屏 + JSON),不进 brief、不喂 agent、不回注。
+READOUT_LOOKBACK = 40
+READOUT_MIN_DAYS = 5
+_GATES = ("主力真在", "业绩真兑现", "估值不透支")
+
+
+def rejection_readout(scan_root: Path | None = None, lake_daily: Path | None = None,
+                      lookback: int = READOUT_LOOKBACK, today: str | None = None) -> dict:
+    """最近 `lookback` 个扫描日(不含 `today`)的 L4 拒绝价值读数。可算日 < READOUT_MIN_DAYS → `{"status":"INSUFFICIENT"}`。"""
+    root = Path(scan_root) if scan_root else ws.scan_root()
+    days = [d for d in scan_days(root) if not today or d < today]
+    if not days:
+        return {"status": "NO_DATA", "lookback": lookback}
+    since = days[-lookback] if len(days) >= lookback else days[0]
+    table, ic, meta = run_census(since=since, scan_root=root, lake_daily=lake_daily)
+    out: dict = {"status": "OK", "lookback": lookback, "since": since,
+                 "computable_days": int(meta.get("computable_days", 0)), "main_ruler": MAIN}
+    if out["computable_days"] < READOUT_MIN_DAYS:
+        out["status"] = "INSUFFICIENT"
+        return out
+    out["rank_ic"] = ic or None
+    main = table[table["ruler"] == MAIN].set_index("family") if len(table) else pd.DataFrame()
+
+    def _row(f):
+        if f in main.index:
+            r = main.loc[f]
+            return {"n_days": int(r["n_days"]), "excess_pp": float(r["excess_med_pp"]), "t": float(r["t"])}
+        return None
+    out["ge_ow_days"] = int(main.loc["L4·≥OW", "n_days"]) if "L4·≥OW" in main.index else 0
+    out["finalist"] = _row("L3·finalist")
+    out["gates"] = {}
+    for g in _GATES:
+        p_, f_ = _row(f"L4·门·{g}·PASS"), _row(f"L4·门·{g}·FAIL")
+        out["gates"][g] = {"pass": p_, "fail": f_,
+                           "pass_minus_fail_pp": (p_["excess_pp"] - f_["excess_pp"]) if (p_ and f_) else None}
+    return out
+
+
+def rejection_line(d: dict) -> str:
+    """汇总屏一行(纯函数)。"""
+    st = d.get("status")
+    if st == "NO_DATA":
+        return "无历史扫描日"
+    if st == "INSUFFICIENT":
+        return f"滚动{d.get('lookback')}日可算 {d.get('computable_days', 0)} <{READOUT_MIN_DAYS} → 样本不足"
+    parts = [f"滚动{d['lookback']}日(可算 {d['computable_days']})"]
+    ic = d.get("rank_ic")
+    if ic:
+        t = ic.get("t")
+        parts.append(f"评级 rank-IC {ic['ic_mean']:+.2f}(t {t:.1f}·IC>0 {ic['hit']:.0%}·n {ic['n_days']})"
+                     if t is not None and t == t else f"评级 rank-IC {ic['ic_mean']:+.2f}(n {ic['n_days']})")
+    else:
+        parts.append("评级 rank-IC 不可算(<5 卡/日或单一档)")
+    parts.append(f"≥OW 出现 {d.get('ge_ow_days', 0)} 日")
+    gl = []
+    for g, v in (d.get("gates") or {}).items():
+        pm = v.get("pass_minus_fail_pp")
+        if pm is None:
+            gl.append(f"{g[:2]} —")
+        else:
+            gl.append(f"{g[:2]} {pm:+.2f}({v['pass']['n_days']}/{v['fail']['n_days']})")
+    if gl:
+        parts.append("三门 PASS−FAIL:" + "/".join(gl) + "pp")
+    f = d.get("finalist")
+    if f:
+        parts.append(f"finalist {f['excess_pp']:+.2f}pp(t {f['t']:.1f}·n {f['n_days']})")
+    return " · ".join(parts) + " —— 只给人看,不喂任何 agent"
+
+
 _LAYER_ORDER = ("L1", "L2", "L3", "L4", "E6", "📌")
 
 

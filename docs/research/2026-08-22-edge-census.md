@@ -93,3 +93,14 @@
 - 家族按召回/判断**产物**定义，互相重叠（一只票同时在 L1·composite 与 L1·value）；本稿不做分层匹配反事实。
 - 市场基准是当日截面中位，不是可投资组合；超额 pp 是「相对」读数，不是策略收益。
 - 样本 40 日、单一 regime 主导（range 53 / trend 43 / risk_off 11 的历史面板，本窗多为 range）；不分 regime（§0）。
+
+## 4. 裁决记录与实施（2026-08-22）
+
+用户读 §2 后裁定（四选项：(a) healthy 三处强制降为不强制 / 编排 workflow 合一 / (c) 拒绝价值改用 rank-IC 日读 / (b) 换尺）：**选 (a) + (c)**；(b) 明确未选——主尺不动。
+
+**(a) 已实施**：`triage.HEALTHY_MANDATORY=False`（pass1 规则③ healthy 不再全入，走④轮询）；`merge.HEALTHY_QUOTA_FRAC=0.0`（守卫④不动作，⑤⑥ 保护集与 ⑧ 配额下限随同一常量联动）；`l3-rank.md` 硬约束 A 改为「画像之一，不设比例」并写入三尺全负的证据行；L1 路 quota 112 与 L2 健康桶 floor 15 **不动**（仍可选）。回滚 = 两个常量各一行 + agent def revert。08-21 真数据重跑：pass1 healthy 席 7→4、共振强留 10→5（批 C）、6 进 6 出；finalists 不变（那天的 healthy 票是 L3 自己选的，不是④塞的）。变异 MA1–MA4 全红（MA4 首轮漏网，补 `test_sector_cap_no_longer_protects_healthy_by_default` 后红）。
+
+**(c) 已实施**：`edge_census.rejection_readout/rejection_line` + prelude 步骤 `l4_rejection`（menu 之后；读历史不读当日；`--skip l4_rejection` 可跳；落 `_l4_rejection_readout.json`；**不进 brief、不喂任何 agent**）。2026-08-22 首读：`滚动40日(可算 35)· 评级 rank-IC +0.13(t 1.6·IC>0 59%·n 29)· ≥OW 出现 3 日 · 三门 PASS−FAIL:主力 −0.30(11/14)/业绩 +0.08(14/16)/估值 +0.39(16/8)pp · finalist −0.28pp(t −3.8·n 34)`。
+
+**未做**：(b) 换尺（用户未选）；L2 健康桶 floor（用户选「不动」）；编排 workflow 合一（未选）。
+

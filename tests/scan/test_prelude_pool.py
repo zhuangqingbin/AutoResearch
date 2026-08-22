@@ -17,7 +17,8 @@ _SKIP_ALL_BUT_DOSSIER_POOL = ("preflight",
                               "retro_refresh", "retro_pending", "t1_pending", "learning_health",
                               "consensus", "temperature", "universe", "calendar", "catalyst",
                               "menu", "ledgers",
-                              "news_catalog")   # Wave12-T35 新步骤
+                              "news_catalog",   # Wave12-T35 新步骤
+                              "l4_rejection")   # 2026-08-22 批 (c) 新步骤(拒绝价值日读)
 
 
 def test_prelude_has_dossier_pool_step(tmp_path, monkeypatch):
