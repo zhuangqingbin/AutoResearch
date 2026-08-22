@@ -68,28 +68,32 @@ def test_triage_keeps_resonance_rows_n_channels_ge_3():
     assert "000099" in set(kept["code"])
 
 
-def test_triage_keeps_healthy_lane_rows():
+def test_triage_healthy_not_mandatory_by_default():
+    """2026-08-22 批 (a):healthy lane 不再全入(HEALTHY_MANDATORY=False)。target=1 且另有
+    composite 路竞争者时,轮询按通道名序先给 composite,低分 healthy 行被切。
+    (旧用例用 momentum 当对照:h<m,healthy 队列恰好排前,即便关掉强留也会因字母序拿到席位——
+    那是个不鉴别的绿灯。)"""
     rows = [_row("000099", composite=1.0, gbdt_score=1.0, n_channels=1, recall_channels="healthy")]
     rows += [_row(f"{i:06d}", composite=99.0 - i, gbdt_score=99.0 - i, n_channels=1,
-                  recall_channels="momentum") for i in range(1, 6)]
-    df = pd.DataFrame(rows)
-    kept, _ = triage_l2_for_l3(df, target=1)
-    assert "000099" in set(kept["code"])
+                  recall_channels="composite") for i in range(1, 6)]
+    kept, cut = triage_l2_for_l3(pd.DataFrame(rows), target=1)
+    assert "000099" not in set(kept["code"]) and "000099" in set(cut["code"])
 
 
-def test_triage_healthy_membership_not_just_first_channel():
-    """healthy 判据是集合 membership,不是 `_row_lane` 的"仅首通道"渲染判据——
-    "momentum|healthy"(healthy 不在首位)也该全入。"""
-    rows = [_row("000099", composite=1.0, gbdt_score=1.0, n_channels=1,
-                recall_channels="momentum|healthy")]
+def test_triage_healthy_mandatory_parity_when_flag_restored(monkeypatch):
+    """回滚杆锁:HEALTHY_MANDATORY=True → healthy 全入(含集合 membership:`momentum|healthy`
+    healthy 不在首位也算),记 selection_reason=lane/detail=healthy。"""
+    from autoresearch.scan.l3 import triage as tr
+    monkeypatch.setattr(tr, "HEALTHY_MANDATORY", True)
+    rows = [_row("000099", composite=1.0, gbdt_score=1.0, n_channels=1, recall_channels="healthy"),
+            _row("000098", composite=2.0, gbdt_score=2.0, n_channels=2, recall_channels="momentum|healthy")]
     rows += [_row(f"{i:06d}", composite=99.0 - i, gbdt_score=99.0 - i, n_channels=1,
-                  recall_channels="momentum") for i in range(1, 6)]
-    df = pd.DataFrame(rows)
-    kept, _ = triage_l2_for_l3(df, target=1)
-    assert "000099" in set(kept["code"])
-
-
-# ───────────────────────── 缺列兜底(不崩,该规则贡献 0 行) ─────────────────────────
+                  recall_channels="composite") for i in range(1, 6)]
+    kept, _ = triage_l2_for_l3(pd.DataFrame(rows), target=2)
+    k = kept.set_index("code")
+    assert {"000099", "000098"} <= set(k.index)
+    assert (k.loc[["000099", "000098"], "selection_reason"] == "lane").all()
+    assert (k.loc[["000099", "000098"], "selection_detail"] == "healthy").all()
 
 
 def test_triage_missing_n_channels_column_skips_resonance_rule_gracefully():

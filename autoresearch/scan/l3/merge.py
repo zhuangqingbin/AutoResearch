@@ -20,6 +20,27 @@ CHASE_1D_PCT = 9.5
 # + 下游饰品 1 席 = 5/9,而 L3/merge 此前一个帽也没有(L2 有 sector_cap 20%)。
 # 回滚杆 = 改成 99。
 L3_SECTOR_CAP = 3
+# healthy 配额分数(2026-08-22 批 (a),用户裁定「三处强制降为不强制」):守卫④ 的 target =
+# ceil(n × HEALTHY_QUOTA_FRAC)。**0.0 = ④ 不动作**,且 ⑤⑥ 的 protect_lanes 与 ⑧ 的配额下限
+# 同步不再含 healthy(三处由同一个常量驱动,见 `_healthy_quota` / `_lane_quota_floor`)。
+# 证据:edge 普查(docs/research/2026-08-22-edge-census.md)—— healthy 画像三把尺全负
+# (L1·healthy 隔夜 −0.37pp t=−5.58、fwd_10 −4.76pp;L3·lane·healthy −0.38 t=−3.56),
+# 而守卫④ 曾强制把它凑到 finalist 的 1/3。回滚杆 = 改回 1/3(一行恢复 ④⑤⑥⑧ 四处旧行为)。
+HEALTHY_QUOTA_FRAC = 0.0
+
+
+def _healthy_quota(n: int) -> int:
+    """守卫④ 的 healthy 席位目标(ceil(n × frac));frac=0 → 0 = 不动作。"""
+    return math.ceil(n * HEALTHY_QUOTA_FRAC) if (n and HEALTHY_QUOTA_FRAC > 0) else 0
+
+
+def _guarded_lanes_before(step: str) -> set[str]:
+    """在 `step`(⑤ trend / ⑥ lowturn)之前已配置好配额、须受保护的 lane 集。
+    healthy 只在 HEALTHY_QUOTA_FRAC>0 时算(否则没有「④ 刚满足的硬约束」可保护)。"""
+    lanes: set[str] = {"healthy"} if HEALTHY_QUOTA_FRAC > 0 else set()
+    if step == "lowturn":
+        lanes.add("trend")
+    return lanes
 
 
 def _drop_and_backfill(m: pd.DataFrame, conv: pd.Series, fin_idx: set, victims: list,
@@ -71,7 +92,10 @@ def _lane_quota_floor(m: pd.DataFrame, fin_idx: set) -> dict:
     4 席里 3 席 lane=healthy,若整个 healthy lane 免剔,行业帽永远咬不动。
     """
     n = len(fin_idx)
-    return {"healthy": math.ceil(n / 3) if n else 0, "trend": 2, "lowturn": 1}
+    floors = {"trend": 2, "lowturn": 1}
+    if HEALTHY_QUOTA_FRAC > 0:                       # healthy 配额关了就没有「配额」可保护
+        floors["healthy"] = _healthy_quota(n)
+    return floors
 
 
 def _apply_sector_cap(m: pd.DataFrame, conv: pd.Series, fin_idx: set, cap: int) -> set:
@@ -177,7 +201,8 @@ def merge_l3_finalists_v3(judged: pd.DataFrame, budget: int,
        (`guard="cap"`,**无条件覆写**——即便该行先前已被①标过 `"ins75"`,只要它最终仍被
        cap 挤出候选集,guard 就该反映"真正原因是 cap 截尾",不留半真半假的旧标签;
        final-review-l3-merge.md Minor-3①)。
-    ④ **健康比例守卫**(比例制,`ceil(n/3)`,`n`=当前候选集大小):候选集里 `lane=="healthy"`
+    ④ **健康比例守卫**(比例制,`ceil(n × HEALTHY_QUOTA_FRAC)`;**2026-08-22 起 frac=0 = 不动作**,
+       用户裁定「healthy 三处强制降为不强制」,证据见 edge 普查):候选集里 `lane=="healthy"`
        (v1 从简判定——只认 l3-rank 已写下的 `lane` 字段是否恰为 `"healthy"` 这一个字符串,
        不重算 pct_60d/main_net/cmf/obv 的组合读数;那套定性判断是 l3-rank rubric 硬约束 A
        的职责,确定性层这里只做"数够不够"的兜底,故意从简,更精细的健康画像判定留给
@@ -283,12 +308,13 @@ def merge_l3_finalists_v3(judged: pd.DataFrame, budget: int,
             "chase_1d", "chase_backfill", sector_cap=L3_SECTOR_CAP)
 
     n = len(fin_idx)
+    # 守卫④ healthy 配额:2026-08-22 起 HEALTHY_QUOTA_FRAC=0 → target 0 → 不动作(回滚改常量)。
     fin_idx = _swap_lane_quota(m, conv, fin_idx, "healthy",             # 守卫④
-                               math.ceil(n / 3) if n else 0, "healthy_quota")
+                               _healthy_quota(n), "healthy_quota")
     fin_idx = _swap_lane_quota(m, conv, fin_idx, "trend", 2, "trend_quota",   # 守卫⑤
-                               protect_lanes={"healthy"})   # I-2:不可换出健康配额行
+                               protect_lanes=_guarded_lanes_before("trend"))   # I-2:不可换出已配置的配额行
     fin_idx = _swap_lane_quota(m, conv, fin_idx, "lowturn", 1, "lowturn_quota",   # 守卫⑥
-                               qualify_conv=55.0, protect_lanes={"healthy", "trend"})
+                               qualify_conv=55.0, protect_lanes=_guarded_lanes_before("lowturn"))
 
     # 守卫⑧ sector_cap(2026-08-22 批 C):同 `sector` 至多 L3_SECTOR_CAP 席,超出剔最弱 + 回填异行业。
     # 2026-08-21:贵金属(12 只成分的申万二级)拿 4 席 + 下游饰品 1 席 = 5/9,而 L3/merge 此前

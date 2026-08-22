@@ -11,7 +11,7 @@ import pandas as pd
 # 各值在本层的产生规则(L2 侧见 `recall/l2_stratify.py`):
 #   pinned            规则① 保送(全程直通,不占竞争名额)
 #   conviction_guard  规则② 多路共振(n_channels>=3)top-RESONANCE_CAP —— 强制补入,不是排序结果
-#   lane              规则③ healthy 全入 / 规则④ 通道轮询(detail 记具体通道名)
+#   lane              规则③ healthy 全入(默认关,HEALTHY_MANDATORY)/ 规则④ 通道轮询(detail 记具体通道名)
 #   backfill          填满收尾(无通道 / 通道队列耗尽后按分捡回)
 #   merit / sector    L2 侧才产生(sn-composite 核 / sector cap 回填),本层恒不出现
 SELECTION_REASONS = ("merit", "lane", "sector", "pinned", "conviction_guard", "backfill")
@@ -27,6 +27,14 @@ RULE_VERSION = "pass1.v2"        # v2 = 本波新增 selection_reason/detail;规
 # 在数学上 ≈「这票已经涨起来了」,不是独立多因子确认。共振票不再免检,改为与其他 lane 竞争
 # round-robin(不是被切,是不再免检)。回滚杆 = 改成一个很大的数(如 10**6)。
 RESONANCE_CAP = 5
+# healthy lane 是否在 pass1 强留(2026-08-22 批 (a),用户裁定「三处强制降为不强制」)。
+# 证据:edge 普查(docs/research/2026-08-22-edge-census.md)—— healthy 画像在三把尺上全负
+# (L1·healthy 隔夜 −0.37pp t=−5.58、fwd_10 −4.76pp t=−5.5;L3·lane·healthy −0.38 t=−3.56),
+# 而它此前被三处强制(本规则③全入 / merge 守卫④ ceil(n/3) 配额 / l3-rank 硬约束 A ≥1/3 席)。
+# 2026-08-21 实测规则③一项就占 14/40 席。关掉 = healthy 与其他 lane 一样走规则④通道轮询
+# (L1 路 quota 112 / L2 健康桶 floor 15 不动,它仍「可选」,只是不再「必选」)。
+# 回滚杆 = 改 True(一行)。
+HEALTHY_MANDATORY = False
 
 
 def triage_l2_for_l3(df: pd.DataFrame, target: int = 60, *, lowturn_cap: int = 0,
@@ -55,7 +63,8 @@ def triage_l2_for_l3(df: pd.DataFrame, target: int = 60, *, lowturn_cap: int = 0
        为真且尚未 mandatory 的行按 `order` 降序取前 `cap` 入 mandatory(`selection_reason=lane`、
        `selection_detail=lowturn`);`cap<=0`(默认)= 现行为逐字 parity。谓词/阈值真身在
        `common/turnup.py`,不在这里重造判据。
-    ③ healthy lane 全入:`recall_channels` 按 `"|"` 拆分后的集合包含 `"healthy"`(已注册召回
+    ③ healthy lane 全入(**默认关**,`HEALTHY_MANDATORY`;2026-08-22 起 healthy 走④轮询):
+       `recall_channels` 按 `"|"` 拆分后的集合包含 `"healthy"`(已注册召回
        通道名,见 `recall/channels.py`;集合 membership 判定——镜像 `l2_stratify._style_masks`
        的写法,**不是** `_row_lane` 的"仅取首通道"渲染判据,那是防重复渲染用的、语义不同)。
        `recall_channels` 列缺失 → 跳过,不报错。
@@ -130,12 +139,13 @@ def triage_l2_for_l3(df: pd.DataFrame, target: int = 60, *, lowturn_cap: int = 0
             _mark(i, "conviction_guard", f"n_channels={int(n_ch.loc[i])}")
 
     chan_sets = None
-    if "recall_channels" in d.columns:                                   # ③ healthy lane 全入
+    if "recall_channels" in d.columns:
         chan_sets = d["recall_channels"].fillna("").astype(str).map(lambda s: set(s.split("|")) - {""})
-        healthy = chan_sets.map(lambda s: "healthy" in s)
-        mandatory |= healthy
-        for i in d.index[healthy]:
-            _mark(i, "lane", "healthy")
+        if HEALTHY_MANDATORY:                                            # ③ healthy lane 全入(2026-08-22 起默认关)
+            healthy = chan_sets.map(lambda s: "healthy" in s)
+            mandatory |= healthy
+            for i in d.index[healthy]:
+                _mark(i, "lane", "healthy")
 
     if lowturn_cap > 0:                                                  # ③b lowturn 强留(≤cap)
         from autoresearch.common.turnup import LOWTURN_DEFAULTS, lowturn_mask

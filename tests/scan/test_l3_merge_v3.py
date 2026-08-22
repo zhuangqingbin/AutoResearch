@@ -116,11 +116,27 @@ def test_cap_is_min_of_finalist_max_and_budget():
 # ═══════════════════════ ⑤健康比例守卫(ceil(n/3)) ═══════════════════════
 
 
-def test_healthy_quota_swaps_in_bench_candidate_when_deficit():
-    """3 只 finalist(均非 healthy lane,conviction 60/70/80)→ ceil(3/3)=1 健康画像缺口;
-    bench 有一只够格(conviction=68>=65,lane=healthy)→ 换掉候选集里最弱(非 protected)的
-    尾部票,双方都记 guard='healthy_quota'。(6 位字母码,zfill 对齐后原样不变,断言免去
-    前导零换算。)"""
+def test_healthy_quota_off_by_default_no_swap():
+    """2026-08-22 批 (a):HEALTHY_QUOTA_FRAC=0 → 守卫④ 不动作。同一 fixture 下旧行为会把
+    bench 的 healthy 票(68)换进来、踢掉 value 尾票(60);现在 finalists 原样、guard 全空。
+    证据:healthy 画像三把尺全负(edge 普查)。"""
+    judged = pd.DataFrame([
+        _pick("AAAAAA", 80, lane="trend", finalist=True),
+        _pick("BBBBBB", 70, lane="momentum", finalist=True),
+        _pick("CCCCCC", 60, lane="value", finalist=True),
+        _pick("DDDDDD", 68, lane="healthy", finalist=False),
+    ])
+    fin, bench = merge_l3_finalists_v3(judged, budget=30, finalist_max=10)
+    assert set(fin["code"]) == {"AAAAAA", "BBBBBB", "CCCCCC"}
+    assert set(bench["code"]) == {"DDDDDD"}
+    assert (fin["guard"] == "").all() and (bench["guard"] == "").all()
+
+
+def test_healthy_quota_parity_when_frac_restored(monkeypatch):
+    """回滚杆锁:HEALTHY_QUOTA_FRAC 改回 1/3 → ④ 逐字恢复旧行为(换进 healthy 68、踢 value 60,
+    双方记 guard='healthy_quota')。"""
+    from autoresearch.scan.l3 import merge as mg
+    monkeypatch.setattr(mg, "HEALTHY_QUOTA_FRAC", 1 / 3)
     judged = pd.DataFrame([
         _pick("AAAAAA", 80, lane="trend", finalist=True),
         _pick("BBBBBB", 70, lane="momentum", finalist=True),
@@ -132,6 +148,18 @@ def test_healthy_quota_swaps_in_bench_candidate_when_deficit():
     assert set(bench["code"]) == {"CCCCCC"}
     assert fin[fin["code"] == "DDDDDD"].iloc[0]["guard"] == "healthy_quota"
     assert bench[bench["code"] == "CCCCCC"].iloc[0]["guard"] == "healthy_quota"
+
+
+def test_healthy_rows_no_longer_protected_from_trend_swap_by_default():
+    """frac=0 时 healthy 行不再是「④ 刚满足的硬约束」,守卫⑤ 换尾票可以换走它(最弱者)。"""
+    judged = pd.DataFrame([
+        _pick("AAAAAA", 80, lane="momentum", finalist=True),
+        _pick("HHHHHH", 58, lane="healthy", finalist=True),    # 最弱,且不再受保护
+        _pick("VVVVVV", 62, lane="value", finalist=True),
+        _pick("TTTTTT", 70, lane="trend", finalist=False),     # 够格 trend 候选(≥65)
+    ])
+    fin, bench = merge_l3_finalists_v3(judged, budget=30, finalist_max=10)
+    assert "TTTTTT" in set(fin["code"]) and "HHHHHH" in set(bench["code"])
 
 
 def test_healthy_quota_does_not_force_when_bench_has_no_qualifying_candidate():
@@ -149,9 +177,12 @@ def test_healthy_quota_does_not_force_when_bench_has_no_qualifying_candidate():
     assert (fin["guard"] == "").all()
 
 
-def test_healthy_quota_protects_conviction_ge_75_rows_from_being_swapped_out():
+def test_healthy_quota_protects_conviction_ge_75_rows_from_being_swapped_out(monkeypatch):
     """尾部置换不能挪走 conviction>=75 的行(ins75 保险保护范围)——即便它是当前候选集里
-    唯一的"非 healthy"票、换出它才能腾位置,也不换,守卫序里 conviction>=75 恒留任。"""
+    唯一的"非 healthy"票、换出它才能腾位置,也不换,守卫序里 conviction>=75 恒留任。
+    (2026-08-22 起 ④ 默认关,本条在 frac=1/3 回滚态下验证该保护仍成立。)"""
+    from autoresearch.scan.l3 import merge as mg
+    monkeypatch.setattr(mg, "HEALTHY_QUOTA_FRAC", 1 / 3)
     judged = pd.DataFrame([
         _pick("AAAAAA", 90, lane="trend", finalist=True),   # 唯一非 healthy,但 conviction>=75 受保护
         _pick("BBBBBB", 70, lane="healthy", finalist=True),
@@ -433,22 +464,22 @@ def test_sector_cap_respects_ins75():
 
 
 def test_sector_cap_skips_victim_that_would_break_lane_quota():
-    """**保护的是配额、不是整个 lane**:最弱的那只恰好是 healthy 且剔了会跌破 ceil(n/3) → 跳过它,
-    改剔次弱的非配额行。(没有这条守卫,行业帽会把守卫④ 刚配好的健康配额击穿。)"""
+    """**保护的是配额、不是整个 lane**:最弱的那只恰好是 trend 且剔了会跌破守卫⑤ 的 2 席 → 跳过它,
+    改剔次弱的非配额行。(2026-08-22 起 healthy 不再有配额,本条用 trend lane 验证同一机制。)"""
     judged = pd.DataFrame([
-        _sec("000001", 70, "贵金属", lane="healthy"),
+        _sec("000001", 70, "贵金属", lane="trend"),
         _sec("000002", 68, "贵金属", lane="main"),
         _sec("000003", 66, "贵金属", lane="main"),      # 次弱、非配额 lane → 应剔它
-        _sec("000004", 60, "贵金属", lane="healthy"),   # 最弱,但剔了 healthy 只剩 1 < floor 2
+        _sec("000004", 60, "贵金属", lane="trend"),     # 最弱,但剔了 trend 只剩 1 < floor 2
         _sec("000005", 58, "石油", lane="main"),
         _sec("000006", 57, "航运", lane="main", finalist=False),
     ])
     fin, bench = merge_l3_finalists_v3(judged, budget=30, finalist_max=10)
     assert sum(1 for s in fin["sector"] if s == "贵金属") == 3
-    assert "000004" in set(fin["code"]), "healthy 配额行被保住"
+    assert "000004" in set(fin["code"]), "trend 配额行被保住"
     assert "000003" not in set(fin["code"]), "改剔次弱的非配额行"
     assert bench.set_index("code").loc["000003", "guard"] == "sector_cap"
-    assert sum(1 for ln in fin["lane"] if ln == "healthy") >= 2
+    assert sum(1 for ln in fin["lane"] if ln == "trend") >= 2
 
 
 def test_sector_cap_prefers_weakest_when_no_quota_conflict():
@@ -492,3 +523,20 @@ def test_sector_cap_under_limit_is_silent():
                            _sec("000003", 66, "石油")])
     fin, _ = merge_l3_finalists_v3(judged, budget=30, finalist_max=10)
     assert len(fin) == 3 and (fin["guard"] == "").all()
+
+
+def test_sector_cap_no_longer_protects_healthy_by_default():
+    """2026-08-22 批 (a):healthy 没有配额 → 守卫⑧ 的配额保护不再含它;最弱的 healthy 行照剔。
+    (MA4 变异:`_lane_quota_floor` 若仍写死 healthy=ceil(n/3),本条变红。)"""
+    judged = pd.DataFrame([
+        _sec("000001", 70, "贵金属", lane="main"),
+        _sec("000002", 68, "贵金属", lane="main"),
+        _sec("000003", 66, "贵金属", lane="main"),
+        _sec("000004", 60, "贵金属", lane="healthy"),   # 最弱;旧逻辑会因 healthy floor 跳过它
+        _sec("000005", 58, "石油", lane="main"),
+        _sec("000006", 57, "航运", lane="main", finalist=False),
+    ])
+    fin, bench = merge_l3_finalists_v3(judged, budget=30, finalist_max=10)
+    assert "000004" not in set(fin["code"])
+    assert bench.set_index("code").loc["000004", "guard"] == "sector_cap"
+    assert sum(1 for s in fin["sector"] if s == "贵金属") == 3

@@ -119,10 +119,10 @@ L2 之后、与 L3 证据取数**并发**:
 **两遍法**(`l3.two_pass` 默认开):
 
 1. `harvest_l3_evidence`(龙虎榜/预告/快报)+ `harvest_l3_news`(公告情感)补证据;
-2. **pass1 分诊**(`triage_l2_for_l3`,零 LLM):pinned/多路共振/healthy lane 全入 + 各通道 top-K 轮询,~200 行收到 `pass1_target`(现 40);被切的落影子 `_l3_pass1_cut.csv`(不代表判死);
+2. **pass1 分诊**(`triage_l2_for_l3`,零 LLM):pinned 全入 + 多路共振 top-5(`RESONANCE_CAP`,2026-08-22)+ lowturn 强留 ≤8 + 各通道 top-K 轮询,~200 行收到 `pass1_target`(现 40);**healthy lane 自 2026-08-22 不再全入**(`HEALTHY_MANDATORY=False`,证据=edge 普查三尺全负;08-21 它一项占 14/40 席),与其他 lane 同等轮询;被切的落影子 `_l3_pass1_cut.csv`(不代表判死);
 3. `l3_table_md` 压紧凑表(表头注明「pass1 分诊 n→n」);**2026-08-22 加两列** `pct_1d`(当日涨幅)与 `dist_high_60`(距 60 日高,≤0)+ pf 词「今日大涨」(≥9.5)/「贴顶」(dist_high_60≥−2 ∧ pct_60d>0)—— 此前 L3 看不见当日涨幅却被要求替 L4 避开「涨停追高」,2026-08-21 两只入围票双双在 L4 早停该因;
 4. 一个 Opus(`l3-rank`,max)通看 ~40 只,按 6 维 rubric(channel 共振/资金/基本面/情感/脆弱/T+2 兑现机制)**比较着选**(比较式 > 逐只打分),给出 **finalist tier 7–10 只**(`finalist:true`,宁缺毋滥不凑数)+ 其余 **bench**(`finalist:false`,落 `_l3_bench.csv`,防漏影子);
-5. `L3_judged_full.csv`(全量判断)→ `merge_l3_finalists_v3` 确定性守卫,**按序** ①`ins75`(conviction≥75 未标 finalist 强制补入,误杀保险)→ ②`lt55`(<55 剔除)→ ③`cap`(=min(`finalist_max`,当日 l4_budget) 按 conviction 截尾)→ **⑦`chase_1d`**(当日 `pct_1d`≥9.5 剔除 + 从 bench 回填 `chase_backfill`,conviction≥55 才够格、不硬凑;2026-08-22)→ ④`healthy_quota`(健康画像不足 ceil(n/3) 从 bench 补)→ ⑤`trend_quota`(soft 2 席)→ ⑥`lowturn_quota`(soft 1 席,qualify 55)→ **⑧`sector_cap`**(同 `sector` >3 席则剔最弱 + 回填异行业 `sector_backfill`;2026-08-22)。缺 `finalist` 字段(旧 judged)→ 按 conviction 排序取 cap 同守卫;各守卫的**列缺 → 整段 no-op**(parity);📌 保送在全部守卫**之后**由 `_inject_pinned_finalists` 注入,不受⑦⑧影响(持仓涨停/同行业照样出卡);
+5. `L3_judged_full.csv`(全量判断)→ `merge_l3_finalists_v3` 确定性守卫,**按序** ①`ins75`(conviction≥75 未标 finalist 强制补入,误杀保险)→ ②`lt55`(<55 剔除)→ ③`cap`(=min(`finalist_max`,当日 l4_budget) 按 conviction 截尾)→ **⑦`chase_1d`**(当日 `pct_1d`≥9.5 剔除 + 从 bench 回填 `chase_backfill`,conviction≥55 才够格、不硬凑;2026-08-22)→ ④`healthy_quota`(**2026-08-22 起 `HEALTHY_QUOTA_FRAC=0` 不动作**;回滚改 1/3 即恢复「健康画像不足 ceil(n/3) 从 bench 补」,⑤⑥⑧ 的保护集随同一常量联动)→ ⑤`trend_quota`(soft 2 席)→ ⑥`lowturn_quota`(soft 1 席,qualify 55)→ **⑧`sector_cap`**(同 `sector` >3 席则剔最弱 + 回填异行业 `sector_backfill`;2026-08-22)。缺 `finalist` 字段(旧 judged)→ 按 conviction 排序取 cap 同守卫;各守卫的**列缺 → 整段 no-op**(parity);📌 保送在全部守卫**之后**由 `_inject_pinned_finalists` 注入,不受⑦⑧影响(持仓涨停/同行业照样出卡);
 6. 注入:策略师地形段。(**因子方向经验校准块与 T+1 快环校准块已于 2026-08-21 随闭环退役** —— 那是「把历史账本学到的东西塞回今天的判断 prompt」的回注腿。)
 
 **judged 输出契约**:每元素含 `mechanism`(两日内兑现机制+明日买家,写不出不选)与行为化 conviction(**≥70 = 能说出 D+1 谁买且愿真金买入,每日 ≥70 限 ~5 只**;50-69 = 值得 L4 验不背书)。
