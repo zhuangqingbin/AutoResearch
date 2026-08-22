@@ -4,10 +4,13 @@
 design: docs/specs/2026-07-03-scan-run-reliability-design.md §2
 
 首航(07-02)人肉串前奏 ~10 分钟且有漏跑风险;本模块把它收编:
-attribution 刷新 → retro pending 列出(**只备料不代跑诊断**)→ consensus 拉(限频容忍)
-→ universe(regime-aware 默认开,含影子)→ 日历 → 菜单/预算/哨兵
-→ journal + buy_ledger 刷新 → 覆盖池日检(进退复+待建档)。各步 try 包裹失败不阻断,末尾汇总屏。
+consensus 拉(限频容忍)→ 温度 → universe(regime-aware 默认开,含影子)→ 日历 → 催化
+→ 菜单/预算/哨兵 → 覆盖池日检(进退复+待建档)→ 新闻目录体检。各步 try 包裹失败不阻断,
+末尾汇总屏。
 (观察单日检步骤已退役 —— 用户裁定 fb_20260714_002,别再加回。)
+(2026-08-21 用户裁定「整个 learning 层退役」:attribution 刷新 / retro·t1 欠账列出 /
+ 学习环健康三查 / 十本账本刷新 / GATE0 preflight 六步随闭环一并删除,别再加回 ——
+ GATE0 的唯一输入是 retro·t1 欠账,闭环一走它恒 PASS,是空转的门。)
 
   uv run --no-sync python -m autoresearch.scan.prelude 2026-07-03
   uv run --no-sync python -m autoresearch.scan.prelude 2026-07-03 --no-regime-aware --skip universe
@@ -20,6 +23,29 @@ import sys
 from pathlib import Path
 
 from autoresearch.common import workspace as ws
+
+
+def lowturn_line(res: dict) -> str:
+    """低位转强三段到货的汇总屏片段(2026-08-22)。三键缺 = 两把开关全关 → 空串(parity)。
+
+    为什么印在汇总屏:2026-08-21 首跑「全帧 120 → L1 17 → **L2 0**」整天没人看见,L3 侧
+    整套(旗列/pass1 强留/守卫⑥/硬约束 G)空转。到货数是这条特性唯一会变的量,人眼一秒判死活。
+    (同族配方:「自动学习的腿必须有一个会变的量做断言,否则它死了也像活着」。)
+    """
+    keys = ("lowturn_full", "lowturn_l1", "lowturn_l2")
+    if not all(k in res for k in keys):
+        return ""
+    f, l1, l2 = (res.get(k) for k in keys)
+    def _fmt(v):
+        return "?" if v is None else str(v)
+    warn = " ⚠️L2 零到货" if (l2 == 0 and isinstance(f, int) and f > 0) else ""
+    return f" · lowturn 全帧 {_fmt(f)} → L1 {_fmt(l1)} → L2 {_fmt(l2)}{warn}"
+
+
+def universe_line(res: dict) -> str:
+    """prelude 汇总屏的 universe 行(纯函数,便于测试与复用)。"""
+    return (f"L0 {res['universe']} → 召回 {res['recall_n']} → "
+            f"L2 {res['l2_n']}({res['l2_engine']})") + lowturn_line(res)
 
 
 def _run_steps(steps) -> list[dict]:
@@ -35,79 +61,29 @@ def _run_steps(steps) -> list[dict]:
     return out
 
 
-def calib_suggestion_lines(scan_root=None, date: str | None = None) -> list[str]:
-    """当日件建议行(spec 2026-07-05 §8 验收⑤):📐 触价校准 + 🔁 L3 翻案 + 🚪 门柱 + ⚡tripwire。
+def tripwire_advisory_lines(scan_root=None, date: str | None = None) -> list[str]:
+    """当日件建议行 —— 现只剩 ⚡tripwire 持仓盯梢(纯读,可单测)。
 
-    组件各自 thin 禁注(样本不足的行自带"禁注"字样,编排层勿贴);报表落盘由 _ledgers
-    步骤负责,本函数只收集行(纯读,可单测)。
+    ⚡tripwire(Wave7 P2)是**当日风控提醒**(给人看):持仓在两次扫描之间原本无人盯梢,
+    卡片里的「失效」条件写完就没有任何机器复核过。`date` 缺省则跳过该行(纯读接口不猜
+    wall-clock)。
 
-    ⚡tripwire(Wave7 P2)与前三者性质不同:前三条是**校准先验**(贴给下游 agent 读),
-    这条是**当日风控提醒**(给人看)——持仓在两次扫描之间原本无人盯梢,卡片里的「失效」
-    条件写完就没有任何机器复核过。`date` 缺省则跳过该行(纯读接口不猜 wall-clock)。
+    2026-08-21 learning 层退役:原同居本函数的三条**校准先验**(📐 触价校准 / 🔁 L3 翻案率 /
+    🚪 门柱)全是"从历史账本学到的东西再贴回给下游 agent 读"——正是被裁掉的闭环回注腿,
+    随 `buy_ledger`/`cross_calib` 一并删除;函数因此从 `calib_suggestion_lines` 更名,
+    L4 共享块那个消费点(原「当日校准锚」节)同批摘除,只剩人读的这一条。
     """
-    from autoresearch.learning.buy_ledger import calibration_line, target_calibration
-    from autoresearch.learning.cross_calib import flip_stats, gate_stats, suggestion_lines
-    lines = [ln for ln in [calibration_line(target_calibration(scan_root))] if ln]
-    lines += suggestion_lines(flip_stats(scan_root), gate_stats(scan_root))
+    lines: list[str] = []
     if date:
         import contextlib
         with contextlib.suppress(Exception):   # 盯梢是 advisory,不该有能力阻断 prelude
-            from autoresearch.learning.tripwire_watch import check, render_line
+            from autoresearch.scan.tripwire_watch import check, render_line
             from autoresearch.scan.user_config import load_pinned
             n = len([e for e in (load_pinned(date).get("kept") or []) if e.get("code")])
             ln = render_line(check(date, scan_root=scan_root or ws.scan_root()), n)
             if ln:
                 lines.append(ln)
     return lines
-
-
-def _retro_input_nag(scan_root: Path | str | None = None) -> str:
-    """诊断欠账(retro_input.md 已备料但未收尾,无 done.json)→ 提醒行(D1 清欠;仿
-    `assemble._proposals_nag` 语气)。措辞与 `retro.pending_days()`/CLI `pending` 的
-    「诊断欠账(已备料)」段同一套词汇(Wave11-A7:归因欠账/诊断欠账两笔账分开记,勿混报)。
-
-    比既有 `retro_pending` 步骤(只看"够资格复盘")更进一步的欠账信号:这里专挑"scan-retro 已经
-    跑过 write_retro_input 却从没 mark_done"——诊断会话烂尾比"还没开始"更该催办(勘察 D1:
-    07-07/07-08 两日就是这个状态)。presence-gated:无 context/scan / 无烂尾日 → ""。
-    """
-    scan_root = Path(scan_root or ws.scan_root())
-    if not scan_root.exists():
-        return ""
-    stalled = sorted(p.name for p in scan_root.iterdir()
-                     if p.is_dir() and (p / "retro" / "retro_input.md").exists()
-                     and not (p / "retro" / "done.json").exists())
-    if not stalled:
-        return ""
-    # Wave10 A10:超 48h 的备料升红 —— 「欠了 3 天」和「昨天刚欠」不是同一件事,
-    # 用同一种语气报会让读者对这条提醒脱敏(而脱敏之后真的烂尾也没人看)。
-    aged = _stalled_over_48h(scan_root, stalled)
-    # 头部同时留 "retro_input"/"done.json"(老断言依赖的字面量)与 "诊断欠账"(Wave11-A7
-    # 新词汇,跟 CLI `pending` 的「诊断欠账(已备料)」段对齐)——两套读者(既有测试 grep
-    # 字面量、人读新词汇)都不该因为这次纯措辞同步而读不懂。
-    head = ("🚨 诊断欠账超 48h 未收尾(retro_input 已备料)" if aged
-            else "诊断欠账(retro_input 已备料,无 done.json)")
-    detail = "、".join(f"{d}({_stall_age_h(scan_root, d)}h)" if d in aged else d
-                       for d in stalled)
-    return (f"{head}:{detail}"
-            + " ← scan-retro 诊断烂尾,去补 mark_done 或重跑诊断,别让欠账攒着")
-
-
-_RETRO_STALE_HOURS = 48
-
-
-def _stall_age_h(scan_root: Path, day: str) -> int | None:
-    """备料落盘至今的小时数;取不到 → None(不猜)。"""
-    import time
-    path = Path(scan_root) / day / "retro" / "retro_input.md"
-    try:
-        return int((time.time() - path.stat().st_mtime) / 3600)
-    except OSError:
-        return None
-
-
-def _stalled_over_48h(scan_root: Path, stalled: list[str]) -> set[str]:
-    return {d for d in stalled
-            if (h := _stall_age_h(scan_root, d)) is not None and h >= _RETRO_STALE_HOURS}
 
 
 def _parse_ts(value):
@@ -216,7 +192,7 @@ def render_summary(date: str, results: list[dict], scan_root: Path | str | None 
     # (=pending),若把 pending 当 blind 处理就会天天无条件误报(复核轮1 实测:
     # `L2_gbdt_top200.csv` mtime 与 `L3_news/` mtime 相差 9 分 36 秒,后者严格晚于
     # prelude 收尾)。改为**回看最近一个已完成扫描日**(跳过仍是 pending 的日子),
-    # 与既有的 retro_pending / dossier 对账提醒同款"看历史"套路。
+    # 与既有的 dossier 对账提醒同款"看历史"套路。
     #
     # 沿用本函数其余可选行的记账约定(try/except + stderr,不用 contextlib.suppress)——
     # 本文件 write_summary 那段注释已有前车之鉴:静默吞异常曾让落盘失败在 workflow 侧
@@ -245,27 +221,15 @@ def render_summary(date: str, results: list[dict], scan_root: Path | str | None 
         out.append(f"  {macro_state_line(date)}")
     except Exception as e:  # noqa: BLE001 — 状态行可选,缺了不挡前奏
         print(f"[prelude] ✗ macro_state_line: {e}", file=sys.stderr)
-    pend = next((r["note"] for r in results
-                 if r["step"] == "retro_pending" and "待诊断" in r["note"]), None)
-    if pend:
-        out.append(f"  ⚠️  {pend}")
     try:
-        stalled = _retro_input_nag()
-        if stalled:
-            out.append(f"  ⚠️  {stalled}")
-    except Exception as e:  # noqa: BLE001 — nag 可选,缺了不挡前奏
-        print(f"[prelude] ✗ retro_input_nag: {e}", file=sys.stderr)
-    try:
-        # 传 date → 多出 ⚡tripwire 行(Wave7 P2)。**只在这里传**:汇总屏是给人看的,
-        # 而 l4_card 那个调用点组装的是喂 agent 的校准先验 —— 持仓风控提醒不该混进去
-        # 影响个股评级(同 market_view §4-5 只进 L5 的防锚定纪律)。
-        clines = calib_suggestion_lines(date=date)
+        # ⚡tripwire 持仓盯梢(Wave7 P2)——**仅人看,勿贴给任何 agent**:持仓风控提醒不该
+        # 混进个股评级的输入(同 market_view §4-5 只进 L5 的防锚定纪律)。
+        clines = tripwire_advisory_lines(date=date)
         if clines:
-            out.append("  当日件建议行(📐 贴 _l4_shared_instructions.md;🔁 贴 L3 校准块旁;"
-                       "🚪 贴 skeptic/PM 先验;⚡ 仅人看勿贴;**含「禁注」的行勿贴**):")
+            out.append("  当日件建议行(⚡ 仅人看,勿贴进任何 agent 输入):")
             out += [f"    {ln}" for ln in clines]
     except Exception as e:  # noqa: BLE001 — 建议行可选,缺了不挡前奏
-        print(f"[prelude] ✗ calib_lines: {e}", file=sys.stderr)
+        print(f"[prelude] ✗ tripwire_lines: {e}", file=sys.stderr)
     out.append("  下一步(LLM 段):哨兵档 → 直接 assemble(日历已跑);"
                "全扫 → 策略师 → L3 → L4(见 SKILL 流程)")
     return "\n".join(out)
@@ -362,41 +326,6 @@ def run_prelude(date: str, regime_aware: bool | None = None, skip: tuple[str, ..
     scan_dir = ws.scan_root() / date
     _write_t0(scan_dir)
 
-    def _refresh():
-        from autoresearch.learning.retro import refresh_attributions
-        done = refresh_attributions()
-        return f"刷新 {len(done)} 日" + (f"({'、'.join(done)})" if done else "")
-
-    def _pending():
-        from autoresearch.learning.retro import pending_days
-        days = pending_days(today=date)
-        return ("待诊断 retro 日:" + "、".join(days) + " ← 开扫前先用 scan-retro 补诊断") \
-            if days else "无待复盘日"
-
-    def _t1_pending():
-        # 快环(T+1 判断层复盘,fb_20260717_001):T 报告真选票 vs T+1 收盘,D+1 即可复盘
-        from autoresearch.learning.t1_review import pending_pairs
-        pairs = pending_pairs(today=date)
-        return ("T+1 快环待复盘:" + "、".join(f"{p['t']}→{p['t1']}" for p in pairs)
-                + " ← 最新对跑 t1-review workflow,更早的 backfill") if pairs else "快环无欠账"
-
-    def _learning_health():
-        # 学习环健康三查(全只读,子项各自 suppress:一项炸不连坐)
-        import contextlib
-        lines: list[str] = []
-        with contextlib.suppress(Exception):
-            from autoresearch.learning.changelog_ledger import heartbeat
-            lines.append(heartbeat())
-        with contextlib.suppress(Exception):
-            from autoresearch.learning.lesson_yield import guard_coverage_line
-            lines.append(guard_coverage_line())
-        with contextlib.suppress(Exception):
-            import autoresearch.learning.feedback_store as fs
-            nag = getattr(fs, "proposals_nag_lines", None)   # 看板自清洁(可选,缺=旧版 parity)
-            if nag:
-                lines.extend(nag(max_lines=3))
-        return "\n           ".join(lines) if lines else "(学习环健康查不可用)"
-
     def _consensus():
         from autoresearch.research.consensus import pull
         pull(date)
@@ -413,7 +342,7 @@ def run_prelude(date: str, regime_aware: bool | None = None, skip: tuple[str, ..
     def _universe():
         from autoresearch.scan.universe import run
         res = run(date, regime_aware=regime_aware)
-        return f"L0 {res['universe']} → 召回 {res['recall_n']} → L2 {res['l2_n']}({res['l2_engine']})"
+        return universe_line(res)
 
     def _calendar():
         import pandas as pd
@@ -453,33 +382,6 @@ def run_prelude(date: str, regime_aware: bool | None = None, skip: tuple[str, ..
         level, reason = sentinel_advice(scan_dir)
         print(mh or "(菜单体检:staging 缺)")
         return f"L4 预算 {n}({why});sentinel={level}({reason})"
-
-    def _ledgers():
-        import contextlib
-
-        from autoresearch.learning import (
-            buy_ledger,
-            catalyst_ledger,
-            changelog_ledger,
-            channel_ledger,
-            cross_calib,
-            earlystop_ledger,
-            gate_ledger,
-            journal,
-            paper_nav,
-            zero_buy_ledger,
-        )
-        # 九个 ledger 串行但各自 suppress:单点故障不再连坐(改前五个共享一个 try,一炸全炸)。
-        # 07-12 D3 清欠:channel/gate/zero_buy/changelog 四个"存在但不会自己长大"的账本纳入白名单
-        # (此前只能靠人/Claude 手跑 CLI,见 docs/research/2026-07-12-learning-system-survey.md §1)。
-        # watchlist_ledger 随观察单日检退役(fb_20260714_002),模块已于 2026-07-17 删除(P3 清欠)。
-        for mod in (journal, buy_ledger, cross_calib, catalyst_ledger, paper_nav,
-                    channel_ledger, gate_ledger, zero_buy_ledger, changelog_ledger,
-                    earlystop_ledger):
-            with contextlib.suppress(Exception):
-                mod.main()
-        return ("journal + buy_ledger + cross_calib + catalyst + paper_nav + "
-                "channel + gate + zero_buy + changelog + earlystop 已刷新")
 
     def _dossier_pool():
         import contextlib
@@ -551,29 +453,10 @@ def run_prelude(date: str, regime_aware: bool | None = None, skip: tuple[str, ..
                 f" · 最新 {fresh} 前 · {srcs}"
                 + ("".join(" · " + f for f in flags)))
 
-    def _preflight():
-        """GATE0 启动前体检(design 2026-08-03 §4.2-4)—— **默认只告警,不阻断**。
-
-        为什么挂在 prelude:它跑在 frame/universe/LLM **之前**,是本仓唯一一个「还没开始
-        花钱」的位置。GATE1 在 L2 之后,那时取数/打分/召回都已经花掉了 —— 设计稿点名的
-        正是这个勘误。真硬闸是 B 类(需 availability SLO + registry),本步不做。
-        """
-        from autoresearch.learning.nightly_runner import collect_debts
-        from autoresearch.scan.gate0 import ADVISORY, PASS, preflight
-
-        report = preflight(collect_debts(date), day=date, mode=ADVISORY)
-        if report["verdict"] == PASS:
-            return "无阻断级债务(数据完整性/成熟标签)"
-        return (f"⚠️ 应阻断级债务:{report['blocking_tiers']} ← 当前 advisory 只告警"
-                f"(硬闸是 B 类,需 registry)")
-
-    all_steps = [("preflight", _preflight),
-                 ("retro_refresh", _refresh), ("retro_pending", _pending),
-                 ("t1_pending", _t1_pending), ("learning_health", _learning_health),
-                 ("consensus", _consensus), ("temperature", _temperature),
+    all_steps = [("consensus", _consensus), ("temperature", _temperature),
                  ("universe", _universe), ("calendar", _calendar),
                  ("catalyst", _catalyst), ("menu", _menu),
-                 ("ledgers", _ledgers), ("dossier_pool", _dossier_pool),
+                 ("dossier_pool", _dossier_pool),
                  # Wave12-T35:纯读 news_catalog 出一行覆盖/freshness/非空率;
                  # 不喂任何决策面(三个 B 类消费接口本波仍全关)。
                  ("news_catalog", _news_catalog)]

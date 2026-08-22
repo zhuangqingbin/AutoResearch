@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """内置 channel 注册表 —— 全复用 common.scoring(零新因子数学)。
 
-注册数 ≠ 启用数:生产启用路以 `scan_config.funnel.recall_channels` 为准(现 9 路),
-`event` / `sector_momentum` 两路**默认不启用**,只在影子变体里跑并各自攒
-`unique_excess_t2` 累计证据(见各自 docstring)。
+注册数 ≠ 启用数:生产启用路以 `scan_config.funnel.recall_channels` 为准(现 10 路,
+2026-08-22 加 `lowturn`),`event` / `sector_momentum` 两路**默认不启用**(取证渠道已随
+2026-08-21 闭环退役,见各自 docstring)。
 
 design: docs/specs/2026-06-22-l1-multi-recall-design.md §9 路 channel 表。
 每路:对 scored 帧(已含 composite + 因子列)过门 + 按策略信号降序 + 截 top-k。
@@ -49,6 +49,64 @@ def reversal_confirm(frame, date, k):
     "边际改善∨资金即放行"更严——channel_eval 按 lane 分行累计 ≥10 日后裁决新旧路优劣。"""
     g = lens_reversal_confirm(frame)
     return gate_rank(g, g["reversal_confirm_gate"], "reversal_confirm_score", k)
+
+
+def _lowturn_cfg() -> dict:
+    """低位转强阈值 = `LOWTURN_DEFAULTS` 叠 `scan_config.jsonc` 的 `l3.lowturn` 块。
+
+    **本路与 L3 旗共用同一份阈值、同一个谓词**(`turnup.lowturn_flag`)——「两层各造一套
+    词表」在本仓已付过两次学费(`l2_stratify.py:39-52` 自述)。两把开关分工:
+    `funnel.recall_channels` 管**召不召回**(本路),`l3.lowturn.enabled` 管**L3 旗列 /
+    pass1 强留**;阈值只有这一处。配置读不到 → 内建默认(测试/离线 parity)。
+    """
+    from autoresearch.common.turnup import LOWTURN_DEFAULTS
+    try:
+        from autoresearch.scan.user_config import load_user_config
+        user = (load_user_config().get("l3") or {}).get("lowturn") or {}
+    except Exception:  # noqa: BLE001 — 配置层故障不挡确定性召回
+        user = {}
+    return {**LOWTURN_DEFAULTS, **user}
+
+
+@channel("lowturn", quota=120, floor=40,
+         desc="低位转强(turnup.lowturn_mask 过门 = 与 L3 旗同一谓词同一 cfg;按 reversal_confirm_score 排)")
+def lowturn(frame, date, k):
+    """低位转强画像的**生产者**(2026-08-22;design 2026-08-22-funnel-shape-after-lowturn-first-run)。
+
+    **立案**:2026-08-21 低位转强波把 L3 侧整套接好了(表旗列 / pass1 强留 ≤8 / merge 守卫⑥ /
+    l3-rank 硬约束 G),首跑当天实测 `lowturn_mask` 全帧 **120** 只亮旗 → L1 top1000 剩 **17**
+    → L2 200 **0** 只 → L3 表「今日旗亮 0 只」。整条特性是**没有生产者的消费者**(FN-1 家族)。
+    根因:这批票 composite 中位 40.1 vs 全帧 50.5(分位 13.5%),merit 核不收;而 7 个风格桶按
+    召回 provenance 分桶,没有任何一路召回它们。昨稿 R5 裁定「并入反转桶(floor 12 共用)」的
+    前提——`reversal_confirm` 重开后会送这类票——同日被证伪:该门全帧只 27 只过、通道召 6 只,
+    与 lowturn 120 只**交集 2 只**,是两群票(当日反转桶 floor 救回的 5 只 pct_5d 中位 −6.8%、
+    站上 MA20 的 0%,还在跌)。故本波翻转 R5:独立一路 + 独立 L2 桶。
+
+    **门** = `turnup.lowturn_mask`(逐行 `lowturn_flag`):低位(距 60 日高 ≥15% ∧ 60 日涨幅
+    <10)∧ 转强(近 5 日为正 ∧ 站回 MA20 ∧ MA5>MA10)∧ 放量(`vol_ratio_20`≥1.2)∧ 资金
+    (主力或 CMF 转正)∧ ¬健康上涨 ∧ ¬落刀 ∧ 非 ST/退。阈值见 `_lowturn_cfg`。
+
+    **排序** = `lens_reversal_confirm` 的 `reversal_confirm_score`(低位30+企稳30+确认40)。
+    与通道 `reversal_confirm` 是「同模块两档」:**门不同**(那路要 60 日跌≥25% ∧ vol_ratio_20
+    ≥1.5 的起爆硬门,严;本路的画像门宽)、**分数同一份**,零新因子数学。2026-08-21 实测
+    120/120 行该分数非 NaN。
+
+    **证据边界(引用本路时必须连带)**:该画像在决策尺 `gap_c1_o2` 上历史相对超额 **−0.24pp
+    (t=−6.36,132 日)**,与现任 healthy 画像同为负(−0.17pp);正超额在 5~10 日尺
+    (+0.63/+0.99pp)。接上生产者的理由是「不比现任差 + 打开候选池形状 + 让 L3/L4 有机会判它」,
+    **不是**「它隔夜能赚」。读数全文 `docs/research/2026-08-21-lowturn-precheck.md`。
+
+    缺列 → 谓词逐行 False → 空帧降级(与其余各路同契约,不抛)。
+    """
+    from autoresearch.common.turnup import lowturn_mask
+    if not len(frame):
+        return empty_result()
+    mask = lowturn_mask(frame, _lowturn_cfg())
+    if not len(mask) or not bool(mask.any()):
+        return empty_result()                               # 无票过门 → 空帧
+    g = lens_reversal_confirm(frame)                        # index 同 frame(g = df.copy())
+    return gate_rank(g, mask.reindex(g.index).fillna(False).astype(bool),
+                     "reversal_confirm_score", k)
 
 
 @channel("growth", quota=150, floor=40, desc="成长加速(lens_growth 过门)")
@@ -166,7 +224,7 @@ def sector_momentum(frame, date, k):
     `floor=0` ⇒ `quota_union` 里本路一票都不受保护;`STYLE_CHANNELS` 没有映射到本路的桶
     ⇒ 不进 `DEFAULT_FLOORS`、不改 `merit_need`、不产 `l2_lane_reserved` 标签;不在
     `scan_config.funnel.recall_channels` 里 ⇒ 生产召回逐字节不变。它只在
-    `universe.write_shadow_variants` 的 `plus_sectormom` 反事实里跑,产物是
+    (原 `universe.write_shadow_variants` 的 `plus_sectormom` 反事实腿已随 2026-08-21 闭环退役删除。)产物曾是
     `shadow/L1_channels_plus_sectormom.csv`,由 `channel_audit --variant plus_sectormom`
     按与 accumulation 2026-07-11 退役同一套 `unique_excess_t2` 裁决。
 

@@ -253,127 +253,25 @@ def recall_select(scored: pd.DataFrame, analysis_date: str, recall_n: int,
     return _inject_pinned_l1(recall, scored, pinned), per_channel
 
 
-def write_shadow_variants(outdir: Path, scored: pd.DataFrame, recall: pd.DataFrame,
-                          analysis_date: str, recall_n: int, l2_n: int,
-                          l2_floors: dict | None, l2_sector_cap: float, l2_cols: list[str],
-                          recall_mode: str = "multi",
-                          include_bj: bool = True, source: str = "tushare",
-                          l0_min_amount_yi: float = 0.0, l0_min_list_days: int = 0,
-                          recall_channels=None, regime_aware: bool = False,
-                          channel_quotas: dict[str, int] | None = None,
-                          channel_floors: dict[str, int] | None = None) -> list[str]:
-    """影子漏斗:变体 L2 落 <outdir>/shadow/(确定性 A/B,只落 staging 不喂 L3)。返回变体名。
+def _lowturn_counts(scored, recall, l2, cfg: dict) -> dict:
+    """低位转强旗的**三段计数**(纯函数,零取数):全帧 → L1 → L2。
 
-    - nostrat:纯 composite 序(分层到底救了还是害了);
-    - nocap:分层但无行业上限(cap 挡了多少赢家);
-    - pre_healthy:**当日实际启用路的反事实,去掉 healthy 通道**(无健康桶)——healthy 通道的
-      捕获增量由 retro 对照直接可测(2026-07-03 起)。仅 multi 模式有意义。
-    - plus_event:**当日实际启用路 + event 通道的反事实**(pre_healthy 的镜像:少一路 vs 多一路)——
-      给事件驱动召回路(Wave4,默认不启用)攒 `unique_excess_t2` 累计证据,判它是否够格转正。
-      仅当日路未含 event 时有意义(已启用则无反事实可比)。
-    - plus_sectormom:同形,给 `sector_momentum` 影子路(Wave12-T20,EXP-2 的 challenger)
-      攒同一套证据。两条影子路各落各的长表,**样本不得混**(预注册 spec `shared_instrument`)。
-    - capfloor20:cap_floor_yi=20(默认 30)重跑 L0→L1→L2——验证 pr_20260624_001(小盘/北交所
-      领涨日 30亿地板系统性漏判赢家)是否值得放宽。**唯一非零成本变体**:前面几个都在本次已取好
-      的 `scored`/`recall` 上重组,capfloor20 要真重新拉取 universe(网络/湖),故单独 try/except
-      兜底——它失败不牵连前面已经算好、只等落盘的零成本变体。
+    2026-08-21 首跑事故的探针化:那天 `lowturn_mask` 全帧 120 只亮旗、L1 剩 17、**L2 恰 0**,
+    于是 L3 侧整套(旗列/pass1 强留/守卫⑥/G 条)空转一整天而没有任何一行日志喊过。
+    「上线即恒 0」这种死法没有报错,只有一个谁也没在数的数——所以把它数出来:进 `meta.json`
+    与 prelude 汇总屏,并由 `self_review` 探针 14 在 L2 到货为 0 时 warn。
+    (同族配方:「自动学习的腿必须有一个会变的量做断言,否则它死了也像活着」。)
 
-    每个经 `recall_select` 算出的变体(pre_healthy/plus_event/capfloor20)都把它的
-    `per_channel`(第二个返回值,逐路长表)落 `shadow/L1_channels_<variant>.csv`(列同主
-    `L1_channels.csv`:channel/code/channel_rank/channel_score)——`channel_audit --variant`
-    的 `unique_excess_t2` 只能从这张长表算。原实现三处 `re9, _ = ...` / `recall20, _ = ...`
-    一律丢弃第二个返回值,新召回路(如 event)因此无法按 accumulation 2026-07-11 被裁同口径
-    裁决(Wave4 仪器修复)。
+    三帧任一算不出(缺列/坏值)→ 该键为 None,不抛(B 级观测腿不得阻断扫描)。
     """
-    from autoresearch.scan.recall.l2_stratify import DEFAULT_FLOORS, select_l2
-
-    sh = outdir / "shadow"
-    sh.mkdir(exist_ok=True)
-
-    def _dump_per_channel(vname: str, pc) -> None:
-        """影子变体的逐路长表(Wave4 仪器修复)。
-
-        原实现把 `recall_select` 的 per_channel 一律丢弃(`re9, _ = ...`),导致影子只能
-        拿到"L2 名单多捕几个赢家"的粗读数,拿不到 `unique_excess_t2` —— 而后者正是
-        accumulation 2026-07-11 被裁决退役所用的指标。没有它,新召回路无法按同口径裁决。
-        """
-        if pc is not None and len(pc):
-            pc.to_csv(sh / f"L1_channels_{vname}.csv", index=False)
-
-    nostrat = recall.sort_values("composite", ascending=False).head(l2_n).copy()
-    nostrat.insert(0, "l2_rank", range(1, len(nostrat) + 1))
-    variants: dict[str, pd.DataFrame] = {"nostrat": nostrat}
-    variants["nocap"], _ = select_l2(recall, l2_n, floors=l2_floors, sector_cap_frac=1.0)
-    if recall_mode == "multi":
-        from autoresearch.scan.recall.registry import registered_channels
-        # bug 修复(Wave4):原先 `old` 恒取 registered_channels()(全部已注册路,含已停用的
-        # accumulation/northbound),不看当日实际启用了哪些路 → "去掉 healthy 的反事实"混进了
-        # 根本没参与当日召回的停用路,反事实失真。改为以调用方传入的 recall_channels(当日
-        # 实际启用路)为基准,缺省(None)才退回全部注册路。
-        base_names = list(recall_channels or registered_channels())
-        old = [n for n in base_names if n != "healthy"]
-        re9, pc9 = recall_select(scored, analysis_date, recall_n, "multi", old,
-                                 channel_quotas=channel_quotas, channel_floors=channel_floors)
-        f9 = {k: v for k, v in (l2_floors or DEFAULT_FLOORS).items() if k != "健康"}
-        variants["pre_healthy"], _ = select_l2(re9, l2_n, floors=f9, sector_cap_frac=l2_sector_cap)
-        _dump_per_channel("pre_healthy", pc9)
-
-        if "event" not in base_names:
-            plus = [*base_names, "event"]
-            # m-3(Review Round 1 minor):重跑前清掉上次残留——若这次失败,except 分支不会
-            # 重新落盘,留着旧文件会被 channel_audit --variant 当成"今天的证据"误读进十日账本。
-            (sh / "L1_channels_plus_event.csv").unlink(missing_ok=True)
-            try:      # event 路是本波新代码,单独兜底不牵连以上两个零成本变体
-                re_p, pc_p = recall_select(scored, analysis_date, recall_n, "multi", plus,
-                                           channel_quotas=channel_quotas,
-                                           channel_floors=channel_floors)
-                # m-4(Review Round 1 minor):逐路长表(仪器本体)提到 select_l2 之前落盘——
-                # L2 分层这一步失败不该连累它,它不依赖 select_l2 的产出。
-                _dump_per_channel("plus_event", pc_p)
-                variants["plus_event"], _ = select_l2(re_p, l2_n, floors=l2_floors,
-                                                      sector_cap_frac=l2_sector_cap)
-            except Exception as e:  # noqa: BLE001 — 兜底可以,静默不行(同 I-2):plus_event
-                # 是 event 路唯一的 unique_excess_t2 证据源,它悄悄不落盘 = 十日审批的账本
-                # 缺日而无人知(下面 capfloor20 早就是"告警后继续",这里对齐)。
-                print(f"[warn] shadow plus_event 失败(event 路当日无影子读数): {e!r}",
-                      file=sys.stderr)
-
-        # plus_sectormom(Wave12-T20):EXP-2 `exp_20260801_recall_sector_momentum` 的
-        # challenger 数据腿。与 plus_event 同形、同纪律、**独立文件**——预注册 spec 明写两条
-        # 影子路「共用 channel_audit 仪器,但 family/variant 分开,不得混样本」。
-        if "sector_momentum" not in base_names:
-            plus_s = [*base_names, "sector_momentum"]
-            (sh / "L1_channels_plus_sectormom.csv").unlink(missing_ok=True)   # m-3 同款:清残留
-            try:
-                re_s, pc_s = recall_select(scored, analysis_date, recall_n, "multi", plus_s,
-                                           channel_quotas=channel_quotas,
-                                           channel_floors=channel_floors)
-                _dump_per_channel("plus_sectormom", pc_s)      # m-4 同款:仪器本体先落盘
-                variants["plus_sectormom"], _ = select_l2(re_s, l2_n, floors=l2_floors,
-                                                          sector_cap_frac=l2_sector_cap)
-            except Exception as e:  # noqa: BLE001 — 同 plus_event:兜底可以,静默不行
-                print(f"[warn] shadow plus_sectormom 失败(sector_momentum 路当日无影子读数): {e!r}",
-                      file=sys.stderr)
-    # m-3:capfloor20 同形(见上 plus_event 注释)——重跑前清掉上次残留,防陈旧长表被读进账本。
-    (sh / "L1_channels_capfloor20.csv").unlink(missing_ok=True)
-    try:
-        uni20, _ = build_market_frame(analysis_date, cap_floor_yi=20.0, include_bj=include_bj,
-                                      source=source, l0_min_amount_yi=l0_min_amount_yi,
-                                      l0_min_list_days=l0_min_list_days)
-        weights20, _ = pick_weights(uni20, regime_aware)
-        scored20 = composite_score(uni20, weights20)
-        recall20, pc20 = recall_select(scored20, analysis_date, recall_n, recall_mode, recall_channels,
-                                       channel_quotas=channel_quotas, channel_floors=channel_floors)
-        _dump_per_channel("capfloor20", pc20)      # m-4:提到 select_l2 之前(理由同上 plus_event)
-        variants["capfloor20"], _ = select_l2(recall20, l2_n, floors=l2_floors, sector_cap_frac=l2_sector_cap)
-    except Exception as e:  # noqa: BLE001 — 唯一重取数变体,失败不阻其余零成本变体落盘
-        print(f"[warn] shadow capfloor20 失败(不阻其余变体): {e}", file=sys.stderr)
-    for vname, vdf in variants.items():
-        vdf[[c for c in l2_cols if c in vdf.columns]].to_csv(sh / f"L2_{vname}.csv", index=False)
-    return list(variants)
-
-
-# ───────────────────────── 编排 + 输出 ─────────────────────────
+    from autoresearch.common.turnup import lowturn_mask
+    out: dict = {}
+    for key, frame in (("lowturn_full", scored), ("lowturn_l1", recall), ("lowturn_l2", l2)):
+        try:
+            out[key] = int(lowturn_mask(frame, cfg).sum()) if frame is not None and len(frame) else 0
+        except Exception:  # noqa: BLE001 — 观测腿失败不挡扫描,记 None 让下游知道"没量到"
+            out[key] = None
+    return out
 
 
 def _funnel_overlay(recall_channels, channel_quotas, channel_floors):
@@ -400,7 +298,6 @@ def run(analysis_date: str, cap_floor_yi: float | None = None, include_bj: bool 
         source: str | None = None, recall_mode: str = "multi", recall_channels=None,
         pinned_path=None,                                                # 保送 pinned.json 路径(None=默认路径;缺文件→kept=[]→no-op parity)
         regime_aware: bool | None = None,                                # L1 权重按 regime 选(None→config funnel.regime_aware;内建 False)
-        shadow: bool = True,                                              # 影子漏斗变体 L2(纯增量文件,可 --no-shadow 关)
         l0_min_amount_yi: float | None = None, l0_min_list_days: int | None = None,  # L0 流动性/次新硬门(内建 0=关=parity)
         l2_floors: dict | None = None, l2_sector_cap: float | None = None,
         channel_quotas: dict[str, int] | None = None,                     # 覆盖各路 quota(None=CHANNEL_DEFAULTS,parity)
@@ -413,8 +310,8 @@ def run(analysis_date: str, cap_floor_yi: float | None = None, include_bj: bool 
     `weights_path`:透传 `pick_weights(path=...)`。**None = 现行为**(读
     `context/factor_lab/weights.json`)→ 逐字节 parity,生产路径不受影响。存在的理由是
     **权重 PIT**(design 2026-07-12-funnel-replay-l35-removal-design.md Part B §2.3):
-    weights.json 是 retro 用含未来前向收益校准出来的,拿它回放历史 = 用未来的权重预测过去;
-    `research.replay` 因此注入先验/as-of 权重快照。
+    weights.json 是用含未来前向收益的面板校准出来的,拿它回放历史 = 用未来的权重预测过去;
+    (原 `research.replay` 因此注入先验/as-of 权重快照;该回放器已随 2026-08-21 闭环退役删除。)
     """
     # FN-1 缝第三修:生产真身(workflow→prelude→本函数直调)不经 cli._config_from_args,scan_config
     # 的 funnel 在真跑动从未生效(2026-07-11 冒烟坐实:仍 11 路旧配额)。兜底下沉:调用方没显式给的
@@ -499,7 +396,14 @@ def run(analysis_date: str, cap_floor_yi: float | None = None, include_bj: bool 
     # 实证:确定性 L2 无稳健 alpha、regime 依赖 → 不预测、不赌 regime,只给 L3/L4 建均衡菜单;alpha 在 L3/L4。
     # L2Rank stage 共用 select_l2 → golden parity。(design: 2026-06-25-l2-stratified-sampler)
     from autoresearch.scan.recall.l2_stratify import select_l2
-    l2, l2_engine = select_l2(recall, l2_n, floors=l2_floors, sector_cap_frac=l2_sector_cap)
+    # 未启用通道的桶 floor 运行时归零(2026-08-22):multi 模式才有「启用通道集」这个概念;
+    # composite 单路模式与 recall_channels 缺省(=全注册路)都传 None/全集 = 原样 parity。
+    _enabled = None
+    if recall_mode == "multi":
+        from autoresearch.scan.recall import registered_channels
+        _enabled = list(recall_channels) if recall_channels else registered_channels()
+    l2, l2_engine = select_l2(recall, l2_n, floors=l2_floors, sector_cap_frac=l2_sector_cap,
+                              enabled_channels=_enabled)
     # T16(Wave12 F1-3):select_l2 早算出 selection_reason/selection_detail(每票「因何进菜单」:
     # merit 核/风格桶救回/行业 cap/保送/回填,见 l2_stratify.py),此前这两列漏投影进白名单——
     # 内存里的 l2 有它们,CSV 却没有,导致 l2_slo._guards 的分布 guard 分支 31 天从未触发过
@@ -509,25 +413,27 @@ def run(analysis_date: str, cap_floor_yi: float | None = None, include_bj: bool 
     l2[[c for c in l2_cols if c in l2.columns]].to_csv(outdir / "L2_gbdt_top200.csv", index=False)
     print(f"[L2 粗排] recall {len(recall)} → {l2_engine} top {len(l2)}")
 
-    if shadow:   # ── 影子漏斗:变体 L2(确定性 A/B;只落 staging 不喂 L3;前三免费+capfloor20 重取数)──
-        try:
-            names = write_shadow_variants(outdir, scored, recall, analysis_date, recall_n,
-                                          l2_n, l2_floors, l2_sector_cap, l2_cols, recall_mode,
-                                          include_bj=include_bj, source=source,
-                                          l0_min_amount_yi=l0_min_amount_yi,
-                                          l0_min_list_days=l0_min_list_days,
-                                          recall_channels=recall_channels, regime_aware=regime_aware,
-                                          channel_quotas=channel_quotas, channel_floors=channel_floors)
-            print(f"[shadow] 变体 L2 ×{len(names)}({'/'.join(names)})→ {outdir / 'shadow'}"
-                  "(retro 对照赢家捕获)", file=sys.stderr)
-        except Exception as e:  # noqa: BLE001 — 影子失败不阻主漏斗
-            print(f"[warn] 影子漏斗失败: {e}", file=sys.stderr)
+    # (2026-08-21 learning 层退役:影子漏斗 5 变体〔nostrat/nocap/pre_healthy/plus_event/
+    #  plus_sectormom/capfloor20〕整段删除。它存在的唯一理由是喂 retro 对照与
+    #  `channel_audit --variant` 的 `unique_excess_t2`,两个消费者都随闭环没了;其中
+    #  capfloor20 还是**唯一重取数**变体,留着 = 每跑一次白付一次全市场取数换一堆没人读的 CSV。)
 
     sectors.to_csv(outdir / "sectors.csv", index=False)
+    # 低位转强三段计数(2026-08-22):两把开关任一开就量 —— 通道启用(生产者)或 L3 旗启用
+    # (消费者)。两个都关 = 该特性整体不在场,不量、不落键(逐字 parity)。
+    _lt_counts: dict = {}
+    try:
+        from autoresearch.scan.recall.channels import _lowturn_cfg
+        _lt_cfg = _lowturn_cfg()
+        if (_enabled and "lowturn" in _enabled) or bool(_lt_cfg.get("enabled")):
+            _lt_counts = _lowturn_counts(scored, recall, l2, _lt_cfg)
+    except Exception as e:  # noqa: BLE001 — 观测腿失败不挡扫描
+        print(f"[warn] lowturn 三段计数失败({e!r})→ meta 不落该三键", file=sys.stderr)
     (outdir / "meta.json").write_text(json.dumps({
         "analysis_date": analysis_date, "universe_raw": n_raw, "universe": n_l0, "after_gate_a": len(uni),
         "recall_n": len(recall), "l2_n": len(l2), "l2_engine": l2_engine,
         "l2_sector_cap": l2_sector_cap,
+        **_lt_counts,
         "cap_floor_yi": cap_floor_yi, "include_bj": include_bj, "source": source,
         "regime": _regime,                                    # 当日 regime(regime_aware 关 = null)
         "weights_source": weights.get("meta", {}).get("source", "weights.json"),
@@ -547,7 +453,8 @@ def run(analysis_date: str, cap_floor_yi: float | None = None, include_bj: bool 
         print(f"[数据契约] 本次 B 级降级 {len(degraded)} 条 → {outdir / 'degraded.json'}")
     print(f"[done] L1 召回 → {outdir}/L1_recall_top1000.csv ({len(recall)})")
     return {"universe": n_l0, "after_gate_a": len(uni), "recall_n": len(recall),
-            "l2_n": len(l2), "l2_engine": l2_engine, "sectors": len(sectors), "outdir": str(outdir)}
+            "l2_n": len(l2), "l2_engine": l2_engine, "sectors": len(sectors), "outdir": str(outdir),
+            **_lt_counts}
 
 
 # ───────────────────────── 离线自测(无网络) ─────────────────────────
@@ -683,8 +590,6 @@ def main(argv: list[str] | None = None) -> int:
                     help="L1 权重按当日 regime 选(需 weights.json regimes 块;缺省=scan_config funnel.regime_aware→关)")
     ap.add_argument("--no-regime-aware", action="store_true",
                     help="强制关 regime 权重(覆盖 scan_config)")
-    ap.add_argument("--no-shadow", action="store_true",
-                    help="关掉影子漏斗变体 L2(默认开;纯增量文件,retro 做确定性 A/B)")
     ap.add_argument("--selftest", action="store_true", help="离线验证打分逻辑(无网络)")
     args = ap.parse_args(argv)
 
@@ -698,8 +603,7 @@ def main(argv: list[str] | None = None) -> int:
               recall_mode=args.recall_mode, l2_sector_cap=args.l2_sector_cap,
               recall_channels=(args.recall_channels.split(",") if args.recall_channels else None),
               regime_aware=(True if args.regime_aware
-                            else (False if args.no_regime_aware else None)),
-              shadow=not args.no_shadow)
+                            else (False if args.no_regime_aware else None)))
     print(f"\nL0 universe={res['universe']} → 轻门 {res['after_gate_a']} → 召回 top{res['recall_n']} "
           f"→ L2 {res['l2_engine']} top{res['l2_n']} (板块概览 {res['sectors']} 个)"
           f"\n→ {res['outdir']}/L2_gbdt_top200.csv")

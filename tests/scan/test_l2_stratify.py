@@ -16,7 +16,10 @@ from autoresearch.scan.recall.l2_stratify import (
 
 def _universe(n=600, seed=7):
     rng = np.random.default_rng(seed)
-    chans = ["composite", "momentum", "reversal", "value", "growth", "accumulation", "main_fund", "heat", "healthy", "event"]  # healthy: 2026-07-03 第10路; event: Wave4 第11路(桶存在即需覆盖,纵使生产默认关)
+    # 桶存在即需覆盖(纵使生产默认关):healthy=2026-07-03 第10路、event=Wave4 第11路、
+    # lowturn=2026-08-22 批 A 新路(独立「低位转强」桶 floor 8)。
+    chans = ["composite", "momentum", "reversal", "value", "growth", "accumulation",
+             "main_fund", "heat", "healthy", "event", "lowturn"]
     inds = rng.choice(["半导体", "白酒", "医药", "电力", "煤炭", "汽车"], n)
     # 每只随机命中 1–3 路(composite 保底)
     rc = []

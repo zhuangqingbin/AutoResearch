@@ -23,18 +23,45 @@ STYLE_CHANNELS: dict[str, tuple[str, ...]] = {
     "吸筹": ("accumulation",),
     "主力": ("main_fund",),
     "健康": ("healthy",),
+    # 2026-08-22:低位转强独立成桶(翻转 2026-08-21 稿的 R5「并入反转桶」)。理由=实测两个
+    # 谓词是两群票:reversal_confirm 门全帧 27 只过、与 lowturn 120 只交集 2 只;共用 floor 12
+    # 时反转桶被「还在跌」的票占满(2026-08-21 该桶 5 只 pct_5d 中位 −6.8%、站上 MA20 的 0%),
+    # lowturn 永远轮不到。design 2026-08-22-funnel-shape-after-lowturn-first-run §3.2。
+    "低位转强": ("lowturn",),
     "事件": ("event",),
 }
 # 事件桶 floor=0(Wave4 Review Round 1 C-1):event 通道**默认不启用**(不在 scan_config 的
 # funnel.recall_channels 里)⇒ 桶恒无成员,但 floor 只要 >0 就会**先把 `merit_need` 减掉**
 # (`merit_need = l2_n − Σfloor`),那部分名额落回 floor 补位/回填循环 ⇒ 每天恰好 10 行被打上
 # `l2_lane_reserved=True`(「配额救回,非有机进场」)。该标签有三个真消费者:`l3_select._row_lane`
-# (渲染进喂 l3-rank 的表)、`l4_card.force_full_card`(满卡/早停)、`retro.floor_experiment`
+# (渲染进喂 l3-rank 的表)与 `l4_card.force_full_card`(满卡/早停)
 # (闭环账本分组)⇒ 挂着「未启用」的牌子却天天改生产 LLM 输入,违背「全默认关→parity 不破」。
 # 真数据实测:floor=0 vs 「无事件桶」在 29 个扫描日 code/l2_rank/l2_lane_reserved 三列逐值一致。
 # **启用 event 路时,把这个 0 改成 10 即可**(桶与 STYLE_CHANNELS 的映射已就位)。
 DEFAULT_FLOORS: dict[str, int] = {"趋势": 20, "健康": 15, "反转": 12, "价值": 12,
-                                  "成长": 12, "吸筹": 12, "主力": 10, "事件": 0}
+                                  "成长": 12, "吸筹": 12, "主力": 10, "低位转强": 8,
+                                  "事件": 0}
+
+
+def effective_floors(floors: dict[str, int], enabled_channels=None) -> dict[str, int]:
+    """把「桶的通道全都没启用 → floor 必须是 0」从人工约定升格为**代码不变量**(2026-08-22)。
+
+    上面 `DEFAULT_FLOORS["事件"] = 0` 那一大段注释描述的病:未启用通道的桶恒无成员,但 floor
+    只要 >0 就先把 `merit_need` 减掉,那部分名额落回 floor 补位/回填 ⇒ 每天恰好 N 行被打
+    `l2_lane_reserved=True`,**挂着「未启用」的牌子却天天改生产 L2 分布**。此前靠「记得手工把
+    该桶 floor 写 0」维持,是一条指令级约束;现在按启用集在运行时归零,人不必再记得。
+
+    直接效果:新通道的**回滚杆只剩一根**——从 `funnel.recall_channels` 摘掉它,桶 floor 自动
+    归 0、下游(pass1 强留 / merge 守卫)无候选,逐字 parity。
+
+    `enabled_channels=None` → 原样返回(parity:单测与离线调用不传)。静态的
+    `DEFAULT_FLOORS["事件"]=0` 与 `test_disabled_channel_buckets_have_zero_floor` 保留不动(双保险)。
+    """
+    if enabled_channels is None:
+        return floors
+    enabled = set(enabled_channels)
+    return {st: (0 if not (set(STYLE_CHANNELS.get(st, ())) & enabled) else n)
+            for st, n in floors.items()}
 
 # selection_reason 词表 —— **与 L3 pass1 共用一套**(design 2026-08-03 §3.1/§4.4;
 # 定义点见 `scan/l3/triage.py`)。两层各造一套词表 = 两边的「lane」不是同一件事,
@@ -70,12 +97,14 @@ def _style_masks(channels: pd.Series) -> dict[str, pd.Series]:
 def stratified_l2(df: pd.DataFrame, l2_n: int = 200, floors: dict[str, int] | None = None,
                   sector_cap_frac: float = 0.20, score_col: str = "composite",
                   industry_col: str = "industry", regime: str | None = None,
-                  regime_caps: dict | None = None) -> pd.DataFrame:
+                  regime_caps: dict | None = None, enabled_channels=None) -> pd.DataFrame:
     """召回帧 → 分层采样的 l2_n 行(确定性)。返回选中行 + `l2_lane_reserved`(floor 补进来的=True)。
 
     算法:① sn = sector-neutral(score)② merit 核 = top(l2_n−Σfloor) by sn(过 sector cap)
     ③ 逐风格(floor 大的先)把不足 floor 的从线下按 sn 补 ④ 不足 l2_n → by sn 回填(必要时松 cap)。
     floors=None → DEFAULT_FLOORS;floors={} → 纯 sn top-N(无分层,parity 用)。
+    `enabled_channels`(可选,当日启用的召回通道名集合)→ 见 `effective_floors`:桶的通道
+    全未启用则该桶 floor 运行时归 0;None = 原样(parity)。
 
     ⚠️ **`regime` / `regime_caps` 是「已建未接线」的半特性**(design 2026-08-03 §3.3 O3
     清算)。函数体确实按 regime 调 sector cap(见下面 `cap_frac` 一行),单测也覆盖了它 ——
@@ -91,6 +120,7 @@ def stratified_l2(df: pd.DataFrame, l2_n: int = 200, floors: dict[str, int] | No
     risk_off 只有 11 日 → 该 regime 恒 `IMMATURE`,不得靠全样本调参后声称分 regime 稳定。
     """
     floors = DEFAULT_FLOORS if floors is None else floors
+    floors = effective_floors(floors, enabled_channels)   # 未启用通道的桶 floor 归 0(2026-08-22)
     r = df.reset_index(drop=True).copy()
     if "code" in r.columns:
         r["code"] = r["code"].astype(str).str.zfill(6)
@@ -170,12 +200,14 @@ def stratified_l2(df: pd.DataFrame, l2_n: int = 200, floors: dict[str, int] | No
 
 
 def select_l2(recall: pd.DataFrame, l2_n: int, floors: dict[str, int] | None = None,
-              sector_cap_frac: float = 0.20, regime: str | None = None, regime_caps: dict | None = None):
+              sector_cap_frac: float = 0.20, regime: str | None = None, regime_caps: dict | None = None,
+              enabled_channels=None):
     """L2 选股编排(`universe.run` 与 `L2Rank` stage **共用** → golden parity)。
 
     返回 (l2_df, engine):l2_df 带 `l2_rank`(分层选择序)+ `l2_lane_reserved` + `sector_mom`(行业动量)
     + `gbdt_score`/`l2_score`(=composite,显示用,向后兼容旧列名)+ 召回列。确定性、零 LLM、无模型。
     `regime`+`regime_caps` 给定 → 按 regime 调 sector cap(默认 None=固定 cap=parity)。
+    `enabled_channels` 透传 `stratified_l2` → `effective_floors`(未启用通道的桶 floor 归 0)。
 
     pinned 强留(design 2026-07-11 §4.1;plan Task 3):`recall` 若带 `pinned`(bool)列且有
     True 行 → 这些行**先抽出、完全不进分层采样的竞争池**(不占 l2_n、不因它们恰好达标与否
@@ -194,7 +226,8 @@ def select_l2(recall: pd.DataFrame, l2_n: int, floors: dict[str, int] | None = N
         rest = recall
 
     l2 = stratified_l2(rest, l2_n, floors=floors, sector_cap_frac=sector_cap_frac,
-                       score_col="composite", regime=regime, regime_caps=regime_caps)
+                       score_col="composite", regime=regime, regime_caps=regime_caps,
+                       enabled_channels=enabled_channels)
     l2.insert(0, "l2_rank", range(1, len(l2) + 1))
 
     if has_pinned:
