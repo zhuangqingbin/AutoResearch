@@ -1,6 +1,6 @@
 ---
 name: scan-market
-description: "Use when the user wants to scan the WHOLE A-share market to discover buy-worthy stocks AND strong sectors — 「扫描全A股」「全市场选股」「哪些板块值得买」「find the best A-share buys」. Deterministic L0-L2 funnel + Claude L3/L4/L5; artifacts → reports_<engine>/scan/<run_id>/. NOT for: one named ticker (→ stock-research; 持仓单票复核走其 lite 档), reviewing a past scan day (→ scan-retro), cross-asset macro (→ macro-research). Project-local."
+description: "Use when the user wants to scan the WHOLE A-share market to discover buy-worthy stocks AND strong sectors — 「扫描全A股」「全市场选股」「哪些板块值得买」「find the best A-share buys」. Deterministic L0-L2 funnel + Claude L3/L4/L5; artifacts → reports_<engine>/scan/<run_id>/. NOT for: one named ticker (→ stock-research; 持仓单票复核走其 lite 档), cross-asset macro (→ macro-research). Project-local."
 ---
 
 # scan-market — 全 A股六段漏斗扫描(挖掘个股 + 板块,零付费 API)
@@ -27,14 +27,14 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
 ## 前置
 - 在**项目根目录**运行;akshare/tushare/lightgbm 已装(venv-only,**务必 `uv run --no-sync`**);`.env` 有 `TUSHARE_TOKEN`+`FRED_API_KEY`。默认中文。
 - **路径约定(引擎隔离)**:`$CTX`/`$RPT` = 本引擎工作区根(Claude→`context_claude`/`reports_claude`,Codex→`context_codex`/`reports_codex`;bash 块用 `CTX=context_${AUTORESEARCH_ENGINE:-claude}` 一行取值)。数据湖 `lake/` 两引擎共享;Read/Write 工具调用时把 `$CTX`/`$RPT` 代入具体目录名。python -m 命令不带路径参数时自动按引擎解析。
-- **召回权重**:`weights.json`(`factor_lab calibrate` 产;命令见常见坑节)。regime 用法与重标定见 STAGES.md L1 节;L2 不用模型(见铁律)。
-- **闭环(开跑前补跑复盘)**:先 `autoresearch.learning.retro pending`(D+2)与 `autoresearch.learning.t1_review pending`(D+1);有欠账先用 **scan-retro** 补上。补复盘会话同受 **复盘不动刀** 禁令约束(不编辑 `.claude/` 与 CLAUDE.md/AGENTS.md,见 scan-retro 的 `retro-playbook.md`「边界」节)。
+- **召回权重**:`weights.json`(`factor_lab calibrate` 产;命令见常见坑节)。**现在只有显式跑 `factor_lab calibrate` 才会变** —— 原夜跑自动重标定腿随闭环退役。regime 用法见 STAGES.md L1 节;L2 不用模型(见铁律)。
+- **闭环已整体退役**(2026-08-21 用户裁定):`autoresearch/learning/` 整包、`scan-retro` 与 `feedback` 两个 skill、以及扫描路径上所有账本记账与回注腿全部删除。开跑前**没有**要补的复盘;L3/L4 的 prompt 不再吃任何历史账本派生的先验。细节与保留件见 STAGES.md「行为变更的入口」节。
 - **一致预期**:`autoresearch.research.consensus pull <date>`(限频 1次/小时)。
 - **token 真计量**:无需前置——CP7 跑 `usage_harvest`(命令见下方;OTEL 已退役)。
 
 ## 配置单一事实源(防流程漂移)
 
-**全部用户可调参数只有一个家:`.claude/skills/scan-market/scan_config.jsonc`**(JSONC;按漏斗阶段排序,每键标【生效点】)。例外仅两个:保送票**清单**在 `pinned.jsonc`(策略 cap/TTL 仍在 scan_config),L1 因子**权重**在 `$CTX/factor_lab/weights.json`(retro 自动重标定,不手编)。
+**全部用户可调参数只有一个家:`.claude/skills/scan-market/scan_config.jsonc`**(JSONC;按漏斗阶段排序,每键标【生效点】)。例外仅两个:保送票**清单**在 `pinned.jsonc`(策略 cap/TTL 仍在 scan_config),L1 因子**权重**在 `$CTX/factor_lab/weights.json`(由 `factor_lab calibrate` 产,不手编;自动重标定腿已随闭环退役)。
 
 - **装载链**:`frame --json` 经 `autoresearch/scan/user_config.py` **白名单校验**后回显 → 随 Workflow `args.config` 传入(workflow 无文件系统访问)→ L4 每股 `args.cfg` 原样透传;确定性 CLI(universe/prelude/frame/sector.*)在入口经 `user_config.knob()` 读同一文件兜底。
 - **优先级恒为**:CLI 显式 flag / 显式形参 > scan_config > 代码内建默认;删 key = 内建默认(parity)。
@@ -45,20 +45,19 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
 | Stage0 | `pinned` | cap·ttl_days | `scan/frame.py`(load_pinned→run_contract) |
 | Stage0 | `agents` | 12 role × {model,effort}(闭集必须列全) | `user_config.resolve_agent_config` → `_resolved_agent_config.json` → 3 个 workflow AG() + `usage_reconcile` 对账 |
 | L0 | `l0` | cap_floor_yi·include_bj·source·min_amount_yi·min_list_days | `scan/frame.py build_market_frame`(单一代码路径)+ `universe.run`(meta 记生效值) |
-| L1 | `funnel` | regime_aware·recall_n·l2_n·recall_channels(9路,2026-08-21 重开 reversal_confirm)·channel_quotas(现值 value312·momentum188·heat112·healthy112·growth112·main_fund150·reversal_confirm150)·channel_floors | `universe.run`(`_funnel_overlay`+`knob`);regime_aware 另生效 `prelude.run_prelude`(生产路缺省 true) |
+| L1 | `funnel` | regime_aware·recall_n·l2_n·recall_channels(10路,2026-08-21 重开 reversal_confirm、2026-08-22 加 lowturn)·channel_quotas(现值 value312·momentum188·heat112·healthy112·growth112·main_fund150·reversal_confirm150·lowturn120)·channel_floors | `universe.run`(`_funnel_overlay`+`knob`);regime_aware 另生效 `prelude.run_prelude`(生产路缺省 true) |
 | L2 | `l2` | sector_cap·(floors) | `universe.run` → `l2_stratify.select_l2` |
 | 旁路 | `sector` | reuse_ttl_days·max_briefs | `sector/reuse.py main` / `sector/pack.py main` |
 | L3 | `l3` | two_pass·pass1_target·finalist_max·lowturn{enabled,阈值×8,pass1_cap} | `scan/l3/prompt.py prepare_l3_table`(旗列)/ `scan/l3/triage.py`(pass1 强留)/ `scan/l3/merge.py write_finalists`(守卫⑥);谓词真身 `common/turnup.lowturn_flag` |
 | L4 | `l4_intel` | enabled·max_queries | `l4-stock.js`(intelOn/maxQ;**缺块=intel 关**)+ `scan/l4/intel_status.py` |
 | L4 | `performance` | streaming_l4 | `scan-market.js`(任务簿流式 vs 旧批量 GATE3) |
-| 闭环 | `learning` | shrink·shrink_k | `learning/shrink.py shrink_config`(4 消费点) |
-| 收尾 | `relative_buy` | mode·exclude_pinned·activate_date | `scan/post_run.py publish_run_observation` → `relative_buy.write_decision`/`verify_decision`(2026-08-19 裁决表 A1/A2:mode=active 正式接管 BUY、exclude_pinned=true 剔📌;activate_date=2026-08-19 起 `learning/legacy_freeze` 冻结 buy_ledger/zero_buy_ledger 两本旧账,三键同一 commit 落地) |
+| 收尾 | `relative_buy` | mode·exclude_pinned·activate_date | `scan/post_run.py publish_run_observation` → `relative_buy.write_decision`/`verify_decision`(2026-08-19 裁决表 A1/A2:mode=active 正式接管 BUY、exclude_pinned=true 剔📌;**activate_date 自 2026-08-21 起无消费点** —— 原生效点 `learning/legacy_freeze` 随闭环删除,该键仅作转正日记录) |
 
 **防漂移铁律:**
 1. **白名单外的键 load 即 raise**(`user_config.py`)——写错键名当场炸,不静默失效;错型同样 raise(`_KNOB_TYPES`)。
 2. **新增参数三件套**:进 `user_config.py` 白名单 + 有真实消费点(grep 调用链)+ 测试锁(`tests/scan/test_config_knobs.py` / `test_user_config.py`)。三缺一不许合。
-3. **改值 ≠ 无害**:召回/L3/L4/评级类旋钮的取值变更属行为变更,先走「实验治理」节的 registry;config 是放参数的地方,不是绕过治理的后门。
-4. **不入 config 的清单**(行为归属,代码持有;想调=先立实验):L2 风格桶 floors 明细(`l2_stratify.DEFAULT_FLOORS`)、menu 五面旗/L4 预算档 30/22/15(`scan/menu.py`)、conviction 守卫阈 75/55(`l3/merge.py`)、rubric 三门与早停(`l4/rubric`)、intel `hard_cap=30`(`l4/intel_guard.py`)、主尺 `common.ruler.MAIN_RULER`、哨兵档位判据、L1 各路信号定义。
+3. **改值 ≠ 无害**:召回/L3/L4/评级类旋钮的取值变更属行为变更 —— 先想清楚、留测试锁再改;config 是放参数的地方,不是绕过判断的后门。
+4. **不入 config 的清单**(行为归属,代码持有):L2 风格桶 floors 明细(`l2_stratify.DEFAULT_FLOORS`)、menu 五面旗/L4 预算档 30/22/15(`scan/menu.py`)、conviction 守卫阈 75/55(`l3/merge.py`)、rubric 三门与早停(`l4/rubric`)、intel `hard_cap=30`(`l4/intel_guard.py`)、主尺 `common.ruler.MAIN_RULER`、哨兵档位判据、L1 各路信号定义。
 
 ## 流程(6 段)
 
@@ -88,7 +87,7 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
 > | CP6 | L4 全完 | 评级分布 + 停因分桶 + OW三门直方图 | `autoresearch.scan.render <date> --view gate_hist` |
 > | CP7 | GATE4 过 | **`brief.md` 原文全量转播** + 产物路径 + 分段耗时 + **token 真计量** | Read `$RPT/scan/<run_id>/brief.md`(≤3KB)+ `--view timing` + `usage_harvest` |
 >
-> **CP7 播报 = 读 brief 原文,不复述**:`brief.md` 是确定性模板产物(零 LLM,七节 ≤3,000B,同 run 重放 byte 稳定)——主会话再总结一遍只会新增编数面,还要多一次对账。原文贴出 + 附 `$RPT/scan/<run_id>/` 路径即可;要展开某一节再读 `summary.md`(详细版)。brief 缺席 = `self_review` 的 `brief·缺失` **warn**(GATE4 照过,但 warn 进 `gate_fires.csv` 且照样播),如实播报,**不要拿 summary 顶替**。
+> **CP7 播报 = 读 brief 原文,不复述**:`brief.md` 是确定性模板产物(零 LLM,六节 ≤3,000B,同 run 重放 byte 稳定)——主会话再总结一遍只会新增编数面,还要多一次对账。原文贴出 + 附 `$RPT/scan/<run_id>/` 路径即可;要展开某一节再读 `summary.md`(详细版)。brief 缺席 = `self_review` 的 `brief·缺失` **warn**(GATE4 照过,但 warn 进 `gate_fires.csv` 且照样播),如实播报,**不要拿 summary 顶替**。
 > **CP7 计量**:命令见步骤 5(含 `usage_reconcile`)。覆盖主会话+subagent,成本按公开计价倍率加权;缺 JSON 写 `UNMEASURED`,**不能写 `$0`**。
 > **唤醒纪律**(cache 读按全上下文计费,主会话曾独占近半全场成本):派发一次性全派、收通知只领不播,不出分析文字;CP2/CP3 合并播报,CP0/CP1/CP4/CP6/CP7 照常播。
 
@@ -96,7 +95,8 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
    ```bash
    uv run --no-sync python -m autoresearch.scan.prelude <YYYY-MM-DD>
    ```
-   跑全部确定性前奏(账本/日历/菜单/预算/哨兵建议刷新,逐件见 STAGES.md 闭环层表);末尾汇总屏含 **📐/🔁/🚪 当日件建议行**。
+   跑全部确定性前奏(一致预期/温度/L0-L2/日历/催化/菜单预算哨兵/覆盖池日检/新闻目录体检 **7 步**);末尾汇总屏含 **⚡tripwire 持仓盯梢行(仅人看,勿贴给任何 agent)**。
+   (2026-08-21 learning 层退役同批删掉 6 步:attribution 刷新 / retro 欠账 / t1 欠账 / 学习环健康三查 / 十本账本刷新 / GATE0 preflight。)
    - **夜间预热**:交易日 19:30 launchd 自动跑;看汇总屏「预热(夜间)」行,安装见 STAGES.md『运维细节』。
 0.5. **市场研判**:
    ```bash
@@ -159,9 +159,9 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
      --report-dir $RPT/scan/<run_id>
    ```
    → `$RPT/scan/<YYYYMMDD_HHMM>/`:**`brief.md`(≤3KB 速读,入口)**+`summary.md`(详细版)+`details/`+`token_usage.md`+`trace/`;`index.md` 首行即指 brief。成本/墙钟成熟门(10 次真实扫描前恒 `IMMATURE`)见 STAGES.md『计量与跨层校准』;预算超线只写 warning/`DEGRADED`,不制造 BUY。
-   **汇报(CP7)**:**先原文转播 `brief.md` 全文**(七节:市场/漏斗/BUY 结论/持仓/风险哨/昨日 delta/欠账),再补分段耗时(`render --view timing`)+ 产物路径;需要展开细节才引 `summary.md`。0 买日的**停因分桶**已由 brief ③ 自带,照贴即可,**不要说「无一过 ≥OW 三门」**——早停卡按定义不写三门段(见 STAGES.md『运维细节』)。
+   **汇报(CP7)**:**先原文转播 `brief.md` 全文**(六节:市场/漏斗/BUY 结论/持仓/风险哨/昨日 delta),再补分段耗时(`render --view timing`)+ 产物路径;需要展开细节才引 `summary.md`。0 买日的**停因分桶**已由 brief ③ 自带,照贴即可,**不要说「无一过 ≥OW 三门」**——早停卡按定义不写三门段(见 STAGES.md『运维细节』)。
    **GATE4 拦什么**(控制方裁定):判据 = `gate_fires.csv` 里有任意一行 `severity=fail`。`brief_lint` 的八条按「**报告是不是在说假话**」二分 —— **fail(毙掉本趟)**:`brief·数字对账` / `brief↔summary不一致` / `brief·白名单外取数` / `brief·BUY契约(active 期)`;**warn(放行,但进账 + 播报)**:`brief·缺失` / `brief·超预算` / `brief·边表缺失` / `brief·边表过期`。**一份人类可读摘要排版超限是展示层问题;报告说假话才是硬门该拦的事**——别让 3KB 排版预算毙掉一条 60 分钟的流水线(「GATE3 差 16 字节」同族疤)。播报行 `[brief lint] fail N · warn M / 共 K 条` 两个计数都要念。
-   **报告分两层是安全的**:`t1_review` 与 `retro` **不解析 `summary.md` 正文**(它们读 `finalists.csv` / `decision_records.json` / `_final_ratings.json` / `retro/attribution.csv` 等结构化文件),所以重排/瘦身 summary 不影响任何机器消费者;红线文件 `details/*.md`、`finalists.csv`、`decision_records.json`、`shadow_buys.csv` 一字不动。
+   **报告分两层是安全的**:**机器消费者不读、也不解析 `summary.md` 正文**(结论都在 `finalists.csv` / `decision_records.json` / `_final_ratings.json` 等结构化文件里),所以重排/瘦身 summary 不影响任何人;红线文件 `details/*.md`、`finalists.csv`、`decision_records.json` 一字不动。
    **brief 对账**:assemble 收尾自动跑 `self_review.brief_lint`(边表重算 + 正文锚在 + brief↔summary 同源 + active 期 BUY≥1 契约),结果追加进 `gate_fires.csv` 并打一行 `[brief lint] fail N · warn M / 共 K 条`;**有 fail 先修根因再播**,warn 照播不隐去。
    **配置生效对账**:`usage_reconcile`(第四条命令)把配置期望×实测逐 role 对上,`ok=false` 直接打进 CP7 播报,不经 `self_review` 转手(见 STAGES.md『计量与跨层校准』)。
 
@@ -173,9 +173,9 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
    - **建档队列**:`pending_init` 逐只派 `.claude/workflows/dossier-init.js`(**≤3 只/晚**)。
    - **prelude 会替你催**:📐=未对账、🕰️=>90 日未刷新;解药是跑一次**成功的季度对账**(细节见 STAGES.md『运维细节』)。
 
-## 实验治理(行为变更的唯一生产入口)
+## 行为变更的入口
 
-涉及召回、L3、门、早停、ensemble、评级、Token 或速度的改动,现行治理链条(2026-08-19 用户裁决 A3;`experiment_registry`/`promotion`/`rollback_watch`/`mainflow5d` 已整删,无自动晋升机器、无 PREREGISTERED→ACTIVE 状态机):**影子账本直接呈证**(既有 `shadow/` 产物与各学习账本自身的观测本身即证据)→ **写成 proposal 交用户人批**(`feedback` skill 的裁决通道)→ **人批后由开发会话改 `scan_config.jsonc`/代码落地**。E6 相对 BUY 转正即此模式的首个实例。完整说明见 STAGES.md「实验治理」节。
+2026-08-21 用户裁定「整个 learning 层退役」后**没有治理链条这回事了**:涉及召回、L3、门、早停、评级、Token 或速度的改动 = 普通开发改动(人判断 → 改 `scan_config.jsonc` 或代码 → 测试锁 → 合入)。无自动学习、无影子账本呈证、无 proposal 裁决通道。保留下来的三件门/尺与同批连带退役的清单见 STAGES.md「行为变更的入口」节。
 
 ## 铁律
 - **确定性层零 LLM**:L0/L1/**L2**/L5 全 pandas,不在筛选里编数、不预测。
@@ -183,7 +183,7 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
 - **L3/L4 必须 subagent**(独立 context),只回传紧凑结果,否则撑爆主线。
 - **每只 finalist 走 stock-research lite 档**——继承其铁律。
 - **中间名单全 staging**,L5 发布到 `trace/` 留溯源。
-- **报告双层**:`brief.md` = 入口(确定性模板、零 LLM、≤3,000B、同 run 重放 byte 稳定),`summary.md` = 详细版。**不设收编官 agent**(用户裁定):brief 的内容全是结构化结论/计数/评级/tripwire,让 LLM 再压一遍只增加编数面与对账成本。`t1_review`/`retro` **不解析** summary 正文,只读结构化文件——所以重排/瘦身 summary 不动任何机器契约。
+- **报告双层**:`brief.md` = 入口(确定性模板、零 LLM、≤3,000B、同 run 重放 byte 稳定),`summary.md` = 详细版。**不设收编官 agent**(用户裁定):brief 的内容全是结构化结论/计数/评级/tripwire,让 LLM 再压一遍只增加编数面与对账成本。机器消费者不读 summary 正文(整条链上已经没有解析它的人)——所以重排/瘦身 summary 不动任何契约。
 - **诚实收尾**:召回/粗排是启发式 + `gap_c1_o2` 超短主尺 IC 校准(随 regime 漂移);L3/L4 是 Claude 推理产出;"仅供研究,非投资建议"。
 - **性能开关不拥有评级**:现仅存 `performance.streaming_l4`(默认 true;回滚设 `false`)。任何开关都不得改 finalist cap、rubric 三门、**主尺**(`common.ruler.MAIN_RULER`,现 `gap_c1_o2`)或 BUY 数量(Wave10 B4 退役两个越权开关,详情见 STAGES.md)。
 - **模块归属**:`agents/l3_select.py`、`agents/l4_card.py`、`scan/assemble.py` 仅保留旧 import/CLI 兼容,新代码直连 `scan/l3/*`、`scan/l4/*` 等 owner 模块,不要塞回适配器。

@@ -18,9 +18,9 @@ L0 选集  →  L1 召回  →  L2 粗排  →  L3 精排(两遍法)      →  L
 
 **两条旁路**(并行算好后喂进主链):**市场研判**(macro-research lite 档,Stage 0 与 L0 并行,Opus×1 写 `market_view.md`,L3/L4/L5 三处复用)+ **行业 brief**(sector-research lite 档,L2 后按行业并发)。
 
-**主链之外**:L1 影子漏斗(2–5 个变体免费 A/B,喂 retro 对照);事后闭环(retro 归因 → 自动重标定权重 + 人批建议/经验 → 注回 L1 权重与 L3 校准块)。L4 派发前没有任何复用层(TTL 复用已退役,用户裁定「不要任何复用」;观察单直通车随观察单一并退役)。
+**主链之外**:无。**事后闭环与 L1 影子漏斗已整体退役**(2026-08-21 用户裁定,见「行为变更的入口」节)。L4 派发前没有任何复用层(TTL 复用已退役,用户裁定「不要任何复用」;观察单直通车随观察单一并退役)。
 
-**三层角色分工**:确定性层(L0/L1/L2/L5+全部度量,零 LLM 纯 pandas 不编数)/ AI 判断层(L3/L4/策略师,全 Opus subagent 只回传紧凑结果)/ 闭环层(`autoresearch/learning`,用已兑现涨跌批改前两层)。
+**两层角色分工**:确定性层(L0/L1/L2/L5+全部度量,零 LLM 纯 pandas 不编数)/ AI 判断层(L3/L4/策略师,全 Opus subagent 只回传紧凑结果)。原第三层「闭环层」(`autoresearch/learning`)已于 2026-08-21 整体退役。
 
 ---
 
@@ -44,7 +44,7 @@ L0 选集  →  L1 召回  →  L2 粗排  →  L3 精排(两遍法)      →  L
 
 多路策略并行:每路"过门 → 按信号排序 → 截 top-quota" → `quota_union` 合并(各路 floor 保底多样性),带 provenance。
 
-**已注册 12 路,当前默认启用 8 路**(由 `scan_config.jsonc` 的 `funnel.recall_channels` 决定;⚠️ **该 key 缺省 = 用全部 12 路**,删掉整行会把默认停用的 `event` 一并上线,违反其入场纪律 `pr_20260725_001`):
+**已注册 14 路,当前默认启用 10 路**(由 `scan_config.jsonc` 的 `funnel.recall_channels` 决定;⚠️ **该 key 缺省 = 用全部 12 路**,删掉整行会把默认停用的 `event` 一并上线,违反其入场纪律 `pr_20260725_001`):
 
 | 通道 | quota/floor | 信号 |
 |---|---|---|
@@ -52,6 +52,7 @@ L0 选集  →  L1 召回  →  L2 粗排  →  L3 精排(两遍法)      →  L
 | momentum | 250→188/50 | 趋势龙头(36 日版 quota 下调,unique 超额持续为负) |
 | reversal | 200/50 | 困境反转(旧路;与 reversal_confirm 的 A/B 已于 2026-08-19 结束,见下方 reversal_confirm 行) |
 | **reversal_confirm** | 150/50 | 反转确认四段:低位 + 企稳(**D−1 截止**缩量、RSI 20~85)+ **放量起爆硬门**(`vol_ratio_20`≥1.5 ∧ 站回 MA20 ∧ MA5>MA10)+ 可交易;无量突破不召回。**2026-08-21 重开**(08-19 曾因恒空 4 周摘出;数据腿 = `frame` 60 日面板 + `common/turnup.py` 十列,门修法与理由见 design 2026-08-21 §2.3/§5.1 —— 旧③代理 `ma_bull` 与①前置低位定义互斥,只接列不改门仍近空)。与旧 `reversal` 同时活体 A/B,裁决见「开放线头」 |
+| **lowturn** | 120/40 | **低位转强(2026-08-22 新增)**:门=`common/turnup.lowturn_mask`(与 L3 旗**同一谓词同一阈值**,阈值住 `l3.lowturn`),排序=`reversal_confirm_score`。与 `reversal_confirm` 是「同模块两档」——那路门严(60 日跌≥25% ∧ vol_ratio_20≥1.5 起爆硬门),本路画像门宽。**立案**:2026-08-21 低位转强波把 L3 侧全接好了(旗列/pass1 强留/守卫⑥/硬约束 G),首跑实测全帧 **120** 亮旗 → L1 **17** → L2 **0**,整条特性是「没有生产者的消费者」;昨稿 R5「并入反转桶」的前提同日被证伪(两谓词交集仅 2 只)。**证据边界**:决策尺 −0.24pp(t=−6.36)与现任 healthy 同负,正超额在 5~10 日尺 —— 接生产者是为「打开候选池形状 + 让 L3/L4 有机会判」,不是「隔夜能赚」。design 2026-08-22-funnel-shape-after-lowturn-first-run |
 | value | 200→312/50 | 行业内低估(36 日版 quota 上调,胜率 57.6%/+0.9% 全路最优) |
 | main_fund | 200→150/50 | 主力净流入 |
 | heat | 200→112/50 | 成交额量级(捞巨额龙头;36 日版 quota 下调,unique 超额持续为负) |
@@ -59,9 +60,9 @@ L0 选集  →  L1 召回  →  L2 粗排  →  L3 精排(两遍法)      →  L
 | healthy | 150→112/40 | 质量上涨(0<pct60<40 且主力净流入>0 且 cmf>0;36 日版 quota 下调,unique 超额持续为负) |
 | accumulation | 120/30 | 底部吸筹 —— **默认停用**(unique 超额 −0.21%,原并入 reversal_confirm;reversal_confirm 本身已于 2026-08-19 停用) |
 | northbound | 120/30 | 北向持股 —— **默认停用**(hk_ratio T+2 IC −0.108,信息已在 L4 简报行) |
-| **event** | 80/20 | 公告事件(回购/增持按公告去重、调研只作有无;信号来自 `scan/events.py`,排序键 `ev_hard`+composite 决胜,**不用当日涨幅**——追当日大涨实证为负价值)。**默认停用·取证中**:裁决判据 = `channel_audit --variant plus_event` 的 `unique_excess_t2` 累计 ≥10 日 >0 才提启用,维持为负则退役;L2「事件」桶 floor **=0**(未启用通道不得改生产 L2 分布) |
+| **event** | 80/20 | 公告事件(回购/增持按公告去重、调研只作有无;信号来自 `scan/events.py`,排序键 `ev_hard`+composite 决胜,**不用当日涨幅**——追当日大涨实证为负价值)。**默认停用**(2026-08-21 起取证渠道也没了:影子变体与 `channel_audit` 随闭环删除);L2「事件」桶 floor **=0**(未启用通道不得改生产 L2 分布) |
 
-- **配额覆盖**(36 日版,2026-08-19 拍板,取代 07-11 的 18 日版):`funnel.channel_quotas` 现生效 value 312 / momentum 188 / heat 112 / healthy 112 / growth 112 / main_fund 150;兜底读取在 `universe.run` 本体(`_funnel_overlay`,prelude 与 CLI 直调同源),显式参数/CLI flag 恒优先,缺文件=注册表默认。六键全写(逐一核对目标值均不等于各路 `@channel` 注册表默认,任一键缺省会回落注册表默认而非维持原覆盖值)。影子变体同口径透传。
+- **配额覆盖**(36 日版,2026-08-19 拍板,取代 07-11 的 18 日版):`funnel.channel_quotas` 现生效 value 312 / momentum 188 / heat 112 / healthy 112 / growth 112 / main_fund 150;兜底读取在 `universe.run` 本体(`_funnel_overlay`,prelude 与 CLI 直调同源),显式参数/CLI flag 恒优先,缺文件=注册表默认。六键全写(逐一核对目标值均不等于各路 `@channel` 注册表默认,任一键缺省会回落注册表默认而非维持原覆盖值)。
 - **rz 因子组**:融资买入强度 `rz_buy_intensity` 独立第 10 因子组,语义=情绪接力资金代理,非基本面确认。
 
 **regime-aware(默认开,`funnel.regime_aware`)**:按当日 regime 取 `weights.json` 的 `regimes[trend|range|risk_off]` 权重块,缺块回退 flat。regime 判定(`common/regime.py`):breadth≥0.55 且 pct_60d>0 → trend;breadth≤0.30 且 pct_60d<0 → risk_off;其余 range。当前面板(107 成型日):trend 43 / range 53 / risk_off 11;momentum IC 在 trend −0.055、range +0.015。
@@ -69,7 +70,7 @@ L0 选集  →  L1 召回  →  L2 粗排  →  L3 精排(两遍法)      →  L
 **已知局限**:
 
 - risk_off 样本薄(11 日);horizon 之争未决(`pr_20260702_001`)。
-- 影子漏斗:默认产 **5** 变体(`nostrat`/`nocap`/`pre_healthy`/`plus_event`/`capfloor20`)落 staging,retro 对照,累计 ≥10 日才提 proposal;影子也落逐路长表 `L1_channels_<variant>.csv`,由 `channel_audit --variant <name>` 算 `unique_excess_t2`。
+- ~~影子漏斗~~:5 变体(`nostrat`/`nocap`/`pre_healthy`/`plus_event`/`capfloor20`)与 `--no-shadow` 开关**已于 2026-08-21 整段删除** —— 它们存在的唯一理由是喂 retro 对照与 `channel_audit --variant` 的 `unique_excess_t2`,两个消费者都随闭环没了;其中 `capfloor20` 还是唯一重取数变体,留着 = 每跑一次白付一次全市场取数换一堆没人读的 CSV。
 - ⚠️ `pre_healthy` 语义在 **2026-07-25 有定义断层**(基准从"全注册路"改"当日实际启用路"):跨该日读 `L2_pre_healthy.csv` 趋势线不能直接连线。
 - ⚠️ momentum 勘误:早期「unique +0.75%」已过期且符号翻负(26 日 −1.07%);相位条件 quota 属 B 类须 registry,quota 维持不动(`docs/research/2026-08-04-momentum-phase-conditional-ic.md`)。
 
@@ -77,11 +78,11 @@ L0 选集  →  L1 召回  →  L2 粗排  →  L3 精排(两遍法)      →  L
 
 ## L2 · 粗排 —— `recall/l2_stratify.select_l2`(确定性分层采样,→200)
 
-**不用机器学习**:① sector-neutral composite 排 merit;② 7 风格桶固定 floor(趋势20/健康15/反转12/价值12/成长12/吸筹12/主力10,明细=行为归属留在 `l2_stratify.DEFAULT_FLOORS`);③ 任一申万一级 ≤20%(`l2.sector_cap`)。产物 `L2_gbdt_top200.csv`:`l2_rank`=选择序、`gbdt_score`=composite、`l2_lane_reserved`=被 floor 救回。
+**不用机器学习**:① sector-neutral composite 排 merit;② 8 风格桶固定 floor(趋势20/健康15/反转12/价值12/成长12/吸筹12/主力10/**低位转强8**,明细=行为归属留在 `l2_stratify.DEFAULT_FLOORS`);**未启用通道的桶 floor 运行时归零**(`effective_floors`,2026-08-22)——此前靠「记得手工把该桶 floor 写 0」维持,是指令级约束;现在按当日启用集在运行时归零,于是新通道的**回滚杆只剩一根**:从 `recall_channels` 摘掉它,桶随之消失、逐字 parity;③ 任一申万一级 ≤20%(`l2.sector_cap`)。产物 `L2_gbdt_top200.csv`:`l2_rank`=选择序、`gbdt_score`=composite、`l2_lane_reserved`=被 floor 救回。
 
 **菜单体检**(`scan/menu.py`):行业集中度/落刀面/健康上涨/估值四项,自动嵌 L5;健康上涨=0 打 ⚠️菜单病。
 
-**哨兵建议**(`menu.sentinel_advice`,按全市场健康占比):<3% 建议哨兵档(跳 L3+L4 省 ~70% token);3–5% 仅 consider;≥5% 全扫。**由人拍板不自动**;retro 侧做 floor 自然实验,持续弱才复审。
+**哨兵建议**(`menu.sentinel_advice`,按全市场健康占比):<3% 建议哨兵档(跳 L3+L4 省 ~70% token);3–5% 仅 consider;≥5% 全扫。**由人拍板不自动**。
 
 ---
 
@@ -107,7 +108,7 @@ L2 之后、与 L3 证据取数**并发**:
 
 - `sector.reuse <date> --apply`(TTL ≤5 日 ♻️ 复用;已复用行业从 fan-out 排除)→ 剩余 `sector.pack <date>`(红榜 top3 ∪ L2 集中度 top3 ∪ 存量 watchlist.csv 行业,K≤6)→ 每行业一个 `sector-brief` agent 写两段契约 brief:`## 地形段`(喂 L3/L4)+ `## 研判段`(仅 L5,含 `**行业方向**` keyed 行)。L4 派发前对 ≥2 只同行业 finalist 的行业补漏。
 - **只有这一条路**:原 `performance.sector_brief_mode` A/B 开关已退役——`finalist_only` 会让 L3 看不到判断型行业 brief、可能改变 finalists,按「性能开关不拥有评级」铁律它不是性能开关。
-- **消费与价值**:`l3_table_md(sector_terrain=True)` 只渲染 L2 top200 覆盖行业(~110 行压 30–50);assemble 自动嵌 🏭 行业研判 + 🔗 同链对比(presence-gated);发布时 `sector_ledger.record_calls` 记方向 MTM。价值 = 同链论点摊销 + 行业相对估值锚,**不解决 0 买也不设门**。
+- **消费与价值**:`l3_table_md(sector_terrain=True)` 只渲染 L2 top200 覆盖行业(~110 行压 30–50);assemble 自动嵌 🏭 行业研判 + 🔗 同链对比(presence-gated)。价值 = 同链论点摊销 + 行业相对估值锚,**不解决 0 买也不设门**。
 
 ---
 
@@ -118,11 +119,11 @@ L2 之后、与 L3 证据取数**并发**:
 **两遍法**(`l3.two_pass` 默认开):
 
 1. `harvest_l3_evidence`(龙虎榜/预告/快报)+ `harvest_l3_news`(公告情感)补证据;
-2. **pass1 分诊**(`triage_l2_for_l3`,零 LLM):pinned/多路共振/healthy lane 全入 + 各通道 top-K 轮询,~200 行收到 `pass1_target`(现 40);被切的落影子 `_l3_pass1_cut.csv`(不代表判死,retro 验证分诊没吃赢家);
-3. `l3_table_md` 压紧凑表(表头注明「pass1 分诊 n→n」);
-4. 一个 Opus(`l3-rank`,max)通看 ~40 只,按 6 维 rubric(channel 共振/资金/基本面/情感/脆弱/T+2 兑现机制)**比较着选**(比较式 > 逐只打分),给出 **finalist tier 7–10 只**(`finalist:true`,宁缺毋滥不凑数)+ 其余 **bench**(`finalist:false`,落 `_l3_bench.csv`,防漏影子——账本追踪 bench 有没有藏够格票);
-5. `L3_judged_full.csv`(全量判断)→ `merge_l3_finalists_v3` 确定性守卫:conviction≥75 未标 finalist 强制补入(误杀保险 `ins75`)/ <55 剔除(`lt55`)/ 健康画像不足 ceil(n/3) 从 bench 补(`healthy_quota`)/ cap=min(`finalist_max`,当日 l4_budget);缺 `finalist` 字段(旧 judged)→ 按 conviction 排序取 cap 同守卫;
-6. 校准注入:因子方向经验校准块 + 策略师地形段 + 行业备忘录块。
+2. **pass1 分诊**(`triage_l2_for_l3`,零 LLM):pinned/多路共振/healthy lane 全入 + 各通道 top-K 轮询,~200 行收到 `pass1_target`(现 40);被切的落影子 `_l3_pass1_cut.csv`(不代表判死);
+3. `l3_table_md` 压紧凑表(表头注明「pass1 分诊 n→n」);**2026-08-22 加两列** `pct_1d`(当日涨幅)与 `dist_high_60`(距 60 日高,≤0)+ pf 词「今日大涨」(≥9.5)/「贴顶」(dist_high_60≥−2 ∧ pct_60d>0)—— 此前 L3 看不见当日涨幅却被要求替 L4 避开「涨停追高」,2026-08-21 两只入围票双双在 L4 早停该因;
+4. 一个 Opus(`l3-rank`,max)通看 ~40 只,按 6 维 rubric(channel 共振/资金/基本面/情感/脆弱/T+2 兑现机制)**比较着选**(比较式 > 逐只打分),给出 **finalist tier 7–10 只**(`finalist:true`,宁缺毋滥不凑数)+ 其余 **bench**(`finalist:false`,落 `_l3_bench.csv`,防漏影子);
+5. `L3_judged_full.csv`(全量判断)→ `merge_l3_finalists_v3` 确定性守卫,**按序** ①`ins75`(conviction≥75 未标 finalist 强制补入,误杀保险)→ ②`lt55`(<55 剔除)→ ③`cap`(=min(`finalist_max`,当日 l4_budget) 按 conviction 截尾)→ **⑦`chase_1d`**(当日 `pct_1d`≥9.5 剔除 + 从 bench 回填 `chase_backfill`,conviction≥55 才够格、不硬凑;2026-08-22)→ ④`healthy_quota`(健康画像不足 ceil(n/3) 从 bench 补)→ ⑤`trend_quota`(soft 2 席)→ ⑥`lowturn_quota`(soft 1 席,qualify 55)→ **⑧`sector_cap`**(同 `sector` >3 席则剔最弱 + 回填异行业 `sector_backfill`;2026-08-22)。缺 `finalist` 字段(旧 judged)→ 按 conviction 排序取 cap 同守卫;各守卫的**列缺 → 整段 no-op**(parity);📌 保送在全部守卫**之后**由 `_inject_pinned_finalists` 注入,不受⑦⑧影响(持仓涨停/同行业照样出卡);
+6. 注入:策略师地形段。(**因子方向经验校准块与 T+1 快环校准块已于 2026-08-21 随闭环退役** —— 那是「把历史账本学到的东西塞回今天的判断 prompt」的回注腿。)
 
 **judged 输出契约**:每元素含 `mechanism`(两日内兑现机制+明日买家,写不出不选)与行为化 conviction(**≥70 = 能说出 D+1 谁买且愿真金买入,每日 ≥70 限 ~5 只**;50-69 = 值得 L4 验不背书)。
 
@@ -134,7 +135,7 @@ L2 之后、与 L3 证据取数**并发**:
 
 **稳定性与验尸**:周频 `shuffle_seed` 乱序重跑 audit,overlap<0.70 提 proposal;错杀验尸(L2-keep 且非 finalist 且 T+5 赢家)实证错杀=0——**病在召回线,别冤枉判断层**。
 
-**L3.5 已完全移除**(用户裁定"完全移除、直接 L3 输出"):链路 = L3 → GATE2(只读校验:6 位码 + exempt lane 记账)→ L4 派发,中间无收窄层。回测结论「只有 conviction≥70 有 T+2 edge」已内化为上面的行为化定义;将来复验"收窄闸"类假设用**漏斗回放器**(`research/replay`),不复活 L3.5。
+**L3.5 已完全移除**(用户裁定"完全移除、直接 L3 输出"):链路 = L3 → GATE2(只读校验:6 位码 + exempt lane 记账)→ L4 派发,中间无收窄层。回测结论「只有 conviction≥70 有 T+2 edge」已内化为上面的行为化定义;将来复验"收窄闸"类假设需要重新造一把尺(原**漏斗回放器** `research/replay` 已随 2026-08-21 闭环退役删除 —— 它的归因腿读的是 `retro.attribute`),但不复活 L3.5。
 
 ---
 
@@ -174,7 +175,7 @@ P0 简报（市场地形+档案+解禁/披露旗+行业备忘+误读预警）
 评级由 `rubric_rating` 派生;早停只向下;≥OW 必走完 P4+P5。
 
 - **防污染**:简报的 L3 论点是**中性前提清单**(前提逐条核真,前提 2=兑现机制),conviction 在"L3 元数据"行注明"读完 P1 数字后再看";l4-card 铁律「先读数据后读论点」(P1 盲读微 pass:先写 3 行独立初判)。
-- **补基率**:逐卡 🔁 基率行(`write_base_rates`:lane 翻案率+评级历史 T+2 胜率,n<10 ⚠禁注)+ 📐 目标价锚(`target_calib.json`,**v4 口径 = 目标带 vs T+2 开盘**,随主尺 `gap_c1_o2` 换代;目标价超 p60 须在卡内给硬理由)。均在逐卡块,cache 前缀契约不破。
+- ~~补基率~~:🔁 基率行与 📐 目标价锚已于 2026-08-21 随闭环退役(两者都由 `buy_ledger`/`cross_calib` 派生)。同批删的还有 📚 跨票判例块与行业备忘录回退行;`_l4_shared_instructions.md` 退成只有标头的稳定骨架(消费侧按「文件在就读」接线,留空骨架比让 prompt 前缀随文件有无而变更安全)。
 - **买单 ensemble**(替代常设 skeptic):≥OW 新派卡各追加 2 独立 l4-card run(复核卡落 `ensemble/`),取中位、**只向下折回**;spread≥2 档 → 🎭 badge + 组合视角人裁行;`_ensemble.json` 缺 = parity。
 - **阶段效能**:早停率随 regime 波动大(20%~100%),弱市高早停是纪律不是失灵;错杀率 ≈10% 与满卡组持平。纪律实证:紫光国微三度被 CFO/FCF 门封顶 Hold——**别为凑买单放宽资金/估值门**。
 
@@ -195,15 +196,15 @@ self_review 硬门 banner → H1 → regime+drift 行(+🌡情绪温度行)
 → 📈市场研判 → 🎯看多行业 top3 → 🏭行业研判(一行一行业)
 → 📈影子组合成绩单行(真实 vs 影子[若门不拦最想买3只] vs 市场,hold=2 主尺)
 → §1 漏斗数量 → 数据降级行 → §2 各阶段卡点&概览(+🍱菜单体检)
-→ 📌 经验/未决反馈 → 🕯️ 附录 → 分段耗时/落盘事实 → ⏳待裁决提案
+→ 🕯️ 附录 → 分段耗时/落盘事实
 → 💸成本与时延观测(managed,注入)→ 诚实局限
 ```
 
 - **入口是 `brief.md` 不是本表**:CP7 转播 brief 全文;要展开才按节序进 `summary.md`。
-- **GATE4 severity 口径**:判据/fail-warn 二分见 SKILL.md 步骤 5「GATE4 拦什么」;单一事实源 = `learning.self_review.BRIEF_LINT_SEVERITY`,勿在别处另写一份。
-- **现场完备**:发布同时写 `run_health.json` + `index.md` 导航页(**第二天复盘从 index.md 进**);`weights_used.json` + meta.regime 固化,漏斗可复现。
+- **GATE4 severity 口径**:判据/fail-warn 二分见 SKILL.md 步骤 5「GATE4 拦什么」;单一事实源 = `scan.self_review.BRIEF_LINT_SEVERITY`,勿在别处另写一份。
+- **现场完备**:发布同时写 `run_health.json` + `index.md` 导航页(**第二天回看从 index.md 进**);`weights_used.json` + meta.regime 固化,漏斗可复现。
 - **计量时序**:assemble 时 `_token_usage.json` 通常尚未生成,报告先写 `UNMEASURED`;CP7 跑 usage_harvest `--json-out` 后由 `post_run observe` 原位替换 managed section,并刷新 `_budget_observation.json`、budget StageResult 与 ArtifactIndex。
-- **观察单已退役**(用户裁定):日检/触发/直通车全无;存量 `$CTX/watchlist.csv` 保留(sector.pack 行业选择器仍直接读)。发布落 `$RPT/scan/<运行时刻>/`(数据日在 manifest.json,retro 据此定位)。
+- **观察单已退役**(用户裁定):日检/触发/直通车全无;存量 `$CTX/watchlist.csv` 保留(sector.pack 行业选择器仍直接读)。发布落 `$RPT/scan/<运行时刻>/`(数据日在 manifest.json)。
 
 ---
 
@@ -216,60 +217,59 @@ self_review 硬门 banner → H1 → regime+drift 行(+🌡情绪温度行)
   - ⚠️ 旧「落盘字节÷2.8」估算曾低估 30 倍且分布相反——**按估算砍成本会砍错地方**,估算列已退役;信 usage_harvest。
 - **配置生效对账**(`usage_reconcile`,scan 步骤 5 第四条命令):当日 `user_config_echo.json`(期望)× `_token_usage.json`(实测)逐 role 对账,`ok=false` 直接进 CP7 播报 stdout——**这就是当日结论**,不经 `self_review` 转手(`self_review` 同名 check 时序落后一轮,只能读上一次结果)。三条精度边界(时序滞后 / `general-purpose` 壳只做集合断言 / effort 是请求参数非实测)写在模块 docstring 与报表头,播报时勿脑补掉。exit 恒 0。
 - **OTEL 遥测已删除**:勿再配那五件 env,照旧文档跑直接 ModuleNotFoundError。
-- **跨层校准**:`python -m autoresearch.learning.cross_calib` → `$RPT/learning/cross_calib.md`(L3→L4 翻案率 per lane;rubric 门柱级拦对/错杀)。
-- **触价校准**:`target_calibration` 统计目标触达率 → `buy_ledger.md`(首证:hi10 6.3% vs 目标 28.8% = 过乐观)。
-- **账本列名断层(读历史产物必知)**:落盘列名 `*_t2`/`ex2`/`fwd_2` 等沿自旧主尺 `fwd_2_oc` 年代,**值随 `common.ruler.MAIN_RULER`(现 `gap_c1_o2`)现算**。逐日文件(`retro/attribution.csv` 等)可能在扫描日之后被重算刷新——**分界不是扫描日期,是该文件最近一次被(重)算的时刻**;读侧认每份文件自带的 `ruler` 列,缺列按 `res.get("ruler","fwd_2_oc")` 兜底(诚实标旧尺)。`channel_audit`/`cross_calib` 每次现读 `MAIN_RULER` 同名列聚合,不会跨尺混算(缺列文件只是样本变少)。渲染层已加当前主尺提示;**历史产物不回改,展示层现算**。
+- **账本列名断层(读历史产物必知)**:落盘列名 `*_t2`/`ex2`/`fwd_2` 等沿自旧主尺 `fwd_2_oc` 年代,**值随 `common.ruler.MAIN_RULER`(现 `gap_c1_o2`)现算**。逐日文件(`retro/attribution.csv` 等)可能在扫描日之后被重算刷新——**分界不是扫描日期,是该文件最近一次被(重)算的时刻**;读侧认每份文件自带的 `ruler` 列,缺列按 `res.get("ruler","fwd_2_oc")` 兜底(诚实标旧尺)。渲染层已加当前主尺提示;**历史产物不回改,展示层现算**。
 - **注入分层铁律**:python 只产读数;prelude 打三条当日件建议行(📐/🔁/🚪),n<10 的 thin 行标「禁注」勿贴。**校准不改门/权重/评级。**
 
 ---
 
-## 实验治理
+## 行为变更的入口(原「实验治理」)
 
-D1(2026-08-19,用户裁决 A3):原「预注册 → 五守卫 → 人工 approve/activate → 观察窗 → accept/rollback」状态机(`experiment_registry`/`promotion`/`rollback_watch`/`mainflow5d`)已整删——5 个实验全冻在 `PREREGISTERED`、零 `ACTIVE`;其中 2 个有 38 条 shadow 观测但 `promotion`/`rollback_watch` 从无生产调用点(=从未被评估),另 3 个 0 观测(shadow 腿没接线)。`experiment_template.py` 的方法学部分(H0/H1/cutoff/配对单位/聚类/五态裁决 `conclude()`/0 BUY 不得当动机)**保留**,供 `gate_recal.py`(E1a 门失败分级)与 `l3_marginal.py` 的核心裁决逻辑直接调用,只删除它面向 registry 的胶水函数(`to_registry_definition`/`minimums_for`)。
+D1(2026-08-19,用户裁决 A3)删掉了预注册状态机(`experiment_registry`/`promotion`/`rollback_watch`/`mainflow5d`);**D2(2026-08-21,用户裁定「整个 learning 层退役」)删掉了它剩下的全部证据来源** —— `autoresearch/learning/` 整包、`scan-retro` 与 `feedback` 两个 skill、以及扫描路径上所有账本记账与回注腿。
 
-现行治理链条(涉及召回、L3、门、早停、ensemble、评级、Token 或速度的改动):
+现在没有"治理链条"这回事了。涉及召回、L3、门、早停、评级、Token 或速度的改动 = **普通开发改动**:人判断 → 改 `scan_config.jsonc` 或代码 → 测试锁 → 合入。没有自动学习、没有影子账本呈证、没有 proposal 裁决通道。
 
-1. **影子账本直接呈证**——既有 `shadow/` 产物与各学习账本(gate_ledger/channel_ledger/relative_ledger/gate_recal/l3_marginal 等)的观测本身就是证据,不再需要预注册。
-2. **写成 proposal 交用户人批**——走 `feedback` skill 的裁决通道(`裁决提案`),证据与建议一次性列清。
-3. **人批后由开发会话改 `scan_config.jsonc`/代码落地**——无状态机、无 `PREREGISTERED→ACTIVE` 流转、无自动激活机器。
+**保留下来的三件门/尺**(它们从来不是"学习",只是历史上住在 `learning/` 里):
 
-E6 相对 BUY 转正(`scan_config.jsonc` 的 `relative_buy.mode` 一行翻 `active`)是这套模式的首个实例,详见 `docs/specs/2026-08-18-e6-activation-learning-slimdown-design.md` §3 E2。
+| 现址 | 干什么 | 为什么留 |
+|---|---|---|
+| `scan/self_review.py` | 发布前机械自检 + `brief_lint` + 写 `gate_fires.csv` | **GATE4 的判据真身** —— 检的是「报告有没有说假话」,与"从历史里学到什么"无关 |
+| `scan/tripwire_watch.py` | 决策卡价格线 vs 今日收盘的冲突检测 | 确定性风控尺,进 brief ⑤ 风险哨与 prelude ⚡ 建议行(**仅人看,勿贴给 agent**) |
+| `scan/temperature_calib.py` 内联的 `trade_days`/`market_nav` | 湖交易日历 + 全市场等权 NAV | 纯读湖工具,原与影子 NAV 同居 `paper_nav` |
+
+**同批连带退役**(不是遗漏 —— 判据只有一条:**输入没人生产了,就不留**):
+
+| 类别 | 删了什么 |
+|---|---|
+| 门 | GATE0 preflight(`scan/gate0.py`;唯一输入是 retro/t1 欠账,闭环一走恒 PASS) |
+| 报告节 | `scan/near_miss.py`(「差一点/弃权」,三个数据源全是学习账本)、brief ⑦ 欠账节 + 「旧 OW 基率」分账行 + ① 的**两尺分歧**、summary 的经验/未决反馈节 + 影子 NAV 行 |
+| prompt 注入 | L3 表尾两个校准块、L4 的 🔁 基率 / 📐 目标价锚 / 📚 判例 / 行业备忘录 |
+| 离线研究仪器 | `research/replay`(漏斗回放器)、`research/ruler_compare`(两尺对照)、`research/channel_audit`(通道整编)、`research/overnight_evidence`、`research/candidates`(立项账本)、`research/l2_grid`、`scan/l2_slo`(winner-capture SLO)、`lowturn_precheck --live` 腿 —— **全部以 `retro/attribution.csv` 为输入** |
+| L1 | 影子漏斗 5 变体 + `write_shadow_variants` + `--no-shadow`(唯一消费者是 retro 对照与 channel_audit) |
+| 档案 | `dossier/ledger.py`(t1 快环战绩 + retro 归因桶),§7 只剩确定性入围史 |
+| 体检/清单 | `run_health` 的 `ledger_freshness`/`retro` 两键、`artifacts` 的 5 个 retro/shadow 产物条目、成本效率的 `mature_decision_records`/`verified_correct_rejections` 两个分母、`self_review.dump_ow_gate_fires` |
+| 开关/入口 | `prewarm --with-calibrate`、`relative_buy preflight` verb、`scan_config.jsonc` 的 `learning` 块 |
+
+**E6 不受影响**:相对 BUY 的所有权在 `scan/relative_buy.py` 的 `write_decision`/`verify_decision`,它们从不读账本。`scan_config.jsonc` 的 `relative_buy.mode=active` 照旧。
 
 ---
 
-## 闭环层 —— `autoresearch/learning`(确定性度量 + Claude 诊断)
+## 覆盖档案链 —— `autoresearch/dossier`(**不属于闭环,整条保留**)
 
-| 件 | 现状 |
-|---|---|
-| `retro` | 归因→诊断→权重重标定(可回滚)→建议→经验;归因桶细分 `l3_bench`/`pass1_cut`+漏检读数;attribution 优先 join `_final_ratings.json`(终评级)与 process_score 列(presence-gated);retro_input 未读 → prelude nag |
-| `prelude` 账本白名单 | 每日自动刷 attribution + journal/buy_ledger/cross_calib/catalyst/paper_nav + channel/gate/zero_buy/changelog 四账本;失败不阻断 |
-| `stage_eval` | 逐段 edge 量尺;读数:L2 −1.1%;L3 真选无正 alpha(去保送污染 −3.8%);L4 评级 rank-IC +0.55——edge 在「拒绝」侧 |
-| `channel_ledger` | 边际 alpha → quota 提议 |
-| `zero_buy_ledger` | 0买日 vs 有买日对照;买单口径 = attribution `bought` **单一事实源**(run_health 逐日核一致性) |
-| `temperature` | S1 五序列+五相位;回填 124 日,展示先行 |
-| `target_calib` | 目标带分位校准(📐 目标锚,v4=目标带 vs T+2 开盘随主尺换代);prelude 当日件行 `calibration_line` 报近 30 日触达率 |
-| `shrink` / `shrink_replay` | 基率收缩原语:四消费点(🔁基率/翻案率/📐细分格/tail_rate)注入 p̂=(n·p+k·p_g)/(n+k),n<3 禁注;`learning` 配置回滚杆 |
-| `process_score` / `process_backfill` | 过程分机检:逐卡 6 项确定性 checklist → `process_scores.csv` + attribution 列(0 买日也有过程标签);历史回填 355 卡 |
-| `lesson_yield` | 教训证伪器:逐条带 guard 教训的反事实 Δpp 累计 + MTM;命中 n≥20 且累计 Δ≤0 自动提名 retire(只提名人批) |
-| `feedback_store` | lessons(regime 域+MTM,cap=8)/ proposals / changelog / 权重回滚 |
-| `gate_ledger` | 门 MTM 拦对率;OW 三门建账(assemble 逐满卡解析失守 → gate_fires binding 行)+ `tail_rate` 左尾 ≤−5% KPI(门=避雷器);读数:三门 mean_ex2 为正但 tail_rate 36-46% |
-| `t1_review` | T+1 快环:T 报告真选票 vs T+1 收盘(保送不算/只相邻交易日;判定尺=行业中性超额÷截面稳健σ 的 z,双门+一字板剔除);**LLM 逐票诊断/候选自动立案链已于 D3(2026-08-19,用户裁定 A5)退役**,确定性侧全保留——CLI(`pending`/`build`/`backfill`/`report`)+ nightly_close 自动 `t1_backfill`/`t1_gap_finalize`;prelude `t1_pending` 催办;账本 `$CTX/learning/t1_review.jsonl`;🔄 校准块仍注入 L3/L4 prompt(账本派生数据非指令,不再有新经验/自动立案) |
-| `changelog_ledger.heartbeat` | 自动腿心跳探针:连续 3 次重标定 sha 不变 → 🚨 进 prelude 汇总屏。**自动学习的腿必须有一个会变的量做断言**;`recalibrate_and_log` 前置 `factor_lab.extend_plan()` 增量续面板(勿重跑 harvest——会按 form_span 重造小面板冲掉历史累积) |
-| `scan/dossier.py` | **前科卡**(跨日入围史)注入 L4,强制"变化项"节;与覆盖档案是两回事,并存不互替 |
-| `dossier/*`(覆盖档案链) | 常备覆盖模型:`coverage_pool.json` 池(prelude 日检:进=pinned/20日真选≥2、退=20日未选、cap30 LRU)→ `$CTX/knowledge/dossiers/<code>.md` 八节档案(`dossier-init` workflow 首覆)→ L4 prompt 注入「📚 覆盖档案摘要」(`schema.injectable_summary` 四门=注入器与卡 lint 单一事实源)+ intel prompt 内嵌已知底(情报员无 Read=结构性盲)→ 卡写「档案对账」节(`self_review` 分档探针)→ assemble 尾 `delta.record_scan_deltas` 按**终评级**回写 §8 + 刷新 §2/§3/§4/§6/§7 与摘要机算行 → 季度对账 `python -m autoresearch.dossier.reconcile <period>`(express 优先/forecast 兜底/未披露也落痕;prelude 📐 提醒 + 🕰️ 90 日陈旧告警)。全链 presence-gated:无档案 = 注入前行为逐字节不变 |
-| `factor_lab` | harvest → calibrate(_regimes) → eval;107 成型日 |
-| `research/replay` | 漏斗历史回放器:逐日调生产真身 `universe.run(outdir=…)` 重放 L0→L2 + 归因 + 温度相位 → 相位×fwd / 通道×相位 / 赢家验尸。把裁决样本从"每月 20 日"换成"一次 250–500 日"。**PIT 六条**(权重 PIT 最隐蔽:weights.json 由含未来收益的 retro 校准而来 → 默认 `weights=prior` 零泄漏)。CLI:`replay m1/run/attr/report` |
-| `consensus` | 一致预期前向积累(限频 1 次/小时);<60 日不入线上 IC 门 |
-| `journal` | 扫描日记 |
-| `changelog_ledger` | 重标定前后 composite IC 对比 + trial 计数与 DSR-lite(多重检验红灯:最新 Δ≤0 亮灯时该出「仅 regime 切换时重标定」提案,别继续调) |
-| `buy_ledger` | 买后管理 → 评级基率(n≥10) |
-| `sector_memo` | 行业事实月度蒸馏(待 ≥20 scan 日) |
-| `scan/health.py` | run_health + index.md 导航 + 账本新鲜度行(复盘欠账/账本 mtime 滞后/买单口径一致 ✓✗) |
-| `scan/calendar.py` | 解禁 + 披露日历 |
-| 影子漏斗 | universe 变体 L2 免费 A/B |
-| `paper_nav` | 真实/影子/市场三线 NAV;+sized 双轨(分数Kelly×vol目标×流动性cap,纯纸面,缺数据回退等权) |
-| `shadow_buys` | conviction top-3 纸面记账(三门证伪法庭);等权+sized 双轨 |
-| `catalyst_ledger` | 催化旗 fwd_5 对照(n≥30) |
+常备覆盖模型:`coverage_pool.json` 池(prelude 日检:进=pinned/20日真选≥2、退=20日未选、cap30 LRU)→ `$CTX/knowledge/dossiers/<code>.md` 八节档案(`dossier-init` workflow 首覆)→ L4 prompt 注入「📚 覆盖档案摘要」(`schema.injectable_summary` 四门 = 注入器与卡 lint 单一事实源)+ intel prompt 内嵌已知底(情报员无 Read = 结构性盲)→ 卡写「档案对账」节(`self_review` 分档探针)→ assemble 尾 `delta.record_scan_deltas` 按**终评级**回写 §8 + 刷新 §2/§3/§4/§6/§7 与摘要机算行 → 季度对账 `python -m autoresearch.dossier.reconcile <period>`(express 优先/forecast 兜底/未披露也落痕;prelude 📐 提醒 + 🕰️ 90 日陈旧告警)。
+
+全链 presence-gated:无档案 = 注入前行为逐字节不变。**与 `scan/dossier.py` 的「前科卡」(跨日入围史,强制卡内"变化项"节)是两件事,并存不互替。**
+
+**为什么它不随 learning 层走**:档案记的是**这家公司的事实**(业务模型/盈利驱动/风险矩阵/披露对账),不是"系统从自己的历史判断里学到了什么"。它不改权重、不改门、不往 prompt 里塞历史胜率 —— 注入的是公司事实,和 slim/intel 同类。
+
+---
+
+## 历史产物(只读,无人再生产)
+
+按用户裁定,盘上已有的账本文件**原样保留不动**:`$CTX/learning/*.jsonl`、`$CTX/scan/*/retro/*.csv`、`$RPT/learning/*.md`、`$CTX/knowledge/`(lessons/proposals/precedents.db)。**代码侧零读侧、零写侧** —— 没有任何生产路径写它们,也没有任何模块读它们(2026-08-21 二轮清理后,brief 的两尺分歧腿与 replay 的 R3 也删了)。它们是纯归档。
+
+`$CTX/learning/` 这个目录名是历史遗留,里面仍有两样**活的**东西,与闭环无关:`temperature.csv`(S1 情绪温度计,prelude 增量落盘)与 `usage_reconcile.jsonl`(token 计量 streak)。目录不改名——改了历史文件就跟路径失联。
+
+覆盖档案链(`dossier/*`)**不属于 learning,整条保留**:池日检在 prelude、首覆走 `dossier-init`、L4 注入「📚 覆盖档案摘要」、收尾 δ 回写、季度对账 —— 一件没动。
 
 ---
 
@@ -281,7 +281,7 @@ E6 相对 BUY 转正(`scan_config.jsonc` 的 `relative_buy.mode` 一行翻 `acti
   - **B 级(增强:北向/两融/龙虎榜/公告/质押/新闻/宏观)**——缺失只降级,但**必须记账**(`degradations()` → `degraded.json` → 报告一行);不走 cache 的降级点用 `record_degradation()`。
   - **为什么分级**:真实的空是合法的(presence-gated 降级是设计);真正的病是**降级不留痕**——打分对整组 NaN 会剔分母放大其余组权重,漏斗照样跑完退出码 0。湖体检:`python -m autoresearch.data.contracts doctor [--purge]`(A 级毒源必清;B 级空帧多为真实的空,不删)。
 - 🚨 **入湖一律全字段**(`cache._lake_params`):`_cache_key` 不含 `fields` → 一个 key 只有一个 parquet;带窄 `fields` 的查询若成为某 key 首个写入者,就把窄表钉成该日快照,后来者只能读到缺列表,且失败多被上游吞成静默降级(实证:两列窄表 → volprice 组整组 NaN → 全市场 composite 失真 98.8%)。**要窄列自己 `df[cols]`——多几列无害,少一列是灾难。**
-- **降级**:缺权限 B 级端点自动 NaN、打分重新归一(且记账);盘中跑 retro 当日 EOD 未发布 → fwd 降级 NaN 不抛。
+- **降级**:缺权限 B 级端点自动 NaN、打分重新归一(且记账)。
 
 ---
 
@@ -295,21 +295,20 @@ E6 相对 BUY 转正(`scan_config.jsonc` 的 `relative_buy.mode` 一行翻 `acti
 ## 开放线头(诚实局限)
 
 1. regime 块 horizon 之争(`pr_20260702_001`)待 T+5 数据裁决;risk_off 块样本薄(11 日)。
-2. healthy 通道反事实(`pre_healthy` 影子)、capfloor20 影子——仍在攒 channel_ledger 前向读数,≥10 日再裁。**reversal_confirm 与旧 reversal 的 A/B 于 2026-08-19 结束、2026-08-21 重开**:08-19 摘出的原因是名义启用实际恒空 4 周+(起爆硬门 `vol_ratio_20` 从未接入生产 L1 帧,缺列即整段判 False);08-21 低位转强波把两件事都做了 —— ① `vol_ratio_20` 等十列经 `frame._harvest_vol_series` 60 日面板 + `common/turnup.py` 接入 L1 帧并入 `keep` 白名单;② 起爆硬门③由 `ma_bull` 改为 `above_ma20 ∧ ma5_gt_ma10`(旧代理含 MA20>MA60,与①「60 日跌 ≥25%」定义互斥,只接列不改门通道仍会近空)。**A/B 重新计时**:配额 150,≥10 扫描日后按 `channel_ledger` 的 `unique_excess_t2` 分 lane 裁决(新路 ≥ 旧路且 ≥0 → 旧路提退役;新路 <0 且旧路 ≥0 → 新路回影子;两路皆负 → 皆提退役)。`self_review.channel_liveness_lint` 逐日盯「启用通道 0 行」,防同族复发。36 日版新配额(value312/momentum188/heat112/healthy112/growth112/main_fund150)已按 `channel_ledger` 36 日累计读数于同日拍板生效,同样不再是开放线头。
-3. attribution 孤儿:非交易日键 fwd 永远无法结算,保持 "—";评级基率 n<10 禁注。
+2. healthy 通道反事实、capfloor20 —— **取证渠道随 2026-08-21 闭环退役整个消失**(影子变体、`channel_ledger`、`channel_audit` 全删)。要重开得先重新造一把前向尺。**reversal_confirm 与旧 reversal 的 A/B 于 2026-08-19 结束、2026-08-21 重开**:08-19 摘出的原因是名义启用实际恒空 4 周+(起爆硬门 `vol_ratio_20` 从未接入生产 L1 帧,缺列即整段判 False);08-21 低位转强波把两件事都做了 —— ① `vol_ratio_20` 等十列经 `frame._harvest_vol_series` 60 日面板 + `common/turnup.py` 接入 L1 帧并入 `keep` 白名单;② 起爆硬门③由 `ma_bull` 改为 `above_ma20 ∧ ma5_gt_ma10`(旧代理含 MA20>MA60,与①「60 日跌 ≥25%」定义互斥,只接列不改门通道仍会近空)。**A/B 的裁决腿已随 2026-08-21 闭环退役删除**(`channel_ledger` 与 `channel_audit` 都没了);配额 150 保留,但目前无尺可裁。`self_review.channel_liveness_lint` 逐日盯「启用通道 0 行」,防同族复发。36 日版新配额(value312/momentum188/heat112/healthy112/growth112/main_fund150)已于 2026-08-21 前拍板生效,不再是开放线头。
 4. consensus 积累 <60 日不入线上;anns_d 无接口权限 → 公告情感列空、监管旗恒空(`anns_empty_rate`=1.0 即该态,index/L3 表头有显式标注)。
-5. 三门账本/tail_rate 攒 ≥20 日才裁雷分级;温度计菜单/预算联动待相位判定质量复审。
+5. 温度计菜单/预算联动待相位判定质量复审。(三门账本/tail_rate 雷分级随 `gate_ledger` 于 2026-08-21 退役。)
 6. 仅供研究,非投资建议。
 
 ---
 
 ## 运维细节(SKILL 只留指针;跑动时不需要逐字读)
 
-- **低位转强活体双尺观察**(只读,手动):`uv run --no-sync python -m autoresearch.research.lowturn_precheck --live` → `reports_claude/research/lowturn_live.md`(lane=lowturn 的 finalist × `retro/attribution.csv`,主尺与 `fwd_5_oc`/`fwd_10_oc` 并列)。≥10 个有 lowturn finalist 的成熟日后,与 `channel_ledger`(reversal_confirm lane)一起提裁决提案。**参考尺只观察,决策尺不变**(2026-07-10 / 08-05 裁定)。回测侧同一命令去掉 `--live` = Gate 0 复跑。
+- **低位转强 Gate 0 回测**(只读,手动):`uv run --no-sync python -m autoresearch.research.lowturn_precheck [--cap-floor 30]` → `reports_claude/research/lowturn_precheck.md`。前向收益由 `factor_lab` 面板**现算**,不依赖任何账本,故不受闭环退役影响。**参考尺只观察,决策尺不变**(2026-07-10 / 08-05 裁定)。(原 `--live` 活体双尺观察腿读 `retro/attribution.csv`,已随闭环删除。)
 
 ### 夜间预热(launchd)
 
-交易日 19:30 自动 `scripts/prewarm.sh`(= `python -m autoresearch.scan.prewarm`,湖预拉+温度;calibrate 默认不跑防污染 changelog/DSR 计数)。跑过预热的日子开扫全湖命中(L0-L2 ~6.5m);**当天有没有预热看汇总屏「预热(夜间):✓/✗」行**。安装:
+交易日 19:30 自动 `scripts/prewarm.sh`(= `python -m autoresearch.scan.prewarm`,湖预拉+温度)。跑过预热的日子开扫全湖命中(L0-L2 ~6.5m);**当天有没有预热看汇总屏「预热(夜间):✓/✗」行**。安装:
 
 ```bash
 sed "s|__REPO__|$PWD|" scripts/com.tradingagents.scan-prewarm.plist \
