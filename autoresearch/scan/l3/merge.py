@@ -11,6 +11,59 @@ import pandas as pd
 from autoresearch.common import workspace as ws
 
 
+# 当日大涨阈(2026-08-22 批 B)。定义与 `docs/research/2026-08-08-overnight-evidence-gap.md` ①
+# 逐字一致(当日 ≥9.5%),**不做板别感知**:创业板 +9.5% 不是涨停但同样是追高,主尺量的也不是
+# 「打板当晚」而是第二个夜晚。读数:隔夜主尺最高桶 −0.96% [−1.06, −0.84] **整区间同号**。
+# 回滚杆 = 改成 `float("inf")`(守卫⑦静默,列与 pf 词保留无害)。
+CHASE_1D_PCT = 9.5
+# L3 行业帽(2026-08-22 批 C):同 `sector` 至多几席。2026-08-21 实测贵金属(12 只成分)拿 4 席
+# + 下游饰品 1 席 = 5/9,而 L3/merge 此前一个帽也没有(L2 有 sector_cap 20%)。
+# 回滚杆 = 改成 99。
+L3_SECTOR_CAP = 3
+
+
+def _drop_and_backfill(m: pd.DataFrame, conv: pd.Series, fin_idx: set, victims: list,
+                       guard_name: str, backfill_guard: str, *,
+                       qualify_conv: float = 55.0, sector_cap: int | None = None) -> set:
+    """守卫⑦/⑧共用:剔掉 `victims` → 从 bench 按 conviction 降序**回填到原席位数**。
+
+    与 `_swap_lane_quota`(按 lane 凑配额)的区别:那个是「缺某类就换进来」,这个是
+    「这几只不该在场,踢掉但席位不能白丢」。用户 2026-08-22 裁定:**剔除并回填**——E6 候选池
+    宽度不因剔除缩水;回填只收 `conviction >= qualify_conv`,**够格不足则不硬凑**(同④⑤⑥纪律)。
+
+    `sector_cap` 给定时,回填还须保证补进来的票不把它自己所在 sector 顶破帽(守卫⑧用)。
+    bench 池排除 `guard` 已被本轮标记的行(不把刚踢出去的再捡回来)。
+    """
+    if not victims:
+        return fin_idx
+    fin_idx = set(fin_idx)
+    for i in victims:
+        fin_idx.discard(i)
+        m.loc[i, "guard"] = guard_name          # 无条件覆写:真正原因就是本守卫
+    need = len(victims)
+    sector = m["sector"].astype(str) if "sector" in m.columns else None
+    # 回填池:bench 里够格的行。**排除失格 guard**(chase_1d 追高 / lt55 低确信 / dup 重复)——
+    # 被 `cap` 截尾的行**不排除**:它正是「conviction 次高、只因名额满才没进」的那批,是最该
+    # 补位的人;补进来时 guard 会被改写成 `backfill_guard`(真实原因)。
+    _DISQUALIFIED = {"chase_1d", "lt55", "dup"}
+    pool = [i for i in m.index
+            if i not in fin_idx and i not in victims
+            and str(m.loc[i, "guard"] or "") not in _DISQUALIFIED
+            and conv.loc[i] >= qualify_conv]
+    pool.sort(key=lambda i: conv.loc[i], reverse=True)
+    for cand in pool:
+        if need <= 0:
+            break
+        if sector_cap is not None and sector is not None:
+            cur = sum(1 for i in fin_idx if sector.loc[i] == sector.loc[cand])
+            if cur >= sector_cap:
+                continue                         # 补进去就破帽 → 跳过,不制造新违规
+        fin_idx.add(cand)
+        m.loc[cand, "guard"] = backfill_guard
+        need -= 1
+    return fin_idx                               # 够格不足 → 席位少几个,不硬凑
+
+
 def _swap_lane_quota(m: pd.DataFrame, conv: pd.Series, fin_idx: set, lane_val: str,
                      target: int, guard_name: str, qualify_conv: float = 65.0,
                      protect_lanes: set[str] | None = None) -> set:
@@ -133,7 +186,7 @@ def merge_l3_finalists_v3(judged: pd.DataFrame, budget: int,
     m["code"] = m["code"].astype(str).str.zfill(6)
     if "conviction" not in m.columns:
         m["conviction"] = 0.0
-    for c in ("conviction", "fragility", "pct_60d"):
+    for c in ("conviction", "fragility", "pct_60d", "pct_1d"):
         if c in m.columns:
             m[c] = pd.to_numeric(m[c], errors="coerce")
     m["guard"] = ""
@@ -169,6 +222,20 @@ def merge_l3_finalists_v3(judged: pd.DataFrame, budget: int,
         order = order[:cap]
 
     fin_idx: set = set(order)
+
+    # 守卫⑦ chase_1d(2026-08-22 批 B):当日涨幅 ≥CHASE_1D_PCT 的票不得 finalist,**剔 + 回填**。
+    # 2026-08-21 实测:002716 湖南白银当日 +10.0%、603209 双双入围 → 两张卡都在 L4 早停
+    # 「涨停追高」,2/9 席位(22% 的 L4 Opus 预算)花在 L4 按规则必否的票上。
+    # **ins75 行也剔**——「高确信误杀保险」保的是「L3 判高分却没标 finalist」,不是「追高豁免」。
+    # 放在 cap 之后:剔掉的席位由 bench 回填(用户 2026-08-22 裁定「剔除并回填」,E6 候选池
+    # 宽度不因剔除缩水),故必须在「已经截到 cap」的集合上做,否则没有「席位数」可言。
+    # 列缺 → victims 空 → 整段 no-op(逐字 parity)。
+    if "pct_1d" in m.columns:
+        _p1 = pd.to_numeric(m["pct_1d"], errors="coerce")
+        fin_idx = _drop_and_backfill(
+            m, conv, fin_idx, [i for i in sorted(fin_idx) if _p1.loc[i] >= CHASE_1D_PCT],
+            "chase_1d", "chase_backfill")
+
     n = len(fin_idx)
     fin_idx = _swap_lane_quota(m, conv, fin_idx, "healthy",             # 守卫④
                                math.ceil(n / 3) if n else 0, "healthy_quota")
@@ -202,11 +269,10 @@ def _inject_pinned_finalists(fin: pd.DataFrame, kept: list[dict],
         闸据此构造 exempt 集;L5 assemble 的「📌 保送」节也按此在 finalists 里查评级)。
         conviction/thesis/risk/catalyst 等 L3 真判字段原样保留(判断记录在案,不因保送
         抹掉——design §4.1"L3 真判但不可淘汰")。**注**:本函数只改 finalists.csv,不碰
-        `L3_judged_full.csv`(该文件仍留 L3 agent 自己判的原始 lane,如 trend/value——
-        `learning.cross_calib.flip_stats` 的按 lane 翻案率读的正是那份原始记录,与此处
-        finalists 层的"pinned"标记是两回事,故意不合并;`learning.channel_ledger` 的
-        per-channel 账则完全在 L1 层(`recall_channels`,universe._inject_pinned_l1 已标
-        `"pinned"`),同样与本函数无关——三层"pinned"标记互相独立、各自服务各自的下游);
+        `L3_judged_full.csv`(该文件仍留 L3 agent 自己判的原始 lane,如 trend/value,
+        与此处 finalists 层的"pinned"标记是两回事,故意不合并;L1 层 `recall_channels`
+        的 `"pinned"` 标记(universe._inject_pinned_l1)又是第三处,同样与本函数无关
+        ——三层"pinned"标记互相独立、各自服务各自的下游);
       - 不在 `fin` 但**在 `judged` 里**(L3 判过、`finalist=false` → 落 bench)→ 从 `judged`
         取该行,**thesis/risk/catalyst/conviction/lenses/sentiment 等 L3 真判字段整段带过来**
         (只把 lane 改判 `"pinned"`、挂 note)。2026-07-12 生产实测:4/4 保送持仓走的都是这条
@@ -321,7 +387,12 @@ def write_finalists(date: str, budget: int = 30, root: Path | None = None,
         l2["code"] = l2["code"].astype(str).str.zfill(6)
         if "pct_60d" not in jd.columns and "pct_60d" in l2.columns:
             jd = jd.merge(l2[["code", "pct_60d"]], on="code", how="left")
-    jd.to_csv(scan_dir / "L3_judged_full.csv", index=False)       # 全量判断(retro/assemble/trace)
+        # pct_1d 回填(2026-08-22 批 B,守卫⑦ 的输入):**无条件** merge —— agent 的 judged
+        # schema 里没有这一列,不像 pct_60d 那样存在「v2 旧 judged 自带」的情形,故不加
+        # `not in jd.columns` 前置条件;列缺 → 守卫⑦ no-op(parity),那正是 L2 表也缺时的行为。
+        if "pct_1d" not in jd.columns and "pct_1d" in l2.columns:
+            jd = jd.merge(l2[["code", "pct_1d"]], on="code", how="left")
+    jd.to_csv(scan_dir / "L3_judged_full.csv", index=False)       # 全量判断(assemble/trace)
 
     from autoresearch.scan.user_config import load_user_config
     finalist_max = int((load_user_config().get("l3") or {}).get("finalist_max", 10))
@@ -343,16 +414,9 @@ def write_finalists(date: str, budget: int = 30, root: Path | None = None,
     bench_n = int(len(bench))
     bench.to_csv(scan_dir / "_l3_bench.csv", index=False)
     fin.to_csv(scan_dir / "finalists.csv", index=False)
-    from autoresearch.learning.l3_audit_ledger import write_audit_candidates
-
-    audit_path = write_audit_candidates(
-        scan_dir,
-        finalist_max=finalist_max,
-    )
-    audit_n = len(pd.read_csv(audit_path, dtype={"code": str}))
     with contextlib.suppress(Exception):
         from autoresearch.scan.stock_stage import record_l3_results
 
         record_l3_results(scan_dir)
     return {"judged_n": int(len(jd)), "finalists_n": int(len(fin)),
-            "finalist_n": finalist_n, "bench_n": bench_n, "audit_n": audit_n}
+            "finalist_n": finalist_n, "bench_n": bench_n}

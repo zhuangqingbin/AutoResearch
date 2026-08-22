@@ -11,7 +11,10 @@ from autoresearch.scan.l3.evidence import harvest_l3_evidence, load_l3_input
 from autoresearch.scan.l3.triage import pass1_meta, triage_l2_for_l3
 
 _L3_COLS = ["code", "name", "pf", "industry", "composite", "gbdt_score",
-            "pct_60d", "sector_mom", "vol_ratio", "cmf_20", "obv_mom_20",
+            # pct_1d/dist_high_60(2026-08-22 批 B):L3 此前**看不见当日涨幅与距高**,却被要求
+            # 替 L4 避开「涨停追高」。2026-08-21 实测 002716 当日 +10.0%、603209 rsi6 79 且距高
+            # −0.9% 双双入围 → 两张卡都在 L4 早停「涨停追高」,2/9 席位(22% Opus 预算)白烧。
+            "pct_1d", "pct_60d", "dist_high_60", "sector_mom", "vol_ratio", "cmf_20", "obv_mom_20",
             "main_net_ratio", "winner_rate", "rsi6", "pe", "pb", "np_yoy",
             "roe", "n_channels", "recall_channels", "news_sent", "news_head"]
 
@@ -28,6 +31,8 @@ def row_profile(r) -> str:
     (不冤枉、不编造)。同输入同输出,禁 wall-clock/随机。词表固定(顺序即优先级):
 
     位置(pct_60d):高位≥40 / 中位≥10 / 低位>−10 / 深跌(其余,恒出现)。
+    今日大涨(pct_1d≥9.5,仅达标才出现;=守卫⑦ 的剔除线,见 l3/merge.CHASE_1D_PCT)。
+    贴顶(dist_high_60≥−2 且 pct_60d>0,仅达标才出现;⑤脆弱维输入,非硬约束)。
     放量(vol_ratio≥2,仅达标才出现)。
     主力(main_net_ratio 与 cmf_20/obv_mom_20 同向判,main 有值即恒出现):main>0 且资金指标
       未反向 → 主力+;main<0 且资金指标未反向 → 主力−;main≈0 → 主力平;主力方向与
@@ -57,6 +62,14 @@ def row_profile(r) -> str:
         else:
             words.append("深跌")
 
+    # 今日大涨 / 贴顶(2026-08-22 批 B):守卫⑦ 会确定性剔掉「今日大涨」,pf 词让 L3 一眼看见
+    # 而不是把一席浪费在必被 L4 否的票上;「贴顶」不是硬约束,是⑤脆弱维的输入。
+    pct1 = _f("pct_1d")
+    if pct1 is not None and pct1 >= 9.5:
+        words.append("今日大涨")
+    dist_hi = _f("dist_high_60")
+    if dist_hi is not None and dist_hi >= -2 and (pct60 is not None and pct60 > 0):
+        words.append("贴顶")
     vol = _f("vol_ratio")
     if vol is not None and vol >= 2:
         words.append("放量")
@@ -337,6 +350,10 @@ def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
         header.append(
             "misread 预警:低基=净利暴增但 ROE 极低(低基数幻觉,勿当真成长);背离=cmf/obv 正但当日主力净流出"
             "(拉高派发嫌疑);套牢=低获利盘·非多头排列·60日已涨(反弹撞套牢盘≠上行空间)。**旗亮仍以对应论点入选者,thesis 必须一句自证非陷阱**。")
+    header.append(
+        "pct_1d 当日涨幅 · dist_high_60 距 60 日高(%,≤0)。**当日 ≥9.5% 的票守卫⑦会确定性剔除**"
+        "(隔夜主尺上追当日大涨整区间为负,docs/research/2026-08-08-overnight-evidence-gap.md ①)"
+        " —— 选它 = 白丢一席,pf 词见「今日大涨」;「贴顶」是⑤脆弱维输入,不是硬约束。")
     if lowturn_flag:
         from autoresearch.common.turnup import LOWTURN_DEFAULTS, LOWTURN_LABEL, lowturn_label
         lt_cfg = {**LOWTURN_DEFAULTS, **(lowturn_cfg or {})}
@@ -365,8 +382,7 @@ def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
 
 def prepare_l3_table(date: str, root: Path | None = None, delta: bool = True,
                      do_harvest: bool = True, pinned_path: Path | str | None = None,
-                     two_pass: bool | None = None,
-                     calib_blocks: bool | None = None) -> dict:
+                     two_pass: bool | None = None) -> dict:
     """L3 精排前的确定性件:harvest 证据/公告情感 + 构建紧凑表 → 写 _l3_table.md(l3-rank agent 读)。
 
     pinned_path 透传给 `l3_table_md`(测试注入;生产默认路径见 `user_config.load_pinned`)。
@@ -382,12 +398,9 @@ def prepare_l3_table(date: str, root: Path | None = None, delta: bool = True,
     表头行、且**完全不调用 `load_user_config`**(纯净回滚,哪怕 scan_config.json 本身写坏
     了也不受影响);返回 dict 形状与本 task 之前实现完全一致(仅 `codes`/`table_bytes`)。
 
-    calib_blocks(2026-07-17 自我迭代腿,fb_20260717_001):表尾追加两个校准块——
-    ① T+1 快环校准(`t1_review.render_t1_calibration_block`,账本派生数据,空账本=零字节);
-    ② 经验校准(`feedback_store.render_calibration_block(regime, with_feedback=True)`,
-      修 pr_20260716_005:此前「经验自动注回 L2/L3 prompt」有腿无接线)。
-    `None`(默认)= 跟随 two_pass(two_pass 显式 False 时同关,保住上面「逐字节不变」的
-    回滚承诺);显式 True/False 独立强制。两块注入各自 suppress:炸了只丢块不挡 L3。
+    2026-08-21(用户裁定「整个 learning 层退役」):原 `calib_blocks` 参数与它注入的两个
+    校准块(T+1 快环校准 / 经验注回)已删 —— 那正是「把历史账本学到的东西塞回今天的判断
+    prompt」的闭环回注腿。L3 现在只看当日证据表,不再吃任何账本派生的先验。
     """
     base = Path(root) if root else ws.scan_root()
     scan_dir = base / date
@@ -445,25 +458,6 @@ def prepare_l3_table(date: str, root: Path | None = None, delta: bool = True,
         lowturn_counts = {"lowturn_n": int(lowturn_mask(base_df, {**LOWTURN_DEFAULTS, **lt_cfg}).sum())}
     if pass1_header:
         md = pass1_header + "\n\n" + md
-
-    if calib_blocks is None:
-        calib_blocks = two_pass is not False    # 跟随回滚杆:two_pass=False 承诺逐字节不变
-    if calib_blocks:
-        import contextlib
-        with contextlib.suppress(Exception):    # 快环校准块(账本派生;空账本=零字节 parity)
-            from autoresearch.learning.t1_review import render_t1_calibration_block
-            blk = render_t1_calibration_block(stage="L3")   # 只带 L3/门/流程相关观察(ERL:相关性>数量)
-            if blk:
-                md = md + "\n\n" + blk
-        with contextlib.suppress(Exception):    # 经验校准块(pr_20260716_005 接线;恒有基线)
-            import json as _json
-
-            from autoresearch.learning.feedback_store import render_calibration_block
-            regime = None
-            mp = scan_dir / "meta.json"
-            if mp.exists():
-                regime = _json.loads(mp.read_text(encoding="utf-8")).get("regime")
-            md = md + "\n\n" + render_calibration_block(regime=regime, with_feedback=True)
 
     (scan_dir / "_l3_table.md").write_text(md, encoding="utf-8")
     return {"codes": len(codes), "table_bytes": len(md), **pass1_counts, **lowturn_counts}

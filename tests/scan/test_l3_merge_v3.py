@@ -325,3 +325,72 @@ def test_lowturn_already_present_no_swap():
     ])
     fin, _ = merge_l3_finalists_v3(judged, budget=30, finalist_max=10)
     assert set(fin["code"]) == {"LLLLLL", "AAAAAA"} and (fin["guard"] == "").all()
+
+
+# ═══════════════ 守卫⑦ chase_1d(2026-08-22 批 B)═══════════════
+# 立案:2026-08-21 002716(当日 +10.0%)与 603209 双双入围 → 两张卡都在 L4 早停「涨停追高」,
+# 2/9 席位(22% Opus 预算)花在 L4 按规则必否的票上。
+
+
+def test_chase_1d_drops_and_backfills_from_bench():
+    judged = pd.DataFrame([
+        _pick("000001", 70, finalist=True, pct_1d=10.0),   # 追高 → 剔
+        _pick("000002", 68, finalist=True, pct_1d=2.0),
+        _pick("000003", 60, finalist=False, pct_1d=1.0),   # bench 最高 → 回填
+        _pick("000004", 56, finalist=False, pct_1d=1.0),
+    ])
+    fin, bench = merge_l3_finalists_v3(judged, budget=30, finalist_max=10)
+    assert set(fin["code"]) == {"000002", "000003"}, "剔 1 补 1,席位数不变"
+    assert bench.set_index("code").loc["000001", "guard"] == "chase_1d"
+    assert fin.set_index("code").loc["000003", "guard"] == "chase_backfill"
+
+
+def test_chase_1d_overrides_ins75():
+    """ins75 保的是「L3 判高分却没标 finalist」的误杀,不是「追高豁免」。"""
+    judged = pd.DataFrame([
+        _pick("000001", 88, finalist=False, pct_1d=12.0),  # ins75 会补入 → 但追高应再剔掉
+        _pick("000002", 70, finalist=True, pct_1d=1.0),
+    ])
+    fin, bench = merge_l3_finalists_v3(judged, budget=30, finalist_max=10)
+    assert "000001" not in set(fin["code"])
+    assert bench.set_index("code").loc["000001", "guard"] == "chase_1d"
+
+
+def test_chase_1d_no_backfill_below_55():
+    """bench 无够格候选(conviction<55)→ 席位空着,不硬凑(同④⑤⑥纪律)。"""
+    judged = pd.DataFrame([
+        _pick("000001", 70, finalist=True, pct_1d=10.0),
+        _pick("000002", 68, finalist=True, pct_1d=2.0),
+        _pick("000003", 40, finalist=False, pct_1d=1.0),
+    ])
+    fin, bench = merge_l3_finalists_v3(judged, budget=30, finalist_max=10)
+    assert set(fin["code"]) == {"000002"}
+    assert "000003" in set(bench["code"])
+
+
+def test_chase_1d_noop_without_column():
+    """judged 与 L2 都没有 pct_1d → 守卫整段 no-op(逐字 parity)。"""
+    judged = pd.DataFrame([_pick("000001", 70, finalist=True),
+                           _pick("000002", 68, finalist=True)])
+    fin, _ = merge_l3_finalists_v3(judged, budget=30, finalist_max=10)
+    assert set(fin["code"]) == {"000001", "000002"}
+    assert (fin["guard"] == "").all()
+
+
+def test_chase_1d_boundary_is_inclusive_at_threshold():
+    judged = pd.DataFrame([
+        _pick("000001", 70, finalist=True, pct_1d=9.5),    # == 阈值 → 剔
+        _pick("000002", 68, finalist=True, pct_1d=9.49),   # 差一点 → 留
+    ])
+    fin, _ = merge_l3_finalists_v3(judged, budget=30, finalist_max=10)
+    assert set(fin["code"]) == {"000002"}
+
+
+def test_chase_1d_nan_is_kept():
+    """NaN(L2 缺该票)不算追高——不冤枉,与 pf 词「缺值不出现」同口径。"""
+    judged = pd.DataFrame([
+        _pick("000001", 70, finalist=True, pct_1d=float("nan")),
+        _pick("000002", 68, finalist=True, pct_1d=1.0),
+    ])
+    fin, _ = merge_l3_finalists_v3(judged, budget=30, finalist_max=10)
+    assert set(fin["code"]) == {"000001", "000002"}
