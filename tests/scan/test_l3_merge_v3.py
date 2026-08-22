@@ -394,3 +394,101 @@ def test_chase_1d_nan_is_kept():
     ])
     fin, _ = merge_l3_finalists_v3(judged, budget=30, finalist_max=10)
     assert set(fin["code"]) == {"000001", "000002"}
+
+
+# ═══════════════ 守卫⑧ sector_cap(2026-08-22 批 C)═══════════════
+# 立案:2026-08-21 贵金属(12 只成分的申万二级)拿 4 席 + 下游饰品 1 席 = 5/9,
+# 而 L3/merge 此前一个行业帽也没有(L2 有 sector_cap 20%)。
+
+
+def _sec(code, conviction, sector, lane="momentum", finalist=True, **extra):
+    d = _pick(code, conviction, lane=lane, finalist=finalist, **extra)
+    d["sector"] = sector
+    return d
+
+
+def test_sector_cap_drops_weakest_and_backfills_other_sector():
+    judged = pd.DataFrame([
+        _sec("000001", 76, "贵金属"), _sec("000002", 74, "贵金属"),
+        _sec("000003", 66, "贵金属"), _sec("000004", 62, "贵金属"),   # 第 4 席、最弱 → 剔
+        _sec("000005", 59, "石油"),
+        _sec("000006", 58, "航运", finalist=False),                    # bench 异行业 → 回填
+    ])
+    fin, bench = merge_l3_finalists_v3(judged, budget=30, finalist_max=10)
+    assert sum(1 for s in fin["sector"] if s == "贵金属") == 3
+    assert "000006" in set(fin["code"])
+    assert fin.set_index("code").loc["000006", "guard"] == "sector_backfill"
+    assert bench.set_index("code").loc["000004", "guard"] == "sector_cap"
+
+
+def test_sector_cap_respects_ins75():
+    """conviction≥75 的行不可被行业帽剔(与④⑤⑥ 同纪律)。"""
+    judged = pd.DataFrame([
+        _sec("000001", 80, "贵金属"), _sec("000002", 78, "贵金属"),
+        _sec("000003", 77, "贵金属"), _sec("000004", 76, "贵金属"),
+        _sec("000005", 60, "航运", finalist=False),
+    ])
+    fin, _ = merge_l3_finalists_v3(judged, budget=30, finalist_max=10)
+    assert sum(1 for s in fin["sector"] if s == "贵金属") == 4, "全 ≥75 → 无人可剔,不硬砍"
+
+
+def test_sector_cap_skips_victim_that_would_break_lane_quota():
+    """**保护的是配额、不是整个 lane**:最弱的那只恰好是 healthy 且剔了会跌破 ceil(n/3) → 跳过它,
+    改剔次弱的非配额行。(没有这条守卫,行业帽会把守卫④ 刚配好的健康配额击穿。)"""
+    judged = pd.DataFrame([
+        _sec("000001", 70, "贵金属", lane="healthy"),
+        _sec("000002", 68, "贵金属", lane="main"),
+        _sec("000003", 66, "贵金属", lane="main"),      # 次弱、非配额 lane → 应剔它
+        _sec("000004", 60, "贵金属", lane="healthy"),   # 最弱,但剔了 healthy 只剩 1 < floor 2
+        _sec("000005", 58, "石油", lane="main"),
+        _sec("000006", 57, "航运", lane="main", finalist=False),
+    ])
+    fin, bench = merge_l3_finalists_v3(judged, budget=30, finalist_max=10)
+    assert sum(1 for s in fin["sector"] if s == "贵金属") == 3
+    assert "000004" in set(fin["code"]), "healthy 配额行被保住"
+    assert "000003" not in set(fin["code"]), "改剔次弱的非配额行"
+    assert bench.set_index("code").loc["000003", "guard"] == "sector_cap"
+    assert sum(1 for ln in fin["lane"] if ln == "healthy") >= 2
+
+
+def test_sector_cap_prefers_weakest_when_no_quota_conflict():
+    """无配额冲突时就是「剔最弱」——配额保护不该把普通情形也一起改掉。"""
+    judged = pd.DataFrame([
+        _sec("000001", 70, "贵金属", lane="healthy"),
+        _sec("000002", 68, "贵金属", lane="healthy"),
+        _sec("000003", 66, "贵金属", lane="healthy"),
+        _sec("000004", 64, "贵金属", lane="main"),      # 非配额、最弱 → 剔它
+        _sec("000005", 62, "石油", lane="value"),
+        _sec("000006", 60, "航运", lane="value", finalist=False),
+    ])
+    fin, _ = merge_l3_finalists_v3(judged, budget=30, finalist_max=10)
+    assert sum(1 for s in fin["sector"] if s == "贵金属") == 3
+    assert sum(1 for ln in fin["lane"] if ln == "healthy") >= 2
+    assert "000004" not in set(fin["code"])
+
+
+def test_sector_cap_backfill_never_creates_new_violation():
+    """回填不得把补进来的票自己所在 sector 顶破帽。"""
+    judged = pd.DataFrame([
+        _sec("000001", 76, "贵金属"), _sec("000002", 74, "贵金属"),
+        _sec("000003", 66, "贵金属"), _sec("000004", 62, "贵金属"),
+        _sec("000005", 61, "贵金属", finalist=False),   # bench 也是贵金属 → 不可回填
+        _sec("000006", 60, "航运", finalist=False),     # 应选它
+    ])
+    fin, _ = merge_l3_finalists_v3(judged, budget=30, finalist_max=10)
+    assert sum(1 for s in fin["sector"] if s == "贵金属") == 3
+    assert "000006" in set(fin["code"]) and "000005" not in set(fin["code"])
+
+
+def test_sector_cap_noop_without_sector_column():
+    judged = pd.DataFrame([{**_pick(f"00000{i}", 70 - i, finalist=True)} for i in range(1, 6)])
+    judged = judged.drop(columns=["sector"])
+    fin, _ = merge_l3_finalists_v3(judged, budget=30, finalist_max=10)
+    assert len(fin) == 5 and (fin["guard"] == "").all()
+
+
+def test_sector_cap_under_limit_is_silent():
+    judged = pd.DataFrame([_sec("000001", 70, "贵金属"), _sec("000002", 68, "贵金属"),
+                           _sec("000003", 66, "石油")])
+    fin, _ = merge_l3_finalists_v3(judged, budget=30, finalist_max=10)
+    assert len(fin) == 3 and (fin["guard"] == "").all()

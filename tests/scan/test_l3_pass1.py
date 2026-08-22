@@ -497,3 +497,22 @@ def test_triage_lowturn_respects_cfg_and_missing_cols():
     bare = pd.DataFrame([_row(f"{i:06d}", composite=99.0 - i, gbdt_score=99.0 - i) for i in range(30)])
     kept3, _ = triage_l2_for_l3(bare, target=10, lowturn_cap=3)     # 缺旗列:不炸,不强留
     assert len(kept3) == 10
+
+
+def test_triage_resonance_is_capped_at_five(monkeypatch):
+    """规则② 由「n_channels>=3 全入」收窄为「按 composite 取前 RESONANCE_CAP(5)」(2026-08-22)。
+
+    理由是数学:n_channels 与 dist_high_60 的 spearman 0.34 —— 多路共振 ≈「已经涨起来」,
+    不是独立多因子确认。被挤出的共振票不再免检,改与其他 lane 竞争 round-robin。
+    """
+    from autoresearch.scan.l3.triage import RESONANCE_CAP
+
+    rows = [_row(f"77{i:04d}", composite=10.0 + i, gbdt_score=10.0 + i, n_channels=4,
+                 recall_channels="momentum|heat|value|growth") for i in range(8)]
+    rows += [_row(f"{i:06d}", composite=99.0 - i, gbdt_score=99.0 - i, n_channels=1,
+                  recall_channels="composite") for i in range(30)]
+    kept, _cut = triage_l2_for_l3(pd.DataFrame(rows), target=12)
+    guarded = kept[kept["selection_reason"] == "conviction_guard"]
+    assert len(guarded) == RESONANCE_CAP == 5
+    # 强留的必须是 composite 最高的 5 只共振票(不是行序)
+    assert set(guarded["code"]) == {f"77{i:04d}" for i in range(3, 8)}

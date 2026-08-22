@@ -64,6 +64,49 @@ def _drop_and_backfill(m: pd.DataFrame, conv: pd.Series, fin_idx: set, victims: 
     return fin_idx                               # 够格不足 → 席位少几个,不硬凑
 
 
+def _lane_quota_floor(m: pd.DataFrame, fin_idx: set) -> dict:
+    """当前候选集应满足的 lane 配额下限(守卫④⑤⑥ 刚配置好的那些)。
+
+    守卫⑧ 剔票时要保护它们**不被击穿**——但保护的是「配额」不是「每一行」:2026-08-21 贵金属
+    4 席里 3 席 lane=healthy,若整个 healthy lane 免剔,行业帽永远咬不动。
+    """
+    n = len(fin_idx)
+    return {"healthy": math.ceil(n / 3) if n else 0, "trend": 2, "lowturn": 1}
+
+
+def _apply_sector_cap(m: pd.DataFrame, conv: pd.Series, fin_idx: set, cap: int) -> set:
+    """守卫⑧:同 `sector` >cap 席 → 剔最弱 + 从 bench 回填异行业(见调用点注释)。"""
+    if "sector" not in m.columns or cap <= 0:
+        return fin_idx
+    fin_idx = set(fin_idx)
+    sector = m["sector"].astype(str)
+    lane = m["lane"].astype(str) if "lane" in m.columns else pd.Series("", index=m.index)
+    floors = _lane_quota_floor(m, fin_idx)
+    by_sector: dict[str, list] = {}
+    for i in sorted(fin_idx):
+        by_sector.setdefault(sector.loc[i], []).append(i)
+
+    victims: list = []
+    for _sec, group in sorted(by_sector.items()):
+        over = len(group) - cap
+        if over <= 0:
+            continue
+        removable = [i for i in group if conv.loc[i] < 75]     # ins75 行不可剔
+        removable.sort(key=lambda i: conv.loc[i])       # 最弱先剔
+        for i in removable:
+            if over <= 0:
+                break
+            ln = lane.loc[i]
+            if ln in floors:                            # lane 配额不可被击穿
+                have = sum(1 for j in fin_idx if lane.loc[j] == ln and j not in victims)
+                if have <= floors[ln]:
+                    continue
+            victims.append(i)
+            over -= 1
+    return _drop_and_backfill(m, conv, fin_idx, victims, "sector_cap", "sector_backfill",
+                              sector_cap=cap)
+
+
 def _swap_lane_quota(m: pd.DataFrame, conv: pd.Series, fin_idx: set, lane_val: str,
                      target: int, guard_name: str, qualify_conv: float = 65.0,
                      protect_lanes: set[str] | None = None) -> set:
@@ -232,9 +275,12 @@ def merge_l3_finalists_v3(judged: pd.DataFrame, budget: int,
     # 列缺 → victims 空 → 整段 no-op(逐字 parity)。
     if "pct_1d" in m.columns:
         _p1 = pd.to_numeric(m["pct_1d"], errors="coerce")
+        # 回填也认行业帽:否则⑦ 补进来的票可能正好把某行业顶到 4 席,⑧ 随即再把它剔掉 ——
+        # 净效果是白丢一席。2026-08-21 真数据实测到这个来回:⑦ 剔 002716(贵金属)后补入
+        # 001337 四川黄金(**也是贵金属**),⑧ 再剔,席位 9→8。帽是全局不变量,越早认越省事。
         fin_idx = _drop_and_backfill(
             m, conv, fin_idx, [i for i in sorted(fin_idx) if _p1.loc[i] >= CHASE_1D_PCT],
-            "chase_1d", "chase_backfill")
+            "chase_1d", "chase_backfill", sector_cap=L3_SECTOR_CAP)
 
     n = len(fin_idx)
     fin_idx = _swap_lane_quota(m, conv, fin_idx, "healthy",             # 守卫④
@@ -243,6 +289,15 @@ def merge_l3_finalists_v3(judged: pd.DataFrame, budget: int,
                                protect_lanes={"healthy"})   # I-2:不可换出健康配额行
     fin_idx = _swap_lane_quota(m, conv, fin_idx, "lowturn", 1, "lowturn_quota",   # 守卫⑥
                                qualify_conv=55.0, protect_lanes={"healthy", "trend"})
+
+    # 守卫⑧ sector_cap(2026-08-22 批 C):同 `sector` 至多 L3_SECTOR_CAP 席,超出剔最弱 + 回填异行业。
+    # 2026-08-21:贵金属(12 只成分的申万二级)拿 4 席 + 下游饰品 1 席 = 5/9,而 L3/merge 此前
+    # **一个行业帽也没有**(L2 有 sector_cap 20%)。L3 自己在每只的 risk 段都写了「同一动量被
+    # 多路重复计数」,却没有任何机制阻止它;E6 于是在「金价 beta 里挑最不差的」。
+    # 可剔判据:conviction<75(ins75 保护)∧ 剔掉后该行 lane 的配额仍满足 —— 保护的是**配额**
+    # 不是每一行(当日贵金属 4 席里 3 席 lane=healthy,整 lane 免剔则帽子永远不咬)。
+    # 回填还须不把补进来的票自己所在 sector 顶破帽。`sector` 列缺 → no-op(parity)。
+    fin_idx = _apply_sector_cap(m, conv, fin_idx, L3_SECTOR_CAP)
 
     fin_order = sorted(fin_idx, key=lambda i: conv.loc[i], reverse=True)
     fin = m.loc[fin_order].copy()

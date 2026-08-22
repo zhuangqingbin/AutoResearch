@@ -10,13 +10,23 @@ import pandas as pd
 #
 # 各值在本层的产生规则(L2 侧见 `recall/l2_stratify.py`):
 #   pinned            规则① 保送(全程直通,不占竞争名额)
-#   conviction_guard  规则② 多路共振(n_channels>=3)—— 强制补入,不是排序结果
+#   conviction_guard  规则② 多路共振(n_channels>=3)top-RESONANCE_CAP —— 强制补入,不是排序结果
 #   lane              规则③ healthy 全入 / 规则④ 通道轮询(detail 记具体通道名)
 #   backfill          填满收尾(无通道 / 通道队列耗尽后按分捡回)
 #   merit / sector    L2 侧才产生(sn-composite 核 / sector cap 回填),本层恒不出现
 SELECTION_REASONS = ("merit", "lane", "sector", "pinned", "conviction_guard", "backfill")
 PASS1_REASONS = ("pinned", "conviction_guard", "lane", "backfill")
 RULE_VERSION = "pass1.v2"        # v2 = 本波新增 selection_reason/detail;规则本身未变
+
+
+# 多路共振强留上限(2026-08-22 批 C)。规则② 原为「n_channels>=3 **全入**」,2026-08-21 实测
+# 那是 10/40 席、且 5 只 finalist 出自其中。改 top-5 的理由是数学:L2 200 里 n_channels 与
+# `dist_high_60` 的 spearman **0.34**、与 `pct_60d` 0.29 —— ≥3 路的 10 只中位 rsi6 72–76、
+# pct_5d +12%,而 1 路的 129 只中位 pct_60d −20.2%。momentum/heat/healthy/main_fund/growth
+# 五路**在强势上涨时同时亮**,低位票至多命中 value/reversal/composite 三路,所以「多路共振」
+# 在数学上 ≈「这票已经涨起来了」,不是独立多因子确认。共振票不再免检,改为与其他 lane 竞争
+# round-robin(不是被切,是不再免检)。回滚杆 = 改成一个很大的数(如 10**6)。
+RESONANCE_CAP = 5
 
 
 def triage_l2_for_l3(df: pd.DataFrame, target: int = 60, *, lowturn_cap: int = 0,
@@ -38,7 +48,8 @@ def triage_l2_for_l3(df: pd.DataFrame, target: int = 60, *, lowturn_cap: int = 0
        多数无保送的日子该列不存在)为真;该列不存在时退化检查 `recall_channels` 字面等于
        `"pinned"`(L1 强注新增行的哨兵值,见 `_inject_pinned_l1`)。两者都缺列 → 该规则
        贡献 0 行,不报错。
-    ② 多路共振全入:`n_channels >= 3`(真实列,直接可用)。列缺失(如 `recall_mode="composite"`
+    ② 多路共振**按 composite 取前 `RESONANCE_CAP` 只**强留(2026-08-22 由「全入」收窄,
+       理由见该常量注释):`n_channels >= 3`(真实列,直接可用)。列缺失(如 `recall_mode="composite"`
        的 L2,无 provenance 列)→ 跳过本规则,不报错。
     ③b lowturn 强留(2026-08-21 低位转强波 §6.2):`lowturn_cap>0` 时,`turnup.lowturn_mask`
        为真且尚未 mandatory 的行按 `order` 降序取前 `cap` 入 mandatory(`selection_reason=lane`、
@@ -110,11 +121,12 @@ def triage_l2_for_l3(df: pd.DataFrame, target: int = 60, *, lowturn_cap: int = 0
     for i in d.index[is_pinned]:
         _mark(i, "pinned")
 
-    if "n_channels" in d.columns:                                        # ② 多路共振全入
+    if "n_channels" in d.columns:                        # ② 多路共振 top-RESONANCE_CAP 强留
         n_ch = pd.to_numeric(d["n_channels"], errors="coerce").fillna(0)
-        resonant = n_ch >= 3
-        mandatory |= resonant
-        for i in d.index[resonant]:
+        resonant = [i for i in d.index[n_ch >= 3] if not mandatory.loc[i]]
+        resonant.sort(key=lambda i: order.loc[i], reverse=True)
+        for i in resonant[:RESONANCE_CAP]:
+            mandatory.loc[i] = True
             _mark(i, "conviction_guard", f"n_channels={int(n_ch.loc[i])}")
 
     chan_sets = None
