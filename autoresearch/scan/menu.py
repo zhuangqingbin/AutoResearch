@@ -74,15 +74,25 @@ def menu_health(scan_dir: Path | str) -> str:
 def zero_buy_streak(scan_dir: Path | str, lookback: int = 10) -> int:
     """今日之前连续 0 买 scan 日数(只数出过卡的日;哨兵/未跑 L4 的日子跳过、不断链)。
 
-    源 = details 卡最终评级(`health.final_ratings`,与 assemble 同口径含 verify 折回);
-    碰到最近一个有 Buy/OW 的日即停。lookback 限回看深度(成本上限)。
+    「这天出过卡」仍看 `health.final_ratings`(非空 = 跑过 L4);「这天有没有买」改读
+    `health.count_buys_with_source`(2026-08-22 批 D)——**与 brief ③ / run_health 同一口径**:
+    shadow 期它返回 ≥OW 张数 = 逐字 parity;active 期读当日 `_relative_buy_decision.json`
+    (`load_decision` 自带日期校验,历史目录各读各的,读不到则显式回退 ≥OW)。
+
+    为什么必须改:E6 自 2026-08-19 `mode=active`,**每个成功日必出 1 只 relative BUY**,
+    而本函数还在数 ≥OW 卡 —— 2026-08-21 汇总屏因此打出「⚠️ 0买连败10日·重旗+连败≥7硬压→10」,
+    那是一面假旗。`health.count_buys_with_source` 早已按 E3b 裁定改口径,只有这里没跟上。
+    (当日实际影响为零:`scan-market.js` 的 `l3cap = min(10, l4_budget)` 与 `finalist_max=10`
+    使预算 10 与 30 都落到 cap 10 —— 病只在「旗说假话」,不在名额。)
+
+    碰到最近一个有买的日即停。lookback 限回看深度(成本上限)。
     2026-07-03 病灶:9 连 0 买日预算仍=30 基准——连败从不是预算函数的输入。
     """
     scan_dir = Path(scan_dir)
     root = scan_dir.parent
     if not root.exists():
         return 0
-    from autoresearch.scan.health import final_ratings  # lazy:避免 import cycle
+    from autoresearch.scan.health import count_buys_with_source, final_ratings  # lazy:避免 import cycle
     streak = seen = 0
     for d in sorted((p for p in root.iterdir()
                      if p.is_dir() and p.name[:2] == "20" and p.name < scan_dir.name),
@@ -96,7 +106,11 @@ def zero_buy_streak(scan_dir: Path | str, lookback: int = 10) -> int:
         if not ratings:
             continue
         seen += 1
-        if any(r in ("Buy", "Overweight") for r in ratings.values()):
+        try:
+            n_buys, _src = count_buys_with_source(d)
+        except Exception:  # noqa: BLE001 — 口径读取失败 → 回落旧判据,不让预算腿因此崩
+            n_buys = sum(1 for r in ratings.values() if r in ("Buy", "Overweight"))
+        if n_buys > 0:
             break
         streak += 1
     return streak

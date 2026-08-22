@@ -149,3 +149,63 @@ def test_l4_budget_streak_broken_by_buy_day(tmp_path):
     assert zero_buy_streak(today) == 0
     n, why = l4_budget(today)
     assert n == 30 and "菜单健康" in why
+
+
+# ═══════ zero_buy_streak 口径卫生(2026-08-22 批 D)═══════
+# E6 自 2026-08-19 active、每成功日必出 1 只 relative BUY,而本函数还在数 ≥OW 卡 →
+# 2026-08-21 汇总屏打出「0买连败10日」的假旗。改读 health.count_buys_with_source。
+
+import json as _json                                    # noqa: E402
+
+import pandas as _pd                                    # noqa: E402
+
+from autoresearch.scan.menu import zero_buy_streak       # noqa: E402
+
+
+def _day(root, date, *, ratings, decision=None):
+    d = root / date
+    (d / "details").mkdir(parents=True, exist_ok=True)
+    for code, rating in ratings.items():
+        (d / "details" / f"{code}.md").write_text(
+            f"# {code}\n**评级**: {rating}\n", encoding="utf-8")
+    _pd.DataFrame([{"code": c, "name": c, "rating": r} for c, r in ratings.items()]).to_csv(
+        d / "finalists.csv", index=False)
+    if decision is not None:
+        (d / "_relative_buy_decision.json").write_text(
+            _json.dumps({"date": date, "buys": decision}, ensure_ascii=False), encoding="utf-8")
+    return d
+
+
+def test_streak_counts_ow_when_shadow(monkeypatch, tmp_path):
+    """shadow 期 = 逐字 parity(数 ≥OW 卡)。"""
+    monkeypatch.setattr("autoresearch.scan.relative_buy.is_active", lambda: False)
+    _day(tmp_path, "2026-08-19", ratings={"000001": "Hold"})
+    _day(tmp_path, "2026-08-20", ratings={"000002": "Overweight"})
+    _day(tmp_path, "2026-08-21", ratings={"000003": "Hold"})
+    assert zero_buy_streak(tmp_path / "2026-08-22") == 1     # 08-21 无买、08-20 有 OW → 停
+
+
+def test_streak_breaks_on_e6_decision_when_active(monkeypatch, tmp_path):
+    """active 期:卡全是 Hold 但决策文件有 BUY → 那天**不算 0 买**,连败断链。"""
+    monkeypatch.setattr("autoresearch.scan.relative_buy.is_active", lambda: True)
+    _day(tmp_path, "2026-08-20", ratings={"000001": "Hold"})
+    _day(tmp_path, "2026-08-21", ratings={"000002": "Hold"},
+         decision=[{"code": "000426", "rank": 1, "basis": "relative"}])
+    assert zero_buy_streak(tmp_path / "2026-08-22") == 0
+
+
+def test_streak_counts_day_without_decision_file_as_zero_buy(monkeypatch, tmp_path):
+    """active 期但当日无决策文件(或日期不符)→ 回退 ≥OW 口径,全 Hold 仍算 0 买。"""
+    monkeypatch.setattr("autoresearch.scan.relative_buy.is_active", lambda: True)
+    _day(tmp_path, "2026-08-20", ratings={"000001": "Overweight"})
+    _day(tmp_path, "2026-08-21", ratings={"000002": "Hold"})
+    assert zero_buy_streak(tmp_path / "2026-08-22") == 1
+
+
+def test_streak_skips_days_without_cards(monkeypatch, tmp_path):
+    """哨兵/未跑 L4 的日子跳过、不断链(既有语义不变)。"""
+    monkeypatch.setattr("autoresearch.scan.relative_buy.is_active", lambda: True)
+    (tmp_path / "2026-08-19").mkdir(parents=True)            # 空目录 = 没出过卡
+    _day(tmp_path, "2026-08-20", ratings={"000001": "Hold"})
+    _day(tmp_path, "2026-08-21", ratings={"000002": "Hold"})
+    assert zero_buy_streak(tmp_path / "2026-08-22") == 2
