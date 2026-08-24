@@ -286,7 +286,8 @@ def test_pcr_panel_skips_missing_days_without_faking(tmp_path, monkeypatch):
     assert "20260818" not in set(panel["date"])                          # 更不会伪造成 0
     assert panel["pcr_vol"].iloc[0] == pytest.approx(0.6)                # 60 put / 100 call
     assert panel["pcr_oi"].iloc[0] == pytest.approx(0.8)
-    assert meta["coverage_missing_total"] == 0
+    assert meta["coverage_missing_this_run"] == 0
+    assert meta["panel_days"] == 2                                       # 面板规模与本次构建数分开报
 
 
 def test_pcr_panel_is_incremental(tmp_path, monkeypatch):

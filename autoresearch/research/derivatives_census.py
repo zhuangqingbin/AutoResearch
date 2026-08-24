@@ -616,8 +616,9 @@ def build_pcr_panel(days: list[str], *, rebuild: bool = False) -> tuple[pd.DataF
         panel = (panel.drop_duplicates(["date", "underlying"])
                  .sort_values(["underlying", "date"]).reset_index(drop=True))
         _save(panel, fp)
-    return panel, {"days_built": len(todo), "coverage_days": cov_days,
-                   "coverage_missing_total": cov_missing}
+    return panel, {"days_built": len(todo), "coverage_days_this_run": cov_days,
+                   "coverage_missing_this_run": cov_missing,
+                   "panel_days": int(panel["date"].nunique()) if len(panel) else 0}
 
 
 def build_basis_panel(days: list[str], index_frames: dict, *,
@@ -671,7 +672,10 @@ def build_basis_panel(days: list[str], index_frames: dict, *,
         if "basis_IM" in panel.columns and "basis_IF" in panel.columns:
             panel["style_gap"] = panel["basis_IM"] - panel["basis_IF"]
         _save(panel, fp)
-    return panel, {"days_built": len(todo), "synthetic_rows_dropped": dropped_synth}
+    # 计数器是**本次跑**的:面板是增量的,续跑时大部分日子来自缓存 → 这两个数会小于
+    # 面板真实规模。读数表要把它标成「本次构建」,别让人读成「全量只丢了这么多」。
+    return panel, {"days_built": len(todo), "synthetic_rows_dropped_this_run": dropped_synth,
+                   "panel_days": int(panel["date"].nunique()) if len(panel) else 0}
 
 
 # ───────────────────────── target / 信号装配 ─────────────────────────
@@ -1056,17 +1060,20 @@ def render(table: pd.DataFrame, tails: list[dict], meta: dict) -> str:
 
     pcr = meta["pcr"]
     L += ["", "### 4.2 PCR 覆盖", "",
-          f"- 联结日数 **{pcr.get('coverage_days', 0)}**;元数据缺失合约累计 "
-          f"**{pcr.get('coverage_missing_total', 0)}** 个"
-          + ("(✅ 全部对平)" if not pcr.get("coverage_missing_total") else " 🚨"),
+          f"- 面板 **{pcr.get('panel_days', 0)}** 日;本次构建 {pcr.get('days_built', 0)} 日、"
+          f"其中联结 {pcr.get('coverage_days_this_run', 0)} 日,元数据缺失合约 "
+          f"**{pcr.get('coverage_missing_this_run', 0)}** 个"
+          + ("(✅ 对平)" if not pcr.get("coverage_missing_this_run") else " 🚨")
+          + " —— 计数器是本次跑的,面板增量续跑时它小于面板规模",
           f"- 入表品种:{'、'.join(f'`{u}`' for u in pcr.get('kept', [])) or '无'}"]
     for u, d in (pcr.get("dropped") or {}).items():
         L.append(f"  - 挡下 `{u}`:{d['reason']}")
 
     b = meta["basis"]
     L += ["", "### 4.3 基差 / 日历", "",
-          f"- 丢弃合成连续合约行 **{b.get('synthetic_rows_dropped', 0)}** 行"
-          "(`IF.CFX`/`IFL1.CFX` 这类,其 oi 是整族加总)"]
+          f"- 面板 **{b.get('panel_days', 0)}** 日;本次构建 {b.get('days_built', 0)} 日,"
+          f"丢弃合成连续合约行 **{b.get('synthetic_rows_dropped_this_run', 0)}** 行"
+          "(`IF.CFX`/`IFL1.CFX` 这类,其 oi 是整族加总;同为本次跑计数)"]
     for k, v in (b.get("series") or {}).items():
         L.append(f"  - `{k}`:有效 {v['n_valid']} 日,自 {v['first'] or '—'}")
     cal = meta["calendar"]
