@@ -873,11 +873,16 @@ def _judge_one(sig: dict, targets: dict, breadth: pd.DataFrame, since: str) -> d
         reg = f
         obs_oc = flag_hl(f[f.index >= since], oc.reindex(f.index)[f.index >= since])
         obs_db = flag_hl(f[f.index >= since], db.reindex(f.index)[f.index >= since])
+        long_hl = flag_hl(f, gap.reindex(f.index))
     else:
         hl = bucket_hl(s, gap, since=since)
         reg = rolling_z(s.dropna())
         obs_oc = bucket_hl(s, oc, since=since)
         obs_db = bucket_hl(s, db, since=since)
+        long_hl = bucket_hl(s, gap)             # 全史,不设 since
+    # 长史列**只观察不判读**(§0.4):判读窗外没有 breadth 基线,基线增量那一条无从检验,
+    # 三条判据缺一条 = 不能判。它的用处是「样本大得多的时候,同一个 H−L 长什么样」。
+    long_start = min((d for d in s.dropna().index), default=None)
 
     idx = [d for d in reg.index if d >= since]
     inc = baseline_increment(gap.reindex(idx), reg.reindex(idx), b.reindex(idx),
@@ -891,6 +896,8 @@ def _judge_one(sig: dict, targets: dict, breadth: pd.DataFrame, since: str) -> d
         "inc_coef": inc["coef"], "inc_t": inc["t"], "inc_n": inc["n"],
         "obs_oc_diff": obs_oc["diff"], "obs_oc_t": obs_oc["t"],
         "obs_dbreadth_diff": obs_db["diff"], "obs_dbreadth_t": obs_db["t"],
+        "long_n": long_hl["n_h"] + long_hl["n_l"], "long_diff": long_hl["diff"],
+        "long_t": long_hl["t"], "long_start": long_start,
         "verdict": v,
     }
 
@@ -1029,15 +1036,19 @@ def render(table: pd.DataFrame, tails: list[dict], meta: dict) -> str:
         L.append("| — | — | — | — | — | — | — | — | — | — | — | — |")
 
     L += ["", "## 2. 观察列(不判读)", "",
-          "| 信号 | 标的 | H−L(T+1 日内 oc)pp | t | H−L(Δbreadth T+1)pp | t |",
-          "|---|---|---:|---:|---:|---:|"]
+          "长史列 = **不设判读窗起点**的同一个 H−L(§0.4:判读窗外没有 breadth 基线,"
+          "三条判据缺一条,只能观察)。", "",
+          "| 信号 | 标的 | H−L(T+1 日内 oc)pp | t | H−L(Δbreadth T+1)pp | t | 长史起点 | 长史 n | 长史 H−L pp | 长史 t |",
+          "|---|---|---:|---:|---:|---:|---|---:|---:|---:|"]
     if len(table):
         for _, r in table.sort_values("signal").iterrows():
             L.append(f"| `{r['signal']}` | {r['target']} | {_pp(r['obs_oc_diff'])} | "
                      f"{_f(r['obs_oc_t'])} | {_pp(r['obs_dbreadth_diff'])} | "
-                     f"{_f(r['obs_dbreadth_t'])} |")
+                     f"{_f(r['obs_dbreadth_t'])} | {r.get('long_start') or '—'} | "
+                     f"{r.get('long_n', 0)} | {_pp(r.get('long_diff'))} | "
+                     f"{_f(r.get('long_t'))} |")
     else:
-        L.append("| — | — | — | — | — | — |")
+        L.append("| — | — | — | — | — | — | — | — | — | — |")
 
     L += ["", f"## 3. A2 哨兵尾部专测(P(标的 T+1 收收 ≤ {TAIL_THRESH:.1%}))", "",
           "| 信号 | 标的 | 急升日 n | 条件概率 | 无条件基率 | 提升倍数 | Fisher p(单侧) |",

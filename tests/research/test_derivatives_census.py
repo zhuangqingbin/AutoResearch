@@ -371,3 +371,11 @@ def test_render_never_prints_literal_nan():
                            "gap_clip": 0.08}}
     md = dc.render(table, [], meta)
     assert "nan" not in md.lower().replace("nan 一视同仁", "")
+
+
+def test_long_history_column_uses_more_sample_than_judged_window():
+    """§0.4 承诺的长史观察列:同一个 H−L 不设判读窗起点 → 样本必须严格更多。"""
+    s, y = _linked(n=900)
+    judged = dc.bucket_hl(s, y, since=s.index[500])
+    long_run = dc.bucket_hl(s, y)
+    assert long_run["n_h"] + long_run["n_l"] > judged["n_h"] + judged["n_l"]
