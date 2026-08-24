@@ -913,6 +913,28 @@ def _tail_rows(sigs: list[dict], targets: dict, since: str) -> list[dict]:
     return rows
 
 
+def attach_fdr(table: pd.DataFrame) -> pd.DataFrame:
+    """给可判格补 BH-FDR 的 q 列(§0.3「正证据数必须与总共测了多少格一起报」)。
+
+    **补充列,不改判读** —— 预注册的三条判据一字未动;q 只用来看「正证据 vs 测了多少格」。
+    样本不足的格不进 FDR 池:它们没被判,不该占一个检验名额。
+
+    这段是纯粹的位置粘合(p 的顺序 ↔ 行的标签),错位不会报错、只会让 q 挂到别人身上,
+    所以单拎出来给测试咬。
+    """
+    out = table.copy()
+    if not len(out):
+        out["fdr_q"] = None
+        return out
+    judged = out[out["verdict"] != THIN]
+    labels = [i for i, pv in zip(judged.index, judged["p"], strict=True) if pv is not None]
+    ps = [pv for pv in judged["p"] if pv is not None]
+    qs = st.bh_fdr(ps) if ps else []
+    qmap = {lab: qs[k]["q"] for k, lab in enumerate(labels)}
+    out["fdr_q"] = [qmap.get(i) for i in out.index]
+    return out
+
+
 def run_census(since: str = JUDGE_START, *, rebuild: bool = False,
                backfill_since: str = BACKFILL_START) -> tuple[pd.DataFrame, list[dict], dict]:
     index_frames = load_index_frames()
@@ -933,21 +955,8 @@ def run_census(since: str = JUDGE_START, *, rebuild: bool = False,
     rows = [r for r in (_judge_one(s, targets, breadth, since) for s in sigs) if r]
     table = pd.DataFrame(rows)
 
-    # 多重比较:判读格数与 BH-FDR 一起报(§0.3「正证据数必须与总共测了多少格一起报」)。
-    # FDR 是**补充列**,不改判读 —— 预注册的三条判据一字未动。
+    table = attach_fdr(table)
     judged = table[table["verdict"] != THIN] if len(table) else table
-    ps = [r for r in (judged["p"].tolist() if len(judged) else []) if r is not None]
-    fdr = st.bh_fdr(ps) if ps else []
-    if len(judged) and fdr:
-        qmap = {}
-        k = 0
-        for i, pv in enumerate(judged["p"].tolist()):
-            if pv is not None:
-                qmap[judged.index[i]] = fdr[k]["q"]
-                k += 1
-        table["fdr_q"] = [qmap.get(i) for i in table.index]
-    else:
-        table["fdr_q"] = None
 
     meta = {
         "schema_version": SCHEMA_VERSION, "rule_version": RULE_VERSION,
@@ -971,11 +980,13 @@ def run_census(since: str = JUDGE_START, *, rebuild: bool = False,
 
 
 def _pp(x) -> str:
-    return "—" if x is None or (isinstance(x, float) and not np.isfinite(x)) else f"{x * 100:+.3f}"
+    """pp 渲染。None 与 NaN 一视同仁 —— pandas 会把含 None 的列静默转成 NaN,
+    只判 `is None` 的渲染会把 `nan` 三个字母原样印进读数表。"""
+    return "—" if x is None or pd.isna(x) else f"{float(x) * 100:+.3f}"
 
 
 def _f(x, nd: int = 2) -> str:
-    return "—" if x is None or (isinstance(x, float) and not np.isfinite(x)) else f"{x:+.{nd}f}"
+    return "—" if x is None or pd.isna(x) else f"{float(x):+.{nd}f}"
 
 
 _FAMILY_LABEL = {"A1": "A1·QVIX 分位", "A2": "A2·QVIX 急升", "A3": "A3·VRP",
@@ -1008,7 +1019,7 @@ def render(table: pd.DataFrame, tails: list[dict], meta: dict) -> str:
                 f"{r['target']} | {r['n_h']} | {r['n_l']} | {_pp(r['mean_h'])} | "
                 f"{_pp(r['mean_l'])} | {mark}{_pp(r['diff'])}{mark} | {_f(r['t'])} | "
                 f"{_f(r['inc_t'])} | "
-                + ("—" if r.get("fdr_q") is None else f"{r['fdr_q']:.3f}")
+                + ("—" if pd.isna(r.get("fdr_q")) else f"{r['fdr_q']:.3f}")
                 + f" | {mark}{r['verdict']}{mark} |")
     else:
         L.append("| — | — | — | — | — | — | — | — | — | — | — | — |")

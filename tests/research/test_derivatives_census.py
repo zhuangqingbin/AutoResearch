@@ -325,3 +325,48 @@ def test_build_targets_alignment_and_clip():
                         "close": [10.0, 10.0, 10.0]})
     out2, n2 = dc.build_targets(big)
     assert n2 == 1 and pd.isna(out2["gap"].iloc[0])               # +100% 被当数据错剔除
+
+
+# ───────────────────────── FDR 粘合(错位不会报错,只会让 q 挂到别人身上)─────────────────────────
+
+
+def test_attach_fdr_maps_q_to_the_right_rows():
+    table = pd.DataFrame({
+        "signal": ["a", "b", "c", "d"],
+        "p": [0.001, 0.90, 0.02, 0.001],
+        "verdict": [dc.POS, dc.UNPROVEN, dc.UNPROVEN, dc.THIN],   # d 是样本不足,不进 FDR 池
+    })
+    out = dc.attach_fdr(table)
+    assert pd.isna(out.loc[3, "fdr_q"])                   # 未判的格不占检验名额
+    qs = [out.loc[i, "fdr_q"] for i in (0, 1, 2)]
+    assert all(q is not None for q in qs)
+    assert qs[0] < qs[2] < qs[1]                          # q 的序必须跟着各自的 p 走
+    assert qs[0] == pytest.approx(0.003, abs=1e-9)        # BH:0.001 × 3/1
+
+
+def test_attach_fdr_on_empty_and_all_thin():
+    assert "fdr_q" in dc.attach_fdr(pd.DataFrame()).columns
+    thin = pd.DataFrame({"signal": ["a"], "p": [0.01], "verdict": [dc.THIN]})
+    assert dc.attach_fdr(thin)["fdr_q"].isna().all()
+
+
+def test_render_never_prints_literal_nan():
+    """pandas 把 None 列转成 NaN —— 渲染只判 `is None` 的话,读数表里会出现字面 `nan`。"""
+    table = pd.DataFrame([{
+        "family": "A1", "signal": "s", "target": "000300.SH", "n_h": 5, "n_l": 5,
+        "mean_h": np.nan, "mean_l": None, "diff": np.nan, "t": None, "p": None,
+        "inc_coef": None, "inc_t": np.nan, "inc_n": 0, "obs_oc_diff": np.nan,
+        "obs_oc_t": None, "obs_dbreadth_diff": None, "obs_dbreadth_t": np.nan,
+        "verdict": dc.THIN, "fdr_q": np.nan,
+    }])
+    meta = {"rule_version": "t", "judge_since": "20220302", "backfill_since": "20210101",
+            "axis": {"n": 1, "first": "20220302", "last": "20260821"},
+            "breadth": {"days": 1, "first": "20220302", "last": "20260821"},
+            "gap_clipped": {}, "qvix": {}, "pcr": {}, "basis": {},
+            "calendar": {"n_expiry_dates": 0, "flag_days_in_window": {}},
+            "n_cells": 1, "n_judged": 0, "n_positive": 0,
+            "thresholds": {"pctile_win": 250, "hi_q": 0.8, "lo_q": 0.2, "nw_lag": 5,
+                           "pos_t": 2.0, "min_bucket_n": 100, "min_flag_n": 20,
+                           "gap_clip": 0.08}}
+    md = dc.render(table, [], meta)
+    assert "nan" not in md.lower().replace("nan 一视同仁", "")
