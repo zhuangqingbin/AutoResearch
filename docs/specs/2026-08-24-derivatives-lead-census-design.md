@@ -143,8 +143,13 @@ lake/derivatives/
 - 断点续传:文件存在即跳过;`--force-refresh-tail N` 重拉最近 N 日;
 - 限速:`sleep_ms` 可调(默认 150ms ≈ 400 call/min),复用 `factor_lab._ts_call` 的
   retry/backoff 模式;
-- 成本预算:opt_daily ≈5800 call + fut_daily ≈2600 call + opt_basic 分页 ≈10 call +
-  index 6 call + qvix 8 call ≈ **8400 call ≈ 25–35 分钟**;磁盘 ≈200–300MB。
+- **成本实测(2026-08-24 冒烟,不是估算)**:`opt_daily` **0.82 s/call**、`fut_daily`
+  0.65 s/call(含 0.12s 礼貌 sleep;瓶颈在 tushare 往返而非本地)。据此定回补窗
+  **2021-01-01 起**(判读窗 2022-03-02 − 250 日暖机),≈1,370 交易日:
+  opt_daily 1,370×3 ≈ 4,110 call ≈ **56 分钟**、fut_daily 1,370 call ≈ 15 分钟
+  (两条腿可并行,互不写同一文件)+ 元数据 ≈20 call → **合计 ≈70~90 分钟**,磁盘 ≈150MB。
+  原稿「8,400 call ≈ 25–35 分钟」按 2016 起全史 + 0.4s/call 估算,**两项都被实测推翻**;
+  2016–2020 段只影响长史观察列(判读窗内不用),故按需再补(`--backfill-since`)。
 
 ### 4.2 模块与复用
 
