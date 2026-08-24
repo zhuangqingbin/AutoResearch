@@ -621,14 +621,17 @@ def build_pcr_panel(days: list[str], *, rebuild: bool = False) -> tuple[pd.DataF
                    "panel_days": int(panel["date"].nunique()) if len(panel) else 0}
 
 
-def build_basis_panel(days: list[str], index_frames: dict, *,
-                      rebuild: bool = False) -> tuple[pd.DataFrame, dict]:
+def build_basis_panel(days: list[str], index_frames: dict, *, rebuild: bool = False,
+                      price_col: str = "settle") -> tuple[pd.DataFrame, dict]:
     """逐日股指期货**主力**(当日最大 OI 的真实合约)年化基差。
 
     真实合约靠 `_REAL_FUT` 正则筛 —— `fut_daily` 里混着 `IF.CFX` / `IFL1.CFX` 这种合成
     连续行,它们的 oi 是整族加总,不滤掉「最大 OI = 主力」会永远选中合成行。
     """
-    fp = deriv_root() / "basis_panel.parquet"
+    # 口径进文件名:settle 与 close 两版基差**不能共用一个缓存**,混在一起就再也分不出
+    # §1.2 复核② 量的是哪一版。
+    suffix = "" if price_col == "settle" else f"_{price_col}"
+    fp = deriv_root() / f"basis_panel{suffix}.parquet"
     have = None if rebuild else _load(fp)
     known = set(have["date"].astype(str)) if have is not None and len(have) else set()
     todo = [d for d in days if d not in known]
@@ -660,7 +663,7 @@ def build_basis_panel(days: list[str], index_frames: dict, *,
                 continue
             days_left = (pd.Timestamp(dl) - pd.Timestamp(day)).days
             rec[f"basis_{fut_code}"] = annualized_basis(
-                float(pd.to_numeric(main["settle"], errors="coerce")),
+                float(pd.to_numeric(main[price_col], errors="coerce")),
                 float(s.loc[day]), float(days_left))
         if len(rec) > 1:
             rows.append(rec)
@@ -987,6 +990,89 @@ def run_census(since: str = JUDGE_START, *, rebuild: bool = False,
     return table, _tail_rows(sigs, targets, since), meta
 
 
+# ───────────── 事后对抗性复核(**不在 §0 预注册内,不改判读**)─────────────
+
+
+def robustness_checks(family_prefix: str = "basis_", *, since: str = JUDGE_START,
+                      backfill_since: str = BACKFILL_START) -> dict:
+    """对出了正证据的那一族做三条复核 —— 一个只有它自己说了算的正结果不值得信。
+
+    ① 基线再加「T 日指数自身涨跌」:基差会不会只是今天涨跌的替身?
+    ② 期货腿改用 `close` 而非 `settle`:`settle` 是当日加权均价,可能把尾盘路径混进来。
+    ③ 判读窗对半分:是不是只靠某一段行情?
+
+    **事后**意味着:结果进读数、但不进 §0.3 的判读。写进仪器是为了让 §1.2 的数字可复现 ——
+    读数里出现一个跑不出来的数字,和没有那个数字一样糟。
+    """
+    frames = load_index_frames()
+    targets = {c: build_targets(f) for c, f in frames.items()}
+    breadth = load_breadth()
+    b = pd.Series(breadth["breadth"].to_numpy(),
+                  index=breadth["date"].astype(str).to_numpy())
+    days = [d for d in trade_days() if d >= _ymd(backfill_since)]
+    settle_panel, _ = build_basis_panel(days, frames)
+    close_panel, _ = build_basis_panel(days, frames, price_col="close")
+
+    def _leg(sig: pd.Series, idx_code: str, *, with_ret: bool = False,
+             half: int | None = None) -> dict:
+        tf = targets[idx_code][0]
+        px = _series(frames[idx_code], "close")
+        z = rolling_z(sig.dropna())
+        idx = [d for d in z.index if d >= since]
+        if half is not None:
+            mid = idx[len(idx) // 2]
+            idx = [d for d in idx if (d < mid if half == 1 else d >= mid)]
+        cols = {"y": _series(tf, "gap").reindex(idx), "z": z.reindex(idx),
+                "b": b.reindex(idx), "m": _series(tf, "mom20").reindex(idx)}
+        if with_ret:
+            cols["r"] = (px / px.shift(1) - 1).reindex(idx)
+        df = pd.DataFrame(cols).dropna()
+        if len(df) < 30:
+            return {"t": None, "n": int(len(df))}
+        X = np.column_stack([np.ones(len(df))] + [df[c].to_numpy() for c in df.columns
+                                                  if c != "y"])
+        res = nw_ols(df["y"].to_numpy(), X)
+        return {"coef": res["coef"][1], "t": res["t"][1], "n": res["n"]}
+
+    out = {"since": since, "note": "事后复核,不改 §0.3 判读", "rows": []}
+    for fut_code, idx_code in FUT_UNDERLYING.items():
+        col = f"{family_prefix}{fut_code}"
+        if col not in settle_panel.columns:
+            continue
+        s = pd.Series(pd.to_numeric(settle_panel[col], errors="coerce").to_numpy(),
+                      index=settle_panel["date"].astype(str).to_numpy())
+        row = {"signal": col, "target": idx_code,
+               "base_t": _leg(s, idx_code)["t"],
+               "with_ret_t": _leg(s, idx_code, with_ret=True)["t"],
+               "half1_t": _leg(s, idx_code, half=1)["t"],
+               "half2_t": _leg(s, idx_code, half=2)["t"]}
+        if col in close_panel.columns:
+            sc = pd.Series(pd.to_numeric(close_panel[col], errors="coerce").to_numpy(),
+                           index=close_panel["date"].astype(str).to_numpy())
+            hl = bucket_hl(sc, _series(targets[idx_code][0], "gap"), since=since)
+            row.update({"close_diff": hl["diff"], "close_t": hl["t"],
+                        "close_inc_t": _leg(sc, idx_code)["t"],
+                        "close_n_h": hl["n_h"], "close_n_l": hl["n_l"]})
+        out["rows"].append(row)
+    return out
+
+
+def render_robustness(rob: dict) -> str:
+    L = ["## 5. 事后对抗性复核(不在 §0 预注册内,**不改判读**)", "",
+         "| 信号 | 预注册基线 t | ①加 ret_T 后 t | ②close 口径 H−L pp | ②close t | ②close 基线 t | ③前半 t | ③后半 t |",
+         "|---|---:|---:|---:|---:|---:|---:|---:|"]
+    for r in rob.get("rows", []):
+        L.append(f"| `{r['signal']}` | {_f(r.get('base_t'))} | {_f(r.get('with_ret_t'))} | "
+                 f"{_pp(r.get('close_diff'))} | {_f(r.get('close_t'))} | "
+                 f"{_f(r.get('close_inc_t'))} | {_f(r.get('half1_t'))} | "
+                 f"{_f(r.get('half2_t'))} |")
+    if not rob.get("rows"):
+        L.append("| — | — | — | — | — | — | — | — |")
+    L += ["", "_① 基差是不是只是今天涨跌的替身;② `settle` 是当日加权均价,换成 `close` 还剩多少;"
+          "③ 强度是不是只集中在某一段。三条都是**事后**的:进读数,不进 §0.3 判读。_", ""]
+    return "\n".join(L)
+
+
 # ───────────────────────── 渲染 ─────────────────────────
 
 
@@ -1117,6 +1203,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--backfill-since", default=BACKFILL_START, help="回补起点(默认 20210101)")
     ap.add_argument("--since", default=JUDGE_START, help="判读窗起点(默认 20220302 = lake/daily 起点)")
     ap.add_argument("--rebuild", action="store_true", help="重建派生面板(PCR/基差)")
+    ap.add_argument("--robustness", action="store_true",
+                    help="连带跑 C2 三条事后对抗性复核(不改判读)")
     ap.add_argument("--out", default=None)
     a = ap.parse_args(argv)
 
@@ -1127,11 +1215,16 @@ def main(argv: list[str] | None = None) -> int:
 
     table, tails, meta = run_census(_ymd(a.since), rebuild=a.rebuild,
                                     backfill_since=a.backfill_since)
+    rob = robustness_checks(since=_ymd(a.since),
+                            backfill_since=a.backfill_since) if a.robustness else None
     out = Path(a.out) if a.out else ws.reports_root() / "research" / "derivatives_census.md"
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(render(table, tails, meta), encoding="utf-8")
+    body = render(table, tails, meta)
+    if rob is not None:
+        body = body.rstrip("\n") + "\n\n" + render_robustness(rob)
+    out.write_text(body, encoding="utf-8")
     (out.parent / "_derivatives_census.json").write_text(json.dumps(
-        {"meta": meta, "tails": tails,
+        {"meta": meta, "tails": tails, "robustness": rob,
          "rows": json.loads(table.to_json(orient="records", force_ascii=False))
          if len(table) else []},
         ensure_ascii=False, indent=1, default=str), encoding="utf-8")

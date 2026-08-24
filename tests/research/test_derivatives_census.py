@@ -379,3 +379,46 @@ def test_long_history_column_uses_more_sample_than_judged_window():
     judged = dc.bucket_hl(s, y, since=s.index[500])
     long_run = dc.bucket_hl(s, y)
     assert long_run["n_h"] + long_run["n_l"] > judged["n_h"] + judged["n_l"]
+
+
+# ───────────────────────── 事后复核的口径隔离 ─────────────────────────
+
+
+def _fake_futures_cache(tmp_path, monkeypatch, days):
+    """合成期货缓存:settle 与 close 故意给不同的值,好验证两版基差没有混用同一个缓存。"""
+    root = tmp_path / "derivatives"
+    monkeypatch.setattr(dc, "deriv_root", lambda: root)
+    dc._save(pd.DataFrame({"ts_code": ["IF2609.CFX"], "fut_code": ["IF"],
+                           "delist_date": ["20260918"], "list_date": ["20260601"]}),
+             root / "fut_basic" / "CFFEX.parquet")
+    for day in days:
+        dc._save(pd.DataFrame({
+            "ts_code": ["IF2609.CFX", "IF.CFX"],          # 第二行是合成连续合约
+            "oi": [1000.0, 999999.0],                     # 合成行 oi 大得多 —— 不滤掉必被选中
+            "settle": [3900.0, 3000.0], "close": [4100.0, 3000.0],
+        }), root / "fut_daily" / "CFFEX" / f"{day}.parquet")
+    idx = pd.DataFrame({"date": days, "open": [4000.0] * len(days),
+                        "close": [4000.0] * len(days)})
+    return root, {"000300.SH": idx}
+
+
+def test_basis_panel_price_col_is_isolated_per_cache(tmp_path, monkeypatch):
+    """settle 版与 close 版必须落**不同**缓存文件,否则再也分不出复核②量的是哪一版。"""
+    days = ["20260817", "20260818"]
+    root, frames = _fake_futures_cache(tmp_path, monkeypatch, days)
+    settle, _ = dc.build_basis_panel(days, frames)
+    close, _ = dc.build_basis_panel(days, frames, price_col="close")
+    assert (root / "basis_panel.parquet").exists()
+    assert (root / "basis_panel_close.parquet").exists()
+    assert settle["basis_IF"].iloc[0] < 0 < close["basis_IF"].iloc[0]   # 3900 贴水 / 4100 升水
+
+
+def test_basis_panel_ignores_synthetic_even_with_huge_oi(tmp_path, monkeypatch):
+    """合成连续合约的 oi 是整族加总 —— 它必然是当日最大,选中它基差照样算得出一个数。"""
+    days = ["20260817"]
+    _, frames = _fake_futures_cache(tmp_path, monkeypatch, days)
+    panel, meta = dc.build_basis_panel(days, frames)
+    assert meta["synthetic_rows_dropped_this_run"] == 1
+    # 若误用合成行(settle=3000/spot=4000)基差会是 −25% 量级;真合约(3900)只有 −2.5% 量级
+    assert panel["basis_IF"].iloc[0] == pytest.approx(
+        dc.annualized_basis(3900.0, 4000.0, 32))
