@@ -10,19 +10,18 @@ brief 的内容全是**结构化结论、计数、评级、tripwire 与账本状
 **零 LLM、零联网、只读结构化产物**,同一 run 重放 byte 稳定(无时间戳、无随机、无无序遍历)。
 将来若要润色,只能生成非权威 commentary,**不得改写 BUY、数字或风险结论**。
 
-## 七节骨架(硬预算 ≤3,000 字节)
+## 六节骨架(硬预算 ≤3,000 字节)
 
-  ① 市场一句(regime + 温度 + 两尺分歧日提示 R-X1)
+  ① 市场一句(regime + 温度 + 策略师定调)
   ② 漏斗一行(L0→finalists)
   ③ **BUY 结论区**——影子期**双行**:旧生产结论(近期恒 0 买)+「影子 relative BUY」行
-     (显式标**非正式·不执行**);activate 后换成正式 BUY 行。第三行常驻
-     **「旧 OW 基率」分账行**,与 relative 账**分列并置、不连成趋势线**(定义断层:
-     决策对象与人口**两处**不同 —— **尺是同一把**,原文的「③尺不同」已于 2026-08-09
-     复核 M-5 勘误删除,见 `docs/research/2026-08-09-e6-replay-baseline.md` §4)。
+     (显式标**非正式·不执行**);activate 后换成正式 BUY 行。
+     (2026-08-21 learning 层退役:原第三行「旧 OW 基率」分账行随 `buy_ledger` 删除。)
   ④ 持仓动作表(pinned 逐票:评级 + tripwire)
   ⑤ 风险哨(自检 fail/warn + 降级字段 + 卡覆盖)
   ⑥ 昨日 delta(finalist 重叠 + 评级变动)
-  ⑦ 欠账红行(待裁决提案 / 未决反馈)
+  (原 ⑦ 欠账红行〔待裁决提案 / 未决反馈〕随 learning 层退役删除 —— 素材出自
+   `feedback_store` 的提案看板,闭环一走没有欠账这回事了。)
 
 ## 语义纪律(硬性,测试钉死)
 
@@ -46,10 +45,10 @@ import sys
 from pathlib import Path
 
 from autoresearch.common import workspace as ws
-from autoresearch.common.ruler import MAIN_RULER, REL_MARKET, REL_SECTOR
+from autoresearch.common.ruler import MAIN_RULER, REL_MARKET
 from autoresearch.scan.relative_buy import DECISION_FILENAME, MODE_SHADOW
 from autoresearch.scan.relative_facts import (  # P0 低位转强波:读模型/禁词单一事实源(summary 同源)
-    BANNED_RELATIVE_PHRASES,
+    BANNED_RELATIVE_PHRASES,  # noqa: F401 — 再导出契约,测试锁 `brief.X is relative_facts.X`,勿删
     DECISION_POOL_LABEL,
     REL_MARKET_POPULATION,
     WEAK_MARKET_PHRASE,
@@ -71,10 +70,8 @@ SOURCES_FILENAME = "_brief_sources.json"
 
 #: 输入白名单 —— 生成器只准从这些结构化产物取数,**禁读 `details/` 全文与 `trace/` 大文件**。
 #: 四个非文件项是**确定性派生**(零 LLM),各自注明真身:
-#:   `buy_ledger`      = `learning.buy_ledger.roll(scan_root)` over `context/scan/*/retro/attribution.csv`
 #:   `menu_health`     = `scan.menu.menu_health(scan_dir)` over `L1_scored_full.csv`+`L2_gbdt_top200.csv`
 #:   `temperature.csv` = `context/learning/temperature.csv`(prelude 增量落盘)
-#:   `feedback_store`  = `context/knowledge/`(提案/未决反馈看板)
 #:
 #: ⚠️ **这张表是双向不变量,不是许愿单**(fix-1,复核 I-2/M-2):
 #:   ⊇ 方向 —— 模块里实际读到的每个文件都必须在表内(`test_whitelist_covers_every_file_read`
@@ -83,13 +80,6 @@ SOURCES_FILENAME = "_brief_sources.json"
 #:      少了 ⊆,一条从没接线的「许愿项」会永远躺在表里冒充契约(`market_view.md` 就这么
 #:      躺了一轮,复核 M-2 逮到)。
 #:
-#: **任务书点名但故意不接的一项**:`near_miss facts`。理由两条,都不是「忘了」——
-#:   ① 它的聚合句真身 `near_miss.summary_line()` 实测 ~600B(门柱计数 + 三门历史 FALSE_KILL
-#:      分母),独占 ⑤ 节全部预算的 5 倍;而同一句话已经**前置**渲染在 summary 的决策主线尾
-#:      (T26 节序),brief 再抄一遍不增加决策信息;
-#:   ② 它读的 `context/learning/shadow_buys.csv` 由 `publisher.run` 的 `is_real` 块写,时序上
-#:      **晚于** brief 落盘 —— 当天首跑必然读到空,重跑才有值,brief 会自己跟自己不一致。
-#:   brief ⑤ 用 `menu_health` 的菜单病旗 + 自检 fail/warn + 降级字段承担同一职责(何时不能买)。
 INPUT_WHITELIST = (
     "meta.json",
     "finalists.csv",
@@ -101,11 +91,8 @@ INPUT_WHITELIST = (
     "_tripwire_conflicts.json",
     "market_view.md",
     DECISION_FILENAME,
-    "retro/attribution.csv",
     "temperature.csv",
-    "buy_ledger",
     "menu_health",
-    "feedback_store",
 )
 
 #: 本模块**产出**(不是输入)的文件名 —— 白名单不变量测试的豁免集。
@@ -151,152 +138,8 @@ def _pct(value, digits: int = 2) -> str:
 
 # ────────────────────────────── 事实收集 ──────────────────────────────
 
-#: R-X1 三态。**`ALIGNED` 与 `UNMEASURED` 必须分开**——见 `_two_ruler_divergence` docstring。
-DIVERGENT, ALIGNED, UNMEASURED = "DIVERGENT", "ALIGNED", "UNMEASURED"
-
-
-def _two_ruler_divergence(scan_root: Path, date: str) -> dict:
-    """R-X1 两尺分歧日提示:**严格早于今日**的最近一个已成熟日,市场等权
-    `gap_c1_o2`(隔夜,主尺)与 `fwd_2_oc`(含日内)符号相反 → `DIVERGENT`。
-
-    今日自己的两尺读数在决策当晚**根本不存在**(要 T+2 才成熟),所以只报最近一个已成熟日,
-    并把日期写进正文——不写死「昨日」,也不假装量的是今天。
-
-    **三态而不是「有/没有」**(fix-1,复核 I-4):第一版同向与缺输入都返回 `None`、都渲染成
-    「什么都不显示」——于是「今天两尺同向」与「`attribution.csv` 换了列名 / pandas 行为变了
-    导致探针瞎了」长得一模一样。这正是本仓「探针死了也像活着」的家族病(recalibrate 空转
-    2 周、force_full 静默未生效都是它)。现在:
-      - `DIVERGENT` → 出完整提示行(含日期与两个读数);
-      - `ALIGNED`   → 出一个短标记「两尺 <日期> 同向」(**已量过、结论是没分歧**);
-      - `UNMEASURED`→ 出「两尺 UNMEASURED」+ 原因(**没量到**,不是没分歧)。
-    三态都进 `sources` 边表,T27 的 lint 因此也能对账这一格。
-    """
-    if not scan_root.is_dir():
-        return {"status": UNMEASURED, "why": "无 scan 根目录"}
-    days = sorted((p for p in scan_root.iterdir()
-                   if p.is_dir() and p.name[:2] == "20" and p.name < date),
-                  reverse=True)
-    if not days:
-        return {"status": UNMEASURED, "why": "无更早扫描日"}
-    for day in days:
-        attr = day / "retro" / "attribution.csv"
-        if not attr.exists():
-            continue
-        try:
-            import pandas as pd
-            frame = pd.read_csv(attr, usecols=lambda c: c in (MAIN_RULER, "fwd_2_oc"))
-        except Exception:  # noqa: BLE001 — 坏表按无读数处理,绝不阻断出报
-            return {"status": UNMEASURED, "date": day.name, "why": "attribution 读不出"}
-        if MAIN_RULER not in frame.columns or "fwd_2_oc" not in frame.columns:
-            # 列名换了 = 探针瞎了,**必须说出来**,不能装作「今天没分歧」
-            return {"status": UNMEASURED, "date": day.name,
-                    "why": f"attribution 缺列({MAIN_RULER}/fwd_2_oc)"}
-        gap = pd.to_numeric(frame[MAIN_RULER], errors="coerce").dropna()
-        oc = pd.to_numeric(frame["fwd_2_oc"], errors="coerce").dropna()
-        if not len(gap) or not len(oc):
-            return {"status": UNMEASURED, "date": day.name, "why": "两列全空"}
-        g, o = round(float(gap.mean()), 6), round(float(oc.mean()), 6)
-        status = ALIGNED if (g > 0) == (o > 0) else DIVERGENT
-        return {"status": status, "date": day.name, "gap": g, "oc": o,
-                "n": int(min(len(gap), len(oc)))}
-    return {"status": UNMEASURED, "why": "更早扫描日均无 retro/attribution.csv"}
-
-
-#: 单次发布生命周期内的 `buy_ledger.roll()` 结果共享(fix-1,复核 M-10)。
-#: `None` = **不在发布窗内,一律不缓存**;`{}` = 在窗内、尚未算过。
-_OW_CACHE: dict[str, dict | None] | None = None
-
-
-@contextlib.contextmanager
-def ow_base_cache():
-    """开一个「单次发布」缓存窗 —— 窗外一律不缓存,窗关即销毁。
-
-    **病灶**(M-10):一次 `publisher.run` 里 `buy_ledger.roll(context/scan)` 被跑**三次**
-    (`build_summary` 的 `_ow_base_line` / brief 生成 / T27 lint 的边表重算),各 ~0.28s,
-    而 `exp_relative_buy_owner` 的 speed 守卫是 `wall_delta_s ≤ 5`。三次读的是同一份账本。
-
-    **为什么敢共享**:实跑确认过,不是读代码推断的。tmp 拷贝上真跑一次 `publisher.run`,
-    给 `roll` 打桩记录每次调用时刻 ledger 全部输入(逐日 `decision_records.json` /
-    `_final_ratings.json` / `finalists.csv` / `L1_scored_full.csv` / `retro/attribution.csv` /
-    `details/*.md` 的 size+mtime_ns)的指纹:**三次快照完全相同、返回帧完全相同**;
-    同一探针对「发布前 vs 发布后」的快照给出不同值,证明它对写入确实敏感(不是恒定的假灯)。
-    时序上也自洽:`build_summary` 写 `decision_records.json` 发生在**第一次** roll 之前
-    (`_dump_decision_records` 在函数头部,`_ow_base_line` 在 §3 块),此后到 lint 之间
-    publisher 只写 `run_health` / `_budget_observation` / `_relative_buy_decision` /
-    `outbox` / `stage_results` —— 全都不在 `roll()` 的读取集里。
-
-    **绝不跨发布**(协调方硬约束):缓存只活在 `with` 里,`finally` 无条件销毁;窗外调用
-    `_ow_base_rate` 走原路每次现算(nightly runner、retro、单测直调都不受影响)。
-    嵌套进入不重开、不提前清空。
-    """
-    global _OW_CACHE
-    if _OW_CACHE is not None:          # 已在窗内(嵌套)→ 交给最外层负责销毁
-        yield
-        return
-    _OW_CACHE = {}
-    try:
-        yield
-    finally:
-        _OW_CACHE = None
-
-
-def _ow_base_rate(scan_root: Path) -> dict | None:
-    """旧 OW 买单账基率(≥Overweight 绝对门,主尺 T+2)。**样本随 `buy_ledger` 自动更新**,
-    不写死 9 笔 —— 下一单进账这行自己会变。缺依赖 → None(presence-gated)。
-
-    在 `ow_base_cache()` 窗内命中缓存则不重跑 `roll()`(M-10);窗外每次现算。
-    """
-    key = str(Path(scan_root).resolve())
-    if _OW_CACHE is not None and key in _OW_CACHE:
-        return _OW_CACHE[key]
-    result = _ow_base_rate_uncached(scan_root)
-    if _OW_CACHE is not None:
-        _OW_CACHE[key] = result
-    return result
-
-
-def _ow_base_rate_uncached(scan_root: Path) -> dict | None:
-    try:
-        from autoresearch.learning.buy_ledger import rating_base_rates, roll
-        ledger = roll(scan_root)
-        rows = [r for r in rating_base_rates(ledger) if r["rating"] in _BUY_RATINGS]
-    except Exception:  # noqa: BLE001 — 账本层可选,坏了不阻发布
-        return None
-    if not rows:
-        return {"n": 0, "n_realized": 0, "win2": None, "mean2": None}
-    n = sum(r["n"] for r in rows)
-    n_realized = sum(r["n_realized"] for r in rows)
-    # M-8(复核 Minor):加权平均的**分母只能是有贡献的那些行**。原式拿全部 `n_realized`
-    # 当分母,而分子只加 `win2 is not None` 的行 —— 老账本缺 `fwd_2` 列(win2=None)时
-    # 胜率会被系统性低估。当前 9 笔恰好全有值不触发,但这是个会在换尺/补数时突然咬人的坑。
-    wins = [r for r in rows if r["win2"] is not None]
-    win_den = sum(r["n_realized"] for r in wins)
-    win2 = (sum(r["win2"] * r["n_realized"] for r in wins) / win_den) if win_den else None
-    means = [r for r in rows if r["mean2"] is not None]
-    mean_den = sum(r["n_realized"] for r in means)
-    mean2 = (sum(r["mean2"] * r["n_realized"] for r in means) / mean_den) \
-        if mean_den else None
-    return {"n": n, "n_realized": n_realized,
-            "win2": None if win2 is None else round(win2, 4),
-            "mean2": None if mean2 is None else round(mean2, 6)}
-
-
-def _debt(scan_root: Path) -> dict:
-    """⑦ 欠账:待裁决提案数 + 未决反馈数(feedback_store;缺 → 0,不猜)。"""
-    out = {"proposals": 0, "open_feedback": 0}
-    with contextlib.suppress(Exception):
-        from autoresearch.learning.feedback_store import proposals_nag_lines
-        out["proposals"] = len(proposals_nag_lines())
-    with contextlib.suppress(Exception):
-        import autoresearch.learning.feedback_store as fs
-        out["open_feedback"] = sum(1 for f in fs._read_jsonl(fs._FEEDBACK)
-                                   if f.get("status") == "open")
-    return out
-
-
 def _gate_counts(scan_dir: Path) -> dict:
-    """self_review 落的 `gate_fires.csv` → fail/warn 计数(`dump_ow_gate_fires` 追加的
-    binding 行没有 severity 列,不计入——那是门审计账,不是自检结论)。"""
+    """self_review 落的 `gate_fires.csv` → fail/warn 计数(无 severity 的行不计入)。"""
     fail = warn = 0
     for row in _rows(scan_dir / "gate_fires.csv"):
         sev = str(row.get("severity") or "").strip()
@@ -457,7 +300,6 @@ def collect_facts(scan_dir: Path | str, *, analysis_date: str | None = None,
             "temperature": (temp or {}).get("score"),
             "phase": (temp or {}).get("phase"),
             "tone": _market_tone(scan),
-            "divergence": _two_ruler_divergence(root, date),
         },
         "funnel": {
             "universe_raw": meta.get("universe_raw"),
@@ -475,7 +317,6 @@ def collect_facts(scan_dir: Path | str, *, analysis_date: str | None = None,
             **_why_no_buy(scan),
         },
         "relative": _relative_facts(decision),
-        "ow_base": _ow_base_rate(root),
         "pinned": pinned,
         "risk": {**_gate_counts(scan),
                  "degraded": list(health.get("degraded_fields") or []),
@@ -483,7 +324,6 @@ def collect_facts(scan_dir: Path | str, *, analysis_date: str | None = None,
                  "cards": counts.get("cards"), "finalists": len(finals)},
         "delta": {"prev_date": prev_date, "n_repeat": churn.get("n_repeat"),
                   "n_today": churn.get("n_today"), "changes": changes},
-        "debt": _debt(root),
     }
 
 
@@ -498,19 +338,6 @@ def _src(rows: list[dict], field: str, value, file: str, locator: str, text: str
     rows.append({"field": field, "value": "—" if value is None else str(value),
                  "file": file, "locator": locator, "text": text})
     return text
-
-
-def _divergence_text(dv: dict) -> str:
-    """R-X1 三态渲染。**`ALIGNED` 与 `UNMEASURED` 措辞必须不同**(复核 I-4):前者是
-    「已经量过、两尺同向」,后者是「没量到」——把没量到画成没分歧,就是探针死了也像活着。"""
-    status = dv.get("status", UNMEASURED)
-    date = dv.get("date")
-    if status == DIVERGENT:
-        return (f"⚖️ 两尺分歧({date} 已成熟):隔夜 {MAIN_RULER} {_pct(dv['gap'])} "
-                f"vs 含日内 fwd_2_oc {_pct(dv['oc'])} 符号相反——日内那段不在本系统授权内")
-    if status == ALIGNED:
-        return f"⚖️ 两尺({date} 已成熟)同向,无分歧"
-    return f"⚖️ 两尺 UNMEASURED({dv.get('why') or '无读数'})——**没量到,不等于没分歧**"
 
 
 def _sections(facts: dict, *, pinned_cap: int, delta_cap: int) -> tuple[list[str], list[dict]]:
@@ -532,10 +359,6 @@ def _sections(facts: dict, *, pinned_cap: int, delta_cap: int) -> tuple[list[str
     if mk.get("tone"):
         bits.append(_src(src, "market.tone", mk["tone"], "market_view.md",
                          "§1 一句话定调", f"定调「{mk['tone']}」"))
-    bits.append(_src(src, "market.divergence",
-                     (mk.get("divergence") or {}).get("status"), "retro/attribution.csv",
-                     f"mean({MAIN_RULER}) vs mean(fwd_2_oc)",
-                     _divergence_text(mk.get("divergence") or {})))
     out.append("**① 市场**:" + " · ".join(bits))
 
     # ② 漏斗
@@ -576,15 +399,6 @@ def _sections(facts: dict, *, pinned_cap: int, delta_cap: int) -> tuple[list[str
     # ⑥ 昨日 delta
     out.append("**⑥ 昨日 delta**:" + _delta_text(facts, src, delta_cap))
 
-    # ⑦ 欠账
-    debt = facts["debt"]
-    debt_text = f"待裁决提案 {debt['proposals']} · 未决反馈 {debt['open_feedback']}"
-    _src(src, "debt.proposals", debt["proposals"], "feedback_store", "proposals(open)",
-         debt_text)
-    _src(src, "debt.open_feedback", debt["open_feedback"], "feedback_store",
-         "feedback(status=open)", debt_text)
-    out.append("**⑦ 欠账**:" + debt_text)
-
     out.append("")
     out.append(f"_确定性生成(零 LLM);主尺 {facts['ruler']};详细版见 `summary.md`。"
                f"仅供研究,非投资建议。_")
@@ -620,14 +434,14 @@ def _buy_lines(facts: dict, src: list[dict]) -> list[str]:
            if not active else "✅ **relative BUY**")
     if not rel.get("present"):
         lines.append(f"- {tag}:—(`{DECISION_FILENAME}` 未生成 —— 缺证据不等于没候选)")
-        return lines + [_ow_line(facts, src)]
+        return lines
     if rel.get("blocked"):
         why = "、".join(rel.get("blocked_reasons") or []) or "无分桶"
         text = (f"{tag}:**BLOCKED**(全部候选被硬资格否决:{why};"
                 f"候选 {rel.get('n_candidates')} / 合格 {rel.get('n_eligible')})")
         _src(src, "relative.blocked", True, DECISION_FILENAME, "blocked", text)
         lines.append("- " + text)
-        return lines + [_ow_line(facts, src)]
+        return lines
 
     gap_txt = _abs_gap_text(rel)
     text = (f"{tag}:{rel.get('name') or '—'} {rel.get('code') or '—'}"
@@ -654,7 +468,7 @@ def _buy_lines(facts: dict, src: list[dict]) -> list[str]:
     _src(src, "relative.abs_gap_status", rel.get("abs_gap_status"), DECISION_FILENAME,
          "candidates[code].expected_abs_gap.status", text)
     lines.append("- " + text)
-    return lines + [_ow_line(facts, src)]
+    return lines
 
 
 def _why_text(buys: dict, *, active: bool = False) -> str:
@@ -691,28 +505,6 @@ def _abs_gap_text(rel: dict) -> str:
         return (f"{_pct(value)}(n={rel.get('abs_gap_n', 0)})"
                 f" → **{WEAK_MARKET_PHRASE}**(相对 BUY 从不承诺绝对收益为正)")
     return f"{_pct(value)}(n={rel.get('abs_gap_n', 0)})"
-
-
-def _ow_line(facts: dict, src: list[dict]) -> str:
-    """旧 OW 基率**分账行**(常驻)。与上面的 relative 账**分列并置、不连成趋势线**。
-
-    **两处不同,不是三处**(fix-1,复核 M-5 更正):①决策对象(绝对『值得买』vs 相对
-    『最值得买』);②人口(≥OW 的卡 vs 当日全部 L4 候选的相对冠军)。原文还写了「③尺不同
-    (旧行跨越 T16 换尺、口径混存)」—— **这条不成立**:`buy_ledger.roll()` 的
-    `fwd_2 = _a(MAIN_RULER)`(`buy_ledger.py:168`)是每次**现算**的,3 条已实现行与新账同为
-    `gap_c1_o2`。「不连线」的结论不变,但少一条理由就得少写一条。"""
-    head = "📊 **旧 OW 基率(分账·定义断层·不连线)**:"
-    ow = facts.get("ow_base")
-    if not ow:
-        return "- " + head + "—(buy_ledger 不可用)"
-    win = "—" if ow["win2"] is None else f"{ow['win2']:.0%}"
-    mean = "—" if ow["mean2"] is None else _pct(ow["mean2"])
-    text = (f"{head}{ow['n']} 笔(已实现 {ow['n_realized']})"
-            f"· T+2 胜率 {win} · 均值 {mean}")
-    _src(src, "ow_base.n", ow["n"], "buy_ledger", "roll().shape[0]", text)
-    _src(src, "ow_base.win2", ow["win2"], "buy_ledger",
-         "rating_base_rates().win2", text)
-    return "- " + text
 
 
 def _pinned_text(facts: dict, src: list[dict], cap: int) -> str:

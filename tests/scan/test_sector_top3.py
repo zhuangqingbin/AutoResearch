@@ -45,19 +45,6 @@ def test_pack_and_render_and_anti_anchor():
     assert render_sector_top3({}) == ""
 
 
-def test_ledger_record_top3_idempotent_and_separate(tmp_path):
-    """record_calls(brief 研判段方向记账)已随 2026-08-19 D6(⚖A6,用户裁定)退役——
-    brief 研判段整段砍除,行业方向记账现只剩 record_top3 一条 source。本用例收窄为
-    只验 record_top3 自身的幂等性(与 brief 分账的原断言随 record_calls 一并作废)。
-    """
-    from autoresearch.learning.sector_ledger import _load, record_top3
-    p = tmp_path / "sector_calls.jsonl"
-    assert record_top3("2026-07-10", ["行业A", "行业B"], path=p) == 2
-    assert record_top3("2026-07-10", ["行业A"], path=p) == 0          # 幂等
-    rows = _load(p)
-    assert {r["source"] for r in rows} == {"deterministic_top3"}
-
-
 def test_briefing_sectors_union_top3(tmp_path):
     from autoresearch.sector.pack import select_briefing_sectors
     scan_dir = tmp_path

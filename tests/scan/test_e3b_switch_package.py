@@ -95,7 +95,7 @@ def test_shadow_summary_ignores_a_present_decision_file(tmp_path):
 def test_shadow_banner_flow_buys_n_is_the_rating_count(tmp_path, monkeypatch):
     """影子期 `flow.buys_n` 仍是 ≥OW 张数(逐字不变)。"""
     seen: dict = {}
-    import autoresearch.learning.self_review as sr
+    import autoresearch.scan.self_review as sr
 
     def _capture(ctx):
         seen.update(ctx)
@@ -140,7 +140,7 @@ def test_active_build_summary_never_trusts_a_stale_decision_file(tmp_path, activ
 def test_active_banner_marks_buys_n_as_deferred(tmp_path, activate, monkeypatch):
     """active 期 `flow.buys_n` 不再拿 ≥OW 张数冒充买单数,而是 None + 显式来源标记。"""
     seen: dict = {}
-    import autoresearch.learning.self_review as sr
+    import autoresearch.scan.self_review as sr
 
     def _capture(ctx):
         seen.update(ctx)

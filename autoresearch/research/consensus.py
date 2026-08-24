@@ -147,7 +147,7 @@ def backfill(start: str, end: str, cache_root: Path | None = None,
 #
 # 触发条款(写死,不可临场放宽):`n≥60 且 两半 IC 同号 且 |IC|>0.02` → TRIGGERED。
 # D1(2026-08-19,用户裁决 A3):不再自动生成 registry spec(`build_spec` 已随
-# experiment_registry 家族整删)——触发只是信号,推进与否走人批 proposal 通道。
+# experiment_registry 家族整删;2026-08-21 闭环整体退役)——触发只是信号,推进与否由人判断。
 # 自动腿断言:status 输出的 n 必须**周周增长**。
 #
 # 为什么要那条断言:§0.3-4 的判例是「权重自动重标定连续 4 次 NO-OP,闭环唯一自动腿空转

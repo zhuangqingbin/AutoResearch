@@ -15,8 +15,8 @@ from __future__ import annotations
 
 import json
 
-from autoresearch.learning.self_review import product_shape_lint
 from autoresearch.scan import health
+from autoresearch.scan.self_review import product_shape_lint
 
 
 def _mk(tmp_path, news: dict[str, list]):

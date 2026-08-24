@@ -15,6 +15,12 @@ from autoresearch.scan.post_run import (
     run_consumers,
 )
 
+#: 2026-08-21 learning 层退役后 `SUBSCRIPTIONS["RUN_FINALIZED"]` 已空(13 个学习账本
+#: consumer 全删)。下面这些用例测的是 **consumer 机制本身**(幂等/重试/backlog 计数),
+#: 不是生产路由表,所以显式传一张合成订阅表 —— 换成生产表就变成"测一个空集合",
+#: 断言全部退化成 0==0 的假绿灯。
+_FAKE_ROUTES = {"RUN_FINALIZED": {"c_alpha", "c_beta"}}
+
 
 def _scan_with_run_event(tmp_path):
     scan = tmp_path / "2026-07-28"
@@ -48,8 +54,8 @@ def test_successful_consumer_is_not_called_twice(tmp_path):
     def handler(received, _scan):
         calls.append(received.event_id)
 
-    first = run_consumers(scan, registry={"journal": handler})
-    second = run_consumers(scan, registry={"journal": handler})
+    first = run_consumers(scan, registry={"c_alpha": handler}, subscriptions=_FAKE_ROUTES)
+    second = run_consumers(scan, registry={"c_alpha": handler}, subscriptions=_FAKE_ROUTES)
     assert first.succeeded == 1 and first.failed == 0
     assert second.skipped == 1 and second.succeeded == 0
     assert calls == [event.event_id]
@@ -66,12 +72,13 @@ def test_failed_consumer_can_be_retried_alone(tmp_path):
     def succeeding(event, _scan):
         calls.append(event.event_id)
 
-    first = run_consumers(scan, registry={"journal": failing})
+    first = run_consumers(scan, registry={"c_alpha": failing}, subscriptions=_FAKE_ROUTES)
     second = run_consumers(
         scan,
-        registry={"journal": succeeding},
-        only={"journal"},
+        registry={"c_alpha": succeeding},
+        only={"c_alpha"},
         retry_failed=True,
+        subscriptions=_FAKE_ROUTES,
     )
     assert first.failed == 1
     assert second.succeeded == 1
@@ -96,30 +103,32 @@ def test_one_consumer_failure_does_not_block_another(tmp_path):
 
     result = run_consumers(
         scan,
-        registry={"journal": failing, "buy_ledger": succeeding},
+        registry={"c_alpha": failing, "c_beta": succeeding},
+        subscriptions=_FAKE_ROUTES,
     )
     assert result.failed == 1 and result.succeeded == 1
     assert len(calls) == 1
     status = consumer_status(
         scan,
-        registry={"journal": failing, "buy_ledger": succeeding},
+        registry={"c_alpha": failing, "c_beta": succeeding},
+        subscriptions=_FAKE_ROUTES,
     )
     assert status["status"] == "BACKLOG"
-    assert status["failed_consumers"] == ["journal"]
+    assert status["failed_consumers"] == ["c_alpha"]
     assert status["pending"] == 0
 
 
 def test_only_filter_leaves_other_expected_consumer_pending(tmp_path):
     scan, _ = _scan_with_run_event(tmp_path)
     registry = {
-        "journal": lambda _event, _scan: None,
-        "buy_ledger": lambda _event, _scan: None,
+        "c_alpha": lambda _event, _scan: None,
+        "c_beta": lambda _event, _scan: None,
     }
-    run_consumers(scan, registry=registry, only={"journal"})
-    status = consumer_status(scan, registry=registry)
+    run_consumers(scan, registry=registry, only={"c_alpha"}, subscriptions=_FAKE_ROUTES)
+    status = consumer_status(scan, registry=registry, subscriptions=_FAKE_ROUTES)
     assert status["status"] == "BACKLOG"
     assert status["pending"] == 1
-    assert status["pending_consumers"] == ["buy_ledger"]
+    assert status["pending_consumers"] == ["c_beta"]
 
 
 def test_pending_counts_event_consumer_pairs_not_unique_names(tmp_path):
@@ -149,7 +158,8 @@ def test_load_rejects_tampered_receipt(tmp_path):
     scan, _ = _scan_with_run_event(tmp_path)
     run_consumers(
         scan,
-        registry={"journal": lambda _event, _scan: None},
+        registry={"c_alpha": lambda _event, _scan: None},
+        subscriptions=_FAKE_ROUTES,
     )
     path = scan / "outbox" / "consumer_state.json"
     raw = json.loads(path.read_text(encoding="utf-8"))
@@ -160,13 +170,30 @@ def test_load_rejects_tampered_receipt(tmp_path):
 
 
 def test_status_cli_prints_deterministic_backlog_json(tmp_path, capsys):
+    """CLI 用**生产订阅表**报 backlog —— 所以夹具必须发一个真的还有订阅者的事件。
+
+    2026-08-21 learning 层退役后 `RUN_FINALIZED` 的 8 个学习账本 consumer 全删,只剩
+    `DOSSIER_DELTA_READY → dossier_delta` 这一条真路由;继续用 RUN_FINALIZED 夹具会让本
+    用例断言一个空集合(恒 OK/pending=0),变成永不变红的绿灯。
+    """
     from autoresearch.scan.post_run import main
 
-    scan, _ = _scan_with_run_event(tmp_path)
+    scan = tmp_path / "2026-07-28"
+    scan.mkdir()
+    emit_events(scan, [OutboxEvent.build(
+        event_type="DOSSIER_DELTA_READY",
+        analysis_date=scan.name,
+        run_id="run-1",
+        contract_hash=None,
+        aggregate_id="000001",
+        payload={"code": "000001", "rating": "Hold", "conviction": "50"},
+        created_at="2026-07-28T10:00:00Z",
+    )])
     assert main([str(scan), "status"]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["status"] == "BACKLOG"
-    assert result["pending"] == 8
+    assert result["pending"] == 1
+    assert result["pending_consumers"] == ["dossier_delta"]
 
 
 def test_status_cli_reports_corrupt_control_file(tmp_path, capsys):
@@ -241,58 +268,6 @@ def test_observe_cli_survives_enqueue_failure(tmp_path, monkeypatch, capsys):
     assert result["ok"] is True
 
 
-def test_retro_consumers_retry_independently_from_price_attribution(tmp_path):
-    scan = tmp_path / "2026-07-28"
-    scan.mkdir()
-    event = OutboxEvent.build(
-        event_type="RETRO_FINALIZED",
-        analysis_date=scan.name,
-        run_id="run-1",
-        contract_hash=None,
-        aggregate_id=scan.name,
-        payload={
-            "attribution_hash": "a" * 64,
-            "rejection_attribution_hash": "b" * 64,
-        },
-        created_at="2026-07-28T10:00:00Z",
-    )
-    emit_events(scan, [event])
-    calls = {"l3": 0, "ensemble": 0}
-
-    def l3(_event, _scan):
-        calls["l3"] += 1
-
-    def fail(_event, _scan):
-        calls["ensemble"] += 1
-        raise RuntimeError("boom")
-
-    first = run_consumers(
-        scan,
-        registry={"l3_audit_ledger": l3, "ensemble_ledger": fail},
-    )
-    second = run_consumers(
-        scan,
-        registry={"l3_audit_ledger": l3, "ensemble_ledger": l3},
-        only={"ensemble_ledger"},
-        retry_failed=True,
-    )
-
-    assert first.succeeded == 1 and first.failed == 1
-    assert second.succeeded == 1
-    assert calls == {"l3": 2, "ensemble": 1}
-    status = consumer_status(
-        scan,
-        registry={
-            "l3_audit_ledger": l3,
-            "ensemble_ledger": l3,
-        },
-        event_types={"RETRO_FINALIZED"},
-    )
-    assert status["status"] == "OK"
-    assert status["expected"] == 2
-
-
-# ── E1b:publish_run_observation 在护照/决策现算前先 reconcile task-book ──────────
 def _l4_book_with_running_task(tmp_path, date: str, code: str = "000001") -> tuple:
     """最小 task-book 夹具:一票 RUNNING、prompt/slim/card 三产物齐且 slim 合格 ——
     2026-08-12 型事故复现(卡已在盘,book 没收尾)。"""

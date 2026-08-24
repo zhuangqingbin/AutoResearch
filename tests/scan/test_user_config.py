@@ -206,25 +206,11 @@ def test_l3_block_survives_whitelist(tmp_path):
 # spec: docs/specs/2026-07-12-selflearning-optimization-brainstorm.md §4 P0-3。
 
 
-def test_learning_whitelisted(tmp_path):
-    p = tmp_path / "scan_config.jsonc"
-    p.write_text(json.dumps({"learning": {"shrink": False, "shrink_k": 20}}), encoding="utf-8")
-    cfg = load_user_config(p)
-    assert cfg["learning"] == {"shrink": False, "shrink_k": 20}
-
-
 def test_learning_unknown_subkey_raises(tmp_path):
     p = tmp_path / "scan_config.jsonc"
     p.write_text(json.dumps({"learning": {"shrinkage": True}}), encoding="utf-8")   # 拼写错
     with pytest.raises(ValueError, match="learning"):
         load_user_config(p)
-
-
-def test_learning_block_survives_whitelist(tmp_path):
-    raw = {"shrink": True, "shrink_k": 15}
-    p = tmp_path / "scan_config.jsonc"
-    p.write_text(json.dumps({"learning": raw}), encoding="utf-8")
-    assert load_user_config(p)["learning"] == raw
 
 
 # ───────────────────────── budgets:只观测不截断 ─────────────────────────

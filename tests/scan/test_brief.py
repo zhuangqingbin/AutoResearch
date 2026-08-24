@@ -263,7 +263,7 @@ def test_sources_cover_every_number_and_stay_in_whitelist(scan):
 def test_sources_expose_key_decision_fields(scan):
     fields = {r["field"] for r in brief.build(scan, run_folder=_RUN)["sources"]}
     for must in ("funnel.universe", "buys.production_n", "relative.code",
-                 "relative.rank", "ow_base.n", "ow_base.win2"):
+                 "relative.rank"):
         assert must in fields, f"sources 缺关键字段 {must}"
 
 
@@ -324,14 +324,6 @@ def test_eval_population_falls_back_when_decision_doc_predates_the_split(tmp_pat
     rows = {r["field"]: r for r in out["sources"]}
     assert "全市场可交易" in rows["relative.eval_population"]["value"]
     assert rows["relative.eval_population"]["value"] != rows["relative.decision_pool_n"]["value"]
-
-
-def test_ow_gap_reason_count_is_two_not_three(scan):
-    """X3:旧 OW 账断层是**两处**(决策对象/人口),尺是同一把(2026-08-09 复核 M-5 勘误)。
-    模块头曾是全仓最后一处还写「三处」的地方。"""
-    head = Path(brief.__file__).read_text(encoding="utf-8").split('"""', 2)[1]
-    assert "三处都不同" not in head, "brief 模块头还在说旧 OW 断层有三处"
-    assert "两处" in head
 
 
 def test_no_details_or_trace_in_whitelist():
@@ -475,22 +467,6 @@ def test_has_buy_day_drops_why_line(tmp_path):
     assert "生产 BUY 1 只" in md
 
 
-def test_ow_base_rate_is_split_account_not_trend(scan):
-    md = brief.build(scan, run_folder=_RUN)["markdown"]
-    line = next(ln for ln in md.splitlines() if "旧 OW 基率" in ln)
-    assert "定义断层" in line and "不连线" in line
-    # 样本数随 buy_ledger 走,不写死:合成 scan_root 无买单 → n=0
-    assert "9 笔" not in line
-
-
-def test_ow_base_rate_reads_buy_ledger(scan, monkeypatch):
-    monkeypatch.setattr(brief, "_ow_base_rate", lambda _root: {
-        "n": 9, "n_realized": 3, "win2": 0.0, "mean2": -0.007})
-    line = next(ln for ln in brief.build(scan, run_folder=_RUN)["markdown"].splitlines()
-                if "旧 OW 基率" in ln)
-    assert "9 笔" in line and "0%" in line
-
-
 def test_blocked_run_is_not_rendered_as_success(tmp_path):
     scan = _scan_dir(tmp_path, decision=_decision(blocked=True))
     md = brief.build(scan, run_folder=_RUN)["markdown"]
@@ -523,77 +499,6 @@ def _attr(root: Path, day: str, gap: float, oc: float, *, cols=("gap_c1_o2", "fw
     return d / "attribution.csv"
 
 
-def test_divergence_opposite_signs_renders_full_hint(tmp_path):
-    scan = _scan_dir(tmp_path)
-    _attr(scan.parent, "2026-08-05", gap=-0.0005, oc=0.0182)
-    md = brief.build(scan, run_folder=_RUN)["markdown"]
-    line = next(ln for ln in md.splitlines() if "① 市场" in ln)
-    assert "两尺分歧(2026-08-05 已成熟)" in line
-    assert "-0.05%" in line and "+1.82%" in line
-    assert "日内那段不在本系统授权内" in line
-
-
-def test_divergence_same_signs_says_aligned_not_silence(tmp_path):
-    """同向 → **明说「同向,无分歧」**(已量过),不是什么都不显示。"""
-    scan = _scan_dir(tmp_path)
-    _attr(scan.parent, "2026-08-05", gap=0.0031, oc=0.0182)
-    line = next(ln for ln in brief.build(scan, run_folder=_RUN)["markdown"].splitlines()
-                if "① 市场" in ln)
-    assert "同向,无分歧" in line
-    assert "两尺分歧" not in line and "UNMEASURED" not in line
-
-
-def test_divergence_missing_columns_says_unmeasured(tmp_path):
-    """列名换了 = 探针瞎了 → **UNMEASURED + 原因**,绝不能画成「今天没分歧」。
-
-    这正是复核 I-4 点名的失败场景:`retro` 改列名 → 第一版永远静默不出行。
-    """
-    scan = _scan_dir(tmp_path)
-    _attr(scan.parent, "2026-08-05", gap=0.1, oc=0.2, cols=("gap_c1_o2_v2", "fwd_2_oc_v2"))
-    line = next(ln for ln in brief.build(scan, run_folder=_RUN)["markdown"].splitlines()
-                if "① 市场" in ln)
-    assert "UNMEASURED" in line and "缺列" in line
-    assert "没量到,不等于没分歧" in line
-    assert "同向" not in line
-
-
-def test_divergence_no_prior_day_says_unmeasured(scan):
-    line = next(ln for ln in brief.build(scan, run_folder=_RUN)["markdown"].splitlines()
-                if "① 市场" in ln)
-    assert "UNMEASURED" in line and "无更早扫描日" in line
-
-
-def test_divergence_ignores_today_and_future(tmp_path):
-    """**严格早于今日**:今日自己的 attribution 在决策当晚不存在;即便盘上有也不许用
-    (那是从未来读数)。这里给今日与未来日各造一份,断言仍判 UNMEASURED。"""
-    scan = _scan_dir(tmp_path)
-    _attr(scan.parent, _DATE, gap=-0.5, oc=0.5)
-    _attr(scan.parent, "2026-08-07", gap=-0.5, oc=0.5)
-    line = next(ln for ln in brief.build(scan, run_folder=_RUN)["markdown"].splitlines()
-                if "① 市场" in ln)
-    assert "UNMEASURED" in line, f"用了今日/未来的读数:{line}"
-
-
-def test_divergence_picks_the_latest_prior_day(tmp_path):
-    scan = _scan_dir(tmp_path)
-    _attr(scan.parent, "2026-08-03", gap=-0.01, oc=0.01)     # 更早:分歧
-    _attr(scan.parent, "2026-08-05", gap=0.01, oc=0.01)      # 最近:同向
-    line = next(ln for ln in brief.build(scan, run_folder=_RUN)["markdown"].splitlines()
-                if "① 市场" in ln)
-    assert "2026-08-05" in line and "同向" in line, f"没取最近的那一天:{line}"
-
-
-def test_divergence_status_is_in_sources(tmp_path):
-    """三态都要能被 T27 对账 —— 边表里必须有这一行,且 text 真在正文。"""
-    scan = _scan_dir(tmp_path)
-    _attr(scan.parent, "2026-08-05", gap=-0.0005, oc=0.0182)
-    out = brief.build(scan, run_folder=_RUN)
-    row = next(r for r in out["sources"] if r["field"] == "market.divergence")
-    assert row["value"] == brief.DIVERGENT
-    assert row["file"] == "retro/attribution.csv"
-    assert row["text"] in out["markdown"]
-
-
 # ─────────────── M-10:buy_ledger.roll 单次发布只跑一次 ───────────────
 #
 # 病灶:一次 `publisher.run` 里 `roll(context/scan)` 被跑三次(build_summary 的 _ow_base_line /
@@ -614,70 +519,13 @@ def _count_rolls(monkeypatch) -> list:
     return calls
 
 
-def test_ow_base_rate_rolls_once_per_publish(tmp_path, monkeypatch):
-    from autoresearch.scan import assemble
-    scan = _scan_dir(tmp_path)
-    calls = _count_rolls(monkeypatch)
-    assemble.run(_DATE, scan_dir=scan, out_root=tmp_path / "reports" / "scan",
-                 hhmm="2308", run_date="2026-08-06")
-    assert len(calls) == 1, f"一次发布跑了 {len(calls)} 次 buy_ledger.roll:{calls}"
-
-
-def test_ow_base_cache_does_not_leak_across_publishes(tmp_path, monkeypatch):
-    """**跨发布必须重算**:窗在 `run()` 外壳里开关,两次发布 = 两次 roll。
-    漏到下一次发布就是把昨天的账本读数印在今天的报告上。"""
-    from autoresearch.scan import assemble
-    scan = _scan_dir(tmp_path)
-    calls = _count_rolls(monkeypatch)
-    for hhmm in ("2308", "2330"):
-        assemble.run(_DATE, scan_dir=scan, out_root=tmp_path / "reports" / "scan",
-                     hhmm=hhmm, run_date="2026-08-06")
-    assert len(calls) == 2, f"两次发布共 {len(calls)} 次 roll(期望 2)"
-    assert brief._OW_CACHE is None, "发布结束后缓存窗必须已销毁"
-
-
-def test_ow_base_cache_is_off_outside_a_publish(tmp_path, monkeypatch):
-    """窗外一律不缓存 —— nightly runner / retro / 单测直调不受影响。"""
-    calls = _count_rolls(monkeypatch)
-    root = _scan_dir(tmp_path).parent
-    brief._ow_base_rate(root)
-    brief._ow_base_rate(root)
-    assert len(calls) == 2, "窗外不该有缓存"
-    assert brief._OW_CACHE is None
-
-
-def test_ow_base_cache_is_destroyed_even_on_exception(tmp_path, monkeypatch):
-    """异常从发布真身抛出时,窗也必须关 —— 否则下一次发布读的是上一份账本。"""
-    from autoresearch.scan import publisher
-    monkeypatch.setattr(publisher, "_run_publish",
-                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
-    with pytest.raises(RuntimeError):
-        publisher.run(_DATE, scan_dir=tmp_path, out_root=tmp_path)
-    assert brief._OW_CACHE is None, "异常路径漏了缓存窗"
-
-
-def test_ow_win_rate_denominator_only_counts_contributing_rows(monkeypatch):
-    """M-8:加权平均的分母只能是**有贡献**的行。老账本缺 fwd_2 列(win2=None)时,
-    旧式分母(全部 n_realized)会把胜率系统性低估。"""
-    import pandas as pd
-
-    from autoresearch.learning import buy_ledger
-    monkeypatch.setattr(buy_ledger, "roll", lambda root=None: pd.DataFrame())
-    monkeypatch.setattr(buy_ledger, "rating_base_rates", lambda _l, **k: [
-        {"rating": "Overweight", "n": 4, "n_realized": 4, "win2": 0.5, "mean2": 0.01},
-        {"rating": "Buy", "n": 6, "n_realized": 6, "win2": None, "mean2": None},
-    ])
-    out = brief._ow_base_rate_uncached(Path("/nonexistent"))
-    assert out["n"] == 10 and out["n_realized"] == 10
-    assert out["win2"] == 0.5, f"分母掺了无贡献行 → {out['win2']}(旧式会算成 0.2)"
-
-
 # ───────────────────────────── 七节骨架 + 落盘 ─────────────────────────────
 
-def test_seven_sections_present(scan):
+def test_six_sections_present(scan):
     md = brief.build(scan, run_folder=_RUN)["markdown"]
+    # 2026-08-21 learning 层退役:原 ⑦ 欠账(待裁决提案/未决反馈)随 feedback_store 删除。
     for mark in ("① 市场", "② 漏斗", "③ 结论", "④ 持仓", "⑤ 风险哨",
-                 "⑥ 昨日 delta", "⑦ 欠账"):
+                 "⑥ 昨日 delta"):
         assert mark in md, f"brief 缺第 {mark} 节"
 
 

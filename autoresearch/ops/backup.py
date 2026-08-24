@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 """D11 · 知识资产 nightly 备份 —— 本波唯一新增的自动步(2026-08-19)。
 
-`context_<engine>/knowledge/`(判例库 precedents.db 650 条 + 全部 dossier 常备档案)、
-`context_<engine>/learning/*.jsonl`(闭环学习全部账本)、
-`context_<engine>/factor_lab/weights.json`(冻结的排序权重)是**不可重算资产**——
-丢了就永久没了,且全在 `.gitignore` 外、当前零备份零版本。本模块只做打包 + 轮转,
-不做恢复/校验(资产量小,恢复即"解压覆盖回去")。
+`context_<engine>/knowledge/`(dossier 常备档案 + 遗留 precedents.db)、
+`context_<engine>/learning/*.jsonl`(**历史账本,只读**——生产者已随 2026-08-21
+「整个 learning 层退役」删除;唯一还在写的是 `usage_reconcile.jsonl`)、
+`context_<engine>/factor_lab/weights.json`(排序权重)是**不可重算资产**——丢了就永久
+没了,且全在 `.gitignore` 外、当前零备份零版本。本模块只做打包 + 轮转,不做恢复/校验
+(资产量小,恢复即"解压覆盖回去")。
 
 见 docs/specs/2026-08-18-e6-activation-learning-slimdown-design.md §4 D11。
 
-⚠️ 挂点说明:设计稿原文把本步挂在 `nightly_close` 末位,但实施当下
-`autoresearch/learning/nightly_close.py` 正被另一并行 agent 改动,协调纪律禁止本次
-触碰该文件 —— 故本模块只提供函数 + CLI,**未接入 nightly_close 的七步表**。挂点留待
-`nightly_close.py` 的并行改动落地后,由主会话补一行 `_backup()` 调用接线。
+⚠️ **无自动挂点**:原计划挂在 `nightly_close` 末位,该模块已随闭环退役删除。本模块只提供
+函数 + CLI,靠人手动或 launchd 跑。
 """
 from __future__ import annotations
 
@@ -30,7 +29,7 @@ def run_backup(root: Path | str | None = None, keep: int = DEFAULT_KEEP) -> dict
 
     含三件:
     - ``context_<engine>/knowledge/`` 整目录(判例库 + dossier 档案),arcname 前缀 ``knowledge/``；
-    - ``context_<engine>/learning/*.jsonl``(仅 jsonl 账本,不含 csv/其他 staging),
+    - ``context_<engine>/learning/*.jsonl``(仅 jsonl,不含 csv/其他 staging),
       arcname 前缀 ``learning/``；
     - ``context_<engine>/factor_lab/weights.json``(单文件),arcname ``factor_lab/weights.json``。
 

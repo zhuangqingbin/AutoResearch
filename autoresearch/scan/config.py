@@ -42,7 +42,6 @@ class ScanConfig:
     pinned: dict | None = None        # {cap, ttl_days} 保送票参数(Task 3+ 消费)
     l4_intel: dict | None = None      # {enabled,max_queries} 活体情报参数
     l3: dict | None = None            # {two_pass,pass1_target,finalist_max}
-    learning: dict | None = None      # {shrink,shrink_k}
     budgets: dict | None = None       # 成本/墙钟/并发观测预算；不拥有截断权限
     performance: dict | None = None   # 流式调度/稳定上下文/行业 brief A/B;不拥有评级语义
     # 2026-08-11 配置单一事实源波(消费点 = user_config.knob() 各接线,见 SKILL「配置」节)

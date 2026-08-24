@@ -13,12 +13,11 @@ design: docs/specs/2026-08-21-lowturn-recall-l3-picture-display-design.md §7 / 
 `gap_c1_o2` 下也没复跑过 —— 是没跑,不是被否。开工前证伪能省下整条 LLM 路(07-25 event
 路教训:首读边际 −1.01pp)。
 
-活体(`--live`):生产 scan 日的 `_l3_judged.json`(lane=lowturn)× `retro/attribution.csv`,
-同一套 daily_stats/aggregate,只读不写账本。
+(2026-08-21 learning 层退役:原 `--live` 活体双尺观察腿删除 —— 它读 `retro/attribution.csv`,
+ 该产物已无生产者。Gate 0 回测腿自足:前向收益由 `factor_lab` 面板现算,不依赖任何账本。)
 
 用法:
   uv run --no-sync python -m autoresearch.research.lowturn_precheck [--cap-floor 30] [--out PATH]
-  uv run --no-sync python -m autoresearch.research.lowturn_precheck --live [--out PATH]
 """
 from __future__ import annotations
 
@@ -41,7 +40,7 @@ SPARSE_MED = 3             # 每日旗亮中位 <3 只 → SPARSE(定义过严,�
 MIN_CROSS_SECTION = 50
 FOOTNOTE = ("_参考尺 `fwd_5_oc`/`fwd_10_oc` **只观察**;决策尺仍为 gap_c1_o2(2026-07-10 / 08-05 裁定),"
             "本表不构成换尺依据。相对超额 = 组内均值 − 当日可交易全集截面中位"
-            "(与 stage_eval.channel_edge 同口径)。_")
+            "_")
 
 
 def daily_stats(frame: pd.DataFrame, mask: pd.Series, ruler: str) -> dict | None:
@@ -203,57 +202,18 @@ def render(table: pd.DataFrame, verdict: dict, regime_table: pd.DataFrame | None
     return "\n".join(lines) + "\n"
 
 
-def run_live(scan_root: Path | str | None = None) -> tuple[pd.DataFrame, str]:
-    """生产日 lane=lowturn finalist 的双尺读数(只读)。无成熟日 → 空表 + 说明。"""
-    root = Path(scan_root or ws.scan_root())
-    per_day: dict[str, list[dict]] = {r: [] for r in RULERS}
-    n_days_seen = 0
-    if root.is_dir():
-        for day in sorted(p for p in root.iterdir() if p.is_dir()):
-            jp, ap = day / "_l3_judged.json", day / "retro" / "attribution.csv"
-            if not (jp.exists() and ap.exists()):
-                continue
-            try:
-                judged = json.loads(jp.read_text(encoding="utf-8"))
-                attr = pd.read_csv(ap, dtype={"code": str})
-            except Exception:  # noqa: BLE001 — 坏日跳过,不编
-                continue
-            codes = {str(e.get("code", "")).zfill(6) for e in judged
-                     if isinstance(e, dict) and e.get("lane") == "lowturn" and e.get("finalist")}
-            if not codes:
-                continue
-            n_days_seen += 1
-            attr["code"] = attr["code"].astype(str).str.zfill(6)
-            mask = attr["code"].isin(codes)
-            for r in RULERS:
-                if r in attr.columns:
-                    st = daily_stats(attr, mask, r)
-                    if st:
-                        per_day[r].append(st)
-    table = pd.DataFrame([{"group": "lowturn(live finalist)", "ruler": r, **aggregate(days)}
-                          for r, days in per_day.items()])
-    note = f"_活体:{n_days_seen} 个有 lowturn finalist 的扫描日;成熟日按尺计入 n_days。_"
-    return table, note
-
-
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--cap-floor", type=float, default=30.0)
-    ap.add_argument("--live", action="store_true")
     ap.add_argument("--out", type=str, default=None)
     ap.add_argument("--cfg", type=str, default=None,
                     help="JSON 字符串,覆盖 LOWTURN_DEFAULTS 阈值(预登记放宽一档用)")
     a = ap.parse_args(argv)
     cfg = json.loads(a.cfg) if a.cfg else None
-    if a.live:
-        table, note = run_live()
-        md = render(table, {"verdict": "LIVE", "why": note})
-        out = Path(a.out) if a.out else ws.reports_root() / "research" / "lowturn_live.md"
-    else:
-        table, verdict, regime_table, unmeasurable = run_precheck(a.cap_floor, cfg)
-        md = render(table, verdict, regime_table, unmeasurable)
-        out = Path(a.out) if a.out else ws.reports_root() / "research" / "lowturn_precheck.md"
+    table, verdict, regime_table, unmeasurable = run_precheck(a.cap_floor, cfg)
+    md = render(table, verdict, regime_table, unmeasurable)
+    out = Path(a.out) if a.out else ws.reports_root() / "research" / "lowturn_precheck.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(md, encoding="utf-8")
     print(md)

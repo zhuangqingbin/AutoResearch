@@ -15,7 +15,6 @@ from autoresearch.scan.health import (
     finalist_churn,
     index_md,
     l4_phase_stats,
-    ledger_freshness,
     run_health,
     stage_results_health,
     write_run_health,
@@ -42,7 +41,7 @@ def _mk_day(root, date, codes=("000001",), cards=None, l1_rows=None, meta=None):
 
 
 def _mk_fires(scan, rows):
-    """`gate_fires.csv` 的最小合法写法(字段名同 `learning.self_review.dump_gate_fires`)。"""
+    """`gate_fires.csv` 的最小合法写法(字段名同 `scan.self_review.dump_gate_fires`)。"""
     with (scan / "gate_fires.csv").open("w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=["date", "code", "check", "severity", "detail"])
         w.writeheader()
@@ -358,13 +357,16 @@ def test_post_run_health_reports_consumer_backlog(tmp_path):
     from autoresearch.scan.post_run import initialize_consumer_state
 
     d = _mk_day(tmp_path, "2026-07-28")
+    # 2026-08-21 learning 层退役后 `RUN_FINALIZED` 已无订阅者(13 个学习账本 consumer 全删)
+    # —— 用它做夹具会让本用例断言一个空集合(恒 OK/0),变成永不变红的绿灯。改用唯一还
+    # 活着的路由 `DOSSIER_DELTA_READY → dossier_delta`。
     event = OutboxEvent.build(
-        event_type="RUN_FINALIZED",
+        event_type="DOSSIER_DELTA_READY",
         analysis_date=d.name,
         run_id="run-1",
         contract_hash=None,
-        aggregate_id="run-1",
-        payload={"n_buys": 0, "n_decisions": 1},
+        aggregate_id="000001",
+        payload={"code": "000001", "rating": "Hold", "conviction": "50"},
         created_at="2026-07-28T10:00:00Z",
     )
     emit_events(d, [event])
@@ -372,8 +374,8 @@ def test_post_run_health_reports_consumer_backlog(tmp_path):
     result = run_health(d)["post_run"]
     assert result["status"] == "BACKLOG"
     assert result["n_events"] == 1
-    assert result["expected"] == 8
-    assert result["pending"] == 8
+    assert result["expected"] == 1
+    assert result["pending"] == 1
     assert result["failed_consumers"] == []
 
 
@@ -384,101 +386,6 @@ def test_post_run_health_rejects_corrupt_events(tmp_path):
     result = run_health(d)["post_run"]
     assert result["status"] == "INVALID"
     assert "JSONDecodeError" in result["error"]
-
-
-def test_retro_health_reports_facts_gates_consumers_and_shadow_counts(
-    tmp_path,
-):
-    from autoresearch.learning.abstention_ledger import (
-        write_abstention_verdict,
-    )
-    from autoresearch.scan.outbox import OutboxEvent, emit_events
-
-    d = _mk_day(tmp_path, "2026-07-28")
-    (d / "retro").mkdir()
-    attr = pd.DataFrame(
-        [
-            {"code": "000001", "fwd_2_oc": 0.03},
-            {"code": "000002", "fwd_2_oc": -0.03},
-            {"code": "000003", "fwd_2_oc": 0.0},
-        ]
-    )
-    attr.to_csv(d / "retro" / "attribution.csv", index=False)
-    rejection = pd.DataFrame(
-        [
-            {
-                "date": d.name,
-                "code": "000001",
-                "first_rejection_stage": "L4_GATE_MAIN",
-                "final_action": "ABSTAIN",
-                "gate_state_quality": "COMPLETE",
-                "buyable": True,
-                "mature": True,
-                "excess_2": 0.03,
-                "opportunity": True,
-            },
-            {
-                "date": d.name,
-                "code": "000002",
-                "first_rejection_stage": "L4_MULTI_GATE",
-                "final_action": "ABSTAIN",
-                "gate_state_quality": "COMPLETE",
-                "buyable": True,
-                "mature": True,
-                "excess_2": -0.03,
-                "opportunity": False,
-            },
-            {
-                "date": d.name,
-                "code": "000003",
-                "first_rejection_stage": "DATA_UNDECIDABLE",
-                "final_action": "ABSTAIN",
-                "gate_state_quality": "UNKNOWN",
-                "buyable": True,
-                "mature": True,
-                "excess_2": 0.0,
-                "opportunity": False,
-            },
-        ]
-    )
-    rejection.to_csv(d / "retro" / "rejection_attribution.csv", index=False)
-    write_abstention_verdict(d, rejection)
-    (d / "shadow").mkdir()
-    pd.DataFrame({"code": ["000002", "000003"]}).to_csv(
-        d / "shadow" / "l3_audit_candidates.csv",
-        index=False,
-    )
-    event = OutboxEvent.build(
-        event_type="RETRO_FINALIZED",
-        analysis_date=d.name,
-        run_id=None,
-        contract_hash=None,
-        aggregate_id=d.name,
-        payload={
-            "attribution_hash": "a" * 64,
-            "rejection_attribution_hash": "b" * 64,
-        },
-        created_at="2026-07-28T10:00:00Z",
-    )
-    emit_events(d, [event])
-
-    result = run_health(d)["retro"]
-
-    assert result["rejection"]["status"] == "OK"
-    assert result["rejection"]["n_rows"] == 3
-    assert result["abstention"]["verdict"] == "FALSE"
-    assert result["abstention"]["data_quality"] == "DEGRADED"
-    assert result["gate_counts"] == {"unique": 1, "multi": 1, "unknown": 1}
-    assert result["shadow_queues"]["l3_audit"] == 2
-    assert result["retro_consumers"]["status"] == "BACKLOG"
-    assert result["retro_consumers"]["pending"] > 0
-
-
-def test_retro_health_absence_is_advisory(tmp_path):
-    d = _mk_day(tmp_path, "2026-07-28")
-    result = run_health(d)["retro"]
-    assert result["status"] == "ABSENT"
-    assert result["rejection"]["status"] == "ABSENT"
 
 
 def test_finalist_churn(tmp_path):
@@ -584,103 +491,6 @@ def test_index_md_hides_anns_line_when_unexpected_data_present(tmp_path):
     (rep / "details").mkdir(parents=True)
     s = index_md(d, rep)
     assert "anns_d 已退役" not in s
-
-
-def test_retro_health_section(tmp_path):
-    """retro 的运行健康节:降级字段/核心缺产物才出声;无恙/缺文件 → []。"""
-    from autoresearch.learning.retro import _health_section
-    assert _health_section(tmp_path) == []
-    (tmp_path / "run_health.json").write_text(json.dumps(
-        {"degraded_fields": ["pe"], "core_missing": ["L2_gbdt_top200.csv"]}), encoding="utf-8")
-    s = "\n".join(_health_section(tmp_path))
-    assert "运行健康" in s and "pe" in s and "数据病" in s and "L2_gbdt_top200.csv" in s
-    (tmp_path / "run_health.json").write_text(json.dumps(
-        {"degraded_fields": [], "core_missing": []}), encoding="utf-8")
-    assert _health_section(tmp_path) == []
-
-
-def test_ledger_freshness_pending_retro_days(tmp_path):
-    """复盘欠账日数:有 attribution.csv(fwd 已实现)但无 done.json 的天数——纯本地文件判定,
-    刻意不摸 retro.pending_days()/交易日历(避免网络依赖拖慢 run_health,见函数 docstring)。"""
-    scan_root = tmp_path / "scan"
-    for day, done in (("2026-07-07", False), ("2026-07-08", False), ("2026-07-09", True)):
-        r = scan_root / day / "retro"
-        r.mkdir(parents=True)
-        (r / "attribution.csv").write_text("code\n", encoding="utf-8")
-        if done:
-            (r / "done.json").write_text("{}", encoding="utf-8")
-    fr = ledger_freshness(scan_root / "2026-07-09", learning_root=tmp_path / "learning_nx")
-    assert fr["pending_retro_days"] == 2
-    assert fr["pending_retro_list"] == ["2026-07-07", "2026-07-08"]
-
-
-def test_ledger_freshness_lag_days(tmp_path):
-    """四账本 mtime 滞后 scan 日数:从未生成 → None;有 mtime → 数落后了几个 scan 日。"""
-    import os
-    from datetime import datetime
-
-    scan_root = tmp_path / "scan"
-    for day in ("2026-07-08", "2026-07-09", "2026-07-10"):
-        (scan_root / day).mkdir(parents=True)
-    learning_root = tmp_path / "learning"
-    learning_root.mkdir()
-    p = learning_root / "channel_ledger.md"
-    p.write_text("x", encoding="utf-8")
-    ts = datetime(2026, 7, 8).timestamp()
-    os.utime(p, (ts, ts))
-    fr = ledger_freshness(scan_root / "2026-07-10", learning_root=learning_root)
-    assert fr["ledger_lag_days"]["channel_ledger"] == 2       # 07-09、07-10 两个 scan 日晚于账本 mtime
-    assert fr["ledger_lag_days"]["gate_ledger"] is None       # 从未生成
-    assert fr["ledger_lag_days"]["zero_buy_ledger"] is None
-    assert fr["ledger_lag_days"]["changelog_ledger"] is None
-
-
-def test_ledger_freshness_buy_count_consistent(tmp_path):
-    """journal vs zero_buy 买单计数:同一 attribution.csv 喂两本账,D5 修复后应一致(✓)。"""
-    d = tmp_path / "scan" / "2026-07-08"
-    (d / "details").mkdir(parents=True)
-    (d / "retro").mkdir()
-    pd.DataFrame([{"code": "000001", "name": "甲", "sector": "半导体"}]).to_csv(
-        d / "finalists.csv", index=False)
-    (d / "details" / "000001.md").write_text("**Rating**: Overweight\n", encoding="utf-8")
-    pd.DataFrame([{"code": "000001", "bought": True, "fwd_1_oo": 0.01}]).to_csv(
-        d / "retro" / "attribution.csv", index=False)
-    fr = ledger_freshness(d, learning_root=tmp_path / "learning_nx")
-    assert fr["buy_count_consistent"] is True
-    assert fr["buy_count_mismatches"] == []
-
-
-def test_ledger_freshness_flags_buy_count_mismatch(tmp_path, monkeypatch):
-    """回归检测器:两本账若被人为改分叉,一致性行必须能测出来(✗ + 具体日期)。"""
-    import autoresearch.learning.journal as journal_mod
-    d = tmp_path / "scan" / "2026-07-08"
-    (d / "details").mkdir(parents=True)
-    (d / "retro").mkdir()
-    pd.DataFrame([{"code": "000001", "name": "甲", "sector": "半导体"}]).to_csv(
-        d / "finalists.csv", index=False)
-    (d / "details" / "000001.md").write_text("**Rating**: Overweight\n", encoding="utf-8")
-    pd.DataFrame([{"code": "000001", "bought": True, "fwd_1_oo": 0.01}]).to_csv(
-        d / "retro" / "attribution.csv", index=False)
-    monkeypatch.setattr(journal_mod, "roll",
-                        lambda root=None: pd.DataFrame([{"date": "2026-07-08", "buys": 0.0}]))
-    fr = ledger_freshness(d, learning_root=tmp_path / "learning_nx")
-    assert fr["buy_count_consistent"] is False
-    assert "2026-07-08" in fr["buy_count_mismatches"]
-
-
-def test_ledger_freshness_no_overlap_is_none(tmp_path):
-    """两本账无重叠日(如 zero_buy 从没跑过)→ 一致性字段 None,不误判 True/False。"""
-    d = _mk_day(tmp_path, "2026-07-09")
-    fr = ledger_freshness(d, learning_root=tmp_path / "learning_nx")
-    assert fr["buy_count_consistent"] is None
-
-
-def test_run_health_includes_ledger_freshness(tmp_path):
-    """run_health 顶层挂载账本新鲜度节(交付物:当天可读 run_health.json 里验)。"""
-    d = _mk_day(tmp_path, "2026-07-02", cards={"000001": CARD_OW})
-    h = run_health(d)
-    assert "ledger_freshness" in h
-    assert h["ledger_freshness"]["pending_retro_days"] == 0     # 无 retro/ 目录 → 0,不炸
 
 
 def test_assemble_writes_health_and_index(tmp_path):

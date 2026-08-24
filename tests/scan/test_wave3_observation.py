@@ -102,14 +102,10 @@ def test_available_cost_and_timing_publish_observation_and_denominators(tmp_path
 
     assert got["measurement_status"] == "MEASURED"
     assert got["maturity"]["status"] == "IMMATURE"
-    assert got["effectiveness"]["denominators"] == {
-        "mature_decision_records": 2,
-        "final_buy_candidates": 1,
-        "verified_correct_rejections": 1,
-    }
-    assert got["effectiveness"]["usd_per_mature_decision_record"] == 6.0
+    # 2026-08-21 learning 层退役:`mature_decision_records` / `verified_correct_rejections`
+    # 两个分母算自 `retro/rejection_attribution.csv`(已无生产者),随之删除。
+    assert got["effectiveness"]["denominators"] == {"final_buy_candidates": 1}
     assert got["effectiveness"]["usd_per_final_buy_candidate"] == 12.0
-    assert got["effectiveness"]["usd_per_verified_correct_rejection"] == 12.0
     assert "$12.0000" in got["markdown"]
     assert artifacts["budget_observation"]["status"] == "PRESENT"
 

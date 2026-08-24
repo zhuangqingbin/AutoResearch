@@ -14,7 +14,7 @@
   - 组装：`python -m autoresearch.analyze.assemble context_claude/analyze/<TICKER>_<date>`（用项目 `parse_rating` 校验五档评级）。
 - **全 A 扫描**：`scan-market` skill —— "扫描全 A 股 / 全市场选股 / 哪些板块值得买"。确定性漏斗 L0→L1→L2 + Claude 在 L3/L4/L5 做研究/辩论/整合。
   - 漏斗：`python -m autoresearch.scan.prelude <date>`（确定性前奏一键：L0→L2 + 日历/观察单/菜单/账本；staging `context_claude/scan/<date>/*.csv`；发布产物 `reports_claude/scan/<run_id>/` 由 assemble 生成）。
-  - 整合：`python -m autoresearch.scan.assemble <date>`。复盘：`python -m autoresearch.learning.retro pending`（`scan-retro` skill）。
+  - 整合：`python -m autoresearch.scan.assemble <date>`。**闭环复盘已整体退役**（2026-08-21 用户裁定：`autoresearch/learning/` 整包 + `scan-retro`/`feedback` 两个 skill 删除；细节见 scan-market 的 `STAGES.md`「行为变更的入口」节）。
   - 常备覆盖档案（`context_claude/knowledge/dossiers/`）：池日检在 prelude 内；首覆走 `dossier-init` skill；**中报/年报披露后**跑季度对账 `python -m autoresearch.dossier.reconcile <period>`（如 `20260630`；prelude 的 dossier_pool 行会在该期未对账时打 📐 提醒）。
 - **宏观**：`macro-research` skill（**full/lite 两档**）—— full："研究全球宏观 / 现在该超配什么资产 / A股哪些行业值得配";lite = **市场研判**(原首席策略师,scan-market Stage 0 调用或"今天大盘怎么看",读 `python -m autoresearch.scan.frame <date> --json` 的湖派生 market_pack 写 market_view.md)。
   - 取数：`python -m autoresearch.macro.harvest [date]`；组装：`python -m autoresearch.macro.assemble context_claude/macro/<date>`。
@@ -22,7 +22,7 @@
 ### 包结构（`autoresearch/`）
 
 - `autoresearch/data`、`autoresearch/dataflows`、`autoresearch/agents/utils` —— 免费数据层（lake + contracts + sources；yfinance/FRED/akshare/tushare）+ `rating.py` 等工具。
-- `autoresearch/common`、`autoresearch/trace`、`autoresearch/learning` —— 打分原语 / token 真计量（usage_harvest，读 subagent transcript；OTEL telemetry 因零生产调用点已于 2026-07-27 退役）/ 闭环学习（feedback·retro·self_review·stage_eval）。（原 `models` 模型园区与 typed-trace 平行实现已于 2026-07-13 移除：零生产调用，L2 champion 方向此前已弃用。）
+- `autoresearch/common`、`autoresearch/trace` —— 打分原语 / token 真计量（usage_harvest，读 subagent transcript；OTEL telemetry 因零生产调用点已于 2026-07-27 退役）。（原 `autoresearch/learning` 闭环学习包已于 2026-08-21 用户裁定整体退役；发布前自检硬门 `self_review` 与持仓盯梢尺 `tripwire_watch` 搬去 `autoresearch/scan/`——它们检的是「报告对不对/持仓破没破线」，从来不是「从历史里学到什么」。原 `models` 模型园区与 typed-trace 平行实现已于 2026-07-13 移除。）
 - `autoresearch/scan`、`autoresearch/analyze`、`autoresearch/macro` —— 三个 skill 的 stage 管道 + agents + CLI。
 
 > 注：原框架的**付费 LLM 多 agent 路径**（LangGraph 编排、provider clients、CLI、批量 runner）已移除——本项目现在**只**保留 Claude-as-engine 的 scan / analyze / macro 路线 + 其依赖的免费数据层（`autoresearch/data`、`autoresearch/dataflows`、`autoresearch/agents/utils`）。架构详见 `docs/specs/2026-06-22-autoresearch-arch-redesign-design.md` 与 README 的 **架构** 节。

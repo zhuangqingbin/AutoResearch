@@ -2,11 +2,9 @@
 from __future__ import annotations
 
 import json
-import re
 from collections import Counter
 from pathlib import Path
 
-from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import MAIN_RULER
 from autoresearch.scan.decision_finalize import (
     _PROPOSAL_BY_RATING,
@@ -398,35 +396,6 @@ def inject_deferred_blocks(summary: str, scan_dir: Path | str,
                          _position_overlay_active(scan, decision))
 
 
-def _ow_base_rate_for(scan_root: Path):
-    """旧 OW 基率(与 brief ③ 第三行**同一函数**,不另写一份口径)。缺依赖 → None。"""
-    try:
-        from autoresearch.scan.brief import _ow_base_rate
-        return _ow_base_rate(Path(scan_root))
-    except Exception:  # noqa: BLE001 — 账本层可选,坏了不阻发布
-        return None
-
-
-def _ow_base_line(scan_root: Path) -> str:
-    """组合视角里的「旧 OW 基率」**分账行**(spec E5①)。
-
-    与新 relative 账**分列并置、不连成一条趋势线**。**两处不同,不是三处**(fix-1,复核
-    M-5 更正):①决策对象(绝对『值得买』vs 相对『最值得买』);②人口(≥OW 的卡 vs 当日
-    全部 L4 候选的相对冠军)。原文第三条「尺不同」**不成立** —— `buy_ledger.roll()` 的
-    `fwd_2 = _a(MAIN_RULER)` 是现算的,两账同为 `gap_c1_o2`。结论不变,理由少一条。
-    样本随 `buy_ledger` 自动更新,不写死。
-    """
-    ow = _ow_base_rate_for(scan_root)
-    if not ow:
-        return ""
-    win = "—" if ow["win2"] is None else f"{ow['win2']:.0%}"
-    mean = "—" if ow["mean2"] is None else f"{ow['mean2'] * 100:+.2f}%"
-    return (f"📊 **旧 OW 基率(分账·定义断层·不连线)**:{ow['n']} 笔"
-            f"(已实现 {ow['n_realized']})· {MAIN_RULER} 胜率 {win} · 均值 {mean}"
-            f" —— 这是**旧绝对门**(≥Overweight)的账;与影子 relative 账**决策对象与人口**"
-            f"两处不同(尺相同,同为 {MAIN_RULER}),分列并置,**不得接成一条曲线读**。")
-
-
 def _portfolio_note_from(rows: list[dict], buys: list[dict], label: str,
                          n_buys: int | None = None) -> str:
     """组合视角一行的**唯一**成型口径。legacy(≥OW)与 active(决策文件 buys[])共用它 ——
@@ -530,106 +499,6 @@ def _position_overlay_active(scan_dir: Path, decision: dict | None) -> str:
         return head + ("今日 **BLOCKED**(硬资格否决,非择时空仓)→ 不开新仓;"
                        "这是系统说「今天这道题算不出来」,不是说「今天该空仓」。")
     return head + _overlay_tail(len(_decision_buy_codes(decision)))
-
-#: 经验节「一句话」的字符上限(全文留 `context/knowledge/`,summary 只放锚)。
-LESSON_GIST_CHARS = 46
-#: 经验正文里的【勘误/边界扩展/证据勘误】类**旁注块** —— 它们是 lesson 的修订史,不是
-#: 规则本身。整块剥掉后再取首句,否则首行恰好整行都是旁注的条目会渲染成空(实测
-#: `ls_l2_cuts_oversold_sector_rotation` 就是这种形状)。跨行也要剥,故用 DOTALL。
-_LESSON_ANNOT = re.compile(r"【[^】]*】", re.S)
-
-
-def _lessons_and_open_feedback(rows: list[dict]) -> tuple[list[dict], list[dict]]:
-    """与 buy-list 标的/行业相关的 active 经验 + 未决反馈。库不可用/坏 → ([], [])。
-
-    抽成独立函数是为了让渲染层(`_knowledge_note`)可被测试直接摆布——旧版把取数和渲染
-    焊在一起,测「表格长什么样」就必须准备一整套真知识库。
-    """
-    try:
-        import autoresearch.learning.feedback_store as fs
-    except Exception:  # noqa: BLE001 — 知识库是可选层,缺了不影响出报告
-        return [], []
-    codes = {str(r.get("code")) for r in rows if r.get("code")}
-    scopes: list = [("global", "*")]
-    for r in rows:
-        if r.get("code"):
-            scopes.append(("ticker", str(r["code"])))
-        ind = r.get("sector") or r.get("industry")
-        if ind:
-            scopes.append(("industry", ind))
-    try:
-        lessons = fs.lessons_for(scopes)
-        open_fb = [f for f in fs._read_jsonl(fs._FEEDBACK)
-                   if f.get("status") == "open"
-                   and (f.get("scope", {}).get("kind") == "global"
-                        or f.get("scope", {}).get("value") in codes)]
-    except Exception:  # noqa: BLE001
-        return [], []
-    return lessons, open_fb
-
-
-def _gist(text: str, limit: int = LESSON_GIST_CHARS) -> str:
-    """自由文本 → 一句话锚:剥【勘误/边界扩展】类前缀标注 → 取首行首句 → 硬截断。
-
-    表格单元格里不能出现裸 `|`(会把一行劈成多列)与换行,统一替换。
-    """
-    stripped = _LESSON_ANNOT.sub("", str(text or ""))
-    body = next((ln.strip() for ln in stripped.splitlines() if ln.strip()), "")
-    for stop in ("。", ";", ";", " —— "):
-        idx = body.find(stop)
-        if 0 < idx <= limit:
-            body = body[:idx]
-            break
-    body = body.replace("|", "/").replace("\n", " ")
-    return (body[:limit] + "…") if len(body) > limit else (body or "—")
-
-
-def _guard_cell(lsn: dict) -> str:
-    """经验的 guard 状态 —— **硬门真身**:带 {field,op,value} 的经验会被 self_review 当
-    fail 级红线执行;没有的用 `guard_na_reason` 说明为什么不可机检,不留空白让人猜。"""
-    gd = lsn.get("guard")
-    if isinstance(gd, dict) and gd.get("field"):
-        return f"`{gd.get('field')}{gd.get('op', '')}{gd.get('value', '')}`"
-    reason = str(lsn.get("guard_na_reason") or "").strip()
-    return f"—({_gist(reason, 16)})" if reason else "—"
-
-
-def _knowledge_note(rows: list[dict]) -> str:
-    """经验 / 未决反馈节(Wave12 T26:**表格化**,8.0KB → ~1KB)。
-
-    旧版把每条 lesson 的 `rule` **整段原文**倒进 summary(单条最长 1.5KB,整节 17.6%),
-    而 summary 的读者需要的是「哪几条在生效、哪几条是硬门、可信度多少」——原文是查证时
-    才要看的东西,它本来就完整存在 `context/knowledge/lessons.jsonl` 里。这里换成
-    id / 一句话 / guard / conf / MTM 五列,**减层不减料**:条目一条不少,全文给出去处。
-
-    store 空 / feedback_store 不可用 → 返回空串(向后兼容,老路径不破)。
-    """
-    lessons, open_fb = _lessons_and_open_feedback(rows)
-    if not lessons and not open_fb:
-        return ""
-    lines = ["## 📌 经验 / 未决反馈(闭环记忆)"]
-    if lessons:
-        lines += ["", f"**生效经验**({len(lessons)} 条,已注入 L2/L3 校准 + 本次研判;"
-                  "`guard` 非空 = self_review 硬门真身)",
-                  "| lesson | 一句话 | guard | conf | MTM |", "|---|---|---|---:|---:|"]
-        for lsn in lessons:
-            sc = lsn.get("scope", {})
-            tag = "" if sc.get("kind") == "global" else f"[{sc.get('value')}] "
-            mtm = lsn.get("mtm") or {}
-            mtm_cell = (f"{mtm.get('support', 0)}/{mtm.get('refute', 0)}"
-                        if mtm else "—")
-            lines.append(f"| `{lsn.get('id', '?')}` | {tag}{_gist(lsn.get('rule'))} "
-                         f"| {_guard_cell(lsn)} | {float(lsn.get('confidence', 0)):.2f} "
-                         f"| {mtm_cell} |")
-    if open_fb:
-        lines += ["", f"**未决反馈**({len(open_fb)} 条,待 retro / 后续消化)",
-                  "| id | verdict | 一句话 |", "|---|---|---|"]
-        for f in open_fb:
-            lines.append(f"| `{f.get('id')}` | {f.get('verdict')} "
-                         f"| {_gist(f.get('note'), 40)} |")
-    lines += ["", "_经验全文 / 证据链 / mtm 明细见 `context/knowledge/lessons.jsonl` 与 "
-              "`feedback.jsonl`(本表只给锚,不再嵌原文)。MTM = support/refute。_"]
-    return "\n".join(lines) + "\n"
 
 def _conflict_block(conflicts: dict[str, dict]) -> str:
     """⚖️ 两尺分歧框(Wave9 A-2)——presence-gated,无冲突返回空串。
@@ -803,7 +672,7 @@ def _self_review_banner(scan_dir: Path, rows: list[dict], summary_text: str,
                         regime_drift: str = "") -> str:
     """发布前机械自检(self_review 硬门)→ 报告顶部 banner。缺依赖/无问题 → 空串(老路不破)。"""
     try:
-        import autoresearch.learning.self_review as self_review
+        import autoresearch.scan.self_review as self_review
     except Exception:  # noqa: BLE001
         return ""
     l1 = {}
@@ -819,12 +688,6 @@ def _self_review_banner(scan_dir: Path, rows: list[dict], summary_text: str,
                        "main_net_ratio": lf.get("main_net_ratio"),
                        "rubric_suggest": r.get("rubric_suggest"), "rubric_dev": r.get("rubric_dev")})
     n_present = sum(1 for r in rows if r.get("target") != "⚠️卡片缺失")
-    lessons = []
-    try:
-        import autoresearch.learning.feedback_store as fs
-        lessons = fs.lessons_for([("global", "*")])
-    except Exception:  # noqa: BLE001
-        pass
     # E3b(task-2.4)· `flow.buys_n` 的口径:
     # shadow 期 = ≥OW 张数(现行为,逐字不变);active 期这个数**不再是买单数** ——
     # 买单只存在于 `_relative_buy_decision.json`,而本函数跑在 `build_summary` 内部,比
@@ -839,7 +702,7 @@ def _self_review_banner(scan_dir: Path, rows: list[dict], summary_text: str,
     if is_active():
         buys_n, buys_src = None, "deferred:决策文件在 build_summary 之后才写,本刻不可知"
     ctx = {"finalists": finals, "n_cards_expected": len(rows), "n_cards_present": n_present,
-           "summary_text": summary_text, "lessons": lessons, "regime_drift": regime_drift,
+           "summary_text": summary_text, "regime_drift": regime_drift,
            "flow": {                                       # 编排完备性 lint(LLM 段可能被静默跳过)
                "buys_n": buys_n,
                "buys_n_source": buys_src,
@@ -890,8 +753,6 @@ def _self_review_banner(scan_dir: Path, rows: list[dict], summary_text: str,
                 res["ok"] = False                                     # 会升 fail 的,补上防 banner 头失真
     with contextlib.suppress(Exception):
         self_review.dump_gate_fires(scan_dir, res, scan_dir.name)   # R3 留痕;IO 失败不阻发布
-    with contextlib.suppress(Exception):
-        self_review.dump_ow_gate_fires(scan_dir)          # OW三门失守 binding 行;IO 失败不阻发布
     return self_review.render_banner(res)
 
 def _buylist_table_lines(rows: list[dict], l1_full: dict, l2_top: dict, ch_map: dict,
@@ -953,7 +814,7 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
             r["proposal"] = _PROPOSAL_BY_RATING.get(folded, r.get("proposal", "—"))
         if _ensemble_flag(e):
             r["ens_flag"] = True                # 🎭复核分歧:spread≥2 → 行 badge + 组合视角人裁提示
-    _dump_final_ratings(scan_dir, rows)   # P0-2:两个 fold 循环已跑完 → rows["rating"] 即终评级,落盘供 retro 优先 join(含保送,retro 口径不变)
+    _dump_final_ratings(scan_dir, rows)   # P0-2:两个 fold 循环已跑完 → rows["rating"] 即终评级,落盘作权威值(含保送)
     _dump_decision_records(scan_dir, rows, vmap, emap)
     # A1:复核分歧的结构化事实 —— 单向阀吃掉的持仓分歧此前在报告里零痕迹(920179 立案现场)
     dump_dissent_records(scan_dir, build_dissent_records(rows, emap))
@@ -1015,9 +876,6 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
     active = is_active()
     out += ["", "### 组合视角",
             portfolio_placeholder() if active else _portfolio_note(genuine_rows)]
-    ow_line = _ow_base_line(Path(scan_dir).parent)   # E5①:旧 OW 基率**分账行**(与 brief ③ 同源)
-    if ow_line:
-        out += ["", ow_line]
     # A1:传 rows 后同时出「持仓保护规则」行(需要 lane 与卡面评级,只有 rows 里有)
     ens_lines = _ensemble_dissent_lines(emap, rows)   # presence-gated:无分歧 → []
     if ens_lines:
@@ -1051,17 +909,9 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
     if pin_sec:
         out += [pin_sec, ""]
 
-    # C3:0买日的聚合「差一点」+ 弃权 banner **前置到决策主线尾**;逐只读数仍只进文末附录
-    # (§R6:只给个案不给分母会把读者推向绕门)。非 0买日 / 无 shadow → presence-gated 为空。
-    from autoresearch.scan import near_miss  # 文件惯例:可选层在函数内 import
-    near_miss_facts = None
-    with _ctx.suppress(Exception):           # 证据层坏了不该阻断发布
-        near_miss_facts = near_miss.build(scan_dir, n_buys=len(
-            [r for r in genuine_rows if r.get("proposal") == "BUY"]))
-        for line in (near_miss.summary_line(near_miss_facts),
-                     near_miss.abstention_line(near_miss_facts)):
-            if line:
-                out += ["", line]
+    # (2026-08-21 learning 层退役:0买日的「差一点/弃权」banner + 文末附录整节删除 ——
+    #  它三个数据源(影子买单账/门归因/弃权账本)全是
+    #  学习账本,闭环一走这一节没有任何素材,留着只会渲染成空壳。)
     out += [""]
 
     # ══════════ 以下为背景与溯源(决策已在上面给完;这里是「为什么」与「怎么来的」)══════════
@@ -1080,18 +930,8 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
         if pulse:
             out += ["## 📈 今日 A 股市场\n", pulse, ""]
 
-    # ── 影子组合成绩单一行(spec 2026-07-05 wave §A1;presence-gated:文件缺 → 不加)──
-    # 只在真实现场注入(与 run() 的 is_real 判据同姿势):tmp 测试目录从此不受开发机全局
-    # reports/learning/paper_nav_summary.txt 污染(该文件由真实 prelude 跑动落盘,与 tmp scan_dir 无关)。
-    if scan_dir == ws.scan_root() / analysis_date:
-        pn = ws.reports_root() / "learning/paper_nav_summary.txt"
-        if pn.exists():
-            try:
-                nav_line = pn.read_text(encoding="utf-8").strip()
-            except Exception:  # noqa: BLE001
-                nav_line = ""
-            if nav_line:
-                out += [nav_line, ""]
+    # (影子组合成绩单行随 learning 层退役删除 —— 素材 `paper_nav_summary.txt` 由已删的
+    #  夜间账本刷新腿落盘。)
 
     # (观察单日检节已退役 —— 用户裁定 fb_20260714_002:即便 watchlist_status.csv 在也不渲染。)
 
@@ -1135,20 +975,7 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
         out.append("_无 finalists.csv_")
     out.append("")
 
-    kn = _knowledge_note(rows)
-    if kn:
-        out += [kn]
-    if near_miss_facts is not None:          # C3:逐只读数只在这里,与 buy-list 不同视觉层级
-        with _ctx.suppress(Exception):
-            appendix = near_miss.appendix_lines(near_miss_facts)
-            if appendix:
-                out += ["", *appendix]
     out += _stage_token_estimate(scan_dir)
-    # ── ⏳ 待裁决提案 nag(presence-gated;仅真实现场注入,镜像 paper_nav 成绩单守卫防 tmp 测试污染)──
-    if scan_dir == ws.scan_root() / analysis_date:
-        nag = _proposals_nag()
-        if nag:
-            out += [nag, ""]
     out += ["## 诚实局限",
             f"- 召回/粗排为启发式 + {MAIN_RULER} 超短主尺 IC 校准(L1 复合分、L2 sn_composite 同口径;T+1/T+5 参考),随 regime 漂移;L3/L4 为 Claude 推理产出。",
             "- 业绩/龙虎榜/预告有披露滞后;无权限端点降级标注。",
@@ -1158,19 +985,3 @@ def build_summary(scan_dir: Path, analysis_date: str, hhmm: str, folder: str,
     banner = _self_review_banner(scan_dir, rows, body, regime_drift=regime_drift)   # UZI self-review 硬门:fail 顶到最前
     return f"{banner}\n{body}" if banner else body
 
-def _proposals_nag() -> str:
-    """## ⏳ 待裁决提案(open 看板;presence-gated:缺文件/无 open/坏行 → "")。
-
-    运营节奏 nag:proposals 攒着不裁 = 闭环学习卡死("过度建设跑动不足"的解药是节奏不是机制)。
-    行渲染/排序/标注(龄·配对·疑失效)委托 feedback_store.proposals_nag_lines(看板自清洁,
-    机器只整理不裁决);账本缺/空/坏行 → ""(原行为,parity 不破)。
-    """
-    try:
-        from autoresearch.learning.feedback_store import proposals_nag_lines  # lazy 接线
-        lines = proposals_nag_lines()
-    except Exception:  # noqa: BLE001 — IO/渲染失败当无提案,不阻发布
-        return ""
-    if not lines:
-        return ""
-    return ("## ⏳ 待裁决提案\n" + "\n".join(lines)
-            + "\n\n_提案满 20 交易日未裁将持续在此提醒;裁决走 feedback / scan-retro 流程,别攒。_")

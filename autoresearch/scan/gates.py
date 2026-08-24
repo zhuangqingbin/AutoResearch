@@ -116,7 +116,7 @@ def gate4(scan_dir: Path) -> dict:
     **判据 = `gate_fires.csv` 里有任意一行 `severity=="fail"` 就不过**,所以往这本账里写
     什么 severity,等价于决定「要不要毙掉这一整趟约 60 分钟的扫描」。`brief_lint` 的九条
     判据据此二分(B-2,2026-08-09 控制方裁定;E4 08-18 补第九条同属 fail;单一事实源
-    `learning.self_review.BRIEF_LINT_SEVERITY`):**报告说假话** → fail,本门拦;
+    `scan.self_review.BRIEF_LINT_SEVERITY`):**报告说假话** → fail,本门拦;
     **报告畸形或缺失**(没落盘/排版超限/边表缺失或过期)→ warn,本门放行但照样进账、
     照样播给 CP7。一份人类可读摘要撑破字节预算不该毁掉一次已经跑完的扫描。
     """

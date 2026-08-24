@@ -314,16 +314,6 @@ def test_prelude_step_is_wired_and_reads_catalog():
     assert "tz_suspect_sources" in src
 
 
-def test_nightly_close_wires_flash_ingest():
-    """同上,夜间腿:`nightly_close.run` 的步骤元组里必须有 news_flash。"""
-    import inspect
-
-    from autoresearch.learning import nightly_close
-    src = inspect.getsource(nightly_close.run)
-    assert '("news_flash", _news_flash)' in src
-    assert "ingest_flash" in src
-
-
 def test_flash_observations_visibility_gated_by_first_seen_not_published():
     """可见性由 first_seen 决定,不由 published 抢跑。
 

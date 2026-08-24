@@ -4,7 +4,7 @@
 无档案票必须写「档案未建」缺档声明行。两侧口径都对齐 `.claude/agents/l4-card.md`
 模板措辞——这是同一批改动的两半,漂了就是「lint 罚一个没被告知过的 agent」。
 """
-from autoresearch.learning.self_review import product_shape_lint
+from autoresearch.scan.self_review import product_shape_lint
 
 
 def _mk(tmp_path, card_body: str, has_dossier: bool):

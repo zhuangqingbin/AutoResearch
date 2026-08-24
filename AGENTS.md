@@ -10,13 +10,11 @@
 | stock-research | 研究/分析单一股票(full 全量报告;"快速看一眼/出张卡"= lite 决策卡) | `.claude/skills/stock-research/SKILL.md` |
 | macro-research | 全球宏观 / 资产配置 / "今天大盘怎么看"(lite=市场研判) | `.claude/skills/macro-research/SKILL.md` |
 | sector-research | 研究单个申万行业(景气/格局/龙头映射) | `.claude/skills/sector-research/SKILL.md` |
-| scan-retro | 复盘某日扫描(/retro;漏斗归因+权重再校准) | `.claude/skills/scan-retro/SKILL.md` |
-| feedback | 用户对报告的纠错/表扬/"记住X" → 闭环知识库 | `.claude/skills/feedback/SKILL.md` |
 
 **全部项目技能一律软链**进 `~/.codex/skills/`(codex 原生 skill 发现同构于 `<name>/SKILL.md`;软链 = 两边改任一侧即同步,勿复制)。换机重建 / 新增技能后把名字补进循环再跑:
 
 ```bash
-for s in feedback macro-research scan-market scan-retro sector-research stock-research; do
+for s in macro-research scan-market sector-research stock-research; do
   ln -sfn "$PWD/.claude/skills/$s" ~/.codex/skills/$s
 done
 ```
@@ -36,6 +34,5 @@ uv run --no-sync python -m autoresearch.scan.prewarm            # 夜间预热(l
 uv run --no-sync python -m autoresearch.scan.prelude <date>     # 确定性前奏一键(L0-L2 等)
 uv run --no-sync python -m autoresearch.scan.frame <date> --json # market_pack(策略师输入)
 uv run --no-sync python -m autoresearch.scan.assemble <date>    # L5 整合(内含 self_review 硬门)
-uv run --no-sync python -m autoresearch.learning.retro pending  # 待复盘日
 uv run --no-sync python -m pytest -q                            # 全量测试
 ```

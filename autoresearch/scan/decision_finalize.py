@@ -240,7 +240,7 @@ def _dump_final_ratings(scan_dir: Path, rows: list[dict]) -> None:
     """P0-2(坏账③修复):把 ensemble/verify 折回后的**终评级**落 `<scan_dir>/_final_ratings.json`
     (`{code: rating}`)。
 
-    此前 retro 归因只读发布报告 `details/*.md` 的**卡面**评级(`parse_rating`)——Tier-3 红队
+    此前归因侧只读发布报告 `details/*.md` 的**卡面**评级(`parse_rating`)——Tier-3 红队
     降级/否决 + 买单 ensemble 折回都只改了 `build_summary` 内存里的 `rows["rating"]`,从未写回
     卡片文件,导致被折回的 OW(如 06-30 胜宏)仍以卡面 OW 进 attribution,污染 `bought`/评级基率
     (STAGES.md 开放线头 #6)。`retro._buylist` 优先 join 本文件(presence-gated,缺文件回退卡面
@@ -373,7 +373,7 @@ def _tripwire_hits(scan_dir, analysis_date: str, codes: list[str]) -> list[dict]
     (final-review Important-2,07-29/300857 实例:含今日时线=194.73~233.27 把
     205.00 包在带内测不出冲突;严格早于今日时线=210.01,才是当时真实在用的那条)。
     """
-    from autoresearch.learning import tripwire_watch
+    from autoresearch.scan import tripwire_watch
     root = Path(scan_dir).parent if scan_dir else ws.scan_root()
     return tripwire_watch.check(analysis_date, codes=codes, scan_root=root, card_before=analysis_date)
 

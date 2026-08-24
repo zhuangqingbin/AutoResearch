@@ -1,8 +1,8 @@
 """gate_status 格式容错回归:门名↔✓/✗ 间允许空白 + 卡片多处出现"OW三门"时取最后可解析段。
 
 design: 「漏斗 P0+P1 波」Task 2 补充修复(2b)。背景(task-2-report.md Self-review 最后一条):
-gate_status(assemble.py:222)作为 self_review.dump_ow_gate_fires / learning.shadow_buys._binding /
-learning.cross_calib 三个消费方共用的解析器,有两处格式敏感导致 OW 三门失守被系统性漏记——
+gate_status(assemble.py:222)作为门柱解析的
+多个消费方共用的解析器,有两处格式敏感导致 OW 三门失守被系统性漏记——
 ①`_GATESEG_RE.search` 只取全文**第一处**"OW三门"字样(卡片散文段先提到就锁死,文末真正的
 结构化 Rubric 判定段被忽略);②门名与 ✓/✗ 之间若有空格就解析不出,而 `.claude/agents/l4-card.md`
 满卡模板 Rubric 行写的正是「主力真在 ✓/✗」带空格格式。真实实例:

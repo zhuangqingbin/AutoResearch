@@ -10,7 +10,7 @@ design: docs/specs/2026-07-07-memory-astrategy-optimization-design.md §S1(验�
 看温度是否提供 regime 三块之外的正交信息。**不改 score 权重/phase 阈值/门/菜单**——
 v1 权重与分段阈值仍是待校准先验(见 `temperature.py` 模块 docstring),本报告只给证据。
 
-样本量 n<10 的行标 ⚠样本少(与 `cross_calib.py`/`buy_ledger.py` 同款 thin 禁注惯例)。
+样本量 n<10 的行标 ⚠样本少(thin 禁注惯例)。
 
   uv run --no-sync python -m autoresearch.scan.temperature_calib   # → reports/research/temperature_calib.md
 """
@@ -28,6 +28,49 @@ _WS_SCAN_ROOT = ws.scan_root()  # B008 修法:默认值须为模块级单例(def
 _MIN_N = 10
 _PHASE_ORDER = ["冰点", "修复", "发酵", "高潮", "退潮", "未知"]
 
+_LAKE_DAILY = ws.lake_root() / "daily"
+_NAV_START = "20260618"       # 首个 scan 日;之前的湖数据不进条件分布
+
+
+def trade_days(start: str = _NAV_START, lake: Path | None = None) -> list[str]:
+    """湖 `daily/` 分区文件名即交易日历(`YYYYMMDD.parquet`)。
+
+    2026-08-21 learning 层退役:原在 `learning.paper_nav`,与影子 NAV 同居一个模块。
+    它只是"读湖列文件名",与闭环学习无关,故随 `market_nav` 一起内联到唯一消费方这里。
+    """
+    lake = Path(lake or _LAKE_DAILY)
+    if not lake.exists():
+        return []
+    return sorted(p.stem for p in lake.glob("*.parquet")
+                  if len(p.stem) == 8 and p.stem.isdigit() and p.stem >= start)
+
+
+def market_nav(days: list[str], lake: Path | None = None) -> pd.Series:
+    """全市场等权收益(收盘到收盘 `pct_chg` 均值)累乘 NAV;缺分区/缺列记 0。
+
+    累乘性质 → 任意两日间累计收益 = `nav[j]/nav[i]-1`,不必额外拆解单日收益。
+    (原 `paper_nav.market_nav` 的 `mode="oc"` 分支;`mode="gap"` 分支随影子
+     NAV 一起退役 —— 本模块只做温度分段的条件分布,从来只用 oc 口径。)
+    """
+    lake = Path(lake or _LAKE_DAILY)
+    rets: list[float] = []
+    for d in days:
+        fp = lake / f"{d}.parquet"
+        r = 0.0
+        if fp.exists():
+            try:
+                s = pd.to_numeric(pd.read_parquet(fp, columns=["pct_chg"])["pct_chg"],
+                                  errors="coerce").dropna()
+                r = float(s.mean()) / 100.0 if len(s) else 0.0
+            except Exception:  # noqa: BLE001 — 坏分区记 0,不阻断整条曲线
+                r = 0.0
+        rets.append(r)
+    nav, navs = 1.0, []
+    for r in rets:
+        nav *= 1 + r
+        navs.append(round(nav, 6))
+    return pd.Series(navs, index=list(days), name="mkt")
+
 
 def _phase_sort_key(phase: str) -> int:
     return _PHASE_ORDER.index(phase) if phase in _PHASE_ORDER else len(_PHASE_ORDER)
@@ -36,7 +79,7 @@ def _phase_sort_key(phase: str) -> int:
 def forward_returns(dates_iso: list[str]) -> pd.DataFrame:
     """temperature.csv 各日('YYYY-MM-DD')→ 全市场等权 fwd_1(次日)/fwd_2(2 日累计)收益。
 
-    复用 `paper_nav.market_nav`(累乘 NAV)+ `trade_days`(湖 parquet 文件名即交易日历);
+    复用本模块的 `market_nav`(累乘 NAV)+ `trade_days`(湖 parquet 文件名即交易日历);
     `market_nav` 累乘性质 → 任意两日间累计收益 = nav[j]/nav[i]-1,不必额外拆解单日收益。
     日历 `start` 早于 temperature.csv 最早日一天不差(否则该日之前的种子/首日会被裁掉)。
     lake 无该日/日历覆盖不到未来两个交易日 → 对应 fwd 置 None(数据尚未成熟,非缺陷)。
@@ -44,7 +87,6 @@ def forward_returns(dates_iso: list[str]) -> pd.DataFrame:
     cols = ["date", "fwd_1", "fwd_2"]
     if not dates_iso:
         return pd.DataFrame(columns=cols)
-    from autoresearch.learning.paper_nav import market_nav, trade_days
     start = min(dates_iso).replace("-", "")
     days = trade_days(start=start)
     if not days:
@@ -130,7 +172,7 @@ def _pct(x) -> str:
 
 def render(phase_tbl: pd.DataFrame, cross_tbl: pd.DataFrame, n_days: int) -> list[str]:
     out = ["# S1 情绪温度计校准报告(phase × 市场 fwd_1/fwd_2 条件分布 + phase×regime 交叉表)", "",
-           f"_样本:`temperature.csv` {n_days} 日;市场收益复用 `paper_nav.market_nav`"
+           f"_样本:`temperature.csv` {n_days} 日;市场收益取 `market_nav`"
            "(全市场等权日收益累乘,任两日间取比值即累计收益)。n<10 标 ⚠样本少。"
            "**只读数,不改 score 权重/phase 阈值/门/菜单**(S1 spec 拍板边界:本波展示先行)。_", ""]
 

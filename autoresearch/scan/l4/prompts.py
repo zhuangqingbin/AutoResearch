@@ -9,11 +9,7 @@ from pathlib import Path
 import pandas as pd
 
 from autoresearch.common import workspace as ws
-from autoresearch.scan.l4.context import (
-    _target_calib_mark,
-    compose_funnel_brief,
-    write_base_rates,
-)
+from autoresearch.scan.l4.context import compose_funnel_brief
 from autoresearch.scan.l4.rubric import force_full_card
 
 _WS_REPORTS_SCAN = ws.reports_root() / "scan"  # B008 修法:默认值须为模块级单例(def 时求值,与旧字面量常量同语义)
@@ -22,30 +18,15 @@ _WS_REPORTS_SCAN = ws.reports_root() / "scan"  # B008 修法:默认值须为模�
 def write_shared_instructions(scan_dir: Path | str) -> int:
     """落 `_l4_shared_instructions.md`(当日共享块,逐卡 byte-identical)。返回写入字节数。
 
-    Wave5 ④B:该文件此前**全仓无生产者**(只有读者 + 测试写者),07-17/07-21 实测均不存在
-    —— prelude 每天算出的 📐/🔁/🚪 当日校准行从未到达任何一张决策卡。这里把 STAGES.md:215
-    描述的手工步骤变成确定性生产。
-
-    纪律:prelude 建议行里**含「禁注」的行不贴**(样本不足的自我标注,贴进 prompt = 用坏
-    先验污染判断);两个来源任一异常都不阻断(写出只含标头的稳定文件,好过没有文件)。
+    2026-08-21(用户裁定「整个 learning 层退役」)本文件退成**只有标头的稳定骨架**:原来
+    往里塞的两样东西都是闭环回注 —— ① prelude 的 📐/🔁/🚪 当日校准锚(buy_ledger 触价校准 /
+    cross_calib 翻案率 / 门柱),② T+1 快环校准块 —— 已随账本一并退役。骨架保留是**故意的**:
+    消费侧(`build_l4_prompts`)按"文件在就读"接线,留一个 byte 稳定的空骨架比让每张卡的
+    prompt 前缀随文件有无而变更安全(cache 前缀契约)。日后若有新的全卡共享块,往这里加。
     """
-    import contextlib
-
     scan_dir = Path(scan_dir)
     scan_dir.mkdir(parents=True, exist_ok=True)
     lines = ["## 当日共享块(全卡一致;确定性生成,勿逐卡改写)"]
-    calib: list[str] = []
-    with contextlib.suppress(Exception):
-        from autoresearch.scan.prelude import calib_suggestion_lines
-        calib = [ln for ln in calib_suggestion_lines() if "禁注" not in ln]
-    if calib:
-        lines += ["", "### 当日校准锚(据实调用,不作评级指令)"] + [f"- {ln}" for ln in calib]
-    t1_blk = ""
-    with contextlib.suppress(Exception):
-        from autoresearch.learning.t1_review import render_t1_calibration_block
-        t1_blk = render_t1_calibration_block(stage="L4")
-    if t1_blk:
-        lines += ["", t1_blk.strip()]
     text = "\n".join(lines).strip() + "\n"
     p = scan_dir / "_l4_shared_instructions.md"
     p.write_text(text, encoding="utf-8")
@@ -147,21 +128,12 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
         return {"n_prompts": 0, "tickers": [], "pinned": []}
     from autoresearch.dataflows.symbol_utils import normalize_symbol  # lazy,保持模块轻量
     fin = pd.read_csv(fp, dtype={"code": str})
-    import contextlib
-    # FN-1 第四修:🔁 基率 json 此前无生产调用点(真实跑动恒空)——派发前日级落稿,幂等;
-    # 失败不挡派发(消费方 _base_rate_mark presence-gated,缺文件即无此行)。
-    with contextlib.suppress(Exception):
-        write_base_rates(scan_dir)
-    with contextlib.suppress(Exception):   # 终审 I-3:📐 锚随派发日刷新(与基率同节奏),不冻结在首算日分布
-        from autoresearch.learning.buy_ledger import write_target_calib
-        write_target_calib()
     shared = ""
     sp = scan_dir / "_l4_shared_instructions.md"
     if sp.exists():
         shared = sp.read_text(encoding="utf-8").strip()
-    # (Wave5 ④B)t1 校准块已并入 `write_shared_instructions` 写的文件 —— 共享块的唯一事实源
-    # 就是那个文件,消费侧不再二次拼接(否则同一段会在每张卡里出现两遍)。
-    calib_line = _target_calib_mark(scan_dir)        # 📐 目标价基率锚(日级,算一次逐卡复用)
+    # 共享块的唯一事实源就是那个文件,消费侧不二次拼接(否则同一段会在每张卡里出现两遍)。
+    # 2026-08-21:🔁 基率落稿与 📐 目标价锚(buy_ledger 派生)随 learning 层退役一并删除。
 
     # FN-1 第五修:`force_full_card`(早停安全网)自 2026-06-27 建成起**零生产调用点** ——
     # 高 conviction+多路共振的真龙头照样被表面 P1-P3 早停砍掉。这里接进真派发链。
@@ -227,8 +199,6 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
         echo = yesterday_echo(code6, str(r.get("name", "") or ""), date)
         if echo:
             body.append(echo.rstrip())
-        if calib_line:                               # 逐卡块内(共享前缀之后,不破 cache 契约)
-            body += ["", calib_line]
         prompt_parts = [
             # 固定标头(逐卡不变,≤300B)——cache 前缀契约(T8):共享块前不得出现逐卡可变内容,
             # 否则 30 卡并发前缀全断、cache 全 miss。逐卡专属标题(含 📌 保送标记)移到共享块**之后**。

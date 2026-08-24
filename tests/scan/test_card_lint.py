@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from autoresearch.learning.self_review import card_contract_lint
+from autoresearch.scan.self_review import card_contract_lint
 
 FULL_OK = "# 卡\n**Rating**: Hold\n进入P4倾向: Hold\n变化项(vs 档案):无\n"
 FULL_NO_P4 = "# 卡\n**Rating**: Hold\n**一行多空**:多:x ｜ 空:y\n"
@@ -92,7 +92,7 @@ def _mk_cov_dossier_no_summary(code):
 
 
 def test_card_lint_covered_stock_requires_reconcile_section(tmp_path):
-    from autoresearch.learning.self_review import card_contract_lint
+    from autoresearch.scan.self_review import card_contract_lint
     d = tmp_path / "details"
     d.mkdir(parents=True)
     _mk_cov_dossier("300857")
@@ -103,7 +103,7 @@ def test_card_lint_covered_stock_requires_reconcile_section(tmp_path):
 
 
 def test_card_lint_covered_stock_with_reconcile_ok(tmp_path):
-    from autoresearch.learning.self_review import card_contract_lint
+    from autoresearch.scan.self_review import card_contract_lint
     d = tmp_path / "details"
     d.mkdir(parents=True)
     _mk_cov_dossier("300858")
@@ -117,7 +117,7 @@ def test_card_lint_covered_no_summary_not_injectable_no_reconcile_warn(tmp_path)
     """review R1 important 修复回归锁:initiated 但摘要块缺失(不可注入)→ lint 不报
     「档案对账缺失」——与注入器 `_dossier_summary_mark`(同一 `injectable_summary` 门)同判,
     杜绝"没注入却照查"的假阳。"""
-    from autoresearch.learning.self_review import card_contract_lint
+    from autoresearch.scan.self_review import card_contract_lint
     d = tmp_path / "details"
     d.mkdir(parents=True)
     _mk_cov_dossier_no_summary("300859")

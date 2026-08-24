@@ -61,36 +61,9 @@ CRITICAL_ARTIFACTS = (
     ),
     ArtifactSpec("gate_fires", 1, "assemble", "gate_fires.csv"),
     ArtifactSpec("early_stop", 1, "assemble", "_early_stop.json"),
-    ArtifactSpec(
-        "retro_attribution",
-        1,
-        "retro",
-        "retro/attribution.csv",
-    ),
-    ArtifactSpec(
-        "rejection_attribution",
-        1,
-        "retro",
-        "retro/rejection_attribution.csv",
-    ),
-    ArtifactSpec(
-        "abstention_verdict",
-        1,
-        "retro",
-        "retro/abstention_verdict.json",
-    ),
-    ArtifactSpec(
-        "l3_audit_candidates",
-        1,
-        "l3_rank",
-        "shadow/l3_audit_candidates.csv",
-    ),
-    ArtifactSpec(
-        "l3_audit_ledger",
-        1,
-        "retro",
-        "retro/l3_audit_ledger.json",
-    ),
+    # (2026-08-21 learning 层退役:retro_attribution / rejection_attribution /
+    #  abstention_verdict / l3_audit_candidates / l3_audit_ledger 五个条目随生产者一并删除
+    #  —— 清单里留一个没人生产的产物 = 每天报一次 MISSING 的假告警。)
     ArtifactSpec("run_health", 1, "health", "run_health.json"),
     ArtifactSpec("summary", 1, "assemble", "summary.md", root="report"),
     ArtifactSpec("manifest", 1, "assemble", "manifest.json", root="report"),

@@ -17,7 +17,6 @@ import csv
 import json
 from datetime import datetime, timezone
 
-import pandas as pd
 import pytest
 
 from autoresearch.common import workspace as ws
@@ -238,8 +237,10 @@ def test_stage_results_are_published_and_indexed(published):
     assert health["decision_records"]["early_stop_match"] is True
     assert health["post_run"]["status"] == "BACKLOG"
     assert health["post_run"]["n_events"] == 9
-    assert health["post_run"]["expected"] == 11
-    assert health["post_run"]["pending"] == 11
+    # 2026-08-21 learning 层退役:原 11 = RUN_FINALIZED×8 学习账本 + DOSSIER_DELTA_READY×3。
+    # 前 8 个 consumer 已随闭环删除,只剩 3 个档案 δ。
+    assert health["post_run"]["expected"] == 3
+    assert health["post_run"]["pending"] == 3
     assert health["post_run"]["failed_consumers"] == []
 
 
@@ -587,20 +588,6 @@ def test_final_ratings_json_maintained_ow_keeps_overweight(tmp_path):
 # ───────────────────────── P0-4:process_scores.csv 接线(assemble.run 侧) ─────────────────────────
 
 
-def test_process_scores_csv_present_in_fresh_publish(tmp_path):
-    """assemble.run() 应把过程分 checklist 落 <scan_dir>/process_scores.csv(presence-gated,
-    finalists.csv 在场即写)。"""
-    root = tmp_path / "scan_l5_ps"
-    scan = _build_scan_dir(root)
-    assemble.run(_DATA_DATE, scan_dir=scan, out_root=root / ws.reports_root() / "scan",
-                hhmm=_HHMM, run_date=_RUN_DATE)
-    p = scan / "process_scores.csv"
-    assert p.exists()
-    df = pd.read_csv(p, dtype={"code": str})
-    assert set(df["code"]) == {"300476", "600519", "002384", "301117"}
-    assert "process_score" in df.columns
-
-
 # ───────────────────────── P0-1(c):precedents.build_index 挂 is_real 后处理 ─────────────────────────
 
 
@@ -619,26 +606,6 @@ def test_run_does_not_touch_real_precedents_db(tmp_path):
         assert real_db.stat().st_mtime == original_mtime, "真实 precedents.db 不应被修改"
     else:
         assert not real_db.exists(), "真实 precedents.db 不应被创建"
-
-
-def test_is_real_publish_calls_precedents_build_index(tmp_path, monkeypatch):
-    """is_real 分支(scan_dir 解析为 context/scan/<date> 本尊)应调用一次
-    `precedents.build_index`(P0-1(c))。
-
-    `is_real` 判据硬编码相对路径比较(`ws.scan_root()/analysis_date`),无参数可覆盖,
-    只能靠 chdir 到全新 tmp_path 触发正分支(全沙盒,不碰真实仓库;对照上面的负分支测试)。
-    build_index 本体替换为计数桩,避免真建 sqlite 索引、不受环境 FTS5 差异影响。
-    """
-    monkeypatch.chdir(tmp_path)
-    scan = _build_scan_dir(tmp_path)   # root=tmp_path(已 chdir)→ scan = tmp_path/context/scan/<date>
-    calls: list[tuple] = []
-    monkeypatch.setattr("autoresearch.learning.precedents.build_index",
-                        lambda *a, **k: calls.append((a, k)) or {"dates_indexed": ["x"]})
-
-    assemble.run(_DATA_DATE, scan_dir=scan, out_root=tmp_path / ws.reports_root() / "scan",
-                hhmm=_HHMM, run_date=_RUN_DATE)
-
-    assert calls, "is_real 发布应调用 precedents.build_index 一次"
 
 
 # ───────────────────────── Wave3.5 review I-2:sections_skipped 打印接线 ─────────────────────────

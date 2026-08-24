@@ -37,8 +37,8 @@ def test_agent_files_exist_with_frontmatter():
 
 def test_l4_card_contract_anchors_synced():
     """l4-card 与 lite-playbook 的机器契约锚一致(卡被 parse_rating/lint/stage_eval 直接读)。"""
-    from autoresearch.learning.self_review import _CARD_V4_MARKER  # 单一事实源(T17/T24)
     from autoresearch.scan.agents.l4_card import _OW_GATES  # 单一事实源
+    from autoresearch.scan.self_review import _CARD_V4_MARKER  # 单一事实源(T17/T24)
     agent = _agent_text("l4-card")
     playbook = (SKILLS / "stock-research" / "lite-playbook.md").read_text(encoding="utf-8")
     anchors = ["进入P4倾向", "FINAL TRANSACTION PROPOSAL", "**Rating**",
@@ -72,7 +72,7 @@ def test_l4_card_v4_marker_full_line_byte_identical():
     """
     import re
 
-    from autoresearch.learning.self_review import _CARD_V4_MARKER
+    from autoresearch.scan.self_review import _CARD_V4_MARKER
 
     agent = _agent_text("l4-card")
     playbook = (SKILLS / "stock-research" / "lite-playbook.md").read_text(encoding="utf-8")
@@ -97,7 +97,7 @@ def test_l4_card_research_body_anchors_synced():
     全文内联注入,只在 `autoresearch/scan/l4/prompts.py`/`context.py` 接线),不是
     stock-research lite 独立单票用法的通用契约,两份 playbook 本就该在这一点上分叉。
     """
-    from autoresearch.learning.self_review import (
+    from autoresearch.scan.self_review import (
         _MICRO_REPORT_HDR,
         _NO_DOSSIER_DECL,
         _RESEARCH_BODY_HDR,
@@ -392,15 +392,19 @@ def test_cp7_broadcasts_brief_verbatim():
     assert "brief.md" in md.split("**汇报(CP7)**")[1][:400], "步骤 5 汇报段未指向 brief"
 
 
-def test_skill_states_machine_consumers_do_not_read_summary():
-    """分层安全性的前提必须写在文档里:t1_review / retro **不解析 summary 正文**,
-    它们读结构化文件。不写下来,下一个人重排 summary 时会以为自己在动机器契约。"""
+def test_skill_docs_say_nothing_machine_reads_summary_prose():
+    """分层安全性的前提必须写在文档里:**没有机器消费者解析 `summary.md` 正文**,
+    结论都在结构化文件里。不写下来,下一个人重排 summary 时会以为自己在动机器契约。
+
+    (2026-08-21 learning 层退役前这条断言点名的是 `t1_review`/`retro` 两个消费者;
+     它们已随闭环删除,性质从"那两个不读"变成"没有人读",措辞随之更新。)
+    """
     md = (SKILLS / "scan-market" / "SKILL.md").read_text(encoding="utf-8")
     hits = [ln for ln in md.splitlines()
-            if "summary" in ln and ("t1" in ln or "retro" in ln)]
-    assert len(hits) >= 2, f"SKILL.md 需在两处写明机器消费者不读 summary,现 {len(hits)} 处"
+            if "summary" in ln and ("不读" in ln or "不解析" in ln)]
+    assert len(hits) >= 2, f"SKILL.md 需在两处写明没有机器消费者读 summary 正文,现 {len(hits)} 处"
     for ln in hits[:2]:
-        assert "不读" in ln or "不解析" in ln, f"措辞不构成断言:{ln}"
+        assert "机器消费者" in ln, f"措辞不构成断言:{ln}"
 
 
 def test_macro_brief_consumes_new_pack_blocks():
@@ -486,29 +490,40 @@ def test_experiment_registry_governance_retired_from_skill_docs():
             f"{nm} 仍在教已删除的 promotion CLI"
         assert "autoresearch.learning.rollback_watch" not in doc, \
             f"{nm} 仍在教已删除的 rollback_watch CLI"
-    # 新治理模型的三段式必须都在场,不能只删旧的不写新的
-    for anchor in ("影子账本", "proposal", "人批", "开发会话"):
-        assert anchor in stages, f"STAGES.md 缺新治理模型关键词:{anchor}"
-        assert anchor in skill, f"SKILL.md 缺新治理模型关键词:{anchor}"
+    # D2(2026-08-21,用户裁定「整个 learning 层退役」):连"影子账本呈证 → proposal 人批"
+    # 那套也没了(证据来源整包删除)。两份文档必须**明说现在是普通开发改动**,不能只删
+    # 旧描述留一片空白 —— 空白会让下一个人以为治理还在、只是自己没找到。
+    for anchor in ("普通开发改动", "learning 层退役"):
+        assert anchor in stages, f"STAGES.md 缺现行说明关键词:{anchor}"
+    assert "learning" in skill and "退役" in skill, "SKILL.md 未说明闭环已退役"
+    for doc, nm in ((skill, "SKILL.md"), (stages, "STAGES.md")):
+        for gone in ("autoresearch.learning.retro", "autoresearch.learning.t1_review",
+                     "autoresearch.learning.cross_calib"):
+            assert gone not in doc, f"{nm} 仍在教已删除的 {gone} CLI"
 
 
 def test_experiment_registry_family_modules_are_gone():
     """模块真删了(不是只改文档)—— 否则「退役」只是叙事(镜像 test_telemetry_module_is_gone)。
 
-    `experiment_template.py` **不**在此列:D1 执行时发现它是 `gate_recal.py`/
-    `l3_marginal.py` 核心裁决逻辑的真实依赖(方法学,非治理状态机),用户裁决 A3
-    确认保留 —— 断言它仍然存在,防止未来有人顺手把它也删了。
+    D2(2026-08-21,用户裁定「整个 learning 层退役」)把范围从"治理状态机"扩到**整包**:
+    `autoresearch.learning` 这个包名本身必须已经不存在。原来 D1 特意保留的
+    `experiment_template.py`(当时是 `gate_recal`/`l3_marginal` 的真实依赖)随那两个模块
+    一起删 —— 依赖方没了,方法学模块也就没有消费者了。
+
+    **正锚同样重要**:三件门/尺是搬家不是删,它们必须在 `autoresearch.scan` 下可 import,
+    否则「搬家」也会变成只存在于叙事里的说法。
     """
     import importlib.util
 
-    for mod in ("autoresearch.learning.experiment_registry",
-                "autoresearch.learning.promotion",
-                "autoresearch.learning.rollback_watch",
-                "autoresearch.learning.mainflow5d"):
-        assert importlib.util.find_spec(mod) is None, \
-            f"{mod} 仍在:文档说退役、代码还在 = 又一个只存在于叙事里的改动"
-    assert importlib.util.find_spec("autoresearch.learning.experiment_template") is not None, \
-        "experiment_template 应保留(gate_recal/l3_marginal 的真实依赖,用户裁决 A3)"
+    assert importlib.util.find_spec("autoresearch.learning") is None, \
+        "autoresearch.learning 仍在:文档说整包退役、代码还在 = 只存在于叙事里的改动"
+    for mod in ("autoresearch.scan.self_review", "autoresearch.scan.tripwire_watch"):
+        assert importlib.util.find_spec(mod) is not None, \
+            f"{mod} 应已搬到 scan 包(GATE4 判据 / 持仓盯梢尺,不是学习件)"
+    from autoresearch.scan import temperature_calib
+    for fn in ("trade_days", "market_nav"):
+        assert hasattr(temperature_calib, fn), \
+            f"temperature_calib.{fn} 应已内联(原 learning.paper_nav 的读湖工具)"
 
 
 def test_otel_path_retired_from_skill_docs():

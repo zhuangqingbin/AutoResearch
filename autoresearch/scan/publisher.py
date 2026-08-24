@@ -87,7 +87,7 @@ def _inject_news_headline(body: str, head_line: str) -> str:
 def _publish_details(scan_dir: Path, detail_out: Path) -> int:
     """把 L4 staging 决策卡发布到 details/,文件名用**股票名称**(非 ticker);只发当前 finalists。
 
-    staging 卡仍以 <code>.md 暂存(parse_rating/retro 内部按 code);发布层改名 <名称>.md 便于人读。
+    staging 卡仍以 <code>.md 暂存(机器侧按 code);发布层改名 <名称>.md 便于人读。
     发布时若有 `_l4_intel_<code>.md`(活体情报盲搜稿)→ 原文附在卡片尾部(fb_20260714_004:
     读者要在 details 里直接看到当日新闻依据,不用去翻 staging)。附录只加在**发布副本**,
     staging 卡不动;parse_rating 两遍法先认卡面 `Rating:` 标签行,intel 中文文本不干扰评级解析。
@@ -234,18 +234,14 @@ def _publish_pipeline(scan_dir: Path, out_base: Path, analysis_date: str) -> int
 def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None = None,
         hhmm: str | None = None, run_date: str | None = None,
         pinned_path: str | Path | None = None) -> Path:
-    """L5 发布入口。薄壳:只负责开一个**单次发布**的 `buy_ledger` 缓存窗(M-10),
-    真身在 `_run_publish`。
+    """L5 发布入口。薄壳,真身在 `_run_publish`。
 
-    写成外壳而不是把 `with` 塞进函数体,是为了让「窗的生命周期 == 一次发布」这件事**由
-    结构保证**:异常从 `_run_publish` 抛出时 `finally` 照样销毁,不会把上一份账本的读数
-    漏给下一次发布(nightly 连跑多天时这就是错数)。窗外调用一律不缓存。
+    (2026-08-21 learning 层退役:原来这层壳存在的唯一理由是开一个「单次发布」的
+     `buy_ledger.roll()` 缓存窗〔M-10〕—— 账本删了,窗也就没有了。壳保留是为了不动
+     所有调用方的入口名。)
     """
-    from autoresearch.scan.brief import ow_base_cache
-
-    with ow_base_cache():
-        return _run_publish(analysis_date, scan_dir=scan_dir, out_root=out_root,
-                            hhmm=hhmm, run_date=run_date, pinned_path=pinned_path)
+    return _run_publish(analysis_date, scan_dir=scan_dir, out_root=out_root,
+                        hhmm=hhmm, run_date=run_date, pinned_path=pinned_path)
 
 
 def _run_publish(analysis_date: str, scan_dir: Path | None = None,
@@ -276,15 +272,12 @@ def _run_publish(analysis_date: str, scan_dir: Path | None = None,
         # (FN-1 家族)。但 build_summary 内部才写 gate_fires.csv,所以此刻的 artifacts 列表
         # 必然把它记成 missing(07-24 实锤:run_health 13:16:21 / gate_fires 13:16:22)。
         # 故 build_summary 之后再刷一次(见下方),让落盘的那份 missing 列表说真话。
-    with contextlib.suppress(Exception):               # P0-4:逐卡过程分 checklist(presence-gated,失败不阻发布)
-        from autoresearch.learning.process_score import write_process_scores
-        write_process_scores(scan_dir)
     n_pipe = _publish_pipeline(scan_dir, out_base, analysis_date)   # trace/ 挂 out_base(details 同级)
     from autoresearch.scan.artifacts import ARTIFACT_INDEX_SCHEMA_VERSION
     from autoresearch.scan.decision_record import DECISION_RECORD_SCHEMA_VERSION
     from autoresearch.scan.run_contract import load_run_contract
 
-    manifest = {                                             # retro 按 analysis_date 定位(目录名≠数据日)
+    manifest = {                                             # 按 analysis_date 定位(目录名≠数据日)
         "analysis_date": analysis_date,
         "generated_at": now.isoformat(timespec="seconds"),
         "hhmm": hhmm,
@@ -399,7 +392,7 @@ def _run_publish(analysis_date: str, scan_dir: Path | None = None,
     # 不阻断而吞,另一边把吞下去的结果变成门失败(「GATE3 差 16 字节毙 60min 流水线」同族)。
     # 播报走 `brief_lint_banner`:fail 与 warn **都播**,降级不等于消音。
     with contextlib.suppress(Exception):
-        from autoresearch.learning.self_review import (
+        from autoresearch.scan.self_review import (
             append_gate_fires,
             brief_lint,
             brief_lint_banner,
@@ -453,23 +446,6 @@ def _run_publish(analysis_date: str, scan_dir: Path | None = None,
     # 提前跑会永远写成「未生成」(FN-1 家族:探针读还没生成的产物)。
     with contextlib.suppress(Exception):
         (out_base / "index.md").write_text(_health.index_md(scan_dir, out_base), encoding="utf-8")
-    # 记账/刷新副作用共享同一条真实现场判据(resolve() 防相对/绝对路径假阴性)——
-    # 测试 tmp 目录一律不触发,堵同类测试泄漏口(此前 sector_ledger 无门,曾单独裸奔)。
-    if is_real:
-        # (Phase 4 的 `record_calls` 挂点已随 D6 退役 —— brief 研判段整段砍除,
-        #  行业方向记账现只剩下面这条确定性 top3 来源。)
-        with contextlib.suppress(Exception):       # P7:top3 看多记账(失败不阻发布)
-            from autoresearch.learning.sector_ledger import record_top3
-            from autoresearch.scan.market import market_pack as _mp3
-            inds3 = [r["industry"] for r in (_mp3(scan_dir).get("sector_healthy_top3") or [])]
-            n3 = record_top3(analysis_date, inds3)
-            if n3:
-                print(f"[sector_ledger] 记 top3 看多 {n3} 条(source=deterministic_top3)")
-        with contextlib.suppress(Exception):           # 影子买单记账(spec 2026-07-05 wave §A2,失败不阻发布)
-            from autoresearch.learning.shadow_buys import record as _shadow_record
-            n_sh = _shadow_record(scan_dir)
-            if n_sh:
-                print(f"[shadow_buys] 记 {n_sh} 只影子买单 → context/learning/shadow_buys.csv")
     print(f"[L5 整合] summary → {summary_path}  (数据日 {analysis_date})")
     print(f"[L5 整合] details → {detail_out}  ({n_cards} 张卡 + trace/ {n_pipe} 件溯源)")
     return summary_path

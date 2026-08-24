@@ -8,11 +8,12 @@ design: docs/specs/2026-07-12-scan-speed-perimeter-design.md §P1。
 - build_market_frame 全市场取数入湖(daily×20 + 快照端点)→ L3 evidence 三端点预拉(P2a 已走湖)
   → temperature rollup → 热度快照(东财人气/雪球关注,Wave12 T3;B 级断采不挡预热,见
   `_hot_rank_snapshot`)→ 写 _prewarm.json(stage_timing「预热」行消费);
-- calibrate **默认不跑**:夜跑自动 recalibrate 会在不扫描的日子也改 weights + 记 changelog,
-  污染 DSR-lite trial 计数(P0-6)——`--with-calibrate` 手动旋钮。
+(2026-08-21 learning 层退役:原 `--with-calibrate` 旋钮 —— 夜跑自动重标定 `weights.json`
+ —— 随 `learning.retro.recalibrate_and_log` 一并删除。权重现在只由显式的
+ `python -m autoresearch.research.factor_lab calibrate` 改。)
 幂等:湖已有该日数据 → 全程命中秒退。失败退出码非零、不阻断(晚间扫描回落现路径)。
   uv run --no-sync python -m autoresearch.scan.prewarm            # 自动选日
-  uv run --no-sync python -m autoresearch.scan.prewarm 2026-07-10 --with-calibrate
+  uv run --no-sync python -m autoresearch.scan.prewarm 2026-07-10
 """
 from __future__ import annotations
 
@@ -139,8 +140,7 @@ def _hot_rank_snapshot(date: str) -> str:
     return " · ".join(parts) + f" · 观测日 {snap.replace('-', '')}"
 
 
-def run_prewarm(date: str | None = None, *, with_calibrate: bool = False,
-                now: datetime | None = None) -> dict:
+def run_prewarm(date: str | None = None, *, now: datetime | None = None) -> dict:
     now = now or datetime.now()
     date = date or latest_settled_trade_date(now)
     scan_dir = ws.scan_root() / date
@@ -164,11 +164,6 @@ def run_prewarm(date: str | None = None, *, with_calibrate: bool = False,
         _step("temperature", _temperature)
         _step("dossier_prefetch", _dossier_prefetch)
         _step("hot_rank_snapshot", _hot_rank_snapshot)
-        if with_calibrate:
-            def _calib(d):
-                from autoresearch.learning.retro import recalibrate_and_log
-                return f"weights 重标定:{str(recalibrate_and_log(d))[:80]}"
-            _step("calibrate", _calib)
     finally:
         if set_env:
             os.environ.pop("LAKE_ASSUME_SETTLED", None)
@@ -184,10 +179,8 @@ def run_prewarm(date: str | None = None, *, with_calibrate: bool = False,
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="scan 夜间预热(确定性,零 LLM;launchd 19:30 或手动)")
     ap.add_argument("date", nargs="?", default=None, help="缺省=最近已结算交易日")
-    ap.add_argument("--with-calibrate", action="store_true",
-                    help="附带 recalibrate_and_log(默认关:防污染 changelog/DSR 计数)")
     args = ap.parse_args(argv)
-    return 0 if run_prewarm(args.date, with_calibrate=args.with_calibrate)["ok"] else 1
+    return 0 if run_prewarm(args.date)["ok"] else 1
 
 
 if __name__ == "__main__":

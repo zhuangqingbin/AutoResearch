@@ -19,16 +19,16 @@ description: "Single A-share INDUSTRY (申万一级) research — 景气度/产�
 
 ## lite 档(行业 brief;模板见 `sector-playbook.md`)
 1. **确定性件(零 LLM)**:`uv run --no-sync python -m autoresearch.sector.reuse <date> --apply`(TTL≤5 日♻️复用:regime 同 + 行业中位 60 日动量位移 ≤3pp)→ 剩余行业 `uv run --no-sync python -m autoresearch.sector.pack <date>`(自动选:红榜 top3 ∪ L2 集中度 top3 ∪ 观察单行业,K≤6;→ `$CTX/sector/<date>/<行业>.json`)。
-2. **brief subagent(每行业一个,可并发)**:读 pack JSON(数字不可编造)+ sector_memo 行(若有),写 `$CTX/scan/<date>/sector_briefs/<行业>.md`——**两段契约**(标题即机器接口,勿改字):`## 地形段(喂 L3/L4 · 描述性)` + `## 研判段(仅 L5)`(内含 `**行业方向**: 看多|中性|看空` keyed 行)。
-3. **消费自动发生(零编排)**:L3 表 `sector_terrain=True` 前置全行业地形行;L4 简报注入该行业 brief 地形段(无 brief 回退 memo 行);L5 assemble 自动嵌 🏭 行业研判节 + 🔗 同链对比表;发布时 `sector_ledger.record_calls` 自动记方向。
+2. **brief subagent(每行业一个,可并发)**:读 pack JSON(数字不可编造),写 `$CTX/scan/<date>/sector_briefs/<行业>.md`——**两段契约**(标题即机器接口,勿改字):`## 地形段(喂 L3/L4 · 描述性)` + `## 研判段(仅 L5)`(内含 `**行业方向**: 看多|中性|看空` keyed 行)。
+3. **消费自动发生(零编排)**:L3 表 `sector_terrain=True` 前置全行业地形行;L4 简报注入该行业 brief 地形段(无 brief 则整段省略);L5 assemble 自动嵌 🏭 行业研判节 + 🔗 同链对比表。
 
 ## full 档(单行业深研,standalone;6 节结构见 `sector-playbook.md`)
-`python -m autoresearch.sector.pack <date> --industries <行业>` 取包 → 深研(链上下游 WebSearch 产业证据标『实时网查』、格局与龙头映射、景气位置、行业内估值分布)→ 报告落 `$RPT/sector/<date>/<行业>.md`(两段结构同 lite,研判段更厚)→ 收尾 **`sector_memo.upsert_memo` 回写**(记忆从"卡片共性蒸馏"升级为"研究结论")+ `sector_ledger.record_calls`。
+`python -m autoresearch.sector.pack <date> --industries <行业>` 取包 → 深研(链上下游 WebSearch 产业证据标『实时网查』、格局与龙头映射、景气位置、行业内估值分布)→ 报告落 `$RPT/sector/<date>/<行业>.md`(两段结构同 lite,研判段更厚)。**无收尾记账**(2026-08-21 learning 层退役:`sector_memo` / `sector_ledger` 两条腿已删)。
 
 ## 铁律(防锚定,违反即作废)
 - **三层同律**:地形段只许数字/事实/日历(会喂 L3/L4);方向性判断(看多空/超低配语言)只在研判段 = 只进 L5/standalone 报告。**个股评级只由本股 rubric 三门决定。**
 - **不设门**:行业弱 ≠ 该行业的票不研究——本 skill 产出不参与 L0–L3 筛选,只增强 L4/L5 判断(每加一条硬门 = 一块永久盲区)。
-- 数字全出 pack/staging,缺字段写 —,不编;**行业嘴也被 MTM**(方向行进 `sector_ledger` 对行业已实现收益记账,已成熟 n<10 ⚠只记账)。
+- 数字全出 pack/staging,缺字段写 —,不编。
 - 收尾写明"Claude 推理产出,仅供研究,非投资建议"。
 
 ## 常见坑

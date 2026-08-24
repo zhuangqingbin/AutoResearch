@@ -380,37 +380,6 @@ def test_extend_plan_idempotent_and_heals_holes(tmp_path, monkeypatch):
     assert len(fetched) == n_before                                      # 幂等:一个端点都没重拉
 
 
-def test_recalibrate_and_log_calls_extend_before_calibrate(tmp_path, monkeypatch):
-    """接线序:extend_plan 先于 calibrate(否则续了也白续);extend 炸不阻断 calibrate。"""
-    calls = []
-    import autoresearch.learning.feedback_store as fs
-    import autoresearch.learning.retro as retro
-    import autoresearch.research.factor_lab as fl
-    wp = tmp_path / "weights.json"
-    wp.write_text('{"weights": {"__global__": {}}, "meta": {"n_dates": 1}}', encoding="utf-8")
-    monkeypatch.setattr(retro, "Path", lambda p: wp if "weights.json" in str(p) else __import__("pathlib").Path(p))
-    monkeypatch.setattr(fl, "extend_plan", lambda: calls.append("extend") or {"added_f": 1, "added_p": 1, "healed": 0, "f_last": "20260715", "n_f": 108})
-    monkeypatch.setattr(fl, "calibrate", lambda **k: calls.append("calibrate") or {})
-    monkeypatch.setattr(fs, "snapshot_weights", lambda: "aaa")
-    monkeypatch.setattr(fs, "log_change", lambda *a, **k: calls.append("log"))
-    retro.recalibrate_and_log("2026-07-16")
-    assert calls == ["extend", "calibrate", "log"]
-
-    calls.clear()
-    monkeypatch.setattr(fl, "extend_plan", lambda: (_ for _ in ()).throw(RuntimeError("网络断")))
-    retro.recalibrate_and_log("2026-07-16")
-    assert calls == ["calibrate", "log"]                                 # 退化但不死,探针兜底
-
-
-# ═══════════════ split_half_regime_gate / calibrate_regimes(require_split_half) ═══════════════
-#
-# T16 review 修复(2026-08-07 用户裁定):单桶样本量够 min_dates 不等于该桶权重方向在时间上
-# 稳定——trend/risk_off 两桶曾在未经两半符号一致门检验的情况下直接落盘。这里锁住两件事:
-# ①门函数本身对「两半都达标+符号一致」「只在单半出现」「两半都达标但符号翻多数」三种情形
-#   分别给出正确判定;②calibrate_regimes() 真的把门接上了(过门的桶落盘,没过/判不了的桶
-#   进 meta.regimes_pending,不出现在 weights.json 的 regimes 里)。
-
-
 def _day_rows(date: str, regime: str, sign_a: int, sign_b: int, n: int = 30) -> pd.DataFrame:
     """单日 n 行(≥30,`_spearman` 的最小样本门槛):grp_a/grp_b 与 fwd 的相关性符号可独立指定
     (grp_x = fwd 若 sign_x>0,否则 = 倒序 fwd)—— 保证当日 IC 恰好是 +1.0 或 -1.0,无噪声。

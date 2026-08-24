@@ -26,7 +26,7 @@ _RENAME = {"rep_impl": "ev_rep_impl", "rep_plan": "ev_rep_plan",
            "holder_in": "ev_holder_in", "holder_de": "ev_holder_de", "surv_n": "ev_surv_n"}
 _RAW_EVENT_COLS: tuple[str, ...] = tuple(_RENAME.values())
 
-# 正催化列源,与 learning/catalyst_ledger._POS 同一组列名(rep_impl/rep_plan/holder_in/surv_n,
+# 正催化列源(rep_impl/rep_plan/holder_in/surv_n,
 # 减持 holder_de 均不算正)——**用法不同,不是口径分叉**:catalyst_ledger 只把这几列当**布尔
 # 旗**用(`cat[pos_cols].sum(axis=1) > 0`,只问"有没有"),从没把它们加总成一个可排序的量,
 # 所以它不曾继承下面这个病。本模块要产出一个可排序的"事件强度"分数(`ev_pos` 要喂
@@ -57,7 +57,7 @@ EVENT_COLS: tuple[str, ...] = (*_RAW_EVENT_COLS, "ev_hard", "ev_pos")
 # 按它们分流到 holder_in/holder_de、rep_impl/rep_plan,同日同票的"增持公告 + 减持公告"
 # (或"回购实施 + 回购预案")是两件真事,不能被折叠成一件。
 # **只在本模块入口去重,不动 `catalyst_counts`**:L3 表的 `cat` 列(`harvest_catalyst`)与
-# `learning/catalyst_ledger` 与它共用,改它 = 跨消费者口径变更,须独立立项 + 各自对拍。
+# 改它 = 口径变更,须先想清楚下游谁在读。
 # `stk_surv` 不去重:调研腿的贡献已被 `min(ev_surv_n, 1)` 封顶,去重与否不改 `ev_pos`
 # (`ev_surv_n` 原始列保留"接待机构家数"语义,是 L4 卡展示用的实数,不该被折叠)。
 _DEDUP_KEYS: dict[str, tuple[str, ...]] = {

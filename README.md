@@ -39,7 +39,6 @@ autoresearch/
   dataflows/   # vendor data tools (yfinance/FRED/...) + agents/utils (rating.py etc.)
   common/      # shared scoring primitives · sw_sector_map · uzi_lenses · vol_series
   trace/       # typed run trace: store (parquet stages + manifest) · schema
-  learning/    # closed loop: feedback_store · self_review · retro · stage_eval
   scan/        # full-market funnel: pipeline · stages/{l0,l1,l2} · agents · cli · parity
   analyze/     # single-ticker deep-dive: harvest · assemble
   macro/       # top-down macro: harvest · assemble

@@ -1,7 +1,6 @@
 """L4 descriptive per-stock context and base-rate rendering."""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pandas as pd
@@ -160,47 +159,6 @@ def _fund_mark(base: Path, code6: str) -> str:
     return (f"- **机构面(基金重仓,季度滞后)**:{n} 只基金持有,市值 {mkv_txt}"
             f"(环比 {d_txt};定期报告口径,滞后于当前,advisory 存在性≠方向)")
 
-def _precedent_mark(base: Path, code6: str, sector, gate_hint: str | None = None) -> str:
-    """跨票同型判例块(presence-gated:`precedents.db` 不存在 → "";异常降级空串,风格同
-    `_inst_mark`/`_seat_mark` 家族)。plan: 2026-07-11-hermes-selfimprove-plan.md Plan B Task 4;
-    design: 2026-07-11-recall-gate-pinned-config-design.md §5.2。
-
-    db 路径按 `base`(scan_dir,生产态 = `context/scan/<date>`)反推兄弟目录
-    `base.parent.parent/knowledge/precedents.db`——镜像 `learning.precedents` 模块自身
-    `context/{scan,knowledge}` 兄弟约定(同函数内 `render_dossier(scan_root=base.parent, ...)`
-    也是同一手法);零硬编码路径,tmp_path 天然隔离,不需 monkeypatch。
-
-    查 `learning.precedents.query`(近90日,按 sector + 可选 gate_hint AND 过滤)找跨票同型
-    历史判例,渲染「📚 判例(跨票同型,advisory)」块,每条一行(日期/代码/名称/结局摘要/fwd_2)。
-    用 `code6` 剔除同票命中——同票历史已由 `dossier`(R5 前科卡)覆盖,本块只负责"其它票"的
-    跨票同型旁证,两者并存不重复(design §5.2「与个股档案分工」)。advisory:不进分不设门;
-    token 预算 ≤400/卡(k≤3 + 单行短摘要天然封顶)。
-
-    gate_hint:P0 简报组装时尚无门型判定(OW三门是 subagent 读完深核才判的),多数调用点
-    传 None——拿不到就只按 sector 查,不强凑一个不可靠的门型猜测。
-    """
-    db_path = Path(base).parent.parent / "knowledge" / "precedents.db"
-    if not db_path.exists():
-        return ""
-    try:
-        from autoresearch.learning.precedents import query
-        sector_s = None if sector is None or pd.isna(sector) else (str(sector).strip() or None)
-        # k 留缓冲:剔除同票命中后仍够凑 top-3(跨票池通常够,凑不满也不报错,只是更短)。
-        rows = query(sector=sector_s, gate=gate_hint, k=8, days=90, db_path=db_path)
-        rows = [r for r in rows if str(r.get("code") or "").zfill(6) != code6][:3]
-    except Exception:  # noqa: BLE001 — 判例可选,缺了不挡简报
-        return ""
-    if not rows:
-        return ""
-    from autoresearch.common.ruler import MAIN_RULER  # Wave12-T12:标签点名当前尺(名实记档)
-    out = ["- **📚 判例(跨票同型,advisory)**:近90日同型 top-3(仅供旁证,不进分不设门)"]
-    for r in rows:
-        fwd = r.get("fwd_2")
-        fwd_txt = f"{fwd * 100:+.2f}%" if fwd is not None else "—"
-        out.append(f"  - {r.get('date') or '—'} {r.get('code') or '—'} {r.get('name') or '—'}"
-                   f" | {r.get('verdict_line') or '—'} | fwd_2({MAIN_RULER}) {fwd_txt}")
-    return "\n".join(out)
-
 def _dossier_summary_text(code6: str) -> str:
     """给 intel 内嵌用的档案摘要纯文本;不可注入 → ""(与卡注入同一事实源)。"""
     try:
@@ -232,111 +190,6 @@ def _dossier_summary_mark(code6: str) -> str:
         return "\n".join([head, block.strip(), tail])
     except Exception:  # noqa: BLE001 — 档案层可选,坏档不挡派发
         return ""
-
-def _base_rate_mark(base: Path, lane) -> str:
-    """🔁 基率行(presence-gated:`_l4_base_rates.json`〔`write_base_rates` 产〕缺 → ""）。
-
-    逐卡块内,拼 ≤3 项频率锚(brainstorm §5.2):该票 lane 的 L3→L4 高确信翻案率
-    (`by_lane`,cross_calib.flip_stats)+ OW 评级历史 T+2 胜率/均值(`by_rating["Overweight"]`,
-    buy_ledger 全库买单账;"过三门票" 的代理——rubric_rating 定义 OW 即三门皆过)。三项各自
-    独立 presence-gate(有则加,没有就跳),互不挡对方;n<3 已在 `write_base_rates` 写盘时
-    过滤掉(绝对禁注 floor,design 2026-07-12-selflearning-optimization-brainstorm.md §4
-    P0-3),这里只管"有没有条目"。数值本身是收缩估计,`n_tag` 按既有 ⚠ 阈值(=10)标薄样本
-    (双轨语义:门槛用硬 n,这里注入锚用收缩值+⚠提示,不再二值断供)。全部缺 → 整行不注。
-    """
-    p = Path(base) / "_l4_base_rates.json"
-    if not p.exists():
-        return ""
-    try:
-        import json
-        data = json.loads(p.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001 — 基率可选,缺了不挡简报
-        return ""
-    from autoresearch.learning.shrink import n_tag
-    parts: list[str] = []
-    lane_s = lane.strip() if isinstance(lane, str) and lane.strip() else None
-    if lane_s:
-        bl = (data.get("by_lane") or {}).get(lane_s)
-        if bl and bl.get("flip_rate") is not None:
-            parts.append(f"{lane_s} lane 高确信历史被 L4 翻案 "
-                        f"{bl['flip_rate']:.0%}{n_tag(bl.get('n'), _BASE_RATE_THIN_N)}")
-    ow = (data.get("by_rating") or {}).get("Overweight")
-    if ow:
-        if ow.get("win") is not None:
-            parts.append(f"OW 卡历史 T+2 胜率 {ow['win']:.0%}{n_tag(ow.get('n'), _BASE_RATE_THIN_N)}")
-        if ow.get("mean_fwd2") is not None:
-            parts.append(f"OW 历史 T+2 均值 {ow['mean_fwd2']:+.1%}")
-    if not parts:
-        return ""
-    return "🔁 基率:" + "｜".join(parts[:3])
-
-def write_base_rates(scan_dir: Path | str, min_n: int = 10) -> Path | None:
-    """L4 逐卡 🔁 基率锚落稿(presence-gated 消费方:`_base_rate_mark` 读此文件注入简报)。
-
-    从 `cross_calib.flip_stats`(近30 scan日,per lane 高确信翻案率**收缩估计**,列 lane/
-    n_hiconv/flip_rate/thin)+ `buy_ledger.roll` → `rating_base_rates`(全库 ≥OW 买单 T+2
-    胜率/均值,per rating,本函数对 `win2` 再收缩一次——`rating_base_rates` 本身仍回原始值,
-    供 `buy_ledger.md` 审计表按既有口径展示)聚 `_l4_base_rates.json`:
-    `{"by_lane": {lane: {"n", "flip_rate"}}, "by_rating": {rating: {"n", "mean_fwd2", "win"}}}`。
-
-    收缩公式 p̂=(n·p_桶+k·p_全局)/(n+k)(design 2026-07-12-selflearning-optimization-
-    brainstorm.md §4 P0-3,C9-C12);n<3(`shrink.MIN_N_INJECT`)绝对禁注——`flip_stats` 已把
-    这条 floor 烤进它自己的 `flip_rate` 列(本函数只需再检查是否 NaN);`by_rating` 侧的
-    floor 在本函数内独立判(`n_realized<3` 剔除)。`min_n`(默认10)不再是排除门槛,只是
-    `rating_base_rates` 自己的 `thin` 标记阈值(供 `_base_rate_mark` 的 `n_tag` 沿用同一惯例)。
-    任一数据源缺失/异常 → 该侧降级空字典,不挡另一侧、不挡落稿(mirror 本文件其余 `_xxx_mark`
-    presence-gated 风格)。
-
-    `scan_dir` = 当日 scan 目录(如 `context/scan/<date>`,与 `_l4_prompt_*.md` 同级);
-    跨日统计的 `scan_root` 由 `scan_dir.parent` 反推(mirror `_target_calib_mark` 的
-    `Path(base).parent.parent` 兄弟目录约定,这里只需上一级,因为 `flip_stats`/`roll` 的
-    `scan_root` 本身就是"逐日子目录的容器",不是再上一层的 `context/`)。两侧都空手(无
-    现场)→ 不写垃圾空骨架,返回 None;presence-gated 消费方按文件是否存在处理,行为一致。
-    """
-    from autoresearch.learning.shrink import MIN_N_INJECT, shrink as _shrink_fn, shrink_config
-
-    scan_dir = Path(scan_dir)
-    scan_root = scan_dir.parent
-    shrink_on, k = shrink_config()
-
-    by_lane: dict = {}
-    try:
-        from autoresearch.learning import cross_calib
-        flips = cross_calib.flip_stats(scan_root=scan_root, window=30)
-        for r in flips.itertuples(index=False):
-            if pd.isna(r.flip_rate):
-                continue
-            by_lane[str(r.lane)] = {"n": int(r.n_hiconv), "flip_rate": float(r.flip_rate)}
-    except Exception:  # noqa: BLE001 — L3 校准可选,缺了不挡落稿
-        pass
-
-    by_rating: dict = {}
-    try:
-        from autoresearch.learning import buy_ledger
-        ledger = buy_ledger.roll(scan_root=scan_root)
-        f2_all = (pd.to_numeric(ledger["fwd_2"], errors="coerce").dropna()
-                 if "fwd_2" in ledger.columns else pd.Series(dtype=float))
-        p_global_win = float((f2_all > 0).mean()) if len(f2_all) else None
-        for b in buy_ledger.rating_base_rates(ledger, min_n=min_n):
-            n = b["n_realized"]
-            if n < MIN_N_INJECT or b["mean2"] is None or b["win2"] is None:
-                continue
-            if shrink_on:
-                shrunk = _shrink_fn(b["win2"], n, p_global_win, k)
-                win = round(float(shrunk), 4) if shrunk is not None else b["win2"]
-            else:
-                win = b["win2"]
-            by_rating[b["rating"]] = {"n": n, "mean_fwd2": b["mean2"], "win": win}
-    except Exception:  # noqa: BLE001 — 评级基率可选,缺了不挡落稿
-        pass
-
-    if not by_lane and not by_rating:
-        return None
-    scan_dir.mkdir(parents=True, exist_ok=True)
-    out = scan_dir / "_l4_base_rates.json"
-    out.write_text(json.dumps({"by_lane": by_lane, "by_rating": by_rating},
-                              ensure_ascii=False, indent=2), encoding="utf-8")
-    return out
 
 def compose_funnel_brief(code: str, scan_dir: Path | str) -> str:
     """L4 **P0 定向**:从漏斗产物(L1_recall/L2/finalists)拼该票紧凑简报 markdown。
@@ -391,9 +244,6 @@ def compose_funnel_brief(code: str, scan_dir: Path | str) -> str:
         f"  - 最大风险:{_g(l3,'risk')}",
         f"  - 催化:{_g(l3,'catalyst')}",
     ]
-    br = _base_rate_mark(base, l3.get("lane"))
-    if br:
-        lines.append(br)
     try:                                     # 日历旗:解禁风险窗/预约披露日(事实日期非方向)
         from autoresearch.scan.calendar import calendar_flags
         lines += calendar_flags(base, code6)
@@ -414,25 +264,14 @@ def compose_funnel_brief(code: str, scan_dir: Path | str) -> str:
     fm = _fund_mark(base, code6)             # 机构面第二行:基金重仓(fund_hold.csv 在才注,presence-gated)
     if fm:
         lines.append(fm)
-    pcm = _precedent_mark(base, code6, ind, None)   # 跨票同型判例:precedents.db 在才注(presence-gated)
-    if pcm:
-        lines.append(pcm)
     sector_block = ""
-    try:                                     # Phase 3:行业 brief 地形段(同链摊销;无 brief → memo 行回退)
+    try:                                     # Phase 3:行业 brief 地形段(同链摊销;无 brief → 整段省略)
         from autoresearch.sector.brief import render_terrain_block
         sector_block = render_terrain_block(ind, base)
     except Exception:  # noqa: BLE001
         sector_block = ""
     if sector_block:
         lines.append(sector_block)
-    else:
-        try:                                 # 行业备忘录(记忆中层:行业级历史事实,非方向)
-            from autoresearch.learning.sector_memo import render_memo_line
-            ml = render_memo_line(ind)
-            if ml:
-                lines.append(ml)
-        except Exception:  # noqa: BLE001
-            pass
     brief = "\n".join(lines) + "\n"
     ctx = _market_ctx(base, ind)
     dsum = _dossier_summary_mark(code6)      # Wave3 ④:覆盖档案摘要(presence-gated,缺="")
@@ -454,27 +293,3 @@ def compose_funnel_brief(code: str, scan_dir: Path | str) -> str:
     parts = [p for p in (ctx, dsum, doss, dsecs, brief) if p]
     return "\n".join(parts)
 
-def _target_calib_mark(base: Path | str) -> str:
-    """📐 目标价基率锚行(presence-gated:`target_calib.json` 缺 → ""）。日级(非逐票),
-    整次派发只算一次,逐卡块内原样复用。
-
-    路径按 `base`(scan_dir,生产态 = `context/scan/<date>`)反推兄弟目录
-    `base.parent.parent/learning/target_calib.json`——镜像 `_precedent_mark` 的
-    `context/{scan,learning}` 兄弟约定,tmp_path 天然隔离,不需 monkeypatch。当日 regime
-    读 `base` 自己的 `meta.json`(缺文件/缺键 → 只报全体,同 regime 段跳过)。
-    """
-    p = Path(base).parent.parent / "learning" / "target_calib.json"
-    if not p.exists():
-        return ""
-    try:
-        import json
-
-        from autoresearch.learning.buy_ledger import target_calib_line
-        calib = json.loads(p.read_text(encoding="utf-8"))
-        regime = None
-        mp = Path(base) / "meta.json"
-        if mp.exists():
-            regime = json.loads(mp.read_text(encoding="utf-8")).get("regime")
-        return target_calib_line(calib, regime) or ""
-    except Exception:  # noqa: BLE001 — 锚可选,缺了不挡简报
-        return ""

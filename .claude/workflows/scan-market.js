@@ -203,7 +203,7 @@ const l2ok = await gate('l2-check',
   `test -s ${SD}/L2_gbdt_top200.csv && echo '{"ok":true}' || echo '{"ok":false,"reason":"L2 缺失"}'`, OK, 'Prelude')
 if (!l2ok || !l2ok.ok) {
   log('L2 缺失(universe 半途失败)→ 重试确定性前奏一次')
-  await bash(`${R} autoresearch.scan.prelude ${date} --skip retro_refresh,retro_pending,consensus`,
+  await bash(`${R} autoresearch.scan.prelude ${date} --skip consensus`,
     'prelude-retry', 'Prelude')
 }
 const g1 = await stageGate('GATE1', `${R} autoresearch.scan.gates gate1 ${date}`, 'gate1', 'Prelude')

@@ -33,7 +33,7 @@ def run_universe(monkeypatch, tmp_path, *, l2_n=20, recall_n=60, n_uni=300, seed
     - `weights_path` 指向 tmp_path 下必不存在的文件 → `pick_weights` 确定性回落内置
       `_PRIOR_WEIGHTS`,不读开发机可能存在的 `context/factor_lab/weights.json`
       (那是 gitignored、随本地跑动漂移的产物,测试不该依赖它是否存在)。
-    - `shadow=False`:本测试只关心主 L2 落盘,不需要影子变体那一整段。
+    (影子变体那一整段已随 2026-08-21 learning 层退役删除。)
 
     返回 outdir(含 L2_gbdt_top200.csv 等产物)。
     """
@@ -46,7 +46,7 @@ def run_universe(monkeypatch, tmp_path, *, l2_n=20, recall_n=60, n_uni=300, seed
     outdir = tmp_path / DATE
     U.run(DATE, outdir=outdir, recall_n=recall_n, l2_n=l2_n, recall_mode="multi",
          recall_channels=list(RECALL_CHANNELS),
-         weights_path=str(tmp_path / "no-such-weights.json"), shadow=False)
+         weights_path=str(tmp_path / "no-such-weights.json"))
     return outdir
 
 

@@ -519,30 +519,6 @@ def _zero_buy_mechanism(scan_dir: Path | str, n_cards: int) -> str:
             f"——早停卡按定义压 ≤Hold 且不写 OW三门段,不计入门柱直方图")
 
 
-def _abstention_verdict_line(scan_dir: Path | str) -> str:
-    """当前日缺 T+2 时明确 IMMATURE；已复盘重跑则展示验 hash 的裁决。"""
-    from autoresearch.learning.abstention_ledger import (
-        abstention_verdict_path,
-        load_abstention_verdict,
-    )
-
-    path = abstention_verdict_path(scan_dir)
-    if not path.exists():
-        return "日级弃权裁决: **IMMATURE**（T+2 尚未成熟）"
-    try:
-        verdict = load_abstention_verdict(path)
-    except Exception as exc:  # noqa: BLE001 — 坏事实必须在报告可见
-        return (
-            "日级弃权裁决: **INVALID**"
-            f"（{type(exc).__name__}: {exc}）"
-        )
-    return (
-        f"日级弃权裁决: **{verdict.status}**"
-        f"（+2pp机会 {verdict.n_opportunities}，"
-        f"数据质量 {verdict.data_quality}）"
-    )
-
-
 def _e6_readout_line(scan_dir: Path, *, n_ow: int) -> str | None:
     """E6 active 且当日决策文件在场 → 「研究评级(证据)· 相对 BUY(决策)」一行;否则 None(走 legacy)。
 
@@ -600,7 +576,6 @@ def render_funnel_readout(scan_dir: Path | str) -> str:
         lines.append(e6_line)
         if not buys:
             lines.append(f"  - 为什么没有 ≥OW 卡:{_zero_buy_mechanism(scan_dir, len(final))}")
-            lines.append(f"  - {_abstention_verdict_line(scan_dir)}")
     elif buys:
         lines.append(f"- **{len(buys)} 买**(≥OW):{_names(scan_dir, buys)}")
     else:
@@ -609,7 +584,6 @@ def render_funnel_readout(scan_dir: Path | str) -> str:
         lines.append(f"- **0 买**:{len(final)} 只 finalist 深核后无一进买单 —— "
                      f"{zh} regime 下当前采取空仓观望。")
         lines.append(f"  - 机制拆分:{_zero_buy_mechanism(scan_dir, len(final))}")
-        lines.append(f"  - {_abstention_verdict_line(scan_dir)}")
     downgraded = [c for c, v in vmap.items() if v["verdict"] == "降级"]
     if downgraded:
         lines.append(f"- **观察单**:{_names(scan_dir, downgraded)}(skeptic 降级,待触发复核)")

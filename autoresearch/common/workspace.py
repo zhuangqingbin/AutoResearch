@@ -78,6 +78,13 @@ def scan_dir(date) -> Path:
 
 
 def learning_root() -> Path:
+    """`context_<engine>/learning/` —— **目录名是历史遗留**,不再有闭环学习。
+
+    2026-08-21「整个 learning 层退役」后这里只剩三类东西:① 仍在写的
+    `usage_reconcile.jsonl`(token 计量 streak,不是学习)与 `temperature.csv`
+    (S1 情绪温度计,prelude 增量落盘);② 历史账本 jsonl/csv(按用户裁定原样保留,
+    无生产者);③ 若干离线审计报告的落点。**不改名**:改了历史文件就跟路径失联。
+    """
     return context_root() / "learning"
 
 

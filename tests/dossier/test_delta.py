@@ -121,22 +121,6 @@ def test_refresh_summary_line_preserves_blank_line_and_trailing_newline():
     assert refreshed.endswith("\n")                  # 文件仍以 \n 收尾
 
 
-def test_delta_refreshes_section7_with_track_block(tmp_path, monkeypatch):
-    import json
-
-    from autoresearch.dossier import delta, ledger
-    p = _mk_dossier()
-    lp = tmp_path / "t1.jsonl"
-    lp.write_text(json.dumps({"t": "2026-07-14", "code": "300857", "rating": "Underweight",
-                              "verdict": "准", "excess_ind": -0.03, "sealed": False},
-                             ensure_ascii=False) + "\n", encoding="utf-8")
-    monkeypatch.setattr(ledger, "_T1_LEDGER", lp)
-    delta.record_scan_delta("300857", "2026-07-24", rating="Hold")
-    text = p.read_text(encoding="utf-8")
-    assert "t1 快环战绩" in delta.section_body(text, 6)   # §7 尾战绩块
-    assert "t1 方向 1 笔 准1/不准0" in text               # 摘要判例行升级
-
-
 def test_record_scan_deltas_batch(tmp_path, monkeypatch):
     import json
 

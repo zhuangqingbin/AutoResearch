@@ -174,7 +174,7 @@ def _finalist_row(scan_dir: Path, fr: dict) -> dict:
 # 只跳空白。全语料 241 张带门柱段的卡里 **42 张(17.4%)** 因此被判成「三门全过」——
 # 方向还是单向的:**真失守被读成通过**。链路上的每一环都吃了这个错:
 #   decision_records 记 PASS → `decision_gate_bucket` 返回 None → 该票**根本不进门账本**;
-#   门柱直方图少数;`shadow_buys.binding` 空;`classify_first_death` 从 `L4_GATE_*` 掉到
+#   门柱直方图少数;影子买单的 binding 列空;首因分类从 `L4_GATE_*` 掉到
 #   `L4_RUBRIC_SCORE`/`DATA_UNDECIDABLE`;A11 的门归因 v3 全盘继承。
 # 症状很像「这道门最近没怎么拦人」,而事实是「解析器看不懂加粗」。
 _EMPHASIS = "*_`"
@@ -203,7 +203,7 @@ def _seg_has_mark(seg: str) -> bool:
 
 def gate_status(text: str) -> dict[str, bool] | None:
     """解析卡文『OW三门…』段 → {门: 是否✗失守};无门柱段(如早停卡)→ None。
-    门柱直方图与 learning.cross_calib 共用本函数(单一口径,防漂移)。
+    门柱直方图统一走本函数(单一口径,防漂移)。
 
     容错(漏斗 P0+P1 波 Task 2b 修复):①门名与 ✓/✗ 之间允许空白(l4-card.md 满卡模板 Rubric 行的
     真实写法「主力真在 ✗」带空格);②卡片正文可能多处出现"OW三门"字样(如先散文一句带过、文末

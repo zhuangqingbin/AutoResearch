@@ -14,7 +14,7 @@
   assemble 那个 bug 正落在这层:`--help` 会走进 `main()` 触发 NameError。
 
 Tier 2 的名单是 **实测快照做的回归锁**,不是「应该支持 --help」的主张。判据故意不用
-「文件里有没有 argparse」——`learning.retro` 手写 `--help` 分支却不用 argparse,
+「文件里有没有 argparse」——历史上有模块手写 `--help` 分支却不用 argparse,
 按那个启发式会被漏掉。`_NO_HELP_CLI` 里的豁免逐条注明**为什么**它合法地不认 `--help`,
 新增模块若想进豁免必须同样给理由(而不是"测试红了就加进来")。
 """

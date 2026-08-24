@@ -23,12 +23,12 @@ SCHEMA_SWITCH_V4 = "2026-08-07"   # 卡契约 v4 日期分界(T17 绑执行日�
 # 过 L0 门**的全体可交易票(`entry_tradable()` 折叠后的全集,含漏在 L0/L1/L2 的票,只要
 # 当日真能买、`REL_GAP_RULER` 有数就入分母)——不是仅 L0 过门的子集。这与本任务书 Interfaces
 # 一度写的「L0 可交易全集」字面冲突;冲突以用户裁定为准(此处引用的正是用户裁定原文
-# "全市场可交易等权"),不是被忽略的差异。理由:①`l3_marginal.day_frame` 的 `excess_2`
+# "全市场可交易等权"),不是被忽略的差异。理由:①边际分析的 `excess_2`
 # 市场基准(见下方 I-2 互指)同样不限于 L0,两条线人口口径需要一致,否则连"漏在 L0 的票
 # 相对市场表现如何"这种最基本的复盘问题都答不出来;②`rel_gap_sector` 的分母天然只含
 # 有 `industry` 的行(≈L0 过门票),若 `rel_gap_market` 改采 L0-only,两列人口会重新对齐,
 # 但代价是丢失"漏在 L0 的票相对全市场基准表现"这个读数——这正是本列存在的意义之一
-# (零买复盘/账本审计要看这个,见 `_rel_gap_cols` docstring)。留痕:`test_retro_rel_cols.py`
+# (零买复盘/审计要看这个)。留痕(该测试已随 2026-08-21 闭环退役删除):
 # 的 `test_missing_industry_makes_rel_gap_sector_nan_but_not_rel_gap_market` 断言了
 # L0-missing 但可交易的票确实会拉动市场均值(不是被静默排除),该断言即本裁定的可执行记录。
 #
@@ -43,7 +43,7 @@ REL_MARKET = "rel_gap_market"    # gap_c1_o2 − 当日全市场可交易(entry_
 REL_SECTOR = "rel_gap_sector"    # gap_c1_o2 − 同申万一级可交易等权均值(行业中性辅;缺行业/该行业当日无可交易成员→NaN,不猜)
 REL_GAP_RULER = "gap_c1_o2"      # 字面量,REL_MARKET/REL_SECTOR 的唯一口径来源;不要改用 MAIN_RULER(I-4)
 
-# I-2(final-review 2026-08-08/09,docstring 互指):`autoresearch.learning.l3_marginal.day_frame`
+# I-2(final-review 2026-08-08/09):边际分析的 `day_frame`(模块已随 2026-08-21 闭环退役删除)
 # 的 `excess_2` 是全仓另一个独立的市场基准(同一批可交易票的 MAIN_RULER **中位**,服务 L3
 # 内部反事实比较,跟随当前 MAIN_RULER),其 docstring 明文写"换基准就换了口径,跨模块比较
 # 立刻失真,所以这里不另造一个"——REL_MARKET/REL_SECTOR 确实是在造第二个,是刻意的:
@@ -83,7 +83,7 @@ def entry_tradable(frame: pd.DataFrame, ruler_name: str | None = None,
       或字符串解析不出真值(CSV 空单元格)→ 同样折 `default`,**不是**硬编码 False。
 
     默认 `default=True`("未知按可执行处理")是 2026-08-08 final-review C1 的裁定,与
-    `autoresearch.research.ruler_compare.gap_frame`(已过 review)的 `buyable_c1.fillna(True)`
+    原 `research.ruler_compare.gap_frame`(已随 2026-08-21 闭环退役删除)的 `buyable_c1.fillna(True)`
     同一选择 —— docstring 原话「未知按可执行处理,显式选择,镜像 `attribution.csv` 的
     `tradable = buyable.fillna(True) & MAIN_RULER.notna()`」,不为同一个可空布尔发明第二套
     NA 语义。

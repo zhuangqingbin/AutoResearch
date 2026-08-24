@@ -71,9 +71,9 @@ def _cache(endpoint: str, day: str, fetch_fn) -> pd.DataFrame:
     """(endpoint, day) → pickle 缓存;命中即读,否则拉取 + 落盘。
 
     空结果也缓存(避免重拉)——**除 `_NEVER_EMPTY` 端点外**。`daily` 的两个调用点
-    (harvest 的 plan_dates / retro.realized_returns 的 _trade_days)都只传交易日,
+    (harvest 的 plan_dates 等)都只传交易日,
     所以空 daily 只可能是瞬时拉取失败;把它落盘会永久毒化前向收益(fwd 全 NaN →
-    retro 当日"赢家 0"的假空结论)。已存在的毒化空 pickle 读时清除重拉。
+    当日"赢家 0"的假空结论)。已存在的毒化空 pickle 读时清除重拉。
     """
     fp = CACHE / endpoint / f"{day}.pkl"
     if fp.exists():
@@ -1014,7 +1014,7 @@ def ic_by_regime(panel: pd.DataFrame, min_dates: int = _IC_MIN_DATES,
                  t_gate: float = _IC_T_GATE) -> pd.DataFrame:
     """分 regime × 因子组的逐日截面 IC + t 值裁决表(Wave6 批C ②A)。纯函数,零 IO。
 
-    **为什么必须分桶**:07-21 `stage_eval.csv` 的 L2 排序 IC 对主尺是 −0.2225,而 117 日面板
+    **为什么必须分桶**:07-21 实测 L2 排序 IC 对主尺是 −0.2225,而 117 日面板
     的 momentum 也是负的(−0.0325)。但「全期负」有两种完全不同的成因:①这个因子真没用;
     ②risk_off 日的负信号把 trend 日的正信号**均值掩埋**了。二者的处方相反(前者该降权,
     后者该做 regime 条件化),而全局平均分不出来 —— `test_flat_washes_out_regime` 已用合成

@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import csv
-import importlib
 import json
 import shutil
 import sys
@@ -21,25 +20,11 @@ from autoresearch.scan.run_contract import sha256_json
 CONSUMER_RECEIPT_SCHEMA_VERSION = 1
 CONSUMER_STATE_SCHEMA_VERSION = 1
 RECEIPT_STATUSES = {"SUCCEEDED", "FAILED", "SKIPPED"}
+# 2026-08-21(用户裁定「整个 learning 层退役」):`RUN_FINALIZED` / `RETRO_FINALIZED` 两个
+# 事件下挂的 13 个学习账本 consumer 随闭环一并删除,outbox 只剩档案 δ 回写这一个真消费者。
+# 事件本身保留(`RUN_FINALIZED` 仍是发布收尾的语义锚,且 `artifact_index`/receipts 契约
+# 都挂在它上面);没有订阅者的事件走 `_expected_pairs` 天然产生零 pair,不报错。
 SUBSCRIPTIONS = {
-    "RUN_FINALIZED": {
-        "journal",
-        "buy_ledger",
-        "zero_buy_ledger",
-        "paper_nav",
-        "gate_ledger",
-        "earlystop_ledger",
-        "pinned_ledger",
-        "precedents",
-    },
-    "RETRO_FINALIZED": {
-        "abstention_ledger",
-        "cross_calib",
-        "ensemble_ledger",
-        "gate_ledger",
-        "l3_audit_ledger",
-        "zero_buy_ledger",
-    },
     "DOSSIER_DELTA_READY": {"dossier_delta"},
 }
 ConsumerHandler = Callable[[OutboxEvent, Path], object]
@@ -189,20 +174,6 @@ def initialize_consumer_state(scan_dir: Path | str) -> Path:
     return _write_consumer_receipts(scan_dir, {})
 
 
-def _module_main(module_name: str) -> ConsumerHandler:
-    def _handler(_event: OutboxEvent, _scan: Path) -> object:
-        module = importlib.import_module(f"autoresearch.learning.{module_name}")
-        return module.main()
-
-    return _handler
-
-
-def _precedents(_event: OutboxEvent, _scan: Path) -> object:
-    from autoresearch.learning.precedents import build_index
-
-    return build_index()
-
-
 def _dossier_delta(event: OutboxEvent, scan: Path) -> object:
     from autoresearch.dossier.delta import record_scan_delta
 
@@ -229,24 +200,7 @@ def _dossier_delta(event: OutboxEvent, scan: Path) -> object:
 
 
 def default_registry() -> dict[str, ConsumerHandler]:
-    names = (
-        "abstention_ledger",
-        "journal",
-        "buy_ledger",
-        "cross_calib",
-        "zero_buy_ledger",
-        "paper_nav",
-        "gate_ledger",
-        "earlystop_ledger",
-        "ensemble_ledger",
-        "l3_audit_ledger",
-        "pinned_ledger",
-    )
-    return {
-        **{name: _module_main(name) for name in names},
-        "precedents": _precedents,
-        "dossier_delta": _dossier_delta,
-    }
+    return {"dossier_delta": _dossier_delta}
 
 
 def _expected_pairs(
@@ -385,7 +339,7 @@ def safe_run_consumers(
 ) -> ConsumerRunResult | None:
     try:
         return run_consumers(scan_dir, **kwargs)
-    except Exception as exc:  # noqa: BLE001 — learning cannot block publication
+    except Exception as exc:  # noqa: BLE001 — consumers cannot block publication
         print(f"[post_run] consumer 调度失败: {exc}", file=sys.stderr)
         return None
 
@@ -418,12 +372,15 @@ def _run_identity_and_budgets(scan: Path) -> tuple[str, dict | None]:
     return contract.run_id, contract.stage_budgets
 
 
-def _bool(value: object) -> bool:
-    return str(value).strip().lower() in {"1", "true", "yes"}
-
-
 def _effectiveness(scan: Path, estimated_usd: float | None) -> dict:
-    """成本分母只读领域事实；缺成熟前向样本时诚实为零/`None`。"""
+    """成本分母只读领域事实。
+
+    2026-08-21(用户裁定「整个 learning 层退役」):原来三个分母里有两个
+    (`mature_decision_records` / `verified_correct_rejections`)算自
+    `retro/rejection_attribution.csv` —— 那个产物已无生产者,留着只会让两行恒为 0、
+    把「没量到」渲染成「一次都没对过」。两个分母连同它们的 USD/单位 一并删除,
+    只留 `final_buy_candidates`(源自 `decision_records.json`,活的)。
+    """
     decisions = {}
     decision_path = scan / "decision_records.json"
     if decision_path.exists():
@@ -431,33 +388,7 @@ def _effectiveness(scan: Path, estimated_usd: float | None) -> dict:
 
         decisions = load_decision_records(decision_path)
     final_buys = sum(record.proposal == "BUY" for record in decisions.values())
-    mature_codes: set[str] = set()
-    correct_rejections = 0
-    retro_path = scan / "retro" / "rejection_attribution.csv"
-    if retro_path.exists():
-        with retro_path.open(encoding="utf-8", newline="") as handle:
-            for row in csv.DictReader(handle):
-                code = str(row.get("code") or "").zfill(6)
-                mature = _bool(row.get("mature"))
-                if mature and code in decisions:
-                    mature_codes.add(code)
-                try:
-                    excess = float(row.get("excess_2") or "")
-                except (TypeError, ValueError):
-                    excess = None
-                if (
-                    mature
-                    and _bool(row.get("buyable"))
-                    and row.get("first_rejection_stage") != "BOUGHT"
-                    and excess is not None
-                    and excess <= -0.02
-                ):
-                    correct_rejections += 1
-    denominators = {
-        "mature_decision_records": len(mature_codes),
-        "final_buy_candidates": final_buys,
-        "verified_correct_rejections": correct_rejections,
-    }
+    denominators = {"final_buy_candidates": final_buys}
 
     def per(name: str) -> float | None:
         denominator = denominators[name]
@@ -467,14 +398,7 @@ def _effectiveness(scan: Path, estimated_usd: float | None) -> dict:
 
     return {
         "denominators": denominators,
-        "usd_per_mature_decision_record": per("mature_decision_records"),
         "usd_per_final_buy_candidate": per("final_buy_candidates"),
-        "usd_per_verified_correct_rejection": per(
-            "verified_correct_rejections"
-        ),
-        "verified_correct_rejection_definition": (
-            "mature & buyable & rejected & excess_2<=-2pp"
-        ),
     }
 
 
@@ -523,12 +447,8 @@ def render_run_observation(observation: dict) -> str:
         "",
         "| 成本效率分母 | 数量 | USD/单位 |",
         "|---|---:|---:|",
-        f"| 成熟 DecisionRecord | {denominators.get('mature_decision_records', 0)}"
-        f" | {_money(effectiveness.get('usd_per_mature_decision_record'))} |",
         f"| 最终 BUY 候选 | {denominators.get('final_buy_candidates', 0)}"
         f" | {_money(effectiveness.get('usd_per_final_buy_candidate'))} |",
-        f"| 已验证正确拒绝 | {denominators.get('verified_correct_rejections', 0)}"
-        f" | {_money(effectiveness.get('usd_per_verified_correct_rejection'))} |",
     ]
     warnings = observation.get("warnings") or []
     if warnings:
@@ -653,8 +573,8 @@ def publish_run_observation(
     # 与护照是同一个时刻的两个派生视图。生产默认仍是**影子**(mode=shadow):只写
     # `_relative_buy_decision.json`,不写 buy ledger、不改 publisher、不碰
     # decision_records;失败只打一行(`safe_write_decision`/`safe_verify_decision` 自带),
-    # 不能反过来阻断发布。前向观测的消费者是 `autoresearch.learning.relative_ledger`
-    # (夜间 `_ledgers`)。P0-2:`decision_write` 显式选写入语义 —— write 原子覆盖
+    # 不能反过来阻断发布。(前向观测账本 `relative_ledger` 已于 2026-08-21
+    # 随 learning 层退役删除。)P0-2:`decision_write` 显式选写入语义 —— write 原子覆盖
     # (writer-1);verify 现算校验,不一致时绝不覆盖、只留证据+报警(writer-2)。
     #
     # E6 转正瘦身波 task-2.2(2026-08-19):mode/exclude_pinned 从 `scan_config.jsonc` 的

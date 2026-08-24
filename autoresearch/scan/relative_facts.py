@@ -58,7 +58,7 @@ def relative_facts(decision: dict | None) -> dict:
         #                        (当日 **L0 过门票**);
         #   `eval_population`  = `rel_gap_market` 这一列的真分母 = **全市场可交易**
         #                        (`ruler.py` I-1 人口裁定,含漏在 L0 的票),评分时由
-        #                        `learning.relative_ledger.outcome_for` 另算,不在本产物里。
+        #                        评分时另算,不在本产物里。
         # 两数常年不等(2026-08-04 实测 4193 vs 5426),`relative_ledger` 明文「不可互换」。
         "decision_pool_n": market.get("n"),
         "eval_population": market.get("eval_population") or REL_MARKET_POPULATION,

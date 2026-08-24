@@ -86,13 +86,9 @@ def _read_jsonc(p: Path):
 # l3:两遍法分诊(design 2026-07-12-l3-merge-plan.md Task 1)——two_pass/pass1_target 由
 # `l3_select.prepare_l3_table` 消费;finalist_max 由 merge v3 消费(`write_finalists` 已接线,
 # cap=min(finalist_max, budget))。
-# learning:基率收缩估计(brainstorm 2026-07-12 §4 P0-3)——shrink/shrink_k 由
-# `autoresearch.learning.shrink.shrink_config` 消费,四消费点(l4_card.write_base_rates/
-# cross_calib.flip_stats/buy_ledger 的 target_calib/gate_ledger 的 tail_rate)各自读取。
-# 默认 shrink=true·shrink_k=15(新基线);本块是回滚杆,不是 opt-in。
 _TOP_WHITELIST = {
     "agents", "funnel", "pinned", "l4_intel", "l3",
-    "learning", "budgets", "performance",
+    "budgets", "performance",
     # 2026-08-11 配置单一事实源波:L0/L2/行业 brief 运行旋钮入白名单(消费点=knob() 解析,
     # 见各块注;jsonc 里每键必须标【生效点】,SKILL.md「配置」节列全表)。
     "l0", "l2", "sector",
@@ -110,7 +106,6 @@ _SUB_WHITELIST = {
     "pinned": {"cap", "ttl_days"},
     "l4_intel": {"enabled", "max_queries"},
     "l3": {"two_pass", "pass1_target", "finalist_max", "lowturn"},
-    "learning": {"shrink", "shrink_k"},
     "budgets": {
         "cache_hit_min", "stage_cost_usd", "stage_wall_seconds", "concurrency",
         "min_real_scans", "baseline_run",
@@ -304,7 +299,7 @@ def resolve_agent_config(cfg: dict, *, require_all: bool = True) -> dict:
     4. `require_all`(生产默认)时缺任一必填 role → `ValueError`,消息列出缺哪几个。
 
     `require_all=False` 供**局部编排**用(它仍然校验写了的那些,只是不要求写全 —— 但那样
-    产出的 resolved 是**残表**,不该落盘冒充当日全量)。历史上唯一的调用场景是 scan-retro
+    产出的 resolved 是**残表**,不该落盘冒充当日全量)。历史上唯一的调用场景是复盘会话
     拉 t1-review workflow;t1-review 已于 D3(2026-08-19,用户裁定 A5)退役,本参数暂无
     生产调用点,机制原样保留供未来局部编排复用。
     """

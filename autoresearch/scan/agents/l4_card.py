@@ -23,8 +23,6 @@ from autoresearch.scan.l4.prompts import (
     write_dispatch_pack,
     write_shared_instructions,
 )
-from autoresearch.scan.l4.context import _BASE_RATE_THIN_N  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
-from autoresearch.scan.l4.context import _base_rate_mark  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 from autoresearch.scan.l4.context import _cat_mark  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 from autoresearch.scan.l4.context import _dist_mark  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 from autoresearch.scan.l4.context import _dossier_summary_mark  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
@@ -34,11 +32,8 @@ from autoresearch.scan.l4.context import _inst_mark  # noqa: F401 — re-export/
 from autoresearch.scan.l4.context import _market_ctx  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 from autoresearch.scan.l4.context import _misread_mark  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 from autoresearch.scan.l4.context import _pledge_mark  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
-from autoresearch.scan.l4.context import _precedent_mark  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 from autoresearch.scan.l4.context import _seat_mark  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
-from autoresearch.scan.l4.context import _target_calib_mark  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 from autoresearch.scan.l4.context import compose_funnel_brief  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
-from autoresearch.scan.l4.context import write_base_rates  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 from autoresearch.scan.l4.parsers import parse_ratings_from_details  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 from autoresearch.scan.l4.parsers import pick_opportunity_candidates  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 from autoresearch.scan.l4.producers import _SLIM_ANCHORS  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)

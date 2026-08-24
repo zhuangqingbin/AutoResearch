@@ -5,18 +5,18 @@ design: docs/specs/2026-07-02-scan-observability-design.md §1
 
 一次 scan 的"体检报告 + 导航页":关键产物在位表、因子 NaN 降级、finalist 逐日重叠
 (churn,卡片复用的前置读数)、L4 阶段效能(早停/满卡/复用/P4 翻盘)、买单计数。
-retro 读 run_health.json 提示"勿把数据病当因子病";index.md 是第二天复盘的入口。
+index.md 是第二天回看的入口。
+
+2026-08-21(用户裁定「整个 learning 层退役」):`ledger_freshness`(账本新鲜度)与
+`retro_health`(复盘事实/consumer 积压)两节随闭环删除,`run_health` 相应少两个键。
 """
 from __future__ import annotations
 
 import json
 import re
-from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
-
-from autoresearch.common import workspace as ws
 
 # 关键产物在位表(缺 = 流程段没跑/失败;market_view 是可选段,缺了只提示不报错。
 # watchlist_status.csv 随观察单日检退役摘除,fb_20260714_002)
@@ -200,11 +200,9 @@ def _legacy_final_ratings(scan_dir: Path) -> dict[str, str]:
     ensemble(≥OW 买单复核 / pinned SELL 复核)那条腿漏了(Wave7 P1 发现)。后果:
     · sell_review 把 Sell 折回 Underweight 后,本函数仍报 Sell —— 07-24/07-27 的 300857 实锤,
       与同目录 `_final_ratings.json`(assemble 落的权威值)直接打架;
-    · ow_review 只向下折,一旦发生,`buy_ledger`/`count_buys`/`paper_nav`/`shadow_buys`
-      会把一张已被折成 Hold 的卡继续算作买单 = 幽灵买单。历史上尚未发生(全量重放 0 例),
-      所以既有账本没被污染 —— 但这是运气,不是设计。
-    `retro.py` 早已绕过本函数直读 `_final_ratings.json`(注释「P0-2 坏账③修复」),
-    那是在消费侧打补丁;本次修在源头,让绕道不再必要。
+    · ow_review 只向下折,一旦发生,`count_buys` 会把一张已被折成 Hold 的卡继续算作买单
+      = 幽灵买单。历史上尚未发生(全量重放 0 例),所以没被污染 —— 但这是运气,不是设计。
+    权威值是同目录的 `_final_ratings.json`(assemble 落盘);本函数与它保持同源。
     """
     scan_dir = Path(scan_dir)
     fin = _read(scan_dir / "finalists.csv")
@@ -275,74 +273,6 @@ def count_buys_with_source(scan_dir: Path) -> tuple[int, str | None]:
 def count_buys(scan_dir: Path) -> int:
     """最终买单数。shadow 期 = ≥OW(verify 折回后);active 期见 `count_buys_with_source`。"""
     return count_buys_with_source(scan_dir)[0]
-
-
-# D3 清欠(spec 2026-07-12 P0-1):这四本"存在但不会自己长大"的账本现已纳入 prelude._ledgers()
-# 白名单(见 autoresearch/scan/prelude.py),本节验它们是否真的被刷新。
-_D3_LEDGERS = ("channel_ledger", "gate_ledger", "zero_buy_ledger", "changelog_ledger")
-
-
-def ledger_freshness(scan_dir: Path, learning_root: Path | str | None = None) -> dict:
-    """账本新鲜度体检(P0-1 裁决法产物):复盘欠账日数 + 四账本 mtime 滞后 + 两本买单计数一致性。
-
-    - `pending_retro_days`/`pending_retro_list`:有 `retro/attribution.csv`(fwd 已实现,
-      `attribute()` 才会成功落盘)但无 `retro/done.json` 的天数——纯本地文件判定,**刻意不复用**
-      `retro.pending_days()`(它要连 `factor_lab._pro()`/交易日历,实测每次 ~0.5-0.8s;`run_health`
-      被 assemble/index_md 等到处调用,接上会把网络依赖/延迟传染到全仓库测试套件)。语义上是它的
-      保守子集(只数"已确认欠账"的天,不判"是否够资格复盘"这层日历逻辑,那是 prelude 里
-      `retro_pending` 步骤 + `_retro_input_nag` 的管辖)。
-    - `ledger_lag_days`:`_D3_LEDGERS` 各自报告 mtime 落后多少个 scan 日(从未生成过 → None)。
-    - `buy_count_consistent`/`buy_count_mismatches`:journal vs zero_buy_ledger 重叠日买单计数
-      是否一致——D5 口径统一后应恒为 True,留作日后再分叉的回归检测器;无重叠日 → None(非误判)。
-
-    presence-gated、每项各自 try/except:任一子计算失败不拖垮整体,退化为空/None。全函数零网络。
-    """
-    scan_dir = Path(scan_dir)
-    scan_root = scan_dir.parent
-    day_dirs = sorted((p for p in scan_root.iterdir() if p.is_dir() and p.name[:2] == "20"),
-                      key=lambda p: p.name) if scan_root.exists() else []
-    days = [p.name for p in day_dirs]
-
-    pending = sorted(p.name for p in day_dirs
-                     if (p / "retro" / "attribution.csv").exists()
-                     and not (p / "retro" / "done.json").exists())
-
-    troot = Path(learning_root) if learning_root else ws.reports_root() / "learning"
-    lag: dict[str, int | None] = {}
-    for name in _D3_LEDGERS:
-        p = troot / f"{name}.md"
-        if not p.exists():
-            lag[name] = None
-            continue
-        try:
-            mdate = datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d")
-            lag[name] = sum(1 for d in days if d > mdate)
-        except Exception:  # noqa: BLE001
-            lag[name] = None
-
-    consistent: bool | None = None
-    mismatches: list[str] = []
-    try:
-        from autoresearch.learning import (
-            journal as _journal_mod,  # lazy 防环
-            zero_buy_ledger as _zbl_mod,
-        )
-        jr, zr = _journal_mod.roll(scan_root), _zbl_mod.roll(scan_root)
-        if len(jr) and len(zr) and "buys" in jr.columns and "n_bought" in zr.columns:
-            jm, zm = jr.set_index("date")["buys"], zr.set_index("date")["n_bought"]
-            common = jm.index.intersection(zm.index)
-            for dte in common:
-                jv, zv = jm.loc[dte], zm.loc[dte]
-                if pd.notna(jv) and pd.notna(zv) and int(jv) != int(zv):
-                    mismatches.append(str(dte))
-            if len(common):
-                consistent = not mismatches
-    except Exception:  # noqa: BLE001
-        consistent = None
-
-    return {"pending_retro_days": len(pending), "pending_retro_list": pending,
-            "ledger_lag_days": lag, "buy_count_consistent": consistent,
-            "buy_count_mismatches": mismatches}
 
 
 def _json_object(path: Path) -> dict | None:
@@ -598,176 +528,6 @@ def post_run_health(scan_dir: Path) -> dict:
         }
 
 
-def retro_health(scan_dir: Path) -> dict:
-    """Validate retro facts and expose only retro consumer/shadow backlog."""
-    scan = Path(scan_dir)
-    retro = scan / "retro"
-    absent_fact = {"status": "ABSENT", "n_rows": 0, "error": None}
-    absent_verdict = {
-        "status": "ABSENT",
-        "verdict": None,
-        "data_quality": None,
-        "error": None,
-    }
-    absent_consumers = {
-        "status": "ABSENT",
-        "n_events": 0,
-        "expected": 0,
-        "succeeded": 0,
-        "pending": 0,
-        "pending_consumers": [],
-        "failed_consumers": [],
-    }
-    result = {
-        "status": "ABSENT",
-        "rejection": absent_fact,
-        "abstention": absent_verdict,
-        "gate_counts": {"unique": 0, "multi": 0, "unknown": 0},
-        "shadow_queues": {
-            "l3_audit": 0,
-            "earlystop_total": 0,
-            "earlystop_pending": 0,
-            "earlystop_completed": 0,
-        },
-        "retro_consumers": absent_consumers,
-        "errors": [],
-    }
-    if not retro.exists() and not (scan / "shadow").exists():
-        return result
-
-    rejection_path = retro / "rejection_attribution.csv"
-    rejection = None
-    if rejection_path.exists():
-        try:
-            rejection = pd.read_csv(rejection_path, dtype={"code": str})
-            required = {
-                "code",
-                "first_rejection_stage",
-                "gate_state_quality",
-            }
-            missing = sorted(required - set(rejection.columns))
-            if missing:
-                raise ValueError(
-                    "rejection attribution missing columns: " + ",".join(missing)
-                )
-            rejection["code"] = rejection["code"].astype(str).str.zfill(6)
-            if rejection["code"].duplicated().any():
-                raise ValueError("rejection attribution duplicate code")
-            attr_path = retro / "attribution.csv"
-            if attr_path.exists():
-                attr = pd.read_csv(attr_path, dtype={"code": str})
-                attr_codes = set(attr["code"].astype(str).str.zfill(6))
-                rejection_codes = set(rejection["code"])
-                if attr_codes != rejection_codes:
-                    raise ValueError(
-                        "rejection attribution universe mismatch"
-                    )
-            from autoresearch.learning.rejection_attribution import (
-                FIRST_DEATH_STAGES,
-            )
-
-            invalid_stages = sorted(
-                set(rejection["first_rejection_stage"].astype(str))
-                - FIRST_DEATH_STAGES
-            )
-            if invalid_stages:
-                raise ValueError(
-                    "invalid first rejection stages: "
-                    + ",".join(invalid_stages)
-                )
-            result["rejection"] = {
-                "status": "OK",
-                "n_rows": len(rejection),
-                "error": None,
-            }
-            stages = rejection["first_rejection_stage"].astype(str)
-            quality = rejection["gate_state_quality"].astype(str)
-            result["gate_counts"] = {
-                "unique": int(
-                    stages.isin(
-                        {
-                            "L4_GATE_MAIN",
-                            "L4_GATE_EARNINGS",
-                            "L4_GATE_VALUATION",
-                        }
-                    ).sum()
-                ),
-                "multi": int((stages == "L4_MULTI_GATE").sum()),
-                "unknown": int((quality == "UNKNOWN").sum()),
-            }
-        except Exception as exc:  # noqa: BLE001
-            result["rejection"] = {
-                **absent_fact,
-                "status": "INVALID",
-                "error": f"{type(exc).__name__}: {exc}",
-            }
-            result["errors"].append(result["rejection"]["error"])
-
-    verdict_path = retro / "abstention_verdict.json"
-    if verdict_path.exists():
-        try:
-            from autoresearch.learning.abstention_ledger import (
-                load_abstention_verdict,
-            )
-
-            verdict = load_abstention_verdict(verdict_path)
-            result["abstention"] = {
-                "status": "OK",
-                "verdict": verdict.status,
-                "data_quality": verdict.data_quality,
-                "error": None,
-            }
-        except Exception as exc:  # noqa: BLE001
-            result["abstention"] = {
-                **absent_verdict,
-                "status": "INVALID",
-                "error": f"{type(exc).__name__}: {exc}",
-            }
-            result["errors"].append(result["abstention"]["error"])
-
-    audit_path = scan / "shadow" / "l3_audit_candidates.csv"
-    if audit_path.exists():
-        try:
-            audit = pd.read_csv(audit_path, dtype={"code": str})
-            result["shadow_queues"]["l3_audit"] = len(audit)
-        except Exception as exc:  # noqa: BLE001
-            result["errors"].append(
-                f"l3 audit queue {type(exc).__name__}: {exc}"
-            )
-
-    outbox = scan / "outbox" / "events.json"
-    if outbox.exists():
-        try:
-            from autoresearch.scan.outbox import load_events
-            from autoresearch.scan.post_run import consumer_status
-
-            events = load_events(outbox)
-            if any(event.event_type == "RETRO_FINALIZED" for event in events):
-                result["retro_consumers"] = consumer_status(
-                    scan,
-                    event_types={"RETRO_FINALIZED"},
-                )
-        except Exception as exc:  # noqa: BLE001
-            result["errors"].append(
-                f"retro consumers {type(exc).__name__}: {exc}"
-            )
-
-    if result["errors"] or any(
-        item["status"] == "INVALID"
-        for item in (result["rejection"], result["abstention"])
-    ):
-        result["status"] = "INVALID"
-    elif result["retro_consumers"]["status"] == "BACKLOG":
-        result["status"] = "BACKLOG"
-    elif (
-        result["rejection"]["status"] == "OK"
-        or result["abstention"]["status"] == "OK"
-        or any(result["shadow_queues"].values())
-    ):
-        result["status"] = "OK"
-    return result
-
-
 def run_health(scan_dir: Path) -> dict:
     """一次 scan 的体检 dict(artifacts/counts/NaN 降级/churn/L4 阶段/meta 回显)。"""
     scan_dir = Path(scan_dir)
@@ -813,12 +573,10 @@ def run_health(scan_dir: Path) -> dict:
             "regime": meta.get("regime"), "l2_engine": meta.get("l2_engine"),
             "weights_source": meta.get("weights_source"),
             "churn": finalist_churn(scan_dir), "l4_phases": l4_phase_stats(scan_dir),
-            "ledger_freshness": ledger_freshness(scan_dir),
             "run_contract": run_contract_health(scan_dir),
             "stage_results": stage_results_health(scan_dir),
             "decision_records": decision_records_health(scan_dir),
-            "post_run": post_run_health(scan_dir),
-            "retro": retro_health(scan_dir)}
+            "post_run": post_run_health(scan_dir)}
 
 
 def write_run_health(scan_dir: Path) -> Path:
@@ -840,8 +598,7 @@ def index_md(scan_dir: Path, report_dir: Path) -> str:
               "/持仓/风险哨/昨日 delta/欠账)" if brief_ok else
               "- **读我(30 秒)**:`brief.md` **未生成** —— 速读层缺席(见 self_review 的 "
               "`brief·缺失` 条目),先读详细版"),
-             "- **详细版**:[summary.md](summary.md)(buy-list + 漏斗 + 各阶段概览;"
-              "机器消费者 t1_review / retro **不读**本文正文,它们读结构化文件)"]
+             "- **详细版**:[summary.md](summary.md)(buy-list + 漏斗 + 各阶段概览)"]
     cards = sorted((report_dir / "details").glob("*.md")) if (report_dir / "details").is_dir() else []
     if cards:
         lines.append(f"- **决策卡**({len(cards)} 张):" + "、".join(
@@ -853,8 +610,6 @@ def index_md(scan_dir: Path, report_dir: Path) -> str:
     ok = [a for a, v in h["artifacts"].items() if v]
     lines.append(f"- **staging(中间结果)**:`{scan_dir}/` — 在位:{('、'.join(ok)) or '—'}"
                  + (f";**缺**:{'、'.join(h['missing'])}" if h["missing"] else ""))
-    if (scan_dir / "retro").is_dir():
-        lines.append(f"- **复盘现场**:`{scan_dir}/retro/`(retro_input.md / attribution.csv)")
     prevs = sorted((p.name for p in report_dir.parent.iterdir()
                     if p.is_dir() and p.name < report_dir.name and (p / "summary.md").exists()),
                    reverse=True)

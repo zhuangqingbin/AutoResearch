@@ -11,7 +11,7 @@
 
 输入:`$CTX/sector/<date>/<行业>.json`(确定性 pack,数字不可编造;字段含 n_market/n_l2/
 median_pct_60d/median_pe/pe_p25/pe_p75/median_pb/median_np_yoy/median_roe/main_pos_frac/
-main_net_sum_yi/healthy_n/median_winner/leaders/calendar)+ sector_memo 行(若有,历史事实)。
+main_net_sum_yi/healthy_n/median_winner/leaders/calendar)。(原 sector_memo 历史事实行随 2026-08-21 learning 层退役删除。)
 落点:`$CTX/scan/<date>/sector_briefs/<行业>.md`。
 
 ```
@@ -41,18 +41,11 @@ banner 保留勿删。
 5. **龙头映射**:环节 × 代表公司事实表(**不给个股评级**——要评级对该票跑 stock-research);
 6. **研判结论**(standalone 报告专属,**不进机器契约**、不喂 L3/L4/ledger——仅供人读:情景 + 触发位。lite brief 已无此节,两档不再同构)。
 
-**收尾(闭环)**:
-```bash
-uv run --no-sync python - <<'PY'
-from autoresearch.learning.sector_memo import upsert_memo
-upsert_memo("<行业>", "<1–2 句研究结论(事实为主)>", "<date>")
-PY
-```
-(`sector_ledger.record_calls` 已随 D6 退役——行业方向记账现只有 `record_top3` 一条来源,
-不由任何 brief/报告驱动;full 深研收尾因此只剩 `upsert_memo` 一步。)
+**收尾**:无。(2026-08-21 用户裁定「整个 learning 层退役」:`sector_memo.upsert_memo`
+行业事实月度蒸馏与 `sector_ledger` 方向记账两条腿随闭环一并删除;full 深研跑完就是报告本身,
+不再往任何账本里记东西。)
 
 ## 与 scan-market 的衔接(编排事实)
 Stage 1(L2 后)与 L3 证据取数**同一条消息并发**;L4 派发前对 ≥2 只同行业 finalist 的未覆盖链
 补漏;消费(L3 地形行 / L4 简报注入)全部自动、presence-gated——无 brief 的日子 = 现状行为,
-parity 不破。行业方向叙事(L5 「🎯 看多行业 top3」+ `sector_ledger` 记账)完全走确定性 top3,
-与 brief 是否存在无关。
+parity 不破。行业方向叙事(L5 「🎯 看多行业 top3」)完全走确定性 top3,与 brief 是否存在无关。

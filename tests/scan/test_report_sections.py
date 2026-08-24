@@ -5,7 +5,7 @@
   ② 行业研判节 = 每行业**一行**地形首句 + 指向 `trace/sector_briefs/<行业>.md` 的链接,
      研判段全文不再嵌入(节字节上限 2,000B;文件本就单独发布在 trace/)
   ③ 经验/未决反馈节 = 表格化(id / 一句话 / guard 状态)
-  ④ `near_miss` 附录、诚实局限、成本观测原样保留;组合视角节增「旧 OW 基率」分账行
+  ④ 诚实局限、成本观测原样保留(`near_miss` 附录与「旧 OW 基率」分账行已随 2026-08-21 闭环退役删除)
      (与 brief ③ 同源渲染,定义断层不连线)
 
 合成 fixture,零网络;所有产物落 tmp_path。
@@ -124,58 +124,7 @@ def test_inject_dashboard_replaces_managed_block(md):
 
 # ───────────────────────────── ③ 经验节表格化 ─────────────────────────────
 
-def test_knowledge_note_is_a_table_with_id_and_guard(monkeypatch):
-    lessons = [
-        {"id": "ls_alpha", "scope": {"kind": "global", "value": "*"}, "confidence": 0.87,
-         "rule": "【勘误】漏斗对深跌票有逐级收紧的拒绝梯度;越往下游被拒的越是纯接刀。\n"
-                 "后面还有很长很长的第二段第三段,旧版把整段原文都倒进 summary。",
-         "guard": {"field": "winner_rate", "op": ">", "value": 90},
-         "mtm": {"support": 9, "refute": 0}},
-        {"id": "ls_beta", "scope": {"kind": "industry", "value": "银行Ⅱ"},
-         "confidence": 0.2, "rule": "用户明确不想要下跌趋势的票。",
-         "guard_na_reason": "偏好类,无数值判据", "mtm": {"support": 1, "refute": 2}},
-    ]
-    monkeypatch.setattr(rs, "_lessons_and_open_feedback",
-                        lambda rows: (lessons, [{"verdict": "process", "note": "n",
-                                                 "id": "fb_1"}]))
-    note = rs._knowledge_note([{"code": "300476", "sector": "元件"}])
-    assert note.startswith("## 📌 经验 / 未决反馈")
-    assert "| lesson | 一句话 | guard | conf | MTM |" in note
-    assert "| `ls_alpha` |" in note and "| `ls_beta` |" in note
-    assert "winner_rate>90" in note, "guard 状态必须落表(它是硬门的真身)"
-    assert "9/0" in note, "MTM support/refute 是降级依据,不能丢"
-    assert "后面还有很长很长的第二段" not in note, "全文留 context/knowledge/,不再进 summary"
-    assert "context/knowledge" in note, "必须告诉读者全文在哪(减层不减料)"
-    assert "漏斗对深跌票有逐级收紧" in note, "【勘误】旁注剥掉后必须还能取到规则正文"
-
-
-def test_gist_survives_a_whole_line_of_annotation():
-    """真数据形状:整个首行都是【…勘误…】旁注,规则正文在第二行。剥块不当 → 单元格空成 '—'。"""
-    rule = ("【2026-07-15 机制勘误 —— 原文把病因记成「L2 是动量训练的 GBDT champion」,"
-            "该模块已于 2026-07-13 整簇删除。现象仍在,归因需改口。】\n"
-            "漏斗对「深跌 + 主力净出」的超卖反转票有逐级收紧的拒绝梯度。\n第三行不该被取到。")
-    gist = rs._gist(rule)
-    assert gist != "—" and "漏斗对" in gist
-    assert "机制勘误" not in gist and "第三行" not in gist
-
-
-def test_knowledge_note_empty_store_is_still_silent(monkeypatch):
-    monkeypatch.setattr(rs, "_lessons_and_open_feedback", lambda rows: ([], []))
-    assert rs._knowledge_note([{"code": "300476"}]) == ""
-
-
 # ───────────────────────────── ④ 保留件 + 旧 OW 基率分账行 ─────────────────────────────
-
-def test_ow_base_line_is_split_account(tmp_path, monkeypatch):
-    monkeypatch.setattr(rs, "_ow_base_rate_for",
-                        lambda _root: {"n": 9, "n_realized": 3, "win2": 0.0,
-                                       "mean2": -0.007})
-    md = build_summary(_scan(tmp_path), _D, "1200", _F)
-    line = next(ln for ln in md.splitlines() if "旧 OW 基率" in ln)
-    assert "9 笔" in line and "0%" in line
-    assert "定义断层" in line and "不连线" in line
-    assert md.find("旧 OW 基率") > md.find("### 组合视角")
-
 
 def test_preserved_sections_survive_the_reorder(md):
     for anchor in ("## 诚实局限", "各阶段耗时 & 落盘字节", "精排(L3)入选",
@@ -262,36 +211,20 @@ def _fat_scan(tmp_path):
     return d
 
 
-def test_summary_total_bytes_regression_lock(tmp_path, monkeypatch):
-    """T26 Step 2 硬验收落成断言:summary 总字节 ≤ `rs.SUMMARY_MAX_BYTES`(38KB)。"""
-    lessons = [{"id": f"ls_{i}", "scope": {"kind": "global", "value": "*"},
-                "confidence": 0.8, "rule": _FAT_LESSON, "mtm": {"support": 9, "refute": 0}}
-               for i in range(12)]
-    fb = [{"id": f"fb_{i}", "verdict": "process", "note": "用户反馈" * 30} for i in range(9)]
-    monkeypatch.setattr(rs, "_lessons_and_open_feedback", lambda rows: (lessons, fb))
+def test_summary_total_bytes_regression_lock(tmp_path):
+    """T26 Step 2 硬验收落成断言:summary 总字节 ≤ `rs.SUMMARY_MAX_BYTES`(38KB)。
+
+    **鉴别力现状要说清楚**(2026-08-21 learning 层退役):原来这条用例带一个 ① 鉴别力探针
+    ——「同一份 fixture 用旧口径渲染必须真的撑破 38KB」,而旧口径的胖肉主要来自经验/未决
+    反馈节(12 条 lesson × 整段 rule 原文)。那一节已随 `feedback_store` 整节删除,探针剩下
+    的行业节只有 22KB,压不到门槛 —— 继续留着它就是个恒失败的假探针,故删。**② 契约本体
+    仍是真锁**:summary 涨过 38KB 这条用例照样变红。原 ③「减层不减料」断言的对象(12 条
+    lesson / 9 条反馈全在场)随该节一并作废。
+    """
     d = _fat_scan(tmp_path)
-
-    # ① 鉴别力证明:同一份 fixture 用旧口径渲染,必须真的撑破 38KB
-    #   D6(⚖A6)后行业研判节的新口径贡献 = 0 字节(整节退役,不是"降级成一行"),
-    #   所以 old_extra 只剩「旧行业节全部字节」+「经验节新旧差」两项。
     md_new = build_summary(d, _D, "1200", _F)
-    old_extra = (len(_old_style_sector_section(d).encode("utf-8"))
-                 + len(_old_style_knowledge_note([{"code": "300476"}]).encode("utf-8"))
-                 - len(rs._knowledge_note([{"code": "300476"}]).encode("utf-8")))
-    old_bytes = len(md_new.encode("utf-8")) + old_extra
-    assert old_bytes > rs.SUMMARY_MAX_BYTES, \
-        f"探针失效:旧口径只有 {old_bytes}B,压不到 {rs.SUMMARY_MAX_BYTES}B 门槛"
-
-    # ② 契约本体
     assert len(md_new.encode("utf-8")) <= rs.SUMMARY_MAX_BYTES, \
         f"summary {len(md_new.encode('utf-8'))}B > {rs.SUMMARY_MAX_BYTES}B(T26 交付量回退)"
-    # ③ 减层不减料:12 条 lesson / 9 条反馈一条不少。
-    #   (8 个行业的名字曾在此断言过"一条不少"——D6 后行业研判节整节退役,sector_briefs
-    #   的内容不再进入 summary 正文,该断言随契约本身一起作废,不是遗漏。)
-    for i in range(12):
-        assert f"`ls_{i}`" in md_new
-    for i in range(9):
-        assert f"`fb_{i}`" in md_new
 
 
 def test_summary_max_bytes_is_the_task_book_number():
@@ -317,32 +250,6 @@ def test_gate_hist_basis_note_pins_both_producer_names():
 
 
 # ─────────────── M-12:任务书 ④ 点名的保留件补断言 ───────────────
-
-def test_near_miss_banner_is_front_loaded_and_appendix_stays_at_tail(tmp_path, monkeypatch):
-    """①「差一点/弃权 banner 前置」+ ④「near_miss 附录原样保留」。
-
-    banner 必须排在背景节(📈 市场)**之前**,逐只附录仍留在文末 —— §R6:只给个案不给分母
-    会把读者推向绕门,两者的视觉层级不能合并。
-    """
-    from autoresearch.scan import near_miss
-    facts = near_miss.NearMissFacts(
-        date=_D, is_zero_buy=True,
-        shadow=[{"code": "300476", "name": "甲", "conviction": 72,
-                 "binding": ["主力真在"], "close": 5.2}],
-        gate_counts={"主力真在": 1, "业绩真兑现": 0, "估值不透支": 0},
-        gate_history={}, abstention=None, as_of_days=[_D])
-    monkeypatch.setattr(near_miss, "build", lambda *a, **k: facts)
-    md = build_summary(_scan(tmp_path), _D, "1200", _F)
-    banner_at, appendix_at = md.find("🎯 差一点"), md.find("🕯️ 影子观察附录")
-    assert banner_at > 0 and appendix_at > 0, "差一点 banner / 影子附录 丢了"
-    # 锚取必然在场的背景节(`## 📈 今日 A 股市场` 在合成盘 presence-gated 不出,拿它当锚
-    # 会 find→-1、断言恒真,又是一个假灯)
-    funnel_at = md.find("## 1. 漏斗(数量)")
-    assert funnel_at > 0
-    assert banner_at < funnel_at, "弃权 banner 未前置到决策主线"
-    assert appendix_at > md.find("## 📌 经验"), "逐只附录不该爬到决策主线"
-    assert near_miss.DISCLAIMER in md, "附录的「未过门,非建议」免责被丢了"
-
 
 def test_observation_anchor_survives_for_cost_section(md):
     """④「💸 成本观测」由 `post_run.inject_run_observation_section` 注在 `## 诚实局限` 之前;

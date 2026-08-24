@@ -112,9 +112,9 @@ gap 扣成本为正 —— **v1 影子期无已验证阈值(`SECOND_BUY_THRESHOL
 
   uv run --no-sync python -m autoresearch.scan.relative_buy <date>
 
-转正前体检(task-2.3,人读,不接线进任何自动化门):
-
-  uv run --no-sync python -m autoresearch.scan.relative_buy preflight
+(原 `preflight` verb〔E6 转正前体检〕于 2026-08-21 随前向观测账本 `relative_ledger` 一并
+ 删除 —— 它读的是那本前向观测账本,闭环退役后没有数据源。E6 本身不受影响:BUY 决策的
+ 写者/校验者 `write_decision`/`verify_decision` 从不依赖账本。)
 """
 from __future__ import annotations
 
@@ -270,7 +270,7 @@ def _universe(scan: Path) -> dict:
     **这不是 `rel_gap_market` 的人口**(B-1,2026-08-09 全支终审):本函数的 `members`
     只含**过了 L0 门**的票(`L1_scored_full.csv` 的行),它是决策层自己算四面分位与 P10
     流动性门用的分母;而 `rel_gap_market` 的真分母是**全市场可交易**(`ruler.py` I-1 人口
-    裁定,含漏在 L0/L1/L2 的票),由 `learning.relative_ledger.outcome_for` 在评分时另算。
+    裁定,含漏在 L0/L1/L2 的票),在评分时另算(该腿已随 learning 层退役删除)。
     两数常年不等(2026-08-04 实测 4193 vs 5426),`relative_ledger` 明文「不可互换……引用
     时必须点名是哪一个」。产物里对应 `benchmark.market` 的 `definition` / `eval_population`
     两个字段(I-2 已拆开,勿再合并)。
@@ -662,7 +662,7 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
                 # 是决策层自己算四面分位与 P10 流动性门用的分母(L0 过门票),而
                 # `rel_gap_market` 的真分母是**全市场可交易**(`ruler.py` T22 I-1 人口
                 # 裁定,含漏在 L0 的票;2026-08-04 实测 4193 vs 5426)。事后评分那个分母
-                # 由 `learning/relative_ledger.outcome_for` 在评分时另算,不在本产物里。
+                # 评分时另算,不在本产物里(该腿已随 learning 层退役删除)。
                 "definition": "决策层分位/流动性门的分母 = 当日 L0 可交易全集等权",
                 "column": REL_MARKET,
                 "eval_population": ("全市场可交易(entry_tradable,含漏在 L0 的票)"
@@ -902,7 +902,7 @@ def verify_decision(scan_dir: Path | str, date: str | None = None,
               f"(sha256={fresh_digest['sha256'][:12]}) —— 见 {mismatch_path.name}")
     print(f"[relative_buy] verify 不一致(盘上那份保持不变): {detail}", file=sys.stderr)
 
-    from autoresearch.learning.self_review import append_gate_fires
+    from autoresearch.scan.self_review import append_gate_fires
 
     append_gate_fires(scan, [{
         "check": MISMATCH_CHECK_NAME,
@@ -926,92 +926,9 @@ def safe_verify_decision(scan_dir: Path | str, date: str | None = None,
         return None
 
 
-#: preflight 只往回看几行契约错(近期健康度,不是全历史)。与 `summarize()` 的
-#: `n_contract_errors`(全账本)是两个不同的窗口,读的人不能混着比。
-PREFLIGHT_RECENT_N = 14
-#: preflight `last_3` 亮几行最近决策日(纯人读一眼,不是统计窗口)。
-PREFLIGHT_LAST_N = 3
-
-
-def preflight_report(ledger_path: str | Path | None = None) -> dict:
-    """转正前体检(task-2.3/2.5b):`{"summary", "last_3", "contract_errors_recent",
-    "contract_errors"}`。
-
-    用途:用户在批准 `scan_config.jsonc` 的 `relative_buy.mode` 由 `shadow` 翻
-    `active` 之前,人读一眼这份体检——**不接线进任何自动化门**,纯只读汇总,不影响
-    scan-market 主链任何一步。
-
-    - `summary` = `relative_ledger.summarize()` 的原样返回(全账本口径)。
-    - `last_3` = 账本(按日期升序落盘)尾 `PREFLIGHT_LAST_N` 行的 `{date, status,
-      code}`——⚠️ 账本 schema 是**扁平化**的单票字段(`status`/`code`),**没有**
-      `buys` 数组,消费时不得按数组读。
-    - `contract_errors_recent` = 尾 `PREFLIGHT_RECENT_N` 行里 `contract_errors`
-      **非空的行数**(与 `summarize()["n_contract_errors"]` 同一"行计数"口径,只是把
-      窗口收到最近 N 行,专看"最近是不是又开始出契约错了")。**未分类总数,保留字段
-      不删**,供既有消费者/测试兼容。
-    - `contract_errors`(task-2.5b 新增)= 按 `relative_ledger.contract_error_kind()`
-      分类后的计数 `{"real", "version_skew_supersede", "recent_real",
-      "recent_version_skew_supersede"}`。前两者是全账本口径(`real +
-      version_skew_supersede == summary["n_contract_errors"]`),后两者是近
-      `PREFLIGHT_RECENT_N` 行口径(`recent_real + recent_version_skew_supersede ==
-      contract_errors_recent`)——两条恒等式在测试里锁死。分类动机:2026-08-19 实测
-      真实账本 `n_contract_errors=8` 全部是同一种 I-6 良性留痕(`rule_version` 时序
-      错位,BUY 代码不变),混在一个未分类计数里会让人读体检把治理留痕误判成 8 条真
-      违规——`real` 才是需要人工核实的数字,`version_skew_supersede` 不是。
-
-    空/缺账本 → 不炸,四个键仍在场(`summary` 全零、`last_3=[]`、
-    `contract_errors_recent=0`、`contract_errors` 四值皆 0)——preflight 恰恰可能在
-    账本还很短的早期就被跑起来。
-    """
-    from autoresearch.learning.relative_ledger import (
-        CONTRACT_ERROR_KIND_REAL,
-        CONTRACT_ERROR_KIND_VERSION_SKEW_SUPERSEDE,
-        contract_error_kind,
-        load_ledger,
-        summarize,
-    )
-
-    rows = load_ledger(ledger_path)
-    last_n = rows[-PREFLIGHT_LAST_N:] if PREFLIGHT_LAST_N else []
-    last_3 = [{"date": row.get("date"), "status": row.get("status"),
-               "code": row.get("code")} for row in last_n]
-    recent = rows[-PREFLIGHT_RECENT_N:] if PREFLIGHT_RECENT_N else []
-    contract_errors_recent = sum(1 for row in recent if row.get("contract_errors"))
-    kinds_full = [contract_error_kind(row) for row in rows]
-    kinds_recent = [contract_error_kind(row) for row in recent]
-    contract_errors = {
-        "real": kinds_full.count(CONTRACT_ERROR_KIND_REAL),
-        "version_skew_supersede": kinds_full.count(CONTRACT_ERROR_KIND_VERSION_SKEW_SUPERSEDE),
-        "recent_real": kinds_recent.count(CONTRACT_ERROR_KIND_REAL),
-        "recent_version_skew_supersede":
-            kinds_recent.count(CONTRACT_ERROR_KIND_VERSION_SKEW_SUPERSEDE),
-    }
-    return {"summary": summarize(rows), "last_3": last_3,
-            "contract_errors_recent": contract_errors_recent,
-            "contract_errors": contract_errors}
-
-
-def _main_preflight(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(
-        description="E6 转正前体检(preflight):人读 relative_buy 账本 summarize + "
-                    f"尾{PREFLIGHT_LAST_N}行 + 近{PREFLIGHT_RECENT_N}行契约错计数")
-    parser.add_argument("--ledger", default=None,
-                        help="账本路径覆盖(缺省 = relative_ledger.LEDGER_PATH)")
-    args = parser.parse_args(argv)
-    print(json.dumps(preflight_report(args.ledger), ensure_ascii=False, sort_keys=True))
-    return 0
-
-
 def main(argv: list[str] | None = None) -> int:
-    """CLI:默认动作(无 verb)构建并写入当日决策文档;`preflight` verb 出体检 JSON。
-
-    向后兼容锁:`main([<scan>])`(没有 verb 的旧唯一形态)必须继续原样工作——第一个
-    词只要不是已知 verb 就当作隐式的默认动作,不强改成子命令结构逼旧调用方都加前缀。
-    """
+    """CLI:构建并写入当日决策文档。"""
     raw = list(argv if argv is not None else sys.argv[1:])
-    if raw[:1] == ["preflight"]:
-        return _main_preflight(raw[1:])
-
     parser = argparse.ArgumentParser(
         description="统一相对决策层 finalizer v1(影子;确定性、零 LLM、零联网)")
     parser.add_argument("scan", help="分析日(YYYY-MM-DD)或 scan 目录")
