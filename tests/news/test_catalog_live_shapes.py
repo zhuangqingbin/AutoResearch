@@ -304,8 +304,12 @@ def test_prelude_step_is_wired_and_reads_catalog():
     import inspect
 
     from autoresearch.scan import prelude
+    # 2026-08-26:步骤表提成 `STEP_NAMES` 常量 + `impls` 映射后,原来的文本匹配失效。
+    # 换成**更强**的两条结构断言:名字在清单里,且清单里的每个名字都有实现
+    # (名字有、实现没有 → `run_prelude` 里 `impls[n]` 当场 KeyError,不静默少跑一步)。
+    assert "news_catalog" in prelude.STEP_NAMES
     src = inspect.getsource(prelude.run_prelude)
-    assert '("news_catalog", _news_catalog)' in src
+    assert '"news_catalog": _news_catalog' in src
     assert "market_heat_eligible" in src, "报表行必须区分市场口径与 selective"
     # I5:历史腿(snapshot_inferred)入没入目录必须在报表行上看得见 —— 首版整条缺席
     # 而报表行照样绿,正是因为它只报总数、不报 basis 构成。

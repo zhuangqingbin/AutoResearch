@@ -5,6 +5,7 @@ spec: docs/specs/2026-07-03-scan-run-reliability-design.md §2
 from __future__ import annotations
 
 from autoresearch.common import workspace as ws
+from autoresearch.scan.prelude import STEP_NAMES
 from autoresearch.scan.prelude import _run_steps
 
 
@@ -21,10 +22,11 @@ def test_run_steps_isolation():
     assert res[0]["note"] == "好" and "炸" in res[1]["note"]
 
 
-#: 2026-08-21 learning 层退役后 prelude 只剩 7 步;这里跳掉除 temperature 外的全部
-#: (原常量还列着 retro_refresh/retro_pending/ledgers 三个已删步骤)。
-_SKIP_ALL_BUT_TEMPERATURE = ("consensus", "universe", "calendar", "catalyst",
-                             "menu", "dossier_pool", "news_catalog")
+#: 跳掉除 temperature 外的全部步骤。**从生产的 `STEP_NAMES` 派生**,不再手抄 ——
+#: 手抄清单曾经要在两个测试文件里各维护一份,加一步漏改一份就把「只验缺席」的用例弄红,
+#: 而单跑一份测试看不见另一份(记忆:prelude-step-two-skip-lists)。步骤清单本身由
+#: `test_step_names_inventory` 显式锁住,派生不会让「悄悄加了一步」变哑。
+_SKIP_ALL_BUT_TEMPERATURE = tuple(n for n in STEP_NAMES if n != "temperature")
 
 
 def test_temperature_step_reports_score_and_phase(tmp_path, monkeypatch):
@@ -74,13 +76,8 @@ def test_run_prelude_writes_succeeded_stage_result(tmp_path, monkeypatch):
     from autoresearch.scan.stage_result import load_stage_result
 
     monkeypatch.chdir(tmp_path)
-    results = run_prelude("2026-07-28", skip=(
-        "preflight",
-        "retro_refresh", "retro_pending", "t1_pending", "learning_health",
-        "consensus", "temperature", "universe", "calendar", "catalyst",
-        "menu", "ledgers", "dossier_pool",
-        "news_catalog",              # Wave12-T35 新步骤;本测试要的是"零步骤"的形状
-    ))
+    # 本测试要的是「零步骤」的形状 → 跳全部(从生产清单派生,加步骤不必改这里)
+    results = run_prelude("2026-07-28", skip=STEP_NAMES)
     stage = load_stage_result(
         tmp_path / ws.scan_root() / "2026-07-28" / "stage_results" / "prelude.json"
     )
@@ -106,3 +103,43 @@ def test_run_prelude_writes_degraded_stage_result(tmp_path, monkeypatch):
     assert stage.status == "DEGRADED"
     assert stage.metrics == {"n_failed": 1, "n_steps": 2}
     assert stage.warnings == ["universe: RuntimeError: boom"]
+
+
+def test_step_names_inventory():
+    """步骤清单显式锁 —— skip 清单改成派生之后,这里是「悄悄加/删了一步」的唯一哨兵。
+
+    加步骤是合法动作,但必须**在这里露面**(改这一行 = 声明「我知道我在改 prelude 的
+    步骤集」),否则派生就把「忘了同步」和「偷偷改了」一起变哑了。
+    """
+    assert STEP_NAMES == (
+        "consensus", "temperature", "universe", "calendar", "catalyst", "menu",
+        "l4_rejection", "outcome_fill", "dossier_pool", "news_catalog",
+    )
+
+
+def test_every_step_name_has_an_impl(tmp_path, monkeypatch):
+    """`STEP_NAMES` 里有名字却没实现 → `run_prelude` 当场 KeyError(而不是静默少跑一步)。
+    这条用例正着证明:全跳时不炸,说明名字与实现是配齐的映射。"""
+    from autoresearch.scan.prelude import run_prelude
+    monkeypatch.chdir(tmp_path)
+    assert run_prelude("2026-07-28", skip=STEP_NAMES) == []
+
+
+def test_outcome_fill_step_runs_and_is_skippable(tmp_path, monkeypatch, capsys):
+    """结果账本步骤(2026-08-26 §4.4):跑得起来、可跳、且**不写当日 staging 的决策面**。"""
+    from autoresearch.scan import outcome as _outcome
+    from autoresearch.scan.prelude import run_prelude
+
+    monkeypatch.chdir(tmp_path)
+    calls = []
+    monkeypatch.setattr(_outcome, "fill",
+                        lambda **kw: calls.append(kw) or {"filled": 2, "skipped": 1, "rows": 7,
+                                                          "runs": ["r1", "r2"]})
+    monkeypatch.setattr(_outcome, "ledger_line", lambda *a, **k: "结果账本:攒样本 2/20")
+    only = tuple(n for n in STEP_NAMES if n != "outcome_fill")
+    res = run_prelude("2026-07-28", skip=only)
+    assert [r["step"] for r in res] == ["outcome_fill"]
+    assert res[0]["ok"] and "回填 2 run" in res[0]["note"]
+    assert calls == [{"now": "2026-07-28"}]
+    assert run_prelude("2026-07-28", skip=STEP_NAMES) == []      # 可跳
+    capsys.readouterr()

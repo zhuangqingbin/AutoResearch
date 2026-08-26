@@ -9,16 +9,13 @@ import pytest
 from autoresearch.common import workspace as ws
 from autoresearch.scan import prelude
 from autoresearch.scan.prelude import run_prelude
+from autoresearch.scan.prelude import STEP_NAMES
 
 # all_steps 除 dossier_pool 外的全部步名——从源码 autoresearch/scan/prelude.py:run_prelude
-# 现场抄录(2026-07-23,11 个):retro_refresh/retro_pending/t1_pending/learning_health/
-# consensus/temperature/universe/calendar/catalyst/menu/ledgers。
-_SKIP_ALL_BUT_DOSSIER_POOL = ("preflight",
-                              "retro_refresh", "retro_pending", "t1_pending", "learning_health",
-                              "consensus", "temperature", "universe", "calendar", "catalyst",
-                              "menu", "ledgers",
-                              "news_catalog",   # Wave12-T35 新步骤
-                              "l4_rejection")   # 2026-08-22 批 (c) 新步骤(拒绝价值日读)
+# 跳掉除 dossier_pool 外的全部。**从生产 `STEP_NAMES` 派生**(2026-08-26)——
+# 此前是现场手抄的第二份清单,与 test_prelude.py 那份必须同改,漏一份就红(记忆:
+# prelude-step-two-skip-lists)。
+_SKIP_ALL_BUT_DOSSIER_POOL = tuple(n for n in STEP_NAMES if n != "dossier_pool")
 
 
 def test_prelude_has_dossier_pool_step(tmp_path, monkeypatch):

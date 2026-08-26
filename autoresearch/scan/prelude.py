@@ -24,6 +24,22 @@ from pathlib import Path
 
 from autoresearch.common import workspace as ws
 
+#: prelude 步骤的**顺序与去留的单一事实源**(2026-08-26)。
+#:
+#: 为什么提成模块常量:此前步骤表内联在 `run_prelude` 里,而测试侧维护着**两份手写的
+#: skip 清单**(`test_prelude.py` 与 `test_prelude_pool.py`)—— 加一步就得同改两处,漏一处
+#: 就把「只验缺席」的用例弄红,而且单跑一份测试根本看不见另一份(记忆:
+#: `prelude-step-two-skip-lists`)。现在两份测试都从这里派生 skip 集合,加步骤不再需要改它们;
+#: **步骤清单本身**由 `tests/scan/test_prelude.py::test_step_names_inventory` 显式锁住 ——
+#: 派生消灭的是「忘了同步」的红,不是「悄悄加了一步没人知道」的哑。
+STEP_NAMES = (
+    "consensus", "temperature", "universe", "calendar", "catalyst", "menu",
+    "l4_rejection",     # 2026-08-22 批 (c):拒绝价值日读(读历史不读当日)
+    "outcome_fill",     # 2026-08-26 §4.4:结果账本回填(只记不学;读历史不读当日)
+    "dossier_pool",
+    "news_catalog",     # Wave12-T35:纯读目录健康,不喂任何决策面
+)
+
 
 def lowturn_line(res: dict) -> str:
     """低位转强三段到货的汇总屏片段(2026-08-22)。三键缺 = 两把开关全关 → 空串(parity)。
@@ -467,15 +483,26 @@ def run_prelude(date: str, regime_aware: bool | None = None, skip: tuple[str, ..
             print(f"[prelude] ✗ _l4_rejection_readout.json 落盘失败: {e!r}", file=sys.stderr)
         return rejection_line(d)
 
-    all_steps = [("consensus", _consensus), ("temperature", _temperature),
-                 ("universe", _universe), ("calendar", _calendar),
-                 ("catalyst", _catalyst), ("menu", _menu),
-                 # 2026-08-22 批 (c):拒绝价值日读(menu 之后;读历史不读当日;--skip l4_rejection 可跳)
-                 ("l4_rejection", _l4_rejection),
-                 ("dossier_pool", _dossier_pool),
-                 # Wave12-T35:纯读 news_catalog 出一行覆盖/freshness/非空率;
-                 # 不喂任何决策面(三个 B 类消费接口本波仍全关)。
-                 ("news_catalog", _news_catalog)]
+    def _outcome_fill():
+        """结果账本回填(2026-08-26 §4.4):把已发布 run 的推荐票逐只补上事后读数。
+
+        **只记不学**:不回注 prompt、不改权重/门/评级、不产 proposal;读数只进汇总屏这一行
+        与 `chain_view` 的 ⑩ 段,**不进 brief、不喂任何 agent**(同 l4_rejection 的边界)。
+        增量幂等:已 `complete` 的 run 直接跳过,所以每天成本只与「昨天新出的 + 还没成熟的」
+        成正比。`--skip outcome_fill` 可跳。
+        """
+        from autoresearch.scan.outcome import fill, ledger_line
+        res = fill(now=date)
+        return f"回填 {res['filled']} run / 跳过 {res['skipped']} · {ledger_line()}"
+
+    impls = {"consensus": _consensus, "temperature": _temperature,
+             "universe": _universe, "calendar": _calendar, "catalyst": _catalyst,
+             "menu": _menu, "l4_rejection": _l4_rejection,
+             "outcome_fill": _outcome_fill, "dossier_pool": _dossier_pool,
+             "news_catalog": _news_catalog}
+    # 顺序与去留的**单一事实源**是模块常量 `STEP_NAMES`(见其旁注:两份手写 skip 清单的坑)。
+    # 名字在 STEP_NAMES 里却没有实现 → 这里 KeyError 当场炸(响亮),不静默少跑一步。
+    all_steps = [(n, impls[n]) for n in STEP_NAMES]
     results = _run_steps([(n, f) for n, f in all_steps if n not in skip])
 
     # 汇总屏:打印 + 落盘(Wave5 ①)。落盘是为了绕开 scan-market.js「只回报 stdout 末 15 行」
