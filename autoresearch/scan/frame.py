@@ -193,6 +193,17 @@ def build_market_frame(analysis_date: str, *, cap_floor_yi: float | None = None,
 # ───────────────────────── CLI:盘前哨兵预告(零 LLM) ─────────────────────────
 
 
+def _prompt_hashes() -> dict:
+    """prompt 本体的内容指纹(现场留存波 R3)。留存层故障不该挡住 Stage 0 —— 读不到就
+    诚实空表(空表 = 「没记」,不是「干净」;`git_dirty` 那条腿仍然在)。"""
+    try:
+        from autoresearch.scan.retention import prompt_hashes
+        return prompt_hashes()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[frame] ⚠️ prompt_hashes 跳过:{type(exc).__name__}: {exc}", file=sys.stderr)
+        return {}
+
+
 def _atomic_write_json(path: Path | str, payload: dict) -> Path:
     """JSON 原子落盘:先写 `.tmp` 再 `os.replace`(同目录换名,POSIX 原子)。
 
@@ -322,6 +333,10 @@ def main(argv: list[str] | None = None) -> int:
                 "pinned_ttl_days": pinned_ttl,
             },
             artifact_schema_versions=artifact_schema_versions(),
+            # v2(2026-08-26 现场留存波):prompt 本体的内容指纹。`git_sha` 只说 HEAD 在哪,
+            # 而 agent def **未提交也会生效**(会话启动装载工作树那一份)。`git_dirty`/
+            # `dirty_paths` 由 `RunContract.build` 自己探(默认 None = 现探)。
+            prompt_hashes=_prompt_hashes(),
         )
         echo_dir = ws.scan_root() / analysis_date
         echo_dir.mkdir(parents=True, exist_ok=True)

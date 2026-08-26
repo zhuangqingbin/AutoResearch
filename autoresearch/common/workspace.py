@@ -30,6 +30,12 @@ from pathlib import Path
 
 ENGINES = ("claude", "codex")
 
+#: 2026-08-11 引擎隔离**之前**的 context 根名。历史产物(如 08-11 前的 `_l4_tasks.json`,
+#: 实测 113 处)把路径记成裸 `context/…`,那个根今天不存在、文件却还在 —— 读侧要做前缀
+#: 重映射(`scan/retention.resolve_recorded_path`)。名字放这里,是因为本模块是**根名的
+#: 唯一事实源**,包括已经作废的那个;放消费点就是又一处裸根字面量。
+LEGACY_CONTEXT_ROOT = "context"
+
 
 def detect_engine(environ=None) -> str:
     """按 docstring 的四级优先返回 'claude' | 'codex';非法显式值直接 raise(不静默回落)。"""

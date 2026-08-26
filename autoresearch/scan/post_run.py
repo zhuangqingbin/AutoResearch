@@ -588,15 +588,17 @@ def publish_run_observation(
     # 这种半开状态,那是本波要防的分家的另一种形状。
     from autoresearch.scan.relative_buy import configured_relative_buy
 
-    _rb_mode, _rb_exclude_pinned, _ = configured_relative_buy()
+    _rb_mode, _rb_exclude_pinned, _, _rb_pool = configured_relative_buy()
     if decision_write == "write":
         from autoresearch.scan.relative_buy import safe_write_decision
 
-        safe_write_decision(scan, mode=_rb_mode, exclude_pinned=_rb_exclude_pinned)
+        safe_write_decision(scan, mode=_rb_mode, exclude_pinned=_rb_exclude_pinned,
+                            pool=_rb_pool)
     else:
         from autoresearch.scan.relative_buy import safe_verify_decision
 
-        safe_verify_decision(scan, mode=_rb_mode, exclude_pinned=_rb_exclude_pinned)
+        safe_verify_decision(scan, mode=_rb_mode, exclude_pinned=_rb_exclude_pinned,
+                             pool=_rb_pool)
     from autoresearch.scan.stage_result import safe_record_stage_result
 
     safe_record_stage_result(
@@ -637,6 +639,17 @@ def publish_run_observation(
             scan / "_budget_observation.json",
             trace / "_budget_observation.json",
         )
+        # 现场留存复跑(2026-08-26 §4 R1/R5):observe 是**最后一个**写 run 目录的步骤 ——
+        # 它刚写完 token_usage.md / 刷新了 artifact_index 与 _budget_observation,而
+        # `_token_usage.json` 也是此刻才在 staging 里出现。发布时那次镜像看不到它们,
+        # 所以这里再镜像一次并**重写清单**(否则清单会把 observe 自己的产物报成 extra)。
+        # 幂等:同输入两次调用结果一致。失败只留痕,不改变 observe 的返回。
+        with contextlib.suppress(Exception):
+            from autoresearch.scan.retention import retain
+
+            ret = retain(scan, report)
+            if ret["errors"]:
+                print(f"[post_run] ⚠️ 现场留存:{'; '.join(ret['errors'])}", file=sys.stderr)
     return observation
 
 

@@ -446,6 +446,18 @@ def _run_publish(analysis_date: str, scan_dir: Path | None = None,
     # 提前跑会永远写成「未生成」(FN-1 家族:探针读还没生成的产物)。
     with contextlib.suppress(Exception):
         (out_base / "index.md").write_text(_health.index_md(scan_dir, out_base), encoding="utf-8")
+    # ── 现场留存(2026-08-26 设计稿 §4;R1 镜像 + R2 run 外输入 + R5 清单)────────────
+    # **必须是本函数的最后一步**:上面每一段都还在往 staging 写(build_summary 落
+    # `_final_ratings`/`decision_records`/`gate_fires`、publish_run_observation 落
+    # `_relative_buy_decision`、brief 落 `_brief_sources`、health 刷 `run_health`)。
+    # 早一行跑 = 镜像到半成品,而那正是本波要修的病(同族:「brief 读了 relative_buy 的
+    # 半成品」)。CP7 的 `post_run observe` 会再跑一次(那时 `_token_usage.json` 才有),
+    # 两次都幂等。`retain` 自己吞异常并分类留痕 —— 留存是加法,不该有能力毁掉一次扫描。
+    from autoresearch.scan.retention import retain
+    _ret = retain(scan_dir, out_base)
+    print(f"[L5 整合] 现场 → trace/staging {_ret['mirrored']} 件 · "
+          f"inputs {_ret['inputs']} · MANIFEST {'✓' if _ret['manifest'] else '✗'}"
+          + (f" · ⚠️ {'; '.join(_ret['errors'])}" if _ret["errors"] else ""))
     print(f"[L5 整合] summary → {summary_path}  (数据日 {analysis_date})")
     print(f"[L5 整合] details → {detail_out}  ({n_cards} 张卡 + trace/ {n_pipe} 件溯源)")
     return summary_path

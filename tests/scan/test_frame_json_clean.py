@@ -12,7 +12,7 @@ import json
 import pandas as pd
 
 from autoresearch.common import workspace as ws
-from autoresearch.scan import frame
+from autoresearch.scan import frame, run_contract
 
 DATE = "2026-07-09"
 
@@ -90,8 +90,11 @@ def test_json_mode_writes_contract_and_short_ref(monkeypatch, capsys, tmp_path):
     contract = json.loads(contract_path.read_text(encoding="utf-8"))
 
     assert rc == 0
+    # schema_version 取常量而非字面量:锁的是「short_ref 恰好这四个键、值与落盘契约一致」,
+    # 不是「版本号永远是 1」——版本本来就会随字段增补前进(v2 = 2026-08-26 现场留存波
+    # 加 git_dirty/dirty_paths/prompt_hashes)。写死字面量会让每次加字段都误报一条红。
     assert payload["run_contract"] == {
-        "schema_version": 1,
+        "schema_version": run_contract.RUN_CONTRACT_SCHEMA_VERSION,
         "run_id": contract["run_id"],
         "contract_hash": contract["contract_hash"],
         "config_hash": contract["config_hash"],

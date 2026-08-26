@@ -99,6 +99,37 @@ def yesterday_echo(code6: str, name: str, analysis_date: str, *,
     return "\n".join(lines) + "\n"
 
 
+DOSSIER_SNAPSHOT_DIR = "_dossier_snapshot"
+DOSSIER_SNAPSHOT_INDEX = "_dossier_snapshot.json"
+
+
+def _snapshot_dossiers(scan_dir: Path, codes: set[str]) -> dict:
+    """把本次派发会读到的档案原文抄进 `<scan_dir>/_dossier_snapshot/<code>.md` + 索引 hash。
+
+    见调用点注释:档案在 assemble 尾被 δ 原地改写,只有**落稿这一刻**抄的才是 agent 真读的
+    那一版。索引记 sha256 与字节数 —— 事后可以直接回答「今天注入的档案跟上周是不是同一份」。
+    """
+    import hashlib
+
+    from autoresearch.dossier.schema import dossier_path
+    scan_dir = Path(scan_dir)
+    out_dir = scan_dir / DOSSIER_SNAPSHOT_DIR
+    index: dict[str, dict] = {}
+    for code6 in sorted(codes):
+        src = dossier_path(code6)
+        if not src.is_file():
+            continue
+        raw = src.read_bytes()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / f"{code6}.md").write_bytes(raw)
+        index[code6] = {"sha256": hashlib.sha256(raw).hexdigest(),
+                        "bytes": len(raw), "source": str(src)}
+    doc = {"schema_version": 1, "captured_at_stage": "l4_prompts", "dossiers": index}
+    (scan_dir / DOSSIER_SNAPSHOT_INDEX).write_text(
+        json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=1), encoding="utf-8")
+    return doc
+
+
 def write_dispatch_pack(scan_dir: Path | str) -> dict:
     """L4 派发包确定性落稿(零 LLM):`_harvest_list.txt`(yfinance 归一后缀,`.SH` 绝迹)
     + 每卡 `_l4_prompt_<code>.md`(共享指令 + 漏斗简报 + slim/卡路径指针)。
@@ -227,6 +258,15 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
     with contextlib.suppress(Exception):
         (scan_dir / "_dossier_present.json").write_text(
             json.dumps(sorted(with_dossier), ensure_ascii=False), encoding="utf-8")
+    # 档案 as-read 快照(2026-08-26 现场留存波 §4 R2)。**必须在这一刻抄** —— 档案是
+    # `knowledge/dossiers/<code>.md`,assemble 收尾的 `dossier.delta.record_scan_deltas`
+    # 会**原地改写**它(实测 300857 的 mtime = 读它那次 run 的收尾时刻),所以发布时再抄
+    # 拿到的是 δ **之后**的文本,而 l4-card 读的是 δ **之前**那份。写进 staging(不是直接
+    # 写 run 目录):staging 会被 `retention.mirror_staging` 整目录带走,这里不必知道 run 在哪。
+    # `_dossier_present.json` 的形状**不动**(三个消费者按 list 读,post_run 还专门有
+    # 「语法合法但形状不对」的测试)——新增独立文件,不改老契约。
+    with contextlib.suppress(Exception):
+        _snapshot_dossiers(scan_dir, with_dossier)
     return {
         "n_prompts": n_prompts,
         "tickers": tickers,

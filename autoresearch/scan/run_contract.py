@@ -5,11 +5,18 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-RUN_CONTRACT_SCHEMA_VERSION = 1
+RUN_CONTRACT_SCHEMA_VERSION = 2
+#: 本代码能**读**的 schema 版本。v1 契约(2026-08-26 之前的全部历史 run)必须继续可读:
+#: `publisher` 的 manifest、`run_mode` 的冻结快照都按它定位 run_id,读不了就等于把历史
+#: run 的身份弄丢。v2 只是**加字段**(git_dirty/dirty_paths/prompt_hashes),v1 的
+#: `contract_hash` 按当年的 payload 现算(见 `_hash_payload`),逐字节仍然对得上。
+SUPPORTED_SCHEMA_VERSIONS = (1, 2)
+#: v2 新增字段 —— v1 契约验哈希时必须**排除**它们(当年那份 hash 里没有这三个键)。
+_V2_FIELDS = ("git_dirty", "dirty_paths", "prompt_hashes")
 
 
 def canonical_json(value: object) -> str:
@@ -37,6 +44,39 @@ def resolve_git_sha(repo_root: Path | str = ".") -> str:
         return "unknown"
 
 
+#: `dirty_paths` 的上限 —— 只为「看得见有哪些」,不是完整 diff(真 diff 去 git 里查)。
+DIRTY_PATHS_CAP = 40
+
+
+def resolve_git_dirty(repo_root: Path | str = ".") -> tuple[bool, list[str]]:
+    """工作树是否有未提交改动 + 改动路径(≤`DIRTY_PATHS_CAP`,已排序)。
+
+    为什么必须记(2026-08-26 审计 #11):`git_sha` 只回答「HEAD 在哪」,而 **agent def 未提交
+    也会生效** —— 会话启动装载的是工作树里那一份。本地改过 `.claude/agents/l4-card.md`
+    再跑一趟,契约会记下一个**看起来干净**的 sha,事后复盘按那个 sha 去 checkout,拿到的
+    根本不是当时执行的规则。配合 `prompt_hashes` 才形成闭环:一个说「树脏了」,一个说
+    「脏的是不是 prompt、脏成什么样」。
+
+    不在 git 仓库 / git 不可用 → `(False, [])`(与 `resolve_git_sha` 的 "unknown" 同款诚实
+    降级:查不到不等于干净,但也不能凭空说脏 —— 此时 `git_sha` 已经是 "unknown",两条
+    合起来读就不会误判)。
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=Path(repo_root),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return False, []
+    paths = sorted(
+        line[3:].strip() for line in proc.stdout.splitlines() if line.strip()
+    )
+    return bool(paths), paths[:DIRTY_PATHS_CAP]
+
+
 @dataclass(frozen=True)
 class RunContract:
     """一次 scan 的不可变运行身份。"""
@@ -54,10 +94,20 @@ class RunContract:
     stage_budgets: dict
     artifact_schema_versions: dict[str, int]
     contract_hash: str
+    # ── v2(2026-08-26 现场留存波)———————————————————————————————————————
+    # 三个字段都带默认值,这样 v1 的 raw dict 仍能 `cls(**raw)` 构造出来。
+    git_dirty: bool = False
+    dirty_paths: tuple[str, ...] = ()
+    prompt_hashes: dict[str, str] = field(default_factory=dict)
 
     def _hash_payload(self) -> dict:
         payload = asdict(self)
         payload.pop("contract_hash")
+        if self.schema_version < 2:
+            # v1 契约当年的 hash payload 里没有这三个键 —— 验历史契约必须按当年的形状算,
+            # 否则今天起全部历史 run 的 `load_run_contract` 一起报 hash mismatch。
+            for key in _V2_FIELDS:
+                payload.pop(key, None)
         return payload
 
     def to_dict(self) -> dict:
@@ -85,6 +135,9 @@ class RunContract:
         git_sha: str | None = None,
         now: datetime | None = None,
         repo_root: Path | str = ".",
+        git_dirty: bool | None = None,
+        dirty_paths: list[str] | tuple[str, ...] | None = None,
+        prompt_hashes: dict[str, str] | None = None,
     ) -> RunContract:
         stamp = now or datetime.now(timezone.utc)
         if stamp.tzinfo is None:
@@ -93,6 +146,10 @@ class RunContract:
         created_at = stamp.isoformat(timespec="microseconds").replace("+00:00", "Z")
         run_id = stamp.strftime("%Y%m%dT%H%M%S%fZ")
         normalized_config = json.loads(canonical_json(user_config))
+        if git_dirty is None or dirty_paths is None:
+            probed_dirty, probed_paths = resolve_git_dirty(repo_root)
+            git_dirty = probed_dirty if git_dirty is None else git_dirty
+            dirty_paths = probed_paths if dirty_paths is None else dirty_paths
         base = cls(
             schema_version=RUN_CONTRACT_SCHEMA_VERSION,
             analysis_date=analysis_date,
@@ -107,13 +164,22 @@ class RunContract:
             stage_budgets=json.loads(canonical_json(stage_budgets)),
             artifact_schema_versions=dict(sorted(artifact_schema_versions.items())),
             contract_hash="",
+            git_dirty=bool(git_dirty),
+            dirty_paths=tuple(dirty_paths or ()),
+            prompt_hashes=dict(sorted((prompt_hashes or {}).items())),
         )
         return replace(base, contract_hash=sha256_json(base._hash_payload()))
 
     @classmethod
     def from_dict(cls, raw: dict) -> RunContract:
-        contract = cls(**raw)
-        if contract.schema_version != RUN_CONTRACT_SCHEMA_VERSION:
+        payload = dict(raw)
+        # JSON 没有 tuple —— 落盘时 `dirty_paths` 变成 list,读回来要还原成 tuple,
+        # 否则 `_hash_payload` 的 `asdict` 产出 list vs tuple 在 canonical_json 里其实同形
+        # (都序列化成数组),但字段类型漂移会让下游 `replace()`/相等比较出岔。
+        if isinstance(payload.get("dirty_paths"), list):
+            payload["dirty_paths"] = tuple(payload["dirty_paths"])
+        contract = cls(**payload)
+        if contract.schema_version not in SUPPORTED_SCHEMA_VERSIONS:
             raise ValueError(
                 f"unsupported run contract schema_version={contract.schema_version}"
             )

@@ -156,7 +156,9 @@ def test_manifest_records_contract_identity(published):
     )
     assert manifest["run_id"] == contract["run_id"]
     assert manifest["contract_hash"] == contract["contract_hash"]
-    assert manifest["run_contract_schema_version"] == 1
+    from autoresearch.scan.run_contract import RUN_CONTRACT_SCHEMA_VERSION
+    # 取常量:锁的是「manifest 记的版本 = 代码写的版本」,不是「版本永远是 1」
+    assert manifest["run_contract_schema_version"] == RUN_CONTRACT_SCHEMA_VERSION
     assert manifest["artifact_index_schema_version"] == ARTIFACT_INDEX_SCHEMA_VERSION
 
 
