@@ -1,6 +1,6 @@
-# 现场留存 × BUY 所有权 —— 设计稿（2026-08-26，待裁）
+# 现场留存 × BUY 所有权 —— 设计稿(2026-08-26,已实施)
 
-> 状态：**设计稿，零实施**。两件用户点名的事：① 每个阶段的可复现现场都要留下来（为以后人肉复盘「推荐股票为什么效果不好」）；② 一直没有 BUY，集中解决。
+> 状态：**已全部实施**（2026-08-26；§5 的 P0/P1/P2/P2′/P3 五批全落地，实施记录与八条偏离见 §9）。§6 的 Q1–Q5 按本稿建议裁定。两件用户点名的事：① 每个阶段的可复现现场都要留下来（为以后人肉复盘「推荐股票为什么效果不好」）；② 一直没有 BUY，集中解决。
 > 本稿先把病根量出来（§1–§2），再给三条路和推荐（§3），现场留存的缺口表与机制（§4），实施顺序/验收/回滚（§5），最后是必须由用户裁的问题（§6）。所有数字可复现（§7）。
 
 ---
@@ -125,7 +125,7 @@
 
 ### 路 A ·「证据层持有 BUY，判断层只否决，T+1 收盘执行条件」（**推荐**；隔夜尺内可做）
 
-**A1 · BUY 池换成 composite 席位。** L3 merge 加确定性守卫 **⑨ `composite_seat`**（在 ⑧ 之后）：当日 L2 菜单按 `gbdt_score`（= sector-neutral composite）取前 M（M=3，旋钮 `relative_buy.pool_m`），剔 📌/ST/`pct_1d≥9.5`/监管旗/质押>40/成交额分位<P10，**强制进 finalists**，`lane="composite"`，`guard="composite_seat"`，不受 ②`lt55` 与 ③`cap` 约束（与 📌 同级）。pass1 同步「composite 席强留」（同 lowturn 强留写法），让 l3-rank 照常判它（可 bench，判断不改席位）。证据：§1.5 composite top20/50 +0.14/+0.17，t 1.96/2.78。
+**A1 · BUY 池换成 composite 席位。** L3 merge 加确定性守卫 **⑨ `composite_seat`**（在 ⑧ 之后）：当日 L2 菜单按 `gbdt_score`（= sector-neutral composite）取前 M（M=3，旋钮 `l3.composite_seat.m`；实施时归到 `l3` 块，因为它是 L3 的生效点），剔 📌/ST/`pct_1d≥9.5`（监管旗/质押/流动性不在这一层重做——流动性由 E6 硬门④ 的 P10 分位承接，监管/质押由 L4 的否决检查承接），**强制进 finalists**，`lane="composite"`，`guard="composite_seat"`，不受 ②`lt55` 与 ③`cap` 约束（与 📌 同级）。pass1 同步「composite 席强留」（同 lowturn 强留写法），让 l3-rank 照常判它（可 bench，判断不改席位）。证据：§1.5 composite top20/50 +0.14/+0.17，t 1.96/2.78。
 
 **A2 · L4 对 composite 席的角色 = 否决检查。** 不改 `l4-card.md` 的 rubric、不改早停规则，卡照常出；E6 只消费三样：`research_rating ∈ {Sell, Underweight}`、`FINAL TRANSACTION PROPOSAL == SELL`、早停停因 ∈ {基本面恶化, 估值透支, 涨停追高, 数据不足} → **否决**。Hold（含早停「其他/资金流出/题材透支」）**不否决**——它们在隔夜尺上无区分力（§1.4 Hold −0.20 vs UW −0.35 差异不显著；「主力真在」反向），而 UW/SELL 否决是**产品一致性**要求（BUY 不能与卡面打架），不是统计要求。
 
@@ -249,3 +249,82 @@
 - 相对超额是「相对截面中位」的读数，不是策略收益；成本估算按 A 股散户口径。
 - 本稿不改主尺（三次裁定）；路 B 的全部数字来自观察尺。
 - 仅供研究，非投资建议。
+
+---
+
+## 9. 实施记录与偏离（2026-08-26）
+
+状态:**§5 的 P0 / P1 / P2 / P2′ / P3 全部实施完毕**(用户「开始开发吧 开发到完」;§6 Q1–Q5 按本稿建议裁定 —— Q1=A 含 C 硬门、Q2=M3 且含 UW、Q3=留、Q4=建、Q5 一并做完不再攒)。
+
+### 9.1 落地清单
+
+| 批 | 新增/改动 | 产物 |
+|---|---|---|
+| P0 | 新 `scan/retention.py`(镜像/快照/清单/transcript/湖清单)、新 `scan/chain_view.py`、`run_contract` v2、`l4/prompts._snapshot_dossiers`、`publisher` 与 `post_run` 各挂一次 `retain()` | `trace/staging/`、`trace/inputs/`、`trace/transcripts/`、`trace/lake_manifest.json`、`trace/MANIFEST.sha256` |
+| P1 | 新 `scan/outcome.py` + prelude 步 `outcome_fill` + `STEP_NAMES` 单一事实源 | `$RPT/scan/_ledger/{outcome/<run_id>.json, recommendations.csv}` |
+| P2 | `l3/merge` 守卫⑨ + `l3/triage` ①b + E6 `v3.0`(A2 硬门 + `pool`)+ brief ③ + `tripwire_watch` `[执行线]` + agent def/playbook + `scan_config` 两键 | `finalists.csv` 的 `guard=composite_seat`、决策文件的 `pool`/`pool_members`/`in_pool` |
+| P2′ | `retention.archive_transcripts`(读 `_token_usage.json` 定位,不另写一套) | `trace/transcripts/<agent>-<file>.jsonl.gz` + `_index.json` |
+| P3 | `retention.lake_manifest` / `diff_lake_manifest` | `trace/lake_manifest.json` |
+
+新增测试:`test_retention.py`(28)、`test_chain_view.py`(8)、`test_outcome.py`(17)、`test_composite_seat.py`(23)、E6 v3 段(14)、brief v3 段(3)、prelude 三条、run_contract v2 六条。
+
+### 9.2 与本稿的偏离（八条，全部当场决定并记录）
+
+1. **结果账本落 `_ledger/` 而不是 `trace/outcome.json`**(§4.4 原文)。同一波刚给 run 目录立了「发布后不再变」的 MANIFEST 不变量,事后往 run 里写文件会让每个 run 的 `verify` 永远报一条 `extra` —— 等于自己把刚立的哨兵弄哑。
+2. **`relative_buy.pool="finalists"` 不是 v2 逐字 parity**(§5 P2 回滚列原文说是)。它只回滚**候选池与排序**;A2 的 UW/SELL 硬门对两个池都生效 —— 那是产品一致性(BUY 不能与卡面打架),与「从哪个池选」是两件事。要连硬门一起回滚得改 `relative_buy.py` 的两个 frozenset(显式代码改动)。常量旁注与 `STAGES.md` 已按此写。
+3. **transcript 体积估错一个量级**:§4.3 R4 估 10–20 MB/run,实测(2026-08-25 真跑)五个 role 原始 2.65 MB、gzip ≈49% → **约 1.3 MB/run**。既然这么便宜,把 `l4-intel` 也收了(原计划 4 个判断 role)。
+4. **P3 湖清单当波做完,不攒**(§6 Q5 建议攒着)。因为实现方式换了:不动 `cache.get_or_fetch` 热路径(跨进程、风险高),改成发布收尾对**窗口内湖文件**做一次只读指纹(2781 文件 / 126 MB / **1.0 秒**)。代价是它证明「文件是不是同一批」而**不证明「当天读过」**——这句话逐字写进产物的 `note` 与测试断言里(过度声称的留痕比没有留痕更危险)。
+5. **composite 席位加入 pass1 的受保护集**(§3 A1 未提)。实施时被测试逮到:`mandatory > target` 时截尾会把席位切掉,而守卫⑨ 仍会强制它进 finalists → 出现「L2 展示字段 + 空 thesis」行,正是 pinned 当年那次事故的形状。现在 `protected = pinned ∪ seat`。生产 target=40、mandatory≈18,这条永不咬人,但已用两条用例钉住(含「合法超 target」那条,免得后人当故障修)。
+6. **prelude 步骤表提成 `STEP_NAMES` 模块常量**(§5 P1 只说「两份 skip 清单同改」)。改成两份测试从生产常量**派生**,加步骤不再需要改它们;同时新增 `test_step_names_inventory` 显式锁清单 —— 派生消灭的是「忘了同步」的红,不是「悄悄加了一步」的哑。这条顺手把记忆里 `prelude-step-two-skip-lists` 那个反复踩的坑关掉了。
+7. **`run_contract` v2 必须保持 v1 可读**(§4.3 R3 未提)。`from_dict` 认 `{1,2}`,`_hash_payload` 按 `schema_version` 排除 v2 三键 —— 否则全部历史 run 的契约一起报 hash mismatch,`publisher` 的 manifest 与 `run_mode` 的冻结快照会同时丢掉 run 身份。
+8. **席位注入放在 `write_finalists`(守卫全跑完之后、pinned 之前)而不是 `merge_l3_finalists_v3` 内部**。席位要的是 L2 的 `gbdt_score`,而 v3 只吃 judged 帧;放外面还能复用 pinned 那套「已在场只打标 / 在 judged 就整段带过来 / 都没有才建占位行」的既有形状,不动守卫链。
+
+### 9.3 实施中被真数据推翻/确认的
+
+- **A2 在真数据上生效**(08-24/08-25 staging 副本回放):08-25 天味食品(UW + `FINAL PROPOSAL: SELL`)被 `hard_gate.no_redflag` 否决,BUY 改中国中车(Hold);08-24 瑞丰银行(Hold)不变。与 §3 路C 的预测逐字一致。
+- **`pool=composite` 回放历史日必然 BLOCKED**(`in_pool=0`)—— 那几天没有守卫⑨,席位不存在。这是**正确行为**(诚实 blocked,不静默退回全体池),但也意味着 A1/A3 的活体证据只能等下一次真跑。
+- **结果账本口径与 `edge_census` 逐日对得上**:5 个 BUY 日的 `excess_med_market` 与 `edge_census.daily_stats` 的 `excess_med` 六位小数全等。
+- **账本第一读就逮到一件事**:全史 6 笔 `e6_buy` 里 **4 笔是 shadow 期**,其中 08-13/08-18 两笔的决策文件是被影子回放改写出来的(brief 当天印的是 BLOCKED),且标的还是 📌 持仓 688766。所以账本加了 `mode`/`src` 两列,`ledger_line` 只数 **active** 期 —— 不分列读就是把两条假 BUY 算进战绩。
+- **P0 机械验收**:08-25 staging 副本重发布 → 镜像 531 件(= staging 535 减 4 个锁/`_sem`,逐文件 diff 一致)、inputs `{slim 10, sector_packs 9, prompts 11, temperature_row 1}`、MANIFEST 664 件 `verify` 全绿;改一个字节 → `changed` 精确点名 + exit 1。run 目录 4 MB → 9.5 MB。
+
+### 9.4 仍待下一次**真跑**才能核的（活体验收）
+
+1. `trace/staging` + `trace/inputs` + `trace/transcripts` + `lake_manifest` 四件齐,`retention verify` 绿;
+2. prelude 汇总屏出现 `outcome_fill` 行与「结果账本」读数;
+3. `finalists.csv` 出现 3 行 `guard=composite_seat`,且它们在 `L3_judged_full.csv` 里**有 thesis**(证明 pass1 ①b 真的让 l3-rank 判到了);
+4. brief ③ 的 BUY 是席位票、卡面 ≥Hold、带「池=composite 证据席」与两条执行线;
+5. L4 卡里出现 `[执行线]` 两行(**agent def 会话启动装载,下个 session 生效**);
+6. 日成本 ~$27 → ~$32(+3 张卡);
+7. T+1 晚 `outcome_fill` 给当日 BUY 落上 `exec_ok`。
+
+**20 个结果日后**按 `_ledger/recommendations.csv` 读数裁 A 的去留(§3 推荐段的承诺)——若 active BUY 净值 ≤0,那时手里已经有本系统自己的数据,再裁是否走路 B。
+
+### 9.5 变异探针(12 条,逐条实跑)
+
+「改完先问『把这段删掉测试会红吗』」—— 12 条一次跑完,**3 条第一轮没红**,都是真的零鉴别力:
+
+| # | 变异 | 首轮 | 根因 / 修法 |
+|---|---|---|---|
+| M1 | `rating in REDFLAG_RATINGS` → `rating == "Sell"`(撤销 UW 否决) | ❌ 仍绿 | 用例那只票**同时**是 UW 且提案 SELL,两条防线各自都拦得住 → 分不开。补 `test_underweight_alone_vetoes_without_a_sell_proposal`(UW 但提案 HOLD),并断言否决理由里点名评级 |
+| M2 | 删掉 `buy_pool = [… if row["in_pool"]]`(撤销池过滤) | ❌ 仍绿 | 用例里非席位票的 composite **低于**席位,删了过滤后「按 composite 排」照样给同一答案。补 `test_composite_pool_excludes_a_higher_composite_non_seat`(非席位票 composite 全场最高) |
+| M7 | `gzip.compress(..., mtime=0)` → 去掉 `mtime=0` | ❌ 仍绿 | 同一秒内两次 compress 的 mtime 本来就相同 → 幂等断言测不出。改断言 gzip 头第 4–8 字节(MTIME 字段)恒零 |
+| M3 | 排序退回 Borda 平均 | ✅ | |
+| M4 | 席位不受 pass1 保护 | ✅ | |
+| M5 | 席位不剔追高/ST/📌 | ✅ | |
+| M6 | 席位不带 L3 判断过来 | ✅ | |
+| M8 | 镜像 `rglob`→`glob`(子目录又被跳过) | ✅ | |
+| M9 | 账本 upsert→append | ✅ | |
+| M10 | v1 契约 hash 不排除 v2 键 | ✅ | |
+| M11 | `ledger_line` 不分 shadow/active | ✅ | |
+| M12 | `exec_ok` 不看收盘区间位置 | ✅ | |
+
+补完三条后 12/12 全红。这一节本身也是读数:**新写的用例里有 1/4 是「看着在测、其实什么都没测」** —— 与 Wave3.5 那次运行时变异测试的比例相当。
+
+### 9.6 既有守卫在本波逮到的四件事(它们值这个钱)
+
+全量首跑 4 红,**没有一条是巧合**:
+
+1. `test_no_bare_root_literals_in_source` —— `retention.py` 里为做历史路径重映射写了裸 `'context'`。修法不是加豁免,是把这个**已作废的根名**归进 `workspace.LEGACY_CONTEXT_ROOT`(该模块本就是根名的唯一事实源,包括作废的那个)。
+2. `test_prelude_step_is_wired_and_reads_catalog` —— 它按**源码文本**匹配 `("news_catalog", _news_catalog)`,被 `STEP_NAMES` 重构打破。改成两条**更强**的结构断言(名字在清单里 ∧ 清单里每个名字都有实现),不是把探针调软。
+3. `test_manifest_records_contract_identity` —— 写死 `schema_version == 1`。改取常量:锁的是「manifest 记的 = 代码写的」,不是「版本永远是 1」。
+4. `test_relative_buy_decision_has_buy_but_brief_prints_blocked_is_fail` —— brief ③ 插了 `· 池=…`,锚点失配。顺带证实了一件事:`(N 只)` 后缀是 presence-gated 的,**老决策文件逐字无害**。

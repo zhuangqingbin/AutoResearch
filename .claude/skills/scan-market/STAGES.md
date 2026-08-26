@@ -122,7 +122,7 @@ L2 之后、与 L3 证据取数**并发**:
 2. **pass1 分诊**(`triage_l2_for_l3`,零 LLM):pinned 全入 + 多路共振 top-5(`RESONANCE_CAP`,2026-08-22)+ lowturn 强留 ≤8 + 各通道 top-K 轮询,~200 行收到 `pass1_target`(现 40);**healthy lane 自 2026-08-22 不再全入**(`HEALTHY_MANDATORY=False`,证据=edge 普查三尺全负;08-21 它一项占 14/40 席),与其他 lane 同等轮询;被切的落影子 `_l3_pass1_cut.csv`(不代表判死);
 3. `l3_table_md` 压紧凑表(表头注明「pass1 分诊 n→n」);**2026-08-22 加两列** `pct_1d`(当日涨幅)与 `dist_high_60`(距 60 日高,≤0)+ pf 词「今日大涨」(≥9.5)/「贴顶」(dist_high_60≥−2 ∧ pct_60d>0)—— 此前 L3 看不见当日涨幅却被要求替 L4 避开「涨停追高」,2026-08-21 两只入围票双双在 L4 早停该因;
 4. 一个 Opus(`l3-rank`,max)通看 ~40 只,按 6 维 rubric(channel 共振/资金/基本面/情感/脆弱/T+2 兑现机制)**比较着选**(比较式 > 逐只打分),给出 **finalist tier 7–10 只**(`finalist:true`,宁缺毋滥不凑数)+ 其余 **bench**(`finalist:false`,落 `_l3_bench.csv`,防漏影子);
-5. `L3_judged_full.csv`(全量判断)→ `merge_l3_finalists_v3` 确定性守卫,**按序** ①`ins75`(conviction≥75 未标 finalist 强制补入,误杀保险)→ ②`lt55`(<55 剔除)→ ③`cap`(=min(`finalist_max`,当日 l4_budget) 按 conviction 截尾)→ **⑦`chase_1d`**(当日 `pct_1d`≥9.5 剔除 + 从 bench 回填 `chase_backfill`,conviction≥55 才够格、不硬凑;2026-08-22)→ ④`healthy_quota`(**2026-08-22 起 `HEALTHY_QUOTA_FRAC=0` 不动作**;回滚改 1/3 即恢复「健康画像不足 ceil(n/3) 从 bench 补」,⑤⑥⑧ 的保护集随同一常量联动)→ ⑤`trend_quota`(soft 2 席)→ ⑥`lowturn_quota`(soft 1 席,qualify 55)→ **⑧`sector_cap`**(同 `sector` >3 席则剔最弱 + 回填异行业 `sector_backfill`;2026-08-22)。缺 `finalist` 字段(旧 judged)→ 按 conviction 排序取 cap 同守卫;各守卫的**列缺 → 整段 no-op**(parity);📌 保送在全部守卫**之后**由 `_inject_pinned_finalists` 注入,不受⑦⑧影响(持仓涨停/同行业照样出卡);
+5. `L3_judged_full.csv`(全量判断)→ `merge_l3_finalists_v3` 确定性守卫,**按序** ①`ins75`(conviction≥75 未标 finalist 强制补入,误杀保险)→ ②`lt55`(<55 剔除)→ ③`cap`(=min(`finalist_max`,当日 l4_budget) 按 conviction 截尾)→ **⑦`chase_1d`**(当日 `pct_1d`≥9.5 剔除 + 从 bench 回填 `chase_backfill`,conviction≥55 才够格、不硬凑;2026-08-22)→ ④`healthy_quota`(**2026-08-22 起 `HEALTHY_QUOTA_FRAC=0` 不动作**;回滚改 1/3 即恢复「健康画像不足 ceil(n/3) 从 bench 补」,⑤⑥⑧ 的保护集随同一常量联动)→ ⑤`trend_quota`(soft 2 席)→ ⑥`lowturn_quota`(soft 1 席,qualify 55)→ **⑧`sector_cap`**(同 `sector` >3 席则剔最弱 + 回填异行业 `sector_backfill`;2026-08-22)→ **⑨`composite_seat`**(2026-08-26 §3 路A:当日 L2 菜单 composite 最高的 M=3 只**强制进 finalists**,`guard=composite_seat`/`lane=composite`,**与 📌 同级** —— 不占名额、不受 ②lt55/③cap 约束;剔 📌/ST/`pct_1d≥9.5`;pass1 有配套 ①b 强留,让 l3-rank 真判到它们)。缺 `finalist` 字段(旧 judged)→ 按 conviction 排序取 cap 同守卫;各守卫的**列缺 → 整段 no-op**(parity);📌 保送在全部守卫**之后**由 `_inject_pinned_finalists` 注入,不受⑦⑧影响(持仓涨停/同行业照样出卡);
 6. 注入:策略师地形段。(**因子方向经验校准块与 T+1 快环校准块已于 2026-08-21 随闭环退役** —— 那是「把历史账本学到的东西塞回今天的判断 prompt」的回注腿。)
 
 **judged 输出契约**:每元素含 `mechanism`(两日内兑现机制+明日买家,写不出不选)与行为化 conviction(**≥70 = 能说出 D+1 谁买且愿真金买入,每日 ≥70 限 ~5 只**;50-69 = 值得 L4 验不背书)。
@@ -205,6 +205,9 @@ self_review 硬门 banner → H1 → regime+drift 行(+🌡情绪温度行)
 - **现场完备**:发布同时写 `run_health.json` + `index.md` 导航页(**第二天回看从 index.md 进**);`weights_used.json` + meta.regime 固化,漏斗可复现。
 - **计量时序**:assemble 时 `_token_usage.json` 通常尚未生成,报告先写 `UNMEASURED`;CP7 跑 usage_harvest `--json-out` 后由 `post_run observe` 原位替换 managed section,并刷新 `_budget_observation.json`、budget StageResult 与 ArtifactIndex。
 - **观察单已退役**(用户裁定):日检/触发/直通车全无;存量 `$CTX/watchlist.csv` 保留(sector.pack 行业选择器仍直接读)。发布落 `$RPT/scan/<运行时刻>/`(数据日在 manifest.json)。
+- **现场留存**(`scan/retention.py`,2026-08-26):发布收尾 + `post_run observe` 各跑一次 `retain()` → `trace/staging/`(**整目录镜像** staging,含子目录)+ `trace/inputs/{slim,sector_packs,prompts,temperature_row}`(staging 之外的输入:逐票 slim/深核、行业 pack、agent def/playbook/config 本体、当日温度计行)+ `trace/transcripts/*.jsonl.gz`(判断腿 subagent 推理链,≈1.3MB/run)+ `trace/lake_manifest.json`(窗口内湖指纹,~1s)+ `trace/MANIFEST.sha256`。**判据:run 目录自足到 staging 可弃**(staging 按数据日键,同日重跑原地覆盖 —— 实测 64 个已发布 run 只剩 49 个 staging)。**必须是发布的最后一步**:早一行就镜像到半成品。核验 `python -m autoresearch.scan.retention verify <run_dir>`;链路复盘 `python -m autoresearch.scan.chain_view <run_id> <code>`。
+- **run_contract v2**:加 `git_dirty`/`dirty_paths`/`prompt_hashes` —— `git_sha` 只说 HEAD 在哪,而 **agent def 未提交也会生效**(会话启动装载工作树那份)。v1 契约仍可读(`_hash_payload` 按 `schema_version` 排除 v2 三键,历史 run 身份不丢)。
+- **结果账本**(`scan/outcome.py`,**只记不学**):prelude 的 `outcome_fill` 步逐日回填已发布 run 的推荐票事后读数 → `$RPT/scan/_ledger/outcome/<run_id>.json` + `_ledger/recommendations.csv`。口径与 `research.edge_census` 逐字同源(同一 `forward_returns`/`entry_tradable`/`GAP_CLIP`),两边可直接对表。**必读两列**:`mode`(shadow 期的 BUY 明写「不执行」)与 `src`(`shared` = 读自共享 staging,未必是本 run 那份)。消费者只有 `chain_view` ⑩ 段与汇总屏一行;**不进 brief、不喂任何 agent、不改任何参数**。落 `_ledger/` 而非 run 目录内,是因为 run 目录刚立了「发布后不再变」的 MANIFEST 不变量。
 
 ---
 
@@ -250,6 +253,11 @@ D1(2026-08-19,用户裁决 A3)删掉了预注册状态机(`experiment_registry`/
 | 开关/入口 | `prewarm --with-calibrate`、`relative_buy preflight` verb、`scan_config.jsonc` 的 `learning` 块 |
 
 **E6 不受影响**:相对 BUY 的所有权在 `scan/relative_buy.py` 的 `write_decision`/`verify_decision`,它们从不读账本。`scan_config.jsonc` 的 `relative_buy.mode=active` 照旧。
+
+**E6 v3.0(2026-08-26 §3 路A)** —— 两件事,各自可单独回滚:
+- **A2 硬门扩集**(对**两个池都生效**):`research_rating ∈ {Sell, Underweight}` 或卡面 `FINAL TRANSACTION PROPOSAL: SELL` 或早停停因 ∈ {基本面恶化, 估值透支, 涨停追高, 数据不足} → 否决。立案:08-20 金螳螂、08-25 天味食品**两次**把提议 SELL 的 UW 卡发成当日 BUY(v1 已知问题 #6 原话:「提议卖出的票可以当相对 BUY 出这条通路是敞开的」)。**留在集合外的是 {其他, 题材透支, 资金流出}** —— 它们在隔夜尺上对 Hold/UW 无区分力(L4·Hold −0.20 vs UW −0.35 不显著),把它们也当红灯 = 拿没证据的判断否决有证据的候选。回滚 = 改 `relative_buy.py` 的两个 frozenset(代码改动,不是配置)。
+- **A1/A3 候选池切换**(`scan_config.relative_buy.pool`):`composite` = BUY 只在守卫⑨ 的证据席里选、**排序改按 composite 分**(`target_align`),另三面降为记录列。理由是尺:L3·finalist 一族 40 日隔夜相对超额 **−0.27pp(t=−3.94)显著为负**,而 composite 是全表唯一正证据(+0.14pp t=3.05;L2 top20/50 +0.14/+0.17,t 1.96/2.78)。**期望 ≈ 一次往返成本量级,不承诺隔夜赚钱**。席位为空 → 诚实 `blocked`,**不静默退回全体池**。回滚 = 该键改回 `finalists`。
+- **执行线(A4)**:卡片写两条机读行 `[执行线] pct_chg <= 3.0` / `[执行线] pos_in_range < 0.7`(T+1 尾盘**入场**条件,与三型盯梢线不同族;`tripwire_watch` 解析但**不报警**,事后计量在 `scan/outcome.exec_ok`)。证据:四年全湖 1086 日,收在当日区间上 30% 的票隔夜比全体差 0.13~0.27pp,**逐年同号**。
 
 ---
 

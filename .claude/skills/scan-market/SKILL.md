@@ -51,6 +51,8 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
 | L3 | `l3` | two_pass·pass1_target·finalist_max·lowturn{enabled,阈值×8,pass1_cap} | `scan/l3/prompt.py prepare_l3_table`(旗列)/ `scan/l3/triage.py`(pass1 强留)/ `scan/l3/merge.py write_finalists`(守卫⑥);谓词真身 `common/turnup.lowturn_flag` |
 | L4 | `l4_intel` | enabled·max_queries | `l4-stock.js`(intelOn/maxQ;**缺块=intel 关**)+ `scan/l4/intel_status.py` |
 | L4 | `performance` | streaming_l4 | `scan-market.js`(任务簿流式 vs 旧批量 GATE3) |
+| 精排 | `l3.composite_seat` | enabled·m | `scan/l3/merge.composite_seat_cfg` → ① `write_finalists` 的 `inject_composite_seats`(守卫⑨:当日 L2 composite 最高的 m 只强制进 finalists,`guard=composite_seat`)② `l3/prompt.prepare_l3_table` → `triage` 的 ①b 强留(让 l3-rank 真判到它们)。回滚 = `enabled:false` |
+| 收尾 | `relative_buy.pool` | finalists·composite | `relative_buy.configured_pool` → `post_run.publish_run_observation` → `build_decision(pool=…)`。`composite` = BUY 只在守卫⑨ 的证据席里选、按 composite 分排(2026-08-26 §3 路A)。回滚 = 改回 `finalists`(**只回滚候选池;A2 的 UW/SELL 硬门对两个池都生效**) |
 | 收尾 | `relative_buy` | mode·exclude_pinned·activate_date | `scan/post_run.py publish_run_observation` → `relative_buy.write_decision`/`verify_decision`(2026-08-19 裁决表 A1/A2:mode=active 正式接管 BUY、exclude_pinned=true 剔📌;**activate_date 自 2026-08-21 起无消费点** —— 原生效点 `learning/legacy_freeze` 随闭环删除,该键仅作转正日记录) |
 
 **防漂移铁律:**
@@ -164,6 +166,18 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
    **报告分两层是安全的**:**机器消费者不读、也不解析 `summary.md` 正文**(结论都在 `finalists.csv` / `decision_records.json` / `_final_ratings.json` 等结构化文件里),所以重排/瘦身 summary 不影响任何人;红线文件 `details/*.md`、`finalists.csv`、`decision_records.json` 一字不动。
    **brief 对账**:assemble 收尾自动跑 `self_review.brief_lint`(边表重算 + 正文锚在 + brief↔summary 同源 + active 期 BUY≥1 契约),结果追加进 `gate_fires.csv` 并打一行 `[brief lint] fail N · warn M / 共 K 条`;**有 fail 先修根因再播**,warn 照播不隐去。
    **配置生效对账**:`usage_reconcile`(第四条命令)把配置期望×实测逐 role 对上,`ok=false` 直接打进 CP7 播报,不经 `self_review` 转手(见 STAGES.md『计量与跨层校准』)。
+   **现场留存(2026-08-26,自动;无需额外命令)**:assemble 收尾与 `post_run observe` 各跑一次 `scan/retention.retain` ——
+   `trace/staging/`(整目录镜像 staging)+ `trace/inputs/{slim,sector_packs,prompts,temperature_row}`(staging 之外的输入)
+   + `trace/transcripts/*.jsonl.gz`(判断腿 subagent 的推理链,observe 那次才有)+ `trace/lake_manifest.json`(窗口内湖指纹)
+   + `trace/MANIFEST.sha256`(全目录内容清单)。**判据是「run 目录自足到 staging 可弃」** —— staging 按数据日键,同日重跑会原地覆盖。
+   核验与复盘两条只读命令(任何时候都能跑):
+   ```bash
+   uv run --no-sync python -m autoresearch.scan.retention verify $RPT/scan/<run_id>   # 发布后被改过吗
+   uv run --no-sync python -m autoresearch.scan.chain_view <run_id> <6位码>            # 这只票是怎么被推上来的
+   ```
+   ⚠️ **回放/研究仪器一律写 scratch 或 `$RPT/research/`,禁写 run 目录与 staging** —— 实测 `20260725_1316` 的 `run_health.json`
+   被一次回放覆盖成 `cards=0`(该 run 实有 11 张卡)、08-13/08-18 的 `_relative_buy_decision.json` 被影子回放改写成 `buys=[688766]`
+   (与当日 brief 的 BLOCKED 直接打架)。`verify` 就是用来发现这类事的。
 
 6. **覆盖档案维护**(盘后,不占扫描窗;presence-gated,池空则整段跳过)
    ```bash
