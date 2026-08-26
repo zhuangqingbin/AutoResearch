@@ -20,6 +20,12 @@ WEAK_MARKET_PHRASE = "弱市相对最优"
 REL_MARKET_POPULATION = "全市场可交易"
 #: 决策文档 `benchmark.market.n` 的人口标签(决策层四面分位 / 流动性门的分母)。
 DECISION_POOL_LABEL = "L0 可交易"
+#: v3.0 候选池的人话标签(brief ③ 用)。**两条规则不同名**,免得读者把两天的读数连成一条线。
+POOL_LABELS = {"finalists": "L3 finalist 全体", "composite": "composite 证据席"}
+#: v3.0 期望值的诚实措辞 —— 证据是 +0.14~0.17pp(t 1.96~2.78,42 个扫描日),与一次 A 股
+#: 往返成本(印花税 0.05% + 佣金 + 滑点 ≈ 0.1~0.15%)**同量级**。写「预计上涨」是越权
+#: (`BANNED_RELATIVE_PHRASES` 已挡),写「稳赚」更是;这句是能说的上限。
+COMPOSITE_EXPECTATION = "期望≈往返成本量级,不承诺绝对收益为正"
 
 
 def relative_facts(decision: dict | None) -> dict:
@@ -69,4 +75,8 @@ def relative_facts(decision: dict | None) -> dict:
         "abs_gap_n": gap.get("n", 0),
         "hard_reject": hard_reject,
         "ruler": decision.get("ruler") or MAIN_RULER,
+        # v3.0:BUY 从哪个池里选的 + 当日席位规模。读这份决策前先看这两个键。
+        "pool": decision.get("pool") or "finalists",
+        "pool_label": POOL_LABELS.get(decision.get("pool") or "finalists", "?"),
+        "n_pool": (decision.get("counts") or {}).get("in_pool"),
     }

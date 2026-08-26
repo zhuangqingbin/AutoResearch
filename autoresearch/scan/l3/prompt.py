@@ -428,10 +428,16 @@ def prepare_l3_table(date: str, root: Path | None = None, delta: bool = True,
     if two_pass:
         pass1_target = int(l3_cfg.get("pass1_target", 60))
         df_full = load_l3_input(date, root=base)
+        # composite 席位强留(2026-08-26 §3 路A):守卫⑨ 会把这几只强制送进 finalists,
+        # pass1 必须先让 l3-rank 判到它们 —— 否则 finalists 里那几行只有 L2 展示字段、空 thesis
+        # (pinned 当年踩过的同一个坑:「保送 ≠ 免判,更 ≠ 判了不要」)。
+        from autoresearch.scan.l3.merge import composite_seat_cfg
+        _seat_on, _seat_m = composite_seat_cfg(l3_cfg and {"l3": l3_cfg} or None)
         kept, cut = triage_l2_for_l3(
             df_full, target=pass1_target,
             lowturn_cap=int(lt_cfg.get("pass1_cap", 8)) if lowturn_on else 0,
-            lowturn_cfg=lt_cfg)
+            lowturn_cfg=lt_cfg,
+            composite_seat_m=_seat_m if _seat_on else 0)
         cut.to_csv(scan_dir / "_l3_pass1_cut.csv", index=False)
         # `_l3_pass1_kept.csv` + meta(design 2026-08-03 §4.4):cut 只说"谁没进",
         # 而 tier-1 反事实要的是"进来的这 K 只各自凭什么进" —— 没有 selection_reason

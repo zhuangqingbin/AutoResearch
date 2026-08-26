@@ -38,7 +38,8 @@ HEALTHY_MANDATORY = False
 
 
 def triage_l2_for_l3(df: pd.DataFrame, target: int = 60, *, lowturn_cap: int = 0,
-                     lowturn_cfg: dict | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+                     lowturn_cfg: dict | None = None,
+                     composite_seat_m: int = 0) -> tuple[pd.DataFrame, pd.DataFrame]:
     """pass1 确定性分诊(零 LLM):L2 ~200 行 → kept(进 pass2/l3-rank 深比较,~target 行)+
     cut(影子,写 `_l3_pass1_cut.csv`,供 attribution 证明分诊没吃掉赢家)。design: plan
     2026-07-12-l3-merge-plan.md Task 1。
@@ -56,6 +57,11 @@ def triage_l2_for_l3(df: pd.DataFrame, target: int = 60, *, lowturn_cap: int = 0
        多数无保送的日子该列不存在)为真;该列不存在时退化检查 `recall_channels` 字面等于
        `"pinned"`(L1 强注新增行的哨兵值,见 `_inject_pinned_l1`)。两者都缺列 → 该规则
        贡献 0 行,不报错。
+    ①b composite 席位强留(2026-08-26 §3 路A):`composite_seat_m>0` 时,`merge.pick_composite_seats`
+       选出的席位一律入 mandatory(`selection_reason=conviction_guard`、`selection_detail=
+       composite_seat`),并与 pinned 同属**受保护集**(mandatory 超 target 时不被截尾)。
+       理由:守卫⑨ 会把它们强制送进 finalists,pass1 切了它们 = finalists 里出现空 thesis 行。
+       `composite_seat_m<=0`(默认)= 现行为逐字 parity。
     ② 多路共振**按 composite 取前 `RESONANCE_CAP` 只**强留(2026-08-22 由「全入」收窄,
        理由见该常量注释):`n_channels >= 3`(真实列,直接可用)。列缺失(如 `recall_mode="composite"`
        的 L2,无 provenance 列)→ 跳过本规则,不报错。
@@ -130,6 +136,25 @@ def triage_l2_for_l3(df: pd.DataFrame, target: int = 60, *, lowturn_cap: int = 0
     for i in d.index[is_pinned]:
         _mark(i, "pinned")
 
+    is_seat = pd.Series(False, index=d.index)
+    if composite_seat_m > 0:                             # ①b composite 席位强留(2026-08-26 §3 路A)
+        # 守卫⑨ 会把这几只**强制送进 finalists**;若 pass1 把它们切掉,l3-rank 就从没判过它们,
+        # finalists 里那几行只能是「L2 展示字段 + 空 thesis」——正是 pinned 当年踩过的坑
+        # (「保送 ≠ 免判,更 ≠ 判了不要」)。所以这里必须让它们进表被判。
+        # 谓词与守卫⑨ **同一个函数**(单一事实源),不在这里重造一套排序/剔除规则。
+        from autoresearch.scan.l3.merge import pick_composite_seats
+        try:
+            seats = pick_composite_seats(d, int(composite_seat_m))
+        except Exception:  # noqa: BLE001 — 席位算不出不该挡住 pass1
+            seats = []
+        seat_codes = {s["code"] for s in seats}
+        if seat_codes and "code" in d.columns:
+            for i in d.index[d["code"].astype(str).str.zfill(6).isin(seat_codes)]:
+                is_seat.loc[i] = True
+                if not mandatory.loc[i]:
+                    mandatory.loc[i] = True
+                    _mark(i, "conviction_guard", "composite_seat")
+
     if "n_channels" in d.columns:                        # ② 多路共振 top-RESONANCE_CAP 强留
         n_ch = pd.to_numeric(d["n_channels"], errors="coerce").fillna(0)
         resonant = [i for i in d.index[n_ch >= 3] if not mandatory.loc[i]]
@@ -168,11 +193,15 @@ def triage_l2_for_l3(df: pd.DataFrame, target: int = 60, *, lowturn_cap: int = 0
         # `_l3_pass1_cut.csv`、丢失 L3 真判机会("L3 真判但不可淘汰"失守)。pinned 行数
         # 本身就超过 target 的极端情形(理论上用户 pinned 名单很小,不会发生)→ 全部保留,
         # kept 允许略超 target(强留优先级高于 target 硬性配额)。
-        pinned_idx = [i for i in mandatory_idx if is_pinned.loc[i]]
-        other_idx = [i for i in mandatory_idx if not is_pinned.loc[i]]
+        # 受保护集 = 📌 保送 ∪ composite 席位。两者同理:守卫层会把它们**强制送进
+        # finalists**,若 pass1 在这里把它们切掉,l3-rank 就从没判过它们,finalists 里
+        # 那几行只剩 L2 展示字段 + 空 thesis(「保送 ≠ 免判,更 ≠ 判了不要」的同款事故)。
+        protected = is_pinned | is_seat
+        protected_idx = [i for i in mandatory_idx if protected.loc[i]]
+        other_idx = [i for i in mandatory_idx if not protected.loc[i]]
         ranked = sorted(other_idx, key=lambda i: order.loc[i], reverse=True)
-        remaining_target = max(0, target - len(pinned_idx))
-        kept_set: set[int] = set(pinned_idx) | set(ranked[:remaining_target])
+        remaining_target = max(0, target - len(protected_idx))
+        kept_set: set[int] = set(protected_idx) | set(ranked[:remaining_target])
     else:
         kept_set = set(mandatory_idx)
 

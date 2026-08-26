@@ -78,6 +78,8 @@ class Cand:
     tradable: bool = True                # 写进 L1_scored_full 的入场旗列
     tripwire_hits: int = 0
     in_universe: bool = True             # False = 根本不在 L0 可交易全集里
+    seat: bool = False                   # v3.0:L3 守卫⑨ 的 composite 证据席(finalists.guard)
+    proposal: str | None = None          # 卡面 `FINAL TRANSACTION PROPOSAL`(v3.0 硬门④ 第二腿)
 
 
 # 排名主用例:A/B/C/D 四只,面分刻意造成「等权平均」与「乘积」结论相反(见
@@ -191,8 +193,11 @@ def _build_scan(tmp_path: Path, cands: list[Cand], *,
         [{"code": c.code, "conviction": 60, "mechanism": "x", "lane": "healthy",
           "triage_lean": "OW", "finalist": True} for c in cands],
         ensure_ascii=False), encoding="utf-8")
-    _write_csv(scan / "finalists.csv", ["ticker", "code", "name", "sector", "guard"],
-               [[f"{c.code}.SZ", c.code, c.name, c.industry, ""] for c in cands])
+    _write_csv(scan / "finalists.csv",
+               ["ticker", "code", "name", "sector", "guard", "lane"],
+               [[f"{c.code}.SZ", c.code, c.name, c.industry,
+                 "composite_seat" if c.seat else "", "composite" if c.seat else ""]
+                for c in cands])
 
     # ── run 契约 + 决策事实本 ──
     contract = RunContract.build(
@@ -208,7 +213,8 @@ def _build_scan(tmp_path: Path, cands: list[Cand], *,
                 analysis_date=date, contract_hash=contract.contract_hash, code=c.code,
                 source_rating=c.rating, rubric_rating=c.rating,
                 gate_states=c.gate_states, early_stop=c.early_stop,
-                ensemble_ratings=[], final_rating=c.rating, proposal="HOLD",
+                ensemble_ratings=[], final_rating=c.rating,
+                proposal=c.proposal or "HOLD",
                 reason="rubric", evidence_refs=[f"finalists.csv#{c.code}"],
                 first_rejection_stage="L4_RUBRIC",
             ) for c in cands if c.carded]
@@ -300,9 +306,13 @@ def test_rule_version_is_pinned_and_reaches_the_written_product(tmp_path):
     v1.1 = v1 + 两道硬门的 ABSENT 收紧;v1.2 = v1.1 + data_a 第 4 判改读
     `stage_results.failed_data`(E1a)。v2.0(task-2.2,2026-08-19)= `mode` 形参开放接受
     `"active"` + 新增 `exclude_pinned` 过滤(生产默认仍 shadow/False,翻 active 是独立的
-    裁决表批准动作)。**打分与选择语义与 v1 逐字相同**(8 日回放零变化)。
+    裁决表批准动作)。**v1→v2.0 打分与选择语义逐字相同**(8 日回放零变化)。
+
+    **v3.0(2026-08-26 §3 路A)是第一次真的改规则**,两件事:① 硬门④ 扩集(UW/Sell 卡与
+    `FINAL PROPOSAL: SELL` 一律否决 —— 08-20/08-25 两次把提议 SELL 的卡发成 BUY);
+    ② 新增 `pool` 形参:`composite` 时候选池 = L3 守卫⑨ 的证据席,排序改按 composite 分。
     """
-    assert RULE_VERSION == "e6.v2.0"
+    assert RULE_VERSION == "e6.v3.0"
     scan = _build_scan(tmp_path, _RANK_CANDS)
     assert build_decision(scan)["rule_version"] == RULE_VERSION
     written = json.loads(write_decision(scan).read_text(encoding="utf-8"))
@@ -1011,7 +1021,7 @@ def test_safe_verify_decision_survives_build_failure(tmp_path, monkeypatch, caps
 
 def test_active_mode_accepted(tmp_path):
     doc = build_decision(_build_scan(tmp_path, _RANK_CANDS), mode=MODE_ACTIVE)
-    assert doc["mode"] == "active" and doc["rule_version"] == "e6.v2.0"
+    assert doc["mode"] == "active" and doc["rule_version"] == RULE_VERSION
 
 
 def test_mode_still_rejects_illegal_values(tmp_path):
@@ -1148,7 +1158,7 @@ def test_configured_relative_buy_defaults_to_shadow_without_config(tmp_path, mon
     """缺配置 → shadow/False/None = 内建默认 = 现行为(parity)。"""
     monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH", tmp_path / "nope.jsonc")
 
-    assert configured_relative_buy() == ("shadow", False, None)
+    assert configured_relative_buy() == ("shadow", False, None, "finalists")
     assert is_active() is False
     assert activate_date() is None
 
@@ -1157,7 +1167,7 @@ def test_configured_relative_buy_reads_all_three_knobs(tmp_path, monkeypatch):
     _write_config(tmp_path, {"mode": "active", "exclude_pinned": True,
                              "activate_date": "2026-08-20"}, monkeypatch)
 
-    assert configured_relative_buy() == ("active", True, "2026-08-20")
+    assert configured_relative_buy() == ("active", True, "2026-08-20", "finalists")
     assert is_active() is True
     assert activate_date() == "2026-08-20"
 
@@ -1168,5 +1178,197 @@ def test_configured_relative_buy_degrades_loudly_on_broken_config(tmp_path, monk
     cfg.write_text(json.dumps({"relative_buy": {"mode": "nonsense"}}), encoding="utf-8")
     monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH", cfg)
 
-    assert configured_relative_buy() == ("shadow", False, None)
+    assert configured_relative_buy() == ("shadow", False, None, "finalists")
     assert "scan_config 读取失败" in capsys.readouterr().err
+
+
+# ═══════════════════════ v3.0(2026-08-26 §3 路A)═══════════════════════════
+#
+# 两件事各自可单独回滚,所以各自单独锁:
+#   A2 硬门扩集 —— UW/Sell 卡与 `FINAL PROPOSAL: SELL` 不得当 BUY(对两个池都生效);
+#   A1/A3 池切换 —— `pool="composite"` 时只在 L3 守卫⑨ 的证据席里选、按 composite 分排。
+
+from autoresearch.scan.relative_buy import (  # noqa: E402
+    POOL_COMPOSITE,
+    POOL_FINALISTS,
+    REDFLAG_EARLY_STOP_REASONS,
+    REDFLAG_RATINGS,
+    configured_pool,
+)
+
+
+def test_underweight_card_can_no_longer_be_buy(tmp_path):
+    """**本波最核心的一条**:2026-08-20 金螳螂、2026-08-25 天味食品两次把卡面 UW、
+    `FINAL TRANSACTION PROPOSAL: SELL` 的票发成当日 BUY(v1 已知问题 #6 原话:
+    「提议卖出的票可以当相对 BUY 出这条通路是敞开的」)。v3.0 把这条通路焊死。"""
+    cands = [
+        Cand(code="603317", name="天味食品", composite_rank=1, amount_yi=9.0,
+             rating="Underweight", proposal="SELL",
+             early_stop={"phase": "P3", "reason": "资金流出"}),
+        Cand(code="601766", name="中国中车", composite_rank=50, amount_yi=8.0,
+             rating="Hold", early_stop={"phase": "P3", "reason": "其他"}),
+    ]
+    doc = build_decision(_build_scan(tmp_path, cands), mode=MODE_ACTIVE)
+    assert [b["code"] for b in doc["buys"]] == ["601766"]
+    veto = next(c for c in doc["candidates"] if c["code"] == "603317")
+    assert veto["hard_gate"]["no_redflag"] is False and veto["eligible"] is False
+
+
+def test_underweight_alone_vetoes_without_a_sell_proposal(tmp_path):
+    """**变异探针 M1**:上一条用例的票同时是 UW **且**提案 SELL —— 两条防线各自都能拦住它,
+    所以把 `rating in REDFLAG_RATINGS` 改回 `rating == "Sell"`,那条用例照样绿(实测)。
+    这里给一只「UW 但提案 HOLD」的票,单独锁住**评级**那条腿。"""
+    cands = [
+        Cand(code="603317", name="只是UW", composite_rank=1, amount_yi=9.0,
+             rating="Underweight", proposal="HOLD"),
+        Cand(code="601766", name="干净票", composite_rank=50, amount_yi=8.0, rating="Hold"),
+    ]
+    doc = build_decision(_build_scan(tmp_path, cands), mode=MODE_ACTIVE)
+    assert [b["code"] for b in doc["buys"]] == ["601766"]
+    veto = next(c for c in doc["candidates"] if c["code"] == "603317")
+    assert veto["hard_gate"]["no_redflag"] is False
+    detail = next(e["detail"] for e in doc["excluded"] if e["code"] == "603317")
+    assert "Underweight" in detail          # 理由必须点名评级,不是借了提案那条腿
+
+
+def test_sell_proposal_vetoes_even_when_rating_unreadable(tmp_path):
+    """两条独立防线:评级解析可能失手,而 `FINAL TRANSACTION PROPOSAL` 是卡的机读契约行。"""
+    cands = [
+        Cand(code="603317", name="提案卖出", composite_rank=1, amount_yi=9.0,
+             rating="Hold", proposal="SELL"),
+        Cand(code="601766", name="干净票", composite_rank=50, amount_yi=8.0, rating="Hold"),
+    ]
+    doc = build_decision(_build_scan(tmp_path, cands), mode=MODE_ACTIVE)
+    assert [b["code"] for b in doc["buys"]] == ["601766"]
+
+
+def test_hold_with_neutral_earlystop_is_not_vetoed(tmp_path):
+    """**反向锁**:{其他, 题材透支, 资金流出} 三档故意留在红灯集之外 —— 它们在隔夜尺上
+    对 Hold/UW 无区分力(L4·Hold −0.20 vs UW −0.35 不显著)。把它们也当红灯,就是拿没有
+    证据的判断去否决有证据的候选,当天会直接 BLOCKED。"""
+    for reason in ("其他", "题材透支", "资金流出"):
+        cands = [Cand(code="601766", name="干净票", composite_rank=1, amount_yi=9.0,
+                      rating="Hold", early_stop={"phase": "P3", "reason": reason})]
+        doc = build_decision(_build_scan(tmp_path / reason, cands), mode=MODE_ACTIVE)
+        assert [b["code"] for b in doc["buys"]] == ["601766"], reason
+
+
+@pytest.mark.parametrize("reason", sorted(REDFLAG_EARLY_STOP_REASONS - {"监管/审计红灯"}))
+def test_redflag_earlystop_reasons_are_vetoed(tmp_path, reason):
+    cands = [Cand(code="601766", name="红灯票", composite_rank=1, amount_yi=9.0,
+                  rating="Hold", early_stop={"phase": "P3", "reason": reason})]
+    doc = build_decision(_build_scan(tmp_path / reason.replace("/", "_"), cands),
+                         mode=MODE_ACTIVE)
+    assert doc["blocked"] is True
+
+
+def test_redflag_ratings_content_is_pinned():
+    """扩集是规则改动,必须显式露面(同 rule_version 那条哨兵的用意)。"""
+    assert REDFLAG_RATINGS == frozenset({"Sell", "Underweight"})
+    assert REDFLAG_EARLY_STOP_REASONS == frozenset({
+        "基本面恶化", "监管/审计红灯", "估值透支", "涨停追高", "数据不足"})
+
+
+def test_composite_pool_only_picks_from_seats(tmp_path):
+    """A1/A3:BUY 只在证据席里选。**四面综合分最高的那只如果不是席位,就不该当 BUY** ——
+    这正是把 BUY 所有权从判断层搬到证据层的那一步。"""
+    cands = [
+        # 综合分最高(四面全好)但不是席位
+        Cand(code="000034", name="判断层最爱", composite_rank=20, amount_yi=9.0,
+             n_channels=4, best_channel_rank=1, rating="Hold", intel="INTEL",
+             dossier=True, price_claim="CLEAN"),
+        # 席位:composite 最高(rank 越小分位越高),其余面平平
+        Cand(code="600188", name="证据席甲", composite_rank=1, amount_yi=3.0,
+             n_channels=1, best_channel_rank=30, rating="Hold", intel="NONE", seat=True),
+        Cand(code="601699", name="证据席乙", composite_rank=5, amount_yi=2.0,
+             n_channels=1, best_channel_rank=40, rating="Hold", intel="NONE", seat=True),
+    ]
+    scan = _build_scan(tmp_path, cands)
+    fin = build_decision(scan, mode=MODE_ACTIVE, pool=POOL_FINALISTS)
+    comp = build_decision(scan, mode=MODE_ACTIVE, pool=POOL_COMPOSITE)
+    assert [b["code"] for b in fin["buys"]] == ["000034"]      # v2 池:判断层最爱
+    assert [b["code"] for b in comp["buys"]] == ["600188"]     # v3 池:composite 最高的席位
+    assert comp["pool"] == "composite" and comp["pool_members"] == ["600188", "601699"]
+    assert comp["counts"]["in_pool"] == 2
+    dropped = {e["code"] for e in comp["excluded"] if e["reason"] == "not_in_pool"}
+    assert "000034" in dropped                                # 落选留痕,不静默消失
+
+
+def test_composite_pool_excludes_a_higher_composite_non_seat(tmp_path):
+    """**变异探针 M2**:上一条用例里非席位票的 composite 低于席位,所以就算把池过滤整段
+    删掉,「按 composite 排」也会给出同一个答案 —— 那条用例对池过滤零鉴别力(实测)。
+
+    这里让**非席位票的 composite 全场最高**(现实里它可能因 📌/追高/ST 被剔出席位):
+    只有池过滤真的在,BUY 才会落到席位上。"""
+    cands = [
+        Cand(code="000034", name="composite 全场最高但不是席位", composite_rank=1,
+             amount_yi=9.0, rating="Hold"),
+        Cand(code="600188", name="证据席", composite_rank=40, amount_yi=3.0,
+             rating="Hold", seat=True),
+    ]
+    doc = build_decision(_build_scan(tmp_path, cands), mode=MODE_ACTIVE,
+                         pool=POOL_COMPOSITE)
+    assert [b["code"] for b in doc["buys"]] == ["600188"]
+    by = {c["code"]: c for c in doc["candidates"]}
+    assert by["000034"]["faces"]["target_align"] > by["600188"]["faces"]["target_align"]
+
+
+def test_composite_pool_ranks_by_composite_not_borda(tmp_path):
+    """排序改按 `target_align`(composite 分位)——另三面在隔夜尺上无证据,降为记录列。
+    变异探针:若排序仍用 Borda 平均,下面这只 evidence/recall 更好的席位会夺冠。"""
+    cands = [
+        Cand(code="600188", name="composite 更高", composite_rank=1, amount_yi=2.0,
+             n_channels=1, best_channel_rank=40, rating="Hold", intel="NONE", seat=True),
+        Cand(code="601699", name="四面更好", composite_rank=30, amount_yi=9.0,
+             n_channels=4, best_channel_rank=1, rating="Hold", intel="INTEL",
+             dossier=True, price_claim="CLEAN", seat=True),
+    ]
+    doc = build_decision(_build_scan(tmp_path, cands), mode=MODE_ACTIVE, pool=POOL_COMPOSITE)
+    assert [b["code"] for b in doc["buys"]] == ["600188"]
+    by = {c["code"]: c for c in doc["candidates"]}
+    assert by["601699"]["relative_decision_score"] > by["600188"]["relative_decision_score"]
+
+
+def test_composite_pool_blocks_honestly_when_no_seats(tmp_path):
+    """席位为空(守卫⑨ 关了 / 当日 L2 表缺 composite 列)→ 诚实 BLOCKED,
+    **不悄悄退回全体池** —— 静默回退等于当天的 BUY 换了一套规则却没人知道。"""
+    cands = [Cand(code="601766", name="非席位", composite_rank=1, amount_yi=9.0,
+                  rating="Hold")]
+    doc = build_decision(_build_scan(tmp_path, cands), mode=MODE_ACTIVE, pool=POOL_COMPOSITE)
+    assert doc["blocked"] is True and doc["pool_members"] == []
+    assert any(r["reason"] == "not_in_pool" for r in doc["blocked_reasons"])
+
+
+def test_pool_finalists_keeps_candidate_table_intact(tmp_path):
+    """池只决定**谁能当 BUY**,不裁剪候选表(观测语义不变,同 exclude_pinned 的既定纪律)。"""
+    cands = [Cand(code=c, name=f"票{c}", composite_rank=i + 1, amount_yi=9.0 - i,
+                  rating="Hold", seat=(i == 2)) for i, c in enumerate(
+                      ["000034", "600188", "601699"])]
+    scan = _build_scan(tmp_path, cands)
+    fin = build_decision(scan, mode=MODE_ACTIVE, pool=POOL_FINALISTS)
+    comp = build_decision(scan, mode=MODE_ACTIVE, pool=POOL_COMPOSITE)
+    assert len(fin["candidates"]) == len(comp["candidates"]) == 3
+    assert all(c["in_pool"] for c in fin["candidates"])
+
+
+def test_illegal_pool_raises(tmp_path):
+    with pytest.raises(ValueError, match="pool 只接受"):
+        build_decision(_build_scan(tmp_path, _RANK_CANDS), pool="whatever")
+
+
+def test_configured_pool_reads_config_and_defaults(tmp_path, monkeypatch):
+    """回滚杆读得到、缺键回内建默认(= v2 候选池,parity)。
+    走本文件既有的 `_write_config`(patch `DEFAULT_PATH`)—— `tests/scan/conftest.py` 的
+    autouse fixture 把 `DEFAULT_PATH` 钉在一个不存在的路径上(防真配置渗进 tmp_path 测试),
+    所以靠 chdir + 造 `.claude/` 目录那套在本目录里永远读不到。"""
+    _write_config(tmp_path, {"pool": "composite"}, monkeypatch)
+    assert configured_pool() == POOL_COMPOSITE
+    _write_config(tmp_path, {"mode": "active"}, monkeypatch)
+    assert configured_pool() == POOL_FINALISTS          # 缺键 = 内建默认(parity)
+
+
+def test_illegal_pool_in_config_degrades_loudly(tmp_path, monkeypatch, capsys):
+    """错型不静默生效(同 knob 纪律):回落 finalists + stderr 留痕。"""
+    _write_config(tmp_path, {"pool": "whatever"}, monkeypatch)
+    assert configured_pool() == POOL_FINALISTS
+    assert "relative_buy.pool" in capsys.readouterr().err

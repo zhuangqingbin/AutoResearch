@@ -28,6 +28,80 @@ L3_SECTOR_CAP = 3
 # 而守卫④ 曾强制把它凑到 finalist 的 1/3。回滚杆 = 改回 1/3(一行恢复 ④⑤⑥⑧ 四处旧行为)。
 HEALTHY_QUOTA_FRAC = 0.0
 
+# ── composite 席位(2026-08-26 §3 路A · 守卫⑨)────────────────────────────────
+# **BUY 的所有权从判断层搬到证据层**。E6 此前只在 L3 finalist 里挑,而 finalist 这一族在
+# 隔夜主尺上 40 日相对超额 **−0.27pp(t=−3.94)= 显著为负**;全表唯一的正证据是确定性
+# `composite`(+0.14pp,t=3.05),L2 菜单内前 20/50 名同样为正(+0.14 t=1.96 / +0.17 t=2.78,
+# 42 个扫描日实测,`docs/research/2026-08-26-buy-owner-spikes/`)。于是:每天把当日 L2 菜单
+# 里 composite 最高的 M 只**强制送进 finalists**,让它们出卡、进 E6 候选池;判断层的活儿
+# 改成「否决」——那才是它被证明会做的事(`STAGES.md` §二:已证 edge 在拒绝不在挑选)。
+#
+# **它承诺什么**:每天一个证据链自洽、与卡面不打架、可事后计量的 BUY。
+# **它不承诺什么**:隔夜赚钱。+0.14~0.17pp 与一次 A 股往返成本同量级。
+#
+# 席位不受守卫②lt55/③cap 约束(与 📌 保送同级:它不是排序的产物,是证据层的直通车),
+# 但**要过**追高剔除(pct_1d≥CHASE_1D_PCT)与 ST/📌 排除。
+# 回滚杆:`scan_config.jsonc` 的 `l3.composite_seat.enabled=false`(一行,逐字 parity)。
+COMPOSITE_SEAT_M = 3
+COMPOSITE_SEAT_GUARD = "composite_seat"
+
+
+def composite_seat_cfg(cfg: dict | None = None) -> tuple[bool, int]:
+    """`(enabled, m)` —— 生效点唯一解析口。配置层故障 → 默认开、M=3(与常量一致)。"""
+    from autoresearch.scan.user_config import knob
+    block = knob("l3", "composite_seat", None, {}, cfg) or {}
+    if not isinstance(block, dict):
+        return True, COMPOSITE_SEAT_M
+    enabled = block.get("enabled", True)
+    m = block.get("m", COMPOSITE_SEAT_M)
+    try:
+        m = max(0, int(m))
+    except (TypeError, ValueError):
+        m = COMPOSITE_SEAT_M
+    return bool(enabled), m
+
+
+def _is_st(name: object) -> bool:
+    s = str(name or "").upper().replace(" ", "")
+    return "ST" in s or "退" in s
+
+
+def pick_composite_seats(l2: "pd.DataFrame | None", m: int,
+                         exclude: set[str] | None = None) -> list[dict]:
+    """当日 L2 菜单里 composite 最高的 ≤m 只(确定性;见 `COMPOSITE_SEAT_M` 旁注)。
+
+    排序键 `gbdt_score`(= sector-neutral composite,实测与 `composite` 列逐值相等),缺列
+    退化 `composite`;两列都缺 → 空(presence-gated,parity)。
+    剔:📌 保送(它们走自己的直通车)/ ST·退 / 当日涨幅 ≥`CHASE_1D_PCT`(追高在隔夜尺上
+    四年逐年为负)/ 调用方给的 `exclude`(通常是已在 finalists 的码 —— 已经在场就不必再占席)。
+    """
+    if l2 is None or not len(l2):
+        return []
+    col = "gbdt_score" if "gbdt_score" in l2.columns else (
+        "composite" if "composite" in l2.columns else None)
+    if col is None or m <= 0:
+        return []
+    d = l2.copy()
+    d["code"] = d["code"].astype(str).str.zfill(6)
+    score = pd.to_numeric(d[col], errors="coerce")
+    keep = score.notna()
+    if "pinned" in d.columns:
+        keep &= ~d["pinned"].map(lambda v: bool(v) if pd.notna(v) else False)
+    if "name" in d.columns:
+        keep &= ~d["name"].map(_is_st)
+    if "pct_1d" in d.columns:
+        keep &= ~(pd.to_numeric(d["pct_1d"], errors="coerce") >= CHASE_1D_PCT)
+    if exclude:
+        keep &= ~d["code"].isin({str(c).zfill(6) for c in exclude})
+    d = d.loc[keep].assign(_score=score.loc[keep])
+    d = d.sort_values(["_score", "code"], ascending=[False, True]).head(int(m))
+    out = []
+    for _, r in d.iterrows():
+        out.append({"code": r["code"], "name": r.get("name", ""),
+                    "sector": r.get("industry", r.get("sector", "")),
+                    "score": float(r["_score"])})
+    return out
+
 
 def _healthy_quota(n: int) -> int:
     """守卫④ 的 healthy 席位目标(ceil(n × frac));frac=0 → 0 = 不动作。"""
@@ -339,6 +413,59 @@ def merge_l3_finalists_v3(judged: pd.DataFrame, budget: int,
         bench = pd.concat([bench, dup_rows], ignore_index=True)
     return fin, bench
 
+def inject_composite_seats(fin: pd.DataFrame, seats: list[dict],
+                           judged: pd.DataFrame | None = None) -> pd.DataFrame:
+    """把 composite 席位注入 finalists(守卫⑨;结构镜像 `_inject_pinned_finalists`)。
+
+    - 已在 `fin`(L3 自己也选了它)→ **不重复行**,只打 `guard="composite_seat"` 留痕
+      (L3 的 thesis/conviction 原样保留 —— 判断记录在案,不因证据层直通而抹掉);
+    - 不在 `fin` 但**在 judged 里**(L3 判过、落 bench)→ 从 judged 取整行带过来
+      (thesis/mechanism/risk/catalyst/conviction 全部保留),再打 guard;
+      **这是 pinned 那次事故的同款教训**:只查 L2 会把 L3 的判断整段丢掉,下游 L4 prompt
+      就会告诉卡片「本票无 L3 前提清单」,卡只好自己从 L1 重建。
+    - 两处都没有(pass1 切了 / l3-rank 没判它)→ 用 L2 行的展示字段建占位行,`data_missing=False`
+      (name/sector 是真数据),`conviction` 留空(**不编**:证据层直通不代表判断层给过分)。
+
+    `seats` 空 → 原样返回(presence-gated parity)。
+    """
+    if not seats:
+        return fin
+    out = fin.copy()
+    if "code" in out.columns:
+        out["code"] = out["code"].astype(str).str.zfill(6)
+    for col, default in (("lane", ""), ("guard", ""), ("data_missing", False)):
+        if col not in out.columns:
+            out[col] = default
+    have = set(out["code"]) if "code" in out.columns else set()
+    judged_z = None
+    if judged is not None and not judged.empty and "code" in judged.columns:
+        judged_z = judged.assign(code=judged["code"].astype(str).str.zfill(6))
+
+    new_rows: list[pd.DataFrame] = []
+    for seat in seats:
+        code = str(seat["code"]).zfill(6)
+        if code in have:
+            m = out["code"] == code
+            # guard 留痕但**不覆盖**已有的更具体标记(如 lowturn_quota/chase_backfill):
+            # 那些说的是「它怎么进来的」,而席位说的是「它另外还占了一个证据席」。
+            out.loc[m & (out["guard"].fillna("") == ""), "guard"] = COMPOSITE_SEAT_GUARD
+            continue
+        row: dict = {"code": code, "ticker": code, "lane": "composite",
+                     "guard": COMPOSITE_SEAT_GUARD, "data_missing": False}
+        hit = judged_z[judged_z["code"] == code] if judged_z is not None else None
+        if hit is not None and len(hit):
+            r0 = hit.iloc[0].to_dict()
+            r0.pop("finalist", None)
+            row = {**{k: v for k, v in r0.items() if pd.notna(v)}, **row}
+        else:
+            row["name"] = seat.get("name", "")
+            row["sector"] = seat.get("sector", "")
+        new_rows.append(pd.DataFrame([row]))
+    if new_rows:
+        out = pd.concat([out, *new_rows], ignore_index=True, sort=False)
+    return out
+
+
 def _inject_pinned_finalists(fin: pd.DataFrame, kept: list[dict],
                              lookup: pd.DataFrame | None = None,
                              judged: pd.DataFrame | None = None) -> pd.DataFrame:
@@ -480,6 +607,20 @@ def write_finalists(date: str, budget: int = 30, root: Path | None = None,
     fin, bench = merge_l3_finalists_v3(jd, budget=budget, finalist_max=finalist_max)
     finalist_n = int(len(fin))
 
+    # 守卫⑨ composite 席位(2026-08-26 §3 路A):在 v3 全部守卫**之后**、pinned 注入**之前**
+    # 注入 —— 与 📌 同级的直通车,不占 finalist 名额、不参与 cap 截尾。放在 pinned 之前是为了
+    # 让 pinned 的「已在场就只改判 lane」逻辑仍能覆盖同码情形(📌 优先级更高)。
+    seats: list[dict] = []
+    seat_enabled, seat_m = composite_seat_cfg()
+    if seat_enabled and seat_m > 0:
+        seats = pick_composite_seats(l2, seat_m,
+                                     exclude={str(c) for c in fin.get("code", [])})
+        fin = inject_composite_seats(fin, seats, judged=jd)
+        if len(seats):
+            bench = bench[~bench["code"].astype(str).isin({s["code"] for s in seats})
+                          ].reset_index(drop=True)
+    seat_n = int(len(seats))
+
     from autoresearch.scan.user_config import load_pinned
     kept = load_pinned(date, path=pinned_path)["kept"]
     if kept:
@@ -500,4 +641,8 @@ def write_finalists(date: str, budget: int = 30, root: Path | None = None,
 
         record_l3_results(scan_dir)
     return {"judged_n": int(len(jd)), "finalists_n": int(len(fin)),
-            "finalist_n": finalist_n, "bench_n": bench_n}
+            "finalist_n": finalist_n, "bench_n": bench_n,
+            # 守卫⑨ 的**会变的量**:席位这条腿死了也像活着(同族配方:自动的腿必须有一个
+            # 会变的量做断言)。0 = 关了、或当日 L2 表缺 composite 列、或全被追高/ST 剔光。
+            "composite_seat_n": seat_n,
+            "composite_seats": [s["code"] for s in seats]}

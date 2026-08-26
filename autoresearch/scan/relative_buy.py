@@ -28,7 +28,7 @@ publisher、不动 `decision_records.json`、不改任何 prompt**;活体真正�
 
 ## v1 规则(**观察前锁定**;任何改动 = 新 `RULE_VERSION`,经影子账本呈证 + proposal 人批)
 
-> 当前 `RULE_VERSION = "e6.v2.0"`。v1.1 只把两道硬门对"产物缺席"的静默放行堵上,
+> 当前 `RULE_VERSION = "e6.v3.0"`。v1.1 只把两道硬门对"产物缺席"的静默放行堵上,
 > v1.2 只把 `data_a` 第 4 判改读 `stage_results.failed_data`(gate4 的 hygiene/metering
 > 类失败不再连坐当日 BUY),v2.0 只把 `mode` 形参开放接受 `"active"` + 加 `exclude_pinned`
 > 过滤(生产默认仍 `shadow`/`False`)。**打分与选择语义与 v1 逐字相同**(8 日回放零变化
@@ -131,7 +131,7 @@ from autoresearch.common.ruler import MAIN_RULER, REL_MARKET, REL_SECTOR, entry_
 from autoresearch.scan.passport import build_passport
 
 SCHEMA_VERSION = 1
-RULE_VERSION = "e6.v2.0"
+RULE_VERSION = "e6.v3.0"
 # v1.1 = v1 + 两道硬门的 ABSENT 收紧(`data_a` 三个 status 一律要求 `== "OK"`;`contract`
 # 消费护照 `missing["l4.research_rating"]`)。**打分与选择语义与 v1 逐字相同** —— 四面算法 /
 # Borda 等权平均 / 并列决胜三级 / 第 2 只的门 / `expected_abs_gap` 一个字符未动。
@@ -173,7 +173,29 @@ EXPECTED_ABS_GAP_MIN_N = 20
 #: 成交额分位下限(L0 可交易全集内)。
 LIQUIDITY_PCTL_FLOOR = 0.10
 #: 硬门 ④ 的红灯停因。"监管/审计红灯"不在 `l4/parsers.py` 的七词表内(逐字实现,现行永不命中)。
-REDFLAG_EARLY_STOP_REASONS = frozenset({"基本面恶化", "监管/审计红灯"})
+#: **v3.0 扩集**(2026-08-26 §3 路A 的 A2):加 {估值透支, 涨停追高, 数据不足}。
+#: 判据是**产品一致性不是统计**:E6 出的 BUY 不能与同一张卡自己写的结论打架。留在集合外的
+#: 是 {其他, 题材透支, 资金流出} —— 这三档在隔夜尺上对 Hold/UW 无区分力(edge 普查:
+#: L4·Hold −0.20 vs UW −0.35,差异不显著;「主力真在」门 PASS−FAIL 甚至反向 −0.22pp),
+#: 把它们也当红灯就是拿没有证据的判断去否决有证据的候选。
+REDFLAG_EARLY_STOP_REASONS = frozenset({
+    "基本面恶化", "监管/审计红灯", "估值透支", "涨停追高", "数据不足",
+})
+#: v3.0 硬门 ④ 否决的评级档(A2)。UW/Sell 卡 + `FINAL TRANSACTION PROPOSAL: SELL` 都不得当 BUY。
+#: 实测背景:2026-08-20 金螳螂、2026-08-25 天味食品**两次**把提议 SELL 的 UW 卡发成当日 BUY
+#: (v1 已知问题 #6 原话:「提议卖出的票可以当相对 BUY 出这条通路是敞开的」)。
+REDFLAG_RATINGS = frozenset({"Sell", "Underweight"})
+REDFLAG_PROPOSALS = frozenset({"SELL"})
+#: BUY 候选池来源(v3.0)。`POOL_FINALISTS` = v2 的**候选池**(判断层 finalist 全体);
+#: `POOL_COMPOSITE` = 只在「证据席」(L3 守卫⑨ `composite_seat`)里选、且按 composite 分排。
+#:
+#: ⚠️ **回滚杆的边界要说清**(实施时发现设计稿 §5 那句"= v2 逐字"不准确):
+#: `scan_config.relative_buy.pool="finalists"` 只回滚**候选池与排序**,**不回滚上面那两条
+#: 硬门扩集**(A2 的 UW/SELL 否决对两个池都生效 —— 它是产品一致性要求:BUY 不能与卡面
+#: 结论打架,和"从哪个池里选"是两件事)。要连硬门一起回滚,得把 `REDFLAG_RATINGS` 与
+#: `REDFLAG_EARLY_STOP_REASONS` 改回 v2 的取值(各一行),那是一次显式的代码改动,不是配置。
+POOL_FINALISTS = "finalists"
+POOL_COMPOSITE = "composite"
 #: `risk_safety` 里算作"风险类"的停因 = 七词表减去 {数据不足, 其他}(那两个是"缺证据/
 #: 未归类",不是实质负面发现,且已由 evidence 面的早停基础分反映)。
 RISK_EARLY_STOP_REASONS = frozenset({
@@ -346,6 +368,27 @@ def _data_contract_ok(scan: Path) -> tuple[bool, str]:
 
 
 # ── 逐票契约(task-book + 价格断言)─────────────────────────────────────────
+def _composite_seat_codes(scan: Path) -> set[str]:
+    """当日 composite 证据席的码集(v3.0 的候选池定义)。
+
+    真身是 L3 守卫⑨ 写进 `finalists.csv` 的 `guard == "composite_seat"`(或 `lane ==
+    "composite"` —— 两个标记同批写下,认哪个都行,认两个更抗一侧被改)。**不在这里重算
+    composite 排序**:重算就等于第二套规则,两处迟早给出不同的席位(同族家训:同一条规则
+    两处各写一套,迟早在某次改动后给出两个不同的数,而那时没人知道该信哪个)。
+    文件缺席 / 列缺席 → 空集 → `pool="composite"` 那天诚实 `blocked`,不悄悄退回全体池。
+    """
+    rows = _rows(scan / "finalists.csv")
+    if not rows:
+        return set()
+    out: set[str] = set()
+    for row in rows:
+        guard = str(row.get("guard") or "").strip()
+        lane = str(row.get("lane") or "").strip()
+        if guard == "composite_seat" or lane == "composite":
+            out.add(_code(row.get("code") or row.get("ticker")))
+    return out
+
+
 def _task_book(scan: Path) -> dict | None:
     book = _json_doc(scan / "_l4_tasks.json")
     if not isinstance(book, dict) or not isinstance(book.get("tasks"), dict):
@@ -519,10 +562,17 @@ def _hard_gate(entry: dict, ctx: dict) -> tuple[dict[str, bool], list[dict]]:
     rating = entry["l4"].get("research_rating")
     stop_reason = str(entry["l4"].get("earlystop_reason") or "")
     amount_pctl = ctx["universe"]["amount_pctl"].get(code)
+    proposal = str(entry["l4"].get("proposal") or "").upper()
     if _is_st(entry.get("name")):
         fail("no_redflag", f"ST/退市标记:{entry.get('name')!r}")
-    elif rating == "Sell":
-        fail("no_redflag", "research_rating=Sell")
+    elif rating in REDFLAG_RATINGS:
+        # v3.0(A2):v1/v2 只挡最末一档 Sell,于是 UW 卡照样能当 BUY 出 —— 08-20/08-25
+        # 两次实测。BUY 与卡面结论打架比 0 BUY 更误导,这是产品一致性要求。
+        fail("no_redflag", f"research_rating={rating}(v3.0 起 UW/Sell 一律否决)")
+    elif proposal in REDFLAG_PROPOSALS:
+        # 评级读不出来但卡自己写了 `FINAL TRANSACTION PROPOSAL: SELL` 的情形(两条独立防线:
+        # 评级解析可能失手,提案行是卡的机读契约行)。
+        fail("no_redflag", f"卡面提案 {proposal}")
     elif stop_reason in REDFLAG_EARLY_STOP_REASONS:
         fail("no_redflag", f"早停红灯停因:{stop_reason}")
     elif amount_pctl is not None and amount_pctl < LIQUIDITY_PCTL_FLOOR:
@@ -536,7 +586,8 @@ def _hard_gate(entry: dict, ctx: dict) -> tuple[dict[str, bool], list[dict]]:
 
 # ── 主构建 ─────────────────────────────────────────────────────────────────
 def build_decision(scan_dir: Path | str, date: str | None = None,
-                   mode: str = MODE_SHADOW, exclude_pinned: bool = False) -> dict:
+                   mode: str = MODE_SHADOW, exclude_pinned: bool = False,
+                   pool: str = POOL_FINALISTS) -> dict:
     """`context/scan/<date>` → 统一相对决策文档(确定性、零 LLM、零联网、只读)。
 
     护照**现算**(`passport.build_passport`),不读盘上那份 `_candidate_passport.json`:
@@ -552,6 +603,9 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
         raise ValueError(
             f"mode 只接受 {MODE_SHADOW!r}/{MODE_ACTIVE!r}(装开关不是翻开关,翻 active 之外"
             f"的值一律非法);收到 {mode!r}")
+    if pool not in {POOL_FINALISTS, POOL_COMPOSITE}:
+        raise ValueError(
+            f"pool 只接受 {POOL_FINALISTS!r}/{POOL_COMPOSITE!r};收到 {pool!r}")
     scan = Path(scan_dir)
     date = date or scan.name
 
@@ -561,6 +615,7 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
     entries.sort(key=lambda entry: entry["code"])
 
     universe = _universe(scan)
+    seat_codes = _composite_seat_codes(scan)
     dossier = _json_doc(scan / "_dossier_present.json")
     n_channels = {entry["code"]: entry["recall"].get("n_channels")
                   for entry in entries
@@ -600,6 +655,10 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
             "amount_pctl": universe["amount_pctl"].get(code),
             "price_claim": ctx["price_claim"].get(code, "UNMEASURED"),
             "expected_abs_gap": {"value": None, "status": "UNMEASURED", "n": 0},
+            # v3.0:该票在不在当日 BUY 候选池里。`finalists` 池 = 全体(与 v2 逐字一致);
+            # `composite` 池 = 只有证据席。**不进池 ≠ 不进候选表** —— 全部派发过的票照旧
+            # 全量留在 `candidates` 里(观测语义不变),只是不当 BUY。
+            "in_pool": (True if pool == POOL_FINALISTS else code in seat_codes),
         })
 
     by_code = {row["code"]: row for row in candidates}
@@ -615,11 +674,23 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
     # exclude_pinned(v2.0):BUY 池排掉📌持仓(保送不算判例);rank 字段照旧按**全体**
     # eligible 排(上面那个循环),这里只影响谁能当 buys[0]——不重排、不从候选表摘除。
     buy_pool = ([row for row in eligible if not row["pinned"]]
-                if exclude_pinned else eligible)
+                if exclude_pinned else list(eligible))
     for row in eligible:
         if exclude_pinned and row["pinned"]:
             excluded.append({"code": row["code"], "reason": "pinned_holding",
                              "detail": "📌 持仓不参与相对 BUY(保送不算判例)"})
+    if pool == POOL_COMPOSITE:
+        # v3.0(A1):BUY 只在证据席里选,并且**按 composite 分排**(`target_align`)——
+        # 四面 Borda 平均里只有这一面有隔夜正证据(L2 top20/top50 +0.14/+0.17pp,t 1.96/2.78),
+        # 另三面(recall_strength/evidence/risk_safety)在本尺上无证据,降为记录列不进排序。
+        dropped = [row for row in buy_pool if not row["in_pool"]]
+        for row in dropped:
+            excluded.append({"code": row["code"], "reason": "not_in_pool",
+                             "detail": "不在 composite 证据席(v3.0 候选池=L3 守卫⑨ 席位)"})
+        buy_pool = [row for row in buy_pool if row["in_pool"]]
+        buy_pool.sort(key=lambda row: (-row["faces"]["target_align"],
+                                       -(universe["amount"].get(row["code"]) or 0.0),
+                                       row["code"]))
 
     # 第 2 只起的门:v1 影子期无已验证阈值 → 恒不满足,恒只出 1 只。
     buys = ([{"code": buy_pool[0]["code"], "basis": "relative", "rank": 1}]
@@ -650,6 +721,10 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
         "rule_version": RULE_VERSION,
         "mode": mode,
         "exclude_pinned": exclude_pinned,
+        # v3.0:BUY 候选池来源 + 当日席位码。**读这份决策文件前先看这两个键** ——
+        # `finalists` 与 `composite` 是两条不同的规则,读数不可直接相连。
+        "pool": pool,
+        "pool_members": sorted(seat_codes),
         "date": date,
         "ruler": MAIN_RULER,
         "benchmark": {
@@ -699,6 +774,7 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
             "candidates": len(candidates),
             "eligible": len(eligible),
             "excluded_rows": len(excluded),
+            "in_pool": sum(1 for row in candidates if row["in_pool"]),
             "buys": len(buys),
             "with_missing_face": sum(1 for row in candidates if row["faces_missing"]),
             "orphan_finalists": len(orphans["finalists"]),
@@ -753,8 +829,8 @@ def load_decision(scan_dir: Path | str, *, date: str | None = None) -> dict | No
     return doc
 
 
-def configured_relative_buy() -> tuple[str, bool, str | None]:
-    """`scan_config.jsonc` 的 `relative_buy` 块 → `(mode, exclude_pinned, activate_date)`。
+def configured_relative_buy() -> tuple[str, bool, str | None, str]:
+    """`scan_config.jsonc` 的 `relative_buy` 块 → `(mode, exclude_pinned, activate_date, pool)`。
 
     **消费侧的 mode 事实源是 config,不是决策文件**:E3b 的渲染点要在决策文件写出来**之前**
     就决定"要不要落占位符",那时盘上那份要么不存在要么是过期的,拿它的 `mode` 反推等于让
@@ -773,9 +849,15 @@ def configured_relative_buy() -> tuple[str, bool, str | None]:
               file=sys.stderr)
         block = {}
     activate = block.get("activate_date")
+    pool = str(block.get("pool") or POOL_FINALISTS)
+    if pool not in {POOL_FINALISTS, POOL_COMPOSITE}:   # 错型不静默生效(同 knob 纪律)
+        print(f"[relative_buy] scan_config 的 relative_buy.pool={pool!r} 非法 → 回落 "
+              f"{POOL_FINALISTS!r}", file=sys.stderr)
+        pool = POOL_FINALISTS
     return (str(block.get("mode") or MODE_SHADOW),
             bool(block.get("exclude_pinned", False)),
-            str(activate) if activate else None)
+            str(activate) if activate else None,
+            pool)
 
 
 def configured_mode() -> str:
@@ -793,12 +875,18 @@ def activate_date() -> str | None:
     return configured_relative_buy()[2]
 
 
+def configured_pool() -> str:
+    """BUY 候选池来源(v3.0)。薄封装,消费点别再自己解析一遍 config。"""
+    return configured_relative_buy()[3]
+
+
 def write_decision(scan_dir: Path | str, date: str | None = None,
-                   mode: str = MODE_SHADOW, exclude_pinned: bool = False) -> Path:
+                   mode: str = MODE_SHADOW, exclude_pinned: bool = False,
+                   pool: str = POOL_FINALISTS) -> Path:
     """构建并原子落盘。`sort_keys=True` 是 byte 稳定契约的一半,另一半是构建本身无时序量。"""
     scan = Path(scan_dir)
     target = scan / DECISION_FILENAME
-    payload = _serialize_decision(build_decision(scan, date, mode, exclude_pinned))
+    payload = _serialize_decision(build_decision(scan, date, mode, exclude_pinned, pool))
     target.parent.mkdir(parents=True, exist_ok=True)
     temp = target.with_name(f"{target.name}.tmp")
     temp.write_bytes(payload)
@@ -807,10 +895,11 @@ def write_decision(scan_dir: Path | str, date: str | None = None,
 
 
 def safe_write_decision(scan_dir: Path | str, date: str | None = None,
-                        mode: str = MODE_SHADOW, exclude_pinned: bool = False) -> Path | None:
+                        mode: str = MODE_SHADOW, exclude_pinned: bool = False,
+                        pool: str = POOL_FINALISTS) -> Path | None:
     """影子件失败不得阻断任何东西(本轮没有任何生产消费者依赖它)。"""
     try:
-        return write_decision(scan_dir, date, mode, exclude_pinned)
+        return write_decision(scan_dir, date, mode, exclude_pinned, pool)
     except Exception as exc:  # noqa: BLE001 — 纯影子件失败只记一行,不连累主链
         print(f"[relative_buy] 构建失败: {type(exc).__name__}: {exc}", file=sys.stderr)
         return None
@@ -828,7 +917,8 @@ def _decision_digest(doc: dict, raw: bytes) -> dict:
 
 
 def verify_decision(scan_dir: Path | str, date: str | None = None,
-                    mode: str = MODE_SHADOW, exclude_pinned: bool = False) -> dict:
+                    mode: str = MODE_SHADOW, exclude_pinned: bool = False,
+                    pool: str = POOL_FINALISTS) -> dict:
     """P0-2:writer-2(`post_run observe`)的第二次「写」改成幂等校验,不再无条件覆盖。
 
     `mode`/`exclude_pinned`(v2.0,task-2.2)与 `write_decision` 同参、原样透传给现算的
@@ -861,7 +951,7 @@ def verify_decision(scan_dir: Path | str, date: str | None = None,
     """
     scan = Path(scan_dir)
     target = scan / DECISION_FILENAME
-    fresh_doc = build_decision(scan, date, mode, exclude_pinned)
+    fresh_doc = build_decision(scan, date, mode, exclude_pinned, pool)
     fresh_bytes = _serialize_decision(fresh_doc)
     resolved_date = str(fresh_doc.get("date") or date or scan.name)
 
@@ -916,11 +1006,12 @@ def verify_decision(scan_dir: Path | str, date: str | None = None,
 
 
 def safe_verify_decision(scan_dir: Path | str, date: str | None = None,
-                         mode: str = MODE_SHADOW, exclude_pinned: bool = False) -> dict | None:
+                         mode: str = MODE_SHADOW, exclude_pinned: bool = False,
+                         pool: str = POOL_FINALISTS) -> dict | None:
     """`verify_decision` 的失败纪律版:出异常只打一行,与 `safe_write_decision` 同一姿势
     (决策件本身从不阻断发布);但内部真正的「不一致」分支不算异常,是正常返回路径。"""
     try:
-        return verify_decision(scan_dir, date, mode, exclude_pinned)
+        return verify_decision(scan_dir, date, mode, exclude_pinned, pool)
     except Exception as exc:  # noqa: BLE001 — 纯影子件失败只记一行,不连累主链
         print(f"[relative_buy] verify 失败: {type(exc).__name__}: {exc}", file=sys.stderr)
         return None

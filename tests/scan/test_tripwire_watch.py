@@ -140,3 +140,32 @@ def test_render_line_none_when_nothing_watched():
 def test_render_line_lists_hits():
     ln = T.render_line([{"code": "601869", "kind": "price", "detail": "收盘 300.00 < 303.28"}], 3)
     assert "601869" in ln and "人裁" in ln
+
+
+def test_exec_line_is_parsed_but_never_alerts(tmp_path):
+    """执行线(2026-08-26 A4)是 T+1 尾盘的**入场**条件,不是持仓退出条件。
+
+    ① 必须被解析出来(否则它又变回没人读的自由文本 —— 本模块存在的理由);
+    ② 但**不得**产生 tripwire 命中(每天对着已经过去的入场时点报警是噪音)。
+    """
+    from autoresearch.scan.tripwire_watch import check, parse_tripwires
+
+    card = ("""
+- [执行线] pct_chg <= 3.0 → 当日涨超 3% 放弃本次尾盘入场
+- [执行线] pos_in_range < 0.7 → 收在当日区间上 30% 放弃
+- [价格线] close < 10.0 → 隔日清仓
+""")
+    wires = parse_tripwires(card)
+    kinds = [w["kind"] for w in wires]
+    assert kinds.count("exec") == 2 and "price" in kinds
+    ex = [w for w in wires if w["kind"] == "exec"]
+    assert ex[0]["metric"] == "pct_chg" and ex[0]["op"] == "<=" and ex[0]["level"] == 3.0
+    assert ex[1]["metric"] == "pos_in_range" and ex[1]["level"] == 0.7
+
+    scan_root = tmp_path / "scan"
+    d = scan_root / "2026-08-25"
+    (d / "details").mkdir(parents=True)
+    (d / "details" / "603317.md").write_text(card, encoding="utf-8")
+    (d / "L1_scored_full.csv").write_text("code,close\n603317,9.0\n", encoding="utf-8")
+    hits = check("2026-08-25", codes=["603317"], scan_root=scan_root)
+    assert [h["kind"] for h in hits] == ["price"]      # 价格线触发,执行线不触发

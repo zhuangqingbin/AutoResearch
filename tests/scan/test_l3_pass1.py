@@ -427,7 +427,11 @@ def test_prepare_two_pass_none_reads_config_pass1_target_override(tmp_path, monk
     真触发截断分诊(镜像 test_frame_json_echo_reflects_real_config 的 DEFAULT_PATH 显式冲销手法)。"""
     cfg_dir = tmp_path / ".claude" / "skills" / "scan-market"
     cfg_dir.mkdir(parents=True)
-    (cfg_dir / "scan_config.jsonc").write_text('{"l3": {"pass1_target": 2}}', encoding="utf-8")
+    # composite 席位显式关掉:本用例测的是 `pass1_target` 覆盖,而席位是**受保护集**
+    # (2026-08-26 §3 路A ①b),开着会让 kept 合法地超过 target —— 那是另一条规则,
+    # 由 `test_composite_seat.py` 单独锁。
+    (cfg_dir / "scan_config.jsonc").write_text(
+        '{"l3": {"pass1_target": 2, "composite_seat": {"enabled": false}}}', encoding="utf-8")
     monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH", cfg_dir / "scan_config.jsonc")
 
     base = tmp_path / "context" / "scan"

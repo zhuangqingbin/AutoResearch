@@ -435,7 +435,8 @@ def test_publish_run_observation_write_passes_relative_buy_config(tmp_path, monk
 
     publish_run_observation(scan, real_scan=False, decision_write="write")
 
-    assert captured == {"mode": "active", "exclude_pinned": True}
+    assert captured == {"mode": "active", "exclude_pinned": True,
+                        "pool": "finalists"}   # v3.0 起 pool 也必须原样透传
 
 
 def test_publish_run_observation_verify_passes_relative_buy_config(tmp_path, monkeypatch):
@@ -459,7 +460,8 @@ def test_publish_run_observation_verify_passes_relative_buy_config(tmp_path, mon
 
     publish_run_observation(scan, real_scan=False, decision_write="verify")
 
-    assert captured == {"mode": "active", "exclude_pinned": True}
+    assert captured == {"mode": "active", "exclude_pinned": True,
+                        "pool": "finalists"}   # v3.0 起 pool 也必须原样透传
 
 
 def test_publish_run_observation_defaults_relative_buy_to_shadow_without_config(
@@ -480,4 +482,5 @@ def test_publish_run_observation_defaults_relative_buy_to_shadow_without_config(
 
     publish_run_observation(scan, real_scan=False, decision_write="write")
 
-    assert captured == {"mode": "shadow", "exclude_pinned": False}
+    assert captured == {"mode": "shadow", "exclude_pinned": False,
+                        "pool": "finalists"}

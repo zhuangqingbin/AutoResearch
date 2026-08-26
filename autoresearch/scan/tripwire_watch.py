@@ -32,6 +32,15 @@ _WS_SCAN_ROOT = ws.scan_root()  # B008 修法:默认值须为模块级单例(def
 _PRICE_RE = re.compile(r"\[价格线\]\s*close\s*(<=|>=|<|>)\s*(-?\d+(?:\.\d+)?)\s*(?:→\s*(.*))?")
 _DATE_RE = re.compile(r"\[日期线\]\s*(\d{4}-\d{2}-\d{2})\s*(.*)")
 _EVENT_RE = re.compile(r"\[事件旗\]\s*([^→\n]+?)\s*(?:→\s*(.*))?$")
+# 执行线(2026-08-26 §3 路A · A4)——**入场条件**,与上面三型「持有中的退出条件」不同族:
+#   `[执行线] pct_chg <= 3.0 → 当日涨超 3% 放弃本次尾盘入场`
+#   `[执行线] pos_in_range < 0.7 → 收在当日区间上 30% 放弃`
+# 为什么必须机读:此前卡片的「入场否决」是自由文本,写完那一刻起没有任何机器复核过 ——
+# 与「决策卡的失效条件没人读」是同一个病(本模块存在的理由)。而这条尤其要紧:实测
+# 卡片写的入场否决方向**反了**(四年全湖 1086 日,收在当日区间上 30% 的票隔夜比全体差
+# 0.13~0.27pp,逐年同号),自由文本让这件事整整没被发现过。
+_EXEC_RE = re.compile(
+    r"\[执行线\]\s*(pct_chg|pos_in_range)\s*(<=|>=|<|>)\s*(-?\d+(?:\.\d+)?)\s*(?:→\s*(.*))?")
 _DATE_LEAD_DAYS = 3          # 日期线提前几天开始预警(交易日近似 = 日历日)
 _OPS = {"<": lambda a, b: a < b, "<=": lambda a, b: a <= b,
         ">": lambda a, b: a > b, ">=": lambda a, b: a >= b}
@@ -51,6 +60,12 @@ def parse_tripwires(card_text: str) -> list[dict]:
         if m:
             out.append({"kind": "date", "date": m.group(1),
                         "action": m.group(2).strip(), "raw": line})
+            continue
+        m = _EXEC_RE.search(line)
+        if m:
+            out.append({"kind": "exec", "metric": m.group(1), "op": m.group(2),
+                        "level": float(m.group(3)),
+                        "action": (m.group(4) or "").strip(), "raw": line})
             continue
         m = _EVENT_RE.search(line)
         if m:
@@ -173,6 +188,11 @@ def check(date: str, codes: list[str] | None = None,
                                  "raw": w["raw"],
                                  "detail": f"{w['date']} 还有 {gap} 天"
                                            + (f":{w['action']}" if w["action"] else "")})
+            # `kind == "exec"` **故意不在这里判**:执行线是 T+1 尾盘的**入场**条件,
+            # 而本函数是「持仓在两次扫描之间的退出盯梢」——两者时点与语义都不同。
+            # 它的事后计量在 `scan/outcome.exec_ok`(逐票记「若按此执行会怎样」),
+            # 当场执行由人在 T+1 尾盘按卡片那一行做。给它加一条 hit 分支 = 每天对着
+            # 已经过去的入场时点报警,是噪音不是信息。
             elif w["kind"] == "event" and titles:
                 got_kw = [k for k in w["keywords"] if any(k in t for t in titles)]
                 if got_kw:

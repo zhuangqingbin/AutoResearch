@@ -340,7 +340,13 @@ def test_relative_buy_decision_has_buy_but_brief_prints_blocked_is_fail(publishe
     report, scan = published
     path = report / brief.BRIEF_FILENAME
     text = path.read_text(encoding="utf-8")
-    old = ("上港集团 600018 · basis=relative · 合格内 #1/1(候选 1) · 卡面 Hold")
+    # 2026-08-26:③ 行在 `basis=` 与 `合格内` 之间插了 `· 池=…`(v3.0 候选池来源)。
+    # 锚点跟着更新 —— 本用例测的是「决策文件有 BUY 而 brief 印 BLOCKED 要 fail」,
+    # 不是这句话的措辞。
+    # `(N 只)` 后缀是 presence-gated 的:老决策文件没有 `counts.in_pool` → 不渲染
+    # (本 fixture 正是老形状)。这也顺带证明 v3 的新键对历史产物是逐字无害的。
+    old = ("上港集团 600018 · basis=relative · 池=L3 finalist 全体"
+           " · 合格内 #1/1(候选 1) · 卡面 Hold")
     new = "**BLOCKED**(全部候选被硬资格否决:hard_gate.no_redflag×1;候选 1 / 合格 0)"
     assert old in text, "锚点没先出现,后面的篡改是空操作"
     path.write_text(text.replace(old, new), encoding="utf-8")

@@ -105,7 +105,7 @@ _SUB_WHITELIST = {
     "sector": {"reuse_ttl_days", "max_briefs"},
     "pinned": {"cap", "ttl_days"},
     "l4_intel": {"enabled", "max_queries"},
-    "l3": {"two_pass", "pass1_target", "finalist_max", "lowturn"},
+    "l3": {"two_pass", "pass1_target", "finalist_max", "lowturn", "composite_seat"},
     "budgets": {
         "cache_hit_min", "stage_cost_usd", "stage_wall_seconds", "concurrency",
         "min_real_scans", "baseline_run",
@@ -113,7 +113,7 @@ _SUB_WHITELIST = {
     "performance": {
         "streaming_l4",
     },
-    "relative_buy": {"mode", "exclude_pinned", "activate_date"},
+    "relative_buy": {"mode", "exclude_pinned", "activate_date", "pool"},
 }
 
 # ── 运行旋钮类型校验(2026-08-11)——错型静默生效比缺键更难查,一律 raise ──
@@ -125,6 +125,7 @@ def _t_nonneg_int(v): return isinstance(v, int) and not isinstance(v, bool) and 
 def _t_source(v): return v in {"em", "tushare"}
 def _t_dict(v): return isinstance(v, dict)
 def _t_rbmode(v): return v in {"shadow", "active"}
+def _t_rbpool(v): return v in {"finalists", "composite"}
 def _t_date_or_null(v): return v is None or (isinstance(v, str) and _DATE_RE.fullmatch(v) is not None)
 
 
@@ -142,9 +143,14 @@ _KNOB_TYPES: dict[tuple[str, str], tuple] = {
     ("sector", "reuse_ttl_days"): (_t_posint, "正整数"),
     ("sector", "max_briefs"): (_t_posint, "正整数"),
     ("l3", "lowturn"): (_t_dict, "object"),   # 低位转强阈值块(2026-08-21;键义见 common/turnup.LOWTURN_DEFAULTS)
+    # composite 席位块(2026-08-26 §3 路A):{enabled: bool, m: int}——键义见 scan/l3/merge.COMPOSITE_SEAT_*
+    ("l3", "composite_seat"): (_t_dict, "object"),
     ("relative_buy", "mode"): (_t_rbmode, "shadow|active"),
     ("relative_buy", "exclude_pinned"): (_t_bool, "boolean"),
     ("relative_buy", "activate_date"): (_t_date_or_null, "YYYY-MM-DD 或 null"),
+    # BUY 候选池来源(2026-08-26 §3 路A):"finalists"=v2 逐字行为(判断层持有 BUY)/
+    # "composite"=v3(证据层持有 BUY,判断层只否决)。回滚杆就是这一个键。
+    ("relative_buy", "pool"): (_t_rbpool, "finalists|composite"),
 }
 
 # agents={role: {model, effort}} 的 role 闭集(Wave11 B1)——白名单外一律 raise,防拼写错

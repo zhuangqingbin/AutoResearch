@@ -619,3 +619,63 @@ def test_shadow_mode_keeps_the_legacy_wording(tmp_path):
     assert "**生产 BUY 0 只**(旧绝对门 ≥Overweight;" in md
     assert "└ 为什么没买:" in md
     assert "研究评级分布" not in md
+
+
+# ── v3.0 composite 池的诚实呈现(2026-08-26 §3 路A · A5)────────────────────
+
+def _composite_decision():
+    return {
+        "mode": "active", "rule_version": "e6.v3.0", "blocked": False,
+        "pool": "composite", "pool_members": ["600188", "601699"],
+        "date": "2026-08-25", "ruler": "gap_c1_o2",
+        "buys": [{"code": "600188", "basis": "relative", "rank": 1}],
+        "counts": {"candidates": 5, "eligible": 2, "in_pool": 2},
+        "candidates": [{"code": "600188", "name": "兖矿能源", "rank": 1,
+                        "research_rating": "Hold", "eligible": True,
+                        "relative_decision_score": 0.5,
+                        "expected_abs_gap": {"status": "UNMEASURED", "n": 0}}],
+        "benchmark": {"market": {"column": "rel_gap_market", "n": 4312},
+                      "sector": {"column": "rel_gap_sector"}},
+    }
+
+
+def test_composite_pool_brief_states_pool_evidence_and_exec_line():
+    """A5 诚实呈现:BUY 行必须说清**从哪个池选的**,并在下面写证据量级与执行线 ——
+    否则读者会把「相对最优」读成「明天会涨」。"""
+    from autoresearch.scan.brief import _buy_lines
+    from autoresearch.scan.relative_facts import relative_facts
+
+    facts = {"buys": {"production_n": 0, "dist": {"Hold": 2}, "run_mode": "FULL",
+                      "n_early": 0},
+             "relative": relative_facts(_composite_decision())}
+    text = "\n".join(_buy_lines(facts, []))
+    assert "池=composite 证据席(2 只)" in text
+    assert "不承诺绝对收益为正" in text          # 期望的上限措辞
+    assert "执行线" in text and "≤3%" in text and "上 30%" in text
+    assert "四年逐年为负" in text                # 方向与直觉相反,必须连证据一起说
+
+
+def test_finalists_pool_brief_has_no_composite_addendum():
+    """v2 池不该长出 v3 的两行 —— 两条规则不同名、不同承诺,读数也不该被连成一条线。"""
+    from autoresearch.scan.brief import _buy_lines
+    from autoresearch.scan.relative_facts import relative_facts
+
+    doc = {**_composite_decision(), "pool": "finalists", "pool_members": []}
+    facts = {"buys": {"production_n": 0, "dist": {"Hold": 2}, "run_mode": "FULL",
+                      "n_early": 0},
+             "relative": relative_facts(doc)}
+    text = "\n".join(_buy_lines(facts, []))
+    assert "池=L3 finalist 全体" in text
+    assert "执行线" not in text
+
+
+def test_composite_brief_lines_stay_within_budget():
+    """brief 是 ≤3KB 硬预算的速读层;新增两行不得把它顶出预算(超了只 warn,但那也是噪音)。"""
+    from autoresearch.scan.brief import MAX_BYTES, _buy_lines
+    from autoresearch.scan.relative_facts import relative_facts
+
+    facts = {"buys": {"production_n": 0, "dist": {"Hold": 2}, "run_mode": "FULL",
+                      "n_early": 0},
+             "relative": relative_facts(_composite_decision())}
+    added = len("\n".join(_buy_lines(facts, [])).encode("utf-8"))
+    assert added < MAX_BYTES // 2       # ③ 一节远小于半个预算

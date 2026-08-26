@@ -49,6 +49,7 @@ from autoresearch.common.ruler import MAIN_RULER, REL_MARKET
 from autoresearch.scan.relative_buy import DECISION_FILENAME, MODE_SHADOW
 from autoresearch.scan.relative_facts import (  # P0 低位转强波:读模型/禁词单一事实源(summary 同源)
     BANNED_RELATIVE_PHRASES,  # noqa: F401 — 再导出契约,测试锁 `brief.X is relative_facts.X`,勿删
+    COMPOSITE_EXPECTATION,
     DECISION_POOL_LABEL,
     REL_MARKET_POPULATION,
     WEAK_MARKET_PHRASE,
@@ -444,8 +445,10 @@ def _buy_lines(facts: dict, src: list[dict]) -> list[str]:
         return lines
 
     gap_txt = _abs_gap_text(rel)
+    pool_txt = (f" · 池={rel.get('pool_label')}"
+                + (f"({rel.get('n_pool')} 只)" if rel.get("n_pool") is not None else ""))
     text = (f"{tag}:{rel.get('name') or '—'} {rel.get('code') or '—'}"
-            f" · basis={rel.get('basis')} · 合格内 #{rel.get('rank')}"
+            f" · basis={rel.get('basis')}{pool_txt} · 合格内 #{rel.get('rank')}"
             f"/{rel.get('n_eligible')}(候选 {rel.get('n_candidates')})"
             f" · 卡面 {rel.get('research_rating') or '—'}"
             f" · 基准 {rel.get('market_column')}(人口={REL_MARKET_POPULATION}等权;"
@@ -467,7 +470,19 @@ def _buy_lines(facts: dict, src: list[dict]) -> list[str]:
          "relative_ledger 另算,不在本产物里)", text)
     _src(src, "relative.abs_gap_status", rel.get("abs_gap_status"), DECISION_FILENAME,
          "candidates[code].expected_abs_gap.status", text)
+    _src(src, "relative.pool", rel.get("pool"), DECISION_FILENAME, "pool", text)
     lines.append("- " + text)
+    if rel.get("pool") == "composite":
+        # v3.0 的诚实呈现(A5):证据是什么、期望多大、执行条件是什么 —— 三样都写在
+        # BUY 行下面,免得读者把「相对最优」读成「明天会涨」。
+        exec_txt = ("  ↳ 证据:当日 composite 分位最高的证据席(L2 菜单内 top20/50 隔夜相对超额 "
+                    "+0.14/+0.17pp,t 1.96/2.78,42 个扫描日)· L4 否决检查通过"
+                    f" · {COMPOSITE_EXPECTATION}")
+        _src(src, "relative.pool_expectation", rel.get("pool"), DECISION_FILENAME,
+             "pool==composite", exec_txt)
+        lines.append(exec_txt)
+        lines.append("  ↳ 执行线(T+1 尾盘,机器可检):当日涨幅 ≤3% ∧ 收盘不在当日区间上 30% "
+                     "∧ 未封涨停 —— 追强在隔夜尺上四年逐年为负(−0.13~−0.27pp)")
     return lines
 
 

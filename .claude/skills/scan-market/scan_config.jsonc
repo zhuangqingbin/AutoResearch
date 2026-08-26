@@ -137,6 +137,16 @@
     "pass1_target": 40,        // 60→40(2026-07-18 线A:影子回放 20 日 mandatory 0 漏、delta 无赢家
                                // 富集);回滚=改回 60 或 two_pass=false;被切的落影子 _l3_pass1_cut.csv
     "finalist_max": 10,        // finalist tier 上限
+    // ── composite 证据席(2026-08-26 §3 路A · 守卫⑨)────────────────────────────
+    // 【生效点】scan/l3/merge.composite_seat_cfg → ① write_finalists 的
+    //   inject_composite_seats(把当日 L2 菜单 composite 最高的 m 只强制送进 finalists,
+    //   guard=composite_seat / lane=composite,不占 finalist 名额、不受 lt55/cap 约束)
+    //   ② scan/l3/prompt.prepare_l3_table → triage 的 ①b 强留(让 l3-rank 真判到它们 ——
+    //   pass1 切了它们,finalists 里就只剩空 thesis 行,pinned 当年踩过这个坑)。
+    // 剔除:📌 保送 / ST·退 / 当日涨幅 ≥9.5%(追高在隔夜尺四年逐年为负)。
+    // ⚖️ 证据与边界同 relative_buy.pool 那段(两键是**同一个裁定**的产物,同批改)。
+    // 回滚杆 = "enabled": false(一行,逐字 parity);m 每加 1 ≈ +1 张卡 ≈ +$1.5/日。
+    "composite_seat": { "enabled": true, "m": 3 },
     // ── 低位转强第三画像(2026-08-21 低位转强波;design §6.1)────────────────────
     // 【生效点】scan/l3/prompt.py prepare_l3_table → l3_table_md(lowturn_flag, lowturn_cfg)
     //   (表内 lowturn 旗列 + 图例)+ scan/l3/triage.py triage_l2_for_l3(lowturn_cap, lowturn_cfg)
@@ -190,5 +200,20 @@
   //   复核路(08-18 影子 BUY 688766 普冉本身就是📌,正是这条裁定要堵住的形状)。
   // activate_date: 保留键(YYYY-MM-DD 或 null)。原生效点 learning/legacy_freeze 已随
   //   2026-08-21「整个 learning 层退役」裁定删除,本键现无消费点,仅作 E6 转正日的记录。
-  "relative_buy": { "mode": "active", "exclude_pinned": true, "activate_date": "2026-08-19" }
+  // pool(2026-08-26 §3 路A · A1/A3):BUY 候选池来源。
+  //   "finalists" = v2 候选池(判断层 finalist 全体);
+  //   "composite" = v3 证据席(L3 守卫⑨ 的 composite 席位),排序改按 composite 分。
+  // 【生效点】relative_buy.configured_pool() → post_run.publish_run_observation →
+  //   build_decision(pool=...);席位真身 = scan/l3/merge.pick_composite_seats。
+  // ⚖️ **上线理由与证据边界(必须连读)**:隔夜主尺上 L3·finalist 一族 40 日相对超额
+  //   **−0.27pp(t=−3.94)显著为负**,而全表唯一正证据是确定性 composite(+0.14pp,
+  //   t=3.05;L2 菜单内 top20/top50 +0.14/+0.17,t 1.96/2.78,42 个扫描日)。所以把 BUY
+  //   的所有权从判断层搬到证据层,判断层改做它被证明会做的事(拒绝)。
+  //   **期望 ≈ 一次 A 股往返成本量级,不承诺隔夜赚钱**;20 个结果日后按 `_ledger/
+  //   recommendations.csv` 的读数裁去留。读数全文:docs/specs/2026-08-26-scene-retention-
+  //   and-buy-owner-design.md §1.5/§1.7。
+  // 回滚杆 = 本键改回 "finalists"(**只回滚候选池与排序**;A2 的 UW/SELL 硬门对两个池都
+  //   生效,要连它一起回滚得改 relative_buy.py 的两个 frozenset,那是显式代码改动)。
+  "relative_buy": { "mode": "active", "exclude_pinned": true, "activate_date": "2026-08-19",
+                    "pool": "composite" }
 }
