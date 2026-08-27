@@ -1,7 +1,7 @@
 # scan-market 法证级 Run Capsule 设计
 
 > 日期：2026-08-27
-> 状态：待用户复核
+> 状态：已批准，待实施
 > 一期范围：`scan-market` 全 A 股主链（Stage0、L0–L5、宏观 lite、行业 brief、L3、L4、发布、结果账本）
 > 二期范围：复用同一基础设施接入单股 full、宏观 full、行业 full；一期不修改三条 full 链的产物契约
 > 引擎隔离：本文的 `$CTX`/`$RPT` 始终指当前引擎根；Codex 只写 `context_codex/` 与 `reports_codex/`，不读写 Claude 根；`lake/` 仍是唯一共享数据湖
