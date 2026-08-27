@@ -124,6 +124,17 @@ def test_l4_workflow_routes_every_business_agent_through_boundary_wrapper():
     assert source.count("tracedAgent(") >= 9
     assert "l4-card-${code}-${taskAttempt}" in source
     assert "l4-intel-${code}-${taskAttempt}" in source
+    assert source.count("rawAgent(") == 2
+    emit_body = source.split("const emitAgentEvent =", 1)[1].split(
+        "async function tracedAgent", 1
+    )[0]
+    assert emit_body.count("rawAgent(") == 1
+    assert "--control-invocation-id ${controlInvocationId}" in emit_body
+    assert "trace-control-${invocationId}-${eventType.toLowerCase()}" in emit_body
+    wrapper_body = source.split("async function tracedAgent", 1)[1].split(
+        "const recordL4", 1
+    )[0]
+    assert wrapper_body.count("rawAgent(") == 1
 
 
 @pytest.mark.skipif(_NODE is None, reason="requires node workflow probe")
@@ -178,6 +189,15 @@ def test_l4_boundary_wrapper_emits_one_dispatch_and_one_terminal_with_same_id(
     assert terminal in boundary_prompts[1]
     ids = [re.findall(r"--invocation-id ([^ ]+)", prompt)[-1] for prompt in boundary_prompts]
     assert ids == ["gp-shell-600000-1-task-preflight-600000"] * 2
+    control_ids = [
+        re.search(r"--control-invocation-id ([^ ]+)", prompt).group(1)
+        for prompt in boundary_prompts
+    ]
+    assert control_ids == [
+        "trace-control-gp-shell-600000-1-task-preflight-600000-agent_dispatched",
+        "trace-control-gp-shell-600000-1-task-preflight-600000-"
+        + ("agent_failed" if business_failure else "agent_completed"),
+    ]
 
 
 @pytest.mark.skipif(_NODE is None, reason="requires node workflow probe")

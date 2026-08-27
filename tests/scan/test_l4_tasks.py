@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -400,6 +401,109 @@ def test_stale_running_task_is_recovered_as_one_transient_retry(tmp_path):
     assert recovered["action"] == "RUN"
     assert recovered["attempt"] == 2
     assert recovered["reason"] == "STALE_TASK"
+
+
+def test_stale_running_trace_persists_failure_then_claim_with_exact_hashes(
+    tmp_path, monkeypatch
+):
+    handle, book = _traced_book(tmp_path, monkeypatch)
+    first = preflight(book, "000001", expected_attempt=1, now=NOW)
+    before = json.loads(book.read_text(encoding="utf-8"))
+    original_started_at = before["tasks"]["000001"]["started_at"]
+    n_before = len(_trace_events(handle))
+
+    result = preflight(
+        book,
+        "000001",
+        expected_attempt=2,
+        now=NOW + timedelta(hours=2),
+        stale_after_seconds=3600,
+    )
+
+    assert first["attempt"] == 1 and result["attempt"] == 2
+    events = _trace_events(handle)[n_before:]
+    assert [event["event_type"] for event in events] == [
+        "TASK_RETRY_SCHEDULED",
+        "TASK_CLAIMED",
+    ]
+    failed, claimed = events
+    assert (failed["payload"]["old_status"], failed["payload"]["new_status"]) == (
+        "RUNNING",
+        "FAILED",
+    )
+    assert failed["payload"]["error_class"] == "STALE_TASK"
+    assert failed["attempt"] == 1
+    assert (claimed["payload"]["old_status"], claimed["payload"]["new_status"]) == (
+        "FAILED",
+        "RUNNING",
+    )
+    assert claimed["attempt"] == 2
+    final = json.loads(book.read_text(encoding="utf-8"))
+    intermediate = deepcopy(final)
+    intermediate_task = intermediate["tasks"]["000001"]
+    intermediate_task["attempt"] = 1
+    intermediate_task["status"] = "FAILED"
+    intermediate_task["started_at"] = original_started_at
+    expected_failed_hash = hashlib.sha256(
+        canonical_json(intermediate).encode("utf-8")
+    ).hexdigest()
+    expected_claimed_hash = hashlib.sha256(
+        canonical_json(final).encode("utf-8")
+    ).hexdigest()
+    assert failed["payload"]["task_book_hash"] == expected_failed_hash
+    assert claimed["payload"]["task_book_hash"] == expected_claimed_hash
+    assert failed["payload"]["task_book_hash"] != claimed["payload"]["task_book_hash"]
+
+
+def test_stale_expected_attempt_mismatch_precedes_all_mutation_and_audit(
+    tmp_path, monkeypatch
+):
+    from autoresearch.scan import l4_tasks
+
+    handle, book = _traced_book(tmp_path, monkeypatch)
+    preflight(book, "000001", expected_attempt=1, now=NOW)
+    book_before = book.read_bytes()
+    events_before = (handle.capsule / "events/events.jsonl").read_bytes()
+    audit_calls = []
+    original_record = l4_tasks.structural_audit.record
+
+    def observed_record(*args, **kwargs):
+        audit_calls.append((args, kwargs))
+        return original_record(*args, **kwargs)
+
+    monkeypatch.setattr(l4_tasks.structural_audit, "record", observed_record)
+    with pytest.raises(ValueError, match="expected attempt 3.*next attempt 2"):
+        preflight(
+            book,
+            "000001",
+            expected_attempt=3,
+            now=NOW + timedelta(hours=2),
+            stale_after_seconds=3600,
+        )
+
+    assert audit_calls == []
+    assert book.read_bytes() == book_before
+    assert (handle.capsule / "events/events.jsonl").read_bytes() == events_before
+
+
+def test_exhausted_failure_preflight_blocks_without_duplicate_task_failed_event(
+    tmp_path, monkeypatch
+):
+    handle, book = _traced_book(tmp_path, monkeypatch)
+    preflight(book, "000001", expected_attempt=1, now=NOW)
+    mark_failure(book, "000001", "TIMEOUT", now=NOW)
+    preflight(book, "000001", expected_attempt=2, now=NOW)
+    mark_failure(book, "000001", "CONNECTION", now=NOW)
+    before = _trace_events(handle)
+    assert before[-1]["event_type"] == "TASK_FAILED"
+
+    result = preflight(book, "000001", now=NOW)
+
+    assert result["action"] == "BLOCKED"
+    assert json.loads(book.read_text(encoding="utf-8"))["tasks"]["000001"][
+        "status"
+    ] == "BLOCKED"
+    assert _trace_events(handle) == before
 
 
 def test_prepare_slim_retries_only_target_stock_once(tmp_path):

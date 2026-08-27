@@ -81,20 +81,26 @@ const CARD = { type: 'object', required: ['code', 'rating'],
     conviction: { type: 'number', minimum: 0, maximum: 100 }, proposal: { type: 'string' } } }
 const rawAgent = agent
 const AGENT_EVENT_ACK = { type: 'object', required: ['ok'],
-  properties: { ok: { type: 'boolean' }, event: { type: 'object' } } }
+  properties: { ok: { type: 'boolean' }, event: { type: 'object' },
+    control_events: { type: 'array', items: { type: 'object' } } } }
 const safeAgentPart = (value) => String(value).replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '')
+// Workflow runtime 没有非 agent 的 shell primitive。trace-control 只能在获调度后的第一条
+// 精确命令里自登记；该命令原子追加 control dispatch → 目标边界 → control terminal，
+// 不递归套 tracedAgent。若它连命令都未执行，外层只可 best-effort 报警，后续完整性门报缺。
 const emitAgentEvent = (eventType, invocationId, role) => {
   const terminal = eventType === 'AGENT_FAILED'
     ? ` --error-json '{"status":"threw"}'`
     : ` --result-json '{"status":"${eventType === 'AGENT_DISPATCHED' ? 'queued' : 'returned'}"}'`
   const evidenceInvocation = `agent-event-${invocationId}-${eventType.toLowerCase()}`
+  const controlInvocationId = `trace-control-${invocationId}-${eventType.toLowerCase()}`
   return rawAgent(
     `执行:\`${PY('l4', evidenceInvocation, taskAttempt, code)} autoresearch.trace.capsule agent-event ${RUN_ID} ${eventType} ` +
-      `--role ${role} --subject ${code} --invocation-id ${invocationId} --attempt ${taskAttempt}${terminal}\`。` +
+      `--role ${role} --subject ${code} --invocation-id ${invocationId} --attempt ${taskAttempt} ` +
+      `--control-invocation-id ${controlInvocationId}${terminal}\`。` +
       '把 stdout 最后一行 JSON 原样作为结构化返回；不要判断或增删字段。' +
       '**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**',
     { agentType: 'general-purpose', ...AG('gp_shell_json'),
-      label: `trace:${eventType}:${invocationId}`, schema: AGENT_EVENT_ACK })
+      label: `trace-control:${eventType}:${invocationId}`, schema: AGENT_EVENT_ACK })
 }
 async function tracedAgent(invocationId, role, prompt, options) {
   try {

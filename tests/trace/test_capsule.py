@@ -21,6 +21,7 @@ from autoresearch.trace.capsule import (
     load_run,
     main,
     record_agent_boundary,
+    record_controlled_agent_boundary,
 )
 from autoresearch.trace.events import verify_event_chain
 
@@ -634,6 +635,76 @@ def test_agent_boundary_records_authoritative_binding_and_structured_result(
     assert verify_event_chain(handle.capsule / "events/events.jsonl")["ok"] is True
 
 
+def test_controlled_agent_boundary_self_registers_control_and_target(
+    tmp_path, monkeypatch
+):
+    handle = _begin(tmp_path, monkeypatch)
+
+    result = record_controlled_agent_boundary(
+        handle.run_id,
+        "AGENT_DISPATCHED",
+        role="l4-card",
+        subject="600000",
+        invocation_id="l4-card-600000-1",
+        attempt=1,
+        control_invocation_id="trace-control-l4-card-600000-1-dispatched",
+        result={"status": "queued"},
+    )
+
+    events = _events(handle)[-3:]
+    assert [event["event_type"] for event in events] == [
+        "AGENT_DISPATCHED",
+        "AGENT_DISPATCHED",
+        "AGENT_COMPLETED",
+    ]
+    assert [event["invocation_id"] for event in events] == [
+        "trace-control-l4-card-600000-1-dispatched",
+        "l4-card-600000-1",
+        "trace-control-l4-card-600000-1-dispatched",
+    ]
+    assert events[0]["payload"]["role"] == "trace-control"
+    assert events[1]["payload"]["role"] == "l4-card"
+    assert events[2]["payload"]["role"] == "trace-control"
+    assert result["event"] == events[1]
+    assert result["control_events"] == [events[0], events[2]]
+
+
+def test_controlled_agent_boundary_records_self_failure_when_target_append_fails(
+    tmp_path, monkeypatch
+):
+    handle = _begin(tmp_path, monkeypatch)
+    original = capsule_mod.append_event
+
+    def fail_target(path, **fields):
+        if fields["invocation_id"] == "l4-card-600000-1":
+            raise OSError("target event fault")
+        return original(path, **fields)
+
+    monkeypatch.setattr(capsule_mod, "append_event", fail_target)
+    with pytest.raises(OSError, match="target event fault"):
+        record_controlled_agent_boundary(
+            handle.run_id,
+            "AGENT_COMPLETED",
+            role="l4-card",
+            subject="600000",
+            invocation_id="l4-card-600000-1",
+            attempt=1,
+            control_invocation_id="trace-control-l4-card-600000-1-completed",
+            result={"status": "returned"},
+        )
+
+    events = _events(handle)[-2:]
+    assert [event["event_type"] for event in events] == [
+        "AGENT_DISPATCHED",
+        "AGENT_FAILED",
+    ]
+    assert all(
+        event["invocation_id"] == "trace-control-l4-card-600000-1-completed"
+        for event in events
+    )
+    assert events[-1]["payload"]["error"]["error_type"] == "OSError"
+
+
 @pytest.mark.parametrize(
     "field,value,match",
     [
@@ -736,6 +807,8 @@ def test_agent_event_cli_emits_one_canonical_json_and_honest_failure(
         "l4-card-600000-1",
         "--attempt",
         "1",
+        "--control-invocation-id",
+        "trace-control-l4-card-600000-1-dispatched",
         "--result-json",
         '{"status":"queued"}',
     ]) == 0
@@ -745,6 +818,10 @@ def test_agent_event_cli_emits_one_canonical_json_and_honest_failure(
     success = json.loads(captured.out)
     assert success["ok"] is True
     assert success["event"]["event_type"] == "AGENT_DISPATCHED"
+    assert [event["event_type"] for event in success["control_events"]] == [
+        "AGENT_DISPATCHED",
+        "AGENT_COMPLETED",
+    ]
     assert captured.out == canonical_json(success) + "\n"
 
     assert main([

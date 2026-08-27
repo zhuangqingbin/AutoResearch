@@ -443,15 +443,41 @@ def preflight(
                     "attempt": task["attempt"],
                     "reason": "ALREADY_RUNNING",
                 }
+            stale_attempt = int(task.get("attempt") or 0)
+            if stale_attempt < MAX_ATTEMPTS:
+                stale_next_attempt = stale_attempt + 1
+                if (
+                    expected_attempt is not None
+                    and expected_attempt != stale_next_attempt
+                ):
+                    raise ValueError(
+                        f"expected attempt {expected_attempt} does not match "
+                        f"next attempt {stale_next_attempt}"
+                    )
             status = "FAILED"
             task["status"] = status
             task["last_error_class"] = "STALE_TASK"
             task["last_error"] = f"running for {int(age)}s"
+            task["updated_at"] = stamp
             reason = "STALE_TASK"
             # 一次执行悄悄蒸发了：既没 mark_success 也没 mark_failure，账本一直以为它在跑。
             structural_audit.record(
                 payload, code6, structural_audit.COMPLETION_MISJUDGED,
                 f"RUNNING {int(age)}s 无终态回写", now=now)
+            _atomic_write(path, payload)
+            _record_task_transition(
+                path,
+                payload,
+                code6,
+                event_type=(
+                    "TASK_RETRY_SCHEDULED"
+                    if stale_attempt < MAX_ATTEMPTS
+                    else "TASK_FAILED"
+                ),
+                old_status="RUNNING",
+                error_class="STALE_TASK",
+            )
+            old_status = "FAILED"
         if status == "BLOCKED":
             return {
                 "ok": True,
@@ -472,14 +498,20 @@ def preflight(
                     and int(task["attempt"]) >= MAX_ATTEMPTS
                     else "TASK_BLOCKED"
                 )
-                _record_task_transition(
-                    path,
-                    payload,
-                    code6,
-                    event_type=terminal_event,
-                    old_status=old_status,
-                    error_class=error_class or "NON_TRANSIENT_FAILURE",
+                already_recorded_exhaustion = (
+                    old_status == "FAILED"
+                    and error_class in TRANSIENT_ERRORS
+                    and int(task["attempt"]) >= MAX_ATTEMPTS
                 )
+                if not already_recorded_exhaustion:
+                    _record_task_transition(
+                        path,
+                        payload,
+                        code6,
+                        event_type=terminal_event,
+                        old_status=old_status,
+                        error_class=error_class or "NON_TRANSIENT_FAILURE",
+                    )
                 return {
                     "ok": True,
                     "code": code6,

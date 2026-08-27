@@ -512,6 +512,95 @@ def record_agent_boundary(
     )
 
 
+def record_controlled_agent_boundary(
+    run_id: str,
+    event_type: str,
+    *,
+    role: str,
+    subject: str,
+    invocation_id: str,
+    attempt: int,
+    control_invocation_id: str,
+    result: Mapping | None = None,
+    error: Mapping | None = None,
+) -> dict:
+    """Self-register one trace-control agent around its target boundary append."""
+    binding = {
+        "target_event_type": event_type,
+        "target_invocation_id": invocation_id,
+        "target_role": role,
+    }
+    control_dispatched = record_agent_boundary(
+        run_id,
+        "AGENT_DISPATCHED",
+        role="trace-control",
+        subject=subject,
+        invocation_id=control_invocation_id,
+        attempt=attempt,
+        result=binding,
+    )
+    try:
+        target = record_agent_boundary(
+            run_id,
+            event_type,
+            role=role,
+            subject=subject,
+            invocation_id=invocation_id,
+            attempt=attempt,
+            result=result,
+            error=error,
+        )
+    except Exception as exc:
+        with contextlib.suppress(Exception):
+            record_agent_boundary(
+                run_id,
+                "AGENT_FAILED",
+                role="trace-control",
+                subject=subject,
+                invocation_id=control_invocation_id,
+                attempt=attempt,
+                error={
+                    "error_type": type(exc).__name__,
+                    "phase": "target-boundary",
+                    **binding,
+                },
+            )
+        raise
+    try:
+        control_completed = record_agent_boundary(
+            run_id,
+            "AGENT_COMPLETED",
+            role="trace-control",
+            subject=subject,
+            invocation_id=control_invocation_id,
+            attempt=attempt,
+            result={
+                "target_event_hash": target["event_hash"],
+                **binding,
+            },
+        )
+    except Exception as exc:
+        with contextlib.suppress(Exception):
+            record_agent_boundary(
+                run_id,
+                "AGENT_FAILED",
+                role="trace-control",
+                subject=subject,
+                invocation_id=control_invocation_id,
+                attempt=attempt,
+                error={
+                    "error_type": type(exc).__name__,
+                    "phase": "control-terminal",
+                    **binding,
+                },
+            )
+        raise
+    return {
+        "control_events": [control_dispatched, control_completed],
+        "event": target,
+    }
+
+
 def _validate_report_dir(report_dir: Path | str | None) -> Path | None:
     if report_dir is None:
         return None
@@ -1036,6 +1125,7 @@ def _parser() -> argparse.ArgumentParser:
     agent_event.add_argument("--attempt", required=True, type=int)
     agent_event.add_argument("--result-json")
     agent_event.add_argument("--error-json")
+    agent_event.add_argument("--control-invocation-id")
     return parser
 
 
@@ -1077,17 +1167,31 @@ def main(argv: list[str] | None = None) -> int:
             parsed_error = (
                 json.loads(args.error_json) if args.error_json is not None else None
             )
-            event = record_agent_boundary(
-                args.run_id,
-                args.event_type,
-                role=args.role,
-                subject=args.subject,
-                invocation_id=args.invocation_id,
-                attempt=args.attempt,
-                result=parsed_result,
-                error=parsed_error,
-            )
-            result = {"event": event, "ok": True}
+            if args.control_invocation_id:
+                controlled = record_controlled_agent_boundary(
+                    args.run_id,
+                    args.event_type,
+                    role=args.role,
+                    subject=args.subject,
+                    invocation_id=args.invocation_id,
+                    attempt=args.attempt,
+                    control_invocation_id=args.control_invocation_id,
+                    result=parsed_result,
+                    error=parsed_error,
+                )
+                result = {**controlled, "ok": True}
+            else:
+                event = record_agent_boundary(
+                    args.run_id,
+                    args.event_type,
+                    role=args.role,
+                    subject=args.subject,
+                    invocation_id=args.invocation_id,
+                    attempt=args.attempt,
+                    result=parsed_result,
+                    error=parsed_error,
+                )
+                result = {"event": event, "ok": True}
         _emit(result)
         return 0
     except Exception as exc:  # noqa: BLE001 - CLI converts failure into honest exit
@@ -1108,4 +1212,5 @@ __all__ = [
     "load_run",
     "main",
     "record_agent_boundary",
+    "record_controlled_agent_boundary",
 ]
