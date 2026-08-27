@@ -10,9 +10,9 @@ workflow。空 config 的后果是**静默**的:intel 被关掉、全体 agent �
 先被调用(而不是 guard 先 throw「为空」),说明 guard 要么没拦住,要么拦的位置太晚
 (前面已经派发过 agent 了)——这正是 07-21 事故的结构性重演:静默继续跑,不是显式失败。
 
-l4-stock.js 自己有「date/code 必填」校验(在 cfg 解析之前),args 必须带 `code` 才能走到
-cfg guard;不带 code 会先撞那条校验,消息不含「为空」→ 测试假红。scan-market.js 不关心
-`code` 键(忽略多余键),同一份 args 两文件通用。
+l4-stock.js 自己有「date/code/attempt 必填」校验(在 cfg 解析之前),args 必须带 `code` 和
+`attempt` 才能走到 cfg guard;漏任一项会先撞输入校验,消息不含「为空」→ 测试假红。
+scan-market.js 不关心这两个键(忽略多余键),同一份 args 两文件通用。
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ _PROBE_BLOCKS = textwrap.dedent("""
   let src = fs.readFileSync(process.argv[1], 'utf8').replace(/^export const meta/m, 'const meta');
   const agent = () => { throw new Error('AGENT_CALLED_BEFORE_GUARD'); };
   const fn = new AsyncFunction('agent','parallel','pipeline','log','phase','args','budget','workflow', src);
-  fn(agent, null, null, () => {}, () => {}, {date: '2026-01-01', code: '600000', name: 'X', sector: 'Y', run_id: '20260827T010203456789Z'}, {total: null}, null)
+  fn(agent, null, null, () => {}, () => {}, {date: '2026-01-01', code: '600000', attempt: 1, name: 'X', sector: 'Y', run_id: '20260827T010203456789Z'}, {total: null}, null)
     .then(() => { console.log('NO_THROW'); process.exit(1); })
     .catch(e => { console.log(e.message); process.exit(/为空/.test(e.message) ? 0 : 1); });
 """)
@@ -52,7 +52,7 @@ _PROBE_ESCAPE = textwrap.dedent("""
   let src = fs.readFileSync(process.argv[1], 'utf8').replace(/^export const meta/m, 'const meta');
   const agent = () => { throw new Error('REACHED_AGENT_DISPATCH'); };
   const fn = new AsyncFunction('agent','parallel','pipeline','log','phase','args','budget','workflow', src);
-  const a = {date: '2026-01-01', code: '600000', name: 'X', sector: 'Y', run_id: '20260827T010203456789Z', allow_empty_config: true};
+  const a = {date: '2026-01-01', code: '600000', attempt: 1, name: 'X', sector: 'Y', run_id: '20260827T010203456789Z', allow_empty_config: true};
   fn(agent, null, null, () => {}, () => {}, a, {total: null}, null)
     .then(() => { console.log('NO_THROW_STILL_OK'); process.exit(0); })
     .catch(e => {

@@ -12,10 +12,15 @@ export const meta = {
 // args 可能以对象或(harness 序列化后的)JSON 字符串到达 —— 两种都容错解析。
 const A = (typeof args === 'string' && args ? JSON.parse(args) : args) || {}
 const date = A.date
-if (!date) throw new Error('args.date 必填,如 {date:"2026-07-07"}')
+const validDate = (value) => {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  const parsed = new Date(`${value}T00:00:00.000Z`)
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value
+}
+if (!validDate(date)) throw new Error(`args.date 非法:${String(date)}`)
 const RUN_ID = A.run_id
 if (!RUN_ID) throw new Error('args.run_id 必填；先运行 autoresearch.trace.capsule begin')
-if (!/^\d{8}T\d{12}Z$/.test(RUN_ID)) throw new Error(`args.run_id 非法:${RUN_ID}`)
+if (typeof RUN_ID !== 'string' || !/^\d{8}T\d{12}Z$/.test(RUN_ID)) throw new Error(`args.run_id 非法:${String(RUN_ID)}`)
 // scan_config.json 白名单校验后的 user_config(autoresearch/scan/user_config.py)经 frame --json
 // 回显、由调用方随 Workflow args.config 传入(本脚本无文件系统访问,不能自己读文件)。缺省 = {}。
 const cfg = A.config || {}
@@ -240,7 +245,7 @@ log(`运行模式 = ${runMode}${rm && rm.pinned_codes ? `(持仓 ${rm.pinned_cod
 
 if (runMode === 'SENTINEL_EMPTY') {
   log('哨兵档且无持仓 → 跳过 L3/L4(日历已在 prelude 跑过);assemble+GATE4 由主会话收尾')
-  return { date, run_id: RUN_ID, engine: ENGINE, mode: 'sentinel', run_mode: runMode, finalists: 0, dispatch: [], meta: {},
+  return { date, run_id: RUN_ID, engine: ENGINE, dispatch_attempt: 1, mode: 'sentinel', run_mode: runMode, finalists: 0, dispatch: [], meta: {},
     l4_budget: g1m.l4_budget, published: false }
 }
 if (runMode === 'SENTINEL_PINNED') {
@@ -252,7 +257,7 @@ if (runMode === 'SENTINEL_PINNED') {
   await bash(`${PY('gate2', 'gate2-sentinel-attempt-1')} autoresearch.scan.gates gate2 ${date} --skip ${'sentinel_pinned_no_l3'}`,
     'GATE2-skip', 'L3').catch(() => null)
   await bash(`${PY('l4-prep', 'l4-prompts-pinned-attempt-1')} autoresearch.scan.agents.l4_card prompts ${date}`, 'l4-prep-pinned', 'L4-prep')
-  return { date, run_id: RUN_ID, engine: ENGINE, mode: 'l4-handoff', run_mode: runMode, finalists: codes.length,
+  return { date, run_id: RUN_ID, engine: ENGINE, dispatch_attempt: 1, mode: 'l4-handoff', run_mode: runMode, finalists: codes.length,
     dispatch: codes.map((c) => ({ code: c, lane: 'pinned' })), dispatch_batches: [codes],
     meta: {}, l4_budget: codes.length, published: false }
 }
@@ -432,7 +437,7 @@ if (!streamingL4) {
   dispatchBatches = tasks.dispatch_batches || []
   log(`L4 流式任务簿 ✓ ${taskBook} · 批次宽度 ${tasks.effective_cap || '?'} · ${dispatchBatches.length} 批`)
 }
-log(`L4 交接:新派 ${dispatch.length} 股(每股一个 l4-stock workflow,主会话并行拉起)`)
+log(`L4 交接:新派 ${dispatch.length} 股(每股一个 l4-stock workflow,主会话并行拉起；必须传 args.attempt=1)`)
 // CP4(Wave5 ①):随时可调的确定性看板,不用等一小时后的 summary.md
 log(`🔎 随时可调:\`${PY('observe', 'render-menu-health-attempt-1')} autoresearch.scan.render ${date} --view menu_health\`(L2 成色)· ` +
   `\`${PY('observe', 'render-gate-hist-attempt-1')} autoresearch.scan.render ${date} --view gate_hist\`(L4 完成后看评级分布/停因分桶/门柱)· ` +
@@ -448,6 +453,6 @@ if (pinnedCodes.length) {
 }
 
 // meta(名称/行业)透传给 l4-stock 的 intel 盲搜 prompt;assemble+GATE4 由主会话在全部 l4-stock 完成后收尾。
-return { date, run_id: RUN_ID, engine: ENGINE, mode: 'l4-handoff', finalists: g2m.n, dispatch, dispatch_batches: dispatchBatches,
+return { date, run_id: RUN_ID, engine: ENGINE, dispatch_attempt: 1, mode: 'l4-handoff', finalists: g2m.n, dispatch, dispatch_batches: dispatchBatches,
   task_book: taskBook, streaming_l4: streamingL4,
   meta: plan.meta || g2m.meta || {}, l4_budget: g1m.l4_budget, published: false }

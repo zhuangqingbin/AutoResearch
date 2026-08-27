@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import re
+import shutil
+import subprocess
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -11,6 +15,32 @@ WORKFLOWS = (
     Path(".claude/workflows/scan-market.js"),
     Path(".claude/workflows/l4-stock.js"),
 )
+_NODE = shutil.which("node")
+
+
+def _probe_workflow(path: Path, args: dict) -> dict:
+    script = textwrap.dedent(
+        """
+        const fs = require('fs');
+        const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+        let src = fs.readFileSync(process.argv[1], 'utf8').replace(/^export const meta/m, 'const meta');
+        let first = null;
+        const agent = (prompt) => { first = prompt; throw new Error('STOP_AT_FIRST_AGENT'); };
+        const fn = new AsyncFunction('agent','parallel','pipeline','log','phase','args','budget','workflow', src);
+        fn(agent, null, null, () => {}, () => {}, JSON.parse(process.argv[2]), {total:null}, null)
+          .then(() => console.log(JSON.stringify({first, error:null})))
+          .catch(e => console.log(JSON.stringify({first, error:e.message})));
+        """
+    )
+    completed = subprocess.run(
+        [_NODE, "-e", script, str(path), json.dumps(args)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    return json.loads(completed.stdout.splitlines()[-1])
 
 
 def _executable_source(path: Path) -> str:
@@ -60,15 +90,102 @@ def test_scan_handoff_propagates_run_and_engine_to_stock_workflows():
     source = _executable_source(WORKFLOWS[0])
     assert source.count("run_id: RUN_ID") >= 3
     assert source.count("engine: ENGINE") >= 3
+    assert source.count("dispatch_attempt: 1") >= 3
 
 
 def test_l4_workflow_invocation_ids_bind_stock_and_attempt():
     source = _executable_source(WORKFLOWS[1])
-    assert "let taskAttempt = Math.max(1, Number(A.attempt) || 1)" in source
+    assert "args.attempt 必填" in source
+    assert "Math.max(1, Number(A.attempt) || 1)" not in source
     assert "PY('l4', `l4-preflight-${code}-attempt-${taskAttempt}`, taskAttempt, code)" in source
     assert "PY('l4', `l4-prepare-${code}-attempt-${taskAttempt}`" in source
     assert "PY('l4', `l4-failure-${code}-attempt-${taskAttempt}`" in source
     assert "PY('l4', `l4-success-${code}-attempt-${taskAttempt}`" in source
+
+
+@pytest.mark.skipif(_NODE is None, reason="requires node workflow probe")
+@pytest.mark.parametrize(
+    "path,args",
+    [
+        (WORKFLOWS[0], {"date": "2026-01-01;touch /tmp/pwn", "run_id": "20260827T010203456789Z"}),
+        (WORKFLOWS[0], {"date": "2026-02-30", "run_id": "20260827T010203456789Z"}),
+        (WORKFLOWS[0], {"date": "2026-01-01", "run_id": "20260827T010203456789Z;id"}),
+        (
+            WORKFLOWS[1],
+            {
+                "date": "2026-01-01;id",
+                "run_id": "20260827T010203456789Z",
+                "code": "600000",
+                "attempt": 1,
+            },
+        ),
+        (
+            WORKFLOWS[1],
+            {
+                "date": "2026-02-30",
+                "run_id": "20260827T010203456789Z",
+                "code": "600000",
+                "attempt": 1,
+            },
+        ),
+        (
+            WORKFLOWS[1],
+            {
+                "date": "2026-01-01",
+                "run_id": "20260827T010203456789Z",
+                "code": "600000;id",
+                "attempt": 1,
+            },
+        ),
+        (
+            WORKFLOWS[1],
+            {
+                "date": "2026-01-01",
+                "run_id": "20260827T010203456789Z;id",
+                "code": "600000",
+                "attempt": 1,
+            },
+        ),
+    ],
+)
+def test_workflow_rejects_unsafe_shell_and_path_tokens_before_dispatch(path, args):
+    args.update({"allow_empty_config": True})
+    result = _probe_workflow(path, args)
+    assert result["first"] is None
+    assert "非法" in result["error"]
+
+
+@pytest.mark.skipif(_NODE is None, reason="requires node workflow probe")
+@pytest.mark.parametrize("attempt", [None, 0, -1, 1.5, "1", "1;id"])
+def test_l4_workflow_requires_authoritative_positive_integer_attempt(attempt):
+    args = {
+        "date": "2026-01-01",
+        "run_id": "20260827T010203456789Z",
+        "code": "600000",
+        "allow_empty_config": True,
+    }
+    if attempt is not None:
+        args["attempt"] = attempt
+    result = _probe_workflow(WORKFLOWS[1], args)
+    assert result["first"] is None
+    assert "attempt" in result["error"]
+
+
+@pytest.mark.skipif(_NODE is None, reason="requires node workflow probe")
+def test_l4_retry_attempts_produce_distinct_preflight_invocation_ids():
+    base = {
+        "date": "2026-01-01",
+        "run_id": "20260827T010203456789Z",
+        "code": "600000",
+        "allow_empty_config": True,
+    }
+    first = _probe_workflow(WORKFLOWS[1], {**base, "attempt": 1})["first"]
+    second = _probe_workflow(WORKFLOWS[1], {**base, "attempt": 2})["first"]
+    assert "l4-preflight-600000-attempt-1" in first
+    assert "--attempt 1" in first
+    assert "l4-preflight-600000-attempt-2" in second
+    assert "--attempt 2" in second
+    assert first != second
 
 
 @pytest.mark.parametrize("path", WORKFLOWS)

@@ -9,8 +9,10 @@ import os
 import signal
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from multiprocessing import get_context
 from pathlib import Path
 
 import pytest
@@ -70,6 +72,16 @@ def _assert_terminal_error_agrees(handle, result, invocation_id: str) -> dict:
     index = json.loads((handle.capsule / "events/invocations.json").read_text(encoding="utf-8"))
     assert index[invocation_id]["error"] == error
     return error
+
+
+def _multiprocess_capture(handle, number: int) -> None:
+    run_captured(
+        handle,
+        stage="l4",
+        argv=[sys.executable, "-c", f"print({number})"],
+        invocation_id=f"mp-l4-60000{number}-attempt-1",
+        subject=f"60000{number}",
+    )
 
 
 def test_capture_preserves_exact_argv_and_separate_binary_streams(tmp_path, monkeypatch):
@@ -177,6 +189,27 @@ def test_capture_records_secret_presence_without_any_secret_value(tmp_path, monk
     assert "super-secret-value" not in (handle.capsule / "events/invocations.json").read_text(
         encoding="utf-8"
     )
+
+
+def test_recorded_allowlisted_environment_redacts_embedded_secret_values(tmp_path, monkeypatch):
+    handle = _begin(tmp_path, monkeypatch)
+    secret = "duplicated-secret-token"
+    monkeypatch.setenv("TUSHARE_TOKEN", secret)
+    monkeypatch.setenv("PATH", f"/safe/bin:{secret}:/more/bin")
+    monkeypatch.setenv("PYTHONPATH", f"/project/{secret}/src")
+
+    result = run_captured(
+        handle,
+        stage="frame",
+        argv=[sys.executable, "-c", "pass"],
+        invocation_id="embedded-env-redaction-1",
+    )
+
+    encoded = json.dumps(result.invocation, ensure_ascii=False)
+    assert secret not in encoded
+    assert result.invocation["environment"]["TUSHARE_TOKEN"] == {"present": True}
+    assert result.invocation["environment"]["PATH"] == "/safe/bin:[REDACTED]:/more/bin"
+    assert result.invocation["environment"]["PYTHONPATH"] == "/project/[REDACTED]/src"
 
 
 def test_capture_injects_run_stage_and_invocation_into_child(tmp_path, monkeypatch):
@@ -293,6 +326,109 @@ def test_concurrent_invocations_update_index_without_lost_rows(tmp_path, monkeyp
     index = json.loads((handle.capsule / "events/invocations.json").read_text(encoding="utf-8"))
     assert set(index) == {f"l4-60000{i}-attempt-1" for i in range(4)}
     assert all(result.exit_code == 0 for result in results)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires fork and POSIX file locking")
+def test_multiprocess_invocations_update_index_without_lost_rows(tmp_path, monkeypatch):
+    handle = _begin(tmp_path, monkeypatch)
+    context = get_context("fork")
+    processes = [
+        context.Process(target=_multiprocess_capture, args=(handle, number)) for number in range(4)
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=10)
+        assert not process.is_alive()
+        assert process.exitcode == 0
+
+    index = json.loads((handle.capsule / "events/invocations.json").read_text(encoding="utf-8"))
+    assert set(index) == {f"mp-l4-60000{i}-attempt-1" for i in range(4)}
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX process groups")
+def test_descendant_retaining_pipes_is_bounded_and_recorded(tmp_path, monkeypatch):
+    handle = _begin(tmp_path, monkeypatch)
+    script = (
+        "import subprocess,sys;"
+        "subprocess.Popen([sys.executable,'-c','import time;time.sleep(5)']);"
+        "print('direct-child-done')"
+    )
+    started = time.monotonic()
+
+    result = run_captured(
+        handle,
+        stage="frame",
+        argv=[sys.executable, "-c", script],
+        invocation_id="retained-pipes-1",
+        drain_grace=0.1,
+        termination_grace=0.1,
+    )
+
+    assert time.monotonic() - started < 2
+    assert result.exit_code == 0
+    assert result.invocation["status"] == "FAILED"
+    assert any(
+        error["classification"] == "PIPE_DRAIN_TIMEOUT"
+        for error in result.invocation["capture_errors"]
+    )
+    assert not any(
+        thread.name.startswith("exec-capture-retained-pipes-1") and thread.is_alive()
+        for thread in threading.enumerate()
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX process groups")
+def test_first_signal_kills_term_ignoring_child_after_grace(tmp_path, monkeypatch):
+    handle = _begin(tmp_path, monkeypatch)
+    script = "import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(5)"
+    timer = threading.Timer(0.15, os.kill, args=(os.getpid(), signal.SIGTERM))
+    timer.start()
+    started = time.monotonic()
+    try:
+        result = run_captured(
+            handle,
+            stage="prelude",
+            argv=[sys.executable, "-c", script],
+            invocation_id="ignore-term-1",
+            drain_grace=0.1,
+            termination_grace=0.15,
+        )
+    finally:
+        timer.cancel()
+
+    assert time.monotonic() - started < 2
+    assert result.exit_code == -signal.SIGKILL
+    assert result.invocation["forwarded_signals"] == [signal.SIGTERM]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX process groups")
+def test_second_signal_escalates_to_sigkill_immediately(tmp_path, monkeypatch):
+    handle = _begin(tmp_path, monkeypatch)
+    script = "import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(5)"
+    timers = [
+        threading.Timer(delay, os.kill, args=(os.getpid(), signal.SIGTERM))
+        for delay in (0.15, 0.25)
+    ]
+    for timer in timers:
+        timer.start()
+    started = time.monotonic()
+    try:
+        result = run_captured(
+            handle,
+            stage="prelude",
+            argv=[sys.executable, "-c", script],
+            invocation_id="double-signal-1",
+            drain_grace=0.1,
+            termination_grace=1.0,
+        )
+    finally:
+        for timer in timers:
+            timer.cancel()
+
+    assert time.monotonic() - started < 1
+    assert result.exit_code == -signal.SIGKILL
+    assert result.invocation["forwarded_signals"] == [signal.SIGTERM, signal.SIGTERM]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="requires POSIX process groups")
@@ -539,6 +675,76 @@ def test_gzip_failure_has_structured_traceback_and_agrees_with_event(tmp_path, m
     assert "[REDACTED]" in encoded
 
 
+@pytest.mark.parametrize("failed_stream", ["stdout", "stderr"])
+def test_gzip_failure_retains_exact_raw_stream_and_points_metadata_to_it(
+    tmp_path, monkeypatch, failed_stream
+):
+    handle = _begin(tmp_path, monkeypatch)
+    original = exec_mod._gzip_raw
+
+    def fail_selected(raw_path, destination):
+        if f".{failed_stream}.log.gz" in destination.name:
+            raise OSError(f"{failed_stream} compression unavailable")
+        return original(raw_path, destination)
+
+    monkeypatch.setattr(exec_mod, "_gzip_raw", fail_selected)
+    result = run_captured(
+        handle,
+        stage="frame",
+        argv=[
+            sys.executable,
+            "-c",
+            "import os;os.write(1,b'OUT\\x00\\xff');os.write(2,b'ERR\\x00\\xfe')",
+        ],
+        invocation_id=f"raw-fallback-{failed_stream}",
+    )
+
+    failed_ref = result.invocation[f"{failed_stream}_log"]
+    failed_path = handle.capsule / failed_ref
+    assert failed_ref.endswith(f".{failed_stream}.log.raw")
+    assert result.invocation[f"{failed_stream}_log_encoding"] == "raw"
+    assert failed_path.is_file()
+    expected = b"OUT\x00\xff" if failed_stream == "stdout" else b"ERR\x00\xfe"
+    assert failed_path.read_bytes() == expected
+    other = "stderr" if failed_stream == "stdout" else "stdout"
+    assert result.invocation[f"{other}_log_encoding"] == "gzip"
+    assert (handle.capsule / result.invocation[f"{other}_log"]).is_file()
+    terminal = [
+        row
+        for row in _events(handle)
+        if row["invocation_id"] == f"raw-fallback-{failed_stream}"
+        and row["event_type"] == "COMMAND_FAILED"
+    ]
+    assert terminal[0]["payload"][f"{failed_stream}_log"] == failed_ref
+    assert terminal[0]["payload"][f"{failed_stream}_log_encoding"] == "raw"
+
+
+def test_raw_fallback_post_commit_error_still_points_to_existing_evidence(tmp_path, monkeypatch):
+    handle = _begin(tmp_path, monkeypatch)
+    real_retain = exec_mod._retain_raw
+
+    def fail_gzip(raw_path, destination):
+        raise OSError("compression unavailable")
+
+    def commit_then_fail(raw_path, destination):
+        real_retain(raw_path, destination)
+        raise OSError("directory durability acknowledgement unavailable")
+
+    monkeypatch.setattr(exec_mod, "_gzip_raw", fail_gzip)
+    monkeypatch.setattr(exec_mod, "_retain_raw", commit_then_fail)
+    result = run_captured(
+        handle,
+        stage="frame",
+        argv=[sys.executable, "-c", "print('durable bytes')"],
+        invocation_id="raw-post-commit-error-1",
+    )
+
+    for stream in ("stdout", "stderr"):
+        evidence = handle.capsule / result.invocation[f"{stream}_log"]
+        assert evidence.is_file()
+        assert result.invocation[f"{stream}_log_encoding"] == "raw"
+
+
 def test_terminal_index_failure_is_recovered_as_structured_failure(tmp_path, monkeypatch):
     handle = _begin(tmp_path, monkeypatch)
     original = exec_mod._finish_invocation
@@ -671,6 +877,46 @@ def test_signal_handlers_restore_when_terminal_finalization_raises(tmp_path, mon
         )
     assert signal.getsignal(signal.SIGINT) == previous_int
     assert signal.getsignal(signal.SIGTERM) == previous_term
+
+
+def test_signal_handler_restore_failure_compensates_plain_success_evidence(tmp_path, monkeypatch):
+    handle = _begin(tmp_path, monkeypatch)
+    previous_term = signal.getsignal(signal.SIGTERM)
+    real_signal = signal.signal
+    term_installed = False
+
+    def fail_term_restore(signum, handler):
+        nonlocal term_installed
+        if signum == signal.SIGTERM:
+            if not term_installed:
+                term_installed = True
+            elif handler == previous_term:
+                raise OSError("cannot restore SIGTERM handler")
+        return real_signal(signum, handler)
+
+    monkeypatch.setattr(signal, "signal", fail_term_restore)
+    try:
+        with pytest.raises(exec_mod.EvidenceFinalizationError) as raised:
+            run_captured(
+                handle,
+                stage="frame",
+                argv=[sys.executable, "-c", "pass"],
+                invocation_id="restore-compensation-1",
+            )
+    finally:
+        real_signal(signal.SIGTERM, previous_term)
+
+    assert any(error["phase"] == "restore_signal_handlers" for error in raised.value.errors)
+    rows = [row for row in _events(handle) if row["invocation_id"] == "restore-compensation-1"]
+    assert [row["event_type"] for row in rows] == [
+        "COMMAND_STARTED",
+        "COMMAND_COMPLETED",
+        "COMMAND_FAILED",
+    ]
+    assert rows[-1]["payload"]["error"]["phase"] == "restore_signal_handlers"
+    index = json.loads((handle.capsule / "events/invocations.json").read_text(encoding="utf-8"))
+    assert index["restore-compensation-1"]["status"] == "FAILED"
+    assert index["restore-compensation-1"]["exit_code"] == 0
 
 
 def test_index_terminal_failure_still_appends_failed_event_before_signal_restore(

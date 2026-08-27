@@ -8,17 +8,26 @@ export const meta = {
   ],
 }
 
-// args: {date, code, name, sector, cfg} —— cfg 透传 scan_config 的 agents/l4_intel 块(缺省 = 现硬编码值,parity)。
+// args: {date, run_id, code, attempt, name, sector, cfg} —— attempt 由 scan handoff/重试调度权威下发;
+// cfg 透传 scan_config 的 agents/l4_intel 块(缺省 = 现硬编码值,parity)。
 // 为什么每股一个 workflow(而非 scan-market.js 内批量派发):①每个 workflow 有独立并发帽,N 股真并行;
 // ②intel→card 在股内链式衔接,股间零 barrier(旧批量版全体 intel 完才派卡);③单股失败只废单股,
 // 主会话对该股单独重跑即可 —— 2026-07-14 GATE3 差 16 字节毙掉 60min/1.6M token 全流水线的教训。
 const A = (typeof args === 'string' && args ? JSON.parse(args) : args) || {}
 const { date, code } = A
-if (!date || !code) throw new Error('args.date/args.code 必填,如 {date:"2026-07-14", code:"000651"}')
+const validDate = (value) => {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  const parsed = new Date(`${value}T00:00:00.000Z`)
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value
+}
+if (!validDate(date)) throw new Error(`args.date 非法:${String(date)}`)
 const RUN_ID = A.run_id
 if (!RUN_ID) throw new Error('args.run_id 必填；沿用 scan-market 的 run_id')
-if (!/^\d{8}T\d{12}Z$/.test(RUN_ID)) throw new Error(`args.run_id 非法:${RUN_ID}`)
-if (!/^\d{6}$/.test(code)) throw new Error(`args.code 非法:${code}`)
+if (typeof RUN_ID !== 'string' || !/^\d{8}T\d{12}Z$/.test(RUN_ID)) throw new Error(`args.run_id 非法:${String(RUN_ID)}`)
+if (typeof code !== 'string' || !/^\d{6}$/.test(code)) throw new Error(`args.code 非法:${String(code)}`)
+if (!Number.isInteger(A.attempt) || A.attempt <= 0) {
+  throw new Error(`args.attempt 必填且必须为正整数:${String(A.attempt)}`)
+}
 const name = A.name || ''
 const sector = A.sector || '行业未知'
 const cfg = A.cfg || {}
@@ -66,7 +75,7 @@ const PY = (stage, invocation, attempt = 1, subject = null) =>
   `--stage ${stage} --invocation-id ${invocation} --attempt ${attempt}` +
   `${subject ? ` --subject ${subject}` : ''} -- uv run --no-sync python -m`
 const TASK_BOOK = `${SD}/_l4_tasks.json`
-let taskAttempt = Math.max(1, Number(A.attempt) || 1)
+let taskAttempt = A.attempt
 const CARD = { type: 'object', required: ['code', 'rating'],
   properties: { code: { type: 'string' }, rating: { type: 'string' },
     conviction: { type: 'number', minimum: 0, maximum: 100 }, proposal: { type: 'string' } } }
@@ -152,7 +161,9 @@ if (taskPreflight && ['BLOCKED', 'WAIT'].includes(taskPreflight.action)) {
     error: `task ${taskPreflight.action}:${taskPreflight.reason || ''}` }
 }
 const trackedTask = !!taskPreflight && taskPreflight.action === 'RUN'
-taskAttempt = Math.max(1, Number(taskPreflight && taskPreflight.attempt) || 1)
+if (trackedTask && (!Number.isInteger(taskPreflight.attempt) || taskPreflight.attempt <= 0 || taskPreflight.attempt !== taskAttempt)) {
+  throw new Error(`L4 task attempt 与 args.attempt 不一致(task=${String(taskPreflight.attempt)}, args=${taskAttempt})；拒绝复用 invocation_id`)
+}
 const intelResume = !!(taskPreflight && taskPreflight.intel_resume)
 
 // ── Slim ∥ Intel(结构性盲:prompt 只给码/名/行业/日期,防确认偏误)────────────
