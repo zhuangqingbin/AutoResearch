@@ -100,3 +100,11 @@ def knowledge_root() -> Path:
 
 def factor_lab_root() -> Path:
     return context_root() / "factor_lab"
+
+
+def broker_root() -> Path:
+    """`context_<engine>/broker/` —— 券商成交取数层产物根(2026-08-27 设计稿 §5)。
+
+    个人财务数据:**不进 lake/**(lake 是跨引擎共享的行情湖),按引擎分根、gitignore。
+    """
+    return context_root() / "broker"
