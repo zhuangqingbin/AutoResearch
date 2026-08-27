@@ -13,7 +13,7 @@ import pytest
 from autoresearch.common import workspace as ws
 from autoresearch.scan.artifacts import ArtifactSpec
 from autoresearch.scan.run_contract import load_run_contract
-from autoresearch.trace import capsule as capsule_mod
+from autoresearch.trace import capsule as capsule_mod, identity as identity_mod
 from autoresearch.trace.atomic import canonical_json, sha256_bytes
 from autoresearch.trace.capsule import (
     begin_run,
@@ -170,6 +170,7 @@ def test_begin_consumes_authoritative_cleanup_warning_from_snapshot_loader(
         (out / "snapshot_cleanup_warning.json").write_text(
             canonical_json(warning) + "\n", encoding="utf-8"
         )
+        identity_mod._write_snapshot_inventory(out, environ={})
         return base
 
     monkeypatch.setattr(capsule_mod, "snapshot_identity", snapshot)

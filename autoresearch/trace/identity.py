@@ -74,7 +74,7 @@ _PLACEHOLDER_RE = re.compile(
     r"placeholder|redacted|\[redacted\]|your[_-][A-Za-z0-9_-]+|"
     r"<[A-Za-z0-9_.:-]+>|\$\{[A-Za-z_][A-Za-z0-9_]*\})$"
 )
-_OPAQUE_RE = re.compile(rb"(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/=_-]{24,}(?![A-Za-z0-9+/=_-])")
+_OPAQUE_RE = re.compile(rb"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{24,}={0,2}(?![A-Za-z0-9+/=_-])")
 _JWT_RE = re.compile(
     rb"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\."
     rb"[A-Za-z0-9_-]{16,}(?![A-Za-z0-9_-])"
@@ -124,12 +124,14 @@ _SNAPSHOT_LOCKS_GUARD = threading.Lock()
 _SNAPSHOT_SIBLING_SUFFIX_RE = re.compile(r"[a-z0-9_]{8}")
 _CLEANUP_WARNING = "snapshot_cleanup_warning.json"
 _TRANSACTION_JOURNAL = "snapshot_transaction.json"
+_SNAPSHOT_INVENTORY = "snapshot_inventory.json"
 _OWNED_FILES = frozenset(
     {
         "code.patch",
         "dependencies.txt",
         "environment.json",
         _CLEANUP_WARNING,
+        _SNAPSHOT_INVENTORY,
         "snapshot_result.json",
         "source_manifest.json",
         "source_links.json",
@@ -301,7 +303,7 @@ def _literal_value_is_secret(value: Any) -> bool:
     if isinstance(value, bytes):
         value = value.decode("utf-8", errors="ignore")
     if isinstance(value, str):
-        return not _placeholder_literal(value)
+        return not _placeholder_literal(value) and bool(re.search(r"[A-Za-z0-9]", value))
     return isinstance(value, (int, float, complex))
 
 
@@ -705,6 +707,66 @@ def _git_paths(repo: Path, *args: str) -> tuple[Path, ...]:
     return tuple(Path(os.fsdecode(item)) for item in sorted(raw.split(b"\0")) if item)
 
 
+def _changed_tracked_paths(repo: Path) -> tuple[tuple[bytes | None, bytes | None], ...]:
+    """Return HEAD/worktree path pairs from NUL-delimited Git output."""
+    fields = bytes(
+        _run(
+            repo,
+            ["git", "diff", "--name-status", "-z", "--find-renames", "HEAD", "--"],
+        )
+    ).split(b"\0")
+    if fields and fields[-1] == b"":
+        fields.pop()
+    rows: list[tuple[bytes | None, bytes | None]] = []
+    cursor = 0
+    while cursor < len(fields):
+        status = fields[cursor]
+        cursor += 1
+        if not status:
+            raise ValueError("invalid NUL-delimited git diff status")
+        code = chr(status[0])
+        if code in {"R", "C"}:
+            if cursor + 1 >= len(fields):
+                raise ValueError("truncated NUL-delimited git rename")
+            old_path, new_path = fields[cursor], fields[cursor + 1]
+            cursor += 2
+            rows.append((old_path, new_path))
+            continue
+        if cursor >= len(fields):
+            raise ValueError("truncated NUL-delimited git diff path")
+        path = fields[cursor]
+        cursor += 1
+        rows.append((None if code == "A" else path, None if code == "D" else path))
+    return tuple(rows)
+
+
+def _head_blob(repo: Path, raw_path: bytes) -> bytes:
+    return bytes(_run(repo, ["git", "cat-file", "blob", f"HEAD:{os.fsdecode(raw_path)}"]))
+
+
+def _worktree_blob(repo: Path, raw_path: bytes) -> bytes:
+    relative = Path(os.fsdecode(raw_path))
+    info = (repo / relative).lstat()
+    if stat.S_ISLNK(info.st_mode):
+        return os.fsencode(os.readlink(repo / relative))
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError("changed tracked source is not regular")
+    payload, _mode = _read_regular(repo, relative)
+    return payload
+
+
+def _scan_changed_tracked_blobs(repo: Path, *, environ: dict[str, str]) -> None:
+    """Fail closed if either side of any changed tracked blob contains credentials."""
+    for old_path, new_path in _changed_tracked_paths(repo):
+        for raw_path, reader in ((old_path, _head_blob), (new_path, _worktree_blob)):
+            if raw_path is None:
+                continue
+            payload = reader(repo, raw_path)
+            scan = scan_for_secrets(payload, environ=environ)
+            if not scan["ok"]:
+                raise SecretMaterialDetected(("tracked_blob",))
+
+
 def _path_bytes(relative: Path) -> bytes:
     return os.fsencode(relative.as_posix())
 
@@ -1075,6 +1137,7 @@ def _load_base_snapshot_result(output: Path) -> dict:
                 raise ValueError("invalid identity artifact claim")
             _claimed_artifact_path(output, relative)
     _validate_manifest_hashes(output)
+    _validate_snapshot_inventory(output)
     return result
 
 
@@ -1136,80 +1199,132 @@ def _has_valid_live_snapshot(output: Path) -> bool:
     return True
 
 
-def _artifact_record(path: Path, logical_name: str) -> dict[str, Any]:
+def _owned_names() -> tuple[str, ...]:
+    return tuple(sorted({*(_OWNED_FILES - {_CLEANUP_WARNING}), *_OWNED_DIRS}))
+
+
+def _append_inventory_tree(path: Path, logical: PurePosixPath, rows: list[dict[str, Any]]) -> None:
     info = path.lstat()
+    common = {"path": logical.as_posix(), "mode": stat.S_IMODE(info.st_mode)}
     if stat.S_ISLNK(info.st_mode):
-        raise ValueError("identity transaction artifact cannot be a symlink")
+        raise ValueError("identity inventory cannot contain a symlink")
     if stat.S_ISREG(info.st_mode):
-        return {
-            "name": logical_name,
-            "type": "file",
-            "mode": stat.S_IMODE(info.st_mode),
-            "sha256": sha256_bytes(path.read_bytes()),
-        }
+        rows.append({**common, "type": "file", "sha256": sha256_bytes(path.read_bytes())})
+        return
     if not stat.S_ISDIR(info.st_mode):
-        raise ValueError("identity transaction artifact must be regular")
+        raise ValueError("identity inventory cannot contain a special file")
+    rows.append({**common, "type": "directory"})
+    for child in sorted(path.iterdir(), key=lambda item: os.fsencode(item.name)):
+        _append_inventory_tree(child, logical / child.name, rows)
+
+
+def _owned_inventory(root: Path, *, include_inventory: bool) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    stack = [path]
-    while stack:
-        directory = stack.pop()
-        for child in sorted(directory.iterdir(), key=lambda item: os.fsencode(item.name)):
-            child_info = child.lstat()
-            relative = child.relative_to(path).as_posix()
-            if stat.S_ISLNK(child_info.st_mode):
-                raise ValueError("identity transaction tree cannot contain a symlink")
-            if stat.S_ISDIR(child_info.st_mode):
-                rows.append(
-                    {
-                        "path": relative,
-                        "type": "directory",
-                        "mode": stat.S_IMODE(child_info.st_mode),
-                    }
-                )
-                stack.append(child)
-            elif stat.S_ISREG(child_info.st_mode):
-                rows.append(
-                    {
-                        "path": relative,
-                        "type": "file",
-                        "mode": stat.S_IMODE(child_info.st_mode),
-                        "sha256": sha256_bytes(child.read_bytes()),
-                    }
-                )
-            else:
-                raise ValueError("identity transaction tree contains a special file")
-    rows.sort(key=lambda item: str(item["path"]))
-    return {
-        "name": logical_name,
-        "type": "directory",
-        "mode": stat.S_IMODE(info.st_mode),
-        "tree_sha256": sha256_bytes(canonical_json(rows).encode("utf-8")),
-    }
-
-
-def _owned_inventory(root: Path, names: tuple[str, ...]) -> list[dict[str, Any]]:
-    rows = []
-    for name in names:
+    for name in _owned_names():
+        if name == _SNAPSHOT_INVENTORY and not include_inventory:
+            continue
         path = root / name
         try:
             path.lstat()
         except FileNotFoundError:
             continue
-        rows.append(_artifact_record(path, name))
+        _append_inventory_tree(path, PurePosixPath(name), rows)
+    rows.sort(key=lambda row: (str(row["path"]), str(row["type"])))
     return rows
+
+
+def _validate_inventory_rows(rows: Any) -> list[dict[str, Any]]:
+    if not isinstance(rows, list):
+        raise ValueError("invalid identity snapshot inventory")
+    allowed = set(_owned_names())
+    validated: list[dict[str, Any]] = []
+    paths: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("invalid identity snapshot inventory row")
+        relative = row.get("path")
+        artifact_type = row.get("type")
+        mode = row.get("mode")
+        if not isinstance(relative, str) or not isinstance(mode, int):
+            raise ValueError("invalid identity snapshot inventory row")
+        logical = PurePosixPath(relative)
+        if (
+            logical.is_absolute()
+            or not logical.parts
+            or logical.parts[0] not in allowed
+            or any(part in {"", ".", ".."} for part in logical.parts)
+            or relative in paths
+        ):
+            raise ValueError("invalid identity snapshot inventory path")
+        paths.add(relative)
+        if artifact_type == "file":
+            digest = row.get("sha256")
+            if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise ValueError("invalid identity snapshot inventory digest")
+            if set(row) != {"path", "type", "mode", "sha256"}:
+                raise ValueError("invalid identity snapshot inventory file row")
+        elif artifact_type == "directory":
+            if set(row) != {"path", "type", "mode"}:
+                raise ValueError("invalid identity snapshot inventory directory row")
+        else:
+            raise ValueError("invalid identity snapshot inventory type")
+        validated.append(dict(row))
+    return sorted(validated, key=lambda row: (str(row["path"]), str(row["type"])))
+
+
+def _write_snapshot_inventory(output: Path, *, environ: dict[str, str]) -> None:
+    inventory = {
+        "schema_version": 1,
+        "artifacts": _owned_inventory(output, include_inventory=False),
+    }
+    _write_scanned(
+        output / _SNAPSHOT_INVENTORY,
+        (canonical_json(inventory) + "\n").encode("utf-8"),
+        environ=environ,
+    )
+
+
+def _validate_snapshot_inventory(output: Path) -> None:
+    payload = _read_regular_json(output / _SNAPSHOT_INVENTORY)
+    if payload.get("schema_version") != 1:
+        raise ValueError("invalid identity snapshot inventory")
+    expected = _validate_inventory_rows(payload.get("artifacts"))
+    actual = _owned_inventory(output, include_inventory=False)
+    if actual != expected:
+        raise ValueError("identity snapshot inventory mismatch")
+
+
+def _inventory_matches(root: Path, expected: Any, *, include_inventory: bool = True) -> bool:
+    try:
+        validated = _validate_inventory_rows(expected)
+        return _owned_inventory(root, include_inventory=include_inventory) == validated
+    except (FileNotFoundError, OSError, ValueError, TypeError):
+        return False
+
+
+def _combined_old_inventory(backup: Path, output: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for name in _owned_names():
+        saved = backup / name
+        source = saved if saved.exists() or saved.is_symlink() else output / name
+        try:
+            source.lstat()
+        except FileNotFoundError:
+            continue
+        _append_inventory_tree(source, PurePosixPath(name), rows)
+    return sorted(rows, key=lambda row: (str(row["path"]), str(row["type"])))
 
 
 def _write_transaction_journal(
     backup: Path,
     output: Path,
     generation: Path,
-    names: tuple[str, ...],
 ) -> dict:
     journal = {
         "schema_version": 1,
         "output_name": output.name,
-        "old_artifacts": _owned_inventory(output, names),
-        "new_artifacts": _owned_inventory(generation, names),
+        "old_artifacts": _owned_inventory(output, include_inventory=True),
+        "new_artifacts": _owned_inventory(generation, include_inventory=True),
     }
     payload = (canonical_json(journal) + "\n").encode("utf-8")
     if not scan_for_secrets(payload, environ={})["ok"]:
@@ -1233,15 +1348,8 @@ def _load_transaction_journal(backup: Path, output: Path) -> dict:
         or not isinstance(journal.get("new_artifacts"), list)
     ):
         raise ValueError("invalid identity transaction journal")
-    allowed = {*(_OWNED_FILES - {_CLEANUP_WARNING}), *_OWNED_DIRS}
     for inventory_name in ("old_artifacts", "new_artifacts"):
-        names = []
-        for row in journal[inventory_name]:
-            if not isinstance(row, dict) or row.get("name") not in allowed:
-                raise ValueError("invalid identity transaction artifact")
-            names.append(str(row["name"]))
-        if len(names) != len(set(names)):
-            raise ValueError("duplicate identity transaction artifact")
+        journal[inventory_name] = _validate_inventory_rows(journal[inventory_name])
     return journal
 
 
@@ -1249,15 +1357,10 @@ def _backup_can_restore(backup: Path, output: Path) -> bool:
     try:
         journal = _load_transaction_journal(backup, output)
         old = journal["old_artifacts"]
-        if not any(row.get("name") == "snapshot_result.json" for row in old):
+        if not any(row.get("path") == "snapshot_result.json" for row in old):
             return False
-        for expected in old:
-            name = expected.get("name")
-            if not isinstance(name, str):
-                return False
-            candidate = backup / name if (backup / name).exists() else output / name
-            if _artifact_record(candidate, name) != expected:
-                return False
+        if _combined_old_inventory(backup, output) != old:
+            return False
     except (FileNotFoundError, OSError, ValueError, TypeError):
         return False
     return True
@@ -1265,9 +1368,10 @@ def _backup_can_restore(backup: Path, output: Path) -> bool:
 
 def _restore_snapshot_backup(backup: Path, output: Path) -> None:
     journal = _load_transaction_journal(backup, output)
-    expected_names = {str(row["name"]) for row in journal["old_artifacts"]}
-    names = tuple(sorted({*(_OWNED_FILES - {_CLEANUP_WARNING}), *_OWNED_DIRS}))
-    for name in names:
+    expected_names = {str(row["path"]).split("/", 1)[0] for row in journal["old_artifacts"]}
+    if _combined_old_inventory(backup, output) != journal["old_artifacts"]:
+        raise RuntimeError("identity rollback inventory is incomplete")
+    for name in _owned_names():
         live = output / name
         saved = backup / name
         if saved.exists() or saved.is_symlink():
@@ -1286,11 +1390,26 @@ def _recover_or_scavenge_snapshot_siblings(output: Path) -> None:
     if not siblings:
         return
     backups = [child for child in siblings if child.name.startswith(f".{output.name}.backup-")]
+    recovered = not backups
+    for backup in backups:
+        try:
+            journal = _load_transaction_journal(backup, output)
+        except (FileNotFoundError, OSError, ValueError):
+            continue
+        if _inventory_matches(output, journal["new_artifacts"]):
+            recovered = True
+            break
+        if _inventory_matches(output, journal["old_artifacts"]):
+            recovered = True
+            break
+        if _backup_can_restore(backup, output):
+            _restore_snapshot_backup(backup, output)
+            recovered = True
+            break
+    if not recovered:
+        raise RuntimeError("identity snapshot has no valid rollback generation")
     if not _has_valid_live_snapshot(output):
-        recoverable = [backup for backup in backups if _backup_can_restore(backup, output)]
-        if not recoverable:
-            raise RuntimeError("identity snapshot has no valid rollback generation")
-        _restore_snapshot_backup(recoverable[0], output)
+        raise RuntimeError("identity snapshot recovery failed validation")
     for child in siblings:
         _remove_snapshot_sibling(child)
     _fsync_directory(output.parent)
@@ -1306,20 +1425,24 @@ def _promote_snapshot_generation(generation: Path, output: Path) -> list[dict[st
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
         raise ValueError("identity output must be a real directory")
     backup = Path(tempfile.mkdtemp(prefix=f".{output.name}.backup-", dir=output.parent))
-    owned_names = tuple(sorted({*(_OWNED_FILES - {_CLEANUP_WARNING}), *_OWNED_DIRS}))
+    owned_names = _owned_names()
     moved_old: list[tuple[Path, Path]] = []
     promoted: list[Path] = []
     committed = False
     try:
-        _write_transaction_journal(backup, output, generation, owned_names)
+        _write_transaction_journal(backup, output, generation)
         for name in owned_names:
-            source = generation / name
             destination = output / name
             old = backup / name
             if destination.exists() or destination.is_symlink():
                 old.parent.mkdir(parents=True, exist_ok=True)
                 _replace_promoted_path(destination, old)
                 moved_old.append((old, destination))
+        _fsync_directory(backup)
+        _fsync_directory(output)
+        for name in owned_names:
+            source = generation / name
+            destination = output / name
             if source.exists() or source.is_symlink():
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 _replace_promoted_path(source, destination)
@@ -1399,24 +1522,6 @@ def _record_snapshot_cleanup_degradation(
     degraded = _apply_cleanup_warning(result, marker) if marker_written else dict(result)
     if not marker_written:
         degraded["ok"] = False
-    try:
-        _write_scanned(
-            output / "snapshot_result.json",
-            (canonical_json(degraded) + "\n").encode("utf-8"),
-            environ=environ,
-        )
-    except Exception as exc:
-        failures = [*failures, _cleanup_failure("snapshot_result_update", exc)]
-        marker["failures"] = failures
-        if marker_written:
-            try:
-                _write_scanned(
-                    output / _CLEANUP_WARNING,
-                    (canonical_json(marker) + "\n").encode("utf-8"),
-                    environ=environ,
-                )
-            except Exception:
-                print("identity snapshot cleanup warning persistence degraded", file=sys.stderr)
     print("identity snapshot cleanup degraded", file=sys.stderr)
     if marker_written:
         return load_snapshot_result(output)
@@ -2001,6 +2106,7 @@ def _snapshot_identity_locked(
             if patch_before is not None
             else bytes(_run(repo, ["git", "diff", "--binary", "--no-ext-diff", "HEAD"]))
         )
+        _scan_changed_tracked_blobs(repo, environ=env)
         _write_scanned(output / "code.patch", patch, environ=env)
         components["git_patch"] = _component("SUCCESS", artifacts=("code.patch",))
     except Exception as exc:
@@ -2328,6 +2434,8 @@ def snapshot_identity(
                 service_tier=service_tier,
                 environ=environ,
             )
+            env = dict(os.environ if environ is None else environ)
+            _write_snapshot_inventory(generation, environ=env)
             if not _has_valid_live_snapshot(generation):
                 raise RuntimeError("identity generation is incomplete")
             cleanup_failures = _promote_snapshot_generation(generation, output)
