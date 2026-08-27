@@ -30,6 +30,10 @@ _SECRET_KEY_RE = re.compile(
     r"token|secret|password|authorization|cookie|api[_-]?key", re.IGNORECASE
 )
 _BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
+_SLACK_TOKEN_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9])xox[bpar]-(?:[0-9]{1,3}-)?"
+    r"(?:[0-9]{8,16}-){1,3}[A-Za-z0-9]{20,80}(?![A-Za-z0-9])"
+)
 _KEYLIKE_RE = re.compile(r"(?i)\b(?:sk|pk|rk|api)[-_](?:live[-_])?[A-Za-z0-9_-]{16,}\b")
 _AWS_KEY_RE = re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")
 _SECRET_ASSIGNMENT_RE = re.compile(
@@ -142,6 +146,7 @@ def redact_value(value: Any, *, environ: dict[str, str] | None = None) -> Redact
             return pattern.sub(_REDACTED, current)
 
         text = replace(_BEARER_RE, text)
+        text = replace(_SLACK_TOKEN_RE, text)
         text = replace(_KEYLIKE_RE, text)
         text = replace(_AWS_KEY_RE, text)
         text = replace(_SECRET_ASSIGNMENT_RE, text)
@@ -225,6 +230,7 @@ def scan_for_secrets(payload: bytes, *, environ: dict[str, str] | None = None) -
         char_to_byte.append(total)
     for kind, pattern in (
         ("bearer", _BEARER_RE),
+        ("slack_token", _SLACK_TOKEN_RE),
         ("key_like", _KEYLIKE_RE),
         ("cloud_key", _AWS_KEY_RE),
         ("secret_assignment", _SECRET_ASSIGNMENT_RE),

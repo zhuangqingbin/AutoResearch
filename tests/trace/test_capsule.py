@@ -349,6 +349,20 @@ def test_begin_rejects_known_env_secret_embedded_under_safe_contract_key(
     assert not ws.scan_run_root(RUN_ID).exists()
 
 
+def test_begin_rejects_slack_token_under_safe_contract_key_before_workspace(
+    tmp_path, monkeypatch
+):
+    _redirect_roots(monkeypatch, tmp_path)
+    token = "xoxb-123456789012-123456789012-abcdefghijklmnopqrstuvwx"
+    config = {"l2": {"floors": {"comment": f"diagnostic::{token}"}}}
+
+    with pytest.raises(ValueError, match="secret material") as raised:
+        begin_run("scan-market", DATE, "codex", config, now=NOW)
+
+    assert token not in str(raised.value)
+    assert not ws.scan_run_root(RUN_ID).exists()
+
+
 def test_begin_contract_gate_allows_safe_hashes_run_ids_and_session_ids(
     tmp_path, monkeypatch
 ):

@@ -200,6 +200,35 @@ def test_redact_value_recurses_and_removes_known_embedded_secret(monkeypatch):
 
 
 @pytest.mark.parametrize(
+    "prefix,numeric_segments",
+    [
+        ("xoxb", 2),
+        ("xoxp", 3),
+        ("xoxa", 2),
+        ("xoxr", 2),
+    ],
+)
+def test_slack_tokens_are_detected_without_returning_the_value(prefix, numeric_segments):
+    token = "-".join([prefix, *(["123456789012"] * numeric_segments), "abcdefghijklmnopqrstuvwx"])
+
+    result = scan_for_secrets(token.encode())
+
+    assert result["ok"] is False
+    assert result["findings"] == [{"kind": "slack_token", "offset": 0, "length": len(token)}]
+    assert token not in canonical_json(result)
+
+
+def test_redact_value_removes_slack_token_under_arbitrary_safe_key():
+    token = "xoxb-123456789012-123456789012-abcdefghijklmnopqrstuvwx"
+
+    result = redact_value({"comment": f"diagnostic::{token}::end"}, environ={})
+
+    assert result.hits == 1
+    assert token not in canonical_json(result.value)
+    assert result.value == {"comment": "diagnostic::[REDACTED]::end"}
+
+
+@pytest.mark.parametrize(
     "payload,ok",
     [
         (b"Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456", False),
@@ -242,6 +271,8 @@ def test_secret_scanner_detects_random_and_jwt_material(payload):
         b"context_codex/scan_runs/20260827T010203456789Z/staging/2026-08-27",
         b"gap_c1_o2_reversal_candidate_column_name",
         b"scan-market-forensic-run-capsule-source-manifest",
+        b"xoxb-token-format-documentation",
+        b"prefix-xoxp-short-slug",
     ],
 )
 def test_secret_scanner_ignores_paths_columns_and_slugs(payload):
@@ -282,6 +313,26 @@ def test_secret_prompt_and_untracked_source_are_never_archived(tmp_path, monkeyp
     assert not (out / "prompts/skills/scan-market/SECRET.md").exists()
     assert _tar_names(out / "untracked_sources.tar.zst") == []
     assert secret.encode() not in _all_artifact_bytes(out)
+
+
+def test_slack_token_in_prompt_and_untracked_source_is_never_persisted(tmp_path):
+    repo = _repo(tmp_path)
+    token = "xoxb-123456789012-123456789012-abcdefghijklmnopqrstuvwx"
+    prompt = repo / ".claude/skills/new/SLACK.md"
+    prompt.parent.mkdir(parents=True)
+    prompt.write_text(f"diagnostic channel: {token}\n", encoding="utf-8")
+    source = repo / "autoresearch/slack_fixture.py"
+    source.write_text(f'COMMENT = "diagnostic::{token}"\n', encoding="utf-8")
+    out = tmp_path / "identity"
+
+    result = snapshot_identity(repo, out, engine="codex")
+
+    assert result["ok"] is False
+    assert result["components"]["prompts"]["status"] == "PARTIAL"
+    assert result["components"]["untracked_sources"]["status"] == "PARTIAL"
+    assert not (out / "prompts/skills/new/SLACK.md").exists()
+    assert _tar_names(out / "untracked_sources.tar.zst") == []
+    assert token.encode() not in _all_artifact_bytes(out)
 
 
 def test_secret_value_in_source_path_is_not_written_to_tar_or_manifest(tmp_path, monkeypatch):
