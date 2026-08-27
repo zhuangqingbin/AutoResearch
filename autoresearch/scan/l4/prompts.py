@@ -154,8 +154,8 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
     """
     scan_dir = Path(scan_dir)
     date = scan_dir.name
-    input_dir = ws.scan_input_dir(date)
-    resolved_scan_dir = ws.scan_dir(date)
+    input_dir = ws.scan_input_dir(date, scan_dir=scan_dir)
+    resolved_scan_dir = scan_dir
     fp = scan_dir / "finalists.csv"
     if not fp.exists():
         return {"n_prompts": 0, "tickers": [], "pinned": []}

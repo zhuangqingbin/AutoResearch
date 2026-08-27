@@ -199,7 +199,8 @@ def initialize(
     """初始化或合并 `_l4_tasks.json`；既有单票状态不被其它票重置。"""
     base = Path(root) if root is not None else ws.scan_root()
     scan_dir = base / date
-    ctx = Path(context_root) if context_root is not None else ws.scan_input_dir(date)
+    ctx = (Path(context_root) if context_root is not None
+           else ws.scan_input_dir(date, scan_dir=scan_dir))
     path = scan_dir / "_l4_tasks.json"
     cap_values = _normalize_caps(caps)
     ordered = list(dict.fromkeys(str(code).split(".")[0].zfill(6) for code in codes))

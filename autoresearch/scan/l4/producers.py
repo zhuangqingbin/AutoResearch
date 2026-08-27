@@ -335,7 +335,8 @@ def harvest_slim_batch(date: str, root: Path | None = None, min_bytes: int = 4_0
     """
     base = Path(root) if root else ws.scan_root()
     scan_dir = base / date
-    ctx = Path(ctx_root) if ctx_root is not None else ws.scan_input_dir(date)
+    ctx = (Path(ctx_root) if ctx_root is not None
+           else ws.scan_input_dir(date, scan_dir=scan_dir))
     tickers = [t for t in (scan_dir / "_harvest_list.txt").read_text(encoding="utf-8").split() if t]
     hv = harvest_fn or (lambda t, dt: _default_harvest_slim(t, dt, ctx))
 

@@ -27,10 +27,12 @@ from __future__ import annotations
 
 import os
 import re
+from datetime import date as calendar_date
 from pathlib import Path
 
 ENGINES = ("claude", "codex")
-_RUN_ID_RE = re.compile(r"^\d{8}T\d{12}Z$")
+_RUN_ID_RE = re.compile(r"^[0-9]{8}T[0-9]{12}Z$")
+_SCAN_DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 
 #: 2026-08-11 引擎隔离**之前**的 context 根名。历史产物(如 08-11 前的 `_l4_tasks.json`,
 #: 实测 113 处)把路径记成裸 `context/…`,那个根今天不存在、文件却还在 —— 读侧要做前缀
@@ -88,7 +90,7 @@ def active_run_id(environ=None) -> str | None:
 
 
 def scan_run_root(run_id: str | None = None) -> Path:
-    value = run_id or active_run_id()
+    value = active_run_id() if run_id is None else str(run_id)
     if value is None:
         raise ValueError("缺 AUTORESEARCH_RUN_ID，无法解析 run-scoped workspace")
     if not _RUN_ID_RE.fullmatch(value):
@@ -101,12 +103,27 @@ def scan_root() -> Path:
     return scan_run_root(run_id) / "staging" if run_id else context_root() / "scan"
 
 
+def _validated_scan_date(date) -> str:
+    value = str(date)
+    if not _SCAN_DATE_RE.fullmatch(value):
+        raise ValueError(f"scan date={value!r} 非法")
+    try:
+        calendar_date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"scan date={value!r} 非法") from exc
+    return value
+
+
 def scan_dir(date) -> Path:
-    return scan_root() / str(date)
+    return scan_root() / _validated_scan_date(date)
 
 
-def scan_input_dir(date) -> Path:
-    return scan_dir(date) / "_external_inputs" if active_run_id() else context_root()
+def scan_input_dir(date, *, scan_dir=None) -> Path:
+    value = _validated_scan_date(date)
+    if not active_run_id():
+        return context_root()
+    resolved_scan_dir = Path(scan_dir) if scan_dir is not None else scan_root() / value
+    return resolved_scan_dir / "_external_inputs"
 
 
 def learning_root() -> Path:
