@@ -143,3 +143,21 @@ def test_full_cli_rejects_output_dir_before_harvest_setup(tmp_path, monkeypatch)
 
     with pytest.raises(ValueError, match="--out-dir.*--slim"):
         harvest.main()
+
+
+def test_slim_cli_invalid_date_does_not_create_explicit_output_dir(tmp_path, monkeypatch):
+    output_dir = tmp_path / "must_not_be_created"
+    monkeypatch.setattr(sys, "argv", [
+        "harvest",
+        "NVDA",
+        "2026-02-30",
+        "stock",
+        "--slim",
+        "--out-dir",
+        str(output_dir),
+    ])
+
+    with pytest.raises(ValueError):
+        harvest.main()
+
+    assert not output_dir.exists()

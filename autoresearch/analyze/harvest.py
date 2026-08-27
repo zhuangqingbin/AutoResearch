@@ -1126,6 +1126,7 @@ def main() -> int:
     slim = "--slim" in flags
     ticker = normalize_symbol(pos[0])   # 入口归一(.SH→.SS 等):取数/staging 文件名/下游指针三处口径一致
     trade_date = pos[1] if len(pos) > 1 else date.today().isoformat()
+    d = datetime.strptime(trade_date, "%Y-%m-%d")
     asset_type = pos[2] if len(pos) > 2 else "stock"
     peers_arg = pos[3] if len(pos) > 3 else ""
     peers = [normalize_symbol(p.strip()) for p in peers_arg.split(",") if p.strip()] \
@@ -1135,7 +1136,6 @@ def main() -> int:
     set_config(DEFAULT_CONFIG)
 
     end = trade_date
-    d = datetime.strptime(trade_date, "%Y-%m-%d")
     price_start = (d - timedelta(days=400)).strftime("%Y-%m-%d")  # >200 trading days for 200 SMA
     news_start = (d - timedelta(days=14)).strftime("%Y-%m-%d")
 
