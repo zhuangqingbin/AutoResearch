@@ -10,15 +10,18 @@ export const meta = {
 
 // ── 输入 & 常量 ──────────────────────────────────────────────────
 // args 可能以对象或(harness 序列化后的)JSON 字符串到达 —— 两种都容错解析。
-const date = (typeof args === 'string' && args ? JSON.parse(args).date : (args && args.date))
+const A = (typeof args === 'string' && args ? JSON.parse(args) : args) || {}
+const date = A.date
 if (!date) throw new Error('args.date 必填,如 {date:"2026-07-07"}')
+const RUN_ID = A.run_id
+if (!RUN_ID) throw new Error('args.run_id 必填；先运行 autoresearch.trace.capsule begin')
+if (!/^\d{8}T\d{12}Z$/.test(RUN_ID)) throw new Error(`args.run_id 非法:${RUN_ID}`)
 // scan_config.json 白名单校验后的 user_config(autoresearch/scan/user_config.py)经 frame --json
 // 回显、由调用方随 Workflow args.config 传入(本脚本无文件系统访问,不能自己读文件)。缺省 = {}。
-const cfg = (typeof args === 'string' && args ? JSON.parse(args).config : (args && args.config)) || {}
+const cfg = A.config || {}
 // Wave11-B5(07-21 事故根治):空 cfg = 静默关 intel + 全体掉回缺省 effort,且当时无人知晓。
 // 结构性拒绝替代文档叮嘱;确需空跑(离线试装)显式传 args.allow_empty_config=true。
-const _allowEmpty = !!(typeof args === 'string' && args ? JSON.parse(args).allow_empty_config
-                       : (args && args.allow_empty_config))
+const _allowEmpty = !!A.allow_empty_config
 if (!Object.keys(cfg).length && !_allowEmpty) {
   throw new Error('args.config 为空 —— 会静默关 intel/降 effort(07-21 事故)。传 allow_empty_config:true 才可空跑。')
 }
@@ -53,12 +56,21 @@ const streamingL4 = cfg.performance?.streaming_l4 ?? true
 // 这条流水线就会给一个不认识它的 CLI 传 flag。
 // 哨兵档人工 override(SKILL 步骤 2.2:哨兵是「确定性建议,**人拍板**」,而本脚本原先硬编码直接跳 L3/L4
 // —— 判据只问"今天有没有值得买的",不知道用户还有"保送持仓该不该走"的问题挂着)。缺省 false = 现行为(parity)。
-const forceFull = !!(typeof args === 'string' && args ? JSON.parse(args).force_full : (args && args.force_full))
-const R = 'uv run --no-sync python -m'
+const forceFull = !!A.force_full
 // 引擎隔离根(2026-08-11):context_<engine>,engine 随 args.config.engine 下发(frame 注入)
-const ENGINE = ((typeof args === 'string' && args ? JSON.parse(args).engine : (args && args.engine)) || cfg.engine || 'claude')
+const ENGINE = (A.engine || cfg.engine || 'claude')
+if (!['claude', 'codex'].includes(ENGINE)) throw new Error(`args.engine 非法:${ENGINE}`)
 const CTX = `context_${ENGINE}`
-const SD = `${CTX}/scan/${date}`
+const SD = `${CTX}/scan_runs/${RUN_ID}/staging/${date}`
+const CAPTURE = (stage, invocation, attempt = 1, subject = null) =>
+  `AUTORESEARCH_ENGINE=${ENGINE} AUTORESEARCH_RUN_ID=${RUN_ID} ` +
+  `uv run --no-sync python -m autoresearch.trace.exec_capture --run-id ${RUN_ID} ` +
+  `--stage ${stage} --invocation-id ${invocation} --attempt ${attempt}` +
+  `${subject ? ` --subject ${subject}` : ''}`
+const PY = (stage, invocation, attempt = 1, subject = null) =>
+  `${CAPTURE(stage, invocation, attempt, subject)} -- uv run --no-sync python -m`
+const PYC = (stage, invocation, attempt = 1) =>
+  `${CAPTURE(stage, invocation, attempt)} -- uv run --no-sync python -c`
 
 // 确定性命令 → general-purpose Bash-agent(只跑命令、回报退出码,不判断)
 // Wave6 T1:壳零判断,却背着 opus 系统前缀 —— 07-24 真计量 13 个 gp 共 798k 加权(全场 14.5%),
@@ -124,7 +136,7 @@ function stageMetrics(g) {
 // 业务门先保留原 stdout 供诊断，Workflow 只消费随后读取并验 hash/contract 的 StageResult。
 function stageGate(label, cmd, stage, phaseName) {
   return agent(
-    `依次执行:\`${cmd}; ${R} autoresearch.scan.stage_result show ${SD} ${stage}\`\n` +
+    `依次执行:\`${cmd}; ${PY(stage, `${stage}-result-${label.toLowerCase()}`)} autoresearch.scan.stage_result show ${SD} ${stage}\`\n` +
     '前一条命令的 stdout 保留作诊断；把最后一行 StageResult JSON 原样作为结构化返回。\n' +
     '**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向**' +
     '(混入 stderr 会污染这行 JSON)。',
@@ -136,7 +148,7 @@ function stageGate(label, cmd, stage, phaseName) {
 phase('Prelude')
 // frame 先行:pack 存盘 + 取数入湖(prelude/universe 随后湖命中不重拉)
 log('Prelude 开始:frame → [universe 全市场取数 ∥ market_view](取数历史 ~10m,完成即 GATE1)')
-await bash(`mkdir -p ${SD} && ${R} autoresearch.scan.frame ${date} --json-out ${SD}/market_pack.json`, 'frame', 'Prelude')
+await bash(`mkdir -p ${SD} && ${PY('frame', 'frame-attempt-1')} autoresearch.scan.frame ${date} --json-out ${SD}/market_pack.json`, 'frame', 'Prelude')
 // frame 与 universe 同样走 tushare 全市场取数,同样会 ChunkedEncodingError 半途而废 —— 但此前只有
 // universe 有重试守卫(见下方 l2-check),frame 这条裸奔。事故两代:
 //   2026-07-27:frame 在 11/12 端点断线退出码 1,`>` 重定向留下 **0 字节** pack;
@@ -148,13 +160,13 @@ await bash(`mkdir -p ${SD} && ${R} autoresearch.scan.frame ${date} --json-out ${
 // render_fallback_pulse 回退,还经 l4_card.py 的 market_context_block 把无信息简报注入每张 L4 卡),
 // 于是 market_view.md 缺席、L3 在没有地形段的情况下精排。同族前科:空 pickle 永不重拉 / 空 slim 默认 Hold。
 const packok = await gate('pack-check',
-  `${R.replace('python -m', 'python -c')} "import json,sys;json.load(open('${SD}/market_pack.json'))" 2>/dev/null && echo '{"ok":true}' || echo '{"ok":false,"reason":"market_pack 缺失或非合法 JSON(frame 崩 / 产物被污染)"}'`,
+  `${PYC('frame', 'pack-check-attempt-1')} "import json,sys;json.load(open('${SD}/market_pack.json'))" 2>/dev/null && echo '{"ok":true}' || echo '{"ok":false,"reason":"market_pack 缺失或非合法 JSON(frame 崩 / 产物被污染)"}'`,
   OK, 'Prelude')
 if (!packok || !packok.ok) {
   log('⚠️ market_pack 缺失或非合法 JSON(frame 半途失败)→ 重试一次')
-  await bash(`${R} autoresearch.scan.frame ${date} --json-out ${SD}/market_pack.json`, 'frame-retry', 'Prelude')
+  await bash(`${PY('frame', 'frame-attempt-2', 2)} autoresearch.scan.frame ${date} --json-out ${SD}/market_pack.json`, 'frame-retry', 'Prelude')
   const packok2 = await gate('pack-recheck',
-    `${R.replace('python -m', 'python -c')} "import json,sys;json.load(open('${SD}/market_pack.json'))" 2>/dev/null && echo '{"ok":true}' || echo '{"ok":false,"reason":"重试后仍缺失/非法"}'`,
+    `${PYC('frame', 'pack-check-attempt-2', 2)} "import json,sys;json.load(open('${SD}/market_pack.json'))" 2>/dev/null && echo '{"ok":true}' || echo '{"ok":false,"reason":"重试后仍缺失/非法"}'`,
     OK, 'Prelude')
   // 不 throw:market_pack 是 B 级(缺了 L3 少地形段、L5 有确定性脉搏回退,持仓仍需当日卡)。
   // 但降级必须留痕 —— 这一行就是账,别让它再静默。
@@ -167,13 +179,13 @@ if (!packok || !packok.ok) {
 // Wave10 A4:投影缺失必须被发现 —— 策略师现在只读它,缺了就是**静默无输入**(比缺 full pack
 // 更隐蔽:pack-check 会绿,而 market_view 会写不出或凭空写)。缺则就地补投一次,仍缺则记账。
 const spok = await gate('strategist-pack-check',
-  `${R.replace('python -m', 'python -c')} "import json,sys;d=json.load(open('${SD}/strategist_pack.json'));sys.exit(0 if d.get('pack') else 1)" 2>/dev/null && echo '{"ok":true}' || echo '{"ok":false,"reason":"strategist_pack 缺失/空投影"}'`,
+  `${PYC('frame', 'strategist-pack-check-attempt-1')} "import json,sys;d=json.load(open('${SD}/strategist_pack.json'));sys.exit(0 if d.get('pack') else 1)" 2>/dev/null && echo '{"ok":true}' || echo '{"ok":false,"reason":"strategist_pack 缺失/空投影"}'`,
   OK, 'Prelude')
 if (!spok || !spok.ok) {
-  await bash(`${R} autoresearch.scan.strategist_pack ${SD}/market_pack.json -o ${SD}/strategist_pack.json`,
+  await bash(`${PY('frame', 'strategist-pack-rebuild-attempt-1')} autoresearch.scan.strategist_pack ${SD}/market_pack.json -o ${SD}/strategist_pack.json`,
     'strategist-pack-rebuild', 'Prelude')
   const spok2 = await gate('strategist-pack-recheck',
-    `${R.replace('python -m', 'python -c')} "import json,sys;d=json.load(open('${SD}/strategist_pack.json'));sys.exit(0 if d.get('pack') else 1)" 2>/dev/null && echo '{"ok":true}' || echo '{"ok":false,"reason":"补投后仍缺"}'`,
+    `${PYC('frame', 'strategist-pack-check-attempt-2', 2)} "import json,sys;d=json.load(open('${SD}/strategist_pack.json'));sys.exit(0 if d.get('pack') else 1)" 2>/dev/null && echo '{"ok":true}' || echo '{"ok":false,"reason":"补投后仍缺"}'`,
     OK, 'Prelude')
   log(spok2 && spok2.ok ? 'strategist-pack ✓(补投后)'
     : '🚨 strategist_pack 补投后仍缺 → market_view 无输入(B级降级·已记账);L5 走确定性脉搏回退')
@@ -183,7 +195,7 @@ await parallel([
   // W8-5:回显必须以**文件真在**为条件。原先 `prelude && echo SUMMARY_FILE=...` 只看 prelude
   // 退出码,07-28 汇总屏写盘失败(被 suppress 吞)时照样回显路径 → agent 回报「Summary file
   // generated」但文件不存在,CP1 转播落空。日志不得替不存在的文件背书。
-  () => bash(`${R} autoresearch.scan.prelude ${date}; test -s ${SD}/_prelude_summary.md ` +
+  () => bash(`${PY('prelude', 'prelude-attempt-1')} autoresearch.scan.prelude ${date}; test -s ${SD}/_prelude_summary.md ` +
     `&& echo "SUMMARY_FILE=${SD}/_prelude_summary.md" || echo "SUMMARY_MISSING(见 stderr 的落盘失败行)"`,
     'prelude/universe', 'Prelude'),
   // Wave10 A4:策略师只拿**投影**(`strategist_pack.json`),不给 full pack。
@@ -203,10 +215,10 @@ const l2ok = await gate('l2-check',
   `test -s ${SD}/L2_gbdt_top200.csv && echo '{"ok":true}' || echo '{"ok":false,"reason":"L2 缺失"}'`, OK, 'Prelude')
 if (!l2ok || !l2ok.ok) {
   log('L2 缺失(universe 半途失败)→ 重试确定性前奏一次')
-  await bash(`${R} autoresearch.scan.prelude ${date} --skip consensus`,
+  await bash(`${PY('prelude', 'prelude-attempt-2', 2)} autoresearch.scan.prelude ${date} --skip consensus`,
     'prelude-retry', 'Prelude')
 }
-const g1 = await stageGate('GATE1', `${R} autoresearch.scan.gates gate1 ${date}`, 'gate1', 'Prelude')
+const g1 = await stageGate('GATE1', `${PY('gate1', 'gate1-attempt-1')} autoresearch.scan.gates gate1 ${date}`, 'gate1', 'Prelude')
 if (!g1 || !(g1.status === 'SUCCEEDED')) throw new Error(`GATE1 失败:${g1 ? g1.error : 'agent 无返回'}`)
 const g1m = stageMetrics(g1)
 log(`GATE1 ✓ sentinel=${g1m.sentinel_level} · L4预算=${g1m.l4_budget}`)
@@ -219,7 +231,7 @@ log(`📋 前奏汇总屏全文:${SD}/_prelude_summary.md(主会话 Read 后全�
 // 中间档 SENTINEL_PINNED 补的是此前的缺口:材料枯竭的日子里**持仓复核也一起没了**,
 // 07-31 只能靠 force_full 手工拉满,代价是把全市场选股一并跑了($34.48/113min)。
 const rm = await gpJson(
-  `${R} autoresearch.scan.run_mode ${date} --decide --sentinel-level ${g1m.sentinel_level || 'full'}` +
+  `${PY('gate1', 'run-mode-attempt-1')} autoresearch.scan.run_mode ${date} --decide --sentinel-level ${g1m.sentinel_level || 'full'}` +
   `${forceFull ? ' --force-full' : ''}`,
   'run-mode', RUN_MODE).catch(() => null)
 const runMode = (rm && rm.mode) || (g1m.sentinel_level === 'sentinel'
@@ -228,7 +240,7 @@ log(`运行模式 = ${runMode}${rm && rm.pinned_codes ? `(持仓 ${rm.pinned_cod
 
 if (runMode === 'SENTINEL_EMPTY') {
   log('哨兵档且无持仓 → 跳过 L3/L4(日历已在 prelude 跑过);assemble+GATE4 由主会话收尾')
-  return { date, mode: 'sentinel', run_mode: runMode, finalists: 0, dispatch: [], meta: {},
+  return { date, run_id: RUN_ID, engine: ENGINE, mode: 'sentinel', run_mode: runMode, finalists: 0, dispatch: [], meta: {},
     l4_budget: g1m.l4_budget, published: false }
 }
 if (runMode === 'SENTINEL_PINNED') {
@@ -237,10 +249,10 @@ if (runMode === 'SENTINEL_PINNED') {
   // 这个差异由 run_mode 与 `l3_judged=false` 公开,不伪装成等价上下文。
   const codes = (rm && rm.pinned_codes) || []
   log(`哨兵档·仅持仓复核:${codes.length} 只(${codes.join(',')})→ 跳 sector/L3/非持仓 L4`)
-  await bash(`${R} autoresearch.scan.gates gate2 ${date} --skip ${'sentinel_pinned_no_l3'}`,
+  await bash(`${PY('gate2', 'gate2-sentinel-attempt-1')} autoresearch.scan.gates gate2 ${date} --skip ${'sentinel_pinned_no_l3'}`,
     'GATE2-skip', 'L3').catch(() => null)
-  await bash(`${R} autoresearch.scan.agents.l4_card prompts ${date}`, 'l4-prep-pinned', 'L4-prep')
-  return { date, mode: 'l4-handoff', run_mode: runMode, finalists: codes.length,
+  await bash(`${PY('l4-prep', 'l4-prompts-pinned-attempt-1')} autoresearch.scan.agents.l4_card prompts ${date}`, 'l4-prep-pinned', 'L4-prep')
+  return { date, run_id: RUN_ID, engine: ENGINE, mode: 'l4-handoff', run_mode: runMode, finalists: codes.length,
     dispatch: codes.map((c) => ({ code: c, lane: 'pinned' })), dispatch_batches: [codes],
     meta: {}, l4_budget: codes.length, published: false }
 }
@@ -267,8 +279,9 @@ const l3cap = Math.min(10, l4Budget)
 const SECTORS = { type: 'object', required: ['ok', 'sectors'],
   properties: { ok: { type: 'boolean' }, sectors: { type: 'array', items: { type: 'string' } } } }
 const sectorsRes = await gate('sector-pack+list',
-  `${R} autoresearch.sector.reuse ${date} --apply; ${R} autoresearch.sector.pack ${date}; ` +
-  `uv run --no-sync python -c "import json,glob,os;d='${CTX}/sector/${date}';b='${SD}/sector_briefs';` +
+  `${PY('l3', 'sector-reuse-attempt-1')} autoresearch.sector.reuse ${date} --apply; ` +
+  `${PY('l3', 'sector-pack-attempt-1')} autoresearch.sector.pack ${date}; ` +
+  `${PYC('l3', 'sector-list-attempt-1')} "import json,glob,os;d='${CTX}/sector/${date}';b='${SD}/sector_briefs';` +
   `print(json.dumps({'ok':True,'sectors':sorted(os.path.splitext(os.path.basename(p))[0] ` +
   `for p in glob.glob(d+'/*.json') if not os.path.exists(os.path.join(b,os.path.splitext(os.path.basename(p))[0]+'.md')))}))"`,
   SECTORS, 'L3')
@@ -280,7 +293,7 @@ const sectors = sectorsRes.sectors || []
 const preL3BriefSectors = sectors
 log(`待写行业 brief:${sectors.length} 个${sectors.length ? ` (${sectors.join('、')})` : '(全部 TTL 复用)'}`)
 await parallel([
-  () => bash(`${R} autoresearch.scan.agents.l3_select prepare ${date}`, 'l3-prepare', 'L3'),
+  () => bash(`${PY('l3', 'l3-prepare-attempt-1')} autoresearch.scan.agents.l3_select prepare ${date}`, 'l3-prepare', 'L3'),
   ...preL3BriefSectors.map((sec) => () => agent(
     `你是行业分析师。读 ${CTX}/sector/${date}/${sec}.json 写 ${SD}/sector_briefs/${sec}.md,单段机器契约(## 地形段 喂 L3/L4;纯事实性,不含方向判断)。零新取数。`,
     { agentType: 'sector-brief', ...AG('sector_brief'),
@@ -294,7 +307,7 @@ await agent(
   { agentType: 'l3-rank', ...AG('l3_rank'),
     label: 'L3-rank', phase: 'L3' })
 // thesis 数字机检(确定性 lint):打回一次自修,修复后不再二检(防循环)
-const l3lint = await gate('l3-lint', `${R} autoresearch.scan.agents.l3_select lint ${date}`, OK, 'L3')
+const l3lint = await gate('l3-lint', `${PY('l3', 'l3-lint-attempt-1')} autoresearch.scan.agents.l3_select lint ${date}`, OK, 'L3')
 if (l3lint && l3lint.ok === false) {
   log(`L3 数字机检未过 → 打回一次自修:${(l3lint.reason || '').slice(0, 200)}`)
   // Wave7 B′-e:自修是**可选增益**,不是流水线的必经关节 —— 它挂了不该让人以为它跑过了。
@@ -306,7 +319,7 @@ if (l3lint && l3lint.ok === false) {
     properties: { ok: { type: 'boolean' }, codes: { type: 'array', items: { type: 'string' } },
       n: { type: 'integer' }, prompt: { type: 'string' } } }
   const repair = await gate('l3-repair-pack',
-    `${R} autoresearch.scan.agents.l3_select repair-pack ${date}`, REPAIR, 'L3')
+    `${PY('l3', 'l3-repair-pack-attempt-1')} autoresearch.scan.agents.l3_select repair-pack ${date}`, REPAIR, 'L3')
   // Wave12-T34 归因契约(改这段前先读):`l3_repair` 复用 `agentType: 'l3-rank'` 派发,
   // harvest 分不清一行是主排还是自修。归因靠的是**产物**——`repair-pack` 在派发之前写下的
   // `_l3_repair_prompt.md` 在场即"本日派过一次 l3_repair"
@@ -324,7 +337,7 @@ if (l3lint && l3lint.ok === false) {
       properties: { ok: { type: 'boolean' }, patched: { type: 'integer' },
         preserved: { type: 'integer' }, codes: { type: 'array', items: { type: 'string' } } } }
     const applied = await gate('l3-repair-apply',
-      `${R} autoresearch.scan.agents.l3_select apply-repair ${date}`, APPLY, 'L3')
+      `${PY('l3', 'l3-repair-apply-attempt-1')} autoresearch.scan.agents.l3_select apply-repair ${date}`, APPLY, 'L3')
     if (applied && applied.ok) log(`L3 局部修复 ✓ ${applied.patched} 票· 原样保留 ${applied.preserved} 票`)
     else log('⚠️ L3 局部修复 patch 校验/merge 未完成—— 带原 judged 继续')
   } else {
@@ -333,8 +346,8 @@ if (l3lint && l3lint.ok === false) {
 }
 // 确定性写 finalists(修前导零)+ GATE2,合并一个 gate(壳合并②,-1 spawn)
 const g2 = await stageGate('GATE2',
-  `${R} autoresearch.scan.agents.l3_select finalists ${date} --budget ${l3cap} && ` +
-  `${R} autoresearch.scan.gates gate2 ${date} --budget ${l3cap}`, 'gate2', 'L3')
+  `${PY('l3', 'l3-finalists-attempt-1')} autoresearch.scan.agents.l3_select finalists ${date} --budget ${l3cap} && ` +
+  `${PY('gate2', 'gate2-attempt-1')} autoresearch.scan.gates gate2 ${date} --budget ${l3cap}`, 'gate2', 'L3')
 if (!g2 || !(g2.status === 'SUCCEEDED')) throw new Error(`GATE2 失败:${g2 ? g2.error : 'no return'}`)
 const g2m = stageMetrics(g2)   // 同 g1:haiku 壳可能多包一层,见 stageMetrics 注释
 // L3.5 闸已完全移除(2026-07-12 用户裁定"直接 L3 输出"):L3 finalist tier 即 L4 入选集。
@@ -360,16 +373,16 @@ await bash(
   // 当日 📐/🔁/🚪 校准行从未到达任何一张决策卡(Wave5 ④B)。
   // TTL 复用(l4_reuse --apply)已于 2026-07-29 退役(用户裁定 R5「不要任何复用」)——
   // 复用票不跑 intel、新闻冻在源卡日,评级稳定性改由昨卡回声承接(l4/prompts.py)。
-  `${R} autoresearch.scan.agents.l4_card shared ${date}; ` +
-  `( ${R} autoresearch.scan.agents.l4_card pledge ${date} || true ) & ` +
-  `( ${R} autoresearch.scan.agents.l4_card seats ${date} || true ) & ` +
-  `( ${R} autoresearch.scan.calendar ${date} || true ) & ` +
-  `( ${R} autoresearch.scan.agents.l4_card consensus ${date} || true ) & ` +
+  `${PY('l4-prep', 'l4-shared-attempt-1')} autoresearch.scan.agents.l4_card shared ${date}; ` +
+  `( ${PY('l4-prep', 'l4-pledge-attempt-1')} autoresearch.scan.agents.l4_card pledge ${date} || true ) & ` +
+  `( ${PY('l4-prep', 'l4-seats-attempt-1')} autoresearch.scan.agents.l4_card seats ${date} || true ) & ` +
+  `( ${PY('l4-prep', 'l4-calendar-attempt-1')} autoresearch.scan.calendar ${date} || true ) & ` +
+  `( ${PY('l4-prep', 'l4-consensus-attempt-1')} autoresearch.scan.agents.l4_card consensus ${date} || true ) & ` +
   `wait`, 'l4-prep', 'L4-prep')
 const PLAN = { type: 'object', required: ['dispatch'],
   properties: { dispatch: { type: 'array', items: { type: 'string' } },
     meta: { type: 'object' } } }
-const plan = await gate('dispatch-plan', `${R} autoresearch.scan.agents.l4_card dispatch-plan ${date}`, PLAN, 'L4-prep')
+const plan = await gate('dispatch-plan', `${PY('l4-prep', 'l4-dispatch-plan-attempt-1')} autoresearch.scan.agents.l4_card dispatch-plan ${date}`, PLAN, 'L4-prep')
 if (!plan) throw new Error('dispatch-plan 无返回')
 let dispatch = plan.dispatch
 let dispatchBatches = dispatch.length ? [dispatch] : []
@@ -380,7 +393,10 @@ if (!streamingL4) {
     properties: { ok: { type: 'boolean' }, reason: { type: 'string' },
       failures: { type: 'array', items: { type: 'object',
         properties: { ticker: { type: 'string' }, bytes: { type: 'integer' }, why: { type: 'string' } } } } } }
-  const g3 = await gate('GATE3', `${R} autoresearch.scan.agents.l4_card prompts ${date} && ${R} autoresearch.scan.agents.l4_card harvest-slim ${date}`, G3, 'L4-prep')
+  const g3 = await gate('GATE3',
+    `${PY('l4-prep', 'l4-prompts-batch-attempt-1')} autoresearch.scan.agents.l4_card prompts ${date} && ` +
+    `${PY('l4-prep', 'l4-harvest-slim-attempt-1')} autoresearch.scan.agents.l4_card harvest-slim ${date}`,
+    G3, 'L4-prep')
   if (!g3) throw new Error('GATE3 无返回')
   if (!g3.ok) {
     const bad = new Set((g3.failures || []).map((f) => String(f.ticker || '').slice(0, 6)))
@@ -404,7 +420,8 @@ if (!streamingL4) {
       reason: { type: 'string' },
       missing_prompts: { type: 'array', items: { type: 'string' } } } }
   const tasks = await gate('l4-tasks-init',
-    `${R} autoresearch.scan.agents.l4_card prompts ${date} && ${R} autoresearch.scan.l4_tasks init ${date}`,
+    `${PY('l4-prep', 'l4-prompts-streaming-attempt-1')} autoresearch.scan.agents.l4_card prompts ${date} && ` +
+    `${PY('l4-prep', 'l4-tasks-init-attempt-1')} autoresearch.scan.l4_tasks init ${date}`,
     TASKS, 'L4-prep')
   if (!tasks || !tasks.ok) throw new Error(
     `L4 task book 初始化失败:${tasks
@@ -417,7 +434,9 @@ if (!streamingL4) {
 }
 log(`L4 交接:新派 ${dispatch.length} 股(每股一个 l4-stock workflow,主会话并行拉起)`)
 // CP4(Wave5 ①):随时可调的确定性看板,不用等一小时后的 summary.md
-log(`🔎 随时可调:\`${R} autoresearch.scan.render ${date} --view menu_health\`(L2 成色)· \`--view gate_hist\`(L4 完成后看评级分布/停因分桶/门柱)· \`--view timing\`(分段耗时)`)
+log(`🔎 随时可调:\`${PY('observe', 'render-menu-health-attempt-1')} autoresearch.scan.render ${date} --view menu_health\`(L2 成色)· ` +
+  `\`${PY('observe', 'render-gate-hist-attempt-1')} autoresearch.scan.render ${date} --view gate_hist\`(L4 完成后看评级分布/停因分桶/门柱)· ` +
+  `\`${PY('observe', 'render-timing-attempt-1')} autoresearch.scan.render ${date} --view timing\`(分段耗时)`)
 // 📌 保送票在派发那一秒必须可见:07-21 漏传 args.pinned → 300857/601869 的持仓 SELL 双复核
 // 整段没跑(self_review 探针 9 sell_review_missing 只能事后 warn,拦不住)。
 const metaAll = plan.meta || g2m.meta || {}
@@ -429,6 +448,6 @@ if (pinnedCodes.length) {
 }
 
 // meta(名称/行业)透传给 l4-stock 的 intel 盲搜 prompt;assemble+GATE4 由主会话在全部 l4-stock 完成后收尾。
-return { date, mode: 'l4-handoff', finalists: g2m.n, dispatch, dispatch_batches: dispatchBatches,
+return { date, run_id: RUN_ID, engine: ENGINE, mode: 'l4-handoff', finalists: g2m.n, dispatch, dispatch_batches: dispatchBatches,
   task_book: taskBook, streaming_l4: streamingL4,
   meta: plan.meta || g2m.meta || {}, l4_budget: g1m.l4_budget, published: false }

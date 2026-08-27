@@ -1,4 +1,5 @@
 """Wave 3 工作流开关：流式 L4、稳定上下文和 finalist-only 行业 brief。"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -32,10 +33,16 @@ def test_l4_tasks_init_gate_runs_prompts_before_init_in_same_shell():
     不得再出现 prompts —— 迁回去等于撤销 C2。
     """
     src = (WF / "scan-market.js").read_text(encoding="utf-8")
-    assert "l4_card prompts ${date} && ${R} autoresearch.scan.l4_tasks init" in src, (
-        "prompts 与 init 不再同壳相邻,或迁移顺序被打乱(C2 接线松脱)")
+    task_gate = src[src.index("const tasks = await gate('l4-tasks-init'") :]
+    prompts = task_gate.index("l4_card prompts ${date}")
+    separator = task_gate.index("&&", prompts)
+    init = task_gate.index("autoresearch.scan.l4_tasks init ${date}", separator)
+    assert prompts < separator < init, "prompts 与 init 不再同壳相邻,或迁移顺序被打乱(C2 接线松脱)"
+    assert "PY('l4-prep', 'l4-tasks-init-attempt-1')" in task_gate[prompts:init], (
+        "init 绕过命令捕获器"
+    )
 
-    l4prep = src[src.index("'l4-prep'") - 800: src.index("'l4-prep'")]
+    l4prep = src[src.index("'l4-prep'") - 800 : src.index("'l4-prep'")]
     assert "l4_card prompts" not in l4prep, "prompts 又被挪回了 l4-prep 长壳(C2 被撤销)"
 
 
@@ -45,12 +52,12 @@ def test_l4_stock_preflights_then_runs_slim_and_intel_in_parallel():
     # 子命令不再是裸 `preflight ${code} ${date}`,而是完整命令行的一段。
     preflight_at = src.index("l4_tasks preflight ${code} ${date}")
     card_at = src.index("phase('Card')")
-    success_at = src.index("`success ${code} ${date}`")
+    success_at = src.index("l4_tasks success ${code} ${date}")
 
     assert preflight_at < card_at < success_at
-    intel = src[src.index("phase('Intel')"):card_at]
+    intel = src[src.index("phase('Intel')") : card_at]
     assert "parallel([" in intel
-    assert "`prepare ${code} ${date}`" in intel
+    assert "l4_tasks prepare ${code} ${date}" in intel
     assert "agent(" in intel
     assert "DATA_INTEGRITY" in intel
 
@@ -59,7 +66,7 @@ def test_task_success_is_presence_gated_for_legacy_direct_invocations():
     src = (WF / "l4-stock.js").read_text(encoding="utf-8")
     assert "test -s ${TASK_BOOK}" in src
     assert '"action":"LEGACY"' in src
-    assert "`success ${code} ${date}`" in src
+    assert "l4_tasks success ${code} ${date}" in src
 
 
 def test_stable_context_blocks_switch_is_gone_from_the_workflow_too():
@@ -93,4 +100,3 @@ def test_sector_briefs_have_exactly_one_path():
     briefs = src.index("preL3BriefSectors")
     gate2 = src.index("const g2 =")
     assert briefs < gate2, "行业 brief 必须在 GATE2 之前生成(L3 要读它)"
-

@@ -15,6 +15,10 @@ export const meta = {
 const A = (typeof args === 'string' && args ? JSON.parse(args) : args) || {}
 const { date, code } = A
 if (!date || !code) throw new Error('args.date/args.code 必填,如 {date:"2026-07-14", code:"000651"}')
+const RUN_ID = A.run_id
+if (!RUN_ID) throw new Error('args.run_id 必填；沿用 scan-market 的 run_id')
+if (!/^\d{8}T\d{12}Z$/.test(RUN_ID)) throw new Error(`args.run_id 非法:${RUN_ID}`)
+if (!/^\d{6}$/.test(code)) throw new Error(`args.code 非法:${code}`)
 const name = A.name || ''
 const sector = A.sector || '行业未知'
 const cfg = A.cfg || {}
@@ -54,14 +58,20 @@ const pinned = !!A.pinned   // dispatch-plan meta 透传;缺省 false = 现行�
 const dossierSummary = String(A.dossierSummary || '').trim()   // dispatch-plan meta 透传;缺省空 = parity(M-2:全函数防御,同款 !!A.pinned)
 // 引擎隔离根:engine 随每股 args.engine 或 cfg 透传(缺省 claude;只有 Claude 会执行本 js)
 const ENGINE = (A.engine || (A.cfg && A.cfg.engine) || 'claude')
-const SD = `context_${ENGINE}/scan/${date}`
-const R = 'uv run --no-sync python -m'
+if (!['claude', 'codex'].includes(ENGINE)) throw new Error(`args.engine 非法:${ENGINE}`)
+const SD = `context_${ENGINE}/scan_runs/${RUN_ID}/staging/${date}`
+const PY = (stage, invocation, attempt = 1, subject = null) =>
+  `AUTORESEARCH_ENGINE=${ENGINE} AUTORESEARCH_RUN_ID=${RUN_ID} ` +
+  `uv run --no-sync python -m autoresearch.trace.exec_capture --run-id ${RUN_ID} ` +
+  `--stage ${stage} --invocation-id ${invocation} --attempt ${attempt}` +
+  `${subject ? ` --subject ${subject}` : ''} -- uv run --no-sync python -m`
 const TASK_BOOK = `${SD}/_l4_tasks.json`
+let taskAttempt = Math.max(1, Number(A.attempt) || 1)
 const CARD = { type: 'object', required: ['code', 'rating'],
   properties: { code: { type: 'string' }, rating: { type: 'string' },
     conviction: { type: 'number', minimum: 0, maximum: 100 }, proposal: { type: 'string' } } }
 const recordL4 = (errorCode = null) => agent(
-  `在仓库根目录执行:\`${R} autoresearch.scan.stock_stage l4 ${date} ${code}` +
+  `在仓库根目录执行:\`${PY('l4', `l4-stage-${code}-attempt-${taskAttempt}`, taskAttempt, code)} autoresearch.scan.stock_stage l4 ${date} ${code}` +
   `${errorCode ? ` --error ${errorCode}` : ''}\`。只回报退出码,不要判断或解释。` +
   `**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**`,
   { agentType: 'general-purpose', ...AG('gp_shell'), label: `stage:${code}` })
@@ -70,7 +80,7 @@ const recordL4 = (errorCode = null) => agent(
 // 可能跑数分钟 → harness 转后台 → haiku 壳判定"卡住"并 pkill 生产作业。同样两条药:
 // 显式告知耗时 + 禁杀纪律,model 升 sonnet(每票仅 1 次调用,代价可忽略)。
 const taskGate = (subcommand, schema, label) => agent(
-  `执行:\`if test -s ${TASK_BOOK}; then ${R} autoresearch.scan.l4_tasks ${subcommand}; ` +
+  `执行:\`if test -s ${TASK_BOOK}; then ${subcommand}; ` +
   `else echo '{"ok":true,"action":"LEGACY"}'; fi\`\n` +
   '把 stdout 最后一行 JSON 原样作为结构化返回；不要判断或增删字段。' +
   '**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**\n' +
@@ -116,7 +126,8 @@ const classifyFailure = (error) => {
   return 'AGENT_ERROR'
 }
 const taskFailure = (errorClass) => taskGate(
-  `failure ${code} ${date} --error-class ${errorClass}`,
+  `${PY('l4', `l4-failure-${code}-attempt-${taskAttempt}`, taskAttempt, code)} ` +
+    `autoresearch.scan.l4_tasks failure ${code} ${date} --error-class ${errorClass}`,
   TASK_RESULT,
   `task-failure:${code}`,
 ).catch(() => null)
@@ -124,7 +135,7 @@ const taskFailure = (errorClass) => taskGate(
 // C1b(2026-08-10):bookless 的 LEGACY 分支移入 python(壳零判断)——preflight 现在
 // 无论有无任务簿都能回答,且缺 prompt 一律 BLOCKED(盲卡在这里绝育)。
 const taskPreflight = await gpJson(
-  `${R} autoresearch.scan.l4_tasks preflight ${code} ${date}`,
+  `${PY('l4', `l4-preflight-${code}-attempt-${taskAttempt}`, taskAttempt, code)} autoresearch.scan.l4_tasks preflight ${code} ${date}`,
   `task-preflight:${code}`,
   TASK_ACTION,
 )
@@ -141,6 +152,7 @@ if (taskPreflight && ['BLOCKED', 'WAIT'].includes(taskPreflight.action)) {
     error: `task ${taskPreflight.action}:${taskPreflight.reason || ''}` }
 }
 const trackedTask = !!taskPreflight && taskPreflight.action === 'RUN'
+taskAttempt = Math.max(1, Number(taskPreflight && taskPreflight.attempt) || 1)
 const intelResume = !!(taskPreflight && taskPreflight.intel_resume)
 
 // ── Slim ∥ Intel(结构性盲:prompt 只给码/名/行业/日期,防确认偏误)────────────
@@ -185,7 +197,10 @@ async function intelLeg() {
   return null
 }
 await parallel([
-  () => taskGate(`prepare ${code} ${date}`, TASK_RESULT, `slim:${code}`)
+  () => taskGate(
+    `${PY('l4', `l4-prepare-${code}-attempt-${taskAttempt}`, taskAttempt, code)} ` +
+      `autoresearch.scan.l4_tasks prepare ${code} ${date}`,
+    TASK_RESULT, `slim:${code}`)
     .then((r) => { slimResult = r; return r }),
   ...(intelOn && !intelResume ? [() => intelLeg().then((r) => { intelResult = r; return r })] : []),
 ])
@@ -196,7 +211,7 @@ if (!intelOn) {
   // "情报面被主动关掉"与"情报面出事了/根本没有"。值与迁移前逐字节一致:本分支从不派 intelLeg,
   // intelAttempts 恒 0、intelResult/intelError 恒 null → 只带 --normalize --disabled。
   await bash(
-    `${R} autoresearch.scan.l4.intel_status ${date} ${code} --normalize` +
+    `${PY('l4', `l4-intel-status-${code}-attempt-${taskAttempt}`, taskAttempt, code)} autoresearch.scan.l4.intel_status ${date} ${code} --normalize` +
     `${intelOn ? '' : ' --disabled'}${intelAttempts > 1 ? ` --attempts ${intelAttempts}` : ''}` +
     `${intelResult ? '' : (intelError ? ` --error-class ${intelError}` : '')}`,
     `intel-status:${code}`, 'Intel').catch(() => null)
@@ -213,7 +228,7 @@ if (!intelOn) {
   // 铁律:**只拒稿不拒票**,守卫失败一律不阻断本票。
   if (intelResult) {
     const g = await gpJson(
-      `${R} autoresearch.scan.l4.intel_guard ${date} ${code}`,
+      `${PY('l4', `l4-intel-guard-${code}-attempt-${taskAttempt}`, taskAttempt, code)} autoresearch.scan.l4.intel_guard ${date} ${code}`,
       `intel-guard:${code}`, INTEL_GUARD)
       .catch((e) => { log(`⚠️ intel-guard ✗ ${code}:${e && e.message ? e.message : e}(放行)`); return null })
     if (g && g.action === 'REJECTED') {
@@ -226,7 +241,7 @@ if (!intelOn) {
   // 于是 07-31 的 000651「自报 39 条触发超硬顶审计」在报告里零痕迹。报告/直播/T1 从此读同一份
   // 结构化状态,谁也不许再解析稿头猜。A7 的旧事件净分归一化同批跑(--normalize)。
   await bash(
-    `${R} autoresearch.scan.l4.intel_status ${date} ${code} --normalize` +
+    `${PY('l4', `l4-intel-status-${code}-attempt-${taskAttempt}`, taskAttempt, code)} autoresearch.scan.l4.intel_status ${date} ${code} --normalize` +
     `${intelOn ? '' : ' --disabled'}${intelAttempts > 1 ? ` --attempts ${intelAttempts}` : ''}` +
     `${intelResult ? '' : (intelError ? ` --error-class ${intelError}` : '')}`,
     `intel-status:${code}`, 'Intel').catch(() => null)
@@ -326,7 +341,8 @@ if (trigger) {
   log(`🎭 复核 ✓ ${code} [${trigger}] runs=${JSON.stringify(ratings)} → 终评 ${final}${degraded ? '(degraded,报告强制人裁展示)' : ''}`)
 }
 const taskDone = await taskGate(
-  `success ${code} ${date}`,
+  `${PY('l4', `l4-success-${code}-attempt-${taskAttempt}`, taskAttempt, code)} ` +
+    `autoresearch.scan.l4_tasks success ${code} ${date}`,
   TASK_RESULT,
   `task-success:${code}`,
 ).catch(() => null)
