@@ -229,3 +229,33 @@ def test_checkpoint_metrics_are_deeply_immutable_and_json_serializable(tmp_path)
         checkpoint.metrics["counts"]["rows"] += (3,)
     assert canonical_json(checkpoint.metrics) == '{"counts":{"rows":[1,2]}}'
     assert checkpoint.to_dict()["metrics"] == {"counts": {"rows": [1, 2]}}
+
+
+@pytest.mark.parametrize("metrics", ([], (), [1, 2]))
+def test_checkpoint_rejects_non_mapping_metrics_root(tmp_path, metrics):
+    with pytest.raises(TypeError, match="metrics.*mapping"):
+        Checkpoint(
+            run_id=RUN_ID,
+            stage="l3",
+            attempt=1,
+            status="SUCCEEDED",
+            path=tmp_path / "result.json",
+            created_at="2026-08-27T01:02:03.000000Z",
+            metrics=metrics,
+        )
+
+
+def test_checkpoint_defensively_freezes_artifacts(tmp_path):
+    artifacts = ["_l3_judged.json"]
+    checkpoint = Checkpoint(
+        run_id=RUN_ID,
+        stage="l3",
+        attempt=1,
+        status="SUCCEEDED",
+        path=tmp_path / "result.json",
+        created_at="2026-08-27T01:02:03.000000Z",
+        artifacts=artifacts,
+    )
+    artifacts.append("late.json")
+
+    assert checkpoint.artifacts == ("_l3_judged.json",)

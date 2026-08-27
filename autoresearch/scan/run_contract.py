@@ -23,11 +23,19 @@ _V2_FIELDS = ("git_dirty", "dirty_paths", "prompt_hashes")
 _V3_FIELDS = ("run_kind", "engine", "workspace_path", "session_ref")
 
 
-def _workspace_candidates(*, analysis_date: str, run_id: str) -> tuple[Path, Path]:
-    return (
-        ws.scan_run_root(run_id).resolve(),
-        (ws.context_root() / "scan" / analysis_date).resolve(),
-    )
+_CAPSULE_WORKSPACE = "capsule"
+_LEGACY_WORKSPACE = "legacy"
+
+
+def _workspace_candidates(
+    *, analysis_date: str, run_id: str
+) -> dict[str, tuple[str, str]]:
+    capsule = ws.scan_run_root(run_id)
+    legacy = ws.context_root() / "scan" / analysis_date
+    return {
+        _CAPSULE_WORKSPACE: (str(capsule), str(capsule.resolve())),
+        _LEGACY_WORKSPACE: (str(legacy), str(legacy.resolve())),
+    }
 
 
 def _validate_workspace_path(
@@ -35,27 +43,51 @@ def _validate_workspace_path(
     *,
     analysis_date: str,
     run_id: str,
-    capsule_only: bool = False,
-) -> str:
+    allowed_modes: tuple[str, ...] = (_CAPSULE_WORKSPACE, _LEGACY_WORKSPACE),
+) -> tuple[str, str]:
     if not isinstance(workspace_path, (str, Path)):
         raise ValueError(f"invalid workspace_path: {workspace_path!r}")
     recorded = str(workspace_path)
     if not recorded.strip():
         raise ValueError("invalid workspace_path: empty")
-    try:
-        resolved = Path(recorded).resolve()
-        capsule, legacy = _workspace_candidates(
-            analysis_date=analysis_date, run_id=run_id
-        )
-    except (OSError, RuntimeError) as exc:
-        raise ValueError(f"invalid workspace_path: {recorded!r}") from exc
-    allowed = (capsule,) if capsule_only else (capsule, legacy)
-    if resolved not in allowed:
-        raise ValueError(
-            f"invalid workspace_path: {recorded!r}; expected "
-            + " or ".join(str(path) for path in allowed)
-        )
-    return recorded
+    if ".." in Path(recorded).parts:
+        raise ValueError(f"invalid workspace_path: {recorded!r}")
+    candidates = _workspace_candidates(analysis_date=analysis_date, run_id=run_id)
+    for mode in allowed_modes:
+        if recorded in candidates[mode]:
+            return recorded, mode
+    expected = [candidate for mode in allowed_modes for candidate in candidates[mode]]
+    raise ValueError(
+        f"invalid workspace_path: {recorded!r}; expected " + " or ".join(expected)
+    )
+
+
+def _validate_run_kind(value) -> str:
+    if type(value) is not str or value != "scan-market":
+        raise ValueError(f"invalid run_kind: {value!r}")
+    return value
+
+
+def _validate_session_ref(value) -> str | None:
+    if value is None:
+        return None
+    if type(value) is not str or not value.strip():
+        raise ValueError(f"invalid session_ref: {value!r}")
+    return value
+
+
+def _validate_engine(value, *, workspace_mode: str) -> str:
+    if type(value) is not str:
+        raise ValueError(f"invalid engine: {value!r}")
+    if workspace_mode == _CAPSULE_WORKSPACE:
+        if value not in ws.ENGINES or value != ws.ENGINE:
+            raise ValueError(
+                f"invalid engine for capsule workspace: {value!r}; expected {ws.ENGINE!r}"
+            )
+        return value
+    if value != "":
+        raise ValueError(f"invalid engine for legacy workspace: {value!r}")
+    return value
 
 
 def sha256_json(value: object) -> str:
@@ -187,6 +219,12 @@ class RunContract:
         run_id: str | None = None,
     ) -> RunContract:
         resolved_analysis_date = ws.validate_scan_date(analysis_date)
+        active_run_id = ws.active_run_id()
+        if run_id is None and active_run_id is not None:
+            raise ValueError(
+                "cannot build implicit contract identity with active "
+                "AUTORESEARCH_RUN_ID"
+            )
         stamp = now or datetime.now(timezone.utc)
         if stamp.tzinfo is None:
             stamp = stamp.replace(tzinfo=timezone.utc)
@@ -196,26 +234,24 @@ class RunContract:
             stamp.strftime("%Y%m%dT%H%M%S%fZ") if run_id is None else str(run_id)
         )
         resolved_run_id = ws.validate_run_id(resolved_run_id)
+        workspace_mode = (
+            _CAPSULE_WORKSPACE if run_id is not None else _LEGACY_WORKSPACE
+        )
         if workspace_path is None:
             if run_id is not None:
                 raise ValueError(
                     "workspace_path is required when run_id is explicitly supplied"
                 )
-            if ws.active_run_id() is not None:
-                raise ValueError(
-                    "cannot build implicit contract identity with active "
-                    "AUTORESEARCH_RUN_ID"
-                )
-            resolved_workspace = str(
-                ws.context_root() / "scan" / resolved_analysis_date
-            )
-        else:
-            resolved_workspace = _validate_workspace_path(
-                workspace_path,
-                analysis_date=resolved_analysis_date,
-                run_id=resolved_run_id,
-                capsule_only=run_id is not None,
-            )
+            workspace_path = ws.context_root() / "scan" / resolved_analysis_date
+        resolved_workspace, workspace_mode = _validate_workspace_path(
+            workspace_path,
+            analysis_date=resolved_analysis_date,
+            run_id=resolved_run_id,
+            allowed_modes=(workspace_mode,),
+        )
+        resolved_run_kind = _validate_run_kind(run_kind)
+        resolved_engine = _validate_engine(engine, workspace_mode=workspace_mode)
+        resolved_session_ref = _validate_session_ref(session_ref)
         normalized_config = json.loads(canonical_json(user_config))
         if git_dirty is None or dirty_paths is None:
             probed_dirty, probed_paths = resolve_git_dirty(repo_root)
@@ -238,10 +274,10 @@ class RunContract:
             git_dirty=bool(git_dirty),
             dirty_paths=tuple(dirty_paths or ()),
             prompt_hashes=dict(sorted((prompt_hashes or {}).items())),
-            run_kind=run_kind,
-            engine=engine,
+            run_kind=resolved_run_kind,
+            engine=resolved_engine,
             workspace_path=resolved_workspace,
-            session_ref=session_ref,
+            session_ref=resolved_session_ref,
         )
         return replace(base, contract_hash=sha256_json(base._hash_payload()))
 
@@ -271,11 +307,16 @@ class RunContract:
         if isinstance(payload.get("dirty_paths"), list):
             payload["dirty_paths"] = tuple(payload["dirty_paths"])
         if schema_version == 3:
-            payload["workspace_path"] = _validate_workspace_path(
+            payload["workspace_path"], workspace_mode = _validate_workspace_path(
                 payload["workspace_path"],
                 analysis_date=payload["analysis_date"],
                 run_id=payload["run_id"],
             )
+            payload["run_kind"] = _validate_run_kind(payload["run_kind"])
+            payload["engine"] = _validate_engine(
+                payload["engine"], workspace_mode=workspace_mode
+            )
+            payload["session_ref"] = _validate_session_ref(payload["session_ref"])
         contract = cls(**payload)
         if contract.config_hash != sha256_json(contract.user_config):
             raise ValueError("run contract config_hash mismatch")

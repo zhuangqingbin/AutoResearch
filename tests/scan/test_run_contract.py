@@ -16,6 +16,7 @@ from autoresearch.scan.run_contract import (
 
 DATE = "2026-07-28"
 NOW = datetime(2026, 7, 28, 12, 34, 56, 123456, tzinfo=timezone.utc)
+CAPSULE_RUN_ID = "20260827T010203456789Z"
 
 
 def _build(user_config: dict | None = None, **overrides) -> RunContract:
@@ -33,6 +34,16 @@ def _build(user_config: dict | None = None, **overrides) -> RunContract:
     )
 
 
+def _build_capsule(**overrides) -> RunContract:
+    values = {
+        "run_id": CAPSULE_RUN_ID,
+        "workspace_path": ws.scan_run_root(CAPSULE_RUN_ID),
+        "engine": "codex",
+    }
+    values.update(overrides)
+    return _build(**values)
+
+
 def test_config_hash_is_canonical_but_contract_identity_is_explicit():
     left = _build({"agents": {"l4_card": {"effort": "high"}}, "pinned": {"cap": 1}})
     right = _build({"pinned": {"cap": 1}, "agents": {"l4_card": {"effort": "high"}}})
@@ -42,11 +53,8 @@ def test_config_hash_is_canonical_but_contract_identity_is_explicit():
 
 
 def test_v3_contract_carries_engine_kind_workspace_and_session_ref(tmp_path):
-    contract = _build(
-        run_id="20260827T010203456789Z",
+    contract = _build_capsule(
         run_kind="scan-market",
-        engine="codex",
-        workspace_path="context_codex/scan_runs/20260827T010203456789Z",
         session_ref="01a03dbe-7173-76a3-ac96-919ae6936e71",
     )
 
@@ -89,29 +97,75 @@ def test_ambient_run_cannot_mint_implicit_contract_identity(monkeypatch):
         _build()
 
 
+def test_ambient_run_cannot_mint_identity_with_explicit_legacy_workspace(monkeypatch):
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", CAPSULE_RUN_ID)
+    with pytest.raises(ValueError, match="active AUTORESEARCH_RUN_ID"):
+        _build(workspace_path=ws.context_root() / "scan" / DATE)
+
+
 @pytest.mark.parametrize(
     "workspace_path",
     [
         "",
         "../../escape",
-        "context_codex/scan_runs/20260827T010203456790Z/staging/2026-07-28",
-        "context_codex/scan_runs/20260827T010203456789Z",
+        f"context_codex/scan_runs/{CAPSULE_RUN_ID}/staging/2026-07-28",
+        "context_codex/scan_runs/20260827T010203456790Z",
     ],
 )
 def test_capsule_build_rejects_unsafe_or_mismatched_workspace(workspace_path):
     with pytest.raises(ValueError, match="workspace_path"):
-        _build(
-            run_id="20260827T010203456790Z",
-            workspace_path=workspace_path,
-        )
+        _build_capsule(workspace_path=workspace_path)
+
+
+@pytest.mark.parametrize(
+    "workspace_path",
+    [
+        f"context_codex/scan_runs/wrong/../{CAPSULE_RUN_ID}",
+        f"./context_codex/scan_runs/{CAPSULE_RUN_ID}",
+    ],
+)
+def test_capsule_build_rejects_noncanonical_workspace_alias(workspace_path):
+    with pytest.raises(ValueError, match="workspace_path"):
+        _build_capsule(workspace_path=workspace_path)
+
+
+def test_legacy_build_rejects_predicted_capsule_workspace(monkeypatch):
+    monkeypatch.delenv("AUTORESEARCH_RUN_ID", raising=False)
+    predicted = NOW.strftime("%Y%m%dT%H%M%S%fZ")
+    with pytest.raises(ValueError, match="workspace_path"):
+        _build(workspace_path=ws.scan_run_root(predicted))
 
 
 def test_capsule_build_preserves_safe_absolute_workspace_string():
     run_id = "20260827T010203456790Z"
     absolute = ws.scan_run_root(run_id).resolve()
-    contract = _build(run_id=run_id, workspace_path=absolute)
+    contract = _build_capsule(run_id=run_id, workspace_path=absolute)
 
     assert contract.workspace_path == str(absolute)
+
+
+@pytest.mark.parametrize("run_kind", (1, "", "stock-research"))
+def test_build_rejects_invalid_run_kind(run_kind):
+    with pytest.raises(ValueError, match="run_kind"):
+        _build(run_kind=run_kind)
+
+
+@pytest.mark.parametrize("engine", (1, "codex", "claude", "unknown"))
+def test_legacy_build_rejects_nonempty_or_nonstring_engine(engine):
+    with pytest.raises(ValueError, match="engine"):
+        _build(engine=engine)
+
+
+@pytest.mark.parametrize("engine", ("", "claude", 1))
+def test_capsule_build_requires_matching_active_engine(engine):
+    with pytest.raises(ValueError, match="engine"):
+        _build_capsule(engine=engine)
+
+
+@pytest.mark.parametrize("session_ref", ({}, [], 1, True, ""))
+def test_build_rejects_invalid_session_ref(session_ref):
+    with pytest.raises(ValueError, match="session_ref"):
+        _build(session_ref=session_ref)
 
 
 def test_legacy_build_defaults_to_existing_scan_workspace(monkeypatch):
@@ -319,6 +373,60 @@ def test_load_rejects_rehashed_v3_with_invalid_workspace(
         load_run_contract(path)
 
 
+def test_load_rejects_rehashed_v3_with_lexical_workspace_escape(tmp_path):
+    raw = _build_capsule().to_dict()
+    raw["workspace_path"] = (
+        f"context_codex/scan_runs/wrong/../{CAPSULE_RUN_ID}"
+    )
+    raw["contract_hash"] = sha256_json(
+        {key: value for key, value in raw.items() if key != "contract_hash"}
+    )
+    path = tmp_path / "run_contract.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="workspace_path"):
+        load_run_contract(path)
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid"),
+    [
+        ("run_kind", "stock-research"),
+        ("run_kind", 1),
+        ("engine", "claude"),
+        ("engine", 1),
+        ("session_ref", ""),
+        ("session_ref", {"id": "session"}),
+    ],
+)
+def test_load_rejects_rehashed_v3_with_invalid_identity_field(
+    tmp_path, field, invalid
+):
+    raw = _build_capsule(session_ref="session-1").to_dict()
+    raw[field] = invalid
+    raw["contract_hash"] = sha256_json(
+        {key: value for key, value in raw.items() if key != "contract_hash"}
+    )
+    path = tmp_path / f"invalid-{field}.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=field):
+        load_run_contract(path)
+
+
+def test_load_rejects_rehashed_legacy_v3_with_nonempty_engine(tmp_path):
+    raw = _build().to_dict()
+    raw["engine"] = "codex"
+    raw["contract_hash"] = sha256_json(
+        {key: value for key, value in raw.items() if key != "contract_hash"}
+    )
+    path = tmp_path / "run_contract.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="engine"):
+        load_run_contract(path)
+
+
 @pytest.mark.parametrize(
     ("field", "unsafe"),
     [("run_id", "../escape"), ("analysis_date", "../../escape")],
@@ -350,7 +458,7 @@ def test_v1_hash_payload_excludes_v2_fields():
 def test_v2_hash_payload_excludes_v3_fields():
     from autoresearch.scan.run_contract import _V3_FIELDS
 
-    contract = _build(engine="codex", session_ref="session-1")
+    contract = _build_capsule(session_ref="session-1")
     assert all(field in contract._hash_payload() for field in _V3_FIELDS)
     v2_like = RunContract(**{**contract.to_dict(), "schema_version": 2})
     assert not any(field in v2_like._hash_payload() for field in _V3_FIELDS)

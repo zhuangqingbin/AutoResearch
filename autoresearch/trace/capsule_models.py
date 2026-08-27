@@ -197,7 +197,12 @@ class Checkpoint:
     error: str | None = None
 
     def __post_init__(self) -> None:
-        normalized = json.loads(canonical_json(self.metrics))
+        if not isinstance(self.metrics, Mapping):
+            raise TypeError("Checkpoint metrics root must be a mapping")
+        normalized = json.loads(canonical_json(dict(self.metrics)))
+        object.__setattr__(
+            self, "artifacts", tuple(str(artifact) for artifact in self.artifacts)
+        )
         object.__setattr__(self, "metrics", _freeze_json(normalized))
 
     def to_dict(self) -> dict:
