@@ -564,6 +564,20 @@ def test_begin_rejects_generic_uri_credentials_before_workspace(
     assert not ws.scan_run_root(RUN_ID).exists()
 
 
+def test_begin_rejects_empty_username_uri_credentials_before_workspace(
+    tmp_path, monkeypatch
+):
+    _redirect_roots(monkeypatch, tmp_path)
+    connection = "custom+driver://:correct-horse@service.internal/app"
+    config = {"l2": {"floors": {"comment": connection}}}
+
+    with pytest.raises(ValueError, match="secret material") as raised:
+        begin_run("scan-market", DATE, "codex", config, now=NOW)
+
+    assert connection not in str(raised.value)
+    assert not ws.scan_run_root(RUN_ID).exists()
+
+
 def test_begin_contract_gate_allows_safe_hashes_run_ids_and_session_ids(
     tmp_path, monkeypatch
 ):

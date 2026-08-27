@@ -144,6 +144,41 @@ def test_real_repository_safe_prompt_corpus_snapshots_completely(tmp_path):
     assert represented == expected
 
 
+def test_real_repository_has_no_generic_literal_assignment_false_positives():
+    repo = Path(__file__).resolve().parents[2]
+    offenders = []
+    for relative_root in (
+        Path("autoresearch"),
+        Path(".claude/agents"),
+        Path(".claude/skills"),
+        Path(".claude/workflows"),
+    ):
+        for path in sorted((repo / relative_root).rglob("*")):
+            if not path.is_file() or path.is_symlink():
+                continue
+            findings = scan_for_secrets(path.read_bytes(), environ={})["findings"]
+            if any(
+                finding["kind"] in {"secret_assignment", "contextual_credential"}
+                for finding in findings
+            ):
+                offenders.append(path.relative_to(repo).as_posix())
+
+    assert offenders == []
+
+
+def test_unrelated_dirty_runtime_expression_preserves_code_patch(tmp_path):
+    repo = _repo(tmp_path)
+    (repo / "autoresearch/rule.py").write_text(
+        'VALUE = os.environ["PUBLIC_VALUE"]\n', encoding="utf-8"
+    )
+    out = tmp_path / "identity"
+
+    result = snapshot_identity(repo, out, engine="codex", environ={})
+
+    assert result["components"]["git_patch"]["status"] == "SUCCESS"
+    assert b'os.environ["PUBLIC_VALUE"]' in (out / "code.patch").read_bytes()
+
+
 def test_snapshot_excludes_out_of_scope_symlinks_and_special_files(tmp_path):
     repo = _repo(tmp_path)
     outside = tmp_path / "outside.py"
@@ -165,9 +200,7 @@ def test_snapshot_excludes_out_of_scope_symlinks_and_special_files(tmp_path):
     names = _tar_names(out / "untracked_sources.tar.zst")
     assert names == []
     manifest = json.loads((out / "source_manifest.json").read_text(encoding="utf-8"))
-    assert [row["path"] for row in manifest["prompt_rejected"]] == [
-        ".claude/skills/escape.md"
-    ]
+    assert [row["path"] for row in manifest["prompt_rejected"]] == [".claude/skills/escape.md"]
     assert [row["path"] for row in manifest["untracked_rejected"]] == [
         ".claude/skills/escape.md",
         "autoresearch/escape.py",
@@ -320,6 +353,19 @@ def test_uri_private_key_and_provider_credentials_are_detected_and_redacted():
         assert redaction.hits >= 1
 
 
+def test_uri_credentials_with_empty_username_are_detected_and_redacted():
+    connection = "mssql+pyodbc://:correct-horse@service.internal/app"
+
+    scan = scan_for_secrets(connection.encode(), environ={})
+    redaction = redact_value({"comment": connection}, environ={})
+
+    assert scan["ok"] is False
+    assert scan["findings"] == [{"kind": "uri_userinfo", "offset": 0, "length": len(connection)}]
+    assert connection not in canonical_json(scan)
+    assert connection not in canonical_json(redaction.value)
+    assert redaction.hits == 1
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -339,9 +385,46 @@ def test_secret_scanner_allows_public_urls_and_source_text(payload):
     "payload",
     [
         b'api_key = os.getenv("PROVIDER_API_KEY")',
+        b'api_key = os.environ["PROVIDER_API_KEY"]',
+        b'api_key = getenv("PROVIDER_API_KEY")',
+        b"api_key = get_api_key()",
+        b"password = getpass.getpass()",
         b"credentials = load_credentials()",
+        b"credentials = provider.credentials",
+        b'client_secret = vault.read("service")',
         b"database_url = settings.database_url",
+        b"database_url = config.database_url",
+        b"api_key = None",
+        b"token = null",
+        b"password = False",
+        b'api_key = "YOUR_API_KEY"',
+        b"token = <TOKEN>",
+        b"secret = ${SECRET}",
+        b"password = CHANGEME",
+        b'# api_key = "literal-credential-value"',
+        b'// token = "literal-credential-value"',
     ],
+    ids=(
+        "os-getenv",
+        "os-environ",
+        "getenv",
+        "getter-call",
+        "getpass-call",
+        "loader-call",
+        "provider-attribute",
+        "vault-call",
+        "settings-attribute",
+        "config-attribute",
+        "none",
+        "null",
+        "false",
+        "quoted-placeholder",
+        "angle-placeholder",
+        "environment-placeholder",
+        "changeme-placeholder",
+        "python-comment",
+        "slash-comment",
+    ),
 )
 def test_secret_assignment_scanner_allows_runtime_expressions(payload):
     assert scan_for_secrets(payload, environ={})["ok"] is True
@@ -352,9 +435,11 @@ def test_secret_assignment_scanner_allows_runtime_expressions(payload):
     "payload",
     [
         b'api_key = "literal-credential-value"',
+        b"api_key = literalcredentialvalue",
         b'credentials = "literal-credential-value"',
         b'database_url = "driver://runner:password@service.internal/app"',
     ],
+    ids=("quoted-secret", "bare-secret", "quoted-credential", "credential-uri"),
 )
 def test_secret_assignment_scanner_rejects_literal_credentials(payload):
     assert scan_for_secrets(payload, environ={})["ok"] is False
@@ -402,6 +487,36 @@ def test_database_env_is_presence_only_and_known_value_never_persists(tmp_path):
     environment = json.loads((out / "environment.json").read_text(encoding="utf-8"))
     assert environment["secret_environment"]["DATABASE_URL"] == {"present": True}
     assert "PUBLIC_URL" not in environment["secret_environment"]
+    assert connection.encode() not in _all_artifact_bytes(out)
+
+
+def test_empty_username_uri_is_rejected_from_patch_prompt_env_and_untracked(tmp_path):
+    repo = _repo(tmp_path)
+    connection = "custom+driver://:correct-horse@service.internal/app"
+    (repo / "autoresearch/rule.py").write_text(f'CONNECTION = "{connection}"\n', encoding="utf-8")
+    (repo / ".claude/agents/analyst.md").write_text(
+        f"connection note: {connection}\n", encoding="utf-8"
+    )
+    source = repo / "autoresearch/new_connection.py"
+    source.write_text(f'VALUE = "{connection}"\n', encoding="utf-8")
+    out = tmp_path / "identity"
+
+    result = snapshot_identity(
+        repo,
+        out,
+        engine="codex",
+        environ={"DATABASE_URL": connection},
+    )
+
+    assert result["components"]["git_patch"]["status"] == "MISSING"
+    assert result["components"]["prompts"]["status"] == "PARTIAL"
+    assert result["components"]["untracked_sources"]["status"] == "PARTIAL"
+    assert result["components"]["environment"]["status"] == "SUCCESS"
+    assert not (out / "code.patch").exists()
+    assert not (out / "prompts/agents/analyst.md").exists()
+    assert _tar_names(out / "untracked_sources.tar.zst") == []
+    environment = json.loads((out / "environment.json").read_text(encoding="utf-8"))
+    assert environment["secret_environment"]["DATABASE_URL"] == {"present": True}
     assert connection.encode() not in _all_artifact_bytes(out)
 
 
@@ -475,9 +590,7 @@ def test_secret_in_dirty_patch_is_not_persisted_and_marks_component_missing(tmp_
 def test_uri_credentials_in_dirty_patch_are_never_persisted(tmp_path):
     repo = _repo(tmp_path)
     connection = "postgresql://runner:correct-horse-battery@db.internal:5432/app"
-    (repo / "autoresearch/rule.py").write_text(
-        f'DATABASE = "{connection}"\n', encoding="utf-8"
-    )
+    (repo / "autoresearch/rule.py").write_text(f'DATABASE = "{connection}"\n', encoding="utf-8")
     out = tmp_path / "identity"
 
     result = snapshot_identity(repo, out, engine="codex", environ={})
@@ -492,9 +605,7 @@ def test_uri_credentials_in_dirty_patch_are_never_persisted(tmp_path):
 def test_generic_uri_credentials_in_dirty_patch_are_never_persisted(tmp_path, scheme):
     repo = _repo(tmp_path)
     connection = f"{scheme}://runner:correct-horse@service.internal/app"
-    (repo / "autoresearch/rule.py").write_text(
-        f'CONNECTION = "{connection}"\n', encoding="utf-8"
-    )
+    (repo / "autoresearch/rule.py").write_text(f'CONNECTION = "{connection}"\n', encoding="utf-8")
     out = tmp_path / "identity"
 
     result = snapshot_identity(repo, out, engine="codex", environ={})
@@ -667,9 +778,7 @@ def test_repository_epoch_drift_is_explicitly_partial(tmp_path, monkeypatch):
     stable = identity_mod._repository_epoch(repo)
     changed = {**stable, "status_sha256": "f" * 64}
     epochs = iter((stable, changed))
-    monkeypatch.setattr(
-        identity_mod, "_repository_epoch", lambda *_, **__: next(epochs)
-    )
+    monkeypatch.setattr(identity_mod, "_repository_epoch", lambda *_, **__: next(epochs))
 
     result = snapshot_identity(repo, out, engine="codex", environ={})
 
@@ -761,14 +870,54 @@ def test_checked_out_submodule_records_head_status_and_diff(tmp_path):
     result = snapshot_identity(repo, out, engine="codex", environ={})
 
     assert result["components"]["submodules"]["status"] == "SUCCESS"
-    row = json.loads((out / "submodules.json").read_text(encoding="utf-8"))[
-        "submodules"
-    ][0]
+    row = json.loads((out / "submodules.json").read_text(encoding="utf-8"))["submodules"][0]
     assert row["gitlink_sha"] == child_head
     assert row["checked_out_head"] == child_head
     assert row["status"] == "CAPTURED"
     assert bytes.fromhex(row["status_hex"]) == b""
     assert bytes.fromhex(row["diff_hex"]) == b""
+
+
+def test_clean_submodule_head_mismatch_is_explicitly_partial(tmp_path):
+    repo = _repo(tmp_path)
+    child = tmp_path / "child-mismatch"
+    child.mkdir()
+    _git(child, "init", "-q")
+    _git(child, "config", "user.email", "identity@example.invalid")
+    _git(child, "config", "user.name", "Identity Test")
+    (child / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _git(child, "add", ".")
+    _git(child, "commit", "-qm", "child")
+    parent_gitlink = _git(child, "rev-parse", "HEAD").stdout.strip()
+    _git(
+        repo,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        str(child),
+        "vendor/sub",
+    )
+    _git(repo, "commit", "-qam", "add submodule")
+    checkout = repo / "vendor/sub"
+    _git(checkout, "config", "user.email", "identity@example.invalid")
+    _git(checkout, "config", "user.name", "Identity Test")
+    (checkout / "module.py").write_text("VALUE = 2\n", encoding="utf-8")
+    _git(checkout, "commit", "-qam", "local checkout commit")
+    checked_out_head = _git(checkout, "rev-parse", "HEAD").stdout.strip()
+    out = tmp_path / "identity"
+
+    result = snapshot_identity(repo, out, engine="codex", environ={})
+
+    assert result["components"]["submodules"]["status"] == "PARTIAL"
+    row = json.loads((out / "submodules.json").read_text(encoding="utf-8"))["submodules"][0]
+    assert row["gitlink_sha"] == parent_gitlink
+    assert row["checked_out_head"] == checked_out_head
+    assert row["checked_out_head"] != row["gitlink_sha"]
+    assert bytes.fromhex(row["status_hex"]) == b""
+    assert bytes.fromhex(row["diff_hex"]) == b""
+    assert row["recursive_state"] == "HEAD_MISMATCH"
 
 
 def test_dirty_submodule_is_partial_when_nested_bytes_are_not_archived(tmp_path):
@@ -798,9 +947,7 @@ def test_dirty_submodule_is_partial_when_nested_bytes_are_not_archived(tmp_path)
     result = snapshot_identity(repo, out, engine="codex", environ={})
 
     assert result["components"]["submodules"]["status"] == "PARTIAL"
-    row = json.loads((out / "submodules.json").read_text(encoding="utf-8"))[
-        "submodules"
-    ][0]
+    row = json.loads((out / "submodules.json").read_text(encoding="utf-8"))["submodules"][0]
     assert bytes.fromhex(row["status_hex"])
     assert row["recursive_state"] == "UNARCHIVED_DIRTY_STATE"
 
@@ -850,9 +997,7 @@ def test_clean_submodule_with_nested_gitlink_is_explicitly_partial(tmp_path):
     result = snapshot_identity(repo, out, engine="codex", environ={})
 
     assert result["components"]["submodules"]["status"] == "PARTIAL"
-    row = json.loads((out / "submodules.json").read_text(encoding="utf-8"))[
-        "submodules"
-    ][0]
+    row = json.loads((out / "submodules.json").read_text(encoding="utf-8"))["submodules"][0]
     assert row["recursive_state"] == "UNARCHIVED_NESTED_SUBMODULES"
     assert len(row["nested_gitlinks"]) == 1
 
@@ -872,9 +1017,7 @@ def test_tracked_behavioral_symlinks_are_audited_losslessly(tmp_path):
     result = snapshot_identity(repo, out, engine="codex", environ={})
 
     assert result["components"]["source_links"]["status"] == "PARTIAL"
-    rows = json.loads((out / "source_links.json").read_text(encoding="utf-8"))[
-        "source_links"
-    ]
+    rows = json.loads((out / "source_links.json").read_text(encoding="utf-8"))["source_links"]
     safe_row = next(row for row in rows if row["path"].endswith("linked_rule.py"))
     unsafe_row = next(row for row in rows if row["path"].endswith("external_rule.py"))
     assert bytes.fromhex(safe_row["link_target_hex"]) == b"rule.py"
@@ -959,6 +1102,99 @@ def test_promotion_failure_rolls_back_previous_snapshot_generation(tmp_path, mon
         snapshot_identity(repo, out, engine="codex", environ={})
 
     assert _owned_snapshot_bytes(out) == before
+
+
+@pytest.mark.skipif(os.name == "nt", reason="directory fsync is POSIX-specific")
+def test_commit_fsync_failure_rolls_back_previous_snapshot_generation(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    out = tmp_path / "identity"
+    assert snapshot_identity(repo, out, engine="codex", environ={})["ok"] is True
+    before = _owned_snapshot_bytes(out)
+    (repo / "autoresearch/rule.py").write_text("VALUE = 2\n", encoding="utf-8")
+    original = identity_mod._fsync_directory
+    failed = False
+
+    def fail_commit(path):
+        nonlocal failed
+        if Path(path) == out and not failed:
+            failed = True
+            raise OSError("commit sync fault")
+        return original(path)
+
+    monkeypatch.setattr(identity_mod, "_fsync_directory", fail_commit)
+
+    with pytest.raises(OSError, match="commit sync fault"):
+        snapshot_identity(repo, out, engine="codex", environ={})
+
+    assert _owned_snapshot_bytes(out) == before
+
+
+@pytest.mark.skipif(os.name == "nt", reason="directory fsync is POSIX-specific")
+def test_post_commit_cleanup_fsync_failure_keeps_new_generation_and_is_explicit(
+    tmp_path, monkeypatch, capsys
+):
+    repo = _repo(tmp_path)
+    out = tmp_path / "identity"
+    assert snapshot_identity(repo, out, engine="codex", environ={})["ok"] is True
+    (repo / "autoresearch/rule.py").write_text("VALUE = 2\n", encoding="utf-8")
+    original = identity_mod._fsync_directory
+    parent_calls = 0
+
+    def fail_post_commit(path):
+        nonlocal parent_calls
+        if Path(path) == out.parent:
+            parent_calls += 1
+            if parent_calls == 2:
+                raise OSError("cleanup sync fault")
+        return original(path)
+
+    monkeypatch.setattr(identity_mod, "_fsync_directory", fail_post_commit)
+
+    result = snapshot_identity(repo, out, engine="codex", environ={})
+
+    assert b"VALUE = 2" in (out / "code.patch").read_bytes()
+    assert result["ok"] is False
+    assert result["components"]["snapshot_cleanup"]["status"] == "PARTIAL"
+    persisted = json.loads((out / "snapshot_result.json").read_text(encoding="utf-8"))
+    assert persisted["components"]["snapshot_cleanup"]["status"] == "PARTIAL"
+    assert (out / "identity_cleanup_degraded.json").is_file()
+    assert capsys.readouterr().err == "identity snapshot cleanup degraded\n"
+
+
+def test_stale_owned_backup_is_marked_then_scavenged_on_retry(tmp_path, monkeypatch, capsys):
+    repo = _repo(tmp_path)
+    out = tmp_path / "identity"
+    assert snapshot_identity(repo, out, engine="codex", environ={})["ok"] is True
+    (repo / "autoresearch/rule.py").write_text("VALUE = 2\n", encoding="utf-8")
+    unrelated = out.parent / ".identity.backup-manual-keep"
+    unrelated.mkdir()
+    original = identity_mod.shutil.rmtree
+
+    def fail_backup(path, *args, **kwargs):
+        if Path(path).name.startswith(".identity.backup-"):
+            raise OSError("backup cleanup fault")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(identity_mod.shutil, "rmtree", fail_backup)
+
+    degraded = snapshot_identity(repo, out, engine="codex", environ={})
+
+    assert degraded["components"]["snapshot_cleanup"]["status"] == "PARTIAL"
+    assert (out / "identity_cleanup_degraded.json").is_file()
+    assert any(
+        path.name.startswith(".identity.backup-")
+        for path in identity_mod._owned_snapshot_siblings(out)
+    )
+    assert capsys.readouterr().err == "identity snapshot cleanup degraded\n"
+
+    monkeypatch.setattr(identity_mod.shutil, "rmtree", original)
+    recovered = snapshot_identity(repo, out, engine="codex", environ={})
+
+    assert recovered["ok"] is True
+    assert not (out / "identity_cleanup_degraded.json").exists()
+    assert list(out.parent.glob(".identity.backup-*")) == [unrelated]
+    assert list(out.parent.glob(".identity.generation-*")) == []
+    assert unrelated.is_dir()
 
 
 def test_concurrent_snapshots_serialize_without_interleaved_artifacts(tmp_path):

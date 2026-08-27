@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import base64
 import io
 import json
@@ -18,7 +19,7 @@ import tarfile
 import tempfile
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -39,9 +40,7 @@ _SLACK_TOKEN_RE = re.compile(
 )
 _KEYLIKE_RE = re.compile(r"(?i)\b(?:sk|pk|rk|api)[-_](?:live[-_])?[A-Za-z0-9_-]{16,}\b")
 _AWS_KEY_RE = re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")
-_URI_CREDENTIAL_RE = re.compile(
-    r"(?i)\b[A-Za-z][A-Za-z0-9+.-]*://[^\s/@:]+:[^\s/@]+@[^\s]+"
-)
+_URI_CREDENTIAL_RE = re.compile(r"(?i)\b[A-Za-z][A-Za-z0-9+.-]*://[^\s/@:]*:[^\s/@]+@[^\s]+")
 _PEM_PRIVATE_KEY_RE = re.compile(
     r"(?is)-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----.*?"
     r"(?:-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----|\Z)"
@@ -56,18 +55,22 @@ _PROVIDER_TOKEN_RES = (
     re.compile(r"(?<![A-Za-z0-9])SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{20,}"),
     re.compile(r"(?i)(?<![A-Za-z0-9])npm_[A-Za-z0-9]{36,255}(?![A-Za-z0-9])"),
 )
+_ASSIGNMENT_RHS = r"""(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}{]+)"""
 _SECRET_ASSIGNMENT_RE = re.compile(
-    r"(?i)\b(?:[A-Za-z0-9_-]*(?:token|secret|password|authorization|cookie)"
-    r"|[A-Za-z0-9_-]*api[_-]?key)\b[\"']?\s*[:=]\s*[^\s,;{\[]{4,}"
+    rf"(?i)\b(?P<key>(?:token|secret|password|authorization|cookie|api[_-]?key|"
+    rf"(?:access|auth|refresh|session|bearer|github|gitlab|openai|anthropic|tushare|"
+    rf"fred|slack|stripe|npm)[_-]token|[A-Za-z0-9_-]+[_-](?:password|secret|api[_-]?key)))"
+    rf"\b[\"']?[ \t]*(?::|(?<![=!<>])=(?!=))[ \t]*(?P<rhs>{_ASSIGNMENT_RHS})"
 )
 _CONTEXT_CREDENTIAL_RE = re.compile(
-    r"(?i)\b(?:credential|credentials|client[_-]?secret|[A-Za-z0-9_-]*dsn|database[_-]?url|"
+    rf"(?i)\b(?P<key>credential|credentials|client[_-]?secret|[A-Za-z0-9_-]*dsn|database[_-]?url|"
     r"mongo(?:db)?[_-]?(?:uri|url)|redis[_-]?(?:uri|url)|connection[_-]?string)"
-    r"\b[\"']?\s*[:=]\s*[\"']?[^\s\"',;}{\]]{6,}"
+    rf"\b[\"']?[ \t]*(?::|(?<![=!<>])=(?!=))[ \t]*(?P<rhs>{_ASSIGNMENT_RHS})"
 )
-_SAFE_CREDENTIAL_EXPRESSION_RE = re.compile(
-    r"(?i)^(?:os\.getenv\s*\(|os\.environ\s*\[|load_[A-Za-z0-9_]*credentials?\s*\(|"
-    r"settings\.[A-Za-z0-9_.]+|config\.[A-Za-z0-9_.]+)"
+_PLACEHOLDER_RE = re.compile(
+    r"(?i)^(?:none|null|true|false|changeme|change[_-]?me|replace[_-]?me|"
+    r"placeholder|redacted|\[redacted\]|your[_-][A-Za-z0-9_-]+|"
+    r"<[A-Za-z0-9_.:-]+>|\$\{[A-Za-z_][A-Za-z0-9_]*\})$"
 )
 _OPAQUE_RE = re.compile(rb"(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/=_-]{24,}(?![A-Za-z0-9+/=_-])")
 _JWT_RE = re.compile(
@@ -116,11 +119,13 @@ _SECRET_CONNECTION_ENV_RE = re.compile(
 )
 _SNAPSHOT_LOCKS: dict[str, threading.Lock] = {}
 _SNAPSHOT_LOCKS_GUARD = threading.Lock()
+_SNAPSHOT_SIBLING_SUFFIX_RE = re.compile(r"[a-z0-9_]{8}")
 _OWNED_FILES = frozenset(
     {
         "code.patch",
         "dependencies.txt",
         "environment.json",
+        "identity_cleanup_degraded.json",
         "snapshot_result.json",
         "source_manifest.json",
         "source_links.json",
@@ -186,7 +191,7 @@ def redact_value(value: Any, *, environ: dict[str, str] | None = None) -> Redact
             parts: list[str] = []
             cursor = 0
             for match in pattern.finditer(current):
-                if _is_safe_credential_expression(match.group()):
+                if not _is_literal_credential_assignment(current, match):
                     continue
                 parts.append(current[cursor : match.start()])
                 parts.append(_REDACTED)
@@ -253,12 +258,64 @@ def _entropy(value: bytes) -> float:
     return -sum((count / size) * math.log2(count / size) for count in counts.values())
 
 
-def _is_safe_credential_expression(assignment: str) -> bool:
-    separator = re.search(r"[:=]", assignment)
-    if separator is None:
+def _is_commented_assignment(text: str, start: int) -> bool:
+    line_start = text.rfind("\n", 0, start) + 1
+    prefix = text[line_start:start].lstrip()
+    return prefix.startswith(("#", "//", "/*", "*"))
+
+
+def _placeholder_literal(value: str) -> bool:
+    return not value or bool(_PLACEHOLDER_RE.fullmatch(value.strip()))
+
+
+def _is_literal_credential_assignment(text: str, match: re.Match[str]) -> bool:
+    """Classify one line-level assignment without guessing runtime expressions."""
+    if _is_commented_assignment(text, match.start()):
         return False
-    right_hand_side = assignment[separator.end() :].lstrip()
-    return bool(_SAFE_CREDENTIAL_EXPRESSION_RE.match(right_hand_side))
+    right_hand_side = match.group("rhs").strip()
+    if _placeholder_literal(right_hand_side):
+        return False
+    if right_hand_side[:1] in {'"', "'"}:
+        try:
+            literal = ast.literal_eval(right_hand_side)
+        except (SyntaxError, ValueError):
+            return False
+        if not isinstance(literal, (str, bytes)):
+            return False
+        decoded = (
+            literal.decode("utf-8", errors="ignore") if isinstance(literal, bytes) else literal
+        )
+        return not _placeholder_literal(decoded)
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", right_hand_side):
+        # A short identifier is a variable expression. Long opaque identifiers
+        # in env/YAML-style assignments are bare credential literals.
+        return len(right_hand_side) >= 16
+    if re.fullmatch(
+        r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+",
+        right_hand_side,
+    ):
+        return False
+    if re.fullmatch(r"[A-Za-z0-9._~+/=-]+", right_hand_side):
+        return True
+    try:
+        expression = ast.parse(right_hand_side, mode="eval").body
+    except SyntaxError:
+        # Non-Python placeholder syntaxes are handled above. Remaining compact
+        # source tokens are literal values; calls/attributes parse structurally.
+        return bool(re.fullmatch(r"[A-Za-z0-9._~+/=-]+", right_hand_side))
+    if isinstance(expression, (ast.Call, ast.Attribute, ast.Subscript)):
+        return False
+    if isinstance(expression, ast.Constant):
+        if expression.value is None or isinstance(expression.value, bool):
+            return False
+        if isinstance(expression.value, (str, bytes)):
+            value = expression.value
+            decoded = value.decode("utf-8", errors="ignore") if isinstance(value, bytes) else value
+            return not _placeholder_literal(decoded)
+        return True
+    if isinstance(expression, ast.Name):
+        return False
+    return False
 
 
 def _looks_like_stable_identifier(value: bytes) -> bool:
@@ -337,7 +394,7 @@ def scan_for_secrets(payload: bytes, *, environ: dict[str, str] | None = None) -
         ("contextual_credential", _CONTEXT_CREDENTIAL_RE),
     ):
         for match in pattern.finditer(text):
-            if not _is_safe_credential_expression(match.group()):
+            if _is_literal_credential_assignment(text, match):
                 add(kind, match.start(), match.end())
 
     for match in _JWT_RE.finditer(payload):
@@ -554,9 +611,7 @@ def _source_state_sha256(repo: Path) -> str:
                 entry["mode"] = stat.S_IMODE(info.st_mode)
                 entry["type"] = stat.S_IFMT(info.st_mode)
                 if stat.S_ISLNK(info.st_mode):
-                    entry["link_target_hex"] = os.fsencode(
-                        os.readlink(repo / relative)
-                    ).hex()
+                    entry["link_target_hex"] = os.fsencode(os.readlink(repo / relative)).hex()
             except OSError as exc:
                 entry["error_type"] = type(exc).__name__
             rows.append(entry)
@@ -600,9 +655,7 @@ def _repository_epoch(repo: Path, *, patch: bytes | None = None) -> dict[str, st
             ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
         )
     )
-    untracked = bytes(
-        _run(repo, ["git", "ls-files", "--others", "--exclude-standard", "-z"])
-    )
+    untracked = bytes(_run(repo, ["git", "ls-files", "--others", "--exclude-standard", "-z"]))
     patch_bytes = (
         patch
         if patch is not None
@@ -684,18 +737,72 @@ def _remove_owned_path(path: Path) -> None:
         path.unlink()
 
 
-def _promote_snapshot_generation(generation: Path, output: Path) -> None:
+def _remove_snapshot_sibling(path: Path) -> None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return
+    if stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
+def _owned_snapshot_siblings(output: Path) -> list[Path]:
+    prefixes = (f".{output.name}.generation-", f".{output.name}.backup-")
+
+    def is_owned(child: Path) -> bool:
+        return any(
+            child.name.startswith(prefix)
+            and _SNAPSHOT_SIBLING_SUFFIX_RE.fullmatch(child.name[len(prefix) :])
+            for prefix in prefixes
+        )
+
+    return sorted(
+        (child for child in output.parent.iterdir() if is_owned(child)),
+        key=lambda child: child.name,
+    )
+
+
+def _has_valid_live_snapshot(output: Path) -> bool:
+    result_path = output / "snapshot_result.json"
+    try:
+        info = result_path.lstat()
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            return False
+        payload = json.loads(result_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return isinstance(payload, dict) and payload.get("schema_version") == 1
+
+
+def _scavenge_snapshot_siblings(output: Path) -> None:
+    siblings = _owned_snapshot_siblings(output)
+    if not siblings:
+        return
+    if any(
+        child.name.startswith(f".{output.name}.backup-") for child in siblings
+    ) and not _has_valid_live_snapshot(output):
+        raise RuntimeError("identity snapshot backup requires recovery")
+    for child in siblings:
+        _remove_snapshot_sibling(child)
+    _fsync_directory(output.parent)
+
+
+def _cleanup_failure(phase: str, exc: BaseException) -> dict[str, str]:
+    return {"phase": phase, "error_type": type(exc).__name__}
+
+
+def _promote_snapshot_generation(generation: Path, output: Path) -> list[dict[str, str]]:
     output.mkdir(parents=True, mode=0o700, exist_ok=True)
     info = output.lstat()
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
         raise ValueError("identity output must be a real directory")
-    backup = Path(
-        tempfile.mkdtemp(prefix=f".{output.name}.backup-", dir=output.parent)
-    )
+    backup = Path(tempfile.mkdtemp(prefix=f".{output.name}.backup-", dir=output.parent))
     owned_names = tuple(sorted({*_OWNED_FILES, *_OWNED_DIRS}))
     moved_old: list[tuple[Path, Path]] = []
     promoted: list[Path] = []
-    backup_disposable = False
+    committed = False
     try:
         for name in owned_names:
             source = generation / name
@@ -709,9 +816,9 @@ def _promote_snapshot_generation(generation: Path, output: Path) -> None:
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 _replace_promoted_path(source, destination)
                 promoted.append(destination)
-        _fsync_directory(output)
         _fsync_directory(output.parent)
-        backup_disposable = True
+        _fsync_directory(output)
+        committed = True
     except Exception:
         for destination in reversed(promoted):
             _remove_owned_path(destination)
@@ -720,12 +827,85 @@ def _promote_snapshot_generation(generation: Path, output: Path) -> None:
             os.replace(old, destination)
         _fsync_directory(output)
         _fsync_directory(output.parent)
-        backup_disposable = True
-        raise
-    finally:
-        if backup_disposable:
-            shutil.rmtree(backup, ignore_errors=True)
+        try:
+            _remove_snapshot_sibling(backup)
             _fsync_directory(output.parent)
+        except Exception:
+            print("identity snapshot rollback cleanup degraded", file=sys.stderr)
+        raise
+    if not committed:  # pragma: no cover - defensive state assertion
+        raise RuntimeError("identity generation was not committed")
+
+    cleanup_failures: list[dict[str, str]] = []
+    for phase, sibling in (("backup_removal", backup), ("generation_removal", generation)):
+        try:
+            _remove_snapshot_sibling(sibling)
+        except Exception as exc:
+            cleanup_failures.append(_cleanup_failure(phase, exc))
+    try:
+        _fsync_directory(output.parent)
+    except Exception as exc:
+        cleanup_failures.append(_cleanup_failure("cleanup_fsync", exc))
+    return cleanup_failures
+
+
+def _record_snapshot_cleanup_degradation(
+    output: Path,
+    result: dict,
+    failures: list[dict[str, str]],
+    *,
+    environ: dict[str, str],
+) -> dict:
+    marker = {
+        "schema_version": 1,
+        "status": "PARTIAL",
+        "failures": failures,
+        "stale_backup_count": sum(
+            child.name.startswith(f".{output.name}.backup-")
+            for child in _owned_snapshot_siblings(output)
+        ),
+        "stale_generation_count": sum(
+            child.name.startswith(f".{output.name}.generation-")
+            for child in _owned_snapshot_siblings(output)
+        ),
+    }
+    marker_written = False
+    try:
+        _write_scanned(
+            output / "identity_cleanup_degraded.json",
+            (canonical_json(marker) + "\n").encode("utf-8"),
+            environ=environ,
+        )
+        marker_written = True
+    except Exception as exc:
+        failures = [*failures, _cleanup_failure("cleanup_marker", exc)]
+
+    degraded = dict(result)
+    components = dict(result.get("components", {}))
+    components["snapshot_cleanup"] = _component(
+        "PARTIAL",
+        artifacts=("identity_cleanup_degraded.json",) if marker_written else (),
+        errors=tuple(item["error_type"] for item in failures),
+        missing=("snapshot_cleanup",),
+    )
+    degraded["components"] = components
+    degraded["ok"] = False
+    degraded["missing"] = sorted({*result.get("missing", []), "snapshot_cleanup"})
+    degraded["errors"] = [
+        *result.get("errors", []),
+        {
+            "component": "snapshot_cleanup",
+            "messages": [item["error_type"] for item in failures],
+        },
+    ]
+    with suppress(Exception):
+        _write_scanned(
+            output / "snapshot_result.json",
+            (canonical_json(degraded) + "\n").encode("utf-8"),
+            environ=environ,
+        )
+    print("identity snapshot cleanup degraded", file=sys.stderr)
+    return degraded
 
 
 def _walk_regular(repo: Path, relative_root: Path) -> tuple[list[Path], list[dict]]:
@@ -748,9 +928,7 @@ def _walk_regular(repo: Path, relative_root: Path) -> tuple[list[Path], list[dic
         return files, excluded
 
     stack: list[tuple[int, bytes]] = [(root_fd, _path_bytes(relative_root))]
-    directory_flags = (
-        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    )
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     while stack:
         directory_fd, raw_directory = stack.pop()
         child_dirs: list[tuple[int, bytes]] = []
@@ -808,9 +986,7 @@ def _open_relative_fd(repo: Path, relative: Path, flags: int) -> tuple[int, os.s
     parts = _path_bytes(relative).split(b"/")
     if not parts or any(part in (b"", b".", b"..") for part in parts):
         raise ValueError("unsafe relative source path")
-    directory_flags = (
-        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    )
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     directory_fd = os.open(repo, directory_flags)
     try:
         for part in parts[:-1]:
@@ -868,14 +1044,18 @@ def _read_source(repo: Path, relative: Path) -> tuple[bytes, int, dict[str, str]
         raise ValueError("source symlink escapes repository") from exc
     payload, mode = _read_regular(repo, resolved_relative)
     exact_mode = stat.S_IMODE(resolved.lstat().st_mode)
-    return payload, mode, {
-        "link_target": _path_display(Path(os.fsdecode(raw_target))),
-        "link_target_hex": raw_target.hex(),
-        "resolved_source": _path_display(resolved_relative),
-        "resolved_source_hex": _path_bytes(resolved_relative).hex(),
-        "resolved_sha256": sha256_bytes(payload),
-        "resolved_mode": exact_mode,
-    }
+    return (
+        payload,
+        mode,
+        {
+            "link_target": _path_display(Path(os.fsdecode(raw_target))),
+            "link_target_hex": raw_target.hex(),
+            "resolved_source": _path_display(resolved_relative),
+            "resolved_source_hex": _path_bytes(resolved_relative).hex(),
+            "resolved_sha256": sha256_bytes(payload),
+            "resolved_mode": exact_mode,
+        },
+    )
 
 
 def _tar_bytes(files: list[tuple[str, bytes, int]]) -> bytes:
@@ -946,7 +1126,9 @@ def _submodule_snapshot(repo: Path, output: Path, *, environ: dict[str, str]) ->
             info = checkout.lstat()
             if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
                 raise ValueError("unsafe submodule checkout")
-            head = bytes(_run(repo, ["git", "-C", os.fsdecode(raw_path), "rev-parse", "HEAD"])).strip()
+            head = bytes(
+                _run(repo, ["git", "-C", os.fsdecode(raw_path), "rev-parse", "HEAD"])
+            ).strip()
             status = bytes(
                 _run(
                     repo,
@@ -956,7 +1138,15 @@ def _submodule_snapshot(repo: Path, output: Path, *, environ: dict[str, str]) ->
             diff = bytes(
                 _run(
                     repo,
-                    ["git", "-C", os.fsdecode(raw_path), "diff", "--binary", "--no-ext-diff", "HEAD"],
+                    [
+                        "git",
+                        "-C",
+                        os.fsdecode(raw_path),
+                        "diff",
+                        "--binary",
+                        "--no-ext-diff",
+                        "HEAD",
+                    ],
                 )
             )
             nested_index = bytes(
@@ -971,9 +1161,7 @@ def _submodule_snapshot(repo: Path, output: Path, *, environ: dict[str, str]) ->
             )["ok"]:
                 raise SecretMaterialDetected(("submodule",))
             nested_gitlinks = []
-            for nested_record in sorted(
-                item for item in nested_index.split(b"\0") if item
-            ):
+            for nested_record in sorted(item for item in nested_index.split(b"\0") if item):
                 nested_metadata, nested_path = nested_record.split(b"\t", 1)
                 nested_mode, nested_sha, _nested_stage = nested_metadata.split(b" ", 2)
                 if nested_mode == b"160000":
@@ -984,20 +1172,22 @@ def _submodule_snapshot(repo: Path, output: Path, *, environ: dict[str, str]) ->
                             "gitlink_sha": nested_sha.decode("ascii"),
                         }
                     )
+            checked_out_head = head.decode("ascii")
             dirty = bool(status or diff)
+            head_mismatch = checked_out_head != gitlink_sha.decode("ascii")
             nested_incomplete = bool(nested_gitlinks)
             recursive_state = (
                 "UNARCHIVED_DIRTY_STATE"
                 if dirty
                 else (
-                    "UNARCHIVED_NESTED_SUBMODULES"
-                    if nested_incomplete
-                    else "CLEAN"
+                    "HEAD_MISMATCH"
+                    if head_mismatch
+                    else ("UNARCHIVED_NESTED_SUBMODULES" if nested_incomplete else "CLEAN")
                 )
             )
             row.update(
                 {
-                    "checked_out_head": head.decode("ascii"),
+                    "checked_out_head": checked_out_head,
                     "status": "CAPTURED" if recursive_state == "CLEAN" else "PARTIAL",
                     "status_hex": status.hex(),
                     "diff_hex": diff.hex(),
@@ -1202,9 +1392,7 @@ def _snapshot_identity_locked(
     patch_before: bytes | None = None
 
     try:
-        patch_before = bytes(
-            _run(repo, ["git", "diff", "--binary", "--no-ext-diff", "HEAD"])
-        )
+        patch_before = bytes(_run(repo, ["git", "diff", "--binary", "--no-ext-diff", "HEAD"]))
         epoch_before = _repository_epoch(repo, patch=patch_before)
     except Exception as exc:
         components["repository_epoch"] = _component(
@@ -1251,9 +1439,7 @@ def _snapshot_identity_locked(
                 *(path.as_posix() for path in (*_PROMPT_DIRS, *_ROOT_SOURCES)),
             )
         }
-        tracked_all = {
-            _path_bytes(path) for path in _git_paths(repo, "ls-files", "-z")
-        }
+        tracked_all = {_path_bytes(path) for path in _git_paths(repo, "ls-files", "-z")}
         untracked = _git_paths(
             repo,
             "ls-files",
@@ -1331,9 +1517,7 @@ def _snapshot_identity_locked(
                 raise SecretMaterialDetected(("source_metadata",))
             member = _archive_member(relative)
             archive_entries.append((member, payload, mode))
-            untracked_rows.append(
-                _path_record(relative, archive_member=member, **source_metadata)
-            )
+            untracked_rows.append(_path_record(relative, archive_member=member, **source_metadata))
         except (
             FileNotFoundError,
             ValueError,
@@ -1341,9 +1525,7 @@ def _snapshot_identity_locked(
             RuntimeError,
             SecretMaterialDetected,
         ) as exc:
-            archive_rejected.append(
-                _path_record(relative, reason=_member_rejection_reason(exc))
-            )
+            archive_rejected.append(_path_record(relative, reason=_member_rejection_reason(exc)))
     rejected_raw = {bytes.fromhex(row["raw_path_hex"]) for row in archive_rejected}
     for source_root in _SOURCE_DIRS:
         _files, skipped = _walk_regular(repo, source_root)
@@ -1424,9 +1606,7 @@ def _snapshot_identity_locked(
                     _path_record(relative, reason=_member_rejection_reason(exc)),
                 )
     prompt_rejected_rows = [prompt_rejected[key] for key in sorted(prompt_rejected)]
-    prompt_errors = tuple(
-        f"{row['path']}: {row['reason']}" for row in prompt_rejected_rows
-    )
+    prompt_errors = tuple(f"{row['path']}: {row['reason']}" for row in prompt_rejected_rows)
     prompt_artifacts = tuple(row["snapshot"] for row in prompt_rows)
     components["prompts"] = _component(
         "PARTIAL" if prompt_errors else "SUCCESS",
@@ -1480,9 +1660,7 @@ def _snapshot_identity_locked(
             payload, _mode = _read_regular(repo, relative)
             project_files[_path_display(relative)] = {
                 "sha256": sha256_bytes(payload),
-                "classification": (
-                    "TRACKED" if _path_bytes(relative) in tracked else "UNTRACKED"
-                ),
+                "classification": ("TRACKED" if _path_bytes(relative) in tracked else "UNTRACKED"),
             }
         except FileNotFoundError:
             project_files[_path_display(relative)] = {
@@ -1507,12 +1685,8 @@ def _snapshot_identity_locked(
                 errors=(_safe_error(exc, environ=env),),
                 missing=("repository epoch after snapshot",),
             )
-    safe_archive_rejected = [
-        _sanitize_path_record(row, environ=env) for row in archive_rejected
-    ]
-    safe_prompt_rejected = [
-        _sanitize_path_record(row, environ=env) for row in prompt_rejected_rows
-    ]
+    safe_archive_rejected = [_sanitize_path_record(row, environ=env) for row in archive_rejected]
+    safe_prompt_rejected = [_sanitize_path_record(row, environ=env) for row in prompt_rejected_rows]
     safe_excluded = [_sanitize_path_record(row, environ=env) for row in excluded]
     manifest = redact_value(
         {
@@ -1583,9 +1757,7 @@ def _snapshot_identity_locked(
             "redaction_rule_version": REDACTION_RULE_VERSION,
             "components": safe_components,
             "missing": sorted({*missing, "snapshot_result"}),
-            "errors": [
-                {"component": "snapshot_result", "messages": [_REDACTED]}
-            ],
+            "errors": [{"component": "snapshot_result", "messages": [_REDACTED]}],
         }
         result_payload = (canonical_json(safe_result) + "\n").encode("utf-8")
     _write_scanned(output / "snapshot_result.json", result_payload, environ=env)
@@ -1613,6 +1785,7 @@ def snapshot_identity(
             info = output.lstat()
             if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
                 raise ValueError("identity output must be a real directory")
+        _scavenge_snapshot_siblings(output)
         generation = Path(
             tempfile.mkdtemp(
                 prefix=f".{output.name}.generation-",
@@ -1631,7 +1804,20 @@ def snapshot_identity(
             )
             if not (generation / "snapshot_result.json").is_file():
                 raise RuntimeError("identity generation is incomplete")
-            _promote_snapshot_generation(generation, output)
+            cleanup_failures = _promote_snapshot_generation(generation, output)
+            if cleanup_failures:
+                env = dict(os.environ if environ is None else environ)
+                return _record_snapshot_cleanup_degradation(
+                    output,
+                    result,
+                    cleanup_failures,
+                    environ=env,
+                )
             return result
-        finally:
-            shutil.rmtree(generation, ignore_errors=True)
+        except Exception:
+            try:
+                _remove_snapshot_sibling(generation)
+                _fsync_directory(output.parent)
+            except Exception:
+                print("identity snapshot generation cleanup degraded", file=sys.stderr)
+            raise
