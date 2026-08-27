@@ -89,3 +89,44 @@ def ingested_shas(root=None) -> set[str]:
         if rec.get("status") == "ok" and rec.get("sha256"):
             out.add(rec["sha256"])
     return out
+
+
+_SORT_KEYS = ["account", "trade_date", "trade_time", "code", "side", "trade_id"]
+
+
+def merge(root=None) -> pd.DataFrame:
+    """raw/* → trades.csv,全量确定性重建。
+
+    自然键 `schema.NATURAL_KEY` 分组;组内各源按 seq 排序后**按位次配对**(multiset:
+    gtht 2 笔 vs chinaclear 1 笔 → 2 行,第 1 行双源、第 2 行单源);位次上的主源 = 优先级最高者,
+    其余源只对 `FILLABLE_COLUMNS` 补缺;`sources` = 参与源按优先级 `+` 连。
+    """
+    base = root_or_default(root)
+    raw_dir = base / RAW_DIRNAME
+    frames = [read_raw(p) for p in sorted(raw_dir.glob("*.csv"))] if raw_dir.exists() else []
+    frames = [f for f in frames if len(f)]
+    if not frames:
+        trades = pd.DataFrame(columns=list(schema.TRADES_COLUMNS))
+    else:
+        allr = pd.concat(frames, ignore_index=True)
+        rows: list[dict] = []
+        for _key, g in allr.groupby(list(schema.NATURAL_KEY), dropna=False, sort=True):
+            by_src = {s: sg.sort_values("seq", kind="stable").to_dict("records")
+                      for s, sg in g.groupby("source_kind")}
+            order = sorted(by_src, key=lambda s: (PRIORITY.get(s, 3), s))
+            for i in range(max(len(v) for v in by_src.values())):
+                present = [s for s in order if i < len(by_src[s])]
+                primary = dict(by_src[present[0]][i])
+                for s in present[1:]:
+                    other = by_src[s][i]
+                    for col in schema.FILLABLE_COLUMNS:
+                        if schema.is_blank(primary.get(col)) and not schema.is_blank(other.get(col)):
+                            primary[col] = other[col]
+                primary["sources"] = "+".join(present)
+                rows.append(primary)
+        trades = (pd.DataFrame(rows).reindex(columns=list(schema.TRADES_COLUMNS))
+                  .sort_values(_SORT_KEYS, kind="stable").reset_index(drop=True))
+    path = trades_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    trades.to_csv(path, index=False, encoding="utf-8")
+    return trades
