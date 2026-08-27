@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from autoresearch.common import workspace as ws
 from autoresearch.scan.run_contract import (
     RunContract,
     load_run_contract,
@@ -70,25 +71,53 @@ def test_build_rejects_invalid_analysis_date_even_with_explicit_workspace(tmp_pa
         _build(analysis_date="../escape", workspace_path=tmp_path)
 
 
-def test_injected_run_id_default_workspace_ignores_ambient_run(monkeypatch):
-    ambient = "20260827T010203456789Z"
-    injected = "20260827T010203456790Z"
-    monkeypatch.setenv("AUTORESEARCH_RUN_ID", ambient)
+def test_injected_run_id_requires_explicit_allocated_workspace(monkeypatch):
+    monkeypatch.delenv("AUTORESEARCH_RUN_ID", raising=False)
+    with pytest.raises(ValueError, match="workspace_path.*required"):
+        _build(run_id="20260827T010203456790Z")
 
-    contract = _build(run_id=injected)
 
-    assert contract.run_id == injected
-    assert contract.workspace_path == (
-        f"context_codex/scan_runs/{injected}/staging/{DATE}"
-    )
+def test_injected_run_id_cannot_borrow_ambient_workspace(monkeypatch):
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", "20260827T010203456789Z")
+    with pytest.raises(ValueError, match="workspace_path.*required"):
+        _build(run_id="20260827T010203456790Z")
+
+
+def test_ambient_run_cannot_mint_implicit_contract_identity(monkeypatch):
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", "20260827T010203456789Z")
+    with pytest.raises(ValueError, match="active AUTORESEARCH_RUN_ID"):
+        _build()
+
+
+@pytest.mark.parametrize(
+    "workspace_path",
+    [
+        "",
+        "../../escape",
+        "context_codex/scan_runs/20260827T010203456790Z/staging/2026-07-28",
+        "context_codex/scan_runs/20260827T010203456789Z",
+    ],
+)
+def test_capsule_build_rejects_unsafe_or_mismatched_workspace(workspace_path):
+    with pytest.raises(ValueError, match="workspace_path"):
+        _build(
+            run_id="20260827T010203456790Z",
+            workspace_path=workspace_path,
+        )
+
+
+def test_capsule_build_preserves_safe_absolute_workspace_string():
+    run_id = "20260827T010203456790Z"
+    absolute = ws.scan_run_root(run_id).resolve()
+    contract = _build(run_id=run_id, workspace_path=absolute)
+
+    assert contract.workspace_path == str(absolute)
 
 
 def test_legacy_build_defaults_to_existing_scan_workspace(monkeypatch):
-    from autoresearch.common import workspace as ws
-
     monkeypatch.delenv("AUTORESEARCH_RUN_ID", raising=False)
     contract = _build()
-    assert contract.workspace_path == str(ws.scan_dir(DATE))
+    assert contract.workspace_path == str(ws.context_root() / "scan" / DATE)
 
 
 def test_contract_hash_covers_pinned_and_data_policy():
@@ -252,12 +281,50 @@ def test_load_rejects_boolean_schema_version_before_hash_validation(tmp_path):
         load_run_contract(path)
 
 
+@pytest.mark.parametrize("missing", ("run_kind", "engine", "workspace_path", "session_ref"))
+def test_v3_load_requires_every_physical_v3_field(tmp_path, missing):
+    raw = _build().to_dict()
+    raw.pop(missing)
+    raw["contract_hash"] = sha256_json(
+        {key: value for key, value in raw.items() if key != "contract_hash"}
+    )
+    path = tmp_path / f"missing-{missing}.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=f"missing v3 field.*{missing}"):
+        load_run_contract(path)
+
+
+@pytest.mark.parametrize(
+    "workspace_path",
+    [
+        "",
+        "../../escape",
+        "context_codex/scan/2026-07-28/child",
+        "context_codex/scan_runs/20260827T999999999999Z",
+    ],
+)
+def test_load_rejects_rehashed_v3_with_invalid_workspace(
+    tmp_path, workspace_path
+):
+    raw = _build().to_dict()
+    raw["workspace_path"] = workspace_path
+    raw["contract_hash"] = sha256_json(
+        {key: value for key, value in raw.items() if key != "contract_hash"}
+    )
+    path = tmp_path / "run_contract.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="workspace_path"):
+        load_run_contract(path)
+
+
 @pytest.mark.parametrize(
     ("field", "unsafe"),
     [("run_id", "../escape"), ("analysis_date", "../../escape")],
 )
 def test_load_rejects_rehashed_v3_with_unsafe_path_identity(tmp_path, field, unsafe):
-    raw = _build(workspace_path="safe/workspace").to_dict()
+    raw = _build().to_dict()
     raw[field] = unsafe
     raw["contract_hash"] = sha256_json(
         {key: value for key, value in raw.items() if key != "contract_hash"}

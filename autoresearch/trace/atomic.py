@@ -37,15 +37,12 @@ def _write_all(fd: int, payload: bytes) -> None:
 
 
 def _fsync_directory(path: Path) -> None:
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    try:
-        fd = os.open(path, flags)
-    except OSError:
+    if os.name == "nt":
         return
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    fd = os.open(path, flags)
     try:
         os.fsync(fd)
-    except OSError:
-        pass
     finally:
         os.close(fd)
 

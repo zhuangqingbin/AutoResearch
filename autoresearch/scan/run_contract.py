@@ -23,6 +23,41 @@ _V2_FIELDS = ("git_dirty", "dirty_paths", "prompt_hashes")
 _V3_FIELDS = ("run_kind", "engine", "workspace_path", "session_ref")
 
 
+def _workspace_candidates(*, analysis_date: str, run_id: str) -> tuple[Path, Path]:
+    return (
+        ws.scan_run_root(run_id).resolve(),
+        (ws.context_root() / "scan" / analysis_date).resolve(),
+    )
+
+
+def _validate_workspace_path(
+    workspace_path: Path | str,
+    *,
+    analysis_date: str,
+    run_id: str,
+    capsule_only: bool = False,
+) -> str:
+    if not isinstance(workspace_path, (str, Path)):
+        raise ValueError(f"invalid workspace_path: {workspace_path!r}")
+    recorded = str(workspace_path)
+    if not recorded.strip():
+        raise ValueError("invalid workspace_path: empty")
+    try:
+        resolved = Path(recorded).resolve()
+        capsule, legacy = _workspace_candidates(
+            analysis_date=analysis_date, run_id=run_id
+        )
+    except (OSError, RuntimeError) as exc:
+        raise ValueError(f"invalid workspace_path: {recorded!r}") from exc
+    allowed = (capsule,) if capsule_only else (capsule, legacy)
+    if resolved not in allowed:
+        raise ValueError(
+            f"invalid workspace_path: {recorded!r}; expected "
+            + " or ".join(str(path) for path in allowed)
+        )
+    return recorded
+
+
 def sha256_json(value: object) -> str:
     """返回稳定 JSON 的 SHA-256 十六进制摘要。"""
     return sha256_bytes(canonical_json(value).encode("utf-8"))
@@ -161,16 +196,26 @@ class RunContract:
             stamp.strftime("%Y%m%dT%H%M%S%fZ") if run_id is None else str(run_id)
         )
         resolved_run_id = ws.validate_run_id(resolved_run_id)
-        if workspace_path is not None:
-            resolved_workspace = str(workspace_path)
-        elif run_id is not None:
+        if workspace_path is None:
+            if run_id is not None:
+                raise ValueError(
+                    "workspace_path is required when run_id is explicitly supplied"
+                )
+            if ws.active_run_id() is not None:
+                raise ValueError(
+                    "cannot build implicit contract identity with active "
+                    "AUTORESEARCH_RUN_ID"
+                )
             resolved_workspace = str(
-                ws.scan_run_root(resolved_run_id)
-                / "staging"
-                / resolved_analysis_date
+                ws.context_root() / "scan" / resolved_analysis_date
             )
         else:
-            resolved_workspace = str(ws.scan_dir(resolved_analysis_date))
+            resolved_workspace = _validate_workspace_path(
+                workspace_path,
+                analysis_date=resolved_analysis_date,
+                run_id=resolved_run_id,
+                capsule_only=run_id is not None,
+            )
         normalized_config = json.loads(canonical_json(user_config))
         if git_dirty is None or dirty_paths is None:
             probed_dirty, probed_paths = resolve_git_dirty(repo_root)
@@ -208,6 +253,10 @@ class RunContract:
             raise ValueError(
                 f"unsupported run contract schema_version={schema_version!r}"
             )
+        if schema_version == 3:
+            missing = [field for field in _V3_FIELDS if field not in payload]
+            if missing:
+                raise ValueError(f"missing v3 field(s): {', '.join(missing)}")
         payload["analysis_date"] = ws.validate_scan_date(payload.get("analysis_date"))
         payload["run_id"] = ws.validate_run_id(payload.get("run_id"))
         if schema_version == 1:
@@ -221,6 +270,12 @@ class RunContract:
         # (都序列化成数组),但字段类型漂移会让下游 `replace()`/相等比较出岔。
         if isinstance(payload.get("dirty_paths"), list):
             payload["dirty_paths"] = tuple(payload["dirty_paths"])
+        if schema_version == 3:
+            payload["workspace_path"] = _validate_workspace_path(
+                payload["workspace_path"],
+                analysis_date=payload["analysis_date"],
+                run_id=payload["run_id"],
+            )
         contract = cls(**payload)
         if contract.config_hash != sha256_json(contract.user_config):
             raise ValueError("run contract config_hash mismatch")
