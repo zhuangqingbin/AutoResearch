@@ -612,6 +612,14 @@ def test_agent_boundary_records_authoritative_binding_and_structured_result(
     tmp_path, monkeypatch
 ):
     handle = _begin(tmp_path, monkeypatch)
+    record_agent_boundary(
+        handle.run_id,
+        "AGENT_DISPATCHED",
+        role="l4-card",
+        subject="600000",
+        invocation_id="l4-card-600000-1",
+        attempt=1,
+    )
 
     event = record_agent_boundary(
         handle.run_id,
@@ -673,14 +681,22 @@ def test_controlled_agent_boundary_records_self_failure_when_target_append_fails
     tmp_path, monkeypatch
 ):
     handle = _begin(tmp_path, monkeypatch)
-    original = capsule_mod.append_event
+    record_agent_boundary(
+        handle.run_id,
+        "AGENT_DISPATCHED",
+        role="l4-card",
+        subject="600000",
+        invocation_id="l4-card-600000-1",
+        attempt=1,
+    )
+    original = capsule_mod.append_guarded_event
 
     def fail_target(path, **fields):
         if fields["invocation_id"] == "l4-card-600000-1":
             raise OSError("target event fault")
         return original(path, **fields)
 
-    monkeypatch.setattr(capsule_mod, "append_event", fail_target)
+    monkeypatch.setattr(capsule_mod, "append_guarded_event", fail_target)
     with pytest.raises(OSError, match="target event fault"):
         record_controlled_agent_boundary(
             handle.run_id,
@@ -772,6 +788,14 @@ def test_agent_failure_redacts_secret_values_before_append(tmp_path, monkeypatch
     handle = _begin(tmp_path, monkeypatch)
     secret = "abcdefghijklmnopqrstuvwxyz123456"
     monkeypatch.setenv("TUSHARE_TOKEN", secret)
+    record_agent_boundary(
+        handle.run_id,
+        "AGENT_DISPATCHED",
+        role="l4-card",
+        subject="600000",
+        invocation_id="l4-card-600000-1",
+        attempt=1,
+    )
 
     event = record_agent_boundary(
         handle.run_id,
@@ -789,6 +813,190 @@ def test_agent_failure_redacts_secret_values_before_append(tmp_path, monkeypatch
     encoded = json.dumps(event, ensure_ascii=False)
     assert secret not in encoded
     assert encoded.count("[REDACTED]") >= 2
+
+
+@pytest.mark.parametrize(
+    "event_type,result,error,match",
+    [
+        ("AGENT_DISPATCHED", None, {"type": "x"}, "DISPATCHED.*error"),
+        ("AGENT_COMPLETED", None, {"type": "x"}, "COMPLETED.*error"),
+        ("AGENT_FAILED", None, None, "FAILED.*error"),
+        ("AGENT_FAILED", {"status": "bad"}, {"type": "x"}, "FAILED.*result"),
+    ],
+)
+def test_agent_boundary_enforces_event_payload_rules(
+    tmp_path, monkeypatch, event_type, result, error, match
+):
+    handle = _begin(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError, match=match):
+        record_agent_boundary(
+            handle.run_id,
+            event_type,
+            role="l4-card",
+            subject="600000",
+            invocation_id="l4-card-600000-1",
+            attempt=1,
+            result=result,
+            error=error,
+        )
+
+
+def test_agent_lifecycle_is_ordered_idempotent_and_conflict_safe(
+    tmp_path, monkeypatch
+):
+    handle = _begin(tmp_path, monkeypatch)
+    kwargs = {
+        "role": "l4-card",
+        "subject": "600000",
+        "invocation_id": "l4-card-600000-1",
+        "attempt": 1,
+    }
+    before = (handle.capsule / "events/events.jsonl").read_bytes()
+    with pytest.raises(ValueError, match="requires.*dispatch"):
+        record_agent_boundary(
+            handle.run_id,
+            "AGENT_COMPLETED",
+            **kwargs,
+            result={"status": "returned"},
+        )
+    assert (handle.capsule / "events/events.jsonl").read_bytes() == before
+
+    dispatched = record_agent_boundary(
+        handle.run_id, "AGENT_DISPATCHED", **kwargs, result={"status": "queued"}
+    )
+    duplicate_dispatch = record_agent_boundary(
+        handle.run_id, "AGENT_DISPATCHED", **kwargs, result={"status": "queued"}
+    )
+    assert duplicate_dispatch == dispatched
+    with pytest.raises(ValueError, match="conflicting.*dispatch"):
+        record_agent_boundary(
+            handle.run_id,
+            "AGENT_DISPATCHED",
+            **kwargs,
+            result={"status": "different"},
+        )
+
+    completed = record_agent_boundary(
+        handle.run_id,
+        "AGENT_COMPLETED",
+        **kwargs,
+        result={"status": "returned"},
+    )
+    duplicate_terminal = record_agent_boundary(
+        handle.run_id,
+        "AGENT_COMPLETED",
+        **kwargs,
+        result={"status": "returned"},
+    )
+    assert duplicate_terminal == completed
+    with pytest.raises(ValueError, match="conflicting.*terminal"):
+        record_agent_boundary(
+            handle.run_id,
+            "AGENT_FAILED",
+            **kwargs,
+            error={"error_type": "late"},
+        )
+    assert [
+        event["event_type"] for event in _events(handle) if event["invocation_id"] == kwargs["invocation_id"]
+    ] == ["AGENT_DISPATCHED", "AGENT_COMPLETED"]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("role", "other-role"), ("subject", "600001"), ("attempt", 2)],
+)
+def test_agent_terminal_rejects_binding_drift(tmp_path, monkeypatch, field, value):
+    handle = _begin(tmp_path, monkeypatch)
+    kwargs = {
+        "role": "l4-card",
+        "subject": "600000",
+        "invocation_id": "l4-card-600000-1",
+        "attempt": 1,
+    }
+    record_agent_boundary(handle.run_id, "AGENT_DISPATCHED", **kwargs)
+    kwargs[field] = value
+
+    with pytest.raises(ValueError, match="binding"):
+        record_agent_boundary(
+            handle.run_id,
+            "AGENT_COMPLETED",
+            **kwargs,
+            result={"status": "returned"},
+        )
+
+
+def test_agent_terminal_rejects_stage_drift(tmp_path, monkeypatch):
+    handle = _begin(tmp_path, monkeypatch)
+    kwargs = {
+        "role": "l4-card",
+        "subject": "600000",
+        "invocation_id": "l4-card-600000-1",
+        "attempt": 1,
+    }
+    monkeypatch.setenv("AUTORESEARCH_STAGE", "l4")
+    record_agent_boundary(handle.run_id, "AGENT_DISPATCHED", **kwargs)
+    monkeypatch.setenv("AUTORESEARCH_STAGE", "l5")
+
+    with pytest.raises(ValueError, match="binding"):
+        record_agent_boundary(
+            handle.run_id,
+            "AGENT_COMPLETED",
+            **kwargs,
+            result={"status": "returned"},
+        )
+
+
+def test_agent_lifecycle_concurrency_has_one_dispatch_and_one_terminal(
+    tmp_path, monkeypatch
+):
+    handle = _begin(tmp_path, monkeypatch)
+    kwargs = {
+        "role": "l4-card",
+        "subject": "600000",
+        "invocation_id": "l4-card-600000-1",
+        "attempt": 1,
+    }
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        dispatches = list(
+            pool.map(
+                lambda _: record_agent_boundary(
+                    handle.run_id, "AGENT_DISPATCHED", **kwargs
+                ),
+                range(8),
+            )
+        )
+    assert len({event["event_hash"] for event in dispatches}) == 1
+
+    def terminal(event_type):
+        if event_type == "AGENT_COMPLETED":
+            return record_agent_boundary(
+                handle.run_id,
+                event_type,
+                **kwargs,
+                result={"status": "returned"},
+            )
+        return record_agent_boundary(
+            handle.run_id,
+            event_type,
+            **kwargs,
+            error={"error_type": "RuntimeError"},
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(terminal, kind) for kind in ("AGENT_COMPLETED", "AGENT_FAILED")]
+    outcomes = []
+    for future in futures:
+        try:
+            outcomes.append(future.result()["event_type"])
+        except ValueError:
+            outcomes.append("REJECTED")
+    assert outcomes.count("REJECTED") == 1
+    agent_events = [
+        event for event in _events(handle) if event["invocation_id"] == kwargs["invocation_id"]
+    ]
+    assert len(agent_events) == 2
+    assert agent_events[0]["event_type"] == "AGENT_DISPATCHED"
 
 
 def test_agent_event_cli_emits_one_canonical_json_and_honest_failure(

@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -408,8 +409,33 @@ def verify_event_chain(path: Path | str) -> dict:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
+def append_guarded_event(
+    path: Path | str,
+    *,
+    guard: Callable[[tuple[dict, ...], dict], dict | None],
+    **fields,
+) -> dict:
+    """Validate history and run ``guard`` under the same exclusive append lock.
+
+    Returning an existing event makes a semantic retry idempotent. Returning
+    ``None`` authorizes one append. Raising rejects without changing the log.
+    """
+    if not callable(guard):
+        raise TypeError("guard must be callable")
+    return _append_event(path, fields, guard=guard)
+
+
 def append_event(path: Path | str, **fields) -> dict:
     """Durably append one event; every append also fsyncs the parent directory."""
+    return _append_event(path, fields, guard=None)
+
+
+def _append_event(
+    path: Path | str,
+    fields: dict,
+    *,
+    guard: Callable[[tuple[dict, ...], dict], dict | None] | None,
+) -> dict:
     normalized_fields = _validate_semantic_fields(fields)
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -425,6 +451,21 @@ def append_event(path: Path | str, **fields) -> dict:
                 raise ValueError(
                     f"invalid existing event chain: {existing['error']}"
                 )
+            if guard is not None:
+                handle.seek(0)
+                history = tuple(
+                    json.loads(line)
+                    for line in handle.read().decode("utf-8").splitlines()
+                )
+                guarded = guard(history, normalized_fields)
+                if guarded is not None:
+                    if not any(
+                        item.get("event_hash") == guarded.get("event_hash")
+                        and item == guarded
+                        for item in history
+                    ):
+                        raise ValueError("guard returned an event outside locked history")
+                    return guarded
             event = {
                 "schema_version": EVENT_SCHEMA_VERSION,
                 "seq": existing["n"] + 1,

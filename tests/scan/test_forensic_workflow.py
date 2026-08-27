@@ -105,6 +105,7 @@ def test_l4_workflow_invocation_ids_bind_stock_and_attempt():
     assert "PY('l4', `l4-prepare-${code}-attempt-${taskAttempt}`" in source
     assert "PY('l4', `l4-failure-${code}-attempt-${taskAttempt}`" in source
     assert "PY('l4', `l4-success-${code}-attempt-${taskAttempt}`" in source
+    assert source.count("--expected-attempt ${taskAttempt}") >= 3
 
 
 def test_l4_workflow_routes_every_business_agent_through_boundary_wrapper():
@@ -131,10 +132,83 @@ def test_l4_workflow_routes_every_business_agent_through_boundary_wrapper():
     assert emit_body.count("rawAgent(") == 1
     assert "--control-invocation-id ${controlInvocationId}" in emit_body
     assert "trace-control-${invocationId}-${eventType.toLowerCase()}" in emit_body
+    assert "required: ['ok', 'event', 'control_events']" in source
+    assert "TRACE_CONTROL_CALLS_PER_TARGET = 2" in source
     wrapper_body = source.split("async function tracedAgent", 1)[1].split(
         "const recordL4", 1
     )[0]
     assert wrapper_body.count("rawAgent(") == 1
+    assert wrapper_body.count("emitAgentEvent(") == 3
+
+
+@pytest.mark.skipif(_NODE is None, reason="requires node workflow probe")
+@pytest.mark.parametrize("ack_mode", ["valid", "ok-false", "target-mismatch", "control-mismatch"])
+def test_l4_trace_control_ack_is_strictly_validated_but_remains_best_effort(
+    ack_mode
+):
+    path = WORKFLOWS[1]
+    script = textwrap.dedent(
+        r"""
+        const fs = require('fs');
+        const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+        let src = fs.readFileSync(process.argv[1], 'utf8').replace(/^export const meta/m, 'const meta');
+        const mode = process.argv[3];
+        const logs = [];
+        const boundaryAck = (prompt) => {
+          const eventType = prompt.match(/agent-event \S+ (AGENT_[A-Z]+)/)[1];
+          const invocationId = [...prompt.matchAll(/--invocation-id ([^ ]+)/g)].at(-1)[1];
+          const controlId = prompt.match(/--control-invocation-id ([^ `]+)/)[1];
+          const role = prompt.match(/--role ([^ ]+)/)[1];
+          const subject = prompt.match(/--subject ([^ ]+)/)[1];
+          const attempt = Number([...prompt.matchAll(/--attempt (\d+)/g)].at(-1)[1]);
+          const runId = prompt.match(/agent-event (\S+) AGENT_/)[1];
+          const event = (type, id, eventRole) => ({
+            run_id: runId, engine: 'claude', stage: 'l4', invocation_id: id,
+            attempt, subject, event_type: type,
+            payload: {role: eventRole, result: null, error: null},
+          });
+          const ack = {
+            ok: true,
+            event: event(eventType, invocationId, role),
+            control_events: [
+              event('AGENT_DISPATCHED', controlId, 'trace-control'),
+              event('AGENT_COMPLETED', controlId, 'trace-control'),
+            ],
+          };
+          if (mode === 'ok-false') ack.ok = false;
+          if (mode === 'target-mismatch') ack.event.invocation_id = 'wrong-target';
+          if (mode === 'control-mismatch') ack.control_events[1].subject = '600001';
+          return ack;
+        };
+        const agent = async (prompt) => {
+          if (/autoresearch\.trace\.capsule agent-event/.test(prompt)) return boundaryAck(prompt);
+          return {ok: true, action: 'BLOCKED', attempt: 0, reason: 'fixture'};
+        };
+        const fn = new AsyncFunction('agent','parallel','pipeline','log','phase','args','budget','workflow', src);
+        fn(agent, null, null, value => logs.push(String(value)), () => {}, JSON.parse(process.argv[2]), {total:null}, null)
+          .then(result => console.log(JSON.stringify({logs, result, error:null})))
+          .catch(error => console.log(JSON.stringify({logs, result:null, error:error.message})));
+        """
+    )
+    args = {
+        "date": "2026-01-01",
+        "run_id": "20260827T010203456789Z",
+        "code": "600000",
+        "attempt": 1,
+        "allow_empty_config": True,
+    }
+    completed = subprocess.run(
+        [_NODE, "-e", script, str(path), json.dumps(args), ack_mode],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    result = json.loads(completed.stdout.splitlines()[-1])
+    assert result["error"] is None
+    warnings = [line for line in result["logs"] if "取证失败" in line]
+    assert (warnings == []) is (ack_mode == "valid")
 
 
 @pytest.mark.skipif(_NODE is None, reason="requires node workflow probe")

@@ -15,6 +15,7 @@ from autoresearch.trace.events import (
     GENESIS_HASH,
     _event_hash,
     append_event,
+    append_guarded_event,
     verify_event_chain,
 )
 
@@ -152,6 +153,32 @@ def test_append_links_to_the_full_previous_hash(tmp_path):
     assert second["seq"] == 2
     assert second["prev_hash"] == first["event_hash"]
     assert len(second["prev_hash"]) == 64
+
+
+def test_guarded_append_checks_and_appends_under_one_lock(tmp_path):
+    path = tmp_path / "events.jsonl"
+    fields = _fields()
+
+    def idempotent_guard(existing, proposed):
+        for event in existing:
+            if event["invocation_id"] == proposed["invocation_id"]:
+                if all(event[key] == proposed[key] for key in proposed):
+                    return event
+                raise ValueError("conflicting invocation")
+        return None
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(
+            pool.map(
+                lambda _: append_guarded_event(
+                    path, guard=idempotent_guard, **fields
+                ),
+                range(8),
+            )
+        )
+
+    assert len({event["event_hash"] for event in results}) == 1
+    assert len(path.read_text(encoding="utf-8").splitlines()) == 1
 
 
 def test_event_chain_detects_delete_insert_reorder_and_edit(tmp_path, subtests):

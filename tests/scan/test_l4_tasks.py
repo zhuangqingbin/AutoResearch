@@ -18,7 +18,6 @@ from autoresearch.scan.l4_tasks import (
     preflight,
     prepare_slim,
 )
-from autoresearch.trace.atomic import canonical_json
 from autoresearch.trace.capsule import begin_run
 
 DATE = "2026-07-28"
@@ -114,6 +113,10 @@ def _trace_events(handle, code="000001"):
     ]
 
 
+def _persisted_book_bytes(payload: dict) -> bytes:
+    return (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+
 def test_initialize_is_atomic_and_preserves_order(tmp_path):
     result = _book(tmp_path)
     path = tmp_path / DATE / "_l4_tasks.json"
@@ -153,7 +156,7 @@ def test_initialize_defaults_to_run_scoped_slim_and_hashes_it(tmp_path, monkeypa
 
     book = initialize(DATE, ["000001"], now=NOW)
     preflight(book["path"], "000001", now=NOW)
-    mark_success(book["path"], "000001", now=NOW)
+    mark_success(book["path"], "000001", expected_attempt=1, now=NOW)
     payload = json.loads((scan / "_l4_tasks.json").read_text(encoding="utf-8"))
     slim_ref = payload["tasks"]["000001"]["artifacts"]["slim"]
 
@@ -245,9 +248,9 @@ def test_l4_trace_preserves_retry_failure_then_success_history(tmp_path, monkeyp
     handle, book = _traced_book(tmp_path, monkeypatch)
 
     assert preflight(book, "000001", now=NOW)["attempt"] == 1
-    mark_failure(book, "000001", "TIMEOUT", now=NOW)
+    mark_failure(book, "000001", "TIMEOUT", expected_attempt=1, now=NOW)
     assert preflight(book, "000001", now=NOW)["attempt"] == 2
-    mark_success(book, "000001", now=NOW)
+    mark_success(book, "000001", expected_attempt=2, now=NOW)
 
     events = _trace_events(handle)
     assert [event["event_type"] for event in events] == [
@@ -275,7 +278,9 @@ def test_l4_failure_transition_event_mapping(
     handle, book = _traced_book(tmp_path, monkeypatch)
     preflight(book, "000001", now=NOW)
 
-    result = mark_failure(book, "000001", error_class, now=NOW)
+    result = mark_failure(
+        book, "000001", error_class, expected_attempt=1, now=NOW
+    )
 
     event = _trace_events(handle)[-1]
     assert result["status"] == expected_status
@@ -286,15 +291,20 @@ def test_l4_failure_transition_event_mapping(
 def test_l4_exhausted_transient_failure_is_task_failed(tmp_path, monkeypatch):
     handle, book = _traced_book(tmp_path, monkeypatch)
     preflight(book, "000001", now=NOW)
-    mark_failure(book, "000001", "TIMEOUT", now=NOW)
+    mark_failure(book, "000001", "TIMEOUT", expected_attempt=1, now=NOW)
     preflight(book, "000001", now=NOW)
 
-    mark_failure(book, "000001", "CONNECTION", now=NOW)
+    result = mark_failure(
+        book, "000001", "CONNECTION", expected_attempt=2, now=NOW
+    )
 
     event = _trace_events(handle)[-1]
     assert event["event_type"] == "TASK_FAILED"
     assert event["attempt"] == 2
-    assert event["payload"]["new_status"] == "FAILED"
+    assert event["payload"]["new_status"] == result["status"] == "BLOCKED"
+    assert event["payload"]["task_book_hash"] == hashlib.sha256(
+        book.read_bytes()
+    ).hexdigest()
 
 
 def test_l4_transition_hashes_authoritative_book_and_visible_artifacts(
@@ -308,9 +318,7 @@ def test_l4_transition_hashes_authoritative_book_and_visible_artifacts(
     task = payload["tasks"]["000001"]
     event = _trace_events(handle)[-1]
     evidence = event["payload"]
-    expected_book_hash = hashlib.sha256(
-        canonical_json(payload).encode("utf-8")
-    ).hexdigest()
+    expected_book_hash = hashlib.sha256(book.read_bytes()).hexdigest()
     assert evidence["task_book_hash"] == expected_book_hash
     assert evidence["attempt"] == task["attempt"] == event["attempt"]
     for name in ("prompt", "slim", "card"):
@@ -341,6 +349,132 @@ def test_l4_event_failure_is_best_effort_after_authoritative_mutation(
     diagnostic = capsys.readouterr().err
     assert "TASK_CLAIMED" in diagnostic
     assert "events full" in diagnostic
+
+
+@pytest.mark.parametrize("terminal", ["failure", "success"])
+def test_late_attempt_one_terminal_cannot_mutate_claimed_attempt_two(
+    tmp_path, monkeypatch, terminal
+):
+    handle, book = _traced_book(tmp_path, monkeypatch)
+    preflight(book, "000001", expected_attempt=1, now=NOW)
+    mark_failure(book, "000001", "TIMEOUT", expected_attempt=1, now=NOW)
+    preflight(book, "000001", expected_attempt=2, now=NOW)
+    book_before = book.read_bytes()
+    events_before = (handle.capsule / "events/events.jsonl").read_bytes()
+
+    with pytest.raises(ValueError, match="expected attempt 1.*authoritative attempt 2"):
+        if terminal == "failure":
+            mark_failure(
+                book,
+                "000001",
+                "CONNECTION",
+                expected_attempt=1,
+                now=NOW,
+            )
+        else:
+            mark_success(book, "000001", expected_attempt=1, now=NOW)
+
+    assert book.read_bytes() == book_before
+    assert (handle.capsule / "events/events.jsonl").read_bytes() == events_before
+    task = json.loads(book.read_text(encoding="utf-8"))["tasks"]["000001"]
+    assert (task["attempt"], task["status"]) == (2, "RUNNING")
+
+
+def test_active_run_terminal_requires_expected_attempt_without_mutation(
+    tmp_path, monkeypatch
+):
+    handle, book = _traced_book(tmp_path, monkeypatch)
+    preflight(book, "000001", expected_attempt=1, now=NOW)
+    book_before = book.read_bytes()
+    events_before = (handle.capsule / "events/events.jsonl").read_bytes()
+
+    with pytest.raises(ValueError, match="expected_attempt.*active run"):
+        mark_failure(book, "000001", "TIMEOUT", now=NOW)
+
+    assert book.read_bytes() == book_before
+    assert (handle.capsule / "events/events.jsonl").read_bytes() == events_before
+
+
+def test_duplicate_identical_failure_is_idempotent_but_conflict_rejects(
+    tmp_path, monkeypatch
+):
+    handle, book = _traced_book(tmp_path, monkeypatch)
+    preflight(book, "000001", expected_attempt=1, now=NOW)
+    first = mark_failure(
+        book,
+        "000001",
+        "TIMEOUT",
+        error="same",
+        expected_attempt=1,
+        now=NOW,
+    )
+    book_after_first = book.read_bytes()
+    events_after_first = (handle.capsule / "events/events.jsonl").read_bytes()
+
+    duplicate = mark_failure(
+        book,
+        "000001",
+        "TIMEOUT",
+        error="same",
+        expected_attempt=1,
+        now=NOW + timedelta(minutes=1),
+    )
+    assert duplicate == {**first, "idempotent": True}
+    assert book.read_bytes() == book_after_first
+    assert (handle.capsule / "events/events.jsonl").read_bytes() == events_after_first
+
+    with pytest.raises(ValueError, match="contradictory terminal"):
+        mark_failure(
+            book,
+            "000001",
+            "CONNECTION",
+            expected_attempt=1,
+            now=NOW,
+        )
+    assert book.read_bytes() == book_after_first
+    assert (handle.capsule / "events/events.jsonl").read_bytes() == events_after_first
+
+
+def test_duplicate_identical_success_is_idempotent_and_failure_conflicts(
+    tmp_path, monkeypatch
+):
+    handle, book = _traced_book(tmp_path, monkeypatch)
+    preflight(book, "000001", expected_attempt=1, now=NOW)
+    first = mark_success(book, "000001", expected_attempt=1, now=NOW)
+    book_after_first = book.read_bytes()
+    events_after_first = (handle.capsule / "events/events.jsonl").read_bytes()
+
+    duplicate = mark_success(
+        book, "000001", expected_attempt=1, now=NOW + timedelta(minutes=1)
+    )
+    assert duplicate == {**first, "idempotent": True}
+    assert book.read_bytes() == book_after_first
+    assert (handle.capsule / "events/events.jsonl").read_bytes() == events_after_first
+
+    with pytest.raises(ValueError, match="contradictory terminal"):
+        mark_failure(
+            book, "000001", "TIMEOUT", expected_attempt=1, now=NOW
+        )
+
+
+def test_success_rejects_symlinked_artifact_without_terminal_mutation(
+    tmp_path, monkeypatch
+):
+    handle, book = _traced_book(tmp_path, monkeypatch)
+    preflight(book, "000001", expected_attempt=1, now=NOW)
+    task = json.loads(book.read_text(encoding="utf-8"))["tasks"]["000001"]
+    card = Path(task["artifacts"]["card"]["path"])
+    target = card.with_name("real-card.md")
+    card.rename(target)
+    card.symlink_to(target)
+    events_before = (handle.capsule / "events/events.jsonl").read_bytes()
+
+    with pytest.raises(ValueError, match="missing artifacts:card"):
+        mark_success(book, "000001", expected_attempt=1, now=NOW)
+
+    task = json.loads(book.read_text(encoding="utf-8"))["tasks"]["000001"]
+    assert task["status"] == "RUNNING"
+    assert (handle.capsule / "events/events.jsonl").read_bytes() == events_before
 
 
 def test_l4_without_run_id_never_attempts_event_capture(tmp_path, monkeypatch):
@@ -445,11 +579,9 @@ def test_stale_running_trace_persists_failure_then_claim_with_exact_hashes(
     intermediate_task["status"] = "FAILED"
     intermediate_task["started_at"] = original_started_at
     expected_failed_hash = hashlib.sha256(
-        canonical_json(intermediate).encode("utf-8")
+        _persisted_book_bytes(intermediate)
     ).hexdigest()
-    expected_claimed_hash = hashlib.sha256(
-        canonical_json(final).encode("utf-8")
-    ).hexdigest()
+    expected_claimed_hash = hashlib.sha256(book.read_bytes()).hexdigest()
     assert failed["payload"]["task_book_hash"] == expected_failed_hash
     assert claimed["payload"]["task_book_hash"] == expected_claimed_hash
     assert failed["payload"]["task_book_hash"] != claimed["payload"]["task_book_hash"]
@@ -491,18 +623,20 @@ def test_exhausted_failure_preflight_blocks_without_duplicate_task_failed_event(
 ):
     handle, book = _traced_book(tmp_path, monkeypatch)
     preflight(book, "000001", expected_attempt=1, now=NOW)
-    mark_failure(book, "000001", "TIMEOUT", now=NOW)
+    mark_failure(book, "000001", "TIMEOUT", expected_attempt=1, now=NOW)
     preflight(book, "000001", expected_attempt=2, now=NOW)
-    mark_failure(book, "000001", "CONNECTION", now=NOW)
+    mark_failure(book, "000001", "CONNECTION", expected_attempt=2, now=NOW)
     before = _trace_events(handle)
     assert before[-1]["event_type"] == "TASK_FAILED"
 
+    book_before = book.read_bytes()
     result = preflight(book, "000001", now=NOW)
 
     assert result["action"] == "BLOCKED"
     assert json.loads(book.read_text(encoding="utf-8"))["tasks"]["000001"][
         "status"
     ] == "BLOCKED"
+    assert book.read_bytes() == book_before
     assert _trace_events(handle) == before
 
 

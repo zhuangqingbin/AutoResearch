@@ -29,7 +29,11 @@ from autoresearch.trace.capsule_models import (
     RunHandle,
     RunState,
 )
-from autoresearch.trace.events import append_event, verify_event_chain
+from autoresearch.trace.events import (
+    append_event,
+    append_guarded_event,
+    verify_event_chain,
+)
 
 _STAGE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$", re.ASCII)
@@ -463,6 +467,91 @@ def _agent_payload(name: str, value: Mapping | None) -> dict | None:
     return normalized
 
 
+def _validate_agent_payload_rules(
+    event_type: str,
+    *,
+    result: dict | None,
+    error: dict | None,
+) -> None:
+    if event_type == "AGENT_DISPATCHED" and error is not None:
+        raise ValueError("AGENT_DISPATCHED forbids error payload")
+    if event_type == "AGENT_COMPLETED" and error is not None:
+        raise ValueError("AGENT_COMPLETED forbids error payload")
+    if event_type == "AGENT_FAILED":
+        if error is None:
+            raise ValueError("AGENT_FAILED requires error payload")
+        if result is not None:
+            raise ValueError("AGENT_FAILED forbids result payload")
+
+
+def _agent_semantic(event: Mapping) -> dict:
+    return {
+        key: event[key]
+        for key in (
+            "run_id",
+            "engine",
+            "stage",
+            "invocation_id",
+            "attempt",
+            "subject",
+            "event_type",
+            "payload",
+        )
+    }
+
+
+def _agent_lifecycle_guard(history: tuple[dict, ...], proposed: dict) -> dict | None:
+    related = [
+        event
+        for event in history
+        if event["run_id"] == proposed["run_id"]
+        and event["invocation_id"] == proposed["invocation_id"]
+        and event["event_type"] in _AGENT_EVENT_TYPES
+    ]
+    dispatches = [
+        event for event in related if event["event_type"] == "AGENT_DISPATCHED"
+    ]
+    terminals = [
+        event for event in related if event["event_type"] != "AGENT_DISPATCHED"
+    ]
+    if len(dispatches) > 1 or len(terminals) > 1:
+        raise ValueError("agent lifecycle history contains duplicate semantic events")
+
+    if proposed["event_type"] == "AGENT_DISPATCHED":
+        if terminals and not dispatches:
+            raise ValueError("agent lifecycle has terminal without dispatch")
+        if dispatches:
+            if _agent_semantic(dispatches[0]) == proposed:
+                return dispatches[0]
+            raise ValueError("conflicting agent dispatch for invocation_id")
+        return None
+
+    if not dispatches:
+        raise ValueError("agent terminal requires prior dispatch")
+    dispatched = dispatches[0]
+    dispatch_binding = (
+        dispatched["engine"],
+        dispatched["stage"],
+        dispatched["subject"],
+        dispatched["attempt"],
+        dispatched["payload"]["role"],
+    )
+    proposed_binding = (
+        proposed["engine"],
+        proposed["stage"],
+        proposed["subject"],
+        proposed["attempt"],
+        proposed["payload"]["role"],
+    )
+    if proposed_binding != dispatch_binding:
+        raise ValueError("agent terminal binding differs from dispatch")
+    if terminals:
+        if _agent_semantic(terminals[0]) == proposed:
+            return terminals[0]
+        raise ValueError("conflicting agent terminal for invocation_id")
+    return None
+
+
 def record_agent_boundary(
     run_id: str,
     event_type: str,
@@ -486,6 +575,11 @@ def record_agent_boundary(
         raise ValueError("attempt must be a positive integer")
     normalized_result = _agent_payload("result", result)
     normalized_error = _agent_payload("error", error)
+    _validate_agent_payload_rules(
+        event_type,
+        result=normalized_result,
+        error=normalized_error,
+    )
     ambient_run_id = ws.active_run_id()
     if ambient_run_id is not None and ambient_run_id != run_id:
         raise ValueError(
@@ -495,8 +589,9 @@ def record_agent_boundary(
     stage = _validate_stage(
         str(os.environ.get("AUTORESEARCH_STAGE", "")).strip() or "l4"
     )
-    return append_event(
+    return append_guarded_event(
         handle.capsule / "events/events.jsonl",
+        guard=_agent_lifecycle_guard,
         run_id=handle.run_id,
         engine=handle.engine,
         stage=stage,

@@ -80,13 +80,34 @@ const CARD = { type: 'object', required: ['code', 'rating'],
   properties: { code: { type: 'string' }, rating: { type: 'string' },
     conviction: { type: 'number', minimum: 0, maximum: 100 }, proposal: { type: 'string' } } }
 const rawAgent = agent
-const AGENT_EVENT_ACK = { type: 'object', required: ['ok'],
+const AGENT_EVENT_ACK = { type: 'object', required: ['ok', 'event', 'control_events'],
   properties: { ok: { type: 'boolean' }, event: { type: 'object' },
     control_events: { type: 'array', items: { type: 'object' } } } }
 const safeAgentPart = (value) => String(value).replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '')
 // Workflow runtime 没有非 agent 的 shell primitive。trace-control 只能在获调度后的第一条
 // 精确命令里自登记；该命令原子追加 control dispatch → 目标边界 → control terminal，
 // 不递归套 tracedAgent。若它连命令都未执行，外层只可 best-effort 报警，后续完整性门报缺。
+// 每个目标 agent 固定承担两次 trace-control 调用开销(dispatch 前一次、terminal 后一次)。
+const TRACE_CONTROL_CALLS_PER_TARGET = 2
+const validateAgentEventAck = (ack, eventType, invocationId, role, controlInvocationId) => {
+  if (!ack || ack.ok !== true || !ack.event || !Array.isArray(ack.control_events)) {
+    throw new Error('trace-control ACK 缺 ok=true/event/control_events')
+  }
+  const matches = (event, expectedType, expectedInvocation, expectedRole) =>
+    !!event && event.run_id === RUN_ID && event.stage === 'l4' &&
+    event.invocation_id === expectedInvocation && event.event_type === expectedType &&
+    event.subject === code && event.attempt === taskAttempt &&
+    event.payload && event.payload.role === expectedRole
+  if (!matches(ack.event, eventType, invocationId, role)) {
+    throw new Error('trace-control ACK 目标边界绑定不匹配')
+  }
+  if (ack.control_events.length !== TRACE_CONTROL_CALLS_PER_TARGET ||
+      !matches(ack.control_events[0], 'AGENT_DISPATCHED', controlInvocationId, 'trace-control') ||
+      !matches(ack.control_events[1], 'AGENT_COMPLETED', controlInvocationId, 'trace-control')) {
+    throw new Error('trace-control ACK 自身生命周期绑定不匹配')
+  }
+  return ack
+}
 const emitAgentEvent = (eventType, invocationId, role) => {
   const terminal = eventType === 'AGENT_FAILED'
     ? ` --error-json '{"status":"threw"}'`
@@ -101,6 +122,8 @@ const emitAgentEvent = (eventType, invocationId, role) => {
       '**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**',
     { agentType: 'general-purpose', ...AG('gp_shell_json'),
       label: `trace-control:${eventType}:${invocationId}`, schema: AGENT_EVENT_ACK })
+    .then((ack) => validateAgentEventAck(
+      ack, eventType, invocationId, role, controlInvocationId))
 }
 async function tracedAgent(invocationId, role, prompt, options) {
   try {
@@ -186,7 +209,7 @@ const classifyFailure = (error) => {
 }
 const taskFailure = (errorClass) => taskGate(
   `${PY('l4', `l4-failure-${code}-attempt-${taskAttempt}`, taskAttempt, code)} ` +
-    `autoresearch.scan.l4_tasks failure ${code} ${date} --error-class ${errorClass}`,
+    `autoresearch.scan.l4_tasks failure ${code} ${date} --error-class ${errorClass} --expected-attempt ${taskAttempt}`,
   TASK_RESULT,
   `task-failure:${code}`,
 ).catch(() => null)
@@ -407,7 +430,7 @@ if (trigger) {
 }
 const taskDone = await taskGate(
   `${PY('l4', `l4-success-${code}-attempt-${taskAttempt}`, taskAttempt, code)} ` +
-    `autoresearch.scan.l4_tasks success ${code} ${date}`,
+    `autoresearch.scan.l4_tasks success ${code} ${date} --expected-attempt ${taskAttempt}`,
   TASK_RESULT,
   `task-success:${code}`,
 ).catch(() => null)

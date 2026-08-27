@@ -11,6 +11,7 @@ import fcntl
 import hashlib
 import json
 import os
+import stat
 import sys
 import time
 from collections.abc import Callable, Iterator
@@ -20,11 +21,8 @@ from pathlib import Path
 
 from autoresearch.common import workspace as ws
 from autoresearch.scan import structural_audit
-from autoresearch.trace.atomic import canonical_json, sha256_bytes
 from autoresearch.trace.capsule import require_active_run
 from autoresearch.trace.events import append_event
-from typing import Callable  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
-from typing import Iterator  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 
 SCHEMA_VERSION = 1
 MAX_ATTEMPTS = 2
@@ -54,12 +52,60 @@ def _parse_stamp(value: str | None) -> datetime | None:
         return None
 
 
+def _file_signature(info: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
+
+
+def _secure_artifact_evidence(path: Path) -> tuple[str, str | None]:
+    """Hash one stable regular file without following a final symlink."""
+    try:
+        path_before = path.lstat()
+        if stat.S_ISLNK(path_before.st_mode) or not stat.S_ISREG(path_before.st_mode):
+            return "UNREADABLE", None
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(path, flags)
+        try:
+            fd_before = os.fstat(fd)
+            if (
+                not stat.S_ISREG(fd_before.st_mode)
+                or (fd_before.st_dev, fd_before.st_ino)
+                != (path_before.st_dev, path_before.st_ino)
+            ):
+                return "UNREADABLE", None
+            if fd_before.st_size == 0:
+                return "EMPTY", None
+            digest = hashlib.sha256()
+            while chunk := os.read(fd, 1024 * 1024):
+                digest.update(chunk)
+            fd_after = os.fstat(fd)
+        finally:
+            os.close(fd)
+        path_after = path.lstat()
+        if (
+            _file_signature(path_before) != _file_signature(fd_before)
+            or _file_signature(fd_before) != _file_signature(fd_after)
+            or _file_signature(fd_after) != _file_signature(path_after)
+        ):
+            return "UNREADABLE", None
+        return "PRESENT", digest.hexdigest()
+    except FileNotFoundError:
+        return "MISSING", None
+    except OSError:
+        return "UNREADABLE", None
+
+
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    status, digest = _secure_artifact_evidence(path)
+    if status != "PRESENT" or digest is None:
+        raise OSError(f"artifact is not a stable regular file: {path} ({status})")
+    return digest
 
 
 def _artifact(path: Path, *, content_hash: str | None = None) -> dict:
@@ -74,7 +120,8 @@ def _prompt_file_ok(scan_dir: Path, code: str) -> bool:
     """prompt 任务包在且非空 —— C1 硬门的唯一判据(直接 stat 文件,不信账本旧记录)。"""
     code6 = str(code).split(".")[0].zfill(6)
     p = Path(scan_dir) / f"_l4_prompt_{code6}.md"
-    return p.is_file() and p.stat().st_size > 0
+    status, _ = _secure_artifact_evidence(p)
+    return status == "PRESENT"
 
 
 def _normalize_caps(caps: dict | None) -> dict[str, int]:
@@ -92,27 +139,24 @@ def _normalize_caps(caps: dict | None) -> dict[str, int]:
     return out
 
 
-def _atomic_write(path: Path, payload: dict) -> None:
+def _atomic_write(path: Path, payload: dict) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(f"{path.name}.tmp")
-    temp.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+    content = (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode(
+        "utf-8"
     )
+    temp.write_bytes(content)
     temp.replace(path)
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _task_artifact_evidence(task: dict, name: str) -> tuple[str, str | None]:
     ref = (task.get("artifacts") or {}).get(name) or {}
-    path = Path(str(ref.get("path") or ""))
-    try:
-        if not path.is_file():
-            return "MISSING", None
-        if path.stat().st_size == 0:
-            return "EMPTY", None
-        return "PRESENT", _sha256(path)
-    except OSError:
-        return "UNREADABLE", None
+    raw_path = str(ref.get("path") or "")
+    if not raw_path:
+        return "MISSING", None
+    path = Path(raw_path)
+    return _secure_artifact_evidence(path)
 
 
 def _record_task_transition(
@@ -120,6 +164,7 @@ def _record_task_transition(
     payload: dict,
     code: str,
     *,
+    task_book_hash: str,
     event_type: str,
     old_status: str,
     error_class: str | None,
@@ -144,9 +189,7 @@ def _record_task_transition(
             "error_class": error_class,
             "new_status": str(task.get("status") or ""),
             "old_status": str(old_status),
-            "task_book_hash": sha256_bytes(
-                canonical_json(payload).encode("utf-8")
-            ),
+            "task_book_hash": task_book_hash,
         }
         for name in ("prompt", "slim", "card"):
             status, content_hash = _task_artifact_evidence(task, name)
@@ -346,9 +389,10 @@ def _verified(task: dict) -> bool:
         ref = task.get("artifacts", {}).get(name) or {}
         content_hash = ref.get("content_hash")
         path = Path(str(ref.get("path") or ""))
-        if not content_hash or not path.is_file() or path.stat().st_size == 0:
+        status, actual_hash = _secure_artifact_evidence(path)
+        if not content_hash or status != "PRESENT":
             return False
-        if _sha256(path) != content_hash:
+        if actual_hash != content_hash:
             return False
     return True
 
@@ -454,7 +498,8 @@ def preflight(
                         f"expected attempt {expected_attempt} does not match "
                         f"next attempt {stale_next_attempt}"
                     )
-            status = "FAILED"
+            exhausted_stale = stale_attempt >= MAX_ATTEMPTS
+            status = "BLOCKED" if exhausted_stale else "FAILED"
             task["status"] = status
             task["last_error_class"] = "STALE_TASK"
             task["last_error"] = f"running for {int(age)}s"
@@ -464,19 +509,28 @@ def preflight(
             structural_audit.record(
                 payload, code6, structural_audit.COMPLETION_MISJUDGED,
                 f"RUNNING {int(age)}s 无终态回写", now=now)
-            _atomic_write(path, payload)
+            book_hash = _atomic_write(path, payload)
             _record_task_transition(
                 path,
                 payload,
                 code6,
+                task_book_hash=book_hash,
                 event_type=(
                     "TASK_RETRY_SCHEDULED"
-                    if stale_attempt < MAX_ATTEMPTS
+                    if not exhausted_stale
                     else "TASK_FAILED"
                 ),
                 old_status="RUNNING",
                 error_class="STALE_TASK",
             )
+            if exhausted_stale:
+                return {
+                    "ok": True,
+                    "code": code6,
+                    "action": "BLOCKED",
+                    "attempt": task["attempt"],
+                    "reason": "STALE_TASK",
+                }
             old_status = "FAILED"
         if status == "BLOCKED":
             return {
@@ -491,7 +545,7 @@ def preflight(
             if error_class not in TRANSIENT_ERRORS or int(task["attempt"]) >= MAX_ATTEMPTS:
                 task["status"] = "BLOCKED"
                 task["updated_at"] = stamp
-                _atomic_write(path, payload)
+                book_hash = _atomic_write(path, payload)
                 terminal_event = (
                     "TASK_FAILED"
                     if error_class in TRANSIENT_ERRORS
@@ -508,6 +562,7 @@ def preflight(
                         path,
                         payload,
                         code6,
+                        task_book_hash=book_hash,
                         event_type=terminal_event,
                         old_status=old_status,
                         error_class=error_class or "NON_TRANSIENT_FAILURE",
@@ -529,11 +584,12 @@ def preflight(
         task["status"] = "RUNNING"
         task["started_at"] = stamp
         task["updated_at"] = stamp
-        _atomic_write(path, payload)
+        book_hash = _atomic_write(path, payload)
         _record_task_transition(
             path,
             payload,
             code6,
+            task_book_hash=book_hash,
             event_type="TASK_CLAIMED",
             old_status=old_status,
             error_class=(str(task.get("last_error_class") or "") or None),
@@ -554,8 +610,16 @@ def mark_failure(
     error_class: str,
     *,
     error: str | None = None,
+    expected_attempt: int | None = None,
     now: datetime | None = None,
 ) -> dict:
+    active_run = ws.active_run_id()
+    if active_run is not None and expected_attempt is None:
+        raise ValueError("expected_attempt is required for an active run terminal")
+    if expected_attempt is not None and (
+        type(expected_attempt) is not int or expected_attempt < 1
+    ):
+        raise ValueError("expected_attempt must be a positive integer")
     path = Path(book)
     code6 = str(code).split(".")[0].zfill(6)
     kind = str(error_class).strip().upper()
@@ -563,16 +627,46 @@ def mark_failure(
         _, payload = _read(path)
         task = payload["tasks"][code6]
         old_status = str(task["status"])
+        authoritative_attempt = int(task.get("attempt") or 0)
+        if expected_attempt is not None and expected_attempt != authoritative_attempt:
+            raise ValueError(
+                f"expected attempt {expected_attempt} does not match "
+                f"authoritative attempt {authoritative_attempt}"
+            )
+        terminal_status = (
+            "FAILED"
+            if kind in TRANSIENT_ERRORS and authoritative_attempt < MAX_ATTEMPTS
+            else "BLOCKED"
+        )
+        terminal_error = error or kind
+        if expected_attempt is not None and old_status != "RUNNING":
+            if (
+                task.get("last_error_class") == kind
+                and task.get("last_error") == terminal_error
+                and old_status == terminal_status
+            ):
+                return {
+                    "ok": True,
+                    "code": code6,
+                    "status": terminal_status,
+                    "attempt": authoritative_attempt,
+                    "error_class": kind,
+                    "idempotent": True,
+                }
+            raise ValueError(
+                f"contradictory terminal for attempt {authoritative_attempt}: "
+                f"authoritative status {old_status}"
+            )
         task["attempt"] = max(1, int(task.get("attempt") or 0))
         task["last_error_class"] = kind
-        task["last_error"] = error or kind
-        task["status"] = "FAILED" if kind in TRANSIENT_ERRORS else "BLOCKED"
+        task["last_error"] = terminal_error
+        task["status"] = terminal_status
         task["updated_at"] = _stamp(now)
         if kind == "RATE_LIMIT":
             payload["rate_limit_failures"] = int(
                 payload.get("rate_limit_failures") or 0
             ) + 1
-        _atomic_write(path, payload)
+        book_hash = _atomic_write(path, payload)
         if kind not in TRANSIENT_ERRORS:
             event_type = "TASK_BLOCKED"
         elif int(task["attempt"]) >= MAX_ATTEMPTS:
@@ -583,6 +677,7 @@ def mark_failure(
             path,
             payload,
             code6,
+            task_book_hash=book_hash,
             event_type=event_type,
             old_status=old_status,
             error_class=kind,
@@ -600,23 +695,51 @@ def mark_success(
     book: Path | str,
     code: str,
     *,
+    expected_attempt: int | None = None,
     now: datetime | None = None,
 ) -> dict:
+    active_run = ws.active_run_id()
+    if active_run is not None and expected_attempt is None:
+        raise ValueError("expected_attempt is required for an active run terminal")
+    if expected_attempt is not None and (
+        type(expected_attempt) is not int or expected_attempt < 1
+    ):
+        raise ValueError("expected_attempt must be a positive integer")
     path = Path(book)
     code6 = str(code).split(".")[0].zfill(6)
     with _locked(path):
         _, payload = _read(path)
         task = payload["tasks"][code6]
         old_status = str(task["status"])
+        authoritative_attempt = int(task.get("attempt") or 0)
+        if expected_attempt is not None and expected_attempt != authoritative_attempt:
+            raise ValueError(
+                f"expected attempt {expected_attempt} does not match "
+                f"authoritative attempt {authoritative_attempt}"
+            )
+        if expected_attempt is not None and old_status != "RUNNING":
+            if old_status == "SUCCEEDED":
+                return {
+                    "ok": True,
+                    "code": code6,
+                    "status": "SUCCEEDED",
+                    "attempt": authoritative_attempt,
+                    "idempotent": True,
+                }
+            raise ValueError(
+                f"contradictory terminal for attempt {authoritative_attempt}: "
+                f"authoritative status {old_status}"
+            )
         refs = task["artifacts"]
         missing = []
         for name in ("prompt", "slim", "card"):
             artifact_path = Path(refs[name]["path"])
-            if not artifact_path.is_file() or artifact_path.stat().st_size == 0:
+            status, content_hash = _secure_artifact_evidence(artifact_path)
+            if status != "PRESENT" or content_hash is None:
                 missing.append(name)
                 continue
             refs[name] = _artifact(
-                artifact_path, content_hash=_sha256(artifact_path)
+                artifact_path, content_hash=content_hash
             )
         # 调用方以为跑成了、账本查出没跑成 —— 这就是「完成态误判」。原先只抛异常，
         # 异常一被上层吞掉这件事就再无痕迹，B5 的判据也就永远查不到它。
@@ -629,6 +752,14 @@ def mark_success(
         from autoresearch.scan.l4.producers import _slim_defect
 
         _, defect = _slim_defect(Path(refs["slim"]["path"]), 4096)
+        if not defect:
+            for name in ("prompt", "slim", "card"):
+                status, content_hash = _secure_artifact_evidence(
+                    Path(refs[name]["path"])
+                )
+                if status != "PRESENT" or content_hash != refs[name]["content_hash"]:
+                    defect = f"{name} changed while validating"
+                    break
         if defect:
             structural_audit.record(
                 payload, code6, structural_audit.COMPLETION_MISJUDGED,
@@ -639,11 +770,12 @@ def mark_success(
         task["last_error_class"] = None
         task["last_error"] = None
         task["updated_at"] = _stamp(now)
-        _atomic_write(path, payload)
+        book_hash = _atomic_write(path, payload)
         _record_task_transition(
             path,
             payload,
             code6,
+            task_book_hash=book_hash,
             event_type="TASK_SUCCEEDED",
             old_status=old_status,
             error_class=None,
@@ -713,12 +845,13 @@ def reconcile(book: Path | str, *, now: datetime | None = None) -> dict:
             recovered.append(code6)
             recovered_from[code6] = "RUNNING"
         if recovered:
-            _atomic_write(path, payload)
+            book_hash = _atomic_write(path, payload)
             for code6 in recovered:
                 _record_task_transition(
                     path,
                     payload,
                     code6,
+                    task_book_hash=book_hash,
                     event_type="TASK_SUCCEEDED",
                     old_status=recovered_from[code6],
                     error_class=None,
@@ -954,7 +1087,9 @@ def main(argv: list[str] | None = None) -> int:
         elif args.cmd == "prepare":
             result = prepare_slim(book, args.first)
         elif args.cmd == "success":
-            result = mark_success(book, args.first)
+            result = mark_success(
+                book, args.first, expected_attempt=args.expected_attempt
+            )
         else:
             if not args.error_class:
                 parser.error("failure requires --error-class")
@@ -963,6 +1098,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.first,
                 args.error_class,
                 error=args.error,
+                expected_attempt=args.expected_attempt,
             )
     print(json.dumps(result, ensure_ascii=False))
     return 0 if result.get("ok") else 1
