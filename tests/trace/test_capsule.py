@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from autoresearch.common import workspace as ws
+from autoresearch.scan.artifacts import ArtifactSpec
 from autoresearch.scan.run_contract import load_run_contract
 from autoresearch.trace import capsule as capsule_mod
 from autoresearch.trace.atomic import canonical_json, sha256_bytes
@@ -219,6 +220,34 @@ def test_begin_fault_after_allocation_leaves_recoverable_failure_marker(
     assert _events(recovered)[-1]["event_type"] == "STAGE_FAILED"
 
 
+def test_checkpoint_rejects_bootstrap_failed_run_without_allocating_attempt(
+    tmp_path, monkeypatch
+):
+    _redirect_roots(monkeypatch, tmp_path)
+    original = capsule_mod.append_event
+    calls = 0
+
+    def fail_once(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("event fault")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(capsule_mod, "append_event", fail_once)
+    with pytest.raises(RuntimeError, match="recoverable workspace"):
+        begin_run("scan-market", DATE, "codex", {}, now=NOW)
+    handle = load_run(RUN_ID)
+    events_before = (handle.capsule / "events/events.jsonl").read_bytes()
+
+    with pytest.raises(RuntimeError, match="not ACTIVE|FAILED"):
+        checkpoint(handle.run_id, "l2", "FAILED", [], {}, error="bootstrap")
+
+    assert not (handle.capsule / "stages/l2").exists()
+    assert not (handle.capsule / "products/staging/l2").exists()
+    assert (handle.capsule / "events/events.jsonl").read_bytes() == events_before
+
+
 def test_checkpoint_never_overwrites_an_attempt(tmp_path, monkeypatch):
     handle = _begin(tmp_path, monkeypatch)
     artifact = handle.staging / "_l3_judged.json"
@@ -257,6 +286,98 @@ def test_checkpoint_rejects_symlinked_artifact_source(tmp_path, monkeypatch):
     linked.symlink_to(outside)
     with pytest.raises(ValueError, match="symlink"):
         checkpoint(handle.run_id, "l2", "SUCCEEDED", [linked], {})
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [Path("stages/l2"), Path("products/staging/l2")],
+)
+def test_checkpoint_rejects_symlinked_destination_stage_without_outside_writes(
+    tmp_path, monkeypatch, relative
+):
+    handle = _begin(tmp_path, monkeypatch)
+    source = handle.staging / "L2_gbdt_top200.csv"
+    source.write_bytes(b"code\n600000\n")
+    outside = tmp_path / f"outside-{'-'.join(relative.parts)}"
+    outside.mkdir()
+    destination = handle.capsule / relative
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.symlink_to(outside, target_is_directory=True)
+    events_before = (handle.capsule / "events/events.jsonl").read_bytes()
+
+    with pytest.raises(ValueError, match="symlink"):
+        checkpoint(handle.run_id, "l2", "SUCCEEDED", ["l2"], {})
+
+    assert list(outside.iterdir()) == []
+    assert (handle.capsule / "events/events.jsonl").read_bytes() == events_before
+
+
+def test_checkpoint_rejects_logical_and_literal_destination_collision_pre_attempt(
+    tmp_path, monkeypatch
+):
+    handle = _begin(tmp_path, monkeypatch)
+    (handle.staging / "L2_gbdt_top200.csv").write_bytes(b"code\n600000\n")
+    events_before = (handle.capsule / "events/events.jsonl").read_bytes()
+
+    with pytest.raises(ValueError, match="collision"):
+        checkpoint(
+            handle.run_id,
+            "l2",
+            "SUCCEEDED",
+            ["l2", "L2_gbdt_top200.csv"],
+            {},
+        )
+
+    assert not (handle.capsule / "stages/l2").exists()
+    assert (handle.capsule / "events/events.jsonl").read_bytes() == events_before
+
+
+def test_checkpoint_rejects_overlapping_spec_and_literal_pre_attempt(
+    tmp_path, monkeypatch
+):
+    handle = _begin(tmp_path, monkeypatch)
+    details = handle.staging / "details"
+    details.mkdir()
+    (details / "600000.md").write_text("card", encoding="utf-8")
+    monkeypatch.setitem(
+        capsule_mod._ARTIFACT_SPECS,
+        "overlap",
+        ArtifactSpec("overlap", 1, "test", "details/*.md"),
+    )
+    events_before = (handle.capsule / "events/events.jsonl").read_bytes()
+
+    with pytest.raises(ValueError, match="collision"):
+        checkpoint(
+            handle.run_id,
+            "l4",
+            "SUCCEEDED",
+            ["l4_cards", "overlap"],
+            {},
+        )
+
+    assert not (handle.capsule / "stages/l4").exists()
+    assert not (handle.capsule / "products/staging/l4").exists()
+    assert (handle.capsule / "events/events.jsonl").read_bytes() == events_before
+
+
+def test_checkpoint_detects_source_mutation_during_copy_without_completed_event(
+    tmp_path, monkeypatch
+):
+    handle = _begin(tmp_path, monkeypatch)
+    source = handle.staging / "payload.bin"
+    source.write_bytes(b"before")
+    original_copy = capsule_mod._copy_artifact
+
+    def mutate_then_copy(copy_source, destination):
+        copy_source.write_bytes(b"after-is-longer")
+        return original_copy(copy_source, destination)
+
+    monkeypatch.setattr(capsule_mod, "_copy_artifact", mutate_then_copy)
+    events_before = (handle.capsule / "events/events.jsonl").read_bytes()
+    with pytest.raises(RuntimeError, match="changed during capture"):
+        checkpoint(handle.run_id, "l2", "SUCCEEDED", [source], {})
+    assert (handle.capsule / "events/events.jsonl").read_bytes() == events_before
+    assert not (handle.capsule / "stages/l2/attempt-1/result.json").exists()
 
 
 def test_checkpoint_rejects_ambiguous_relative_literal_across_roots(
@@ -377,4 +498,17 @@ def test_load_run_rejects_noncanonical_or_regressing_state_times(
     state.update({"created_at": created_at, "updated_at": updated_at})
     state_path.write_text(json.dumps(state), encoding="utf-8")
     with pytest.raises(RuntimeError, match="state"):
+        load_run(handle.run_id)
+
+
+def test_load_run_rejects_state_created_at_different_from_contract(
+    tmp_path, monkeypatch
+):
+    handle = _begin(tmp_path, monkeypatch)
+    state_path = handle.workspace / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["created_at"] = "2026-08-27T01:02:04.456789Z"
+    state["updated_at"] = state["created_at"]
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="created_at"):
         load_run(handle.run_id)

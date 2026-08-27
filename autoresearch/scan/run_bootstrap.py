@@ -208,9 +208,9 @@ def resolve_active_scan_contract(
         raise RuntimeError("RunContract v3 requires AUTORESEARCH_RUN_ID")
     try:
         # Lazy import avoids a module cycle: capsule.begin_run calls prepare_scan_run.
-        from autoresearch.trace.capsule import load_run
+        from autoresearch.trace.capsule import require_active_run
 
-        handle = load_run(run_id)
+        handle = require_active_run(run_id)
     except Exception as exc:
         raise RuntimeError(
             f"RunContract v3 for active run {run_id} is missing or invalid: {exc}"

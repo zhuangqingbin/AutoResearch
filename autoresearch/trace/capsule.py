@@ -7,6 +7,7 @@ import contextlib
 import json
 import os
 import re
+import stat
 import sys
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
@@ -362,7 +363,12 @@ def load_run(run_id: str) -> RunHandle:
         )
     if Path(contract.workspace_path).resolve() != workspace.resolve():
         raise RuntimeError("RunContract workspace_path does not match loaded workspace")
-    _state_from_path(workspace / "state.json", run_id=resolved_id)
+    state = _state_from_path(workspace / "state.json", run_id=resolved_id)
+    if state.created_at != contract.created_at:
+        raise RuntimeError(
+            "state created_at does not match RunContract: "
+            f"state={state.created_at!r}, contract={contract.created_at!r}"
+        )
     event_path = _require_workspace_path(
         workspace, capsule / "events/events.jsonl", kind="file"
     )
@@ -385,6 +391,17 @@ def load_run(run_id: str) -> RunHandle:
     actual_started = {key: first_event.get(key) for key in expected_started}
     if actual_started != expected_started:
         raise RuntimeError("first event must be the matching RUN_STARTED fact")
+    return handle
+
+
+def require_active_run(run_id: str) -> RunHandle:
+    """Load a valid run and reject terminal business states."""
+    handle = load_run(run_id)
+    state = _state_from_path(handle.workspace / "state.json", run_id=handle.run_id)
+    if state.business_status != BusinessStatus.ACTIVE:
+        raise RuntimeError(
+            f"run {handle.run_id} is not ACTIVE: {state.business_status.value}"
+        )
     return handle
 
 
@@ -546,7 +563,7 @@ def _resolve_artifacts(
 ) -> list[dict]:
     report = _validate_report_dir(report_dir)
     rows = []
-    seen: set[tuple[str, str, str | None]] = set()
+    seen: set[tuple[str, str]] = set()
     for artifact in artifacts:
         spec = _ARTIFACT_SPECS.get(artifact) if type(artifact) is str else None
         resolved = (
@@ -555,7 +572,10 @@ def _resolve_artifacts(
             else [_literal_artifact(handle, artifact, report_dir=report)]
         )
         for row in resolved:
-            key = (row["root"], row["path"], row["logical_id"])
+            # Every artifact is copied below ``<attempt>/<root>/<path>``.  Logical
+            # IDs are provenance, not a namespace, so they cannot make duplicate
+            # destinations distinct.
+            key = (row["root"], row["path"])
             if key in seen:
                 raise ValueError(f"artifact path collision: {key!r}")
             seen.add(key)
@@ -563,9 +583,46 @@ def _resolve_artifacts(
     return rows
 
 
-def _allocate_attempt(capsule: Path, stage: str) -> tuple[int, Path]:
-    stage_root = capsule / "stages" / stage
-    stage_root.mkdir(parents=True, exist_ok=True)
+def _safe_directory(root: Path, relative: Path | str, *, create: bool) -> Path:
+    """Walk one relative directory path without accepting symlink components."""
+    relative_path = Path(relative)
+    if relative_path.is_absolute() or ".." in relative_path.parts:
+        raise ValueError(f"directory escapes trusted root: {relative_path}")
+    root_info = root.lstat()
+    if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+        raise ValueError(f"trusted directory is not a real directory: {root}")
+    root_resolved = root.resolve(strict=True)
+    current = root
+    for part in relative_path.parts:
+        if part in ("", "."):
+            continue
+        candidate = current / part
+        try:
+            info = candidate.lstat()
+        except FileNotFoundError:
+            if not create:
+                raise
+            candidate.mkdir(exist_ok=False)
+            info = candidate.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            raise ValueError(f"destination directory contains a symlink: {candidate}")
+        if not stat.S_ISDIR(info.st_mode):
+            raise ValueError(f"destination component is not a directory: {candidate}")
+        try:
+            candidate.resolve(strict=True).relative_to(root_resolved)
+        except ValueError as exc:
+            raise ValueError(f"destination directory escapes trusted root: {candidate}") from exc
+        current = candidate
+    return current
+
+
+def _allocate_attempt(capsule: Path, stage: str) -> tuple[int, Path, Path]:
+    # Validate both destination branches before claiming an attempt.  In particular,
+    # a pre-created products symlink must fail before stages/attempt-N exists.
+    stage_root = _safe_directory(capsule, Path("stages") / stage, create=True)
+    product_stage_root = _safe_directory(
+        capsule, Path("products/staging") / stage, create=True
+    )
     while True:
         numbers = []
         for path in stage_root.iterdir():
@@ -576,13 +633,13 @@ def _allocate_attempt(capsule: Path, stage: str) -> tuple[int, Path]:
         path = stage_root / f"attempt-{attempt}"
         try:
             path.mkdir(exist_ok=False)
-            return attempt, path
+            _safe_directory(capsule, path.relative_to(capsule), create=False)
+            return attempt, path, product_stage_root
         except FileExistsError:
             continue
 
 
 def _copy_artifact(source: Path, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
     nofollow = getattr(os, "O_NOFOLLOW", 0)
     source_fd = os.open(source, os.O_RDONLY | nofollow)
     try:
@@ -617,7 +674,7 @@ def checkpoint(
     ``(stage, attempt)``.  Within each pair the terminal event is always appended
     before ``CHECKPOINT_WRITTEN`` and each appears exactly once.
     """
-    handle = load_run(run_id)
+    handle = require_active_run(run_id)
     resolved_stage = _validate_stage(stage)
     resolved_status = _validate_status(status)
     if isinstance(artifacts, (str, bytes)) or not isinstance(artifacts, Sequence):
@@ -631,13 +688,10 @@ def checkpoint(
         handle, artifacts, report_dir=report_dir
     )
 
-    attempt, attempt_path = _allocate_attempt(handle.capsule, resolved_stage)
-    product_root = (
-        handle.capsule
-        / "products/staging"
-        / resolved_stage
-        / f"attempt-{attempt}"
+    attempt, attempt_path, product_stage_root = _allocate_attempt(
+        handle.capsule, resolved_stage
     )
+    product_root = product_stage_root / f"attempt-{attempt}"
     output_rows = []
     for artifact in normalized_artifacts:
         source = artifact["source"]
@@ -651,15 +705,38 @@ def checkpoint(
             "sha256": None,
         }
         if source is not None and source.is_file():
-            size = source.stat().st_size
-            row["bytes"] = size
-            if size == 0:
+            source_before = source.stat(follow_symlinks=False)
+            if source_before.st_size == 0:
+                row["bytes"] = 0
                 row["status"] = "EMPTY"
             else:
-                destination = product_root / artifact["root"] / artifact["path"]
+                product_root = _safe_directory(
+                    handle.capsule,
+                    product_root.relative_to(handle.capsule),
+                    create=True,
+                )
+                relative_destination = Path(artifact["root"]) / artifact["path"]
+                destination_parent = _safe_directory(
+                    product_root, relative_destination.parent, create=True
+                )
+                destination = destination_parent / relative_destination.name
                 _copy_artifact(source, destination)
+                source_after = source.stat(follow_symlinks=False)
+                mutation_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+                if any(
+                    getattr(source_before, field) != getattr(source_after, field)
+                    for field in mutation_fields
+                ):
+                    raise RuntimeError(f"artifact source changed during capture: {source}")
+                captured_size = destination.stat(follow_symlinks=False).st_size
+                if captured_size != source_after.st_size:
+                    raise RuntimeError(
+                        "artifact source changed during capture: "
+                        f"source={source_after.st_size}, captured={captured_size}"
+                    )
                 row.update(
                     {
+                        "bytes": captured_size,
                         "status": "PRESENT",
                         "sha256": sha256_file(destination),
                         "captured_path": destination.relative_to(handle.capsule).as_posix(),

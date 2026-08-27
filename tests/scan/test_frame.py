@@ -18,6 +18,7 @@ from autoresearch.scan import frame as scan_frame
 from autoresearch.scan.market import market_pack, market_pack_from_frame
 from autoresearch.scan.menu import sentinel_advice, sentinel_advice_from_frame
 from autoresearch.scan.run_contract import load_run_contract
+from autoresearch.trace import capsule as capsule_mod
 from autoresearch.trace.capsule import begin_run
 from tests.scan._synth_universe import synth_universe
 
@@ -221,6 +222,40 @@ def test_frame_refuses_active_run_without_contract_before_any_fetch(
         lambda *a, **k: pytest.fail("market fetch happened before contract validation"),
     )
     with pytest.raises(RuntimeError, match="RunContract v3"):
+        scan_frame.main(["2026-08-27", "--json"])
+
+
+def test_frame_rejects_bootstrap_failed_active_env_before_any_fetch(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    monkeypatch.setattr(ws, "context_root", lambda: tmp_path / "context_codex")
+    monkeypatch.setattr(
+        "autoresearch.scan.user_config.DEFAULT_PINNED_PATH",
+        tmp_path / "missing-pinned.jsonc",
+    )
+    original = capsule_mod.append_event
+    calls = 0
+
+    def fail_once(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("event fault")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(capsule_mod, "append_event", fail_once)
+    now = datetime(2026, 8, 27, 1, 2, 3, 456789, tzinfo=timezone.utc)
+    with pytest.raises(RuntimeError, match="recoverable workspace"):
+        begin_run("scan-market", "2026-08-27", "codex", {}, now=now)
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", "20260827T010203456789Z")
+    monkeypatch.setattr(
+        scan_frame,
+        "build_market_frame",
+        lambda *a, **k: pytest.fail("market fetch happened for a FAILED run"),
+    )
+
+    with pytest.raises(RuntimeError, match="not ACTIVE|FAILED"):
         scan_frame.main(["2026-08-27", "--json"])
 
 
