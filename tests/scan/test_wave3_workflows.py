@@ -58,7 +58,7 @@ def test_l4_stock_preflights_then_runs_slim_and_intel_in_parallel():
     intel = src[src.index("phase('Intel')") : card_at]
     assert "parallel([" in intel
     assert "l4_tasks prepare ${code} ${date}" in intel
-    assert "agent(" in intel
+    assert "tracedAgent(" in intel
     assert "DATA_INTEGRITY" in intel
 
 

@@ -25,7 +25,11 @@ def _probe_workflow(path: Path, args: dict) -> dict:
         const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
         let src = fs.readFileSync(process.argv[1], 'utf8').replace(/^export const meta/m, 'const meta');
         let first = null;
-        const agent = (prompt) => { first = prompt; throw new Error('STOP_AT_FIRST_AGENT'); };
+        const agent = (prompt) => {
+          if (/autoresearch\\.trace\\.capsule agent-event/.test(prompt)) return {ok: true};
+          first = prompt;
+          throw new Error('STOP_AT_FIRST_AGENT');
+        };
         const fn = new AsyncFunction('agent','parallel','pipeline','log','phase','args','budget','workflow', src);
         fn(agent, null, null, () => {}, () => {}, JSON.parse(process.argv[2]), {total:null}, null)
           .then(() => console.log(JSON.stringify({first, error:null})))
@@ -101,6 +105,79 @@ def test_l4_workflow_invocation_ids_bind_stock_and_attempt():
     assert "PY('l4', `l4-prepare-${code}-attempt-${taskAttempt}`" in source
     assert "PY('l4', `l4-failure-${code}-attempt-${taskAttempt}`" in source
     assert "PY('l4', `l4-success-${code}-attempt-${taskAttempt}`" in source
+
+
+def test_l4_workflow_routes_every_business_agent_through_boundary_wrapper():
+    source = _executable_source(WORKFLOWS[1])
+    assert "const rawAgent = agent" in source
+    assert "async function tracedAgent(" in source
+    assert "AGENT_DISPATCHED" in source
+    assert "AGENT_COMPLETED" in source
+    assert "AGENT_FAILED" in source
+    assert "autoresearch.trace.capsule agent-event" in source
+    assert "await emitAgentEvent('AGENT_DISPATCHED'" in source
+    assert "await emitAgentEvent('AGENT_COMPLETED'" in source
+    assert "await emitAgentEvent('AGENT_FAILED'" in source
+    # All legacy call sites must use tracedAgent.  The raw primitive is owned only by
+    # the wrapper and its evidence writer; no direct `agent(...)` bypass remains.
+    assert not re.search(r"(?<![A-Za-z])agent\s*\(", source)
+    assert source.count("tracedAgent(") >= 9
+    assert "l4-card-${code}-${taskAttempt}" in source
+    assert "l4-intel-${code}-${taskAttempt}" in source
+
+
+@pytest.mark.skipif(_NODE is None, reason="requires node workflow probe")
+@pytest.mark.parametrize("business_failure", [False, True])
+def test_l4_boundary_wrapper_emits_one_dispatch_and_one_terminal_with_same_id(
+    business_failure
+):
+    path = WORKFLOWS[1]
+    script = textwrap.dedent(
+        """
+        const fs = require('fs');
+        const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+        let src = fs.readFileSync(process.argv[1], 'utf8').replace(/^export const meta/m, 'const meta');
+        const fail = JSON.parse(process.argv[3]);
+        const calls = [];
+        const agent = async (prompt, options) => {
+          calls.push({prompt, label: options && options.label});
+        if (/autoresearch\\.trace\\.capsule agent-event/.test(prompt)) return {ok: true};
+          if (fail) throw new Error('BUSINESS_AGENT_FAILED');
+          return {ok: true, action: 'BLOCKED', attempt: 0, reason: 'fixture'};
+        };
+        const fn = new AsyncFunction('agent','parallel','pipeline','log','phase','args','budget','workflow', src);
+        fn(agent, null, null, () => {}, () => {}, JSON.parse(process.argv[2]), {total:null}, null)
+          .then(result => console.log(JSON.stringify({calls, result, error:null})))
+          .catch(error => console.log(JSON.stringify({calls, result:null, error:error.message})));
+        """
+    )
+    args = {
+        "date": "2026-01-01",
+        "run_id": "20260827T010203456789Z",
+        "code": "600000",
+        "attempt": 1,
+        "allow_empty_config": True,
+    }
+    completed = subprocess.run(
+        [_NODE, "-e", script, str(path), json.dumps(args), json.dumps(business_failure)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    result = json.loads(completed.stdout.splitlines()[-1])
+    boundary_prompts = [
+        item["prompt"]
+        for item in result["calls"]
+        if "autoresearch.trace.capsule agent-event" in item["prompt"]
+    ]
+    assert len(boundary_prompts) == 2
+    assert "AGENT_DISPATCHED" in boundary_prompts[0]
+    terminal = "AGENT_FAILED" if business_failure else "AGENT_COMPLETED"
+    assert terminal in boundary_prompts[1]
+    ids = [re.findall(r"--invocation-id ([^ ]+)", prompt)[-1] for prompt in boundary_prompts]
+    assert ids == ["gp-shell-600000-1-task-preflight-600000"] * 2
 
 
 @pytest.mark.skipif(_NODE is None, reason="requires node workflow probe")

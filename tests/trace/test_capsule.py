@@ -15,7 +15,13 @@ from autoresearch.scan.artifacts import ArtifactSpec
 from autoresearch.scan.run_contract import load_run_contract
 from autoresearch.trace import capsule as capsule_mod
 from autoresearch.trace.atomic import canonical_json, sha256_bytes
-from autoresearch.trace.capsule import begin_run, checkpoint, load_run, main
+from autoresearch.trace.capsule import (
+    begin_run,
+    checkpoint,
+    load_run,
+    main,
+    record_agent_boundary,
+)
 from autoresearch.trace.events import verify_event_chain
 
 DATE = "2026-08-27"
@@ -599,6 +605,164 @@ def test_capsule_cli_emits_one_canonical_json_and_inspect_is_read_only(
     assert inspected_text.count("\n") == 1
     assert json.loads(inspected_text)["run_id"] == begun["run_id"]
     assert event_path.read_bytes() == before
+
+
+def test_agent_boundary_records_authoritative_binding_and_structured_result(
+    tmp_path, monkeypatch
+):
+    handle = _begin(tmp_path, monkeypatch)
+
+    event = record_agent_boundary(
+        handle.run_id,
+        "AGENT_COMPLETED",
+        role="l4-card",
+        subject="600000",
+        invocation_id="l4-card-600000-1",
+        attempt=1,
+        result={"status": "returned", "rating": "Hold"},
+    )
+
+    assert event["event_type"] == "AGENT_COMPLETED"
+    assert event["invocation_id"] == "l4-card-600000-1"
+    assert event["subject"] == "600000"
+    assert event["attempt"] == 1
+    assert event["payload"] == {
+        "error": None,
+        "result": {"rating": "Hold", "status": "returned"},
+        "role": "l4-card",
+    }
+    assert verify_event_chain(handle.capsule / "events/events.jsonl")["ok"] is True
+
+
+@pytest.mark.parametrize(
+    "field,value,match",
+    [
+        ("event_type", "AGENT_STARTED", "event_type"),
+        ("role", "", "role"),
+        ("role", "l4 card", "role"),
+        ("subject", "../600000", "subject"),
+        ("invocation_id", "l4-card;id", "invocation_id"),
+        ("attempt", 0, "attempt"),
+        ("attempt", True, "attempt"),
+    ],
+)
+def test_agent_boundary_rejects_unsafe_or_ambiguous_binding(
+    tmp_path, monkeypatch, field, value, match
+):
+    handle = _begin(tmp_path, monkeypatch)
+    kwargs = {
+        "event_type": "AGENT_DISPATCHED",
+        "role": "l4-card",
+        "subject": "600000",
+        "invocation_id": "l4-card-600000-1",
+        "attempt": 1,
+    }
+    kwargs[field] = value
+
+    with pytest.raises((TypeError, ValueError), match=match):
+        record_agent_boundary(handle.run_id, **kwargs)
+
+
+def test_agent_boundary_rejects_terminal_run(tmp_path, monkeypatch):
+    handle = _begin(tmp_path, monkeypatch)
+    state_path = handle.workspace / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["business_status"] = "FAILED"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="not ACTIVE"):
+        record_agent_boundary(
+            handle.run_id,
+            "AGENT_FAILED",
+            role="l4-card",
+            subject="600000",
+            invocation_id="l4-card-600000-1",
+            attempt=1,
+            error={"error_type": "RuntimeError"},
+        )
+
+
+def test_agent_boundary_rejects_ambient_run_mismatch(tmp_path, monkeypatch):
+    handle = _begin(tmp_path, monkeypatch)
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", "20260827T010203456780Z")
+
+    with pytest.raises(ValueError, match="AUTORESEARCH_RUN_ID.*does not match"):
+        record_agent_boundary(
+            handle.run_id,
+            "AGENT_DISPATCHED",
+            role="l4-card",
+            subject="600000",
+            invocation_id="l4-card-600000-1",
+            attempt=1,
+        )
+
+
+def test_agent_failure_redacts_secret_values_before_append(tmp_path, monkeypatch):
+    handle = _begin(tmp_path, monkeypatch)
+    secret = "abcdefghijklmnopqrstuvwxyz123456"
+    monkeypatch.setenv("TUSHARE_TOKEN", secret)
+
+    event = record_agent_boundary(
+        handle.run_id,
+        "AGENT_FAILED",
+        role="l4-card",
+        subject="600000",
+        invocation_id="l4-card-600000-1",
+        attempt=1,
+        error={
+            "authorization": f"Bearer {secret}",
+            "message": f"request failed with opaque credential {secret}",
+        },
+    )
+
+    encoded = json.dumps(event, ensure_ascii=False)
+    assert secret not in encoded
+    assert encoded.count("[REDACTED]") >= 2
+
+
+def test_agent_event_cli_emits_one_canonical_json_and_honest_failure(
+    tmp_path, monkeypatch, capsys
+):
+    handle = _begin(tmp_path, monkeypatch)
+    assert main([
+        "agent-event",
+        handle.run_id,
+        "AGENT_DISPATCHED",
+        "--role",
+        "l4-card",
+        "--subject",
+        "600000",
+        "--invocation-id",
+        "l4-card-600000-1",
+        "--attempt",
+        "1",
+        "--result-json",
+        '{"status":"queued"}',
+    ]) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out.count("\n") == 1
+    success = json.loads(captured.out)
+    assert success["ok"] is True
+    assert success["event"]["event_type"] == "AGENT_DISPATCHED"
+    assert captured.out == canonical_json(success) + "\n"
+
+    assert main([
+        "agent-event",
+        handle.run_id,
+        "AGENT_COMPLETED",
+        "--role",
+        "l4-card",
+        "--subject",
+        "600000",
+        "--invocation-id",
+        "bad;id",
+        "--attempt",
+        "1",
+    ]) == 2
+    captured = capsys.readouterr()
+    assert "invalid invocation_id" in captured.err
+    assert json.loads(captured.out)["ok"] is False
 
 
 @pytest.mark.parametrize(

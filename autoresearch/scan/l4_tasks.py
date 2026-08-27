@@ -10,6 +10,7 @@ import argparse
 import fcntl
 import hashlib
 import json
+import os
 import sys
 import time
 from collections.abc import Callable, Iterator
@@ -19,6 +20,9 @@ from pathlib import Path
 
 from autoresearch.common import workspace as ws
 from autoresearch.scan import structural_audit
+from autoresearch.trace.atomic import canonical_json, sha256_bytes
+from autoresearch.trace.capsule import require_active_run
+from autoresearch.trace.events import append_event
 from typing import Callable  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 from typing import Iterator  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 
@@ -96,6 +100,78 @@ def _atomic_write(path: Path, payload: dict) -> None:
         encoding="utf-8",
     )
     temp.replace(path)
+
+
+def _task_artifact_evidence(task: dict, name: str) -> tuple[str, str | None]:
+    ref = (task.get("artifacts") or {}).get(name) or {}
+    path = Path(str(ref.get("path") or ""))
+    try:
+        if not path.is_file():
+            return "MISSING", None
+        if path.stat().st_size == 0:
+            return "EMPTY", None
+        return "PRESENT", _sha256(path)
+    except OSError:
+        return "UNREADABLE", None
+
+
+def _record_task_transition(
+    path: Path,
+    payload: dict,
+    code: str,
+    *,
+    event_type: str,
+    old_status: str,
+    error_class: str | None,
+) -> None:
+    """Best-effort append while the task-book lock still owns this exact snapshot."""
+    try:
+        run_id = ws.active_run_id()
+        if run_id is None:
+            return
+        handle = require_active_run(run_id)
+        expected = handle.staging / "_l4_tasks.json"
+        if path.resolve() != expected.resolve():
+            raise ValueError(
+                f"task book does not belong to active run: {path} != {expected}"
+            )
+        task = payload["tasks"][code]
+        attempt = int(task.get("attempt") or 0)
+        if attempt < 1:
+            raise ValueError(f"authoritative task attempt is not positive: {attempt}")
+        evidence: dict[str, object] = {
+            "attempt": attempt,
+            "error_class": error_class,
+            "new_status": str(task.get("status") or ""),
+            "old_status": str(old_status),
+            "task_book_hash": sha256_bytes(
+                canonical_json(payload).encode("utf-8")
+            ),
+        }
+        for name in ("prompt", "slim", "card"):
+            status, content_hash = _task_artifact_evidence(task, name)
+            evidence[f"{name}_status"] = status
+            evidence[f"{name}_hash"] = content_hash
+        invocation_id = str(
+            os.environ.get("AUTORESEARCH_INVOCATION_ID", "")
+        ).strip() or f"l4-task-{code}-attempt-{attempt}"
+        stage = str(os.environ.get("AUTORESEARCH_STAGE", "")).strip() or "l4"
+        append_event(
+            handle.capsule / "events/events.jsonl",
+            run_id=handle.run_id,
+            engine=handle.engine,
+            stage=stage,
+            invocation_id=invocation_id,
+            attempt=attempt,
+            subject=code,
+            event_type=event_type,
+            payload=evidence,
+        )
+    except Exception as exc:  # noqa: BLE001 - evidence cannot change task semantics
+        print(
+            f"[l4_tasks] {event_type} 取证失败:{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
 
 
 @contextmanager
@@ -331,6 +407,7 @@ def preflight(
         if code6 not in payload["tasks"]:
             raise KeyError(f"unknown L4 task:{code6}")
         task = payload["tasks"][code6]
+        old_status = str(task["status"])
         status = task["status"]
         if status == "SUCCEEDED":
             if _verified(task):
@@ -389,6 +466,20 @@ def preflight(
                 task["status"] = "BLOCKED"
                 task["updated_at"] = stamp
                 _atomic_write(path, payload)
+                terminal_event = (
+                    "TASK_FAILED"
+                    if error_class in TRANSIENT_ERRORS
+                    and int(task["attempt"]) >= MAX_ATTEMPTS
+                    else "TASK_BLOCKED"
+                )
+                _record_task_transition(
+                    path,
+                    payload,
+                    code6,
+                    event_type=terminal_event,
+                    old_status=old_status,
+                    error_class=error_class or "NON_TRANSIENT_FAILURE",
+                )
                 return {
                     "ok": True,
                     "code": code6,
@@ -407,6 +498,14 @@ def preflight(
         task["started_at"] = stamp
         task["updated_at"] = stamp
         _atomic_write(path, payload)
+        _record_task_transition(
+            path,
+            payload,
+            code6,
+            event_type="TASK_CLAIMED",
+            old_status=old_status,
+            error_class=(str(task.get("last_error_class") or "") or None),
+        )
         return {
             "ok": True,
             "code": code6,
@@ -431,6 +530,7 @@ def mark_failure(
     with _locked(path):
         _, payload = _read(path)
         task = payload["tasks"][code6]
+        old_status = str(task["status"])
         task["attempt"] = max(1, int(task.get("attempt") or 0))
         task["last_error_class"] = kind
         task["last_error"] = error or kind
@@ -441,6 +541,20 @@ def mark_failure(
                 payload.get("rate_limit_failures") or 0
             ) + 1
         _atomic_write(path, payload)
+        if kind not in TRANSIENT_ERRORS:
+            event_type = "TASK_BLOCKED"
+        elif int(task["attempt"]) >= MAX_ATTEMPTS:
+            event_type = "TASK_FAILED"
+        else:
+            event_type = "TASK_RETRY_SCHEDULED"
+        _record_task_transition(
+            path,
+            payload,
+            code6,
+            event_type=event_type,
+            old_status=old_status,
+            error_class=kind,
+        )
     return {
         "ok": True,
         "code": code6,
@@ -461,6 +575,7 @@ def mark_success(
     with _locked(path):
         _, payload = _read(path)
         task = payload["tasks"][code6]
+        old_status = str(task["status"])
         refs = task["artifacts"]
         missing = []
         for name in ("prompt", "slim", "card"):
@@ -493,6 +608,14 @@ def mark_success(
         task["last_error"] = None
         task["updated_at"] = _stamp(now)
         _atomic_write(path, payload)
+        _record_task_transition(
+            path,
+            payload,
+            code6,
+            event_type="TASK_SUCCEEDED",
+            old_status=old_status,
+            error_class=None,
+        )
     return {
         "ok": True,
         "code": code6,
@@ -526,6 +649,7 @@ def reconcile(book: Path | str, *, now: datetime | None = None) -> dict:
 
     path = Path(book)
     recovered: list[str] = []
+    recovered_from: dict[str, str] = {}
     skipped: list[dict] = []
     with _locked(path):
         _, payload = _read(path)
@@ -555,8 +679,18 @@ def reconcile(book: Path | str, *, now: datetime | None = None) -> dict:
             task["last_error"] = None
             task["updated_at"] = _stamp(now)
             recovered.append(code6)
+            recovered_from[code6] = "RUNNING"
         if recovered:
             _atomic_write(path, payload)
+            for code6 in recovered:
+                _record_task_transition(
+                    path,
+                    payload,
+                    code6,
+                    event_type="TASK_SUCCEEDED",
+                    old_status=recovered_from[code6],
+                    error_class=None,
+                )
     return {"ok": True, "recovered": recovered, "skipped": skipped}
 
 

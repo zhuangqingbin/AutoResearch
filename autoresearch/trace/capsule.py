@@ -32,6 +32,15 @@ from autoresearch.trace.capsule_models import (
 from autoresearch.trace.events import append_event, verify_event_chain
 
 _STAGE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+_AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$", re.ASCII)
+_AGENT_EVENT_TYPES = frozenset(
+    {"AGENT_DISPATCHED", "AGENT_COMPLETED", "AGENT_FAILED"}
+)
+_SECRET_KEY_RE = re.compile(
+    r"token|secret|password|authorization|cookie|api[_-]?key", re.IGNORECASE
+)
+_BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
+_KEYLIKE_RE = re.compile(r"\b(?:sk|pk)-[A-Za-z0-9_-]{16,}\b", re.IGNORECASE)
 _UTC_TIMESTAMP_RE = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z$"
 )
@@ -403,6 +412,104 @@ def require_active_run(run_id: str) -> RunHandle:
             f"run {handle.run_id} is not ACTIVE: {state.business_status.value}"
         )
     return handle
+
+
+def _validate_agent_identifier(name: str, value: object) -> str:
+    if type(value) is not str or not _AGENT_ID_RE.fullmatch(value):
+        raise ValueError(f"invalid {name}: {value!r}")
+    return value
+
+
+def _redact_agent_value(value: object, *, secret_key: bool = False) -> object:
+    if secret_key:
+        return "[REDACTED]"
+    if type(value) is dict:
+        return {
+            str(key): _redact_agent_value(
+                item,
+                secret_key=bool(_SECRET_KEY_RE.search(str(key))),
+            )
+            for key, item in value.items()
+        }
+    if type(value) is list:
+        return [_redact_agent_value(item) for item in value]
+    if type(value) is str:
+        redacted = _KEYLIKE_RE.sub(
+            "[REDACTED]", _BEARER_RE.sub("[REDACTED]", value)
+        )
+        for key, secret in os.environ.items():
+            if (
+                _SECRET_KEY_RE.search(key)
+                and len(secret) >= 4
+                and secret in redacted
+            ):
+                redacted = redacted.replace(secret, "[REDACTED]")
+        return redacted
+    return value
+
+
+def _agent_payload(name: str, value: Mapping | None) -> dict | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{name} must be a JSON object or None")
+    redacted = _redact_agent_value(dict(value))
+    try:
+        normalized = json.loads(canonical_json(redacted))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must contain canonical JSON values") from exc
+    if type(normalized) is not dict:
+        raise TypeError(f"{name} must be a JSON object or None")
+    return normalized
+
+
+def record_agent_boundary(
+    run_id: str,
+    event_type: str,
+    *,
+    role: str,
+    subject: str,
+    invocation_id: str,
+    attempt: int,
+    result: Mapping | None = None,
+    error: Mapping | None = None,
+) -> dict:
+    """Append one authoritative agent dispatch/terminal binding to an active run."""
+    if type(event_type) is not str or event_type not in _AGENT_EVENT_TYPES:
+        raise ValueError(
+            f"invalid event_type: {event_type!r}; expected {sorted(_AGENT_EVENT_TYPES)!r}"
+        )
+    resolved_role = _validate_agent_identifier("role", role)
+    resolved_subject = _validate_agent_identifier("subject", subject)
+    resolved_invocation = _validate_agent_identifier("invocation_id", invocation_id)
+    if type(attempt) is not int or attempt < 1:
+        raise ValueError("attempt must be a positive integer")
+    normalized_result = _agent_payload("result", result)
+    normalized_error = _agent_payload("error", error)
+    ambient_run_id = ws.active_run_id()
+    if ambient_run_id is not None and ambient_run_id != run_id:
+        raise ValueError(
+            f"AUTORESEARCH_RUN_ID={ambient_run_id!r} does not match {run_id!r}"
+        )
+    handle = require_active_run(run_id)
+    stage = _validate_stage(
+        str(os.environ.get("AUTORESEARCH_STAGE", "")).strip() or "l4"
+    )
+    return append_event(
+        handle.capsule / "events/events.jsonl",
+        run_id=handle.run_id,
+        engine=handle.engine,
+        stage=stage,
+        invocation_id=resolved_invocation,
+        attempt=attempt,
+        subject=resolved_subject,
+        event_type=event_type,
+        payload={
+            "error": normalized_error,
+            "result": normalized_result,
+            "role": resolved_role,
+        },
+    )
 
 
 def _validate_report_dir(report_dir: Path | str | None) -> Path | None:
@@ -920,6 +1027,15 @@ def _parser() -> argparse.ArgumentParser:
     save.add_argument("--report-dir")
     inspect = commands.add_parser("inspect")
     inspect.add_argument("run_id")
+    agent_event = commands.add_parser("agent-event")
+    agent_event.add_argument("run_id")
+    agent_event.add_argument("event_type", choices=sorted(_AGENT_EVENT_TYPES))
+    agent_event.add_argument("--role", required=True)
+    agent_event.add_argument("--subject", required=True)
+    agent_event.add_argument("--invocation-id", required=True)
+    agent_event.add_argument("--attempt", required=True, type=int)
+    agent_event.add_argument("--result-json")
+    agent_event.add_argument("--error-json")
     return parser
 
 
@@ -952,8 +1068,26 @@ def main(argv: list[str] | None = None) -> int:
                 error=args.error,
                 report_dir=args.report_dir,
             ).to_dict()
-        else:
+        elif args.command == "inspect":
             result = inspect_run(args.run_id)
+        else:
+            parsed_result = (
+                json.loads(args.result_json) if args.result_json is not None else None
+            )
+            parsed_error = (
+                json.loads(args.error_json) if args.error_json is not None else None
+            )
+            event = record_agent_boundary(
+                args.run_id,
+                args.event_type,
+                role=args.role,
+                subject=args.subject,
+                invocation_id=args.invocation_id,
+                attempt=args.attempt,
+                result=parsed_result,
+                error=parsed_error,
+            )
+            result = {"event": event, "ok": True}
         _emit(result)
         return 0
     except Exception as exc:  # noqa: BLE001 - CLI converts failure into honest exit
@@ -973,4 +1107,5 @@ __all__ = [
     "inspect_run",
     "load_run",
     "main",
+    "record_agent_boundary",
 ]

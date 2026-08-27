@@ -79,7 +79,48 @@ let taskAttempt = A.attempt
 const CARD = { type: 'object', required: ['code', 'rating'],
   properties: { code: { type: 'string' }, rating: { type: 'string' },
     conviction: { type: 'number', minimum: 0, maximum: 100 }, proposal: { type: 'string' } } }
-const recordL4 = (errorCode = null) => agent(
+const rawAgent = agent
+const AGENT_EVENT_ACK = { type: 'object', required: ['ok'],
+  properties: { ok: { type: 'boolean' }, event: { type: 'object' } } }
+const safeAgentPart = (value) => String(value).replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '')
+const emitAgentEvent = (eventType, invocationId, role) => {
+  const terminal = eventType === 'AGENT_FAILED'
+    ? ` --error-json '{"status":"threw"}'`
+    : ` --result-json '{"status":"${eventType === 'AGENT_DISPATCHED' ? 'queued' : 'returned'}"}'`
+  const evidenceInvocation = `agent-event-${invocationId}-${eventType.toLowerCase()}`
+  return rawAgent(
+    `执行:\`${PY('l4', evidenceInvocation, taskAttempt, code)} autoresearch.trace.capsule agent-event ${RUN_ID} ${eventType} ` +
+      `--role ${role} --subject ${code} --invocation-id ${invocationId} --attempt ${taskAttempt}${terminal}\`。` +
+      '把 stdout 最后一行 JSON 原样作为结构化返回；不要判断或增删字段。' +
+      '**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**',
+    { agentType: 'general-purpose', ...AG('gp_shell_json'),
+      label: `trace:${eventType}:${invocationId}`, schema: AGENT_EVENT_ACK })
+}
+async function tracedAgent(invocationId, role, prompt, options) {
+  try {
+    await emitAgentEvent('AGENT_DISPATCHED', invocationId, role)
+  } catch (error) {
+    log(`⚠️ agent dispatch 取证失败:${invocationId}:${error && error.message ? error.message : error}`)
+  }
+  try {
+    const result = await rawAgent(prompt, options)
+    try {
+      await emitAgentEvent('AGENT_COMPLETED', invocationId, role)
+    } catch (error) {
+      log(`⚠️ agent completed 取证失败:${invocationId}:${error && error.message ? error.message : error}`)
+    }
+    return result
+  } catch (error) {
+    try {
+      await emitAgentEvent('AGENT_FAILED', invocationId, role)
+    } catch (traceError) {
+      log(`⚠️ agent failed 取证失败:${invocationId}:${traceError && traceError.message ? traceError.message : traceError}`)
+    }
+    throw error
+  }
+}
+const recordL4 = (errorCode = null) => tracedAgent(
+  `gp-shell-${code}-${taskAttempt}-stage-result-${safeAgentPart(errorCode || 'success')}`, 'gp-shell',
   `在仓库根目录执行:\`${PY('l4', `l4-stage-${code}-attempt-${taskAttempt}`, taskAttempt, code)} autoresearch.scan.stock_stage l4 ${date} ${code}` +
   `${errorCode ? ` --error ${errorCode}` : ''}\`。只回报退出码,不要判断或解释。` +
   `**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**`,
@@ -88,7 +129,8 @@ const recordL4 = (errorCode = null) => agent(
 // 🚨 2026-08-05 事故(同族,见 scan-market.js:35 注释):`prepare` 子命令内含单票 slim 取数,
 // 可能跑数分钟 → harness 转后台 → haiku 壳判定"卡住"并 pkill 生产作业。同样两条药:
 // 显式告知耗时 + 禁杀纪律,model 升 sonnet(每票仅 1 次调用,代价可忽略)。
-const taskGate = (subcommand, schema, label) => agent(
+const taskGate = (subcommand, schema, label) => tracedAgent(
+  `gp-shell-${code}-${taskAttempt}-${safeAgentPart(label)}`, 'gp-shell',
   `执行:\`if test -s ${TASK_BOOK}; then ${subcommand}; ` +
   `else echo '{"ok":true,"action":"LEGACY"}'; fi\`\n` +
   '把 stdout 最后一行 JSON 原样作为结构化返回；不要判断或增删字段。' +
@@ -97,7 +139,8 @@ const taskGate = (subcommand, schema, label) => agent(
   '它没卡住,它在取数;被 harness 转后台就安静等完成通知。拿不到退出码就如实回报,不要自己"修"。',
   { agentType: 'general-purpose', ...AG('gp_shell_json'), label, schema })
 // 通用确定性 CLI 壳:跑一条命令、把它打印的最后一行 JSON 原样带回(零判断)。
-const gpJson = (cmd, label, schema) => agent(
+const gpJson = (cmd, label, schema) => tracedAgent(
+  `gp-shell-${code}-${taskAttempt}-${safeAgentPart(label)}`, 'gp-shell',
   `执行:\`${cmd}\`\n它会向 stdout 打印一行 JSON。把最后一行 JSON 原样作为结构化返回,` +
   '不改、不增删字段。**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**',
   { agentType: 'general-purpose', ...AG('gp_shell_json'), label, schema })
@@ -106,7 +149,8 @@ const gpJson = (cmd, label, schema) => agent(
 // intel_status 的**调用点**写进本文件(L160),却没带上这份定义 —— 每只票都会在 Intel 相位
 // 之后同步抛 `bash is not defined`,`.catch(() => null)` 接不住(ReferenceError 在 promise
 // 生成前就抛了),结果是一张决策卡都出不来。与 scan-market.js:35 的 bash() 同语义、同签名。
-const bash = (cmd, label, phaseName) => agent(
+const bash = (cmd, label, phaseName) => tracedAgent(
+  `gp-shell-${code}-${taskAttempt}-${safeAgentPart(label)}`, 'gp-shell',
   '在仓库根目录精确执行下面这条命令,然后只回报:退出码 + stdout 末 15 行。' +
   '不要做别的、不要判断、不要解释。\n' +
   '**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**\n' +
@@ -192,7 +236,8 @@ async function intelLeg() {
   for (let i = 1; i <= 3; i++) {
     intelAttempts = i
     try {
-      return await agent(
+      return await tracedAgent(
+        `l4-intel-${code}-${taskAttempt}${i > 1 ? `-retry-${i}` : ''}`, 'l4-intel',
         `活体情报采集:${code} ${name}(${sector})· 分析日 ${date}。按你的人设六面全查(≤${maxQ} 条),写 ${SD}/_l4_intel_${code}.md;返回 code 与事件行数 events。${knownBase}`,
         { agentType: 'l4-intel', ...AG('l4_intel'),
           label: i > 1 ? `intel:${code}#${i}` : `intel:${code}`, phase: 'Intel', schema: INTEL })
@@ -273,7 +318,8 @@ if (trackedTask && !slimResult) {
 phase('Card')
 let card
 try {
-  card = await agent(
+  card = await tracedAgent(
+    `l4-card-${code}-${taskAttempt}`, 'l4-card',
     `执行 ${SD}/_l4_prompt_${code}.md:先读整个任务包,再按其指令做渐进深度 DD + 早停,写决策卡到 ${SD}/details/${code}.md。最后返回该卡最终五档评级与 FINAL 行(code / rating / conviction / proposal=FINAL TRANSACTION PROPOSAL 的值,如 "SELL")。`,
     { agentType: 'l4-card', ...AG('l4_card'),
       label: `card:${code}`, phase: 'Card', schema: CARD })
@@ -307,7 +353,8 @@ if (trigger) {
     : `🎭 持仓卖出复核:${code} 追加 2 独立 run 取中位(只向温和折回,卖错持仓代价不对称)`)
   const RANK = { 'sell': 0, 'underweight': 1, 'hold': 2, 'overweight': 3, 'buy': 4 }
   const tier = (r) => RANK[String(r || '').toLowerCase()] ?? 2
-  const rerun = (i) => agent(
+  const rerun = (i) => tracedAgent(
+    `ens-review-${code}-${taskAttempt}-reviewer-${i}`, 'ens-review',
     `独立复核 run${i}(不知道其它 run 结论):执行 ${SD}/_l4_prompt_${code}.md 的任务包,按人设走渐进深度 DD,决策卡写到 ${SD}/ensemble/${code}.run${i}.md(先自行创建 ensemble/ 目录),返回 code/rating/conviction/proposal。`,
     { agentType: 'l4-card', ...AG('ens_review'),
       label: `ens${i}:${code}`, phase: 'Verify', schema: CARD })
@@ -339,7 +386,8 @@ if (trigger) {
     spread: sorted[sorted.length - 1] - sorted[0], degraded, trigger,
     n_runs: ratings.length, early_stopped: earlyStopped,
     role: 'ens_review', n_dispatch: ensDispatched }
-  await agent(
+  await tracedAgent(
+    `gp-shell-${code}-${taskAttempt}-ens-dump`, 'gp-shell',
     `在仓库根目录精确执行下面这条命令,然后只回报退出码。不要做别的、不要判断。\n` +
     `**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向(heredoc 原样保留)。**` +
     `\n\n\`\`\`\ncat > ${SD}/_ensemble_${code}.json << 'EOF'\n${JSON.stringify(rec)}\nEOF\n\`\`\``,

@@ -4,9 +4,11 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
+from autoresearch.common import workspace as ws
 from autoresearch.scan.l4_tasks import (
     dispatch_batches,
     initialize,
@@ -15,9 +17,12 @@ from autoresearch.scan.l4_tasks import (
     preflight,
     prepare_slim,
 )
+from autoresearch.trace.atomic import canonical_json
+from autoresearch.trace.capsule import begin_run
 
 DATE = "2026-07-28"
 NOW = datetime(2026, 7, 28, 8, 0, tzinfo=timezone.utc)
+TRACE_NOW = datetime(2026, 7, 28, 8, 0, 0, 123456, tzinfo=timezone.utc)
 
 
 def _files(tmp_path, code: str, ticker: str) -> None:
@@ -58,6 +63,54 @@ def _book(tmp_path, codes=("000001", "000002", "000003")):
         meta=meta,
         now=NOW,
     )
+
+
+def _traced_book(tmp_path, monkeypatch, code="000001"):
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    monkeypatch.setattr(ws, "context_root", lambda: tmp_path / "context_codex")
+    monkeypatch.setattr(ws, "reports_root", lambda: tmp_path / "reports_codex")
+    monkeypatch.setattr(
+        "autoresearch.scan.user_config.DEFAULT_PINNED_PATH",
+        tmp_path / "missing-pinned.jsonc",
+    )
+    handle = begin_run("scan-market", DATE, "codex", {}, now=TRACE_NOW)
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", handle.run_id)
+    scan = handle.staging
+    inputs = ws.scan_input_dir(DATE, scan_dir=scan)
+    (scan / "details").mkdir(parents=True, exist_ok=True)
+    inputs.mkdir(parents=True, exist_ok=True)
+    (scan / f"_l4_prompt_{code}.md").write_text("# prompt\n", encoding="utf-8")
+    ticker = f"{code}.SZ"
+    (inputs / f"{ticker}_{DATE}_slim.md").write_text(
+        "\n".join([
+            "## Verified market snapshot",
+            "### Latest verified OHLCV row",
+            "| Close | 12.34 |",
+            "## Market context",
+            "## Fundamentals overview",
+            "x" * 5000,
+        ]),
+        encoding="utf-8",
+    )
+    (scan / "details" / f"{code}.md").write_text("# card\n", encoding="utf-8")
+    book = initialize(
+        DATE,
+        [code],
+        root=handle.workspace / "staging",
+        context_root=inputs,
+        meta={code: {"ticker": ticker}},
+        now=NOW,
+    )
+    return handle, Path(book["path"])
+
+
+def _trace_events(handle, code="000001"):
+    path = handle.capsule / "events/events.jsonl"
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if json.loads(line).get("subject") == code
+    ]
 
 
 def test_initialize_is_atomic_and_preserves_order(tmp_path):
@@ -185,6 +238,123 @@ def test_transient_failure_retries_once_without_touching_other_stock(tmp_path):
 
     mark_failure(book["path"], "000001", "TIMEOUT", now=NOW)
     assert preflight(book["path"], "000001", now=NOW)["action"] == "BLOCKED"
+
+
+def test_l4_trace_preserves_retry_failure_then_success_history(tmp_path, monkeypatch):
+    handle, book = _traced_book(tmp_path, monkeypatch)
+
+    assert preflight(book, "000001", now=NOW)["attempt"] == 1
+    mark_failure(book, "000001", "TIMEOUT", now=NOW)
+    assert preflight(book, "000001", now=NOW)["attempt"] == 2
+    mark_success(book, "000001", now=NOW)
+
+    events = _trace_events(handle)
+    assert [event["event_type"] for event in events] == [
+        "TASK_CLAIMED",
+        "TASK_RETRY_SCHEDULED",
+        "TASK_CLAIMED",
+        "TASK_SUCCEEDED",
+    ]
+    assert events[1]["payload"]["error_class"] == "TIMEOUT"
+    assert events[1]["payload"]["old_status"] == "RUNNING"
+    assert events[1]["payload"]["new_status"] == "FAILED"
+    assert events[-1]["attempt"] == 2
+
+
+@pytest.mark.parametrize(
+    "error_class,expected_event,expected_status",
+    [
+        ("SCHEMA_ERROR", "TASK_BLOCKED", "BLOCKED"),
+        ("TIMEOUT", "TASK_RETRY_SCHEDULED", "FAILED"),
+    ],
+)
+def test_l4_failure_transition_event_mapping(
+    tmp_path, monkeypatch, error_class, expected_event, expected_status
+):
+    handle, book = _traced_book(tmp_path, monkeypatch)
+    preflight(book, "000001", now=NOW)
+
+    result = mark_failure(book, "000001", error_class, now=NOW)
+
+    event = _trace_events(handle)[-1]
+    assert result["status"] == expected_status
+    assert event["event_type"] == expected_event
+    assert event["payload"]["error_class"] == error_class
+
+
+def test_l4_exhausted_transient_failure_is_task_failed(tmp_path, monkeypatch):
+    handle, book = _traced_book(tmp_path, monkeypatch)
+    preflight(book, "000001", now=NOW)
+    mark_failure(book, "000001", "TIMEOUT", now=NOW)
+    preflight(book, "000001", now=NOW)
+
+    mark_failure(book, "000001", "CONNECTION", now=NOW)
+
+    event = _trace_events(handle)[-1]
+    assert event["event_type"] == "TASK_FAILED"
+    assert event["attempt"] == 2
+    assert event["payload"]["new_status"] == "FAILED"
+
+
+def test_l4_transition_hashes_authoritative_book_and_visible_artifacts(
+    tmp_path, monkeypatch
+):
+    handle, book = _traced_book(tmp_path, monkeypatch)
+
+    preflight(book, "000001", now=NOW)
+
+    payload = json.loads(book.read_text(encoding="utf-8"))
+    task = payload["tasks"]["000001"]
+    event = _trace_events(handle)[-1]
+    evidence = event["payload"]
+    expected_book_hash = hashlib.sha256(
+        canonical_json(payload).encode("utf-8")
+    ).hexdigest()
+    assert evidence["task_book_hash"] == expected_book_hash
+    assert evidence["attempt"] == task["attempt"] == event["attempt"]
+    for name in ("prompt", "slim", "card"):
+        path = Path(task["artifacts"][name]["path"])
+        assert evidence[f"{name}_status"] == "PRESENT"
+        assert evidence[f"{name}_hash"] == hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_l4_event_failure_is_best_effort_after_authoritative_mutation(
+    tmp_path, monkeypatch, capsys
+):
+    from autoresearch.scan import l4_tasks
+
+    handle, book = _traced_book(tmp_path, monkeypatch)
+    before_events = (handle.capsule / "events/events.jsonl").read_bytes()
+
+    def fail_event(*args, **kwargs):
+        raise OSError("events full")
+
+    monkeypatch.setattr(l4_tasks, "append_event", fail_event)
+    result = preflight(book, "000001", now=NOW)
+
+    task = json.loads(book.read_text(encoding="utf-8"))["tasks"]["000001"]
+    assert result["action"] == "RUN"
+    assert task["status"] == "RUNNING"
+    assert task["attempt"] == 1
+    assert (handle.capsule / "events/events.jsonl").read_bytes() == before_events
+    diagnostic = capsys.readouterr().err
+    assert "TASK_CLAIMED" in diagnostic
+    assert "events full" in diagnostic
+
+
+def test_l4_without_run_id_never_attempts_event_capture(tmp_path, monkeypatch):
+    from autoresearch.scan import l4_tasks
+
+    book = _book(tmp_path, ("000001",))
+    monkeypatch.delenv("AUTORESEARCH_RUN_ID", raising=False)
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("legacy task transition attempted forensic capture")
+
+    monkeypatch.setattr(l4_tasks, "append_event", unexpected)
+    result = preflight(book["path"], "000001", now=NOW)
+
+    assert result["action"] == "RUN"
 
 
 def test_expected_retry_attempt_mismatch_is_atomic_then_exact_next_attempt_runs(tmp_path):
