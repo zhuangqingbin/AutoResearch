@@ -434,6 +434,44 @@ def test_checkpoint_rejects_ambiguous_relative_literal_across_roots(
         )
 
 
+def test_checkpoint_records_literal_missing_at_resolution_and_completes_attempt(
+    tmp_path, monkeypatch
+):
+    handle = _begin(tmp_path, monkeypatch)
+
+    item = checkpoint(
+        handle.run_id,
+        "l2",
+        "SUCCEEDED",
+        ["never-created.json"],
+        {},
+    )
+
+    result_path = handle.capsule / "stages/l2/attempt-1/result.json"
+    outputs = json.loads(
+        (handle.capsule / "stages/l2/attempt-1/outputs.json").read_text(
+            encoding="utf-8"
+        )
+    )["artifacts"]
+    assert item.attempt == 1
+    assert result_path.is_file()
+    assert outputs == [
+        {
+            "bytes": None,
+            "logical_id": None,
+            "path": "never-created.json",
+            "pattern": None,
+            "root": "scan",
+            "sha256": None,
+            "status": "MISSING",
+        }
+    ]
+    assert [event["event_type"] for event in _events(handle)[-2:]] == [
+        "STAGE_COMPLETED",
+        "CHECKPOINT_WRITTEN",
+    ]
+
+
 def test_concurrent_checkpoints_allocate_unique_attempts(tmp_path, monkeypatch):
     handle = _begin(tmp_path, monkeypatch)
 

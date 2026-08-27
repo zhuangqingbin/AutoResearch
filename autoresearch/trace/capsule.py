@@ -493,14 +493,25 @@ def _literal_artifact(
         raise ValueError(f"artifact path escapes {root_name} root: {text!r}") from exc
     if not relative.parts:
         raise ValueError("artifact path cannot be the staging root")
-    if source.exists() and (source.is_symlink() or not source.is_file()):
+    try:
+        source_info = source.lstat()
+    except FileNotFoundError:
+        captured_source = None
+        source_signature = None
+    else:
+        if stat.S_ISLNK(source_info.st_mode) or not stat.S_ISREG(source_info.st_mode):
+            raise ValueError(f"artifact must be a regular file: {text!r}")
+        captured_source = resolved
+        source_signature = _capture_signature(source_info)
+    if captured_source is not None and not source.is_file():
         raise ValueError(f"artifact must be a regular file: {text!r}")
     return {
         "logical_id": None,
         "pattern": None,
         "root": root_name,
         "path": relative.as_posix(),
-        "source": resolved,
+        "source": captured_source,
+        "source_signature": source_signature,
     }
 
 
@@ -519,6 +530,7 @@ def _registered_artifact_rows(
                 "root": spec.root,
                 "path": spec.path,
                 "source": None,
+                "source_signature": None,
             }
         ]
     base_resolved = base.resolve(strict=True)
@@ -540,6 +552,7 @@ def _registered_artifact_rows(
                 "root": spec.root,
                 "path": relative.as_posix(),
                 "source": resolved,
+                "source_signature": _capture_signature(resolved.lstat()),
             }
         )
     if rows:
@@ -551,6 +564,7 @@ def _registered_artifact_rows(
             "root": spec.root,
             "path": spec.path,
             "source": None,
+            "source_signature": None,
         }
     ]
 
@@ -665,13 +679,26 @@ def _write_capture(fd: int, block: bytes) -> None:
         view = view[written:]
 
 
-def _copy_artifact(source: Path, destination: Path) -> tuple[int, bool]:
+def _copy_artifact(
+    source: Path,
+    destination: Path,
+    *,
+    expected_signature: tuple[int, ...] | None,
+) -> tuple[int, bool]:
     """Capture from one no-follow descriptor and prove the source stayed stable."""
     nofollow = getattr(os, "O_NOFOLLOW", 0)
-    source_fd = os.open(source, os.O_RDONLY | nofollow)
+    try:
+        source_fd = os.open(source, os.O_RDONLY | nofollow)
+    except OSError as exc:
+        raise RuntimeError(f"artifact source changed during capture: {source}") from exc
     destination_fd = -1
     try:
         before = os.fstat(source_fd)
+        if (
+            expected_signature is not None
+            and _capture_signature(before) != expected_signature
+        ):
+            raise RuntimeError(f"artifact source changed during capture: {source}")
         if not stat.S_ISREG(before.st_mode):
             raise ValueError(f"artifact source is not a regular file: {source}")
         captured_size = 0
@@ -774,7 +801,11 @@ def checkpoint(
                 product_root, relative_destination.parent, create=True
             )
             destination = destination_parent / relative_destination.name
-            captured_size, present = _copy_artifact(source, destination)
+            captured_size, present = _copy_artifact(
+                source,
+                destination,
+                expected_signature=artifact["source_signature"],
+            )
             row["bytes"] = captured_size
             if present:
                 row.update(
