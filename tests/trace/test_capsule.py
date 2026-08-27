@@ -143,6 +143,49 @@ def test_begin_snapshots_identity_after_run_started_and_records_success(tmp_path
     )
 
 
+def test_begin_consumes_authoritative_cleanup_warning_from_snapshot_loader(
+    tmp_path, monkeypatch
+):
+    _redirect_roots(monkeypatch, tmp_path)
+
+    def snapshot(repo_root, out, **identity):
+        base = {
+            "schema_version": 1,
+            "ok": True,
+            "redaction_rule_version": 2,
+            "components": {},
+            "missing": [],
+            "errors": [],
+        }
+        warning = {
+            "schema_version": 1,
+            "status": "PARTIAL",
+            "failures": [{"phase": "cleanup_fsync", "error_type": "OSError"}],
+            "stale_backup_count": 1,
+            "stale_generation_count": 0,
+        }
+        (out / "snapshot_result.json").write_text(
+            canonical_json(base) + "\n", encoding="utf-8"
+        )
+        (out / "snapshot_cleanup_warning.json").write_text(
+            canonical_json(warning) + "\n", encoding="utf-8"
+        )
+        return base
+
+    monkeypatch.setattr(capsule_mod, "snapshot_identity", snapshot)
+
+    handle = begin_run("scan-market", DATE, "codex", {}, now=NOW)
+
+    events = _events(handle)
+    assert [event["event_type"] for event in events] == [
+        "RUN_STARTED",
+        "IDENTITY_SNAPSHOTTED",
+        "EVIDENCE_MISSING",
+    ]
+    assert events[-1]["payload"]["ok"] is False
+    assert events[-1]["payload"]["components"]["snapshot_cleanup"] == "PARTIAL"
+
+
 def test_partial_identity_failure_keeps_run_loadable_and_emits_redacted_gap(tmp_path, monkeypatch):
     _redirect_roots(monkeypatch, tmp_path)
     secret = "sk-live-abcdefghijklmnopqrstuvwxyz123456"

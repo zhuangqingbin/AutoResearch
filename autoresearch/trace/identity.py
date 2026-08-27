@@ -19,7 +19,7 @@ import tarfile
 import tempfile
 import threading
 import time
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -55,17 +55,19 @@ _PROVIDER_TOKEN_RES = (
     re.compile(r"(?<![A-Za-z0-9])SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{20,}"),
     re.compile(r"(?i)(?<![A-Za-z0-9])npm_[A-Za-z0-9]{36,255}(?![A-Za-z0-9])"),
 )
-_ASSIGNMENT_RHS = r"""(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}{]+)"""
-_SECRET_ASSIGNMENT_RE = re.compile(
-    rf"(?i)\b(?P<key>(?:token|secret|password|authorization|cookie|api[_-]?key|"
-    rf"(?:access|auth|refresh|session|bearer|github|gitlab|openai|anthropic|tushare|"
-    rf"fred|slack|stripe|npm)[_-]token|[A-Za-z0-9_-]+[_-](?:password|secret|api[_-]?key)))"
-    rf"\b[\"']?[ \t]*(?::|(?<![=!<>])=(?!=))[ \t]*(?P<rhs>{_ASSIGNMENT_RHS})"
+_SECRET_TARGET_RE = re.compile(
+    r"(?i)^(?:token|secret|password|authorization|cookie|api[_-]?key|"
+    r"(?:access|auth|refresh|session|bearer|github|gitlab|openai|anthropic|tushare|"
+    r"fred|slack|stripe|npm)[_-]token|[A-Za-z0-9_-]+[_-](?:password|secret|api[_-]?key))$"
 )
-_CONTEXT_CREDENTIAL_RE = re.compile(
-    rf"(?i)\b(?P<key>credential|credentials|client[_-]?secret|[A-Za-z0-9_-]*dsn|database[_-]?url|"
-    r"mongo(?:db)?[_-]?(?:uri|url)|redis[_-]?(?:uri|url)|connection[_-]?string)"
-    rf"\b[\"']?[ \t]*(?::|(?<![=!<>])=(?!=))[ \t]*(?P<rhs>{_ASSIGNMENT_RHS})"
+_CONTEXT_TARGET_RE = re.compile(
+    r"(?i)^(?:credential|credentials|client[_-]?secret|[A-Za-z0-9_-]*dsn|database[_-]?url|"
+    r"mongo(?:db)?[_-]?(?:uri|url)|redis[_-]?(?:uri|url)|connection[_-]?string)$"
+)
+_FALLBACK_ASSIGNMENT_RE = re.compile(
+    r"""^[ \t]*(?:[+\-](?![+\-]))?[ \t]*(?:[{,][ \t]*)?["']?"""
+    r"(?P<key>[A-Za-z_][A-Za-z0-9_-]*)[\"']?[ \t]*(?P<delimiter>:|(?<![=!<>])=(?!=))"
+    r"[ \t]*(?P<rhs>.+?)?[ \t]*(?:[,}]?[ \t]*)$"
 )
 _PLACEHOLDER_RE = re.compile(
     r"(?i)^(?:none|null|true|false|changeme|change[_-]?me|replace[_-]?me|"
@@ -120,12 +122,14 @@ _SECRET_CONNECTION_ENV_RE = re.compile(
 _SNAPSHOT_LOCKS: dict[str, threading.Lock] = {}
 _SNAPSHOT_LOCKS_GUARD = threading.Lock()
 _SNAPSHOT_SIBLING_SUFFIX_RE = re.compile(r"[a-z0-9_]{8}")
+_CLEANUP_WARNING = "snapshot_cleanup_warning.json"
+_TRANSACTION_JOURNAL = "snapshot_transaction.json"
 _OWNED_FILES = frozenset(
     {
         "code.patch",
         "dependencies.txt",
         "environment.json",
-        "identity_cleanup_degraded.json",
+        _CLEANUP_WARNING,
         "snapshot_result.json",
         "source_manifest.json",
         "source_links.json",
@@ -186,21 +190,13 @@ def redact_value(value: Any, *, environ: dict[str, str] | None = None) -> Redact
             hits += len(matches)
             return pattern.sub(_REDACTED, current)
 
-        def replace_assignments(pattern: re.Pattern[str], current: str) -> str:
+        def replace_assignments(current: str) -> str:
             nonlocal hits
-            parts: list[str] = []
-            cursor = 0
-            for match in pattern.finditer(current):
-                if not _is_literal_credential_assignment(current, match):
-                    continue
-                parts.append(current[cursor : match.start()])
-                parts.append(_REDACTED)
-                cursor = match.end()
-                hits += 1
-            if not parts:
-                return current
-            parts.append(current[cursor:])
-            return "".join(parts)
+            ranges = _credential_assignment_ranges(current)
+            for _kind, start, end in reversed(ranges):
+                current = current[:start] + _REDACTED + current[end:]
+            hits += len(ranges)
+            return current
 
         text = replace(_BEARER_RE, text)
         text = replace(_SLACK_TOKEN_RE, text)
@@ -210,8 +206,7 @@ def redact_value(value: Any, *, environ: dict[str, str] | None = None) -> Redact
             text = replace(pattern, text)
         text = replace(_KEYLIKE_RE, text)
         text = replace(_AWS_KEY_RE, text)
-        text = replace_assignments(_SECRET_ASSIGNMENT_RE, text)
-        text = replace_assignments(_CONTEXT_CREDENTIAL_RE, text)
+        text = replace_assignments(text)
         return text
 
     def redact(item: Any, *, secret_key: bool = False) -> Any:
@@ -258,64 +253,263 @@ def _entropy(value: bytes) -> float:
     return -sum((count / size) * math.log2(count / size) for count in counts.values())
 
 
-def _is_commented_assignment(text: str, start: int) -> bool:
-    line_start = text.rfind("\n", 0, start) + 1
-    prefix = text[line_start:start].lstrip()
-    return prefix.startswith(("#", "//", "/*", "*"))
-
-
 def _placeholder_literal(value: str) -> bool:
     return not value or bool(_PLACEHOLDER_RE.fullmatch(value.strip()))
 
 
-def _is_literal_credential_assignment(text: str, match: re.Match[str]) -> bool:
-    """Classify one line-level assignment without guessing runtime expressions."""
-    if _is_commented_assignment(text, match.start()):
+def _credential_kind(name: str) -> str | None:
+    if _SECRET_TARGET_RE.fullmatch(name):
+        return "secret_assignment"
+    if _CONTEXT_TARGET_RE.fullmatch(name):
+        return "contextual_credential"
+    return None
+
+
+def _target_names(target: ast.expr) -> tuple[str, ...]:
+    if isinstance(target, ast.Name):
+        return (target.id,)
+    if isinstance(target, ast.Attribute):
+        return (target.attr,)
+    if isinstance(target, ast.Subscript) and isinstance(target.slice, ast.Constant):
+        return (str(target.slice.value),)
+    if isinstance(target, (ast.List, ast.Tuple)):
+        return tuple(name for child in target.elts for name in _target_names(child))
+    return ()
+
+
+def _attribute_parts(node: ast.expr) -> tuple[str, ...]:
+    if isinstance(node, ast.Name):
+        return (node.id,)
+    if isinstance(node, ast.Attribute):
+        return (*_attribute_parts(node.value), node.attr)
+    return ()
+
+
+def _is_environment_lookup(node: ast.Call) -> bool:
+    parts = _attribute_parts(node.func)
+    return parts in {
+        ("getenv",),
+        ("os", "getenv"),
+        ("environ", "get"),
+        ("os", "environ", "get"),
+    }
+
+
+def _literal_value_is_secret(value: Any) -> bool:
+    if value is None or isinstance(value, bool):
         return False
-    right_hand_side = match.group("rhs").strip()
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="ignore")
+    if isinstance(value, str):
+        return not _placeholder_literal(value)
+    return isinstance(value, (int, float, complex))
+
+
+def _literal_node_has_secret(node: ast.AST, source: str) -> bool:
+    if isinstance(node, ast.Constant):
+        return _literal_value_is_secret(node.value)
+    if isinstance(node, ast.JoinedStr):
+        return any(
+            (
+                isinstance(child, ast.Constant)
+                and isinstance(child.value, str)
+                and _literal_value_is_secret(child.value)
+            )
+            or (
+                isinstance(child, ast.FormattedValue)
+                and _literal_node_has_secret(child.value, source)
+            )
+            for child in node.values
+        )
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return any(_literal_node_has_secret(child, source) for child in node.elts)
+    if isinstance(node, ast.Dict):
+        return any(
+            child is not None and _literal_node_has_secret(child, source) for child in node.values
+        )
+    if isinstance(node, ast.BinOp):
+        if isinstance(node.op, ast.Add):
+            return _literal_node_has_secret(node.left, source) or _literal_node_has_secret(
+                node.right, source
+            )
+        segment = ast.get_source_segment(source, node) or ""
+        return " " not in segment and bool(re.fullmatch(r"[A-Za-z0-9._~+/=-]+", segment))
+    if isinstance(node, ast.Call):
+        if not _is_environment_lookup(node):
+            return False
+        defaults = list(node.args[1:])
+        defaults.extend(
+            keyword.value
+            for keyword in node.keywords
+            if keyword.arg is not None and keyword.arg.lower() in {"default", "fallback"}
+        )
+        return any(_literal_node_has_secret(child, source) for child in defaults)
+    if isinstance(node, ast.IfExp):
+        return _literal_node_has_secret(node.body, source) or _literal_node_has_secret(
+            node.orelse, source
+        )
+    if isinstance(node, ast.UnaryOp):
+        return _literal_node_has_secret(node.operand, source)
+    return False
+
+
+def _node_span(source: str, node: ast.AST) -> tuple[int, int]:
+    lines = source.splitlines(keepends=True) or [source]
+    starts: list[int] = []
+    cursor = 0
+    for line in lines:
+        starts.append(cursor)
+        cursor += len(line)
+
+    def character_column(line: str, byte_column: int) -> int:
+        encoded = line.encode("utf-8")[:byte_column]
+        return len(encoded.decode("utf-8", errors="ignore"))
+
+    start_line = max(int(getattr(node, "lineno", 1)) - 1, 0)
+    end_line = max(int(getattr(node, "end_lineno", start_line + 1)) - 1, start_line)
+    start = starts[start_line] + character_column(lines[start_line], int(node.col_offset))
+    end_column = int(getattr(node, "end_col_offset", node.col_offset + 1))
+    end = starts[end_line] + character_column(lines[end_line], end_column)
+    return start, max(end, start + 1)
+
+
+def _python_credential_ranges(source: str) -> tuple[bool, bool, list[tuple[str, int, int]]]:
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, TypeError):
+        return False, False, []
+    recognized = False
+    ranges: list[tuple[str, int, int]] = []
+    for node in ast.walk(tree):
+        targets: tuple[ast.expr, ...] = ()
+        value: ast.AST | None = None
+        if isinstance(node, ast.Assign):
+            targets = tuple(node.targets)
+            value = node.value
+        elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value is not None:
+            targets = (node.target,)
+            value = node.value
+        if targets and value is not None:
+            kinds = [
+                kind
+                for target in targets
+                for name in _target_names(target)
+                if (kind := _credential_kind(name)) is not None
+            ]
+            if kinds:
+                recognized = True
+                compact_chained_literal = (
+                    isinstance(node, ast.Assign)
+                    and len(node.targets) > 1
+                    and " " not in (ast.get_source_segment(source, node) or "")
+                )
+                if compact_chained_literal or _literal_node_has_secret(value, source):
+                    start, end = _node_span(source, node)
+                    ranges.append((kinds[0], start, end))
+        if isinstance(node, ast.Dict):
+            for key, child in zip(node.keys, node.values, strict=True):
+                if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
+                    continue
+                kind = _credential_kind(key.value)
+                if kind is None:
+                    continue
+                recognized = True
+                if _literal_node_has_secret(child, source):
+                    start, end = _node_span(source, node)
+                    ranges.append((kind, start, end))
+                    break
+    return True, recognized, ranges
+
+
+def _strip_inline_comment(value: str) -> str:
+    quote = ""
+    escaped = False
+    depth = 0
+    for index, char in enumerate(value):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and quote:
+            escaped = True
+            continue
+        if quote:
+            if char == quote:
+                quote = ""
+            continue
+        if char in {'"', "'"}:
+            quote = char
+            continue
+        if char in "([{":
+            depth += 1
+            continue
+        if char in ")]}" and depth:
+            depth -= 1
+            continue
+        if depth == 0 and char == "#":
+            return value[:index].rstrip()
+        if depth == 0 and value[index : index + 2] == "//":
+            return value[:index].rstrip()
+    return value.strip()
+
+
+def _fallback_rhs_has_secret(value: str) -> bool:
+    right_hand_side = _strip_inline_comment(value).rstrip(",}").strip()
     if _placeholder_literal(right_hand_side):
         return False
-    if right_hand_side[:1] in {'"', "'"}:
-        try:
-            literal = ast.literal_eval(right_hand_side)
-        except (SyntaxError, ValueError):
-            return False
-        if not isinstance(literal, (str, bytes)):
-            return False
-        decoded = (
-            literal.decode("utf-8", errors="ignore") if isinstance(literal, bytes) else literal
-        )
-        return not _placeholder_literal(decoded)
-    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", right_hand_side):
-        # A short identifier is a variable expression. Long opaque identifiers
-        # in env/YAML-style assignments are bare credential literals.
-        return len(right_hand_side) >= 16
-    if re.fullmatch(
-        r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+",
-        right_hand_side,
-    ):
-        return False
-    if re.fullmatch(r"[A-Za-z0-9._~+/=-]+", right_hand_side):
-        return True
     try:
         expression = ast.parse(right_hand_side, mode="eval").body
-    except SyntaxError:
-        # Non-Python placeholder syntaxes are handled above. Remaining compact
-        # source tokens are literal values; calls/attributes parse structurally.
+    except (SyntaxError, ValueError):
         return bool(re.fullmatch(r"[A-Za-z0-9._~+/=-]+", right_hand_side))
-    if isinstance(expression, (ast.Call, ast.Attribute, ast.Subscript)):
-        return False
-    if isinstance(expression, ast.Constant):
-        if expression.value is None or isinstance(expression.value, bool):
-            return False
-        if isinstance(expression.value, (str, bytes)):
-            value = expression.value
-            decoded = value.decode("utf-8", errors="ignore") if isinstance(value, bytes) else value
-            return not _placeholder_literal(decoded)
-        return True
-    if isinstance(expression, ast.Name):
-        return False
-    return False
+    return _literal_node_has_secret(expression, right_hand_side)
+
+
+def _merge_credential_ranges(
+    ranges: list[tuple[str, int, int]],
+) -> list[tuple[str, int, int]]:
+    merged: list[tuple[str, int, int]] = []
+    for kind, start, end in sorted(ranges, key=lambda item: (item[1], item[2])):
+        if merged and start < merged[-1][2]:
+            old_kind, old_start, old_end = merged[-1]
+            merged[-1] = (old_kind, old_start, max(old_end, end))
+        else:
+            merged.append((kind, start, end))
+    return merged
+
+
+def _credential_assignment_ranges(text: str) -> list[tuple[str, int, int]]:
+    parsed, recognized, ranges = _python_credential_ranges(text)
+    if parsed and recognized:
+        return _merge_credential_ranges(ranges)
+
+    cursor = 0
+    findings: list[tuple[str, int, int]] = []
+    for raw_line in text.splitlines(keepends=True):
+        line = raw_line.rstrip("\r\n")
+        stripped = line.lstrip()
+        if not stripped or stripped.startswith(("#", "//", "/*", "*", "+++", "---")):
+            cursor += len(raw_line)
+            continue
+        prefix = len(line) - len(stripped)
+        if stripped[:1] in {"+", "-"} and not stripped.startswith(("++", "--")):
+            prefix += 1
+            stripped = stripped[1:].lstrip()
+            prefix = len(line) - len(stripped)
+        line_parsed, recognized, line_ranges = _python_credential_ranges(stripped)
+        if line_parsed and recognized:
+            findings.extend(
+                (kind, cursor + prefix + start, cursor + prefix + end)
+                for kind, start, end in line_ranges
+            )
+            cursor += len(raw_line)
+            continue
+        match = _FALLBACK_ASSIGNMENT_RE.match(stripped)
+        if match is not None:
+            kind = _credential_kind(match.group("key"))
+            right_hand_side = match.group("rhs") or ""
+            if kind is not None and _fallback_rhs_has_secret(right_hand_side):
+                findings.append((kind, cursor + prefix, cursor + len(line)))
+        cursor += len(raw_line)
+    return _merge_credential_ranges(findings)
 
 
 def _looks_like_stable_identifier(value: bytes) -> bool:
@@ -337,6 +531,12 @@ def _looks_like_source_identifier(value: bytes) -> bool:
     upper = sum(byte in b"ABCDEFGHIJKLMNOPQRSTUVWXYZ" for byte in value)
     digits = sum(byte in b"0123456789" for byte in value)
     separators = sum(byte in b"-_" for byte in value)
+    if re.fullmatch(rb"[A-Z][A-Z0-9]*(?:_[A-Z0-9]+){2,}", value):
+        return True
+    if re.fullmatch(rb"[a-z][a-z0-9]*(?:_[a-z0-9]+)+", value):
+        return True
+    if not digits and re.fullmatch(rb"(?:[A-Z][a-z]{2,}){3,}", value):
+        return True
     if b"/" in value and b"+" not in value and b"=" not in value:
         return separators >= 1 and lower >= (3 * max(upper, 1))
     if b"/" not in value and b"+" not in value and b"=" not in value:
@@ -389,13 +589,8 @@ def scan_for_secrets(payload: bytes, *, environ: dict[str, str] | None = None) -
     for pattern in _PROVIDER_TOKEN_RES:
         for match in pattern.finditer(text):
             add("provider_token", match.start(), match.end())
-    for kind, pattern in (
-        ("secret_assignment", _SECRET_ASSIGNMENT_RE),
-        ("contextual_credential", _CONTEXT_CREDENTIAL_RE),
-    ):
-        for match in pattern.finditer(text):
-            if _is_literal_credential_assignment(text, match):
-                add(kind, match.start(), match.end())
+    for kind, start, end in _credential_assignment_ranges(text):
+        add(kind, start, end)
 
     for match in _JWT_RE.finditer(payload):
         if _is_jwt_candidate(match.group()):
@@ -764,26 +959,338 @@ def _owned_snapshot_siblings(output: Path) -> list[Path]:
     )
 
 
-def _has_valid_live_snapshot(output: Path) -> bool:
-    result_path = output / "snapshot_result.json"
+def _read_regular_json(path: Path) -> dict:
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise ValueError("identity JSON artifact must be a regular file")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("identity JSON artifact must contain an object")
+    return payload
+
+
+def _claimed_artifact_path(output: Path, relative: str) -> Path:
+    logical = PurePosixPath(relative)
+    if (
+        logical.is_absolute()
+        or not logical.parts
+        or any(part in ("", ".", "..") for part in logical.parts)
+    ):
+        raise ValueError("unsafe identity artifact path")
+    current = output
+    for part in logical.parts:
+        current = current / part
+        info = current.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            raise ValueError("identity artifact path contains a symlink")
+    if not stat.S_ISREG(current.lstat().st_mode):
+        raise ValueError("claimed identity artifact is not regular")
+    current.resolve(strict=True).relative_to(output.resolve(strict=True))
+    return current
+
+
+def _validate_manifest_hashes(output: Path) -> None:
+    manifest_path = output / "source_manifest.json"
+    if manifest_path.exists():
+        manifest = _read_regular_json(manifest_path)
+        for row in manifest.get("prompts", []):
+            if not isinstance(row, dict):
+                raise ValueError("invalid prompt manifest row")
+            snapshot = row.get("snapshot")
+            digest = row.get("sha256")
+            if (
+                isinstance(snapshot, str)
+                and isinstance(digest, str)
+                and sha256_bytes(_claimed_artifact_path(output, snapshot).read_bytes()) != digest
+            ):
+                raise ValueError("prompt snapshot hash mismatch")
+        epoch = manifest.get("repository_epoch", {})
+        before = epoch.get("before") if isinstance(epoch, dict) else None
+        patch_digest = before.get("patch_sha256") if isinstance(before, dict) else None
+        patch_path = output / "code.patch"
+        if (
+            patch_path.exists()
+            and isinstance(patch_digest, str)
+            and sha256_bytes(_claimed_artifact_path(output, "code.patch").read_bytes())
+            != patch_digest
+        ):
+            raise ValueError("identity patch hash mismatch")
+        archive_path = output / "untracked_sources.tar.zst"
+        if archive_path.exists():
+            raw_tar = zstandard.ZstdDecompressor().decompress(
+                _claimed_artifact_path(output, archive_path.name).read_bytes()
+            )
+            with tarfile.open(fileobj=io.BytesIO(raw_tar), mode="r:") as archive:
+                archive_rows = archive.getmembers()
+                if any(not member.isfile() for member in archive_rows):
+                    raise ValueError("untracked archive contains a non-regular member")
+                members = {
+                    member.name: archive.extractfile(member).read() for member in archive_rows
+                }
+            expected_members = {
+                row["archive_member"]
+                for row in manifest.get("untracked_paths", [])
+                if isinstance(row, dict) and isinstance(row.get("archive_member"), str)
+            }
+            if set(members) != expected_members:
+                raise ValueError("untracked archive membership mismatch")
+            for row in manifest.get("untracked_paths", []):
+                if not isinstance(row, dict):
+                    raise ValueError("invalid untracked manifest row")
+                member = row.get("archive_member")
+                digest = row.get("sha256")
+                if (
+                    isinstance(member, str)
+                    and isinstance(digest, str)
+                    and (member not in members or sha256_bytes(members[member]) != digest)
+                ):
+                    raise ValueError("untracked source hash mismatch")
+    links_path = output / "source_links.json"
+    if links_path.exists():
+        links = _read_regular_json(links_path)
+        for row in links.get("source_links", []):
+            if not isinstance(row, dict):
+                raise ValueError("invalid source link row")
+            snapshot = row.get("snapshot")
+            digest = row.get("sha256")
+            if (
+                isinstance(snapshot, str)
+                and isinstance(digest, str)
+                and sha256_bytes(_claimed_artifact_path(output, snapshot).read_bytes()) != digest
+            ):
+                raise ValueError("source link snapshot hash mismatch")
+
+
+def _load_base_snapshot_result(output: Path) -> dict:
+    result = _read_regular_json(output / "snapshot_result.json")
+    if result.get("schema_version") != 1 or not isinstance(result.get("components"), dict):
+        raise ValueError("invalid identity snapshot result")
+    if not scan_for_secrets(canonical_json(result).encode("utf-8"), environ={})["ok"]:
+        raise ValueError("identity snapshot result failed safety validation")
+    for component in result["components"].values():
+        if not isinstance(component, dict) or not isinstance(component.get("artifacts", []), list):
+            raise ValueError("invalid identity component result")
+        for relative in component.get("artifacts", []):
+            if not isinstance(relative, str):
+                raise ValueError("invalid identity artifact claim")
+            _claimed_artifact_path(output, relative)
+    _validate_manifest_hashes(output)
+    return result
+
+
+def _apply_cleanup_warning(result: dict, warning: dict) -> dict:
+    failures = warning.get("failures")
+    if warning.get("schema_version") != 1 or warning.get("status") != "PARTIAL":
+        raise ValueError("invalid identity cleanup warning")
+    if not scan_for_secrets(canonical_json(warning).encode("utf-8"), environ={})["ok"]:
+        raise ValueError("identity cleanup warning failed safety validation")
+    if not isinstance(failures, list) or any(
+        not isinstance(item, dict)
+        or not isinstance(item.get("phase"), str)
+        or not isinstance(item.get("error_type"), str)
+        for item in failures
+    ):
+        raise ValueError("invalid identity cleanup warning failures")
+    degraded = dict(result)
+    components = dict(result.get("components", {}))
+    components["snapshot_cleanup"] = _component(
+        "PARTIAL",
+        artifacts=(_CLEANUP_WARNING,),
+        errors=tuple(item["error_type"] for item in failures),
+        missing=("snapshot_cleanup",),
+    )
+    degraded["components"] = components
+    degraded["ok"] = False
+    degraded["missing"] = sorted({*result.get("missing", []), "snapshot_cleanup"})
+    degraded["errors"] = [
+        *(
+            item
+            for item in result.get("errors", [])
+            if not isinstance(item, dict) or item.get("component") != "snapshot_cleanup"
+        ),
+        {
+            "component": "snapshot_cleanup",
+            "messages": [item["error_type"] for item in failures],
+        },
+    ]
+    return degraded
+
+
+def load_snapshot_result(out: Path | str) -> dict:
+    """Load and validate a snapshot, applying durable cleanup warnings."""
+    output = Path(out)
+    result = _load_base_snapshot_result(output)
+    warning_path = output / _CLEANUP_WARNING
     try:
-        info = result_path.lstat()
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
-            return False
-        payload = json.loads(result_path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, UnicodeDecodeError, json.JSONDecodeError):
+        warning = _read_regular_json(warning_path)
+    except FileNotFoundError:
+        return result
+    return _apply_cleanup_warning(result, warning)
+
+
+def _has_valid_live_snapshot(output: Path) -> bool:
+    try:
+        load_snapshot_result(output)
+    except (FileNotFoundError, OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
         return False
-    return isinstance(payload, dict) and payload.get("schema_version") == 1
+    return True
 
 
-def _scavenge_snapshot_siblings(output: Path) -> None:
+def _artifact_record(path: Path, logical_name: str) -> dict[str, Any]:
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode):
+        raise ValueError("identity transaction artifact cannot be a symlink")
+    if stat.S_ISREG(info.st_mode):
+        return {
+            "name": logical_name,
+            "type": "file",
+            "mode": stat.S_IMODE(info.st_mode),
+            "sha256": sha256_bytes(path.read_bytes()),
+        }
+    if not stat.S_ISDIR(info.st_mode):
+        raise ValueError("identity transaction artifact must be regular")
+    rows: list[dict[str, Any]] = []
+    stack = [path]
+    while stack:
+        directory = stack.pop()
+        for child in sorted(directory.iterdir(), key=lambda item: os.fsencode(item.name)):
+            child_info = child.lstat()
+            relative = child.relative_to(path).as_posix()
+            if stat.S_ISLNK(child_info.st_mode):
+                raise ValueError("identity transaction tree cannot contain a symlink")
+            if stat.S_ISDIR(child_info.st_mode):
+                rows.append(
+                    {
+                        "path": relative,
+                        "type": "directory",
+                        "mode": stat.S_IMODE(child_info.st_mode),
+                    }
+                )
+                stack.append(child)
+            elif stat.S_ISREG(child_info.st_mode):
+                rows.append(
+                    {
+                        "path": relative,
+                        "type": "file",
+                        "mode": stat.S_IMODE(child_info.st_mode),
+                        "sha256": sha256_bytes(child.read_bytes()),
+                    }
+                )
+            else:
+                raise ValueError("identity transaction tree contains a special file")
+    rows.sort(key=lambda item: str(item["path"]))
+    return {
+        "name": logical_name,
+        "type": "directory",
+        "mode": stat.S_IMODE(info.st_mode),
+        "tree_sha256": sha256_bytes(canonical_json(rows).encode("utf-8")),
+    }
+
+
+def _owned_inventory(root: Path, names: tuple[str, ...]) -> list[dict[str, Any]]:
+    rows = []
+    for name in names:
+        path = root / name
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            continue
+        rows.append(_artifact_record(path, name))
+    return rows
+
+
+def _write_transaction_journal(
+    backup: Path,
+    output: Path,
+    generation: Path,
+    names: tuple[str, ...],
+) -> dict:
+    journal = {
+        "schema_version": 1,
+        "output_name": output.name,
+        "old_artifacts": _owned_inventory(output, names),
+        "new_artifacts": _owned_inventory(generation, names),
+    }
+    payload = (canonical_json(journal) + "\n").encode("utf-8")
+    if not scan_for_secrets(payload, environ={})["ok"]:
+        raise ValueError("identity transaction journal failed safety validation")
+    _atomic_write_bytes(backup / _TRANSACTION_JOURNAL, payload)
+    _fsync_directory(backup)
+    _fsync_directory(output.parent)
+    return journal
+
+
+def _load_transaction_journal(backup: Path, output: Path) -> dict:
+    backup_info = backup.lstat()
+    if stat.S_ISLNK(backup_info.st_mode) or not stat.S_ISDIR(backup_info.st_mode):
+        raise ValueError("identity transaction backup must be a real directory")
+    backup.resolve(strict=True).relative_to(output.parent.resolve(strict=True))
+    journal = _read_regular_json(backup / _TRANSACTION_JOURNAL)
+    if (
+        journal.get("schema_version") != 1
+        or journal.get("output_name") != output.name
+        or not isinstance(journal.get("old_artifacts"), list)
+        or not isinstance(journal.get("new_artifacts"), list)
+    ):
+        raise ValueError("invalid identity transaction journal")
+    allowed = {*(_OWNED_FILES - {_CLEANUP_WARNING}), *_OWNED_DIRS}
+    for inventory_name in ("old_artifacts", "new_artifacts"):
+        names = []
+        for row in journal[inventory_name]:
+            if not isinstance(row, dict) or row.get("name") not in allowed:
+                raise ValueError("invalid identity transaction artifact")
+            names.append(str(row["name"]))
+        if len(names) != len(set(names)):
+            raise ValueError("duplicate identity transaction artifact")
+    return journal
+
+
+def _backup_can_restore(backup: Path, output: Path) -> bool:
+    try:
+        journal = _load_transaction_journal(backup, output)
+        old = journal["old_artifacts"]
+        if not any(row.get("name") == "snapshot_result.json" for row in old):
+            return False
+        for expected in old:
+            name = expected.get("name")
+            if not isinstance(name, str):
+                return False
+            candidate = backup / name if (backup / name).exists() else output / name
+            if _artifact_record(candidate, name) != expected:
+                return False
+    except (FileNotFoundError, OSError, ValueError, TypeError):
+        return False
+    return True
+
+
+def _restore_snapshot_backup(backup: Path, output: Path) -> None:
+    journal = _load_transaction_journal(backup, output)
+    expected_names = {str(row["name"]) for row in journal["old_artifacts"]}
+    names = tuple(sorted({*(_OWNED_FILES - {_CLEANUP_WARNING}), *_OWNED_DIRS}))
+    for name in names:
+        live = output / name
+        saved = backup / name
+        if saved.exists() or saved.is_symlink():
+            _remove_owned_path(live)
+            _replace_promoted_path(saved, live)
+        elif name not in expected_names:
+            _remove_owned_path(live)
+    _fsync_directory(output)
+    _fsync_directory(output.parent)
+    if not _has_valid_live_snapshot(output):
+        raise RuntimeError("restored identity snapshot failed validation")
+
+
+def _recover_or_scavenge_snapshot_siblings(output: Path) -> None:
     siblings = _owned_snapshot_siblings(output)
     if not siblings:
         return
-    if any(
-        child.name.startswith(f".{output.name}.backup-") for child in siblings
-    ) and not _has_valid_live_snapshot(output):
-        raise RuntimeError("identity snapshot backup requires recovery")
+    backups = [child for child in siblings if child.name.startswith(f".{output.name}.backup-")]
+    if not _has_valid_live_snapshot(output):
+        recoverable = [backup for backup in backups if _backup_can_restore(backup, output)]
+        if not recoverable:
+            raise RuntimeError("identity snapshot has no valid rollback generation")
+        _restore_snapshot_backup(recoverable[0], output)
     for child in siblings:
         _remove_snapshot_sibling(child)
     _fsync_directory(output.parent)
@@ -799,11 +1306,12 @@ def _promote_snapshot_generation(generation: Path, output: Path) -> list[dict[st
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
         raise ValueError("identity output must be a real directory")
     backup = Path(tempfile.mkdtemp(prefix=f".{output.name}.backup-", dir=output.parent))
-    owned_names = tuple(sorted({*_OWNED_FILES, *_OWNED_DIRS}))
+    owned_names = tuple(sorted({*(_OWNED_FILES - {_CLEANUP_WARNING}), *_OWNED_DIRS}))
     moved_old: list[tuple[Path, Path]] = []
     promoted: list[Path] = []
     committed = False
     try:
+        _write_transaction_journal(backup, output, generation, owned_names)
         for name in owned_names:
             source = generation / name
             destination = output / name
@@ -816,6 +1324,8 @@ def _promote_snapshot_generation(generation: Path, output: Path) -> list[dict[st
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 _replace_promoted_path(source, destination)
                 promoted.append(destination)
+        if not _has_valid_live_snapshot(output):
+            raise RuntimeError("promoted identity generation failed validation")
         _fsync_directory(output.parent)
         _fsync_directory(output)
         committed = True
@@ -846,6 +1356,12 @@ def _promote_snapshot_generation(generation: Path, output: Path) -> list[dict[st
         _fsync_directory(output.parent)
     except Exception as exc:
         cleanup_failures.append(_cleanup_failure("cleanup_fsync", exc))
+    if not cleanup_failures:
+        try:
+            _remove_owned_path(output / _CLEANUP_WARNING)
+            _fsync_directory(output)
+        except Exception as exc:
+            cleanup_failures.append(_cleanup_failure("cleanup_warning_removal", exc))
     return cleanup_failures
 
 
@@ -872,7 +1388,7 @@ def _record_snapshot_cleanup_degradation(
     marker_written = False
     try:
         _write_scanned(
-            output / "identity_cleanup_degraded.json",
+            output / _CLEANUP_WARNING,
             (canonical_json(marker) + "\n").encode("utf-8"),
             environ=environ,
         )
@@ -880,31 +1396,30 @@ def _record_snapshot_cleanup_degradation(
     except Exception as exc:
         failures = [*failures, _cleanup_failure("cleanup_marker", exc)]
 
-    degraded = dict(result)
-    components = dict(result.get("components", {}))
-    components["snapshot_cleanup"] = _component(
-        "PARTIAL",
-        artifacts=("identity_cleanup_degraded.json",) if marker_written else (),
-        errors=tuple(item["error_type"] for item in failures),
-        missing=("snapshot_cleanup",),
-    )
-    degraded["components"] = components
-    degraded["ok"] = False
-    degraded["missing"] = sorted({*result.get("missing", []), "snapshot_cleanup"})
-    degraded["errors"] = [
-        *result.get("errors", []),
-        {
-            "component": "snapshot_cleanup",
-            "messages": [item["error_type"] for item in failures],
-        },
-    ]
-    with suppress(Exception):
+    degraded = _apply_cleanup_warning(result, marker) if marker_written else dict(result)
+    if not marker_written:
+        degraded["ok"] = False
+    try:
         _write_scanned(
             output / "snapshot_result.json",
             (canonical_json(degraded) + "\n").encode("utf-8"),
             environ=environ,
         )
+    except Exception as exc:
+        failures = [*failures, _cleanup_failure("snapshot_result_update", exc)]
+        marker["failures"] = failures
+        if marker_written:
+            try:
+                _write_scanned(
+                    output / _CLEANUP_WARNING,
+                    (canonical_json(marker) + "\n").encode("utf-8"),
+                    environ=environ,
+                )
+            except Exception:
+                print("identity snapshot cleanup warning persistence degraded", file=sys.stderr)
     print("identity snapshot cleanup degraded", file=sys.stderr)
+    if marker_written:
+        return load_snapshot_result(output)
     return degraded
 
 
@@ -1785,7 +2300,18 @@ def snapshot_identity(
             info = output.lstat()
             if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
                 raise ValueError("identity output must be a real directory")
-        _scavenge_snapshot_siblings(output)
+        try:
+            _recover_or_scavenge_snapshot_siblings(output)
+        except Exception as exc:
+            if not _has_valid_live_snapshot(output):
+                raise
+            env = dict(os.environ if environ is None else environ)
+            return _record_snapshot_cleanup_degradation(
+                output,
+                load_snapshot_result(output),
+                [_cleanup_failure("stale_sibling_scavenge", exc)],
+                environ=env,
+            )
         generation = Path(
             tempfile.mkdtemp(
                 prefix=f".{output.name}.generation-",
@@ -1802,7 +2328,7 @@ def snapshot_identity(
                 service_tier=service_tier,
                 environ=environ,
             )
-            if not (generation / "snapshot_result.json").is_file():
+            if not _has_valid_live_snapshot(generation):
                 raise RuntimeError("identity generation is incomplete")
             cleanup_failures = _promote_snapshot_generation(generation, output)
             if cleanup_failures:
@@ -1813,7 +2339,7 @@ def snapshot_identity(
                     cleanup_failures,
                     environ=env,
                 )
-            return result
+            return load_snapshot_result(output)
         except Exception:
             try:
                 _remove_snapshot_sibling(generation)

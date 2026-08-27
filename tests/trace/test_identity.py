@@ -434,8 +434,31 @@ def test_secret_assignment_scanner_allows_runtime_expressions(payload):
 @pytest.mark.parametrize(
     "payload",
     [
+        b"api_key: str = provider_api_key",
+        b"api_key = settings.database_url",
+        b"api_key = get_api_key()",
+        b'client_secret = vault.read("service")',
+        b'api_key = os.getenv("PROVIDER_API_KEY")  # runtime only',
+        b'api_key = os.environ.get("PROVIDER_API_KEY")',
+    ],
+    ids=(
+        "annotated-name",
+        "attribute",
+        "getter-call",
+        "vault-call",
+        "getenv-no-default",
+        "environ-get-no-default",
+    ),
+)
+def test_structural_assignment_scanner_allows_runtime_only_rhs(payload):
+    assert scan_for_secrets(payload, environ={})["ok"] is True
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
         b'api_key = "literal-credential-value"',
-        b"api_key = literalcredentialvalue",
+        b"api_key = literal-credential-value",
         b'credentials = "literal-credential-value"',
         b'database_url = "driver://runner:password@service.internal/app"',
     ],
@@ -446,6 +469,87 @@ def test_secret_assignment_scanner_rejects_literal_credentials(payload):
     redacted = redact_value({"source": payload.decode()}, environ={})
     assert redacted.hits >= 1
     assert payload.decode() not in canonical_json(redacted.value)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b'api_key: str = "literal-credential-value"',
+        b'api_key = f"literal-{suffix}"',
+        b'credentials = {"primary": ["literal-credential-value"]}',
+        b'api_key = "literal-" + "credential-value"',
+        b'api_key = os.getenv("PROVIDER_API_KEY", "literal-credential-value")',
+        b'{"api_key": {"fallback": "literal-credential-value"}}',
+        b"api_key: literal-credential-value",
+        b'+api_key = ["literal-credential-value"]',
+    ],
+    ids=(
+        "annotated",
+        "fstring",
+        "container",
+        "concatenated",
+        "getenv-default",
+        "json",
+        "yaml-bare",
+        "diff-added-container",
+    ),
+)
+def test_structural_assignment_scanner_rejects_recursive_literal_rhs(payload):
+    result = scan_for_secrets(payload, environ={})
+
+    assert result["ok"] is False
+    assert any(
+        finding["kind"] in {"secret_assignment", "contextual_credential"}
+        for finding in result["findings"]
+    )
+    assert all("value" not in finding for finding in result["findings"])
+
+
+def test_dirty_patch_rejects_structural_literals_but_keeps_runtime_only_rhs(tmp_path):
+    literal_root = tmp_path / "literal"
+    literal_root.mkdir()
+    literal_repo = _repo(literal_root)
+    (literal_repo / "autoresearch/rule.py").write_text(
+        "\n".join(
+            (
+                'api_key: str = "literal-credential-value"',
+                'fallback = f"literal-{suffix}"',
+                'credentials = {"primary": ["literal-credential-value"]}',
+                'client_secret = os.getenv("CLIENT_SECRET", "literal-credential-value")',
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    literal_out = tmp_path / "literal-identity"
+
+    rejected = snapshot_identity(literal_repo, literal_out, engine="codex", environ={})
+
+    assert rejected["components"]["git_patch"]["status"] == "MISSING"
+    assert not (literal_out / "code.patch").exists()
+
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    runtime_repo = _repo(runtime_root)
+    (runtime_repo / "autoresearch/rule.py").write_text(
+        "\n".join(
+            (
+                "api_key: str = provider_api_key",
+                "credentials = provider.credentials",
+                "database_url = settings.database_url",
+                "client_secret = get_api_key()",
+                'password = os.getenv("SERVICE_PASSWORD")  # lookup key only',
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    runtime_out = tmp_path / "runtime-identity"
+
+    kept = snapshot_identity(runtime_repo, runtime_out, engine="codex", environ={})
+
+    assert kept["components"]["git_patch"]["status"] == "SUCCESS"
+    assert (runtime_out / "code.patch").is_file()
 
 
 def test_redact_value_sanitizes_credentials_in_dict_keys_without_losing_collisions():
@@ -569,6 +673,18 @@ def test_secret_scanner_detects_random_and_jwt_material(payload):
 )
 def test_secret_scanner_ignores_paths_columns_and_slugs(payload):
     assert scan_for_secrets(payload)["ok"] is True
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"UPPERCASE_SCHEMA_CONSTANT_WITH_UNDERSCORES",
+        b"ordinary_long_identifier_for_schema_column",
+        b"LongDescriptiveSchemaIdentifierWithoutDigits",
+    ],
+)
+def test_secret_scanner_ignores_long_source_identifiers(payload):
+    assert scan_for_secrets(payload, environ={})["ok"] is True
 
 
 def test_secret_in_dirty_patch_is_not_persisted_and_marks_component_missing(tmp_path, monkeypatch):
@@ -1104,6 +1220,55 @@ def test_promotion_failure_rolls_back_previous_snapshot_generation(tmp_path, mon
     assert _owned_snapshot_bytes(out) == before
 
 
+def test_live_snapshot_validation_rejects_missing_claimed_artifact(tmp_path):
+    repo = _repo(tmp_path)
+    (repo / "autoresearch/rule.py").write_text("VALUE = 2\n", encoding="utf-8")
+    out = tmp_path / "identity"
+    assert snapshot_identity(repo, out, engine="codex", environ={})["ok"] is True
+    (out / "code.patch").unlink()
+
+    assert identity_mod._has_valid_live_snapshot(out) is False
+
+
+def test_crash_after_old_patch_move_restores_only_valid_rollback_copy(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    (repo / "autoresearch/rule.py").write_text("VALUE = 2\n", encoding="utf-8")
+    out = tmp_path / "identity"
+    assert snapshot_identity(repo, out, engine="codex", environ={})["ok"] is True
+    before = _owned_snapshot_bytes(out)
+    (repo / "autoresearch/rule.py").write_text("VALUE = 3\n", encoding="utf-8")
+    original_replace = identity_mod._replace_promoted_path
+
+    def crash_after_old_patch(source, destination):
+        original_replace(source, destination)
+        if Path(destination).name == "code.patch" and Path(destination).parent.name.startswith(
+            ".identity.backup-"
+        ):
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(identity_mod, "_replace_promoted_path", crash_after_old_patch)
+
+    with pytest.raises(KeyboardInterrupt):
+        snapshot_identity(repo, out, engine="codex", environ={})
+
+    assert not (out / "code.patch").exists()
+    assert list(out.parent.glob(".identity.backup-*"))
+    monkeypatch.setattr(identity_mod, "_replace_promoted_path", original_replace)
+    monkeypatch.setattr(
+        identity_mod,
+        "_snapshot_identity_locked",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("new capture fault")),
+    )
+
+    with pytest.raises(OSError, match="new capture fault"):
+        snapshot_identity(repo, out, engine="codex", environ={})
+
+    assert _owned_snapshot_bytes(out) == before
+    assert identity_mod._has_valid_live_snapshot(out) is True
+    assert list(out.parent.glob(".identity.backup-*")) == []
+    assert list(out.parent.glob(".identity.generation-*")) == []
+
+
 @pytest.mark.skipif(os.name == "nt", reason="directory fsync is POSIX-specific")
 def test_commit_fsync_failure_rolls_back_previous_snapshot_generation(tmp_path, monkeypatch):
     repo = _repo(tmp_path)
@@ -1144,7 +1309,7 @@ def test_post_commit_cleanup_fsync_failure_keeps_new_generation_and_is_explicit(
         nonlocal parent_calls
         if Path(path) == out.parent:
             parent_calls += 1
-            if parent_calls == 2:
+            if parent_calls == 3:
                 raise OSError("cleanup sync fault")
         return original(path)
 
@@ -1157,7 +1322,68 @@ def test_post_commit_cleanup_fsync_failure_keeps_new_generation_and_is_explicit(
     assert result["components"]["snapshot_cleanup"]["status"] == "PARTIAL"
     persisted = json.loads((out / "snapshot_result.json").read_text(encoding="utf-8"))
     assert persisted["components"]["snapshot_cleanup"]["status"] == "PARTIAL"
-    assert (out / "identity_cleanup_degraded.json").is_file()
+    assert (out / "snapshot_cleanup_warning.json").is_file()
+    assert capsys.readouterr().err == "identity snapshot cleanup degraded\n"
+
+
+def test_cleanup_warning_is_authoritative_when_base_result_stays_successful(tmp_path):
+    repo = _repo(tmp_path)
+    out = tmp_path / "identity"
+    assert snapshot_identity(repo, out, engine="codex", environ={})["ok"] is True
+    base = json.loads((out / "snapshot_result.json").read_text(encoding="utf-8"))
+    assert base["ok"] is True
+    warning = {
+        "schema_version": 1,
+        "status": "PARTIAL",
+        "failures": [{"phase": "cleanup_fsync", "error_type": "OSError"}],
+        "stale_backup_count": 1,
+        "stale_generation_count": 0,
+    }
+    (out / "snapshot_cleanup_warning.json").write_text(
+        canonical_json(warning) + "\n", encoding="utf-8"
+    )
+
+    loaded = identity_mod.load_snapshot_result(out)
+
+    assert loaded["ok"] is False
+    assert loaded["components"]["snapshot_cleanup"]["status"] == "PARTIAL"
+    assert "snapshot_cleanup" in loaded["missing"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="directory fsync is POSIX-specific")
+def test_cleanup_warning_remains_authoritative_when_result_update_fails(
+    tmp_path, monkeypatch, capsys
+):
+    repo = _repo(tmp_path)
+    out = tmp_path / "identity"
+    assert snapshot_identity(repo, out, engine="codex", environ={})["ok"] is True
+    (repo / "autoresearch/rule.py").write_text("VALUE = 2\n", encoding="utf-8")
+    original_fsync = identity_mod._fsync_directory
+    original_write = identity_mod._write_scanned
+    parent_calls = 0
+
+    def fail_cleanup_fsync(path):
+        nonlocal parent_calls
+        if Path(path) == out.parent:
+            parent_calls += 1
+            if parent_calls == 3:
+                raise OSError("cleanup sync fault")
+        return original_fsync(path)
+
+    def fail_live_result(path, payload, **kwargs):
+        if Path(path) == out / "snapshot_result.json":
+            raise OSError("result update fault")
+        return original_write(path, payload, **kwargs)
+
+    monkeypatch.setattr(identity_mod, "_fsync_directory", fail_cleanup_fsync)
+    monkeypatch.setattr(identity_mod, "_write_scanned", fail_live_result)
+
+    result = snapshot_identity(repo, out, engine="codex", environ={})
+
+    assert json.loads((out / "snapshot_result.json").read_text(encoding="utf-8"))["ok"] is True
+    assert (out / "snapshot_cleanup_warning.json").is_file()
+    assert result["ok"] is False
+    assert identity_mod.load_snapshot_result(out)["ok"] is False
     assert capsys.readouterr().err == "identity snapshot cleanup degraded\n"
 
 
@@ -1180,7 +1406,7 @@ def test_stale_owned_backup_is_marked_then_scavenged_on_retry(tmp_path, monkeypa
     degraded = snapshot_identity(repo, out, engine="codex", environ={})
 
     assert degraded["components"]["snapshot_cleanup"]["status"] == "PARTIAL"
-    assert (out / "identity_cleanup_degraded.json").is_file()
+    assert (out / "snapshot_cleanup_warning.json").is_file()
     assert any(
         path.name.startswith(".identity.backup-")
         for path in identity_mod._owned_snapshot_siblings(out)
@@ -1191,7 +1417,7 @@ def test_stale_owned_backup_is_marked_then_scavenged_on_retry(tmp_path, monkeypa
     recovered = snapshot_identity(repo, out, engine="codex", environ={})
 
     assert recovered["ok"] is True
-    assert not (out / "identity_cleanup_degraded.json").exists()
+    assert not (out / "snapshot_cleanup_warning.json").exists()
     assert list(out.parent.glob(".identity.backup-*")) == [unrelated]
     assert list(out.parent.glob(".identity.generation-*")) == []
     assert unrelated.is_dir()

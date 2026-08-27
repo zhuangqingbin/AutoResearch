@@ -34,7 +34,12 @@ from autoresearch.trace.events import (
     append_guarded_event,
     verify_event_chain,
 )
-from autoresearch.trace.identity import redact_value, scan_for_secrets, snapshot_identity
+from autoresearch.trace.identity import (
+    load_snapshot_result,
+    redact_value,
+    scan_for_secrets,
+    snapshot_identity,
+)
 
 _STAGE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$", re.ASCII)
@@ -254,11 +259,14 @@ def _record_identity_snapshot(handle: RunHandle) -> None:
     """Capture identity after RUN_STARTED; identity gaps never kill the business run."""
     try:
         repo_root = Path(__file__).resolve().parents[2]
+        identity_root = handle.capsule / "identity"
         result = snapshot_identity(
             repo_root,
-            handle.capsule / "identity",
+            identity_root,
             engine=handle.engine,
         )
+        if (identity_root / "snapshot_result.json").is_file():
+            result = load_snapshot_result(identity_root)
     except Exception as exc:
         result = {
             "ok": False,
