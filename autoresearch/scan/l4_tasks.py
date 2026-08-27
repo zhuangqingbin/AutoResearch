@@ -63,6 +63,10 @@ def _file_signature(info: os.stat_result) -> tuple[int, int, int, int, int, int]
     )
 
 
+def _directory_identity(info: os.stat_result) -> tuple[int, int, int]:
+    return (info.st_dev, info.st_ino, info.st_mode)
+
+
 def _secure_artifact_evidence(path: Path) -> tuple[str, str | None]:
     """Hash one stable regular file without following a final symlink."""
     try:
@@ -103,7 +107,7 @@ def _secure_artifact_evidence(path: Path) -> tuple[str, str | None]:
 
 def _open_contained_parent(
     root_fd: int, parts: tuple[str, ...]
-) -> tuple[int, tuple[tuple[int, int, int, int, int, int], ...]]:
+) -> tuple[int, tuple[tuple[int, int, int], ...]]:
     current = os.dup(root_fd)
     signatures = []
     flags = (
@@ -120,7 +124,7 @@ def _open_contained_parent(
             info = os.fstat(current)
             if not stat.S_ISDIR(info.st_mode):
                 raise OSError(f"artifact parent component is not a directory: {part}")
-            signatures.append(_file_signature(info))
+            signatures.append(_directory_identity(info))
         return current, tuple(signatures)
     except Exception:
         os.close(current)
@@ -149,7 +153,7 @@ def _secure_contained_artifact_evidence(
             return "UNREADABLE", None
         root_fd = os.open(root, directory_flags)
         root_before = os.fstat(root_fd)
-        if _file_signature(root_path_before) != _file_signature(root_before):
+        if _directory_identity(root_path_before) != _directory_identity(root_before):
             return "UNREADABLE", None
         parent_fd, parent_signatures = _open_contained_parent(root_fd, parts[:-1])
         path_before = os.stat(parts[-1], dir_fd=parent_fd, follow_symlinks=False)
@@ -182,7 +186,7 @@ def _secure_contained_artifact_evidence(
             os.close(rebound_fd)
         root_path_after = root.lstat()
         if (
-            _file_signature(root_before) != _file_signature(root_path_after)
+            _directory_identity(root_before) != _directory_identity(root_path_after)
             or parent_signatures != rebound_signatures
             or _file_signature(path_before) != _file_signature(fd_before)
             or _file_signature(fd_before) != _file_signature(fd_after)
@@ -410,9 +414,87 @@ def _tushare_slot(scan_dir: Path, k: int, *, poll_seconds: float = 5.0,
             print(f"[prepare_slim] 等 tushare 槽 {int(waited)}s(K={k})…", flush=True)
 
 
+def _read_active_task_book(book_path: Path) -> bytes:
+    run_id = ws.active_run_id()
+    if run_id is None:
+        raise ValueError("active task-book read requires AUTORESEARCH_RUN_ID")
+    handle = require_active_run(run_id)
+    expected = handle.staging / "_l4_tasks.json"
+    if _lexical_absolute(book_path) != _lexical_absolute(expected):
+        raise ValueError(f"task book is outside active staging: {book_path}")
+    relative = expected.relative_to(handle.workspace)
+    root_fd = parent_fd = fd = None
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        root_path_before = handle.workspace.lstat()
+        root_fd = os.open(handle.workspace, directory_flags)
+        root_before = os.fstat(root_fd)
+        if _directory_identity(root_path_before) != _directory_identity(root_before):
+            raise ValueError("active task-book root changed before secure read")
+        parent_fd, parent_before = _open_contained_parent(
+            root_fd, relative.parts[:-1]
+        )
+        before_path = os.stat(
+            relative.parts[-1], dir_fd=parent_fd, follow_symlinks=False
+        )
+        if stat.S_ISLNK(before_path.st_mode) or not stat.S_ISREG(before_path.st_mode):
+            raise ValueError("active task book must be a non-symlink regular file")
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        fd = os.open(relative.parts[-1], flags, dir_fd=parent_fd)
+        before_fd = os.fstat(fd)
+        if (
+            not stat.S_ISREG(before_fd.st_mode)
+            or _file_signature(before_path) != _file_signature(before_fd)
+        ):
+            raise ValueError("task book changed before secure read")
+        chunks = []
+        while chunk := os.read(fd, 1024 * 1024):
+            chunks.append(chunk)
+        after_fd = os.fstat(fd)
+        after_path = os.stat(
+            relative.parts[-1], dir_fd=parent_fd, follow_symlinks=False
+        )
+        rebound_fd, parent_after = _open_contained_parent(
+            root_fd, relative.parts[:-1]
+        )
+        try:
+            rebound = os.stat(
+                relative.parts[-1], dir_fd=rebound_fd, follow_symlinks=False
+            )
+        finally:
+            os.close(rebound_fd)
+        root_path_after = handle.workspace.lstat()
+    finally:
+        for open_fd in (fd, parent_fd, root_fd):
+            if open_fd is not None:
+                os.close(open_fd)
+    if (
+        _directory_identity(root_before) != _directory_identity(root_path_after)
+        or parent_before != parent_after
+        or _file_signature(before_fd) != _file_signature(after_fd)
+        or _file_signature(after_fd) != _file_signature(after_path)
+        or _file_signature(after_path) != _file_signature(rebound)
+    ):
+        raise ValueError("task book changed while reading")
+    return b"".join(chunks)
+
+
 def _read(path: Path | str) -> tuple[Path, dict]:
     book_path = Path(path)
-    payload = json.loads(book_path.read_text(encoding="utf-8"))
+    if ws.active_run_id() is None:
+        text = book_path.read_text(encoding="utf-8")
+    else:
+        text = _read_active_task_book(book_path).decode("utf-8")
+    payload = json.loads(text)
     if payload.get("schema_version") != SCHEMA_VERSION:
         raise ValueError(f"unsupported L4 task book schema:{payload.get('schema_version')}")
     if not isinstance(payload.get("tasks"), dict):

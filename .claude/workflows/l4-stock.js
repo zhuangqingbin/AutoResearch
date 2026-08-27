@@ -95,11 +95,26 @@ const AGENT_EVENT_ROW = {
     payload: { type: 'object' }, prev_hash: EVENT_HASH_SCHEMA, event_hash: EVENT_HASH_SCHEMA,
   },
 }
+const CONTROL_BINDING_RESULT = {
+  type: 'object', additionalProperties: false,
+  required: ['target_event_type', 'target_invocation_id', 'target_role'],
+  properties: {
+    target_event_type: { type: 'string' }, target_invocation_id: { type: 'string' },
+    target_role: { type: 'string' }, target_event_hash: EVENT_HASH_SCHEMA,
+  },
+}
+const CONTROL_EVENT_ROW = { ...AGENT_EVENT_ROW, properties: {
+  ...AGENT_EVENT_ROW.properties,
+  payload: { type: 'object', additionalProperties: false,
+    required: ['error', 'result', 'role'],
+    properties: { error: {}, result: CONTROL_BINDING_RESULT,
+      role: { type: 'string' } } },
+} }
 const AGENT_EVENT_ACK = { type: 'object', required: ['ok', 'event', 'control_events'],
   additionalProperties: false,
   properties: { ok: { type: 'boolean' }, event: AGENT_EVENT_ROW,
     control_events: { type: 'array', minItems: 2, maxItems: 2,
-      items: AGENT_EVENT_ROW } } }
+      items: CONTROL_EVENT_ROW } } }
 const safeAgentPart = (value) => String(value).replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '')
 // Workflow runtime 没有非 agent 的 shell primitive。trace-control 只能在获调度后的第一条
 // 精确命令里自登记；该命令原子追加 control dispatch → 目标边界 → control terminal，
@@ -125,9 +140,14 @@ const validateAgentEventAck = (ack, eventType, invocationId, role, controlInvoca
   if (!matches(ack.event, eventType, invocationId, role)) {
     throw new Error('trace-control ACK 目标边界绑定不匹配')
   }
+  const bindingMatches = (event) => event.payload.result &&
+    event.payload.result.target_event_type === eventType &&
+    event.payload.result.target_invocation_id === invocationId &&
+    event.payload.result.target_role === role
   if (ack.control_events.length !== TRACE_CONTROL_CALLS_PER_TARGET ||
       !matches(ack.control_events[0], 'AGENT_DISPATCHED', controlInvocationId, 'trace-control') ||
       !matches(ack.control_events[1], 'AGENT_COMPLETED', controlInvocationId, 'trace-control') ||
+      !bindingMatches(ack.control_events[0]) || !bindingMatches(ack.control_events[1]) ||
       !ack.control_events[1].payload.result ||
       ack.control_events[1].payload.result.target_event_hash !== ack.event.event_hash) {
     throw new Error('trace-control ACK 自身生命周期绑定不匹配')

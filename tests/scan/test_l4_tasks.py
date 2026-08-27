@@ -558,6 +558,96 @@ def test_active_reconcile_does_not_recover_through_symlinked_details(tmp_path, m
     assert (handle.capsule / "events/events.jsonl").read_bytes() == events_before
 
 
+def test_active_artifact_hash_tolerates_unrelated_sibling_creation(
+    tmp_path, monkeypatch
+):
+    from autoresearch.scan import l4_tasks
+
+    handle, book = _traced_book(tmp_path, monkeypatch)
+    card = handle.staging / "details/000001.md"
+    card_info = card.stat()
+    expected_hash = hashlib.sha256(card.read_bytes()).hexdigest()
+    real_read = l4_tasks.os.read
+    created = False
+
+    def create_sibling_during_card_read(fd, size):
+        nonlocal created
+        chunk = real_read(fd, size)
+        info = l4_tasks.os.fstat(fd)
+        if not created and (info.st_dev, info.st_ino) == (
+            card_info.st_dev,
+            card_info.st_ino,
+        ):
+            (card.parent / "parallel-sibling.md").write_text(
+                "parallel output\n", encoding="utf-8"
+            )
+            created = True
+        return chunk
+
+    monkeypatch.setattr(l4_tasks.os, "read", create_sibling_during_card_read)
+    preflight(book, "000001", expected_attempt=1, now=NOW)
+
+    claimed = _trace_events(handle)[-1]
+    assert created is True
+    assert claimed["payload"]["card_status"] == "PRESENT"
+    assert claimed["payload"]["card_hash"] == expected_hash
+
+
+def test_active_preflight_rejects_symlinked_task_book_without_outside_mutation(
+    tmp_path, monkeypatch
+):
+    handle, book = _traced_book(tmp_path, monkeypatch)
+    outside = tmp_path / "outside-task-book.json"
+    book.rename(outside)
+    book.symlink_to(outside)
+    outside_before = outside.read_bytes()
+    events_before = (handle.capsule / "events/events.jsonl").read_bytes()
+
+    with pytest.raises(ValueError, match="task book.*symlink|regular"):
+        preflight(book, "000001", expected_attempt=1, now=NOW)
+
+    assert book.is_symlink()
+    assert outside.read_bytes() == outside_before
+    assert (handle.capsule / "events/events.jsonl").read_bytes() == events_before
+
+
+def test_active_preflight_rejects_task_book_replacement_during_secure_read(
+    tmp_path, monkeypatch
+):
+    from autoresearch.scan import l4_tasks
+
+    handle, book = _traced_book(tmp_path, monkeypatch)
+    original = book.read_bytes()
+    original_info = book.stat()
+    events_before = (handle.capsule / "events/events.jsonl").read_bytes()
+    real_read = l4_tasks.os.read
+    replaced = False
+
+    def replace_during_book_read(fd, size):
+        nonlocal replaced
+        chunk = real_read(fd, size)
+        info = l4_tasks.os.fstat(fd)
+        if not replaced and (info.st_dev, info.st_ino) == (
+            original_info.st_dev,
+            original_info.st_ino,
+        ):
+            replacement = book.with_name("replacement-task-book.json")
+            replacement.write_bytes(original)
+            replacement.replace(book)
+            replaced = True
+        return chunk
+
+    monkeypatch.setattr(l4_tasks.os, "read", replace_during_book_read)
+    with pytest.raises(ValueError, match="task book changed while reading"):
+        preflight(book, "000001", expected_attempt=1, now=NOW)
+
+    assert replaced is True
+    assert json.loads(book.read_text(encoding="utf-8"))["tasks"]["000001"][
+        "status"
+    ] == "PENDING"
+    assert (handle.capsule / "events/events.jsonl").read_bytes() == events_before
+
+
 def test_l4_without_run_id_never_attempts_event_capture(tmp_path, monkeypatch):
     from autoresearch.scan import l4_tasks
 

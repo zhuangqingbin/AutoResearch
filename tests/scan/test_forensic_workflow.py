@@ -36,10 +36,14 @@ const boundaryAck = (prompt) => {
   });
   const target = event(3, eventType, invocationId, role, 'a'.repeat(64));
   const completed = event(4, 'AGENT_COMPLETED', controlId, 'trace-control', 'c'.repeat(64));
-  completed.payload.result = {target_event_hash: target.event_hash};
+  const binding = {target_event_type: eventType,
+    target_invocation_id: invocationId, target_role: role};
+  completed.payload.result = {...binding, target_event_hash: target.event_hash};
+  const dispatched = event(
+    2, 'AGENT_DISPATCHED', controlId, 'trace-control', 'b'.repeat(64));
+  dispatched.payload.result = binding;
   return {ok: true, event: target, control_events: [
-    event(2, 'AGENT_DISPATCHED', controlId, 'trace-control', 'b'.repeat(64)),
-    completed,
+    dispatched, completed,
   ]};
 };
 """
@@ -168,6 +172,9 @@ def test_l4_workflow_routes_every_business_agent_through_boundary_wrapper():
     ):
         assert field in source
     assert "target_event_hash" in source
+    assert "target_event_type" in source
+    assert "target_invocation_id" in source
+    assert "target_role" in source
     assert "TRACE_CONTROL_CALLS_PER_TARGET = 2" in source
     wrapper_body = source.split("async function tracedAgent", 1)[1].split(
         "const recordL4", 1
@@ -188,6 +195,12 @@ def test_l4_workflow_routes_every_business_agent_through_boundary_wrapper():
         "missing-hash",
         "wrong-linkage",
         "wrong-terminal",
+        "dispatch-missing-type",
+        "dispatch-wrong-invocation",
+        "dispatch-wrong-role",
+        "completed-missing-type",
+        "completed-wrong-invocation",
+        "completed-wrong-role",
     ],
 )
 def test_l4_trace_control_ack_is_strictly_validated_but_remains_best_effort(
@@ -218,6 +231,8 @@ def test_l4_trace_control_ack_is_strictly_validated_but_remains_best_effort(
             prev_hash: '0'.repeat(64), event_hash: eventHash,
           });
           const target = event(3, eventType, invocationId, role, 'a'.repeat(64));
+          const binding = {target_event_type: eventType,
+            target_invocation_id: invocationId, target_role: role};
           const ack = {
             ok: true,
             event: target,
@@ -226,7 +241,8 @@ def test_l4_trace_control_ack_is_strictly_validated_but_remains_best_effort(
               event(4, 'AGENT_COMPLETED', controlId, 'trace-control', 'c'.repeat(64)),
             ],
           };
-          ack.control_events[1].payload.result = {target_event_hash: target.event_hash};
+          ack.control_events[0].payload.result = {...binding};
+          ack.control_events[1].payload.result = {...binding, target_event_hash: target.event_hash};
           if (mode === 'ok-false') ack.ok = false;
           if (mode === 'target-mismatch') ack.event.invocation_id = 'wrong-target';
           if (mode === 'control-mismatch') ack.control_events[1].subject = '600001';
@@ -234,6 +250,12 @@ def test_l4_trace_control_ack_is_strictly_validated_but_remains_best_effort(
           if (mode === 'missing-hash') delete ack.event.event_hash;
           if (mode === 'wrong-linkage') ack.control_events[1].payload.result.target_event_hash = 'd'.repeat(64);
           if (mode === 'wrong-terminal') ack.control_events[1].event_type = 'AGENT_FAILED';
+          if (mode === 'dispatch-missing-type') delete ack.control_events[0].payload.result.target_event_type;
+          if (mode === 'dispatch-wrong-invocation') ack.control_events[0].payload.result.target_invocation_id = 'wrong-target';
+          if (mode === 'dispatch-wrong-role') ack.control_events[0].payload.result.target_role = 'wrong-role';
+          if (mode === 'completed-missing-type') delete ack.control_events[1].payload.result.target_event_type;
+          if (mode === 'completed-wrong-invocation') ack.control_events[1].payload.result.target_invocation_id = 'wrong-target';
+          if (mode === 'completed-wrong-role') ack.control_events[1].payload.result.target_role = 'wrong-role';
           return ack;
         };
         const agent = async (prompt) => {
