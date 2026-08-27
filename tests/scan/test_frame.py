@@ -252,6 +252,33 @@ def test_frame_active_run_uses_frozen_effective_data_policy(
     ]
 
 
+def test_frame_active_run_uses_custom_begin_config_without_reloading_default(
+    tmp_path, monkeypatch, capsys
+):
+    from autoresearch.scan import user_config as uc
+
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    monkeypatch.setattr(ws, "context_root", lambda: tmp_path / "context_codex")
+    monkeypatch.setattr(ws, "reports_root", lambda: tmp_path / "reports_codex")
+    monkeypatch.setattr(uc, "DEFAULT_PINNED_PATH", tmp_path / "missing-pinned.jsonc")
+    custom = tmp_path / "custom-scan-config.jsonc"
+    custom.write_text(
+        json.dumps({"l0": {"source": "em", "cap_floor_yi": 55, "include_bj": False}}),
+        encoding="utf-8",
+    )
+    # DEFAULT_PATH deliberately remains the isolated missing config from conftest.
+    handle = begin_run("scan-market", "2026-08-27", "codex", custom)
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", handle.run_id)
+    calls = _patch_active_frame(monkeypatch, synth_universe(n=30, seed=101))
+    assert scan_frame.main(["2026-08-27", "--json"]) == 0
+    capsys.readouterr()
+    assert calls[0][1] == {
+        "cap_floor_yi": 55.0,
+        "include_bj": False,
+        "source": "em",
+    }
+
+
 # ───────────────────────── _harvest_vol_series:60 日面板(P1 低位转强波) ─────────────────────────
 
 

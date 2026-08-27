@@ -187,6 +187,7 @@ def test_show_cli_rejects_contract_mismatch(tmp_path, capsys):
 def _begin_capsule(tmp_path, monkeypatch):
     monkeypatch.setattr(ws, "ENGINE", "codex")
     monkeypatch.setattr(ws, "context_root", lambda: tmp_path / "context_codex")
+    monkeypatch.setattr(ws, "reports_root", lambda: tmp_path / "reports_codex")
     monkeypatch.delenv("AUTORESEARCH_RUN_ID", raising=False)
     monkeypatch.setattr(
         "autoresearch.scan.user_config.DEFAULT_PINNED_PATH",
@@ -267,4 +268,104 @@ def test_safe_stage_result_capsule_failure_is_best_effort(
         error=None,
     )
     assert path is not None and path.is_file()
+    assert "[capsule]" in capsys.readouterr().err
+
+
+def test_safe_stage_result_resolves_l2_artifact_id_to_real_file(tmp_path, monkeypatch):
+    handle = _begin_capsule(tmp_path, monkeypatch)
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", handle.run_id)
+    source = handle.staging / "L2_gbdt_top200.csv"
+    source.write_bytes(b"code\n600000\n")
+    safe_record_stage_result(
+        handle.staging,
+        stage="gate1",
+        status="SUCCEEDED",
+        artifacts=["l2"],
+        metrics={},
+        warnings=[],
+        error=None,
+    )
+    outputs = json.loads(
+        (handle.capsule / "stages/gate1/attempt-1/outputs.json").read_text(
+            encoding="utf-8"
+        )
+    )["artifacts"]
+    assert outputs == [
+        {
+            "bytes": len(b"code\n600000\n"),
+            "captured_path": "products/staging/gate1/attempt-1/scan/L2_gbdt_top200.csv",
+            "logical_id": "l2",
+            "path": "L2_gbdt_top200.csv",
+            "pattern": "L2_gbdt_top200.csv",
+            "root": "scan",
+            "sha256": outputs[0]["sha256"],
+            "status": "PRESENT",
+        }
+    ]
+    assert (
+        handle.capsule
+        / "products/staging/gate1/attempt-1/scan/L2_gbdt_top200.csv"
+    ).read_bytes() == source.read_bytes()
+
+
+def test_safe_stage_result_resolves_multifile_and_report_root_specs(
+    tmp_path, monkeypatch
+):
+    handle = _begin_capsule(tmp_path, monkeypatch)
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", handle.run_id)
+    details = handle.staging / "details"
+    details.mkdir()
+    (details / "600000.md").write_text("one", encoding="utf-8")
+    (details / "600001.md").write_text("two", encoding="utf-8")
+    report = tmp_path / "reports_codex/scan/20260827_1200"
+    report.mkdir(parents=True)
+    (report / "summary.md").write_text("summary", encoding="utf-8")
+    safe_record_stage_result(
+        handle.staging,
+        stage="assemble",
+        status="SUCCEEDED",
+        artifacts=["l4_cards", "summary"],
+        metrics={},
+        warnings=[],
+        error=None,
+        report_dir=report,
+    )
+    rows = json.loads(
+        (handle.capsule / "stages/assemble/attempt-1/outputs.json").read_text(
+            encoding="utf-8"
+        )
+    )["artifacts"]
+    assert [(row["logical_id"], row["root"], row["path"]) for row in rows] == [
+        ("l4_cards", "scan", "details/600000.md"),
+        ("l4_cards", "scan", "details/600001.md"),
+        ("summary", "report", "summary.md"),
+    ]
+    for row in rows:
+        assert (handle.capsule / row["captured_path"]).is_file()
+
+
+def test_safe_stage_result_rejects_ambient_run_bound_to_other_staging(
+    tmp_path, monkeypatch, capsys
+):
+    first = _begin_capsule(tmp_path, monkeypatch)
+    monkeypatch.delenv("AUTORESEARCH_RUN_ID", raising=False)
+    second = begin_run(
+        "scan-market",
+        "2026-08-27",
+        "codex",
+        {},
+        now=datetime(2026, 8, 27, 1, 2, 3, 456790, tzinfo=timezone.utc),
+    )
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", first.run_id)
+    result = safe_record_stage_result(
+        second.staging,
+        stage="gate1",
+        status="SUCCEEDED",
+        artifacts=[],
+        metrics={},
+        warnings=[],
+        error=None,
+    )
+    assert result is not None and result.is_file()
+    assert not (first.capsule / "stages/gate1").exists()
     assert "[capsule]" in capsys.readouterr().err

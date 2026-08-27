@@ -231,9 +231,15 @@ def resolve_active_scan_contract(
             "RunContract v3 engine mismatch: "
             f"expected={ws.ENGINE!r}, actual={contract.engine!r}"
         )
-    current_config = _resolved_user_config(config, engine=contract.engine)
-    if sha256_json(current_config) != contract.config_hash:
-        raise RuntimeError("RunContract v3 config mismatch with current scan_config")
+    # ``begin --config-file custom.jsonc`` freezes the effective config into the
+    # contract.  A later frame invocation normally supplies no config source, so it
+    # must consume that frozen value instead of silently consulting DEFAULT_PATH.
+    # Callers that explicitly supply ``config=`` retain the mismatch assertion hook.
+    current_config = contract.user_config
+    if config is not None:
+        current_config = _resolved_user_config(config, engine=contract.engine)
+        if sha256_json(current_config) != contract.config_hash:
+            raise RuntimeError("RunContract v3 config mismatch with expected scan_config")
     requested_policy = _effective_data_policy(
         current_config,
         cap_floor_yi=cap_floor_yi,

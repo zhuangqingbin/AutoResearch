@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -12,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from autoresearch.common import workspace as ws
+from autoresearch.scan.artifacts import CRITICAL_ARTIFACTS, ArtifactSpec
 from autoresearch.scan.run_contract import load_run_contract, write_run_contract
 from autoresearch.trace.atomic import (
     atomic_write_json,
@@ -29,6 +31,10 @@ from autoresearch.trace.capsule_models import (
 from autoresearch.trace.events import append_event, verify_event_chain
 
 _STAGE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+_UTC_TIMESTAMP_RE = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z$"
+)
+_ARTIFACT_SPECS = {spec.name: spec for spec in CRITICAL_ARTIFACTS}
 _TERMINAL_EVENTS = {
     "SUCCEEDED": "STAGE_COMPLETED",
     "DEGRADED": "STAGE_COMPLETED",
@@ -77,7 +83,12 @@ def _state_from_path(path: Path, *, run_id: str) -> RunState:
             updated_at=str(raw["updated_at"]),
         )
         for field in (state.created_at, state.updated_at):
-            datetime.fromisoformat(field.replace("Z", "+00:00"))
+            if not _UTC_TIMESTAMP_RE.fullmatch(field):
+                raise ValueError("state timestamps must be canonical UTC with six digits")
+        created = datetime.fromisoformat(state.created_at.replace("Z", "+00:00"))
+        updated = datetime.fromisoformat(state.updated_at.replace("Z", "+00:00"))
+        if updated < created:
+            raise ValueError("state updated_at is before created_at")
         return state
     except RuntimeError:
         raise
@@ -96,6 +107,103 @@ def _write_contract_copies(handle: RunHandle) -> None:
     payloads = {path.read_bytes() for path in paths}
     if len(payloads) != 1 or any(load_run_contract(path) != handle.contract for path in paths):
         raise RuntimeError("RunContract copies are not identical and verified")
+
+
+def _write_state(workspace: Path, state: RunState) -> Path:
+    return atomic_write_json(workspace / "state.json", state.to_dict())
+
+
+def _create_run_layout(handle: RunHandle) -> None:
+    handle.staging.mkdir(parents=True, exist_ok=False)
+    for relative in ("identity", "events", "stages", "products/staging"):
+        (handle.capsule / relative).mkdir(parents=True, exist_ok=True)
+
+
+def _run_started_fields(handle: RunHandle) -> dict:
+    return {
+        "run_id": handle.run_id,
+        "engine": handle.engine,
+        "stage": "run",
+        "invocation_id": f"run-{handle.run_id}",
+        "attempt": 1,
+        "subject": None,
+        "event_type": "RUN_STARTED",
+        "payload": {
+            "analysis_date": handle.analysis_date,
+            "contract_hash": handle.contract.contract_hash,
+            "kind": handle.contract.run_kind,
+            "workspace": str(handle.workspace),
+        },
+    }
+
+
+def _record_bootstrap_failure(
+    handle: RunHandle,
+    *,
+    phase: str,
+    error: BaseException,
+    now: datetime,
+) -> None:
+    """Best-effort evidence for failures after the collision-safe allocation."""
+    marker = {
+        "analysis_date": handle.analysis_date,
+        "contract_hash": handle.contract.contract_hash,
+        "engine": handle.engine,
+        "error": str(error),
+        "error_type": type(error).__name__,
+        "phase": phase,
+        "run_id": handle.run_id,
+    }
+    with contextlib.suppress(Exception):
+        atomic_write_json(handle.workspace / "bootstrap_failure.json", marker)
+    with contextlib.suppress(Exception):
+        failed = RunState.build(
+            run_id=handle.run_id,
+            business_status=BusinessStatus.FAILED,
+            evidence_status=EvidenceStatus.EVIDENCE_INCOMPLETE,
+            replayability=Replayability.NONE,
+            now=now,
+        )
+        _write_state(handle.workspace, failed)
+    try:
+        _create_run_layout(handle)
+    except Exception:
+        # The layout may be partially present.  Establish each required directory
+        # independently so one failed mkdir does not hide all later evidence.
+        for path in (
+            handle.staging,
+            handle.capsule / "identity",
+            handle.capsule / "events",
+            handle.capsule / "stages",
+            handle.capsule / "products/staging",
+        ):
+            with contextlib.suppress(Exception):
+                path.mkdir(parents=True, exist_ok=True)
+    for path in (
+        handle.workspace / "run_contract.json",
+        handle.staging / "run_contract.json",
+        handle.capsule / "identity/run_contract.json",
+    ):
+        with contextlib.suppress(Exception):
+            write_run_contract(path, handle.contract)
+    event_path = handle.capsule / "events/events.jsonl"
+    try:
+        chain = verify_event_chain(event_path)
+        if chain["ok"] and chain["n"] == 0:
+            append_event(event_path, **_run_started_fields(handle))
+        append_event(
+            event_path,
+            run_id=handle.run_id,
+            engine=handle.engine,
+            stage="bootstrap",
+            invocation_id=f"bootstrap-{handle.run_id}",
+            attempt=1,
+            subject=None,
+            event_type="STAGE_FAILED",
+            payload=marker,
+        )
+    except Exception:
+        pass
 
 
 def begin_run(
@@ -118,19 +226,11 @@ def begin_run(
     stamp = _utc_now(now)
     run_id = ws.validate_run_id(stamp.strftime("%Y%m%dT%H%M%S%fZ"))
     workspace = ws.scan_run_root(run_id)
-    workspace.parent.mkdir(parents=True, exist_ok=True)
-    workspace.mkdir(exist_ok=False)
     staging = workspace / "staging" / resolved_date
     capsule = workspace / "capsule"
-    staging.mkdir(parents=True, exist_ok=False)
-    for relative in (
-        "identity",
-        "events",
-        "stages",
-        "products/staging",
-    ):
-        (capsule / relative).mkdir(parents=True, exist_ok=True)
 
+    # All configuration/git/prompt probing is completed before the run directory is
+    # published.  Invalid configuration therefore cannot leave an anonymous orphan.
     from autoresearch.scan.run_bootstrap import prepare_scan_run
 
     contract = prepare_scan_run(
@@ -151,7 +251,8 @@ def begin_run(
         capsule=capsule,
         contract=contract,
     )
-    _write_contract_copies(handle)
+    workspace.parent.mkdir(parents=True, exist_ok=True)
+    workspace.mkdir(exist_ok=False)
     state = RunState.build(
         run_id=run_id,
         business_status=BusinessStatus.ACTIVE,
@@ -159,24 +260,52 @@ def begin_run(
         replayability=Replayability.NONE,
         now=stamp,
     )
-    atomic_write_json(workspace / "state.json", state.to_dict())
-    append_event(
-        capsule / "events/events.jsonl",
-        run_id=run_id,
-        engine=engine,
-        stage="run",
-        invocation_id=f"run-{run_id}",
-        attempt=1,
-        subject=None,
-        event_type="RUN_STARTED",
-        payload={
-            "analysis_date": resolved_date,
-            "contract_hash": contract.contract_hash,
-            "kind": kind,
-            "workspace": str(workspace),
-        },
-    )
+    phase = "state"
+    try:
+        # The recovery-visible state is the first write after mkdir(exist_ok=False).
+        _write_state(workspace, state)
+        phase = "layout"
+        _create_run_layout(handle)
+        phase = "contract"
+        _write_contract_copies(handle)
+        phase = "event"
+        append_event(capsule / "events/events.jsonl", **_run_started_fields(handle))
+    except Exception as exc:
+        _record_bootstrap_failure(handle, phase=phase, error=exc, now=stamp)
+        raise RuntimeError(
+            f"run bootstrap failed at {phase}; recoverable workspace={workspace}: {exc}"
+        ) from exc
     return handle
+
+
+def _require_workspace_path(
+    workspace: Path,
+    path: Path,
+    *,
+    kind: str,
+) -> Path:
+    """Require a real non-symlink path lexically and physically inside workspace."""
+    try:
+        relative = path.relative_to(workspace)
+    except ValueError as exc:
+        raise ValueError(f"required {kind} escapes workspace: {path}") from exc
+    current = workspace
+    if current.is_symlink():
+        raise ValueError(f"required workspace is a symlink: {workspace}")
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError(f"required {kind} contains a symlink: {current}")
+    try:
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(workspace.resolve(strict=True))
+    except (FileNotFoundError, ValueError) as exc:
+        raise RuntimeError(f"required {kind} is missing or escapes workspace: {path}") from exc
+    if kind == "directory" and not path.is_dir():
+        raise RuntimeError(f"required directory is not a directory: {path}")
+    if kind == "file" and not path.is_file():
+        raise RuntimeError(f"required file is not a regular file: {path}")
+    return path
 
 
 def load_run(run_id: str) -> RunHandle:
@@ -193,14 +322,30 @@ def load_run(run_id: str) -> RunHandle:
     if workspace.is_symlink():
         raise ValueError("run workspace cannot be a symlink")
 
+    _require_workspace_path(workspace, workspace, kind="directory")
+    workspace_contract = _require_workspace_path(
+        workspace, workspace / "run_contract.json", kind="file"
+    )
+    _require_workspace_path(workspace, workspace / "state.json", kind="file")
+    capsule = _require_workspace_path(workspace, workspace / "capsule", kind="directory")
+    _require_workspace_path(workspace, capsule / "identity", kind="directory")
+    _require_workspace_path(workspace, capsule / "events", kind="directory")
+    _require_workspace_path(workspace, capsule / "stages", kind="directory")
+    _require_workspace_path(workspace, capsule / "products/staging", kind="directory")
     contract_paths = (
-        workspace / "run_contract.json",
-        workspace / "capsule/identity/run_contract.json",
+        workspace_contract,
+        _require_workspace_path(
+            workspace, capsule / "identity/run_contract.json", kind="file"
+        ),
     )
     contracts = [load_run_contract(path) for path in contract_paths]
     contract = contracts[0]
     staging = workspace / "staging" / contract.analysis_date
-    staging_contract = staging / "run_contract.json"
+    _require_workspace_path(workspace, workspace / "staging", kind="directory")
+    _require_workspace_path(workspace, staging, kind="directory")
+    staging_contract = _require_workspace_path(
+        workspace, staging / "run_contract.json", kind="file"
+    )
     contracts.append(load_run_contract(staging_contract))
     contract_paths = (*contract_paths, staging_contract)
     if any(item != contract for item in contracts[1:]):
@@ -217,28 +362,16 @@ def load_run(run_id: str) -> RunHandle:
         )
     if Path(contract.workspace_path).resolve() != workspace.resolve():
         raise RuntimeError("RunContract workspace_path does not match loaded workspace")
-    if not staging.is_dir():
-        raise RuntimeError("RunContract staging directory is missing")
-    capsule = workspace / "capsule"
-    if not capsule.is_dir():
-        raise RuntimeError("capsule directory is missing")
     _state_from_path(workspace / "state.json", run_id=resolved_id)
-    event_path = capsule / "events/events.jsonl"
-    if not event_path.is_file():
-        raise RuntimeError("RUN_STARTED event log is missing")
+    event_path = _require_workspace_path(
+        workspace, capsule / "events/events.jsonl", kind="file"
+    )
     chain = verify_event_chain(event_path)
     if not chain["ok"]:
         raise RuntimeError(f"invalid event chain: {chain['error']}")
     if chain["n"] < 1:
         raise RuntimeError("RUN_STARTED event is missing")
-    first_event = json.loads(event_path.read_text(encoding="utf-8").splitlines()[0])
-    if (
-        first_event.get("event_type") != "RUN_STARTED"
-        or first_event.get("run_id") != resolved_id
-        or first_event.get("engine") != contract.engine
-    ):
-        raise RuntimeError("first event must be the matching RUN_STARTED fact")
-    return RunHandle(
+    handle = RunHandle(
         run_id=resolved_id,
         analysis_date=contract.analysis_date,
         engine=contract.engine,
@@ -247,9 +380,57 @@ def load_run(run_id: str) -> RunHandle:
         capsule=capsule,
         contract=contract,
     )
+    first_event = json.loads(event_path.read_text(encoding="utf-8").splitlines()[0])
+    expected_started = _run_started_fields(handle)
+    actual_started = {key: first_event.get(key) for key in expected_started}
+    if actual_started != expected_started:
+        raise RuntimeError("first event must be the matching RUN_STARTED fact")
+    return handle
 
 
-def _artifact_source(handle: RunHandle, value: Path | str) -> tuple[str, Path]:
+def _validate_report_dir(report_dir: Path | str | None) -> Path | None:
+    if report_dir is None:
+        return None
+    report = Path(report_dir)
+    allowed = ws.reports_root() / "scan"
+    try:
+        relative = report.absolute().relative_to(allowed.absolute())
+    except ValueError as exc:
+        raise ValueError(f"report_dir escapes current engine reports root: {report}") from exc
+    current = allowed.absolute()
+    if current.is_symlink():
+        raise ValueError(f"reports scan root is a symlink: {current}")
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError(f"report_dir contains a symlink: {current}")
+    if not report.is_dir():
+        raise ValueError(f"report_dir is not an existing directory: {report}")
+    try:
+        report.resolve(strict=True).relative_to(allowed.resolve(strict=True))
+    except (FileNotFoundError, ValueError) as exc:
+        raise ValueError(f"report_dir escapes current engine reports root: {report}") from exc
+    return report
+
+
+def _reject_symlink_components(base: Path, path: Path, *, label: str) -> None:
+    try:
+        relative = path.absolute().relative_to(base.absolute())
+    except ValueError as exc:
+        raise ValueError(f"{label} escapes its declared root: {path}") from exc
+    current = base.absolute()
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError(f"{label} contains a symlink: {current}")
+
+
+def _literal_artifact(
+    handle: RunHandle,
+    value: Path | str,
+    *,
+    report_dir: Path | None,
+) -> dict:
     if not isinstance(value, (str, Path)):
         raise TypeError(f"artifact must be a path string, got {type(value).__name__}")
     text = str(value)
@@ -258,26 +439,128 @@ def _artifact_source(handle: RunHandle, value: Path | str) -> tuple[str, Path]:
     raw = Path(text)
     if ".." in raw.parts:
         raise ValueError(f"artifact path traverses staging: {text!r}")
-    staging = handle.staging.resolve()
-    if raw.is_absolute():
-        source = raw
-    else:
-        cwd_candidate = raw.resolve()
+    roots = [("scan", handle.staging)]
+    if report_dir is not None:
+        roots.append(("report", report_dir))
+    candidates = []
+    positioned = raw if raw.is_absolute() else raw.absolute()
+    for root_name, root in roots:
         try:
-            cwd_candidate.relative_to(staging)
-            source = cwd_candidate
+            positioned.relative_to(root.absolute())
+            candidates.append((root_name, root, positioned))
         except ValueError:
-            source = handle.staging / raw
+            pass
+    if not candidates and not raw.is_absolute():
+        relative_candidates = [
+            (root_name, root, root / raw) for root_name, root in roots
+        ]
+        existing = [item for item in relative_candidates if item[2].exists()]
+        if len(existing) > 1:
+            raise ValueError(f"literal artifact path is ambiguous across roots: {text!r}")
+        if len(existing) == 1:
+            candidates = existing
+        elif len(relative_candidates) == 1:
+            candidates = relative_candidates
+        else:
+            raise ValueError(
+                f"missing literal artifact path is ambiguous; use an absolute path: {text!r}"
+            )
+    if len(candidates) != 1:
+        raise ValueError(f"artifact path is outside or ambiguous: {text!r}")
+    root_name, root, source = candidates[0]
+    _reject_symlink_components(root, source, label="artifact source")
     resolved = source.resolve(strict=False)
     try:
-        relative = resolved.relative_to(staging)
+        relative = resolved.relative_to(root.resolve(strict=True))
     except ValueError as exc:
-        raise ValueError(f"artifact path escapes staging: {text!r}") from exc
+        raise ValueError(f"artifact path escapes {root_name} root: {text!r}") from exc
     if not relative.parts:
         raise ValueError("artifact path cannot be the staging root")
     if source.exists() and (source.is_symlink() or not source.is_file()):
         raise ValueError(f"artifact must be a regular file: {text!r}")
-    return relative.as_posix(), resolved
+    return {
+        "logical_id": None,
+        "pattern": None,
+        "root": root_name,
+        "path": relative.as_posix(),
+        "source": resolved,
+    }
+
+
+def _registered_artifact_rows(
+    handle: RunHandle,
+    spec: ArtifactSpec,
+    *,
+    report_dir: Path | None,
+) -> list[dict]:
+    base = handle.staging if spec.root == "scan" else report_dir
+    if base is None:
+        return [
+            {
+                "logical_id": spec.name,
+                "pattern": spec.path,
+                "root": spec.root,
+                "path": spec.path,
+                "source": None,
+            }
+        ]
+    base_resolved = base.resolve(strict=True)
+    matches = sorted(base.glob(spec.path))
+    rows = []
+    for source in matches:
+        _reject_symlink_components(base, source, label="artifact source")
+        if not source.is_file():
+            continue
+        resolved = source.resolve(strict=True)
+        try:
+            relative = resolved.relative_to(base_resolved)
+        except ValueError as exc:
+            raise ValueError(f"artifact source escapes {spec.root} root: {source}") from exc
+        rows.append(
+            {
+                "logical_id": spec.name,
+                "pattern": spec.path,
+                "root": spec.root,
+                "path": relative.as_posix(),
+                "source": resolved,
+            }
+        )
+    if rows:
+        return rows
+    return [
+        {
+            "logical_id": spec.name,
+            "pattern": spec.path,
+            "root": spec.root,
+            "path": spec.path,
+            "source": None,
+        }
+    ]
+
+
+def _resolve_artifacts(
+    handle: RunHandle,
+    artifacts: Sequence[Path | str],
+    *,
+    report_dir: Path | str | None,
+) -> list[dict]:
+    report = _validate_report_dir(report_dir)
+    rows = []
+    seen: set[tuple[str, str, str | None]] = set()
+    for artifact in artifacts:
+        spec = _ARTIFACT_SPECS.get(artifact) if type(artifact) is str else None
+        resolved = (
+            _registered_artifact_rows(handle, spec, report_dir=report)
+            if spec is not None
+            else [_literal_artifact(handle, artifact, report_dir=report)]
+        )
+        for row in resolved:
+            key = (row["root"], row["path"], row["logical_id"])
+            if key in seen:
+                raise ValueError(f"artifact path collision: {key!r}")
+            seen.add(key)
+            rows.append(row)
+    return rows
 
 
 def _allocate_attempt(capsule: Path, stage: str) -> tuple[int, Path]:
@@ -300,7 +583,18 @@ def _allocate_attempt(capsule: Path, stage: str) -> tuple[int, Path]:
 
 def _copy_artifact(source: Path, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with source.open("rb") as reader, destination.open("xb") as writer:
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    source_fd = os.open(source, os.O_RDONLY | nofollow)
+    try:
+        destination_fd = os.open(
+            destination,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow,
+            0o600,
+        )
+    except BaseException:
+        os.close(source_fd)
+        raise
+    with os.fdopen(source_fd, "rb") as reader, os.fdopen(destination_fd, "wb") as writer:
         for block in iter(lambda: reader.read(1024 * 1024), b""):
             writer.write(block)
         writer.flush()
@@ -314,8 +608,15 @@ def checkpoint(
     artifacts: Sequence[Path | str],
     metrics: Mapping,
     error: str | None = None,
+    *,
+    report_dir: Path | str | None = None,
 ) -> Checkpoint:
-    """Persist one immutable stage attempt, then append its two terminal facts."""
+    """Persist one immutable attempt and its two facts.
+
+    Concurrent pairs may interleave globally; consumers join them by
+    ``(stage, attempt)``.  Within each pair the terminal event is always appended
+    before ``CHECKPOINT_WRITTEN`` and each appears exactly once.
+    """
     handle = load_run(run_id)
     resolved_stage = _validate_stage(stage)
     resolved_status = _validate_status(status)
@@ -326,14 +627,9 @@ def checkpoint(
     if error is not None and type(error) is not str:
         raise TypeError("error must be a string or None")
     normalized_metrics = json.loads(canonical_json(dict(metrics)))
-    normalized_artifacts: list[tuple[str, Path]] = []
-    seen: set[str] = set()
-    for artifact in artifacts:
-        relative, source = _artifact_source(handle, artifact)
-        if relative in seen:
-            raise ValueError(f"artifact path collision: {relative!r}")
-        seen.add(relative)
-        normalized_artifacts.append((relative, source))
+    normalized_artifacts = _resolve_artifacts(
+        handle, artifacts, report_dir=report_dir
+    )
 
     attempt, attempt_path = _allocate_attempt(handle.capsule, resolved_stage)
     product_root = (
@@ -343,15 +639,24 @@ def checkpoint(
         / f"attempt-{attempt}"
     )
     output_rows = []
-    for relative, source in normalized_artifacts:
-        row = {"path": relative, "status": "MISSING", "bytes": None, "sha256": None}
-        if source.is_file():
+    for artifact in normalized_artifacts:
+        source = artifact["source"]
+        row = {
+            "logical_id": artifact["logical_id"],
+            "pattern": artifact["pattern"],
+            "root": artifact["root"],
+            "path": artifact["path"],
+            "status": "MISSING",
+            "bytes": None,
+            "sha256": None,
+        }
+        if source is not None and source.is_file():
             size = source.stat().st_size
             row["bytes"] = size
             if size == 0:
                 row["status"] = "EMPTY"
             else:
-                destination = product_root / relative
+                destination = product_root / artifact["root"] / artifact["path"]
                 _copy_artifact(source, destination)
                 row.update(
                     {
@@ -374,7 +679,7 @@ def checkpoint(
         status=resolved_status,
         path=attempt_path,
         created_at=created_at,
-        artifacts=tuple(relative for relative, _ in normalized_artifacts),
+        artifacts=tuple(str(artifact) for artifact in artifacts),
         metrics=normalized_metrics,
         error=error,
     )
@@ -460,6 +765,7 @@ def _parser() -> argparse.ArgumentParser:
     save.add_argument("--artifact", action="append", default=[])
     save.add_argument("--metrics-json", default="{}")
     save.add_argument("--error")
+    save.add_argument("--report-dir")
     inspect = commands.add_parser("inspect")
     inspect.add_argument("run_id")
     return parser
@@ -492,6 +798,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.artifact,
                 metrics,
                 error=args.error,
+                report_dir=args.report_dir,
             ).to_dict()
         else:
             result = inspect_run(args.run_id)

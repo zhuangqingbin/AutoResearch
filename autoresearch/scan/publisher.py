@@ -342,6 +342,7 @@ def _run_publish(analysis_date: str, scan_dir: Path | None = None,
         metrics={"n_cards": n_cards, "n_trace_before_final": n_pipe},
         warnings=[],
         error=None,
+        report_dir=out_base,
     )
     with contextlib.suppress(Exception):
         # 正式 gate4 CLI 仍由主会话执行；此处只为最终 health/index 先写同一份影子事实。

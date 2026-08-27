@@ -7,7 +7,11 @@ from datetime import datetime, timezone
 import pytest
 
 from autoresearch.common import workspace as ws
-from autoresearch.scan.run_bootstrap import prepare_scan_run
+from autoresearch.scan.run_bootstrap import (
+    prepare_scan_run,
+    resolve_active_scan_contract,
+)
+from autoresearch.trace.capsule import begin_run
 
 DATE = "2026-08-27"
 NOW = datetime(2026, 8, 27, 1, 2, 3, 456789, tzinfo=timezone.utc)
@@ -110,3 +114,22 @@ def test_prepare_scan_run_resolves_agents_once_into_hashed_user_config(
     assert set(contract.user_config["resolved_agents"]) == uc._AGENT_ROLES
     assert contract.user_config["engine"] == "codex"
     assert contract.agents == agents
+
+
+def test_active_contract_explicit_expected_config_still_detects_mismatch(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    monkeypatch.setattr(ws, "context_root", lambda: tmp_path / "context_codex")
+    monkeypatch.setattr(
+        "autoresearch.scan.user_config.DEFAULT_PINNED_PATH",
+        tmp_path / "missing-pinned.jsonc",
+    )
+    expected = tmp_path / "expected.jsonc"
+    expected.write_text(json.dumps({"pinned": {"cap": 3}}), encoding="utf-8")
+    other = tmp_path / "other.jsonc"
+    other.write_text(json.dumps({"pinned": {"cap": 4}}), encoding="utf-8")
+    handle = begin_run("scan-market", DATE, "codex", expected, now=NOW)
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", handle.run_id)
+    with pytest.raises(RuntimeError, match="config mismatch"):
+        resolve_active_scan_contract(DATE, config=other)

@@ -10,6 +10,8 @@ import pytest
 
 from autoresearch.common import workspace as ws
 from autoresearch.scan.run_contract import load_run_contract
+from autoresearch.trace import capsule as capsule_mod
+from autoresearch.trace.atomic import canonical_json, sha256_bytes
 from autoresearch.trace.capsule import begin_run, checkpoint, load_run, main
 from autoresearch.trace.events import verify_event_chain
 
@@ -94,6 +96,129 @@ def test_load_run_rejects_missing_run_started_event(tmp_path, monkeypatch):
         load_run(handle.run_id)
 
 
+@pytest.mark.parametrize("component", ["staging", "capsule", "events_file"])
+def test_load_run_rejects_symlinked_required_components(
+    tmp_path, monkeypatch, component
+):
+    handle = _begin(tmp_path, monkeypatch)
+    outside = tmp_path / f"outside-{component}"
+    if component == "staging":
+        original = handle.workspace / "staging"
+        original.rename(outside)
+        original.symlink_to(outside, target_is_directory=True)
+    elif component == "capsule":
+        handle.capsule.rename(outside)
+        handle.capsule.symlink_to(outside, target_is_directory=True)
+    else:
+        event_path = handle.capsule / "events/events.jsonl"
+        outside.write_bytes(event_path.read_bytes())
+        event_path.unlink()
+        event_path.symlink_to(outside)
+    with pytest.raises((RuntimeError, ValueError), match="symlink|escape"):
+        load_run(handle.run_id)
+
+
+@pytest.mark.parametrize(
+    "payload_key,replacement",
+    [
+        ("analysis_date", "2026-08-26"),
+        ("contract_hash", "f" * 64),
+        ("workspace", "context_codex/scan_runs/20260827T010203456780Z"),
+    ],
+)
+def test_load_run_rejects_rehashed_wrong_run_started_identity(
+    tmp_path, monkeypatch, payload_key, replacement
+):
+    handle = _begin(tmp_path, monkeypatch)
+    event_path = handle.capsule / "events/events.jsonl"
+    event = json.loads(event_path.read_text(encoding="utf-8"))
+    event["payload"][payload_key] = replacement
+    unsigned = {key: value for key, value in event.items() if key != "event_hash"}
+    event["event_hash"] = sha256_bytes(canonical_json(unsigned).encode("utf-8"))
+    event_path.write_text(canonical_json(event) + "\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="RUN_STARTED"):
+        load_run(handle.run_id)
+
+
+def test_begin_invalid_config_never_publishes_workspace(tmp_path, monkeypatch):
+    _redirect_roots(monkeypatch, tmp_path)
+    with pytest.raises(ValueError, match="未知顶层键"):
+        begin_run("scan-market", DATE, "codex", {"typo": True}, now=NOW)
+    assert not ws.scan_run_root(RUN_ID).exists()
+
+
+@pytest.mark.parametrize(
+    "fault",
+    ["layout", "state", "contract-1", "contract-2", "contract-3", "event"],
+)
+def test_begin_fault_after_allocation_leaves_recoverable_failure_marker(
+    tmp_path, monkeypatch, fault
+):
+    _redirect_roots(monkeypatch, tmp_path)
+    if fault == "layout":
+        original = capsule_mod._create_run_layout
+        calls = 0
+
+        def fail_once(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise OSError("layout fault")
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(capsule_mod, "_create_run_layout", fail_once)
+    elif fault == "state":
+        original = capsule_mod._write_state
+        calls = 0
+
+        def fail_once(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise OSError("state fault")
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(capsule_mod, "_write_state", fail_once)
+    elif fault.startswith("contract"):
+        fail_at = int(fault.split("-")[1])
+        original = capsule_mod.write_run_contract
+        calls = 0
+
+        def fail_nth(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == fail_at:
+                raise OSError(f"contract {fail_at} fault")
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(capsule_mod, "write_run_contract", fail_nth)
+    else:
+        original = capsule_mod.append_event
+        calls = 0
+
+        def fail_once(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise OSError("event fault")
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(capsule_mod, "append_event", fail_once)
+
+    workspace = ws.scan_run_root(RUN_ID)
+    with pytest.raises(RuntimeError, match="recoverable workspace"):
+        begin_run("scan-market", DATE, "codex", {}, now=NOW)
+    marker = json.loads((workspace / "bootstrap_failure.json").read_text(encoding="utf-8"))
+    state = json.loads((workspace / "state.json").read_text(encoding="utf-8"))
+    assert marker["run_id"] == RUN_ID
+    assert marker["error_type"] == "OSError"
+    assert state["business_status"] == "FAILED"
+    assert state["evidence_status"] == "EVIDENCE_INCOMPLETE"
+    recovered = load_run(RUN_ID)
+    assert recovered.workspace == workspace
+    assert _events(recovered)[-1]["event_type"] == "STAGE_FAILED"
+
+
 def test_checkpoint_never_overwrites_an_attempt(tmp_path, monkeypatch):
     handle = _begin(tmp_path, monkeypatch)
     artifact = handle.staging / "_l3_judged.json"
@@ -108,7 +233,7 @@ def test_checkpoint_never_overwrites_an_attempt(tmp_path, monkeypatch):
     second_result = handle.capsule / "stages/l3/attempt-2/result.json"
     assert first_result.is_file() and second_result.is_file()
     assert json.loads(first_result.read_text(encoding="utf-8"))["error"] == "schema"
-    copied = handle.capsule / "products/staging/l3/attempt-2/_l3_judged.json"
+    copied = handle.capsule / "products/staging/l3/attempt-2/scan/_l3_judged.json"
     assert copied.read_bytes() == b"first"
 
 
@@ -120,8 +245,37 @@ def test_checkpoint_same_artifact_name_preserves_each_attempt_bytes(tmp_path, mo
     artifact.write_bytes(b"two")
     checkpoint(handle.run_id, "gate1", "SUCCEEDED", [artifact], {})
     products = handle.capsule / "products/staging/gate1"
-    assert (products / "attempt-1/product.json").read_bytes() == b"one"
-    assert (products / "attempt-2/product.json").read_bytes() == b"two"
+    assert (products / "attempt-1/scan/product.json").read_bytes() == b"one"
+    assert (products / "attempt-2/scan/product.json").read_bytes() == b"two"
+
+
+def test_checkpoint_rejects_symlinked_artifact_source(tmp_path, monkeypatch):
+    handle = _begin(tmp_path, monkeypatch)
+    outside = tmp_path / "outside-artifact"
+    outside.write_bytes(b"secret")
+    linked = handle.staging / "linked.bin"
+    linked.symlink_to(outside)
+    with pytest.raises(ValueError, match="symlink"):
+        checkpoint(handle.run_id, "l2", "SUCCEEDED", [linked], {})
+
+
+def test_checkpoint_rejects_ambiguous_relative_literal_across_roots(
+    tmp_path, monkeypatch
+):
+    handle = _begin(tmp_path, monkeypatch)
+    report = tmp_path / "reports_codex/scan/20260827_1200"
+    report.mkdir(parents=True)
+    (handle.staging / "same.json").write_text("scan", encoding="utf-8")
+    (report / "same.json").write_text("report", encoding="utf-8")
+    with pytest.raises(ValueError, match="ambiguous"):
+        checkpoint(
+            handle.run_id,
+            "assemble",
+            "SUCCEEDED",
+            ["same.json"],
+            {},
+            report_dir=report,
+        )
 
 
 def test_concurrent_checkpoints_allocate_unique_attempts(tmp_path, monkeypatch):
@@ -137,6 +291,19 @@ def test_concurrent_checkpoints_allocate_unique_attempts(tmp_path, monkeypatch):
     assert sorted(row.attempt for row in rows) == list(range(1, 25))
     assert len(list((handle.capsule / "stages/l2").glob("attempt-*/result.json"))) == 24
     assert verify_event_chain(handle.capsule / "events/events.jsonl")["ok"] is True
+    # Event pairs may interleave globally.  Consumers join by (stage, attempt):
+    # every attempt still has one terminal fact followed by one checkpoint fact.
+    grouped = {}
+    for event in _events(handle):
+        if event["stage"] == "l2":
+            grouped.setdefault(event["attempt"], []).append(event)
+    assert set(grouped) == set(range(1, 25))
+    for attempt, events in grouped.items():
+        assert [event["event_type"] for event in events] == [
+            "STAGE_COMPLETED",
+            "CHECKPOINT_WRITTEN",
+        ], attempt
+        assert events[0]["seq"] < events[1]["seq"]
 
 
 def test_checkpoint_emits_terminal_then_written_once_per_attempt(tmp_path, monkeypatch):
@@ -190,3 +357,24 @@ def test_capsule_cli_emits_one_canonical_json_and_inspect_is_read_only(
     assert inspected_text.count("\n") == 1
     assert json.loads(inspected_text)["run_id"] == begun["run_id"]
     assert event_path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "created_at,updated_at",
+    [
+        ("2026-08-27T01:02:03.456789", "2026-08-27T01:02:03.456789Z"),
+        ("2026-08-27T09:02:03.456789+08:00", "2026-08-27T01:02:03.456789Z"),
+        ("2026-08-27T01:02:03Z", "2026-08-27T01:02:03.456789Z"),
+        ("2026-08-27T01:02:04.456789Z", "2026-08-27T01:02:03.456789Z"),
+    ],
+)
+def test_load_run_rejects_noncanonical_or_regressing_state_times(
+    tmp_path, monkeypatch, created_at, updated_at
+):
+    handle = _begin(tmp_path, monkeypatch)
+    state_path = handle.workspace / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state.update({"created_at": created_at, "updated_at": updated_at})
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="state"):
+        load_run(handle.run_id)
