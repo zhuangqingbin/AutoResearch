@@ -14,6 +14,7 @@ from autoresearch.trace.atomic import canonical_json, sha256_bytes
 
 EVENT_SCHEMA_VERSION = 1
 GENESIS_HASH = "0" * 64
+MAX_JSON_DEPTH = 64
 
 _RESERVED_FIELDS = frozenset(
     {"schema_version", "seq", "ts", "prev_hash", "event_hash"}
@@ -68,27 +69,48 @@ def _validate_utf8(value: str, *, path: str) -> None:
 
 
 def _validate_json_value(value: object, *, path: str) -> None:
-    if value is None or type(value) in (bool, int):
-        return
-    if type(value) is str:
-        _validate_utf8(value, path=path)
-        return
-    if type(value) is float:
-        if not math.isfinite(value):
-            raise ValueError(f"{path} contains a non-finite float")
-        return
-    if type(value) is list:
-        for index, item in enumerate(value):
-            _validate_json_value(item, path=f"{path}[{index}]")
-        return
-    if type(value) is dict:
-        for key, item in value.items():
+    active_containers: set[int] = set()
+    stack = [("visit", value, path, 0)]
+    while stack:
+        action, current, current_path, depth = stack.pop()
+        if action == "leave":
+            active_containers.remove(id(current))
+            continue
+        if current is None or type(current) in (bool, int):
+            continue
+        if type(current) is str:
+            _validate_utf8(current, path=current_path)
+            continue
+        if type(current) is float:
+            if not math.isfinite(current):
+                raise ValueError(f"{current_path} contains a non-finite float")
+            continue
+        if type(current) not in (list, dict):
+            raise TypeError(
+                f"{current_path} contains a non-JSON value of type "
+                f"{type(current).__name__}"
+            )
+
+        identity = id(current)
+        if identity in active_containers:
+            raise ValueError(f"{current_path} contains a cyclic JSON value")
+        if depth >= MAX_JSON_DEPTH:
+            raise ValueError(
+                f"{current_path} nesting exceeds maximum depth {MAX_JSON_DEPTH}"
+            )
+        active_containers.add(identity)
+        stack.append(("leave", current, current_path, depth))
+        if type(current) is list:
+            for index in range(len(current) - 1, -1, -1):
+                stack.append(
+                    ("visit", current[index], f"{current_path}[{index}]", depth + 1)
+                )
+            continue
+        for key, item in reversed(tuple(current.items())):
             if type(key) is not str:
-                raise TypeError(f"{path} contains a non-string object key")
-            _validate_utf8(key, path=f"{path} key")
-            _validate_json_value(item, path=f"{path}.{key}")
-        return
-    raise TypeError(f"{path} contains a non-JSON value of type {type(value).__name__}")
+                raise TypeError(f"{current_path} contains a non-string object key")
+            _validate_utf8(key, path=f"{current_path} key")
+            stack.append(("visit", item, f"{current_path}.{key}", depth + 1))
 
 
 def _validate_semantic_fields(fields: dict) -> dict:
@@ -142,6 +164,7 @@ def _validate_event(
     expected_seq: int,
     expected_prev_hash: str,
     expected_run_id: str | None,
+    expected_engine: str | None,
 ) -> dict:
     if type(event) is not dict:
         raise ValueError("event must be an object")
@@ -171,6 +194,11 @@ def _validate_event(
         raise ValueError(
             "run_id differs from first event: "
             f"expected {expected_run_id!r}, got {semantic['run_id']!r}"
+        )
+    if expected_engine is not None and semantic["engine"] != expected_engine:
+        raise ValueError(
+            "engine differs from first event: "
+            f"expected {expected_engine!r}, got {semantic['engine']!r}"
         )
 
     prev_hash = event["prev_hash"]
@@ -213,13 +241,19 @@ def _failure(*, line: int, n: int, detail: str, last_hash: str) -> dict:
     }
 
 
-def _verify_text(text: str, *, expected_run_id: str | None = None) -> dict:
+def _verify_text(
+    text: str,
+    *,
+    expected_run_id: str | None = None,
+    expected_engine: str | None = None,
+) -> dict:
     if not text:
         return {"ok": True, "n": 0, "error": None, "last_hash": GENESIS_HASH}
 
     n = 0
     last_hash = GENESIS_HASH
     run_id = expected_run_id
+    engine = expected_engine
     lines = text.split("\n")
     for line_number, raw_line in enumerate(lines, start=1):
         final_segment = line_number == len(lines)
@@ -252,6 +286,13 @@ def _verify_text(text: str, *, expected_run_id: str | None = None) -> dict:
                 detail=str(exc),
                 last_hash=last_hash,
             )
+        except RecursionError:
+            return _failure(
+                line=line_number,
+                n=n,
+                detail="JSON nesting exceeds decoder limit",
+                last_hash=last_hash,
+            )
         except (json.JSONDecodeError, ValueError) as exc:
             return _failure(
                 line=line_number,
@@ -265,9 +306,17 @@ def _verify_text(text: str, *, expected_run_id: str | None = None) -> dict:
                 expected_seq=n + 1,
                 expected_prev_hash=last_hash,
                 expected_run_id=run_id,
+                expected_engine=engine,
             )
             if raw_line != canonical_json(verified):
                 raise ValueError("event is not encoded as canonical JSON")
+        except RecursionError:
+            return _failure(
+                line=line_number,
+                n=n,
+                detail="JSON nesting exceeds validation or canonicalization limit",
+                last_hash=last_hash,
+            )
         except (TypeError, ValueError) as exc:
             return _failure(
                 line=line_number,
@@ -276,19 +325,27 @@ def _verify_text(text: str, *, expected_run_id: str | None = None) -> dict:
                 last_hash=last_hash,
             )
         run_id = verified["run_id"] if run_id is None else run_id
+        engine = verified["engine"] if engine is None else engine
         last_hash = verified["event_hash"]
         n += 1
 
     return {"ok": True, "n": n, "error": None, "last_hash": last_hash}
 
 
-def _verify_bytes(data: bytes, *, expected_run_id: str | None = None) -> dict:
+def _verify_bytes(
+    data: bytes,
+    *,
+    expected_run_id: str | None = None,
+    expected_engine: str | None = None,
+) -> dict:
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError as exc:
         prefix_end = data.rfind(b"\n", 0, exc.start) + 1
         reliable = _verify_text(
-            data[:prefix_end].decode("utf-8"), expected_run_id=expected_run_id
+            data[:prefix_end].decode("utf-8"),
+            expected_run_id=expected_run_id,
+            expected_engine=expected_engine,
         )
         if not reliable["ok"]:
             return reliable
@@ -298,15 +355,41 @@ def _verify_bytes(data: bytes, *, expected_run_id: str | None = None) -> dict:
             detail=f"invalid UTF-8: {exc}",
             last_hash=reliable["last_hash"],
         )
-    return _verify_text(text, expected_run_id=expected_run_id)
+    return _verify_text(
+        text,
+        expected_run_id=expected_run_id,
+        expected_engine=expected_engine,
+    )
 
 
-def _verify_handle(handle, *, expected_run_id: str | None = None) -> dict:
+def _verify_handle(
+    handle,
+    *,
+    expected_run_id: str | None = None,
+    expected_engine: str | None = None,
+) -> dict:
     handle.seek(0)
     content = handle.read()
     if isinstance(content, bytes):
-        return _verify_bytes(content, expected_run_id=expected_run_id)
-    return _verify_text(content, expected_run_id=expected_run_id)
+        return _verify_bytes(
+            content,
+            expected_run_id=expected_run_id,
+            expected_engine=expected_engine,
+        )
+    return _verify_text(
+        content,
+        expected_run_id=expected_run_id,
+        expected_engine=expected_engine,
+    )
+
+
+def _fsync_directory(path: Path) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    fd = os.open(path, flags)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def verify_event_chain(path: Path | str) -> dict:
@@ -326,7 +409,7 @@ def verify_event_chain(path: Path | str) -> dict:
 
 
 def append_event(path: Path | str, **fields) -> dict:
-    """Append one validated event after durably extending its hash chain."""
+    """Durably append one event; every append also fsyncs the parent directory."""
     normalized_fields = _validate_semantic_fields(fields)
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -334,7 +417,9 @@ def append_event(path: Path | str, **fields) -> dict:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         try:
             existing = _verify_handle(
-                handle, expected_run_id=normalized_fields["run_id"]
+                handle,
+                expected_run_id=normalized_fields["run_id"],
+                expected_engine=normalized_fields["engine"],
             )
             if not existing["ok"]:
                 raise ValueError(
@@ -360,6 +445,7 @@ def append_event(path: Path | str, **fields) -> dict:
                 expected_seq=event["seq"],
                 expected_prev_hash=event["prev_hash"],
                 expected_run_id=normalized_fields["run_id"],
+                expected_engine=normalized_fields["engine"],
             )
             line = (canonical_json(event) + "\n").encode("utf-8")
             handle.seek(0, os.SEEK_END)
@@ -370,6 +456,9 @@ def append_event(path: Path | str, **fields) -> dict:
                 )
             handle.flush()
             os.fsync(handle.fileno())
+            # This extra syscall on every append is deliberate: a prior attempt may
+            # have persisted event bytes but failed while syncing the new dir entry.
+            _fsync_directory(target.parent)
         finally:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
     return event
