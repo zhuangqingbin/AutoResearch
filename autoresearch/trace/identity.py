@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import io
+import json
 import locale
 import math
 import os
@@ -35,6 +37,10 @@ _SECRET_ASSIGNMENT_RE = re.compile(
     r"|[A-Za-z0-9_-]*api[_-]?key)\b[\"']?\s*[:=]\s*[^\s,;{\[]{4,}"
 )
 _OPAQUE_RE = re.compile(rb"(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/=_-]{24,}(?![A-Za-z0-9+/=_-])")
+_JWT_RE = re.compile(
+    rb"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\."
+    rb"[A-Za-z0-9_-]{16,}(?![A-Za-z0-9_-])"
+)
 _OPAQUE_CLASSES = tuple(
     re.compile(pattern) for pattern in (rb"[a-z]", rb"[A-Z]", rb"[0-9]", rb"[+/=_-]")
 )
@@ -167,6 +173,33 @@ def _looks_like_stable_identifier(value: bytes) -> bool:
     )
 
 
+def _looks_like_source_identifier(value: bytes) -> bool:
+    """Recognize human source paths/slugs without weakening opaque credentials."""
+    lower = sum(byte in b"abcdefghijklmnopqrstuvwxyz" for byte in value)
+    upper = sum(byte in b"ABCDEFGHIJKLMNOPQRSTUVWXYZ" for byte in value)
+    digits = sum(byte in b"0123456789" for byte in value)
+    separators = sum(byte in b"-_" for byte in value)
+    if b"/" in value and b"+" not in value and b"=" not in value:
+        return separators >= 1 and lower >= (3 * max(upper, 1))
+    if b"/" not in value and b"+" not in value and b"=" not in value:
+        return separators >= 2 and upper == 0 and lower > digits
+    return False
+
+
+def _is_jwt_candidate(value: bytes) -> bool:
+    segments = value.split(b".")
+    if len(segments) != 3:
+        return False
+    try:
+        decoded = []
+        for segment in segments[:2]:
+            padding = b"=" * (-len(segment) % 4)
+            decoded.append(json.loads(base64.urlsafe_b64decode(segment + padding)))
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return False
+    return all(isinstance(item, dict) for item in decoded)
+
+
 def scan_for_secrets(payload: bytes, *, environ: dict[str, str] | None = None) -> dict:
     """Find likely unredacted secrets without returning or hashing their values."""
     if not isinstance(payload, bytes):
@@ -199,6 +232,10 @@ def scan_for_secrets(payload: bytes, *, environ: dict[str, str] | None = None) -
         for match in pattern.finditer(text):
             add(kind, char_to_byte[match.start()], char_to_byte[match.end()])
 
+    for match in _JWT_RE.finditer(payload):
+        if _is_jwt_candidate(match.group()):
+            add("jwt", match.start(), match.end())
+
     for secret in _secret_values(env):
         encoded = secret.encode("utf-8")
         offset = 0
@@ -211,13 +248,13 @@ def scan_for_secrets(payload: bytes, *, environ: dict[str, str] | None = None) -
 
     for match in _OPAQUE_RE.finditer(payload):
         candidate = match.group()
-        if _looks_like_stable_identifier(candidate):
+        if _looks_like_stable_identifier(candidate) or _looks_like_source_identifier(candidate):
             continue
         prefix = payload[max(0, match.start() - 32) : match.start()].lower()
         if re.search(rb"(?:sha(?:256)?|contract_hash|event_hash|prev_hash)=$", prefix):
             continue
         classes = sum(bool(pattern.search(candidate)) for pattern in _OPAQUE_CLASSES)
-        if classes >= 2 and _entropy(candidate) >= 4.2:
+        if classes >= 2 and _entropy(candidate) >= 4.5:
             add("high_entropy", match.start(), match.end())
 
     findings.sort(key=lambda row: (int(row["offset"]), str(row["kind"])))
@@ -395,6 +432,18 @@ def _component(
     }
 
 
+def _member_rejection_reason(error: BaseException) -> str:
+    if isinstance(error, SecretMaterialDetected):
+        return "SECRET_DETECTED"
+    if isinstance(error, PermissionError):
+        return "UNREADABLE"
+    if isinstance(error, FileNotFoundError):
+        return "MISSING"
+    if isinstance(error, ValueError):
+        return "UNSAFE_FILE_TYPE"
+    return "READ_ERROR"
+
+
 def _prompt_destination(relative: Path) -> Path:
     return Path("prompts") / relative.relative_to(".claude")
 
@@ -523,7 +572,7 @@ def snapshot_identity(
         components["git_patch"] = _component("MISSING", errors=(error,), missing=("code.patch",))
 
     archive_entries: list[tuple[str, bytes, int]] = []
-    archive_errors: list[str] = []
+    archive_rejected: list[dict[str, str]] = []
     for name in untracked:
         relative = Path(name)
         try:
@@ -544,36 +593,44 @@ def snapshot_identity(
                     tuple(sorted({str(row["kind"]) for row in scan["findings"]}))
                 )
             archive_entries.append((relative.as_posix(), payload, mode))
-        except (FileNotFoundError, ValueError, OSError, SecretMaterialDetected) as exc:
-            archive_errors.append(f"{relative.as_posix()}: {_safe_error(exc, environ=env)}")
-    if archive_errors:
+        except (
+            FileNotFoundError,
+            ValueError,
+            OSError,
+            RuntimeError,
+            SecretMaterialDetected,
+        ) as exc:
+            archive_rejected.append(
+                {
+                    "path": relative.as_posix(),
+                    "reason": _member_rejection_reason(exc),
+                }
+            )
+    try:
+        tar_payload = _tar_bytes(archive_entries)
+        compressed = zstandard.ZstdCompressor(
+            level=19,
+            threads=0,
+            write_checksum=True,
+            write_content_size=True,
+        ).compress(tar_payload)
+        # Each member was scanned before compression.  Compressed bytes are
+        # intentionally high entropy and cannot be meaningfully probed raw.
+        _atomic_write_bytes(output / "untracked_sources.tar.zst", compressed)
+        rejected = tuple(f"{row['path']}: {row['reason']}" for row in archive_rejected)
+        components["untracked_sources"] = _component(
+            "PARTIAL" if archive_rejected else "SUCCESS",
+            artifacts=("untracked_sources.tar.zst",),
+            errors=rejected,
+            missing=rejected,
+        )
+    except Exception as exc:
+        (output / "untracked_sources.tar.zst").unlink(missing_ok=True)
         components["untracked_sources"] = _component(
             "MISSING",
-            errors=tuple(archive_errors),
+            errors=(_safe_error(exc, environ=env),),
             missing=("untracked_sources.tar.zst",),
         )
-    else:
-        try:
-            tar_payload = _tar_bytes(archive_entries)
-            compressed = zstandard.ZstdCompressor(
-                level=19,
-                threads=0,
-                write_checksum=True,
-                write_content_size=True,
-            ).compress(tar_payload)
-            # Each member was scanned before compression.  Compressed bytes are
-            # intentionally high entropy and cannot be meaningfully probed raw.
-            _atomic_write_bytes(output / "untracked_sources.tar.zst", compressed)
-            components["untracked_sources"] = _component(
-                "SUCCESS", artifacts=("untracked_sources.tar.zst",)
-            )
-        except Exception as exc:
-            (output / "untracked_sources.tar.zst").unlink(missing_ok=True)
-            components["untracked_sources"] = _component(
-                "MISSING",
-                errors=(_safe_error(exc, environ=env),),
-                missing=("untracked_sources.tar.zst",),
-            )
 
     prompt_rows: list[dict] = []
     prompt_errors: list[str] = []
@@ -672,6 +729,8 @@ def snapshot_identity(
             "schema_version": 1,
             "git": git_metadata,
             "untracked": list(untracked),
+            "untracked_included": [name for name, _, _ in archive_entries],
+            "untracked_rejected": archive_rejected,
             "prompts": sorted(prompt_rows, key=lambda row: row["source"]),
             "project_files": project_files,
             "excluded": sorted(excluded, key=lambda row: (row["path"], row["reason"])),

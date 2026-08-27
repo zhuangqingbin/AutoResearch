@@ -291,6 +291,81 @@ def test_begin_invalid_config_never_publishes_workspace(tmp_path, monkeypatch):
     assert not ws.scan_run_root(RUN_ID).exists()
 
 
+def test_begin_rejects_nested_user_config_secret_before_workspace(
+    tmp_path, monkeypatch
+):
+    _redirect_roots(monkeypatch, tmp_path)
+    secret = "sk-live-abcdefghijklmnopqrstuvwxyz123456"
+    config = {"l2": {"floors": {"api_key": secret}}}
+
+    with pytest.raises(ValueError, match="secret material") as raised:
+        begin_run("scan-market", DATE, "codex", config, now=NOW)
+
+    assert secret not in str(raised.value)
+    assert not ws.scan_run_root(RUN_ID).exists()
+
+
+def test_begin_rejects_secret_from_effective_pinned_contract_before_workspace(
+    tmp_path, monkeypatch
+):
+    _redirect_roots(monkeypatch, tmp_path)
+    secret = "sk-live-abcdefghijklmnopqrstuvwxyz123456"
+    pinned = tmp_path / "pinned.jsonc"
+    pinned.write_text(
+        json.dumps(
+            [
+                {
+                    "code": "600000",
+                    "note": f"Bearer {secret}",
+                    "added": DATE,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "autoresearch.scan.user_config.DEFAULT_PINNED_PATH", pinned
+    )
+
+    with pytest.raises(ValueError, match="secret material") as raised:
+        begin_run("scan-market", DATE, "codex", {}, now=NOW)
+
+    assert secret not in str(raised.value)
+    assert not ws.scan_run_root(RUN_ID).exists()
+
+
+def test_begin_rejects_known_env_secret_embedded_under_safe_contract_key(
+    tmp_path, monkeypatch
+):
+    _redirect_roots(monkeypatch, tmp_path)
+    secret = "plain-secret-value"
+    monkeypatch.setenv("TUSHARE_TOKEN", secret)
+    config = {"l2": {"floors": {"comment": f"prefix::{secret}::suffix"}}}
+
+    with pytest.raises(ValueError, match="secret material") as raised:
+        begin_run("scan-market", DATE, "codex", config, now=NOW)
+
+    assert secret not in str(raised.value)
+    assert not ws.scan_run_root(RUN_ID).exists()
+
+
+def test_begin_contract_gate_allows_safe_hashes_run_ids_and_session_ids(
+    tmp_path, monkeypatch
+):
+    _redirect_roots(monkeypatch, tmp_path)
+
+    handle = begin_run(
+        "scan-market",
+        DATE,
+        "codex",
+        {"l2": {"floors": {"config_hash": "a" * 64, "run_id": RUN_ID}}},
+        now=NOW,
+        session_ref="01a03dbe-7173-76a3-ac96-919ae6936e71",
+    )
+
+    assert load_run(handle.run_id) == handle
+
+
 @pytest.mark.parametrize(
     "fault",
     ["layout", "state", "contract-1", "contract-2", "contract-3", "event"],
@@ -361,6 +436,28 @@ def test_begin_fault_after_allocation_leaves_recoverable_failure_marker(
     recovered = load_run(RUN_ID)
     assert recovered.workspace == workspace
     assert _events(recovered)[-1]["event_type"] == "STAGE_FAILED"
+
+
+def test_bootstrap_failure_metadata_and_exception_never_leak_secret(
+    tmp_path, monkeypatch
+):
+    _redirect_roots(monkeypatch, tmp_path)
+    secret = "plain-secret-value"
+    monkeypatch.setenv("TUSHARE_TOKEN", secret)
+
+    def fail_layout(*args, **kwargs):
+        raise OSError(f"layout failed with {secret}")
+
+    monkeypatch.setattr(capsule_mod, "_create_run_layout", fail_layout)
+
+    with pytest.raises(RuntimeError, match="recoverable workspace") as raised:
+        begin_run("scan-market", DATE, "codex", {}, now=NOW)
+
+    workspace = ws.scan_run_root(RUN_ID)
+    marker = (workspace / "bootstrap_failure.json").read_text(encoding="utf-8")
+    assert secret not in str(raised.value)
+    assert raised.value.__cause__ is None
+    assert secret not in marker
 
 
 def test_checkpoint_rejects_bootstrap_failed_run_without_allocating_attempt(

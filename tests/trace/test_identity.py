@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 import zstandard
 
+from autoresearch.trace import identity as identity_mod
 from autoresearch.trace.atomic import canonical_json
 from autoresearch.trace.identity import redact_value, scan_for_secrets, snapshot_identity
 
@@ -65,6 +66,15 @@ def _tar_names(path: Path) -> list[str]:
         return archive.getnames()
 
 
+def _tar_contents(path: Path) -> dict[str, bytes]:
+    import io
+    import tarfile
+
+    raw = zstandard.ZstdDecompressor().decompress(path.read_bytes())
+    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
+        return {member.name: archive.extractfile(member).read() for member in archive.getmembers()}
+
+
 def test_identity_contains_dirty_patch_untracked_sources_and_environment(tmp_path, monkeypatch):
     repo = _repo(tmp_path)
     (repo / "autoresearch/rule.py").write_text("VALUE = 2\n", encoding="utf-8")
@@ -113,6 +123,24 @@ def test_untracked_tar_and_prompt_snapshot_are_byte_deterministic(tmp_path):
     prompt_rows = {row["source"]: row for row in first_manifest["prompts"]}
     assert prompt_rows[".claude/agents/analyst.md"]["classification"] == "TRACKED"
     assert prompt_rows[".claude/skills/new/SKILL.md"]["classification"] == "UNTRACKED"
+
+
+def test_real_repository_safe_prompt_corpus_snapshots_completely(tmp_path):
+    repo = Path(__file__).resolve().parents[2]
+    out = tmp_path / "identity"
+
+    result = snapshot_identity(repo, out, engine="codex")
+
+    assert result["components"]["prompts"]["status"] == "SUCCESS"
+    expected = {
+        path.relative_to(repo).as_posix()
+        for root in (".claude/agents", ".claude/skills", ".claude/workflows")
+        for path in (repo / root).rglob("*")
+        if path.is_file() and not path.is_symlink()
+    }
+    manifest = json.loads((out / "source_manifest.json").read_text(encoding="utf-8"))
+    represented = {row["source"] for row in manifest["prompts"]}
+    assert represented == expected
 
 
 def test_snapshot_excludes_out_of_scope_symlinks_and_special_files(tmp_path):
@@ -191,6 +219,35 @@ def test_secret_scanner_has_useful_high_entropy_boundaries(payload, ok):
         assert all("value" not in finding for finding in result["findings"])
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"opaque=M7pQ2xV9nK4rT8wL6cD3sF1hJ5uB0yE7aG9mN2qR",
+        (
+            b"jwt=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+            b"eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkphbmUgRG9lIn0."
+            b"SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+        ),
+    ],
+)
+def test_secret_scanner_detects_random_and_jwt_material(payload):
+    result = scan_for_secrets(payload)
+    assert result["ok"] is False
+    assert result["hits"] >= 1
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"context_codex/scan_runs/20260827T010203456789Z/staging/2026-08-27",
+        b"gap_c1_o2_reversal_candidate_column_name",
+        b"scan-market-forensic-run-capsule-source-manifest",
+    ],
+)
+def test_secret_scanner_ignores_paths_columns_and_slugs(payload):
+    assert scan_for_secrets(payload)["ok"] is True
+
+
 def test_secret_in_dirty_patch_is_not_persisted_and_marks_component_missing(tmp_path, monkeypatch):
     repo = _repo(tmp_path)
     secret = "plain-secret-value"
@@ -221,9 +278,9 @@ def test_secret_prompt_and_untracked_source_are_never_archived(tmp_path, monkeyp
 
     assert result["ok"] is False
     assert result["components"]["prompts"]["status"] == "PARTIAL"
-    assert result["components"]["untracked_sources"]["status"] == "MISSING"
+    assert result["components"]["untracked_sources"]["status"] == "PARTIAL"
     assert not (out / "prompts/skills/scan-market/SECRET.md").exists()
-    assert not (out / "untracked_sources.tar.zst").exists()
+    assert _tar_names(out / "untracked_sources.tar.zst") == []
     assert secret.encode() not in _all_artifact_bytes(out)
 
 
@@ -237,5 +294,66 @@ def test_secret_value_in_source_path_is_not_written_to_tar_or_manifest(tmp_path,
     result = snapshot_identity(repo, out, engine="codex")
 
     assert result["ok"] is False
-    assert not (out / "untracked_sources.tar.zst").exists()
+    assert result["components"]["untracked_sources"]["status"] == "PARTIAL"
+    assert _tar_names(out / "untracked_sources.tar.zst") == []
     assert secret.encode() not in _all_artifact_bytes(out)
+
+
+def test_partial_untracked_archive_keeps_all_safe_members_deterministically(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    secret = "plain-secret-value"
+    monkeypatch.setenv("OPENAI_API_KEY", secret)
+    (repo / "autoresearch/a_safe.py").write_bytes(b"A = 1\n")
+    (repo / "autoresearch/b_safe.py").write_bytes(b"B = 2\n")
+    (repo / "autoresearch/blocked.py").write_text(f'VALUE = "{secret}"\n', encoding="utf-8")
+    first = tmp_path / "identity-first"
+    second = tmp_path / "identity-second"
+
+    first_result = snapshot_identity(repo, first, engine="codex")
+    second_result = snapshot_identity(repo, second, engine="codex")
+
+    archive = first / "untracked_sources.tar.zst"
+    assert archive.read_bytes() == (second / archive.name).read_bytes()
+    assert _tar_contents(archive) == {
+        "autoresearch/a_safe.py": b"A = 1\n",
+        "autoresearch/b_safe.py": b"B = 2\n",
+    }
+    component = first_result["components"]["untracked_sources"]
+    assert component["status"] == "PARTIAL"
+    assert component["artifacts"] == ["untracked_sources.tar.zst"]
+    assert any("autoresearch/blocked.py" in item for item in component["missing"])
+    manifest = json.loads((first / "source_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["untracked_included"] == [
+        "autoresearch/a_safe.py",
+        "autoresearch/b_safe.py",
+    ]
+    assert [row["path"] for row in manifest["untracked_rejected"]] == ["autoresearch/blocked.py"]
+    assert second_result["components"]["untracked_sources"]["status"] == "PARTIAL"
+
+
+def test_partial_untracked_archive_records_unreadable_member_and_keeps_safe_one(
+    tmp_path, monkeypatch
+):
+    repo = _repo(tmp_path)
+    safe = repo / "autoresearch/safe.py"
+    unreadable = repo / "autoresearch/unreadable.py"
+    safe.write_bytes(b"SAFE = 1\n")
+    unreadable.write_bytes(b"UNREADABLE = 1\n")
+    original = identity_mod._read_regular
+
+    def fail_one(root, relative):
+        if relative.as_posix() == "autoresearch/unreadable.py":
+            raise PermissionError("permission denied")
+        return original(root, relative)
+
+    monkeypatch.setattr(identity_mod, "_read_regular", fail_one)
+    out = tmp_path / "identity"
+
+    result = snapshot_identity(repo, out, engine="codex")
+
+    component = result["components"]["untracked_sources"]
+    assert component["status"] == "PARTIAL"
+    assert _tar_contents(out / "untracked_sources.tar.zst") == {
+        "autoresearch/safe.py": b"SAFE = 1\n"
+    }
+    assert any("autoresearch/unreadable.py" in item for item in component["missing"])

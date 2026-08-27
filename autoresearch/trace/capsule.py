@@ -147,6 +147,23 @@ def _run_started_fields(handle: RunHandle) -> dict:
     }
 
 
+def _safe_exception_text(error: BaseException) -> str:
+    text = str(error) or type(error).__name__
+    redacted = str(redact_value(text).value)
+    if not scan_for_secrets(redacted.encode("utf-8"))["ok"]:
+        return "[REDACTED]"
+    return redacted
+
+
+def _require_secret_free_contract(contract) -> None:
+    """Reject the exact effective contract; never persist a redacted substitute."""
+    payload = contract.to_dict()
+    redaction = redact_value(payload)
+    serialized = canonical_json(payload).encode("utf-8")
+    if redaction.hits or not scan_for_secrets(serialized)["ok"]:
+        raise ValueError("effective RunContract contains suspected secret material")
+
+
 def _identity_event_payload(result: Mapping) -> dict:
     """Expose component outcomes without allowing capture errors to leak secrets."""
     components = result.get("components", {})
@@ -242,11 +259,12 @@ def _record_bootstrap_failure(
     now: datetime,
 ) -> None:
     """Best-effort evidence for failures after the collision-safe allocation."""
+    safe_error = _safe_exception_text(error)
     marker = {
         "analysis_date": handle.analysis_date,
         "contract_hash": handle.contract.contract_hash,
         "engine": handle.engine,
-        "error": str(error),
+        "error": safe_error,
         "error_type": type(error).__name__,
         "phase": phase,
         "run_id": handle.run_id,
@@ -315,11 +333,6 @@ def begin_run(
     """Allocate one collision-safe active run and persist its identity first."""
     if kind != "scan-market":
         raise ValueError(f"unsupported run kind: {kind!r}")
-    if session_ref is not None:
-        if not isinstance(session_ref, str):
-            raise ValueError(f"invalid session_ref type: {type(session_ref).__name__}")
-        if not scan_for_secrets(session_ref.encode("utf-8"))["ok"]:
-            raise ValueError("session_ref contains suspected secret material")
     resolved_date = ws.validate_scan_date(analysis_date)
     if engine not in ws.ENGINES or engine != ws.ENGINE:
         raise ValueError(
@@ -344,6 +357,7 @@ def begin_run(
         session_ref=session_ref,
         now=stamp,
     )
+    _require_secret_free_contract(contract)
     handle = RunHandle(
         run_id=run_id,
         analysis_date=resolved_date,
@@ -374,9 +388,11 @@ def begin_run(
         append_event(capsule / "events/events.jsonl", **_run_started_fields(handle))
     except Exception as exc:
         _record_bootstrap_failure(handle, phase=phase, error=exc, now=stamp)
+        safe_error = _safe_exception_text(exc)
         raise RuntimeError(
-            f"run bootstrap failed at {phase}; recoverable workspace={workspace}: {exc}"
-        ) from exc
+            f"run bootstrap failed at {phase}; recoverable workspace={workspace}: "
+            f"{safe_error}"
+        ) from None
     _record_identity_snapshot(handle)
     return handle
 
