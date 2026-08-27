@@ -11,9 +11,10 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.broker.adapters import screenshot
 from autoresearch.broker.schema import SOURCE_KINDS
 
-REGISTRY: dict[str, Callable[..., pd.DataFrame]] = {}
+REGISTRY: dict[str, Callable[..., pd.DataFrame]] = {"screenshot": screenshot.parse}
 
 
 def detect_source_kind(path: Path) -> str | None:
