@@ -288,7 +288,8 @@ def _default_harvest_slim(ticker: str, date: str, ctx_root: Path) -> Path:
     import sys
 
     subprocess.run(
-        [sys.executable, "-m", "autoresearch.analyze.harvest", ticker, date, "stock", "--slim"],
+        [sys.executable, "-m", "autoresearch.analyze.harvest", ticker, date, "stock", "--slim",
+         "--out-dir", str(ctx_root)],
         check=False)
     return ctx_root / f"{ticker}_{date}_slim.md"
 
@@ -333,6 +334,7 @@ def harvest_slim_batch(date: str, root: Path | None = None, min_bytes: int = 4_0
     workers=4 默认并发(spec §P3);subprocess 取数为 I/O 密集,限频靠 per-ticker retries
     串行重试承担。workers<=1 退化原串行 for 循环(兼容旧行为/便于对串行时序敏感的测试)。
     """
+    date = ws.validate_scan_date(date)
     base = Path(root) if root else ws.scan_root()
     scan_dir = base / date
     ctx = (Path(ctx_root) if ctx_root is not None

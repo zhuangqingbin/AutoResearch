@@ -5,6 +5,8 @@ import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from autoresearch.scan.l4_tasks import (
     dispatch_batches,
     initialize,
@@ -103,6 +105,52 @@ def test_initialize_defaults_to_run_scoped_slim_and_hashes_it(tmp_path, monkeypa
 
     assert slim_ref["path"] == str(slim)
     assert slim_ref["content_hash"] == hashlib.sha256(slim.read_bytes()).hexdigest()
+
+
+def test_initialize_rejects_traversal_date_before_explicit_context_write(tmp_path):
+    declared_root = tmp_path / "declared"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside.joinpath("_l4_prompt_000001.md").write_text("# prompt", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="scan date"):
+        initialize(
+            "../outside",
+            ["000001"],
+            root=declared_root,
+            context_root=tmp_path / "explicit_context",
+            now=NOW,
+        )
+
+    assert not outside.joinpath("_l4_tasks.json").exists()
+
+
+def test_l4_task_cli_book_path_rejects_traversal_date(tmp_path):
+    from autoresearch.scan import l4_tasks
+
+    with pytest.raises(ValueError, match="scan date"):
+        l4_tasks._book_path("../outside", str(tmp_path / "declared"))
+
+
+def test_l4_tasks_cli_init_validates_date_before_dispatch_read(tmp_path):
+    from autoresearch.scan import l4_tasks
+
+    declared = tmp_path / "declared"
+    declared.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside.joinpath("finalists.csv").write_bytes(b"\xff")
+    caps = json.dumps({"tushare": 1, "web_search": 1, "web_fetch": 1, "l4_stock": 1})
+
+    with pytest.raises(ValueError, match="scan date"):
+        l4_tasks.main([
+            "init",
+            "../outside",
+            "--root",
+            str(declared),
+            "--caps-json",
+            caps,
+        ])
 
 
 def test_success_is_skipped_only_while_all_artifact_hashes_match(tmp_path):

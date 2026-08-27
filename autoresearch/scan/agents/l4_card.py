@@ -69,6 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--root", default=None, help="scan 根目录(默认 context/scan)")
     ap.add_argument("--workers", type=int, default=4, help="slim 批量并发数(1=串行)")
     args = ap.parse_args(argv)
+    args.date = ws.validate_scan_date(args.date)
     if args.cmd == "shared":
         import json
         base = Path(args.root) if args.root else ws.scan_root()

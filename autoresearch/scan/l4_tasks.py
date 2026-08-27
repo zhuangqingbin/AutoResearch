@@ -197,6 +197,7 @@ def initialize(
     now: datetime | None = None,
 ) -> dict:
     """初始化或合并 `_l4_tasks.json`；既有单票状态不被其它票重置。"""
+    date = ws.validate_scan_date(date)
     base = Path(root) if root is not None else ws.scan_root()
     scan_dir = base / date
     ctx = (Path(context_root) if context_root is not None
@@ -716,6 +717,7 @@ def stats(book: Path | str) -> dict:
 
 
 def _book_path(date: str, root: str | None) -> Path:
+    date = ws.validate_scan_date(date)
     return (Path(root) if root else ws.scan_root()) / date / "_l4_tasks.json"
 
 
@@ -733,6 +735,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--error", default=None)
     parser.add_argument("--caps-json", default=None)
     args = parser.parse_args(argv)
+    if args.cmd in {"init", "batches", "stats", "reconcile"}:
+        args.first = ws.validate_scan_date(args.first)
+    elif args.second:
+        args.second = ws.validate_scan_date(args.second)
     caps = json.loads(args.caps_json) if args.caps_json else None
     if args.cmd == "init":
         from autoresearch.scan.l4.dispatch import dispatch_plan

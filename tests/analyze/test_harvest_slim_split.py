@@ -1,4 +1,8 @@
 """slim 二段式:深核块分离到 *_slim_deep.md(spec 2026-07-08 T1;取代旧同文件重排)。"""
+import sys
+
+import pytest
+
 from autoresearch.analyze import harvest
 from autoresearch.analyze.harvest import _split_slim_for_progressive, _write_slim_files
 from autoresearch.common import workspace as ws
@@ -79,3 +83,63 @@ def test_full_report_output_stays_at_engine_context_root(tmp_path, monkeypatch):
 
     assert output_dir == tmp_path / "context_codex"
     assert output_dir.is_dir()
+
+
+def test_slim_cli_writes_to_explicit_output_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(harvest, "ROOT", tmp_path / "repo")
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", "20260827T010203456789Z")
+    monkeypatch.setattr(harvest, "set_config", lambda _config: None)
+    monkeypatch.setattr(harvest, "resolve_instrument_identity", lambda _ticker: None)
+    monkeypatch.setattr(
+        harvest,
+        "build_instrument_context",
+        lambda _ticker, _asset_type, _identity: "identity",
+    )
+    monkeypatch.setattr(
+        harvest,
+        "_section",
+        lambda title, *_args, **_kwargs: f"\n## {title}\n\ntest data\n",
+    )
+    output_dir = tmp_path / "explicit" / "_external_inputs"
+    monkeypatch.setattr(sys, "argv", [
+        "harvest",
+        "NVDA",
+        "2026-08-27",
+        "stock",
+        "--slim",
+        "--out-dir",
+        str(output_dir),
+    ])
+
+    assert harvest.main() == 0
+    assert (output_dir / "NVDA_2026-08-27_slim.md").is_file()
+
+
+def test_full_report_rejects_explicit_output_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(harvest, "ROOT", tmp_path / "repo")
+    output_dir = tmp_path / "must_not_be_created"
+
+    with pytest.raises(ValueError, match="--out-dir.*--slim"):
+        harvest._output_dir("2026-08-27", slim=False, explicit=output_dir)
+
+    assert not output_dir.exists()
+
+
+def test_full_cli_rejects_output_dir_before_harvest_setup(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "argv", [
+        "harvest",
+        "NVDA",
+        "2026-08-27",
+        "stock",
+        "--out-dir",
+        str(tmp_path / "forbidden"),
+    ])
+    monkeypatch.setattr(
+        harvest,
+        "set_config",
+        lambda _config: (_ for _ in ()).throw(AssertionError("harvest setup started")),
+    )
+
+    with pytest.raises(ValueError, match="--out-dir.*--slim"):
+        harvest.main()

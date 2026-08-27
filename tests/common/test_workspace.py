@@ -132,6 +132,10 @@ def test_scan_dir_rejects_unsafe_or_invalid_dates(monkeypatch, analysis_date):
         ws.scan_dir(analysis_date)
 
 
+def test_validate_scan_date_returns_exact_valid_ascii_date():
+    assert ws.validate_scan_date("2026-08-27") == "2026-08-27"
+
+
 def test_lake_is_engine_independent(monkeypatch):
     """数据湖是唯一共享根:换引擎不得改变 lake 路径。"""
     monkeypatch.setattr(ws, "ENGINE", "claude")

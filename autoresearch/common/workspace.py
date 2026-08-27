@@ -103,7 +103,7 @@ def scan_root() -> Path:
     return scan_run_root(run_id) / "staging" if run_id else context_root() / "scan"
 
 
-def _validated_scan_date(date) -> str:
+def validate_scan_date(date) -> str:
     value = str(date)
     if not _SCAN_DATE_RE.fullmatch(value):
         raise ValueError(f"scan date={value!r} 非法")
@@ -115,11 +115,11 @@ def _validated_scan_date(date) -> str:
 
 
 def scan_dir(date) -> Path:
-    return scan_root() / _validated_scan_date(date)
+    return scan_root() / validate_scan_date(date)
 
 
 def scan_input_dir(date, *, scan_dir=None) -> Path:
-    value = _validated_scan_date(date)
+    value = validate_scan_date(date)
     if not active_run_id():
         return context_root()
     resolved_scan_dir = Path(scan_dir) if scan_dir is not None else scan_root() / value
