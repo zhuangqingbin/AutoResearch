@@ -47,6 +47,40 @@ def test_write_dispatch_pack(tmp_path):
     assert (d / "_l4_prompt_300001.md").exists()
 
 
+def test_dispatch_prompt_renders_run_scoped_artifact_paths(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", "20260827T010203456789Z")
+    d = _mk(tmp_path)
+
+    write_dispatch_pack(d)
+    prompt = (d / "_l4_prompt_600584.md").read_text(encoding="utf-8")
+
+    inputs = ws.scan_input_dir(_DATE)
+    scan = ws.scan_dir(_DATE)
+    assert str(inputs / f"600584.SS_{_DATE}_slim.md") in prompt
+    assert str(inputs / f"600584.SS_{_DATE}_slim_deep.md") in prompt
+    assert str(scan / "_l4_intel_600584.md") in prompt
+    assert str(scan / "details/600584.md") in prompt
+    assert "context/scan/" not in prompt
+
+
+def test_dispatch_prompt_legacy_mode_renders_active_engine_paths(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    monkeypatch.delenv("AUTORESEARCH_RUN_ID", raising=False)
+    d = _mk(tmp_path)
+
+    write_dispatch_pack(d)
+    prompt = (d / "_l4_prompt_600584.md").read_text(encoding="utf-8")
+
+    assert f"context_codex/600584.SS_{_DATE}_slim.md" in prompt
+    assert f"context_codex/600584.SS_{_DATE}_slim_deep.md" in prompt
+    assert f"context_codex/scan/{_DATE}/_l4_intel_600584.md" in prompt
+    assert f"context_codex/scan/{_DATE}/details/600584.md" in prompt
+    assert "context/scan/" not in prompt
+
+
 def test_dispatch_pack_cli(tmp_path, monkeypatch, capsys):
     _mk(tmp_path)
     monkeypatch.chdir(tmp_path)

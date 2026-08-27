@@ -26,9 +26,11 @@ AGENTS.md 要求的 ``export AUTORESEARCH_ENGINE=codex``(沙箱外 CODEX_* 检�
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 ENGINES = ("claude", "codex")
+_RUN_ID_RE = re.compile(r"^\d{8}T\d{12}Z$")
 
 #: 2026-08-11 引擎隔离**之前**的 context 根名。历史产物(如 08-11 前的 `_l4_tasks.json`,
 #: 实测 113 处)把路径记成裸 `context/…`,那个根今天不存在、文件却还在 —— 读侧要做前缀
@@ -75,12 +77,36 @@ def lake_root() -> Path:
 
 # ── 高频组合根(纯便捷,无独立语义)─────────────────────────────────────────────
 
+def active_run_id(environ=None) -> str | None:
+    env = os.environ if environ is None else environ
+    value = str(env.get("AUTORESEARCH_RUN_ID", "")).strip()
+    if not value:
+        return None
+    if not _RUN_ID_RE.fullmatch(value):
+        raise ValueError(f"AUTORESEARCH_RUN_ID={value!r} 非法")
+    return value
+
+
+def scan_run_root(run_id: str | None = None) -> Path:
+    value = run_id or active_run_id()
+    if value is None:
+        raise ValueError("缺 AUTORESEARCH_RUN_ID，无法解析 run-scoped workspace")
+    if not _RUN_ID_RE.fullmatch(value):
+        raise ValueError(f"AUTORESEARCH_RUN_ID={value!r} 非法")
+    return context_root() / "scan_runs" / value
+
+
 def scan_root() -> Path:
-    return context_root() / "scan"
+    run_id = active_run_id()
+    return scan_run_root(run_id) / "staging" if run_id else context_root() / "scan"
 
 
 def scan_dir(date) -> Path:
     return scan_root() / str(date)
+
+
+def scan_input_dir(date) -> Path:
+    return scan_dir(date) / "_external_inputs" if active_run_id() else context_root()
 
 
 def learning_root() -> Path:

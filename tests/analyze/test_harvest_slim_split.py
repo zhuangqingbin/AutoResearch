@@ -1,5 +1,7 @@
 """slim 二段式:深核块分离到 *_slim_deep.md(spec 2026-07-08 T1;取代旧同文件重排)。"""
+from autoresearch.analyze import harvest
 from autoresearch.analyze.harvest import _split_slim_for_progressive, _write_slim_files
+from autoresearch.common import workspace as ws
 
 
 def _parts():
@@ -47,3 +49,33 @@ def test_write_slim_files_no_deep_single_file(tmp_path):
     out = _write_slim_files(tmp_path, "600519.SS", "2026-07-08", only_surface)
     assert not (tmp_path / "600519.SS_2026-07-08_slim_deep.md").exists()
     assert "深核分界" not in out.read_text(encoding="utf-8")   # 老路不插指针
+
+
+def test_slim_files_are_isolated_between_same_date_runs(tmp_path, monkeypatch):
+    monkeypatch.setattr(harvest, "ROOT", tmp_path)
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    date = "2026-08-27"
+
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", "20260827T010203456789Z")
+    first_dir = harvest._output_dir(date, slim=True)
+    first = _write_slim_files(first_dir, "000062.SZ", date, _parts())
+    first_text = first.read_text(encoding="utf-8")
+
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", "20260827T020304567890Z")
+    second_dir = harvest._output_dir(date, slim=True)
+    second = _write_slim_files(second_dir, "000062.SZ", date, ["# second run"])
+
+    assert first_dir != second_dir
+    assert first.read_text(encoding="utf-8") == first_text
+    assert second.read_text(encoding="utf-8") == "# second run"
+
+
+def test_full_report_output_stays_at_engine_context_root(tmp_path, monkeypatch):
+    monkeypatch.setattr(harvest, "ROOT", tmp_path)
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", "20260827T010203456789Z")
+
+    output_dir = harvest._output_dir("2026-08-27", slim=False)
+
+    assert output_dir == tmp_path / "context_codex"
+    assert output_dir.is_dir()

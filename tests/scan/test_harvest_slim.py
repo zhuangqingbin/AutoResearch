@@ -61,6 +61,31 @@ def test_harvest_slim_all_ok(tmp_path):
     assert res["ok"] is True and res["failures"] == []
 
 
+def test_harvest_slim_default_context_is_run_scoped(tmp_path, monkeypatch):
+    from autoresearch.scan.l4 import producers
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", "20260827T010203456789Z")
+    _setup_cli(tmp_path, ["600584.SS"])
+    seen: list = []
+
+    def fake(ticker, date, ctx_root):
+        seen.append(ctx_root)
+        ctx_root.mkdir(parents=True, exist_ok=True)
+        path = ctx_root / f"{ticker}_{date}_slim.md"
+        path.write_text(_slim_body(pad=5000), encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(producers, "_default_harvest_slim", fake)
+    result = harvest_slim_batch("2026-07-07", workers=1, retries=0)
+
+    expected = ws.scan_input_dir("2026-07-07")
+    assert result["ok"] is True
+    assert seen == [expected]
+    assert (expected / "600584.SS_2026-07-07_slim.md").is_file()
+
+
 def test_harvest_slim_compact_but_complete_passes(tmp_path):
     """🚨 2026-07-14 生产回归:药石科技(300725)slim **8176B — 差 16 字节没够 8192B 体积门槛**,
     结构 24 节一个不缺、OHLCV/主力/筹码全真,只是当期新闻少几条 → 旧体积门槛误杀,

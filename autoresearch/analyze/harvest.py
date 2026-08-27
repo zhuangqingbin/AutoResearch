@@ -1095,6 +1095,13 @@ def _write_slim_files(out_dir: Path, ticker: str, trade_date: str, parts: list[s
     return out_path
 
 
+def _output_dir(trade_date: str, *, slim: bool) -> Path:
+    relative = ws.scan_input_dir(trade_date) if slim else ws.context_root()
+    out_dir = ROOT / relative
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir
+
+
 def main() -> int:
     flags = {a for a in sys.argv[1:] if a.startswith("--")}
     pos = [a for a in sys.argv[1:] if not a.startswith("--")]
@@ -1220,8 +1227,7 @@ def main() -> int:
     if not slim:
         parts.append(_section("Peer-relative valuation & strength (v2)", peer_relative, ticker, peers, end))
 
-    out_dir = ROOT / ws.context_root()
-    out_dir.mkdir(exist_ok=True)
+    out_dir = _output_dir(trade_date, slim=slim)
     if slim:
         out_path = _write_slim_files(out_dir, ticker, trade_date, parts)
     else:

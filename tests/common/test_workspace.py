@@ -56,6 +56,50 @@ def test_roots_follow_engine(monkeypatch):
     assert ws.reports_root() == Path("reports_codex")
 
 
+def test_active_run_scopes_scan_workspace(monkeypatch):
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", "20260827T010203456789Z")
+
+    assert ws.active_run_id() == "20260827T010203456789Z"
+    assert ws.scan_run_root() == Path(
+        "context_codex/scan_runs/20260827T010203456789Z")
+    assert ws.scan_root() == Path(
+        "context_codex/scan_runs/20260827T010203456789Z/staging")
+    assert ws.scan_dir("2026-08-27") == Path(
+        "context_codex/scan_runs/20260827T010203456789Z/staging/2026-08-27")
+    assert ws.scan_input_dir("2026-08-27") == Path(
+        "context_codex/scan_runs/20260827T010203456789Z/staging/2026-08-27/_external_inputs")
+    assert "claude" not in str(ws.scan_input_dir("2026-08-27"))
+
+
+@pytest.mark.parametrize("run_id", ["../x", "run/x", "latest", "20260827_0102"])
+def test_active_run_id_rejects_malformed_values(run_id):
+    with pytest.raises(ValueError, match="AUTORESEARCH_RUN_ID"):
+        ws.active_run_id({"AUTORESEARCH_RUN_ID": run_id})
+
+
+def test_scan_run_root_rejects_malformed_explicit_id():
+    with pytest.raises(ValueError, match="AUTORESEARCH_RUN_ID"):
+        ws.scan_run_root("../x")
+
+
+def test_empty_run_id_preserves_legacy_scan_workspace(monkeypatch):
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", "   ")
+
+    assert ws.active_run_id() is None
+    assert ws.scan_root() == Path("context_codex/scan")
+    assert ws.scan_dir("2026-08-27") == Path("context_codex/scan/2026-08-27")
+    assert ws.scan_input_dir("2026-08-27") == Path("context_codex")
+    assert "claude" not in str(ws.scan_dir("2026-08-27"))
+
+
+def test_scan_run_root_requires_a_run_id(monkeypatch):
+    monkeypatch.delenv("AUTORESEARCH_RUN_ID", raising=False)
+    with pytest.raises(ValueError, match="缺 AUTORESEARCH_RUN_ID"):
+        ws.scan_run_root()
+
+
 def test_lake_is_engine_independent(monkeypatch):
     """数据湖是唯一共享根:换引擎不得改变 lake 路径。"""
     monkeypatch.setattr(ws, "ENGINE", "claude")

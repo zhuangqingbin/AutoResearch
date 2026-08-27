@@ -1,6 +1,7 @@
 """L4 单票任务簿：可恢复、失败隔离、限次重试和稳定批次。"""
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -67,6 +68,41 @@ def test_initialize_is_atomic_and_preserves_order(tmp_path):
     assert payload["tasks"]["000002"]["pinned"] is True
     assert payload["tasks"]["000001"]["status"] == "PENDING"
     assert not path.with_name("_l4_tasks.json.tmp").exists()
+
+
+def test_initialize_defaults_to_run_scoped_slim_and_hashes_it(tmp_path, monkeypatch):
+    from autoresearch.common import workspace as ws
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", "20260827T010203456789Z")
+    scan = ws.scan_dir(DATE)
+    inputs = ws.scan_input_dir(DATE)
+    scan.joinpath("details").mkdir(parents=True)
+    inputs.mkdir(parents=True)
+    scan.joinpath("_l4_prompt_000001.md").write_text("# prompt", encoding="utf-8")
+    slim = inputs / f"000001.SZ_{DATE}_slim.md"
+    slim.write_text(
+        "\n".join([
+            "## Verified market snapshot",
+            "### Latest verified OHLCV row",
+            "| Close | 12.34 |",
+            "## Market context",
+            "## Fundamentals overview",
+            "x" * 5000,
+        ]),
+        encoding="utf-8",
+    )
+    scan.joinpath("details/000001.md").write_text("# card", encoding="utf-8")
+
+    book = initialize(DATE, ["000001"], now=NOW)
+    preflight(book["path"], "000001", now=NOW)
+    mark_success(book["path"], "000001", now=NOW)
+    payload = json.loads((scan / "_l4_tasks.json").read_text(encoding="utf-8"))
+    slim_ref = payload["tasks"]["000001"]["artifacts"]["slim"]
+
+    assert slim_ref["path"] == str(slim)
+    assert slim_ref["content_hash"] == hashlib.sha256(slim.read_bytes()).hexdigest()
 
 
 def test_success_is_skipped_only_while_all_artifact_hashes_match(tmp_path):
