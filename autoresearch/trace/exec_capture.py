@@ -61,6 +61,18 @@ class CaptureResult:
     invocation: dict
 
 
+class EvidenceFinalizationError(RuntimeError):
+    """One or more terminal evidence channels remained unavailable."""
+
+    def __init__(self, errors: list[dict], exceptions: list[BaseException]):
+        self.errors = tuple(errors)
+        self.exceptions = tuple(exceptions)
+        details = "; ".join(
+            f"{error['classification']}[{error['phase']}]: {error['message']}" for error in errors
+        )
+        super().__init__(f"evidence finalization failed: {details}")
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
@@ -723,19 +735,37 @@ def _capture_reserved(
             )
 
         metadata, _ = build_metadata(errors)
+        persisted = metadata
+        index_persisted = False
+        finalization_errors: list[dict] = []
+        finalization_exceptions: list[BaseException] = []
         try:
             persisted = _finish_invocation(handle, invocation_id, metadata)
+            index_persisted = True
         except BaseException as exc:
-            errors.append(
-                exception_error(
-                    exc,
+            primary_index_error = exception_error(
+                exc,
+                classification="INDEX_WRITE_FAILURE",
+                category="PERSISTENCE",
+                phase="invocation-index",
+            )
+            errors.append(primary_index_error)
+            metadata, _ = build_metadata(errors)
+            try:
+                persisted = _replace_invocation(handle, invocation_id, metadata)
+                index_persisted = True
+            except BaseException as fallback_exc:
+                fallback_index_error = exception_error(
+                    fallback_exc,
                     classification="INDEX_WRITE_FAILURE",
                     category="PERSISTENCE",
-                    phase="invocation-index",
+                    phase="invocation-index-fallback",
                 )
-            )
-            metadata, _ = build_metadata(errors)
-            persisted = _replace_invocation(handle, invocation_id, metadata)
+                errors.append(fallback_index_error)
+                metadata, _ = build_metadata(errors)
+                persisted = metadata
+                finalization_errors.extend([primary_index_error, fallback_index_error])
+                finalization_exceptions.extend([exc, fallback_exc])
 
         event_type = "COMMAND_FAILED" if metadata["status"] == "FAILED" else "COMMAND_COMPLETED"
         event_fields = _event_fields(
@@ -751,29 +781,59 @@ def _capture_reserved(
             append_event(handle.capsule / "events/events.jsonl", **event_fields)
         except BaseException as exc:
             if not _terminal_event_exists(handle, invocation_id):
-                errors.append(
-                    exception_error(
-                        exc,
-                        classification="EVENT_WRITE_FAILURE",
-                        category="PERSISTENCE",
-                        phase="terminal-event",
-                    )
+                primary_event_error = exception_error(
+                    exc,
+                    classification="EVENT_WRITE_FAILURE",
+                    category="PERSISTENCE",
+                    phase="terminal-event",
                 )
+                errors.append(primary_event_error)
                 metadata, _ = build_metadata(errors)
-                persisted = _replace_invocation(handle, invocation_id, metadata)
-                append_event(
-                    handle.capsule / "events/events.jsonl",
-                    **_event_fields(
-                        handle,
-                        stage=stage,
-                        invocation_id=invocation_id,
-                        attempt=attempt,
-                        subject=subject,
-                        event_type="COMMAND_FAILED",
-                        payload=terminal_payload(metadata),
-                    ),
-                )
+                persisted = metadata
+                if index_persisted:
+                    try:
+                        persisted = _replace_invocation(handle, invocation_id, metadata)
+                    except BaseException as index_update_exc:
+                        index_update_error = exception_error(
+                            index_update_exc,
+                            classification="INDEX_WRITE_FAILURE",
+                            category="PERSISTENCE",
+                            phase="invocation-index-event-fallback",
+                        )
+                        errors.append(index_update_error)
+                        metadata, _ = build_metadata(errors)
+                        persisted = metadata
+                        index_persisted = False
+                        finalization_errors.append(index_update_error)
+                        finalization_exceptions.append(index_update_exc)
+                try:
+                    append_event(
+                        handle.capsule / "events/events.jsonl",
+                        **_event_fields(
+                            handle,
+                            stage=stage,
+                            invocation_id=invocation_id,
+                            attempt=attempt,
+                            subject=subject,
+                            event_type="COMMAND_FAILED",
+                            payload=terminal_payload(metadata),
+                        ),
+                    )
+                except BaseException as retry_exc:
+                    if not _terminal_event_exists(handle, invocation_id):
+                        retry_event_error = exception_error(
+                            retry_exc,
+                            classification="EVENT_WRITE_FAILURE",
+                            category="PERSISTENCE",
+                            phase="terminal-event-retry",
+                        )
+                        errors.append(retry_event_error)
+                        finalization_errors.extend([primary_event_error, retry_event_error])
+                        finalization_exceptions.extend([exc, retry_exc])
 
+        if finalization_errors:
+            aggregate = EvidenceFinalizationError(finalization_errors, finalization_exceptions)
+            raise aggregate from finalization_exceptions[0]
         if pending_exception is not None:
             raise pending_exception
         return CaptureResult(exit_code=exit_code, invocation=persisted)

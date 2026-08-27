@@ -673,6 +673,102 @@ def test_signal_handlers_restore_when_terminal_finalization_raises(tmp_path, mon
     assert signal.getsignal(signal.SIGTERM) == previous_term
 
 
+def test_index_terminal_failure_still_appends_failed_event_before_signal_restore(
+    tmp_path, monkeypatch
+):
+    handle = _begin(tmp_path, monkeypatch)
+    order = []
+    real_append = exec_mod.append_event
+    real_signal = signal.signal
+
+    def fail_finish(*args, **kwargs):
+        order.append("index-finish")
+        raise OSError("primary index persistence failed")
+
+    def fail_replace(*args, **kwargs):
+        order.append("index-replace")
+        raise RuntimeError("fallback index persistence failed")
+
+    def traced_append(path, **fields):
+        if fields["event_type"] in {"COMMAND_COMPLETED", "COMMAND_FAILED"}:
+            order.append("terminal-event")
+        return real_append(path, **fields)
+
+    installed_handlers = set()
+
+    def traced_signal(signum, handler):
+        if signum in installed_handlers:
+            order.append("restore")
+        else:
+            installed_handlers.add(signum)
+        return real_signal(signum, handler)
+
+    monkeypatch.setattr(exec_mod, "_finish_invocation", fail_finish)
+    monkeypatch.setattr(exec_mod, "_replace_invocation", fail_replace)
+    monkeypatch.setattr(exec_mod, "append_event", traced_append)
+    monkeypatch.setattr(signal, "signal", traced_signal)
+
+    with pytest.raises(RuntimeError) as raised:
+        run_captured(
+            handle,
+            stage="frame",
+            argv=[sys.executable, "-c", "pass"],
+            invocation_id="index-terminal-failure-1",
+        )
+
+    assert order[:3] == ["index-finish", "index-replace", "terminal-event"]
+    assert order.index("terminal-event") < order.index("restore")
+    assert [error["classification"] for error in raised.value.errors] == [
+        "INDEX_WRITE_FAILURE",
+        "INDEX_WRITE_FAILURE",
+    ]
+    terminal = [
+        row
+        for row in _events(handle)
+        if row["invocation_id"] == "index-terminal-failure-1"
+        and row["event_type"] == "COMMAND_FAILED"
+    ]
+    assert len(terminal) == 1
+    assert terminal[0]["payload"]["error"]["classification"] == "INDEX_WRITE_FAILURE"
+
+
+def test_index_and_event_terminal_failures_are_raised_without_masking_primary(
+    tmp_path, monkeypatch
+):
+    handle = _begin(tmp_path, monkeypatch)
+    real_append = exec_mod.append_event
+    terminal_attempts = 0
+
+    def fail_index(*args, **kwargs):
+        raise OSError("index unavailable")
+
+    def fail_terminal(path, **fields):
+        nonlocal terminal_attempts
+        if fields["event_type"] in {"COMMAND_COMPLETED", "COMMAND_FAILED"}:
+            terminal_attempts += 1
+            raise OSError(f"terminal event unavailable attempt {terminal_attempts}")
+        return real_append(path, **fields)
+
+    monkeypatch.setattr(exec_mod, "_finish_invocation", fail_index)
+    monkeypatch.setattr(exec_mod, "_replace_invocation", fail_index)
+    monkeypatch.setattr(exec_mod, "append_event", fail_terminal)
+
+    with pytest.raises(RuntimeError) as raised:
+        run_captured(
+            handle,
+            stage="frame",
+            argv=[sys.executable, "-c", "pass"],
+            invocation_id="index-event-terminal-failure-1",
+        )
+
+    classifications = [error["classification"] for error in raised.value.errors]
+    assert classifications[:2] == ["INDEX_WRITE_FAILURE", "INDEX_WRITE_FAILURE"]
+    assert "EVENT_WRITE_FAILURE" in classifications
+    assert raised.value.errors[0]["message"] == "index unavailable"
+    assert "index unavailable" in str(raised.value)
+    assert terminal_attempts >= 1
+
+
 def test_cli_requires_separator_and_returns_child_outcome(tmp_path, monkeypatch):
     handle = _begin(tmp_path, monkeypatch)
     with pytest.raises(SystemExit):
