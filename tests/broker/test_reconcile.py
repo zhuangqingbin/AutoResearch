@@ -50,3 +50,19 @@ def test_main_prints_and_returns_zero(tmp_path, raw, capsys):
 
 def test_empty_root(tmp_path):
     assert "无 raw" in reconcile.report(tmp_path / "nothing")
+
+
+def test_other_rows_stay_out_of_buckets_but_are_reported(tmp_path, raw):
+    _put(tmp_path, raw.rows({}, {"code": "", "biz_type": "利息归本", "price": "", "qty": "",
+                                 "amount": "1.5"}), "gtht")
+    _put(tmp_path, raw(), "chinaclear")
+    out = reconcile.report(tmp_path)
+    assert "两边都有 1 · 仅 chinaclear 0 · 仅 gtht 0" in out
+    assert "OTHER 行(不入桶):chinaclear 0 / gtht 1" in out
+    assert "桶只计 BUY/SELL" in out
+
+
+def test_invalid_since_exits_2(tmp_path, raw, capsys):
+    _put(tmp_path, raw(), "gtht")
+    assert reconcile.main(["--root", str(tmp_path), "--since", "2026/08/01"]) == 0   # 可解析写法照收
+    assert reconcile.main(["--root", str(tmp_path), "--since", "昨天"]) == 2

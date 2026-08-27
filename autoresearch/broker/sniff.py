@@ -22,7 +22,8 @@ def _decode(raw: bytes, *, strict: bool = True) -> str:
             continue
     if strict:
         raise ValueError(f"无法按 {'/'.join(_ENCODINGS)} 解码(gb18030 也失败)")
-    return raw.decode("utf-8", errors="replace")
+    # 嗅探用的宽松兜底:头 2048 字节可能正好切在多字节字符中间,按 gb18030 忽略残尾
+    return raw.decode("gb18030", errors="ignore")
 
 
 def sniff(path: Path) -> str:

@@ -52,14 +52,19 @@ def ingest_file(path: Path, *, source_kind: str, account: str | None, root, forc
         raw = adapters.parse(path, source_kind, account=account)
         df = schema.normalize(raw, source_kind=source_kind, source_file=path.name, ingested_at=now)
         rep = schema.validate(df, today=today)
-    except DataContractError as e:
-        entry.update(status="rejected", a_error=str(e))
-        print(f"[broker] ✗ 拒收 {path.name}:{e}", file=sys.stderr)
+    except (DataContractError, ValueError) as e:
+        # ValueError = adapter 自己没包住的解析失败(pandas 的 EmptyDataError/ParserError 都是它的子类):
+        # 同样按文件拒收,不许一份坏文件中止整批。日志只记首行 + 问题条数(§13:不记逐笔明细)。
+        msg = str(e)
+        lines = msg.splitlines() or [""]
+        entry.update(status="rejected", a_error=lines[0], a_problems=max(len(lines) - 1, 0))
+        print(f"[broker] ✗ 拒收 {path.name}:{msg}", file=sys.stderr)
         if not dry_run:
             store.append_log(entry, root)
         return entry
     entry.update(accounts=list(rep.accounts), period=list(rep.period or ()), rows=rep.rows,
-                 b_degradations=rep.b_degradations, warnings=rep.warnings)
+                 b_degradations=rep.b_degradations, b_by_account=rep.b_by_account,
+                 warnings=rep.warnings)
     if dry_run:
         entry["status"] = "dry-run"
         return entry
@@ -80,7 +85,10 @@ def render_summary(trades: pd.DataFrame | None, entries: list[dict]) -> str:
              f" · 拒收 {n['rejected']} · 试跑 {n['dry-run']}"]
     for e in entries:
         if e["status"] == "rejected":
-            lines.append(f"  ✗ 拒收 {e['file']}:{str(e.get('a_error', '')).splitlines()[0]}")
+            extra = f"(共 {e['a_problems']} 处)" if e.get("a_problems") else ""
+            lines.append(f"  ✗ 拒收 {e['file']}:{e.get('a_error') or ''}{extra}")
+        elif e["status"] == "skipped":
+            lines.append(f"  ↷ 已导入 {e['file']}")
         elif e["status"] == "dry-run":
             lines.append(f"  ○ 试跑 {e['file']}:{e.get('rows', 0)} 行 · 账户 "
                          f"{'/'.join(e.get('accounts', []))} · B降级 {e.get('b_degradations') or '无'}"
@@ -90,8 +98,8 @@ def render_summary(trades: pd.DataFrame | None, entries: list[dict]) -> str:
     degr: dict[str, dict[str, int]] = {}
     for e in entries:
         if e["status"] == "ok":
-            for acct in e.get("accounts", []):
-                for reason, k in (e.get("b_degradations") or {}).items():
+            for acct, d in (e.get("b_by_account") or {}).items():
+                for reason, k in d.items():
                     degr.setdefault(acct, {})[reason] = degr.get(acct, {}).get(reason, 0) + k
     for acct, g in trades.groupby("account", sort=True):
         is_trade = g["side"].isin(("BUY", "SELL"))
@@ -103,7 +111,7 @@ def render_summary(trades: pd.DataFrame | None, entries: list[dict]) -> str:
                 if d else "0")
         lines.append(f"  {acct:<5} {g['trade_date'].min()}..{g['trade_date'].max()}  "
                      f"BUY {counts['BUY']} / SELL {counts['SELL']} / OTHER {counts['OTHER']}   "
-                     f"成交额 {_fmt_money(turnover)}  费用 {_fmt_money(fees)}  A违规 0  B降级 {dtxt}")
+                     f"成交额 {_fmt_money(turnover)}  费用 {_fmt_money(fees)}  B降级(本次) {dtxt}")
     multi = int(trades["sources"].astype(str).str.contains(r"\+").sum()) if len(trades) else 0
     lines.append(f"trades.csv 重建:{len(trades)} 行 · 多源匹配 {multi} 行 · 单源 {len(trades) - multi} 行")
     return "\n".join(lines)
@@ -123,19 +131,22 @@ def main(argv: list[str] | None = None) -> int:
     except FileNotFoundError as e:
         print(f"[broker] {e}", file=sys.stderr)
         return 2
-    entries: list[dict] = []
+    # 先把整批的来源都定下来,再动任何一个文件:来源不明/无 adapter 是参数错(退 2),不许写了一半才发现
+    plan: list[tuple[Path, str]] = []
+    bad: list[str] = []
     for f in files:
         kind = args.source or adapters.detect_source_kind(f)
         if kind is None:
-            print(f"[broker] {f}:无法识别来源(父目录须为 {'/'.join(schema.SOURCE_KINDS)} 之一,"
-                  "或传 --source)", file=sys.stderr)
-            return 2
-        try:
-            entries.append(ingest_file(f, source_kind=kind, account=args.account, root=args.root,
-                                       force=args.force, dry_run=args.dry_run))
-        except ValueError as e:
-            print(f"[broker] {f}:{e}", file=sys.stderr)
-            return 2
+            bad.append(f"{f}:无法识别来源(父目录须为 {'/'.join(schema.SOURCE_KINDS)} 之一,或传 --source)")
+        elif kind not in adapters.REGISTRY:
+            bad.append(f"{f}:source_kind={kind!r} 尚无 adapter(已有 {sorted(adapters.REGISTRY)})")
+        else:
+            plan.append((f, kind))
+    if bad:
+        print("[broker] 整批未动:\n  " + "\n  ".join(bad), file=sys.stderr)
+        return 2
+    entries = [ingest_file(f, source_kind=kind, account=args.account, root=args.root,
+                           force=args.force, dry_run=args.dry_run) for f, kind in plan]
     trades = None if args.dry_run else store.merge(args.root)
     print(render_summary(trades, entries))
     return 1 if any(e["status"] == "rejected" for e in entries) else 0

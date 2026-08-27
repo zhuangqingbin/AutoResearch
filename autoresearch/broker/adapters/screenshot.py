@@ -22,7 +22,7 @@ SCREENSHOT_HEADER = (
     "trade_date", "trade_time", "code", "name", "biz_type", "price", "qty", "amount",
     "commission", "stamp_tax", "transfer_fee", "other_fee", "net_amount", "balance_after",
 )
-_NAME_RE = re.compile(r"^(?P<account>[a-z0-9]+)_\d{8}-\d{8}\.csv$")
+_NAME_RE = re.compile(r"^(?P<account>[a-z0-9]+)_\d{8}-\d{8}\.csv$", re.IGNORECASE)
 
 
 def parse(path: Path, *, account: str | None = None) -> pd.DataFrame:
@@ -30,16 +30,24 @@ def parse(path: Path, *, account: str | None = None) -> pd.DataFrame:
     kind = sniff.sniff(path)
     if kind != "text":
         raise DataContractError(f"{path.name}:截图路只收标准 CSV,真身是 {kind}")
-    df = pd.read_csv(io.StringIO(sniff.read_text(path)), dtype=str, keep_default_na=False)
+    try:
+        df = pd.read_csv(io.StringIO(sniff.read_text(path)), dtype=str, keep_default_na=False)
+    except (pd.errors.EmptyDataError, pd.errors.ParserError, ValueError) as e:
+        raise DataContractError(f"{path.name}:CSV 解析失败({e})") from e
     header = tuple(str(c).strip() for c in df.columns)
     if header != SCREENSHOT_HEADER:
         raise DataContractError(
             f"{path.name}:表头必须逐字为\n  {','.join(SCREENSHOT_HEADER)}\n实际\n  {','.join(header)}")
     m = _NAME_RE.match(path.name)
-    acct = account or (m.group("account") if m else None)
+    from_name = m.group("account").lower() if m else None
+    if account and from_name and account != from_name:
+        raise DataContractError(
+            f"{path.name}:文件名账户 {from_name} 与 --account {account} 冲突,拒收"
+            "(--account 只在文件名不带账户时生效;一批多户请别传 --account)")
+    acct = account or from_name
     if not acct:
         raise DataContractError(
-            f"{path.name}:截图 CSV 需要 --account,或文件名形如 <account>_<起>-<止>.csv")
+            f"{path.name}:截图 CSV 需要 --account,或文件名形如 <account>_<起>-<止>.csv(大小写不限)")
     df.columns = list(header)
     df.insert(0, "account", acct)
     df["trade_id"] = ""

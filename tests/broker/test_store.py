@@ -58,3 +58,10 @@ def test_roots_follow_workspace_engine(monkeypatch):
     assert store.raw_path(None, "gtht") == Path("context_codex/broker/raw/gtht.csv")
     assert store.trades_path(None) == Path("context_codex/broker/trades.csv")
     assert store.log_path(None) == Path("context_codex/broker/ingest_log.jsonl")
+
+
+def test_upsert_refuses_mixed_sources(tmp_path, raw):
+    import pytest
+    mixed = pd.concat([_norm(raw(), "gtht"), _norm(raw(), "chinaclear")], ignore_index=True)
+    with pytest.raises(ValueError, match="一个来源"):
+        store.upsert_raw(mixed, tmp_path)

@@ -39,7 +39,8 @@ def test_ingest_writes_raw_trades_and_log(inbox, tmp_path, capsys):
     assert "sha256" in log[0] and "period" in log[0] and "rows" in log[0]
     out = capsys.readouterr().out
     assert "gtht  2026-08-25..2026-08-26  BUY 1 / SELL 1 / OTHER 0" in out
-    assert "成交额 2,484" in out and "费用 11" in out and "A违规 0" in out
+    assert "成交额 2,484" in out and "费用 11" in out and "B降级(本次) 0" in out
+    assert "拒收 0" in out
     assert "trades.csv 重建:2 行" in out
 
 
@@ -49,7 +50,8 @@ def test_second_run_skips_and_is_byte_stable(inbox, tmp_path, capsys):
     before = store.trades_path(root).read_bytes()
     assert _run(inbox, root) == 0
     assert store.trades_path(root).read_bytes() == before
-    assert "已导入跳过 1" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "已导入跳过 1" in out and "↷ 已导入 gtht_20260825-20260826.csv" in out
     assert len(_log(root)) == 1
 
 
@@ -71,6 +73,9 @@ def test_rejected_file_writes_nothing_but_log_and_exit_1(inbox, tmp_path, capsys
     assert {e["status"] for e in _log(root)} == {"ok", "rejected"}
     assert "拒收" in capsys.readouterr().out
     assert len(store.read_raw(store.raw_path(root, "screenshot"))) == 2   # 好文件照常入
+    rej = [e for e in _log(root) if e["status"] == "rejected"][0]
+    assert "第1行" not in rej["a_error"] and "9999" not in rej["a_error"]   # §13:不记逐笔明细
+    assert rej["a_problems"] == 1
 
 
 def test_dry_run_writes_nothing(inbox, tmp_path, capsys):
@@ -80,11 +85,41 @@ def test_dry_run_writes_nothing(inbox, tmp_path, capsys):
     assert "试跑" in capsys.readouterr().out
 
 
-def test_unknown_source_dir_exits_2(tmp_path):
-    d = tmp_path / "inbox" / "misc"
-    d.mkdir(parents=True)
+def test_unknown_source_dir_exits_2_before_any_write(inbox, tmp_path):
+    d = inbox / "misc"
+    d.mkdir()
     (d / "x.csv").write_text("a\n", encoding="utf-8")
-    assert ingest.main([str(d), "--root", str(tmp_path / "root")]) == 2
+    root = tmp_path / "root"
+    assert _run(inbox, root) == 2          # inbox 里还有一份好文件,也不许先写它
+    assert not root.exists()
+
+
+def test_source_flag_overrides_dir_name(tmp_path):
+    d = tmp_path / "misc"
+    d.mkdir()
+    (d / "gtht_20260825-20260826.csv").write_text(f"{HEADER}\n{BUY}\n", encoding="utf-8")
+    root = tmp_path / "root"
+    assert ingest.main([str(d), "--root", str(root), "--source", "screenshot"]) == 0
+    assert len(store.read_raw(store.raw_path(root, "screenshot"))) == 1
+
+
+def test_account_flag_conflicting_with_filename_rejects_not_relabels(inbox, tmp_path):
+    (inbox / "screenshot" / "tpy_20260825-20260826.csv").write_text(f"{HEADER}\n{BUY}\n",
+                                                                     encoding="utf-8")
+    root = tmp_path / "root"
+    assert _run(inbox, root, "--account", "gtht") == 1
+    raw = store.read_raw(store.raw_path(root, "screenshot"))
+    assert set(raw.account) == {"gtht"} and len(raw) == 2     # tpy 行没有被改名成 gtht 后吞掉
+    assert [e["file"] for e in _log(root) if e["status"] == "rejected"] == ["tpy_20260825-20260826.csv"]
+
+
+def test_zero_byte_file_is_rejected_and_batch_still_completes(inbox, tmp_path):
+    (inbox / "screenshot" / "tpy_20260801-20260826.csv").write_bytes(b"")
+    root = tmp_path / "root"
+    assert _run(inbox, root) == 1
+    assert store.trades_path(root).exists()
+    assert len(store.read_raw(store.raw_path(root, "screenshot"))) == 2
+    assert {e["status"] for e in _log(root)} == {"ok", "rejected"}
 
 
 def test_source_without_adapter_exits_2(tmp_path):
@@ -92,6 +127,7 @@ def test_source_without_adapter_exits_2(tmp_path):
     d.mkdir(parents=True)
     (d / "x.pdf").write_bytes(b"%PDF-1.4")
     assert ingest.main([str(d), "--root", str(tmp_path / "root")]) == 2
+    assert not (tmp_path / "root").exists()
 
 
 def test_iter_files_skips_hidden_and_recurses(tmp_path):

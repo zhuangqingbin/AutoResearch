@@ -86,3 +86,32 @@ def test_net_amount_consistent_sell(raw):
 def test_odd_lot_buy_is_warning_only(raw):
     rep = _v(raw(qty="150", amount="1851", other_fee="0", net_amount="-1856.01"))
     assert rep.warnings == ["BUY 非 100 股整数倍 ×1"] and rep.b_degradations == {}
+
+
+def test_relative_tolerance_governs_large_trades(raw):
+    ok = raw(price="1000", qty="100", amount="100400", other_fee="0", net_amount="-100405.01")
+    assert _v(ok).rows == 1                                   # 差 400 ≤ 0.5%×100400
+    with pytest.raises(DataContractError, match="amount"):
+        _v(raw(price="1000", qty="100", amount="100600"))     # 差 600 > 503
+
+
+def test_time_name_balance_missing_are_b_level(raw):
+    rep = _v(raw(trade_time="", name="", balance_after="", other_fee="0"))
+    assert rep.b_degradations == {"trade_time 缺": 1, "name 缺": 1, "balance_after 缺": 1}
+
+
+def test_problem_lines_are_truncated_with_total(raw):
+    with pytest.raises(DataContractError, match="共 11 处"):
+        _v(raw.rows(*[{"amount": "9999"} for _ in range(11)]))
+
+
+def test_unknown_account_message_names_it(raw):
+    with pytest.raises(DataContractError, match="xx"):
+        _v(raw(account="xx"))
+
+
+def test_b_degradations_are_split_by_account(raw):
+    rep = _v(raw.rows({"account": "gtht", "other_fee": "0"},
+                      {"account": "tpy", "commission": "", "other_fee": "0"}))
+    assert rep.b_by_account == {"tpy": {"commission 缺": 1}}
+    assert rep.b_degradations == {"commission 缺": 1}

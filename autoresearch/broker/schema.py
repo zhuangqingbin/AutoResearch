@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
@@ -115,18 +116,37 @@ def _parse_time(raw) -> str:
 
 
 def _to_num(raw) -> float:
+    """空 → NaN;非空但不可解析 → raise ValueError(不许把「解析失败」伪装成「缺」)。"""
     s = _s(raw).replace(",", "").replace("元", "")
     if not s:
         return math.nan
-    try:
-        return float(s)
-    except ValueError:
-        return math.nan
+    return float(s)
 
 
 def _norm_code(raw) -> str:
-    s = _s(raw).upper().split(".")[0]
+    s = unicodedata.normalize("NFKC", _s(raw)).upper().split(".")[0]
     return s.zfill(6) if s.isdigit() else s
+
+
+def parse_date(raw) -> str | None:
+    """任意常见写法 → ISO 日期;解析失败 → None(CLI 参数校验也用它)。"""
+    return _parse_date(raw)
+
+
+def natural_key(r) -> tuple[str, ...]:
+    """跨源「同一笔」的唯一定义(§8):merge / reconcile 共用,不许各写各的。
+
+    数值经 `fmt_num` 折到 4 位小数(adapter 若用 amount/qty 反推 price 不会因浮点噪音错配);
+    OTHER 行(红利/税/利息/转账)没有 price/qty,再加 amount 区分 —— 否则同日两笔现金流会被并成一笔。
+    """
+    g = r.__getitem__ if isinstance(r, dict) else (lambda k: getattr(r, k))
+    side = g("side")
+    return (str(g("account")), str(g("trade_date")), str(g("code")), str(side),
+            fmt_num(g("price")), fmt_num(g("qty")), fmt_num(g("amount")) if side == "OTHER" else "")
+
+
+def natural_key_strings(df: pd.DataFrame) -> list[str]:
+    return ["|".join(natural_key(r)) for r in df.itertuples(index=False)]
 
 
 def normalize(df_raw: pd.DataFrame, *, source_kind: str, source_file: str,
@@ -145,10 +165,25 @@ def normalize(df_raw: pd.DataFrame, *, source_kind: str, source_file: str,
     df["side"] = df["biz_type"].map(to_side)
     df["trade_date"] = df["trade_date"].map(lambda v: _parse_date(v) or _s(v))
     df["trade_time"] = df["trade_time"].map(_parse_time)
+    bad: list[str] = []
     for col in NUMERIC_COLUMNS:
-        df[col] = df[col].map(_to_num).astype(float)
+        vals: list[float] = []
+        for i, v in enumerate(df[col]):
+            try:
+                vals.append(_to_num(v))
+            except ValueError:
+                bad.append(f"第{i + 1}行:{col} {_s(v)!r} 不可解析")
+                vals.append(math.nan)
+        df[col] = pd.Series(vals, index=df.index, dtype=float)
+    if bad:
+        more = f"\n…共 {len(bad)} 处" if len(bad) > _MAX_PROBLEM_LINES else ""
+        raise DataContractError(f"{source_file}:A 级违约,整文件拒收(数值不可解析):\n"
+                                + "\n".join(bad[:_MAX_PROBLEM_LINES]) + more)
     df["trade_id"] = df["trade_id"].map(_s)
-    df["seq"] = df.groupby(["trade_date", "code", "side", "price", "qty"], dropna=False).cumcount()
+    # 同价分笔序号:组键含 account;先按 (时刻, 成交编号) 稳定排序再编号,与文件行序无关
+    ordered = df.sort_values(["trade_time", "trade_id"], kind="stable")
+    df["seq"] = ordered.groupby(["account", "trade_date", "code", "side", "price", "qty"],
+                                dropna=False).cumcount()
     df["row_hash"] = [
         hashlib.sha1("|".join([r.account, r.trade_date, r.trade_time, r.code, r.side,
                                fmt_num(r.price), fmt_num(r.qty), fmt_num(r.amount),
@@ -172,6 +207,8 @@ class ValidationReport:
     period: tuple[str, str] | None = None
     b_degradations: dict[str, int] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    #: 按账户拆的 B 级计数(中国结算一份文件含两户时,摘要屏才不会把一份的降级算到每个账户头上)
+    b_by_account: dict[str, dict[str, int]] = field(default_factory=dict)
 
 
 def validate(df: pd.DataFrame, *, today: date | None = None) -> ValidationReport:
@@ -217,6 +254,26 @@ def validate(df: pd.DataFrame, *, today: date | None = None) -> ValidationReport
                                 + "\n".join(problems[:_MAX_PROBLEM_LINES]) + more)
 
     trades = df[df["side"].isin(("BUY", "SELL"))]
+    b_by_account = {acct: _b_checks(g) for acct, g in trades.groupby("account", sort=True)}
+    b: dict[str, int] = {}
+    for d in b_by_account.values():
+        for reason, n in d.items():
+            b[reason] = b.get(reason, 0) + n
+    for reason, n in b.items():
+        record_degradation(f"broker/{src}", f"{reason} ×{n}", key=fname)
+
+    warnings: list[str] = []
+    odd = trades[(trades["side"] == "BUY") & ((trades["qty"] % 100) != 0)]
+    if len(odd):
+        warnings.append(f"BUY 非 100 股整数倍 ×{len(odd)}")
+    return ValidationReport(
+        src, fname, len(df), tuple(sorted(set(df["account"]))),
+        (str(df["trade_date"].min()), str(df["trade_date"].max())), b, warnings,
+        {a: d for a, d in b_by_account.items() if d})
+
+
+def _b_checks(trades: pd.DataFrame) -> dict[str, int]:
+    """B 级计数(只看 BUY/SELL 行):费用四项缺 / 时刻缺 / 名称缺 / 剩余持仓缺 / net_amount 不符。"""
     b: dict[str, int] = {}
     for col in FEE_COLUMNS:
         n = int(trades[col].isna().sum())
@@ -237,13 +294,4 @@ def validate(df: pd.DataFrame, *, today: date | None = None) -> ValidationReport
         n = int(((t["net_amount"] - expected).abs() > NET_TOL_ABS).sum())
         if n:
             b["net_amount 与 amount±费用 偏差>1元"] = n
-    for reason, n in b.items():
-        record_degradation(f"broker/{src}", f"{reason} ×{n}", key=fname)
-
-    warnings: list[str] = []
-    odd = trades[(trades["side"] == "BUY") & ((trades["qty"] % 100) != 0)]
-    if len(odd):
-        warnings.append(f"BUY 非 100 股整数倍 ×{len(odd)}")
-    return ValidationReport(
-        src, fname, len(df), tuple(sorted(set(df["account"]))),
-        (str(df["trade_date"].min()), str(df["trade_date"].max())), b, warnings)
+    return b

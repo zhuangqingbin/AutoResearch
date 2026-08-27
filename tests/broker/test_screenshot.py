@@ -30,9 +30,28 @@ def test_parse_account_from_filename(tmp_path):
     assert r.account == "gtht" and r.code == "000001" and r.amount == "1234.00" and r.trade_id == ""
 
 
-def test_account_param_overrides_filename(tmp_path):
+def test_account_param_conflicting_with_filename_raises(tmp_path):
     p = _csv(tmp_path, "gtht_20260825-20260826.csv", f"{HEADER}\n{ROW}\n")
+    with pytest.raises(DataContractError, match="冲突"):
+        screenshot.parse(p, account="tpy")
+    assert screenshot.parse(p, account="gtht").iloc[0].account == "gtht"   # 一致则无事
+
+
+def test_account_param_fills_when_filename_has_none(tmp_path):
+    p = _csv(tmp_path, "shot.csv", f"{HEADER}\n{ROW}\n")
     assert screenshot.parse(p, account="tpy").iloc[0].account == "tpy"
+
+
+def test_uppercase_filename_account(tmp_path):
+    p = _csv(tmp_path, "GTHT_20260825-20260826.csv", f"{HEADER}\n{ROW}\n")
+    assert screenshot.parse(p).iloc[0].account == "gtht"
+
+
+def test_zero_byte_file_is_contract_error_not_pandas_error(tmp_path):
+    p = tmp_path / "gtht_20260825-20260826.csv"
+    p.write_bytes(b"")
+    with pytest.raises(DataContractError, match="解析失败"):
+        screenshot.parse(p)
 
 
 def test_missing_account_raises(tmp_path):

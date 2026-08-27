@@ -109,8 +109,9 @@ def merge(root=None) -> pd.DataFrame:
         trades = pd.DataFrame(columns=list(schema.TRADES_COLUMNS))
     else:
         allr = pd.concat(frames, ignore_index=True)
+        allr["_nk"] = schema.natural_key_strings(allr)
         rows: list[dict] = []
-        for _key, g in allr.groupby(list(schema.NATURAL_KEY), dropna=False, sort=True):
+        for _key, g in allr.groupby("_nk", sort=True):
             by_src = {s: sg.sort_values("seq", kind="stable").to_dict("records")
                       for s, sg in g.groupby("source_kind")}
             order = sorted(by_src, key=lambda s: (PRIORITY.get(s, 3), s))
@@ -122,6 +123,13 @@ def merge(root=None) -> pd.DataFrame:
                     for col in schema.FILLABLE_COLUMNS:
                         if schema.is_blank(primary.get(col)) and not schema.is_blank(other.get(col)):
                             primary[col] = other[col]
+                    # 主源只有哈希 id、低优先源带真成交编号 → 取真的
+                    oid = str(other.get("trade_id") or "")
+                    if str(primary.get("trade_id", "")).startswith("h:") and oid and not oid.startswith("h:"):
+                        primary["trade_id"] = oid
+                    # 首次入表时间 = 各源中最早的那个(§6)
+                    primary["ingested_at"] = min(str(primary.get("ingested_at") or "~"),
+                                                 str(other.get("ingested_at") or "~"))
                 primary["sources"] = "+".join(present)
                 rows.append(primary)
         trades = (pd.DataFrame(rows).reindex(columns=list(schema.TRADES_COLUMNS))

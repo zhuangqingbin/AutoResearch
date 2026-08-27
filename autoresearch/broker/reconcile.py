@@ -23,8 +23,9 @@ _MAX_KEYS = 20
 
 
 def _keys(df: pd.DataFrame) -> Counter:
-    return Counter((r.trade_date, r.code, r.side, schema.fmt_num(r.price), schema.fmt_num(r.qty))
-                   for r in df.itertuples(index=False))
+    """只对 BUY/SELL 行计桶,键 = `schema.natural_key`(与 merge 同一定义)。"""
+    t = df[df["side"].isin(("BUY", "SELL"))]
+    return Counter(schema.natural_key(r) for r in t.itertuples(index=False))
 
 
 def _turnover(df: pd.DataFrame) -> float:
@@ -39,6 +40,8 @@ def compare(a: pd.DataFrame, b: pd.DataFrame) -> dict:
         "only_b": sum((kb - ka).values()),
         "amount_a": _turnover(a),
         "amount_b": _turnover(b),
+        "other_a": int((a["side"] == "OTHER").sum()),
+        "other_b": int((b["side"] == "OTHER").sum()),
         "only_a_keys": sorted((ka - kb).elements())[:_MAX_KEYS],
         "only_b_keys": sorted((kb - ka).elements())[:_MAX_KEYS],
     }
@@ -49,7 +52,7 @@ def report(root=None, *, account: str | None = None, since: str | None = None) -
     frames = ({p.stem: store.read_raw(p) for p in sorted(raw_dir.glob("*.csv"))}
               if raw_dir.exists() else {})
     frames = {s: f for s, f in frames.items() if len(f)}
-    lines = ["[broker·reconcile] 只报不裁"]
+    lines = ["[broker·reconcile] 只报不裁(窗口 = 两源成交日交集,按成交日推定、非导出覆盖期;桶只计 BUY/SELL)"]
     if not frames:
         lines.append("  无 raw 数据")
         return "\n".join(lines)
@@ -74,10 +77,13 @@ def report(root=None, *, account: str | None = None, since: str | None = None) -
             lines.append(f"  {acct} {sa}↔{sb} {lo}..{hi}:两边都有 {r['both']} · 仅 {sa} {r['only_a']}"
                          f" · 仅 {sb} {r['only_b']} · 成交额 {r['amount_a']:,.0f} vs {r['amount_b']:,.0f}"
                          f"(差 {r['amount_a'] - r['amount_b']:,.0f})")
+            if r["other_a"] or r["other_b"]:
+                lines.append(f"      OTHER 行(不入桶):{sa} {r['other_a']} / {sb} {r['other_b']}"
+                             "(红利/税/利息/转账;来源结构不同,差异不算不一致)")
             for k in r["only_a_keys"]:
-                lines.append(f"      仅 {sa}:{' '.join(k)}")
+                lines.append(f"      仅 {sa}:{' '.join(k[1:6])}")
             for k in r["only_b_keys"]:
-                lines.append(f"      仅 {sb}:{' '.join(k)}")
+                lines.append(f"      仅 {sb}:{' '.join(k[1:6])}")
     return "\n".join(lines)
 
 
@@ -87,7 +93,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--since", help="只看该日(含)之后")
     ap.add_argument("--root", help="产物根(缺省 workspace.broker_root())")
     args = ap.parse_args(argv)
-    print(report(args.root, account=args.account, since=args.since))
+    since = None
+    if args.since:
+        since = schema.parse_date(args.since)
+        if since is None:
+            print(f"[broker·reconcile] --since {args.since!r} 不是日期(要 YYYY-MM-DD)", file=sys.stderr)
+            return 2
+    print(report(args.root, account=args.account, since=since))
     return 0
 
 

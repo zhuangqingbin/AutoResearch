@@ -26,8 +26,39 @@ def test_normalize_code_zfill_ts_code_side_and_numbers(raw):
 
 
 def test_code_with_suffix_and_sh_board(raw):
-    assert _norm(raw(code="600519.SS")).iloc[0].ts_code == "600519.SH"
+    r = _norm(raw(code="600519.SS")).iloc[0]
+    assert r.code == "600519" and r.ts_code == "600519.SH"
     assert _norm(raw(code="300857")).iloc[0].ts_code == "300857.SZ"
+
+
+def test_fullwidth_digits_are_normalized(raw):
+    r = _norm(raw(code="０００００１")).iloc[0]
+    assert r.code == "000001" and r.ts_code == "000001.SZ"
+
+
+def test_unparseable_number_is_a_level_not_silent_nan(raw):
+    with pytest.raises(DataContractError, match="commission '5.0O' 不可解析"):
+        _norm(raw(commission="5.0O"))
+
+
+def test_seq_is_independent_of_file_row_order(raw):
+    a = _norm(raw.rows({"trade_time": "09:31:05"}, {"trade_time": "09:32:00"}))
+    b = _norm(raw.rows({"trade_time": "09:32:00"}, {"trade_time": "09:31:05"}))
+    assert sorted(a.row_hash) == sorted(b.row_hash)
+
+
+def test_seq_group_key_includes_account(raw):
+    out = _norm(raw.rows({"account": "gtht"}, {"account": "tpy"}))
+    assert out.seq.tolist() == [0, 0]
+
+
+def test_natural_key_rounds_and_adds_amount_only_for_other(raw):
+    buy = _norm(raw(price="12.340000001")).iloc[0]
+    other = _norm(raw(code="", biz_type="利息归本", price="", qty="", amount="1.5")).iloc[0]
+    kb, ko = schema.natural_key(buy), schema.natural_key(other)
+    assert kb == ("gtht", "2026-08-26", "000001", "BUY", "12.3400", "100.0000", "")
+    assert ko == ("gtht", "2026-08-26", "", "OTHER", "", "", "1.5000")
+    assert schema.natural_key(buy.to_dict()) == kb
 
 
 def test_to_side_keywords():
