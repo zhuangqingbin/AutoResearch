@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from dataclasses import asdict, dataclass, replace
@@ -181,10 +182,29 @@ def record_stage_result(
 def safe_record_stage_result(scan_dir: Path | str, **kwargs) -> Path | None:
     """影子双写入口：控制面故障显式走 stderr，但不改变业务返回。"""
     try:
-        return record_stage_result(scan_dir, **kwargs)
+        path = record_stage_result(scan_dir, **kwargs)
     except Exception as exc:  # noqa: BLE001 — 影子控制面不能阻断生产阶段
         print(f"[stage_result] {kwargs.get('stage', '?')} 写入失败: {exc}", file=sys.stderr)
         return None
+    run_id = str(os.environ.get("AUTORESEARCH_RUN_ID", "")).strip()
+    if run_id:
+        try:
+            from autoresearch.trace.capsule import checkpoint
+
+            checkpoint(
+                run_id,
+                kwargs["stage"],
+                StageStatus(kwargs["status"]).value,
+                kwargs.get("artifacts") or [],
+                kwargs.get("metrics") or {},
+                error=kwargs.get("error"),
+            )
+        except Exception as exc:  # noqa: BLE001 — 取证故障不能改业务返回值
+            print(
+                f"[capsule] {kwargs.get('stage', '?')} checkpoint 失败: {exc}",
+                file=sys.stderr,
+            )
+    return path
 
 
 def verified_stage_result(

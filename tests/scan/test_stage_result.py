@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from autoresearch.common import workspace as ws
 from autoresearch.scan.run_contract import RunContract, write_run_contract
 from autoresearch.scan.stage_result import (
     StageResult,
@@ -13,8 +14,10 @@ from autoresearch.scan.stage_result import (
     load_stage_result,
     main,
     record_stage_result,
+    safe_record_stage_result,
     write_stage_result,
 )
+from autoresearch.trace.capsule import begin_run
 
 NOW = datetime(2026, 7, 28, 15, 0, tzinfo=timezone.utc)
 
@@ -179,3 +182,89 @@ def test_show_cli_rejects_contract_mismatch(tmp_path, capsys):
     assert main(["show", str(tmp_path), "gate1"]) == 2
     error = json.loads(capsys.readouterr().out)
     assert "contract_hash mismatch" in error["error"]
+
+
+def _begin_capsule(tmp_path, monkeypatch):
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    monkeypatch.setattr(ws, "context_root", lambda: tmp_path / "context_codex")
+    monkeypatch.delenv("AUTORESEARCH_RUN_ID", raising=False)
+    monkeypatch.setattr(
+        "autoresearch.scan.user_config.DEFAULT_PINNED_PATH",
+        tmp_path / "missing-pinned.jsonc",
+    )
+    return begin_run(
+        "scan-market",
+        "2026-08-27",
+        "codex",
+        {},
+        now=datetime(2026, 8, 27, 1, 2, 3, 456789, tzinfo=timezone.utc),
+    )
+
+
+def test_safe_stage_result_keeps_latest_snapshot_and_appends_attempts(
+    tmp_path, monkeypatch
+):
+    handle = _begin_capsule(tmp_path, monkeypatch)
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", handle.run_id)
+    safe_record_stage_result(
+        handle.staging,
+        stage="gate1",
+        status="FAILED",
+        artifacts=[],
+        metrics={},
+        warnings=[],
+        error="bad",
+    )
+    safe_record_stage_result(
+        handle.staging,
+        stage="gate1",
+        status="SUCCEEDED",
+        artifacts=[],
+        metrics={},
+        warnings=[],
+        error=None,
+    )
+    assert load_stage_result(
+        handle.staging / "stage_results/gate1.json"
+    ).status == "SUCCEEDED"
+    attempts = sorted((handle.capsule / "stages/gate1").glob("attempt-*/result.json"))
+    assert len(attempts) == 2
+    assert json.loads(attempts[0].read_text(encoding="utf-8"))["error"] == "bad"
+
+
+def test_record_stage_result_remains_environment_unaware(tmp_path, monkeypatch):
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", "20260827T010203456789Z")
+    monkeypatch.setattr(
+        "autoresearch.trace.capsule.checkpoint",
+        lambda *a, **k: pytest.fail("deterministic API called capsule"),
+    )
+    assert record_stage_result(
+        tmp_path / "2026-08-27",
+        stage="gate1",
+        status="SUCCEEDED",
+        artifacts=[],
+        metrics={},
+        warnings=[],
+        error=None,
+    ).is_file()
+
+
+def test_safe_stage_result_capsule_failure_is_best_effort(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", "20260827T010203456789Z")
+    monkeypatch.setattr(
+        "autoresearch.trace.capsule.checkpoint",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    path = safe_record_stage_result(
+        tmp_path / "2026-08-27",
+        stage="gate1",
+        status="SUCCEEDED",
+        artifacts=[],
+        metrics={},
+        warnings=[],
+        error=None,
+    )
+    assert path is not None and path.is_file()
+    assert "[capsule]" in capsys.readouterr().err
