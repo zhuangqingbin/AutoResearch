@@ -90,15 +90,17 @@ def test_guardrail_reproduces_the_original_incident_shape_via_shutil_copy2(tmp_p
 # ───────────────────────── 反向:护栏不能误伤 ─────────────────────────
 
 
-def test_guardrail_does_not_block_reads_of_real_production_files():
-    """护栏只挡写,不挡读——真实历史产物必须仍然可读(否则会误伤大量正常测试)。"""
-    real_file = _REPO_ROOT / ws.reports_root() / "scan" / "20260725_1316" / "manifest.json"
-    assert real_file.exists(), "前提断言:这份真实产物应当存在,若不存在说明测试环境变了"
-    text = real_file.read_text(encoding="utf-8")
-    assert text                                    # 读得到内容,未被拦
+def test_guardrail_does_not_block_read_attempts_in_real_production_tree():
+    """护栏只挡写:真实生产树里对不存在哨兵的读应是 FileNotFound,不能变 PermissionError。
 
-    with real_file.open(encoding="utf-8") as fh:    # Path.open 读模式同样不受影响
-        assert fh.read()
+    用不存在的哨兵避免依赖开发机遗留的 gitignored 历史报告,同时仍让 read_text/Path.open
+    穿过护栏对真实生产根的路径判定。
+    """
+    with pytest.raises(FileNotFoundError):
+        _CANARY_REPORTS_FILE.read_text(encoding="utf-8")
+    with pytest.raises(FileNotFoundError):
+        with _CANARY_REPORTS_FILE.open(encoding="utf-8"):
+            pass
 
 
 def test_guardrail_allows_writes_under_tmp_path(tmp_path):

@@ -10,11 +10,12 @@ import json
 
 import pytest
 
+from autoresearch.common import workspace as ws
 from autoresearch.scan import retention
 
 
 def _staging(tmp_path, date="2026-08-25"):
-    d = tmp_path / "context_claude" / "scan" / date
+    d = tmp_path / ws.scan_root() / date
     (d / "L3_evidence").mkdir(parents=True)
     (d / "ensemble").mkdir()
     (d / "_sem").mkdir()
@@ -32,7 +33,7 @@ def test_mirror_carries_subdirectories_not_just_files(tmp_path):
     """审计的核心缺口:`publisher._archive_reasoning` 的 `p.is_file()` 过滤把 staging 的
     **子目录**(L3_evidence/L3_news/ensemble)整段静默跳过。镜像必须带上它们。"""
     scan = _staging(tmp_path)
-    run = tmp_path / "reports_claude" / "scan" / "20260825_2149"
+    run = tmp_path / ws.reports_root() / "scan" / "20260825_2149"
     n = retention.mirror_staging(scan, run)
     st = run / "trace" / "staging"
     assert (st / "L3_evidence" / "603317.json").is_file()
@@ -63,11 +64,11 @@ def test_mirror_is_idempotent(tmp_path):
 
 
 def test_snapshot_inputs_copies_slim_from_context_root(tmp_path, monkeypatch):
-    """slim 住在 `context_claude/` **根目录**(不在 scan/<date>/ 下),所以镜像带不走它。
+    """slim 住在活动引擎的 context **根目录**(不在 scan/<date>/ 下),所以镜像带不走它。
     这是审计 Table 2 第 1 行:卡片每个数字的来源,原先只有 sha256 活在任务簿里。"""
     monkeypatch.chdir(tmp_path)
     scan = _staging(tmp_path)
-    ctx = tmp_path / "context_claude"
+    ctx = tmp_path / ws.context_root()
     (ctx / "603317.SS_2026-08-25_slim.md").write_text("x" * 9000, encoding="utf-8")
     (ctx / "603317.SS_2026-08-25_slim_deep.md").write_text("y" * 5000, encoding="utf-8")
     (scan / "_harvest_list.txt").write_text("603317.SS\n", encoding="utf-8")
@@ -82,7 +83,7 @@ def test_snapshot_inputs_falls_back_to_finalists_when_harvest_list_missing(tmp_p
     """`_harvest_list.txt` 缺席(老 run / 中断)→ 从 finalists 现算 ticker,不是直接放弃。"""
     monkeypatch.chdir(tmp_path)
     scan = _staging(tmp_path)
-    (tmp_path / "context_claude" / "603317.SS_2026-08-25_slim.md").write_text("z", encoding="utf-8")
+    (tmp_path / ws.context_root() / "603317.SS_2026-08-25_slim.md").write_text("z", encoding="utf-8")
     out = retention.snapshot_inputs(scan, tmp_path / "run")
     assert out["slim"] == 1
 
@@ -179,7 +180,7 @@ def test_retain_full_cycle_verifies(tmp_path, monkeypatch):
     """镜像 + 快照 + 清单 一趟下来,`verify` 必须绿 —— 这是活体验收①的单测版。"""
     monkeypatch.chdir(tmp_path)
     scan = _staging(tmp_path)
-    run = tmp_path / "reports_claude" / "scan" / "20260825_2149"
+    run = tmp_path / ws.reports_root() / "scan" / "20260825_2149"
     run.mkdir(parents=True)
     (run / "summary.md").write_text("汇总", encoding="utf-8")
     res = retention.retain(scan, run)
@@ -214,8 +215,8 @@ def test_resolve_recorded_path_remaps_pre_isolation_context_root(tmp_path, monke
     """2026-08-11 引擎隔离前的任务簿记的是裸 `context/…`(实测 113 处)。那个根没了、
     文件还在 —— 照字面找会把在场的产物报成 MISSING。"""
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "context_claude").mkdir()
-    real = tmp_path / "context_claude" / "601288.SS_2026-07-28_slim.md"
+    (tmp_path / ws.context_root()).mkdir()
+    real = tmp_path / ws.context_root() / "601288.SS_2026-07-28_slim.md"
     real.write_text("slim", encoding="utf-8")
     got = retention.resolve_recorded_path("context/601288.SS_2026-07-28_slim.md")
     assert got is not None and got.read_text(encoding="utf-8") == "slim"
@@ -225,7 +226,7 @@ def test_resolve_recorded_path_returns_none_when_really_gone(tmp_path, monkeypat
     """重映射只是**找同一件东西的新址**,不是把不存在的说成存在。"""
     monkeypatch.chdir(tmp_path)
     assert retention.resolve_recorded_path("context/nope_slim.md") is None
-    assert retention.resolve_recorded_path("context_claude/nope_slim.md") is None
+    assert retention.resolve_recorded_path((ws.context_root() / "nope_slim.md").as_posix()) is None
 
 
 # ── transcript 归档(2026-08-26 §4.3 R4)──────────────────────────────────────

@@ -7,11 +7,12 @@ from __future__ import annotations
 
 import json
 
+from autoresearch.common import workspace as ws
 from autoresearch.scan import chain_view
 
 
 def _run(tmp_path, *, with_mirror=True):
-    run = tmp_path / "reports_claude" / "scan" / "20260825_2149"
+    run = tmp_path / ws.reports_root() / "scan" / "20260825_2149"
     (run / "details").mkdir(parents=True)
     (run / "trace").mkdir(exist_ok=True)
     (run / "manifest.json").write_text(json.dumps({"analysis_date": "2026-08-25"}), encoding="utf-8")
@@ -88,7 +89,7 @@ def test_full_chain_links_every_stage(tmp_path, monkeypatch):
 def test_absent_pieces_are_named_not_skipped(tmp_path, monkeypatch):
     """老 run(无 trace/staging、无 inputs)—— 每一段都要明写缺席,不能静默跳过。"""
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "context_claude" / "scan").mkdir(parents=True)
+    (tmp_path / ws.scan_root()).mkdir(parents=True)
     md = chain_view.render(_run(tmp_path, with_mirror=False), "603317")
     assert md.count(chain_view.ABSENT) >= 5
     assert "MANIFEST 缺席" in md
@@ -100,7 +101,7 @@ def test_shared_staging_fallback_is_flagged(tmp_path, monkeypatch):
     (实测 64 个已发布 run 只剩 49 个 staging)。"""
     monkeypatch.chdir(tmp_path)
     run = _run(tmp_path, with_mirror=False)
-    shared = tmp_path / "context_claude" / "scan" / "2026-08-25"
+    shared = tmp_path / ws.scan_root() / "2026-08-25"
     shared.mkdir(parents=True)
     (shared / "L1_scored_full.csv").write_text("code,name,composite\n603317,天味食品,60.7\n",
                                                encoding="utf-8")
