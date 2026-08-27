@@ -293,6 +293,19 @@ def _default_harvest_slim(ticker: str, date: str, ctx_root: Path) -> Path:
         check=False)
     return ctx_root / f"{ticker}_{date}_slim.md"
 
+def _slim_bytes_defect(data: bytes, min_bytes: int) -> tuple[int, str | None]:
+    """按已安全捕获的内容判一份 slim 能不能用。"""
+    size = len(data)
+    if size < min_bytes:
+        return size, f"<{min_bytes}B(疑空稿/截断)"
+    text = data.decode("utf-8", errors="replace")
+    missing = [a for a in _SLIM_ANCHORS if a not in text]
+    if missing:
+        return size, f"结构缺块:{', '.join(missing)}"
+    if not _SLIM_CLOSE_RE.search(text):
+        return size, "结构齐但 OHLCV Close 无数值(NO_DATA 占位)"
+    return size, None
+
 def _slim_defect(path: Path | None, min_bytes: int) -> tuple[int, str | None]:
     """判一份 slim 能不能用。返回 (bytes, 缺陷描述);缺陷 None = 合格。
 

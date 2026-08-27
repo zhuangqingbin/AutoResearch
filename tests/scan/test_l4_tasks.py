@@ -851,6 +851,287 @@ def test_prepare_slim_retries_only_target_stock_once(tmp_path):
     assert payload["tasks"]["000002"]["slim_attempts"] == 0
 
 
+def _valid_slim_text() -> str:
+    return "\n".join([
+        "## Verified market snapshot",
+        "### Latest verified OHLCV row",
+        "| Close | 12.34 |",
+        "## Market context",
+        "## Fundamentals overview",
+        "x" * 5000,
+    ])
+
+
+def test_active_prepare_slim_rejects_symlinked_external_inputs_cache(
+    tmp_path, monkeypatch
+):
+    handle, book = _traced_book(tmp_path, monkeypatch)
+    inputs = handle.staging / "_external_inputs"
+    outside = tmp_path / "outside-inputs"
+    inputs.rename(outside)
+    inputs.symlink_to(outside, target_is_directory=True)
+    outside_slim = outside / f"000001.SZ_{DATE}_slim.md"
+    outside_before = outside_slim.read_bytes()
+    outside_digest = hashlib.sha256(outside_before).hexdigest()
+    calls = []
+
+    result = prepare_slim(
+        book,
+        "000001",
+        harvest_fn=lambda ticker, date: calls.append((ticker, date)),
+        retries=0,
+        now=NOW,
+    )
+
+    assert result["ok"] is False
+    assert result["attempts"] == 0
+    assert calls == []
+    assert outside_slim.read_bytes() == outside_before
+    persisted = json.loads(book.read_text(encoding="utf-8"))["tasks"]["000001"]
+    assert persisted["artifacts"]["slim"]["status"] != "PRESENT"
+    assert persisted["artifacts"]["slim"]["content_hash"] is None
+    assert persisted["last_error_class"] == "DATA_INTEGRITY"
+    assert outside_digest.encode() not in book.read_bytes()
+
+
+def test_active_prepare_slim_does_not_harvest_through_symlinked_parent(
+    tmp_path, monkeypatch
+):
+    handle, book = _traced_book(tmp_path, monkeypatch)
+    inputs = handle.staging / "_external_inputs"
+    outside = tmp_path / "outside-missing-inputs"
+    inputs.rename(outside)
+    outside_slim = outside / f"000001.SZ_{DATE}_slim.md"
+    outside_slim.rename(tmp_path / "saved-slim.md")
+    inputs.symlink_to(outside, target_is_directory=True)
+    calls = []
+
+    def harvest(ticker: str, date: str) -> Path:
+        calls.append((ticker, date))
+        outside_slim.write_text(_valid_slim_text(), encoding="utf-8")
+        return inputs / outside_slim.name
+
+    result = prepare_slim(
+        book, "000001", harvest_fn=harvest, retries=0, now=NOW
+    )
+
+    assert result["ok"] is False
+    assert result["attempts"] == 0
+    assert calls == []
+    assert not outside_slim.exists()
+    persisted = json.loads(book.read_text(encoding="utf-8"))["tasks"]["000001"]
+    assert persisted["artifacts"]["slim"]["status"] != "PRESENT"
+    assert persisted["artifacts"]["slim"]["content_hash"] is None
+
+
+def test_active_prepare_slim_does_not_harvest_through_final_symlink(
+    tmp_path, monkeypatch
+):
+    handle, book = _traced_book(tmp_path, monkeypatch)
+    declared = handle.staging / "_external_inputs" / f"000001.SZ_{DATE}_slim.md"
+    outside = tmp_path / "outside-final-slim.md"
+    declared.rename(outside)
+    declared.symlink_to(outside)
+    outside_before = outside.read_bytes()
+    calls = []
+
+    def harvest(ticker: str, date: str) -> Path:
+        calls.append((ticker, date))
+        declared.write_text(_valid_slim_text(), encoding="utf-8")
+        return declared
+
+    result = prepare_slim(
+        book, "000001", harvest_fn=harvest, retries=0, now=NOW
+    )
+
+    assert result["ok"] is False
+    assert result["attempts"] == 0
+    assert calls == []
+    assert outside.read_bytes() == outside_before
+    persisted = json.loads(book.read_text(encoding="utf-8"))["tasks"]["000001"]
+    assert persisted["artifacts"]["slim"] == {
+        "path": str(declared),
+        "status": "UNREADABLE",
+        "content_hash": None,
+    }
+
+
+def test_active_prepare_slim_retries_ordinary_harvest_exception(
+    tmp_path, monkeypatch
+):
+    handle, book = _traced_book(tmp_path, monkeypatch)
+    declared = handle.staging / "_external_inputs" / f"000001.SZ_{DATE}_slim.md"
+    declared.rename(tmp_path / "saved-slim.md")
+    calls = []
+
+    def harvest(ticker: str, date: str) -> Path:
+        calls.append((ticker, date))
+        if len(calls) == 1:
+            raise ConnectionError("transient")
+        declared.write_text(_valid_slim_text(), encoding="utf-8")
+        return declared
+
+    result = prepare_slim(
+        book, "000001", harvest_fn=harvest, retries=1, now=NOW
+    )
+
+    assert result["ok"] is True
+    assert result["attempts"] == 2
+    assert calls == [("000001.SZ", DATE), ("000001.SZ", DATE)]
+
+
+def test_active_prepare_slim_stops_retry_after_failed_harvest_replaces_parent(
+    tmp_path, monkeypatch
+):
+    handle, book = _traced_book(tmp_path, monkeypatch)
+    inputs = handle.staging / "_external_inputs"
+    declared = inputs / f"000001.SZ_{DATE}_slim.md"
+    declared.rename(tmp_path / "saved-slim.md")
+    outside = tmp_path / "failed-harvest-inputs"
+    calls = []
+
+    def harvest(_ticker: str, _date: str) -> Path:
+        calls.append(len(calls) + 1)
+        if len(calls) == 1:
+            inputs.rename(outside)
+            inputs.symlink_to(outside, target_is_directory=True)
+            raise ConnectionError("failed after replacing parent")
+        declared.write_text(_valid_slim_text(), encoding="utf-8")
+        return declared
+
+    result = prepare_slim(
+        book, "000001", harvest_fn=harvest, retries=1, now=NOW
+    )
+
+    assert result["ok"] is False
+    assert result["attempts"] == 1
+    assert calls == [1]
+    assert not (outside / declared.name).exists()
+    persisted = json.loads(book.read_text(encoding="utf-8"))["tasks"]["000001"]
+    assert persisted["artifacts"]["slim"]["status"] == "UNREADABLE"
+    assert persisted["artifacts"]["slim"]["content_hash"] is None
+
+
+def test_active_prepare_slim_stops_retry_after_failed_harvest_creates_symlink(
+    tmp_path, monkeypatch
+):
+    handle, book = _traced_book(tmp_path, monkeypatch)
+    declared = handle.staging / "_external_inputs" / f"000001.SZ_{DATE}_slim.md"
+    declared.rename(tmp_path / "saved-slim.md")
+    outside = tmp_path / "failed-harvest-outside.md"
+    outside.write_text("outside must remain unchanged", encoding="utf-8")
+    outside_before = outside.read_bytes()
+    calls = []
+
+    def harvest(_ticker: str, _date: str) -> Path:
+        calls.append(len(calls) + 1)
+        if len(calls) == 1:
+            declared.symlink_to(outside)
+            raise ConnectionError("failed after creating final symlink")
+        declared.write_text(_valid_slim_text(), encoding="utf-8")
+        return declared
+
+    result = prepare_slim(
+        book, "000001", harvest_fn=harvest, retries=1, now=NOW
+    )
+
+    assert result["ok"] is False
+    assert result["attempts"] == 1
+    assert calls == [1]
+    assert outside.read_bytes() == outside_before
+    persisted = json.loads(book.read_text(encoding="utf-8"))["tasks"]["000001"]
+    assert persisted["artifacts"]["slim"]["status"] == "UNREADABLE"
+    assert persisted["artifacts"]["slim"]["content_hash"] is None
+
+
+def test_active_prepare_slim_rejects_alternate_harvest_output(
+    tmp_path, monkeypatch
+):
+    handle, book = _traced_book(tmp_path, monkeypatch)
+    declared = handle.staging / "_external_inputs" / f"000001.SZ_{DATE}_slim.md"
+    declared.rename(tmp_path / "saved-slim.md")
+    alternate = tmp_path / "alternate-slim.md"
+
+    def harvest(_ticker: str, _date: str) -> Path:
+        alternate.write_text(_valid_slim_text(), encoding="utf-8")
+        return alternate
+
+    result = prepare_slim(
+        book, "000001", harvest_fn=harvest, retries=0, now=NOW
+    )
+
+    assert result["ok"] is False
+    assert result["attempts"] == 1
+    assert "path" in result["reason"].lower()
+    persisted = json.loads(book.read_text(encoding="utf-8"))["tasks"]["000001"]
+    slim = persisted["artifacts"]["slim"]
+    assert slim["path"] == str(declared)
+    assert slim["status"] != "PRESENT"
+    assert slim["content_hash"] is None
+    assert (
+        hashlib.sha256(alternate.read_bytes()).hexdigest().encode()
+        not in book.read_bytes()
+    )
+
+
+def test_active_prepare_slim_rejects_parent_replacement_during_harvest(
+    tmp_path, monkeypatch
+):
+    handle, book = _traced_book(tmp_path, monkeypatch)
+    inputs = handle.staging / "_external_inputs"
+    declared = inputs / f"000001.SZ_{DATE}_slim.md"
+    declared.rename(tmp_path / "saved-slim.md")
+    outside = tmp_path / "replaced-inputs"
+
+    def harvest(_ticker: str, _date: str) -> Path:
+        inputs.rename(outside)
+        inputs.symlink_to(outside, target_is_directory=True)
+        (outside / declared.name).write_text(_valid_slim_text(), encoding="utf-8")
+        return declared
+
+    result = prepare_slim(
+        book, "000001", harvest_fn=harvest, retries=0, now=NOW
+    )
+
+    assert result["ok"] is False
+    persisted = json.loads(book.read_text(encoding="utf-8"))["tasks"]["000001"]
+    assert persisted["artifacts"]["slim"]["status"] != "PRESENT"
+    assert persisted["artifacts"]["slim"]["content_hash"] is None
+
+
+def test_active_prepare_slim_cache_and_trusted_default_harvest(
+    tmp_path, monkeypatch
+):
+    from autoresearch.scan.l4 import producers
+
+    handle, book = _traced_book(tmp_path, monkeypatch)
+    inputs = handle.staging / "_external_inputs"
+    cached = prepare_slim(book, "000001", retries=0, now=NOW)
+    assert cached["ok"] is True
+    assert cached["attempts"] == 0
+
+    declared = inputs / f"000001.SZ_{DATE}_slim.md"
+    inputs.rename(tmp_path / "saved-inputs")
+    seen = []
+
+    def default_harvest(ticker: str, date: str, ctx_root: Path) -> Path:
+        seen.append((ticker, date, ctx_root))
+        target = ctx_root / f"{ticker}_{date}_slim.md"
+        target.write_text(_valid_slim_text(), encoding="utf-8")
+        return target
+
+    monkeypatch.setattr(producers, "_default_harvest_slim", default_harvest)
+    harvested = prepare_slim(book, "000001", retries=0, now=NOW)
+
+    assert harvested["ok"] is True
+    assert harvested["attempts"] == 1
+    assert seen == [("000001.SZ", DATE, inputs)]
+    persisted = json.loads(book.read_text(encoding="utf-8"))["tasks"]["000001"]
+    assert persisted["artifacts"]["slim"]["content_hash"] == hashlib.sha256(
+        declared.read_bytes()
+    ).hexdigest()
+
+
 def test_dispatch_batches_effective_cap_is_l4_stock_and_ignores_rate_limit(tmp_path):
     """Wave11 C1:派发帽=caps.l4_stock,不再 min 四帽、不再被 rate_limit_failures 收窄。"""
     book = _book(tmp_path)

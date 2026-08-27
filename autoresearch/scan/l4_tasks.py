@@ -131,13 +131,13 @@ def _open_contained_parent(
         raise
 
 
-def _secure_contained_artifact_evidence(
+def _secure_contained_artifact_snapshot(
     root: Path, relative: Path
-) -> tuple[str, str | None]:
-    """Hash through trusted dirfds, rejecting symlinks in every path component."""
+) -> tuple[str, bytes | None, str | None]:
+    """Read one stable file through trusted dirfds without following symlinks."""
     parts = relative.parts
     if relative.is_absolute() or not parts or any(part in {"", ".", ".."} for part in parts):
-        return "UNREADABLE", None
+        return "UNREADABLE", None, None
     directory_flags = (
         os.O_RDONLY
         | getattr(os, "O_CLOEXEC", 0)
@@ -150,15 +150,15 @@ def _secure_contained_artifact_evidence(
         if stat.S_ISLNK(root_path_before.st_mode) or not stat.S_ISDIR(
             root_path_before.st_mode
         ):
-            return "UNREADABLE", None
+            return "UNREADABLE", None, None
         root_fd = os.open(root, directory_flags)
         root_before = os.fstat(root_fd)
         if _directory_identity(root_path_before) != _directory_identity(root_before):
-            return "UNREADABLE", None
+            return "UNREADABLE", None, None
         parent_fd, parent_signatures = _open_contained_parent(root_fd, parts[:-1])
         path_before = os.stat(parts[-1], dir_fd=parent_fd, follow_symlinks=False)
         if stat.S_ISLNK(path_before.st_mode) or not stat.S_ISREG(path_before.st_mode):
-            return "UNREADABLE", None
+            return "UNREADABLE", None, None
         file_flags = (
             os.O_RDONLY
             | getattr(os, "O_CLOEXEC", 0)
@@ -171,11 +171,11 @@ def _secure_contained_artifact_evidence(
             or (fd_before.st_dev, fd_before.st_ino)
             != (path_before.st_dev, path_before.st_ino)
         ):
-            return "UNREADABLE", None
-        if fd_before.st_size == 0:
-            return "EMPTY", None
+            return "UNREADABLE", None, None
         digest = hashlib.sha256()
+        chunks = []
         while chunk := os.read(file_fd, 1024 * 1024):
+            chunks.append(chunk)
             digest.update(chunk)
         fd_after = os.fstat(file_fd)
         path_after = os.stat(parts[-1], dir_fd=parent_fd, follow_symlinks=False)
@@ -193,14 +193,80 @@ def _secure_contained_artifact_evidence(
             or _file_signature(fd_after) != _file_signature(path_after)
             or _file_signature(path_after) != _file_signature(rebound)
         ):
-            return "UNREADABLE", None
-        return "PRESENT", digest.hexdigest()
+            return "UNREADABLE", None, None
+        data = b"".join(chunks)
+        if not data:
+            return "EMPTY", data, None
+        return "PRESENT", data, digest.hexdigest()
     except FileNotFoundError:
-        return "MISSING", None
+        return "MISSING", None, None
     except OSError:
-        return "UNREADABLE", None
+        return "UNREADABLE", None, None
     finally:
         for fd in (file_fd, parent_fd, root_fd):
+            if fd is not None:
+                os.close(fd)
+
+
+def _secure_contained_artifact_evidence(
+    root: Path, relative: Path
+) -> tuple[str, str | None]:
+    """Hash through trusted dirfds, rejecting symlinks in every path component."""
+    status, _, digest = _secure_contained_artifact_snapshot(root, relative)
+    return status, digest
+
+
+def _secure_contained_directory(
+    root: Path,
+    relative: Path,
+    *,
+    create_leaf: bool,
+) -> tuple[tuple[int, int, int], ...]:
+    """Validate a directory chain and optionally create only its final component."""
+    parts = relative.parts
+    if relative.is_absolute() or not parts or any(part in {"", ".", ".."} for part in parts):
+        raise ValueError(f"unsafe contained directory: {relative}")
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    root_fd = parent_fd = leaf_fd = rebound_fd = None
+    try:
+        root_path_before = root.lstat()
+        if stat.S_ISLNK(root_path_before.st_mode) or not stat.S_ISDIR(
+            root_path_before.st_mode
+        ):
+            raise ValueError("trusted artifact root is not a directory")
+        root_fd = os.open(root, directory_flags)
+        root_before = os.fstat(root_fd)
+        if _directory_identity(root_path_before) != _directory_identity(root_before):
+            raise ValueError("trusted artifact root changed")
+        parent_fd, parent_identities = _open_contained_parent(root_fd, parts[:-1])
+        try:
+            leaf_fd = os.open(parts[-1], directory_flags, dir_fd=parent_fd)
+        except FileNotFoundError:
+            if not create_leaf:
+                raise
+            os.mkdir(parts[-1], mode=0o755, dir_fd=parent_fd)
+            leaf_fd = os.open(parts[-1], directory_flags, dir_fd=parent_fd)
+        leaf_info = os.fstat(leaf_fd)
+        if not stat.S_ISDIR(leaf_info.st_mode):
+            raise ValueError("trusted artifact parent is not a directory")
+        identities = parent_identities + (_directory_identity(leaf_info),)
+        rebound_fd, rebound_identities = _open_contained_parent(root_fd, parts)
+        root_path_after = root.lstat()
+        if (
+            identities != rebound_identities
+            or _directory_identity(root_before) != _directory_identity(root_path_after)
+        ):
+            raise ValueError("trusted artifact parent changed")
+        return identities
+    except OSError as exc:
+        raise ValueError(f"unsafe trusted artifact parent: {relative}") from exc
+    finally:
+        for fd in (rebound_fd, leaf_fd, parent_fd, root_fd):
             if fd is not None:
                 os.close(fd)
 
@@ -1122,6 +1188,214 @@ def reconcile(book: Path | str, *, now: datetime | None = None) -> dict:
     return {"ok": True, "recovered": recovered, "skipped": skipped}
 
 
+def _active_slim_observation(
+    root: Path,
+    relative: Path,
+    min_bytes: int,
+) -> tuple[int, str | None, str, str | None]:
+    from autoresearch.scan.l4.producers import _slim_bytes_defect
+
+    status, data, content_hash = _secure_contained_artifact_snapshot(root, relative)
+    if status == "MISSING":
+        return 0, "文件不存在", status, None
+    if status == "UNREADABLE":
+        return 0, "安全读取失败:UNREADABLE", status, None
+    size, defect = _slim_bytes_defect(data or b"", min_bytes)
+    return size, defect, status, content_hash
+
+
+def _prepare_active_slim(
+    path: Path,
+    payload: dict,
+    code6: str,
+    *,
+    trusted: dict[str, tuple[Path, Path]],
+    harvest_fn: Callable[[str, str], Path] | None,
+    retries: int,
+    min_bytes: int,
+    now: datetime | None,
+) -> dict:
+    from autoresearch.scan.l4.producers import _default_harvest_slim
+
+    task = payload["tasks"][code6]
+    ticker = task["ticker"]
+    root, relative = trusted["slim"]
+    slim_path = root / relative
+    parent_relative = relative.parent
+    trusted_parent = root / parent_relative
+    attempts = 0
+    sem_wait = 0.0
+    status = "UNREADABLE"
+    content_hash = None
+    parent_identities = None
+    binding_failure = False
+    try:
+        parent_identities = _secure_contained_directory(
+            root, parent_relative, create_leaf=True
+        )
+        size, defect, status, content_hash = _active_slim_observation(
+            root, relative, min_bytes
+        )
+    except (OSError, ValueError) as exc:
+        size, defect = 0, f"不安全的 slim 父目录:{exc}"
+
+    if defect and parent_identities is not None and status != "UNREADABLE":
+        harvest = harvest_fn or (
+            lambda symbol, date: _default_harvest_slim(
+                symbol, date, trusted_parent
+            )
+        )
+        try:
+            k = max(
+                1,
+                int((payload.get("caps") or DEFAULT_CAPS)["tushare"])
+                - int(payload.get("rate_limit_failures") or 0),
+            )
+            started_waiting = time.monotonic()
+            with _tushare_slot(path.parent, k):
+                sem_wait = time.monotonic() - started_waiting
+                for _ in range(max(0, retries) + 1):
+                    try:
+                        before_attempt = _secure_contained_directory(
+                            root, parent_relative, create_leaf=False
+                        )
+                    except (OSError, ValueError) as exc:
+                        size, defect = 0, f"harvest containment failure:{exc}"
+                        status, content_hash = "UNREADABLE", None
+                        binding_failure = True
+                        break
+                    if before_attempt != parent_identities:
+                        size, defect = 0, "trusted slim parent changed before harvest"
+                        status, content_hash = "UNREADABLE", None
+                        binding_failure = True
+                        break
+                    size, defect, status, content_hash = _active_slim_observation(
+                        root, relative, min_bytes
+                    )
+                    if status == "UNREADABLE":
+                        binding_failure = True
+                        break
+                    if defect is None:
+                        break
+                    attempts += 1
+                    try:
+                        produced = Path(harvest(ticker, payload["date"]))
+                    except Exception as exc:  # noqa: BLE001 — 转为单票失败事实
+                        size, defect = 0, f"harvest 异常:{exc}"
+                        content_hash = None
+                        try:
+                            after_error = _secure_contained_directory(
+                                root, parent_relative, create_leaf=False
+                            )
+                        except (OSError, ValueError) as parent_exc:
+                            defect = f"harvest containment failure:{parent_exc}"
+                            status, content_hash = "UNREADABLE", None
+                            binding_failure = True
+                            break
+                        if after_error != parent_identities:
+                            defect = "trusted slim parent changed during failed harvest"
+                            status, content_hash = "UNREADABLE", None
+                            binding_failure = True
+                            break
+                        continue
+                    try:
+                        after_attempt = _secure_contained_directory(
+                            root, parent_relative, create_leaf=False
+                        )
+                    except (OSError, ValueError) as exc:
+                        size, defect = 0, f"harvest containment failure:{exc}"
+                        status, content_hash = "UNREADABLE", None
+                        binding_failure = True
+                        break
+                    if after_attempt != parent_identities:
+                        size, defect = 0, "trusted slim parent changed during harvest"
+                        status, content_hash = "UNREADABLE", None
+                        binding_failure = True
+                        break
+                    if _lexical_absolute(produced) != _lexical_absolute(slim_path):
+                        size, defect = 0, (
+                            f"harvest path mismatch:{produced} != {slim_path}"
+                        )
+                        status, content_hash = "UNREADABLE", None
+                        binding_failure = True
+                        break
+                    try:
+                        resolved_matches = (
+                            produced.resolve(strict=True)
+                            == slim_path.resolve(strict=True)
+                        )
+                    except OSError as exc:
+                        size, defect = 0, f"harvest 输出不存在:{exc}"
+                        status, content_hash = "MISSING", None
+                        continue
+                    if not resolved_matches:
+                        size, defect = 0, (
+                            f"harvest resolved path mismatch:{produced} != {slim_path}"
+                        )
+                        status, content_hash = "UNREADABLE", None
+                        binding_failure = True
+                        break
+                    size, defect, status, content_hash = _active_slim_observation(
+                        root, relative, min_bytes
+                    )
+                    if defect is None or status == "UNREADABLE":
+                        break
+        except Exception as exc:  # noqa: BLE001 — 记入单票数据完整性失败
+            size, defect = 0, f"tushare 信号量获取异常:{exc!r}"
+            status, content_hash = "UNREADABLE", None
+
+    with _locked(path):
+        _, latest = _read(path)
+        current = latest["tasks"][code6]
+        latest_trusted = _active_artifact_layout(path, latest, code6)
+        if latest_trusted is None:
+            raise ValueError("active slim preparation lost its active run binding")
+        latest_root, latest_relative = latest_trusted["slim"]
+        if (latest_root, latest_relative) != (root, relative):
+            defect = "trusted slim layout changed before task-book mutation"
+            status, content_hash = "UNREADABLE", None
+            binding_failure = True
+        try:
+            latest_parent = _secure_contained_directory(
+                root, parent_relative, create_leaf=False
+            )
+            if parent_identities is None or latest_parent != parent_identities:
+                raise ValueError("trusted slim parent changed before task-book mutation")
+            latest_size, latest_defect, latest_status, latest_hash = (
+                _active_slim_observation(root, relative, min_bytes)
+            )
+            if defect is None:
+                size, defect = latest_size, latest_defect
+                status = latest_status
+                content_hash = latest_hash if latest_defect is None else None
+            elif not binding_failure:
+                status, content_hash = latest_status, None
+        except (OSError, ValueError) as exc:
+            size, defect = 0, f"安全复验失败:{exc}"
+            status, content_hash = "UNREADABLE", None
+        current["slim_attempts"] = int(current.get("slim_attempts") or 0) + attempts
+        current["artifacts"]["slim"] = {
+            "path": str(slim_path),
+            "status": status,
+            "content_hash": content_hash if defect is None else None,
+        }
+        current["updated_at"] = _stamp(now)
+        current["sem_wait_s"] = round(sem_wait, 1)
+        if defect:
+            current["last_error_class"] = "DATA_INTEGRITY"
+            current["last_error"] = defect
+        _atomic_write(path, latest)
+    return {
+        "ok": defect is None,
+        "code": code6,
+        "ticker": ticker,
+        "bytes": int(size),
+        "attempts": attempts,
+        "reason": defect or "ok",
+        "sem_wait_s": round(sem_wait, 1),
+    }
+
+
 def prepare_slim(
     book: Path | str,
     code: str,
@@ -1135,6 +1409,18 @@ def prepare_slim(
     path, payload = _read(book)
     code6 = str(code).split(".")[0].zfill(6)
     task = payload["tasks"][code6]
+    trusted = _active_artifact_layout(path, payload, code6)
+    if trusted is not None:
+        return _prepare_active_slim(
+            path,
+            payload,
+            code6,
+            trusted=trusted,
+            harvest_fn=harvest_fn,
+            retries=retries,
+            min_bytes=min_bytes,
+            now=now,
+        )
     ticker = task["ticker"]
     slim_path = Path(task["artifacts"]["slim"]["path"])
     slim_path.parent.mkdir(parents=True, exist_ok=True)
