@@ -1,6 +1,6 @@
 # 券商成交记录取数层 —— 设计稿(里程碑 1:两户成交数据走通)
 
-日期:2026-08-27 · 状态:**设计待评审 → 探针 → 实施计划**
+日期:2026-08-27 · 状态:**格式无关核心已实施**(计划 `docs/plans/2026-08-27-broker-trades-ingest-plan.md`,分支 feature/broker-ingest)**→ 待真样本探针建券商 adapter**
 路径:brainstorming(architectural)· 复盘层**明确延后**(用户 08-27:「先把怎么拿到交易数据走通」)
 
 ## §0 一句话
@@ -94,20 +94,21 @@ context_<engine>/broker/                  # 已被 .gitignore 的 context_*/ 覆
 | `commission` / `stamp_tax` / `transfer_fee` / `other_fee` | float | 费用四项(B 级;缺则 NaN + 记账) |
 | `net_amount` | float | 清算金额,带号:BUY 为负、SELL 为正;源有「发生金额/清算金额」优先取源值 |
 | `balance_after` | float | 剩余持仓(B 级;核对用) |
-| `trade_id` | str | 源「成交编号」;缺则 `h:` + sha1(`account|date|time|code|side|price|qty|amount|seq`)[:16] |
+| `trade_id` | str | 源「成交编号」;缺则 `h:` + sha1(`account|date|time|code|side|price|qty|amount|seq`)[:16];合并时主源只有哈希 id 而低优先源带真成交编号 → 取真的 |
 | `source_kind` / `source_file` | str | `chinaclear` / `gtht` / `tpy` / `screenshot`;源文件 basename |
 | `sources` | str | 合并后来源集合(如 `gtht+chinaclear`) |
-| `ingested_at` | ISO | 首次入表时间 |
+| `ingested_at` | ISO | 首次入表时间(合并后取各源最早) |
 
-`seq` = 同一文件内「(date, code, side, price, qty) 相同」组的序号——**同价分笔成交是合法的两行**,
-不得被去重吃掉;`row_hash` 含 `seq`。
+`seq` = 同一文件内「(account, date, code, side, price, qty) 相同」组的序号(先按 (时刻, 成交编号) 稳定排序再编号,
+与文件行序无关)——**同价分笔成交是合法的两行**,不得被去重吃掉;`row_hash` 含 `seq`。
 
 ## §7 契约(承接 `data/contracts.py` 两级哲学 + 07-12 用户裁定「为空即抛」)
 
 **文件级 A**:0 行 → `DataContractError`;账户无法归户(中国结算文件里的股东账号不在 `accounts.jsonc`)→ 抛,
 明写缺哪个账号;期间无法识别 → 抛。
 
-**行级 A**(违反即整文件拒收,不落 raw):`trade_date` 可解析且不晚于今天;`code` 6 位数字;`side` ∈ 枚举;
+**行级 A**(违反即整文件拒收,不落 raw):`trade_date` 可解析且不晚于今天;`code` 6 位数字(BUY/SELL 必须;OTHER 行允许空);
+任一数值列**非空但不可解析**(`5.0O`/`--`/`¥12`)—— 解析失败不许伪装成「缺」;`side` ∈ 枚举;
 BUY/SELL 行 `price>0`、`qty>0`、且 **`|amount − price×qty| ≤ max(1.0 元, 0.5%×amount)`**
 ——这条专门兜截图识读错位/丢位,也兜 PDF 抽表串列。
 
@@ -115,19 +116,26 @@ BUY/SELL 行 `price>0`、`qty>0`、且 **`|amount − price×qty| ≤ max(1.0 �
 `name` 缺、`balance_after` 缺;`net_amount` 源值与 `amount ± 费用` 偏差 > 1 元(记账,不改源值);
 BUY 的 `qty` 非 100 整数倍**只 warn 不拦**(科创板/北交所允许 1 股递增)。
 
-`DataContractError` 不得被吞(既有原则);CLI 退出码非 0。
+`DataContractError` 不得被吞(既有原则);CLI 退出码非 0。`ingest_log` 的拒收条目只记错误首行 + 问题条数,
+**不记逐笔明细**(§13);逐行原因只在 stderr。
 
 ## §8 幂等与合并
 
 - **文件幂等**:`sha256` 已在 `ingest_log` → 跳过并打印「已导入」;`--force` 重解析(仍按 row_hash 去重)。
 - **行幂等**:`raw/<src>.csv` 以 `row_hash` 为键 upsert;同文件重跑 = 0 新增(验收项)。
 - **跨源合并**(`merge()`,每次全量重建 `trades.csv`,确定性):
-  - 自然键 `(account, trade_date, code, side, price, qty)` **按计数**匹配(multiset,配合 `seq`);
+  - 自然键 = `schema.natural_key`(**merge 与 reconcile 共用同一定义**,不许各写各的):
+    `(account, trade_date, code, side, fmt(price), fmt(qty), OTHER 行再加 fmt(amount))`,数值折到 4 位小数
+    (adapter 用 amount/qty 反推 price 的浮点噪音不致错配);OTHER 行没有价量,不加 amount 同日两笔现金流
+    (利息 1.5 与转入 50000、红利 88 与税 −17.6)会被并成一笔——复核逮到的规格缺陷,已修。**按计数**匹配(multiset,配合 `seq`);
   - 来源优先级 **券商交割单(gtht/tpy) > chinaclear > screenshot**:高优先源提供 `trade_id` 与主值,
     低优先源只**补缺**(如 chinaclear 无费用、券商有,取券商;反之亦然);
   - 只在一个源出现的行照常入表,`sources` 标单源。
 - **跨源核对**(`reconcile.py`,只报不裁):对每个账户 × 两源共同覆盖的期间,输出
   「两边都有 / 仅 A / 仅 B」三桶清单 + 金额合计差;有差异**不自动裁决**,列出来给人看。
+  桶**只计 BUY/SELL**;OTHER 行(红利/税/利息/转账)另起一行按源计数——中国结算结构性没有利息/转账类,
+  把它们算进桶只会造出永久噪音。窗口按两源**成交日交集**推定,不是导出覆盖期(adapter 目前不声明覆盖期;
+  这意味着一源最后一笔之后另一源的成交落在窗外——报告头一行明写这一点,后续 adapter 能声明覆盖期时再换)。
   这是 A 主干「内容未证实」的长期保险丝:每期都跑,一致率掉了立刻可见。
 
 ## §9 各 adapter(格式由探针决定;本节只定**不变的规则**与已知坑)
@@ -169,13 +177,24 @@ uv run --no-sync python -m autoresearch.broker.reconcile [--account …] [--sinc
 ```
 
 `--account` 仅对券商源必填(文件本身不带券商身份时);中国结算源按 `accounts.jsonc` 自动归户。
+**`--account` 与文件名自带的账户冲突 → 该文件拒收**(不是覆盖:覆盖会把另一户的成交改名后被 row_hash 去重吞掉,
+复核逮到的静默丢数据路径)。整批先定来源再动文件:来源不明/无 adapter 退 2 且一个字节不写;坏文件(空/解析失败)
+按文件拒收、批次继续、`trades.csv` 照常重建。
 摘要屏(每次 ingest 末尾,一屏读完):
 
 ```
 [broker] 文件 3 · 新导入 2 · 已导入跳过 1
-  tpy   2026-06-01..2026-08-26  BUY 41 / SELL 39 / OTHER 3   成交额 1,234,567  费用 1,234  A违规 0  B降级 2(commission 缺 ×80)
-  gtht  2026-01-05..2026-08-26  BUY 12 / SELL 12 / OTHER 1   成交额   345,678  费用   456  A违规 0  B降级 0
-trades.csv 重建:108 行(gtht+chinaclear 匹配 24/24 · 仅 chinaclear 0 · 仅 gtht 0)
+  ↷ 已导入 gtht_20260101-20260826.csv
+  tpy   2026-06-01..2026-08-26  BUY 41 / SELL 39 / OTHER 3   成交额 1,234,567  费用 1,234  B降级(本次) 2(commission 缺 ×80)
+  gtht  2026-01-05..2026-08-26  BUY 12 / SELL 12 / OTHER 1   成交额   345,678  费用   456  B降级(本次) 0
+trades.csv 重建:108 行 · 多源匹配 24 行 · 单源 84 行
+```
+
+账户行的笔数/期间/成交额是 `trades.csv` 全量,`B降级(本次)` 只算本次导入的文件、**按账户拆分**(中国结算一份文件
+含两户时不会把一份的降级算到每个账户头上);不印 `A违规`(能进 trades 的文件按定义 A 违规为 0,拒收数在首行)。
+配对明细看 `reconcile`。
+
+```
 ```
 
 ## §12 测试(`tests/broker/`)
