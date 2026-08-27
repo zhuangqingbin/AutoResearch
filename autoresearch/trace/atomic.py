@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 from pathlib import Path
 
 
@@ -25,14 +27,52 @@ def sha256_file(path: Path | str) -> str:
     return digest.hexdigest()
 
 
+def _write_all(fd: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    while view:
+        written = os.write(fd, view)
+        if written == 0:
+            raise OSError("short write while persisting atomic JSON")
+        view = view[written:]
+
+
+def _fsync_directory(path: Path) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def atomic_write_json(path: Path | str, value: object) -> Path:
-    """Atomically replace *path* with stable, human-readable UTF-8 JSON."""
+    """Durably replace *path* using an exclusive same-directory temp file."""
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    temp = target.with_name(f"{target.name}.tmp")
-    temp.write_text(
-        json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
-        encoding="utf-8",
+    payload = (canonical_json(value) + "\n").encode("utf-8")
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
     )
-    temp.replace(target)
+    temp = Path(temp_name)
+    try:
+        try:
+            _write_all(fd, payload)
+            os.fsync(fd)
+        finally:
+            open_fd = fd
+            fd = -1
+            os.close(open_fd)
+        os.replace(temp, target)
+        _fsync_directory(target.parent)
+    finally:
+        try:
+            if fd >= 0:
+                os.close(fd)
+        finally:
+            temp.unlink(missing_ok=True)
     return target

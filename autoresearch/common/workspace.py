@@ -84,8 +84,14 @@ def active_run_id(environ=None) -> str | None:
     value = str(env.get("AUTORESEARCH_RUN_ID", "")).strip()
     if not value:
         return None
+    return validate_run_id(value)
+
+
+def validate_run_id(run_id) -> str:
+    """Validate the exact ASCII run identity used in path derivation."""
+    value = str(run_id)
     if not _RUN_ID_RE.fullmatch(value):
-        raise ValueError(f"AUTORESEARCH_RUN_ID={value!r} 非法")
+        raise ValueError(f"run_id/AUTORESEARCH_RUN_ID={value!r} 非法")
     return value
 
 
@@ -93,9 +99,7 @@ def scan_run_root(run_id: str | None = None) -> Path:
     value = active_run_id() if run_id is None else str(run_id)
     if value is None:
         raise ValueError("缺 AUTORESEARCH_RUN_ID，无法解析 run-scoped workspace")
-    if not _RUN_ID_RE.fullmatch(value):
-        raise ValueError(f"AUTORESEARCH_RUN_ID={value!r} 非法")
-    return context_root() / "scan_runs" / value
+    return context_root() / "scan_runs" / validate_run_id(value)
 
 
 def scan_root() -> Path:

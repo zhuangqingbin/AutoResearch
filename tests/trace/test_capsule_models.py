@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from autoresearch.trace.atomic import canonical_json
 from autoresearch.trace.capsule_models import (
     BusinessStatus,
     Checkpoint,
@@ -86,6 +87,100 @@ def test_active_business_state_can_transition_to_terminal_state():
     assert succeeded.updated_at == "2026-08-27T02:00:00.000000Z"
 
 
+def test_semantic_noop_returns_previous_without_refreshing_timestamp():
+    previous = RunState.build(
+        run_id=RUN_ID,
+        now=datetime(2026, 8, 27, 1, tzinfo=timezone.utc),
+    )
+
+    repeated = RunState.build(
+        run_id=RUN_ID,
+        previous=previous,
+        now=datetime(2026, 8, 27, 2, tzinfo=timezone.utc),
+    )
+
+    assert repeated is previous
+    assert repeated.updated_at == "2026-08-27T01:00:00.000000Z"
+
+
+def test_transition_rejects_time_before_previous_update():
+    previous = RunState.build(
+        run_id=RUN_ID,
+        evidence_status=EvidenceStatus.EVIDENCE_INCOMPLETE,
+        now=datetime(2026, 8, 27, 2, tzinfo=timezone.utc),
+    )
+
+    with pytest.raises(ValueError, match="before previous.updated_at"):
+        RunState.build(
+            run_id=RUN_ID,
+            evidence_status=EvidenceStatus.COMPLETE,
+            previous=previous,
+            now=datetime(2026, 8, 27, 1, tzinfo=timezone.utc),
+        )
+
+
+def test_complete_evidence_cannot_regress_to_pending():
+    complete = RunState.build(
+        run_id=RUN_ID,
+        business_status=BusinessStatus.SUCCEEDED,
+        evidence_status=EvidenceStatus.COMPLETE,
+    )
+
+    with pytest.raises(ValueError, match="illegal evidence transition"):
+        RunState.build(
+            run_id=RUN_ID,
+            business_status=BusinessStatus.SUCCEEDED,
+            evidence_status=EvidenceStatus.PENDING,
+            previous=complete,
+        )
+
+
+def test_active_evidence_cannot_be_reclassified_as_legacy():
+    pending = RunState.build(run_id=RUN_ID)
+
+    with pytest.raises(ValueError, match="illegal evidence transition"):
+        RunState.build(
+            run_id=RUN_ID,
+            evidence_status=EvidenceStatus.LEGACY_PARTIAL,
+            previous=pending,
+        )
+
+
+def test_terminal_business_state_permits_incomplete_evidence_repair():
+    incomplete = RunState.build(
+        run_id=RUN_ID,
+        business_status=BusinessStatus.SUCCEEDED,
+        evidence_status=EvidenceStatus.EVIDENCE_INCOMPLETE,
+    )
+
+    repaired = RunState.build(
+        run_id=RUN_ID,
+        business_status=BusinessStatus.SUCCEEDED,
+        evidence_status=EvidenceStatus.COMPLETE,
+        previous=incomplete,
+    )
+
+    assert repaired.business_status == "SUCCEEDED"
+    assert repaired.evidence_status == "COMPLETE"
+
+
+def test_complete_evidence_can_be_marked_incomplete_after_tamper_detection():
+    complete = RunState.build(
+        run_id=RUN_ID,
+        business_status=BusinessStatus.SUCCEEDED,
+        evidence_status=EvidenceStatus.COMPLETE,
+    )
+
+    invalidated = RunState.build(
+        run_id=RUN_ID,
+        business_status=BusinessStatus.SUCCEEDED,
+        evidence_status=EvidenceStatus.EVIDENCE_INCOMPLETE,
+        previous=complete,
+    )
+
+    assert invalidated.evidence_status == "EVIDENCE_INCOMPLETE"
+
+
 @pytest.mark.parametrize(
     ("current", "requested"),
     [
@@ -112,3 +207,25 @@ def test_run_state_instance_rejects_mutation():
     state = RunState.build(run_id=RUN_ID)
     with pytest.raises(FrozenInstanceError):
         state.run_id = "other"
+
+
+def test_checkpoint_metrics_are_deeply_immutable_and_json_serializable(tmp_path):
+    source = {"counts": {"rows": [1, 2]}}
+    checkpoint = Checkpoint(
+        run_id=RUN_ID,
+        stage="l3",
+        attempt=1,
+        status="SUCCEEDED",
+        path=tmp_path / "result.json",
+        created_at="2026-08-27T01:02:03.000000Z",
+        metrics=source,
+    )
+    source["counts"]["rows"].append(3)
+
+    assert checkpoint.metrics["counts"]["rows"] == (1, 2)
+    with pytest.raises(TypeError):
+        checkpoint.metrics["new"] = 1
+    with pytest.raises(TypeError):
+        checkpoint.metrics["counts"]["rows"] += (3,)
+    assert canonical_json(checkpoint.metrics) == '{"counts":{"rows":[1,2]}}'
+    assert checkpoint.to_dict()["metrics"] == {"counts": {"rows": [1, 2]}}

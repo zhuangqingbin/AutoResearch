@@ -18,8 +18,9 @@ NOW = datetime(2026, 7, 28, 12, 34, 56, 123456, tzinfo=timezone.utc)
 
 
 def _build(user_config: dict | None = None, **overrides) -> RunContract:
+    analysis_date = overrides.pop("analysis_date", DATE)
     return RunContract.build(
-        analysis_date=DATE,
+        analysis_date=analysis_date,
         user_config=user_config or {},
         pinned={"kept": [], "expired": []},
         data_policy={"source": "tushare", "cap_floor_yi": 30.0, "include_bj": True},
@@ -62,6 +63,24 @@ def test_v3_contract_carries_engine_kind_workspace_and_session_ref(tmp_path):
 def test_build_rejects_invalid_injected_run_id(run_id):
     with pytest.raises(ValueError, match="run_id|AUTORESEARCH_RUN_ID"):
         _build(run_id=run_id)
+
+
+def test_build_rejects_invalid_analysis_date_even_with_explicit_workspace(tmp_path):
+    with pytest.raises(ValueError, match="scan date"):
+        _build(analysis_date="../escape", workspace_path=tmp_path)
+
+
+def test_injected_run_id_default_workspace_ignores_ambient_run(monkeypatch):
+    ambient = "20260827T010203456789Z"
+    injected = "20260827T010203456790Z"
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", ambient)
+
+    contract = _build(run_id=injected)
+
+    assert contract.run_id == injected
+    assert contract.workspace_path == (
+        f"context_codex/scan_runs/{injected}/staging/{DATE}"
+    )
 
 
 def test_legacy_build_defaults_to_existing_scan_workspace(monkeypatch):
@@ -110,6 +129,7 @@ def test_load_rejects_tampered_contract(tmp_path):
 def test_v1_contract_still_loads_and_verifies(tmp_path):
     """全部历史 run 的契约都是 v1。读不了 = 把它们的 run_id/身份弄丢(publisher 的
     manifest、run_mode 的冻结快照都按它定位)。v2 只是加字段,v1 的 hash 按当年 payload 现算。"""
+    # Golden hashes were produced by the pre-v3 implementation at 2193849.
     v1 = {
         "schema_version": 1,
         "analysis_date": DATE,
@@ -117,17 +137,14 @@ def test_v1_contract_still_loads_and_verifies(tmp_path):
         "created_at": "2026-07-28T12:34:56.123456Z",
         "git_sha": "abc1234",
         "user_config": {},
-        "config_hash": "",
+        "config_hash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
         "agents": {},
         "pinned": {"kept": [], "expired": []},
         "data_policy": {},
         "stage_budgets": {},
         "artifact_schema_versions": {},
-        "contract_hash": "",
+        "contract_hash": "b6872447fd7e3c1ec0ceb5fe34ff5cf7722c26f78183ade279a2dc3eb51b81da",
     }
-    v1["config_hash"] = sha256_json(v1["user_config"])
-    payload = {k: v for k, v in v1.items() if k != "contract_hash"}
-    v1["contract_hash"] = sha256_json(payload)          # 当年的算法:没有 v2 三键
 
     p = tmp_path / "run_contract.json"
     p.write_text(json.dumps(v1, ensure_ascii=False), encoding="utf-8")
@@ -139,6 +156,41 @@ def test_v1_contract_still_loads_and_verifies(tmp_path):
     assert loaded.engine == ""
     assert loaded.workspace_path == ""
     assert loaded.session_ref is None
+
+
+def test_pre_v3_v2_golden_digest_still_loads(tmp_path):
+    # Fixed pre-v3 digest: this test intentionally does not call sha256_json.
+    v2 = {
+        "schema_version": 2,
+        "analysis_date": "2026-08-26",
+        "run_id": "20260826T101112131415Z",
+        "created_at": "2026-08-26T10:11:12.131415Z",
+        "git_sha": "def5678",
+        "user_config": {
+            "agents": {"l4_card": {"effort": "high"}},
+            "force_full": False,
+        },
+        "config_hash": "50b8530e33a49b0e787fbd48965a78cbb736db48b8216805c7d0006b9a4707f0",
+        "agents": {"l4_card": {"effort": "high"}},
+        "pinned": {"kept": [{"code": "600000"}], "expired": []},
+        "data_policy": {"source": "tushare", "include_bj": True},
+        "stage_budgets": {"l3_finalist_max": 10},
+        "artifact_schema_versions": {"market_pack": 1},
+        "git_dirty": True,
+        "dirty_paths": [".claude/agents/l4-card.md"],
+        "prompt_hashes": {
+            ".claude/agents/l4-card.md": "0123456789abcdef"
+        },
+        "contract_hash": "29757cd81fa2435d51fb40aa1baabc8a9651d5f540e26b1e625ee792f38c1816",
+    }
+    path = tmp_path / "run_contract.json"
+    path.write_text(json.dumps(v2), encoding="utf-8")
+
+    loaded = load_run_contract(path)
+
+    assert loaded.schema_version == 2
+    assert loaded.contract_hash == v2["contract_hash"]
+    assert loaded.engine == ""
 
 
 def test_v2_contract_still_verifies_without_v3_fields(tmp_path):
@@ -188,6 +240,33 @@ def test_v2_contract_cannot_smuggle_unhashed_v3_identity(tmp_path):
     assert loaded.engine == ""
     assert loaded.workspace_path == ""
     assert loaded.session_ref is None
+
+
+def test_load_rejects_boolean_schema_version_before_hash_validation(tmp_path):
+    raw = _build(git_dirty=False, dirty_paths=[]).to_dict()
+    raw["schema_version"] = True
+    path = tmp_path / "run_contract.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="schema_version"):
+        load_run_contract(path)
+
+
+@pytest.mark.parametrize(
+    ("field", "unsafe"),
+    [("run_id", "../escape"), ("analysis_date", "../../escape")],
+)
+def test_load_rejects_rehashed_v3_with_unsafe_path_identity(tmp_path, field, unsafe):
+    raw = _build(workspace_path="safe/workspace").to_dict()
+    raw[field] = unsafe
+    raw["contract_hash"] = sha256_json(
+        {key: value for key, value in raw.items() if key != "contract_hash"}
+    )
+    path = tmp_path / "run_contract.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="run_id|scan date"):
+        load_run_contract(path)
 
 
 def test_v1_hash_payload_excludes_v2_fields():

@@ -151,6 +151,7 @@ class RunContract:
         session_ref: str | None = None,
         run_id: str | None = None,
     ) -> RunContract:
+        resolved_analysis_date = ws.validate_scan_date(analysis_date)
         stamp = now or datetime.now(timezone.utc)
         if stamp.tzinfo is None:
             stamp = stamp.replace(tzinfo=timezone.utc)
@@ -159,15 +160,17 @@ class RunContract:
         resolved_run_id = (
             stamp.strftime("%Y%m%dT%H%M%S%fZ") if run_id is None else str(run_id)
         )
-        try:
-            ws.scan_run_root(resolved_run_id)
-        except ValueError as exc:
-            raise ValueError(f"invalid run_id: {resolved_run_id!r}") from exc
-        resolved_workspace = (
-            str(ws.scan_dir(analysis_date))
-            if workspace_path is None
-            else str(workspace_path)
-        )
+        resolved_run_id = ws.validate_run_id(resolved_run_id)
+        if workspace_path is not None:
+            resolved_workspace = str(workspace_path)
+        elif run_id is not None:
+            resolved_workspace = str(
+                ws.scan_run_root(resolved_run_id)
+                / "staging"
+                / resolved_analysis_date
+            )
+        else:
+            resolved_workspace = str(ws.scan_dir(resolved_analysis_date))
         normalized_config = json.loads(canonical_json(user_config))
         if git_dirty is None or dirty_paths is None:
             probed_dirty, probed_paths = resolve_git_dirty(repo_root)
@@ -175,7 +178,7 @@ class RunContract:
             dirty_paths = probed_paths if dirty_paths is None else dirty_paths
         base = cls(
             schema_version=RUN_CONTRACT_SCHEMA_VERSION,
-            analysis_date=analysis_date,
+            analysis_date=resolved_analysis_date,
             run_id=resolved_run_id,
             created_at=created_at,
             git_sha=git_sha if git_sha is not None else resolve_git_sha(repo_root),
@@ -201,6 +204,12 @@ class RunContract:
     def from_dict(cls, raw: dict) -> RunContract:
         payload = dict(raw)
         schema_version = payload.get("schema_version")
+        if type(schema_version) is not int or schema_version not in SUPPORTED_SCHEMA_VERSIONS:
+            raise ValueError(
+                f"unsupported run contract schema_version={schema_version!r}"
+            )
+        payload["analysis_date"] = ws.validate_scan_date(payload.get("analysis_date"))
+        payload["run_id"] = ws.validate_run_id(payload.get("run_id"))
         if schema_version == 1:
             for key in _V2_FIELDS:
                 payload.pop(key, None)
@@ -213,10 +222,6 @@ class RunContract:
         if isinstance(payload.get("dirty_paths"), list):
             payload["dirty_paths"] = tuple(payload["dirty_paths"])
         contract = cls(**payload)
-        if contract.schema_version not in SUPPORTED_SCHEMA_VERSIONS:
-            raise ValueError(
-                f"unsupported run contract schema_version={contract.schema_version}"
-            )
         if contract.config_hash != sha256_json(contract.user_config):
             raise ValueError("run contract config_hash mismatch")
         if contract.contract_hash != sha256_json(contract._hash_payload()):

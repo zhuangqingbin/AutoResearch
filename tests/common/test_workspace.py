@@ -84,6 +84,14 @@ def test_scan_run_root_rejects_malformed_explicit_id():
         ws.scan_run_root("../x")
 
 
+def test_validate_run_id_is_the_public_ascii_validation_boundary():
+    assert ws.validate_run_id("20260827T010203456789Z") == (
+        "20260827T010203456789Z"
+    )
+    with pytest.raises(ValueError, match="run_id"):
+        ws.validate_run_id("２０２６０８２７T０１０２０３４５６７８９Z")
+
+
 def test_active_run_id_rejects_unicode_digits():
     unicode_id = "２０２６０８２７T０１０２０３４５６７８９Z"
     with pytest.raises(ValueError, match="AUTORESEARCH_RUN_ID"):

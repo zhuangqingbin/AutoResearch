@@ -144,7 +144,7 @@ def test_show_cli_fails_for_missing_or_corrupt_snapshot(tmp_path, capsys):
 
 def test_show_cli_rejects_contract_mismatch(tmp_path, capsys):
     first = RunContract.build(
-        analysis_date=tmp_path.name,
+        analysis_date="2026-07-28",
         user_config={},
         pinned={"kept": [], "expired": []},
         data_policy={"source": "tushare"},
@@ -152,7 +152,6 @@ def test_show_cli_rejects_contract_mismatch(tmp_path, capsys):
         artifact_schema_versions={},
         git_sha="first",
         now=NOW,
-        workspace_path=tmp_path,
     )
     write_run_contract(tmp_path / "run_contract.json", first)
     record_stage_result(
@@ -166,7 +165,7 @@ def test_show_cli_rejects_contract_mismatch(tmp_path, capsys):
         now=NOW,
     )
     second = RunContract.build(
-        analysis_date=tmp_path.name,
+        analysis_date="2026-07-28",
         user_config={"force_full": True},
         pinned={"kept": [], "expired": []},
         data_policy={"source": "tushare"},
@@ -174,7 +173,6 @@ def test_show_cli_rejects_contract_mismatch(tmp_path, capsys):
         artifact_schema_versions={},
         git_sha="second",
         now=NOW,
-        workspace_path=tmp_path,
     )
     write_run_contract(tmp_path / "run_contract.json", second)
 
