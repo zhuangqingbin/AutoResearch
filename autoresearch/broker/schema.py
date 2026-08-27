@@ -21,11 +21,13 @@ from __future__ import annotations
 
 import hashlib
 import math
-from datetime import datetime
+import re
+from dataclasses import dataclass, field
+from datetime import date, datetime
 
 import pandas as pd
 
-from autoresearch.data.contracts import DataContractError
+from autoresearch.data.contracts import DataContractError, record_degradation
 from autoresearch.dataflows.symbol_utils import to_ts_code
 
 ACCOUNTS = ("tpy", "gtht")
@@ -159,3 +161,89 @@ def normalize(df_raw: pd.DataFrame, *, source_kind: str, source_file: str,
     df["source_file"] = source_file
     df["ingested_at"] = ingested_at or datetime.now().isoformat(timespec="seconds")
     return df.loc[:, list(RAW_STORE_COLUMNS)]
+
+
+@dataclass
+class ValidationReport:
+    source_kind: str
+    source_file: str
+    rows: int
+    accounts: tuple[str, ...] = ()
+    period: tuple[str, str] | None = None
+    b_degradations: dict[str, int] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
+
+
+def validate(df: pd.DataFrame, *, today: date | None = None) -> ValidationReport:
+    """两级契约。A 级 → raise `DataContractError`(整文件拒收);B 级 → 记账并进报告。"""
+    src = str(df["source_kind"].iloc[0]) if len(df) else "?"
+    fname = str(df["source_file"].iloc[0]) if len(df) else "?"
+    if len(df) == 0:
+        raise DataContractError(f"{fname}:0 行 —— 空文件拒收(source={src})")
+    today = today or date.today()
+    bad_accounts = sorted(set(df["account"]) - set(ACCOUNTS))
+    if bad_accounts:
+        raise DataContractError(
+            f"{fname}:账户 {bad_accounts} 不在 {ACCOUNTS};截图/券商源需 --account,"
+            "中国结算源需 accounts.jsonc 归户")
+    problems: list[str] = []
+    for i, r in enumerate(df.itertuples(index=False)):
+        line = f"第{i + 1}行"
+        d = _parse_date(r.trade_date)
+        if d is None:
+            problems.append(f"{line}:trade_date {r.trade_date!r} 不可解析")
+        elif d > today.isoformat():
+            problems.append(f"{line}:trade_date {d} 在未来")
+        code_ok = bool(re.fullmatch(r"\d{6}", r.code or ""))
+        if r.side in ("BUY", "SELL"):
+            if not code_ok:
+                problems.append(f"{line}:code {r.code!r} 非 6 位数字")
+            if not r.price > 0:
+                problems.append(f"{line}:price {r.price} 非正")
+            if not r.qty > 0:
+                problems.append(f"{line}:qty {r.qty} 非正")
+            if math.isnan(r.amount):
+                problems.append(f"{line}:amount 缺")
+            elif r.price > 0 and r.qty > 0:
+                diff = abs(r.amount - r.price * r.qty)
+                if diff > max(AMOUNT_TOL_ABS, AMOUNT_TOL_REL * abs(r.amount)):
+                    problems.append(f"{line}:amount {r.amount} ≠ price×qty "
+                                    f"{r.price * r.qty:.2f}(差 {diff:.2f})")
+        elif r.code and not code_ok:
+            problems.append(f"{line}:code {r.code!r} 非 6 位数字")
+    if problems:
+        more = f"\n…共 {len(problems)} 处" if len(problems) > _MAX_PROBLEM_LINES else ""
+        raise DataContractError(f"{fname}:A 级违约,整文件拒收:\n"
+                                + "\n".join(problems[:_MAX_PROBLEM_LINES]) + more)
+
+    trades = df[df["side"].isin(("BUY", "SELL"))]
+    b: dict[str, int] = {}
+    for col in FEE_COLUMNS:
+        n = int(trades[col].isna().sum())
+        if n:
+            b[f"{col} 缺"] = n
+    for col in ("trade_time", "name"):
+        n = int((trades[col] == "").sum())
+        if n:
+            b[f"{col} 缺"] = n
+    n = int(trades["balance_after"].isna().sum())
+    if n:
+        b["balance_after 缺"] = n
+    known = trades[list(FEE_COLUMNS)].notna().all(axis=1) & trades["net_amount"].notna()
+    if known.any():
+        t = trades[known]
+        fees = t[list(FEE_COLUMNS)].sum(axis=1)
+        expected = (t["amount"] - fees).where(t["side"] == "SELL", -(t["amount"] + fees))
+        n = int(((t["net_amount"] - expected).abs() > NET_TOL_ABS).sum())
+        if n:
+            b["net_amount 与 amount±费用 偏差>1元"] = n
+    for reason, n in b.items():
+        record_degradation(f"broker/{src}", f"{reason} ×{n}", key=fname)
+
+    warnings: list[str] = []
+    odd = trades[(trades["side"] == "BUY") & ((trades["qty"] % 100) != 0)]
+    if len(odd):
+        warnings.append(f"BUY 非 100 股整数倍 ×{len(odd)}")
+    return ValidationReport(
+        src, fname, len(df), tuple(sorted(set(df["account"]))),
+        (str(df["trade_date"].min()), str(df["trade_date"].max())), b, warnings)
