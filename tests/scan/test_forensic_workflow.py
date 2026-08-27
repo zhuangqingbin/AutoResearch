@@ -183,8 +183,10 @@ def test_l4_retry_attempts_produce_distinct_preflight_invocation_ids():
     second = _probe_workflow(WORKFLOWS[1], {**base, "attempt": 2})["first"]
     assert "l4-preflight-600000-attempt-1" in first
     assert "--attempt 1" in first
+    assert "--expected-attempt 1" in first
     assert "l4-preflight-600000-attempt-2" in second
     assert "--attempt 2" in second
+    assert "--expected-attempt 2" in second
     assert first != second
 
 

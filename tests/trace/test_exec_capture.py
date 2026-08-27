@@ -281,6 +281,38 @@ def test_capture_requires_an_exact_non_shell_argument_vector(tmp_path, monkeypat
         )
 
 
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+@pytest.mark.parametrize("encoding", ["gz", "raw"])
+@pytest.mark.parametrize("target_kind", ["file", "symlink"])
+def test_preexisting_final_log_target_is_rejected_before_started_or_child(
+    tmp_path, monkeypatch, stream, encoding, target_kind
+):
+    handle = _begin(tmp_path, monkeypatch)
+    log_dir = handle.capsule / "logs/frame"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    destination = log_dir / f"owned-target-1.{stream}.log.{encoding}"
+    if target_kind == "file":
+        destination.write_bytes(b"STALE")
+    else:
+        outside = tmp_path / f"outside-{stream}-{encoding}"
+        outside.write_bytes(b"STALE")
+        destination.symlink_to(outside)
+    marker = tmp_path / "child-started"
+    before = _events(handle)
+
+    with pytest.raises((FileExistsError, ValueError), match="evidence"):
+        run_captured(
+            handle,
+            stage="frame",
+            argv=[sys.executable, "-c", f"open({str(marker)!r},'w').write('bad')"],
+            invocation_id="owned-target-1",
+        )
+
+    assert not marker.exists()
+    assert _events(handle) == before
+    assert destination.is_symlink() or destination.read_bytes() == b"STALE"
+
+
 def test_duplicate_invocation_id_never_overwrites_prior_evidence(tmp_path, monkeypatch):
     handle = _begin(tmp_path, monkeypatch)
     first = run_captured(
@@ -721,17 +753,24 @@ def test_gzip_failure_retains_exact_raw_stream_and_points_metadata_to_it(
 
 def test_raw_fallback_post_commit_error_still_points_to_existing_evidence(tmp_path, monkeypatch):
     handle = _begin(tmp_path, monkeypatch)
-    real_retain = exec_mod._retain_raw
+    real_gzip = exec_mod._gzip_raw
+    real_sync = exec_mod._fsync_directory
+    stdout_fallback_syncs = 0
 
     def fail_gzip(raw_path, destination):
-        raise OSError("compression unavailable")
+        if ".stdout.log.gz" in destination.name:
+            raise OSError("compression unavailable")
+        return real_gzip(raw_path, destination)
 
-    def commit_then_fail(raw_path, destination):
-        real_retain(raw_path, destination)
-        raise OSError("directory durability acknowledgement unavailable")
+    def fail_directory_sync(path):
+        nonlocal stdout_fallback_syncs
+        stdout_fallback_syncs += 1
+        if stdout_fallback_syncs == 2:
+            raise OSError("raw-temp cleanup durability acknowledgement unavailable")
+        return real_sync(path)
 
     monkeypatch.setattr(exec_mod, "_gzip_raw", fail_gzip)
-    monkeypatch.setattr(exec_mod, "_retain_raw", commit_then_fail)
+    monkeypatch.setattr(exec_mod, "_fsync_directory", fail_directory_sync)
     result = run_captured(
         handle,
         stage="frame",
@@ -739,10 +778,46 @@ def test_raw_fallback_post_commit_error_still_points_to_existing_evidence(tmp_pa
         invocation_id="raw-post-commit-error-1",
     )
 
-    for stream in ("stdout", "stderr"):
-        evidence = handle.capsule / result.invocation[f"{stream}_log"]
-        assert evidence.is_file()
-        assert result.invocation[f"{stream}_log_encoding"] == "raw"
+    evidence = handle.capsule / result.invocation["stdout_log"]
+    assert evidence.is_file()
+    assert result.invocation["stdout_log_encoding"] == "raw"
+
+
+def test_raw_publish_race_never_claims_stale_target_as_this_invocations_bytes(
+    tmp_path, monkeypatch
+):
+    handle = _begin(tmp_path, monkeypatch)
+    real_gzip = exec_mod._gzip_raw
+    real_link = exec_mod.os.link
+
+    def fail_stdout_gzip(raw_path, destination):
+        if ".stdout.log.gz" in destination.name:
+            raise OSError("stdout compression unavailable")
+        return real_gzip(raw_path, destination)
+
+    def race_stdout_publish(source, destination, *args, **kwargs):
+        destination = Path(destination)
+        if ".stdout.log.raw" in destination.name:
+            destination.write_bytes(b"STALE")
+            raise FileExistsError("racer owns stable raw target")
+        return real_link(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(exec_mod, "_gzip_raw", fail_stdout_gzip)
+    monkeypatch.setattr(exec_mod.os, "link", race_stdout_publish)
+    result = run_captured(
+        handle,
+        stage="frame",
+        argv=[sys.executable, "-c", "import os;os.write(1,b'FRESH')"],
+        invocation_id="raw-publish-race-1",
+    )
+
+    stable = handle.capsule / "logs/frame/raw-publish-race-1.stdout.log.raw"
+    evidence = handle.capsule / result.invocation["stdout_log"]
+    assert stable.read_bytes() == b"STALE"
+    assert evidence != stable
+    assert evidence.is_file()
+    assert evidence.read_bytes() == b"FRESH"
+    assert result.invocation["stdout_log_encoding"] == "raw-temp"
 
 
 def test_terminal_index_failure_is_recovered_as_structured_failure(tmp_path, monkeypatch):
@@ -911,12 +986,107 @@ def test_signal_handler_restore_failure_compensates_plain_success_evidence(tmp_p
     assert [row["event_type"] for row in rows] == [
         "COMMAND_STARTED",
         "COMMAND_COMPLETED",
-        "COMMAND_FAILED",
+        "COMMAND_EVIDENCE_FAILED",
     ]
-    assert rows[-1]["payload"]["error"]["phase"] == "restore_signal_handlers"
+    terminals = [row for row in rows if row["event_type"] in exec_mod.COMMAND_TERMINAL_EVENTS]
+    assert len(terminals) == 1
+    correction = rows[-1]
+    assert correction["payload"]["error"]["phase"] == "restore_signal_handlers"
+    assert correction["payload"]["supersedes_seq"] == terminals[0]["seq"]
     index = json.loads((handle.capsule / "events/invocations.json").read_text(encoding="utf-8"))
-    assert index["restore-compensation-1"]["status"] == "FAILED"
+    assert index["restore-compensation-1"]["status"] == "EVIDENCE_FAILED"
+    assert index["restore-compensation-1"]["business_status"] == "COMPLETED"
+    assert index["restore-compensation-1"]["evidence_status"] == "FAILED"
     assert index["restore-compensation-1"]["exit_code"] == 0
+
+
+def test_active_base_exception_is_preserved_with_signal_restore_failure(tmp_path, monkeypatch):
+    handle = _begin(tmp_path, monkeypatch)
+    real_start = threading.Thread.start
+    real_signal = signal.signal
+    previous_term = signal.getsignal(signal.SIGTERM)
+    starts = 0
+    term_installed = False
+
+    def interrupt_first_reader(thread):
+        nonlocal starts
+        starts += 1
+        if starts == 1:
+            raise KeyboardInterrupt("active reader-start interrupt")
+        return real_start(thread)
+
+    def fail_term_restore(signum, handler):
+        nonlocal term_installed
+        if signum == signal.SIGTERM:
+            if not term_installed:
+                term_installed = True
+            elif handler == previous_term:
+                raise OSError("cannot restore handler during interrupt")
+        return real_signal(signum, handler)
+
+    monkeypatch.setattr(threading.Thread, "start", interrupt_first_reader)
+    monkeypatch.setattr(signal, "signal", fail_term_restore)
+    try:
+        with pytest.raises(exec_mod.EvidenceFinalizationError) as raised:
+            run_captured(
+                handle,
+                stage="frame",
+                argv=[sys.executable, "-c", "import time;time.sleep(2)"],
+                invocation_id="active-exception-restore-1",
+                termination_grace=0.1,
+            )
+    finally:
+        real_signal(signal.SIGTERM, previous_term)
+
+    assert any(isinstance(exc, KeyboardInterrupt) for exc in raised.value.exceptions)
+    rows = [row for row in _events(handle) if row["invocation_id"] == "active-exception-restore-1"]
+    assert len([row for row in rows if row["event_type"] in exec_mod.COMMAND_TERMINAL_EVENTS]) == 1
+    assert rows[-1]["event_type"] == "COMMAND_EVIDENCE_FAILED"
+
+
+def test_restore_failure_after_child_failure_adds_nonterminal_correction_only(
+    tmp_path, monkeypatch
+):
+    handle = _begin(tmp_path, monkeypatch)
+    previous_term = signal.getsignal(signal.SIGTERM)
+    real_signal = signal.signal
+    term_installed = False
+
+    def fail_term_restore(signum, handler):
+        nonlocal term_installed
+        if signum == signal.SIGTERM:
+            if not term_installed:
+                term_installed = True
+            elif handler == previous_term:
+                raise OSError("cannot restore SIGTERM after child failure")
+        return real_signal(signum, handler)
+
+    monkeypatch.setattr(signal, "signal", fail_term_restore)
+    try:
+        with pytest.raises(exec_mod.EvidenceFinalizationError):
+            run_captured(
+                handle,
+                stage="frame",
+                argv=[sys.executable, "-c", "raise SystemExit(7)"],
+                invocation_id="failed-restore-correction-1",
+            )
+    finally:
+        real_signal(signal.SIGTERM, previous_term)
+
+    rows = [row for row in _events(handle) if row["invocation_id"] == "failed-restore-correction-1"]
+    terminals = [row for row in rows if row["event_type"] in exec_mod.COMMAND_TERMINAL_EVENTS]
+    assert [row["event_type"] for row in rows] == [
+        "COMMAND_STARTED",
+        "COMMAND_FAILED",
+        "COMMAND_EVIDENCE_FAILED",
+    ]
+    assert len(terminals) == 1
+    assert rows[-1]["payload"]["supersedes_seq"] == terminals[0]["seq"]
+    index = json.loads((handle.capsule / "events/invocations.json").read_text())
+    record = index["failed-restore-correction-1"]
+    assert record["status"] == "EVIDENCE_FAILED"
+    assert record["business_status"] == "FAILED"
+    assert record["exit_code"] == 7
 
 
 def test_index_terminal_failure_still_appends_failed_event_before_signal_restore(

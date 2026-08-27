@@ -187,6 +187,25 @@ def test_transient_failure_retries_once_without_touching_other_stock(tmp_path):
     assert preflight(book["path"], "000001", now=NOW)["action"] == "BLOCKED"
 
 
+def test_expected_retry_attempt_mismatch_is_atomic_then_exact_next_attempt_runs(tmp_path):
+    book = _book(tmp_path, ("000001",))
+    assert preflight(book["path"], "000001", expected_attempt=1, now=NOW)["attempt"] == 1
+    mark_failure(book["path"], "000001", "RATE_LIMIT", now=NOW)
+    path = tmp_path / DATE / "_l4_tasks.json"
+    before = path.read_bytes()
+
+    with pytest.raises(ValueError, match="expected attempt 3.*next attempt 2"):
+        preflight(book["path"], "000001", expected_attempt=3, now=NOW)
+
+    assert path.read_bytes() == before
+    retry = preflight(book["path"], "000001", expected_attempt=2, now=NOW)
+    assert retry["action"] == "RUN"
+    assert retry["attempt"] == 2
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["tasks"]["000001"]["status"] == "RUNNING"
+    assert payload["tasks"]["000001"]["attempt"] == 2
+
+
 def test_contract_failure_never_retries(tmp_path):
     book = _book(tmp_path, ("000003",))
     preflight(book["path"], "000003", now=NOW)

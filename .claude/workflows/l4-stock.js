@@ -144,7 +144,7 @@ const taskFailure = (errorClass) => taskGate(
 // C1b(2026-08-10):bookless 的 LEGACY 分支移入 python(壳零判断)——preflight 现在
 // 无论有无任务簿都能回答,且缺 prompt 一律 BLOCKED(盲卡在这里绝育)。
 const taskPreflight = await gpJson(
-  `${PY('l4', `l4-preflight-${code}-attempt-${taskAttempt}`, taskAttempt, code)} autoresearch.scan.l4_tasks preflight ${code} ${date}`,
+  `${PY('l4', `l4-preflight-${code}-attempt-${taskAttempt}`, taskAttempt, code)} autoresearch.scan.l4_tasks preflight ${code} ${date} --expected-attempt ${taskAttempt}`,
   `task-preflight:${code}`,
   TASK_ACTION,
 )

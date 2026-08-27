@@ -281,10 +281,15 @@ def preflight(
     book: Path | str,
     code: str,
     *,
+    expected_attempt: int | None = None,
     now: datetime | None = None,
     stale_after_seconds: int = 3600,
 ) -> dict:
     """为一票领取一次执行权；SUCCEEDED 只在三件产物指纹仍匹配时可复用。"""
+    if expected_attempt is not None and (
+        type(expected_attempt) is not int or expected_attempt < 1
+    ):
+        raise ValueError("expected_attempt must be a positive integer")
     path = Path(book)
     code6 = str(code).split(".")[0].zfill(6)
     # C1b(design 2026-08-10):prompt 任务包是出卡的前提 —— 缺着认领 = 盲卡。
@@ -392,7 +397,12 @@ def preflight(
                     "reason": error_class or "NON_TRANSIENT_FAILURE",
                 }
             reason = reason or error_class
-        task["attempt"] = int(task.get("attempt") or 0) + 1
+        next_attempt = int(task.get("attempt") or 0) + 1
+        if expected_attempt is not None and expected_attempt != next_attempt:
+            raise ValueError(
+                f"expected attempt {expected_attempt} does not match next attempt {next_attempt}"
+            )
+        task["attempt"] = next_attempt
         task["status"] = "RUNNING"
         task["started_at"] = stamp
         task["updated_at"] = stamp
@@ -734,6 +744,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--error-class", default=None)
     parser.add_argument("--error", default=None)
     parser.add_argument("--caps-json", default=None)
+    parser.add_argument("--expected-attempt", type=int, default=None)
     args = parser.parse_args(argv)
     if args.cmd in {"init", "batches", "stats", "reconcile"}:
         args.first = ws.validate_scan_date(args.first)
@@ -771,7 +782,9 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"{args.cmd} requires CODE DATE")
         book = _book_path(args.second, args.root)
         if args.cmd == "preflight":
-            result = preflight(book, args.first)
+            if args.expected_attempt is None:
+                parser.error("preflight requires --expected-attempt")
+            result = preflight(book, args.first, expected_attempt=args.expected_attempt)
         elif args.cmd == "prepare":
             result = prepare_slim(book, args.first)
         elif args.cmd == "success":

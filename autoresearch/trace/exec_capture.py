@@ -53,6 +53,7 @@ _KNOWN_SECRET_KEYS = frozenset(
 _SECRET_MARKERS = ("TOKEN", "SECRET", "PASSWORD", "API_KEY", "PRIVATE_KEY")
 _DEFAULT_DRAIN_GRACE = 1.0
 _DEFAULT_TERMINATION_GRACE = 5.0
+COMMAND_TERMINAL_EVENTS = frozenset({"COMMAND_COMPLETED", "COMMAND_FAILED"})
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,14 @@ class EvidenceFinalizationError(RuntimeError):
             f"{error['classification']}[{error['phase']}]: {error['message']}" for error in errors
         )
         super().__init__(f"evidence finalization failed: {details}")
+
+
+class RawFallbackCommitError(OSError):
+    """Raw fallback publication failed; ``committed`` proves target ownership."""
+
+    def __init__(self, message: str, *, committed: bool):
+        self.committed = committed
+        super().__init__(message)
 
 
 def _utc_now() -> str:
@@ -170,6 +179,15 @@ def _reject_symlink_file(path: Path) -> None:
         raise ValueError(f"evidence path is a symlink: {path}")
     if not stat.S_ISREG(info.st_mode):
         raise ValueError(f"evidence path is not a regular file: {path}")
+
+
+def _require_absent_evidence(path: Path) -> None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return
+    kind = "symlink" if stat.S_ISLNK(info.st_mode) else "existing target"
+    raise FileExistsError(f"evidence path already exists ({kind}): {path}")
 
 
 def _fsync_directory(path: Path) -> None:
@@ -315,6 +333,24 @@ def _reserve_invocation(handle: RunHandle, invocation_id: str, metadata: dict) -
     _with_index_lock(handle, reserve)
 
 
+def _require_unreserved_invocation(handle: RunHandle, invocation_id: str) -> None:
+    """Provide a clear duplicate-identity error before log target preflight."""
+    index_path, lock_path = _index_paths(handle)
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(lock_path, flags, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        if index_path.exists():
+            payload = json.loads(index_path.read_text(encoding="utf-8"))
+            if type(payload) is not dict:
+                raise RuntimeError("invalid invocation index: root must be an object")
+            if invocation_id in payload:
+                raise ValueError(f"duplicate invocation_id: {invocation_id}")
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
 def _finish_invocation(handle: RunHandle, invocation_id: str, metadata: dict) -> dict:
     def finish(index: dict):
         if invocation_id not in index:
@@ -425,19 +461,32 @@ def _gzip_raw(raw_path: Path, destination: Path) -> None:
         temp.unlink(missing_ok=True)
 
 
+def _raw_fallback_path(destination: Path) -> Path:
+    return destination.with_suffix("").with_suffix(".log.raw")
+
+
 def _retain_raw(raw_path: Path, destination: Path) -> None:
     """Durably commit an uncompressed stream when gzip finalization fails."""
-    _reject_symlink_file(destination)
-    if destination.exists():
-        raise FileExistsError(f"raw log evidence already exists: {destination}")
-    os.replace(raw_path, destination)
-    os.chmod(destination, 0o600)
-    fd = os.open(destination, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    committed = False
     try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    _fsync_directory(destination.parent)
+        # link(2) is an atomic, no-overwrite publication claim. Unlike replace(),
+        # it cannot silently adopt or overwrite a stale/racing destination.
+        os.link(raw_path, destination, follow_symlinks=False)
+        committed = True
+        os.chmod(destination, 0o600)
+        fd = os.open(destination, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        _fsync_directory(destination.parent)
+    except BaseException as exc:
+        raise RawFallbackCommitError(str(exc), committed=committed) from exc
+    try:
+        raw_path.unlink()
+        _fsync_directory(destination.parent)
+    except BaseException as exc:
+        raise RawFallbackCommitError(str(exc), committed=True) from exc
 
 
 def _event_fields(
@@ -487,16 +536,17 @@ def _join_readers(threads: list[threading.Thread], grace: float) -> list[threadi
     return [thread for thread in threads if thread.is_alive()]
 
 
-def _terminal_event_exists(handle: RunHandle, invocation_id: str) -> bool:
+def _find_terminal_event(handle: RunHandle, invocation_id: str) -> dict | None:
     path = handle.capsule / "events/events.jsonl"
+    terminal = None
     for line in path.read_text(encoding="utf-8").splitlines():
         row = json.loads(line)
-        if row.get("invocation_id") == invocation_id and row.get("event_type") in {
-            "COMMAND_COMPLETED",
-            "COMMAND_FAILED",
-        }:
-            return True
-    return False
+        if (
+            row.get("invocation_id") == invocation_id
+            and row.get("event_type") in COMMAND_TERMINAL_EVENTS
+        ):
+            terminal = row
+    return terminal
 
 
 def _capture_reserved(
@@ -546,6 +596,7 @@ def _capture_reserved(
     errors: list[dict] = []
     metadata: dict | None = None
     persisted: dict | None = None
+    terminal_event: dict | None = None
     finalization_errors: list[dict] = []
     finalization_exceptions: list[BaseException] = []
 
@@ -822,11 +873,9 @@ def _capture_reserved(
                         phase=f"{name}-gzip",
                     )
                 )
-                raw_destination = destination.with_suffix("").with_suffix(".log.raw")
+                raw_destination = _raw_fallback_path(destination)
                 try:
                     _retain_raw(raw_path, raw_destination)
-                    log_refs[name] = raw_destination.relative_to(handle.capsule).as_posix()
-                    log_encodings[name] = "raw"
                 except BaseException as fallback_exc:
                     capture_errors.append(
                         exception_error(
@@ -836,16 +885,15 @@ def _capture_reserved(
                             phase=f"{name}-raw-fallback",
                         )
                     )
-                    try:
-                        fallback_info = raw_destination.lstat()
-                    except FileNotFoundError:
-                        fallback_info = None
-                    if fallback_info is not None and stat.S_ISREG(fallback_info.st_mode):
+                    if isinstance(fallback_exc, RawFallbackCommitError) and fallback_exc.committed:
                         log_refs[name] = raw_destination.relative_to(handle.capsule).as_posix()
                         log_encodings[name] = "raw"
                     else:
                         log_refs[name] = raw_path.relative_to(handle.capsule).as_posix()
                         log_encodings[name] = "raw-temp"
+                else:
+                    log_refs[name] = raw_destination.relative_to(handle.capsule).as_posix()
+                    log_encodings[name] = "raw"
             else:
                 try:
                     raw_path.unlink(missing_ok=True)
@@ -923,9 +971,10 @@ def _capture_reserved(
             payload=terminal_payload(metadata),
         )
         try:
-            append_event(handle.capsule / "events/events.jsonl", **event_fields)
+            terminal_event = append_event(handle.capsule / "events/events.jsonl", **event_fields)
         except BaseException as exc:
-            if not _terminal_event_exists(handle, invocation_id):
+            terminal_event = _find_terminal_event(handle, invocation_id)
+            if terminal_event is None:
                 primary_event_error = exception_error(
                     exc,
                     classification="EVENT_WRITE_FAILURE",
@@ -952,7 +1001,7 @@ def _capture_reserved(
                         finalization_errors.append(index_update_error)
                         finalization_exceptions.append(index_update_exc)
                 try:
-                    append_event(
+                    terminal_event = append_event(
                         handle.capsule / "events/events.jsonl",
                         **_event_fields(
                             handle,
@@ -965,7 +1014,8 @@ def _capture_reserved(
                         ),
                     )
                 except BaseException as retry_exc:
-                    if not _terminal_event_exists(handle, invocation_id):
+                    terminal_event = _find_terminal_event(handle, invocation_id)
+                    if terminal_event is None:
                         retry_event_error = exception_error(
                             retry_exc,
                             classification="EVENT_WRITE_FAILURE",
@@ -1006,13 +1056,37 @@ def _capture_reserved(
                 "restored": False,
                 "restore_failures": len(restoration_errors),
             }
+            business_status = (
+                terminal_event["event_type"].removeprefix("COMMAND_")
+                if terminal_event is not None
+                else (metadata or {}).get("status", "FAILED")
+            )
             metadata, _ = build_metadata(errors)
-            metadata["status"] = "FAILED"
+            metadata["status"] = "EVIDENCE_FAILED"
+            metadata["business_status"] = business_status
+            metadata["evidence_status"] = "FAILED"
+            metadata["evidence_error"] = restoration_evidence[0]
+            metadata["terminal_event_seq"] = (
+                terminal_event["seq"] if terminal_event is not None else None
+            )
             aggregate_errors: list[dict] = []
             aggregate_exceptions: list[BaseException] = []
             if isinstance(active_exception, EvidenceFinalizationError):
                 aggregate_errors.extend(active_exception.errors)
                 aggregate_exceptions.extend(active_exception.exceptions)
+            elif active_exception is not None:
+                active_errors = [error for error in errors if error not in restoration_evidence]
+                if not active_errors:
+                    active_errors = [
+                        exception_error(
+                            active_exception,
+                            classification="WRAPPER_EXCEPTION",
+                            category="WRAPPER",
+                            phase="active-exception",
+                        )
+                    ]
+                aggregate_errors.extend(active_errors)
+                aggregate_exceptions.append(active_exception)
             aggregate_errors.extend(restoration_evidence)
             aggregate_exceptions.extend(restoration_errors)
             try:
@@ -1035,8 +1109,17 @@ def _capture_reserved(
                         invocation_id=invocation_id,
                         attempt=attempt,
                         subject=subject,
-                        event_type="COMMAND_FAILED",
-                        payload=terminal_payload(metadata),
+                        event_type="COMMAND_EVIDENCE_FAILED",
+                        payload={
+                            **terminal_payload(metadata),
+                            "supersedes_seq": (
+                                terminal_event["seq"] if terminal_event is not None else None
+                            ),
+                            "supersedes_event_type": (
+                                terminal_event["event_type"] if terminal_event is not None else None
+                            ),
+                            "business_status": business_status,
+                        },
                     ),
                 )
             except BaseException as event_exc:
@@ -1044,7 +1127,7 @@ def _capture_reserved(
                     event_exc,
                     classification="EVENT_WRITE_FAILURE",
                     category="PERSISTENCE",
-                    phase="restore-signal-terminal-event",
+                    phase="restore-signal-evidence-event",
                 )
                 aggregate_errors.append(event_error)
                 aggregate_exceptions.append(event_exc)
@@ -1074,10 +1157,16 @@ def run_captured(
     handle = _require_current_active_handle(handle)
 
     log_dir = _real_directory(handle.capsule, Path("logs") / stage, create=True)
+    _require_unreserved_invocation(handle, invocation_id)
     stdout_path = log_dir / f"{invocation_id}.stdout.log.gz"
     stderr_path = log_dir / f"{invocation_id}.stderr.log.gz"
-    _reject_symlink_file(stdout_path)
-    _reject_symlink_file(stderr_path)
+    for evidence_path in (
+        stdout_path,
+        stderr_path,
+        _raw_fallback_path(stdout_path),
+        _raw_fallback_path(stderr_path),
+    ):
+        _require_absent_evidence(evidence_path)
 
     child_env = dict(os.environ)
     child_env.update(
