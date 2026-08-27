@@ -17,6 +17,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -172,6 +173,70 @@ def _recorded_environment(environ: dict[str, str]) -> dict:
     return recorded
 
 
+def _secret_values(environ: dict[str, str]) -> tuple[str, ...]:
+    values = {
+        value
+        for key, value in environ.items()
+        if value
+        and (key in _KNOWN_SECRET_KEYS or any(marker in key.upper() for marker in _SECRET_MARKERS))
+    }
+    return tuple(sorted(values, key=len, reverse=True))
+
+
+def _redact_text(value: str | None, secrets: tuple[str, ...]) -> str | None:
+    if value is None:
+        return None
+    for secret in secrets:
+        value = value.replace(secret, "[REDACTED]")
+    return value
+
+
+def _redact_error(error: dict, secrets: tuple[str, ...]) -> dict:
+    result = dict(error)
+    for field in ("summary", "message", "traceback"):
+        result[field] = _redact_text(result[field], secrets)
+    return result
+
+
+def _redacted_errors(errors: list[dict], secrets: tuple[str, ...]) -> list[dict]:
+    return [_redact_error(error, secrets) for error in errors]
+
+
+def _exception_error(
+    exc: BaseException,
+    *,
+    classification: str,
+    category: str,
+    phase: str,
+    traceback_text: str | None = None,
+) -> dict:
+    """Describe a wrapper exception without discarding its Python traceback."""
+    message = str(exc) or type(exc).__name__
+    return {
+        "classification": classification,
+        "category": category,
+        "summary": f"{type(exc).__name__}: {message}",
+        "message": message,
+        "exception_type": type(exc).__name__,
+        "type": type(exc).__name__,
+        "phase": phase,
+        "traceback": traceback_text if traceback_text is not None else traceback.format_exc(),
+    }
+
+
+def _process_error(*, classification: str, exception_type: str, summary: str, phase: str) -> dict:
+    return {
+        "classification": classification,
+        "category": "PROCESS",
+        "summary": summary,
+        "message": summary,
+        "exception_type": exception_type,
+        "type": exception_type,
+        "phase": phase,
+        "traceback": None,
+    }
+
+
 def _index_paths(handle: RunHandle) -> tuple[Path, Path]:
     events_dir = _real_directory(handle.capsule, Path("events"), create=False)
     index = events_dir / "invocations.json"
@@ -226,6 +291,21 @@ def _finish_invocation(handle: RunHandle, invocation_id: str, metadata: dict) ->
     return _with_index_lock(handle, finish)
 
 
+def _replace_invocation(handle: RunHandle, invocation_id: str, metadata: dict) -> dict:
+    """Replace this invocation's terminal row after a later evidence failure."""
+
+    def replace(index: dict):
+        current = index.get(invocation_id)
+        if current is None:
+            raise RuntimeError(f"invocation reservation is missing: {invocation_id}")
+        if current.get("run_id") != handle.run_id:
+            raise RuntimeError(f"invocation identity does not match run: {invocation_id}")
+        index[invocation_id] = metadata
+        return metadata
+
+    return _with_index_lock(handle, replace)
+
+
 def _discard_reservation(handle: RunHandle, invocation_id: str) -> None:
     def discard(index: dict):
         if index.get(invocation_id, {}).get("status") == "STARTING":
@@ -266,7 +346,14 @@ def _reader(pipe, raw_fd: int, parent_stream: TextIO, errors: list[dict], name: 
             with contextlib.suppress(Exception):
                 _echo(parent_stream, block)
     except BaseException as exc:
-        errors.append({"stream": name, "type": type(exc).__name__, "message": str(exc)})
+        errors.append(
+            _exception_error(
+                exc,
+                classification="STREAM_CAPTURE_FAILURE",
+                category="CAPTURE",
+                phase=f"{name}-reader",
+            )
+        )
     finally:
         with contextlib.suppress(Exception):
             pipe.close()
@@ -334,6 +421,371 @@ def _terminate_child(process: subprocess.Popen) -> int:
         with contextlib.suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGKILL)
         return process.wait()
+
+
+def _terminal_event_exists(handle: RunHandle, invocation_id: str) -> bool:
+    path = handle.capsule / "events/events.jsonl"
+    for line in path.read_text(encoding="utf-8").splitlines():
+        row = json.loads(line)
+        if row.get("invocation_id") == invocation_id and row.get("event_type") in {
+            "COMMAND_COMPLETED",
+            "COMMAND_FAILED",
+        }:
+            return True
+    return False
+
+
+def _capture_reserved(
+    handle: RunHandle,
+    *,
+    stage: str,
+    invocation_id: str,
+    attempt: int,
+    subject: str | None,
+    command: list[str],
+    child_env: dict[str, str],
+    base: dict,
+    stdout_fd: int,
+    stderr_fd: int,
+    stdout_raw: Path,
+    stderr_raw: Path,
+    stdout_path: Path,
+    stderr_path: Path,
+    stdout_ref: str,
+    stderr_ref: str,
+    started_monotonic: float,
+) -> CaptureResult:
+    """Run a reserved invocation; restore signals only after terminal evidence."""
+    process: subprocess.Popen | None = None
+    threads: list[threading.Thread] = []
+    started_threads: list[threading.Thread] = []
+    reader_errors: list[dict] = []
+    capture_errors: list[dict] = []
+    previous_handlers: dict[int, object] = {}
+    signal_handling = {
+        "installed": False,
+        "reason": (
+            "not-main-thread"
+            if threading.current_thread() is not threading.main_thread()
+            else "child-not-started"
+        ),
+    }
+    signal_forwarded: list[int] = []
+    exit_code: int | None = None
+    pending_exception: BaseException | None = None
+    secrets = _secret_values(child_env)
+
+    def exception_error(
+        exc: BaseException, *, classification: str, category: str, phase: str
+    ) -> dict:
+        return _redact_error(
+            _exception_error(
+                exc,
+                classification=classification,
+                category=category,
+                phase=phase,
+            ),
+            secrets,
+        )
+
+    def build_metadata(errors: list[dict]) -> tuple[dict, int | None]:
+        child_signal = -exit_code if exit_code is not None and exit_code < 0 else None
+        observed_signal = child_signal or (signal_forwarded[-1] if signal_forwarded else None)
+        failed = (
+            exit_code != 0
+            or observed_signal is not None
+            or bool(errors)
+            or pending_exception is not None
+        )
+        return (
+            {
+                **base,
+                "status": "FAILED" if failed else "COMPLETED",
+                "ended_at": _utc_now(),
+                "duration_seconds": round(time.monotonic() - started_monotonic, 9),
+                "exit_code": exit_code,
+                "signal": observed_signal,
+                "signal_handling": signal_handling,
+                "forwarded_signals": signal_forwarded,
+                "error": errors[0] if errors else None,
+                "capture_errors": errors,
+            },
+            observed_signal,
+        )
+
+    def terminal_payload(metadata: dict) -> dict:
+        return {
+            "exit_code": metadata["exit_code"],
+            "signal": metadata["signal"],
+            "duration_seconds": metadata["duration_seconds"],
+            "stdout_log": stdout_ref,
+            "stderr_log": stderr_ref,
+            "error": metadata["error"],
+        }
+
+    try:
+        try:
+            try:
+                process = subprocess.Popen(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env=child_env,
+                    start_new_session=True,
+                )
+            except OSError as exc:
+                signal_handling = {"installed": False, "reason": "spawn-failed"}
+                capture_errors.append(
+                    exception_error(
+                        exc,
+                        classification="SPAWN_FAILURE",
+                        category="WRAPPER",
+                        phase="spawn",
+                    )
+                )
+            else:
+                if threading.current_thread() is threading.main_thread():
+
+                    def forward(signum, frame):
+                        signal_forwarded.append(signum)
+                        if process is not None and process.poll() is None:
+                            with contextlib.suppress(ProcessLookupError):
+                                os.killpg(process.pid, signum)
+
+                    try:
+                        for signum in (signal.SIGINT, signal.SIGTERM):
+                            previous_handlers[signum] = signal.getsignal(signum)
+                            signal.signal(signum, forward)
+                    except (OSError, RuntimeError, ValueError) as exc:
+                        for signum, previous in previous_handlers.items():
+                            with contextlib.suppress(Exception):
+                                signal.signal(signum, previous)
+                        previous_handlers.clear()
+                        signal_handling = {
+                            "installed": False,
+                            "reason": f"signal-api-unavailable: {type(exc).__name__}",
+                        }
+                    else:
+                        signal_handling = {"installed": True, "reason": None}
+
+                assert process.stdout is not None and process.stderr is not None
+                threads = [
+                    threading.Thread(
+                        target=_reader,
+                        args=(process.stdout, stdout_fd, sys.stdout, reader_errors, "stdout"),
+                        daemon=False,
+                    ),
+                    threading.Thread(
+                        target=_reader,
+                        args=(process.stderr, stderr_fd, sys.stderr, reader_errors, "stderr"),
+                        daemon=False,
+                    ),
+                ]
+                try:
+                    for thread in threads:
+                        thread.start()
+                        started_threads.append(thread)
+                except Exception as exc:
+                    capture_errors.append(
+                        exception_error(
+                            exc,
+                            classification="READER_START_FAILURE",
+                            category="CAPTURE",
+                            phase="reader-start",
+                        )
+                    )
+                    exit_code = _terminate_child(process)
+                except BaseException as exc:
+                    pending_exception = exc
+                    capture_errors.append(
+                        exception_error(
+                            exc,
+                            classification="READER_START_FAILURE",
+                            category="CAPTURE",
+                            phase="reader-start",
+                        )
+                    )
+                    exit_code = _terminate_child(process)
+                else:
+                    try:
+                        exit_code = process.wait()
+                    except BaseException as exc:
+                        pending_exception = exc
+                        capture_errors.append(
+                            exception_error(
+                                exc,
+                                classification="WRAPPER_EXCEPTION",
+                                category="WRAPPER",
+                                phase="wait",
+                            )
+                        )
+                        exit_code = _terminate_child(process)
+        finally:
+            for thread in started_threads:
+                try:
+                    thread.join()
+                except BaseException as exc:
+                    if pending_exception is None:
+                        pending_exception = exc
+                    capture_errors.append(
+                        exception_error(
+                            exc,
+                            classification="STREAM_CAPTURE_FAILURE",
+                            category="CAPTURE",
+                            phase="reader-drain",
+                        )
+                    )
+            if process is not None:
+                for name, pipe in (("stdout", process.stdout), ("stderr", process.stderr)):
+                    if pipe is not None:
+                        try:
+                            pipe.close()
+                        except Exception as exc:
+                            capture_errors.append(
+                                exception_error(
+                                    exc,
+                                    classification="STREAM_CAPTURE_FAILURE",
+                                    category="CAPTURE",
+                                    phase=f"{name}-close",
+                                )
+                            )
+            for name, fd in (("stdout", stdout_fd), ("stderr", stderr_fd)):
+                try:
+                    os.fsync(fd)
+                except OSError as exc:
+                    capture_errors.append(
+                        exception_error(
+                            exc,
+                            classification="LOG_FLUSH_FAILURE",
+                            category="CAPTURE",
+                            phase=f"{name}-flush",
+                        )
+                    )
+                try:
+                    os.close(fd)
+                except OSError as exc:
+                    capture_errors.append(
+                        exception_error(
+                            exc,
+                            classification="LOG_CLOSE_FAILURE",
+                            category="CAPTURE",
+                            phase=f"{name}-close",
+                        )
+                    )
+
+        for name, raw_path, destination in (
+            ("stdout", stdout_raw, stdout_path),
+            ("stderr", stderr_raw, stderr_path),
+        ):
+            try:
+                _gzip_raw(raw_path, destination)
+            except BaseException as exc:
+                capture_errors.append(
+                    exception_error(
+                        exc,
+                        classification="LOG_COMPRESSION_FAILURE",
+                        category="CAPTURE",
+                        phase=f"{name}-gzip",
+                    )
+                )
+            try:
+                raw_path.unlink(missing_ok=True)
+            except BaseException as exc:
+                capture_errors.append(
+                    exception_error(
+                        exc,
+                        classification="LOG_CLEANUP_FAILURE",
+                        category="CAPTURE",
+                        phase=f"{name}-cleanup",
+                    )
+                )
+
+        errors = [*_redacted_errors(reader_errors, secrets), *capture_errors]
+        child_signal = -exit_code if exit_code is not None and exit_code < 0 else None
+        observed_signal = child_signal or (signal_forwarded[-1] if signal_forwarded else None)
+        if observed_signal is not None:
+            errors.append(
+                _process_error(
+                    classification="PROCESS_SIGNAL",
+                    exception_type="ProcessSignal",
+                    summary=f"child terminated after signal {observed_signal}",
+                    phase="signal",
+                )
+            )
+        elif exit_code is not None and exit_code != 0:
+            errors.append(
+                _process_error(
+                    classification="PROCESS_NONZERO_EXIT",
+                    exception_type="ProcessExit",
+                    summary=f"child exited with code {exit_code}",
+                    phase="wait",
+                )
+            )
+
+        metadata, _ = build_metadata(errors)
+        try:
+            persisted = _finish_invocation(handle, invocation_id, metadata)
+        except BaseException as exc:
+            errors.append(
+                exception_error(
+                    exc,
+                    classification="INDEX_WRITE_FAILURE",
+                    category="PERSISTENCE",
+                    phase="invocation-index",
+                )
+            )
+            metadata, _ = build_metadata(errors)
+            persisted = _replace_invocation(handle, invocation_id, metadata)
+
+        event_type = "COMMAND_FAILED" if metadata["status"] == "FAILED" else "COMMAND_COMPLETED"
+        event_fields = _event_fields(
+            handle,
+            stage=stage,
+            invocation_id=invocation_id,
+            attempt=attempt,
+            subject=subject,
+            event_type=event_type,
+            payload=terminal_payload(metadata),
+        )
+        try:
+            append_event(handle.capsule / "events/events.jsonl", **event_fields)
+        except BaseException as exc:
+            if not _terminal_event_exists(handle, invocation_id):
+                errors.append(
+                    exception_error(
+                        exc,
+                        classification="EVENT_WRITE_FAILURE",
+                        category="PERSISTENCE",
+                        phase="terminal-event",
+                    )
+                )
+                metadata, _ = build_metadata(errors)
+                persisted = _replace_invocation(handle, invocation_id, metadata)
+                append_event(
+                    handle.capsule / "events/events.jsonl",
+                    **_event_fields(
+                        handle,
+                        stage=stage,
+                        invocation_id=invocation_id,
+                        attempt=attempt,
+                        subject=subject,
+                        event_type="COMMAND_FAILED",
+                        payload=terminal_payload(metadata),
+                    ),
+                )
+
+        if pending_exception is not None:
+            raise pending_exception
+        return CaptureResult(exit_code=exit_code, invocation=persisted)
+    finally:
+        restoration_errors = []
+        for signum, previous in previous_handlers.items():
+            try:
+                signal.signal(signum, previous)
+            except Exception as exc:
+                restoration_errors.append(exc)
+        if restoration_errors and sys.exc_info()[0] is None:
+            raise restoration_errors[0]
 
 
 def run_captured(
@@ -436,198 +888,25 @@ def run_captured(
         stderr_raw.unlink(missing_ok=True)
         raise
 
-    process: subprocess.Popen | None = None
-    threads: list[threading.Thread] = []
-    started_threads: list[threading.Thread] = []
-    reader_errors: list[dict] = []
-    capture_errors: list[dict] = []
-    previous_handlers: dict[int, object] = {}
-    signal_handling = {
-        "installed": False,
-        "reason": (
-            "not-main-thread"
-            if threading.current_thread() is not threading.main_thread()
-            else "child-not-started"
-        ),
-    }
-    signal_forwarded: list[int] = []
-    exit_code: int | None = None
-    pending_exception: BaseException | None = None
-
-    try:
-        try:
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=child_env,
-                start_new_session=True,
-            )
-        except OSError as exc:
-            signal_handling = {"installed": False, "reason": "spawn-failed"}
-            capture_errors.append(
-                {"type": type(exc).__name__, "message": str(exc), "phase": "spawn"}
-            )
-        else:
-            if threading.current_thread() is threading.main_thread():
-
-                def forward(signum, frame):
-                    signal_forwarded.append(signum)
-                    if process is not None and process.poll() is None:
-                        with contextlib.suppress(ProcessLookupError):
-                            os.killpg(process.pid, signum)
-
-                try:
-                    for signum in (signal.SIGINT, signal.SIGTERM):
-                        previous_handlers[signum] = signal.getsignal(signum)
-                        signal.signal(signum, forward)
-                except (OSError, RuntimeError, ValueError) as exc:
-                    for signum, previous in previous_handlers.items():
-                        with contextlib.suppress(Exception):
-                            signal.signal(signum, previous)
-                    previous_handlers.clear()
-                    signal_handling = {
-                        "installed": False,
-                        "reason": f"signal-api-unavailable: {type(exc).__name__}",
-                    }
-                else:
-                    signal_handling = {"installed": True, "reason": None}
-
-            assert process.stdout is not None and process.stderr is not None
-            threads = [
-                threading.Thread(
-                    target=_reader,
-                    args=(process.stdout, stdout_fd, sys.stdout, reader_errors, "stdout"),
-                    daemon=False,
-                ),
-                threading.Thread(
-                    target=_reader,
-                    args=(process.stderr, stderr_fd, sys.stderr, reader_errors, "stderr"),
-                    daemon=False,
-                ),
-            ]
-            try:
-                for thread in threads:
-                    thread.start()
-                    started_threads.append(thread)
-            except Exception as exc:
-                capture_errors.append(
-                    {
-                        "type": type(exc).__name__,
-                        "message": str(exc),
-                        "phase": "reader-start",
-                    }
-                )
-                exit_code = _terminate_child(process)
-            except BaseException as exc:
-                pending_exception = exc
-                capture_errors.append(
-                    {
-                        "type": type(exc).__name__,
-                        "message": str(exc),
-                        "phase": "reader-start",
-                    }
-                )
-                exit_code = _terminate_child(process)
-            else:
-                try:
-                    exit_code = process.wait()
-                except BaseException as exc:
-                    pending_exception = exc
-                    capture_errors.append(
-                        {
-                            "type": type(exc).__name__,
-                            "message": str(exc),
-                            "phase": "wait",
-                        }
-                    )
-                    exit_code = _terminate_child(process)
-    finally:
-        for thread in started_threads:
-            thread.join()
-        for signum, previous in previous_handlers.items():
-            try:
-                signal.signal(signum, previous)
-            except Exception as exc:
-                capture_errors.append(
-                    {
-                        "type": type(exc).__name__,
-                        "message": str(exc),
-                        "phase": "signal-restore",
-                    }
-                )
-        if process is not None:
-            for pipe in (process.stdout, process.stderr):
-                if pipe is not None:
-                    with contextlib.suppress(Exception):
-                        pipe.close()
-        for fd in (stdout_fd, stderr_fd):
-            with contextlib.suppress(OSError):
-                os.fsync(fd)
-            with contextlib.suppress(OSError):
-                os.close(fd)
-
-    try:
-        _gzip_raw(stdout_raw, stdout_path)
-    except BaseException as exc:
-        capture_errors.append(
-            {"type": type(exc).__name__, "message": str(exc), "phase": "stdout-gzip"}
-        )
-    try:
-        _gzip_raw(stderr_raw, stderr_path)
-    except BaseException as exc:
-        capture_errors.append(
-            {"type": type(exc).__name__, "message": str(exc), "phase": "stderr-gzip"}
-        )
-    stdout_raw.unlink(missing_ok=True)
-    stderr_raw.unlink(missing_ok=True)
-
-    ended_at = _utc_now()
-    child_signal = -exit_code if exit_code is not None and exit_code < 0 else None
-    observed_signal = child_signal or (signal_forwarded[-1] if signal_forwarded else None)
-    all_errors = [*capture_errors, *reader_errors]
-    failed = (
-        exit_code != 0
-        or observed_signal is not None
-        or bool(all_errors)
-        or pending_exception is not None
+    return _capture_reserved(
+        handle,
+        stage=stage,
+        invocation_id=invocation_id,
+        attempt=attempt,
+        subject=subject,
+        command=command,
+        child_env=child_env,
+        base=base,
+        stdout_fd=stdout_fd,
+        stderr_fd=stderr_fd,
+        stdout_raw=stdout_raw,
+        stderr_raw=stderr_raw,
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
+        stdout_ref=stdout_ref,
+        stderr_ref=stderr_ref,
+        started_monotonic=started_monotonic,
     )
-    metadata = {
-        **base,
-        "status": "FAILED" if failed else "COMPLETED",
-        "ended_at": ended_at,
-        "duration_seconds": round(time.monotonic() - started_monotonic, 9),
-        "exit_code": exit_code,
-        "signal": observed_signal,
-        "signal_handling": signal_handling,
-        "forwarded_signals": signal_forwarded,
-        "error": all_errors[0] if all_errors else None,
-        "capture_errors": all_errors,
-    }
-    persisted = _finish_invocation(handle, invocation_id, metadata)
-    event_type = "COMMAND_FAILED" if failed else "COMMAND_COMPLETED"
-    append_event(
-        handle.capsule / "events/events.jsonl",
-        **_event_fields(
-            handle,
-            stage=stage,
-            invocation_id=invocation_id,
-            attempt=attempt,
-            subject=subject,
-            event_type=event_type,
-            payload={
-                "exit_code": exit_code,
-                "signal": observed_signal,
-                "duration_seconds": metadata["duration_seconds"],
-                "stdout_log": stdout_ref,
-                "stderr_log": stderr_ref,
-                "error": metadata["error"],
-            },
-        ),
-    )
-    if pending_exception is not None:
-        raise pending_exception
-    return CaptureResult(exit_code=exit_code, invocation=persisted)
 
 
 def _parser() -> argparse.ArgumentParser:

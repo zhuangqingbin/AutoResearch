@@ -22,6 +22,16 @@ from autoresearch.trace.exec_capture import main, run_captured
 
 DATE = "2026-08-27"
 NOW = datetime(2026, 8, 27, 1, 2, 3, 456789, tzinfo=timezone.utc)
+ERROR_FIELDS = {
+    "classification",
+    "category",
+    "summary",
+    "message",
+    "exception_type",
+    "type",
+    "phase",
+    "traceback",
+}
 
 
 def _begin(tmp_path: Path, monkeypatch):
@@ -44,6 +54,22 @@ def _events(handle) -> list[dict]:
 def _gzip_bytes(path: Path) -> bytes:
     with gzip.open(path, "rb") as handle:
         return handle.read()
+
+
+def _assert_terminal_error_agrees(handle, result, invocation_id: str) -> dict:
+    error = result.invocation["error"]
+    assert set(error) == ERROR_FIELDS
+    assert all(error[key] for key in ERROR_FIELDS - {"traceback"})
+    terminal = [
+        row
+        for row in _events(handle)
+        if row["invocation_id"] == invocation_id and row["event_type"] == "COMMAND_FAILED"
+    ]
+    assert len(terminal) == 1
+    assert terminal[0]["payload"]["error"] == error
+    index = json.loads((handle.capsule / "events/invocations.json").read_text(encoding="utf-8"))
+    assert index[invocation_id]["error"] == error
+    return error
 
 
 def test_capture_preserves_exact_argv_and_separate_binary_streams(tmp_path, monkeypatch):
@@ -94,6 +120,17 @@ def test_capture_records_nonzero_as_one_terminal_failure(tmp_path, monkeypatch):
         "COMMAND_FAILED",
     ]
     assert terminal[-1]["payload"]["exit_code"] == 23
+    error = _assert_terminal_error_agrees(handle, result, "gate1-attempt-1")
+    assert error == {
+        "classification": "PROCESS_NONZERO_EXIT",
+        "category": "PROCESS",
+        "summary": "child exited with code 23",
+        "message": "child exited with code 23",
+        "exception_type": "ProcessExit",
+        "type": "ProcessExit",
+        "phase": "wait",
+        "traceback": None,
+    }
 
 
 def test_capture_records_spawn_failure_without_inventing_child_exit(tmp_path, monkeypatch):
@@ -107,7 +144,12 @@ def test_capture_records_spawn_failure_without_inventing_child_exit(tmp_path, mo
 
     assert result.exit_code is None
     assert result.invocation["status"] == "FAILED"
-    assert result.invocation["error"]["type"] == "FileNotFoundError"
+    error = _assert_terminal_error_agrees(handle, result, "spawn-failure-1")
+    assert error["classification"] == "SPAWN_FAILURE"
+    assert error["category"] == "WRAPPER"
+    assert error["exception_type"] == "FileNotFoundError"
+    assert error["phase"] == "spawn"
+    assert "Traceback (most recent call last)" in error["traceback"]
     rows = [row for row in _events(handle) if row["invocation_id"] == "spawn-failure-1"]
     assert [row["event_type"] for row in rows] == [
         "COMMAND_STARTED",
@@ -273,6 +315,9 @@ def test_sigterm_is_forwarded_and_previous_handler_is_restored(tmp_path, monkeyp
         )
         assert result.exit_code == -signal.SIGTERM
         assert result.invocation["signal"] == signal.SIGTERM
+        error = _assert_terminal_error_agrees(handle, result, "signal-1")
+        assert error["classification"] == "PROCESS_SIGNAL"
+        assert error["traceback"] is None
         assert signal.getsignal(signal.SIGTERM) is prior_handler
     finally:
         timer.cancel()
@@ -304,6 +349,9 @@ def test_forwarded_signal_is_a_failure_even_when_child_exits_zero(tmp_path, monk
     assert result.invocation["signal"] == signal.SIGTERM
     assert result.invocation["status"] == "FAILED"
     assert _events(handle)[-1]["event_type"] == "COMMAND_FAILED"
+    error = _assert_terminal_error_agrees(handle, result, "signal-caught-1")
+    assert error["classification"] == "PROCESS_SIGNAL"
+    assert error["traceback"] is None
 
 
 def test_signal_handling_degrades_explicitly_outside_main_thread(tmp_path, monkeypatch):
@@ -432,7 +480,15 @@ def test_reader_error_is_recorded_as_capture_failure(tmp_path, monkeypatch):
             return original(pipe, raw_fd, parent_stream, errors, name)
         pipe.read()
         pipe.close()
-        errors.append({"stream": name, "type": "OSError", "message": "simulated reader fault"})
+        errors.append(
+            exec_mod._exception_error(
+                OSError("simulated reader fault"),
+                classification="STREAM_CAPTURE_FAILURE",
+                category="CAPTURE",
+                phase="stdout-reader",
+                traceback_text="Traceback (simulated reader)",
+            )
+        )
 
     monkeypatch.setattr(exec_mod, "_reader", fail_stdout_reader)
     result = run_captured(
@@ -444,12 +500,177 @@ def test_reader_error_is_recorded_as_capture_failure(tmp_path, monkeypatch):
 
     assert result.exit_code == 0
     assert result.invocation["status"] == "FAILED"
-    assert result.invocation["error"] == {
-        "stream": "stdout",
-        "type": "OSError",
-        "message": "simulated reader fault",
-    }
+    error = _assert_terminal_error_agrees(handle, result, "reader-failure-1")
+    assert error["classification"] == "STREAM_CAPTURE_FAILURE"
+    assert error["phase"] == "stdout-reader"
+    assert error["traceback"] == "Traceback (simulated reader)"
     assert _events(handle)[-1]["event_type"] == "COMMAND_FAILED"
+
+
+def test_gzip_failure_has_structured_traceback_and_agrees_with_event(tmp_path, monkeypatch):
+    handle = _begin(tmp_path, monkeypatch)
+    secret = "gzip-super-secret-value"
+    monkeypatch.setenv("TUSHARE_TOKEN", secret)
+    original = exec_mod._gzip_raw
+    calls = 0
+
+    def fail_stdout(raw_path, destination):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError(f"gzip evidence failed: {secret}")
+        return original(raw_path, destination)
+
+    monkeypatch.setattr(exec_mod, "_gzip_raw", fail_stdout)
+    result = run_captured(
+        handle,
+        stage="frame",
+        argv=[sys.executable, "-c", "print('output')"],
+        invocation_id="gzip-failure-1",
+    )
+
+    error = _assert_terminal_error_agrees(handle, result, "gzip-failure-1")
+    assert error["classification"] == "LOG_COMPRESSION_FAILURE"
+    assert error["category"] == "CAPTURE"
+    assert error["phase"] == "stdout-gzip"
+    assert "Traceback (most recent call last)" in error["traceback"]
+    encoded = json.dumps(result.invocation, ensure_ascii=False)
+    assert secret not in encoded
+    assert "[REDACTED]" in encoded
+
+
+def test_terminal_index_failure_is_recovered_as_structured_failure(tmp_path, monkeypatch):
+    handle = _begin(tmp_path, monkeypatch)
+    original = exec_mod._finish_invocation
+    calls = 0
+
+    def fail_once(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("index write failed")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(exec_mod, "_finish_invocation", fail_once)
+    result = run_captured(
+        handle,
+        stage="frame",
+        argv=[sys.executable, "-c", "pass"],
+        invocation_id="index-failure-1",
+    )
+
+    error = _assert_terminal_error_agrees(handle, result, "index-failure-1")
+    assert error["classification"] == "INDEX_WRITE_FAILURE"
+    assert error["category"] == "PERSISTENCE"
+    assert error["phase"] == "invocation-index"
+    assert "Traceback (most recent call last)" in error["traceback"]
+
+
+def test_terminal_event_failure_is_retried_as_matching_failed_evidence(tmp_path, monkeypatch):
+    handle = _begin(tmp_path, monkeypatch)
+    original = exec_mod.append_event
+    failed = False
+
+    def fail_first_terminal(path, **fields):
+        nonlocal failed
+        if fields["event_type"] in {"COMMAND_COMPLETED", "COMMAND_FAILED"} and not failed:
+            failed = True
+            raise OSError("terminal event write failed")
+        return original(path, **fields)
+
+    monkeypatch.setattr(exec_mod, "append_event", fail_first_terminal)
+    result = run_captured(
+        handle,
+        stage="frame",
+        argv=[sys.executable, "-c", "pass"],
+        invocation_id="event-failure-1",
+    )
+
+    error = _assert_terminal_error_agrees(handle, result, "event-failure-1")
+    assert error["classification"] == "EVENT_WRITE_FAILURE"
+    assert error["category"] == "PERSISTENCE"
+    assert error["phase"] == "terminal-event"
+    assert "Traceback (most recent call last)" in error["traceback"]
+
+
+def test_signal_handlers_restore_after_logs_index_and_terminal_event(tmp_path, monkeypatch):
+    handle = _begin(tmp_path, monkeypatch)
+    previous_int = signal.getsignal(signal.SIGINT)
+    previous_term = signal.getsignal(signal.SIGTERM)
+
+    def prior_int(signum, frame):
+        return None
+
+    def prior_term(signum, frame):
+        return None
+
+    signal.signal(signal.SIGINT, prior_int)
+    signal.signal(signal.SIGTERM, prior_term)
+    order = []
+    real_signal = signal.signal
+    real_gzip = exec_mod._gzip_raw
+    real_finish = exec_mod._finish_invocation
+    real_append = exec_mod.append_event
+
+    def traced_signal(signum, handler):
+        if handler in {prior_int, prior_term}:
+            order.append("restore")
+        return real_signal(signum, handler)
+
+    def traced_gzip(*args, **kwargs):
+        order.append("gzip")
+        return real_gzip(*args, **kwargs)
+
+    def traced_finish(*args, **kwargs):
+        order.append("index")
+        return real_finish(*args, **kwargs)
+
+    def traced_append(path, **fields):
+        if fields["event_type"] in {"COMMAND_COMPLETED", "COMMAND_FAILED"}:
+            order.append("terminal-event")
+        return real_append(path, **fields)
+
+    monkeypatch.setattr(signal, "signal", traced_signal)
+    monkeypatch.setattr(exec_mod, "_gzip_raw", traced_gzip)
+    monkeypatch.setattr(exec_mod, "_finish_invocation", traced_finish)
+    monkeypatch.setattr(exec_mod, "append_event", traced_append)
+    try:
+        run_captured(
+            handle,
+            stage="frame",
+            argv=[sys.executable, "-c", "pass"],
+            invocation_id="restore-order-1",
+        )
+        assert order.index("restore") > order.index("terminal-event")
+        assert order.index("restore") > max(
+            index for index, item in enumerate(order) if item in {"gzip", "index"}
+        )
+        assert signal.getsignal(signal.SIGINT) is prior_int
+        assert signal.getsignal(signal.SIGTERM) is prior_term
+    finally:
+        real_signal(signal.SIGINT, previous_int)
+        real_signal(signal.SIGTERM, previous_term)
+
+
+def test_signal_handlers_restore_when_terminal_finalization_raises(tmp_path, monkeypatch):
+    handle = _begin(tmp_path, monkeypatch)
+    previous_int = signal.getsignal(signal.SIGINT)
+    previous_term = signal.getsignal(signal.SIGTERM)
+
+    def fail_terminal(*args, **kwargs):
+        raise RuntimeError("terminal persistence unavailable")
+
+    monkeypatch.setattr(exec_mod, "_finish_invocation", fail_terminal)
+    monkeypatch.setattr(exec_mod, "_replace_invocation", fail_terminal)
+    with pytest.raises(RuntimeError, match="terminal persistence unavailable"):
+        run_captured(
+            handle,
+            stage="frame",
+            argv=[sys.executable, "-c", "pass"],
+            invocation_id="restore-failure-1",
+        )
+    assert signal.getsignal(signal.SIGINT) == previous_int
+    assert signal.getsignal(signal.SIGTERM) == previous_term
 
 
 def test_cli_requires_separator_and_returns_child_outcome(tmp_path, monkeypatch):
