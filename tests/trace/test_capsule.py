@@ -58,6 +58,16 @@ def _redirect_roots(monkeypatch, tmp_path: Path) -> None:
         "autoresearch.scan.user_config.DEFAULT_PINNED_PATH",
         tmp_path / "missing-pinned.jsonc",
     )
+    monkeypatch.setattr(
+        capsule_mod,
+        "snapshot_identity",
+        lambda *args, **kwargs: {
+            "ok": True,
+            "components": {},
+            "missing": [],
+            "errors": [],
+        },
+    )
 
 
 def _begin(tmp_path: Path, monkeypatch):
@@ -95,6 +105,106 @@ def test_begin_writes_three_identical_verified_v3_contracts(tmp_path, monkeypatc
     assert all(load_run_contract(path) == handle.contract for path in paths)
     assert handle.contract.schema_version == 3
     assert handle.contract.workspace_path == str(handle.workspace)
+
+
+def test_begin_snapshots_identity_after_run_started_and_records_success(tmp_path, monkeypatch):
+    _redirect_roots(monkeypatch, tmp_path)
+    observed = {}
+
+    def snapshot(repo_root, out, **identity):
+        event_path = out.parent / "events/events.jsonl"
+        observed["events_at_snapshot"] = [
+            json.loads(line)["event_type"]
+            for line in event_path.read_text(encoding="utf-8").splitlines()
+        ]
+        observed["identity"] = identity
+        (out / "environment.json").write_text('{"engine":"codex"}\n', encoding="utf-8")
+        return {
+            "ok": True,
+            "components": {"environment": {"status": "SUCCESS"}},
+            "missing": [],
+            "errors": [],
+        }
+
+    monkeypatch.setattr(capsule_mod, "snapshot_identity", snapshot)
+
+    handle = begin_run("scan-market", DATE, "codex", {}, now=NOW)
+
+    assert observed["events_at_snapshot"] == ["RUN_STARTED"]
+    assert observed["identity"]["engine"] == "codex"
+    assert [event["event_type"] for event in _events(handle)] == [
+        "RUN_STARTED",
+        "IDENTITY_SNAPSHOTTED",
+    ]
+    state = json.loads((handle.workspace / "state.json").read_text(encoding="utf-8"))
+    assert (state["business_status"], state["evidence_status"]) == (
+        "ACTIVE",
+        "PENDING",
+    )
+
+
+def test_partial_identity_failure_keeps_run_loadable_and_emits_redacted_gap(tmp_path, monkeypatch):
+    _redirect_roots(monkeypatch, tmp_path)
+    secret = "sk-live-abcdefghijklmnopqrstuvwxyz123456"
+    monkeypatch.setenv("OPENAI_API_KEY", secret)
+
+    def partial(*args, **kwargs):
+        return {
+            "ok": False,
+            "components": {
+                "git_patch": {
+                    "status": "MISSING",
+                    "errors": [f"unsafe payload {secret}"],
+                },
+                "environment": {"status": "SUCCESS", "errors": []},
+            },
+            "missing": ["git_patch"],
+            "errors": [f"unsafe payload {secret}"],
+        }
+
+    monkeypatch.setattr(capsule_mod, "snapshot_identity", partial)
+
+    handle = begin_run("scan-market", DATE, "codex", {}, now=NOW)
+
+    assert load_run(handle.run_id) == handle
+    events = _events(handle)
+    assert events[0]["event_type"] == "RUN_STARTED"
+    assert [event["event_type"] for event in events[1:]] == [
+        "IDENTITY_SNAPSHOTTED",
+        "EVIDENCE_MISSING",
+    ]
+    state = json.loads((handle.workspace / "state.json").read_text(encoding="utf-8"))
+    assert (state["business_status"], state["evidence_status"]) == (
+        "ACTIVE",
+        "PENDING",
+    )
+    assert secret not in canonical_json(events)
+    assert events[-1]["payload"]["missing"] == ["git_patch"]
+
+
+def test_unexpected_identity_exception_does_not_turn_business_run_failed(tmp_path, monkeypatch):
+    _redirect_roots(monkeypatch, tmp_path)
+    secret = "sk-live-abcdefghijklmnopqrstuvwxyz123456"
+    monkeypatch.setenv("OPENAI_API_KEY", secret)
+
+    def broken(*args, **kwargs):
+        raise OSError(f"identity unavailable {secret}")
+
+    monkeypatch.setattr(capsule_mod, "snapshot_identity", broken)
+
+    handle = begin_run("scan-market", DATE, "codex", {}, now=NOW)
+
+    assert load_run(handle.run_id) == handle
+    events = _events(handle)
+    assert [event["event_type"] for event in events] == [
+        "RUN_STARTED",
+        "EVIDENCE_MISSING",
+    ]
+    assert secret not in canonical_json(events)
+    assert events[-1]["payload"]["missing"] == ["identity_snapshot"]
+    state = json.loads((handle.workspace / "state.json").read_text(encoding="utf-8"))
+    assert state["business_status"] == "ACTIVE"
+    assert state["evidence_status"] == "PENDING"
 
 
 def test_begin_collision_never_attaches_to_existing_run(tmp_path, monkeypatch):
@@ -160,11 +270,16 @@ def test_load_run_rejects_rehashed_wrong_run_started_identity(
 ):
     handle = _begin(tmp_path, monkeypatch)
     event_path = handle.capsule / "events/events.jsonl"
-    event = json.loads(event_path.read_text(encoding="utf-8"))
-    event["payload"][payload_key] = replacement
-    unsigned = {key: value for key, value in event.items() if key != "event_hash"}
-    event["event_hash"] = sha256_bytes(canonical_json(unsigned).encode("utf-8"))
-    event_path.write_text(canonical_json(event) + "\n", encoding="utf-8")
+    events = [json.loads(line) for line in event_path.read_text(encoding="utf-8").splitlines()]
+    events[0]["payload"][payload_key] = replacement
+    for index, event in enumerate(events):
+        if index:
+            event["prev_hash"] = events[index - 1]["event_hash"]
+        unsigned = {key: value for key, value in event.items() if key != "event_hash"}
+        event["event_hash"] = sha256_bytes(canonical_json(unsigned).encode("utf-8"))
+    event_path.write_text(
+        "".join(canonical_json(event) + "\n" for event in events), encoding="utf-8"
+    )
     with pytest.raises(RuntimeError, match="RUN_STARTED"):
         load_run(handle.run_id)
 
@@ -551,7 +666,7 @@ def test_multiprocess_first_use_allocates_all_attempts_without_directory_race(
     ) == process_count
     chain = verify_event_chain(handle.capsule / "events/events.jsonl")
     assert chain["ok"] is True
-    assert chain["n"] == 1 + (2 * process_count)
+    assert chain["n"] == 2 + (2 * process_count)
     assert list(outside.iterdir()) == []
 
 

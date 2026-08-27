@@ -34,17 +34,13 @@ from autoresearch.trace.events import (
     append_guarded_event,
     verify_event_chain,
 )
+from autoresearch.trace.identity import redact_value, scan_for_secrets, snapshot_identity
 
 _STAGE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$", re.ASCII)
 _AGENT_EVENT_TYPES = frozenset(
     {"AGENT_DISPATCHED", "AGENT_COMPLETED", "AGENT_FAILED"}
 )
-_SECRET_KEY_RE = re.compile(
-    r"token|secret|password|authorization|cookie|api[_-]?key", re.IGNORECASE
-)
-_BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
-_KEYLIKE_RE = re.compile(r"\b(?:sk|pk)-[A-Za-z0-9_-]{16,}\b", re.IGNORECASE)
 _UTC_TIMESTAMP_RE = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z$"
 )
@@ -151,6 +147,93 @@ def _run_started_fields(handle: RunHandle) -> dict:
     }
 
 
+def _identity_event_payload(result: Mapping) -> dict:
+    """Expose component outcomes without allowing capture errors to leak secrets."""
+    components = result.get("components", {})
+    summary = {
+        str(name): str(component.get("status", "MISSING"))
+        for name, component in components.items()
+        if isinstance(component, Mapping)
+    }
+    payload = {
+        "ok": bool(result.get("ok")),
+        "components": summary,
+        "missing": sorted(str(item) for item in result.get("missing", [])),
+        "errors": result.get("errors", []),
+    }
+    redacted = redact_value(payload).value
+    if not isinstance(redacted, dict):  # pragma: no cover - recursive shape invariant
+        raise TypeError("identity result did not normalize to an object")
+    if not scan_for_secrets(canonical_json(redacted).encode("utf-8"))["ok"]:
+        redacted["errors"] = ["[REDACTED]"]
+    return redacted
+
+
+def _record_identity_snapshot(handle: RunHandle) -> None:
+    """Capture identity after RUN_STARTED; identity gaps never kill the business run."""
+    try:
+        repo_root = Path(__file__).resolve().parents[2]
+        result = snapshot_identity(
+            repo_root,
+            handle.capsule / "identity",
+            engine=handle.engine,
+        )
+    except Exception as exc:
+        result = {
+            "ok": False,
+            "components": {},
+            "missing": ["identity_snapshot"],
+            "errors": [
+                {
+                    "component": "identity_snapshot",
+                    "error_type": type(exc).__name__,
+                    "message": str(exc),
+                }
+            ],
+        }
+        payload = _identity_event_payload(result)
+        with contextlib.suppress(Exception):
+            append_event(
+                handle.capsule / "events/events.jsonl",
+                run_id=handle.run_id,
+                engine=handle.engine,
+                stage="identity",
+                invocation_id=f"identity-{handle.run_id}",
+                attempt=1,
+                subject=None,
+                event_type="EVIDENCE_MISSING",
+                payload=payload,
+            )
+        return
+
+    payload = _identity_event_payload(result)
+    with contextlib.suppress(Exception):
+        append_event(
+            handle.capsule / "events/events.jsonl",
+            run_id=handle.run_id,
+            engine=handle.engine,
+            stage="identity",
+            invocation_id=f"identity-{handle.run_id}",
+            attempt=1,
+            subject=None,
+            event_type="IDENTITY_SNAPSHOTTED",
+            payload=payload,
+        )
+    if not result.get("ok"):
+        with contextlib.suppress(Exception):
+            append_event(
+                handle.capsule / "events/events.jsonl",
+                run_id=handle.run_id,
+                engine=handle.engine,
+                stage="identity",
+                invocation_id=f"identity-{handle.run_id}",
+                attempt=1,
+                subject=None,
+                event_type="EVIDENCE_MISSING",
+                payload=payload,
+            )
+
+
 def _record_bootstrap_failure(
     handle: RunHandle,
     *,
@@ -232,6 +315,11 @@ def begin_run(
     """Allocate one collision-safe active run and persist its identity first."""
     if kind != "scan-market":
         raise ValueError(f"unsupported run kind: {kind!r}")
+    if session_ref is not None:
+        if not isinstance(session_ref, str):
+            raise ValueError(f"invalid session_ref type: {type(session_ref).__name__}")
+        if not scan_for_secrets(session_ref.encode("utf-8"))["ok"]:
+            raise ValueError("session_ref contains suspected secret material")
     resolved_date = ws.validate_scan_date(analysis_date)
     if engine not in ws.ENGINES or engine != ws.ENGINE:
         raise ValueError(
@@ -289,6 +377,7 @@ def begin_run(
         raise RuntimeError(
             f"run bootstrap failed at {phase}; recoverable workspace={workspace}: {exc}"
         ) from exc
+    _record_identity_snapshot(handle)
     return handle
 
 
@@ -424,32 +513,8 @@ def _validate_agent_identifier(name: str, value: object) -> str:
     return value
 
 
-def _redact_agent_value(value: object, *, secret_key: bool = False) -> object:
-    if secret_key:
-        return "[REDACTED]"
-    if type(value) is dict:
-        return {
-            str(key): _redact_agent_value(
-                item,
-                secret_key=bool(_SECRET_KEY_RE.search(str(key))),
-            )
-            for key, item in value.items()
-        }
-    if type(value) is list:
-        return [_redact_agent_value(item) for item in value]
-    if type(value) is str:
-        redacted = _KEYLIKE_RE.sub(
-            "[REDACTED]", _BEARER_RE.sub("[REDACTED]", value)
-        )
-        for key, secret in os.environ.items():
-            if (
-                _SECRET_KEY_RE.search(key)
-                and len(secret) >= 4
-                and secret in redacted
-            ):
-                redacted = redacted.replace(secret, "[REDACTED]")
-        return redacted
-    return value
+def _redact_agent_value(value: object) -> object:
+    return redact_value(value).value
 
 
 def _agent_payload(name: str, value: Mapping | None) -> dict | None:
