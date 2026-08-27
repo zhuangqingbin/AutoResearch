@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -158,13 +159,73 @@ def test_snapshot_excludes_out_of_scope_symlinks_and_special_files(tmp_path):
     out = tmp_path / "identity"
     result = snapshot_identity(repo, out, engine="codex")
 
-    assert result["ok"] is True
+    assert result["ok"] is False
+    assert result["components"]["prompts"]["status"] == "PARTIAL"
+    assert result["components"]["untracked_sources"]["status"] == "PARTIAL"
     names = _tar_names(out / "untracked_sources.tar.zst")
     assert names == []
+    manifest = json.loads((out / "source_manifest.json").read_text(encoding="utf-8"))
+    assert [row["path"] for row in manifest["prompt_rejected"]] == [
+        ".claude/skills/escape.md"
+    ]
+    assert [row["path"] for row in manifest["untracked_rejected"]] == [
+        ".claude/skills/escape.md",
+        "autoresearch/escape.py",
+        "autoresearch/special.pipe",
+    ]
     combined = _all_artifact_bytes(out)
     assert b"DO_NOT_COPY" not in combined
     assert b"do-not-copy" not in combined
     assert not (out / "prompts/skills/escape.md").exists()
+
+
+def test_safe_in_repo_prompt_symlink_captures_target_and_exact_bytes(tmp_path):
+    repo = _repo(tmp_path)
+    link = repo / ".claude/skills/linked.md"
+    link.symlink_to("../agents/analyst.md")
+    out = tmp_path / "identity"
+
+    result = snapshot_identity(repo, out, engine="codex")
+
+    assert result["components"]["prompts"]["status"] == "SUCCESS"
+    assert (out / "prompts/skills/linked.md").read_bytes() == b"tracked agent\n"
+    manifest = json.loads((out / "source_manifest.json").read_text(encoding="utf-8"))
+    row = next(row for row in manifest["prompts"] if row["source"].endswith("linked.md"))
+    assert row["link_target"] == "../agents/analyst.md"
+    assert row["resolved_source"] == ".claude/agents/analyst.md"
+    assert row["sha256"] == row["resolved_sha256"]
+
+
+def test_prompt_parent_replacement_with_symlink_is_partial_and_never_followed(
+    tmp_path, monkeypatch
+):
+    repo = _repo(tmp_path)
+    relative = Path(".claude/skills/scan-market/SKILL.md")
+    source_parent = repo / relative.parent
+    held_parent = repo / ".claude/skills/held"
+    outside_parent = tmp_path / "outside-skills"
+    outside_parent.mkdir()
+    (outside_parent / "SKILL.md").write_bytes(b"OUTSIDE_BYTES\n")
+    original = identity_mod._read_regular
+    replaced = False
+
+    def replace_parent(root, item):
+        nonlocal replaced
+        if item == relative and not replaced:
+            source_parent.rename(held_parent)
+            source_parent.symlink_to(outside_parent, target_is_directory=True)
+            replaced = True
+        return original(root, item)
+
+    monkeypatch.setattr(identity_mod, "_read_regular", replace_parent)
+    out = tmp_path / "identity"
+
+    result = snapshot_identity(repo, out, engine="codex", environ={})
+
+    assert result["ok"] is False
+    assert result["components"]["prompts"]["status"] == "PARTIAL"
+    assert not (out / "prompts/skills/scan-market/SKILL.md").exists()
+    assert b"OUTSIDE_BYTES" not in _all_artifact_bytes(out)
 
 
 def test_snapshot_rejects_symlinked_output_parent_without_outside_writes(tmp_path):
@@ -226,6 +287,89 @@ def test_redact_value_removes_slack_token_under_arbitrary_safe_key():
     assert result.hits == 1
     assert token not in canonical_json(result.value)
     assert result.value == {"comment": "diagnostic::[REDACTED]::end"}
+
+
+def test_uri_private_key_and_provider_credentials_are_detected_and_redacted():
+    candidates = {
+        "uri_userinfo": "postgresql://runner:correct-horse-battery@db.internal:5432/app",
+        "private_key": (
+            "-----BEGIN PRIVATE KEY-----\n"
+            "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7\n"
+            "-----END PRIVATE KEY-----"
+        ),
+        "github": "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij",
+        "gitlab": "glpat-AbCdEfGhIjKlMnOpQrSt",
+        "google": "AIzaSyA1234567890bcdefghijklmnopqrstuv",
+        "stripe": "sk_live_abcdefghijklmnopqrstuvwx",
+        "twilio": "SK0123456789abcdef0123456789abcdef",
+        "sendgrid": "SG.abcdefghijklmnopqrstuv.ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef",
+        "npm": "npm_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij",
+        "contextual_dsn": "analytics_dsn=host=db.internal",
+    }
+
+    for kind, candidate in candidates.items():
+        scan = scan_for_secrets(candidate.encode(), environ={})
+        assert scan["ok"] is False, kind
+        assert all("value" not in finding for finding in scan["findings"])
+        redaction = redact_value({"comment": candidate}, environ={})
+        assert candidate not in canonical_json(redaction.value)
+        assert redaction.hits >= 1
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"https://example.com/public/docs?q=identity",
+        b"postgresql://db.internal:5432/public",
+        b"redis://cache.internal:6379/0",
+        b"PEM-private-key-format-documentation",
+        b"provider-token-detection-source-text",
+    ],
+)
+def test_secret_scanner_allows_public_urls_and_source_text(payload):
+    assert scan_for_secrets(payload, environ={})["ok"] is True
+
+
+def test_redact_value_sanitizes_credentials_in_dict_keys_without_losing_collisions():
+    first = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij"
+    second = "npm_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij"
+    known = "database-password-value"
+    payload = {
+        f"header::{first}": "first",
+        f"header::{second}": "second",
+        "header::[REDACTED]": "literal",
+        f"prefix::{known}": "third",
+        "authorization": "plain credential value",
+    }
+
+    result = redact_value(payload, environ={"DATABASE_URL": known})
+    rendered = canonical_json(result.value)
+
+    assert first not in rendered
+    assert second not in rendered
+    assert known not in rendered
+    assert result.value["authorization"] == "[REDACTED]"
+    assert len(result.value) == len(payload)
+    assert scan_for_secrets(rendered.encode(), environ={"DATABASE_URL": known})["ok"] is True
+
+
+def test_database_env_is_presence_only_and_known_value_never_persists(tmp_path):
+    repo = _repo(tmp_path)
+    connection = "postgresql://runner:correct-horse-battery@db.internal:5432/app"
+    out = tmp_path / "identity"
+
+    result = snapshot_identity(
+        repo,
+        out,
+        engine="codex",
+        environ={"DATABASE_URL": connection, "PUBLIC_URL": "https://example.com"},
+    )
+
+    assert result["components"]["environment"]["status"] == "SUCCESS"
+    environment = json.loads((out / "environment.json").read_text(encoding="utf-8"))
+    assert environment["secret_environment"]["DATABASE_URL"] == {"present": True}
+    assert "PUBLIC_URL" not in environment["secret_environment"]
+    assert connection.encode() not in _all_artifact_bytes(out)
 
 
 @pytest.mark.parametrize(
@@ -295,6 +439,22 @@ def test_secret_in_dirty_patch_is_not_persisted_and_marks_component_missing(tmp_
     assert result["missing"] == ["git_patch"]
 
 
+def test_uri_credentials_in_dirty_patch_are_never_persisted(tmp_path):
+    repo = _repo(tmp_path)
+    connection = "postgresql://runner:correct-horse-battery@db.internal:5432/app"
+    (repo / "autoresearch/rule.py").write_text(
+        f'DATABASE = "{connection}"\n', encoding="utf-8"
+    )
+    out = tmp_path / "identity"
+
+    result = snapshot_identity(repo, out, engine="codex", environ={})
+
+    assert result["ok"] is False
+    assert result["components"]["git_patch"]["status"] == "MISSING"
+    assert not (out / "code.patch").exists()
+    assert connection.encode() not in _all_artifact_bytes(out)
+
+
 def test_secret_prompt_and_untracked_source_are_never_archived(tmp_path, monkeypatch):
     repo = _repo(tmp_path)
     secret = "plain-secret-value"
@@ -347,7 +507,9 @@ def test_secret_value_in_source_path_is_not_written_to_tar_or_manifest(tmp_path,
     assert result["ok"] is False
     assert result["components"]["untracked_sources"]["status"] == "PARTIAL"
     assert _tar_names(out / "untracked_sources.tar.zst") == []
-    assert secret.encode() not in _all_artifact_bytes(out)
+    artifacts = _all_artifact_bytes(out)
+    assert secret.encode() not in artifacts
+    assert secret.encode().hex().encode() not in artifacts
 
 
 def test_partial_untracked_archive_keeps_all_safe_members_deterministically(tmp_path, monkeypatch):
@@ -408,3 +570,188 @@ def test_partial_untracked_archive_records_unreadable_member_and_keeps_safe_one(
         "autoresearch/safe.py": b"SAFE = 1\n"
     }
     assert any("autoresearch/unreadable.py" in item for item in component["missing"])
+
+
+@pytest.mark.skipif(os.name == "nt", reason="byte paths require POSIX")
+def test_non_utf8_untracked_path_is_lossless_and_replayable(tmp_path):
+    repo = _repo(tmp_path)
+    raw_relative = b"autoresearch/nonutf-\xff.py"
+    try:
+        fd = os.open(
+            os.fsencode(repo) + b"/" + raw_relative,
+            os.O_WRONLY | os.O_CREAT,
+            0o644,
+        )
+    except OSError as exc:
+        pytest.skip(f"filesystem rejects byte paths: errno={exc.errno}")
+    try:
+        os.write(fd, b"VALUE = 7\n")
+    finally:
+        os.close(fd)
+    expected_status = subprocess.run(
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        cwd=os.fsencode(repo),
+        check=True,
+        capture_output=True,
+    ).stdout
+    out = tmp_path / "identity"
+
+    result = snapshot_identity(repo, out, engine="codex", environ={})
+
+    assert result["components"]["untracked_sources"]["status"] == "SUCCESS"
+    manifest = json.loads((out / "source_manifest.json").read_text(encoding="utf-8"))
+    assert bytes.fromhex(manifest["git"]["porcelain_status_hex"]) == expected_status
+    path_row = next(
+        row
+        for row in manifest["untracked_paths"]
+        if bytes.fromhex(row["raw_path_hex"]) == raw_relative
+    )
+    assert path_row["archive_member"].startswith("__raw_path__/")
+    assert _tar_contents(out / "untracked_sources.tar.zst")[path_row["archive_member"]] == (
+        b"VALUE = 7\n"
+    )
+
+
+def test_repository_epoch_drift_is_explicitly_partial(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    out = tmp_path / "identity"
+    stable = identity_mod._repository_epoch(repo)
+    changed = {**stable, "status_sha256": "f" * 64}
+    epochs = iter((stable, changed))
+    monkeypatch.setattr(identity_mod, "_repository_epoch", lambda *_: next(epochs))
+
+    result = snapshot_identity(repo, out, engine="codex", environ={})
+
+    assert result["ok"] is False
+    assert result["components"]["repository_epoch"]["status"] == "PARTIAL"
+    assert "repository_epoch" in result["missing"]
+
+
+def test_missing_gitlink_checkout_is_an_explicit_submodule_gap(tmp_path):
+    repo = _repo(tmp_path)
+    child = tmp_path / "child"
+    child.mkdir()
+    _git(child, "init", "-q")
+    _git(child, "config", "user.email", "identity@example.invalid")
+    _git(child, "config", "user.name", "Identity Test")
+    (child / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _git(child, "add", ".")
+    _git(child, "commit", "-qm", "child")
+    child_head = _git(child, "rev-parse", "HEAD").stdout.strip()
+    _git(repo, "update-index", "--add", "--cacheinfo", f"160000,{child_head},vendor/sub")
+    out = tmp_path / "identity"
+
+    result = snapshot_identity(repo, out, engine="codex", environ={})
+
+    assert result["ok"] is False
+    assert result["components"]["submodules"]["status"] == "PARTIAL"
+    submodules = json.loads((out / "submodules.json").read_text(encoding="utf-8"))
+    assert submodules["submodules"] == [
+        {
+            "gitlink_sha": child_head,
+            "path": "vendor/sub",
+            "raw_path_hex": "76656e646f722f737562",
+            "status": "MISSING_CHECKOUT",
+        }
+    ]
+
+
+def test_checked_out_submodule_records_head_status_and_diff(tmp_path):
+    repo = _repo(tmp_path)
+    child = tmp_path / "child-checkout"
+    child.mkdir()
+    _git(child, "init", "-q")
+    _git(child, "config", "user.email", "identity@example.invalid")
+    _git(child, "config", "user.name", "Identity Test")
+    (child / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _git(child, "add", ".")
+    _git(child, "commit", "-qm", "child")
+    child_head = _git(child, "rev-parse", "HEAD").stdout.strip()
+    _git(
+        repo,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        str(child),
+        "vendor/sub",
+    )
+    _git(repo, "commit", "-qam", "add submodule")
+    out = tmp_path / "identity"
+
+    result = snapshot_identity(repo, out, engine="codex", environ={})
+
+    assert result["components"]["submodules"]["status"] == "SUCCESS"
+    row = json.loads((out / "submodules.json").read_text(encoding="utf-8"))[
+        "submodules"
+    ][0]
+    assert row["gitlink_sha"] == child_head
+    assert row["checked_out_head"] == child_head
+    assert row["status"] == "CAPTURED"
+    assert bytes.fromhex(row["status_hex"]) == b""
+    assert bytes.fromhex(row["diff_hex"]) == b""
+
+
+def test_retry_removes_only_stale_owned_prompts_and_preserves_contract(tmp_path):
+    repo = _repo(tmp_path)
+    out = tmp_path / "identity"
+    out.mkdir()
+    contract = out / "run_contract.json"
+    contract.write_bytes(b"contract-bytes\n")
+    prompt = repo / ".claude/skills/new/SKILL.md"
+    prompt.parent.mkdir(parents=True)
+    prompt.write_text("temporary prompt\n", encoding="utf-8")
+    assert snapshot_identity(repo, out, engine="codex", environ={})["ok"] is True
+    copied = out / "prompts/skills/new/SKILL.md"
+    assert copied.is_file()
+
+    prompt.unlink()
+    result = snapshot_identity(repo, out, engine="codex", environ={})
+
+    assert result["ok"] is True
+    assert not copied.exists()
+    assert contract.read_bytes() == b"contract-bytes\n"
+
+
+def test_concurrent_snapshots_serialize_without_interleaved_artifacts(tmp_path):
+    repo = _repo(tmp_path)
+    out = tmp_path / "identity"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(
+            pool.map(
+                lambda _: snapshot_identity(repo, out, engine="codex", environ={}),
+                range(2),
+            )
+        )
+
+    assert all(result["ok"] for result in results)
+    assert json.loads((out / "snapshot_result.json").read_text(encoding="utf-8"))["ok"]
+    assert _tar_names(out / "untracked_sources.tar.zst") == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="directory fsync is POSIX-specific")
+def test_identity_atomic_write_fsyncs_parent_and_propagates_failure(tmp_path, monkeypatch):
+    target = tmp_path / "identity/artifact.bin"
+    original = identity_mod.os.fsync
+    directory_calls = 0
+
+    def observe(fd):
+        nonlocal directory_calls
+        if os.path.isdir(f"/dev/fd/{fd}"):
+            directory_calls += 1
+        return original(fd)
+
+    monkeypatch.setattr(identity_mod.os, "fsync", observe)
+    identity_mod._atomic_write_bytes(target, b"safe")
+    assert directory_calls == 1
+
+    def fail_directory(fd):
+        if os.path.isdir(f"/dev/fd/{fd}"):
+            raise OSError("directory sync fault")
+        return original(fd)
+
+    monkeypatch.setattr(identity_mod.os, "fsync", fail_directory)
+    with pytest.raises(OSError, match="directory sync fault"):
+        identity_mod._atomic_write_bytes(target, b"replacement")

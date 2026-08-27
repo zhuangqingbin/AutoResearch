@@ -182,6 +182,29 @@ def test_partial_identity_failure_keeps_run_loadable_and_emits_redacted_gap(tmp_
     assert events[-1]["payload"]["missing"] == ["git_patch"]
 
 
+def test_identity_event_payload_falls_back_wholesale_for_opaque_material(
+    tmp_path, monkeypatch
+):
+    _redirect_roots(monkeypatch, tmp_path)
+    candidate = "M7pQ2xV9nK4rT8wL6cD3sF1hJ5uB0yE7aG9mN2qR"
+    monkeypatch.setattr(
+        capsule_mod,
+        "snapshot_identity",
+        lambda *args, **kwargs: {
+            "ok": False,
+            "components": {},
+            "missing": [candidate],
+            "errors": [{"component": "identity", "message": candidate}],
+        },
+    )
+
+    handle = begin_run("scan-market", DATE, "codex", {}, now=NOW)
+
+    serialized = canonical_json(_events(handle))
+    assert candidate not in serialized
+    assert _events(handle)[-1]["payload"]["missing"] == ["identity_snapshot"]
+
+
 def test_unexpected_identity_exception_does_not_turn_business_run_failed(tmp_path, monkeypatch):
     _redirect_roots(monkeypatch, tmp_path)
     secret = "sk-live-abcdefghijklmnopqrstuvwxyz123456"
@@ -205,6 +228,80 @@ def test_unexpected_identity_exception_does_not_turn_business_run_failed(tmp_pat
     state = json.loads((handle.workspace / "state.json").read_text(encoding="utf-8"))
     assert state["business_status"] == "ACTIVE"
     assert state["evidence_status"] == "PENDING"
+
+
+def test_identity_success_event_append_failure_persists_gap_marker_and_event(
+    tmp_path, monkeypatch
+):
+    _redirect_roots(monkeypatch, tmp_path)
+    original = capsule_mod.append_event
+
+    def fail_snapshot_event(*args, **kwargs):
+        if kwargs.get("event_type") == "IDENTITY_SNAPSHOTTED":
+            raise OSError("event append fault")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(capsule_mod, "append_event", fail_snapshot_event)
+
+    handle = begin_run("scan-market", DATE, "codex", {}, now=NOW)
+
+    assert load_run(handle.run_id) == handle
+    assert [event["event_type"] for event in _events(handle)] == [
+        "RUN_STARTED",
+        "EVIDENCE_MISSING",
+    ]
+    assert _events(handle)[-1]["payload"]["missing"] == [
+        "identity_snapshot_event"
+    ]
+    marker = json.loads(
+        (handle.capsule / "identity/identity_event_failure.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert marker["failures"] == [
+        {
+            "attempted_event": "IDENTITY_SNAPSHOTTED",
+            "component": "identity_events",
+            "error_type": "OSError",
+        }
+    ]
+
+
+def test_identity_missing_event_append_failure_persists_gap_marker(tmp_path, monkeypatch):
+    _redirect_roots(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        capsule_mod,
+        "snapshot_identity",
+        lambda *args, **kwargs: {
+            "ok": False,
+            "components": {"git_patch": {"status": "MISSING"}},
+            "missing": ["git_patch"],
+            "errors": [],
+        },
+    )
+    original = capsule_mod.append_event
+
+    def fail_gap_event(*args, **kwargs):
+        if kwargs.get("event_type") == "EVIDENCE_MISSING":
+            raise OSError("gap append fault")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(capsule_mod, "append_event", fail_gap_event)
+
+    handle = begin_run("scan-market", DATE, "codex", {}, now=NOW)
+
+    assert load_run(handle.run_id) == handle
+    assert [event["event_type"] for event in _events(handle)] == [
+        "RUN_STARTED",
+        "IDENTITY_SNAPSHOTTED",
+    ]
+    marker = json.loads(
+        (handle.capsule / "identity/identity_event_failure.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert marker["failures"][0]["attempted_event"] == "EVIDENCE_MISSING"
+    assert marker["failures"][0]["error_type"] == "OSError"
 
 
 def test_begin_collision_never_attaches_to_existing_run(tmp_path, monkeypatch):
@@ -360,6 +457,18 @@ def test_begin_rejects_slack_token_under_safe_contract_key_before_workspace(
         begin_run("scan-market", DATE, "codex", config, now=NOW)
 
     assert token not in str(raised.value)
+    assert not ws.scan_run_root(RUN_ID).exists()
+
+
+def test_begin_rejects_uri_credentials_before_workspace_allocation(tmp_path, monkeypatch):
+    _redirect_roots(monkeypatch, tmp_path)
+    connection = "postgresql://runner:correct-horse-battery@db.internal:5432/app"
+    config = {"l2": {"floors": {"comment": connection}}}
+
+    with pytest.raises(ValueError, match="secret material") as raised:
+        begin_run("scan-market", DATE, "codex", config, now=NOW)
+
+    assert connection not in str(raised.value)
     assert not ws.scan_run_root(RUN_ID).exists()
 
 
@@ -867,6 +976,45 @@ def test_agent_boundary_records_authoritative_binding_and_structured_result(
         "role": "l4-card",
     }
     assert verify_event_chain(handle.capsule / "events/events.jsonl")["ok"] is True
+
+
+def test_agent_payload_sanitizes_credential_in_dictionary_key(tmp_path, monkeypatch):
+    handle = _begin(tmp_path, monkeypatch)
+    credential = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij"
+
+    event = record_agent_boundary(
+        handle.run_id,
+        "AGENT_DISPATCHED",
+        role="l4-card",
+        subject="600000",
+        invocation_id="l4-card-600000-key",
+        attempt=1,
+        result={f"header::{credential}": "present"},
+    )
+
+    serialized = canonical_json(event)
+    assert credential not in serialized
+    assert event["payload"]["result"] == {"header::[REDACTED]": "present"}
+
+
+def test_agent_payload_post_scan_rejects_unredacted_opaque_secret(tmp_path, monkeypatch):
+    handle = _begin(tmp_path, monkeypatch)
+    candidate = "M7pQ2xV9nK4rT8wL6cD3sF1hJ5uB0yE7aG9mN2qR"
+    before = (handle.capsule / "events/events.jsonl").read_bytes()
+
+    with pytest.raises(ValueError, match="secret material") as raised:
+        record_agent_boundary(
+            handle.run_id,
+            "AGENT_DISPATCHED",
+            role="l4-card",
+            subject="600000",
+            invocation_id="l4-card-600000-opaque",
+            attempt=1,
+            result={"comment": candidate},
+        )
+
+    assert candidate not in str(raised.value)
+    assert (handle.capsule / "events/events.jsonl").read_bytes() == before
 
 
 def test_controlled_agent_boundary_self_registers_control_and_target(

@@ -182,8 +182,69 @@ def _identity_event_payload(result: Mapping) -> dict:
     if not isinstance(redacted, dict):  # pragma: no cover - recursive shape invariant
         raise TypeError("identity result did not normalize to an object")
     if not scan_for_secrets(canonical_json(redacted).encode("utf-8"))["ok"]:
-        redacted["errors"] = ["[REDACTED]"]
+        return {
+            "ok": False,
+            "components": {},
+            "missing": ["identity_snapshot"],
+            "errors": ["[REDACTED]"],
+        }
     return redacted
+
+
+def _persist_identity_event_failure(
+    handle: RunHandle,
+    *,
+    attempted_event: str,
+    error: BaseException,
+) -> None:
+    path = handle.capsule / "identity/identity_event_failure.json"
+    failures: list[dict[str, str]] = []
+    try:
+        current = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(current, dict) and isinstance(current.get("failures"), list):
+            failures = [row for row in current["failures"] if isinstance(row, dict)]
+    except FileNotFoundError:
+        pass
+    failure = {
+        "attempted_event": attempted_event,
+        "component": "identity_events",
+        "error_type": type(error).__name__,
+    }
+    failures.append(failure)
+    marker = {"schema_version": 1, "failures": failures}
+    safe = redact_value(marker).value
+    serialized = canonical_json(safe).encode("utf-8")
+    if not scan_for_secrets(serialized)["ok"]:
+        raise ValueError("identity event failure metadata contains secret material")
+    atomic_write_json(path, safe)
+
+
+def _append_identity_event(
+    handle: RunHandle,
+    *,
+    event_type: str,
+    payload: dict,
+) -> bool:
+    try:
+        append_event(
+            handle.capsule / "events/events.jsonl",
+            run_id=handle.run_id,
+            engine=handle.engine,
+            stage="identity",
+            invocation_id=f"identity-{handle.run_id}",
+            attempt=1,
+            subject=None,
+            event_type=event_type,
+            payload=payload,
+        )
+        return True
+    except Exception as exc:
+        _persist_identity_event_failure(
+            handle,
+            attempted_event=event_type,
+            error=exc,
+        )
+        return False
 
 
 def _record_identity_snapshot(handle: RunHandle) -> None:
@@ -209,46 +270,34 @@ def _record_identity_snapshot(handle: RunHandle) -> None:
             ],
         }
         payload = _identity_event_payload(result)
-        with contextlib.suppress(Exception):
-            append_event(
-                handle.capsule / "events/events.jsonl",
-                run_id=handle.run_id,
-                engine=handle.engine,
-                stage="identity",
-                invocation_id=f"identity-{handle.run_id}",
-                attempt=1,
-                subject=None,
-                event_type="EVIDENCE_MISSING",
-                payload=payload,
-            )
+        _append_identity_event(handle, event_type="EVIDENCE_MISSING", payload=payload)
         return
 
     payload = _identity_event_payload(result)
-    with contextlib.suppress(Exception):
-        append_event(
-            handle.capsule / "events/events.jsonl",
-            run_id=handle.run_id,
-            engine=handle.engine,
-            stage="identity",
-            invocation_id=f"identity-{handle.run_id}",
-            attempt=1,
-            subject=None,
-            event_type="IDENTITY_SNAPSHOTTED",
-            payload=payload,
-        )
-    if not result.get("ok"):
-        with contextlib.suppress(Exception):
-            append_event(
-                handle.capsule / "events/events.jsonl",
-                run_id=handle.run_id,
-                engine=handle.engine,
-                stage="identity",
-                invocation_id=f"identity-{handle.run_id}",
-                attempt=1,
-                subject=None,
-                event_type="EVIDENCE_MISSING",
-                payload=payload,
+    snapshotted = _append_identity_event(
+        handle,
+        event_type="IDENTITY_SNAPSHOTTED",
+        payload=payload,
+    )
+    if not result.get("ok") or not snapshotted:
+        gap_payload = dict(payload)
+        if not snapshotted:
+            gap_payload["ok"] = False
+            gap_payload["missing"] = sorted(
+                {*gap_payload.get("missing", []), "identity_snapshot_event"}
             )
+            gap_payload["errors"] = [
+                *gap_payload.get("errors", []),
+                {
+                    "component": "identity_events",
+                    "error_type": "EVENT_APPEND_FAILED",
+                },
+            ]
+        _append_identity_event(
+            handle,
+            event_type="EVIDENCE_MISSING",
+            payload=gap_payload,
+        )
 
 
 def _record_bootstrap_failure(
@@ -545,6 +594,8 @@ def _agent_payload(name: str, value: Mapping | None) -> dict | None:
         raise ValueError(f"{name} must contain canonical JSON values") from exc
     if type(normalized) is not dict:
         raise TypeError(f"{name} must be a JSON object or None")
+    if not scan_for_secrets(canonical_json(normalized).encode("utf-8"))["ok"]:
+        raise ValueError(f"{name} contains suspected secret material")
     return normalized
 
 
