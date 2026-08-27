@@ -239,11 +239,14 @@ def _append_identity_event(
         )
         return True
     except Exception as exc:
-        _persist_identity_event_failure(
-            handle,
-            attempted_event=event_type,
-            error=exc,
-        )
+        try:
+            _persist_identity_event_failure(
+                handle,
+                attempted_event=event_type,
+                error=exc,
+            )
+        except Exception:
+            print("identity evidence persistence degraded", file=sys.stderr)
         return False
 
 

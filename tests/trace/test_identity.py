@@ -192,7 +192,9 @@ def test_safe_in_repo_prompt_symlink_captures_target_and_exact_bytes(tmp_path):
     manifest = json.loads((out / "source_manifest.json").read_text(encoding="utf-8"))
     row = next(row for row in manifest["prompts"] if row["source"].endswith("linked.md"))
     assert row["link_target"] == "../agents/analyst.md"
+    assert bytes.fromhex(row["link_target_hex"]) == b"../agents/analyst.md"
     assert row["resolved_source"] == ".claude/agents/analyst.md"
+    assert bytes.fromhex(row["resolved_source_hex"]) == b".claude/agents/analyst.md"
     assert row["sha256"] == row["resolved_sha256"]
 
 
@@ -305,6 +307,8 @@ def test_uri_private_key_and_provider_credentials_are_detected_and_redacted():
         "sendgrid": "SG.abcdefghijklmnopqrstuv.ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef",
         "npm": "npm_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij",
         "contextual_dsn": "analytics_dsn=host=db.internal",
+        "driver_uri": "mssql+pyodbc://runner:correct-horse@db.internal/app",
+        "non_db_uri": "amqps://worker:correct-horse@mq.internal/vhost",
     }
 
     for kind, candidate in candidates.items():
@@ -320,6 +324,7 @@ def test_uri_private_key_and_provider_credentials_are_detected_and_redacted():
     "payload",
     [
         b"https://example.com/public/docs?q=identity",
+        b"ftp://anonymous@example.com/public/file.txt",
         b"postgresql://db.internal:5432/public",
         b"redis://cache.internal:6379/0",
         b"PEM-private-key-format-documentation",
@@ -328,6 +333,34 @@ def test_uri_private_key_and_provider_credentials_are_detected_and_redacted():
 )
 def test_secret_scanner_allows_public_urls_and_source_text(payload):
     assert scan_for_secrets(payload, environ={})["ok"] is True
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b'api_key = os.getenv("PROVIDER_API_KEY")',
+        b"credentials = load_credentials()",
+        b"database_url = settings.database_url",
+    ],
+)
+def test_secret_assignment_scanner_allows_runtime_expressions(payload):
+    assert scan_for_secrets(payload, environ={})["ok"] is True
+    assert redact_value({"source": payload.decode()}, environ={}).hits == 0
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b'api_key = "literal-credential-value"',
+        b'credentials = "literal-credential-value"',
+        b'database_url = "driver://runner:password@service.internal/app"',
+    ],
+)
+def test_secret_assignment_scanner_rejects_literal_credentials(payload):
+    assert scan_for_secrets(payload, environ={})["ok"] is False
+    redacted = redact_value({"source": payload.decode()}, environ={})
+    assert redacted.hits >= 1
+    assert payload.decode() not in canonical_json(redacted.value)
 
 
 def test_redact_value_sanitizes_credentials_in_dict_keys_without_losing_collisions():
@@ -450,6 +483,22 @@ def test_uri_credentials_in_dirty_patch_are_never_persisted(tmp_path):
     result = snapshot_identity(repo, out, engine="codex", environ={})
 
     assert result["ok"] is False
+    assert result["components"]["git_patch"]["status"] == "MISSING"
+    assert not (out / "code.patch").exists()
+    assert connection.encode() not in _all_artifact_bytes(out)
+
+
+@pytest.mark.parametrize("scheme", ["mssql+pyodbc", "amqps"])
+def test_generic_uri_credentials_in_dirty_patch_are_never_persisted(tmp_path, scheme):
+    repo = _repo(tmp_path)
+    connection = f"{scheme}://runner:correct-horse@service.internal/app"
+    (repo / "autoresearch/rule.py").write_text(
+        f'CONNECTION = "{connection}"\n', encoding="utf-8"
+    )
+    out = tmp_path / "identity"
+
+    result = snapshot_identity(repo, out, engine="codex", environ={})
+
     assert result["components"]["git_patch"]["status"] == "MISSING"
     assert not (out / "code.patch").exists()
     assert connection.encode() not in _all_artifact_bytes(out)
@@ -618,13 +667,42 @@ def test_repository_epoch_drift_is_explicitly_partial(tmp_path, monkeypatch):
     stable = identity_mod._repository_epoch(repo)
     changed = {**stable, "status_sha256": "f" * 64}
     epochs = iter((stable, changed))
-    monkeypatch.setattr(identity_mod, "_repository_epoch", lambda *_: next(epochs))
+    monkeypatch.setattr(
+        identity_mod, "_repository_epoch", lambda *_, **__: next(epochs)
+    )
 
     result = snapshot_identity(repo, out, engine="codex", environ={})
 
     assert result["ok"] is False
     assert result["components"]["repository_epoch"]["status"] == "PARTIAL"
     assert "repository_epoch" in result["missing"]
+
+
+def test_repository_epoch_detects_patch_and_prompt_content_race(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    (repo / "autoresearch/rule.py").write_text("VALUE = 2\n", encoding="utf-8")
+    prompt = repo / ".claude/agents/analyst.md"
+    prompt.write_text("prompt v2\n", encoding="utf-8")
+    out = tmp_path / "identity"
+    original = identity_mod._write_scanned
+    mutated = False
+
+    def mutate_after_patch(path, payload, **kwargs):
+        nonlocal mutated
+        written = original(path, payload, **kwargs)
+        if path.name == "code.patch" and not mutated:
+            mutated = True
+            (repo / "autoresearch/rule.py").write_text("VALUE = 3\n", encoding="utf-8")
+            prompt.write_text("prompt v3\n", encoding="utf-8")
+        return written
+
+    monkeypatch.setattr(identity_mod, "_write_scanned", mutate_after_patch)
+
+    result = snapshot_identity(repo, out, engine="codex", environ={})
+
+    assert b"VALUE = 2" in (out / "code.patch").read_bytes()
+    assert (out / "prompts/agents/analyst.md").read_bytes() == b"prompt v3\n"
+    assert result["components"]["repository_epoch"]["status"] == "PARTIAL"
 
 
 def test_missing_gitlink_checkout_is_an_explicit_submodule_gap(tmp_path):
@@ -693,6 +771,121 @@ def test_checked_out_submodule_records_head_status_and_diff(tmp_path):
     assert bytes.fromhex(row["diff_hex"]) == b""
 
 
+def test_dirty_submodule_is_partial_when_nested_bytes_are_not_archived(tmp_path):
+    repo = _repo(tmp_path)
+    child = tmp_path / "child-dirty"
+    child.mkdir()
+    _git(child, "init", "-q")
+    _git(child, "config", "user.email", "identity@example.invalid")
+    _git(child, "config", "user.name", "Identity Test")
+    (child / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _git(child, "add", ".")
+    _git(child, "commit", "-qm", "child")
+    _git(
+        repo,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        str(child),
+        "vendor/sub",
+    )
+    _git(repo, "commit", "-qam", "add submodule")
+    (repo / "vendor/sub/untracked.txt").write_text("nested bytes\n", encoding="utf-8")
+    out = tmp_path / "identity"
+
+    result = snapshot_identity(repo, out, engine="codex", environ={})
+
+    assert result["components"]["submodules"]["status"] == "PARTIAL"
+    row = json.loads((out / "submodules.json").read_text(encoding="utf-8"))[
+        "submodules"
+    ][0]
+    assert bytes.fromhex(row["status_hex"])
+    assert row["recursive_state"] == "UNARCHIVED_DIRTY_STATE"
+
+
+def test_clean_submodule_with_nested_gitlink_is_explicitly_partial(tmp_path):
+    repo = _repo(tmp_path)
+    leaf = tmp_path / "leaf"
+    leaf.mkdir()
+    _git(leaf, "init", "-q")
+    _git(leaf, "config", "user.email", "identity@example.invalid")
+    _git(leaf, "config", "user.name", "Identity Test")
+    (leaf / "leaf.py").write_text("LEAF = 1\n", encoding="utf-8")
+    _git(leaf, "add", ".")
+    _git(leaf, "commit", "-qm", "leaf")
+    child = tmp_path / "child-nested"
+    child.mkdir()
+    _git(child, "init", "-q")
+    _git(child, "config", "user.email", "identity@example.invalid")
+    _git(child, "config", "user.name", "Identity Test")
+    (child / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _git(child, "add", ".")
+    _git(child, "commit", "-qm", "child")
+    _git(
+        child,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        str(leaf),
+        "nested/leaf",
+    )
+    _git(child, "commit", "-qam", "nested leaf")
+    _git(
+        repo,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        str(child),
+        "vendor/sub",
+    )
+    _git(repo, "commit", "-qam", "outer submodule")
+    out = tmp_path / "identity"
+
+    result = snapshot_identity(repo, out, engine="codex", environ={})
+
+    assert result["components"]["submodules"]["status"] == "PARTIAL"
+    row = json.loads((out / "submodules.json").read_text(encoding="utf-8"))[
+        "submodules"
+    ][0]
+    assert row["recursive_state"] == "UNARCHIVED_NESTED_SUBMODULES"
+    assert len(row["nested_gitlinks"]) == 1
+
+
+def test_tracked_behavioral_symlinks_are_audited_losslessly(tmp_path):
+    repo = _repo(tmp_path)
+    outside = tmp_path / "outside.py"
+    outside.write_bytes(b"OUTSIDE_LINK_BYTES\n")
+    safe = repo / "autoresearch/linked_rule.py"
+    unsafe = repo / "autoresearch/external_rule.py"
+    safe.symlink_to("rule.py")
+    unsafe.symlink_to(outside)
+    _git(repo, "add", "autoresearch/linked_rule.py", "autoresearch/external_rule.py")
+    _git(repo, "commit", "-qm", "behavioral links")
+    out = tmp_path / "identity"
+
+    result = snapshot_identity(repo, out, engine="codex", environ={})
+
+    assert result["components"]["source_links"]["status"] == "PARTIAL"
+    rows = json.loads((out / "source_links.json").read_text(encoding="utf-8"))[
+        "source_links"
+    ]
+    safe_row = next(row for row in rows if row["path"].endswith("linked_rule.py"))
+    unsafe_row = next(row for row in rows if row["path"].endswith("external_rule.py"))
+    assert bytes.fromhex(safe_row["link_target_hex"]) == b"rule.py"
+    assert bytes.fromhex(safe_row["resolved_source_hex"]) == b"autoresearch/rule.py"
+    assert safe_row["sha256"] == safe_row["resolved_sha256"]
+    assert safe_row["mode"] == 0o644
+    assert (out / safe_row["snapshot"]).read_bytes() == b"VALUE = 1\n"
+    assert unsafe_row["status"] == "UNSAFE_TARGET"
+    assert b"OUTSIDE_LINK_BYTES" not in _all_artifact_bytes(out)
+
+
 def test_retry_removes_only_stale_owned_prompts_and_preserves_contract(tmp_path):
     repo = _repo(tmp_path)
     out = tmp_path / "identity"
@@ -712,6 +905,60 @@ def test_retry_removes_only_stale_owned_prompts_and_preserves_contract(tmp_path)
     assert result["ok"] is True
     assert not copied.exists()
     assert contract.read_bytes() == b"contract-bytes\n"
+
+
+def _owned_snapshot_bytes(out: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(out).as_posix(): path.read_bytes()
+        for path in sorted(out.rglob("*"))
+        if path.is_file() and path.name != "run_contract.json"
+    }
+
+
+def test_capture_failure_preserves_previous_snapshot_generation(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    out = tmp_path / "identity"
+    assert snapshot_identity(repo, out, engine="codex", environ={})["ok"] is True
+    before = _owned_snapshot_bytes(out)
+    (repo / "autoresearch/rule.py").write_text("VALUE = 2\n", encoding="utf-8")
+    (repo / ".claude/agents/analyst.md").write_text("new prompt\n", encoding="utf-8")
+    original = identity_mod._write_scanned
+
+    def fail_result(path, payload, **kwargs):
+        if path.name == "snapshot_result.json":
+            raise OSError("capture fault")
+        return original(path, payload, **kwargs)
+
+    monkeypatch.setattr(identity_mod, "_write_scanned", fail_result)
+
+    with pytest.raises(OSError, match="capture fault"):
+        snapshot_identity(repo, out, engine="codex", environ={})
+
+    assert _owned_snapshot_bytes(out) == before
+
+
+def test_promotion_failure_rolls_back_previous_snapshot_generation(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    out = tmp_path / "identity"
+    assert snapshot_identity(repo, out, engine="codex", environ={})["ok"] is True
+    before = _owned_snapshot_bytes(out)
+    (repo / "autoresearch/rule.py").write_text("VALUE = 2\n", encoding="utf-8")
+    original = identity_mod._replace_promoted_path
+    calls = 0
+
+    def fail_second(source, destination):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("promotion fault")
+        return original(source, destination)
+
+    monkeypatch.setattr(identity_mod, "_replace_promoted_path", fail_second)
+
+    with pytest.raises(OSError, match="promotion fault"):
+        snapshot_identity(repo, out, engine="codex", environ={})
+
+    assert _owned_snapshot_bytes(out) == before
 
 
 def test_concurrent_snapshots_serialize_without_interleaved_artifacts(tmp_path):

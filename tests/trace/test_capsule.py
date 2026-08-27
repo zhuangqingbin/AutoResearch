@@ -304,6 +304,83 @@ def test_identity_missing_event_append_failure_persists_gap_marker(tmp_path, mon
     assert marker["failures"][0]["error_type"] == "OSError"
 
 
+def test_identity_success_event_and_marker_double_fault_never_aborts_begin(
+    tmp_path, monkeypatch, capsys
+):
+    _redirect_roots(monkeypatch, tmp_path)
+    original_append = capsule_mod.append_event
+    original_atomic = capsule_mod.atomic_write_json
+
+    def fail_snapshot_event(*args, **kwargs):
+        if kwargs.get("event_type") == "IDENTITY_SNAPSHOTTED":
+            raise OSError("event fault")
+        return original_append(*args, **kwargs)
+
+    def fail_marker(path, value):
+        if Path(path).name == "identity_event_failure.json":
+            raise OSError("marker fault")
+        return original_atomic(path, value)
+
+    monkeypatch.setattr(capsule_mod, "append_event", fail_snapshot_event)
+    monkeypatch.setattr(capsule_mod, "atomic_write_json", fail_marker)
+
+    handle = begin_run("scan-market", DATE, "codex", {}, now=NOW)
+
+    assert load_run(handle.run_id) == handle
+    assert [event["event_type"] for event in _events(handle)] == [
+        "RUN_STARTED",
+        "EVIDENCE_MISSING",
+    ]
+    warning = capsys.readouterr().err
+    assert warning == "identity evidence persistence degraded\n"
+    state = json.loads((handle.workspace / "state.json").read_text(encoding="utf-8"))
+    assert state["business_status"] == "ACTIVE"
+    assert state["evidence_status"] == "PENDING"
+
+
+def test_identity_gap_event_and_marker_double_fault_never_aborts_begin(
+    tmp_path, monkeypatch, capsys
+):
+    _redirect_roots(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        capsule_mod,
+        "snapshot_identity",
+        lambda *args, **kwargs: {
+            "ok": False,
+            "components": {"git_patch": {"status": "MISSING"}},
+            "missing": ["git_patch"],
+            "errors": [],
+        },
+    )
+    original_append = capsule_mod.append_event
+    original_atomic = capsule_mod.atomic_write_json
+
+    def fail_gap_event(*args, **kwargs):
+        if kwargs.get("event_type") == "EVIDENCE_MISSING":
+            raise OSError("gap fault")
+        return original_append(*args, **kwargs)
+
+    def fail_marker(path, value):
+        if Path(path).name == "identity_event_failure.json":
+            raise OSError("marker fault")
+        return original_atomic(path, value)
+
+    monkeypatch.setattr(capsule_mod, "append_event", fail_gap_event)
+    monkeypatch.setattr(capsule_mod, "atomic_write_json", fail_marker)
+
+    handle = begin_run("scan-market", DATE, "codex", {}, now=NOW)
+
+    assert load_run(handle.run_id) == handle
+    assert [event["event_type"] for event in _events(handle)] == [
+        "RUN_STARTED",
+        "IDENTITY_SNAPSHOTTED",
+    ]
+    assert capsys.readouterr().err == "identity evidence persistence degraded\n"
+    state = json.loads((handle.workspace / "state.json").read_text(encoding="utf-8"))
+    assert state["business_status"] == "ACTIVE"
+    assert state["evidence_status"] == "PENDING"
+
+
 def test_begin_collision_never_attaches_to_existing_run(tmp_path, monkeypatch):
     _begin(tmp_path, monkeypatch)
     with pytest.raises(FileExistsError):
@@ -463,6 +540,21 @@ def test_begin_rejects_slack_token_under_safe_contract_key_before_workspace(
 def test_begin_rejects_uri_credentials_before_workspace_allocation(tmp_path, monkeypatch):
     _redirect_roots(monkeypatch, tmp_path)
     connection = "postgresql://runner:correct-horse-battery@db.internal:5432/app"
+    config = {"l2": {"floors": {"comment": connection}}}
+
+    with pytest.raises(ValueError, match="secret material") as raised:
+        begin_run("scan-market", DATE, "codex", config, now=NOW)
+
+    assert connection not in str(raised.value)
+    assert not ws.scan_run_root(RUN_ID).exists()
+
+
+@pytest.mark.parametrize("scheme", ["mssql+pyodbc", "amqps"])
+def test_begin_rejects_generic_uri_credentials_before_workspace(
+    tmp_path, monkeypatch, scheme
+):
+    _redirect_roots(monkeypatch, tmp_path)
+    connection = f"{scheme}://runner:correct-horse@service.internal/app"
     config = {"l2": {"floors": {"comment": connection}}}
 
     with pytest.raises(ValueError, match="secret material") as raised:
