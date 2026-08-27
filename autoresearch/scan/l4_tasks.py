@@ -1236,6 +1236,8 @@ def _prepare_active_slim(
         size, defect, status, content_hash = _active_slim_observation(
             root, relative, min_bytes
         )
+        if status == "UNREADABLE":
+            binding_failure = True
     except (OSError, ValueError) as exc:
         size, defect = 0, f"不安全的 slim 父目录:{exc}"
 
@@ -1338,7 +1340,10 @@ def _prepare_active_slim(
                     size, defect, status, content_hash = _active_slim_observation(
                         root, relative, min_bytes
                     )
-                    if defect is None or status == "UNREADABLE":
+                    if status == "UNREADABLE":
+                        binding_failure = True
+                        break
+                    if defect is None:
                         break
         except Exception as exc:  # noqa: BLE001 — 记入单票数据完整性失败
             size, defect = 0, f"tushare 信号量获取异常:{exc!r}"
@@ -1364,11 +1369,17 @@ def _prepare_active_slim(
             latest_size, latest_defect, latest_status, latest_hash = (
                 _active_slim_observation(root, relative, min_bytes)
             )
-            if defect is None:
+            if latest_status == "UNREADABLE":
+                binding_failure = True
+            if binding_failure:
+                size = latest_size if latest_status == "UNREADABLE" else size
+                defect = defect or latest_defect or "安全读取失败:UNREADABLE"
+                status, content_hash = "UNREADABLE", None
+            elif defect is None:
                 size, defect = latest_size, latest_defect
                 status = latest_status
                 content_hash = latest_hash if latest_defect is None else None
-            elif not binding_failure:
+            else:
                 status, content_hash = latest_status, None
         except (OSError, ValueError) as exc:
             size, defect = 0, f"安全复验失败:{exc}"

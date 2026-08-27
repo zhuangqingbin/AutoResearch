@@ -862,6 +862,110 @@ def _valid_slim_text() -> str:
     ])
 
 
+def test_active_prepare_slim_initial_unreadable_is_sticky_until_fresh_call(
+    tmp_path, monkeypatch
+):
+    from autoresearch.scan import l4_tasks
+
+    handle, book = _traced_book(tmp_path, monkeypatch)
+    slim = handle.staging / "_external_inputs" / f"000001.SZ_{DATE}_slim.md"
+    original_identity = (slim.stat().st_dev, slim.stat().st_ino)
+    replacement_bytes = (_valid_slim_text() + "\nstable replacement\n").encode()
+    replacement_hash = hashlib.sha256(replacement_bytes).hexdigest()
+    real_read = l4_tasks.os.read
+    replaced = False
+
+    def replace_initial_slim_during_read(fd, size):
+        nonlocal replaced
+        chunk = real_read(fd, size)
+        info = l4_tasks.os.fstat(fd)
+        if not replaced and (info.st_dev, info.st_ino) == original_identity:
+            replacement = slim.with_name("initial-replacement-slim.md")
+            replacement.write_bytes(replacement_bytes)
+            replacement.replace(slim)
+            replaced = True
+        return chunk
+
+    monkeypatch.setattr(l4_tasks.os, "read", replace_initial_slim_during_read)
+    first = prepare_slim(
+        book,
+        "000001",
+        harvest_fn=lambda *_: pytest.fail("unstable cache must not harvest"),
+        retries=0,
+        now=NOW,
+    )
+
+    assert replaced is True
+    assert first["ok"] is False
+    assert "UNREADABLE" in first["reason"]
+    first_task = json.loads(book.read_text(encoding="utf-8"))["tasks"]["000001"]
+    assert first_task["artifacts"]["slim"]["status"] == "UNREADABLE"
+    assert first_task["artifacts"]["slim"]["content_hash"] is None
+    assert replacement_hash.encode() not in book.read_bytes()
+
+    second = prepare_slim(book, "000001", retries=0, now=NOW)
+    second_task = json.loads(book.read_text(encoding="utf-8"))["tasks"]["000001"]
+    assert second["ok"] is True
+    assert second_task["artifacts"]["slim"]["status"] == "PRESENT"
+    assert second_task["artifacts"]["slim"]["content_hash"] == replacement_hash
+
+
+def test_active_prepare_slim_post_harvest_unreadable_is_sticky_until_fresh_call(
+    tmp_path, monkeypatch
+):
+    from autoresearch.scan import l4_tasks
+
+    handle, book = _traced_book(tmp_path, monkeypatch)
+    slim = handle.staging / "_external_inputs" / f"000001.SZ_{DATE}_slim.md"
+    slim.rename(tmp_path / "saved-slim.md")
+    replacement_bytes = (_valid_slim_text() + "\nstable post-harvest replacement\n").encode()
+    replacement_hash = hashlib.sha256(replacement_bytes).hexdigest()
+    real_read = l4_tasks.os.read
+    harvested_identity = None
+    replaced = False
+
+    def replace_harvested_slim_during_read(fd, size):
+        nonlocal replaced
+        chunk = real_read(fd, size)
+        info = l4_tasks.os.fstat(fd)
+        if (
+            not replaced
+            and harvested_identity is not None
+            and (info.st_dev, info.st_ino) == harvested_identity
+        ):
+            replacement = slim.with_name("post-harvest-replacement-slim.md")
+            replacement.write_bytes(replacement_bytes)
+            replacement.replace(slim)
+            replaced = True
+        return chunk
+
+    def harvest(_ticker: str, _date: str) -> Path:
+        nonlocal harvested_identity
+        slim.write_text(_valid_slim_text(), encoding="utf-8")
+        info = slim.stat()
+        harvested_identity = (info.st_dev, info.st_ino)
+        return slim
+
+    monkeypatch.setattr(l4_tasks.os, "read", replace_harvested_slim_during_read)
+    first = prepare_slim(
+        book, "000001", harvest_fn=harvest, retries=0, now=NOW
+    )
+
+    assert replaced is True
+    assert first["ok"] is False
+    assert "UNREADABLE" in first["reason"]
+    first_task = json.loads(book.read_text(encoding="utf-8"))["tasks"]["000001"]
+    assert first_task["artifacts"]["slim"]["status"] == "UNREADABLE"
+    assert first_task["artifacts"]["slim"]["content_hash"] is None
+    assert replacement_hash.encode() not in book.read_bytes()
+
+    second = prepare_slim(book, "000001", retries=0, now=NOW)
+    second_task = json.loads(book.read_text(encoding="utf-8"))["tasks"]["000001"]
+    assert second["ok"] is True
+    assert second_task["artifacts"]["slim"]["status"] == "PRESENT"
+    assert second_task["artifacts"]["slim"]["content_hash"] == replacement_hash
+
+
 def test_active_prepare_slim_rejects_symlinked_external_inputs_cache(
     tmp_path, monkeypatch
 ):
