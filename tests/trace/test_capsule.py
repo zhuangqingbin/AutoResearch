@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
+import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +21,25 @@ from autoresearch.trace.events import verify_event_chain
 DATE = "2026-08-27"
 NOW = datetime(2026, 8, 27, 1, 2, 3, 456789, tzinfo=timezone.utc)
 RUN_ID = "20260827T010203456789Z"
+
+
+def _multiprocess_checkpoint_worker(
+    context_root: str,
+    reports_root: str,
+    run_id: str,
+    start,
+    results,
+) -> None:
+    os.environ["AUTORESEARCH_ENGINE"] = "codex"
+    ws.ENGINE = "codex"
+    ws.context_root = lambda: Path(context_root)
+    ws.reports_root = lambda: Path(reports_root)
+    start.wait(timeout=10)
+    try:
+        item = checkpoint(run_id, "multiprocess", "SUCCEEDED", [], {})
+        results.put(("ok", item.attempt))
+    except BaseException as exc:  # pragma: no cover - reported to the parent assertion
+        results.put(("error", f"{type(exc).__name__}: {exc}"))
 
 
 def _redirect_roots(monkeypatch, tmp_path: Path) -> None:
@@ -360,22 +381,36 @@ def test_checkpoint_rejects_overlapping_spec_and_literal_pre_attempt(
     assert (handle.capsule / "events/events.jsonl").read_bytes() == events_before
 
 
-def test_checkpoint_detects_source_mutation_during_copy_without_completed_event(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize("initial", [b"", b"before"])
+@pytest.mark.parametrize("mutation", ["populate", "replace"])
+def test_checkpoint_detects_source_mutation_on_same_descriptor_without_completed_event(
+    tmp_path, monkeypatch, initial, mutation
 ):
     handle = _begin(tmp_path, monkeypatch)
     source = handle.staging / "payload.bin"
-    source.write_bytes(b"before")
-    original_copy = capsule_mod._copy_artifact
+    source.write_bytes(initial)
+    source_inode = source.stat().st_ino
+    original_fstat = capsule_mod.os.fstat
+    mutated = False
 
-    def mutate_then_copy(copy_source, destination):
-        copy_source.write_bytes(b"after-is-longer")
-        return original_copy(copy_source, destination)
+    def mutate_after_first_source_fstat(fd):
+        nonlocal mutated
+        info = original_fstat(fd)
+        if not mutated and info.st_ino == source_inode:
+            mutated = True
+            if mutation == "populate":
+                source.write_bytes(b"after-is-longer")
+            else:
+                replacement = source.with_suffix(".replacement")
+                replacement.write_bytes(b"replacement")
+                replacement.replace(source)
+        return info
 
-    monkeypatch.setattr(capsule_mod, "_copy_artifact", mutate_then_copy)
+    monkeypatch.setattr(capsule_mod.os, "fstat", mutate_after_first_source_fstat)
     events_before = (handle.capsule / "events/events.jsonl").read_bytes()
     with pytest.raises(RuntimeError, match="changed during capture"):
         checkpoint(handle.run_id, "l2", "SUCCEEDED", [source], {})
+    assert mutated is True
     assert (handle.capsule / "events/events.jsonl").read_bytes() == events_before
     assert not (handle.capsule / "stages/l2/attempt-1/result.json").exists()
 
@@ -425,6 +460,54 @@ def test_concurrent_checkpoints_allocate_unique_attempts(tmp_path, monkeypatch):
             "CHECKPOINT_WRITTEN",
         ], attempt
         assert events[0]["seq"] < events[1]["seq"]
+
+
+def test_multiprocess_first_use_allocates_all_attempts_without_directory_race(
+    tmp_path, monkeypatch
+):
+    handle = _begin(tmp_path, monkeypatch)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    process_count = 16
+    process_context = multiprocessing.get_context("fork")
+    start = process_context.Event()
+    results = process_context.Queue()
+    processes = [
+        process_context.Process(
+            target=_multiprocess_checkpoint_worker,
+            args=(
+                str(ws.context_root()),
+                str(ws.reports_root()),
+                handle.run_id,
+                start,
+                results,
+            ),
+        )
+        for _ in range(process_count)
+    ]
+    for process in processes:
+        process.start()
+    start.set()
+    for process in processes:
+        process.join(timeout=20)
+        assert process.exitcode == 0
+    outcomes = [results.get(timeout=5) for _ in processes]
+
+    assert [kind for kind, _ in outcomes] == ["ok"] * process_count
+    assert sorted(attempt for _, attempt in outcomes) == list(
+        range(1, process_count + 1)
+    )
+    assert len(
+        list(
+            (handle.capsule / "stages/multiprocess").glob(
+                "attempt-*/result.json"
+            )
+        )
+    ) == process_count
+    chain = verify_event_chain(handle.capsule / "events/events.jsonl")
+    assert chain["ok"] is True
+    assert chain["n"] == 1 + (2 * process_count)
+    assert list(outside.iterdir()) == []
 
 
 def test_checkpoint_emits_terminal_then_written_once_per_attempt(tmp_path, monkeypatch):

@@ -602,7 +602,10 @@ def _safe_directory(root: Path, relative: Path | str, *, create: bool) -> Path:
         except FileNotFoundError:
             if not create:
                 raise
-            candidate.mkdir(exist_ok=False)
+            # Another process may win the first-use mkdir race.  Its entry is
+            # trusted only after the same lstat/type/containment checks below.
+            with contextlib.suppress(FileExistsError):
+                candidate.mkdir(exist_ok=False)
             info = candidate.lstat()
         if stat.S_ISLNK(info.st_mode):
             raise ValueError(f"destination directory contains a symlink: {candidate}")
@@ -639,23 +642,79 @@ def _allocate_attempt(capsule: Path, stage: str) -> tuple[int, Path, Path]:
             continue
 
 
-def _copy_artifact(source: Path, destination: Path) -> None:
+_CAPTURE_STAT_FIELDS = (
+    "st_mode",
+    "st_dev",
+    "st_ino",
+    "st_size",
+    "st_mtime_ns",
+    "st_ctime_ns",
+)
+
+
+def _capture_signature(info: os.stat_result) -> tuple[int, ...]:
+    return tuple(getattr(info, field) for field in _CAPTURE_STAT_FIELDS)
+
+
+def _write_capture(fd: int, block: bytes) -> None:
+    view = memoryview(block)
+    while view:
+        written = os.write(fd, view)
+        if written == 0:
+            raise OSError("short write while capturing artifact")
+        view = view[written:]
+
+
+def _copy_artifact(source: Path, destination: Path) -> tuple[int, bool]:
+    """Capture from one no-follow descriptor and prove the source stayed stable."""
     nofollow = getattr(os, "O_NOFOLLOW", 0)
     source_fd = os.open(source, os.O_RDONLY | nofollow)
+    destination_fd = -1
     try:
-        destination_fd = os.open(
-            destination,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow,
-            0o600,
-        )
-    except BaseException:
+        before = os.fstat(source_fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError(f"artifact source is not a regular file: {source}")
+        captured_size = 0
+        if before.st_size == 0:
+            # A read is still part of the protocol for EMPTY: a file populated
+            # after the first fstat cannot be silently recorded as empty.
+            captured_size = len(os.read(source_fd, 1))
+        else:
+            destination_fd = os.open(
+                destination,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow,
+                0o600,
+            )
+            while True:
+                block = os.read(source_fd, 1024 * 1024)
+                if not block:
+                    break
+                _write_capture(destination_fd, block)
+                captured_size += len(block)
+            os.fsync(destination_fd)
+            destination_info = os.fstat(destination_fd)
+            if destination_info.st_size != captured_size:
+                raise RuntimeError(
+                    "artifact source changed during capture: "
+                    f"captured={captured_size}, destination={destination_info.st_size}"
+                )
+
+        after = os.fstat(source_fd)
+        try:
+            path_after = source.lstat()
+        except OSError as exc:
+            raise RuntimeError(f"artifact source changed during capture: {source}") from exc
+        if (
+            _capture_signature(before) != _capture_signature(after)
+            or _capture_signature(after) != _capture_signature(path_after)
+            or captured_size != after.st_size
+        ):
+            raise RuntimeError(f"artifact source changed during capture: {source}")
+        return captured_size, before.st_size > 0
+    finally:
+        if destination_fd >= 0:
+            os.close(destination_fd)
         os.close(source_fd)
-        raise
-    with os.fdopen(source_fd, "rb") as reader, os.fdopen(destination_fd, "wb") as writer:
-        for block in iter(lambda: reader.read(1024 * 1024), b""):
-            writer.write(block)
-        writer.flush()
-        os.fsync(writer.fileno())
 
 
 def checkpoint(
@@ -704,44 +763,29 @@ def checkpoint(
             "bytes": None,
             "sha256": None,
         }
-        if source is not None and source.is_file():
-            source_before = source.stat(follow_symlinks=False)
-            if source_before.st_size == 0:
-                row["bytes"] = 0
-                row["status"] = "EMPTY"
-            else:
-                product_root = _safe_directory(
-                    handle.capsule,
-                    product_root.relative_to(handle.capsule),
-                    create=True,
-                )
-                relative_destination = Path(artifact["root"]) / artifact["path"]
-                destination_parent = _safe_directory(
-                    product_root, relative_destination.parent, create=True
-                )
-                destination = destination_parent / relative_destination.name
-                _copy_artifact(source, destination)
-                source_after = source.stat(follow_symlinks=False)
-                mutation_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
-                if any(
-                    getattr(source_before, field) != getattr(source_after, field)
-                    for field in mutation_fields
-                ):
-                    raise RuntimeError(f"artifact source changed during capture: {source}")
-                captured_size = destination.stat(follow_symlinks=False).st_size
-                if captured_size != source_after.st_size:
-                    raise RuntimeError(
-                        "artifact source changed during capture: "
-                        f"source={source_after.st_size}, captured={captured_size}"
-                    )
+        if source is not None:
+            product_root = _safe_directory(
+                handle.capsule,
+                product_root.relative_to(handle.capsule),
+                create=True,
+            )
+            relative_destination = Path(artifact["root"]) / artifact["path"]
+            destination_parent = _safe_directory(
+                product_root, relative_destination.parent, create=True
+            )
+            destination = destination_parent / relative_destination.name
+            captured_size, present = _copy_artifact(source, destination)
+            row["bytes"] = captured_size
+            if present:
                 row.update(
                     {
-                        "bytes": captured_size,
                         "status": "PRESENT",
                         "sha256": sha256_file(destination),
                         "captured_path": destination.relative_to(handle.capsule).as_posix(),
                     }
                 )
+            else:
+                row["status"] = "EMPTY"
         output_rows.append(row)
 
     created_at = (
