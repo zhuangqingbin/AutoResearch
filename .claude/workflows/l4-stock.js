@@ -80,21 +80,45 @@ const CARD = { type: 'object', required: ['code', 'rating'],
   properties: { code: { type: 'string' }, rating: { type: 'string' },
     conviction: { type: 'number', minimum: 0, maximum: 100 }, proposal: { type: 'string' } } }
 const rawAgent = agent
+const EVENT_HASH_SCHEMA = { type: 'string', pattern: '^[0-9a-f]{64}$' }
+const AGENT_EVENT_ROW = {
+  type: 'object', additionalProperties: false,
+  required: ['schema_version', 'seq', 'run_id', 'ts', 'engine', 'stage',
+    'invocation_id', 'attempt', 'subject', 'event_type', 'payload', 'prev_hash', 'event_hash'],
+  properties: {
+    schema_version: { type: 'integer', enum: [1] },
+    seq: { type: 'integer', minimum: 1 }, run_id: { type: 'string' },
+    ts: { type: 'string' }, engine: { type: 'string' }, stage: { type: 'string' },
+    invocation_id: { type: 'string' }, attempt: { type: 'integer', minimum: 1 },
+    subject: { type: 'string' },
+    event_type: { type: 'string', enum: ['AGENT_DISPATCHED', 'AGENT_COMPLETED', 'AGENT_FAILED'] },
+    payload: { type: 'object' }, prev_hash: EVENT_HASH_SCHEMA, event_hash: EVENT_HASH_SCHEMA,
+  },
+}
 const AGENT_EVENT_ACK = { type: 'object', required: ['ok', 'event', 'control_events'],
-  properties: { ok: { type: 'boolean' }, event: { type: 'object' },
-    control_events: { type: 'array', items: { type: 'object' } } } }
+  additionalProperties: false,
+  properties: { ok: { type: 'boolean' }, event: AGENT_EVENT_ROW,
+    control_events: { type: 'array', minItems: 2, maxItems: 2,
+      items: AGENT_EVENT_ROW } } }
 const safeAgentPart = (value) => String(value).replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '')
 // Workflow runtime 没有非 agent 的 shell primitive。trace-control 只能在获调度后的第一条
 // 精确命令里自登记；该命令原子追加 control dispatch → 目标边界 → control terminal，
 // 不递归套 tracedAgent。若它连命令都未执行，外层只可 best-effort 报警，后续完整性门报缺。
 // 每个目标 agent 固定承担两次 trace-control 调用开销(dispatch 前一次、terminal 后一次)。
 const TRACE_CONTROL_CALLS_PER_TARGET = 2
+const EVENT_HASH_RE = /^[0-9a-f]{64}$/
+const EVENT_TS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/
 const validateAgentEventAck = (ack, eventType, invocationId, role, controlInvocationId) => {
   if (!ack || ack.ok !== true || !ack.event || !Array.isArray(ack.control_events)) {
     throw new Error('trace-control ACK 缺 ok=true/event/control_events')
   }
+  const completeEvent = (event) => !!event && event.schema_version === 1 &&
+    Number.isInteger(event.seq) && event.seq > 0 && EVENT_TS_RE.test(event.ts) &&
+    event.engine === ENGINE && EVENT_HASH_RE.test(event.prev_hash) &&
+    EVENT_HASH_RE.test(event.event_hash) && event.payload &&
+    typeof event.payload === 'object' && !Array.isArray(event.payload)
   const matches = (event, expectedType, expectedInvocation, expectedRole) =>
-    !!event && event.run_id === RUN_ID && event.stage === 'l4' &&
+    completeEvent(event) && event.run_id === RUN_ID && event.stage === 'l4' &&
     event.invocation_id === expectedInvocation && event.event_type === expectedType &&
     event.subject === code && event.attempt === taskAttempt &&
     event.payload && event.payload.role === expectedRole
@@ -103,9 +127,12 @@ const validateAgentEventAck = (ack, eventType, invocationId, role, controlInvoca
   }
   if (ack.control_events.length !== TRACE_CONTROL_CALLS_PER_TARGET ||
       !matches(ack.control_events[0], 'AGENT_DISPATCHED', controlInvocationId, 'trace-control') ||
-      !matches(ack.control_events[1], 'AGENT_COMPLETED', controlInvocationId, 'trace-control')) {
+      !matches(ack.control_events[1], 'AGENT_COMPLETED', controlInvocationId, 'trace-control') ||
+      !ack.control_events[1].payload.result ||
+      ack.control_events[1].payload.result.target_event_hash !== ack.event.event_hash) {
     throw new Error('trace-control ACK 自身生命周期绑定不匹配')
   }
+  // ACK 只证明 relay 返回结构与目标 hash 的绑定；磁盘上的 hash chain 仍是权威现场。
   return ack
 }
 const emitAgentEvent = (eventType, invocationId, role) => {

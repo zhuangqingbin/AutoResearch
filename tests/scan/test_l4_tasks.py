@@ -17,6 +17,7 @@ from autoresearch.scan.l4_tasks import (
     mark_success,
     preflight,
     prepare_slim,
+    reconcile,
 )
 from autoresearch.trace.capsule import begin_run
 
@@ -155,6 +156,8 @@ def test_initialize_defaults_to_run_scoped_slim_and_hashes_it(tmp_path, monkeypa
     scan.joinpath("details/000001.md").write_text("# card", encoding="utf-8")
 
     book = initialize(DATE, ["000001"], now=NOW)
+    # This path-layout test uses a synthetic run id, not a valid forensic capsule.
+    monkeypatch.delenv("AUTORESEARCH_RUN_ID")
     preflight(book["path"], "000001", now=NOW)
     mark_success(book["path"], "000001", expected_attempt=1, now=NOW)
     payload = json.loads((scan / "_l4_tasks.json").read_text(encoding="utf-8"))
@@ -474,6 +477,84 @@ def test_success_rejects_symlinked_artifact_without_terminal_mutation(
 
     task = json.loads(book.read_text(encoding="utf-8"))["tasks"]["000001"]
     assert task["status"] == "RUNNING"
+    assert (handle.capsule / "events/events.jsonl").read_bytes() == events_before
+
+
+@pytest.mark.parametrize(
+    "artifact,parent_name",
+    [("card", "details"), ("slim", "_external_inputs")],
+)
+def test_active_trace_rejects_symlinked_artifact_parent_without_hashing_outside(
+    tmp_path, monkeypatch, artifact, parent_name
+):
+    handle, book = _traced_book(tmp_path, monkeypatch)
+    task = json.loads(book.read_text(encoding="utf-8"))["tasks"]["000001"]
+    artifact_path = Path(task["artifacts"][artifact]["path"])
+    parent = artifact_path.parent
+    outside = tmp_path / f"outside-{parent_name}"
+    parent.rename(outside)
+    parent.symlink_to(outside, target_is_directory=True)
+    outside_digest = hashlib.sha256(
+        (outside / artifact_path.name).read_bytes()
+    ).hexdigest()
+
+    preflight(book, "000001", expected_attempt=1, now=NOW)
+
+    claimed = _trace_events(handle)[-1]
+    assert claimed["payload"][f"{artifact}_status"] == "UNREADABLE"
+    assert claimed["payload"][f"{artifact}_hash"] is None
+    assert outside_digest not in json.dumps(claimed)
+    events_before = (handle.capsule / "events/events.jsonl").read_bytes()
+    with pytest.raises(ValueError, match=f"missing artifacts:{artifact}"):
+        mark_success(book, "000001", expected_attempt=1, now=NOW)
+    persisted = json.loads(book.read_text(encoding="utf-8"))["tasks"]["000001"]
+    assert persisted["status"] == "RUNNING"
+    assert persisted["artifacts"][artifact]["content_hash"] is None
+    assert (handle.capsule / "events/events.jsonl").read_bytes() == events_before
+
+
+def test_active_success_rejects_task_book_artifact_path_outside_declared_shape(
+    tmp_path, monkeypatch
+):
+    handle, book = _traced_book(tmp_path, monkeypatch)
+    preflight(book, "000001", expected_attempt=1, now=NOW)
+    payload = json.loads(book.read_text(encoding="utf-8"))
+    outside = tmp_path / "outside-card.md"
+    outside.write_text("# outside card\n", encoding="utf-8")
+    payload["tasks"]["000001"]["artifacts"]["card"]["path"] = str(outside)
+    book.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    book_before = book.read_bytes()
+    events_before = (handle.capsule / "events/events.jsonl").read_bytes()
+
+    with pytest.raises(ValueError, match="artifact path.*card"):
+        mark_success(book, "000001", expected_attempt=1, now=NOW)
+
+    assert book.read_bytes() == book_before
+    assert (handle.capsule / "events/events.jsonl").read_bytes() == events_before
+    assert hashlib.sha256(outside.read_bytes()).hexdigest().encode() not in book_before
+
+
+def test_active_reconcile_does_not_recover_through_symlinked_details(tmp_path, monkeypatch):
+    handle, book = _traced_book(tmp_path, monkeypatch)
+    preflight(book, "000001", expected_attempt=1, now=NOW)
+    details = handle.staging / "details"
+    outside = tmp_path / "outside-reconcile-details"
+    details.rename(outside)
+    details.symlink_to(outside, target_is_directory=True)
+    outside_digest = hashlib.sha256((outside / "000001.md").read_bytes()).hexdigest()
+    events_before = (handle.capsule / "events/events.jsonl").read_bytes()
+
+    result = reconcile(book, now=NOW)
+
+    assert result["recovered"] == []
+    assert result["skipped"] == [{"code": "000001", "missing": ["card"]}]
+    persisted = json.loads(book.read_text(encoding="utf-8"))["tasks"]["000001"]
+    assert persisted["status"] == "RUNNING"
+    assert persisted["artifacts"]["card"]["content_hash"] is None
+    assert outside_digest.encode() not in book.read_bytes()
     assert (handle.capsule / "events/events.jsonl").read_bytes() == events_before
 
 

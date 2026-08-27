@@ -17,6 +17,33 @@ WORKFLOWS = (
 )
 _NODE = shutil.which("node")
 
+_BOUNDARY_ACK_JS = r"""
+const boundaryAck = (prompt) => {
+  const eventType = prompt.match(/agent-event \S+ (AGENT_[A-Z]+)/)[1];
+  const invocationId = [...prompt.matchAll(/--invocation-id ([^ ]+)/g)].at(-1)[1];
+  const controlId = prompt.match(/--control-invocation-id ([^ `]+)/)[1];
+  const role = prompt.match(/--role ([^ ]+)/)[1];
+  const subject = prompt.match(/--subject ([^ ]+)/)[1];
+  const attempt = Number([...prompt.matchAll(/--attempt (\d+)/g)].at(-1)[1]);
+  const runId = prompt.match(/agent-event (\S+) AGENT_/)[1];
+  const engine = prompt.match(/AUTORESEARCH_ENGINE=([^ ]+)/)[1];
+  const event = (seq, type, id, eventRole, eventHash) => ({
+    schema_version: 1, seq, run_id: runId,
+    ts: '2026-08-27T01:02:03.456789Z', engine, stage: 'l4',
+    invocation_id: id, attempt, subject, event_type: type,
+    payload: {role: eventRole, result: null, error: null},
+    prev_hash: '0'.repeat(64), event_hash: eventHash,
+  });
+  const target = event(3, eventType, invocationId, role, 'a'.repeat(64));
+  const completed = event(4, 'AGENT_COMPLETED', controlId, 'trace-control', 'c'.repeat(64));
+  completed.payload.result = {target_event_hash: target.event_hash};
+  return {ok: true, event: target, control_events: [
+    event(2, 'AGENT_DISPATCHED', controlId, 'trace-control', 'b'.repeat(64)),
+    completed,
+  ]};
+};
+"""
+
 
 def _probe_workflow(path: Path, args: dict) -> dict:
     script = textwrap.dedent(
@@ -24,9 +51,10 @@ def _probe_workflow(path: Path, args: dict) -> dict:
         const fs = require('fs');
         const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
         let src = fs.readFileSync(process.argv[1], 'utf8').replace(/^export const meta/m, 'const meta');
+        __BOUNDARY_ACK__
         let first = null;
         const agent = (prompt) => {
-          if (/autoresearch\\.trace\\.capsule agent-event/.test(prompt)) return {ok: true};
+          if (/autoresearch\\.trace\\.capsule agent-event/.test(prompt)) return boundaryAck(prompt);
           first = prompt;
           throw new Error('STOP_AT_FIRST_AGENT');
         };
@@ -35,7 +63,7 @@ def _probe_workflow(path: Path, args: dict) -> dict:
           .then(() => console.log(JSON.stringify({first, error:null})))
           .catch(e => console.log(JSON.stringify({first, error:e.message})));
         """
-    )
+    ).replace("__BOUNDARY_ACK__", _BOUNDARY_ACK_JS)
     completed = subprocess.run(
         [_NODE, "-e", script, str(path), json.dumps(args)],
         capture_output=True,
@@ -133,6 +161,13 @@ def test_l4_workflow_routes_every_business_agent_through_boundary_wrapper():
     assert "--control-invocation-id ${controlInvocationId}" in emit_body
     assert "trace-control-${invocationId}-${eventType.toLowerCase()}" in emit_body
     assert "required: ['ok', 'event', 'control_events']" in source
+    for field in (
+        "schema_version", "seq", "run_id", "ts", "engine", "stage",
+        "invocation_id", "attempt", "subject", "event_type", "payload",
+        "prev_hash", "event_hash",
+    ):
+        assert field in source
+    assert "target_event_hash" in source
     assert "TRACE_CONTROL_CALLS_PER_TARGET = 2" in source
     wrapper_body = source.split("async function tracedAgent", 1)[1].split(
         "const recordL4", 1
@@ -142,7 +177,19 @@ def test_l4_workflow_routes_every_business_agent_through_boundary_wrapper():
 
 
 @pytest.mark.skipif(_NODE is None, reason="requires node workflow probe")
-@pytest.mark.parametrize("ack_mode", ["valid", "ok-false", "target-mismatch", "control-mismatch"])
+@pytest.mark.parametrize(
+    "ack_mode",
+    [
+        "valid",
+        "ok-false",
+        "target-mismatch",
+        "control-mismatch",
+        "wrong-engine",
+        "missing-hash",
+        "wrong-linkage",
+        "wrong-terminal",
+    ],
+)
 def test_l4_trace_control_ack_is_strictly_validated_but_remains_best_effort(
     ack_mode
 ):
@@ -162,22 +209,31 @@ def test_l4_trace_control_ack_is_strictly_validated_but_remains_best_effort(
           const subject = prompt.match(/--subject ([^ ]+)/)[1];
           const attempt = Number([...prompt.matchAll(/--attempt (\d+)/g)].at(-1)[1]);
           const runId = prompt.match(/agent-event (\S+) AGENT_/)[1];
-          const event = (type, id, eventRole) => ({
-            run_id: runId, engine: 'claude', stage: 'l4', invocation_id: id,
+          const event = (seq, type, id, eventRole, eventHash) => ({
+            schema_version: 1, seq,
+            run_id: runId, ts: '2026-08-27T01:02:03.456789Z',
+            engine: 'claude', stage: 'l4', invocation_id: id,
             attempt, subject, event_type: type,
             payload: {role: eventRole, result: null, error: null},
+            prev_hash: '0'.repeat(64), event_hash: eventHash,
           });
+          const target = event(3, eventType, invocationId, role, 'a'.repeat(64));
           const ack = {
             ok: true,
-            event: event(eventType, invocationId, role),
+            event: target,
             control_events: [
-              event('AGENT_DISPATCHED', controlId, 'trace-control'),
-              event('AGENT_COMPLETED', controlId, 'trace-control'),
+              event(2, 'AGENT_DISPATCHED', controlId, 'trace-control', 'b'.repeat(64)),
+              event(4, 'AGENT_COMPLETED', controlId, 'trace-control', 'c'.repeat(64)),
             ],
           };
+          ack.control_events[1].payload.result = {target_event_hash: target.event_hash};
           if (mode === 'ok-false') ack.ok = false;
           if (mode === 'target-mismatch') ack.event.invocation_id = 'wrong-target';
           if (mode === 'control-mismatch') ack.control_events[1].subject = '600001';
+          if (mode === 'wrong-engine') ack.event.engine = 'codex';
+          if (mode === 'missing-hash') delete ack.event.event_hash;
+          if (mode === 'wrong-linkage') ack.control_events[1].payload.result.target_event_hash = 'd'.repeat(64);
+          if (mode === 'wrong-terminal') ack.control_events[1].event_type = 'AGENT_FAILED';
           return ack;
         };
         const agent = async (prompt) => {
@@ -222,11 +278,12 @@ def test_l4_boundary_wrapper_emits_one_dispatch_and_one_terminal_with_same_id(
         const fs = require('fs');
         const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
         let src = fs.readFileSync(process.argv[1], 'utf8').replace(/^export const meta/m, 'const meta');
+        __BOUNDARY_ACK__
         const fail = JSON.parse(process.argv[3]);
         const calls = [];
         const agent = async (prompt, options) => {
           calls.push({prompt, label: options && options.label});
-        if (/autoresearch\\.trace\\.capsule agent-event/.test(prompt)) return {ok: true};
+        if (/autoresearch\\.trace\\.capsule agent-event/.test(prompt)) return boundaryAck(prompt);
           if (fail) throw new Error('BUSINESS_AGENT_FAILED');
           return {ok: true, action: 'BLOCKED', attempt: 0, reason: 'fixture'};
         };
@@ -235,7 +292,7 @@ def test_l4_boundary_wrapper_emits_one_dispatch_and_one_terminal_with_same_id(
           .then(result => console.log(JSON.stringify({calls, result, error:null})))
           .catch(error => console.log(JSON.stringify({calls, result:null, error:error.message})));
         """
-    )
+    ).replace("__BOUNDARY_ACK__", _BOUNDARY_ACK_JS)
     args = {
         "date": "2026-01-01",
         "run_id": "20260827T010203456789Z",

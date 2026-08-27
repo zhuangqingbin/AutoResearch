@@ -101,6 +101,106 @@ def _secure_artifact_evidence(path: Path) -> tuple[str, str | None]:
         return "UNREADABLE", None
 
 
+def _open_contained_parent(
+    root_fd: int, parts: tuple[str, ...]
+) -> tuple[int, tuple[tuple[int, int, int, int, int, int], ...]]:
+    current = os.dup(root_fd)
+    signatures = []
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        for part in parts:
+            next_fd = os.open(part, flags, dir_fd=current)
+            os.close(current)
+            current = next_fd
+            info = os.fstat(current)
+            if not stat.S_ISDIR(info.st_mode):
+                raise OSError(f"artifact parent component is not a directory: {part}")
+            signatures.append(_file_signature(info))
+        return current, tuple(signatures)
+    except Exception:
+        os.close(current)
+        raise
+
+
+def _secure_contained_artifact_evidence(
+    root: Path, relative: Path
+) -> tuple[str, str | None]:
+    """Hash through trusted dirfds, rejecting symlinks in every path component."""
+    parts = relative.parts
+    if relative.is_absolute() or not parts or any(part in {"", ".", ".."} for part in parts):
+        return "UNREADABLE", None
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    root_fd = parent_fd = file_fd = None
+    try:
+        root_path_before = root.lstat()
+        if stat.S_ISLNK(root_path_before.st_mode) or not stat.S_ISDIR(
+            root_path_before.st_mode
+        ):
+            return "UNREADABLE", None
+        root_fd = os.open(root, directory_flags)
+        root_before = os.fstat(root_fd)
+        if _file_signature(root_path_before) != _file_signature(root_before):
+            return "UNREADABLE", None
+        parent_fd, parent_signatures = _open_contained_parent(root_fd, parts[:-1])
+        path_before = os.stat(parts[-1], dir_fd=parent_fd, follow_symlinks=False)
+        if stat.S_ISLNK(path_before.st_mode) or not stat.S_ISREG(path_before.st_mode):
+            return "UNREADABLE", None
+        file_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        file_fd = os.open(parts[-1], file_flags, dir_fd=parent_fd)
+        fd_before = os.fstat(file_fd)
+        if (
+            not stat.S_ISREG(fd_before.st_mode)
+            or (fd_before.st_dev, fd_before.st_ino)
+            != (path_before.st_dev, path_before.st_ino)
+        ):
+            return "UNREADABLE", None
+        if fd_before.st_size == 0:
+            return "EMPTY", None
+        digest = hashlib.sha256()
+        while chunk := os.read(file_fd, 1024 * 1024):
+            digest.update(chunk)
+        fd_after = os.fstat(file_fd)
+        path_after = os.stat(parts[-1], dir_fd=parent_fd, follow_symlinks=False)
+        rebound_fd, rebound_signatures = _open_contained_parent(root_fd, parts[:-1])
+        try:
+            rebound = os.stat(parts[-1], dir_fd=rebound_fd, follow_symlinks=False)
+        finally:
+            os.close(rebound_fd)
+        root_path_after = root.lstat()
+        if (
+            _file_signature(root_before) != _file_signature(root_path_after)
+            or parent_signatures != rebound_signatures
+            or _file_signature(path_before) != _file_signature(fd_before)
+            or _file_signature(fd_before) != _file_signature(fd_after)
+            or _file_signature(fd_after) != _file_signature(path_after)
+            or _file_signature(path_after) != _file_signature(rebound)
+        ):
+            return "UNREADABLE", None
+        return "PRESENT", digest.hexdigest()
+    except FileNotFoundError:
+        return "MISSING", None
+    except OSError:
+        return "UNREADABLE", None
+    finally:
+        for fd in (file_fd, parent_fd, root_fd):
+            if fd is not None:
+                os.close(fd)
+
+
 def _sha256(path: Path) -> str:
     status, digest = _secure_artifact_evidence(path)
     if status != "PRESENT" or digest is None:
@@ -150,11 +250,57 @@ def _atomic_write(path: Path, payload: dict) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _task_artifact_evidence(task: dict, name: str) -> tuple[str, str | None]:
+def _lexical_absolute(path: Path) -> Path:
+    return Path(os.path.abspath(os.fspath(path)))
+
+
+def _active_artifact_layout(
+    path: Path,
+    payload: dict,
+    code: str,
+    *,
+    handle=None,
+) -> dict[str, tuple[Path, Path]] | None:
+    run_id = ws.active_run_id()
+    if run_id is None:
+        return None
+    active = handle or require_active_run(run_id)
+    expected_book = active.staging / "_l4_tasks.json"
+    if _lexical_absolute(path) != _lexical_absolute(expected_book):
+        raise ValueError(f"task book does not belong to active run: {path}")
+    date = ws.validate_scan_date(payload.get("date"))
+    if date != active.analysis_date:
+        raise ValueError("task book date does not match active run")
+    task = payload["tasks"][code]
+    if task.get("code") != code or task.get("ticker") != _ticker(code):
+        raise ValueError(f"invalid active task identity:{code}")
+    prefix = Path("staging") / date
+    relatives = {
+        "prompt": prefix / f"_l4_prompt_{code}.md",
+        "slim": prefix / "_external_inputs" / f"{task['ticker']}_{date}_slim.md",
+        "card": prefix / "details" / f"{code}.md",
+    }
+    for name, relative in relatives.items():
+        recorded = Path(str((task.get("artifacts") or {}).get(name, {}).get("path") or ""))
+        expected = active.workspace / relative
+        if not str(recorded) or _lexical_absolute(recorded) != _lexical_absolute(expected):
+            raise ValueError(f"artifact path mismatch for {name}: {recorded}")
+    return {name: (active.workspace, relative) for name, relative in relatives.items()}
+
+
+def _task_artifact_evidence(
+    task: dict,
+    name: str,
+    *,
+    trusted: dict[str, tuple[Path, Path]] | None = None,
+) -> tuple[str, str | None]:
     ref = (task.get("artifacts") or {}).get(name) or {}
     raw_path = str(ref.get("path") or "")
     if not raw_path:
         return "MISSING", None
+    if trusted is not None:
+        root, relative = trusted[name]
+        return _secure_contained_artifact_evidence(root, relative)
     path = Path(raw_path)
     return _secure_artifact_evidence(path)
 
@@ -181,6 +327,9 @@ def _record_task_transition(
                 f"task book does not belong to active run: {path} != {expected}"
             )
         task = payload["tasks"][code]
+        trusted = _active_artifact_layout(
+            path, payload, code, handle=handle
+        )
         attempt = int(task.get("attempt") or 0)
         if attempt < 1:
             raise ValueError(f"authoritative task attempt is not positive: {attempt}")
@@ -192,7 +341,9 @@ def _record_task_transition(
             "task_book_hash": task_book_hash,
         }
         for name in ("prompt", "slim", "card"):
-            status, content_hash = _task_artifact_evidence(task, name)
+            status, content_hash = _task_artifact_evidence(
+                task, name, trusted=trusted
+            )
             evidence[f"{name}_status"] = status
             evidence[f"{name}_hash"] = content_hash
         invocation_id = str(
@@ -384,12 +535,17 @@ def initialize(
     }
 
 
-def _verified(task: dict) -> bool:
+def _verified(
+    task: dict,
+    *,
+    trusted: dict[str, tuple[Path, Path]] | None = None,
+) -> bool:
     for name in ("prompt", "slim", "card"):
         ref = task.get("artifacts", {}).get(name) or {}
         content_hash = ref.get("content_hash")
-        path = Path(str(ref.get("path") or ""))
-        status, actual_hash = _secure_artifact_evidence(path)
+        status, actual_hash = _task_artifact_evidence(
+            task, name, trusted=trusted
+        )
         if not content_hash or status != "PRESENT":
             return False
         if actual_hash != content_hash:
@@ -451,10 +607,11 @@ def preflight(
         if code6 not in payload["tasks"]:
             raise KeyError(f"unknown L4 task:{code6}")
         task = payload["tasks"][code6]
+        trusted = _active_artifact_layout(path, payload, code6)
         old_status = str(task["status"])
         status = task["status"]
         if status == "SUCCEEDED":
-            if _verified(task):
+            if _verified(task, trusted=trusted):
                 # 守卫拦住了对已成功票的重派 —— 断点续跑的正常现象，记作观察量不进失败数。
                 # 真正的失败是这里被绕过、成功票又跑一遍（TERMINAL_RERUN，见 structural_audit）。
                 structural_audit.record(
@@ -626,6 +783,7 @@ def mark_failure(
     with _locked(path):
         _, payload = _read(path)
         task = payload["tasks"][code6]
+        _active_artifact_layout(path, payload, code6)
         old_status = str(task["status"])
         authoritative_attempt = int(task.get("attempt") or 0)
         if expected_attempt is not None and expected_attempt != authoritative_attempt:
@@ -710,6 +868,7 @@ def mark_success(
     with _locked(path):
         _, payload = _read(path)
         task = payload["tasks"][code6]
+        trusted = _active_artifact_layout(path, payload, code6)
         old_status = str(task["status"])
         authoritative_attempt = int(task.get("attempt") or 0)
         if expected_attempt is not None and expected_attempt != authoritative_attempt:
@@ -734,13 +893,17 @@ def mark_success(
         missing = []
         for name in ("prompt", "slim", "card"):
             artifact_path = Path(refs[name]["path"])
-            status, content_hash = _secure_artifact_evidence(artifact_path)
+            status, content_hash = _task_artifact_evidence(
+                task, name, trusted=trusted
+            )
             if status != "PRESENT" or content_hash is None:
                 missing.append(name)
                 continue
-            refs[name] = _artifact(
-                artifact_path, content_hash=content_hash
-            )
+            refs[name] = {
+                "path": str(artifact_path),
+                "status": "PRESENT",
+                "content_hash": content_hash,
+            }
         # 调用方以为跑成了、账本查出没跑成 —— 这就是「完成态误判」。原先只抛异常，
         # 异常一被上层吞掉这件事就再无痕迹，B5 的判据也就永远查不到它。
         if missing:
@@ -754,8 +917,8 @@ def mark_success(
         _, defect = _slim_defect(Path(refs["slim"]["path"]), 4096)
         if not defect:
             for name in ("prompt", "slim", "card"):
-                status, content_hash = _secure_artifact_evidence(
-                    Path(refs[name]["path"])
+                status, content_hash = _task_artifact_evidence(
+                    task, name, trusted=trusted
                 )
                 if status != "PRESENT" or content_hash != refs[name]["content_hash"]:
                     defect = f"{name} changed while validating"
@@ -821,22 +984,40 @@ def reconcile(book: Path | str, *, now: datetime | None = None) -> dict:
             task = payload["tasks"][code6]
             if task.get("status") != "RUNNING":
                 continue
+            trusted = _active_artifact_layout(path, payload, code6)
             refs = task.get("artifacts") or {}
             missing = []
+            content_hashes = {}
             for name in ("prompt", "slim", "card"):
-                p = Path(str((refs.get(name) or {}).get("path") or ""))
-                if not p.is_file() or p.stat().st_size == 0:
+                status, content_hash = _task_artifact_evidence(
+                    task, name, trusted=trusted
+                )
+                if status != "PRESENT" or content_hash is None:
                     missing.append(name)
+                else:
+                    content_hashes[name] = content_hash
             if not missing:
                 _, defect = _slim_defect(Path(refs["slim"]["path"]), 4096)
                 if defect:
                     missing = [f"slim:{defect}"]
+            if not missing:
+                for name in ("prompt", "slim", "card"):
+                    status, content_hash = _task_artifact_evidence(
+                        task, name, trusted=trusted
+                    )
+                    if status != "PRESENT" or content_hash != content_hashes[name]:
+                        missing = [name]
+                        break
             if missing:
                 skipped.append({"code": code6, "missing": missing})
                 continue
             for name in ("prompt", "slim", "card"):
                 p = Path(refs[name]["path"])
-                refs[name] = _artifact(p, content_hash=_sha256(p))
+                refs[name] = {
+                    "path": str(p),
+                    "status": "PRESENT",
+                    "content_hash": content_hashes[name],
+                }
             task["status"] = "SUCCEEDED"
             task["recovered"] = True
             task["last_error_class"] = None
