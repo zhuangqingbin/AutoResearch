@@ -152,6 +152,7 @@ def test_show_cli_rejects_contract_mismatch(tmp_path, capsys):
         artifact_schema_versions={},
         git_sha="first",
         now=NOW,
+        workspace_path=tmp_path,
     )
     write_run_contract(tmp_path / "run_contract.json", first)
     record_stage_result(
@@ -173,6 +174,7 @@ def test_show_cli_rejects_contract_mismatch(tmp_path, capsys):
         artifact_schema_versions={},
         git_sha="second",
         now=NOW,
+        workspace_path=tmp_path,
     )
     write_run_contract(tmp_path / "run_contract.json", second)
 

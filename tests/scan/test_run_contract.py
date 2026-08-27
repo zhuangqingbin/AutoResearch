@@ -9,6 +9,7 @@ import pytest
 from autoresearch.scan.run_contract import (
     RunContract,
     load_run_contract,
+    sha256_json,
     write_run_contract,
 )
 
@@ -16,7 +17,7 @@ DATE = "2026-07-28"
 NOW = datetime(2026, 7, 28, 12, 34, 56, 123456, tzinfo=timezone.utc)
 
 
-def _build(user_config: dict | None = None) -> RunContract:
+def _build(user_config: dict | None = None, **overrides) -> RunContract:
     return RunContract.build(
         analysis_date=DATE,
         user_config=user_config or {},
@@ -26,6 +27,7 @@ def _build(user_config: dict | None = None) -> RunContract:
         artifact_schema_versions={"market_pack": 1, "finalists": 1},
         git_sha="abc1234",
         now=NOW,
+        **overrides,
     )
 
 
@@ -35,6 +37,39 @@ def test_config_hash_is_canonical_but_contract_identity_is_explicit():
     assert left.config_hash == right.config_hash
     assert left.contract_hash == right.contract_hash
     assert left.run_id == "20260728T123456123456Z"
+
+
+def test_v3_contract_carries_engine_kind_workspace_and_session_ref(tmp_path):
+    contract = _build(
+        run_id="20260827T010203456789Z",
+        run_kind="scan-market",
+        engine="codex",
+        workspace_path="context_codex/scan_runs/20260827T010203456789Z",
+        session_ref="01a03dbe-7173-76a3-ac96-919ae6936e71",
+    )
+
+    assert contract.schema_version == 3
+    assert contract.run_id == "20260827T010203456789Z"
+    assert contract.run_kind == "scan-market"
+    assert contract.engine == "codex"
+    assert contract.workspace_path.endswith(contract.run_id)
+    assert contract.session_ref.startswith("01a03dbe")
+    path = write_run_contract(tmp_path / "run_contract.json", contract)
+    assert load_run_contract(path) == contract
+
+
+@pytest.mark.parametrize("run_id", ["", "../run", "20260827T01020345678Z"])
+def test_build_rejects_invalid_injected_run_id(run_id):
+    with pytest.raises(ValueError, match="run_id|AUTORESEARCH_RUN_ID"):
+        _build(run_id=run_id)
+
+
+def test_legacy_build_defaults_to_existing_scan_workspace(monkeypatch):
+    from autoresearch.common import workspace as ws
+
+    monkeypatch.delenv("AUTORESEARCH_RUN_ID", raising=False)
+    contract = _build()
+    assert contract.workspace_path == str(ws.scan_dir(DATE))
 
 
 def test_contract_hash_covers_pinned_and_data_policy():
@@ -90,7 +125,6 @@ def test_v1_contract_still_loads_and_verifies(tmp_path):
         "artifact_schema_versions": {},
         "contract_hash": "",
     }
-    from autoresearch.scan.run_contract import sha256_json
     v1["config_hash"] = sha256_json(v1["user_config"])
     payload = {k: v for k, v in v1.items() if k != "contract_hash"}
     v1["contract_hash"] = sha256_json(payload)          # 当年的算法:没有 v2 三键
@@ -101,6 +135,59 @@ def test_v1_contract_still_loads_and_verifies(tmp_path):
     assert loaded.schema_version == 1
     assert loaded.git_dirty is False and loaded.dirty_paths == ()
     assert loaded.prompt_hashes == {}
+    assert loaded.run_kind == "scan-market"
+    assert loaded.engine == ""
+    assert loaded.workspace_path == ""
+    assert loaded.session_ref is None
+
+
+def test_v2_contract_still_verifies_without_v3_fields(tmp_path):
+    raw = _build(
+        git_dirty=True,
+        dirty_paths=["prompt.md"],
+        prompt_hashes={"prompt.md": "abc"},
+    ).to_dict()
+    raw["schema_version"] = 2
+    for key in ("run_kind", "engine", "workspace_path", "session_ref"):
+        raw.pop(key)
+    raw["contract_hash"] = sha256_json(
+        {key: value for key, value in raw.items() if key != "contract_hash"}
+    )
+
+    path = tmp_path / "run_contract.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    loaded = load_run_contract(path)
+
+    assert loaded.schema_version == 2
+    assert loaded.git_dirty is True
+    assert loaded.prompt_hashes == {"prompt.md": "abc"}
+    assert loaded.run_kind == "scan-market"
+    assert loaded.engine == ""
+    assert loaded.workspace_path == ""
+    assert loaded.session_ref is None
+
+
+def test_v2_contract_cannot_smuggle_unhashed_v3_identity(tmp_path):
+    raw = _build(git_dirty=False, dirty_paths=[]).to_dict()
+    raw["schema_version"] = 2
+    for key in ("run_kind", "engine", "workspace_path", "session_ref"):
+        raw.pop(key)
+    raw["contract_hash"] = sha256_json(
+        {key: value for key, value in raw.items() if key != "contract_hash"}
+    )
+    raw.update(
+        engine="codex",
+        workspace_path="context_codex/scan_runs/unhashed",
+        session_ref="unhashed-session",
+    )
+    path = tmp_path / "run_contract.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    loaded = load_run_contract(path)
+
+    assert loaded.engine == ""
+    assert loaded.workspace_path == ""
+    assert loaded.session_ref is None
 
 
 def test_v1_hash_payload_excludes_v2_fields():
@@ -108,10 +195,19 @@ def test_v1_hash_payload_excludes_v2_fields():
     立刻报 hash mismatch —— 全部历史 run 一起读不出来。"""
     from autoresearch.scan.run_contract import _V2_FIELDS
     c = _build()
-    assert c.schema_version == 2
+    assert c.schema_version == 3
     assert all(f in c._hash_payload() for f in _V2_FIELDS)
     v1_like = RunContract(**{**c.to_dict(), "schema_version": 1})
     assert not any(f in v1_like._hash_payload() for f in _V2_FIELDS)
+
+
+def test_v2_hash_payload_excludes_v3_fields():
+    from autoresearch.scan.run_contract import _V3_FIELDS
+
+    contract = _build(engine="codex", session_ref="session-1")
+    assert all(field in contract._hash_payload() for field in _V3_FIELDS)
+    v2_like = RunContract(**{**contract.to_dict(), "schema_version": 2})
+    assert not any(field in v2_like._hash_payload() for field in _V3_FIELDS)
 
 
 def test_prompt_hashes_and_dirty_enter_contract_hash():
