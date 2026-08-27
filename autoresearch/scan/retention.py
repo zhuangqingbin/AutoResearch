@@ -45,6 +45,7 @@ import sys
 from pathlib import Path
 
 from autoresearch.common import workspace as ws
+from autoresearch.trace.atomic import atomic_write_json
 
 MANIFEST_NAME = "MANIFEST.sha256"
 #: 镜像时跳过的目录名(锁/缓存,不是现场)
@@ -295,8 +296,9 @@ def lake_manifest(date: str, *, lake_root: Path | None = None,
     """
     root = Path(lake_root) if lake_root else ws.lake_root()
     if not root.is_dir():
-        return {"schema_version": 1, "date": str(date), "window_days": window_days,
-                "files": {}, "note": "lake 目录不存在"}
+        return {"schema_version": 1, "schema": "window_guess",
+                "source_mode": "window_guess", "date": str(date),
+                "window_days": window_days, "files": {}, "note": "lake 目录不存在"}
     daily = root / "daily"
     D = str(date).replace("-", "")
     days = sorted(p.stem for p in daily.glob("*.parquet")) if daily.is_dir() else []
@@ -310,20 +312,83 @@ def lake_manifest(date: str, *, lake_root: Path | None = None,
             if key not in window and stem != "static":
                 continue
             files[f"{ep_dir.name}/{stem}"] = f"{sha256_file(p)}:{p.stat().st_size}"
-    return {"schema_version": 1, "date": str(date), "window_days": window_days,
+    return {"schema_version": 1, "schema": "window_guess",
+            "source_mode": "window_guess", "date": str(date), "window_days": window_days,
             "n_files": len(files),
-            "note": ("窗口内湖文件的内容指纹。**不等于「这些文件当天被读过」** —— 真 lineage "
-                     "要在 cache.get_or_fetch 逐次记账(热路径 + 跨进程),本波未做。"
+            "note": ("window_guess 回退视图：窗口内湖文件的内容指纹。"
+                     "**不等于「这些文件当天被读过」**；只有 reads.jsonl 派生的 exact_reads "
+                     "才是逐次真实 lineage。"
                      "key=static(stock_basic/trade_cal)是唯一「刷新即覆盖」的一类,最该盯。"),
             "files": files}
 
 
+def _lineage_path(scan_dir: Path) -> Path | None:
+    candidates = (
+        scan_dir.parent.parent / "capsule/lineage/reads.jsonl",
+        scan_dir / "lineage/reads.jsonl",
+        scan_dir / "trace/reads.jsonl",
+    )
+    return next((path for path in candidates if path.is_file()), None)
+
+
+def _read_exact_manifest(scan_dir: Path) -> dict | None:
+    source = _lineage_path(scan_dir)
+    if source is None:
+        return None
+    rows: list[dict] = []
+    failed = 0
+    try:
+        for line in source.read_text(encoding="utf-8").splitlines():
+            row = json.loads(line)
+            if not isinstance(row, dict):
+                continue
+            if row.get("status") == "SUCCEEDED" and row.get("blob_hash"):
+                rows.append(row)
+            elif row.get("status") == "FAILED":
+                failed += 1
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not rows:
+        return None
+
+    files: dict[str, str] = {}
+    for ordinal, row in enumerate(rows, start=1):
+        raw_path = row.get("path")
+        endpoint = str(row.get("endpoint") or "unknown")
+        stem = Path(str(raw_path)).stem if raw_path else f"blob-{str(row['blob_hash'])[:16]}"
+        base_key = f"{endpoint}/{stem}"
+        key = base_key
+        value = f"{row['blob_hash']}:{int(row.get('bytes') or 0)}"
+        if key in files and files[key] != value:
+            key = f"{base_key}#{ordinal}"
+        files[key] = value
+    return {
+        "schema_version": 2,
+        "schema": "exact_reads",
+        "source_mode": "exact_reads",
+        "date": scan_dir.name,
+        "n_files": len(files),
+        "n_successful_reads": len(rows),
+        "n_failed_reads": failed,
+        "files": files,
+        "note": "由本次实际成功 source reads 派生；不是窗口猜测。",
+    }
+
+
 def write_lake_manifest(scan_dir: Path | str, run_dir: Path | str) -> int:
     """落 `<run_dir>/trace/lake_manifest.json`,返回文件数。"""
-    doc = lake_manifest(Path(scan_dir).name)
     target = Path(run_dir) / "trace" / "lake_manifest.json"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(doc, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+    if target.is_file():
+        try:
+            existing = json.loads(target.read_text(encoding="utf-8"))
+            return int(existing.get("n_files") or 0)
+        except (OSError, json.JSONDecodeError, AttributeError):
+            return 0
+    source = Path(scan_dir)
+    doc = _read_exact_manifest(source) or lake_manifest(source.name)
+    doc.setdefault("schema", "window_guess")
+    doc.setdefault("source_mode", "window_guess")
+    atomic_write_json(target, doc)
     return int(doc.get("n_files") or 0)
 
 
@@ -466,6 +531,10 @@ def retain(scan_dir: Path | str, run_dir: Path | str) -> dict:
         res["transcripts"] = archive_transcripts(scan_dir, run_dir)
     except Exception as exc:  # noqa: BLE001
         res["errors"].append(f"archive_transcripts: {type(exc).__name__}: {exc}")
+    try:
+        res["lake_files"] = write_lake_manifest(scan_dir, run_dir)
+    except Exception as exc:  # noqa: BLE001
+        res["errors"].append(f"write_lake_manifest: {type(exc).__name__}: {exc}")
     try:
         res["manifest"] = str(write_manifest(run_dir))
     except Exception as exc:  # noqa: BLE001

@@ -37,6 +37,32 @@ _PERIOD_PARAM_KEYS = ("period", "date", "end_date")
 _ENTITY_PARAM_KEYS = ("ts_code", "symbol", "code", "exchange_id", "exchange")
 
 
+class _NoSourceTrace:
+    """Zero-import no-op for ordinary cache calls outside a forensic run."""
+
+    @staticmethod
+    def finish_success(*args, **kwargs) -> bool:
+        return False
+
+    @staticmethod
+    def finish_failure(*args, **kwargs) -> bool:
+        return False
+
+
+_NO_SOURCE_TRACE = _NoSourceTrace()
+
+
+def _source_trace(endpoint: str, params: dict, today: str | None):
+    if not str(os.environ.get("AUTORESEARCH_RUN_ID", "")).strip():
+        return _NO_SOURCE_TRACE
+    try:
+        from autoresearch.trace.source_lineage import trace_access
+
+        return trace_access(endpoint, params, today=today)
+    except BaseException:
+        return _NO_SOURCE_TRACE
+
+
 # 快照型端点(`policy(...)["snapshot"]`)落盘时补的**观测出处**两列(Wave12 T2 Interfaces
 # 逐字要求 `first_seen_basis="observed"`)。没有观测时刻,"这份分片到底什么时候抓的、是不是
 # 半截、跟哪个交易日对齐"永久不可回答 —— 而快照数据事后无从复查(接口没有历史参数)。
@@ -175,58 +201,77 @@ def get_or_fetch(
     校验挂在**三条路径**上,尤其是**湖命中**:历史脏数据(空帧/窄表)读出来照样毒化下游,而且它
     **不会**再经过取数路径的任何检查 —— 这是原设计的盲区。
     """
-    if fetch is None:
-        from autoresearch.data.sources import fetch as fetch  # 延迟导入,避开取数依赖
+    trace = _source_trace(endpoint, params, today)
+    try:
+        if fetch is None:
+            from autoresearch.data.sources import fetch as fetch  # 延迟导入,避开取数依赖
 
-    # 延迟导入:契约表是纯数据,无取数依赖
-    from autoresearch.data.contracts import check, refuses_lake
+        # 延迟导入:契约表是纯数据,无取数依赖
+        from autoresearch.data.contracts import check, refuses_lake
 
-    pol = policy(endpoint)
-    t = _today_compact(today)
+        pol = policy(endpoint)
+        t = _today_compact(today)
 
-    # ③ live:总取新,绝不缓存,不校验(盘中快照的完整性由调用方自负——它们本就不入湖)。
-    if pol["settle"] == "live":
-        return fetch(endpoint, params)
+        # ③ live:总取新,绝不缓存,不校验(盘中快照的完整性由调用方自负——它们本就不入湖)。
+        if pol["settle"] == "live":
+            result = fetch(endpoint, params)
+            trace.finish_success(result, "FETCHED_LIVE", None)
+            return result
 
-    key = _cache_key(endpoint, params, t)
-    path = LAKE / endpoint / f"{key}.parquet"
+        key = _cache_key(endpoint, params, t)
+        path = LAKE / endpoint / f"{key}.parquet"
 
-    # 已结算(date < today)且文件存在 → 命中,零取数。**命中也要校验**(湖里可能躺着毒源)。
-    if path.exists():
-        return check(endpoint, _read(path), key=str(key), source="lake")
+        # 已结算(date < today)且文件存在 → 命中,零取数。**命中也要校验**(湖里可能躺着毒源)。
+        if path.exists():
+            result = check(endpoint, _read(path), key=str(key), source="lake")
+            trace.finish_success(result, "CACHE_HIT", path)
+            return result
 
-    # 快照端点的 PIT 守门(Wave12 复核 I1):只挡**写新分区**,历史读在上一行已经放行。
-    # 快照接口只有"此刻",所以 as-of 键必须等于真实今天;否则这次取数会把今天的观测钉成
-    # 过去某天的假历史(补跑 / 节假日 launchd 触发 / 手工传日期都会撞上),事后不可甄别。
-    if pol.get("snapshot") and t != _real_today():
-        raise SnapshotDateError(
-            f"[快照 PIT] {endpoint} 的 as-of 键 {t} ≠ 今天 {_real_today()}:"
-            f"快照接口只返回「此刻」,补不出 {t} 的历史 —— 强行取数会把**今天**的观测写成 "
-            f"{t} 的假历史且事后不可甄别。要今天的快照就用今天的日期;要 {t} 的,它已经永远没有了。")
+        # 快照端点的 PIT 守门(Wave12 复核 I1):只挡**写新分区**,历史读在上一行已经放行。
+        # 快照接口只有"此刻",所以 as-of 键必须等于真实今天;否则这次取数会把今天的观测钉成
+        # 过去某天的假历史(补跑 / 节假日 launchd 触发 / 手工传日期都会撞上),事后不可甄别。
+        if pol.get("snapshot") and t != _real_today():
+            raise SnapshotDateError(
+                f"[快照 PIT] {endpoint} 的 as-of 键 {t} ≠ 今天 {_real_today()}:"
+                f"快照接口只返回「此刻」,补不出 {t} 的历史 —— 强行取数会把**今天**的观测写成 "
+                f"{t} 的假历史且事后不可甄别。要今天的快照就用今天的日期;要 {t} 的,它已经永远没有了。")
 
-    # date 键:date >= today(盘中未结算)→ 拉新但不写(明天结算后才入湖)。**只查空、不查列**
-    # (`cols=False`):这份数据不入湖、只服务当次调用,调用方要哪几列是它自己的事(温度计只要
-    # `ts_code,pct_chg`)。但 A 级拉到空仍要抛 —— 数据还没发布,下游必然残废,与
-    # `assert_tushare_ready` 同一立场("晚点再跑,或跑前一交易日")。
-    if pol["key"] == "date":
-        d = _compact(_first(params, _DATE_PARAM_KEYS))
-        # 预热豁免(spec 2026-07-12-scan-speed-perimeter §P1):LAKE_ASSUME_SETTLED=1 且
-        # d == today → 视为已结算,落到下方「拉取→契约→原子写」正常入湖(19:15 后 EOD 已发布,
-        # 契约 min_rows 仍兜底);d > today(未来日)任何情况拒写。env 未设 = 现行为逐字节不变。
-        if d and d >= t and not (d == t and os.environ.get("LAKE_ASSUME_SETTLED") == "1"):
-            return check(endpoint, fetch(endpoint, params), key=str(key), source="fetch", cols=False)
+        # date 键:date >= today(盘中未结算)→ 拉新但不写(明天结算后才入湖)。**只查空、不查列**
+        # (`cols=False`):这份数据不入湖、只服务当次调用,调用方要哪几列是它自己的事(温度计只要
+        # `ts_code,pct_chg`)。但 A 级拉到空仍要抛 —— 数据还没发布,下游必然残废,与
+        # `assert_tushare_ready` 同一立场("晚点再跑,或跑前一交易日")。
+        if pol["key"] == "date":
+            d = _compact(_first(params, _DATE_PARAM_KEYS))
+            # 预热豁免(spec 2026-07-12-scan-speed-perimeter §P1):LAKE_ASSUME_SETTLED=1 且
+            # d == today → 视为已结算,落到下方「拉取→契约→原子写」正常入湖(19:15 后 EOD 已发布,
+            # 契约 min_rows 仍兜底);d > today(未来日)任何情况拒写。env 未设 = 现行为逐字节不变。
+            if d and d >= t and not (d == t and os.environ.get("LAKE_ASSUME_SETTLED") == "1"):
+                result = check(
+                    endpoint,
+                    fetch(endpoint, params),
+                    key=str(key),
+                    source="fetch",
+                    cols=False,
+                )
+                trace.finish_success(result, "FETCHED_UNSETTLED", None)
+                return result
 
-    # 拉取 → 校验 → 原子写。**入湖必须全字段**(`_lake_params`:窄 fields 会把窄表钉成该 key 的
-    # 湖快照,毒化所有后来的调用方——2026-07-12 M1 对拍实证)。
-    df = fetch(endpoint, _lake_params(params))
-    if df is None:
-        df = pd.DataFrame()
-    df = check(endpoint, df, key=str(key), source="fetch")   # A 级违约 → 抛,下一行不执行 = 不入湖
-    if pol.get("snapshot"):
-        df = _stamp_observed(df)                             # 观测出处(I3):落盘前打戳
-    # B 级快照端点的空/半截**同样不入湖**(C2):落了就 `path.exists()` 恒命中,这一天永远残缺;
-    # 不落 → 同日重跑(或下一次夜采)还能救回来。契约已在上面 check() 里记过账,这里只管别钉死。
-    if refuses_lake(endpoint, df):
+        # 拉取 → 校验 → 原子写。**入湖必须全字段**(`_lake_params`:窄 fields 会把窄表钉成该 key 的
+        # 湖快照,毒化所有后来的调用方——2026-07-12 M1 对拍实证)。
+        df = fetch(endpoint, _lake_params(params))
+        if df is None:
+            df = pd.DataFrame()
+        df = check(endpoint, df, key=str(key), source="fetch")   # A 级违约 → 抛,下一行不执行 = 不入湖
+        if pol.get("snapshot"):
+            df = _stamp_observed(df)                             # 观测出处(I3):落盘前打戳
+        # B 级快照端点的空/半截**同样不入湖**(C2):落了就 `path.exists()` 恒命中,这一天永远残缺;
+        # 不落 → 同日重跑(或下一次夜采)还能救回来。契约已在上面 check() 里记过账,这里只管别钉死。
+        if refuses_lake(endpoint, df):
+            trace.finish_success(df, "FETCHED_REFUSED_LAKE", None)
+            return df
+        _atomic_write(path, df)
+        trace.finish_success(df, "FETCHED_CACHED", path)
         return df
-    _atomic_write(path, df)
-    return df
+    except BaseException as exc:
+        trace.finish_failure(exc)
+        raise

@@ -52,6 +52,28 @@ def test_first_fetch_writes_then_second_call_hits(lake):
     pd.testing.assert_frame_equal(out1.reset_index(drop=True), out2.reset_index(drop=True))
 
 
+def test_without_active_run_cache_creates_no_forensic_artifacts(lake, monkeypatch):
+    """普通数据层调用保持原契约：没有 run identity 就没有隐式 trace 根或 blob。"""
+    import autoresearch.trace.source_lineage as lineage
+
+    monkeypatch.delenv("AUTORESEARCH_RUN_ID", raising=False)
+    monkeypatch.setattr(
+        lineage,
+        "trace_access",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("no-run cache path must not enter trace control plane")
+        ),
+    )
+    cache.get_or_fetch(
+        "daily",
+        {"trade_date": "20240102"},
+        today="20260622",
+        fetch=lambda *_: _daily_row(),
+    )
+    assert not list(lake.parent.rglob("reads.jsonl"))
+    assert not list(lake.parent.rglob("blobs"))
+
+
 # ───────────────────── 窄表毒化回归(2026-07-12,回放器 M1 对拍逮到) ─────────────────────
 #
 # `_cache_key` 不含 `fields` → 湖里一个 key 只有一个 parquet。带窄 fields 的查询若成为该 key 的
