@@ -495,7 +495,7 @@ def test_scan_sector_subject_travels_as_display_name_not_mangled_ascii():
 def test_scan_workflow_finalizes_failed_before_rethrowing():
     """业务异常必须先冻结 capsule 再上抛,且冻结失败不得盖住原始异常。"""
     source = _executable_source(WORKFLOWS[0])
-    assert "const __main = async () =>" in source
+    assert "async function __main()" in source
     assert "return await __main()" in source
     assert "--business-status FAILED" in source
     assert "capsule:finalize-failed" in source

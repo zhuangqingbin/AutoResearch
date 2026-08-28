@@ -70,7 +70,7 @@ if (!['claude', 'codex'].includes(ENGINE)) throw new Error(`args.engine 非法:$
 // 主体包在 __main 里:业务异常必须**先冻结 capsule 再上抛**。不冻结的话,失败的 run
 // 只剩一个 ACTIVE spool 和没人读的 stderr —— 而失败恰恰是最需要现场的那一种结局。
 // (SIGKILL 走不到这里,那条路归 `capsule recover` 的陈旧租约恢复。)
-const __main = async () => {
+async function __main() {
 const CTX = `context_${ENGINE}`
 const SD = `${CTX}/scan_runs/${RUN_ID}/staging/${date}`
 const CAPTURE = (stage, invocation, attempt = 1, subject = null) =>

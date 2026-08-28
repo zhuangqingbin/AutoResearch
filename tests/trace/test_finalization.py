@@ -176,3 +176,31 @@ def test_verify_reports_completeness_and_integrity_separately(finalizable):
     assert result["completeness_ok"] is False
     assert result["missing_required"]
     assert result["event_chain_ok"] is True
+
+
+def test_archive_failure_downgrades_capsule_json_and_state_too(finalizable, monkeypatch):
+    """归档失败后,capsule.json / state.json 不得还挂着 COMPLETE。
+
+    展示层读的是 capsule.json;只降级 completeness.json 而留着旧的 COMPLETE,
+    等于把假绿灯从一个文件搬到另一个文件。
+    """
+    from autoresearch.scan.evidence import evidence_facts
+
+    handle, report_dir, _ = finalizable
+    monkeypatch.setattr(
+        capsule_mod,
+        "build_archive",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    finalize(handle.run_id, BusinessStatus.SUCCEEDED, report_dir)
+
+    manifest = json.loads(
+        (report_dir / "capsule/capsule.json").read_text(encoding="utf-8")
+    )
+    state = json.loads((handle.workspace / "state.json").read_text(encoding="utf-8"))
+    assert manifest["evidence_status"] == "EVIDENCE_INCOMPLETE"
+    assert state["evidence_status"] == "EVIDENCE_INCOMPLETE"
+    facts = evidence_facts(report_dir)
+    assert facts["evidence_status"] == "EVIDENCE_INCOMPLETE"
+    assert facts["green"] is False

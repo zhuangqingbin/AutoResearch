@@ -22,8 +22,7 @@ import pandas as pd
 import pytest
 
 from autoresearch.common import workspace as ws
-from autoresearch.trace import capsule as capsule_mod
-from autoresearch.trace import process_probe
+from autoresearch.trace import capsule as capsule_mod, process_probe
 from autoresearch.trace.blobs import put_dataframe
 from autoresearch.trace.capsule import (
     BusinessStatus,

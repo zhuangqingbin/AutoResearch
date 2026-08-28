@@ -2517,6 +2517,27 @@ def finalize(
             f"archive could not be written: {archive_reason}",
         ]
         atomic_write_json(handle.capsule / "verification/completeness.json", evidence)
+        # capsule.json 与 state.json 也必须跟着降级 —— 否则 evidence_facts() 读到的
+        # 还是归档失败**之前**那句 COMPLETE,展示层就又有了一个假绿灯。
+        _write_capsule_manifest(
+            handle,
+            final_path=final_path,
+            business_status=resolved_status,
+            evidence_status=evidence_status,
+            replayability=replayability,
+            checkpoint_name=checkpoint_name,
+        )
+        _write_state(
+            handle.workspace,
+            RunState.build(
+                run_id=handle.run_id,
+                business_status=resolved_status,
+                evidence_status=evidence_status,
+                replayability=replayability,
+                now=now,
+                previous=terminal,
+            ),
+        )
         published = _publish_capsule(handle, final_path)
         manifest_bytes = write_manifest(final_path).read_bytes()
         root_hash = sha256_bytes(manifest_bytes)

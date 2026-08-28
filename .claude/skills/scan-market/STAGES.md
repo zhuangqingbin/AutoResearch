@@ -205,7 +205,21 @@ self_review 硬门 banner → H1 → regime+drift 行(+🌡情绪温度行)
 - **现场完备**:发布同时写 `run_health.json` + `index.md` 导航页(**第二天回看从 index.md 进**);`weights_used.json` + meta.regime 固化,漏斗可复现。
 - **计量时序**:assemble 时 `_token_usage.json` 通常尚未生成,报告先写 `UNMEASURED`;CP7 跑 usage_harvest `--json-out` 后由 `post_run observe` 原位替换 managed section,并刷新 `_budget_observation.json`、budget StageResult 与 ArtifactIndex。
 - **观察单已退役**(用户裁定):日检/触发/直通车全无;存量 `$CTX/watchlist.csv` 保留(sector.pack 行业选择器仍直接读)。发布落 `$RPT/scan/<运行时刻>/`(数据日在 manifest.json)。
-- **现场留存**(`scan/retention.py`,2026-08-26):发布收尾 + `post_run observe` 各跑一次 `retain()` → `trace/staging/`(**整目录镜像** staging,含子目录)+ `trace/inputs/{slim,sector_packs,prompts,temperature_row}`(staging 之外的输入:逐票 slim/深核、行业 pack、agent def/playbook/config 本体、当日温度计行)+ `trace/transcripts/*.jsonl.gz`(判断腿 subagent 推理链,≈1.3MB/run)+ `trace/lake_manifest.json`(窗口内湖指纹,~1s)+ `trace/MANIFEST.sha256`。**判据:run 目录自足到 staging 可弃**(staging 按数据日键,同日重跑原地覆盖 —— 实测 64 个已发布 run 只剩 49 个 staging)。**必须是发布的最后一步**:早一行就镜像到半成品。核验 `python -m autoresearch.scan.retention verify <run_dir>`;链路复盘 `python -m autoresearch.scan.chain_view <run_id> <code>`。
+- **法证 run capsule**(`autoresearch/trace/`,2026-08-28,设计稿 `docs/superpowers/specs/2026-08-27-scan-forensic-run-capsule-design.md`):
+  run 从 `capsule begin` 起就拥有独立工作区 `$CTX/scan_runs/<run_id>/`(`state.json` 带**租约**:hostname/pid/进程启动时刻/心跳),
+  每条确定性命令经 `trace.exec_capture` 捕获 argv/stdout/stderr/信号,每个 agent 边界经 `capsule agent-event` 进
+  **hash 链** `events/events.jsonl`,每次 lake 读取经 `trace.source_lineage` 落 `lineage/reads.jsonl` + 内容寻址 blob。
+  CP7 的 `post_run observe` 末尾调 `capsule finalize`,按固定次序:transcript 物化 → 真计量 → 产物快照 →
+  expected/replay/completeness → `capsule.json` → MANIFEST → root → 脱钩 `ROOT.json` → `.tar.zst` 归档 →
+  `_ledger/run_capsules.jsonl` 追加一条 revision → 全树只读 → 复验。
+  **三个结论互不替代**:`integrity_ok`(已归档文件被改没)/ `completeness_ok`(该有的证据齐不齐)/
+  `replayability`(冻结输入能否重放出同样字节)。**`MANIFEST` 通过 ≠ 完整** —— 它列不到没人写下的文件,
+  `20260826_2000` 正是这样带着 0 transcript / 557 未归档 staging / `$0.0000` 假成本显示「完整性 ✓」的。
+  失败与中断也冻结:`$RPT/scan/_failed/<run_id>/`,带 `failure.json`(含最后一个可靠检查点)。
+  事后找回的证据走**叠加层** `_repairs/<run_id>/revision-N/`,base root 永不变动。
+  Codex transcript **只认显式绑定**(`capsule bind-transcript`),候选 0 个写 `GONE`、多个写 `AMBIGUOUS`,
+  **禁止按最新 mtime 猜**;计量走 `usage_harvest --engine codex --run-id`,量不到写 `UNMEASURED`(不是 `$0`)。
+- **现场留存**(`scan/retention.py`,2026-08-26,**已降为兼容路径**:capsule 在场时它的 MANIFEST 绿灯只代表完好性,不再是完整性结论):发布收尾 + `post_run observe` 各跑一次 `retain()` → `trace/staging/`(**整目录镜像** staging,含子目录)+ `trace/inputs/{slim,sector_packs,prompts,temperature_row}`(staging 之外的输入:逐票 slim/深核、行业 pack、agent def/playbook/config 本体、当日温度计行)+ `trace/transcripts/*.jsonl.gz`(判断腿 subagent 推理链,≈1.3MB/run)+ `trace/lake_manifest.json`(窗口内湖指纹,~1s)+ `trace/MANIFEST.sha256`。**判据:run 目录自足到 staging 可弃**(staging 按数据日键,同日重跑原地覆盖 —— 实测 64 个已发布 run 只剩 49 个 staging)。**必须是发布的最后一步**:早一行就镜像到半成品。核验 `python -m autoresearch.scan.retention verify <run_dir>`;链路复盘 `python -m autoresearch.scan.chain_view <run_id> <code>`。
 - **run_contract v2**:加 `git_dirty`/`dirty_paths`/`prompt_hashes` —— `git_sha` 只说 HEAD 在哪,而 **agent def 未提交也会生效**(会话启动装载工作树那份)。v1 契约仍可读(`_hash_payload` 按 `schema_version` 排除 v2 三键,历史 run 身份不丢)。
 - **结果账本**(`scan/outcome.py`,**只记不学**):prelude 的 `outcome_fill` 步逐日回填已发布 run 的推荐票事后读数 → `$RPT/scan/_ledger/outcome/<run_id>.json` + `_ledger/recommendations.csv`。口径与 `research.edge_census` 逐字同源(同一 `forward_returns`/`entry_tradable`/`GAP_CLIP`),两边可直接对表。**必读两列**:`mode`(shadow 期的 BUY 明写「不执行」)与 `src`(`shared` = 读自共享 staging,未必是本 run 那份)。消费者只有 `chain_view` ⑩ 段与汇总屏一行;**不进 brief、不喂任何 agent、不改任何参数**。落 `_ledger/` 而非 run 目录内,是因为 run 目录刚立了「发布后不再变」的 MANIFEST 不变量。
 
@@ -213,7 +227,7 @@ self_review 硬门 banner → H1 → regime+drift 行(+🌡情绪温度行)
 
 ## 计量与跨层校准(usage_harvest = 唯一正典)
 
-- **token/成本真计量**:`python -m autoresearch.trace.usage_harvest --session <sessionId> --out $RPT/scan/<run>/token_usage.md --json-out $CTX/scan/<date>/_token_usage.json`。覆盖可定位的主会话+subagent;按 `message.id` 去重,分 input/output/cache read/write/model/effort/失败/重试,按公开计价倍率加权估算。补账 `--transcripts <glob>`。
+- **token/成本真计量**(Codex 引擎走 `--engine codex --run-id "$RUN_ID"`,读 capsule 里的显式 transcript 绑定;量不到写 `UNMEASURED`,**绝不渲染成 `$0.0000`**):`python -m autoresearch.trace.usage_harvest --session <sessionId> --out $RPT/scan/<run>/token_usage.md --json-out $CTX/scan/<date>/_token_usage.json`。覆盖可定位的主会话+subagent;按 `message.id` 去重,分 input/output/cache read/write/model/effort/失败/重试,按公开计价倍率加权估算。补账 `--transcripts <glob>`。
   - **回填**:`python -m autoresearch.scan.post_run <date> observe --report-dir $RPT/scan/<run>`;缺成本/墙钟写未计量 warning,**绝不写 `$0`**。
   - **预算只告警**:超 cache 红线/阶段成本/墙钟只产 `DEGRADED` StageResult,`truncated=false`;不能截候选、查询、卡或阶段。
   - **成熟门**:至少 **10 次真实扫描**且基线已定价、成本/墙钟/cache 齐全,才报中位成本与 P50/P90 并判 PASS/FAIL;此前恒 `IMMATURE`。效率分母(USD/成熟 DecisionRecord、USD/最终 BUY、USD/已验证正确拒绝)分母 0 显示 `—`,不制造 BUY。

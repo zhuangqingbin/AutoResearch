@@ -126,7 +126,7 @@ def _round_floats(text: str) -> str:
     多余的位数只会挤掉真正要看的字。**只动显示**,不动任何产物。"""
     import re
 
-    def _sub(m: "re.Match[str]") -> str:
+    def _sub(m: re.Match[str]) -> str:
         return f"{float(m.group(0)):.4f}".rstrip("0").rstrip(".")
 
     return re.sub(r"-?\d+\.\d{6,}", _sub, text)
@@ -192,7 +192,7 @@ def _sec_passport(src: Sources, code6: str) -> list[str]:
     elif isinstance(entries, list):
         row = next((e for e in entries if _z6(e.get("code")) == code6), None)
     if row is None:
-        return out + [f"- 护照里没有这只票(未进 L1 打分集,或护照当日未生成)"]
+        return out + ["- 护照里没有这只票(未进 L1 打分集,或护照当日未生成)"]
     out.append("```json")
     out.append(json.dumps(row, ensure_ascii=False, indent=1, sort_keys=True))
     out.append("```")
