@@ -442,7 +442,9 @@ def test_readable_all_failed_lineage_is_still_exact_not_window_guess(tmp_path, m
     assert doc["n_total_reads"] == 1
     assert doc["n_successful_reads"] == 0
     assert doc["n_failed_reads"] == 1
-    assert doc["n_incomplete_reads"] == 0
+    assert doc["n_incomplete_reads"] == 1
+    assert doc["n_missing_source_events"] == 1
+    assert doc["evidence_complete"] is False
     assert doc["n_no_blob_reads"] == 0
 
 
@@ -566,6 +568,96 @@ def test_exact_manifest_requires_matching_source_event_and_no_gap(tmp_path, monk
     assert doc["n_incomplete_reads"] == 1
     assert doc["n_missing_source_events"] == 1
     assert doc["n_evidence_gaps"] == 1
+
+
+def test_missing_events_file_marks_every_read_incomplete(tmp_path):
+    workspace = tmp_path / "scan_runs" / "20260827T010203456789Z"
+    scan = workspace / "staging/2026-08-27"
+    reads = workspace / "capsule/lineage/reads.jsonl"
+    scan.mkdir(parents=True)
+    reads.parent.mkdir(parents=True)
+    reads.write_text(
+        json.dumps(
+            {
+                "status": "FAILED",
+                "endpoint": "daily",
+                "blob_hash": None,
+                "bytes": None,
+                "rows": None,
+                "columns_hash": None,
+                "evidence_complete": True,
+                "correlation_id": "missing-event-row",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    doc, reason = retention._read_exact_manifest(scan)
+
+    assert reason == ""
+    assert doc["n_missing_source_events"] == 1
+    assert doc["n_incomplete_reads"] == 1
+    assert doc["evidence_complete"] is False
+
+
+def test_orphan_gap_is_counted_when_read_append_failed(tmp_path):
+    workspace = tmp_path / "scan_runs" / "20260827T010203456789Z"
+    scan = workspace / "staging/2026-08-27"
+    lineage = workspace / "capsule/lineage"
+    scan.mkdir(parents=True)
+    lineage.mkdir(parents=True)
+    (lineage / "reads.jsonl").write_text("", encoding="utf-8")
+    (lineage / "evidence_gaps.jsonl").write_text(
+        json.dumps(
+            {
+                "correlation_id": "orphan-gap",
+                "lineage_row_hash": "a" * 64,
+                "row_persisted": False,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    doc, reason = retention._read_exact_manifest(scan)
+
+    assert reason == ""
+    assert doc["n_evidence_gaps"] == 1
+    assert doc["n_orphan_gaps"] == 1
+    assert doc["evidence_complete"] is False
+
+
+def test_orphan_source_event_is_counted_without_matching_read(tmp_path):
+    workspace = tmp_path / "scan_runs" / "20260827T010203456789Z"
+    scan = workspace / "staging/2026-08-27"
+    capsule = workspace / "capsule"
+    lineage = capsule / "lineage"
+    events = capsule / "events"
+    scan.mkdir(parents=True)
+    lineage.mkdir(parents=True)
+    events.mkdir(parents=True)
+    (lineage / "reads.jsonl").write_text("", encoding="utf-8")
+    (events / "events.jsonl").write_text(
+        json.dumps(
+            {
+                "event_type": "SOURCE_FETCHED",
+                "payload": {
+                    "lineage_persisted": True,
+                    "lineage_row_hash": "b" * 64,
+                    "correlation_id": "orphan-event",
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    doc, reason = retention._read_exact_manifest(scan)
+
+    assert reason == ""
+    assert doc["n_orphan_source_events"] == 1
+    assert doc["evidence_complete"] is False
 
 
 @pytest.mark.parametrize("malformation", ["digest", "size", "content", "parquet_rows"])

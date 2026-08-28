@@ -365,9 +365,15 @@ def _require_digest(value: object, *, field: str) -> str:
     return value
 
 
-def _validate_lineage_blob(capsule: Path, row: dict) -> None:
-    digest = _require_digest(row.get("blob_hash"), field="blob_hash")
-    size = row.get("bytes")
+def _validate_lineage_blob(
+    capsule: Path,
+    row: dict,
+    *,
+    hash_field: str = "blob_hash",
+    size_field: str = "bytes",
+) -> None:
+    digest = _require_digest(row.get(hash_field), field=hash_field)
+    size = row.get(size_field)
     rows = row.get("rows")
     columns_hash = _require_digest(row.get("columns_hash"), field="columns_hash")
     if type(size) is not int or size < 0:
@@ -390,24 +396,35 @@ def _row_hash(row: dict) -> str:
     return hashlib.sha256(canonical_json(row).encode("utf-8")).hexdigest()
 
 
-def _source_event_keys(events: list[dict]) -> set[tuple[str, str | None]]:
-    keys: set[tuple[str, str | None]] = set()
+def _source_event_keys(events: list[dict]) -> list[tuple[str | None, str | None]]:
+    keys: list[tuple[str | None, str | None]] = []
     for event in events:
         if event.get("event_type") not in {"SOURCE_READ", "SOURCE_FETCHED", "SOURCE_FAILED"}:
             continue
         payload = event.get("payload")
-        if not isinstance(payload, dict) or payload.get("lineage_persisted") is not True:
+        if not isinstance(payload, dict):
+            keys.append((None, None))
             continue
         digest = payload.get("lineage_row_hash")
-        if type(digest) is not str or not _DIGEST_RE.fullmatch(digest):
-            continue
+        normalized_digest = (
+            digest
+            if payload.get("lineage_persisted") is True
+            and type(digest) is str
+            and _DIGEST_RE.fullmatch(digest)
+            else None
+        )
         correlation = payload.get("correlation_id")
-        keys.add((digest, correlation if type(correlation) is str and correlation else None))
+        keys.append(
+            (
+                normalized_digest,
+                correlation if type(correlation) is str and correlation else None,
+            )
+        )
     return keys
 
 
-def _gap_keys(gaps: list[dict]) -> set[tuple[str | None, str | None]]:
-    keys: set[tuple[str | None, str | None]] = set()
+def _gap_keys(gaps: list[dict]) -> list[tuple[str | None, str | None]]:
+    keys: list[tuple[str | None, str | None]] = []
     for gap in gaps:
         digest = gap.get("lineage_row_hash")
         normalized_digest = (
@@ -417,9 +434,30 @@ def _gap_keys(gaps: list[dict]) -> set[tuple[str | None, str | None]]:
         normalized_correlation = (
             correlation if type(correlation) is str and correlation else None
         )
-        if normalized_digest is not None or normalized_correlation is not None:
-            keys.add((normalized_digest, normalized_correlation))
+        keys.append((normalized_digest, normalized_correlation))
     return keys
+
+
+def _event_matches(
+    row_key: tuple[str, str | None], event_key: tuple[str | None, str | None]
+) -> bool:
+    row_hash, row_correlation = row_key
+    event_hash, event_correlation = event_key
+    return event_hash == row_hash and (
+        row_correlation is None or event_correlation == row_correlation
+    )
+
+
+def _gap_matches(
+    row_key: tuple[str, str | None], gap_key: tuple[str | None, str | None]
+) -> bool:
+    row_hash, row_correlation = row_key
+    gap_hash, gap_correlation = gap_key
+    if gap_hash is not None:
+        return gap_hash == row_hash and (
+            gap_correlation is None or gap_correlation == row_correlation
+        )
+    return gap_correlation is not None and gap_correlation == row_correlation
 
 
 def _read_exact_manifest(scan_dir: Path) -> tuple[dict | None, str]:
@@ -438,8 +476,9 @@ def _read_exact_manifest(scan_dir: Path) -> tuple[dict | None, str]:
         gap_keys = _gap_keys(gaps)
 
         effective_complete: list[bool] = []
+        row_keys: list[tuple[str, str | None]] = []
+        used_events: set[int] = set()
         missing_events = 0
-        matching_gaps = 0
         for row in rows:
             status = row.get("status")
             if status not in {"SUCCEEDED", "FAILED"}:
@@ -452,11 +491,25 @@ def _read_exact_manifest(scan_dir: Path) -> tuple[dict | None, str]:
             blob_hash = row.get("blob_hash")
             if status == "SUCCEEDED" and blob_hash is not None:
                 _validate_lineage_blob(capsule, row)
+                if row.get("normalized_blob_hash") is not None:
+                    _validate_lineage_blob(
+                        capsule,
+                        row,
+                        hash_field="normalized_blob_hash",
+                        size_field="normalized_bytes",
+                    )
             elif status == "SUCCEEDED" and row.get("bytes") is not None:
                 raise ValueError("successful source row without blob cannot record bytes")
             elif status == "FAILED" and any(
                 row.get(field) is not None
-                for field in ("blob_hash", "bytes", "rows", "columns_hash")
+                for field in (
+                    "blob_hash",
+                    "bytes",
+                    "rows",
+                    "columns_hash",
+                    "normalized_blob_hash",
+                    "normalized_bytes",
+                )
             ):
                 raise ValueError("failed source row cannot reference successful content")
 
@@ -464,26 +517,32 @@ def _read_exact_manifest(scan_dir: Path) -> tuple[dict | None, str]:
             correlation = row.get("correlation_id")
             if correlation is not None and (type(correlation) is not str or not correlation):
                 raise ValueError("correlation_id must be a non-empty string")
-            has_event = any(
-                event_digest == digest
-                and (correlation is None or event_correlation == correlation)
-                for event_digest, event_correlation in event_keys
+            row_key = (digest, correlation)
+            row_keys.append(row_key)
+            event_index = next(
+                (
+                    index
+                    for index, event_key in enumerate(event_keys)
+                    if index not in used_events and _event_matches(row_key, event_key)
+                ),
+                None,
             )
-            has_gap = any(
-                gap_digest == digest
-                or (correlation is not None and gap_correlation == correlation)
-                for gap_digest, gap_correlation in gap_keys
-            )
-            if events_present and not has_event:
+            has_event = event_index is not None
+            if event_index is not None:
+                used_events.add(event_index)
+            has_gap = any(_gap_matches(row_key, gap_key) for gap_key in gap_keys)
+            if not has_event:
                 missing_events += 1
-            if has_gap:
-                matching_gaps += 1
             complete = row["evidence_complete"] and not has_gap
-            if events_present:
-                complete = complete and has_event
+            complete = complete and has_event
             if status == "SUCCEEDED" and blob_hash is None:
                 complete = False
             effective_complete.append(complete)
+        orphan_source_events = len(event_keys) - len(used_events)
+        orphan_gaps = sum(
+            not any(_gap_matches(row_key, gap_key) for row_key in row_keys)
+            for gap_key in gap_keys
+        )
     except BaseException:
         return None, "lineage_unreadable"
 
@@ -519,7 +578,16 @@ def _read_exact_manifest(scan_dir: Path) -> tuple[dict | None, str]:
         "n_incomplete_reads": len(incomplete),
         "n_no_blob_reads": len(no_blob),
         "n_missing_source_events": missing_events,
-        "n_evidence_gaps": matching_gaps,
+        "n_evidence_gaps": len(gap_keys),
+        "n_orphan_gaps": orphan_gaps,
+        "n_orphan_source_events": orphan_source_events,
+        "source_events_file_present": events_present,
+        "evidence_complete": (
+            not incomplete
+            and not gap_keys
+            and missing_events == 0
+            and orphan_source_events == 0
+        ),
         "files": files,
         "note": "由本次实际成功 source reads 派生；不是窗口猜测。",
     }, ""

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -192,11 +193,12 @@ def test_cache_hit_blob_comes_from_returned_frame_not_reopened_path(
     monkeypatch.setattr(cache, "LAKE", lake)
     path = cache.lake_path("daily", {"trade_date": "20260825"})
     cache._atomic_write(path, _daily(10.5))
+    original_bytes = path.read_bytes()
     original_finish = cache._finish_source_success
 
-    def replace_path_before_evidence(trace, frame, access, exact_path):
+    def replace_path_before_evidence(trace, frame, access, exact_path, **kwargs):
         cache._atomic_write(path, _daily(99.0))
-        return original_finish(trace, frame, access, exact_path)
+        return original_finish(trace, frame, access, exact_path, **kwargs)
 
     monkeypatch.setattr(cache, "_finish_source_success", replace_path_before_evidence)
     returned = cache.get_or_fetch(
@@ -204,9 +206,14 @@ def test_cache_hit_blob_comes_from_returned_frame_not_reopened_path(
     )
 
     row = _reads(active_run)[-1]
-    captured = pd.read_parquet(blob_path(active_run.capsule, row["blob_hash"]))
+    captured_path = blob_path(active_run.capsule, row["blob_hash"])
+    captured = pd.read_parquet(captured_path)
     pd.testing.assert_frame_equal(captured, returned)
     assert captured.iloc[0]["close"] == 10.5
+    assert captured_path.read_bytes() == original_bytes
+    assert row["blob_hash"] == hashlib.sha256(original_bytes).hexdigest()
+    assert row["bytes"] == len(original_bytes)
+    assert row["blob_role"] == "SOURCE_FILE_SNAPSHOT"
 
 
 def test_fetched_cached_blob_preserves_returned_named_index(active_run, tmp_path, monkeypatch):
@@ -219,7 +226,11 @@ def test_fetched_cached_blob_preserves_returned_named_index(active_run, tmp_path
     )
 
     row = _reads(active_run)[-1]
-    captured = pd.read_parquet(blob_path(active_run.capsule, row["blob_hash"]))
+    assert row["blob_role"] == "SOURCE_FILE_SNAPSHOT"
+    assert row["normalized_blob_hash"]
+    captured = pd.read_parquet(
+        blob_path(active_run.capsule, row["normalized_blob_hash"])
+    )
     pd.testing.assert_frame_equal(captured, returned)
 
 
@@ -230,9 +241,9 @@ def test_fetch_return_and_blob_share_copy_isolated_from_producer_mutation(
     producer_frame = _daily(10.5)
     original_finish = cache._finish_source_success
 
-    def mutate_producer_before_evidence(trace, stable_frame, access, path):
+    def mutate_producer_before_evidence(trace, stable_frame, access, path, **kwargs):
         producer_frame.loc[:, "close"] = 99.0
-        return original_finish(trace, stable_frame, access, path)
+        return original_finish(trace, stable_frame, access, path, **kwargs)
 
     monkeypatch.setattr(cache, "_finish_source_success", mutate_producer_before_evidence)
     returned = cache.get_or_fetch(
@@ -247,6 +258,34 @@ def test_fetch_return_and_blob_share_copy_isolated_from_producer_mutation(
     assert producer_frame.iloc[0]["close"] == 99.0
     assert returned.iloc[0]["close"] == 10.5
     pd.testing.assert_frame_equal(captured, returned)
+
+
+@pytest.mark.parametrize("case", ["hit", "write"])
+def test_source_byte_snapshot_failure_preserves_business_result(
+    active_run, tmp_path, monkeypatch, case
+):
+    monkeypatch.setattr(cache, "LAKE", tmp_path / "lake")
+    path = cache.lake_path("daily", {"trade_date": "20260825"})
+    if case == "hit":
+        cache._atomic_write(path, _daily())
+    monkeypatch.setattr(
+        cache,
+        "_read_file_bytes",
+        lambda *_: (_ for _ in ()).throw(OSError("snapshot evidence failed")),
+    )
+
+    returned = cache.get_or_fetch(
+        "daily",
+        {"trade_date": "20260825"},
+        today="20260827",
+        fetch=lambda *_: _daily(),
+    )
+
+    pd.testing.assert_frame_equal(returned.reset_index(drop=True), _daily())
+    row = _reads(active_run)[-1]
+    assert row["status"] == "SUCCEEDED"
+    assert row["evidence_complete"] is False
+    assert (active_run.capsule / "lineage/evidence_gaps.jsonl").is_file()
 
 
 def test_get_or_fetch_records_contract_exception(active_run, tmp_path, monkeypatch):

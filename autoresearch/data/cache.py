@@ -31,6 +31,7 @@ from autoresearch.data.endpoints import policy
 LAKE = ws.lake_root()
 
 _COMPRESSION = "zstd"
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 # 各 key 模式下,从 params 里找"日期/报告期/实体"用的候选键名(吸收 tushare/akshare 差异)。
 _DATE_PARAM_KEYS = ("trade_date", "date", "ann_date", "cal_date")
@@ -70,9 +71,9 @@ def _source_trace(endpoint: str, params: dict, today: str | None):
         return _NO_SOURCE_TRACE
 
 
-def _finish_source_success(trace, frame, access: str, path) -> None:
+def _finish_source_success(trace, frame, access: str, path, *, source_bytes=None) -> None:
     try:
-        trace.finish_success(frame, access, path)
+        trace.finish_success(frame, access, path, source_bytes=source_bytes)
     except BaseException:
         _trace_warning()
 
@@ -84,13 +85,17 @@ def _finish_source_failure(trace, error: BaseException) -> None:
         _trace_warning()
 
 
-def _stable_source_frame(trace, frame):
-    """Detach a traced result from provider-owned mutable memory before evidence capture."""
+def _trace_enabled(trace) -> bool:
     try:
-        enabled = bool(getattr(trace, "enabled", False))
+        return bool(getattr(trace, "enabled", False))
     except BaseException:
         _trace_warning()
-        return frame
+        return False
+
+
+def _stable_source_frame(trace, frame):
+    """Detach a traced result from provider-owned mutable memory before evidence capture."""
+    enabled = _trace_enabled(trace)
     if not enabled or not isinstance(frame, pd.DataFrame):
         return frame
     try:
@@ -192,13 +197,42 @@ def _read(path: Path) -> pd.DataFrame:
     return pq.read_table(path).to_pandas()
 
 
-def _atomic_write(path: Path, df: pd.DataFrame) -> None:
+def _read_file_bytes(path: Path) -> bytes:
+    fd = os.open(path, os.O_RDONLY | _NOFOLLOW)
+    try:
+        chunks = []
+        while chunk := os.read(fd, 1024 * 1024):
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
+def _read_snapshot(path: Path, *, capture_bytes: bool) -> tuple[pd.DataFrame, bytes | None]:
+    if not capture_bytes:
+        return _read(path), None
+    try:
+        payload = _read_file_bytes(path)
+        return pq.read_table(pa.BufferReader(payload)).to_pandas(), payload
+    except BaseException:
+        _trace_warning()
+        return _read(path), None
+
+
+def _atomic_write(path: Path, df: pd.DataFrame, *, capture_bytes: bool = False) -> bytes | None:
     """ZSTD parquet 原子写:tmp → os.replace。空帧也写(存在==取过且为空)。"""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     table = pa.Table.from_pandas(df, preserve_index=False)
     pq.write_table(table, tmp, compression=_COMPRESSION)
+    payload = None
+    if capture_bytes:
+        try:
+            payload = _read_file_bytes(tmp)
+        except BaseException:
+            _trace_warning()
     os.replace(tmp, path)
+    return payload
 
 
 def _lake_params(params: dict) -> dict:
@@ -260,10 +294,15 @@ def get_or_fetch(
 
         # 已结算(date < today)且文件存在 → 命中,零取数。**命中也要校验**(湖里可能躺着毒源)。
         if path.exists():
-            result = _stable_source_frame(
-                trace, check(endpoint, _read(path), key=str(key), source="lake")
+            raw_result, source_bytes = _read_snapshot(
+                path, capture_bytes=_trace_enabled(trace)
             )
-            _finish_source_success(trace, result, "CACHE_HIT", path)
+            result = _stable_source_frame(
+                trace, check(endpoint, raw_result, key=str(key), source="lake")
+            )
+            _finish_source_success(
+                trace, result, "CACHE_HIT", path, source_bytes=source_bytes
+            )
             return result
 
         # 快照端点的 PIT 守门(Wave12 复核 I1):只挡**写新分区**,历史读在上一行已经放行。
@@ -312,8 +351,10 @@ def get_or_fetch(
         if refuses_lake(endpoint, df):
             _finish_source_success(trace, df, "FETCHED_REFUSED_LAKE", None)
             return df
-        _atomic_write(path, df)
-        _finish_source_success(trace, df, "FETCHED_CACHED", path)
+        source_bytes = _atomic_write(path, df, capture_bytes=_trace_enabled(trace))
+        _finish_source_success(
+            trace, df, "FETCHED_CACHED", path, source_bytes=source_bytes
+        )
         return df
     except BaseException as exc:
         _finish_source_failure(trace, exc)

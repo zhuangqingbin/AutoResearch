@@ -19,7 +19,7 @@ import pandas as pd
 from autoresearch.common import workspace as ws
 from autoresearch.data.endpoints import policy
 from autoresearch.trace.atomic import canonical_json, sha256_bytes
-from autoresearch.trace.blobs import blob_path, put_dataframe
+from autoresearch.trace.blobs import blob_path, put_bytes, put_dataframe
 from autoresearch.trace.capsule import require_active_run
 from autoresearch.trace.capsule_models import RunHandle
 from autoresearch.trace.events import append_event
@@ -244,12 +244,14 @@ class SourceAccess:
         frame: pd.DataFrame | None,
         access: str,
         path: Path | str | None,
+        *,
+        source_bytes: bytes | None = None,
     ) -> bool:
         if self._finished or self.handle is None:
             return False
         self._finished = True
         try:
-            return self._finish_success(frame, access, path)
+            return self._finish_success(frame, access, path, source_bytes=source_bytes)
         except BaseException as exc:
             self._record_unexpected_gap(
                 status="SUCCEEDED", access=access, error=exc
@@ -261,17 +263,36 @@ class SourceAccess:
         frame: pd.DataFrame | None,
         access: str,
         path: Path | str | None,
+        *,
+        source_bytes: bytes | None,
     ) -> bool:
         exact_path = Path(path) if path is not None else None
         blob_hash: str | None = None
         blob_bytes: int | None = None
+        blob_role: str | None = None
+        normalized_blob_hash: str | None = None
+        normalized_blob_bytes: int | None = None
         evidence_error = self._setup_error
         try:
-            if isinstance(frame, pd.DataFrame):
+            if exact_path is not None:
+                if not isinstance(source_bytes, bytes):
+                    raise ValueError("path-backed source is missing its stable byte snapshot")
+                blob_hash = put_bytes(self.handle.capsule, source_bytes)
+                blob_bytes = len(source_bytes)
+                blob_role = "SOURCE_FILE_SNAPSHOT"
+                if not isinstance(frame, pd.DataFrame):
+                    raise TypeError("successful source result is not a DataFrame")
+                normalized_blob_hash = put_dataframe(self.handle.capsule, frame)
+                normalized_blob_bytes = blob_path(
+                    self.handle.capsule, normalized_blob_hash
+                ).stat().st_size
+            elif isinstance(frame, pd.DataFrame):
                 blob_hash = put_dataframe(self.handle.capsule, frame)
+                blob_role = "NORMALIZED_RESULT"
             else:
                 raise TypeError("successful source result is not a DataFrame")
-            blob_bytes = blob_path(self.handle.capsule, blob_hash).stat().st_size
+            if blob_bytes is None:
+                blob_bytes = blob_path(self.handle.capsule, blob_hash).stat().st_size
         except BaseException as exc:  # evidence cannot replace a successful data result
             evidence_error = evidence_error or exc
         return self._persist(
@@ -281,6 +302,9 @@ class SourceAccess:
             frame=frame,
             blob_hash=blob_hash,
             blob_bytes=blob_bytes,
+            blob_role=blob_role,
+            normalized_blob_hash=normalized_blob_hash,
+            normalized_blob_bytes=normalized_blob_bytes,
             business_error=None,
             evidence_error=evidence_error,
         )
@@ -297,6 +321,9 @@ class SourceAccess:
                 frame=None,
                 blob_hash=None,
                 blob_bytes=None,
+                blob_role=None,
+                normalized_blob_hash=None,
+                normalized_blob_bytes=None,
                 business_error=error,
                 evidence_error=self._setup_error,
             )
@@ -313,6 +340,9 @@ class SourceAccess:
         frame: pd.DataFrame | None,
         blob_hash: str | None,
         blob_bytes: int | None,
+        blob_role: str | None,
+        normalized_blob_hash: str | None,
+        normalized_blob_bytes: int | None,
         business_error: BaseException | None,
         evidence_error: BaseException | None,
     ) -> bool:
@@ -338,6 +368,9 @@ class SourceAccess:
             "path": str(_safe_value(str(path))) if path is not None else None,
             "blob_hash": blob_hash,
             "bytes": blob_bytes,
+            "blob_role": blob_role,
+            "normalized_blob_hash": normalized_blob_hash,
+            "normalized_bytes": normalized_blob_bytes,
             "rows": len(frame) if isinstance(frame, pd.DataFrame) else None,
             "columns_hash": _columns_hash(frame),
             "started_at": self.started_at,
