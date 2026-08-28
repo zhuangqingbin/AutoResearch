@@ -8,7 +8,12 @@ from pathlib import Path
 import pytest
 
 from autoresearch.trace.blobs import blob_path
-from autoresearch.trace.capsule import bind_transcript, materialize_transcripts
+from autoresearch.trace.capsule import (
+    bind_transcript,
+    materialize_agent_index,
+    materialize_transcripts,
+    record_agent_boundary,
+)
 from autoresearch.trace.transcripts import adapter_for
 from autoresearch.trace.transcripts.base import (
     NormalizedItem,
@@ -406,3 +411,149 @@ def test_binding_rejects_paths_inside_the_capsule(codex_run):
 
 def test_adapter_registry_selects_codex():
     assert isinstance(adapter_for("codex"), CodexTranscriptAdapter)
+
+
+# --- Task 11: every reached invocation is accounted for ---------------------
+
+
+_REACHED = (
+    ("strategist", None, None, "strategist-market-1"),
+    ("sector-brief", None, "银行", "sector-brief-yinhang-1"),
+    ("l3-rank", None, None, "l3-rank-market-1"),
+    ("l4-card", "600000", None, "l4-card-600000-1"),
+    ("l4-intel", "600000", None, "l4-intel-600000-1"),
+)
+
+
+def _dispatch_all(handle, source, *, bind=True):
+    for role, subject, display, invocation_id in _REACHED:
+        record_agent_boundary(
+            handle.run_id,
+            "AGENT_DISPATCHED",
+            role=role,
+            subject=subject,
+            subject_display=display,
+            invocation_id=invocation_id,
+            attempt=1,
+        )
+        record_agent_boundary(
+            handle.run_id,
+            "AGENT_COMPLETED",
+            role=role,
+            subject=subject,
+            subject_display=display,
+            invocation_id=invocation_id,
+            attempt=1,
+        )
+        if bind:
+            bind_transcript(
+                handle.run_id,
+                source,
+                role=role,
+                subject=subject or "market",
+                invocation_id=invocation_id,
+            )
+
+
+def test_agent_index_has_one_explicit_row_per_reached_invocation(codex_run):
+    handle, source = codex_run
+    _dispatch_all(handle, source)
+
+    index = materialize_agent_index(handle.run_id)
+
+    keys = {
+        (row["role"], row["subject"], row["attempt"]) for row in index["invocations"]
+    }
+    assert ("strategist", None, 1) in keys
+    assert ("sector-brief", "银行", 1) in keys
+    assert ("l3-rank", None, 1) in keys
+    assert ("l4-card", "600000", 1) in keys
+    assert ("l4-intel", "600000", 1) in keys
+    assert index["coverage"] == {"expected": 5, "present": 5, "missing": 0}
+
+
+def test_reached_dispatch_without_transcript_is_gone_not_absent(codex_run):
+    handle, source = codex_run
+    _dispatch_all(handle, source, bind=False)
+
+    index = materialize_agent_index(handle.run_id)
+
+    assert index["coverage"] == {"expected": 5, "present": 0, "missing": 5}
+    assert {row["status"] for row in index["invocations"]} == {"GONE"}
+    assert all(row["dispatched"] for row in index["invocations"])
+
+
+def test_failed_dispatch_still_owns_a_row(codex_run):
+    handle, _ = codex_run
+    record_agent_boundary(
+        handle.run_id,
+        "AGENT_DISPATCHED",
+        role="l4-card",
+        subject="600000",
+        invocation_id="l4-card-600000-1",
+        attempt=1,
+    )
+    record_agent_boundary(
+        handle.run_id,
+        "AGENT_FAILED",
+        role="l4-card",
+        subject="600000",
+        invocation_id="l4-card-600000-1",
+        attempt=1,
+        error={"status": "threw"},
+    )
+
+    index = materialize_agent_index(handle.run_id)
+
+    row = index["invocations"][0]
+    assert row["terminal"] == "FAILED"
+    assert row["status"] == "GONE"
+    assert index["coverage"]["expected"] == 1
+
+
+def test_deterministic_relays_are_not_expected_to_have_transcripts(codex_run):
+    handle, source = codex_run
+    record_agent_boundary(
+        handle.run_id,
+        "AGENT_DISPATCHED",
+        role="trace-control",
+        subject="600000",
+        invocation_id="trace-control-l4-card-600000-1",
+        attempt=1,
+        result={"target_role": "l4-card"},
+    )
+    bind_transcript(
+        handle.run_id,
+        source,
+        role="l4-card",
+        subject="600000",
+        invocation_id="l4-card-600000-1",
+    )
+
+    index = materialize_agent_index(handle.run_id)
+
+    relay = next(r for r in index["invocations"] if r["role"] == "trace-control")
+    assert relay["status"] == "NOT_EXPECTED"
+    assert relay["expected"] is False
+    assert index["coverage"] == {"expected": 1, "present": 1, "missing": 0}
+
+
+def test_subject_key_is_stable_and_display_survives_into_the_index(codex_run):
+    from autoresearch.trace.capsule import subject_key
+
+    handle, source = codex_run
+    record_agent_boundary(
+        handle.run_id,
+        "AGENT_DISPATCHED",
+        role="sector-brief",
+        subject_display="银行",
+        invocation_id=f"sector-brief-{subject_key('银行')}-1",
+        attempt=1,
+    )
+
+    index = materialize_agent_index(handle.run_id)
+    row = index["invocations"][0]
+
+    assert subject_key("银行") == subject_key("银行")
+    assert len(subject_key("银行")) == 12
+    assert row["subject"] == "银行"

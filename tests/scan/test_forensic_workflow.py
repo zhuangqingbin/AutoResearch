@@ -447,3 +447,44 @@ def test_workflow_propagates_engine_and_run_identity(path):
     assert "--run-id ${RUN_ID}" in source
     assert "--stage ${stage}" in source
     assert "--invocation-id ${invocation}" in source
+
+
+# --- Task 11: every business agent crosses a traced boundary ----------------
+
+
+def test_scan_workflow_routes_every_business_agent_through_boundary_wrapper():
+    source = _executable_source(WORKFLOWS[0])
+    business = (
+        ("strategist", "strategist-market-1", "prelude"),
+        ("sector-brief", "sector-brief-${i + 1}-1", "l3"),
+        ("l3-rank", "l3-rank-market-1", "l3"),
+        ("l3-repair", "l3-repair-market-1", "l3"),
+    )
+    for role, invocation_id, stage in business:
+        assert f"role: '{role}'" in source
+        assert f"invocationId: `{invocation_id}`" in source or (
+            f"invocationId: '{invocation_id}'" in source
+        )
+        assert f"stage: '{stage}'" in source
+    # 业务 agentType 必须只出现在 tracedAgent 的调用里,不得再有裸 agent( 派发。
+    for agent_type in ("macro-brief", "sector-brief", "l3-rank"):
+        for match in re.finditer(rf"agentType: '{agent_type}'", source):
+            head = source[: match.start()]
+            assert head.rfind("tracedAgent(") > head.rfind("await agent("), agent_type
+
+
+def test_scan_boundary_emits_all_three_event_types_including_failure():
+    source = _executable_source(WORKFLOWS[0])
+    assert "emitBoundary(spec, 'AGENT_DISPATCHED')" in source
+    assert "emitBoundary(spec, 'AGENT_COMPLETED')" in source
+    assert "emitBoundary(spec, 'AGENT_FAILED')" in source
+    assert "--control-invocation-id" in source
+    assert "validateBoundaryAck" in source
+
+
+def test_scan_sector_subject_travels_as_display_name_not_mangled_ascii():
+    source = _executable_source(WORKFLOWS[0])
+    assert "--subject-display" in source
+    assert "subjectDisplay: sec" in source
+    # 中文行业名不得被塞进 ASCII-only 的 --subject。
+    assert "--subject ${spec.subjectDisplay}" not in source

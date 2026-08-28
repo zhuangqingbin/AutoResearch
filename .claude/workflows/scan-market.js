@@ -129,6 +129,126 @@ const gpJson = (cmd, label, schema, phaseName) => agent(
   '不改、不增删字段。**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**',
   { agentType: 'general-purpose', ...AG('gp_shell_json'), label, schema,
     ...(phaseName ? { phase: phaseName } : {}) })
+// ── agent 边界取证(Task 11)──────────────────────────────────────────────
+// 每个**业务** agent(策略师/行业 brief/L3 精排/L3 自修)在派发前后各追加一条边界事件,
+// 失败也追加 —— CP7 的 agents/index.json 按事件链点名,少一条就是 GONE,不是「目录里没有」。
+// gp-shell / trace-control 是确定性中继,它们的现场是 logs/ 里的命令捕获,不欠 transcript。
+const rawAgent = agent
+const EVENT_HASH_SCHEMA = { type: 'string', pattern: '^[0-9a-f]{64}$' }
+const AGENT_EVENT_ROW = {
+  type: 'object', additionalProperties: false,
+  required: ['schema_version', 'seq', 'run_id', 'ts', 'engine', 'stage',
+    'invocation_id', 'attempt', 'subject', 'event_type', 'payload', 'prev_hash', 'event_hash'],
+  properties: {
+    schema_version: { type: 'integer', enum: [1] },
+    seq: { type: 'integer', minimum: 1 }, run_id: { type: 'string' },
+    ts: { type: 'string' }, engine: { type: 'string' }, stage: { type: 'string' },
+    invocation_id: { type: 'string' }, attempt: { type: 'integer', minimum: 1 },
+    subject: { type: ['string', 'null'] },
+    event_type: { type: 'string', enum: ['AGENT_DISPATCHED', 'AGENT_COMPLETED', 'AGENT_FAILED'] },
+    payload: { type: 'object' }, prev_hash: EVENT_HASH_SCHEMA, event_hash: EVENT_HASH_SCHEMA,
+  },
+}
+const CONTROL_BINDING_RESULT = {
+  type: 'object', additionalProperties: false,
+  required: ['target_event_type', 'target_invocation_id', 'target_role'],
+  properties: {
+    target_event_type: { type: 'string' }, target_invocation_id: { type: 'string' },
+    target_role: { type: 'string' }, target_event_hash: EVENT_HASH_SCHEMA,
+    subject_display: { type: 'string' },
+  },
+}
+const CONTROL_EVENT_ROW = { ...AGENT_EVENT_ROW, properties: {
+  ...AGENT_EVENT_ROW.properties,
+  payload: { type: 'object', additionalProperties: false,
+    required: ['error', 'result', 'role'],
+    properties: { error: {}, result: CONTROL_BINDING_RESULT, role: { type: 'string' } } },
+} }
+const AGENT_EVENT_ACK = { type: 'object', required: ['ok', 'event', 'control_events'],
+  additionalProperties: false,
+  properties: { ok: { type: 'boolean' }, event: AGENT_EVENT_ROW,
+    control_events: { type: 'array', minItems: 2, maxItems: 2, items: CONTROL_EVENT_ROW } } }
+const TRACE_CONTROL_CALLS_PER_TARGET = 2
+const EVENT_HASH_RE = /^[0-9a-f]{64}$/
+const EVENT_TS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/
+const validateBoundaryAck = (ack, spec, eventType, controlInvocationId) => {
+  if (!ack || ack.ok !== true || !ack.event || !Array.isArray(ack.control_events)) {
+    throw new Error('trace-control ACK 缺 ok=true/event/control_events')
+  }
+  const completeEvent = (event) => !!event && event.schema_version === 1 &&
+    Number.isInteger(event.seq) && event.seq > 0 && EVENT_TS_RE.test(event.ts) &&
+    event.engine === ENGINE && EVENT_HASH_RE.test(event.prev_hash) &&
+    EVENT_HASH_RE.test(event.event_hash) && event.payload &&
+    typeof event.payload === 'object' && !Array.isArray(event.payload)
+  // subject_display 的 ASCII key 由 python 侧 sha256 派生,JS 无法预知 —— 只校验它是字符串。
+  const subjectOk = (event) => spec.subjectDisplay
+    ? typeof event.subject === 'string' && event.subject.length > 0
+    : event.subject === (spec.subject === undefined ? null : spec.subject)
+  const matches = (event, expectedType, expectedInvocation, expectedRole) =>
+    completeEvent(event) && event.run_id === RUN_ID && event.stage === spec.stage &&
+    event.invocation_id === expectedInvocation && event.event_type === expectedType &&
+    subjectOk(event) && event.attempt === (spec.attempt || 1) &&
+    event.payload && event.payload.role === expectedRole
+  if (!matches(ack.event, eventType, spec.invocationId, spec.role)) {
+    throw new Error('trace-control ACK 目标边界绑定不匹配')
+  }
+  const bindingMatches = (event) => event.payload.result &&
+    event.payload.result.target_event_type === eventType &&
+    event.payload.result.target_invocation_id === spec.invocationId &&
+    event.payload.result.target_role === spec.role
+  if (ack.control_events.length !== TRACE_CONTROL_CALLS_PER_TARGET ||
+      !matches(ack.control_events[0], 'AGENT_DISPATCHED', controlInvocationId, 'trace-control') ||
+      !matches(ack.control_events[1], 'AGENT_COMPLETED', controlInvocationId, 'trace-control') ||
+      !bindingMatches(ack.control_events[0]) || !bindingMatches(ack.control_events[1]) ||
+      !ack.control_events[1].payload.result ||
+      ack.control_events[1].payload.result.target_event_hash !== ack.event.event_hash) {
+    throw new Error('trace-control ACK 自身生命周期绑定不匹配')
+  }
+  return ack
+}
+const emitBoundary = (spec, eventType) => {
+  const attempt = spec.attempt || 1
+  const terminal = eventType === 'AGENT_FAILED'
+    ? ` --error-json '{"status":"threw"}'`
+    : ` --result-json '{"status":"${eventType === 'AGENT_DISPATCHED' ? 'queued' : 'returned'}"}'`
+  const subjectArg = spec.subjectDisplay
+    ? ` --subject-display '${spec.subjectDisplay}'`
+    : (spec.subject ? ` --subject ${spec.subject}` : '')
+  const evidenceInvocation = `agent-event-${spec.invocationId}-${eventType.toLowerCase()}`
+  const controlInvocationId = `trace-control-${spec.invocationId}-${eventType.toLowerCase()}`
+  return rawAgent(
+    `执行:\`${PY(spec.stage, evidenceInvocation, attempt)} autoresearch.trace.capsule agent-event ${RUN_ID} ${eventType} ` +
+      `--role ${spec.role}${subjectArg} --invocation-id ${spec.invocationId} --attempt ${attempt} ` +
+      `--control-invocation-id ${controlInvocationId}${terminal}\`。` +
+      '把 stdout 最后一行 JSON 原样作为结构化返回；不要判断或增删字段。' +
+      '**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**',
+    { agentType: 'general-purpose', ...AG('gp_shell_json'),
+      label: `trace-control:${eventType}:${spec.invocationId}`, schema: AGENT_EVENT_ACK })
+    .then((ack) => validateBoundaryAck(ack, spec, eventType, controlInvocationId))
+}
+async function tracedAgent(spec, prompt, options) {
+  try {
+    await emitBoundary(spec, 'AGENT_DISPATCHED')
+  } catch (error) {
+    log(`⚠️ agent dispatch 取证失败:${spec.invocationId}:${error && error.message ? error.message : error}`)
+  }
+  try {
+    const result = await rawAgent(prompt, options)
+    try {
+      await emitBoundary(spec, 'AGENT_COMPLETED')
+    } catch (error) {
+      log(`⚠️ agent completed 取证失败:${spec.invocationId}:${error && error.message ? error.message : error}`)
+    }
+    return result
+  } catch (error) {
+    try {
+      await emitBoundary(spec, 'AGENT_FAILED')
+    } catch (traceError) {
+      log(`⚠️ agent failed 取证失败:${spec.invocationId}:${traceError && traceError.message ? traceError.message : traceError}`)
+    }
+    throw error
+  }
+}
 // StageResult 的 metrics 解包。2026-07-30 实跑事故:haiku 壳把整条 StageResult 记录**再包一层**
 // 塞进 metrics(`{stage,status,metrics:{...整条记录含自己的 metrics...}}`)—— 外层三字段仍匹配
 // STAGE_RESULT schema,校验照常放行,于是当时的 `g1.metrics.l4_budget` 静默变 undefined:
@@ -209,7 +329,8 @@ await parallel([
   // 数据级为零:看不见就写不出。投影由 `frame --json-out` 同步落盘,allowlist 之外的键
   // (含 sector_healthy_top3 / run_contract / user_config 与**将来任何新增键**)默认进不来。
   // full pack 仍是 L5 与 L3 数字 validator 的事实源,不受影响。
-  () => agent(
+  () => tracedAgent(
+    { stage: 'prelude', role: 'strategist', invocationId: 'strategist-market-1', attempt: 1 },
     `读 ${SD}/strategist_pack.json 的 pack 段,按你的人设写 ${SD}/market_view.md(六小节;前3描述性地形、后2仅 L5)。数字只出自该文件,不编;个股不评级、不锚定卡片。`,
     { agentType: 'macro-brief', ...AG('strategist'),
       label: 'market_view', phase: 'Prelude' }),
@@ -299,7 +420,12 @@ const preL3BriefSectors = sectors
 log(`待写行业 brief:${sectors.length} 个${sectors.length ? ` (${sectors.join('、')})` : '(全部 TTL 复用)'}`)
 await parallel([
   () => bash(`${PY('l3', 'l3-prepare-attempt-1')} autoresearch.scan.agents.l3_select prepare ${date}`, 'l3-prepare', 'L3'),
-  ...preL3BriefSectors.map((sec) => () => agent(
+  // invocation id 用**当日行业清单里的序号**:行业名是中文,JS 侧没有 sha256 可用,
+  // 而事件 subject 的 ASCII key 由 python 从 --subject-display 派生。序号在一次 run 内
+  // 唯一且确定;index 里显示的仍是行业原名(payload.subject_display)。
+  ...preL3BriefSectors.map((sec, i) => () => tracedAgent(
+    { stage: 'l3', role: 'sector-brief', subjectDisplay: sec,
+      invocationId: `sector-brief-${i + 1}-1`, attempt: 1 },
     `你是行业分析师。读 ${CTX}/sector/${date}/${sec}.json 写 ${SD}/sector_briefs/${sec}.md,单段机器契约(## 地形段 喂 L3/L4;纯事实性,不含方向判断)。零新取数。`,
     { agentType: 'sector-brief', ...AG('sector_brief'),
       label: `brief:${sec}`, phase: 'L3' })
@@ -307,7 +433,8 @@ await parallel([
 ])
 // L3 holistic 精排(唯一 max-effort 判断核心)
 log(`L3 精排开始:pass1 已分诊 200→~40(影子 _l3_pass1_cut.csv),l3-rank 深比较出 finalist tier 7~${l3cap} 只+bench(effort max,历史 60行~14-25m,40行待测)`)
-await agent(
+await tracedAgent(
+  { stage: 'l3', role: 'l3-rank', invocationId: 'l3-rank-market-1', attempt: 1 },
   `L3 精排 · 日期 ${date} · finalist tier 按质 7~${l3cap} 只(judged 每元素带 finalist:true/false)+其余为 bench;宁缺毋滥。文件在 ${SD}/:_l3_table.md(~40 表,pass1 已分诊)、market_view.md(§1-3 地形)、sector_briefs/(地形段)。按你的人设(6 维 rubric + 硬约束 A-E)比较式精排,写 ${SD}/_l3_judged.json。`,
   { agentType: 'l3-rank', ...AG('l3_rank'),
     label: 'L3-rank', phase: 'L3' })
@@ -333,7 +460,8 @@ if (l3lint && l3lint.ok === false) {
   // 烧掉 56.9k 加权却没留下任何自报记录 —— 让"它自己承认跑过"当唯一事实源,恰好会在
   // 它死掉时丢掉那一行的归属,而那正是最需要看清成本的时刻。
   // ⚠️ 若以后改成"prompt 不在场也可能派发"或"n==0 也写 prompt",必须同步改 dispatch_census。
-  const fix = repair && repair.n > 0 ? await agent(
+  const fix = repair && repair.n > 0 ? await tracedAgent(
+    { stage: 'l3', role: 'l3-repair', invocationId: 'l3-repair-market-1', attempt: 1 },
     `Read ${SD}/_l3_repair_prompt.md，只处理其中列出的失败票；按文件内 schema 用 Write 写 ${SD}/_l3_repair_patch.json。不要读取任何全量 L3 输入或输出文件。`,
     { agentType: 'l3-rank', ...AG('l3_repair'), label: 'L3-lint-fix', phase: 'L3' })
     .catch((e) => { log(`⚠️ L3 自修 agent 异常:${e && e.message ? e.message : e}`); return null }) : null

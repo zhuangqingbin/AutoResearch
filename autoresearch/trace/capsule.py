@@ -6,6 +6,7 @@ import argparse
 import contextlib
 import fcntl
 import gzip
+import hashlib
 import io
 import json
 import os
@@ -706,27 +707,55 @@ def _agent_lifecycle_guard(history: tuple[dict, ...], proposed: dict) -> dict | 
     return None
 
 
+def subject_key(display: str) -> str:
+    """Derive a collision-safe ASCII subject key from a non-ASCII display name.
+
+    Event subjects are ASCII identifiers, but real subjects (申万一级行业名) are
+    Chinese.  The key is the first 12 hex characters of the display name's
+    SHA-256 digest; the display name itself travels in the event payload so the
+    index can show it verbatim.
+    """
+    if type(display) is not str or not display.strip():
+        raise ValueError("subject_display must be a non-empty string")
+    return hashlib.sha256(display.encode("utf-8")).hexdigest()[:12]
+
+
 def record_agent_boundary(
     run_id: str,
     event_type: str,
     *,
     role: str,
-    subject: str,
     invocation_id: str,
     attempt: int,
+    subject: str | None = None,
+    subject_display: str | None = None,
     result: Mapping | None = None,
     error: Mapping | None = None,
 ) -> dict:
-    """Append one authoritative agent dispatch/terminal binding to an active run."""
+    """Append one authoritative agent dispatch/terminal binding to an active run.
+
+    ``subject`` is ``None`` for market-wide roles (strategist, L3 rank).  When a
+    subject only exists as a non-ASCII display name, pass ``subject_display``
+    and the ASCII key is derived deterministically.
+    """
     if type(event_type) is not str or event_type not in _AGENT_EVENT_TYPES:
         raise ValueError(
             f"invalid event_type: {event_type!r}; expected {sorted(_AGENT_EVENT_TYPES)!r}"
         )
     resolved_role = _validate_agent_identifier("role", role)
-    resolved_subject = _validate_agent_identifier("subject", subject)
+    if subject_display is not None:
+        derived = subject_key(subject_display)
+        if subject is not None and subject != derived:
+            raise ValueError("subject does not match subject_display key")
+        subject = derived
+    resolved_subject = (
+        None if subject is None else _validate_agent_identifier("subject", subject)
+    )
     resolved_invocation = _validate_agent_identifier("invocation_id", invocation_id)
     if type(attempt) is not int or attempt < 1:
         raise ValueError("attempt must be a positive integer")
+    if subject_display is not None:
+        result = {**dict(result or {}), "subject_display": subject_display}
     normalized_result = _agent_payload("result", result)
     normalized_error = _agent_payload("error", error)
     _validate_agent_payload_rules(
@@ -766,10 +795,11 @@ def record_controlled_agent_boundary(
     event_type: str,
     *,
     role: str,
-    subject: str,
     invocation_id: str,
     attempt: int,
     control_invocation_id: str,
+    subject: str | None = None,
+    subject_display: str | None = None,
     result: Mapping | None = None,
     error: Mapping | None = None,
 ) -> dict:
@@ -779,11 +809,14 @@ def record_controlled_agent_boundary(
         "target_invocation_id": invocation_id,
         "target_role": role,
     }
+    control_subject = (
+        subject if subject_display is None else subject_key(subject_display)
+    )
     control_dispatched = record_agent_boundary(
         run_id,
         "AGENT_DISPATCHED",
         role="trace-control",
-        subject=subject,
+        subject=control_subject,
         invocation_id=control_invocation_id,
         attempt=attempt,
         result=binding,
@@ -794,6 +827,7 @@ def record_controlled_agent_boundary(
             event_type,
             role=role,
             subject=subject,
+            subject_display=subject_display,
             invocation_id=invocation_id,
             attempt=attempt,
             result=result,
@@ -805,7 +839,7 @@ def record_controlled_agent_boundary(
                 run_id,
                 "AGENT_FAILED",
                 role="trace-control",
-                subject=subject,
+                subject=control_subject,
                 invocation_id=control_invocation_id,
                 attempt=attempt,
                 error={
@@ -820,7 +854,7 @@ def record_controlled_agent_boundary(
             run_id,
             "AGENT_COMPLETED",
             role="trace-control",
-            subject=subject,
+            subject=control_subject,
             invocation_id=control_invocation_id,
             attempt=attempt,
             result={
@@ -834,7 +868,7 @@ def record_controlled_agent_boundary(
                 run_id,
                 "AGENT_FAILED",
                 role="trace-control",
-                subject=subject,
+                subject=control_subject,
                 invocation_id=control_invocation_id,
                 attempt=attempt,
                 error={
@@ -1629,13 +1663,8 @@ def _external_tool_rows(
     return rows
 
 
-def materialize_transcripts(run_id: str) -> dict:
-    """Archive every bound transcript and account for it in ``agents/index.json``.
-
-    Missing sources stay explicit ``GONE`` rows: completeness is never inferred
-    from an absent directory.
-    """
-    handle = require_active_run(run_id)
+def _archive_bound_transcripts(handle: RunHandle) -> dict[str, dict]:
+    """Archive every bound transcript and return one evidence row per binding."""
     bindings = _read_jsonl(_bindings_path(handle))
     raw_root = _safe_directory(handle.capsule, Path("agents/raw"), create=True)
     normalized_root = _safe_directory(
@@ -1755,6 +1784,117 @@ def materialize_transcripts(run_id: str) -> dict:
     if pending_lineage:
         _safe_directory(handle.capsule, Path("lineage"), create=True)
         _append_locked_jsonl(lineage_path, pending_lineage)
+    return {row["invocation_id"]: row for row in invocations}
+
+
+# Deterministic relays: their evidence is the captured command in ``logs/``, not
+# an LLM transcript, so requiring one would make completeness permanently false.
+_NON_TRANSCRIPT_ROLES = frozenset({"trace-control", "gp-shell"})
+
+
+def _agent_expectations(handle: RunHandle) -> dict[str, dict]:
+    """One row per *reached* agent invocation, taken from the event chain.
+
+    The chain is the authority for what ran: a failed dispatch still owes a row,
+    and a leg that was never reached simply has no event.
+    """
+    rows: dict[str, dict] = {}
+    path = handle.capsule / "events/events.jsonl"
+    if not path.is_file():
+        return rows
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        event = json.loads(line)
+        if event.get("event_type") not in _AGENT_EVENT_TYPES:
+            continue
+        payload = event.get("payload") or {}
+        result = payload.get("result") or {}
+        invocation_id = str(event.get("invocation_id"))
+        row = rows.setdefault(
+            invocation_id,
+            {
+                "invocation_id": invocation_id,
+                "role": payload.get("role"),
+                "subject": event.get("subject"),
+                "subject_key": event.get("subject"),
+                "attempt": event.get("attempt"),
+                "dispatched": False,
+                "terminal": None,
+            },
+        )
+        display = result.get("subject_display") if isinstance(result, Mapping) else None
+        if isinstance(display, str) and display:
+            row["subject"] = display
+        event_type = event["event_type"]
+        if event_type == "AGENT_DISPATCHED":
+            row["dispatched"] = True
+        elif event_type == "AGENT_COMPLETED":
+            row["terminal"] = "COMPLETED"
+        elif event_type == "AGENT_FAILED":
+            row["terminal"] = "FAILED"
+    return rows
+
+
+def materialize_agent_index(
+    run_id: str,
+    *,
+    not_expected: Sequence[str] = (),
+) -> dict:
+    """Archive bound transcripts and account for **every** reached invocation.
+
+    Coverage is never inferred from an absent directory: a dispatch with no
+    bound transcript is an explicit ``GONE`` row, a role that structurally has
+    no transcript is ``NOT_EXPECTED``, and a failed dispatch still gets a row.
+    """
+    handle = require_active_run(run_id)
+    skipped_roles = _NON_TRANSCRIPT_ROLES | {str(role) for role in not_expected}
+    evidence = _archive_bound_transcripts(handle)
+    expectations = _agent_expectations(handle)
+
+    invocations: list[dict] = []
+    for invocation_id in sorted(set(expectations) | set(evidence)):
+        expectation = expectations.get(invocation_id, {})
+        row = dict(
+            evidence.get(invocation_id)
+            or {
+                "engine": handle.engine,
+                "invocation_id": invocation_id,
+                "role": expectation.get("role"),
+                "subject": expectation.get("subject"),
+                "stage": None,
+                "source_path": None,
+                "status": "GONE",
+                "reason": "reached dispatch has no bound transcript",
+                "raw": None,
+                "normalized": None,
+                "source_sha256": None,
+                "source_bytes": None,
+                "rows": None,
+                "unparsed_rows": None,
+                "items": None,
+                "model": None,
+                "effort": None,
+                "usage": None,
+            }
+        )
+        if expectation:
+            row["role"] = expectation.get("role") or row.get("role")
+            row["subject"] = expectation.get("subject")
+            row["attempt"] = expectation.get("attempt")
+            row["dispatched"] = expectation.get("dispatched", False)
+            row["terminal"] = expectation.get("terminal")
+        else:
+            row.setdefault("attempt", 1)
+            row["dispatched"] = False
+            row["terminal"] = None
+            row["reason"] = row.get("reason") or "bound without a dispatch event"
+        if str(row.get("role")) in skipped_roles:
+            row["status"] = "NOT_EXPECTED"
+            row["reason"] = "role has no transcript evidence by construction"
+        row["expected"] = row["status"] != "NOT_EXPECTED"
+        invocations.append(row)
+
     invocations.sort(
         key=lambda item: (
             str(item["role"]),
@@ -1762,15 +1902,16 @@ def materialize_transcripts(run_id: str) -> dict:
             str(item["invocation_id"]),
         )
     )
-    present = sum(1 for item in invocations if item["status"] == "PRESENT")
+    expected = [item for item in invocations if item["expected"]]
+    present = sum(1 for item in expected if item["status"] == "PRESENT")
     index = {
         "schema_version": _TRANSCRIPT_SCHEMA_VERSION,
         "run_id": handle.run_id,
         "invocations": invocations,
         "coverage": {
-            "expected": len(invocations),
+            "expected": len(expected),
             "present": present,
-            "missing": len(invocations) - present,
+            "missing": len(expected) - present,
         },
     }
     atomic_write_json(handle.capsule / "agents/index.json", index)
@@ -1788,6 +1929,11 @@ def materialize_transcripts(run_id: str) -> dict:
         payload={"coverage": index["coverage"]},
     )
     return index
+
+
+def materialize_transcripts(run_id: str, *, not_expected: Sequence[str] = ()) -> dict:
+    """Compatibility name for :func:`materialize_agent_index`."""
+    return materialize_agent_index(run_id, not_expected=not_expected)
 
 
 def inspect_run(run_id: str) -> dict:
@@ -1837,7 +1983,8 @@ def _parser() -> argparse.ArgumentParser:
     agent_event.add_argument("run_id")
     agent_event.add_argument("event_type", choices=sorted(_AGENT_EVENT_TYPES))
     agent_event.add_argument("--role", required=True)
-    agent_event.add_argument("--subject", required=True)
+    agent_event.add_argument("--subject")
+    agent_event.add_argument("--subject-display")
     agent_event.add_argument("--invocation-id", required=True)
     agent_event.add_argument("--attempt", required=True, type=int)
     agent_event.add_argument("--result-json")
@@ -1890,6 +2037,7 @@ def main(argv: list[str] | None = None) -> int:
                     args.event_type,
                     role=args.role,
                     subject=args.subject,
+                    subject_display=args.subject_display,
                     invocation_id=args.invocation_id,
                     attempt=args.attempt,
                     control_invocation_id=args.control_invocation_id,
@@ -1903,6 +2051,7 @@ def main(argv: list[str] | None = None) -> int:
                     args.event_type,
                     role=args.role,
                     subject=args.subject,
+                    subject_display=args.subject_display,
                     invocation_id=args.invocation_id,
                     attempt=args.attempt,
                     result=parsed_result,
@@ -1929,6 +2078,7 @@ __all__ = [
     "inspect_run",
     "load_run",
     "main",
+    "materialize_agent_index",
     "materialize_transcripts",
     "record_agent_boundary",
     "record_controlled_agent_boundary",

@@ -72,7 +72,10 @@ def test_l3_lint_fix_reads_narrow_pack_not_full_table():
     src = (WF / "scan-market.js").read_text(encoding="utf-8")
     head, _, tail = src.partition("label: 'L3-lint-fix'")
     assert tail, "L3-lint-fix 调用点不见了"
-    prompt = head.rsplit("await agent(", 1)[-1] + tail[:500]
+    # Task 11 起业务 agent 走 tracedAgent 包装,定位取两种调用形式里**最后**出现的那个。
+    call_at = max(head.rfind("await agent("), head.rfind("tracedAgent("))
+    assert call_at >= 0, "L3-lint-fix 的派发调用点不见了"
+    prompt = head[call_at:] + tail[:500]
     assert "_l3_repair_prompt.md" in prompt
     assert "_l3_repair_patch.json" in prompt
     assert "_l3_table.md" not in prompt
