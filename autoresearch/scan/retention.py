@@ -331,28 +331,28 @@ def _lineage_path(scan_dir: Path) -> Path | None:
     return next((path for path in candidates if path.is_file()), None)
 
 
-def _read_exact_manifest(scan_dir: Path) -> dict | None:
+def _read_exact_manifest(scan_dir: Path) -> tuple[dict | None, str]:
     source = _lineage_path(scan_dir)
     if source is None:
-        return None
+        return None, "lineage_absent"
     rows: list[dict] = []
-    failed = 0
     try:
         for line in source.read_text(encoding="utf-8").splitlines():
             row = json.loads(line)
             if not isinstance(row, dict):
-                continue
-            if row.get("status") == "SUCCEEDED" and row.get("blob_hash"):
-                rows.append(row)
-            elif row.get("status") == "FAILED":
-                failed += 1
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not rows:
-        return None
+                return None, "lineage_unreadable"
+            rows.append(row)
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None, "lineage_unreadable"
+
+    succeeded = [row for row in rows if row.get("status") == "SUCCEEDED"]
+    failed = [row for row in rows if row.get("status") == "FAILED"]
+    incomplete = [row for row in rows if row.get("evidence_complete") is not True]
+    no_blob = [row for row in succeeded if not row.get("blob_hash")]
+    blobbed = [row for row in succeeded if row.get("blob_hash")]
 
     files: dict[str, str] = {}
-    for ordinal, row in enumerate(rows, start=1):
+    for ordinal, row in enumerate(blobbed, start=1):
         raw_path = row.get("path")
         endpoint = str(row.get("endpoint") or "unknown")
         stem = Path(str(raw_path)).stem if raw_path else f"blob-{str(row['blob_hash'])[:16]}"
@@ -368,11 +368,14 @@ def _read_exact_manifest(scan_dir: Path) -> dict | None:
         "source_mode": "exact_reads",
         "date": scan_dir.name,
         "n_files": len(files),
-        "n_successful_reads": len(rows),
-        "n_failed_reads": failed,
+        "n_total_reads": len(rows),
+        "n_successful_reads": len(succeeded),
+        "n_failed_reads": len(failed),
+        "n_incomplete_reads": len(incomplete),
+        "n_no_blob_reads": len(no_blob),
         "files": files,
         "note": "由本次实际成功 source reads 派生；不是窗口猜测。",
-    }
+    }, ""
 
 
 def write_lake_manifest(scan_dir: Path | str, run_dir: Path | str) -> int:
@@ -385,9 +388,12 @@ def write_lake_manifest(scan_dir: Path | str, run_dir: Path | str) -> int:
         except (OSError, json.JSONDecodeError, AttributeError):
             return 0
     source = Path(scan_dir)
-    doc = _read_exact_manifest(source) or lake_manifest(source.name)
-    doc.setdefault("schema", "window_guess")
-    doc.setdefault("source_mode", "window_guess")
+    doc, reason = _read_exact_manifest(source)
+    if doc is None:
+        doc = lake_manifest(source.name)
+        doc.setdefault("schema", "window_guess")
+        doc.setdefault("source_mode", "window_guess")
+        doc["source_reason"] = reason
     atomic_write_json(target, doc)
     return int(doc.get("n_files") or 0)
 

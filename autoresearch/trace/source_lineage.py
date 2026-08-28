@@ -64,8 +64,20 @@ def _safe_value(value: Any) -> Any:
 
 def _safe_error(error: BaseException) -> tuple[str, str]:
     error_type = type(error).__name__
-    message = _safe_value(str(error) or error_type)
-    return error_type, str(message)
+    try:
+        raw = str(error) or error_type
+    except BaseException:
+        return error_type, "[unavailable]"
+    try:
+        message = _safe_value(raw)
+    except BaseException:
+        return error_type, "[unavailable]"
+    return error_type, message if isinstance(message, str) else "[unavailable]"
+
+
+def _generic_evidence_warning() -> None:
+    with contextlib.suppress(BaseException):
+        os.write(2, b"source lineage evidence incomplete\n")
 
 
 def _fsync_directory(path: Path) -> None:
@@ -158,6 +170,7 @@ class SourceAccess:
     attempt: int = 1
     subject: str | None = None
     _finished: bool = field(default=False, init=False, repr=False)
+    _setup_error: BaseException | None = field(default=None, repr=False)
 
     @property
     def enabled(self) -> bool:
@@ -172,10 +185,24 @@ class SourceAccess:
         if self._finished or self.handle is None:
             return False
         self._finished = True
+        try:
+            return self._finish_success(frame, access, path)
+        except BaseException as exc:
+            self._record_unexpected_gap(
+                status="SUCCEEDED", access=access, error=exc
+            )
+            return False
+
+    def _finish_success(
+        self,
+        frame: pd.DataFrame | None,
+        access: str,
+        path: Path | str | None,
+    ) -> bool:
         exact_path = Path(path) if path is not None else None
         blob_hash: str | None = None
         blob_bytes: int | None = None
-        evidence_error: BaseException | None = None
+        evidence_error = self._setup_error
         try:
             if exact_path is not None:
                 blob_hash = put_file(self.handle.capsule, exact_path)
@@ -185,7 +212,7 @@ class SourceAccess:
                 raise TypeError("successful source result is not a DataFrame")
             blob_bytes = blob_path(self.handle.capsule, blob_hash).stat().st_size
         except BaseException as exc:  # evidence cannot replace a successful data result
-            evidence_error = exc
+            evidence_error = evidence_error or exc
         return self._persist(
             status="SUCCEEDED",
             access=access,
@@ -201,16 +228,20 @@ class SourceAccess:
         if self._finished or self.handle is None:
             return False
         self._finished = True
-        return self._persist(
-            status="FAILED",
-            access=None,
-            path=None,
-            frame=None,
-            blob_hash=None,
-            blob_bytes=None,
-            business_error=error,
-            evidence_error=None,
-        )
+        try:
+            return self._persist(
+                status="FAILED",
+                access=None,
+                path=None,
+                frame=None,
+                blob_hash=None,
+                blob_bytes=None,
+                business_error=error,
+                evidence_error=self._setup_error,
+            )
+        except BaseException as exc:
+            self._record_unexpected_gap(status="FAILED", access=None, error=exc)
+            return False
 
     def _persist(
         self,
@@ -308,37 +339,83 @@ class SourceAccess:
         event_persisted: bool,
         error: BaseException,
     ) -> None:
-        assert self.handle is not None
-        error_type, _ = _safe_error(error)
-        gap = {
-            "schema_version": 1,
-            "run_id": self.handle.run_id,
-            "stage": self.stage,
-            "invocation_id": self.invocation_id,
-            "attempt": self.attempt,
-            "endpoint": self.endpoint,
-            "access": access,
-            "source_status": status,
-            "row_persisted": row_persisted,
-            "event_persisted": event_persisted,
-            "error_type": error_type,
-            "recorded_at": _utc_now(),
-        }
-        with contextlib.suppress(BaseException):
+        self._record_gap(
+            status=status,
+            access=access,
+            row_persisted=row_persisted,
+            event_persisted=event_persisted,
+            error=error,
+        )
+
+    def _record_unexpected_gap(
+        self,
+        *,
+        status: str,
+        access: str | None,
+        error: BaseException,
+    ) -> None:
+        self._record_gap(
+            status=status,
+            access=access,
+            row_persisted=False,
+            event_persisted=False,
+            error=error,
+        )
+
+    def _record_gap(
+        self,
+        *,
+        status: str,
+        access: str | None,
+        row_persisted: bool,
+        event_persisted: bool,
+        error: BaseException,
+    ) -> None:
+        if self.handle is None:
+            _generic_evidence_warning()
+            return
+        try:
+            gap = {
+                "schema_version": 1,
+                "run_id": self.handle.run_id,
+                "stage": self.stage,
+                "invocation_id": self.invocation_id,
+                "attempt": self.attempt,
+                "endpoint": self.endpoint,
+                "access": access,
+                "source_status": status,
+                "row_persisted": row_persisted,
+                "event_persisted": event_persisted,
+                "error_type": type(error).__name__,
+                "recorded_at": _utc_now(),
+            }
+        except BaseException:
+            _generic_evidence_warning()
+            return
+        marker_ok = False
+        event_ok = False
+        try:
             _append_jsonl(self.handle.capsule, "evidence_gaps.jsonl", gap)
-        if event_persisted:
-            with contextlib.suppress(BaseException):
-                append_event(
-                    self.handle.capsule / "events/events.jsonl",
-                    run_id=self.handle.run_id,
-                    engine=self.handle.engine,
-                    stage=self.stage,
-                    invocation_id=self.invocation_id,
-                    attempt=self.attempt,
-                    subject=self.subject,
-                    event_type="EVIDENCE_MISSING",
-                    payload=gap,
-                )
+            marker_ok = True
+        except BaseException:
+            pass
+        try:
+            append_event(
+                self.handle.capsule / "events/events.jsonl",
+                run_id=self.handle.run_id,
+                engine=self.handle.engine,
+                stage=self.stage,
+                invocation_id=self.invocation_id,
+                attempt=self.attempt,
+                subject=self.subject,
+                event_type="EVIDENCE_MISSING",
+                payload=gap,
+            )
+            event_ok = True
+        except BaseException:
+            pass
+        if not marker_ok and not event_ok:
+            _generic_evidence_warning()
 
 
 def trace_access(
@@ -376,10 +453,12 @@ def trace_access(
         str(os.environ.get("AUTORESEARCH_INVOCATION_ID", "")).strip() or f"source-{os.getpid()}"
     )
     subject = str(os.environ.get("AUTORESEARCH_SUBJECT", "")).strip() or None
+    setup_error = None
     try:
         normalized = _safe_value(params)
-    except BaseException:
+    except BaseException as exc:
         normalized = "[UNSERIALIZABLE]"
+        setup_error = exc
     if not isinstance(normalized, dict):
         normalized = {"params": normalized}
     return SourceAccess(
@@ -393,4 +472,5 @@ def trace_access(
         invocation_id=invocation_id,
         attempt=attempt,
         subject=subject,
+        _setup_error=setup_error,
     )

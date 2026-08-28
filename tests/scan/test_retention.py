@@ -399,6 +399,125 @@ def test_write_lake_manifest_derives_exact_reads_from_active_capsule(tmp_path):
     assert doc["n_failed_reads"] == 1
 
 
+def test_readable_all_failed_lineage_is_still_exact_not_window_guess(tmp_path, monkeypatch):
+    workspace = tmp_path / "scan_runs" / "20260827T010203456789Z"
+    scan = workspace / "staging" / "2026-08-27"
+    reads = workspace / "capsule" / "lineage" / "reads.jsonl"
+    scan.mkdir(parents=True)
+    reads.parent.mkdir(parents=True)
+    reads.write_text(
+        json.dumps(
+            {
+                "status": "FAILED",
+                "endpoint": "daily",
+                "blob_hash": None,
+                "evidence_complete": True,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        retention,
+        "lake_manifest",
+        lambda *_: (_ for _ in ()).throw(AssertionError("must not guess")),
+    )
+
+    run = tmp_path / "report"
+    assert retention.write_lake_manifest(scan, run) == 0
+    doc = json.loads((run / "trace/lake_manifest.json").read_text(encoding="utf-8"))
+    assert doc["source_mode"] == "exact_reads"
+    assert doc["files"] == {}
+    assert doc["n_total_reads"] == 1
+    assert doc["n_successful_reads"] == 0
+    assert doc["n_failed_reads"] == 1
+    assert doc["n_incomplete_reads"] == 0
+    assert doc["n_no_blob_reads"] == 0
+
+
+def test_readable_success_without_blob_is_exact_and_counted_incomplete(tmp_path, monkeypatch):
+    workspace = tmp_path / "scan_runs" / "20260827T010203456789Z"
+    scan = workspace / "staging" / "2026-08-27"
+    reads = workspace / "capsule" / "lineage" / "reads.jsonl"
+    scan.mkdir(parents=True)
+    reads.parent.mkdir(parents=True)
+    reads.write_text(
+        json.dumps(
+            {
+                "status": "SUCCEEDED",
+                "endpoint": "daily",
+                "blob_hash": None,
+                "evidence_complete": False,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        retention,
+        "lake_manifest",
+        lambda *_: (_ for _ in ()).throw(AssertionError("must not guess")),
+    )
+
+    run = tmp_path / "report"
+    retention.write_lake_manifest(scan, run)
+    doc = json.loads((run / "trace/lake_manifest.json").read_text(encoding="utf-8"))
+    assert doc["source_mode"] == "exact_reads"
+    assert doc["files"] == {}
+    assert doc["n_total_reads"] == 1
+    assert doc["n_successful_reads"] == 1
+    assert doc["n_failed_reads"] == 0
+    assert doc["n_incomplete_reads"] == 1
+    assert doc["n_no_blob_reads"] == 1
+
+
+def test_empty_readable_lineage_is_exact_with_zero_counts(tmp_path, monkeypatch):
+    workspace = tmp_path / "scan_runs" / "20260827T010203456789Z"
+    scan = workspace / "staging" / "2026-08-27"
+    reads = workspace / "capsule" / "lineage" / "reads.jsonl"
+    scan.mkdir(parents=True)
+    reads.parent.mkdir(parents=True)
+    reads.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        retention,
+        "lake_manifest",
+        lambda *_: (_ for _ in ()).throw(AssertionError("must not guess")),
+    )
+
+    run = tmp_path / "report"
+    retention.write_lake_manifest(scan, run)
+    doc = json.loads((run / "trace/lake_manifest.json").read_text(encoding="utf-8"))
+    assert doc["source_mode"] == "exact_reads"
+    assert doc["files"] == {}
+    assert doc["n_total_reads"] == 0
+
+
+def test_unreadable_lineage_falls_back_with_reason(tmp_path, monkeypatch):
+    workspace = tmp_path / "scan_runs" / "20260827T010203456789Z"
+    scan = workspace / "staging" / "2026-08-27"
+    reads = workspace / "capsule" / "lineage" / "reads.jsonl"
+    scan.mkdir(parents=True)
+    reads.parent.mkdir(parents=True)
+    reads.write_text("{broken\n", encoding="utf-8")
+    monkeypatch.setattr(
+        retention,
+        "lake_manifest",
+        lambda date: {
+            "schema_version": 1,
+            "date": date,
+            "n_files": 0,
+            "files": {},
+            "note": "guess",
+        },
+    )
+
+    run = tmp_path / "report"
+    retention.write_lake_manifest(scan, run)
+    doc = json.loads((run / "trace/lake_manifest.json").read_text(encoding="utf-8"))
+    assert doc["source_mode"] == "window_guess"
+    assert doc["source_reason"] == "lineage_unreadable"
+
+
 def test_write_lake_manifest_falls_back_to_labeled_window_guess(tmp_path, monkeypatch):
     scan = tmp_path / "scan" / "2026-08-25"
     scan.mkdir(parents=True)

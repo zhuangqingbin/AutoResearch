@@ -76,6 +76,24 @@ def _record_lineage_process(number: int) -> bool:
     return access.finish_success(_daily(float(number)), "FETCHED_UNSETTLED", None)
 
 
+class _HostileBusinessError(RuntimeError):
+    def __str__(self) -> str:
+        raise RuntimeError("hostile __str__ must never run outside evidence containment")
+
+
+class _HostileColumn:
+    def __hash__(self) -> int:
+        return 7
+
+    def __str__(self) -> str:
+        raise RuntimeError("hostile column stringification")
+
+
+class _HostilePath:
+    def __fspath__(self) -> str:
+        raise RuntimeError("hostile path coercion")
+
+
 def test_trace_access_redacts_params_and_records_exact_context(active_run, monkeypatch):
     secret = "trace-secret-value"
     monkeypatch.setenv("TUSHARE_TOKEN", secret)
@@ -197,6 +215,176 @@ def test_failure_error_is_redacted_without_changing_original_exception(
     persisted = json.dumps(_reads(active_run)[-1], ensure_ascii=False)
     assert secret not in persisted
     assert "[REDACTED]" in persisted
+
+
+def test_hostile_exception_string_never_replaces_original_failure(
+    active_run, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(cache, "LAKE", tmp_path / "lake")
+    original = _HostileBusinessError()
+
+    def fail(*_):
+        raise original
+
+    with pytest.raises(_HostileBusinessError) as caught:
+        cache.get_or_fetch(
+            "daily", {"trade_date": "20260825"}, today="20260827", fetch=fail
+        )
+
+    assert caught.value is original
+    assert caught.value.__traceback__ is not None
+    row = _reads(active_run)[-1]
+    assert row["error_type"] == "_HostileBusinessError"
+    assert row["error_message"] == "[unavailable]"
+
+
+def test_hostile_column_hash_failure_never_changes_successful_return(active_run):
+    frame = pd.DataFrame([[1]])
+    frame.columns = [_HostileColumn()]
+
+    out = cache.get_or_fetch(
+        "stock_zh_a_spot_em", {}, today="20260827", fetch=lambda *_: frame
+    )
+
+    assert out is frame
+    gap = json.loads(
+        (active_run.capsule / "lineage/evidence_gaps.jsonl").read_text(encoding="utf-8")
+    )
+    assert gap["error_type"] == "RuntimeError"
+
+
+def test_hostile_path_coercion_is_contained_by_finish_success(active_run):
+    access = trace_access("daily", {"trade_date": "20260825"})
+    assert access.finish_success(_daily(), "CACHE_HIT", _HostilePath()) is False
+    assert (active_run.capsule / "lineage/evidence_gaps.jsonl").is_file()
+
+
+@pytest.mark.parametrize("failing_channel", ["blob", "row", "event", "canonical"])
+def test_any_success_evidence_failure_preserves_exact_dataframe(
+    active_run, monkeypatch, failing_channel
+):
+    import autoresearch.trace.source_lineage as lineage
+
+    frame = pd.DataFrame({"x": [1]})
+    if failing_channel == "blob":
+        monkeypatch.setattr(
+            lineage,
+            "put_dataframe",
+            lambda *_: (_ for _ in ()).throw(OSError("blob failed")),
+        )
+    elif failing_channel == "row":
+        monkeypatch.setattr(
+            lineage,
+            "_append_read",
+            lambda *_: (_ for _ in ()).throw(OSError("row failed")),
+        )
+    elif failing_channel == "event":
+        original_append = lineage.append_event
+
+        def fail_source_event(*args, **kwargs):
+            if str(kwargs.get("event_type", "")).startswith("SOURCE_"):
+                raise OSError("event failed")
+            return original_append(*args, **kwargs)
+
+        monkeypatch.setattr(lineage, "append_event", fail_source_event)
+    else:
+        original_canonical = lineage.canonical_json
+        calls = 0
+
+        def fail_first_canonical(value):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise TypeError("canonical failed")
+            return original_canonical(value)
+
+        monkeypatch.setattr(lineage, "canonical_json", fail_first_canonical)
+
+    out = cache.get_or_fetch(
+        "stock_zh_a_spot_em", {}, today="20260827", fetch=lambda *_: frame
+    )
+
+    assert out is frame
+    assert (active_run.capsule / "lineage/evidence_gaps.jsonl").is_file() or any(
+        row["event_type"] == "EVIDENCE_MISSING" for row in _events(active_run)
+    )
+
+
+def test_raising_trace_adapter_cannot_replace_success_or_failure(
+    active_run, monkeypatch
+):
+    import autoresearch.trace.source_lineage as lineage
+
+    class BrokenTrace:
+        def finish_success(self, *_args, **_kwargs):
+            raise OSError("success evidence failed")
+
+        def finish_failure(self, *_args, **_kwargs):
+            raise OSError("failure evidence failed")
+
+    monkeypatch.setattr(lineage, "trace_access", lambda *_args, **_kwargs: BrokenTrace())
+    frame = pd.DataFrame({"x": [1]})
+    assert (
+        cache.get_or_fetch(
+            "stock_zh_a_spot_em", {}, today="20260827", fetch=lambda *_: frame
+        )
+        is frame
+    )
+
+    original = _HostileBusinessError()
+
+    def fail(*_):
+        raise original
+
+    with pytest.raises(_HostileBusinessError) as caught:
+        cache.get_or_fetch("stock_zh_a_spot_em", {}, today="20260827", fetch=fail)
+    assert caught.value is original
+
+
+def test_gap_recording_failure_degrades_to_generic_stderr_without_leak(
+    active_run, monkeypatch, capfd
+):
+    import autoresearch.trace.source_lineage as lineage
+
+    access = trace_access("daily", {"trade_date": "20260825"})
+    monkeypatch.setattr(
+        lineage,
+        "_append_jsonl",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("sensitive persistence detail")
+        ),
+    )
+    monkeypatch.setattr(
+        lineage,
+        "append_event",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("sensitive event detail")
+        ),
+    )
+
+    assert access.finish_failure(_HostileBusinessError()) is False
+    stderr = capfd.readouterr().err
+    assert "source lineage evidence incomplete" in stderr
+    assert "sensitive" not in stderr
+    assert "hostile" not in stderr
+
+
+def test_gap_metadata_construction_failure_is_also_contained(
+    active_run, monkeypatch, capfd
+):
+    import autoresearch.trace.source_lineage as lineage
+
+    access = trace_access("daily", {"trade_date": "20260825"})
+    monkeypatch.setattr(
+        lineage,
+        "_utc_now",
+        lambda: (_ for _ in ()).throw(RuntimeError("clock detail must not leak")),
+    )
+
+    assert access.finish_success(_daily(), "FETCHED_UNSETTLED", None) is False
+    stderr = capfd.readouterr().err
+    assert "source lineage evidence incomplete" in stderr
+    assert "clock detail" not in stderr
 
 
 def test_get_or_fetch_records_snapshot_guard_before_fetch(active_run, tmp_path, monkeypatch):

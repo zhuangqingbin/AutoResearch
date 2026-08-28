@@ -15,6 +15,7 @@ lake 根 = 模块级 LAKE,测试 monkeypatch 成 tmp 目录,绝不污染真 cont
 """
 from __future__ import annotations
 
+import contextlib
 import os
 from datetime import date
 from pathlib import Path
@@ -52,6 +53,11 @@ class _NoSourceTrace:
 _NO_SOURCE_TRACE = _NoSourceTrace()
 
 
+def _trace_warning() -> None:
+    with contextlib.suppress(BaseException):
+        os.write(2, b"source lineage evidence incomplete\n")
+
+
 def _source_trace(endpoint: str, params: dict, today: str | None):
     if not str(os.environ.get("AUTORESEARCH_RUN_ID", "")).strip():
         return _NO_SOURCE_TRACE
@@ -60,7 +66,22 @@ def _source_trace(endpoint: str, params: dict, today: str | None):
 
         return trace_access(endpoint, params, today=today)
     except BaseException:
+        _trace_warning()
         return _NO_SOURCE_TRACE
+
+
+def _finish_source_success(trace, frame, access: str, path) -> None:
+    try:
+        trace.finish_success(frame, access, path)
+    except BaseException:
+        _trace_warning()
+
+
+def _finish_source_failure(trace, error: BaseException) -> None:
+    try:
+        trace.finish_failure(error)
+    except BaseException:
+        _trace_warning()
 
 
 # 快照型端点(`policy(...)["snapshot"]`)落盘时补的**观测出处**两列(Wave12 T2 Interfaces
@@ -215,7 +236,7 @@ def get_or_fetch(
         # ③ live:总取新,绝不缓存,不校验(盘中快照的完整性由调用方自负——它们本就不入湖)。
         if pol["settle"] == "live":
             result = fetch(endpoint, params)
-            trace.finish_success(result, "FETCHED_LIVE", None)
+            _finish_source_success(trace, result, "FETCHED_LIVE", None)
             return result
 
         key = _cache_key(endpoint, params, t)
@@ -224,7 +245,7 @@ def get_or_fetch(
         # 已结算(date < today)且文件存在 → 命中,零取数。**命中也要校验**(湖里可能躺着毒源)。
         if path.exists():
             result = check(endpoint, _read(path), key=str(key), source="lake")
-            trace.finish_success(result, "CACHE_HIT", path)
+            _finish_source_success(trace, result, "CACHE_HIT", path)
             return result
 
         # 快照端点的 PIT 守门(Wave12 复核 I1):只挡**写新分区**,历史读在上一行已经放行。
@@ -253,7 +274,7 @@ def get_or_fetch(
                     source="fetch",
                     cols=False,
                 )
-                trace.finish_success(result, "FETCHED_UNSETTLED", None)
+                _finish_source_success(trace, result, "FETCHED_UNSETTLED", None)
                 return result
 
         # 拉取 → 校验 → 原子写。**入湖必须全字段**(`_lake_params`:窄 fields 会把窄表钉成该 key 的
@@ -267,11 +288,11 @@ def get_or_fetch(
         # B 级快照端点的空/半截**同样不入湖**(C2):落了就 `path.exists()` 恒命中,这一天永远残缺;
         # 不落 → 同日重跑(或下一次夜采)还能救回来。契约已在上面 check() 里记过账,这里只管别钉死。
         if refuses_lake(endpoint, df):
-            trace.finish_success(df, "FETCHED_REFUSED_LAKE", None)
+            _finish_source_success(trace, df, "FETCHED_REFUSED_LAKE", None)
             return df
         _atomic_write(path, df)
-        trace.finish_success(df, "FETCHED_CACHED", path)
+        _finish_source_success(trace, df, "FETCHED_CACHED", path)
         return df
     except BaseException as exc:
-        trace.finish_failure(exc)
+        _finish_source_failure(trace, exc)
         raise
