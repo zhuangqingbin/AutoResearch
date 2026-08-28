@@ -344,6 +344,45 @@ def safe_run_consumers(
         return None
 
 
+def _finalize_forensic_run(report_dir: str | None) -> dict:
+    """Freeze the run's capsule and report the verdict; never break publishing.
+
+    A run without an active forensic spool (legacy path, or a rerun of an old
+    date) simply reports ``skipped`` —— it must not be able to claim a capsule
+    it does not have.
+    """
+    from autoresearch.common import workspace as ws
+
+    run_id = None
+    try:
+        run_id = ws.active_run_id()
+    except ValueError as exc:
+        return {"finalized": False, "reason": f"invalid AUTORESEARCH_RUN_ID: {exc}"}
+    if not run_id:
+        return {"finalized": False, "reason": "no active forensic run"}
+    try:
+        from autoresearch.trace.capsule import BusinessStatus, finalize, verify
+
+        outcome = finalize(run_id, BusinessStatus.SUCCEEDED, report_dir)
+        verdict = verify(run_id, final_path=outcome.final_path)
+        return {
+            "finalized": True,
+            "run_id": run_id,
+            "root_hash": outcome.root_hash,
+            "evidence_status": outcome.evidence_status.value,
+            "durability": outcome.durability,
+            "integrity_ok": verdict["integrity_ok"],
+            "completeness_ok": verdict["completeness_ok"],
+            "replayability": verdict["replayability"],
+        }
+    except Exception as exc:  # noqa: BLE001 - 冻结失败必须说出来,但不毁掉已发布的报告
+        return {
+            "finalized": False,
+            "run_id": run_id,
+            "reason": f"{type(exc).__name__}: {exc}",
+        }
+
+
 def _atomic_json(path: Path, payload: dict) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(f"{path.name}.tmp")
@@ -846,6 +885,10 @@ def main(argv: list[str] | None = None) -> int:
                 phase=args.phase,
                 decision_write="verify",
             )
+            # CP7 定序(设计稿 §9):gate4 → 引擎感知计量 → usage_reconcile → observe →
+            # expected/replay/completeness → finalize → 冻结后复验。finalize 必须在
+            # observe **之后**:它要把此刻定稿的观测一起冻进 capsule。
+            finalization = _finalize_forensic_run(args.report_dir)
             with contextlib.suppress(Exception):  # 插队建档失败不挡成本观测发布(Wave9 R6)
                 receipt = enqueue_receipt(scan, scan.name)
                 queued = receipt["inserted_codes"]
@@ -857,6 +900,7 @@ def main(argv: list[str] | None = None) -> int:
                 "measurement_status": result["measurement_status"],
                 "maturity": result["maturity"],
                 "observation": str(scan / "_budget_observation.json"),
+                "capsule": finalization,
             }, ensure_ascii=False, sort_keys=True))
             return 0
         result = run_consumers(

@@ -293,6 +293,19 @@ def _run_publish(analysis_date: str, scan_dir: Path | None = None,
                 "contract_hash": contract.contract_hash,
                 "run_contract_schema_version": contract.schema_version,
             })
+    # 发布时业务已成功、证据尚未冻结:先写 PENDING,CP7 的 finalize 再改写成终态。
+    # 这三个字段让「报告」和「现场」的状态永远各自可见,不互相冒充。
+    from autoresearch.scan.evidence import evidence_facts, has_capsule
+
+    manifest.update({
+        "capsule_schema_version": 1,
+        "business_status": "SUCCEEDED",
+        "evidence_status": (
+            evidence_facts(out_base)["evidence_status"]
+            if has_capsule(out_base)
+            else "PENDING"
+        ),
+    })
     (out_base / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
     md = build_summary(scan_dir, analysis_date, hhmm, folder, pinned_path=pinned_path)

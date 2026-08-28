@@ -610,6 +610,12 @@ def index_md(scan_dir: Path, report_dir: Path) -> str:
     ok = [a for a, v in h["artifacts"].items() if v]
     lines.append(f"- **staging(中间结果)**:`{scan_dir}/` — 在位:{('、'.join(ok)) or '—'}"
                  + (f";**缺**:{'、'.join(h['missing'])}" if h["missing"] else ""))
+    # 六个证据事实分行(设计稿 §8.1):业务/证据/完好/完整/可重放/归档 各自成立或不成立,
+    # 任何一项都不得代表其余五项。
+    from autoresearch.scan.evidence import evidence_facts, render_evidence_lines
+
+    lines.append("- **现场证据**:")
+    lines += [f"  {row}" for row in render_evidence_lines(evidence_facts(report_dir))]
     prevs = sorted((p.name for p in report_dir.parent.iterdir()
                     if p.is_dir() and p.name < report_dir.name and (p / "summary.md").exists()),
                    reverse=True)

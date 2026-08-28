@@ -737,7 +737,8 @@ def retain(scan_dir: Path | str, run_dir: Path | str) -> dict:
     """发布收尾的现场留存(镜像 + run 外输入 + 清单)。失败分类留痕,**不抛**:
     留存是加法,不该有能力毁掉一次已跑完的扫描(同 `brief.safe_publish` 口径)。"""
     res: dict = {"mirrored": 0, "inputs": {}, "transcripts": {}, "lake_files": 0,
-                 "manifest": None, "errors": []}
+                 "manifest": None, "errors": [], "evidence_status": "LEGACY_PARTIAL",
+                 "integrity_ok": None, "completeness_ok": None}
     try:
         res["mirrored"] = mirror_staging(scan_dir, run_dir)
     except Exception as exc:  # noqa: BLE001
@@ -756,6 +757,18 @@ def retain(scan_dir: Path | str, run_dir: Path | str) -> dict:
         res["lake_files"] = write_lake_manifest(scan_dir, run_dir)
     except Exception as exc:  # noqa: BLE001
         res["errors"].append(f"write_lake_manifest: {type(exc).__name__}: {exc}")
+    try:
+        # forensic capsule 在场时,完好性/完整性由 capsule 的两条独立结论回答;
+        # 这里的旧 MANIFEST 只是兼容路径,**不得**被当成新的完整性结论来源。
+        from autoresearch.scan.evidence import evidence_facts, has_capsule
+
+        if has_capsule(run_dir):
+            facts = evidence_facts(run_dir)
+            res["evidence_status"] = facts["evidence_status"]
+            res["integrity_ok"] = facts["integrity_ok"]
+            res["completeness_ok"] = facts["completeness_ok"]
+    except Exception as exc:  # noqa: BLE001
+        res["errors"].append(f"evidence_facts: {type(exc).__name__}: {exc}")
     try:
         res["manifest"] = str(write_manifest(run_dir))
     except Exception as exc:  # noqa: BLE001

@@ -92,7 +92,10 @@ def test_absent_pieces_are_named_not_skipped(tmp_path, monkeypatch):
     (tmp_path / ws.scan_root()).mkdir(parents=True)
     md = chain_view.render(_run(tmp_path, with_mirror=False), "603317")
     assert md.count(chain_view.ABSENT) >= 5
-    assert "MANIFEST 缺席" in md
+    # capsule 之前的 run:完好性只能由旧 MANIFEST 回答,完整性必须明说「未知」,
+    # 绝不能因为没有 expected 清单就默认通过。
+    assert "早于 forensic capsule" in md
+    assert "**完整性**:未知" in md
     assert "结果账本尚未回填" in md
 
 
@@ -147,3 +150,84 @@ def test_cli_missing_run_returns_2(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     assert chain_view.main(["nope_run", "603317"]) == 2
     capsys.readouterr()
+
+
+# --- Task 16: the collapsed ✓ is gone -------------------------------------
+
+
+def _capsule_run(run_dir, *, completeness_ok, replay="FULL", business="SUCCEEDED"):
+    import json
+
+    capsule = run_dir / "capsule"
+    (capsule / "verification").mkdir(parents=True, exist_ok=True)
+    (capsule / "capsule.json").write_text(
+        json.dumps(
+            {
+                "capsule_schema_version": 1,
+                "business_status": business,
+                "evidence_status": "COMPLETE" if completeness_ok else "EVIDENCE_INCOMPLETE",
+                "replayability": replay,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (capsule / "verification/completeness.json").write_text(
+        json.dumps(
+            {
+                "completeness_ok": completeness_ok,
+                "missing_required": [] if completeness_ok else ["agents/l4-card/*"],
+                "coverage": {
+                    "agents": {"expected": 2, "present": 2 if completeness_ok else 1},
+                    "sources": {"reads": 10, "covered": 10},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    from autoresearch.trace.atomic import sha256_bytes
+    from autoresearch.trace.capsule import write_manifest
+
+    manifest = write_manifest(run_dir)
+    (capsule / "verification/ROOT.json").write_text(
+        json.dumps(
+            {
+                "root_hash": sha256_bytes(manifest.read_bytes()),
+                "durability": "LOCAL_ONLY",
+            }
+        ),
+        encoding="utf-8",
+    )
+    return run_dir
+
+
+def test_chain_view_never_calls_manifest_integrity_scene_completeness(tmp_path, monkeypatch):
+    from autoresearch.common import workspace as ws
+
+    monkeypatch.setattr(ws, "reports_root", lambda: tmp_path / "reports_codex")
+    monkeypatch.setattr(ws, "context_root", lambda: tmp_path / "context_codex")
+    (tmp_path / ws.scan_root()).mkdir(parents=True)
+    run = _run(tmp_path, with_mirror=True)
+    _capsule_run(run, completeness_ok=False)
+
+    rendered = chain_view.render(run, "603317")
+
+    assert "**完好性**:✓" in rendered
+    assert "**完整性**:✗" in rendered
+    assert "现场完整性" not in rendered
+    assert "agents/l4-card/*" in rendered
+    assert "**现场可复盘**:✗" in rendered
+
+
+def test_chain_view_green_requires_every_fact(tmp_path, monkeypatch):
+    from autoresearch.common import workspace as ws
+
+    monkeypatch.setattr(ws, "reports_root", lambda: tmp_path / "reports_codex")
+    monkeypatch.setattr(ws, "context_root", lambda: tmp_path / "context_codex")
+    (tmp_path / ws.scan_root()).mkdir(parents=True)
+    run = _run(tmp_path, with_mirror=True)
+    _capsule_run(run, completeness_ok=True)
+
+    assert "**现场可复盘**:✓" in chain_view.render(run, "603317")
+
+    _capsule_run(run, completeness_ok=True, replay="NONE")
+    assert "**现场可复盘**:✗" in chain_view.render(run, "603317")

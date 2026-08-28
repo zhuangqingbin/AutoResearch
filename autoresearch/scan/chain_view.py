@@ -171,12 +171,12 @@ def _sec_identity(src: Sources, code6: str) -> list[str]:
                             + ("(v1 契约未记)" if "prompt_hashes" not in contract else "")),
             ("contract_hash", contract.get("contract_hash")),
         ])
-    from autoresearch.scan.retention import verify_manifest
-    v = verify_manifest(src.run)
-    out.append(f"- **现场完整性**:" + (
-        "MANIFEST 缺席(2026-08-26 之前的 run 天然如此)" if v.get("reason") == "no-manifest"
-        else ("✓ 全部 %d 件对得上" % v["n"] if v["ok"] else
-              f"⚠️ 变 {len(v['changed'])} · 缺 {len(v['missing'])} · 多 {len(v['extra'])}")))
+    # 六个事实分开报。旧版把「MANIFEST 里列到的文件没被改」渲染成「现场完整性 ✓」——
+    # 而 MANIFEST 永远列不到没人写下的文件,于是 557 个未归档 staging、0 份 transcript、
+    # $0.0000 的假成本全都躲在那个 ✓ 后面(设计稿 §2 立案证据)。
+    from autoresearch.scan.evidence import evidence_facts, render_evidence_lines
+
+    out += render_evidence_lines(evidence_facts(src.run))
     return out
 
 

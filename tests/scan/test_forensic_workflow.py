@@ -104,7 +104,9 @@ def test_no_deterministic_python_module_command_bypasses_capture(path):
     raw_modules = [
         match.group(0) for match in re.finditer(r"python -m autoresearch\.[A-Za-z0-9_.]+", source)
     ]
-    assert raw_modules == ["python -m autoresearch.trace.exec_capture"]
+    # 判据是「每一条都走捕获」,不是「只准出现一条」—— 失败冻结路是第二个合法调用点。
+    assert raw_modules, "工作流里一条确定性模块命令都没有?定位假设失效"
+    assert set(raw_modules) == {"python -m autoresearch.trace.exec_capture"}
     assert "${R}" not in source
 
 
@@ -488,3 +490,23 @@ def test_scan_sector_subject_travels_as_display_name_not_mangled_ascii():
     assert "subjectDisplay: sec" in source
     # 中文行业名不得被塞进 ASCII-only 的 --subject。
     assert "--subject ${spec.subjectDisplay}" not in source
+
+
+def test_scan_workflow_finalizes_failed_before_rethrowing():
+    """业务异常必须先冻结 capsule 再上抛,且冻结失败不得盖住原始异常。"""
+    source = _executable_source(WORKFLOWS[0])
+    assert "const __main = async () =>" in source
+    assert "return await __main()" in source
+    assert "--business-status FAILED" in source
+    assert "capsule:finalize-failed" in source
+    catch_body = source.split("return await __main()")[1]
+    assert "throw error" in catch_body
+    assert catch_body.index("--business-status FAILED") < catch_body.index("throw error")
+
+
+def test_l4_stock_does_not_finalize_the_whole_run():
+    """每股 workflow 只记自己的失败事件;整轮的业务终态归父级编排。"""
+    source = _executable_source(WORKFLOWS[1])
+    assert "capsule finalize" not in source
+    assert "--business-status" not in source
+    assert "AGENT_FAILED" in source

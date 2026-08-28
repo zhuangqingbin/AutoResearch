@@ -65,6 +65,12 @@ const forceFull = !!A.force_full
 // 引擎隔离根(2026-08-11):context_<engine>,engine 随 args.config.engine 下发(frame 注入)
 const ENGINE = (A.engine || cfg.engine || 'claude')
 if (!['claude', 'codex'].includes(ENGINE)) throw new Error(`args.engine 非法:${ENGINE}`)
+
+// ── 失败也要留下现场 ────────────────────────────────────────────────
+// 主体包在 __main 里:业务异常必须**先冻结 capsule 再上抛**。不冻结的话,失败的 run
+// 只剩一个 ACTIVE spool 和没人读的 stderr —— 而失败恰恰是最需要现场的那一种结局。
+// (SIGKILL 走不到这里,那条路归 `capsule recover` 的陈旧租约恢复。)
+const __main = async () => {
 const CTX = `context_${ENGINE}`
 const SD = `${CTX}/scan_runs/${RUN_ID}/staging/${date}`
 const CAPTURE = (stage, invocation, attempt = 1, subject = null) =>
@@ -584,3 +590,30 @@ if (pinnedCodes.length) {
 return { date, run_id: RUN_ID, engine: ENGINE, dispatch_attempt: 1, mode: 'l4-handoff', finalists: g2m.n, dispatch, dispatch_batches: dispatchBatches,
   task_book: taskBook, streaming_l4: streamingL4,
   meta: plan.meta || g2m.meta || {}, l4_budget: g1m.l4_budget, published: false }
+
+}
+
+try {
+  return await __main()
+} catch (error) {
+  const detail = JSON.stringify({
+    error_type: (error && error.name) || 'Error',
+    message: String((error && error.message) || error).slice(0, 500),
+    stage: 'workflow',
+  }).replace(/'/g, '')
+  try {
+    await agent(
+      `执行:\`AUTORESEARCH_ENGINE=${ENGINE} AUTORESEARCH_RUN_ID=${RUN_ID} ` +
+        `uv run --no-sync python -m autoresearch.trace.exec_capture --run-id ${RUN_ID} ` +
+        `--stage finalize --invocation-id finalize-failed-${RUN_ID} --attempt 1 ` +
+        `-- uv run --no-sync python -m ` +
+        `autoresearch.trace.capsule finalize ${RUN_ID} --business-status FAILED ` +
+        `--error-json '${detail}'\`。把 stdout 最后一行 JSON 原样作为结构化返回。` +
+        '**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**',
+      { agentType: 'general-purpose', label: 'capsule:finalize-failed' })
+  } catch (traceError) {
+    // 冻结失败要说出来,但绝不能盖住原始异常 —— 那才是这次 run 死掉的真正原因。
+    log(`⚠️ 失败冻结未完成:${traceError && traceError.message ? traceError.message : traceError}`)
+  }
+  throw error
+}
