@@ -84,6 +84,22 @@ def _finish_source_failure(trace, error: BaseException) -> None:
         _trace_warning()
 
 
+def _stable_source_frame(trace, frame):
+    """Detach a traced result from provider-owned mutable memory before evidence capture."""
+    try:
+        enabled = bool(getattr(trace, "enabled", False))
+    except BaseException:
+        _trace_warning()
+        return frame
+    if not enabled or not isinstance(frame, pd.DataFrame):
+        return frame
+    try:
+        return frame.copy(deep=True)
+    except BaseException:
+        _trace_warning()
+        return frame
+
+
 # 快照型端点(`policy(...)["snapshot"]`)落盘时补的**观测出处**两列(Wave12 T2 Interfaces
 # 逐字要求 `first_seen_basis="observed"`)。没有观测时刻,"这份分片到底什么时候抓的、是不是
 # 半截、跟哪个交易日对齐"永久不可回答 —— 而快照数据事后无从复查(接口没有历史参数)。
@@ -235,7 +251,7 @@ def get_or_fetch(
 
         # ③ live:总取新,绝不缓存,不校验(盘中快照的完整性由调用方自负——它们本就不入湖)。
         if pol["settle"] == "live":
-            result = fetch(endpoint, params)
+            result = _stable_source_frame(trace, fetch(endpoint, params))
             _finish_source_success(trace, result, "FETCHED_LIVE", None)
             return result
 
@@ -244,7 +260,9 @@ def get_or_fetch(
 
         # 已结算(date < today)且文件存在 → 命中,零取数。**命中也要校验**(湖里可能躺着毒源)。
         if path.exists():
-            result = check(endpoint, _read(path), key=str(key), source="lake")
+            result = _stable_source_frame(
+                trace, check(endpoint, _read(path), key=str(key), source="lake")
+            )
             _finish_source_success(trace, result, "CACHE_HIT", path)
             return result
 
@@ -267,12 +285,15 @@ def get_or_fetch(
             # d == today → 视为已结算,落到下方「拉取→契约→原子写」正常入湖(19:15 后 EOD 已发布,
             # 契约 min_rows 仍兜底);d > today(未来日)任何情况拒写。env 未设 = 现行为逐字节不变。
             if d and d >= t and not (d == t and os.environ.get("LAKE_ASSUME_SETTLED") == "1"):
-                result = check(
-                    endpoint,
-                    fetch(endpoint, params),
-                    key=str(key),
-                    source="fetch",
-                    cols=False,
+                result = _stable_source_frame(
+                    trace,
+                    check(
+                        endpoint,
+                        fetch(endpoint, params),
+                        key=str(key),
+                        source="fetch",
+                        cols=False,
+                    ),
                 )
                 _finish_source_success(trace, result, "FETCHED_UNSETTLED", None)
                 return result
@@ -285,6 +306,7 @@ def get_or_fetch(
         df = check(endpoint, df, key=str(key), source="fetch")   # A 级违约 → 抛,下一行不执行 = 不入湖
         if pol.get("snapshot"):
             df = _stamp_observed(df)                             # 观测出处(I3):落盘前打戳
+        df = _stable_source_frame(trace, df)
         # B 级快照端点的空/半截**同样不入湖**(C2):落了就 `path.exists()` 恒命中,这一天永远残缺;
         # 不落 → 同日重跑(或下一次夜采)还能救回来。契约已在上面 check() 里记过账,这里只管别钉死。
         if refuses_lake(endpoint, df):

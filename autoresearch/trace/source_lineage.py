@@ -8,6 +8,7 @@ import json
 import math
 import os
 import stat
+import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -18,7 +19,7 @@ import pandas as pd
 from autoresearch.common import workspace as ws
 from autoresearch.data.endpoints import policy
 from autoresearch.trace.atomic import canonical_json, sha256_bytes
-from autoresearch.trace.blobs import blob_path, put_dataframe, put_file
+from autoresearch.trace.blobs import blob_path, put_dataframe
 from autoresearch.trace.capsule import require_active_run
 from autoresearch.trace.capsule_models import RunHandle
 from autoresearch.trace.events import append_event
@@ -93,16 +94,77 @@ def _lineage_directory(capsule: Path) -> Path:
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
         raise ValueError("capsule must be a real directory")
     directory = capsule / "lineage"
+    created = False
     try:
         info = directory.lstat()
     except FileNotFoundError:
-        with contextlib.suppress(FileExistsError):
+        try:
             directory.mkdir(mode=0o700)
+            created = True
+        except FileExistsError:
+            pass
         info = directory.lstat()
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
         raise ValueError("lineage directory must be a real directory")
     directory.resolve(strict=True).relative_to(capsule.resolve(strict=True))
+    if created:
+        _fsync_directory(capsule)
     return directory
+
+
+def _durable_directory(path: Path) -> Path:
+    missing: list[Path] = []
+    current = path
+    while True:
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            missing.append(current)
+            current = current.parent
+            continue
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise ValueError(f"emergency evidence directory is unsafe: {current}")
+        break
+    for candidate in reversed(missing):
+        with contextlib.suppress(FileExistsError):
+            candidate.mkdir(mode=0o700)
+        info = candidate.lstat()
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise ValueError(f"emergency evidence directory is unsafe: {candidate}")
+        _fsync_directory(candidate.parent)
+    return path
+
+
+def _record_binding_gap(error: BaseException) -> None:
+    """Persist a safe out-of-capsule marker when an explicit run cannot be bound."""
+    _generic_evidence_warning()
+    try:
+        root = _durable_directory(ws.context_root() / "scan_runs" / "_evidence_gaps")
+        row = {
+            "schema_version": 1,
+            "reason": "invalid_active_run_binding",
+            "error_type": type(error).__name__,
+            "recorded_at": _utc_now(),
+        }
+        path = root / "source_lineage.jsonl"
+        payload = (canonical_json(row) + "\n").encode("utf-8")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | _NOFOLLOW, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            view = memoryview(payload)
+            while view:
+                written = os.write(fd, view)
+                if written <= 0:
+                    raise OSError("short emergency lineage write")
+                view = view[written:]
+            os.fsync(fd)
+            _fsync_directory(root)
+        finally:
+            with contextlib.suppress(OSError):
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+    except BaseException:
+        return
 
 
 def _append_jsonl(capsule: Path, name: str, row: dict) -> None:
@@ -169,6 +231,7 @@ class SourceAccess:
     invocation_id: str = "source-read"
     attempt: int = 1
     subject: str | None = None
+    correlation_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     _finished: bool = field(default=False, init=False, repr=False)
     _setup_error: BaseException | None = field(default=None, repr=False)
 
@@ -204,9 +267,7 @@ class SourceAccess:
         blob_bytes: int | None = None
         evidence_error = self._setup_error
         try:
-            if exact_path is not None:
-                blob_hash = put_file(self.handle.capsule, exact_path)
-            elif isinstance(frame, pd.DataFrame):
+            if isinstance(frame, pd.DataFrame):
                 blob_hash = put_dataframe(self.handle.capsule, frame)
             else:
                 raise TypeError("successful source result is not a DataFrame")
@@ -268,6 +329,7 @@ class SourceAccess:
             "invocation_id": self.invocation_id,
             "attempt": self.attempt,
             "subject": self.subject,
+            "correlation_id": self.correlation_id,
             "endpoint": self.endpoint,
             "normalized_params": self.normalized_params,
             "policy_key": self.policy_key,
@@ -286,6 +348,7 @@ class SourceAccess:
             "evidence_complete": evidence_error is None,
             "evidence_error_type": evidence_error_type,
         }
+        lineage_row_hash = sha256_bytes(canonical_json(row).encode("utf-8"))
         row_ok = True
         try:
             _append_read(self.handle.capsule, row)
@@ -299,7 +362,8 @@ class SourceAccess:
             "blob_hash": blob_hash,
             "rows": row["rows"],
             "status": status,
-            "lineage_row_hash": sha256_bytes(canonical_json(row).encode("utf-8")),
+            "lineage_row_hash": lineage_row_hash,
+            "correlation_id": self.correlation_id,
             "lineage_persisted": row_ok,
             "evidence_complete": evidence_error is None and row_ok,
             "error_type": error_type,
@@ -326,6 +390,7 @@ class SourceAccess:
                 access=access,
                 row_persisted=row_ok,
                 event_persisted=event_ok,
+                lineage_row_hash=lineage_row_hash,
                 error=evidence_error or RuntimeError("source evidence incomplete"),
             )
         return complete
@@ -337,6 +402,7 @@ class SourceAccess:
         access: str | None,
         row_persisted: bool,
         event_persisted: bool,
+        lineage_row_hash: str | None,
         error: BaseException,
     ) -> None:
         self._record_gap(
@@ -344,6 +410,7 @@ class SourceAccess:
             access=access,
             row_persisted=row_persisted,
             event_persisted=event_persisted,
+            lineage_row_hash=lineage_row_hash,
             error=error,
         )
 
@@ -359,6 +426,7 @@ class SourceAccess:
             access=access,
             row_persisted=False,
             event_persisted=False,
+            lineage_row_hash=None,
             error=error,
         )
 
@@ -369,6 +437,7 @@ class SourceAccess:
         access: str | None,
         row_persisted: bool,
         event_persisted: bool,
+        lineage_row_hash: str | None,
         error: BaseException,
     ) -> None:
         if self.handle is None:
@@ -382,6 +451,8 @@ class SourceAccess:
                 "invocation_id": self.invocation_id,
                 "attempt": self.attempt,
                 "endpoint": self.endpoint,
+                "correlation_id": self.correlation_id,
+                "lineage_row_hash": lineage_row_hash,
                 "access": access,
                 "source_status": status,
                 "row_persisted": row_persisted,
@@ -426,16 +497,20 @@ def trace_access(
 ) -> SourceAccess:
     """Start one best-effort source trace, or return a true no-op without an active run."""
     started_at = _utc_now()
+    raw_run_id = str(os.environ.get("AUTORESEARCH_RUN_ID", "")).strip()
     try:
         run_id = ws.active_run_id()
-    except ValueError:
+    except ValueError as exc:
+        _record_binding_gap(exc)
         run_id = None
     if run_id is None:
         return SourceAccess(None, str(endpoint), {}, None, None, started_at)
     try:
         handle = require_active_run(run_id)
-    except BaseException:
+    except BaseException as exc:
         # The data path must remain available even when its evidence control plane is not.
+        if raw_run_id:
+            _record_binding_gap(exc)
         return SourceAccess(None, str(endpoint), {}, None, None, started_at)
     try:
         pol = policy(endpoint)

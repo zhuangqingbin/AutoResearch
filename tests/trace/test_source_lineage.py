@@ -4,6 +4,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from multiprocessing import get_context
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -11,6 +12,7 @@ import pytest
 from autoresearch.common import workspace as ws
 from autoresearch.data import cache
 from autoresearch.data.contracts import DataContractError
+from autoresearch.scan import retention
 from autoresearch.trace.blobs import blob_path
 from autoresearch.trace.capsule import begin_run
 from autoresearch.trace.source_lineage import trace_access
@@ -183,6 +185,70 @@ def test_get_or_fetch_records_every_success_path(active_run, tmp_path, monkeypat
     assert _events(active_run)[-1]["event_type"] == expected_event
 
 
+def test_cache_hit_blob_comes_from_returned_frame_not_reopened_path(
+    active_run, tmp_path, monkeypatch
+):
+    lake = tmp_path / "lake"
+    monkeypatch.setattr(cache, "LAKE", lake)
+    path = cache.lake_path("daily", {"trade_date": "20260825"})
+    cache._atomic_write(path, _daily(10.5))
+    original_finish = cache._finish_source_success
+
+    def replace_path_before_evidence(trace, frame, access, exact_path):
+        cache._atomic_write(path, _daily(99.0))
+        return original_finish(trace, frame, access, exact_path)
+
+    monkeypatch.setattr(cache, "_finish_source_success", replace_path_before_evidence)
+    returned = cache.get_or_fetch(
+        "daily", {"trade_date": "20260825"}, today="20260827", fetch=lambda *_: None
+    )
+
+    row = _reads(active_run)[-1]
+    captured = pd.read_parquet(blob_path(active_run.capsule, row["blob_hash"]))
+    pd.testing.assert_frame_equal(captured, returned)
+    assert captured.iloc[0]["close"] == 10.5
+
+
+def test_fetched_cached_blob_preserves_returned_named_index(active_run, tmp_path, monkeypatch):
+    monkeypatch.setattr(cache, "LAKE", tmp_path / "lake")
+    frame = _daily()
+    frame.index = pd.DatetimeIndex(["2026-08-25T00:00:00Z"], name="trade_ts")
+
+    returned = cache.get_or_fetch(
+        "daily", {"trade_date": "20260825"}, today="20260827", fetch=lambda *_: frame
+    )
+
+    row = _reads(active_run)[-1]
+    captured = pd.read_parquet(blob_path(active_run.capsule, row["blob_hash"]))
+    pd.testing.assert_frame_equal(captured, returned)
+
+
+def test_fetch_return_and_blob_share_copy_isolated_from_producer_mutation(
+    active_run, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(cache, "LAKE", tmp_path / "lake")
+    producer_frame = _daily(10.5)
+    original_finish = cache._finish_source_success
+
+    def mutate_producer_before_evidence(trace, stable_frame, access, path):
+        producer_frame.loc[:, "close"] = 99.0
+        return original_finish(trace, stable_frame, access, path)
+
+    monkeypatch.setattr(cache, "_finish_source_success", mutate_producer_before_evidence)
+    returned = cache.get_or_fetch(
+        "daily",
+        {"trade_date": "20260825"},
+        today="20260827",
+        fetch=lambda *_: producer_frame,
+    )
+
+    row = _reads(active_run)[-1]
+    captured = pd.read_parquet(blob_path(active_run.capsule, row["blob_hash"]))
+    assert producer_frame.iloc[0]["close"] == 99.0
+    assert returned.iloc[0]["close"] == 10.5
+    pd.testing.assert_frame_equal(captured, returned)
+
+
 def test_get_or_fetch_records_contract_exception(active_run, tmp_path, monkeypatch):
     monkeypatch.setattr(cache, "LAKE", tmp_path / "lake")
     with pytest.raises(DataContractError):
@@ -246,7 +312,8 @@ def test_hostile_column_hash_failure_never_changes_successful_return(active_run)
         "stock_zh_a_spot_em", {}, today="20260827", fetch=lambda *_: frame
     )
 
-    assert out is frame
+    assert out.iloc[0, 0] == frame.iloc[0, 0]
+    assert out.columns[0] is frame.columns[0]
     gap = json.loads(
         (active_run.capsule / "lineage/evidence_gaps.jsonl").read_text(encoding="utf-8")
     )
@@ -304,7 +371,7 @@ def test_any_success_evidence_failure_preserves_exact_dataframe(
         "stock_zh_a_spot_em", {}, today="20260827", fetch=lambda *_: frame
     )
 
-    assert out is frame
+    pd.testing.assert_frame_equal(out, frame)
     assert (active_run.capsule / "lineage/evidence_gaps.jsonl").is_file() or any(
         row["event_type"] == "EVIDENCE_MISSING" for row in _events(active_run)
     )
@@ -466,6 +533,96 @@ def test_trace_persistence_failure_does_not_replace_success_or_double_terminal(
     assert terminals[0]["event_type"] == "SOURCE_FETCHED"
     assert terminals[0]["payload"]["evidence_complete"] is False
     assert (active_run.capsule / "lineage/evidence_gaps.jsonl").is_file()
+
+
+def test_manifest_never_calls_event_append_failure_complete(active_run, monkeypatch):
+    import autoresearch.trace.source_lineage as lineage
+
+    original_append = lineage.append_event
+
+    def fail_source_event(*args, **kwargs):
+        if str(kwargs.get("event_type", "")).startswith("SOURCE_"):
+            raise OSError("source event unavailable")
+        return original_append(*args, **kwargs)
+
+    monkeypatch.setattr(lineage, "append_event", fail_source_event)
+    frame = pd.DataFrame({"x": [1]})
+    returned = cache.get_or_fetch(
+        "stock_zh_a_spot_em", {}, today="20260827", fetch=lambda *_: frame
+    )
+    pd.testing.assert_frame_equal(returned, frame)
+    scan = active_run.staging
+    scan.mkdir(parents=True, exist_ok=True)
+
+    doc, reason = retention._read_exact_manifest(scan)
+
+    assert reason == ""
+    assert doc["n_total_reads"] == 1
+    assert doc["n_incomplete_reads"] == 1
+    assert doc["n_missing_source_events"] == 1
+    assert doc["n_evidence_gaps"] == 1
+
+
+def test_invalid_explicit_run_binding_warns_and_writes_emergency_gap(
+    tmp_path, monkeypatch, capfd
+):
+    import autoresearch.trace.source_lineage as lineage
+
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    monkeypatch.setattr(ws, "context_root", lambda: tmp_path / "context_codex")
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", "../../wrong")
+    monkeypatch.setattr(cache, "LAKE", tmp_path / "lake")
+    synced = []
+    real_fsync = lineage._fsync_directory
+
+    def record_fsync(path):
+        synced.append(Path(path))
+        real_fsync(path)
+
+    monkeypatch.setattr(lineage, "_fsync_directory", record_fsync)
+    frame = pd.DataFrame({"x": [1]})
+
+    returned = cache.get_or_fetch(
+        "stock_zh_a_spot_em", {}, today="20260827", fetch=lambda *_: frame
+    )
+
+    pd.testing.assert_frame_equal(returned, frame)
+    assert "source lineage evidence incomplete" in capfd.readouterr().err
+    emergency = tmp_path / "context_codex/scan_runs/_evidence_gaps/source_lineage.jsonl"
+    rows = [json.loads(line) for line in emergency.read_text(encoding="utf-8").splitlines()]
+    assert rows[-1]["reason"] == "invalid_active_run_binding"
+    assert rows[-1]["error_type"] == "ValueError"
+    assert "../../wrong" not in emergency.read_text(encoding="utf-8")
+    assert {
+        tmp_path,
+        tmp_path / "context_codex",
+        tmp_path / "context_codex/scan_runs",
+        emergency.parent,
+    }.issubset(set(synced))
+
+
+def test_lineage_directory_creation_fsync_failure_preserves_business_result(
+    active_run, monkeypatch, capfd
+):
+    import autoresearch.trace.source_lineage as lineage
+
+    real_fsync = lineage._fsync_directory
+
+    def fail_capsule_parent(path):
+        if Path(path) == active_run.capsule:
+            raise OSError("directory fsync failed")
+        return real_fsync(path)
+
+    monkeypatch.setattr(lineage, "_fsync_directory", fail_capsule_parent)
+    frame = pd.DataFrame({"x": [1]})
+    returned = cache.get_or_fetch(
+        "stock_zh_a_spot_em", {}, today="20260827", fetch=lambda *_: frame
+    )
+
+    pd.testing.assert_frame_equal(returned, frame)
+    stderr = capfd.readouterr().err
+    assert "directory fsync failed" not in stderr
+    assert any(row["event_type"] == "EVIDENCE_MISSING" for row in _events(active_run))
 
 
 def test_lineage_append_never_follows_existing_reads_symlink(active_run, tmp_path):

@@ -40,11 +40,15 @@ def _secure_directory(root: Path, parts: tuple[str, ...]) -> Path:
     current = root
     for part in parts:
         candidate = current / part
+        created = False
         try:
             info = candidate.lstat()
         except FileNotFoundError:
-            with contextlib.suppress(FileExistsError):
+            try:
                 candidate.mkdir(mode=0o700)
+                created = True
+            except FileExistsError:
+                pass
             info = candidate.lstat()
         if stat.S_ISLNK(info.st_mode):
             raise ValueError(f"blob directory contains a symlink: {candidate}")
@@ -54,6 +58,8 @@ def _secure_directory(root: Path, parts: tuple[str, ...]) -> Path:
             candidate.resolve(strict=True).relative_to(resolved_root)
         except ValueError as exc:
             raise ValueError(f"blob directory escapes capsule: {candidate}") from exc
+        if created:
+            _fsync_directory(current)
         current = candidate
     return current
 
@@ -238,7 +244,7 @@ def dataframe_bytes(frame: pd.DataFrame) -> bytes:
     """Serialize a validated frame with stable parquet writer options."""
     if not isinstance(frame, pd.DataFrame):
         raise TypeError("frame must be a pandas DataFrame")
-    table = pa.Table.from_pandas(frame, preserve_index=False)
+    table = pa.Table.from_pandas(frame, preserve_index=True)
     stream = io.BytesIO()
     pq.write_table(
         table,

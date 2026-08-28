@@ -6,8 +6,10 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 
+import pandas as pd
 import pytest
 
 from autoresearch.common import workspace as ws
@@ -365,16 +367,25 @@ def test_lake_manifest_missing_lake_is_not_an_error(tmp_path):
 def test_write_lake_manifest_derives_exact_reads_from_active_capsule(tmp_path):
     workspace = tmp_path / "scan_runs" / "20260827T010203456789Z"
     scan = workspace / "staging" / "2026-08-27"
-    reads = workspace / "capsule" / "lineage" / "reads.jsonl"
+    capsule = workspace / "capsule"
+    reads = capsule / "lineage" / "reads.jsonl"
     scan.mkdir(parents=True)
     reads.parent.mkdir(parents=True)
+    frame = pd.DataFrame({"close": [10.5]})
+    raw = retention._dataframe_bytes(frame)
+    digest = hashlib.sha256(raw).hexdigest()
+    blob = capsule / "blobs/sha256" / digest[:2] / digest
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(raw)
     rows = [
         {
             "schema_version": 1,
             "endpoint": "daily",
             "path": "lake/daily/20260825.parquet",
-            "blob_hash": "a" * 64,
-            "bytes": 123,
+            "blob_hash": digest,
+            "bytes": len(raw),
+            "rows": 1,
+            "columns_hash": retention._frame_columns_hash(frame),
             "status": "SUCCEEDED",
             "evidence_complete": True,
         },
@@ -395,7 +406,7 @@ def test_write_lake_manifest_derives_exact_reads_from_active_capsule(tmp_path):
     doc = json.loads((run / "trace/lake_manifest.json").read_text(encoding="utf-8"))
     assert doc["schema"] == "exact_reads"
     assert doc["source_mode"] == "exact_reads"
-    assert doc["files"] == {"daily/20260825": f"{'a' * 64}:123"}
+    assert doc["files"] == {"daily/20260825": f"{digest}:{len(raw)}"}
     assert doc["n_failed_reads"] == 1
 
 
@@ -516,6 +527,133 @@ def test_unreadable_lineage_falls_back_with_reason(tmp_path, monkeypatch):
     doc = json.loads((run / "trace/lake_manifest.json").read_text(encoding="utf-8"))
     assert doc["source_mode"] == "window_guess"
     assert doc["source_reason"] == "lineage_unreadable"
+
+
+def test_exact_manifest_requires_matching_source_event_and_no_gap(tmp_path, monkeypatch):
+    workspace = tmp_path / "scan_runs" / "20260827T010203456789Z"
+    scan = workspace / "staging" / "2026-08-27"
+    lineage = workspace / "capsule" / "lineage"
+    events = workspace / "capsule" / "events"
+    scan.mkdir(parents=True)
+    lineage.mkdir(parents=True)
+    events.mkdir(parents=True)
+    row = {
+        "status": "SUCCEEDED",
+        "endpoint": "daily",
+        "path": None,
+        "blob_hash": None,
+        "bytes": None,
+        "rows": 1,
+        "columns_hash": "a" * 64,
+        "evidence_complete": True,
+        "correlation_id": "source-correlation",
+    }
+    (lineage / "reads.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+    (events / "events.jsonl").write_text("", encoding="utf-8")
+    (lineage / "evidence_gaps.jsonl").write_text(
+        json.dumps({"correlation_id": "source-correlation"}) + "\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        retention,
+        "lake_manifest",
+        lambda date: {"schema_version": 1, "date": date, "files": {}, "note": "guess"},
+    )
+
+    run = tmp_path / "report"
+    retention.write_lake_manifest(scan, run)
+    doc = json.loads((run / "trace/lake_manifest.json").read_text(encoding="utf-8"))
+    assert doc["source_mode"] == "exact_reads"
+    assert doc["n_incomplete_reads"] == 1
+    assert doc["n_missing_source_events"] == 1
+    assert doc["n_evidence_gaps"] == 1
+
+
+@pytest.mark.parametrize("malformation", ["digest", "size", "content", "parquet_rows"])
+def test_malformed_blob_semantics_fall_back_without_aborting(
+    tmp_path, monkeypatch, malformation
+):
+    workspace = tmp_path / "scan_runs" / "20260827T010203456789Z"
+    scan = workspace / "staging" / "2026-08-27"
+    capsule = workspace / "capsule"
+    reads = capsule / "lineage/reads.jsonl"
+    scan.mkdir(parents=True)
+    reads.parent.mkdir(parents=True)
+    frame = pd.DataFrame({"x": [1]})
+    raw = retention._dataframe_bytes(frame)
+    digest = hashlib.sha256(raw).hexdigest()
+    blob = capsule / "blobs/sha256" / digest[:2] / digest
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(raw)
+    row = {
+        "status": "SUCCEEDED",
+        "endpoint": "daily",
+        "path": None,
+        "blob_hash": digest,
+        "bytes": len(raw),
+        "rows": 1,
+        "columns_hash": retention._frame_columns_hash(frame),
+        "evidence_complete": False,
+    }
+    if malformation == "digest":
+        row["blob_hash"] = "not-a-digest"
+    elif malformation == "size":
+        row["bytes"] += 1
+    elif malformation == "content":
+        blob.write_bytes(raw + b"corrupt")
+    else:
+        row["rows"] = 2
+    reads.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    monkeypatch.setattr(
+        retention,
+        "lake_manifest",
+        lambda date: {"schema_version": 1, "date": date, "files": {}, "note": "guess"},
+    )
+
+    run = tmp_path / "report"
+    assert retention.write_lake_manifest(scan, run) == 0
+    doc = json.loads((run / "trace/lake_manifest.json").read_text(encoding="utf-8"))
+    assert doc["source_mode"] == "window_guess"
+    assert doc["source_reason"] == "lineage_unreadable"
+
+
+def test_exact_manifest_deduplicates_repeated_path_content_versions(tmp_path):
+    workspace = tmp_path / "scan_runs" / "20260827T010203456789Z"
+    scan = workspace / "staging" / "2026-08-27"
+    capsule = workspace / "capsule"
+    reads = capsule / "lineage/reads.jsonl"
+    scan.mkdir(parents=True)
+    reads.parent.mkdir(parents=True)
+    versions = []
+    for value in (1, 2):
+        frame = pd.DataFrame({"x": [value]})
+        raw = retention._dataframe_bytes(frame)
+        digest = hashlib.sha256(raw).hexdigest()
+        blob = capsule / "blobs/sha256" / digest[:2] / digest
+        blob.parent.mkdir(parents=True, exist_ok=True)
+        blob.write_bytes(raw)
+        versions.append((digest, len(raw), retention._frame_columns_hash(frame)))
+    rows = []
+    for digest, size, columns_hash in (
+        versions[0], versions[1], versions[1], versions[0]
+    ):
+        rows.append(
+            {
+                "status": "SUCCEEDED",
+                "endpoint": "daily",
+                "path": "lake/daily/20260825.parquet",
+                "blob_hash": digest,
+                "bytes": size,
+                "rows": 1,
+                "columns_hash": columns_hash,
+                "evidence_complete": False,
+            }
+        )
+    reads.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+    doc, reason = retention._read_exact_manifest(scan)
+    assert reason == ""
+    assert doc["n_files"] == 2
+    assert len(doc["files"]) == 2
 
 
 def test_write_lake_manifest_falls_back_to_labeled_window_guess(tmp_path, monkeypatch):

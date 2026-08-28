@@ -22,6 +22,10 @@ def _put_blob_process(args: tuple[str, bytes]) -> str:
     return put_bytes(Path(root), payload)
 
 
+def _dataframe_bytes_process(frame: pd.DataFrame) -> bytes:
+    return dataframe_bytes(frame)
+
+
 def test_blob_store_deduplicates_identical_content_and_sets_private_mode(tmp_path):
     first = put_bytes(tmp_path, b"same")
     second = put_bytes(tmp_path, b"same")
@@ -106,6 +110,66 @@ def test_dataframe_parquet_serialization_is_stable_and_preserves_schema(tmp_path
     digest = put_dataframe(tmp_path, frame)
     restored = pd.read_parquet(blob_path(tmp_path, digest))
     pd.testing.assert_frame_equal(restored, frame)
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        pd.DataFrame(
+            {"value": [1, 2]},
+            index=pd.DatetimeIndex(
+                ["2026-08-27T01:00:00Z", "2026-08-28T01:00:00Z"],
+                name="observed_at",
+            ),
+        ),
+        pd.DataFrame(
+            {"value": [1, 2]},
+            index=pd.MultiIndex.from_arrays(
+                [["600000.SH", "000001.SZ"], [1, 2]],
+                names=["ts_code", "rank"],
+            ),
+        ),
+    ],
+)
+def test_dataframe_parquet_preserves_named_index_cross_process(tmp_path, frame):
+    local = dataframe_bytes(frame)
+    with get_context("spawn").Pool(1) as pool:
+        remote = pool.apply(_dataframe_bytes_process, (frame,))
+
+    assert remote == local
+    digest = put_dataframe(tmp_path, frame)
+    restored = pd.read_parquet(blob_path(tmp_path, digest))
+    pd.testing.assert_frame_equal(restored, frame)
+
+
+def test_blob_creation_fsyncs_every_new_directory_parent(tmp_path, monkeypatch):
+    import autoresearch.trace.blobs as blobs
+
+    synced = []
+    real_fsync = blobs._fsync_directory
+
+    def record(path):
+        synced.append(Path(path))
+        real_fsync(path)
+
+    monkeypatch.setattr(blobs, "_fsync_directory", record)
+    put_bytes(tmp_path, b"durable")
+
+    assert tmp_path in synced
+    assert tmp_path / "blobs" in synced
+    assert tmp_path / "blobs/sha256" in synced
+
+
+def test_blob_directory_fsync_failure_is_explicit(tmp_path, monkeypatch):
+    import autoresearch.trace.blobs as blobs
+
+    monkeypatch.setattr(
+        blobs,
+        "_fsync_directory",
+        lambda *_: (_ for _ in ()).throw(OSError("fsync failed")),
+    )
+    with pytest.raises(OSError, match="fsync failed"):
+        put_bytes(tmp_path, b"not claimed durable")
 
 
 def test_blob_path_rejects_non_digest_and_capsule_root_symlink(tmp_path):

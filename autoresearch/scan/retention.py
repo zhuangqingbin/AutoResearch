@@ -40,18 +40,24 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import shutil
+import stat
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 from autoresearch.common import workspace as ws
-from autoresearch.trace.atomic import atomic_write_json
+from autoresearch.trace.atomic import atomic_write_json, canonical_json
+from autoresearch.trace.blobs import dataframe_bytes
 
 MANIFEST_NAME = "MANIFEST.sha256"
 #: 镜像时跳过的目录名(锁/缓存,不是现场)
 SKIP_DIRS = frozenset({"_sem", "__pycache__", ".omc"})
 #: 镜像时跳过的文件后缀(半截写入/锁文件)
 SKIP_SUFFIXES = (".lock", ".tmp")
+_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$", re.ASCII)
 
 #: prompt 本体 —— 它们才是 agent 真正执行的指令,run 里原先只有一个 `git_sha` 代表它们。
 #: 仓内相对路径;缺文件静默跳过(不同引擎/精简 checkout 下可能不全)。
@@ -331,36 +337,175 @@ def _lineage_path(scan_dir: Path) -> Path | None:
     return next((path for path in candidates if path.is_file()), None)
 
 
+def _dataframe_bytes(frame: pd.DataFrame) -> bytes:
+    return dataframe_bytes(frame)
+
+
+def _frame_columns_hash(frame: pd.DataFrame) -> str:
+    columns = [
+        {"name": str(name), "dtype": str(dtype)}
+        for name, dtype in zip(frame.columns, frame.dtypes, strict=True)
+    ]
+    return hashlib.sha256(canonical_json(columns).encode("utf-8")).hexdigest()
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        row = json.loads(line)
+        if not isinstance(row, dict):
+            raise ValueError("jsonl row must be an object")
+        rows.append(row)
+    return rows
+
+
+def _require_digest(value: object, *, field: str) -> str:
+    if type(value) is not str or not _DIGEST_RE.fullmatch(value):
+        raise ValueError(f"{field} must be a full lowercase SHA-256 digest")
+    return value
+
+
+def _validate_lineage_blob(capsule: Path, row: dict) -> None:
+    digest = _require_digest(row.get("blob_hash"), field="blob_hash")
+    size = row.get("bytes")
+    rows = row.get("rows")
+    columns_hash = _require_digest(row.get("columns_hash"), field="columns_hash")
+    if type(size) is not int or size < 0:
+        raise ValueError("bytes must be a non-negative integer")
+    if type(rows) is not int or rows < 0:
+        raise ValueError("rows must be a non-negative integer")
+    target = capsule / "blobs" / "sha256" / digest[:2] / digest
+    info = target.lstat()
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise ValueError("blob must be a regular file")
+    target.resolve(strict=True).relative_to(capsule.resolve(strict=True))
+    if info.st_size != size or sha256_file(target) != digest:
+        raise ValueError("blob size or digest mismatch")
+    frame = pd.read_parquet(target)
+    if len(frame) != rows or _frame_columns_hash(frame) != columns_hash:
+        raise ValueError("blob dataframe semantics mismatch")
+
+
+def _row_hash(row: dict) -> str:
+    return hashlib.sha256(canonical_json(row).encode("utf-8")).hexdigest()
+
+
+def _source_event_keys(events: list[dict]) -> set[tuple[str, str | None]]:
+    keys: set[tuple[str, str | None]] = set()
+    for event in events:
+        if event.get("event_type") not in {"SOURCE_READ", "SOURCE_FETCHED", "SOURCE_FAILED"}:
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, dict) or payload.get("lineage_persisted") is not True:
+            continue
+        digest = payload.get("lineage_row_hash")
+        if type(digest) is not str or not _DIGEST_RE.fullmatch(digest):
+            continue
+        correlation = payload.get("correlation_id")
+        keys.add((digest, correlation if type(correlation) is str and correlation else None))
+    return keys
+
+
+def _gap_keys(gaps: list[dict]) -> set[tuple[str | None, str | None]]:
+    keys: set[tuple[str | None, str | None]] = set()
+    for gap in gaps:
+        digest = gap.get("lineage_row_hash")
+        normalized_digest = (
+            digest if type(digest) is str and _DIGEST_RE.fullmatch(digest) else None
+        )
+        correlation = gap.get("correlation_id")
+        normalized_correlation = (
+            correlation if type(correlation) is str and correlation else None
+        )
+        if normalized_digest is not None or normalized_correlation is not None:
+            keys.add((normalized_digest, normalized_correlation))
+    return keys
+
+
 def _read_exact_manifest(scan_dir: Path) -> tuple[dict | None, str]:
     source = _lineage_path(scan_dir)
     if source is None:
         return None, "lineage_absent"
-    rows: list[dict] = []
     try:
-        for line in source.read_text(encoding="utf-8").splitlines():
-            row = json.loads(line)
-            if not isinstance(row, dict):
-                return None, "lineage_unreadable"
-            rows.append(row)
-    except (OSError, UnicodeError, json.JSONDecodeError):
+        rows = _read_jsonl(source)
+        capsule = source.parent.parent
+        event_path = capsule / "events/events.jsonl"
+        gap_path = source.parent / "evidence_gaps.jsonl"
+        events_present = event_path.is_file()
+        events = _read_jsonl(event_path) if events_present else []
+        gaps = _read_jsonl(gap_path) if gap_path.is_file() else []
+        event_keys = _source_event_keys(events)
+        gap_keys = _gap_keys(gaps)
+
+        effective_complete: list[bool] = []
+        missing_events = 0
+        matching_gaps = 0
+        for row in rows:
+            status = row.get("status")
+            if status not in {"SUCCEEDED", "FAILED"}:
+                raise ValueError("invalid source status")
+            endpoint = row.get("endpoint")
+            if type(endpoint) is not str or not endpoint:
+                raise ValueError("endpoint must be non-empty")
+            if type(row.get("evidence_complete")) is not bool:
+                raise ValueError("evidence_complete must be boolean")
+            blob_hash = row.get("blob_hash")
+            if status == "SUCCEEDED" and blob_hash is not None:
+                _validate_lineage_blob(capsule, row)
+            elif status == "SUCCEEDED" and row.get("bytes") is not None:
+                raise ValueError("successful source row without blob cannot record bytes")
+            elif status == "FAILED" and any(
+                row.get(field) is not None
+                for field in ("blob_hash", "bytes", "rows", "columns_hash")
+            ):
+                raise ValueError("failed source row cannot reference successful content")
+
+            digest = _row_hash(row)
+            correlation = row.get("correlation_id")
+            if correlation is not None and (type(correlation) is not str or not correlation):
+                raise ValueError("correlation_id must be a non-empty string")
+            has_event = any(
+                event_digest == digest
+                and (correlation is None or event_correlation == correlation)
+                for event_digest, event_correlation in event_keys
+            )
+            has_gap = any(
+                gap_digest == digest
+                or (correlation is not None and gap_correlation == correlation)
+                for gap_digest, gap_correlation in gap_keys
+            )
+            if events_present and not has_event:
+                missing_events += 1
+            if has_gap:
+                matching_gaps += 1
+            complete = row["evidence_complete"] and not has_gap
+            if events_present:
+                complete = complete and has_event
+            if status == "SUCCEEDED" and blob_hash is None:
+                complete = False
+            effective_complete.append(complete)
+    except BaseException:
         return None, "lineage_unreadable"
 
     succeeded = [row for row in rows if row.get("status") == "SUCCEEDED"]
     failed = [row for row in rows if row.get("status") == "FAILED"]
-    incomplete = [row for row in rows if row.get("evidence_complete") is not True]
+    incomplete = [row for row, complete in zip(rows, effective_complete, strict=True) if not complete]
     no_blob = [row for row in succeeded if not row.get("blob_hash")]
     blobbed = [row for row in succeeded if row.get("blob_hash")]
 
     files: dict[str, str] = {}
-    for ordinal, row in enumerate(blobbed, start=1):
+    versions: dict[str, dict[str, str]] = {}
+    for row in blobbed:
         raw_path = row.get("path")
         endpoint = str(row.get("endpoint") or "unknown")
         stem = Path(str(raw_path)).stem if raw_path else f"blob-{str(row['blob_hash'])[:16]}"
         base_key = f"{endpoint}/{stem}"
-        key = base_key
         value = f"{row['blob_hash']}:{int(row.get('bytes') or 0)}"
-        if key in files and files[key] != value:
-            key = f"{base_key}#{ordinal}"
+        known = versions.setdefault(base_key, {})
+        if value in known:
+            continue
+        key = base_key if not known else f"{base_key}#v{len(known) + 1}"
+        known[value] = key
         files[key] = value
     return {
         "schema_version": 2,
@@ -373,6 +518,8 @@ def _read_exact_manifest(scan_dir: Path) -> tuple[dict | None, str]:
         "n_failed_reads": len(failed),
         "n_incomplete_reads": len(incomplete),
         "n_no_blob_reads": len(no_blob),
+        "n_missing_source_events": missing_events,
+        "n_evidence_gaps": matching_gaps,
         "files": files,
         "note": "由本次实际成功 source reads 派生；不是窗口猜测。",
     }, ""
