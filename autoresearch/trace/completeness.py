@@ -134,22 +134,39 @@ def build_expected(profile: RunProfile) -> ExpectedEvidence:
                     reason=f"run stopped at {profile.last_stage!r} before {stage!r}",
                 )
             )
+    from autoresearch.scan.run_profile import ROLE_STAGES
+
     for role in (*profile.agent_roles, *sorted(profile.conditional_roles)):
         expected = profile.role_expected(role)
         conditional = role in profile.conditional_roles
+        stage = ROLE_STAGES.get(role)
+        # 模式本身就没有这条腿 = NOT_EXPECTED;有这条腿但没跑到 = NOT_REACHED。
+        unreached = (
+            stage is not None
+            and stage in profile.expected_stages
+            and not profile.stage_reached(stage)
+        )
         items.append(
             ExpectedItem(
                 key=f"agent:{role}",
                 selector=f"agents/{role}/*",
                 source="agent_index",
-                disposition=REQUIRED if expected and not conditional else NOT_EXPECTED,
+                disposition=(
+                    REQUIRED
+                    if expected and not conditional
+                    else (NOT_REACHED if unreached else NOT_EXPECTED)
+                ),
                 reason=(
                     "role is dispatched in this mode"
                     if expected and not conditional
                     else (
-                        "conditional leg: only owed when triggered"
-                        if conditional
-                        else "role is not dispatched in this mode"
+                        f"stage {stage!r} was never reached"
+                        if unreached
+                        else (
+                            "conditional leg: only owed when triggered"
+                            if conditional
+                            else "role is not dispatched in this mode"
+                        )
                     )
                 ),
             )
@@ -269,6 +286,13 @@ def evaluate(
     }
     agents = agent_coverage(root)
     sources = source_coverage(root)
+    # 一个被派发过、却没有 transcript 的 agent invocation 就是 GONE ——
+    # 设计稿 §8.5 规则 4:LLM run 里出现 GONE/AMBIGUOUS,completeness_ok 必须为 false。
+    # 只报覆盖率而不进结论,等于把这条规则写在文档里、不写在代码里。
+    if not agents["ok"]:
+        missing_required.append(
+            f"agents/index.json: {agents['missing']} reached invocation(s) without a transcript"
+        )
     return {
         "schema_version": SCHEMA_VERSION,
         "completeness_ok": not missing_required,
@@ -339,6 +363,10 @@ def write_completeness(
     durability: str = "PENDING",
 ) -> dict:
     root = Path(capsule)
+    # coverage.json 必须在**评估之前**落盘:它自己就是 expected 清单里的一条
+    # REQUIRED 规则,评估跑在它前面就会把「还没写」判成「缺失」——检查者跑在
+    # 被检查者前面,永远差一拍。
+    atomic_write_json(root / "lineage/coverage.json", source_coverage(root))
     result = evaluate(root, profile, durability=durability)
     atomic_write_json(root / "verification/completeness.json", result)
     return result

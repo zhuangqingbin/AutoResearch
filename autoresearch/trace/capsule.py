@@ -2209,12 +2209,26 @@ def verify_archive(archive: Path | str, root_hash: str | None = None) -> dict:
 
 
 def _last_reliable_checkpoint(capsule: Path) -> str | None:
-    best: str | None = None
-    for result in sorted((capsule / "stages").glob("*/attempt-*/result.json")):
-        payload = json.loads(result.read_text(encoding="utf-8"))
-        if payload.get("status") in {"SUCCEEDED", "DEGRADED"}:
-            best = payload.get("stage")
-    return best
+    """The newest stage that actually completed — ordered by time, not by name.
+
+    Globbing ``stages/*`` yields alphabetical order, where ``prelude`` sorts
+    after ``gate4``; a run through the whole pipeline would then report that it
+    stopped at prelude.  The attempt's own ``created_at`` is the only ordering
+    that means anything here.
+    """
+    best: tuple[str, str] | None = None
+    for result in (capsule / "stages").glob("*/attempt-*/result.json"):
+        try:
+            payload = json.loads(result.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if payload.get("status") not in {"SUCCEEDED", "DEGRADED"}:
+            continue
+        stamp = str(payload.get("created_at") or "")
+        stage = payload.get("stage")
+        if stage and (best is None or stamp > best[0]):
+            best = (stamp, str(stage))
+    return best[1] if best else None
 
 
 def _freeze_tree(final_path: Path) -> None:
@@ -2234,6 +2248,32 @@ def _thaw_tree(path: Path) -> None:
             os.chmod(item, 0o755 if item.is_dir() else 0o644)
     with contextlib.suppress(OSError):
         os.chmod(path, 0o755)
+
+
+def _write_capsule_manifest(
+    handle: RunHandle,
+    *,
+    final_path: Path,
+    business_status: BusinessStatus,
+    evidence_status: EvidenceStatus,
+    replayability: Replayability,
+    checkpoint_name: str | None,
+) -> Path:
+    return atomic_write_json(
+        handle.capsule / "capsule.json",
+        {
+            "capsule_schema_version": CAPSULE_SCHEMA_VERSION,
+            "run_id": handle.run_id,
+            "analysis_date": handle.analysis_date,
+            "engine": handle.engine,
+            "business_status": business_status.value,
+            "evidence_status": evidence_status.value,
+            "replayability": replayability.value,
+            "contract_hash": handle.contract.contract_hash,
+            "final_path": str(final_path),
+            "last_reliable_checkpoint": checkpoint_name,
+        },
+    )
 
 
 def _write_usage(handle: RunHandle) -> None:
@@ -2330,7 +2370,16 @@ def finalize(
     materialize_agent_index(handle.run_id)
     _write_usage(handle)
 
-    # 2. expected / completeness / replay
+    # 2. 阶段产物快照:capsule 必须自带业务产物,否则重放没有比对基准、
+    #    归档也不是自足的(设计稿 §7 products/)。
+    if handle.staging.is_dir():
+        shutil.copytree(
+            handle.staging,
+            handle.capsule / "products/staging",
+            dirs_exist_ok=True,
+        )
+
+    # 3. expected / completeness / replay
     resolved_profile = profile or scan_profile(
         business_status=resolved_status.value,
         last_stage=_last_reliable_checkpoint(handle.capsule),
@@ -2355,6 +2404,16 @@ def finalize(
                 "error": json.loads(canonical_json(redact_value(dict(error or {})).value)),
             },
         )
+    # capsule.json 也是一条 REQUIRED 规则,所以先写一版 PENDING 再评估,
+    # 评估完再把终态证据状态覆写回去(两次都在 MANIFEST 之前,清单只见终稿)。
+    _write_capsule_manifest(
+        handle,
+        final_path=final_path,
+        business_status=resolved_status,
+        evidence_status=EvidenceStatus.PENDING,
+        replayability=Replayability.NONE,
+        checkpoint_name=checkpoint_name,
+    )
     evidence = completeness_mod.write_completeness(
         handle.capsule, resolved_profile, durability="PENDING"
     )
@@ -2369,21 +2428,14 @@ def finalize(
         else EvidenceStatus.EVIDENCE_INCOMPLETE
     )
 
-    # 3. capsule.json + terminal state
-    atomic_write_json(
-        handle.capsule / "capsule.json",
-        {
-            "capsule_schema_version": CAPSULE_SCHEMA_VERSION,
-            "run_id": handle.run_id,
-            "analysis_date": handle.analysis_date,
-            "engine": handle.engine,
-            "business_status": resolved_status.value,
-            "evidence_status": evidence_status.value,
-            "replayability": replayability.value,
-            "contract_hash": handle.contract.contract_hash,
-            "final_path": str(final_path),
-            "last_reliable_checkpoint": checkpoint_name,
-        },
+    # 4. capsule.json 终稿 + terminal state
+    _write_capsule_manifest(
+        handle,
+        final_path=final_path,
+        business_status=resolved_status,
+        evidence_status=evidence_status,
+        replayability=replayability,
+        checkpoint_name=checkpoint_name,
     )
     append_event(
         handle.capsule / "events/events.jsonl",
@@ -2411,7 +2463,7 @@ def finalize(
 
     published = _publish_capsule(handle, final_path)
 
-    # 4-6. MANIFEST → root → detached ROOT
+    # 5-7. MANIFEST → root → detached ROOT
     durability, archive_path, archive_hash, archive_reason = "LOCAL_ONLY", None, None, None
     try:
         manifest_bytes = write_manifest(final_path).read_bytes()
@@ -2435,7 +2487,7 @@ def finalize(
                 "archive_hash": None,
             },
         )
-        # 7. archive outside the report directory
+        # 8. archive outside the report directory
         archive_path = build_archive(final_path, handle.run_id)
         archive_hash = sha256_file(archive_path)
     except Exception as exc:  # noqa: BLE001 - the business report survives this
@@ -2488,7 +2540,7 @@ def finalize(
             },
         )
 
-    # 8. one locked ledger revision
+    # 9. one locked ledger revision
     append_ledger_revision(
         {
             "schema_version": CAPSULE_SCHEMA_VERSION,
@@ -2506,7 +2558,7 @@ def finalize(
         }
     )
 
-    # 9. freeze, then 10. reopen and verify
+    # 10. freeze, then 11. reopen and verify
     _freeze_tree(final_path)
     verify(handle.run_id, final_path=final_path)
     return FinalizationResult(

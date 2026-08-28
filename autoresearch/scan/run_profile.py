@@ -40,6 +40,19 @@ SCAN_AGENT_ROLES: tuple[str, ...] = (
 # about the run, not a hole in the evidence.
 CONDITIONAL_AGENT_ROLES: frozenset[str] = frozenset({"l3-repair", "l4-ensemble"})
 
+# Which stage each role belongs to.  A role whose stage was never reached is
+# NOT_EXPECTED — a run that died at L3 does not owe L4 transcripts, and calling
+# them "missing" would make every failed run look like an evidence failure too.
+ROLE_STAGES: dict[str, str] = {
+    "strategist": "prelude",
+    "sector-brief": "l3",
+    "l3-rank": "l3",
+    "l3-repair": "l3",
+    "l4-card": "l4",
+    "l4-intel": "l4",
+    "l4-ensemble": "l4",
+}
+
 # A sentinel (no-finalist) run never dispatches per-stock work.
 SENTINEL_SKIPPED_STAGES: frozenset[str] = frozenset({"l4"})
 SENTINEL_SKIPPED_ROLES: frozenset[str] = frozenset(
@@ -99,6 +112,9 @@ class RunProfile:
 
     def role_expected(self, role: str) -> bool:
         if self.mode == "SENTINEL_EMPTY" and role in SENTINEL_SKIPPED_ROLES:
+            return False
+        stage = ROLE_STAGES.get(role)
+        if stage is not None and not self.stage_reached(stage):
             return False
         return role in self.agent_roles
 
@@ -164,6 +180,7 @@ __all__ = [
     "CONDITIONAL_AGENT_ROLES",
     "MODES",
     "REPLAYABLE_STAGES",
+    "ROLE_STAGES",
     "SCAN_AGENT_ROLES",
     "SCAN_STAGES",
     "SENTINEL_SKIPPED_ROLES",
