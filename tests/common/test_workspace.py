@@ -47,6 +47,7 @@ def test_bad_explicit_engine_raises():
 
 
 def test_roots_follow_engine(monkeypatch):
+    monkeypatch.delenv("AUTORESEARCH_RUN_ID", raising=False)
     monkeypatch.setattr(ws, "ENGINE", "claude")
     assert ws.context_root() == Path("context_claude")
     assert ws.reports_root() == Path("reports_claude")
@@ -54,6 +55,93 @@ def test_roots_follow_engine(monkeypatch):
     monkeypatch.setattr(ws, "ENGINE", "codex")
     assert ws.context_root() == Path("context_codex")
     assert ws.reports_root() == Path("reports_codex")
+
+
+def test_active_run_scopes_scan_workspace(monkeypatch):
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", "20260827T010203456789Z")
+
+    assert ws.active_run_id() == "20260827T010203456789Z"
+    assert ws.scan_run_root() == Path(
+        "context_codex/scan_runs/20260827T010203456789Z")
+    assert ws.scan_root() == Path(
+        "context_codex/scan_runs/20260827T010203456789Z/staging")
+    assert ws.scan_dir("2026-08-27") == Path(
+        "context_codex/scan_runs/20260827T010203456789Z/staging/2026-08-27")
+    assert ws.scan_input_dir("2026-08-27") == Path(
+        "context_codex/scan_runs/20260827T010203456789Z/staging/2026-08-27/_external_inputs")
+    assert "claude" not in str(ws.scan_input_dir("2026-08-27"))
+
+
+@pytest.mark.parametrize("run_id", ["../x", "run/x", "latest", "20260827_0102"])
+def test_active_run_id_rejects_malformed_values(run_id):
+    with pytest.raises(ValueError, match="AUTORESEARCH_RUN_ID"):
+        ws.active_run_id({"AUTORESEARCH_RUN_ID": run_id})
+
+
+def test_scan_run_root_rejects_malformed_explicit_id():
+    with pytest.raises(ValueError, match="AUTORESEARCH_RUN_ID"):
+        ws.scan_run_root("../x")
+
+
+def test_validate_run_id_is_the_public_ascii_validation_boundary():
+    assert ws.validate_run_id("20260827T010203456789Z") == (
+        "20260827T010203456789Z"
+    )
+    with pytest.raises(ValueError, match="run_id"):
+        ws.validate_run_id("２０２６０８２７T０１０２０３４５６７８９Z")
+
+
+def test_active_run_id_rejects_unicode_digits():
+    unicode_id = "２０２６０８２７T０１０２０３４５６７８９Z"
+    with pytest.raises(ValueError, match="AUTORESEARCH_RUN_ID"):
+        ws.active_run_id({"AUTORESEARCH_RUN_ID": unicode_id})
+
+
+def test_scan_run_root_rejects_explicit_empty_id_even_with_active_env(monkeypatch):
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", "20260827T010203456789Z")
+    with pytest.raises(ValueError, match="AUTORESEARCH_RUN_ID"):
+        ws.scan_run_root("")
+
+
+def test_empty_run_id_preserves_legacy_scan_workspace(monkeypatch):
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", "   ")
+
+    assert ws.active_run_id() is None
+    assert ws.scan_root() == Path("context_codex/scan")
+    assert ws.scan_dir("2026-08-27") == Path("context_codex/scan/2026-08-27")
+    assert ws.scan_input_dir("2026-08-27") == Path("context_codex")
+    assert "claude" not in str(ws.scan_dir("2026-08-27"))
+
+
+def test_scan_run_root_requires_a_run_id(monkeypatch):
+    monkeypatch.delenv("AUTORESEARCH_RUN_ID", raising=False)
+    with pytest.raises(ValueError, match="缺 AUTORESEARCH_RUN_ID"):
+        ws.scan_run_root()
+
+
+@pytest.mark.parametrize(
+    "analysis_date",
+    [
+        "/tmp/x",
+        "../../escape",
+        "../2026-08-27",
+        "2026/08/27",
+        "２０２６-０８-２７",
+        "2026-8-7",
+        "2026-13-01",
+        "2026-02-30",
+    ],
+)
+def test_scan_dir_rejects_unsafe_or_invalid_dates(monkeypatch, analysis_date):
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", "20260827T010203456789Z")
+    with pytest.raises(ValueError, match="scan date"):
+        ws.scan_dir(analysis_date)
+
+
+def test_validate_scan_date_returns_exact_valid_ascii_date():
+    assert ws.validate_scan_date("2026-08-27") == "2026-08-27"
 
 
 def test_lake_is_engine_independent(monkeypatch):

@@ -8,13 +8,26 @@ export const meta = {
   ],
 }
 
-// args: {date, code, name, sector, cfg} —— cfg 透传 scan_config 的 agents/l4_intel 块(缺省 = 现硬编码值,parity)。
+// args: {date, run_id, code, attempt, name, sector, cfg} —— attempt 由 scan handoff/重试调度权威下发;
+// cfg 透传 scan_config 的 agents/l4_intel 块(缺省 = 现硬编码值,parity)。
 // 为什么每股一个 workflow(而非 scan-market.js 内批量派发):①每个 workflow 有独立并发帽,N 股真并行;
 // ②intel→card 在股内链式衔接,股间零 barrier(旧批量版全体 intel 完才派卡);③单股失败只废单股,
 // 主会话对该股单独重跑即可 —— 2026-07-14 GATE3 差 16 字节毙掉 60min/1.6M token 全流水线的教训。
 const A = (typeof args === 'string' && args ? JSON.parse(args) : args) || {}
 const { date, code } = A
-if (!date || !code) throw new Error('args.date/args.code 必填,如 {date:"2026-07-14", code:"000651"}')
+const validDate = (value) => {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  const parsed = new Date(`${value}T00:00:00.000Z`)
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value
+}
+if (!validDate(date)) throw new Error(`args.date 非法:${String(date)}`)
+const RUN_ID = A.run_id
+if (!RUN_ID) throw new Error('args.run_id 必填；沿用 scan-market 的 run_id')
+if (typeof RUN_ID !== 'string' || !/^\d{8}T\d{12}Z$/.test(RUN_ID)) throw new Error(`args.run_id 非法:${String(RUN_ID)}`)
+if (typeof code !== 'string' || !/^\d{6}$/.test(code)) throw new Error(`args.code 非法:${String(code)}`)
+if (!Number.isInteger(A.attempt) || A.attempt <= 0) {
+  throw new Error(`args.attempt 必填且必须为正整数:${String(A.attempt)}`)
+}
 const name = A.name || ''
 const sector = A.sector || '行业未知'
 const cfg = A.cfg || {}
@@ -54,14 +67,137 @@ const pinned = !!A.pinned   // dispatch-plan meta 透传;缺省 false = 现行�
 const dossierSummary = String(A.dossierSummary || '').trim()   // dispatch-plan meta 透传;缺省空 = parity(M-2:全函数防御,同款 !!A.pinned)
 // 引擎隔离根:engine 随每股 args.engine 或 cfg 透传(缺省 claude;只有 Claude 会执行本 js)
 const ENGINE = (A.engine || (A.cfg && A.cfg.engine) || 'claude')
-const SD = `context_${ENGINE}/scan/${date}`
-const R = 'uv run --no-sync python -m'
+if (!['claude', 'codex'].includes(ENGINE)) throw new Error(`args.engine 非法:${ENGINE}`)
+const SD = `context_${ENGINE}/scan_runs/${RUN_ID}/staging/${date}`
+const PY = (stage, invocation, attempt = 1, subject = null) =>
+  `AUTORESEARCH_ENGINE=${ENGINE} AUTORESEARCH_RUN_ID=${RUN_ID} ` +
+  `uv run --no-sync python -m autoresearch.trace.exec_capture --run-id ${RUN_ID} ` +
+  `--stage ${stage} --invocation-id ${invocation} --attempt ${attempt}` +
+  `${subject ? ` --subject ${subject}` : ''} -- uv run --no-sync python -m`
 const TASK_BOOK = `${SD}/_l4_tasks.json`
+let taskAttempt = A.attempt
 const CARD = { type: 'object', required: ['code', 'rating'],
   properties: { code: { type: 'string' }, rating: { type: 'string' },
     conviction: { type: 'number', minimum: 0, maximum: 100 }, proposal: { type: 'string' } } }
-const recordL4 = (errorCode = null) => agent(
-  `在仓库根目录执行:\`${R} autoresearch.scan.stock_stage l4 ${date} ${code}` +
+const rawAgent = agent
+const EVENT_HASH_SCHEMA = { type: 'string', pattern: '^[0-9a-f]{64}$' }
+const AGENT_EVENT_ROW = {
+  type: 'object', additionalProperties: false,
+  required: ['schema_version', 'seq', 'run_id', 'ts', 'engine', 'stage',
+    'invocation_id', 'attempt', 'subject', 'event_type', 'payload', 'prev_hash', 'event_hash'],
+  properties: {
+    schema_version: { type: 'integer', enum: [1] },
+    seq: { type: 'integer', minimum: 1 }, run_id: { type: 'string' },
+    ts: { type: 'string' }, engine: { type: 'string' }, stage: { type: 'string' },
+    invocation_id: { type: 'string' }, attempt: { type: 'integer', minimum: 1 },
+    subject: { type: 'string' },
+    event_type: { type: 'string', enum: ['AGENT_DISPATCHED', 'AGENT_COMPLETED', 'AGENT_FAILED'] },
+    payload: { type: 'object' }, prev_hash: EVENT_HASH_SCHEMA, event_hash: EVENT_HASH_SCHEMA,
+  },
+}
+const CONTROL_BINDING_RESULT = {
+  type: 'object', additionalProperties: false,
+  required: ['target_event_type', 'target_invocation_id', 'target_role'],
+  properties: {
+    target_event_type: { type: 'string' }, target_invocation_id: { type: 'string' },
+    target_role: { type: 'string' }, target_event_hash: EVENT_HASH_SCHEMA,
+  },
+}
+const CONTROL_EVENT_ROW = { ...AGENT_EVENT_ROW, properties: {
+  ...AGENT_EVENT_ROW.properties,
+  payload: { type: 'object', additionalProperties: false,
+    required: ['error', 'result', 'role'],
+    properties: { error: {}, result: CONTROL_BINDING_RESULT,
+      role: { type: 'string' } } },
+} }
+const AGENT_EVENT_ACK = { type: 'object', required: ['ok', 'event', 'control_events'],
+  additionalProperties: false,
+  properties: { ok: { type: 'boolean' }, event: AGENT_EVENT_ROW,
+    control_events: { type: 'array', minItems: 2, maxItems: 2,
+      items: CONTROL_EVENT_ROW } } }
+const safeAgentPart = (value) => String(value).replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '')
+// Workflow runtime 没有非 agent 的 shell primitive。trace-control 只能在获调度后的第一条
+// 精确命令里自登记；该命令原子追加 control dispatch → 目标边界 → control terminal，
+// 不递归套 tracedAgent。若它连命令都未执行，外层只可 best-effort 报警，后续完整性门报缺。
+// 每个目标 agent 固定承担两次 trace-control 调用开销(dispatch 前一次、terminal 后一次)。
+const TRACE_CONTROL_CALLS_PER_TARGET = 2
+const EVENT_HASH_RE = /^[0-9a-f]{64}$/
+const EVENT_TS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/
+const validateAgentEventAck = (ack, eventType, invocationId, role, controlInvocationId) => {
+  if (!ack || ack.ok !== true || !ack.event || !Array.isArray(ack.control_events)) {
+    throw new Error('trace-control ACK 缺 ok=true/event/control_events')
+  }
+  const completeEvent = (event) => !!event && event.schema_version === 1 &&
+    Number.isInteger(event.seq) && event.seq > 0 && EVENT_TS_RE.test(event.ts) &&
+    event.engine === ENGINE && EVENT_HASH_RE.test(event.prev_hash) &&
+    EVENT_HASH_RE.test(event.event_hash) && event.payload &&
+    typeof event.payload === 'object' && !Array.isArray(event.payload)
+  const matches = (event, expectedType, expectedInvocation, expectedRole) =>
+    completeEvent(event) && event.run_id === RUN_ID && event.stage === 'l4' &&
+    event.invocation_id === expectedInvocation && event.event_type === expectedType &&
+    event.subject === code && event.attempt === taskAttempt &&
+    event.payload && event.payload.role === expectedRole
+  if (!matches(ack.event, eventType, invocationId, role)) {
+    throw new Error('trace-control ACK 目标边界绑定不匹配')
+  }
+  const bindingMatches = (event) => event.payload.result &&
+    event.payload.result.target_event_type === eventType &&
+    event.payload.result.target_invocation_id === invocationId &&
+    event.payload.result.target_role === role
+  if (ack.control_events.length !== TRACE_CONTROL_CALLS_PER_TARGET ||
+      !matches(ack.control_events[0], 'AGENT_DISPATCHED', controlInvocationId, 'trace-control') ||
+      !matches(ack.control_events[1], 'AGENT_COMPLETED', controlInvocationId, 'trace-control') ||
+      !bindingMatches(ack.control_events[0]) || !bindingMatches(ack.control_events[1]) ||
+      !ack.control_events[1].payload.result ||
+      ack.control_events[1].payload.result.target_event_hash !== ack.event.event_hash) {
+    throw new Error('trace-control ACK 自身生命周期绑定不匹配')
+  }
+  // ACK 只证明 relay 返回结构与目标 hash 的绑定；磁盘上的 hash chain 仍是权威现场。
+  return ack
+}
+const emitAgentEvent = (eventType, invocationId, role) => {
+  const terminal = eventType === 'AGENT_FAILED'
+    ? ` --error-json '{"status":"threw"}'`
+    : ` --result-json '{"status":"${eventType === 'AGENT_DISPATCHED' ? 'queued' : 'returned'}"}'`
+  const evidenceInvocation = `agent-event-${invocationId}-${eventType.toLowerCase()}`
+  const controlInvocationId = `trace-control-${invocationId}-${eventType.toLowerCase()}`
+  return rawAgent(
+    `执行:\`${PY('l4', evidenceInvocation, taskAttempt, code)} autoresearch.trace.capsule agent-event ${RUN_ID} ${eventType} ` +
+      `--role ${role} --subject ${code} --invocation-id ${invocationId} --attempt ${taskAttempt} ` +
+      `--control-invocation-id ${controlInvocationId}${terminal}\`。` +
+      '把 stdout 最后一行 JSON 原样作为结构化返回；不要判断或增删字段。' +
+      '**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**',
+    { agentType: 'general-purpose', ...AG('gp_shell_json'),
+      label: `trace-control:${eventType}:${invocationId}`, schema: AGENT_EVENT_ACK })
+    .then((ack) => validateAgentEventAck(
+      ack, eventType, invocationId, role, controlInvocationId))
+}
+async function tracedAgent(invocationId, role, prompt, options) {
+  try {
+    await emitAgentEvent('AGENT_DISPATCHED', invocationId, role)
+  } catch (error) {
+    log(`⚠️ agent dispatch 取证失败:${invocationId}:${error && error.message ? error.message : error}`)
+  }
+  try {
+    const result = await rawAgent(prompt, options)
+    try {
+      await emitAgentEvent('AGENT_COMPLETED', invocationId, role)
+    } catch (error) {
+      log(`⚠️ agent completed 取证失败:${invocationId}:${error && error.message ? error.message : error}`)
+    }
+    return result
+  } catch (error) {
+    try {
+      await emitAgentEvent('AGENT_FAILED', invocationId, role)
+    } catch (traceError) {
+      log(`⚠️ agent failed 取证失败:${invocationId}:${traceError && traceError.message ? traceError.message : traceError}`)
+    }
+    throw error
+  }
+}
+const recordL4 = (errorCode = null) => tracedAgent(
+  `gp-shell-${code}-${taskAttempt}-stage-result-${safeAgentPart(errorCode || 'success')}`, 'gp-shell',
+  `在仓库根目录执行:\`${PY('l4', `l4-stage-${code}-attempt-${taskAttempt}`, taskAttempt, code)} autoresearch.scan.stock_stage l4 ${date} ${code}` +
   `${errorCode ? ` --error ${errorCode}` : ''}\`。只回报退出码,不要判断或解释。` +
   `**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**`,
   { agentType: 'general-purpose', ...AG('gp_shell'), label: `stage:${code}` })
@@ -69,8 +205,9 @@ const recordL4 = (errorCode = null) => agent(
 // 🚨 2026-08-05 事故(同族,见 scan-market.js:35 注释):`prepare` 子命令内含单票 slim 取数,
 // 可能跑数分钟 → harness 转后台 → haiku 壳判定"卡住"并 pkill 生产作业。同样两条药:
 // 显式告知耗时 + 禁杀纪律,model 升 sonnet(每票仅 1 次调用,代价可忽略)。
-const taskGate = (subcommand, schema, label) => agent(
-  `执行:\`if test -s ${TASK_BOOK}; then ${R} autoresearch.scan.l4_tasks ${subcommand}; ` +
+const taskGate = (subcommand, schema, label) => tracedAgent(
+  `gp-shell-${code}-${taskAttempt}-${safeAgentPart(label)}`, 'gp-shell',
+  `执行:\`if test -s ${TASK_BOOK}; then ${subcommand}; ` +
   `else echo '{"ok":true,"action":"LEGACY"}'; fi\`\n` +
   '把 stdout 最后一行 JSON 原样作为结构化返回；不要判断或增删字段。' +
   '**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**\n' +
@@ -78,7 +215,8 @@ const taskGate = (subcommand, schema, label) => agent(
   '它没卡住,它在取数;被 harness 转后台就安静等完成通知。拿不到退出码就如实回报,不要自己"修"。',
   { agentType: 'general-purpose', ...AG('gp_shell_json'), label, schema })
 // 通用确定性 CLI 壳:跑一条命令、把它打印的最后一行 JSON 原样带回(零判断)。
-const gpJson = (cmd, label, schema) => agent(
+const gpJson = (cmd, label, schema) => tracedAgent(
+  `gp-shell-${code}-${taskAttempt}-${safeAgentPart(label)}`, 'gp-shell',
   `执行:\`${cmd}\`\n它会向 stdout 打印一行 JSON。把最后一行 JSON 原样作为结构化返回,` +
   '不改、不增删字段。**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**',
   { agentType: 'general-purpose', ...AG('gp_shell_json'), label, schema })
@@ -87,7 +225,8 @@ const gpJson = (cmd, label, schema) => agent(
 // intel_status 的**调用点**写进本文件(L160),却没带上这份定义 —— 每只票都会在 Intel 相位
 // 之后同步抛 `bash is not defined`,`.catch(() => null)` 接不住(ReferenceError 在 promise
 // 生成前就抛了),结果是一张决策卡都出不来。与 scan-market.js:35 的 bash() 同语义、同签名。
-const bash = (cmd, label, phaseName) => agent(
+const bash = (cmd, label, phaseName) => tracedAgent(
+  `gp-shell-${code}-${taskAttempt}-${safeAgentPart(label)}`, 'gp-shell',
   '在仓库根目录精确执行下面这条命令,然后只回报:退出码 + stdout 末 15 行。' +
   '不要做别的、不要判断、不要解释。\n' +
   '**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**\n' +
@@ -116,7 +255,8 @@ const classifyFailure = (error) => {
   return 'AGENT_ERROR'
 }
 const taskFailure = (errorClass) => taskGate(
-  `failure ${code} ${date} --error-class ${errorClass}`,
+  `${PY('l4', `l4-failure-${code}-attempt-${taskAttempt}`, taskAttempt, code)} ` +
+    `autoresearch.scan.l4_tasks failure ${code} ${date} --error-class ${errorClass} --expected-attempt ${taskAttempt}`,
   TASK_RESULT,
   `task-failure:${code}`,
 ).catch(() => null)
@@ -124,7 +264,7 @@ const taskFailure = (errorClass) => taskGate(
 // C1b(2026-08-10):bookless 的 LEGACY 分支移入 python(壳零判断)——preflight 现在
 // 无论有无任务簿都能回答,且缺 prompt 一律 BLOCKED(盲卡在这里绝育)。
 const taskPreflight = await gpJson(
-  `${R} autoresearch.scan.l4_tasks preflight ${code} ${date}`,
+  `${PY('l4', `l4-preflight-${code}-attempt-${taskAttempt}`, taskAttempt, code)} autoresearch.scan.l4_tasks preflight ${code} ${date} --expected-attempt ${taskAttempt}`,
   `task-preflight:${code}`,
   TASK_ACTION,
 )
@@ -141,6 +281,9 @@ if (taskPreflight && ['BLOCKED', 'WAIT'].includes(taskPreflight.action)) {
     error: `task ${taskPreflight.action}:${taskPreflight.reason || ''}` }
 }
 const trackedTask = !!taskPreflight && taskPreflight.action === 'RUN'
+if (trackedTask && (!Number.isInteger(taskPreflight.attempt) || taskPreflight.attempt <= 0 || taskPreflight.attempt !== taskAttempt)) {
+  throw new Error(`L4 task attempt 与 args.attempt 不一致(task=${String(taskPreflight.attempt)}, args=${taskAttempt})；拒绝复用 invocation_id`)
+}
 const intelResume = !!(taskPreflight && taskPreflight.intel_resume)
 
 // ── Slim ∥ Intel(结构性盲:prompt 只给码/名/行业/日期,防确认偏误)────────────
@@ -169,7 +312,8 @@ async function intelLeg() {
   for (let i = 1; i <= 3; i++) {
     intelAttempts = i
     try {
-      return await agent(
+      return await tracedAgent(
+        `l4-intel-${code}-${taskAttempt}${i > 1 ? `-retry-${i}` : ''}`, 'l4-intel',
         `活体情报采集:${code} ${name}(${sector})· 分析日 ${date}。按你的人设六面全查(≤${maxQ} 条),写 ${SD}/_l4_intel_${code}.md;返回 code 与事件行数 events。${knownBase}`,
         { agentType: 'l4-intel', ...AG('l4_intel'),
           label: i > 1 ? `intel:${code}#${i}` : `intel:${code}`, phase: 'Intel', schema: INTEL })
@@ -185,7 +329,10 @@ async function intelLeg() {
   return null
 }
 await parallel([
-  () => taskGate(`prepare ${code} ${date}`, TASK_RESULT, `slim:${code}`)
+  () => taskGate(
+    `${PY('l4', `l4-prepare-${code}-attempt-${taskAttempt}`, taskAttempt, code)} ` +
+      `autoresearch.scan.l4_tasks prepare ${code} ${date}`,
+    TASK_RESULT, `slim:${code}`)
     .then((r) => { slimResult = r; return r }),
   ...(intelOn && !intelResume ? [() => intelLeg().then((r) => { intelResult = r; return r })] : []),
 ])
@@ -196,7 +343,7 @@ if (!intelOn) {
   // "情报面被主动关掉"与"情报面出事了/根本没有"。值与迁移前逐字节一致:本分支从不派 intelLeg,
   // intelAttempts 恒 0、intelResult/intelError 恒 null → 只带 --normalize --disabled。
   await bash(
-    `${R} autoresearch.scan.l4.intel_status ${date} ${code} --normalize` +
+    `${PY('l4', `l4-intel-status-${code}-attempt-${taskAttempt}`, taskAttempt, code)} autoresearch.scan.l4.intel_status ${date} ${code} --normalize` +
     `${intelOn ? '' : ' --disabled'}${intelAttempts > 1 ? ` --attempts ${intelAttempts}` : ''}` +
     `${intelResult ? '' : (intelError ? ` --error-class ${intelError}` : '')}`,
     `intel-status:${code}`, 'Intel').catch(() => null)
@@ -213,7 +360,7 @@ if (!intelOn) {
   // 铁律:**只拒稿不拒票**,守卫失败一律不阻断本票。
   if (intelResult) {
     const g = await gpJson(
-      `${R} autoresearch.scan.l4.intel_guard ${date} ${code}`,
+      `${PY('l4', `l4-intel-guard-${code}-attempt-${taskAttempt}`, taskAttempt, code)} autoresearch.scan.l4.intel_guard ${date} ${code}`,
       `intel-guard:${code}`, INTEL_GUARD)
       .catch((e) => { log(`⚠️ intel-guard ✗ ${code}:${e && e.message ? e.message : e}(放行)`); return null })
     if (g && g.action === 'REJECTED') {
@@ -226,7 +373,7 @@ if (!intelOn) {
   // 于是 07-31 的 000651「自报 39 条触发超硬顶审计」在报告里零痕迹。报告/直播/T1 从此读同一份
   // 结构化状态,谁也不许再解析稿头猜。A7 的旧事件净分归一化同批跑(--normalize)。
   await bash(
-    `${R} autoresearch.scan.l4.intel_status ${date} ${code} --normalize` +
+    `${PY('l4', `l4-intel-status-${code}-attempt-${taskAttempt}`, taskAttempt, code)} autoresearch.scan.l4.intel_status ${date} ${code} --normalize` +
     `${intelOn ? '' : ' --disabled'}${intelAttempts > 1 ? ` --attempts ${intelAttempts}` : ''}` +
     `${intelResult ? '' : (intelError ? ` --error-class ${intelError}` : '')}`,
     `intel-status:${code}`, 'Intel').catch(() => null)
@@ -247,7 +394,8 @@ if (trackedTask && !slimResult) {
 phase('Card')
 let card
 try {
-  card = await agent(
+  card = await tracedAgent(
+    `l4-card-${code}-${taskAttempt}`, 'l4-card',
     `执行 ${SD}/_l4_prompt_${code}.md:先读整个任务包,再按其指令做渐进深度 DD + 早停,写决策卡到 ${SD}/details/${code}.md。最后返回该卡最终五档评级与 FINAL 行(code / rating / conviction / proposal=FINAL TRANSACTION PROPOSAL 的值,如 "SELL")。`,
     { agentType: 'l4-card', ...AG('l4_card'),
       label: `card:${code}`, phase: 'Card', schema: CARD })
@@ -281,7 +429,8 @@ if (trigger) {
     : `🎭 持仓卖出复核:${code} 追加 2 独立 run 取中位(只向温和折回,卖错持仓代价不对称)`)
   const RANK = { 'sell': 0, 'underweight': 1, 'hold': 2, 'overweight': 3, 'buy': 4 }
   const tier = (r) => RANK[String(r || '').toLowerCase()] ?? 2
-  const rerun = (i) => agent(
+  const rerun = (i) => tracedAgent(
+    `ens-review-${code}-${taskAttempt}-reviewer-${i}`, 'ens-review',
     `独立复核 run${i}(不知道其它 run 结论):执行 ${SD}/_l4_prompt_${code}.md 的任务包,按人设走渐进深度 DD,决策卡写到 ${SD}/ensemble/${code}.run${i}.md(先自行创建 ensemble/ 目录),返回 code/rating/conviction/proposal。`,
     { agentType: 'l4-card', ...AG('ens_review'),
       label: `ens${i}:${code}`, phase: 'Verify', schema: CARD })
@@ -313,7 +462,8 @@ if (trigger) {
     spread: sorted[sorted.length - 1] - sorted[0], degraded, trigger,
     n_runs: ratings.length, early_stopped: earlyStopped,
     role: 'ens_review', n_dispatch: ensDispatched }
-  await agent(
+  await tracedAgent(
+    `gp-shell-${code}-${taskAttempt}-ens-dump`, 'gp-shell',
     `在仓库根目录精确执行下面这条命令,然后只回报退出码。不要做别的、不要判断。\n` +
     `**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向(heredoc 原样保留)。**` +
     `\n\n\`\`\`\ncat > ${SD}/_ensemble_${code}.json << 'EOF'\n${JSON.stringify(rec)}\nEOF\n\`\`\``,
@@ -326,7 +476,8 @@ if (trigger) {
   log(`🎭 复核 ✓ ${code} [${trigger}] runs=${JSON.stringify(ratings)} → 终评 ${final}${degraded ? '(degraded,报告强制人裁展示)' : ''}`)
 }
 const taskDone = await taskGate(
-  `success ${code} ${date}`,
+  `${PY('l4', `l4-success-${code}-attempt-${taskAttempt}`, taskAttempt, code)} ` +
+    `autoresearch.scan.l4_tasks success ${code} ${date} --expected-attempt ${taskAttempt}`,
   TASK_RESULT,
   `task-success:${code}`,
 ).catch(() => null)

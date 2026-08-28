@@ -171,6 +171,13 @@ def _workflow_src() -> str:
     return Path(".claude/workflows/scan-market.js").read_text(encoding="utf-8")
 
 
+def _strategist_dispatch(src: str) -> str:
+    head = src.split("agentType: 'macro-brief'")[0]
+    start = max(head.rfind("() => agent("), head.rfind("() => tracedAgent("))
+    assert start >= 0, "策略师派发调用点不见了(本测试定位假设失效,请重写)"
+    return head[start:]
+
+
 def test_workflow_hands_the_strategist_only_the_projection():
     """派发 prompt 必须指向投影,且**不得**再把 full market_pack 交给策略师。
 
@@ -178,7 +185,9 @@ def test_workflow_hands_the_strategist_only_the_projection():
     只写模块不接线 = 特性等于没做(而 07-30/31 已经连续两日复发过)。
     """
     src = _workflow_src()
-    dispatch = src.split("agentType: 'macro-brief'")[0].split("() => agent(")[-1]
+    # Task 11 起策略师走 tracedAgent 包装:切片取两种调用形式里**最后**出现的那个,
+    # 否则会把上游 bash() 注释里的 market_pack.json 一起吞进来。
+    dispatch = _strategist_dispatch(src)
     assert "strategist_pack.json" in dispatch
     assert "market_pack.json" not in dispatch, "策略师又能读到 full pack 了"
 
@@ -189,7 +198,9 @@ def test_workflow_no_longer_relies_on_a_prompt_level_reminder():
     留着它无害但会误导:读的人会以为防线还在 prompt 上,从而在别处照抄这种写法。
     """
     src = _workflow_src()
-    dispatch = src.split("agentType: 'macro-brief'")[0].split("() => agent(")[-1]
+    # Task 11 起策略师走 tracedAgent 包装:切片取两种调用形式里**最后**出现的那个,
+    # 否则会把上游 bash() 注释里的 market_pack.json 一起吞进来。
+    dispatch = _strategist_dispatch(src)
     assert "sector_healthy_top3" not in dispatch
 
 

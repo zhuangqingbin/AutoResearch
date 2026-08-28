@@ -15,6 +15,7 @@ tickers, so each block degrades gracefully and says so.
 
 Usage:
     python -m autoresearch.analyze.harvest TICKER [YYYY-MM-DD] [stock|crypto] [PEER1,PEER2,...]
+        [--slim [--out-dir PATH]]
 """
 
 import os
@@ -1095,9 +1096,29 @@ def _write_slim_files(out_dir: Path, ticker: str, trade_date: str, parts: list[s
     return out_path
 
 
+def _output_dir(trade_date: str, *, slim: bool, explicit: Path | None = None) -> Path:
+    if explicit is not None and not slim:
+        raise ValueError("--out-dir 仅支持 --slim，不得迁移 full 报告")
+    relative = explicit if explicit is not None else (
+        ws.scan_input_dir(trade_date) if slim else ws.context_root())
+    out_dir = ROOT / relative
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir
+
+
 def main() -> int:
-    flags = {a for a in sys.argv[1:] if a.startswith("--")}
-    pos = [a for a in sys.argv[1:] if not a.startswith("--")]
+    args = list(sys.argv[1:])
+    explicit_out_dir = None
+    if "--out-dir" in args:
+        if args.count("--out-dir") != 1:
+            raise ValueError("--out-dir 只能指定一次")
+        option_index = args.index("--out-dir")
+        if option_index + 1 >= len(args) or args[option_index + 1].startswith("--"):
+            raise ValueError("--out-dir 缺 PATH")
+        explicit_out_dir = Path(args[option_index + 1])
+        del args[option_index:option_index + 2]
+    flags = {a for a in args if a.startswith("--")}
+    pos = [a for a in args if not a.startswith("--")]
     if not pos:
         print(__doc__)
         return 1
@@ -1105,15 +1126,16 @@ def main() -> int:
     slim = "--slim" in flags
     ticker = normalize_symbol(pos[0])   # 入口归一(.SH→.SS 等):取数/staging 文件名/下游指针三处口径一致
     trade_date = pos[1] if len(pos) > 1 else date.today().isoformat()
+    d = datetime.strptime(trade_date, "%Y-%m-%d")
     asset_type = pos[2] if len(pos) > 2 else "stock"
     peers_arg = pos[3] if len(pos) > 3 else ""
     peers = [normalize_symbol(p.strip()) for p in peers_arg.split(",") if p.strip()] \
         or PEER_MAP.get(ticker.upper(), [])
+    out_dir = _output_dir(trade_date, slim=slim, explicit=explicit_out_dir)
 
     set_config(DEFAULT_CONFIG)
 
     end = trade_date
-    d = datetime.strptime(trade_date, "%Y-%m-%d")
     price_start = (d - timedelta(days=400)).strftime("%Y-%m-%d")  # >200 trading days for 200 SMA
     news_start = (d - timedelta(days=14)).strftime("%Y-%m-%d")
 
@@ -1220,8 +1242,6 @@ def main() -> int:
     if not slim:
         parts.append(_section("Peer-relative valuation & strength (v2)", peer_relative, ticker, peers, end))
 
-    out_dir = ROOT / ws.context_root()
-    out_dir.mkdir(exist_ok=True)
     if slim:
         out_path = _write_slim_files(out_dir, ticker, trade_date, parts)
     else:

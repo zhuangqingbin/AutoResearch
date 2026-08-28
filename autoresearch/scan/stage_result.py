@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from dataclasses import asdict, dataclass, replace
@@ -180,11 +181,47 @@ def record_stage_result(
 
 def safe_record_stage_result(scan_dir: Path | str, **kwargs) -> Path | None:
     """影子双写入口：控制面故障显式走 stderr，但不改变业务返回。"""
+    compat_kwargs = dict(kwargs)
+    report_dir = compat_kwargs.pop("report_dir", None)
     try:
-        return record_stage_result(scan_dir, **kwargs)
+        path = record_stage_result(scan_dir, **compat_kwargs)
     except Exception as exc:  # noqa: BLE001 — 影子控制面不能阻断生产阶段
         print(f"[stage_result] {kwargs.get('stage', '?')} 写入失败: {exc}", file=sys.stderr)
         return None
+    run_id = str(os.environ.get("AUTORESEARCH_RUN_ID", "")).strip()
+    if run_id:
+        try:
+            from autoresearch.trace.capsule import checkpoint, load_run
+
+            handle = load_run(run_id)
+            supplied = Path(scan_dir)
+            if supplied.is_symlink() or supplied.resolve() != handle.staging.resolve():
+                raise ValueError(
+                    "scan_dir does not match ambient run staging: "
+                    f"supplied={supplied}, expected={handle.staging}"
+                )
+            snapshot = load_stage_result(path)
+            if (
+                snapshot.analysis_date != handle.analysis_date
+                or snapshot.contract_hash != handle.contract.contract_hash
+            ):
+                raise ValueError("StageResult date/contract does not match ambient run")
+
+            checkpoint(
+                run_id,
+                compat_kwargs["stage"],
+                StageStatus(compat_kwargs["status"]).value,
+                compat_kwargs.get("artifacts") or [],
+                compat_kwargs.get("metrics") or {},
+                error=compat_kwargs.get("error"),
+                report_dir=report_dir,
+            )
+        except Exception as exc:  # noqa: BLE001 — 取证故障不能改业务返回值
+            print(
+                f"[capsule] {kwargs.get('stage', '?')} checkpoint 失败: {exc}",
+                file=sys.stderr,
+            )
+    return path
 
 
 def verified_stage_result(

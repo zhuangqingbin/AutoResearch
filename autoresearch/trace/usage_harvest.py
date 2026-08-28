@@ -24,24 +24,20 @@ import argparse
 import json
 from pathlib import Path
 
+from autoresearch.common import workspace as ws
 from autoresearch.trace.pricing import (
     PRICE_SOURCE_EFFECTIVE_DATE,
     PRICE_SOURCE_URL,
     estimate_usd,
 )
+from autoresearch.trace.transcripts import adapter_for
+from autoresearch.trace.transcripts.base import (
+    RunIdentity,
+    TranscriptRef,
+    UsageRecord,
+)
 
 PROJECTS_ROOT = Path.home() / ".claude" / "projects"
-
-
-def _iter_rows(path: Path):
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            yield json.loads(line)
-        except Exception:  # noqa: BLE001 — 半截行跳过,不废整份 transcript
-            continue
 
 
 # 计价倍率(相对 base input token 的**倍数**,不是价格;来源:官方 prompt caching 计价)。
@@ -51,100 +47,51 @@ def _iter_rows(path: Path):
 _W_READ, _W_WRITE_5M, _W_WRITE_1H = 0.1, 1.25, 2.0
 
 
-def _meta_agent(path: Path) -> str | None:
-    """transcript 旁的 `agent-X.meta.json`(harness 派发时落)→ agentType。
-
-    limit-killed 的稿 jsonl 里连一行带 attributionAgent 的记录都没有(2026-08-09
-    实测 39 份),但 meta.json 是派发时写的、必在 —— 账目身份不该跟着 API 死亡一起丢。
-    """
-    meta = path.with_name(path.name.replace(".jsonl", ".meta.json"))
-    if not meta.is_file():
-        return None
-    import contextlib
-    import json as _json
-    with contextlib.suppress(Exception):
-        return (_json.loads(meta.read_text(encoding="utf-8")) or {}).get("agentType") or None
-    return None
-
-
-def usage_of(path: Path, role: str = "subagent") -> dict:
-    """单份 transcript → 去重后的 usage 合计 + agent 身份。
-
-    去重键 = `message.id`;同 id 取**最后**一条(流式累计值,前面的都是中间态)。
-    """
-    latest: dict[str, dict] = {}
-    agent = effort = model = None
-    speed = "standard"
-    failures: list[int] = []
-    terminals: list[int] = []
-    for idx, row in enumerate(_iter_rows(path)):
-        if row.get("error") or row.get("isApiErrorMessage"):
-            failures.append(idx)
-        agent = agent or row.get("attributionAgent")
-        effort = effort or row.get("effort")
-        msg = row.get("message") or {}
-        candidate_model = msg.get("model")
-        if candidate_model and candidate_model != "<synthetic>":
-            model = model or candidate_model
-        u = msg.get("usage")
-        if u and msg.get("id"):
-            latest[msg["id"]] = u
-            speed = u.get("speed") or speed
-        if (
-            not (row.get("error") or row.get("isApiErrorMessage"))
-            and msg.get("stop_reason") in {"end_turn", "stop_sequence"}
-        ):
-            terminals.append(idx)
-    tot = {"messages": len(latest), "input": 0, "output": 0,
-           "cache_read": 0, "cache_create": 0, "cache_create_1h": 0,
-           "cache_create_5m": 0}
-    for u in latest.values():
-        tot["input"] += int(u.get("input_tokens") or 0)
-        tot["output"] += int(u.get("output_tokens") or 0)
-        tot["cache_read"] += int(u.get("cache_read_input_tokens") or 0)
-        cache_total = int(u.get("cache_creation_input_tokens") or 0)
-        tot["cache_create"] += cache_total
-        # 5m/1h 两种 TTL 的写入倍率不同(1.25× vs 2×),transcript 分开记了就别混算
-        cache_split = u.get("cache_creation") or {}
-        c1h = int(cache_split.get("ephemeral_1h_input_tokens") or 0)
-        c5m = int(cache_split.get("ephemeral_5m_input_tokens") or 0)
-        tot["cache_create_1h"] += c1h
-        tot["cache_create_5m"] += c5m if c5m else max(cache_total - c1h, 0)
-    failure_count = len(failures)
-    terminal_after_failure = bool(
-        terminals and (not failures or terminals[-1] > failures[-1])
-    )
-    if failure_count and terminal_after_failure:
-        status = "RETRIED_SUCCEEDED"
-    elif failure_count:
-        status = "FAILED"
-    elif terminals:
-        status = "SUCCEEDED"
-    else:
-        status = "INCOMPLETE"
-    discarded = status == "FAILED"
-    retry_count = failure_count if terminal_after_failure else max(failure_count - 1, 0)
-    tot["role"] = role
-    tot["agent"] = ("(主会话)" if role == "main"
-                    else (agent or _meta_agent(path) or "(未标注)"))
-    tot["effort"] = effort or "—"
-    tot["model"] = model or "—"
-    tot["speed"] = speed
-    tot["file"] = path.name
-    tot["path"] = str(path)
-    tot["status"] = status
-    tot["failure_count"] = failure_count
-    tot["retry_count"] = retry_count
-    tot["discarded"] = discarded
+def legacy_usage_dict(record: UsageRecord) -> dict:
+    """Convert stable adapter usage into the historical public dict schema."""
+    path = record.ref.path
+    tot = {
+        "messages": record.messages,
+        "input": record.input,
+        "output": record.output,
+        "cache_read": record.cache_read,
+        "cache_create": record.cache_create,
+        "cache_create_1h": record.cache_create_1h,
+        "cache_create_5m": record.cache_create_5m,
+        "role": record.role,
+        "agent": record.agent,
+        "effort": record.effort,
+        "model": record.model,
+        "speed": record.speed,
+        "file": path.name if path is not None else "—",
+        "path": str(path) if path is not None else "—",
+        "status": record.status,
+        "failure_count": record.failure_count,
+        "retry_count": record.retry_count,
+        "discarded": record.discarded,
+        "reasoning_output": record.reasoning_output,
+    }
     tot["billed_in"] = tot["input"] + tot["cache_create"] + tot["cache_read"]
     tot["weighted_in"] = round(tot["input"] + tot["cache_create_5m"] * _W_WRITE_5M
                                + tot["cache_create_1h"] * _W_WRITE_1H
                                + tot["cache_read"] * _W_READ)
+    if record.status == "UNMEASURED":
+        # 证据缺失/无法解析:不定价、不折算,也绝不渲染成 $0 —— 未计量不是免费。
+        tot.update(
+            {
+                "estimated_usd": None,
+                "relative_opus_cost": None,
+                "discarded_usd": 0.0,
+                "retry_usd": 0.0,
+                "retry_cost_status": "NONE",
+            }
+        )
+        return tot
     priced = estimate_usd(
         tot["model"],
         tot,
         as_of=PRICE_SOURCE_EFFECTIVE_DATE,
-        speed=speed,
+        speed=tot["speed"],
     )
     tot.update({k: v for k, v in priced.items() if k != "total_usd"})
     tot["estimated_usd"] = priced["total_usd"]
@@ -159,10 +106,16 @@ def usage_of(path: Path, role: str = "subagent") -> dict:
         if priced["total_usd"] is None or not opus
         else priced["total_usd"] / opus
     )
-    tot["discarded_usd"] = priced["total_usd"] if discarded else 0.0
-    tot["retry_usd"] = None if retry_count else 0.0
-    tot["retry_cost_status"] = "UNATTRIBUTED" if retry_count else "NONE"
+    tot["discarded_usd"] = priced["total_usd"] if record.discarded else 0.0
+    tot["retry_usd"] = None if record.retry_count else 0.0
+    tot["retry_cost_status"] = "UNATTRIBUTED" if record.retry_count else "NONE"
     return tot
+
+
+def usage_of(path: Path, role: str = "subagent") -> dict:
+    """单份 Claude transcript → 保持旧 schema 的 usage dict。"""
+    ref = TranscriptRef(engine="claude", path=Path(path), role=role)
+    return legacy_usage_dict(adapter_for("claude").usage(ref))
 
 
 # 模型价差(相对 opus 输入价的**倍率**,仅供「贵在哪」定序,不冒充账单)。
@@ -257,6 +210,60 @@ def collect_session(
     return sorted(rows, key=lambda r: -r["weighted_in"])
 
 
+def unmeasured_row(ref: TranscriptRef, *, reason: str) -> dict:
+    """一条诚实的「没量到」行:状态 UNMEASURED、成本 None,绝不是 0。"""
+    record = UsageRecord(
+        ref=ref,
+        messages=0,
+        input=0,
+        output=0,
+        cache_read=0,
+        cache_create=0,
+        cache_create_1h=0,
+        cache_create_5m=0,
+        role=ref.role,
+        agent=ref.role,
+        effort="—",
+        model="—",
+        speed="standard",
+        status="UNMEASURED",
+        failure_count=0,
+        retry_count=0,
+        discarded=False,
+    )
+    row = legacy_usage_dict(record)
+    row["reason"] = reason
+    row["invocation_id"] = ref.invocation_id
+    row["subject"] = ref.subject
+    return row
+
+
+def collect_run(run_id: str, *, engine: str | None = None) -> list[dict]:
+    """一个 run 的全部**显式绑定** transcript → 逐 agent usage(按加权降序)。
+
+    定位权只在 adapter 手里:Claude 走 session 目录,Codex 走 capsule 里的显式绑定。
+    绑定在、文件不在 → UNMEASURED 行;绝不因为「目录里没文件」就当作没花钱。
+    """
+    resolved_engine = str(engine or ws.ENGINE)
+    # 未知 run 必须炸,不能安静地变成「0 份 transcript」= 免费。
+    if not ws.scan_run_root(ws.validate_run_id(run_id)).is_dir():
+        raise FileNotFoundError(f"unknown run_id: {run_id}")
+    adapter = adapter_for(resolved_engine)
+    identity = RunIdentity(run_id=run_id, engine=resolved_engine)
+    rows: list[dict] = []
+    for ref in adapter.locate(identity):
+        if ref.status != "PRESENT":
+            rows.append(unmeasured_row(ref, reason=f"transcript {ref.status}"))
+            continue
+        try:
+            rows.append(legacy_usage_dict(adapter.usage(ref)))
+        except Exception as exc:  # noqa: BLE001 - 不可解析也必须留一行
+            rows.append(
+                unmeasured_row(ref, reason=f"{type(exc).__name__}: {exc}")
+            )
+    return sorted(rows, key=lambda r: -r["weighted_in"])
+
+
 def build_ledger(rows: list[dict], *, source: str | None = None) -> dict:
     """逐 transcript facts → 可机读总账。"""
     priced = [r for r in rows if r.get("estimated_usd") is not None]
@@ -277,6 +284,11 @@ def build_ledger(rows: list[dict], *, source: str | None = None) -> dict:
         "estimated_usd": sum(float(r["estimated_usd"]) for r in priced),
         "discarded_usd": sum(float(r.get("discarded_usd") or 0) for r in priced),
         "unpriced_transcripts": len(rows) - len(priced),
+        "unmeasured_transcripts": sum(
+            r.get("status") == "UNMEASURED" for r in rows
+        ),
+        "reasoning_output": sum(int(r.get("reasoning_output") or 0) for r in rows),
+        "priced_transcripts": len(priced),
     }
     return {
         "schema_version": 1,
@@ -300,6 +312,13 @@ def _usd(value: float | None) -> str:
     return "—" if value is None else f"${value:.4f}"
 
 
+def _cost_cell(row: dict) -> str:
+    """未计量的证据必须自报家门 —— `$0.0000` 是「量到了,是零」的意思。"""
+    if row.get("status") == "UNMEASURED":
+        return "— (UNMEASURED)"
+    return _usd(row.get("estimated_usd"))
+
+
 def render(rows: list[dict], sub_dir: str | None = None) -> str:
     """→ markdown(逐 agent 表 + 按 agent 类型汇总 + 覆盖率声明)。"""
     has_main = any(r.get("role") == "main" for r in rows)
@@ -315,6 +334,9 @@ def render(rows: list[dict], sub_dir: str | None = None) -> str:
     hit = cache_hit_rate(rows)
     ledger = build_ledger(rows, source=sub_dir)
     facts = ledger["totals"]
+    has_priced = bool(facts["priced_transcripts"])
+    total_cost = _usd(facts["estimated_usd"]) if has_priced else "—"
+    discarded_cost = _usd(facts["discarded_usd"]) if has_priced else "—"
     role_note = (
         f"{facts['main_transcripts']} 主会话 + {facts['subagent_transcripts']} subagent"
         if has_main
@@ -324,10 +346,11 @@ def render(rows: list[dict], sub_dir: str | None = None) -> str:
             f"**加权 {_k(tot_w)}**(cache读 ×{_W_READ}、5m写 ×{_W_WRITE_5M}、1h写 ×{_W_WRITE_1H})· "
             f"输出合计 **{_k(tot_out)}** · cache 命中率 "
             + (f"**{hit:.1%}**" if hit is not None else "—"),
-            f"- **估算成本 {_usd(facts['estimated_usd'])}**"
+            f"- **估算成本 {total_cost}**"
             f"(失败 {facts['failure_count']} · 重试 {facts['retry_count']} · "
-            f"废弃 {facts['discarded_transcripts']} 份/{_usd(facts['discarded_usd'])} · "
-            f"未定价 {facts['unpriced_transcripts']} 份)",
+            f"废弃 {facts['discarded_transcripts']} 份/{discarded_cost} · "
+            f"未定价 {facts['unpriced_transcripts']} 份 · "
+            f"未计量 {facts['unmeasured_transcripts']} 份)",
             f"- 价格口径:Claude API standard global list price · "
             f"{PRICE_SOURCE_EFFECTIVE_DATE} 快照 · {PRICE_SOURCE_URL}",
             "",
@@ -340,7 +363,7 @@ def render(rows: list[dict], sub_dir: str | None = None) -> str:
             f"| {_k(r['output'])} | {_k(r['cache_read'])} "
             f"| {_k(r.get('cache_create_5m', 0))} "
             f"| {_k(r.get('cache_create_1h', 0))} | {_k(r['input'])} "
-            f"| **{_usd(r.get('estimated_usd'))}** |"
+            f"| **{_cost_cell(r)}** |"
         )
     by: dict[str, dict] = {}
     for r in rows:
@@ -366,6 +389,7 @@ def render(rows: list[dict], sub_dir: str | None = None) -> str:
             b["unpriced"] += 1
         else:
             b["usd"] += float(r["estimated_usd"])
+        b["priced"] = b["n"] - b["unpriced"]
     out += ["", "**按模型汇总**(加权 × 模型价差 ≈ 真实成本方向 —— 上面的加权口径本身"
             "**不含**模型价差,壳从 opus 降 haiku 时加权几乎不变而成本降一个量级):", "",
             "| 模型 | 个数 | 加权输入 | 价差倍率 | 折算(相对 opus) | 输出 | 估算成本 | 未定价 |",
@@ -373,8 +397,9 @@ def render(rows: list[dict], sub_dir: str | None = None) -> str:
     for fam, b in sorted(bym.items(), key=lambda kv: -kv[1]["w"]):
         mult = _MODEL_MULT.get(fam)
         adj = _k(int(b["w"] * mult)) if mult else "—"
+        cost = _usd(b["usd"]) if b.get("priced") else "—"
         out.append(f"| {fam} | {b['n']} | {_k(b['w'])} | {mult if mult else '—'} "
-                   f"| {adj} | {_k(b['out'])} | {_usd(b['usd'])} | {b['unpriced']} |")
+                   f"| {adj} | {_k(b['out'])} | {cost} | {b['unpriced']} |")
     if has_main:
         coverage = (
             "_**覆盖声明**:本表覆盖已定位到的主会话与其 session 目录下 subagent transcript；"
@@ -402,10 +427,21 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--session", default=None, help="sessionId(自动定位 subagents 目录)")
     ap.add_argument("--transcripts", default=None,
                     help="transcript glob(追溯模式,与 --dir/--session 三选一)")
+    ap.add_argument("--engine", default=None, choices=list(ws.ENGINES),
+                    help="引擎(与 --run-id 同用;缺省取当前引擎)")
+    ap.add_argument("--run-id", default=None,
+                    help="run_id(读该 run 的显式 transcript 绑定,与 --dir/--session 互斥)")
     ap.add_argument("--out", default=None, help="落盘 md 路径(缺省只打印)")
     ap.add_argument("--json-out", default=None, help="落盘 canonical JSON ledger")
     a = ap.parse_args(argv)
-    if a.transcripts:
+    if a.run_id:
+        try:
+            rows = collect_run(a.run_id, engine=a.engine)
+        except Exception as exc:  # noqa: BLE001 - CLI 把失败变成诚实退出码
+            print(f"[usage_harvest] run 取数失败:{type(exc).__name__}: {exc}")
+            return 1
+        source = f"run:{a.run_id}"
+    elif a.transcripts:
         rows = collect_glob(a.transcripts)
         source = a.transcripts
     elif a.session:

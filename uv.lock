@@ -55,6 +55,7 @@ dependencies = [
     { name = "stockstats" },
     { name = "typing-extensions" },
     { name = "yfinance" },
+    { name = "zstandard" },
 ]
 
 [package.optional-dependencies]
@@ -85,6 +86,7 @@ requires-dist = [
     { name = "stockstats", specifier = ">=0.6.5" },
     { name = "typing-extensions", specifier = ">=4.14.0" },
     { name = "yfinance", specifier = ">=1.4.1" },
+    { name = "zstandard", specifier = ">=0.23" },
 ]
 provides-extras = ["dev", "data", "models"]
 

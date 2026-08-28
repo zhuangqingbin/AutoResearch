@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from autoresearch.common import workspace as ws
 from autoresearch.scan import outcome
 
 
@@ -19,11 +20,11 @@ from autoresearch.scan import outcome
 
 def _run(tmp_path, run_id="20260825_2149", date="2026-08-25", *, mode="active",
          buys=("603317",), in_mirror=True):
-    run = tmp_path / "reports_claude" / "scan" / run_id
+    run = tmp_path / ws.reports_root() / "scan" / run_id
     run.mkdir(parents=True)
     (run / "manifest.json").write_text(json.dumps(
         {"analysis_date": date, "run_id": "20260825T123650212028Z"}), encoding="utf-8")
-    base = run / "trace" / "staging" if in_mirror else tmp_path / "context_claude" / "scan" / date
+    base = run / "trace" / "staging" if in_mirror else tmp_path / ws.scan_root() / date
     base.mkdir(parents=True)
     (base / "finalists.csv").write_text(
         "code,name,sector,lane,guard,conviction\n"
@@ -70,7 +71,7 @@ def test_upsert_is_idempotent(tmp_path, monkeypatch):
     _fake_market(monkeypatch)
     run = _run(tmp_path)
     doc = outcome.compute_outcome(run)
-    root = tmp_path / "reports_claude" / "scan"
+    root = tmp_path / ws.reports_root() / "scan"
     outcome.upsert_ledger(doc, root)
     outcome.upsert_ledger(doc, root)
     outcome.upsert_ledger(doc, root)
@@ -84,7 +85,7 @@ def test_fill_skips_already_complete_runs(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     _fake_market(monkeypatch)
     _run(tmp_path)
-    root = tmp_path / "reports_claude" / "scan"
+    root = tmp_path / ws.reports_root() / "scan"
     first = outcome.fill(reports_root=root)
     second = outcome.fill(reports_root=root)
     assert first["filled"] == 1 and second["filled"] == 0 and second["skipped"] == 1
@@ -95,7 +96,7 @@ def test_immature_run_is_skipped_not_written(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(outcome, "market_frame", lambda date, **k: (None, {"reason": "未成熟"}))
     _run(tmp_path)
-    root = tmp_path / "reports_claude" / "scan"
+    root = tmp_path / ws.reports_root() / "scan"
     res = outcome.fill(reports_root=root)
     assert res["filled"] == 0 and res["skipped"] == 1
     assert not outcome.outcome_path("20260825_2149", root).exists()
@@ -111,7 +112,7 @@ def test_shadow_buys_are_not_counted_as_active(tmp_path, monkeypatch):
     的影子回放改写成 `buys=[688766]`(还是一只 📌 持仓)。"""
     monkeypatch.chdir(tmp_path)
     _fake_market(monkeypatch)
-    root = tmp_path / "reports_claude" / "scan"
+    root = tmp_path / ws.reports_root() / "scan"
     outcome.upsert_ledger(outcome.compute_outcome(
         _run(tmp_path, "20260818_2043", "2026-08-18", mode="shadow")), root)
     line = outcome.ledger_line(root)
@@ -125,7 +126,7 @@ def test_src_column_flags_shared_staging_reads(tmp_path, monkeypatch):
     run = _run(tmp_path, in_mirror=False)          # 只有共享 staging,没有 trace/staging
     doc = outcome.compute_outcome(run)
     assert doc["read_from_shared_staging"] is True
-    root = tmp_path / "reports_claude" / "scan"
+    root = tmp_path / ws.reports_root() / "scan"
     outcome.upsert_ledger(doc, root)
     assert {r["src"] for r in outcome.load_ledger(root)} == {"shared"}
 
@@ -136,7 +137,7 @@ def test_mirrored_run_is_marked_src_run(tmp_path, monkeypatch):
     _fake_market(monkeypatch)
     doc = outcome.compute_outcome(_run(tmp_path))
     assert doc["read_from_shared_staging"] is False
-    root = tmp_path / "reports_claude" / "scan"
+    root = tmp_path / ws.reports_root() / "scan"
     outcome.upsert_ledger(doc, root)
     assert {r["src"] for r in outcome.load_ledger(root)} == {"run"}
 
@@ -202,7 +203,7 @@ def test_ledger_line_withholds_mean_below_min_n(tmp_path, monkeypatch):
     正是不让人再凭印象说「最近推荐得挺准」。"""
     monkeypatch.chdir(tmp_path)
     _fake_market(monkeypatch)
-    root = tmp_path / "reports_claude" / "scan"
+    root = tmp_path / ws.reports_root() / "scan"
     outcome.upsert_ledger(outcome.compute_outcome(_run(tmp_path)), root)
     line = outcome.ledger_line(root)
     assert "攒样本 1/20" in line and "均 gap" not in line
@@ -210,7 +211,7 @@ def test_ledger_line_withholds_mean_below_min_n(tmp_path, monkeypatch):
 
 def test_ledger_line_empty_is_honest(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    assert "空" in outcome.ledger_line(tmp_path / "reports_claude" / "scan")
+    assert "空" in outcome.ledger_line(tmp_path / ws.reports_root() / "scan")
 
 
 def test_cli_fill_and_line(tmp_path, monkeypatch, capsys):

@@ -484,3 +484,53 @@ def test_publish_run_observation_defaults_relative_buy_to_shadow_without_config(
 
     assert captured == {"mode": "shadow", "exclude_pinned": False,
                         "pool": "finalists"}
+
+
+# --- Task 16: CP7 冻结现场 ---------------------------------------------------
+
+
+def test_finalize_step_is_skipped_honestly_without_an_active_run(monkeypatch):
+    from autoresearch.scan import post_run as P
+
+    monkeypatch.delenv("AUTORESEARCH_RUN_ID", raising=False)
+
+    result = P._finalize_forensic_run(None)
+
+    assert result == {"finalized": False, "reason": "no active forensic run"}
+
+
+def test_finalize_step_reports_its_own_failure_without_claiming_success(monkeypatch):
+    from autoresearch.scan import post_run as P
+    from autoresearch.trace import capsule as capsule_mod
+
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", "20260827T010203456789Z")
+    monkeypatch.setattr(
+        capsule_mod,
+        "finalize",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("spool is gone")),
+    )
+
+    result = P._finalize_forensic_run(None)
+
+    assert result["finalized"] is False
+    assert "spool is gone" in result["reason"]
+
+
+def test_finalize_step_reports_the_three_verdicts_separately(codex_run, tmp_path, monkeypatch):
+    from autoresearch.common import workspace as ws
+    from autoresearch.scan import post_run as P
+    from autoresearch.trace.capsule import checkpoint
+
+    handle, _ = codex_run
+    report_dir = ws.reports_root() / "scan" / handle.run_id
+    report_dir.mkdir(parents=True)
+    (report_dir / "summary.md").write_text("# synthetic\n", encoding="utf-8")
+    checkpoint(handle.run_id, "l3", "SUCCEEDED", [], {})
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", handle.run_id)
+
+    result = P._finalize_forensic_run(str(report_dir))
+
+    assert result["finalized"] is True
+    assert result["integrity_ok"] is True
+    assert result["completeness_ok"] is False  # 这次没产出全部证据,如实报
+    assert result["replayability"] == "NONE"

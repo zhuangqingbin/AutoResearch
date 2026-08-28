@@ -126,7 +126,7 @@ def _round_floats(text: str) -> str:
     多余的位数只会挤掉真正要看的字。**只动显示**,不动任何产物。"""
     import re
 
-    def _sub(m: "re.Match[str]") -> str:
+    def _sub(m: re.Match[str]) -> str:
         return f"{float(m.group(0)):.4f}".rstrip("0").rstrip(".")
 
     return re.sub(r"-?\d+\.\d{6,}", _sub, text)
@@ -171,12 +171,12 @@ def _sec_identity(src: Sources, code6: str) -> list[str]:
                             + ("(v1 契约未记)" if "prompt_hashes" not in contract else "")),
             ("contract_hash", contract.get("contract_hash")),
         ])
-    from autoresearch.scan.retention import verify_manifest
-    v = verify_manifest(src.run)
-    out.append(f"- **现场完整性**:" + (
-        "MANIFEST 缺席(2026-08-26 之前的 run 天然如此)" if v.get("reason") == "no-manifest"
-        else ("✓ 全部 %d 件对得上" % v["n"] if v["ok"] else
-              f"⚠️ 变 {len(v['changed'])} · 缺 {len(v['missing'])} · 多 {len(v['extra'])}")))
+    # 六个事实分开报。旧版把「MANIFEST 里列到的文件没被改」渲染成「现场完整性 ✓」——
+    # 而 MANIFEST 永远列不到没人写下的文件,于是 557 个未归档 staging、0 份 transcript、
+    # $0.0000 的假成本全都躲在那个 ✓ 后面(设计稿 §2 立案证据)。
+    from autoresearch.scan.evidence import evidence_facts, render_evidence_lines
+
+    out += render_evidence_lines(evidence_facts(src.run))
     return out
 
 
@@ -192,7 +192,7 @@ def _sec_passport(src: Sources, code6: str) -> list[str]:
     elif isinstance(entries, list):
         row = next((e for e in entries if _z6(e.get("code")) == code6), None)
     if row is None:
-        return out + [f"- 护照里没有这只票(未进 L1 打分集,或护照当日未生成)"]
+        return out + ["- 护照里没有这只票(未进 L1 打分集,或护照当日未生成)"]
     out.append("```json")
     out.append(json.dumps(row, ensure_ascii=False, indent=1, sort_keys=True))
     out.append("```")

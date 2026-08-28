@@ -238,7 +238,7 @@ def test_prepare_l3_table_wires_lane_blocks(tmp_path, monkeypatch):
                  ).to_csv(d / "L2_gbdt_top200.csv", index=False)
     for c in ("000001", "000002"):
         (d / "L3_news" / f"{c}.json").write_text("[]", encoding="utf-8")
-    monkeypatch.setattr("autoresearch.scan.agents.l3_select.harvest_l3_evidence", lambda *a, **k: {})
+    monkeypatch.setattr("autoresearch.scan.l3.prompt.harvest_l3_evidence", lambda *a, **k: {})
     monkeypatch.setattr("autoresearch.scan.agents.l3_news.harvest_l3_news", lambda *a, **k: {})
     L.prepare_l3_table("2026-07-09", root=base)
     text = (d / "_l3_table.md").read_text(encoding="utf-8")

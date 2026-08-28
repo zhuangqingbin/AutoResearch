@@ -47,6 +47,103 @@ def test_write_dispatch_pack(tmp_path):
     assert (d / "_l4_prompt_300001.md").exists()
 
 
+def test_dispatch_prompt_renders_run_scoped_artifact_paths(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", "20260827T010203456789Z")
+    d = _mk(tmp_path)
+
+    write_dispatch_pack(d)
+    prompt = (d / "_l4_prompt_600584.md").read_text(encoding="utf-8")
+
+    inputs = d / "_external_inputs"
+    assert f"`{inputs / f'600584.SS_{_DATE}_slim.md'}`" in prompt
+    assert f"`{inputs / f'600584.SS_{_DATE}_slim_deep.md'}`" in prompt
+    assert f"`{d / '_l4_intel_600584.md'}`" in prompt
+    assert f"`{d / 'details/600584.md'}`" in prompt
+    assert "context/scan/" not in prompt
+
+
+def test_dispatch_prompt_legacy_mode_renders_active_engine_paths(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    monkeypatch.delenv("AUTORESEARCH_RUN_ID", raising=False)
+    d = _mk(tmp_path)
+
+    write_dispatch_pack(d)
+    prompt = (d / "_l4_prompt_600584.md").read_text(encoding="utf-8")
+
+    assert f"`context_codex/600584.SS_{_DATE}_slim.md`" in prompt
+    assert f"`context_codex/600584.SS_{_DATE}_slim_deep.md`" in prompt
+    assert f"`{d / '_l4_intel_600584.md'}`" in prompt
+    assert f"`{d / 'details/600584.md'}`" in prompt
+    assert "context/scan/" not in prompt
+
+
+def test_explicit_scan_root_aligns_prompt_task_and_slim_paths(tmp_path, monkeypatch):
+    import json
+
+    from autoresearch.scan import l4_tasks
+    from autoresearch.scan.l4 import producers
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", "20260827T010203456789Z")
+    explicit_root = tmp_path / "alternate_scan"
+    scan = explicit_root / _DATE
+    scan.joinpath("details").mkdir(parents=True)
+    pd.DataFrame([
+        {"code": "600584", "name": "长电科技", "sector": "半导体", "conviction": 50},
+    ]).to_csv(scan / "finalists.csv", index=False)
+    scan.joinpath("_l4_shared_instructions.md").write_text("共享指令", encoding="utf-8")
+
+    write_dispatch_pack(scan)
+    prompt = scan.joinpath("_l4_prompt_600584.md").read_text(encoding="utf-8")
+    seen_inputs = []
+
+    def fake_harvest(ticker, date, input_dir):
+        seen_inputs.append(input_dir)
+        input_dir.mkdir(parents=True, exist_ok=True)
+        path = input_dir / f"{ticker}_{date}_slim.md"
+        path.write_text(
+            "\n".join([
+                "## Verified market snapshot",
+                "### Latest verified OHLCV row",
+                "| Close | 12.34 |",
+                "## Market context",
+                "## Fundamentals overview",
+                "x" * 5000,
+            ]),
+            encoding="utf-8",
+        )
+        return path
+
+    monkeypatch.setattr(producers, "_default_harvest_slim", fake_harvest)
+    harvest_result = producers.harvest_slim_batch(
+        _DATE, root=explicit_root, retries=0, workers=1)
+    book = l4_tasks.initialize(
+        _DATE,
+        ["600584"],
+        root=explicit_root,
+        meta={"600584": {"ticker": "600584.SS"}},
+    )
+    payload = json.loads(scan.joinpath("_l4_tasks.json").read_text(encoding="utf-8"))
+    artifacts = payload["tasks"]["600584"]["artifacts"]
+    inputs = scan / "_external_inputs"
+
+    assert harvest_result["ok"] is True
+    assert seen_inputs == [inputs]
+    assert artifacts["slim"]["path"] == str(inputs / f"600584.SS_{_DATE}_slim.md")
+    assert artifacts["slim"]["status"] == "PRESENT"
+    assert artifacts["prompt"]["path"] == str(scan / "_l4_prompt_600584.md")
+    assert artifacts["card"]["path"] == str(scan / "details/600584.md")
+    assert str(inputs / f"600584.SS_{_DATE}_slim.md") in prompt
+    assert str(scan / "_l4_intel_600584.md") in prompt
+    assert str(scan / "details/600584.md") in prompt
+    assert str(ws.scan_dir(_DATE)) not in prompt
+    assert book["path"] == str(scan / "_l4_tasks.json")
+
+
 def test_dispatch_pack_cli(tmp_path, monkeypatch, capsys):
     _mk(tmp_path)
     monkeypatch.chdir(tmp_path)

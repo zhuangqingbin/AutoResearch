@@ -193,17 +193,6 @@ def build_market_frame(analysis_date: str, *, cap_floor_yi: float | None = None,
 # ───────────────────────── CLI:盘前哨兵预告(零 LLM) ─────────────────────────
 
 
-def _prompt_hashes() -> dict:
-    """prompt 本体的内容指纹(现场留存波 R3)。留存层故障不该挡住 Stage 0 —— 读不到就
-    诚实空表(空表 = 「没记」,不是「干净」;`git_dirty` 那条腿仍然在)。"""
-    try:
-        from autoresearch.scan.retention import prompt_hashes
-        return prompt_hashes()
-    except Exception as exc:  # noqa: BLE001
-        print(f"[frame] ⚠️ prompt_hashes 跳过:{type(exc).__name__}: {exc}", file=sys.stderr)
-        return {}
-
-
 def _atomic_write_json(path: Path | str, payload: dict) -> Path:
     """JSON 原子落盘:先写 `.tmp` 再 `os.replace`(同目录换名,POSIX 原子)。
 
@@ -243,6 +232,28 @@ def main(argv: list[str] | None = None) -> int:
     analysis_date = args.date or date.today().isoformat()
     want_pack = bool(args.json or args.json_out)
 
+    # A forensic run already owns its identity before any business read.  Validate
+    # and reuse that exact v3 contract here; the frame must never mint a second ID.
+    contract = None
+    if ws.active_run_id() is not None:
+        from autoresearch.scan.run_bootstrap import resolve_active_scan_contract
+
+        contract = resolve_active_scan_contract(
+            analysis_date,
+            cap_floor_yi=args.cap_floor,
+            include_bj=False if args.exclude_bj else None,
+            source=args.source,
+        )
+    elif want_pack:
+        from autoresearch.scan.run_bootstrap import prepare_scan_run
+
+        contract = prepare_scan_run(
+            analysis_date,
+            cap_floor_yi=args.cap_floor,
+            include_bj=False if args.exclude_bj else None,
+            source=args.source,
+        )
+
     import contextlib
 
     # 产 pack 时把整个构建段的 stdout 圈进 stderr:湖冷时取数层(tushare_source 等)会 print 进度行,
@@ -251,11 +262,17 @@ def main(argv: list[str] | None = None) -> int:
     with contextlib.redirect_stdout(sys.stderr) if want_pack else contextlib.nullcontext():
         # 运行旋钮在 CLI 层就解析成**具体值**(2026-08-11):run_contract.data_policy 是可复现
         # 凭据,必须记实际生效值,不能记 None(「配置生效对账」对的就是这份)。
-        from autoresearch.scan.user_config import knob
-        cap_floor = float(knob("l0", "cap_floor_yi", args.cap_floor, 30.0))
-        include_bj = bool(knob("l0", "include_bj",
-                               (False if args.exclude_bj else None), True))
-        source = str(knob("l0", "source", args.source, "tushare"))
+        if contract is not None:
+            cap_floor = float(contract.data_policy["cap_floor_yi"])
+            include_bj = bool(contract.data_policy["include_bj"])
+            source = str(contract.data_policy["source"])
+        else:
+            from autoresearch.scan.user_config import knob
+
+            cap_floor = float(knob("l0", "cap_floor_yi", args.cap_floor, 30.0))
+            include_bj = bool(knob("l0", "include_bj",
+                                   (False if args.exclude_bj else None), True))
+            source = str(knob("l0", "source", args.source, "tushare"))
         frame, counts = build_market_frame(analysis_date, cap_floor_yi=cap_floor,
                                            include_bj=include_bj, source=source)
         # Wave5 ③A:资金面/指数估值取数落 `_macro_cn.json` —— 必须在 market_pack 之前跑,
@@ -280,67 +297,16 @@ def main(argv: list[str] | None = None) -> int:
         mstate, mnote = load_macro_state(analysis_date, regime_today=reg.get("label"))
         print(f"[macro_state] {mnote}", file=sys.stderr)
     if want_pack:
-        from autoresearch.scan.artifacts import artifact_schema_versions
-        from autoresearch.scan.budget import normalize_budgets
-        from autoresearch.scan.run_contract import RunContract, write_run_contract
-        from autoresearch.scan.user_config import (
-            load_pinned,
-            load_user_config,
-            materialize_agent_config,
-            resolve_agent_config,
-        )
+        from autoresearch.scan.run_contract import write_run_contract
+        from autoresearch.scan.user_config import materialize_agent_config
 
-        user_cfg = load_user_config()
-        # 引擎隔离(2026-08-11):engine 随 echo 下发 —— workflow js 无 env/文件系统,
-        # 只能从 args.config.engine 拼 context_<engine> 根(缺省 claude)。
-        # ⚠️ 只对非空 config 注入:空 config 必须保持 `{}` 原样,否则 workflow 的
-        # 「空 config 结构性 throw」护栏(07-21 事故防线)会被一个 meta 键静默绕过。
-        if user_cfg:
-            user_cfg = {**user_cfg, "engine": ws.ENGINE}
-        # Wave12-T33:agent 档位的**解释**收进 user_config 一处 → resolved 随 user_cfg
-        # 一起进 run_contract / echo / market_pack,workflow 从 `args.config.resolved_agents`
-        # 直接吃、不再各自解释缺省;`usage_reconcile` 对同一份 resolved 对账。
-        # 放在 RunContract.build 之前 = config_hash 覆盖 resolved(它本来就是"这次跑用了
-        # 什么档位"的一部分),echo/pack/contract 三处仍然同哈希。
-        # ⚠️ 只在真有 agents 配置时才 materialize:缺配置文件(`{}`)是既有 parity 路径
-        # (离线/测试),不该被本条改成硬失败——fail-fast 的靶子是"配了一半"和"配了但空",
-        # 不是"这台机器上根本没这个文件"。
-        # **这一层不炸,不代表没人炸**(修复轮 1 M6 澄清):07-21 事故的真实形状恰恰是
-        # 「`.jsonc` 按 `.json` 查无 → `{}`」,而它在本层只会安静地不 materialize。
-        # 真正拦住它的是下游 workflow 的结构性 throw(`scan-market.js:22-26`、
-        # `l4-stock.js:22-25`、`t1-review.js:24-26`)—— 分工是**本层管"配坏了"、
-        # workflow 管"根本没配"**。删任一侧之前先读另一侧。
-        if user_cfg.get("agents"):
-            user_cfg = {**user_cfg, "resolved_agents": resolve_agent_config(user_cfg)}
-        pinned_cfg = user_cfg.get("pinned") or {}
-        pinned_cap = int(pinned_cfg.get("cap", 5))
-        pinned_ttl = int(pinned_cfg.get("ttl_days", 10))
-        l3_cfg = user_cfg.get("l3") or {}
-        pinned = load_pinned(analysis_date, cap=pinned_cap, ttl_days=pinned_ttl)
-        contract = RunContract.build(
-            analysis_date=analysis_date,
-            user_config=user_cfg,
-            pinned=pinned,
-            data_policy={
-                "source": source,            # 记实际生效值(CLI>config>内建),不记 argparse 原始 None
-                "cap_floor_yi": cap_floor,
-                "include_bj": include_bj,
-            },
-            stage_budgets={
-                **normalize_budgets(user_cfg.get("budgets")),
-                "l3_finalist_max": int(l3_cfg.get("finalist_max", 10)),
-                "pinned_cap": pinned_cap,
-                "pinned_ttl_days": pinned_ttl,
-            },
-            artifact_schema_versions=artifact_schema_versions(),
-            # v2(2026-08-26 现场留存波):prompt 本体的内容指纹。`git_sha` 只说 HEAD 在哪,
-            # 而 agent def **未提交也会生效**(会话启动装载工作树那一份)。`git_dirty`/
-            # `dirty_paths` 由 `RunContract.build` 自己探(默认 None = 现探)。
-            prompt_hashes=_prompt_hashes(),
-        )
-        echo_dir = ws.scan_root() / analysis_date
+        if contract is None:  # pragma: no cover - want_pack always prepares above
+            raise RuntimeError("missing prepared RunContract")
+        user_cfg = contract.user_config
+        echo_dir = ws.scan_dir(analysis_date)
         echo_dir.mkdir(parents=True, exist_ok=True)
-        write_run_contract(echo_dir / "run_contract.json", contract)
+        if ws.active_run_id() is None:
+            write_run_contract(echo_dir / "run_contract.json", contract)
         (echo_dir / "user_config_echo.json").write_text(
             json.dumps(user_cfg, ensure_ascii=False, indent=2), encoding="utf-8")
         if user_cfg.get("resolved_agents"):

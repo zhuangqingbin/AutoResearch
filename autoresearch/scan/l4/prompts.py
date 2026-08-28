@@ -154,6 +154,8 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
     """
     scan_dir = Path(scan_dir)
     date = scan_dir.name
+    input_dir = ws.scan_input_dir(date, scan_dir=scan_dir)
+    resolved_scan_dir = scan_dir
     fp = scan_dir / "finalists.csv"
     if not fp.exists():
         return {"n_prompts": 0, "tickers": [], "pinned": []}
@@ -230,6 +232,10 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
         echo = yesterday_echo(code6, str(r.get("name", "") or ""), date)
         if echo:
             body.append(echo.rstrip())
+        slim_path = input_dir / f"{ticker}_{date}_slim.md"
+        deep_path = input_dir / f"{ticker}_{date}_slim_deep.md"
+        intel_path = resolved_scan_dir / f"_l4_intel_{code6}.md"
+        card_path = resolved_scan_dir / "details" / f"{code6}.md"
         prompt_parts = [
             # 固定标头(逐卡不变,≤300B)——cache 前缀契约(T8):共享块前不得出现逐卡可变内容,
             # 否则 30 卡并发前缀全断、cache 全 miss。逐卡专属标题(含 📌 保送标记)移到共享块**之后**。
@@ -244,11 +250,11 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
             *body,
             "",
             "---",
-            f"- slim 数据:`context/{ticker}_{date}_slim.md`(P1–P3 表面块;**>8KB 才可信**,≈4.8KB=NO_DATA 须重拉)",
-            f"- deep 深核:`context/{ticker}_{date}_slim_deep.md`(**survivor 进 P4 才 Read**;早停卡不读;缺文件=陷阱维标「未核」)",
-            f"- 活体情报:`context/scan/{date}/_l4_intel_{code6}.md`(若存在:P3 先读它作催化/题材/机构主料、"
+            f"- slim 数据:`{slim_path}`(P1–P3 表面块;**>8KB 才可信**,≈4.8KB=NO_DATA 须重拉)",
+            f"- deep 深核:`{deep_path}`(**survivor 进 P4 才 Read**;早停卡不读;缺文件=陷阱维标「未核」)",
+            f"- 活体情报:`{intel_path}`(若存在:P3 先读它作催化/题材/机构主料、"
             f"自发网查降 ≤1 条验证;缺文件=回退卡内网查,cap 原规则)",
-            f"- 决策卡写往:`context/scan/{date}/details/{code6}.md`",
+            f"- 决策卡写往:`{card_path}`",
             ""]
         prompt = "\n".join(prompt_parts)
         (scan_dir / f"_l4_prompt_{code6}.md").write_text(prompt, encoding="utf-8")

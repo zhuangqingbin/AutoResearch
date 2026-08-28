@@ -15,6 +15,7 @@ lake 根 = 模块级 LAKE,测试 monkeypatch 成 tmp 目录,绝不污染真 cont
 """
 from __future__ import annotations
 
+import contextlib
 import os
 from datetime import date
 from pathlib import Path
@@ -30,11 +31,78 @@ from autoresearch.data.endpoints import policy
 LAKE = ws.lake_root()
 
 _COMPRESSION = "zstd"
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 # 各 key 模式下,从 params 里找"日期/报告期/实体"用的候选键名(吸收 tushare/akshare 差异)。
 _DATE_PARAM_KEYS = ("trade_date", "date", "ann_date", "cal_date")
 _PERIOD_PARAM_KEYS = ("period", "date", "end_date")
 _ENTITY_PARAM_KEYS = ("ts_code", "symbol", "code", "exchange_id", "exchange")
+
+
+class _NoSourceTrace:
+    """Zero-import no-op for ordinary cache calls outside a forensic run."""
+
+    @staticmethod
+    def finish_success(*args, **kwargs) -> bool:
+        return False
+
+    @staticmethod
+    def finish_failure(*args, **kwargs) -> bool:
+        return False
+
+
+_NO_SOURCE_TRACE = _NoSourceTrace()
+
+
+def _trace_warning() -> None:
+    with contextlib.suppress(BaseException):
+        os.write(2, b"source lineage evidence incomplete\n")
+
+
+def _source_trace(endpoint: str, params: dict, today: str | None):
+    if not str(os.environ.get("AUTORESEARCH_RUN_ID", "")).strip():
+        return _NO_SOURCE_TRACE
+    try:
+        from autoresearch.trace.source_lineage import trace_access
+
+        return trace_access(endpoint, params, today=today)
+    except BaseException:
+        _trace_warning()
+        return _NO_SOURCE_TRACE
+
+
+def _finish_source_success(trace, frame, access: str, path, *, source_bytes=None) -> None:
+    try:
+        trace.finish_success(frame, access, path, source_bytes=source_bytes)
+    except BaseException:
+        _trace_warning()
+
+
+def _finish_source_failure(trace, error: BaseException) -> None:
+    try:
+        trace.finish_failure(error)
+    except BaseException:
+        _trace_warning()
+
+
+def _trace_enabled(trace) -> bool:
+    try:
+        return bool(getattr(trace, "enabled", False))
+    except BaseException:
+        _trace_warning()
+        return False
+
+
+def _stable_source_frame(trace, frame):
+    """Detach a traced result from provider-owned mutable memory before evidence capture."""
+    enabled = _trace_enabled(trace)
+    if not enabled or not isinstance(frame, pd.DataFrame):
+        return frame
+    try:
+        return frame.copy(deep=True)
+    except BaseException:
+        _trace_warning()
+        return frame
 
 
 # 快照型端点(`policy(...)["snapshot"]`)落盘时补的**观测出处**两列(Wave12 T2 Interfaces
@@ -129,13 +197,42 @@ def _read(path: Path) -> pd.DataFrame:
     return pq.read_table(path).to_pandas()
 
 
-def _atomic_write(path: Path, df: pd.DataFrame) -> None:
+def _read_file_bytes(path: Path) -> bytes:
+    fd = os.open(path, os.O_RDONLY | _NOFOLLOW)
+    try:
+        chunks = []
+        while chunk := os.read(fd, 1024 * 1024):
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
+def _read_snapshot(path: Path, *, capture_bytes: bool) -> tuple[pd.DataFrame, bytes | None]:
+    if not capture_bytes:
+        return _read(path), None
+    try:
+        payload = _read_file_bytes(path)
+        return pq.read_table(pa.BufferReader(payload)).to_pandas(), payload
+    except BaseException:
+        _trace_warning()
+        return _read(path), None
+
+
+def _atomic_write(path: Path, df: pd.DataFrame, *, capture_bytes: bool = False) -> bytes | None:
     """ZSTD parquet 原子写:tmp → os.replace。空帧也写(存在==取过且为空)。"""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     table = pa.Table.from_pandas(df, preserve_index=False)
     pq.write_table(table, tmp, compression=_COMPRESSION)
+    payload = None
+    if capture_bytes:
+        try:
+            payload = _read_file_bytes(tmp)
+        except BaseException:
+            _trace_warning()
     os.replace(tmp, path)
+    return payload
 
 
 def _lake_params(params: dict) -> dict:
@@ -175,58 +272,100 @@ def get_or_fetch(
     校验挂在**三条路径**上,尤其是**湖命中**:历史脏数据(空帧/窄表)读出来照样毒化下游,而且它
     **不会**再经过取数路径的任何检查 —— 这是原设计的盲区。
     """
-    if fetch is None:
-        from autoresearch.data.sources import fetch as fetch  # 延迟导入,避开取数依赖
+    trace = _source_trace(endpoint, params, today)
+    try:
+        # 重放模式:只认冻结的 reads.jsonl + capsule 内 blob。命中不了就炸,
+        # **绝不**回落到湖或网络 —— 能靠回落跑通的重放证明不了任何事。
+        from autoresearch.trace import replay as _replay
 
-    # 延迟导入:契约表是纯数据,无取数依赖
-    from autoresearch.data.contracts import check, refuses_lake
+        replay_capsule = _replay.active_capsule()
+        if replay_capsule is not None:
+            result = _replay.frame_for(replay_capsule, endpoint, params)
+            _finish_source_success(trace, result, "REPLAYED", None)
+            return result
 
-    pol = policy(endpoint)
-    t = _today_compact(today)
+        if fetch is None:
+            from autoresearch.data.sources import fetch as fetch  # 延迟导入,避开取数依赖
 
-    # ③ live:总取新,绝不缓存,不校验(盘中快照的完整性由调用方自负——它们本就不入湖)。
-    if pol["settle"] == "live":
-        return fetch(endpoint, params)
+        # 延迟导入:契约表是纯数据,无取数依赖
+        from autoresearch.data.contracts import check, refuses_lake
 
-    key = _cache_key(endpoint, params, t)
-    path = LAKE / endpoint / f"{key}.parquet"
+        pol = policy(endpoint)
+        t = _today_compact(today)
 
-    # 已结算(date < today)且文件存在 → 命中,零取数。**命中也要校验**(湖里可能躺着毒源)。
-    if path.exists():
-        return check(endpoint, _read(path), key=str(key), source="lake")
+        # ③ live:总取新,绝不缓存,不校验(盘中快照的完整性由调用方自负——它们本就不入湖)。
+        if pol["settle"] == "live":
+            result = _stable_source_frame(trace, fetch(endpoint, params))
+            _finish_source_success(trace, result, "FETCHED_LIVE", None)
+            return result
 
-    # 快照端点的 PIT 守门(Wave12 复核 I1):只挡**写新分区**,历史读在上一行已经放行。
-    # 快照接口只有"此刻",所以 as-of 键必须等于真实今天;否则这次取数会把今天的观测钉成
-    # 过去某天的假历史(补跑 / 节假日 launchd 触发 / 手工传日期都会撞上),事后不可甄别。
-    if pol.get("snapshot") and t != _real_today():
-        raise SnapshotDateError(
-            f"[快照 PIT] {endpoint} 的 as-of 键 {t} ≠ 今天 {_real_today()}:"
-            f"快照接口只返回「此刻」,补不出 {t} 的历史 —— 强行取数会把**今天**的观测写成 "
-            f"{t} 的假历史且事后不可甄别。要今天的快照就用今天的日期;要 {t} 的,它已经永远没有了。")
+        key = _cache_key(endpoint, params, t)
+        path = LAKE / endpoint / f"{key}.parquet"
 
-    # date 键:date >= today(盘中未结算)→ 拉新但不写(明天结算后才入湖)。**只查空、不查列**
-    # (`cols=False`):这份数据不入湖、只服务当次调用,调用方要哪几列是它自己的事(温度计只要
-    # `ts_code,pct_chg`)。但 A 级拉到空仍要抛 —— 数据还没发布,下游必然残废,与
-    # `assert_tushare_ready` 同一立场("晚点再跑,或跑前一交易日")。
-    if pol["key"] == "date":
-        d = _compact(_first(params, _DATE_PARAM_KEYS))
-        # 预热豁免(spec 2026-07-12-scan-speed-perimeter §P1):LAKE_ASSUME_SETTLED=1 且
-        # d == today → 视为已结算,落到下方「拉取→契约→原子写」正常入湖(19:15 后 EOD 已发布,
-        # 契约 min_rows 仍兜底);d > today(未来日)任何情况拒写。env 未设 = 现行为逐字节不变。
-        if d and d >= t and not (d == t and os.environ.get("LAKE_ASSUME_SETTLED") == "1"):
-            return check(endpoint, fetch(endpoint, params), key=str(key), source="fetch", cols=False)
+        # 已结算(date < today)且文件存在 → 命中,零取数。**命中也要校验**(湖里可能躺着毒源)。
+        if path.exists():
+            raw_result, source_bytes = _read_snapshot(
+                path, capture_bytes=_trace_enabled(trace)
+            )
+            result = _stable_source_frame(
+                trace, check(endpoint, raw_result, key=str(key), source="lake")
+            )
+            _finish_source_success(
+                trace, result, "CACHE_HIT", path, source_bytes=source_bytes
+            )
+            return result
 
-    # 拉取 → 校验 → 原子写。**入湖必须全字段**(`_lake_params`:窄 fields 会把窄表钉成该 key 的
-    # 湖快照,毒化所有后来的调用方——2026-07-12 M1 对拍实证)。
-    df = fetch(endpoint, _lake_params(params))
-    if df is None:
-        df = pd.DataFrame()
-    df = check(endpoint, df, key=str(key), source="fetch")   # A 级违约 → 抛,下一行不执行 = 不入湖
-    if pol.get("snapshot"):
-        df = _stamp_observed(df)                             # 观测出处(I3):落盘前打戳
-    # B 级快照端点的空/半截**同样不入湖**(C2):落了就 `path.exists()` 恒命中,这一天永远残缺;
-    # 不落 → 同日重跑(或下一次夜采)还能救回来。契约已在上面 check() 里记过账,这里只管别钉死。
-    if refuses_lake(endpoint, df):
+        # 快照端点的 PIT 守门(Wave12 复核 I1):只挡**写新分区**,历史读在上一行已经放行。
+        # 快照接口只有"此刻",所以 as-of 键必须等于真实今天;否则这次取数会把今天的观测钉成
+        # 过去某天的假历史(补跑 / 节假日 launchd 触发 / 手工传日期都会撞上),事后不可甄别。
+        if pol.get("snapshot") and t != _real_today():
+            raise SnapshotDateError(
+                f"[快照 PIT] {endpoint} 的 as-of 键 {t} ≠ 今天 {_real_today()}:"
+                f"快照接口只返回「此刻」,补不出 {t} 的历史 —— 强行取数会把**今天**的观测写成 "
+                f"{t} 的假历史且事后不可甄别。要今天的快照就用今天的日期;要 {t} 的,它已经永远没有了。")
+
+        # date 键:date >= today(盘中未结算)→ 拉新但不写(明天结算后才入湖)。**只查空、不查列**
+        # (`cols=False`):这份数据不入湖、只服务当次调用,调用方要哪几列是它自己的事(温度计只要
+        # `ts_code,pct_chg`)。但 A 级拉到空仍要抛 —— 数据还没发布,下游必然残废,与
+        # `assert_tushare_ready` 同一立场("晚点再跑,或跑前一交易日")。
+        if pol["key"] == "date":
+            d = _compact(_first(params, _DATE_PARAM_KEYS))
+            # 预热豁免(spec 2026-07-12-scan-speed-perimeter §P1):LAKE_ASSUME_SETTLED=1 且
+            # d == today → 视为已结算,落到下方「拉取→契约→原子写」正常入湖(19:15 后 EOD 已发布,
+            # 契约 min_rows 仍兜底);d > today(未来日)任何情况拒写。env 未设 = 现行为逐字节不变。
+            if d and d >= t and not (d == t and os.environ.get("LAKE_ASSUME_SETTLED") == "1"):
+                result = _stable_source_frame(
+                    trace,
+                    check(
+                        endpoint,
+                        fetch(endpoint, params),
+                        key=str(key),
+                        source="fetch",
+                        cols=False,
+                    ),
+                )
+                _finish_source_success(trace, result, "FETCHED_UNSETTLED", None)
+                return result
+
+        # 拉取 → 校验 → 原子写。**入湖必须全字段**(`_lake_params`:窄 fields 会把窄表钉成该 key 的
+        # 湖快照,毒化所有后来的调用方——2026-07-12 M1 对拍实证)。
+        df = fetch(endpoint, _lake_params(params))
+        if df is None:
+            df = pd.DataFrame()
+        df = check(endpoint, df, key=str(key), source="fetch")   # A 级违约 → 抛,下一行不执行 = 不入湖
+        if pol.get("snapshot"):
+            df = _stamp_observed(df)                             # 观测出处(I3):落盘前打戳
+        df = _stable_source_frame(trace, df)
+        # B 级快照端点的空/半截**同样不入湖**(C2):落了就 `path.exists()` 恒命中,这一天永远残缺;
+        # 不落 → 同日重跑(或下一次夜采)还能救回来。契约已在上面 check() 里记过账,这里只管别钉死。
+        if refuses_lake(endpoint, df):
+            _finish_source_success(trace, df, "FETCHED_REFUSED_LAKE", None)
+            return df
+        source_bytes = _atomic_write(path, df, capture_bytes=_trace_enabled(trace))
+        _finish_source_success(
+            trace, df, "FETCHED_CACHED", path, source_bytes=source_bytes
+        )
         return df
-    _atomic_write(path, df)
-    return df
+    except BaseException as exc:
+        _finish_source_failure(trace, exc)
+        raise

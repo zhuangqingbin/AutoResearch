@@ -93,7 +93,21 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
 > **CP7 计量**:命令见步骤 5(含 `usage_reconcile`)。覆盖主会话+subagent,成本按公开计价倍率加权;缺 JSON 写 `UNMEASURED`,**不能写 `$0`**。
 > **唤醒纪律**(cache 读按全上下文计费,主会话曾独占近半全场成本):派发一次性全派、收通知只领不播,不出分析文字;CP2/CP3 合并播报,CP0/CP1/CP4/CP6/CP7 照常播。
 
-0. **前奏一键**:
+0. **开场:先领 run_id,再取任何一个数**(2026-08-28 法证 capsule):
+   ```bash
+   export AUTORESEARCH_ENGINE=codex   # Claude 会话下无需设置
+   RUN_JSON=$(uv run --no-sync python -m autoresearch.trace.capsule begin scan-market <YYYY-MM-DD> \
+     --engine "$AUTORESEARCH_ENGINE" --config-file .claude/skills/scan-market/scan_config.jsonc)
+   RUN_ID=$(printf '%s' "$RUN_JSON" | jq -r .run_id)
+   export AUTORESEARCH_RUN_ID="$RUN_ID"
+   ```
+   `begin` **必须先于任何取数**:它先落 RunContract v3 + 代码/环境/prompt 身份快照,再公布 run 目录 ——
+   配置写错的 run 因此不会留下一个无名孤儿。`RUN_ID` 随 `Workflow args.run_id` 传给 `scan-market.js`,
+   再由它透传给每个 `l4-stock`;staging 从此按 **run** 分区(`$CTX/scan_runs/<run_id>/staging/<date>/`),
+   同日重跑不再互相覆盖。
+   上一次被 SIGKILL / 断电打断的 run 由 `prelude`/`prewarm` 开头自动冻结(只警告,不阻断);
+   也可手动 `python -m autoresearch.trace.capsule recover`。
+0.1. **前奏一键**:
    ```bash
    uv run --no-sync python -m autoresearch.scan.prelude <YYYY-MM-DD>
    ```
@@ -152,7 +166,8 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
    CTX=context_${AUTORESEARCH_ENGINE:-claude}; RPT=reports_${AUTORESEARCH_ENGINE:-claude}
    uv run --no-sync python -m autoresearch.scan.assemble <date> && \
    uv run --no-sync python -m autoresearch.scan.gates gate4 <date> && \
-   uv run --no-sync python -m autoresearch.trace.usage_harvest --session <本次 sessionId> \
+   uv run --no-sync python -m autoresearch.trace.usage_harvest --engine $AUTORESEARCH_ENGINE \
+     --run-id "$RUN_ID" \
      --out $RPT/scan/<run_id>/token_usage.md \
      --json-out $CTX/scan/<date>/_token_usage.json && \
    uv run --no-sync python -m autoresearch.trace.usage_reconcile <date> \
@@ -160,20 +175,42 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
    uv run --no-sync python -m autoresearch.scan.post_run <date> observe \
      --report-dir $RPT/scan/<run_id>
    ```
+   `observe` 的最后一步就是 **capsule finalize + 冻结后复验**(CP7 定序:gate4 → 计量 →
+   reconcile → observe → expected/replay/completeness → finalize → verify),它的裁决在
+   `observe` 的 stdout JSON 里以 `capsule` 段返回。Claude 引擎仍可用 `--session <sessionId>`
+   走旧口径;Codex 引擎**必须**走 `--engine codex --run-id`(它没有 Claude 的 subagent 目录,
+   `--session` 只会给出一张空表)。
    → `$RPT/scan/<YYYYMMDD_HHMM>/`:**`brief.md`(≤3KB 速读,入口)**+`summary.md`(详细版)+`details/`+`token_usage.md`+`trace/`;`index.md` 首行即指 brief。成本/墙钟成熟门(10 次真实扫描前恒 `IMMATURE`)见 STAGES.md『计量与跨层校准』;预算超线只写 warning/`DEGRADED`,不制造 BUY。
    **汇报(CP7)**:**先原文转播 `brief.md` 全文**(六节:市场/漏斗/BUY 结论/持仓/风险哨/昨日 delta),再补分段耗时(`render --view timing`)+ 产物路径;需要展开细节才引 `summary.md`。0 买日的**停因分桶**已由 brief ③ 自带,照贴即可,**不要说「无一过 ≥OW 三门」**——早停卡按定义不写三门段(见 STAGES.md『运维细节』)。
    **GATE4 拦什么**(控制方裁定):判据 = `gate_fires.csv` 里有任意一行 `severity=fail`。`brief_lint` 的八条按「**报告是不是在说假话**」二分 —— **fail(毙掉本趟)**:`brief·数字对账` / `brief↔summary不一致` / `brief·白名单外取数` / `brief·BUY契约(active 期)`;**warn(放行,但进账 + 播报)**:`brief·缺失` / `brief·超预算` / `brief·边表缺失` / `brief·边表过期`。**一份人类可读摘要排版超限是展示层问题;报告说假话才是硬门该拦的事**——别让 3KB 排版预算毙掉一条 60 分钟的流水线(「GATE3 差 16 字节」同族疤)。播报行 `[brief lint] fail N · warn M / 共 K 条` 两个计数都要念。
    **报告分两层是安全的**:**机器消费者不读、也不解析 `summary.md` 正文**(结论都在 `finalists.csv` / `decision_records.json` / `_final_ratings.json` 等结构化文件里),所以重排/瘦身 summary 不影响任何人;红线文件 `details/*.md`、`finalists.csv`、`decision_records.json` 一字不动。
    **brief 对账**:assemble 收尾自动跑 `self_review.brief_lint`(边表重算 + 正文锚在 + brief↔summary 同源 + active 期 BUY≥1 契约),结果追加进 `gate_fires.csv` 并打一行 `[brief lint] fail N · warn M / 共 K 条`;**有 fail 先修根因再播**,warn 照播不隐去。
    **配置生效对账**:`usage_reconcile`(第四条命令)把配置期望×实测逐 role 对上,`ok=false` 直接打进 CP7 播报,不经 `self_review` 转手(见 STAGES.md『计量与跨层校准』)。
-   **现场留存(2026-08-26,自动;无需额外命令)**:assemble 收尾与 `post_run observe` 各跑一次 `scan/retention.retain` ——
-   `trace/staging/`(整目录镜像 staging)+ `trace/inputs/{slim,sector_packs,prompts,temperature_row}`(staging 之外的输入)
-   + `trace/transcripts/*.jsonl.gz`(判断腿 subagent 的推理链,observe 那次才有)+ `trace/lake_manifest.json`(窗口内湖指纹)
-   + `trace/MANIFEST.sha256`(全目录内容清单)。**判据是「run 目录自足到 staging 可弃」** —— staging 按数据日键,同日重跑会原地覆盖。
-   核验与复盘两条只读命令(任何时候都能跑):
+   **法证 run capsule(2026-08-28)**:每次扫描**从启动就有**一个独立、可冻结、可校验的现场
+   (`$RPT/scan/<run_id>/capsule/`)。它回答**三个互不替代**的问题,任何一个都不代表其余两个:
+   - `integrity_ok` —— 已归档文件有没有被改(MANIFEST + 脱钩 ROOT + 账本三重锚定);
+   - `completeness_ok` —— 按本次的模式与终态,**该有的证据齐不齐**(expected 清单逐条比对);
+   - `replayability` —— 只用 capsule 里的冻结输入,确定性阶段能否重放出同样的字节。
+
+   ⚠️ **`MANIFEST` 校验通过 ≠ 现场完整**。MANIFEST 只对它列过的文件重算 hash,而**没人写下的文件
+   它永远列不到** —— `20260826_2000` 就是这样带着 0 份 transcript、557 个未归档 staging 和
+   `$0.0000` 的假成本,在旧展示层里显示「现场完整性 ✓」的。`chain_view` 与 `index.md` 现在分行
+   报六个事实(业务/证据/完好/完整/可重放/归档),绿灯「现场可复盘」要求它们**同时**成立。
+
+   旧 `scan/retention.retain`(`trace/staging/`+`trace/inputs/`+`trace/MANIFEST.sha256`)降为
+   **兼容路径**:capsule 之前的 run 仍靠它,但它给出的绿灯只代表完好性,**不得**再当作完整性结论。
+   核验与复盘(任何时候都能跑,全部只读):
    ```bash
-   uv run --no-sync python -m autoresearch.scan.retention verify $RPT/scan/<run_id>   # 发布后被改过吗
-   uv run --no-sync python -m autoresearch.scan.chain_view <run_id> <6位码>            # 这只票是怎么被推上来的
+   uv run --no-sync python -m autoresearch.trace.capsule verify "$RUN_ID"              # 三个结论分开报
+   uv run --no-sync python -m autoresearch.trace.capsule inspect "$RUN_ID"             # 活跃 spool 概览
+   uv run --no-sync python -m autoresearch.trace.capsule replay "$RUN_ID"              # 只用冻结输入重放 L0-L2/L5
+   uv run --no-sync python -m autoresearch.scan.chain_view <run_id> <6位码>             # 这只票是怎么被推上来的
+   uv run --no-sync python -m autoresearch.scan.retention verify $RPT/scan/<run_id>    # 旧 run 的兼容核验
+   ```
+   证据事后找回来 → **叠加层**,绝不回头改冻结的现场:
+   ```bash
+   uv run --no-sync python -m autoresearch.trace.capsule repair "$RUN_ID" \
+     --reason "transcript restored" --source <暂存目录>   # 写 _repairs/<run_id>/revision-N/
    ```
    ⚠️ **回放/研究仪器一律写 scratch 或 `$RPT/research/`,禁写 run 目录与 staging** —— 实测 `20260725_1316` 的 `run_health.json`
    被一次回放覆盖成 `cards=0`(该 run 实有 11 张卡)、08-13/08-18 的 `_relative_buy_decision.json` 被影子回放改写成 `buys=[688766]`

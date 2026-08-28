@@ -1,4 +1,8 @@
 import json
+import subprocess
+import sys
+
+import pytest
 
 from autoresearch.common import workspace as ws
 from autoresearch.scan.agents.l4_card import harvest_slim_batch
@@ -59,6 +63,94 @@ def test_harvest_slim_all_ok(tmp_path):
 
     res = harvest_slim_batch("2026-07-07", root=tmp_path, retries=0, harvest_fn=fake)
     assert res["ok"] is True and res["failures"] == []
+
+
+def test_harvest_slim_default_context_is_run_scoped(tmp_path, monkeypatch):
+    from autoresearch.scan.l4 import producers
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", "20260827T010203456789Z")
+    _setup_cli(tmp_path, ["600584.SS"])
+    seen: list = []
+
+    def fake(ticker, date, ctx_root):
+        seen.append(ctx_root)
+        ctx_root.mkdir(parents=True, exist_ok=True)
+        path = ctx_root / f"{ticker}_{date}_slim.md"
+        path.write_text(_slim_body(pad=5000), encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(producers, "_default_harvest_slim", fake)
+    result = harvest_slim_batch("2026-07-07", workers=1, retries=0)
+
+    expected = ws.scan_input_dir("2026-07-07")
+    assert result["ok"] is True
+    assert seen == [expected]
+    assert (expected / "600584.SS_2026-07-07_slim.md").is_file()
+
+
+def test_default_harvest_slim_forwards_output_dir_to_child(tmp_path, monkeypatch):
+    from autoresearch.scan.l4.producers import _default_harvest_slim
+
+    calls = []
+
+    def fake_run(argv, *, check):
+        calls.append((argv, check))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    output_dir = tmp_path / "explicit" / "2026-07-07" / "_external_inputs"
+
+    result = _default_harvest_slim("600584.SS", "2026-07-07", output_dir)
+
+    assert calls == [([
+        sys.executable,
+        "-m",
+        "autoresearch.analyze.harvest",
+        "600584.SS",
+        "2026-07-07",
+        "stock",
+        "--slim",
+        "--out-dir",
+        str(output_dir),
+    ], False)]
+    assert result == output_dir / "600584.SS_2026-07-07_slim.md"
+
+
+def test_harvest_slim_rejects_absolute_date_before_explicit_context_read(tmp_path):
+    declared_root = tmp_path / "declared"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside.joinpath("_harvest_list.txt").write_text("600584.SS\n", encoding="utf-8")
+    valid_slim = tmp_path / "valid_slim.md"
+    valid_slim.write_text(_slim_body(pad=5000), encoding="utf-8")
+    touched = []
+
+    def fake_harvest(ticker, date):
+        touched.append((ticker, date))
+        return valid_slim
+
+    with pytest.raises(ValueError, match="scan date"):
+        harvest_slim_batch(
+            str(outside),
+            root=declared_root,
+            ctx_root=tmp_path / "explicit_context",
+            retries=0,
+            workers=1,
+            harvest_fn=fake_harvest,
+        )
+
+    assert touched == []
+
+
+def test_l4_card_cli_rejects_absolute_date_before_shared_write(tmp_path):
+    from autoresearch.scan.agents.l4_card import main
+
+    outside = tmp_path / "outside"
+    with pytest.raises(ValueError, match="scan date"):
+        main(["shared", str(outside), "--root", str(tmp_path / "declared")])
+
+    assert not outside.joinpath("_l4_shared_instructions.md").exists()
 
 
 def test_harvest_slim_compact_but_complete_passes(tmp_path):

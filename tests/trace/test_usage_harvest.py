@@ -367,3 +367,148 @@ def test_usage_of_unlabeled_when_no_meta(tmp_path):
     p = tmp_path / "agent-nometa.jsonl"
     p.write_text("", encoding="utf-8")
     assert usage_of(p)["agent"] == "(未标注)"                 # 兜底的兜底不变
+
+
+def test_legacy_usage_dict_exactly_matches_claude_adapter_fixture():
+    from pathlib import Path
+
+    from autoresearch.trace.transcripts.base import TranscriptRef
+    from autoresearch.trace.transcripts.claude import ClaudeTranscriptAdapter
+
+    path = Path(__file__).parent / "fixtures" / "claude" / "agent-l4-card.jsonl"
+    record = ClaudeTranscriptAdapter().usage(
+        TranscriptRef(engine="claude", path=path, role="subagent")
+    )
+
+    assert U.usage_of(path) == U.legacy_usage_dict(record)
+    assert set(U.usage_of(path)) == {
+        "messages", "input", "output", "cache_read", "cache_create",
+        "cache_create_1h", "cache_create_5m", "role", "agent", "effort",
+        "model", "speed", "file", "path", "status", "failure_count",
+        "retry_count", "discarded", "reasoning_output", "billed_in", "weighted_in",
+        "pricing_source", "source_effective_date", "pricing_status",
+        "pricing_schema_version", "pricing_reason", "price_profile",
+        "input_usd", "output_usd", "cache_read_usd", "cache_write_1h_usd",
+        "cache_write_5m_usd",
+        "estimated_usd", "relative_opus_cost", "discarded_usd", "retry_usd",
+        "retry_cost_status",
+    }
+
+
+# --- Codex: engine-aware harvest -------------------------------------------
+
+
+def test_codex_run_harvest_reads_bound_transcripts(codex_run):
+    from autoresearch.trace.capsule import bind_transcript
+
+    handle, source = codex_run
+    bind_transcript(
+        handle.run_id,
+        source,
+        role="l4-card",
+        subject="600000",
+        invocation_id="agent-l4-card-600000-1",
+    )
+
+    rows = U.collect_run(handle.run_id, engine="codex")
+
+    assert len(rows) == 1
+    assert rows[0]["agent"] == "l4-card"
+    assert rows[0]["model"] == "gpt-5.6-sol"
+    assert rows[0]["output"] == 1671
+    assert rows[0]["reasoning_output"] == 1119
+    assert rows[0]["status"] == "RETRIED_SUCCEEDED"
+
+
+def test_unknown_model_is_unpriced_never_pseudo_zero(codex_run):
+    from autoresearch.trace.capsule import bind_transcript
+
+    handle, source = codex_run
+    bind_transcript(
+        handle.run_id,
+        source,
+        role="l4-card",
+        subject="600000",
+        invocation_id="agent-l4-card-600000-1",
+    )
+
+    rows = U.collect_run(handle.run_id, engine="codex")
+    md = U.render(rows, sub_dir=f"run:{handle.run_id}")
+
+    assert rows[0]["estimated_usd"] is None
+    assert "$0.0000" not in md
+
+
+def test_missing_evidence_is_unmeasured_row_not_a_zero_row(codex_run):
+    from autoresearch.trace.capsule import bind_transcript
+
+    handle, source = codex_run
+    bind_transcript(
+        handle.run_id,
+        source,
+        role="l4-card",
+        subject="600000",
+        invocation_id="agent-l4-card-600000-1",
+    )
+    source.unlink()
+
+    rows = U.collect_run(handle.run_id, engine="codex")
+    md = U.render(rows, sub_dir=f"run:{handle.run_id}")
+    ledger = U.build_ledger(rows, source=f"run:{handle.run_id}")
+
+    assert rows[0]["status"] == "UNMEASURED"
+    assert rows[0]["estimated_usd"] is None
+    assert "— (UNMEASURED)" in md
+    assert "$0.0000" not in md
+    assert ledger["totals"]["unmeasured_transcripts"] == 1
+
+
+def test_cli_engine_codex_run_id_writes_ledger(codex_run, tmp_path):
+    from autoresearch.trace.capsule import bind_transcript
+
+    handle, source = codex_run
+    bind_transcript(
+        handle.run_id,
+        source,
+        role="l4-card",
+        subject="600000",
+        invocation_id="agent-l4-card-600000-1",
+    )
+    out = tmp_path / "token_usage.md"
+    json_out = tmp_path / "_token_usage.json"
+
+    code = U.main(
+        [
+            "--engine",
+            "codex",
+            "--run-id",
+            handle.run_id,
+            "--out",
+            str(out),
+            "--json-out",
+            str(json_out),
+        ]
+    )
+
+    assert code == 0
+    ledger = json.loads(json_out.read_text(encoding="utf-8"))
+    assert ledger["source"] == f"run:{handle.run_id}"
+    assert ledger["totals"]["transcripts"] == 1
+    assert ledger["rows"][0]["model"] == "gpt-5.6-sol"
+
+
+def test_cli_rejects_unknown_engine():
+    import pytest
+
+    with pytest.raises(SystemExit) as raised:
+        U.main(["--engine", "nope", "--run-id", "20260827T010203456789Z"])
+    assert raised.value.code == 2
+
+
+def test_cli_reports_unreadable_run_without_pretending_zero(tmp_path, monkeypatch):
+    from autoresearch.common import workspace as ws
+
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    monkeypatch.setattr(ws, "context_root", lambda: tmp_path / "context_codex")
+
+    assert U.main(["--engine", "codex", "--run-id", "20260827T999999999999Z"]) == 1

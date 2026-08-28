@@ -7,13 +7,19 @@ design: docs/specs/2026-07-03-research-skills-altitude-refactor-design.md §5.1 
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
+from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from autoresearch.common import workspace as ws
 from autoresearch.scan import frame as scan_frame
 from autoresearch.scan.market import market_pack, market_pack_from_frame
 from autoresearch.scan.menu import sentinel_advice, sentinel_advice_from_frame
+from autoresearch.scan.run_contract import load_run_contract
+from autoresearch.trace import capsule as capsule_mod
+from autoresearch.trace.capsule import begin_run
 from tests.scan._synth_universe import synth_universe
 
 DATE = "2026-07-03"
@@ -156,14 +162,166 @@ def test_frame_cli_smoke(monkeypatch, capsys, tmp_path):
     assert contract["stage_budgets"]["concurrency"]["tushare"] == 4
 
 
+def _patch_active_frame(monkeypatch, df):
+    calls = []
+
+    def _build(d, **kwargs):
+        calls.append((d, kwargs))
+        return df, {"universe_raw": len(df), "universe": len(df), "after_gate_a": len(df)}
+
+    monkeypatch.setattr(scan_frame, "build_market_frame", _build)
+    monkeypatch.setattr(
+        "autoresearch.data.macro_cn.write_macro_cn", lambda d: Path("macro.json")
+    )
+    monkeypatch.setattr(
+        "autoresearch.macro.state.load_macro_state",
+        lambda today, regime_today=None, path=None: (None, "none"),
+    )
+    return calls
+
+
+def test_frame_reuses_bootstrap_contract_instead_of_minting_second_identity(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    monkeypatch.setattr(ws, "context_root", lambda: tmp_path / "context_codex")
+    monkeypatch.setattr(
+        "autoresearch.scan.user_config.DEFAULT_PINNED_PATH",
+        tmp_path / "missing-pinned.jsonc",
+    )
+    handle = begin_run(
+        "scan-market",
+        "2026-08-27",
+        "codex",
+        {},
+        now=datetime(2026, 8, 27, 1, 2, 3, 456789, tzinfo=timezone.utc),
+    )
+    contract_before = (handle.staging / "run_contract.json").read_bytes()
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", handle.run_id)
+    df = synth_universe(n=30, seed=99)
+    _patch_active_frame(monkeypatch, df)
+
+    assert scan_frame.main(["2026-08-27", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    loaded = load_run_contract(handle.staging / "run_contract.json")
+    assert loaded.run_id == handle.run_id
+    assert loaded.contract_hash == handle.contract.contract_hash
+    assert payload["run_contract"] == handle.contract.short_ref()
+    assert (handle.staging / "run_contract.json").read_bytes() == contract_before
+
+
+def test_frame_refuses_active_run_without_contract_before_any_fetch(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    monkeypatch.setattr(ws, "context_root", lambda: tmp_path / "context_codex")
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", "20260827T010203456789Z")
+    monkeypatch.setattr(
+        scan_frame,
+        "build_market_frame",
+        lambda *a, **k: pytest.fail("market fetch happened before contract validation"),
+    )
+    with pytest.raises(RuntimeError, match="RunContract v3"):
+        scan_frame.main(["2026-08-27", "--json"])
+
+
+def test_frame_rejects_bootstrap_failed_active_env_before_any_fetch(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    monkeypatch.setattr(ws, "context_root", lambda: tmp_path / "context_codex")
+    monkeypatch.setattr(
+        "autoresearch.scan.user_config.DEFAULT_PINNED_PATH",
+        tmp_path / "missing-pinned.jsonc",
+    )
+    original = capsule_mod.append_event
+    calls = 0
+
+    def fail_once(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("event fault")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(capsule_mod, "append_event", fail_once)
+    now = datetime(2026, 8, 27, 1, 2, 3, 456789, tzinfo=timezone.utc)
+    with pytest.raises(RuntimeError, match="recoverable workspace"):
+        begin_run("scan-market", "2026-08-27", "codex", {}, now=now)
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", "20260827T010203456789Z")
+    monkeypatch.setattr(
+        scan_frame,
+        "build_market_frame",
+        lambda *a, **k: pytest.fail("market fetch happened for a FAILED run"),
+    )
+
+    with pytest.raises(RuntimeError, match="not ACTIVE|FAILED"):
+        scan_frame.main(["2026-08-27", "--json"])
+
+
+def test_frame_active_run_uses_frozen_effective_data_policy(
+    tmp_path, monkeypatch, capsys
+):
+    from autoresearch.scan import user_config as uc
+
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    monkeypatch.setattr(ws, "context_root", lambda: tmp_path / "context_codex")
+    monkeypatch.setattr(uc, "DEFAULT_PINNED_PATH", tmp_path / "missing-pinned.jsonc")
+    config = tmp_path / "scan_config.jsonc"
+    config.write_text(
+        json.dumps({"l0": {"source": "em", "cap_floor_yi": 42, "include_bj": False}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(uc, "DEFAULT_PATH", config)
+    handle = begin_run("scan-market", "2026-08-27", "codex", config)
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", handle.run_id)
+    calls = _patch_active_frame(monkeypatch, synth_universe(n=30, seed=100))
+
+    assert scan_frame.main(["2026-08-27", "--json"]) == 0
+    capsys.readouterr()
+    assert calls == [
+        (
+            "2026-08-27",
+            {"cap_floor_yi": 42.0, "include_bj": False, "source": "em"},
+        )
+    ]
+
+
+def test_frame_active_run_uses_custom_begin_config_without_reloading_default(
+    tmp_path, monkeypatch, capsys
+):
+    from autoresearch.scan import user_config as uc
+
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    monkeypatch.setattr(ws, "context_root", lambda: tmp_path / "context_codex")
+    monkeypatch.setattr(ws, "reports_root", lambda: tmp_path / "reports_codex")
+    monkeypatch.setattr(uc, "DEFAULT_PINNED_PATH", tmp_path / "missing-pinned.jsonc")
+    custom = tmp_path / "custom-scan-config.jsonc"
+    custom.write_text(
+        json.dumps({"l0": {"source": "em", "cap_floor_yi": 55, "include_bj": False}}),
+        encoding="utf-8",
+    )
+    # DEFAULT_PATH deliberately remains the isolated missing config from conftest.
+    handle = begin_run("scan-market", "2026-08-27", "codex", custom)
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", handle.run_id)
+    calls = _patch_active_frame(monkeypatch, synth_universe(n=30, seed=101))
+    assert scan_frame.main(["2026-08-27", "--json"]) == 0
+    capsys.readouterr()
+    assert calls[0][1] == {
+        "cap_floor_yi": 55.0,
+        "include_bj": False,
+        "source": "em",
+    }
+
+
 # ───────────────────────── _harvest_vol_series:60 日面板(P1 低位转强波) ─────────────────────────
 
 
 def _fake_daily_world(monkeypatch, n_days: int, n_codes: int = 8, seed: int = 0):
     """伪造 tushare 日历 + 湖:`get_or_fetch('daily', {'trade_date': d})` 返回当日全市场日线。"""
-    import numpy as np
-
     from datetime import date as _date, timedelta as _td
+
+    import numpy as np
 
     rng = np.random.default_rng(seed)
     # 真实连续日历日(生产 `_harvest_vol_series` 会对 `last` 做 strptime 反推 start 窗口,

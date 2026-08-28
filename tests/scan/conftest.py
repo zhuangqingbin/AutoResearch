@@ -123,3 +123,13 @@ def _isolate_temperature_csv(monkeypatch):
     CSV_PATH(测试体内的 setattr 后执行,优先生效)。"""
     monkeypatch.setattr("autoresearch.scan.temperature.CSV_PATH",
                         Path("/nonexistent/tests-no-real-temperature.csv"))
+
+
+@pytest.fixture
+def codex_run(tmp_path, monkeypatch):
+    """One active Codex run plus a writable copy of the rollout fixture."""
+    from tests.forensic_fixtures import begin_fixture_run, copy_fixture
+
+    handle = begin_fixture_run(tmp_path, monkeypatch)
+    source = copy_fixture("codex/rollout.jsonl", tmp_path / "harness")
+    return handle, source

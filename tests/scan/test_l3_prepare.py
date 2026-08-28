@@ -36,8 +36,8 @@ def test_prepare_with_harvest_default(tmp_path, monkeypatch):
         (d / "L3_news" / f"{c}.json").write_text("[]", encoding="utf-8")
         (d / "L3_evidence" / f"{c}.json").write_text("{}", encoding="utf-8")
 
-    # Monkeypatch harvest functions to no-op to prevent network calls
-    monkeypatch.setattr("autoresearch.scan.agents.l3_select.harvest_l3_evidence",
+    # Patch where prepare_l3_table resolves each harvester; its evidence import is bound in prompt.
+    monkeypatch.setattr("autoresearch.scan.l3.prompt.harvest_l3_evidence",
                        lambda *a, **k: {})
     monkeypatch.setattr("autoresearch.scan.agents.l3_news.harvest_l3_news",
                        lambda *a, **k: {})

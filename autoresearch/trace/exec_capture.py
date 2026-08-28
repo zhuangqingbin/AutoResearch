@@ -1,0 +1,1333 @@
+#!/usr/bin/env python3
+"""Run one argv vector while preserving its exact process evidence."""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import fcntl
+import gzip
+import json
+import os
+import re
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import traceback
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import TextIO
+
+from autoresearch.trace.atomic import atomic_write_json
+from autoresearch.trace.capsule import refresh_heartbeat, require_active_run
+from autoresearch.trace.capsule_models import RunHandle
+from autoresearch.trace.events import append_event
+
+_STAGE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$", re.ASCII)
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$", re.ASCII)
+_RECORDED_ENV_KEYS = (
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TZ",
+    "PATH",
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "VIRTUAL_ENV",
+)
+_KNOWN_SECRET_KEYS = frozenset(
+    {
+        "ANTHROPIC_API_KEY",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "FRED_API_KEY",
+        "OPENAI_API_KEY",
+        "TUSHARE_TOKEN",
+    }
+)
+_SECRET_MARKERS = ("TOKEN", "SECRET", "PASSWORD", "API_KEY", "PRIVATE_KEY")
+_DEFAULT_DRAIN_GRACE = 1.0
+_DEFAULT_TERMINATION_GRACE = 5.0
+COMMAND_TERMINAL_EVENTS = frozenset({"COMMAND_COMPLETED", "COMMAND_FAILED"})
+
+
+@dataclass(frozen=True)
+class CaptureResult:
+    """Terminal child outcome plus the persisted invocation metadata."""
+
+    exit_code: int | None
+    invocation: dict
+
+
+class EvidenceFinalizationError(RuntimeError):
+    """One or more terminal evidence channels remained unavailable."""
+
+    def __init__(self, errors: list[dict], exceptions: list[BaseException]):
+        self.errors = tuple(errors)
+        self.exceptions = tuple(exceptions)
+        details = "; ".join(
+            f"{error['classification']}[{error['phase']}]: {error['message']}" for error in errors
+        )
+        super().__init__(f"evidence finalization failed: {details}")
+
+
+class RawFallbackCommitError(OSError):
+    """Raw fallback publication failed; ``committed`` proves target ownership."""
+
+    def __init__(self, message: str, *, committed: bool):
+        self.committed = committed
+        super().__init__(message)
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def _validate_identifier(name: str, value: object, *, optional: bool = False):
+    if optional and value is None:
+        return None
+    if type(value) is not str:
+        raise TypeError(f"{name} must be a string")
+    pattern = _STAGE_RE if name == "stage" else _IDENTIFIER_RE
+    if not pattern.fullmatch(value):
+        raise ValueError(f"unsafe {name}: {value!r}")
+    return value
+
+
+def _validate_argv(argv: object) -> list[str]:
+    if type(argv) not in (list, tuple):
+        raise TypeError("argv must be an argument vector, not a shell string")
+    if not argv:
+        raise ValueError("argv must not be empty")
+    result = []
+    for index, item in enumerate(argv):
+        if type(item) is not str:
+            raise TypeError(f"argv[{index}] must be a string")
+        if "\x00" in item:
+            raise ValueError(f"argv[{index}] contains NUL")
+        if index == 0 and not item:
+            raise ValueError("argv[0] must not be empty")
+        result.append(item)
+    return result
+
+
+def _validate_attempt(attempt: object) -> int:
+    if type(attempt) is not int or attempt < 1:
+        raise ValueError("attempt must be a positive integer")
+    return attempt
+
+
+def _validate_grace(name: str, value: object) -> float:
+    if type(value) not in (int, float) or isinstance(value, bool) or value <= 0:
+        raise ValueError(f"{name} must be a positive number")
+    return float(value)
+
+
+def _require_current_active_handle(handle: object) -> RunHandle:
+    if not isinstance(handle, RunHandle):
+        raise TypeError("handle must be a RunHandle")
+    current = require_active_run(handle.run_id)
+    if current != handle:
+        raise RuntimeError("RunHandle is stale or does not match current run identity")
+    return current
+
+
+def _real_directory(root: Path, relative: Path, *, create: bool) -> Path:
+    """Walk a relative directory without following a symlink component."""
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError(f"directory escapes capsule: {relative}")
+    root_info = root.lstat()
+    if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+        raise ValueError(f"capsule root is not a real directory: {root}")
+    root_resolved = root.resolve(strict=True)
+    current = root
+    for part in relative.parts:
+        if part in ("", "."):
+            continue
+        candidate = current / part
+        try:
+            info = candidate.lstat()
+        except FileNotFoundError:
+            if not create:
+                raise
+            with contextlib.suppress(FileExistsError):
+                candidate.mkdir(mode=0o700)
+            info = candidate.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            raise ValueError(f"destination contains a symlink: {candidate}")
+        if not stat.S_ISDIR(info.st_mode):
+            raise ValueError(f"destination component is not a directory: {candidate}")
+        try:
+            candidate.resolve(strict=True).relative_to(root_resolved)
+        except ValueError as exc:
+            raise ValueError(f"destination escapes capsule: {candidate}") from exc
+        current = candidate
+    return current
+
+
+def _reject_symlink_file(path: Path) -> None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(info.st_mode):
+        raise ValueError(f"evidence path is a symlink: {path}")
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError(f"evidence path is not a regular file: {path}")
+
+
+def _require_absent_evidence(path: Path) -> None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return
+    kind = "symlink" if stat.S_ISLNK(info.st_mode) else "existing target"
+    raise FileExistsError(f"evidence path already exists ({kind}): {path}")
+
+
+def _fsync_directory(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _recorded_environment(environ: dict[str, str]) -> dict:
+    secrets = _secret_values(environ)
+    recorded: dict[str, object] = {
+        key: _redact_text(environ[key], secrets) for key in _RECORDED_ENV_KEYS if key in environ
+    }
+    secret_keys = set(_KNOWN_SECRET_KEYS)
+    secret_keys.update(
+        key for key in environ if any(marker in key.upper() for marker in _SECRET_MARKERS)
+    )
+    for key in sorted(secret_keys):
+        recorded[key] = {"present": bool(environ.get(key))}
+    return recorded
+
+
+def _secret_values(environ: dict[str, str]) -> tuple[str, ...]:
+    values = {
+        value
+        for key, value in environ.items()
+        if value
+        and (key in _KNOWN_SECRET_KEYS or any(marker in key.upper() for marker in _SECRET_MARKERS))
+    }
+    return tuple(sorted(values, key=len, reverse=True))
+
+
+def _redact_text(value: str | None, secrets: tuple[str, ...]) -> str | None:
+    if value is None:
+        return None
+    for secret in secrets:
+        value = value.replace(secret, "[REDACTED]")
+    return value
+
+
+def _redact_error(error: dict, secrets: tuple[str, ...]) -> dict:
+    result = dict(error)
+    for field in ("summary", "message", "traceback"):
+        result[field] = _redact_text(result[field], secrets)
+    return result
+
+
+def _redacted_errors(errors: list[dict], secrets: tuple[str, ...]) -> list[dict]:
+    return [_redact_error(error, secrets) for error in errors]
+
+
+def _exception_error(
+    exc: BaseException,
+    *,
+    classification: str,
+    category: str,
+    phase: str,
+    traceback_text: str | None = None,
+) -> dict:
+    """Describe a wrapper exception without discarding its Python traceback."""
+    message = str(exc) or type(exc).__name__
+    return {
+        "classification": classification,
+        "category": category,
+        "summary": f"{type(exc).__name__}: {message}",
+        "message": message,
+        "exception_type": type(exc).__name__,
+        "type": type(exc).__name__,
+        "phase": phase,
+        "traceback": traceback_text if traceback_text is not None else traceback.format_exc(),
+    }
+
+
+def _process_error(*, classification: str, exception_type: str, summary: str, phase: str) -> dict:
+    return {
+        "classification": classification,
+        "category": "PROCESS",
+        "summary": summary,
+        "message": summary,
+        "exception_type": exception_type,
+        "type": exception_type,
+        "phase": phase,
+        "traceback": None,
+    }
+
+
+def _capture_condition_error(
+    *, classification: str, exception_type: str, summary: str, phase: str
+) -> dict:
+    return {
+        "classification": classification,
+        "category": "CAPTURE",
+        "summary": summary,
+        "message": summary,
+        "exception_type": exception_type,
+        "type": exception_type,
+        "phase": phase,
+        "traceback": None,
+    }
+
+
+def _index_paths(handle: RunHandle) -> tuple[Path, Path]:
+    events_dir = _real_directory(handle.capsule, Path("events"), create=False)
+    index = events_dir / "invocations.json"
+    lock = events_dir / "invocations.lock"
+    _reject_symlink_file(index)
+    _reject_symlink_file(lock)
+    return index, lock
+
+
+def _with_index_lock(handle: RunHandle, update) -> dict:
+    index_path, lock_path = _index_paths(handle)
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(lock_path, flags, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        _reject_symlink_file(index_path)
+        if index_path.exists():
+            try:
+                value = json.loads(index_path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                raise RuntimeError(f"invalid invocation index: {exc}") from exc
+            if type(value) is not dict:
+                raise RuntimeError("invalid invocation index: root must be an object")
+        else:
+            value = {}
+        result = update(value)
+        atomic_write_json(index_path, value)
+        return result
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def _reserve_invocation(handle: RunHandle, invocation_id: str, metadata: dict) -> None:
+    def reserve(index: dict):
+        if invocation_id in index:
+            raise ValueError(f"duplicate invocation_id: {invocation_id}")
+        index[invocation_id] = metadata
+
+    _with_index_lock(handle, reserve)
+
+
+def _require_unreserved_invocation(handle: RunHandle, invocation_id: str) -> None:
+    """Provide a clear duplicate-identity error before log target preflight."""
+    index_path, lock_path = _index_paths(handle)
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(lock_path, flags, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        if index_path.exists():
+            payload = json.loads(index_path.read_text(encoding="utf-8"))
+            if type(payload) is not dict:
+                raise RuntimeError("invalid invocation index: root must be an object")
+            if invocation_id in payload:
+                raise ValueError(f"duplicate invocation_id: {invocation_id}")
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def _finish_invocation(handle: RunHandle, invocation_id: str, metadata: dict) -> dict:
+    def finish(index: dict):
+        if invocation_id not in index:
+            raise RuntimeError(f"invocation reservation is missing: {invocation_id}")
+        if index[invocation_id].get("status") != "STARTING":
+            raise RuntimeError(f"invocation is already terminal: {invocation_id}")
+        index[invocation_id] = metadata
+        return metadata
+
+    return _with_index_lock(handle, finish)
+
+
+def _replace_invocation(handle: RunHandle, invocation_id: str, metadata: dict) -> dict:
+    """Replace this invocation's terminal row after a later evidence failure."""
+
+    def replace(index: dict):
+        current = index.get(invocation_id)
+        if current is None:
+            raise RuntimeError(f"invocation reservation is missing: {invocation_id}")
+        if current.get("run_id") != handle.run_id:
+            raise RuntimeError(f"invocation identity does not match run: {invocation_id}")
+        index[invocation_id] = metadata
+        return metadata
+
+    return _with_index_lock(handle, replace)
+
+
+def _discard_reservation(handle: RunHandle, invocation_id: str) -> None:
+    def discard(index: dict):
+        if index.get(invocation_id, {}).get("status") == "STARTING":
+            del index[invocation_id]
+
+    _with_index_lock(handle, discard)
+
+
+def _make_raw_temp(directory: Path, stream_name: str) -> tuple[int, Path]:
+    fd, name = tempfile.mkstemp(prefix=f".{stream_name}.", suffix=".raw.tmp", dir=directory)
+    os.chmod(name, 0o600)
+    return fd, Path(name)
+
+
+def _echo(stream: TextIO, block: bytes) -> None:
+    target = getattr(stream, "buffer", None)
+    if target is not None:
+        target.write(block)
+        target.flush()
+        return
+    stream.write(block.decode("utf-8", errors="replace"))
+    stream.flush()
+
+
+def _reader(pipe, raw_fd: int, parent_stream: TextIO, errors: list[dict], name: str):
+    try:
+        while True:
+            block = pipe.read(64 * 1024)
+            if not block:
+                break
+            view = memoryview(block)
+            while view:
+                written = os.write(raw_fd, view)
+                if written == 0:
+                    raise OSError(f"short write while capturing {name}")
+                view = view[written:]
+            # A closed parent stream must not stop evidence capture.
+            with contextlib.suppress(Exception):
+                _echo(parent_stream, block)
+    except BaseException as exc:
+        errors.append(
+            _exception_error(
+                exc,
+                classification="STREAM_CAPTURE_FAILURE",
+                category="CAPTURE",
+                phase=f"{name}-reader",
+            )
+        )
+    finally:
+        with contextlib.suppress(Exception):
+            pipe.close()
+
+
+def _gzip_raw(raw_path: Path, destination: Path) -> None:
+    _reject_symlink_file(destination)
+    if destination.exists():
+        raise FileExistsError(f"log evidence already exists: {destination}")
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
+    )
+    temp = Path(temp_name)
+    try:
+        with os.fdopen(fd, "wb") as target:
+            fd = -1
+            with (
+                gzip.GzipFile(
+                    filename="", mode="wb", fileobj=target, compresslevel=9, mtime=0
+                ) as archive,
+                raw_path.open("rb") as source,
+            ):
+                for block in iter(lambda: source.read(1024 * 1024), b""):
+                    archive.write(block)
+            target.flush()
+            os.fsync(target.fileno())
+        os.replace(temp, destination)
+        os.chmod(destination, 0o600)
+        _fsync_directory(destination.parent)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        temp.unlink(missing_ok=True)
+
+
+def _raw_fallback_path(destination: Path) -> Path:
+    return destination.with_suffix("").with_suffix(".log.raw")
+
+
+def _retain_raw(raw_path: Path, destination: Path) -> None:
+    """Durably commit an uncompressed stream when gzip finalization fails."""
+    committed = False
+    try:
+        # link(2) is an atomic, no-overwrite publication claim. Unlike replace(),
+        # it cannot silently adopt or overwrite a stale/racing destination.
+        os.link(raw_path, destination, follow_symlinks=False)
+        committed = True
+        os.chmod(destination, 0o600)
+        fd = os.open(destination, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        _fsync_directory(destination.parent)
+    except BaseException as exc:
+        raise RawFallbackCommitError(str(exc), committed=committed) from exc
+    try:
+        raw_path.unlink()
+        _fsync_directory(destination.parent)
+    except BaseException as exc:
+        raise RawFallbackCommitError(str(exc), committed=True) from exc
+
+
+def _event_fields(
+    handle: RunHandle,
+    *,
+    stage: str,
+    invocation_id: str,
+    attempt: int,
+    subject: str | None,
+    event_type: str,
+    payload: dict,
+) -> dict:
+    return {
+        "run_id": handle.run_id,
+        "engine": handle.engine,
+        "stage": stage,
+        "invocation_id": invocation_id,
+        "attempt": attempt,
+        "subject": subject,
+        "event_type": event_type,
+        "payload": payload,
+    }
+
+
+def _signal_process_group(process: subprocess.Popen, signum: int) -> None:
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(process.pid, signum)
+
+
+def _terminate_child(process: subprocess.Popen, grace: float) -> int | None:
+    if process.poll() is None:
+        _signal_process_group(process, signal.SIGTERM)
+    try:
+        return process.wait(timeout=grace)
+    except subprocess.TimeoutExpired:
+        _signal_process_group(process, signal.SIGKILL)
+        try:
+            return process.wait(timeout=grace)
+        except subprocess.TimeoutExpired:
+            return process.poll()
+
+
+def _join_readers(threads: list[threading.Thread], grace: float) -> list[threading.Thread]:
+    deadline = time.monotonic() + grace
+    for thread in threads:
+        thread.join(timeout=max(0.0, deadline - time.monotonic()))
+    return [thread for thread in threads if thread.is_alive()]
+
+
+def _find_terminal_event(handle: RunHandle, invocation_id: str) -> dict | None:
+    path = handle.capsule / "events/events.jsonl"
+    terminal = None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        row = json.loads(line)
+        if (
+            row.get("invocation_id") == invocation_id
+            and row.get("event_type") in COMMAND_TERMINAL_EVENTS
+        ):
+            terminal = row
+    return terminal
+
+
+def _capture_reserved(
+    handle: RunHandle,
+    *,
+    stage: str,
+    invocation_id: str,
+    attempt: int,
+    subject: str | None,
+    command: list[str],
+    child_env: dict[str, str],
+    base: dict,
+    stdout_fd: int,
+    stderr_fd: int,
+    stdout_raw: Path,
+    stderr_raw: Path,
+    stdout_path: Path,
+    stderr_path: Path,
+    stdout_ref: str,
+    stderr_ref: str,
+    started_monotonic: float,
+    drain_grace: float,
+    termination_grace: float,
+) -> CaptureResult:
+    """Run a reserved invocation; restore signals only after terminal evidence."""
+    process: subprocess.Popen | None = None
+    threads: list[threading.Thread] = []
+    started_threads: list[threading.Thread] = []
+    reader_errors: list[dict] = []
+    capture_errors: list[dict] = []
+    previous_handlers: dict[int, object] = {}
+    signal_handling = {
+        "installed": False,
+        "reason": (
+            "not-main-thread"
+            if threading.current_thread() is not threading.main_thread()
+            else "child-not-started"
+        ),
+    }
+    signal_forwarded: list[int] = []
+    exit_code: int | None = None
+    pending_exception: BaseException | None = None
+    escalation_timer: threading.Timer | None = None
+    secrets = _secret_values(child_env)
+    log_refs = {"stdout": stdout_ref, "stderr": stderr_ref}
+    log_encodings = {"stdout": "gzip", "stderr": "gzip"}
+    errors: list[dict] = []
+    metadata: dict | None = None
+    persisted: dict | None = None
+    terminal_event: dict | None = None
+    finalization_errors: list[dict] = []
+    finalization_exceptions: list[BaseException] = []
+
+    def exception_error(
+        exc: BaseException, *, classification: str, category: str, phase: str
+    ) -> dict:
+        return _redact_error(
+            _exception_error(
+                exc,
+                classification=classification,
+                category=category,
+                phase=phase,
+            ),
+            secrets,
+        )
+
+    def build_metadata(errors: list[dict]) -> tuple[dict, int | None]:
+        child_signal = -exit_code if exit_code is not None and exit_code < 0 else None
+        observed_signal = child_signal or (signal_forwarded[-1] if signal_forwarded else None)
+        failed = (
+            exit_code != 0
+            or observed_signal is not None
+            or bool(errors)
+            or pending_exception is not None
+        )
+        return (
+            {
+                **base,
+                "stdout_log": log_refs["stdout"],
+                "stderr_log": log_refs["stderr"],
+                "stdout_log_encoding": log_encodings["stdout"],
+                "stderr_log_encoding": log_encodings["stderr"],
+                "status": "FAILED" if failed else "COMPLETED",
+                "ended_at": _utc_now(),
+                "duration_seconds": round(time.monotonic() - started_monotonic, 9),
+                "exit_code": exit_code,
+                "signal": observed_signal,
+                "signal_handling": signal_handling,
+                "forwarded_signals": signal_forwarded,
+                "error": errors[0] if errors else None,
+                "capture_errors": errors,
+            },
+            observed_signal,
+        )
+
+    def terminal_payload(metadata: dict) -> dict:
+        return {
+            "exit_code": metadata["exit_code"],
+            "signal": metadata["signal"],
+            "duration_seconds": metadata["duration_seconds"],
+            "stdout_log": metadata["stdout_log"],
+            "stderr_log": metadata["stderr_log"],
+            "stdout_log_encoding": metadata["stdout_log_encoding"],
+            "stderr_log_encoding": metadata["stderr_log_encoding"],
+            "error": metadata["error"],
+        }
+
+    try:
+        try:
+            try:
+                process = subprocess.Popen(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env=child_env,
+                    start_new_session=True,
+                )
+            except OSError as exc:
+                signal_handling = {"installed": False, "reason": "spawn-failed"}
+                capture_errors.append(
+                    exception_error(
+                        exc,
+                        classification="SPAWN_FAILURE",
+                        category="WRAPPER",
+                        phase="spawn",
+                    )
+                )
+            else:
+                if threading.current_thread() is threading.main_thread():
+
+                    def forward(signum, frame):
+                        nonlocal escalation_timer
+                        signal_forwarded.append(signum)
+                        if process is None or process.poll() is not None:
+                            return
+                        if len(signal_forwarded) == 1:
+                            _signal_process_group(process, signum)
+                            escalation_timer = threading.Timer(
+                                termination_grace,
+                                _signal_process_group,
+                                args=(process, signal.SIGKILL),
+                            )
+                            escalation_timer.daemon = True
+                            escalation_timer.start()
+                        else:
+                            _signal_process_group(process, signal.SIGKILL)
+
+                    try:
+                        for signum in (signal.SIGINT, signal.SIGTERM):
+                            previous_handlers[signum] = signal.getsignal(signum)
+                            signal.signal(signum, forward)
+                    except (OSError, RuntimeError, ValueError) as exc:
+                        for signum, previous in previous_handlers.items():
+                            with contextlib.suppress(Exception):
+                                signal.signal(signum, previous)
+                        previous_handlers.clear()
+                        signal_handling = {
+                            "installed": False,
+                            "reason": f"signal-api-unavailable: {type(exc).__name__}",
+                        }
+                    else:
+                        signal_handling = {"installed": True, "reason": None}
+
+                assert process.stdout is not None and process.stderr is not None
+                threads = [
+                    threading.Thread(
+                        target=_reader,
+                        args=(process.stdout, stdout_fd, sys.stdout, reader_errors, "stdout"),
+                        name=f"exec-capture-{invocation_id}-stdout",
+                        daemon=True,
+                    ),
+                    threading.Thread(
+                        target=_reader,
+                        args=(process.stderr, stderr_fd, sys.stderr, reader_errors, "stderr"),
+                        name=f"exec-capture-{invocation_id}-stderr",
+                        daemon=True,
+                    ),
+                ]
+                try:
+                    for thread in threads:
+                        thread.start()
+                        started_threads.append(thread)
+                except Exception as exc:
+                    capture_errors.append(
+                        exception_error(
+                            exc,
+                            classification="READER_START_FAILURE",
+                            category="CAPTURE",
+                            phase="reader-start",
+                        )
+                    )
+                    exit_code = _terminate_child(process, termination_grace)
+                except BaseException as exc:
+                    pending_exception = exc
+                    capture_errors.append(
+                        exception_error(
+                            exc,
+                            classification="READER_START_FAILURE",
+                            category="CAPTURE",
+                            phase="reader-start",
+                        )
+                    )
+                    exit_code = _terminate_child(process, termination_grace)
+                else:
+                    try:
+                        while exit_code is None:
+                            try:
+                                exit_code = process.wait(timeout=min(termination_grace, 0.25))
+                            except subprocess.TimeoutExpired:
+                                # 长命令期间续租(内部 30s 限流)。没有心跳,恢复器分不清
+                                # 「跑了 20 分钟的 prelude」和「进程早就没了」。
+                                refresh_heartbeat(
+                                    handle.run_id, invocation_id=invocation_id
+                                )
+                                continue
+                    except BaseException as exc:
+                        pending_exception = exc
+                        capture_errors.append(
+                            exception_error(
+                                exc,
+                                classification="WRAPPER_EXCEPTION",
+                                category="WRAPPER",
+                                phase="wait",
+                            )
+                        )
+                        exit_code = _terminate_child(process, termination_grace)
+        finally:
+            if escalation_timer is not None:
+                escalation_timer.cancel()
+            try:
+                alive = _join_readers(started_threads, drain_grace)
+            except BaseException as exc:
+                alive = [thread for thread in started_threads if thread.is_alive()]
+                if pending_exception is None:
+                    pending_exception = exc
+                capture_errors.append(
+                    exception_error(
+                        exc,
+                        classification="STREAM_CAPTURE_FAILURE",
+                        category="CAPTURE",
+                        phase="reader-drain",
+                    )
+                )
+            if alive and process is not None:
+                capture_errors.append(
+                    _capture_condition_error(
+                        classification="PIPE_DRAIN_TIMEOUT",
+                        exception_type="PipeDrainTimeout",
+                        summary=(
+                            f"reader pipes did not reach EOF within {drain_grace:g}s; "
+                            "terminating the child process group"
+                        ),
+                        phase="reader-drain",
+                    )
+                )
+                _signal_process_group(process, signal.SIGTERM)
+                alive = _join_readers(alive, termination_grace)
+                if alive:
+                    _signal_process_group(process, signal.SIGKILL)
+                    alive = _join_readers(alive, termination_grace)
+            if process is not None:
+                for name, pipe in (("stdout", process.stdout), ("stderr", process.stderr)):
+                    if pipe is not None:
+                        try:
+                            if alive:
+                                # BufferedReader.close() may wait forever on a read lock held
+                                # by a stuck reader. Closing the descriptor is non-blocking;
+                                # the daemon reader will then unwind or remain explicitly
+                                # recorded as PIPE_DRAIN_STUCK.
+                                os.close(pipe.fileno())
+                            else:
+                                pipe.close()
+                        except Exception as exc:
+                            capture_errors.append(
+                                exception_error(
+                                    exc,
+                                    classification="STREAM_CAPTURE_FAILURE",
+                                    category="CAPTURE",
+                                    phase=f"{name}-close",
+                                )
+                            )
+            if alive:
+                alive = _join_readers(alive, drain_grace)
+            if alive:
+                capture_errors.append(
+                    _capture_condition_error(
+                        classification="PIPE_DRAIN_STUCK",
+                        exception_type="PipeDrainStuck",
+                        summary="reader pipes remained blocked after process-group SIGKILL",
+                        phase="reader-drain-final",
+                    )
+                )
+            for name, fd in (("stdout", stdout_fd), ("stderr", stderr_fd)):
+                try:
+                    os.fsync(fd)
+                except OSError as exc:
+                    capture_errors.append(
+                        exception_error(
+                            exc,
+                            classification="LOG_FLUSH_FAILURE",
+                            category="CAPTURE",
+                            phase=f"{name}-flush",
+                        )
+                    )
+                try:
+                    os.close(fd)
+                except OSError as exc:
+                    capture_errors.append(
+                        exception_error(
+                            exc,
+                            classification="LOG_CLOSE_FAILURE",
+                            category="CAPTURE",
+                            phase=f"{name}-close",
+                        )
+                    )
+
+        for name, raw_path, destination in (
+            ("stdout", stdout_raw, stdout_path),
+            ("stderr", stderr_raw, stderr_path),
+        ):
+            try:
+                _gzip_raw(raw_path, destination)
+            except BaseException as exc:
+                capture_errors.append(
+                    exception_error(
+                        exc,
+                        classification="LOG_COMPRESSION_FAILURE",
+                        category="CAPTURE",
+                        phase=f"{name}-gzip",
+                    )
+                )
+                raw_destination = _raw_fallback_path(destination)
+                try:
+                    _retain_raw(raw_path, raw_destination)
+                except BaseException as fallback_exc:
+                    capture_errors.append(
+                        exception_error(
+                            fallback_exc,
+                            classification="LOG_FALLBACK_FAILURE",
+                            category="CAPTURE",
+                            phase=f"{name}-raw-fallback",
+                        )
+                    )
+                    if isinstance(fallback_exc, RawFallbackCommitError) and fallback_exc.committed:
+                        log_refs[name] = raw_destination.relative_to(handle.capsule).as_posix()
+                        log_encodings[name] = "raw"
+                    else:
+                        log_refs[name] = raw_path.relative_to(handle.capsule).as_posix()
+                        log_encodings[name] = "raw-temp"
+                else:
+                    log_refs[name] = raw_destination.relative_to(handle.capsule).as_posix()
+                    log_encodings[name] = "raw"
+            else:
+                try:
+                    raw_path.unlink(missing_ok=True)
+                except BaseException as exc:
+                    capture_errors.append(
+                        exception_error(
+                            exc,
+                            classification="LOG_CLEANUP_FAILURE",
+                            category="CAPTURE",
+                            phase=f"{name}-cleanup",
+                        )
+                    )
+
+        errors = [*_redacted_errors(reader_errors, secrets), *capture_errors]
+        child_signal = -exit_code if exit_code is not None and exit_code < 0 else None
+        observed_signal = child_signal or (signal_forwarded[-1] if signal_forwarded else None)
+        if observed_signal is not None:
+            errors.append(
+                _process_error(
+                    classification="PROCESS_SIGNAL",
+                    exception_type="ProcessSignal",
+                    summary=f"child terminated after signal {observed_signal}",
+                    phase="signal",
+                )
+            )
+        elif exit_code is not None and exit_code != 0:
+            errors.append(
+                _process_error(
+                    classification="PROCESS_NONZERO_EXIT",
+                    exception_type="ProcessExit",
+                    summary=f"child exited with code {exit_code}",
+                    phase="wait",
+                )
+            )
+
+        metadata, _ = build_metadata(errors)
+        persisted = metadata
+        index_persisted = False
+        try:
+            persisted = _finish_invocation(handle, invocation_id, metadata)
+            index_persisted = True
+        except BaseException as exc:
+            primary_index_error = exception_error(
+                exc,
+                classification="INDEX_WRITE_FAILURE",
+                category="PERSISTENCE",
+                phase="invocation-index",
+            )
+            errors.append(primary_index_error)
+            metadata, _ = build_metadata(errors)
+            try:
+                persisted = _replace_invocation(handle, invocation_id, metadata)
+                index_persisted = True
+            except BaseException as fallback_exc:
+                fallback_index_error = exception_error(
+                    fallback_exc,
+                    classification="INDEX_WRITE_FAILURE",
+                    category="PERSISTENCE",
+                    phase="invocation-index-fallback",
+                )
+                errors.append(fallback_index_error)
+                metadata, _ = build_metadata(errors)
+                persisted = metadata
+                finalization_errors.extend([primary_index_error, fallback_index_error])
+                finalization_exceptions.extend([exc, fallback_exc])
+
+        event_type = "COMMAND_FAILED" if metadata["status"] == "FAILED" else "COMMAND_COMPLETED"
+        event_fields = _event_fields(
+            handle,
+            stage=stage,
+            invocation_id=invocation_id,
+            attempt=attempt,
+            subject=subject,
+            event_type=event_type,
+            payload=terminal_payload(metadata),
+        )
+        try:
+            terminal_event = append_event(handle.capsule / "events/events.jsonl", **event_fields)
+        except BaseException as exc:
+            terminal_event = _find_terminal_event(handle, invocation_id)
+            if terminal_event is None:
+                primary_event_error = exception_error(
+                    exc,
+                    classification="EVENT_WRITE_FAILURE",
+                    category="PERSISTENCE",
+                    phase="terminal-event",
+                )
+                errors.append(primary_event_error)
+                metadata, _ = build_metadata(errors)
+                persisted = metadata
+                if index_persisted:
+                    try:
+                        persisted = _replace_invocation(handle, invocation_id, metadata)
+                    except BaseException as index_update_exc:
+                        index_update_error = exception_error(
+                            index_update_exc,
+                            classification="INDEX_WRITE_FAILURE",
+                            category="PERSISTENCE",
+                            phase="invocation-index-event-fallback",
+                        )
+                        errors.append(index_update_error)
+                        metadata, _ = build_metadata(errors)
+                        persisted = metadata
+                        index_persisted = False
+                        finalization_errors.append(index_update_error)
+                        finalization_exceptions.append(index_update_exc)
+                try:
+                    terminal_event = append_event(
+                        handle.capsule / "events/events.jsonl",
+                        **_event_fields(
+                            handle,
+                            stage=stage,
+                            invocation_id=invocation_id,
+                            attempt=attempt,
+                            subject=subject,
+                            event_type="COMMAND_FAILED",
+                            payload=terminal_payload(metadata),
+                        ),
+                    )
+                except BaseException as retry_exc:
+                    terminal_event = _find_terminal_event(handle, invocation_id)
+                    if terminal_event is None:
+                        retry_event_error = exception_error(
+                            retry_exc,
+                            classification="EVENT_WRITE_FAILURE",
+                            category="PERSISTENCE",
+                            phase="terminal-event-retry",
+                        )
+                        errors.append(retry_event_error)
+                        finalization_errors.extend([primary_event_error, retry_event_error])
+                        finalization_exceptions.extend([exc, retry_exc])
+
+        if finalization_errors:
+            aggregate = EvidenceFinalizationError(finalization_errors, finalization_exceptions)
+            raise aggregate from finalization_exceptions[0]
+        if pending_exception is not None:
+            raise pending_exception
+        return CaptureResult(exit_code=exit_code, invocation=persisted)
+    finally:
+        active_exception = sys.exc_info()[1]
+        restoration_errors: list[BaseException] = []
+        restoration_evidence: list[dict] = []
+        for signum, previous in previous_handlers.items():
+            try:
+                signal.signal(signum, previous)
+            except Exception as exc:
+                restoration_errors.append(exc)
+                restoration_evidence.append(
+                    exception_error(
+                        exc,
+                        classification="SIGNAL_HANDLER_RESTORE_FAILURE",
+                        category="FINALIZATION",
+                        phase="restore_signal_handlers",
+                    )
+                )
+        if restoration_errors:
+            errors.extend(restoration_evidence)
+            signal_handling = {
+                **signal_handling,
+                "restored": False,
+                "restore_failures": len(restoration_errors),
+            }
+            business_status = (
+                terminal_event["event_type"].removeprefix("COMMAND_")
+                if terminal_event is not None
+                else (metadata or {}).get("status", "FAILED")
+            )
+            metadata, _ = build_metadata(errors)
+            metadata["status"] = "EVIDENCE_FAILED"
+            metadata["business_status"] = business_status
+            metadata["evidence_status"] = "FAILED"
+            metadata["evidence_error"] = restoration_evidence[0]
+            metadata["terminal_event_seq"] = (
+                terminal_event["seq"] if terminal_event is not None else None
+            )
+            aggregate_errors: list[dict] = []
+            aggregate_exceptions: list[BaseException] = []
+            if isinstance(active_exception, EvidenceFinalizationError):
+                aggregate_errors.extend(active_exception.errors)
+                aggregate_exceptions.extend(active_exception.exceptions)
+            elif active_exception is not None:
+                active_errors = [error for error in errors if error not in restoration_evidence]
+                if not active_errors:
+                    active_errors = [
+                        exception_error(
+                            active_exception,
+                            classification="WRAPPER_EXCEPTION",
+                            category="WRAPPER",
+                            phase="active-exception",
+                        )
+                    ]
+                aggregate_errors.extend(active_errors)
+                aggregate_exceptions.append(active_exception)
+            aggregate_errors.extend(restoration_evidence)
+            aggregate_exceptions.extend(restoration_errors)
+            try:
+                persisted = _replace_invocation(handle, invocation_id, metadata)
+            except BaseException as index_exc:
+                index_error = exception_error(
+                    index_exc,
+                    classification="INDEX_WRITE_FAILURE",
+                    category="PERSISTENCE",
+                    phase="restore-signal-invocation-index",
+                )
+                aggregate_errors.append(index_error)
+                aggregate_exceptions.append(index_exc)
+            try:
+                append_event(
+                    handle.capsule / "events/events.jsonl",
+                    **_event_fields(
+                        handle,
+                        stage=stage,
+                        invocation_id=invocation_id,
+                        attempt=attempt,
+                        subject=subject,
+                        event_type="COMMAND_EVIDENCE_FAILED",
+                        payload={
+                            **terminal_payload(metadata),
+                            "supersedes_seq": (
+                                terminal_event["seq"] if terminal_event is not None else None
+                            ),
+                            "supersedes_event_type": (
+                                terminal_event["event_type"] if terminal_event is not None else None
+                            ),
+                            "business_status": business_status,
+                        },
+                    ),
+                )
+            except BaseException as event_exc:
+                event_error = exception_error(
+                    event_exc,
+                    classification="EVENT_WRITE_FAILURE",
+                    category="PERSISTENCE",
+                    phase="restore-signal-evidence-event",
+                )
+                aggregate_errors.append(event_error)
+                aggregate_exceptions.append(event_exc)
+            aggregate = EvidenceFinalizationError(aggregate_errors, aggregate_exceptions)
+            raise aggregate from aggregate_exceptions[0]
+
+
+def run_captured(
+    handle: RunHandle,
+    stage: str,
+    argv,
+    invocation_id: str,
+    attempt: int = 1,
+    subject: str | None = None,
+    *,
+    drain_grace: float = _DEFAULT_DRAIN_GRACE,
+    termination_grace: float = _DEFAULT_TERMINATION_GRACE,
+) -> CaptureResult:
+    """Execute exactly one argument vector and persist its streamed evidence."""
+    stage = _validate_identifier("stage", stage)
+    invocation_id = _validate_identifier("invocation_id", invocation_id)
+    subject = _validate_identifier("subject", subject, optional=True)
+    attempt = _validate_attempt(attempt)
+    drain_grace = _validate_grace("drain_grace", drain_grace)
+    termination_grace = _validate_grace("termination_grace", termination_grace)
+    command = _validate_argv(argv)
+    handle = _require_current_active_handle(handle)
+
+    log_dir = _real_directory(handle.capsule, Path("logs") / stage, create=True)
+    _require_unreserved_invocation(handle, invocation_id)
+    stdout_path = log_dir / f"{invocation_id}.stdout.log.gz"
+    stderr_path = log_dir / f"{invocation_id}.stderr.log.gz"
+    for evidence_path in (
+        stdout_path,
+        stderr_path,
+        _raw_fallback_path(stdout_path),
+        _raw_fallback_path(stderr_path),
+    ):
+        _require_absent_evidence(evidence_path)
+
+    child_env = dict(os.environ)
+    child_env.update(
+        {
+            "AUTORESEARCH_ENGINE": handle.engine,
+            "AUTORESEARCH_RUN_ID": handle.run_id,
+            "AUTORESEARCH_STAGE": stage,
+            "AUTORESEARCH_INVOCATION_ID": invocation_id,
+        }
+    )
+    started_at = _utc_now()
+    started_monotonic = time.monotonic()
+    stdout_ref = stdout_path.relative_to(handle.capsule).as_posix()
+    stderr_ref = stderr_path.relative_to(handle.capsule).as_posix()
+    environment = _recorded_environment(child_env)
+    stdout_fd = -1
+    stderr_fd = -1
+    stdout_raw: Path | None = None
+    stderr_raw: Path | None = None
+    try:
+        stdout_fd, stdout_raw = _make_raw_temp(log_dir, f"{invocation_id}.stdout")
+        stderr_fd, stderr_raw = _make_raw_temp(log_dir, f"{invocation_id}.stderr")
+    except BaseException:
+        for fd in (stdout_fd, stderr_fd):
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        for path in (stdout_raw, stderr_raw):
+            if path is not None:
+                path.unlink(missing_ok=True)
+        raise
+
+    base = {
+        "run_id": handle.run_id,
+        "engine": handle.engine,
+        "stage": stage,
+        "invocation_id": invocation_id,
+        "attempt": attempt,
+        "subject": subject,
+        "argv": command,
+        "cwd": os.getcwd(),
+        "started_at": started_at,
+        "environment": environment,
+        "stdout_log": stdout_ref,
+        "stderr_log": stderr_ref,
+        "status": "STARTING",
+    }
+    reserved = False
+    try:
+        _reserve_invocation(handle, invocation_id, dict(base))
+        reserved = True
+        append_event(
+            handle.capsule / "events/events.jsonl",
+            **_event_fields(
+                handle,
+                stage=stage,
+                invocation_id=invocation_id,
+                attempt=attempt,
+                subject=subject,
+                event_type="COMMAND_STARTED",
+                payload={
+                    "argv": command,
+                    "cwd": base["cwd"],
+                    "environment": environment,
+                    "stdout_log": stdout_ref,
+                    "stderr_log": stderr_ref,
+                },
+            ),
+        )
+    except BaseException:
+        if reserved:
+            with contextlib.suppress(Exception):
+                _discard_reservation(handle, invocation_id)
+        for fd in (stdout_fd, stderr_fd):
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        stdout_raw.unlink(missing_ok=True)
+        stderr_raw.unlink(missing_ok=True)
+        raise
+
+    return _capture_reserved(
+        handle,
+        stage=stage,
+        invocation_id=invocation_id,
+        attempt=attempt,
+        subject=subject,
+        command=command,
+        child_env=child_env,
+        base=base,
+        stdout_fd=stdout_fd,
+        stderr_fd=stderr_fd,
+        stdout_raw=stdout_raw,
+        stderr_raw=stderr_raw,
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
+        stdout_ref=stdout_ref,
+        stderr_ref=stderr_ref,
+        started_monotonic=started_monotonic,
+        drain_grace=drain_grace,
+        termination_grace=termination_grace,
+    )
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="python -m autoresearch.trace.exec_capture",
+        description="capture one exact argv vector into an active run capsule",
+    )
+    parser.add_argument("--run-id", required=True)
+    parser.add_argument("--stage", required=True)
+    parser.add_argument("--invocation-id", required=True)
+    parser.add_argument("--attempt", type=int, default=1)
+    parser.add_argument("--subject")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    parser = _parser()
+    option_end = raw.index("--") if "--" in raw else len(raw)
+    option_argv = raw[:option_end]
+    if "-h" in option_argv or "--help" in option_argv:
+        parser.parse_args(option_argv)
+    if "--" not in raw:
+        parser.error("missing required '--' before child argv")
+    separator = option_end
+    options = parser.parse_args(option_argv)
+    command = raw[separator + 1 :]
+    if not command:
+        parser.error("child argv after '--' must not be empty")
+    try:
+        handle = require_active_run(options.run_id)
+        result = run_captured(
+            handle,
+            stage=options.stage,
+            argv=command,
+            invocation_id=options.invocation_id,
+            attempt=options.attempt,
+            subject=options.subject,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        print(f"[exec-capture] {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 125
+    if result.exit_code is None:
+        error = result.invocation.get("error") or {}
+        detail = error.get("message", "child was not spawned")
+        print(f"[exec-capture] spawn failed: {detail}", file=sys.stderr)
+        return 127
+    if result.invocation.get("signal"):
+        return 128 + int(result.invocation["signal"])
+    if result.exit_code < 0:
+        return 128 + (-result.exit_code)
+    if result.invocation.get("capture_errors") and result.exit_code == 0:
+        print("[exec-capture] evidence capture failed", file=sys.stderr)
+        return 125
+    return result.exit_code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

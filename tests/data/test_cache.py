@@ -52,6 +52,28 @@ def test_first_fetch_writes_then_second_call_hits(lake):
     pd.testing.assert_frame_equal(out1.reset_index(drop=True), out2.reset_index(drop=True))
 
 
+def test_without_active_run_cache_creates_no_forensic_artifacts(lake, monkeypatch):
+    """普通数据层调用保持原契约：没有 run identity 就没有隐式 trace 根或 blob。"""
+    import autoresearch.trace.source_lineage as lineage
+
+    monkeypatch.delenv("AUTORESEARCH_RUN_ID", raising=False)
+    monkeypatch.setattr(
+        lineage,
+        "trace_access",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("no-run cache path must not enter trace control plane")
+        ),
+    )
+    cache.get_or_fetch(
+        "daily",
+        {"trade_date": "20240102"},
+        today="20260622",
+        fetch=lambda *_: _daily_row(),
+    )
+    assert not list(lake.parent.rglob("reads.jsonl"))
+    assert not list(lake.parent.rglob("blobs"))
+
+
 # ───────────────────── 窄表毒化回归(2026-07-12,回放器 M1 对拍逮到) ─────────────────────
 #
 # `_cache_key` 不含 `fields` → 湖里一个 key 只有一个 parquet。带窄 fields 的查询若成为该 key 的
@@ -236,3 +258,40 @@ def test_no_env_same_day_not_written(tmp_path, monkeypatch):
     cache.get_or_fetch("top_list", {"trade_date": "20260710"}, today="2026-07-10",
                        fetch=lambda ep, p: df)
     assert not (tmp_path / "top_list" / "20260710.parquet").exists()   # parity
+
+
+def test_replay_env_short_circuits_before_lake_or_network(tmp_path, monkeypatch):
+    """重放模式下 get_or_fetch 只读冻结 blob —— 湖和网络都不许被走到。"""
+    import json
+
+    import pandas as pd
+
+    from autoresearch.trace import replay as R
+    from autoresearch.trace.blobs import put_dataframe
+
+    capsule = tmp_path / "capsule"
+    (capsule / "lineage").mkdir(parents=True)
+    frame = pd.DataFrame({"ts_code": ["600000.SH"], "close": [10.5]})
+    digest = put_dataframe(capsule, frame)
+    (capsule / "lineage/reads.jsonl").write_text(
+        json.dumps(
+            {
+                "endpoint": "daily",
+                "normalized_params": {"trade_date": "20260825"},
+                "normalized_blob_hash": digest,
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(R.REPLAY_ENV, str(capsule))
+    monkeypatch.setattr(cache, "LAKE", tmp_path / "never-read-lake")
+
+    def _explode(*args, **kwargs):
+        raise AssertionError("network reached during replay")
+
+    restored = cache.get_or_fetch("daily", {"trade_date": "20260825"}, fetch=_explode)
+
+    pd.testing.assert_frame_equal(restored, frame)
+    assert not (tmp_path / "never-read-lake").exists()

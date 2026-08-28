@@ -288,9 +288,23 @@ def _default_harvest_slim(ticker: str, date: str, ctx_root: Path) -> Path:
     import sys
 
     subprocess.run(
-        [sys.executable, "-m", "autoresearch.analyze.harvest", ticker, date, "stock", "--slim"],
+        [sys.executable, "-m", "autoresearch.analyze.harvest", ticker, date, "stock", "--slim",
+         "--out-dir", str(ctx_root)],
         check=False)
     return ctx_root / f"{ticker}_{date}_slim.md"
+
+def _slim_bytes_defect(data: bytes, min_bytes: int) -> tuple[int, str | None]:
+    """按已安全捕获的内容判一份 slim 能不能用。"""
+    size = len(data)
+    if size < min_bytes:
+        return size, f"<{min_bytes}B(疑空稿/截断)"
+    text = data.decode("utf-8", errors="replace")
+    missing = [a for a in _SLIM_ANCHORS if a not in text]
+    if missing:
+        return size, f"结构缺块:{', '.join(missing)}"
+    if not _SLIM_CLOSE_RE.search(text):
+        return size, "结构齐但 OHLCV Close 无数值(NO_DATA 占位)"
+    return size, None
 
 def _slim_defect(path: Path | None, min_bytes: int) -> tuple[int, str | None]:
     """判一份 slim 能不能用。返回 (bytes, 缺陷描述);缺陷 None = 合格。
@@ -333,9 +347,11 @@ def harvest_slim_batch(date: str, root: Path | None = None, min_bytes: int = 4_0
     workers=4 默认并发(spec §P3);subprocess 取数为 I/O 密集,限频靠 per-ticker retries
     串行重试承担。workers<=1 退化原串行 for 循环(兼容旧行为/便于对串行时序敏感的测试)。
     """
+    date = ws.validate_scan_date(date)
     base = Path(root) if root else ws.scan_root()
     scan_dir = base / date
-    ctx = ctx_root or ws.context_root()
+    ctx = (Path(ctx_root) if ctx_root is not None
+           else ws.scan_input_dir(date, scan_dir=scan_dir))
     tickers = [t for t in (scan_dir / "_harvest_list.txt").read_text(encoding="utf-8").split() if t]
     hv = harvest_fn or (lambda t, dt: _default_harvest_slim(t, dt, ctx))
 

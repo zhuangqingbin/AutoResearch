@@ -26,9 +26,13 @@ AGENTS.md 要求的 ``export AUTORESEARCH_ENGINE=codex``(沙箱外 CODEX_* 检�
 from __future__ import annotations
 
 import os
+import re
+from datetime import date as calendar_date
 from pathlib import Path
 
 ENGINES = ("claude", "codex")
+_RUN_ID_RE = re.compile(r"^[0-9]{8}T[0-9]{12}Z$")
+_SCAN_DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 
 #: 2026-08-11 引擎隔离**之前**的 context 根名。历史产物(如 08-11 前的 `_l4_tasks.json`,
 #: 实测 113 处)把路径记成裸 `context/…`,那个根今天不存在、文件却还在 —— 读侧要做前缀
@@ -75,12 +79,55 @@ def lake_root() -> Path:
 
 # ── 高频组合根(纯便捷,无独立语义)─────────────────────────────────────────────
 
+def active_run_id(environ=None) -> str | None:
+    env = os.environ if environ is None else environ
+    value = str(env.get("AUTORESEARCH_RUN_ID", "")).strip()
+    if not value:
+        return None
+    return validate_run_id(value)
+
+
+def validate_run_id(run_id) -> str:
+    """Validate the exact ASCII run identity used in path derivation."""
+    value = str(run_id)
+    if not _RUN_ID_RE.fullmatch(value):
+        raise ValueError(f"run_id/AUTORESEARCH_RUN_ID={value!r} 非法")
+    return value
+
+
+def scan_run_root(run_id: str | None = None) -> Path:
+    value = active_run_id() if run_id is None else str(run_id)
+    if value is None:
+        raise ValueError("缺 AUTORESEARCH_RUN_ID，无法解析 run-scoped workspace")
+    return context_root() / "scan_runs" / validate_run_id(value)
+
+
 def scan_root() -> Path:
-    return context_root() / "scan"
+    run_id = active_run_id()
+    return scan_run_root(run_id) / "staging" if run_id else context_root() / "scan"
+
+
+def validate_scan_date(date) -> str:
+    value = str(date)
+    if not _SCAN_DATE_RE.fullmatch(value):
+        raise ValueError(f"scan date={value!r} 非法")
+    try:
+        calendar_date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"scan date={value!r} 非法") from exc
+    return value
 
 
 def scan_dir(date) -> Path:
-    return scan_root() / str(date)
+    return scan_root() / validate_scan_date(date)
+
+
+def scan_input_dir(date, *, scan_dir=None) -> Path:
+    value = validate_scan_date(date)
+    if not active_run_id():
+        return context_root()
+    resolved_scan_dir = Path(scan_dir) if scan_dir is not None else scan_root() / value
+    return resolved_scan_dir / "_external_inputs"
 
 
 def learning_root() -> Path:

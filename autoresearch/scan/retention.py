@@ -40,17 +40,24 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import shutil
+import stat
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 from autoresearch.common import workspace as ws
+from autoresearch.trace.atomic import atomic_write_json, canonical_json
+from autoresearch.trace.blobs import dataframe_bytes
 
 MANIFEST_NAME = "MANIFEST.sha256"
 #: 镜像时跳过的目录名(锁/缓存,不是现场)
 SKIP_DIRS = frozenset({"_sem", "__pycache__", ".omc"})
 #: 镜像时跳过的文件后缀(半截写入/锁文件)
 SKIP_SUFFIXES = (".lock", ".tmp")
+_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$", re.ASCII)
 
 #: prompt 本体 —— 它们才是 agent 真正执行的指令,run 里原先只有一个 `git_sha` 代表它们。
 #: 仓内相对路径;缺文件静默跳过(不同引擎/精简 checkout 下可能不全)。
@@ -295,8 +302,9 @@ def lake_manifest(date: str, *, lake_root: Path | None = None,
     """
     root = Path(lake_root) if lake_root else ws.lake_root()
     if not root.is_dir():
-        return {"schema_version": 1, "date": str(date), "window_days": window_days,
-                "files": {}, "note": "lake 目录不存在"}
+        return {"schema_version": 1, "schema": "window_guess",
+                "source_mode": "window_guess", "date": str(date),
+                "window_days": window_days, "files": {}, "note": "lake 目录不存在"}
     daily = root / "daily"
     D = str(date).replace("-", "")
     days = sorted(p.stem for p in daily.glob("*.parquet")) if daily.is_dir() else []
@@ -310,20 +318,298 @@ def lake_manifest(date: str, *, lake_root: Path | None = None,
             if key not in window and stem != "static":
                 continue
             files[f"{ep_dir.name}/{stem}"] = f"{sha256_file(p)}:{p.stat().st_size}"
-    return {"schema_version": 1, "date": str(date), "window_days": window_days,
+    return {"schema_version": 1, "schema": "window_guess",
+            "source_mode": "window_guess", "date": str(date), "window_days": window_days,
             "n_files": len(files),
-            "note": ("窗口内湖文件的内容指纹。**不等于「这些文件当天被读过」** —— 真 lineage "
-                     "要在 cache.get_or_fetch 逐次记账(热路径 + 跨进程),本波未做。"
+            "note": ("window_guess 回退视图：窗口内湖文件的内容指纹。"
+                     "**不等于「这些文件当天被读过」**；只有 reads.jsonl 派生的 exact_reads "
+                     "才是逐次真实 lineage。"
                      "key=static(stock_basic/trade_cal)是唯一「刷新即覆盖」的一类,最该盯。"),
             "files": files}
 
 
+def _lineage_path(scan_dir: Path) -> Path | None:
+    candidates = (
+        scan_dir.parent.parent / "capsule/lineage/reads.jsonl",
+        scan_dir / "lineage/reads.jsonl",
+        scan_dir / "trace/reads.jsonl",
+    )
+    return next((path for path in candidates if path.is_file()), None)
+
+
+def _dataframe_bytes(frame: pd.DataFrame) -> bytes:
+    return dataframe_bytes(frame)
+
+
+def _frame_columns_hash(frame: pd.DataFrame) -> str:
+    columns = [
+        {"name": str(name), "dtype": str(dtype)}
+        for name, dtype in zip(frame.columns, frame.dtypes, strict=True)
+    ]
+    return hashlib.sha256(canonical_json(columns).encode("utf-8")).hexdigest()
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        row = json.loads(line)
+        if not isinstance(row, dict):
+            raise ValueError("jsonl row must be an object")
+        rows.append(row)
+    return rows
+
+
+def _require_digest(value: object, *, field: str) -> str:
+    if type(value) is not str or not _DIGEST_RE.fullmatch(value):
+        raise ValueError(f"{field} must be a full lowercase SHA-256 digest")
+    return value
+
+
+def _validate_lineage_blob(
+    capsule: Path,
+    row: dict,
+    *,
+    hash_field: str = "blob_hash",
+    size_field: str = "bytes",
+) -> None:
+    digest = _require_digest(row.get(hash_field), field=hash_field)
+    size = row.get(size_field)
+    rows = row.get("rows")
+    columns_hash = _require_digest(row.get("columns_hash"), field="columns_hash")
+    if type(size) is not int or size < 0:
+        raise ValueError("bytes must be a non-negative integer")
+    if type(rows) is not int or rows < 0:
+        raise ValueError("rows must be a non-negative integer")
+    target = capsule / "blobs" / "sha256" / digest[:2] / digest
+    info = target.lstat()
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise ValueError("blob must be a regular file")
+    target.resolve(strict=True).relative_to(capsule.resolve(strict=True))
+    if info.st_size != size or sha256_file(target) != digest:
+        raise ValueError("blob size or digest mismatch")
+    frame = pd.read_parquet(target)
+    if len(frame) != rows or _frame_columns_hash(frame) != columns_hash:
+        raise ValueError("blob dataframe semantics mismatch")
+
+
+def _row_hash(row: dict) -> str:
+    return hashlib.sha256(canonical_json(row).encode("utf-8")).hexdigest()
+
+
+def _source_event_keys(events: list[dict]) -> list[tuple[str | None, str | None]]:
+    keys: list[tuple[str | None, str | None]] = []
+    for event in events:
+        if event.get("event_type") not in {"SOURCE_READ", "SOURCE_FETCHED", "SOURCE_FAILED"}:
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            keys.append((None, None))
+            continue
+        digest = payload.get("lineage_row_hash")
+        normalized_digest = (
+            digest
+            if payload.get("lineage_persisted") is True
+            and type(digest) is str
+            and _DIGEST_RE.fullmatch(digest)
+            else None
+        )
+        correlation = payload.get("correlation_id")
+        keys.append(
+            (
+                normalized_digest,
+                correlation if type(correlation) is str and correlation else None,
+            )
+        )
+    return keys
+
+
+def _gap_keys(gaps: list[dict]) -> list[tuple[str | None, str | None]]:
+    keys: list[tuple[str | None, str | None]] = []
+    for gap in gaps:
+        digest = gap.get("lineage_row_hash")
+        normalized_digest = (
+            digest if type(digest) is str and _DIGEST_RE.fullmatch(digest) else None
+        )
+        correlation = gap.get("correlation_id")
+        normalized_correlation = (
+            correlation if type(correlation) is str and correlation else None
+        )
+        keys.append((normalized_digest, normalized_correlation))
+    return keys
+
+
+def _event_matches(
+    row_key: tuple[str, str | None], event_key: tuple[str | None, str | None]
+) -> bool:
+    row_hash, row_correlation = row_key
+    event_hash, event_correlation = event_key
+    return event_hash == row_hash and (
+        row_correlation is None or event_correlation == row_correlation
+    )
+
+
+def _gap_matches(
+    row_key: tuple[str, str | None], gap_key: tuple[str | None, str | None]
+) -> bool:
+    row_hash, row_correlation = row_key
+    gap_hash, gap_correlation = gap_key
+    if gap_hash is not None:
+        return gap_hash == row_hash and (
+            gap_correlation is None or gap_correlation == row_correlation
+        )
+    return gap_correlation is not None and gap_correlation == row_correlation
+
+
+def _read_exact_manifest(scan_dir: Path) -> tuple[dict | None, str]:
+    source = _lineage_path(scan_dir)
+    if source is None:
+        return None, "lineage_absent"
+    try:
+        rows = _read_jsonl(source)
+        capsule = source.parent.parent
+        event_path = capsule / "events/events.jsonl"
+        gap_path = source.parent / "evidence_gaps.jsonl"
+        events_present = event_path.is_file()
+        events = _read_jsonl(event_path) if events_present else []
+        gaps = _read_jsonl(gap_path) if gap_path.is_file() else []
+        event_keys = _source_event_keys(events)
+        gap_keys = _gap_keys(gaps)
+
+        effective_complete: list[bool] = []
+        row_keys: list[tuple[str, str | None]] = []
+        used_events: set[int] = set()
+        missing_events = 0
+        for row in rows:
+            status = row.get("status")
+            if status not in {"SUCCEEDED", "FAILED"}:
+                raise ValueError("invalid source status")
+            endpoint = row.get("endpoint")
+            if type(endpoint) is not str or not endpoint:
+                raise ValueError("endpoint must be non-empty")
+            if type(row.get("evidence_complete")) is not bool:
+                raise ValueError("evidence_complete must be boolean")
+            blob_hash = row.get("blob_hash")
+            if status == "SUCCEEDED" and blob_hash is not None:
+                _validate_lineage_blob(capsule, row)
+                if row.get("normalized_blob_hash") is not None:
+                    _validate_lineage_blob(
+                        capsule,
+                        row,
+                        hash_field="normalized_blob_hash",
+                        size_field="normalized_bytes",
+                    )
+            elif status == "SUCCEEDED" and row.get("bytes") is not None:
+                raise ValueError("successful source row without blob cannot record bytes")
+            elif status == "FAILED" and any(
+                row.get(field) is not None
+                for field in (
+                    "blob_hash",
+                    "bytes",
+                    "rows",
+                    "columns_hash",
+                    "normalized_blob_hash",
+                    "normalized_bytes",
+                )
+            ):
+                raise ValueError("failed source row cannot reference successful content")
+
+            digest = _row_hash(row)
+            correlation = row.get("correlation_id")
+            if correlation is not None and (type(correlation) is not str or not correlation):
+                raise ValueError("correlation_id must be a non-empty string")
+            row_key = (digest, correlation)
+            row_keys.append(row_key)
+            event_index = next(
+                (
+                    index
+                    for index, event_key in enumerate(event_keys)
+                    if index not in used_events and _event_matches(row_key, event_key)
+                ),
+                None,
+            )
+            has_event = event_index is not None
+            if event_index is not None:
+                used_events.add(event_index)
+            has_gap = any(_gap_matches(row_key, gap_key) for gap_key in gap_keys)
+            if not has_event:
+                missing_events += 1
+            complete = row["evidence_complete"] and not has_gap
+            complete = complete and has_event
+            if status == "SUCCEEDED" and blob_hash is None:
+                complete = False
+            effective_complete.append(complete)
+        orphan_source_events = len(event_keys) - len(used_events)
+        orphan_gaps = sum(
+            not any(_gap_matches(row_key, gap_key) for row_key in row_keys)
+            for gap_key in gap_keys
+        )
+    except BaseException:
+        return None, "lineage_unreadable"
+
+    succeeded = [row for row in rows if row.get("status") == "SUCCEEDED"]
+    failed = [row for row in rows if row.get("status") == "FAILED"]
+    incomplete = [row for row, complete in zip(rows, effective_complete, strict=True) if not complete]
+    no_blob = [row for row in succeeded if not row.get("blob_hash")]
+    blobbed = [row for row in succeeded if row.get("blob_hash")]
+
+    files: dict[str, str] = {}
+    versions: dict[str, dict[str, str]] = {}
+    for row in blobbed:
+        raw_path = row.get("path")
+        endpoint = str(row.get("endpoint") or "unknown")
+        stem = Path(str(raw_path)).stem if raw_path else f"blob-{str(row['blob_hash'])[:16]}"
+        base_key = f"{endpoint}/{stem}"
+        value = f"{row['blob_hash']}:{int(row.get('bytes') or 0)}"
+        known = versions.setdefault(base_key, {})
+        if value in known:
+            continue
+        key = base_key if not known else f"{base_key}#v{len(known) + 1}"
+        known[value] = key
+        files[key] = value
+    return {
+        "schema_version": 2,
+        "schema": "exact_reads",
+        "source_mode": "exact_reads",
+        "date": scan_dir.name,
+        "n_files": len(files),
+        "n_total_reads": len(rows),
+        "n_successful_reads": len(succeeded),
+        "n_failed_reads": len(failed),
+        "n_incomplete_reads": len(incomplete),
+        "n_no_blob_reads": len(no_blob),
+        "n_missing_source_events": missing_events,
+        "n_evidence_gaps": len(gap_keys),
+        "n_orphan_gaps": orphan_gaps,
+        "n_orphan_source_events": orphan_source_events,
+        "source_events_file_present": events_present,
+        "evidence_complete": (
+            not incomplete
+            and not gap_keys
+            and missing_events == 0
+            and orphan_source_events == 0
+        ),
+        "files": files,
+        "note": "由本次实际成功 source reads 派生；不是窗口猜测。",
+    }, ""
+
+
 def write_lake_manifest(scan_dir: Path | str, run_dir: Path | str) -> int:
     """落 `<run_dir>/trace/lake_manifest.json`,返回文件数。"""
-    doc = lake_manifest(Path(scan_dir).name)
     target = Path(run_dir) / "trace" / "lake_manifest.json"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(doc, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+    if target.is_file():
+        try:
+            existing = json.loads(target.read_text(encoding="utf-8"))
+            return int(existing.get("n_files") or 0)
+        except (OSError, json.JSONDecodeError, AttributeError):
+            return 0
+    source = Path(scan_dir)
+    doc, reason = _read_exact_manifest(source)
+    if doc is None:
+        doc = lake_manifest(source.name)
+        doc.setdefault("schema", "window_guess")
+        doc.setdefault("source_mode", "window_guess")
+        doc["source_reason"] = reason
+    atomic_write_json(target, doc)
     return int(doc.get("n_files") or 0)
 
 
@@ -451,7 +737,8 @@ def retain(scan_dir: Path | str, run_dir: Path | str) -> dict:
     """发布收尾的现场留存(镜像 + run 外输入 + 清单)。失败分类留痕,**不抛**:
     留存是加法,不该有能力毁掉一次已跑完的扫描(同 `brief.safe_publish` 口径)。"""
     res: dict = {"mirrored": 0, "inputs": {}, "transcripts": {}, "lake_files": 0,
-                 "manifest": None, "errors": []}
+                 "manifest": None, "errors": [], "evidence_status": "LEGACY_PARTIAL",
+                 "integrity_ok": None, "completeness_ok": None}
     try:
         res["mirrored"] = mirror_staging(scan_dir, run_dir)
     except Exception as exc:  # noqa: BLE001
@@ -466,6 +753,22 @@ def retain(scan_dir: Path | str, run_dir: Path | str) -> dict:
         res["transcripts"] = archive_transcripts(scan_dir, run_dir)
     except Exception as exc:  # noqa: BLE001
         res["errors"].append(f"archive_transcripts: {type(exc).__name__}: {exc}")
+    try:
+        res["lake_files"] = write_lake_manifest(scan_dir, run_dir)
+    except Exception as exc:  # noqa: BLE001
+        res["errors"].append(f"write_lake_manifest: {type(exc).__name__}: {exc}")
+    try:
+        # forensic capsule 在场时,完好性/完整性由 capsule 的两条独立结论回答;
+        # 这里的旧 MANIFEST 只是兼容路径,**不得**被当成新的完整性结论来源。
+        from autoresearch.scan.evidence import evidence_facts, has_capsule
+
+        if has_capsule(run_dir):
+            facts = evidence_facts(run_dir)
+            res["evidence_status"] = facts["evidence_status"]
+            res["integrity_ok"] = facts["integrity_ok"]
+            res["completeness_ok"] = facts["completeness_ok"]
+    except Exception as exc:  # noqa: BLE001
+        res["errors"].append(f"evidence_facts: {type(exc).__name__}: {exc}")
     try:
         res["manifest"] = str(write_manifest(run_dir))
     except Exception as exc:  # noqa: BLE001

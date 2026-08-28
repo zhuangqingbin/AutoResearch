@@ -23,9 +23,9 @@ import os
 import sys
 import time
 from datetime import datetime, timedelta
+from pathlib import Path  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 
 from autoresearch.common import workspace as ws
-from pathlib import Path  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
 
 _SETTLE_HHMM = 19 * 60 + 15    # 当日 EOD 视为已结算的最早本地时刻(19:15;spec §P1 依据)
 
@@ -141,6 +141,10 @@ def _hot_rank_snapshot(date: str) -> str:
 
 
 def run_prewarm(date: str | None = None, *, now: datetime | None = None) -> dict:
+    # 与 prelude 同理:新一轮取数之前先冻结上一次被打断的 run(只警告,不阻断)。
+    from autoresearch.trace.capsule import recover_stale_runs_quietly
+
+    recover_stale_runs_quietly()
     now = now or datetime.now()
     date = date or latest_settled_trade_date(now)
     scan_dir = ws.scan_root() / date
