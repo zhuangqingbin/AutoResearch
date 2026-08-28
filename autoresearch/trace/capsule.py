@@ -11,6 +11,7 @@ import io
 import json
 import os
 import re
+import shutil
 import stat
 import sys
 from collections.abc import Mapping, Sequence
@@ -24,6 +25,7 @@ from autoresearch.trace.atomic import (
     atomic_write_bytes,
     atomic_write_json,
     canonical_json,
+    sha256_bytes,
     sha256_file,
 )
 from autoresearch.trace.blobs import put_bytes
@@ -31,6 +33,7 @@ from autoresearch.trace.capsule_models import (
     BusinessStatus,
     Checkpoint,
     EvidenceStatus,
+    FinalizationResult,
     Replayability,
     RunHandle,
     RunState,
@@ -1936,6 +1939,640 @@ def materialize_transcripts(run_id: str, *, not_expected: Sequence[str] = ()) ->
     return materialize_agent_index(run_id, not_expected=not_expected)
 
 
+# ------------------------------------------------------------------ finalization
+
+MANIFEST_NAME = "MANIFEST.sha256"
+ROOT_NAME = "ROOT.json"
+LEDGER_NAME = "run_capsules.jsonl"
+CAPSULE_SCHEMA_VERSION = 1
+_GENESIS_ROW_HASH = "0" * 64
+# Excluded from the manifest they would otherwise have to describe: the manifest
+# cannot list its own hash, and ROOT must stay *outside* the cycle it anchors.
+_MANIFEST_EXCLUSIONS = (
+    f"capsule/verification/{MANIFEST_NAME}",
+    f"capsule/verification/{ROOT_NAME}",
+)
+
+
+def ledger_path() -> Path:
+    return ws.reports_root() / "scan" / "_ledger" / LEDGER_NAME
+
+
+def failed_root() -> Path:
+    return ws.reports_root() / "scan" / "_failed"
+
+
+def archive_root() -> Path:
+    return ws.reports_root() / "scan" / "_capsule_archive"
+
+
+def _iter_manifest_files(final_path: Path) -> list[Path]:
+    files = []
+    for path in sorted(final_path.rglob("*")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        relative = path.relative_to(final_path).as_posix()
+        if relative in _MANIFEST_EXCLUSIONS:
+            continue
+        files.append(path)
+    return files
+
+
+def write_manifest(final_path: Path | str) -> Path:
+    """Hash every frozen file into the standard ``sha256sum`` format."""
+    root = Path(final_path)
+    lines = [
+        f"{sha256_file(path)}  {path.relative_to(root).as_posix()}\n"
+        for path in _iter_manifest_files(root)
+    ]
+    target = root / "capsule" / "verification" / MANIFEST_NAME
+    return atomic_write_bytes(target, "".join(lines).encode("utf-8"))
+
+
+def read_manifest(final_path: Path | str) -> dict[str, str]:
+    path = Path(final_path) / "capsule" / "verification" / MANIFEST_NAME
+    entries: dict[str, str] = {}
+    if not path.is_file():
+        return entries
+    for line in path.read_text(encoding="utf-8").splitlines():
+        digest, _, relative = line.partition("  ")
+        if digest and relative:
+            entries[relative] = digest
+    return entries
+
+
+def verify_manifest(final_path: Path | str) -> dict:
+    """Compare the frozen listing against what is on disk right now."""
+    root = Path(final_path)
+    listed = read_manifest(root)
+    actual = {
+        path.relative_to(root).as_posix(): sha256_file(path)
+        for path in _iter_manifest_files(root)
+    }
+    changed = sorted(k for k, v in listed.items() if k in actual and actual[k] != v)
+    missing = sorted(set(listed) - set(actual))
+    extra = sorted(set(actual) - set(listed))
+    return {
+        "ok": not (changed or missing or extra) and bool(listed),
+        "changed": changed,
+        "missing": missing,
+        "extra": extra,
+        "files": len(listed),
+    }
+
+
+def _event_chain_tail(capsule: Path) -> str | None:
+    path = capsule / "events/events.jsonl"
+    if not path.is_file():
+        return None
+    lines = path.read_text(encoding="utf-8").splitlines()
+    if not lines:
+        return None
+    return json.loads(lines[-1]).get("event_hash")
+
+
+def read_valid_ledger(path: Path | str | None = None) -> list[dict]:
+    """Return the ledger prefix that is still a valid append-only chain.
+
+    Validation stops at the first broken ``prev_hash`` or per-run revision gap:
+    a corrupted tail must not be able to erase or rewrite the rows before it.
+    """
+    target = Path(path) if path is not None else ledger_path()
+    if not target.is_file():
+        return []
+    rows: list[dict] = []
+    previous = _GENESIS_ROW_HASH
+    seen: dict[str, int] = {}
+    for line in target.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except Exception:  # noqa: BLE001 - a corrupt tail truncates, never rewrites
+            break
+        body = {key: value for key, value in row.items() if key != "row_hash"}
+        if row.get("prev_hash") != previous:
+            break
+        if sha256_bytes(canonical_json(body).encode("utf-8")) != row.get("row_hash"):
+            break
+        run_id = str(row.get("run_id"))
+        revision = row.get("revision")
+        if type(revision) is not int or revision != seen.get(run_id, 0) + 1:
+            break
+        seen[run_id] = revision
+        previous = row["row_hash"]
+        rows.append(row)
+    return rows
+
+
+def append_ledger_revision(row: Mapping) -> dict:
+    """Append one revision under an exclusive lock; identical rows are a no-op."""
+    target = ledger_path()
+
+    def guard(existing: list[dict]):
+        for item in existing:
+            if (
+                item.get("run_id") == row.get("run_id")
+                and item.get("revision") == row.get("revision")
+                and item.get("root_hash") == row.get("root_hash")
+            ):
+                return [item]
+        return None
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("a+b") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            handle.seek(0)
+            existing = [
+                json.loads(line)
+                for line in handle.read().decode("utf-8").splitlines()
+                if line.strip()
+            ]
+            duplicate = guard(existing)
+            if duplicate is not None:
+                return duplicate[0]
+            valid = read_valid_ledger(target)
+            previous = valid[-1]["row_hash"] if valid else _GENESIS_ROW_HASH
+            revision = (
+                max(
+                    (
+                        int(item.get("revision") or 0)
+                        for item in valid
+                        if item.get("run_id") == row.get("run_id")
+                    ),
+                    default=0,
+                )
+                + 1
+            )
+            body = {**dict(row), "prev_hash": previous, "revision": revision}
+            body.pop("row_hash", None)
+            final_row = {
+                **body,
+                "row_hash": sha256_bytes(canonical_json(body).encode("utf-8")),
+            }
+            handle.seek(0, os.SEEK_END)
+            handle.write((canonical_json(final_row) + "\n").encode("utf-8"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    _fsync_dir(target.parent)
+    return final_row
+
+
+def build_archive(final_path: Path | str, run_id: str) -> Path:
+    """Write one deterministic, self-contained ``.tar.zst`` outside the report tree."""
+    import tarfile
+
+    import zstandard
+
+    root = Path(final_path)
+    destination = archive_root() / f"{run_id}.tar.zst"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w", format=tarfile.PAX_FORMAT) as archive:
+        for path in sorted(root.rglob("*")):
+            if path.is_symlink():
+                continue
+            info = archive.gettarinfo(str(path), arcname=path.relative_to(root).as_posix())
+            info.mtime = 0
+            info.uid = info.gid = 0
+            info.uname = info.gname = ""
+            info.mode = 0o755 if path.is_dir() else 0o644
+            if path.is_file():
+                with path.open("rb") as handle:
+                    archive.addfile(info, handle)
+            else:
+                archive.addfile(info)
+    payload = zstandard.ZstdCompressor(level=10).compress(buffer.getvalue())
+    return atomic_write_bytes(destination, payload)
+
+
+def verify_archive(archive: Path | str, root_hash: str | None = None) -> dict:
+    """Read the archive back and confirm it still carries the anchored ROOT."""
+    import tarfile
+
+    import zstandard
+
+    path = Path(archive)
+    if not path.is_file():
+        return {"ok": False, "reason": "archive is missing", "members": 0}
+    try:
+        raw = zstandard.ZstdDecompressor().decompress(
+            path.read_bytes(), max_output_size=1 << 31
+        )
+        members: list[str] = []
+        found_root = None
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as bundle:
+            for info in bundle.getmembers():
+                members.append(info.name)
+                if info.name == f"capsule/verification/{ROOT_NAME}":
+                    extracted = bundle.extractfile(info)
+                    if extracted is not None:
+                        found_root = json.loads(extracted.read().decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001 - an unreadable archive is a finding
+        return {"ok": False, "reason": _safe_exception_text(exc), "members": 0}
+    if root_hash is not None and (found_root or {}).get("root_hash") != root_hash:
+        return {
+            "ok": False,
+            "reason": "archived ROOT does not carry the expected root hash",
+            "members": len(members),
+        }
+    return {"ok": True, "reason": None, "members": len(members)}
+
+
+def _last_reliable_checkpoint(capsule: Path) -> str | None:
+    best: str | None = None
+    for result in sorted((capsule / "stages").glob("*/attempt-*/result.json")):
+        payload = json.loads(result.read_text(encoding="utf-8"))
+        if payload.get("status") in {"SUCCEEDED", "DEGRADED"}:
+            best = payload.get("stage")
+    return best
+
+
+def _freeze_tree(final_path: Path) -> None:
+    """Read-only after every write: a frozen run must not be edited in place."""
+    for path in sorted(final_path.rglob("*"), reverse=True):
+        if path.is_symlink():
+            continue
+        with contextlib.suppress(OSError):
+            os.chmod(path, 0o555 if path.is_dir() else 0o444)
+    with contextlib.suppress(OSError):
+        os.chmod(final_path, 0o555)
+
+
+def _thaw_tree(path: Path) -> None:
+    for item in sorted(path.rglob("*")):
+        with contextlib.suppress(OSError):
+            os.chmod(item, 0o755 if item.is_dir() else 0o644)
+    with contextlib.suppress(OSError):
+        os.chmod(path, 0o755)
+
+
+def _write_usage(handle: RunHandle) -> None:
+    from autoresearch.trace import usage_harvest
+
+    rows = usage_harvest.collect_run(handle.run_id, engine=handle.engine)
+    source = f"run:{handle.run_id}"
+    atomic_write_json(
+        handle.capsule / "usage/_token_usage.json",
+        usage_harvest.build_ledger(rows, source=source),
+    )
+    atomic_write_bytes(
+        handle.capsule / "usage/token_usage.md",
+        (usage_harvest.render(rows, sub_dir=source) + "\n").encode("utf-8"),
+    )
+
+
+def _resolve_final_path(
+    handle: RunHandle,
+    business_status: BusinessStatus,
+    report_dir: Path | None,
+) -> Path:
+    if business_status == BusinessStatus.SUCCEEDED:
+        if report_dir is None:
+            raise ValueError("a SUCCEEDED run must name its published report_dir")
+        return report_dir
+    target = failed_root() / handle.run_id
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def _publish_capsule(handle: RunHandle, final_path: Path) -> Path:
+    destination = final_path / "capsule"
+    if destination.exists():
+        _thaw_tree(destination)
+        shutil.rmtree(destination)
+    shutil.copytree(handle.capsule, destination, symlinks=False)
+    return destination
+
+
+def finalize(
+    run_id: str,
+    business_status: BusinessStatus | str,
+    report_dir: Path | str | None = None,
+    *,
+    error: Mapping | None = None,
+    replay_stages: Sequence[str] = (),
+    profile=None,
+    now: datetime | None = None,
+) -> FinalizationResult:
+    """Freeze one run into a read-only, root-anchored, self-contained capsule.
+
+    The order is fixed and each step depends only on the ones before it:
+    transcripts and usage → expected/completeness/replay → capsule.json and
+    terminal state → MANIFEST → root → ROOT → archive → ledger → freeze →
+    reopen and verify.  Archive failure degrades *evidence*, never the business
+    report: the published run stays exactly where it is.
+    """
+    from autoresearch.scan.run_profile import scan_profile
+    from autoresearch.trace import completeness as completeness_mod, replay as replay_mod
+
+    resolved_status = BusinessStatus(business_status)
+    if resolved_status == BusinessStatus.ACTIVE:
+        raise ValueError("finalize needs a terminal business status")
+    handle = load_run(run_id)
+    state = _state_from_path(handle.workspace / "state.json", run_id=handle.run_id)
+    resolved_report = _validate_report_dir(report_dir)
+    final_path = _resolve_final_path(handle, resolved_status, resolved_report)
+
+    if state.business_status != BusinessStatus.ACTIVE:
+        # Already frozen: re-finalizing must be a no-op that returns the same root.
+        existing = _load_root(final_path)
+        if existing is not None and state.business_status == resolved_status:
+            return FinalizationResult(
+                run_id=handle.run_id,
+                business_status=state.business_status,
+                evidence_status=state.evidence_status,
+                replayability=state.replayability,
+                final_path=final_path,
+                root_hash=existing.get("root_hash"),
+                archive=(
+                    archive_root() / f"{handle.run_id}.tar.zst"
+                    if (archive_root() / f"{handle.run_id}.tar.zst").is_file()
+                    else None
+                ),
+                durability=str(existing.get("durability") or ""),
+                last_reliable_checkpoint=existing.get("last_reliable_checkpoint"),
+            )
+        raise RuntimeError(
+            f"run {handle.run_id} is already {state.business_status.value}"
+        )
+
+    # 1. transcripts and truthful usage
+    materialize_agent_index(handle.run_id)
+    _write_usage(handle)
+
+    # 2. expected / completeness / replay
+    resolved_profile = profile or scan_profile(
+        business_status=resolved_status.value,
+        last_stage=_last_reliable_checkpoint(handle.capsule),
+    )
+    completeness_mod.write_expected(handle.capsule, resolved_profile)
+    replay_mod.replay(
+        handle.run_id,
+        capsule=handle.capsule,
+        analysis_date=handle.analysis_date,
+        stages=tuple(replay_stages),
+        keep_scratch=False,
+    )
+    checkpoint_name = _last_reliable_checkpoint(handle.capsule)
+    if resolved_status != BusinessStatus.SUCCEEDED:
+        atomic_write_json(
+            handle.capsule / "failure.json",
+            {
+                "schema_version": CAPSULE_SCHEMA_VERSION,
+                "run_id": handle.run_id,
+                "business_status": resolved_status.value,
+                "last_reliable_checkpoint": checkpoint_name,
+                "error": json.loads(canonical_json(redact_value(dict(error or {})).value)),
+            },
+        )
+    evidence = completeness_mod.write_completeness(
+        handle.capsule, resolved_profile, durability="PENDING"
+    )
+    replayability = Replayability(
+        completeness_mod.replay_state(handle.capsule)
+        if completeness_mod.replay_state(handle.capsule) in {"FULL", "PARTIAL", "NONE"}
+        else "NONE"
+    )
+    evidence_status = (
+        EvidenceStatus.COMPLETE
+        if evidence["completeness_ok"]
+        else EvidenceStatus.EVIDENCE_INCOMPLETE
+    )
+
+    # 3. capsule.json + terminal state
+    atomic_write_json(
+        handle.capsule / "capsule.json",
+        {
+            "capsule_schema_version": CAPSULE_SCHEMA_VERSION,
+            "run_id": handle.run_id,
+            "analysis_date": handle.analysis_date,
+            "engine": handle.engine,
+            "business_status": resolved_status.value,
+            "evidence_status": evidence_status.value,
+            "replayability": replayability.value,
+            "contract_hash": handle.contract.contract_hash,
+            "final_path": str(final_path),
+            "last_reliable_checkpoint": checkpoint_name,
+        },
+    )
+    append_event(
+        handle.capsule / "events/events.jsonl",
+        run_id=handle.run_id,
+        engine=handle.engine,
+        stage="finalize",
+        invocation_id=f"finalize-{handle.run_id}",
+        attempt=1,
+        subject=None,
+        event_type=f"RUN_{resolved_status.value}",
+        payload={
+            "completeness_ok": evidence["completeness_ok"],
+            "final_path": str(final_path),
+        },
+    )
+    terminal = RunState.build(
+        run_id=handle.run_id,
+        business_status=resolved_status,
+        evidence_status=evidence_status,
+        replayability=replayability,
+        now=now,
+        previous=state,
+    )
+    _write_state(handle.workspace, terminal)
+
+    published = _publish_capsule(handle, final_path)
+
+    # 4-6. MANIFEST → root → detached ROOT
+    durability, archive_path, archive_hash, archive_reason = "LOCAL_ONLY", None, None, None
+    try:
+        manifest_bytes = write_manifest(final_path).read_bytes()
+        root_hash = sha256_bytes(manifest_bytes)
+        _write_root(
+            published,
+            {
+                "schema_version": CAPSULE_SCHEMA_VERSION,
+                "run_id": handle.run_id,
+                "root_hash": root_hash,
+                "manifest_hash": sha256_bytes(manifest_bytes),
+                "manifest_files": len(read_manifest(final_path)),
+                "event_chain_tail": _event_chain_tail(published),
+                "completeness_hash": sha256_file(
+                    published / "verification/completeness.json"
+                ),
+                "business_status": resolved_status.value,
+                "evidence_status": evidence_status.value,
+                "durability": durability,
+                "last_reliable_checkpoint": checkpoint_name,
+                "archive_hash": None,
+            },
+        )
+        # 7. archive outside the report directory
+        archive_path = build_archive(final_path, handle.run_id)
+        archive_hash = sha256_file(archive_path)
+    except Exception as exc:  # noqa: BLE001 - the business report survives this
+        archive_path = None
+        archive_hash = None
+        durability = "ARCHIVE_FAILED"
+        archive_reason = _safe_exception_text(exc)
+        evidence_status = EvidenceStatus.EVIDENCE_INCOMPLETE
+        append_event(
+            handle.capsule / "events/events.jsonl",
+            run_id=handle.run_id,
+            engine=handle.engine,
+            stage="finalize",
+            invocation_id=f"finalize-archive-{handle.run_id}",
+            attempt=1,
+            subject=None,
+            event_type="EVIDENCE_MISSING",
+            payload={"phase": "archive", "reason": archive_reason},
+        )
+        # Those three files changed, so completeness → MANIFEST → ROOT are redone.
+        evidence = completeness_mod.evaluate(
+            handle.capsule, resolved_profile, durability=durability
+        )
+        evidence["completeness_ok"] = False
+        evidence["warnings"] = [
+            *evidence.get("warnings", []),
+            f"archive could not be written: {archive_reason}",
+        ]
+        atomic_write_json(handle.capsule / "verification/completeness.json", evidence)
+        published = _publish_capsule(handle, final_path)
+        manifest_bytes = write_manifest(final_path).read_bytes()
+        root_hash = sha256_bytes(manifest_bytes)
+        _write_root(
+            published,
+            {
+                "schema_version": CAPSULE_SCHEMA_VERSION,
+                "run_id": handle.run_id,
+                "root_hash": root_hash,
+                "manifest_hash": sha256_bytes(manifest_bytes),
+                "manifest_files": len(read_manifest(final_path)),
+                "event_chain_tail": _event_chain_tail(published),
+                "completeness_hash": sha256_file(
+                    published / "verification/completeness.json"
+                ),
+                "business_status": resolved_status.value,
+                "evidence_status": evidence_status.value,
+                "durability": durability,
+                "last_reliable_checkpoint": checkpoint_name,
+                "archive_hash": None,
+            },
+        )
+
+    # 8. one locked ledger revision
+    append_ledger_revision(
+        {
+            "schema_version": CAPSULE_SCHEMA_VERSION,
+            "run_id": handle.run_id,
+            "analysis_date": handle.analysis_date,
+            "engine": handle.engine,
+            "business_status": resolved_status.value,
+            "evidence_status": evidence_status.value,
+            "final_path": str(final_path),
+            "root_hash": root_hash,
+            "archive_hash": archive_hash,
+            "durability": durability,
+            "failure_class": archive_reason,
+            "archived_at": terminal.updated_at,
+        }
+    )
+
+    # 9. freeze, then 10. reopen and verify
+    _freeze_tree(final_path)
+    verify(handle.run_id, final_path=final_path)
+    return FinalizationResult(
+        run_id=handle.run_id,
+        business_status=resolved_status,
+        evidence_status=evidence_status,
+        replayability=replayability,
+        final_path=final_path,
+        root_hash=root_hash,
+        archive=archive_path,
+        durability=durability,
+        last_reliable_checkpoint=checkpoint_name,
+    )
+
+
+def _write_root(published: Path, payload: Mapping) -> Path:
+    return atomic_write_json(published / "verification" / ROOT_NAME, dict(payload))
+
+
+def _load_root(final_path: Path) -> dict | None:
+    path = Path(final_path) / "capsule" / "verification" / ROOT_NAME
+    if not path.is_file():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _find_final_path(run_id: str) -> Path | None:
+    for row in reversed(read_valid_ledger()):
+        if row.get("run_id") == run_id:
+            return Path(str(row.get("final_path")))
+    candidate = failed_root() / run_id
+    return candidate if candidate.is_dir() else None
+
+
+def verify(run_id: str, *, final_path: Path | str | None = None) -> dict:
+    """Answer integrity, completeness and replay **separately**, never as one ✓."""
+    root_path = Path(final_path) if final_path is not None else _find_final_path(run_id)
+    if root_path is None or not root_path.is_dir():
+        return {
+            "run_id": run_id,
+            "ok": False,
+            "reason": "no frozen capsule for this run",
+            "integrity_ok": False,
+            "completeness_ok": False,
+            "root_ledger_ok": False,
+            "replayability": "NONE",
+        }
+    published = root_path / "capsule"
+    manifest = verify_manifest(root_path)
+    stored_root = _load_root(root_path) or {}
+    manifest_path = published / "verification" / MANIFEST_NAME
+    current_root = (
+        sha256_bytes(manifest_path.read_bytes()) if manifest_path.is_file() else None
+    )
+    root_ok = bool(stored_root) and current_root == stored_root.get("root_hash")
+    ledger_rows = [
+        row for row in read_valid_ledger() if row.get("run_id") == run_id
+    ]
+    ledger_ok = bool(ledger_rows) and ledger_rows[-1].get(
+        "root_hash"
+    ) == stored_root.get("root_hash")
+    completeness_path = published / "verification/completeness.json"
+    evidence = (
+        json.loads(completeness_path.read_text(encoding="utf-8"))
+        if completeness_path.is_file()
+        else {}
+    )
+    chain = verify_event_chain(published / "events/events.jsonl")
+    archive = archive_root() / f"{run_id}.tar.zst"
+    return {
+        "run_id": run_id,
+        "final_path": str(root_path),
+        "integrity_ok": bool(manifest["ok"]) and root_ok,
+        "manifest": manifest,
+        "root_ledger_ok": bool(root_ok and ledger_ok),
+        "root_hash": stored_root.get("root_hash"),
+        "event_chain_ok": bool(chain.get("ok")),
+        "completeness_ok": bool(evidence.get("completeness_ok")),
+        "missing_required": evidence.get("missing_required", []),
+        "replayability": str(
+            (evidence.get("coverage") or {}).get("replay") or "NONE"
+        ),
+        "durability": str(stored_root.get("durability") or ""),
+        "business_status": stored_root.get("business_status"),
+        "evidence_status": stored_root.get("evidence_status"),
+        "archive": str(archive) if archive.is_file() else None,
+        "archive_ok": verify_archive(archive, stored_root.get("root_hash"))["ok"]
+        if archive.is_file()
+        else False,
+    }
+
+
 def inspect_run(run_id: str) -> dict:
     """Return a read-only summary of one active spool."""
     handle = load_run(run_id)
@@ -1979,6 +2616,32 @@ def _parser() -> argparse.ArgumentParser:
     save.add_argument("--report-dir")
     inspect = commands.add_parser("inspect")
     inspect.add_argument("run_id")
+    bind = commands.add_parser("bind-transcript")
+    bind.add_argument("run_id")
+    bind.add_argument("path")
+    bind.add_argument("--role", required=True)
+    bind.add_argument("--subject")
+    bind.add_argument("--invocation-id", required=True)
+    bind.add_argument("--engine", choices=ws.ENGINES)
+    bind.add_argument("--from-ordinal", type=int)
+    bind.add_argument("--to-ordinal", type=int)
+    materialize = commands.add_parser("materialize-agents")
+    materialize.add_argument("run_id")
+    replay_cmd = commands.add_parser("replay")
+    replay_cmd.add_argument("run_id")
+    replay_cmd.add_argument("--stage", action="append", default=[])
+    done = commands.add_parser("finalize")
+    done.add_argument("run_id")
+    done.add_argument(
+        "--business-status",
+        required=True,
+        choices=["SUCCEEDED", "FAILED", "INTERRUPTED"],
+    )
+    done.add_argument("--report-dir")
+    done.add_argument("--error-json")
+    done.add_argument("--replay-stage", action="append", default=[])
+    check = commands.add_parser("verify")
+    check.add_argument("run_id")
     agent_event = commands.add_parser("agent-event")
     agent_event.add_argument("run_id")
     agent_event.add_argument("event_type", choices=sorted(_AGENT_EVENT_TYPES))
@@ -2024,6 +2687,50 @@ def main(argv: list[str] | None = None) -> int:
             ).to_dict()
         elif args.command == "inspect":
             result = inspect_run(args.run_id)
+        elif args.command == "bind-transcript":
+            result = bind_transcript(
+                args.run_id,
+                args.path,
+                role=args.role,
+                subject=args.subject,
+                invocation_id=args.invocation_id,
+                engine=args.engine,
+                start_ordinal=args.from_ordinal,
+                end_ordinal=args.to_ordinal,
+            )
+        elif args.command == "materialize-agents":
+            result = materialize_agent_index(args.run_id)
+        elif args.command == "replay":
+            from autoresearch.trace import replay as replay_mod
+
+            handle = load_run(args.run_id)
+            result = replay_mod.replay(
+                handle.run_id,
+                capsule=handle.capsule,
+                analysis_date=handle.analysis_date,
+                stages=tuple(args.stage) or ("l0", "l1", "l2", "l5"),
+            )
+        elif args.command == "finalize":
+            outcome = finalize(
+                args.run_id,
+                args.business_status,
+                args.report_dir,
+                error=json.loads(args.error_json) if args.error_json else None,
+                replay_stages=tuple(args.replay_stage),
+            )
+            result = {
+                "run_id": outcome.run_id,
+                "business_status": outcome.business_status.value,
+                "evidence_status": outcome.evidence_status.value,
+                "replayability": outcome.replayability.value,
+                "final_path": str(outcome.final_path),
+                "root_hash": outcome.root_hash,
+                "archive": str(outcome.archive) if outcome.archive else None,
+                "durability": outcome.durability,
+                "last_reliable_checkpoint": outcome.last_reliable_checkpoint,
+            }
+        elif args.command == "verify":
+            result = verify(args.run_id)
         else:
             parsed_result = (
                 json.loads(args.result_json) if args.result_json is not None else None
@@ -2072,14 +2779,25 @@ if __name__ == "__main__":
 
 
 __all__ = [
+    "MANIFEST_NAME",
+    "ROOT_NAME",
+    "append_ledger_revision",
     "begin_run",
     "bind_transcript",
     "checkpoint",
     "inspect_run",
     "load_run",
     "main",
+    "build_archive",
+    "finalize",
+    "ledger_path",
     "materialize_agent_index",
     "materialize_transcripts",
+    "read_valid_ledger",
+    "verify",
+    "verify_archive",
+    "verify_manifest",
+    "write_manifest",
     "record_agent_boundary",
     "record_controlled_agent_boundary",
 ]
