@@ -29,19 +29,10 @@ from autoresearch.trace.pricing import (
     PRICE_SOURCE_URL,
     estimate_usd,
 )
+from autoresearch.trace.transcripts import adapter_for
+from autoresearch.trace.transcripts.base import TranscriptRef, UsageRecord
 
 PROJECTS_ROOT = Path.home() / ".claude" / "projects"
-
-
-def _iter_rows(path: Path):
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            yield json.loads(line)
-        except Exception:  # noqa: BLE001 — 半截行跳过,不废整份 transcript
-            continue
 
 
 # 计价倍率(相对 base input token 的**倍数**,不是价格;来源:官方 prompt caching 计价)。
@@ -51,91 +42,29 @@ def _iter_rows(path: Path):
 _W_READ, _W_WRITE_5M, _W_WRITE_1H = 0.1, 1.25, 2.0
 
 
-def _meta_agent(path: Path) -> str | None:
-    """transcript 旁的 `agent-X.meta.json`(harness 派发时落)→ agentType。
-
-    limit-killed 的稿 jsonl 里连一行带 attributionAgent 的记录都没有(2026-08-09
-    实测 39 份),但 meta.json 是派发时写的、必在 —— 账目身份不该跟着 API 死亡一起丢。
-    """
-    meta = path.with_name(path.name.replace(".jsonl", ".meta.json"))
-    if not meta.is_file():
-        return None
-    import contextlib
-    import json as _json
-    with contextlib.suppress(Exception):
-        return (_json.loads(meta.read_text(encoding="utf-8")) or {}).get("agentType") or None
-    return None
-
-
-def usage_of(path: Path, role: str = "subagent") -> dict:
-    """单份 transcript → 去重后的 usage 合计 + agent 身份。
-
-    去重键 = `message.id`;同 id 取**最后**一条(流式累计值,前面的都是中间态)。
-    """
-    latest: dict[str, dict] = {}
-    agent = effort = model = None
-    speed = "standard"
-    failures: list[int] = []
-    terminals: list[int] = []
-    for idx, row in enumerate(_iter_rows(path)):
-        if row.get("error") or row.get("isApiErrorMessage"):
-            failures.append(idx)
-        agent = agent or row.get("attributionAgent")
-        effort = effort or row.get("effort")
-        msg = row.get("message") or {}
-        candidate_model = msg.get("model")
-        if candidate_model and candidate_model != "<synthetic>":
-            model = model or candidate_model
-        u = msg.get("usage")
-        if u and msg.get("id"):
-            latest[msg["id"]] = u
-            speed = u.get("speed") or speed
-        if (
-            not (row.get("error") or row.get("isApiErrorMessage"))
-            and msg.get("stop_reason") in {"end_turn", "stop_sequence"}
-        ):
-            terminals.append(idx)
-    tot = {"messages": len(latest), "input": 0, "output": 0,
-           "cache_read": 0, "cache_create": 0, "cache_create_1h": 0,
-           "cache_create_5m": 0}
-    for u in latest.values():
-        tot["input"] += int(u.get("input_tokens") or 0)
-        tot["output"] += int(u.get("output_tokens") or 0)
-        tot["cache_read"] += int(u.get("cache_read_input_tokens") or 0)
-        cache_total = int(u.get("cache_creation_input_tokens") or 0)
-        tot["cache_create"] += cache_total
-        # 5m/1h 两种 TTL 的写入倍率不同(1.25× vs 2×),transcript 分开记了就别混算
-        cache_split = u.get("cache_creation") or {}
-        c1h = int(cache_split.get("ephemeral_1h_input_tokens") or 0)
-        c5m = int(cache_split.get("ephemeral_5m_input_tokens") or 0)
-        tot["cache_create_1h"] += c1h
-        tot["cache_create_5m"] += c5m if c5m else max(cache_total - c1h, 0)
-    failure_count = len(failures)
-    terminal_after_failure = bool(
-        terminals and (not failures or terminals[-1] > failures[-1])
-    )
-    if failure_count and terminal_after_failure:
-        status = "RETRIED_SUCCEEDED"
-    elif failure_count:
-        status = "FAILED"
-    elif terminals:
-        status = "SUCCEEDED"
-    else:
-        status = "INCOMPLETE"
-    discarded = status == "FAILED"
-    retry_count = failure_count if terminal_after_failure else max(failure_count - 1, 0)
-    tot["role"] = role
-    tot["agent"] = ("(主会话)" if role == "main"
-                    else (agent or _meta_agent(path) or "(未标注)"))
-    tot["effort"] = effort or "—"
-    tot["model"] = model or "—"
-    tot["speed"] = speed
-    tot["file"] = path.name
-    tot["path"] = str(path)
-    tot["status"] = status
-    tot["failure_count"] = failure_count
-    tot["retry_count"] = retry_count
-    tot["discarded"] = discarded
+def legacy_usage_dict(record: UsageRecord) -> dict:
+    """Convert stable adapter usage into the historical public dict schema."""
+    path = record.ref.path
+    tot = {
+        "messages": record.messages,
+        "input": record.input,
+        "output": record.output,
+        "cache_read": record.cache_read,
+        "cache_create": record.cache_create,
+        "cache_create_1h": record.cache_create_1h,
+        "cache_create_5m": record.cache_create_5m,
+        "role": record.role,
+        "agent": record.agent,
+        "effort": record.effort,
+        "model": record.model,
+        "speed": record.speed,
+        "file": path.name if path is not None else "—",
+        "path": str(path) if path is not None else "—",
+        "status": record.status,
+        "failure_count": record.failure_count,
+        "retry_count": record.retry_count,
+        "discarded": record.discarded,
+    }
     tot["billed_in"] = tot["input"] + tot["cache_create"] + tot["cache_read"]
     tot["weighted_in"] = round(tot["input"] + tot["cache_create_5m"] * _W_WRITE_5M
                                + tot["cache_create_1h"] * _W_WRITE_1H
@@ -144,7 +73,7 @@ def usage_of(path: Path, role: str = "subagent") -> dict:
         tot["model"],
         tot,
         as_of=PRICE_SOURCE_EFFECTIVE_DATE,
-        speed=speed,
+        speed=tot["speed"],
     )
     tot.update({k: v for k, v in priced.items() if k != "total_usd"})
     tot["estimated_usd"] = priced["total_usd"]
@@ -159,10 +88,16 @@ def usage_of(path: Path, role: str = "subagent") -> dict:
         if priced["total_usd"] is None or not opus
         else priced["total_usd"] / opus
     )
-    tot["discarded_usd"] = priced["total_usd"] if discarded else 0.0
-    tot["retry_usd"] = None if retry_count else 0.0
-    tot["retry_cost_status"] = "UNATTRIBUTED" if retry_count else "NONE"
+    tot["discarded_usd"] = priced["total_usd"] if record.discarded else 0.0
+    tot["retry_usd"] = None if record.retry_count else 0.0
+    tot["retry_cost_status"] = "UNATTRIBUTED" if record.retry_count else "NONE"
     return tot
+
+
+def usage_of(path: Path, role: str = "subagent") -> dict:
+    """单份 Claude transcript → 保持旧 schema 的 usage dict。"""
+    ref = TranscriptRef(engine="claude", path=Path(path), role=role)
+    return legacy_usage_dict(adapter_for("claude").usage(ref))
 
 
 # 模型价差(相对 opus 输入价的**倍率**,仅供「贵在哪」定序,不冒充账单)。

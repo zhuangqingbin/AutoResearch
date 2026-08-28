@@ -367,3 +367,29 @@ def test_usage_of_unlabeled_when_no_meta(tmp_path):
     p = tmp_path / "agent-nometa.jsonl"
     p.write_text("", encoding="utf-8")
     assert usage_of(p)["agent"] == "(未标注)"                 # 兜底的兜底不变
+
+
+def test_legacy_usage_dict_exactly_matches_claude_adapter_fixture():
+    from pathlib import Path
+
+    from autoresearch.trace.transcripts.base import TranscriptRef
+    from autoresearch.trace.transcripts.claude import ClaudeTranscriptAdapter
+
+    path = Path(__file__).parent / "fixtures" / "claude" / "agent-l4-card.jsonl"
+    record = ClaudeTranscriptAdapter().usage(
+        TranscriptRef(engine="claude", path=path, role="subagent")
+    )
+
+    assert U.usage_of(path) == U.legacy_usage_dict(record)
+    assert set(U.usage_of(path)) == {
+        "messages", "input", "output", "cache_read", "cache_create",
+        "cache_create_1h", "cache_create_5m", "role", "agent", "effort",
+        "model", "speed", "file", "path", "status", "failure_count",
+        "retry_count", "discarded", "billed_in", "weighted_in",
+        "pricing_source", "source_effective_date", "pricing_status",
+        "pricing_schema_version", "pricing_reason", "price_profile",
+        "input_usd", "output_usd", "cache_read_usd", "cache_write_1h_usd",
+        "cache_write_5m_usd",
+        "estimated_usd", "relative_opus_cost", "discarded_usd", "retry_usd",
+        "retry_cost_status",
+    }
