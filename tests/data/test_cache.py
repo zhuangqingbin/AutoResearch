@@ -258,3 +258,40 @@ def test_no_env_same_day_not_written(tmp_path, monkeypatch):
     cache.get_or_fetch("top_list", {"trade_date": "20260710"}, today="2026-07-10",
                        fetch=lambda ep, p: df)
     assert not (tmp_path / "top_list" / "20260710.parquet").exists()   # parity
+
+
+def test_replay_env_short_circuits_before_lake_or_network(tmp_path, monkeypatch):
+    """重放模式下 get_or_fetch 只读冻结 blob —— 湖和网络都不许被走到。"""
+    import json
+
+    import pandas as pd
+
+    from autoresearch.trace import replay as R
+    from autoresearch.trace.blobs import put_dataframe
+
+    capsule = tmp_path / "capsule"
+    (capsule / "lineage").mkdir(parents=True)
+    frame = pd.DataFrame({"ts_code": ["600000.SH"], "close": [10.5]})
+    digest = put_dataframe(capsule, frame)
+    (capsule / "lineage/reads.jsonl").write_text(
+        json.dumps(
+            {
+                "endpoint": "daily",
+                "normalized_params": {"trade_date": "20260825"},
+                "normalized_blob_hash": digest,
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(R.REPLAY_ENV, str(capsule))
+    monkeypatch.setattr(cache, "LAKE", tmp_path / "never-read-lake")
+
+    def _explode(*args, **kwargs):
+        raise AssertionError("network reached during replay")
+
+    restored = cache.get_or_fetch("daily", {"trade_date": "20260825"}, fetch=_explode)
+
+    pd.testing.assert_frame_equal(restored, frame)
+    assert not (tmp_path / "never-read-lake").exists()

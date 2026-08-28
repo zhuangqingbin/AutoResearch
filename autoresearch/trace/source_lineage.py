@@ -76,6 +76,17 @@ def _safe_error(error: BaseException) -> tuple[str, str]:
     return error_type, message if isinstance(message, str) else "[unavailable]"
 
 
+def normalized_params(params: object) -> dict:
+    """The exact params shape the lineage writer records, so replay can key on it."""
+    try:
+        normalized = _safe_value(params)
+    except BaseException:  # noqa: BLE001 - unserializable params are still a fact
+        normalized = "[UNSERIALIZABLE]"
+    if not isinstance(normalized, dict):
+        normalized = {"params": normalized}
+    return normalized
+
+
 def _generic_evidence_warning() -> None:
     with contextlib.suppress(BaseException):
         os.write(2, b"source lineage evidence incomplete\n")
@@ -563,12 +574,12 @@ def trace_access(
     subject = str(os.environ.get("AUTORESEARCH_SUBJECT", "")).strip() or None
     setup_error = None
     try:
-        normalized = _safe_value(params)
+        _safe_value(params)
     except BaseException as exc:
-        normalized = "[UNSERIALIZABLE]"
         setup_error = exc
-    if not isinstance(normalized, dict):
-        normalized = {"params": normalized}
+    # One normalization for both writer and replay reader: if these two ever
+    # disagreed, every replay lookup would miss and look like absent evidence.
+    normalized = normalized_params(params)
     return SourceAccess(
         handle=handle,
         endpoint=str(endpoint),

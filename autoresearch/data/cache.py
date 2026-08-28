@@ -274,6 +274,16 @@ def get_or_fetch(
     """
     trace = _source_trace(endpoint, params, today)
     try:
+        # 重放模式:只认冻结的 reads.jsonl + capsule 内 blob。命中不了就炸,
+        # **绝不**回落到湖或网络 —— 能靠回落跑通的重放证明不了任何事。
+        from autoresearch.trace import replay as _replay
+
+        replay_capsule = _replay.active_capsule()
+        if replay_capsule is not None:
+            result = _replay.frame_for(replay_capsule, endpoint, params)
+            _finish_source_success(trace, result, "REPLAYED", None)
+            return result
+
         if fetch is None:
             from autoresearch.data.sources import fetch as fetch  # 延迟导入,避开取数依赖
 
