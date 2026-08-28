@@ -17,6 +17,12 @@ from autoresearch.scan.run_contract import (
 DATE = "2026-07-28"
 NOW = datetime(2026, 7, 28, 12, 34, 56, 123456, tzinfo=timezone.utc)
 CAPSULE_RUN_ID = "20260827T010203456789Z"
+# capsule 契约的引擎必须等于**当前**引擎(引擎隔离守卫)。夹具因此不能写死 codex ——
+# 写死会让整份文件只在 `AUTORESEARCH_ENGINE=codex` 下为真,换 Claude 会话跑就集体变红,
+# 而红的是夹具、不是守卫。`OTHER_ENGINE` 专供「故意不匹配」的负例。
+ENGINE = ws.ENGINE
+CTX = f"context_{ENGINE}"
+OTHER_ENGINE = next(name for name in ws.ENGINES if name != ENGINE)
 
 
 def _build(user_config: dict | None = None, **overrides) -> RunContract:
@@ -38,7 +44,7 @@ def _build_capsule(**overrides) -> RunContract:
     values = {
         "run_id": CAPSULE_RUN_ID,
         "workspace_path": ws.scan_run_root(CAPSULE_RUN_ID),
-        "engine": "codex",
+        "engine": ENGINE,
     }
     values.update(overrides)
     return _build(**values)
@@ -61,7 +67,7 @@ def test_v3_contract_carries_engine_kind_workspace_and_session_ref(tmp_path):
     assert contract.schema_version == 3
     assert contract.run_id == "20260827T010203456789Z"
     assert contract.run_kind == "scan-market"
-    assert contract.engine == "codex"
+    assert contract.engine == ENGINE
     assert contract.workspace_path.endswith(contract.run_id)
     assert contract.session_ref.startswith("01a03dbe")
     path = write_run_contract(tmp_path / "run_contract.json", contract)
@@ -108,8 +114,8 @@ def test_ambient_run_cannot_mint_identity_with_explicit_legacy_workspace(monkeyp
     [
         "",
         "../../escape",
-        f"context_codex/scan_runs/{CAPSULE_RUN_ID}/staging/2026-07-28",
-        "context_codex/scan_runs/20260827T010203456790Z",
+        f"{CTX}/scan_runs/{CAPSULE_RUN_ID}/staging/2026-07-28",
+        f"{CTX}/scan_runs/20260827T010203456790Z",
     ],
 )
 def test_capsule_build_rejects_unsafe_or_mismatched_workspace(workspace_path):
@@ -120,8 +126,8 @@ def test_capsule_build_rejects_unsafe_or_mismatched_workspace(workspace_path):
 @pytest.mark.parametrize(
     "workspace_path",
     [
-        f"context_codex/scan_runs/wrong/../{CAPSULE_RUN_ID}",
-        f"./context_codex/scan_runs/{CAPSULE_RUN_ID}",
+        f"{CTX}/scan_runs/wrong/../{CAPSULE_RUN_ID}",
+        f"./{CTX}/scan_runs/{CAPSULE_RUN_ID}",
     ],
 )
 def test_capsule_build_rejects_noncanonical_workspace_alias(workspace_path):
@@ -156,7 +162,7 @@ def test_legacy_build_rejects_nonempty_or_nonstring_engine(engine):
         _build(engine=engine)
 
 
-@pytest.mark.parametrize("engine", ("", "claude", 1))
+@pytest.mark.parametrize("engine", ("", OTHER_ENGINE, 1))
 def test_capsule_build_requires_matching_active_engine(engine):
     with pytest.raises(ValueError, match="engine"):
         _build_capsule(engine=engine)
@@ -311,8 +317,8 @@ def test_v2_contract_cannot_smuggle_unhashed_v3_identity(tmp_path):
         {key: value for key, value in raw.items() if key != "contract_hash"}
     )
     raw.update(
-        engine="codex",
-        workspace_path="context_codex/scan_runs/unhashed",
+        engine=ENGINE,
+        workspace_path=f"{CTX}/scan_runs/unhashed",
         session_ref="unhashed-session",
     )
     path = tmp_path / "run_contract.json"
@@ -354,8 +360,8 @@ def test_v3_load_requires_every_physical_v3_field(tmp_path, missing):
     [
         "",
         "../../escape",
-        "context_codex/scan/2026-07-28/child",
-        "context_codex/scan_runs/20260827T999999999999Z",
+        f"{CTX}/scan/2026-07-28/child",
+        f"{CTX}/scan_runs/20260827T999999999999Z",
     ],
 )
 def test_load_rejects_rehashed_v3_with_invalid_workspace(
@@ -376,7 +382,7 @@ def test_load_rejects_rehashed_v3_with_invalid_workspace(
 def test_load_rejects_rehashed_v3_with_lexical_workspace_escape(tmp_path):
     raw = _build_capsule().to_dict()
     raw["workspace_path"] = (
-        f"context_codex/scan_runs/wrong/../{CAPSULE_RUN_ID}"
+        f"{CTX}/scan_runs/wrong/../{CAPSULE_RUN_ID}"
     )
     raw["contract_hash"] = sha256_json(
         {key: value for key, value in raw.items() if key != "contract_hash"}
@@ -393,7 +399,7 @@ def test_load_rejects_rehashed_v3_with_lexical_workspace_escape(tmp_path):
     [
         ("run_kind", "stock-research"),
         ("run_kind", 1),
-        ("engine", "claude"),
+        ("engine", OTHER_ENGINE),
         ("engine", 1),
         ("session_ref", ""),
         ("session_ref", {"id": "session"}),
@@ -416,7 +422,7 @@ def test_load_rejects_rehashed_v3_with_invalid_identity_field(
 
 def test_load_rejects_rehashed_legacy_v3_with_nonempty_engine(tmp_path):
     raw = _build().to_dict()
-    raw["engine"] = "codex"
+    raw["engine"] = ENGINE
     raw["contract_hash"] = sha256_json(
         {key: value for key, value in raw.items() if key != "contract_hash"}
     )
