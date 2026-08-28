@@ -47,6 +47,35 @@ def _fsync_directory(path: Path) -> None:
         os.close(fd)
 
 
+def atomic_write_bytes(path: Path | str, payload: bytes) -> Path:
+    """Durably replace *path* with exact bytes via a same-directory temp file."""
+    if not isinstance(payload, (bytes, bytearray)):
+        raise TypeError("payload must be bytes")
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
+    )
+    temp = Path(temp_name)
+    try:
+        try:
+            _write_all(fd, bytes(payload))
+            os.fsync(fd)
+        finally:
+            open_fd = fd
+            fd = -1
+            os.close(open_fd)
+        os.replace(temp, target)
+        _fsync_directory(target.parent)
+    finally:
+        try:
+            if fd >= 0:
+                os.close(fd)
+        finally:
+            temp.unlink(missing_ok=True)
+    return target
+
+
 def atomic_write_json(path: Path | str, value: object) -> Path:
     """Durably replace *path* using an exclusive same-directory temp file."""
     target = Path(path)

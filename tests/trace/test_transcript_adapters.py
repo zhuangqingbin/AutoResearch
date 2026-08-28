@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from autoresearch.trace.blobs import blob_path
+from autoresearch.trace.capsule import bind_transcript, materialize_transcripts
 from autoresearch.trace.transcripts import adapter_for
 from autoresearch.trace.transcripts.base import (
     NormalizedItem,
@@ -15,8 +17,19 @@ from autoresearch.trace.transcripts.base import (
     TranscriptRef,
 )
 from autoresearch.trace.transcripts.claude import ClaudeTranscriptAdapter
+from autoresearch.trace.transcripts.codex import (
+    CodexTranscriptAdapter,
+    locate_candidates,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def read_jsonl(path) -> list[dict]:
+    import json
+
+    text = Path(path).read_text(encoding="utf-8")
+    return [json.loads(line) for line in text.splitlines() if line.strip()]
 
 
 @pytest.fixture
@@ -100,3 +113,296 @@ def test_claude_locator_uses_explicit_session_ref(tmp_path):
         (main, "main", "PRESENT"),
         (agent, "subagent", "PRESENT"),
     ]
+
+
+@pytest.fixture
+def codex_ref() -> TranscriptRef:
+    return TranscriptRef(
+        engine="codex",
+        path=FIXTURES / "codex" / "rollout.jsonl",
+        role="l4-card",
+        subject="600000",
+        invocation_id="agent-l4-card-600000-1",
+    )
+
+
+def test_codex_usage_uses_last_cumulative_snapshot_not_sum(codex_ref):
+    usage = CodexTranscriptAdapter().usage(codex_ref)
+
+    assert usage.model == "gpt-5.6-sol"
+    assert usage.effort == "high"
+    assert usage.input == 207681
+    assert usage.cache_read == 200448
+    assert usage.cache_create == 4096
+    assert usage.output == 1671
+    assert usage.reasoning_output == 1119
+    assert usage.status == "RETRIED_SUCCEEDED"
+    assert usage.failure_count == 1
+    assert usage.retry_count == 1
+    assert usage.role == "l4-card"
+
+
+def test_codex_input_excludes_cached_input_tokens(codex_ref):
+    """`input_tokens` in a Codex rollout INCLUDES `cached_input_tokens`.
+
+    Verified against real rollouts: ``total_tokens == input_tokens + output_tokens``
+    while ``cached_input_tokens <= input_tokens``.  Reporting the raw field as
+    uncached input would double-count every cached prefix.
+    """
+    raw = read_jsonl(codex_ref.path)
+    final = [
+        row
+        for row in raw
+        if row.get("payload", {}).get("type") == "token_count"
+    ][-1]["payload"]["info"]["total_token_usage"]
+    usage = CodexTranscriptAdapter().usage(codex_ref)
+
+    assert final["input_tokens"] == 408129
+    assert usage.input == final["input_tokens"] - final["cached_input_tokens"]
+    assert usage.input + usage.cache_read == final["input_tokens"]
+
+
+def test_codex_normalize_keeps_visible_items_only(codex_ref):
+    normalized = CodexTranscriptAdapter().normalize(codex_ref)
+
+    assert [item.kind for item in normalized.items] == [
+        "message",
+        "tool_request",
+        "tool_result",
+        "message",
+        "error",
+        "message",
+    ]
+    blob = str([dict(item.payload) for item in normalized.items])
+    assert "encrypted_content" not in blob
+    assert "ZmFrZS1lbmNyeXB0ZWQ" not in blob
+    assert normalized.model == "gpt-5.6-sol"
+    assert normalized.effort == "high"
+
+
+def test_codex_normalize_redacts_secret_material(codex_ref):
+    normalized = CodexTranscriptAdapter().normalize(codex_ref)
+    request = next(item for item in normalized.items if item.kind == "tool_request")
+
+    assert "FIXTUREONLYNOTREAL0000" not in str(dict(request.payload))
+    assert "[REDACTED]" in str(dict(request.payload))
+
+
+@pytest.mark.parametrize(
+    "candidates,status",
+    [([], "GONE"), (["a.jsonl", "b.jsonl"], "AMBIGUOUS")],
+)
+def test_codex_locator_never_guesses_latest_mtime(tmp_path, candidates, status):
+    paths = []
+    for name in candidates:
+        path = tmp_path / name
+        path.write_text("", encoding="utf-8")
+        paths.append(path)
+    identity = RunIdentity(run_id="20260827T010203456789Z", engine="codex")
+
+    refs = locate_candidates(identity, paths)
+
+    assert refs[0].status == status
+    assert all(ref.status != "PRESENT" for ref in refs)
+
+
+def test_codex_single_candidate_is_not_promoted_to_present(tmp_path):
+    path = tmp_path / "only.jsonl"
+    path.write_text("", encoding="utf-8")
+    identity = RunIdentity(run_id="20260827T010203456789Z", engine="codex")
+
+    refs = locate_candidates(identity, [path])
+
+    assert [ref.status for ref in refs] == ["CANDIDATE"]
+
+
+def test_explicit_binding_is_authoritative(codex_run):
+    handle, source = codex_run
+
+    bind_transcript(
+        handle.run_id,
+        source,
+        role="l4-card",
+        subject="600000",
+        invocation_id="agent-l4-card-600000-1",
+    )
+    refs = CodexTranscriptAdapter().locate(
+        RunIdentity(run_id=handle.run_id, engine="codex")
+    )
+
+    assert [(ref.status, ref.role, ref.subject) for ref in refs] == [
+        ("PRESENT", "l4-card", "600000")
+    ]
+
+
+def test_visible_tool_calls_are_indexed_and_results_are_blobbed(codex_run):
+    handle, source = codex_run
+    bind_transcript(
+        handle.run_id,
+        source,
+        role="l4-intel",
+        subject="600000",
+        invocation_id="agent-l4-intel-600000-1",
+    )
+
+    materialize_transcripts(handle.run_id)
+
+    rows = read_jsonl(handle.capsule / "lineage/external_tools.jsonl")
+    assert rows[0]["tool_name"] == "web.search_query"
+    assert rows[0]["capture_level"] == "HARNESS_RESPONSE"
+    assert rows[0]["role"] == "l4-intel"
+    assert rows[0]["invocation_id"] == "agent-l4-intel-600000-1"
+    assert rows[0]["status"] == "COMPLETED"
+    assert blob_path(handle.capsule, rows[0]["result_hash"]).is_file()
+    assert "FIXTUREONLYNOTREAL0000" not in rows[0]["request"]
+
+
+def test_incomplete_tool_request_stays_an_explicit_row(codex_run):
+    handle, source = codex_run
+    lines = source.read_text(encoding="utf-8").splitlines()
+    trimmed = [line for line in lines if "custom_tool_call_output" not in line]
+    source.write_text("\n".join(trimmed) + "\n", encoding="utf-8")
+    bind_transcript(
+        handle.run_id,
+        source,
+        role="l4-intel",
+        subject="600000",
+        invocation_id="agent-l4-intel-600000-1",
+    )
+
+    materialize_transcripts(handle.run_id)
+
+    rows = read_jsonl(handle.capsule / "lineage/external_tools.jsonl")
+    assert [row["status"] for row in rows] == ["INCOMPLETE"]
+    assert rows[0]["result_hash"] is None
+
+
+def test_raw_archive_is_redacted_and_deterministic(codex_run):
+    import gzip
+
+    handle, source = codex_run
+    bind_transcript(
+        handle.run_id,
+        source,
+        role="l4-card",
+        subject="600000",
+        invocation_id="agent-l4-card-600000-1",
+    )
+
+    materialize_transcripts(handle.run_id)
+    archive = handle.capsule / "agents/raw/agent-l4-card-600000-1.jsonl.gz"
+    first = archive.read_bytes()
+    materialize_transcripts(handle.run_id)
+
+    assert archive.read_bytes() == first
+    body = gzip.decompress(first).decode("utf-8")
+    assert "FIXTUREONLYNOTREAL0000" not in body
+    assert "session_meta" in body
+    assert first[4:8] == b"\x00\x00\x00\x00"
+
+
+def test_agent_index_reports_bound_invocations(codex_run):
+    import json
+
+    handle, source = codex_run
+    bind_transcript(
+        handle.run_id,
+        source,
+        role="l4-card",
+        subject="600000",
+        invocation_id="agent-l4-card-600000-1",
+    )
+
+    materialize_transcripts(handle.run_id)
+
+    index = json.loads(
+        (handle.capsule / "agents/index.json").read_text(encoding="utf-8")
+    )
+    row = index["invocations"][0]
+    assert row["status"] == "PRESENT"
+    assert row["role"] == "l4-card"
+    assert row["usage"]["output"] == 1671
+    assert index["coverage"] == {"expected": 1, "present": 1, "missing": 0}
+
+
+def test_missing_source_at_materialize_is_gone_not_silent(codex_run):
+    import json
+
+    handle, source = codex_run
+    bind_transcript(
+        handle.run_id,
+        source,
+        role="l4-card",
+        subject="600000",
+        invocation_id="agent-l4-card-600000-1",
+    )
+    source.unlink()
+
+    materialize_transcripts(handle.run_id)
+
+    index = json.loads(
+        (handle.capsule / "agents/index.json").read_text(encoding="utf-8")
+    )
+    assert index["invocations"][0]["status"] == "GONE"
+    assert index["coverage"] == {"expected": 1, "present": 0, "missing": 1}
+
+
+def test_conflicting_binding_for_one_invocation_is_rejected(codex_run, tmp_path):
+    handle, source = codex_run
+    other = tmp_path / "harness" / "other.jsonl"
+    other.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    bind_transcript(
+        handle.run_id,
+        source,
+        role="l4-card",
+        subject="600000",
+        invocation_id="agent-l4-card-600000-1",
+    )
+
+    with pytest.raises(ValueError, match="conflicting transcript binding"):
+        bind_transcript(
+            handle.run_id,
+            other,
+            role="l4-card",
+            subject="600000",
+            invocation_id="agent-l4-card-600000-1",
+        )
+
+
+def test_identical_binding_is_idempotent(codex_run):
+    handle, source = codex_run
+    first = bind_transcript(
+        handle.run_id,
+        source,
+        role="l4-card",
+        subject="600000",
+        invocation_id="agent-l4-card-600000-1",
+    )
+    second = bind_transcript(
+        handle.run_id,
+        source,
+        role="l4-card",
+        subject="600000",
+        invocation_id="agent-l4-card-600000-1",
+    )
+
+    assert first == second
+    assert len(read_jsonl(handle.capsule / "agents/bindings.jsonl")) == 1
+
+
+def test_binding_rejects_paths_inside_the_capsule(codex_run):
+    handle, _ = codex_run
+    inside = handle.capsule / "identity/run_contract.json"
+
+    with pytest.raises(ValueError, match="inside the capsule"):
+        bind_transcript(
+            handle.run_id,
+            inside,
+            role="l4-card",
+            subject="600000",
+            invocation_id="agent-l4-card-600000-2",
+        )
+
+
+def test_adapter_registry_selects_codex():
+    assert isinstance(adapter_for("codex"), CodexTranscriptAdapter)

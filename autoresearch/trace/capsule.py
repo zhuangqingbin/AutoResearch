@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import fcntl
+import gzip
+import io
 import json
 import os
 import re
@@ -17,10 +20,12 @@ from autoresearch.common import workspace as ws
 from autoresearch.scan.artifacts import CRITICAL_ARTIFACTS, ArtifactSpec
 from autoresearch.scan.run_contract import load_run_contract, write_run_contract
 from autoresearch.trace.atomic import (
+    atomic_write_bytes,
     atomic_write_json,
     canonical_json,
     sha256_file,
 )
+from autoresearch.trace.blobs import put_bytes
 from autoresearch.trace.capsule_models import (
     BusinessStatus,
     Checkpoint,
@@ -39,6 +44,12 @@ from autoresearch.trace.identity import (
     redact_value,
     scan_for_secrets,
     snapshot_identity,
+)
+from autoresearch.trace.transcripts import (
+    TranscriptRef,
+    adapter_for,
+    is_external_tool,
+    tool_call_id,
 )
 
 _STAGE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
@@ -1311,6 +1322,474 @@ def checkpoint(
     return item
 
 
+# ------------------------------------------------------------------ transcripts
+
+_TRANSCRIPT_SCHEMA_VERSION = 1
+_URL_RE = re.compile(r"https?://[^\s\"'<>\\]+")
+
+
+def _bindings_path(handle: RunHandle) -> Path:
+    return handle.capsule / "agents/bindings.jsonl"
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    if not path.is_file():
+        return []
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        row = json.loads(line)
+        if not isinstance(row, dict):
+            raise ValueError(f"{path.name} rows must be JSON objects")
+        rows.append(row)
+    return rows
+
+
+def _append_locked_jsonl(
+    path: Path,
+    rows: Sequence[Mapping],
+    *,
+    guard=None,
+):
+    """Append canonical JSONL rows while holding one exclusive lock.
+
+    ``guard`` sees the rows already on disk and may return a replacement result
+    (making the call idempotent) or raise (rejecting it) before anything is
+    written.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            handle.seek(0)
+            existing = [
+                json.loads(line)
+                for line in handle.read().decode("utf-8").splitlines()
+                if line.strip()
+            ]
+            if guard is not None:
+                decided = guard(existing)
+                if decided is not None:
+                    return decided
+            payload = b"".join(
+                (canonical_json(dict(row)) + "\n").encode("utf-8") for row in rows
+            )
+            if payload:
+                handle.seek(0, os.SEEK_END)
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    if rows:
+        _fsync_dir(path.parent)
+    return list(rows)
+
+
+def _fsync_dir(path: Path) -> None:
+    if os.name == "nt":
+        return
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    fd = os.open(path, flags)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _binding_identity(row: Mapping) -> tuple:
+    return (
+        row.get("engine"),
+        row.get("invocation_id"),
+        row.get("role"),
+        row.get("subject"),
+        row.get("path"),
+        row.get("start_ordinal"),
+        row.get("end_ordinal"),
+    )
+
+
+def _require_external_source(handle: RunHandle, source: Path) -> Path:
+    """Require a readable regular file that is not part of the run's own state."""
+    if source.is_symlink():
+        raise ValueError(f"transcript path is a symlink: {source}")
+    if not source.is_file():
+        raise ValueError(f"transcript path is not a regular file: {source}")
+    resolved = source.resolve(strict=True)
+    for owned, label in (
+        (handle.capsule, "inside the capsule"),
+        (handle.workspace, "inside the run workspace"),
+    ):
+        try:
+            resolved.relative_to(owned.resolve())
+        except ValueError:
+            continue
+        # A run may not cite its own evidence as an external harness transcript.
+        raise ValueError(f"transcript path is {label}: {source}")
+    return resolved
+
+
+def bind_transcript(
+    run_id: str,
+    path: Path | str,
+    *,
+    role: str,
+    invocation_id: str,
+    subject: str | None = None,
+    engine: str | None = None,
+    start_ordinal: int | None = None,
+    end_ordinal: int | None = None,
+) -> dict:
+    """Record one authoritative transcript binding for an active run.
+
+    Binding is the *only* way a harness transcript becomes evidence: locators
+    may enumerate candidates but never promote one by mtime.  Re-binding the
+    same identity is idempotent; binding a different path to an invocation that
+    already has one is rejected.
+    """
+    handle = require_active_run(run_id)
+    resolved_role = _validate_agent_identifier("role", role)
+    resolved_invocation = _validate_agent_identifier("invocation_id", invocation_id)
+    resolved_subject = (
+        None if subject is None else _validate_agent_identifier("subject", subject)
+    )
+    resolved_engine = handle.engine if engine is None else str(engine)
+    if resolved_engine not in ws.ENGINES:
+        raise ValueError(f"engine must be one of {ws.ENGINES!r}")
+    for name, value in (("start_ordinal", start_ordinal), ("end_ordinal", end_ordinal)):
+        if value is not None and (type(value) is not int or value < 0):
+            raise ValueError(f"{name} must be a non-negative integer or None")
+    if (
+        start_ordinal is not None
+        and end_ordinal is not None
+        and end_ordinal < start_ordinal
+    ):
+        raise ValueError("end_ordinal must not precede start_ordinal")
+    source = _require_external_source(handle, Path(path))
+    stage = _validate_stage(
+        str(os.environ.get("AUTORESEARCH_STAGE", "")).strip() or "l4"
+    )
+    row = {
+        "schema_version": _TRANSCRIPT_SCHEMA_VERSION,
+        "engine": resolved_engine,
+        "invocation_id": resolved_invocation,
+        "role": resolved_role,
+        "subject": resolved_subject,
+        "stage": stage,
+        "path": str(source),
+        "start_ordinal": start_ordinal,
+        "end_ordinal": end_ordinal,
+        "session_ref": handle.contract.session_ref,
+    }
+
+    def guard(existing: list[dict]):
+        for item in existing:
+            if item.get("invocation_id") != resolved_invocation:
+                continue
+            if _binding_identity(item) == _binding_identity(row):
+                return item
+            raise ValueError(
+                "conflicting transcript binding for invocation_id "
+                f"{resolved_invocation!r}"
+            )
+        return None
+
+    decided = _append_locked_jsonl(_bindings_path(handle), [row], guard=guard)
+    bound = decided[0] if isinstance(decided, list) else decided
+    if bound is row:
+        append_event(
+            handle.capsule / "events/events.jsonl",
+            run_id=handle.run_id,
+            engine=handle.engine,
+            stage=stage,
+            invocation_id=resolved_invocation,
+            attempt=1,
+            subject=resolved_subject,
+            event_type="TRANSCRIPT_BOUND",
+            payload={
+                "engine": resolved_engine,
+                "role": resolved_role,
+                "source": str(source),
+            },
+        )
+    return bound
+
+
+def _redact_bytes(payload: bytes) -> bytes:
+    """Blank any secret span the scanner still finds after value redaction."""
+    report = scan_for_secrets(payload)
+    if report["ok"]:
+        return payload
+    text = payload.decode("latin-1")
+    for finding in sorted(
+        report["findings"], key=lambda row: int(row["offset"]), reverse=True
+    ):
+        start = int(finding["offset"])
+        end = start + int(finding["length"])
+        text = text[:start] + "[REDACTED]" + text[end:]
+    return text.encode("latin-1")
+
+
+def _raw_archive_bytes(source: Path) -> tuple[bytes, int, int]:
+    """Return deterministic gzip bytes of the redacted harness-schema rows."""
+    rows: list[str] = []
+    unparsed = 0
+    for line in source.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            parsed = json.loads(line)
+        except Exception:  # noqa: BLE001 - a truncated tail line is a fact, not a crash
+            unparsed += 1
+            continue
+        rows.append(canonical_json(redact_value(parsed).value))
+    body = _redact_bytes(("\n".join(rows) + "\n" if rows else "").encode("utf-8"))
+    buffer = io.BytesIO()
+    # mtime=0 keeps a re-materialized archive byte-identical.
+    with gzip.GzipFile(fileobj=buffer, mode="wb", mtime=0) as archive:
+        archive.write(body)
+    return buffer.getvalue(), len(rows), unparsed
+
+
+def _first_url(*values: object) -> str | None:
+    for value in values:
+        if value is None:
+            continue
+        match = _URL_RE.search(value if isinstance(value, str) else canonical_json(value))
+        if match:
+            return match.group().rstrip(".,;)]}")
+    return None
+
+
+def _external_tool_rows(
+    handle: RunHandle,
+    binding: Mapping,
+    normalized,
+) -> list[dict]:
+    """One row per visible external tool call, with its response blobbed."""
+    results: dict[str, dict] = {}
+    for item in normalized.items:
+        if item.kind != "tool_result":
+            continue
+        key = tool_call_id(item.payload)
+        if key is not None:
+            results[key] = {"payload": dict(item.payload), "timestamp": item.timestamp}
+    rows: list[dict] = []
+    for item in normalized.items:
+        if item.kind != "tool_request":
+            continue
+        payload = dict(item.payload)
+        tool_name = payload.get("tool_name")
+        if not is_external_tool(tool_name):
+            continue
+        key = tool_call_id(payload)
+        result = results.get(key) if key is not None else None
+        request_text = payload.get("input")
+        if not isinstance(request_text, str):
+            request_text = canonical_json(request_text)
+        result_hash = None
+        result_bytes = None
+        status = "INCOMPLETE"
+        completed_at = None
+        content = None
+        if result is not None:
+            content = result["payload"].get("content")
+            body = (
+                content if isinstance(content, str) else canonical_json(content)
+            ).encode("utf-8")
+            result_hash = put_bytes(handle.capsule, body)
+            result_bytes = len(body)
+            status = "FAILED" if result["payload"].get("is_error") else "COMPLETED"
+            completed_at = result["timestamp"]
+        rows.append(
+            {
+                "schema_version": _TRANSCRIPT_SCHEMA_VERSION,
+                "capture_level": "HARNESS_RESPONSE",
+                "completed_at": completed_at,
+                "engine": binding.get("engine"),
+                "invocation_id": binding.get("invocation_id"),
+                "namespace": payload.get("namespace"),
+                "request": request_text,
+                "requested_at": item.timestamp,
+                "result_bytes": result_bytes,
+                "result_hash": result_hash,
+                "role": binding.get("role"),
+                "stage": binding.get("stage"),
+                "status": status,
+                "subject": binding.get("subject"),
+                "title": payload.get("title"),
+                "tool_call_id": key,
+                "tool_name": tool_name,
+                "url": _first_url(request_text, content),
+            }
+        )
+    return rows
+
+
+def materialize_transcripts(run_id: str) -> dict:
+    """Archive every bound transcript and account for it in ``agents/index.json``.
+
+    Missing sources stay explicit ``GONE`` rows: completeness is never inferred
+    from an absent directory.
+    """
+    handle = require_active_run(run_id)
+    bindings = _read_jsonl(_bindings_path(handle))
+    raw_root = _safe_directory(handle.capsule, Path("agents/raw"), create=True)
+    normalized_root = _safe_directory(
+        handle.capsule, Path("agents/normalized"), create=True
+    )
+    lineage_path = handle.capsule / "lineage/external_tools.jsonl"
+    recorded = {
+        (row.get("invocation_id"), row.get("tool_call_id"))
+        for row in _read_jsonl(lineage_path)
+    }
+    invocations: list[dict] = []
+    pending_lineage: list[dict] = []
+    for binding in bindings:
+        engine = str(binding.get("engine"))
+        invocation_id = str(binding.get("invocation_id"))
+        row = {
+            "engine": engine,
+            "invocation_id": invocation_id,
+            "role": binding.get("role"),
+            "subject": binding.get("subject"),
+            "stage": binding.get("stage"),
+            "source_path": binding.get("path"),
+            "status": "PRESENT",
+            "reason": None,
+            "raw": None,
+            "normalized": None,
+            "source_sha256": None,
+            "source_bytes": None,
+            "rows": None,
+            "unparsed_rows": None,
+            "items": None,
+            "model": None,
+            "effort": None,
+            "usage": None,
+        }
+        source = Path(str(binding.get("path")))
+        if source.is_symlink() or not source.is_file():
+            row["status"] = "GONE"
+            row["reason"] = "bound transcript is not a readable regular file"
+            invocations.append(row)
+            continue
+        ref = TranscriptRef(
+            engine=engine,
+            path=source,
+            status="PRESENT",
+            role=str(binding.get("role") or "subagent"),
+            subject=binding.get("subject"),
+            invocation_id=invocation_id,
+            session_ref=binding.get("session_ref"),
+            start_ordinal=binding.get("start_ordinal"),
+            end_ordinal=binding.get("end_ordinal"),
+        )
+        try:
+            adapter = adapter_for(engine)
+            normalized = adapter.normalize(ref)
+            usage = adapter.usage(ref)
+            archive, parsed_rows, unparsed = _raw_archive_bytes(source)
+        except Exception as exc:  # noqa: BLE001 - an unreadable transcript is a fact
+            row["status"] = "UNSUPPORTED"
+            row["reason"] = _safe_exception_text(exc)
+            invocations.append(row)
+            continue
+        raw_path = raw_root / f"{invocation_id}.jsonl.gz"
+        normalized_path = normalized_root / f"{invocation_id}.json"
+        atomic_write_bytes(raw_path, archive)
+        atomic_write_json(
+            normalized_path,
+            {
+                "schema_version": _TRANSCRIPT_SCHEMA_VERSION,
+                "engine": engine,
+                "invocation_id": invocation_id,
+                "role": normalized.ref.role,
+                "subject": normalized.ref.subject,
+                "status": normalized.status,
+                "model": normalized.model,
+                "effort": normalized.effort,
+                "items": [
+                    {
+                        "index": item.index,
+                        "kind": item.kind,
+                        "payload": json.loads(canonical_json(dict(item.payload))),
+                        "timestamp": item.timestamp,
+                    }
+                    for item in normalized.items
+                ],
+            },
+        )
+        row.update(
+            {
+                "raw": raw_path.relative_to(handle.capsule).as_posix(),
+                "normalized": normalized_path.relative_to(handle.capsule).as_posix(),
+                "source_sha256": sha256_file(source),
+                "source_bytes": source.stat().st_size,
+                "rows": parsed_rows,
+                "unparsed_rows": unparsed,
+                "items": len(normalized.items),
+                "model": normalized.model,
+                "effort": normalized.effort,
+                "transcript_status": normalized.status,
+                "usage": {
+                    "messages": usage.messages,
+                    "input": usage.input,
+                    "output": usage.output,
+                    "cache_read": usage.cache_read,
+                    "cache_create": usage.cache_create,
+                    "reasoning_output": usage.reasoning_output,
+                    "status": usage.status,
+                },
+            }
+        )
+        invocations.append(row)
+        pending_lineage.extend(
+            item
+            for item in _external_tool_rows(handle, binding, normalized)
+            if (item["invocation_id"], item["tool_call_id"]) not in recorded
+        )
+    if pending_lineage:
+        _safe_directory(handle.capsule, Path("lineage"), create=True)
+        _append_locked_jsonl(lineage_path, pending_lineage)
+    invocations.sort(
+        key=lambda item: (
+            str(item["role"]),
+            str(item["subject"] or ""),
+            str(item["invocation_id"]),
+        )
+    )
+    present = sum(1 for item in invocations if item["status"] == "PRESENT")
+    index = {
+        "schema_version": _TRANSCRIPT_SCHEMA_VERSION,
+        "run_id": handle.run_id,
+        "invocations": invocations,
+        "coverage": {
+            "expected": len(invocations),
+            "present": present,
+            "missing": len(invocations) - present,
+        },
+    }
+    atomic_write_json(handle.capsule / "agents/index.json", index)
+    append_event(
+        handle.capsule / "events/events.jsonl",
+        run_id=handle.run_id,
+        engine=handle.engine,
+        stage=_validate_stage(
+            str(os.environ.get("AUTORESEARCH_STAGE", "")).strip() or "cp7"
+        ),
+        invocation_id=f"transcripts-{handle.run_id}",
+        attempt=1,
+        subject=None,
+        event_type="TRANSCRIPTS_MATERIALIZED",
+        payload={"coverage": index["coverage"]},
+    )
+    return index
+
+
 def inspect_run(run_id: str) -> dict:
     """Return a read-only summary of one active spool."""
     handle = load_run(run_id)
@@ -1445,10 +1924,12 @@ if __name__ == "__main__":
 
 __all__ = [
     "begin_run",
+    "bind_transcript",
     "checkpoint",
     "inspect_run",
     "load_run",
     "main",
+    "materialize_transcripts",
     "record_agent_boundary",
     "record_controlled_agent_boundary",
 ]

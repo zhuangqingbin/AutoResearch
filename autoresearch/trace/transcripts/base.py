@@ -8,6 +8,60 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 
+class TranscriptUnreadable(RuntimeError):
+    """The bound transcript cannot be read, so nothing may be inferred from it."""
+
+
+# Tool names a harness executes locally.  Everything else is treated as an
+# external, evidence-bearing call: an unknown tool must fail *open* into the
+# lineage record rather than silently vanish from the capsule.
+LOCAL_TOOL_NAMES = frozenset(
+    {
+        "apply_patch",
+        "bash",
+        "edit",
+        "edit_file",
+        "exec",
+        "followup_task",
+        "glob",
+        "grep",
+        "list_agents",
+        "local_shell",
+        "notebookedit",
+        "read",
+        "read_file",
+        "send_message",
+        "shell",
+        "spawn_agent",
+        "task",
+        "todowrite",
+        "todo_write",
+        "update_plan",
+        "view_image",
+        "wait",
+        "wait_agent",
+        "write",
+        "write_file",
+    }
+)
+
+
+def is_external_tool(name: object) -> bool:
+    """True when a tool call is external evidence rather than a local action."""
+    if not isinstance(name, str) or not name.strip():
+        return False
+    return name.strip().lower() not in LOCAL_TOOL_NAMES
+
+
+def tool_call_id(payload: Mapping) -> str | None:
+    """Read the engine-neutral correlation id out of a normalized payload."""
+    for key in ("tool_call_id", "call_id", "tool_use_id"):
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
 class _FrozenDict(dict):
     def _immutable(self, *args, **kwargs):
         raise TypeError("frozen mapping does not support mutation")
@@ -47,7 +101,11 @@ class RunIdentity:
 
 @dataclass(frozen=True)
 class TranscriptRef:
-    """One explicitly identified transcript or one truthful missing-state row."""
+    """One explicitly identified transcript or one truthful missing-state row.
+
+    ``start_ordinal``/``end_ordinal`` bound one role segment inside a session a
+    harness reuses for several roles; both ``None`` means the whole file.
+    """
 
     engine: str
     path: Path | None = None
@@ -56,10 +114,22 @@ class TranscriptRef:
     subject: str | None = None
     invocation_id: str | None = None
     session_ref: str | None = None
+    start_ordinal: int | None = None
+    end_ordinal: int | None = None
 
     def __post_init__(self) -> None:
         if self.path is not None:
             object.__setattr__(self, "path", Path(self.path))
+        for field_name in ("start_ordinal", "end_ordinal"):
+            value = getattr(self, field_name)
+            if value is not None and (type(value) is not int or value < 0):
+                raise ValueError(f"{field_name} must be a non-negative integer or None")
+        if (
+            self.start_ordinal is not None
+            and self.end_ordinal is not None
+            and self.end_ordinal < self.start_ordinal
+        ):
+            raise ValueError("end_ordinal must not precede start_ordinal")
 
 
 @dataclass(frozen=True)
