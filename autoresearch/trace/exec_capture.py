@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import TextIO
 
 from autoresearch.trace.atomic import atomic_write_json
-from autoresearch.trace.capsule import require_active_run
+from autoresearch.trace.capsule import refresh_heartbeat, require_active_run
 from autoresearch.trace.capsule_models import RunHandle
 from autoresearch.trace.events import append_event
 
@@ -756,6 +756,11 @@ def _capture_reserved(
                             try:
                                 exit_code = process.wait(timeout=min(termination_grace, 0.25))
                             except subprocess.TimeoutExpired:
+                                # 长命令期间续租(内部 30s 限流)。没有心跳,恢复器分不清
+                                # 「跑了 20 分钟的 prelude」和「进程早就没了」。
+                                refresh_heartbeat(
+                                    handle.run_id, invocation_id=invocation_id
+                                )
                                 continue
                     except BaseException as exc:
                         pending_exception = exc

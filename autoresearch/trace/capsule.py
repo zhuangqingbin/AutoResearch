@@ -15,12 +15,14 @@ import shutil
 import stat
 import sys
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from autoresearch.common import workspace as ws
 from autoresearch.scan.artifacts import CRITICAL_ARTIFACTS, ArtifactSpec
 from autoresearch.scan.run_contract import load_run_contract, write_run_contract
+from autoresearch.trace import process_probe
 from autoresearch.trace.atomic import (
     atomic_write_bytes,
     atomic_write_json,
@@ -139,8 +141,25 @@ def _write_contract_copies(handle: RunHandle) -> None:
         raise RuntimeError("RunContract copies are not identical and verified")
 
 
-def _write_state(workspace: Path, state: RunState) -> Path:
-    return atomic_write_json(workspace / "state.json", state.to_dict())
+def _write_state(workspace: Path, state: RunState, *, lease: Mapping | None = None) -> Path:
+    """Persist the state, carrying the ownership lease across transitions.
+
+    The lease lives beside the state machine's own fields; dropping it on a
+    transition would make a live run look ownerless to the recovery pass.
+    """
+    path = workspace / "state.json"
+    carried = lease
+    if carried is None and path.is_file():
+        try:
+            previous = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(previous.get("lease"), dict):
+                carried = previous["lease"]
+        except Exception:  # noqa: BLE001 - an unreadable lease is simply not carried
+            carried = None
+    payload = state.to_dict()
+    if carried is not None:
+        payload["lease"] = dict(carried)
+    return atomic_write_json(path, payload)
 
 
 def _create_run_layout(handle: RunHandle) -> None:
@@ -454,7 +473,14 @@ def begin_run(
     phase = "state"
     try:
         # The recovery-visible state is the first write after mkdir(exist_ok=False).
-        _write_state(workspace, state)
+        _write_state(
+            workspace,
+            state,
+            lease=process_probe.current_lease(
+                invocation_id=f"run-{run_id}",
+                heartbeat=state.created_at,
+            ),
+        )
         phase = "layout"
         _create_run_layout(handle)
         phase = "contract"
@@ -2573,6 +2599,303 @@ def verify(run_id: str, *, final_path: Path | str | None = None) -> dict:
     }
 
 
+# ---------------------------------------------------------- lease and recovery
+
+HEARTBEAT_INTERVAL_SECONDS = 30
+DEFAULT_STALE_AFTER = timedelta(minutes=5)
+
+
+def read_lease(workspace: Path | str) -> dict | None:
+    path = Path(workspace) / "state.json"
+    if not path.is_file():
+        return None
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    lease = raw.get("lease")
+    return lease if isinstance(lease, dict) else None
+
+
+def lease_is_live(lease: Mapping | None) -> bool:
+    """A lease is live only while its exact owning process still runs."""
+    return process_probe.matches(lease)
+
+
+def refresh_heartbeat(
+    run_id: str,
+    *,
+    invocation_id: str | None = None,
+    now: datetime | None = None,
+    min_interval: float = HEARTBEAT_INTERVAL_SECONDS,
+    force: bool = False,
+) -> dict | None:
+    """Renew this run's lease, at most once per ``min_interval`` seconds.
+
+    Best-effort by construction: a run whose heartbeat cannot be written is a
+    run that will look stale later, which is the safe direction.  It must never
+    take down the work it is only observing.
+    """
+    try:
+        workspace = ws.scan_run_root(ws.validate_run_id(run_id))
+        state_path = workspace / "state.json"
+        if not state_path.is_file():
+            return None
+        raw = json.loads(state_path.read_text(encoding="utf-8"))
+        if raw.get("business_status") != BusinessStatus.ACTIVE.value:
+            return None
+        stamp = _utc_now(now)
+        previous = raw.get("lease") if isinstance(raw.get("lease"), dict) else None
+        if not force and previous:
+            try:
+                last = datetime.fromisoformat(
+                    str(previous.get("heartbeat")).replace("Z", "+00:00")
+                )
+                if (stamp - last).total_seconds() < min_interval:
+                    return previous
+            except (TypeError, ValueError):
+                pass
+        lease = process_probe.current_lease(
+            invocation_id=invocation_id
+            or (str(os.environ.get("AUTORESEARCH_INVOCATION_ID", "")).strip() or None),
+            heartbeat=stamp.isoformat(timespec="microseconds").replace("+00:00", "Z"),
+        )
+        atomic_write_json(state_path, {**raw, "lease": lease})
+        return lease
+    except Exception:  # noqa: BLE001 - observation must never break the observed
+        return None
+
+
+@dataclass(frozen=True)
+class RecoveryResult:
+    run_id: str
+    business_status: str
+    final_path: Path | None
+    reason: str
+    finalized: bool
+
+
+def recover_stale_runs(
+    *,
+    now: datetime | None = None,
+    stale_after: timedelta = DEFAULT_STALE_AFTER,
+    engine_root: Path | None = None,
+) -> list[RecoveryResult]:
+    """Freeze runs whose owning process is gone, and only those.
+
+    Two independent conditions must both hold: the heartbeat is older than
+    ``stale_after`` *and* the recorded (pid, start time) identity no longer
+    matches a live process.  Either one alone produces false positives — a
+    paused run looks silent, and a recycled pid looks alive.
+    """
+    root = engine_root if engine_root is not None else ws.context_root() / "scan_runs"
+    if not root.is_dir():
+        return []
+    stamp = _utc_now(now)
+    results: list[RecoveryResult] = []
+    for workspace in sorted(root.iterdir()):
+        if not workspace.is_dir() or workspace.is_symlink():
+            continue
+        state_path = workspace / "state.json"
+        if not state_path.is_file():
+            continue
+        try:
+            raw = json.loads(state_path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 - an unreadable spool is left alone
+            continue
+        if raw.get("business_status") != BusinessStatus.ACTIVE.value:
+            continue
+        lease = raw.get("lease") if isinstance(raw.get("lease"), dict) else None
+        heartbeat = str((lease or {}).get("heartbeat") or raw.get("updated_at") or "")
+        try:
+            last = datetime.fromisoformat(heartbeat.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if (stamp - last) < stale_after:
+            continue
+        if lease_is_live(lease):
+            continue
+        run_id = str(raw.get("run_id") or workspace.name)
+        try:
+            outcome = finalize(
+                run_id,
+                BusinessStatus.INTERRUPTED,
+                error={
+                    "error_type": "RunInterrupted",
+                    "reason": "owning process is gone and the heartbeat went stale",
+                    "last_heartbeat": heartbeat,
+                },
+                now=stamp,
+            )
+        except Exception as exc:  # noqa: BLE001 - never delete what we could not freeze
+            results.append(
+                RecoveryResult(
+                    run_id=run_id,
+                    business_status=BusinessStatus.ACTIVE.value,
+                    final_path=None,
+                    reason=_safe_exception_text(exc),
+                    finalized=False,
+                )
+            )
+            continue
+        results.append(
+            RecoveryResult(
+                run_id=run_id,
+                business_status=outcome.business_status.value,
+                final_path=outcome.final_path,
+                reason="stale lease",
+                finalized=True,
+            )
+        )
+    return results
+
+
+def recover_stale_runs_quietly(**kwargs) -> list[RecoveryResult]:
+    """Recovery for pipeline entrypoints: it warns, it never blocks a new run."""
+    try:
+        results = recover_stale_runs(**kwargs)
+    except Exception as exc:  # noqa: BLE001 - a new run must not die of an old one
+        print(f"[capsule] 陈旧 run 恢复失败(不影响本次运行):{_safe_exception_text(exc)}")
+        return []
+    for item in results:
+        state = "已冻结" if item.finalized else "未能冻结"
+        print(f"[capsule] 恢复中断 run {item.run_id}:{state}({item.reason})")
+    return results
+
+
+# ------------------------------------------------------------------ repairs
+
+
+def repairs_root() -> Path:
+    return ws.reports_root() / "scan" / "_repairs"
+
+
+@dataclass(frozen=True)
+class RepairResult:
+    run_id: str
+    revision: int
+    base_root_hash: str
+    composite_root_hash: str
+    overlay_path: Path
+    added: tuple[str, ...]
+    reason: str
+
+
+def repair(
+    run_id: str,
+    *,
+    reason: str,
+    source: Path | str | None = None,
+) -> RepairResult:
+    """Add missing evidence as an append-only overlay; never touch the base.
+
+    A frozen capsule is frozen.  Restored evidence therefore lands in
+    ``_repairs/<run_id>/revision-N/`` with its own MANIFEST, and the ledger gains
+    a new revision whose composite root covers base plus every overlay.  Any
+    path that already exists in the base view is a collision and fails.
+    """
+    if type(reason) is not str or not reason.strip():
+        raise ValueError("a repair must state its reason")
+    final_path = _find_final_path(run_id)
+    if final_path is None or not final_path.is_dir():
+        raise FileNotFoundError(f"no frozen capsule for run {run_id}")
+    base_root = _load_root(final_path) or {}
+    base_root_hash = str(base_root.get("root_hash") or "")
+    if not base_root_hash:
+        raise RuntimeError(f"run {run_id} has no anchored base root to repair against")
+
+    ledger_rows = [row for row in read_valid_ledger() if row.get("run_id") == run_id]
+    revision = (ledger_rows[-1]["revision"] if ledger_rows else 0) + 1
+    overlay = repairs_root() / run_id / f"revision-{revision}"
+    if overlay.exists():
+        raise FileExistsError(f"overlay already exists: {overlay}")
+
+    origin = Path(source) if source is not None else ws.scan_run_root(run_id) / "capsule"
+    if not origin.is_dir():
+        raise FileNotFoundError(f"no repair source for run {run_id}: {origin}")
+    base_view = {
+        path.relative_to(final_path).as_posix()
+        for path in final_path.rglob("*")
+        if path.is_file()
+    }
+    added: list[str] = []
+    for path in sorted(origin.rglob("*")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        relative = Path("capsule") / path.relative_to(origin)
+        if relative.as_posix() in base_view:
+            continue
+        destination = overlay / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, destination)
+        added.append(relative.as_posix())
+    if not added:
+        shutil.rmtree(overlay, ignore_errors=True)
+        raise RuntimeError("repair adds nothing: every source file is already in the base")
+
+    lines = [
+        f"{sha256_file(overlay / name)}  {name}\n" for name in sorted(added)
+    ]
+    manifest = atomic_write_bytes(
+        overlay / "verification" / MANIFEST_NAME, "".join(lines).encode("utf-8")
+    )
+    overlay_root = sha256_bytes(manifest.read_bytes())
+    previous_overlays = sorted(
+        item for item in (repairs_root() / run_id).iterdir() if item.is_dir()
+    )
+    overlay_roots = []
+    for item in previous_overlays:
+        candidate = item / "verification" / MANIFEST_NAME
+        if candidate.is_file():
+            overlay_roots.append(sha256_bytes(candidate.read_bytes()))
+    composite = sha256_bytes(
+        canonical_json(
+            {"base": base_root_hash, "overlays": overlay_roots}
+        ).encode("utf-8")
+    )
+    atomic_write_json(
+        overlay / "verification" / ROOT_NAME,
+        {
+            "schema_version": CAPSULE_SCHEMA_VERSION,
+            "run_id": run_id,
+            "revision": revision,
+            "base_root_hash": base_root_hash,
+            "overlay_root_hash": overlay_root,
+            "composite_root_hash": composite,
+            "reason": reason,
+            "added": sorted(added),
+        },
+    )
+    append_ledger_revision(
+        {
+            "schema_version": CAPSULE_SCHEMA_VERSION,
+            "run_id": run_id,
+            "analysis_date": base_root.get("analysis_date"),
+            "engine": ws.ENGINE,
+            "business_status": base_root.get("business_status"),
+            "evidence_status": base_root.get("evidence_status"),
+            "final_path": str(final_path),
+            "root_hash": composite,
+            "base_root_hash": base_root_hash,
+            "overlay_path": str(overlay),
+            "archive_hash": None,
+            "durability": str(base_root.get("durability") or ""),
+            "failure_class": None,
+            "repair_reason": reason,
+            "archived_at": _utc_now()
+            .isoformat(timespec="microseconds")
+            .replace("+00:00", "Z"),
+        }
+    )
+    _freeze_tree(overlay)
+    return RepairResult(
+        run_id=run_id,
+        revision=revision,
+        base_root_hash=base_root_hash,
+        composite_root_hash=composite,
+        overlay_path=overlay,
+        added=tuple(sorted(added)),
+        reason=reason,
+    )
+
+
 def inspect_run(run_id: str) -> dict:
     """Return a read-only summary of one active spool."""
     handle = load_run(run_id)
@@ -2642,6 +2965,12 @@ def _parser() -> argparse.ArgumentParser:
     done.add_argument("--replay-stage", action="append", default=[])
     check = commands.add_parser("verify")
     check.add_argument("run_id")
+    recover = commands.add_parser("recover")
+    recover.add_argument("--stale-after-minutes", type=float, default=5.0)
+    fix = commands.add_parser("repair")
+    fix.add_argument("run_id")
+    fix.add_argument("--reason", required=True)
+    fix.add_argument("--source")
     agent_event = commands.add_parser("agent-event")
     agent_event.add_argument("run_id")
     agent_event.add_argument("event_type", choices=sorted(_AGENT_EVENT_TYPES))
@@ -2731,6 +3060,32 @@ def main(argv: list[str] | None = None) -> int:
             }
         elif args.command == "verify":
             result = verify(args.run_id)
+        elif args.command == "recover":
+            result = {
+                "recovered": [
+                    {
+                        "run_id": item.run_id,
+                        "business_status": item.business_status,
+                        "final_path": str(item.final_path) if item.final_path else None,
+                        "finalized": item.finalized,
+                        "reason": item.reason,
+                    }
+                    for item in recover_stale_runs(
+                        stale_after=timedelta(minutes=args.stale_after_minutes)
+                    )
+                ]
+            }
+        elif args.command == "repair":
+            fixed = repair(args.run_id, reason=args.reason, source=args.source)
+            result = {
+                "run_id": fixed.run_id,
+                "revision": fixed.revision,
+                "base_root_hash": fixed.base_root_hash,
+                "composite_root_hash": fixed.composite_root_hash,
+                "overlay_path": str(fixed.overlay_path),
+                "added": list(fixed.added),
+                "reason": fixed.reason,
+            }
         else:
             parsed_result = (
                 json.loads(args.result_json) if args.result_json is not None else None
@@ -2794,6 +3149,10 @@ __all__ = [
     "materialize_agent_index",
     "materialize_transcripts",
     "read_valid_ledger",
+    "recover_stale_runs",
+    "recover_stale_runs_quietly",
+    "refresh_heartbeat",
+    "repair",
     "verify",
     "verify_archive",
     "verify_manifest",

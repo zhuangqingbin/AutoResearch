@@ -334,6 +334,12 @@ def _write_t0(scan_dir: Path) -> None:
 
 
 def run_prelude(date: str, regime_aware: bool | None = None, skip: tuple[str, ...] = ()) -> list[dict]:
+    # 新 run 开工前先冻结上一次被 SIGKILL/断电打断的 run:它的现场随时间只会更烂,
+    # 而且不冻结就没人知道它停在哪。失败只警告,绝不挡住本次运行。
+    from autoresearch.trace.capsule import recover_stale_runs_quietly
+
+    recover_stale_runs_quietly()
+
     # 生产路(scan-market.js → prelude)的历史缺省 = True;scan_config funnel.regime_aware 可覆盖,
     # CLI --no-regime-aware 恒优先(2026-08-11 配置单一事实源波;universe 直调 CLI 的内建缺省
     # 仍是 False,两处 parity 各自成立,见 universe.run 同款注)。
@@ -474,6 +480,7 @@ def run_prelude(date: str, regime_aware: bool | None = None, skip: tuple[str, ..
         超额 / finalist 超额。零 LLM、只读湖与历史 staging、**不进 brief、不喂任何 agent**。
         立案:≥OW 卡 40 天只出 4 天,「门的价值」在现尺不可测,改用每天都量得到的读数。"""
         import json as _json
+
         from autoresearch.research.edge_census import rejection_line, rejection_readout
         d = rejection_readout(today=date)
         try:
