@@ -231,3 +231,48 @@ def test_drift_guard_would_catch_a_new_name(monkeypatch):
         if lit not in registered and lit not in ca.NON_ARTIFACT_LITERALS
     ]
     assert unknown == ["verify.csv"]
+
+
+# ---------------------------------------------------------------- JS 生成物
+
+def test_generated_js_is_in_sync():
+    """改了契约层却忘了重新生成 → 当场红。
+
+    JS 侧没有测试(`node --check` 对 ESM 顶层 return 零鉴别力,写坏仍 exit 0),
+    所以「两边一致」这件事必须由 python 侧的这条用例扛。
+    """
+    from autoresearch.contracts import emit
+
+    ok, msg = emit.check(REPO)
+    assert ok, msg
+
+
+def test_generated_js_exposes_both_rating_directions():
+    """JS 的 RANK 是 sell=0,python 是 Buy=0 —— 生成物必须两个视图都给,不靠人记。"""
+    from autoresearch.contracts import emit
+
+    payload = emit.build_payload()
+    assert payload["rating_order"][0] == "Buy"
+    assert payload["rating_rank_js"]["sell"] == 0
+
+
+def test_generated_js_parses_as_a_module():
+    """`node --check` 对 ESM 是假绿灯 —— 用真解析证明生成物语法有效。"""
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        import pytest as _pytest
+
+        _pytest.skip("no node on PATH")
+    js = REPO / "autoresearch" / ".." / ".claude/workflows/_contracts.generated.js"
+    probe = (
+        "import('file://' + process.argv[1])"
+        ".then(m => { if (!m.CONTRACTS_HASH) { process.exit(3) } })"
+        ".catch(e => { console.error(String(e)); process.exit(4) })"
+    )
+    r = subprocess.run(  # noqa: S603
+        [node, "-e", probe, str(js.resolve())], capture_output=True, text=True, check=False
+    )
+    assert r.returncode == 0, f"生成物不是有效 ESM:{r.stderr[:400]}"
