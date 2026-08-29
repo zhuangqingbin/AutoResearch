@@ -147,8 +147,22 @@ def _ref_probe(path: Path) -> subprocess.CompletedProcess:
                           capture_output=True, text=True, timeout=15, check=False)
 
 
+#: 本目录里**不是 workflow** 的 js(下划线前缀 = 生成物/被 import 的模块,不是被派发的脚本)。
+#:
+#: 上面那个 AsyncFunction 探针是**为 workflow 形态量身做的**:它只剥掉首行的 `export `
+#: (`/^export\s+/m` 无 `g` flag),因为本仓 workflow 的惯例正是「唯一一处 export,
+#: `export const meta = {`」。一个正经的 ESM 模块会有**多处** `export`,剩下的在函数体里
+#: 不合法 → 探针把合法模块判成语法错误。那是探针的适用域问题,不是文件的问题。
+#:
+#: 生成物有它自己更强的验收(`tests/contracts/test_registry_parity.py`:真 `import()`
+#: 动态加载 + 与 python 登记表逐字节同步),所以这里排除掉它不留检查缺口。
+_NON_WORKFLOW_JS: frozenset[str] = frozenset({"_contracts.generated.js"})
+
+
 def _workflow_files() -> list[Path]:
-    files = sorted(WORKFLOWS_DIR.glob("*.js"))
+    files = sorted(
+        p for p in WORKFLOWS_DIR.glob("*.js") if p.name not in _NON_WORKFLOW_JS
+    )
     assert files, f"未找到任何 workflow js:{WORKFLOWS_DIR}"
     return files
 
