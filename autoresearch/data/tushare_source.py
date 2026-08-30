@@ -23,8 +23,10 @@ canonical 列与 `autoresearch.data.akshare_universe.fetch_universe`(东财路�
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import time
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -82,6 +84,33 @@ def _ts_call(fn, tries: int = 4, backoff: float = 1.5):
 def _code6(ts_code: pd.Series) -> pd.Series:
     """'600519.SH' → '600519'。"""
     return ts_code.astype(str).str.split(".").str[0].str.zfill(6)
+
+
+# ───────────────────────── 湖取数门面(生产帧唯一的取数口) ─────────────────────────
+
+
+def _lake_fetch(endpoint: str, params: dict, analysis_date: str) -> pd.DataFrame:
+    """经数据湖取一个端点 —— **生产帧的每条 tushare 取数都必须走这里**。
+
+    为什么:`cache.get_or_fetch` 是 A 级数据契约(`contracts.check`)唯一的挂载点 —— 空帧 /
+    行数腰斩 / 缺关键列 → `DataContractError` 阻断**且拒绝入湖**;B 级缺失 → 自动记一笔降级。
+    2026-08-29 之前 `fetch_universe_tushare` 是裸调 `pro.X()`(只有 60 日 `daily` 面板走湖),
+    于是这套契约**在生产路径上一次都没执行过**,它只在 prewarm / backfill / doctor 里跑过。
+    三条实测后果(spec 2026-08-29 §1.3):`north`/`rz` 两组自 07-13 起每次扫描非空率 0.0;
+    08-26 与 07-29 的 `chip`/`tech` 组非空率 0.547(21:xx 的半载快照);hk_hold 的"空返回"
+    其实是发布滞后 —— 三者没有任何一条在账本上留过痕。
+
+    **不传 `fields`**:湖里一个 key 只有一个 parquet,而 `cache._cache_key` 不含 fields ——
+    带窄 `fields` 的查询一旦成为某 key 的首个写入者,就把窄表钉成了这一天的湖快照
+    (2026-07-12 M1 对拍实证:`daily` 被钉成两列 → volprice 组整组 NaN → 全市场打分失真
+    98.8%、L2 名单 jaccard 0.36)。**多几列无害,少一列是灾难。**
+
+    `analysis_date` 作为 `today=` 传下去:它决定"已结算(可入湖)/ 盘中未结算(拉新不写)"
+    的分支,漏传会把当天的帧误判成可永久钉死的历史。
+    """
+    from autoresearch.data import cache
+
+    return cache.get_or_fetch(endpoint, dict(params), today=analysis_date)
 
 
 # ───────────────────────── 交易日历 ─────────────────────────
@@ -181,13 +210,23 @@ def fetch_fundamentals_yjbb(analysis_date: str) -> pd.DataFrame:
 # ───────────────────────── tushare 增强因子(可选,高权限 token) ─────────────────────────
 
 
-def _fetch_factors(pro, last: str) -> pd.DataFrame | None:
-    """stk_factor_pro(MA多头排列/RSI)+ cyq_perf(筹码获利比例)。失败则返回 None(降级)。"""
+def _fetch_factors(last: str, analysis_date: str) -> pd.DataFrame | None:
+    """stk_factor_pro(MA多头排列/RSI)+ cyq_perf(筹码获利比例)——**两条腿都经湖**。失败 → None。
+
+    两个端点在 `contracts.CONTRACTS` 里都是 **A 级**(tech 组 / chip 组的地基)。于是这里的
+    `except Exception` 有两层职责必须分开:
+
+    - `DataContractError`(空 / 行数腰斩 / 缺关键列)**必须炸穿**,不得被吞回"降级 → return
+      None"。08-26 与 07-29 的 chip/tech 组非空率 0.547(21:xx 的 tushare 半载快照)就是从
+      "阻断退化成 None"这条路走过去的:组整组半残 → `composite_score` 把它从分母剔除、
+      放大其余组权重 → 打分照样输出 0–100,残废得看不出来。
+    - 权限 / 网络类失败仍是合法降级(低权限 token 本就没有这两个端点),但**必须记账** ——
+      此前只有一行 `print`,没人看得见,账本上也没有任何一行记得这件事。
+    """
+    from autoresearch.data.contracts import DataContractError, record_degradation
+
     try:
-        sf = _ts_call(lambda: pro.stk_factor_pro(
-            trade_date=last,
-            fields="ts_code,close,ma_qfq_5,ma_qfq_10,ma_qfq_20,ma_qfq_60,rsi_qfq_6,rsi_qfq_12,macd_qfq",
-        ))
+        sf = _lake_fetch("stk_factor_pro", {"trade_date": last}, analysis_date)
         c = _num(sf["close"])
         m5, m10, m20, m60 = (_num(sf[f"ma_qfq_{n}"]) for n in (5, 10, 20, 60))
         fac = pd.DataFrame(
@@ -200,12 +239,15 @@ def _fetch_factors(pro, last: str) -> pd.DataFrame | None:
                 "macd": _num(sf["macd_qfq"]),
             }
         )
-    except Exception as e:  # noqa: BLE001
+    except DataContractError:
+        raise                       # A 级契约违约:阻断整条流程,不许退化成"降级"
+    except Exception as e:  # noqa: BLE001 — 权限/网络:合法降级,但必须留痕
         print(f"[warn] stk_factor_pro 取数失败({e!r})→ 趋势结构降级为代理", flush=True)
+        record_degradation("stk_factor_pro", f"取数失败({e!r})→ tech 组(rsi6/rsi12)整组置空",
+                           key=last)
         return None
     try:
-        cy = _ts_call(lambda: pro.cyq_perf(
-            trade_date=last, fields="ts_code,winner_rate,cost_15pct,cost_50pct,cost_85pct,weight_avg"))
+        cy = _lake_fetch("cyq_perf", {"trade_date": last}, analysis_date)
         c50 = _num(cy["cost_50pct"])
         cyf = pd.DataFrame(
             {
@@ -217,8 +259,12 @@ def _fetch_factors(pro, last: str) -> pd.DataFrame | None:
             }
         )
         fac = fac.merge(cyf, on="code", how="left")
-    except Exception as e:  # noqa: BLE001
+    except DataContractError:
+        raise                       # 同上:chip 组的地基,阻断不得被吞
+    except Exception as e:  # noqa: BLE001 — 权限/网络:合法降级,但必须留痕
         print(f"[warn] cyq_perf 取数失败({e!r})→ 筹码因子缺省", flush=True)
+        record_degradation("cyq_perf", f"取数失败({e!r})→ chip 组(筹码集中度/浮盈)整组置空",
+                           key=last)
     return fac
 
 
@@ -240,39 +286,89 @@ def _moneyflow_struct_cols(mf: pd.DataFrame) -> pd.DataFrame:
     })
 
 
-def _fetch_moneyflow_struct(pro, last: str) -> pd.DataFrame | None:
-    """moneyflow 结构(主力/散户净额 + 主力净流入)。失败 → None(降级)。"""
+def _fetch_moneyflow_struct(last: str, analysis_date: str) -> pd.DataFrame | None:
+    """moneyflow 结构(主力/散户净额 + 主力净流入)——**经湖**。失败 → None(降级)。
+
+    `moneyflow` 是 A 级(fund_main 组 + `main_net_ratio`)→ `DataContractError` 必须炸穿;
+    权限/网络失败仍降级,但记账。
+    """
+    from autoresearch.data.contracts import DataContractError, record_degradation
+
     try:
-        mf = _ts_call(lambda: pro.moneyflow(
-            trade_date=last,
-            fields="ts_code,buy_sm_amount,sell_sm_amount,buy_lg_amount,sell_lg_amount,"
-                   "buy_elg_amount,sell_elg_amount,net_mf_amount"))
+        mf = _lake_fetch("moneyflow", {"trade_date": last}, analysis_date)
         out = _moneyflow_struct_cols(mf)
         out["main_inflow_yi"] = _num(mf["net_mf_amount"]) / 1e4   # 沿用原 canonical 列
         return out
-    except Exception as e:  # noqa: BLE001
+    except DataContractError:
+        raise
+    except Exception as e:  # noqa: BLE001 — 权限/网络:合法降级,但必须留痕
         print(f"[warn] moneyflow 结构取数失败({e!r})→ 资金结构因子降级", flush=True)
+        record_degradation("moneyflow", f"取数失败({e!r})→ fund_main/fund_retail 两组置空",
+                           key=last)
         return None
 
 
-def _fetch_hk_hold(pro, last: str) -> pd.DataFrame | None:
+def _fetch_hk_hold(last: str, analysis_date: str) -> pd.DataFrame | None:
     """北向持股占比(hk_hold;ratio = 占流通股比 %)。B 级(增强)→ 失败/空 = 降级,但**必须记账**。
 
     2026-07-09 实证:该日 `hk_ratio` 全表为空(north 组整组失效),当时唯一的痕迹是一行
     `[warn] hk_hold 取数失败`,没人看见、也没有任何账本记得——直到回放器对拍时才被发现。
     降级本身是合法的(北向确有空档期,且 northbound 通道已停用),**但它必须是可见的**
     (design 2026-07-12-data-contracts-design.md)。
+
+    经湖(2026-08-29 T3):取数日**不变**(改成 T−1 是待裁的 Q8)—— 这里只保证失败/空留痕。
+    08-28 普查回填对同样的 `hk_hold 20260825/26/27` 拿到 958 行,而生产当晚拿到空 → 生产的
+    "空"多半是 T 晚取数撞上发布滞后(滞后时长 UNVERIFIED),不是真的没有北向。
+
+    ⚠️ **未裁的口径问题(2026-08-29 实测,只留痕不改)**:湖里 `hk_hold/20260826` 的 958 行
+    `exchange` **全是 HK**(港股通**南向**持股,`ts_code` 形如 `00001.HK`)。`_code6` 会把
+    `00001.HK` 补成 `'000001'`,与 A 股代码**撞号** —— 实测 297 个 A 股代码因此拿到了港股的
+    持股比例。改口径(按 `exchange ∈ {SH,SZ}` 过滤)会动打分输入,超出本任务"只改数据从哪来"
+    的边界,故**本次不改**:只在"一行北向都没有"时记一笔降级,把这个现场摆到账本上。
     """
-    from autoresearch.data.contracts import record_degradation
+    from autoresearch.data.contracts import DataContractError, record_degradation
 
     try:
-        hk = _ts_call(lambda: pro.hk_hold(trade_date=last, fields="ts_code,ratio"))
-    except Exception as e:  # noqa: BLE001
+        hk = _lake_fetch("hk_hold", {"trade_date": last}, analysis_date)
+    except DataContractError:
+        raise                       # 湖里那份是毒源(空/坏)时照样炸穿,别静默吃掉
+    except Exception as e:  # noqa: BLE001 — B 级:降级合法,但必须记账
         record_degradation("hk_hold", f"取数失败({e!r})→ north 组置空", key=last)
         return None
     if hk is None or not len(hk):
         record_degradation("hk_hold", "空返回(该日无北向数据)→ north 组置空", key=last)
         return None
+    # ── 代码域硬门(2026-08-30 裁定):只认**北向**(沪/深股通持有 A 股),南向一行不要 ──
+    #
+    # `hk_hold` 一个端点装了两个方向:北向(exchange=SH/SZ,`ts_code` 是 A 股)与南向
+    # (exchange=HK,`ts_code` 形如 `00001.HK`)。而 `hk_ratio` 的语义是**北向持股占比**。
+    #
+    # 不过滤的后果是**串号**,不是缺数:`_code6("00001.HK")` → `"000001"`,那是平安银行;
+    # `00002.HK`(中电控股)→ `000002` 万科A。2026-08-30 实测当日 958 行南向数据里
+    # **297 个**落进了当日 L0 池的真实 A 股代码上 —— 于是平安银行拿着长和的持股比例进了
+    # composite 的 `north` 组。这类错**比缺数难发现得多**:字段有值、量级也像,只是属于别人。
+    #
+    # 为什么过滤完就空了(实测 `exchange=SH` / `SZ` 各返回 **0 行**):**北向个股持股明细
+    # 自 2024-08 起停止披露**(macro-playbook 数据坑 #3 早记过这条,中观北向因此改用
+    # `moneyflow_hsgt` 官方日频汇总)。也就是说 `hk_ratio` 这一列**没有合法数据源**了,
+    # 而不是"今天恰好没有"。
+    #
+    # 所以这里的正确行为是**诚实缺席**:北向为空 → 返回 None → `north` 组 NaN → 打分时
+    # 该组被重新归一剔除(既有的 B 级降级语义)。这与生产在扫描夜实际拿到的结果一致
+    # (那些夜里 live 调用因发布滞后返回空,`north` 本来就是 NaN)—— 换句话说本改动
+    # **不改扫描夜的既有行为,只拿掉数据补齐后才会显形的那份污染**。
+    if "exchange" in hk.columns:
+        north = hk[hk["exchange"].astype(str).isin(("SH", "SZ"))]
+        if not len(north):
+            record_degradation(
+                "hk_hold",
+                f"{len(hk)} 行全是港股通**南向**(exchange=HK)、北向 0 行 → hk_ratio 诚实置空。"
+                f"北向个股持股明细 2024-08 起停止披露(实测 exchange=SH/SZ 各返回 0 行),"
+                f"该列**无合法数据源**;不过滤会让 `_code6('00001.HK')='000001'` 把港股比例"
+                f"串到平安银行等 A 股上(当日实测撞号 297 只)",
+                key=last)
+            return None
+        hk = north
     return pd.DataFrame({"code": _code6(hk["ts_code"]), "hk_ratio": _num(hk["ratio"])})
 
 
@@ -334,20 +430,115 @@ def fetch_limit_list_d(trade_date: str) -> pd.DataFrame:
 _RAW_COUNT: dict = {}   # 全A(硬门前)原始数;放本模块(单次 import)避开 __main__/scan.universe 双模块陷阱
 
 
+# `stock_basic` 的湖副本"多旧算旧"—— **换了自然日就重拉**。
+_STOCK_BASIC_PARAMS = {"list_status": "L"}
+
+
+def _lake_day(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch).strftime("%Y-%m-%d")
+
+
+def _stock_basic_stale(path: Path, now: float | None = None) -> bool:
+    """湖副本是否**不是今天取的**(不存在 = 陈旧)。
+
+    2026-08-29 复核把粒度从 ISO 周收紧到自然日 —— 周粒度带进了一个**真实的门衰减**:
+    周中新上市的票在本周内不会被重取,于是它在 `stock_basic` 里根本没有行 →
+    `list_date` 是 NaN → 剔次新硬门 `ld > int(d60)` 恒 False(**它混进候选池**),
+    同时 `name` 也是 NaN → ST/退 门在名字里找不到 "ST" 就**也放它过**。
+    两道 L0 硬门同时失灵最长 6 天,周界才自愈。
+
+    硬门失灵的代价不对称:多拉一次 `stock_basic` 是每趟一次小取数(5.5k 行、一列表),
+    而漏掉一次次新/ST 剔除会把一只不该研究的票一路送进 L3/L4。所以按日刷新 ——
+    这正好也是接湖之前的老行为(生产帧每趟裸调 `pro.stock_basic` 拿最新名单),
+    于是这条改动对硬门是**逐字节 parity**,只是多了 A 级契约与湖留痕。
+    """
+    if not path.exists():
+        return True
+    return _lake_day(path.stat().st_mtime) != _lake_day(now if now is not None else time.time())
+
+
+def _fetch_stock_basic(analysis_date: str) -> pd.DataFrame:
+    """证券基础(名称 + 上市日)经湖 + **每日刷新**。
+
+    `stock_basic` 的 policy 键是 `static`(湖里只有一份 `static.parquet`),而 static 的语义是
+    "存在即命中、永不重取" —— 工作树里那份的 mtime 停在 **2026-06-22**。生产帧此前是裸调
+    `pro.stock_basic` 拿最新名单所以没中招;把它接进湖之后若沿用 static 语义,新上市的票会
+    永远没有 `name` / `list_date`,于是剔次新硬门(`list_date > d60`,NaN 比较恒 False)与 ST
+    门(名字里找 "ST"/"退")都看不见它们 —— 名单会随时间慢慢腐坏。
+
+    故按**自然日**刷新:湖副本不是今天的 → 先把它挪开(不是删:取数失败要放回去)再经
+    `get_or_fetch` 重新入湖,一周一份、既不每天重拉也不会两个月不动。
+    (为什么不直接给 policy 加一个 `week` 键:那要同时改 `data/endpoints.py` 与 `data/cache.py`
+    的 `_cache_key`,两份都不在本任务的文件所有权内 —— 见 plan Wave1 文件所有权表。)
+
+    失败语义分两级:`DataContractError`(A 级:空/腰斩/缺列)**照样炸穿**,只是先把旧副本放
+    回去别把湖弄丢;权限/网络类失败 → 放回旧副本、记一笔降级并沿用它(宁可用上周的名单,也
+    不要没有名单;内容契约仍会在读旧副本时再跑一遍)。
+    """
+    from autoresearch.data import cache
+    from autoresearch.data.contracts import DataContractError, record_degradation
+
+    params = dict(_STOCK_BASIC_PARAMS)
+    path = cache.lake_path("stock_basic", params)
+    parked: Path | None = None
+    if _stock_basic_stale(path):
+        if path.exists():
+            parked = path.with_suffix(path.suffix + ".prev")
+            with contextlib.suppress(OSError):
+                os.replace(path, parked)
+            if path.exists():                       # 挪失败 → 当作没挪(下面按命中处理)
+                parked = None
+        print(f"[L0·tushare] stock_basic 湖副本非今日({_lake_day(time.time())})→ 重新入湖",
+              flush=True)
+    try:
+        sb = cache.get_or_fetch("stock_basic", params, today=analysis_date)
+    except DataContractError:
+        if parked is not None:                      # 契约违约的那份本就没入湖,把旧的放回去
+            with contextlib.suppress(OSError):
+                os.replace(parked, path)
+        raise
+    except Exception as e:  # noqa: BLE001 — 权限/网络:退回上一份名单,但必须留痕
+        if parked is None:
+            raise
+        os.replace(parked, path)
+        record_degradation(
+            "stock_basic",
+            f"日刷新取数失败({e!r})→ 沿用上一份湖副本({_lake_day(path.stat().st_mtime)});"
+            f"该周内新上市的票会缺 name/list_date(剔次新门与 ST 门看不见它们)",
+            key=_lake_day(time.time()))
+        return cache.get_or_fetch("stock_basic", params, today=analysis_date)
+    if parked is not None:
+        with contextlib.suppress(OSError):
+            parked.unlink()
+    return sb
+
+
 def _margin_rz_cols(mg: pd.DataFrame) -> pd.DataFrame:
     """margin_detail → code + rzmre_yuan(融资买入额,元)。纯函数无网络,selftest 可测。"""
     return pd.DataFrame({"code": _code6(mg["ts_code"]), "rzmre_yuan": _num(mg["rzmre"])})
 
 
-def _fetch_margin_rz(pro, last: str) -> pd.DataFrame | None:
-    """margin_detail(两融明细)→ rz 原料。失败/空 → None(rz 组 NaN 降级,composite 重归一跳过)。"""
+def _fetch_margin_rz(last: str, analysis_date: str) -> pd.DataFrame | None:
+    """margin_detail(两融明细)→ rz 原料。经湖;失败/空 → None(rz 组 NaN,composite 重归一跳过)。
+
+    B 级降级本身合法,但此前**完全无声**:空返回那条分支连 `print` 都没有,只有异常分支打一行
+    warn。于是 `rz` 组自 07-13 起每次扫描非空率 **0.0**,账本上一行记录都没有 —— 直到 08-29
+    的接线审计才被发现(spec 2026-08-29 §1.3 ①)。两条路现在都 `record_degradation`。
+    """
+    from autoresearch.data.contracts import DataContractError, record_degradation
+
     try:
-        mg = _ts_call(lambda: pro.margin_detail(trade_date=last, fields="ts_code,rzmre"))
+        mg = _lake_fetch("margin_detail", {"trade_date": last}, analysis_date)
         if mg is None or mg.empty:
+            print("[warn] margin_detail 空返回 → rz_buy_intensity 降级", flush=True)
+            record_degradation("margin_detail", "空返回(该日无两融明细)→ rz 组置空", key=last)
             return None
         return _margin_rz_cols(mg)
-    except Exception as e:  # noqa: BLE001
+    except DataContractError:
+        raise
+    except Exception as e:  # noqa: BLE001 — B 级:降级合法,但必须记账
         print(f"[warn] margin_detail 取数失败({e!r})→ rz_buy_intensity 降级", flush=True)
+        record_degradation("margin_detail", f"取数失败({e!r})→ rz 组置空", key=last)
         return None
 
 
@@ -361,23 +552,26 @@ def fetch_universe_tushare(
 
     单位换算:total_mv/net_mf_amount 为**万元**(/1e4→亿);daily.amount 为**千元**
     (/1e5→亿)。动量用原始收盘价 60日/YTD 涨跌(高召回粗筛代理,除权噪声留 L3b 核)。
+
+    **取数一律经湖**(2026-08-29 T3,spec §1.3 第一行):九条 tushare 取数
+    (`daily_basic` / `daily`×3 / `stock_basic` / `moneyflow` / `margin_detail` /
+    `stk_factor_pro` / `cyq_perf` / `hk_hold`)此前全是裸 `pro.X()`,只有 60 日 `daily` 面板
+    走湖 —— A 级数据契约因此**在生产路径上一次都没执行过**。现在全部经 `_lake_fetch`
+    (= `cache.get_or_fetch`,**不传 fields**),契约回到生产路径上。
     """
     pro = _pro()
     last, d60, dys = resolve_momentum_dates(pro, analysis_date)
     assert_tushare_ready(pro, last)   # 盘后就绪硬门:今天数据没落全 → 抛错中止,别静默跑残缺
     print(f"[L0·tushare] as-of 交易日={last}  60日前={d60}  年初={dys}", flush=True)
 
-    # 每日指标:市值/PE/PB/量比/换手/股息率
-    db = _ts_call(lambda: pro.daily_basic(
-        trade_date=last,
-        fields="ts_code,close,turnover_rate,volume_ratio,pe_ttm,pb,dv_ratio,total_mv,circ_mv,total_share",
-    ))
-    # 日线:价/涨跌/成交额(+ 60日前、年初 收盘价算动量)
-    dl = _ts_call(lambda: pro.daily(trade_date=last, fields="ts_code,close,pct_chg,amount"))
-    dl60 = _ts_call(lambda: pro.daily(trade_date=d60, fields="ts_code,close"))
-    dlys = _ts_call(lambda: pro.daily(trade_date=dys, fields="ts_code,close"))
-    # 名称 + 上市日(剔次新)
-    sb = _ts_call(lambda: pro.stock_basic(list_status="L", fields="ts_code,name,list_date"))
+    # 每日指标:市值/PE/PB/量比/换手/股息率(A 级)
+    db = _lake_fetch("daily_basic", {"trade_date": last}, analysis_date)
+    # 日线:价/涨跌/成交额(+ 60日前、年初 收盘价算动量)(A 级)
+    dl = _lake_fetch("daily", {"trade_date": last}, analysis_date)
+    dl60 = _lake_fetch("daily", {"trade_date": d60}, analysis_date)
+    dlys = _lake_fetch("daily", {"trade_date": dys}, analysis_date)
+    # 名称 + 上市日(剔次新):static 键 + 周刷新,见 `_fetch_stock_basic`
+    sb = _fetch_stock_basic(analysis_date)
 
     df = pd.DataFrame(
         {
@@ -406,7 +600,7 @@ def fetch_universe_tushare(
     df["pct_60d"] = (df["close_now"] / df["c60"] - 1) * 100
     df["pct_ytd"] = (df["close_now"] / df["cys"] - 1) * 100
     # 资金结构(主力净流入 + 大单+特大单净 + 散户净;主力净占比 = 主力净额/成交额)
-    mfs = _fetch_moneyflow_struct(pro, last)
+    mfs = _fetch_moneyflow_struct(last, analysis_date)
     if mfs is not None:
         df = df.merge(mfs, on="code", how="left")
         df["main_net_ratio"] = df["main_net_yi"] / df["amount_yi"].replace(0, np.nan)
@@ -415,7 +609,7 @@ def fetch_universe_tushare(
             df[c] = np.nan
     # 融资买入强度(FN-1 第五修:pr_20260710_001 rz 入组后,生产帧此前无此列 → 组恒 NaN = no-op)。
     # 口径同 factor_lab.py:rzmre(元)/当日成交额(元);amount_yi 亿 → ×1e8。
-    mg = _fetch_margin_rz(pro, last)
+    mg = _fetch_margin_rz(last, analysis_date)
     if mg is not None:
         df = df.merge(mg, on="code", how="left")
         df["rz_buy_intensity"] = df["rzmre_yuan"] / (df["amount_yi"] * 1e8).replace(0, np.nan)
@@ -428,10 +622,10 @@ def fetch_universe_tushare(
 
     # 增强因子(可选):技术/筹码 + 北向 + 现价相对筹码成本
     if with_factors:
-        fac = _fetch_factors(pro, last)
+        fac = _fetch_factors(last, analysis_date)
         if fac is not None:
             df = df.merge(fac, on="code", how="left")
-        hk = _fetch_hk_hold(pro, last)
+        hk = _fetch_hk_hold(last, analysis_date)
         if hk is not None:
             df = df.merge(hk, on="code", how="left")
         if "cost_50pct" in df.columns:
