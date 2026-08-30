@@ -303,7 +303,17 @@ let intelError = null
 // 07-31 实跑 ENOTFOUND ×3 —— presence-gate 让任务"完成"了,但两张卡情报面变薄
 // **而报告上看不出来**。非瞬时错(如 SCHEMA_ERROR)不重试:重试它只是把一次失败
 // 变成三次失败 + 三倍延迟。终失败 → 结构化 DEGRADED,不是静默变薄。
+// ── <contracts:begin> ── 由 `python -m autoresearch.contracts.emit --write` 生成,勿手编
+// 真身:autoresearch/contracts/agent_output.py(评级序) · autoresearch/contracts/retry.py(瞬时错误)
+// 评级名次:**JS 与 python 方向相反**(这里 sell=0…buy=4,而 python 的
+// RATING_ORDER 是 Buy=0…Sell=4)。此前两边各写一份字面量、谁也没有测试锁,
+// 方向只活在人的记忆里。
+const RANK = { buy: 4, overweight: 3, hold: 2, underweight: 1, sell: 0 }
+// 可重试的瞬时错误(**情报再搜**口径 = contracts/retry.INTEL_RESEARCH)。
+// 注意 `retry.TASK_ATTEMPT` 是**另一套**(含 STALE_TASK 而非 ENOTFOUND):
+// 任务簿重试与网查重试是两条不同策略,名字像但不是一回事 —— 别顺手合并。
 const TRANSIENT = ['RATE_LIMIT', 'CONNECTION', 'TIMEOUT', 'ENOTFOUND']
+// ── <contracts:end> ──
 const errClass = (e) => {
   const m = String((e && e.message) || e || '').toUpperCase()
   return TRANSIENT.find((t) => m.includes(t)) || 'OTHER'
@@ -427,7 +437,6 @@ if (trigger) {
   log(trigger === 'ow_review'
     ? `🎭 买单复核:${code} 追加 2 独立 run 取中位(只向下折回)`
     : `🎭 持仓卖出复核:${code} 追加 2 独立 run 取中位(只向温和折回,卖错持仓代价不对称)`)
-  const RANK = { 'sell': 0, 'underweight': 1, 'hold': 2, 'overweight': 3, 'buy': 4 }
   const tier = (r) => RANK[String(r || '').toLowerCase()] ?? 2
   const rerun = (i) => tracedAgent(
     `ens-review-${code}-${taskAttempt}-reviewer-${i}`, 'ens-review',

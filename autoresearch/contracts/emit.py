@@ -1,140 +1,136 @@
 #!/usr/bin/env python3
-"""把契约层**生成**给 JS 侧 —— 让 workflow 不再各拼各的字面量。
+"""把契约层**生成进 workflow 的行内块** —— 让 JS 不再各拼各的字面量。
 
 design: `docs/specs/2026-08-29-full-coverage-research-system-brainstorm.md` §2.4 A1 / §2.2 K7。
 
 ## 病灶
 
-`.claude/workflows/*.js` 与 python 各持一份同一个概念:
+`.claude/workflows/*.js` 与 python 各持一份同一个概念,而 JS 侧**没有测试**
+(`node --check` 对 ESM + 顶层 return 零鉴别力 —— 写坏了仍 exit 0,是本仓记过的假绿灯):
 
 | 概念 | JS | python |
 |---|---|---|
-| 评级序 | `RANK = {sell:0…buy:4}`(`l4-stock.js:430`) | `RATINGS_5_TIER` Buy=0…Sell=4 —— **方向相反** |
-| 任务动作 | `'SKIP'/'RUN'/'BLOCKED'/'WAIT'/'LEGACY'` 字面量 | `scan/l4_tasks.py` 同名字符串 |
-| 瞬时错误 | `l4-stock.js:249-256` | `intel_status.TRANSIENT_ERRORS` |
-| staging 路径 | `context_${ENGINE}/scan_runs/${RUN_ID}/staging/${date}` | `ws.scan_root()` |
-| 阶段串 | `'l4-prep'`、`'finalize'` | `run_profile.SCAN_STAGES` 里没有这两个 |
+| 评级名次 | `RANK = {sell:0…buy:4}`(`l4-stock.js:430`) | `RATING_ORDER` Buy=0…Sell=4 —— **方向相反** |
+| 瞬时错误 | `TRANSIENT = [...]`(`l4-stock.js:306`) | `contracts/retry.INTEL_RESEARCH` |
 
-两份真身意味着两个可以各自漂移的地方,而 JS 侧**没有测试**
-(`node --check` 对 ESM + 顶层 return 零鉴别力 —— 写坏了仍 exit 0,
-是本仓记过的「永不变红的绿灯」)。
+两份真身 = 两个可以各自漂移的地方,而「方向相反」这件事只活在人的记忆里。
 
-## 做法
+## 做法:**行内代码生成**,不是旁边放一个文件
 
-python 是唯一真身,JS 侧消费**生成物** `.claude/workflows/_contracts.generated.js`。
-生成物带 `contracts_hash`;测试断言「磁盘上的生成物 == 现在重新生成的内容」,
-所以改了 python 而忘了重新生成会当场红。
+初版(2026-08-29)生成了一份独立的 `.claude/workflows/_contracts.generated.js`,
+指望两个 workflow `import` 它。**2026-08-30 复核发现那条路走不通,而且它本身就是
+设计稿在骂的那种病**:
 
-    uv run --no-sync python -m autoresearch.contracts.emit          # 打印到 stdout
-    uv run --no-sync python -m autoresearch.contracts.emit --write  # 写入生成物
+- 三个 workflow **没有任何一个 import 过任何东西**(grep 实证),Workflow 运行时也明说
+  「No filesystem or Node.js API access」—— 本地文件 import 大概率根本不成立;
+- 于是那份生成物**零消费者**,只有它自己的测试在读它 —— 正是 spec §1.3 列的
+  「建成未接线」(FN-1)家族。**修别人这个病的同一天造了一个新的**,所以删掉重做。
+
+改成把值直接生成进 workflow 文件里一段带标记的块:不需要 import、静态可校验、
+漂移当场红。
+
+    uv run --no-sync python -m autoresearch.contracts.emit          # 打印将要写入的块
+    uv run --no-sync python -m autoresearch.contracts.emit --write  # 同步进 workflow
     uv run --no-sync python -m autoresearch.contracts.emit --check  # CI:不一致则 exit 1
 """
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
 import sys
 from pathlib import Path
 
-from autoresearch.contracts import agent_output as ao, artifacts as ca, stages as cs
+from autoresearch.contracts import agent_output as ao, retry
 
-#: 生成物落点。**不要**手编它 —— 它是 python 的投影。
-GENERATED_JS = Path(".claude/workflows/_contracts.generated.js")
+#: 行内块的起止标记。两行之间的一切由本模块拥有 —— 手编会被 `--write` 覆盖、被 `--check` 判红。
+BEGIN = "// ── <contracts:begin> ── 由 `python -m autoresearch.contracts.emit --write` 生成,勿手编"
+END = "// ── <contracts:end> ──"
 
-_HEADER = """\
-// 自动生成,请勿手编 —— 真身是 `autoresearch/contracts/`。
-// 重新生成:`uv run --no-sync python -m autoresearch.contracts.emit --write`
-//
-// 为什么有这个文件:JS 与 python 此前各持一份评级序(方向还相反)、任务动作枚举、
-// 阶段串与 staging 路径。两份真身 = 两个可以各自漂移的地方,而 JS 侧没有测试
-// (`node --check` 对 ESM 顶层 return 零鉴别力)。现在 python 是唯一真身。
-"""
+#: 哪个 workflow 要哪些常量。**只放确实有两份真身的东西**,不是把 python 全搬过去 ——
+#: 生成物越大,它自己就越像下一个没人读的文件。
+WORKFLOW_BLOCKS: dict[str, tuple[str, ...]] = {
+    ".claude/workflows/l4-stock.js": ("rank", "transient"),
+}
 
 
-def build_payload() -> dict:
-    """生成物的结构化内容(JS 与测试共用)。"""
-    return {
-        "schema_version": ca.ARTIFACT_REGISTRY_SCHEMA_VERSION,
-        "stages": list(cs.STAGES),
-        "js_stage_aliases": dict(cs.JS_STAGE_ALIASES),
-        "modes": list(cs.MODES),
-        "l4_skipping_modes": sorted(cs.L4_SKIPPING_MODES),
-        "role_stages": dict(cs.ROLE_STAGES),
-        "conditional_roles": sorted(cs.CONDITIONAL_ROLES),
-        # 评级:两个方向都由 RATING_ORDER 派生,不再靠人记住哪边是哪边。
-        "rating_order": list(ao.RATING_ORDER),
-        "rating_rank_js": ao.js_rank_view(),
-        "proposals": list(ao.PROPOSALS),
-        "stop_reasons": list(ao.STOP_REASONS),
-        "ow_gates": list(ao.OW_GATES),
-        "artifacts": {
-            a.name: {
-                "path": a.path,
-                "root": a.root,
-                "stage": a.stage,
-                "presence": a.presence,
-            }
-            for a in ca.ARTIFACTS
-        },
-    }
+def render_block(keys: tuple[str, ...]) -> str:
+    """一个 workflow 的行内块正文(含起止标记)。"""
+    lines = [
+        BEGIN,
+        "// 真身:autoresearch/contracts/agent_output.py(评级序)"
+        " · autoresearch/contracts/retry.py(瞬时错误)",
+    ]
+    if "rank" in keys:
+        body = ", ".join(f"{k}: {v}" for k, v in ao.js_rank_view().items())
+        lines += [
+            "// 评级名次:**JS 与 python 方向相反**(这里 sell=0…buy=4,而 python 的",
+            "// RATING_ORDER 是 Buy=0…Sell=4)。此前两边各写一份字面量、谁也没有测试锁,",
+            "// 方向只活在人的记忆里。",
+            f"const RANK = {{ {body} }}",
+        ]
+    if "transient" in keys:
+        arr = ", ".join(f"'{e}'" for e in retry.INTEL_RESEARCH)
+        lines += [
+            "// 可重试的瞬时错误(**情报再搜**口径 = contracts/retry.INTEL_RESEARCH)。",
+            "// 注意 `retry.TASK_ATTEMPT` 是**另一套**(含 STALE_TASK 而非 ENOTFOUND):",
+            "// 任务簿重试与网查重试是两条不同策略,名字像但不是一回事 —— 别顺手合并。",
+            f"const TRANSIENT = [{arr}]",
+        ]
+    lines.append(END)
+    return "\n".join(lines)
 
 
-def payload_hash(payload: dict) -> str:
-    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+def _splice(text: str, block: str) -> str:
+    """把 `text` 里 BEGIN..END 之间换成 `block`。
 
-
-def render_js(payload: dict | None = None) -> str:
-    payload = payload if payload is not None else build_payload()
-    body = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
-    digest = payload_hash(payload)
-    return (
-        f"{_HEADER}\n"
-        f"export const CONTRACTS_HASH = '{digest}'\n\n"
-        f"export const CONTRACTS = {body}\n\n"
-        "export const STAGES = CONTRACTS.stages\n"
-        "export const MODES = CONTRACTS.modes\n"
-        "export const RATING_RANK = CONTRACTS.rating_rank_js\n"
-        "export const ARTIFACTS = CONTRACTS.artifacts\n\n"
-        "// 阶段串折叠:JS 用连字符,python 用下划线。\n"
-        "export const normalizeStage = (name) =>\n"
-        "  CONTRACTS.js_stage_aliases[name] ?? name\n\n"
-        "// 产物相对路径:JS 侧唯一该拼路径的地方。\n"
-        "export const artifactPath = (name) => {\n"
-        "  const spec = CONTRACTS.artifacts[name]\n"
-        "  if (!spec) throw new Error(`未登记的产物:${name}`)\n"
-        "  return spec.path\n"
-        "}\n"
-    )
+    没有标记 → 报错。标记要人**放一次**(块落在文件哪个位置是人的判断,
+    不该由生成器擅自插入)。
+    """
+    if BEGIN not in text or END not in text:
+        raise ValueError("目标文件里没有 <contracts:begin>/<contracts:end> 标记")
+    head = text.split(BEGIN)[0]
+    tail = text.split(END, 1)[1]
+    return head + block + tail
 
 
 def check(root: Path | None = None) -> tuple[bool, str]:
-    """磁盘上的生成物是否与现在重新生成的一致。"""
-    target = (root or Path.cwd()) / GENERATED_JS
-    want = render_js()
-    if not target.is_file():
-        return False, f"生成物不存在:{target}"
-    got = target.read_text(encoding="utf-8")
-    if got != want:
+    """每个 workflow 的行内块是否与现在重新生成的一致。"""
+    base = root or Path.cwd()
+    stale: list[str] = []
+    for rel, keys in WORKFLOW_BLOCKS.items():
+        target = base / rel
+        if not target.is_file():
+            return False, f"workflow 不存在:{target}"
+        text = target.read_text(encoding="utf-8")
+        try:
+            want = _splice(text, render_block(keys))
+        except ValueError as exc:
+            return False, f"{rel}: {exc}"
+        if text != want:
+            stale.append(rel)
+    if stale:
         return False, (
-            f"生成物已过期:{target}\n"
-            "改了 autoresearch/contracts/ 就要重新生成:\n"
+            "以下 workflow 的契约块已过期:" + ", ".join(stale) + "\n"
+            "改了 autoresearch/contracts/ 就要重新同步:\n"
             "  uv run --no-sync python -m autoresearch.contracts.emit --write"
         )
     return True, "in sync"
 
 
-def write(root: Path | None = None) -> Path:
-    target = (root or Path.cwd()) / GENERATED_JS
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(render_js(), encoding="utf-8")
-    return target
+def write(root: Path | None = None) -> list[Path]:
+    """把行内块同步进每个 workflow;返回被改动的文件。"""
+    base = root or Path.cwd()
+    out: list[Path] = []
+    for rel, keys in WORKFLOW_BLOCKS.items():
+        target = base / rel
+        text = target.read_text(encoding="utf-8")
+        target.write_text(_splice(text, render_block(keys)), encoding="utf-8")
+        out.append(target)
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="把契约层生成给 JS 侧")
-    ap.add_argument("--write", action="store_true", help="写入生成物")
+    ap = argparse.ArgumentParser(description="把契约层生成进 workflow 的行内块")
+    ap.add_argument("--write", action="store_true", help="同步进 workflow")
     ap.add_argument("--check", action="store_true", help="不一致则 exit 1")
     args = ap.parse_args(argv)
     if args.check:
@@ -142,9 +138,11 @@ def main(argv: list[str] | None = None) -> int:
         print(msg)
         return 0 if ok else 1
     if args.write:
-        print(f"wrote {write()}")
+        for path in write():
+            print(f"synced {path}")
         return 0
-    print(render_js())
+    for rel, keys in WORKFLOW_BLOCKS.items():
+        print(f"# {rel}\n{render_block(keys)}")
     return 0
 
 

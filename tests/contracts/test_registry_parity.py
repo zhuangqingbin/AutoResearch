@@ -233,13 +233,17 @@ def test_drift_guard_would_catch_a_new_name(monkeypatch):
     assert unknown == ["verify.csv"]
 
 
-# ---------------------------------------------------------------- JS 生成物
+# ---------------------------------------------------------------- JS 行内块
 
-def test_generated_js_is_in_sync():
-    """改了契约层却忘了重新生成 → 当场红。
+def test_workflow_contract_block_is_in_sync():
+    """改了契约层却忘了同步 workflow → 当场红。
 
     JS 侧没有测试(`node --check` 对 ESM 顶层 return 零鉴别力,写坏仍 exit 0),
-    所以「两边一致」这件事必须由 python 侧的这条用例扛。
+    所以「两边一致」必须由 python 侧这条用例扛。
+
+    2026-08-30:初版生成了一份独立的 `_contracts.generated.js` 指望 workflow import 它 ——
+    但三个 workflow **没有任何一个 import 过东西**,Workflow 运行时也没有文件系统访问,
+    于是那份生成物零消费者(自己变成了 FN-1「建成未接线」)。现在改成行内块。
     """
     from autoresearch.contracts import emit
 
@@ -247,32 +251,57 @@ def test_generated_js_is_in_sync():
     assert ok, msg
 
 
-def test_generated_js_exposes_both_rating_directions():
-    """JS 的 RANK 是 sell=0,python 是 Buy=0 —— 生成物必须两个视图都给,不靠人记。"""
+def test_block_carries_both_rating_directions():
+    """JS 的 RANK 是 sell=0,python 是 Buy=0 —— 生成块必须自带这句解释,不靠人记。"""
     from autoresearch.contracts import emit
 
-    payload = emit.build_payload()
-    assert payload["rating_order"][0] == "Buy"
-    assert payload["rating_rank_js"]["sell"] == 0
+    block = emit.render_block(("rank",))
+    assert "sell: 0" in block and "buy: 4" in block
+    assert "方向相反" in block
 
 
-def test_generated_js_parses_as_a_module():
-    """`node --check` 对 ESM 是假绿灯 —— 用真解析证明生成物语法有效。"""
-    import shutil
-    import subprocess
+def test_block_sync_guard_bites(tmp_path):
+    """鉴别力自证:把块里的值改一个字,`check` 必须红。"""
+    from autoresearch.contracts import emit
 
-    node = shutil.which("node")
-    if not node:
-        import pytest as _pytest
+    rel = next(iter(emit.WORKFLOW_BLOCKS))
+    src = (REPO / rel).read_text(encoding="utf-8")
+    (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / rel).write_text(src.replace("sell: 0", "sell: 9"), encoding="utf-8")
+    ok, msg = emit.check(tmp_path)
+    assert not ok and "过期" in msg
 
-        _pytest.skip("no node on PATH")
-    js = REPO / "autoresearch" / ".." / ".claude/workflows/_contracts.generated.js"
-    probe = (
-        "import('file://' + process.argv[1])"
-        ".then(m => { if (!m.CONTRACTS_HASH) { process.exit(3) } })"
-        ".catch(e => { console.error(String(e)); process.exit(4) })"
-    )
-    r = subprocess.run(  # noqa: S603
-        [node, "-e", probe, str(js.resolve())], capture_output=True, text=True, check=False
-    )
-    assert r.returncode == 0, f"生成物不是有效 ESM:{r.stderr[:400]}"
+
+def test_workflow_defines_each_generated_constant_once():
+    """行内块替换的是**本地重复定义**,不是又加一份 —— 重复会让 JS 侧静默用错那个。"""
+    src = (REPO / ".claude/workflows/l4-stock.js").read_text(encoding="utf-8")
+    assert src.count("const RANK") == 1
+    assert src.count("const TRANSIENT") == 1
+
+
+# ---------------------------------------------------------------- 重试分类学
+
+def test_the_two_retry_taxonomies_stay_deliberately_different():
+    """两套「瞬时错误」名字几乎一样、内容**故意不同** —— 锁住这个差异本身。
+
+    `INTEL_RESEARCH` 含 `ENOTFOUND`(DNS 失败,再发一次网查有意义);
+    `TASK_ATTEMPT` 含 `STALE_TASK`(租约过期 = 上一个认领进程死了,必须能重试)。
+    合并它们不会报错,只会**默默改掉两条重试策略里的一条** —— 这条用例就是那道栏杆。
+    """
+    from autoresearch.contracts import retry
+
+    assert "ENOTFOUND" in retry.INTEL_RESEARCH
+    assert "ENOTFOUND" not in retry.TASK_ATTEMPT
+    assert "STALE_TASK" in retry.TASK_ATTEMPT
+    assert "STALE_TASK" not in retry.INTEL_RESEARCH
+    assert set(retry.INTEL_RESEARCH) != set(retry.TASK_ATTEMPT), "两套口径被合并了"
+
+
+def test_production_consumers_read_the_contract_not_their_own_copy():
+    """两个生产消费者必须转出 contracts 的定义,而不是各留一份字面量。"""
+    from autoresearch.contracts import retry
+    from autoresearch.scan.l4.intel_status import TRANSIENT_ERRORS as intel
+    from autoresearch.scan.l4_tasks import TRANSIENT_ERRORS as task
+
+    assert intel is retry.INTEL_RESEARCH
+    assert task is retry.TASK_ATTEMPT

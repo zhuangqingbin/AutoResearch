@@ -31,6 +31,7 @@ from datetime import date as _date
 from pathlib import Path
 
 from autoresearch.common import workspace as ws
+from autoresearch.contracts import retry as _retry
 
 SCHEMA_VERSION = 1
 
@@ -40,7 +41,9 @@ AVAILABILITY = ("INTEL", "CARD_FALLBACK", "NONE")
 
 # §A6:只有**瞬时**错才重试。SCHEMA_ERROR 这类结构错重试多少次都是同一个结果,
 # 重试它只是把一次失败变成三次失败 + 三倍延迟。
-TRANSIENT_ERRORS = ("RATE_LIMIT", "CONNECTION", "TIMEOUT", "ENOTFOUND")
+#: 情报再搜口径的单一真身在 `contracts/retry.py`(那里并排解释了它与任务簿口径
+#: 为什么**故意不同**);这里只做转出,勿在本文件另写一份。
+TRANSIENT_ERRORS = _retry.INTEL_RESEARCH
 MAX_ATTEMPTS = 3            # 首发 + 最多 2 次重试(§A6)
 
 UNMEASURED = "UNMEASURED"

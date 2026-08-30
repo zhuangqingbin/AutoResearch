@@ -20,13 +20,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from autoresearch.common import workspace as ws
+from autoresearch.contracts import retry as _retry
 from autoresearch.scan import structural_audit
 from autoresearch.trace.capsule import require_active_run
 from autoresearch.trace.events import append_event
 
 SCHEMA_VERSION = 1
 MAX_ATTEMPTS = 2
-TRANSIENT_ERRORS = frozenset({"RATE_LIMIT", "CONNECTION", "TIMEOUT", "STALE_TASK"})
+#: 任务簿重试口径的单一真身在 `contracts/retry.py`(与情报再搜口径**故意不同**:
+#: 这里含 STALE_TASK 而不含 ENOTFOUND,理由见那边)。
+TRANSIENT_ERRORS = _retry.TASK_ATTEMPT
 REQUIRED_CAPS = ("tushare", "web_search", "web_fetch", "l4_stock")
 # l4_stock 退出「资源」语义,升为派发帽;缺省 64 = 事实无上限(Wave11 C1)。
 # tushare/web_search/web_fetch 仍是独立资源帽,但不再参与 effective_cap 的运算 ——
