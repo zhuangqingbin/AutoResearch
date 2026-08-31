@@ -25,6 +25,7 @@ Usage:
 """
 
 import json
+import os
 import re
 import sys
 from datetime import datetime
@@ -248,6 +249,10 @@ def main() -> int:
     # harvest 落盘的原始 md 是否在场(相对路径,或 null);degradations 读本进程累积的
     # B 级降级记账(assemble 自己不取数,同进程通常是 0)。
     ctx_file = ws.context_root() / f"{ticker}_{adate}.md"
+    # D6.4:run_id 由 `AUTORESEARCH_RUN_ID` 直填(不在场 → None,与今天相同)。
+    # `analyze.runctl finalize --report-dir` 还会在**冻结之前**再回填一次兜底:
+    # 手工跑 assemble、事后才决定留现场的那条路,manifest 也不会缺身份。
+    active_run_id = str(os.environ.get("AUTORESEARCH_RUN_ID", "")).strip() or None
     (out_dir / "manifest.json").write_text(json.dumps({
         "ticker": ticker, "name": fname,
         "market": "A股" if _is_ashare(ticker) else "其他",
@@ -255,7 +260,7 @@ def main() -> int:
         "hhmm": now.strftime("%H%M"),
         "schema_version": 2,
         "engine": ws.ENGINE,
-        "run_id": None,
+        "run_id": active_run_id,
         "context_file": str(ctx_file) if ctx_file.exists() else None,
         "degradations": len(data_contracts.degradations()),
         "rating": rating,
@@ -267,6 +272,21 @@ def main() -> int:
     print(f"[parse_rating → 5-tier signal] {rating}")
     if skipped:
         print("[note] 跳过未提供的可选 lens 分段: " + ", ".join(skipped))
+
+    # D6.4:进程内 checkpoint(不开 RUN_ID → 真 no-op,零留痕)。产物给的是**发布目录**
+    # 里的两份,`record_stage` 会把它们快照进 run staging —— 于是 capsule 自带的
+    # products 里既有取数原料,也有最终交付。
+    from autoresearch.analyze.runctl import record_stage
+    record_stage(
+        "assemble",
+        outputs=[out_path, out_dir / "manifest.json"],
+        inputs=[str(root)],
+        metrics={
+            "ticker": ticker, "rating": rating, "proposal": proposal_m.group(1),
+            "spine_sections": len(spine_present), "appendix_sections": len(appx_present),
+            "skipped_lenses": len(skipped), "report_dir": str(out_dir),
+        },
+    )
     return 0
 
 

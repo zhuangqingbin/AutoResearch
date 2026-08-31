@@ -574,7 +574,37 @@ def main() -> int:
     degs = degradations()
     if degs:
         print(f"[数据降级账] {len(degs)} 条:{_deg_render(degs)}", flush=True)
+
+    # D6.4:`AUTORESEARCH_RUN_ID` 在场时把这一步记进法证现场(**进程内** checkpoint,
+    # 不套 scan 那层 traced 壳)。不开 run 时 `record_stage` 是真 no-op —— 零留痕,
+    # 与今天逐字相同。取证故障只走 stderr,永不改本函数的返回码。
+    from autoresearch.analyze.runctl import record_stage
+    record_stage(
+        "harvest",
+        outputs=[path for path in _harvest_outputs(out_dir, ticker, trade_date, slim)
+                 if path.is_file()],
+        inputs=[ticker, trade_date],
+        metrics={
+            "tier": tier_key, "market": market_key, "blocks": len(parts),
+            "bytes": out_path.stat().st_size, "degradations": len(degs),
+            "peers": len(peers),
+        },
+        status="DEGRADED" if degs else "SUCCEEDED",
+    )
     return 0
+
+
+def _harvest_outputs(out_dir: Path, ticker: str, trade_date: str, slim: bool) -> list[Path]:
+    """这一趟 harvest **可能**写出的全部文件(在场与否由调用方过滤)。
+
+    两档各自的侧文件是真实存在的第二产物(slim 的 `_slim_deep.md`、full 的
+    `_indicators.md`),漏掉它们等于让现场少一半 —— 而它们正是 P4 深核与指标全序列
+    的落点。名字在这里派生一次,不在 checkpoint 调用点再手抄一遍。
+    """
+    stem = f"{ticker}_{trade_date}"
+    if slim:
+        return [out_dir / f"{stem}_slim.md", out_dir / f"{stem}_slim_deep.md"]
+    return [out_dir / f"{stem}.md", out_dir / f"{stem}_indicators.md"]
 
 
 if __name__ == "__main__":

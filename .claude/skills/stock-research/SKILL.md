@@ -39,6 +39,13 @@ description: Two-tier single-ticker research. FULL deep-dive report by default (
 2. **渐进 DD + 早停**:P0 简报定向 → P1–P3 表面 4 维 →【主早停②:非买点 → 早停卡止】→ survivor P4 陷阱核 →【③击杀】→ P5 满卡(三档 EV/R:R + 多空自压)。**早停只向下,≥OW 必走 P4+P5**。落点:独立跑 → `$RPT/analyze/<YYYYMMDD>_<HHMM>/<名称|TICKER>_lite.md`;被 scan L4 调用 → staging `$CTX/scan/<date>/details/<ticker>.md`。
 3. **(可选)校验**:`autoresearch.scan.assemble` / `parse_rating` 直接读卡。
 
+## 现场留存(可选但推荐;D6)
+开了就有一份可核验的法证现场(取数读点/prompt 哈希/产物快照/事件链);**不开 `RUN_ID` 时一切照旧、零留痕**,与今天逐字相同。
+0. 开场:`uv run --no-sync python -m autoresearch.analyze.runctl begin <TICKER> <日期> --mode FULL|LITE --session-ref <本会话 sessionId>` → 回显首行 `RUN_ID=…`,`export AUTORESEARCH_RUN_ID=<回显>`(此后 harvest/assemble 自动 checkpoint,无需额外命令)。
+- **绑 transcript**(full 派了情报员时,第 5 步之后):`… runctl bind $AUTORESEARCH_RUN_ID ~/.claude/projects/<slug>/<sessionId>/subagents/agent-<情报员id>.jsonl --role company-intel|us-intel`。
+- **收尾**(full 第 6 步后 / lite 第 3 步后):`… runctl finalize $AUTORESEARCH_RUN_ID --report-dir $RPT/analyze/<YYYYMMDD_HHMM>`;中途放弃 → `--status INTERRUPTED --reason <一句话>`(无需 `--report-dir`)。
+- 读结论:`… runctl verify <RUN_ID>` —— **完好性 / 完整性 / 可重放性 三个结论互不替代**,`MANIFEST 通过 ≠ 现场完整`。
+
 ## 铁律(两档共;违反即作废重来)
 - **每个价格/指标/财务数字出自本档 context**(full=全量 md / lite=slim);不凭记忆/训练知识填数。lite 不得引用 slim 没取的块(全球宏观/做空/同业全表/期权/资产负债+现金流全表)——要它们 → full。
 - 以 `get_verified_market_snapshot` 为价格/指标**唯一真值**;冲突标注、不私自调和。
