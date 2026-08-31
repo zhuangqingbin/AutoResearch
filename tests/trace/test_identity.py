@@ -1618,3 +1618,41 @@ def test_identity_atomic_write_fsyncs_parent_and_propagates_failure(tmp_path, mo
     monkeypatch.setattr(identity_mod.os, "fsync", fail_directory)
     with pytest.raises(OSError, match="directory sync fault"):
         identity_mod._atomic_write_bytes(target, b"replacement")
+
+
+# ───────────────────────────────────────────────── D6.5: codex escape hatch
+
+
+def test_detect_codex_web_search_mode_reads_the_configured_value(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_text('model = "gpt-5.6-sol"\nweb_search = "cached"\n', encoding="utf-8")
+
+    assert identity_mod.detect_codex_web_search_mode(config) == "cached"
+
+
+def test_detect_codex_web_search_mode_unquoted_value(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_text("web_search = live\n", encoding="utf-8")
+
+    assert identity_mod.detect_codex_web_search_mode(config) == "live"
+
+
+def test_detect_codex_web_search_mode_missing_file_is_unknown_not_a_crash(tmp_path):
+    assert identity_mod.detect_codex_web_search_mode(tmp_path / "nope.toml") == "UNKNOWN"
+
+
+def test_detect_codex_web_search_mode_missing_key_is_unknown(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_text('model = "gpt-5.6-sol"\n', encoding="utf-8")
+
+    assert identity_mod.detect_codex_web_search_mode(config) == "UNKNOWN"
+
+
+def test_detect_codex_web_search_mode_never_writes_the_config(tmp_path):
+    config = tmp_path / "config.toml"
+    original = 'web_search = "cached"\n'
+    config.write_text(original, encoding="utf-8")
+
+    identity_mod.detect_codex_web_search_mode(config)
+
+    assert config.read_text(encoding="utf-8") == original

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from autoresearch.contracts.profiles import ArtifactRule, RunProfile
 from autoresearch.scan.run_profile import scan_profile
 from autoresearch.trace.completeness import (
     build_expected,
@@ -177,3 +178,68 @@ def test_source_coverage_counts_only_blobs_that_are_inside_the_capsule(tmp_path)
         "uncovered": ["adj"],
         "ok": False,
     }
+
+
+# ---------------------------------------------------------------- D6.5: evidence levels
+
+
+def test_completeness_levels_bucketed(tmp_path):
+    """两条 L0 一条 L1、命中 2/3 → `levels` 按 level 分桶,L1 那条 MISSING(D6.5)。"""
+    capsule = tmp_path / "capsule"
+    (capsule / "a.json").parent.mkdir(parents=True, exist_ok=True)
+    (capsule / "a.json").write_bytes(b"{}")
+    (capsule / "b.json").write_bytes(b"{}")
+    # c.json 故意不写 → 那条 L1 规则 MISSING。
+    profile = RunProfile(
+        kind="scan-market",
+        expected_stages=(),
+        agent_roles=(),
+        artifact_rules=(
+            ArtifactRule("a", "a.json", "capsule", "always"),
+            ArtifactRule("b", "b.json", "capsule", "always"),
+            ArtifactRule("c", "c.json", "capsule", "always", evidence_level="L1"),
+        ),
+        replayable_stages=(),
+    )
+
+    result = evaluate(capsule, profile)
+
+    assert result["levels"]["L0"] == {"required": 2, "hit": 2}
+    assert result["levels"]["L1"] == {"required": 1, "hit": 0}
+    assert "L2" not in result["levels"]
+
+
+def test_scan_rules_default_l0():
+    """scan profile 全部规则 `evidence_level == "L0"`(行为守恒探针,D6.5 红线)。"""
+    profile = scan_profile()
+
+    assert all(rule.evidence_level == "L0" for rule in profile.artifact_rules)
+
+
+def test_evidence_level_never_changes_the_completeness_verdict(tmp_path):
+    """把一条规则的 `evidence_level` 从 L0 换成 L2,判定必须逐字不变(D6.5 红线)。
+
+    这是「只加字段不改判定」的变异式对照:同一份胶囊算两次,唯二的差异是
+    `usage_ledger` 规则的 `evidence_level`——`completeness_ok`/`counts`/
+    `missing_required`/`not_expected`/`not_reached` 必须逐字相同,只有新增的
+    `levels` 键该变(因为它就是喂 `levels` 用的,别的字段读不到这个维度)。
+    """
+    from dataclasses import replace
+
+    capsule = _complete_capsule(tmp_path, roles=("strategist", "l4-card"))
+    base_profile = scan_profile(agent_roles=("strategist", "l4-card"))
+    relabeled_rules = tuple(
+        replace(rule, evidence_level="L2") if rule.key == "usage_ledger" else rule
+        for rule in base_profile.artifact_rules
+    )
+    relabeled_profile = replace(base_profile, artifact_rules=relabeled_rules)
+
+    baseline = evaluate(capsule, base_profile)
+    relabeled = evaluate(capsule, relabeled_profile)
+
+    for key in ("completeness_ok", "counts", "missing_required",
+                "not_expected", "not_reached"):
+        assert baseline[key] == relabeled[key], key
+    assert baseline["levels"] != relabeled["levels"]
+    assert relabeled["levels"]["L2"] == {"required": 1, "hit": 1}
+    assert set(baseline["levels"]) == {"L0"}

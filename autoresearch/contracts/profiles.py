@@ -81,12 +81,23 @@ class ArtifactRule:
     ``source`` says who answers it: the capsule filesystem, the agent index, the
     read lineage, or the replay probe.  ``required_when`` names the condition
     under which the artifact is owed at all.
+
+    ``evidence_level`` (D6.5) is a **purely additive** classification of *how much*
+    of the underlying evidence a hit actually proves: ``L0`` = existence only (the
+    default — a file is there, full stop), ``L1`` = a harness-written summary view
+    (e.g. ``agents/index.json``: per-invocation model/effort/usage, not the raw
+    transcript), ``L2`` = original full-text evidence (a fetch tool's captured page
+    body — no producer exists for this yet; P2 reserves the slot).  It never
+    participates in disposition: `build_expected`/`evaluate`'s REQUIRED/PRESENT/
+    MISSING logic reads only `required_when` and file presence, exactly as before.
+    This field only feeds `completeness.evaluate`'s new `levels` summary.
     """
 
     key: str
     selector: str
     source: str
     required_when: str
+    evidence_level: str = "L0"
 
 
 @dataclass(frozen=True)

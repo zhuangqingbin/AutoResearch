@@ -12,6 +12,7 @@ task: `.superpowers/sdd/2026-08-31-stock-research-p0-p1/task-13-brief.md`。
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -257,3 +258,137 @@ def test_cli_begin_prints_an_exportable_run_id(tmp_ws, capsys):
 def test_cli_bind_rejects_an_unknown_role(tmp_ws):
     with pytest.raises(SystemExit):
         runctl.main(["bind", "20260827T010203456789Z", "x.jsonl", "--role", "l3-rank"])
+
+
+# ---------------------------------------------------------------- D6.5: codex escape hatch
+
+
+def test_begin_calls_the_codex_escape_hatch_only_on_codex_engine(tmp_ws, monkeypatch):
+    """`tmp_ws` 走 `redirect_roots` → `ws.ENGINE == "codex"`,`begin()` 必须接线调用。"""
+    calls = []
+    monkeypatch.setattr(
+        runctl, "_record_codex_escape_hatch", lambda handle: calls.append(handle.run_id)
+    )
+
+    started = _begin(monkeypatch)
+
+    assert calls == [started["run_id"]]
+
+
+def test_begin_skips_the_codex_escape_hatch_on_claude_engine(tmp_ws, monkeypatch):
+    monkeypatch.setattr(ws, "ENGINE", "claude")
+    calls = []
+    monkeypatch.setattr(
+        runctl, "_record_codex_escape_hatch", lambda handle: calls.append(handle.run_id)
+    )
+
+    runctl.begin(TICKER, DATE, mode="LITE", session_ref="sess-claude-branch")
+
+    assert calls == []
+
+
+def test_record_codex_escape_hatch_writes_the_detected_mode(tmp_ws, monkeypatch):
+    """逃逸口只读 `~/.codex/config.toml`,把探测值追加进 `environment.json`(D6.5)。"""
+    monkeypatch.setattr(
+        "autoresearch.trace.identity.detect_codex_web_search_mode",
+        lambda *args, **kwargs: "cached",
+    )
+    started = _begin(monkeypatch)
+    handle = capsule_mod.load_run(started["run_id"])
+    env_path = handle.capsule / "identity" / "environment.json"
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    env_path.write_text(json.dumps({"schema_version": 1, "engine": "codex"}), encoding="utf-8")
+
+    runctl._record_codex_escape_hatch(handle)
+
+    payload = json.loads(env_path.read_text(encoding="utf-8"))
+    assert payload["codex_web_search_mode"] == "cached"
+    assert payload["engine"] == "codex"  # 原有键原样保留,只是追加
+
+
+def test_record_codex_escape_hatch_is_a_silent_noop_without_environment_json(
+    tmp_ws, monkeypatch, capsys
+):
+    """身份快照缺失是既有的独立容错路径(`EVIDENCE_MISSING` 事件已经记过一遍)——
+    这个附加键不该为同一件事再吵一次。"""
+    started = _begin(monkeypatch)
+    handle = capsule_mod.load_run(started["run_id"])
+    assert not (handle.capsule / "identity" / "environment.json").is_file()
+
+    runctl._record_codex_escape_hatch(handle)
+
+    assert capsys.readouterr().err == ""
+    assert not (handle.capsule / "identity" / "environment.json").is_file()
+
+
+def test_record_codex_escape_hatch_warns_on_unreadable_json(tmp_ws, monkeypatch, capsys):
+    started = _begin(monkeypatch)
+    handle = capsule_mod.load_run(started["run_id"])
+    env_path = handle.capsule / "identity" / "environment.json"
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    env_path.write_text("{ not json", encoding="utf-8")
+
+    runctl._record_codex_escape_hatch(handle)
+
+    assert "codex_web_search_mode 记录失败" in capsys.readouterr().err
+
+
+def test_begin_warns_if_codex_rollout_missing_is_called(tmp_ws, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        runctl, "_warn_if_codex_rollout_missing", lambda: calls.append(True)
+    )
+
+    _begin(monkeypatch)
+
+    assert calls == [True]
+
+
+def test_warn_if_codex_rollout_missing_fires_when_directory_is_empty(
+    tmp_path, monkeypatch, capsys
+):
+    from datetime import date as calendar_date
+
+    monkeypatch.setenv("CODEX_SANDBOX_NETWORK_DISABLED", "1")
+    sessions_root = tmp_path / "sessions"
+
+    runctl._warn_if_codex_rollout_missing(
+        calendar_date(2026, 8, 27), sessions_root=sessions_root
+    )
+
+    err = capsys.readouterr().err
+    assert "rollout 目录空/缺席" in err
+    assert str(sessions_root / "2026" / "08" / "27") in err
+
+
+def test_warn_if_codex_rollout_missing_silent_when_a_file_is_present(
+    tmp_path, monkeypatch, capsys
+):
+    from datetime import date as calendar_date
+
+    monkeypatch.setenv("CODEX_SANDBOX_NETWORK_DISABLED", "1")
+    day_dir = tmp_path / "sessions" / "2026" / "08" / "27"
+    day_dir.mkdir(parents=True)
+    (day_dir / "rollout-fixture.jsonl").write_text("{}\n", encoding="utf-8")
+
+    runctl._warn_if_codex_rollout_missing(
+        calendar_date(2026, 8, 27), sessions_root=tmp_path / "sessions"
+    )
+
+    assert capsys.readouterr().err == ""
+
+
+def test_warn_if_codex_rollout_missing_silent_without_codex_env(
+    tmp_path, monkeypatch, capsys
+):
+    from datetime import date as calendar_date
+
+    for key in list(os.environ):
+        if key.startswith("CODEX_"):
+            monkeypatch.delenv(key, raising=False)
+
+    runctl._warn_if_codex_rollout_missing(
+        calendar_date(2026, 8, 27), sessions_root=tmp_path / "sessions"
+    )
+
+    assert capsys.readouterr().err == ""

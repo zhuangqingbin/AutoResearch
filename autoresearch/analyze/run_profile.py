@@ -9,11 +9,24 @@
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 from autoresearch.contracts import stages as vocab
-from autoresearch.contracts.profiles import RunProfile
+from autoresearch.contracts.profiles import ArtifactRule, RunProfile
 from autoresearch.contracts.profiles import _BASE_RULES as _SCAN_BASE_RULES
 
 TERMINAL = ("SUCCEEDED", "FAILED", "INTERRUPTED")
+
+#: analyze 复用 scan 的 `_BASE_RULES` 形状,只把 `agent_index` 标 L1(D6.5)——
+#: `agents/index.json` 是 harness 自己写的**摘要视图**(每条 invocation 的
+#: model/effort/usage 汇总),不是原文;L2(fetch 工具抓到的页面全文)此波没有生产者,
+#: 留给 P2。只换 `evidence_level` 一个字段,`key`/`selector`/`source`/`required_when`
+#: 逐字不变 —— `evaluate()` 的判定只读那四个字段,所以这一步不可能改变任何一条
+#: 规则的 disposition(task-15 红线:只加字段不改判定)。
+_ANALYZE_ARTIFACT_RULES: tuple[ArtifactRule, ...] = tuple(
+    replace(rule, evidence_level="L1") if rule.key == "agent_index" else rule
+    for rule in _SCAN_BASE_RULES
+)
 
 
 def analyze_profile(
@@ -40,7 +53,7 @@ def analyze_profile(
         kind="stock-research",
         expected_stages=vocab.ANALYZE_LITE_STAGES if lite else vocab.ANALYZE_STAGES,
         agent_roles=tuple(agent_roles) if agent_roles is not None else default_roles,
-        artifact_rules=_SCAN_BASE_RULES,
+        artifact_rules=_ANALYZE_ARTIFACT_RULES,
         replayable_stages=(),
         mode=mode,
         business_status=business_status,

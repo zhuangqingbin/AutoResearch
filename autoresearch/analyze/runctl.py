@@ -28,6 +28,17 @@ harvest 的落点是 `$CTX/`(`analyze_ctx` 根),不在 run 目录里 —— 这�
 业务产物就只能复制一份进 `staging/<date>/`,`finalize` 再把整个 staging 冻进
 `capsule/products/staging/`。原始绝对路径记在 checkpoint 的 metrics 里(`origin`),
 所以「这份快照是从哪儿来的」没有丢。
+
+## Codex 逃逸口(D6.5)
+
+`codex exec` 驱动本模块时**禁止 `--ephemeral`**:该开关完全不落 rollout 文件
+(`~/.codex/sessions/**/rollout-*.jsonl`),`bind()` / `usage_harvest.collect_run`
+从此无源可读 —— 这趟 run 的全部 LLM 证据永久 UNMEASURED,且是「证据从未存在过」,
+不是「丢了能补」。`begin()` 因此做两件尽力而为的 B 级记账(**只读**用户的
+`~/.codex/config.toml`,从不改它):①把 `web_search` 配置值(`cached`/`live`/…,
+探测失败写 `"UNKNOWN"`)写进 `identity/environment.json` 的附加键
+`codex_web_search_mode`;②`CODEX_*` 环境变量在场却当日 rollout 目录空/缺席时
+打一条 stderr warn(典型病因正是 `--ephemeral`)。两者都不阻断业务 run。
 """
 from __future__ import annotations
 
@@ -123,6 +134,58 @@ def _stage_outputs(staging: Path, outputs) -> tuple[list[str], dict[str, str]]:
 # ─────────────────────────────────────────────────── CLI verbs
 
 
+def _warn_if_codex_rollout_missing(
+    today: calendar_date | None = None,
+    *,
+    sessions_root: Path | None = None,
+) -> None:
+    """`CODEX_*` 在场却当日 rollout 目录空/缺席 → 打 warn(尽力而为,B 级;D6.5)。
+
+    典型病因:`codex exec --ephemeral` 完全不落 rollout(见本模块顶部文档字符串)。
+    这是唯一能在 run 一开始就打旗的地方 —— 之后 `bind()` 只会看到「无候选文件」,
+    分不清是真没跑还是被 `--ephemeral` 吃了。
+    """
+    if not any(key.startswith("CODEX_") for key in os.environ):
+        return
+    stamp = today or calendar_date.today()
+    root = sessions_root if sessions_root is not None else Path.home() / ".codex" / "sessions"
+    rollout_dir = root / f"{stamp.year:04d}" / f"{stamp.month:02d}" / f"{stamp.day:02d}"
+    if rollout_dir.is_dir() and any(rollout_dir.iterdir()):
+        return
+    print(
+        f"[analyze·capsule] CODEX_* 在场但今日 rollout 目录空/缺席({rollout_dir})"
+        " —— 若用了 `codex exec --ephemeral`,本趟 run 的 LLM 证据会永久 UNMEASURED",
+        file=sys.stderr,
+    )
+
+
+def _record_codex_escape_hatch(handle) -> None:
+    """把 `codex_web_search_mode` 追加进这趟 run 的 `identity/environment.json`(D6.5)。
+
+    只读 `~/.codex/config.toml`,从不改它;`environment.json` 是**这趟 run 自己的**
+    身份快照,追加一个键不涉及用户配置。身份快照缺失是既有已知的独立容错路径
+    (`capsule._record_identity_snapshot` 本就吞异常并单独记 `EVIDENCE_MISSING`
+    事件),这里不为同一件事再吵一遍;只在文件**在场却读不动/不是合法 JSON**这种
+    新增的失败模式上才打 warn。
+    """
+    env_path = handle.capsule / "identity" / "environment.json"
+    if not env_path.is_file():
+        return
+    try:
+        payload = json.loads(env_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 — 逃逸口记账失败不阻断业务 run
+        print(
+            f"[analyze·capsule] codex_web_search_mode 记录失败: {exc}",
+            file=sys.stderr,
+        )
+        return
+    from autoresearch.trace.atomic import atomic_write_json
+    from autoresearch.trace.identity import detect_codex_web_search_mode
+
+    payload["codex_web_search_mode"] = detect_codex_web_search_mode()
+    atomic_write_json(env_path, payload)
+
+
 def begin(
     ticker: str,
     analysis_date: str,
@@ -134,6 +197,9 @@ def begin(
     name: str | None = None,
 ) -> dict:
     from autoresearch.trace.capsule import begin_run
+
+    if ws.ENGINE == "codex":
+        _warn_if_codex_rollout_missing()
 
     handle = begin_run(
         "stock-research",
@@ -149,6 +215,8 @@ def begin(
         session_ref=session_ref,
         bootstrap=prepare_analyze_run,
     )
+    if ws.ENGINE == "codex":
+        _record_codex_escape_hatch(handle)
     return {
         "run_id": handle.run_id,
         "analysis_date": handle.analysis_date,

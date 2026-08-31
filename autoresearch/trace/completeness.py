@@ -45,6 +45,10 @@ class ExpectedItem:
     source: str
     disposition: str
     reason: str
+    #: D6.5 — only fed from `ArtifactRule.evidence_level`.  Stage/role-derived items
+    #: (the two loops below that never come from an `ArtifactRule`) keep the "L0"
+    #: default: they are existence checks by construction, nothing more.
+    evidence_level: str = "L0"
 
     def to_dict(self) -> dict:
         return {
@@ -53,6 +57,7 @@ class ExpectedItem:
             "source": self.source,
             "disposition": self.disposition,
             "reason": self.reason,
+            "evidence_level": self.evidence_level,
         }
 
 
@@ -110,6 +115,7 @@ def build_expected(profile: RunProfile) -> ExpectedEvidence:
                 source=rule.source,
                 disposition=REQUIRED if applies else NOT_EXPECTED,
                 reason=reason,
+                evidence_level=rule.evidence_level,
             )
         )
     for stage in profile.expected_stages:
@@ -248,6 +254,26 @@ def agent_coverage(capsule: Path) -> dict:
     }
 
 
+def _level_counts(results: list[dict]) -> dict[str, dict[str, int]]:
+    """Bucket the REQUIRED tally by `evidence_level` (D6.5).
+
+    Only levels a rule actually declares show up — a report saying "X% at L2"
+    needs a denominator that counts just the rules that exist at that level, not
+    three levels each padded to 0/0.  Disposition itself is untouched: this reads
+    the same PRESENT/MISSING values `counts` already computed, it just re-groups
+    them by an orthogonal key.
+    """
+    levels: dict[str, dict[str, int]] = {}
+    for row in results:
+        if row["disposition"] not in (PRESENT, MISSING):
+            continue
+        bucket = levels.setdefault(row["evidence_level"], {"required": 0, "hit": 0})
+        bucket["required"] += 1
+        if row["disposition"] == PRESENT:
+            bucket["hit"] += 1
+    return levels
+
+
 def replay_state(capsule: Path) -> str:
     path = capsule / "verification/replay.json"
     if not path.is_file():
@@ -310,6 +336,7 @@ def evaluate(
         "schema_version": SCHEMA_VERSION,
         "completeness_ok": not missing_required,
         "counts": counts,
+        "levels": _level_counts(results),
         "missing_required": sorted(missing_required),
         "not_expected": sorted(
             row["selector"] for row in results if row["disposition"] == NOT_EXPECTED

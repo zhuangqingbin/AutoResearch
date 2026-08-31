@@ -2455,3 +2455,35 @@ def snapshot_identity(
             except Exception:
                 print("identity snapshot generation cleanup degraded", file=sys.stderr)
             raise
+
+
+# ───────────────────────────────────────────────── D6.5: codex escape hatch
+
+#: Codex CLI's own config file — never written by this module, only read.
+_CODEX_CONFIG_PATH = Path.home() / ".codex" / "config.toml"
+
+#: A minimal line-scan, not a full TOML parser: this is a best-effort probe
+#: (falls back to `"UNKNOWN"` on any miss), and the project has no TOML dependency
+#: for a `requires-python = ">=3.10"` floor (`tomllib` is 3.11+ only).  Matches
+#: `web_search = "cached"` with or without quotes, at any indentation, ignoring a
+#: trailing comment.
+_WEB_SEARCH_RE = re.compile(r'(?m)^\s*web_search\s*=\s*"?([A-Za-z_]+)"?\s*(?:#.*)?$')
+
+
+def detect_codex_web_search_mode(config_path: Path | str | None = None) -> str:
+    """Read-only probe of `~/.codex/config.toml`'s `web_search` setting (D6.5).
+
+    Codex's `web_search` config chooses between a cached (OpenAI-maintained) index
+    and a live fetch — that distinction matters at replay time ("what was actually
+    searched" vs. "what the model was shown"), so it belongs in the run's own
+    identity snapshot.  This function **never writes** the user's config; any
+    absence, unreadable file, or unrecognized shape degrades to `"UNKNOWN"` —
+    never a guessed mode.
+    """
+    path = Path(config_path) if config_path is not None else _CODEX_CONFIG_PATH
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return "UNKNOWN"
+    match = _WEB_SEARCH_RE.search(text)
+    return match.group(1) if match else "UNKNOWN"
