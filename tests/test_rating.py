@@ -12,8 +12,15 @@ from autoresearch.agents.utils.rating import parse_rating
 
 
 def test_parse_rating_strict_requires_keyed_line():
+    """非 strict 档(旧行为)在这句散文上其实**兜底**到默认值,不是真的抓到 "Buy"——
+    "不是 Buy,更接近观望" 里 "Buy," 与后面的中文字符零间隔粘连,两遍启发式都
+    抓不到干净的 "buy" 词元(`.strip("*:.,")` 只剥边界字符,中间的逗号剥不掉,句尾的
+    中文句号「。」也不在剥离字符集里),于是落到 `default="Hold"`。
+
+    这里必须断言**具体值**而非 `x == A or x`(那种写法对任何实现都恒真,是零鉴别力的
+    绿灯,复核轮 1 逮到——变异自证见 batch-B-report.md「修复轮 1」节)。"""
     prose = "我们认为它不是 Buy,更接近观望。"
-    assert parse_rating(prose) == "Buy" or parse_rating(prose)  # 旧行为:兜底(记录现状)
+    assert parse_rating(prose) == "Hold"      # 非 strict:抓不到词元 → 兜底默认(旧行为,必须不变)
     assert parse_rating(prose, strict=True) is None             # 新:strict 不猜
 
 
