@@ -251,6 +251,8 @@ ARTIFACTS: tuple[Artifact, ...] = (
     # `for_stage`/`for_root` 等派生查询使用),但如实标注它当前**不受** drift 守卫
     # 保护。结论:「先登记再写码 → 守卫会红」这条纪律**只对以裸字面量出现的产物
     # 成立**;f-string 拼出来的产物名不在守卫覆盖范围内,登记了也不代表有安全网。
+    # (独立复核脚本见 batch-D-report.md「修复轮 1」节:移除/保留本条注册,
+    # `test_no_unregistered_artifact_literals` 的 unknown-literals 输出确认完全相同。)
     Artifact("analyze_indicators", "_indicators.md", "analyze_ctx", "harvest",
              "analyze.harvest", "md", "gated", required_when="full"),
     Artifact("analyze_sections", "1_analysts/*.md", "analyze_staging", "write",

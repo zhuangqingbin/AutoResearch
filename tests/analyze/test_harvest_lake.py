@@ -8,6 +8,13 @@ ts_code)与本仓这两个端点"整表拉单票全历史、无日期参数"的�
 
 一端点一测,函数名 `test_<ep>_goes_through_lake`;每个测试都监控 `calls` 列表证明
 `cache.get_or_fetch` 被正确以该端点名调用(修前:直调 `pro.X`/`ak.X`,列表为空)。
+
+修复轮 1(2026-09-01,reviewer Important-1):补 `_lake_market_day` 的显式缺列夹具
+用例(`test_lake_market_day_recovers_missing_trade_date_column`)+ 经
+`ashare_market_context_ts` 复现 2026-08-31 §LIVE parity 实测的完整崩溃链路
+(`test_moneyflow_legacy_schema_mixed_with_new_schema_days_sorts_correctly`)——两个
+用例都做过变异自证:临时删掉 `tushare_enrich._lake_market_day` 里
+`hit["trade_date"] = trade_date` 那一行会让它们同时变红,详见 batch-D-report.md。
 """
 from __future__ import annotations
 
