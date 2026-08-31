@@ -13,7 +13,20 @@ import pandas as pd
 import pytest
 
 from autoresearch.common import workspace as ws
+from autoresearch.contracts.agent_output import (
+    EXEC_LINE_MAX_PCT_1D,
+    EXEC_LINE_MAX_POS_IN_RANGE,
+)
 from autoresearch.scan import outcome
+
+
+def test_exec_line_thresholds_are_the_same_object_as_the_single_source():
+    """D8.3⑤:`outcome.EXEC_MAX_*` 引用 `contracts.agent_output` 的同一个对象,
+    不是复制一份数值——`is` 断言锁死单源,不是 `==`。"""
+    assert outcome.EXEC_MAX_PCT_1D is EXEC_LINE_MAX_PCT_1D
+    assert outcome.EXEC_MAX_POS_IN_RANGE is EXEC_LINE_MAX_POS_IN_RANGE
+    assert outcome.EXEC_MAX_PCT_1D == 3.0
+    assert outcome.EXEC_MAX_POS_IN_RANGE == 0.7
 
 # ───────────────────────── 夹具:一个最小的已发布 run ─────────────────────────
 

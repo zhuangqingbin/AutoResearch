@@ -52,6 +52,16 @@ STOP_REASONS: tuple[str, ...] = (
 #: OW 三门的门名(`l4/parsers._GATES3` 同源)。
 OW_GATES: tuple[str, ...] = ("主力真在", "业绩真兑现", "估值不透支")
 
+#: `[执行线]` 阈值单源(D8.3⑤)。此前 `scan/outcome.EXEC_MAX_*` 与两份手写文档
+#: (`.claude/skills/stock-research/lite-playbook.md` / `.claude/agents/l4-card.md`)
+#: 各写一份同一个数字,没有测试对齐 ——「病灶」小节里点名的那条散文漂移隐患。
+#: `outcome.py` 的 `EXEC_MAX_PCT_1D`/`EXEC_MAX_POS_IN_RANGE` 现在**引用同一个对象**
+#: (`is` 恒成立);两份文档改由 `scan.self_review.exec_line_threshold_lint` 对拍。
+#: 数值本身不是猜的:四年全湖 1086 日实测,收在当日区间上 30% 的票隔夜比全体差
+#: 0.13~0.27pp、逐年同号(证据见 `scan/outcome.py` 模块 docstring)。
+EXEC_LINE_MAX_PCT_1D: float = 3.0
+EXEC_LINE_MAX_POS_IN_RANGE: float = 0.7
+
 
 @dataclass(frozen=True)
 class Field:
@@ -101,9 +111,9 @@ L4_CARD = OutputContract(
         Field("ow_gates", r"OW三门[^\n→]*", False),
         Field("p4_intent", r"进入P4倾向[:：]\s*(\w+)", False),
         Field("exec_line_pct", r"\[执行线\]\s*pct_chg\s*<=\s*([\d.]+)", False,
-              "T+1 尾盘入场条件;阈值真身 outcome.EXEC_MAX_PCT_CHG"),
+              "T+1 尾盘入场条件;阈值真身 agent_output.EXEC_LINE_MAX_PCT_1D"),
         Field("exec_line_pos", r"\[执行线\]\s*pos_in_range\s*<\s*([\d.]+)", False,
-              "阈值真身 outcome.EXEC_MAX_POS_IN_RANGE"),
+              "阈值真身 agent_output.EXEC_LINE_MAX_POS_IN_RANGE"),
     ),
 )
 

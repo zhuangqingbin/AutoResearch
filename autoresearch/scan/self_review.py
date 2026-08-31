@@ -826,6 +826,76 @@ def stale_ruler_lint(root=".") -> list[dict]:
     return out
 
 
+#: `[执行线]` 两份活文档路径(D8.3⑤;数值真身单源在
+#: `contracts.agent_output.EXEC_LINE_MAX_PCT_1D`/`EXEC_LINE_MAX_POS_IN_RANGE`)。
+#: **带 `.claude/` 前缀**——这两个字面量已经登记在
+#: `contracts.artifacts.NON_ARTIFACT_LITERALS` 里(是散文,不是产物),写成不带
+#: 前缀的裸相对路径会被 `test_no_unregistered_artifact_literals` 判成新字面量。
+_EXEC_LINE_DOCS = (
+    ".claude/skills/stock-research/lite-playbook.md",
+    ".claude/agents/l4-card.md",
+)
+
+
+def exec_line_threshold_lint(root=".") -> list[dict]:
+    """`[执行线]` 两份活文档里的阈值数字与常量单源对齐(D8.3⑤;防散文漂移)。
+
+    这两行是**给 agent 照抄的固定散文**(playbook / agent def 里都写死了
+    `pct_chg <= 3.0` / `pos_in_range < 0.7` 两行,要求"照抄,勿改阈值勿反向"),数字
+    真身是 `contracts.agent_output.EXEC_LINE_MAX_PCT_1D` /
+    `EXEC_LINE_MAX_POS_IN_RANGE`(`scan.outcome` 的判定常量与它们是**同一个对象**)。
+    此前两边各写一份、没有测试对齐——改常量不动文档、或改文档不动常量,都会在这里
+    被拦。**只读不改**:本探针从不写这两份文档,数值本身也不在这里定义。
+
+    `root` 是**仓库根**(与 `stale_ruler_lint` 同款惯例),不是 `.claude` 根——
+    两个文档字面量已经带了 `.claude/` 前缀。
+
+    pattern 直接复用 `contracts.agent_output.L4_CARD` 契约里 `exec_line_pct` /
+    `exec_line_pos` 两个字段的正则,不在这里另写一份——那样又会制造第三处可以
+    独立漂移的阈值解析副本。
+
+    presence-gated:文件缺失 / 读不动 / 锚点缺失 → 各自静默跳过(锚点本身在不在,
+    是产出契约 lint 管的事,不是本探针的判定对象)。
+    """
+    from pathlib import Path
+
+    from autoresearch.contracts.agent_output import (
+        EXEC_LINE_MAX_PCT_1D,
+        EXEC_LINE_MAX_POS_IN_RANGE,
+        contract,
+    )
+
+    pct_pattern = re.compile(contract("l4-card").field("exec_line_pct").pattern)
+    pos_pattern = re.compile(contract("l4-card").field("exec_line_pos").pattern)
+    base = Path(root)
+    out: list[dict] = []
+    for rel in _EXEC_LINE_DOCS:
+        p = base / rel
+        try:
+            text = p.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001 — presence-gated,坏文件不炸
+            continue
+        pct_match = pct_pattern.search(text)
+        if pct_match is not None and float(pct_match.group(1)) != EXEC_LINE_MAX_PCT_1D:
+            out.append({
+                "check": "产物形状·执行线阈值散文漂移",
+                "severity": "fail",
+                "detail": f"{p} 的 [执行线] pct_chg 阈值写成 {pct_match.group(1)} ≠ "
+                          f"常量 EXEC_LINE_MAX_PCT_1D={EXEC_LINE_MAX_PCT_1D}",
+                "code": None,
+            })
+        pos_match = pos_pattern.search(text)
+        if pos_match is not None and float(pos_match.group(1)) != EXEC_LINE_MAX_POS_IN_RANGE:
+            out.append({
+                "check": "产物形状·执行线阈值散文漂移",
+                "severity": "fail",
+                "detail": f"{p} 的 [执行线] pos_in_range 阈值写成 {pos_match.group(1)} ≠ "
+                          f"常量 EXEC_LINE_MAX_POS_IN_RANGE={EXEC_LINE_MAX_POS_IN_RANGE}",
+                "code": None,
+            })
+    return out
+
+
 def card_v4_marker_lint(scan_dir, date_str: str) -> list[dict]:
     """v4 卡契约口径声明缺失 lint(T17;design A5)。
 
@@ -1315,6 +1385,10 @@ def product_shape_lint(scan_dir, date_str: str, *,
     # 既查 .claude 文档也查新增代码文件,且要在仓库根上跑 `git status`)。
     with contextlib.suppress(Exception):
         out.extend(stale_ruler_lint(claude_root.parent))
+    # 15)执行线阈值散文漂移(D8.3⑤):按**仓库根**(同 14,不是 .claude 根——本探针
+    # 的文档字面量自带 `.claude/` 前缀)。
+    with contextlib.suppress(Exception):
+        out.extend(exec_line_threshold_lint(claude_root.parent))
 
     # 13) v4 卡契约口径声明缺失(T17):标记行本体是 T24 的事,这里只加检查
     with contextlib.suppress(Exception):

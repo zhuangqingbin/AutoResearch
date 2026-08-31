@@ -11,10 +11,20 @@ import json
 import pandas as pd
 
 from autoresearch.scan.self_review import (
+    exec_line_threshold_lint,
     product_shape_lint,
     retired_symbol_lint,
     stale_ruler_lint,
     workflow_literal_lint,
+)
+
+_EXEC_LINE_CHECK = "产物形状·执行线阈值散文漂移"
+_LITE_PLAYBOOK_REL = "skills/stock-research/lite-playbook.md"
+_L4_CARD_REL = "agents/l4-card.md"
+_EXEC_LINE_TEXT = (
+    "**执行线(2026-08-26 新增;所有卡都写,含早停卡;两行照抄,勿改阈值勿反向)**:\n\n"
+    "- [执行线] pct_chg <= 3.0 → 当日涨超 3% 放弃本次尾盘入场\n"
+    "- [执行线] pos_in_range < 0.7 → 收盘在当日区间上 30% 放弃入场\n"
 )
 
 DATE = "2026-07-17"
@@ -723,3 +733,89 @@ def test_lowturn_no_flag_in_market_is_silent(tmp_path):
     d = _mk_clean(tmp_path)
     _meta(d, lowturn_full=0, lowturn_l1=0, lowturn_l2=0)
     assert _by(product_shape_lint(d, DATE), _LT) == []
+
+
+# ── D8.3⑤:[执行线] 阈值散文漂移 ─────────────────────────────────────────────
+
+
+def test_exec_line_threshold_matching_docs_are_clean(tmp_path):
+    root = _mk_claude_root(
+        tmp_path,
+        **{_LITE_PLAYBOOK_REL: _EXEC_LINE_TEXT, _L4_CARD_REL: _EXEC_LINE_TEXT},
+    )
+    assert exec_line_threshold_lint(root.parent) == []
+
+
+def test_exec_line_threshold_pct_drift_fails(tmp_path):
+    drifted = _EXEC_LINE_TEXT.replace("pct_chg <= 3.0", "pct_chg <= 4.0")
+    root = _mk_claude_root(
+        tmp_path,
+        **{_LITE_PLAYBOOK_REL: drifted, _L4_CARD_REL: _EXEC_LINE_TEXT},
+    )
+
+    rows = exec_line_threshold_lint(root.parent)
+
+    assert len(rows) == 1
+    assert rows[0]["check"] == _EXEC_LINE_CHECK
+    assert rows[0]["severity"] == "fail"
+    assert "4.0" in rows[0]["detail"] and "lite-playbook.md" in rows[0]["detail"]
+
+
+def test_exec_line_threshold_pos_drift_fails(tmp_path):
+    drifted = _EXEC_LINE_TEXT.replace("pos_in_range < 0.7", "pos_in_range < 0.8")
+    root = _mk_claude_root(
+        tmp_path,
+        **{_LITE_PLAYBOOK_REL: _EXEC_LINE_TEXT, _L4_CARD_REL: drifted},
+    )
+
+    rows = exec_line_threshold_lint(root.parent)
+
+    assert len(rows) == 1
+    assert rows[0]["check"] == _EXEC_LINE_CHECK
+    assert "0.8" in rows[0]["detail"] and "l4-card.md" in rows[0]["detail"]
+
+
+def test_exec_line_threshold_both_docs_drift_reports_both(tmp_path):
+    drifted = (
+        _EXEC_LINE_TEXT
+        .replace("pct_chg <= 3.0", "pct_chg <= 5.0")
+        .replace("pos_in_range < 0.7", "pos_in_range < 0.6")
+    )
+    root = _mk_claude_root(
+        tmp_path,
+        **{_LITE_PLAYBOOK_REL: drifted, _L4_CARD_REL: drifted},
+    )
+
+    rows = exec_line_threshold_lint(root.parent)
+
+    assert len(rows) == 4  # 两份文档 × (pct 漂移 + pos 漂移)
+
+
+def test_exec_line_threshold_missing_docs_is_silent(tmp_path):
+    root = tmp_path / ".claude"
+    root.mkdir()
+    assert exec_line_threshold_lint(root.parent) == []
+
+
+def test_exec_line_threshold_wired_into_product_shape_lint(tmp_path):
+    """T15 探针必须真接进 product_shape_lint,不是建了没人调(FN-1 家训)。
+
+    `product_shape_lint` 用 `scan_dir.parent.parent.parent` 推 `.claude` 根(仿生产
+    `context_<engine>/scan/<date>` 的三层深度)。这里搭同样深度的**隔离**子树,
+    全部挂在本用例自己的 `tmp_path` 下 —— 不借用真实的 `scan_dir.parent.parent.parent`
+    (那会算到 pytest 共享的祖先目录,跨用例/跨会话泄漏)。
+    """
+    root = tmp_path / "isolated"
+    scan_dir = _mk_clean(root / "context_claude" / "scan")
+    claude_root = root / ".claude"
+    drifted = _EXEC_LINE_TEXT.replace("pct_chg <= 3.0", "pct_chg <= 9.9")
+    (claude_root / _LITE_PLAYBOOK_REL).parent.mkdir(parents=True, exist_ok=True)
+    (claude_root / _LITE_PLAYBOOK_REL).write_text(drifted, encoding="utf-8")
+    (claude_root / _L4_CARD_REL).parent.mkdir(parents=True, exist_ok=True)
+    (claude_root / _L4_CARD_REL).write_text(_EXEC_LINE_TEXT, encoding="utf-8")
+    assert scan_dir.parent.parent.parent == root  # premise: 三层深度算对了
+
+    rows = _by(product_shape_lint(scan_dir, DATE), _EXEC_LINE_CHECK)
+
+    assert len(rows) == 1
+    assert "9.9" in rows[0]["detail"]

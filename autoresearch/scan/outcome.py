@@ -58,6 +58,10 @@ import numpy as np
 import pandas as pd
 
 from autoresearch.common import ruler as _ruler, workspace as ws
+from autoresearch.contracts.agent_output import (
+    EXEC_LINE_MAX_PCT_1D,
+    EXEC_LINE_MAX_POS_IN_RANGE,
+)
 from autoresearch.scan.run_naming import is_run_dir
 
 OUTCOME_SCHEMA_VERSION = 1
@@ -68,8 +72,12 @@ MAIN = _ruler.MAIN_RULER
 #: A4 执行线阈值(设计稿 §3 路A)。**先量后用**:上线与否是产品裁定,这里只负责记下
 #: 「若按此执行会怎样」。证据:四年全湖 1086 日,收在当日区间上 30% 的票隔夜比全体差
 #: 0.13~0.27pp,**逐年同号**(2022–2026 无一年反号)。
-EXEC_MAX_PCT_1D = 3.0
-EXEC_MAX_POS_IN_RANGE = 0.7
+#:
+#: D8.3⑤:数值真身搬去 `contracts.agent_output`(两份手写文档与这里各写一份、没有
+#: 测试对齐的病灶登记在那边的模块 docstring)。这里的两个名字**引用同一个对象**
+#: (`is` 恒成立),不是复制——改数值只需要改那一处。
+EXEC_MAX_PCT_1D = EXEC_LINE_MAX_PCT_1D
+EXEC_MAX_POS_IN_RANGE = EXEC_LINE_MAX_POS_IN_RANGE
 
 LEDGER_COLUMNS = (
     # `mode`/`src` 是**读这本账之前必须先看的两列**,不是装饰:
