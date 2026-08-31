@@ -7,13 +7,11 @@ from pathlib import Path
 import pandas as pd
 
 from autoresearch.common import workspace as ws
+# 单一事实源(D1.6 #5):harvest 侧测试同引 contracts.agent_output.SLIM_ANCHORS——
+# 改一个标题字符串两侧测试都会红。`_SLIM_ANCHORS` 这个名字保留(scan/agents/l4_card.py
+# 仍 `from ...producers import _SLIM_ANCHORS` 转出口,勿删)。
+from autoresearch.contracts.agent_output import SLIM_ANCHORS as _SLIM_ANCHORS
 
-_SLIM_ANCHORS = (
-    "## Verified market snapshot",
-    "### Latest verified OHLCV row",
-    "## Market context",
-    "## Fundamentals overview",
-)
 _SLIM_CLOSE_RE = re.compile(
     r"\|\s*Close\s*\|\s*([0-9]+(?:\.[0-9]+)?)\s*\|"
 )

@@ -15,7 +15,7 @@ tickers, so each block degrades gracefully and says so.
 
 Usage:
     python -m autoresearch.analyze.harvest TICKER [YYYY-MM-DD] [stock|crypto] [PEER1,PEER2,...]
-        [--slim [--out-dir PATH]]
+        [--slim [--out-dir PATH]] [--name A股中文简称]
 """
 
 import os
@@ -73,6 +73,7 @@ from autoresearch.agents.utils.agent_utils import (  # noqa: E402
     get_verified_market_snapshot,
     resolve_instrument_identity,
 )
+from autoresearch.contracts.agent_output import L1_REUSE_COLUMNS  # noqa: E402
 from autoresearch.data.keyless import consensus_eps_block  # noqa: E402
 from autoresearch.dataflows.config import set_config  # noqa: E402
 from autoresearch.dataflows.stockstats_utils import filter_financials_by_date  # noqa: E402
@@ -940,6 +941,15 @@ def _rt_incomplete(row) -> bool:
     return not bool(v)
 
 
+def _company_query_name(explicit_name: str | None, identity: dict) -> str | None:
+    """gnews 查询词的公司名来源(D1.6 #3):显式 `--name`(A股中文简称,Claude 在 session 内
+    已知,同 `analyze.assemble --name` 的约定)优先 —— yfinance `longName`/`shortName`
+    对 A 股常是英文/拼音,Google News zh 用它检索基本查不到东西;缺省时 fallback 回
+    `identity.get("company_name")`(英文 longName,美股这就是对的查询词)。"""
+    name = (explicit_name or "").strip()
+    return name or identity.get("company_name")
+
+
 # ───────────────────────── 派发清单(单一事实源)─────────────────────────
 
 
@@ -1229,9 +1239,16 @@ def prediction_markets_or_websearch_note(topics: list[str]) -> str:
     return body
 
 
-def ashare_news_akshare(sym: str, limit: int = 12) -> str | None:
+def ashare_news_akshare(sym: str, limit: int = 12, *, start_date: str | None = None,
+                        end_date: str | None = None) -> str | None:
     """East-money individual-stock news via akshare (OPTIONAL dependency).
-    Returns markdown bullets, or None if akshare is absent / returns nothing."""
+    Returns markdown bullets, or None if akshare is absent / returns nothing.
+
+    D1.6 #1:`stock_news_em` 不接受日期参数——返回的是"最近若干条"而非"窗内条",
+    回填历史日会把窗外(更旧/更新)的条目当成当天新闻。这里按
+    `start_date<=日期<=end_date` client 侧过滤 + 按标题去重(同新闻多来源转载常见)+
+    按时间倒序,`limit` 在过滤/去重/排序**之后**才截断,不然窗外的行可能先占满配额。
+    """
     try:
         import akshare as ak
     except ImportError:
@@ -1243,14 +1260,27 @@ def ashare_news_akshare(sym: str, limit: int = 12) -> str | None:
         return f"_akshare 东财新闻取数失败: {e}_"
     if df is None or not len(df):
         return None
-    rows = []
-    for _, r in df.head(limit).iterrows():
+    seen_titles: set[str] = set()
+    rows: list[tuple[str, str]] = []
+    for _, r in df.iterrows():
         title = str(r.get("新闻标题", "") or "").strip()
         when = str(r.get("发布时间", "") or "").strip()
         src = str(r.get("文章来源", "") or "").strip()
-        if title:
-            rows.append(f"- [{when}] **{title}**" + (f" ({src})" if src else ""))
-    return "\n".join(rows) if rows else None
+        if not title:
+            continue
+        day = when[:10]
+        if start_date and day and day < start_date:
+            continue
+        if end_date and day and day > end_date:
+            continue
+        if title in seen_titles:
+            continue
+        seen_titles.add(title)
+        rows.append((when, f"- [{when}] **{title}**" + (f" ({src})" if src else "")))
+    if not rows:
+        return None
+    rows.sort(key=lambda t: t[0], reverse=True)
+    return "\n".join(line for _, line in rows[:limit])
 
 
 def ticker_news_block(ticker: str, start_date: str, end_date: str) -> str:
@@ -1270,7 +1300,8 @@ def ticker_news_block(ticker: str, start_date: str, end_date: str) -> str:
              + (yf_text if not yf_empty else "_未抓到（A股/非美在 yfinance 新闻覆盖薄）。_")]
     ak_ok = False
     if is_cn:
-        ak_news = ashare_news_akshare(normalize_symbol(ticker))
+        ak_news = ashare_news_akshare(normalize_symbol(ticker),
+                                      start_date=start_date, end_date=end_date)
         parts.append("### akshare 东方财富个股新闻\n\n" + (ak_news or
                      "_未启用（akshare 未安装；`uv add akshare` 后得确定性东财新闻）→ 见下方 WebSearch 兜底。_"))
         ak_ok = bool(ak_news) and not ak_news.startswith("_")
@@ -1749,7 +1780,17 @@ def ashare_market_context_from_l1(row: dict) -> str:
     L1(screen_market)已对全市场取过 tushare 富因子并落盘;scan-market L4 决策卡直接复用
     该行,不再二次 round-trip(单一真值,L4 与召回数字一致)。10 日资金序列 / MACD 金叉死叉 /
     股东户数趋势等 L1 未存的细节,如需 → 对该票跑全量 analyze-ticker。
+
+    D1.6 #6:`row` 缺 `L1_REUSE_COLUMNS`(single source,`contracts/agent_output.py`)
+    里的列时,原先静默回退(该项就是缺该行数据,读者看不出是"L1 没存"还是"这票真没有")——
+    现在缺列仍回退渲染(不炸),但先 `record_degradation("L1_scored_full", ...,
+    kind="legit_empty")` 留痕。
     """
+    missing = [c for c in L1_REUSE_COLUMNS if c not in row]
+    if missing:
+        from autoresearch.data.contracts import record_degradation
+        record_degradation("L1_scored_full", f"列缺失: {missing}",
+                           key=str(row.get("code", "")), kind="legit_empty")
     out: list[str] = []
 
     # 0) L1 召回打分(复合分 + 8 子分):卡片自带召回理由
@@ -1944,6 +1985,29 @@ def _write_slim_files(out_dir: Path, ticker: str, trade_date: str, parts: list[s
     return out_path
 
 
+# ───────────────────────── D1.6 #2:fwd-PE 补价 ─────────────────────────
+
+#: 从「Verified market snapshot」`_section` 已渲染出的正文里抠 Close —— 同进程已取的
+#: 价,不再二次网络往返(同款正则,与 `scan/l4/producers._SLIM_CLOSE_RE` 各自独立维护:
+#: 后者读**落盘的 slim 文件**,这里读**同一进程内存里刚生成的 body 字符串**,场景不同,
+#: 不强并成单源)。
+_SNAPSHOT_CLOSE_RE = re.compile(r"\|\s*Close\s*\|\s*([0-9]+(?:\.[0-9]+)?)\s*\|")
+
+
+def _snapshot_close(section_text: str) -> float | None:
+    """已渲染的 verified-snapshot 节文本 →「Latest verified OHLCV row」表里的 Close。"""
+    m = _SNAPSHOT_CLOSE_RE.search(section_text or "")
+    return float(m.group(1)) if m else None
+
+
+def _consensus_eps_price(l1_row: dict | None, snapshot_section: str) -> float | None:
+    """A股卖方一致预期 fwd-PE 算价用的 price=:优先 L1 复用行的 close(slim 同源,已在手);
+    否则退到本进程已取的 verified-snapshot close(非 slim / 无 L1 行时的唯一价来源 ——
+    此前这条路 price 恒 None,fwd-PE 列永不出现,D1.6 #2)。"""
+    px = _l1_float(l1_row, "close") if l1_row is not None else None
+    return px if px is not None else _snapshot_close(snapshot_section)
+
+
 def _output_dir(trade_date: str, *, slim: bool, explicit: Path | None = None) -> Path:
     if explicit is not None and not slim:
         raise ValueError("--out-dir 仅支持 --slim，不得迁移 full 报告")
@@ -1955,6 +2019,11 @@ def _output_dir(trade_date: str, *, slim: bool, explicit: Path | None = None) ->
 
 
 def main() -> int:
+    # D1.6 #4:离线开关(措辞对齐 data/sources/yf_options.py 等既有 AUTORESEARCH_OFFLINE=1
+    # 语义)——离线模式下不取任何网络,提前退出,免得跑一半才在各处炸成一串降级账。
+    if os.environ.get("AUTORESEARCH_OFFLINE"):
+        print("[harvest] AUTORESEARCH_OFFLINE=1:离线模式不取网络,提前退出", flush=True)
+        return 2
     args = list(sys.argv[1:])
     explicit_out_dir = None
     if "--out-dir" in args:
@@ -1965,6 +2034,17 @@ def main() -> int:
             raise ValueError("--out-dir 缺 PATH")
         explicit_out_dir = Path(args[option_index + 1])
         del args[option_index:option_index + 2]
+    # D1.6 #3:A股中文简称(同 `analyze.assemble --name` 的约定,Claude 在 session 内已知,
+    # 显式传最稳)——喂 gnews zh 查询词,不然只能退到 yfinance longName(A 股常是英文/拼音)。
+    explicit_name = None
+    if "--name" in args:
+        if args.count("--name") != 1:
+            raise ValueError("--name 只能指定一次")
+        name_index = args.index("--name")
+        if name_index + 1 >= len(args) or args[name_index + 1].startswith("--"):
+            raise ValueError("--name 缺 NAME")
+        explicit_name = args[name_index + 1]
+        del args[name_index:name_index + 2]
     flags = {a for a in args if a.startswith("--")}
     pos = [a for a in args if not a.startswith("--")]
     if not pos:
@@ -2011,10 +2091,12 @@ def main() -> int:
             get_indicators, {"symbol": ticker, "indicator": ",".join(INDICATORS),
                              "curr_date": end, "look_back_days": 30},
             endpoint="analyze:yf-technical-indicators"))
-    parts.append(_section(
+    # 变量留手:同一节的文本供本函数末尾 fwd-PE 补价复用(D1.6 #2,零二次网络往返)。
+    _snapshot_section = _section(
         "Verified market snapshot (source of truth)",
         get_verified_market_snapshot, {"symbol": ticker, "curr_date": end, "look_back_days": 30},
-        endpoint="analyze:verified-snapshot"))
+        endpoint="analyze:verified-snapshot")
+    parts.append(_snapshot_section)
     if _is_ashare(ticker):
         # scan-market L4:有 L1 召回行 → 复用(零富因子重复取数,与召回同源);
         # 全量 analyze-ticker / 无 scan → live tushare(10日资金序列+MACD 更全)。
@@ -2101,7 +2183,8 @@ def main() -> int:
     if not slim:  # 期权链(A股空)+ 外源扩面(EDGAR/分析师行动/映射/gnews):决策卡不需要
         # 派发清单的单一事实源 = `external_sections`(slim 那边它自己也返回空,两道门)。
         for _title, _fn, _args, _kw in external_sections(
-                ticker, end, slim=slim, company_name=identity.get("company_name")):
+                ticker, end, slim=slim,
+                company_name=_company_query_name(explicit_name, identity)):
             parts.append(_opt_section(_title, _fn, *_args, **_kw))
     parts.append(_section("Analyst consensus & price targets (v2)", analyst_consensus, ticker,
                           endpoint="analyze:yf-analyst-consensus"))
@@ -2110,8 +2193,10 @@ def main() -> int:
     if _is_ashare(ticker):
         parts.append(_section("Corporate calendar — A股 业绩预告·快报/解禁 (v4)",
                               ashare_calendar_best, ticker, end, endpoint="analyze:ashare-calendar"))
-        # A股卖方一致预期 EPS → 真 fwd-PE(补 yfinance 对 A 股 forwardPE 的缺口;同花顺 keyless)
-        _eps_px = _l1_float(l1_row, "close") if l1_row is not None else None
+        # A股卖方一致预期 EPS → 真 fwd-PE(补 yfinance 对 A 股 forwardPE 的缺口;同花顺 keyless)。
+        # D1.6 #2:price= 优先 L1 复用行 close,否则退到同进程已取的 snapshot close ——
+        # 此前非 slim(全量 analyze-ticker)路径 l1_row 恒 None,price 恒 None,fwd-PE 列永不出现。
+        _eps_px = _consensus_eps_price(l1_row, _snapshot_section)
         parts.append(_section("A股卖方一致预期 EPS / fwd-PE (同花顺·keyless)",
                               consensus_eps_block, ticker, _eps_px,
                               endpoint="analyze:keyless-consensus-eps"))

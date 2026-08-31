@@ -161,6 +161,36 @@ CONTRACTS: dict[str, OutputContract] = {
 #: 情报时效契约的三个版本名(`intel_guard` / `self_review` 的 recency lint 选型用)。
 INTEL_CONTRACT_VERSIONS: tuple[str, ...] = ("v1", "v2_full", "v2_macro")
 
+#: `analyze.harvest` slim 渲染必须齐的结构锚点(标题前缀)——**single source**
+#: (design: 2026-08-31 D1.6 #5)。原分别定义在 `scan/l4/producers.py`(质检
+#: `_slim_defect`/`_slim_bytes_defect` 用它判"结构缺块")与 `tests/analyze/
+#: test_harvest.py`(回归锁 harvest 侧真渲染的标题);两边各写一份时,改一个标题
+#: 字符串只会有一侧的测试报警,另一侧带着假设静默漂移。搬到这里后两侧同引一份,
+#: 变异探针:改一个字符串 → 两侧测试都红。
+SLIM_ANCHORS: tuple[str, ...] = (
+    "## Verified market snapshot",
+    "### Latest verified OHLCV row",
+    "## Market context",
+    "## Fundamentals overview",
+)
+
+#: `analyze.harvest.ashare_market_context_from_l1` 复用的 L1 召回因子行列名——
+#: **single source**(design: 2026-08-31 D1.6 #6)。L1 生产者(`scan/universe.py`
+#: 的 `keep` 白名单)必须把这些列都投影进 `L1_scored_full.csv` /
+#: `L1_recall_top1000.csv`,否则 harvest 的 slim 复用会静默漏字段(消费侧此前
+#: 无声回退 = 少了什么都看不出来;现在缺列会 `record_degradation("L1_scored_full",
+#: ..., kind="legit_empty")` 留痕)。顺序即 `ashare_market_context_from_l1` 里
+#: 读取它们的顺序,不是随意排列。
+L1_REUSE_COLUMNS: tuple[str, ...] = (
+    "composite",
+    "score_momentum", "score_fund_main", "score_fund_retail", "score_chip",
+    "score_north", "score_tech", "score_growth", "score_value",
+    "main_inflow_yi", "main_net_ratio", "retail_net_yi",
+    "ma_bull", "above_ma60", "rsi6", "rsi12",
+    "winner_rate", "chip_concentration", "price_to_cost", "close",
+    "hk_ratio",
+)
+
 
 def contract(role: str) -> OutputContract:
     """按角色取产出契约;未登记 → `KeyError`。"""
