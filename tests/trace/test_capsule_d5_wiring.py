@@ -247,6 +247,5 @@ def test_stock_full_web_budget_materialized(tmp_path, monkeypatch):
     budget = json.loads(
         (result.final_path / "capsule" / LINEAGE_BUDGET).read_text(encoding="utf-8")
     )
-    assert budget["totals"]["measurement"] in {"MEASURED", "UNMEASURED"}
     assert budget["totals"]["measurement"] == "MEASURED"
     data_contracts.clear_degradations()

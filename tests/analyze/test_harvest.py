@@ -145,22 +145,26 @@ def test_offline_short_circuits(monkeypatch):
 
 
 @pytest.mark.unit
-def test_slim_anchors_single_source():
+def test_slim_anchors_single_source(monkeypatch):
     """_SLIM_ANCHORS 单一事实源:scan/l4/producers 与本测试同引 contracts.agent_output;
-    变异探针 —— 改一个标题字符串,两侧都会红。"""
+    变异探针 —— 改生产侧标题字符串,下面的断言必须红(旧写法手抄标题字面量,对任何
+    实现都成立、零鉴别力;现在从 `harvest.BLOCKS` 真实调用派生,标题字符串跟着生产
+    代码走)。"""
     from autoresearch.contracts.agent_output import SLIM_ANCHORS
     from autoresearch.scan.l4 import producers
 
     assert producers._SLIM_ANCHORS is SLIM_ANCHORS   # 同一个对象,不是"抄一份值相等的"
 
-    # harvest 侧:main() 真实用来渲染这几节的标题,经 _section 包一层就是 slim 产物里的锚点行。
+    # harvest 侧:真跑 BLOCKS 里对应的 4 个块(桩掉取数 fn,只留 _section 包的标题),
+    # 不是手抄标题字符串——生产侧改了标题,rendered 会跟着真实产出变,断言才会变红。
+    stub = lambda *a, **k: "x"   # noqa: E731
+    for fn_name in ("get_verified_market_snapshot", "ashare_market_context_best",
+                    "us_market_context", "get_fundamentals"):
+        monkeypatch.setattr(harvest, fn_name, stub)
+    ctx = {"ticker": "AAPL", "end": "2026-08-28", "l1_row": None}
     rendered = "".join(
-        harvest._section(title, lambda: "x") for title in (
-            "Verified market snapshot (source of truth)",
-            "Market context — A股 (主力/技术/筹码/北向)",
-            "Market context — US (regime/breadth/sector/VIX)",
-            "Fundamentals overview",
-        ))
+        harvest.BLOCKS[name](ctx) for name in
+        ("verified_snapshot", "ashare_market_context", "us_market_context", "fundamentals_overview"))
     for anchor in SLIM_ANCHORS:
         if anchor == "### Latest verified OHLCV row":
             continue   # 来自 get_verified_market_snapshot 自己的正文,不是 _section 的标题包装
