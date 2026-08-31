@@ -227,6 +227,12 @@ ARTIFACTS: tuple[Artifact, ...] = (
              "analyze.harvest", "md", "gated", required_when="lite_or_scan"),
     Artifact("analyze_slim_deep", "_slim_deep.md", "analyze_ctx", "harvest",
              "analyze.harvest", "md", "gated", required_when="lite_or_scan"),
+    # analyze_indicators(task-11/D1.5,Q7 瘦身):full 档的 12 个 `## <ind> values`
+    # 30 天序列块搬进这份 deep 附件(主文件只留「末值+5日前值+方向」汇总表),按需
+    # `Read` 才拉。同 analyze_slim 的裸后缀理由:path 逐字等于生产侧真实写盘用的后缀
+    # 常量,不写成 `*_indicators.md`(drift 守卫是字符串集合比对,不做 glob)。
+    Artifact("analyze_indicators", "_indicators.md", "analyze_ctx", "harvest",
+             "analyze.harvest", "md", "gated", required_when="full"),
     Artifact("analyze_sections", "1_analysts/*.md", "analyze_staging", "write",
              "stock-writer", "md", "always"),
     Artifact("analyze_research", "2_research/*.md", "analyze_staging", "write",

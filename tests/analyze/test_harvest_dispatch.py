@@ -1,7 +1,10 @@
 """Task 10(D1.1):harvest.py 拆五模块 + `(market,tier)` 派发表单一事实源。
 
 `HARVEST_PLAN`/`BLOCKS` 是 SKILL.md:38 手抄清单的机器真身 —— 这两个测试锁住它的
-形状契约(两档都在、slim 不拉 400 天 OHLCV、每个引用的块名都在 `BLOCKS` 里注册)。
+形状契约(两档都在、slim 不拉紧凑价格块、每个引用的块名都在 `BLOCKS` 里注册)。
+
+`price_history_compact`(task-11/D1.5 瘦身前名叫 `price_history_400d`)是 full-only
+块的锚点用例——沿用同一断言,只是块名跟着 task-11 的重命名更新。
 """
 from autoresearch.analyze.harvest import BLOCKS, HARVEST_PLAN
 
@@ -9,7 +12,7 @@ from autoresearch.analyze.harvest import BLOCKS, HARVEST_PLAN
 def test_dispatch_table_covers_both_tiers():
     assert ("ashare", "slim") in HARVEST_PLAN and ("us", "full") in HARVEST_PLAN
     slim = HARVEST_PLAN[("ashare", "slim")]
-    assert "price_history_400d" not in slim         # slim 不拉 400 天(既有语义)
+    assert "price_history_compact" not in slim       # slim 不拉紧凑价格块(既有语义)
     assert "verified_snapshot" in slim
 
 
@@ -37,11 +40,12 @@ def test_non_ashare_markets_share_identical_content():
 
 
 def test_slim_plans_never_include_not_slim_only_blocks():
-    """既有语义:slim 不拉 400 天 OHLCV / 指标序列 / 外源扩面 / 资产负债表&现金流全表 /
-    宏观8序列 / 预测市场 / 中国底色 / 同业相对估值 / 龙虎榜席位(uzi_seats 是"仅全量"块,
+    """既有语义:slim 不拉紧凑价格块(D1.5:60天日线+52周周线,原 400 天 OHLCV)/
+    指标摘要块(D1.5:原指标序列)/ 外源扩面 / 资产负债表&现金流全表 / 宏观8序列 /
+    预测市场 / 中国底色 / 同业相对估值 / 龙虎榜席位(uzi_seats 是"仅全量"块,
     不是"仅 slim"块——命名易混,单独断言排除)。"""
     not_slim_only = {
-        "price_history_400d", "technical_indicators", "global_macro_news",
+        "price_history_compact", "technical_indicators_compact", "global_macro_news",
         "insider_transactions", "ownership_short", "macro_series", "china_backdrop",
         "prediction_markets", "balance_sheet", "cash_flow", "external_evidence",
         "peer_relative", "uzi_seats",

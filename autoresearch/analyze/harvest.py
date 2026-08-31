@@ -77,7 +77,6 @@ from autoresearch.agents.utils.agent_utils import (  # noqa: E402
     get_indicators,
     get_insider_transactions,
     get_macro_indicators,
-    get_stock_data,
     get_verified_market_snapshot,
     resolve_instrument_identity,
 )
@@ -175,9 +174,12 @@ from autoresearch.analyze.blocks_us import (  # noqa: E402
     _vix_latest,
     analyst_consensus,
     earnings_calendar,
+    indicator_summary_table,
     ownership_short,
     peer_relative,
     prediction_markets_or_websearch_note,
+    price_history_compact_block,
+    render_indicator_summary_table,
     us_market_context,
 )
 from autoresearch.analyze.slim_io import (  # noqa: E402
@@ -320,17 +322,39 @@ def _blk_fwd_pe(ctx: dict) -> str:
                     endpoint="analyze:keyless-consensus-eps")
 
 
-#: 名 → callable 注册表(task-10 interfaces)。
-BLOCKS: dict[str, "callable"] = {
-    "price_history_400d": lambda ctx: _section(
-        f"Price history (OHLCV) {ctx['price_start']} → {ctx['end']}",
-        get_stock_data, {"symbol": ctx["ticker"], "start_date": ctx["price_start"], "end_date": ctx["end"]},
-        endpoint="yfinance"),
-    "technical_indicators": lambda ctx: _section(
+def _blk_technical_indicators_compact(ctx: dict) -> str:
+    """D1.5(Q7)瘦身:12 个 `## <ind> values` 30 天序列块 → 摘要表(末值/5日前值/方向)
+    + deep 附件指针。取数**不变**(同一次 `get_indicators.invoke(...)`,与旧块同源
+    同数字);变的只是主文件里怎么摆——全序列原样写进 `<TICKER>_<date>_indicators.md`
+    (已在 `contracts.artifacts.ARTIFACTS` 登记 `analyze_indicators`),主文件只留汇总表
+    + 指向 deep 文件的指针注释。摘要/落盘失败(B 级)不阻断 harvest,退回内联全文本。
+    """
+    raw_section = _section(
         "Technical indicators (full menu)",
         get_indicators, {"symbol": ctx["ticker"], "indicator": ",".join(INDICATORS),
                          "curr_date": ctx["end"], "look_back_days": 30},
-        endpoint="analyze:yf-technical-indicators"),
+        endpoint="analyze:yf-technical-indicators")
+    try:
+        deep_path = ctx["out_dir"] / f"{ctx['ticker']}_{ctx['trade_date']}_indicators.md"
+        deep_path.write_text(
+            f"# 技术指标 30 天全序列(deep 附件,按需读)— {ctx['ticker']} @ {ctx['trade_date']}\n"
+            + raw_section, encoding="utf-8")
+        rows = indicator_summary_table(raw_section, INDICATORS)
+        pointer = f"\n<!-- 指标全 30 天序列已拆到同目录 `{deep_path.name}`,按需 Read -->\n"
+        return (f"\n## Technical indicators (summary; full series → {deep_path.name})\n\n"
+                + render_indicator_summary_table(rows) + pointer)
+    except Exception as e:  # noqa: BLE001 — 摘要/落盘失败也不许阻断 harvest(B 级)
+        from autoresearch.data.contracts import record_degradation
+        record_degradation("analyze:indicators-summary", f"{type(e).__name__}: {e}")
+        return f"\n## Technical indicators (summary)\n\n_ERROR building summary: {e}_\n" + raw_section
+
+
+#: 名 → callable 注册表(task-10 interfaces)。
+BLOCKS: dict[str, "callable"] = {
+    "price_history_compact": lambda ctx: _section(
+        "Price history (OHLCV, compact: 60d daily + 52w weekly)",
+        price_history_compact_block, ctx["ticker"], ctx["end"], endpoint="yfinance"),
+    "technical_indicators_compact": _blk_technical_indicators_compact,
     "verified_snapshot": _blk_verified_snapshot,
     "ashare_market_context": _blk_ashare_market_context,
     "us_market_context": lambda ctx: _section(
@@ -406,7 +430,7 @@ BLOCKS: dict[str, "callable"] = {
 
 #: 有序块名清单——逐字对应 `main()` 拆分前的内联调用顺序(§LIVE parity 已核对逐字节相同)。
 _ASHARE_FULL: tuple[str, ...] = (
-    "price_history_400d", "technical_indicators", "verified_snapshot", "ashare_market_context",
+    "price_history_compact", "technical_indicators_compact", "verified_snapshot", "ashare_market_context",
     "tradeability", "ticker_news", "global_macro_news", "insider_transactions", "ownership_short",
     "ashare_shareholder", "uzi_fundamentals", "uzi_margin", "uzi_seats",
     "macro_series", "china_backdrop", "prediction_markets",
@@ -423,7 +447,7 @@ _ASHARE_SLIM: tuple[str, ...] = (
     "analyst_consensus", "earnings_calendar", "ashare_calendar", "fwd_pe",
 )
 _US_FULL: tuple[str, ...] = (
-    "price_history_400d", "technical_indicators", "verified_snapshot", "us_market_context",
+    "price_history_compact", "technical_indicators_compact", "verified_snapshot", "us_market_context",
     "tradeability", "ticker_news", "global_macro_news", "insider_transactions", "ownership_short",
     "macro_series", "prediction_markets",
     "fundamentals_overview", "income_statement", "balance_sheet", "cash_flow",
@@ -499,7 +523,9 @@ def main() -> int:
     set_config(DEFAULT_CONFIG)
 
     end = trade_date
-    price_start = (d - timedelta(days=400)).strftime("%Y-%m-%d")  # >200 trading days for 200 SMA
+    # D1.5(Q7):`price_start`(旧 400 天 OHLCV 起点)随 price_history_400d 块一起退役——
+    # `price_history_compact_block` 改用 `load_ohlcv` 自带的 5 年缓存窗 + `.tail(60/52)`,
+    # 不需要调用方算起点。
     news_start = (d - timedelta(days=14)).strftime("%Y-%m-%d")
 
     print(f"[harvest v4{' SLIM' if slim else ''}] {ticker} @ {trade_date} "
@@ -524,10 +550,11 @@ def main() -> int:
 
     ctx: dict = {
         "ticker": ticker, "trade_date": trade_date, "end": end,
-        "price_start": price_start, "news_start": news_start,
+        "news_start": news_start,
         "peers": peers, "identity": identity, "slim": slim,
         "explicit_name": explicit_name, "l1_row": l1_row,
         "snapshot_section": "",
+        "out_dir": out_dir,  # D1.5(Q7):technical_indicators_compact 落 deep 附件要用
     }
     market_key = "ashare" if is_ashare else "us"
     tier_key = "slim" if slim else "full"
