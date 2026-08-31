@@ -79,7 +79,26 @@ LEDGER_COLUMNS = (
     # 情景概率(P2 的 D4.9 才有机器可读格式)——列先立好,先全空,不解析、不改卡模板。
     "ev_pct", "scenario_p_bull", "scenario_p_base", "scenario_p_bear",
     # 事后读数(`fill` 写):主尺 D+2 成熟才算;fwd_5/10/20 只给 full 报告补。
-    "gap_c1_o2", "fwd_5", "fwd_10", "fwd_20", "matured",
+    # `maturity_status` 是修复轮 1(reviewer Important-1)加的:`matured` 单独一个
+    # 布尔盖不住「永久不可测」与「还没到期」这两件语义完全不同的事,见 MATURITY_STATUSES。
+    "gap_c1_o2", "fwd_5", "fwd_10", "fwd_20", "maturity_status", "matured",
+)
+
+#: `maturity_status` 闭集(D5.1 修复轮 1)。本仓铁律「『没测到』和『测出来是零』是两件事」
+#: 在这里的具体化:下面五个值里,只有一个是"会自己解决"的临时态,其余四个都是"永远
+#: 不会再变"的终态——读账本的人必须能分清「这行明天可能就好了」和「这行永远不会有
+#: 读数」,不能只靠一个 `matured=false` 猜。
+MATURITY_STATUSES = (
+    "MATURED",              # gap_c1_o2 算出来了(matured=true 与此同义)
+    "PENDING_D2",           # analysis_date 是有效交易日,但 D+2(或那两天的行情文件本身)
+                             # 还没落湖 —— 明天/下次 fill 会自己重试,不是缺陷
+    "NA_NON_TRADING_DAY",   # analysis_date 本身不在湖的交易日历里(含空日期)——A 股
+                             # 周末/节假日永远不会有这天的行情,永久不可测
+    "NA_MARKET",            # ticker 解析不出 6 位 A 股代码(如美股票)——湖只装 A 股行情,
+                             # 永久不可测
+    "NA_NO_LAKE_ROW",       # 交易日有效、代码形状也对,但这只票在整段前瞻窗口
+                             # (D+1..D+20)湖里一行都找不到,或恰好缺 D+1/D+2 那两天的
+                             # 行情(停牌/代码有误/尚未上市)——同样永久不可测
 )
 
 
@@ -120,7 +139,7 @@ def _blank_row(*, run_dir: str, file: str, tier: str, ticker: str, name: str,
         "contract_ok": "true" if (rating and proposal) else "false",
         "ev_pct": "", "scenario_p_bull": "", "scenario_p_base": "", "scenario_p_bear": "",
         "gap_c1_o2": "", "fwd_5": "", "fwd_10": "", "fwd_20": "",
-        "matured": "false",
+        "maturity_status": "", "matured": "false",
     }
 
 
@@ -253,20 +272,25 @@ def _lake_trade_days(lake_daily: Path | None = None) -> list[str]:
     return sorted(p.stem[:8] for p in d.glob("*.parquet") if p.stem[:8].isdigit())
 
 
-def _market_returns(analysis_date: str, *, lake_daily: Path | None = None) -> pd.DataFrame | None:
-    """分析日 → 前向收益帧(index=6 位代码,列 `gap_c1_o2`/`fwd_5_oc`/`fwd_10_oc`/`fwd_20_oc`)。
+def _market_returns(analysis_date: str, *,
+                     lake_daily: Path | None = None) -> tuple[pd.DataFrame | None, str]:
+    """分析日 → `(前向收益帧, status)`。
 
-    D+2 未落湖(未成熟)→ `None`。**测试的 monkeypatch 点**——`fill` 不直接碰湖,一律
-    经这一个函数。
+    帧 index=6 位代码,列 `gap_c1_o2`/`fwd_5_oc`/`fwd_10_oc`/`fwd_20_oc`。帧非 `None`
+    时 `status="MATURED"`;帧是 `None` 时 `status` 是 `MATURITY_STATUSES` 里的
+    `"NA_NON_TRADING_DAY"`(永久:`analysis_date` 本身不在湖的交易日历里)或
+    `"PENDING_D2"`(暂时:是有效交易日,但 D+2 那两天的行情——或干脆文件本身——
+    还没落湖)。返回值直接复用闭集词汇,`fill()` 不必再做第二次翻译。**测试的
+    monkeypatch 点**——`fill` 不直接碰湖,一律经这一个函数。
     """
     d = Path(lake_daily) if lake_daily else ws.lake_root() / "daily"
     P = _lake_trade_days(lake_daily)
     D = str(analysis_date).replace("-", "")
     if D not in P:
-        return None
+        return None, "NA_NON_TRADING_DAY"
     idx = P.index(D)
     if idx + 2 >= len(P):
-        return None                                    # D+2 尚未落湖:未成熟,不是故障
+        return None, "PENDING_D2"                       # D+2 尚未落湖:未成熟,不是故障
     window = P[idx + 1: min(len(P), idx + 21)]           # D+1..D+20(不足 20 日就取到湖尾)
     frames = []
     for k, day in enumerate(window, start=1):
@@ -285,17 +309,17 @@ def _market_returns(analysis_date: str, *, lake_daily: Path | None = None) -> pd
             "close": pd.to_numeric(bars["close"], errors="coerce"),
         }))
     if not frames:
-        return None
+        return None, "PENDING_D2"
     long = pd.concat(frames, ignore_index=True)
     o = long.pivot_table(index="code", columns="k", values="open")
     c = long.pivot_table(index="code", columns="k", values="close")
     if 1 not in o.columns or 1 not in c.columns or 2 not in o.columns:
-        return None                                    # D+2 的 open 缺席:同样是未成熟
+        return None, "PENDING_D2"                       # D+1/D+2 的 open 缺席:同样是未成熟
     out = pd.DataFrame(index=o.index)
     out[_ruler.MAIN_RULER] = o[2] / c[1] - 1.0            # T+1 收买 → T+2 开卖(隔夜主尺)
     for n in (5, 10, 20):
         out[f"fwd_{n}_oc"] = (c[n] / o[1] - 1.0) if n in c.columns else np.nan
-    return out
+    return out, "MATURED"
 
 
 def fill(*, reports_root: Path | None = None, now: str | None = None,
@@ -305,30 +329,51 @@ def fill(*, reports_root: Path | None = None, now: str | None = None,
     只碰 `matured != true` 的行(增量,同 `scan.outcome.fill` 的既定写法:成本只与
     「还没成熟的」成正比,不随账本历史长度增长)。full 报告另补 `fwd_5/10/20`;
     lite 卡这三列永远留空(隔夜口径的短窗卡,长持仓窗读数无意义)。
+
+    每一条不成熟的行都会写一个 `MATURITY_STATUSES` 闭集里的具体原因(D5.1 修复轮 1;
+    reviewer Important-1)——不再把「非交易日」「非 A 股」「湖里没这只票」「D+2 还没
+    落湖」四件语义不同的事压成同一个 `matured=false`。返回值里的 `skipped_by_reason`
+    是同一批原因的计数,`skipped` 仍是总数(向后兼容)。
     """
     path = _cards_path(reports_root)
     existing = _read_cards(path)
     filled = skipped = 0
-    cache: dict[str, pd.DataFrame | None] = {}
+    reason_counts: dict[str, int] = {}
+    cache: dict[str, tuple[pd.DataFrame | None, str]] = {}
+
+    def _mark_unmatured(row: dict, status: str) -> None:
+        nonlocal skipped
+        row["maturity_status"] = status
+        row["matured"] = "false"
+        reason_counts[status] = reason_counts.get(status, 0) + 1
+        skipped += 1
+
     for row in existing.values():
         if str(row.get("matured", "")).lower() == "true":
             continue
-        date = str(row.get("analysis_date") or "")
         code = _code6(row.get("ticker"))
-        if not date or not code:
-            skipped += 1
+        if not code:
+            _mark_unmatured(row, "NA_MARKET")            # 不是能解析出的 6 位 A 股代码
+            continue
+        date = str(row.get("analysis_date") or "")
+        if not date:
+            _mark_unmatured(row, "NA_NON_TRADING_DAY")   # 连日期都没有,视同无效交易日
             continue
         if date not in cache:
             cache[date] = _market_returns(date, lake_daily=lake_daily)
-        fr = cache[date]
-        if fr is None or code not in fr.index:
-            skipped += 1
+        fr, status = cache[date]
+        if fr is None:
+            _mark_unmatured(row, status)                 # 已是 "NA_NON_TRADING_DAY"/"PENDING_D2"
+            continue
+        if code not in fr.index:
+            _mark_unmatured(row, "NA_NO_LAKE_ROW")       # 整段窗口湖里都没有这只票
             continue
         gap = _num(fr.loc[code].get(_ruler.MAIN_RULER))
         if gap is None:
-            skipped += 1
+            _mark_unmatured(row, "NA_NO_LAKE_ROW")       # D+1/D+2 恰好缺它的行情(停牌等)
             continue
         row["gap_c1_o2"] = gap
+        row["maturity_status"] = "MATURED"
         row["matured"] = "true"
         if row.get("tier") == "full":
             row["fwd_5"] = _num(fr.loc[code].get("fwd_5_oc"))
@@ -336,7 +381,8 @@ def fill(*, reports_root: Path | None = None, now: str | None = None,
             row["fwd_20"] = _num(fr.loc[code].get("fwd_20_oc"))
         filled += 1
     _write_cards(path, existing)
-    return {"filled": filled, "skipped": skipped}
+    return {"filled": filled, "skipped": skipped,
+            "skipped_by_reason": dict(sorted(reason_counts.items()))}
 
 
 # ───────────────────────── CLI ─────────────────────────
