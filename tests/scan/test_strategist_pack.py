@@ -218,3 +218,20 @@ def test_macro_brief_agent_definition_points_at_the_projection():
     src = Path(".claude/agents/macro-brief.md").read_text(encoding="utf-8")
     assert "strategist_pack.json" in src
     assert "context/scan/<date>/market_pack.json" not in src
+
+
+def test_global_tape_never_reaches_the_strategist(tmp_path):
+    """D-2/B-1 边界:`global_tape` 进 full market_pack(L5 展示),**不进策略师投影**。
+
+    策略师读隔夜 tape 属 B-1(改判断层输入),受 09-中冻结。投影是默认拒绝的 allowlist,
+    所以这条本该自动成立 —— 钉死它是因为「顺手把新键加进 allowlist」是零成本动作,而
+    防锚定失守过两次(07-30/31 连续两日),**指令级约束的失败率不为零,数据级才是零**。
+    """
+    from autoresearch.scan.strategist_pack import ALLOWED_KEYS, project
+
+    assert "global_tape" not in ALLOWED_KEYS
+    pack = {"regime": {"label": "range"}, "breadth": {}, "money": {}, "valuation": {},
+            "global_tape": {"rows": [{"symbol": "^VIX", "close": 14.5}], "usable": True}}
+    projected = project(pack)
+    assert "global_tape" not in projected
+    assert "^VIX" not in json.dumps(projected, ensure_ascii=False)

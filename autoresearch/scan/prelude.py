@@ -36,8 +36,10 @@ STEP_NAMES = (
     "consensus", "temperature", "universe", "calendar", "catalyst", "menu",
     "l4_rejection",     # 2026-08-22 批 (c):拒绝价值日读(读历史不读当日)
     "outcome_fill",     # 2026-08-26 §4.4:结果账本回填(只记不学;读历史不读当日)
+    "ledger_views",     # 2026-08-28 §2.4 G2/G3:运行日历 + 市场行 + 逐级 KPI(同上,只记不学)
     "dossier_pool",
     "news_catalog",     # Wave12-T35:纯读目录健康,不喂任何决策面
+    "overseas",         # 2026-08-29 D-2:隔夜窗海外事件日历(**风险可见性**,不喂判断层)
 )
 
 
@@ -430,6 +432,28 @@ def run_prelude(date: str, regime_aware: bool | None = None, skip: tuple[str, ..
         extra = " · ".join(x for x in (slo, nag, stale) if x)
         return f"{note} · {extra}" if extra else note
 
+    def _overseas():
+        """D-2:隔夜窗海外事件日历(2026-08-29;`scan/overseas.py`)。
+
+        主尺 `gap_c1_o2` 的持仓窗横跨整个美股 T+1 交易日(21:30–04:00 CST + 盘后财报到
+        08:00 + FOMC 02:00),所以「T+1 尾盘买之前」与「隔夜持仓期间」有哪些**已知**外部
+        事件,是这条流水线此前完全看不见的一面(08-26 真跑漏掉 NVDA 盘后财报即为实例)。
+
+        ⚠️ **风险可见性,不是选股信号**:只进 summary 📅 / brief ⑤ / 📌 哨兵三个展示点,
+        **不喂 L3/L4/策略师**,不自动否决入场、不改仓位、不改评级(设计稿 §0 边界最后一行)。
+        判断层接入(B-2/B-3)受 09-中冻结,与本步无关。
+        """
+        from autoresearch.scan.overseas import run as _overseas_run
+
+        got = _overseas_run(date, scan_dir)
+        n = got.get("n", 0)
+        if not n:
+            return "无隔夜窗海外事件(或源不可用 → 已记降级)"
+        by = got.get("by_window") or {}
+        zh = {"pre_entry": "入场前", "holding_overnight": "持仓隔夜", "date_risk": "当日风险"}
+        parts = "、".join(f"{zh.get(k, k)} {v}" for k, v in sorted(by.items()))
+        return f"{n} 条({parts})→ overseas_calendar.csv"
+
     def _news_catalog():
         """Wave12-T35:news_catalog 覆盖 / freshness / 非空率报表行(**只看,不喂决策**)。
 
@@ -502,11 +526,35 @@ def run_prelude(date: str, regime_aware: bool | None = None, skip: tuple[str, ..
         res = fill(now=date)
         return f"回填 {res['filled']} run / 跳过 {res['skipped']} · {ledger_line()}"
 
+    def _ledger_views():
+        """运行日历 / 市场行 / 逐级 KPI(2026-08-28 §2.4 G2+G3;**只记不学**)。
+
+        与 `outcome_fill` 同一条边界:读数只进汇总屏这一行与 `chain_view`,**不进 brief、
+        不喂任何 agent、不改任何参数**。放在 `outcome_fill` **之后**:三张视图与人口表
+        都是结果账本的下游,先回填才有得物化。
+
+        为什么必须挂在这里(而不是只挂夜间任务):`populations` 与 `ledger_views` 是两个
+        **新生产者**,而本仓最常复发的缺陷正是「生产者没接线」——夜间 launchd 那条腿已经
+        死过一次(`nightly_close` exec 一个被删的模块,每交易日白跑很久没人知道)。两处
+        都跑、都幂等,任何一条腿死了另一条还在。`--skip ledger_views` 可跳。
+        """
+        import contextlib
+
+        from autoresearch.scan import ledger_views as _views, populations as _pop
+
+        res = _views.build()
+        pop = _pop.build()
+        with contextlib.suppress(Exception):     # KPI 表算不出来不该挡住前面两张视图
+            _pop.write_stage_rulers()
+        return (f"视图 {len(res.get('views') or [])} 张 / 人口 {pop.get('built', 0)} run · "
+                f"{_views.line()}")
+
     impls = {"consensus": _consensus, "temperature": _temperature,
              "universe": _universe, "calendar": _calendar, "catalyst": _catalyst,
              "menu": _menu, "l4_rejection": _l4_rejection,
-             "outcome_fill": _outcome_fill, "dossier_pool": _dossier_pool,
-             "news_catalog": _news_catalog}
+             "outcome_fill": _outcome_fill, "ledger_views": _ledger_views,
+             "dossier_pool": _dossier_pool,
+             "news_catalog": _news_catalog, "overseas": _overseas}
     # 顺序与去留的**单一事实源**是模块常量 `STEP_NAMES`(见其旁注:两份手写 skip 清单的坑)。
     # 名字在 STEP_NAMES 里却没有实现 → 这里 KeyError 当场炸(响亮),不静默少跑一步。
     all_steps = [(n, impls[n]) for n in STEP_NAMES]

@@ -246,3 +246,11 @@ backups/
 .worktrees/
 .cursor-zsh/
 .claude/skills/.omc/
+
+# planning-with-files 的会话临时件(仓库根,skill 每次开工都会重写它们;非交付物)。
+# **必须 root-anchored**:`.superpowers/sdd/**/progress.md` 是另一回事,别被这条一起吃掉。
+# `__pycache__/` 已由本文件第 2 行覆盖(`git check-ignore -v` 实测命中 `.gitignore:2`),
+# 故 `docs/research/**/__pycache__/*.pyc` 无需再加规则,也没有任何 .pyc 被跟踪过。
+/task_plan.md
+/findings.md
+/progress.md

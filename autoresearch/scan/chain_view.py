@@ -177,6 +177,20 @@ def _sec_identity(src: Sources, code6: str) -> list[str]:
     from autoresearch.scan.evidence import evidence_facts, render_evidence_lines
 
     out += render_evidence_lines(evidence_facts(src.run))
+    # 时间锚(§2.4 G1):数据日回答「研究的是哪天」,这四行回答「什么时候才能真的下单」。
+    # 缺了它,一份 T+1 收盘之后才写完的报告看上去与当天 20:00 就出的那份一模一样。
+    from autoresearch.scan.exec_anchor import read_execution
+
+    anchor = read_execution(src.run)
+    if anchor.get("analysis_date"):
+        quality = anchor.get("ready_quality") or "?"
+        out += _kv([
+            ("批准时刻", f"{anchor.get('decision_approved_at') or ABSENT}"
+                         f"({anchor.get('ready_source') or '?'}·{quality})"),
+            ("第一个可执行尾盘", anchor.get("first_available_session") or ABSENT),
+            ("迟到 session", anchor.get("exec_lag")),
+            ("可执行状态", anchor.get("actionability_status")),
+        ])
     return out
 
 

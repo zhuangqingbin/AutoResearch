@@ -878,6 +878,163 @@ def ingest_lake_shards(source: str = "stock_news_em", *,
     }
 
 
+# ───────────── 外源扩面入账口(2026-08-28 §6.3 / §3.1 / §3.2)─────────────
+#
+# 三类证据分别入账,**不合并**:
+#   数值 / 期权 / tape / EDGAR / 结构化监管  → lake + source_lineage(**不进本目录**)
+#   新闻 / 事件                              → 本目录(PIT:first_seen ≤ cutoff ∧ stage ≤ 请求)
+#   LLM 网查工具行                            → capsule external_tools,再由下面映射成 observation
+#
+# 三个入口共用同一套身份/PIT 纪律,只是 `first_seen_basis` 与 `source` 不同。
+
+#: LLM 网查行映射过来的两个来源名。**T4 层**(§3.1 来源分级):聚合 / 发现,
+#: 单独不能支持 material claim —— 必须跟到 canonical 原文,由 claim_ledger 判。
+SOURCE_WEBSEARCH = "websearch"
+SOURCE_WEBFETCH = "webfetch"
+WEB_TOOL_SOURCES = (SOURCE_WEBSEARCH, SOURCE_WEBFETCH)
+
+#: §3.2 已排除:数值 / 期权 / tape / 结构化监管数据**不进 news_catalog**。
+#: 它们的事实源是 `lake + source_lineage`;硬塞进来会让 `available_stage` /
+#: `revision` 这些**新闻语义**去污染数值表,还会制造 raw 重复。
+_NON_NEWS_MARKERS = ("global_tape", "us_options", "us_ticker", "opt_daily", "opt_basic",
+                     "option_chain", "fut_daily", "cboe_vix", "edgar", "ohlc", "kline",
+                     "daily_basic", "quote", "option", "future", "basis", "tape")
+
+
+def assert_news_like(source: str) -> None:
+    """把 §3.2 的排除写成一次**会拒绝**的检查(不是注释里的君子协定)。"""
+    low = str(source or "").strip().lower()
+    if not low:
+        raise CatalogError("source 为空")
+    hit = next((m for m in _NON_NEWS_MARKERS if m in low), None)
+    if hit is not None:
+        raise CatalogError(
+            f"source={source!r} 命中数值/结构化标记 {hit!r} —— 数值 / 期权 / tape / EDGAR "
+            "以 lake + source_lineage 为事实源,**不进 news_catalog**(设计稿 §3.2:"
+            "stage / revision 语义不相容,会制造 raw 重复)")
+
+
+def assert_scan_stage(stage: str) -> str:
+    """`available_stage` 只能用现有 `L0…L5`。独立技能**不发明** `standalone` 假 stage。
+
+    独立技能(macro / sector / stock full)的时点信息记在自己的 run trace
+    (`context` + `decision_cutoff`),不参与 scan 的 stage 比较(§3 / §6.1)。
+    """
+    text = str(stage or "").strip()
+    if text in _STAGE_ORDER:
+        return text
+    extra = ("(独立技能把 context / cutoff 记在 run trace,不发明新 stage)"
+             if text.lower() in {"standalone", "full", "report"} else "")
+    raise CatalogError(f"available_stage={stage!r} 不在 {list(STAGES)}{extra}")
+
+
+def event_observation(source: str, title: str, *, first_seen_ts: str,
+                      event_date: str | None = None, url: str = "",
+                      published_ts: str | None = None, available_stage: str = "L1",
+                      scope: str = SCOPE_MARKET_WIDE, codes: tuple = (),
+                      code_method: str = METHOD_SOURCE_FIELD,
+                      scan_run_id: str | None = None, fetched_ts: str | None = None,
+                      raw_artifact_path: str = "", body_hash: str = "") -> Observation:
+    """确定性源的新闻 / 事件入账口(日历、公告、RSS 发现…)。
+
+    确定性源是我们**自己抓的**,所以 `first_seen_basis="observed"` —— 它和历史分片的
+    `snapshot_inferred` 不可混用(后者的时间是快照落盘时间,不是首见时间)。
+    """
+    assert_news_like(source)
+    assert_scan_stage(available_stage)
+    return Observation(
+        source=str(source), title=str(title), url=str(url or ""),
+        published_ts=published_ts, first_seen_ts=first_seen_ts,
+        fetched_ts=fetched_ts or first_seen_ts,
+        first_seen_basis=BASIS_OBSERVED, available_stage=available_stage,
+        scope=scope, scan_run_id=scan_run_id,
+        raw_artifact_path=str(raw_artifact_path or ""),
+        event_date=event_date, codes=tuple(codes), code_method=code_method,
+        body_hash=str(body_hash or ""))
+
+
+def ingest_events(items: list[Observation], *, catalog: NewsCatalog | None = None) -> dict:
+    """把确定性事件观测写进目录(只增;同血统内容变了 → 新 revision)。"""
+    cat = catalog or NewsCatalog()
+    for item in items:
+        assert_news_like(item.source)
+        assert_scan_stage(item.available_stage)
+    result = cat.ingest(items)
+    return {"schema_version": SCHEMA_VERSION, "n_items": len(items), **result}
+
+
+def external_tool_observation(row: dict, *, available_stage: str,
+                              scope: str = SCOPE_SELECTIVE,
+                              scan_run_id: str | None = None,
+                              codes: tuple = (), code_method: str = METHOD_QUERY_CODE,
+                              blob_prefix: str = "capsule/blobs") -> Observation | None:
+    """LLM 网查工具行 → observation。**没有 canonical URL 的行不入账**。
+
+    映射规则(§6.3):`source=websearch|webfetch`、`url` 经 canonicalize、
+    `raw_artifact_path` 指向 capsule blob(**引用**,不复制内容)、
+    `first_seen_ts=requested_at`、`published_ts=None`(工具行不知道原文发布时间,
+    编一个就是给 24h 窗喂假数)。
+
+    返回 `None` = 这一行不是新闻证据(本地工具、无 URL 的纯搜索结果)。
+    没有 canonical 原文的搜索行只能证明「搜到过」,进不了 material claim(§3.1 T4)。
+    """
+    from autoresearch.trace.evidence_index import safe_canonical_url
+    from autoresearch.trace.web_budget import KIND_FETCH, KIND_SEARCH, classify_tool
+
+    kind = classify_tool(row.get("tool_name"))
+    if kind not in (KIND_SEARCH, KIND_FETCH):
+        return None
+    url = safe_canonical_url(row.get("url"))
+    if not url:
+        return None
+    first_seen = row.get("requested_at") or row.get("completed_at")
+    if not first_seen:
+        return None
+    assert_scan_stage(available_stage)
+    result_hash = str(row.get("result_hash") or "")
+    title = str(row.get("title") or "").strip() or url
+    return Observation(
+        source=SOURCE_WEBSEARCH if kind == KIND_SEARCH else SOURCE_WEBFETCH,
+        title=title, url=url,
+        # 工具行没有可信的发布时间 —— 留空比编一个安全。
+        published_ts=None, first_seen_ts=first_seen,
+        fetched_ts=row.get("completed_at") or first_seen,
+        first_seen_basis=BASIS_OBSERVED, available_stage=available_stage,
+        scope=scope, scan_run_id=scan_run_id,
+        raw_artifact_path=f"{blob_prefix}/{result_hash}" if result_hash else "",
+        event_date=None, codes=tuple(codes), code_method=code_method,
+        body_hash=result_hash)
+
+
+def ingest_external_tools(rows: list[dict], *, available_stage: str,
+                          catalog: NewsCatalog | None = None,
+                          scope: str = SCOPE_SELECTIVE,
+                          scan_run_id: str | None = None,
+                          codes_by_subject: dict | None = None) -> dict:
+    """`external_tools.jsonl` → 目录观测。逐行对账,跳过的行必须有去处。"""
+    cat = catalog or NewsCatalog()
+    items: list[Observation] = []
+    skipped: list[dict] = []
+    for row in rows:
+        codes = tuple((codes_by_subject or {}).get(str(row.get("subject") or ""), ()))
+        try:
+            item = external_tool_observation(
+                row, available_stage=available_stage, scope=scope,
+                scan_run_id=scan_run_id, codes=codes)
+        except CatalogError as exc:
+            skipped.append({"tool_call_id": row.get("tool_call_id"), "reason": str(exc)})
+            continue
+        if item is None:
+            skipped.append({"tool_call_id": row.get("tool_call_id"),
+                            "reason": "非网查行或无 canonical URL —— 只证明搜到过,不入账"})
+            continue
+        items.append(item)
+    result = cat.ingest(items)
+    return {"schema_version": SCHEMA_VERSION, "n_rows": len(rows),
+            "n_observations": len(items), "skipped": skipped,
+            "reconciled": len(rows) == len(items) + len(skipped), **result}
+
+
 def manifest_day(scan_dir: Path | str, *, catalog: NewsCatalog | None = None,
                  stage: str = "L3") -> dict:
     """单日 manifest(最小证伪步)—— 把该日 `L3_news/*.json` 收进目录并逐源对账。

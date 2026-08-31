@@ -12,6 +12,9 @@ design: docs/specs/2026-07-12-scan-speed-perimeter-design.md §P1。
  —— 随 `learning.retro.recalibrate_and_log` 一并删除。权重现在只由显式的
  `python -m autoresearch.research.factor_lab calibrate` 改。)
 幂等:湖已有该日数据 → 全程命中秒退。失败退出码非零、不阻断(晚间扫描回落现路径)。
+日期解析是**第一步**而不是入口前的裸调用(2026-08-29 T6,见 `run_prewarm` docstring):
+交易日历瞬断 → 记一行失败账 + `_prewarm_failed.json`,不再抛栈把整晚带走;
+`scripts/com.tradingagents.scan-prewarm.plist` 另配 21:00 二次尝试(退出码非零即有第二次机会)。
   uv run --no-sync python -m autoresearch.scan.prewarm            # 自动选日
   uv run --no-sync python -m autoresearch.scan.prewarm 2026-07-10
 """
@@ -23,11 +26,13 @@ import os
 import sys
 import time
 from datetime import datetime, timedelta
-from pathlib import Path  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+from pathlib import Path
 
 from autoresearch.common import workspace as ws
 
 _SETTLE_HHMM = 19 * 60 + 15    # 当日 EOD 视为已结算的最早本地时刻(19:15;spec §P1 依据)
+#: `_step()` 的失败哨兵。用独立对象而非 `None`:步骤函数返回 `None`(空 note)是合法成功。
+_STEP_FAILED = object()
 
 
 def latest_settled_trade_date(now: datetime | None = None) -> str:
@@ -141,43 +146,79 @@ def _hot_rank_snapshot(date: str) -> str:
 
 
 def run_prewarm(date: str | None = None, *, now: datetime | None = None) -> dict:
+    """夜间预热主流程 —— **日期解析也是一步**,日历炸了不再把整晚带走。
+
+    2026-08-29(计划 T6):`date = date or latest_settled_trade_date(now)` 原来写在 `_step()`
+    **之外**,于是 `trade_cal` 一次 DNS 瞬断就让整个函数抛栈退出 —— 一步取数没跑、磁盘上一点
+    证据没有。08-28 20:13 真死过(`NameResolutionError api.waditu.com` ×3),`lake/daily/20260828`
+    因此干脆缺席;plist 那边当时也没有任何重试(本波一并补了 21:00 二次尝试)。现在:
+
+      · 显式传 `date` → **完全不碰日历**(离线补跑可用);
+      · 自动选日失败 → 记一行 `{"step": "resolve_date", "ok": False}`、返回 `{"ok": False}`
+        而**不抛**,且**不再往下跑取数步**(没有日期,后面每一步都会拿 `None` 去取数);
+      · 自动选日成功**不占账面一行** —— 日期就是记录里的 `date` 字段,而 `steps` 是取数账
+        (`prelude._hot_rank_snapshot_warning` / `stage_timing` / 既有测试都按那五步读它)。
+
+    落盘位置:有日期照旧 `scan_dir/_prewarm.json`;**无日期时 `scan_dir` 无处可建**,记录改落
+    `ws.scan_root()/"_prewarm_failed.json"`(同一个 staging 根,不带日期分区)。汇总屏的
+    `prewarm_line()` 读的仍是 `<date>/_prewarm.json`,那行照旧显示「预热(夜间):✗ 未跑」——
+    这份 `_prewarm_failed.json` 是它旁边那句「为什么没跑」的素材,不必靠 /tmp 日志考古。
+    """
     # 与 prelude 同理:新一轮取数之前先冻结上一次被打断的 run(只警告,不阻断)。
     from autoresearch.trace.capsule import recover_stale_runs_quietly
 
     recover_stale_runs_quietly()
     now = now or datetime.now()
-    date = date or latest_settled_trade_date(now)
-    scan_dir = ws.scan_root() / date
-    scan_dir.mkdir(parents=True, exist_ok=True)
     started = time.time()
     steps: list[dict] = []
+
+    def _step(name: str, fn, *args, record_success: bool = True):
+        """跑一步、记一行账;成功返回 `fn` 的返回值,失败返回 `_STEP_FAILED` 且**不抛**。
+
+        `record_success=False` 只给 `resolve_date` 用:见上方 docstring(成功的解析不占账面)。
+        """
+        try:
+            out = fn(*args)
+        except Exception as e:  # noqa: BLE001 — 单步失败记录继续,末尾以 ok 汇总定退出码
+            steps.append({"step": name, "ok": False, "note": f"{type(e).__name__}: {e}"})
+            print(f"[prewarm] ✗ {name}: {e}", file=sys.stderr)
+            return _STEP_FAILED
+        if record_success:
+            steps.append({"step": name, "ok": True, "note": str(out or "")})
+        return out
+
+    def _finish(target: str | None, record: Path) -> dict:
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(json.dumps(
+            {"date": target, "started_at": started, "ended_at": time.time(), "steps": steps},
+            ensure_ascii=False, indent=1), encoding="utf-8")
+        ok = bool(steps) and all(s["ok"] for s in steps)
+        print(f"[prewarm] {target or '(日期未解析)'} {'✓' if ok else '✗'} · "
+              + " · ".join(f"{s['step']}{'✓' if s['ok'] else '✗'} {s['note']}" for s in steps))
+        return {"date": target, "ok": ok, "steps": steps}
+
+    if date is None:
+        resolved = _step("resolve_date", latest_settled_trade_date, now, record_success=False)
+        if resolved is _STEP_FAILED:
+            return _finish(None, ws.scan_root() / "_prewarm_failed.json")
+        date = str(resolved)
+
+    scan_dir = ws.scan_root() / date
+    scan_dir.mkdir(parents=True, exist_ok=True)
     set_env = date == now.strftime("%Y-%m-%d")
     if set_env:
         os.environ["LAKE_ASSUME_SETTLED"] = "1"
 
-    def _step(name: str, fn) -> None:
-        try:
-            steps.append({"step": name, "ok": True, "note": str(fn(date) or "")})
-        except Exception as e:  # noqa: BLE001 — 单步失败记录继续,末尾以 ok 汇总定退出码
-            steps.append({"step": name, "ok": False, "note": f"{type(e).__name__}: {e}"})
-            print(f"[prewarm] ✗ {name}: {e}", file=sys.stderr)
-
     try:
-        _step("frame_lake", _frame_lake)
-        _step("evidence_lake", _prewarm_evidence)
-        _step("temperature", _temperature)
-        _step("dossier_prefetch", _dossier_prefetch)
-        _step("hot_rank_snapshot", _hot_rank_snapshot)
+        _step("frame_lake", _frame_lake, date)
+        _step("evidence_lake", _prewarm_evidence, date)
+        _step("temperature", _temperature, date)
+        _step("dossier_prefetch", _dossier_prefetch, date)
+        _step("hot_rank_snapshot", _hot_rank_snapshot, date)
     finally:
         if set_env:
             os.environ.pop("LAKE_ASSUME_SETTLED", None)
-    (scan_dir / "_prewarm.json").write_text(json.dumps(
-        {"date": date, "started_at": started, "ended_at": time.time(), "steps": steps},
-        ensure_ascii=False, indent=1), encoding="utf-8")
-    ok = all(s["ok"] for s in steps)
-    print(f"[prewarm] {date} {'✓' if ok else '✗'} · "
-          + " · ".join(f"{s['step']}{'✓' if s['ok'] else '✗'} {s['note']}" for s in steps))
-    return {"date": date, "ok": ok, "steps": steps}
+    return _finish(date, scan_dir / "_prewarm.json")
 
 
 def main(argv: list[str] | None = None) -> int:

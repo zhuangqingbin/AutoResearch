@@ -177,6 +177,11 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
         _l2 = pd.read_csv(l2p, dtype={"code": str})
         if "code" in _l2.columns:
             _l2["code"] = _l2["code"].astype(str).str.zfill(6)
+            # 「一 code 一行」是本查表的语义前提,不是 L2 产物的保证:上游帧一旦有重复码
+            # (2026-08-26 实跑:601665 在 L0 帧里两行 → L2 两行),`to_dict("index")` 直接
+            # ValueError 炸掉整条 L4 派发 —— L3 已烧完的 token 全作废。重复行内容同源,
+            # 按 L2 选择序保留第一条(确定性)。根因修在 `frame.build_market_frame` 出口。
+            _l2 = _l2.drop_duplicates(subset="code", keep="first")
             l2_priors = _l2.set_index("code").to_dict("index")
 
     tickers: list[str] = []

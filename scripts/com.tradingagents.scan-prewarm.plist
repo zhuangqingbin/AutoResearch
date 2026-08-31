@@ -5,12 +5,24 @@
   <key>ProgramArguments</key><array>
     <string>/bin/zsh</string><string>-lc</string><string>__REPO__/scripts/prewarm.sh</string>
   </array>
+  <!-- 重试机制:**第二次 StartCalendarInterval(21:00)**,不是 KeepAlive/SuccessfulExit=false。
+       为什么需要重试:08-28 20:13 `trade_cal` 一次 DNS 瞬断(NameResolutionError api.waditu.com ×3)
+       就让整晚预热白过,`lake/daily/20260828` 直接缺席,而这里当时一次重试都没有。
+       为什么不用 KeepAlive/SuccessfulExit=false:prewarm 只要**任一** B 级步骤失败就 exit 1
+       (自 08-22 起就是常态),那等于让 launchd 按 ~10s 节流整夜无限重启,把 tushare 打爆。
+       21:00 这次是**有界的一次**补跑,且幂等——19:30 已把湖灌好时它全程命中缓存、秒退。
+       (与 20:45 的 nightly-close 理论上可重叠,但两者写不同的根:账本 vs 湖,且入湖是原子写。) -->
   <key>StartCalendarInterval</key><array>
     <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>19</integer><key>Minute</key><integer>30</integer></dict>
     <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>19</integer><key>Minute</key><integer>30</integer></dict>
     <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>19</integer><key>Minute</key><integer>30</integer></dict>
     <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>19</integer><key>Minute</key><integer>30</integer></dict>
     <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>19</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>21</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>21</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>21</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>21</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>21</integer><key>Minute</key><integer>0</integer></dict>
   </array>
   <key>StandardOutPath</key><string>/tmp/scan-prewarm.log</string>
   <key>StandardErrorPath</key><string>/tmp/scan-prewarm.err.log</string>

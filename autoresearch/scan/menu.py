@@ -71,6 +71,33 @@ def menu_health(scan_dir: Path | str) -> str:
     return "\n".join(lines) + "\n" if len(lines) > 1 else ""
 
 
+def _prev_day_dirs(scan_dir: Path, root: Path, lookback: int) -> list[Path]:
+    """更早的 scan 日目录,新→旧;同一天只取一条(调用方给的 root 优先)。
+
+    修 K4(spec 2026-08-29 §2.2):run 分区下 `scan_dir.parent` 只装得下**本 run 自己的
+    日期**,连败于是永远数成 0 —— 而它是 `l4_budget` 五面旗之一。所以在**生产路径**
+    (`scan_dir.parent` 就是活着的 `ws.scan_root()`)额外向 `published_days` 要历史已发布日;
+    测试注入的 tmp 目录不是 scan_root,行为逐字不变(也不会被真实工作区的日期污染)。
+    """
+    found: dict[str, Path] = {}
+    if root.exists():
+        for p in root.iterdir():
+            if p.is_dir() and p.name[:2] == "20" and p.name < scan_dir.name:
+                found.setdefault(p.name, p)
+    if _is_live_scan_root(root):
+        from autoresearch.scan.published_days import previous_staging_dirs
+        for p in previous_staging_dirs(scan_dir.name, limit=max(30, int(lookback) * 3)):
+            found.setdefault(p.name, p)
+    return [found[name] for name in sorted(found, reverse=True)]
+
+
+def _is_live_scan_root(root: Path) -> bool:
+    try:
+        return root.resolve() == ws.scan_root().resolve()
+    except (OSError, ValueError):       # 非法 AUTORESEARCH_RUN_ID / 路径解析失败 → 只用兄弟目录
+        return False
+
+
 def zero_buy_streak(scan_dir: Path | str, lookback: int = 10) -> int:
     """今日之前连续 0 买 scan 日数(只数出过卡的日;哨兵/未跑 L4 的日子跳过、不断链)。
 
@@ -87,16 +114,17 @@ def zero_buy_streak(scan_dir: Path | str, lookback: int = 10) -> int:
 
     碰到最近一个有买的日即停。lookback 限回看深度(成本上限)。
     2026-07-03 病灶:9 连 0 买日预算仍=30 基准——连败从不是预算函数的输入。
+    2026-08-29 修 K4:「更早的日子在哪」交给 `_prev_day_dirs`(run 分区下兄弟目录只有今天),
+    口径与回看深度**一字未改**。
     """
     scan_dir = Path(scan_dir)
     root = scan_dir.parent
-    if not root.exists():
-        return 0
-    from autoresearch.scan.health import count_buys_with_source, final_ratings  # lazy:避免 import cycle
+    from autoresearch.scan.health import (  # lazy:避免 import cycle
+        count_buys_with_source,
+        final_ratings,
+    )
     streak = seen = 0
-    for d in sorted((p for p in root.iterdir()
-                     if p.is_dir() and p.name[:2] == "20" and p.name < scan_dir.name),
-                    reverse=True):
+    for d in _prev_day_dirs(scan_dir, root, lookback):
         if seen >= lookback:
             break
         try:

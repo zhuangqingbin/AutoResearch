@@ -50,6 +50,15 @@ def _card_fields(d: Path, code6: str) -> tuple[str | None, str | None]:
 
 
 def _verify_row(d: Path, code6: str) -> dict | None:
+    """历史某日该票的 Tier-3 裁决行;无表/无行 → None。
+
+    ⚠️ **`verify.csv` 自 2026-07-06 起没有生产者**(Tier-3 买单独立 skeptic 按用户裁定移除;
+    2026-08-29 Task 9b 全仓复核:只有读点、零写点)。于是对**当日及此后**的 scan 日,本函数
+    结构性地恒返回 None —— 档案里 `verify` 字段为空是**事实,不是取数失败**。
+    读侧保留是为了**历史**:`stock_dossier` 回看最近 N 个 scan 日,2026-07-06 之前落过盘的
+    目录里这张表真实存在,删掉读点会让那段历史在档案里凭空消失。
+    详见 spec `2026-08-29-full-coverage-research-system-brainstorm.md` §1.3 / §4.3。
+    """
     p = d / "verify.csv"
     if not p.exists():
         return None

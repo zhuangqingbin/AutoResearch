@@ -369,3 +369,37 @@ def test_safe_stage_result_rejects_ambient_run_bound_to_other_staging(
     assert result is not None and result.is_file()
     assert not (first.capsule / "stages/gate1").exists()
     assert "[capsule]" in capsys.readouterr().err
+
+
+def test_assemble_stage_result_carries_both_halves_of_the_publish_bundle(
+    tmp_path, monkeypatch
+):
+    """§6.2:summary 与 appendix 是**一个发布包**。控制面用 StageResult 声明 L5 实际
+    产物 —— 只登记 summary 会让「附录没落盘」在控制面上完全不可见。"""
+    handle = _begin_capsule(tmp_path, monkeypatch)
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", handle.run_id)
+    report = tmp_path / "reports_codex/scan/20260828_2100"
+    report.mkdir(parents=True)
+    (report / "summary.md").write_text("决策层", encoding="utf-8")
+    (report / "appendix.md").write_text("现场层", encoding="utf-8")
+    safe_record_stage_result(
+        handle.staging,
+        stage="assemble",
+        status="SUCCEEDED",
+        artifacts=["summary", "appendix"],
+        metrics={},
+        warnings=[],
+        error=None,
+        report_dir=report,
+    )
+    rows = json.loads(
+        (handle.capsule / "stages/assemble/attempt-1/outputs.json").read_text(
+            encoding="utf-8"
+        )
+    )["artifacts"]
+    assert [(row["logical_id"], row["root"], row["path"]) for row in rows] == [
+        ("summary", "report", "summary.md"),
+        ("appendix", "report", "appendix.md"),
+    ]
+    for row in rows:
+        assert (handle.capsule / row["captured_path"]).is_file()

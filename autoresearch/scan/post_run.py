@@ -15,6 +15,13 @@ from pathlib import Path
 
 from autoresearch.common import workspace as ws
 from autoresearch.scan.outbox import OutboxEvent, load_events, outbox_path
+from autoresearch.scan.report_model import (
+    APPENDIX_FILENAME,
+    APPENDIX_SECTIONS,
+    RUN_OBSERVATION_DETAIL_MARKERS,
+    RUN_OBSERVATION_MARKERS,
+    appendix_link,
+)
 from autoresearch.scan.run_contract import sha256_json
 
 CONSUMER_RECEIPT_SCHEMA_VERSION = 1
@@ -28,8 +35,14 @@ SUBSCRIPTIONS = {
     "DOSSIER_DELTA_READY": {"dossier_delta"},
 }
 ConsumerHandler = Callable[[OutboxEvent, Path], object]
-OBSERVATION_START = "<!-- run-observation:start -->"
-OBSERVATION_END = "<!-- run-observation:end -->"
+# managed 标记的**单一事实源**在 `report_model`(§6.5):渲染侧(report_sections /
+# report_appendix)与刷新侧(这里)各抄一份字面量,就是给「两边写的不是同一个标记 →
+# 注入静默 no-op → 报告留成占位」开了口子。两组标记,两个文件,一个 observation。
+OBSERVATION_START, OBSERVATION_END = RUN_OBSERVATION_MARKERS
+OBSERVATION_DETAIL_START, OBSERVATION_DETAIL_END = RUN_OBSERVATION_DETAIL_MARKERS
+#: 标记缺席时各自的稳定回退锚:summary 用「诚实局限」标题,appendix 用 F 节标题。
+SUMMARY_OBSERVATION_ANCHOR = "\n## 诚实局限"
+APPENDIX_OBSERVATION_ANCHOR = "\n## " + dict(APPENDIX_SECTIONS)["methods"]
 
 
 @dataclass(frozen=True)
@@ -445,6 +458,19 @@ def _money(value: object) -> str:
     return "—" if value is None else f"${float(value):.4f}"
 
 
+def _degraded_fields(scan: Path) -> list[str]:
+    """已落盘的 `run_health.degraded_fields`(读盘、不现算 —— 现算会造第二个口径)。"""
+    path = scan / "run_health.json"
+    if not path.is_file():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    fields = payload.get("degraded_fields") if isinstance(payload, dict) else None
+    return [str(f) for f in fields] if isinstance(fields, list) else []
+
+
 def render_run_observation(observation: dict) -> str:
     """预算/成本视图；`—` 与 UNMEASURED 永不格式化成零。"""
     maturity = observation.get("maturity") or {}
@@ -499,17 +525,148 @@ def render_run_observation(observation: dict) -> str:
     return "\n".join(lines)
 
 
+def _fmt_wall(seconds: object) -> str:
+    if seconds is None:
+        return "—"
+    try:
+        total = int(float(seconds))          # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return "—"
+    minutes, secs = divmod(max(total, 0), 60)
+    return f"{minutes}m{secs:02d}s" if minutes else f"{secs}s"
+
+
+def render_run_observation_line(observation: dict) -> str:
+    """summary 侧的**紧凑一行**(§6.5):墙钟 · LLM 调用 · 计量状态 · 数据降级 + 明细链接。
+
+    与 appendix E 的完整块**同一个 observation 对象**渲染 —— 各自重读/重算就是给
+    「决策层与现场层说两个数」开口子。这里只印读数,成本表整体住在附录 E。
+    未计量的量一律 `—`,**永不格式化成 0**(「没量到」不等于「量到了是零」)。
+    """
+    calls = observation.get("n_llm_calls")
+    cache = observation.get("cache_hit_rate")
+    degraded = observation.get("degraded_fields") or []
+    cost = _money(observation.get("estimated_usd"))
+    parts = [
+        f"墙钟 {_fmt_wall(observation.get('interactive_wall_s'))}",
+        f"LLM 调用 {'—' if calls is None else int(calls)}",
+        f"计量:{observation.get('measurement_status', 'UNMEASURED')} {cost}"
+        + (f"(cache {float(cache):.1%})" if cache is not None else "(cache —)"),
+        "数据降级:" + ("、".join(str(f) for f in degraded) if degraded else "无"),
+    ]
+    return " · ".join(parts) + " → " + appendix_link("运行明细", "runtime")
+
+
+def _inject_managed(text: str, markdown: str, start: str, end: str,
+                    anchor: str) -> tuple[str, str | None]:
+    """原位替换一对 managed 标记;标记缺席按**稳定锚**回退,并把回退如实报出来。
+
+    回退不是失败(报告仍然拿到内容),但**必须留痕** —— 静默回退会让「渲染层把标记
+    改名了」这种事永远看不见,而 managed 注入 no-op 的病史(仪表盘/组合/overlay 留成
+    占位)正出在这里。返回 `(新文本, warn 或 None)`。
+    """
+    managed = f"{start}\n{markdown.strip()}\n{end}"
+    if start in text and end in text:
+        before, rest = text.split(start, 1)
+        _, after = rest.split(end, 1)
+        return before.rstrip() + "\n\n" + managed + after, None
+    if anchor in text:
+        before, after = text.split(anchor, 1)
+        return (before.rstrip() + "\n\n" + managed + "\n" + anchor + after,
+                f"{start} 缺席,按稳定锚 `{anchor.strip()}` 回退")
+    return (text.rstrip() + "\n\n" + managed + "\n",
+            f"{start} 与锚 `{anchor.strip()}` 均缺席,已追加到文末")
+
+
 def inject_run_observation_section(summary: str, markdown: str) -> str:
-    managed = f"{OBSERVATION_START}\n{markdown.strip()}\n{OBSERVATION_END}"
-    if OBSERVATION_START in summary and OBSERVATION_END in summary:
-        before, rest = summary.split(OBSERVATION_START, 1)
-        _, after = rest.split(OBSERVATION_END, 1)
-        return before.rstrip() + "\n\n" + managed + after
-    marker = "\n## 诚实局限"
-    if marker in summary:
-        before, after = summary.split(marker, 1)
-        return before.rstrip() + "\n\n" + managed + "\n" + marker + after
-    return summary.rstrip() + "\n\n" + managed + "\n"
+    """summary 的 `run-observation` managed 块(兼容面:签名与返回值不变)。"""
+    return _inject_managed(summary, markdown, OBSERVATION_START, OBSERVATION_END,
+                           SUMMARY_OBSERVATION_ANCHOR)[0]
+
+
+def inject_run_observation_detail(appendix: str, markdown: str) -> str:
+    """appendix E 的 `run-observation-detail` managed 块(完整成本表)。"""
+    return _inject_managed(appendix, markdown, OBSERVATION_DETAIL_START,
+                           OBSERVATION_DETAIL_END, APPENDIX_OBSERVATION_ANCHOR)[0]
+
+
+def observation_after_failure(exc: BaseException) -> dict:
+    """观测控制面炸了也要有**一个** observation —— 两处渲染的同源前提不能因异常破掉。
+
+    诚实为 UNMEASURED,并明说这个异常不改变任何评级或候选(展示层故障不许伪装成
+    研究结论变化)。
+    """
+    reason = f"观测控制面异常:{type(exc).__name__}"
+    return {
+        "measurement_status": "UNMEASURED",
+        "status": "DEGRADED",
+        "estimated_usd": None,
+        "interactive_wall_s": None,
+        "cache_hit_rate": None,
+        "n_llm_calls": None,
+        "degraded_fields": [],
+        "warnings": [reason],
+        "markdown": ("## 💸 成本与时延观测\n\n"
+                     f"- 计量:UNMEASURED · {reason}\n\n"
+                     "_未计量不等于零成本；该异常不改变任何评级或候选。_"),
+    }
+
+
+def refresh_run_observation(
+    summary_text: str | None,
+    appendix_text: str | None,
+    observation: dict,
+) -> tuple[str | None, str | None, list[str]]:
+    """**双刷新**(§6.5):同一个 observation → summary 紧凑一行 + appendix E 完整块。
+
+    返回 `(新 summary, 新 appendix, warns)`;入参为 `None`(文件不在盘上)时对应返回
+    `None` 并落 warn —— **不回填**:给一个 2026-08-28 之前的旧 run 凭空造一份 appendix,
+    等于拿今天的义务改写昨天的现场。任一边刷不动都必须能被看见,
+    「静默只刷新一边」正是本节要拦的形状。
+    """
+    warns: list[str] = []
+    detail_md = observation.get("markdown") or render_run_observation(observation)
+    line_md = render_run_observation_line(observation)
+    if summary_text is None:
+        warns.append("summary.md 缺席,运行观测未刷新")
+        new_summary = None
+    else:
+        new_summary, warn = _inject_managed(
+            summary_text, line_md, OBSERVATION_START, OBSERVATION_END,
+            SUMMARY_OBSERVATION_ANCHOR)
+        if warn:
+            warns.append(f"summary.md:{warn}")
+    if appendix_text is None:
+        warns.append(f"{APPENDIX_FILENAME} 缺席,运行观测明细未刷新(旧 run 不回填)")
+        new_appendix = None
+    else:
+        new_appendix, warn = _inject_managed(
+            appendix_text, detail_md, OBSERVATION_DETAIL_START, OBSERVATION_DETAIL_END,
+            APPENDIX_OBSERVATION_ANCHOR)
+        if warn:
+            warns.append(f"{APPENDIX_FILENAME}:{warn}")
+    return new_summary, new_appendix, warns
+
+
+def refresh_run_observation_files(report_dir: Path | str, observation: dict) -> list[str]:
+    """把双刷新落到盘上(两文件各自原子替换);返回 warns。"""
+    report = Path(report_dir)
+    summary_path, appendix_path = report / "summary.md", report / APPENDIX_FILENAME
+
+    def _read(path: Path) -> str | None:
+        return path.read_text(encoding="utf-8") if path.is_file() else None
+
+    new_summary, new_appendix, warns = refresh_run_observation(
+        _read(summary_path), _read(appendix_path), observation)
+    for path, text in ((summary_path, new_summary), (appendix_path, new_appendix)):
+        if text is None:
+            continue
+        tmp = path.with_name(f"{path.name}.tmp")
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(path)
+    for warn in warns:
+        print(f"[post_run] ⚠️ 运行观测刷新:{warn}", file=sys.stderr)
+    return warns
 
 
 def publish_run_observation(
@@ -587,6 +744,10 @@ def publish_run_observation(
         scan,
         observation.get("estimated_usd"),
     )
+    # summary 紧凑一行要的两个读数(§4.4 样张):调用次数与降级字段。两者都**只读已在盘上的
+    # 事实**,取不到就留 None/[] —— 紧凑行会印 `—`/`无`,不猜。
+    observation["n_llm_calls"] = len(usage.get("rows") or []) if usage else None
+    observation["degraded_fields"] = _degraded_fields(scan)
     observation["markdown"] = render_run_observation(observation)
     _atomic_json(scan / "_budget_observation.json", observation)
     # E1b(2026-08-18 设计稿):护照/相对决策**现算**之前先对 task-book 做收尾自愈 ——
@@ -659,15 +820,15 @@ def publish_run_observation(
     )
     if report_dir is not None:
         report = Path(report_dir)
-        summary = report / "summary.md"
-        if summary.exists():
-            summary.write_text(
-                inject_run_observation_section(
-                    summary.read_text(encoding="utf-8"),
-                    observation["markdown"],
-                ),
-                encoding="utf-8",
-            )
+        # 双刷新(§6.5):**先把两份文件都写完**,再刷最终字节 / artifact index /
+        # trace 镜像 / MANIFEST —— 顺序颠倒就会拿「只刷了一半」的现场去算哈希。
+        refresh_run_observation_files(report, observation)
+        # 最终态字节预算:这一次才是验收读数(token 计量此刻才到)。展示层 warn,不截断。
+        with contextlib.suppress(Exception):
+            from autoresearch.scan.health import measure_report_budget, write_run_health
+
+            measure_report_budget(scan, report)
+            write_run_health(scan)
         from autoresearch.scan.artifacts import write_artifact_index
 
         index = write_artifact_index(scan, report_dir=report)

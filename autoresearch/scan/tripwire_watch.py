@@ -200,7 +200,38 @@ def check(date: str, codes: list[str] | None = None,
                                  "raw": w["raw"],
                                  "detail": f"新闻标题命中 {'/'.join(got_kw)}"
                                            + (f" → {w['action']}" if w["action"] else "")})
+    hits.extend(_overseas_hits(date, codes or [], scan_root))
     return hits
+
+
+def _overseas_hits(date: str, codes: list[str], scan_root: Path | str) -> list[dict]:
+    """D-2:持仓映射名在两窄窗里的已知海外事件(`scan/overseas.py`)。
+
+    **风险可见性,不是触发器**:`kind="overseas"` 只是「这只票的映射对象今晚有事」,
+    它不主张因果、不给动作、不改评级 —— 08-26 真跑里 📌 300857(算力链)在 NVDA 盘后
+    财报当晚零提示,补的就是这一面。取不到映射 / 无日历 → [](presence-gated)。
+    """
+    if not codes:
+        return []
+    try:
+        from autoresearch.data.readthrough import load_map
+        from autoresearch.scan.overseas import tripwire_rows
+    except Exception:  # noqa: BLE001 — 可选层
+        return []
+    try:
+        mapping = (load_map(date) or {}).get("codes") or {}
+    except Exception:  # noqa: BLE001
+        return []
+    scan_dir = Path(scan_root) / date
+    out: list[dict] = []
+    for code in codes:
+        code6 = str(code).zfill(6)
+        items = mapping.get(code6) or mapping.get(str(code)) or []
+        syms = [it.get("symbol") for it in items if isinstance(it, dict) and it.get("symbol")]
+        for line in tripwire_rows(scan_dir, code6, syms):
+            out.append({"code": code6, "kind": "overseas", "card_date": None,
+                        "raw": "readthrough_map", "detail": line.lstrip("- ")})
+    return out
 
 
 def render_line(hits: list[dict], n_watched: int) -> str | None:

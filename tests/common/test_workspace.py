@@ -162,15 +162,31 @@ _EXACT_ROOTS = {"context", "reports", "context_claude", "context_codex",
 
 
 def _string_literals(tree: ast.AST):
-    """产出 (lineno, value):普通串 + f-string 首段;跳过 docstring(说明文不算接线)。"""
+    """产出 (lineno, value):普通串 + f-string 首段。
+
+    跳过两类**不可能是路径根**的字面量,否则守卫会对着无辜代码天天报警(本仓家训:
+    「lint 天天报警 ≠ 违规 —— 修法排序是 补指令 > 给合法情形一个标记 > 才是加严检查」):
+
+    - **docstring**:说明文不算接线;
+    - **dict 键名**(2026-08-29):`{"context": ctx}` 里的 `"context"` 是 JSON schema 的
+      键,不是目录 —— `trace/web_budget.py` 与 `evidence_index.py` 的产物 schema 里各有一个
+      (设计稿 §6.1 明确要求这个键叫 `context`)。键名位置永远拼不出路径,排除它不减牙齿:
+      `Path("context")` / `"context/scan"` 仍然会被逮到(见 `test_bare_root_guard_still_bites`)。
+    """
     doc_nodes = set()
+    key_nodes = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Dict):
+            key_nodes.update(id(k) for k in node.keys
+                             if isinstance(k, ast.Constant) and isinstance(k.value, str))
     for node in ast.walk(tree):
         if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             body = getattr(node, "body", [])
             if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
                 doc_nodes.add(id(body[0].value))
     for node in ast.walk(tree):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in doc_nodes:
+        if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                and id(node) not in doc_nodes and id(node) not in key_nodes):
             yield node.lineno, node.value
         elif isinstance(node, ast.JoinedStr) and node.values:
             first = node.values[0]
@@ -194,6 +210,25 @@ def test_no_bare_root_literals_in_source():
     assert not offenders, (
         f"裸根字面量 {len(offenders)} 处(应改走 autoresearch.common.workspace):\n"
         + "\n".join(offenders[:60]))
+
+
+def test_bare_root_guard_still_bites():
+    """收窄(跳过 dict 键)之后,守卫对**真的**裸根仍然变红 —— 防「删空也绿」。
+
+    这条是上面那个豁免的对手方:三种真违规形态各一例,加一例合法的 dict 键名对照。
+    """
+    def offenders_of(src: str) -> set[str]:
+        # 用 set:f-string 的首段会同时以 Constant 与 JoinedStr 两种形态产出(生产扫描里
+        # 重复计数无害,这里只关心「逮没逮到」)。
+        tree = ast.parse(src)
+        return {v for _, v in _string_literals(tree)
+                if _BARE_ROOT.match(v) and ("/" in v or v in _EXACT_ROOTS)}
+
+    assert offenders_of('from pathlib import Path\np = Path("context/scan")') == {"context/scan"}
+    assert offenders_of('root = "context"') == {"context"}
+    assert offenders_of('p = f"reports_claude/scan/{run}"') == {"reports_claude/scan/"}
+    assert offenders_of('payload = {"context": ctx}') == set()       # 键名:合法
+    assert offenders_of('d = {"path": "context/scan"}') == {"context/scan"}   # 值仍要逮
 
 
 def test_no_bare_root_literals_in_workflow_js():

@@ -44,7 +44,7 @@ L0 选集  →  L1 召回  →  L2 粗排  →  L3 精排(两遍法)      →  L
 
 多路策略并行:每路"过门 → 按信号排序 → 截 top-quota" → `quota_union` 合并(各路 floor 保底多样性),带 provenance。
 
-**已注册 14 路,当前默认启用 10 路**(由 `scan_config.jsonc` 的 `funnel.recall_channels` 决定;⚠️ **该 key 缺省 = 用全部 12 路**,删掉整行会把默认停用的 `event` 一并上线,违反其入场纪律 `pr_20260725_001`):
+**已注册 14 路,当前默认启用 10 路**(由 `scan_config.jsonc` 的 `funnel.recall_channels` 决定;⚠️ **该 key 缺省 = 用全部 14 路** —— `config.py:30` 的 `recall_channels: list[str] | None = None` 注得明明白白「None=全注册」,**不是**回落到今天这 10 路。删掉整行会把 4 路默认停用的 `accumulation` / `northbound` / `sector_momentum` / `event` 一并上线,其中 `event` 直接违反其入场纪律 `pr_20260725_001`。真值现取:`uv run --no-sync python -c "import autoresearch.scan.recall.channels as _c; from autoresearch.scan.recall.registry import registered_channels; print(len(registered_channels()))"`):
 
 | 通道 | quota/floor | 信号 |
 |---|---|---|
@@ -60,6 +60,7 @@ L0 选集  →  L1 召回  →  L2 粗排  →  L3 精排(两遍法)      →  L
 | healthy | 150→112/40 | 质量上涨(0<pct60<40 且主力净流入>0 且 cmf>0;36 日版 quota 下调,unique 超额持续为负) |
 | accumulation | 120/30 | 底部吸筹 —— **默认停用**(unique 超额 −0.21%,原并入 reversal_confirm;reversal_confirm 本身已于 2026-08-19 停用) |
 | northbound | 120/30 | 北向持股 —— **默认停用**(hk_ratio T+2 IC −0.108,信息已在 L4 简报行) |
+| sector_momentum | 150/**0** | 板块动量上涨侧(同行业 `pct_60d` 中位 >0 硬门,按板块排序、板块内 composite 决胜;**绝不用当日涨幅**——追当日大涨实证为负价值)—— **默认停用**(EXP-2 `exp_20260801_recall_sector_momentum` 的 challenger 数据腿,`floor=0` 影子专用;唯一消费者随 2026-08-21 闭环退役删除,现在无尺可裁) |
 | **event** | 80/20 | 公告事件(回购/增持按公告去重、调研只作有无;信号来自 `scan/events.py`,排序键 `ev_hard`+composite 决胜,**不用当日涨幅**——追当日大涨实证为负价值)。**默认停用**(2026-08-21 起取证渠道也没了:影子变体与 `channel_audit` 随闭环删除);L2「事件」桶 floor **=0**(未启用通道不得改生产 L2 分布) |
 
 - **配额覆盖**(36 日版,2026-08-19 拍板,取代 07-11 的 18 日版):`funnel.channel_quotas` 现生效 value 312 / momentum 188 / heat 112 / healthy 112 / growth 112 / main_fund 150;兜底读取在 `universe.run` 本体(`_funnel_overlay`,prelude 与 CLI 直调同源),显式参数/CLI flag 恒优先,缺文件=注册表默认。六键全写(逐一核对目标值均不等于各路 `@channel` 注册表默认,任一键缺省会回落注册表默认而非维持原覆盖值)。
@@ -78,7 +79,11 @@ L0 选集  →  L1 召回  →  L2 粗排  →  L3 精排(两遍法)      →  L
 
 ## L2 · 粗排 —— `recall/l2_stratify.select_l2`(确定性分层采样,→200)
 
-**不用机器学习**:① sector-neutral composite 排 merit;② 8 风格桶固定 floor(趋势20/健康15/反转12/价值12/成长12/吸筹12/主力10/**低位转强8**,明细=行为归属留在 `l2_stratify.DEFAULT_FLOORS`);**未启用通道的桶 floor 运行时归零**(`effective_floors`,2026-08-22)——此前靠「记得手工把该桶 floor 写 0」维持,是指令级约束;现在按当日启用集在运行时归零,于是新通道的**回滚杆只剩一根**:从 `recall_channels` 摘掉它,桶随之消失、逐字 parity;③ 任一申万一级 ≤20%(`l2.sector_cap`)。产物 `L2_gbdt_top200.csv`:`l2_rank`=选择序、`gbdt_score`=composite、`l2_lane_reserved`=被 floor 救回。
+**不用机器学习**:① sector-neutral composite 排 merit;② 8 风格桶固定 floor(趋势20/健康15/反转12/价值12/成长12/吸筹12/主力10/**低位转强8**,明细=行为归属留在 `l2_stratify.DEFAULT_FLOORS`);**未启用通道的桶 floor 运行时归零**(`effective_floors`,2026-08-22)——此前靠「记得手工把该桶 floor 写 0」维持,是指令级约束;现在按当日启用集在运行时归零,于是新通道的**回滚杆只剩一根**:从 `recall_channels` 摘掉它,桶随之消失、逐字 parity;③ 任一 `industry` 标签 ≤20%(`l2.sector_cap`;⚠️ **不是申万一级**,见下条)。产物 `L2_gbdt_top200.csv`:`l2_rank`=选择序、`gbdt_score`=composite、`l2_lane_reserved`=被 floor 救回。
+- **⚠️ 「行业」= 东财所处行业,不是申万一级**(上面 ① 的 sector-neutral 去均值与 ③ 的 `sector_cap` 用的是**同一列** `industry`):它来自 akshare `stock_yjbb_em` 的「所处行业」(`data/tushare_source.py:154`;`common/sw_sector_map.py:4-5` 记着同一件事:「不是规整的申万一级」),粒度细到「证券Ⅱ / 半导体 / 消费电子 / 工业金属」这一级。**08-26 实测**:全帧 **129** 个标签、L1 top1000 里 120 个、L2 200 只里 67 个。
+  **后果 1:20% 的 `sector_cap` 在这种粒度下几乎从不触发** —— 08-26 L2 最大单行业 13/201 = **6.5%**,离 20% 差三倍,那天**剔 0 行**。别把它当成「已有行业分散保护」来读:真正在拦同板块扎堆的是 **L3 守卫⑧的 3 席帽**(`l3/merge.py:557` 把同一个 `industry` 直接赋成 `sector`,所以 08-21 贵金属 4 席拦得住,而 L2 的 20% 帽对同一天完全没动作)。
+  **后果 2**:① 的 sector-neutral 去均值是在这种细标签的小组内做的,组内样本一少,去掉的更多是标签噪声而非行业 beta。
+  要让 L2 的帽真起作用,得先把标签收缩到申万一级那种粗度(`common/sw_sector_map.py` 的 ~7 大类是现成的中间层)。**本条只是把口径说对,不是改判据** —— `l2.sector_cap` 的值与守卫⑧的 3 席都不动。
 
 **菜单体检**(`scan/menu.py`):行业集中度/落刀面/健康上涨/估值四项,自动嵌 L5;健康上涨=0 打 ⚠️菜单病。
 
@@ -106,7 +111,7 @@ Stage 0 与 L0 并行,回退到 L2 之后落盘。模板在 `macro-playbook.md` 
 
 L2 之后、与 L3 证据取数**并发**:
 
-- `sector.reuse <date> --apply`(TTL ≤5 日 ♻️ 复用;已复用行业从 fan-out 排除)→ 剩余 `sector.pack <date>`(红榜 top3 ∪ L2 集中度 top3 ∪ 存量 watchlist.csv 行业,K≤6)→ 每行业一个 `sector-brief` agent 写两段契约 brief:`## 地形段`(喂 L3/L4)+ `## 研判段`(仅 L5,含 `**行业方向**` keyed 行)。L4 派发前对 ≥2 只同行业 finalist 的行业补漏。
+- `sector.reuse <date> --apply`(TTL ≤5 日 ♻️ 复用;已复用行业从 fan-out 排除)→ 剩余 `sector.pack <date>`(红榜 top3 ∪ L2 集中度 top3 ∪ 存量 watchlist.csv 行业,K≤6)→ 每行业一个 `sector-brief` agent 写**单段**契约 brief:`## 地形段`(喂 L3/L4)——`## 研判段` 与 `**行业方向**` keyed 行已于 2026-08-19 D6 整段砍除(用户裁定),`sector/brief.py` 只认 `TERRAIN_HDR`,行业方向叙事改走确定性 top3 (`market.sector_healthy_top3`)。L4 派发前对 ≥2 只同行业 finalist 的行业补漏。
 - **只有这一条路**:原 `performance.sector_brief_mode` A/B 开关已退役——`finalist_only` 会让 L3 看不到判断型行业 brief、可能改变 finalists,按「性能开关不拥有评级」铁律它不是性能开关。
 - **消费与价值**:`l3_table_md(sector_terrain=True)` 只渲染 L2 top200 覆盖行业(~110 行压 30–50);assemble 自动嵌 🏭 行业研判 + 🔗 同链对比(presence-gated)。价值 = 同链论点摊销 + 行业相对估值锚,**不解决 0 买也不设门**。
 
@@ -185,26 +190,42 @@ P0 简报（市场地形+档案+解禁/披露旗+行业备忘+误读预警）
 
 实现归属为单向链:`l4/parsers → decision_finalize → report_sections → publisher → post_run`。`assemble.py` 只兼容导出与 CLI;L3/L4 的机制件由各自 `scan/l3/*`、`scan/l4/*` 持有,仓内消费者必须直连 owner,禁止从兼容 adapter 反向 import;Workflow 只调度,不持有 rating/gate 规则。
 
-**summary.md 节序**(决策主线前置;新节全 presence-gated。真身 = `report_sections.build_summary` 的节序注释块,改序先改那里):
+**报告双层 = 一个发布包**(2026-08-29 B+ 重构,design `docs/specs/2026-08-28-summary-slimdown-design.md`):
+`summary.md` **决策层**(11 节,典型 7–10KB)+ `appendix.md` **现场层**(A–G 七节)。
+两份由**一次** `report_sections.prepare_report_model()` 冻结出的 `ReportModel` 纯渲染而来
+(`render_summary` / `report_appendix.render_appendix` 都是纯函数:不读盘、不写盘、不 fold 评级)。
+真身 = `report_sections.py` 模块头的节序 + 事实归属注释块与 `report_model.py`,改序先改那里。
 
 ```
-self_review 硬门 banner → H1 → regime+drift 行(+🌡情绪温度行)
-→ 🧭 决策仪表盘(managed,= brief ①②③④ 逐字同源,publisher 注入)
-→ §3 投资建议表(🎭复核分歧 badge)+ 组合视角(同板块告警 + 🎭人裁行 + 仓位 overlay:
-   risk_off 0–2 成 / range 3–5 / trend 5–8)+ 📅两周日历
-→ 📌 保送持仓 → 差一点/弃权 banner
-→ 📈市场研判 → 🎯看多行业 top3 → 🏭行业研判(一行一行业)
-→ 📈影子组合成绩单行(真实 vs 影子[若门不拦最想买3只] vs 市场,hold=2 主尺)
-→ §1 漏斗数量 → 数据降级行 → §2 各阶段卡点&概览(+🍱菜单体检)
-→ 🕯️ 附录 → 分段耗时/落盘事实
-→ 💸成本与时延观测(managed,注入)→ 诚实局限
+summary.md(决策层)
+  自检 banner(**聚合版**:同 key 折成 `×n`;明细 → appendix A)
+  → # A股扫描 · <数据日>(run <id>) + 身份行(不放结论)
+  → 🧭 决策仪表盘(managed,brief ①②③④ 逐字)
+  → ## 行动(overlay 仓位 managed · 组合集中度 managed · 🔗 同链一行 · 复核分歧 · 哨兵 banner)
+  → ## 候选(N 只)  # | 名称 | 板块 | 评级 | 目标(EV) | 一句依据 | L1→L2
+  → ## 📌 保送持仓(同表 + 保送理由列)
+  → ## 为什么没有 BUY / ## BUY 资格与约束(**单源** decision_records:早停分桶 + 三门 ✗)
+  → ## 市场地形(策略师 **2/3/5 小节切片**;解析失败只留一行链接,不整段回退)
+  → ## 行业 top3 → ## 📅 未来 14 天(含 D-2 隔夜窗海外事件)
+  → ## 运行事实(managed 紧凑一行)→ ## 诚实局限(锚字面勿动)
+
+appendix.md(现场层;标题恒在,缺席印 `无 / NOT_EXPECTED`)
+  A 自检明细全文 · B 漏斗现场(数量/降级/卡点/菜单/0买机制)· C 研究全文(策略师/L3 逐票/Tier-3)
+  · D 门柱与资格(自由文本口径直方图 + 两口径说明)· E 运行观测(耗时全表 + managed detail 块)
+  · F 方法与口径(语义锚 `#method-*`)· G 诚实局限全文
 ```
+
+**事实归属**(每个事实在 summary 里只有**一个**展开点;这是本次重构的核心不变量):
+regime/温度/定调 → 仪表盘①;BUY/BLOCKED 结论 → 仪表盘③;持仓总动作 → 仪表盘④;
+仓位与动作 → 行动节;单票 → 候选/保送表;无 BUY 的**统计** → 节 6;漏斗现场与门柱自由文本口径 → appendix。
+**字节预算**(展示层 warn,不截断、不改评级、不毙 GATE4):summary 目标 12KB / warn 16KB,
+appendix 目标 20KB / warn 24KB。08-26 真 staging 离线重渲实测 **27,008B → 7,400B**。
 
 - **入口是 `brief.md` 不是本表**:CP7 转播 brief 全文;要展开才按节序进 `summary.md`。
 - **GATE4 severity 口径**:判据/fail-warn 二分见 SKILL.md 步骤 5「GATE4 拦什么」;单一事实源 = `scan.self_review.BRIEF_LINT_SEVERITY`,勿在别处另写一份。
 - **现场完备**:发布同时写 `run_health.json` + `index.md` 导航页(**第二天回看从 index.md 进**);`weights_used.json` + meta.regime 固化,漏斗可复现。
 - **计量时序**:assemble 时 `_token_usage.json` 通常尚未生成,报告先写 `UNMEASURED`;CP7 跑 usage_harvest `--json-out` 后由 `post_run observe` 原位替换 managed section,并刷新 `_budget_observation.json`、budget StageResult 与 ArtifactIndex。
-- **观察单已退役**(用户裁定):日检/触发/直通车全无;存量 `$CTX/watchlist.csv` 保留(sector.pack 行业选择器仍直接读)。发布落 `$RPT/scan/<运行时刻>/`(数据日在 manifest.json)。
+- **观察单已退役**(用户裁定):日检/触发/直通车全无;存量 `$CTX/watchlist.csv` 保留(sector.pack 行业选择器仍直接读)。发布落 `$RPT/scan/<数据日>-<发布MMDD_HHMM>/`(2026-08-28 用户裁定;真身 `scan/run_naming.py`。旧 `<跑动日>_<HHMM>` 只读兼容——那个格式里目录名首段是跑动日,`20260826_2000` 研究的其实是 08-25,61 个 run 里 19 个数据日≠跑动日)。
 - **法证 run capsule**(`autoresearch/trace/`,2026-08-28,设计稿 `docs/superpowers/specs/2026-08-27-scan-forensic-run-capsule-design.md`):
   run 从 `capsule begin` 起就拥有独立工作区 `$CTX/scan_runs/<run_id>/`(`state.json` 带**租约**:hostname/pid/进程启动时刻/心跳),
   每条确定性命令经 `trace.exec_capture` 捕获 argv/stdout/stderr/信号,每个 agent 边界经 `capsule agent-event` 进
@@ -222,6 +243,7 @@ self_review 硬门 banner → H1 → regime+drift 行(+🌡情绪温度行)
 - **现场留存**(`scan/retention.py`,2026-08-26,**已降为兼容路径**:capsule 在场时它的 MANIFEST 绿灯只代表完好性,不再是完整性结论):发布收尾 + `post_run observe` 各跑一次 `retain()` → `trace/staging/`(**整目录镜像** staging,含子目录)+ `trace/inputs/{slim,sector_packs,prompts,temperature_row}`(staging 之外的输入:逐票 slim/深核、行业 pack、agent def/playbook/config 本体、当日温度计行)+ `trace/transcripts/*.jsonl.gz`(判断腿 subagent 推理链,≈1.3MB/run)+ `trace/lake_manifest.json`(窗口内湖指纹,~1s)+ `trace/MANIFEST.sha256`。**判据:run 目录自足到 staging 可弃**(staging 按数据日键,同日重跑原地覆盖 —— 实测 64 个已发布 run 只剩 49 个 staging)。**必须是发布的最后一步**:早一行就镜像到半成品。核验 `python -m autoresearch.scan.retention verify <run_dir>`;链路复盘 `python -m autoresearch.scan.chain_view <run_id> <code>`。
 - **run_contract v2**:加 `git_dirty`/`dirty_paths`/`prompt_hashes` —— `git_sha` 只说 HEAD 在哪,而 **agent def 未提交也会生效**(会话启动装载工作树那份)。v1 契约仍可读(`_hash_payload` 按 `schema_version` 排除 v2 三键,历史 run 身份不丢)。
 - **结果账本**(`scan/outcome.py`,**只记不学**):prelude 的 `outcome_fill` 步逐日回填已发布 run 的推荐票事后读数 → `$RPT/scan/_ledger/outcome/<run_id>.json` + `_ledger/recommendations.csv`。口径与 `research.edge_census` 逐字同源(同一 `forward_returns`/`entry_tradable`/`GAP_CLIP`),两边可直接对表。**必读两列**:`mode`(shadow 期的 BUY 明写「不执行」)与 `src`(`shared` = 读自共享 staging,未必是本 run 那份)。消费者只有 `chain_view` ⑩ 段与汇总屏一行;**不进 brief、不喂任何 agent、不改任何参数**。落 `_ledger/` 而非 run 目录内,是因为 run 目录刚立了「发布后不再变」的 MANIFEST 不变量。
+- **时间锚**(`scan/exec_anchor.py`,2026-08-28 §2.4 G1):manifest 新增 `execution` 块(`decision_approved_at`/`first_available_session`/`exec_lag`/`actionability_status`),账本新增同名四列。**读 BUY 战绩前先看 `actionability`**:报告在 T+1 收盘之后才就绪的 run(实测 8/61),主尺买腿是**已经过去的价格**——它们不进 `ledger_line` 的均值,单列「迟到 n 笔不计」;反事实收益走独立列 `exec_gap_c1_o2`(同一把尺、买腿改到第一个真正来得及的尾盘),**两列绝不混算**。运营截止 14:45(不是交易所的 14:57——人读完还要下单)。历史 manifest 一个字不改(run 发布后不再变是 MANIFEST/ROOT 的不变量),老 run 由 `read_execution` 按 `generated_at` 估算并标 `ready_quality=estimated`。
 
 ---
 

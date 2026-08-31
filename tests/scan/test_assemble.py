@@ -2,13 +2,20 @@
 
 一个 module-scoped fixture 造与原 selftest **完全相同**的合成 scan dir(meta/L1/L2/finalists/L4 卡/
 中间推理件/verify.csv),跑 `assemble.run(d, run_date=2026-06-21, hhmm=0930)`,各 test 对发布产物断言:
-  - 三段 summary(## 1 漏斗 / ## 2 各阶段 / ## 3 投资建议)
-  - **逐阶段 buy-list 表**(L1召回/L2粗排/L3精排/L4研究 列;名次带分母 #5 + 列头 #/N + 列注;已删 代码/R:R/提案)
-  - **token 估算段**(## 各阶段 token 消耗 / 确定性·GBDT)
-  - Tier-3 多空辩论徽标(🛡️红队 / ⚠️降级 / ✅维持 / 多/空/共识明细)
+  - **决策层 `summary.md`**(## 候选 / ## 📌 保送持仓 / ## 为什么没有 BUY;节序见 report_sections 模块头)
+  - **现场层 `appendix.md`**(A–G 七节:自检明细 / 漏斗现场 / 研究全文 / 门柱 / 运行观测 / 口径 / 局限)
+  - **候选表新列集**(`# | 名称 | 板块 | 评级 | 目标(EV) | 一句依据 | L1→L2`;
+    已删 代码 / R:R / 提案 / 置信度,`L3精排` 全文列下沉 appendix C,`L1召回`+`L2粗排` 合并成一列)
+  - **耗时 & 落盘字节段 + token 计量说明**(下沉 appendix E)
+  - Tier-3 多空辩论(徽标并进评级格 → summary;多/空/共识明细 → appendix C)
   - 降级折回(甲 OW→Hold 踢出买单;丁 OW 维持不改)
-  - run-folder 与 manifest 解耦(目录名=运行日 20260621_0930;manifest.analysis_date=数据日 d)
+  - run-folder 目录名 = 数据日-发布时刻(20260620-0621_0930);manifest.analysis_date 同为数据日 d
   - reasoning 归档(l3/l4/verify)+ 决策卡按名称发布(300476→甲.md)
+
+2026-08-28 summary 精简重构(design: docs/specs/2026-08-28-summary-slimdown-design.md §4.1/§5/§7)
+把现场内容整体搬到 `appendix.md`。本文件的断言**跟着内容搬**:原来断言「在 summary 里」的
+现场素材,现在断言「在 appendix 里」+「不在 summary 里」——搬家不减料,两侧 token 表相加
+不少于重构前的 30 条。
 NO network. 纯确定性。
 """
 from __future__ import annotations
@@ -28,7 +35,7 @@ from pathlib import Path  # noqa: F401 — re-export/兼容面,勿删(ruff --fix
 _DATA_DATE = "2026-06-20"
 _RUN_DATE = "2026-06-21"
 _HHMM = "0930"
-_RUN_FOLDER = "20260621_0930"   # 目录名 = 运行日_HHMM(非数据日)
+_RUN_FOLDER = "20260620-0621_0930"   # 目录名 = 数据日-发布MMDD_HHMM(2026-08-28 用户裁定)
 
 
 def _build_scan_dir(root):
@@ -116,28 +123,54 @@ def _build_scan_dir(root):
 
 @pytest.fixture(scope="module")
 def published(tmp_path_factory):
-    """跑 assemble.run 一次,返回 (out_base, summary_md, trace_dir)。run_date≠数据日,验证解耦。"""
+    """跑 assemble.run 一次,返回发布包(summary + appendix)+ trace_dir。run_date≠数据日,验证解耦。
+
+    `md` = 决策层 summary.md 全文;`appendix` = 现场层 appendix.md 全文 —— 两份是**一个发布包**
+    (publisher `_write_report_bundle`),所以两份一起读、一起断言:内容搬家后,「哪一边有」
+    本身就是被测行为。
+    """
     root = tmp_path_factory.mktemp("scan_l5")
     scan = _build_scan_dir(root)
     summary_path = assemble.run(_DATA_DATE, scan_dir=scan, out_root=root / ws.reports_root() / "scan",
                                 hhmm=_HHMM, run_date=_RUN_DATE)
     out_base = root / ws.reports_root() / "scan" / _RUN_FOLDER
     md = summary_path.read_text(encoding="utf-8")
+    appendix_path = out_base / "appendix.md"
     return {
         "summary_path": summary_path,
+        "appendix_path": appendix_path,
         "out_base": out_base,
         "md": md,
+        "appendix": appendix_path.read_text(encoding="utf-8"),
         "trace": out_base / "trace",
         "scan_dir": scan,
     }
 
 
+#: 候选表节锚(旧 `## 3. 投资建议` → 新 `## 候选(N 只)`;§4.1 节 4)
+_CANDIDATES_ANCHOR = "## 候选("
+
+
+def _candidate_header(md: str) -> str:
+    """候选表表头行(从节锚往下找第一行 `| #`)。切片恒空 = 恒绿假灯,故先断言锚在。"""
+    i = md.find(_CANDIDATES_ANCHOR)
+    assert i >= 0, f"summary 缺候选表节锚 {_CANDIDATES_ANCHOR!r} —— 后续切片会恒空(假绿灯)"
+    return next((ln for ln in md[i:].splitlines() if ln.lstrip().startswith("| #")), "")
+
+
 # ───────────────────────── run-folder / manifest 解耦 ─────────────────────────
 
 
-def test_run_folder_uses_run_date_not_data_date(published):
-    assert published["summary_path"].parent == published["out_base"], \
-        f"发布目录应取运行日({_RUN_FOLDER})"
+def test_run_folder_leads_with_the_data_date(published):
+    """2026-08-28 用户裁定:目录名首段 = **研究的是哪天的行情**,尾段 = 什么时候写完的。
+
+    旧格式首段是跑动日,于是 `20260826_2000` 这个名字对人说"08-26"、研究的却是 08-25
+    (61 个已发布 run 里 19 个数据日 ≠ 跑动日)。
+    """
+    assert published["out_base"].name == _RUN_FOLDER
+    assert published["out_base"].name.startswith(_DATA_DATE.replace("-", ""))
+    assert not published["out_base"].name.startswith(_RUN_DATE.replace("-", ""))
+    assert published["summary_path"].parent == published["out_base"]
 
 
 def test_manifest_records_data_date(published):
@@ -178,14 +211,26 @@ def test_artifact_index_is_written_and_published(published):
         "summary", "manifest",
     ):
         assert rows[name]["status"] == "PRESENT", name
+    # `appendix` 是**契约门控**产物(artifacts.CONTRACT_GATED_ARTIFACTS):本夹具的
+    # run_contract 只记了 `market_pack`,所以这一次 run 没认领 appendix 义务 → 整行不生成
+    # (既不 PRESENT 也不 MISSING)。文件本身照发 —— 「没记进契约」≠「没产出」。
+    assert "appendix" not in rows, "旧契约 run 不得凭今天的清单被倒灌 appendix 义务"
+    assert (published["out_base"] / "appendix.md").exists(), "发布包缺 appendix.md"
 
 
 def test_summary_is_explicit_when_current_run_cost_is_not_yet_measured(published):
-    text = published["summary_path"].read_text(encoding="utf-8")
-    assert "## 💸 成本与时延观测" in text
-    assert "计量:UNMEASURED" in text
-    assert "成本 JSON 未计量" in text
+    """未计量必须显式说出来。§5 行 20/21:成本明细整块下沉 appendix E,summary 只留紧凑一行。"""
+    text = published["md"]
+    assert "计量:UNMEASURED" in text, "summary 紧凑行仍须自报计量状态"
     assert "$0" not in text
+    # 明细块(标题 + 「未计量」逐条)搬到 appendix E,一个字都没丢
+    appendix = published["appendix"]
+    assert "## 💸 成本与时延观测" in appendix
+    assert "计量:UNMEASURED" in appendix
+    assert "成本 JSON 未计量" in appendix
+    assert "$0" not in appendix
+    # summary 不再重复展开明细(事实归属:墙钟/成本 的唯一展开点 = appendix E)
+    assert "成本 JSON 未计量" not in text
 
 
 def test_trace_run_health_is_final_refresh(published):
@@ -202,9 +247,10 @@ def test_assemble_records_final_stage_results(published):
     assemble_result = load_stage_result(stage_dir / "assemble.json")
     gate4_result = load_stage_result(stage_dir / "gate4.json")
     assert assemble_result.status == "SUCCEEDED"
+    # `appendix` 与 `summary` 是一个发布包:两文件未齐不得记 SUCCEEDED(§6.2)
     assert assemble_result.artifacts == [
         "final_ratings", "decision_records", "gate_fires", "run_health",
-        "summary", "manifest",
+        "summary", "appendix", "manifest",
     ]
     assert assemble_result.metrics["n_cards"] == 3
     assert gate4_result.status == "FAILED"
@@ -326,7 +372,7 @@ def test_decision_record_failure_does_not_block_summary(
         _HHMM,
         _RUN_FOLDER,
     )
-    assert "## 3. 投资建议" in md
+    assert _CANDIDATES_ANCHOR in md and "## 候选(4 只)" in md
     assert "[decision_record] 写入失败: dirty rating" in capsys.readouterr().err
 
 
@@ -354,24 +400,89 @@ def test_reasoning_archived(published):
         assert (rdir / stage / fn).exists(), f"reasoning 归档缺 {stage}/{fn}"
 
 
-# ───────────────────────── 三段 summary + 逐阶段表 + token 段 + Tier-3 徽标 ─────────────────────────
+# ───────────── 发布包内容清单:summary 侧(决策层)/ appendix 侧(现场层)─────────────
+#
+# 2026-08-28 B+ 重构把现场素材整体搬进 appendix.md。原来一张 30 条的 summary token 表现在
+# 拆成两张(§7「拆成 summary token 表与 appendix token 表两组,总数不许变少」):
+#   - 搬走的条目**跟着搬**到 appendix 表(不是删掉);
+#   - 只是换了标题字面的(`## 3. 投资建议` → `## 候选(N 只)`)按新字面锁;
+#   - 合并/删列造成字面消失的(`L1召回(#/` / `L3精排` / `列注`),
+#     由下面的 `test_summary_does_not_leak_site_layer_content` 反向钉住「不得复辟」。
 
 
 @pytest.mark.parametrize("token", [
-    # 三段标题 + 漏斗计数 + 各段名
-    "## 1. 漏斗", "## 2. 各阶段", "## 3. 投资建议", "5483", "1000",
-    "选集", "召回", "粗排", "精排", "Overweight", "+30%", "⚠️卡片缺失",
-    "AI 光模块需求超预期", "组合视角",
-    # 逐阶段结论列(per-stage buy-list 表)
-    "L1召回(#/", "L2粗排(#/", "L3精排", "L4研究·结论", "#5", "列注",
-    # 耗时/字节段(Wave6 T8:~token 估算列已退役 —— 2026-07-24 实测对加权真值低估 30 倍)
-    "## 各阶段耗时 & 落盘字节", "effort", "墙钟", "token_usage.md",
-    # Tier-3 多空辩论徽标 + 明细
-    "🛡️红队", "🛡️ Tier-3 买单多空辩论", "⚠️降级", "✅维持",
-    "估值已透支PE160", "AI光模块需求真切", "降级2/3",
+    # 节标题(新节序;`## 候选(4 只)` 带只数 —— 只数错了也要红)
+    "## 候选(4 只)", "## BUY 资格与约束", "## 运行事实", "## 诚实局限",
+    # 漏斗计数的唯一展开点 = 🧭 仪表盘②(brief 逐字)
+    "5483", "1000",
+    # 候选表:评级 / 目标 / 缺卡占位 / 新列头 / 合并后的漏斗位次单元格
+    "Overweight", "+30%", "⚠️卡片缺失", "一句依据", "L1→L2", "#5", "→ #2",
+    # Tier-3 徽标并进评级格(明细去 appendix C)
+    "⚠️降级", "✅维持",
+    # 组合视角:`### 组合视角` 标题下沉进「## 行动」,但 managed 标记与集中度读数留在决策层
+    "<!-- SCAN_PORTFOLIO_START -->", "板块集中度",
+    # 运行事实紧凑一行(明细去 appendix E)
+    "墙钟", "计量:UNMEASURED",
 ])
 def test_summary_contains_token(published, token):
     assert token in published["md"], f"summary 缺 '{token}'"
+
+
+@pytest.mark.parametrize("token", [
+    # A–G 骨架 + 搬进来的现场素材
+    "## B. 漏斗现场", "**漏斗数量**", "**各阶段卡点**",
+    "5483", "1000", "选集", "召回", "粗排", "精排",
+    # 旧 §3 表的 `L3精排` 全文列 → C 节逐票全文(论点/风险/催化)
+    "## C. 研究全文", "AI 光模块需求超预期", "估值高", "Q2 财报",
+    # 耗时/字节段(Wave6 T8:~token 估算列已退役 —— 2026-07-24 实测对加权真值低估 30 倍)
+    "## 各阶段耗时 & 落盘字节", "effort", "墙钟", "token_usage.md",
+    # Tier-3 多空辩论明细(徽标仍在 summary 的评级格)
+    "🛡️ Tier-3 买单多空辩论", "⚠️降级", "估值已透支PE160", "AI光模块需求真切", "降级2/3",
+    # 旧「列注」的注文去处(§4.3 规则 5:恒定模板文本只进附录)
+    "### 一句依据", "### 漏斗口径", "遗留别名",
+    # 恒定局限三条全文 + 六段漏斗免责行
+    "## G. 诚实局限", "六段漏斗",
+])
+def test_appendix_contains_token(published, token):
+    assert token in published["appendix"], f"appendix 缺 '{token}'"
+
+
+def test_self_review_banner_aggregated_in_summary_full_in_appendix(published):
+    """自检 banner:summary 顶是**聚合版**(同 key 一行 + 计数),appendix A 留**逐条原文**。
+
+    §1 病灶:13 行只有 5 种,同一句话重复 8 遍。聚合不是删 —— 三条 `卡片契约·P4倾向缺失`
+    在 appendix A 一条不少。把 `_render_banner(..., aggregate=True)` 改回 False,或者让
+    appendix A 也印聚合版,这条都会红。
+    """
+    md, appendix = published["md"], published["appendix"]
+    for key, n in (("卡片契约·P4倾向缺失", 3), ("citation_density", 3)):
+        in_summary = [ln for ln in md.splitlines() if key in ln]
+        in_appendix = [ln for ln in appendix.splitlines() if key in ln]
+        assert len(in_summary) == 1, f"summary banner 未聚合 {key}: {in_summary}"
+        assert f"×{n}" in in_summary[0], f"聚合行应带计数 ×{n}: {in_summary[0]}"
+        assert len(in_appendix) == n, f"appendix A 应保留 {key} 逐条原文: {in_appendix}"
+    assert "🛑 **覆盖率不足**:决策卡 3/4 < 80%" in md
+    assert "🛑 **覆盖率不足**:决策卡 3/4 < 80%" in appendix
+
+
+@pytest.mark.parametrize("token", [
+    # 旧节号绝迹(节号 3→无号→1→2 的错乱正是本波要治的病)
+    "## 1. 漏斗", "## 2. 各阶段", "## 3. 投资建议",
+    # 现场层素材不得回流决策层(事实归属表右侧的东西)
+    "AI 光模块需求超预期",              # L3 全文论点 → appendix C
+    "## 各阶段耗时 & 落盘字节", "token_usage.md",   # 遥测 → appendix E
+    "🛡️ Tier-3 买单多空辩论", "估值已透支PE160",     # 辩论明细 → appendix C
+    "OW三门失守分布",                   # 自由文本口径直方图 → appendix D(两口径不同屏)
+    # 已合并/删除的旧列字面不得复辟
+    "L1召回(#/", "L2粗排(#/", "L3精排", "L4研究·结论", "🛡️红队", "列注",
+])
+def test_summary_does_not_leak_site_layer_content(published, token):
+    """决策层的**反向**锁:上面两张表管「有没有搬到位」,这张管「搬完有没有偷偷留一份」。
+
+    把 `render_summary` 里任一节改回去印现场素材,这条就红 —— 没有它,两张正向表在
+    「summary 与 appendix 都印一遍」时会同时绿(重复展开正是本波要根治的病)。
+    """
+    assert token not in published["md"], f"summary 仍在展开现场层内容 '{token}'"
 
 
 def test_token_table_intel_row(tmp_path):
@@ -435,15 +546,27 @@ def test_stage_table_no_echo_parity(tmp_path):
     assert "| 预热(夜间)" not in text               # presence-gated:无 _prewarm.json 不加行
 
 
-def test_per_stage_table_dropped_code_rr_proposal(published):
-    """逐阶段 buy-list 表已删 代码/R:R/提案 列(只留 L1召回/L2粗排/L3精排/L4研究 等结论列)。"""
+def test_candidate_table_column_set(published):
+    """候选表列集(§4.1 节 4)= `# | 名称 | 板块 | 评级 | 目标(EV) | 一句依据 | L1→L2`。
+
+    老断言(代码/R:R/提案 已删)原样保留;新增三条删列锁:
+    - `L3精排` 全文列(中位 292 字一格)→ appendix C,决策层只留同向一句依据;
+    - `L4研究·结论` 列 → 改名「一句依据」(必须与终评级同向);
+    - `L1召回`/`L2粗排` 两列 → 合并成 `L1→L2` 一列。
+    删掉哪一条,`_candidate_table_lines` 相应改回去时这条都会红。
+    """
     md = published["md"]
-    s3 = md.find("## 3. 投资建议")
-    header = next((ln for ln in md[s3:].splitlines() if ln.lstrip().startswith("| #")), "")
-    assert all(c in header for c in ("L1召回", "L2粗排", "L3精排", "L4研究")), f"逐阶段表头缺列: {header}"
-    assert "R:R" not in header, f"逐阶段表不应有 R:R 列: {header}"
-    assert "提案" not in header, f"逐阶段表不应有 提案 列: {header}"
-    assert "代码" not in header, f"逐阶段表不应有 代码 列: {header}"
+    header = _candidate_header(md)
+    assert all(c in header for c in ("名称", "板块", "评级", "目标(EV)", "一句依据", "L1→L2")), \
+        f"候选表头缺列: {header}"
+    assert "R:R" not in header, f"候选表不应有 R:R 列: {header}"
+    assert "提案" not in header, f"候选表不应有 提案 列: {header}"
+    assert "代码" not in header, f"候选表不应有 代码 列: {header}"
+    assert "L3精排" not in header, f"L3 全文列应已下沉 appendix C: {header}"
+    assert "L4研究·结论" not in header, f"L4 结论列应改名「一句依据」: {header}"
+    assert "L1召回" not in header and "L2粗排" not in header, f"两列应已合并成 L1→L2: {header}"
+    # 删列不减料:L3 全文在 appendix C 逐票展开
+    assert "AI 光模块需求超预期" in published["appendix"], "L3 论点全文没跟着搬进 appendix C"
 
 
 # ───────────────────────── buy-list 排序 + Tier-3 折回评级 ─────────────────────────
@@ -452,9 +575,11 @@ def test_per_stage_table_dropped_code_rr_proposal(published):
 def test_buylist_sorted_by_rating_then_conviction(published):
     """丁(OW维持)< 甲(Hold降级,conv203)< 乙(Hold,conv125)< 丙(缺卡)。"""
     md = published["md"]
-    s3 = md.find("## 3. 投资建议")
+    s3 = md.find(_CANDIDATES_ANCHOR)
+    assert s3 >= 0, f"summary 缺候选表节锚 {_CANDIDATES_ANCHOR!r}"
     ords = [md.find(n, s3) for n in ("丁", "甲", "乙", "丙")]
-    assert ords[0] < ords[1] < ords[2] < ords[3], f"buy-list 排序错(应 丁<甲<乙<丙): {ords}"
+    assert all(o >= 0 for o in ords), f"候选表缺票: {ords}"
+    assert ords[0] < ords[1] < ords[2] < ords[3], f"候选表排序错(应 丁<甲<乙<丙): {ords}"
 
 
 def test_downgrade_folds_back_rating(published):
@@ -471,18 +596,32 @@ def test_maintained_keeps_rating(published):
     assert "Overweight" in row117, f"维持不应改评级(丁 应留 OW): {row117}"
 
 
-def test_buylist_l1l2_cells_queue_and_score(published):
-    """L1召回:#名次/N(列头)+ 命中队列(中文);L2粗排:#名次/N + gbdt 分。"""
+def test_candidate_l1l2_cell_merges_rank_and_queue(published):
+    """`L1→L2` 合并列:`#L1名次·命中队列 → #L2名次`(§4.1「表列」)。
+
+    与旧两列的差别,逐条都是**被测行为**:
+    - 分母 `(#/N)` 不再进列头 —— 全量 N 的唯一展开点是 🧭 仪表盘②(`L0 5483→L1 1000→L2 200`);
+    - `g0.54` gbdt 分**删除**:它是遗留列名(值 = sn_composite 分层采样序,不是模型分),
+      口径落 appendix F「漏斗口径」。这里钉成反向断言 —— 谁把它加回来谁变红;
+    - 裸 composite(`·80`)仍不得出现(旧断言原样保留);
+    - 「列注」整段下沉 appendix F(§4.3 规则 5),summary 不再每日重印。
+    """
     md = published["md"]
-    s3 = md.find("## 3. 投资建议")
-    header = next((ln for ln in md[s3:].splitlines() if ln.lstrip().startswith("| #")), "")
-    assert "L1召回(#/" in header and "L2粗排(#/" in header, f"列头应带分母(#/N): {header}"
+    header = _candidate_header(md)
+    assert "L1→L2" in header, f"缺合并列头 L1→L2: {header}"
+    assert "L1召回(#/" not in header and "L2粗排(#/" not in header, f"旧两列复辟: {header}"
     row = next((ln for ln in md.splitlines() if "甲" in ln and ln.lstrip().startswith("|")), "")
     assert "#5" in row, f"甲 L1 名次应显示 #5: {row}"
-    assert "成长" in row, f"L1召回应显示命中队列(growth→成长): {row}"
-    assert "g0.5" in row, f"L2粗排应带 gbdt 分(0.54→g0.54): {row}"
+    assert "成长" in row, f"L1 侧应显示命中队列(growth→成长): {row}"
+    assert "→ #2" in row, f"L2 侧名次应保留在合并列右侧: {row}"
+    assert "g0.5" not in row, f"gbdt 分是遗留列名,已删,不得复辟: {row}"
     assert "·80" not in row, f"L1 不应再有裸 composite: {row}"
-    assert "列注" in md, "应有列注解释名次/队列含义"
+    assert "列注" not in md, "列注是每日恒定模板文本,应下沉 appendix F"
+    # 注文没丢:名次/队列/gbdt 别名的口径全在 appendix F,summary 只留语义链接
+    appendix = published["appendix"]
+    assert "### 漏斗口径" in appendix and "遗留别名" in appendix
+    assert "### 一句依据" in appendix
+    assert "appendix.md#method-evidence" in md, "候选表应有指向 appendix F 的稳定口径链接"
 
 
 # ───────────────────────── 呈现层瘦身(2026-07-04) ─────────────────────────
@@ -498,10 +637,8 @@ def test_l4_brief_not_over_truncated():
 
 def test_buylist_header_drops_confidence(published):
     """置信度列 30 行全『中』零信息 → 删;置信度仍在 details 卡内。"""
-    md = published["md"]
-    s3 = md.find("## 3. 投资建议")
-    header = next((ln for ln in md[s3:].splitlines() if ln.lstrip().startswith("| #")), "")
-    assert "置信度" not in header, f"buy-list 表不应再有置信度列: {header}"
+    header = _candidate_header(published["md"])
+    assert "置信度" not in header, f"候选表不应再有置信度列: {header}"
 
 
 # ───────────────────────── 影子买单 CSV 污染防护 ─────────────────────────

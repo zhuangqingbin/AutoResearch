@@ -572,10 +572,13 @@ def test_run_health_refreshed_after_summary():
     挪到 build_summary 之后会让那个探针静默失效。故保留前一次 + 之后补刷一次。
     """
     src = (ROOT / "autoresearch" / "scan" / "publisher.py").read_text(encoding="utf-8")
-    after = src.split("summary_path.write_text(md", 1)
+    # 2026-08-29 B+:summary 写盘从 `summary_path.write_text(md)` 变成**发布包双写**
+    # `_write_report_bundle(out_base, md, appendix_md)`(两份都非空才动盘,各自 tmp+replace)。
+    # 锚随之更新;被守的不变量一个字没变:run_health 必须在报告落盘**之后**再刷一次。
+    after = src.split("_write_report_bundle(", 1)
     assert len(after) == 2, "summary 写盘锚点漂移,先更新本测试"
     assert "_health.write_run_health(scan_dir)" in after[1], \
-        "build_summary 之后没有补刷 run_health → missing 列表继续说假话"
+        "报告落盘之后没有补刷 run_health → missing 列表继续说假话"
 
 
 # ═══════ Wave12-T33:AGENT_DEFAULTS 三/四文件 + Python `_ROLE_FALLBACK` 的机器锁 ═══════

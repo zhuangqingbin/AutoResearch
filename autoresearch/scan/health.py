@@ -18,12 +18,54 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.contracts import artifacts as _contract_artifacts
+from autoresearch.scan.report_model import (
+    APPENDIX_FILENAME,
+    APPENDIX_WARN_BYTES,
+    SUMMARY_WARN_BYTES,
+)
+
+REPORT_BUDGET_SCHEMA_VERSION = 1
+#: 展示层预算读数落在 staging 这个文件里,再由 `run_health` 带进 run_health.json。
+REPORT_BUDGET_NAME = "_report_budget.json"
+
 # 关键产物在位表(缺 = 流程段没跑/失败;market_view 是可选段,缺了只提示不报错。
 # watchlist_status.csv 随观察单日检退役摘除,fb_20260714_002)
-_ARTIFACTS = ["L1_scored_full.csv", "L1_recall_top1000.csv", "L2_gbdt_top200.csv",
-              "finalists.csv", "market_view.md", "verify.csv",
-              "gate_fires.csv", "weights_used.json", "L3_judged_full.csv"]
-_CORE = {"L1_scored_full.csv", "L1_recall_top1000.csv", "L2_gbdt_top200.csv", "finalists.csv"}
+#
+# 2026-08-29(Task 9b,spec §2.2 K3):这里曾是**第四份**「该有什么」登记表 —— 九个文件名
+# 手写在这一行,与 `contracts.artifacts` / `run_profile` / `publisher` / `replay` 各说各话。
+# 现在只留**策展**(体检报告关心哪几件),名字与路径一律回 `contracts.artifacts` 取:
+# 登记表里改一个 path,这里跟着变;策展名写错 → `by_name` 当场 KeyError,不静默少一项。
+#
+# `verify.csv` 在这次派生里**被除名**(spec §1.3「消费者无生产者」/ §4.3 裁决):Tier-3 买单
+# skeptic 已于 2026-07-06 移除,全仓零写者,于是它每一趟都被记进 `missing` —— 一条永远
+# 亮着的假警报(08-26 项目级审计 C4 记的「missing: ["verify.csv"] 十连」就是它)。
+_HEALTH_ARTIFACT_NAMES = ("l1_full", "l1_recall", "l2", "finalists", "market_view",
+                          "gate_fires", "weights_used", "l3_judged")
+#: 核心四件:缺任意一件 = 漏斗根本没跑通(GATE 会据此毙掉整趟),不是「某段可选产物没生成」。
+_CORE_ARTIFACT_NAMES = ("l1_full", "l1_recall", "l2", "finalists")
+
+
+def _staging_paths(names: tuple[str, ...]) -> list[str]:
+    """登记名 → staging 相对文件名。未登记 → KeyError;非 staging 实名文件 → ValueError。
+
+    `run_health` 用 `(scan_dir / name).exists()` 判在场,所以这几件只能是 staging 根下的
+    **实名**文件:登记表若把其中之一改成 glob 族或搬去 report 根,`exists()` 会恒 False,
+    体检会把在场的产物整片报成缺席 —— 那种静默失真宁可在 import 期就炸掉。
+    """
+    out: list[str] = []
+    for name in names:
+        spec = _contract_artifacts.by_name(name)
+        if spec.root != "staging" or "*" in spec.path:
+            raise ValueError(
+                f"run_health 的产物 {name} 在登记表里是 root={spec.root} path={spec.path};"
+                "它必须是 staging 根下的实名文件,否则 exists() 判不了在场")
+        out.append(spec.path)
+    return out
+
+
+_ARTIFACTS = _staging_paths(_HEALTH_ARTIFACT_NAMES)
+_CORE = set(_staging_paths(_CORE_ARTIFACT_NAMES))
 
 # NaN 体检的关键因子列(L1_recall 口径;降级 = 该组权限缺/端点挂,IC 读数打折扣)
 _FACTOR_COLS = ["composite", "main_net_ratio", "winner_rate", "chip_concentration",
@@ -528,6 +570,80 @@ def post_run_health(scan_dir: Path) -> dict:
         }
 
 
+def report_budget(scan_dir: Path) -> dict | None:
+    """读回最近一次发布包字节预算读数(缺席 → None,不伪造 0)。"""
+    return _json_object(Path(scan_dir) / REPORT_BUDGET_NAME)
+
+
+def measure_report_budget(scan_dir: Path | str, report_dir: Path | str) -> dict:
+    """**所有 managed 注入完成后**对最终文件计量字节(§6.10)。
+
+    这是**展示层**读数,故意做成一条死路:它只会落 warn + 打印,
+    **不截断、不改评级、不毙 GATE4** —— 「一份人类可读摘要排版超限是展示层问题;
+    报告说假话才是硬门该拦的事」(GATE3 差 16 字节毙掉 60min 流水线的疤还在)。
+
+    调用点有两处,都在「注入已经全部做完」之后:`publisher._run_publish`(brief 回填之后)
+    与 `post_run.publish_run_observation`(观测双刷新之后)。**验收读数以后者为准** ——
+    前者拿到的还不是终值(token 计量此刻通常没到)。
+
+    返回 `{schema_version, summary_bytes, appendix_bytes, warnings[...]}`;
+    同时落 `_report_budget.json` 供 `run_health` 带走。文件缺席 → 字节记 None
+    (「没量到」和「量到 0」必须分得开)。
+    """
+    scan, report = Path(scan_dir), Path(report_dir)
+
+    def _text(name: str) -> str | None:
+        p = report / name
+        return p.read_text(encoding="utf-8") if p.is_file() else None
+
+    summary_text, appendix_text = _text("summary.md"), _text(APPENDIX_FILENAME)
+
+    def _fallback(name: str, text: str, cap: int) -> str | None:
+        size = len(text.encode("utf-8"))
+        return None if size <= cap else f"{name} 最终 {size} B > 展示层预算 {cap} B"
+
+    # 判据来自渲染侧的两个 `*_budget_warn`(预算常量的单一事实源在 `report_model`);
+    # 它们不可用时才回退到本地计量 —— 计量本身不能因为 import 出问题就静默消失。
+    try:
+        from autoresearch.scan.report_appendix import appendix_budget_warn
+        from autoresearch.scan.report_sections import summary_budget_warn
+    except ImportError:
+        summary_budget_warn = lambda t: _fallback("summary.md", t, SUMMARY_WARN_BYTES)  # noqa: E731
+        appendix_budget_warn = lambda t: _fallback(APPENDIX_FILENAME, t, APPENDIX_WARN_BYTES)  # noqa: E731
+    warnings: list[str] = []
+    summary_bytes = appendix_bytes = None
+    if summary_text is not None:
+        summary_bytes = len(summary_text.encode("utf-8"))
+        warn = summary_budget_warn(summary_text)
+        if warn:
+            warnings.append(f"{warn}(展示层告警:不截断、不改评级、不毙 GATE4)")
+    if appendix_text is not None:
+        appendix_bytes = len(appendix_text.encode("utf-8"))
+        warn = appendix_budget_warn(appendix_text)
+        if warn:
+            warnings.append(f"{warn}(展示层告警:不截断、不改评级、不毙 GATE4)")
+    payload = {
+        "schema_version": REPORT_BUDGET_SCHEMA_VERSION,
+        "summary_bytes": summary_bytes,
+        "summary_warn_bytes": SUMMARY_WARN_BYTES,
+        "appendix_bytes": appendix_bytes,
+        "appendix_warn_bytes": APPENDIX_WARN_BYTES,
+        "warnings": warnings,
+    }
+    target = scan / REPORT_BUDGET_NAME
+    try:
+        scan.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(f"{target.name}.tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+                       encoding="utf-8")
+        tmp.replace(target)
+    except OSError as exc:                      # 量不到就说量不到,不假装量过
+        payload["warnings"] = [*warnings, f"预算读数落盘失败:{type(exc).__name__}"]
+    for line in payload["warnings"]:
+        print(f"[L5 整合] ⚠️ 版式预算:{line}")
+    return payload
+
+
 def run_health(scan_dir: Path) -> dict:
     """一次 scan 的体检 dict(artifacts/counts/NaN 降级/churn/L4 阶段/meta 回显)。"""
     scan_dir = Path(scan_dir)
@@ -576,7 +692,10 @@ def run_health(scan_dir: Path) -> dict:
             "run_contract": run_contract_health(scan_dir),
             "stage_results": stage_results_health(scan_dir),
             "decision_records": decision_records_health(scan_dir),
-            "post_run": post_run_health(scan_dir)}
+            "post_run": post_run_health(scan_dir),
+            # 展示层字节预算(§6.10);presence-gated —— 发布前跑 run_health 时还没有,
+            # 那时是 None(「还没量」),不是 0(「量到了并且很小」)。
+            "report_budget": report_budget(scan_dir)}
 
 
 def write_run_health(scan_dir: Path) -> Path:
@@ -598,7 +717,17 @@ def index_md(scan_dir: Path, report_dir: Path) -> str:
               "/持仓/风险哨/昨日 delta/欠账)" if brief_ok else
               "- **读我(30 秒)**:`brief.md` **未生成** —— 速读层缺席(见 self_review 的 "
               "`brief·缺失` 条目),先读详细版"),
-             "- **详细版**:[summary.md](summary.md)(buy-list + 漏斗 + 各阶段概览)"]
+             # 报告是三层,不是两层(2026-08-28 §6.3):brief 30 秒 → summary 决策 → appendix 现场。
+             # 「详细版」这个旧文案把 summary 说成"什么都有的那份",正是它长到 27KB 的措辞前提。
+             "- **决策层**:[summary.md](summary.md)(结论 → 行动 → 候选 → 为什么 → 地形 → 日历)"]
+    if (report_dir / APPENDIX_FILENAME).exists():
+        lines.append(f"- **现场附录**:[{APPENDIX_FILENAME}]({APPENDIX_FILENAME})"
+                     "(漏斗现场 / 研究全文 / 门柱与资格 / 运行观测 / 方法与口径 / 诚实局限)")
+    else:
+        # 缺席**明说**(同 brief 口径):静默会让「发布包只落了一半」不可见,
+        # 而那正是 §6.2 的失败语义要拦的东西。
+        lines.append(f"- **现场附录**:`{APPENDIX_FILENAME}` **未生成** —— 现场层缺席"
+                     "(旧 run 天然如此;新 run 缺席见 artifact_index 的 appendix 行)")
     cards = sorted((report_dir / "details").glob("*.md")) if (report_dir / "details").is_dir() else []
     if cards:
         lines.append(f"- **决策卡**({len(cards)} 张):" + "、".join(
@@ -628,6 +757,9 @@ def index_md(scan_dir: Path, report_dir: Path) -> str:
         hl += f";finalist 重叠 {ch['n_repeat']}/{ch['n_today']}(vs {ch['prev_date']})"
     if h["degraded_fields"]:
         hl += f";⚠️ 降级字段:{'、'.join(h['degraded_fields'])}"
+    budget_warnings = (h.get("report_budget") or {}).get("warnings") or []
+    if budget_warnings:                   # 展示层告警:看得见即可,不改变任何门与评级
+        hl += f";⚠️ 版式预算:{'；'.join(str(w) for w in budget_warnings)}"
     lines.append(hl)
     if h["anns_expected"]:
         # anns_d 已退役(2026-07-18):此前只在 run_health.json 里挂 anns_expected=True,报告

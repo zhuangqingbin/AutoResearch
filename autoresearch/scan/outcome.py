@@ -57,8 +57,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from autoresearch.common import ruler as _ruler
-from autoresearch.common import workspace as ws
+from autoresearch.common import ruler as _ruler, workspace as ws
+from autoresearch.scan.run_naming import is_run_dir
 
 OUTCOME_SCHEMA_VERSION = 1
 LEDGER_DIRNAME = "_ledger"
@@ -82,6 +82,12 @@ LEDGER_COLUMNS = (
     "e6_buy", "buyable_c1", "t1_open", "t1_high", "t1_low", "t1_close", "t1_pct_chg",
     "t1_pos_in_range", "exec_ok", "t2_open", "gap_c1_o2", "rel_gap_market",
     "rel_gap_sector", "excess_med_market", "fwd_5_oc", "fwd_10_oc", "ruler",
+    # ── 时间锚(2026-08-28 §2.4 G1)。**读 BUY 战绩前必须先看 `actionability`** ──
+    #  `anchor_session` 是本行主尺真正的买腿日:正常 run = analysis_date 的下一交易日
+    #  (与上面各列同源);迟到 run(报告在 T+1 收盘后才就绪)的那一天已经过去了,
+    #  上面的 `gap_c1_o2` 记的是一笔**下不了的单**。`exec_gap_c1_o2` 是同一把尺从
+    #  第一个真正来得及的尾盘起算的反事实,**绝不与上面那列混算均值**(两个人口)。
+    "anchor_session", "exec_lag", "actionability", "exec_gap_c1_o2",
     "computed_at",
 )
 
@@ -258,6 +264,34 @@ def _num(value) -> float | None:
     return None if pd.isna(f) else round(f, 6)
 
 
+def exec_anchor_frame(execution: dict | None, *, lake_daily: Path | None = None):
+    """迟到 run 的**反事实**帧:主尺改从第一个真正来得及的尾盘起算。
+
+    正常 run(`exec_lag == 0`)返回 `None` —— 锚点与主帧逐字相同,再算一遍纯属浪费。
+    只有报告在 T+1 收盘之后才就绪的那些 run 才有第二个锚点,而它们的主帧记的是
+    一笔**下不了的单**(61 个 run 里 8 个,13%)。
+
+    实现上取 `first_available_session` 的**前一个**交易日做 D —— `forward_returns`
+    的买腿恒为 D+1,所以这样它的 D+1 正好落在第一个可执行的尾盘上,口径与主帧
+    逐字同源(同一 `forward_returns`、同一 `GAP_CLIP`),不另造一把尺。
+    """
+    first = str((execution or {}).get("first_available_session") or "")
+    if not first or not (execution or {}).get("exec_lag"):
+        return None
+    from autoresearch.research import edge_census as ec
+
+    P = ec.lake_trade_days(lake_daily)
+    target = first.replace("-", "")
+    if target not in P:
+        return None
+    i = P.index(target)
+    if i == 0:
+        return None
+    anchor = P[i - 1]
+    fr, _ = market_frame(f"{anchor[:4]}-{anchor[4:6]}-{anchor[6:]}", lake_daily=lake_daily)
+    return fr
+
+
 def compute_outcome(run_dir: Path | str, *, lake_daily: Path | None = None) -> dict | None:
     """一次 run → 结果文档;D+2 未落湖 → `None`(未成熟,不是失败)。"""
     run = Path(run_dir)
@@ -268,6 +302,14 @@ def compute_outcome(run_dir: Path | str, *, lake_daily: Path | None = None) -> d
     fr, meta = market_frame(date, lake_daily=lake_daily)
     if fr is None:
         return None
+    # 时间锚(§2.4 G1):这份报告到底什么时候才能下单。正常 run 与主帧同锚;
+    # 迟到 run 另算一份反事实帧,**两者绝不混算**(列名即人口)。
+    from autoresearch.scan import exec_anchor as _anchor
+
+    execution = _anchor.read_execution(run)
+    exec_fr = None
+    with contextlib.suppress(Exception):
+        exec_fr = exec_anchor_frame(execution, lake_daily=lake_daily)
     sectors = {code: str(row.get("sector") or "") for code, row in facts["rows"].items()}
     rel = _relative_columns(fr, sectors)
     ok_entry = _ruler.entry_tradable(fr, ruler_name=MAIN)
@@ -300,6 +342,8 @@ def compute_outcome(run_dir: Path | str, *, lake_daily: Path | None = None) -> d
             "excess_med_market": _num(rel.loc[code, "excess_med_market"]) if code in rel.index else None,
             "fwd_5_oc": _num(m["fwd_5_oc"]) if m is not None else None,
             "fwd_10_oc": _num(m["fwd_10_oc"]) if m is not None else None,
+            "exec_gap_c1_o2": (_num(exec_fr.loc[code, MAIN])
+                               if exec_fr is not None and code in exec_fr.index else None),
         }
     # 「成熟」= 主尺算得出来的行占多数。少数票停牌/新股缺数是常态,不该让整份结果反复重算。
     n_scored = sum(1 for r in rows.values() if r.get(MAIN) is not None)
@@ -317,6 +361,7 @@ def compute_outcome(run_dir: Path | str, *, lake_daily: Path | None = None) -> d
         "n_rows": len(rows), "n_scored": n_scored,
         "exec_line": {"max_pct_1d": EXEC_MAX_PCT_1D,
                       "max_pos_in_range": EXEC_MAX_POS_IN_RANGE},
+        "execution": execution,
         "rows": rows,
     }
 
@@ -339,6 +384,7 @@ def write_outcome(doc: dict, reports_root: Path | None = None) -> Path:
 
 def _ledger_rows(doc: dict) -> list[dict]:
     stamp = doc.get("computed_at") or ""
+    anchor = doc.get("execution") or {}
     out = []
     for code, row in sorted(doc["rows"].items()):
         out.append({
@@ -347,8 +393,14 @@ def _ledger_rows(doc: dict) -> list[dict]:
             "src": "shared" if doc.get("read_from_shared_staging") else "run",
             **{k: row.get(k) for k in LEDGER_COLUMNS
                if k not in ("run_id", "analysis_date", "mode", "src", "code",
-                            "ruler", "computed_at")},
-            "ruler": doc["ruler"], "computed_at": stamp,
+                            "ruler", "computed_at", "anchor_session", "exec_lag",
+                            "actionability")},
+            "ruler": doc["ruler"],
+            # 三列同源于 doc 级 execution(逐行相同):读 BUY 战绩前先看 actionability。
+            "anchor_session": anchor.get("first_available_session"),
+            "exec_lag": anchor.get("exec_lag"),
+            "actionability": anchor.get("actionability_status"),
+            "computed_at": stamp,
         })
     return out
 
@@ -386,16 +438,23 @@ def load_ledger(reports_root: Path | None = None) -> list[dict]:
 
 
 def published_runs(reports_root: Path | None = None) -> list[Path]:
+    """已发布 run 目录。两种目录名都认(新 `20260825-0826_2000` / legacy `20260826_2000`)。
+
+    判据从「`[:2]=='20'` 且含下划线」收紧到 `run_naming.is_run_dir` —— 旧判据会把
+    `_ledger`/`_failed`/`_capsule_archive` 之外任何以 20 开头带下划线的目录都当 run
+    (它们只是恰好没有 `manifest.json` 才没出事)。
+    """
     base = Path(reports_root or (ws.reports_root() / "scan"))
     if not base.is_dir():
         return []
     return sorted(p for p in base.iterdir()
-                  if p.is_dir() and p.name[:2] == "20" and "_" in p.name
+                  if p.is_dir() and is_run_dir(p.name)
                   and (p / "manifest.json").is_file())
 
 
 def fill(*, reports_root: Path | None = None, lake_daily: Path | None = None,
-         limit: int | None = None, now: str | None = None) -> dict:
+         limit: int | None = None, now: str | None = None,
+         rebuild: bool = False) -> dict:
     """回填全部**未成熟或未算过**的已发布 run。返回 `{filled, skipped, rows, runs}`。
 
     幂等 + 增量:已存在且 `complete` 的 run 直接跳过(不重算、不重写),所以每天跑它的
@@ -408,7 +467,10 @@ def fill(*, reports_root: Path | None = None, lake_daily: Path | None = None,
         if p.is_file():
             with contextlib.suppress(OSError, json.JSONDecodeError):
                 existing = json.loads(p.read_text(encoding="utf-8"))
-        if isinstance(existing, dict) and existing.get("complete"):
+        # `rebuild`:口径变了(如 2026-08-28 新增时间锚四列)才需要重算已成熟的 run。
+        # 默认关着 —— 每晚跑的成本必须只与「昨天新出的 + 还没成熟的」成正比,
+        # 而不是与历史长度成正比。
+        if not rebuild and isinstance(existing, dict) and existing.get("complete"):
             skipped += 1
             continue
         doc = compute_outcome(run, lake_daily=lake_daily)
@@ -441,14 +503,24 @@ def ledger_line(reports_root: Path | None = None) -> str:
         return "结果账本:空(还没回填过 —— `python -m autoresearch.scan.outcome fill`)"
     # 只数 **active 期**的 BUY:shadow 期的那几笔在当天报告里明写「非正式·不执行」,
     # 混进来就是把没执行过的东西算进战绩(且其中两笔的决策文件还是被影子回放改写出来的)。
-    buys = [r for r in rows
-            if str(r.get("e6_buy")).lower() == "true" and str(r.get("mode")) == "active"]
+    all_buys = [r for r in rows
+                if str(r.get("e6_buy")).lower() == "true" and str(r.get("mode")) == "active"]
     shadow_n = sum(1 for r in rows if str(r.get("e6_buy")).lower() == "true"
                    and str(r.get("mode")) != "active")
+    # 时间锚(§2.4 G1):报告在 T+1 收盘之后才就绪的那些 run,主尺买腿是**已经过去的价格**。
+    # 它们不进主均值(否则 13% 的假单被算进战绩),单列一个计数如实说明被排除了几笔。
+    # 老行没有这一列(账本先于本波)→ 视为未知,同样不进主均值,计入 `unknown_n`。
+    buys = [r for r in all_buys if str(r.get("actionability") or "") == "ACTIONABLE"]
+    late_n = sum(1 for r in all_buys
+                 if str(r.get("actionability") or "") in {"LATE_REVALIDATION_REQUIRED", "EXPIRED"})
+    unknown_n = len(all_buys) - len(buys) - late_n
     scored = [r for r in buys if _num(r.get(MAIN)) is not None]
     if len(scored) < MIN_LEDGER_N:
-        return (f"结果账本:{len(rows)} 行 · active BUY {len(buys)} 笔(已成熟 {len(scored)})"
+        return (f"结果账本:{len(rows)} 行 · active BUY {len(all_buys)} 笔"
+                f"(可执行 {len(buys)}·已成熟 {len(scored)})"
                 + (f" · 另 shadow 期 {shadow_n} 笔不计" if shadow_n else "")
+                + (f" · 迟到 {late_n} 笔不计" if late_n else "")
+                + (f" · 锚未知 {unknown_n} 笔不计" if unknown_n else "")
                 + f" · 攒样本 {len(scored)}/{MIN_LEDGER_N},不印均值")
     gaps = [_num(r.get(MAIN)) for r in scored]
     rel = [_num(r.get(_ruler.REL_MARKET)) for r in scored
@@ -460,7 +532,9 @@ def ledger_line(reports_root: Path | None = None) -> str:
            f"结果账本:BUY {len(scored)} 笔 · 均 gap {100 * float(np.mean(gaps)):+.2f}pp")
     if ok_gaps:
         txt += (f" · 执行线内 {len(ok_gaps)} 笔 {100 * float(np.mean(ok_gaps)):+.2f}pp")
-    return txt + f" · 主尺 {MAIN}(只记不学;仅人看)"
+    if late_n or unknown_n:
+        txt += f" · 排除迟到 {late_n}/锚未知 {unknown_n} 笔"
+    return txt + f" · 主尺 {MAIN}(可执行口径;只记不学;仅人看)"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -468,11 +542,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("command", choices=["fill", "line"])
     ap.add_argument("--limit", type=int, default=None, help="本次最多回填几个 run")
     ap.add_argument("--today", default=None, help="computed_at 时间戳(留痕用)")
+    ap.add_argument("--rebuild", action="store_true",
+                    help="连已成熟的 run 一起重算(口径变更后用;默认增量)")
     args = ap.parse_args(argv)
     if args.command == "line":
         print(ledger_line())
         return 0
-    res = fill(limit=args.limit, now=args.today)
+    res = fill(limit=args.limit, now=args.today, rebuild=args.rebuild)
     print(json.dumps({"ok": True, **res}, ensure_ascii=False, sort_keys=True))
     print(ledger_line())
     return 0

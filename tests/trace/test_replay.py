@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib
+import importlib.util
 import json
 from pathlib import Path
 
@@ -233,3 +235,169 @@ def test_replay_writes_its_verdict_into_the_capsule(tmp_path):
 
     payload = json.loads((capsule / "verification/replay.json").read_text())
     assert payload["replayability"] == R.NONE
+
+
+def test_l5_spec_compares_both_halves_of_the_publish_bundle():
+    """§6.3:L5 的产物是发布包(summary + appendix)。只比对 summary 会让「附录没重现」
+    在 replay 结论里完全不可见 —— 「产物能证明跑过什么、不能证明没跑过什么」。"""
+    specs = {spec.stage: spec for spec in R.default_stage_specs("2026-08-28")}
+    assert specs["l5"].outputs == ("summary.md", "appendix.md")
+
+
+def test_l5_replay_is_partial_when_only_the_summary_reproduces(tmp_path):
+    """summary 逐字节命中、appendix 没产出 → 不许报 FULL(半个发布包不是可重放)。"""
+    capsule = _capsule(tmp_path)
+    (capsule / "products/staging/summary.md").write_text("决策层\n", encoding="utf-8")
+    (capsule / "products/staging/appendix.md").write_text("现场层\n", encoding="utf-8")
+
+    def runner(spec, scratch, env):
+        (scratch / "staging/summary.md").write_text("决策层\n", encoding="utf-8")
+        return 0
+
+    result = R.replay(
+        "20260828T010203456789Z",
+        capsule=capsule,
+        analysis_date="2026-08-28",
+        stages=("l5",),
+        runner=runner,
+    )
+
+    assert result["replayability"] == R.PARTIAL
+    outputs = {row["name"]: row for row in result["stages"][0]["outputs"]}
+    assert outputs["summary.md"]["match"] is True
+    assert outputs["appendix.md"]["match"] is False and outputs["appendix.md"]["frozen"] is True
+
+
+def test_l5_replay_is_full_when_both_halves_reproduce(tmp_path):
+    capsule = _capsule(tmp_path)
+    (capsule / "products/staging/summary.md").write_text("决策层\n", encoding="utf-8")
+    (capsule / "products/staging/appendix.md").write_text("现场层\n", encoding="utf-8")
+
+    def runner(spec, scratch, env):
+        (scratch / "staging/summary.md").write_text("决策层\n", encoding="utf-8")
+        (scratch / "staging/appendix.md").write_text("现场层\n", encoding="utf-8")
+        return 0
+
+    result = R.replay(
+        "20260828T010203456789Z",
+        capsule=capsule,
+        analysis_date="2026-08-28",
+        stages=("l5",),
+        runner=runner,
+    )
+
+    assert result["replayability"] == R.FULL
+
+
+# --- stage spec 的 argv 必须真能跑 -------------------------------------------
+
+
+def test_every_stage_spec_module_is_importable_and_runnable():
+    """死 argv 是「永不变红的绿灯」。
+
+    既有用例全程注入假 runner,于是 l2 的 spec 指向一个**根本不存在的模块**
+    (`autoresearch.scan.l2_stratify`,真身在 `autoresearch/scan/recall/`)也一路绿。
+    真跑走的是 `uv run … python -m <argv[0]>`,所以「可导入」还不够 —— 没有
+    `main()` 的模块 `python -m` 一样跑不起来(`recall.l2_stratify` 正是如此)。
+    """
+    for spec in R.default_stage_specs("2026-08-26"):
+        mod_name = spec.argv[0]
+        assert (
+            importlib.util.find_spec(mod_name) is not None
+        ), f"{spec.stage}: 模块不存在 {mod_name}"
+        mod = importlib.import_module(mod_name)
+        assert hasattr(
+            mod, "main"
+        ), f"{spec.stage}: {mod_name} 没有 main(),python -m 跑不起来"
+
+
+def test_l1_and_l2_are_one_universe_run_not_two(tmp_path):
+    """L1/L2 的真实生产者是**同一条命令**:`scan.universe` 内部调 `recall.l2_stratify.
+    select_l2`,一次写出三份 CSV。把 l2 的 argv 也写成 universe 会把它跑两遍(浪费,
+    且第二遍的湖/时钟状态未必与第一遍相同)—— 正确形状是一个 spec 声明三产物、只跑一次。
+    """
+    capsule = _capsule(tmp_path)
+    calls = []
+
+    def runner(spec, scratch, env):
+        calls.append(spec.argv)
+        return 0
+
+    R.replay(
+        "20260829T010203456789Z",
+        capsule=capsule,
+        analysis_date="2026-08-26",
+        stages=("l1", "l2"),
+        runner=runner,
+        keep_scratch=False,
+    )
+
+    assert len(calls) == 1, f"universe 被跑了 {len(calls)} 次:{calls}"
+    assert calls[0][0] == "autoresearch.scan.universe"
+
+
+def test_l1_and_l2_stay_separate_rows_with_their_own_outputs(tmp_path):
+    """合并的是**执行**,不是对外结构。`capsule` / `completeness` 的读侧仍必须看见
+    `l1` 与 `l2` 两行,且每行只汇报自己那几份产物 —— 否则改的就不止是 replay 自己。
+    """
+    capsule = _capsule(tmp_path)
+    products = {
+        "L1_scored_full.csv": "code,score\n600000,1.0\n",
+        "L1_recall_top1000.csv": "code,score\n600000,1.0\n",
+        "L2_gbdt_top200.csv": "code,score\n600000,1.0\n",
+    }
+    for name, text in products.items():
+        (capsule / "products/staging" / name).write_text(text, encoding="utf-8")
+
+    def runner(spec, scratch, env):
+        for name, text in products.items():
+            (scratch / "staging" / name).write_text(text, encoding="utf-8")
+        return 0
+
+    result = R.replay(
+        "20260829T010203456789Z",
+        capsule=capsule,
+        analysis_date="2026-08-26",
+        stages=("l1", "l2"),
+        runner=runner,
+        keep_scratch=False,
+    )
+
+    rows = {row["stage"]: row for row in result["stages"]}
+    assert set(rows) == {"l1", "l2"}
+    assert [o["name"] for o in rows["l1"]["outputs"]] == [
+        "L1_scored_full.csv",
+        "L1_recall_top1000.csv",
+    ]
+    assert [o["name"] for o in rows["l2"]["outputs"]] == ["L2_gbdt_top200.csv"]
+    assert result["replayability"] == R.FULL
+
+
+def test_l2_goes_partial_when_only_the_l1_half_reproduces(tmp_path):
+    """一条命令三产物:L2 那份没重现出来,`l2` 行必须红,而不是被 `l1` 的命中带绿。"""
+    capsule = _capsule(tmp_path)
+    for name in ("L1_scored_full.csv", "L1_recall_top1000.csv", "L2_gbdt_top200.csv"):
+        (capsule / "products/staging" / name).write_text(
+            "code,score\n600000,1.0\n", encoding="utf-8"
+        )
+
+    def runner(spec, scratch, env):
+        for name in ("L1_scored_full.csv", "L1_recall_top1000.csv"):
+            (scratch / "staging" / name).write_text(
+                "code,score\n600000,1.0\n", encoding="utf-8"
+            )
+        return 0
+
+    result = R.replay(
+        "20260829T010203456789Z",
+        capsule=capsule,
+        analysis_date="2026-08-26",
+        stages=("l1", "l2"),
+        runner=runner,
+        keep_scratch=False,
+    )
+
+    rows = {row["stage"]: row for row in result["stages"]}
+    assert rows["l1"]["match"] is True
+    assert rows["l2"]["match"] is False
+    assert result["replayability"] == R.PARTIAL

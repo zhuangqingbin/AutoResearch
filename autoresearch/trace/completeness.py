@@ -17,6 +17,9 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+# 阶段 / 角色词汇的**唯一**来源。此前这里从 `run_profile` 里函数级 import 一份 ROLE_STAGES,
+# 于是「该有什么」的分母在这层又长出一个可以独立漂移的副本(spec 2026-08-29 §2.2 K3)。
+from autoresearch.contracts.stages import ROLE_STAGES
 from autoresearch.scan.run_profile import RunProfile, scan_profile
 from autoresearch.trace.atomic import atomic_write_json
 
@@ -134,8 +137,6 @@ def build_expected(profile: RunProfile) -> ExpectedEvidence:
                     reason=f"run stopped at {profile.last_stage!r} before {stage!r}",
                 )
             )
-    from autoresearch.scan.run_profile import ROLE_STAGES
-
     for role in (*profile.agent_roles, *sorted(profile.conditional_roles)):
         expected = profile.role_expected(role)
         conditional = role in profile.conditional_roles

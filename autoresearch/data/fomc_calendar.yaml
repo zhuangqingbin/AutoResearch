@@ -1,0 +1,68 @@
+# FOMC 年度会议日程(物化 yaml)—— design 2026-08-28-external-evidence-expansion §9「FOMC 日程」行。
+#
+# ╔══════════════════════════════════════════════════════════════════════════════════════╗
+# ║ ⚠️  UNVERIFIED —— 本文件的会议日**未经官方页核实**(`verified_by: pending`)。         ║
+# ║                                                                                      ║
+# ║ 后果(由 `fomc_calendar.load_fomc` 强制,不是自觉):                                  ║
+# ║   · pending 的年份一律产出 `time_quality: DATE_ONLY`,**永远进不了两个窄窗**,         ║
+# ║     只能显示为「当日风险」;                                                          ║
+# ║   · `statement_local_time` 即使写着 14:00,pending 时也**不会**被用来算                ║
+# ║     `scheduled_at_utc` —— 它只是待核实的候选值,不是事实。                            ║
+# ║                                                                                      ║
+# ║ 转正流程(人工,走 PR):打开 `source_url` 逐条比对 → 改 `verified_by` 为核实人 →       ║
+# ║ 填 `fetched_at` / `content_hash` → `revision` 递增(`initial` → `v2` …)。             ║
+# ║ 旧 revision 不删,改期(rescheduled)新增条目,保留历史(§2:改期保留旧 revision)。    ║
+# ╚══════════════════════════════════════════════════════════════════════════════════════╝
+
+version: 1
+source_url: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+fetched_at: null            # 未抓取:本文件是**手工初版**,不是官方页物化产物
+content_hash: null          # 官方页内容 hash —— 抓取后才有;与本文件自身 hash 是两回事
+revision: initial
+verified_by: pending
+timezone: America/New_York  # 声明发布时刻的本地时区;换算一律走 IANA(禁止写死 ET 偏移)
+
+years:
+  2026:
+    revision: initial
+    verified_by: pending
+    # `added_at` = 这批行**被写进本仓**的时刻 = 它们的 first_seen_ts 下界。
+    # 不是「Fed 公布日程的时刻」(那个我们不知道),也绝不用 now() 冒充。
+    added_at: 2026-08-29T00:00:00Z
+    meetings:
+      - start_date: 2026-01-27
+        end_date: 2026-01-28
+        statement_local_time: "14:00"   # 惯例值,pending 时不被使用(见文件头)
+        press_conference: true
+      - start_date: 2026-03-17
+        end_date: 2026-03-18
+        statement_local_time: "14:00"
+        press_conference: true
+        projections: true               # SEP 会议(惯例:3/6/9/12 月)
+      - start_date: 2026-04-28
+        end_date: 2026-04-29
+        statement_local_time: "14:00"
+        press_conference: true
+      - start_date: 2026-06-16
+        end_date: 2026-06-17
+        statement_local_time: "14:00"
+        press_conference: true
+        projections: true
+      - start_date: 2026-07-28
+        end_date: 2026-07-29
+        statement_local_time: "14:00"
+        press_conference: true
+      - start_date: 2026-09-15
+        end_date: 2026-09-16
+        statement_local_time: "14:00"
+        press_conference: true
+        projections: true
+      - start_date: 2026-10-27
+        end_date: 2026-10-28
+        statement_local_time: "14:00"
+        press_conference: true
+      - start_date: 2026-12-08
+        end_date: 2026-12-09
+        statement_local_time: "14:00"
+        press_conference: true
+        projections: true

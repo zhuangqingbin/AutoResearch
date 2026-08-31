@@ -22,7 +22,10 @@ def _mk(tmp_path, regime="risk_off"):
 def test_position_overlay_zero_buy(tmp_path):
     d = _mk(tmp_path, "risk_off")
     s = _position_overlay(d, [])
-    assert "0–2 成" in s and "空仓/底仓与系统读数一致" in s
+    # 2026-08-29 §4.1.1:overlay **只出仓位与动作**,0买/BLOCKED 的结论与因果归 🧭 仪表盘③。
+    assert "0–2 成" in s and "本次不开新仓" in s
+    for owned_by_dashboard in ("0 买", "BLOCKED", "空仓/底仓与系统读数一致"):
+        assert owned_by_dashboard not in s, "overlay 复述了仪表盘③ 独占的结论"
 
 
 def test_position_overlay_missing_regime(tmp_path):
@@ -36,7 +39,7 @@ def test_position_overlay_sick_menu_lower_band(tmp_path):
              "main_net_ratio": -0.01, "cmf_20": -0.05, "pe": 30.0} for i in range(10)]
     pd.DataFrame(rows).to_csv(d / "L2_gbdt_top200.csv", index=False)
     s = _position_overlay(d, [{"rating": "Overweight"}])
-    assert "3–5 成" in s and "下沿" in s and "1 只买单" in s
+    assert "3–5 成" in s and "下沿" in s and "1 只按评级×置信度分配" in s
 
 
 def test_portfolio_note_same_sector_bet():

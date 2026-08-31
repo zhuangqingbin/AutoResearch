@@ -2291,6 +2291,112 @@ def _write_usage(handle: RunHandle) -> None:
     )
 
 
+def _degrade_evidence(handle: RunHandle, endpoint: str, reason: str) -> None:
+    """Book one B-tier evidence degradation — 「降级不留痕」才是真病。
+
+    The endpoints are namespaced `capsule.*` on purpose: they are *evidence* legs,
+    not data endpoints, and nobody should mistake them for a lake fetch failing.
+    """
+    try:
+        from autoresearch.data.contracts import record_degradation
+
+        record_degradation(endpoint, reason, key=handle.run_id)
+    except Exception:  # noqa: BLE001 - a bookkeeping failure must still be visible
+        print(f"[capsule·B级降级] {endpoint}[{handle.run_id}]:{reason}", file=sys.stderr)
+
+
+def _resolve_run_mode(handle: RunHandle) -> str:
+    """Which mode this run actually ran in — one half of the completeness denominator.
+
+    `finalize` used to call `scan_profile(business_status=…, last_stage=…)` with **no
+    mode** (spec 2026-08-29 §2.2 K3), so every run was expanded as `FULL`: a sentinel
+    run has no L4 leg, yet `l4-card` / `l4-intel` were marked REQUIRED and the
+    completeness verdict was false for every sentinel run by construction.
+
+    The fallback is `"FULL"` because it is the **widest** expectation — failing to read
+    the mode can only make the verdict stricter, never manufacture a false green.  It is
+    still a degradation, and it is booked.
+    """
+    from autoresearch.scan.run_profile import MODES
+
+    path = handle.staging / "run_mode.json"
+    if not path.is_file():
+        _degrade_evidence(
+            handle, "capsule.run_mode", "run_mode.json 缺席 → 完整性按最宽的 FULL 展开"
+        )
+        return "FULL"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        mode = str((payload or {}).get("mode") or "")
+    except Exception as exc:  # noqa: BLE001 - unreadable mode ≠ no mode
+        _degrade_evidence(
+            handle,
+            "capsule.run_mode",
+            f"run_mode.json 读不动/非法 JSON({_safe_exception_text(exc)})→ 按 FULL 展开",
+        )
+        return "FULL"
+    if mode not in MODES:
+        _degrade_evidence(
+            handle,
+            "capsule.run_mode",
+            f"run_mode.json mode={mode!r} 不在 {MODES} → 按 FULL 展开",
+        )
+        return "FULL"
+    return mode
+
+
+def _materialize_external_evidence(handle: RunHandle) -> None:
+    """D-5 留痕(外源扩面稿 2026-08-28 §6.1/§6.2)的第 2、3 步 —— 此前**建成未接线**。
+
+    两个 materializer 有模块、有测试,`autoresearch/` 内**零调用者**(spec 2026-08-29
+    §1.3),于是真跑既没有 `web_budget.json` 也没有 `external_evidence_index.json`。
+
+    顺序是有意的:两者都读 `materialize_agent_index` 才生成的 `lineage/external_tools.jsonl`,
+    倒着跑会安静地产出一份「什么都没查」的现场(`tests/trace/test_evidence_index.py` 的
+    定序用例)。位置也是有意的:在 MANIFEST 之前,清单才盖得住它俩。
+
+    它们是 **B 级证据**:失败记账、**不阻断** finalize —— 一个索引 bug 不该毙掉整趟现场。
+
+    参数只给**capsule 自己推得出来**的那几个(`run_id`、`staging`)。多给一个 finalize 才
+    知道的字段(engine / caps),冻结后按 §11 「二次 materialize 字节不变」重跑就会产出不同
+    字节,而 `write_if_changed` 对冻结文件的正确反应是**抛**(不偷改历史)—— 那等于把审计
+    路堵死。engine 在 `identity/run_contract.json` 里本来就有,不必在预算里再抄一份。
+    """
+    from autoresearch.trace import (
+        evidence_index as evidence_index_mod,
+        web_budget as web_budget_mod,
+    )
+
+    try:
+        budget = web_budget_mod.materialize_web_budget(
+            handle.capsule,
+            run_id=handle.run_id,
+        )
+        # materializer 落的是设计稿 §6.1 的原址 `capsule/lineage/web_budget.json`;
+        # 生产 lint 的读点定在 `capsule/usage/web_budget.json`(计划 2026-08-29 P0 T1/T4)。
+        # 同一份 canonical 字节写两处,读侧不会读到第二个真身。
+        web_budget_mod.write_budget(
+            handle.capsule / "usage" / web_budget_mod.BUDGET_NAME, budget
+        )
+    except Exception as exc:  # noqa: BLE001 - B-tier evidence never kills the scene
+        _degrade_evidence(
+            handle, "capsule.web_budget", f"web 预算物化失败:{_safe_exception_text(exc)}"
+        )
+
+    try:
+        evidence_index_mod.materialize_evidence_index(
+            handle.capsule,
+            run_id=handle.run_id,
+            staging=handle.staging,
+        )
+    except Exception as exc:  # noqa: BLE001 - B-tier evidence never kills the scene
+        _degrade_evidence(
+            handle,
+            "capsule.external_evidence_index",
+            f"外源证据索引物化失败:{_safe_exception_text(exc)}",
+        )
+
+
 def _resolve_final_path(
     handle: RunHandle,
     business_status: BusinessStatus,
@@ -2366,9 +2472,10 @@ def finalize(
             f"run {handle.run_id} is already {state.business_status.value}"
         )
 
-    # 1. transcripts and truthful usage
+    # 1. transcripts and truthful usage, then the two D-5 indexes that read them
     materialize_agent_index(handle.run_id)
     _write_usage(handle)
+    _materialize_external_evidence(handle)
 
     # 2. 阶段产物快照:capsule 必须自带业务产物,否则重放没有比对基准、
     #    归档也不是自足的(设计稿 §7 products/)。
@@ -2381,6 +2488,7 @@ def finalize(
 
     # 3. expected / completeness / replay
     resolved_profile = profile or scan_profile(
+        mode=_resolve_run_mode(handle),
         business_status=resolved_status.value,
         last_stage=_last_reliable_checkpoint(handle.capsule),
     )
@@ -2888,20 +2996,32 @@ def repair(
         for path in final_path.rglob("*")
         if path.is_file()
     }
-    added: list[str] = []
+    planned: list[tuple[Path, str]] = []
+    collisions: list[str] = []
     for path in sorted(origin.rglob("*")):
         if path.is_symlink() or not path.is_file():
             continue
-        relative = Path("capsule") / path.relative_to(origin)
-        if relative.as_posix() in base_view:
+        relative = (Path("capsule") / path.relative_to(origin)).as_posix()
+        if relative in base_view:
+            collisions.append(relative)
             continue
+        planned.append((path, relative))
+    # 先判后写:碰撞件被跳过、其余照补,会让操作者以为证据都补回来了。整笔失败才诚实。
+    if collisions:
+        shown = ", ".join(sorted(collisions)[:5])
+        if len(collisions) > 5:
+            shown += f", …(共 {len(collisions)} 件)"
+        raise FileExistsError(
+            f"repair collides with the frozen base, nothing was written: {shown}"
+        )
+    if not planned:
+        raise RuntimeError("repair adds nothing: the source has no files to restore")
+    added: list[str] = []
+    for path, relative in planned:
         destination = overlay / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, destination)
-        added.append(relative.as_posix())
-    if not added:
-        shutil.rmtree(overlay, ignore_errors=True)
-        raise RuntimeError("repair adds nothing: every source file is already in the base")
+        added.append(relative)
 
     lines = [
         f"{sha256_file(overlay / name)}  {name}\n" for name in sorted(added)

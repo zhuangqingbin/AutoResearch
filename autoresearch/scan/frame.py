@@ -185,6 +185,25 @@ def build_market_frame(analysis_date: str, *, cap_floor_yi: float | None = None,
     if vol_series:
         vps = _harvest_vol_series(uni["code"], analysis_date)      # 多日量价序列(CMF/OBV/...)→ volprice 组
         uni = uni.merge(vps, on="code", how="left")                # 失败已在上面抛 DataContractError
+    # 「一 code 一行」是这张帧的出口契约之一,却从没人守过它:上面九次 `merge(..., on="code")`
+    # 里任何一个右表有重复码就会静默扇出一行。2026-08-26 实跑代价 —— 601665 齐鲁银行在帧里
+    # 两行 → L1 召回两行 → L2 两行 → `l4/prompts.py` 的 `set_index("code").to_dict("index")`
+    # 抛 ValueError,**在 L3 已经烧完 1.16M token 之后**把整条派发炸掉。
+    # 修在这里而不是修某一个 merge:帧是 L0 的单一代码路径,谁扇出的都在这道门内收口。
+    # 同源重复行取第一条(确定性);**去重必须留痕** —— 静默去重会把上游的真问题一起抹掉。
+    dup_mask = uni["code"].duplicated(keep="first")
+    if bool(dup_mask.any()):
+        dup_codes = sorted(uni.loc[dup_mask, "code"].astype(str).unique())
+        from autoresearch.data.contracts import record_degradation
+        record_degradation(
+            "market_frame",
+            f"帧内重复 code {len(dup_codes)} 个({','.join(dup_codes[:8])}"
+            f"{'…' if len(dup_codes) > 8 else ''})→ 各保留第一行。"
+            f"根因在 fetch_universe 的某个 left-merge 右表有重复码(B 级,不阻断)",
+            key=f"dup_code_{analysis_date}")
+        print(f"[frame] ⚠️ 帧内重复 code {len(dup_codes)} 个 → 去重保留第一行:"
+              f"{','.join(dup_codes[:8])}", file=sys.stderr)
+        uni = uni[~dup_mask].reset_index(drop=True)
     # 出口契约(漏斗地基的最后一道门):喂给 composite_score 的帧到底全不全,与它从哪来无关。
     check_market_frame(uni, with_vol_series=vol_series)
     return uni, {"universe_raw": int(n_raw), "universe": n_l0, "after_gate_a": len(uni)}
@@ -331,6 +350,18 @@ def main(argv: list[str] | None = None) -> int:
             warnings=[],
             error=None,
         )
+        # D-2:隔夜 tape 进 **full market_pack**(L5 展示与人读),**不进 strategist 投影** ——
+        # 策略师读它属 B-1(改判断层输入),受 09-中冻结。`strategist_pack.ALLOWED_KEYS` 是
+        # 默认拒绝的白名单,所以这里加键**不会**泄漏过去;`tests/scan/test_frame*.py` 与
+        # macro 侧各有一条断言钉死这件事(防有人"顺手"把它加进 allowlist)。
+        tape = None
+        try:
+            from autoresearch.data.sources.yf_tape import global_tape_pack
+            tape = global_tape_pack(analysis_date)
+            if not tape.get("usable"):     # 源在场但一条都没取到 → 不塞半截块进 pack
+                tape = None
+        except Exception as exc:  # noqa: BLE001 — B 级:海外 tape 取不到不挡帧
+            print(f"[frame] global_tape 跳过:{type(exc).__name__}", file=sys.stderr)
         payload = {
             **pack,
             "macro_state": mstate,
@@ -338,6 +369,8 @@ def main(argv: list[str] | None = None) -> int:
             "user_config": user_cfg,
             "run_contract": contract.short_ref(),
         }
+        if tape:
+            payload["global_tape"] = tape
         if args.json_out:
             out = _atomic_write_json(args.json_out, payload)
             print(f"[frame] market_pack → {out}(原子落盘)", file=sys.stderr)

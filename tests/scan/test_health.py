@@ -427,20 +427,28 @@ def test_index_md_links_and_prev_run(tmp_path):
     assert "20260701_0900" in s and "健康一行" in s
 
 
+def _nav_lines(text: str) -> list[str]:
+    """index.md 的三层导航行:读我(brief)/ 决策层(summary)/ 现场附录(appendix)。"""
+    return [ln for ln in text.splitlines()
+            if "**读我" in ln or "**决策层" in ln or "**现场附录" in ln]
+
+
 def test_index_md_points_to_brief_first(tmp_path):
     """Wave12-T28:入口切 brief —— 首个「读我」条目指 `brief.md`(≤3KB 速读层),
-    `summary.md` 降为「详细版」。两者都在,只是**读的顺序**变了。"""
+    `summary.md` 降为详细层。两者都在,只是**读的顺序**变了。"""
     d = _mk_day(tmp_path / "ctx", "2026-07-02", cards={"000001": CARD_OW})
     rd = tmp_path / "reports" / "20260702_1200"
     rd.mkdir(parents=True)
     (rd / "brief.md").write_text("# 速读\n", encoding="utf-8")
     s = index_md(d, rd)
-    read_lines = [ln for ln in s.splitlines() if "**读我" in ln or "**详细版" in ln]
-    assert read_lines, "index.md 没有读我/详细版导航行"
+    read_lines = _nav_lines(s)
+    assert read_lines, "index.md 没有读我/决策层导航行"
     # 断言**可点的链接形式**,不是「出现过 brief.md 这个词」—— 后者在「未生成」文案里同样
     # 成立,会让本条测试对「brief 在不在盘上」完全无鉴别力(变异探针 L 实测过)。
     assert "[brief.md](brief.md)" in read_lines[0], f"首个导航行不是 brief 链接:{read_lines[0]}"
-    assert "未生成" not in s, "brief 在盘上却渲染成未生成"
+    # 「未生成」现在有两个合法出处(brief / appendix),所以只对 brief 那一行断言 ——
+    # 全文级的 `"未生成" not in s` 会被隔壁 appendix 行连坐,对 brief 失去鉴别力。
+    assert "未生成" not in read_lines[0], "brief 在盘上却渲染成未生成"
     assert s.index("brief.md") < s.index("summary.md"), "brief 必须排在 summary 之前"
     assert any("summary.md" in ln for ln in read_lines), "summary 不能被摘掉(减层不减料)"
 
@@ -451,7 +459,50 @@ def test_index_md_says_so_when_brief_missing(tmp_path):
     rd = tmp_path / "reports" / "20260702_1200"
     rd.mkdir(parents=True)
     s = index_md(d, rd)
-    assert "brief.md" in s and "未生成" in s
+    brief_line = _nav_lines(s)[0]
+    assert "brief.md" in brief_line and "未生成" in brief_line
+    assert "summary.md" in s
+
+
+def test_index_md_links_the_scene_appendix(tmp_path):
+    """报告是三层(§6.3):brief 30 秒 → summary 决策层 → appendix 现场层。
+    索引必须把第三层挂出来,否则「现场下沉到附录」等于把它藏了。"""
+    d = _mk_day(tmp_path / "ctx", "2026-07-02", cards={"000001": CARD_OW})
+    rd = tmp_path / "reports" / "20260702_1200"
+    rd.mkdir(parents=True)
+    (rd / "brief.md").write_text("# 速读\n", encoding="utf-8")
+    (rd / "appendix.md").write_text("# 扫描附录\n", encoding="utf-8")
+    s = index_md(d, rd)
+    nav = _nav_lines(s)
+    assert "[appendix.md](appendix.md)" in nav[-1], f"没有可点的现场附录链接:{nav[-1]}"
+    # 读序 = brief → summary → appendix(减层不减料,但顺序有意义)
+    assert s.index("brief.md") < s.index("summary.md") < s.index("appendix.md")
+    # 文案分工必须写明,否则读者仍然会把 summary 当「什么都有的那份」
+    assert "决策层" in s and "现场" in s
+
+
+def test_index_md_says_so_when_appendix_missing(tmp_path):
+    """旧 run 天然没有 appendix —— 明说缺席,不静默(同 brief 口径)。"""
+    d = _mk_day(tmp_path / "ctx", "2026-07-02", cards={"000001": CARD_OW})
+    rd = tmp_path / "reports" / "20260702_1200"
+    rd.mkdir(parents=True)
+    s = index_md(d, rd)
+    appendix_line = [ln for ln in s.splitlines() if "**现场附录" in ln][0]
+    assert "未生成" in appendix_line
+    assert "[appendix.md](appendix.md)" not in appendix_line, "缺席却给了可点链接"
+
+
+def test_index_md_surfaces_the_display_budget_warning(tmp_path):
+    """版式超预算是**展示层**告警:必须看得见(健康一行),但不改任何门与评级。"""
+    from autoresearch.scan.health import measure_report_budget
+
+    d = _mk_day(tmp_path / "ctx", "2026-07-02", cards={"000001": CARD_OW})
+    rd = tmp_path / "reports" / "20260702_1200"
+    rd.mkdir(parents=True)
+    (rd / "summary.md").write_text("x" * (17 * 1024), encoding="utf-8")
+    measure_report_budget(d, rd)
+    s = index_md(d, rd)
+    assert "版式预算" in s
     assert "summary.md" in s
 
 
@@ -598,3 +649,65 @@ def test_final_ratings_without_ensemble_unchanged(tmp_path):
     from autoresearch.scan.health import final_ratings
     d = _mk_fold_day(tmp_path, "Hold", None)
     assert final_ratings(d)["300857"] == "Hold"
+
+
+# ── 发布包字节预算(2026-08-28 §6.10;展示层,永不改变判断)────────────────────────
+
+def test_measure_report_budget_is_silent_within_budget(tmp_path):
+    from autoresearch.scan.health import REPORT_BUDGET_NAME, measure_report_budget
+
+    scan = tmp_path / "scan" / "2026-08-28"
+    scan.mkdir(parents=True)
+    report = tmp_path / "run"
+    report.mkdir()
+    (report / "summary.md").write_text("x" * 4096, encoding="utf-8")
+    (report / "appendix.md").write_text("y" * 4096, encoding="utf-8")
+    got = measure_report_budget(scan, report)
+    assert got["warnings"] == []
+    assert got["summary_bytes"] == 4096 and got["appendix_bytes"] == 4096
+    assert json.loads((scan / REPORT_BUDGET_NAME).read_text(encoding="utf-8"))["warnings"] == []
+
+
+def test_measure_report_budget_warns_per_file_and_never_truncates(tmp_path):
+    """超预算只 warn —— 文件**逐字节不变**。截断报告等于让排版改写研究内容。"""
+    from autoresearch.scan.health import measure_report_budget
+
+    scan = tmp_path / "scan" / "2026-08-28"
+    scan.mkdir(parents=True)
+    report = tmp_path / "run"
+    report.mkdir()
+    big_summary, big_appendix = "s" * (17 * 1024), "a" * (25 * 1024)
+    (report / "summary.md").write_text(big_summary, encoding="utf-8")
+    (report / "appendix.md").write_text(big_appendix, encoding="utf-8")
+    got = measure_report_budget(scan, report)
+    assert len(got["warnings"]) == 2, got["warnings"]
+    assert any("summary.md" in w for w in got["warnings"])
+    assert any("appendix.md" in w for w in got["warnings"])
+    assert (report / "summary.md").read_text(encoding="utf-8") == big_summary
+    assert (report / "appendix.md").read_text(encoding="utf-8") == big_appendix
+
+
+def test_measure_report_budget_reports_absence_not_zero(tmp_path):
+    """文件不在盘上 → 字节记 None。记 0 会让「没量到」和「量到了很小」长得一样。"""
+    from autoresearch.scan.health import measure_report_budget
+
+    scan = tmp_path / "scan" / "2026-08-28"
+    scan.mkdir(parents=True)
+    report = tmp_path / "run"
+    report.mkdir()
+    got = measure_report_budget(scan, report)
+    assert got["summary_bytes"] is None and got["appendix_bytes"] is None
+    assert got["warnings"] == []
+
+
+def test_run_health_carries_report_budget_only_after_measuring(tmp_path):
+    """presence-gated:发布前那几次体检还没有预算读数,那时是 None,不是 0。"""
+    from autoresearch.scan.health import measure_report_budget
+
+    d = _mk_day(tmp_path / "ctx", "2026-07-02", cards={"000001": CARD_OW})
+    assert run_health(d)["report_budget"] is None
+    report = tmp_path / "run"
+    report.mkdir()
+    (report / "summary.md").write_text("x" * 100, encoding="utf-8")
+    measure_report_budget(d, report)
+    assert run_health(d)["report_budget"]["summary_bytes"] == 100

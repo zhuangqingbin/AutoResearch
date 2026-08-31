@@ -64,4 +64,9 @@ def test_assemble_embeds_calendar(tmp_path):
     d = _mk(tmp_path)
     (d / "meta.json").write_text("{}", encoding="utf-8")
     md = build_summary(d, "2026-07-02", "1200", "20260702_1200")
-    assert "未来 14 天日历" in md
+    # 2026-08-29 B+ 重构:节标题由 summary 自己出(生产者自带的 `### 📅 …日历` 内标题被剥,
+    # 避免与本节标题重复);断言改锚新标题 **并加验真日历内容**——只对标题断言是弱验收。
+    assert "## 📅 未来 14 天" in md
+    assert "000001 20260716" in md                     # 披露锚真进了 summary,不是只剩个标题
+    assert "000003" not in md                          # 14 日窗外的仍被挡在外面
+    assert "### 📅" not in md                          # 内标题已剥,不与节标题重复

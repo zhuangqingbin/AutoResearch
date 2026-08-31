@@ -8,6 +8,11 @@ design: docs/specs/2026-07-03-research-skills-altitude-refactor-design.md §5.2(
 None/{},描述性可缺)。`load_macro_state`:注入方读取 + **双失效**:① age > ttl_days;
 ② 当日 regime ≠ regime_at_run(regime 翻转日拿旧宏观叙事校准比没有更坏——与 lessons 的
 regime 域同一教训)。缺/坏/过期 → (None, 原因),调用方回退"只用日频 pack"(presence-gated)。
+
+2026-08-28(外源扩面 D-4,spec `2026-08-28-external-evidence-expansion-design.md` §5.3):
+新增 `global_tape_asof` + `global_tape`(≤8 个描述性数字)—— **只写不读**:写进
+`macro_state.json` 供 full 档作者与审计读,`load_macro_state` 返回前由 `_hide_write_only`
+摘掉(策略师是否读属 B-1,受 08-26 冻结;摘的理由见该函数 docstring)。
 """
 from __future__ import annotations
 
@@ -23,6 +28,19 @@ _WS_SCAN_ROOT = ws.scan_root()  # B008 修法:默认值须为模块级单例(def
 STATE_NAME = "macro_state.json"
 DEFAULT_ROOT = ws.context_root() / "macro"
 DEFAULT_TTL_DAYS = 7
+
+#: harvest(D-4)落在**同一个 `<date>` 目录**里的机读 tape;presence-gated。
+GLOBAL_TAPE_NAME = "global_tape.json"
+#: 进 macro_state 的 ≤8 个数(设计稿 §5.3)。
+#: ⚠️ 这是**上限守卫**,不是第二个事实源:数字由 `macro.harvest` 抽好写进 `global_tape.json`
+#: 的 `macro_state_numbers`,这里只负责「不管上游给多少,进 macro_state 的最多就这 8 个数、
+#: 且一个方向性字段都不许有」(§5.3:会议概率类字段须先有加权求解 + fixture 才准新增)。
+TAPE_NUMBER_KEYS: tuple[str, ...] = (
+    "vix", "vix_term_ratio", "skew", "move", "ust10y", "dxy", "usdcnh",
+    "zq_front_month_avg_rate",
+)
+#: 「只写不读」的外源块 —— `load_macro_state` 返回前摘掉,理由见 `_hide_write_only`。
+_WRITE_ONLY_KEYS: tuple[str, ...] = ("global_tape_asof", "global_tape")
 
 _RISK_MAP = {"Buy": "risk_on", "Overweight": "risk_on", "Hold": "neutral",
              "Underweight": "risk_off", "Sell": "risk_off"}
@@ -66,6 +84,45 @@ def _key_risks(premortem_text: str | None, cap: int = 3) -> list[str]:
     return risks
 
 
+def _global_tape_block(root: Path | str) -> dict:
+    """`<root>/global_tape.json`(harvest 落)→ `{global_tape_asof, global_tape}`,presence-gated。
+
+    缺 / 坏 / `ok=false` → `(None, {})`,宏观报告照写(B 级,永不阻)。数字**原样搬**:不换算、
+    不判断、不补方向 —— `ust10y` 是 `^TNX` 原始报价这类口径问题由 `global_tape.json` 的
+    `units` 块说明,这里做换算就是把单位坑复制成两份。
+    """
+    p = Path(root) / GLOBAL_TAPE_NAME
+    empty = {"global_tape_asof": None, "global_tape": {}}
+    if not p.exists():
+        return empty
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 — 坏 JSON 不阻摘要
+        return empty
+    if not isinstance(data, dict) or not data.get("ok"):
+        return empty          # 取数失败那份也会落盘(带 ok=false),它不该冒充读数
+    nums = data.get("macro_state_numbers")
+    if not isinstance(nums, dict):
+        return empty
+    return {"global_tape_asof": data.get("as_of"),
+            "global_tape": {k: nums.get(k) for k in TAPE_NUMBER_KEYS}}
+
+
+def _hide_write_only(state: dict) -> dict:
+    """返回给消费方之前摘掉「只写不读」的外源块(§5.3:策略师是否读 tape 属 B-1,冻结中)。
+
+    **为什么摘在这里**:`scan/frame.py:355` 把 `load_macro_state` 的返回**整个**塞进
+    market_pack 的 `macro_state` 键,而 `strategist_pack.ALLOWED_KEYS` 里恰恰有 `macro_state`
+    —— 那是**整块投影**,不是逐字段白名单。所以在当前接线下,「写进 macro_state.json」==
+    「策略师看得见」:不摘,D-4(I 类)就静默变成 B-1(设计稿明令冻结、要开关 + shadow)。
+
+    摘的是**返回值**;落盘那份一个字节没动(文件里仍可审计、full 档作者仍可直接读),
+    TTL / 失效判定一个字没改(本函数在两条判定全部通过之后才被调用)。
+    真要开 B-1,删掉本函数的调用点比在 allowlist 上加键更明确 —— 那时才该有人批。
+    """
+    return {k: v for k, v in state.items() if k not in _WRITE_ONLY_KEYS}
+
+
 def write_macro_state(root: Path | str, report_path: Path | str | None = None,
                       out_dir: Path | str | None = None,
                       scan_root: Path | str = _WS_SCAN_ROOT) -> dict:
@@ -96,6 +153,8 @@ def write_macro_state(root: Path | str, report_path: Path | str | None = None,
         "cross_asset": cross,
         "ashare_sectors": parse_allocation(sectors_txt) if sectors_txt else {},
         "key_risks": _key_risks(_txt("1_spine/premortem.md")),
+        # D-4:外源 tape 的 ≤8 个数 + 它自己的 as_of。**只写不读**(见 `_hide_write_only`)。
+        **_global_tape_block(root),
         "ttl_days": DEFAULT_TTL_DAYS,
     }
     out = Path(out_dir) if out_dir else DEFAULT_ROOT
@@ -177,7 +236,8 @@ def load_macro_state(today: str, regime_today: str | None = None,
     base = state.get("regime_at_run")
     if regime_today and base and regime_today != base:
         return None, f"regime 已翻转({base}→{regime_today})→ 宏观视图失效,只用日频 pack"
-    return state, f"macro_state 新鲜(as_of {as_of},{age}d≤{ttl}d,regime_at_run {base or '未记'})"
+    return (_hide_write_only(state),
+            f"macro_state 新鲜(as_of {as_of},{age}d≤{ttl}d,regime_at_run {base or '未记'})")
 
 
 if __name__ == "__main__":

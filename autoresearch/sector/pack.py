@@ -7,6 +7,13 @@ design: docs/specs/2026-07-03-research-skills-altitude-refactor-design.md §5.3/
 全局 watchlist)——**零新增取数端点**(行业指数 sw_daily 待权限核实〔spec 开放问题 1〕,缺不影响
 本包);缺文件/缺列逐字段降级(None/[]/''),presence-gated 不抛。
 
+2026-08-28 外源扩面 D-6:pack 多一个 **presence-gated** 的 `readthrough` 键(海外读透映射;
+design `docs/specs/2026-08-28-external-evidence-expansion-design.md` §8 + §4「中观 full」行)。
+它是本模块唯一一个不出自 scan staging 的块 —— 名单来自人工维护的 `readthrough_map.yaml`
+(`autoresearch.data.readthrough.load_map`),隔夜涨跌来自 `data.sources.yf_tape.fetch_global_tape`
+(湖派生,B 级)。**两条腿缺失都只降级不阻断**:无有效映射 → 整键省略(不是空 list);tape 拿不到
+→ `pct_*` 置 None + 整块标 `stale_reason` + `record_degradation` 记账(绝不抛)。
+
 用法:
   uv run --no-sync python -m autoresearch.sector.pack <date>                     # 自动选行业
   uv run --no-sync python -m autoresearch.sector.pack <date> --industries 电子,煤炭
@@ -58,11 +65,225 @@ def _safe(industry) -> str:
     return re.sub(r'[/\\:*?"<>|\s]', "", str(industry)) or "未分类"
 
 
+# ─────────────── 海外读透映射块(D-6 · presence-gated · **只进 full 档**) ───────────────
+#
+# 边界(2026-08-28 设计稿 §4 核心表 + §10 排期,**写死在这里防漂移**):
+#   · 中观 **full**(sector-research standalone 深研)= 本块的**唯一**消费者 —— I 类,现在可做。
+#   · 中观 **lite**(scan-market Stage 1 的行业 brief)= **一个字不加**。lite 地形段多一行
+#     「海外映射(事实)」是设计稿的 **B-4**,受 08-26 A0 判断层冻结,要等 09-中攒够 20 结果日、
+#     带 `external.sector_readthrough` 开关才做。brief 会喂 L3/L4 —— 往它里塞新事实 = 改判断层
+#     输入,不是展示层改动。所以:pack JSON 里有这个键,`sector-brief.md` / playbook lite 模板
+#     里**不许出现**它(`tests/sector/test_readthrough_pack.py` 有越界探针逐字对账)。
+#   · 映射只表示「值得观察的关系」,**不表示因果方向 / 涨跌传导方向 / 评级方向**(§8 规则一)。
+#     渲染禁忌写在 `sector-playbook.md` full 节;本模块只搬事实字段,不合成任何方向措辞。
+#
+# 两条腿都是 B 级:名单腿(`readthrough.load_map`)缺 → 整键省略;行情腿(`yf_tape`)缺 → pct 置
+# None + 标 `stale_reason` + 记账。**任何一条都不许抛**(sector pack 是 scan Stage 1 的前置件,
+# 炸在这里等于用一个展示增强把整条漏斗打死)。
+
+_RT_MAX = 4                     # §8:单层 ≤4 项(load_map 已截,这里再截一次 = 纵深防御)
+_RT_KINDS = ("company", "etf", "index")
+_RT_RELATIONS = ("customer", "supplier", "peer", "theme")
+_RT_DIRECTIONS = ("downstream", "upstream", "peer")
+_RT_UNTRADABLE = ("delisted", "suspended", "halted", "unlisted", "expired")
+_RT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _rt_degrade(endpoint: str, reason: str, key: str = "") -> None:
+    """B 级降级记账(懒导入:避免 sector 包在 import 期就拖上 data 契约层)。"""
+    try:
+        from autoresearch.data.contracts import record_degradation
+        record_degradation(endpoint, reason, key=key)
+    except Exception:  # noqa: BLE001 — 记账本身失败也不许影响 pack
+        print(f"[sector.pack] {endpoint}:{reason}(记账失败)", file=sys.stderr)
+
+
+def _rt_date(v) -> str | None:
+    s = str(v or "").strip()[:10]
+    return s if _RT_DATE_RE.match(s) else None
+
+
+def _rt_num(row: dict | None, col: str, nd: int = 2) -> float | None:
+    if not row or col not in row:
+        return None
+    try:
+        f = float(row[col])
+    except (TypeError, ValueError):
+        return None
+    return None if pd.isna(f) else round(f, nd)
+
+
+def _rt_bool(row: dict | None, col: str) -> bool | None:
+    """三态布尔(True/False/未知)。**不能用 `is False` 直接判** —— pandas 取出来的是
+    `numpy.bool_`,`np.False_ is False` 为假,那样写 session_complete 探针永远不亮。"""
+    if not row or col not in row:
+        return None
+    v = row[col]
+    try:
+        if v is None or pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        return None
+    if isinstance(v, str):
+        s = v.strip().lower()
+        return {"true": True, "1": True, "yes": True,
+                "false": False, "0": False, "no": False}.get(s)
+    return bool(v)
+
+
+def _rt_str(row: dict | None, col: str) -> str | None:
+    if not row:
+        return None
+    v = row.get(col)
+    try:
+        if v is None or pd.isna(v):
+            return None
+    except (TypeError, ValueError):      # 非标量(list/dict)→ 按缺处理
+        return None
+    return str(v).strip() or None
+
+
+def _rt_valid(item, as_of: str) -> bool:
+    """pack 侧的独立准入(**不信任 load_map 已经筛过** —— 消费者自己也要能拒)。
+
+    拒的四类:枚举不合法 / 证据 URL 缺或不是 http(s) / 不在有效期内 / 标了不可交易。
+    2026-07-28 教训「立案时写的诊断,动工一查 4/4 全错」的同族推论:上游声称筛过 ≠ 真筛过,
+    而这块是要印进研究报告的**外部事实**,错一条就是一条查无实据的产业证据。
+    """
+    if not isinstance(item, dict):
+        return False
+    if not str(item.get("symbol") or "").strip():
+        return False
+    if str(item.get("kind") or "") not in _RT_KINDS:
+        return False
+    if str(item.get("relation") or "") not in _RT_RELATIONS:
+        return False
+    if str(item.get("direction") or "") not in _RT_DIRECTIONS:
+        return False
+    url = str(item.get("evidence_url") or "").strip()
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return False
+    if item.get("tradable") is False:
+        return False
+    if str(item.get("status") or "").strip().lower() in _RT_UNTRADABLE:
+        return False
+    eff_from, eff_to, today = _rt_date(item.get("effective_from")), _rt_date(item.get("effective_to")), _rt_date(as_of)
+    if eff_from is None:                      # 有效期起点必填(§8:入库 lint 验有效期)
+        return False
+    if today is None:                         # as_of 不是日期 → 无法判有效期,只保枚举/证据门
+        return True
+    if eff_from > today:
+        return False
+    return not (eff_to is not None and eff_to < today)
+
+
+def _rt_map_items(industry, as_of: str) -> list[dict]:
+    """人工映射表 → 该行业的原始名单;模块未接线 / 无该行业 → [](合法空,不记账)。"""
+    try:
+        from autoresearch.data.readthrough import load_map
+    except Exception:  # noqa: BLE001 — D-1 source soak 前该模块可以整个不存在
+        return []
+    try:
+        m = load_map(as_of) or {}
+    except Exception as e:  # noqa: BLE001
+        _rt_degrade("readthrough_map", f"load_map 失败({type(e).__name__}: {e})", key=str(as_of))
+        return []
+    if not isinstance(m, dict):
+        return []
+    by_ind = m.get("industries") if isinstance(m.get("industries"), dict) else m
+    items = by_ind.get(str(industry)) if isinstance(by_ind, dict) else None
+    return list(items) if isinstance(items, (list, tuple)) else []
+
+
+def _rt_tape(as_of: str) -> tuple[dict[str, dict], str | None]:
+    """隔夜 tape → {symbol: 行};取数失败/空 → ({}, stale_reason) 且**记账**,不抛。"""
+    try:
+        from autoresearch.data.sources.yf_tape import fetch_global_tape
+    except Exception as e:  # noqa: BLE001
+        reason = f"tape 源未接线({type(e).__name__})"
+        _rt_degrade("global_tape", reason, key=str(as_of))
+        return {}, reason
+    try:
+        df = fetch_global_tape(as_of=as_of)
+    except Exception as e:  # noqa: BLE001
+        reason = f"tape 取数失败({type(e).__name__}: {e})"
+        _rt_degrade("global_tape", reason, key=str(as_of))
+        return {}, reason
+    if df is None or not len(df) or "symbol" not in getattr(df, "columns", []):
+        reason = "tape 空返回(无 symbol 行)"
+        _rt_degrade("global_tape", reason, key=str(as_of))
+        return {}, reason
+    rows: dict[str, dict] = {}
+    for _, r in df.iterrows():
+        sym = str(r.get("symbol") or "").strip().upper()
+        if sym:
+            rows.setdefault(sym, dict(r))
+    return rows, None
+
+
+def _rt_render(item: dict, tape: dict[str, dict], stale: str | None) -> dict:
+    """单条映射 → pack 行(纯搬运:字段照抄 + tape 数字,**零方向措辞**)。"""
+    sym = str(item["symbol"]).strip()
+    kind = str(item["kind"])
+    row = tape.get(sym.upper())
+    reason = stale
+    if reason is None and row is None:
+        reason = f"tape 无 {sym} 行"
+    # 必须走 `_rt_bool`:`is False` 只对 Python bool 成立,而帧里取出来的可能是
+    # `numpy.bool_`(`np.False_ is False` 为假)——那样探针永远不亮,一个还没收盘、
+    # 随时会变的数字就会被当成已定读数印进报告。
+    elif reason is None and _rt_bool(row, "session_complete") is False:
+        reason = "美股时段未收(session_complete=False)"
+    # 财报主体键只对 kind == "company" 开放:§8「ETF / 指数不得伪装成公司或财报主体」——
+    # 上游即使误塞 next_earnings_date 给一只 ETF,这里也一律抹成 None(硬门,不是提示)。
+    is_company = kind == "company"
+    return {
+        "symbol": sym,
+        "kind": kind,                         # 原样带出:下游据此决定能不能当财报主体讲
+        "relation": str(item["relation"]),
+        "direction": str(item["direction"]),
+        "rationale": str(item.get("rationale") or "").strip(),
+        "evidence_url": str(item["evidence_url"]).strip(),
+        "pct_1d": _rt_num(row, "pct_1d"),
+        "pct_5d": _rt_num(row, "pct_5d"),
+        "next_earnings_date": (_rt_str(row, "next_earnings_date")
+                               or _rt_str(item, "next_earnings_date")) if is_company else None,
+        "implied_move_note": (_rt_str(row, "implied_move_note")
+                              or _rt_str(item, "implied_move_note")) if is_company else None,
+        "stale_reason": reason,
+    }
+
+
+def readthrough_block(industry, as_of: str) -> list[dict] | None:
+    """行业 → 海外读透映射块;**无有效映射返回 None**(调用方据此整键省略,而不是写空 list)。"""
+    raw = _rt_map_items(industry, as_of)
+    if not raw:
+        return None
+    valid = [it for it in raw if _rt_valid(it, as_of)][:_RT_MAX]
+    if not valid:
+        return None
+    tape, stale = _rt_tape(as_of)
+    return [_rt_render(it, tape, stale) for it in valid]
+
+
 # ───────────────────────── 单行业数据包 ─────────────────────────
 
 
 def sector_pack(industry: str, scan_dir: Path | str) -> dict:
-    """单行业确定性数据包:成分截面聚合 + L2 入选数 + 日历事件计数。字段可缺(None/[])。"""
+    """单行业确定性数据包:成分截面聚合 + L2 入选数 + 日历事件计数 + (有则)海外读透映射。
+
+    字段可缺(None/[]);`readthrough` 是 **presence-gated** 的 —— 无有效映射时整键不存在
+    (不是空 list),下游据「键在不在」决定渲不渲染那一节。
+    """
+    pack = _sector_pack_staging(industry, scan_dir)
+    rt = readthrough_block(industry, pack.get("as_of") or "")
+    if rt:
+        pack["readthrough"] = rt
+    return pack
+
+
+def _sector_pack_staging(industry: str, scan_dir: Path | str) -> dict:
+    """pack 的 staging 腿(全部只读 scan 既有产物,零外源;缺文件/缺列逐字段降级)。"""
     scan_dir = Path(scan_dir)
     pack: dict = {"industry": str(industry), "as_of": scan_dir.name,
                   "n_market": 0, "n_l2": 0,

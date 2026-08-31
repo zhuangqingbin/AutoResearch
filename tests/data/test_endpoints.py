@@ -47,7 +47,8 @@ def test_every_entry_is_wellformed():
     for name, pol in endpoints.ENDPOINTS.items():
         assert pol["key"] in {"date", "period", "as_of", "static", None}, name
         assert pol["settle"] in {"eod", "live"}, name
-        assert pol["source"] in {"tushare", "akshare", "eastmoney", "fred", "yfinance"}, name
+        assert pol["source"] in {"tushare", "akshare", "eastmoney", "fred", "yfinance",
+                                 "cboe", "official", "sec"}, name
         # live endpoints must not be keyed (they are never written to the lake)
         if pol["settle"] == "live":
             assert pol["key"] is None, name
@@ -56,4 +57,33 @@ def test_every_entry_is_wellformed():
         if pol.get("snapshot"):
             assert pol["key"] == "as_of", name
             assert pol["settle"] == "eod", name
-        assert set(pol) <= {"key", "settle", "source", "snapshot"}, name
+        assert set(pol) <= {"key", "settle", "source", "snapshot",
+                            *endpoints.FRESHNESS_KEYS}, name
+
+
+def test_freshness_contract_is_all_or_nothing():
+    """时效三键要么全声明、要么全不声明(design 2026-08-28 §9)。
+
+    只写一半 = 消费端读到 `max_stale=None` 就当"没有上限",而这正是 §9 要禁的
+    「静默沿用旧值」。数值本身也要自洽:`freshness_slo ≤ max_stale`,否则"陈旧带"是空的,
+    `stale_on_error` 永远轮不到被消费(登记了却永不生效的字段 = 没写)。
+    """
+    for name in endpoints.ENDPOINTS:
+        f = endpoints.freshness(name)
+        declared = [k for k, v in f.items() if v is not None]
+        assert len(declared) in (0, 3), f"{name}: 时效契约只写了一半 {declared}"
+        if not declared:
+            continue
+        assert isinstance(f["stale_on_error"], bool), name
+        assert f["freshness_slo"] > 0 and f["max_stale"] > 0, name
+        assert f["freshness_slo"] <= f["max_stale"], name
+        if f["stale_on_error"] is False:
+            assert f["freshness_slo"] < f["max_stale"], \
+                f"{name}: stale_on_error=False 却没有陈旧带 → 该字段永远不会被消费"
+
+
+def test_freshness_state_is_undeclared_for_legacy_endpoints():
+    """既有端点没声明时效契约 → 不给它们凭空立规矩(恒 usable,不编造 stale_reason)。"""
+    s = endpoints.freshness_state("daily", 10**9)
+    assert s["state"] == endpoints.UNDECLARED
+    assert s["usable"] is True and s["stale_reason"] == ""

@@ -18,6 +18,20 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _no_trade_cal_network(monkeypatch):
+    """交易日历不得在单测里走网络(`exec_anchor.trading_sessions` 第 1 级是 tushare)。
+
+    **只掐网络那一级,不替换 `trading_sessions` 本体** —— 换成桩的话,测"日历回退"
+    的用例就会测到桩而不是被测函数(「绿灯不等于有灯」)。掐掉之后它自动落到
+    lake 分区 / 工作日启发,并如实标 `calendar_quality`。
+    """
+    def _offline(*_a, **_k):
+        raise RuntimeError("单测禁止 trade_cal 网络调用")
+
+    monkeypatch.setattr("autoresearch.data.tushare_source._pro", _offline)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_default_pinned(monkeypatch):
     monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PINNED_PATH",
                         Path("/nonexistent/tests-no-real-pinned.jsonc"))

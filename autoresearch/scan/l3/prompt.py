@@ -124,8 +124,18 @@ def compact_table(df: pd.DataFrame, cols: list[str] | None = None) -> str:
     return "\n".join(lines)
 
 def _prev_l3_day(date: str, root: Path | None = None) -> Path | None:
-    """最近一个有 L3 现场(L3_judged_full + L2)的更早 scan 日;无 → None。"""
-    root = root or ws.scan_root()
+    """最近一个有 L3 现场(L3_judged_full + L2)的更早 scan 日;无 → None。
+
+    `root=None`(生产)→ 候选目录来自 `scan.published_days`(修 K4:run 分区下遍历
+    `scan_root()` 兄弟目录只看得见本 run 自己的日期,Δ 模式因此**静默**退化成全量表)。
+    显式传 `root` → 仍是该目录下的兄弟枚举(测试注入面)。**存在性判据一字未动**。
+    """
+    if root is None:
+        from autoresearch.scan.published_days import previous_staging_dirs
+        cands = [p for p in previous_staging_dirs(date)
+                 if (p / "L3_judged_full.csv").exists()
+                 and (p / "L2_gbdt_top200.csv").exists()]           # 已是新→旧
+        return cands[0] if cands else None
     if not root.exists():
         return None
     cands = sorted((p for p in root.iterdir()
@@ -451,7 +461,11 @@ def prepare_l3_table(date: str, root: Path | None = None, delta: bool = True,
         pass1_counts = {"pass1_kept": len(kept), "pass1_cut": len(cut),
                         "pass1_meta": meta}
 
-    md = l3_table_md(date, root=base, delta=delta, dist_flag=True, reg_flag=True,
+    # root 而非 base:显式 root(测试注入)照旧透传;生产的 root=None 必须**保持 None**,
+    # 否则 `_prev_l3_day` 收到 `ws.scan_root()` 这个显式目录 → 又回到 K4 的兄弟目录枚举。
+    # 其余读点都是 `root or ws.scan_root()`,与传 base 逐字等价。
+    md = l3_table_md(date, root=Path(root) if root else None,
+                     delta=delta, dist_flag=True, reg_flag=True,
                      cat_flag=True, sector_terrain=True, misread_flag=True,
                      pinned_flag=True, pinned_path=pinned_path, lane_blocks=True,
                      restrict_codes=restrict_codes,

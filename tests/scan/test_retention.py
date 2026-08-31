@@ -794,3 +794,23 @@ def test_retain_calls_lake_manifest_before_writing_manifest(tmp_path, monkeypatc
     result = retention.retain(tmp_path / "scan", tmp_path / "run")
     assert calls == ["lake", "manifest"]
     assert result["lake_files"] == 3
+
+
+def test_manifest_covers_both_halves_of_the_publish_bundle(tmp_path):
+    """§6.3:appendix 与 summary 一起进 MANIFEST —— 只哈希一半,附录被动过就看不见了。"""
+    run = tmp_path / "run"
+    (run / "trace").mkdir(parents=True)
+    (run / "summary.md").write_text("决策层", encoding="utf-8")
+    (run / "appendix.md").write_text("现场层", encoding="utf-8")
+    retention.write_manifest(run)
+    recorded = retention.read_manifest(run)
+    assert "summary.md" in recorded and "appendix.md" in recorded
+    assert retention.verify_manifest(run)["ok"] is True
+
+    (run / "appendix.md").write_text("被改过", encoding="utf-8")
+    res = retention.verify_manifest(run)
+    assert res["ok"] is False and res["changed"] == ["appendix.md"]
+
+    retention.write_manifest(run)
+    (run / "appendix.md").unlink()
+    assert retention.verify_manifest(run)["missing"] == ["appendix.md"]

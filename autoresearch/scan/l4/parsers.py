@@ -9,6 +9,7 @@ from pathlib import Path
 import pandas as pd
 
 from autoresearch.agents.utils.rating import parse_rating
+from autoresearch.scan.report_model import EVIDENCE_MAX_CHARS
 
 _PROPOSAL_RE = re.compile(
     r"FINAL TRANSACTION PROPOSAL[:\s*]*\**\s*(BUY|HOLD|SELL)",
@@ -125,6 +126,117 @@ def _l4_brief(text: str, rating: str) -> str:
     if m:
         return _clip(m.group(1), 96)
     return "—"
+
+# ══ §6.7 评级同向「一句依据」(design: 2026-08-28-summary-slimdown-design.md §6.7)══════
+#
+# `_l4_brief` 的病:Hold/UW 卡只找「空」段,找不到就**回退到多空对撞首条空**,再找不到印 `—`
+# —— 08-26 实测 10 张卡里 **3 张印 `—`**,而「为什么没买」恰是 0 买日那张表的全部信息量。
+# 本函数是**并行入口**(不动 `_l4_brief` 与它的 96 字宽度 —— 旧调用方还在用),做两件事:
+#   ① 空头链补齐到四级:L4 空侧 → `**早停**` 停因 → 失守门柱 → L3 risk;
+#   ② **反向段绝不作为回退**(宁缺毋误导):给 Hold 卡印一句多头话术比印 `—` 更坏 ——
+#      表里那一列是「与终评级同向的依据」,印反了就是报告在说假话。
+#: `**早停**:停于 P2 ｜ 停因:资金流出` 的**原文**停因(不做 `_STOP_REASONS` 归一 ——
+#: 归一会把自由文本一律吞成「其他」,而这里要的是给人读的那句话)。
+_EVIDENCE_STOP_RE = re.compile(r"\*\*早停\*\*[:：][^\n]*?停因[:：]\s*([^\n｜|]+)")
+#: 首句边界(§6.7):第一个 。/;/; 之前。
+_EVIDENCE_SENT_END_RE = re.compile(r"[。;；]")
+#: 极性 → 评级集合。**未知评级按空头处理**(与 `_l4_brief` 的 `rating in (Buy, Overweight)`
+#: 同口径):拿不准时给空头证据是保守的,给多头证据是危险的。
+_EVIDENCE_BULL_RATINGS = ("Buy", "Overweight")
+
+
+def _evidence_clip(s: str, n: int = EVIDENCE_MAX_CHARS) -> str:
+    """一句依据的统一收口:去 markdown / 管道符 / 换行 → 按**字符**截断加 `…`。
+
+    全链唯一上限 `EVIDENCE_MAX_CHARS`(report_model 单一事实源),不再 80/96 两套。
+    截断后总长恰为 `n`(n-1 个字符 + `…`)。
+    """
+    t = str(s or "")
+    for mark in ("**", "__", "`"):
+        t = t.replace(mark, "")
+    t = t.replace("|", "/").replace("｜", "/")
+    t = re.sub(r"\s+", " ", t)
+    t = re.sub(r"^[\s\-•*#>]+", "", t).strip()
+    t = t.strip(" =。;；:：、")
+    return t if len(t) <= n else t[: n - 1] + "…"
+
+
+def _evidence_first_sentence(s: str) -> str:
+    """首句 = 第一个 `。`/`;`/`;` 之前(没有终止符 → 全文)。"""
+    t = str(s or "").strip()
+    m = _EVIDENCE_SENT_END_RE.search(t)
+    return t[: m.start()] if m else t
+
+
+def _bullbear_side(text: str, want: str) -> str:
+    """L4「**一行多空**」里 `want`(多/空)那一侧;该侧缺席 → ""(**不取另一侧**)。"""
+    m = _BULLBEAR_RE.search(text or "")
+    if not m:
+        return ""
+    for seg in re.split(r"[｜|]", m.group(1)):
+        s = seg.strip()
+        if s.startswith(want):
+            return s.lstrip("多空").strip(" :：")
+    return ""
+
+
+def _early_stop_reason(text: str) -> str:
+    """`**早停**` 行的停因原文;退回自由文本 `早停因:`;都没有 → ""。"""
+    m = _EVIDENCE_STOP_RE.search(text or "")
+    if m:
+        return m.group(1)
+    m = _STOPWHY_RE.search(text or "")
+    return m.group(1) if m else ""
+
+
+def _gate_breach_text(text: str) -> str:
+    """失守门柱 → `三门失守:主力真在、估值不透支`;无门柱段/无 ✗ → ""。
+
+    走 `gate_status` 单一口径(它认识加粗 `**✗**` —— 17.4% 误判那道疤就在这里)。
+    """
+    st = gate_status(text or "")
+    if not st:
+        return ""
+    bad = [g for g in _GATES3 if st.get(g)]
+    return f"三门失守:{'、'.join(bad)}" if bad else ""
+
+
+def pick_rating_aligned_evidence(card_text: str, final_rating: str,
+                                 finalist_row: dict | None = None) -> dict:
+    """与**终评级同向**的一句依据 → `{"text", "source", "polarity"}`(§6.7)。
+
+    - 极性:`final_rating` ∈ {Buy, Overweight} → 只走多头链;其余(Hold/Underweight/Sell/
+      未知/空)→ 只走空头链。**反向段绝不作为回退**。
+    - 多头链:L4「一行多空」多侧 → L3 `thesis` 首句。
+    - 空头链:L4「一行多空」空侧 → `**早停**` 停因 → 失守门柱 → L3 `risk` 首句。
+    - 全空 → `{"text": "—", "source": "none", "polarity": "neutral"}`。
+    - `source` ∈ `l4_bull|l4_bear|early_stop|gate|l3_thesis|l3_risk|none`(供 appendix C 留痕;
+      summary 只印 `text`)。
+
+    `finalist_row` = finalists.csv 的原行(读 `thesis`/`risk`);缺 → 只走卡内两/四级。
+    """
+    text = card_text or ""
+    row = finalist_row if isinstance(finalist_row, dict) else {}
+    if str(final_rating or "") in _EVIDENCE_BULL_RATINGS:
+        polarity = "bull"
+        chain: tuple[tuple[str, object], ...] = (
+            ("l4_bull", lambda: _bullbear_side(text, "多")),
+            ("l3_thesis", lambda: _evidence_first_sentence(row.get("thesis"))),
+        )
+    else:
+        polarity = "bear"
+        chain = (
+            ("l4_bear", lambda: _bullbear_side(text, "空")),
+            ("early_stop", lambda: _early_stop_reason(text)),
+            ("gate", lambda: _gate_breach_text(text)),
+            ("l3_risk", lambda: _evidence_first_sentence(row.get("risk"))),
+        )
+    for source, getter in chain:
+        got = _evidence_clip(getter())
+        if got and got != "—":
+            return {"text": got, "source": source, "polarity": polarity}
+    return {"text": "—", "source": "none", "polarity": "neutral"}
+
 
 def _decision_text(scan_dir: Path, ticker: str) -> str | None:
     """定位 finalist 的 lite 决策卡:context/scan/<date>/details/<ticker>.md,按 6 位代码 glob 兜底。"""

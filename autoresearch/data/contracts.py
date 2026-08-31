@@ -190,6 +190,47 @@ CONTRACTS: dict[str, Contract] = {
     "macro_china_shrzgm": _c(TIER_DEGRADE),
     "fred": _c(TIER_DEGRADE, note="宏观时序"),
     "yfinance": _c(TIER_DEGRADE, note="跨资产历史价"),
+
+    # ── B 级:外源实时信息扩面(design 2026-08-28-external-evidence-expansion §9)──
+    # 九个键**全部 B 级**:它们是 **I 类基建;消费者 presence-gated** —— 缺席时漏斗/报告照常
+    # 成立(不进 composite、不进 L0 硬门、不进 regime),只是相应块整块不出现。
+    # `empty_ok` 只给**源模块明写过"源成功,真实空"**的端点(见各自 record_degradation 的
+    # kind="legit_empty"),不凭想象加 —— 一个错立的"合法空"会把真失败伪装成正常。
+    "global_tape": _c(TIER_DEGRADE,
+                      "symbol market close status bar_date session_complete fetched_at",
+                      note="隔夜 tape(22 标的):**每个请求标的恰一行**,失败也留行(少一行 = "
+                           "失败被静默吞掉);列取自 yf_tape.TAPE_COLUMNS —— status 区分 "
+                           "ok/empty/failed,缺它就分不出「源真空」与「我们没拿到」"),
+    "us_options": _c(TIER_DEGRADE,
+                     note="美股期权链快照:报价易腐、不可回填 → 空/半截**不入湖**(落了就 "
+                          "path.exists 恒命中,这一天永远残缺)",
+                     persist_violations=False),
+    "us_ticker": _c(TIER_DEGRADE,
+                    note="美股票面(news/earnings_dates/upgrades/holders/info):微观 full 用;"
+                         "尚无生产者,先登记后接线(D-1 canary)"),
+    "cboe_vix": _c(TIER_DEGRADE, "date close", 2000,
+                   note="CBOE VIX 全历史 csv(≈9,261 行,1990 起)= VIX 分位备源。行数下限专治"
+                        "「拉了一半就断了」——分位对整段历史敏感,少一段 2008/2020 会静默偏移"
+                        "而读数看起来一模一样;半截**不入湖**(同 C2)",
+                   persist_violations=False),
+    "fred_calendar": _c(TIER_DEGRADE,
+                        note="FRED releases/dates:区间内 0 条发布 = 真实空(源模块记 "
+                             "kind='legit_empty')",
+                        empty_ok=True),
+    "fomc_calendar": _c(TIER_DEGRADE,
+                        note="FOMC 年度日程(官方页物化):快照 → 空/半截不入湖",
+                        persist_violations=False),
+    "official_event_calendar": _c(TIER_DEGRADE,
+                                  note="官方事件时刻(Fed/BLS/BEA/IR):只为候选补准确时刻,"
+                                       "确认才升 TIMED、否则保持 DATE_ONLY;快照 → 不入湖违约帧",
+                                  persist_violations=False),
+    "edgar": _c(TIER_DEGRADE,
+                note="SEC EDGAR submissions:近 90 日 0 条申报 = 真实空(源模块记 "
+                     "kind='legit_empty');需官方 UA + 速率遵守",
+                empty_ok=True),
+    "us_earnings_dates": _c(TIER_DEGRADE,
+                            note="美股财报日历(yfinance earnings_dates):未来日期 + 历史 8 次"
+                                 "实际波动对齐;尚无生产者,先登记后接线(D-1 canary)"),
     # live 端点(spot/资金流榜/涨停池)不入湖、不校验 —— 见 `check` 的 policy 短路。
 }
 
@@ -335,12 +376,61 @@ _FRAME_VOLPRICE = ("cmf_20", "obv_mom_20")     # volprice 组:唯一的多日序
 
 _FRAME_MIN_ROWS = 2000    # L0 硬门(市值/次新/流动性)后仍应有数千只;低于此 = 上游残缺
 
+# ───── 覆盖率判据(2026-08-29 T3):**列在场 ≠ 列可用** ─────
+#
+# 门槛 0.90 = "这一列必须覆盖至少九成的股票,否则它代表的因子组已经残了"。
+#
+# 为什么要加:08-26(与 07-29)的生产帧里 `rsi6` / `rsi12` / `winner_rate` /
+# `chip_concentration` / `price_to_cost` 五列的非空率**都是 0.5472** —— 21:xx 的 tushare
+# 半载快照(`stk_factor_pro` / `cyq_perf` 只落了一半的票)。而当时这道门只查"列在不在"与
+# "是不是整列全 NaN",半张表是 NaN 照样放行:`composite_score` 对半残的组按 `notna()` 逐股
+# 重归一 —— **有值的那 54.7% 与没值的那 45.3% 用的是两套权重**,而打分照样输出 0–100、
+# 漏斗照样跑完、退出码 0。08-29 复跑同一天(数据已补齐)实测 1.0000,坐实了那是取数窗口
+# 问题而非市场事实 —— 但当晚**没有任何一行记录**说过这件事。
+#
+# 只查"列在场但覆盖率不足",不查"列整根缺席":缺席是合法降级(低权限 token 本就没有
+# `stk_factor_pro`/`cyq_perf`),而且取数侧已经 `record_degradation` 记过账;半载才是那种
+# "看起来一切正常"的失真。
+_FRAME_MIN_COVERAGE = 0.90
+# **阻断线**(2026-08-29 复核加):低于它才抛,介于两线之间只记账 + 告警。
+#
+# 为什么不是「低于 0.90 就阻断」:本条守卫立案时引的两个现场(08-26 与 07-29)实测覆盖率
+# **0.547** —— 若 0.90 直接阻断,那两晚的扫描不是"带着半载 chip/tech 出报告",而是**整趟
+# 不存在**。诊断书写的病是「**降级不留痕**」(composite 对缺失组自动剔分母、放大其余组权重,
+# 而当晚没有任何一行记录说过),不是「不许降级」;把 warn 直接升成 kill 比证据要求的更强,
+# 而代价是一个真实的夜间窗口(21:xx 正是 tushare 灌数半载、也正是扫描跑动的时刻)。
+#
+# 所以分两线,两种失败长得不一样:
+#   coverage < 0.50  → A 级抛出(**这一组实际上不在了**,与「整列全 NaN / 行数腰斩」同族);
+#   0.50 ≤ cov < 0.90 → `record_degradation` + 告警(进 `degraded.json` → 报告一行),
+#                        让人看得见,但今晚照常有报告。
+# 回滚杆 = 把 `_FRAME_BLOCK_COVERAGE` 提到 0.90(即恢复"低于 0.90 就阻断")。
+_FRAME_BLOCK_COVERAGE = 0.50
+# A 级来源列(空/半载 → 阻断):行情/动量/主力资金 + stk_factor_pro 与 cyq_perf 各一个代表。
+_FRAME_COVERAGE_A = ("close", "pct_60d", "main_net_ratio", "rsi6", "winner_rate")
+# B 级来源列(半载 → 降级记账,不阻断):北向 / 两融。
+_FRAME_COVERAGE_B = ("hk_ratio", "rz_buy_intensity")
+
+
+def _coverage(df: pd.DataFrame, col: str) -> float:
+    return float(df[col].notna().mean())
+
 
 def check_market_frame(df: pd.DataFrame, *, with_vol_series: bool = True) -> pd.DataFrame:
     """全市场因子帧的出口契约(`scan.frame.build_market_frame` 末尾调)——**漏斗地基的最后一道门**。
 
     前面每一道校验都可能被绕过(新的 try/except、新的取数路径、湖里的历史脏数据),但**打分帧本身
     残缺就是残缺**:这里查的是"喂给 composite_score 的东西到底全不全",与它从哪来无关。
+
+    三条判据:① 行数(规模,受 `CHECK_ROWS` 开关)② 关键列在不在 / 是不是整列全 NaN
+    ③ **覆盖率**(2026-08-29 新增):A 级来源列 `{close, pct_60d, main_net_ratio, rsi6,
+    winner_rate}` 非空率 < **0.90** → `DataContractError` 阻断;B 级来源列
+    `{hk_ratio, rz_buy_intensity}` < 0.90 → `record_degradation` 降级记账。
+
+    判据 ③ 补的是判据 ② 的盲区:08-26 的生产帧里 rsi6/winner_rate 非空率 **0.547**(21:xx
+    的 tushare 半载快照),列在场、不是全 NaN,于是这道门放行,而 composite 对半残的组按
+    `notna()` 逐股重归一 —— 有值的那一半和没值的那一半用的是两套权重,打分照样漂亮。
+    08-29 复跑同一天实测 1.0000:那是取数窗口,不是市场事实,而当晚账本上一行记录都没有。
 
     `with_vol_series=False`(盘前只要 regime/哨兵的省时路径)→ 不查 volprice 列(显式跳过 ≠ 静默丢失)。
     """
@@ -352,12 +442,40 @@ def check_market_frame(df: pd.DataFrame, *, with_vol_series: bool = True) -> pd.
             v.append(f"行数腰斩({len(df)} < {_FRAME_MIN_ROWS})")
         need = list(_FRAME_CORE) + (list(_FRAME_VOLPRICE) if with_vol_series else [])
         miss = [c for c in need if c not in df.columns]
+        dead: list[str] = []
         if miss:
             v.append(f"缺关键列 {miss}")
         else:                       # 列在但整列全 NaN = 同样的死法(列在场骗过了列检查)
             dead = [c for c in need if c != "code" and df[c].isna().all()]
             if dead:
                 v.append(f"整列全 NaN {dead}")
+        # ③ 覆盖率:列在场、也不是全 NaN,但半张表是 NaN(已报过的列不重复刷)
+        seen = set(miss) | set(dead)
+        for c in _FRAME_COVERAGE_B:                 # B 级先记账:A 级抛出后这一趟就没了
+            if c in df.columns and c not in seen and _coverage(df, c) < _FRAME_MIN_COVERAGE:
+                record_degradation(
+                    "market_frame",
+                    f"{c} 非空率 {_coverage(df, c):.3f} < {_FRAME_MIN_COVERAGE:.2f}"
+                    f"(B 级来源半载/缺席)→ 该组对没值的股票被重归一跳过,不阻断",
+                    key=f"coverage_{c}")
+        thin = [(c, _coverage(df, c)) for c in _FRAME_COVERAGE_A
+                if c in df.columns and c not in seen and _coverage(df, c) < _FRAME_MIN_COVERAGE]
+        # 半载分两档:低于阻断线 = 这一组实际上不在了(抛);两线之间 = 记账 + 告警,今晚照常出报告。
+        for c, cov in thin:
+            if cov >= _FRAME_BLOCK_COVERAGE:
+                record_degradation(
+                    "market_frame",
+                    f"{c} 非空率 {cov:.3f} < {_FRAME_MIN_COVERAGE:.2f}(半载快照:列在场、"
+                    f"不全 NaN,只覆盖了一部分票)→ composite 对没值的股票剔该组分母、"
+                    f"放大其余组权重;≥{_FRAME_BLOCK_COVERAGE:.2f} 故不阻断,但这一趟的打分"
+                    f"**不是满配**,读排名时按此折价",
+                    key=f"coverage_{c}")
+        blocking = [(c, cov) for c, cov in thin if cov < _FRAME_BLOCK_COVERAGE]
+        if blocking:
+            v.append("A 级列非空率低于阻断线 "
+                     + f"{_FRAME_BLOCK_COVERAGE:.2f}:"
+                     + ", ".join(f"{c}={cov:.3f}" for c, cov in blocking)
+                     + "(半载快照:列在场、不全 NaN,但多数票没值 = 该组实际上不在了)")
     if v:
         raise DataContractError(
             f"[数据契约·A级] 全市场因子帧违约:{'; '.join(v)}\n"

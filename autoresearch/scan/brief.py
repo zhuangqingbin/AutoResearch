@@ -46,6 +46,7 @@ from pathlib import Path
 
 from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import MAIN_RULER, REL_MARKET
+from autoresearch.contracts import artifacts as _contract_artifacts
 from autoresearch.scan.relative_buy import DECISION_FILENAME, MODE_SHADOW
 from autoresearch.scan.relative_facts import (  # P0 低位转强波:读模型/禁词单一事实源(summary 同源)
     BANNED_RELATIVE_PHRASES,  # noqa: F401 — 再导出契约,测试锁 `brief.X is relative_facts.X`,勿删
@@ -81,19 +82,43 @@ SOURCES_FILENAME = "_brief_sources.json"
 #:      少了 ⊆,一条从没接线的「许愿项」会永远躺在表里冒充契约(`market_view.md` 就这么
 #:      躺了一轮,复核 M-2 逮到)。
 #:
-INPUT_WHITELIST = (
-    "meta.json",
-    "finalists.csv",
-    "_final_ratings.json",
-    "decision_records.json",
-    "run_mode.json",
-    "run_health.json",
-    "gate_fires.csv",
-    "_tripwire_conflicts.json",
-    "market_view.md",
-    DECISION_FILENAME,
-    "temperature.csv",
-    "menu_health",
+#: 2026-08-29(Task 9c / spec §2.4 A1):**路径不在这里再写一份** —— 凡是已登记的产物
+#: 一律 `("artifact", <登记名>)`,路径由 `contracts.artifacts` 给;登记表改名而这里没跟上
+#: (或名字打错)= **导入即 `KeyError`**,不会像今天这样安静地漂(K1 的病:一个产物名散在
+#: 40 个文件里)。
+#:
+#: ⚠️ 白名单是**许可**表,比登记表窄得多(登记表 80+ 项,brief 只准读下面 10 项)——
+#: 所以这里是**逐项点名**,不是 `for_root("staging")` 之类的宽过滤器。用过滤器等于把
+#: 「brief 能读什么」交给别人以后往登记表里加什么,那是放宽许可,不是派生。
+#:
+#: `("literal", …)` 的三项没进登记表,各有各的理由(它们**不是**漏登记):
+#:   `_tripwire_conflicts.json` / `temperature.csv` —— `contracts.NON_ARTIFACT_LITERALS`
+#:      审计判定「不是流水线产物」(后者在引擎根 `context_<engine>/learning/` 下增量落盘);
+#:   `menu_health` —— 虚拟项,根本不是文件(见上面的真身注释)。
+_WHITELIST_SPEC: tuple[tuple[str, str], ...] = (
+    ("artifact", "funnel_meta"),               # meta.json
+    ("artifact", "finalists"),
+    ("artifact", "final_ratings"),
+    ("artifact", "decision_records"),
+    ("artifact", "run_mode"),
+    ("artifact", "run_health"),
+    ("artifact", "gate_fires"),
+    ("literal", "_tripwire_conflicts.json"),
+    ("artifact", "market_view"),
+    ("artifact", "relative_buy_decision"),     # == relative_buy.DECISION_FILENAME(读点用后者)
+    ("literal", "temperature.csv"),
+    ("literal", "menu_health"),
+    ("artifact", "overseas_calendar"),  # D-2:隔夜窗海外事件(⑤ 风险哨一句;风险可见性,不喂判断层)
+)
+
+#: 白名单里**已登记**产物的登记名(顺序同上)。
+REGISTERED_INPUTS: tuple[str, ...] = tuple(n for kind, n in _WHITELIST_SPEC if kind == "artifact")
+#: 白名单里**未登记**的三项(理由见 `_WHITELIST_SPEC` 注释)。
+UNREGISTERED_INPUTS: tuple[str, ...] = tuple(n for kind, n in _WHITELIST_SPEC if kind == "literal")
+
+INPUT_WHITELIST = tuple(
+    _contract_artifacts.by_name(n).path if kind == "artifact" else n
+    for kind, n in _WHITELIST_SPEC
 )
 
 #: 本模块**产出**(不是输入)的文件名 —— 白名单不变量测试的豁免集。
@@ -241,6 +266,19 @@ def _menu_sick(scan_dir: Path) -> bool | None:
     return "⚠️菜单病" in block
 
 
+def _overseas_line(scan_dir: Path) -> str:
+    """D-2:隔夜窗海外事件一句(`scan/overseas.py`;缺文件 / 无事件 → "")。
+
+    **风险可见性,不是决策输入**:brief ⑤ 只印一句 + 计数,不改 BUY/仓位/评级
+    (设计稿 §0 边界最后一行)。判断层接入(B-2/B-3)受 09-中冻结,与本行无关。
+    """
+    try:
+        from autoresearch.scan.overseas import brief_line
+        return brief_line(scan_dir)
+    except Exception:  # noqa: BLE001 — 可选层,坏日历不挡 30 秒入口
+        return ""
+
+
 def collect_facts(scan_dir: Path | str, *, analysis_date: str | None = None,
                   run_folder: str | None = None, decision: dict | None = None,
                   scan_root: Path | None = None) -> dict:
@@ -322,6 +360,7 @@ def collect_facts(scan_dir: Path | str, *, analysis_date: str | None = None,
         "risk": {**_gate_counts(scan),
                  "degraded": list(health.get("degraded_fields") or []),
                  "menu_sick": _menu_sick(scan),
+                 "overseas": _overseas_line(scan),
                  "cards": counts.get("cards"), "finalists": len(finals)},
         "delta": {"prev_date": prev_date, "n_repeat": churn.get("n_repeat"),
                   "n_today": churn.get("n_today"), "changes": changes},
@@ -393,6 +432,13 @@ def _sections(facts: dict, *, pinned_cap: int, delta_cap: int) -> tuple[list[str
     _src(src, "risk.n_warn", rk["n_warn"], "gate_fires.csv", "severity==warn", risk_text)
     _src(src, "risk.degraded", ",".join(rk["degraded"]), "run_health.json",
          "degraded_fields", risk_text)
+    # D-2:隔夜窗海外事件一句(presence-gated;文件缺 / 无事件 → 整段不出现,parity 不破)。
+    # **风险可见性**:它不改 BUY、不改仓位、不改评级,只让「买之前/持仓期间有什么已知外部
+    # 事件」在 30 秒入口里可见 —— 08-26 真跑漏掉 NVDA 盘后财报正是这条腿缺席。
+    _ov = str(rk.get("overseas") or "")
+    if _ov:
+        risk_text = f"{risk_text} · {_ov}"
+        _src(src, "risk.overseas", _ov, "overseas_calendar.csv", "window+subject", risk_text)
     _src(src, "risk.menu_sick", rk.get("menu_sick"), "menu_health",
          "健康上涨断供旗", risk_text)
     out.append("**⑤ 风险哨**:" + risk_text)

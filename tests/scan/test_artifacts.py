@@ -129,3 +129,68 @@ def test_read_finalists_keeps_codes_as_strings(tmp_path):
     fp = tmp_path / "finalists.csv"
     fp.write_text("code,name\n2156,x\n", encoding="utf-8")
     assert read_finalists(fp)["code"].dtype == object
+
+
+# ── 现场附录(2026-08-28 §6.3 / §6.4)────────────────────────────────────────────
+#
+# appendix 是**契约门控**产物:清单里加一项不能让所有历史 run 变红。判据只有一条 ——
+# 这一次 run 自己的 `run_contract.artifact_schema_versions` 里有没有记这个名字。
+
+
+def _contract(scan, versions: dict) -> None:
+    scan.mkdir(parents=True, exist_ok=True)
+    (scan / "run_contract.json").write_text(
+        json.dumps({"run_id": "run-1", "contract_hash": "b" * 64,
+                    "artifact_schema_versions": versions}),
+        encoding="utf-8",
+    )
+
+
+def test_new_contract_makes_the_appendix_a_real_obligation(tmp_path):
+    """契约登记了 appendix → 缺席必红(MISSING),不能靠「新文件而已」蒙混过去。"""
+    scan, report = tmp_path / "2026-08-28", tmp_path / "run"
+    report.mkdir()
+    _contract(scan, {"summary": 1, "appendix": 1})
+    rows = _by_name(build_artifact_index(scan, report_dir=report, now=NOW))
+    assert rows["appendix"]["status"] == "MISSING"
+    assert rows["appendix"]["root"] == "report" and rows["appendix"]["path"] == "appendix.md"
+
+
+def test_present_appendix_is_hashed_like_any_other_artifact(tmp_path):
+    scan, report = tmp_path / "2026-08-28", tmp_path / "run"
+    report.mkdir()
+    _contract(scan, {"summary": 1, "appendix": 1})
+    (report / "appendix.md").write_text("# 扫描附录\n", encoding="utf-8")
+    rows = _by_name(build_artifact_index(scan, report_dir=report, now=NOW))
+    assert rows["appendix"]["status"] == "PRESENT"
+    assert len(rows["appendix"]["content_hash"]) == 64
+
+
+def test_legacy_contract_never_grows_an_appendix_obligation(tmp_path):
+    """空 map 的 legacy run:**整行不生成** —— 既不 MISSING、也不进 coverage 分母。
+    「NOT_EXPECTED」与「该有却没有」在读者眼里必须长得不一样。"""
+    scan, report = tmp_path / "2026-07-28", tmp_path / "run"
+    report.mkdir()
+    _contract(scan, {})
+    index = build_artifact_index(scan, report_dir=report, now=NOW)
+    rows = _by_name(index)
+    assert "appendix" not in rows
+    assert index["coverage"]["registered"] == len(index["artifacts"])
+    # 其余产物照旧被追责 —— 门控只对新加的那一项生效,不是给整张表开后门
+    assert rows["summary"]["status"] == "MISSING"
+
+
+def test_run_without_any_contract_is_treated_as_legacy(tmp_path):
+    """契约文件都没有(更老的现场)→ 同样不追责 appendix。"""
+    scan, report = tmp_path / "2026-07-01", tmp_path / "run"
+    scan.mkdir()
+    report.mkdir()
+    assert "appendix" not in _by_name(build_artifact_index(scan, report_dir=report, now=NOW))
+
+
+def test_todays_contracts_do_register_the_appendix(tmp_path):
+    """接线检查:新 run 的契约必须真的记上 appendix,否则上面那条「必红」永远触发不到
+    (「生产者没接线」FN-1 家族)。"""
+    from autoresearch.scan.artifacts import artifact_schema_versions
+
+    assert artifact_schema_versions()["appendix"] == 1

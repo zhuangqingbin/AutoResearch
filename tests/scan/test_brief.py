@@ -386,8 +386,35 @@ def test_whitelist_has_no_dead_entry(scan):
     """
     files = {r["file"] for r in brief.build(scan, run_folder=_RUN)["sources"]}
     dead = sorted(set(brief.INPUT_WHITELIST) - files)
-    # temperature.csv 在 tests/scan/conftest 里被隔离成不存在 → 该行 presence-gated 不出
-    assert dead == ["temperature.csv"], f"白名单死条目(从没被读过):{dead}"
+    # 两个 presence-gated 项在夹具里天然不出边表行,**不是死条目**:
+    #   `temperature.csv`        —— tests/scan/conftest 把它隔离成不存在;
+    #   `overseas_calendar.csv`  —— D-2 日历,夹具没有它(无事件 → ⑤ 不加那句)。
+    # 判据仍是「必须能真渲染出一个数」:下面那条用例给了日历就要求它出现在边表里,
+    # 所以这里的豁免不会把「接了白名单却永远读不到」放行(FN-1 家族防线)。
+    assert dead == ["overseas_calendar.csv", "temperature.csv"], \
+        f"白名单死条目(从没被读过):{dead}"
+
+
+def test_overseas_line_is_sourced_when_the_calendar_exists(tmp_path):
+    """D-2:日历在场 → ⑤ 风险哨多一句 **且** sources 边表有 `risk.overseas` 行。
+
+    这条是上面那个豁免的对手方:白名单里加一项而它永远读不到,就是「生产者没接线」的
+    同族(FN-1)。给了日历还不出行 = 接线断了,这里会红。
+    """
+    from autoresearch.scan import overseas as _ov
+
+    scan = _scan_dir(tmp_path)
+    ev_csv = scan / _ov.OVERSEAS_CSV
+    ev_csv.write_text(
+        "event_id,event_type,subject,window,time_quality,local_date,scheduled_at_utc,"
+        "mapped_symbols,source_url,first_seen_ts,revision,status\n"
+        "e1,earnings,NVDA 财报,holding_overnight,TIMED,2026-08-26,2026-08-26T20:00:00+00:00,"
+        "NVDA,https://example.com/x,2026-08-26T01:00:00+00:00,r1,scheduled\n",
+        encoding="utf-8")
+    out = brief.build(scan, run_folder=_RUN)
+    assert "海外窗" in out["markdown"]
+    assert any(r["field"] == "risk.overseas" for r in out["sources"]), \
+        "日历在场却没出边表行 —— 白名单接了个读不到的输入"
 
 
 def test_tripwire_number_is_sourced_to_its_own_file(tmp_path):

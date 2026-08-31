@@ -111,7 +111,7 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
    ```bash
    uv run --no-sync python -m autoresearch.scan.prelude <YYYY-MM-DD>
    ```
-   跑全部确定性前奏(一致预期/温度/L0-L2/日历/催化/菜单预算哨兵/**L4 拒绝价值日读**(2026-08-22:滚动 40 日评级 rank-IC·≥OW 出现日数·三门 PASS−FAIL·finalist 超额,只给人看不喂 agent)/覆盖池日检/新闻目录体检 **9 步**);末尾汇总屏含 **⚡tripwire 持仓盯梢行(仅人看,勿贴给任何 agent)**。
+   跑全部确定性前奏 **12 步**(顺序与去留的单一事实源 = `prelude.STEP_NAMES`,别照抄本行:`consensus` 一致预期 / `temperature` 温度 / `universe` L0-L2 / `calendar` 日历 / `catalyst` 催化 / `menu` 菜单预算哨兵 / `l4_rejection` **L4 拒绝价值日读**(2026-08-22:滚动 40 日评级 rank-IC·≥OW 出现日数·三门 PASS−FAIL·finalist 超额,只给人看不喂 agent)/ `outcome_fill` 结果账本回填(2026-08-26,只记不学,读历史不读当日)/ `ledger_views` 运行日历+市场行+逐级 KPI(2026-08-28 G2/G3,同上)/ `dossier_pool` 覆盖池日检 / `news_catalog` 新闻目录体检 / `overseas` 隔夜窗海外事件日历(2026-08-29 D-2:风险可见性,**不喂判断层**));末尾汇总屏含 **⚡tripwire 持仓盯梢行(仅人看,勿贴给任何 agent)**。
    (2026-08-21 learning 层退役同批删掉 6 步:attribution 刷新 / retro 欠账 / t1 欠账 / 学习环健康三查 / 十本账本刷新 / GATE0 preflight。)
    - **夜间预热**:交易日 19:30 launchd 自动跑;看汇总屏「预热(夜间)」行,安装见 STAGES.md『运维细节』。
 0.5. **市场研判**:
@@ -164,14 +164,25 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
    **五条在一个 shell 批次跑完再播 CP7**,`<run_id>` 是 assemble 打印的报告目录名:
    ```bash
    CTX=context_${AUTORESEARCH_ENGINE:-claude}; RPT=reports_${AUTORESEARCH_ENGINE:-claude}
+   # ⚠️ 两份计量 JSON 的落点由 `AUTORESEARCH_RUN_ID` 决定,**不是**恒为 `$CTX/scan/<date>/`。
+   #   读侧真身:`post_run observe` 走 `_resolve_scan(<date>)` → `workspace.scan_root()/<date>`,
+   #   `_usage_reconcile.json` 由 `self_review.usage_reconcile_lint(scan_dir.parent)` 扫兄弟日期目录。
+   #   `scan_root()` 就在这里分两支,写侧必须跟着分:
+   #     ① 有 RUN_ID(步骤 0 已 export,**正常跑动恒走这支**)→ run 分区:
+   #        --json-out $CTX/scan_runs/$AUTORESEARCH_RUN_ID/staging/<date>/_token_usage.json
+   #     ② 无 RUN_ID(单步重跑 / 老树)→ 历史根:
+   #        --json-out $CTX/scan/<date>/_token_usage.json
+   #   下面的 `$STAGING` 就是这两支的 shell 取法 —— **别手写死其中一支**:落错根时读侧只是
+   #   什么都读不到,CP7 **静默**写 `UNMEASURED`,没有任何报错替你发现。
+   STAGING=${AUTORESEARCH_RUN_ID:+$CTX/scan_runs/$AUTORESEARCH_RUN_ID/staging}; STAGING=${STAGING:-$CTX/scan}
    uv run --no-sync python -m autoresearch.scan.assemble <date> && \
    uv run --no-sync python -m autoresearch.scan.gates gate4 <date> && \
    uv run --no-sync python -m autoresearch.trace.usage_harvest --engine $AUTORESEARCH_ENGINE \
      --run-id "$RUN_ID" \
      --out $RPT/scan/<run_id>/token_usage.md \
-     --json-out $CTX/scan/<date>/_token_usage.json && \
+     --json-out $STAGING/<date>/_token_usage.json && \
    uv run --no-sync python -m autoresearch.trace.usage_reconcile <date> \
-     --json-out $CTX/scan/<date>/_usage_reconcile.json && \
+     --json-out $STAGING/<date>/_usage_reconcile.json && \
    uv run --no-sync python -m autoresearch.scan.post_run <date> observe \
      --report-dir $RPT/scan/<run_id>
    ```
@@ -180,7 +191,7 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
    `observe` 的 stdout JSON 里以 `capsule` 段返回。Claude 引擎仍可用 `--session <sessionId>`
    走旧口径;Codex 引擎**必须**走 `--engine codex --run-id`(它没有 Claude 的 subagent 目录,
    `--session` 只会给出一张空表)。
-   → `$RPT/scan/<YYYYMMDD_HHMM>/`:**`brief.md`(≤3KB 速读,入口)**+`summary.md`(详细版)+`details/`+`token_usage.md`+`trace/`;`index.md` 首行即指 brief。成本/墙钟成熟门(10 次真实扫描前恒 `IMMATURE`)见 STAGES.md『计量与跨层校准』;预算超线只写 warning/`DEGRADED`,不制造 BUY。
+   → `$RPT/scan/<数据日YYYYMMDD>-<发布MMDD_HHMM>/`(2026-08-28 用户裁定:**首段是研究的哪天行情**,尾段是写完的时刻;如 `20260825-0826_2000` = 研究 08-25 的市场、08-26 20:00 写完。旧格式 `<跑动日>_<HHMM>` 只读兼容,历史目录一律不改名):**`brief.md`(≤3KB 速读,入口)**+`summary.md`(**决策层**,11 节)+`appendix.md`(**现场层** A–G:漏斗/研究全文/门柱口径/耗时/方法/局限)+`details/`+`token_usage.md`+`trace/`;`index.md` 首行即指 brief。成本/墙钟成熟门(10 次真实扫描前恒 `IMMATURE`)见 STAGES.md『计量与跨层校准』;预算超线只写 warning/`DEGRADED`,不制造 BUY。
    **汇报(CP7)**:**先原文转播 `brief.md` 全文**(六节:市场/漏斗/BUY 结论/持仓/风险哨/昨日 delta),再补分段耗时(`render --view timing`)+ 产物路径;需要展开细节才引 `summary.md`。0 买日的**停因分桶**已由 brief ③ 自带,照贴即可,**不要说「无一过 ≥OW 三门」**——早停卡按定义不写三门段(见 STAGES.md『运维细节』)。
    **GATE4 拦什么**(控制方裁定):判据 = `gate_fires.csv` 里有任意一行 `severity=fail`。`brief_lint` 的八条按「**报告是不是在说假话**」二分 —— **fail(毙掉本趟)**:`brief·数字对账` / `brief↔summary不一致` / `brief·白名单外取数` / `brief·BUY契约(active 期)`;**warn(放行,但进账 + 播报)**:`brief·缺失` / `brief·超预算` / `brief·边表缺失` / `brief·边表过期`。**一份人类可读摘要排版超限是展示层问题;报告说假话才是硬门该拦的事**——别让 3KB 排版预算毙掉一条 60 分钟的流水线(「GATE3 差 16 字节」同族疤)。播报行 `[brief lint] fail N · warn M / 共 K 条` 两个计数都要念。
    **报告分两层是安全的**:**机器消费者不读、也不解析 `summary.md` 正文**(结论都在 `finalists.csv` / `decision_records.json` / `_final_ratings.json` 等结构化文件里),所以重排/瘦身 summary 不影响任何人;红线文件 `details/*.md`、`finalists.csv`、`decision_records.json` 一字不动。

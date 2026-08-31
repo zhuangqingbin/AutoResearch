@@ -48,8 +48,44 @@ def test_repair_writes_overlay_and_preserves_base_root(frozen):
 def test_repair_cannot_overwrite_a_base_path(frozen):
     handle, _, report_dir, _ = frozen
 
-    with pytest.raises(RuntimeError, match="repair adds nothing"):
+    with pytest.raises(FileExistsError, match="collides with the frozen base"):
         repair(handle.run_id, reason="no-op", source=report_dir / "capsule")
+
+
+def test_repair_fails_when_only_some_files_collide(frozen, tmp_path):
+    """混合冲突整笔失败:碰撞件被静默跳过会让操作者以为证据都补回来了。"""
+    handle, _, report_dir, base = frozen
+    frozen_file = next(
+        path for path in sorted((report_dir / "capsule").rglob("*")) if path.is_file()
+    )
+    mixed = tmp_path / "mixed"
+    collision = mixed / frozen_file.relative_to(report_dir / "capsule")
+    collision.parent.mkdir(parents=True, exist_ok=True)
+    collision.write_bytes(b"rewritten")
+    (mixed / "agents/raw").mkdir(parents=True, exist_ok=True)
+    (mixed / "agents/raw/l4-card-600000-9.jsonl.gz").write_bytes(b"\x1f\x8b restored")
+
+    with pytest.raises(FileExistsError, match="collides with the frozen base"):
+        repair(handle.run_id, reason="mixed source", source=mixed)
+
+    # 失败必须是空操作:没有叠加层、没有账本 revision、base root 不动。
+    assert not (capsule_mod.repairs_root() / handle.run_id).exists()
+    revisions = [
+        row["revision"] for row in read_valid_ledger() if row["run_id"] == handle.run_id
+    ]
+    assert revisions == [1]
+    assert capsule_mod._load_root(report_dir)["root_hash"] == base.root_hash
+
+
+def test_repair_rejects_a_source_with_no_files(frozen, tmp_path):
+    handle, _, _, _ = frozen
+    empty = tmp_path / "empty"
+    (empty / "nested").mkdir(parents=True)
+
+    with pytest.raises(RuntimeError, match="repair adds nothing"):
+        repair(handle.run_id, reason="nothing restored", source=empty)
+
+    assert not (capsule_mod.repairs_root() / handle.run_id).exists()
 
 
 def test_repair_appends_one_ledger_revision_chained_to_the_first(frozen):

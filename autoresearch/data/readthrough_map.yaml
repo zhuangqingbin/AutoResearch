@@ -1,0 +1,351 @@
+# 海外读透映射表(人工维护,入库)—— design `docs/specs/2026-08-28-external-evidence-expansion-design.md` §8。
+#
+# ╔══════════════════════════════════════════════════════════════════════════════════════════╗
+# ║ 本表示「值得观察的关系」,**不表示因果方向、涨跌传导方向或评级方向**。                     ║
+# ║ 渲染时禁止写「A 涨所以 B 应涨」(§8 规则一;`readthrough.py` 模块 docstring 同一句)。      ║
+# ╚══════════════════════════════════════════════════════════════════════════════════════════╝
+#
+# ── 初版状态:**全部条目 `status: pending_evidence` + `evidence_url: null`** ────────────────
+#
+#   每一条关系都需要一份**可核对的公开凭证**(客户/供应商披露、招股书或年报的客户集中度章节、
+#   基金持仓页、交易所公告 …)。写这份初版时**没有任何一条被真实核对过**,所以按 §8 的纪律
+#   一律留 `null` 并标 `pending_evidence` —— **禁止编造 URL**。后果(由代码强制,不是自觉):
+#
+#     · `readthrough.load_map()` 直接把它们**全部剔除** ⇒ 当前本表的可消费条目数 = 0
+#       ⇒ sector pack 的 `readthrough` 键整键不存在,报告里一个字都不会出现;
+#     · `readthrough.lint_map()` 把它们报成 `PENDING`(不是 ERROR)—— 这是**合法的待办**形态,
+#       不是文件坏了。ERROR 只留给「有 URL 但不是公网 http(s)」「枚举非法」「过期区间倒挂」这类真错。
+#
+#   转正流程(人工,走 PR):找到凭证 → 填 `evidence_url`(公网 http(s),不带追踪参数)→
+#   `status` 改 `active` → 补 `effective_from`。**只改 status 不填 URL 会被 lint 判 ERROR**
+#   (「声称已核实却拿不出凭证」比 pending 更坏)。
+#
+# ── 字段(§8 schema v2 逐字) ───────────────────────────────────────────────────────────────
+#   symbol          海外标的代码(yfinance 口径;指数带 `^`)
+#   kind            company | etf | index   ← **ETF / 指数不得伪装成公司或财报主体**
+#   relation        customer | supplier | peer | theme
+#   direction       downstream | upstream | peer
+#   rationale       为什么值得看(一句话;**不写方向、不写涨跌传导**)
+#   evidence_url    公网 http(s) 凭证;没有真凭证 → null(必须同时标 pending_evidence)
+#   effective_from  起效日(必填)
+#   effective_to    失效日;null = 长期有效。季度复核让过期项**自动停止消费**
+#   status          pending_evidence | active | delisted | suspended | halted | unlisted | expired
+#   tradable        可选三态布尔;lint 的在线解析器可回填。false ⇒ 不消费
+#
+# ── 规模纪律 ───────────────────────────────────────────────────────────────────────────────
+#   单层 ≤4 项(超出由 owner 人工取舍,lint 判 ERROR);个股 `codes` 优先于 `industries`
+#   (命中 code 就**只用** code 名单,不与行业名单合并);空名单 = 整块省略。
+#   行业名用 scan 帧里的真实行业名(申万口径,如「半导体」「消费电子」),对不上 = 永远命中不了。
+
+version: 2
+reviewed_at: 2026-08-29
+owner: research
+
+industries:
+  # ───────────────────────────── 电子 / 算力链 ─────────────────────────────
+  半导体:
+    - symbol: SMH
+      kind: etf
+      relation: theme
+      direction: peer
+      rationale: 海外半导体板块地形(整体涨跌与资金进出的观察面)
+      evidence_url: null
+      effective_from: 2026-08-29
+      effective_to: null
+      status: pending_evidence
+    - symbol: ^SOX
+      kind: index
+      relation: theme
+      direction: peer
+      rationale: 费城半导体指数 —— 板块基准,只作地形不作个股映射
+      evidence_url: null
+      effective_from: 2026-08-29
+      effective_to: null
+      status: pending_evidence
+    - symbol: NVDA
+      kind: company
+      relation: peer
+      direction: peer
+      rationale: 海外算力芯片龙头,其财报口径/指引是需求侧一手事实
+      evidence_url: null
+      effective_from: 2026-08-29
+      effective_to: null
+      status: pending_evidence
+    - symbol: AMAT
+      kind: company
+      relation: peer
+      direction: peer
+      rationale: 海外设备龙头,资本开支与订单口径反映产线投资节奏
+      evidence_url: null
+      effective_from: 2026-08-29
+      effective_to: null
+      status: pending_evidence
+
+  消费电子:
+    - symbol: AAPL
+      kind: company
+      relation: customer
+      direction: downstream
+      rationale: 终端需求与供应链披露的读透对象
+      evidence_url: null
+      effective_from: 2026-08-29
+      effective_to: null
+      status: pending_evidence
+    - symbol: QCOM
+      kind: company
+      relation: supplier
+      direction: upstream
+      rationale: 主控/基带上游,其出货口径与终端出货节奏相关
+      evidence_url: null
+      effective_from: 2026-08-29
+      effective_to: null
+      status: pending_evidence
+    - symbol: XLK
+      kind: etf
+      relation: theme
+      direction: peer
+      rationale: 海外科技板块地形
+      evidence_url: null
+      effective_from: 2026-08-29
+      effective_to: null
+      status: pending_evidence
+
+  计算机设备:
+    - symbol: NVDA
+      kind: company
+      relation: supplier
+      direction: upstream
+      rationale: 服务器/算力设备的上游芯片供给与交付节奏
+      evidence_url: null
+      effective_from: 2026-08-29
+      effective_to: null
+      status: pending_evidence
+    - symbol: DELL
+      kind: company
+      relation: peer
+      direction: peer
+      rationale: 海外服务器同业,其指引含 AI 服务器订单与毛利口径
+      evidence_url: null
+      effective_from: 2026-08-29
+      effective_to: null
+      status: pending_evidence
+    - symbol: SMCI
+      kind: company
+      relation: peer
+      direction: peer
+      rationale: 海外 AI 服务器同业,排产与交付口径
+      evidence_url: null
+      effective_from: 2026-08-29
+      effective_to: null
+      status: pending_evidence
+
+  光学光电子:
+    - symbol: AAPL
+      kind: company
+      relation: customer
+      direction: downstream
+      rationale: 光学模组终端需求的读透对象
+      evidence_url: null
+      effective_from: 2026-08-29
+      effective_to: null
+      status: pending_evidence
+    - symbol: LPL
+      kind: company
+      relation: peer
+      direction: peer
+      rationale: 海外面板同业(ADR),价格与产能口径
+      evidence_url: null
+      effective_from: 2026-08-29
+      effective_to: null
+      status: pending_evidence
+
+  元件:
+    - symbol: APH
+      kind: company
+      relation: peer
+      direction: peer
+      rationale: 海外连接器同业,数据中心/汽车分部口径
+      evidence_url: null
+      effective_from: 2026-08-29
+      effective_to: null
+      status: pending_evidence
+    - symbol: TEL
+      kind: company
+      relation: peer
+      direction: peer
+      rationale: 海外连接器同业,订单与库存口径
+      evidence_url: null
+      effective_from: 2026-08-29
+      effective_to: null
+      status: pending_evidence
+
+  # ───────────────────────────── 新能源 / 制造 ─────────────────────────────
+  电池:
+    - symbol: TSLA
+      kind: company
+      relation: customer
+      direction: downstream
+      rationale: 电动车终端需求与电池采购的读透对象
+      evidence_url: null
+      effective_from: 2026-08-29
+      effective_to: null
+      status: pending_evidence
+    - symbol: ALB
+      kind: company
+      relation: supplier
+      direction: upstream
+      rationale: 海外锂盐上游,其价格/合约口径是成本侧事实
+      evidence_url: null
+      effective_from: 2026-08-29
+      effective_to: null
+      status: pending_evidence
+    - symbol: LIT
+      kind: etf
+      relation: theme
+      direction: peer
+      rationale: 海外锂电产业链地形
+      evidence_url: null
+      effective_from: 2026-08-29
+      effective_to: null
+      status: pending_evidence
+
+  光伏设备:
+    - symbol: FSLR
+      kind: company
+      relation: peer
+      direction: peer
+      rationale: 海外组件同业,产能/订单与政策口径
+      evidence_url: null
+      effective_from: 2026-08-29
+      effective_to: null
+      status: pending_evidence
+    - symbol: ENPH
+      kind: company
+      relation: peer
+      direction: peer
+      rationale: 海外逆变器/分布式同业,渠道库存口径
+      evidence_url: null
+      effective_from: 2026-08-29
+      effective_to: null
+      status: pending_evidence
+    - symbol: TAN
+      kind: etf
+      relation: theme
+      direction: peer
+      rationale: 海外光伏板块地形
+      evidence_url: null
+      effective_from: 2026-08-29
+      effective_to: null
+      status: pending_evidence
+
+  汽车零部件:
+    - symbol: TSLA
+      kind: company
+      relation: customer
+      direction: downstream
+      rationale: 整车终端需求与零部件采购的读透对象
+      evidence_url: null
+      effective_from: 2026-08-29
+      effective_to: null
+      status: pending_evidence
+    - symbol: GM
+      kind: company
+      relation: customer
+      direction: downstream
+      rationale: 海外整车客户,产量计划与库存口径
+      evidence_url: null
+      effective_from: 2026-08-29
+      effective_to: null
+      status: pending_evidence
+    - symbol: APTV
+      kind: company
+      relation: peer
+      direction: peer
+      rationale: 海外零部件同业,订单与定点口径
+      evidence_url: null
+      effective_from: 2026-08-29
+      effective_to: null
+      status: pending_evidence
+
+  # ───────────────────────────── 软件 / 通信 ─────────────────────────────
+  软件开发:
+    - symbol: MSFT
+      kind: company
+      relation: peer
+      direction: peer
+      rationale: 海外软件/云同业,企业 IT 支出口径
+      evidence_url: null
+      effective_from: 2026-08-29
+      effective_to: null
+      status: pending_evidence
+    - symbol: ORCL
+      kind: company
+      relation: peer
+      direction: peer
+      rationale: 海外企业软件同业,云与许可分部口径
+      evidence_url: null
+      effective_from: 2026-08-29
+      effective_to: null
+      status: pending_evidence
+    - symbol: IGV
+      kind: etf
+      relation: theme
+      direction: peer
+      rationale: 海外软件板块地形
+      evidence_url: null
+      effective_from: 2026-08-29
+      effective_to: null
+      status: pending_evidence
+
+  通信设备:
+    - symbol: CSCO
+      kind: company
+      relation: peer
+      direction: peer
+      rationale: 海外网络设备同业,订单积压与交付口径
+      evidence_url: null
+      effective_from: 2026-08-29
+      effective_to: null
+      status: pending_evidence
+    - symbol: ANET
+      kind: company
+      relation: peer
+      direction: peer
+      rationale: 海外数据中心交换同业,云厂商资本开支口径
+      evidence_url: null
+      effective_from: 2026-08-29
+      effective_to: null
+      status: pending_evidence
+
+# ── 个股映射(优先于行业;命中 code 就只用这里的名单) ────────────────────────────────────
+codes:
+  # 300857 协创数据 —— 📌 持仓(`.claude/skills/scan-market/pinned.jsonc`)。
+  # 关系一条都没核实过:下面三条全是**待证据**的候选,不是已知事实。
+  "300857":
+    - symbol: NVDA
+      kind: company
+      relation: supplier
+      direction: upstream
+      rationale: 算力硬件上游芯片供给与交付节奏(关系待公开凭证核实)
+      evidence_url: null
+      effective_from: 2026-08-29
+      effective_to: null
+      status: pending_evidence
+    - symbol: SMCI
+      kind: company
+      relation: peer
+      direction: peer
+      rationale: 海外 AI 服务器同业,排产/交付口径(关系待公开凭证核实)
+      evidence_url: null
+      effective_from: 2026-08-29
+      effective_to: null
+      status: pending_evidence
+    - symbol: WDC
+      kind: company
+      relation: supplier
+      direction: upstream
+      rationale: 存储介质上游,价格与供给口径(关系待公开凭证核实)
+      evidence_url: null
+      effective_from: 2026-08-29
+      effective_to: null
+      status: pending_evidence

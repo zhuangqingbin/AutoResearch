@@ -48,22 +48,107 @@ def _num(v):
 
 
 
-def intel_query_cap_lint(scan_dir, cap: int = 15) -> list[dict]:
-    """情报稿自报查询数 vs 配置 cap 对账(product_shape_lint 探针 10 的素材)。
+#: capsule `web_budget.json`(落点见 `_WEB_BUDGET_RELS`)的 schema(外源扩面设计稿 §6.2)。**严格按这 11 个键读,
+#: 缺任一键 = UNMEASURED**(不是 0、更不是「未超限」)—— 「transcript 未绑定 / payload 解析
+#: 不动 → UNMEASURED」是那份稿子写死的判据,而 0 会被人读成「一次都没查」。
+WEB_BUDGET_KEYS = ("measurement", "tool_calls", "search_queries", "fetched_urls",
+                   "failed_units", "duplicate_urls", "wall_s", "cap_unit", "cap",
+                   "cap_enforcement", "self_report_delta")
+
+
+def read_web_budget(path) -> tuple[dict | None, str]:
+    """读 §6.2 的 `web_budget.json` → `(obj, why)`;`obj is None` = 不可用,`why` 说明原因。
+
+    一切异常路径都落到「不可用」,**绝不抛**:量不到是法证诊断,不是发布故障。
+    """
+    import json
+    from pathlib import Path
+
+    fp = Path(path)
+    if not fp.exists():
+        return None, "web_budget.json 缺席"
+    try:
+        obj = json.loads(fp.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return None, "web_budget.json 读不动/非法 JSON"
+    if not isinstance(obj, dict):
+        return None, "web_budget.json 顶层不是对象"
+    missing = [k for k in WEB_BUDGET_KEYS if k not in obj]
+    if missing:
+        return None, f"web_budget.json 缺键 {missing[:3]}"
+    return obj, ""
+
+
+#: capsule 里 `web_budget.json` 的**两个**落点,按优先序探。
+#: ① `capsule/usage/web_budget.json` —— finalize 的 D-5 materializer 接线后的落点
+#:    (`docs/superpowers/plans/2026-08-29-full-coverage-p0-p1.md` Task 1 Interfaces 逐字);
+#: ② `capsule/lineage/web_budget.json` —— `trace/web_budget.materialize_web_budget` 今天
+#:    自己写的那个(`root / "lineage" / BUDGET_NAME`)。
+#: 只探一个 = 探错了就等于没接线,而「接好了但永远走不到」正是本条要修的病本身。
+_WEB_BUDGET_RELS = ("capsule/usage/web_budget.json", "capsule/lineage/web_budget.json")
+
+
+def _default_web_budget_path(scan_dir):
+    """从 `scan_dir` 反解本 run 的 capsule `web_budget.json`;找不到返回 `None`。
+
+    `workspace.scan_dir(date)` = `context_<engine>/scan_runs/<run_id>/staging/<date>`,而
+    capsule 与 staging 同级(`trace/capsule.py` 的 `workspace / "capsule"`)—— 所以本趟的
+    run 根就是 `scan_dir` 的祖父目录。已发布/回放布局里 capsule 被拷到 run 目录下,故
+    `scan_dir` 自身与父目录也各探一次。
+
+    **只认入参反解出来的那趟,不从 `AUTORESEARCH_RUN_ID` 直取**:环境里挂着的 run 与手上
+    这个 scan_dir 可以不是同一趟(离线复盘 / 回放 / 补跑),env 直取会把别人的预算当成本趟
+    的真值 —— 那比自报还糟(自报至少是本趟的谎)。没有 run 分区的旧布局
+    (`context_<engine>/scan/<date>`,压根没有 capsule)自然一个都不中 → `None` → 调用方
+    逐字节回落自报路。
+    """
+    from pathlib import Path
+
+    d = Path(scan_dir)
+    for root in (d, *list(d.parents)[:2]):
+        for rel in _WEB_BUDGET_RELS:
+            candidate = root / rel
+            try:
+                if candidate.is_file():
+                    return candidate
+            except OSError:                 # 路径太长/权限 —— 量不到就当没有,绝不抛
+                continue
+    return None
+
+
+def intel_query_cap_lint(scan_dir, cap: int = 15, web_budget_path=None) -> list[dict]:
+    """情报查询数 vs 配置 cap 对账(product_shape_lint 探针 10 的素材)。
 
     `l4-intel` 的声明行本来就写「网查 N 条」,但全仓此前**没有任何消费者**读它 ——
     2026-07-24 实测 11 稿自报 18/18/17/15/20/26/23/16/17/21/25(cap=15)→ **10 只超限**,
     最高 26 条 = cap 的 173%,而限频「形同虚设」这件事只在 pr_20260714_007 里挂着没人验。
 
-    返回逐码 `{"code", "claimed", "cap"}`;`claimed=None` = 稿里根本没自报,**同样上报**
-    ——缺字段是弱证据,不得以缺推断合规。无 intel 稿 → `[]`(presence-gated)。
+    ## 两条路(外源扩面设计稿 §6.2)
+
+    - `web_budget_path=None`(默认)= 先 `_default_web_budget_path(scan_dir)` 自己找本趟
+      capsule 的真身(P0·T4:生产从来不传路径,于是真值路建好了两周没走过一次,而自报正是
+      2026-08-26 八稿超限 22–37 条 vs cap 20 没被发现的原因);**找不到才**回落 **旧自报路**,
+      逐字节不变:返回逐码 `{"code", "claimed", "cap"}`;`claimed=None` = 稿里根本没自报,
+      **同样上报** —— 缺字段是弱证据,不得以缺推断合规。
+    - 给了路径(显式优先)= **真值路**:capsule 的 `web_budget.json` 是权威(一行 tool call ≠ 一次
+      查询,batch 里可能有 N 条 query),自报值降为诊断项 `self_report_delta`。返回**至多
+      一行** run 级条目(`code=None`):
+      * `kind="measured"` = 真值超 cap(`{"used","unit","cap","self_report_delta",…}`);
+        未超 → `[]`(不出条)。
+      * `kind="unmeasured"` = `measurement != MEASURED` / 文件缺席 / 缺键 → **既不判超限也
+        不判合规**,由调用方落 `intel_budget_unmeasured` warn:**量不到 ≠ 没超**。
+
+    无 intel 稿 → `[]`(presence-gated;两条路都是 —— 情报站没跑就没有它的预算要对账)。
     """
     import re
     from pathlib import Path
 
     d = Path(scan_dir)
     out: list[dict] = []
+    claimed_all: list[int] = []
+    n_files = 0
     for p in sorted(d.glob("_l4_intel_*.md")):
+        n_files += 1
         code = p.stem.replace("_l4_intel_", "")
         try:
             text = p.read_text(encoding="utf-8")
@@ -73,9 +158,38 @@ def intel_query_cap_lint(scan_dir, cap: int = 15) -> list[dict]:
         m = re.search(r"网查\s*(\d+)\s*条", text)
         if m is None:
             out.append({"code": code, "claimed": None, "cap": cap})
-        elif int(m.group(1)) > cap:
-            out.append({"code": code, "claimed": int(m.group(1)), "cap": cap})
-    return out
+        else:
+            claimed_all.append(int(m.group(1)))
+            if int(m.group(1)) > cap:
+                out.append({"code": code, "claimed": int(m.group(1)), "cap": cap})
+    if web_budget_path is None:
+        web_budget_path = _default_web_budget_path(d)   # 生产不传路径也要走真值路
+    if web_budget_path is None:
+        return out                                  # 无 capsule → 旧自报路:逐字节不变
+    if n_files == 0:
+        return []                                   # presence-gated
+    obj, why = read_web_budget(web_budget_path)
+    self_total = sum(claimed_all) if claimed_all else None
+    base = {"code": None, "unit": "search_queries", "cap": cap, "used": None,
+            "self_report_total": self_total, "self_report_delta": None,
+            "n_self_reported": len(claimed_all), "n_intel_files": n_files}
+    if obj is None or str(obj.get("measurement")) != "MEASURED":
+        reason = why or f"measurement={obj.get('measurement')!r}"
+        return [{**base, "kind": "unmeasured", "measurement": "UNMEASURED", "reason": reason}]
+    unit = str(obj.get("cap_unit") or "search_queries")
+    used = obj.get(unit) if unit in obj else obj.get("search_queries")
+    cap_raw = obj.get("cap")
+    cap_val = int(cap_raw) if isinstance(cap_raw, (int, float)) and cap_raw > 0 else cap
+    if not isinstance(used, (int, float)):
+        return [{**base, "kind": "unmeasured", "measurement": "UNMEASURED", "unit": unit,
+                 "cap": cap_val, "reason": f"cap_unit={unit} 真值缺失"}]
+    delta = obj.get("self_report_delta")
+    if not isinstance(delta, (int, float)):
+        delta = None if self_total is None else self_total - used
+    row = {**base, "kind": "measured", "measurement": "MEASURED", "unit": unit,
+           "cap": cap_val, "used": used, "self_report_delta": delta,
+           "cap_enforcement": str(obj.get("cap_enforcement") or "")}
+    return [row] if used > cap_val else []
 
 
 def review(ctx: dict) -> dict:
@@ -267,16 +381,42 @@ def intel_future_dates_lint(scan_dir, date_str: str) -> list[dict]:
     return out
 
 
-_INTEL_WINDOWS = ("T0", "24h", "背景", "催化挂")
 # 日历天口径(不是交易日):">1 周" 取 7 天,与契约里给 agent 的说法逐字一致。
 _INTEL_STALE_DAYS = 7
+_INTEL_CATALYST_WIN = "催化挂"
+
+# ── 时效契约 v2(外源扩面设计稿 §6.4):三套窗按**契约名**参数化 ────────────────────
 # 各时效窗允许的日期跨度(天):宽松取并集 —— T0 与 24h 无法从**日期**区分(同一天盘后
 # 与当天白天都是 gap 0),探针不该假装分得清;分不清的地方就不报。
-_INTEL_WINDOW_SPAN = {"T0": (0, 0), "24h": (0, 1), "背景": (1, _INTEL_STALE_DAYS)}
+#   intel_v1        = 现行微观 lite:T0 / 24h / 背景;
+#   intel_v2_full   = 微观 full · 中观 full:24h / 本周 / 本月 / 背景;
+#   intel_v2_macro  = 宏观 full:48h / 本周 / 本月 / 背景。
+_INTEL_WINDOW_SPANS: dict[str, dict[str, tuple[int, int]]] = {
+    "intel_v1": {"T0": (0, 0), "24h": (0, 1), "背景": (1, _INTEL_STALE_DAYS)},
+    "intel_v2_full": {"24h": (0, 1), "本周": (0, 7), "本月": (0, 31), "背景": (1, 60)},
+    "intel_v2_macro": {"48h": (0, 2), "本周": (0, 7), "本月": (0, 31), "背景": (1, 60)},
+}
+#: 兼容别名(旧调用方 / 旧测试读的是这个名字):= intel_v1 的窗表。
+_INTEL_WINDOW_SPAN = _INTEL_WINDOW_SPANS["intel_v1"]
+#: 「旧契约稿整份跳过」的识别词表 = 该契约的窗名 + 催化挂(催化挂三套契约共有,不衰减)。
+_INTEL_CONTRACT_WINDOWS: dict[str, tuple[str, ...]] = {
+    name: (*spans, _INTEL_CATALYST_WIN) for name, spans in _INTEL_WINDOW_SPANS.items()}
+_INTEL_WINDOWS = _INTEL_CONTRACT_WINDOWS["intel_v1"]     # ("T0","24h","背景","催化挂")
+#: 「超出这个天数还带非零净分」= 未按时效衰减。v1 沿用 7 天(>1周);v2 三窗把「本月」放到
+#: 31 天,故越过本月才算未衰减 —— **不是**把 v1 的尺硬套到 v2 稿上(量错对象类)。
+#: 注:§6.4 的净分系数表(1/1/0.5/0)本 lint **不逐档强制**,只守「越过月窗必须归零」这条边,
+#: 与 v1 只守「越过周窗必须归零」同形。
+_INTEL_CONTRACT_STALE_DAYS: dict[str, int] = {
+    "intel_v1": _INTEL_STALE_DAYS, "intel_v2_full": 31, "intel_v2_macro": 31}
+#: 播报用的窗名(保住 v1 的历史文案逐字节不变)。
+_INTEL_STALE_LABEL: dict[str, str] = {
+    "intel_v1": ">1周", "intel_v2_full": ">1月", "intel_v2_macro": ">1月"}
+#: 只有这些窗**声称一个精确时点**;`DATE_ONLY`(行里没有时刻)不得自称它们(§6.4)。
+_INTEL_EXACT_WINDOWS = ("T0",)
 
 
-def intel_recency_lint(scan_dir, date_str: str) -> list[dict]:
-    """intel 时效三窗机检(advisory;Wave7 批 N §4.3)。三条:
+def intel_recency_lint(scan_dir, date_str: str, contract: str = "intel_v1") -> list[dict]:
+    """intel 时效窗机检(advisory;Wave7 批 N §4.3;时效契约 v2 见外源扩面稿 §6.4)。四条:
 
     1. **时效窗与日期对账**:`T0/24h/背景` 三档各有允许的日期跨度,标错 → warn
        (`催化挂` 指向将来时点,无法由过去日期证伪,一律放行)。
@@ -289,6 +429,15 @@ def intel_recency_lint(scan_dir, date_str: str) -> list[dict]:
     **旧契约稿 presence-gated 跳过**:事件段没有任何一行的第 2 列命中三窗词 → 判为
     Wave7 前的旧格式(表头是「2日内可发酵?」),整份跳过不报 —— 新探针不该对着历史存量稿
     刷屏(那是 07-27 十五连报的同一种病)。一切异常路径返回已积累结果,绝不抛。
+
+    4. **DATE_ONLY 自称 T0**:v2 行首格是 `日期时间 / time_quality`;`time_quality=DATE_ONLY`
+       (整行没有时刻)却把窗标成 `T0` → warn。T0 = 「收盘后到跑报之间」这一个精确时点,
+       只有日期的行**证明不了**自己落在那个窗里,不得伪装(§6.4)。行里既无时刻也无
+       `time_quality` 标记(= v1 存量稿的写法)→ 判不出质量,**不报**(分不清的地方就不报)。
+
+    `contract` ∈ `intel_v1`(默认,现行微观 lite:T0/24h/背景)/ `intel_v2_full`(24h/本周/
+    本月/背景)/ `intel_v2_macro`(48h/本周/本月/背景)。默认行为逐字节不变;未知契约名
+    **回落 v1 并落一条 `intel_contract_unknown` warn**(降级不等于消音:静默换尺 = 量错对象)。
 
     审计文本经 `_intel_audit_text` 取(W9-B2-fix:TRIMMED 稿存在裁前留档时读留档,
     否则本条 3 的净分未衰减检查恰好会对被优先砍掉的背景/>1周行永久失明)。
@@ -303,12 +452,27 @@ def intel_recency_lint(scan_dir, date_str: str) -> list[dict]:
     def add(check, sev, detail, code=None):
         out.append({"check": check, "severity": sev, "detail": detail, "code": code})
 
+    if contract not in _INTEL_WINDOW_SPANS:
+        add("intel_contract_unknown", "warn",
+            f"未知时效契约 `{contract}` —— 已回落 `intel_v1` 的窗表;"
+            f"可选:{'/'.join(_INTEL_WINDOW_SPANS)}")
+        contract = "intel_v1"
+    spans = _INTEL_WINDOW_SPANS[contract]
+    windows = _INTEL_CONTRACT_WINDOWS[contract]
+    stale_days = _INTEL_CONTRACT_STALE_DAYS[contract]
+    stale_label = _INTEL_STALE_LABEL[contract]
+
     try:
         as_of = datetime.strptime(date_str, "%Y-%m-%d")
     except (ValueError, TypeError):
         return out
 
-    row_re = re.compile(r"\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*([^|]*?)\s*\|(.*)\|\s*([+-]?\d+(?:\.\d+)?)\s*\|\s*$")
+    # 首格容错到 v2 的 `日期 时刻 / time_quality`(§6.4);v1 的纯日期格是它的子集,解析结果不变。
+    row_re = re.compile(
+        r"\|\s*(\d{4}-\d{2}-\d{2})"                    # 1 日期
+        r"(?:[ T](\d{1,2}:\d{2}(?::\d{2})?))?"           # 2 时刻(可选)
+        r"\s*(?:/\s*([A-Za-z_]+))?\s*"                   # 3 time_quality(可选)
+        r"\|\s*([^|]*?)\s*\|(.*)\|\s*([+-]?\d+(?:\.\d+)?)\s*\|\s*$")
     for p in sorted(scan_dir.glob("_l4_intel_*.md")):
         code = p.stem.replace("_l4_intel_", "")
         try:
@@ -326,28 +490,37 @@ def intel_recency_lint(scan_dir, date_str: str) -> list[dict]:
                 continue
             m = row_re.match(line.strip())
             if m:
-                rows.append((m.group(1), m.group(2).strip(), float(m.group(4))))
-        if not any(w in _INTEL_WINDOWS for _, w, _ in rows):
+                # 显式 time_quality 优先;没标记但有时刻 = EXACT;都没有 = 判不出("")。
+                quality = (m.group(3) or "").upper() or ("EXACT" if m.group(2) else "")
+                rows.append((m.group(1), quality, m.group(4).strip(), float(m.group(6))))
+        if not any(w in windows for _, _, w, _ in rows):
             continue                      # 旧契约稿(Wave7 前)→ 整份跳过,不报
-        bad_win, stale = [], []
-        for d, win, score in rows:
+        bad_win, stale, date_only = [], [], []
+        for d, quality, win, score in rows:
             try:
                 gap = (as_of - datetime.strptime(d, "%Y-%m-%d")).days
             except ValueError:
                 continue
+            if quality == "DATE_ONLY" and win in _INTEL_EXACT_WINDOWS:
+                date_only.append(f"{d}({win})")
             if gap < 0:
                 continue                  # 前视由 intel_future_dates_lint 管,不重复报
-            span = _INTEL_WINDOW_SPAN.get(win)
+            span = spans.get(win)
             if span and not (span[0] <= gap <= span[1]):
                 bad_win.append(f"{d}({win},实距 {gap}d)")
-            if gap > _INTEL_STALE_DAYS and win != "催化挂" and score != 0:
+            if gap > stale_days and win != _INTEL_CATALYST_WIN and score != 0:
                 stale.append(f"{d}({score:+g})")
         if bad_win:
             add("intel_window_mismatch", "warn",
                 f"{p.name} 时效窗与日期不符:{'、'.join(bad_win[:3])}", code=code)
         if stale:
             add("intel_stale_score", "warn",
-                f"{p.name} >1周事件净分未衰减到 0(且未标 催化挂):{'、'.join(stale[:3])}", code=code)
+                f"{p.name} {stale_label}事件净分未衰减到 0(且未标 催化挂):"
+                f"{'、'.join(stale[:3])}", code=code)
+        if date_only:
+            add("intel_window_date_only_t0", "warn",
+                f"{p.name} DATE_ONLY 行自称 {_INTEL_EXACT_WINDOWS[0]}(无时刻,证不了落在该窗):"
+                f"{'、'.join(date_only[:3])}", code=code)
         if "T0面=" not in text:
             add("intel_t0_missing", "warn",
                 f"{p.name} 声明行缺 `T0面=` —— 分不清「盘后无增量」与「没查」", code=code)
@@ -756,7 +929,8 @@ def channel_liveness_lint(scan_dir, date_str: str, *, recall_channels=None,
     return out
 
 
-def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
+def product_shape_lint(scan_dir, date_str: str, *,
+                       web_budget_path=None) -> list[dict]:
     """产物形状 lint(十四探针,零 LLM;design: 2026-07-13-next-optimization-survey.md 线 C
     + 2026-07-22 dossier design Wave1 ⑤ + 2026-07-23 终审 I-2 + Wave9 B-3 + Wave11 D4 + T17)。
 
@@ -899,6 +1073,10 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
                     l2 = pd.read_csv(l2p, dtype={"code": str})
                     if "code" in l2.columns:
                         l2["code"] = l2["code"].astype(str).str.zfill(6)
+                        # 同 `l4/prompts.py`:重复码会让 to_dict("index") 抛 ValueError,
+                        # 而这里外面套着 suppress —— 炸了不会红,只是这条 force_full 检查
+                        # 静默失效(「绿灯不等于有灯」)。显式去重,别让它悄悄不干活。
+                        l2 = l2.drop_duplicates(subset="code", keep="first")
                         l2_priors = l2.set_index("code").to_dict("index")
             hits = [r["code"] for r in fin_rows
                     if r["code"] not in reused          # 复用卡不派发,force_full 未评估
@@ -980,7 +1158,25 @@ def product_shape_lint(scan_dir, date_str: str) -> list[dict]:
     with contextlib.suppress(Exception):
         _cap = int((json.loads((scan_dir / "user_config_echo.json").read_text(encoding="utf-8"))
                     .get("l4_intel") or {}).get("max_queries") or 15)
-    for h in intel_query_cap_lint(scan_dir, cap=_cap):
+    # 真值路(外源扩面稿 §6.2):capsule 的 `web_budget.json` 是权威(一行 tool call ≠ 一次
+    # 查询),自报只剩诊断价值;量不到 → `intel_budget_unmeasured`。**不传 `web_budget_path`
+    # 也照样走真值路** —— `intel_query_cap_lint` 会自己按 `_WEB_BUDGET_RELS` 找本趟 capsule
+    # (P0·T4:生产真身 report_sections 从来不传路径,这条真值路此前一次都没走到过)。
+    for h in intel_query_cap_lint(scan_dir, cap=_cap, web_budget_path=web_budget_path):
+        if h.get("kind") == "unmeasured":
+            _diag = ("" if h.get("self_report_total") is None
+                     else f";自报合计 {h['self_report_total']} 条(仅诊断)")
+            add("intel_budget_unmeasured", "warn",
+                f"网查预算量不到({h.get('reason') or 'UNMEASURED'})—— **量不到 ≠ 没超**:"
+                f"既不判超限、也不判合规{_diag}", code=None)
+            continue
+        if h.get("kind") == "measured":
+            _d = h.get("self_report_delta")
+            add("产物形状·intel限频", "warn",
+                f"真值 {h['used']} {h['unit']} > cap {h['cap']} —— 取自 capsule "
+                f"`web_budget.json`(自报 delta {'—' if _d is None else _d},仅诊断)",
+                code=None)
+            continue
         _claimed = "未自报查询数" if h["claimed"] is None else f"自报 {h['claimed']} 条"
         add("产物形状·intel限频", "warn",
             f"{_claimed} > cap {h['cap']} —— 限频是指令级、无强制力(pr_20260714_007);"
@@ -1468,15 +1664,99 @@ def dump_gate_fires(scan_dir, result: dict, date: str):
     return p
 
 
-def render_banner(result: dict) -> str:
-    """自检结果 → 报告顶部 banner(有 fail 醒目拦截,有 warn 提示)。无问题返回空串。"""
+#: banner 聚合器的数字 token(§6.6 范围摘要)。
+_BANNER_NUM_RE = re.compile(r"-?\d+(?:\.\d+)?")
+#: 摘要在此分隔符处收尾(后面是每条都一样的解释性长尾,聚合时没有信息量)。
+_BANNER_TAIL_SEPS = ("——", " — ", ";", ";")
+#: 聚合摘要的展示上限(字符);超出截断加 `…`。
+_BANNER_SUMMARY_MAX = 60
+#: 摘要两端的悬挂标点(在分隔符处收尾后会留下)。
+_BANNER_EDGE_RE = re.compile(r"^[\s·—;;,,、]+|[\s·—;;,,、]+$")
+
+
+def _banner_groups(failures: list[dict]) -> list[tuple[str, str, list[dict]]]:
+    """`failures` → `[(mark, check, rows)]`:按 lint key 分组,**fail 组永远排在 warn 组前**。
+
+    `list.sort` 稳定 ⇒ 同severity 内保持首现序,组内保持原顺序(聚合的是版面,不是事实)。
+    """
+    order: list[tuple[str, str]] = []
+    buckets: dict[tuple[str, str], list[dict]] = {}
+    for x in failures:
+        key = ("fail" if x.get("severity") == "fail" else "warn", str(x.get("check", "")))
+        if key not in buckets:
+            buckets[key] = []
+            order.append(key)
+        buckets[key].append(x)
+    order.sort(key=lambda k: 0 if k[0] == "fail" else 1)
+    return [("🛑" if k[0] == "fail" else "⚠️", k[1], buckets[k]) for k in order]
+
+
+def _banner_range_summary(details: list[str]) -> str:
+    """同 key 多行 → 一句范围摘要(如 `自报 22–37 条 > cap 20`);抽不出可比数字 → `""`。
+
+    判据是**骨架逐字相同**(把数字挖空后相等):只有同一句话的同一个数位才能求 min–max。
+    把不同句子里的数字混进同一个范围,正是本仓「量错对象」家族的病(08-28 R1 时间锚同款)
+    —— 宁可只印 `×n`,也不给一个看起来精确的假区间。
+    """
+    if not details:
+        return ""
+    skels = [_BANNER_NUM_RE.sub("\x00", d) for d in details]
+    nums = [_BANNER_NUM_RE.findall(d) for d in details]
+    if len(set(skels)) != 1 or len({len(n) for n in nums}) != 1:
+        return ""                              # 骨架不同 → 数字不可比,只印 ×n
+    parts, slots, varying = skels[0].split("\x00"), [], set()
+    for i in range(len(nums[0])):
+        vals = [n[i] for n in nums]
+        if len(set(vals)) == 1:
+            slots.append(vals[0])
+        else:
+            ordered = sorted(vals, key=float)
+            slots.append(f"{ordered[0]}–{ordered[-1]}")
+            varying.add(i)
+    text, keep_to = "", 0
+    for i, seg in enumerate(parts):
+        text += seg
+        if i < len(slots):
+            text += slots[i]
+            if i in varying:
+                keep_to = len(text)            # 收尾不得砍掉任何一个变化了的数位
+    cut = len(text)
+    for sep in _BANNER_TAIL_SEPS:
+        j = text.find(sep, keep_to)
+        if j >= 0:
+            cut = min(cut, j)
+    text = _BANNER_EDGE_RE.sub("", text[:cut])
+    if len(text) > _BANNER_SUMMARY_MAX:
+        text = text[:_BANNER_SUMMARY_MAX - 1] + "…"
+    return text
+
+
+def render_banner(result: dict, aggregate: bool = False) -> str:
+    """自检结果 → 报告顶部 banner(有 fail 醒目拦截,有 warn 提示)。无问题返回空串。
+
+    `aggregate=False`(默认)= 逐条一行,**与历史输出逐字节一致** —— appendix A 用它出全文。
+
+    `aggregate=True`(§6.6,summary 决策层用)= 按 lint key 分组:`**key**:×n(范围摘要)`;
+    `n == 1` 原样输出该行;fail 组永远在 warn 组前。08-26 实测 13 行只有 5 种 key,
+    `产物形状·intel限频` 同一句话重复 8 遍占 summary 8.5% 字节 —— 聚合掉的是**版面**,
+    顶行 `fail N / warn M` 仍是**逐条**计数,全文仍在 appendix A(不删事实,只去重复)。
+    """
     if not result["failures"]:
         return ""
     icon = "🛑 自检未通过(发布前须先修根因)" if result["n_fail"] else "⚠️ 自检提示"
     lines = [f"> {icon} — fail {result['n_fail']} / warn {result['n_warn']}"]
-    for x in result["failures"]:
-        mark = "🛑" if x["severity"] == "fail" else "⚠️"
-        lines.append(f"> {mark} **{x['check']}**:{x['detail']}")
+    if not aggregate:
+        for x in result["failures"]:
+            mark = "🛑" if x["severity"] == "fail" else "⚠️"
+            lines.append(f"> {mark} **{x['check']}**:{x['detail']}")
+        return "\n".join(lines) + "\n"
+    for mark, check, rows in _banner_groups(result["failures"]):
+        if len(rows) == 1:
+            lines.append(f"> {mark} **{check}**:{rows[0].get('detail', '')}")
+            continue
+        summary = _banner_range_summary([str(r.get("detail", "")) for r in rows])
+        lines.append(f"> {mark} **{check}**:×{len(rows)}"
+                     + (f"({summary})" if summary else ""))
     return "\n".join(lines) + "\n"
 
 

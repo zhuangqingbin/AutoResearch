@@ -41,6 +41,19 @@ def _load_verify(scan_dir: Path) -> dict[str, dict]:
 
     bull(最强多头)+ consensus(PM 3 透镜共识)是 A/B 新增列;老 4 列 schema(无 bull/consensus)
     仍兼容,缺列回空串(无 verify.csv 则整表空,老路不破)。
+
+    ⚠️ **`verify.csv` 今天没有任何生产者,生产上这张表恒空**(2026-08-29 Task 9b 核实:
+    全仓 `verify.csv` 只有读点,零写点)。写它的 Tier-3 买单独立 skeptic 已于 **2026-07-06**
+    按用户裁定移除(`.claude/skills/stock-research/lite-playbook.md:187`、
+    `self_review.py:265` 停用的那条 fail lint 都是同一次移除的留痕);没有任何 agent def、
+    workflow 或 python 路径会再写出这个文件。
+    保留读侧的理由是**结构**而非功能:`_apply_verify_downgrade` 的折回、
+    `first_rejection="VERIFY"` 这一档、以及 `verify.csv#<code>` 证据引用共同构成
+    DecisionRecord 的形状,删掉会改动记录 schema 与拒绝分类的语义(B 类冻结禁区),
+    而空表分支本就是「老路不破」的恒等式。**它天天返回 `{}` 是事实,不是洞** ——
+    所以 `health._ARTIFACTS` 已把 `verify.csv` 除名(它曾在那里天天报一条假 missing)。
+    要么哪天真复活 Tier-3(给它一个写者),要么连着三个读者一起删;不留幽灵。
+    详见 spec `2026-08-29-full-coverage-research-system-brainstorm.md` §1.3 / §4.3。
     """
     out: dict[str, dict] = {}
     for r in _read_csv(scan_dir / "verify.csv"):

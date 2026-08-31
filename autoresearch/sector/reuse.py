@@ -48,14 +48,25 @@ def _ind_mom(scan_dir: Path, industry: str) -> float | None:
     return float(m.median()) if len(m) else None
 
 
-def find_reusable(date: str, industries, root: Path | str = _WS_SCAN_ROOT,
+def find_reusable(date: str, industries, root: Path | str | None = None,
                   ttl_days: int = 5, mom_shift_pp: float = 3.0) -> dict[str, dict]:
-    """逐行业找最近可复用 brief → {行业: {src, prev, shift_pp}};判不中 → 不入结果。"""
-    root = Path(root)
-    today_dir = root / date
+    """逐行业找最近可复用 brief → {行业: {src, prev, shift_pp}};判不中 → 不入结果。
+
+    `root=None`(生产)→ 「昨天在哪」交给 `scan.published_days`(修 K4:run 分区下遍历
+    `scan_root()` 兄弟目录只看得见本 run 自己的日期,TTL 复用永远落空 = 每天白付 6 个
+    opus brief)。显式传 `root` → 仍是该目录下的兄弟枚举(测试注入面,行为逐字不变)。
+    **判据一个都没动**:TTL 天数 / regime 同 / 中位动量位移容差全在下面,与从前逐字相同。
+    """
+    if root is None:
+        from autoresearch.scan.published_days import previous_staging_dirs
+        today_dir = ws.scan_dir(date)
+        prev_dirs = previous_staging_dirs(date, limit=max(30, int(ttl_days) * 2))
+    else:
+        root = Path(root)
+        today_dir = root / date
+        prev_dirs = (sorted((p for p in root.iterdir() if p.is_dir() and p.name < date),
+                            key=lambda p: p.name, reverse=True) if root.exists() else [])
     reg_today = _regime(today_dir)
-    prev_dirs = (sorted((p for p in root.iterdir() if p.is_dir() and p.name < date),
-                        key=lambda p: p.name, reverse=True) if root.exists() else [])
     out: dict[str, dict] = {}
     for ind in industries:
         for pdir in prev_dirs:
@@ -111,7 +122,9 @@ def main(argv: list[str] | None = None) -> int:
     else:
         from autoresearch.sector.pack import select_briefing_sectors
         inds, _ = select_briefing_sectors(root / args.date)
-    found = find_reusable(args.date, inds, root=root, ttl_days=ttl)
+    # root 只喂「今天写哪」(apply_reuse);「昨天在哪」交给 published_days —— CLI 在 run 分区下
+    # 显式传 root 就等于把 K4 回归又装回来一次。
+    found = find_reusable(args.date, inds, ttl_days=ttl)
     for ind in inds:
         if ind in found:
             print(f"[sector.reuse] ♻️ {ind} ← {found[ind]['prev']}(动量位移 {found[ind]['shift_pp']}pp)")

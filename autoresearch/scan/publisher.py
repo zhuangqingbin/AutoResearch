@@ -3,14 +3,97 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import re
 import shutil
 from datetime import datetime
 from pathlib import Path
 
 from autoresearch.common import workspace as ws
+from autoresearch.contracts import artifacts as _contract_artifacts
 from autoresearch.scan.l4.parsers import _load_json, _read_csv
-from autoresearch.scan.report_sections import _funnel_rows, build_summary
+from autoresearch.scan.report_model import APPENDIX_FILENAME
+from autoresearch.scan.report_sections import _funnel_rows
+from autoresearch.scan.run_naming import format_run_dir
+
+# ── 「发布时该搬什么」的两张表(2026-08-29 Task 9c / spec §2.4 A1)────────────────
+#
+# 两张表原来是两处硬编码的产物名。名字的真身现在只有一个:`contracts.artifacts` 的登记表
+# —— 这里只写**登记名**,路径由登记表给;打错字或登记表改名而这里没跟上 = 导入即
+# `KeyError`(K1 的病:`finalists.csv` 今天散在 40 个生产文件里,改名要改 40 处)。
+
+#: staging → `<run>/trace/` 的搬运路线:`(登记名, trace 里的目的文件名 | None = 同名)`。
+#: 两个**改名**项是发布期的历史命名契约(第二天复盘的人按这两个名字找文件),不是某个登记名
+#: 的投影 —— 所以目的名留字面量,不去引别的产物的 path(那样它会跟着别人一起漂)。
+_TRACE_ROUTES: tuple[tuple[str, str | None], ...] = (
+    ("funnel_meta", "L0_universe_meta.json"),  # meta.json 在 trace 里叫 L0 元数据(历史名)
+    ("run_contract", None),          # 运行身份契约(配置/保送/数据策略/hash)
+    ("run_health", None),            # 运行体检(NaN 降级/churn/L4 阶段效能)
+    ("weights_used", None),          # 重放快照(当日实际权重)
+    ("l1_full", None),               # 全量打分(所有过门股 sorted + recalled 标记)
+    ("l1_recall", None),             # 召回工作集(top N)
+    ("l2", None),                    # 粗排:GBDT 学习重排 top N(确定性)
+    ("l3_judged", None),             # 精排全量判断(holistic 通看 ~200,非仅 finalists)
+    ("finalists", "L3_fine_finalists.csv"),    # 精排最终入选(top N;发布期旧名)
+)
+
+#: 被搬进 trace 的 staging 产物的**登记名**(顺序即拷贝顺序)。
+TRACE_SOURCE_NAMES: tuple[str, ...] = tuple(name for name, _ in _TRACE_ROUTES)
+
+#: staging 文件名 → trace 目的文件名(`_publish_pipeline` 逐项拷贝)。
+TRACE_MAPPING: dict[str, str] = {
+    _contract_artifacts.by_name(name).path:
+        (dst or _contract_artifacts.by_name(name).path)
+    for name, dst in _TRACE_ROUTES
+}
+
+#: assemble 阶段在 `StageResult` 里**认领**的产物 —— 全是登记名(不是随手编的标签):
+#: 这串名字会被完整性结论当「这一阶段该有什么」的证据读,拼错一个 = 少认领一件而无人报警。
+ASSEMBLE_STAGE_ARTIFACTS: tuple[str, ...] = tuple(
+    _contract_artifacts.by_name(name).name for name in (
+        "final_ratings", "decision_records", "gate_fires", "run_health",
+        "summary", "appendix", "manifest",
+    )
+)
+
+
+class ReportBundleError(RuntimeError):
+    """发布包不完整:summary / appendix 任一份渲染为空或写入失败。
+
+    这是**发布完整性**故障,不是研究结论故障 —— 抛出后不写成功 StageResult、不落
+    manifest、不建 artifact index / MANIFEST,staging 原样留着,只重跑 L5 就能补齐。
+    尤其**不回写评级 / BUY**:展示层坏掉不许伪装成研究结论变了。
+    """
+
+
+def _write_report_bundle(out_base: Path, summary_text: object,
+                         appendix_text: object) -> tuple[Path, Path]:
+    """summary + appendix 作为**一个发布包**落盘(§6.2)。
+
+    两份都非空才动盘:先各写 `.tmp`,再各 `os.replace` —— 第二份写不出来时第一份也还没
+    顶替旧文件,不会留下「summary 是新的、appendix 是上一次的」这种半真半假现场。
+    「appendix 缺席但 summary 成功」不算发布完成(Q8)。
+    """
+    pairs = (("summary.md", summary_text), (APPENDIX_FILENAME, appendix_text))
+    for name, text in pairs:
+        if not isinstance(text, str) or not text.strip():
+            raise ReportBundleError(
+                f"发布包不完整:{name} 渲染结果为空({type(text).__name__});"
+                "已保留 staging,重跑 L5 即可补齐(评级/BUY 未回写)")
+    staged: list[tuple[Path, Path]] = []
+    try:
+        for name, text in pairs:
+            target = out_base / name
+            tmp = target.with_name(f"{target.name}.tmp")
+            tmp.write_text(str(text), encoding="utf-8")
+            staged.append((tmp, target))
+    except OSError as exc:
+        for tmp, _ in staged:
+            tmp.unlink(missing_ok=True)
+        raise ReportBundleError(f"发布包写入失败:{type(exc).__name__}: {exc}") from exc
+    for tmp, target in staged:
+        os.replace(tmp, target)
+    return out_base / "summary.md", out_base / APPENDIX_FILENAME
 
 
 def _safe_name(name: str) -> str:
@@ -199,19 +282,8 @@ def _publish_pipeline(scan_dir: Path, out_base: Path, analysis_date: str) -> int
     """把各阶段 staging 产物发布到 <YYYYMMDD_HHMM>/trace/(漏斗溯源 + reasoning 推理留痕)。"""
     pdir = out_base / "trace"
     pdir.mkdir(parents=True, exist_ok=True)
-    mapping = {
-        "meta.json": "L0_universe_meta.json",
-        "run_contract.json": "run_contract.json",          # 运行身份契约(配置/保送/数据策略/hash)
-        "run_health.json": "run_health.json",              # 运行体检(NaN 降级/churn/L4 阶段效能)
-        "weights_used.json": "weights_used.json",          # 重放快照(当日实际权重)
-        "L1_scored_full.csv": "L1_scored_full.csv",        # 全量打分(所有过门股 sorted + recalled 标记)
-        "L1_recall_top1000.csv": "L1_recall_top1000.csv",  # 召回工作集(top N)
-        "L2_gbdt_top200.csv": "L2_gbdt_top200.csv",        # 粗排:GBDT 学习重排 top N(确定性)
-        "L3_judged_full.csv": "L3_judged_full.csv",        # 精排全量判断(holistic 通看 ~200,非仅 finalists)
-        "finalists.csv": "L3_fine_finalists.csv",          # 精排最终入选(top N)
-    }
     n = 0
-    for src, dst in mapping.items():
+    for src, dst in TRACE_MAPPING.items():
         p = scan_dir / src
         if p.exists():
             shutil.copy2(p, pdir / dst)
@@ -255,10 +327,18 @@ def _run_publish(analysis_date: str, scan_dir: Path | None = None,
     ).resolve()
     now = datetime.now()
     hhmm = hhmm or now.strftime("%H%M")
-    # 发布目录时间戳 = **实际运行时刻**(run_date 仅自测注入);数据日 analysis_date 另记 manifest,与目录名解耦
-    run_compact = (run_date or now.strftime("%Y-%m-%d")).replace("-", "")
-    folder = f"{run_compact}_{hhmm}"
-    out_base = out_root / folder                       # reports/scan/<运行日YYYYMMDD>_<HHMM>/
+    # 目录名 = **数据日在前,发布时刻在后**(2026-08-28 用户裁定;真身见 `run_naming`)。
+    # 旧格式首段是跑动日,于是 `20260826_2000` 这个名字对人说"08-26"、研究的却是 08-25
+    # (61 个 run 里 19 个数据日 ≠ 跑动日)。`run_date`/`hhmm` 仍只供自测注入发布时刻。
+    published_at = now
+    if run_date:                       # 自测注入:把发布时刻钉死,目录名才可断言
+        try:
+            published_at = datetime.strptime(
+                f"{str(run_date).replace('-', '')}{hhmm}", "%Y%m%d%H%M")
+        except ValueError:
+            published_at = now
+    folder = format_run_dir(analysis_date, published_at)
+    out_base = out_root / folder                       # reports/scan/<数据日>-<发布MMDD_HHMM>/
     detail_out = out_base / "details"
     detail_out.mkdir(parents=True, exist_ok=True)
     n_cards = _publish_details(scan_dir, detail_out)
@@ -297,6 +377,16 @@ def _run_publish(analysis_date: str, scan_dir: Path | None = None,
     # 这三个字段让「报告」和「现场」的状态永远各自可见,不互相冒充。
     from autoresearch.scan.evidence import evidence_facts, has_capsule
 
+    # 时间锚(2026-08-28 §2.4 G1):**这份报告什么时候才能真的下单**。
+    # 此刻 GATE4 还没跑,所以批准时刻先用发布时刻并如实标 `publish_time`/`estimated`;
+    # CP7 的 `post_run observe` 在 GATE4 过之后用实测时刻覆盖它(`gate4_approved`/`measured`)。
+    # 写在这里而不是等 CP7:发布路径可能不经 post_run,那时有个诚实的估算好过什么都没有。
+    with contextlib.suppress(Exception):
+        from autoresearch.scan.exec_anchor import build_execution_block
+
+        manifest["execution"] = build_execution_block(
+            analysis_date, approved_at=now, brief_written_at=now,
+            ready_source="publish_time", ready_quality="estimated")
     manifest.update({
         "capsule_schema_version": 1,
         "business_status": "SUCCEEDED",
@@ -306,19 +396,41 @@ def _run_publish(analysis_date: str, scan_dir: Path | None = None,
             else "PENDING"
         ),
     })
-    (out_base / "manifest.json").write_text(
-        json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
-    md = build_summary(scan_dir, analysis_date, hhmm, folder, pinned_path=pinned_path)
+    # ── 发布包(§6.2):一次整形 → 两处纯渲染 → 两份文本都成了才落盘 ────────────────
+    # 顺序是冻结的(2026-08-28 定稿),每一步都有它必须在那个位置的理由:
+    #   prepare_report_model  唯一一次读盘 + 既有 finalize / 决策落盘副作用
+    #   render_summary        纯;含聚合 banner
+    #   attach_review         纯;把 review 结果/全文 banner 回填进不可变模型
+    #   render_appendix       纯;A 节读 model 里的 banner 全文
+    #   finalize_review_artifacts  **不纯**:落 gate_fires.csv —— 那是 GATE4 的判据源。
+    #       旧路径里这个副作用藏在 `build_summary` 内部,prepare/render 拆开后**必须显式调**,
+    #       漏掉 = GATE4 没有输入(「拆半个特性没人接线」同族)。故它排在写文件之前。
+    # 这里**不再调 `build_summary`** —— 那个兼容壳内部会再跑一遍 prepare,等于白算一次
+    # 并且制造第二个写者。
+    from autoresearch.scan.report_appendix import render_appendix
+    from autoresearch.scan.report_sections import (
+        attach_review,
+        finalize_review_artifacts,
+        prepare_report_model,
+        render_summary,
+    )
+
+    model = prepare_report_model(scan_dir, analysis_date, hhmm, folder,
+                                 pinned_path=pinned_path)
+    md = render_summary(model)
+    model = attach_review(model, md)
+    appendix_md = render_appendix(model)
+    finalize_review_artifacts(scan_dir, model)
     try:
         # usage_harvest 通常在 GATE4 后才完成：此刻无 JSON 就明确落 UNMEASURED；
         # CP7 随后用 post_run observe 原位替换本 managed section。
         from autoresearch.scan.post_run import (
-            inject_run_observation_section,
             publish_run_observation,
+            refresh_run_observation,
         )
 
         # 决策文件(writer-1)读的是 run_health 里的 decision_records.status,而 :273 那份快照拍
-        # 于 build_summary 之前 —— 当日首跑时它报 ABSENT,导致 data_a 团灭、brief 被印成
+        # 于报告整形之前 —— 当日首跑时它报 ABSENT,导致 data_a 团灭、brief 被印成
         # BLOCKED,而事后 `post_run observe` 重算又得到 BUY(2026-08-13 实证:4/8 份 brief 与
         # 决策文件不一致)。这里补拍一次,让 writer-1 读到与 writer-2 同样的事实。
         # 详见 docs/research/2026-08-19-decision-file-two-writers-and-taskbook-hash.md §2
@@ -330,28 +442,30 @@ def _run_publish(analysis_date: str, scan_dir: Path | None = None,
         # 「意图必须写在调用点、不能靠猜」。
         observation = publish_run_observation(
             scan_dir, real_scan=is_real, decision_write="write")
-        md = inject_run_observation_section(md, observation["markdown"])
     except Exception as exc:  # noqa: BLE001 — 观测控制面不能阻断报告
-        from autoresearch.scan.post_run import inject_run_observation_section
-
-        md = inject_run_observation_section(
-            md,
-            "## 💸 成本与时延观测\n\n"
-            f"- 计量:UNMEASURED · 观测控制面异常:{type(exc).__name__}\n\n"
-            "_未计量不等于零成本；该异常不改变任何评级或候选。_",
+        from autoresearch.scan.post_run import (
+            observation_after_failure,
+            refresh_run_observation,
         )
-    summary_path = out_base / "summary.md"
-    summary_path.write_text(md, encoding="utf-8")
+
+        observation = observation_after_failure(exc)
+    # summary 紧凑一行 + appendix E 完整块,**同一个 observation**(§6.5)。
+    md, appendix_md, _obs_warns = refresh_run_observation(md, appendix_md, observation)
+    for _warn in _obs_warns:
+        print(f"[L5 整合] ⚠️ 运行观测注入:{_warn}")
+    # 两份都非空才落盘、才记 SUCCEEDED;任一份失败 → 抛,不产出半真半假的发布包。
+    summary_path, appendix_path = _write_report_bundle(out_base, md, appendix_md)
+    # manifest 排在双写**之后**:它写着 `business_status: SUCCEEDED`,发布包没成之前
+    # 那句话就是假的。发布失败时 staging 原样保留,只重跑 L5 即可补齐(不重跑 L3/L4)。
+    (out_base / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
     from autoresearch.scan.stage_result import safe_record_stage_result
 
     safe_record_stage_result(
         scan_dir,
         stage="assemble",
         status="SUCCEEDED",
-        artifacts=[
-            "final_ratings", "decision_records", "gate_fires", "run_health",
-            "summary", "manifest",
-        ],
+        artifacts=list(ASSEMBLE_STAGE_ARTIFACTS),
         metrics={"n_cards": n_cards, "n_trace_before_final": n_pipe},
         warnings=[],
         error=None,
@@ -414,6 +528,13 @@ def _run_publish(analysis_date: str, scan_dir: Path | None = None,
         _lint = brief_lint(out_base, scan_dir)
         append_gate_fires(scan_dir, _lint, analysis_date)
         print(brief_lint_banner(_lint))
+    # ── 版式预算(§6.10)——**所有 managed 注入完成后**才计量最终文件 ────────────────
+    # 位置紧跟 brief 回填(仪表盘/组合/overlay 是发布期最后一次注入)。这是展示层读数:
+    # 只 warn + 进 run_health,**不截断、不改评级、不毙 GATE4**。真正的验收读数在
+    # `post_run observe` 刷完终值那次(此刻 token 计量通常还没到),两处用同一个函数。
+    with contextlib.suppress(Exception):
+        _health.measure_report_budget(scan_dir, out_base)
+        _health.write_run_health(scan_dir)     # 让预算读数进入落盘的那份体检
     with contextlib.suppress(Exception):
         # 最终快照必须等 manifest/summary/gate_fires/第二次 health 全部落盘后再 hash。
         # 同时覆盖 trace 里 assemble 前发布的旧 health，保证 staging/trace 同一事实。
@@ -473,6 +594,7 @@ def _run_publish(analysis_date: str, scan_dir: Path | None = None,
           f"inputs {_ret['inputs']} · MANIFEST {'✓' if _ret['manifest'] else '✗'}"
           + (f" · ⚠️ {'; '.join(_ret['errors'])}" if _ret["errors"] else ""))
     print(f"[L5 整合] summary → {summary_path}  (数据日 {analysis_date})")
+    print(f"[L5 整合] appendix → {appendix_path}  (现场 / 口径 / 遥测)")
     print(f"[L5 整合] details → {detail_out}  ({n_cards} 张卡 + trace/ {n_pipe} 件溯源)")
     return summary_path
 

@@ -1,10 +1,36 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  夜间收盘后确定性欠账补跑(outcome fill + ledger_views build)。
+
+  **模板,装之前要替换两个占位**(prewarm plist 只有 __REPO__,这里多一个 __ENGINE__):
+
+      for E in claude codex; do
+        sed -e "s|__REPO__|$PWD|" -e "s|__ENGINE__|$E|g" \
+          scripts/com.tradingagents.nightly-close.plist \
+          > ~/Library/LaunchAgents/com.tradingagents.nightly-close.$E.plist
+        launchctl bootstrap gui/$(id -u) \
+          ~/Library/LaunchAgents/com.tradingagents.nightly-close.$E.plist
+      done
+
+  为什么是**每个引擎一个 label**、而不是一个任务跑两遍:
+  launchd 的环境里既没有 CLAUDECODE 也没有 CODEX_*,`workspace.detect_engine` 会落到
+  第 4 级「在位者 claude」——那是兜底,不是决定。靠它就等于 codex 根永远没人补账,而且
+  从日志上看两边长得一模一样。所以 Label / EnvironmentVariables / 日志路径三处都带引擎名:
+  哪个引擎的夜间任务死了,`launchctl list | grep nightly-close` 与日志文件名各自指名道姓。
+  Label 必须与文件名一致(`launchctl bootstrap` 的硬要求),所以两个引擎必然是两个文件。
+
+  只装一个引擎也完全可以(比如只用 Claude):跑上面循环里的一半即可。
+-->
 <plist version="1.0"><dict>
-  <key>Label</key><string>com.tradingagents.nightly-close</string>
+  <key>Label</key><string>com.tradingagents.nightly-close.__ENGINE__</string>
   <key>ProgramArguments</key><array>
     <string>/bin/zsh</string><string>-lc</string><string>__REPO__/scripts/nightly_close.sh</string>
   </array>
+  <!-- 引擎在这里钉死:脚本里的 `: "${AUTORESEARCH_ENGINE:=claude}"` 只兜手动执行。 -->
+  <key>EnvironmentVariables</key><dict>
+    <key>AUTORESEARCH_ENGINE</key><string>__ENGINE__</string>
+  </dict>
   <key>StartCalendarInterval</key><array>
     <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>20</integer><key>Minute</key><integer>45</integer></dict>
     <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>20</integer><key>Minute</key><integer>45</integer></dict>
@@ -12,6 +38,7 @@
     <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>20</integer><key>Minute</key><integer>45</integer></dict>
     <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>20</integer><key>Minute</key><integer>45</integer></dict>
   </array>
-  <key>StandardOutPath</key><string>/tmp/nightly-close.log</string>
-  <key>StandardErrorPath</key><string>/tmp/nightly-close.err.log</string>
+  <!-- 日志按引擎分文件:两个引擎写同一个 /tmp 文件的话,谁死了都看不出来。 -->
+  <key>StandardOutPath</key><string>/tmp/nightly-close.__ENGINE__.log</string>
+  <key>StandardErrorPath</key><string>/tmp/nightly-close.__ENGINE__.err.log</string>
 </dict></plist>

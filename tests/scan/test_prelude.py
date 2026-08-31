@@ -113,7 +113,12 @@ def test_step_names_inventory():
     """
     assert STEP_NAMES == (
         "consensus", "temperature", "universe", "calendar", "catalyst", "menu",
-        "l4_rejection", "outcome_fill", "dossier_pool", "news_catalog",
+        # 2026-08-28 §2.4 G2+G3:`ledger_views` 物化运行日历/市场行/逐级 KPI,
+        # 必须排在 `outcome_fill` 之后(它们是结果账本的下游)。
+        "l4_rejection", "outcome_fill", "ledger_views", "dossier_pool", "news_catalog",
+        # 2026-08-29 D-2:`overseas` 落隔夜窗海外事件日历。**风险可见性,不喂判断层** ——
+        # 只进 summary 📅 / brief ⑤ / 📌 哨兵三个展示点。
+        "overseas",
     )
 
 

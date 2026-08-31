@@ -9,6 +9,21 @@ original staging tree, or the outcome ledger.
 
 LLM stages are never re-executed: their output is not reproducible, so they are
 reported as ``EVIDENCE_ONLY`` rather than pretended to be replayable.
+
+**L1 与 L2 是同一条命令(2026-08-29)。** 在此之前 l2 的 spec 写的是
+``("autoresearch.scan.l2_stratify", date)`` —— 那个模块**根本不存在**(真身在
+``autoresearch/scan/recall/l2_stratify.py``,而且它没有 ``main()``,``python -m``
+跑不起来)。这条死 argv 从未变红,因为既有用例全程注入假 runner:一个「永不变红的
+绿灯」。L2 的真实生产者是 ``autoresearch.scan.universe`` —— 它内部调
+``recall.l2_stratify.select_l2``,一次写出 ``L1_scored_full.csv`` /
+``L1_recall_top1000.csv`` / ``L2_gbdt_top200.csv`` 三份。所以修法不是把 l2 的 argv
+也写成 universe(那会把 universe 跑两遍:浪费,且两遍之间湖/时钟状态未必相同,足以
+凭空造出一个「不可重放」的假结论),而是**合成一个 spec、声明三份产物、只跑一次**。
+
+对外结构不变:``l1`` / ``l2`` 两个旧名保留为 :data:`STAGE_ALIASES` 里的别名,各自映到
+同一次执行的结果,并**只汇报自己名下那几份产物** —— 于是 ``capsule`` /
+``completeness`` 的读侧(以及 ``capsule replay --stage l2`` 这类命令行)逐字节不变。
+显式注入的 ``specs=`` 永远优先于别名解析,老调用方的行为一并不动。
 """
 
 from __future__ import annotations
@@ -24,6 +39,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.contracts import stages as vocab
 from autoresearch.trace.atomic import atomic_write_json, canonical_json, sha256_bytes
 from autoresearch.trace.blobs import blob_path
 from autoresearch.trace.source_lineage import normalized_params
@@ -163,29 +179,80 @@ class StageSpec:
     outputs: tuple[str, ...]
 
 
+#: 单元名一律来自契约词汇(`contracts.stages`),不在这里另立一套 —— 「该有什么」的分母
+#: 有四个版本正是 spec §2.2 K3 的病。这里只保留**行为**:每个执行单元跑什么、产什么。
+L1L2 = vocab.L1L2_UNIT
+
+#: 旧阶段名 → (真正执行的 spec, 该名字对外汇报的产物子集)。
+#: 合并的是**执行**,不是对外结构:`l1` 仍只汇报两份 L1 产物、`l2` 仍只汇报 L2 那份,
+#: 所以 `l2` 那一行不会被 `l1` 的命中带绿,反之亦然。模块 docstring 记了为什么合并。
+#: 键与「映到谁」出自 `vocab.REPLAY_UNIT_ALIASES`;这里只补每个别名对外汇报的产物视图,
+#: 词汇表新增一个别名而这里忘了给视图 → 建表时当场 KeyError,不会安静少报一份产物。
+_ALIAS_OUTPUTS: dict[str, tuple[str, ...]] = {
+    "l1": ("L1_scored_full.csv", "L1_recall_top1000.csv"),
+    "l2": ("L2_gbdt_top200.csv",),
+}
+STAGE_ALIASES: dict[str, tuple[str, tuple[str, ...]]] = {
+    unit: (target, _ALIAS_OUTPUTS[unit])
+    for unit, target in vocab.REPLAY_UNIT_ALIASES.items()
+}
+
+
 def default_stage_specs(analysis_date: str) -> tuple[StageSpec, ...]:
-    return (
-        StageSpec(
-            "l0",
+    """One spec per **execution unit** declared in the contracts vocabulary.
+
+    The unit names and their order come from `vocab.REPLAY_EXEC_UNITS`; only the argv and
+    the product list live here.  A unit in the vocabulary with no plan (or a plan for a
+    unit nobody replays) raises instead of silently skipping a stage — the l2 dead-argv bug
+    was invisible for exactly that reason.
+    """
+    plans: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+        "l0": (
             ("autoresearch.scan.frame", analysis_date, "--json-out", "market_pack.json"),
             ("market_pack.json",),
         ),
-        StageSpec(
-            "l1",
+        # 一条命令三产物:`universe` 内部调 `recall.l2_stratify.select_l2`,L1 与 L2
+        # 从来就是同一次执行的两半。历史上它们是两个 spec,而 l2 的 argv 指向一个
+        # 不存在的模块 —— 见模块 docstring。
+        L1L2: (
             ("autoresearch.scan.universe", analysis_date),
-            ("L1_scored_full.csv", "L1_recall_top1000.csv"),
+            ("L1_scored_full.csv", "L1_recall_top1000.csv", "L2_gbdt_top200.csv"),
         ),
-        StageSpec(
-            "l2",
-            ("autoresearch.scan.l2_stratify", analysis_date),
-            ("L2_gbdt_top200.csv",),
-        ),
-        StageSpec(
-            "l5",
+        # L5 的产物是**一个发布包**(2026-08-28 §6.3):summary=决策层、appendix=现场层。
+        # 只比对 summary 会让「附录没重现出来」这件事在 replay 里完全不可见,而
+        # 「产物能证明跑过什么、不能证明没跑过什么」正是这层要防的洞。
+        "l5": (
             ("autoresearch.scan.assemble", analysis_date),
-            ("summary.md",),
+            ("summary.md", "appendix.md"),
         ),
-    )
+    }
+    drift = set(plans) ^ set(vocab.REPLAY_EXEC_UNITS)
+    if drift:
+        raise ValueError(
+            f"replay units and execution plans disagree: {sorted(drift)} "
+            f"(vocabulary={vocab.REPLAY_EXEC_UNITS!r}, plans={sorted(plans)!r})"
+        )
+    return tuple(StageSpec(unit, *plans[unit]) for unit in vocab.REPLAY_EXEC_UNITS)
+
+
+def _resolve_stage(
+    stage: str, specs: dict[str, StageSpec]
+) -> tuple[StageSpec | None, tuple[str, ...] | None]:
+    """Find the spec that answers for ``stage``, plus the outputs it may report.
+
+    Exact name first, so an explicitly injected ``specs=`` always wins over the
+    alias table (old callers and tests must behave byte-identically).  Only then
+    do we fall back to :data:`STAGE_ALIASES`, which maps the historical ``l1`` /
+    ``l2`` names onto the single merged run.  A ``None`` view means "report every
+    output this spec declares" — today's behaviour for every non-aliased stage.
+    """
+    spec = specs.get(stage)
+    if spec is not None:
+        return spec, None
+    target, view = STAGE_ALIASES.get(stage, (None, None))
+    if target is None:
+        return None, None
+    return specs.get(target), view
 
 
 def _subprocess_runner(spec: StageSpec, scratch: Path, env: dict) -> int:
@@ -206,7 +273,7 @@ def replay(
     *,
     capsule: Path | str,
     analysis_date: str,
-    stages: Sequence[str] = ("l0", "l1", "l2", "l5"),
+    stages: Sequence[str] = vocab.REPLAY_UNITS,
     runner: Callable[[StageSpec, Path, dict], int] = _subprocess_runner,
     specs: Sequence[StageSpec] | None = None,
     keep_scratch: bool = True,
@@ -231,8 +298,12 @@ def replay(
     env["AUTORESEARCH_ENGINE"] = str(os.environ.get("AUTORESEARCH_ENGINE", ""))
 
     rows: list[dict] = []
+    # 一个 spec 在一次 replay 里最多执行一次。`l1` 与 `l2` 映到同一个合并 spec,重复执行
+    # 会把 universe 跑两遍,还会让第二遍先删掉第一遍刚产出的文件 —— 结果凭空多出一个
+    # 「不可重放」。键是**被解析到的 spec 名**,不是请求名。
+    executed: dict[str, dict] = {}
     for stage in stages:
-        spec = resolved_specs.get(stage)
+        spec, view = _resolve_stage(stage, resolved_specs)
         if spec is None:
             rows.append(
                 {
@@ -244,22 +315,39 @@ def replay(
                 }
             )
             continue
-        try:
-            code = runner(spec, scratch, env)
-        except ReplayInputMissing as exc:
+        outcome = executed.get(spec.stage)
+        if outcome is None:
+            # scratch 是**整目录拷贝**冻结产物来的(上面 copytree) —— 所以本 stage 声明的产物
+            # 在 runner 跑之前就已经躺在那儿了。不先删掉它们,一个**什么都没产出**的 stage 也会
+            # 逐字节"命中",replay 报 FULL:那正是「产物能证明跑过什么、不能证明没跑过什么」
+            # 被反过来用。删完再跑,`produced.is_file()` 才真的等于「这次跑出来了」。
+            # (2026-08-29:appendix 进 L5 outputs 后由 `test_l5_replay_is_partial_when_only_
+            #  the_summary_reproduces` 逮到;缺陷本身在单产物时代就存在,只是没有第二个产物照出来。)
+            # 删的是 spec 声明的**全部**产物(不是别名视图),因为它们出自同一次执行。
+            for name in spec.outputs:
+                stale = scratch / "staging" / name
+                if stale.is_file():
+                    stale.unlink()
+            try:
+                outcome = {"code": runner(spec, scratch, env), "error": None}
+            except ReplayInputMissing as exc:
+                outcome = {"code": None, "error": str(exc)}
+            executed[spec.stage] = outcome
+        if outcome["error"] is not None:
             rows.append(
                 {
                     "stage": stage,
                     "status": PARTIAL,
                     "match": False,
-                    "reason": str(exc),
+                    "reason": outcome["error"],
                     "outputs": [],
                 }
             )
             continue
+        code = outcome["code"]
         outputs = []
         matched = code == 0
-        for name in spec.outputs:
+        for name in (spec.outputs if view is None else view):
             produced = scratch / "staging" / name
             frozen = frozen_products / name
             row = {
@@ -308,9 +396,11 @@ def replay(
 __all__ = [
     "EVIDENCE_ONLY",
     "FULL",
+    "L1L2",
     "NONE",
     "PARTIAL",
     "REPLAY_ENV",
+    "STAGE_ALIASES",
     "ReplayInputMissing",
     "StageSpec",
     "active_capsule",
