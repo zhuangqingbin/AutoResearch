@@ -39,7 +39,8 @@ def test_load_and_fold(tmp_path):
 def test_load_ensemble_merges_per_code_files(tmp_path):
     """fb_20260714_003(每股独立 l4-stock workflow):每股各写 `_ensemble_<code>.json`
     (单条 record,无共享文件写竞态),_load_ensemble 与旧批量 `_ensemble.json` 合并读,
-    同 code 时 per-code 文件覆盖旧批量。坏 per-code json 跳过不挡其余。"""
+    同 code 时 per-code 文件覆盖旧批量。坏 per-code json **隔离为 `.bad` + 合成
+    degraded 记录**,不再静默跳过(D8.3 ③:响亮失败,强制人裁,不挡其余)。"""
     (tmp_path / "_ensemble.json").write_text(json.dumps([
         {"code": "688213", "ratings": ["Overweight", "Hold", "Hold"], "median": "Hold", "spread": 1}]),
         encoding="utf-8")
@@ -49,11 +50,13 @@ def test_load_ensemble_merges_per_code_files(tmp_path):
     (tmp_path / "_ensemble_688213.json").write_text(json.dumps(
         {"code": "688213", "ratings": ["Overweight", "Sell", "Sell"], "median": "Sell", "spread": 3}),
         encoding="utf-8")
-    (tmp_path / "_ensemble_bad.json").write_text("{oops", encoding="utf-8")
+    (tmp_path / "_ensemble_999999.json").write_text("{oops", encoding="utf-8")
     ens = assemble._load_ensemble(tmp_path)
     assert ens["000651"]["median"] == "Overweight"          # per-code 新路
     assert ens["688213"]["median"] == "Sell"                # per-code 覆盖旧批量
-    assert len(ens) == 2                                     # 坏 json 跳过
+    assert ens["999999"]["degraded"] is True                # 坏 json 合成人裁记录,不再消失
+    assert len(ens) == 3
+    assert (tmp_path / "_ensemble_999999.json.bad").exists()  # 坏文件被隔离,不再原地重复解析
 
 
 def test_load_ensemble_missing_file_is_empty(tmp_path):
@@ -62,9 +65,24 @@ def test_load_ensemble_missing_file_is_empty(tmp_path):
 
 
 def test_load_ensemble_bad_json_is_empty(tmp_path):
-    """坏 json → {}(可选层不挡整份报告发布,同 pinned.json 惯例)。"""
+    """坏的**旧批量**文件 `_ensemble.json`(无 per-code 文件名可反推)→ {}(可选层不挡整份
+    报告发布,同 pinned.json 惯例)——D8.3 ③ 的合成 degraded 记录只对 per-code 文件名生效
+    (`_ensemble_<code>.json`),旧批量文件名里没有 code 可提取,量不出该记给谁。"""
     (tmp_path / "_ensemble.json").write_text("{not json", encoding="utf-8")
     assert assemble._load_ensemble(tmp_path) == {}
+
+
+def test_load_ensemble_quarantines_bad_json(tmp_path, capsys):
+    """D8.3 ③:per-code 坏 json 隔离为 `<p>.bad` + 打印隔离提示 + 合成
+    `{degraded: True, spread: 1}` 记录进 `out`(强制 `_ensemble_flag` 判人裁展示,
+    分歧不静默消失——与 `_ensemble_flag` 现语义一致:`degraded and spread>0` → True)。"""
+    (tmp_path / "_ensemble_300308.json").write_text("{oops", encoding="utf-8")
+    out = assemble._load_ensemble(tmp_path)
+    assert (tmp_path / "_ensemble_300308.json.bad").exists()
+    assert out["300308"]["degraded"] is True          # 强制人裁,不静默
+    assert assemble._ensemble_flag(out["300308"]) is True
+    err = capsys.readouterr().err
+    assert "300308" in err and "隔离" in err
 
 
 def test_fold_never_upgrades():

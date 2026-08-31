@@ -1253,7 +1253,7 @@ def test_hold_with_neutral_earlystop_is_not_vetoed(tmp_path):
         assert [b["code"] for b in doc["buys"]] == ["601766"], reason
 
 
-@pytest.mark.parametrize("reason", sorted(REDFLAG_EARLY_STOP_REASONS - {"监管/审计红灯"}))
+@pytest.mark.parametrize("reason", sorted(REDFLAG_EARLY_STOP_REASONS))  # D8.3 ②:死条目已删,不必再减
 def test_redflag_earlystop_reasons_are_vetoed(tmp_path, reason):
     cands = [Cand(code="601766", name="红灯票", composite_rank=1, amount_yi=9.0,
                   rating="Hold", early_stop={"phase": "P3", "reason": reason})]
@@ -1263,10 +1263,15 @@ def test_redflag_earlystop_reasons_are_vetoed(tmp_path, reason):
 
 
 def test_redflag_ratings_content_is_pinned():
-    """扩集是规则改动,必须显式露面(同 rule_version 那条哨兵的用意)。"""
+    """扩集是规则改动,必须显式露面(同 rule_version 那条哨兵的用意)。
+
+    D8.3 ②(2026-08-31):`"监管/审计红灯"` 从集合里删除——它不在 `l4/parsers.py` 的
+    七词早停表内,规则逐字实现下永不命中,是纯死码(ratchet 见
+    `tests/scan/test_early_stop_parse.py::test_redflag_reasons_subset_of_closed_set`)。
+    """
     assert REDFLAG_RATINGS == frozenset({"Sell", "Underweight"})
     assert REDFLAG_EARLY_STOP_REASONS == frozenset({
-        "基本面恶化", "监管/审计红灯", "估值透支", "涨停追高", "数据不足"})
+        "基本面恶化", "估值透支", "涨停追高", "数据不足"})
 
 
 def test_composite_pool_only_picks_from_seats(tmp_path):

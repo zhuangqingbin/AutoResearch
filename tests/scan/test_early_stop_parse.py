@@ -42,3 +42,18 @@ def test_write_early_stop_json(tmp_path):
     assert got == {"000651": {"phase": "P3", "reason": "资金流出"}}
     on_disk = json.loads((d / "_early_stop.json").read_text(encoding="utf-8"))
     assert on_disk == got
+
+
+# ── D8.3 ②:REDFLAG_EARLY_STOP_REASONS 是 STOP_REASONS 闭集的子集(ratchet) ──────
+#
+# 病灶(2026-08-29 审计):`relative_buy.REDFLAG_EARLY_STOP_REASONS` 曾含 "监管/审计红灯"，
+# 但这个词从不在 `_STOP_REASONS`(本文件锚的七词表)里——`parse_early_stop` 把闭集外的
+# 自由文本一律折成"其他"，所以这一支在生产里逐字实现、永不命中，是纯死码。本用例把
+# "两套早停停因词表必须互相兼容"钉成 ratchet:未来谁往 REDFLAG 集里加词，若忘了先加进
+# 七词表，这里立刻红。
+
+def test_redflag_reasons_subset_of_closed_set():
+    from autoresearch.contracts.agent_output import STOP_REASONS
+    from autoresearch.scan.relative_buy import REDFLAG_EARLY_STOP_REASONS
+
+    assert REDFLAG_EARLY_STOP_REASONS <= set(STOP_REASONS)

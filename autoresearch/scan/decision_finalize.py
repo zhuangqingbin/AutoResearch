@@ -90,7 +90,15 @@ def _load_ensemble(scan_dir: Path) -> dict[str, dict]:
     · 旧批量:`_ensemble.json` = `[{"code","ratings":[...],"median":...,"spread":int}]`
     · 新每股:`_ensemble_<code>.json` = 单条 record(dict 或 单元素 list)——每股 workflow 各写
       各的文件,天然无并发写竞态;per-code 文件后读,同 code 覆盖旧批量文件。
-    无文件/坏 json → {}(presence-gated,老路不破,同 `_load_verify` 惯例)。
+    无文件 → {}(presence-gated,老路不破,同 `_load_verify` 惯例)。
+
+    D8.3 ③:坏 json **不再静默吞**(此前 `except: continue` 让分歧凭空消失,与
+    `_ensemble_flag` "分歧不静默消失"的设计初衷自相矛盾)。改为**响亮失败**:坏文件
+    原地隔离成 `<p>.bad`(不再被下次 glob 捡到)+ 打印一行 stderr;能从 per-code 文件名
+    (`_ensemble_<code>.json`)反推出 code 时,再合成一条 `{degraded: True, spread: 1}`
+    记录写进 `out`——`_ensemble_flag` 对 `degraded and spread>0` 恒判 True,强制该票
+    进人裁展示,不让"复核数据本身就坏了"这件事悄悄消失。旧批量文件名 `_ensemble.json`
+    反推不出 code,量不出该记给谁,仍按老路吞掉(仅打印 + 隔离,不合成记录)。
     """
     out: dict[str, dict] = {}
 
@@ -104,7 +112,15 @@ def _load_ensemble(scan_dir: Path) -> dict[str, dict]:
             continue
         try:
             _ingest(json.loads(p.read_text(encoding="utf-8")))
-        except Exception:  # noqa: BLE001 — 可选层,坏 json 不挡整份报告发布
+        except Exception:  # noqa: BLE001 — 坏 json 不挡整份报告发布,但不再静默吞
+            with contextlib.suppress(Exception):
+                p.rename(p.with_name(p.name + ".bad"))
+            print(f"[ensemble] 坏 JSON 已隔离: {p.name}", file=sys.stderr)
+            code = p.stem.removeprefix("_ensemble_")
+            if code and code != p.stem:  # 只有 per-code 文件名反推得出 code；旧批量文件名反推不出
+                out[code.zfill(6) if code.isdigit() else code] = {
+                    "code": code, "degraded": True, "spread": 1,
+                }
             continue
     return out
 

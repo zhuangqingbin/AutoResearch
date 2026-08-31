@@ -57,12 +57,24 @@ def test_gate_status_regression_688213_rubric_line_with_space():
     assert st["主力真在"] is True
 
 
-def test_gate_status_unchanged_when_no_segment_has_a_parseable_mark():
-    """全部"OW三门"段都解析不出 ✓/✗ 标记(纯散文提及,没有结构化判定)时,返回语义与改动前
-    完全一致——不得因为"找不到就返回 None"而误伤既有的"找到门名但没标记→False"契约,
-    也不得因为"取最后一段"而改变单段场景下的既有行为。"""
-    assert gate_status("OW三门缺「主力真在」一门,待补充结构化判定。") == {"主力真在": False}
+def test_gate_status_no_segment_at_all_returns_none():
+    """全文压根没有"OW三门"字样 → None(与改动前一致,这条从来没变过)。"""
     assert gate_status("# 卡\n无门柱段\n") is None
+
+
+# D8.3 ①(2026-08-31 修口径):上面这条用例原名 `..._unchanged_when_no_segment_has_a_
+# parseable_mark`,曾断言"全部『OW三门』段都解析不出 ✓/✗ 标记时 → {"主力真在": False}"
+# ——即"找到门名但没标记 = 未失守(全过)"。审计（full-coverage-research-system-
+# brainstorm §2.2 K2）指出这正是同一条「解析器读不懂就悄悄给通过」的病：`_mark_after`
+# 对没写标记的门名返回 ""，`"" == "✗"` 恒 False，于是"一个字都没判"被读成"三门全过"。
+# 本用例因此**改口径**（不是新增,是修正）：这个场景现在必须是 None（"这段解析不出判断"），
+# 不能再默认全部通过。See `test_gate_status_unmarked_returns_none` below for the new
+# behaviour's dedicated regression lock（同一事实,两个用例名字不同角度各锁一次）。
+
+def test_gate_status_prose_mention_without_marks_returns_none():
+    """纯散文提及门名、没有任何 ✓/✗ 标记时 → None,不再当"三门全过"读(D8.3 ①修口径,
+    见上方旁注;此用例接手了原 `..._unchanged_...` 的这一半断言并翻转结论)。"""
+    assert gate_status("OW三门缺「主力真在」一门,待补充结构化判定。") is None
 
 
 # ── Wave10 A11 复核(2026-08-01):同一缺陷族的**第三次**复发 ────────────────
@@ -103,3 +115,26 @@ def test_emphasis_without_a_real_mark_still_reads_as_not_failed():
     """`主力真在**(数据缺)**` 没有 ✓/✗ → 与改动前同语义,判 False,不臆测。"""
     assert gate_status("OW三门 主力真在**(数据缺)**·业绩真兑现 ✗·估值不透支 ✓") == {
         "主力真在": False, "业绩真兑现": True, "估值不透支": False}
+
+
+# ── D8.3 ①:门记号容错(✔/✘/× 变体字形)+ 无记号段返回 None(不再"首段全 False=三门全
+# 通过") ──────────────────────────────────────────────────────────────────────
+#
+# 病灶(2026-08-29 审计):`gate_status` 对"段内有门名、但一个 ✓/✗ 都没有"的旧回落是
+# `_parse_gate_seg(matches[0].group(0))` —— 每个门名找不到标记 → `_mark_after` 返回
+# "" → `"" == "✗"` 恒 False → 三门全判"未失守"(=全 PASS)。这是同一条「解析器读不懂
+# 就悄悄给通过」的病(与加粗号那次同族),只是触发条件从"加粗看不懂"换成"压根没写"。
+# 上面 `test_gate_status_unchanged_when_no_segment_has_a_parseable_mark` 正是锁死这条
+# **旧错误语义**的用例(名字叫"unchanged"是因为那次修复不想动它)——本轮改动之后它必须
+# 跟着改口径,不能继续断言"没记号=全过"。
+
+def test_gate_marks_tolerant_glyphs():
+    """`✔`(→✓)/`✘`/`×`(→✗)三种变体字形与 `✓`/`✗` 同解。"""
+    seg = "OW三门 主力真在 ✘·业绩真兑现 ✔·估值不透支 ×"
+    st = gate_status(seg)
+    assert st == {"主力真在": True, "业绩真兑现": False, "估值不透支": True}  # True=✗失守
+
+
+def test_gate_status_unmarked_returns_none():
+    """段内三个门名全部提及、但一个 ✓/✗/✔/✘/× 都没有(纯散文提及)→ None,不再默认全过。"""
+    assert gate_status("OW三门 主力真在·业绩真兑现·估值不透支(散文提及,无记号)") is None

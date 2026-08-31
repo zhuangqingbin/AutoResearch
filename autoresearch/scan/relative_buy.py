@@ -72,10 +72,10 @@ BUY 候选,也不进 `excluded`——把 190 只 pass1 被切的票记成"被排
    `UNMEASURED`,**不当 fail 用**(缺证据不等于有罪),并在 `inputs` 留痕。
 4. `no_redflag` v1 判定 = 非 ST/退 ∧ `research_rating != "Sell"` ∧ 早停原因 ∉
    `REDFLAG_EARLY_STOP_REASONS` ∧ 当日成交额分位 ≥ P10(**L0 可交易全集内**)。
-   ⚠️ **premise 偏差(实测)**:早停停因是七选一的机读词表(`l4/parsers.py`:数据不足/
-   涨停追高/题材透支/资金流出/估值透支/基本面恶化/其他),里面**没有**"监管/审计红灯"
-   这一档。规则逐字实现(该 token 留在集合里),但它在现行词表下**永不命中**——见文件尾
-   「v1 已知问题」。
+   ⚠️ **premise 偏差(实测,2026-08-31 已修 · D8.3 ②)**:早停停因是七选一的机读词表
+   (`l4/parsers.py`:数据不足/涨停追高/题材透支/资金流出/估值透支/基本面恶化/其他),
+   曾经写死的 "监管/审计红灯" 不在这七选一里,规则逐字实现下永不命中——纯死码,已删除
+   (行为零变;见文件尾「v1 已知问题」#1)。
 
 **四个面**(各自转**当日候选内**的中位分位,等权 Borda 平均):
 
@@ -172,14 +172,17 @@ SECOND_BUY_BLOCK_REASON = "v1 影子期无已验证阈值"
 EXPECTED_ABS_GAP_MIN_N = 20
 #: 成交额分位下限(L0 可交易全集内)。
 LIQUIDITY_PCTL_FLOOR = 0.10
-#: 硬门 ④ 的红灯停因。"监管/审计红灯"不在 `l4/parsers.py` 的七词表内(逐字实现,现行永不命中)。
-#: **v3.0 扩集**(2026-08-26 §3 路A 的 A2):加 {估值透支, 涨停追高, 数据不足}。
+#: 硬门 ④ 的红灯停因。**v3.0 扩集**(2026-08-26 §3 路A 的 A2):加 {估值透支, 涨停追高, 数据不足}。
 #: 判据是**产品一致性不是统计**:E6 出的 BUY 不能与同一张卡自己写的结论打架。留在集合外的
 #: 是 {其他, 题材透支, 资金流出} —— 这三档在隔夜尺上对 Hold/UW 无区分力(edge 普查:
 #: L4·Hold −0.20 vs UW −0.35,差异不显著;「主力真在」门 PASS−FAIL 甚至反向 −0.22pp),
 #: 把它们也当红灯就是拿没有证据的判断去否决有证据的候选。
+#: D8.3 ②:曾含 "监管/审计红灯"——它不在 `l4/parsers._STOP_REASONS`(= `contracts.
+#: agent_output.STOP_REASONS`)的七词表内,`parse_early_stop` 把闭集外的自由文本一律
+#: 折成"其他",这一支逐字实现、永不命中,是纯死码,已删除(行为零变;ratchet 见
+#: `tests/scan/test_early_stop_parse.py::test_redflag_reasons_subset_of_closed_set`)。
 REDFLAG_EARLY_STOP_REASONS = frozenset({
-    "基本面恶化", "监管/审计红灯", "估值透支", "涨停追高", "数据不足",
+    "基本面恶化", "估值透支", "涨停追高", "数据不足",
 })
 #: v3.0 硬门 ④ 否决的评级档(A2)。UW/Sell 卡 + `FINAL TRANSACTION PROPOSAL: SELL` 都不得当 BUY。
 #: 实测背景:2026-08-20 金螳螂、2026-08-25 天味食品**两次**把提议 SELL 的 UW 卡发成当日 BUY
@@ -752,8 +755,9 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
                 "source_column": "industry",     # 实为 tushare「所处行业」,见文件尾 ⑤
                 "n_sectors": len(universe["sectors"]),
             },
-            # 红灯词表进产物(复核 Minor):源码里标了三处「监管/审计红灯 是死条件」,
-            # 但只读 JSON 的人看不见这一支是死的。导出词表 = 让它自己说话。
+            # 红灯词表进产物(复核 Minor):只读 JSON 的人看不见集合里有没有死条目 ——
+            # 导出词表 = 让它自己说话。("监管/审计红灯" 那个死条目已在 D8.3 ②删除,
+            # 现在这里导出的就是真正生效的四词。)
             "redflag_early_stop_reasons": sorted(REDFLAG_EARLY_STOP_REASONS),
             "excluded_from_benchmark": universe["excluded"],
         },
@@ -1053,11 +1057,12 @@ def main(argv: list[str] | None = None) -> int:
 #
 # ── v1 已知问题(不在本轮改;改 = 新 rule_version + registry)────────────────
 #
-# 1. `REDFLAG_EARLY_STOP_REASONS` 里的 `"监管/审计红灯"` 在现行早停词表(`l4/parsers.py`
-#    七选一)下**永不命中**——这一支是死条件。真正的监管信号在 L3 侧另有独立探测器
-#    (`agents/l3_news.reg_flag`,近 10 日公告命中 立案/问询/关注函/处罚/违规/诉讼/监管/
-#    证监会/交易所),但它没有进 L4 的结构化产物。要让这一支活起来,得先把 `news_reg`
-#    接进逐票产物,那是另一件事。
+# 1. **(2026-08-31 已修 · D8.3 ②)** `REDFLAG_EARLY_STOP_REASONS` 曾含 `"监管/审计红灯"`,
+#    在现行早停词表(`l4/parsers.py` 七选一)下**永不命中**——纯死条件,已删除(行为零变,
+#    ratchet 测试见 `tests/scan/test_early_stop_parse.py`)。真正的监管信号在 L3 侧另有
+#    独立探测器(`agents/l3_news.reg_flag`,近 10 日公告命中 立案/问询/关注函/处罚/违规/
+#    诉讼/监管/证监会/交易所),但它没有进 L4 的结构化产物。要让"监管红灯"这条信号真正
+#    活起来,得先把 `news_reg` 接进逐票产物、再走新 `rule_version` 加回集合,那是另一件事。
 # 2. 逐票 `price_claim` 状态没有生产者(见文件头 ③)。在补上 `_price_claim_status.json`
 #    的生产者之前,`evidence` 面的 "+0.2 干净" 分量对全体候选恒不给分 = 零鉴别力,
 #    硬门 ③ 的价格断言这一支同样恒不触发。

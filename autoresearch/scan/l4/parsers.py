@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import json
 import re
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -269,7 +270,14 @@ def _finalist_row(scan_dir: Path, fr: dict) -> dict:
         conf = m.group(1) if m else "—"
     prop = _PROPOSAL_RE.search(text)
     rub = _RUBRIC_RE.search(text)
-    rating = parse_rating(text)
+    # D8.3 ④:strict-with-warn —— 先认行首 `**Rating**:` 标签(契约干净);找不到才落回
+    # 宽松兜底(行为读数不变,硬切是 P2 D8.2 的事),但打印一行 stderr 留痕:少了这行标签
+    # 不该是静默发生的事,即便读数最终碰巧一样。
+    rating = parse_rating(text, strict=True)
+    if rating is None:
+        rating = parse_rating(text)
+        code = fr.get("code") or ticker
+        print(f"[card-contract] {code} Rating 行缺失,已启用全文兜底", file=sys.stderr)
     return {
         **fr,
         "rating": rating,
@@ -290,10 +298,14 @@ def _finalist_row(scan_dir: Path, fr: dict) -> dict:
 #   `L4_RUBRIC_SCORE`/`DATA_UNDECIDABLE`;A11 的门归因 v3 全盘继承。
 # 症状很像「这道门最近没怎么拦人」,而事实是「解析器看不懂加粗」。
 _EMPHASIS = "*_`"
+#: D8.3 ①:门记号变体字形容错 —— `✔`(粗体对勾常见写法)、`✘`/`×`(叉号常见写法)与
+#: 规范 `✓`/`✗` 同解。归一化在 `_mark_after` 内做,`_parse_gate_seg` 等下游只认规范两态。
+_GLYPH_NORMALIZE = {"✔": "✓", "✘": "✗", "×": "✗"}
 
 
 def _mark_after(seg: str, gate: str) -> str:
-    """门名之后的 ✓/✗ 标记(容错:「门」后缀、空白、markdown 强调号);没有 → ""。"""
+    """门名之后的 ✓/✗ 标记(容错:「门」后缀、空白、markdown 强调号、✔/✘/× 变体字形);
+    没有 → ""。"""
     i = seg.find(gate)
     if i < 0:
         return ""
@@ -302,7 +314,8 @@ def _mark_after(seg: str, gate: str) -> str:
         j += 1
     while seg[j:j + 1] and (seg[j].isspace() or seg[j] in _EMPHASIS):
         j += 1                                  # 空白 + `**`/`__`/`` ` `` 一并跳过
-    return seg[j:j + 1] if seg[j:j + 1] in ("✓", "✗") else ""
+    ch = _GLYPH_NORMALIZE.get(seg[j:j + 1], seg[j:j + 1])
+    return ch if ch in ("✓", "✗") else ""
 
 
 def _parse_gate_seg(seg: str) -> dict[str, bool]:
@@ -314,13 +327,22 @@ def _seg_has_mark(seg: str) -> bool:
     return any(_mark_after(seg, g) for g in _GATES3)
 
 def gate_status(text: str) -> dict[str, bool] | None:
-    """解析卡文『OW三门…』段 → {门: 是否✗失守};无门柱段(如早停卡)→ None。
-    门柱直方图统一走本函数(单一口径,防漂移)。
+    """解析卡文『OW三门…』段 → {门: 是否✗失守};无门柱段(如早停卡)、或段内一个 ✓/✗
+    记号都没有(纯散文提及,没有结构化判定)→ None。门柱直方图统一走本函数(单一口径,
+    防漂移)。
 
     容错(漏斗 P0+P1 波 Task 2b 修复):①门名与 ✓/✗ 之间允许空白(l4-card.md 满卡模板 Rubric 行的
     真实写法「主力真在 ✗」带空格);②卡片正文可能多处出现"OW三门"字样(如先散文一句带过、文末
     Rubric 行才结构化判定)——取全部匹配段里**最后一个**能解析出至少一个 ✓/✗ 标记的段;若全部段
-    都解析不出标记,退回首段(与改动前完全一致的返回语义)。"""
+    都解析不出标记 → None(D8.3 ①,2026-08-31 修口径)。
+
+    ⚠️ 这条 None 分支此前是"退回首段"、把"一个字都没判"读成"三门全过"(`_mark_after`
+    对没写标记的门名返回 "",`"" == "✗"` 恒 False)——与「读不懂加粗 `**✗**` → 17.4%
+    的卡被判三门全过」同族的"解析器猜不出就悄悄放行"病,只是触发条件从"看不懂加粗"
+    换成"压根没写"。下游消费者(`decision_finalize._build_decision_records` 的
+    `gate_states` 只在 `gates is not None` 时才更新、`l4/parsers._gate_breach_text`
+    与 `report_sections.gate_histogram` 都已经把 `None`/falsy 当"跳过,不计入分母"处理)
+    ——None 本就是这些消费者认识的合法输入,早停卡从来就在传它。"""
     matches = list(_GATESEG_RE.finditer(text))
     if not matches:
         return None
@@ -328,7 +350,7 @@ def gate_status(text: str) -> dict[str, bool] | None:
         seg = m.group(0)
         if _seg_has_mark(seg):
             return _parse_gate_seg(seg)
-    return _parse_gate_seg(matches[0].group(0))
+    return None
 
 def parse_early_stop(text: str) -> dict | None:
     """决策卡的机读早停行 → {"phase","reason"};满卡无此行 → None。

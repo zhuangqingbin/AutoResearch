@@ -684,6 +684,36 @@ def test_decision_text_zfills_short_ticker(tmp_path):
     assert _decision_text(tmp_path, "999999") is None
 
 
+# ─────────────────────── D8.3 ④:_finalist_row rating strict-with-warn ───────────────────────
+#
+# `_finalist_row` 此前直接调宽松 `parse_rating(text)`(两遍兜底)。D8.3 改成先 strict 后宽松:
+# 找到行首 `**Rating**:` 标签 → 直接用(行为不变);找不到 → 仍走宽松兜底(**行为不变**,
+# 读数不翻)但打印一行 stderr 留痕(可观测性 +1,硬切等 P2 D8.2)。
+
+
+def test_finalist_row_falls_back_with_warning_when_rating_unkeyed(tmp_path, capsys):
+    """卡面没有行首 `**Rating**:` 标签 → 仍按旧宽松兜底给出评级(读数不变),但打印警告。"""
+    (tmp_path / "details").mkdir(parents=True)
+    (tmp_path / "details" / "300308.md").write_text(
+        "# 决策卡 — 300308 中际旭创\nRubric建议: Overweight\n"
+        "FINAL TRANSACTION PROPOSAL: **HOLD**\n", encoding="utf-8")
+    row = assemble._finalist_row(tmp_path, {"code": "300308", "ticker": "300308"})
+    assert row["rating"] == "Overweight"          # 与改动前的宽松兜底读数逐字相同
+    err = capsys.readouterr().err
+    assert "300308" in err and "Rating 行缺失" in err and "全文兜底" in err
+
+
+def test_finalist_row_strict_hit_prints_no_warning(tmp_path, capsys):
+    """卡面有行首 `**Rating**:` 标签 → strict 直接命中,不打印兜底警告。"""
+    (tmp_path / "details").mkdir(parents=True)
+    (tmp_path / "details" / "300308.md").write_text(
+        "# 决策卡 — 300308 中际旭创\n**Rating**: Overweight\n"
+        "FINAL TRANSACTION PROPOSAL: **BUY**\n", encoding="utf-8")
+    row = assemble._finalist_row(tmp_path, {"code": "300308", "ticker": "300308"})
+    assert row["rating"] == "Overweight"
+    assert capsys.readouterr().err == ""
+
+
 # ───────────────────────── P0-2:_final_ratings.json(assemble.py 单写者 T2) ─────────────────────────
 #
 # design: docs/specs/2026-07-12-selflearning-optimization-brainstorm.md §4 P0-2
