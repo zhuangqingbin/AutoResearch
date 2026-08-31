@@ -16,6 +16,13 @@ subagent transcript 物化(`trace/capsule.py::_archive_bound_transcripts`)——
 不 import autoresearch、不读 stdin、不碰磁盘——本 hook 每次 WebFetch/WebSearch 后
 都跑,不能拖慢日常问答。
 
+**任何异常都必须吞掉、exit 0**(hook 崩溃会打断 Claude Code 的工具调用,这是硬约束):
+`AUTORESEARCH_RUN_ID` 在场之后的整段——包括 `from autoresearch.common import
+workspace as ws` 这一行本身——都在一个外层 `try/except Exception: return 0` 里。
+这一行不是无害的:`workspace.py` 顶层有 `ENGINE: str = detect_engine()`,若环境里
+`AUTORESEARCH_ENGINE` 是非法值,**import 期间**就会抛 `ValueError`,不包住就是一条
+未捕获的 traceback + exit 1。
+
 落点(避免与主账双写破幂等):
 - run 目录存在且还没 finalize(`capsule/capsule.json` 尚未写终稿)→ 追加到运行内
   `<run_root>/capsule/lineage/external_tools_hook.jsonl`(**独立文件名**,主账叫
@@ -92,46 +99,42 @@ def _append_row(path: Path, row: dict) -> None:
 def main(raw: str | None = None) -> int:
     run_id_env = os.environ.get("AUTORESEARCH_RUN_ID", "").strip()
     if not run_id_env:
-        return 0  # 零成本兜底:没有活跃 run,连 import 都不做
-
-    repo_root = Path(__file__).resolve().parents[2]
-    if str(repo_root) not in sys.path:
-        sys.path.insert(0, str(repo_root))
-    from autoresearch.common import workspace as ws
+        return 0  # 零成本兜底:没有活跃 run,连 import 都不做——必须在这行之前完成
 
     try:
+        repo_root = Path(__file__).resolve().parents[2]
+        if str(repo_root) not in sys.path:
+            sys.path.insert(0, str(repo_root))
+        from autoresearch.common import workspace as ws
+
         run_id = ws.validate_run_id(run_id_env)
-    except ValueError:
-        return 0
 
-    text = sys.stdin.read() if raw is None else raw
-    try:
+        text = sys.stdin.read() if raw is None else raw
         payload = json.loads(text) if text and text.strip() else {}
-    except (TypeError, ValueError):
-        return 0
-    if not isinstance(payload, dict):
-        return 0
+        if not isinstance(payload, dict):
+            return 0
 
-    tool_name = payload.get("tool_name")
-    if not tool_name:
-        return 0
-    tool_input = payload.get("tool_input")
-    if not isinstance(tool_input, dict):
-        tool_input = {}
+        tool_name = payload.get("tool_name")
+        if not tool_name:
+            return 0
+        tool_input = payload.get("tool_input")
+        if not isinstance(tool_input, dict):
+            tool_input = {}
 
-    row = {
-        "ts": _utc_now(),
-        "session_id": str(payload.get("session_id") or ""),
-        "tool": tool_name,
-        "url_or_query": tool_input.get("url") or tool_input.get("query") or "",
-        "response_chars": _char_count(payload.get("tool_response")),
-        "capture_level": "HOOK_L1",
-    }
-
-    try:
+        row = {
+            "ts": _utc_now(),
+            "session_id": str(payload.get("session_id") or ""),
+            "tool": tool_name,
+            "url_or_query": tool_input.get("url") or tool_input.get("query") or "",
+            "response_chars": _char_count(payload.get("tool_response")),
+            "capture_level": "HOOK_L1",
+        }
         _append_row(_target_path(ws, run_id), row)
     except Exception:
-        pass  # L1 兜底证据,写失败不得让 WebFetch/WebSearch 调用本身报错
+        # L1 兜底证据:workspace import(ENGINE=detect_engine() 可能在 import 期间就
+        # 抛 ValueError)、run_id 校验、JSON 解析、落盘——任何一步出错都不能让
+        # WebFetch/WebSearch 这次调用本身报错,也不能把 traceback 打到 stderr。
+        return 0
     return 0
 
 
