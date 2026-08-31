@@ -108,6 +108,78 @@ def test_hk_hold_absent_ticker_renders_no_holding_note(monkeypatch):
     assert "非标的/无持股记录" in (out or "")
 
 
+@pytest.mark.unit
+def test_lake_market_day_recovers_missing_trade_date_column(monkeypatch):
+    """修复轮1(reviewer Important-1)—— legacy 湖分区防御的显式缺列夹具。
+
+    `day_df` 完全没有 `trade_date` 列(老 8 列 schema;2026-08-31 §LIVE parity 实测
+    逮到的 `lake/moneyflow/2026080{3,4,5}.parquet` 就是这个真实形状)。`_lake_market_day`
+    必须用调用方已知的查询键 `trade_date` 强制覆盖该列,而不是信任湖里可能残缺的
+    同名列——这正是 tushare_enrich.py 里 `hit["trade_date"] = trade_date` 那一行的
+    职责。此前 `test_moneyflow_goes_through_lake` 的合成 DataFrame 自带 `trade_date`
+    列,删掉那行覆盖逻辑该测试也不会变红(见 reviewer 手工推演);本用例直接构造
+    「没有这一列」的原始崩溃前提,让覆盖逻辑本身可被变异测试。
+
+    变异自证(见 batch-D-report.md「修复轮 1」节的实测输出):注释掉
+    `hit["trade_date"] = trade_date` 那一行 → 本用例变红
+    (`AssertionError: assert 'trade_date' in Index([...])`);改回后变绿。
+    """
+    calls: list[tuple[str, dict]] = []
+    # 老 8 列 schema:没有 trade_date 列(hk_hold/moneyflow 等 date 键端点的 legacy 分区)
+    legacy_day_df = pd.DataFrame({
+        "ts_code": ["300308.SZ", "000001.SZ"],
+        "net_mf_amount": [1234.0, -999.0],
+    })
+
+    def fake_gof(endpoint, params, today=None, fetch=None):
+        calls.append((endpoint, dict(params)))
+        return legacy_day_df
+
+    monkeypatch.setattr("autoresearch.data.cache.get_or_fetch", fake_gof)
+    hit = tushare_enrich._lake_market_day("moneyflow", "20260805", "2026-08-30", "300308.SZ")
+    assert calls == [("moneyflow", {"trade_date": "20260805"})]
+    assert len(hit) == 1
+    assert "trade_date" in hit.columns              # 修前:老 schema 里压根没有这一列
+    assert hit.iloc[0]["trade_date"] == "20260805"  # 用查询键强制覆盖,不信任湖里同名列
+    assert hit.iloc[0]["ts_code"] == "300308.SZ"    # 过滤逻辑本身不受影响(仍按 ts_code 筛)
+
+
+@pytest.mark.unit
+def test_moneyflow_legacy_schema_mixed_with_new_schema_days_sorts_correctly(monkeypatch):
+    """修复轮1(reviewer Important-1 附加场景)—— 复现 2026-08-31 §LIVE 实测的完整
+    崩溃链路:10 日窗口里混了一天"legacy 分区"(day_df 无 trade_date 列)。若不强制
+    覆盖,`pd.concat` 后该天 `trade_date` 会被静默填 `NaN`,`sort_values("trade_date")`
+    把 `NaN` 排到最后,`net.iloc[-1]`("最新日")就会被这条其实是旧日子的行错误顶替
+    ——`ashare_market_context_ts` 的输出会把 legacy 那天的资金流误报成"最新日"。
+    """
+    calls: list[tuple[str, dict]] = []
+    # 20260827 是 legacy 分区:没有 trade_date 列;20260826/20260828 是新 schema
+    legacy_827 = pd.DataFrame({"ts_code": ["300308.SZ"], "net_mf_amount": [9999.0]})
+    new_826 = pd.DataFrame({"ts_code": ["300308.SZ"], "trade_date": ["20260826"], "net_mf_amount": [100.0]})
+    new_828 = pd.DataFrame({"ts_code": ["300308.SZ"], "trade_date": ["20260828"], "net_mf_amount": [50.0]})
+    rows_by_day = {"20260826": new_826, "20260827": legacy_827, "20260828": new_828}
+
+    def fake_gof(endpoint, params, today=None, fetch=None):
+        calls.append((endpoint, dict(params)))
+        if endpoint != "moneyflow":
+            return pd.DataFrame()          # stk_factor_pro/cyq_perf/hk_hold:本用例不关心
+        return rows_by_day[params["trade_date"]]
+
+    monkeypatch.setattr(tushare_enrich, "_pro", lambda: object())
+    monkeypatch.setattr(tushare_enrich, "_last_trade", lambda pro, curr_date: "20260828")
+    monkeypatch.setattr(tushare_enrich, "_trade_days",
+                        lambda pro, start, end: ["20260826", "20260827", "20260828"])
+    monkeypatch.setattr("autoresearch.data.cache.get_or_fetch", fake_gof)
+
+    out = tushare_enrich.ashare_market_context_ts("300308.SZ", "2026-08-28")
+    mf_calls = [c for c in calls if c[0] == "moneyflow"]
+    assert len(mf_calls) == 3
+    # 最新日必须是 20260828 的 +0.01 亿(50/1e4),不是 legacy 827 那天被 NaN 排序顶替
+    # 出来的 +1.00 亿(9999/1e4)——若覆盖逻辑被删掉,这一断言就会变红。
+    assert "最新日 +0.01 亿" in (out or "")
+    assert "+1.00 亿" not in (out or "")
+
+
 # ───────────────────────── tushare_enrich.ashare_shareholder_ts ─────────────────────────
 # stk_holdernumber / pledge_stat(as_of 键,entity=ts_code,天然吻合原有"整表拉取"用法)
 

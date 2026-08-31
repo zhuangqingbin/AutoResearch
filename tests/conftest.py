@@ -70,6 +70,35 @@ def _isolate_config():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_degradation_ledger():
+    """Reset the process-global B-tier degradation ledger around every test.
+
+    `autoresearch.data.contracts._DEGRADED` 是一个**进程级 list**,谁都能往里 append,
+    从来没人在测试之间清过。于是任何一个「跑完一趟会记降级」的测试都会污染它后面
+    所有读 `degradations()` 的测试 —— 而这类失败**只在特定执行顺序下出现**。
+
+    真事故(2026-08-31 实测,merge-base `6a5a566` 就在,不是本波引入):
+    `pytest tests/trace tests/analyze` → `test_assemble_writes_manifest_v2_fields`
+    断言 `manifest["degradations"] == 0` 却拿到 **22** —— 那 22 条是
+    `tests/trace/test_finalization.py` 里每一趟 finalize 经
+    `capsule._resolve_run_mode → _degrade_evidence` 记下的 `capsule.run_mode` 降级。
+    单独跑 `tests/analyze` 永远是绿的,所以它伪装成「偶发」。
+
+    修在这里而不是在受害者那边加防御:**受害者不止一个**(`tests/scan` 同样能触发),
+    而且「降级不留痕才是真病」—— 生产侧的记账一行都不能少,该隔离的是测试进程。
+    位置紧挨 `_isolate_config`:那条修的是另一个同族进程级全局(`dataflows.config._config`)。
+
+    仓里已有 8 个测试文件手写了自己的 `clear_degradations()` fixture —— 它们正是在
+    绕开这个缺失的全局隔离。留着不动(幂等,且有几个还要断言具体内容)。
+    """
+    import autoresearch.data.contracts as contracts
+
+    contracts.clear_degradations()
+    yield
+    contracts.clear_degradations()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_dossier_dir(tmp_path, monkeypatch):
     """dossier 层隔离(Wave3):防任何测试读写真实 context/knowledge/dossiers。
 

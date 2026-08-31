@@ -231,6 +231,26 @@ ARTIFACTS: tuple[Artifact, ...] = (
     # 30 天序列块搬进这份 deep 附件(主文件只留「末值+5日前值+方向」汇总表),按需
     # `Read` 才拉。同 analyze_slim 的裸后缀理由:path 逐字等于生产侧真实写盘用的后缀
     # 常量,不写成 `*_indicators.md`(drift 守卫是字符串集合比对,不做 glob)。
+    #
+    # ⚠️ 2026-09-01(修复轮1,reviewer Important-2 实测坐实):**这条登记对
+    # `test_no_unregistered_artifact_literals` 是空转,不受守卫保护。** 根因:生产代码
+    # 里 `_indicators.md` 只以 f-string 插值出现(`harvest.py`
+    # `_blk_technical_indicators_compact` 的
+    # `f"{ctx['ticker']}_{ctx['trade_date']}_indicators.md"`),从未有裸字符串字面量
+    # `"_indicators.md"` ——守卫的 `_LITERAL_RE` 只抓完整的裸引号字面量,f-string 里的
+    # `{...}` 插值天然不落在该正则的字符类里,grep 根本抓不到这个名字。reviewer 用
+    # 与 `test_no_unregistered_artifact_literals` 完全相同的正则/扫描根实测:把这一条
+    # 从 `ARTIFACTS` 里整条删掉重跑,unknown-literals 输出前后完全相同(均为空)——
+    # 即它注不注册,守卫都不会红。`analyze_slim`/`analyze_slim_deep` 之所以真受保护,
+    # 是因为 `scan/retention.py:182` 有一处裸字面量消费点
+    # (`for suffix in ("_slim.md", "_slim_deep.md")`);`_indicators.md` 没有对应的
+    # 裸字面量消费者。
+    #
+    # 用户裁定(二选一取 b):不为了激活守卫去发明一个本不需要的裸字面量消费点
+    # (本末倒置)——这条登记保留为**文档性登记**(记录"这是个真实产物",供人类与
+    # `for_stage`/`for_root` 等派生查询使用),但如实标注它当前**不受** drift 守卫
+    # 保护。结论:「先登记再写码 → 守卫会红」这条纪律**只对以裸字面量出现的产物
+    # 成立**;f-string 拼出来的产物名不在守卫覆盖范围内,登记了也不代表有安全网。
     Artifact("analyze_indicators", "_indicators.md", "analyze_ctx", "harvest",
              "analyze.harvest", "md", "gated", required_when="full"),
     Artifact("analyze_sections", "1_analysts/*.md", "analyze_staging", "write",
