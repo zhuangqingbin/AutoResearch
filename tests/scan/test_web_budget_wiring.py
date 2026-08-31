@@ -177,10 +177,22 @@ def test_nightly_close_refreshes_stage_rulers(tmp_path):
     """`populations build` 不写 stage_rulers.csv —— 写它的是 `rulers` 子命令。"""
     text = _nightly_text()
     assert _nightly_steps(text) == [
-        "outcome fill", "ledger_views build", "populations build", "populations rulers"]
+        "outcome fill", "ledger_views build", "populations build",
+        "populations rulers", "analyze ledger"]
     assert re.search(
         r'^step "populations rulers"\s+autoresearch\.scan\.populations\s+rulers\s*$',
         text, re.M)
+
+
+def test_nightly_close_step5_invokes_analyze_ledger_nightly():
+    """第 5 步(D5.1)= `analyze.ledger nightly`(stock-research 独立产物结果账本,
+    ingest + fill 连跑;只记不学,不回注任何 prompt/权重)。"""
+    text = _nightly_text()
+    m = re.search(r'^step "analyze ledger"\s+(\S+)\s+(\S+)\s+(\S.*)$', text, re.M)
+    assert m is not None
+    assert m.group(1) == "autoresearch.analyze.ledger"
+    assert m.group(2) == "nightly"
+    assert "--today" in m.group(3)
 
 
 def test_nightly_close_header_comment_matches_the_real_steps():
