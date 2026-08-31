@@ -14,7 +14,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from autoresearch.analyze import harvest
+from autoresearch.analyze import blocks_ashare, harvest
 from autoresearch.common import uzi_lenses
 from autoresearch.data import tushare_enrich, tushare_source
 
@@ -238,7 +238,7 @@ def test_stock_restricted_release_queue_em_goes_through_lake(monkeypatch):
     monkeypatch.setattr(
         "autoresearch.data.cache.get_or_fetch",
         _fake_gof({"stock_restricted_release_queue_em": rel}, calls))
-    out = harvest.ashare_corporate_calendar("300308.SZ", "2026-08-30")
+    out = blocks_ashare.ashare_corporate_calendar("300308.SZ", "2026-08-30")
     assert calls == [("stock_restricted_release_queue_em", {"symbol": "300308"})]
     assert "限售解禁队列" in (out or "")
 
@@ -251,7 +251,7 @@ def test_stock_lhb_stock_statistic_em_goes_through_lake(monkeypatch):
     monkeypatch.setattr(
         "autoresearch.data.cache.get_or_fetch",
         _fake_gof({"stock_lhb_stock_statistic_em": stat}, calls))
-    out = harvest.ashare_market_context("300308.SZ", "2026-08-28")
+    out = blocks_ashare.ashare_market_context("300308.SZ", "2026-08-28")
     lhb_calls = [c for c in calls if c[0] == "stock_lhb_stock_statistic_em"]
     assert lhb_calls == [("stock_lhb_stock_statistic_em", {"symbol": "近三月"})]
     assert "龙虎榜（近三月）" in (out or "")
@@ -266,6 +266,6 @@ def test_stock_zh_a_gdhs_detail_em_goes_through_lake(monkeypatch):
     monkeypatch.setattr(
         "autoresearch.data.cache.get_or_fetch",
         _fake_gof({"stock_zh_a_gdhs_detail_em": df}, calls))
-    out = harvest.ashare_shareholder_count("300308.SZ")
+    out = blocks_ashare.ashare_shareholder_count("300308.SZ")
     assert calls == [("stock_zh_a_gdhs_detail_em", {"symbol": "300308"})]
     assert "40,000" in (out or "")
