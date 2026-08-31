@@ -22,10 +22,13 @@ import json
 import pytest
 
 from autoresearch.common import workspace as ws
+from autoresearch.common.run_identity import RunContract
 from autoresearch.data import contracts as data_contracts
 from autoresearch.trace import evidence_index as ei, web_budget as wb
 from autoresearch.trace.capsule import (
     BusinessStatus,
+    begin_run,
+    bind_transcript,
     checkpoint,
     finalize,
     read_manifest,
@@ -182,3 +185,68 @@ def test_materializer_failure_does_not_break_finalize(finalizable, monkeypatch):
     assert result.business_status == BusinessStatus.SUCCEEDED
     # 不阻断 ≠ 不记账。
     assert {"capsule.web_budget", "capsule.external_evidence_index"} <= _endpoints()
+
+
+def _prepare_stock_full_run(
+    analysis_date, *, config=None, run_id=None, engine=None,
+    workspace_path=None, session_ref=None, now=None,
+):
+    """stock-research bootstrap 桩(与 `tests/trace/test_capsule_kinds.py` 同款)。"""
+    echo = dict(config or {})
+    return RunContract.build(
+        analysis_date=analysis_date,
+        user_config={"mode": echo.get("mode", "FULL"), "ticker": echo.get("ticker", "")},
+        pinned={},
+        data_policy={},
+        stage_budgets={},
+        artifact_schema_versions={},
+        git_sha="abc1234",
+        git_dirty=False,
+        dirty_paths=[],
+        run_kind="stock-research",
+        engine=engine or ws.ENGINE,
+        workspace_path=workspace_path,
+        session_ref=session_ref,
+        run_id=run_id,
+        now=now,
+    )
+
+
+def test_stock_full_web_budget_materialized(tmp_path, monkeypatch):
+    """D-5 对 `stock-research`(stock_full)一样生效,不靠 kind 白名单(D6.4④)。
+
+    `_materialize_external_evidence` 的调用点(`capsule.finalize` 步骤 1)本就没有
+    任何 kind 检查挡在前面——Step 1 premise check 已核实。这里锁验收标准本身:
+    真跑一票、绑定了情报员 transcript 后,`capsule/lineage/web_budget.json`
+    必须存在且 `measurement` 为 MEASURED(有真证据可读,不是缺省摆着的 UNMEASURED)。
+    """
+    from tests.forensic_fixtures import copy_fixture, redirect_roots
+
+    redirect_roots(monkeypatch, tmp_path)
+    data_contracts.clear_degradations()
+
+    handle = begin_run(
+        "stock-research",
+        "2026-08-27",
+        "codex",
+        {"mode": "FULL", "ticker": "600000.SS"},
+        bootstrap=_prepare_stock_full_run,
+    )
+    source = copy_fixture("codex/rollout.jsonl", tmp_path / "harness")
+    bind_transcript(
+        handle.run_id, source, role="company-intel", invocation_id="company-intel-1",
+    )
+    checkpoint(handle.run_id, "harvest", "SUCCEEDED", [], {})
+
+    result = finalize(
+        handle.run_id,
+        BusinessStatus.INTERRUPTED,
+        error={"error_type": "StoppedForTest", "reason": "D6.4④ 只测到 D-5 物化"},
+    )
+
+    budget = json.loads(
+        (result.final_path / "capsule" / LINEAGE_BUDGET).read_text(encoding="utf-8")
+    )
+    assert budget["totals"]["measurement"] in {"MEASURED", "UNMEASURED"}
+    assert budget["totals"]["measurement"] == "MEASURED"
+    data_contracts.clear_degradations()

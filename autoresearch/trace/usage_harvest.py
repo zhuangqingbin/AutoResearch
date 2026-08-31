@@ -243,15 +243,33 @@ def collect_run(run_id: str, *, engine: str | None = None) -> list[dict]:
 
     定位权只在 adapter 手里:Claude 走 session 目录,Codex 走 capsule 里的显式绑定。
     绑定在、文件不在 → UNMEASURED 行;绝不因为「目录里没文件」就当作没花钱。
+
+    🚨 `session_ref` 必须从 run 的 contract 读(D6.4①):此前这里永远传
+    `RunIdentity(session_ref=None)`,而 `ClaudeTranscriptAdapter.locate` 在
+    `session_ref` 缺席时**短路返回 `[]`**——Claude 引擎的 `collect_run` 因此从没
+    真正定位过任何 transcript。contract 里仍读到 `None`(极少数没绑过 session 的
+    run)时也不能让整函数安静地退化成 `[]`:那正是「表里没有的看起来像没花钱」的
+    反面教材,所以改吐一行诚实的 UNMEASURED。
     """
     resolved_engine = str(engine or ws.ENGINE)
     # 未知 run 必须炸,不能安静地变成「0 份 transcript」= 免费。
     if ws.find_run_root(run_id) is None:
         raise FileNotFoundError(f"unknown run_id: {run_id}")
+    from autoresearch.trace.capsule import load_run
+
+    session_ref = load_run(run_id).contract.session_ref
     adapter = adapter_for(resolved_engine)
-    identity = RunIdentity(run_id=run_id, engine=resolved_engine)
+    identity = RunIdentity(run_id=run_id, engine=resolved_engine, session_ref=session_ref)
+    refs = adapter.locate(identity)
+    if not refs and resolved_engine == "claude" and not session_ref:
+        return [
+            unmeasured_row(
+                TranscriptRef(engine="claude", path=None, status="GONE", role="main"),
+                reason="run contract 没有绑定 session_ref，Claude adapter 无法定位 transcript",
+            )
+        ]
     rows: list[dict] = []
-    for ref in adapter.locate(identity):
+    for ref in refs:
         if ref.status != "PRESENT":
             rows.append(unmeasured_row(ref, reason=f"transcript {ref.status}"))
             continue

@@ -1653,6 +1653,41 @@ def _raw_archive_bytes(source: Path) -> tuple[bytes, int, int]:
     return buffer.getvalue(), len(rows), unparsed
 
 
+def _archive_plain_bytes(body: bytes) -> bytes:
+    """Same mtime=0 + secret-redaction discipline as `_raw_archive_bytes`, for
+    arbitrary (non-JSONL harness-row) file content such as `tool-results/*`."""
+    safe = _redact_bytes(body)
+    buffer = io.BytesIO()
+    with gzip.GzipFile(fileobj=buffer, mode="wb", mtime=0) as archive:
+        archive.write(safe)
+    return buffer.getvalue()
+
+
+def _archive_tool_results_spill(handle: RunHandle, main_transcript: Path) -> None:
+    """Archive `<session>/tool-results/*` next to a bound Claude `role=main` transcript.
+
+    收割盲区(D6.4③):the harness spills large tool outputs to sibling files under
+    a `tool-results/` directory that `ClaudeTranscriptAdapter.locate` never
+    enumerates — it only walks `<session>.jsonl` and `subagents/`.  Those files are
+    therefore an evidence blind spot exactly like the subagent transcripts were
+    before binding existed.  Best-effort: an unreadable spill directory degrades
+    silently rather than failing the whole archive step (the bound main transcript
+    itself is still the primary evidence).
+    """
+    spill_dir = main_transcript.parent / main_transcript.stem / "tool-results"
+    if not spill_dir.is_dir():
+        return
+    dest_root = _safe_directory(handle.capsule, Path("agents/tool_results"), create=True)
+    for path in sorted(spill_dir.iterdir()):
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            body = path.read_bytes()
+        except OSError:  # noqa: BLE001 - one unreadable spill file must not sink the rest
+            continue
+        atomic_write_bytes(dest_root / f"{path.name}.gz", _archive_plain_bytes(body))
+
+
 def _first_url(*values: object) -> str | None:
     for value in values:
         if value is None:
@@ -1817,6 +1852,8 @@ def _archive_bound_transcripts(handle: RunHandle) -> dict[str, dict]:
                 ],
             },
         )
+        if engine == "claude" and str(binding.get("role")) == "main":
+            _archive_tool_results_spill(handle, source)
         row.update(
             {
                 "raw": raw_path.relative_to(handle.capsule).as_posix(),
@@ -3194,7 +3231,7 @@ def repair(
             "archived_at": _utc_now()
             .isoformat(timespec="microseconds")
             .replace("+00:00", "Z"),
-        }
+        },
     )
     _freeze_tree(overlay)
     return RepairResult(

@@ -7,6 +7,9 @@ from pathlib import Path
 
 import pytest
 
+import autoresearch.trace.transcripts as transcripts_mod
+from autoresearch.common import workspace as ws
+from autoresearch.trace import capsule as capsule_mod
 from autoresearch.trace.blobs import blob_path
 from autoresearch.trace.capsule import (
     bind_transcript,
@@ -28,6 +31,51 @@ from autoresearch.trace.transcripts.codex import (
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture
+def claude_run(tmp_path, monkeypatch):
+    """One active Claude-engine run, rooted under a fake `~/.claude/projects` layout.
+
+    Mirrors `tests.forensic_fixtures.redirect_roots` but keeps `engine="claude"`
+    (that helper hardcodes `"codex"`) and points `ClaudeTranscriptAdapter` at a
+    throwaway `projects_root` instead of the real `~/.claude/projects`.
+    """
+    monkeypatch.setattr(ws, "ENGINE", "claude")
+    monkeypatch.setattr(ws, "context_root", lambda: tmp_path / "context_claude")
+    monkeypatch.setattr(ws, "reports_root", lambda: tmp_path / "reports_claude")
+    monkeypatch.delenv("AUTORESEARCH_RUN_ID", raising=False)
+    monkeypatch.setattr(
+        "autoresearch.scan.user_config.DEFAULT_PINNED_PATH",
+        tmp_path / "missing-pinned.jsonc",
+    )
+    monkeypatch.setattr(
+        capsule_mod,
+        "snapshot_identity",
+        lambda *args, **kwargs: {
+            "ok": True,
+            "components": {},
+            "missing": [],
+            "errors": [],
+        },
+    )
+    session_id = "session-claude-fixture"
+    projects_root = tmp_path / "projects"
+    main = projects_root / "proj" / f"{session_id}.jsonl"
+    main.parent.mkdir(parents=True)
+    main.write_text(
+        (FIXTURES / "claude" / "agent-l4-card.jsonl").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    monkeypatch.setitem(
+        transcripts_mod._ADAPTERS,
+        "claude",
+        lambda: ClaudeTranscriptAdapter(projects_root=projects_root),
+    )
+    handle = capsule_mod.begin_run(
+        "scan-market", "2026-08-27", "claude", {}, session_ref=session_id,
+    )
+    return handle, main, session_id
 
 
 def read_jsonl(path) -> list[dict]:
@@ -177,6 +225,8 @@ def test_codex_normalize_keeps_visible_items_only(codex_ref):
         "message",
         "error",
         "message",
+        "tool_request",  # web_search_call (D6.4②)
+        "tool_result",   # web_search_end (D6.4②)
     ]
     blob = str([dict(item.payload) for item in normalized.items])
     assert "encrypted_content" not in blob
@@ -265,7 +315,14 @@ def test_visible_tool_calls_are_indexed_and_results_are_blobbed(codex_run):
 def test_incomplete_tool_request_stays_an_explicit_row(codex_run):
     handle, source = codex_run
     lines = source.read_text(encoding="utf-8").splitlines()
-    trimmed = [line for line in lines if "custom_tool_call_output" not in line]
+    # Also strip the fixture's synthetic web_search pair (D6.4②) — this test wants
+    # exactly one INCOMPLETE row from the custom_tool_call whose output was cut,
+    # not a second COMPLETED row from the unrelated web_search request/result.
+    trimmed = [
+        line
+        for line in lines
+        if "custom_tool_call_output" not in line and "web_search" not in line
+    ]
     source.write_text("\n".join(trimmed) + "\n", encoding="utf-8")
     bind_transcript(
         handle.run_id,
@@ -557,3 +614,150 @@ def test_subject_key_is_stable_and_display_survives_into_the_index(codex_run):
     assert subject_key("银行") == subject_key("银行")
     assert len(subject_key("银行")) == 12
     assert row["subject"] == "银行"
+
+
+# --- D6.4: adapter four-fix batch --------------------------------------------
+
+
+def test_collect_run_reads_contract_session_ref(claude_run):
+    """`collect_run` must read `session_ref` off the run's own contract (D6.4①).
+
+    Before this fix, `usage_harvest.collect_run` always built
+    `RunIdentity(session_ref=None)` — `ClaudeTranscriptAdapter.locate` short-circuits
+    to `[]` whenever `session_ref` is falsy, so the Claude engine's `collect_run`
+    never actually located a transcript for any run, ever.
+    """
+    from autoresearch.trace import usage_harvest as U
+
+    handle, main, session_id = claude_run
+
+    rows = U.collect_run(handle.run_id, engine="claude")
+
+    assert len(rows) == 1
+    assert rows[0]["role"] == "main"
+    assert rows[0]["status"] != "UNMEASURED"
+    assert rows[0]["path"] == str(main)
+
+
+def test_collect_run_without_session_ref_is_unmeasured_not_empty(tmp_path, monkeypatch):
+    """A claude run whose contract never got a `session_ref` must still leave a
+    row — the parenthetical half of D6.4①: `[]` reads upstream as "0 transcripts
+    = free", which is exactly the false-green this whole capsule exists to remove.
+    """
+    from tests.forensic_fixtures import FIXTURE_DATE, FIXTURE_NOW, redirect_roots
+    from autoresearch.trace import capsule as local_capsule_mod
+    from autoresearch.trace import usage_harvest as U
+
+    monkeypatch.setattr(ws, "ENGINE", "claude")
+    monkeypatch.setattr(ws, "context_root", lambda: tmp_path / "context_claude")
+    monkeypatch.setattr(ws, "reports_root", lambda: tmp_path / "reports_claude")
+    monkeypatch.delenv("AUTORESEARCH_RUN_ID", raising=False)
+    monkeypatch.setattr(
+        "autoresearch.scan.user_config.DEFAULT_PINNED_PATH",
+        tmp_path / "missing-pinned.jsonc",
+    )
+    monkeypatch.setattr(
+        local_capsule_mod,
+        "snapshot_identity",
+        lambda *args, **kwargs: {"ok": True, "components": {}, "missing": [], "errors": []},
+    )
+    handle = local_capsule_mod.begin_run(
+        "scan-market", FIXTURE_DATE, "claude", {}, now=FIXTURE_NOW,
+    )
+
+    rows = U.collect_run(handle.run_id, engine="claude")
+
+    assert len(rows) == 1
+    assert rows[0]["status"] == "UNMEASURED"
+    assert rows[0]["estimated_usd"] is None
+
+
+def test_codex_web_search_becomes_tool_items(codex_run):
+    """Codex `web_search_call`/`web_search_end` must survive normalize (D6.4②).
+
+    `web_search_call` used to sit in `_SKIPPED_RESPONSE_ITEMS` — the harness's own
+    network calls left zero trace.  This locks the request/result pair the fixture
+    (`tests/trace/fixtures/codex/rollout.jsonl`) now carries, then proves the pair
+    actually reaches `external_tools.jsonl` through the real production path
+    (`bind_transcript` → `materialize_transcripts` → `capsule._external_tool_rows`).
+    """
+    handle, source = codex_run
+    ref = TranscriptRef(engine="codex", path=source, role="l4-intel")
+
+    normalized = CodexTranscriptAdapter().normalize(ref)
+
+    requests = [item for item in normalized.items if item.kind == "tool_request"
+                and item.payload.get("tool_name") == "web_search"]
+    results = [item for item in normalized.items if item.kind == "tool_result"
+               and item.payload.get("tool_call_id") == "ws-fixture-1"]
+    assert len(requests) == 1
+    assert requests[0].payload["tool_call_id"] == "ws-fixture-1"
+    # `NormalizedItem.payload` freezes lists into tuples (base.py `_freeze`).
+    assert requests[0].payload["input"] == {
+        "type": "search", "queries": ("synthetic web search query",),
+    }
+    assert len(results) == 1
+    assert results[0].payload["content"]["query"] == "synthetic web search query"
+
+    bind_transcript(
+        handle.run_id,
+        source,
+        role="l4-intel",
+        subject="600000",
+        invocation_id="agent-l4-intel-600000-2",
+    )
+    materialize_transcripts(handle.run_id)
+
+    rows = read_jsonl(handle.capsule / "lineage/external_tools.jsonl")
+    web_rows = [row for row in rows if row["tool_name"] == "web_search"]
+    assert len(web_rows) == 1
+    assert web_rows[0]["status"] == "COMPLETED"
+    assert web_rows[0]["tool_call_id"] == "ws-fixture-1"
+    assert blob_path(handle.capsule, web_rows[0]["result_hash"]).is_file()
+
+
+def test_web_search_not_in_local_tool_names():
+    """Premise check (D6.4② Step 1): `web_search` must never be in
+    `LOCAL_TOOL_NAMES`, or `is_external_tool("web_search")` would be `False` and
+    the whole point of normalizing it would be silently defeated downstream."""
+    from autoresearch.trace.transcripts.base import LOCAL_TOOL_NAMES, is_external_tool
+
+    assert "web_search" not in LOCAL_TOOL_NAMES
+    assert is_external_tool("web_search") is True
+
+
+def test_tool_results_spill_archived(claude_run):
+    """`<session>/tool-results/*` must be archived alongside a bound `role=main`
+    Claude transcript (D6.4③) — the harness spills large tool outputs there, and
+    `ClaudeTranscriptAdapter.locate` never enumerates that directory.
+    """
+    handle, main, session_id = claude_run
+    spill_dir = main.parent / session_id / "tool-results"
+    spill_dir.mkdir(parents=True)
+    (spill_dir / "x.txt").write_text("Synthetic large tool output.\n", encoding="utf-8")
+    bind_transcript(handle.run_id, main, role="main", invocation_id="main-session")
+
+    materialize_transcripts(handle.run_id)
+
+    archived = handle.capsule / "agents/tool_results/x.txt.gz"
+    assert archived.is_file()
+    import gzip
+
+    assert gzip.decompress(archived.read_bytes()) == b"Synthetic large tool output.\n"
+
+
+def test_tool_results_spill_not_archived_for_non_main_role(codex_run):
+    """The spill archive is scoped to `role=main` Claude bindings only (D6.4③) —
+    a codex/subagent binding must not attempt (or need) it."""
+    handle, source = codex_run
+    bind_transcript(
+        handle.run_id,
+        source,
+        role="l4-card",
+        subject="600000",
+        invocation_id="agent-l4-card-600000-3",
+    )
+
+    materialize_transcripts(handle.run_id)
+
+    assert not (handle.capsule / "agents/tool_results").exists()

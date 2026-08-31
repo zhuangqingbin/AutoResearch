@@ -35,7 +35,7 @@ from autoresearch.trace.transcripts.base import (
 )
 
 _SKIPPED_RESPONSE_ITEMS = frozenset(
-    {"reasoning", "web_search_call", "encrypted_reasoning"}
+    {"reasoning", "encrypted_reasoning"}
 )
 _REQUEST_ITEMS = frozenset({"custom_tool_call", "function_call"})
 _RESULT_ITEMS = frozenset({"custom_tool_call_output", "function_call_output"})
@@ -289,6 +289,25 @@ class CodexTranscriptAdapter:
                     )
                 elif kind in {"error", "stream_error"}:
                     add("error", {"error": payload.get("message") or payload}, timestamp)
+                elif kind == "web_search_end":
+                    # Sibling of `web_search_call` below: the raw row carries no
+                    # `name` field (there is nothing to search for it in), so the
+                    # normalized `tool_name` is the literal "web_search" — matching
+                    # `web_budget._SEARCH_NAMES` and what `_external_tool_rows`
+                    # (`payload.get("tool_name")`) actually reads.  `content` (not
+                    # the brief's literal "output") mirrors `_RESULT_ITEMS` above so
+                    # the same consumer can hash/blob it.
+                    add(
+                        "tool_result",
+                        {
+                            "tool_call_id": payload.get("call_id"),
+                            "content": {
+                                "query": payload.get("query"),
+                                "results": payload.get("results"),
+                            },
+                        },
+                        timestamp,
+                    )
                 continue
             if row.get("type") != "response_item" or kind in _SKIPPED_RESPONSE_ITEMS:
                 continue
@@ -303,6 +322,23 @@ class CodexTranscriptAdapter:
                         "role": payload.get("role")
                         or ("agent" if kind == "agent_message" else "assistant"),
                         "text": text,
+                    },
+                    timestamp,
+                )
+            elif kind == "web_search_call":
+                # Codex's hosted web_search has no dedicated `name` field in the
+                # raw row (unlike function_call/custom_tool_call) — "web_search" is
+                # a literal here, not read off the payload.  `tool_name` (not the
+                # brief's literal "name") is what `_external_tool_rows` actually
+                # reads (`payload.get("tool_name")`); without it `is_external_tool`
+                # sees `None` and the row is silently dropped — the exact "built
+                # but not wired" failure mode this task exists to close.
+                add(
+                    "tool_request",
+                    {
+                        "tool_call_id": payload.get("call_id") or payload.get("id"),
+                        "tool_name": "web_search",
+                        "input": payload.get("action") or {},
                     },
                     timestamp,
                 )
