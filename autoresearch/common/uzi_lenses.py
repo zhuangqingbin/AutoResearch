@@ -320,7 +320,7 @@ def margin_trend_ts(code: str, lookback: int = 30, curr_date: str | None = None)
     """
     from autoresearch.data.contracts import record_degradation
     try:
-        from autoresearch.data.tushare_source import _pro, _ts_call
+        from autoresearch.data.tushare_source import _pro, _trade_days
         pro = _pro()
     except Exception as e:  # noqa: BLE001
         record_degradation("margin_detail", f"{type(e).__name__}: {e}", key=code)
@@ -330,13 +330,35 @@ def margin_trend_ts(code: str, lookback: int = 30, curr_date: str | None = None)
     end = now.strftime("%Y%m%d")
     start = (now - timedelta(days=lookback + 20)).strftime("%Y%m%d")
     try:
-        mg = _ts_call(lambda: pro.margin_detail(ts_code=tc, start_date=start, end_date=end,
-                                                fields="trade_date,rzye,rzrqye"))
-        if mg is None or len(mg) == 0:
+        # D1.1:margin_detail 登记 policy key="date"(全市场按交易日切,`_cache_key` 不含
+        # ts_code)——与 scan 侧 `tushare_source._fetch_margin_rz` 同款:逐个交易日
+        # `get_or_fetch` 取整市场帧,client 侧按 ts_code 过滤后再拼成趋势序列。直传
+        # `ts_code + start_date/end_date` 会让 `_cache_key` 退化成 "unkeyed",不同票
+        # 互相踩踏同一份湖文件。
+        import pandas as pd
+
+        from autoresearch.data import cache
+
+        days = _trade_days(pro, start, end)
+        hits = []
+        for d in days:
+            day_df = cache.get_or_fetch("margin_detail", {"trade_date": d}, today=curr_date)
+            if day_df is None or not len(day_df) or "ts_code" not in day_df.columns:
+                continue
+            hit = day_df[day_df["ts_code"] == tc]
+            if len(hit):
+                # legacy 湖分区防御(同 tushare_enrich._lake_market_day 2026-08-31 §LIVE
+                # 实测记录):老 schema 分区可能缺 `trade_date` 列,多日 `pd.concat` 会把
+                # 它静默填 NaN、错误地排到 `tail(20)` 的"最新"位——用已知的查询键 `d`
+                # 强制覆盖,不信任湖里可能残缺的同名列。
+                hit = hit.copy()
+                hit["trade_date"] = d
+                hits.append(hit)
+        if not hits:
             record_degradation("margin_detail", "非两融标的或该窗口无融资数据",
                                key=code, kind="legit_empty")
             return None
-        mg = mg.sort_values("trade_date").tail(20)
+        mg = pd.concat(hits, ignore_index=True).sort_values("trade_date").tail(20)
         rz = mg["rzye"].astype(float) / 1e8  # 元 → 亿
         if len(rz) < 2:
             record_degradation("margin_detail", "融资余额历史不足2个交易日,无法算趋势",
@@ -355,13 +377,7 @@ def lhb_seats(code: str, date: str, lookback_days: int = 20) -> str | None:
     """龙虎榜机构 vs 游资席位识别(近窗口);Phase A 实测机构上榜买入后续偏弱 → 标注反指。"""
     from autoresearch.data.contracts import record_degradation
     try:
-        from autoresearch.data.tushare_source import (
-            _code6,
-            _pro,
-            _trade_days,
-            _ts_call,
-            resolve_momentum_dates,
-        )
+        from autoresearch.data.tushare_source import _code6, _pro, _trade_days, resolve_momentum_dates
         pro = _pro()
     except Exception as e:  # noqa: BLE001
         record_degradation("top_inst", f"{type(e).__name__}: {e}", key=code)
@@ -372,8 +388,12 @@ def lhb_seats(code: str, date: str, lookback_days: int = 20) -> str | None:
     inst_net = retail_net = 0.0
     appeared: list[str] = []
     try:
+        from autoresearch.data import cache
+
+        # D1.1:top_inst 已经是逐日全市场直调(未带 ts_code),换成 get_or_fetch 与
+        # scan 同湖共享——扫描日这些交易日大多已被 L1 写入,近乎零取数命中。
         for d in _trade_days(pro, start, last)[-15:]:
-            df = _ts_call(lambda d=d: pro.top_inst(trade_date=d))
+            df = cache.get_or_fetch("top_inst", {"trade_date": d}, today=date)
             if df is None or len(df) == 0:
                 continue
             sub = df[_code6(df["ts_code"]) == c6]

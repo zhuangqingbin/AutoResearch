@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from autoresearch.analyze import harvest
-from autoresearch.data import contracts as dc
+from autoresearch.data import cache, contracts as dc
 
 
 @pytest.mark.unit
@@ -59,8 +59,13 @@ def test_is_ashare_suffix_detection():
 
 
 @pytest.mark.unit
-def test_news_window_filter(monkeypatch):
-    """akshare stock_news_em 不接受日期参数——按 news_start<=日期<=end 过滤,窗外条目剔除。"""
+def test_news_window_filter(tmp_path, monkeypatch):
+    """akshare stock_news_em 不接受日期参数——按 news_start<=日期<=end 过滤,窗外条目剔除。
+
+    D1.1(走湖):`ashare_news_akshare` 现经 `cache.get_or_fetch` 取 `stock_news_em`,
+    `monkeypatch.setattr(cache, "LAKE", tmp_path)` 强制本测试命中一份空湖(cache miss),
+    确保真的落到下面打的 `ak.stock_news_em` 补丁,而不是读到别的测试/真跑留下的湖文件。
+    """
     import akshare as ak
 
     df = pd.DataFrame({
@@ -69,6 +74,7 @@ def test_news_window_filter(monkeypatch):
                    "2026-08-25 15:00:00", "2026-09-05 08:00:00"],
         "文章来源": ["财联社", "财联社", "证券时报", "财联社"],
     })
+    monkeypatch.setattr(cache, "LAKE", tmp_path)
     monkeypatch.setattr(ak, "stock_news_em", lambda symbol: df)
     out = harvest.ashare_news_akshare("300308.SZ", start_date="2026-08-17", end_date="2026-08-31")
     assert out is not None
@@ -77,7 +83,7 @@ def test_news_window_filter(monkeypatch):
 
 
 @pytest.mark.unit
-def test_news_dedup(monkeypatch):
+def test_news_dedup(tmp_path, monkeypatch):
     """同标题多来源(常见于转载)按标题去重,只留一条;结果按时间倒序。"""
     import akshare as ak
 
@@ -86,6 +92,7 @@ def test_news_dedup(monkeypatch):
         "发布时间": ["2026-08-20 10:00:00", "2026-08-20 11:30:00", "2026-08-21 09:00:00"],
         "文章来源": ["财联社", "证券时报", "财联社"],
     })
+    monkeypatch.setattr(cache, "LAKE", tmp_path)
     monkeypatch.setattr(ak, "stock_news_em", lambda symbol: df)
     out = harvest.ashare_news_akshare("300308.SZ", start_date="2026-08-17", end_date="2026-08-31")
     assert out is not None

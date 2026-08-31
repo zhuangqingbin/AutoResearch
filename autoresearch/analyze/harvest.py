@@ -1249,13 +1249,14 @@ def ashare_news_akshare(sym: str, limit: int = 12, *, start_date: str | None = N
     `start_date<=日期<=end_date` client 侧过滤 + 按标题去重(同新闻多来源转载常见)+
     按时间倒序,`limit` 在过滤/去重/排序**之后**才截断,不然窗外的行可能先占满配额。
     """
-    try:
-        import akshare as ak
-    except ImportError:
-        return None
     code = sym.split(".")[0]
     try:
-        df = ak.stock_news_em(symbol=code)
+        # D1.1:stock_news_em 已登记 policy key="as_of"(entity=symbol,按取数日快照)——
+        # 直传 symbol 即可,天然与本函数原有"整表拉取、client 侧按窗口过滤"的用法吻合。
+        from autoresearch.data import cache
+        df = cache.get_or_fetch("stock_news_em", {"symbol": code}, today=end_date)
+    except ImportError:
+        return None
     except Exception as e:
         return f"_akshare 东财新闻取数失败: {e}_"
     if df is None or not len(df):
@@ -1372,7 +1373,12 @@ def ashare_market_context(sym: str, curr_date: str) -> str | None:
     except Exception as e:
         out.append(f"_主力资金流取数失败: {e}_")
     try:
-        stat = _ak_call(lambda: ak.stock_lhb_stock_statistic_em(symbol="近三月"))
+        # D1.1:stock_lhb_stock_statistic_em 已登记 policy key="as_of"。`symbol="近三月"`
+        # 是一个**固定字面量**(选择"近三月"这个统计口径,不是逐票的实体参数)——所有票的调用
+        # 都命中同一个 entity="近三月" 键,天然是"当天首个调用者取全表、其余免费命中"的共享
+        # 快照,与本函数原有"整表拉、client 侧按代码过滤"的用法完全吻合。
+        from autoresearch.data import cache
+        stat = cache.get_or_fetch("stock_lhb_stock_statistic_em", {"symbol": "近三月"}, today=curr_date)
         row = stat[stat["代码"].astype(str) == code]
         if len(row):
             r = row.iloc[0]
@@ -1598,11 +1604,13 @@ def ashare_shareholder_count(sym: str) -> str:
     retail dispersing / possible distribution near highs."""
     code = sym.split(".")[0]
     try:
-        import akshare as ak
+        # D1.1:stock_zh_a_gdhs_detail_em 已登记 policy key="as_of"(entity=symbol)——
+        # 直传 symbol 即可,与本函数原有"整表拉取"用法吻合。ImportError(akshare 未安装)与
+        # 取数失败仍分开渲染(原语义)。
+        from autoresearch.data import cache
+        df = cache.get_or_fetch("stock_zh_a_gdhs_detail_em", {"symbol": code}, today=None)
     except ImportError:
         return f"_akshare 未安装 → 股东户数不可用；推理时 WebSearch『{code} 股东户数 最新』兜底。_"
-    try:
-        df = _ak_call(lambda: ak.stock_zh_a_gdhs_detail_em(symbol=code))
     except Exception as e:
         return f"_股东户数取数失败: {e}（WebSearch『{code} 股东户数』兜底）_"
     if df is None or not len(df):
@@ -1660,14 +1668,13 @@ def ashare_corporate_calendar(sym: str, curr_date: str) -> str:
     overhang on/after curr_date) via akshare (OPTIONAL); 业绩预告/政策窗口/调样
     left to WebSearch at reasoning time."""
     code = sym.split(".")[0]
-    try:
-        import akshare as ak
-    except ImportError:
-        return (f"_akshare 未安装 → 解禁队列不可用；WebSearch『{code} 限售解禁 时间表』兜底。_\n\n"
-                "> 业绩预告（A股 1月底/4月底强制）、政策窗口、指数调样 → 推理时 WebSearch 补，标注『实时网查』。")
     out = []
     try:
-        rel = _ak_call(lambda: ak.stock_restricted_release_queue_em(symbol=code))
+        # D1.1:stock_restricted_release_queue_em 已登记 policy key="as_of"(entity=symbol)——
+        # ImportError(akshare 未安装)与其它取数失败原先分两个 try 块渲染不同文案,合并进
+        # 同一个 try 后用 except 顺序(ImportError 在前)保留两条不同的降级文案。
+        from autoresearch.data import cache
+        rel = cache.get_or_fetch("stock_restricted_release_queue_em", {"symbol": code}, today=curr_date)
         if rel is not None and len(rel):
             cols = rel.columns
 
@@ -1695,6 +1702,9 @@ def ashare_corporate_calendar(sym: str, curr_date: str) -> str:
                 out.append("**限售解禁**：未来无新解禁（队列仅历史）→ 近端无解禁供给压力。")
         else:
             out.append("**限售解禁**：akshare 未返回队列（可能无数据）。")
+    except ImportError:
+        return (f"_akshare 未安装 → 解禁队列不可用；WebSearch『{code} 限售解禁 时间表』兜底。_\n\n"
+                "> 业绩预告（A股 1月底/4月底强制）、政策窗口、指数调样 → 推理时 WebSearch 补，标注『实时网查』。")
     except Exception as e:
         out.append(f"_解禁队列取数失败: {e}（WebSearch『{code} 限售解禁 时间表』兜底）_")
     out.append("> 业绩预告窗口（A股 1月底/4月底强制）、政策窗口（政治局会议/两会/降准降息）、"

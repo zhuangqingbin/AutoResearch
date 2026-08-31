@@ -8,7 +8,7 @@ import pytest
 
 from autoresearch.analyze import harvest
 from autoresearch.common import uzi_lenses
-from autoresearch.data import tushare_enrich, tushare_source
+from autoresearch.data import cache, tushare_enrich, tushare_source
 
 
 # ── 1. harvest.py ~1403 `^VIX` period="5d" → 锚 curr_date ──────────────────────
@@ -32,21 +32,43 @@ def test_vix_latest_anchors_to_curr_date(monkeypatch):
 
 
 # ── 2. uzi_lenses.py ~301 margin_trend_ts end=datetime.now() → 锚 curr_date ────
+#
+# D1.1(走湖):margin_detail 的 policy key="date"(全市场按交易日切),`margin_trend_ts`
+# 现改为逐个交易日 `cache.get_or_fetch({"trade_date": d})` 取全市场帧再按 ts_code 过滤
+# (与 scan 侧 `tushare_source._fetch_margin_rz` 同款),不再是单次 ts_code+区间直调。
+# 交易日历本身经 `_trade_days(pro, start, end)` → `pro.trade_cal(...)`,PIT 断言相应
+# 改为「日历查询的 end 锚在 curr_date」+「逐日湖查询没有一天越过 curr_date」。
+
 
 @pytest.mark.unit
-def test_margin_trend_ts_anchors_end_date_to_curr_date(monkeypatch):
-    captured = {}
-    rows = pd.DataFrame({"trade_date": ["20260601", "20260615"],
-                        "rzye": [1.0e8, 1.1e8], "rzrqye": [0.0, 0.0]})
+def test_margin_trend_ts_anchors_end_date_to_curr_date(monkeypatch, tmp_path):
+    captured: dict = {"trade_dates": []}
+    cal = pd.DataFrame({"cal_date": ["20260618", "20260619", "20260620"]})
+    rows_by_day = {
+        "20260618": pd.DataFrame({"ts_code": ["300308.SZ"], "trade_date": ["20260618"],
+                                  "rzye": [1.0e8], "rzrqye": [0.0]}),
+        "20260619": pd.DataFrame({"ts_code": ["300308.SZ"], "trade_date": ["20260619"],
+                                  "rzye": [1.05e8], "rzrqye": [0.0]}),
+        "20260620": pd.DataFrame({"ts_code": ["300308.SZ"], "trade_date": ["20260620"],
+                                  "rzye": [1.1e8], "rzrqye": [0.0]}),
+    }
 
     class FakePro:
-        def margin_detail(self, ts_code, start_date, end_date, fields):
-            captured["start_date"], captured["end_date"] = start_date, end_date
-            return rows.copy()
+        def trade_cal(self, exchange, start_date, end_date, is_open):
+            captured["cal_end"] = end_date
+            return cal
+
+    def fake_gof(endpoint, params, today=None, fetch=None):
+        assert endpoint == "margin_detail"
+        d = params["trade_date"]
+        captured["trade_dates"].append(d)
+        return rows_by_day.get(d, pd.DataFrame())
 
     monkeypatch.setattr(tushare_source, "_pro", lambda: FakePro())
+    monkeypatch.setattr(cache, "get_or_fetch", fake_gof)
     out = uzi_lenses.margin_trend_ts("300308.SZ", curr_date="2026-06-20")
-    assert captured["end_date"] == "20260620"
+    assert captured["cal_end"] == "20260620"             # 交易日历查询锚在 curr_date,不是真实"现在"
+    assert max(captured["trade_dates"]) <= "20260620"    # 逐日湖查询没有一天越过 curr_date
     assert out is not None and "1.10亿" in out
 
 
@@ -78,9 +100,16 @@ def test_ashare_fundamentals_ts_respects_curr_date(monkeypatch):
 
 
 # ── 4. tushare_enrich.py ~135 stk_holdernumber 最新行 → 先按 ann_date<=curr 过滤 ─
+#
+# D1.1(走湖)更正:`ashare_shareholder_ts` 的实取现经 `cache.get_or_fetch(...)` →
+# `sources.fetch` → `_fetch_tushare` 里**新鲜的** `from autoresearch.data.tushare_source
+# import _pro`(懒导入,每次调用重新解析)—— 补丁必须打在 `tushare_source` 自己的命名空间;
+# 旧注释「打 tushare_enrich」只对**已退役**的直调路径成立,`tushare_enrich.py` 顶层那份
+# `_pro` 现在只当"未配置 token"早退门,不再是实取路径。同时把湖重定向到 `tmp_path`,
+# 避免命中/写脏真实项目湖(2026-08-31 实测:不隔离湖会真的落盘到 `lake/stk_holdernumber/`)。
 
 @pytest.mark.unit
-def test_ashare_shareholder_ts_holdernumber_respects_curr_date(monkeypatch):
+def test_ashare_shareholder_ts_holdernumber_respects_curr_date(monkeypatch, tmp_path):
     hn = pd.DataFrame({"end_date": ["20250630", "20251231", "20990101"],
                        "ann_date": ["20250715", "20260115", "20990110"],
                        "holder_num": [50000, 45000, 1]})
@@ -92,10 +121,8 @@ def test_ashare_shareholder_ts_holdernumber_respects_curr_date(monkeypatch):
         def pledge_stat(self, ts_code):
             return pd.DataFrame()
 
-    # tushare_enrich.py 在**模块顶层** `from ... import _pro`(非函数内懒导入)——
-    # 补丁必须打在 tushare_enrich 自己的命名空间,打 tushare_source 不生效(真打过一次
-    # 真网络:this is exactly why —— 见 batch-A-report.md 记录)。
-    monkeypatch.setattr(tushare_enrich, "_pro", lambda: FakePro())
+    monkeypatch.setattr(cache, "LAKE", tmp_path)
+    monkeypatch.setattr(tushare_source, "_pro", lambda: FakePro())
     out = tushare_enrich.ashare_shareholder_ts("300308.SZ", curr_date="2026-08-30")
     assert out is not None
     assert "20990101" not in out and "20990110" not in out
@@ -105,7 +132,7 @@ def test_ashare_shareholder_ts_holdernumber_respects_curr_date(monkeypatch):
 # ── 5. tushare_enrich.py ~148 pledge_stat 最新行 → 先按 end_date<=curr 过滤 ─────
 
 @pytest.mark.unit
-def test_ashare_shareholder_ts_pledge_respects_curr_date(monkeypatch):
+def test_ashare_shareholder_ts_pledge_respects_curr_date(monkeypatch, tmp_path):
     pl = pd.DataFrame({"end_date": ["20250630", "20990101"], "pledge_ratio": [12.5, 88.8]})
 
     class FakePro:
@@ -115,7 +142,8 @@ def test_ashare_shareholder_ts_pledge_respects_curr_date(monkeypatch):
         def pledge_stat(self, ts_code):
             return pl.copy()
 
-    monkeypatch.setattr(tushare_enrich, "_pro", lambda: FakePro())
+    monkeypatch.setattr(cache, "LAKE", tmp_path)
+    monkeypatch.setattr(tushare_source, "_pro", lambda: FakePro())
     out = tushare_enrich.ashare_shareholder_ts("300308.SZ", curr_date="2026-08-30")
     assert out is not None
     assert "88.8" not in out

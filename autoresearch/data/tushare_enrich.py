@@ -25,7 +25,7 @@ from autoresearch.data.express_fields import (
 
 # 复用 tushare_source 的句柄/重试/日期解析(同一 token、同一防御层)
 from autoresearch.data.contracts import record_degradation
-from autoresearch.data.tushare_source import _pro, _ts_call, resolve_momentum_dates
+from autoresearch.data.tushare_source import _pro, _trade_days, _ts_call, resolve_momentum_dates
 from autoresearch.dataflows.symbol_utils import to_ts_code
 
 
@@ -57,6 +57,40 @@ def _as_of_filter(df: pd.DataFrame, col: str, curr_date: str) -> pd.DataFrame:
 # ───────────────────────── 市场上下文(主力/技术/筹码/北向) ─────────────────────────
 
 
+def _lake_market_day(endpoint: str, trade_date: str, curr_date: str, tc: str) -> pd.DataFrame:
+    """D1.1:该端点(policy key="date")当天的**全市场**湖快照,过滤出本票的行(可能为空)。
+
+    这四个端点(moneyflow/stk_factor_pro/cyq_perf/hk_hold)登记的 key 是 "date" —— 全市场
+    按交易日切,`cache._cache_key` **不含 ts_code**。若像旧代码那样把 `ts_code=tc` 塞进
+    `get_or_fetch` 的 params,`_cache_key` 仍只认 `trade_date`,不同票的调用会全部落到同一个
+    "unkeyed"/同一天的 key 上互相踩踏(先到者的窄结果被当天钉死)。正确用法与
+    `tushare_source._fetch_factors`/`_fetch_moneyflow_struct`/`_fetch_hk_hold`(scan 侧
+    L1 生产者)完全一致:只传 `trade_date`,取**全市场全字段**,client 侧按 `ts_code` 过滤
+    ——与 scan 同湖共享,扫描日免费命中。
+
+    **legacy 湖分区防御**(2026-08-31 §LIVE parity 实测逮到):`lake/moneyflow/2026080{3,4,5}`
+    等旧分区是 8 列的老 schema(缺 `trade_date` 列),`_fetch_moneyflow_struct` 等 scan
+    生产者只读 `net_mf_amount` 等固定字段、从不读 `trade_date` 本身,这条缺陷从未被扫描侧
+    的日常读法暴露过。本函数**多日拼接**(moneyflow 10 日趋势 / margin_detail 20 日趋势)
+    会把当天的过滤结果与其它日子 `pd.concat`,缺列的那天在拼接后被 pandas 静默填 `NaN`
+    ——排序会把这些 `NaN` 行错当"最新"排到 `tail()` 里,合计数与逐日表全部失真。修法:
+    过滤出本票行后,**用调用方已知的 `trade_date` 强制覆盖**该列(不信任湖里可能残缺的
+    同名列)——这一行本来就是"我为 `trade_date` 这一天取的全市场快照过滤出的本票行",
+    与查询键必然一致,覆盖对新 schema 是 no-op,对老 schema 是唯一救回它的办法。
+    """
+    from autoresearch.data import cache
+
+    day_df = cache.get_or_fetch(endpoint, {"trade_date": trade_date}, today=curr_date)
+    if day_df is None or not len(day_df) or "ts_code" not in day_df.columns:
+        return pd.DataFrame()
+    hit = day_df[day_df["ts_code"] == tc]
+    if not len(hit):
+        return hit
+    hit = hit.copy()
+    hit["trade_date"] = trade_date
+    return hit
+
+
 def ashare_market_context_ts(sym: str, curr_date: str) -> str | None:
     """主力资金流(10日)+ 技术结构(多头排列/RSI/MACD)+ 筹码(获利比例)+ 北向。"""
     try:
@@ -67,12 +101,14 @@ def ashare_market_context_ts(sym: str, curr_date: str) -> str | None:
     last = _last_trade(pro, curr_date)
     out: list[str] = []
 
-    # 1) 主力资金流(近 10 交易日)
+    # 1) 主力资金流(近 10 交易日;D1.1 走湖 —— moneyflow 是全市场按日快照,逐个交易日
+    #    `get_or_fetch` 取整市场帧再过滤本票,同一份湖文件与 scan 共享)
     try:
         start = (datetime.strptime(last, "%Y%m%d") - timedelta(days=28)).strftime("%Y%m%d")
-        mf = _ts_call(lambda: pro.moneyflow(ts_code=tc, start_date=start, end_date=last))
-        mf = mf.sort_values("trade_date").tail(10)
-        net = _num(mf["net_mf_amount"]) / 1e4  # 万元 → 亿
+        days = _trade_days(pro, start, last)
+        hits = [h for h in (_lake_market_day("moneyflow", d, curr_date, tc) for d in days) if len(h)]
+        mf = pd.concat(hits, ignore_index=True).sort_values("trade_date").tail(10) if hits else pd.DataFrame()
+        net = _num(mf["net_mf_amount"]) / 1e4 if len(mf) else pd.Series(dtype=float)  # 万元 → 亿
         if len(net):
             cum, lastd, pos = net.sum(), net.iloc[-1], int((net > 0).sum())
             rows = ["| 日期 | 主力净流入(亿) |", "|---|---:|"]
@@ -84,12 +120,11 @@ def ashare_market_context_ts(sym: str, curr_date: str) -> str | None:
         record_degradation("moneyflow", f"{type(e).__name__}: {e}", key=sym)
         out.append(f"_tushare 主力资金流取数失败: {e}_")
 
-    # 2) 技术结构(stk_factor_pro,前复权)
+    # 2) 技术结构(stk_factor_pro,前复权;D1.1 走湖 —— 单日全市场快照过滤本票)
     try:
-        f = "ts_code,close,ma_qfq_5,ma_qfq_10,ma_qfq_20,ma_qfq_60,rsi_qfq_6,rsi_qfq_12,macd_qfq,macd_dif_qfq,macd_dea_qfq"
-        sf = _ts_call(lambda: pro.stk_factor_pro(ts_code=tc, trade_date=last, fields=f))
-        if len(sf):
-            r = sf.iloc[0]
+        sf_day = _lake_market_day("stk_factor_pro", last, curr_date, tc)
+        if len(sf_day):
+            r = sf_day.iloc[0]
             c, m5, m10, m20, m60 = (float(_num(pd.Series([r[k]])).iloc[0]) for k in
                                     ("close", "ma_qfq_5", "ma_qfq_10", "ma_qfq_20", "ma_qfq_60"))
             bull = "是" if (m5 > m10 > m20 > m60) else "否"
@@ -105,12 +140,11 @@ def ashare_market_context_ts(sym: str, curr_date: str) -> str | None:
         record_degradation("stk_factor_pro", f"{type(e).__name__}: {e}", key=sym)
         out.append(f"_tushare 技术因子取数失败: {e}_")
 
-    # 3) 筹码(每日筹码及胜率)
+    # 3) 筹码(每日筹码及胜率;D1.1 走湖)
     try:
-        cy = _ts_call(lambda: pro.cyq_perf(ts_code=tc, trade_date=last,
-                                           fields="ts_code,his_low,his_high,cost_50pct,winner_rate"))
-        if len(cy):
-            r = cy.iloc[0]
+        cy_day = _lake_market_day("cyq_perf", last, curr_date, tc)
+        if len(cy_day):
+            r = cy_day.iloc[0]
             wr = float(_num(pd.Series([r["winner_rate"]])).iloc[0])
             c50 = float(_num(pd.Series([r["cost_50pct"]])).iloc[0])
             out.append(f"**筹码(tushare cyq_perf)**:获利比例 **{wr:.0f}%**"
@@ -120,11 +154,11 @@ def ashare_market_context_ts(sym: str, curr_date: str) -> str | None:
         record_degradation("cyq_perf", f"{type(e).__name__}: {e}", key=sym)
         out.append(f"_tushare 筹码取数失败: {e}_")
 
-    # 4) 北向(沪深股通持股)
+    # 4) 北向(沪深股通持股;D1.1 走湖)
     try:
-        hk = _ts_call(lambda: pro.hk_hold(ts_code=tc, trade_date=last, fields="ts_code,vol,ratio"))
-        if len(hk):
-            ratio = float(_num(pd.Series([hk.iloc[0]["ratio"]])).iloc[0])
+        hk_day = _lake_market_day("hk_hold", last, curr_date, tc)
+        if len(hk_day):
+            ratio = float(_num(pd.Series([hk_day.iloc[0]["ratio"]])).iloc[0])
             out.append(f"**北向(沪深股通)**:持股占比 **{ratio:.2f}%**(聪明钱仓位;趋势需对比历史)。")
         else:
             out.append("**北向(沪深股通)**:非标的/无持股记录。")
@@ -146,13 +180,18 @@ def ashare_shareholder_ts(sym: str, curr_date: str | None = None) -> str | None:
     回填历史日不再读到尚未公告/统计的一期。
     """
     try:
-        pro = _pro()
+        pro = _pro()  # noqa: F841 — 仍作"未配置 token"早退门,不再用于下方实取(D1.1 走湖)
     except Exception:
         return None
     tc = _tscode(sym)
     out: list[str] = []
     try:
-        hn = _ts_call(lambda: pro.stk_holdernumber(ts_code=tc))
+        from autoresearch.data import cache
+
+        # D1.1:stk_holdernumber 是 policy key="as_of"(按取数日快照,entity=ts_code)——
+        # 与本函数原有"整表全history、client 侧筛"的用法天然吻合,直传 ts_code 即可,
+        # 不像 moneyflow 那组 date 键端点需要拆成逐日全市场帧。
+        hn = cache.get_or_fetch("stk_holdernumber", {"ts_code": tc}, today=curr_date)
         if len(hn):
             if curr_date:
                 hn = _as_of_filter(hn, "ann_date", curr_date)
@@ -165,7 +204,9 @@ def ashare_shareholder_ts(sym: str, curr_date: str | None = None) -> str | None:
         record_degradation("stk_holdernumber", f"{type(e).__name__}: {e}", key=sym)
         out.append(f"_tushare 股东户数取数失败: {e}_")
     try:
-        pl = _ts_call(lambda: pro.pledge_stat(ts_code=tc))
+        from autoresearch.data import cache
+
+        pl = cache.get_or_fetch("pledge_stat", {"ts_code": tc}, today=curr_date)
         if len(pl):
             from autoresearch.common.scoring import (
                 pledge_flag_label,  # 阈值单一事实源(与 L4 质押旗同)
@@ -187,7 +228,18 @@ def ashare_shareholder_ts(sym: str, curr_date: str | None = None) -> str | None:
 
 
 def ashare_calendar_ts(sym: str, curr_date: str) -> str | None:
-    """业绩预告(forecast)+ 业绩快报(express):比定期报告更前瞻的成长信号。"""
+    """业绩预告(forecast)+ 业绩快报(express):比定期报告更前瞻的成长信号。
+
+    D1.1 范围裁定(**故意不走湖**):`forecast`/`express` 登记的 policy key 是 "date"
+    (全市场按 `ann_date` 切,`cache._cache_key` 不含 ts_code)——但本函数的天然用法是
+    `pro.forecast(ts_code=tc)`/`pro.express(ts_code=tc)`:整表全历史、不给任何日期参数
+    (预告/快报是不定期事件,不知道"哪天"该查)。若直接把 `{"ts_code": tc}` 传给
+    `get_or_fetch`,`_cache_key` 在 `_DATE_PARAM_KEYS` 里找不到日期键 → 退化成字面量
+    `"unkeyed"`,不同票的查询会互相踩踏同一个湖文件(A 票先写、B 票读到 A 的历史)——
+    与 moneyflow 那组「全市场按日快照」端点不同,forecast/express 没有"逐日累积再按当日
+    过滤"的等价改法(不定期公告,要扫多久回溯期不确定,现场造 = 那是 P2 D2 的事)。
+    故本任务范围收窄:这两个端点维持直调,不接入 `cache.get_or_fetch`。
+    """
     try:
         pro = _pro()
     except Exception:
