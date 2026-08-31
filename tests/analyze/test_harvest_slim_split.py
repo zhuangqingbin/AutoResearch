@@ -55,23 +55,45 @@ def test_write_slim_files_no_deep_single_file(tmp_path):
     assert "深核分界" not in out.read_text(encoding="utf-8")   # 老路不插指针
 
 
-def test_slim_files_are_isolated_between_same_date_runs(tmp_path, monkeypatch):
+def test_standalone_slim_output_ignores_ambient_run_id(tmp_path, monkeypatch):
+    """独立 slim(无 `--out-dir`)必须一律落 `ws.context_root()`(D8.5)。
+
+    此前这里的行为是「按 `AUTORESEARCH_RUN_ID` 隔离」——同一日期、不同 run_id 会
+    各自拿到不同目录。那个隔离手法正是要修的病本身:一次真正独立的 slim 调用不该
+    因为 shell 里恰好留着一个无关 run 的 `AUTORESEARCH_RUN_ID` 就被悄悄路由进
+    那趟 run 的 `_external_inputs/`——两次调用现在必须落在同一个目录。
+    """
     monkeypatch.setattr(harvest, "ROOT", tmp_path)
     monkeypatch.setattr(ws, "ENGINE", "codex")
     date = "2026-08-27"
 
     monkeypatch.setenv("AUTORESEARCH_RUN_ID", "20260827T010203456789Z")
     first_dir = harvest._output_dir(date, slim=True)
-    first = _write_slim_files(first_dir, "000062.SZ", date, _parts())
-    first_text = first.read_text(encoding="utf-8")
 
     monkeypatch.setenv("AUTORESEARCH_RUN_ID", "20260827T020304567890Z")
     second_dir = harvest._output_dir(date, slim=True)
-    second = _write_slim_files(second_dir, "000062.SZ", date, ["# second run"])
 
-    assert first_dir != second_dir
-    assert first.read_text(encoding="utf-8") == first_text
-    assert second.read_text(encoding="utf-8") == "# second run"
+    assert first_dir == second_dir == tmp_path / "context_codex"
+
+
+def test_standalone_slim_never_writes_into_run(tmp_path, monkeypatch):
+    """设了 RUN_ID 时 `_output_dir(...)` 结果不含 `scan_runs`(D8.5)。
+
+    `AUTORESEARCH_RUN_ID` 指向一趟**真实存在**的 scan run(目录已建)时,
+    `active_run_kind()` 会稳稳判成 `"scan-market"`——这是最贴近真实污染场景的
+    构造(不是靠 `active_run_kind()` 的兜底默认值凑出来的)。
+    """
+    monkeypatch.setattr(harvest, "ROOT", tmp_path)
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+    run_id = "20260827T010203456789Z"
+    (tmp_path / "context_codex" / "scan_runs" / run_id).mkdir(parents=True)
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", run_id)
+    assert ws.active_run_kind() == "scan-market"  # premise: 真的命中了一趟活跃 run
+
+    out_dir = harvest._output_dir("2026-08-27", slim=True)
+
+    assert "scan_runs" not in str(out_dir)
+    assert out_dir == tmp_path / "context_codex"
 
 
 def test_full_report_output_stays_at_engine_context_root(tmp_path, monkeypatch):

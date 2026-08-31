@@ -239,10 +239,19 @@ def _consensus_eps_price(l1_row: dict | None, snapshot_section: str) -> float | 
 
 
 def _output_dir(trade_date: str, *, slim: bool, explicit: Path | None = None) -> Path:
+    """独立 slim 不入 run 现场(D8.5):没有 `--out-dir` 时**一律**落 `ws.context_root()`,
+
+    不看 `slim` 是不是 True、也不问 `AUTORESEARCH_RUN_ID` 是不是恰好指向一趟活跃的
+    scan run。此前 slim 分支缺省调 `ws.scan_input_dir(trade_date)`——那个函数按
+    `active_run_kind()` 判断,只要环境里的 `AUTORESEARCH_RUN_ID` 恰好命中一趟真实
+    scan run(哪怕这次 harvest 调用跟那趟 run 毫无关系),就会把产物写进
+    `<run>/_external_inputs/`,污染别人的法证现场。scan 自己的调用点
+    (`scan/l4/producers._default_harvest_slim`)一律显式传 `--out-dir`——那是唯一
+    该把 slim 写进某个 run 目录的路径,不能靠缺省猜。
+    """
     if explicit is not None and not slim:
         raise ValueError("--out-dir 仅支持 --slim，不得迁移 full 报告")
-    relative = explicit if explicit is not None else (
-        ws.scan_input_dir(trade_date) if slim else ws.context_root())
+    relative = explicit if explicit is not None else ws.context_root()
     out_dir = ROOT / relative
     out_dir.mkdir(parents=True, exist_ok=True)
     return out_dir
