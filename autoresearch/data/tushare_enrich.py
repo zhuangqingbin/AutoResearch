@@ -42,6 +42,18 @@ def _last_trade(pro, curr_date: str) -> str:
     return resolve_momentum_dates(pro, curr_date)[0]
 
 
+def _as_of_filter(df: pd.DataFrame, col: str, curr_date: str) -> pd.DataFrame:
+    """`df[col] <= curr_date`(PIT 锚定;D1.4)。两侧统一转 8 位 YYYYMMDD 字符串比较,
+    容 `col` 因与 NaN 混列被 pandas 转成 float64(`20260630` → `20260630.0`,与
+    `data.express_fields._parse_day` 同一处置)。"""
+    def _norm(v) -> str:
+        t = "" if v is None else str(v).strip().replace("-", "")
+        return t[:-2] if t.endswith(".0") else t
+
+    cutoff = _norm(curr_date)
+    return df[df[col].map(_norm) <= cutoff]
+
+
 # ───────────────────────── 市场上下文(主力/技术/筹码/北向) ─────────────────────────
 
 
@@ -126,8 +138,13 @@ def ashare_market_context_ts(sym: str, curr_date: str) -> str | None:
 # ───────────────────────── 股东户数 + 质押 ─────────────────────────
 
 
-def ashare_shareholder_ts(sym: str) -> str | None:
-    """股东户数趋势(集中度)+ 质押比例(爆雷红旗)。"""
+def ashare_shareholder_ts(sym: str, curr_date: str | None = None) -> str | None:
+    """股东户数趋势(集中度)+ 质押比例(爆雷红旗)。
+
+    `curr_date`(D1.4 #4/#5)锚点:缺省(None)不过滤(旧行为,向后兼容);给了就先分别按
+    `ann_date`(户数,公告日)/ `end_date`(质押,统计截止日)<= curr_date 过滤再取最新,
+    回填历史日不再读到尚未公告/统计的一期。
+    """
     try:
         pro = _pro()
     except Exception:
@@ -137,6 +154,8 @@ def ashare_shareholder_ts(sym: str) -> str | None:
     try:
         hn = _ts_call(lambda: pro.stk_holdernumber(ts_code=tc))
         if len(hn):
+            if curr_date:
+                hn = _as_of_filter(hn, "ann_date", curr_date)
             hn = hn.sort_values("end_date").tail(4)
             seq = [(r["end_date"], int(_num(pd.Series([r["holder_num"]])).iloc[0])) for _, r in hn.iterrows()]
             trend = "减少(筹码集中→偏多)" if seq[-1][1] < seq[0][1] else "增加(筹码分散→偏空)"
@@ -151,6 +170,8 @@ def ashare_shareholder_ts(sym: str) -> str | None:
             from autoresearch.common.scoring import (
                 pledge_flag_label,  # 阈值单一事实源(与 L4 质押旗同)
             )
+            if curr_date:
+                pl = _as_of_filter(pl, "end_date", curr_date)
             pl = pl.sort_values("end_date").tail(1).iloc[0]
             pr = float(_num(pd.Series([pl["pledge_ratio"]])).iloc[0])
             lbl = pledge_flag_label(pr)
@@ -176,6 +197,8 @@ def ashare_calendar_ts(sym: str, curr_date: str) -> str | None:
     try:
         fc = _ts_call(lambda: pro.forecast(ts_code=tc))
         if len(fc):
+            fc = _as_of_filter(fc, "ann_date", curr_date)   # PIT(D1.4 #6):不读未公告的一期
+        if len(fc):
             r = fc.sort_values("ann_date").tail(1).iloc[0]
             lo = _num(pd.Series([r["p_change_min"]])).iloc[0]
             hi = _num(pd.Series([r["p_change_max"]])).iloc[0]
@@ -186,9 +209,13 @@ def ashare_calendar_ts(sym: str, curr_date: str) -> str | None:
         record_degradation("forecast", f"{type(e).__name__}: {e}", key=sym)
         out.append(f"_tushare 业绩预告取数失败: {e}_")
     try:
-        # 不传 period / 不按 ann_date 收窄:每票 express 全历史也只有个位数行,而**过期留痕**
-        # 需要看得见那一行(API 侧过滤掉 = 陈年快报静默消失 = 降级不留痕)。限频/重试结构不动。
+        # 不传 period / 不在 API 查询里按 ann_date 收窄:每票 express 全历史也只有个位数行,
+        # 而**过期留痕**需要看得见那一行(API 侧过滤掉 = 陈年快报静默消失 = 降级不留痕)。
+        # 限频/重试结构不动;PIT(D1.4 #6「补同过滤」)只在**取到之后**client 侧砍掉
+        # ann_date > curr_date 的未来一期 —— 与"过期留痕"互不冲突(旧的仍留着让过期分支判)。
         ex = _ts_call(lambda: pro.express(ts_code=tc))
+        if len(ex):
+            ex = _as_of_filter(ex, "ann_date", curr_date)
         if len(ex):
             r = ex.sort_values("ann_date").tail(1).iloc[0]
             end_date = str(r.get("end_date") or "—")

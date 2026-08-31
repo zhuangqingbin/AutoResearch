@@ -75,6 +75,7 @@ from autoresearch.agents.utils.agent_utils import (  # noqa: E402
 )
 from autoresearch.data.keyless import consensus_eps_block  # noqa: E402
 from autoresearch.dataflows.config import set_config  # noqa: E402
+from autoresearch.dataflows.stockstats_utils import filter_financials_by_date  # noqa: E402
 from autoresearch.dataflows.symbol_utils import normalize_symbol  # noqa: E402
 from autoresearch.default_config import DEFAULT_CONFIG  # noqa: E402
 
@@ -657,7 +658,7 @@ def analyst_actions_block(ticker: str, curr_date: str, *, actions=None, targets=
                    "**UNMEASURED 不是 0、不是「没变」**)")
     out.append("> 消费纪律:目标价是**卖方口径的预期**,不是事实;动作背后的论点要靠 "
                "`us-intel` 第②面追原文。")
-    return "\n".join(out)
+    return _REALTIME_DISCLAIMER + "\n\n" + "\n".join(out)
 
 
 def _delta(now_v, prev_v):
@@ -981,6 +982,12 @@ def _opt_section(title: str, fn, *args, **kwargs) -> str:
     return f"\n## {title}\n\n{body}\n"
 
 
+#: `.info` 是 yfinance 的**实时**快照字段 —— 没有历史版本可取,取到的永远是"此刻"。
+#: 4 处消费点(D1.4 附注 #19/#30 等)不改取数(改了也没有历史可回放),只诚实标注,
+#: 别让读者以为这些数字是「curr_date 当天」的已核数据。
+_REALTIME_DISCLAIMER = "_as-of: 运行时刻(实时字段,不可回放)_"
+
+
 def analyst_consensus(symbol: str) -> str:
     t = yf.Ticker(normalize_symbol(symbol))
     try:
@@ -1011,7 +1018,7 @@ def analyst_consensus(symbol: str) -> str:
             out.append("\n近期评级/升降级（尾部）:\n```\n" + str(rec.tail(8)) + "\n```")
     except Exception:
         pass
-    return "\n".join(out)
+    return _REALTIME_DISCLAIMER + "\n\n" + "\n".join(out)
 
 
 def earnings_calendar(symbol: str) -> str:
@@ -1057,7 +1064,7 @@ def peer_relative(symbol: str, peers: list[str], curr_date: str) -> str:
         out.append(f"| {n}{tag} | {r1 if r1 is not None else '—'} | {r3 if r3 is not None else '—'} | "
                    f"{r6 if r6 is not None else '—'} | {fpe or '—'} |")
     note = "" if peers else "\n_未指定同业(第4参数)，仅对基准；相对估值受限。_"
-    return "\n".join(out) + note
+    return _REALTIME_DISCLAIMER + "\n\n" + "\n".join(out) + note
 
 
 # --- v3 yfinance enrichments (ownership/short-interest, earnings quality) -----
@@ -1119,7 +1126,7 @@ def ownership_short(symbol: str) -> str:
             out.append("\n持股结构 major_holders:\n```\n" + str(mh) + "\n```")
     except Exception:
         pass
-    return "\n".join(out)
+    return _REALTIME_DISCLAIMER + "\n\n" + "\n".join(out)
 
 
 def _latest(df, *names):
@@ -1134,13 +1141,20 @@ def _latest(df, *names):
     return None
 
 
-def earnings_quality_metrics(symbol: str) -> str:
-    """Accruals / cash-conversion / SBC dilution derived from quarterly statements."""
+def earnings_quality_metrics(symbol: str, curr_date: str) -> str:
+    """Accruals / cash-conversion / SBC dilution derived from quarterly statements.
+
+    `curr_date`(D1.4 #7)PIT:直取 `yf.Ticker(...).quarterly_*` 属性绕开了
+    `get_income_statement`/`get_balance_sheet`/`get_cashflow` 已经在用的
+    `filter_financials_by_date`(同一裁定,同一函数)——历史回填会把**尚未发生**的报告期
+    当"最新一季"读进 NI/CFO/FCF 等。复用同一把过滤器补齐,不重造一套口径。
+    """
     t = yf.Ticker(normalize_symbol(symbol))
 
     def _stmt(attr):
         try:
-            return getattr(t, attr, None)
+            df = getattr(t, attr, None)
+            return filter_financials_by_date(df, curr_date) if df is not None else None
         except Exception:
             return None
 
@@ -1372,6 +1386,19 @@ def ashare_market_context_or_note(ticker: str, curr_date: str) -> str:
             "标注『实时网查 (WebSearch)』。")
 
 
+def _vix_latest(curr_date: str) -> float | None:
+    """VIX 收盘,PIT 锚定 curr_date(D1.4 #1)——旧版 `period="5d"` 从**真实"现在"**倒数
+    5 天,回填历史日会静默读到未来的 VIX(period 不认 curr_date,只认墙钟)。
+
+    与 `_hist_returns`/SPY regime 同一惯例:`end=curr_date+1天`(yfinance `end` 半开区间,
+    +1 天才把 curr_date 自己纳入)。`.tail(2)` 只是防边界的余量,实际只取最后一行。
+    """
+    end = (datetime.strptime(curr_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+    start = (datetime.strptime(curr_date, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
+    vix = yf.Ticker("^VIX").history(start=start, end=end)["Close"].dropna().tail(2)
+    return float(vix.iloc[-1]) if len(vix) else None
+
+
 def us_market_context(ticker: str, curr_date: str) -> str:
     """US MARKET context (yfinance): SPY regime, breadth proxy (RSP/SPY), the
     stock's sector-ETF rotation, and VIX."""
@@ -1401,9 +1428,8 @@ def us_market_context(ticker: str, curr_date: str) -> str:
         except Exception:
             pass
     try:
-        vix = yf.Ticker("^VIX").history(period="5d")["Close"].dropna()
-        if len(vix):
-            v = float(vix.iloc[-1])
+        v = _vix_latest(curr_date)
+        if v is not None:
             out.append(f"**VIX**：{v:.1f} → "
                        + ("低波动/risk-on" if v < 18 else "高波动/避险" if v > 25 else "中性") + "。")
     except Exception:
@@ -1464,15 +1490,21 @@ def tradeability_block(symbol: str, curr_date: str) -> str:
     return "\n".join(out)
 
 
-def solvency_block(symbol: str) -> str:
+def solvency_block(symbol: str, curr_date: str) -> str:
     """Balance-sheet solvency / refinancing lens — leverage, liquidity runway,
     interest coverage, goodwill: the mechanism behind most blow-ups. A-share
-    share-pledge (股权质押) is left to WebSearch (per-stock akshare is unreliable)."""
+    share-pledge (股权质押) is left to WebSearch (per-stock akshare is unreliable).
+
+    `curr_date`(D1.4 #8)PIT:同 `earnings_quality_metrics` 的病(#7)—— 直取
+    `yf.Ticker(...).quarterly_*` 绕开了 `filter_financials_by_date`,回填历史日会把
+    未来报告期的负债/权益读成"最新"。
+    """
     t = yf.Ticker(normalize_symbol(symbol))
 
     def _stmt(attr):
         try:
-            return getattr(t, attr, None)
+            df = getattr(t, attr, None)
+            return filter_financials_by_date(df, curr_date) if df is not None else None
         except Exception:
             return None
 
@@ -1803,11 +1835,11 @@ def ashare_market_context_best(ticker: str, curr_date: str) -> str:
     return ashare_market_context_or_note(ticker, curr_date)
 
 
-def ashare_shareholder_best(ticker: str) -> str:
+def ashare_shareholder_best(ticker: str, curr_date: str) -> str:
     """股东户数:tushare(含质押爆雷红旗)优先,失败回退 akshare。"""
     try:
         from autoresearch.data.tushare_enrich import ashare_shareholder_ts
-        b = ashare_shareholder_ts(normalize_symbol(ticker))
+        b = ashare_shareholder_ts(normalize_symbol(ticker), curr_date=curr_date)
         if b:
             return b
     except Exception:  # noqa: BLE001
@@ -1836,14 +1868,15 @@ def ashare_calendar_best(ticker: str, curr_date: str) -> str:
 
 # --- UZI 增量透镜(L4 单票深研:A股原生财报 / 融资趋势 / 龙虎榜席位 / 杀猪盘)---
 
-def _uzi_fundamentals(ticker: str) -> str:
+def _uzi_fundamentals(ticker: str, curr_date: str) -> str:
     from autoresearch.common.uzi_lenses import ashare_fundamentals_ts
-    return ashare_fundamentals_ts(ticker) or "_UZI A股原生财报暂不可用(非A股/取数失败)。_"
+    return (ashare_fundamentals_ts(ticker, curr_date=curr_date)
+            or "_UZI A股原生财报暂不可用(非A股/取数失败)。_")
 
 
-def _uzi_margin(ticker: str) -> str:
+def _uzi_margin(ticker: str, curr_date: str) -> str:
     from autoresearch.common.uzi_lenses import margin_trend_ts
-    return margin_trend_ts(ticker) or "_非两融标的或融资数据暂无。_"
+    return margin_trend_ts(ticker, curr_date=curr_date) or "_非两融标的或融资数据暂无。_"
 
 
 def _uzi_seats(ticker: str, curr_date: str) -> str:
@@ -2013,11 +2046,12 @@ def main() -> int:
                               endpoint="analyze:yf-ownership-short"))
     if _is_ashare(ticker):
         parts.append(_section("股东户数 / 质押 (A股, v4)",
-                              ashare_shareholder_best, ticker, endpoint="analyze:ashare-shareholder"))
+                              ashare_shareholder_best, ticker, end,
+                              endpoint="analyze:ashare-shareholder"))
         # UZI 增量透镜:便宜的(财报1调/融资1调/trap零调)slim 也取;席位识别(多日 top_inst)给全量
-        parts.append(_section("A股原生财报 (UZI·tushare)", _uzi_fundamentals, ticker,
+        parts.append(_section("A股原生财报 (UZI·tushare)", _uzi_fundamentals, ticker, end,
                               endpoint="analyze:uzi-fundamentals"))
-        parts.append(_section("融资余额趋势 (UZI·tushare)", _uzi_margin, ticker,
+        parts.append(_section("融资余额趋势 (UZI·tushare)", _uzi_margin, ticker, end,
                               endpoint="analyze:uzi-margin"))
         # 量价机械底(**仅 scan L4 的 slim 路径**复用 L1 因子行,零取数):trap=派发空半 + volprice=吸筹多半 + 多日 CMF/OBV。
         # 全量 analyze-ticker 与 scan **完全解耦——不取 L1**,改由分析师对上方 live 市场上下文(主力/技术/筹码)自行套用 trap/volume_price 判读。
@@ -2057,9 +2091,9 @@ def main() -> int:
         parts.append(_section("Cash flow (quarterly)", get_cashflow,
                               {"ticker": ticker, "freq": "quarterly", "curr_date": end},
                               endpoint="analyze:yf-cashflow"))
-    parts.append(_section("Earnings quality / forensics (v3)", earnings_quality_metrics, ticker,
+    parts.append(_section("Earnings quality / forensics (v3)", earnings_quality_metrics, ticker, end,
                           endpoint="analyze:yf-earnings-quality"))
-    parts.append(_section("Solvency & refinancing (v4)", solvency_block, ticker,
+    parts.append(_section("Solvency & refinancing (v4)", solvency_block, ticker, end,
                           endpoint="analyze:yf-solvency"))
 
     # --- v2 enrichments (yfinance direct; US-centric, degrade gracefully) ---

@@ -25,6 +25,18 @@ def _tscode(code: str) -> str:
     return to_ts_code(code)
 
 
+def _as_of_filter(df, col: str, curr_date: str):
+    """`df[col] <= curr_date`(PIT 锚定;D1.4)。两侧统一转 8 位 YYYYMMDD 字符串比较,
+    容 `col` 因与 NaN 混列被 pandas 转成 float64(`20260630` → `20260630.0`,与
+    `data.express_fields._parse_day` 同一处置)。"""
+    def _norm(v) -> str:
+        t = "" if v is None else str(v).strip().replace("-", "")
+        return t[:-2] if t.endswith(".0") else t
+
+    cutoff = _norm(curr_date)
+    return df[df[col].map(_norm) <= cutoff]
+
+
 # ───────────────────────── 纯函数:DCF + 杀猪盘信号(可自测) ─────────────────────────
 
 
@@ -252,8 +264,12 @@ def render_volume_price_block(vp: dict) -> str:
 # ───────────────────────── tushare 取数透镜(失败降级 None) ─────────────────────────
 
 
-def ashare_fundamentals_ts(code: str) -> str | None:
-    """A股原生财报:fina_indicator(5y ROE/利润率/负债率/同比)+ dividend(最新分红)。补 yfinance 稀疏。"""
+def ashare_fundamentals_ts(code: str, curr_date: str | None = None) -> str | None:
+    """A股原生财报:fina_indicator(5y ROE/利润率/负债率/同比)+ dividend(最新分红)。补 yfinance 稀疏。
+
+    `curr_date`(D1.4 #3)锚点:缺省(None)不过滤(旧行为,向后兼容);给了就先把
+    `end_date` 晚于 curr_date 的报告期滤掉再取"最新",回填历史日不再读到尚未发生的报告期。
+    """
     from autoresearch.data.contracts import record_degradation
     try:
         from autoresearch.data.tushare_source import _pro, _ts_call
@@ -269,6 +285,8 @@ def ashare_fundamentals_ts(code: str) -> str | None:
                                "debt_to_assets,or_yoy,netprofit_yoy"))
         if fi is not None and len(fi):
             fi = fi.sort_values("end_date").drop_duplicates("end_date")
+            if curr_date:
+                fi = _as_of_filter(fi, "end_date", curr_date)
             ann = fi[fi["end_date"].str.endswith("1231")].tail(5)
             roes = [(r["end_date"][:4], r["roe"]) for _, r in ann.iterrows() if r["roe"] == r["roe"]]
             roe_s = " → ".join(f"{y}:{float(v):.1f}%" for y, v in roes)
@@ -294,8 +312,12 @@ def ashare_fundamentals_ts(code: str) -> str | None:
     return "\n\n".join(out) if out else None
 
 
-def margin_trend_ts(code: str, lookback: int = 30) -> str | None:
-    """近 ~20 交易日融资余额趋势(两融标的;非标的返回 None)。"""
+def margin_trend_ts(code: str, lookback: int = 30, curr_date: str | None = None) -> str | None:
+    """近 ~20 交易日融资余额趋势(两融标的;非标的返回 None)。
+
+    `curr_date`(D1.4 #2)锚点:缺省(None)按旧行为用真实"现在"(向后兼容零 curr_date 的
+    调用方);给了就以它为界,回填历史日不再静默取到未来的两融数据。
+    """
     from autoresearch.data.contracts import record_degradation
     try:
         from autoresearch.data.tushare_source import _pro, _ts_call
@@ -304,8 +326,9 @@ def margin_trend_ts(code: str, lookback: int = 30) -> str | None:
         record_degradation("margin_detail", f"{type(e).__name__}: {e}", key=code)
         return None
     tc = _tscode(code)
-    end = datetime.now().strftime("%Y%m%d")
-    start = (datetime.now() - timedelta(days=lookback + 20)).strftime("%Y%m%d")
+    now = datetime.strptime(curr_date, "%Y-%m-%d") if curr_date else datetime.now()
+    end = now.strftime("%Y%m%d")
+    start = (now - timedelta(days=lookback + 20)).strftime("%Y%m%d")
     try:
         mg = _ts_call(lambda: pro.margin_detail(ts_code=tc, start_date=start, end_date=end,
                                                 fields="trade_date,rzye,rzrqye"))
