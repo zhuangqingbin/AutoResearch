@@ -19,6 +19,7 @@ Usage:
 """
 
 import os
+import re
 import sys
 import time
 import traceback
@@ -1640,13 +1641,27 @@ def ashare_corporate_calendar(sym: str, curr_date: str) -> str:
 
 # -----------------------------------------------------------------------------
 
-def _section(title: str, fn, *args, **kwargs) -> str:
-    """Run one data call, capturing output or a readable error per section."""
+def _slug(title: str) -> str:
+    """节标题 → 端点账本的兜底 slug(`analyze:` 前缀 + kebab-case)。
+
+    只在调用方没给 `endpoint=` 时用 —— 宁可粗(泛用 slug)也不可错(悄悄不记账)。
+    """
+    return "analyze:" + re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+
+
+def _section(title: str, fn, *args, endpoint: str | None = None, **kwargs) -> str:
+    """Run one data call, capturing output or a readable error per section.
+
+    异常 → **先记账(B 级降级,`contracts.record_degradation`)再**写人读的降级文案 —— 29 处
+    T 级(裸报错,只有人读)升 B 级(可审计,`degradations()`/`main()` 尾账都能读到,D1.3)。
+    """
     print(f"  - {title} ...", flush=True)
     try:
         out = fn.invoke(*args, **kwargs) if hasattr(fn, "invoke") else fn(*args, **kwargs)
         body = (out or "").strip() or "_(empty)_"
     except Exception as e:  # noqa: BLE001 — one flaky vendor must not kill the harvest
+        from autoresearch.data.contracts import record_degradation
+        record_degradation(endpoint or _slug(title), f"{type(e).__name__}: {e}")
         body = f"_ERROR fetching this section: {e}_\n```\n{traceback.format_exc()}```"
     return f"\n## {title}\n\n{body}\n"
 
@@ -1956,75 +1971,96 @@ def main() -> int:
     if not slim:  # OHLCV 400天(最大块)+ 30天指标多序列:slim 用 snapshot 的当前指标值即可(去冗余)
         parts.append(_section(
             f"Price history (OHLCV) {price_start} → {end}",
-            get_stock_data, {"symbol": ticker, "start_date": price_start, "end_date": end}))
+            get_stock_data, {"symbol": ticker, "start_date": price_start, "end_date": end},
+            endpoint="yfinance"))
         parts.append(_section(
             "Technical indicators (full menu)",
             get_indicators, {"symbol": ticker, "indicator": ",".join(INDICATORS),
-                             "curr_date": end, "look_back_days": 30}))
+                             "curr_date": end, "look_back_days": 30},
+            endpoint="analyze:yf-technical-indicators"))
     parts.append(_section(
         "Verified market snapshot (source of truth)",
-        get_verified_market_snapshot, {"symbol": ticker, "curr_date": end, "look_back_days": 30}))
+        get_verified_market_snapshot, {"symbol": ticker, "curr_date": end, "look_back_days": 30},
+        endpoint="analyze:verified-snapshot"))
     if _is_ashare(ticker):
         # scan-market L4:有 L1 召回行 → 复用(零富因子重复取数,与召回同源);
         # 全量 analyze-ticker / 无 scan → live tushare(10日资金序列+MACD 更全)。
         l1_row = _load_l1_row(ticker, trade_date) if slim else None
         if l1_row is not None:
             parts.append(_section("Market context — A股 (主力/技术/筹码/北向 · 复用L1召回)",
-                                  ashare_market_context_from_l1, l1_row))
+                                  ashare_market_context_from_l1, l1_row,
+                                  endpoint="analyze:l1-market-context"))
         else:
             parts.append(_section("Market context — A股 (主力/技术/筹码/北向)",
-                                  ashare_market_context_best, ticker, end))
+                                  ashare_market_context_best, ticker, end,
+                                  endpoint="analyze:ashare-market-context"))
     else:
         parts.append(_section("Market context — US (regime/breadth/sector/VIX)",
-                              us_market_context, ticker, end))
+                              us_market_context, ticker, end,
+                              endpoint="analyze:yf-us-market-context"))
     parts.append(_section("Tradeability & price-limit reality (v4)",
-                          tradeability_block, ticker, end))
+                          tradeability_block, ticker, end, endpoint="analyze:tradeability"))
 
     print("[news / social]", flush=True)
     parts.append(_section(
         f"Ticker news {news_start} → {end}",
-        ticker_news_block, ticker, news_start, end))
+        ticker_news_block, ticker, news_start, end, endpoint="analyze:ticker-news"))
     if not slim:  # 全球宏观新闻 / 内部交易 / 持仓做空:决策卡用不上
         parts.append(_section("Global / macro news", get_global_news, {"curr_date": end}))
-        parts.append(_section("Insider transactions", get_insider_transactions, {"ticker": ticker}))
-        parts.append(_section("Ownership & short interest (v3)", ownership_short, ticker))
+        parts.append(_section("Insider transactions", get_insider_transactions, {"ticker": ticker},
+                              endpoint="analyze:yf-insider-transactions"))
+        parts.append(_section("Ownership & short interest (v3)", ownership_short, ticker,
+                              endpoint="analyze:yf-ownership-short"))
     if _is_ashare(ticker):
         parts.append(_section("股东户数 / 质押 (A股, v4)",
-                              ashare_shareholder_best, ticker))
+                              ashare_shareholder_best, ticker, endpoint="analyze:ashare-shareholder"))
         # UZI 增量透镜:便宜的(财报1调/融资1调/trap零调)slim 也取;席位识别(多日 top_inst)给全量
-        parts.append(_section("A股原生财报 (UZI·tushare)", _uzi_fundamentals, ticker))
-        parts.append(_section("融资余额趋势 (UZI·tushare)", _uzi_margin, ticker))
+        parts.append(_section("A股原生财报 (UZI·tushare)", _uzi_fundamentals, ticker,
+                              endpoint="analyze:uzi-fundamentals"))
+        parts.append(_section("融资余额趋势 (UZI·tushare)", _uzi_margin, ticker,
+                              endpoint="analyze:uzi-margin"))
         # 量价机械底(**仅 scan L4 的 slim 路径**复用 L1 因子行,零取数):trap=派发空半 + volprice=吸筹多半 + 多日 CMF/OBV。
         # 全量 analyze-ticker 与 scan **完全解耦——不取 L1**,改由分析师对上方 live 市场上下文(主力/技术/筹码)自行套用 trap/volume_price 判读。
         if l1_row is not None:
-            parts.append(_section("杀猪盘/派发风险 (UZI·复用L1)", _uzi_trap, l1_row))
-            parts.append(_section("量价形态/吸筹·多日资金流 (UZI·复用L1)", _uzi_volprice, l1_row))
+            parts.append(_section("杀猪盘/派发风险 (UZI·复用L1)", _uzi_trap, l1_row,
+                                  endpoint="analyze:uzi-trap"))
+            parts.append(_section("量价形态/吸筹·多日资金流 (UZI·复用L1)", _uzi_volprice, l1_row,
+                                  endpoint="analyze:uzi-volprice"))
         if not slim:
-            parts.append(_section("龙虎榜席位识别 (UZI·tushare)", _uzi_seats, ticker, end))
+            parts.append(_section("龙虎榜席位识别 (UZI·tushare)", _uzi_seats, ticker, end,
+                                  endpoint="analyze:uzi-seats"))
 
     if not slim:  # 8 个 FRED 宏观 + 中国背景 + 预测市场:对单只决策卡是背景噪音
         print("[macro]", flush=True)
         for series in MACRO:
             parts.append(_section(f"Macro: {series}", get_macro_indicators,
-                                  {"indicator": series, "curr_date": end}))
+                                  {"indicator": series, "curr_date": end}, endpoint="fred"))
         if _is_ashare(ticker):
-            parts.append(_section("China market backdrop (A-share)", china_backdrop, end))
+            parts.append(_section("China market backdrop (A-share)", china_backdrop, end,
+                                  endpoint="analyze:yf-china-backdrop"))
 
         print("[prediction markets]", flush=True)
         parts.append(_section("Prediction markets (Polymarket; WebSearch fallback if blocked)",
-                              prediction_markets_or_websearch_note, PREDICTION_TOPICS))
+                              prediction_markets_or_websearch_note, PREDICTION_TOPICS,
+                              endpoint="analyze:polymarket"))
 
     print("[fundamentals]", flush=True)
-    parts.append(_section("Fundamentals overview", get_fundamentals, {"ticker": ticker, "curr_date": end}))
+    parts.append(_section("Fundamentals overview", get_fundamentals, {"ticker": ticker, "curr_date": end},
+                          endpoint="analyze:yf-fundamentals"))
     parts.append(_section("Income statement (quarterly)", get_income_statement,
-                          {"ticker": ticker, "freq": "quarterly", "curr_date": end}))
+                          {"ticker": ticker, "freq": "quarterly", "curr_date": end},
+                          endpoint="analyze:yf-income-statement"))
     if not slim:  # 资产负债表/现金流量表全表:slim 用 solvency + earnings-quality 的摘要替代
         parts.append(_section("Balance sheet (quarterly)", get_balance_sheet,
-                              {"ticker": ticker, "freq": "quarterly", "curr_date": end}))
+                              {"ticker": ticker, "freq": "quarterly", "curr_date": end},
+                              endpoint="analyze:yf-balance-sheet"))
         parts.append(_section("Cash flow (quarterly)", get_cashflow,
-                              {"ticker": ticker, "freq": "quarterly", "curr_date": end}))
-    parts.append(_section("Earnings quality / forensics (v3)", earnings_quality_metrics, ticker))
-    parts.append(_section("Solvency & refinancing (v4)", solvency_block, ticker))
+                              {"ticker": ticker, "freq": "quarterly", "curr_date": end},
+                              endpoint="analyze:yf-cashflow"))
+    parts.append(_section("Earnings quality / forensics (v3)", earnings_quality_metrics, ticker,
+                          endpoint="analyze:yf-earnings-quality"))
+    parts.append(_section("Solvency & refinancing (v4)", solvency_block, ticker,
+                          endpoint="analyze:yf-solvency"))
 
     # --- v2 enrichments (yfinance direct; US-centric, degrade gracefully) ---
     print("[v2: analyst / earnings / calendar]", flush=True)
@@ -2033,17 +2069,21 @@ def main() -> int:
         for _title, _fn, _args, _kw in external_sections(
                 ticker, end, slim=slim, company_name=identity.get("company_name")):
             parts.append(_opt_section(_title, _fn, *_args, **_kw))
-    parts.append(_section("Analyst consensus & price targets (v2)", analyst_consensus, ticker))
-    parts.append(_section("Earnings & events calendar (v2)", earnings_calendar, ticker))
+    parts.append(_section("Analyst consensus & price targets (v2)", analyst_consensus, ticker,
+                          endpoint="analyze:yf-analyst-consensus"))
+    parts.append(_section("Earnings & events calendar (v2)", earnings_calendar, ticker,
+                          endpoint="analyze:yf-earnings-calendar"))
     if _is_ashare(ticker):
         parts.append(_section("Corporate calendar — A股 业绩预告·快报/解禁 (v4)",
-                              ashare_calendar_best, ticker, end))
+                              ashare_calendar_best, ticker, end, endpoint="analyze:ashare-calendar"))
         # A股卖方一致预期 EPS → 真 fwd-PE(补 yfinance 对 A 股 forwardPE 的缺口;同花顺 keyless)
         _eps_px = _l1_float(l1_row, "close") if l1_row is not None else None
         parts.append(_section("A股卖方一致预期 EPS / fwd-PE (同花顺·keyless)",
-                              consensus_eps_block, ticker, _eps_px))
+                              consensus_eps_block, ticker, _eps_px,
+                              endpoint="analyze:keyless-consensus-eps"))
     if not slim:
-        parts.append(_section("Peer-relative valuation & strength (v2)", peer_relative, ticker, peers, end))
+        parts.append(_section("Peer-relative valuation & strength (v2)", peer_relative, ticker, peers, end,
+                              endpoint="analyze:yf-peer-relative"))
 
     if slim:
         out_path = _write_slim_files(out_dir, ticker, trade_date, parts)
@@ -2051,6 +2091,11 @@ def main() -> int:
         out_path = out_dir / f"{ticker}_{trade_date}.md"
         out_path.write_text("".join(parts), encoding="utf-8")
     print(f"\n[saved] {out_path}  ({out_path.stat().st_size:,} bytes)", flush=True)
+
+    from autoresearch.data.contracts import degradations, render as _deg_render
+    degs = degradations()
+    if degs:
+        print(f"[数据降级账] {len(degs)} 条:{_deg_render(degs)}", flush=True)
     return 0
 
 

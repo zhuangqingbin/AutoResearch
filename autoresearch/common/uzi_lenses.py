@@ -254,10 +254,12 @@ def render_volume_price_block(vp: dict) -> str:
 
 def ashare_fundamentals_ts(code: str) -> str | None:
     """A股原生财报:fina_indicator(5y ROE/利润率/负债率/同比)+ dividend(最新分红)。补 yfinance 稀疏。"""
+    from autoresearch.data.contracts import record_degradation
     try:
         from autoresearch.data.tushare_source import _pro, _ts_call
         pro = _pro()
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        record_degradation("fina_indicator", f"{type(e).__name__}: {e}", key=code)
         return None
     tc = _tscode(code)
     out: list[str] = []
@@ -276,6 +278,7 @@ def ashare_fundamentals_ts(code: str) -> str | None:
                        f"净利率 {_f(last.get('netprofit_margin'))}%、资产负债率 {_f(last.get('debt_to_assets'))}%、"
                        f"营收同比 {_f(last.get('or_yoy'))}%、净利同比 {_f(last.get('netprofit_yoy'))}%。")
     except Exception as e:  # noqa: BLE001
+        record_degradation("fina_indicator", f"{type(e).__name__}: {e}", key=code)
         out.append(f"_tushare 财报指标取数失败: {e}_")
     try:
         dv = _ts_call(lambda: pro.dividend(ts_code=tc, fields="end_date,div_proc,cash_div_tax,ann_date"))
@@ -286,16 +289,19 @@ def ashare_fundamentals_ts(code: str) -> str | None:
                 out.append(f"**分红(tushare)**:最近 {r['end_date']} 每10股税前 {_f(r.get('cash_div_tax'))} 元"
                            f"({r.get('div_proc', '—')})。")
     except Exception as e:  # noqa: BLE001
+        record_degradation("dividend", f"{type(e).__name__}: {e}", key=code)
         out.append(f"_tushare 分红取数失败: {e}_")
     return "\n\n".join(out) if out else None
 
 
 def margin_trend_ts(code: str, lookback: int = 30) -> str | None:
     """近 ~20 交易日融资余额趋势(两融标的;非标的返回 None)。"""
+    from autoresearch.data.contracts import record_degradation
     try:
         from autoresearch.data.tushare_source import _pro, _ts_call
         pro = _pro()
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        record_degradation("margin_detail", f"{type(e).__name__}: {e}", key=code)
         return None
     tc = _tscode(code)
     end = datetime.now().strftime("%Y%m%d")
@@ -304,21 +310,27 @@ def margin_trend_ts(code: str, lookback: int = 30) -> str | None:
         mg = _ts_call(lambda: pro.margin_detail(ts_code=tc, start_date=start, end_date=end,
                                                 fields="trade_date,rzye,rzrqye"))
         if mg is None or len(mg) == 0:
+            record_degradation("margin_detail", "非两融标的或该窗口无融资数据",
+                               key=code, kind="legit_empty")
             return None
         mg = mg.sort_values("trade_date").tail(20)
         rz = mg["rzye"].astype(float) / 1e8  # 元 → 亿
         if len(rz) < 2:
+            record_degradation("margin_detail", "融资余额历史不足2个交易日,无法算趋势",
+                               key=code, kind="legit_empty")
             return None
         chg = (rz.iloc[-1] / rz.iloc[0] - 1) * 100 if rz.iloc[0] else 0.0
         trend = "增(杠杆资金进场)" if chg > 3 else "降(杠杆资金撤离)" if chg < -3 else "平"
         return (f"**融资余额趋势(tushare,近{len(rz)}日)**:{rz.iloc[0]:.2f}亿 → **{rz.iloc[-1]:.2f}亿**"
                 f"({chg:+.1f}%,{trend})。_(Phase A 实测:融资余额对 T+1 无预测力,作中期资金背景。)_")
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        record_degradation("margin_detail", f"{type(e).__name__}: {e}", key=code)
         return None
 
 
 def lhb_seats(code: str, date: str, lookback_days: int = 20) -> str | None:
     """龙虎榜机构 vs 游资席位识别(近窗口);Phase A 实测机构上榜买入后续偏弱 → 标注反指。"""
+    from autoresearch.data.contracts import record_degradation
     try:
         from autoresearch.data.tushare_source import (
             _code6,
@@ -328,7 +340,8 @@ def lhb_seats(code: str, date: str, lookback_days: int = 20) -> str | None:
             resolve_momentum_dates,
         )
         pro = _pro()
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        record_degradation("top_inst", f"{type(e).__name__}: {e}", key=code)
         return None
     c6 = str(code).split(".")[0].zfill(6)
     last = resolve_momentum_dates(pro, date)[0]
@@ -350,9 +363,11 @@ def lhb_seats(code: str, date: str, lookback_days: int = 20) -> str | None:
                     inst_net += net
                 else:
                     retail_net += net
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        record_degradation("top_inst", f"{type(e).__name__}: {e}", key=code)
         return None
     if not appeared:
+        record_degradation("top_inst", "近窗口未上榜(非异动席位)", key=code, kind="legit_empty")
         return "**龙虎榜席位**:近窗口未上榜 → 无单日异动席位痕迹。"
     note = "(⚠️ Phase A 实测:机构上龙虎榜净买后续 T+1~T+10 反而偏弱,勿当强利好)" if inst_net > 0 else ""
     return (f"**龙虎榜席位识别(tushare,近 {len(appeared)} 次上榜)**:机构专用净买 **{inst_net / 1e4:+.0f}万**"

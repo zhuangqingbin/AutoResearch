@@ -24,6 +24,7 @@ from autoresearch.data.express_fields import (
 )
 
 # 复用 tushare_source 的句柄/重试/日期解析(同一 token、同一防御层)
+from autoresearch.data.contracts import record_degradation
 from autoresearch.data.tushare_source import _pro, _ts_call, resolve_momentum_dates
 from autoresearch.dataflows.symbol_utils import to_ts_code
 
@@ -68,6 +69,7 @@ def ashare_market_context_ts(sym: str, curr_date: str) -> str | None:
             out.append(f"**主力资金流(个股,tushare moneyflow)**:近10日合计 **{cum:+.2f} 亿**"
                        f"({pos}/10 日净流入),最新日 {lastd:+.2f} 亿。\n" + "\n".join(rows))
     except Exception as e:  # noqa: BLE001
+        record_degradation("moneyflow", f"{type(e).__name__}: {e}", key=sym)
         out.append(f"_tushare 主力资金流取数失败: {e}_")
 
     # 2) 技术结构(stk_factor_pro,前复权)
@@ -88,6 +90,7 @@ def ashare_market_context_ts(sym: str, curr_date: str) -> str | None:
                        f"价在 MA60 **{pos60}**(收{c:.2f}/MA60 {m60:.2f})、RSI6 **{rsi6:.0f}**"
                        f"({'过热' if rsi6 > 80 else '超卖' if rsi6 < 20 else '中性'})、MACD **{cross}**(DIF{dif:+.3f}/DEA{dea:+.3f})。")
     except Exception as e:  # noqa: BLE001
+        record_degradation("stk_factor_pro", f"{type(e).__name__}: {e}", key=sym)
         out.append(f"_tushare 技术因子取数失败: {e}_")
 
     # 3) 筹码(每日筹码及胜率)
@@ -102,6 +105,7 @@ def ashare_market_context_ts(sym: str, curr_date: str) -> str | None:
                        f"({'高位获利盘重' if wr > 85 else '深度套牢/超跌' if wr < 15 else '中性'})、"
                        f"筹码平均成本(中位) {c50:.2f}。")
     except Exception as e:  # noqa: BLE001
+        record_degradation("cyq_perf", f"{type(e).__name__}: {e}", key=sym)
         out.append(f"_tushare 筹码取数失败: {e}_")
 
     # 4) 北向(沪深股通持股)
@@ -113,6 +117,7 @@ def ashare_market_context_ts(sym: str, curr_date: str) -> str | None:
         else:
             out.append("**北向(沪深股通)**:非标的/无持股记录。")
     except Exception as e:  # noqa: BLE001
+        record_degradation("hk_hold", f"{type(e).__name__}: {e}", key=sym)
         out.append(f"_tushare 北向取数失败: {e}_")
 
     return "\n\n".join(out) if out else None
@@ -138,6 +143,7 @@ def ashare_shareholder_ts(sym: str) -> str | None:
             s = " → ".join(f"{d}:{n:,}" for d, n in seq)
             out.append(f"**股东户数(tushare)**:{s};近趋势 **{trend}**。")
     except Exception as e:  # noqa: BLE001
+        record_degradation("stk_holdernumber", f"{type(e).__name__}: {e}", key=sym)
         out.append(f"_tushare 股东户数取数失败: {e}_")
     try:
         pl = _ts_call(lambda: pro.pledge_stat(ts_code=tc))
@@ -151,6 +157,7 @@ def ashare_shareholder_ts(sym: str) -> str | None:
             flag = "⚠️高质押(爆雷红旗)" if lbl == "爆雷红旗" else (lbl or "可控")
             out.append(f"**股权质押(tushare)**:质押比例 **{pr:.1f}%**({flag}),截至 {pl['end_date']}。")
     except Exception as e:  # noqa: BLE001
+        record_degradation("pledge_stat", f"{type(e).__name__}: {e}", key=sym)
         out.append(f"_tushare 质押取数失败: {e}_")
     return "\n\n".join(out) if out else None
 
@@ -176,6 +183,7 @@ def ashare_calendar_ts(sym: str, curr_date: str) -> str | None:
             out.append(f"**业绩预告(tushare,{r['end_date']})**:类型 **{r.get('type', '—')}**、"
                        f"净利同比 **{rng}**。原因:{str(r.get('change_reason') or '—')[:60]}")
     except Exception as e:  # noqa: BLE001
+        record_degradation("forecast", f"{type(e).__name__}: {e}", key=sym)
         out.append(f"_tushare 业绩预告取数失败: {e}_")
     try:
         # 不传 period / 不按 ann_date 收窄:每票 express 全历史也只有个位数行,而**过期留痕**
@@ -206,5 +214,6 @@ def ashare_calendar_ts(sym: str, curr_date: str) -> str | None:
                 else:
                     out.append(f"_业绩快报({end_date}):关键字段全缺,不渲染_")
     except Exception as e:  # noqa: BLE001
+        record_degradation("express", f"{type(e).__name__}: {e}", key=sym)
         out.append(f"_tushare 业绩快报取数失败: {e}_")
     return "\n\n".join(out) if out else None
