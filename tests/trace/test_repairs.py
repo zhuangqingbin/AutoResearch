@@ -7,6 +7,7 @@ import json
 import pytest
 
 from autoresearch.common import workspace as ws
+from autoresearch.common.run_identity import RunContract
 from autoresearch.trace import capsule as capsule_mod
 from autoresearch.trace.capsule import (
     BusinessStatus,
@@ -123,3 +124,83 @@ def test_repair_requires_a_reason_and_a_frozen_base(frozen):
         repair(handle.run_id, reason="  ")
     with pytest.raises(FileNotFoundError):
         repair("20260827T999999999999Z", reason="nothing here")
+
+
+# ---------------------------------------------------------------- D6.2: cross-kind regression
+
+
+def _prepare_stock_research_run(
+    analysis_date, *, config=None, run_id=None, engine=None,
+    workspace_path=None, session_ref=None, now=None,
+):
+    """stock-research bootstrap 桩(与 `tests/trace/test_capsule_kinds.py` 同款)。"""
+    echo = dict(config or {})
+    return RunContract.build(
+        analysis_date=analysis_date,
+        user_config={"mode": echo.get("mode", "FULL"), "ticker": echo.get("ticker", "")},
+        pinned={},
+        data_policy={},
+        stage_budgets={},
+        artifact_schema_versions={},
+        git_sha="abc1234",
+        git_dirty=False,
+        dirty_paths=[],
+        run_kind="stock-research",
+        engine=engine or ws.ENGINE,
+        workspace_path=workspace_path,
+        session_ref=session_ref,
+        run_id=run_id,
+        now=now,
+    )
+
+
+@pytest.fixture
+def frozen_stock_research(tmp_path, monkeypatch):
+    """A frozen `stock-research` capsule — repair() 此前只在 `scan-market`(碰巧与
+    `repairs_root()`/`append_ledger_revision()` 的缺省 kind 相同)上测过,这个夹具
+    专门撑一个**非缺省** kind 出来,让 `:3153`/`:3178`(修复前的行号)那两处漏传
+    kind 的 bug 无处可藏。
+    """
+    from tests.forensic_fixtures import redirect_roots
+
+    redirect_roots(monkeypatch, tmp_path)
+    handle = capsule_mod.begin_run(
+        "stock-research",
+        "2026-08-27",
+        "codex",
+        {"mode": "FULL", "ticker": "600000.SS"},
+        bootstrap=_prepare_stock_research_run,
+    )
+    report_dir = ws.reports_root() / "analyze" / handle.run_id
+    report_dir.mkdir(parents=True)
+    (report_dir / "summary.md").write_text("# synthetic\n", encoding="utf-8")
+    checkpoint(handle.run_id, "harvest", "SUCCEEDED", [], {})
+    result = finalize(handle.run_id, BusinessStatus.SUCCEEDED, report_dir)
+    restored = tmp_path / "restored"
+    (restored / "agents/raw").mkdir(parents=True)
+    (restored / "agents/raw/company-intel-1.jsonl.gz").write_bytes(b"\x1f\x8b restored")
+    return handle, restored, report_dir, result
+
+
+def test_repair_lands_in_the_correct_kind_ledger_not_scan_market(frozen_stock_research):
+    """D6.2:对一趟 `stock-research` run 走完整 repair 必须——
+
+    (a) 不抛异常;(b) overlay 完整(有 `verification/ROOT.json`);
+    (c) revision 落进 **analyze** 账本,scan 账本里一行都不该多出来。
+    """
+    handle, restored, _, base = frozen_stock_research
+
+    result = repair(handle.run_id, reason="transcript restored", source=restored)  # (a)
+
+    assert (result.overlay_path / "verification/ROOT.json").is_file()  # (b)
+    assert result.base_root_hash == base.root_hash
+    analyze_rows = [
+        row for row in read_valid_ledger(kind="stock-research")
+        if row["run_id"] == handle.run_id
+    ]
+    scan_rows = [
+        row for row in read_valid_ledger(kind="scan-market")
+        if row["run_id"] == handle.run_id
+    ]
+    assert [row["revision"] for row in analyze_rows] == [1, 2]  # (c)
+    assert scan_rows == []

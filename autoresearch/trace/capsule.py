@@ -3187,7 +3187,7 @@ def repair(
     )
     overlay_root = sha256_bytes(manifest.read_bytes())
     previous_overlays = sorted(
-        item for item in (repairs_root() / run_id).iterdir() if item.is_dir()
+        item for item in (repairs_root(run_kind) / run_id).iterdir() if item.is_dir()
     )
     overlay_roots = []
     for item in previous_overlays:
@@ -3232,6 +3232,7 @@ def repair(
             .isoformat(timespec="microseconds")
             .replace("+00:00", "Z"),
         },
+        kind=run_kind,
     )
     _freeze_tree(overlay)
     return RepairResult(
