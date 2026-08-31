@@ -119,3 +119,23 @@ def test_l1_and_l2_csv_carry_turnup_panel_cols(monkeypatch, tmp_path):
     for fname in ("L1_scored_full.csv", "L1_recall_top1000.csv", "L2_gbdt_top200.csv"):
         header = set(pd.read_csv(outdir / fname, nrows=0).columns)
         assert set(PANEL_COLS) <= header, f"{fname} 缺 {set(PANEL_COLS) - header}"
+
+
+def test_l1_csvs_carry_the_harvest_reuse_columns(monkeypatch, tmp_path):
+    """`contracts.agent_output.L1_REUSE_COLUMNS`(D1.6 #6)双侧锁的生产者侧一半:
+    `analyze.harvest.ashare_market_context_from_l1` 复用的这批列,`universe.run` 的
+    `keep` 白名单(:374-379)必须把它们都投影进 L1 产物,否则 harvest 端"缺列"会被
+    误判成常态(消费侧此前静默回退,现在虽已记 `record_degradation(...,
+    kind="legit_empty")` 但没有任何测试会红——这条测试才是拦『keep 漏投影一列』的探针,
+    harvest 侧的单测只锁得住"缺列时不炸",锁不住"生产者本该产出却没产出")。
+
+    只查 harvest 真实会去读的两个文件(`_load_l1_row` 只 fallback 这两个,不含
+    `L2_gbdt_top200.csv` ——L2 虽复用同一份 `keep` 但不是 harvest 的读点)。
+    """
+    from autoresearch.contracts.agent_output import L1_REUSE_COLUMNS
+
+    outdir = run_universe(monkeypatch, tmp_path)
+    for fname in ("L1_scored_full.csv", "L1_recall_top1000.csv"):
+        header = set(pd.read_csv(outdir / fname, nrows=0).columns)
+        assert set(L1_REUSE_COLUMNS) <= header, (
+            f"{fname} 缺 harvest 复用列: {set(L1_REUSE_COLUMNS) - header}")
