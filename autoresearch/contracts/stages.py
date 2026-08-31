@@ -188,3 +188,18 @@ def stage_index(name: str) -> int:
 def skips_l4(mode: str) -> bool:
     """这个模式是否**不**派发 L4。未知模式按「派发」处理(宁可多要证据)。"""
     return mode in L4_SKIPPING_MODES
+
+
+# ── stock-research(analyze)词汇(2026-08-31 D6.1;scan 词汇在上,一个字未动) ──
+#: 已注册的 run kind——目前只有两个技能落 capsule。新技能接线前先在这里报到。
+RUN_KINDS: tuple[str, ...] = ("scan-market", "stock-research")
+#: full 档阶段序:取数 → 情报 → 撰写 → 组装 → 发布。
+ANALYZE_STAGES: tuple[str, ...] = ("harvest", "intel", "write", "assemble", "publish")
+#: lite 档(决策卡)只有两步——不派情报员,见 `engine-playbook`「lite 一律不派」。
+ANALYZE_LITE_STAGES: tuple[str, ...] = ("harvest", "card")
+#: `stock-research` 的模式词汇,与 `scan.MODES` 互不相干(各自的技能各自的模式)。
+ANALYZE_MODES: tuple[str, ...] = ("FULL", "LITE")
+#: 角色 → 阶段。两个情报角色(A 股 / 美股)都挂在 `intel` 阶段下。
+ANALYZE_ROLE_STAGES: dict[str, str] = {"company-intel": "intel", "us-intel": "intel"}
+#: 只在标的市场匹配时才派发的腿——缺席是「这只票不是这个市场」的事实,不是证据的洞。
+ANALYZE_CONDITIONAL_ROLES: frozenset[str] = frozenset({"company-intel", "us-intel"})

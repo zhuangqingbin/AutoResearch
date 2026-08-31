@@ -16,9 +16,15 @@ here is the *policy*: which of those names a given mode owes evidence for.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
 from autoresearch.contracts import stages as vocab
+
+# `RunProfile` / `ArtifactRule` / `_BASE_RULES` used to be declared right here.  They
+# moved to `contracts/profiles.py` (2026-08-31, D6.1) so `stock-research`
+# (`autoresearch/analyze/`) can build its own `RunProfile` without importing `scan`
+# (which the layering ratchet in `tests/contracts/test_layering.py` forbids — `analyze`
+# sits *below* `scan`).  Re-exported here so every existing
+# `from autoresearch.scan.run_profile import RunProfile` keeps working unchanged.
+from autoresearch.contracts.profiles import ArtifactRule, RunProfile, _BASE_RULES  # noqa: F401
 
 # Ordered pipeline stages.  Order is load-bearing: everything after the last
 # reached stage of a failed run is NOT_REACHED, not missing.
@@ -71,79 +77,9 @@ TERMINAL_STATUSES: tuple[str, ...] = (
 REPLAYABLE_STAGES: tuple[str, ...] = vocab.REPLAY_UNITS
 
 
-@dataclass(frozen=True)
-class ArtifactRule:
-    """One declarative evidence rule.
-
-    ``selector`` is capsule-relative and is also the rule's stable lookup key.
-    ``source`` says who answers it: the capsule filesystem, the agent index, the
-    read lineage, or the replay probe.  ``required_when`` names the condition
-    under which the artifact is owed at all.
-    """
-
-    key: str
-    selector: str
-    source: str
-    required_when: str
-
-
-@dataclass(frozen=True)
-class RunProfile:
-    kind: str
-    expected_stages: tuple[str, ...]
-    agent_roles: tuple[str, ...]
-    artifact_rules: tuple[ArtifactRule, ...]
-    replayable_stages: tuple[str, ...]
-    mode: str = "FULL"
-    business_status: str = "SUCCEEDED"
-    last_stage: str | None = None
-    conditional_roles: frozenset[str] = field(default_factory=frozenset)
-
-    def stage_reached(self, stage: str) -> bool:
-        """True when *stage* is at or before the last stage this run reached."""
-        if stage not in self.expected_stages:
-            return False
-        if self.business_status in {"SUCCEEDED", "ACTIVE"} or self.last_stage is None:
-            return True
-        if self.last_stage not in self.expected_stages:
-            return True
-        return self.expected_stages.index(stage) <= self.expected_stages.index(
-            self.last_stage
-        )
-
-    def role_expected(self, role: str) -> bool:
-        if vocab.skips_l4(self.mode) and role in SENTINEL_SKIPPED_ROLES:
-            return False
-        stage = ROLE_STAGES.get(role)
-        if stage is not None and not self.stage_reached(stage):
-            return False
-        return role in self.agent_roles
-
-
-# Rules that do not depend on stage or role expansion.  ``required_when``:
-#   always      —— every run, whatever its terminal state
-#   llm_run     —— any run that dispatched at least one business agent
-#   failure     —— FAILED / INTERRUPTED runs only
-#   replayable  —— runs with at least one deterministically replayable stage
-_BASE_RULES: tuple[ArtifactRule, ...] = (
-    ArtifactRule("run_contract", "identity/run_contract.json", "capsule", "always"),
-    ArtifactRule("environment", "identity/environment.json", "capsule", "always"),
-    ArtifactRule("dependencies", "identity/dependencies.txt", "capsule", "always"),
-    ArtifactRule(
-        "source_manifest", "identity/source_manifest.json", "capsule", "always"
-    ),
-    ArtifactRule("prompts", "identity/prompts/*", "capsule", "llm_run"),
-    ArtifactRule("events", "events/events.jsonl", "capsule", "always"),
-    ArtifactRule("agent_index", "agents/index.json", "capsule", "llm_run"),
-    ArtifactRule("reads", "lineage/reads.jsonl", "capsule", "always"),
-    ArtifactRule("source_coverage", "lineage/coverage.json", "capsule", "always"),
-    ArtifactRule("usage_ledger", "usage/_token_usage.json", "capsule", "llm_run"),
-    ArtifactRule("products", "products/staging/*", "capsule", "always"),
-    ArtifactRule("capsule_manifest", "capsule.json", "capsule", "always"),
-    ArtifactRule("failure", "failure.json", "capsule", "failure"),
-    ArtifactRule("replay", "verification/replay.json", "capsule", "replayable"),
-)
-
+# `ArtifactRule`, `RunProfile` (and their `stage_reached` / `role_expected` methods)
+# and `_BASE_RULES` used to be declared right here — see `contracts/profiles.py` for
+# the (unchanged) definitions and the re-export import above.
 
 #: Capsule-relative selector segments that name a stage / a role rather than a file.
 #: `_BASE_RULES` themselves are evidence *selectors* (out of scope for the contracts
