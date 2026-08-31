@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from autoresearch.trace.atomic import canonical_json
 
 if TYPE_CHECKING:
-    from autoresearch.scan.run_contract import RunContract
+    from autoresearch.common.run_identity import RunContract
 
 
 class BusinessStatus(str, Enum):

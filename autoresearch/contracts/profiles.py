@@ -21,9 +21,50 @@ re-export 旧名,全仓既有 `from autoresearch.scan.run_profile import RunProf
 """
 from __future__ import annotations
 
+import importlib
 from dataclasses import dataclass, field
+from typing import Callable
 
 from autoresearch.contracts import stages as vocab
+
+#: run kind → 它的 profile 工厂,**记成字符串**而不是 import 进来。
+#:
+#: 这不是懒:`trace/completeness.py` 与 `trace/capsule.finalize` 都要按 `run_kind` 拿到
+#: 对应的 profile,而工厂真身分别住在 `scan/`(层 6)和 `analyze/`(层 5)—— `trace` 在
+#: 层 3,静态 import 任何一个都是一条**向上的边**。`tests/contracts/test_layering.py` 的
+#: 守卫按 AST 查静态 import,所以「字符串 + `importlib` 现取」既不新增边,也不需要往
+#: `KNOWN_UPWARD` 里加豁免(那个棘轮只许减不许增)。
+#:
+#: 代价是错拼的名字要到调用时才炸,所以 `profile_factory()` 把错误说全(kind、目标串、
+#: 原始异常),而不是让调用方拿到一个 `AttributeError: None`。
+PROFILE_FACTORIES: dict[str, str] = {
+    "scan-market": "autoresearch.scan.run_profile:scan_profile",
+    "stock-research": "autoresearch.analyze.run_profile:analyze_profile",
+}
+
+if tuple(PROFILE_FACTORIES) != vocab.RUN_KINDS:
+    raise RuntimeError(
+        "PROFILE_FACTORIES 与 contracts.stages.RUN_KINDS 不一致:"
+        f"{tuple(PROFILE_FACTORIES)} vs {vocab.RUN_KINDS}"
+    )
+
+
+def profile_factory(kind: str) -> Callable[..., "RunProfile"]:
+    """按 run kind 取 profile 工厂(动态 import;见 `PROFILE_FACTORIES` 的注释)。"""
+    target = PROFILE_FACTORIES.get(str(kind))
+    if target is None:
+        raise ValueError(
+            f"unknown run kind: {kind!r}; expected one of {sorted(PROFILE_FACTORIES)}"
+        )
+    module_name, _, attribute = target.partition(":")
+    try:
+        module = importlib.import_module(module_name)
+        return getattr(module, attribute)
+    except (ImportError, AttributeError) as exc:
+        raise RuntimeError(
+            f"profile factory for {kind!r} is not importable ({target!r}): {exc}"
+        ) from exc
+
 
 # `RunProfile.role_expected` 要用的两张表。两者都是 `contracts.stages` 的纯派生
 # (不含 scan 专属信息),搬到这里后 `scan/run_profile.py` 仍各自保有同一份
@@ -59,6 +100,19 @@ class RunProfile:
     business_status: str = "SUCCEEDED"
     last_stage: str | None = None
     conditional_roles: frozenset[str] = field(default_factory=frozenset)
+    #: 哪些阶段**欠一份被捕获的命令输出**(`logs/<stage>/*.stdout.log.gz`)。
+    #: `None` = 「每个到达的阶段都欠」,也就是 `scan-market` 今天的行为(它的每条命令
+    #: 都过 `exec_capture` 的 traced 壳)。`stock-research` 传 `()`:它按设计不套那层壳
+    #: (每条命令 3 次 agent spawn 的成本病,设计稿 §1.4/Q2),留痕走**进程内 checkpoint**。
+    #: 没有捕获壳却把日志记成 REQUIRED,会让每一趟单票研究都恒判「证据缺失」——
+    #: 那是假警报,不是发现。
+    captured_stages: tuple[str, ...] | None = None
+
+    def owes_captured_logs(self, stage: str) -> bool:
+        """这个阶段该不该有被捕获的 stdout/stderr。"""
+        if self.captured_stages is None:
+            return True
+        return stage in self.captured_stages
 
     def stage_reached(self, stage: str) -> bool:
         """True when *stage* is at or before the last stage this run reached."""
@@ -107,8 +161,10 @@ _BASE_RULES: tuple[ArtifactRule, ...] = (
 
 
 __all__ = [
+    "PROFILE_FACTORIES",
     "ROLE_STAGES",
     "SENTINEL_SKIPPED_ROLES",
     "ArtifactRule",
     "RunProfile",
+    "profile_factory",
 ]

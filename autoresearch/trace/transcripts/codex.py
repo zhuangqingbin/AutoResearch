@@ -105,7 +105,8 @@ class CodexTranscriptAdapter:
     def bindings_path(self, run_id: str) -> Path:
         if self._bindings_path is not None:
             return self._bindings_path
-        return ws.scan_run_root(run_id) / "capsule" / "agents" / "bindings.jsonl"
+        root = ws.find_run_root(run_id) or ws.scan_run_root(run_id)
+        return root / "capsule" / "agents" / "bindings.jsonl"
 
     def locate(self, run_identity: RunIdentity) -> list[TranscriptRef]:
         """Return one ref per explicit binding; bindings are the only authority."""

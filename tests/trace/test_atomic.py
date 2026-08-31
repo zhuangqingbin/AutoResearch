@@ -9,7 +9,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from autoresearch.trace import atomic
+# 真身 2026-08-31(D6.2)下沉到 `common/atomic.py`(`trace/atomic.py` 只 re-export)。
+# 这里必须打在**定义**模块上:`monkeypatch.setattr(shim, "_write_all", …)` 改不了
+# 真身模块自己的全局名。
+from autoresearch.common import atomic
 from autoresearch.trace.atomic import (
     atomic_write_json,
     canonical_json,

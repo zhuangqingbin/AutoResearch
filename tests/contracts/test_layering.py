@@ -46,9 +46,12 @@ _LEVEL: dict[str, int] = {p: i for i, layer in enumerate(LAYERS) for p in layer}
 #: **存量**的向上边(2026-08-29 实测)。只许减不许增。
 #: 每一条都记着它为什么还在,以及归哪件收敛。
 KNOWN_UPWARD: frozenset[tuple[str, str]] = frozenset({
-    # trace → scan(4 文件):法证层依赖业务登记表(`capsule.py` 等 import
-    # `scan.artifacts/run_contract/run_bootstrap/run_profile/user_config`),
-    # 而 scan → trace 又有 15 行 —— **成环**。A7 的收敛路径 = 把这些声明搬进 contracts。
+    # trace → scan:法证层依赖业务登记表,而 scan → trace 又有 15 行 —— **成环**。
+    # A7 的收敛路径 = 把这些声明往下搬。2026-08-31(D6.2)搬掉了两处:`RunContract`
+    # 进 `common/run_identity.py`、profile 工厂改按 kind 动态取,于是这条边从
+    # **8 行 / 4 文件**降到 **3 行 / 2 文件**(`capsule.py` 的
+    # `scan.artifacts` 与惰性 `scan.run_bootstrap`、`usage_reconcile.py` 的
+    # `scan.user_config`)。整条边还在,所以这一项还不能删。
     ("trace", "scan"),
     # trace → news(1):`evidence_index.py` 读 claim_ledger。
     ("trace", "news"),

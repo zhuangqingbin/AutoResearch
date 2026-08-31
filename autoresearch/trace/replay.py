@@ -198,14 +198,23 @@ STAGE_ALIASES: dict[str, tuple[str, tuple[str, ...]]] = {
 }
 
 
-def default_stage_specs(analysis_date: str) -> tuple[StageSpec, ...]:
+def default_stage_specs(
+    analysis_date: str, *, kind: str = "scan-market"
+) -> tuple[StageSpec, ...]:
     """One spec per **execution unit** declared in the contracts vocabulary.
 
     The unit names and their order come from `vocab.REPLAY_EXEC_UNITS`; only the argv and
     the product list live here.  A unit in the vocabulary with no plan (or a plan for a
     unit nobody replays) raises instead of silently skipping a stage — the l2 dead-argv bug
     was invisible for exactly that reason.
+
+    非 `scan-market` 的 kind 返回**空表**。`stock-research` 的 `replayable_stages` 是
+    `()`(`analyze/run_profile` 里已诚实声明:它的每一步要么带网络取数、要么是 LLM),
+    给它套 scan 的 l0/l1/l2/l5 argv 会去跑一趟真的全市场扫描 —— 那不是重放,
+    那是在别人的现场里另起一趟。
     """
+    if kind != "scan-market":
+        return ()
     plans: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
         "l0": (
             ("autoresearch.scan.frame", analysis_date, "--json-out", "market_pack.json"),
@@ -277,13 +286,18 @@ def replay(
     runner: Callable[[StageSpec, Path, dict], int] = _subprocess_runner,
     specs: Sequence[StageSpec] | None = None,
     keep_scratch: bool = True,
+    kind: str = "scan-market",
 ) -> dict:
     """Replay the named deterministic stages inside a throwaway scratch tree."""
     root = Path(capsule).resolve()
     gaps = missing_blobs(root)
     resolved_specs = {
         spec.stage: spec
-        for spec in (specs if specs is not None else default_stage_specs(analysis_date))
+        for spec in (
+            specs
+            if specs is not None
+            else default_stage_specs(analysis_date, kind=kind)
+        )
     }
     scratch = Path(tempfile.mkdtemp(prefix=f"autoresearch-replay-{run_id}-"))
     frozen_products = root / "products/staging"

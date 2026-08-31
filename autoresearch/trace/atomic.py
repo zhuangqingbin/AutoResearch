@@ -1,104 +1,28 @@
-"""Stable serialization, hashing, and atomic JSON persistence primitives."""
+"""Stable serialization, hashing, and atomic JSON persistence primitives.
+
+**搬家说明(2026-08-31 D6.2)**:真身已下沉到 `autoresearch/common/atomic.py`,
+本文件只做 re-export。原因是 `common/run_identity.py`(RunContract 的新家)需要
+`canonical_json`/`sha256_bytes`/`atomic_write_json`,而 `common` 排在 `trace`
+**之下** —— `common` import `trace` 会造一条新的向上边,当场被
+`tests/contracts/test_layering.py::test_no_new_upward_edges` 判红。
+
+这几个函数本身零 autoresearch 依赖(只用 stdlib),不属于 `trace` 的私产。
+全仓既有 `from autoresearch.trace.atomic import …`(21 处)一律不断。
+"""
 from __future__ import annotations
 
-import hashlib
-import json
-import os
-import tempfile
-from pathlib import Path
+from autoresearch.common.atomic import (
+    atomic_write_bytes,
+    atomic_write_json,
+    canonical_json,
+    sha256_bytes,
+    sha256_file,
+)
 
-
-def canonical_json(value: object) -> str:
-    """Serialize a JSON-compatible value into its stable compact form."""
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
-def sha256_bytes(value: bytes) -> str:
-    """Return the SHA-256 hexadecimal digest of exact bytes."""
-    return hashlib.sha256(value).hexdigest()
-
-
-def sha256_file(path: Path | str) -> str:
-    """Hash a file without loading the complete evidence artifact into memory."""
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def _write_all(fd: int, payload: bytes) -> None:
-    view = memoryview(payload)
-    while view:
-        written = os.write(fd, view)
-        if written == 0:
-            raise OSError("short write while persisting atomic JSON")
-        view = view[written:]
-
-
-def _fsync_directory(path: Path) -> None:
-    if os.name == "nt":
-        return
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    fd = os.open(path, flags)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
-def atomic_write_bytes(path: Path | str, payload: bytes) -> Path:
-    """Durably replace *path* with exact bytes via a same-directory temp file."""
-    if not isinstance(payload, (bytes, bytearray)):
-        raise TypeError("payload must be bytes")
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp_name = tempfile.mkstemp(
-        prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
-    )
-    temp = Path(temp_name)
-    try:
-        try:
-            _write_all(fd, bytes(payload))
-            os.fsync(fd)
-        finally:
-            open_fd = fd
-            fd = -1
-            os.close(open_fd)
-        os.replace(temp, target)
-        _fsync_directory(target.parent)
-    finally:
-        try:
-            if fd >= 0:
-                os.close(fd)
-        finally:
-            temp.unlink(missing_ok=True)
-    return target
-
-
-def atomic_write_json(path: Path | str, value: object) -> Path:
-    """Durably replace *path* using an exclusive same-directory temp file."""
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    payload = (canonical_json(value) + "\n").encode("utf-8")
-    fd, temp_name = tempfile.mkstemp(
-        prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
-    )
-    temp = Path(temp_name)
-    try:
-        try:
-            _write_all(fd, payload)
-            os.fsync(fd)
-        finally:
-            open_fd = fd
-            fd = -1
-            os.close(open_fd)
-        os.replace(temp, target)
-        _fsync_directory(target.parent)
-    finally:
-        try:
-            if fd >= 0:
-                os.close(fd)
-        finally:
-            temp.unlink(missing_ok=True)
-    return target
+__all__ = [
+    "atomic_write_bytes",
+    "atomic_write_json",
+    "canonical_json",
+    "sha256_bytes",
+    "sha256_file",
+]

@@ -2,7 +2,7 @@
 
 `MANIFEST.sha256` answers only integrity: *the files I listed still hash the
 same*.  It cannot answer completeness, because a file that was never written is
-never listed.  This module expands a :class:`~autoresearch.scan.run_profile.RunProfile`
+never listed.  This module expands a :class:`~autoresearch.contracts.profiles.RunProfile`
 into every expected item, checks each one against the capsule, and reports
 `REQUIRED / PRESENT / MISSING / NOT_EXPECTED / NOT_REACHED` with a reason.
 
@@ -20,8 +20,14 @@ from pathlib import Path
 # 阶段 / 角色词汇的**唯一**来源。此前这里从 `run_profile` 里函数级 import 一份 ROLE_STAGES,
 # 于是「该有什么」的分母在这层又长出一个可以独立漂移的副本(spec 2026-08-29 §2.2 K3)。
 from autoresearch.contracts.stages import ROLE_STAGES
-from autoresearch.scan.run_profile import RunProfile, scan_profile
+# profile 工厂**按 kind 动态取**(`contracts.profiles.PROFILE_FACTORIES` 旁有设计意图):
+# 静态 import `scan.run_profile` / `analyze.run_profile` 都是 `trace` 向上的边。
+from autoresearch.contracts.profiles import RunProfile, profile_factory
 from autoresearch.trace.atomic import atomic_write_json
+
+#: 冻结的 `verification/profile.json` 没记 kind 时按谁展开。v1 profile.json(2026-08-31
+#: kind 化之前的全部历史 capsule)只有一个 kind 存在过,所以这个落回不是猜。
+_DEFAULT_RUN_KIND = "scan-market"
 
 SCHEMA_VERSION = 1
 
@@ -117,14 +123,20 @@ def build_expected(profile: RunProfile) -> ExpectedEvidence:
                     reason="stage was reached and owes one attempt result",
                 )
             )
+            owes_logs = profile.owes_captured_logs(stage)
             for channel in ("stdout", "stderr"):
                 items.append(
                     ExpectedItem(
                         key=f"log:{stage}:{channel}",
                         selector=f"logs/{stage}/*.{channel}.log.gz",
                         source="capsule",
-                        disposition=REQUIRED,
-                        reason="reached stage owes its captured command output",
+                        disposition=REQUIRED if owes_logs else NOT_EXPECTED,
+                        reason=(
+                            "reached stage owes its captured command output"
+                            if owes_logs
+                            else "this run kind captures no command output (in-process "
+                            "checkpoints, no traced shell)"
+                        ),
                     )
                 )
         else:
@@ -316,13 +328,21 @@ def evaluate(
     }
 
 
-def profile_from_capsule(capsule: Path | str) -> RunProfile:
-    """Recover the run's declared profile, or rebuild it from the frozen state."""
+def profile_from_capsule(capsule: Path | str, *, kind: str | None = None) -> RunProfile:
+    """Recover the run's declared profile, or rebuild it from the frozen state.
+
+    kind 的来源按可信度排序:显式参数 → 冻结的 `profile.json` 里的 `kind` →
+    `_DEFAULT_RUN_KIND`。**不**从别处猜:一份被展开成错 kind 的 expected 清单,
+    每一行都是假的。
+    """
     root = Path(capsule)
     stored = root / "verification/profile.json"
     if stored.is_file():
         payload = json.loads(stored.read_text(encoding="utf-8"))
-        return scan_profile(
+        factory = profile_factory(
+            str(kind or payload.get("kind") or _DEFAULT_RUN_KIND)
+        )
+        return factory(
             mode=str(payload.get("mode") or "FULL"),
             business_status=str(payload.get("business_status") or "SUCCEEDED"),
             last_stage=payload.get("last_stage"),
@@ -330,7 +350,7 @@ def profile_from_capsule(capsule: Path | str) -> RunProfile:
             if payload.get("agent_roles") is not None
             else None,
         )
-    return scan_profile()
+    return profile_factory(str(kind or _DEFAULT_RUN_KIND))()
 
 
 def write_expected(

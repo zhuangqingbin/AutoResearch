@@ -246,7 +246,7 @@ def collect_run(run_id: str, *, engine: str | None = None) -> list[dict]:
     """
     resolved_engine = str(engine or ws.ENGINE)
     # 未知 run 必须炸,不能安静地变成「0 份 transcript」= 免费。
-    if not ws.scan_run_root(ws.validate_run_id(run_id)).is_dir():
+    if ws.find_run_root(run_id) is None:
         raise FileNotFoundError(f"unknown run_id: {run_id}")
     adapter = adapter_for(resolved_engine)
     identity = RunIdentity(run_id=run_id, engine=resolved_engine)

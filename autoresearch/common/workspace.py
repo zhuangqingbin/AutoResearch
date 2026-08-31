@@ -30,6 +30,9 @@ import re
 from datetime import date as calendar_date
 from pathlib import Path
 
+# 唯一的 kind 词汇表在契约层(最底层,workspace 在它之上 —— 这是**向下**的边)。
+from autoresearch.contracts.stages import RUN_KINDS as _RUN_KINDS
+
 ENGINES = ("claude", "codex")
 _RUN_ID_RE = re.compile(r"^[0-9]{8}T[0-9]{12}Z$")
 _SCAN_DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
@@ -95,16 +98,97 @@ def validate_run_id(run_id) -> str:
     return value
 
 
-def scan_run_root(run_id: str | None = None) -> Path:
+#: run kind → 引擎根下的 run 池目录名。**键必须等于 `contracts.stages.RUN_KINDS`**
+#: (import 时校验,见下)—— 「该有什么」的分母有四个版本正是本仓踩过的病,路径这层
+#: 不再开第二份 kind 名单。
+RUN_SPOOLS: dict[str, str] = {
+    "scan-market": "scan_runs",
+    "stock-research": "analyze_runs",
+}
+
+#: run kind → 发布产物根下的技能目录名(`reports_<engine>/<这里>/…`)。
+#: scan 的账本/失败区/归档/修补区都挂在 `reports_<engine>/scan/` 下,
+#: stock-research 同构地挂在 `reports_<engine>/analyze/` 下。
+RUN_REPORT_DIRS: dict[str, str] = {
+    "scan-market": "scan",
+    "stock-research": "analyze",
+}
+
+if tuple(RUN_SPOOLS) != _RUN_KINDS or tuple(RUN_REPORT_DIRS) != _RUN_KINDS:
+    raise RuntimeError(
+        "workspace 的 run kind 表与 contracts.stages.RUN_KINDS 不一致:"
+        f"{tuple(RUN_SPOOLS)} / {tuple(RUN_REPORT_DIRS)} vs {_RUN_KINDS}"
+    )
+
+
+def validate_run_kind(kind) -> str:
+    value = str(kind)
+    if value not in RUN_SPOOLS:
+        raise ValueError(f"未知 run kind={kind!r}(可选 {'/'.join(RUN_SPOOLS)})")
+    return value
+
+
+def run_root(kind: str, run_id: str | None = None) -> Path:
+    """某个 kind 的一趟 run 的工作区根(`context_<engine>/<spool>/<run_id>/`)。
+
+    kind 化之前这里只有 `scan_run_root`,于是「run 有工作区」这件 kind 无关的事被写死
+    成了 scan 专属(capsule 的七处 `scan` 字面量之一)。`scan_run_root` 保留为本函数
+    在 `scan-market` 上的别名,签名一字未改,全仓既有调用点不断。
+    """
+    resolved_kind = validate_run_kind(kind)
     value = active_run_id() if run_id is None else str(run_id)
     if value is None:
         raise ValueError("缺 AUTORESEARCH_RUN_ID，无法解析 run-scoped workspace")
-    return context_root() / "scan_runs" / validate_run_id(value)
+    return context_root() / RUN_SPOOLS[resolved_kind] / validate_run_id(value)
+
+
+def run_reports_root(kind: str) -> Path:
+    """某个 kind 的发布产物根 —— `reports_<engine>/scan` 或 `reports_<engine>/analyze`。"""
+    return reports_root() / RUN_REPORT_DIRS[validate_run_kind(kind)]
+
+
+def find_run_root(run_id) -> Path | None:
+    """真实存在的那个 spool 里的 run 目录;哪个 kind 都找不到 → None。
+
+    run_id 自身不带 kind(它只是时间戳),所以「这趟是谁的」只能问文件系统。
+    """
+    value = validate_run_id(run_id)
+    for kind in RUN_SPOOLS:
+        candidate = context_root() / RUN_SPOOLS[kind] / value
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def active_run_kind(environ=None) -> str | None:
+    """环境里那趟 run 的 kind;没有 run → None。
+
+    **落回 `scan-market`** 是有意的:`AUTORESEARCH_RUN_ID` 在场而 spool 目录还没建
+    (begin 之前、或测试夹具只设 env 不建目录)时,历史行为就是「run-scoped scan 路径」,
+    这里必须逐字保持,否则 scan 侧一大票夹具会在解析路径时静默改道。
+    """
+    run_id = active_run_id(environ)
+    if run_id is None:
+        return None
+    for kind in RUN_SPOOLS:
+        if (context_root() / RUN_SPOOLS[kind] / run_id).is_dir():
+            return kind
+    return "scan-market"
+
+
+def scan_run_root(run_id: str | None = None) -> Path:
+    """`run_root("scan-market", …)` 的别名(签名不变)。"""
+    return run_root("scan-market", run_id)
 
 
 def scan_root() -> Path:
     run_id = active_run_id()
-    return scan_run_root(run_id) / "staging" if run_id else context_root() / "scan"
+    if run_id and active_run_kind() == "scan-market":
+        return scan_run_root(run_id) / "staging"
+    # 非 scan 的 run(如 stock-research)在场时,scan 的 staging 根**照旧**是历史根:
+    # 一趟单票研究的 run_id 不该把 `L1_scored_full.csv` 的读点改道到一个不存在的
+    # `scan_runs/<那个 id>/` 里(harvest 的 L1 复用会因此静默落空)。
+    return context_root() / "scan"
 
 
 def validate_scan_date(date) -> str:
@@ -124,7 +208,8 @@ def scan_dir(date) -> Path:
 
 def scan_input_dir(date, *, scan_dir=None) -> Path:
     value = validate_scan_date(date)
-    if not active_run_id():
+    # 同 `scan_root()`:只有 **scan** 的 run 才把外源输入收进 run 目录。
+    if active_run_kind() != "scan-market":
         return context_root()
     resolved_scan_dir = Path(scan_dir) if scan_dir is not None else scan_root() / value
     return resolved_scan_dir / "_external_inputs"

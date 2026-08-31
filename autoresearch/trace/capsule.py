@@ -20,8 +20,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from autoresearch.common import workspace as ws
+from autoresearch.common.run_identity import load_run_contract, write_run_contract
+from autoresearch.contracts.profiles import profile_factory
+from autoresearch.contracts.stages import RUN_KINDS
 from autoresearch.scan.artifacts import CRITICAL_ARTIFACTS, ArtifactSpec
-from autoresearch.scan.run_contract import load_run_contract, write_run_contract
 from autoresearch.trace import process_probe
 from autoresearch.trace.atomic import (
     atomic_write_bytes,
@@ -423,26 +425,41 @@ def begin_run(
     *,
     now: datetime | None = None,
     session_ref: str | None = None,
+    bootstrap=None,
 ) -> RunHandle:
-    """Allocate one collision-safe active run and persist its identity first."""
-    if kind != "scan-market":
+    """Allocate one collision-safe active run and persist its identity first.
+
+    ``bootstrap`` builds the run's :class:`RunContract` from its configuration and must
+    accept ``prepare_scan_run``'s keyword shape.  ``scan-market`` keeps its in-module
+    default (that edge is already on the layering allowlist); every other kind
+    **must supply one**, because `trace` importing `analyze` would be a brand-new
+    upward edge and the ratchet only moves one way.
+    """
+    if kind not in RUN_KINDS:
         raise ValueError(f"unsupported run kind: {kind!r}")
     resolved_date = ws.validate_scan_date(analysis_date)
     if engine not in ws.ENGINES or engine != ws.ENGINE:
         raise ValueError(
             f"engine mismatch: requested={engine!r}, current={ws.ENGINE!r}"
         )
+    if bootstrap is None:
+        if kind != "scan-market":
+            raise ValueError(
+                f"run kind {kind!r} must supply its own bootstrap; trace does not "
+                "import the skill packages it observes"
+            )
+        # All configuration/git/prompt probing is completed before the run directory is
+        # published.  Invalid configuration therefore cannot leave an anonymous orphan.
+        from autoresearch.scan.run_bootstrap import prepare_scan_run
+
+        bootstrap = prepare_scan_run
     stamp = _utc_now(now)
     run_id = ws.validate_run_id(stamp.strftime("%Y%m%dT%H%M%S%fZ"))
-    workspace = ws.scan_run_root(run_id)
+    workspace = ws.run_root(kind, run_id)
     staging = workspace / "staging" / resolved_date
     capsule = workspace / "capsule"
 
-    # All configuration/git/prompt probing is completed before the run directory is
-    # published.  Invalid configuration therefore cannot leave an anonymous orphan.
-    from autoresearch.scan.run_bootstrap import prepare_scan_run
-
-    contract = prepare_scan_run(
+    contract = bootstrap(
         resolved_date,
         config=config,
         run_id=run_id,
@@ -451,6 +468,10 @@ def begin_run(
         session_ref=session_ref,
         now=stamp,
     )
+    if contract.run_kind != kind:
+        raise ValueError(
+            f"bootstrap built a {contract.run_kind!r} contract for a {kind!r} run"
+        )
     _require_secret_free_contract(contract)
     handle = RunHandle(
         run_id=run_id,
@@ -531,10 +552,13 @@ def _require_workspace_path(
 def load_run(run_id: str) -> RunHandle:
     """Load a run strictly beneath the current engine's active spool root."""
     resolved_id = ws.validate_run_id(run_id)
-    parent = ws.context_root() / "scan_runs"
-    workspace = parent / resolved_id
-    if not workspace.is_dir():
+    # run_id 自身不带 kind,所以「这趟住在哪个池子」只能问文件系统(`find_run_root`
+    # 逐个 kind 探)。找到之后仍要与契约里的 `run_kind` 对账 —— 一份 scan 契约躺在
+    # `analyze_runs/` 里是身份坏了,不是路径巧合。
+    workspace = ws.find_run_root(resolved_id)
+    if workspace is None:
         raise FileNotFoundError(f"unknown run_id: {resolved_id}")
+    parent = workspace.parent
     try:
         workspace.resolve().relative_to(parent.resolve())
     except ValueError as exc:
@@ -582,6 +606,11 @@ def load_run(run_id: str) -> RunHandle:
         )
     if Path(contract.workspace_path).resolve() != workspace.resolve():
         raise RuntimeError("RunContract workspace_path does not match loaded workspace")
+    if ws.run_root(contract.run_kind, resolved_id).resolve() != workspace.resolve():
+        raise RuntimeError(
+            f"RunContract run_kind {contract.run_kind!r} does not match the spool "
+            f"holding this run: {parent}"
+        )
     state = _state_from_path(workspace / "state.json", run_id=resolved_id)
     if state.created_at != contract.created_at:
         raise RuntimeError(
@@ -913,18 +942,25 @@ def record_controlled_agent_boundary(
     }
 
 
-def _validate_report_dir(report_dir: Path | str | None) -> Path | None:
+def _validate_report_dir(
+    report_dir: Path | str | None, *, kind: str = "scan-market"
+) -> Path | None:
+    """发布目录必须真的在**这个 kind** 的发布根底下。
+
+    kind 化之前这里写死 `reports_<engine>/scan`,于是一趟 stock-research 想把
+    `reports_<engine>/analyze/<YYYYMMDD_HHMM>/` 交上来就会被判成「逃出发布根」。
+    """
     if report_dir is None:
         return None
     report = Path(report_dir)
-    allowed = ws.reports_root() / "scan"
+    allowed = ws.run_reports_root(kind)
     try:
         relative = report.absolute().relative_to(allowed.absolute())
     except ValueError as exc:
         raise ValueError(f"report_dir escapes current engine reports root: {report}") from exc
     current = allowed.absolute()
     if current.is_symlink():
-        raise ValueError(f"reports scan root is a symlink: {current}")
+        raise ValueError(f"reports root is a symlink: {current}")
     for part in relative.parts:
         current = current / part
         if current.is_symlink():
@@ -1980,16 +2016,23 @@ _MANIFEST_EXCLUSIONS = (
 )
 
 
-def ledger_path() -> Path:
-    return ws.reports_root() / "scan" / "_ledger" / LEDGER_NAME
+# 四个跨 run 的根都按 kind 分家:`reports_<engine>/scan/_ledger` 与
+# `reports_<engine>/analyze/_ledger` 是两本独立账本。合本会让 `_find_final_path`
+# 在一本账里找另一个技能的 run,而 `revision` 的连号校验(`read_valid_ledger`)
+# 也会被另一个技能的写入打断 —— 两个技能并发跑时那是必然,不是偶然。
+# 缺省 `scan-market` 保证既有调用点(`scan/ledger_views.py`、测试)一字不改。
 
 
-def failed_root() -> Path:
-    return ws.reports_root() / "scan" / "_failed"
+def ledger_path(kind: str = "scan-market") -> Path:
+    return ws.run_reports_root(kind) / "_ledger" / LEDGER_NAME
 
 
-def archive_root() -> Path:
-    return ws.reports_root() / "scan" / "_capsule_archive"
+def failed_root(kind: str = "scan-market") -> Path:
+    return ws.run_reports_root(kind) / "_failed"
+
+
+def archive_root(kind: str = "scan-market") -> Path:
+    return ws.run_reports_root(kind) / "_capsule_archive"
 
 
 def _iter_manifest_files(final_path: Path) -> list[Path]:
@@ -2057,13 +2100,15 @@ def _event_chain_tail(capsule: Path) -> str | None:
     return json.loads(lines[-1]).get("event_hash")
 
 
-def read_valid_ledger(path: Path | str | None = None) -> list[dict]:
+def read_valid_ledger(
+    path: Path | str | None = None, *, kind: str = "scan-market"
+) -> list[dict]:
     """Return the ledger prefix that is still a valid append-only chain.
 
     Validation stops at the first broken ``prev_hash`` or per-run revision gap:
     a corrupted tail must not be able to erase or rewrite the rows before it.
     """
-    target = Path(path) if path is not None else ledger_path()
+    target = Path(path) if path is not None else ledger_path(kind)
     if not target.is_file():
         return []
     rows: list[dict] = []
@@ -2091,9 +2136,9 @@ def read_valid_ledger(path: Path | str | None = None) -> list[dict]:
     return rows
 
 
-def append_ledger_revision(row: Mapping) -> dict:
+def append_ledger_revision(row: Mapping, *, kind: str = "scan-market") -> dict:
     """Append one revision under an exclusive lock; identical rows are a no-op."""
-    target = ledger_path()
+    target = ledger_path(kind)
 
     def guard(existing: list[dict]):
         for item in existing:
@@ -2118,7 +2163,7 @@ def append_ledger_revision(row: Mapping) -> dict:
             duplicate = guard(existing)
             if duplicate is not None:
                 return duplicate[0]
-            valid = read_valid_ledger(target)
+            valid = read_valid_ledger(target, kind=kind)
             previous = valid[-1]["row_hash"] if valid else _GENESIS_ROW_HASH
             revision = (
                 max(
@@ -2147,14 +2192,16 @@ def append_ledger_revision(row: Mapping) -> dict:
     return final_row
 
 
-def build_archive(final_path: Path | str, run_id: str) -> Path:
+def build_archive(
+    final_path: Path | str, run_id: str, *, kind: str = "scan-market"
+) -> Path:
     """Write one deterministic, self-contained ``.tar.zst`` outside the report tree."""
     import tarfile
 
     import zstandard
 
     root = Path(final_path)
-    destination = archive_root() / f"{run_id}.tar.zst"
+    destination = archive_root(kind) / f"{run_id}.tar.zst"
     destination.parent.mkdir(parents=True, exist_ok=True)
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w", format=tarfile.PAX_FORMAT) as archive:
@@ -2316,8 +2363,27 @@ def _resolve_run_mode(handle: RunHandle) -> str:
     The fallback is `"FULL"` because it is the **widest** expectation — failing to read
     the mode can only make the verdict stricter, never manufacture a false green.  It is
     still a degradation, and it is booked.
+
+    `stock-research` 没有 `run_mode.json`:它的档(FULL / LITE)在开跑那一刻就冻进了
+    契约的 `user_config`(`analyze/run_bootstrap.prepare_analyze_run` 写的 config echo),
+    再去 staging 里找一个永远不存在的文件,只会给每一趟单票研究记一条假降级。
     """
-    from autoresearch.scan.run_profile import MODES
+    if handle.contract.run_kind != "scan-market":
+        from autoresearch.contracts.stages import ANALYZE_MODES
+
+        mode = str((handle.contract.user_config or {}).get("mode") or "")
+        if mode in ANALYZE_MODES:
+            return mode
+        _degrade_evidence(
+            handle,
+            "capsule.run_mode",
+            f"契约 config echo 的 mode={mode!r} 不在 {ANALYZE_MODES} → 按 FULL 展开",
+        )
+        return "FULL"
+
+    # 模式词汇取自契约层(`scan.run_profile.MODES` 本来就是 `vocab.MODES` 的同一个对象);
+    # 从这里取少一条 trace → scan 的边,棘轮方向正确。
+    from autoresearch.contracts.stages import MODES
 
     path = handle.staging / "run_mode.json"
     if not path.is_file():
@@ -2406,7 +2472,7 @@ def _resolve_final_path(
         if report_dir is None:
             raise ValueError("a SUCCEEDED run must name its published report_dir")
         return report_dir
-    target = failed_root() / handle.run_id
+    target = failed_root(handle.contract.run_kind) / handle.run_id
     target.mkdir(parents=True, exist_ok=True)
     return target
 
@@ -2438,15 +2504,15 @@ def finalize(
     reopen and verify.  Archive failure degrades *evidence*, never the business
     report: the published run stays exactly where it is.
     """
-    from autoresearch.scan.run_profile import scan_profile
     from autoresearch.trace import completeness as completeness_mod, replay as replay_mod
 
     resolved_status = BusinessStatus(business_status)
     if resolved_status == BusinessStatus.ACTIVE:
         raise ValueError("finalize needs a terminal business status")
     handle = load_run(run_id)
+    run_kind = handle.contract.run_kind
     state = _state_from_path(handle.workspace / "state.json", run_id=handle.run_id)
-    resolved_report = _validate_report_dir(report_dir)
+    resolved_report = _validate_report_dir(report_dir, kind=run_kind)
     final_path = _resolve_final_path(handle, resolved_status, resolved_report)
 
     if state.business_status != BusinessStatus.ACTIVE:
@@ -2461,8 +2527,8 @@ def finalize(
                 final_path=final_path,
                 root_hash=existing.get("root_hash"),
                 archive=(
-                    archive_root() / f"{handle.run_id}.tar.zst"
-                    if (archive_root() / f"{handle.run_id}.tar.zst").is_file()
+                    archive_root(run_kind) / f"{handle.run_id}.tar.zst"
+                    if (archive_root(run_kind) / f"{handle.run_id}.tar.zst").is_file()
                     else None
                 ),
                 durability=str(existing.get("durability") or ""),
@@ -2487,7 +2553,9 @@ def finalize(
         )
 
     # 3. expected / completeness / replay
-    resolved_profile = profile or scan_profile(
+    # profile 工厂按 run kind 现取(`contracts.profiles.PROFILE_FACTORIES`)——
+    # 静态 import 任何一个技能包都是 `trace` 向上的边。
+    resolved_profile = profile or profile_factory(run_kind)(
         mode=_resolve_run_mode(handle),
         business_status=resolved_status.value,
         last_stage=_last_reliable_checkpoint(handle.capsule),
@@ -2499,6 +2567,7 @@ def finalize(
         analysis_date=handle.analysis_date,
         stages=tuple(replay_stages),
         keep_scratch=False,
+        kind=run_kind,
     )
     checkpoint_name = _last_reliable_checkpoint(handle.capsule)
     if resolved_status != BusinessStatus.SUCCEEDED:
@@ -2596,7 +2665,7 @@ def finalize(
             },
         )
         # 8. archive outside the report directory
-        archive_path = build_archive(final_path, handle.run_id)
+        archive_path = build_archive(final_path, handle.run_id, kind=run_kind)
         archive_hash = sha256_file(archive_path)
     except Exception as exc:  # noqa: BLE001 - the business report survives this
         archive_path = None
@@ -2684,12 +2753,13 @@ def finalize(
             "durability": durability,
             "failure_class": archive_reason,
             "archived_at": terminal.updated_at,
-        }
+        },
+        kind=run_kind,
     )
 
     # 10. freeze, then 11. reopen and verify
     _freeze_tree(final_path)
-    verify(handle.run_id, final_path=final_path)
+    verify(handle.run_id, final_path=final_path, kind=run_kind)
     return FinalizationResult(
         run_id=handle.run_id,
         business_status=resolved_status,
@@ -2714,17 +2784,46 @@ def _load_root(final_path: Path) -> dict | None:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _find_final_path(run_id: str) -> Path | None:
-    for row in reversed(read_valid_ledger()):
+def resolve_run_kind(run_id: str) -> str:
+    """这趟 run 是哪个 kind —— 先问 spool 目录,再问两本账本,最后落回 `scan-market`。
+
+    冻结之后 spool 目录仍在(`repair` 就是从那里取源),所以第一问通常够。
+    两个都问不出来时落回 `scan-market`:那是 kind 化之前**唯一**存在过的 kind,
+    也就是全部历史 run 的正确答案。
+    """
+    resolved = ws.validate_run_id(run_id)
+    for kind in RUN_KINDS:
+        if ws.run_root(kind, resolved).is_dir():
+            return kind
+    for kind in RUN_KINDS:
+        if any(row.get("run_id") == resolved for row in read_valid_ledger(kind=kind)):
+            return kind
+        if (failed_root(kind) / resolved).is_dir():
+            return kind
+    return "scan-market"
+
+
+def _find_final_path(run_id: str, *, kind: str = "scan-market") -> Path | None:
+    for row in reversed(read_valid_ledger(kind=kind)):
         if row.get("run_id") == run_id:
             return Path(str(row.get("final_path")))
-    candidate = failed_root() / run_id
+    candidate = failed_root(kind) / run_id
     return candidate if candidate.is_dir() else None
 
 
-def verify(run_id: str, *, final_path: Path | str | None = None) -> dict:
+def verify(
+    run_id: str,
+    *,
+    final_path: Path | str | None = None,
+    kind: str | None = None,
+) -> dict:
     """Answer integrity, completeness and replay **separately**, never as one ✓."""
-    root_path = Path(final_path) if final_path is not None else _find_final_path(run_id)
+    resolved_kind = kind or resolve_run_kind(run_id)
+    root_path = (
+        Path(final_path)
+        if final_path is not None
+        else _find_final_path(run_id, kind=resolved_kind)
+    )
     if root_path is None or not root_path.is_dir():
         return {
             "run_id": run_id,
@@ -2744,7 +2843,9 @@ def verify(run_id: str, *, final_path: Path | str | None = None) -> dict:
     )
     root_ok = bool(stored_root) and current_root == stored_root.get("root_hash")
     ledger_rows = [
-        row for row in read_valid_ledger() if row.get("run_id") == run_id
+        row
+        for row in read_valid_ledger(kind=resolved_kind)
+        if row.get("run_id") == run_id
     ]
     ledger_ok = bool(ledger_rows) and ledger_rows[-1].get(
         "root_hash"
@@ -2756,7 +2857,7 @@ def verify(run_id: str, *, final_path: Path | str | None = None) -> dict:
         else {}
     )
     chain = verify_event_chain(published / "events/events.jsonl")
-    archive = archive_root() / f"{run_id}.tar.zst"
+    archive = archive_root(resolved_kind) / f"{run_id}.tar.zst"
     return {
         "run_id": run_id,
         "final_path": str(root_path),
@@ -2815,7 +2916,9 @@ def refresh_heartbeat(
     take down the work it is only observing.
     """
     try:
-        workspace = ws.scan_run_root(ws.validate_run_id(run_id))
+        workspace = ws.find_run_root(run_id)
+        if workspace is None:
+            return None
         state_path = workspace / "state.json"
         if not state_path.is_file():
             return None
@@ -2866,12 +2969,23 @@ def recover_stale_runs(
     matches a live process.  Either one alone produces false positives — a
     paused run looks silent, and a recycled pid looks alive.
     """
-    root = engine_root if engine_root is not None else ws.context_root() / "scan_runs"
-    if not root.is_dir():
-        return []
+    # `engine_root` 显式给了就只扫那一个(测试与运维定点用);否则**每个 kind 的池子
+    # 都要扫** —— 一趟中断的单票研究和一趟中断的扫描一样会占着 ACTIVE 状态,漏扫等于
+    # 它永远不会被冻结。
+    roots = (
+        [Path(engine_root)]
+        if engine_root is not None
+        else [ws.context_root() / spool for spool in ws.RUN_SPOOLS.values()]
+    )
     stamp = _utc_now(now)
     results: list[RecoveryResult] = []
-    for workspace in sorted(root.iterdir()):
+    workspaces = [
+        item
+        for root in roots
+        if root.is_dir()
+        for item in sorted(root.iterdir())
+    ]
+    for workspace in workspaces:
         if not workspace.is_dir() or workspace.is_symlink():
             continue
         state_path = workspace / "state.json"
@@ -2944,8 +3058,8 @@ def recover_stale_runs_quietly(**kwargs) -> list[RecoveryResult]:
 # ------------------------------------------------------------------ repairs
 
 
-def repairs_root() -> Path:
-    return ws.reports_root() / "scan" / "_repairs"
+def repairs_root(kind: str = "scan-market") -> Path:
+    return ws.run_reports_root(kind) / "_repairs"
 
 
 @dataclass(frozen=True)
@@ -2974,7 +3088,8 @@ def repair(
     """
     if type(reason) is not str or not reason.strip():
         raise ValueError("a repair must state its reason")
-    final_path = _find_final_path(run_id)
+    run_kind = resolve_run_kind(run_id)
+    final_path = _find_final_path(run_id, kind=run_kind)
     if final_path is None or not final_path.is_dir():
         raise FileNotFoundError(f"no frozen capsule for run {run_id}")
     base_root = _load_root(final_path) or {}
@@ -2982,13 +3097,17 @@ def repair(
     if not base_root_hash:
         raise RuntimeError(f"run {run_id} has no anchored base root to repair against")
 
-    ledger_rows = [row for row in read_valid_ledger() if row.get("run_id") == run_id]
+    ledger_rows = [
+        row for row in read_valid_ledger(kind=run_kind) if row.get("run_id") == run_id
+    ]
     revision = (ledger_rows[-1]["revision"] if ledger_rows else 0) + 1
-    overlay = repairs_root() / run_id / f"revision-{revision}"
+    overlay = repairs_root(run_kind) / run_id / f"revision-{revision}"
     if overlay.exists():
         raise FileExistsError(f"overlay already exists: {overlay}")
 
-    origin = Path(source) if source is not None else ws.scan_run_root(run_id) / "capsule"
+    origin = (
+        Path(source) if source is not None else ws.run_root(run_kind, run_id) / "capsule"
+    )
     if not origin.is_dir():
         raise FileNotFoundError(f"no repair source for run {run_id}: {origin}")
     base_view = {
@@ -3117,7 +3236,10 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="autoresearch.trace.capsule")
     commands = parser.add_subparsers(dest="command", required=True)
     begin = commands.add_parser("begin")
-    begin.add_argument("kind")
+    # kind 从词汇表来 —— CLI 不再是第二份 kind 名单。注意 `begin` 走 CLI 只对
+    # `scan-market` 有意义(别的 kind 必须由调用方传 bootstrap;stock-research 的
+    # 入口是 `python -m autoresearch.analyze.runctl begin`)。
+    begin.add_argument("kind", choices=list(RUN_KINDS))
     begin.add_argument("analysis_date")
     begin.add_argument("--engine", required=True, choices=ws.ENGINES)
     begin.add_argument("--config-file")
@@ -3231,6 +3353,7 @@ def main(argv: list[str] | None = None) -> int:
                 capsule=handle.capsule,
                 analysis_date=handle.analysis_date,
                 stages=tuple(args.stage) or ("l0", "l1", "l2", "l5"),
+                kind=handle.contract.run_kind,
             )
         elif args.command == "finalize":
             outcome = finalize(

@@ -83,7 +83,11 @@ def test_json_mode_contains_library_stdout(monkeypatch, capsys, tmp_path):
 def test_json_mode_writes_contract_and_short_ref(monkeypatch, capsys, tmp_path):
     """frame 是运行身份最早边界：完整契约落盘，pack 只携带定长引用。"""
     _patch_deps(monkeypatch, tmp_path)
-    monkeypatch.setattr("autoresearch.scan.run_contract.resolve_git_sha", lambda root=".": "deadbeef")
+    # RunContract 真身 2026-08-31(D6.2)搬到 `common/run_identity.py`;
+    # 桩必须打在定义模块上,`scan.run_contract` 只是 re-export 的名字。
+    monkeypatch.setattr(
+        "autoresearch.common.run_identity.resolve_git_sha", lambda root=".": "deadbeef"
+    )
     rc = frame.main([DATE, "--json"])
     payload = json.loads(capsys.readouterr().out)
     contract_path = tmp_path / ws.scan_root() / DATE / "run_contract.json"
