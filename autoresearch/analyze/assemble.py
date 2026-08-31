@@ -32,6 +32,7 @@ from pathlib import Path
 
 from autoresearch.agents.utils.rating import parse_rating
 from autoresearch.common import workspace as ws
+from autoresearch.data import contracts as data_contracts
 
 # The PM decision — required, rendered FIRST as the executive summary. v4: the PM
 # prepends a 决策仪表盘 (one-row dashboard) + 维度评分卡 (scorecard) at its top.
@@ -119,12 +120,22 @@ def _safe_name(name: str) -> str:
 
 
 def _ashare_name_from_context(ticker: str, root: Path) -> str | None:
-    """兜底中文简称:从 harvest context(context/<dir>.md)新闻标题抠 `<中文名><6位代码>`;取不到回 None。"""
+    """兜底中文简称:从 harvest context(context/<dir>.md)新闻标题抠 `<中文名><6位代码>`;取不到回 None。
+
+    D1.6 修复:`root.name` 是 `<ticker>_<YYYYMMDD>`(紧凑日期,见 `main()` 的
+    `root.name.rpartition("_")`),但 `harvest.py` 落盘用 `<ticker>_<YYYY-MM-DD>`
+    (`trade_date = date.today().isoformat()` 的横杠格式)——两处日期格式此前没对齐,
+    兜底恒 None(实测:`context/analyze/300308.SZ_20260830` 目录 vs 真实文件
+    `context/300308.SZ_2026-08-30.md`)。这里把目录名后缀转横杠再拼文件名。
+    """
     m = re.match(r"\d{6}", ticker or "")
     if not m:
         return None
     code = m.group(0)
-    ctx = root.parent.parent / f"{root.name}.md"      # context/analyze/<dir>/ → context/<dir>.md
+    stem, _, raw_date = root.name.rpartition("_")
+    dash_date = (f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
+                 if re.fullmatch(r"\d{8}", raw_date) else raw_date)
+    ctx = root.parent.parent / f"{stem}_{dash_date}.md"  # context/analyze/<dir>/ → context/<dir>.md
     if not ctx.exists():
         return None
     try:
@@ -167,6 +178,20 @@ def main() -> int:
             print(f"  - {root / rel}")
         return 1
 
+    # D1.6/D8.3:硬校验(先于任何发布 I/O)——decision.md 存在不等于内容合契约。此前
+    # 只在最后调一次宽松 `parse_rating`(找不到就默默当 Hold),报告与 manifest 已经写完
+    # 才会被人发现"这张卡其实没结论"。改为提前读一次、strict 校验两条契约行,任一缺席
+    # 直接 return 1 并点名缺哪行,不写出任何文件。
+    decision_text = _read(root, DECISION_REL)
+    rating = parse_rating(decision_text, strict=True)
+    proposal_m = re.search(r"FINAL TRANSACTION PROPOSAL:\s*\*\*(BUY|HOLD|SELL)\*\*",
+                           decision_text)
+    if rating is None or not proposal_m:
+        print("[CONTRACT] decision.md 缺契约行:"
+              + ("`**Rating**: <五档>` " if rating is None else "")
+              + ("`FINAL TRANSACTION PROPOSAL: **…**`" if not proposal_m else ""))
+        return 1
+
     spine_present = [(t, p) for t, items in SPINE if (p := _present(root, items))]
     appx_present = [(t, p) for t, items in APPENDIX if (p := _present(root, items))]
     skipped = [rel for _, items in (SPINE + APPENDIX)
@@ -194,7 +219,7 @@ def main() -> int:
 
     # --- spine: exec summary first, then S2..S5 ---------------------------
     out.append("\n---\n\n" + SPINE_BANNER + "\n")
-    out.append(_anchored("##", DECISION_TITLE, _read(root, DECISION_REL)))
+    out.append(_anchored("##", DECISION_TITLE, decision_text))
     for title, present in spine_present:
         if len(present) == 1:
             out.append(_anchored("##", title, _read(root, present[0][1])))
@@ -218,14 +243,25 @@ def main() -> int:
 
     adate = (f"{datestr[:4]}-{datestr[4:6]}-{datestr[6:]}"            # 数据日(分析日)与目录名解耦
              if re.fullmatch(r"\d{8}", datestr or "") else (datestr or ""))
+    # D1.6:manifest v2 —— 原 6 键 + schema_version/engine/run_id/context_file/degradations/
+    # rating/proposal。run_id 由 T13(capsule 接线)填,这里先 None;context_file 探测
+    # harvest 落盘的原始 md 是否在场(相对路径,或 null);degradations 读本进程累积的
+    # B 级降级记账(assemble 自己不取数,同进程通常是 0)。
+    ctx_file = ws.context_root() / f"{ticker}_{adate}.md"
     (out_dir / "manifest.json").write_text(json.dumps({
         "ticker": ticker, "name": fname,
         "market": "A股" if _is_ashare(ticker) else "其他",
         "analysis_date": adate, "generated_at": now.isoformat(),
         "hhmm": now.strftime("%H%M"),
+        "schema_version": 2,
+        "engine": ws.ENGINE,
+        "run_id": None,
+        "context_file": str(ctx_file) if ctx_file.exists() else None,
+        "degradations": len(data_contracts.degradations()),
+        "rating": rating,
+        "proposal": proposal_m.group(1),
     }, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    rating = parse_rating(_read(root, DECISION_REL))
     print(f"[assembled] {out_path}")
     print(f"[manifest]  {out_dir / 'manifest.json'}  (analysis_date={adate})")
     print(f"[parse_rating → 5-tier signal] {rating}")
