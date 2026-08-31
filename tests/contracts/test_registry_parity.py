@@ -23,6 +23,13 @@ REPO = Path(__file__).resolve().parents[2]
 
 # ---------------------------------------------------------------- 登记表卫生
 
+#: 阶段域(D6.1):scan 词汇(`cs.STAGES`)∪ analyze full 档(`cs.ANALYZE_STAGES`)∪ analyze
+#: lite 档(`cs.ANALYZE_LITE_STAGES`)。三者缺一都会误判——`card` 只活在 lite 元组里
+#: (full 的 `ANALYZE_STAGES` 没有它,见 `contracts/stages.py` D6.1 节),`analyze_lite_card`
+#: 若只并 `ANALYZE_STAGES` 会被当成「阶段不在 STAGES」误杀。
+_KNOWN_STAGES = set(cs.STAGES) | set(cs.ANALYZE_STAGES) | set(cs.ANALYZE_LITE_STAGES)
+
+
 def test_registry_is_internally_consistent():
     names = [a.name for a in ca.ARTIFACTS]
     assert len(names) == len(set(names)), "登记名重复"
@@ -30,7 +37,7 @@ def test_registry_is_internally_consistent():
         assert a.root in ca.ROOTS, f"{a.name}: 未知 root {a.root}"
         assert a.kind in ca.KINDS, f"{a.name}: 未知 kind {a.kind}"
         assert a.presence in ca.PRESENCES, f"{a.name}: 未知 presence {a.presence}"
-        assert a.stage in cs.STAGES, f"{a.name}: 阶段 {a.stage} 不在 STAGES"
+        assert a.stage in _KNOWN_STAGES, f"{a.name}: 阶段 {a.stage} 不在已知阶段域"
         if a.presence != "always":
             assert a.required_when or a.presence == "conditional", (
                 f"{a.name}: gated 产物必须说明 required_when —— 「缺席是事实还是洞」"
@@ -184,7 +191,10 @@ def test_rank_of_rejects_unknown_rating():
 # ---------------------------------------------------------------- drift 守卫
 
 _LITERAL_RE = re.compile(r'"[A-Za-z0-9_./*-]+\.(?:csv|json|md|txt)"')
-_SCAN_ROOTS = ("autoresearch/scan", "autoresearch/trace", ".claude/workflows")
+#: D6.1:扩到 `autoresearch/analyze`(stock-research 的取数/写手/组装)—— 守卫此前只认
+#: scan-market 的三个根,analyze 侧的产物名字面量从未被扫过。
+_SCAN_ROOTS = ("autoresearch/scan", "autoresearch/trace", "autoresearch/analyze",
+               ".claude/workflows")
 
 
 def _repo_literals() -> set[str]:
@@ -231,6 +241,14 @@ def test_drift_guard_would_catch_a_new_name(monkeypatch):
         if lit not in registered and lit not in ca.NON_ARTIFACT_LITERALS
     ]
     assert unknown == ["verify.csv"]
+
+
+def test_analyze_artifacts_registered():
+    """D6.1 变异探针:把 `analyze_manifest` 从 `ARTIFACTS` 里注释掉必须让守卫变红
+    (人工验证过,见 task-2-report.md);这里锁住五个核心 analyze 名字不许静默消失。"""
+    names = {a.name for a in ca.ARTIFACTS}
+    assert {"analyze_slim", "analyze_report_md", "analyze_manifest",
+            "company_intel", "us_intel"} <= names
 
 
 # ---------------------------------------------------------------- JS 行内块

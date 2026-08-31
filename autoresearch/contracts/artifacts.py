@@ -33,6 +33,17 @@ design: `docs/specs/2026-08-29-full-coverage-research-system-brainstorm.md` §2.
 - ``ledger``  —— 跨 run 账本 `reports_<engine>/scan/_ledger/`(**不在 run 目录内**:
   run 目录发布后不再变是 MANIFEST/ROOT 的不变量)
 - ``capsule`` —— 法证现场 `reports_<engine>/scan/<run_id>/capsule/`
+- ``analyze_ctx`` —— stock-research 的取数落盘根,就是 `ws.context_root()` 本身
+  (`context_<engine>/`)。full 报告的整份 context 与 `harvest --slim` 产的决策卡半成品
+  **都直接落在这里**,不进分段目录——这正是 D6.1 的更正:草稿里写的 `../<ticker>_<date>.md`
+  假设了它相对 `analyze_staging`,但真实写法是相对 `analyze_ctx` 自身,无需 `..`。
+- ``analyze_staging`` —— 单票分析的分段草稿目录 `$CTX/analyze/<TICKER>_<YYYYMMDD>/`
+  (`1_analysts/`、`2_research/`、`3_risk/`、`4_portfolio/` 四个子目录 + 两份情报 md)
+- ``analyze_report`` —— stock-research 发布目录 `$RPT/analyze/<YYYYMMDD_HHMM>/`
+  (`autoresearch.analyze.assemble` 产出的最终报告 + `manifest.json`;目录名 = 组装时刻,
+  与 scan 的 `report` 根同一约定)
+- ``analyze_ledger`` —— stock-research 跨 run 账本(镜像 scan 的 `ledger` 根形状;
+  D6.1 落笔时尚无生产者,presence=gated 记的是「这一步还没接线」而不是「这一趟没触发」)
 
 `presence`:``always`` = 该阶段跑到就必须有;``gated`` = 有前置条件才有(缺席是事实
 不是洞);``conditional`` = 只有被触发才有(复核、修补)。
@@ -63,7 +74,10 @@ class Artifact:
     replayable: bool = False
 
 
-ROOTS: tuple[str, ...] = ("staging", "report", "ledger", "capsule")
+ROOTS: tuple[str, ...] = (
+    "staging", "report", "ledger", "capsule",
+    "analyze_ctx", "analyze_staging", "analyze_report", "analyze_ledger",
+)
 KINDS: tuple[str, ...] = ("csv", "json", "md", "txt", "dir")
 PRESENCES: tuple[str, ...] = ("always", "gated", "conditional")
 
@@ -196,6 +210,84 @@ ARTIFACTS: tuple[Artifact, ...] = (
              required_when="有 external_tools 留痕"),
     Artifact("capsule_evidence_index", "lineage/external_evidence_index.json", "capsule", "finalize",
              "evidence_index", "json", "gated", required_when="有外源证据"),
+    # ── stock-research(D6.1;root=analyze_ctx 指 `ws.context_root()` 本身,
+    #    analyze_staging 指 $CTX/analyze/<T>_<D>/,analyze_report 指 $RPT/analyze/<YYYYMMDD_HHMM>/)──
+    # analyze_full_context 与 analyze_slim/analyze_slim_deep 的更正(见 ROOTS 含义表):
+    # 草稿写的 `../<ticker>_<date>.md` 假设它们相对 analyze_staging,但真实落点是
+    # analyze_ctx 根自身,`..` 不合法,故单独给它们一个根。
+    Artifact("analyze_full_context", "*_????-??-??.md", "analyze_ctx", "harvest",
+             "analyze.harvest", "md", "gated", required_when="full"),
+    # analyze_slim / analyze_slim_deep 的 path 刻意写成不带通配符的裸后缀
+    # `_slim.md` / `_slim_deep.md`,而不是「与既有行风格一致」建议的 `*_slim.md`:
+    # `scan/retention.py:182` 早就把这两个后缀原样写成 `for suffix in ("_slim.md",
+    # "_slim_deep.md")`——drift 守卫是纯字符串集合比对,不做真 glob 匹配,`*_slim.md`
+    # 不会等于这条已有字面量。要把它们从白名单挪成正式登记,path 必须逐字等于
+    # retention.py 里已经在用的那个后缀常量。
+    Artifact("analyze_slim", "_slim.md", "analyze_ctx", "harvest",
+             "analyze.harvest", "md", "gated", required_when="lite_or_scan"),
+    Artifact("analyze_slim_deep", "_slim_deep.md", "analyze_ctx", "harvest",
+             "analyze.harvest", "md", "gated", required_when="lite_or_scan"),
+    Artifact("analyze_sections", "1_analysts/*.md", "analyze_staging", "write",
+             "stock-writer", "md", "always"),
+    Artifact("analyze_research", "2_research/*.md", "analyze_staging", "write",
+             "stock-writer", "md", "always"),
+    Artifact("analyze_risk", "3_risk/*.md", "analyze_staging", "write",
+             "stock-writer", "md", "always"),
+    Artifact("analyze_portfolio", "4_portfolio/*.md", "analyze_staging", "write",
+             "stock-writer", "md", "always"),
+    Artifact("company_intel", "_company_intel.md", "analyze_staging", "intel",
+             "company-intel", "md", "gated", required_when="full_ashare"),
+    Artifact("us_intel", "_us_intel.md", "analyze_staging", "intel",
+             "us-intel", "md", "gated", required_when="full_us"),
+    Artifact("analyze_report_md", "*.md", "analyze_report", "assemble",
+             "analyze.assemble", "md", "always"),
+    Artifact("analyze_manifest", "manifest.json", "analyze_report", "assemble",
+             "analyze.assemble", "json", "always"),
+    Artifact("analyze_lite_card", "*_lite.md", "analyze_report", "card",
+             "stock-writer", "md", "gated", required_when="lite"),
+    Artifact("analyze_ledger_cards", "cards.csv", "analyze_ledger", "publish",
+             "analyze.ledger", "csv", "gated", required_when="ledger"),
+    # ── analyze_staging 分段草稿的 18 个具名文件(D6.1 Step4:扩根后 drift 守卫在
+    #    autoresearch/analyze/assemble.py 的 SPINE/APPENDIX/DECISION_REL 里逮到的字面量,
+    #    每个都是「产物」——engine-playbook.md §输出文件映射 逐字同源)。
+    #    必需 11 个(assemble.py 的 opt=False,缺则 [MISSING] 硬挡):
+    Artifact("analyze_decision", "4_portfolio/decision.md", "analyze_staging", "write",
+             "stock-writer", "md", "always"),
+    Artifact("analyze_variant", "2_research/variant.md", "analyze_staging", "write",
+             "stock-writer", "md", "always"),
+    Artifact("analyze_faceoff", "2_research/faceoff.md", "analyze_staging", "write",
+             "stock-writer", "md", "always"),
+    Artifact("analyze_calendar", "4_portfolio/calendar.md", "analyze_staging", "write",
+             "stock-writer", "md", "always"),
+    Artifact("analyze_premortem", "3_risk/premortem.md", "analyze_staging", "write",
+             "stock-writer", "md", "always"),
+    Artifact("analyze_market", "1_analysts/market.md", "analyze_staging", "write",
+             "stock-writer", "md", "always"),
+    Artifact("analyze_news", "1_analysts/news.md", "analyze_staging", "write",
+             "stock-writer", "md", "always"),
+    Artifact("analyze_fundamentals", "1_analysts/fundamentals.md", "analyze_staging", "write",
+             "stock-writer", "md", "always"),
+    Artifact("analyze_bull", "2_research/bull.md", "analyze_staging", "write",
+             "stock-writer", "md", "always"),
+    Artifact("analyze_bear", "2_research/bear.md", "analyze_staging", "write",
+             "stock-writer", "md", "always"),
+    Artifact("analyze_manager", "2_research/manager.md", "analyze_staging", "write",
+             "stock-writer", "md", "always"),
+    #    可选 7 个(engine-playbook.md §输出文件映射「optional lens」名单,写手视深度取舍):
+    Artifact("analyze_debate", "3_risk/debate.md", "analyze_staging", "write",
+             "stock-writer", "md", "gated", required_when="optional_lens"),
+    Artifact("analyze_quality", "1_analysts/quality.md", "analyze_staging", "write",
+             "stock-writer", "md", "gated", required_when="optional_lens"),
+    Artifact("analyze_valuation", "1_analysts/valuation.md", "analyze_staging", "write",
+             "stock-writer", "md", "gated", required_when="optional_lens"),
+    Artifact("analyze_positioning", "1_analysts/positioning.md", "analyze_staging", "write",
+             "stock-writer", "md", "gated", required_when="optional_lens"),
+    Artifact("analyze_peer", "1_analysts/peer.md", "analyze_staging", "write",
+             "stock-writer", "md", "gated", required_when="optional_lens"),
+    Artifact("analyze_solvency", "1_analysts/solvency.md", "analyze_staging", "write",
+             "stock-writer", "md", "gated", required_when="optional_lens"),
+    Artifact("analyze_reality_check", "2_research/reality_check.md", "analyze_staging", "write",
+             "stock-writer", "md", "gated", required_when="optional_lens"),
 )
 
 _BY_NAME: dict[str, Artifact] = {a.name: a for a in ARTIFACTS}
@@ -259,7 +351,9 @@ NON_ARTIFACT_LITERALS: frozenset[str] = frozenset({
     "learning/l2_knife_audit.md", "learning/structural_audit.md",
     "learning/temperature.csv", "temperature.csv", "research/temperature_calib.md",
     "_macro_cn.json", "weights.json", "L1_weights.json", "_claim_ledger.csv",
-    "_dossier_snapshot.json", "_slim.md", "_slim_deep.md",
+    "_dossier_snapshot.json",
+    # 2026-08-31(D6.1):`_slim.md`/`_slim_deep.md` 挪出白名单,改为正式登记
+    # `analyze_slim`/`analyze_slim_deep`(见 ARTIFACTS 尾部 stock-research 节)。
     "_price_claim_status.json", "price_claim_subjects.json",
     "_relative_buy_decision.mismatch.json", "_resolved_agent_config.json",
     "_tripwire_conflicts.json", "l4_watch_cursor.json", "_health.json",
