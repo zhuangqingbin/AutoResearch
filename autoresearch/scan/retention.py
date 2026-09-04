@@ -308,7 +308,7 @@ def lake_manifest(date: str, *, lake_root: Path | None = None,
     daily = root / "daily"
     D = str(date).replace("-", "")
     days = sorted(p.stem for p in daily.glob("*.parquet")) if daily.is_dir() else []
-    window = set(d for d in days if d <= D)
+    window = {d for d in days if d <= D}
     window = set(sorted(window)[-window_days:]) | {D}
     files: dict[str, str] = {}
     for ep_dir in sorted(p for p in root.iterdir() if p.is_dir()):
@@ -692,6 +692,8 @@ def write_manifest(run_dir: Path | str) -> Path:
     target = base / "trace" / MANIFEST_NAME
     target.parent.mkdir(parents=True, exist_ok=True)
     body = "".join(f"{sha}  {rel}\n" for sha, rel in _manifest_rows(base))
+    if target.is_file() and target.read_text(encoding="utf-8") == body:
+        return target
     tmp = target.with_name(f"{target.name}.tmp")
     tmp.write_text(body, encoding="utf-8")
     tmp.replace(target)
@@ -724,7 +726,7 @@ def verify_manifest(run_dir: Path | str) -> dict:
     if not recorded:
         return {"ok": False, "reason": "no-manifest", "n": 0,
                 "missing": [], "changed": [], "extra": []}
-    actual = dict((rel, sha) for sha, rel in _manifest_rows(base))
+    actual = {rel: sha for sha, rel in _manifest_rows(base)}
     missing = sorted(set(recorded) - set(actual))
     extra = sorted(set(actual) - set(recorded))
     changed = sorted(rel for rel in set(recorded) & set(actual)

@@ -89,11 +89,14 @@ def _wall_seconds(timing: dict, key: str) -> int | None:
 
 def _atomic_json(path: Path, payload: dict) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
+    body = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    try:
+        if path.read_text(encoding="utf-8") == body:
+            return path
+    except FileNotFoundError:
+        pass
     temp = path.with_name(f"{path.name}.tmp")
-    temp.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    temp.write_text(body, encoding="utf-8")
     temp.replace(path)
     return path
 
@@ -106,8 +109,13 @@ def observe_run(
     budgets: dict | None = None,
     run_id: str | None = None,
     real_scan: bool = True,
+    persist: bool = True,
 ) -> dict:
-    """生成一次观测并双写 budget StageResult；永远 `truncated=False`。"""
+    """生成一次观测；默认双写 JSON/StageResult，永远 `truncated=False`。
+
+    编排层需在补齐成熟度、报告刷新告警后一次性发布时传 ``persist=False``，避免先写
+    半成品再覆盖最终态，破坏重复运行的字节幂等。
+    """
     scan = Path(scan_dir)
     policy = normalize_budgets(budgets)
     warnings: list[str] = []
@@ -196,23 +204,24 @@ def observe_run(
         "warnings": warnings,
         "advisories": advisories,
     }
-    _atomic_json(scan / "_budget_observation.json", observation)
-    safe_record_stage_result(
-        scan,
-        stage="budget",
-        status=status,
-        artifacts=["budget_observation"],
-        metrics={
-            "truncated": False,
-            "weighted_input_proxy": observation["weighted_input_proxy"],
-            "budget_band": budget_band,
-            "estimated_usd": observation["estimated_usd"],
-            "interactive_wall_s": total_wall,
-            "cache_hit_rate": observation["cache_hit_rate"],
-        },
-        warnings=warnings,
-        error=None,
-    )
+    if persist:
+        _atomic_json(scan / "_budget_observation.json", observation)
+        safe_record_stage_result(
+            scan,
+            stage="budget",
+            status=status,
+            artifacts=["budget_observation"],
+            metrics={
+                "truncated": False,
+                "weighted_input_proxy": observation["weighted_input_proxy"],
+                "budget_band": budget_band,
+                "estimated_usd": observation["estimated_usd"],
+                "interactive_wall_s": total_wall,
+                "cache_hit_rate": observation["cache_hit_rate"],
+            },
+            warnings=warnings,
+            error=None,
+        )
     return observation
 
 

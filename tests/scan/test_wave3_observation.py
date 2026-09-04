@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -236,6 +237,16 @@ def test_markerless_report_is_unchanged_and_degrades_observation(tmp_path):
     assert stage["status"] == "DEGRADED"
     assert stage["metrics"]["truncated"] is False
     assert stage["warnings"] == got["warnings"]
+    # 账本口径锁死:发布线写的是「最终态全量」,比 budget.observe_run 的自持久化多三项。
+    # 少一项都是静默丢账(不是「测出来是零」),多一项则是没登记就上桌——两个方向都要红。
+    assert set(stage["metrics"]) == {
+        "truncated", "measurement_status", "weighted_input_proxy", "budget_band",
+        "estimated_usd", "interactive_wall_s", "cache_hit_rate",
+        "maturity_status", "denominators",
+    }
+    assert stage["metrics"]["measurement_status"] == got["measurement_status"]
+    assert stage["metrics"]["maturity_status"] == got["maturity"]["status"]
+    assert stage["metrics"]["denominators"] == got["effectiveness"]["denominators"]
 
 
 def test_refresh_rejects_malformed_marker_pairs_without_mutating_text():
@@ -266,15 +277,22 @@ def test_refresh_rejects_malformed_marker_pairs_without_mutating_text():
 def test_successful_refresh_updates_hashes_and_is_byte_idempotent(tmp_path):
     scan = _scan(tmp_path)
     _usage(scan, weighted=6_000_000)
+    from autoresearch.scan.health import write_run_health
+
+    write_run_health(scan)
     report = tmp_path / "reports" / "scan" / "run-hashes"
     summary, appendix = _report_bundle(report)
 
     first = publish_run_observation(scan, report_dir=report, real_scan=False)
     watched = [summary, appendix, scan / "artifact_index.json",
+               scan / "_budget_observation.json",
+               scan / "_report_budget.json",
+               scan / "run_health.json",
                report / "trace" / "artifact_index.json",
                report / "trace" / "_budget_observation.json",
                report / "trace" / "MANIFEST.sha256"]
     before = {path: path.read_bytes() for path in watched}
+    mtimes = {path: path.stat().st_mtime_ns for path in watched}
     index = json.loads((scan / "artifact_index.json").read_text(encoding="utf-8"))
     rows = {row["name"]: row for row in index["artifacts"]}
     assert rows["summary"]["content_hash"] == hashlib.sha256(summary.read_bytes()).hexdigest()
@@ -286,8 +304,27 @@ def test_successful_refresh_updates_hashes_and_is_byte_idempotent(tmp_path):
     assert manifest["appendix.md"] == hashlib.sha256(appendix.read_bytes()).hexdigest()
     assert first["budget_band"] == "YELLOW"
 
+    time.sleep(1.05)  # 跨过 artifact index 的秒级 generated_at，证明不是时钟碰巧相同。
     second = publish_run_observation(scan, report_dir=report, real_scan=False)
 
     assert second == first
-    assert summary.read_bytes() == before[summary]
-    assert appendix.read_bytes() == before[appendix]
+    before_index = json.loads(before[scan / "artifact_index.json"])
+    after_index = json.loads((scan / "artifact_index.json").read_text(encoding="utf-8"))
+    assert after_index["artifacts"] == before_index["artifacts"]
+    after_manifest = read_manifest(report)
+    assert after_manifest == manifest
+    assert [path for path in watched if path.read_bytes() != before[path]] == []
+    assert [path for path in watched if path.stat().st_mtime_ns != mtimes[path]] == []
+
+    _usage(scan, cost=8.0, weighted=4_000_000)
+    changed = publish_run_observation(scan, report_dir=report, real_scan=False)
+    changed_index = json.loads((scan / "artifact_index.json").read_text(encoding="utf-8"))
+    changed_rows = {row["name"]: row for row in changed_index["artifacts"]}
+    assert changed["budget_band"] == "GREEN"
+    assert summary.read_bytes() != before[summary]
+    assert changed_rows["summary"]["content_hash"] == hashlib.sha256(
+        summary.read_bytes()).hexdigest()
+    assert (report / "trace" / "artifact_index.json").read_bytes() == (
+        scan / "artifact_index.json").read_bytes()
+    assert read_manifest(report)["summary.md"] == hashlib.sha256(
+        summary.read_bytes()).hexdigest()

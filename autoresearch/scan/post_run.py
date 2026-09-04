@@ -398,11 +398,14 @@ def _finalize_forensic_run(report_dir: str | None) -> dict:
 
 def _atomic_json(path: Path, payload: dict) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
+    body = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    try:
+        if path.read_text(encoding="utf-8") == body:
+            return path
+    except FileNotFoundError:
+        pass
     temp = path.with_name(f"{path.name}.tmp")
-    temp.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    temp.write_text(body, encoding="utf-8")
     temp.replace(path)
     return path
 
@@ -782,6 +785,7 @@ def publish_run_observation(
         budgets=policy,
         run_id=run_id,
         real_scan=real_scan,
+        persist=False,
     )
     observation["warnings"] = list(dict.fromkeys(
         [*observation["warnings"], *external_warnings]
