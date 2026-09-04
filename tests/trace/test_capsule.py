@@ -80,6 +80,62 @@ def _events(handle) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
+def _begin_claude(tmp_path: Path, monkeypatch, **kwargs):
+    """Begin a Claude-engine run against redirected roots."""
+    _redirect_roots(monkeypatch, tmp_path)
+    monkeypatch.setattr(ws, "ENGINE", "claude")
+    monkeypatch.setattr(ws, "context_root", lambda: tmp_path / "context_claude")
+    monkeypatch.setattr(ws, "reports_root", lambda: tmp_path / "reports_claude")
+    return begin_run("scan-market", DATE, "claude", {}, now=NOW, **kwargs)
+
+
+def test_begin_run_self_binds_the_claude_harness_session(tmp_path, monkeypatch):
+    """A Claude run must record which session it ran in, without an operator step.
+
+    Regression: the 2026-09-01/09-02 production runs both wrote ``session_ref: null``
+    because nothing ever called ``runctl bind``; ``usage_harvest`` then reported
+    ``0 subagent · UNMEASURED`` for runs that really spent millions of tokens.
+    """
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "5d26c487-dfe2-4351-ace2-ec52effc6d99")
+    handle = _begin_claude(tmp_path, monkeypatch)
+
+    assert handle.contract.session_ref == "5d26c487-dfe2-4351-ace2-ec52effc6d99"
+
+
+def test_begin_run_keeps_an_explicit_session_ref_over_the_environment(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "5d26c487-dfe2-4351-ace2-ec52effc6d99")
+    handle = _begin_claude(tmp_path, monkeypatch, session_ref="explicit-0000-1111-2222")
+
+    assert handle.contract.session_ref == "explicit-0000-1111-2222"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "   ",
+        "not a session id",
+        "../../etc/passwd",
+        " 5d26c487-dfe2-4351-ace2-ec52effc6d99 ",
+    ],
+)
+def test_begin_run_drops_a_malformed_harness_session_ref(tmp_path, monkeypatch, value):
+    """A wrong binding is worse than none: it would meter somebody else's transcript."""
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", value)
+    handle = _begin_claude(tmp_path, monkeypatch)
+
+    assert handle.contract.session_ref is None
+
+
+def test_begin_run_does_not_give_codex_a_claude_session_ref(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "5d26c487-dfe2-4351-ace2-ec52effc6d99")
+    handle = _begin(tmp_path, monkeypatch)
+
+    assert handle.contract.session_ref is None
+
+
 def test_begin_run_creates_active_spool_before_staging(tmp_path, monkeypatch):
     handle = _begin(tmp_path, monkeypatch)
 

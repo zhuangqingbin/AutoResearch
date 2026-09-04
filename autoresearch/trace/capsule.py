@@ -417,6 +417,31 @@ def _record_bootstrap_failure(
         pass
 
 
+#: The Claude harness exports its session id into every tool shell it runs.  Binding
+#: used to be a manual `runctl bind` step that **no production path ever called**:
+#: the 2026-09-01 and 09-02 scan runs both wrote `session_ref: null`, so
+#: `usage_harvest.collect_run` short-circuited on the adapter's missing-session guard
+#: and `token_usage.md` reported `1 主会话 + 0 subagent · UNMEASURED` for runs that had
+#: really spent ~18.7M weighted input across 316 subagents.  Reading the id the harness
+#: itself exports is an assertion *from* the harness, not an mtime guess over candidate
+#: files, so it satisfies the binding doctrine in `bind_transcript`'s docstring.
+_HARNESS_SESSION_REF_RE = re.compile(r"[0-9a-fA-F][0-9a-fA-F-]{7,63}\Z")
+
+
+def harness_session_ref(engine: str) -> str | None:
+    """Return the current harness session id for ``engine``, or None when absent.
+
+    Only Claude is wired: Codex binds its rollout explicitly through the capsule and
+    must not inherit a Claude session id.  A malformed value is dropped rather than
+    written into the contract, because a wrong binding is worse than an absent one --
+    it would make the adapter meter *somebody else's* transcript.
+    """
+    if engine != "claude":
+        return None
+    raw = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    return raw if _HARNESS_SESSION_REF_RE.match(raw) else None
+
+
 def begin_run(
     kind: str,
     analysis_date: str,
@@ -453,6 +478,10 @@ def begin_run(
         from autoresearch.scan.run_bootstrap import prepare_scan_run
 
         bootstrap = prepare_scan_run
+    # Explicit wins; otherwise self-bind from the harness so the run can be metered
+    # without an operator remembering `runctl bind` (which nothing ever ran).
+    if session_ref is None:
+        session_ref = harness_session_ref(engine)
     stamp = _utc_now(now)
     run_id = ws.validate_run_id(stamp.strftime("%Y%m%dT%H%M%S%fZ"))
     workspace = ws.run_root(kind, run_id)

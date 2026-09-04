@@ -644,14 +644,17 @@ def test_collect_run_without_session_ref_is_unmeasured_not_empty(tmp_path, monke
     row — the parenthetical half of D6.4①: `[]` reads upstream as "0 transcripts
     = free", which is exactly the false-green this whole capsule exists to remove.
     """
-    from tests.forensic_fixtures import FIXTURE_DATE, FIXTURE_NOW, redirect_roots
-    from autoresearch.trace import capsule as local_capsule_mod
-    from autoresearch.trace import usage_harvest as U
+    from autoresearch.trace import capsule as local_capsule_mod, usage_harvest as U
+    from tests.forensic_fixtures import FIXTURE_DATE, FIXTURE_NOW
 
     monkeypatch.setattr(ws, "ENGINE", "claude")
     monkeypatch.setattr(ws, "context_root", lambda: tmp_path / "context_claude")
     monkeypatch.setattr(ws, "reports_root", lambda: tmp_path / "reports_claude")
     monkeypatch.delenv("AUTORESEARCH_RUN_ID", raising=False)
+    # 2026-09-03:`begin_run` 现在会自绑 harness session(`CLAUDE_CODE_SESSION_ID`)。
+    # 本用例要的正是「没人绑成功」那条腿,所以必须自己把环境按住 —— 否则它在真机上
+    # (开发者自己的 Claude 会话里)会悄悄变成「绑上了」而失去鉴别力。
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
     monkeypatch.setattr(
         "autoresearch.scan.user_config.DEFAULT_PINNED_PATH",
         tmp_path / "missing-pinned.jsonc",
@@ -664,6 +667,7 @@ def test_collect_run_without_session_ref_is_unmeasured_not_empty(tmp_path, monke
     handle = local_capsule_mod.begin_run(
         "scan-market", FIXTURE_DATE, "claude", {}, now=FIXTURE_NOW,
     )
+    assert handle.contract.session_ref is None
 
     rows = U.collect_run(handle.run_id, engine="claude")
 

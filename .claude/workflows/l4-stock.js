@@ -172,7 +172,19 @@ const emitAgentEvent = (eventType, invocationId, role) => {
     .then((ack) => validateAgentEventAck(
       ack, eventType, invocationId, role, controlInvocationId))
 }
+// 边界事件只发给**业务** agent —— 与 scan-market.js:178 同策,与 contracts 的角色表同源:
+// `run_profile.SCAN_AGENT_ROLES` 从 `vocab.ROLE_STAGES` 派生,里面只有 strategist /
+// sector-brief / l3-* / l4-*,`gp-shell` 与 `trace-control` 是确定性中继,完整性门从不点
+// 它们的名,它们的现场是 logs/ 里的命令捕获(exec_capture),不欠 transcript。
+// 🚨 2026-09-03:此前本文件给**每个壳**也发一对边界事件,于是一条确定性命令要 3 个
+// subagent(dispatch 壳 + 命令壳 + completed 壳)。node 探针实测:一只票 18 次 agent
+// 调用里 10 次是壳的边界取证。09-01 真跑 200 个 trace-control 壳吃掉该 run subagent
+// 加权输入的 73%(13.6M/18.7M),而它们产出的事件**没有任何消费者**——当日
+// `agents/index.json` 0 行。改为业务角色专属后,一只票 18 → 8 次 agent 调用。
+const RELAY_ROLES = new Set(['gp-shell', 'trace-control'])
 async function tracedAgent(invocationId, role, prompt, options) {
+  // 中继不发边界事件(见 RELAY_ROLES 注)。仍走本包装器,调用点因此不需要 `agent(` 旁路。
+  if (RELAY_ROLES.has(role)) return rawAgent(prompt, options)
   try {
     await emitAgentEvent('AGENT_DISPATCHED', invocationId, role)
   } catch (error) {
