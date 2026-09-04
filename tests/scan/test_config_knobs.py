@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import math
 
 import pytest
 
@@ -64,6 +65,53 @@ def test_new_blocks_whitelisted(tmp_path):
     p = tmp_path / "scan_config.jsonc"
     p.write_text(json.dumps(raw), encoding="utf-8")
     assert load_user_config(p) == raw
+
+
+def test_weighted_budget_keys_are_whitelisted(tmp_path):
+    raw = {
+        "budgets": {
+            "run_weighted_warn": 7_000_000,
+            "run_weighted_target": 5_000_000,
+        }
+    }
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps(raw), encoding="utf-8")
+    assert load_user_config(p) == raw
+
+
+@pytest.mark.parametrize("value", [True, 0, -1])
+@pytest.mark.parametrize("key", ["run_weighted_warn", "run_weighted_target"])
+def test_weighted_budget_values_must_be_positive_numbers(tmp_path, key, value):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"budgets": {key: value}}), encoding="utf-8")
+    with pytest.raises(ValueError, match=key):
+        load_user_config(p)
+
+
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
+@pytest.mark.parametrize("key", ["run_weighted_warn", "run_weighted_target"])
+def test_weighted_budget_values_must_be_finite(tmp_path, key, value):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"budgets": {key: value}}), encoding="utf-8")
+    with pytest.raises(ValueError, match=key):
+        load_user_config(p)
+
+
+def test_weighted_budget_target_cannot_exceed_warn(tmp_path):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(
+        json.dumps(
+            {
+                "budgets": {
+                    "run_weighted_warn": 5_000_000,
+                    "run_weighted_target": 5_000_001,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="target.*warn"):
+        load_user_config(p)
 
 
 @pytest.mark.parametrize("block,bad", [

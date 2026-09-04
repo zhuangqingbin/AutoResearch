@@ -22,6 +22,7 @@ raise**(防拼写错静默失效,是本文件存在的唯一理由);缺文件 = 
 from __future__ import annotations
 
 import json
+import math
 import re
 import sys
 from datetime import date, datetime, timedelta
@@ -108,7 +109,8 @@ _SUB_WHITELIST = {
     "l3": {"two_pass", "pass1_target", "finalist_max", "lowturn", "composite_seat"},
     "budgets": {
         "cache_hit_min", "stage_cost_usd", "stage_wall_seconds", "concurrency",
-        "min_real_scans", "baseline_run",
+        "min_real_scans", "baseline_run", "run_weighted_warn",
+        "run_weighted_target",
     },
     "performance": {
         "streaming_l4",
@@ -120,6 +122,7 @@ _SUB_WHITELIST = {
 def _t_num(v): return isinstance(v, (int, float)) and not isinstance(v, bool)
 def _t_bool(v): return isinstance(v, bool)
 def _t_posint(v): return isinstance(v, int) and not isinstance(v, bool) and v > 0
+def _t_posnum(v): return _t_num(v) and math.isfinite(v) and v > 0
 def _t_nonneg(v): return _t_num(v) and v >= 0
 def _t_nonneg_int(v): return isinstance(v, int) and not isinstance(v, bool) and v >= 0
 def _t_source(v): return v in {"em", "tushare"}
@@ -142,6 +145,8 @@ _KNOB_TYPES: dict[tuple[str, str], tuple] = {
     ("l2", "floors"): (_t_dict, "object"),
     ("sector", "reuse_ttl_days"): (_t_posint, "正整数"),
     ("sector", "max_briefs"): (_t_posint, "正整数"),
+    ("budgets", "run_weighted_warn"): (_t_posnum, "number>0"),
+    ("budgets", "run_weighted_target"): (_t_posnum, "number>0"),
     ("l3", "lowturn"): (_t_dict, "object"),   # 低位转强阈值块(2026-08-21;键义见 common/turnup.LOWTURN_DEFAULTS)
     # composite 席位块(2026-08-26 §3 路A):{enabled: bool, m: int}——键义见 scan/l3/merge.COMPOSITE_SEAT_*
     ("l3", "composite_seat"): (_t_dict, "object"),
@@ -238,6 +243,16 @@ def load_user_config(path: str | Path | None = None) -> dict:
         block = cfg.get(blk)
         if isinstance(block, dict) and key in block and not ok_fn(block[key]):
             raise ValueError(f"scan_config.json {blk}.{key}={block[key]!r} 非法(须为 {want})")
+
+    budgets = cfg.get("budgets")
+    if isinstance(budgets, dict):
+        warn = budgets.get("run_weighted_warn", 7_000_000)
+        target = budgets.get("run_weighted_target", 5_000_000)
+        if target > warn:
+            raise ValueError(
+                "scan_config.json budgets.run_weighted_target 不得大于 "
+                "budgets.run_weighted_warn"
+            )
 
     agents = cfg.get("agents")
     if agents is not None:

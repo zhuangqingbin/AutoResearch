@@ -16,6 +16,8 @@ from autoresearch.scan.stage_result import safe_record_stage_result
 BUDGET_OBSERVATION_SCHEMA_VERSION = 1
 DEFAULT_BUDGETS = {
     "cache_hit_min": 0.85,
+    "run_weighted_warn": 7_000_000,
+    "run_weighted_target": 5_000_000,
     "stage_cost_usd": {},
     "stage_wall_seconds": {},
     "concurrency": {
@@ -29,6 +31,15 @@ DEFAULT_BUDGETS = {
 }
 
 
+def _finite_number(value, *, allow_zero: bool) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    if not math.isfinite(number) or number < 0 or (number == 0 and not allow_zero):
+        return None
+    return number
+
+
 def normalize_budgets(raw: dict | None) -> dict:
     """用户预算块 + 稳定默认值；输入不被原地修改。"""
     raw = raw or {}
@@ -36,10 +47,20 @@ def normalize_budgets(raw: dict | None) -> dict:
         **DEFAULT_BUDGETS["concurrency"],
         **(raw.get("concurrency") or {}),
     }
+    warn_raw = raw.get("run_weighted_warn", DEFAULT_BUDGETS["run_weighted_warn"])
+    target_raw = raw.get(
+        "run_weighted_target", DEFAULT_BUDGETS["run_weighted_target"]
+    )
+    warn = _finite_number(warn_raw, allow_zero=False)
+    target = _finite_number(target_raw, allow_zero=False)
+    if warn is None or target is None or target > warn:
+        raise ValueError("weighted budget 须满足 0 < target <= warn")
     return {
         "cache_hit_min": float(
             raw.get("cache_hit_min", DEFAULT_BUDGETS["cache_hit_min"])
         ),
+        "run_weighted_warn": warn,
+        "run_weighted_target": target,
         "stage_cost_usd": {
             str(k): float(v) for k, v in (raw.get("stage_cost_usd") or {}).items()
         },
@@ -90,12 +111,40 @@ def observe_run(
     scan = Path(scan_dir)
     policy = normalize_budgets(budgets)
     warnings: list[str] = []
+    advisories: list[str] = []
     hit = usage_ledger.get("cache_hit_rate")
-    estimated = (usage_ledger.get("totals") or {}).get("estimated_usd")
-    measured = usage_ledger.get("schema_version") == 1 and estimated is not None
+    totals = usage_ledger.get("totals") or {}
+    estimated = totals.get("estimated_usd")
+    weighted_raw = (
+        totals.get("weighted_input_proxy")
+        if "weighted_input_proxy" in totals
+        else totals.get("weighted_in")
+    )
+    weighted = _finite_number(weighted_raw, allow_zero=True)
+    cost_measured = usage_ledger.get("schema_version") == 1 and estimated is not None
+    measured = cost_measured and weighted is not None
     total_wall = _wall_seconds(timing, "总计")
 
-    if not measured:
+    if weighted is None:
+        budget_band = "RED"
+        warnings.append("weighted_input_proxy 未计量")
+    else:
+        if weighted > policy["run_weighted_warn"]:
+            budget_band = "RED"
+            warnings.append(
+                "weighted_input_proxy "
+                f"{weighted:.0f} > {policy['run_weighted_warn']:.0f}"
+            )
+        elif weighted > policy["run_weighted_target"]:
+            budget_band = "YELLOW"
+            advisories.append(
+                "weighted_input_proxy "
+                f"{weighted:.0f} > target {policy['run_weighted_target']:.0f}"
+            )
+        else:
+            budget_band = "GREEN"
+
+    if not cost_measured:
         warnings.append("成本 JSON 未计量")
     if hit is None:
         warnings.append("cache_hit_rate 未计量")
@@ -134,6 +183,8 @@ def observe_run(
         "measurement_status": "MEASURED" if measured else "UNMEASURED",
         "status": status,
         "truncated": False,
+        "weighted_input_proxy": weighted,
+        "budget_band": budget_band,
         "estimated_usd": None if estimated is None else float(estimated),
         "interactive_wall_s": total_wall,
         "cache_hit_rate": None if hit is None else float(hit),
@@ -143,6 +194,7 @@ def observe_run(
         },
         "budgets": policy,
         "warnings": warnings,
+        "advisories": advisories,
     }
     _atomic_json(scan / "_budget_observation.json", observation)
     safe_record_stage_result(
@@ -152,6 +204,8 @@ def observe_run(
         artifacts=["budget_observation"],
         metrics={
             "truncated": False,
+            "weighted_input_proxy": observation["weighted_input_proxy"],
+            "budget_band": budget_band,
             "estimated_usd": observation["estimated_usd"],
             "interactive_wall_s": total_wall,
             "cache_hit_rate": observation["cache_hit_rate"],
@@ -213,6 +267,22 @@ def evaluate_history(
             "reason": "cost/wall/cache observation incomplete",
         }
 
+    weighted_values: list[float] = []
+    for row in rows:
+        weighted_raw = (
+            row.get("weighted_input_proxy")
+            if "weighted_input_proxy" in row
+            else row.get("weighted_in")
+        )
+        weighted = _finite_number(weighted_raw, allow_zero=True)
+        if weighted is None:
+            return {
+                **base,
+                "status": "IMMATURE",
+                "reason": "weighted observation incomplete",
+            }
+        weighted_values.append(weighted)
+
     costs = [float(row["estimated_usd"]) for row in rows]
     walls_min = [float(row["interactive_wall_s"]) / 60 for row in rows]
     caches = [float(row["cache_hit_rate"]) for row in rows]
@@ -222,6 +292,8 @@ def evaluate_history(
     p50 = float(statistics.median(walls_min))
     p90 = float(_nearest_rank(walls_min, 0.9))
     cache_median = float(statistics.median(caches))
+    weighted_p50 = float(_nearest_rank(weighted_values, 0.5))
+    weighted_p90 = float(_nearest_rank(weighted_values, 0.9))
 
     if int(phase) == 2:
         targets = {
@@ -229,6 +301,8 @@ def evaluate_history(
             "p50": p50 <= 65,
             "p90": p90 <= 90,
             "cache": cache_median >= policy["cache_hit_min"],
+            "weighted_p50": weighted_p50 <= policy["run_weighted_target"],
+            "weighted_p90": weighted_p90 <= policy["run_weighted_warn"],
         }
     else:
         targets = {
@@ -236,6 +310,8 @@ def evaluate_history(
             "p50": p50 <= 75,
             "p90": p90 <= 100,
             "cache": cache_median >= policy["cache_hit_min"],
+            "weighted_p50": weighted_p50 <= policy["run_weighted_target"],
+            "weighted_p90": weighted_p90 <= policy["run_weighted_warn"],
         }
     return {
         **base,
@@ -248,5 +324,7 @@ def evaluate_history(
         "p50_minutes": round(p50, 4),
         "p90_minutes": round(p90, 4),
         "median_cache_hit_rate": round(cache_median, 6),
+        "weighted_p50": round(weighted_p50, 4),
+        "weighted_p90": round(weighted_p90, 4),
         "targets": targets,
     }
