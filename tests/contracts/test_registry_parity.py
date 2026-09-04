@@ -45,6 +45,21 @@ def test_registry_is_internally_consistent():
             )
 
 
+def test_metering_panorama_artifacts_are_registered_outside_runs():
+    assert ca.ROOTS[-1] == "metering"
+    assert ca.by_name("panorama_json") == ca.Artifact(
+        "panorama_json",
+        "panorama_*.json",
+        "metering",
+        "observe",
+        "usage_panorama",
+        "json",
+        "gated",
+        required_when="usage_panorama --write",
+    )
+    assert ca.by_name("panorama_md").stage == "observe"
+
+
 def test_allowlist_does_not_shadow_the_registry():
     """白名单与登记表不许重叠 —— 否则一个产物既「是产物」又「不是产物」。"""
     registered = ca.paths() | {Path(p).name for p in ca.paths()}

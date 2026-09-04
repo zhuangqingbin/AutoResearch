@@ -44,6 +44,8 @@ design: `docs/specs/2026-08-29-full-coverage-research-system-brainstorm.md` §2.
   与 scan 的 `report` 根同一约定)
 - ``analyze_ledger`` —— stock-research 跨 run 账本(镜像 scan 的 `ledger` 根形状;
   D6.1 落笔时尚无生产者,presence=gated 记的是「这一步还没接线」而不是「这一趟没触发」)
+- ``metering`` —— 跨 run 的本机计量读数 `$RPT/_metering/`(**不在任何 run 目录内**;
+  JSON 是机器真相,Markdown 只由 JSON 渲染)
 
 `presence`:``always`` = 该阶段跑到就必须有;``gated`` = 有前置条件才有(缺席是事实
 不是洞);``conditional`` = 只有被触发才有(复核、修补)。
@@ -77,6 +79,7 @@ class Artifact:
 ROOTS: tuple[str, ...] = (
     "staging", "report", "ledger", "capsule",
     "analyze_ctx", "analyze_staging", "analyze_report", "analyze_ledger",
+    "metering",
 )
 KINDS: tuple[str, ...] = ("csv", "json", "md", "txt", "dir")
 PRESENCES: tuple[str, ...] = ("always", "gated", "conditional")
@@ -316,6 +319,11 @@ ARTIFACTS: tuple[Artifact, ...] = (
              "stock-writer", "md", "gated", required_when="optional_lens"),
     Artifact("analyze_reality_check", "2_research/reality_check.md", "analyze_staging", "write",
              "stock-writer", "md", "gated", required_when="optional_lens"),
+    # ── 跨 run 计量读模型(不污染任何单次 run 的 manifest/现场)─────────────
+    Artifact("panorama_json", "panorama_*.json", "metering", "observe",
+             "usage_panorama", "json", "gated", required_when="usage_panorama --write"),
+    Artifact("panorama_md", "panorama_*.md", "metering", "observe",
+             "usage_panorama", "md", "gated", required_when="usage_panorama --write"),
 )
 
 _BY_NAME: dict[str, Artifact] = {a.name: a for a in ARTIFACTS}
