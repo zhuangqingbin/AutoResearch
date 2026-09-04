@@ -929,12 +929,6 @@ def _parse_cli_time(raw: str) -> datetime:
 
 
 def main(argv: list[str] | None = None) -> int:
-    if ws.ENGINE != "claude":
-        print(
-            "[usage_panorama] Codex engine may not access Claude metering inputs",
-            file=sys.stderr,
-        )
-        return 2
     parser = argparse.ArgumentParser(description="explicit Claude token panorama")
     parser.add_argument("--engine", required=True, choices=("claude",))
     parser.add_argument("--cohort", required=True, choices=("baseline", "candidate"))
@@ -944,6 +938,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--to", dest="to_ts", type=_parse_cli_time)
     parser.add_argument("--write", action="store_true")
     args = parser.parse_args(argv)
+    # 引擎守卫必须在 argparse **之后**:`--help` 是任何引擎下都该退 0 的自述
+    # (tests/test_cli_entrypoints.py Tier 2 锁的就是这条),而读 Claude 计量输入
+    # 仍旧只有 claude 引擎能做——守卫仍先于 build_panorama,不碰任何 transcript。
+    if ws.ENGINE != "claude":
+        print(
+            "[usage_panorama] Codex engine may not access Claude metering inputs",
+            file=sys.stderr,
+        )
+        return 2
     selection = Selection(
         engine=args.engine,
         cohort=args.cohort,
