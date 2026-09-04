@@ -633,10 +633,11 @@ def measure_report_budget(scan_dir: Path | str, report_dir: Path | str) -> dict:
     target = scan / REPORT_BUDGET_NAME
     try:
         scan.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_name(f"{target.name}.tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-                       encoding="utf-8")
-        tmp.replace(target)
+        body = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+        if not target.is_file() or target.read_text(encoding="utf-8") != body:
+            tmp = target.with_name(f"{target.name}.tmp")
+            tmp.write_text(body, encoding="utf-8")
+            tmp.replace(target)
     except OSError as exc:                      # 量不到就说量不到,不假装量过
         payload["warnings"] = [*warnings, f"预算读数落盘失败:{type(exc).__name__}"]
     for line in payload["warnings"]:
@@ -700,7 +701,10 @@ def run_health(scan_dir: Path) -> dict:
 
 def write_run_health(scan_dir: Path) -> Path:
     p = Path(scan_dir) / "run_health.json"
-    p.write_text(json.dumps(run_health(scan_dir), ensure_ascii=False, indent=2), encoding="utf-8")
+    body = json.dumps(run_health(scan_dir), ensure_ascii=False, indent=2)
+    if p.is_file() and p.read_text(encoding="utf-8") == body:
+        return p
+    p.write_text(body, encoding="utf-8")
     return p
 
 

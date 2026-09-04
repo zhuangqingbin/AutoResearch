@@ -212,10 +212,29 @@ def write_artifact_index(
     scan = Path(scan_dir)
     scan.mkdir(parents=True, exist_ok=True)
     target = scan / "artifact_index.json"
+    payload = build_artifact_index(scan, report_dir=report_dir, now=now)
+    if target.is_file():
+        try:
+            existing = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            existing = None
+        if isinstance(existing, dict):
+            def _stable_facts(index: dict) -> dict:
+                facts = {k: v for k, v in index.items() if k != "generated_at"}
+                facts["artifacts"] = [
+                    {k: v for k, v in row.items() if k != "created_at"}
+                    for row in index.get("artifacts", [])
+                ]
+                return facts
+
+            old_facts = _stable_facts(existing)
+            new_facts = _stable_facts(payload)
+            if old_facts == new_facts:
+                return target
     temp = target.with_name(f"{target.name}.tmp")
     temp.write_text(
         json.dumps(
-            build_artifact_index(scan, report_dir=report_dir, now=now),
+            payload,
             ensure_ascii=False,
             indent=2,
         ) + "\n",

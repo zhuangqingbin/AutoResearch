@@ -21,6 +21,8 @@
   //   为资源帽,tushare 由 prepare_slim K 槽信号量执行)。回滚杆:l4_stock 改 4 = 旧滑窗宽度。
   "budgets": {
     "cache_hit_min": 0.85,             // cache 命中率红线(低于只告警)
+    "run_weighted_warn": 7000000,      // 单 run weighted input 红线(超线 RED/DEGRADED,不截断)
+    "run_weighted_target": 5000000,    // 成熟 cohort 的 weighted input P50 目标
     "stage_cost_usd": {},              // 每阶段成本上限(空=不设;如 {"l4-card": 20})
     "stage_wall_seconds": {},          // 每阶段墙钟上限(空=不设)
     "concurrency": { "tushare": 4, "web_search": 4, "web_fetch": 4, "l4_stock": 64 },

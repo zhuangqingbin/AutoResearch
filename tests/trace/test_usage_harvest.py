@@ -327,6 +327,8 @@ def test_build_ledger_separates_roles_failures_and_cost(tmp_path):
     ledger = U.build_ledger(rows, source="fixture")
 
     assert ledger["schema_version"] == 1
+    assert ledger["metric_version"] == "weighted-input-v1"
+    assert ledger["totals"]["weighted_input_proxy"] == ledger["totals"]["weighted_in"]
     assert ledger["totals"]["transcripts"] == 2
     assert ledger["totals"]["main_transcripts"] == 1
     assert ledger["totals"]["failure_count"] == 1

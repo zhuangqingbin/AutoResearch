@@ -19,6 +19,7 @@ import tarfile
 import tempfile
 import threading
 import time
+import warnings
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -121,6 +122,8 @@ _SECRET_CONNECTION_ENV_RE = re.compile(
 )
 _SNAPSHOT_LOCKS: dict[str, threading.Lock] = {}
 _SNAPSHOT_LOCKS_GUARD = threading.Lock()
+#: 护住 `_python_credential_ranges` 里那段"临时改进程级 warnings 过滤器"的临界区。
+_SPECULATIVE_PARSE_LOCK = threading.Lock()
 _SNAPSHOT_SIBLING_SUFFIX_RE = re.compile(r"[a-z0-9_]{8}")
 _CLEANUP_WARNING = "snapshot_cleanup_warning.json"
 _TRANSACTION_JOURNAL = "snapshot_transaction.json"
@@ -377,7 +380,17 @@ def _node_span(source: str, node: ast.AST) -> tuple[int, int]:
 
 def _python_credential_ranges(source: str) -> tuple[bool, bool, list[tuple[str, int, int]]]:
     try:
-        tree = ast.parse(source)
+        # 这里是**投机解析**:任意一行 transcript 文本都被当 Python 试一次。语法错误已经
+        # 由下面的 except 接住,但 `\|`、`\s` 这类"能编译、只是可疑"的转义只会发 SyntaxWarning
+        # ——它抱怨的是被脱敏的用户文本(grep 的正则),不是本仓代码,对调用方零信息量。
+        # 不消音的话一次 usage_panorama 就往 stderr 泼 5000+ 行,把真读数冲没(2026-09-04 实测)。
+        #
+        # `catch_warnings` 改的是**进程级**过滤器栈,而脱敏会在多线程下跑(snapshot_identity
+        # 只按 key 串行,capsule 的 redact_value 调用点更没有锁),两个线程交错退出会把
+        # "ignore" 永久留在栈上。所以这段临界区必须自己上锁——锁的代价远小于一次 ast.parse。
+        with _SPECULATIVE_PARSE_LOCK, warnings.catch_warnings():
+            warnings.simplefilter("ignore", SyntaxWarning)
+            tree = ast.parse(source)
     except (SyntaxError, ValueError, TypeError):
         return False, False, []
     recognized = False

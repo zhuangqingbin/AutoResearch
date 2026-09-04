@@ -1,0 +1,45 @@
+=== (1) dev vs scan split (weighted M) ===
+dev    n= 21 turns=  4220 main=  235.8M sub=  344.4M total=  580.2M (58.5%)  omc_loop_waste=  28.0M
+scan   n= 18 turns=  1830 main=  101.5M sub=  308.8M total=  410.4M (41.4%)  omc_loop_waste=  32.8M
+small  n= 13 turns=    53 main=    1.3M sub=    0.4M total=    1.6M ( 0.2%)  omc_loop_waste=   0.1M
+
+=== (2) OMC tail-loop waste: 6649 extra calls, 60.8M weighted = 9.3% of all subagent weighted ===
+   scan: loop 32.8M / sub 308.8M = 10.6%
+   dev: loop 28.0M / sub 344.4M = 8.1%
+
+=== (3) dev sessions: chars by tool — tool_use INPUT total 5.1M, tool RESULT total 6.6M ===
+   input side:
+     Bash                     2.72M (53.7%)
+     Write                    1.34M (26.5%)
+     Agent                    0.50M ( 9.9%)
+     Edit                     0.36M ( 7.0%)
+     SendMessage              0.09M ( 1.7%)
+     AskUserQuestion          0.02M ( 0.4%)
+     Read                     0.02M ( 0.3%)
+     TaskCreate               0.01M ( 0.1%)
+   result side:
+     Bash                     4.64M (70.6%)
+     Read                     1.59M (24.1%)
+     Agent                    0.17M ( 2.6%)
+     Edit                     0.06M ( 0.9%)
+     WebSearch                0.05M ( 0.7%)
+     Write                    0.02M ( 0.4%)
+     SendMessage              0.02M ( 0.2%)
+     ListAgents               0.01M ( 0.2%)
+
+=== (4) biggest dev sessions: subagent cost distribution ===
+08-13 b34d9764 n_sub=44 sub_w=129.4M  top5 share=51%  calls med=46 max=421  agent_w med=0.96M max=23.6M
+       23.6M calls=421 loop=8 out=203k  b34d9764-1031-464f-8553-a378748fb43f/subagents/agent-a6eb04463d4f871be.jsonl
+       12.5M calls=242 loop=8 out=150k  b34d9764-1031-464f-8553-a378748fb43f/subagents/agent-afd609b71aa7456e9.jsonl
+       10.9M calls=242 loop=8 out=198k  b34d9764-1031-464f-8553-a378748fb43f/subagents/agent-a47cd72719ce03477.jsonl
+08-20 f8db6873 n_sub=38 sub_w=68.9M  top5 share=41%  calls med=56 max=241  agent_w med=0.89M max=7.5M
+        7.5M calls=241 loop=8 out=153k  f8db6873-29f2-45ab-9796-dc80a797b28b/subagents/agent-abf9019584a92aefe.jsonl
+        5.4M calls=161 loop=8 out=122k  f8db6873-29f2-45ab-9796-dc80a797b28b/subagents/agent-a95d3740cab4e705e.jsonl
+        5.3M calls=158 loop=8 out=158k  f8db6873-29f2-45ab-9796-dc80a797b28b/subagents/agent-a22d692597ff419b7.jsonl
+09-01 c5144662 n_sub=32 sub_w=92.0M  top5 share=65%  calls med=46 max=357  agent_w med=0.99M max=21.1M
+       21.1M calls=357 loop=8 out=478k  c5144662-fe5f-4ccb-88c2-a786783091b0/subagents/agent-a9207509c1e42c583.jsonl
+       12.3M calls=289 loop=8 out=253k  c5144662-fe5f-4ccb-88c2-a786783091b0/subagents/agent-a1c2571bc1acee74e.jsonl
+       11.7M calls=270 loop=8 out=244k  c5144662-fe5f-4ccb-88c2-a786783091b0/subagents/agent-a6678c1a95ecaa98f.jsonl
+08-05 54f9240e n_sub=0 sub_w=0.0M  top5 share=0%  calls med=0 max=0  agent_w med=0.00M max=0.0M
+
+=== (5) sessions with median ctx > 300k: 14; their main_w share = 85% ===

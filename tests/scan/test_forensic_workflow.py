@@ -159,7 +159,8 @@ def test_l4_workflow_routes_every_business_agent_through_boundary_wrapper():
     assert source.count("tracedAgent(") >= 9
     assert "l4-card-${code}-${taskAttempt}" in source
     assert "l4-intel-${code}-${taskAttempt}" in source
-    assert source.count("rawAgent(") == 2
+    # 3 = emitAgentEvent 的取证写手 + 包装器的业务分支 + 中继短路分支(2026-09-03)。
+    assert source.count("rawAgent(") == 3
     emit_body = source.split("const emitAgentEvent =", 1)[1].split(
         "async function tracedAgent", 1
     )[0]
@@ -181,8 +182,11 @@ def test_l4_workflow_routes_every_business_agent_through_boundary_wrapper():
     wrapper_body = source.split("async function tracedAgent", 1)[1].split(
         "const recordL4", 1
     )[0]
-    assert wrapper_body.count("rawAgent(") == 1
+    assert wrapper_body.count("rawAgent(") == 2  # 业务分支 + 中继短路
     assert wrapper_body.count("emitAgentEvent(") == 3
+    # 中继角色不发边界事件:名单必须显式,免得下次有人靠 label 猜。
+    assert "const RELAY_ROLES = new Set(['gp-shell', 'trace-control'])" in source
+    assert "if (RELAY_ROLES.has(role)) return rawAgent(prompt, options)" in source
 
 
 @pytest.mark.skipif(_NODE is None, reason="requires node workflow probe")
@@ -262,10 +266,11 @@ def test_l4_trace_control_ack_is_strictly_validated_but_remains_best_effort(
         };
         const agent = async (prompt) => {
           if (/autoresearch\.trace\.capsule agent-event/.test(prompt)) return boundaryAck(prompt);
-          return {ok: true, action: 'BLOCKED', attempt: 0, reason: 'fixture'};
+          // RUN(不是 BLOCKED):中继不再发边界事件,只有走到 l4-card 才有 ACK 可校验。
+          return {ok: true, action: 'RUN', attempt: 1, reason: 'fixture'};
         };
         const fn = new AsyncFunction('agent','parallel','pipeline','log','phase','args','budget','workflow', src);
-        fn(agent, null, null, value => logs.push(String(value)), () => {}, JSON.parse(process.argv[2]), {total:null}, null)
+        fn(agent, (tasks) => Promise.all(tasks.map((t) => t())), null, value => logs.push(String(value)), () => {}, JSON.parse(process.argv[2]), {total:null}, null)
           .then(result => console.log(JSON.stringify({logs, result, error:null})))
           .catch(error => console.log(JSON.stringify({logs, result:null, error:error.message})));
         """
@@ -291,6 +296,23 @@ def test_l4_trace_control_ack_is_strictly_validated_but_remains_best_effort(
     assert (warnings == []) is (ack_mode == "valid")
 
 
+def test_relay_roles_in_js_match_the_python_non_transcript_roles():
+    """The JS wrapper and the capsule must agree on who is a deterministic relay.
+
+    `capsule._NON_TRANSCRIPT_ROLES` already declares that `gp-shell` / `trace-control`
+    owe no transcript; `l4-stock.js` now also skips their boundary events.  Two hand-kept
+    lists in two languages drift silently, so pin them to each other here.
+    """
+    from autoresearch.trace.capsule import _NON_TRANSCRIPT_ROLES
+
+    source = WORKFLOWS[1].read_text(encoding="utf-8")
+    literal = re.search(r"const RELAY_ROLES = new Set\(\[([^\]]*)\]\)", source)
+    assert literal is not None, "l4-stock.js lost its RELAY_ROLES declaration"
+    js_roles = {item.strip().strip("'\"") for item in literal.group(1).split(",") if item.strip()}
+
+    assert js_roles == set(_NON_TRANSCRIPT_ROLES)
+
+
 @pytest.mark.skipif(_NODE is None, reason="requires node workflow probe")
 @pytest.mark.parametrize("business_failure", [False, True])
 def test_l4_boundary_wrapper_emits_one_dispatch_and_one_terminal_with_same_id(
@@ -308,11 +330,12 @@ def test_l4_boundary_wrapper_emits_one_dispatch_and_one_terminal_with_same_id(
         const agent = async (prompt, options) => {
           calls.push({prompt, label: options && options.label});
         if (/autoresearch\\.trace\\.capsule agent-event/.test(prompt)) return boundaryAck(prompt);
-          if (fail) throw new Error('BUSINESS_AGENT_FAILED');
-          return {ok: true, action: 'BLOCKED', attempt: 0, reason: 'fixture'};
+          const label = (options && options.label) || '';
+          if (fail && label.indexOf('card:') === 0) throw new Error('BUSINESS_AGENT_FAILED');
+          return {ok: true, action: 'RUN', attempt: 1, reason: 'fixture'};
         };
         const fn = new AsyncFunction('agent','parallel','pipeline','log','phase','args','budget','workflow', src);
-        fn(agent, null, null, () => {}, () => {}, JSON.parse(process.argv[2]), {total:null}, null)
+        fn(agent, (tasks) => Promise.all(tasks.map((t) => t())), null, () => {}, () => {}, JSON.parse(process.argv[2]), {total:null}, null)
           .then(result => console.log(JSON.stringify({calls, result, error:null})))
           .catch(error => console.log(JSON.stringify({calls, result:null, error:error.message})));
         """
@@ -338,19 +361,24 @@ def test_l4_boundary_wrapper_emits_one_dispatch_and_one_terminal_with_same_id(
         for item in result["calls"]
         if "autoresearch.trace.capsule agent-event" in item["prompt"]
     ]
+    # 中继(gp-shell)一条边界事件都不该有 —— 完整性门从不点它们的名,它们的现场在 logs/。
+    # 探针实测(2026-09-03):同一条流水线 18 → 8 次 agent 调用,省下的 10 次全是壳的取证。
+    assert [p for p in boundary_prompts if "--role gp-shell" in p] == []
+    assert len(result["calls"]) == 8
     assert len(boundary_prompts) == 2
+    assert all("--role l4-card" in prompt for prompt in boundary_prompts)
     assert "AGENT_DISPATCHED" in boundary_prompts[0]
     terminal = "AGENT_FAILED" if business_failure else "AGENT_COMPLETED"
     assert terminal in boundary_prompts[1]
     ids = [re.findall(r"--invocation-id ([^ ]+)", prompt)[-1] for prompt in boundary_prompts]
-    assert ids == ["gp-shell-600000-1-task-preflight-600000"] * 2
+    assert ids == ["l4-card-600000-1"] * 2
     control_ids = [
         re.search(r"--control-invocation-id ([^ ]+)", prompt).group(1)
         for prompt in boundary_prompts
     ]
     assert control_ids == [
-        "trace-control-gp-shell-600000-1-task-preflight-600000-agent_dispatched",
-        "trace-control-gp-shell-600000-1-task-preflight-600000-"
+        "trace-control-l4-card-600000-1-agent_dispatched",
+        "trace-control-l4-card-600000-1-"
         + ("agent_failed" if business_failure else "agent_completed"),
     ]
 

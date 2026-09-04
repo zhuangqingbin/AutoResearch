@@ -308,8 +308,10 @@ def build_ledger(rows: list[dict], *, source: str | None = None) -> dict:
         "reasoning_output": sum(int(r.get("reasoning_output") or 0) for r in rows),
         "priced_transcripts": len(priced),
     }
+    totals["weighted_input_proxy"] = totals["weighted_in"]
     return {
         "schema_version": 1,
+        "metric_version": "weighted-input-v1",
         "pricing": {
             "source": PRICE_SOURCE_URL,
             "effective_date": PRICE_SOURCE_EFFECTIVE_DATE,
