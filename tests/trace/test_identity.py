@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -762,6 +763,28 @@ def test_opaque_scanner_splits_assignments_from_source_identifiers(payload):
 )
 def test_runtime_formatting_with_separator_literals_is_not_a_credential(payload):
     assert scan_for_secrets(payload, environ={})["ok"] is True
+
+
+def test_speculative_python_parse_stays_silent_on_user_text():
+    """脱敏对任意文本做投机 `ast.parse`,它的语法牢骚不许泄到调用方。
+
+    这些行**能编译**(所以 except SyntaxError 接不住),只是转义可疑 —— 而它们是被脱敏的
+    用户文本(grep 的正则、Windows 路径),不是本仓代码。2026-09-04 实测:不消音时一次
+    `usage_panorama` 往 stderr 泼 5456 行 `<unknown>:1: SyntaxWarning`,把真读数冲没。
+    """
+    noisy = {
+        "cmd": 'pattern = "a\\|b"',           # grep 交替:`\|`
+        "path": 'root = "C:\\Users\\x"',      # Windows 路径:`\U`
+        "re": 'spacing = "\\s+\\d*"',         # 空白/数字类:`\s` `\d`(变量名中性,不该被脱敏)
+    }
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        redacted = redact_value(noisy).value
+
+    assert [w for w in caught if issubclass(w.category, SyntaxWarning)] == []
+    # 消音不等于跳过扫描:内容仍旧原样过了脱敏,没有被"整段丢弃"这种偷懒实现替掉。
+    assert redacted == noisy
 
 
 def test_all_literal_formatting_is_still_a_credential():
