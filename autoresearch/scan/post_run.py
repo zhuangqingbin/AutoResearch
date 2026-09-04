@@ -478,6 +478,8 @@ def render_run_observation(observation: dict) -> str:
     denominators = effectiveness.get("denominators") or {}
     cache = observation.get("cache_hit_rate")
     wall = observation.get("interactive_wall_s")
+    weighted = observation.get("weighted_input_proxy")
+    weighted_text = "—" if weighted is None else f"{float(weighted):.0f}"
     lines = [
         "## 💸 成本与时延观测",
         "",
@@ -493,6 +495,8 @@ def render_run_observation(observation: dict) -> str:
         )
         + " · "
         + (f"交互墙钟:{int(wall)}s" if wall is not None else "交互墙钟:—"),
+        f"- 加权输入:{weighted_text} · "
+        f"预算带:{observation.get('budget_band') or 'RED'}",
     ]
     if maturity.get("status") in {"PASS", "FAIL"}:
         lines.append(
@@ -547,9 +551,13 @@ def render_run_observation_line(observation: dict) -> str:
     cache = observation.get("cache_hit_rate")
     degraded = observation.get("degraded_fields") or []
     cost = _money(observation.get("estimated_usd"))
+    weighted = observation.get("weighted_input_proxy")
+    weighted_text = "—" if weighted is None else f"{float(weighted):.0f}"
     parts = [
         f"墙钟 {_fmt_wall(observation.get('interactive_wall_s'))}",
         f"LLM 调用 {'—' if calls is None else int(calls)}",
+        f"加权输入 {weighted_text}",
+        f"预算带:{observation.get('budget_band') or 'RED'}",
         f"计量:{observation.get('measurement_status', 'UNMEASURED')} {cost}"
         + (f"(cache {float(cache):.1%})" if cache is not None else "(cache —)"),
         "数据降级:" + ("、".join(str(f) for f in degraded) if degraded else "无"),
@@ -576,6 +584,34 @@ def _inject_managed(text: str, markdown: str, start: str, end: str,
                 f"{start} 缺席,按稳定锚 `{anchor.strip()}` 回退")
     return (text.rstrip() + "\n\n" + managed + "\n",
             f"{start} 与锚 `{anchor.strip()}` 均缺席,已追加到文末")
+
+
+def _managed_marker_problem(text: str, start: str, end: str) -> str | None:
+    starts, ends = text.count(start), text.count(end)
+    if starts != 1 or ends != 1:
+        return (
+            "managed 标记必须各出现一次"
+            f"(begin={starts},end={ends})，报告保持原字节"
+        )
+    begin, finish = text.index(start), text.index(end)
+    if begin >= finish:
+        return "managed 标记顺序错误，报告保持原字节"
+    return None
+
+
+def _replace_managed_strict(
+    text: str,
+    markdown: str,
+    start: str,
+    end: str,
+) -> tuple[str, str | None]:
+    """只替换唯一、顺序正确的 managed 块；不做锚点回退或追加。"""
+    problem = _managed_marker_problem(text, start, end)
+    if problem:
+        return text, problem
+    begin, finish = text.index(start), text.index(end)
+    managed = f"{start}\n{markdown.strip()}\n{end}"
+    return text[:begin] + managed + text[finish + len(end):], None
 
 
 def inject_run_observation_section(summary: str, markdown: str) -> str:
@@ -622,29 +658,46 @@ def refresh_run_observation(
     返回 `(新 summary, 新 appendix, warns)`;入参为 `None`(文件不在盘上)时对应返回
     `None` 并落 warn —— **不回填**:给一个 2026-08-28 之前的旧 run 凭空造一份 appendix,
     等于拿今天的义务改写昨天的现场。任一边刷不动都必须能被看见,
-    「静默只刷新一边」正是本节要拦的形状。
+    「静默只刷新一边」正是本节要拦的形状。已有文件也只认唯一且顺序正确的标记对；
+    标记损坏时原文逐字节保留，不使用稳定锚或文末追加。
     """
     warns: list[str] = []
-    detail_md = observation.get("markdown") or render_run_observation(observation)
-    line_md = render_run_observation_line(observation)
     if summary_text is None:
         warns.append("summary.md 缺席,运行观测未刷新")
+        summary_problem = None
         new_summary = None
     else:
-        new_summary, warn = _inject_managed(
-            summary_text, line_md, OBSERVATION_START, OBSERVATION_END,
-            SUMMARY_OBSERVATION_ANCHOR)
-        if warn:
-            warns.append(f"summary.md:{warn}")
+        summary_problem = _managed_marker_problem(
+            summary_text, OBSERVATION_START, OBSERVATION_END)
+        if summary_problem:
+            warns.append(f"summary.md:{summary_problem}")
     if appendix_text is None:
         warns.append(f"{APPENDIX_FILENAME} 缺席,运行观测明细未刷新(旧 run 不回填)")
+        appendix_problem = None
         new_appendix = None
     else:
-        new_appendix, warn = _inject_managed(
-            appendix_text, detail_md, OBSERVATION_DETAIL_START, OBSERVATION_DETAIL_END,
-            APPENDIX_OBSERVATION_ANCHOR)
-        if warn:
-            warns.append(f"{APPENDIX_FILENAME}:{warn}")
+        appendix_problem = _managed_marker_problem(
+            appendix_text, OBSERVATION_DETAIL_START, OBSERVATION_DETAIL_END)
+        if appendix_problem:
+            warns.append(f"{APPENDIX_FILENAME}:{appendix_problem}")
+    if warns:
+        observation["warnings"] = list(dict.fromkeys([
+            *(observation.get("warnings") or []), *warns,
+        ]))
+        observation["status"] = "DEGRADED"
+    observation["markdown"] = render_run_observation(observation)
+    line_md = render_run_observation_line(observation)
+    if summary_text is not None:
+        new_summary = summary_text
+        if summary_problem is None:
+            new_summary, _ = _replace_managed_strict(
+                summary_text, line_md, OBSERVATION_START, OBSERVATION_END)
+    if appendix_text is not None:
+        new_appendix = appendix_text
+        if appendix_problem is None:
+            new_appendix, _ = _replace_managed_strict(
+                appendix_text, observation["markdown"],
+                OBSERVATION_DETAIL_START, OBSERVATION_DETAIL_END)
     return new_summary, new_appendix, warns
 
 
@@ -656,10 +709,14 @@ def refresh_run_observation_files(report_dir: Path | str, observation: dict) -> 
     def _read(path: Path) -> str | None:
         return path.read_text(encoding="utf-8") if path.is_file() else None
 
+    old_summary, old_appendix = _read(summary_path), _read(appendix_path)
     new_summary, new_appendix, warns = refresh_run_observation(
-        _read(summary_path), _read(appendix_path), observation)
-    for path, text in ((summary_path, new_summary), (appendix_path, new_appendix)):
-        if text is None:
+        old_summary, old_appendix, observation)
+    for path, text, old in (
+        (summary_path, new_summary, old_summary),
+        (appendix_path, new_appendix, old_appendix),
+    ):
+        if text is None or text == old:
             continue
         tmp = path.with_name(f"{path.name}.tmp")
         tmp.write_text(text, encoding="utf-8")
@@ -799,6 +856,13 @@ def publish_run_observation(
 
         safe_verify_decision(scan, mode=_rb_mode, exclude_pinned=_rb_exclude_pinned,
                              pool=_rb_pool)
+    report = Path(report_dir) if report_dir is not None else None
+    if report is not None:
+        # 先刷新报告。标记损坏会把同一 observation 降级；该事实必须先写回预算产物，
+        # 再由 run_health / artifact index / trace / retention 依次读取最终态。
+        refresh_run_observation_files(report, observation)
+        _atomic_json(scan / "_budget_observation.json", observation)
+
     from autoresearch.scan.stage_result import safe_record_stage_result
 
     safe_record_stage_result(
@@ -809,6 +873,8 @@ def publish_run_observation(
         metrics={
             "truncated": False,
             "measurement_status": observation["measurement_status"],
+            "weighted_input_proxy": observation["weighted_input_proxy"],
+            "budget_band": observation["budget_band"],
             "estimated_usd": observation["estimated_usd"],
             "interactive_wall_s": observation["interactive_wall_s"],
             "cache_hit_rate": observation["cache_hit_rate"],
@@ -818,11 +884,7 @@ def publish_run_observation(
         warnings=observation["warnings"],
         error=None,
     )
-    if report_dir is not None:
-        report = Path(report_dir)
-        # 双刷新(§6.5):**先把两份文件都写完**,再刷最终字节 / artifact index /
-        # trace 镜像 / MANIFEST —— 顺序颠倒就会拿「只刷了一半」的现场去算哈希。
-        refresh_run_observation_files(report, observation)
+    if report is not None:
         # 最终态字节预算:这一次才是验收读数(token 计量此刻才到)。展示层 warn,不截断。
         with contextlib.suppress(Exception):
             from autoresearch.scan.health import measure_report_budget, write_run_health

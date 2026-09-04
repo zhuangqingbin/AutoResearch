@@ -1,6 +1,7 @@
 """成本/时延观测接线：缺失不冒充 $0，预算不反向影响决策。"""
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -8,7 +9,14 @@ import pandas as pd
 
 from autoresearch.scan.artifacts import build_artifact_index
 from autoresearch.scan.decision_record import DecisionRecord, write_decision_records
-from autoresearch.scan.post_run import publish_run_observation
+from autoresearch.scan.post_run import (
+    OBSERVATION_END,
+    OBSERVATION_START,
+    publish_run_observation,
+    refresh_run_observation,
+)
+from autoresearch.scan.report_model import RUN_OBSERVATION_DETAIL_MARKERS
+from autoresearch.scan.retention import read_manifest
 
 DATE = "2026-07-28"
 
@@ -76,13 +84,23 @@ def _scan(tmp_path: Path) -> Path:
     return scan
 
 
-def _usage(scan: Path, *, cost: float = 12.0, cache: float = 0.9) -> Path:
+def _usage(
+    scan: Path,
+    *,
+    cost: float = 12.0,
+    cache: float = 0.9,
+    weighted: int = 4_000_000,
+) -> Path:
     path = scan / "_token_usage.json"
     path.write_text(
         json.dumps({
             "schema_version": 1,
             "cache_hit_rate": cache,
-            "totals": {"transcripts": 3, "estimated_usd": cost},
+            "totals": {
+                "transcripts": 3,
+                "estimated_usd": cost,
+                "weighted_input_proxy": weighted,
+            },
             "rows": [
                 {"agent": "l4-card", "estimated_usd": cost},
             ],
@@ -146,12 +164,26 @@ def test_budget_degradation_does_not_mutate_decision_or_rating_artifacts(tmp_pat
     assert {path: path.read_bytes() for path in watched} == before
 
 
+def _report_bundle(report: Path) -> tuple[Path, Path]:
+    report.mkdir(parents=True)
+    summary = report / "summary.md"
+    appendix = report / "appendix.md"
+    summary.write_text(
+        f"# report\n\n{OBSERVATION_START}\nold summary\n{OBSERVATION_END}\n",
+        encoding="utf-8",
+    )
+    detail_start, detail_end = RUN_OBSERVATION_DETAIL_MARKERS
+    appendix.write_text(
+        f"# appendix\n\n{detail_start}\nold detail\n{detail_end}\n",
+        encoding="utf-8",
+    )
+    return summary, appendix
+
+
 def test_post_run_replaces_managed_report_section_after_usage_arrives(tmp_path):
     scan = _scan(tmp_path)
     report = tmp_path / "reports" / "scan" / "run-1"
-    report.mkdir(parents=True)
-    summary = report / "summary.md"
-    summary.write_text("# report\n\nbody\n", encoding="utf-8")
+    summary, appendix = _report_bundle(report)
 
     first = publish_run_observation(scan, report_dir=report, real_scan=False)
     assert first["measurement_status"] == "UNMEASURED"
@@ -163,3 +195,99 @@ def test_post_run_replaces_managed_report_section_after_usage_arrives(tmp_path):
     assert text.count("<!-- run-observation:start -->") == 1
     assert "$7.0000" in text
     assert "UNMEASURED" not in text
+    assert "加权输入 4000000" in text
+    assert "预算带:GREEN" in text
+    assert "加权输入:4000000" in appendix.read_text(encoding="utf-8")
+
+
+def test_unmeasured_rendering_is_dash_and_red(tmp_path):
+    scan = _scan(tmp_path)
+    report = tmp_path / "reports" / "scan" / "run-unmeasured"
+    summary, appendix = _report_bundle(report)
+
+    got = publish_run_observation(scan, report_dir=report, real_scan=False)
+
+    assert got["weighted_input_proxy"] is None
+    assert got["budget_band"] == "RED"
+    assert "加权输入 —" in summary.read_text(encoding="utf-8")
+    assert "预算带:RED" in summary.read_text(encoding="utf-8")
+    assert "加权输入:—" in appendix.read_text(encoding="utf-8")
+
+
+def test_markerless_report_is_unchanged_and_degrades_observation(tmp_path):
+    scan = _scan(tmp_path)
+    _usage(scan)
+    report = tmp_path / "reports" / "scan" / "legacy"
+    report.mkdir(parents=True)
+    summary = report / "summary.md"
+    summary.write_text("# legacy\n\nbody\n", encoding="utf-8")
+    before = summary.read_bytes()
+
+    got = publish_run_observation(scan, report_dir=report, real_scan=False)
+
+    assert summary.read_bytes() == before
+    assert got["status"] == "DEGRADED"
+    assert any("summary.md" in warning and "managed 标记" in warning
+               for warning in got["warnings"])
+    persisted = json.loads((scan / "_budget_observation.json").read_text(encoding="utf-8"))
+    assert persisted["status"] == "DEGRADED"
+    assert persisted["warnings"] == got["warnings"]
+    stage = json.loads((scan / "stage_results" / "budget.json").read_text(encoding="utf-8"))
+    assert stage["status"] == "DEGRADED"
+    assert stage["metrics"]["truncated"] is False
+    assert stage["warnings"] == got["warnings"]
+
+
+def test_refresh_rejects_malformed_marker_pairs_without_mutating_text():
+    observation = {
+        "measurement_status": "MEASURED",
+        "status": "SUCCEEDED",
+        "weighted_input_proxy": 1,
+        "budget_band": "GREEN",
+        "warnings": [],
+    }
+    malformed = [
+        f"prefix\n{OBSERVATION_START}\nbody\n",
+        f"prefix\n{OBSERVATION_END}\nbody\n",
+        f"{OBSERVATION_END}\nbody\n{OBSERVATION_START}\n",
+        f"{OBSERVATION_START}\na\n{OBSERVATION_START}\nb\n{OBSERVATION_END}\n",
+        f"{OBSERVATION_START}\na\n{OBSERVATION_END}\nb\n{OBSERVATION_END}\n",
+    ]
+
+    for text in malformed:
+        candidate = {**observation, "warnings": []}
+        got, _, warnings = refresh_run_observation(text, None, candidate)
+        assert got == text
+        assert warnings
+        assert candidate["status"] == "DEGRADED"
+        assert any("managed 标记" in warning for warning in candidate["warnings"])
+
+
+def test_successful_refresh_updates_hashes_and_is_byte_idempotent(tmp_path):
+    scan = _scan(tmp_path)
+    _usage(scan, weighted=6_000_000)
+    report = tmp_path / "reports" / "scan" / "run-hashes"
+    summary, appendix = _report_bundle(report)
+
+    first = publish_run_observation(scan, report_dir=report, real_scan=False)
+    watched = [summary, appendix, scan / "artifact_index.json",
+               report / "trace" / "artifact_index.json",
+               report / "trace" / "_budget_observation.json",
+               report / "trace" / "MANIFEST.sha256"]
+    before = {path: path.read_bytes() for path in watched}
+    index = json.loads((scan / "artifact_index.json").read_text(encoding="utf-8"))
+    rows = {row["name"]: row for row in index["artifacts"]}
+    assert rows["summary"]["content_hash"] == hashlib.sha256(summary.read_bytes()).hexdigest()
+    assert (report / "trace" / "artifact_index.json").read_bytes() == before[scan / "artifact_index.json"]
+    assert (report / "trace" / "_budget_observation.json").read_bytes() == (
+        scan / "_budget_observation.json").read_bytes()
+    manifest = read_manifest(report)
+    assert manifest["summary.md"] == hashlib.sha256(summary.read_bytes()).hexdigest()
+    assert manifest["appendix.md"] == hashlib.sha256(appendix.read_bytes()).hexdigest()
+    assert first["budget_band"] == "YELLOW"
+
+    second = publish_run_observation(scan, report_dir=report, real_scan=False)
+
+    assert second == first
+    assert summary.read_bytes() == before[summary]
+    assert appendix.read_bytes() == before[appendix]
