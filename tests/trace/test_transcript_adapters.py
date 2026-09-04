@@ -23,6 +23,7 @@ from autoresearch.trace.transcripts.base import (
     RunIdentity,
     TranscriptAdapter,
     TranscriptRef,
+    TranscriptStats,
 )
 from autoresearch.trace.transcripts.claude import ClaudeTranscriptAdapter
 from autoresearch.trace.transcripts.codex import (
@@ -121,6 +122,303 @@ def test_claude_adapter_preserves_usage_dedup_and_retry_status(claude_ref):
     ]
 
 
+def test_claude_stats_exposes_single_parse_contract(tmp_path):
+    import json
+
+    path = tmp_path / "agent-stats.jsonl"
+    rows = [
+        {
+            "type": "user",
+            "timestamp": "2026-09-04T01:00:00Z",
+            "message": {"content": "Start the analysis."},
+        },
+        {
+            "type": "assistant",
+            "timestamp": "2026-09-04T01:00:01Z",
+            "message": {
+                "id": "msg-1",
+                "model": "claude-opus-5",
+                "usage": {
+                    "input_tokens": 1,
+                    "output_tokens": 2,
+                    "cache_read_input_tokens": 3,
+                    "cache_creation_input_tokens": 4,
+                },
+                "content": [{"type": "text", "text": "discarded stream update"}],
+            },
+        },
+        {
+            "type": "assistant",
+            "timestamp": "2026-09-04T01:00:02Z",
+            "attributionAgent": "l4-card",
+            "effort": "high",
+            "message": {
+                "id": "msg-1",
+                "model": "claude-opus-5",
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 11,
+                    "cache_read_input_tokens": 20,
+                    "cache_creation_input_tokens": 7,
+                },
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-1",
+                        "name": "Bash",
+                        "input": {"command": "printf fixture"},
+                    }
+                ],
+            },
+        },
+        {
+            "type": "user",
+            "timestamp": "2026-09-04T01:00:03Z",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": "Synthetic tool output.",
+                    }
+                ]
+            },
+        },
+        {
+            "type": "system",
+            "timestamp": "2026-09-04T01:00:04Z",
+            "compact_boundary": {"preTokens": 210_000},
+            "preTokens": 999_999,
+        },
+        {
+            "type": "assistant",
+            "timestamp": "2026-09-04T01:00:06Z",
+            "message": {
+                "id": "msg-2",
+                "model": "claude-opus-5",
+                "stop_reason": "end_turn",
+                "usage": {
+                    "input_tokens": 30,
+                    "output_tokens": 12,
+                    "cache_read_input_tokens": 50,
+                    "cache_creation_input_tokens": 11,
+                },
+                "content": [{"type": "text", "text": "Finished."}],
+            },
+        },
+    ]
+    path.write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+    ref = TranscriptRef(engine="claude", path=path, role="subagent")
+    adapter = ClaudeTranscriptAdapter(projects_root=tmp_path)
+
+    stats = adapter.stats(ref)
+
+    assert stats.normalized == adapter.normalize(ref)
+    assert stats.usage == adapter.usage(ref)
+    assert stats.first_context_tokens == 37
+    assert stats.context_tokens == (37, 91)
+    assert stats.compact_pre_tokens == (210_000,)
+    assert stats.suspected_tail == 1
+    assert stats.started_at == "2026-09-04T01:00:00Z"
+    assert stats.ended_at == "2026-09-04T01:00:06Z"
+    assert stats.tool_requests["Bash"] == 1
+    assert stats.tool_results["Bash"] == len("Synthetic tool output.")
+    assert "discarded stream update" not in str(stats.normalized.items)
+    with pytest.raises(TypeError):
+        stats.tool_requests["Bash"] = 2
+    with pytest.raises(TypeError):
+        stats.tool_results["Bash"] = 0
+
+
+def test_claude_stats_accepts_only_explicit_compact_metadata(tmp_path):
+    import json
+
+    path = tmp_path / "agent-compact.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "type": "system",
+                "timestamp": "2026-09-04T01:00:00Z",
+                "compactMetadata": {"preTokens": 123_456},
+                "preTokens": 999_999,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    stats = ClaudeTranscriptAdapter(projects_root=tmp_path).stats(
+        TranscriptRef(engine="claude", path=path)
+    )
+
+    assert stats.compact_pre_tokens == (123_456,)
+
+
+def test_claude_stats_last_error_row_replaces_same_id_stream_update(tmp_path):
+    import json
+
+    path = tmp_path / "agent-final-error.jsonl"
+    rows = [
+        {
+            "type": "user",
+            "timestamp": "2026-09-04T01:00:00Z",
+            "message": {"content": "Start."},
+        },
+        {
+            "type": "assistant",
+            "timestamp": "2026-09-04T01:00:01Z",
+            "message": {
+                "id": "same",
+                "model": "claude-opus-5",
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 11,
+                    "cache_read_input_tokens": 20,
+                    "cache_creation_input_tokens": 7,
+                },
+                "content": [{"type": "text", "text": "stale success"}],
+            },
+        },
+        {
+            "type": "assistant",
+            "timestamp": "2026-09-04T01:00:02Z",
+            "error": "rate_limit",
+            "isApiErrorMessage": True,
+            "message": {"id": "same", "model": "<synthetic>", "content": []},
+        },
+    ]
+    path.write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+    ref = TranscriptRef(engine="claude", path=path)
+    adapter = ClaudeTranscriptAdapter(projects_root=tmp_path)
+
+    stats = adapter.stats(ref)
+
+    assert [item.kind for item in stats.normalized.items] == ["message", "error"]
+    assert "stale success" not in str(stats.normalized.items)
+    assert stats.usage.messages == 0
+    assert stats.usage.input == 0
+    assert stats.context_tokens == ()
+    assert stats.normalized == adapter.normalize(ref)
+    assert stats.usage == adapter.usage(ref)
+
+
+def test_claude_stats_dedups_tools_by_tool_use_id_not_message_id(tmp_path):
+    import json
+
+    path = tmp_path / "agent-tools.jsonl"
+    rows = [
+        {
+            "type": "assistant",
+            "timestamp": "2026-09-04T01:00:00Z",
+            "message": {
+                "id": "stream",
+                "model": "claude-opus-5",
+                "usage": {"input_tokens": 1},
+                "content": [
+                    {"type": "tool_use", "id": "tool-1", "name": "Bash", "input": {}}
+                ],
+            },
+        },
+        {
+            "type": "assistant",
+            "timestamp": "2026-09-04T01:00:01Z",
+            "message": {
+                "id": "stream",
+                "model": "claude-opus-5",
+                "usage": {"input_tokens": 2},
+                "content": [
+                    {"type": "tool_use", "id": "tool-1", "name": "Bash", "input": {}}
+                ],
+            },
+        },
+        {
+            "type": "assistant",
+            "timestamp": "2026-09-04T01:00:02Z",
+            "message": {
+                "id": "stream",
+                "model": "claude-opus-5",
+                "usage": {"input_tokens": 3},
+                "content": [
+                    {"type": "tool_use", "id": "tool-2", "name": "Read", "input": {}}
+                ],
+            },
+        },
+        {
+            "type": "user",
+            "timestamp": "2026-09-04T01:00:03Z",
+            "message": {
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "tool-1", "content": "partial"}
+                ]
+            },
+        },
+        {
+            "type": "user",
+            "timestamp": "2026-09-04T01:00:04Z",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": "complete one",
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-2",
+                        "content": "complete two",
+                    },
+                ]
+            },
+        },
+    ]
+    path.write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    stats = ClaudeTranscriptAdapter(projects_root=tmp_path).stats(
+        TranscriptRef(engine="claude", path=path)
+    )
+
+    assert stats.tool_requests == {"Bash": 1, "Read": 1}
+    assert stats.tool_results == {
+        "Bash": len("complete one"),
+        "Read": len("complete two"),
+    }
+    assert stats.usage.messages == 1
+    assert stats.context_tokens == (3,)
+
+
+def test_claude_stats_uses_chronological_valid_timestamp_bounds(tmp_path):
+    import json
+
+    path = tmp_path / "agent-time.jsonl"
+    rows = [
+        {"type": "system", "timestamp": "2026-09-04T01:00:03Z"},
+        {"type": "system", "timestamp": "not-a-timestamp"},
+        {"type": "system"},
+        {"type": "system", "timestamp": "2026-09-04T01:00:01+00:00"},
+        {"type": "system", "timestamp": "2026-09-04T09:00:02+08:00"},
+    ]
+    path.write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    stats = ClaudeTranscriptAdapter(projects_root=tmp_path).stats(
+        TranscriptRef(engine="claude", path=path)
+    )
+
+    assert stats.started_at == "2026-09-04T01:00:01+00:00"
+    assert stats.ended_at == "2026-09-04T01:00:03Z"
+
+
 def test_normalized_items_keep_only_last_stream_update(claude_ref):
     normalized = ClaudeTranscriptAdapter().normalize(claude_ref)
 
@@ -140,6 +438,10 @@ def test_protocol_values_are_immutable(claude_ref):
     item = NormalizedItem(index=0, kind="message", payload={"nested": {"value": 1}})
 
     assert isinstance(ClaudeTranscriptAdapter(), TranscriptAdapter)
+    assert isinstance(
+        ClaudeTranscriptAdapter(), transcripts_mod.StatsTranscriptAdapter
+    )
+    assert transcripts_mod.TranscriptStats is TranscriptStats
     with pytest.raises(FrozenInstanceError):
         identity.run_id = "changed"
     with pytest.raises(TypeError):
@@ -468,6 +770,7 @@ def test_binding_rejects_paths_inside_the_capsule(codex_run):
 
 def test_adapter_registry_selects_codex():
     assert isinstance(adapter_for("codex"), CodexTranscriptAdapter)
+    assert isinstance(adapter_for("codex"), TranscriptAdapter)
 
 
 # --- Task 11: every reached invocation is accounted for ---------------------

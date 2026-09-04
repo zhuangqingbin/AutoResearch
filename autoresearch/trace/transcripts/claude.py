@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import contextlib
 import json
+from collections import Counter
+from datetime import datetime
 from pathlib import Path
 
 from autoresearch.trace.identity import redact_value
@@ -12,6 +14,7 @@ from autoresearch.trace.transcripts.base import (
     NormalizedTranscript,
     RunIdentity,
     TranscriptRef,
+    TranscriptStats,
     UsageRecord,
 )
 
@@ -81,21 +84,28 @@ class ClaudeTranscriptAdapter:
         return []
 
     @staticmethod
-    def _summary(rows: list[dict], ref: TranscriptRef) -> dict:
+    def _summary(
+        rows: list[dict],
+        ref: TranscriptRef,
+        last_message_row: dict[str, int],
+    ) -> dict:
         latest: dict[str, dict] = {}
         agent = effort = model = None
         speed = "standard"
         failures: list[int] = []
         terminals: list[int] = []
         for idx, row in enumerate(rows):
+            msg = row.get("message") or {}
+            if not isinstance(msg, dict):
+                msg = {}
+            message_id = msg.get("id")
+            if message_id and last_message_row.get(str(message_id)) != idx:
+                continue
             failed = bool(row.get("error") or row.get("isApiErrorMessage"))
             if failed:
                 failures.append(idx)
             agent = agent or row.get("attributionAgent")
             effort = effort or row.get("effort")
-            msg = row.get("message") or {}
-            if not isinstance(msg, dict):
-                msg = {}
             candidate_model = msg.get("model")
             if candidate_model and candidate_model != "<synthetic>":
                 model = model or candidate_model
@@ -140,24 +150,113 @@ class ClaudeTranscriptAdapter:
         redacted = redact_value(payload).value
         return redacted if isinstance(redacted, dict) else {}
 
-    def normalize(self, ref: TranscriptRef) -> NormalizedTranscript:
+    @staticmethod
+    def _is_user_turn(row: dict) -> bool:
+        """Distinguish a human/user turn from harness tool-result envelopes."""
+        if row.get("type") != "user":
+            return False
+        message = row.get("message") or {}
+        if not isinstance(message, dict):
+            return False
+        content = message.get("content")
+        if isinstance(content, str):
+            return bool(content)
+        if not isinstance(content, list):
+            return False
+        return any(
+            not isinstance(block, dict) or block.get("type") != "tool_result"
+            for block in content
+        )
+
+    @staticmethod
+    def _content_chars(content: object) -> int:
+        if content is None:
+            return 0
+        if isinstance(content, str):
+            return len(content)
+        return len(
+            json.dumps(
+                content,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+
+    @staticmethod
+    def _timestamp_bounds(rows: list[dict]) -> tuple[str | None, str | None]:
+        """Return chronological bounds from timezone-aware ISO timestamps.
+
+        Missing, malformed, and timezone-naive values cannot establish a reliable
+        absolute event time, so they are excluded. If none remain, both bounds are
+        ``None``.
+        """
+        valid: list[tuple[datetime, int, str]] = []
+        for index, row in enumerate(rows):
+            raw = row.get("timestamp")
+            if not isinstance(raw, str) or not raw:
+                continue
+            try:
+                parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if parsed.tzinfo is None or parsed.utcoffset() is None:
+                continue
+            valid.append((parsed, index, raw))
+        if not valid:
+            return None, None
+        return min(valid, key=lambda item: (item[0], item[1]))[2], max(
+            valid, key=lambda item: (item[0], item[1])
+        )[2]
+
+    @staticmethod
+    def _validate_ref(ref: TranscriptRef, action: str) -> None:
         if ref.engine != "claude":
-            raise ValueError(f"Claude adapter cannot normalize engine {ref.engine!r}")
+            raise ValueError(f"Claude adapter cannot {action} engine {ref.engine!r}")
         if ref.path is None or ref.status != "PRESENT":
             raise FileNotFoundError("Claude transcript is not PRESENT")
+
+    def stats(self, ref: TranscriptRef) -> TranscriptStats:
+        """Parse one Claude JSONL once into normalization, usage, and diagnostics."""
+        self._validate_ref(ref, "inspect")
         rows = list(self._iter_rows(ref.path))
-        summary = self._summary(rows, ref)
         last_message_row: dict[str, int] = {}
         for idx, row in enumerate(rows):
             msg = row.get("message") or {}
-            if (
-                isinstance(msg, dict)
-                and msg.get("id")
-                and not (row.get("error") or row.get("isApiErrorMessage"))
-            ):
+            if isinstance(msg, dict) and msg.get("id"):
                 last_message_row[str(msg["id"])] = idx
+        summary = self._summary(rows, ref, last_message_row)
 
         items: list[NormalizedItem] = []
+        tool_requests_by_id: dict[str, str] = {}
+        tool_results_by_id: dict[str, object] = {}
+        for row in rows:
+            message = row.get("message") or {}
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                tool_id = block.get("id")
+                tool_name = block.get("name")
+                if (
+                    block.get("type") == "tool_use"
+                    and isinstance(tool_id, str)
+                    and tool_id
+                    and isinstance(tool_name, str)
+                    and tool_name
+                ):
+                    tool_requests_by_id[tool_id] = tool_name
+                result_id = block.get("tool_use_id")
+                if (
+                    block.get("type") == "tool_result"
+                    and isinstance(result_id, str)
+                    and result_id
+                ):
+                    tool_results_by_id[result_id] = block.get("content")
 
         def add(kind: str, payload: dict, timestamp: str | None) -> None:
             items.append(
@@ -171,6 +270,12 @@ class ClaudeTranscriptAdapter:
 
         for row_idx, row in enumerate(rows):
             timestamp = row.get("timestamp")
+            msg = row.get("message") or {}
+            if not isinstance(msg, dict):
+                msg = {}
+            message_id = msg.get("id")
+            if message_id and last_message_row.get(str(message_id)) != row_idx:
+                continue
             if row.get("error") or row.get("isApiErrorMessage"):
                 add(
                     "error",
@@ -180,12 +285,6 @@ class ClaudeTranscriptAdapter:
                     },
                     timestamp,
                 )
-                continue
-            msg = row.get("message") or {}
-            if not isinstance(msg, dict):
-                continue
-            message_id = msg.get("id")
-            if message_id and last_message_row.get(str(message_id)) != row_idx:
                 continue
             content = msg.get("content")
             blocks = content if isinstance(content, list) else []
@@ -214,27 +313,30 @@ class ClaudeTranscriptAdapter:
                     continue
                 block_type = block.get("type")
                 if block_type == "tool_use":
+                    tool_name = block.get("name")
+                    request_id = block.get("id")
                     add(
                         "tool_request",
                         {
                             "message_id": message_id,
-                            "tool_use_id": block.get("id"),
-                            "tool_name": block.get("name"),
+                            "tool_use_id": request_id,
+                            "tool_name": tool_name,
                             "input": block.get("input") or {},
                         },
                         timestamp,
                     )
                 elif block_type == "tool_result":
+                    request_id = block.get("tool_use_id")
                     add(
                         "tool_result",
                         {
-                            "tool_use_id": block.get("tool_use_id"),
+                            "tool_use_id": request_id,
                             "content": block.get("content"),
                             "is_error": bool(block.get("is_error")),
                         },
                         timestamp,
                     )
-        return NormalizedTranscript(
+        normalized = NormalizedTranscript(
             ref=ref,
             items=tuple(items),
             status=summary["status"],
@@ -243,13 +345,6 @@ class ClaudeTranscriptAdapter:
             effort=summary["effort"],
         )
 
-    def usage(self, ref: TranscriptRef) -> UsageRecord:
-        if ref.engine != "claude":
-            raise ValueError(f"Claude adapter cannot meter engine {ref.engine!r}")
-        if ref.path is None or ref.status != "PRESENT":
-            raise FileNotFoundError("Claude transcript is not PRESENT")
-        rows = list(self._iter_rows(ref.path))
-        summary = self._summary(rows, ref)
         totals = {
             "input": 0,
             "output": 0,
@@ -270,7 +365,7 @@ class ClaudeTranscriptAdapter:
             c5m = int(cache_split.get("ephemeral_5m_input_tokens") or 0)
             totals["cache_create_1h"] += c1h
             totals["cache_create_5m"] += c5m if c5m else max(cache_total - c1h, 0)
-        return UsageRecord(
+        usage_record = UsageRecord(
             ref=ref,
             messages=len(latest),
             input=totals["input"],
@@ -289,3 +384,72 @@ class ClaudeTranscriptAdapter:
             retry_count=summary["retry_count"],
             discarded=summary["status"] == "FAILED",
         )
+
+        started_at, ended_at = self._timestamp_bounds(rows)
+        context_tokens: list[int] = []
+        assistant_rows: list[int] = []
+        for row_idx, row in enumerate(rows):
+            if row.get("error") or row.get("isApiErrorMessage"):
+                continue
+            message = row.get("message") or {}
+            if not isinstance(message, dict):
+                continue
+            message_id = message.get("id")
+            if message_id and last_message_row.get(str(message_id)) != row_idx:
+                continue
+            if row.get("type") == "assistant" and message_id:
+                assistant_rows.append(row_idx)
+            message_usage = message.get("usage")
+            if row.get("type") != "assistant" or not isinstance(message_usage, dict):
+                continue
+            context_tokens.append(
+                int(message_usage.get("input_tokens") or 0)
+                + int(message_usage.get("cache_read_input_tokens") or 0)
+                + int(message_usage.get("cache_creation_input_tokens") or 0)
+            )
+
+        compact_pre_tokens: list[int] = []
+        for row in rows:
+            for key in ("compact_boundary", "compactMetadata"):
+                boundary = row.get(key)
+                if not isinstance(boundary, dict):
+                    continue
+                pre_tokens = boundary.get("preTokens")
+                if type(pre_tokens) is int and pre_tokens >= 0:
+                    compact_pre_tokens.append(pre_tokens)
+
+        last_user_row = max(
+            (row_idx for row_idx, row in enumerate(rows) if self._is_user_turn(row)),
+            default=-1,
+        )
+        assistant_after_last_user = (
+            sum(row_idx > last_user_row for row_idx in assistant_rows)
+            if last_user_row >= 0
+            else 0
+        )
+        tool_requests = Counter(tool_requests_by_id.values())
+        tool_results: Counter[str] = Counter()
+        for tool_id, content in tool_results_by_id.items():
+            tool_name = tool_requests_by_id.get(tool_id)
+            if tool_name:
+                tool_results[tool_name] += self._content_chars(content)
+        return TranscriptStats(
+            normalized=normalized,
+            usage=usage_record,
+            started_at=started_at,
+            ended_at=ended_at,
+            context_tokens=tuple(context_tokens),
+            first_context_tokens=context_tokens[0] if context_tokens else None,
+            compact_pre_tokens=tuple(compact_pre_tokens),
+            suspected_tail=max(assistant_after_last_user - 1, 0),
+            tool_requests=tool_requests,
+            tool_results=tool_results,
+        )
+
+    def normalize(self, ref: TranscriptRef) -> NormalizedTranscript:
+        self._validate_ref(ref, "normalize")
+        return self.stats(ref).normalized
+
+    def usage(self, ref: TranscriptRef) -> UsageRecord:
+        self._validate_ref(ref, "meter")
+        return self.stats(ref).usage

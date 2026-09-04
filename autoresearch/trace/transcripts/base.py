@@ -178,6 +178,28 @@ class UsageRecord:
     reasoning_output: int = 0
 
 
+@dataclass(frozen=True)
+class TranscriptStats:
+    """One immutable, adapter-owned view of a transcript's measurable facts."""
+
+    normalized: NormalizedTranscript
+    usage: UsageRecord
+    started_at: str | None
+    ended_at: str | None
+    context_tokens: tuple[int, ...]
+    first_context_tokens: int | None
+    compact_pre_tokens: tuple[int, ...]
+    suspected_tail: int
+    tool_requests: Mapping[str, int] = field(default_factory=dict)
+    tool_results: Mapping[str, int] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "context_tokens", tuple(self.context_tokens))
+        object.__setattr__(self, "compact_pre_tokens", tuple(self.compact_pre_tokens))
+        object.__setattr__(self, "tool_requests", _freeze(self.tool_requests))
+        object.__setattr__(self, "tool_results", _freeze(self.tool_results))
+
+
 @runtime_checkable
 class TranscriptAdapter(Protocol):
     def locate(self, run_identity: RunIdentity) -> list[TranscriptRef]: ...
@@ -185,3 +207,10 @@ class TranscriptAdapter(Protocol):
     def normalize(self, ref: TranscriptRef) -> NormalizedTranscript: ...
 
     def usage(self, ref: TranscriptRef) -> UsageRecord: ...
+
+
+@runtime_checkable
+class StatsTranscriptAdapter(TranscriptAdapter, Protocol):
+    """Transcript adapter that also exposes extended metering statistics."""
+
+    def stats(self, ref: TranscriptRef) -> TranscriptStats: ...
