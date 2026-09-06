@@ -58,6 +58,8 @@ import numpy as np
 import pandas as pd
 
 from autoresearch.common import ruler as _ruler, workspace as ws
+from autoresearch.common.forward_returns import _board_limit
+from autoresearch.data import market_panel as _panel
 from autoresearch.scan import exec_anchor as _anchor, outcome as _outcome, run_naming as _naming
 
 VIEWS_SCHEMA_VERSION = 1
@@ -469,12 +471,10 @@ def _dashed(day: str) -> str:
 def market_metrics(day: str, trade_days: list[str], piv: dict) -> dict | None:
     """一个交易日的四把尺读数。`day`/`trade_days` 用 compact YYYYMMDD;不成熟 → `None`。
 
-    口径与 `research.edge_census` / `factor_lab` **逐字同源**(`lake_trade_days` /
-    `load_lake_pivots` / `_board_limit`),两边读数因此可以直接对表。另写一套板制度或
-    另写一个 pivot 加载器,就是在给同一个问题造第二个答案。
+    口径与 `common.forward_returns` / `data.market_panel` **逐字同源**(`lake_trade_days` /
+    `load_lake_pivots` / `_board_limit` 都是同一个实现),两边读数因此可以直接对表。另写
+    一套板制度或另写一个 pivot 加载器,就是在给同一个问题造第二个答案。
     """
-    from autoresearch.research.factor_lab import _board_limit
-
     if not piv or day not in trade_days:
         return None
     index = trade_days.index(day)
@@ -538,9 +538,7 @@ def market_context(reports_root: Path | None = None) -> dict[str, dict]:
 def build_market(sessions: list[str], *, lake_daily: Path | None = None,
                  context: dict[str, dict] | None = None) -> list[dict]:
     """每交易日一行。湖里还没有 D+2 → `PENDING`(**状态不是故障**);湖缺了本该有的天 → `UNAVAILABLE`。"""
-    from autoresearch.research import edge_census as ec
-
-    trade_days = ec.lake_trade_days(lake_daily)
+    trade_days = _panel.lake_trade_days(lake_daily)
     last_lake = trade_days[-1] if trade_days else ""
     wanted = [_compact(day) for day in sessions]
     # 一次装完整个窗口(尾部 +2 个交易日供 D+2 腿),不逐日 IO:60 个交易日 × 5500 只是常态。
@@ -550,7 +548,7 @@ def build_market(sessions: list[str], *, lake_daily: Path | None = None,
         first_index = trade_days.index(in_lake[0])
         last_index = min(len(trade_days) - 1, trade_days.index(in_lake[-1]) + 2)
         window = trade_days[first_index:last_index + 1]
-    piv = ec.load_lake_pivots(window, lake_daily) if window else {}
+    piv = _panel.load_lake_pivots(window, lake_daily) if window else {}
 
     rows: list[dict] = []
     for session, day in zip(sessions, wanted, strict=True):
@@ -573,15 +571,13 @@ def build_market(sessions: list[str], *, lake_daily: Path | None = None,
 # ───────────────────────── 组装 + 运维健康 ─────────────────────────
 
 def _session_span(runs: list[dict], lake_daily: Path | None) -> tuple[str, str] | None:
-    from autoresearch.research import edge_census as ec
-
     anchors = [str(r.get("analysis_date") or "") for r in runs]
     anchors += [str(r.get("run_local_date") or "") for r in runs]
     anchors += [str(r.get("first_available_session") or "") for r in runs]
     known = sorted(day for day in anchors if len(day) == 10)
     if not known:
         return None
-    lake = ec.lake_trade_days(lake_daily)
+    lake = _panel.lake_trade_days(lake_daily)
     end = max(known[-1], _dashed(lake[-1]) if lake else known[-1])
     return known[0], end
 

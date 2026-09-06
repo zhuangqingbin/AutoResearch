@@ -31,8 +31,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from autoresearch.common import ruler as _ruler
-from autoresearch.common import workspace as ws
+from autoresearch.common import ruler as _ruler, workspace as ws
 
 RULERS = ("gap_c1_o2", "fwd_5_oc", "fwd_10_oc")
 MAIN = _ruler.MAIN_RULER
@@ -50,54 +49,10 @@ FOOTNOTE = ("_参考尺 `fwd_5_oc`/`fwd_10_oc` **只观察**,不判读;决策尺
 
 
 # ───────────────────────── 价格:湖 → pivot → 前向收益 ─────────────────────────
-
-def lake_trade_days(lake_daily: Path | None = None) -> list[str]:
-    """湖里有日线的交易日(文件名 YYYYMMDD 升序)——与 `paper_nav.trade_days()` 同口径(已退役),
-    不查交易日历:湖里没有的日子对本仪器就是不存在。"""
-    d = Path(lake_daily) if lake_daily else ws.lake_root() / "daily"
-    return sorted(p.stem[:8] for p in d.glob("*.parquet") if p.stem[:8].isdigit())
-
-
-def load_lake_pivots(dates: list[str], lake_daily: Path | None = None) -> dict[str, pd.DataFrame]:
-    """`lake/daily/<d>.parquet`(tushare daily 列)→ {open/high/low/close/pct_chg/amount: pivot[code×date]}。
-    只装 `dates`,不整湖加载(1087 日 × 5500 只 × 6 列装不起也不需要)。"""
-    d = Path(lake_daily) if lake_daily else ws.lake_root() / "daily"
-    frames = []
-    for day in dates:
-        fp = d / f"{day}.parquet"
-        if not fp.exists():
-            continue
-        df = pd.read_parquet(fp)
-        if df.empty:
-            continue
-        frames.append(pd.DataFrame({
-            "code": df["ts_code"].astype(str).str[:6].str.zfill(6), "date": day,
-            "open": pd.to_numeric(df["open"], errors="coerce"),
-            "high": pd.to_numeric(df["high"], errors="coerce"),
-            "low": pd.to_numeric(df["low"], errors="coerce"),
-            "close": pd.to_numeric(df["close"], errors="coerce"),
-            "pct_chg": pd.to_numeric(df["pct_chg"], errors="coerce"),
-            "amount": pd.to_numeric(df["amount"], errors="coerce"),
-        }))
-    if not frames:
-        return {}
-    long = pd.concat(frames, ignore_index=True)
-    return {f: long.pivot_table(index="code", columns="date", values=f)
-            for f in ("open", "high", "low", "close", "pct_chg", "amount")}
-
-
-def forward_frame(piv: dict, P: list[str], D: str) -> pd.DataFrame | None:
-    """D 日全湖前向收益帧(index=code;列含三尺 + buyable/buyable_c1)。D 不在 P 或 pivot 空 → None。
-    `|gap_c1_o2| > GAP_CLIP` 在板制度下不可能 → 视作数据错,置 NaN(计数进 meta)。"""
-    if not piv or D not in P:
-        return None
-    from autoresearch.research import factor_lab as fl
-    fr = fl.forward_returns(piv, P, D, fwd=10)
-    bad = fr[MAIN].abs() > _ruler.GAP_CLIP
-    fr.attrs["n_clipped"] = int(bad.fillna(False).sum())
-    fr.loc[bad.fillna(False), MAIN] = np.nan
-    return fr
-
+# 三个函数 2026-09-06(E4)分别搬到 `data/market_panel.py`(湖读取)与
+# `common/forward_returns.py`(纯计算);这里是同对象转发,口径与调用签名不变。
+from autoresearch.common.forward_returns import forward_frame  # noqa: E402,F401
+from autoresearch.data.market_panel import lake_trade_days, load_lake_pivots  # noqa: E402,F401
 
 # ───────────────────────── 家族:staging 产物 → {家族名: codes} ─────────────────────────
 

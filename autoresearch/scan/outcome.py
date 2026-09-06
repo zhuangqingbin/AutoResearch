@@ -57,11 +57,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from autoresearch.common import ruler as _ruler, workspace as ws
+from autoresearch.common import forward_returns as _fwd, ruler as _ruler, workspace as ws
 from autoresearch.contracts.agent_output import (
     EXEC_LINE_MAX_PCT_1D,
     EXEC_LINE_MAX_POS_IN_RANGE,
 )
+from autoresearch.data import market_panel as _panel
 from autoresearch.scan.run_naming import is_run_dir
 
 OUTCOME_SCHEMA_VERSION = 1
@@ -220,12 +221,10 @@ def market_frame(date: str, *, lake_daily: Path | None = None) -> tuple[pd.DataF
     """当日全湖前向收益帧 + T+1 盘口(open/high/low/close/pct_chg)。
 
     `None` = 湖里还没有 D+2 收盘(结果尚未成熟)—— 那是**状态不是故障**,`fill` 会跳过并
-    留着下次再算。口径与 `edge_census.forward_frame` 逐字同源(同一 `forward_returns`、
-    同一 `GAP_CLIP` 数据错剔除)。
+    留着下次再算。口径与 `common.forward_returns.forward_frame` 逐字同源(同一
+    `forward_returns`、同一 `GAP_CLIP` 数据错剔除)。
     """
-    from autoresearch.research import edge_census as ec
-
-    P = ec.lake_trade_days(lake_daily)
+    P = _panel.lake_trade_days(lake_daily)
     D = str(date).replace("-", "")
     if D not in P:
         return None, {"reason": "非交易日或湖里没有该日"}
@@ -233,8 +232,8 @@ def market_frame(date: str, *, lake_daily: Path | None = None) -> tuple[pd.DataF
     if idx + 2 >= len(P):
         return None, {"reason": "D+2 尚未落湖(结果未成熟)"}
     window = P[max(0, idx - 1): min(len(P), idx + 13)]
-    piv = ec.load_lake_pivots(window, lake_daily)
-    fr = ec.forward_frame(piv, P, D)
+    piv = _panel.load_lake_pivots(window, lake_daily)
+    fr = _fwd.forward_frame(piv, P, D)
     if fr is None or fr.empty:
         return None, {"reason": "前向收益帧为空"}
     D1 = P[idx + 1]
@@ -286,9 +285,7 @@ def exec_anchor_frame(execution: dict | None, *, lake_daily: Path | None = None)
     first = str((execution or {}).get("first_available_session") or "")
     if not first or not (execution or {}).get("exec_lag"):
         return None
-    from autoresearch.research import edge_census as ec
-
-    P = ec.lake_trade_days(lake_daily)
+    P = _panel.lake_trade_days(lake_daily)
     target = first.replace("-", "")
     if target not in P:
         return None

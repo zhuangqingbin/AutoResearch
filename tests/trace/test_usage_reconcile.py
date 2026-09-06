@@ -832,3 +832,57 @@ def test_real_repo_repair_prompts_all_list_codes():
         pytest.skip("本机无历史 scan 目录")
     for p in prompts:
         assert ur._l3_repair_dispatched(p.parent), f"{p} 被新判据误判成'没派过'"
+
+
+# ───────────────────── E5 步 3:业务配置改显式注入(2026-09-06) ─────────────────────
+#
+# `trace` 是法证层,`scan` 是业务层;`trace → scan` 是一条**向上**的边(见
+# `tests/contracts/test_layering.py::KNOWN_UPWARD`)。本组把 `reconcile` 这条腿改成
+# **调用方注入 resolved**,库函数不再自己去 import `scan.user_config`;CLI(`main`)
+# 保留那次 import 作显式旧桥,edge 收窄到一个入口。
+
+
+def _write_run(tmp_path, echo=None, rows=None, date="2026-08-06"):
+    """只落两份产物,不对账(与 `_run` 的区别就在这一步,好让本组自己挑入口)。"""
+    d = tmp_path / ws.scan_root() / date
+    d.mkdir(parents=True)
+    (d / "user_config_echo.json").write_text(json.dumps(echo if echo is not None else ECHO))
+    (d / "_token_usage.json").write_text(json.dumps({"rows": rows if rows is not None else ROWS}))
+    return d
+
+
+def test_reconcile_with_resolved_refuses_a_missing_config():
+    """`None` 不是「用空表兜底」,是调用方漏传 —— 必须炸,不能静默按缺省对账。"""
+    with pytest.raises(ValueError):
+        ur.reconcile_with_resolved({}, [], date="2026-08-06", census=None,
+                                   resolved_agent_config=None)
+
+
+def test_injected_resolved_does_not_touch_scan_user_config(tmp_path, monkeypatch):
+    """把 loader 换成炸弹:注入路径上它一次都不该被调到。"""
+    _write_run(tmp_path)
+    import autoresearch.scan.user_config as uc
+
+    def _boom(*_a, **_kw):
+        raise AssertionError("库函数不应再读 scan.user_config —— 业务配置该由调用方注入")
+
+    monkeypatch.setattr(uc, "load_resolved_agent_config", _boom)
+    assert ur.reconcile("2026-08-06", root=tmp_path, resolved_agent_config={})["ok"] is True
+
+
+def test_injection_matches_the_legacy_bridge_result(tmp_path):
+    """注入与旧桥必须给出同一份结论 —— 否则这不是搬迁,是行为变更。"""
+    scan_dir = _write_run(tmp_path)
+    from autoresearch.scan.user_config import load_resolved_agent_config
+    injected = ur.reconcile(
+        "2026-08-06", root=tmp_path,
+        resolved_agent_config=(load_resolved_agent_config(scan_dir)
+                               or (ECHO.get("resolved_agents") or {})))
+    assert injected == ur.reconcile("2026-08-06", root=tmp_path)
+
+
+def test_cli_still_works_without_the_caller_supplying_config(tmp_path, capsys):
+    """旧桥这一波不删:`python -m autoresearch.trace.usage_reconcile <date>` 必须照常跑。"""
+    _write_run(tmp_path)
+    assert ur.main(["2026-08-06", "--root", str(tmp_path), "--no-ledger"]) == 0
+    assert "usage_reconcile" in capsys.readouterr().out

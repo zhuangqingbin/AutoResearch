@@ -429,10 +429,35 @@ def _reconcile_core(echo: dict, rows: list[dict], *, date: str,
             "unmeasured": unmeasured}
 
 
-def reconcile(date: str, root: str | Path | None = None) -> dict:
+def reconcile_with_resolved(echo: dict, rows: list[dict], *, date: str,
+                            census: dict[str, int] | None,
+                            resolved_agent_config: dict | None) -> dict:
+    """纯入口:业务配置由**调用方**给,本层不去 `scan.user_config` 取(2026-09-06 E5 步 3)。
+
+    `trace` 是法证层、`scan` 是业务层,`trace → scan` 是一条向上的边。对账要的
+    `resolved` 是一份**业务**事实(哪个 role 配了哪个 model/effort),让法证层自己去业务层
+    拿它,就是把依赖方向倒过来。
+
+    `resolved_agent_config is None` 是**调用方漏传**,不是"没有配置":一律抛错。真的没有
+    resolved 产物时,调用方应显式传 `{}` 或 echo 里那份 —— 二者语义不同(`{}` = 已确认
+    为空 → 逐 role 退回 frontmatter 缺省;漏传 = 不知道),这里不替它做决定。
+    """
+    if resolved_agent_config is None:
+        raise ValueError("resolved agent config must be supplied by caller")
+    return _reconcile_core(echo, rows, date=str(date), census=census,
+                           resolved=resolved_agent_config)
+
+
+def reconcile(date: str, root: str | Path | None = None, *,
+              resolved_agent_config: dict | None = None) -> dict:
     """`context/scan/<date>/` 下 `user_config_echo.json` × `_token_usage.json` 逐行对账。
 
     薄 I/O 外壳,核心逻辑见 `_reconcile_core`。
+
+    `resolved_agent_config` 传了就走注入路径(不 import `scan`);没传则走**显式旧桥**
+    (下面那次惰性 import)。旧桥这一波不删——CP7 的
+    `python -m autoresearch.trace.usage_reconcile <date>` 还在用它,砍早了会断生产管线。
+    残余边记在 E5 台账:`trace → scan` 现只剩 CLI 一个入口。
 
     presence-gated **仅对"文件缺失"生效**(两份产物任一缺失 → `FileNotFoundError`
     原样抛出,不吞):CLI 层(`main`)负责兜底"exit 恒 0"(见模块 CLI 段);`reconcile`
@@ -445,10 +470,21 @@ def reconcile(date: str, root: str | Path | None = None) -> dict:
     rows = json.loads((scan / "_token_usage.json").read_text(encoding="utf-8")).get("rows") or []
     # census 是 presence-gated 的**增益**:有它 ens_review/l3_repair 才分得开;
     # 没它(老 run 目录)照常出表,只是多 role 那几个 agentType 退回集合断言。
+    if resolved_agent_config is None:
+        resolved_agent_config = _resolved_via_legacy_bridge(scan, echo)
+    return reconcile_with_resolved(echo, rows, date=str(date), census=dispatch_census(scan),
+                                   resolved_agent_config=resolved_agent_config)
+
+
+def _resolved_via_legacy_bridge(scan_dir: Path, echo: dict) -> dict:
+    """**旧桥**(2026-09-06 E5 步 3 起唯一的 `trace → scan` 运行时依赖)。
+
+    调用方没注入时的兜底:自己去业务层读 resolved 产物,缺了就退回 echo 里那份。逐调用点
+    迁移完(CP7 命令改由 scan 入口路由)之后删这个函数,那条向上的边随之消失。
+    """
     from autoresearch.scan.user_config import load_resolved_agent_config
-    return _reconcile_core(echo, rows, date=str(date), census=dispatch_census(scan),
-                           resolved=load_resolved_agent_config(scan)
-                           or (echo.get("resolved_agents") or {}))
+
+    return load_resolved_agent_config(scan_dir) or (echo.get("resolved_agents") or {})
 
 
 def render(result: dict) -> str:

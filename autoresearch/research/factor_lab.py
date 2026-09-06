@@ -38,6 +38,10 @@ import pandas as pd
 
 # 复用包内打分原语 + 真·动量透镜(验证"出厂逻辑"本身;与 scan/handler 同口径)
 from autoresearch.common import ruler, workspace as ws
+
+# 前瞻收益与板制度的**唯一实现**在 common(2026-09-06 E4 搬迁);这里是同对象转发,
+# 老调用点(本模块 eval / consensus / sector_top3_backtest / ledger_views)一个都不用改。
+from autoresearch.common.forward_returns import _board_limit, forward_returns  # noqa: F401
 from autoresearch.common.scoring import _factor_groups, _pct, _wsum, lens_momentum
 from autoresearch.common.sw_sector_map import super_sector
 from autoresearch.data.tushare_source import _moneyflow_struct_cols
@@ -264,73 +268,6 @@ def load_price_pivots(P: list[str]) -> dict[str, pd.DataFrame]:
     return piv
 
 
-def _board_limit(code: str) -> float:
-    """涨跌停幅度(%):科创(688)/创业板(30)=20;北交所(8/4/920)=30;其余主板=10。"""
-    if code.startswith("688") or code.startswith("30"):
-        return 20.0
-    if code.startswith(("8", "4", "920")):
-        return 30.0
-    return 10.0
-
-
-def forward_returns(piv: dict, P: list[str], D: str, fwd: int) -> pd.DataFrame:
-    """D 的前瞻收益(D+1 开盘进):cc=收盘到收盘;oo=次日开到再次日开;oc/ocN=开盘到第N日收盘;fwd_2_oc=超短主尺(2026-07-10 用户裁定持仓 1~2 日)。
-
-    并标 D+1 一字涨停(open==close==high 且涨幅近板)= 买不到 → unbuyable。
-
-    另产**隔夜尺三列**(Wave11 批A;2026-08-05 裁定,gap_c1_o2 = open[D+2]/close[D+1] − 1,
-    T+1 收盘买 → T+2 开盘卖;单点常量见 `autoresearch.common.ruler`,本函数仍只加列不改主尺):
-    `gap_c1_o2`(隔夜前瞻收益,float64,数缺→NaN)、`buyable_c1`(T+1 收盘未封涨停,买腿可
-    执行→剔样本用)、`unsellable_o2`(T+2 一字跌停开,卖腿受限→标旗不剔,剔了会美化账本)。
-    后两者是 pandas 可空 `boolean` dtype(2026-08-07 review fix):D+1/D+2 数据缺失时取
-    `pd.NA`(未知),不是 `False`——调用方要用 `.astype(bool)` 或布尔索引前必须先显式决定
-    如何处理 `<NA>`(如 `.fillna(...)`),不会被静默当成"确定可买/可卖"。
-    """
-    idx = P.index(D)
-    c, o, h = piv["close"], piv["open"], piv["high"]
-    pc = piv["pct_chg"]
-    codes = c.index
-    res = pd.DataFrame(index=codes)
-    cD = c[D]
-
-    def col(piv_, k):
-        j = idx + k
-        if not (0 <= j < len(P)) or P[j] not in piv_.columns:   # 越界 / 日历日在但 EOD 未发布
-            return pd.Series(np.nan, index=codes)
-        return piv_[P[j]]
-
-    o1 = col(o, 1)
-    res["fwd_1_cc"] = col(c, 1) / cD - 1.0
-    res["fwd_1_oo"] = col(o, 2) / o1 - 1.0
-    res["fwd_2_oc"] = col(c, 2) / o1 - 1.0            # 超短主尺:D+1 开买 → D+2 收卖(成熟同 fwd_1_oo)
-    h1, h2 = col(h, 1), col(h, 2)
-    res["hi_2_oc"] = np.maximum(h1, h2) / o1 - 1.0   # np.maximum NaN 传染:D+2 缺→NaN,与 fwd_2_oc 成熟配对
-    res["fwd_5_oc"] = col(c, 5) / o1 - 1.0
-    res["fwd_10_oc"] = col(c, min(10, fwd)) / o1 - 1.0
-    # D+1 一字涨停(开=收=高,且涨幅≥板*0.98)→ 买不到
-    pc1, o1h, c1 = col(pc, 1), o1, col(c, 1)
-    lim = pd.Series([_board_limit(x) for x in codes], index=codes)
-    sealed = (pc1 >= lim * 0.98) & (c1 >= h1 - 1e-6) & (o1h >= h1 - 1e-6)
-    res["buyable"] = ~sealed.fillna(False)
-
-    # 隔夜尺三列(Wave11 批A;复用既有 pc1/h1/lim/c1,只补 o2/l2;不动上面的旧 buyable/sealed)
-    o2, l2 = col(o, 2), col(piv["low"], 2)
-    res["gap_c1_o2"] = o2 / c1 - 1.0     # 隔夜主尺(2026-08-05 裁定):T+1 收买 → T+2 开卖
-    # review fix(2026-08-07):col() 对缺数返回全 NaN,但 <=/>= 对 NaN 操作数按 IEEE754/
-    # numpy 语义恒返回 False、不传染 —— 旧写法 fillna(False) 对一个本就不含 NaN 的纯 bool
-    # 列是无效兜底,会把"不知道"误读成"确定卖得出/买得进"(data-contracts-fail-fast 同族
-    # 反模式:降级不留痕)。转 pandas 可空 Float64 比较,&/~ 走三值逻辑,缺数正确传染成
-    # <NA> 而不是伪造的 False。
-    pc1n, c1n, h1n, o2n, l2n = (s.astype("Float64") for s in (pc1, c1, h1, o2, l2))
-    # 买腿可执行:T+1 收盘未封涨停(收盘≈日高 且 当日涨幅≈板)—— 封板收盘买不进;
-    # D+1 缺数 → <NA>(未知,不是"可买")
-    buy_sealed = (pc1n >= lim * 0.98) & (c1n >= h1n - 1e-6)
-    res["buyable_c1"] = ~buy_sealed
-    # 卖腿受限:T+2 一字跌停开(开≈日低 且 开盘较 c1 跌≈板)—— 标旗不剔;
-    # D+2 缺数 → <NA>(未知,不是"卖得出")
-    open_limit_dn = (o2n <= l2n + 1e-6) & (o2n <= c1n * (1 - lim * 0.98 / 100.0))
-    res["unsellable_o2"] = open_limit_dn
-    return res
 
 
 def reversal_confirm_factors(piv: dict, P: list[str], D: str) -> pd.DataFrame:

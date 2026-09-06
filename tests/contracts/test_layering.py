@@ -52,6 +52,12 @@ KNOWN_UPWARD: frozenset[tuple[str, str]] = frozenset({
     # **8 行 / 4 文件**降到 **3 行 / 2 文件**(`capsule.py` 的
     # `scan.artifacts` 与惰性 `scan.run_bootstrap`、`usage_reconcile.py` 的
     # `scan.user_config`)。整条边还在,所以这一项还不能删。
+    #
+    # 2026-09-06(E5 步 3)`usage_reconcile` 那一行收窄成**单一显式旧桥**
+    # (`_resolved_via_legacy_bridge`,只在调用方不注入 resolved 时才走):库函数
+    # `reconcile_with_resolved` 与 `reconcile(..., resolved_agent_config=…)` 已不读 scan。
+    # 行数没变(仍 3 行 / 2 文件)—— CP7 的 `python -m autoresearch.trace.usage_reconcile`
+    # 还在走旧桥,砍早了断生产管线;等 CLI 路由迁到 scan 入口,这一行才真正消失。
     ("trace", "scan"),
     # trace → news(1):`evidence_index.py` 读 claim_ledger。
     ("trace", "news"),
