@@ -202,3 +202,164 @@ def test_negative_freshness_policy_is_a_programming_error():
 def test_impossible_price_shapes_raise(changes):
     with pytest.raises(ValueError):
         em.entry_condition(market_row(**changes), max_age_seconds=60)
+
+
+# ───────────────────────── C3:成交状态与损益(2026-09-07) ─────────────────────────
+from decimal import Decimal as D  # noqa: E402
+
+
+def test_partial_sale_allocates_entry_cost_and_leaves_exposure():
+    result = em.position_pnl(buy_qty="100", buy_notional="1000", buy_fees="2",
+                             sell_qty="40", sell_notional="440", sell_fees="1",
+                             mark_price="10.5", cash_distribution="0", receivable="0")
+    assert result["realized_pnl"] == D("38.2")
+    assert result["remaining_qty"] == D("60")
+    assert result["unrealized_pnl"] == D("28.8")
+    assert result["net_pnl_cash"] == D("-563")
+
+
+def test_no_sale_has_no_realized_return():
+    result = em.position_pnl(buy_qty="100", buy_notional="1000", buy_fees="2",
+                             sell_qty="0", sell_notional="0", sell_fees="0",
+                             mark_price=None, cash_distribution="0", receivable="0")
+    assert result["net_return_realized"] is None and result["unrealized_pnl"] is None
+
+
+def test_unknown_fee_is_not_zero():
+    with pytest.raises(ValueError):
+        em.position_pnl(buy_qty="100", buy_notional="1000", buy_fees=None,
+                        sell_qty="0", sell_notional="0", sell_fees="0",
+                        mark_price=None, cash_distribution="0", receivable="0")
+
+
+def test_dividend_is_kept_out_of_the_price_leg():
+    with_div = em.position_pnl(buy_qty="100", buy_notional="1000", buy_fees="0",
+                               sell_qty="100", sell_notional="1000", sell_fees="0",
+                               mark_price=None, cash_distribution="30", receivable="0")
+    assert with_div["realized_pnl"] == D("0") and with_div["net_pnl_cash"] == D("30")
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"sell_qty": "150"}, {"buy_qty": "0"}, {"sell_qty": "0", "sell_notional": "5"},
+    {"mark_price": "0"}, {"buy_notional": "-1"},
+])
+def test_impossible_positions_raise(kwargs):
+    base = {"buy_qty": "100", "buy_notional": "1000", "buy_fees": "2", "sell_qty": "0",
+            "sell_notional": "0", "sell_fees": "0", "mark_price": None,
+            "cash_distribution": "0", "receivable": "0"}
+    with pytest.raises(ValueError):
+        em.position_pnl(**{**base, **kwargs})
+
+
+def test_entry_status_distinguishes_unknown_from_no_fill():
+    assert em.entry_status(submitted=None, requested_qty="100", filled_qty="0", cancelled=False) == "UNKNOWN"
+    assert em.entry_status(submitted=False, requested_qty="100", filled_qty="0", cancelled=False) == "NOT_SUBMITTED"
+    assert em.entry_status(submitted=True, requested_qty="100", filled_qty="0", cancelled=False) == "NO_FILL"
+    assert em.entry_status(submitted=True, requested_qty="100", filled_qty="40", cancelled=True) == "CANCELLED"
+    assert em.entry_status(submitted=True, requested_qty="100", filled_qty="40", cancelled=False) == "PARTIAL_FILL"
+    assert em.entry_status(submitted=True, requested_qty="100", filled_qty="100", cancelled=False) == "FILLED"
+
+
+def test_fill_without_order_is_a_data_error():
+    with pytest.raises(ValueError):
+        em.entry_status(submitted=False, requested_qty="100", filled_qty="10", cancelled=False)
+
+
+def test_exit_status_not_due_then_unknown_then_no_fill():
+    assert em.exit_status(due=False, submitted=True, requested_qty="100", filled_qty="0",
+                          unsellable_open=False) == "NOT_DUE"
+    assert em.exit_status(due=True, submitted=None, requested_qty="100", filled_qty="0",
+                          unsellable_open=False) == "UNKNOWN"
+    assert em.exit_status(due=True, submitted=True, requested_qty="100", filled_qty="0",
+                          unsellable_open=True) == "NO_FILL"
+    assert em.exit_status(due=True, submitted=True, requested_qty="100", filled_qty="100",
+                          unsellable_open=False) == "FILLED"
+
+
+# ───────────────────────── C4:成本与成交规则 ─────────────────────────
+
+def test_stamp_duty_is_sell_side_only_and_transfer_fee_is_both_sides():
+    kw = {"price": "10", "qty": "100", "slippage_bps": "0", "commission_rate": "0.00025",
+          "minimum_commission": "5", "tax_rate": "0.0005", "transfer_fee_rate": "0.00001"}
+    buy = em.simulated_leg(side="BUY", **kw)
+    sell = em.simulated_leg(side="SELL", **kw)
+    assert buy["tax"] == D("0") and sell["tax"] == D("0.5")
+    assert buy["transfer_fee"] == sell["transfer_fee"] == D("0.01")
+    assert buy["commission"] == D("5")            # 最低佣金
+
+
+def test_slippage_direction_follows_the_side():
+    buy = em.simulated_leg(price="10", qty="100", side="BUY", slippage_bps="10",
+                           commission_rate="0", minimum_commission="0", tax_rate="0")
+    sell = em.simulated_leg(price="10", qty="100", side="SELL", slippage_bps="10",
+                            commission_rate="0", minimum_commission="0", tax_rate="0")
+    assert buy["price"] == D("10.01") and sell["price"] == D("9.99")
+
+
+def test_zero_cost_must_be_declared_explicitly():
+    got = em.simulated_leg(price="10", qty="100", side="SELL", slippage_bps="0",
+                           commission_rate="0", minimum_commission="0", tax_rate="0")
+    assert got["commission"] == 0 and got["tax"] == 0
+
+
+@pytest.mark.parametrize("kwargs", [{"side": "SHORT"}, {"tax_sides": {"BUY", "MID"}},
+                                    {"slippage_bps": "10000"}, {"qty": "0"}])
+def test_invalid_leg_parameters_raise(kwargs):
+    base = {"price": "10", "qty": "100", "side": "BUY", "slippage_bps": "0",
+            "commission_rate": "0", "minimum_commission": "0", "tax_rate": "0"}
+    with pytest.raises(ValueError):
+        em.simulated_leg(**{**base, **kwargs})
+
+
+def test_closing_auction_fills_only_when_auction_price_is_within_limit_and_not_sealed():
+    filled = em.closing_auction_fill(snapshot_last="10.00", limit_bps="50", close_price="10.04",
+                                     entry_sealed=False)
+    assert filled["state"] == "FILLED" and filled["price"] == D("10.04")
+    above = em.closing_auction_fill(snapshot_last="10.00", limit_bps="50", close_price="10.06",
+                                    entry_sealed=False)
+    assert above["state"] == "NO_FILL" and above["reason"] == "AUCTION_ABOVE_LIMIT"
+
+
+def test_sealed_limit_up_never_fills_even_within_limit():
+    """封涨停时排板成交概率≈0 —— 08-28 普查「收益随买得到的可能性单调递减」的机制。"""
+    got = em.closing_auction_fill(snapshot_last="10.00", limit_bps="50", close_price="10.00",
+                                  entry_sealed=True)
+    assert got["state"] == "NO_FILL" and got["reason"] == "LIMIT_UP_SEALED"
+
+
+def test_unknown_seal_state_is_unknown_not_a_fill():
+    got = em.closing_auction_fill(snapshot_last="10.00", limit_bps="50", close_price="10.00",
+                                  entry_sealed=None)
+    assert got["state"] == "UNKNOWN"
+
+
+def test_after_hours_fixed_price_is_board_gated_and_volume_capped():
+    assert em.after_hours_fixed_fill(code="600000", close_price="10", wanted_qty="100",
+                                     after_hours_volume="1000")["state"] == "NOT_SUBMITTED"
+    partial = em.after_hours_fixed_fill(code="688001", close_price="10", wanted_qty="100",
+                                        after_hours_volume="40")
+    assert partial["state"] == "PARTIAL_FILL" and partial["filled_qty"] == D("40")
+    assert em.after_hours_fixed_fill(code="300001", close_price="10", wanted_qty="100",
+                                     after_hours_volume=None)["state"] == "UNKNOWN"
+
+
+def test_every_fill_result_carries_its_rule_version():
+    from autoresearch.contracts.execution import FILL_RULE_VERSIONS
+    a = em.closing_auction_fill(snapshot_last="10", limit_bps="0", close_price="10", entry_sealed=False)
+    b = em.after_hours_fixed_fill(code="688001", close_price="10", wanted_qty="1", after_hours_volume="1")
+    assert a["fill_rule_version"] in FILL_RULE_VERSIONS and b["fill_rule_version"] in FILL_RULE_VERSIONS
+
+
+def test_cost_model_contract_rejects_missing_or_wrong_fields():
+    from autoresearch.contracts.execution import validate_cost_model
+    policy = {"cost_model_version": "ashare_v1", "venue": "SSE", "effective_from": "2023-08-28",
+              "commission_rate": "0.00025", "minimum_commission": "5", "tax_rate": "0.0005",
+              "tax_sides": ["SELL"], "transfer_fee_rate": "0.00001", "slippage_bps": "5",
+              "order_merge": "per_order"}
+    assert validate_cost_model(policy) == policy
+    with pytest.raises(ValueError):
+        validate_cost_model({**policy, "tax_sides": ["MID"]})
+    with pytest.raises(ValueError):
+        validate_cost_model({k: v for k, v in policy.items() if k != "slippage_bps"})
+    with pytest.raises(ValueError):
+        validate_cost_model({**policy, "tax_rate": 0.0005})

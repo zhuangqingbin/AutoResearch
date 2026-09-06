@@ -131,3 +131,42 @@ def validate_snapshot(row: dict) -> dict:
                               or any(not isinstance(f, str) for f in flags)):
         raise ValueError("quality_flags must be a list of reason codes")
     return row
+
+
+# ───────────────────────── C3/C4:成交、成本与损益的词表(2026-09-07) ─────────────────────────
+
+#: 模拟成交规则版本。**没有规则版本的模拟结果不得进入读数**。
+#: - close_auction_limit_v1:买腿 = 以 14:45 快照 last×(1+limit_bps) 挂收盘集合竞价限价单;
+#:   成交价 = 收盘价;成交条件 = 收盘价 ≤ 限价 且 收盘未封涨停(ENTRY_FLAG 可买),否则 NO_FILL。
+#: - after_hours_fixed_v1:仅 688/300 代码,15:05–15:30 盘后固定价格按收盘价成交,量以盘后
+#:   成交量为上限;缺盘后量数据 → UNKNOWN。
+#: - open_auction_v1:卖腿 = T+2 开盘集合竞价;一字跌停开 = EXIT_FLAG 标旗不剔。
+FILL_RULE_VERSIONS: frozenset[str] = frozenset(
+    {"close_auction_limit_v1", "after_hours_fixed_v1", "open_auction_v1"})
+#: 盘后固定价格交易只对这两个板开放(科创 688 / 创业 300、301)。
+AFTER_HOURS_PREFIXES: tuple[str, ...] = ("688", "300", "301")
+
+#: 版本化成本模型必填。费率数值由执行者按来源与生效规则核验,这里只声明**形状**。
+COST_MODEL_FIELDS: tuple[str, ...] = (
+    "cost_model_version", "venue", "effective_from", "commission_rate", "minimum_commission",
+    "tax_rate", "tax_sides", "transfer_fee_rate", "slippage_bps", "order_merge",
+)
+CORPORATE_ACTION_STATES: frozenset[str] = frozenset(
+    {"NONE", "RESOLVED", "CORPORATE_ACTION_UNRESOLVED"})
+
+
+def validate_cost_model(policy: dict) -> dict:
+    """成本模型的形状:字段齐、`tax_sides` ⊆ {BUY, SELL}、费率全是非负 decimal string。"""
+    if not isinstance(policy, dict) or set(policy) != set(COST_MODEL_FIELDS):
+        raise ValueError("cost model must carry exactly the declared fields")
+    if not isinstance(policy["cost_model_version"], str) or not policy["cost_model_version"]:
+        raise ValueError("cost_model_version required")
+    sides = policy["tax_sides"]
+    if not isinstance(sides, list) or not set(sides) <= {"BUY", "SELL"}:
+        raise ValueError("tax_sides must be a subset of BUY/SELL")
+    for field in ("commission_rate", "minimum_commission", "tax_rate", "transfer_fee_rate",
+                  "slippage_bps"):
+        parse_amount(policy[field], field=field)
+    if policy["order_merge"] not in {"per_order", "per_day"}:
+        raise ValueError("order_merge must be per_order or per_day")
+    return policy
