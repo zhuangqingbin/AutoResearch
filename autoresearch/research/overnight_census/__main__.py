@@ -154,9 +154,47 @@ def _stat_cell(cell: dict) -> dict:
     return out
 
 
+#: markdown 读数的历史默认落点 —— 它是一份**已提交**的研究结论,所以默认路径也受覆盖保护。
+DEFAULT_OUT_MD = Path("docs/research/2026-08-28-overnight-concentrated-census-readout.md")
+
+
+def default_out_json() -> Path:
+    """JSON 的默认落点(本引擎根;`reports_root()` 是路径唯一事实源,不手拼引擎名)。"""
+    return ws.reports_root() / "research" / "overnight_census" / "_overnight_census.json"
+
+
+def resolve_outputs(out: Path | str | None = None, out_json: Path | str | None = None,
+                    *, force: bool = False) -> tuple[Path, Path]:
+    """定两个落点,并在任一目标已存在时**拒绝**(除非 `force`)。→ `(md, json)`。
+
+    为什么默认也拦:markdown 的默认值就是 08-28 那份已提交的读数,JSON 的默认值是上一轮的
+    机读结论。「重算写独立目录、冻结报告不原地改写」是项目不变量,而这个入口过去是敞开的
+    —— `--out` 只管 markdown,JSON 连指路的办法都没有。
+
+    `force` 是留给操作者的显式逃逸口(会进命令留痕),不是给守卫开的后门:它只在人明确
+    说「就要盖掉这一份」时才该出现。
+    """
+    md = Path(out) if out else DEFAULT_OUT_MD
+    js = Path(out_json) if out_json else default_out_json()
+    if force:
+        return md, js
+    clashes = [str(p) for p in (md, js) if p.exists()]
+    if clashes:
+        raise FileExistsError(
+            "普查目标已存在,拒绝覆盖上一轮研究结论:" + "、".join(clashes)
+            + f"。改道:--out <新 md> --out-json <新 json>(默认 {DEFAULT_OUT_MD} / "
+            f"{default_out_json()});确实要盖掉这一份:--force")
+    return md, js
+
+
 def run_census(since: str | None = None, until: str | None = None, *,
-               rebuild: bool = False, out: Path | None = None) -> dict:
-    """全流程:面板 → 事件 → 16 格 → 统计判读 → F5 → 渲染落盘。"""
+               rebuild: bool = False, out: Path | None = None,
+               out_json: Path | None = None, force: bool = False) -> dict:
+    """全流程:面板 → 事件 → 16 格 → 统计判读 → F5 → 渲染落盘。
+
+    落点**先定后跑**:面板要 40–90 分钟,把覆盖检查放到最后等于没有守卫。
+    """
+    out_md, out_json_path = resolve_outputs(out, out_json, force=force)
     t0 = time.time()
     panel = panel_mod.build_panel(since=since, until=until, rebuild=rebuild)
     events = families.load_events(lake_root=None, since=since, until=until)
@@ -214,15 +252,15 @@ def run_census(since: str | None = None, until: str | None = None, *,
     md = render_mod.render_markdown(scored + f5, meta)
     js = render_mod.render_json(scored + f5, meta)
 
-    out_md = Path(out) if out else Path("docs/research/2026-08-28-overnight-concentrated-census-readout.md")
     out_md.parent.mkdir(parents=True, exist_ok=True)
     out_md.write_text(md, encoding="utf-8")
-    out_json = ws.reports_root() / "research" / "overnight_census" / "_overnight_census.json"
-    out_json.parent.mkdir(parents=True, exist_ok=True)
-    out_json.write_text(json.dumps(js, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
-    print(f"读数 → {out_md}\njson  → {out_json}\n{meta['seconds']}s · "
+    out_json_path.parent.mkdir(parents=True, exist_ok=True)
+    out_json_path.write_text(json.dumps(js, ensure_ascii=False, indent=2, default=str),
+                             encoding="utf-8")
+    print(f"读数 → {out_md}\njson  → {out_json_path}\n{meta['seconds']}s · "
           f"正证据 {n_pos}/{len(scored)} 格", flush=True)
-    return {"meta": meta, "cells": scored, "f5": f5, "md": str(out_md), "json": str(out_json)}
+    return {"meta": meta, "cells": scored, "f5": f5,
+            "md": str(out_md), "json": str(out_json_path)}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -235,7 +273,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--until", default=None)
     ap.add_argument("--rebuild", action="store_true", help="重建面板缓存")
     ap.add_argument("--coverage", action="store_true", help="只印各表覆盖率")
-    ap.add_argument("--out", default=None)
+    ap.add_argument("--out", default=None, help=f"markdown 读数落点(默认 {DEFAULT_OUT_MD})")
+    ap.add_argument("--out-json", default=None,
+                    help="JSON 读数落点(默认本引擎根 research/overnight_census/)")
+    ap.add_argument("--force", action="store_true",
+                    help="目标已存在时照样写 —— 会盖掉上一轮的研究结论,请确认")
     a = ap.parse_args(argv)
 
     if a.coverage:
@@ -248,7 +290,9 @@ def main(argv: list[str] | None = None) -> int:
                          ensure_ascii=False, indent=2, default=str))
     if a.run:
         run_census(since=a.since, until=a.until, rebuild=a.rebuild,
-                   out=Path(a.out) if a.out else None)
+                   out=Path(a.out) if a.out else None,
+                   out_json=Path(a.out_json) if a.out_json else None,
+                   force=a.force)
     if not (a.backfill or a.run or a.coverage):
         ap.print_help()
     return 0
