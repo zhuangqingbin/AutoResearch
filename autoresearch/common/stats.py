@@ -244,6 +244,62 @@ def date_cluster_bootstrap(frame: pd.DataFrame, value_col: str, *,
                     f"date_cluster_bootstrap(B={n_boot},seed={seed})", alpha)
 
 
+def day_equal_bootstrap(frame: pd.DataFrame, value_col: str, *,
+                        date_col: str = "date", n_boot: int = DEFAULT_BOOT,
+                        alpha: float = DEFAULT_ALPHA,
+                        seed: int = DEFAULT_SEED) -> Interval:
+    """**日等权**均值 + 它自己的区间:先日内取均值,再跨日等权重采样。
+
+    与 `date_cluster_bootstrap` 的区别只有一处,但它决定了 `point` 和 `lo/hi` 是不是同一个
+    量:上面那个函数按日**聚簇**重采样,可是抽完之后对**行**取均值 —— 于是「一天 100 只 +
+    一天 1 只」里热闹那天拿走 99% 的权重,得到的是**行等权**中心。本函数先把每天压成一行
+    再交给它,于是两个数描述同一个估计量。
+
+    `n` = 有效**事件行**数(只描述覆盖),`n_clusters` = 有效**观测日**数(统计权重的单位)。
+    事件多不换来统计权重 —— 这是「日内复制不变性」:把某一天的全部事件等比例复制,
+    点估计与区间都不动。
+
+    ⚠️ 三条不可扩大解释:
+
+    - 这仍是**独立日重采样**,不是连续交易日 moving-block 区间;日与日之间的时序相关性
+      没有被处理(交易日对齐的 block 方法见 `research/overseas_event_census.moving_block_diff`)。
+    - 本函数**不查交易日历**:日期身份、缺日、连续性都归上游数据契约。`date_col` 里出现
+      什么就按什么分组。
+    - 单日 → 有点估计、`lo/hi=None`(没有跨日方差可估),不是「区间为零」。
+
+    坏输入一律炸,不静默降级:缺列(缺 `date_col` 时旧函数会退化成「每行一簇」给出一个窄到
+    假的区间,那是最难发现的错)、`n_boot`/`alpha` 越界、值里有 ±inf(收益的分母为零,
+    均值会被它整个吞掉)。NaN 与不可解析值按既有清洗规则**排除**(不是当 0)。
+    """
+    if frame is None or value_col not in frame or date_col not in frame:
+        raise ValueError(f"day_equal_bootstrap 缺列(需要 {value_col!r} 与 {date_col!r});"
+                         "缺列不能当成空样本 —— 会退化成每行一簇的假区间")
+    if isinstance(n_boot, bool) or not isinstance(n_boot, int) or n_boot < 1:
+        raise ValueError(f"n_boot 必须是正整数,收到 {n_boot!r}")
+    if not 0 < alpha < 1:
+        raise ValueError(f"alpha 必须落在 (0, 1),收到 {alpha!r}")
+
+    values = pd.to_numeric(frame[value_col], errors="coerce")
+    dates = frame[date_col].astype(str).str.strip()
+    keep = values.notna() & ~dates.isin(["", "nan", "NaT", "None"])
+    work = pd.DataFrame({
+        "__date": dates[keep].to_numpy(dtype=object),
+        "__value": values[keep].to_numpy(dtype=float),
+    })
+    if not np.isfinite(work["__value"].to_numpy()).all():
+        raise ValueError(f"day_equal_bootstrap 的 {value_col!r} 含 ±inf —— "
+                         "无穷值不是缺失值,不能当 NaN 排除,请上游查分母为零的行")
+    daily = work.groupby("__date", as_index=False, sort=True)["__value"].mean()
+    interval = date_cluster_bootstrap(
+        daily, "__value", date_col="__date", n_boot=n_boot, alpha=alpha, seed=seed,
+    )
+    return Interval(
+        interval.point, interval.lo, interval.hi,
+        len(work), interval.n_clusters,
+        f"day_equal/{interval.method}", interval.alpha,
+    )
+
+
 def paired_delta_interval(frame: pd.DataFrame, actual_col: str, baseline_col: str, *,
                           date_col: str = "date", n_boot: int = DEFAULT_BOOT,
                           alpha: float = DEFAULT_ALPHA,

@@ -47,6 +47,10 @@ OBSERVE_YEAR = "2026"          # 有读数、进表,但不进 `yearly_sign_ok` �
 
 DEFAULT_SEED = 20260828        # 固定种子:同输入同区间
 
+#: 统计实现版本 —— 换估计量 / 重采样方法 / 人口定义都要换它,新旧读数**不许直接拼成趋势**。
+#: `day_equal.v2` = 均值与区间同为日等权(v1 的区间围绕行等权中心,由 CLI 事后覆盖补偿)。
+STATISTICS_VERSION = "overnight.day_equal.v2"
+
 # 判读四态(`judge` 的全部出口)。
 POS = "正证据"
 NEG = "显著负"
@@ -307,11 +311,12 @@ def cell_stats(frame, *, value_col: str, date_col: str = "date",
     - **按日等权**:先在每个扫描日内对该格全部事件取均值,再跨日等权。`median` / `hit` 同样
       在日均值序列上算(`hit` = 逐日均值 > 0 的**日**占比)。不这么做的话,「一天 100 只 +
       一天 1 只」会让热闹那天拿走 99% 的权重 —— `n_events` 只描述覆盖,不该换来统计权重。
-    - **区间**走 `common.stats.date_cluster_bootstrap`(按扫描日聚簇重采样;单日 → 无跨日
-      方差 → `lo/hi` 皆 None,这是诚实的)。传进去的是同一批行的 NaN 清洗视图。
-      ⚠️ **已知口径不一致**(照契约实现,留痕):该函数的点估计是**行等权**均值,而
-      `mean_pp` 是**日等权**均值;两天行数不等时二者不同,`ci_low_pp` 是围绕行等权中心的。
-      设计稿 §2.3 的主区间是 5 日 moving-block bootstrap,本层先按契约用日聚簇版对账。
+    - **区间**走 `common.stats.day_equal_bootstrap`,与 `mean_pp` 一样先日内均值、再跨日
+      等权 —— 两个数描述**同一个估计量**。`n_events` 是有效事件行数,`n_days` 是有效观测
+      日数;事件数量不换来日权重。单日 → 无跨日方差 → `lo/hi` 皆 None,这是诚实的。
+      该区间仍是**独立日重采样**,不是连续交易日 moving-block 区间(设计稿 §2.3 的
+      5 日 block 主区间属后续独立的方法变更,不在本层)。`seed` 由本函数显式传入。
+      ⚠️ 值里有 ±inf 会**抛**(分母为零的收益;均值会被它整个吞掉)。NaN 照旧排除。
     - `net_pp = mean_pp − COST_PP`(同为 pp)。
     - `yearly`:按 `date` 前 4 位分年,**在日均值序列上**再取均值。`JUDGE_YEARS` 之外的年
       (2026、以及数据里出现的任何其他年)照样出数进表,但不进判据。
@@ -348,7 +353,7 @@ def cell_stats(frame, *, value_col: str, date_col: str = "date",
     daily = work.groupby("__date")["__v"].mean().sort_index()
     n_events, n_days = int(len(work)), int(len(daily))
     mean_pp = float(daily.mean())
-    interval = _stats.date_cluster_bootstrap(work, "__v", date_col="__date", seed=seed)
+    interval = _stats.day_equal_bootstrap(work, "__v", date_col="__date", seed=seed)
 
     year_of_day = pd.Series([d[:4] for d in daily.index], index=daily.index)
     yearly_raw = daily.groupby(year_of_day).mean()
