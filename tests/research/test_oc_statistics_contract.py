@@ -28,6 +28,17 @@ def uneven_events() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def uneven_varied_events() -> pd.DataFrame:
+    """同样的不平衡日结构,但**日均值逐日变化** —— 换 seed 才会换区间的那份夹具。"""
+    rows = []
+    for i, day in enumerate(pd.bdate_range("2026-01-05", periods=40)):
+        count = 100 if i < 20 else 1
+        value = ((i * 37) % 100) / 10.0 - 5.0
+        rows.extend({"date": day.strftime("%Y%m%d"), "gap_pp": value}
+                    for _ in range(count))
+    return pd.DataFrame(rows)
+
+
 # ─────────────────────── core:均值与区间同口径 ───────────────────────
 
 
@@ -69,3 +80,84 @@ def test_non_finite_returns_are_rejected():
 def test_core_still_reports_statistics_version():
     """换估计量必须留版本,否则新旧读数会被直接拼成趋势。"""
     assert core.STATISTICS_VERSION.startswith("overnight.day_equal.")
+
+
+# ─────────────────── CLI:数值不变 + 不再二次覆盖 ───────────────────
+
+
+def test_cli_preserves_old_daily_weighted_formula():
+    """期望值**手算**(groupby + 旧原语),不调新实现 —— 否则两边一起错还能一起绿。"""
+    frame = uneven_events()
+    daily = frame.groupby("date", as_index=False)["gap_pp"].mean()
+    expected = stats.date_cluster_bootstrap(daily, "gap_pp")
+    lo, hi, method = cli.day_equal_ci(frame)
+    assert (lo, hi) == (expected.lo, expected.hi)
+    assert method == "date_cluster_bootstrap(day-equal)"
+
+
+def test_cli_stat_cell_uses_correct_core_result_without_second_override(monkeypatch):
+    frame = uneven_events()
+    expected = core.cell_stats(frame, value_col="gap_pp", seed=stats.DEFAULT_SEED)
+
+    def no_compensation(*args, **kwargs):
+        raise AssertionError("CLI 不许再算一份区间去覆盖 core 的结果")
+
+    monkeypatch.setattr(cli, "day_equal_ci", no_compensation)
+    result = cli._stat_cell({
+        "family": "synthetic", "kind": "main", "timing": "R",
+        "sample_kind": "event", "rows": frame,
+    })
+    actual = result["stats"]
+    assert (actual["ci_low_pp"], actual["ci_high_pp"]) == (
+        expected["ci_low_pp"], expected["ci_high_pp"],
+    )
+    assert actual["ci_method"] == "date_cluster_bootstrap(day-equal)"
+
+
+def test_cli_keeps_its_historical_seed_not_cores():
+    """CLI 必须继续用公共层 seed(20260803)—— 08-28 读数印的就是它。
+
+    两个入口各有默认 seed 是历史事实(core 20260828 / 公共层 20260803)。`_stat_cell`
+    若少传 seed,数字会静默换一批。本用例是唯一会因此变红的断言。
+
+    ⚠️ 夹具必须用**日均值有变化**的那份:`uneven_events` 的日值全是 ±1.0,重采样分布离散
+    到两个 seed 的分位数恰好重合 —— 拿它写这条断言等于写了个永不变红的绿灯(本波实测)。
+    """
+    frame = uneven_varied_events()
+    assert stats.DEFAULT_SEED != core.DEFAULT_SEED
+    published = cli._stat_cell({
+        "family": "synthetic", "kind": "main", "timing": "R",
+        "sample_kind": "event", "rows": frame,
+    })["stats"]
+    cli_seeded = core.cell_stats(frame, value_col="gap_pp", seed=stats.DEFAULT_SEED)
+    core_seeded = core.cell_stats(frame, value_col="gap_pp", seed=core.DEFAULT_SEED)
+    assert (published["ci_low_pp"], published["ci_high_pp"]) == (
+        cli_seeded["ci_low_pp"], cli_seeded["ci_high_pp"])
+    assert (published["ci_low_pp"], published["ci_high_pp"]) != (
+        core_seeded["ci_low_pp"], core_seeded["ci_high_pp"])
+
+
+def test_cli_empty_wrapper_remains_compatible():
+    assert cli.day_equal_ci(None) == (
+        None, None, "date_cluster_bootstrap(day-equal, n_days<2 → 无区间)",
+    )
+
+
+def test_cli_stat_cell_survives_a_missing_rows_frame():
+    """`rows=None` 的格照旧出全 None 读数,不抛 —— 空格不是失败。"""
+    out = cli._stat_cell({"family": "synthetic", "kind": "main", "timing": "R",
+                          "sample_kind": "event", "rows": None})
+    st = out["stats"]
+    assert st["n_events"] == 0 and st["mean_pp"] is None
+    assert st["ci_low_pp"] is None and st["ci_high_pp"] is None
+    assert st["ci_method"].endswith("n_days<2 → 无区间)")
+    assert out["state"] == cli.THIN
+
+
+def test_cli_oracle_classification_remains_separate_from_statistics():
+    result = cli._stat_cell({
+        "family": "synthetic", "kind": "main", "timing": "X",
+        "sample_kind": "event", "rows": uneven_events(),
+    })
+    assert result["actionability"] == cli.X_ORACLE
+    assert result["verdict"] != cli.POS_HIST

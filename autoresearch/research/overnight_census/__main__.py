@@ -16,9 +16,11 @@
 2. **actionability 轴**。F3/F5 的输入含 EOD 终值(`limit`/`last_time`/`fd_amount`/`exec_ok`
    都在收盘后才定),故整族只能给理论上界 —— 它们**不得**输出「历史正候选」,一律降级为
    `ORACLE_*`。这是设计稿 v2 逮到 v1 的缺陷之一(v1 只把 T1 标了上界)。
-3. **日等权区间**。`core.cell_stats` 的点估计按日等权,而 `date_cluster_bootstrap` 的
-   点估计按行等权;判据读的是 CI,所以本层把**逐日均值序列**喂给它 —— 日聚簇重采样一条
-   日均值序列,恰好就是日等权估计量的区间(见 `_day_series`)。
+3. **日等权区间由公共原语算,本层不再覆盖**。`core.cell_stats` 与本层曾各有一份实现:
+   底层的区间围绕行等权中心,本层事后用 `day_equal_ci` 覆盖来补偿。现在两者同走
+   `common.stats.day_equal_bootstrap`,core 一次算对,本层只挑方法串。
+   两个入口**各自保留既有默认 seed**(core `20260828` / 公共层 `20260803`);本层显式传
+   公共层那个 —— 08-28 那份读数印的就是它,少传一次数字会静默换一批。
 """
 from __future__ import annotations
 
@@ -51,34 +53,25 @@ ORACLE_INCONCLUSIVE = "ORACLE_INCONCLUSIVE"
 MAIN_VALUE_COL = "gap_pp"          # 判读只认绝对毛(预注册 §0.2)
 REL_VALUE_COL = "rel_gap_pp"       # 并印,不判读
 
-
-def _day_series(rows: pd.DataFrame, value_col: str, date_col: str = "date") -> pd.DataFrame:
-    """(日, 票) 观测 → **一日一行**的日均值表,列 `[date, value_col]`。
-
-    喂给 `date_cluster_bootstrap` 的必须是这张表:该函数按 `date` 聚簇重采样后对**行**取
-    均值,若直接传原始观测,一天 100 只的日子会拿走 100 倍权重,得到的区间中心是行等权,
-    与 `core.cell_stats` 报的日等权 `mean_pp` 不是同一个量 —— 判据读 CI,口径必须对齐。
-    """
-    if rows is None or len(rows) == 0 or value_col not in rows.columns:
-        return pd.DataFrame({date_col: [], value_col: []})
-    v = pd.to_numeric(rows[value_col], errors="coerce")
-    d = rows[date_col].astype(str).str.strip()
-    keep = v.notna() & d.notna() & ~d.isin(["", "nan", "NaT", "None"])
-    if not keep.any():
-        return pd.DataFrame({date_col: [], value_col: []})
-    daily = (pd.DataFrame({date_col: d[keep].to_numpy(object), value_col: v[keep].to_numpy(float)})
-             .groupby(date_col, as_index=False)[value_col].mean())
-    return daily
+# ── 区间方法串(读数表与 meta 里的字面量,值不要改;此处是它的唯一事实源)──
+CI_METHOD = "date_cluster_bootstrap(day-equal)"
+CI_METHOD_NO_INTERVAL = "date_cluster_bootstrap(day-equal, n_days<2 → 无区间)"
 
 
 def day_equal_ci(rows: pd.DataFrame, value_col: str = MAIN_VALUE_COL,
                  date_col: str = "date") -> tuple[float | None, float | None, str]:
-    """日等权 95% 区间(pp)。→ (lo, hi, method)。日数 < 2 → (None, None, ...)(诚实:无跨日方差)。"""
-    daily = _day_series(rows, value_col, date_col)
-    if len(daily) < 2:
-        return None, None, "date_cluster_bootstrap(day-equal, n_days<2 → 无区间)"
-    iv = _stats.date_cluster_bootstrap(daily, value_col, date_col=date_col)
-    return iv.lo, iv.hi, "date_cluster_bootstrap(day-equal)"
+    """日等权 95% 区间(pp)。→ (lo, hi, method)。日数 < 2 → (None, None, ...)(诚实:无跨日方差)。
+
+    **兼容入口**:区间由 `common.stats.day_equal_bootstrap` 提供(与 `core.cell_stats` 同一
+    实现、同一公共层默认 seed),本函数只保留既有返回格式。`_stat_cell` 已不再调它 ——
+    留着是因为它是这份读数口径的公开名字,外部脚本可以拿单独一批行问同一个问题。
+    """
+    if rows is None or len(rows) == 0 or value_col not in getattr(rows, "columns", []):
+        return None, None, CI_METHOD_NO_INTERVAL
+    iv = _stats.day_equal_bootstrap(rows, value_col, date_col=date_col)
+    if iv.n_clusters < 2:
+        return None, None, CI_METHOD_NO_INTERVAL
+    return iv.lo, iv.hi, CI_METHOD
 
 
 def five_state(st: dict, *, ci_low, ci_high) -> str:
@@ -132,14 +125,20 @@ def _git_sha() -> str:
 
 
 def _stat_cell(cell: dict) -> dict:
-    """一格 → 带统计与判读的格。绝对列判读,相对列并印。"""
+    """一格 → 带统计与判读的格。绝对列判读,相对列并印。
+
+    区间**只算一次**:`core.cell_stats` 现在自己就是日等权口径,本层不再事后覆盖。
+    `seed` 显式传公共层的那个 —— 见模块 docstring 第 3 点,这是读数数值的兼容契约。
+    """
     rows, kind = cell.get("rows"), cell.get("sample_kind", "event")
-    st = core.cell_stats(rows, value_col=MAIN_VALUE_COL, sample_kind=kind) if rows is not None \
-        else core.cell_stats(pd.DataFrame({"date": [], MAIN_VALUE_COL: []}),
-                             value_col=MAIN_VALUE_COL, sample_kind=kind)
-    lo, hi, method = day_equal_ci(rows, MAIN_VALUE_COL)
-    st["ci_low_pp"], st["ci_high_pp"], st["ci_method"] = lo, hi, method
-    rel = core.cell_stats(rows, value_col=REL_VALUE_COL, sample_kind=kind) \
+    source = (rows if rows is not None
+              else pd.DataFrame({"date": [], MAIN_VALUE_COL: []}))
+    st = core.cell_stats(source, value_col=MAIN_VALUE_COL, sample_kind=kind,
+                         seed=_stats.DEFAULT_SEED)
+    lo, hi = st["ci_low_pp"], st["ci_high_pp"]
+    st["ci_method"] = CI_METHOD if st["n_days"] >= 2 else CI_METHOD_NO_INTERVAL
+    rel = core.cell_stats(rows, value_col=REL_VALUE_COL, sample_kind=kind,
+                          seed=_stats.DEFAULT_SEED) \
         if rows is not None and REL_VALUE_COL in getattr(rows, "columns", []) else None
     st["rel_mean_pp"] = (rel or {}).get("mean_pp")
 
@@ -184,7 +183,14 @@ def run_census(since: str | None = None, until: str | None = None, *,
         "git_sha": _git_sha(),
         "prereg": "docs/research/2026-08-28-overnight-concentrated-census.md §0",
         "ruler": "gap_c1_o2", "cost_pp": core.COST_PP, "ci_threshold_pp": core.CI_LOWER_PP,
-        "ci_method": "date_cluster_bootstrap(day-equal)",
+        "ci_method": CI_METHOD,
+        # 换估计量必须留版本 + 可复现参数:光有 `ci_method` 这个名字复现不出同一批数字,
+        # 而新旧版本的读数**不许直接拼成趋势**。
+        "statistics_version": core.STATISTICS_VERSION,
+        "ci_seed": _stats.DEFAULT_SEED, "ci_n_boot": _stats.DEFAULT_BOOT,
+        "ci_alpha": _stats.DEFAULT_ALPHA,
+        "ci_method_detail": ("先日内均值再跨日等权,独立日重采样;"
+                             "**不是**连续交易日 moving-block 区间"),
         "multiplicity": "per-cell 95% CI(max-T simultaneous 待用户裁决,见设计稿溯源头 (a))",
         "n_cells": len(scored), "n_main": sum(1 for c in scored if c.get("kind") == "main"),
         "n_positive": n_pos, "n_f5": len(f5),
