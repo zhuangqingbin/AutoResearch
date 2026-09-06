@@ -46,7 +46,7 @@ def test_registry_is_internally_consistent():
 
 
 def test_metering_panorama_artifacts_are_registered_outside_runs():
-    assert ca.ROOTS[-1] == "metering"
+    assert "metering" in ca.ROOTS      # 曾写成 ROOTS[-1]:纯位置断言,2026-09-07 加研究根后改成员判断
     assert ca.by_name("panorama_json") == ca.Artifact(
         "panorama_json",
         "panorama_*.json",
@@ -208,7 +208,11 @@ def test_rank_of_rejects_unknown_rating():
 _LITERAL_RE = re.compile(r'"[A-Za-z0-9_./*-]+\.(?:csv|json|md|txt)"')
 #: D6.1:扩到 `autoresearch/analyze`(stock-research 的取数/写手/组装)—— 守卫此前只认
 #: scan-market 的三个根,analyze 侧的产物名字面量从未被扫过。
+#: 2026-09-07(Q-R 裁定①):再扩到 `autoresearch/research`(研究仪器)与 `autoresearch/broker`
+#: (券商取数层)。此前两包各写各的落点、守卫一个都不扫 —— C5/F8 的新目录若不登记,
+#: 就会重演「产物没人登记」这条 08-29 的病。
 _SCAN_ROOTS = ("autoresearch/scan", "autoresearch/trace", "autoresearch/analyze",
+               "autoresearch/research", "autoresearch/broker",
                ".claude/workflows")
 
 

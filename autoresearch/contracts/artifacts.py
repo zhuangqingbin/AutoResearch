@@ -80,6 +80,10 @@ ROOTS: tuple[str, ...] = (
     "staging", "report", "ledger", "capsule",
     "analyze_ctx", "analyze_staging", "analyze_report", "analyze_ledger",
     "metering",
+    # 2026-09-07(Q-R 裁定①):研究仪器与券商取数层的产物根,此前从未登记、守卫也不扫。
+    # research_report = $RPT/research/(读数、离线实验目录);research_ctx = $CTX/research/
+    # (研究账本);factor_lab = ws.factor_lab_root();broker = ws.broker_root()。
+    "research_report", "research_ctx", "factor_lab", "broker",
 )
 KINDS: tuple[str, ...] = ("csv", "json", "md", "txt", "dir")
 PRESENCES: tuple[str, ...] = ("always", "gated", "conditional")
@@ -324,6 +328,71 @@ ARTIFACTS: tuple[Artifact, ...] = (
              "usage_panorama", "json", "gated", required_when="usage_panorama --write"),
     Artifact("panorama_md", "panorama_*.md", "metering", "observe",
              "usage_panorama", "md", "gated", required_when="usage_panorama --write"),
+    # ── 研究仪器读数(2026-09-07 Q-R;零 LLM、只读、不进任何 run 现场)────────
+    Artifact("edge_census_md", "edge_census.md", "research_report", "observe",
+             "edge_census", "md", "gated", required_when="edge_census 跑过"),
+    Artifact("edge_census_json", "_edge_census.json", "research_report", "observe",
+             "edge_census", "json", "gated", required_when="edge_census 跑过"),
+    Artifact("overseas_census_md", "overseas_event_census.md", "research_report", "observe",
+             "overseas_event_census", "md", "gated", required_when="overseas_event_census 跑过"),
+    Artifact("overseas_census_json", "_overseas_event_census.json", "research_report", "observe",
+             "overseas_event_census", "json", "gated", required_when="overseas_event_census 跑过"),
+    Artifact("derivatives_census_md", "derivatives_census.md", "research_report", "observe",
+             "derivatives_census", "md", "gated", required_when="derivatives_census 跑过"),
+    Artifact("derivatives_census_json", "_derivatives_census.json", "research_report", "observe",
+             "derivatives_census", "json", "gated", required_when="derivatives_census 跑过"),
+    Artifact("overnight_census_json", "overnight_census/_overnight_census.json", "research_report",
+             "observe", "overnight_census", "json", "gated",
+             required_when="overnight_census --run(md 默认落 docs/,见 A 包 --out/--out-json)"),
+    Artifact("lowturn_precheck_md", "lowturn_precheck.md", "research_report", "observe",
+             "lowturn_precheck", "md", "gated", required_when="lowturn_precheck 跑过"),
+    Artifact("feature_gate_md", "feature_gate.md", "research_report", "observe",
+             "feature_gate", "md", "gated", required_when="feature_gate 跑过"),
+    Artifact("feature_gate_ledger", "feature_gate.json", "research_ctx", "observe",
+             "feature_gate", "json", "gated", required_when="feature_gate 跑过"),
+    Artifact("nested_probe_ledger", "nested_probe.json", "research_ctx", "observe",
+             "nested_probe", "json", "gated", required_when="nested_probe 跑过"),
+    Artifact("ic_by_regime_md", "ic_by_regime.md", "research_report", "observe",
+             "factor_lab", "md", "gated", required_when="factor_lab run_ic_by_regime"),
+    Artifact("sector_top3_backtest_csv", "sector_top3_backtest.csv", "research_report", "observe",
+             "sector_top3_backtest", "csv", "gated", required_when="sector_top3_backtest 跑过"),
+    # factor_lab 自己的落盘根(ws.factor_lab_root())
+    Artifact("factor_lab_ic_table", "ic_table.csv", "factor_lab", "observe",
+             "factor_lab", "csv", "gated", required_when="factor_lab eval"),
+    Artifact("factor_lab_decile_table", "decile_table.csv", "factor_lab", "observe",
+             "factor_lab", "csv", "gated", required_when="factor_lab eval"),
+    Artifact("factor_lab_ic_by_regime", "ic_by_regime.csv", "factor_lab", "observe",
+             "factor_lab", "csv", "gated", required_when="factor_lab run_ic_by_regime"),
+    Artifact("factor_lab_panel_meta", "panel_meta.json", "factor_lab", "observe",
+             "factor_lab", "json", "gated", required_when="factor_lab harvest"),
+    Artifact("factor_lab_youzi_seats", "youzi_seats.json", "factor_lab", "observe",
+             "factor_lab", "json", "gated", required_when="factor_lab harvest(席位缓存)"),
+    # ── 离线实验目录(F1 冻结 / F8 阶段价值 / C5 执行评价;experiment_id 一目录,排他创建)──
+    Artifact("experiment_spec", "*/spec.json", "research_report", "observe",
+             "experiment_io", "json", "conditional"),
+    Artifact("experiment_input_manifest", "*/input_manifest.json", "research_report", "observe",
+             "experiment_io", "json", "conditional"),
+    Artifact("experiment_manifest", "*/manifest.json", "research_report", "observe",
+             "experiment_io", "json", "conditional"),
+    Artifact("experiment_readout", "*/readout.md", "research_report", "observe",
+             "experiment_io", "md", "conditional"),
+    Artifact("stage_value_daily_delta", "stage_value/*/daily_delta.csv", "research_report",
+             "observe", "stage_value", "csv", "conditional"),
+    Artifact("stage_value_coverage", "stage_value/*/coverage.json", "research_report",
+             "observe", "stage_value", "json", "conditional"),
+    Artifact("stage_value_statistics", "stage_value/*/statistics.json", "research_report",
+             "observe", "stage_value", "json", "conditional"),
+    Artifact("execution_assessments", "execution/*/assessments.csv", "research_report",
+             "observe", "execution_audit", "csv", "conditional"),
+    Artifact("execution_daily_metrics", "execution/*/daily_metrics.csv", "research_report",
+             "observe", "execution_audit", "csv", "conditional"),
+    Artifact("execution_coverage", "execution/*/coverage.json", "research_report",
+             "observe", "execution_audit", "json", "conditional"),
+    # ── 券商成交取数层(08-27 设计稿 §5;不进 lake/,只记不学)──────────────────
+    Artifact("broker_trades", "trades.csv", "broker", "observe",
+             "broker.ingest", "csv", "gated", required_when="broker ingest 跑过"),
+    Artifact("broker_raw", "raw/*.csv", "broker", "observe",
+             "broker.store", "csv", "gated", required_when="broker ingest 跑过"),
 )
 
 _BY_NAME: dict[str, Artifact] = {a.name: a for a in ARTIFACTS}
@@ -388,6 +457,9 @@ NON_ARTIFACT_LITERALS: frozenset[str] = frozenset({
     "learning/temperature.csv", "temperature.csv", "research/temperature_calib.md",
     "_macro_cn.json", "weights.json", "L1_weights.json", "_claim_ledger.csv",
     "_dossier_snapshot.json",
+    # 2026-09-07(Q-R):守卫扩到 autoresearch/research 与 autoresearch/broker 后冒出的非产物
+    "docs/research/2026-08-28-overnight-concentrated-census-readout.md",   # 已提交的读数文档(census 的 md 默认落点)
+    # broker inbox 的 `*.csv` 通配不进白名单:已登记的 `raw/*.csv` 基名就是它,白名单再写会与登记表重叠
     # 2026-08-31(D6.1):`_slim.md`/`_slim_deep.md` 挪出白名单,改为正式登记
     # `analyze_slim`/`analyze_slim_deep`(见 ARTIFACTS 尾部 stock-research 节)。
     "_price_claim_status.json", "price_claim_subjects.json",

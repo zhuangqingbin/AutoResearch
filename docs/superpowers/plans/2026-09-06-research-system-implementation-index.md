@@ -163,6 +163,19 @@
 
 ## 9. 待裁问题（各包进入条件）
 
+**2026-09-07 裁定：用户按本节「建议」列全部采纳。** 逐条后果：
+
+| 编号 | 裁定 | 后果 |
+|---|---|---|
+| Q-B | ③ 把 v2 语义装进 `intel_guard` | B2/B3 契约与比较器照做；B4 改为情报稿的事件抽取 + 绑定接口，**影子模式**写侧车产物（新增、不改既有 verdict、不进门）；`review_draft` 路径不再扩展；B5 的人工标注改在情报稿上做 |
+| Q-C | 本地合并 | `feature/broker-ingest` 已合并 main（`a034acb`）；C3/C5 消费 `broker/trades.csv` |
+| Q-D | ① D8 单源 + emit；② 对拍期 D8 策略，20 卡 parity 后切 fail-closed；③ 字段并集 | 词表进 `contracts/agent_output.py`，校验函数在 `contracts/research_card.py`；候选 JSON 先由确定性解析桥从现有 md 派生（不改模板），agent 原生写 JSON 的模板改动与 D4 v5/F3 合并一次人批（解冻后） |
+| Q-E | 不立项 | E3 不做；E2 信封可做 |
+| Q-F | 并报 | F1 已实现 `sensitivity_rulers`；F4/F8 读数敏感尺与主尺并列 |
+| Q-R | ① 登记 | 新增 `research_report` / `research_ctx` / `factor_lab` / `broker` 四个根，既有研究产物与 C5/F8/F6 目录全部登记；漂移守卫扩到 `autoresearch/research` 与 `autoresearch/broker` |
+| Q-冻结 | 照旧 | B4 影子侧车、D1–D4 候选双产物为 I 类可做；D5 生产路由、F2/F3 模板、agent 原生写 JSON 等解冻后一次人批 |
+
+
 | 编号 | 问题 | 选项 | 建议 | 阻塞的任务 |
 |---|---|---|---|---|
 | Q-B | `news/claim_ledger` 生产零调用者：接线、退役，还是把 v2 字段语义装进真在跑的 `intel_guard.lint_claims`？ | ① 按 08-28 外源稿接线 `review_draft`（B 类）② 退役整包，只保 evidence_index 的引用 ③ B2/B3 契约与比较器不变，接入点改为 intel_guard 的事件行 | ③：真守卫在哪就接哪，不为死码写 80 条验收 | B 全部 |
