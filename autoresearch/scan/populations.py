@@ -90,7 +90,16 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from autoresearch.common import ruler as _ruler, stats as _stats, workspace as ws
+from autoresearch.common import (
+    forward_returns as _fwd,
+    ruler as _ruler,
+    stats as _stats,
+    workspace as ws,
+)
+from autoresearch.data import market_panel as _panel
+
+# 只为 `MIN_CROSS_SECTION` 这一个研究阈值(它的 owner 仍是 edge_census);
+# 收益与湖读取已在 E4 改走 common/data,这条边留在 E5 的残余台账里。
 from autoresearch.research import edge_census as _ec
 from autoresearch.scan import outcome as _outcome
 
@@ -269,19 +278,19 @@ def ruler_frame(date: str, *, lake_daily: Path | None = None,
     D+2 没落湖时整份跳过,于是 `fwd_5/10` 永远等不到自己的成熟日(§2.6 那条账)。这里
     只要 D 本身在湖里就出帧,成熟与否由逐列 `status` 说话。
 
-    收益口径全部来自 `edge_census.forward_frame`(=`factor_lab.forward_returns` 同一实现,
+    收益口径全部来自 `common.forward_returns.forward_frame`(与 `factor_lab` 同一实现,
     含 `|gap|>GAP_CLIP` 的数据错剔除);三个相对列走 `outcome._relative_columns`
     ——**列名即口径**,分母各不相同,这里不重新推导。
     """
-    days = _ec.lake_trade_days(lake_daily)
+    days = _panel.lake_trade_days(lake_daily)
     day = str(date).replace("-", "")
     if day not in days:
         return None, {"reason": "NOT_IN_LAKE", "analysis_date": date}
     idx = days.index(day)
     horizon = max(RULER_HORIZON.values())
     window = days[max(0, idx - 1): min(len(days), idx + horizon + 2)]
-    pivots = _ec.load_lake_pivots(window, lake_daily)
-    frame = _ec.forward_frame(pivots, days, day)
+    pivots = _panel.load_lake_pivots(window, lake_daily)
+    frame = _fwd.forward_frame(pivots, days, day)
     if frame is None or frame.empty:
         return None, {"reason": "EMPTY_FORWARD_FRAME", "analysis_date": date}
 
