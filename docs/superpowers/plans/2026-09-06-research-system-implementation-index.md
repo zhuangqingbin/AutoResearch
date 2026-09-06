@@ -39,11 +39,11 @@
 | 工作包 | 详细实施计划 | 任务范围 | 当前状态 |
 |---|---|---|---|
 | A：统计口径 | [Statistical Estimator Convergence](2026-09-06-statistical-estimator-convergence.md) | 日等权估计单源、core/CLI、seed、输出隔离 | 已实施并合并 main（0712114）；保留原计划中的实施偏离与验证记录 |
-| B：事件证据 | [Claim Evidence Verification](2026-09-06-claim-evidence-verification.md) | B1 保守判定；B2 契约；B3 比较；B4 接线；B5 验收 | **待裁 Q-B**。`claim_ledger.review_draft/lint_claim/_supports` 生产零调用者（只有测试；`.claude/` 零引用），真守卫是 `scan/l4/intel_guard.lint_claims`；B1–B3 单独提交零生产效果，B4 接线是 B 类、受 Q-冻结约束 |
-| C：执行评价 | [Execution Evidence and Net Return](2026-09-06-execution-evaluation.md) | C1 时间；C2 快照；C3 成交；C4 成本/权益；C5 导入/读数 | **C1/C2 已实施**（§12）；**C3–C5 待裁 Q-C**（消费 `feature/broker-ingest` 的 trades.csv，不另造成交格式） |
-| D：结构化卡片 | [Structured Research Cards](2026-09-06-structured-research-cards.md) | D1 schema；D2 嵌套事实；D3 比较；D4 权威切换；D5 完整性 | **待裁 Q-D**。与 08-31 稿 D8「card.json 双写」是同一件事（已裁「做」），三处分歧先裁 |
-| E：编排与分层 | [Orchestration Efficiency and Layering](2026-09-06-orchestration-and-layering.md) | E1 当前基线；E2 信封；E3 runner；E4 纯计算；E5 声明注入 | **E1/E4/E5 步 3 已实施**（§12）；E2/E3 仍是条件项（Q-E，09-04 裁定扫描留 workflow.js）；E5 步 4/5 残余边未清 |
-| F：研究方法 | [Research Methods and Stage Value](2026-09-06-research-methods-and-stage-value.md) | F1 实验；F2 full；F3 lite；F4 阶段价值；F5 稳健性；F6 因子；F7 概率；F8 读数 | **F1/F5/F6 统计层/F7 已实施**（§12）；F6 首批家族登记与 F4/F8 未做；**F2/F3 模板改动受 Q-冻结约束**，与 08-31 D4 合并一次人批；样本成熟独立于开发完成 |
+| B：事件证据 | [Claim Evidence Verification](2026-09-06-claim-evidence-verification.md) | B1 保守判定；B2 契约；B3 比较；B4 接线；B5 验收 | **B2/B3 已实施；B4 按 Q-B ③ 以影子侧车接进情报守卫**（§13）。B1 不做（零生产效果）；B5 人工标注集未做；绑定真来源后同一管线不用改 |
+| C：执行评价 | [Execution Evidence and Net Return](2026-09-06-execution-evaluation.md) | C1 时间；C2 快照；C3 成交；C4 成本/权益；C5 导入/读数 | **C1–C5 全部已实施**（§12/§13）；券商分支已合并；真实快照来源与真实成交样本仍是外部依赖 |
+| D：结构化卡片 | [Structured Research Cards](2026-09-06-structured-research-cards.md) | D1 schema；D2 嵌套事实；D3 比较；D4 权威切换；D5 完整性 | **D1–D4 已实施**（§13）：候选 JSON 由解析桥派生，生产仍读 md；**D5 生产路由与 agent 原生写 JSON 的模板改动受 Q-冻结约束** |
+| E：编排与分层 | [Orchestration Efficiency and Layering](2026-09-06-orchestration-and-layering.md) | E1 当前基线；E2 信封；E3 runner；E4 纯计算；E5 声明注入 | **E1/E2/E4/E5 步 3 已实施**；E3 按 Q-E 不立项；E5 步 4/5 残余边已列台账（12 条未清），未迁移 |
+| F：研究方法 | [Research Methods and Stage Value](2026-09-06-research-methods-and-stage-value.md) | F1 实验；F2 full；F3 lite；F4 阶段价值；F5 稳健性；F6 因子；F7 概率；F8 读数 | **F1/F4/F5/F6/F7/F8 已实施**（F6 三格已登记未计算）；**F2/F3 模板改动受 Q-冻结约束**；真实前向样本与三格普查是研究动作，不在工程批次 |
 
 每份实施计划包含：准确文件路径、Consumes/Produces 接口块、核心代码、回归测试样例、执行命令、失败语义、上线条件、提交与回滚边界。代码段是实现基准与关键接入段；既有函数的机械搬迁以当前源码为准，不把文档示例当作已上线实现。
 
@@ -250,4 +250,25 @@
 产物形状守卫在本波逮到自己该逮的：新建的 `common/forward_returns.py` 与 golden JSON 裸写 `fwd_2_oc` 却无沿革注记 → fail，按判据补注记后过。
 
 **未做，别当已完成读**：B 全部（待 Q-B）、C3–C5（待 Q-C）、D 全部（待 Q-D）、E2/E3（Q-E 条件项）、E5 步 4/5 残余边台账、F2/F3 模板（冻结中）、F4 阶段价值、F6 首批家族登记、F8 读数与 CLI。research 根仍未登记 ARTIFACTS（Q-R）。主设计 §6–§8 仍未按首轮评审改稿。
+
+## 13. 第二轮实施记录（2026-09-07，七项裁决之后）
+
+用户按 §9 建议列裁定全部七项后直接在 `main` 上开发（未另开分支），13 个提交，全量 **5641 passed / 6 skipped**（波次 1 后 5285，券商分支带来 90 条，本轮新增 266 条）。
+
+| 提交 | 内容 | 关键决定 |
+|---|---|---|
+| 合并 broker | `feature/broker-ingest` 本地合并（Q-C） | 11 commits 零冲突 |
+| Q-R | 四个新根 + 既有研究产物登记 + 守卫扩到 research/broker | 扩之前两包 22 个未登记字面量，现全部有主 |
+| B2/B3 | `contracts/claim_evidence.py` + `news/claim_support.py` | 谓语首批含增持；时间不一致 UNKNOWN 不许 ±3 天放宽 |
+| B4 | `news/claim_extract.py`（regex_v1）+ `news/claim_binding.py` + 情报守卫侧车 `_l4_claims_*.json` | **影子**：不改稿件/verdict/action，没有门读它；无绑定来源时每条 SOURCE_NOT_BOUND |
+| C3–C5 | 成交状态/损益/成本规则 + 导入器 + 离线 CLI | 三模式永不合并；印花税只收卖腿；`decision_at` 从时间锚派生；输出排他 |
+| D1–D4 | 词表进 agent_output，`research_card` 校验，`card_io` 解析桥，`card_render`，`RunProfile.card_source` | 候选 JSON 由 md 派生不改模板；JSON 权威下缺文件明确失败；持仓规则只 warn |
+| E2 | `contracts/inference_task.py` + `scan/deterministic_runner.verify_handoff` | 只校验不派发；E3 不立项 |
+| F4/F8 | `research/stage_value.py` + CLI | 读 populations 产物；UNKNOWN 旗不当 False；主尺与敏感尺并列；小样本 IMMATURE |
+| F6 | W3 三格家族登记（机器可校验冻结方案）| 已登记未计算 |
+| 文档 | E5 残余边台账；主设计 §6–§8 改稿注记 | 15 条向上边逐文件列状态 |
+
+变异探针 32 个，两个逼出用例：B4「他票行也进侧车」（夹具那行他票没有谓语词，是被谓语过滤掉的）；E1 之外本轮无新的「没有灯的绿灯」。一次流程事故：`pytest … | tail` 吞退出码，F4/F8 在 `-W error::FutureWarning` 下 2 条红之上提交，正常跑本就 15 绿，已补修正提交并改用 `set -o pipefail`。
+
+**仍未做，别当已完成读**：B5 人工标注集（80 条）；C 的真实快照来源与真实成交样本（外部依赖）；D5 生产路由切换与 agent 原生写 JSON 的模板改动（冻结）；E3 runner（Q-E 不立项）；E5 步 4/5 的 12 条残余边迁移；F2/F3 模板（冻结）；F6 三格的真面板普查（研究动作）。
 
