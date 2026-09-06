@@ -1,0 +1,59 @@
+{
+ "schema_version": 1,
+ "experiment_id": "FAM_W3_THREE_GRIDS_20260907",
+ "engine": "claude",
+ "created_at": "2026-09-07T00:00:00+08:00",
+ "code_sha": "a5cb9f7000000000000000000000000000000000",
+ "prompt_hashes": {},
+ "input_manifest_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+ "experiment_family": "w3-three-grids",
+ "hypotheses": [
+  {
+   "hypothesis_id": "w3_first_board_pullback",
+   "mechanism": "首板(首次涨停)次日缩量回调:承接盘未离场、抛压已释放,T+1 尾盘低吸后 T+2 开盘承接;外部证据华安金工 OOS 正、91% 持仓 1 天、滑点敏感",
+   "expected_direction": "positive",
+   "available_at": "T+1 14:45 前(需 T 日涨停板名单 + T+1 盘中量比;kpl_list 次晨才全,T 晚只能用 limit_list_d)",
+   "metric_definition": "T 日首板(limit_list_d 首次涨停)且 T+1 14:45 量比 < 0.6 且 T+1 收盘较 T 收盘回调 [-5%, 0)",
+   "population": "全湖可交易(entry_tradable),剔 ST/新股/北交所",
+   "label": "gap_c1_o2",
+   "rejection_condition": "日等权 95% CI 下界 < +0.15pp 绝对毛(= COST_PP 往返成本),或 n_days < 20"
+  },
+  {
+   "hypothesis_id": "w3_late_seal_premium",
+   "mechanism": "14:00–15:00 晚封板的涨停次日溢价最高(社区统计);恰是 14:45 工具触达时段。**但 08-28 普查已证涨停板族属 X_ORACLE:封板=买不进**,本格先答成交问题",
+   "expected_direction": "positive",
+   "available_at": "T 日 15:00 后(封板时刻需 kpl_list,T+2 8:30 才全);T+1 尾盘决策时只能用 T 日封板时刻",
+   "metric_definition": "T 日涨停且封板时刻 ∈ [14:00, 15:00);T+1 收盘未封板(buyable_c1=True)的子集单列",
+   "population": "全湖涨停板族,按 buyable_c1 分两桶报告",
+   "label": "gap_c1_o2",
+   "rejection_condition": "可买桶(buyable_c1=True)CI 下界 < +0.15pp;不可买桶只报不判(X_ORACLE)"
+  },
+  {
+   "hypothesis_id": "w3_institution_seat_5_20d",
+   "mechanism": "机构席位上榜后 5–20 日窗正(W3 中等证据;本仓 08-22 普查:机构上榜多日窗温和正、隔夜近中性)——**标签是周级尺,不是主尺**",
+   "expected_direction": "positive",
+   "available_at": "T 日 17–19 点(tushare top_inst 盘后)",
+   "metric_definition": "T 日龙虎榜机构席位净买入 > 0(top_inst),按 top_list 归户",
+   "population": "全湖当日龙虎榜上榜票",
+   "label": "fwd_5_oc / fwd_10_oc(敏感尺;主尺 gap_c1_o2 并列只观察)",
+   "rejection_condition": "fwd_5_oc 与 fwd_10_oc 的日等权 CI 下界均 < 0,或 n_days < 20;主尺读数不构成本格的判据"
+  }
+ ],
+ "population_rule": "lake/daily 全湖 + 龙虎榜/涨停名单(tushare,已开通权限);人口按 entry_tradable 折叠",
+ "selection_rule": "按各假设 metric_definition 的确定性规则,零 LLM",
+ "ruler": "gap_c1_o2",
+ "sensitivity_rulers": ["fwd_5_oc", "fwd_10_oc"],
+ "return_unit": "fraction",
+ "baseline": "同日全湖可交易等权(rel_gap_market 口径)",
+ "evidence_mode": "EOD_PROXY",
+ "weighting": "day_equal",
+ "cost_model_version": "none(门槛以 COST_PP=0.15pp 绝对毛计)",
+ "split": {"train": ["2022-03-01", "2025-01-01"], "validation": ["2025-01-01", "2026-01-01"], "test": ["2026-01-01", "2026-09-01"]},
+ "purge_rule": "label 区间相交即剔(robustness.purge_overlap)",
+ "embargo_sessions": 2,
+ "bootstrap": {"n_boot": 2000, "seed": 20260907},
+ "multiplicity": "BY(三格一族,dependence=arbitrary)",
+ "maturity_policy": "common.stats.maturity_verdict(scan_days >= 20)",
+ "quality_constraints": "只用湖与账本;不注入 L3/L4 prompt;结果只进文档",
+ "stop_rule": "样本终点 2026-09-01(test 段末);不因读数好看提前停或延后;过门(CI 下界 ≥ +0.15pp)再按 08-28 Q9 隔夜普查裁决树走,不自动上线"
+}

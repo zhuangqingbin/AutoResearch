@@ -175,6 +175,9 @@ flowchart TD
 
 ## 6. 工作包 B：重大事件证据校验
 
+> **2026-09-07 改稿（Q-B ③）：** 本节原以 `news/claim_ledger.review_draft` 为接入点。核实：该入口及 `lint_claim`/`_supports`/`write_ledger` **生产零调用者**（只有测试；`.claude/` 零引用），真在跑的防编造守卫是 `scan/l4/intel_guard.lint_claims`。裁定后 B2/B3（字段契约 + 保守比较器）照本节语义实施；**B4 的接入点改为情报守卫**：本票回购/增持/减持/中标行经 `news/claim_extract`（regex_v1）抽成 event、经 `news/claim_binding.support_bound_claim` 得结论，写影子侧车 `_l4_claims_<code>.json`（不改稿件、不改既有 verdict、不进门）。§6.4 的 review_draft 接线**不再执行**；§6.5 的人工标注改在情报稿侧车上做，谓语首批补「增持」。B1 不做（零生产效果）。
+
+
 ### 6.1 两步交付
 
 第一步降低错误确信：仅命中“回购”等谓语时，`content_supports` 应为 `UNKNOWN`；来源没有相应内容也不直接等于断言为假。只有证据包足以证明或反驳相应事实时才给确定结论。
@@ -236,6 +239,9 @@ flowchart TD
 必须报告错误 PASS、错误 FAIL、UNKNOWN 占比和缺原文比例。不能通过把全部结果改成 UNKNOWN 宣称语义校验能力提高；第一步保守降级与第二步提高可验证覆盖率分别报告。
 
 ## 7. 工作包 C：执行时点与净收益评价
+
+> **2026-09-07 改稿（Q-C 本地合并）：** 真实成交的取数层已在 `feature/broker-ingest` 实施并合并（`autoresearch/broker/`，产物 `context_<engine>/broker/trades.csv`）。本节 §7.3 的 Fill 格式**不另造**：C3/C5 只对 `broker/schema.TRADES_COLUMNS` 做投影（fill_id=trade_id，position=(账户 hash, 代码)），券商导出没有委托信息时 `entry_status` 为 UNKNOWN。另补三条 A 股微观结构约束：① 买腿的真实实现是 14:57–15:00 收盘集合竞价限价单（`close_auction_limit_v1`），封涨停一律 NO_FILL；科创/创业另有 15:05–15:30 盘后固定价格（`after_hours_fixed_v1`）；② 三种证据模式共用主尺的 `ENTRY_FLAG`/`EXIT_FLAG`；③ `decision_at` 由 `scan/exec_anchor.read_execution` 派生，非 ACTIONABLE 的 run 只进覆盖表。印花税只收卖出腿。
+
 
 ### 7.1 第一版范围
 
@@ -322,6 +328,9 @@ reports_codex/research/execution/<experiment_id>/manifest.json
 - C07：第一版不影响生产评级、召回配额、BUY 或持仓动作。
 
 ## 8. 工作包 D：结构化研究事实与报告迁移
+
+> **2026-09-07 改稿（Q-D）：** 本节与 08-31 stock-research 稿 D8「卡片双写 card.json」（用户已裁「做」）是同一件事，三处分歧按索引 §9 裁定：① 词表单源 `contracts/agent_output.py`（校验函数在 `contracts/research_card.py`，`rubric.py` 同对象引用）；② 对拍期候选 JSON **由解析桥从现有 md 派生**（`scan/l4/card_io.card_from_markdown`），md 仍是权威；agent 原生写 JSON 的模板改动与 D4 v5/F3 合并一次人批（解冻后）；③ 字段取两稿并集。持仓票「盈利质量/偿付不得未核」是研究规则，进 `card_lint_warnings` 不进 schema 拒绝。`RunProfile.card_source` 默认 `legacy_md`，D5 生产路由切换受冻结约束。
+
 
 ### 8.1 内部对象
 

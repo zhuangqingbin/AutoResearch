@@ -319,6 +319,26 @@ def reconcile_with_resolved(echo, rows, *, date, census, resolved_agent_config):
 uv run --no-sync python -m pytest -q tests/contracts/test_layering.py tests/scan/test_deterministic_runner.py tests/common/test_forward_returns_parity.py tests/scan/test_l4_tasks.py tests/scan/test_stock_stage.py tests/trace/test_exec_capture.py
 ~~~
 
+### E5 残余边台账(2026-09-07 实测,`tests/contracts/test_layering.py::_edges()`)
+
+| 边 | 文件 | 状态 | 收敛路径 |
+|---|---|---|---|
+| trace → scan | `trace/capsule.py` | 未清 | `begin_run(bootstrap=None)` 的惰性 `scan.run_bootstrap` 兜底 + `scan.artifacts`;E5 步 1/2 |
+| trace → scan | `trace/usage_reconcile.py` | **已收窄**(E5 步 3):库函数不读 scan,只剩 `_resolved_via_legacy_bridge` 一个显式旧桥 | CP7 命令路由迁到 scan 入口后删桥 |
+| trace → news | `trace/evidence_index.py` | 未清 | 读 `claim_ledger.LEDGER_NAME`;B4 ③ 之后 claim_ledger 休眠,可把常量下沉 contracts |
+| scan → research | `scan/l4/producers.py` | 未清 | `consensus` 的生产数据接口搬到 data,研究诊断留 research |
+| scan → research | `scan/populations.py` | **已收窄**(E4):收益/湖读取改走 common/data,只剩 `MIN_CROSS_SECTION` 一个阈值 | 阈值下沉 contracts 或 common |
+| scan → research | `scan/prelude.py` | 未清 | `consensus.pull` + `edge_census.rejection_line/readout`;若暂不解耦就明确保留,不删 allowlist |
+| scan → research | `scan/outcome.py`、`scan/ledger_views.py` | **已清**(E4) | — |
+| data → trace | `data/cache.py` | 未清 | source_lineage 与 replay 通过注入接口接入;replay 禁网络约束不能因解耦丢失 |
+| common → data | `common/scoring.py`、`common/uzi_lenses.py` | 未清 | 计算与取数/降级记录分离,保留降级留痕 |
+| dossier → scan | `dossier/builder.py`、`dossier/delta.py`、`dossier/pool.py` | 未清 | calendar_flags / final ratings / pinned 由上层解析后传入 |
+| sector → scan | `sector/pack.py`、`sector/reuse.py` | 未清 | previous_staging_dirs 与 knob 改传已解析值 |
+| derivatives → scan | `derivatives/options_lake.py` | 未清 | `ALLOWED_KEYS` 纯词表移入 contracts |
+
+KNOWN_UPWARD 八条边**一条都没 stale**(每条至少还剩一个文件);棘轮没有放宽。每条迁移先用 rg
+确认最新调用者,一次只迁一条调用链并测实际执行。
+
 ## 发布验收与回滚
 
 | 维度 | 放行条件 |
