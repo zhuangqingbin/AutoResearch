@@ -178,14 +178,14 @@ def run(*, spec_path: Path, populations: list[Path], parent: Path | None = None)
             daily = paired_daily_selection(frame) if len(frame) else pd.DataFrame(
                 columns=["date", "baseline", "refined", "delta", "status", "n_baseline", "n_refined",
                          "missing_outcomes"])
+            for col in ("baseline", "refined", "delta"):     # 全 NA 的 object 列 → float,合并时 dtype 一致
+                daily[col] = pd.to_numeric(daily[col], errors="coerce").astype(float)
             daily.insert(0, "ruler", ruler)
             daily.insert(0, "stage", stage)
             daily_frames.append(daily)
             stats[f"{stage}|{ruler}"] = summarize_daily(daily, seed=seed, n_boot=n_boot)
             coverage.append(cov)
-    non_empty = [f for f in daily_frames if len(f)]
-    all_daily = (pd.concat(non_empty, ignore_index=True) if non_empty
-                 else daily_frames[0])
+    all_daily = pd.concat(daily_frames, ignore_index=True)
     all_daily.to_csv(output / "daily_delta.csv", index=False)
     (output / "coverage.json").write_text(json.dumps(coverage, ensure_ascii=False, indent=1) + "\n",
                                           encoding="utf-8")
