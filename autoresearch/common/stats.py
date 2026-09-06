@@ -465,3 +465,128 @@ def expanding_p25(series, *, min_history: int = 10) -> list[float | None]:
         prior = values[:i]
         out.append(float(np.quantile(prior, 0.25)) if len(prior) >= min_history else None)
     return out
+
+
+# ───────────────────── 块 bootstrap:时间相关下的区间(F5 下沉) ─────────────────────
+#
+# 2026-09-06(工作包 F5)从 `research/overseas_event_census` **机械搬入**,抽块约定与统计
+# 口径逐字未改;旧模块同对象转发。搬的理由与 A 包同一条:同仓两套 block bootstrap = 同一个
+# 估计量两处实现,读数迟早悄悄分叉。
+#
+# 下面三个常量是搬迁前那份 §0 预注册值。census 侧仍保留自己的 `BLOCK`/`N_BOOT`/`SEED`
+# 名字(那是它的预注册记录),两边同值由
+# `tests/common/test_block_bootstrap.py::test_preregistered_constants_do_not_drift_from_the_shared_defaults`
+# 钉死 —— 靠测试,不靠谁 import 谁。
+
+MOVING_BLOCK = 5                   # 5 个交易日 moving block
+MOVING_BLOCK_BOOT = 10_000
+MOVING_BLOCK_SEED = 20260829
+
+
+def block_index(rng: np.random.Generator, n: int, block: int) -> np.ndarray:
+    """重叠块抽样的下标 —— **本仓唯一**一份抽块实现。
+
+    起点均匀取自 `0..n-block`(**含端点**),抽 `ceil(n/block)` 个块拼接后截到 `n`。
+    块**不绕回**序列开头:绕回等于把首尾接起来,那是循环块 bootstrap,与这里的口径不是
+    一回事,换过去所有历史读数都要重算。
+    """
+    n_blocks = int(math.ceil(n / block))
+    starts = rng.integers(0, n - block + 1, size=n_blocks)      # 含端点
+    return (starts[:, None] + np.arange(block)[None, :]).ravel()[:n]
+
+
+@dataclass(frozen=True)
+class BootResult:
+    """一次 moving-block bootstrap 的全部产出。`point=None` = 这批样本算不出差值。"""
+
+    point: float | None
+    lo: float | None
+    hi: float | None
+    p: float | None
+    n_boot: int
+    n_valid: int
+    block: int
+    seed: int
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+def _diff(values: np.ndarray, flags: np.ndarray) -> float | None:
+    """事件日均值 − 非事件日均值。任一侧为空 → None(**不是 0**)。"""
+    a, b = values[flags], values[~flags]
+    if not len(a) or not len(b):
+        return None
+    return float(a.mean() - b.mean())
+
+
+def moving_block_diff(values, flags, *, block: int = MOVING_BLOCK,
+                      n_boot: int = MOVING_BLOCK_BOOT, alpha: float = DEFAULT_ALPHA,
+                      seed: int = MOVING_BLOCK_SEED) -> BootResult:
+    """moving-block bootstrap 的「事件日 − 非事件日」均值差。
+
+    `values` / `flags` 必须**按日期升序**且长度相同:块的意义就是时序相邻,乱序等于没做块。
+
+    做法:`block_index` 抽重叠块,`(value, flag)` **成对**搬运 —— 拆开搬就把「哪天是事件日」
+    这个结构洗掉了,那是置换检验不是 bootstrap。每抽一次重算差值,得到 θ̂ 的抽样分布:
+
+      * 95% CI = 分位 [α/2, 1−α/2];
+      * 双侧 p = 2·min(P(θ*≤0), P(θ*≥0)),下限截到 `1/n_valid`(10,000 次抽样分辨不出
+        比 1e-4 更小的 p,报 0 是伪精确)。
+
+    某次抽样若一侧为空(全是事件日或全不是)→ 该次**作废并计数**,不折成 0。有效抽样
+    < n_boot/2 → 返回 `p=None`(区间不可信),由调用方判成「未证」而不是「显著」。
+    """
+    v = np.asarray(values, dtype=float)
+    f = np.asarray(flags, dtype=bool)
+    if v.shape != f.shape:
+        raise ValueError(f"values/flags 长度不一致:{v.shape} vs {f.shape}")
+    n = len(v)
+    point = _diff(v, f) if n else None
+    block = max(1, int(block))
+    if n <= block or point is None:
+        return BootResult(point, None, None, None, n_boot, 0, block, seed)
+    rng = np.random.default_rng(seed)
+    draws: list[float] = []
+    for _ in range(n_boot):
+        idx = block_index(rng, n, block)
+        d = _diff(v[idx], f[idx])
+        if d is not None:
+            draws.append(d)
+    n_valid = len(draws)
+    if n_valid < n_boot // 2:
+        return BootResult(point, None, None, None, n_boot, n_valid, block, seed)
+    arr = np.asarray(draws, dtype=float)
+    lo, hi = np.quantile(arr, [alpha / 2.0, 1.0 - alpha / 2.0])
+    tail = min(float((arr <= 0).mean()), float((arr >= 0).mean()))
+    p = max(2.0 * tail, 1.0 / n_valid)
+    return BootResult(point, float(lo), float(hi), float(min(1.0, p)), n_boot, n_valid, block, seed)
+
+
+def block_mean_ci(values, *, block: int, seed: int, n_boot: int = DEFAULT_BOOT,
+                  alpha: float = DEFAULT_ALPHA) -> dict:
+    """单序列均值的块 bootstrap 区间 —— 与 `moving_block_diff` 共用 `block_index`。
+
+    输入是**按完整研究交易日历排序的日等权均值**(不是股票行):块要有意义,相邻两项就必须
+    是相邻交易日。日历有缺口时,调用方要么分连续段跑,要么在读数里声明「只按观察序列重采样」
+    这条局限 —— 本函数不替它补造缺失日的收益。
+
+    样本短到装不下两个块 → `INSUFFICIENT_BLOCKS` + 区间 `None`(点估计照给)。`nan`/`inf`
+    一律拒绝:块 bootstrap 对缺失值没有意义,悄悄跳过等于换了个人口。
+    """
+    x = np.asarray(values, dtype=float)
+    if x.ndim != 1:
+        raise ValueError("ordered one-dimensional daily observations required")
+    if not np.isfinite(x).all():
+        raise ValueError("ordered finite daily observations required")
+    if type(block) is not int or block < 1:
+        raise ValueError("invalid block size")
+    if type(n_boot) is not int or n_boot < 1 or not 0 < alpha < 1:
+        raise ValueError("invalid bootstrap parameters")
+    if len(x) <= block or len(x) < 2:
+        return {"point": float(x.mean()) if len(x) else None,
+                "lo": None, "hi": None, "status": "INSUFFICIENT_BLOCKS"}
+    rng = np.random.default_rng(seed)
+    draws = np.asarray([x[block_index(rng, len(x), block)].mean() for _ in range(n_boot)])
+    lo, hi = np.quantile(draws, [alpha / 2.0, 1.0 - alpha / 2.0])
+    return {"point": float(x.mean()), "lo": float(lo), "hi": float(hi), "status": "COMPUTED"}

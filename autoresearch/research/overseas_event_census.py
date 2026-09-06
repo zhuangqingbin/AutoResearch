@@ -86,7 +86,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-from dataclasses import asdict, dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -196,75 +195,14 @@ def holm(pvalues, *, m_total: int | None = None) -> list[float]:
     return out
 
 
-@dataclass(frozen=True)
-class BootResult:
-    """一次 moving-block bootstrap 的全部产出。`point=None` = 这批样本算不出差值。"""
-
-    point: float | None
-    lo: float | None
-    hi: float | None
-    p: float | None
-    n_boot: int
-    n_valid: int
-    block: int
-    seed: int
-
-    def as_dict(self) -> dict:
-        return asdict(self)
-
-
-def _diff(values: np.ndarray, flags: np.ndarray) -> float | None:
-    """事件日均值 − 非事件日均值。任一侧为空 → None(**不是 0**)。"""
-    a, b = values[flags], values[~flags]
-    if not len(a) or not len(b):
-        return None
-    return float(a.mean() - b.mean())
-
-
-def moving_block_diff(values, flags, *, block: int = BLOCK, n_boot: int = N_BOOT,
-                      alpha: float = ALPHA, seed: int = SEED) -> BootResult:
-    """5 个交易日 moving-block bootstrap 的「事件日 − 非事件日」均值差(§10 主检验)。
-
-    `values` / `flags` 必须**按日期升序**且长度相同:块的意义就是时序相邻,乱序等于没做块。
-
-    做法:重叠块(起点均匀取自 `0..n-block`)抽 `ceil(n/block)` 个,拼接后截到 n;
-    `(value, flag)` **成对**搬运 —— 拆开搬就把「哪天是事件日」这个结构洗掉了,那是置换检验
-    不是 bootstrap。每抽一次重算差值,得到 θ̂ 的抽样分布:
-
-      * 95% CI = 分位 [α/2, 1−α/2];
-      * 双侧 p = 2·min(P(θ*≤0), P(θ*≥0)),下限截到 `1/n_valid`(10,000 次抽样分辨不出
-        比 1e-4 更小的 p,报 0 是伪精确)。
-
-    某次抽样若一侧为空(全是事件日或全不是)→ 该次**作废并计数**,不折成 0。有效抽样
-    < n_boot/2 → 返回 `p=None`(区间不可信),由调用方判成「未证」而不是「显著」。
-    """
-    v = np.asarray(values, dtype=float)
-    f = np.asarray(flags, dtype=bool)
-    if v.shape != f.shape:
-        raise ValueError(f"values/flags 长度不一致:{v.shape} vs {f.shape}")
-    n = len(v)
-    point = _diff(v, f) if n else None
-    block = max(1, int(block))
-    if n <= block or point is None:
-        return BootResult(point, None, None, None, n_boot, 0, block, seed)
-    rng = np.random.default_rng(seed)
-    n_blocks = int(math.ceil(n / block))
-    starts_hi = n - block                                  # 含端点
-    draws: list[float] = []
-    for _ in range(n_boot):
-        starts = rng.integers(0, starts_hi + 1, size=n_blocks)
-        idx = (starts[:, None] + np.arange(block)[None, :]).ravel()[:n]
-        d = _diff(v[idx], f[idx])
-        if d is not None:
-            draws.append(d)
-    n_valid = len(draws)
-    if n_valid < n_boot // 2:
-        return BootResult(point, None, None, None, n_boot, n_valid, block, seed)
-    arr = np.asarray(draws, dtype=float)
-    lo, hi = np.quantile(arr, [alpha / 2.0, 1.0 - alpha / 2.0])
-    tail = min(float((arr <= 0).mean()), float((arr >= 0).mean()))
-    p = max(2.0 * tail, 1.0 / n_valid)
-    return BootResult(point, float(lo), float(hi), float(min(1.0, p)), n_boot, n_valid, block, seed)
+# BootResult / _diff / moving_block_diff 于 2026-09-06(F5)搬进 `common/stats.py` —— 同仓
+# 两套 block bootstrap 就是同一个估计量两处实现。这里是**同对象**转发,抽块与统计口径不变;
+# §0 的 BLOCK/N_BOOT/SEED 仍是本普查的预注册记录,与共享默认同值由测试钉死。
+from autoresearch.common.stats import (  # noqa: E402
+    BootResult,  # noqa: F401
+    _diff,
+    moving_block_diff,
+)
 
 
 def newey_west_diff(values, flags, *, lag: int = NW_LAG) -> tuple[float | None, float | None, float | None]:
