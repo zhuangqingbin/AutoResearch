@@ -40,10 +40,10 @@
 |---|---|---|---|
 | A：统计口径 | [Statistical Estimator Convergence](2026-09-06-statistical-estimator-convergence.md) | 日等权估计单源、core/CLI、seed、输出隔离 | 已实施并合并 main（0712114）；保留原计划中的实施偏离与验证记录 |
 | B：事件证据 | [Claim Evidence Verification](2026-09-06-claim-evidence-verification.md) | B1 保守判定；B2 契约；B3 比较；B4 接线；B5 验收 | **待裁 Q-B**。`claim_ledger.review_draft/lint_claim/_supports` 生产零调用者（只有测试；`.claude/` 零引用），真守卫是 `scan/l4/intel_guard.lint_claims`；B1–B3 单独提交零生产效果，B4 接线是 B 类、受 Q-冻结约束 |
-| C：执行评价 | [Execution Evidence and Net Return](2026-09-06-execution-evaluation.md) | C1 时间；C2 快照；C3 成交；C4 成本/权益；C5 导入/读数 | C1/C2 可做；**C3–C5 待裁 Q-C**（消费 `feature/broker-ingest` 的 trades.csv，不另造成交格式） |
+| C：执行评价 | [Execution Evidence and Net Return](2026-09-06-execution-evaluation.md) | C1 时间；C2 快照；C3 成交；C4 成本/权益；C5 导入/读数 | **C1/C2 已实施**（§12）；**C3–C5 待裁 Q-C**（消费 `feature/broker-ingest` 的 trades.csv，不另造成交格式） |
 | D：结构化卡片 | [Structured Research Cards](2026-09-06-structured-research-cards.md) | D1 schema；D2 嵌套事实；D3 比较；D4 权威切换；D5 完整性 | **待裁 Q-D**。与 08-31 稿 D8「card.json 双写」是同一件事（已裁「做」），三处分歧先裁 |
-| E：编排与分层 | [Orchestration Efficiency and Layering](2026-09-06-orchestration-and-layering.md) | E1 当前基线；E2 信封；E3 runner；E4 纯计算；E5 声明注入 | E1/E4/E5 可做；E2/E3 是条件项（Q-E，09-04 裁定扫描留 workflow.js）；不重复 09-04 metering Wave 1 |
-| F：研究方法 | [Research Methods and Stage Value](2026-09-06-research-methods-and-stage-value.md) | F1 实验；F2 full；F3 lite；F4 阶段价值；F5 稳健性；F6 因子；F7 概率；F8 读数 | F1/F5–F7 仪器可做（F5 下沉 `moving_block_diff`，不新造）；F4 扩 populations/stage_rulers；**F2/F3 模板改动受 Q-冻结约束**，与 08-31 D4 合并一次人批；样本成熟独立于开发完成 |
+| E：编排与分层 | [Orchestration Efficiency and Layering](2026-09-06-orchestration-and-layering.md) | E1 当前基线；E2 信封；E3 runner；E4 纯计算；E5 声明注入 | **E1/E4/E5 步 3 已实施**（§12）；E2/E3 仍是条件项（Q-E，09-04 裁定扫描留 workflow.js）；E5 步 4/5 残余边未清 |
+| F：研究方法 | [Research Methods and Stage Value](2026-09-06-research-methods-and-stage-value.md) | F1 实验；F2 full；F3 lite；F4 阶段价值；F5 稳健性；F6 因子；F7 概率；F8 读数 | **F1/F5/F6 统计层/F7 已实施**（§12）；F6 首批家族登记与 F4/F8 未做；**F2/F3 模板改动受 Q-冻结约束**，与 08-31 D4 合并一次人批；样本成熟独立于开发完成 |
 
 每份实施计划包含：准确文件路径、Consumes/Produces 接口块、核心代码、回归测试样例、执行命令、失败语义、上线条件、提交与回滚边界。代码段是实现基准与关键接入段；既有函数的机械搬迁以当前源码为准，不把文档示例当作已上线实现。
 
@@ -54,7 +54,7 @@
 | 开发波次 | 内容 | 进入条件 | 可独立推进的内容 |
 |---|---|---|---|
 | 已完成基础 | A | 仓库已记录实施与合并 | 不重做 core/CLI 收敛和 --out-json |
-| 波次 1：不需裁决的 I 类件 | E4（收益纯计算搬迁，golden parity）、E5 步 3（usage_reconcile 注入）、C1/C2（快照契约与可见性）、F1（实验冻结）、F5（`moving_block_diff` 下沉 + 单序列版本）、F6（BY 校正 + 首批家族登记）、F7（Brier/复核重合）、E1（只读基线 + 能力报告） | 现有代码 | 全部可并行；没有一件改变生产 BUY、评级或 prompt |
+| 波次 1：不需裁决的 I 类件 | **已完成（§12）**：E4、E5 步 3、C1/C2、F1、F5、F6 统计层、F7、E1。剩 F6 首批家族登记（W3 三格的零 LLM 复算） | 现有代码 | 全部可并行；没有一件改变生产 BUY、评级或 prompt |
 | 波次 2：裁决后 | Q-B → B1–B3（若接线）或 B2/B3 改挂 intel_guard；Q-C → C3–C5；Q-D → D1–D4；Q-R → 登记 research 根 | 对应裁决 | 没有实盘数据仍可交付 C 导入器与缺失读数 |
 | 波次 3：解冻后的 B 类 | B4 接线、D5 生产路由、F2/F3 模板（与 08-31 D4 v5 合并成一次人批）、E2/E3（仅当 Q-E 立项且 E1 能力报告四项为真） | Q-冻结解除（08-26 A0：09-中攒 20 结果日） | 每件独立回滚杆 |
 | 波次 4：研究评价 | F4（扩 populations 读模型）、F8 读数 | A；净执行评价需 C；事实指标需 B | F4 价格代理版无需等实盘成交 |
@@ -211,3 +211,30 @@
 - 新增 §0 Global Constraints、§9 待裁问题、§10 关系表；§5 加四行接口。
 
 以上记录证明文档链接、示例语法与所列核心样例可用，不替代各包实施时的 RED→GREEN、集成测试、数据验收和研究有效性验证。A 的历史全量测试记录保留在 A 计划中，不冒充本轮重新运行的结果。
+
+## 12. 波次 1 实施记录（2026-09-06）
+
+分支 `feature/research-system-wave1`，9 个提交，全量 **5285 passed / 6 skipped**（会话起点 4985，+300 条测试）。所有改动都是离线件：没有一件改变生产 BUY、评级、prompt、三门或主尺。
+
+| 提交 | 内容 | 关键决定 |
+|---|---|---|
+| E4 | `common/forward_returns.py` + `data/market_panel.py`；`factor_lab`/`edge_census` 同对象转发；三个 scan 消费者改线 | golden 在搬迁**前**录制（8 用例）；`populations` 仍留一条 research 边（只为 `MIN_CROSS_SECTION`），故 KNOWN_UPWARD 条目不 stale |
+| E5 步 3 | `reconcile_with_resolved` 纯入口 + `reconcile(..., resolved_agent_config=)`；`_resolved_via_legacy_bridge` 单一显式旧桥 | 旧桥不删——CP7 命令还在用；`trace → scan` 行数不变但收窄到一个入口 |
+| C1/C2 | `contracts/execution.py` + `common/execution_math.py` | `decision_at` 从 `exec_anchor` 派生（非 ACTIONABLE 的 run 不进分母）；封涨停单列 `LIMIT_UP_QUEUE`；计划的 `decision_at_for_run` 会造 `common → scan` 向上边，改为纯函数收执行块 |
+| F5 | `moving_block_diff`/`BootResult`/`_diff` 下沉 `common/stats`，新增 `block_index`/`block_mean_ci`；`robustness.py` 的块长敏感性 + purge + 交易日 embargo | golden 9 用例逐字段相等；embargo 数交易日不数自然日 |
+| F6 | `common/stats.family_adjustment`（BH/BY，依赖假设无缺省） | `rejected` 按校正后 q 判 |
+| F1 | `contracts/research_experiment.py` + `research/experiment_io.py` | `open("xb")` 排他冻结，无 `--force`；`sensitivity_rulers` 白名单可空 |
+| F7 | `research/probability_eval.py` | 缺成交/缺费用是**未标注**不是 `y=0`；Brier 与基率、可靠性分组同报 |
+| E1 | `research/efficiency_baseline.py` | 计划写的 4 个字段生产查无，改按真实观测键读 + `coverage` 点名；能力没证据一律 `NO_EVIDENCE` |
+
+**每件都跑了变异探针**（共 60 个）。四个当场证明是「没有灯的绿灯」，补了用例才有鉴别力：
+
+1. F5「有效抽样过半」守卫——9 个 golden 里稀疏族 n_valid 是 996/1000，走不到那道门。
+2. E1「按 coverage 排除」——原用例缺的字段同时让单票成本变 None，那一腿零鉴别力。
+3. C1「发布晚于截止」——两个时点一起挪到未来时，`market` 那腿就兜住了。
+4. E4 卖腿旗的 `<=` → `<`——epsilon 让两者语义等价，是**真无差异变异**，不是盲区（同类：F5 的 `% n`，起点上界已保证不绕回）。
+
+产物形状守卫在本波逮到自己该逮的：新建的 `common/forward_returns.py` 与 golden JSON 裸写 `fwd_2_oc` 却无沿革注记 → fail，按判据补注记后过。
+
+**未做，别当已完成读**：B 全部（待 Q-B）、C3–C5（待 Q-C）、D 全部（待 Q-D）、E2/E3（Q-E 条件项）、E5 步 4/5 残余边台账、F2/F3 模板（冻结中）、F4 阶段价值、F6 首批家族登记、F8 读数与 CLI。research 根仍未登记 ARTIFACTS（Q-R）。主设计 §6–§8 仍未按首轮评审改稿。
+
