@@ -285,6 +285,12 @@ def _dump_final_ratings(scan_dir: Path, rows: list[dict]) -> None:
     with contextlib.suppress(Exception):   # Wave5 ②C:早停分桶落盘(0买真机制记账,独立文件
         write_early_stop(scan_dir)         # 不动 _final_ratings.json 的 {code: rating} 契约)
 
+def research_gate_facts(row: dict) -> tuple[dict, dict | None]:
+    """结构化卡的三门与早停(`card_io.card_to_row` 塞进 `_card_facts`);枚举直读,不经 bool。"""
+    facts = row["_card_facts"]
+    return dict(facts["gate_states"]), facts["early_stop"]
+
+
 def _build_decision_records(
     scan_dir: Path,
     rows: list[dict],
@@ -300,16 +306,20 @@ def _build_decision_records(
     for row in rows:
         code = str(row.get("code", "")).zfill(6)
         text = _decision_text(scan_dir, code)
-        gates = gate_status(text or "")
-        gate_states = dict.fromkeys(_GATES3, "UNKNOWN")
-        if gates is not None:
-            gate_states.update(
-                {
-                    gate: "FAIL" if failed else "PASS"
-                    for gate, failed in gates.items()
-                }
-            )
-        early = parse_early_stop(text or "")
+        if row.get("_card_facts"):
+            # D4(2026-09-07):结构化卡在场时,三门/早停直接用枚举,不再从文本反推。
+            gate_states, early = research_gate_facts(row)
+        else:
+            gates = gate_status(text or "")
+            gate_states = dict.fromkeys(_GATES3, "UNKNOWN")
+            if gates is not None:
+                gate_states.update(
+                    {
+                        gate: "FAIL" if failed else "PASS"
+                        for gate, failed in gates.items()
+                    }
+                )
+            early = parse_early_stop(text or "")
         source = row.get("_source_rating", "—")
         post_verify = row.get("_post_verify_rating", source)
         final = row.get("rating", "—")

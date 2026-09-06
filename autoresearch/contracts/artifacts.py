@@ -159,6 +159,9 @@ ARTIFACTS: tuple[Artifact, ...] = (
              required_when="l4_intel.enabled"),
     Artifact("l4_intel_status", "_l4_intel_status_*.json", "staging", "l4", "intel_status", "json", "gated",
              required_when="l4_intel.enabled"),
+    # D3 候选双产物(2026-09-07 Q-D ②):对拍期由解析桥从 md 派生,md 仍是权威;比较结果不供决策消费。
+    Artifact("l4_research_card", "details/*.research.json", "staging", "l4", "card_io", "json", "conditional"),
+    Artifact("l4_card_compare", "card_compare.json", "staging", "l4", "card_io", "json", "conditional"),
     # B4 影子(2026-09-07 Q-B ③):本票回购/增持/减持/中标行的 ClaimEvidence v2 抽取 + 绑定结论;
     # 稿里一行事件都没有时不写。没有任何门读它。
     Artifact("l4_claim_events", "_l4_claims_*.json", "staging", "l4", "intel_guard", "json", "conditional"),

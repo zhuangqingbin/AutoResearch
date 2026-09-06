@@ -24,7 +24,7 @@ from autoresearch.contracts import stages as vocab
 # (which the layering ratchet in `tests/contracts/test_layering.py` forbids — `analyze`
 # sits *below* `scan`).  Re-exported here so every existing
 # `from autoresearch.scan.run_profile import RunProfile` keeps working unchanged.
-from autoresearch.contracts.profiles import ArtifactRule, RunProfile, _BASE_RULES  # noqa: F401
+from autoresearch.contracts.profiles import _BASE_RULES, ArtifactRule, RunProfile  # noqa: F401
 
 # Ordered pipeline stages.  Order is load-bearing: everything after the last
 # reached stage of a failed run is NOT_REACHED, not missing.
@@ -126,10 +126,15 @@ def scan_profile(
     last_stage: str | None = None,
     agent_roles: tuple[str, ...] | None = None,
     replayable_stages: tuple[str, ...] = REPLAYABLE_STAGES,
+    card_source: str = "legacy_md",
 ) -> RunProfile:
     """Build the `scan-market` evidence profile for one run's mode and terminal state."""
+    from autoresearch.contracts.agent_output import CARD_SOURCES
+
     if mode not in MODES:
         raise ValueError(f"unknown run mode: {mode!r}; expected one of {MODES!r}")
+    if card_source not in CARD_SOURCES:
+        raise ValueError(f"unknown card_source: {card_source!r}; expected one of {CARD_SOURCES!r}")
     if business_status not in TERMINAL_STATUSES:
         raise ValueError(f"unknown business status: {business_status!r}")
     skip_l4 = vocab.skips_l4(mode)
@@ -149,6 +154,7 @@ def scan_profile(
         business_status=business_status,
         last_stage=last_stage,
         conditional_roles=CONDITIONAL_AGENT_ROLES,
+        card_source=card_source,
     )
 
 

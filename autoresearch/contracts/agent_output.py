@@ -62,6 +62,40 @@ OW_GATES: tuple[str, ...] = ("主力真在", "业绩真兑现", "估值不透支
 EXEC_LINE_MAX_PCT_1D: float = 3.0
 EXEC_LINE_MAX_POS_IN_RANGE: float = 0.7
 
+# ───────────── ResearchCard v1 词表(工作包 D,Q-D ① 裁定:词表单源在这里)─────────────
+#
+# 2026-09-07:与 08-31 稿 D8「卡片双写」是同一件事;字段取两稿**并集**。校验函数在
+# `contracts/research_card.py`,词表不复制。`scan/l4/rubric._RUBRIC_DIMS` 自此**同对象**引用
+# `RUBRIC_DIMENSIONS`(下沉,不改评分公式)。
+
+#: 六维(rubric 评分卡),顺序即卡面顺序。
+RUBRIC_DIMENSIONS: tuple[str, ...] = ("基本面", "估值", "技术资金", "盈利质量", "偿付", "催化")
+DIMENSION_LEVELS: tuple[str, ...] = ("强", "中", "弱", "未核")
+#: 三门在 JSON 里只有三态。**bool 不进 JSON**:`gate_status(text)` 的 bool 是「失守」、
+#: `rubric_rating(dims, gates)` 的 bool 是「通过」,两边方向相反,透传就是事故。
+GATE_STATES: tuple[str, ...] = ("PASS", "FAIL", "UNKNOWN")
+CONFIDENCE_LEVELS: tuple[str, ...] = ("高", "中", "低")
+EARLY_STOP_PHASES: tuple[str, ...] = ("P0", "P1", "P2", "P3", "P4", "P5")
+#: 主观概率只能标 subjective;没给数就是 not_provided。**不存在** "calibrated" 这个值。
+PROBABILITY_BASES: tuple[str, ...] = ("subjective", "not_provided")
+SCENARIO_NAMES: tuple[str, ...] = ("bull", "base", "bear")
+CARD_SCHEMA_VERSION = 1
+#: 卡是谁产的:解析桥从 md 派生(候选/对拍期)还是 agent 原生写(D5,解冻后)。
+CARD_ORIGINS: tuple[str, ...] = ("parser_bridge_v1", "agent_native_v1")
+#: run 级读取权威(冻进 run_profile):legacy_md = 现状;candidate_json = 双产物只比较;
+#: research_json_v1 = JSON 权威、md 派生(D5,解冻后才允许)。
+CARD_SOURCES: tuple[str, ...] = ("legacy_md", "candidate_json", "research_json_v1")
+#: ResearchCard v1 的字段全集(两稿并集)。多一个少一个都拒 —— 「字段缺席」与「字段为未知」是两件事。
+RESEARCH_CARD_FIELDS: tuple[str, ...] = (
+    "schema_version", "card_origin", "code", "analysis_date", "ruler", "dimensions", "gates",
+    "early_stop", "theses", "evidence_refs", "initial_rating", "proposal",
+    "rating_deviation_reason", "confidence", "scenarios", "probability_basis",
+    "holding", "management", "target", "rr", "summary",
+    # 08-31 D8 的字段
+    "entry_veto", "exec_lines", "tripwires", "base_rate_row", "ev", "conviction",
+    "as_of", "engine", "model",
+)
+
 
 @dataclass(frozen=True)
 class Field:

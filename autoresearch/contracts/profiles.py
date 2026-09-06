@@ -22,8 +22,8 @@ re-export 旧名,全仓既有 `from autoresearch.scan.run_profile import RunProf
 from __future__ import annotations
 
 import importlib
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
 
 from autoresearch.contracts import stages as vocab
 
@@ -49,7 +49,7 @@ if tuple(PROFILE_FACTORIES) != vocab.RUN_KINDS:
     )
 
 
-def profile_factory(kind: str) -> Callable[..., "RunProfile"]:
+def profile_factory(kind: str) -> Callable[..., RunProfile]:
     """按 run kind 取 profile 工厂(动态 import;见 `PROFILE_FACTORIES` 的注释)。"""
     target = PROFILE_FACTORIES.get(str(kind))
     if target is None:
@@ -118,6 +118,10 @@ class RunProfile:
     #: 没有捕获壳却把日志记成 REQUIRED,会让每一趟单票研究都恒判「证据缺失」——
     #: 那是假警报,不是发现。
     captured_stages: tuple[str, ...] | None = None
+    #: 决策卡读取权威(D4,2026-09-07):`legacy_md` = 现状(默认,生产不变);`candidate_json`
+    #: = 双产物只比较不消费;`research_json_v1` = JSON 权威(D5,解冻后)。冻进 run 契约 hash,
+    #: 缺字段的历史 run 按 legacy_md 读,未知值失败。
+    card_source: str = "legacy_md"
 
     def owes_captured_logs(self, stage: str) -> bool:
         """这个阶段该不该有被捕获的 stdout/stderr。"""

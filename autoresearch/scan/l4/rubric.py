@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 from autoresearch.agents.utils.rating import RATINGS_5_TIER
+from autoresearch.contracts.agent_output import OW_GATES, RUBRIC_DIMENSIONS
 
-_RUBRIC_DIMS = ("基本面", "估值", "技术资金", "盈利质量", "偿付", "催化")
+# 2026-09-07(D1):六维与三门词表下沉 `contracts.agent_output`,这里是同对象引用;评分公式不动。
+_RUBRIC_DIMS = RUBRIC_DIMENSIONS
 _DIM_SCORE = {"强": 1, "中": 0, "弱": -1}
-_OW_GATES = ("主力真在", "业绩真兑现", "估值不透支")
+_OW_GATES = OW_GATES
 
 
 def _norm_dim(k: str) -> str:
