@@ -386,6 +386,46 @@ def bh_fdr(pvalues, alpha: float = DEFAULT_ALPHA) -> list[dict]:
     return [{"i": i, "p": ps[i], "q": q[i], "rejected": q[i] <= alpha} for i in range(m)]
 
 
+#: 检验族的依赖假设。**没有默认值** —— 调用方必须说清楚,不说就报错。
+#: `independent_or_positive` = 独立或 PRDS(正回归依赖)→ BH 控 FDR;
+#: `arbitrary` = 任意依赖 → BY(BH 的 q 乘 Σ_{i=1..m} 1/i),更保守。
+DEPENDENCE_ASSUMPTIONS: tuple[str, ...] = ("independent_or_positive", "arbitrary")
+
+
+def family_adjustment(pvalues, *, dependence: str, alpha: float = DEFAULT_ALPHA) -> list[dict]:
+    """一个检验族的 FDR 校正 → 与入参**同序**的 `[{i, p, q, rejected, method}]`。
+
+    BH 本体不重写(`bh_fdr` 已被海外/衍生品普查用着);这里加的是**依赖假设**这一层:
+
+    - 因子之间通常既不独立、也不保证正相关,那时 BH 的 FDR 控制**没有保证**。BY 用
+      `q_BY = min(1, q_BH · Σ_{i=1..m} 1/i)` 换取任意依赖下的控制,代价是更保守。
+    - `dependence` 是 keyword-only 且**无缺省**:一律称「任意相关下受控」是错的,不写又会
+      被当成写了。让它必须出现在调用点,读结论的人才知道这一族按哪个假设算的。
+
+    `rejected` 一律按**校正后**的 q 判 —— 报 BY 的 q 却用 BH 的门,等于没校正。
+    p 值必须是 [0, 1] 内的有限数:NaN/inf/越界一律抛错,不静默截断。
+
+    对照定义:https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.false_discovery_control.html
+    (只对照,不引入运行时 SciPy 依赖。)
+    """
+    if dependence not in DEPENDENCE_ASSUMPTIONS:
+        raise ValueError(f"dependence assumption required, one of {DEPENDENCE_ASSUMPTIONS}")
+    if not 0 < alpha < 1:
+        raise ValueError("invalid alpha")
+    ps = [float(p) for p in pvalues]
+    if any(not math.isfinite(p) or not 0 <= p <= 1 for p in ps):
+        raise ValueError("invalid p-values")
+    rows = bh_fdr(ps, alpha=alpha)
+    if dependence == "independent_or_positive":
+        return [dict(row, method="BH") for row in rows]
+    factor = sum(1.0 / i for i in range(1, len(ps) + 1))
+    out = []
+    for row in rows:
+        q = min(1.0, row["q"] * factor)
+        out.append(dict(row, q=q, rejected=q <= alpha, method="BY"))
+    return out
+
+
 def proportion_power(p0: float, p1: float, n: int, alpha: float = DEFAULT_ALPHA) -> float:
     """两比例(独立、等样本)双侧检验的近似功效 —— 用于「功效是否足够」的门,不是判据本身。"""
     if n <= 0:
