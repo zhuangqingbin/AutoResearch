@@ -26,8 +26,9 @@ from __future__ import annotations
 
 import json
 
-from autoresearch.scan.l4.intel_guard import guard_intel
 import pytest  # noqa: F401 — re-export/兼容面,勿删(ruff --fix 曾误删)
+
+from autoresearch.scan.l4.intel_guard import guard_intel
 
 
 def _write(scan_dir, code: str, claimed: int | None, body: str = "事件段…") -> None:
@@ -131,3 +132,55 @@ def test_cli_emits_single_json_line(tmp_path, capsys):
     assert rc == 0, "拒稿不是进程失败 —— 只拒稿不拒票,退出码必须 0"
     payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert payload["action"] == "REJECTED" and payload["code"] == "601288"
+
+
+# ───────────── B4 影子(2026-09-07 Q-B ③):本票事件抽取侧车 ─────────────
+
+def _event_doc(rows):
+    head = "## 事件段\n| 日期 | 时效窗 | 事件 | 源 | 净分 |\n|---|---|---|---|---|\n"
+    return head + "".join(rows)
+
+
+def test_self_stock_event_claims_land_in_a_sidecar_without_touching_the_verdict(tmp_path):
+    body = _event_doc([
+        "| 2026-07-28 | T0 | 公司公告已完成回购 10 亿元 | http://a | 1.0 |\n",
+        "| 2026-07-27 | 24h | 600001 涨停 | http://b | 0.5 |\n",          # 他票且无谓语词
+        "| 2026-07-27 | 24h | 600001 完成回购 5 亿元 | http://b2 | 0.5 |\n", # 他票 + 谓语词:必须被他票那一腿挡掉
+        "| 2026-07-26 | 背景 | 行业政策利好 | http://c | 0.0 |\n",         # 无谓语词
+    ])
+    _write(tmp_path, "601288", 18, body)
+    out = guard_intel(tmp_path, "601288", hard_cap=30)
+    assert out["action"] == "KEPT" and out["ok"] is True
+    assert out["claim_events"]["n"] == 1
+    sidecar = tmp_path / out["claim_events"]["sidecar"]
+    payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    (event,) = payload["events"]
+    assert event["bundle"]["event"]["predicate"] == "回购"
+    assert event["verdict"] == "UNKNOWN" and event["reason"] == "SOURCE_NOT_BOUND"
+    assert payload["binding"] == "none"
+
+
+def test_no_event_claims_means_no_sidecar(tmp_path):
+    _write(tmp_path, "601288", 18, _event_doc(["| 2026-07-28 | T0 | 行业政策利好 | http://c | 0.0 |\n"]))
+    out = guard_intel(tmp_path, "601288", hard_cap=30)
+    assert out["claim_events"] == {"n": 0, "sidecar": None}
+    assert not list(tmp_path.glob("_l4_claims_*.json"))
+
+
+def test_sidecar_does_not_alter_the_draft_or_claims_lint(tmp_path):
+    body = _event_doc(["| 2026-07-28 | T0 | 控股股东拟增持不超过 2 亿元 | http://a | 1.0 |\n"])
+    _write(tmp_path, "601288", 18, body)
+    before = (tmp_path / "_l4_intel_601288.md").read_text(encoding="utf-8")
+    out = guard_intel(tmp_path, "601288", hard_cap=30)
+    assert (tmp_path / "_l4_intel_601288.md").read_text(encoding="utf-8") == before
+    assert out["claims_lint"] == {"no_url": 0, "mismatch": 0, "orig_as": None}
+
+
+def test_sidecar_is_written_from_the_trimmed_text_not_the_pretrim(tmp_path):
+    rows = ["| 2026-07-28 | T0 | 公司公告已完成回购 10 亿元 | http://t0 | 1.0 |\n"]
+    rows += [f"| 2026-06-{30 - i:02d} | 背景 | 拟增持背景事件{i} | http://b{i} | 0.0 |\n" for i in range(11)]
+    _write(tmp_path, "601288", 40, _event_doc(rows))
+    out = guard_intel(tmp_path, "601288", hard_cap=30)
+    assert out["action"] == "TRIMMED" and out["dropped_rows"] > 0
+    payload = json.loads((tmp_path / out["claim_events"]["sidecar"]).read_text(encoding="utf-8"))
+    assert out["claim_events"]["n"] == len(payload["events"]) < 12

@@ -222,6 +222,46 @@ def _apply_claims_lint(src: Path, text: str, *, self_code: str, trade_date: str)
     return {**meta, "orig_as": orig.name}
 
 
+def _extract_claim_events(src: Path, text: str, *, self_code: str, trade_date: str) -> dict:
+    """B4(Q-B ③,2026-09-07)**影子**:把稿里关于**本票**的回购/增持/减持/中标行抽成
+    ClaimEvidence v2 事件,经绑定器得结论后写侧车 `_l4_claims_<code>.json`。
+
+    影子的含义:① 新增产物,不改稿件正文、不改 `claims_lint`、不改 `action`;② 没有任何
+    门读它;③ 现阶段没有绑定来源(观测/blob 为空),所以每条结论都是 `SOURCE_NOT_BOUND`
+    —— 它证明的是「抽取器在真稿上抽出了什么」,不是「断言被核实了」。B5 的 80 条人工标注
+    就在这些侧车上做;绑定真来源后同一条管线不用改。
+
+    「本票」= 行内不含**他票**六位代码(与 `lint_claims` 管的「他票」互补,两边不重叠)。
+    一行事件都没有时不写侧车(与 `.orig` 同一立场:没有变化就没有审计价值)。
+    """
+    from autoresearch.news.claim_binding import support_bound_claim
+    from autoresearch.news.claim_extract import PREDICATES, bundle_from_line
+
+    self6 = str(self_code).strip().zfill(6)
+    rows = []
+    for line_no, line in enumerate(text.splitlines(), start=1):
+        if not any(w in line for w in PREDICATES):
+            continue
+        if any(c != self6 for c in _CODE_RE.findall(line)):
+            continue                                        # 他票的事归 lint_claims
+        claim_id = f"cl_{self6}_{trade_date}_{line_no}"
+        bundle = bundle_from_line(line, subject_code=self6, claim_id=claim_id)
+        if bundle is None:
+            continue
+        verdict = support_bound_claim(bundle["event"], bundle, observations={}, texts={},
+                                      trusted_fields=(), decision_at=None)
+        rows.append({"line_no": line_no, "line": line.strip(), "bundle": bundle,
+                     "verdict": verdict["verdict"], "reason": verdict["reason"]})
+    if not rows:
+        return {"n": 0, "sidecar": None}
+    sidecar = src.with_name(f"_l4_claims_{self6}.json")
+    sidecar.write_text(json.dumps({
+        "schema_version": 1, "code": self6, "trade_date": trade_date,
+        "extraction": "regex_v1", "binding": "none", "events": rows,
+    }, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    return {"n": len(rows), "sidecar": sidecar.name}
+
+
 def guard_intel(scan_dir: Path | str, code: str, *,
                 hard_cap: int = HARD_CAP_DEFAULT) -> dict:
     """检查一份 intel 稿;超硬顶则按时效裁剪,裁无可裁才整拒。返回可直接 JSON 序列化的裁决。
@@ -252,7 +292,8 @@ def guard_intel(scan_dir: Path | str, code: str, *,
         # 缺自报 = 无法对账,照旧只 warn。以"缺"推断"违规"是把弱证据当强证据。
         claims_lint = _apply_claims_lint(src, text, self_code=code, trade_date=trade_date)
         return {"ok": True, "code": code, "action": "KEPT", "claimed": None,
-                "warn": "unreported", "claims_lint": claims_lint}
+                "warn": "unreported", "claims_lint": claims_lint,
+                "claim_events": _extract_claim_events(src, text, self_code=code, trade_date=trade_date)}
     if claimed > hard_cap:
         trimmed, cut = trim_by_recency(text)
         if not _event_rows(text):
@@ -297,12 +338,14 @@ def guard_intel(scan_dir: Path | str, code: str, *,
         return {"ok": True, "code": code, "action": "TRIMMED",
                 "claimed": claimed, "hard_cap": hard_cap, "dropped_rows": cut,
                 "pretrim_as": pretrim_as, "claims_lint": claims_lint,
+                "claim_events": _extract_claim_events(src, final_text, self_code=code, trade_date=trade_date),
                 "note": "T0/24h 增量保留;card 照常读 intel;"
                         + (f"裁前原文留档 {pretrim_as}(lint 审计用)" if pretrim_as
                            else "未真丢行,无需留档")}
     claims_lint = _apply_claims_lint(src, text, self_code=code, trade_date=trade_date)
     return {"ok": True, "code": code, "action": "KEPT", "claimed": claimed,
-            "hard_cap": hard_cap, "claims_lint": claims_lint}
+            "hard_cap": hard_cap, "claims_lint": claims_lint,
+            "claim_events": _extract_claim_events(src, text, self_code=code, trade_date=trade_date)}
 
 
 def main(argv: list[str] | None = None) -> int:
