@@ -52,9 +52,11 @@ def test_roots_follow_engine(monkeypatch):
     assert ws.context_root() == Path("context_claude")
     assert ws.reports_root() == Path("reports_claude")
     assert ws.scan_dir("2026-08-11") == Path("context_claude/scan/2026-08-11")
+    assert ws.broker_root() == Path("context_claude/broker")
     monkeypatch.setattr(ws, "ENGINE", "codex")
     assert ws.context_root() == Path("context_codex")
     assert ws.reports_root() == Path("reports_codex")
+    assert ws.broker_root() == Path("context_codex/broker")
 
 
 def test_active_run_scopes_scan_workspace(monkeypatch):
