@@ -8,9 +8,12 @@
 
 **Tech Stack:** Python、Decimal、datetime、JSONL、现有 workspace/atomic、pytest；不新增券商连接或行情订阅。
 
-**Status:** 待实施；可靠输入不足时可交付导入与缺失报告，不能宣称已验证真实净收益。
+**Status（2026-09-07）：** 工程链已实施并完成完整性整改：稳定成交身份、FIFO 多轮/部分退出、
+快照 D+2 模拟退出和显式成本口径均已有测试。真实券商成交与真实快照样本仍是外部数据验收项，
+因此当前只能声明“仪器可用”，不能声明已验证真实净收益。
 
-**前置裁决（索引 §9 Q-C）：** 真实成交的取数层已在 `feature/broker-ingest`（11 commits：`autoresearch/broker/{schema,store,sniff,ingest,reconcile}.py` + `adapters/`，产物 `context_<engine>/broker/trades.csv`，`workspace.broker_root`，90 绿，复核修补完，**未合并**）。**C3/C5 消费 trades.csv，不另造 fills/orders 格式**；该分支三选一是 C3–C5 的进入条件。C1/C2（快照契约与可见性）没有既有实现，可先做。
+**前置裁决（历史，索引 §9 Q-C）：** `feature/broker-ingest` 当时是进入条件；现已合并，
+`C3/C5` 正式消费 `context_<engine>/broker/trades.csv`，不另造 fills/orders 格式。
 
 **接口（Consumes / Produces）：**
 

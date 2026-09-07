@@ -8,7 +8,9 @@
 
 **Tech Stack:** Python、pandas、NumPy、现有 common.stats、pytest、版本化 JSON/Markdown；没有新模型训练服务。
 
-**Status:** 待实施；“仪器交付”“有效样本成熟”“优势成立”是三个独立状态，后两项不按工程工期保证。
+**Status（2026-09-07）：** F1/F4/F5/F6/F7/F8 工程仪器已交付；预注册现会强制校验引擎、代码、
+输入 manifest、测试区间、证据/成本模式和成熟政策。W3 v1 因人口与伪 p 值失效，已由独立 v2
+纠偏重算取代。F2/F3 模板仍按冻结裁决延期；“样本成熟”与“优势成立”仍不等于工程完成。
 
 **前置裁决（索引 §9 Q-F、Q-冻结）：** ① **敏感尺**：主尺 `gap_c1_o2` 只用于决策类结论；`fwd_5_oc`/`fwd_10_oc` 与 `ruler.REL_MARKET`/`REL_SECTOR` 并报、**永不进 BUY**（08-21 已证低位转强在周级尺翻正而隔夜尺为负；只用主尺，F4 只会第三次推出「判断层隔夜负」）。② **模板改动（F2/F3）是 B 类**：lite-playbook 是 scan L4 的模板，受 08-26 A0 冻结（09-中攒 20 结果日）约束，且与 08-31 稿 D4 卡 v5 合并成**一次人批**。③ **不新造仪器**：F4 读 08-28 G3 已上线的 `scan/populations.py` 产物（`_ledger/populations/<run>.parquet` 正交布尔 + `views/stage_rulers.csv`，已接 prelude `ledger_views` 步与 nightly_close）；F5 把 `overseas_event_census.moving_block_diff` 下沉到 `common/stats.py`，不另写一套循环块。
 

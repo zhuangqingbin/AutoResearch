@@ -1,0 +1,63 @@
+{
+ "schema_version": 1,
+ "experiment_id": "FAM_W3_THREE_GRIDS_V2_20260907",
+ "engine": "codex",
+ "created_at": "2026-09-07T16:00:00+08:00",
+ "code_sha": "272c378d794d34058eb40a77e4951298e556e10e",
+ "prompt_hashes": {},
+ "input_manifest_hash": "b70c7710735f85d37e0a512e414beb2ac0779e971018871dfbcfc34cdccfc76a",
+ "experiment_family": "w3-three-grids-corrected-reanalysis",
+ "hypotheses": [
+  {
+   "hypothesis_id": "w3_first_board_pullback",
+   "mechanism": "首板次日缩量回调后，T+1 收盘到 T+2 开盘的承接收益为正",
+   "expected_direction": "positive",
+   "available_at": "T+1 14:45 前；本实验以 D+1 全日量比作 EOD 代理",
+   "metric_definition": "T 日首板且 T+1 量比 < 0.6、T+1 收盘较 T 收盘回调 [-5%,0)",
+   "population": "全湖，按 gap_c1_o2 对应的 D+1 收盘 entry_tradable 过滤",
+   "label": "gap_c1_o2",
+   "rejection_condition": "日等权 95% CI 下界 < +0.15pp，或 scan_days < 20"
+  },
+  {
+   "hypothesis_id": "w3_late_seal_premium",
+   "mechanism": "T 日 14:00–15:00 晚封板中，T+1 收盘可买子集仍有正隔夜溢价",
+   "expected_direction": "positive",
+   "available_at": "T 日 15:00 后；T+1 尾盘决策只使用 T 日封板时刻",
+   "metric_definition": "T 日涨停且末次封板时刻位于 [14:00,15:00)，按 buyable_c1 分桶",
+   "population": "全湖涨停板族；buyable_c1 可买桶判读，不可买桶仅作 X_ORACLE 展示",
+   "label": "gap_c1_o2",
+   "rejection_condition": "可买桶日等权 95% CI 下界 < +0.15pp；不可买桶不判"
+  },
+  {
+   "hypothesis_id": "w3_institution_seat_5_20d",
+   "mechanism": "机构专用席位合计净买入后，D+1 开盘至第 5 日收盘收益为正",
+   "expected_direction": "positive",
+   "available_at": "T 日盘后；本实验是离线 EOD 复算",
+   "metric_definition": "T 日龙虎榜机构专用席位合计净买入 > 0",
+   "population": "全湖当日龙虎榜机构席位命中票，按 fwd_5_oc 对应的 D+1 开盘 entry_tradable 过滤",
+   "label": "fwd_5_oc（主检验敏感尺）；fwd_10_oc 与 gap_c1_o2 仅并列观察",
+   "rejection_condition": "fwd_5_oc 日等权双侧块检验经 BY 后不拒绝零均值，或 scan_days < 20"
+  }
+ ],
+ "population_rule": "lake/daily 全湖加 limit_list_d、daily_basic、top_inst；每个标签按自身入场腿的 entry_tradable 过滤",
+ "selection_rule": "按三条 metric_definition 的确定性规则，零 LLM",
+ "ruler": "gap_c1_o2",
+ "sensitivity_rulers": ["fwd_5_oc", "fwd_10_oc"],
+ "return_unit": "fraction",
+ "baseline": "同日全湖对应入场腿可交易等权",
+ "evidence_mode": "EOD_PROXY",
+ "weighting": "day_equal",
+ "cost_model_version": "none(门槛以 COST_PP=0.15pp 绝对毛计)",
+ "split": {
+  "train": ["2018-01-01", "2020-01-01"],
+  "validation": ["2020-01-01", "2022-03-01"],
+  "test": ["2022-03-01", "2026-09-03"]
+ },
+ "purge_rule": "测试段只读，不消费训练行；无待清除的训练标签重叠",
+ "embargo_sessions": 2,
+ "bootstrap": {"n_boot": 2000, "seed": 20260907},
+ "multiplicity": "BY(三格主假设族，dependence=arbitrary)",
+ "maturity_policy": "common.stats.maturity_verdict(scan_days >= 20)",
+ "quality_constraints": "只读本地湖；不抓取网络；不回注 L3/L4、评级、BUY 或权重",
+ "stop_rule": "测试区间固定为 [2022-03-01,2026-09-03)，不得用 CLI 缩窗或延长"
+}

@@ -5,6 +5,7 @@ from pathlib import Path
 from autoresearch.contracts import research_experiment as rx
 
 SPEC = Path(__file__).resolve().parents[2] / "docs" / "research" / "2026-09-07-w3-three-grids-family.spec.json"
+SPEC_V2 = SPEC.with_name("2026-09-07-w3-three-grids-family-v2.spec.json")
 
 
 def test_w3_family_spec_is_a_valid_frozen_experiment():
@@ -27,3 +28,18 @@ def test_every_grid_has_a_falsifiable_rejection_and_the_cost_floor():
     for h in spec["hypotheses"]:
         assert h["rejection_condition"].strip()
     assert "0.15" in spec["stop_rule"] and "不自动上线" in spec["stop_rule"]
+
+
+def test_corrected_family_has_real_identity_and_supported_populations():
+    spec = rx.validate_spec(json.loads(SPEC_V2.read_text(encoding="utf-8")))
+
+    assert spec["experiment_id"] != json.loads(SPEC.read_text())["experiment_id"]
+    assert spec["engine"] == "codex"
+    assert len(spec["code_sha"]) == 40 and set(spec["code_sha"]) != {"0"}
+    assert len(spec["input_manifest_hash"]) == 64
+    assert set(spec["input_manifest_hash"]) != {"0"}
+    assert spec["split"]["test"] == ["2022-03-01", "2026-09-03"]
+    claims = " ".join(h["population"] for h in spec["hypotheses"])
+    assert "剔 ST" not in claims and "北交所" not in claims and "新股" not in claims
+    seat = next(h for h in spec["hypotheses"] if h["hypothesis_id"].startswith("w3_institution"))
+    assert "D+1 开盘" in seat["population"] and "fwd_5_oc" in seat["population"]
