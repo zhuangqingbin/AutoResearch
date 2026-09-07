@@ -320,18 +320,26 @@ def family_correction(stats: dict, *, alpha: float = 0.05) -> list[dict]:
     """三格一族的 BY 校正。**没有 p 值就不编**:`cell_stats` 不给 p,这里用区间是否含 0 作
     保守代理并显式标注 —— 它不是 p 值,只是「这一格的区间跨没跨零」的家族级提醒。"""
     keys = [k for k in GRID_ORDER if k in stats]
-    proxies = []
+    proxies, directions = [], []
     for key in keys:
         st = stats[key]["primary"]
         lo, hi = st.get("ci_low_pp"), st.get("ci_high_pp")
-        proxies.append(0.02 if (lo is not None and hi is not None and (lo > 0 or hi < 0)) else 0.5)
+        excludes = lo is not None and hi is not None and (lo > 0 or hi < 0)
+        proxies.append(0.02 if excludes else 0.5)
+        if lo is not None and lo > 0:
+            directions.append("positive")
+        elif hi is not None and hi < 0:
+            directions.append("negative")
+        else:
+            directions.append("spans_zero")
     if not proxies:
         return []
     adjusted = family_adjustment(proxies, dependence="arbitrary", alpha=alpha)
-    return [{"grid": key, "interval_excludes_zero": row["p"] < 0.5, "q_by": row["q"],
-             "rejected": row["rejected"], "method": row["method"],
-             "note": "p 是区间是否跨零的保守代理,不是检验 p 值"}
-            for key, row in zip(keys, adjusted, strict=True)]
+    return [{"grid": key, "direction": direction, "interval_excludes_zero": row["p"] < 0.5,
+             "q_by": row["q"], "excluded_zero_after_by": row["rejected"], "method": row["method"],
+             "note": ("p 是区间是否跨零的保守代理,不是检验 p 值;"
+                      "`direction=negative` 的格「区间排除零」意味着**显著为负**,不是有发现")}
+            for key, row, direction in zip(keys, adjusted, directions, strict=True)]
 
 
 # ───────────────────────── 读数 ─────────────────────────

@@ -182,6 +182,19 @@ def test_family_correction_is_by_and_labels_its_proxy_honestly():
     assert [r["method"] for r in rows] == ["BY"] * 3
     assert all("不是检验 p 值" in r["note"] for r in rows)
     assert all(r["interval_excludes_zero"] for r in rows)
+    assert all(r["direction"] == "positive" for r in rows)
+
+
+def test_family_correction_carries_direction_so_a_negative_cell_is_not_misread():
+    """显著为负的格「区间排除零」—— 不带方向的话,它读起来像「有发现」。"""
+    stats = {w3.G1: {"primary": {"ci_low_pp": -2.0, "ci_high_pp": -1.0}},
+             w3.G2: {"primary": {"ci_low_pp": -0.5, "ci_high_pp": 0.5}},
+             w3.G3: {"primary": {"ci_low_pp": None, "ci_high_pp": None}}}
+    rows = {r["grid"]: r for r in w3.family_correction(stats)}
+    assert rows[w3.G1]["direction"] == "negative" and rows[w3.G1]["interval_excludes_zero"]
+    assert rows[w3.G2]["direction"] == "spans_zero" and not rows[w3.G2]["interval_excludes_zero"]
+    assert rows[w3.G3]["direction"] == "spans_zero"
+    assert all("显著为负" in r["note"] for r in rows.values())
 
 
 # ───────────────────────── 端到端 ─────────────────────────
