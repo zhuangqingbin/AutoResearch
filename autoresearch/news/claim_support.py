@@ -62,7 +62,12 @@ def compare_events(claim: dict, source: dict, *, checked_fields) -> dict:
             # 时间是 dict(区间+精度):不同精度或时段交叠需单独复核,不许「±3 天」自动放宽
             fields[key] = "PASS" if left == right else "UNKNOWN"
         elif key == "amount_value":
-            fields[key] = "PASS" if Decimal(left) == Decimal(right) else "FAIL"
+            comparators = ("amount_unit", "amount_basis", "effective_at")
+            comparable = all(
+                name in checked and claim[name] is not None and claim[name] == source[name]
+                for name in comparators)
+            fields[key] = ("UNKNOWN" if not comparable
+                           else "PASS" if Decimal(left) == Decimal(right) else "FAIL")
         else:
             fields[key] = "PASS" if left == right else "FAIL"
     verdict = ("FAIL" if "FAIL" in fields.values()

@@ -28,6 +28,23 @@ def test_planned_cap_is_a_cap_not_an_execution():
     assert e["lifecycle"] == "plan" and e["amount_basis"] == "planned_cap"
 
 
+def test_planned_completion_is_not_actual_completion():
+    e = ev("公司拟完成回购 1 亿元。")
+    assert (e["lifecycle"], e["assertion_kind"], e["amount_basis"]) == (
+        "plan", "forecast", "planned_cap")
+
+
+def test_comma_amount_is_not_truncated():
+    e = ev("公司已完成回购 1,000 万元。")
+    assert e["amount_value"] == "10000000"
+
+
+def test_invalid_calendar_date_is_unknown_with_diagnostic():
+    got = extract_event("公司于 2026-09-31 完成回购 1 亿元。", subject_code="600000")
+    assert got["event"]["effective_at"] is None
+    assert got["notes"] == ["invalid_date:2026-09-31"]
+
+
 def test_termination_is_terminated_not_completed():
     e = ev("公司公告终止回购计划,尚未实施回购。")
     assert e["lifecycle"] == "terminated" and e["polarity"] == "negated"

@@ -170,6 +170,17 @@ def test_time_mismatch_is_unknown_not_auto_welded():
     assert got["fields"]["effective_at"] == "UNKNOWN" and got["verdict"] == "UNKNOWN"
 
 
+def test_cumulative_totals_at_different_dates_are_not_a_contradiction():
+    later = {"start": "2026-09-03T00:00:00+08:00", "end": "2026-09-04T00:00:00+08:00",
+             "precision": "day"}
+    got = compare_events(event(lifecycle="in_progress", amount_value="100000000"),
+                         event(lifecycle="in_progress", amount_value="200000000", effective_at=later),
+                         checked_fields=CHECKED)
+    assert got["fields"]["amount_value"] == "UNKNOWN"
+    assert got["fields"]["effective_at"] == "UNKNOWN"
+    assert got["verdict"] == "UNKNOWN"
+
+
 def test_result_carries_rule_version():
     assert compare_events(event(), event(), checked_fields=CHECKED)["rule_version"] == "claim_support.v2"
 

@@ -33,18 +33,19 @@ from autoresearch.contracts.claim_evidence import (
 )
 
 PREDICATES: tuple[str, ...] = ("回购", "增持", "减持", "中标")
-_LIFECYCLE = (
-    ("terminated", ("终止", "取消", "撤销")),
-    ("completed", ("实施完毕", "已完成", "完成", "已实施", "累计")),
-    ("in_progress", ("实施中", "正在", "进行中", "首次")),
-    ("plan", ("拟", "计划", "预案", "将")),
-)
+_TERMINATED = ("终止", "取消", "撤销")
+_COMPLETED_EXPLICIT = ("实施完毕", "已完成", "已实施")
+_COMPLETED_BARE = ("完成",)
+_IN_PROGRESS = ("实施中", "正在", "进行中", "首次", "累计")
+_PLAN = ("拟", "计划", "预案", "将")
 _NEGATED = ("否认", "不实", "未实施", "尚未", "未")
 _UNCERTAIN = ("传闻", "据悉", "或将", "可能", "市场消息")
 _FORECAST = ("预计", "预期")
 _CONDITIONAL = ("若", "如果", "前提")
 _QUOTATION = ("表示", "称", "据")
-_AMOUNT = re.compile(r"(\d+(?:\.\d+)?)\s*(亿元|万元|元|亿股|万股|股|%)")
+_AMOUNT = re.compile(
+    r"(?<![\d,])((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)"
+    r"(?![\d,])\s*(亿元|万元|元|亿股|万股|股|%)")
 _DATE_ISO = re.compile(r"(20\d{2})-(\d{2})-(\d{2})")
 _DATE_CN = re.compile(r"(20\d{2})年(\d{1,2})月(\d{1,2})日")
 _SCALE = {"亿": Decimal("100000000"), "万": Decimal("10000")}
@@ -55,9 +56,14 @@ def _first(words, line):
 
 
 def _lifecycle(line: str) -> str:
-    for name, words in _LIFECYCLE:
-        if _first(words, line):
-            return name
+    if _first(_TERMINATED, line):
+        return "terminated"
+    if _first(_PLAN, line) and not _first(_COMPLETED_EXPLICIT, line):
+        return "plan"
+    if _first(_COMPLETED_EXPLICIT, line) or _first(_COMPLETED_BARE, line):
+        return "completed"
+    if _first(_IN_PROGRESS, line):
+        return "in_progress"
     return "unknown"
 
 
@@ -66,7 +72,7 @@ def _amount(line: str, *, lifecycle: str, predicate: str):
     if not m:
         return None, None, None, None
     number, unit = m.group(1), m.group(2)
-    value = Decimal(number)
+    value = Decimal(number.replace(",", ""))
     if unit.endswith("元"):
         kind = "CNY"
     elif unit.endswith("股"):
@@ -90,14 +96,18 @@ def _amount(line: str, *, lifecycle: str, predicate: str):
 def _effective_at(line: str):
     m = _DATE_ISO.search(line) or _DATE_CN.search(line)
     if not m:
-        return None, None
+        return None, None, None
     y, mo, d = (int(g) for g in m.groups())
-    start = f"{y:04d}-{mo:02d}-{d:02d}T00:00:00+08:00"
-    # 次日 00:00:用 date 算,别手写月末
     from datetime import date, timedelta
-    nxt = date(y, mo, d) + timedelta(days=1)
+    raw_day = f"{y:04d}-{mo:02d}-{d:02d}"
+    try:
+        current = date(y, mo, d)
+    except ValueError:
+        return None, None, f"invalid_date:{raw_day}"
+    start = f"{current.isoformat()}T00:00:00+08:00"
+    nxt = current + timedelta(days=1)
     end = f"{nxt.isoformat()}T00:00:00+08:00"
-    return {"start": start, "end": end, "precision": "day"}, f"{y:04d}-{mo:02d}-{d:02d}"
+    return {"start": start, "end": end, "precision": "day"}, current.isoformat(), None
 
 
 def extract_event(line: str, *, subject_code: str) -> dict | None:
@@ -112,17 +122,17 @@ def extract_event(line: str, *, subject_code: str) -> dict | None:
         polarity = "uncertain"
     else:
         polarity = "affirmed"
-    if _first(_FORECAST, line):
-        kind = "forecast"
-    elif _first(_CONDITIONAL, line):
+    if _first(_CONDITIONAL, line):
         kind = "conditional"
+    elif _first(_FORECAST, line) or lifecycle == "plan":
+        kind = "forecast"
     elif _first(_QUOTATION, line):
         kind = "quotation"
     else:
         kind = "actual"
     amount_value, amount_unit, amount_basis, dropped = _amount(
         line, lifecycle=lifecycle, predicate=predicate)
-    effective_at, day = _effective_at(line)
+    effective_at, day, date_note = _effective_at(line)
     ident = f"{subject_code}|{predicate}|{day or 'nodate'}|{amount_value or ''}|{lifecycle}"
     event = {
         "subject_code": str(subject_code).zfill(6),
@@ -132,8 +142,18 @@ def extract_event(line: str, *, subject_code: str) -> dict | None:
         "amount_basis": amount_basis, "effective_at": effective_at,
     }
     validate_event(event)
-    notes = [dropped] if dropped else []
+    notes = [note for note in (dropped, date_note) if note]
     return {"event": event, "notes": notes}
+
+
+def bundle_from_extraction(got: dict, *, claim_id: str) -> dict:
+    """已完成的一次抽取 → 未绑定证据包；供影子侧车保留抽取诊断而不重复解析。"""
+    return {
+        "schema_version": SCHEMA_VERSION, "claim_id": claim_id, "event": got["event"],
+        "source_observation_ids": [], "quote_spans": [],
+        "extraction_origin": "regex_v1", "verification_basis": "none",
+        "rule_version": RULE_VERSION,
+    }
 
 
 def bundle_from_line(line: str, *, subject_code: str, claim_id: str) -> dict | None:
@@ -141,12 +161,7 @@ def bundle_from_line(line: str, *, subject_code: str, claim_id: str) -> dict | N
     got = extract_event(line, subject_code=subject_code)
     if got is None:
         return None
-    return {
-        "schema_version": SCHEMA_VERSION, "claim_id": claim_id, "event": got["event"],
-        "source_observation_ids": [], "quote_spans": [],
-        "extraction_origin": "regex_v1", "verification_basis": "none",
-        "rule_version": RULE_VERSION,
-    }
+    return bundle_from_extraction(got, claim_id=claim_id)
 
 
 assert set(PREDICATES) == ENUMS["predicate"], "抽取器谓语集必须与契约枚举同源"

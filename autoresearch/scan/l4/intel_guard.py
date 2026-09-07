@@ -235,31 +235,47 @@ def _extract_claim_events(src: Path, text: str, *, self_code: str, trade_date: s
     一行事件都没有时不写侧车(与 `.orig` 同一立场:没有变化就没有审计价值)。
     """
     from autoresearch.news.claim_binding import support_bound_claim
-    from autoresearch.news.claim_extract import PREDICATES, bundle_from_line
+    from autoresearch.news.claim_extract import PREDICATES, bundle_from_extraction, extract_event
 
     self6 = str(self_code).strip().zfill(6)
-    rows = []
+    rows, errors = [], []
     for line_no, line in enumerate(text.splitlines(), start=1):
         if not any(w in line for w in PREDICATES):
             continue
         if any(c != self6 for c in _CODE_RE.findall(line)):
             continue                                        # 他票的事归 lint_claims
         claim_id = f"cl_{self6}_{trade_date}_{line_no}"
-        bundle = bundle_from_line(line, subject_code=self6, claim_id=claim_id)
-        if bundle is None:
-            continue
-        verdict = support_bound_claim(bundle["event"], bundle, observations={}, texts={},
-                                      trusted_fields=(), decision_at=None)
-        rows.append({"line_no": line_no, "line": line.strip(), "bundle": bundle,
-                     "verdict": verdict["verdict"], "reason": verdict["reason"]})
+        try:
+            extracted = extract_event(line, subject_code=self6)
+            if extracted is None:
+                continue
+            bundle = bundle_from_extraction(extracted, claim_id=claim_id)
+            verdict = support_bound_claim(bundle["event"], bundle, observations={}, texts={},
+                                          trusted_fields=(), decision_at=None)
+            rows.append({"line_no": line_no, "line": line.strip(), "bundle": bundle,
+                         "extraction_notes": extracted["notes"],
+                         "verdict": verdict["verdict"], "reason": verdict["reason"]})
+        except Exception as exc:  # shadow instrumentation must not break the production guard
+            errors.append({"line_no": line_no, "reason": "EXTRACTION_FAILED",
+                           "detail": f"{type(exc).__name__}: {exc}"})
     if not rows:
-        return {"n": 0, "sidecar": None}
+        result = {"n": 0, "sidecar": None}
+        if errors:
+            result["errors"] = errors
+        return result
     sidecar = src.with_name(f"_l4_claims_{self6}.json")
-    sidecar.write_text(json.dumps({
-        "schema_version": 1, "code": self6, "trade_date": trade_date,
-        "extraction": "regex_v1", "binding": "none", "events": rows,
-    }, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
-    return {"n": len(rows), "sidecar": sidecar.name}
+    try:
+        sidecar.write_text(json.dumps({
+            "schema_version": 1, "code": self6, "trade_date": trade_date,
+            "extraction": "regex_v1", "binding": "none", "events": rows,
+        }, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    except Exception as exc:  # output is shadow-only; preserve guard action/verdict
+        errors.append({"reason": "SIDECAR_WRITE_FAILED", "detail": str(exc)})
+        return {"n": len(rows), "sidecar": None, "errors": errors}
+    result = {"n": len(rows), "sidecar": sidecar.name}
+    if errors:
+        result["errors"] = errors
+    return result
 
 
 def guard_intel(scan_dir: Path | str, code: str, *,

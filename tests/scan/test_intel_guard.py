@@ -167,6 +167,39 @@ def test_no_event_claims_means_no_sidecar(tmp_path):
     assert not list(tmp_path.glob("_l4_claims_*.json"))
 
 
+def test_invalid_shadow_date_cannot_fail_intel_guard(tmp_path):
+    body = _event_doc([
+        "| 2026-09-31 | T0 | 公司于 2026-09-31 完成回购 1 亿元 | http://a | 1.0 |\n",
+    ])
+    _write(tmp_path, "601288", 18, body)
+    out = guard_intel(tmp_path, "601288", hard_cap=30)
+    assert out["ok"] is True and out["action"] == "KEPT"
+    payload = json.loads((tmp_path / out["claim_events"]["sidecar"]).read_text(encoding="utf-8"))
+    assert payload["events"][0]["extraction_notes"] == ["invalid_date:2026-09-31"]
+
+
+def test_sidecar_write_failure_is_a_shadow_diagnostic(tmp_path, monkeypatch):
+    from pathlib import Path
+    from autoresearch.scan.l4 import intel_guard as ig
+
+    body = _event_doc([
+        "| 2026-09-01 | T0 | 公司已完成回购 1 亿元 | http://a | 1.0 |\n",
+    ])
+    _write(tmp_path, "601288", 18, body)
+    original = Path.write_text
+
+    def fail_sidecar(path, *args, **kwargs):
+        if path.name.startswith("_l4_claims_"):
+            raise OSError("disk full")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", fail_sidecar)
+    out = ig.guard_intel(tmp_path, "601288", hard_cap=30)
+    assert out["ok"] is True and out["action"] == "KEPT"
+    assert out["claim_events"]["errors"] == [{"reason": "SIDECAR_WRITE_FAILED",
+                                                "detail": "disk full"}]
+
+
 def test_sidecar_does_not_alter_the_draft_or_claims_lint(tmp_path):
     body = _event_doc(["| 2026-07-28 | T0 | 控股股东拟增持不超过 2 亿元 | http://a | 1.0 |\n"])
     _write(tmp_path, "601288", 18, body)
