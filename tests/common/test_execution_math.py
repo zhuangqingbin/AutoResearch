@@ -350,6 +350,18 @@ def test_every_fill_result_carries_its_rule_version():
     assert a["fill_rule_version"] in FILL_RULE_VERSIONS and b["fill_rule_version"] in FILL_RULE_VERSIONS
 
 
+def test_open_auction_exit_distinguishes_due_unknown_blocked_and_filled():
+    assert em.open_auction_fill(open_price="10", exit_unsellable=False,
+                                due=False)["state"] == "NOT_DUE"
+    assert em.open_auction_fill(open_price=None, exit_unsellable=None,
+                                due=True)["state"] == "UNKNOWN"
+    assert em.open_auction_fill(open_price="9", exit_unsellable=True,
+                                due=True)["state"] == "NO_FILL"
+    filled = em.open_auction_fill(open_price="10.5", exit_unsellable=False, due=True)
+    assert filled == {"state": "FILLED", "reason": "OPEN_AUCTION",
+                      "price": D("10.5"), "fill_rule_version": "open_auction_v1"}
+
+
 def test_cost_model_contract_rejects_missing_or_wrong_fields():
     from autoresearch.contracts.execution import validate_cost_model
     policy = {"cost_model_version": "ashare_v1", "venue": "SSE", "effective_from": "2023-08-28",

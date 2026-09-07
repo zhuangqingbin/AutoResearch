@@ -241,6 +241,24 @@ def closing_auction_fill(*, snapshot_last, limit_bps, close_price, entry_sealed)
             "fill_rule_version": "close_auction_limit_v1"}
 
 
+def open_auction_fill(*, open_price, exit_unsellable, due: bool) -> dict:
+    """`open_auction_v1`:到期后按 D+2 开盘价退出；一字跌停只标未成交，不剔样本。"""
+    if not due:
+        return {"state": "NOT_DUE", "reason": "EXIT_NOT_DUE",
+                "fill_rule_version": "open_auction_v1"}
+    if open_price is None or exit_unsellable is None:
+        return {"state": "UNKNOWN", "reason": "MISSING_EXIT_DATA",
+                "fill_rule_version": "open_auction_v1"}
+    price = Decimal(open_price)
+    if not price.is_finite() or price <= 0:
+        raise ValueError("invalid open auction price")
+    if exit_unsellable:
+        return {"state": "NO_FILL", "reason": "LIMIT_DOWN_UNSELLABLE", "price": price,
+                "fill_rule_version": "open_auction_v1"}
+    return {"state": "FILLED", "reason": "OPEN_AUCTION", "price": price,
+            "fill_rule_version": "open_auction_v1"}
+
+
 def after_hours_fixed_fill(*, code, close_price, wanted_qty, after_hours_volume) -> dict:
     """`after_hours_fixed_v1`:科创/创业板 15:05–15:30 按收盘价成交,量以盘后成交量为上限。"""
     from autoresearch.contracts.execution import AFTER_HOURS_PREFIXES

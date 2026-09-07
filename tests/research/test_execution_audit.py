@@ -147,6 +147,40 @@ def test_snapshot_fill_follows_the_closing_auction_rule(world):
     assert sim["300001"]["entry_state"] == "NOT_SUBMITTED"
 
 
+def test_snapshot_simulation_exits_at_d2_open_with_costs(world):
+    snapshots, _ = imp.load_snapshots(world["snaps"], engine="claude")
+    rows, coverage = ea._snapshot_rows(
+        snapshots, blocks=ea._execution_blocks(world["runs"]), policy=POLICY,
+        max_age_seconds=60, lake_daily=world["lake"], simulation_qty="100")
+    row = next(r for r in rows if r["code"] == "600000")
+    assert row["exit_state"] == "FILLED"
+    assert Decimal(row["gross_return"]) == pytest.approx(Decimal("10.5") / Decimal("10.2") - 1)
+    assert Decimal(row["net_return_realized"]) < Decimal(row["gross_return"])
+    assert row["fill_rule_version"] == "close_auction_limit_v1"
+    assert row["exit_fill_rule_version"] == "open_auction_v1"
+    assert not any(item.get("snapshot_id") == "s1" for item in coverage)
+
+
+def test_snapshot_without_quantity_reports_gross_and_cost_coverage(world):
+    snapshots, _ = imp.load_snapshots(world["snaps"], engine="claude")
+    rows, coverage = ea._snapshot_rows(
+        snapshots, blocks=ea._execution_blocks(world["runs"]), policy=POLICY,
+        max_age_seconds=60, lake_daily=world["lake"], simulation_qty=None)
+    row = next(r for r in rows if r["code"] == "600000")
+    assert row["gross_return"] is not None and row["net_return_realized"] is None
+    assert any(item.get("snapshot_id") == "s1" and item["reason"] == "MISSING_SIMULATION_QTY"
+               for item in coverage)
+
+
+def test_missing_simulation_quantity_does_not_claim_sample_was_excluded(world):
+    out = _run(world)
+    coverage = json.loads((out / "coverage.json").read_text(encoding="utf-8"))["snapshots"]
+    assert coverage["not_in_denominator"] == [{"snapshot_id": "s2",
+                                                "reason": "RUN_LATE_REVALIDATION_REQUIRED"}]
+    assert coverage["cost_not_computed"] == [{"snapshot_id": "s1",
+                                               "reason": "MISSING_SIMULATION_QTY"}]
+
+
 def test_eod_proxy_uses_the_main_ruler_and_the_buyable_flag(world):
     out = _run(world)
     eod = {r["code"]: r for r in _rows(out / "assessments.csv") if r["evidence_mode"] == "EOD_PROXY"}

@@ -43,7 +43,8 @@ from autoresearch.research import execution_import as imp, execution_ledger
 EXPERIMENT_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,80}")
 ASSESSMENT_FIELDS: tuple[str, ...] = (
     "evidence_mode", "position_id", "code", "session", "run_id", "decision_at", "ready_quality",
-    "entry_verdict", "entry_reason", "fill_rule_version", "entry_state", "exit_state",
+    "entry_verdict", "entry_reason", "fill_rule_version", "exit_fill_rule_version",
+    "entry_state", "exit_state",
     "cost_model_version", "buy_qty", "sell_qty", "remaining_qty", "gross_return",
     "realized_pnl", "unrealized_pnl", "net_pnl_cash", "net_return_realized",
     "holding_window_breached", "corporate_action_status",
@@ -131,8 +132,9 @@ def _eod_rows(codes_by_session: dict[str, set[str]], *, lake_daily: Path | None)
 
 
 def _snapshot_rows(snapshots: list[dict], *, blocks: dict[str, dict], policy: dict,
-                   max_age_seconds: float, lake_daily: Path | None) -> tuple[list[dict], list[dict]]:
-    """SNAPSHOT_SIMULATED:时点验证 → 入场条件 → 收盘集合竞价成交 → 版本化成本。"""
+                   max_age_seconds: float, lake_daily: Path | None,
+                   simulation_qty: str | None = None) -> tuple[list[dict], list[dict]]:
+    """SNAPSHOT_SIMULATED:时点验证 → 收盘买腿 → D+2 开盘卖腿 → 版本化成本。"""
     rows, coverage = [], []
     days = lake_trade_days(lake_daily)
     for snap in snapshots:
@@ -148,31 +150,74 @@ def _snapshot_rows(snapshots: list[dict], *, blocks: dict[str, dict], policy: di
         verdict = em.entry_condition(row, max_age_seconds=max_age_seconds)
         session = decision_at.date().isoformat()
         d = session.replace("-", "")
-        close = sealed = None
+        close = sealed = exit_open = unsellable = None
+        exit_due = False
         if d in days:
             idx = days.index(d)
             window = days[max(0, idx - 1): min(len(days), idx + 3)]
-            frame = forward_frame(load_lake_pivots(window, lake_daily), days, days[idx - 1]) \
-                if idx >= 1 else None
-            piv = load_lake_pivots([d], lake_daily)
+            piv = load_lake_pivots(window, lake_daily)
+            frame = forward_frame(piv, days, days[idx - 1]) if idx >= 1 else None
             if piv and snap["code"] in piv["close"].index:
-                close = piv["close"].loc[snap["code"], d]
-                close = None if close != close else _dec(close)
+                value = piv["close"].loc[snap["code"], d]
+                close = None if pd.isna(value) else _dec(value)
             if frame is not None and snap["code"] in frame.index:
-                flag = frame.loc[snap["code"], _ruler.ENTRY_FLAG]
-                sealed = None if pd.isna(flag) else (not bool(flag))
+                entry_flag = frame.loc[snap["code"], _ruler.ENTRY_FLAG]
+                sealed = None if pd.isna(entry_flag) else not bool(entry_flag)
+                exit_flag = frame.loc[snap["code"], _ruler.EXIT_FLAG]
+                unsellable = None if pd.isna(exit_flag) else bool(exit_flag)
+            if idx + 1 < len(days):
+                exit_due = True
+                exit_day = days[idx + 1]
+                if piv and snap["code"] in piv["open"].index and exit_day in piv["open"].columns:
+                    value = piv["open"].loc[snap["code"], exit_day]
+                    exit_open = None if pd.isna(value) else _dec(value)
         fill = (em.closing_auction_fill(snapshot_last=snap["last"], limit_bps=policy["slippage_bps"],
                                         close_price=close, entry_sealed=sealed)
                 if verdict["verdict"] == "PASS" else
                 {"state": "NOT_SUBMITTED", "reason": verdict["reason"],
                  "fill_rule_version": "close_auction_limit_v1"})
-        rows.append({"evidence_mode": "SNAPSHOT_SIMULATED", "code": snap["code"], "session": session,
-                     "run_id": snap["run_id"], "decision_at": decision_at.isoformat(),
-                     "ready_quality": block.get("ready_quality"),
+        exit_fill = (em.open_auction_fill(open_price=exit_open, exit_unsellable=unsellable,
+                                          due=exit_due)
+                     if fill["state"] == "FILLED" else
+                     {"state": "NOT_DUE" if not exit_due else "UNKNOWN",
+                      "reason": "ENTRY_NOT_FILLED", "fill_rule_version": "open_auction_v1"})
+        gross = (Decimal(exit_fill["price"]) / Decimal(fill["price"]) - 1
+                 if fill["state"] == exit_fill["state"] == "FILLED" else None)
+        pnl = None
+        if gross is not None and simulation_qty is None:
+            coverage.append({"snapshot_id": snap["snapshot_id"], "reason": "MISSING_SIMULATION_QTY"})
+        elif gross is not None:
+            cost_args = {key: policy[key] for key in (
+                "slippage_bps", "commission_rate", "minimum_commission", "tax_rate",
+                "tax_sides", "transfer_fee_rate")}
+            buy = em.simulated_leg(price=fill["price"], qty=simulation_qty, side="BUY", **cost_args)
+            sell = em.simulated_leg(price=exit_fill["price"], qty=simulation_qty, side="SELL", **cost_args)
+            buy_fees = buy["commission"] + buy["tax"] + buy["transfer_fee"]
+            sell_fees = sell["commission"] + sell["tax"] + sell["transfer_fee"]
+            pnl = em.position_pnl(buy_qty=simulation_qty, buy_notional=buy["notional"],
+                                  buy_fees=buy_fees, sell_qty=simulation_qty,
+                                  sell_notional=sell["notional"], sell_fees=sell_fees,
+                                  mark_price=None, cash_distribution="0", receivable="0")
+        rows.append({"evidence_mode": "SNAPSHOT_SIMULATED",
+                     "position_id": f"sim:{snap['run_id']}:{snap['code']}",
+                     "code": snap["code"], "session": session, "run_id": snap["run_id"],
+                     "decision_at": decision_at.isoformat(), "ready_quality": block.get("ready_quality"),
                      "entry_verdict": verdict["verdict"], "entry_reason": fill.get("reason"),
-                     "fill_rule_version": fill["fill_rule_version"], "entry_state": fill["state"],
-                     "exit_state": "NOT_DUE", "cost_model_version": policy["cost_model_version"],
-                     "gross_return": None, "net_return_realized": None})
+                     "fill_rule_version": fill["fill_rule_version"],
+                     "exit_fill_rule_version": exit_fill["fill_rule_version"],
+                     "entry_state": fill["state"], "exit_state": exit_fill["state"],
+                     "cost_model_version": policy["cost_model_version"],
+                     "buy_qty": simulation_qty if fill["state"] == "FILLED" else None,
+                     "sell_qty": simulation_qty if exit_fill["state"] == "FILLED" else None,
+                     "remaining_qty": (None if simulation_qty is None or fill["state"] != "FILLED"
+                                       else "0" if exit_fill["state"] == "FILLED" else simulation_qty),
+                     "gross_return": _dec(gross),
+                     "realized_pnl": _dec(pnl["realized_pnl"]) if pnl else None,
+                     "unrealized_pnl": _dec(pnl["unrealized_pnl"]) if pnl else None,
+                     "net_pnl_cash": _dec(pnl["net_pnl_cash"]) if pnl else None,
+                     "net_return_realized": _dec(pnl["net_return_realized"]) if pnl else None,
+                     "holding_window_breached": bool(exit_due and exit_fill["state"] != "FILLED"),
+                     "corporate_action_status": "NONE"})
     return rows, coverage
 
 
@@ -225,7 +270,8 @@ def _readout(metrics: list[dict], coverage: dict) -> str:
 
 def run(*, experiment_id: str, snapshots: Path | None, trades: Path | None, policy: Path,
         runs_root: Path | None, lake_daily: Path | None, max_age_seconds: float,
-        parent: Path | None = None, engine: str | None = None) -> Path:
+        parent: Path | None = None, engine: str | None = None,
+        simulation_qty: str | None = None) -> Path:
     engine = engine or ws.detect_engine()
     cost = imp.load_policy(policy)
     snap_rows, snap_errors = imp.load_snapshots(snapshots, engine=engine) if snapshots else ([], [])
@@ -234,7 +280,8 @@ def run(*, experiment_id: str, snapshots: Path | None, trades: Path | None, poli
     # 先验证输入、再创建输出(中断目录保留失败 manifest,不自动覆盖重跑)
     output = create_output_dir(experiment_id, parent=parent)
     sim_rows, sim_coverage = _snapshot_rows(snap_rows, blocks=blocks, policy=cost,
-                                            max_age_seconds=max_age_seconds, lake_daily=lake_daily)
+                                            max_age_seconds=max_age_seconds, lake_daily=lake_daily,
+                                            simulation_qty=simulation_qty)
     by_session: dict[str, set[str]] = defaultdict(set)
     for row in sim_rows:
         by_session[row["session"]].add(row["code"])
@@ -245,9 +292,12 @@ def run(*, experiment_id: str, snapshots: Path | None, trades: Path | None, poli
     obs_rows, obs_coverage = _observed_rows(fills, policy=cost)
     rows = eod_rows + sim_rows + obs_rows
     metrics = _daily_metrics(rows)
+    sim_excluded = [row for row in sim_coverage if row["reason"] != "MISSING_SIMULATION_QTY"]
+    sim_cost_missing = [row for row in sim_coverage if row["reason"] == "MISSING_SIMULATION_QTY"]
     coverage = {
         "snapshots": {"loaded": len(snap_rows), "rejected": len(snap_errors),
-                      "not_in_denominator": sim_coverage, "errors": snap_errors},
+                      "not_in_denominator": sim_excluded, "cost_not_computed": sim_cost_missing,
+                      "errors": snap_errors},
         "trades": {"loaded": len(fills), "rejected": len(fill_errors), "errors": fill_errors,
                    "not_in_denominator": obs_coverage},
         "runs_root": str(runs_root) if runs_root else None, "n_run_blocks": len(blocks),
@@ -265,12 +315,15 @@ def run(*, experiment_id: str, snapshots: Path | None, trades: Path | None, poli
         "as_of": datetime.now(timezone.utc).isoformat(),
         "inputs": {"snapshots": _sha256(snapshots), "trades": _sha256(trades), "policy": _sha256(policy)},
         "cost_model_version": cost["cost_model_version"],
-        "fill_rule_versions": sorted({r["fill_rule_version"] for r in rows}),
-        "max_age_seconds": max_age_seconds, "ruler": _ruler.MAIN_RULER,
+        "fill_rule_versions": sorted({version for r in rows for version in
+                                      (r.get("fill_rule_version"), r.get("exit_fill_rule_version"))
+                                      if version}),
+        "max_age_seconds": max_age_seconds, "simulation_qty": simulation_qty,
+        "ruler": _ruler.MAIN_RULER,
         "calendar_source": "lake/daily filenames",
         "outputs": {name: _sha256(output / name) for name in
                     ("assessments.csv", "daily_metrics.csv", "coverage.json", "readout.md")},
-        "n_rows": len(rows), "n_coverage_excluded": (len(sim_coverage) + len(snap_errors)
+        "n_rows": len(rows), "n_coverage_excluded": (len(sim_excluded) + len(snap_errors)
                                                        + len(fill_errors) + len(obs_coverage)),
     }
     (output / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1) + "\n",
@@ -288,6 +341,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--lake-daily", default=None)
     ap.add_argument("--max-age-seconds", type=float, default=60.0,
                     help="快照新鲜度(显式研究参数,不冒充项目缺省)")
+    ap.add_argument("--simulation-qty", default=None,
+                    help="快照模拟的显式参考数量;缺省只报毛收益,成本后收益未知")
     a = ap.parse_args(argv)
     try:
         out = run(experiment_id=a.experiment_id,
@@ -295,7 +350,7 @@ def main(argv: list[str] | None = None) -> int:
                   trades=Path(a.trades) if a.trades else None, policy=Path(a.policy),
                   runs_root=Path(a.runs_root) if a.runs_root else None,
                   lake_daily=Path(a.lake_daily) if a.lake_daily else None,
-                  max_age_seconds=a.max_age_seconds)
+                  max_age_seconds=a.max_age_seconds, simulation_qty=a.simulation_qty)
     except FileExistsError as exc:
         print(f"[execution_audit] 落点已存在,拒绝覆盖:{exc}", file=sys.stderr)
         return 2
