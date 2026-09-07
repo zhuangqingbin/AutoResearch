@@ -38,14 +38,15 @@ import pandas as pd
 from autoresearch.common import execution_math as em, ruler as _ruler, workspace as ws
 from autoresearch.common.forward_returns import forward_frame
 from autoresearch.data.market_panel import lake_trade_days, load_lake_pivots
-from autoresearch.research import execution_import as imp
+from autoresearch.research import execution_import as imp, execution_ledger
 
 EXPERIMENT_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,80}")
 ASSESSMENT_FIELDS: tuple[str, ...] = (
-    "evidence_mode", "code", "session", "run_id", "decision_at", "ready_quality",
+    "evidence_mode", "position_id", "code", "session", "run_id", "decision_at", "ready_quality",
     "entry_verdict", "entry_reason", "fill_rule_version", "entry_state", "exit_state",
-    "cost_model_version", "gross_return", "net_return_realized", "holding_window_breached",
-    "corporate_action_status",
+    "cost_model_version", "buy_qty", "sell_qty", "remaining_qty", "gross_return",
+    "realized_pnl", "unrealized_pnl", "net_pnl_cash", "net_return_realized",
+    "holding_window_breached", "corporate_action_status",
 )
 
 
@@ -175,49 +176,10 @@ def _snapshot_rows(snapshots: list[dict], *, blocks: dict[str, dict], policy: di
     return rows, coverage
 
 
-def _observed_rows(fills: list[dict], *, policy: dict) -> list[dict]:
-    """OBSERVED_FILL:同一 position 的 BUY/SELL 归并成 `position_pnl`;没有卖出腿就没有已实现。"""
-    by_pos: dict[str, dict[str, list[dict]]] = defaultdict(lambda: {"BUY": [], "SELL": []})
-    for fill in fills:
-        by_pos[fill["position_id"]][fill["side"]].append(fill)
-    rows = []
-    for _position_id, legs in sorted(by_pos.items()):
-        buys, sells = legs["BUY"], legs["SELL"]
-        if not buys:
-            continue                      # 只有卖出腿:不是本仪器评价的隔夜仓
-        buys = sorted(buys, key=lambda f: (f["trade_date"], f["trade_time"] or ""))
-        code, session = buys[0]["code"], buys[0]["trade_date"]
-        fees_missing = any(f[k] is None for f in buys + sells
-                           for k in ("commission", "stamp_tax", "transfer_fee", "other_fee"))
-        if fees_missing:
-            rows.append({"evidence_mode": "OBSERVED_FILL", "code": code, "session": session,
-                         "entry_state": "FILLED", "exit_state": "FILLED" if sells else "UNKNOWN",
-                         "entry_verdict": "PASS", "entry_reason": "FEES_MISSING",
-                         "fill_rule_version": "observed", "cost_model_version": "observed",
-                         "gross_return": None, "net_return_realized": None,
-                         "corporate_action_status": "NONE"})
-            continue
-
-        def total(rows_, key):
-            return sum(Decimal(r[key]) for r in rows_)
-
-        def fees(rows_):
-            return sum(Decimal(r[k]) for r in rows_
-                       for k in ("commission", "stamp_tax", "transfer_fee", "other_fee"))
-
-        bq, bn = total(buys, "qty"), total(buys, "amount")
-        sq, sn = (total(sells, "qty"), total(sells, "amount")) if sells else (Decimal(0), Decimal(0))
-        pnl = em.position_pnl(buy_qty=bq, buy_notional=bn, buy_fees=fees(buys), sell_qty=min(sq, bq),
-                              sell_notional=sn, sell_fees=fees(sells) if sells else Decimal(0),
-                              mark_price=None, cash_distribution="0", receivable="0")
-        rows.append({"evidence_mode": "OBSERVED_FILL", "code": code, "session": session,
-                     "entry_state": "FILLED", "exit_state": "FILLED" if sells else "UNKNOWN",
-                     "entry_verdict": "PASS", "entry_reason": "OBSERVED",
-                     "fill_rule_version": "observed", "cost_model_version": "observed",
-                     "gross_return": _dec((sn / sq) / (bn / bq) - 1) if sells and sq else None,
-                     "net_return_realized": _dec(pnl["net_return_realized"]),
-                     "holding_window_breached": None, "corporate_action_status": "NONE"})
-    return rows
+def _observed_rows(fills: list[dict], *, policy: dict) -> tuple[list[dict], list[dict]]:
+    """OBSERVED_FILL:逐时序 FIFO 配对,多轮交易不并成一个 position。"""
+    del policy
+    return execution_ledger.build_episodes(fills)
 
 
 def _daily_metrics(rows: list[dict]) -> list[dict]:
@@ -280,13 +242,14 @@ def run(*, experiment_id: str, snapshots: Path | None, trades: Path | None, poli
         if fill["side"] == "BUY":
             by_session[fill["trade_date"]].add(fill["code"])
     eod_rows = _eod_rows(by_session, lake_daily=lake_daily) if by_session else []
-    obs_rows = _observed_rows(fills, policy=cost)
+    obs_rows, obs_coverage = _observed_rows(fills, policy=cost)
     rows = eod_rows + sim_rows + obs_rows
     metrics = _daily_metrics(rows)
     coverage = {
         "snapshots": {"loaded": len(snap_rows), "rejected": len(snap_errors),
                       "not_in_denominator": sim_coverage, "errors": snap_errors},
-        "trades": {"loaded": len(fills), "rejected": len(fill_errors), "errors": fill_errors},
+        "trades": {"loaded": len(fills), "rejected": len(fill_errors), "errors": fill_errors,
+                   "not_in_denominator": obs_coverage},
         "runs_root": str(runs_root) if runs_root else None, "n_run_blocks": len(blocks),
         "modes": {m: sum(r["evidence_mode"] == m for r in rows)
                   for m in ("EOD_PROXY", "SNAPSHOT_SIMULATED", "OBSERVED_FILL")},
@@ -307,7 +270,8 @@ def run(*, experiment_id: str, snapshots: Path | None, trades: Path | None, poli
         "calendar_source": "lake/daily filenames",
         "outputs": {name: _sha256(output / name) for name in
                     ("assessments.csv", "daily_metrics.csv", "coverage.json", "readout.md")},
-        "n_rows": len(rows), "n_coverage_excluded": len(sim_coverage) + len(snap_errors) + len(fill_errors),
+        "n_rows": len(rows), "n_coverage_excluded": (len(sim_coverage) + len(snap_errors)
+                                                       + len(fill_errors) + len(obs_coverage)),
     }
     (output / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1) + "\n",
                                           encoding="utf-8")

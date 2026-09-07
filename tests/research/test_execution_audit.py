@@ -165,9 +165,19 @@ def test_observed_fill_realizes_only_with_a_sell_leg(world):
     assert obs["300001"]["exit_state"] == "UNKNOWN" and obs["300001"]["net_return_realized"] == ""
 
 
-def test_dividend_rows_are_not_legs(world):
+def test_dividend_rows_are_preserved_for_unresolved_cash_coverage(world):
     fills, errors = imp.load_trades(world["trades"])
-    assert {f["fill_id"] for f in fills} == {"t1", "t2", "t3"} and errors == []
+    assert {f["fill_id"] for f in fills} == {"t1", "t2", "t3", "t4"} and errors == []
+    assert next(f for f in fills if f["fill_id"] == "t4")["side"] == "OTHER"
+
+
+def test_unresolved_cash_event_is_visible_in_execution_coverage(world):
+    out = _run(world)
+    coverage = json.loads((out / "coverage.json").read_text(encoding="utf-8"))
+    assert coverage["trades"]["not_in_denominator"] == [{
+        "account_hash": imp.account_hash("A1"), "code": "600000", "fill_id": "t4",
+        "amount": "30", "reason": "UNRESOLVED_CASH_EVENT",
+    }]
 
 
 def test_output_is_exclusive_and_manifest_hashes_match(world):

@@ -98,18 +98,17 @@ def load_trades(path: Path | str) -> tuple[list[dict], list[dict]]:
         if side not in broker_schema.SIDES:
             errors.append({"line": line_no, "error_code": f"invalid side {side!r}"})
             continue
-        if side == "OTHER":
-            continue                           # 分红/利息等现金流不是买卖腿
         if not raw["trade_id"]:
             errors.append({"line": line_no, "error_code": "trade_id required as fill_id"})
             continue
-        code = str(raw["code"]).zfill(6)
+        code = str(raw["code"]).zfill(6) if raw["code"] else ""
         acct = account_hash(raw["account"])
         row = {
             "fill_id": raw["trade_id"], "position_id": f"{acct}:{code}",
             "account_hash": acct, "code": code, "ts_code": raw["ts_code"], "side": side,
             "trade_date": raw["trade_date"], "trade_time": raw["trade_time"] or None,
-            "price": raw["price"], "qty": raw["qty"], "amount": raw["amount"],
+            "price": _nullable(raw["price"]), "qty": _nullable(raw["qty"]),
+            "amount": _nullable(raw["amount"]),
             "commission": _nullable(raw["commission"]), "stamp_tax": _nullable(raw["stamp_tax"]),
             "transfer_fee": _nullable(raw["transfer_fee"]), "other_fee": _nullable(raw["other_fee"]),
             "source_kind": raw["source_kind"],
