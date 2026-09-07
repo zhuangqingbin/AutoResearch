@@ -605,11 +605,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--since", default=None, help="起始数据日 YYYYMMDD")
     ap.add_argument("--until", default=None, help="终止数据日 YYYYMMDD")
     ap.add_argument("--lake-daily", default=None)
+    ap.add_argument("--lake-root", default=None)
     ap.add_argument("--out-parent", default=None)
     a = ap.parse_args(argv)
     try:
         out = run(spec_path=Path(a.spec), since=a.since, until=a.until,
                   lake_daily=Path(a.lake_daily) if a.lake_daily else None,
+                  lake_root=Path(a.lake_root) if a.lake_root else None,
                   parent=Path(a.out_parent) if a.out_parent else None)
     except FileExistsError as exc:
         print(f"[w3_grids] 落点已存在,拒绝覆盖(换 experiment_id):{exc}", file=sys.stderr)

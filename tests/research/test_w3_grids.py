@@ -340,3 +340,20 @@ def test_w3_conflicting_date_override_is_rejected(lake, tmp_path):
             lake_root=lake["root"], parent=tmp_path / "out",
         )
     assert not (tmp_path / "out").exists()
+
+
+def test_cli_forwards_the_explicit_lake_root(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_run(**kwargs):
+        captured.update(kwargs)
+        return tmp_path / "result"
+
+    monkeypatch.setattr(w3, "run", fake_run)
+
+    assert w3.main([
+        "--spec", str(tmp_path / "spec.json"),
+        "--lake-daily", str(tmp_path / "lake" / "daily"),
+        "--lake-root", str(tmp_path / "lake"),
+    ]) == 0
+    assert captured["lake_root"] == tmp_path / "lake"
