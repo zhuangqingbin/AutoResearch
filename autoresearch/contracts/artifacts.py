@@ -394,6 +394,13 @@ ARTIFACTS: tuple[Artifact, ...] = (
              "observe", "execution_audit", "csv", "conditional"),
     Artifact("execution_coverage", "execution/*/coverage.json", "research_report",
              "observe", "execution_audit", "json", "conditional"),
+    # F6 W3 三格普查(2026-09-07 登记;冻结方案见 docs/research/2026-09-07-w3-three-grids-family.spec.json)
+    Artifact("w3_grids_cells", "w3_grids/*/cells.csv", "research_report", "observe",
+             "w3_grids", "csv", "conditional"),
+    Artifact("w3_grids_statistics", "w3_grids/*/statistics.json", "research_report", "observe",
+             "w3_grids", "json", "conditional"),
+    Artifact("w3_grids_signals", "w3_grids/*/signal_coverage.json", "research_report", "observe",
+             "w3_grids", "json", "conditional"),
     # ── 券商成交取数层(08-27 设计稿 §5;不进 lake/,只记不学)──────────────────
     Artifact("broker_trades", "trades.csv", "broker", "observe",
              "broker.ingest", "csv", "gated", required_when="broker ingest 跑过"),
@@ -465,6 +472,7 @@ NON_ARTIFACT_LITERALS: frozenset[str] = frozenset({
     "_dossier_snapshot.json",
     # 2026-09-07(Q-R):守卫扩到 autoresearch/research 与 autoresearch/broker 后冒出的非产物
     "docs/research/2026-08-28-overnight-concentrated-census-readout.md",   # 已提交的读数文档(census 的 md 默认落点)
+    "docs/research/2026-09-07-w3-three-grids-family.spec.json",           # 已提交的**预注册方案**(W3 三格),不是 run 产物
     # broker inbox 的 `*.csv` 通配不进白名单:已登记的 `raw/*.csv` 基名就是它,白名单再写会与登记表重叠
     # 2026-08-31(D6.1):`_slim.md`/`_slim_deep.md` 挪出白名单,改为正式登记
     # `analyze_slim`/`analyze_slim_deep`(见 ARTIFACTS 尾部 stock-research 节)。
