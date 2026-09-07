@@ -4,9 +4,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from autoresearch.broker import schema, store
 from autoresearch.common import workspace as ws
+from autoresearch.data.contracts import DataContractError
 
 AT = "2026-08-27T10:00:00"
 
@@ -61,7 +63,28 @@ def test_roots_follow_workspace_engine(monkeypatch):
 
 
 def test_upsert_refuses_mixed_sources(tmp_path, raw):
-    import pytest
     mixed = pd.concat([_norm(raw(), "gtht"), _norm(raw(), "chinaclear")], ignore_index=True)
     with pytest.raises(ValueError, match="一个来源"):
         store.upsert_raw(mixed, tmp_path)
+
+
+def test_overlapping_export_with_trade_id_is_idempotent(tmp_path, raw):
+    full = schema.normalize(raw.rows(
+        {"trade_id": "T1", "trade_time": "09:31:05"},
+        {"trade_id": "T2", "trade_time": "09:32:00"},
+    ), source_kind="gtht", source_file="full.xlsx", ingested_at=AT)
+    partial = schema.normalize(raw(trade_id="T2", trade_time="09:32:00"),
+                               source_kind="gtht", source_file="partial.xlsx", ingested_at=AT)
+    assert store.upsert_raw(full, tmp_path) == (2, 0)
+    assert store.upsert_raw(partial, tmp_path) == (0, 1)
+    assert len(store.read_raw(store.raw_path(tmp_path, "gtht"))) == 2
+
+
+def test_same_stable_identity_with_different_economics_is_rejected(tmp_path, raw):
+    old = schema.normalize(raw(trade_id="T1", amount="1234"),
+                           source_kind="gtht", source_file="a.xlsx", ingested_at=AT)
+    changed = schema.normalize(raw(trade_id="T1", price="12.35", amount="1235"),
+                               source_kind="gtht", source_file="b.xlsx", ingested_at=AT)
+    store.upsert_raw(old, tmp_path)
+    with pytest.raises(DataContractError, match="identity conflict"):
+        store.upsert_raw(changed, tmp_path)

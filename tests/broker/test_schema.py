@@ -90,6 +90,15 @@ def test_source_trade_id_wins_over_hash(raw):
     assert _norm(raw(trade_id="  A1B2 ")).iloc[0].trade_id == "A1B2"
 
 
+def test_source_trade_id_hash_is_stable_across_export_ranges(raw):
+    full = _norm(raw.rows(
+        {"trade_id": "T1", "trade_time": "09:31:05"},
+        {"trade_id": "T2", "trade_time": "09:32:00"},
+    ), file="full.xlsx")
+    partial = _norm(raw(trade_id="T2", trade_time="09:32:00"), file="partial.xlsx")
+    assert full.loc[full.trade_id == "T2", "row_hash"].item() == partial.row_hash.item()
+
+
 def test_other_row_without_code_or_price(raw):
     r = _norm(raw(code="", biz_type="利息归本", price="", qty="", amount="12.3")).iloc[0]
     assert r.side == "OTHER" and r.code == "" and r.ts_code == "" and pd.isna(r.price)

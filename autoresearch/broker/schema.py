@@ -56,6 +56,8 @@ RAW_STORE_COLUMNS = tuple(c for c in TRADES_COLUMNS if c != "sources") + ("seq",
 NATURAL_KEY = ("account", "trade_date", "code", "side", "price", "qty")
 #: 合并时低优先源只补缺的列
 FILLABLE_COLUMNS = ("trade_time", "name", *FEE_COLUMNS, "net_amount", "balance_after")
+ECONOMIC_IDENTITY_FIELDS = ("account", "trade_date", "trade_time", "code", "side",
+                            "price", "qty", "amount")
 
 AMOUNT_TOL_ABS = 1.0
 AMOUNT_TOL_REL = 0.005
@@ -149,6 +151,13 @@ def natural_key_strings(df: pd.DataFrame) -> list[str]:
     return ["|".join(natural_key(r)) for r in df.itertuples(index=False)]
 
 
+def economic_signature(r) -> tuple[str, ...]:
+    """成交身份发生冲突时用于比较不可静默变化的经济字段。"""
+    g = r.__getitem__ if isinstance(r, dict) else (lambda k: getattr(r, k))
+    return tuple(fmt_num(g(key)) if key in {"price", "qty", "amount"} else _s(g(key))
+                 for key in ECONOMIC_IDENTITY_FIELDS)
+
+
 def normalize(df_raw: pd.DataFrame, *, source_kind: str, source_file: str,
               ingested_at: str | None = None) -> pd.DataFrame:
     """RAW 字符串帧 → `RAW_STORE_COLUMNS` 帧(确定性:同输入同 row_hash;ingested_at 不进 hash)。"""
@@ -184,12 +193,14 @@ def normalize(df_raw: pd.DataFrame, *, source_kind: str, source_file: str,
     ordered = df.sort_values(["trade_time", "trade_id"], kind="stable")
     df["seq"] = ordered.groupby(["account", "trade_date", "code", "side", "price", "qty"],
                                 dropna=False).cumcount()
-    df["row_hash"] = [
-        hashlib.sha1("|".join([r.account, r.trade_date, r.trade_time, r.code, r.side,
-                               fmt_num(r.price), fmt_num(r.qty), fmt_num(r.amount),
-                               str(r.seq)]).encode("utf-8")).hexdigest()
-        for r in df.itertuples(index=False)
-    ]
+    hashes = []
+    for r in df.itertuples(index=False):
+        identity = ([source_kind, r.account, r.trade_date, r.trade_id]
+                    if r.trade_id else
+                    [r.account, r.trade_date, r.trade_time, r.code, r.side,
+                     fmt_num(r.price), fmt_num(r.qty), fmt_num(r.amount), str(r.seq)])
+        hashes.append(hashlib.sha1("|".join(identity).encode("utf-8")).hexdigest())
+    df["row_hash"] = hashes
     df["trade_id"] = [tid or f"h:{h[:16]}"
                       for tid, h in zip(df["trade_id"], df["row_hash"], strict=True)]
     df["source_kind"] = source_kind

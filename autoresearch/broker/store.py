@@ -62,6 +62,12 @@ def upsert_raw(df: pd.DataFrame, root=None) -> tuple[int, int]:
     path = raw_path(root, kinds.pop())
     existing = (read_raw(path) if path.exists()
                 else pd.DataFrame(columns=list(schema.RAW_STORE_COLUMNS)))
+    combined = pd.concat([existing, df], ignore_index=True) if len(existing) else df
+    for row_hash, group in combined.groupby("row_hash", sort=False):
+        signatures = {schema.economic_signature(row) for row in group.to_dict("records")}
+        if len(signatures) > 1:
+            raise schema.DataContractError(
+                f"stable broker identity conflict for row_hash={row_hash}")
     new = df.loc[~df["row_hash"].isin(set(existing["row_hash"])), list(schema.RAW_STORE_COLUMNS)]
     if len(new):
         path.parent.mkdir(parents=True, exist_ok=True)
