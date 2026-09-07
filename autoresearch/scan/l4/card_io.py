@@ -32,11 +32,12 @@ from autoresearch.contracts.research_card import validate_card
 from autoresearch.scan.l4.parsers import (
     _CONF_RE,
     _DEV_RE,
+    _GATESEG_RE,
     _PROPOSAL_RE,
     _decision_text,
     _get,
+    _mark_after,
     _parse_dashboard,
-    gate_status,
     parse_early_stop,
 )
 from autoresearch.scan.tripwire_watch import parse_tripwires
@@ -65,12 +66,19 @@ def _dimensions(text: str) -> dict[str, str]:
 
 
 def _gates(text: str) -> dict[str, str]:
-    """`gate_status` 的 bool 是「失守」→ 显式转三态;None(无门柱段)→ 全 UNKNOWN。"""
-    parsed = gate_status(text)
+    """Preserve the card's three states instead of treating an absent mark as PASS."""
     states = dict.fromkeys(OW_GATES, "UNKNOWN")
-    if parsed is not None:
-        for gate, failed in parsed.items():
-            states[gate] = "FAIL" if failed else "PASS"
+    for match in reversed(list(_GATESEG_RE.finditer(text))):
+        segment = match.group(0)
+        marks = {gate: _mark_after(segment, gate) for gate in OW_GATES}
+        if not any(marks.values()):
+            continue
+        for gate, mark in marks.items():
+            if mark == "✓":
+                states[gate] = "PASS"
+            elif mark == "✗":
+                states[gate] = "FAIL"
+        break
     return states
 
 

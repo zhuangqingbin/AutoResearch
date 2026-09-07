@@ -13,6 +13,7 @@ from autoresearch.scan.run_profile import scan_profile
 from autoresearch.trace.completeness import (
     build_expected,
     evaluate,
+    profile_from_capsule,
     write_completeness,
     write_expected,
 )
@@ -158,6 +159,15 @@ def test_expected_and_profile_are_frozen_together(tmp_path):
     result = evaluate(capsule)
     assert "stages/l4/*" not in result["not_reached"]  # sentinel drops l4 entirely
     assert "failure.json" in result["missing_required"]
+
+
+def test_card_source_survives_profile_round_trip(tmp_path):
+    capsule = _complete_capsule(tmp_path)
+    profile = scan_profile(card_source="research_json_v1")
+
+    write_expected(capsule, profile)
+
+    assert profile_from_capsule(capsule).card_source == "research_json_v1"
 
 
 def test_source_coverage_counts_only_blobs_that_are_inside_the_capsule(tmp_path):

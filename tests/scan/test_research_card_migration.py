@@ -69,6 +69,25 @@ def test_bridge_fills_unknowns_instead_of_inventing(scan_dir):
     assert card["probability_basis"] == "not_provided" and card["target"] == "未核"
 
 
+def test_bridge_keeps_unreviewed_gates_unknown():
+    text = """# 决策卡 — 600000 甲 @ 2026-09-01
+
+**Rating**: Hold
+OW三门:主力真在 ✓ ｜ 业绩真兑现 未核 ｜ 估值不透支 未核
+FINAL TRANSACTION PROPOSAL: **HOLD**
+"""
+
+    card = card_io.card_from_text(
+        text, code="600000", analysis_date="2026-09-01", holding=False
+    )
+
+    assert card["gates"] == {
+        "主力真在": "PASS",
+        "业绩真兑现": "UNKNOWN",
+        "估值不透支": "UNKNOWN",
+    }
+
+
 def test_missing_card_is_none_not_an_empty_card(scan_dir):
     assert card_io.card_from_markdown(scan_dir, "999999", analysis_date="2026-09-01") is None
 

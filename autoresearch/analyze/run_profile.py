@@ -35,6 +35,7 @@ def analyze_profile(
     business_status: str = "SUCCEEDED",
     last_stage: str | None = None,
     agent_roles: tuple[str, ...] | None = None,
+    card_source: str = "legacy_md",
 ) -> RunProfile:
     """Build the `stock-research` evidence profile for one run's mode and terminal state.
 
@@ -63,6 +64,7 @@ def analyze_profile(
         # 所以没有任何阶段欠 `logs/<stage>/*.log.gz`。留痕走 `analyze/runctl.record_stage`
         # 的进程内 checkpoint。声明成 `()` 而不是让它恒判缺失 —— 假警报不是发现。
         captured_stages=(),
+        card_source=card_source,
     )
 
 

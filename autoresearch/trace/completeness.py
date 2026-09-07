@@ -376,6 +376,7 @@ def profile_from_capsule(capsule: Path | str, *, kind: str | None = None) -> Run
             agent_roles=tuple(payload["agent_roles"])
             if payload.get("agent_roles") is not None
             else None,
+            card_source=str(payload.get("card_source") or "legacy_md"),
         )
     return profile_factory(str(kind or _DEFAULT_RUN_KIND))()
 
@@ -395,6 +396,7 @@ def write_expected(
             "business_status": profile.business_status,
             "last_stage": profile.last_stage,
             "agent_roles": list(profile.agent_roles),
+            "card_source": profile.card_source,
             "expected_stages": list(profile.expected_stages),
             "replayable_stages": list(profile.replayable_stages),
         },
