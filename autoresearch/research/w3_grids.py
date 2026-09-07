@@ -55,7 +55,7 @@ import pandas as pd
 
 from autoresearch.common import ruler as _ruler, workspace as ws
 from autoresearch.common.forward_returns import forward_returns
-from autoresearch.common.stats import family_adjustment
+from autoresearch.common.stats import DEFAULT_BOOT, DEFAULT_SEED, block_mean_test, family_adjustment
 from autoresearch.contracts.research_experiment import validate_spec
 from autoresearch.data.market_panel import lake_trade_days, load_lake_pivots
 from autoresearch.research import experiment_io as eio
@@ -69,6 +69,7 @@ GRID_LABEL = {G1: "首板缩量回调低吸", G2: "晚封板次日溢价", G3: "
 GRID_LABEL_COL = {G1: "gap_pp", G2: "gap_pp", G3: "fwd5_pp"}
 GRID_OBSERVE_COLS = {G1: ("fwd5_pp", "fwd10_pp"), G2: ("fwd5_pp", "fwd10_pp"),
                      G3: ("fwd10_pp", "gap_pp")}
+LABEL_BLOCK = {"gap_pp": 1, "fwd5_pp": 5, "fwd10_pp": 10}
 
 #: 预注册常量(与 spec.json 逐字对应,改这里 = 改预注册)。
 VOL_SHRINK_MAX = 0.6            # G1:D+1 的标准量比(daily_basic.volume_ratio)上限
@@ -312,34 +313,66 @@ def judge_cells(cells: dict[str, pd.DataFrame], *, seed: int) -> dict:
                       "observe_only": {k: {"mean_pp": v["mean_pp"], "n_days": v["n_days"]}
                                        for k, v in observed.items()},
                       "block_sensitivity": (block_sensitivity(daily, seed=seed)
-                                            if len(daily) >= 2 else None)}
+                                            if len(daily) >= 2 else None),
+                      # Inference input only; stripped before any public artifact is written.
+                      "_daily_primary_pp": daily.tolist()}
     return stats
 
 
-def family_correction(stats: dict, *, alpha: float = 0.05) -> list[dict]:
-    """三格一族的 BY 校正。**没有 p 值就不编**:`cell_stats` 不给 p,这里用区间是否含 0 作
-    保守代理并显式标注 —— 它不是 p 值,只是「这一格的区间跨没跨零」的家族级提醒。"""
+def family_correction(stats: dict, *, alpha: float = 0.05,
+                      seed: int = DEFAULT_SEED,
+                      n_boot: int = DEFAULT_BOOT) -> list[dict]:
+    """Use real block-bootstrap p-values, then BY-adjust only tested hypotheses."""
     keys = [k for k in GRID_ORDER if k in stats]
-    proxies, directions = [], []
+    rows: list[dict] = []
+    tested: list[tuple[int, float]] = []
     for key in keys:
-        st = stats[key]["primary"]
-        lo, hi = st.get("ci_low_pp"), st.get("ci_high_pp")
-        excludes = lo is not None and hi is not None and (lo > 0 or hi < 0)
-        proxies.append(0.02 if excludes else 0.5)
-        if lo is not None and lo > 0:
-            directions.append("positive")
-        elif hi is not None and hi < 0:
-            directions.append("negative")
-        else:
-            directions.append("spans_zero")
-    if not proxies:
-        return []
-    adjusted = family_adjustment(proxies, dependence="arbitrary", alpha=alpha)
-    return [{"grid": key, "direction": direction, "interval_excludes_zero": row["p"] < 0.5,
-             "q_by": row["q"], "excluded_zero_after_by": row["rejected"], "method": row["method"],
-             "note": ("p 是区间是否跨零的保守代理,不是检验 p 值;"
-                      "`direction=negative` 的格「区间排除零」意味着**显著为负**,不是有发现")}
-            for key, row, direction in zip(keys, adjusted, directions, strict=True)]
+        item = stats[key]
+        point = item.get("primary", {}).get("mean_pp")
+        direction = ("unknown" if point is None else
+                     ("positive" if point > 0 else "negative" if point < 0 else "zero"))
+        row = {
+            "grid": key,
+            "direction": direction,
+            "status": "NOT_TESTED",
+            "p_raw": None,
+            "q_by": None,
+            "rejected": None,
+            "method": "BY",
+            "block": LABEL_BLOCK[item["label_col"]],
+            "seed": seed,
+            "n_boot": n_boot,
+            "note": "样本未过成熟门,不进入检验族",
+        }
+        if item.get("verdict") != "样本不足":
+            result = block_mean_test(
+                item.get("_daily_primary_pp", ()), block=row["block"],
+                seed=seed, n_boot=n_boot,
+            )
+            row["test_status"] = result.status
+            if result.pvalue is not None:
+                row.update(status="TESTED", p_raw=result.pvalue,
+                           note="日等权序列的双侧 moving-block bootstrap 均值检验")
+                tested.append((len(rows), result.pvalue))
+            else:
+                row["note"] = f"块检验不可计算:{result.status}"
+        rows.append(row)
+
+    if tested:
+        adjusted = family_adjustment(
+            [p for _, p in tested], dependence="arbitrary", alpha=alpha
+        )
+        for (row_index, _), adjusted_row in zip(tested, adjusted, strict=True):
+            rows[row_index]["q_by"] = adjusted_row["q"]
+            rows[row_index]["rejected"] = adjusted_row["rejected"]
+    return rows
+
+
+def _public_stats(stats: dict) -> dict:
+    return {
+        key: {name: value for name, value in item.items() if not name.startswith("_")}
+        for key, item in stats.items()
+    }
 
 
 # ───────────────────────── 读数 ─────────────────────────
@@ -410,7 +443,10 @@ def run(*, spec_path: Path, since: str | None = None, until: str | None = None,
     cells = build_cells(panel, lake_root=lake_root, signal_days=days)
     seed = int(spec["bootstrap"]["seed"])
     stats = judge_cells(cells, seed=seed)
-    family = family_correction(stats)
+    family = family_correction(
+        stats, seed=seed, n_boot=int(spec["bootstrap"]["n_boot"])
+    )
+    stats = _public_stats(stats)
     coverage = signal_coverage(days, lake_root=lake_root)
     coverage["g1_threshold"] = g1_threshold_diagnostics(panel, signal_days=days, lake_root=lake_root)
     win = {"since": days[0], "until": days[-1], "n_days": len(days), "n_panel_rows": int(len(panel))}

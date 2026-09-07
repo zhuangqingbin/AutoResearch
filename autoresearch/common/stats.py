@@ -630,3 +630,59 @@ def block_mean_ci(values, *, block: int, seed: int, n_boot: int = DEFAULT_BOOT,
     draws = np.asarray([x[block_index(rng, len(x), block)].mean() for _ in range(n_boot)])
     lo, hi = np.quantile(draws, [alpha / 2.0, 1.0 - alpha / 2.0])
     return {"point": float(x.mean()), "lo": float(lo), "hi": float(hi), "status": "COMPUTED"}
+
+
+@dataclass(frozen=True)
+class BlockMeanTest:
+    """Two-sided moving-block test of a time-ordered series mean against zero."""
+
+    point: float | None
+    pvalue: float | None
+    status: str
+    n: int
+    n_boot: int
+    n_valid: int
+    block: int
+    seed: int
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+def block_mean_test(values, *, block: int, seed: int,
+                    n_boot: int = DEFAULT_BOOT) -> BlockMeanTest:
+    """Test ``mean(values) == 0`` with a centered moving-block null.
+
+    The observations must already be ordered daily equal-weight values.  The
+    finite-sample ``+1`` correction prevents a bootstrap p-value of zero.
+    """
+    x = np.asarray(values, dtype=float)
+    if x.ndim != 1:
+        raise ValueError("ordered one-dimensional daily observations required")
+    if not np.isfinite(x).all():
+        raise ValueError("ordered finite daily observations required")
+    if type(block) is not int or block < 1:
+        raise ValueError("invalid block size")
+    if type(n_boot) is not int or n_boot < 1:
+        raise ValueError("invalid bootstrap parameters")
+    point = float(x.mean()) if len(x) else None
+    if len(x) < 2:
+        return BlockMeanTest(
+            point, None, "INSUFFICIENT_OBSERVATIONS", len(x), n_boot, 0, block, seed
+        )
+    if len(x) <= block:
+        return BlockMeanTest(
+            point, None, "INSUFFICIENT_BLOCKS", len(x), n_boot, 0, block, seed
+        )
+
+    centered = x - point
+    rng = np.random.default_rng(seed)
+    draws = np.asarray([
+        centered[block_index(rng, len(centered), block)].mean()
+        for _ in range(n_boot)
+    ])
+    extreme = int((np.abs(draws) >= abs(point)).sum())
+    pvalue = float((extreme + 1) / (n_boot + 1))
+    return BlockMeanTest(
+        point, pvalue, "COMPUTED", len(x), n_boot, n_boot, block, seed
+    )

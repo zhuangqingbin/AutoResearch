@@ -176,25 +176,44 @@ def test_small_sample_can_never_be_positive_evidence(lake):
     assert stats[w3.G1]["verdict"] == "样本不足"
 
 
-def test_family_correction_is_by_and_labels_its_proxy_honestly():
-    stats = {g: {"primary": {"ci_low_pp": 0.3, "ci_high_pp": 0.9}} for g in w3.GRID_ORDER}
-    rows = w3.family_correction(stats)
+def _family_stat(grid, daily, *, verdict="未证"):
+    return {
+        "grid": grid,
+        "label_col": w3.GRID_LABEL_COL[grid],
+        "verdict": verdict,
+        "primary": {"mean_pp": sum(daily) / len(daily), "n_days": len(daily)},
+        "_daily_primary_pp": daily,
+    }
+
+
+def test_family_correction_uses_real_block_pvalues_and_by():
+    stats = {
+        grid: _family_stat(grid, [1.0 + (i % 3) * .1 for i in range(60)])
+        for grid in w3.GRID_ORDER
+    }
+    rows = w3.family_correction(stats, seed=7, n_boot=999)
     assert [r["method"] for r in rows] == ["BY"] * 3
-    assert all("不是检验 p 值" in r["note"] for r in rows)
-    assert all(r["interval_excludes_zero"] for r in rows)
+    assert all(r["status"] == "TESTED" for r in rows)
+    assert all(0 < r["p_raw"] <= 1 and 0 < r["q_by"] <= 1 for r in rows)
     assert all(r["direction"] == "positive" for r in rows)
+    assert all("proxy" not in r for r in rows)
 
 
-def test_family_correction_carries_direction_so_a_negative_cell_is_not_misread():
-    """显著为负的格「区间排除零」—— 不带方向的话,它读起来像「有发现」。"""
-    stats = {w3.G1: {"primary": {"ci_low_pp": -2.0, "ci_high_pp": -1.0}},
-             w3.G2: {"primary": {"ci_low_pp": -0.5, "ci_high_pp": 0.5}},
-             w3.G3: {"primary": {"ci_low_pp": None, "ci_high_pp": None}}}
-    rows = {r["grid"]: r for r in w3.family_correction(stats)}
-    assert rows[w3.G1]["direction"] == "negative" and rows[w3.G1]["interval_excludes_zero"]
-    assert rows[w3.G2]["direction"] == "spans_zero" and not rows[w3.G2]["interval_excludes_zero"]
-    assert rows[w3.G3]["direction"] == "spans_zero"
-    assert all("显著为负" in r["note"] for r in rows.values())
+def test_family_correction_does_not_invent_p_for_immature_cell():
+    stats = {
+        w3.G1: _family_stat(w3.G1, [1.0] * 60),
+        w3.G2: _family_stat(w3.G2, [-1.0] * 60),
+        w3.G3: _family_stat(w3.G3, [2.0], verdict="样本不足"),
+    }
+
+    rows = {r["grid"]: r for r in w3.family_correction(stats, seed=7, n_boot=999)}
+
+    assert rows[w3.G1]["direction"] == "positive"
+    assert rows[w3.G2]["direction"] == "negative"
+    assert rows[w3.G3]["status"] == "NOT_TESTED"
+    assert rows[w3.G3]["p_raw"] is None
+    assert rows[w3.G3]["q_by"] is None
+    assert rows[w3.G3]["rejected"] is None
 
 
 # ───────────────────────── 端到端 ─────────────────────────

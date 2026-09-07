@@ -146,3 +146,25 @@ def test_block_mean_ci_shares_the_sampler_with_moving_block_diff():
     assert got["point"] == pytest.approx(values.mean())
     lo, hi = np.quantile(np.asarray(expected), [0.025, 0.975])
     assert got["lo"] == pytest.approx(float(lo)) and got["hi"] == pytest.approx(float(hi))
+
+
+def test_block_mean_pvalue_is_deterministic_and_two_sided():
+    values = [1.0, 1.1, .9, 1.2, .8]
+
+    result = stats.block_mean_test(values, block=2, seed=7, n_boot=999)
+
+    assert result.pvalue == pytest.approx(
+        stats.block_mean_test(values, block=2, seed=7, n_boot=999).pvalue
+    )
+    assert result.pvalue == pytest.approx(
+        stats.block_mean_test([-v for v in values], block=2, seed=7, n_boot=999).pvalue
+    )
+    assert 0 < result.pvalue <= 1
+    assert result.status == "COMPUTED"
+
+
+def test_block_mean_test_reports_insufficient_observations():
+    result = stats.block_mean_test([1.0], block=1, seed=7, n_boot=99)
+
+    assert result.status == "INSUFFICIENT_OBSERVATIONS"
+    assert result.pvalue is None
