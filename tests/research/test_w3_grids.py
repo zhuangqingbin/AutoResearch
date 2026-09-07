@@ -169,6 +169,29 @@ def test_g3_is_judged_on_a_sensitivity_ruler_not_the_main_one(lake):
     assert stats[w3.G1]["is_sensitivity_label"] is False
 
 
+def test_g3_uses_fwd5_open_eligibility_not_close_buyability(lake):
+    day1 = lake["daily"] / "20260902.parquet"
+    bars = pd.read_parquet(day1)
+    seat = bars["ts_code"] == "600003.SH"
+    bars.loc[seat, ["open", "high", "low", "close", "pct_chg"]] = [30.2, 33.0, 30.1, 33.0, 10.0]
+    bars.to_parquet(day1)
+    day5 = pd.read_parquet(lake["daily"] / "20260907.parquet")
+    day5.loc[day5["ts_code"] == "600003.SH", "close"] = 36.24
+    day5.to_parquet(lake["daily"] / "20260908.parquet")
+    window = [*DAYS, "20260908"]
+
+    panel = w3.build_panel(
+        ["20260901"], window=window, lake_daily=lake["daily"], lake_root=lake["root"]
+    )
+    row = panel.set_index("code").loc["600003"]
+    assert not row["in_pop_gap"] and row["in_pop_fwd5"]
+
+    cells = w3.build_cells(panel, lake_root=lake["root"], signal_days=["20260901"])
+
+    assert len(cells[w3.G3]) == 1
+    assert cells[w3.G3].iloc[0]["fwd5_pp"] == pytest.approx(20.0)
+
+
 def test_small_sample_can_never_be_positive_evidence(lake):
     """样本门先判:5 天的合成湖不许刷出「正证据」。"""
     panel = w3.build_panel(["20260901"], window=DAYS, lake_daily=lake["daily"], lake_root=lake["root"])
@@ -219,7 +242,7 @@ def test_family_correction_does_not_invent_p_for_immature_cell():
 # ───────────────────────── 端到端 ─────────────────────────
 
 def test_run_writes_every_registered_output_and_refuses_overwrite(lake, tmp_path):
-    spec = json.loads(Path_spec().read_text(encoding="utf-8"))
+    spec = supported_spec()
     spec_path = tmp_path / "spec.json"
     spec_path.write_text(json.dumps(spec), encoding="utf-8")
     out = w3.run(spec_path=spec_path, since="20260901", until="20260901",
@@ -242,9 +265,26 @@ def Path_spec():
     return Path(__file__).resolve().parents[2] / "docs" / "research" / "2026-09-07-w3-three-grids-family.spec.json"
 
 
+def supported_spec():
+    spec = json.loads(Path_spec().read_text(encoding="utf-8"))
+    spec["hypotheses"][0]["population"] = (
+        "全湖，按 gap_c1_o2 对应 entry_tradable 过滤"
+    )
+    return spec
+
+
+def test_runner_rejects_an_unimplemented_population_claim(lake, tmp_path):
+    with pytest.raises(ValueError, match="UNSUPPORTED_POPULATION_RULE"):
+        w3.run(
+            spec_path=Path_spec(), since="20260901", until="20260901",
+            lake_daily=lake["daily"], lake_root=lake["root"], parent=tmp_path / "out",
+        )
+    assert not (tmp_path / "out").exists()
+
+
 def test_empty_window_is_refused_not_an_empty_readout(lake, tmp_path):
     spec_path = tmp_path / "spec.json"
-    spec_path.write_text(Path_spec().read_text(encoding="utf-8"), encoding="utf-8")
+    spec_path.write_text(json.dumps(supported_spec()), encoding="utf-8")
     with pytest.raises(ValueError, match="没有任何交易日"):
         w3.run(spec_path=spec_path, since="20990101", lake_daily=lake["daily"],
                lake_root=lake["root"], parent=tmp_path / "out")

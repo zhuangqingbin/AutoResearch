@@ -79,8 +79,14 @@ INST_SEAT_KEYWORD = "机构专用"
 FWD_LOOKAHEAD = 12              # 装 pivot 时往后多装的交易日数(fwd_10 + 余量)
 PP = 100.0                      # 小数 → pp
 
+POPULATION_COL_BY_LABEL = {
+    "gap_pp": "in_pop_gap",
+    "fwd5_pp": "in_pop_fwd5",
+    "fwd10_pp": "in_pop_fwd10",
+}
 PANEL_COLS = ("date", "code", "gap_pp", "fwd5_pp", "fwd10_pp", "rel_gap_pp",
-              "buyable_c1", "in_pop", "vol_ratio_d", "close_d")
+              "buyable_c1", "in_pop_gap", "in_pop_fwd5", "in_pop_fwd10",
+              "vol_ratio_d", "close_d")
 
 
 def _z6(value) -> str:
@@ -129,9 +135,16 @@ def build_panel(days: list[str], *, window: list[str], lake_daily: Path | None =
             continue
         gap = pd.to_numeric(fr[_ruler.MAIN_RULER], errors="coerce")
         gap = gap.where(gap.abs() <= _ruler.GAP_CLIP)          # 板制度下不可能 → 数据错,置 NaN
-        tradable = _ruler.entry_tradable(fr, ruler_name=_ruler.MAIN_RULER)
-        in_pop = tradable.fillna(False).astype(bool)
-        base = gap[in_pop.to_numpy()].mean()
+        in_pop_gap = _ruler.entry_tradable(
+            fr, ruler_name="gap_c1_o2"
+        ).fillna(False).astype(bool)
+        in_pop_fwd5 = _ruler.entry_tradable(
+            fr, ruler_name="fwd_5_oc"
+        ).fillna(False).astype(bool)
+        in_pop_fwd10 = _ruler.entry_tradable(
+            fr, ruler_name="fwd_10_oc"
+        ).fillna(False).astype(bool)
+        base = gap[in_pop_gap.to_numpy()].mean()
         close = piv["close"][day] if day in piv["close"].columns else pd.Series(dtype=float)
         vr = _volume_ratio(day, lake_root)
         frames.append(pd.DataFrame({
@@ -141,7 +154,9 @@ def build_panel(days: list[str], *, window: list[str], lake_daily: Path | None =
             "fwd10_pp": (pd.to_numeric(fr["fwd_10_oc"], errors="coerce") * PP).to_numpy(),
             "rel_gap_pp": ((gap - base) * PP).to_numpy() if base == base else np.nan,
             "buyable_c1": pd.array(fr[_ruler.ENTRY_FLAG].to_numpy(), dtype="boolean"),
-            "in_pop": in_pop.to_numpy(),
+            "in_pop_gap": in_pop_gap.to_numpy(),
+            "in_pop_fwd5": in_pop_fwd5.to_numpy(),
+            "in_pop_fwd10": in_pop_fwd10.to_numpy(),
             "vol_ratio_d": vr.reindex(fr.index).to_numpy() if len(vr) else np.nan,
             "close_d": close.reindex(fr.index).to_numpy(),
         }))
@@ -289,9 +304,21 @@ def build_cells(panel: pd.DataFrame, *, lake_root: Path | None = None,
     for key, parts in rows.items():
         frame = pd.concat(parts, ignore_index=True) if parts else panel.head(0).copy()
         base = GRID_LABEL_COL.get(key.split("__")[0], "gap_pp")
-        pop = frame if key.startswith(G2) else frame[frame["in_pop"].astype(bool)]
+        population_col = POPULATION_COL_BY_LABEL[base]
+        pop = frame if key.startswith(G2) else frame[frame[population_col].astype(bool)]
         out[key] = pop[pop[base].notna()].reset_index(drop=True)
     return out
+
+
+def validate_population_declarations(spec: dict) -> None:
+    """Reject population exclusions the current deterministic panel cannot execute."""
+    unsupported = ("剔 ST", "剔ST", "新股", "北交所")
+    claims = [str(spec.get("population_rule") or "")]
+    claims.extend(str(item.get("population") or "") for item in spec.get("hypotheses", ()))
+    if any(token in claim for claim in claims for token in unsupported):
+        raise ValueError(
+            "UNSUPPORTED_POPULATION_RULE: ST/新股/北交所排除未由当前 W3 面板实现"
+        )
 
 
 def judge_cells(cells: dict[str, pd.DataFrame], *, seed: int) -> dict:
@@ -426,6 +453,7 @@ def run(*, spec_path: Path, since: str | None = None, until: str | None = None,
         lake_daily: Path | None = None, lake_root: Path | None = None,
         parent: Path | None = None) -> Path:
     spec = validate_spec(json.loads(Path(spec_path).read_text(encoding="utf-8")))
+    validate_population_declarations(spec)
     all_days = lake_trade_days(lake_daily)
     days = [d for d in all_days if (since is None or d >= since) and (until is None or d <= until)]
     if not days:
