@@ -39,11 +39,11 @@
 | 工作包 | 详细实施计划 | 任务范围 | 当前状态 |
 |---|---|---|---|
 | A：统计口径 | [Statistical Estimator Convergence](2026-09-06-statistical-estimator-convergence.md) | 日等权估计单源、core/CLI、seed、输出隔离 | 已实施并合并 main（0712114）；保留原计划中的实施偏离与验证记录 |
-| B：事件证据 | [Claim Evidence Verification](2026-09-06-claim-evidence-verification.md) | B1 保守判定；B2 契约；B3 比较；B4 接线；B5 验收 | **B2/B3 已实施；B4 按 Q-B ③ 以影子侧车接进情报守卫**（§13）。B1 不做（零生产效果）；B5 人工标注集未做；绑定真来源后同一管线不用改 |
+| B：事件证据 | [Claim Evidence Verification](2026-09-06-claim-evidence-verification.md) | B1 保守判定；B2 契约；B3 比较；B4 接线；B5 验收 | **B2/B3/B4/B5 仪器全部已实施**（§13/§14）。B1 不做（零生产效果）；**B5 的 80 条人工标注仍未做**（外部依赖）；绑定真来源后同一管线不用改 |
 | C：执行评价 | [Execution Evidence and Net Return](2026-09-06-execution-evaluation.md) | C1 时间；C2 快照；C3 成交；C4 成本/权益；C5 导入/读数 | **C1–C5 全部已实施**（§12/§13）；券商分支已合并；真实快照来源与真实成交样本仍是外部依赖 |
 | D：结构化卡片 | [Structured Research Cards](2026-09-06-structured-research-cards.md) | D1 schema；D2 嵌套事实；D3 比较；D4 权威切换；D5 完整性 | **D1–D4 已实施**（§13）：候选 JSON 由解析桥派生，生产仍读 md；**D5 生产路由与 agent 原生写 JSON 的模板改动受 Q-冻结约束** |
 | E：编排与分层 | [Orchestration Efficiency and Layering](2026-09-06-orchestration-and-layering.md) | E1 当前基线；E2 信封；E3 runner；E4 纯计算；E5 声明注入 | **E1/E2/E4/E5 步 3 已实施**；E3 按 Q-E 不立项；E5 步 4/5 残余边已列台账（12 条未清），未迁移 |
-| F：研究方法 | [Research Methods and Stage Value](2026-09-06-research-methods-and-stage-value.md) | F1 实验；F2 full；F3 lite；F4 阶段价值；F5 稳健性；F6 因子；F7 概率；F8 读数 | **F1/F4/F5/F6/F7/F8 已实施**（F6 三格已登记未计算）；**F2/F3 模板改动受 Q-冻结约束**；真实前向样本与三格普查是研究动作，不在工程批次 |
+| F：研究方法 | [Research Methods and Stage Value](2026-09-06-research-methods-and-stage-value.md) | F1 实验；F2 full；F3 lite；F4 阶段价值；F5 稳健性；F6 因子；F7 概率；F8 读数 | **F1/F4/F5/F6/F7/F8 已实施，F6 三格已跑出真读数**（§14）；**F2/F3 模板改动受 Q-冻结约束**；真实前向样本仍是外部依赖 |
 
 每份实施计划包含：准确文件路径、Consumes/Produces 接口块、核心代码、回归测试样例、执行命令、失败语义、上线条件、提交与回滚边界。代码段是实现基准与关键接入段；既有函数的机械搬迁以当前源码为准，不把文档示例当作已上线实现。
 
@@ -271,4 +271,20 @@
 变异探针 32 个，两个逼出用例：B4「他票行也进侧车」（夹具那行他票没有谓语词，是被谓语过滤掉的）；E1 之外本轮无新的「没有灯的绿灯」。一次流程事故：`pytest … | tail` 吞退出码，F4/F8 在 `-W error::FutureWarning` 下 2 条红之上提交，正常跑本就 15 绿，已补修正提交并改用 `set -o pipefail`。
 
 **仍未做，别当已完成读**：B5 人工标注集（80 条）；C 的真实快照来源与真实成交样本（外部依赖）；D5 生产路由切换与 agent 原生写 JSON 的模板改动（冻结）；E3 runner（Q-E 不立项）；E5 步 4/5 的 12 条残余边迁移；F2/F3 模板（冻结）；F6 三格的真面板普查（研究动作）。
+
+## 14. 第三轮实施记录（2026-09-07 续）
+
+5 个提交，全量 **5694 passed / 6 skipped**（第二轮后 5641，本轮 +53）。
+
+| 提交 | 内容 | 结果 |
+|---|---|---|
+| E5 | 策略师投影名单下沉 `contracts/strategist_view.py` | **`derivatives → scan` 这条向上边消失**，KNOWN_UPWARD 收紧一格（守卫主动逼出的红） |
+| B5 | `news/claim_acceptance.py` 验收仪器 | 四项分母各自独立；缺标注 IMMATURE；80 条标注仍是外部依赖 |
+| F6 仪器 | `research/w3_grids.py` 三格普查 | 独立预注册，复用同一批原语；**不动 08-28 那份冻结的格表**（它自带「防读完结果再加格」守卫） |
+| F6 读数 | 1095 个交易日真跑 | **三格全无正证据**：晚封板可买桶 −1.456pp 显著负、机构席位 fwd_5 −1.983pp 显著负、首板缩量回调按注册阈值只有 12 个事件 |
+| 文档 | [三格读数](../../research/2026-09-07-w3-three-grids-readout.md) | 08-31 W3 §8 的三个候选格：两格推翻、一格无法验证 |
+
+变异探针 16 个，三个逼出用例/夹具：G2 不分桶（原夹具没有一只票在 D+1 仍封板，不可买桶恒空）、缺表返回假数据（只验了三个信号源里的一个）、G1 缺 D+1 面板行会静默落空。
+
+**仍未做**：B5 的 80 条人工标注；C 的真实快照与成交样本；D5 生产路由与模板改动（冻结）；E3（Q-E 不立项）；E5 剩余 11 条残余边；F2/F3 模板（冻结）。
 
