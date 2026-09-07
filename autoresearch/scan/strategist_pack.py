@@ -25,33 +25,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from autoresearch.contracts.strategist_view import ALLOWED_KEYS, DENIED_KEYS  # noqa: F401
 from autoresearch.scan.run_contract import sha256_json
 
 SCHEMA_VERSION = 1
 
-# 策略师写市场研判需要的地形与量纲。**只加不减需过 review**:每加一个键,
-# 就是多给策略师一个可以据以锚定的东西。
-ALLOWED_KEYS: tuple[str, ...] = (
-    "regime",
-    "breadth",
-    "money",
-    "valuation",
-    "temperature",
-    "cross_money",
-    "index_val",
-    "macro_state",
-    "macro_state_note",
-    "today_slice",
-    "sectors",
-)
-
-# 明确拒绝并写进产物的键 —— 让"为什么少了它"可查,而不是让人以为投影漏了。
-# 未列在这里的新键同样进不来(默认拒绝),只是不会被单独点名。
-DENIED_KEYS: tuple[str, ...] = (
-    "sector_healthy_top3",   # L5 专用的确定性看多行业排名 —— 策略师看到就会复述
-    "run_contract",          # 运行契约:与市场地形无关,且含 pinned 等决策面事实
-    "user_config",           # 用户配置:同上
-)
+# 名单 2026-09-07(E5)下沉 `contracts/strategist_view.py`(**同对象**转发)—— 它是跨包的
+# 边界事实:derivatives 要自证「还没进判断层」、macro 要说明「我的键一个都不在里面」,
+# 让下层包为读一份名单去 import scan,方向正好反了。投影逻辑仍在本模块。
 
 
 class StrategistPackError(ValueError):

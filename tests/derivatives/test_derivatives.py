@@ -183,15 +183,18 @@ def test_pcr_semantics_travel_with_the_reading():
 def test_derivatives_is_not_in_the_strategist_allowlist():
     """§2.2 消费边界:进 allowlist 即 B 类。当前必须在 I 类边界内。"""
     ol.assert_not_in_strategist_allowlist()
-    from autoresearch.scan.strategist_pack import ALLOWED_KEYS
+    from autoresearch.contracts.strategist_view import ALLOWED_KEYS
+    from autoresearch.scan.strategist_pack import ALLOWED_KEYS as SCAN_ALLOWED
 
     assert "derivatives" not in ALLOWED_KEYS
+    assert SCAN_ALLOWED is ALLOWED_KEYS, "scan 侧必须是同对象转发,不是第二份名单"
 
 
 def test_guard_would_fire_if_it_leaked(monkeypatch):
-    import autoresearch.scan.strategist_pack as sp
+    """2026-09-07:名单下沉 contracts 后,探针跟着搬 —— 单一事实源换了地方,打它才有鉴别力。"""
+    import autoresearch.contracts.strategist_view as sv
 
-    monkeypatch.setattr(sp, "ALLOWED_KEYS", (*sp.ALLOWED_KEYS, "derivatives"))
+    monkeypatch.setattr(sv, "ALLOWED_KEYS", (*sv.ALLOWED_KEYS, "derivatives"))
     with pytest.raises(ol.OptionsError, match="B 类"):
         ol.assert_not_in_strategist_allowlist()
 

@@ -68,10 +68,12 @@ KNOWN_UPWARD: frozenset[tuple[str, str]] = frozenset({
     ("data", "trace"),
     # common → data(2):`scoring.py` 读湖权重、`uzi_lenses.py` 直接取数。
     ("common", "data"),
-    # dossier / sector / derivatives → scan(3/2/1):惰性 import,自注「防环」。
+    # dossier / sector → scan(3/2):惰性 import,自注「防环」。
+    # derivatives → scan 已于 2026-09-07(E5 步 5)**消失**:它唯一那处 import 是为读
+    # `strategist_pack.ALLOWED_KEYS` 自证「还没进判断层」,名单已下沉
+    # `contracts/strategist_view.py`,两侧同对象引用。棘轮据此收紧一格。
     ("dossier", "scan"),
     ("sector", "scan"),
-    ("derivatives", "scan"),
 })
 
 

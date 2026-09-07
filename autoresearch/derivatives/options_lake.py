@@ -257,7 +257,7 @@ def derivatives_block(metrics: pd.DataFrame, *, coverage: dict | None = None,
 
 def assert_not_in_strategist_allowlist() -> None:
     """守卫:`derivatives` 进了 strategist allowlist = 已经是 B 类,必须先过 registry。"""
-    from autoresearch.scan.strategist_pack import ALLOWED_KEYS
+    from autoresearch.contracts.strategist_view import ALLOWED_KEYS
 
     if "derivatives" in ALLOWED_KEYS:
         raise OptionsError(
