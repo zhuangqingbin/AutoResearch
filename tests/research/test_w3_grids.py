@@ -4,9 +4,21 @@ import json
 import pandas as pd
 import pytest
 
+from autoresearch.common import workspace as ws
+from autoresearch.common.run_identity import resolve_git_sha
 from autoresearch.research import w3_grids as w3
+from autoresearch.research.registration import manifest_digest
 
 DAYS = ["20260901", "20260902", "20260903", "20260904", "20260907"]
+
+
+@pytest.fixture(autouse=True)
+def _accept_current_uncommitted_test_implementation(monkeypatch):
+    monkeypatch.setattr(
+        w3, "verify_code_provenance",
+        lambda spec, roots: {"declared": spec["code_sha"], "observed": resolve_git_sha()},
+        raising=False,
+    )
 
 
 def _bar(code, o, h, lo, c, pct, amt=1000.0):
@@ -242,17 +254,20 @@ def test_family_correction_does_not_invent_p_for_immature_cell():
 # ───────────────────────── 端到端 ─────────────────────────
 
 def test_run_writes_every_registered_output_and_refuses_overwrite(lake, tmp_path):
-    spec = supported_spec()
+    spec = supported_spec(lake)
     spec_path = tmp_path / "spec.json"
     spec_path.write_text(json.dumps(spec), encoding="utf-8")
     out = w3.run(spec_path=spec_path, since="20260901", until="20260901",
                  lake_daily=lake["daily"], lake_root=lake["root"], parent=tmp_path / "out")
     for name in ("spec.json", "cells.csv", "statistics.json", "signal_coverage.json",
-                 "readout.md", "manifest.json"):
+                 "input_manifest.json", "readout.md", "manifest.json"):
         assert (out / name).exists(), name
     readout = (out / "readout.md").read_text(encoding="utf-8")
     assert "诚实边界" in readout and "X_ORACLE" in readout and "敏感尺" in readout
     assert "乐观" in readout, "G1 的量比代理偏差方向必须写在读数里"
+    statistics = json.loads((out / "statistics.json").read_text(encoding="utf-8"))
+    assert statistics["stats"][w3.G1]["maturity"]["min_scan_days"] == 20
+    assert "_daily_primary_pp" not in statistics["stats"][w3.G1]
     manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["ci_lower_pp"] == 0.15 and manifest["ruler"] == "gap_c1_o2"
     with pytest.raises(FileExistsError):
@@ -265,10 +280,18 @@ def Path_spec():
     return Path(__file__).resolve().parents[2] / "docs" / "research" / "2026-09-07-w3-three-grids-family.spec.json"
 
 
-def supported_spec():
+def supported_spec(lake):
     spec = json.loads(Path_spec().read_text(encoding="utf-8"))
+    spec["engine"] = ws.ENGINE
+    spec["code_sha"] = resolve_git_sha()
+    spec["split"]["test"] = ["2026-09-01", "2026-09-02"]
     spec["hypotheses"][0]["population"] = (
         "全湖，按 gap_c1_o2 对应 entry_tradable 过滤"
+    )
+    spec["input_manifest_hash"] = manifest_digest(
+        w3.registered_input_manifest(
+            spec, lake_daily=lake["daily"], lake_root=lake["root"]
+        )
     )
     return spec
 
@@ -283,8 +306,37 @@ def test_runner_rejects_an_unimplemented_population_claim(lake, tmp_path):
 
 
 def test_empty_window_is_refused_not_an_empty_readout(lake, tmp_path):
+    spec = supported_spec(lake)
+    spec["split"]["test"] = ["2099-01-01", "2099-01-02"]
     spec_path = tmp_path / "spec.json"
-    spec_path.write_text(json.dumps(supported_spec()), encoding="utf-8")
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
     with pytest.raises(ValueError, match="没有任何交易日"):
-        w3.run(spec_path=spec_path, since="20990101", lake_daily=lake["daily"],
+        w3.run(spec_path=spec_path, lake_daily=lake["daily"],
                lake_root=lake["root"], parent=tmp_path / "out")
+
+
+def test_w3_wrong_manifest_is_rejected_before_output(lake, tmp_path):
+    spec = supported_spec(lake)
+    spec["input_manifest_hash"] = "0" * 64
+    spec_path = tmp_path / "spec.json"
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="input manifest"):
+        w3.run(
+            spec_path=spec_path, lake_daily=lake["daily"], lake_root=lake["root"],
+            parent=tmp_path / "out",
+        )
+    assert not (tmp_path / "out").exists()
+
+
+def test_w3_conflicting_date_override_is_rejected(lake, tmp_path):
+    spec = supported_spec(lake)
+    spec_path = tmp_path / "spec.json"
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="registered test interval"):
+        w3.run(
+            spec_path=spec_path, since="20260902", lake_daily=lake["daily"],
+            lake_root=lake["root"], parent=tmp_path / "out",
+        )
+    assert not (tmp_path / "out").exists()

@@ -40,6 +40,16 @@ from autoresearch.common import ruler as _ruler, workspace as ws
 from autoresearch.common.stats import day_equal_bootstrap, maturity_verdict
 from autoresearch.contracts.research_experiment import validate_spec
 from autoresearch.research import experiment_io as eio
+from autoresearch.research.registration import (
+    file_manifest,
+    parse_maturity_policy,
+    registered_date_slice,
+    registered_test_range,
+    verify_code_provenance,
+    verify_engine,
+    verify_manifest,
+    verify_modes,
+)
 from autoresearch.research.robustness import block_sensitivity
 
 STAGE_PAIRS: dict[str, dict] = {
@@ -48,6 +58,15 @@ STAGE_PAIRS: dict[str, dict] = {
     "l4_to_e6": {"baseline": "e6_candidate", "refined": "is_buy"},
 }
 COMPLETE, INCOMPLETE, EMPTY = "COMPLETE", "INCOMPLETE_OUTCOMES", "EMPTY_SELECTION"
+EVIDENCE_MODES = {"EOD_PROXY", "RETRO_REPLAY"}
+COST_MODELS = {"none"}
+BEHAVIOR_ROOTS = (
+    "autoresearch/research/stage_value.py",
+    "autoresearch/research/registration.py",
+    "autoresearch/research/robustness.py",
+    "autoresearch/common/stats.py",
+    "autoresearch/contracts/research_experiment.py",
+)
 
 
 def paired_daily_selection(frame: pd.DataFrame) -> pd.DataFrame:
@@ -115,7 +134,8 @@ def pairs_from_population(table: pd.DataFrame, *, stage: str, ruler: str) -> tup
     return frame, coverage
 
 
-def summarize_daily(daily: pd.DataFrame, *, seed: int, n_boot: int) -> dict:
+def summarize_daily(daily: pd.DataFrame, *, seed: int, n_boot: int,
+                    min_scan_days: int = 20) -> dict:
     """COMPLETE 日的 delta:日等权区间(A 包原语)+ 块长敏感性(全报)+ 成熟判定。"""
     complete = daily[daily["status"] == COMPLETE]
     counts = daily["status"].value_counts().to_dict()
@@ -129,7 +149,9 @@ def summarize_daily(daily: pd.DataFrame, *, seed: int, n_boot: int) -> dict:
         out.update(point=interval.point, lo=interval.lo, hi=interval.hi)
         out["block_sensitivity"] = block_sensitivity(complete["delta"].to_numpy(dtype=float),
                                                     seed=seed, n_boot=n_boot)
-    out["maturity"] = asdict(maturity_verdict(scan_days=int(len(complete))))
+    out["maturity"] = asdict(maturity_verdict(
+        scan_days=int(len(complete)), min_scan_days=min_scan_days
+    ))
     return out
 
 
@@ -139,6 +161,20 @@ def _sha256(path: Path) -> str:
 
 def _load_population(path: Path) -> pd.DataFrame:
     return pd.read_parquet(path) if path.suffix == ".parquet" else pd.read_csv(path, dtype={"code": str})
+
+
+def _validate_registered_rows(table: pd.DataFrame, spec: dict) -> None:
+    date_col = "analysis_date" if "analysis_date" in table.columns else "date"
+    if date_col not in table.columns:
+        raise ValueError("population table lacks analysis_date")
+    dates = table[date_col].astype(str).str.strip().str.replace("-", "", regex=False)
+    if not dates.str.fullmatch(r"[0-9]{8}").all():
+        raise ValueError("population table contains invalid analysis dates")
+    start, end = registered_test_range(spec)
+    outside = ~dates.ge(start) | ~dates.lt(end)
+    if outside.any():
+        bad = sorted(dates[outside].unique().tolist())
+        raise ValueError(f"rows outside registered test interval [{start},{end}): {bad}")
 
 
 def _readout(spec: dict, stats: dict, coverage: list[dict]) -> str:
@@ -165,7 +201,14 @@ def _readout(spec: dict, stats: dict, coverage: list[dict]) -> str:
 
 def run(*, spec_path: Path, populations: list[Path], parent: Path | None = None) -> Path:
     spec = validate_spec(json.loads(Path(spec_path).read_text(encoding="utf-8")))
+    verify_engine(spec)
+    verify_modes(spec, evidence_modes=EVIDENCE_MODES, cost_models=COST_MODELS)
+    maturity_days = parse_maturity_policy(spec["maturity_policy"])
+    code_identity = verify_code_provenance(spec, BEHAVIOR_ROOTS)
+    input_identity = file_manifest(populations, registered_date_slice(spec))
+    input_digest = verify_manifest(spec, input_identity)
     table = pd.concat([_load_population(p) for p in populations], ignore_index=True)
+    _validate_registered_rows(table, spec)
     base = Path(parent) if parent is not None else ws.reports_root() / "research" / "stage_value"
     output = eio.create_experiment_dir(base, spec["experiment_id"])
     eio.freeze_spec(output, spec)
@@ -183,7 +226,9 @@ def run(*, spec_path: Path, populations: list[Path], parent: Path | None = None)
             daily.insert(0, "ruler", ruler)
             daily.insert(0, "stage", stage)
             daily_frames.append(daily)
-            stats[f"{stage}|{ruler}"] = summarize_daily(daily, seed=seed, n_boot=n_boot)
+            stats[f"{stage}|{ruler}"] = summarize_daily(
+                daily, seed=seed, n_boot=n_boot, min_scan_days=maturity_days
+            )
             coverage.append(cov)
     all_daily = pd.concat(daily_frames, ignore_index=True)
     all_daily.to_csv(output / "daily_delta.csv", index=False)
@@ -192,14 +237,20 @@ def run(*, spec_path: Path, populations: list[Path], parent: Path | None = None)
     (output / "statistics.json").write_text(json.dumps(stats, ensure_ascii=False, indent=1, default=str) + "\n",
                                             encoding="utf-8")
     (output / "input_manifest.json").write_text(json.dumps({
-        "populations": [{"path": str(p), "sha256": _sha256(p)} for p in populations],
-        "engine": spec["engine"], "note": "hash 证明输入身份,不证明输入在当时可得"},
+        "declared_sha256": spec["input_manifest_hash"], "observed_sha256": input_digest,
+        "manifest": input_identity, "engine": spec["engine"],
+        "note": "hash 证明输入身份,不证明输入在当时可得"},
         ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     (output / "readout.md").write_text(_readout(spec, stats, coverage), encoding="utf-8")
     manifest = {"schema_version": 1, "experiment_id": spec["experiment_id"], "engine": spec["engine"],
                 "as_of": datetime.now(timezone.utc).isoformat(), "spec_sha256": eio.spec_digest(output),
                 "ruler": spec["ruler"], "sensitivity_rulers": spec["sensitivity_rulers"],
                 "main_ruler_is": _ruler.MAIN_RULER,
+                "registration": {"input_manifest_sha256": input_digest,
+                                 "code": code_identity,
+                                 "test_interval": registered_date_slice(spec),
+                                 "maturity_min_scan_days": maturity_days,
+                                 "split_application": "TEST_ONLY_NO_TRAIN_ROWS"},
                 "outputs": {name: _sha256(output / name) for name in
                             ("daily_delta.csv", "coverage.json", "statistics.json", "readout.md",
                              "input_manifest.json")}}

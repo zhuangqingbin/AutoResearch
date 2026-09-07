@@ -4,7 +4,14 @@ import json
 import pandas as pd
 import pytest
 
+from autoresearch.common import workspace as ws
+from autoresearch.common.run_identity import resolve_git_sha
 from autoresearch.research import stage_value as sv
+from autoresearch.research.registration import (
+    file_manifest,
+    manifest_digest,
+    registered_date_slice,
+)
 
 
 def test_selection_delta_uses_the_same_days_candidate_population():
@@ -107,8 +114,8 @@ def test_missing_flag_column_is_refused():
 
 def spec():
     return {
-        "schema_version": 1, "experiment_id": "SV_T1", "engine": "claude",
-        "created_at": "2026-09-07T12:00:00+08:00", "code_sha": "a" * 40, "prompt_hashes": {},
+        "schema_version": 1, "experiment_id": "SV_T1", "engine": ws.ENGINE,
+        "created_at": "2026-09-07T12:00:00+08:00", "code_sha": resolve_git_sha(), "prompt_hashes": {},
         "input_manifest_hash": "b" * 64, "experiment_family": "stage-value",
         "hypotheses": [{"hypothesis_id": "h1", "mechanism": "L3 精排选出的票隔夜不优于菜单",
                         "expected_direction": "two_sided", "available_at": "2026-09-01T14:45:00+08:00",
@@ -118,18 +125,87 @@ def spec():
         "sensitivity_rulers": ["fwd_5_oc"], "return_unit": "fraction", "baseline": "in_l2 等权",
         "evidence_mode": "EOD_PROXY", "weighting": "day_equal", "cost_model_version": "none",
         "split": {"train": ["2022-03-01", "2025-01-01"], "validation": ["2025-01-01", "2026-01-01"],
-                  "test": ["2026-01-01", "2026-09-01"]},
+                  "test": ["2026-01-01", "2026-09-02"]},
         "purge_rule": "label overlap", "embargo_sessions": 2, "bootstrap": {"n_boot": 200, "seed": 7},
         "multiplicity": "BY", "maturity_policy": "scan_days >= 20", "quality_constraints": "GATE 通过",
         "stop_rule": "样本终点 2026-12-31",
     }
 
 
+def bound_spec(pop, **updates):
+    value = spec()
+    value.update(updates)
+    value["input_manifest_hash"] = manifest_digest(
+        file_manifest([pop], registered_date_slice(value))
+    )
+    return value
+
+
+@pytest.fixture(autouse=True)
+def _accept_current_uncommitted_test_implementation(monkeypatch):
+    monkeypatch.setattr(
+        sv, "verify_code_provenance",
+        lambda spec, roots: {"declared": spec["code_sha"], "observed": resolve_git_sha()},
+    )
+
+
+def test_wrong_manifest_is_rejected_before_output(tmp_path):
+    pop = tmp_path / "pop.csv"
+    population().to_csv(pop, index=False)
+    value = bound_spec(pop)
+    value["input_manifest_hash"] = "0" * 64
+    spec_path = tmp_path / "spec.json"
+    spec_path.write_text(json.dumps(value), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="input manifest"):
+        sv.run(spec_path=spec_path, populations=[pop], parent=tmp_path / "out")
+    assert not (tmp_path / "out").exists()
+
+
+def test_out_of_registered_test_window_is_rejected(tmp_path):
+    pop = tmp_path / "pop.csv"
+    outside = population()
+    outside.loc[len(outside)] = outside.iloc[0].to_dict()
+    outside.loc[len(outside) - 1, "analysis_date"] = "2026-09-02"
+    outside.to_csv(pop, index=False)
+    spec_path = tmp_path / "spec.json"
+    spec_path.write_text(json.dumps(bound_spec(pop)), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="registered test interval"):
+        sv.run(spec_path=spec_path, populations=[pop], parent=tmp_path / "out")
+    assert not (tmp_path / "out").exists()
+
+
+def test_registered_maturity_threshold_controls_the_verdict():
+    daily = pd.DataFrame({
+        "date": [f"2026-08-{day:02d}" for day in range(1, 21)],
+        "status": [sv.COMPLETE] * 20,
+        "delta": [.01] * 20,
+    })
+
+    result = sv.summarize_daily(daily, seed=7, n_boot=99, min_scan_days=60)
+
+    assert result["maturity"]["status"] == "IMMATURE"
+    assert result["maturity"]["missing"] == ("scan_days=20<60",)
+
+
+def test_unsupported_evidence_mode_is_rejected_before_output(tmp_path):
+    pop = tmp_path / "pop.csv"
+    population().to_csv(pop, index=False)
+    value = bound_spec(pop, evidence_mode="LOOKAHEAD")
+    spec_path = tmp_path / "spec.json"
+    spec_path.write_text(json.dumps(value), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unsupported evidence mode"):
+        sv.run(spec_path=spec_path, populations=[pop], parent=tmp_path / "out")
+    assert not (tmp_path / "out").exists()
+
+
 def test_cli_writes_every_registered_output_and_keeps_rulers_apart(tmp_path):
     pop = tmp_path / "pop.csv"
     population(is_finalist=pd.array([True, True, False, False], dtype="boolean")).to_csv(pop, index=False)
     spec_path = tmp_path / "spec.json"
-    spec_path.write_text(json.dumps(spec()), encoding="utf-8")
+    spec_path.write_text(json.dumps(bound_spec(pop)), encoding="utf-8")
     out = sv.run(spec_path=spec_path, populations=[pop], parent=tmp_path / "out")
     for name in ("spec.json", "input_manifest.json", "daily_delta.csv", "coverage.json",
                  "statistics.json", "readout.md", "manifest.json"):
@@ -148,7 +224,7 @@ def test_small_samples_are_immature_not_conclusions(tmp_path):
     pop = tmp_path / "pop.csv"
     population(is_finalist=pd.array([True, True, False, False], dtype="boolean")).to_csv(pop, index=False)
     spec_path = tmp_path / "spec.json"
-    spec_path.write_text(json.dumps(spec()), encoding="utf-8")
+    spec_path.write_text(json.dumps(bound_spec(pop)), encoding="utf-8")
     out = sv.run(spec_path=spec_path, populations=[pop], parent=tmp_path / "out")
     stats = json.loads((out / "statistics.json").read_text(encoding="utf-8"))
     main = stats["menu_to_l3|gap_c1_o2"]
@@ -159,7 +235,7 @@ def test_small_samples_are_immature_not_conclusions(tmp_path):
 def test_spec_with_unregistered_ruler_is_refused_before_any_output(tmp_path):
     pop = tmp_path / "pop.csv"
     population().to_csv(pop, index=False)
-    bad = spec()
+    bad = bound_spec(pop)
     bad["sensitivity_rulers"] = ["fwd_2_oc"]
     spec_path = tmp_path / "spec.json"
     spec_path.write_text(json.dumps(bad), encoding="utf-8")

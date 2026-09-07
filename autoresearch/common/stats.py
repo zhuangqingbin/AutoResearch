@@ -535,6 +535,13 @@ def block_index(rng: np.random.Generator, n: int, block: int) -> np.ndarray:
     return (starts[:, None] + np.arange(block)[None, :]).ravel()[:n]
 
 
+def circular_block_index(rng: np.random.Generator, n: int, block: int) -> np.ndarray:
+    """Circular moving-block indices for null tests where every day may start a block."""
+    n_blocks = int(math.ceil(n / block))
+    starts = rng.integers(0, n, size=n_blocks)
+    return ((starts[:, None] + np.arange(block)[None, :]) % n).ravel()[:n]
+
+
 @dataclass(frozen=True)
 class BootResult:
     """一次 moving-block bootstrap 的全部产出。`point=None` = 这批样本算不出差值。"""
@@ -678,7 +685,7 @@ def block_mean_test(values, *, block: int, seed: int,
     centered = x - point
     rng = np.random.default_rng(seed)
     draws = np.asarray([
-        centered[block_index(rng, len(centered), block)].mean()
+        centered[circular_block_index(rng, len(centered), block)].mean()
         for _ in range(n_boot)
     ])
     extreme = int((np.abs(draws) >= abs(point)).sum())

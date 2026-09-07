@@ -59,6 +59,16 @@ from autoresearch.common.stats import DEFAULT_BOOT, DEFAULT_SEED, block_mean_tes
 from autoresearch.contracts.research_experiment import validate_spec
 from autoresearch.data.market_panel import lake_trade_days, load_lake_pivots
 from autoresearch.research import experiment_io as eio
+from autoresearch.research.registration import (
+    file_manifest,
+    parse_maturity_policy,
+    registered_date_slice,
+    registered_test_range,
+    verify_code_provenance,
+    verify_engine,
+    verify_manifest,
+    verify_modes,
+)
 from autoresearch.research.overnight_census import core
 from autoresearch.research.robustness import block_sensitivity
 
@@ -78,6 +88,17 @@ LATE_SEAL_WINDOW = (140000, 150000)   # G2:末次封板时刻 HHMMSS,左闭右�
 INST_SEAT_KEYWORD = "机构专用"
 FWD_LOOKAHEAD = 12              # 装 pivot 时往后多装的交易日数(fwd_10 + 余量)
 PP = 100.0                      # 小数 → pp
+EVIDENCE_MODES = {"EOD_PROXY"}
+COST_MODELS = {"none(门槛以 COST_PP=0.15pp 绝对毛计)"}
+BEHAVIOR_ROOTS = (
+    "autoresearch/research/w3_grids.py",
+    "autoresearch/research/registration.py",
+    "autoresearch/research/robustness.py",
+    "autoresearch/common/stats.py",
+    "autoresearch/common/forward_returns.py",
+    "autoresearch/common/ruler.py",
+    "autoresearch/contracts/research_experiment.py",
+)
 
 POPULATION_COL_BY_LABEL = {
     "gap_pp": "in_pop_gap",
@@ -321,7 +342,20 @@ def validate_population_declarations(spec: dict) -> None:
         )
 
 
-def judge_cells(cells: dict[str, pd.DataFrame], *, seed: int) -> dict:
+def _registered_judge(st: dict, *, min_scan_days: int) -> str:
+    if int(st.get("n_days") or 0) < min_scan_days:
+        return "样本不足"
+    ci_low, ci_high = st.get("ci_low_pp"), st.get("ci_high_pp")
+    if (ci_low is not None and ci_low >= core.CI_LOWER_PP
+            and st.get("yearly_sign_ok") and st.get("halves_sign_ok")):
+        return "正证据"
+    if ci_high is not None and ci_high < 0:
+        return "显著负"
+    return "未证"
+
+
+def judge_cells(cells: dict[str, pd.DataFrame], *, seed: int,
+                min_scan_days: int = core.MIN_DAYS_EVENT) -> dict:
     """每格:主标签的四态判读 + 敏感尺并列 + 块长敏感性。不可买桶强制 `只报不判`。"""
     stats = {}
     for key, frame in cells.items():
@@ -329,7 +363,7 @@ def judge_cells(cells: dict[str, pd.DataFrame], *, seed: int) -> dict:
         label = GRID_LABEL_COL[grid]
         primary = core.cell_stats(frame, value_col=label, sample_kind="event", seed=seed)
         verdict = ("只报不判(X_ORACLE:封板买不进)" if key.endswith("__unbuyable")
-                   else core.judge(primary))
+                   else _registered_judge(primary, min_scan_days=min_scan_days))
         observed = {col: core.cell_stats(frame, value_col=col, sample_kind="event", seed=seed)
                     for col in GRID_OBSERVE_COLS[grid] if col in frame.columns}
         daily = (frame.groupby("date")[label].mean().sort_index().to_numpy(dtype=float)
@@ -337,6 +371,10 @@ def judge_cells(cells: dict[str, pd.DataFrame], *, seed: int) -> dict:
         stats[key] = {"grid": grid, "label": GRID_LABEL[grid], "label_col": label,
                       "is_sensitivity_label": label != "gap_pp",
                       "verdict": verdict, "primary": primary,
+                      "maturity": {"status": ("MATURE" if primary["n_days"] >= min_scan_days
+                                                else "IMMATURE"),
+                                   "min_scan_days": min_scan_days,
+                                   "observed_scan_days": primary["n_days"]},
                       "observe_only": {k: {"mean_pp": v["mean_pp"], "n_days": v["n_days"]}
                                        for k, v in observed.items()},
                       "block_sensitivity": (block_sensitivity(daily, seed=seed)
@@ -371,7 +409,10 @@ def family_correction(stats: dict, *, alpha: float = 0.05,
             "n_boot": n_boot,
             "note": "样本未过成熟门,不进入检验族",
         }
-        if item.get("verdict") != "样本不足":
+        maturity = item.get("maturity", {})
+        mature = (maturity.get("status") == "MATURE" if maturity
+                  else item.get("verdict") != "样本不足")
+        if mature:
             result = block_mean_test(
                 item.get("_daily_primary_pp", ()), block=row["block"],
                 seed=seed, n_boot=n_boot,
@@ -449,28 +490,74 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def _registered_selection(spec: dict, *, lake_daily: Path | None,
+                          since: str | None = None, until: str | None = None) -> dict:
+    all_days = lake_trade_days(lake_daily)
+    start, end = registered_test_range(spec)
+    days = [day for day in all_days if start <= day < end]
+    if not days:
+        raise ValueError("注册测试窗口内湖里没有任何交易日")
+    norm_since = str(since).replace("-", "") if since is not None else None
+    norm_until = str(until).replace("-", "") if until is not None else None
+    if norm_since is not None and norm_since != days[0]:
+        raise ValueError("CLI since conflicts with registered test interval")
+    if norm_until is not None and norm_until != days[-1]:
+        raise ValueError("CLI until conflicts with registered test interval")
+    first, last = all_days.index(days[0]), all_days.index(days[-1])
+    window = all_days[first:min(len(all_days), last + FWD_LOOKAHEAD)]
+    tail = all_days[last + 1] if last + 1 < len(all_days) else None
+    panel_days = days + ([tail] if tail else [])
+    return {"all_days": all_days, "days": days, "window": window,
+            "panel_days": panel_days, "tail": tail}
+
+
+def registered_input_manifest(spec: dict, *, lake_daily: Path | None = None,
+                              lake_root: Path | None = None) -> dict:
+    """Build the exact W3 file manifest for the spec's registered test interval."""
+    selection = _registered_selection(spec, lake_daily=lake_daily)
+    daily_root = Path(lake_daily) if lake_daily is not None else ws.lake_root() / "daily"
+    root = Path(lake_root) if lake_root is not None else ws.lake_root()
+    paths = [daily_root / f"{day}.parquet" for day in selection["window"]]
+    paths.extend(root / "daily_basic" / f"{day}.parquet" for day in selection["panel_days"])
+    for table in ("limit_list_d", "top_inst"):
+        paths.extend(root / table / f"{day}.parquet" for day in selection["days"])
+    date_slice = {
+        **registered_date_slice(spec),
+        "selected_days": selection["days"],
+        "panel_days": selection["panel_days"],
+        "forward_window": selection["window"],
+    }
+    return file_manifest(paths, date_slice)
+
+
 def run(*, spec_path: Path, since: str | None = None, until: str | None = None,
         lake_daily: Path | None = None, lake_root: Path | None = None,
         parent: Path | None = None) -> Path:
     spec = validate_spec(json.loads(Path(spec_path).read_text(encoding="utf-8")))
     validate_population_declarations(spec)
-    all_days = lake_trade_days(lake_daily)
-    days = [d for d in all_days if (since is None or d >= since) and (until is None or d <= until)]
-    if not days:
-        raise ValueError("窗口内湖里没有任何交易日")
-    last = all_days.index(days[-1])
-    window = all_days[all_days.index(days[0]): min(len(all_days), last + FWD_LOOKAHEAD)]
+    verify_engine(spec)
+    verify_modes(spec, evidence_modes=EVIDENCE_MODES, cost_models=COST_MODELS)
+    maturity_days = parse_maturity_policy(spec["maturity_policy"])
+    code_identity = verify_code_provenance(spec, BEHAVIOR_ROOTS)
+    selection = _registered_selection(
+        spec, lake_daily=lake_daily, since=since, until=until
+    )
+    days, window = selection["days"], selection["window"]
+    input_identity = registered_input_manifest(
+        spec, lake_daily=lake_daily, lake_root=lake_root
+    )
+    input_digest = verify_manifest(spec, input_identity)
     base = Path(parent) if parent is not None else ws.reports_root() / "research" / "w3_grids"
     output = eio.create_experiment_dir(base, spec["experiment_id"])
     eio.freeze_spec(output, spec)
 
     # 面板多建一天:G1 要查 D+1 的量价。多带的那天不参与信号扫描(见 build_cells)。
-    tail = all_days[last + 1] if last + 1 < len(all_days) else None
+    tail = selection["tail"]
     panel = build_panel(days + ([tail] if tail else []), window=window, lake_daily=lake_daily,
                         lake_root=lake_root)
     cells = build_cells(panel, lake_root=lake_root, signal_days=days)
     seed = int(spec["bootstrap"]["seed"])
-    stats = judge_cells(cells, seed=seed)
+    stats = judge_cells(cells, seed=seed, min_scan_days=maturity_days)
     family = family_correction(
         stats, seed=seed, n_boot=int(spec["bootstrap"]["n_boot"])
     )
@@ -487,6 +574,10 @@ def run(*, spec_path: Path, since: str | None = None, until: str | None = None,
                    ensure_ascii=False, indent=1, default=str) + "\n", encoding="utf-8")
     (output / "signal_coverage.json").write_text(
         json.dumps(coverage, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    (output / "input_manifest.json").write_text(
+        json.dumps({"declared_sha256": spec["input_manifest_hash"],
+                    "observed_sha256": input_digest, "manifest": input_identity},
+                   ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     (output / "readout.md").write_text(_readout(spec, stats, coverage, family, win), encoding="utf-8")
     (output / "manifest.json").write_text(json.dumps({
         "schema_version": 1, "experiment_id": spec["experiment_id"], "engine": spec["engine"],
@@ -496,8 +587,14 @@ def run(*, spec_path: Path, since: str | None = None, until: str | None = None,
         "statistics_version": core.STATISTICS_VERSION,
         "ci_lower_pp": core.CI_LOWER_PP, "cost_pp": core.COST_PP,
         "calendar_source": "lake/daily filenames",
+        "registration": {"input_manifest_sha256": input_digest,
+                         "code": code_identity,
+                         "test_interval": registered_date_slice(spec),
+                         "maturity_min_scan_days": maturity_days,
+                         "split_application": "TEST_ONLY_NO_TRAIN_ROWS"},
         "outputs": {name: _sha256(output / name) for name in
-                    ("cells.csv", "statistics.json", "signal_coverage.json", "readout.md")},
+                    ("cells.csv", "statistics.json", "signal_coverage.json",
+                     "input_manifest.json", "readout.md")},
     }, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     return output
 

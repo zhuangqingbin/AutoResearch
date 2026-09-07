@@ -163,6 +163,18 @@ def test_block_mean_pvalue_is_deterministic_and_two_sided():
     assert result.status == "COMPUTED"
 
 
+def test_block_mean_test_uses_circular_blocks():
+    rng = np.random.default_rng(3)
+    saw_wrap = False
+    for _ in range(30):
+        index = stats.circular_block_index(rng, n=7, block=3)
+        for start in range(0, len(index) - 2, 3):
+            chunk = index[start:start + 3]
+            assert list(chunk) == [chunk[0], (chunk[0] + 1) % 7, (chunk[0] + 2) % 7]
+            saw_wrap |= chunk[0] >= 5
+    assert saw_wrap
+
+
 def test_block_mean_test_reports_insufficient_observations():
     result = stats.block_mean_test([1.0], block=1, seed=7, n_boot=99)
 
