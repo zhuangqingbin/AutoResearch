@@ -51,7 +51,15 @@ from __future__ import annotations
 import argparse
 import contextlib
 import csv
+import hashlib
 import json
+import re
+from datetime import (
+    date as _date,
+    datetime as _datetime,
+    timedelta as _timedelta,
+    timezone as _timezone,
+)
 from pathlib import Path
 
 import numpy as np
@@ -69,6 +77,20 @@ OUTCOME_SCHEMA_VERSION = 1
 LEDGER_DIRNAME = "_ledger"
 LEDGER_CSV = "recommendations.csv"
 MAIN = _ruler.MAIN_RULER
+
+# ── 日期契约状态(2026-09-12 交易日历完整性 P0,§2.2;字面量与验收矩阵逐字同源)──
+#
+# `market_frame` 的 `outcome_status` 只取这五个值之一。C2 会把它们接进
+# `recommendations.csv`/`ledger_views.py`/`chain_view.py`——本文件(Task C1)只负责
+# 正确产出,不碰那三处消费点。
+MATURE = "MATURE"
+PENDING_SESSION = "PENDING_SESSION"
+MISSING_MARKET_DATA = "MISSING_MARKET_DATA"
+UNVERIFIED_CALENDAR = "UNVERIFIED_CALENDAR"
+INVALID_ANALYSIS_DATE = "INVALID_ANALYSIS_DATE"
+#: 唯一可信的日历质量标签(与 `exec_anchor.trading_sessions` 的三级回退同一份字面量)。
+#: `lake_partitions`/`weekday_heuristic` 一律不可信——即便它们恰好给出了正确的日期。
+TRADE_CAL_QUALITY = "trade_cal"
 
 #: A4 执行线阈值(设计稿 §3 路A)。**先量后用**:上线与否是产品裁定,这里只负责记下
 #: 「若按此执行会怎样」。证据:四年全湖 1086 日,收在当日区间上 30% 的票隔夜比全体差
@@ -120,9 +142,9 @@ def _read_rows(base: Path, *names: str) -> list[dict]:
     for name in names:
         p = base / name
         if p.is_file():
-            with contextlib.suppress(OSError, UnicodeDecodeError):
-                with p.open(encoding="utf-8-sig", newline="") as fh:
-                    return list(csv.DictReader(fh))
+            with contextlib.suppress(OSError, UnicodeDecodeError), \
+                p.open(encoding="utf-8-sig", newline="") as fh:
+                return list(csv.DictReader(fh))
     return []
 
 
@@ -215,36 +237,241 @@ def run_facts(run_dir: Path | str) -> dict:
             "rule_version": str(decision.get("rule_version") or "")}
 
 
-# ───────────────────────── 市场事实:湖 → 前向收益 ─────────────────────────
+# ───────────────────────── 日期解析:可信交易日历 → T+1/T+2(零行情读取) ─────────────────────────
+#
+# 病灶(2026-09-12 独立 P0,立案见 §1):旧 `market_frame` 用**湖分区排序后的位置**取
+# T+1/T+2 —— 湖缺某天,后面的文件就顶替成了"T+2",一笔隔夜交易被错记成跨越缺口的多日
+# 持仓(09-01、09-07 两次 run 共 21 行日期错位)。修复:先用**注入的可信日历**把 D 的
+# T+1/T+2 定成精确日期(`resolve_outcome_sessions`,零行情读取),`market_frame` 再按
+# 这两个精确日期去读行情——湖里没有就是 `MISSING_MARKET_DATA`,绝不顺延到下一个分区。
 
-def market_frame(date: str, *, lake_daily: Path | None = None) -> tuple[pd.DataFrame | None, dict]:
+_SESSION_LOOKBACK_DAYS = 10        # D 之前的请求缓冲:只需要够判断"D 是不是交易日"
+#: D 之后的请求缓冲。比 A 股最长连续休市(春节 ~10 个自然日)之后再找到第 10 个交易日
+#: 还要宽——10 个交易日最多跨 2 个周末(~4 天)+ 一段长假,45 个自然日留足余量。
+_SESSION_LOOKAHEAD_DAYS = 45
+#: 迟到执行锚找"前一个可信交易日"专用的回看窗——同样要跨过最长连续休市。
+_PREDECESSOR_LOOKBACK_DAYS = 20
+
+_DASHED_DATE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
+_COMPACT_DATE_RE = re.compile(r"^(\d{4})(\d{2})(\d{2})$")
+
+
+def _compact_or_none(value: object) -> str | None:
+    """`"2026-09-01"`/`"20260901"` → `"20260901"`;格式非法或日期不存在 → `None`。"""
+    s = str(value or "").strip()
+    m = _DASHED_DATE_RE.fullmatch(s) or _COMPACT_DATE_RE.fullmatch(s)
+    if not m:
+        return None
+    y, mo, da = m.groups()
+    try:
+        _date(int(y), int(mo), int(da))
+    except ValueError:
+        return None
+    return f"{y}{mo}{da}"
+
+
+def _dashed(compact: str) -> str:
+    return f"{compact[:4]}-{compact[4:6]}-{compact[6:8]}"
+
+
+def _shift(compact: str, days: int) -> str:
+    d = _date(int(compact[:4]), int(compact[4:6]), int(compact[6:8])) + _timedelta(days=days)
+    return d.strftime("%Y%m%d")
+
+
+def _normalize_today(today: object) -> str:
+    """`today` → 紧凑日期字符串,按 Asia/Shanghai 的交易日期解释。
+
+    `None` = 用真实当前时刻(生产默认);中国全年无夏令时,固定 +8 小时换算,不依赖
+    `zoneinfo`/`pytz`(与 `exec_anchor._gate4_approved_at` 同一手法)。UTC 感知的
+    `datetime` 先转换再取日期,不直接砍掉时区(§2.1 第5条)。裸 `date`/格式化字符串
+    按已经是"上海交易日期"直接采信。
+    """
+    if today is None:
+        now = _datetime.now(_timezone.utc) + _timedelta(hours=8)
+        return now.strftime("%Y%m%d")
+    if isinstance(today, _datetime):
+        dt = today
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(_timezone.utc) + _timedelta(hours=8)
+        return dt.strftime("%Y%m%d")
+    if isinstance(today, _date):
+        return today.strftime("%Y%m%d")
+    return _compact_or_none(today) or ""
+
+
+def _digest(start: str, end: str, quality: str, sessions: tuple[str, ...]) -> str:
+    """日历来源的规范化摘要(§2.1 第6条)——质量 + 请求范围 + 所用 session 列表逐字哈希。"""
+    payload = json.dumps({"start": start, "end": end, "quality": quality,
+                          "sessions": list(sessions)}, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _fetch_trusted_sessions(start_c: str, end_c: str, *, calendar
+                            ) -> tuple[list[str], str, str, str | None]:
+    """如实转达 `calendar(start,end)` 的结果——**不在这里判断可信与否**,只负责规范化
+    (紧凑日期、去重排序)与如实报告失败。调用方(`resolve_outcome_sessions`/
+    `_trusted_predecessor`)各自按自己的用途决定"够不够可信"。
+
+    返回 `(sessions, quality, digest, error)`;`calendar()` 抛异常时 `sessions=[]`、
+    `quality="error"`、`error` 是可读的异常描述(不静默吞掉——弱回退/请求异常都要
+    在 `reason` 里现出原因)。
+    """
+    try:
+        raw, quality = calendar(_dashed(start_c), _dashed(end_c))
+    except Exception as exc:  # noqa: BLE001 - 日历来源必须如实报异常,不静默降级为弱日历
+        return [], "error", _digest(start_c, end_c, "error", ()), f"{type(exc).__name__}: {exc}"
+    sessions = sorted({c for c in (_compact_or_none(s) for s in (raw or [])) if c})
+    digest = _digest(start_c, end_c, str(quality or ""), tuple(sessions))
+    return sessions, str(quality or ""), digest, None
+
+
+def resolve_outcome_sessions(analysis_date: str, *, calendar, today: object = None) -> dict:
+    """纯日期解析(零行情读取):`analysis_date` → 可信日历下的 T+1/T2(+T5/T10 备用)。
+
+    `calendar` 为 `(start,end)->(sessions,quality)`,与 `exec_anchor.trading_sessions`
+    同形状,测试注入合成日历。返回 dict 恒含:
+
+    - `status`:`"OK"`(日期已解析,T+2 已到,调用方可以去读行情)或 §2.2 表格里的
+      `PENDING_SESSION`/`MISSING_MARKET_DATA` 之外的两个日期级状态
+      (`UNVERIFIED_CALENDAR`/`INVALID_ANALYSIS_DATE`)——`MISSING_MARKET_DATA` 本函数
+      判不出来(它零行情读取),留给 `market_frame` 在拿到 `"OK"` 之后按精确日期查湖。
+    - `reason`:人读的原因,任何非 `"OK"` 状态都不为空。
+    - `calendar_quality`/`calendar_digest`:来源质量 + 规范化摘要(§2.1 第6条)。
+    - `t1`/`t2`/`t5`/`t10`:紧凑日期或 `None`(日历覆盖不到就是 `None`,不猜)。
+    - `sessions`:已按 `today` 之前(含)过滤前的完整可信 session 列表(紧凑、排序),
+      供 `market_frame` 建行情窗口用——**位置对齐用这份日历,不用湖文件列表**。
+
+    判定顺序逐字对应 §2.1:①日历来源(quality 必须 `trade_cal`)②弱回退/空/异常/范围
+    不完整一律 `UNVERIFIED_CALENDAR`,不因日期"恰好对上"提高可信度③确认覆盖到所需
+    后续 session 之后,才能用"D 不在可信交易日集合"判 `INVALID_ANALYSIS_DATE`——不能
+    据弱/窄日历下此结论④T+1/T2 只从日历选,T+2 晚于 `today` → `PENDING_SESSION`。
+    """
+    today_c = _normalize_today(today)
+    D = _compact_or_none(analysis_date)
+    base: dict = {
+        "analysis_date": D if D is not None else str(analysis_date), "today": today_c,
+        "t1": None, "t2": None, "t5": None, "t10": None,
+        "calendar_quality": "", "calendar_digest": "", "sessions": [],
+    }
+    if D is None:
+        return {**base, "status": INVALID_ANALYSIS_DATE,
+                "reason": "analysis_date 格式非法(非 YYYY-MM-DD/YYYYMMDD 合法日期)"}
+    start, end = _shift(D, -_SESSION_LOOKBACK_DAYS), _shift(D, _SESSION_LOOKAHEAD_DAYS)
+    sessions, quality, digest, err = _fetch_trusted_sessions(start, end, calendar=calendar)
+    base.update(calendar_quality=quality, calendar_digest=digest, sessions=sessions)
+    if err:
+        return {**base, "status": UNVERIFIED_CALENDAR, "reason": f"日历请求异常:{err}"}
+    if quality != TRADE_CAL_QUALITY:
+        return {**base, "status": UNVERIFIED_CALENDAR,
+                "reason": f"日历质量不可信:{quality or '空'}"}
+    if not sessions:
+        return {**base, "status": UNVERIFIED_CALENDAR, "reason": "日历为空"}
+    after = [s for s in sessions if s > D]
+    if len(after) < 2:
+        return {**base, "status": UNVERIFIED_CALENDAR,
+                "reason": "请求范围不完整:可信日历未覆盖到 T+2"}
+    if D not in sessions:
+        return {**base, "status": INVALID_ANALYSIS_DATE,
+                "reason": "analysis_date 不是可信交易日历里的交易日"}
+    t1, t2 = after[0], after[1]
+    t5 = after[4] if len(after) >= 5 else None
+    t10 = after[9] if len(after) >= 10 else None
+    base.update(t1=t1, t2=t2, t5=t5, t10=t10)
+    if t2 > today_c:
+        return {**base, "status": PENDING_SESSION, "reason": "可信目标 T+2 尚未到"}
+    return {**base, "status": "OK", "reason": ""}
+
+
+def _trusted_predecessor(day: str, *, calendar) -> str | None:
+    """`day`(紧凑或带横杠)在可信日历里**严格早于它**的最后一个 session。
+
+    只有 `quality == trade_cal` 才采信;找不到/不可信一律 `None`——调用方(迟到执行锚)
+    据此决定"无法核验时 `exec_gap_c1_o2` 保持 null",绝不滑到湖里恰好存在的更早分区。
+    """
+    d = _compact_or_none(day)
+    if d is None:
+        return None
+    start = _shift(d, -_PREDECESSOR_LOOKBACK_DAYS)
+    sessions, quality, _digest, err = _fetch_trusted_sessions(start, d, calendar=calendar)
+    if err or quality != TRADE_CAL_QUALITY or not sessions:
+        return None
+    before = [s for s in sessions if s < d]
+    return before[-1] if before else None
+
+
+# ───────────────────────── 市场事实:精确日期 → 湖 → 前向收益 ─────────────────────────
+
+def market_frame(date: str, *, lake_daily: Path | None = None,
+                 calendar=None, today: object = None) -> tuple[pd.DataFrame | None, dict]:
     """当日全湖前向收益帧 + T+1 盘口(open/high/low/close/pct_chg)。
 
-    `None` = 湖里还没有 D+2 收盘(结果尚未成熟)—— 那是**状态不是故障**,`fill` 会跳过并
-    留着下次再算。口径与 `common.forward_returns.forward_frame` 逐字同源(同一
-    `forward_returns`、同一 `GAP_CLIP` 数据错剔除)。
+    `date`/`lake_daily` 与旧签名逐字兼容(正 T1);新增 `calendar`(缺省惰性默认到
+    `exec_anchor.trading_sessions`,避免模块加载就拉 tushare)与 `today`(显式注入,
+    缺省取真实当前时刻)。
+
+    先调 `resolve_outcome_sessions` 把 D 的 T+1/T+2 定成精确日期(零行情读取),
+    只有日历可信且 T+2 已到,才去按精确日期查湖——湖里没有 D/T+1/T+2 的分区就是
+    `MISSING_MARKET_DATA`,**不**顺延到下一个存在的分区、不填零、不悄悄放行。
+
+    `fr is None` 覆盖全部非成熟情形(`meta["outcome_status"]` 如实区分是哪一种,
+    §2.2 的五态之一);`fr` 非空则 `meta["outcome_status"] == MATURE`。`meta` 恒含
+    `outcome_status, reason, calendar_quality, calendar_digest, t1, t2,
+    missing_sessions`;`MATURE` 时另附 `n`/`t5`/`t10`/`fwd5_verified`/`fwd10_verified`
+    (5/10 日旁列的窗口是否可核验——`compute_outcome` 据此在行组装时做 null 门,主尺
+    绝不因此被拖累)。
     """
-    P = _panel.lake_trade_days(lake_daily)
-    D = str(date).replace("-", "")
-    if D not in P:
-        return None, {"reason": "非交易日或湖里没有该日"}
-    idx = P.index(D)
-    if idx + 2 >= len(P):
-        return None, {"reason": "D+2 尚未落湖(结果未成熟)"}
-    window = P[max(0, idx - 1): min(len(P), idx + 13)]
+    if calendar is None:
+        from autoresearch.scan import exec_anchor as _anchor
+        calendar = _anchor.trading_sessions
+    resolved = resolve_outcome_sessions(date, calendar=calendar, today=today)
+    meta: dict = {
+        "outcome_status": resolved["status"],
+        "reason": resolved["reason"],
+        "calendar_quality": resolved["calendar_quality"],
+        "calendar_digest": resolved["calendar_digest"],
+        "t1": resolved["t1"],
+        "t2": resolved["t2"],
+        "missing_sessions": [],
+    }
+    if resolved["status"] != "OK":
+        return None, meta
+    D, t1, t2 = resolved["analysis_date"], resolved["t1"], resolved["t2"]
+    present = set(_panel.lake_trade_days(lake_daily))
+    missing = [d for d in (D, t1, t2) if d not in present]
+    if missing:
+        meta.update(outcome_status=MISSING_MARKET_DATA, missing_sessions=missing,
+                    reason=f"行情缺失(湖无分区):{','.join(missing)}")
+        return None, meta
+    # 位置对齐用可信日历的 session 列表(已按 today 截断),不用湖文件列表——
+    # 这正是本次修复的核心:湖缺的日子不再让后面的文件顶替成"下一个交易日"。
+    window = [s for s in resolved["sessions"] if s <= resolved["today"]]
     piv = _panel.load_lake_pivots(window, lake_daily)
-    fr = _fwd.forward_frame(piv, P, D)
+    fr = _fwd.forward_frame(piv, window, D)
     if fr is None or fr.empty:
-        return None, {"reason": "前向收益帧为空"}
-    D1 = P[idx + 1]
+        close_cols = set(piv.get("close", pd.DataFrame()).columns)
+        still_missing = [d for d in (D, t1, t2) if d not in close_cols] or [D, t1, t2]
+        meta.update(outcome_status=MISSING_MARKET_DATA, missing_sessions=still_missing,
+                    reason="前向收益帧为空(分区文件存在但内容缺失)")
+        return None, meta
     for col, key in (("t1_open", "open"), ("t1_high", "high"), ("t1_low", "low"),
                      ("t1_close", "close"), ("t1_pct_chg", "pct_chg")):
         series = piv.get(key)
-        fr[col] = series[D1] if (series is not None and D1 in series.columns) else np.nan
-    fr["t2_open"] = piv["open"][P[idx + 2]] if P[idx + 2] in piv["open"].columns else np.nan
+        fr[col] = series[t1] if (series is not None and t1 in series.columns) else np.nan
+    fr["t2_open"] = piv["open"][t2] if t2 in piv["open"].columns else np.nan
     span = fr["t1_high"] - fr["t1_low"]
     fr["t1_pos_in_range"] = ((fr["t1_close"] - fr["t1_low"]) / span).where(span > 0)
-    return fr, {"t1": D1, "t2": P[idx + 2], "n": int(len(fr))}
+    meta["outcome_status"] = MATURE
+    meta["reason"] = ""
+    meta["n"] = int(len(fr))
+    t5, t10, today_c = resolved.get("t5"), resolved.get("t10"), resolved["today"]
+    meta["t5"], meta["t10"] = t5, t10
+    # 5/10 日旁列的"是否可核验"——日历够远 + 已经到期 + 湖里真有那天的分区,三条同时
+    # 成立才算数;任何一条不满足都是 False,行组装(`compute_outcome`)据此把
+    # `fwd_5_oc`/`fwd_10_oc` 置 null,绝不因此拖累上面已经判定的 `MATURE` 主尺。
+    meta["fwd5_verified"] = bool(t5 and t5 <= today_c and t5 in present)
+    meta["fwd10_verified"] = bool(t10 and t10 <= today_c and t10 in present)
+    return fr, meta
 
 
 def _relative_columns(fr: pd.DataFrame, sectors: dict[str, str]) -> pd.DataFrame:
@@ -271,40 +498,56 @@ def _num(value) -> float | None:
     return None if pd.isna(f) else round(f, 6)
 
 
-def exec_anchor_frame(execution: dict | None, *, lake_daily: Path | None = None):
+def exec_anchor_frame(execution: dict | None, *, lake_daily: Path | None = None,
+                      calendar=None, today: object = None):
     """迟到 run 的**反事实**帧:主尺改从第一个真正来得及的尾盘起算。
 
     正常 run(`exec_lag == 0`)返回 `None` —— 锚点与主帧逐字相同,再算一遍纯属浪费。
     只有报告在 T+1 收盘之后才就绪的那些 run 才有第二个锚点,而它们的主帧记的是
     一笔**下不了的单**(61 个 run 里 8 个,13%)。
 
-    实现上取 `first_available_session` 的**前一个**交易日做 D —— `forward_returns`
-    的买腿恒为 D+1,所以这样它的 D+1 正好落在第一个可执行的尾盘上,口径与主帧
-    逐字同源(同一 `forward_returns`、同一 `GAP_CLIP`),不另造一把尺。
+    2026-09-12 修复:锚点(`first_available_session` 的**前一个**交易日)改用**可信
+    日历**定位(`_trusted_predecessor`),不再用湖分区列表猜前一天——旧写法在真前驱
+    缺湖时会悄悄滑到更早的、湖里恰好存在的那个分区,把反事实算到错误的日子上。
+    找不到可信前驱、或前驱日的行情不可核验,一律返回 `None`(`exec_gap_c1_o2` 在
+    `compute_outcome` 里自然保持 null,不污染正常主尺,也不伪造反事实)。
+
+    `forward_returns` 的买腿恒为 D+1,所以把前驱日当 D,它的 D+1 正好落在
+    `first_available_session` 上,口径与主帧逐字同源(同一 `forward_returns`、同一
+    `GAP_CLIP`),不另造一把尺。
     """
     first = str((execution or {}).get("first_available_session") or "")
     if not first or not (execution or {}).get("exec_lag"):
         return None
-    P = _panel.lake_trade_days(lake_daily)
-    target = first.replace("-", "")
-    if target not in P:
+    if calendar is None:
+        from autoresearch.scan import exec_anchor as _anchor
+        calendar = _anchor.trading_sessions
+    anchor = _trusted_predecessor(first, calendar=calendar)
+    if anchor is None:
         return None
-    i = P.index(target)
-    if i == 0:
-        return None
-    anchor = P[i - 1]
-    fr, _ = market_frame(f"{anchor[:4]}-{anchor[4:6]}-{anchor[6:]}", lake_daily=lake_daily)
+    fr, _meta = market_frame(_dashed(anchor), lake_daily=lake_daily, calendar=calendar, today=today)
     return fr
 
 
-def compute_outcome(run_dir: Path | str, *, lake_daily: Path | None = None) -> dict | None:
-    """一次 run → 结果文档;D+2 未落湖 → `None`(未成熟,不是失败)。"""
+def compute_outcome(run_dir: Path | str, *, lake_daily: Path | None = None,
+                    calendar=None, today: object = None) -> dict | None:
+    """一次 run → 结果文档;D+2 未落湖(或日历不可信/分析日无效/行情缺失)→ `None`。
+
+    `calendar`/`today` 原样转发给 `market_frame`/`exec_anchor_frame`(§2.1 的显式
+    `today` 注入):缺省时两者各自惰性默认到 `exec_anchor.trading_sessions` 与真实
+    当前时刻,测试可注入合成日历与固定 `today` 让"成熟与否"完全确定性可控。
+
+    `fr is None`(非 `MATURE`)沿用旧契约直接返回 `None`——`market_frame` 已经在
+    `meta["outcome_status"]`/`meta["reason"]` 里如实记了原因(§2.2 五态之一);
+    把"这份 run 该怎么办"的决定(重试/跳过/记账)留给 `fill`,本函数不在这里
+    制造一份带假成熟标记的文档(那是 Task C2 的 CSV/视图传播范围,不在本任务)。
+    """
     run = Path(run_dir)
     facts = run_facts(run)
     date = facts["analysis_date"]
     if not date or not facts["rows"]:
         return None
-    fr, meta = market_frame(date, lake_daily=lake_daily)
+    fr, meta = market_frame(date, lake_daily=lake_daily, calendar=calendar, today=today)
     if fr is None:
         return None
     # 时间锚(§2.4 G1):这份报告到底什么时候才能下单。正常 run 与主帧同锚;
@@ -314,10 +557,15 @@ def compute_outcome(run_dir: Path | str, *, lake_daily: Path | None = None) -> d
     execution = _anchor.read_execution(run)
     exec_fr = None
     with contextlib.suppress(Exception):
-        exec_fr = exec_anchor_frame(execution, lake_daily=lake_daily)
+        exec_fr = exec_anchor_frame(execution, lake_daily=lake_daily, calendar=calendar, today=today)
     sectors = {code: str(row.get("sector") or "") for code, row in facts["rows"].items()}
     rel = _relative_columns(fr, sectors)
     ok_entry = _ruler.entry_tradable(fr, ruler_name=MAIN)
+    # 5/10 日旁列的 null 门(2026-09-12 §2.3 末条,ruling #7):窗口未核验/不完整时
+    # 置 null,但**绝不能拖累上面已经判定的隔夜主尺**——`fr`/`meta["outcome_status"]`
+    # 已经是 MATURE 了,这里只决定 `fwd_5_oc`/`fwd_10_oc` 两列各自要不要置 null。
+    fwd5_ok = bool(meta.get("fwd5_verified"))
+    fwd10_ok = bool(meta.get("fwd10_verified"))
 
     rows: dict[str, dict] = {}
     for code, row in sorted(facts["rows"].items()):
@@ -345,8 +593,8 @@ def compute_outcome(run_dir: Path | str, *, lake_daily: Path | None = None) -> d
             _ruler.REL_MARKET: _num(rel.loc[code, _ruler.REL_MARKET]) if code in rel.index else None,
             _ruler.REL_SECTOR: _num(rel.loc[code, _ruler.REL_SECTOR]) if code in rel.index else None,
             "excess_med_market": _num(rel.loc[code, "excess_med_market"]) if code in rel.index else None,
-            "fwd_5_oc": _num(m["fwd_5_oc"]) if m is not None else None,
-            "fwd_10_oc": _num(m["fwd_10_oc"]) if m is not None else None,
+            "fwd_5_oc": _num(m["fwd_5_oc"]) if (m is not None and fwd5_ok) else None,
+            "fwd_10_oc": _num(m["fwd_10_oc"]) if (m is not None and fwd10_ok) else None,
             "exec_gap_c1_o2": (_num(exec_fr.loc[code, MAIN])
                                if exec_fr is not None and code in exec_fr.index else None),
         }
@@ -459,11 +707,16 @@ def published_runs(reports_root: Path | None = None) -> list[Path]:
 
 def fill(*, reports_root: Path | None = None, lake_daily: Path | None = None,
          limit: int | None = None, now: str | None = None,
-         rebuild: bool = False) -> dict:
+         rebuild: bool = False, calendar=None, today: object = None) -> dict:
     """回填全部**未成熟或未算过**的已发布 run。返回 `{filled, skipped, rows, runs}`。
 
     幂等 + 增量:已存在且 `complete` 的 run 直接跳过(不重算、不重写),所以每天跑它的
     成本只与「昨天新出的 run + 还没成熟的老 run」成正比。
+
+    `calendar`/`today` 原样转发给 `compute_outcome`(缺省即生产默认:真实交易日历、
+    真实当前时刻);测试可注入两者让整条回填链路的"成熟与否"确定性可控,不依赖
+    真实 tushare/挂钟时间。与 `--today` CLI 参数(`now`,只用于 `computed_at` 留痕
+    时间戳)是两个不同的概念,不要混用。
     """
     filled, skipped, n_rows, touched = 0, 0, 0, []
     for run in published_runs(reports_root):
@@ -478,7 +731,7 @@ def fill(*, reports_root: Path | None = None, lake_daily: Path | None = None,
         if not rebuild and isinstance(existing, dict) and existing.get("complete"):
             skipped += 1
             continue
-        doc = compute_outcome(run, lake_daily=lake_daily)
+        doc = compute_outcome(run, lake_daily=lake_daily, calendar=calendar, today=today)
         if doc is None:
             skipped += 1
             continue
