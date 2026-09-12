@@ -406,6 +406,26 @@ ARTIFACTS: tuple[Artifact, ...] = (
              "broker.ingest", "csv", "gated", required_when="broker ingest 跑过"),
     Artifact("broker_raw", "raw/*.csv", "broker", "observe",
              "broker.store", "csv", "gated", required_when="broker ingest 跑过"),
+    # ── 场景重建:证据归属产物(2026-09-12 设计稿 §9;Task 1 只登记,生产者留 Task
+    #    3/4/8/9 —— `scan/transcript_binder.py`、`scan/salvage.py` 均尚未创建。这是
+    #    「先登记再写码」的正向用例:drift 守卫扫的是代码里出现的未登记字面量,不
+    #    要求登记表反向证明生产者已存在。`capsule/agents/{index.json,bindings.jsonl,
+    #    raw/,normalized/}` 本身**不在这里新增**——spec §9 那一行写的是「沿用 capsule
+    #    契约」,即维持它们在 `NON_ARTIFACT_LITERALS` 里「capsule 内部结构」的既有
+    #    处置,只是 schema 版本号往上走;不重复挂号。──────────────────────────
+    Artifact("transcript_bindings_report", "_transcript_bindings.json", "staging",
+             "observe", "transcript_binder", "json", "always"),
+    Artifact("transcript_ledger_index", "agents_index/*.json", "ledger", "observe",
+             "transcript_binder", "json", "conditional",
+             required_when="transcript_binder --offline 跑过该 report_run_id"),
+    Artifact("transcript_ledger_revision", "agents_index/*/*", "ledger", "observe",
+             "transcript_binder", "dir", "conditional",
+             required_when="transcript_binder --offline 生成了新的重建版本(revision_id)"),
+    Artifact("salvage_provenance", "salvage/*/provenance.json", "ledger", "observe",
+             "salvage", "json", "conditional", required_when="salvage 跑过该 report_run_id"),
+    Artifact("scene_reconstruction_acceptance", "acceptance/scene-reconstruction-*.md",
+             "ledger", "observe", "acceptance", "md", "conditional",
+             required_when="真实验收发生后由本引擎执行人记录,不由文档修订生成"),
 )
 
 _BY_NAME: dict[str, Artifact] = {a.name: a for a in ARTIFACTS}

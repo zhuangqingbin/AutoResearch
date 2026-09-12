@@ -60,6 +60,41 @@ def test_metering_panorama_artifacts_are_registered_outside_runs():
     assert ca.by_name("panorama_md").stage == "observe"
 
 
+def test_scene_reconstruction_artifacts_are_registered():
+    """Task 1 of the scene-reconstruction transcript-binding plan (2026-09-12):
+    products a later task's producer (`scan/transcript_binder.py`,
+    `scan/salvage.py` -- neither exists yet) will write, registered ahead of
+    their producer so the drift guard already covers their literal names
+    (spec §9 product table)."""
+    assert ca.by_name("transcript_bindings_report") == ca.Artifact(
+        "transcript_bindings_report",
+        "_transcript_bindings.json",
+        "staging",
+        "observe",
+        "transcript_binder",
+        "json",
+        "always",
+    )
+    assert ca.by_name("transcript_ledger_index").root == "ledger"
+    assert ca.by_name("transcript_ledger_index").presence == "conditional"
+    assert ca.by_name("transcript_ledger_revision").kind == "dir"
+    assert ca.by_name("transcript_ledger_revision").root == "ledger"
+    assert ca.by_name("salvage_provenance") == ca.Artifact(
+        "salvage_provenance",
+        "salvage/*/provenance.json",
+        "ledger",
+        "observe",
+        "salvage",
+        "json",
+        "conditional",
+        required_when="salvage 跑过该 report_run_id",
+    )
+    assert ca.by_name("scene_reconstruction_acceptance").path == (
+        "acceptance/scene-reconstruction-*.md"
+    )
+    assert ca.by_name("scene_reconstruction_acceptance").root == "ledger"
+
+
 def test_allowlist_does_not_shadow_the_registry():
     """白名单与登记表不许重叠 —— 否则一个产物既「是产物」又「不是产物」。"""
     registered = ca.paths() | {Path(p).name for p in ca.paths()}
