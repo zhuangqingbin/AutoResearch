@@ -52,6 +52,7 @@ import argparse
 import contextlib
 import csv
 import hashlib
+import io
 import json
 import re
 from datetime import (
@@ -746,9 +747,17 @@ def upsert_ledger(doc: dict, reports_root: Path | None = None) -> int:
     N 行原样留在表里,和今天的失败状态并排展示成"两个版本各展示一半"的错觉——这正是
     这份 CSV 存在的意义要防的事。这个替换严格按 `run_id` 划界,不影响其它 run 的行
     (verified by `test_whole_run_replace_does_not_touch_other_runs_rows`)。
+
+    2026-09-13 fix round 1(Task C3 finding 2):落盘改走 `trace.atomic.atomic_write_bytes`
+    (同目录临时文件 + fsync + `os.replace` + 目录 fsync),不再是裸 `path.open("w")`——
+    旧写法打开文件的瞬间就把旧内容截断成 0 字节,写到一半进程死掉留下的是一份读不全
+    的账本(这份 CSV 正是"结果账本"模块存在的意义所在,不能比它想解决的问题更脆弱)。
+    内容在内存里用 `io.StringIO(newline="")` 拼好(与旧写法的 `newline=""` 语义逐字
+    相同,经验证字节输出相同)再一次性落盘,不改变任何字段/行序/换行符
+    (verified by `test_upsert_ledger_csv_write_is_atomic_a_failed_write_never_truncates_it`
+    与既有 `test_upsert_is_idempotent` 一起把"内容不变"与"失败不截断"两条都锁住)。
     """
     path = ledger_root(reports_root) / LEDGER_CSV
-    path.parent.mkdir(parents=True, exist_ok=True)
     existing: dict[tuple[str, str], dict] = {}
     if path.is_file():
         with path.open(encoding="utf-8-sig", newline="") as fh:
@@ -759,11 +768,12 @@ def upsert_ledger(doc: dict, reports_root: Path | None = None) -> int:
     fresh = _ledger_rows(doc)
     for r in fresh:
         existing[(r["run_id"], r["code"])] = r
-    with path.open("w", encoding="utf-8", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=list(LEDGER_COLUMNS), extrasaction="ignore")
-        w.writeheader()
-        for key in sorted(existing):
-            w.writerow({k: existing[key].get(k, "") for k in LEDGER_COLUMNS})
+    buf = io.StringIO(newline="")
+    w = csv.DictWriter(buf, fieldnames=list(LEDGER_COLUMNS), extrasaction="ignore")
+    w.writeheader()
+    for key in sorted(existing):
+        w.writerow({k: existing[key].get(k, "") for k in LEDGER_COLUMNS})
+    atomic_write_bytes(path, buf.getvalue().encode("utf-8"))
     return len(fresh)
 
 
@@ -807,6 +817,27 @@ def _is_settled(doc: object) -> bool:
             and doc.get("calendar_quality") == TRADE_CAL_QUALITY
             and doc.get("outcome_status") == MATURE
             and bool(doc.get("complete")))
+
+
+#: 撤回快照(bullet 4)存的字段列表——`_maybe_withdraw` 与两处调用方(朴素增量循环、
+#: 迁移规划)共用同一份,不各写一份字面量(fix round 1 finding 3:两份字面量会各自
+#: 漂移,漂移的那份丢的正是前镜像)。
+_WITHDRAWAL_SNAPSHOT_FIELDS = ("schema_version", "outcome_status", "calendar_quality",
+                              "complete", "t1", "t2", "rows")
+
+
+def _maybe_withdraw(doc: dict, existing: object) -> dict:
+    """撤回(withdrawal,bullet 4)的唯一实现——`fill()`(朴素增量路径)与
+    `plan_outcome_migration`(可审阅迁移路径)都要在"磁盘上的旧文档曾经
+    `complete=True`,这次重算的新文档不再 `complete`"时把旧文档的一个紧凑快照存进
+    `doc["previous"]`;原地修改并返回同一个 `doc`(不满足撤回条件时原样返回,不新增键)。
+
+    2026-09-12 fix round 1(finding 3):此前两处各写一份字面量相同的 dict comprehension
+    (`_fill_incremental`、`plan_outcome_migration`),抽成这一个函数后两边共用。
+    """
+    if isinstance(existing, dict) and existing.get("complete") and not doc.get("complete"):
+        doc["previous"] = {k: existing.get(k) for k in _WITHDRAWAL_SNAPSHOT_FIELDS}
+    return doc
 
 
 # ═══════════════════════ 可审阅回填与恢复(2026-09-12 §6,Task C3) ═══════════════════════
@@ -958,11 +989,7 @@ def plan_outcome_migration(*, reports_root: Path | None = None, lake_daily: Path
             continue                               # 真的没有变化,不进这次迁移
         after_doc = dict(after_doc)
         after_doc["computed_at"] = now or ""
-        if isinstance(before_doc, dict) and before_doc.get("complete") and not after_doc.get("complete"):
-            # 撤回前镜像(与 `fill()` 的既定手法逐字同源——见其 docstring bullet 4)。
-            after_doc["previous"] = {k: before_doc.get(k) for k in
-                                     ("schema_version", "outcome_status", "calendar_quality",
-                                      "complete", "t1", "t2", "rows")}
+        after_doc = _maybe_withdraw(after_doc, before_doc)   # 撤回前镜像(bullet 4;共用实现)
         codes = set((before_doc or {}).get("rows") or {}) | set(after_doc.get("rows") or {})
         codes |= set(run_facts(run)["rows"])         # 该 run 当天记录过的全部票,不论成熟与否
         for code in sorted(codes):
@@ -1035,18 +1062,30 @@ def write_migration_plan(plan: dict, *, reports_root: Path | None = None) -> Pat
 def apply_outcome_migration(migration_id: str, *, reports_root: Path | None = None) -> dict:
     """真正把一次已规划好的迁移应用到生产账本(§6 bullet 4/5/6)。
 
-    顺序逐字对应 brief:①应用前校验源账本 hash 未变化(除非这次迁移自己已经重建过
-    CSV——那时基线已经合法地变成了它自己写的那份,见下)②对每个还没 `applied` 的 run,
-    先核对它的**当前**目标文件 hash 与规划时记的 `before_sha256` 是否仍然一致(有别的
-    写入者动过就拒绝,不盲目覆盖)③用 `atomic_write_bytes` 整体替换真实文件,立即把
-    `applied=True` 落进 state(每个 run 替换完就落一次盘,这就是"中途失败不能记迁移
-    完成"在这里的实现:失败点之前的进度都已经是可信的持久状态)④全部 run 都 `applied`
-    之后才**一次性**重建 CSV(bullet 4 原文"最后一次性重建 CSV"),重建同样只做一次
-    (`csv_rebuilt` 幂等门)。
+    顺序逐字对应 brief:①应用前校验源账本 hash 未变化——**只在这次迁移第一次尝试应用
+    时**核验(`status=="planned"`),核验通过立即落一次检查点把状态推进到 `"applying"`;
+    这一步不会在后续续跑时重来(见下 2026-09-13 fix round 1 finding 4 的更正说明)
+    ②对每个还没 `applied` 的 run,先核对它的**当前**目标文件 hash 与规划时记的
+    `before_sha256` 是否仍然一致(有别的写入者动过就拒绝,不盲目覆盖)③用
+    `atomic_write_bytes` 整体替换真实文件,立即把 `applied=True` 落进 state(每个 run
+    替换完就落一次盘,这就是"中途失败不能记迁移完成"在这里的实现:失败点之前的进度
+    都已经是可信的持久状态)④全部 run 都 `applied` 之后才**一次性**重建 CSV(bullet 4
+    原文"最后一次性重建 CSV"),重建同样只做一次(`csv_rebuilt` 幂等门)。
 
     任何一步失败都直接向上抛异常,不吞、不记"完成"——调用方(`fill`/CLI)据此拿到非零
     退出码,state.json 里已经完成的那部分进度原样留在磁盘上,供 `restore_outcome_migration`
     或"用同一份输入再跑一次"（见 `run_outcome_migration`）恢复/续跑。
+
+    2026-09-13 fix round 1(finding 4,复核发现的真实缺陷,不只是补测试):①的账本
+    hash 校验原来写成"只要 `csv_rebuilt` 还没置真就查"——这在**重建 CSV 的循环自己
+    中途失败**时是错的:循环里每个 `upsert_ledger()` 调用都会真的改动
+    `recommendations.csv`,而 `csv_rebuilt` 要等**整个循环跑完**才置真,所以循环跑到
+    一半死掉时,续跑会拿"规划时那份基线"去比对"已经被这次迁移自己合法改过的账本",
+    永远比不过、永远误报"源账本被并发写入"——把自己的合法进度当成了别人的破坏。改成
+    只在 `status=="planned"`(这次迁移第一次被应用)时查一次、查完立即推进到
+    `"applying"` 并落盘;后续任何一次续跑(不论中断点在 JSON 阶段还是 CSV 重建阶段)
+    都不再重问这个问题——"源账本从规划到第一次尝试应用之间有没有被别人动过"只需要
+    回答一次,之后的账本变化只可能来自这次迁移自己。
     """
     mdir = _migration_dir(migration_id, reports_root)
     state_path = mdir / MIGRATION_STATE_FILE
@@ -1056,12 +1095,14 @@ def apply_outcome_migration(migration_id: str, *, reports_root: Path | None = No
     if state["status"] == "applied":
         return {"ok": True, "status": "already_applied", "migration_id": migration_id,
                "affected_runs": len(state["runs"])}
-    if not state.get("csv_rebuilt"):
+    if state["status"] == "planned":
         current = _sha_or_absent(_csv_bytes_or_absent(reports_root))
         if current != state["source_ledger_digest"]:
             raise RuntimeError(
                 "源账本 hash 与规划时不符(可能被并发写入),拒绝应用——请重新规划:"
                 f"规划时 {state['source_ledger_digest']!r},现在 {current!r}")
+        state["status"] = "applying"
+        atomic_write_json(state_path, state)     # 检查点:这道门只问一次,问过不再重问
     for run_id in sorted(state["runs"]):
         run_state = state["runs"][run_id]
         if run_state["applied"]:
@@ -1185,11 +1226,34 @@ def fill(*, reports_root: Path | None = None, lake_daily: Path | None = None,
     `report_run_id`"时才会新建一个 `_ledger/outcome_migrations/<migration_id>/` 目录、
     写前/后镜像与可审阅 diff——朴素循环从不产生这些文件,`--limit` 对迁移路径也不生效
     (迁移的范围已经由 `run_id`/`rebuild` 精确给定,不需要再截断)。
+
+    2026-09-13 fix round 1(finding 1,controller ruling):裸 `rebuild=True`(既无
+    `dry_run` 也无 `run_id`)**拒绝执行**,不再直通下面朴素循环里"已核验通过的历史行
+    也重算并原地覆写"的那条分支(`_fill_incremental` 自己的 `rebuild` 文档字段原样
+    保留——它仍是那个循环的合法参数,只是不再从 `fill()` 这个公共入口无条件到达)。
+
+    原因:这正是本模块 docstring 头部点名要治的病——"改口径后静默、不可审阅、不可
+    恢复地覆写历史"——而裸 `--rebuild` 是最容易被敲出来的命令形状(旧文档/旧惯例
+    示例都长这样)。选**拒绝**而不是**悄悄改道去跑迁移**:改道意味着"同一行代码在
+    `rebuild=True` 下含义随其它参数隐式切换"(返回值形状从 `filled/skipped/...` 变成
+    `ok/status/...`,副作用从"就地改一个文件"变成"新建一整个迁移目录并可能真的应用
+    到生产账本")——对任何已经在用 `fill(rebuild=True)` 的调用方(包括未来某个自动化
+    脚本)都是一次隐形的语义突变。拒绝则是显式失败:调用方立刻知道要在
+    `--dry-run`(先看 diff)与 `--run-id <report_run_id>`(精确应用单个 run)之间选
+    一个,不会在不知情的情况下把行为换了个底层机制。`rebuild=False`(缺省,平常
+    每晚跑的形状)完全不受影响——只增量重算"还没核验过"的 run,从不覆写已核验值。
     """
     if dry_run or run_id is not None:
         return run_outcome_migration(reports_root=reports_root, lake_daily=lake_daily,
                                      run_id=run_id, rebuild=rebuild, calendar=calendar,
                                      today=today, now=now, dry_run=dry_run)
+    if rebuild:
+        raise ValueError(
+            "fill(rebuild=True) 裸调用会绕开可审阅迁移,静默就地覆写已核验通过的历史行——"
+            "拒绝执行。改用以下两条之一:"
+            "`fill --rebuild --dry-run`(先算出可审阅的 diff,不写任何东西)或 "
+            "`fill --rebuild --run-id <report_run_id>`(精确应用单个已发布 run)。"
+        )
     return _fill_incremental(reports_root=reports_root, lake_daily=lake_daily, limit=limit,
                              now=now, rebuild=rebuild, calendar=calendar, today=today)
 
@@ -1246,11 +1310,7 @@ def _fill_incremental(*, reports_root: Path | None = None, lake_daily: Path | No
             skipped += 1
             skip_reasons[run.name] = "run_or_facts_not_locatable"
             continue
-        if isinstance(existing, dict) and existing.get("complete") and not doc.get("complete"):
-            # 撤回:前镜像存档,不进 `rows`(不会被任何统计读到)。
-            doc["previous"] = {k: existing.get(k) for k in
-                               ("schema_version", "outcome_status", "calendar_quality",
-                                "complete", "t1", "t2", "rows")}
+        doc = _maybe_withdraw(doc, existing)     # 撤回:前镜像存档(bullet 4;共用实现)
         doc["computed_at"] = now or ""
         write_outcome(doc, reports_root)
         n_rows += upsert_ledger(doc, reports_root)
@@ -1350,8 +1410,14 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"ok": True, **res}, ensure_ascii=False, sort_keys=True))
         print(ledger_line())
         return 0
-    res = fill(limit=args.limit, now=args.today, rebuild=args.rebuild,
-              dry_run=args.dry_run, run_id=args.run_id)
+    try:
+        res = fill(limit=args.limit, now=args.today, rebuild=args.rebuild,
+                  dry_run=args.dry_run, run_id=args.run_id)
+    except ValueError as exc:
+        # fix round 1 finding 1:裸 `--rebuild` 在 `fill()` 里抛出——这里只负责把它
+        # 转成 CLI 惯用的 `{"ok": False, "error": ...}` + 非零退出码,不吞、不改措辞。
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+        return 2
     print(json.dumps({"ok": True, **res}, ensure_ascii=False, sort_keys=True))
     print(ledger_line())
     return 0

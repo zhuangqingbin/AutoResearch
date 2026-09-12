@@ -107,6 +107,33 @@ def test_upsert_is_idempotent(tmp_path, monkeypatch):
     assert len({(r["run_id"], r["code"]) for r in rows}) == 2
 
 
+def test_upsert_ledger_csv_write_is_atomic_a_failed_write_never_truncates_it(tmp_path, monkeypatch):
+    """2026-09-13 fix round 1(Task C3 finding 2):`recommendations.csv` 是「结果账本」
+    这个模块存在的意义所在——旧实现是裸 `path.open("w")`(既无临时文件也无 fsync),
+    打开的瞬间就把旧内容截断成 0 字节,写到一半进程死掉就是一份读不全的账本。改用
+    `trace.atomic.atomic_write_bytes` 后,失败必须发生在"替换生效"之前:目标文件在
+    失败的写入尝试前后必须逐字节相同——不是"部分写入"也不是"空文件"。
+    """
+    monkeypatch.chdir(tmp_path)
+    _fake_market(monkeypatch)
+    root = tmp_path / ws.reports_root() / "scan"
+    good = outcome.compute_outcome(_run(tmp_path))
+    outcome.upsert_ledger(good, root)
+    path = outcome.ledger_root(root) / outcome.LEDGER_CSV
+    good_bytes = path.read_bytes()
+    assert good_bytes                                   # 夹具健全性:真的写出了内容
+
+    def boom(*_a, **_k):
+        raise OSError("simulated crash mid csv-write")
+
+    monkeypatch.setattr(outcome, "atomic_write_bytes", boom)
+    other = outcome.compute_outcome(_run(tmp_path, "20260826_2000", "2026-08-26"))
+    with pytest.raises(OSError, match="simulated crash"):
+        outcome.upsert_ledger(other, root)
+
+    assert path.read_bytes() == good_bytes               # 逐字节不变——不是截断、不是半份
+
+
 def test_fill_skips_already_complete_runs(tmp_path, monkeypatch):
     """增量:成熟的 run 不重算 —— 否则每天成本随历史长度线性增长。"""
     monkeypatch.chdir(tmp_path)
@@ -450,7 +477,10 @@ def test_c11_recompute_failure_withdraws_a_previously_mature_schema2_run(tmp_pat
     assert {r["code"] for r in before} == {"603317", "300857"}
     assert all(r[outcome.MAIN] not in ("", None) for r in before)
 
-    second = outcome.fill(reports_root=root, rebuild=True)
+    # 2026-09-13 fix round 1(Task C3 finding 1):`fill(rebuild=True)` 裸调用现在会拒绝
+    # (改道去防止未审阅覆写),这条用例测的是**朴素增量引擎自己的**撤回逻辑,
+    # 直接调 `_fill_incremental`(`fill()` 的既有实现搬迁后的新名字)不受那条新守卫影响。
+    second = outcome._fill_incremental(reports_root=root, rebuild=True)
     assert second["filled"] == 1
     new_doc = json.loads(outcome.outcome_path("20260825_2149", root).read_text(encoding="utf-8"))
     assert new_doc["outcome_status"] == outcome.MISSING_MARKET_DATA

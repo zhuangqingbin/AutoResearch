@@ -211,6 +211,54 @@ def test_run_id_unknown_run_raises_a_clear_error(tmp_path, monkeypatch):
         outcome.fill(reports_root=root, dry_run=True, run_id="does-not-exist")
 
 
+# ─────────────────────── fix round 1 finding 1:裸 --rebuild 不能到达未审阅覆写 ───────────────────────
+
+def test_bare_rebuild_refuses_instead_of_reaching_the_unaudited_overwrite(tmp_path, monkeypatch):
+    """`fill(rebuild=True)`(既无 `dry_run` 也无 `run_id`)曾经会直通 `_fill_incremental`——
+    对已核验通过的历史行做一次静默、不可审阅、不可恢复的就地覆写,恰恰是本任务存在的理由
+    要防的那件事,而且是最容易被人不小心敲出来的命令形状。裸 `--rebuild` 必须拒绝执行,
+    不是悄悄改道去做别的事——错误信息里要点名两条正确命令。
+    """
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / ws.reports_root() / "scan"
+    run = _run(tmp_path, "20260825-0826_2100", "2026-08-25")
+    old = _old_doc(run.name, "2026-08-25", "000001", gap=0.08)
+    _seed_old_state(root, run, old)
+    before_bytes = outcome.outcome_path(run.name, root).read_bytes()
+    new = _new_doc(run.name, "2026-08-25", "000001", gap=0.01)
+    _fake_compute_outcome(monkeypatch, {run.name: new})
+
+    with pytest.raises(ValueError, match="--dry-run.*--run-id|--run-id.*--dry-run"):
+        outcome.fill(reports_root=root, rebuild=True)
+
+    # 拒绝必须真的什么都没做——不是"先做了一半才想起来拒绝"。
+    assert outcome.outcome_path(run.name, root).read_bytes() == before_bytes
+    assert not outcome.migrations_root(root).exists()
+
+
+def test_bare_rebuild_cli_exits_nonzero_with_a_named_alternative(tmp_path, monkeypatch, capsys):
+    """CLI 层同一条防线:`outcome fill --rebuild`(裸)必须以非零退出码结束,
+    且打印的错误里点名 `--dry-run`/`--run-id` 两条审阅过的替代命令。"""
+    monkeypatch.chdir(tmp_path)         # 同 test_cli_fill_and_line 既有手法
+    rc = outcome.main(["fill", "--rebuild"])
+    out = capsys.readouterr().out
+    assert rc != 0
+    payload = json.loads(out.splitlines()[0])
+    assert payload["ok"] is False
+    assert "--dry-run" in payload["error"] and "--run-id" in payload["error"]
+
+
+def test_bare_fill_without_rebuild_is_unaffected(tmp_path, monkeypatch):
+    """`rebuild=False`(缺省,平常夜间跑法)完全不受这次改动影响——只有 `rebuild=True`
+    且既无 `dry_run` 也无 `run_id` 才拒绝。"""
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / ws.reports_root() / "scan"
+    _run(tmp_path, "20260825-0826_2100", "2026-08-25")
+    _fake_compute_outcome(monkeypatch, {})     # 不联网;facts 定位得到但 compute 无结果即可
+    res = outcome.fill(reports_root=root)      # 既有夜间形状,不传 rebuild
+    assert res["filled"] == 0 and "affected_runs" not in res     # 走的是朴素增量路径
+
+
 # ───────────────────────── C12:迁移中断可从前镜像恢复 ─────────────────────────
 
 def _two_run_scope(tmp_path, monkeypatch, root):
@@ -408,3 +456,95 @@ def test_source_ledger_hash_precheck_refuses_a_stale_apply(tmp_path, monkeypatch
 
     with pytest.raises(RuntimeError, match="源账本"):
         outcome.apply_outcome_migration(plan_res["migration_id"], reports_root=root)
+
+
+# ─────────────── fix round 1 finding 4:中断点挪到「一次性重建 CSV」那个循环内部 ───────────────
+#
+# 此前只测过"JSON 替换阶段"中断——所有 run 的真实文件都已经换成新值之后,「一次性重建
+# CSV」那个循环本身还在跑(见 finding 2:这个循环现在是 N 次各自原子的 upsert_ledger
+# 调用,不是一次事务),复核指出这条路径完全没有中断测试过。这里补上,并顺带验证一个
+# 复核发现的真实缺陷:旧代码的账本 hash 前置校验会在这个中断点之后的续跑里误报
+# "源账本被并发写入"(把这次迁移自己刚写下的合法进度当成了别人的破坏)。
+
+def test_resume_completes_an_interruption_inside_the_csv_rebuild_loop(tmp_path, monkeypatch):
+    """中断点在 JSON 阶段**之后**、CSV 全部重建**之前**:两个 run 的真实文件都已经是
+    新值,`upsert_ledger` 只成功了一次。续跑必须(a)不误报账本 hash 不符,(b)补完
+    CSV 重建,(c)不产生重复 `(run_id, code)` 行,(d)不重复应用已经 applied 的 JSON。
+    """
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / ws.reports_root() / "scan"
+    run_a, run_b, old_a, old_b = _two_run_scope(tmp_path, monkeypatch, root)
+    real_upsert = outcome.upsert_ledger
+    calls = {"n": 0}
+
+    def flaky_upsert(doc, reports_root=None):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("simulated crash mid csv-rebuild")
+        return real_upsert(doc, reports_root)
+
+    monkeypatch.setattr(outcome, "upsert_ledger", flaky_upsert)
+    with pytest.raises(OSError, match="simulated crash mid csv-rebuild"):
+        outcome.run_outcome_migration(reports_root=root, run_id=None, rebuild=True, dry_run=False)
+
+    mig_id = outcome._migration_id(run_id=None, rebuild=True)
+    mdir = outcome._migration_dir(mig_id, root)
+    state = json.loads((mdir / outcome.MIGRATION_STATE_FILE).read_text(encoding="utf-8"))
+    assert state["status"] == "applying"          # 不是 planned(已经推进过门),不是 applied
+    assert state.get("csv_rebuilt") is not True
+    assert all(r["applied"] for r in state["runs"].values())     # JSON 阶段确实已经全部完成
+    doc_a = json.loads(outcome.outcome_path(run_a.name, root).read_text(encoding="utf-8"))
+    doc_b = json.loads(outcome.outcome_path(run_b.name, root).read_text(encoding="utf-8"))
+    assert doc_a["rows"]["000001"][outcome.MAIN] == 0.01
+    assert doc_b["rows"]["000002"][outcome.MAIN] == 0.02
+
+    monkeypatch.setattr(outcome, "upsert_ledger", real_upsert)
+    # 续跑——这一步此前会被(现已修复的)账本 hash 误报挡住:CSV 已经被第一次
+    # upsert_ledger 调用合法地改过,续跑不能再拿规划时那份基线去比对它。
+    res = outcome.run_outcome_migration(reports_root=root, run_id=None, rebuild=True, dry_run=False)
+    assert res["ok"] is True and res["status"] == "applied"
+    csv_rows = outcome.load_ledger(root)
+    by_run = {r["run_id"]: r for r in csv_rows}
+    assert by_run[run_a.name][outcome.MAIN] == "0.01"
+    assert by_run[run_b.name][outcome.MAIN] == "0.02"
+    assert len({(r["run_id"], r["code"]) for r in csv_rows}) == len(csv_rows)   # 无重复行
+
+
+def test_restore_recovers_after_an_interruption_inside_the_csv_rebuild_loop(tmp_path, monkeypatch):
+    """同一个中断点,走恢复而不是续跑——两个 run 的真实 JSON 都要回到迁移前的旧值,
+    CSV 也要回到迁移前的旧值,而且校验方式是内容 hash,不是行数或存在性
+    (Task C3 原始验收 C12 的字面要求,这里对准的是 finding 4 新增的中断点)。
+    """
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / ws.reports_root() / "scan"
+    run_a, run_b, old_a, old_b = _two_run_scope(tmp_path, monkeypatch, root)
+    real_upsert = outcome.upsert_ledger
+    calls = {"n": 0}
+
+    def flaky_upsert(doc, reports_root=None):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("simulated crash mid csv-rebuild")
+        return real_upsert(doc, reports_root)
+
+    monkeypatch.setattr(outcome, "upsert_ledger", flaky_upsert)
+    with pytest.raises(OSError, match="simulated crash mid csv-rebuild"):
+        outcome.run_outcome_migration(reports_root=root, run_id=None, rebuild=True, dry_run=False)
+    monkeypatch.setattr(outcome, "upsert_ledger", real_upsert)
+
+    mig_id = outcome._migration_id(run_id=None, rebuild=True)
+    result = outcome.restore_outcome_migration(mig_id, reports_root=root)
+
+    assert result["ok"] is True and result["status"] == "restored"
+    assert result["verified"][run_a.name]["content_hash_ok"] is True
+    assert result["verified"][run_b.name]["content_hash_ok"] is True
+    assert "actual_hash" in result["verified"][run_a.name]
+    restored_a = json.loads(outcome.outcome_path(run_a.name, root).read_text(encoding="utf-8"))
+    restored_b = json.loads(outcome.outcome_path(run_b.name, root).read_text(encoding="utf-8"))
+    assert restored_a["rows"]["000001"][outcome.MAIN] == 0.08     # 迁移前的旧值,不是新值
+    assert restored_b["rows"]["000002"][outcome.MAIN] == 0.09
+    csv_rows = outcome.load_ledger(root)
+    by_run = {r["run_id"]: r for r in csv_rows}
+    assert by_run[run_a.name][outcome.MAIN] == "0.08"
+    assert by_run[run_b.name][outcome.MAIN] == "0.09"
+    assert len({(r["run_id"], r["code"]) for r in csv_rows}) == len(csv_rows)
