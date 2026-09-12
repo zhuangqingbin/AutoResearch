@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 from pathlib import Path
 
@@ -109,6 +110,37 @@ class Sources:
         except OSError:
             return None
 
+    def find_input(self, code6: str, suffix: str) -> tuple[Path | None, str]:
+        """researcher 输入文件(slim/deep)三处住址(2026-09-12 §8;任务 5 修的第一个缺陷):
+        `trace/inputs/slim/`(retention 永久归档)→ `trace/staging/_external_inputs/`
+        (发布镜像,in-flight 的第二处)→ 共享 `context_<engine>/scan/<date>/_external_inputs/`
+        (老 run 兜底,**同数据日重跑会覆盖,不构成本 run 强归属**)。
+
+        返回 `(path, tier)`;`tier` ∈ `"archived"`(第一处,视同本 run 事实)/
+        `"mirror"`(第二处,本 run 发布镜像,视同本 run 事实)/
+        `"shared_no_attribution"`(第三处,只能当参考,调用方不得把它计入事实/BUY 叙事/
+        收益数字——spec §6.3 抢救件同一条纪律的镜像:mtime/同数据日不能证明归属)。
+        找不到 → `(None, "absent")`。
+        """
+        inputs_slim = self.inputs / "slim"
+        if inputs_slim.is_dir():
+            hit = next(iter(sorted(inputs_slim.glob(f"*{code6}*{suffix}"))), None)
+            if hit is not None:
+                return hit, "archived"
+        mirror_ext = self.mirror / "_external_inputs"
+        if mirror_ext.is_dir():
+            hit = next(iter(sorted(mirror_ext.glob(f"*{code6}*{suffix}"))), None)
+            if hit is not None:
+                return hit, "mirror"
+        if self.shared is not None:
+            shared_ext = self.shared / "_external_inputs"
+            if shared_ext.is_dir():
+                hit = next(iter(sorted(shared_ext.glob(f"*{code6}*{suffix}"))), None)
+                if hit is not None:
+                    self.used_shared = True
+                    return hit, "shared_no_attribution"
+        return None, "absent"
+
 
 def _z6(value: object) -> str:
     return str(value or "").split(".")[0].strip().zfill(6)
@@ -141,6 +173,260 @@ def _fmt(value: object, cap: int = 200) -> str:
 
 def _kv(pairs: list[tuple[str, object]]) -> list[str]:
     return [f"- **{k}**:{_fmt(v)}" for k, v in pairs]
+
+
+# ───────────────────── §4–§6:逐 invocation 证据合并(capsule ↔ ledger 补录) ─────────────────────
+#
+# 设计稿 2026-09-12 §6.2「按 invocation 合并」:capsule(`<run>/capsule/agents/index.json`)
+# 是**当场**证据;ledger(`agents_index/<report_run_id>.json`,由尚未实现的
+# `transcript_binder --offline` 生产,spec §9 产物表)是**事后补录**证据。合并必须逐条
+# invocation 决定,永远不能因为 capsule 索引文件**存在**就整份短路返回、无视 ledger——
+# 这正是本任务的 mutation probe (a) 要打中的那一条(V01:capsule 全 GONE、ledger 已补齐
+# 却因为"文件存在"被吞掉)。
+#
+# ledger 索引形状是本任务**合成的契约**(controller ruling #2:spec §9 只给了产物表,
+# 没给字段级 schema;Task 8 必须实现成这个样子,它的复核会对着这里核形状)。逐 invocation
+# 行复用 capsule `agents/index.json` 行的**同一套字段名**(status/reason/normalized/
+# snapshot_id/source_sha256/...)——ledger 的职责是"离线重建出同一张表",不是发明第二套
+# 词表;顶层再加 spec §6.1 明确要求的重建身份(`report_run_id`/`contract_run_id`/`engine`/
+# `run_manifest_sha256`)、`current_revision_id`、`parser_version`、`computed_at`。
+
+def _read_json_or_none(path: Path) -> object | None:
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _rows_by_invocation(doc: object) -> dict[str, dict]:
+    if not isinstance(doc, dict):
+        return {}
+    rows = doc.get("invocations")
+    if not isinstance(rows, list):
+        return {}
+    return {str(r["invocation_id"]): r for r in rows
+            if isinstance(r, dict) and r.get("invocation_id")}
+
+
+def _capsule_invocations(src: Sources) -> dict[str, dict]:
+    return _rows_by_invocation(_read_json_or_none(src.run / "capsule" / "agents" / "index.json"))
+
+
+def _ledger_agents_index_dir(src: Sources) -> Path:
+    """`agents_index/` 的根——沿用 `outcome.ledger_root`(不另写一处 `_ledger` 字面量,
+    同 `ledger_views.views_root` 的既定纪律)。"""
+    from autoresearch.scan.outcome import ledger_root
+
+    return ledger_root(src.run.parent) / "agents_index"
+
+
+def _ledger_index_doc(src: Sources, report_run_id: str) -> object | None:
+    return _read_json_or_none(_ledger_agents_index_dir(src) / f"{report_run_id}.json")
+
+
+def _ledger_invocations(src: Sources, report_run_id: str) -> dict[str, dict]:
+    return _rows_by_invocation(_ledger_index_doc(src, report_run_id))
+
+
+def _merge_invocation(capsule_row: dict | None, ledger_row: dict | None) -> dict:
+    """一条 invocation 的合并结果——原始状态/补录状态/实际来源/冲突全部保留(spec §6.2)。
+
+    `effective` 只在**恰好一边**有效、或两边一致时才置位;两边都 PRESENT 但内容(源摘要)
+    不同 → `conflict=True`、`effective=None`,绝不悄悄挑一边(V02)。"""
+    cap_present = isinstance(capsule_row, dict) and capsule_row.get("status") == "PRESENT"
+    led_present = isinstance(ledger_row, dict) and ledger_row.get("status") == "PRESENT"
+    original_status = (capsule_row.get("status") if isinstance(capsule_row, dict)
+                       else "NO_CAPSULE_INDEX")
+    backfill_status = (ledger_row.get("status") if isinstance(ledger_row, dict)
+                       else "NOT_BACKFILLED")
+    effective: dict | None = None
+    origin = "absent"
+    conflict = False
+    conflict_detail: str | None = None
+    if cap_present and led_present:
+        cap_digest = capsule_row.get("source_sha256")
+        led_digest = ledger_row.get("source_sha256")
+        if cap_digest and led_digest and cap_digest != led_digest:
+            conflict = True
+            conflict_detail = (f"capsule source_sha256={str(cap_digest)[:12]}… 与 ledger "
+                               f"source_sha256={str(led_digest)[:12]}… 不同,两边都在场但"
+                               f"内容冲突,不静默挑选")
+        else:
+            effective, origin = capsule_row, "capsule"
+    elif cap_present:
+        effective, origin = capsule_row, "capsule"
+    elif led_present:
+        effective, origin = ledger_row, "ledger_backfill"
+    return {
+        "capsule": capsule_row, "ledger": ledger_row,
+        "original_status": original_status, "backfill_status": backfill_status,
+        "effective": effective, "origin": origin,
+        "conflict": conflict, "conflict_detail": conflict_detail,
+    }
+
+
+def _merged_invocations(src: Sources, report_run_id: str) -> dict[str, dict]:
+    """capsule ∪ ledger 的 invocation_id 并集,逐条合并(从不因为文件存在就整份短路)。"""
+    cap_rows = _capsule_invocations(src)
+    led_rows = _ledger_invocations(src, report_run_id)
+    return {iid: _merge_invocation(cap_rows.get(iid), led_rows.get(iid))
+           for iid in sorted(set(cap_rows) | set(led_rows))}
+
+
+def _find_invocation(merged: dict[str, dict], role: str, code6: str) -> tuple[str, dict] | None:
+    """按角色 + 代码在合并表里找那条 invocation——`subject` 可能是展示名(含码但不等于
+    码,capsule `_agent_expectations` 的既有行为),所以用子串匹配,不要求恰好相等。"""
+    for iid, m in sorted(merged.items()):
+        row = m["capsule"] or m["ledger"]
+        if not isinstance(row, dict) or str(row.get("role")) != role:
+            continue
+        subject = str(row.get("subject") or "")
+        if subject == code6 or code6 in subject:
+            return iid, m
+    return None
+
+
+def _normalized_doc_for(src: Sources, report_run_id: str, m: dict) -> tuple[object | None, str]:
+    """合并结果 → 该 invocation 的 normalized 文档(读一次,不重新猜路径拼接规则)。
+
+    `effective is None`(冲突未消解/两边皆缺)时不读——没有单一可信来源可读;
+    `normalized` 引用缺失或指向的文件读不出来(corrupted normalized 场景)都返回
+    `(None, 原因)`,调用方据此渲染「证据不足」而不是空白或绝对断言。"""
+    row = m.get("effective")
+    if row is None:
+        return None, "两边均缺席,或两边冲突未消解——没有单一可信来源"
+    rel = row.get("normalized")
+    if not rel:
+        return None, "该 invocation 没有 normalized 产物引用"
+    if m["origin"] == "capsule":
+        path = src.run / "capsule" / rel
+    else:
+        path = _ledger_agents_index_dir(src) / rel
+    doc = _read_json_or_none(path)
+    if doc is None:
+        return None, f"normalized 产物缺失或损坏({rel})"
+    return doc, ""
+
+
+def _operations(doc: object) -> list[dict]:
+    if not isinstance(doc, dict):
+        return []
+    ops = doc.get("operations")
+    return [op for op in ops if isinstance(op, dict)] if isinstance(ops, list) else []
+
+
+def _ops_matching(ops: list[dict], filename: str) -> list[dict]:
+    out = []
+    for op in ops:
+        if op.get("path_source") != "tool_input":
+            continue
+        path = op.get("path")
+        if isinstance(path, str) and Path(path).name == filename:
+            out.append(op)
+    return out
+
+
+#: observation.kind(spec §3.1,逐字复用 Task 1 的词表)→ 中文人读标签。只做展示,
+#: 不改变 kind 本身的判定——分类权威在 `trace.transcripts.base.classify_observation`。
+_KIND_LABELS: dict[str, str] = {
+    "DISCOVERED": "发现(仅路径列出,未证明读到正文)",
+    "READ_REQUESTED": "已请求读取(无可关联返回)",
+    "READ_SUCCEEDED": "读取成功",
+    "READ_PARTIAL": "部分读取(分页/grep/截断,不满足全文断言)",
+    "READ_FAILED": "读取失败",
+    "WRITE_REQUESTED": "已请求写入(无可关联返回)",
+    "WRITE_SUCCEEDED": "写入成功",
+    "WRITE_FAILED": "写入失败",
+    "SEARCH_REQUESTED": "已请求搜索(无可关联返回)",
+    "SEARCH_SUCCEEDED": "搜索成功",
+    "SEARCH_FAILED": "搜索失败",
+}
+_READ_KINDS = frozenset({"READ_REQUESTED", "READ_SUCCEEDED", "READ_PARTIAL", "READ_FAILED"})
+_WRITE_KINDS = frozenset({"WRITE_REQUESTED", "WRITE_SUCCEEDED", "WRITE_FAILED"})
+
+
+def _read_status(ops_for_file: list[dict], *, insufficient: bool, reason: str) -> str:
+    """spec §3.1 末段的展示纪律,逐字照办:
+
+    - 区段缺失/交错/坏行/工具不支持 → 「证据不足,未观察到」(绝不是确定结论);
+    - 只有覆盖确定完整且操作可识别、且确实没找到匹配的读操作时,才可以说
+      「在该调用记录中未观察到成功读取」(唯一允许的强断言,且这句话本身也不是
+      「没读」——它明说是"在该调用记录中");
+    - 找到了操作 → 如实列出观察到的 kind(可能不止一种:先 REQUESTED 后 FAILED 等)。
+    """
+    if insufficient:
+        return f"证据不足,未观察到(原因:{reason})"
+    if not ops_for_file:
+        return "在该调用记录中未观察到成功读取"
+    kinds = sorted({op.get("kind") for op in ops_for_file if op.get("kind") in _READ_KINDS})
+    return "、".join(_KIND_LABELS.get(k, str(k)) for k in kinds) or "在该调用记录中未观察到成功读取"
+
+
+def _deep_expectation(card_kind: str | None, early_stop: dict | None) -> str:
+    """deep(P4)是否被期望到——只回答"这条路径要不要 deep",不判"做没做对"、不带评级/
+    处罚(controller ruling #3)。早停发生在 P4 之前 → 不要求;`card_kind` 明确
+    full/earlystop 时按卡种;两者都判不出来 → 未知。"""
+    phase = str((early_stop or {}).get("phase") or "")
+    if phase in {"P1", "P2", "P3"}:
+        return f"该路径不要求 deep(早停于 {phase},未到 P4)"
+    if card_kind == "earlystop":
+        return "该路径不要求 deep(卡种 earlystop)"
+    if card_kind == "full":
+        return "该路径要求 deep(卡种 full)"
+    return "未知(卡种未解析/早停记录缺失,无法判断——不额外给评级或处罚)"
+
+
+_EDIT_TOOL_NAMES = frozenset({"edit", "edit_file", "apply_patch", "notebookedit", "Edit",
+                              "NotebookEdit"})
+
+
+def _hash_compare(ops_for_file: list[dict], on_disk_path: Path | None) -> tuple[str, str]:
+    """写入 hash 与当前发布版本核验(spec §3.2 + 本任务 bullet 5)——**同产物核验**
+    (调用方保证只传同一产物自己的操作,intel 对 intel、卡对卡,不跨产物比较)。
+
+    返回 `(state, detail)`;state ∈:
+    - `UNKNOWN`           未观察到写入操作;
+    - `NO_FULL_POSTIMAGE` 全部写入都只有 diff(Edit/apply_patch),没有任何一次留下过
+      完整后镜像 hash 可核对;
+    - `SUBSEQUENT_EDIT`   有完整后镜像可核对,但它**不是最后一次写入**——之后还发生过
+      编辑(Edit/apply_patch 从不产出完整后镜像,spec §3.2),所以这次核对只能锚定在
+      "最后一次留下完整后镜像"的那次写入,不是"最后一次写入";
+    - `MATCH`/`DIFFERS`   与当前发布版本字节核对的结果(在没有后续编辑时才是"最终态"
+      本身的核对结果)。
+
+    真实写入序列里,Write 后接 Edit 是**常态**(先落一版骨架,再改几处)——Edit 本身
+    永远没有 artifact,如果只看"最后一条写入有没有 artifact"来判断,SUBSEQUENT_EDIT
+    永远走不到(每次都会先落到 NO_FULL_POSTIMAGE),所以要在写入序列里**倒着找最后一个
+    带完整后镜像的写入**,而不是只看序列的最后一条。
+    """
+    writes = [op for op in ops_for_file if op.get("kind") in _WRITE_KINDS]
+    if not writes:
+        return "UNKNOWN", "未观察到对应写入操作"
+    anchor_idx = None
+    for i in range(len(writes) - 1, -1, -1):
+        art = writes[i].get("artifact")
+        if isinstance(art, dict) and art.get("sha256"):
+            anchor_idx = i
+            break
+    if anchor_idx is None:
+        return "NO_FULL_POSTIMAGE", "只有 diff/无完整后镜像,无法核对最终字节"
+    has_later_edit = anchor_idx < len(writes) - 1
+    artifact = writes[anchor_idx]["artifact"]
+    if on_disk_path is None or not on_disk_path.is_file():
+        return "UNKNOWN", "当前发布版本文件缺失,无法核对"
+    try:
+        on_disk_sha = hashlib.sha256(on_disk_path.read_bytes()).hexdigest()
+    except OSError:
+        return "UNKNOWN", "当前发布版本文件读取失败,无法核对"
+    matched = on_disk_sha == artifact["sha256"]
+    if has_later_edit:
+        return ("SUBSEQUENT_EDIT",
+               "写入后又发生编辑,以最后一次完整后镜像为核对锚点,"
+               + ("当前字节与该锚点一致" if matched else "当前字节与该锚点不同"))
+    return (("MATCH", "与当前发布版本字节一致") if matched else
+           ("DIFFERS", "与当前发布版本不一致(内容已变化,或经历过脱敏)"))
 
 
 # ───────────────────────── 各段渲染 ─────────────────────────
@@ -191,6 +477,12 @@ def _sec_identity(src: Sources, code6: str) -> list[str]:
             ("迟到 session", anchor.get("exec_lag")),
             ("可执行状态", anchor.get("actionability_status")),
         ])
+    # R01(controller 验收矩阵):两类 sentinel(SENTINEL_EMPTY/SENTINEL_PINNED)与
+    # FORCED_FULL 是合法业务结果,不是异常——只在文件存在时现出一行,不为它单独伪造
+    # 缺席文案(旧 run 没有这份产物是正常的,不是"这段该有却没有")。
+    mode_doc = src.doc("run_mode.json")
+    if isinstance(mode_doc, dict) and mode_doc.get("mode"):
+        out.append(f"- **run_mode**:{mode_doc.get('mode')}")
     return out
 
 
@@ -207,9 +499,9 @@ def _sec_passport(src: Sources, code6: str) -> list[str]:
         row = next((e for e in entries if _z6(e.get("code")) == code6), None)
     if row is None:
         return out + ["- 护照里没有这只票(未进 L1 打分集,或护照当日未生成)"]
-    out.append("```json")
-    out.append(json.dumps(row, ensure_ascii=False, indent=1, sort_keys=True))
-    out.append("```")
+    # 紧凑单行(2026-09-12 Task 5:80 行摘要预算收紧后省行——不改内容,只改排版;
+    # 之前 `indent=1` 的多行缩进版没有任何测试依赖其换行形态)。
+    out.append(f"- {json.dumps(row, ensure_ascii=False, sort_keys=True)}")
     return out
 
 
@@ -295,20 +587,65 @@ def _sec_l3(src: Sources, code6: str) -> list[str]:
     return out
 
 
+#: 输入/产物住址 tier → 人读标签。`shared_no_attribution` 单独标 ⚠️——它是 spec §6.3
+#: 抢救件同一条纪律的镜像:只作参考,不构成本 run 强归属(controller ruling #5)。
+_TIER_LABEL: dict[str, str] = {
+    "archived": "已归档", "mirror": "镜像",
+    "shared_no_attribution": "⚠️仅共享·无强归属·仅供参考", "absent": "",
+}
+
+
 def _sec_l4(src: Sources, code6: str) -> list[str]:
     out = ["", "## ⑦ L4 研究"]
+    report_run_id = src.run.name
     prompt = src.find(f"reasoning/l4/_l4_prompt_{code6}.md", f"_l4_prompt_{code6}.md")
     intel = src.find(f"reasoning/l4/_l4_intel_{code6}.md", f"_l4_intel_{code6}.md")
-    slim = next((p for p in sorted((src.inputs / "slim").glob(f"*{code6}*_slim.md"))), None) \
-        if (src.inputs / "slim").is_dir() else None
-    deep = next((p for p in sorted((src.inputs / "slim").glob(f"*{code6}*_slim_deep.md"))), None) \
-        if (src.inputs / "slim").is_dir() else None
+    slim, slim_tier = src.find_input(code6, "_slim.md")
+    deep, deep_tier = src.find_input(code6, "_slim_deep.md")
+
+    # 逐 invocation 合并证据(spec §6.2)——l4-card 管 slim/deep/卡的读写,l4-intel 管
+    # 情报文件自己的写入;两者各自的 normalized 只读一次,不混用(读坏一个不牵连另一个)。
+    merged = _merged_invocations(src, report_run_id)
+    card_found = _find_invocation(merged, "l4-card", code6)
+    intel_found = _find_invocation(merged, "l4-intel", code6)
+
+    def _ops_for(found: tuple[str, dict] | None) -> tuple[list[dict], str]:
+        if found is None:
+            return [], "无可关联 invocation"
+        _, m = found
+        doc, reason = _normalized_doc_for(src, report_run_id, m)
+        if doc is None:
+            return [], (reason or "证据不可读")
+        return _operations(doc), ""
+
+    card_ops, card_ops_reason = _ops_for(card_found)
+    intel_ops, intel_ops_reason = _ops_for(intel_found)
+
+    def _input_line(label: str, path: Path | None, tier: str, *, ops: list[dict],
+                    ops_reason: str, extra: str = "") -> str:
+        if path is None:
+            return f"- {label}:{ABSENT}(未留存)"
+        line = f"- {label}:{src.rel(path)} · {path.stat().st_size}B"
+        tier_note = _TIER_LABEL.get(tier, tier)
+        if tier_note:
+            line += f" · {tier_note}"
+        if tier == "shared_no_attribution":
+            return line + " · 读取:不计入证据(参考资料)" + extra
+        matched = _ops_matching(ops, path.name)
+        status = _read_status(matched, insufficient=bool(ops_reason), reason=_fmt(ops_reason, 50))
+        return line + f" · 读取:{status}" + extra
+
+    card_kind, early_stop_entry = _card_kind_and_early_stop(src, code6)
+    deep_note = f" · {_deep_expectation(card_kind, early_stop_entry)}"
+
     out += [
         f"- 派发 prompt:{src.rel(prompt)}",
-        f"- slim(P1–P3 表面块):{src.rel(slim)}"
-        + (f" · {slim.stat().st_size} B(>8KB 才可信)" if slim else "(2026-08-26 前未留存)"),
-        f"- deep(P4 深核):{src.rel(deep)}",
-        f"- 活体情报:{src.rel(intel)}",
+        _input_line("slim(P1–P3 表面块)", slim, slim_tier, ops=card_ops, ops_reason=card_ops_reason),
+        _input_line("deep(P4 深核)", deep, deep_tier, ops=card_ops, ops_reason=card_ops_reason,
+                    extra=deep_note),
+        f"- 活体情报:{src.rel(intel)}"
+        + (f" · 写入核验:{_hash_compare(_ops_matching(intel_ops, intel.name) if intel else [], intel)[0]}"
+           if intel is not None else ""),
     ]
     tasks = src.doc("reasoning/l4/_l4_tasks.json", "_l4_tasks.json")
     if isinstance(tasks, dict):
@@ -358,7 +695,70 @@ def _sec_l4(src: Sources, code6: str) -> list[str]:
         if code6 in txt:
             card = cand
             break
-    out.append(f"- 发布卡:{src.rel(card)}")
+    card_hash_note = ""
+    if card is not None:
+        state, _detail = _hash_compare(_ops_matching(card_ops, card.name), card)
+        card_hash_note = f" · 写入核验:{state}"
+    out.append(f"- 发布卡:{src.rel(card)}{card_hash_note}")
+    return out
+
+
+def _card_kind_and_early_stop(src: Sources, code6: str) -> tuple[str | None, dict | None]:
+    """`deep` 期望判断要用的两件事——schema 2 才有 `card_context.card_kind`;schema 1/
+    解析失败/决策文件缺席一律 `None`(未知,不额外猜)。"""
+    doc = src.doc("_relative_buy_decision.json")
+    card_kind = None
+    if isinstance(doc, dict) and doc.get("schema_version") == 2:
+        row = next((c for c in (doc.get("candidates") or []) if _z6(c.get("code")) == code6), None)
+        if isinstance(row, dict):
+            ctx = row.get("card_context")
+            if isinstance(ctx, dict):
+                card_kind = ctx.get("card_kind")
+    stop = src.doc("_early_stop.json")
+    entry = stop.get(code6) if isinstance(stop, dict) else None
+    return card_kind, (entry if isinstance(entry, dict) else None)
+
+
+def _sec_e6_card_context(row: dict) -> list[str]:
+    """schema 2 的 `card_context`(spec §7.1)——三种降级态(无卡/卡解析失败/健康卡)
+    必须互不相同(controller ruling #1):`source.relative_path` 有没有值区分"根本没找到
+    卡"与"找到了但解析出问题",`parse_status`/`entry_stance` 再各自现出细节,不靠
+    `conflicts` 里的自然语言描述当唯一辨识信号。schema 1(row 没有这个键)返回 `[]`,
+    这本身就是第四种、与前三种都不同的渲染(整行都不出现)。"""
+    ctx = row.get("card_context")
+    if not isinstance(ctx, dict):
+        return []
+    source = ctx.get("source") or {}
+    path = source.get("relative_path")
+    return [f"- card_context:card_kind={ctx.get('card_kind')} · entry_stance={ctx.get('entry_stance')}"
+           f" · parse_status={ctx.get('parse_status')} · source={path or ABSENT}"
+           f"({source.get('snapshot_quality') or ABSENT})"]
+
+
+def _sec_e6_selection(doc: dict) -> list[str]:
+    """schema 2 的实际选择依据(spec §7.2)——`why` 按决策文件算出的样子原样展示,
+    这里**不重算、不改写**(controller ruling #1 的硬约束)。"""
+    out: list[str] = []
+    sel = doc.get("selection")
+    if isinstance(sel, dict):
+        winner = sel.get("winner") or {}
+        pop = sel.get("population") or {}
+        out.append(f"- selection:pool={sel.get('pool')} · candidates={pop.get('candidates')}"
+                   f"→passed={pop.get('passed_hard_gates')}→after_pinned="
+                   f"{pop.get('after_pinned_exclusion')}→final_pool={pop.get('final_pool')}"
+                   f" · winner={winner.get('code') or '—'}(池内第{winner.get('pool_rank')}名,"
+                   f"观察 rank 见候选本行)")
+    veto = doc.get("veto_accounting")
+    if isinstance(veto, dict):
+        out.append(f"- veto_accounting:vetoed_stocks={veto.get('vetoed_stocks')}"
+                   f" · by_gate={json.dumps(veto.get('by_gate') or {}, ensure_ascii=False, sort_keys=True)}")
+    conflicts = doc.get("conflicts") or []
+    if conflicts:
+        types = "、".join(sorted({str(c.get("type")) for c in conflicts if isinstance(c, dict)}))
+        out.append(f"- ⚠️ conflicts({len(conflicts)}):{types}(展示性,不改选择——why 已把它算进解释)")
+    why = doc.get("why")
+    if why:
+        out.append(f"- why:{_fmt(why, 400)}")
     return out
 
 
@@ -367,12 +767,16 @@ def _sec_e6(src: Sources, code6: str) -> list[str]:
     doc = src.doc("_relative_buy_decision.json")
     if not isinstance(doc, dict):
         return out + [f"- {ABSENT}(决策文件未留存 —— 2026-08-26 前它不在 run 目录里)"]
+    schema2 = doc.get("schema_version") == 2
     buys = [b.get("code") for b in (doc.get("buys") or [])]
     row = next((c for c in (doc.get("candidates") or []) if _z6(c.get("code")) == code6), None)
     out.append(f"- 当日 mode={doc.get('mode')} · rule={doc.get('rule_version')} · "
-               f"blocked={doc.get('blocked')} · BUY={buys or '—'}")
+               f"blocked={doc.get('blocked')} · BUY={buys or '—'}"
+               + (f" · schema={doc.get('schema_version')}" if schema2 else ""))
     if row is None:
         out.append("- 本票不在 E6 候选(当日未派 L4 / 不在候选池)")
+        if schema2:
+            out += _sec_e6_selection(doc)
         return out
     out += _kv([
         ("eligible / rank", f"{row.get('eligible')} / {row.get('rank')}"),
@@ -386,6 +790,9 @@ def _sec_e6(src: Sources, code6: str) -> list[str]:
         out.append(f"- 被排除:`{e.get('reason')}` · {e.get('detail')}")
     if code6 in [_z6(b) for b in buys]:
         out.append("- ✅ **本票就是当日 BUY**")
+    if schema2:
+        out += _sec_e6_card_context(row)
+        out += _sec_e6_selection(doc)
     return out
 
 
@@ -403,7 +810,12 @@ def _sec_outcome(src: Sources, code6: str) -> list[str]:
     out = ["", "## ⑩ 结果(事后)"]
     # 结果落 `_ledger/outcome/<run_id>.json`(**不在 run 目录内**)—— run 目录有「发布后
     # 不再变」的 MANIFEST 不变量,事后往里写会让每个 run 的 `verify` 永远报一条 `extra`。
-    from autoresearch.scan.outcome import MATURE, outcome_path
+    from autoresearch.scan.outcome import (
+        MATURE,
+        OUTCOME_SCHEMA_VERSION,
+        TRADE_CAL_QUALITY,
+        outcome_path,
+    )
     doc: object | None = None
     p = outcome_path(src.run.name, src.run.parent)
     if p.is_file():
@@ -415,19 +827,29 @@ def _sec_outcome(src: Sources, code6: str) -> list[str]:
         return out + [f"- {ABSENT}(结果账本尚未回填 —— "
                       f"`python -m autoresearch.scan.outcome fill`)"]
     status = str(doc.get("outcome_status") or "")
+    cal_quality = str(doc.get("calendar_quality") or "")
     out.append(f"- 口径:主尺 {doc.get('ruler')} · T+1 {doc.get('t1') or ABSENT}"
                f" → T+2 {doc.get('t2') or ABSENT}"
-               f" · 日历 quality={doc.get('calendar_quality') or ABSENT}"
+               f" · 日历 quality={cal_quality or ABSENT}"
                f" · 决策 mode={doc.get('decision_mode') or '?'}"
                + ("(读自共享 staging,未必是本 run 那份)"
                   if doc.get("read_from_shared_staging") else ""))
-    if status != MATURE:
+    # P0 容忍(controller ruling #4):schema 1(2026-09-12 日历完整性修复前)的旧账本
+    # 即便 `outcome_status` 字面量恰好是 `MATURE`,也从未核验过 T+1/T+2 真的来自可信
+    # 交易日历——schema/日历质量任一不满足"恰好等于可信字面量",一律渲染成未核验,
+    # 绝不可能被渲染成"已核验"(`outcome._is_settled` 同一条纪律的视图镜像)。
+    verified = (status == MATURE and doc.get("schema_version") == OUTCOME_SCHEMA_VERSION
+                and cal_quality == TRADE_CAL_QUALITY)
+    if not verified:
         # 2026-09-12 §2(ruling #2):非 MATURE 的文档不携带可汇总的主尺数值——这里没有
         # "半个数字"可展示,只有状态与原因(不落到下面 `row is None` 的通用缺席文案,
         # 那句话是给"这只票压根没被评级/没入 finalist"用的,与"整个 run 还没核验通过"
         # 是两件不同的事,必须分开说)。
+        legacy = ("(schema=" + str(doc.get("schema_version") or ABSENT)
+                 + "·早于日历完整性修复,T+1/T+2 未经可信交易日历核验,不代表已知涨跌)"
+                 if doc.get("schema_version") != OUTCOME_SCHEMA_VERSION else "")
         return out + [f"- **未成熟/未核验**:status={status or ABSENT}"
-                      f" · 原因:{doc.get('reason') or ABSENT}"]
+                      f" · 原因:{doc.get('reason') or ABSENT}{legacy}"]
     row = (doc.get("rows") or {}).get(code6)
     if not isinstance(row, dict):
         return out + ["- 本票不在结果账本(当日未被评级/未入 finalist)"]
@@ -435,7 +857,9 @@ def _sec_outcome(src: Sources, code6: str) -> list[str]:
         ("角色", row.get("role")),
         ("T+1 收 / 当日涨幅", f"{row.get('t1_close')} / {row.get('t1_pct_chg')}%"),
         ("T+1 收盘区间位置", row.get("t1_pos_in_range")),
-        ("执行线", f"exec_ok={row.get('exec_ok')}(追强否决口径)"),
+        # 「执行条件」是**事后按 T+1 收盘价测算**的判断,不是盘中任何时刻被核验过
+        # (spec §8 末段:「日线收盘条件不证明盘中某时刻核验过」)。
+        ("执行条件(事后按收盘价测算,非盘中核验)", f"exec_ok={row.get('exec_ok')}(追强否决口径)"),
         ("T+2 开", row.get("t2_open")),
         ("推荐毛收益 gap_c1_o2(非实际成交)", f"{row.get('gap_c1_o2')}"),
         ("相对全市场 / 行业", f"{row.get('rel_gap_market')} / {row.get('rel_gap_sector')}"),
@@ -447,33 +871,220 @@ def _sec_outcome(src: Sources, code6: str) -> list[str]:
     # 不是渲染出一个空值(Ruling #3:不适用与有原因的错误态不能塌缩成同一种"空")。
     exec_status = row.get("exec_outcome_status")
     if exec_status is not None:
-        out.append(f"- ⚠️ **执行反事实估计**(迟到锚,非实际成交,不与主尺混算)"
-                   f":exec_status={exec_status} · exec_gap_c1_o2={row.get('exec_gap_c1_o2')}")
+        out.append(f"- ⚠️ **执行反事实估计(迟到报告反事实收益)**(迟到锚,非实际成交,"
+                   f"不与主尺混算):exec_status={exec_status}"
+                   f" · exec_gap_c1_o2={row.get('exec_gap_c1_o2')}")
+    # 收益标签四分(controller ruling #4/spec §8 末段):推荐毛收益、事后执行条件测算、
+    # 迟到报告反事实收益都已经分开命名——第四个"实际成交"必须**独立一行**说"未知",
+    # 不能靠"非实际成交"四个字的否定形态替代(那只是给前三者的免责说明,不是这句本身)。
+    out.append("- 实际成交:未知(本模块未接 broker,无法证明任何一笔真的成交;以上均为估算,不是净收益)")
     return out
 
 
-def render(run_dir: Path | str, code: str) -> str:
+def _visible_text_blocks(doc: object, *, cap_chars: int = 300) -> list[str]:
+    """「可见分析文本」(spec §8:详细模式新增)——普通 assistant 文本/harness 摘要,
+    每块至多 `cap_chars` 字。**保守提取**:只认 kind 不是 tool_request/tool_result、
+    payload 里带字符串 `text`/`content` 字段的 item;不认识的形状返回空,不猜、不报错
+    (item kind 的完整分类是 Task 2 的地界,这里只做已知形状的最小提取,已在报告里
+    向复核者标注为已知简化)。"""
+    if not isinstance(doc, dict):
+        return []
+    items = doc.get("items")
+    if not isinstance(items, list):
+        return []
+    out: list[str] = []
+    for item in items:
+        if not isinstance(item, dict) or item.get("kind") in ("tool_request", "tool_result"):
+            continue
+        payload = item.get("payload")
+        text = (payload.get("text") or payload.get("content")) if isinstance(payload, dict) else None
+        if isinstance(text, str) and text.strip():
+            clean = text.strip()
+            out.append(clean if len(clean) <= cap_chars else clean[: cap_chars - 1] + "…")
+    return out
+
+
+def _sec_scene(src: Sources, code6: str, *, verbose: bool) -> list[str]:
+    """⑪ 证据现场——capsule↔ledger 按 invocation 合并后的展示层(spec §6.2/§8)。
+
+    摘要模式只给「来源+原始/补录状态+冲突」与「成功/失败/部分/缺口」计数(spec §8:
+    「80 行内必须保留所有冲突类型、缺口计数」);详细模式再加逐项操作(call_id/kind/
+    响应与产物摘要)与可见文本块。"""
+    out = ["", "## ⑪ 证据现场(transcript 归属)"]
+    report_run_id = src.run.name
+    cap_rows = _capsule_invocations(src)
+    led_rows = _ledger_invocations(src, report_run_id)
+    if not cap_rows and not led_rows:
+        return out + ["- capsule/ledger 均无证据索引(该 run 早于/未启用 transcript 绑定;"
+                      "不代表研究没发生,只代表这层证据没有留痕)"]
+    merged = _merged_invocations(src, report_run_id)
+    relevant: list[tuple[str, str, dict]] = []
+    for role in ("l4-card", "l4-intel"):
+        found = _find_invocation(merged, role, code6)
+        if found is not None:
+            iid, m = found
+            relevant.append((role, iid, m))
+    if not relevant:
+        return out + ["- 本票没有可关联的 l4-card/l4-intel invocation"
+                      "(未派发,或期望/证据索引均没有这只票的行)"]
+    kind_tally: dict[str, int] = {}
+    gap_n = 0
+    conflict_lines: list[str] = []
+    op_lines: list[str] = []
+    text_blocks: list[str] = []
+    for role, iid, m in relevant:
+        out.append(f"- {role}(`{iid}`):来源={m['origin']} · 原始状态={m['original_status']}"
+                   f" · 补录状态={m['backfill_status']}"
+                   + (" · ⚠️冲突" if m["conflict"] else ""))
+        if m["conflict"]:
+            conflict_lines.append(f"  - {role}:{_fmt(m['conflict_detail'], 200)}")
+        doc, reason = _normalized_doc_for(src, report_run_id, m)
+        if doc is None:
+            gap_n += 1
+            conflict_lines.append(f"  - {role}:证据不足,未观察到(原因:{_fmt(reason, 120)})")
+            continue
+        # 快照身份(2026-09-13 复核更正):`agents/normalized/<id>.json` 顶层自带
+        # `snapshot_id`(capsule.py 写入,Task 2 原始提交就有)——可以如实标注"这批操作
+        # 来自哪个快照",但**不能**据此假装知道它在 transcript 里的具体行号
+        # (`item_index` 只是它在本 invocation 归一化 items 列表里的位置,过滤/展开会让
+        # 它对不上原始行——2026-09-13 Task 2 复核更正,字段已改名 `item_index`)。
+        snapshot_id = doc.get("snapshot_id") if isinstance(doc, dict) else None
+        for op in _operations(doc):
+            k = str(op.get("kind"))
+            kind_tally[k] = kind_tally.get(k, 0) + 1
+            if verbose:
+                resp = op.get("response") or {}
+                art = op.get("artifact") or {}
+                op_lines.append(
+                    f"  - call_id={op.get('call_id') or '—'} · kind={k}"
+                    f" · tool={op.get('tool_name')} · path={op.get('path') or '?'}"
+                    f" · snapshot={str(snapshot_id)[:12] if snapshot_id else '—'}"
+                    f" · item_index={op.get('item_index')}(归一化记录内位置,非 transcript 行号)"
+                    f" · response_sha256={str(resp.get('sha256'))[:12] if resp.get('sha256') else '—'}"
+                    f" · artifact_sha256={str(art.get('sha256'))[:12] if art.get('sha256') else '—'}")
+        if verbose and len(text_blocks) < 6:
+            text_blocks += _visible_text_blocks(doc)[: 6 - len(text_blocks)]
+    out += conflict_lines
+    success = sum(kind_tally.get(k, 0) for k in
+                 ("READ_SUCCEEDED", "WRITE_SUCCEEDED", "SEARCH_SUCCEEDED"))
+    partial = kind_tally.get("READ_PARTIAL", 0)
+    failed = sum(kind_tally.get(k, 0) for k in ("READ_FAILED", "WRITE_FAILED", "SEARCH_FAILED"))
+    requested = sum(kind_tally.get(k, 0) for k in
+                    ("READ_REQUESTED", "WRITE_REQUESTED", "SEARCH_REQUESTED"))
+    out.append(f"- 观察计数:成功 {success} · 部分 {partial} · 失败 {failed} · 仅请求 {requested}"
+               f" · 缺口(证据不足) {gap_n}")
+    if verbose:
+        from autoresearch.scan.exec_anchor import read_execution
+
+        out.append("- 逐项操作(call_id 级;`item_index` 是它在归一化记录里的位置,"
+                   "不是 transcript 行号——快照身份见 `snapshot` 与上方来源/invocation 行):")
+        out += (op_lines or ["  - (无可分类的操作;normalized 存在但 operations 为空)"])
+        anchor = read_execution(src.run)
+        approved = anchor.get("decision_approved_at")
+        out.append(f"- 时间锚:决策批准时刻={approved or ABSENT}"
+                   "(单项操作是否早于/晚于批准时刻,取决于 transcript 时间戳是否留存;"
+                   "缺失一律显示未知,不能因为文件被归档就推断当时已看过)")
+        if text_blocks:
+            out.append(f"- 可见分析文本({len(text_blocks)} 块,每块≤300字):")
+            out += [f"  > {t}" for t in text_blocks]
+    return out
+
+
+_SUMMARY_LINE_BUDGET = 80
+
+
+#: 摘要预算超限时**受保护、永不截断**的段:①身份/来源+执行时间锚、⑦研究证据(O01/O02
+#: 就长在这里)、⑧E6 实际选择+卡面冲突、⑨brief、⑩收益口径——逐字对应 spec §8「默认摘要
+#: 优先展示身份/来源、E6 实际选择、卡面冲突……已有执行时间锚与收益口径」那句列的优先级。
+#: 可截断的只剩②候选护照/③L1/④L2/⑤pass1/⑥L3 判断文本——**行动漏斗的早段叙事**,真正
+#: 复盘时这几段最先被跳读,也是历史上唯一没有测试断言依赖其"在摘要模式里完整出现"的段。
+_PROTECTED_SECTIONS = frozenset({"_sec_identity", "_sec_l4", "_sec_e6", "_sec_brief", "_sec_outcome"})
+
+
+def render(run_dir: Path | str, code: str, *, verbose: bool = False) -> str:
     src = Sources(Path(run_dir))
     code6 = _z6(code)
     head = [f"# 推荐链路 — {code6} @ run `{Path(run_dir).name}`(数据日 {src.analysis_date or '?'})",
             "",
             "_确定性生成(零 LLM);每段的「缺席」都是事实,不是渲染失败。仅供研究,非投资建议。_"]
-    body: list[str] = []
-    for fn in (_sec_identity, _sec_passport, _sec_l1, _sec_l2, _sec_pass1,
-               _sec_l3, _sec_l4, _sec_e6, _sec_brief, _sec_outcome):
+    order = (_sec_identity, _sec_passport, _sec_l1, _sec_l2, _sec_pass1,
+            _sec_l3, _sec_l4, _sec_e6, _sec_brief, _sec_outcome)
+    chunks: dict[str, list[str]] = {}
+    for fn in order:
         try:
-            body += fn(src, code6)
+            chunks[fn.__name__] = fn(src, code6)
         except Exception as exc:  # noqa: BLE001 — 一段读坏不该让整张视图消失
-            body += ["", f"## {fn.__name__} 渲染失败:{type(exc).__name__}: {exc}"]
+            chunks[fn.__name__] = ["", f"## {fn.__name__} 渲染失败:{type(exc).__name__}: {exc}"]
+    body = [ln for fn in order for ln in chunks[fn.__name__]]
+    try:
+        scene = _sec_scene(src, code6, verbose=verbose)
+    except Exception as exc:  # noqa: BLE001 — 同上,⑪ 读坏不该拖垮整张视图
+        scene = ["", f"## ⑪ 证据现场 渲染失败:{type(exc).__name__}: {exc}"]
     # 「读了共享 staging」这条警示只能**最后**判:`used_shared` 是各段读盘时才置位的,
     # 放进 ① 会永远为假(① 跑在所有读盘之前)——写在开头的探针读不到还没发生的事实,
-    # 与「brief 读了 relative_buy 的半成品」同一族的时序坑。
+    # 与「brief 读了 relative_buy 的半成品」同一族的时序坑。`find_input` 命中 shared
+    # 一样会置位这个旗子,所以「shared 输入参考」也会触发同一条警示。
+    tail: list[str] = []
     if src.used_shared:
-        body += ["", "---", "",
-                 "⚠️ **本视图有片段读自共享 staging**(`context_*/scan/<date>/`)—— 同数据日"
-                 "重跑会原地覆盖它,那些片段**未必是本 run 当时那份**"
-                 "(2026-08-26 之前的 run 全部如此)。"]
-    return "\n".join(head + body) + "\n"
+        tail = ["", "---", "",
+               "⚠️ **本视图有片段读自共享 staging**(`context_*/scan/<date>/`)—— 同数据日"
+               "重跑会原地覆盖它,那些片段**未必是本 run 当时那份**"
+               "(2026-08-26 之前的 run 全部如此)。"]
+    if verbose:
+        return "\n".join(head + body + scene + tail) + "\n"
+    total = len(head) + len(body) + len(scene) + len(tail)
+    if total <= _SUMMARY_LINE_BUDGET:
+        return "\n".join(head + body + scene + tail) + "\n"
+    # 摘要预算超限(spec §8):受保护段(见 `_PROTECTED_SECTIONS`)与 scene(⑪ 的冲突类型/
+    # 缺口计数)、tail(共享 staging 警示)永不截断;head 同样不截。截断只吃可截断段的预算,
+    # **按原有顺序**从前往后填,填满即止——不改变任何一段在文档里出现的相对位置,只在
+    # 超出处插入一条指向 `--verbose` 的提示,不吞掉后面受保护段的内容(旧实现的真实缺陷:
+    # ⑩ 结果段曾经因为排在 body 末尾被整段砍掉,收益口径反而是最先消失的东西)。
+    protected_len = sum(len(chunks[fn.__name__]) for fn in order
+                        if fn.__name__ in _PROTECTED_SECTIONS)
+    trimmable_budget = max(0, _SUMMARY_LINE_BUDGET - len(head) - len(scene) - len(tail)
+                           - protected_len - 2)   # +2:截断提示本身占的行数
+    # 两遍:第一遍只算「在哪一段可截断段里砍、砍剩多少、一共省略几行」,不产出文本——
+    # 省略总数要看完全部可截断段才知道,不能一边拼一边写一个还没算完的数字。
+    used = 0
+    omitted = 0
+    cut_at: str | None = None
+    keep_of_cut = 0
+    for fn in order:
+        if fn.__name__ in _PROTECTED_SECTIONS:
+            continue
+        piece = chunks[fn.__name__]
+        if cut_at is not None:
+            omitted += len(piece)
+            continue
+        remain = trimmable_budget - used
+        if len(piece) <= remain:
+            used += len(piece)
+        else:
+            cut_at = fn.__name__
+            keep_of_cut = max(0, remain)
+            omitted += len(piece) - keep_of_cut
+    marker = ["", f"…(摘要预算超限,已省略 {omitted} 行 —— 完整链路见 `--verbose`)"]
+    # 第二遍:按原有顺序拼,截断提示紧跟在真正被砍的那一段后面(不是甩到全文最后),
+    # 后面的受保护段(⑦⑧⑨⑩)照旧完整出现在它们本来的位置。
+    new_body: list[str] = []
+    cut_done = False
+    for fn in order:
+        piece = chunks[fn.__name__]
+        if fn.__name__ in _PROTECTED_SECTIONS:
+            new_body += piece
+        elif cut_done:
+            continue
+        elif fn.__name__ == cut_at:
+            new_body += piece[:keep_of_cut] + marker
+            cut_done = True
+        else:
+            new_body += piece
+    if cut_at is None:
+        # 可截断段全部放得下(超预算全部来自受保护段本身)——没有能安全砍的地方,
+        # 宁可略超预算也不能吞掉 spec 点名必须留存的内容,仍然给出 `--verbose` 指向。
+        new_body += marker
+    return "\n".join(head + new_body + scene + tail) + "\n"
 
 
 def _resolve_run(value: str) -> Path:
@@ -486,12 +1097,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("run", help="run 目录或 run_id(如 20260825_2149)")
     ap.add_argument("code", help="6 位股票代码")
     ap.add_argument("--out", default=None, help="落盘路径(默认打到 stdout)")
+    ap.add_argument("--verbose", action="store_true",
+                    help="详细模式:逐项操作 call_id/来源/字节摘要/版本匹配/可见分析文本"
+                         "(spec §8);默认只打印 ≤80 行摘要,截断处指向本参数")
     args = ap.parse_args(argv)
     run_dir = _resolve_run(args.run)
     if not run_dir.is_dir():
         print(f"run 目录不存在:{run_dir}")
         return 2
-    md = render(run_dir, args.code)
+    md = render(run_dir, args.code, verbose=args.verbose)
     if args.out:
         Path(args.out).write_text(md, encoding="utf-8")
         print(f"[chain_view] → {args.out}")

@@ -155,7 +155,14 @@ def test_outcome_section_separates_the_execution_counterfactual_from_the_main_ru
     md_late = chain_view.render(run, "603317")
     assert "反事实" in md_late and "非实际成交" in md_late
     assert "0.077" in md_late
-    assert "实际成交" not in md_late.replace("非实际成交", "")   # 唯一出现只在"非实际成交"里
+    # 2026-09-12 Task 5(controller ruling #4):spec §8 末段要求"推荐毛收益、事后执行
+    # 条件测算、迟到报告反事实收益、实际成交"四个标签必须分开命名——"未接 broker,
+    # 实际成交未知"必须是独立一行的断言,不能只靠"非实际成交"四个字的否定形态代替
+    # (那句是给前三者的免责说明,不是"实际成交"这件事本身的答案)。旧断言(唯一出现
+    # 只在"非实际成交"子串里)因此改向:两处"非实际成交"标注仍在,外加一条独立的
+    # "实际成交:未知"事实行。
+    assert md_late.count("非实际成交") == 2   # 推荐毛收益 + 执行反事实估计,各自标注
+    assert "实际成交:未知" in md_late
 
 
 def test_full_chain_links_every_stage(tmp_path, monkeypatch):
