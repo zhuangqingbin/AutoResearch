@@ -21,9 +21,11 @@ files, not inferred from the harness docs:
 from __future__ import annotations
 
 import json
+import time
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from autoresearch.common import workspace as ws
@@ -96,6 +98,211 @@ def locate_candidates(
         )
         for path in sorted(paths)
     ]
+
+
+# ---------------------------------------------------------------------------
+# Scene reconstruction (2026-09-12 design §4.3/§4.4, Task 3): candidate
+# *discovery* across ``~/.codex/sessions/**`` (never attempted before this
+# task -- `CodexTranscriptAdapter.locate` only replays *already-bound* rows
+# from `bindings.jsonl`, it never walks the filesystem) and mapping a known
+# wall-clock window onto one rollout's own ordinals. Both are pure discovery/
+# narrowing helpers: neither one *decides* an attribution -- that is
+# `scan.transcript_binder.assign`'s job (spec §4.5, ruling 2: never a
+# position/time-order guess).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RolloutSearch:
+    """One location pass's honest self-report.
+
+    Spec §4.3: "显式记录搜索范围、候选数与耗时" -- a caller must be able to tell
+    "genuinely absent" from "the search window was too narrow", so every
+    field describing *how wide* phase 1 looked is explicit, never implied.
+    """
+
+    candidates: tuple[Path, ...]
+    searched_from: str
+    searched_to: str
+    scanned_files: int
+    elapsed_seconds: float
+
+
+def _default_sessions_root() -> Path:
+    return Path.home() / ".codex" / "sessions"
+
+
+def _session_meta_row(path: Path) -> Mapping[str, object] | None:
+    """Read just *path*'s own ``session_meta`` row (real rollouts: row 0).
+
+    Never the full rollout -- phase 2 only needs `session_id`/`cwd` to
+    narrow, and reading one row per phase-1 hit keeps discovery cheap even
+    across a wide date range. A missing/malformed first row (or one that
+    is not `session_meta`) yields ``None``: this file was still *scanned*
+    (counted in `RolloutSearch.scanned_files`), it simply cannot be *narrowed*
+    by content, an honest distinction spec §4.3 requires.
+    """
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:  # noqa: BLE001 - one bad first line is a fact
+                    return None
+                if isinstance(row, dict) and row.get("type") == "session_meta":
+                    payload = row.get("payload")
+                    return payload if isinstance(payload, dict) else {}
+                return None
+    except OSError:
+        return None
+    return None
+
+
+def discover_rollout_candidates(
+    run_identity: RunIdentity,
+    *,
+    sessions_root: Path | str | None = None,
+    lookback_days: int = 10,
+    now: datetime | None = None,
+) -> RolloutSearch:
+    """Enumerate rollout files that could plausibly evidence *run_identity*.
+
+    Spec §4.3 ("支持跨日恢复"): a session created on an earlier day and
+    resumed today must be findable, so the date range searched is anchored on
+    *today* (``now``), walking backward ``lookback_days`` -- never anchored
+    on ``run_identity.started_at`` (a *resumed* session's rollout file was
+    created on some earlier day this run's own start time says nothing
+    about). ``lookback_days=10`` is a deliberate, documented judgment call --
+    generous enough for a long-weekend resume without becoming an unbounded
+    directory walk; flagged for the reviewer as a constant with no other
+    source of truth in this codebase (no config knob, no prior convention to
+    derive it from).
+
+    Two phases, per spec: phase 1 (below) only *narrows* -- a directory/
+    filename-shaped glob across ``[today - lookback_days, today]`` for
+    ``rollout-*.jsonl``. Phase 2 reads each phase-1 hit's own
+    :func:`_session_meta_row` and keeps a file only when its `session_id`
+    matches ``run_identity.session_ref`` (the priority order spec §4.3
+    states: "session_ref 优先"); without a `session_ref`, narrows instead by
+    `cwd` (when known). Neither phase promotes a result to certainty by
+    position, count, or mtime -- an unnarrowed multi-candidate result (no
+    `session_ref` and no `cwd` to check) is returned as-is; what that means
+    for attribution is `assign()`'s decision, never this function's.
+    """
+    started = time.monotonic()
+    root = Path(sessions_root) if sessions_root is not None else _default_sessions_root()
+    anchor = now.date() if now is not None else datetime.now(timezone.utc).date()
+    start_date = anchor - timedelta(days=max(int(lookback_days), 0))
+
+    scanned: list[Path] = []
+    cursor = start_date
+    while cursor <= anchor:
+        day_dir = root / f"{cursor.year:04d}" / f"{cursor.month:02d}" / f"{cursor.day:02d}"
+        if day_dir.is_dir():
+            scanned.extend(sorted(day_dir.glob("rollout-*.jsonl")))
+        cursor += timedelta(days=1)
+
+    session_ref = run_identity.session_ref
+    cwd = str(run_identity.cwd) if run_identity.cwd is not None else None
+    decided: list[Path] = []
+    for path in scanned:
+        meta = _session_meta_row(path)
+        if meta is None:
+            continue
+        if session_ref is not None:
+            if str(meta.get("session_id") or "") == session_ref:
+                decided.append(path)
+            continue
+        if cwd is not None:
+            if str(meta.get("cwd") or "") == cwd:
+                decided.append(path)
+            continue
+        decided.append(path)
+
+    elapsed = time.monotonic() - started
+    return RolloutSearch(
+        candidates=tuple(sorted(decided)),
+        searched_from=start_date.isoformat(),
+        searched_to=anchor.isoformat(),
+        scanned_files=len(scanned),
+        elapsed_seconds=elapsed,
+    )
+
+
+def ordinal_window_for_timestamps(
+    rows: Sequence[Mapping[str, object]],
+    *,
+    start_ts: str | None,
+    end_ts: str | None,
+) -> tuple[int | None, int | None, str]:
+    """Map an authoritative wall-clock window onto *this* rollout's own ordinals.
+
+    Spec §4.4 ("区段"): both edges of the window must come from a genuine
+    per-attempt fact (a TASK/AGENT event's own timestamp) supplied by the
+    caller -- this function never sorts *rows* by time and hands out
+    positions (ruling 2); it only answers "given that I already know this
+    attempt's [start, end], which of *this file's own* rows fall inside it".
+    Which file/attempt a candidate belongs to is never decided here.
+
+    Returns ``(start_ordinal, end_ordinal, quality)``:
+
+    - ``quality="complete"`` -- both edges land on a real row's ordinal.
+    - ``quality="partial"`` -- only one edge does (the window's other end is
+      open, e.g. a claimed-but-not-yet-terminal attempt).
+    - ``quality="unknown"`` -- neither timestamp was supplied, no row in
+      *rows* carries a parseable ``timestamp``/``ordinal`` pair, or the
+      resolved window would end before it starts (an inconsistent claim,
+      never guessed away).
+    """
+    if not start_ts and not end_ts:
+        return None, None, "unknown"
+
+    def _parse(value: str) -> datetime | None:
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            return None
+
+    start_dt = _parse(start_ts) if start_ts else None
+    end_dt = _parse(end_ts) if end_ts else None
+
+    ordinals: list[tuple[datetime, int]] = []
+    for row in rows:
+        raw_ts = row.get("timestamp")
+        ordinal = row.get("ordinal")
+        if not isinstance(raw_ts, str) or type(ordinal) is not int:
+            continue
+        parsed = _parse(raw_ts)
+        if parsed is None:
+            continue
+        ordinals.append((parsed, ordinal))
+    if not ordinals:
+        return None, None, "unknown"
+    ordinals.sort(key=lambda item: item[0])
+
+    start_ordinal: int | None = None
+    if start_dt is not None:
+        for parsed, ordinal in ordinals:
+            if parsed >= start_dt:
+                start_ordinal = ordinal
+                break
+    end_ordinal: int | None = None
+    if end_dt is not None:
+        for parsed, ordinal in reversed(ordinals):
+            if parsed <= end_dt:
+                end_ordinal = ordinal
+                break
+
+    if start_ordinal is not None and end_ordinal is not None:
+        if end_ordinal < start_ordinal:
+            return None, None, "unknown"
+        return start_ordinal, end_ordinal, "complete"
+    if start_ordinal is not None or end_ordinal is not None:
+        return start_ordinal, end_ordinal, "partial"
+    return None, None, "unknown"
 
 
 class CodexTranscriptAdapter:
@@ -630,4 +837,10 @@ class CodexTranscriptAdapter:
         return self.stats(ref).usage
 
 
-__all__ = ["CodexTranscriptAdapter", "locate_candidates"]
+__all__ = [
+    "CodexTranscriptAdapter",
+    "RolloutSearch",
+    "discover_rollout_candidates",
+    "locate_candidates",
+    "ordinal_window_for_timestamps",
+]
