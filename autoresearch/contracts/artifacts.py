@@ -411,8 +411,17 @@ ARTIFACTS: tuple[Artifact, ...] = (
     #    「先登记再写码」的正向用例:drift 守卫扫的是代码里出现的未登记字面量,不
     #    要求登记表反向证明生产者已存在。`capsule/agents/{index.json,bindings.jsonl,
     #    raw/,normalized/}` 本身**不在这里新增**——spec §9 那一行写的是「沿用 capsule
-    #    契约」,即维持它们在 `NON_ARTIFACT_LITERALS` 里「capsule 内部结构」的既有
-    #    处置,只是 schema 版本号往上走;不重复挂号。──────────────────────────
+    #    契约」,即维持它们的既有处置,只是 schema 版本号往上走;不重复挂号。
+    #    2026-09-13(fix round 1,Important 1 更正):这四个名字受到的保护**并不一致**,
+    #    不能一概说成「都在 NON_ARTIFACT_LITERALS 里」——grep 实测只有
+    #    `"agents/index.json"` 真的在那张白名单里;`bindings.jsonl`、`raw/`、
+    #    `normalized/` 根本不在白名单,而是**从未进入过守卫的扫描范围**:
+    #    `test_registry_parity.py` 的 `_LITERAL_RE` 只匹配以 `.csv`/`.json`/`.md`/
+    #    `.txt` 收尾的带引号字面量,`.jsonl` 后缀与两个无后缀目录名天然落在这个
+    #    正则的字符类之外。也就是说这三个名字今天**无人守护**:把它们改名或删掉,
+    #    `test_no_unregistered_artifact_literals` 不会红。是否要把 `_LITERAL_RE`
+    #    扩到覆盖 `.jsonl`/无后缀目录名是另一件事(会改变守卫在全仓的扫描范围),
+    #    留给控制者记录的整分支收尾评审裁决,本任务不在此处顺手改。────────────
     Artifact("transcript_bindings_report", "_transcript_bindings.json", "staging",
              "observe", "transcript_binder", "json", "always"),
     Artifact("transcript_ledger_index", "agents_index/*.json", "ledger", "observe",

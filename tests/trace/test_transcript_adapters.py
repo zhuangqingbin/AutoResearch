@@ -1126,9 +1126,12 @@ def test_binding_status_and_segment_quality_are_modeled_separately():
     derivable from, or collapsed into, the other."""
     assert BINDING_STATUSES != SEGMENT_QUALITIES
     assert not set(BINDING_STATUSES) & set(SEGMENT_QUALITIES)
-    assert type(BINDING_STATUSES) is not type(SEGMENT_QUALITIES) or (
-        BINDING_STATUSES is not SEGMENT_QUALITIES
-    )
+    # Both are plain `tuple[str, ...]` (matching OBSERVATION_KINDS' own style), so
+    # there is no separate *type* to compare -- `type(x) is not type(y)` would be
+    # vacuously False for any two tuples and is deliberately not asserted here.
+    # This is the one remaining clause that can actually fail: a copy-paste bug
+    # that points SEGMENT_QUALITIES at the same tuple object as BINDING_STATUSES.
+    assert BINDING_STATUSES is not SEGMENT_QUALITIES
 
 
 def test_coverage_keys_match_spec_minimum():
