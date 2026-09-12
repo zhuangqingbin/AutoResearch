@@ -76,6 +76,20 @@ _AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$", re.ASCII)
 _AGENT_EVENT_TYPES = frozenset(
     {"AGENT_DISPATCHED", "AGENT_COMPLETED", "AGENT_FAILED"}
 )
+# Task 3 (2026-09-12 scene-reconstruction, spec §4.2): the task-book's own
+# lifecycle events (`autoresearch.scan.l4_tasks._record_task_transition`).
+# These are a *second*, independent evidence source for the l4-card role --
+# under the Codex engine there are zero AGENT_* events at all (AGENTS.md §3:
+# Codex never dispatches a sub-agent), so l4-card expectations must be
+# derivable from these alone.
+_TASK_EVENT_TYPES = frozenset(
+    {"TASK_CLAIMED", "TASK_SUCCEEDED", "TASK_FAILED"}
+)
+#: The task book (`autoresearch/scan/l4_tasks.py`) only ever tracks the
+#: l4-card role -- it has no concept of intel/sector-brief/rank/repair/
+#: strategist attempts.  Naming this once here means `_task_expectations`
+#: never has to guess a role from event content.
+_TASK_EVENT_ROLE = "l4-card"
 _UTC_TIMESTAMP_RE = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z$"
 )
@@ -1978,11 +1992,17 @@ def _archive_bound_transcripts(
 _NON_TRANSCRIPT_ROLES = frozenset({"trace-control", "gp-shell"})
 
 
-def _agent_expectations(handle: RunHandle) -> dict[str, dict]:
+def _expectations_from_agent_events(handle: RunHandle) -> dict[str, dict]:
     """One row per *reached* agent invocation, taken from the event chain.
 
     The chain is the authority for what ran: a failed dispatch still owes a row,
     and a leg that was never reached simply has no event.
+
+    (Renamed from ``_agent_expectations`` -- 2026-09-12 scene-reconstruction
+    Task 3 -- to sit next to :func:`_task_expectations` as the two raw,
+    single-source building blocks `scan.transcript_binder.agent_expectations`
+    merges; this function's own job never changed: read AGENT_* events only,
+    never TASK_* events, never a run's own products.)
     """
     rows: dict[str, dict] = {}
     path = handle.capsule / "events/events.jsonl"
@@ -2006,19 +2026,86 @@ def _agent_expectations(handle: RunHandle) -> dict[str, dict]:
                 "subject_key": event.get("subject"),
                 "attempt": event.get("attempt"),
                 "dispatched": False,
+                "dispatched_at": None,
                 "terminal": None,
+                "terminal_at": None,
             },
         )
         display = result.get("subject_display") if isinstance(result, Mapping) else None
         if isinstance(display, str) and display:
             row["subject"] = display
         event_type = event["event_type"]
+        event_ts = event.get("ts")
         if event_type == "AGENT_DISPATCHED":
             row["dispatched"] = True
+            row["dispatched_at"] = event_ts
         elif event_type == "AGENT_COMPLETED":
             row["terminal"] = "COMPLETED"
+            row["terminal_at"] = event_ts
         elif event_type == "AGENT_FAILED":
             row["terminal"] = "FAILED"
+            row["terminal_at"] = event_ts
+    return rows
+
+
+def _task_expectations(handle: RunHandle) -> dict[str, dict]:
+    """One row per L4 task-book transition, taken from the same event chain.
+
+    Independent source from :func:`_expectations_from_agent_events`: reads
+    only ``TASK_CLAIMED``/``TASK_SUCCEEDED``/``TASK_FAILED`` (emitted by
+    ``autoresearch.scan.l4_tasks._record_task_transition`` from *inside* the
+    task book's ``preflight``/``mark_success``/``mark_failure`` transitions,
+    never by an AGENT_* dispatch). Every row's role is the constant
+    ``_TASK_EVENT_ROLE`` ("l4-card") -- the task book has no other role.
+
+    ``session_ref`` here comes from the task event's own payload (added
+    2026-09-12 scene-reconstruction Task 3, brief bullet 5: "保留可得
+    session/attempt 关联信息") -- it is the one piece of session correlation
+    this event can carry that isn't already implied by the run-level
+    ``run_contract.session_ref`` a caller building ``RunIdentity`` already
+    has, so it is threaded through here rather than re-derived.
+    """
+    rows: dict[str, dict] = {}
+    path = handle.capsule / "events/events.jsonl"
+    if not path.is_file():
+        return rows
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        event = json.loads(line)
+        if event.get("event_type") not in _TASK_EVENT_TYPES:
+            continue
+        payload = event.get("payload") or {}
+        invocation_id = str(event.get("invocation_id"))
+        attempt = event.get("attempt")
+        subject = event.get("subject")
+        row = rows.setdefault(
+            invocation_id,
+            {
+                "invocation_id": invocation_id,
+                "role": _TASK_EVENT_ROLE,
+                "subject": subject,
+                "attempt": attempt,
+                "dispatched": False,
+                "claimed_at": None,
+                "terminal": None,
+                "terminal_at": None,
+                "session_ref": payload.get("session_ref"),
+            },
+        )
+        event_type = event["event_type"]
+        event_ts = event.get("ts")
+        if event_type == "TASK_CLAIMED":
+            row["dispatched"] = True
+            row["claimed_at"] = event_ts
+        elif event_type == "TASK_SUCCEEDED":
+            row["terminal"] = "COMPLETED"
+            row["terminal_at"] = event_ts
+        elif event_type == "TASK_FAILED":
+            row["terminal"] = "FAILED"
+            row["terminal_at"] = event_ts
+        if row["session_ref"] is None and payload.get("session_ref") is not None:
+            row["session_ref"] = payload.get("session_ref")
     return rows
 
 
@@ -2044,7 +2131,7 @@ def materialize_agent_index(
     handle = require_active_run(run_id)
     skipped_roles = _NON_TRANSCRIPT_ROLES | {str(role) for role in not_expected}
     evidence = _archive_bound_transcripts(handle, snapshot_cache=snapshot_cache)
-    expectations = _agent_expectations(handle)
+    expectations = _expectations_from_agent_events(handle)
 
     invocations: list[dict] = []
     for invocation_id in sorted(set(expectations) | set(evidence)):
@@ -2504,8 +2591,14 @@ def _degrade_evidence(handle: RunHandle, endpoint: str, reason: str) -> None:
         print(f"[capsule·B级降级] {endpoint}[{handle.run_id}]:{reason}", file=sys.stderr)
 
 
-def _resolve_run_mode(handle: RunHandle) -> str:
+def resolve_run_mode(handle: RunHandle) -> str:
     """Which mode this run actually ran in — one half of the completeness denominator.
+
+    (Made public -- 2026-09-12 scene-reconstruction Task 3 -- so
+    `scan.transcript_binder.agent_expectations` can build the same
+    :class:`~autoresearch.contracts.profiles.RunProfile` `finalize` uses,
+    rather than re-reading `run_mode.json` a second time under a second name.
+    Renamed from ``_resolve_run_mode``; its one call site below is updated.)
 
     `finalize` used to call `scan_profile(business_status=…, last_stage=…)` with **no
     mode** (spec 2026-08-29 §2.2 K3), so every run was expanded as `FULL`: a sentinel
@@ -2713,7 +2806,7 @@ def finalize(
     # profile 工厂按 run kind 现取(`contracts.profiles.PROFILE_FACTORIES`)——
     # 静态 import 任何一个技能包都是 `trace` 向上的边。
     resolved_profile = profile or profile_factory(run_kind)(
-        mode=_resolve_run_mode(handle),
+        mode=resolve_run_mode(handle),
         business_status=resolved_status.value,
         last_stage=_last_reliable_checkpoint(handle.capsule),
     )
