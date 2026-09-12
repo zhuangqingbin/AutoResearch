@@ -95,6 +95,27 @@ def test_scene_reconstruction_artifacts_are_registered():
     assert ca.by_name("scene_reconstruction_acceptance").root == "ledger"
 
 
+def test_outcome_migration_artifact_is_registered():
+    """Task C3 of the outcome-trading-calendar-integrity plan (2026-09-12 §6):
+    `_ledger/outcome_migrations/<migration_id>/` (before/, after/, diff.json,
+    migration_state.json) is registered as one dir-kind product family, same
+    shape as the sibling `transcript_ledger_revision` entry -- the migration
+    directory's fixed internal filenames are not registered individually."""
+    assert ca.by_name("outcome_migration") == ca.Artifact(
+        "outcome_migration",
+        "outcome_migrations/*",
+        "ledger",
+        "observe",
+        "outcome_migrate",
+        "dir",
+        "conditional",
+        required_when=(
+            "outcome fill --dry-run 或 --run-id 规划/应用过一次迁移"
+            "(§6 Task C3;目录内含 before/、after/、diff.json、migration_state.json)"
+        ),
+    )
+
+
 def test_allowlist_does_not_shadow_the_registry():
     """白名单与登记表不许重叠 —— 否则一个产物既「是产物」又「不是产物」。"""
     registered = ca.paths() | {Path(p).name for p in ca.paths()}

@@ -72,6 +72,12 @@ from autoresearch.contracts.agent_output import (
 )
 from autoresearch.data import market_panel as _panel
 from autoresearch.scan.run_naming import is_run_dir
+from autoresearch.trace.atomic import (
+    atomic_write_bytes,
+    atomic_write_json,
+    canonical_json,
+    sha256_bytes,
+)
 
 OUTCOME_SCHEMA_VERSION = 2
 #: schema 2(2026-09-12 Task C2):逐 run JSON 在 schema 1 的全部字段之上新增
@@ -803,10 +809,396 @@ def _is_settled(doc: object) -> bool:
             and bool(doc.get("complete")))
 
 
+# ═══════════════════════ 可审阅回填与恢复(2026-09-12 §6,Task C3) ═══════════════════════
+#
+# 病灶:C1/C2 修好了「算出正确的 t1/t2/状态」,但没有留下「把受旧口径影响的历史批量
+# 重算一遍」的**可审阅**方式——直接对生产账本跑 `fill(rebuild=True)` 会静默地就地改写
+# 每一份逐 run JSON 与整张 CSV,中途失败也无从分辨"改了一半"与"没开始改"。
+#
+# 本节只新增机器,不在本次会话对真实账本执行任何一次(controller ruling #2)。
+#
+#     _ledger/outcome_migrations/<migration_id>/
+#         before/<run_id>.json      # 应用前,目标文件的逐字节原样拷贝(不存在则不建这个文件)
+#         after/<run_id>.json       # 拟写入的候选文档(canonical_json,写后立即读回校验)
+#         diff.json                 # 人读的审阅表:逐行 run/code/旧新 t1·t2·主收益·成熟状态/原因 + 人口统计
+#         migration_state.json      # 迁移自身的进度(哪些 run 已经真的替换、CSV 有没有重建过)
+#
+# `migration_id` 由**输入**(--run-id 过滤 + --rebuild 开关)派生,不含挂钟时间——同一份
+# 输入两次规划/应用命中同一个目录,天然幂等;`--dry-run` 与真实应用共用同一套规划逻辑,
+# 只是前者在写完 diff/state 之后就停手,绝不触碰 `_ledger/outcome/*.json`、
+# `recommendations.csv` 或任何冻结 run。
+
+MIGRATIONS_DIRNAME = "outcome_migrations"
+MIGRATION_DIFF_FILE = "diff.json"
+MIGRATION_STATE_FILE = "migration_state.json"
+MIGRATION_SCHEMA_VERSION = 1
+#: "没有前一份文件/没有源账本"的哨兵——与真实 sha256 十六进制串在形状上不可能混淆。
+MIGRATION_ABSENT = "ABSENT"
+
+
+def migrations_root(reports_root: Path | None = None) -> Path:
+    return ledger_root(reports_root) / MIGRATIONS_DIRNAME
+
+
+def _migration_dir(migration_id: str, reports_root: Path | None = None) -> Path:
+    return migrations_root(reports_root) / migration_id
+
+
+def _migration_id(*, run_id: str | None, rebuild: bool) -> str:
+    """由**输入**派生,不由挂钟派生(§6 bullet 8)——同一个 `--run-id`/`--rebuild`
+    组合永远映射到同一个目录,这正是"重跑相同输入不新增重复"(C13)在目录这一层的落点。
+    含一段人读 slug,方便在 `outcome_migrations/` 下用肉眼分辨这是哪一次迁移;真正的
+    唯一性由 sha256 摘要保证(slug 本身不足以唯一,理论上两个不同 `today` 的重跑会撞
+    同一个 slug,但那正是希望的行为——见模块头部说明)。
+    """
+    payload = json.dumps({"run_id": run_id or "", "rebuild": bool(rebuild)},
+                         sort_keys=True, ensure_ascii=False)
+    digest = sha256_bytes(payload.encode("utf-8"))[:12]
+    slug = run_id if run_id else "all"
+    mode = "rebuild" if rebuild else "fill"
+    return f"{mode}-{slug}-{digest}"
+
+
+def _read_existing_doc(run_id: str, reports_root: Path | None = None) -> dict | None:
+    p = outcome_path(run_id, reports_root)
+    if not p.is_file():
+        return None
+    with contextlib.suppress(OSError, json.JSONDecodeError):
+        return json.loads(p.read_text(encoding="utf-8"))
+    return None
+
+
+def _csv_bytes_or_absent(reports_root: Path | None = None) -> bytes | None:
+    p = ledger_root(reports_root) / LEDGER_CSV
+    return p.read_bytes() if p.is_file() else None
+
+
+def _sha_or_absent(data: bytes | None) -> str:
+    return MIGRATION_ABSENT if data is None else sha256_bytes(data)
+
+
+def _scope_runs(reports_root: Path | None, *, run_id: str | None, rebuild: bool) -> list[Path]:
+    """精确范围过滤(§6 bullet 2):`run_id` 给定时只认这一个**已发布**目录,一个字都不
+    差;找不到就报错而不是悄悄跑一个空范围(范围写错是最容易发生也最危险的输入错误)。
+    `run_id` 是发布目录名(`report_run_id`),不是 capsule 内部的 `contract_run_id`——
+    两个字段的区别见现场重建设计稿 §2 不变量 9。
+
+    `run_id=None`(ALL 范围)复用与 `fill()` 主循环**完全相同**的 `_is_settled`/`rebuild`
+    判据(不是另起一套规则):这样"迁移会碰哪些 run"与"平常 `fill(rebuild=True)` 会重算
+    哪些 run"永远是同一个答案,不会出现"迁移漏了平常会重算的 run"这种分叉。
+    """
+    if run_id is not None:
+        matches = [p for p in published_runs(reports_root) if p.name == run_id]
+        if not matches:
+            raise ValueError(
+                f"--run-id 精确范围过滤:未找到已发布 run {run_id!r}"
+                "(report_run_id 必须逐字匹配发布目录名,不是 contract_run_id)")
+        return matches
+    out = []
+    for run in published_runs(reports_root):
+        existing = _read_existing_doc(run.name, reports_root)
+        if not rebuild and _is_settled(existing):
+            continue
+        out.append(run)
+    return out
+
+
+def _doc_code_row(doc: dict | None, code: str) -> dict:
+    """从一份文档里取出 `code` 的 diff 可比字段;`doc` 为 `None`(从未存在过)或该
+    `code` 不在 `rows` 里(非 MATURE/从未记录),`main`/`outcome_status` 一律 `None`——
+    doc 级的 `t1`/`t2` 仍然按文档本身广播(同 `_ledger_rows` 的既定手法),空文档才是
+    `None`。"""
+    if not isinstance(doc, dict):
+        return {"t1": None, "t2": None, "main": None, "outcome_status": None}
+    row = (doc.get("rows") or {}).get(code) or {}
+    return {"t1": doc.get("t1"), "t2": doc.get("t2"),
+           "main": row.get(MAIN), "outcome_status": doc.get("outcome_status") or None}
+
+
+def _comparable_doc(doc: dict | None) -> tuple:
+    """一份文档"值不值得进入这次迁移"的可比投影——只比对人会关心的字段(状态、
+    t1/t2、每只票的主收益),不比对 `computed_at`/`calendar_digest` 这类每次重算都会
+    变但不影响结论的字段,否则每晚 `--rebuild` 都会把"其实没变"的 run 也算成受影响。"""
+    if not isinstance(doc, dict):
+        return ("ABSENT",)
+    rows = doc.get("rows") or {}
+    row_tuple = tuple(sorted((code, row.get(MAIN)) for code, row in rows.items()))
+    return (doc.get("outcome_status"), doc.get("t1"), doc.get("t2"),
+           doc.get("calendar_quality"), row_tuple)
+
+
+def plan_outcome_migration(*, reports_root: Path | None = None, lake_daily: Path | None = None,
+                           run_id: str | None = None, rebuild: bool = False,
+                           calendar=None, today: object = None, now: str | None = None) -> dict:
+    """纯计算(计划本身不写盘):`_scope_runs` 选中的每个 run 各调一次
+    `compute_outcome`(**与 `--dry-run` 是否联网完全相同的一次调用**——规划阶段就是
+    读日历/读湖的阶段,`--dry-run` 并不豁免这一步,只豁免"把结果写回真实账本"那一步,
+    见模块头部说明与 §6 bullet 2)。
+
+    返回的 `rows`/`population` 就是 `diff.json` 的正文;`runs` 是内部使用的
+    before/after 字节 + 摘要,供 `write_migration_plan`/`apply_outcome_migration` 用,
+    不直接落盘。
+
+    真正判断"这个 run 要不要进这次迁移"的是 `_comparable_doc` 前后是否相等——即使
+    `_scope_runs` 因为 `rebuild=True` 选中了一个其实已经正确的 run(常见于"再跑一次
+    `--rebuild` 确认没有新东西要修"),这里也会把它排除在 `runs`/`rows` 之外,migration
+    目录不会为"其实什么都没变"的 run 制造前/后镜像。
+    """
+    runs = _scope_runs(reports_root, run_id=run_id, rebuild=rebuild)
+    mig_id = _migration_id(run_id=run_id, rebuild=rebuild)
+    source_ledger_digest = _sha_or_absent(_csv_bytes_or_absent(reports_root))
+    run_entries: dict[str, dict] = {}
+    diff_rows: list[dict] = []
+    for run in runs:
+        before_doc = _read_existing_doc(run.name, reports_root)
+        after_doc = compute_outcome(run, lake_daily=lake_daily, calendar=calendar, today=today)
+        if after_doc is None:
+            continue                              # run/facts 定位不到——同 fill() 的跳过语义
+        if _comparable_doc(before_doc) == _comparable_doc(after_doc):
+            continue                               # 真的没有变化,不进这次迁移
+        after_doc = dict(after_doc)
+        after_doc["computed_at"] = now or ""
+        if isinstance(before_doc, dict) and before_doc.get("complete") and not after_doc.get("complete"):
+            # 撤回前镜像(与 `fill()` 的既定手法逐字同源——见其 docstring bullet 4)。
+            after_doc["previous"] = {k: before_doc.get(k) for k in
+                                     ("schema_version", "outcome_status", "calendar_quality",
+                                      "complete", "t1", "t2", "rows")}
+        codes = set((before_doc or {}).get("rows") or {}) | set(after_doc.get("rows") or {})
+        codes |= set(run_facts(run)["rows"])         # 该 run 当天记录过的全部票,不论成熟与否
+        for code in sorted(codes):
+            old = _doc_code_row(before_doc, code)
+            new = _doc_code_row(after_doc, code)
+            if old == new:
+                continue
+            diff_rows.append({
+                "run_id": run.name, "code": code,
+                "old_t1": old["t1"], "new_t1": new["t1"],
+                "old_t2": old["t2"], "new_t2": new["t2"],
+                "old_main": old["main"], "new_main": new["main"],
+                "old_outcome_status": old["outcome_status"],
+                "new_outcome_status": new["outcome_status"],
+                "reason": after_doc.get("reason") or "",
+            })
+        target = outcome_path(run.name, reports_root)
+        before_bytes = target.read_bytes() if target.is_file() else None
+        after_bytes = (canonical_json(after_doc) + "\n").encode("utf-8")
+        run_entries[run.name] = {
+            "before_bytes": before_bytes, "before_sha256": _sha_or_absent(before_bytes),
+            "after_bytes": after_bytes, "after_sha256": sha256_bytes(after_bytes),
+        }
+    by_transition: dict[str, int] = {}
+    for row in diff_rows:
+        key = f"{row['old_outcome_status'] or 'ABSENT'}->{row['new_outcome_status'] or 'ABSENT'}"
+        by_transition[key] = by_transition.get(key, 0) + 1
+    population = {"affected_runs": len(run_entries), "affected_rows": len(diff_rows),
+                 "by_transition": by_transition}
+    return {
+        "schema_version": MIGRATION_SCHEMA_VERSION, "migration_id": mig_id,
+        "scope": {"run_id": run_id, "rebuild": bool(rebuild)},
+        "source_ledger_digest": source_ledger_digest,
+        "rows": diff_rows, "population": population, "runs": run_entries,
+    }
+
+
+def write_migration_plan(plan: dict, *, reports_root: Path | None = None) -> Path:
+    """把 `plan_outcome_migration` 的结果落盘成可审阅的迁移目录(§6 bullet 1)——
+    `--dry-run` 与真实应用共用这一步,它本身**不算**"改了 outcome/CSV/冻结 run"
+    (三者一个字节都没碰,只是在一个全新的、专属这次迁移的目录下新建文件)。
+
+    候选 JSON 写完立即读回比对哈希(bullet 4 的"写完候选 JSON 校验通过"),校验失败
+    直接抛异常——绝不把一份没验证过的候选当成"已规划好"记进 state。
+    """
+    mdir = _migration_dir(plan["migration_id"], reports_root)
+    before_dir, after_dir = mdir / "before", mdir / "after"
+    runs_state: dict[str, dict] = {}
+    for run_id, entry in plan["runs"].items():
+        if entry["before_bytes"] is not None:
+            atomic_write_bytes(before_dir / f"{run_id}.json", entry["before_bytes"])
+        atomic_write_bytes(after_dir / f"{run_id}.json", entry["after_bytes"])
+        readback = (after_dir / f"{run_id}.json").read_bytes()
+        if sha256_bytes(readback) != entry["after_sha256"]:
+            raise RuntimeError(f"候选 JSON 写后读回校验失败,拒绝规划:{run_id}")
+        runs_state[run_id] = {"before_sha256": entry["before_sha256"],
+                              "after_sha256": entry["after_sha256"], "applied": False}
+    diff_doc = {"schema_version": plan["schema_version"], "migration_id": plan["migration_id"],
+               "scope": plan["scope"], "source_ledger_digest": plan["source_ledger_digest"],
+               "rows": plan["rows"], "population": plan["population"]}
+    atomic_write_json(mdir / MIGRATION_DIFF_FILE, diff_doc)
+    state = {"schema_version": MIGRATION_SCHEMA_VERSION, "migration_id": plan["migration_id"],
+            "status": "planned", "scope": plan["scope"],
+            "source_ledger_digest": plan["source_ledger_digest"],
+            "runs": runs_state, "csv_rebuilt": False}
+    atomic_write_json(mdir / MIGRATION_STATE_FILE, state)
+    return mdir
+
+
+def apply_outcome_migration(migration_id: str, *, reports_root: Path | None = None) -> dict:
+    """真正把一次已规划好的迁移应用到生产账本(§6 bullet 4/5/6)。
+
+    顺序逐字对应 brief:①应用前校验源账本 hash 未变化(除非这次迁移自己已经重建过
+    CSV——那时基线已经合法地变成了它自己写的那份,见下)②对每个还没 `applied` 的 run,
+    先核对它的**当前**目标文件 hash 与规划时记的 `before_sha256` 是否仍然一致(有别的
+    写入者动过就拒绝,不盲目覆盖)③用 `atomic_write_bytes` 整体替换真实文件,立即把
+    `applied=True` 落进 state(每个 run 替换完就落一次盘,这就是"中途失败不能记迁移
+    完成"在这里的实现:失败点之前的进度都已经是可信的持久状态)④全部 run 都 `applied`
+    之后才**一次性**重建 CSV(bullet 4 原文"最后一次性重建 CSV"),重建同样只做一次
+    (`csv_rebuilt` 幂等门)。
+
+    任何一步失败都直接向上抛异常,不吞、不记"完成"——调用方(`fill`/CLI)据此拿到非零
+    退出码,state.json 里已经完成的那部分进度原样留在磁盘上,供 `restore_outcome_migration`
+    或"用同一份输入再跑一次"（见 `run_outcome_migration`）恢复/续跑。
+    """
+    mdir = _migration_dir(migration_id, reports_root)
+    state_path = mdir / MIGRATION_STATE_FILE
+    if not state_path.is_file():
+        raise ValueError(f"迁移目录不存在或尚未规划:{migration_id}")
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    if state["status"] == "applied":
+        return {"ok": True, "status": "already_applied", "migration_id": migration_id,
+               "affected_runs": len(state["runs"])}
+    if not state.get("csv_rebuilt"):
+        current = _sha_or_absent(_csv_bytes_or_absent(reports_root))
+        if current != state["source_ledger_digest"]:
+            raise RuntimeError(
+                "源账本 hash 与规划时不符(可能被并发写入),拒绝应用——请重新规划:"
+                f"规划时 {state['source_ledger_digest']!r},现在 {current!r}")
+    for run_id in sorted(state["runs"]):
+        run_state = state["runs"][run_id]
+        if run_state["applied"]:
+            continue
+        target = outcome_path(run_id, reports_root)
+        current = _sha_or_absent(target.read_bytes() if target.is_file() else None)
+        if current != run_state["before_sha256"]:
+            raise RuntimeError(
+                f"{run_id} 的目标文件自规划以来已经变化,拒绝覆盖(规划时 "
+                f"{run_state['before_sha256']!r},现在 {current!r})")
+        after_path = mdir / "after" / f"{run_id}.json"
+        after_bytes = after_path.read_bytes()
+        if sha256_bytes(after_bytes) != run_state["after_sha256"]:
+            raise RuntimeError(f"{run_id} 的候选文件哈希与迁移状态不符,拒绝应用")
+        atomic_write_bytes(target, after_bytes)
+        run_state["applied"] = True
+        atomic_write_json(state_path, state)          # 每个 run 替换完立即落一次检查点
+    if all(r["applied"] for r in state["runs"].values()) and not state.get("csv_rebuilt"):
+        for run_id in sorted(state["runs"]):
+            after_path = mdir / "after" / f"{run_id}.json"
+            upsert_ledger(json.loads(after_path.read_text(encoding="utf-8")), reports_root)
+        state["csv_rebuilt"] = True
+        state["status"] = "applied"
+        atomic_write_json(state_path, state)
+    return {"ok": True, "status": state["status"], "migration_id": migration_id,
+           "affected_runs": len(state["runs"])}
+
+
+def restore_outcome_migration(migration_id: str, *, reports_root: Path | None = None) -> dict:
+    """从本次迁移的 before 镜像恢复(§6 bullet 5/6)——回滚,不是继续应用。
+
+    对每个受这次迁移影响的 run:`before_sha256 == MIGRATION_ABSENT` 说明它规划时根本
+    没有真实文件,恢复即删除(如果当前存在的话);否则把 `before/<run_id>.json` 的
+    原始字节原样写回真实位置,再**重新读回并对内容 hash**(不是数文件数、不是看文件
+    存不存在)——`verified[run_id]["content_hash_ok"]` 就是这条校验的结果,恢复失败
+    直接抛异常而不是假装成功。CSV 随每个 run 的恢复同步重建(复用 `upsert_ledger` 的
+    整体替换语义,天然幂等)。
+    """
+    mdir = _migration_dir(migration_id, reports_root)
+    state_path = mdir / MIGRATION_STATE_FILE
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    verified: dict[str, dict] = {}
+    for run_id, run_state in sorted(state["runs"].items()):
+        target = outcome_path(run_id, reports_root)
+        if run_state["before_sha256"] == MIGRATION_ABSENT:
+            target.unlink(missing_ok=True)
+            verified[run_id] = {"restored_to": MIGRATION_ABSENT, "content_hash_ok": not target.exists()}
+            upsert_ledger({"run_id": run_id, "rows": {}}, reports_root)
+            continue
+        before_path = mdir / "before" / f"{run_id}.json"
+        before_bytes = before_path.read_bytes()
+        atomic_write_bytes(target, before_bytes)
+        actual = sha256_bytes(target.read_bytes())
+        ok = actual == run_state["before_sha256"]
+        verified[run_id] = {"restored_to": run_state["before_sha256"], "content_hash_ok": ok,
+                            "actual_hash": actual}
+        if not ok:
+            raise RuntimeError(
+                f"{run_id} 恢复后内容哈希不符,拒绝继续:期望 {run_state['before_sha256']!r},"
+                f"实际 {actual!r}")
+        upsert_ledger(json.loads(before_bytes.decode("utf-8")), reports_root)
+    state["status"] = "restored"
+    atomic_write_json(state_path, state)
+    return {"ok": True, "status": "restored", "migration_id": migration_id, "verified": verified}
+
+
+def run_outcome_migration(*, reports_root: Path | None = None, lake_daily: Path | None = None,
+                          run_id: str | None = None, rebuild: bool = False, calendar=None,
+                          today: object = None, now: str | None = None,
+                          dry_run: bool = False) -> dict:
+    """`fill(dry_run=True 或 run_id is not None)` 的落点——把规划/应用两半接起来。
+
+    幂等入口:先看这份 scope(`run_id`+`rebuild`,§6 bullet 8)对应的迁移目录**是否
+    已经规划过**——已经规划过就直接读盘里的 diff/state,不重新调用 `compute_outcome`
+    (不重复读日历/读湖);第一次遇到这份 scope 才会真的规划并落盘。`--dry-run` 到这里
+    就结束,真实应用交给 `apply_outcome_migration`(它自己是可重入的:已经 `applied`
+    的 run 会被跳过,`already_applied` 整体状态直接短路——这就是 C13"相同输入两次不
+    重复"在这一层的实现)。
+    """
+    mig_id = _migration_id(run_id=run_id, rebuild=rebuild)
+    mdir = _migration_dir(mig_id, reports_root)
+    state_path = mdir / MIGRATION_STATE_FILE
+    if not state_path.is_file():
+        plan = plan_outcome_migration(reports_root=reports_root, lake_daily=lake_daily,
+                                      run_id=run_id, rebuild=rebuild, calendar=calendar,
+                                      today=today, now=now)
+        write_migration_plan(plan, reports_root=reports_root)
+        population = plan["population"]
+    else:
+        diff_doc = json.loads((mdir / MIGRATION_DIFF_FILE).read_text(encoding="utf-8"))
+        population = diff_doc["population"]
+    result = {
+        "ok": True, "dry_run": dry_run, "migration_id": mig_id, "migration_dir": str(mdir),
+        "scope": {"run_id": run_id, "rebuild": bool(rebuild)},
+        "affected_runs": population["affected_runs"], "affected_rows": population["affected_rows"],
+        "diff_path": str(mdir / MIGRATION_DIFF_FILE),
+        "network": ("只读日历核验默认走 exec_anchor.trading_sessions → tushare trade_cal"
+                    "(进程内按请求的 start/end 窗口缓存)。规划阶段(dry-run 与真实应用共用)"
+                    "对每个待重算的 run 各触发一次这样的日历核验——dry-run 并不豁免这一步,"
+                    "它只豁免\"把结果写回 outcome JSON/CSV/冻结 run\"那一步。同一份 scope 第二次"
+                    "调用会直接命中已规划好的迁移目录,不再重新读日历/读湖。"),
+    }
+    if dry_run:
+        result["status"] = "planned"
+        return result
+    applied = apply_outcome_migration(mig_id, reports_root=reports_root)
+    result["status"] = applied["status"]
+    return result
+
+
 def fill(*, reports_root: Path | None = None, lake_daily: Path | None = None,
          limit: int | None = None, now: str | None = None,
-         rebuild: bool = False, calendar=None, today: object = None) -> dict:
+         rebuild: bool = False, calendar=None, today: object = None,
+         dry_run: bool = False, run_id: str | None = None) -> dict:
     """回填全部**未核验或未算过**的已发布 run。
+
+    `dry_run`/`run_id`(2026-09-12 §6 Task C3):任一非缺省值都会把整次调用**整体**
+    转给 `run_outcome_migration`——可审阅迁移的规划/应用,不再走下面这条朴素增量循环。
+    两条路径刻意分开、互不改动对方的行为:平常夜间不带这两个参数的 `fill()` 逐字保持
+    原样(成本只与"新 run + 未核验老 run"成正比);只有显式要求"预演"或"精确到某个
+    `report_run_id`"时才会新建一个 `_ledger/outcome_migrations/<migration_id>/` 目录、
+    写前/后镜像与可审阅 diff——朴素循环从不产生这些文件,`--limit` 对迁移路径也不生效
+    (迁移的范围已经由 `run_id`/`rebuild` 精确给定,不需要再截断)。
+    """
+    if dry_run or run_id is not None:
+        return run_outcome_migration(reports_root=reports_root, lake_daily=lake_daily,
+                                     run_id=run_id, rebuild=rebuild, calendar=calendar,
+                                     today=today, now=now, dry_run=dry_run)
+    return _fill_incremental(reports_root=reports_root, lake_daily=lake_daily, limit=limit,
+                             now=now, rebuild=rebuild, calendar=calendar, today=today)
+
+
+def _fill_incremental(*, reports_root: Path | None = None, lake_daily: Path | None = None,
+                      limit: int | None = None, now: str | None = None,
+                      rebuild: bool = False, calendar=None, today: object = None) -> dict:
+    """`fill()` 的既有朴素增量循环——2026-09-12 §6 重构时原样搬出(逐字未改一行
+    正文逻辑),只是让出 `fill` 这个名字给上面的新调度头。
 
     返回 `{filled, skipped, rows, runs, skip_reasons}`——`skip_reasons` 是
     `{run_id: 原因}`,2026-09-12 ruling #2 要求:即便一次 `fill()` 决定不重算某个 run,
@@ -934,16 +1326,32 @@ def ledger_line(reports_root: Path | None = None) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="结果账本(确定性、只记不学)")
-    ap.add_argument("command", choices=["fill", "line"])
-    ap.add_argument("--limit", type=int, default=None, help="本次最多回填几个 run")
+    ap.add_argument("command", choices=["fill", "line", "restore"])
+    ap.add_argument("--limit", type=int, default=None, help="本次最多回填几个 run(仅朴素增量路径)")
     ap.add_argument("--today", default=None, help="computed_at 时间戳(留痕用)")
     ap.add_argument("--rebuild", action="store_true",
                     help="连已成熟的 run 一起重算(口径变更后用;默认增量)")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="只规划/输出一次可审阅迁移,不改 outcome JSON/CSV/冻结 run(§6 Task C3)")
+    ap.add_argument("--run-id", default=None,
+                    help="精确范围过滤:report_run_id(发布目录名,不是 capsule 内部 contract_run_id)")
+    ap.add_argument("--migration-id", default=None,
+                    help="restore 命令:要从 before 镜像恢复的迁移目录 id")
     args = ap.parse_args(argv)
     if args.command == "line":
         print(ledger_line())
         return 0
-    res = fill(limit=args.limit, now=args.today, rebuild=args.rebuild)
+    if args.command == "restore":
+        if not args.migration_id:
+            print(json.dumps({"ok": False, "error": "restore 需要 --migration-id"},
+                             ensure_ascii=False))
+            return 2
+        res = restore_outcome_migration(args.migration_id)
+        print(json.dumps({"ok": True, **res}, ensure_ascii=False, sort_keys=True))
+        print(ledger_line())
+        return 0
+    res = fill(limit=args.limit, now=args.today, rebuild=args.rebuild,
+              dry_run=args.dry_run, run_id=args.run_id)
     print(json.dumps({"ok": True, **res}, ensure_ascii=False, sort_keys=True))
     print(ledger_line())
     return 0

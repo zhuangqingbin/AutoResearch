@@ -435,6 +435,19 @@ ARTIFACTS: tuple[Artifact, ...] = (
     Artifact("scene_reconstruction_acceptance", "acceptance/scene-reconstruction-*.md",
              "ledger", "observe", "acceptance", "md", "conditional",
              required_when="真实验收发生后由本引擎执行人记录,不由文档修订生成"),
+    # ── 可审阅回填与恢复(2026-09-12 outcome-trading-calendar-integrity §6 Task C3)──
+    #    `_ledger/outcome_migrations/<migration_id>/` 是一次「把受旧日历口径影响的
+    #    历史账本重算一遍」的完整审阅现场:before/(应用前逐字节原样拷贝)、after/
+    #    (拟写入的候选文档)、diff.json(人读的逐行审阅表 + 人口统计)、
+    #    migration_state.json(迁移自身的进度,供中断后判断能否继续/恢复)——与
+    #    `transcript_ledger_revision` 同一处置:整个目录用一条 dir-kind glob 登记
+    #    为一个产物族,内部固定文件名不逐一登记(见下方 NON_ARTIFACT_LITERALS 的
+    #    对应说明)。`migration_id` 由 `--run-id`/`--rebuild` 输入派生,不含挂钟时间。
+    Artifact("outcome_migration", "outcome_migrations/*", "ledger", "observe",
+             "outcome_migrate", "dir", "conditional",
+             required_when=("outcome fill --dry-run 或 --run-id 规划/应用过一次迁移"
+                            "(§6 Task C3;目录内含 before/、after/、diff.json、"
+                            "migration_state.json)")),
 )
 
 _BY_NAME: dict[str, Artifact] = {a.name: a for a in ARTIFACTS}
@@ -513,4 +526,9 @@ NON_ARTIFACT_LITERALS: frozenset[str] = frozenset({
     "verify.csv", "L3_fine_finalists.csv",
     # 报告目录内的旧名 / 兼容
     "gate4.json",
+    # outcome_migration(ledger/outcome_migrations/*,dir-kind,2026-09-12 Task C3)的
+    # 内部固定文件名——与 capsule 内部结构、`transcript_ledger_revision` 同一处置:
+    # 整个迁移目录已用上面那条 dir-kind 登记覆盖,`diff.json`/`migration_state.json`
+    # 在每个 <migration_id>/ 下逐字同名重复出现,不逐一登记成带完整路径的 Artifact。
+    "diff.json", "migration_state.json",
 })
