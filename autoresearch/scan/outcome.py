@@ -499,34 +499,51 @@ def _num(value) -> float | None:
 
 
 def exec_anchor_frame(execution: dict | None, *, lake_daily: Path | None = None,
-                      calendar=None, today: object = None):
+                      calendar=None, today: object = None
+                      ) -> tuple[pd.DataFrame | None, dict]:
     """迟到 run 的**反事实**帧:主尺改从第一个真正来得及的尾盘起算。
 
-    正常 run(`exec_lag == 0`)返回 `None` —— 锚点与主帧逐字相同,再算一遍纯属浪费。
-    只有报告在 T+1 收盘之后才就绪的那些 run 才有第二个锚点,而它们的主帧记的是
+    正常 run(`exec_lag == 0`)返回 `(None, ...)` —— 锚点与主帧逐字相同,再算一遍纯属
+    浪费。只有报告在 T+1 收盘之后才就绪的那些 run 才有第二个锚点,而它们的主帧记的是
     一笔**下不了的单**(61 个 run 里 8 个,13%)。
 
     2026-09-12 修复:锚点(`first_available_session` 的**前一个**交易日)改用**可信
     日历**定位(`_trusted_predecessor`),不再用湖分区列表猜前一天——旧写法在真前驱
     缺湖时会悄悄滑到更早的、湖里恰好存在的那个分区,把反事实算到错误的日子上。
-    找不到可信前驱、或前驱日的行情不可核验,一律返回 `None`(`exec_gap_c1_o2` 在
-    `compute_outcome` 里自然保持 null,不污染正常主尺,也不伪造反事实)。
 
     `forward_returns` 的买腿恒为 D+1,所以把前驱日当 D,它的 D+1 正好落在
     `first_available_session` 上,口径与主帧逐字同源(同一 `forward_returns`、同一
     `GAP_CLIP`),不另造一把尺。
+
+    2026-09-12 fix round 1(review finding 1):返回 `(fr, meta)`——`fr is None` 曾经
+    同时代表三种完全不同的情形,调用方分不出来:①根本没有 exec_lag(正常 run,不适用,
+    不是失败)②前驱 session 在可信日历里定位不出来③前驱定位到了,但它自己的
+    T+1/T+2 行情不可核验/缺失/未成熟。`meta["exec_outcome_status"]` 把三者拆开:
+    ①是 `None`(不适用);②③直接复用**主尺同一份状态词表**——③是把前驱日当 D 重新
+    调一次 `market_frame` 算出来的 `outcome_status`(可能是 `MATURE`/`PENDING_SESSION`/
+    `MISSING_MARKET_DATA`/`UNVERIFIED_CALENDAR`/`INVALID_ANALYSIS_DATE` 中的任何一个,
+    原样转发,不折叠);②是 `_trusted_predecessor` 自己就找不到可信前驱,统一记
+    `UNVERIFIED_CALENDAR`(根因同属"日历不可信",与③共享词表但语义不同,靠 `reason`
+    与上一层调用上下文区分)。
+
+    `exec_outcome_status` 与主尺的 `outcome_status` **恒正交**:本函数只在内部另起一次
+    独立的 `market_frame(anchor_date, ...)` 调用,不读、不写调用方的主 `fr`/`meta`,
+    因此 exec 侧失败绝不会让已经判定 `MATURE` 的主尺被拖累,反之亦然
+    (`compute_outcome` 侧还用 `contextlib.suppress(Exception)` 再加一层保险)。
     """
     first = str((execution or {}).get("first_available_session") or "")
     if not first or not (execution or {}).get("exec_lag"):
-        return None
+        return None, {"exec_outcome_status": None, "reason": "", "anchor_session": None}
     if calendar is None:
         from autoresearch.scan import exec_anchor as _anchor
         calendar = _anchor.trading_sessions
     anchor = _trusted_predecessor(first, calendar=calendar)
     if anchor is None:
-        return None
-    fr, _meta = market_frame(_dashed(anchor), lake_daily=lake_daily, calendar=calendar, today=today)
-    return fr
+        return None, {"exec_outcome_status": UNVERIFIED_CALENDAR,
+                      "reason": "迟到锚的前一交易日无法用可信日历核验", "anchor_session": None}
+    fr, meta = market_frame(_dashed(anchor), lake_daily=lake_daily, calendar=calendar, today=today)
+    return fr, {"exec_outcome_status": meta["outcome_status"], "reason": meta["reason"],
+               "anchor_session": anchor}
 
 
 def compute_outcome(run_dir: Path | str, *, lake_daily: Path | None = None,
@@ -555,9 +572,11 @@ def compute_outcome(run_dir: Path | str, *, lake_daily: Path | None = None,
     from autoresearch.scan import exec_anchor as _anchor
 
     execution = _anchor.read_execution(run)
-    exec_fr = None
+    exec_fr, exec_status = None, None
     with contextlib.suppress(Exception):
-        exec_fr = exec_anchor_frame(execution, lake_daily=lake_daily, calendar=calendar, today=today)
+        exec_fr, exec_meta = exec_anchor_frame(execution, lake_daily=lake_daily,
+                                               calendar=calendar, today=today)
+        exec_status = exec_meta.get("exec_outcome_status")
     sectors = {code: str(row.get("sector") or "") for code, row in facts["rows"].items()}
     rel = _relative_columns(fr, sectors)
     ok_entry = _ruler.entry_tradable(fr, ruler_name=MAIN)
@@ -597,6 +616,12 @@ def compute_outcome(run_dir: Path | str, *, lake_daily: Path | None = None,
             "fwd_10_oc": _num(m["fwd_10_oc"]) if (m is not None and fwd10_ok) else None,
             "exec_gap_c1_o2": (_num(exec_fr.loc[code, MAIN])
                                if exec_fr is not None and code in exec_fr.index else None),
+            # review finding 1(2026-09-12 fix round 1):exec 侧状态,doc 级单值逐行广播
+            # (与 `_ledger_rows` 里 anchor_session/exec_lag/actionability 同一手法)。
+            # C2 会把它接进 `recommendations.csv`(`LEDGER_COLUMNS` 本任务不改,这里
+            # 只负责把值算对、放进逐行文档,不会漏进现有 CSV——见 `_ledger_rows` 的
+            # allowlist 过滤)。
+            "exec_outcome_status": exec_status,
         }
     # 「成熟」= 主尺算得出来的行占多数。少数票停牌/新股缺数是常态,不该让整份结果反复重算。
     n_scored = sum(1 for r in rows.values() if r.get(MAIN) is not None)

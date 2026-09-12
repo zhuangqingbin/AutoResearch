@@ -225,9 +225,17 @@ def test_c05_analysis_date_not_a_trading_day_is_invalid(tmp_path):
 
 
 def test_c05_incomplete_range_is_unverified_not_invalid_date(tmp_path):
-    """日历只答得出 D 当天、没有任何后续 session —— 不能据此判"analysis_date 无效"
-    (§2.1 第3条:「不能据弱日历下此结论」;覆盖不足本身先判 UNVERIFIED_CALENDAR)。"""
-    cal = _calendar(["2026-09-01"])
+    """日历只答得出一天、既不含 D 本身也没有任何 D 之后的 session —— 两个失败条件同时
+    成立(覆盖不足 ∧ D 不在日历里),必须是覆盖不足先判(UNVERIFIED_CALENDAR),不能被
+    "D 不在日历里"抢先判成 INVALID_ANALYSIS_DATE(§2.1 第3条:「不能据弱/窄日历下此
+    结论」)。
+
+    夹具刻意不含 D("2026-08-31" ≠ D)——旧夹具 `_calendar(["2026-09-01"])` 把 D 自己
+    放进了返回列表,"D not in sessions" 分支因此永远不会触发,调换 `resolve_outcome_sessions`
+    里两个 `if` 判定的先后顺序也不会让那个版本的测试变红(已用变异探针验证,见 C1 fix
+    report)。这一版才是真的锁住判定顺序的反例。
+    """
+    cal = _calendar(["2026-08-31"])
     fr, meta = outcome.market_frame("2026-09-01", lake_daily=tmp_path / "lake" / "daily",
                                     calendar=cal, today="2026-09-11")
     assert fr is None
@@ -276,9 +284,20 @@ def test_c07_suspended_stock_gets_row_level_null_not_zero(tmp_path, monkeypatch)
 
 
 # ───────────────────────── C08:迟到执行锚的前驱用日历,不滑到更早的湖分区 ─────────────────────────
+#
+# Fix round 1(review finding 1):`exec_anchor_frame` 现在返回 `(fr, meta)`,`meta` 必须让
+# 三个曾经统统坍缩成 `None` 的状态互相可辨:①根本没有 exec_lag(正常 run,无需算)
+# ②前驱 session 本身在可信日历里都定位不出来 ③前驱定位到了,但它自己的 T+1/T+2 行情
+# 缺失/未成熟/日历不可信——这第三种直接复用 `market_frame` 对前驱日算出的
+# `outcome_status`,与主尺五态同一份词表。`exec_outcome_status` 恒与主尺 `outcome_status`
+# 正交:各自独立调用各自的 `market_frame`,互不传染。
 
 def test_c08_late_anchor_predecessor_never_slides_to_an_earlier_lake_file(tmp_path):
-    """真前驱(08-26)缺湖;更早的 08-25 反而有文件 —— 绝不能滑过去冒用它。"""
+    """真前驱(08-26)缺湖;更早的 08-25 反而有文件 —— 绝不能滑过去冒用它。
+
+    前驱日期本身被可信日历正确定位(08-26),只是它自己的湖分区缺失 ——
+    对应三个坍缩状态里的第③种:`exec_outcome_status == MISSING_MARKET_DATA`。
+    """
     root = tmp_path / "lake" / "daily"
     cal = _calendar(_WIDE_SESSIONS)
     _write_day(root, "20260825", {"000001": _bar(10.0, 10.5, 9.8, 10.2, 2.0)})
@@ -287,13 +306,19 @@ def test_c08_late_anchor_predecessor_never_slides_to_an_earlier_lake_file(tmp_pa
     _write_day(root, "20260828", {"000001": _bar(10.8, 11.2, 10.6, 11.0, 2.0)})
     execution = {"first_available_session": "2026-08-27", "exec_lag": 1}
 
-    fr = outcome.exec_anchor_frame(execution, lake_daily=root, calendar=cal, today="2026-09-11")
+    fr, meta = outcome.exec_anchor_frame(execution, lake_daily=root, calendar=cal,
+                                         today="2026-09-11")
 
     assert fr is None      # 前驱 08-26 缺湖 → 无法核验,exec_gap_c1_o2 应保持 null,不得回退到 08-25
+    assert meta["exec_outcome_status"] == outcome.MISSING_MARKET_DATA
+    assert meta["reason"]
 
 
 def test_c08_late_anchor_predecessor_resolves_correctly_when_lake_has_it(tmp_path):
-    """正例:前驱日真有湖数据时,反事实帧必须用日历算出的那一天,不是巧合对上。"""
+    """正例:前驱日真有湖数据时,反事实帧必须用日历算出的那一天,不是巧合对上。
+
+    成功路径:`exec_outcome_status == MATURE`(与主尺共用同一份状态词表)。
+    """
     root = tmp_path / "lake" / "daily"
     cal = _calendar(_WIDE_SESSIONS)
     _write_day(root, "20260826", {"000001": _bar(10.0, 10.5, 9.8, 10.2, 2.0)})   # 真前驱
@@ -301,21 +326,76 @@ def test_c08_late_anchor_predecessor_resolves_correctly_when_lake_has_it(tmp_pat
     _write_day(root, "20260828", {"000001": _bar(10.5, 10.9, 10.3, 10.7, 2.0)})  # 前驱的 T+2
     execution = {"first_available_session": "2026-08-27", "exec_lag": 1}
 
-    fr = outcome.exec_anchor_frame(execution, lake_daily=root, calendar=cal, today="2026-09-11")
+    fr, meta = outcome.exec_anchor_frame(execution, lake_daily=root, calendar=cal,
+                                         today="2026-09-11")
 
     assert fr is not None
     assert "000001" in fr.index
     assert fr.loc["000001", outcome.MAIN] == pytest.approx(10.5 / 10.4 - 1.0)
+    assert meta["exec_outcome_status"] == outcome.MATURE
 
 
 def test_c08_no_exec_lag_returns_none_without_touching_calendar(tmp_path):
-    """正常 run(`exec_lag` 为 0/缺失)—— 与主帧逐字相同,不必另算,函数应直接返回 None。"""
+    """正常 run(`exec_lag` 为 0/缺失)—— 与主帧逐字相同,不必另算,函数应直接返回 None。
+
+    对应三个坍缩状态里的第①种:`exec_outcome_status is None`(不适用,不是失败)——
+    这与②③用主尺同一份状态词表字符串必须是可辨的两类值(`None` vs 字符串)。
+    """
     cal = _calendar(_WIDE_SESSIONS)
-    assert outcome.exec_anchor_frame({"first_available_session": "2026-08-27", "exec_lag": 0},
-                                     lake_daily=tmp_path / "lake" / "daily",
-                                     calendar=cal, today="2026-09-11") is None
-    assert outcome.exec_anchor_frame(None, lake_daily=tmp_path / "lake" / "daily",
-                                     calendar=cal, today="2026-09-11") is None
+    fr1, meta1 = outcome.exec_anchor_frame(
+        {"first_available_session": "2026-08-27", "exec_lag": 0},
+        lake_daily=tmp_path / "lake" / "daily", calendar=cal, today="2026-09-11")
+    assert fr1 is None and meta1["exec_outcome_status"] is None
+
+    fr2, meta2 = outcome.exec_anchor_frame(
+        None, lake_daily=tmp_path / "lake" / "daily", calendar=cal, today="2026-09-11")
+    assert fr2 is None and meta2["exec_outcome_status"] is None
+
+
+def test_c08_predecessor_itself_unverifiable_on_a_weak_calendar(tmp_path):
+    """预驱日期的**定位**本身就失败(日历质量不可信)—— 对应三个坍缩状态里的第②种,
+    必须与"定位到了、只是它自己缺湖"(第③种,`MISSING_MARKET_DATA`)是不同的状态值,
+    否则调用方无法区分"日历没答对"和"日历答对了但当天没数据"这两类完全不同的问题。
+    """
+    cal = _calendar(_WIDE_SESSIONS, quality="lake_partitions")   # 弱质量 → 前驱定位不出来
+    execution = {"first_available_session": "2026-08-27", "exec_lag": 1}
+
+    fr, meta = outcome.exec_anchor_frame(execution, lake_daily=tmp_path / "lake" / "daily",
+                                         calendar=cal, today="2026-09-11")
+
+    assert fr is None
+    assert meta["exec_outcome_status"] == outcome.UNVERIFIED_CALENDAR
+    assert meta["reason"]
+
+
+def test_exec_anchor_failure_never_downgrades_the_mature_main_ruler(tmp_path, monkeypatch):
+    """正交性(review finding 1 末条):exec 侧算不出来,绝不能把已经判定 MATURE 的
+    主尺拖下水——两者是各自独立的 `market_frame` 调用,互不传染。"""
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / "lake" / "daily"
+    cal = _calendar(_WIDE_SESSIONS)
+    _write_day(root, "20260901", {"000001": _bar(10.0, 10.5, 9.8, 10.2, 2.0)})
+    _write_day(root, "20260902", {"000001": _bar(10.2, 10.6, 10.0, 10.4, 2.0)})
+    _write_day(root, "20260903", {"000001": _bar(10.5, 10.9, 10.3, 10.7, 2.0)})
+    run = _run(tmp_path, codes=("000001",))
+    # 手工植入一个"迟到"execution 块,指向一个湖里完全没有数据的窗口——exec 侧必然
+    # MISSING_MARKET_DATA,但不该动主尺(0901 → 0902/0903)一根毫毛。
+    late_target = next(d for d in _WIDE_SESSIONS if d > "2026-10-01")
+    man = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
+    man["execution"] = {"schema_version": 1, "analysis_date": "2026-09-01",
+                        "first_available_session": late_target, "exec_lag": 1,
+                        "actionability_status": "LATE_REVALIDATION_REQUIRED",
+                        "ready_quality": "measured"}
+    (run / "manifest.json").write_text(json.dumps(man), encoding="utf-8")
+
+    doc = outcome.compute_outcome(run, lake_daily=root, calendar=cal, today="2026-11-01")
+
+    assert doc is not None
+    row = doc["rows"]["000001"]
+    # `_num()` 落盘前四舍五入到 6 位小数,容差必须比这更松,否则是断言写法的问题不是行为的问题。
+    assert row[outcome.MAIN] == pytest.approx(10.5 / 10.4 - 1.0, abs=1e-6)  # 主尺分毫不受影响
+    assert row["exec_gap_c1_o2"] is None                               # exec 侧确实拿不到数
+    assert row["exec_outcome_status"] == outcome.MISSING_MARKET_DATA
 
 
 # ───────────────────────── C09:主尺成熟,5/10 日窗口缺日 → 主尺保留,旁列 null ─────────────────────────

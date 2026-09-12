@@ -288,13 +288,20 @@ def test_ledger_line_excludes_late_buys_from_the_mean(tmp_path, monkeypatch):
 
 
 def test_counterfactual_uses_the_first_reachable_close(tmp_path, monkeypatch):
-    """迟到 run 的反事实:同一把尺,买腿改到第一个真正来得及的尾盘。"""
+    """迟到 run 的反事实:同一把尺,买腿改到第一个真正来得及的尾盘。
+
+    2026-09-12 fix round 1:`exec_anchor_frame` 返回 `(fr, meta)`(review finding 1);
+    这里的 fake 跟着新契约换成二元组,`meta["exec_outcome_status"]` 用 `MATURE` 代表
+    "反事实算出来了"。
+    """
     monkeypatch.chdir(tmp_path)
     _fake_market(monkeypatch)
     monkeypatch.setattr(outcome, "exec_anchor_frame",
-                        lambda execution, **k: pd.DataFrame(
+                        lambda execution, **k: (pd.DataFrame(
                             {outcome.MAIN: [0.077]},
-                            index=pd.Index(["603317"], name="code")))
+                            index=pd.Index(["603317"], name="code")),
+                            {"exec_outcome_status": outcome.MATURE, "reason": "",
+                             "anchor_session": "20260827"}))
     root = tmp_path / ws.reports_root() / "scan"
     outcome.upsert_ledger(outcome.compute_outcome(_late_run(tmp_path)), root)
     row = next(r for r in outcome.load_ledger(root) if r["code"] == "603317")
