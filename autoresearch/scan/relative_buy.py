@@ -128,9 +128,21 @@ from pathlib import Path
 
 from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import MAIN_RULER, REL_MARKET, REL_SECTOR, entry_flag_for
+from autoresearch.scan.l4.parsers import parse_card_context
 from autoresearch.scan.passport import build_passport
+from autoresearch.trace import blobs as trace_blobs
+from autoresearch.trace.identity import scan_for_secrets
 
-SCHEMA_VERSION = 1
+#: schema 2(2026-09-12 scene-reconstruction 设计 §7.2,Task 7)= schema 1 + 纯**观测性**
+#: 新增:候选 `card_context`(卡面原文的保守解析,见 `l4/parsers.parse_card_context`)、
+#: `observation_rank`(= 旧 `rank` 的显式别名,供 `selection`/`why` 点名引用,不改 `rank`
+#: 本身的取值);顶层新增 `selection`(实际池/实际顺序/排序依据/池内名次)、
+#: `veto_accounting`(否决股票去重计数 + 逐门命中数)、`field_usage`(字段真实角色表)、
+#: `conflicts`(选中票卡面与选择之间的展示性冲突)、`why`(固定渲染的人读解释)。
+#: **schema 1 的每一个键与取值逐字不变**——这是本次升版的唯一契约:旧字段不动,只加
+#: 新字段;不新增硬门,不改变任何一天的 `buys`/`blocked`/`rank`/`relative_decision_score`
+#: (golden 投影测试锁定,见 `tests/scan/test_relative_buy.py`)。
+SCHEMA_VERSION = 2
 RULE_VERSION = "e6.v3.0"
 # v1.1 = v1 + 两道硬门的 ABSENT 收紧(`data_a` 三个 status 一律要求 `== "OK"`;`contract`
 # 消费护照 `missing["l4.research_rating"]`)。**打分与选择语义与 v1 逐字相同** —— 四面算法 /
@@ -211,6 +223,49 @@ _HARD_GATES = ("tradable", "data_a", "contract", "no_redflag")
 _FACES = ("target_align", "recall_strength", "evidence", "risk_safety")
 _TRUTHY = {"true", "1", "yes", "是"}
 _FALSY = {"false", "0", "no", "否"}
+
+#: card_context 缺卡 / 未归档时的 `source` 占位(spec §7.2「实际选择依据」+ controller
+#: 裁定:`source` 由本文件在 write_decision 的 I/O 边界产出,不是 `parse_card_context`
+#: 的职责)。
+_ABSENT_CARD_SOURCE = {
+    "relative_path": None, "card_sha256": None,
+    "snapshot_quality": "unarchived", "blob_digest": None, "post_hoc": False,
+}
+
+#: `field_usage`(spec §7.2)——真实规则**导出**的字段角色表,不是第二份手写清单:
+#: hard_gate/ranking 两列直接引用 `_HARD_GATES`/`_FACES`,改那两个常量这里自动跟着变,
+#: 不会有人忘记同步一份影子拷贝(同 `benchmark.redflag_early_stop_reasons` 的
+#: "导出词表 = 让它自己说话" 纪律)。`display_only` 列的是本任务新增的 `card_context`
+#: 全部字段——它们只供人读 / `conflicts` 展示,任何一个都不得进 `_hard_gate`/排序,这是
+#: 本任务最硬的约束:`_hard_gate`/`_raw_faces`/`_faces_table`/`eligible`/`buy_pool` 排序
+#: 逐字未动,就是这条约束成立的证据(diff 里找不到这几个函数的任何改动)。
+FIELD_USAGE = {
+    "hard_gate": {
+        "fields": list(_HARD_GATES),
+        "role": "决定 eligible;四类全过才有资格进入候选池(见 build_decision docstring)",
+    },
+    "ranking": {
+        "fields": [*_FACES, "amount", "code"],
+        "role": ("四面 Borda 等权平均 → relative_decision_score,驱动 rank/observation_rank;"
+                "amount/code 是并列决胜键(某天 buy_pool 实际用了哪几个键,见 "
+                "selection.sort_keys,composite 池只用 target_align 一面)"),
+    },
+    "display_only": {
+        "fields": ["card_context.ev_target", "card_context.rr", "card_context.position_raw",
+                   "card_context.trigger_raw", "card_context.exec_lines",
+                   "card_context.entry_stance", "card_context.no_new_position",
+                   "card_context.proposal", "card_context.card_kind"],
+        "role": "仅供人读与 conflicts 展示;不参与 eligible/hard_gate/排序/BUY 选择(本任务硬约束)",
+    },
+    "research_rating": {
+        "role": "hard_gate(no_redflag 的一部分:REDFLAG_RATINGS={Sell,Underweight} 命中即否决)",
+    },
+    "l4_proposal": {
+        "role": ("hard_gate(no_redflag 的一部分:卡面机读 proposal 命中 REDFLAG_PROPOSALS={SELL} "
+                "即否决;取自 decision_records,不是 card_context.proposal——两者来源不同,"
+                "后者是本任务新增的原文解析,见文件尾「已知问题」)"),
+    },
+}
 
 
 # ── 读取原语(容忍缺文件;不容忍猜)──────────────────────────────────────────
@@ -587,10 +642,325 @@ def _hard_gate(entry: dict, ctx: dict) -> tuple[dict[str, bool], list[dict]]:
     return {gate: gates.get(gate, False) for gate in _HARD_GATES}, details
 
 
+# ── card_context:卡面原文一次性读齐 + 归档(spec §7.2「实际选择依据」段落的 source
+# 子字段;controller 裁定归本文件所有,不是 `l4/parsers.parse_card_context` 的职责)───
+#
+# `build_decision` 只做**纯计算**:它从 `card_snapshot` 参数里按 code 取,取不到就是
+# "卡缺失"——不自己读盘。真正的磁盘 I/O(读卡原文、算 hash、试归档)全部在
+# `write_decision`/`verify_decision` 的 I/O 边界完成(`_build_card_snapshot`),两个写者
+# 用**同一套**逻辑构造这份"固定卡输入",`build_decision(card_snapshot=...)` 才谈得上
+# "同输入 → 同输出"的字节级 parity(spec §7.2 硬约束)。
+
+
+def _read_card_texts(scan: Path) -> dict[str, dict]:
+    """`details/*.md` 全部读一遍(与 `l4.parsers.write_early_stop`/
+    `parse_ratings_from_details` 同一遍历方式:glob 全部、文件名 stem 过 `_code` 归一)
+    → {code: {text, relative_path, card_sha256}}。纯读,不归档、不落盘;不按
+    `build_decision` 内部算出的候选集反查——那会形成"先算候选集才能读卡,读卡结果又要
+    喂回候选集构造"的循环。
+    """
+    base = scan / "details"
+    out: dict[str, dict] = {}
+    if not base.is_dir():
+        return out
+    for path in sorted(base.glob("*.md")):
+        code = _code(path.stem)
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        out[code] = {
+            "text": text,
+            "relative_path": str(path.relative_to(scan)),
+            "card_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        }
+    return out
+
+
+def _redact_card_bytes(payload: bytes) -> bytes:
+    """卡面内容归档前的脱敏(spec §7.2「保存脱敏后的卡内容」)。与
+    `trace.capsule._redact_bytes` 同一算法,基于同一个**公开**原语 `scan_for_secrets`
+    独立实现——本任务不碰 `trace/capsule.py`(controller 划的界),但脱敏纪律必须一致,
+    所以复用它已经在用的那个公开扫描函数,不是自己另造一套判据。
+    """
+    report = scan_for_secrets(payload)
+    if report["ok"]:
+        return payload
+    text = payload.decode("latin-1")
+    for finding in sorted(report["findings"], key=lambda row: int(row["offset"]), reverse=True):
+        start = int(finding["offset"])
+        end = start + int(finding["length"])
+        text = text[:start] + "[REDACTED]" + text[end:]
+    return text.encode("latin-1")
+
+
+def _capsule_root_for(scan: Path) -> Path | None:
+    """活跃 run 的 capsule 根,只用于**尝试**归档——找不到/看着不像都诚实返回 `None`
+    (= 交给调用方标 `unarchived`,不是异常)。
+
+    `scan` 在活跃 run 下是 `<run_root>/staging/<date>/`(`workspace.scan_dir` →
+    `scan_root()` 在有 `AUTORESEARCH_RUN_ID` 时等于 `run_root(...)/"staging"`),capsule
+    与 staging 同挂在 run 根下——`scan.parent.parent / "capsule"` 与
+    `retention._lineage_path` 的**第一个**(最新)候选路径同一个约定,这里复用它,不另造
+    第二套猜测规则。**不能用 `evidence.has_capsule`**:那个要求 `capsule.json` 存在,而
+    `capsule.json` 只在 `finalize()` 里才写(法证 capsule 生命周期的终态),
+    `write_decision` 跑在 finalize **之前**(spec §5.2 顺序:E6 校验 → 绑定/快照 → retain
+    → finalize),用它做门槛会让归档在生产里恒假。改用"看起来像不像
+    `capsule._create_run_layout` 建出来的那棵树"(至少有 `identity/` 子目录)——纯目录
+    存在性 stat,任何异常都不上抛。
+    """
+    try:
+        candidate = scan.parent.parent / "capsule"
+        if (candidate.is_dir() and not candidate.is_symlink()
+                and (candidate / "identity").is_dir()):
+            return candidate
+    except OSError:
+        pass
+    return None
+
+
+def _archive_card_snapshot(scan: Path, payload: bytes) -> dict:
+    """尽力而为地把(已脱敏的)卡原文归档进活跃 capsule 的内容寻址 blob 区。
+
+    没有活跃 run、或归档过程任何一步失败 → `{"snapshot_quality": "unarchived",
+    "blob_digest": None}`,绝不上抛——归档只是留痕,不是决策输入,选择结果不能依赖它
+    是否成功。
+    """
+    capsule = _capsule_root_for(scan)
+    if capsule is None:
+        return {"snapshot_quality": "unarchived", "blob_digest": None}
+    try:
+        digest = trace_blobs.put_bytes(capsule, _redact_card_bytes(payload))
+        return {"snapshot_quality": "archived", "blob_digest": digest}
+    except Exception:  # noqa: BLE001 — 归档是尽力而为的留痕,不得阻断决策文件写出
+        return {"snapshot_quality": "unarchived", "blob_digest": None}
+
+
+def _card_source(entry: dict | None, archive: dict) -> dict:
+    """`source` 子字段:相对路径 + 卡内容 hash + 归档引用 + 是否事后补充。`post_hoc`
+    本任务恒 `False`——只实现"现场随 `write_decision` 同步固定快照"这一条路径;历史
+    补录(旧 run 事后重建卡输入)是设计里另一批任务的范围,不在这里悄悄实现一半
+    (那样会造出一个没人真正填过 `True` 的死分支,看着像支持、其实从没测过)。
+    """
+    if entry is None:
+        return dict(_ABSENT_CARD_SOURCE)
+    return {
+        "relative_path": entry.get("relative_path"),
+        "card_sha256": entry.get("card_sha256"),
+        "snapshot_quality": archive["snapshot_quality"],
+        "blob_digest": archive["blob_digest"],
+        "post_hoc": False,
+    }
+
+
+def _build_card_snapshot(scan: Path, *, reuse: dict[str, dict] | None = None) -> dict[str, dict]:
+    """写者的「固定卡输入」构造:读一遍 `details/*.md`,逐码尝试归档,产出喂给
+    `build_decision(card_snapshot=…)` 的字典。
+
+    `reuse`(仅 `verify_decision` 用,取自已发布文档的 `card_context.source`):某码 fresh
+    内容 hash 与 `reuse[code]` 记录的 hash 相同 → **原样复用**那份 `source`,不重新归档、
+    不重算——这是两写者字节 parity 的关键:归档是否成功可能因环境(capsule 这一刻是否
+    还活跃/可写)在两次调用之间改变,内容没变时绝不能让这种纯环境差异伪装成「两次现算
+    不一致」(那会把每天的正常 verify 都吵成假警报)。内容真的变了 → 不复用,现算一份新
+    `source`,让既有的整份文档字节比较(`verify_decision` 主体逻辑)自然把这当成不一致
+    处理——不必在这里另开一条"卡变了"的专用信道。
+    """
+    texts = _read_card_texts(scan)
+    out: dict[str, dict] = {}
+    for code, entry in texts.items():
+        prior = (reuse or {}).get(code)
+        if prior is not None and prior.get("card_sha256") == entry["card_sha256"]:
+            out[code] = {"text": entry["text"], "source": dict(prior)}
+            continue
+        archive = _archive_card_snapshot(scan, entry["text"].encode("utf-8"))
+        out[code] = {"text": entry["text"], "source": _card_source(entry, archive)}
+    return out
+
+
+def _published_card_sources(target: Path) -> dict[str, dict]:
+    """已发布决策文件的逐码 `card_context.source`(供 `verify_decision` 复用判据)。
+    文件缺席/损坏/非 dict → 空字典(= 当作"什么都还没发布过",不是错误)。
+    """
+    if not target.exists():
+        return {}
+    try:
+        doc = json.loads(target.read_bytes().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(doc, dict):
+        return {}
+    out: dict[str, dict] = {}
+    for row in doc.get("candidates") or []:
+        if not isinstance(row, dict):
+            continue
+        code = row.get("code")
+        source = (row.get("card_context") or {}).get("source")
+        if isinstance(code, str) and isinstance(source, dict):
+            out[code] = source
+    return out
+
+
+def _card_context_for(code: str, card_snapshot: dict[str, dict] | None) -> dict:
+    """纯函数:固定卡快照 → 该票的 `card_context`(spec §7.1 字段表 + `source` 子字段)。
+    不读盘、不归档——所有 I/O 已经在调用方(`write_decision`/`verify_decision`)完成,
+    `build_decision` 因此对"卡怎么读到的"保持纯计算(spec §7.2 硬约束)。
+
+    `contract` 恒传 `None`(见文件尾「已知问题」):要不要把「今天」的
+    `EXEC_LINE_MAX_PCT_1D`/`EXEC_LINE_MAX_POS_IN_RANGE` 常量喂给"今天自己产的卡"做自洽
+    核对,是一个本任务特意搁置、留给以后的决定——搁置理由见文件尾,不在这里悄悄接上。
+    """
+    snap = (card_snapshot or {}).get(code)
+    text = snap.get("text") if snap else None
+    parsed = parse_card_context(text, contract=None)
+    source = (dict(snap["source"]) if snap and isinstance(snap.get("source"), dict)
+             else dict(_ABSENT_CARD_SOURCE))
+    return {**parsed, "source": source}
+
+
+# ── E6 实际选择解释(spec §7.2「实际选择依据」)───────────────────────────────
+def _selection_sort_spec(pool: str) -> tuple[list[str], list[str]]:
+    """该 pool 的 buy_pool 排序键名 + 方向——与 `build_decision` 里真正用来 `.sort()` 的
+    key 逐字同源(见下面两处调用点旁注),不在这里重算一遍规则。"""
+    if pool == POOL_COMPOSITE:
+        return (["target_align", "amount", "code"], ["desc", "desc", "asc"])
+    return (["relative_decision_score", "target_align", "amount", "code"],
+            ["desc", "desc", "desc", "asc"])
+
+
+def _sort_key_values(row: dict, names: list[str], universe: dict) -> list:
+    raw = {
+        "relative_decision_score": row["relative_decision_score"],
+        "target_align": row["faces"]["target_align"],
+        "amount": universe["amount"].get(row["code"]),
+        "code": row["code"],
+    }
+    return [round(raw[name], 6) if isinstance(raw[name], float) else raw[name]
+           for name in names]
+
+
+def _selection_block(*, pool: str, eligible: list[dict], buy_pool: list[dict],
+                     universe: dict, buys: list[dict], second_buy: dict,
+                     excluded: list[dict], candidates_n: int) -> dict:
+    """spec §7.2「实际选择依据」——只从 `build_decision` 已经算好的 eligible/buy_pool/
+    排序值/excluded/second_buy 里摘,不重算第二套排序(那正是 composite 池 E03 场景要堵
+    的病:重算迟早和真正选择分家)。`pool_rank` 用 `codes.index()` 现查,不从
+    `observation_rank` 反推——两者在 composite 池下可以是不同的数。
+    """
+    names, directions = _selection_sort_spec(pool)
+    codes = [row["code"] for row in buy_pool]
+    winner_code = buys[0]["code"] if buys else None
+    pinned_excluded = sorted(row["code"] for row in excluded if row["reason"] == "pinned_holding")
+    not_in_pool_excluded = sorted(row["code"] for row in excluded if row["reason"] == "not_in_pool")
+    return {
+        "pool": pool,
+        "population": {
+            "candidates": candidates_n,
+            "passed_hard_gates": len(eligible),
+            "after_pinned_exclusion": len(eligible) - len(pinned_excluded),
+            "final_pool": len(buy_pool),
+        },
+        "codes": codes,
+        "sort_keys": {
+            "names": names, "directions": directions,
+            "values": {row["code"]: _sort_key_values(row, names, universe) for row in buy_pool},
+        },
+        "exclusions": {"pinned_holding": pinned_excluded, "not_in_pool": not_in_pool_excluded},
+        "winner": {
+            "code": winner_code,
+            "pool_rank": (codes.index(winner_code) + 1) if winner_code in codes else None,
+        },
+        "buys_count": len(buys),
+        "second_buy_reason": second_buy["reason"],
+    }
+
+
+def _veto_accounting_block(*, candidates: list[dict], eligible: list[dict],
+                           buy_pool: list[dict], excluded: list[dict],
+                           candidates_n: int) -> dict:
+    """否决股票数按 code 去重;每门命中数另列(可能重复计一只票);四个流水人口分别
+    命名——全文任何地方都不得用"合格"指两个不同的数(bullet 5/9)。
+    """
+    pinned_excluded = sorted(row["code"] for row in excluded if row["reason"] == "pinned_holding")
+    vetoed_codes = sorted({row["code"] for row in candidates if not row["eligible"]})
+    by_gate = {gate: sum(1 for row in candidates if row["hard_gate"].get(gate) is False)
+              for gate in _HARD_GATES}
+    return {
+        "population": {
+            "candidates": candidates_n,
+            "passed_hard_gates": len(eligible),
+            "after_pinned_exclusion": len(eligible) - len(pinned_excluded),
+            "final_pool": len(buy_pool),
+        },
+        "vetoed_stocks": len(vetoed_codes),
+        "vetoed_codes": vetoed_codes,
+        "by_gate": by_gate,
+    }
+
+
+def _selection_conflicts(by_code: dict[str, dict], winner_code: str | None) -> list[dict]:
+    """spec §7.2:选中票的卡面与 E6 选择之间的**展示性**冲突——只看被选中的那一只(v1
+    恒 0/1 只 BUY),三种触发:卡面 PROHIBITED、卡面 CONDITIONAL(前置条件未被证明满足)、
+    卡缺失/解析失败(`parse_status == "ERROR"`)。**这是展示事实,不新增门**——本函数不
+    读写任何 `hard_gate`/`eligible`/`buys`,调用点也在 `build_decision` 选择完成之后。
+    """
+    if not winner_code or winner_code not in by_code:
+        return []
+    card = by_code[winner_code]["card_context"]
+    conflicts: list[dict] = []
+    stance = card.get("entry_stance")
+    if stance == "PROHIBITED":
+        conflicts.append({
+            "code": winner_code, "type": "card_says_prohibited",
+            "detail": (f"卡面 entry_stance=PROHIBITED(position_raw="
+                      f"{card.get('position_raw')!r}, trigger_raw={card.get('trigger_raw')!r})"
+                      f",E6 仍选中为 BUY"),
+        })
+    elif stance == "CONDITIONAL":
+        conflicts.append({
+            "code": winner_code, "type": "condition_not_shown_met",
+            "detail": (f"卡面 entry_stance=CONDITIONAL,前置条件未被证明满足"
+                      f"(position_raw={card.get('position_raw')!r}, "
+                      f"trigger_raw={card.get('trigger_raw')!r})"),
+        })
+    if card.get("parse_status") == "ERROR":
+        conflicts.append({
+            "code": winner_code, "type": "card_missing_or_unparseable",
+            "detail": f"card_context.parse_errors={card.get('parse_errors')}",
+        })
+    return conflicts
+
+
+def _render_why(*, pool: str, selection: dict, by_code: dict[str, dict],
+                conflicts: list[dict]) -> str:
+    """`why`:由 `selection`/`conflicts` 结构化字段**固定渲染**,不另算——用实际池内
+    名次(`selection.winner.pool_rank`),绝不用 `observation_rank`(mutation probe:把这里
+    换成 observation_rank,composite 池的 E03 测试必须变红)。
+    """
+    winner_code = selection["winner"]["code"]
+    if winner_code is None:
+        return "当日 BLOCKED,无 BUY 可解释(候选/硬门/池过滤后无入选)。"
+    pool_rank = selection["winner"]["pool_rank"]
+    observation_rank = by_code[winner_code].get("observation_rank")
+    names = selection["sort_keys"]["names"]
+    values = selection["sort_keys"]["values"][winner_code]
+    key_text = "、".join(f"{n}={v}" for n, v in zip(names, values, strict=True))
+    parts = [
+        f"{winner_code} 是 {pool} 池(共 {len(selection['codes'])} 只)第 {pool_rank} 名"
+        f"(全体 eligible 观察 rank={observation_rank};两者可能不同,以池内第 {pool_rank} 名"
+        f"为准,不是观察 rank)。",
+        f"排序依据:{key_text}。",
+        f"第 2 只未出:{selection['second_buy_reason']}。",
+    ]
+    for c in conflicts:
+        parts.append(f"冲突:{c['type']} — {c['detail']}")
+    return " ".join(parts)
+
+
 # ── 主构建 ─────────────────────────────────────────────────────────────────
 def build_decision(scan_dir: Path | str, date: str | None = None,
                    mode: str = MODE_SHADOW, exclude_pinned: bool = False,
-                   pool: str = POOL_FINALISTS) -> dict:
+                   pool: str = POOL_FINALISTS,
+                   card_snapshot: dict[str, dict] | None = None) -> dict:
     """`context/scan/<date>` → 统一相对决策文档(确定性、零 LLM、零联网、只读)。
 
     护照**现算**(`passport.build_passport`),不读盘上那份 `_candidate_passport.json`:
@@ -601,6 +971,15 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
     `excluded` 追加一条 `reason="pinned_holding"`。`rank` 字段照旧按**全体** eligible 排,
     不因排除而重排(观测语义不变)。若当日非📌合格为 0 → 诚实 `blocked=True`,不退回去
     选📌票。缺省 `False` = 现行为(parity)。
+
+    `card_snapshot`(schema 2,Task 7):可选的「固定卡输入」——`{code: {"text":
+    str|None, "source": {...}}}`,由 `write_decision`/`verify_decision` 在 I/O 边界读盘
+    构造(`_build_card_snapshot`)。本函数只按 code 查表、调用纯函数
+    `l4.parsers.parse_card_context` 解析,**不自己读盘、不归档**——保持纯计算是字节级
+    parity(两写者同输入 → 同输出)与 golden 投影测试可信的前提。缺省 `None` 时每只候选
+    的 `card_context` 一律按"卡缺失"处理(`parse_card_context(None)`),不影响
+    `eligible`/`hard_gate`/`buys`/`rank` 等既有字段——这些字段与卡面解析完全独立
+    (schema 1 行为逐字不变的证据)。
     """
     if mode not in {MODE_SHADOW, MODE_ACTIVE}:
         raise ValueError(
@@ -654,6 +1033,11 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
             "relative_decision_score": round(
                 sum(face[name] for name in _FACES) / len(_FACES), 6),
             "rank": None,
+            # schema 2:`rank` 的显式别名——同一个数,新名字专供 `selection`/`why` 点名
+            # 引用,不让"全体观察名次"与"实际池内名次"共用一个容易被读错的名字
+            # (spec §7.2:不得把全体观察第 N 名写成实际池内第 N 名)。`rank` 本身取值/
+            # 语义逐字不变。
+            "observation_rank": None,
             "research_rating": entry["l4"].get("research_rating"),
             "amount_pctl": universe["amount_pctl"].get(code),
             "price_claim": ctx["price_claim"].get(code, "UNMEASURED"),
@@ -662,6 +1046,9 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
             # `composite` 池 = 只有证据席。**不进池 ≠ 不进候选表** —— 全部派发过的票照旧
             # 全量留在 `candidates` 里(观测语义不变),只是不当 BUY。
             "in_pool": (True if pool == POOL_FINALISTS else code in seat_codes),
+            # schema 2:卡面原文的保守解析(spec §7.1)。纯查表 + 纯函数,`card_snapshot`
+            # 缺该 code → "卡缺失"(不是错误,不影响 eligible/hard_gate/buys)。
+            "card_context": _card_context_for(code, card_snapshot),
         })
 
     by_code = {row["code"]: row for row in candidates}
@@ -673,6 +1060,7 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
                          row["code"]))
     for rank, row in enumerate(eligible, start=1):
         by_code[row["code"]]["rank"] = rank
+        by_code[row["code"]]["observation_rank"] = rank
 
     # exclude_pinned(v2.0):BUY 池排掉📌持仓(保送不算判例);rank 字段照旧按**全体**
     # eligible 排(上面那个循环),这里只影响谁能当 buys[0]——不重排、不从候选表摘除。
@@ -713,6 +1101,20 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
                 buckets[row["reason"]] = buckets.get(row["reason"], 0) + 1
             blocked_reasons = [{"reason": reason, "n": buckets[reason]}
                                for reason in sorted(buckets)]
+
+    # schema 2:实际选择依据 + 否决计数 + 字段角色 + 展示性冲突 + 固定渲染的 why。全部
+    # 从上面已经算好的 eligible/buy_pool/excluded/second_buy/candidates 摘,不重算第二套
+    # 排序或门(spec §7.2 硬约束)。
+    winner_code = buys[0]["code"] if buys else None
+    selection = _selection_block(
+        pool=pool, eligible=eligible, buy_pool=buy_pool, universe=universe,
+        buys=buys, second_buy=second_buy, excluded=excluded,
+        candidates_n=len(candidates))
+    veto_accounting = _veto_accounting_block(
+        candidates=candidates, eligible=eligible, buy_pool=buy_pool,
+        excluded=excluded, candidates_n=len(candidates))
+    conflicts = _selection_conflicts(by_code, winner_code)
+    why = _render_why(pool=pool, selection=selection, by_code=by_code, conflicts=conflicts)
 
     market_members = universe["members"]
     raw_orphans = passport.get("orphans") or {}
@@ -790,6 +1192,13 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
         "blocked": blocked,
         "blocked_reasons": blocked_reasons,
         "excluded": sorted(excluded, key=lambda row: (row["code"], row["reason"])),
+        # schema 2(Task 7,spec §7.2)——见文件头「schema 2」注:纯观测性新增,不改上面
+        # 任何一个既有键的取值。
+        "selection": selection,
+        "veto_accounting": veto_accounting,
+        "field_usage": FIELD_USAGE,
+        "conflicts": conflicts,
+        "why": why,
     }
 
 
@@ -887,10 +1296,18 @@ def configured_pool() -> str:
 def write_decision(scan_dir: Path | str, date: str | None = None,
                    mode: str = MODE_SHADOW, exclude_pinned: bool = False,
                    pool: str = POOL_FINALISTS) -> Path:
-    """构建并原子落盘。`sort_keys=True` 是 byte 稳定契约的一半,另一半是构建本身无时序量。"""
+    """构建并原子落盘。`sort_keys=True` 是 byte 稳定契约的一半,另一半是构建本身无时序量。
+
+    schema 2(Task 7):在这里的 I/O 边界一次性读齐 `details/*.md`、算 hash、尝试归档
+    (`_build_card_snapshot`),把结果作为「固定卡输入」传给纯计算的 `build_decision`
+    ——卡面读取只在这一处发生,`verify_decision` 复用同一构造函数,两者才谈得上"同一份
+    卡输入 → 字节级 parity"。
+    """
     scan = Path(scan_dir)
     target = scan / DECISION_FILENAME
-    payload = _serialize_decision(build_decision(scan, date, mode, exclude_pinned, pool))
+    card_snapshot = _build_card_snapshot(scan)
+    payload = _serialize_decision(
+        build_decision(scan, date, mode, exclude_pinned, pool, card_snapshot=card_snapshot))
     target.parent.mkdir(parents=True, exist_ok=True)
     temp = target.with_name(f"{target.name}.tmp")
     temp.write_bytes(payload)
@@ -952,10 +1369,19 @@ def verify_decision(scan_dir: Path | str, date: str | None = None,
 
     返回 `{"match": bool, "action": str, ...}`,便于调用方/测试内省;调用方若只关心
     副作用可以忽略返回值(与 `write_decision` 返回 `Path` 同一习惯,只是这里多一个字段)。
+
+    schema 2(Task 7)卡面 parity:重新读一遍 `details/*.md`,逐码把 fresh 内容 hash 与
+    「已发布文档记录的那份 `card_context.source.card_sha256`」比较——相同则原样复用已发布
+    的 `source`(不重新归档,见 `_build_card_snapshot` 的 `reuse` 参数),这样卡没变时两次
+    现算才能真正字节相等,不被"归档这一刻是否仍处于活跃 run"这种环境差异污染成假
+    不一致。卡内容如果真的变了,复用判据自然失效,现算出的整份文档就会与盘上那份不同
+    ——直接落进下面既有的"内容不等"分支(mismatch 侧车 + gate_fires),不必另开一条
+    "卡变了"的专用信道。
     """
     scan = Path(scan_dir)
     target = scan / DECISION_FILENAME
-    fresh_doc = build_decision(scan, date, mode, exclude_pinned, pool)
+    card_snapshot = _build_card_snapshot(scan, reuse=_published_card_sources(target))
+    fresh_doc = build_decision(scan, date, mode, exclude_pinned, pool, card_snapshot=card_snapshot)
     fresh_bytes = _serialize_decision(fresh_doc)
     resolved_date = str(fresh_doc.get("date") or date or scan.name)
 
@@ -1079,5 +1505,15 @@ def main(argv: list[str] | None = None) -> int:
 # 6. `research_rating != "Sell"` 只挡五档里最末一档。实测 2026-08-06 有 4 只 `Underweight`
 #    (`decision_records.proposal == "SELL"`)全部通过硬门并进入排序——当天冠军是 Hold 所以
 #    没咬到,但"提议卖出的票可以当相对 BUY 出"这条通路是敞开的。规则观察前锁定,本轮不改。
+# 7. **(schema 2,Task 7)`_card_context_for` 恒传 `contract=None` 给 `parse_card_context`**
+#    ——`exec_lines.*.contract_match` 因此对**每一天、每一张卡**都是 `UNKNOWN`,包括当天
+#    刚产出、理应能跟当前 `contracts.agent_output.EXEC_LINE_MAX_PCT_1D`/
+#    `EXEC_LINE_MAX_POS_IN_RANGE` 自洽核对的活体卡。这是本任务刻意搁置的决定,不是漏做:
+#    `l4/parsers.py` 明确不导入那两个常量(防止"没传 contract"退化成"拿今天的值判历史
+#    漂移"),该常量存在但没有独立的"版本号"字段——若直接用
+#    `contracts.agent_output.AGENT_OUTPUT_SCHEMA_VERSION` 顶替,会把"这两个阈值有没有变"
+#    这件事和"整份卡片输出契约的 schema 版本"这件**不同**的事捆在一起,阈值改了但
+#    schema 没升版时会静默失配——版本语义比"暂时留 UNKNOWN"更容易出错。给活体运行接一个
+#    真正独立的执行线契约版本号,是可以做但本任务没做的下一步。
 if __name__ == "__main__":
     raise SystemExit(main())

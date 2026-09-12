@@ -1377,3 +1377,447 @@ def test_illegal_pool_in_config_degrades_loudly(tmp_path, monkeypatch, capsys):
     _write_config(tmp_path, {"pool": "whatever"}, monkeypatch)
     assert configured_pool() == POOL_FINALISTS
     assert "relative_buy.pool" in capsys.readouterr().err
+
+
+# ═══════════════════════ schema 2(Task 7,2026-09-12 scene-reconstruction §7.2)═══════
+#
+# `_relative_buy_decision.json` 升 schema 2:候选新增 `card_context`(卡面原文保守解析)/
+# `observation_rank`(= 旧 `rank` 的显式别名);顶层新增 `selection`(实际池/实际顺序/
+# 排序依据/池内名次)、`veto_accounting`(否决股票去重计数 + 逐门命中数)、`field_usage`
+# (字段真实角色表)、`conflicts`(选中票卡面与选择之间的展示性冲突)、`why`(固定渲染的
+# 人读解释)。**schema 1 的每一个键与取值逐字不变**——第一条测试就是这件事的 golden 锁,
+# 其余测试都建立在"投影不变"这同一份契约之上。
+
+from autoresearch.scan.relative_buy import (  # noqa: E402
+    _FACES,
+    _HARD_GATES,
+    FIELD_USAGE,
+    safe_write_decision,
+)
+from autoresearch.trace.blobs import blob_path  # noqa: E402
+
+
+def _write_card(scan: Path, code: str, text: str) -> Path:
+    details = scan / "details"
+    details.mkdir(parents=True, exist_ok=True)
+    path = details / f"{code}.md"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+# 真实卡面形状,直接借用 task-6-brief 给定的字面样本族(与
+# `tests/scan/test_parsers_card_context.py` 同一形状,证据来源同一份契约)。
+_CARD_ALLOWED_A = "\n".join([
+    "# 决策卡 — 002345 示例票 @ 2026-08-06",
+    "| 评级 | 现价 | EV目标(T+2 开盘预期带) | R:R | 仓位 | 触发位 |",
+    "|---|---|---|---|---|---|",
+    "| Hold | 10 | +3%~-1% | 1.2 : 1 | 明确允许新开仓，仓位 10% | 跌破 9 清 |",
+    "- [执行线] pct_chg <= 3.0 → 当日涨超 3% 放弃本次尾盘入场",
+    "- [执行线] pos_in_range < 0.7 → 收在当日区间上 30% 放弃",
+    "FINAL TRANSACTION PROPOSAL: **HOLD**",
+])
+#: 同一票,EV/仓位/执行线数值全部换掉,entry_stance 仍是 ALLOWED——E05 display_only 不变性
+#: 测试专用:只有数值变了,规则读的字段(hard_gate/faces)一个没碰。
+_CARD_ALLOWED_B = "\n".join([
+    "# 决策卡 — 002345 示例票 @ 2026-08-06",
+    "| 评级 | 现价 | EV目标(T+2 开盘预期带) | R:R | 仓位 | 触发位 |",
+    "|---|---|---|---|---|---|",
+    "| Hold | 10 | +8%~-4% | 2.5 : 1 | 明确允许新开仓，仓位 30% | 跌破 7 清 |",
+    "- [执行线] pct_chg <= 5.0 → 当日涨超 5% 放弃本次尾盘入场",
+    "- [执行线] pos_in_range < 0.4 → 收在当日区间上 60% 放弃",
+    "FINAL TRANSACTION PROPOSAL: **HOLD**",
+])
+_CARD_PROHIBITED = "\n".join([
+    "# 决策卡 — 002345 示例票 @ 2026-08-06",
+    "| 评级 | 现价 | EV目标(T+2 开盘预期带) | R:R | 仓位 | 触发位 |",
+    "|---|---|---|---|---|---|",
+    "| Hold | 10 | +3%~-1% | 1.2 : 1 | 0%(不新建仓) | 跌破 9 清 |",
+    "FINAL TRANSACTION PROPOSAL: **HOLD**",
+])
+_CARD_CONDITIONAL = "\n".join([
+    "# 决策卡 — 002345 示例票 @ 2026-08-06",
+    "| 评级 | 现价 | EV目标(T+2 开盘预期带) | R:R | 仓位 | 触发位 |",
+    "|---|---|---|---|---|---|",
+    "| Hold | 10 | +3%~-1% | 1.2 : 1 | 待突破确认 | 跌破 9 清 |",
+    "FINAL TRANSACTION PROPOSAL: **HOLD**",
+])
+_CARD_CORRUPTED = "\n".join([
+    "# 决策卡 — 002345 示例票 @ 2026-08-06",
+    "| 评级 | 现价 | EV目标(T+2 开盘预期带) | R:R | 仓位 | 触发位 |",
+    "|---|---|---|---|---|---|",
+    "| Hold | 10 | 坏数据??? | N/A : 1 | 10% | — |",
+    "- [执行线] pct_chg <= abc → 放弃",
+    "FINAL TRANSACTION PROPOSAL: **HOLD**",
+])
+
+
+def _projection(doc: dict) -> dict:
+    """brief bullet 1/11 的「决策投影」子集:buys/blocked/pool/second_buy/excluded +
+    每票 eligibility/hard_gate/rank/observation_rank/relative_decision_score/faces/
+    faces_missing/in_pool。**不含** card_context/selection/veto_accounting/conflicts/
+    why/field_usage——那些是本任务新增的观测层,display_only 不变性只保证这个子集不变,
+    新增观测层本身当然会随卡面输入变化(否则它就没在记录任何东西)。
+    """
+    return {
+        "buys": doc["buys"], "blocked": doc["blocked"],
+        "blocked_reasons": doc["blocked_reasons"], "pool": doc["pool"],
+        "second_buy": doc["second_buy"], "excluded": doc["excluded"],
+        "candidates": [
+            {k: row[k] for k in (
+                "code", "eligible", "hard_gate", "rank", "observation_rank",
+                "relative_decision_score", "faces", "faces_missing", "in_pool",
+            )}
+            for row in doc["candidates"]
+        ],
+    }
+
+
+# ── bullet 1:golden 投影 —— 本任务全部新增字段的安全网 ──────────────────────
+def test_schema_2_golden_projection_is_unchanged_by_new_fields(tmp_path):
+    """用 `_RANK_CANDS`(docstring 里那组"等权平均 vs 乘积会给出相反结论"的主用例)锁死
+    schema 1 的每一个既有字段——数值取自本任务改动**之前**对同一 fixture 的真实运行
+    (`build_decision` 逐字节 dump,未做任何人工调整)。只要这条测试还绿,后面加的任何
+    新字段都不可能悄悄改掉一天的 BUY/排名/分数/合格性。
+    """
+    doc = build_decision(_build_scan(tmp_path, _RANK_CANDS))
+
+    assert doc["schema_version"] == SCHEMA_VERSION == 2
+    assert doc["rule_version"] == RULE_VERSION == "e6.v3.0"
+    assert doc["blocked"] is False
+    assert doc["blocked_reasons"] == []
+    assert doc["buys"] == [{"basis": "relative", "code": "002345", "rank": 1}]
+    assert doc["second_buy"] == {"fired": False, "reason": "v1 影子期无已验证阈值",
+                                 "threshold": None}
+    assert doc["pool"] == "finalists"
+    assert doc["excluded"] == []
+    assert doc["counts"] == {
+        "buys": 1, "candidates": 4, "eligible": 4, "excluded_rows": 0, "in_pool": 4,
+        "orphan_finalists": 0, "orphan_rated": 0, "with_missing_face": 0,
+    }
+
+    by = _by_code(doc)
+    expected = {
+        "000034": {"rank": 2, "observation_rank": 2, "relative_decision_score": 0.625,
+                   "eligible": True, "in_pool": True,
+                   "faces": {"target_align": 0.625, "recall_strength": 0.625,
+                             "evidence": 0.625, "risk_safety": 0.625}},
+        "002345": {"rank": 1, "observation_rank": 1, "relative_decision_score": 0.6875,
+                   "eligible": True, "in_pool": True,
+                   "faces": {"target_align": 0.125, "recall_strength": 0.875,
+                             "evidence": 0.875, "risk_safety": 0.875}},
+        "600188": {"rank": 3, "observation_rank": 3, "relative_decision_score": 0.5,
+                   "eligible": True, "in_pool": True,
+                   "faces": {"target_align": 0.875, "recall_strength": 0.375,
+                             "evidence": 0.375, "risk_safety": 0.375}},
+        "601699": {"rank": 4, "observation_rank": 4, "relative_decision_score": 0.1875,
+                   "eligible": True, "in_pool": True,
+                   "faces": {"target_align": 0.375, "recall_strength": 0.125,
+                             "evidence": 0.125, "risk_safety": 0.125}},
+    }
+    for code, want in expected.items():
+        row = by[code]
+        assert row["rank"] == want["rank"], code
+        assert row["observation_rank"] == want["observation_rank"], code
+        assert row["relative_decision_score"] == want["relative_decision_score"], code
+        assert row["eligible"] == want["eligible"], code
+        assert row["in_pool"] == want["in_pool"], code
+        assert row["faces"] == want["faces"], code
+        assert row["faces_missing"] == [], code
+        assert row["hard_gate"] == {"tradable": True, "data_a": True,
+                                    "contract": True, "no_redflag": True}, code
+
+    # 新字段确实新增了(不是名字换了旧字段),旧字段没有一个消失
+    for row in doc["candidates"]:
+        assert "card_context" in row
+        assert "observation_rank" in row
+    for key in ("selection", "veto_accounting", "field_usage", "conflicts", "why"):
+        assert key in doc
+
+
+def test_display_only_invariance_helper_covers_exactly_the_old_schema_1_fields(tmp_path):
+    """`_projection` 本身的自检:同一 fixture 反复 `build_decision` 两次(不碰任何卡),
+    投影必须逐字相等——这是后面几条"改了 display_only 输入,投影不变"测试能成立的地基。
+    """
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    assert _projection(build_decision(scan)) == _projection(build_decision(scan))
+
+
+# ── E03:composite 池实际顺序与全体观察 rank 不同 ─────────────────────────────
+def test_composite_pool_selection_uses_pool_rank_not_observation_rank_in_why(tmp_path):
+    """600188 在 composite 池里排第 1(target_align 更高)当选 BUY,但它在全体 eligible
+    的观察排名(四面 Borda 更低)里只排第 2——`selection.winner.pool_rank` 与 `why` 都必须
+    用池内第 1 名,绝不能把"全体观察第 2 名"读成"池内第 2 名"(controller 描述的那个
+    具体 bug 场景)。数值取自对同一 fixture 的真实运行(与
+    `test_composite_pool_ranks_by_composite_not_borda` 同一 fixture)。
+    """
+    cands = [
+        Cand(code="600188", name="composite 更高", composite_rank=1, amount_yi=2.0,
+             n_channels=1, best_channel_rank=40, rating="Hold", intel="NONE", seat=True),
+        Cand(code="601699", name="四面更好", composite_rank=30, amount_yi=9.0,
+             n_channels=4, best_channel_rank=1, rating="Hold", intel="INTEL",
+             dossier=True, price_claim="CLEAN", seat=True),
+    ]
+    doc = build_decision(_build_scan(tmp_path, cands), mode=MODE_ACTIVE, pool=POOL_COMPOSITE)
+    by = _by_code(doc)
+
+    # 前提自证:两个 rank 真的不同,这条用例才有鉴别力
+    assert by["600188"]["rank"] == 2
+    assert by["600188"]["observation_rank"] == 2
+    assert by["601699"]["rank"] == 1
+    assert doc["buys"][0]["code"] == "600188"
+
+    selection = doc["selection"]
+    assert selection["pool"] == "composite"
+    assert selection["codes"] == ["600188", "601699"]
+    assert selection["winner"] == {"code": "600188", "pool_rank": 1}
+    assert selection["sort_keys"]["names"] == ["target_align", "amount", "code"]
+    assert selection["sort_keys"]["directions"] == ["desc", "desc", "asc"]
+    assert selection["sort_keys"]["values"]["600188"] == [0.75, 2.0, "600188"]
+    assert selection["sort_keys"]["values"]["601699"] == [0.25, 9.0, "601699"]
+    assert selection["population"] == {
+        "candidates": 2, "passed_hard_gates": 2,
+        "after_pinned_exclusion": 2, "final_pool": 2,
+    }
+
+    # why 必须点名池内第 1 名,绝不能印成观察第 2 名
+    assert "第 1 名" in doc["why"]
+    assert "第 2 名" not in doc["why"]
+    assert "观察 rank=2" in doc["why"]
+
+
+# ── E04:一票触发多硬门 ────────────────────────────────────────────────────
+def test_veto_accounting_dedupes_stocks_but_lists_each_gate_hit_separately(tmp_path):
+    double_veto = Cand(code="000998", name="双门否决票", in_universe=False, rating="Sell",
+                       composite_rank=1, amount_yi=9.0)
+    clean = Cand(code="000034", name="正常票", composite_rank=2, amount_yi=8.0, rating="Hold")
+    doc = build_decision(_build_scan(tmp_path, [double_veto, clean]))
+
+    by = _by_code(doc)
+    assert by["000998"]["eligible"] is False
+    assert by["000998"]["hard_gate"]["tradable"] is False
+    assert by["000998"]["hard_gate"]["no_redflag"] is False
+    assert by["000998"]["hard_gate"]["data_a"] is True
+    assert by["000998"]["hard_gate"]["contract"] is True
+
+    veto = doc["veto_accounting"]
+    assert veto["vetoed_stocks"] == 1            # 按 code 去重:恒一只
+    assert veto["vetoed_codes"] == ["000998"]
+    assert veto["by_gate"] == {"tradable": 1, "data_a": 0, "contract": 0, "no_redflag": 1}
+    assert veto["population"] == {
+        "candidates": 2, "passed_hard_gates": 1,
+        "after_pinned_exclusion": 1, "final_pool": 1,
+    }
+    # "合格"不得混用:候选数/过硬门数/final_pool 三个不同的数,键名各自独立
+    assert veto["population"]["candidates"] != veto["population"]["passed_hard_gates"]
+
+
+def test_field_usage_derives_from_hard_gates_and_faces_without_inventing_a_new_gate(tmp_path):
+    doc = build_decision(_build_scan(tmp_path, _RANK_CANDS))
+    fu = doc["field_usage"]
+    assert fu == FIELD_USAGE                              # 每天同一份常量,byte 稳定
+    assert fu["hard_gate"]["fields"] == list(_HARD_GATES)
+    assert fu["ranking"]["fields"] == [*_FACES, "amount", "code"]
+    display_only = set(fu["display_only"]["fields"])
+    assert display_only & set(fu["hard_gate"]["fields"]) == set()
+    assert display_only & set(fu["ranking"]["fields"]) == set()
+    assert all(f.startswith("card_context.") for f in display_only)
+    assert "research_rating" in fu and "hard_gate" in fu["research_rating"]["role"]
+    assert "l4_proposal" in fu and "hard_gate" in fu["l4_proposal"]["role"]
+
+
+# ── 卡缺失:card_context 诚实降级,选择不受影响 ────────────────────────────
+def test_missing_card_is_absent_source_and_unknown_card_context_without_blocking_buy(tmp_path):
+    doc = build_decision(_build_scan(tmp_path, _RANK_CANDS))
+    by = _by_code(doc)
+    card = by["002345"]["card_context"]
+    assert card["card_kind"] == "unknown"
+    assert card["parse_status"] == "ERROR"
+    assert card["entry_stance"] == "UNKNOWN"
+    assert card["source"] == {
+        "relative_path": None, "card_sha256": None,
+        "snapshot_quality": "unarchived", "blob_digest": None, "post_hoc": False,
+    }
+    assert doc["buys"][0]["code"] == "002345"          # 卡缺失不影响选择
+    assert doc["conflicts"] == [{
+        "code": "002345", "type": "card_missing_or_unparseable",
+        "detail": f"card_context.parse_errors={card['parse_errors']}",
+    }]
+
+
+# ── E05:display_only 输入改动/损坏 → 决策投影不变,错误有账 ──────────────────
+def test_corrupted_card_leaves_decision_projection_unchanged_and_accounts_the_parse_error(
+    tmp_path,
+):
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    baseline = _projection(build_decision(scan))
+
+    _write_card(scan, "002345", _CARD_CORRUPTED)
+    doc = json.loads(write_decision(scan).read_text(encoding="utf-8"))
+
+    assert _projection(doc) == baseline
+    card = _by_code(doc)["002345"]["card_context"]
+    assert card["parse_status"] == "PARTIAL"
+    assert any("pct_chg" in e for e in card["parse_errors"])
+    assert card["exec_lines"]["pct_chg"]["presence"] is True
+    assert card["exec_lines"]["pct_chg"]["threshold"] is None
+    assert card["ev_target"] == "坏数据???"
+
+
+def test_display_only_card_fields_never_change_the_decision_projection(tmp_path):
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    _write_card(scan, "002345", _CARD_ALLOWED_A)
+    doc_a = json.loads(write_decision(scan).read_text(encoding="utf-8"))
+
+    _write_card(scan, "002345", _CARD_ALLOWED_B)       # EV/仓位/执行线数值全部换掉
+    doc_b = json.loads(write_decision(scan).read_text(encoding="utf-8"))
+
+    assert _projection(doc_a) == _projection(doc_b)
+    card_a = _by_code(doc_a)["002345"]["card_context"]
+    card_b = _by_code(doc_b)["002345"]["card_context"]
+    assert card_a["ev_target"] != card_b["ev_target"]
+    assert card_a["position_raw"] != card_b["position_raw"]
+    assert card_a["entry_stance"] == card_b["entry_stance"] == "ALLOWED"
+
+
+def test_prohibited_card_does_not_block_buy_but_surfaces_as_conflict(tmp_path):
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    baseline = _projection(build_decision(scan))
+
+    _write_card(scan, "002345", _CARD_PROHIBITED)      # 冠军自己的卡写"0%(不新建仓)"
+    doc = json.loads(write_decision(scan).read_text(encoding="utf-8"))
+
+    assert _projection(doc) == baseline                # 决策投影分毫不变(不新增门)
+    assert doc["blocked"] is False
+    assert doc["buys"][0]["code"] == "002345"
+    card = _by_code(doc)["002345"]["card_context"]
+    assert card["entry_stance"] == "PROHIBITED"
+    assert doc["conflicts"] == [{
+        "code": "002345", "type": "card_says_prohibited",
+        "detail": (f"卡面 entry_stance=PROHIBITED(position_raw="
+                  f"{card['position_raw']!r}, trigger_raw={card['trigger_raw']!r})"
+                  f",E6 仍选中为 BUY"),
+    }]
+
+
+def test_conditional_card_surfaces_as_condition_not_shown_met_conflict(tmp_path):
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    baseline = _projection(build_decision(scan))
+
+    _write_card(scan, "002345", _CARD_CONDITIONAL)
+    doc = json.loads(write_decision(scan).read_text(encoding="utf-8"))
+
+    assert _projection(doc) == baseline
+    assert doc["buys"][0]["code"] == "002345"
+    assert doc["conflicts"][0]["type"] == "condition_not_shown_met"
+    assert doc["conflicts"][0]["code"] == "002345"
+
+
+def test_selection_and_why_are_well_formed_when_blocked(tmp_path):
+    cands = [Cand(code="30075" + str(i), name=f"票{i}", rating="Sell",
+                  composite_rank=i + 1, n_channels=2, best_channel_rank=i + 1)
+             for i in range(3)]
+    doc = build_decision(_build_scan(tmp_path, cands))
+    assert doc["blocked"] is True
+
+    selection = doc["selection"]
+    assert selection["codes"] == []
+    assert selection["winner"] == {"code": None, "pool_rank": None}
+    assert selection["buys_count"] == 0
+    assert doc["conflicts"] == []
+    assert doc["why"] == "当日 BLOCKED,无 BUY 可解释(候选/硬门/池过滤后无入选)。"
+
+    veto = doc["veto_accounting"]
+    assert veto["vetoed_stocks"] == 3
+    assert veto["vetoed_codes"] == ["300750", "300751", "300752"]
+    assert veto["by_gate"]["no_redflag"] == 3
+
+
+# ── 卡快照归档(spec §7.2:active run 复用 trace.blobs;无 active run → unarchived)──
+def test_write_decision_archives_card_snapshot_under_active_capsule(tmp_path):
+    run_root = tmp_path / "run"
+    scan = _build_scan(run_root / "staging", _RANK_CANDS)
+    capsule = run_root / "capsule"
+    (capsule / "identity").mkdir(parents=True)
+    _write_card(scan, "002345", _CARD_ALLOWED_A)
+
+    target = write_decision(scan)
+    doc = json.loads(target.read_text(encoding="utf-8"))
+    source = _by_code(doc)["002345"]["card_context"]["source"]
+
+    assert source["snapshot_quality"] == "archived"
+    assert source["relative_path"] == "details/002345.md"
+    assert source["card_sha256"] == hashlib.sha256(
+        _CARD_ALLOWED_A.encode("utf-8")).hexdigest()
+    # 无密钥的普通卡:脱敏是 no-op,归档字节等于原文,digest 因此等于 card_sha256
+    assert source["blob_digest"] == source["card_sha256"]
+    blob = blob_path(capsule, source["blob_digest"])
+    assert blob.is_file()
+    assert blob.read_text(encoding="utf-8") == _CARD_ALLOWED_A
+    assert source["post_hoc"] is False
+
+    # 归档成功与否不改变选择
+    assert doc["buys"][0]["code"] == "002345"
+
+
+def test_write_decision_marks_card_unarchived_without_active_capsule(tmp_path):
+    scan = _build_scan(tmp_path, _RANK_CANDS)      # 没有 run/capsule/identity 那棵树
+    _write_card(scan, "002345", _CARD_ALLOWED_A)
+
+    doc = json.loads(write_decision(scan).read_text(encoding="utf-8"))
+    source = _by_code(doc)["002345"]["card_context"]["source"]
+
+    assert source["snapshot_quality"] == "unarchived"
+    assert source["blob_digest"] is None
+    assert source["card_sha256"] == hashlib.sha256(
+        _CARD_ALLOWED_A.encode("utf-8")).hexdigest()
+    assert doc["buys"][0]["code"] == "002345"      # 归档失败/跳过不影响选择
+
+
+# ── E06:writer parity + 卡中途变化走 mismatch 通道 ───────────────────────────
+def test_write_then_verify_with_unchanged_real_card_is_still_byte_parity(tmp_path):
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    _write_card(scan, "002345", _CARD_ALLOWED_A)
+    written = write_decision(scan)
+    before = written.read_bytes()
+
+    result = verify_decision(scan)
+
+    assert result == {"match": True, "action": "noop", "path": str(written)}
+    assert written.read_bytes() == before
+    assert not (scan / MISMATCH_FILENAME).exists()
+    assert not (scan / "gate_fires.csv").exists()
+
+
+def test_verify_detects_card_changed_mid_flight_and_routes_through_mismatch_not_overwrite(
+    tmp_path,
+):
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    _write_card(scan, "002345", _CARD_ALLOWED_A)
+    written = write_decision(scan)
+    original_bytes = written.read_bytes()
+    original_doc = json.loads(original_bytes)
+    assert original_doc["buys"][0]["code"] == "002345"
+
+    _write_card(scan, "002345", _CARD_PROHIBITED)   # 中途卡内容改变(entry_stance 变了)
+
+    result = verify_decision(scan)
+
+    assert written.read_bytes() == original_bytes    # 已发布答案绝不覆盖
+    assert result["match"] is False
+    assert result["action"] == "mismatch"
+    assert (scan / MISMATCH_FILENAME).exists()
+    rows = _gate_fires_rows(scan)
+    assert len(rows) == 1
+    assert rows[0]["check"] == MISMATCH_CHECK_NAME
+    assert fail_class(rows[0]["check"]) == "data"
+
+
+def test_safe_write_decision_also_archives_card_snapshot(tmp_path):
+    """`safe_write_decision` 只是失败纪律外壳,正常路径行为必须与 `write_decision` 一致
+    ——包括 schema 2 的卡快照/归档。"""
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    _write_card(scan, "002345", _CARD_ALLOWED_A)
+    target = safe_write_decision(scan)
+    assert target is not None
+    doc = json.loads(target.read_text(encoding="utf-8"))
+    assert _by_code(doc)["002345"]["card_context"]["parse_status"] == "OK"
