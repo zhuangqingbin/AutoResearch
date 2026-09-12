@@ -1,0 +1,308 @@
+"""card_context 保守解析(Task 6 · spec 2026-09-12 scene-reconstruction-transcript-binding §7.1)。
+
+E6(`relative_buy.py`)长期只读卡的机读提案(`FINAL TRANSACTION PROPOSAL`),不读卡面
+仓位/触发位/执行线——于是写着"不新开仓"的卡也能被相对层选成当日 BUY(设计稿附录 A
+E12:四笔亏损 BUY 现场,四张卡全写不建仓/早停不建仓/不追)。本文件测试新增的两个公共
+入口,只做**保守解析**,不改 E6 的候选池/硬门/排序/评级规则(Task 7 才接线进决策文档):
+
+  - `read_card_text(scan_dir, ticker)`:原私有 `_decision_text` 的公共名(别名仍保留)。
+  - `parse_card_context(text, *, contract=None)`:卡文本 → 结构化 card_context。
+
+四态 `entry_stance` 只认**正证据**(spec §7.1 段落 + task-6-brief 控制者裁决):
+  0%/0.0%(完整仓位数值)或 不建仓/不新开仓/不新建仓 → PROHIBITED;
+  待突破确认/满足条件才考虑/不追高 → CONDITIONAL;
+  明确肯定且无否定/前置条件的新开仓建议 → ALLOWED;其余 → UNKNOWN
+  (绝不能从"没有否定词"反推 ALLOWED;裸数字如"10%"不是推荐)。
+`exec_lines` 的 `presence`(这行是否写了)与 `contract_match`(阈值是否等于传入的历史
+`contract`)分开计算——不传 `contract` 恒 `UNKNOWN`,不拿今天的常量顶替历史版本。
+"""
+from __future__ import annotations
+
+import pytest
+
+from autoresearch.scan.l4.parsers import parse_card_context, read_card_text
+
+# ── brief 给定的字面用例(逐字照抄,不得改写)──────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("position", "stance"),
+    [
+        ("0%", "PROHIBITED"),
+        ("0.0%", "PROHIBITED"),
+        ("不新开仓", "PROHIBITED"),
+        ("待突破确认", "CONDITIONAL"),
+        ("不追高", "CONDITIONAL"),
+        ("明确允许新开仓，仓位 10%", "ALLOWED"),
+        ("10%", "UNKNOWN"),
+        ("—", "UNKNOWN"),
+    ],
+)
+def test_entry_stance_requires_positive_evidence(position, stance):
+    text = "\n".join([
+        "# 决策卡",
+        "| 评级 | 现价 | 仓位 |",
+        "|---|---|---|",
+        f"| Hold | 10 | {position} |",
+        "FINAL TRANSACTION PROPOSAL: **HOLD**",
+    ])
+    got = parse_card_context(text)
+    assert got["entry_stance"] == stance
+    if stance in {"CONDITIONAL", "UNKNOWN"}:
+        assert got["no_new_position"] is None
+
+
+# ── 真实卡面形状(task-6-brief 第5条给定的字段样本)───────────────────────────
+
+_EARLYSTOP_CARD = "\n".join([
+    "# 决策卡 — 600000 示例票 @ 2026-09-12  ·  〔早停·表面 DD〕",
+    "| 评级 | 现价 | 时间框架 | 触发位 | 置信度 |",
+    "|---|---|---|---|---|",
+    "| Hold | 12.34 | T+1 | 不新开仓;持有者 T+2 开盘 ≥180 减、跌破 166.39(布林下轨)清 | 中 |",
+    "**早停**: 停于 P3 ｜ 停因:资金流出",
+    "FINAL TRANSACTION PROPOSAL: **HOLD**",
+])
+
+_FULL_CARD = "\n".join([
+    "# 决策卡 — 300857 示例票 @ 2026-09-12",
+    "| 评级 | 现价 | EV目标(T+2 开盘预期带) | 上行 | 下行 | R:R | 时间框架 | 仓位 | 触发位 | 置信度 |",
+    "|---|---|---|---|---|---|---|---|---|---|",
+    "| Overweight | 18.20 | +3.2%~-1.1% | +8% | -2% | **0.83 : 1** | T+2 | "
+    "0%(不新建仓) | 跌破 16.5 清 | 高 |",
+    "FINAL TRANSACTION PROPOSAL: **BUY**",
+])
+
+_EXEC_CARD = "\n".join([
+    "# 决策卡",
+    "| 评级 | 现价 | 仓位 |",
+    "|---|---|---|",
+    "| Hold | 10 | 10% |",
+    "- [执行线] pct_chg <= 3.0 → 当日涨超 3% 放弃本次尾盘入场",
+    "- [执行线] pos_in_range < 0.7 → 收在当日区间上 30% 放弃",
+    "FINAL TRANSACTION PROPOSAL: **HOLD**",
+])
+
+
+def test_card_kind_earlystop_detected_and_position_column_absent():
+    got = parse_card_context(_EARLYSTOP_CARD)
+    assert got["card_kind"] == "earlystop"
+    assert got["position_raw"] is None            # 早停卡没有仓位列
+    assert got["trigger_raw"] is not None
+    assert got["entry_stance"] == "PROHIBITED"     # 证据来自触发位「不新开仓」
+    assert got["no_new_position"] is True
+    assert got["parse_status"] == "OK"
+    # 早停卡不应有 EV/R:R(它们那张表压根没有这两列)——缺失为 null,不是错误。
+    assert got["ev_target"] is None
+    assert got["rr"] is None
+
+
+def test_card_kind_full_reads_emphasis_and_position_note_without_recomputing_ev():
+    got = parse_card_context(_FULL_CARD)
+    assert got["card_kind"] == "full"
+    assert got["proposal"] == "BUY"
+    assert got["rr"] == "0.83 : 1"                 # `**` 强调号已被 _parse_dashboard 剥离
+    assert got["ev_target"] == "+3.2%~-1.1%"       # 原文原样,不据区间中枢重算期望值
+    assert got["position_raw"] == "0%(不新建仓)"
+    assert got["trigger_raw"] == "跌破 16.5 清"
+    assert got["entry_stance"] == "PROHIBITED"     # 0% 前缀 + 「不新建仓」双重命中
+    assert got["no_new_position"] is True
+    assert got["parse_status"] == "OK"
+
+
+def test_entry_stance_tolerates_markdown_emphasis_in_position_cell():
+    """08-01 17.4% 误判同根病灶(`**` 强调号)在 card_context 这条新链路上不能重演。"""
+    text = "\n".join([
+        "# 决策卡",
+        "| 评级 | 现价 | 仓位 |",
+        "|---|---|---|",
+        "| **Hold** | 10 | **0%** |",
+        "FINAL TRANSACTION PROPOSAL: **HOLD**",
+    ])
+    got = parse_card_context(text)
+    assert got["position_raw"] == "0%"
+    assert got["entry_stance"] == "PROHIBITED"
+
+
+def test_out_of_vocabulary_negation_is_unknown_not_prohibited_or_allowed():
+    """PROHIBIT 词表是 spec 给定的封闭三词(不建仓/不新开仓/不新建仓)。"不可以新开仓"
+    这类释义变体不在表内 → 落 UNKNOWN,不靠通用否定词外推 PROHIBITED;同时 ALLOW 正则的
+    否定 lookbehind 也保证它不会被误配成 ALLOWED。两边都不外推,是同一个"只认正证据"
+    纪律的两面。
+    """
+    text = "\n".join([
+        "# 决策卡", "| 评级 | 现价 | 仓位 |", "|---|---|---|",
+        "| Hold | 10 | 不可以新开仓 |", "FINAL TRANSACTION PROPOSAL: **HOLD**",
+    ])
+    got = parse_card_context(text)
+    assert got["entry_stance"] == "UNKNOWN"
+    assert got["no_new_position"] is None
+
+
+@pytest.mark.parametrize(
+    ("position", "expected_stance", "expected_no_new_position"),
+    [
+        ("0%", "PROHIBITED", True),
+        ("不新开仓", "PROHIBITED", True),
+        ("明确允许新开仓，仓位 10%", "ALLOWED", False),
+        ("待突破确认", "CONDITIONAL", None),
+        ("10%", "UNKNOWN", None),
+    ],
+)
+def test_no_new_position_is_compat_field_derived_from_stance(
+    position, expected_stance, expected_no_new_position,
+):
+    text = "\n".join([
+        "# 决策卡", "| 评级 | 现价 | 仓位 |", "|---|---|---|",
+        f"| Hold | 10 | {position} |", "FINAL TRANSACTION PROPOSAL: **HOLD**",
+    ])
+    got = parse_card_context(text)
+    assert got["entry_stance"] == expected_stance
+    assert got["no_new_position"] is expected_no_new_position
+
+
+# ── 验收矩阵 E01:空表 / 数值损坏 / 相互矛盾 ─────────────────────────────────
+
+
+def test_e01_empty_table_reports_error_without_raising():
+    text = "# 决策卡\n\n(暂无仪表盘数据)\n"
+    got = parse_card_context(text)
+    assert got["card_kind"] == "unknown"
+    assert got["entry_stance"] == "UNKNOWN"
+    assert got["no_new_position"] is None
+    assert got["proposal"] is None
+    assert got["parse_status"] == "ERROR"
+    assert got["parse_errors"]
+
+
+def test_e01_header_only_table_without_data_row_is_unknown():
+    text = "\n".join(["# 决策卡", "| 评级 | 现价 | 仓位 |", "|---|---|---|"])
+    got = parse_card_context(text)
+    assert got["card_kind"] == "unknown"
+    assert got["parse_status"] == "ERROR"
+
+
+def test_e01_corrupted_exec_threshold_does_not_raise_and_is_recorded():
+    text = "\n".join([
+        "# 决策卡",
+        "| 评级 | 现价 | EV目标(T+2 开盘预期带) | R:R | 仓位 | 触发位 |",
+        "|---|---|---|---|---|---|",
+        "| Hold | 10 | 坏数据??? | N/A : 1 | 10% | — |",
+        "- [执行线] pct_chg <= abc → 放弃",
+        "- [执行线] pos_in_range < 0.7 → 收在当日区间上 30% 放弃",
+        "FINAL TRANSACTION PROPOSAL: **HOLD**",
+    ])
+    got = parse_card_context(text)  # 不应抛异常
+    assert got["ev_target"] == "坏数据???"          # 原文原样保留,不尝试数值化
+    assert got["rr"] == "N/A : 1"
+    assert got["entry_stance"] == "UNKNOWN"
+    assert got["exec_lines"]["pct_chg"]["presence"] is True   # 行在,只是数字读不出来
+    assert got["exec_lines"]["pct_chg"]["threshold"] is None
+    assert got["exec_lines"]["pct_chg"]["op"] is None
+    assert got["exec_lines"]["pos_in_range"]["presence"] is True
+    assert got["exec_lines"]["pos_in_range"]["threshold"] == 0.7
+    assert got["parse_status"] == "PARTIAL"
+    assert any("pct_chg" in e for e in got["parse_errors"])
+
+
+def test_e01_mutually_contradictory_card_stays_prohibited_and_records_conflict():
+    text = "\n".join([
+        "# 决策卡",
+        "| 评级 | 现价 | 仓位 | 触发位 |",
+        "|---|---|---|---|",
+        "| Hold | 10 | 0% | 建议新开仓,风险可控 |",
+        "FINAL TRANSACTION PROPOSAL: **HOLD**",
+    ])
+    got = parse_card_context(text)
+    assert got["entry_stance"] == "PROHIBITED"     # 否定/零仓位与允许同时出现 → 保守
+    assert got["no_new_position"] is True
+    assert got["parse_status"] == "PARTIAL"
+    assert any("entry_stance" in e for e in got["parse_errors"])
+
+
+# ── 验收矩阵 E02:执行线版本缺失 vs 漂移,presence 与 contract_match 独立移动 ──
+
+
+def test_e02_contract_match_unknown_when_version_missing():
+    got = parse_card_context(_EXEC_CARD)  # contract=None(默认;版本不可得)
+    for metric in ("pct_chg", "pos_in_range"):
+        assert got["exec_lines"][metric]["presence"] is True
+        assert got["exec_lines"][metric]["contract_match"] == "UNKNOWN"
+        assert got["exec_lines"][metric]["contract_version"] is None
+
+
+def test_e02_contract_match_and_drift_with_presence_held_constant():
+    matching = {"EXEC_LINE_MAX_PCT_1D": 3.0, "EXEC_LINE_MAX_POS_IN_RANGE": 0.7, "version": "v1"}
+    got = parse_card_context(_EXEC_CARD, contract=matching)
+    assert got["exec_lines"]["pct_chg"]["presence"] is True
+    assert got["exec_lines"]["pct_chg"]["contract_match"] == "MATCH"
+    assert got["exec_lines"]["pct_chg"]["contract_version"] == "v1"
+    assert got["exec_lines"]["pos_in_range"]["contract_match"] == "MATCH"
+
+    drifted = {"EXEC_LINE_MAX_PCT_1D": 2.0, "EXEC_LINE_MAX_POS_IN_RANGE": 0.7, "version": "v0"}
+    got_drift = parse_card_context(_EXEC_CARD, contract=drifted)
+    # 同一段卡面文本;presence 不因 contract 数字变化而变化,只有 contract_match 变。
+    assert got_drift["exec_lines"]["pct_chg"]["presence"] is True
+    assert got_drift["exec_lines"]["pct_chg"]["contract_match"] == "DRIFTED"
+    assert got_drift["exec_lines"]["pos_in_range"]["contract_match"] == "MATCH"  # 只有 pct 漂移
+
+
+def test_e02_exec_line_absent_stays_unknown_even_with_contract_supplied():
+    text_no_exec = "\n".join([
+        "# 决策卡", "| 评级 | 现价 | 仓位 |", "|---|---|---|", "| Hold | 10 | 10% |",
+        "FINAL TRANSACTION PROPOSAL: **HOLD**",
+    ])
+    got = parse_card_context(text_no_exec, contract={
+        "EXEC_LINE_MAX_PCT_1D": 3.0, "EXEC_LINE_MAX_POS_IN_RANGE": 0.7,
+    })
+    for metric in ("pct_chg", "pos_in_range"):
+        assert got["exec_lines"][metric]["presence"] is False
+        assert got["exec_lines"][metric]["contract_match"] == "UNKNOWN"
+
+
+def test_e02_contract_missing_one_key_does_not_contaminate_the_other_metric():
+    got = parse_card_context(_EXEC_CARD, contract={"EXEC_LINE_MAX_PCT_1D": 3.0})
+    assert got["exec_lines"]["pct_chg"]["contract_match"] == "MATCH"
+    assert got["exec_lines"]["pos_in_range"]["contract_match"] == "UNKNOWN"
+
+
+# ── 任何异常都不能逃出本函数(brief 条款8:E6 不能因为一张坏卡丢掉整份决策文档)──
+
+
+@pytest.mark.parametrize("bad_text", [None, "", "   \n\n  ", 12345, object()])
+def test_parse_card_context_never_raises_on_degenerate_input(bad_text):
+    got = parse_card_context(bad_text)  # type: ignore[arg-type]
+    assert got["card_kind"] == "unknown"
+    assert got["parse_status"] == "ERROR"
+    assert got["entry_stance"] == "UNKNOWN"
+    assert got["no_new_position"] is None
+    assert got["parse_errors"]
+
+
+# ── read_card_text:公共入口 + `_decision_text` 别名(既有调用方零改动)────────
+
+
+def test_read_card_text_finds_card_by_exact_and_suffixed_ticker(tmp_path):
+    details = tmp_path / "details"
+    details.mkdir()
+    (details / "000001.md").write_text(_FULL_CARD, encoding="utf-8")
+    assert read_card_text(tmp_path, "000001") == _FULL_CARD
+    assert read_card_text(tmp_path, "000001.SZ") == _FULL_CARD  # 带交易所后缀的 ticker
+
+
+def test_read_card_text_zfill_glob_fallback_for_short_code(tmp_path):
+    details = tmp_path / "details"
+    details.mkdir()
+    (details / "002156.md").write_text(_FULL_CARD, encoding="utf-8")
+    assert read_card_text(tmp_path, "2156") is not None
+
+
+def test_read_card_text_missing_card_returns_none(tmp_path):
+    assert read_card_text(tmp_path, "999999") is None
+
+
+def test_decision_text_alias_is_read_card_text():
+    """既有调用方(decision_finalize/report_sections/l4.card_io/assemble 的 re-export)
+    按 `_decision_text` 这个私有名导入;它必须与新公共名是同一个函数对象。"""
+    from autoresearch.scan.l4 import parsers
+
+    assert parsers._decision_text is parsers.read_card_text

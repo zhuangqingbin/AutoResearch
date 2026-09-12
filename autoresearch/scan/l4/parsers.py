@@ -239,8 +239,13 @@ def pick_rating_aligned_evidence(card_text: str, final_rating: str,
     return {"text": "—", "source": "none", "polarity": "neutral"}
 
 
-def _decision_text(scan_dir: Path, ticker: str) -> str | None:
-    """定位 finalist 的 lite 决策卡:context/scan/<date>/details/<ticker>.md,按 6 位代码 glob 兜底。"""
+def read_card_text(scan_dir: Path, ticker: str) -> str | None:
+    """定位 finalist 的 lite 决策卡:context/scan/<date>/details/<ticker>.md,按 6 位代码 glob 兜底。
+
+    公共入口(Task 6,2026-09-12 scene-reconstruction 设计 §3);原私有名 `_decision_text`
+    仍保留为别名(见下),`decision_finalize`/`report_sections`/`l4.card_io`/`assemble`
+    的既有 import 不必改动。
+    """
     base = scan_dir / "details"
     code = ticker.split(".")[0]
     tries = [base / f"{ticker}.md"]
@@ -256,6 +261,11 @@ def _decision_text(scan_dir: Path, ticker: str) -> str | None:
         if p.exists():
             return p.read_text(encoding="utf-8")
     return None
+
+
+#: 向后兼容别名(原私有名)——既有调用方按这个名字导入,行为与 `read_card_text` 完全相同
+#: (同一个函数对象,不是重复实现)。
+_decision_text = read_card_text
 
 def _finalist_row(scan_dir: Path, fr: dict) -> dict:
     ticker = (fr.get("ticker") or fr.get("code") or "").strip()
@@ -379,3 +389,222 @@ def write_early_stop(scan_dir: Path | str) -> dict[str, dict]:
     (scan_dir / "_early_stop.json").write_text(
         json.dumps(out, ensure_ascii=False), encoding="utf-8")
     return out
+
+# ══ Task 6(2026-09-12 scene-reconstruction 设计 §7.1):card_context 保守解析 ═══════
+#
+# E6(`relative_buy.py`)长期只读卡的机读提案(`_PROPOSAL_RE`),不读卡面仓位/触发位/
+# 执行线——于是写着"不新开仓"的卡也能被相对层选成当日 BUY(设计稿附录 A E12:四笔
+# 亏损 BUY 现场,四张卡全写不建仓/早停不建仓/不追)。本节新增两个公共入口把这些信号
+# **保守地**解析出来,交给 Task 7(`relative_buy.py`)接进 E6 解释文档——本节自己
+# 不改候选池/硬门/排序/评级规则,也不碰 relative_buy.py。
+#
+# 设计边界(供 reviewer 核对):`parse_card_context` 只吃卡面原文(+ 可选的历史 contract
+# 阈值),不知道文件路径/hash/是否事后补录——spec §7.1 的 `source` 字段需要那些身份
+# 信息,由 Task 7 在本函数返回值之上补一层(它握着 scan_dir/code/capsule 引用),不在
+# 这里生产。
+#
+# 四态判定只认**正证据**(task-6-brief 控制者裁决 + spec §7.1 段落):
+#   PROHIBITED  — 仓位为完整零值(0%/0.0%,允许尾随注释如"0%(不新建仓)")
+#                 或命中 不建仓/不新开仓/不新建仓(spec 给定的封闭三词,不外推释义变体)。
+#   CONDITIONAL — 命中 待突破确认/满足条件才考虑/不追高(同样是封闭三词)。
+#   ALLOWED     — 命中"允许/建议/可/可以"紧跟"新开仓/新建仓"且前一字不是否定字——
+#                 绝不能从"没找到否定词"反推允许;裸数字(如"10%")不是推荐,不算证据。
+#   UNKNOWN     — 其余(含词表外的释义变体,如"不可以新开仓"——不在封闭词表内,不外推)。
+# 证据来自 `position_raw`(仓位列)∪ `trigger_raw`(触发位列):早停卡没有仓位列,
+# "不新开仓"这类判词写在触发位里,两栏都要看;零值判定单独锚定在 `position_raw`
+# 开头(`^0(?:\.0+)?%`),前缀锚点保证"10%"不会被读成"0%"的子串误命中。
+# 否定/零仓位证据与允许证据同时出现时,保守记 PROHIBITED,冲突记进 `parse_errors`
+# ——不是新开一个"conflicts"键,spec 那个键属于 Task 7 的 E6 解释层产物。
+_STANCE_ZERO_RE = re.compile(r"^0(?:\.0+)?\s*%")
+_STANCE_PROHIBIT_WORDS = ("不建仓", "不新开仓", "不新建仓")
+_STANCE_CONDITIONAL_WORDS = ("待突破确认", "满足条件才考虑", "不追高")
+_STANCE_ALLOW_RE = re.compile(r"(?<![不无未非禁勿])(?:明确)?(?:允许|建议|可以?)新(?:开仓|建仓)")
+
+#: `[执行线]` 两个已知字段名(与 `contracts.agent_output.L4_CARD` 的
+#: `exec_line_pct`/`exec_line_pos` 同源)。本模块**不 import**
+#: `EXEC_LINE_MAX_PCT_1D`/`EXEC_LINE_MAX_POS_IN_RANGE`——只拿这两个字符串常量名去
+#: `contract` 参数里查,历史阈值必须由调用方(留存当时版本的一方)显式传入,绝不能让
+#: "没传 contract" 退化成"拿今天的常量去判历史卡漂移"(task-6-brief 第4条硬约束)。
+_EXEC_METRICS = ("pct_chg", "pos_in_range")
+_EXEC_CONTRACT_KEYS = {
+    "pct_chg": "EXEC_LINE_MAX_PCT_1D", "pos_in_range": "EXEC_LINE_MAX_POS_IN_RANGE",
+}
+_EXEC_PRESENCE_RE = {
+    metric: re.compile(r"\[执行线\][^\n]*\b" + re.escape(metric) + r"\b")
+    for metric in _EXEC_METRICS
+}
+_EXEC_VALUE_RE = {
+    metric: re.compile(
+        r"\[执行线\]\s*" + re.escape(metric) + r"\s*(<=|>=|<|>)\s*(-?\d+(?:\.\d+)?)")
+    for metric in _EXEC_METRICS
+}
+
+
+def _entry_stance(position_raw: str | None, trigger_raw: str | None) -> tuple[str, bool]:
+    """新开仓四态(仅凭正证据)。返回 `(entry_stance, conflict)`;
+    `conflict=True` 表示否定/零仓位证据与允许证据同时出现(仍保守记 PROHIBITED)。
+    """
+    pos = position_raw or ""
+    combined = f"{pos} {trigger_raw or ''}"
+    is_zero = bool(_STANCE_ZERO_RE.match(pos.strip()))
+    has_prohibit = is_zero or any(w in combined for w in _STANCE_PROHIBIT_WORDS)
+    has_conditional = any(w in combined for w in _STANCE_CONDITIONAL_WORDS)
+    has_allow = bool(_STANCE_ALLOW_RE.search(combined))
+    if has_prohibit:
+        return "PROHIBITED", has_allow
+    if has_conditional:
+        return "CONDITIONAL", False
+    if has_allow:
+        return "ALLOWED", False
+    return "UNKNOWN", False
+
+
+def _no_new_position(stance: str) -> bool | None:
+    """兼容字段(spec §7.1):PROHIBITED→True;ALLOWED→False;CONDITIONAL/UNKNOWN→None。"""
+    if stance == "PROHIBITED":
+        return True
+    if stance == "ALLOWED":
+        return False
+    return None
+
+
+def _exec_line_raw(text: str, metric: str) -> str | None:
+    """卡面里提到该 `[执行线]` 字段的那一整行原文(去项目符号,`_strip` 去强调号);
+    没写就 None——presence 只问"这行是否存在",不依赖数字能否解析。"""
+    for raw_line in text.splitlines():
+        line = raw_line.strip().lstrip("-•*").strip()
+        if _EXEC_PRESENCE_RE[metric].search(line):
+            return _strip(line)
+    return None
+
+
+def _exec_value(raw: str, metric: str) -> tuple[str | None, float | None]:
+    """从已定位的执行线原文里取 `(操作符, 阈值)`;数字损坏/缺失 → `(None, None)`
+    (正则的捕获组只在数字形状完整时才命中,`float()` 不会抛)。"""
+    m = _EXEC_VALUE_RE[metric].search(raw)
+    if not m:
+        return None, None
+    return m.group(1), float(m.group(2))
+
+
+def _parse_exec_lines(text: str, contract: dict | None,
+                      parse_errors: list[str]) -> dict[str, dict]:
+    """`exec_lines` 两个字段:presence 与 contract_match 分开计算、互不派生
+    (spec §7.1 硬约束)。`contract_match` 是三态字符串
+    (`MATCH`/`DRIFTED`/`UNKNOWN`)——与 `agent_output.GATE_STATES` 同一防漂移理由:
+    bool 表不了"未知",不进 JSON。
+    """
+    contract_version = contract.get("version") if isinstance(contract, dict) else None
+    out: dict[str, dict] = {}
+    for metric in _EXEC_METRICS:
+        raw = _exec_line_raw(text, metric)
+        presence = raw is not None
+        op = threshold = None
+        if presence:
+            op, threshold = _exec_value(raw, metric)
+            if threshold is None:
+                parse_errors.append(f"exec_lines.{metric}: 阈值数字无法解析,已保留原文")
+        contract_match = "UNKNOWN"
+        if presence and threshold is not None and isinstance(contract, dict):
+            want = contract.get(_EXEC_CONTRACT_KEYS[metric])
+            if isinstance(want, (int, float)) and not isinstance(want, bool):
+                contract_match = "MATCH" if abs(float(want) - threshold) < 1e-9 else "DRIFTED"
+        out[metric] = {
+            "raw": raw, "op": op, "threshold": threshold,
+            "presence": presence, "contract_match": contract_match,
+            "contract_version": contract_version,
+        }
+    return out
+
+
+def _empty_exec_lines(contract: dict | None) -> dict[str, dict]:
+    contract_version = contract.get("version") if isinstance(contract, dict) else None
+    return {metric: {"raw": None, "op": None, "threshold": None, "presence": False,
+                     "contract_match": "UNKNOWN", "contract_version": contract_version}
+            for metric in _EXEC_METRICS}
+
+
+def _empty_card_context(card_kind: str, parse_errors: list[str],
+                        contract: dict | None) -> dict:
+    return {
+        "card_kind": card_kind, "proposal": None, "ev_target": None, "rr": None,
+        "position_raw": None, "trigger_raw": None,
+        "entry_stance": "UNKNOWN", "no_new_position": None,
+        "exec_lines": _empty_exec_lines(contract),
+        "parse_status": "ERROR", "parse_errors": parse_errors,
+    }
+
+
+def _parse_card_context_impl(text: str | None, contract: dict | None) -> dict:
+    parse_errors: list[str] = []
+    body = text if isinstance(text, str) else ""
+    if not body.strip():
+        parse_errors.append("text: 卡片正文为空或缺失")
+        return _empty_card_context("unknown", parse_errors, contract)
+
+    dash = _parse_dashboard(body)
+    if not dash:
+        parse_errors.append("dashboard: 未找到可解析的『评级』表(空表或格式不可辨认)")
+        return _empty_card_context("unknown", parse_errors, contract)
+
+    if parse_early_stop(body) is not None:
+        card_kind = "earlystop"
+    elif "仓位" in dash:
+        card_kind = "full"
+    else:
+        card_kind = "unknown"
+        parse_errors.append("card_kind: 表存在但既无早停行也无仓位列,判定为未知卡种")
+
+    prop_m = _PROPOSAL_RE.search(body)
+    proposal = prop_m.group(1).upper() if prop_m else None
+    if proposal is None:
+        parse_errors.append("proposal: 未找到 FINAL TRANSACTION PROPOSAL 行")
+
+    ev_target = _get(dash, "EV目标", "目标") or None
+    rr = _get(dash, "R:R") or None
+    position_raw = _get(dash, "仓位") or None
+    trigger_raw = _get(dash, "触发位") or None
+
+    stance, conflict = _entry_stance(position_raw, trigger_raw)
+    if conflict:
+        parse_errors.append(
+            "entry_stance: 否定/零仓位证据与允许新开仓证据同时出现,保守记 PROHIBITED")
+
+    return {
+        "card_kind": card_kind,
+        "proposal": proposal, "ev_target": ev_target, "rr": rr,
+        "position_raw": position_raw, "trigger_raw": trigger_raw,
+        "entry_stance": stance, "no_new_position": _no_new_position(stance),
+        "exec_lines": _parse_exec_lines(body, contract, parse_errors),
+        "parse_status": "PARTIAL" if parse_errors else "OK",
+        "parse_errors": parse_errors,
+    }
+
+
+def parse_card_context(text: str, *, contract: dict | None = None) -> dict:
+    """决策卡文本 → card_context(spec 2026-09-12 scene-reconstruction 设计 §7.1)。
+
+    保守解析:缺失记 `None`,格式错误记 `parse_errors`,**任何异常都不向上抛出**
+    ——E6 不能因为一张形状意外的卡丢掉整份决策文档(task-6-brief 条款8)。字段级
+    解析(`_parse_card_context_impl`)已经对每一步做了防御性处理(正则不命中就是
+    `None`,从不对未经校验的文本调用 `float()`);下面这层 `try/except` 是兜底,
+    不是主路径——真出现未预期异常时仍要留下原因,不能静默退化成"看起来正常的空
+    结果"(设计 §2 全局约束:不能用宽泛 try/except 吞掉错误又不留痕)。
+
+    `contract`:当时留存的执行线阈值,形如
+    `{"EXEC_LINE_MAX_PCT_1D": 3.0, "EXEC_LINE_MAX_POS_IN_RANGE": 0.7, "version": "..."}`。
+    不传(`None`,默认)时 `exec_lines.*.contract_match` 恒为 `"UNKNOWN"`——本函数不读
+    `contracts.agent_output` 的当前常量,不会拿今天的阈值顶替历史版本去判"漂移"。
+
+    不产出 `source`(相对路径/内容 hash/版本/是否事后补充):那些字段需要调用方已知
+    的文件身份与归档状态,本函数只接收卡面原文,由 Task 7 组装
+    `_relative_buy_decision.json` 时在这份返回值之上补上。
+    """
+    try:
+        return _parse_card_context_impl(text, contract)
+    except Exception as exc:  # 本函数唯一允许的全局兜底——见上方 docstring,留原因不吞错。
+        return _empty_card_context(
+            "unknown",
+            [f"parse_card_context: 未预期异常 {type(exc).__name__}: {exc}"],
+            contract,
+        )
