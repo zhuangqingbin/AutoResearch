@@ -135,7 +135,7 @@ from autoresearch.contracts.agent_output import (
 from autoresearch.scan.l4.parsers import parse_card_context
 from autoresearch.scan.passport import build_passport
 from autoresearch.trace import blobs as trace_blobs
-from autoresearch.trace.identity import scan_for_secrets
+from autoresearch.trace.identity import redact_residual_secrets
 
 #: schema 2(2026-09-12 scene-reconstruction 设计 §7.2,Task 7)= schema 1 + 纯**观测性**
 #: 新增:候选 `card_context`(卡面原文的保守解析,见 `l4/parsers.parse_card_context`)、
@@ -711,20 +711,16 @@ def _read_card_texts(scan: Path) -> tuple[dict[str, dict], dict[str, dict]]:
 
 
 def _redact_card_bytes(payload: bytes) -> bytes:
-    """卡面内容归档前的脱敏(spec §7.2「保存脱敏后的卡内容」)。与
-    `trace.capsule._redact_bytes` 同一算法,基于同一个**公开**原语 `scan_for_secrets`
-    独立实现——本任务不碰 `trace/capsule.py`(controller 划的界),但脱敏纪律必须一致,
-    所以复用它已经在用的那个公开扫描函数,不是自己另造一套判据。
+    """卡面内容归档前的脱敏(spec §7.2「保存脱敏后的卡内容」)。委托给共享原语
+    `trace.identity.redact_residual_secrets`——那是 `trace.capsule`(归档 transcript/
+    tool-results 字节,原名 `_redact_bytes`,已在同批合并里改名并搬走)与
+    `trace.transcripts.snapshot` 也在用的**同一个**实现(2026-09-13 三方合并:本文件、
+    capsule.py、snapshot.py 原先各自维护一份逐字节相同的脱敏循环,三份互相漂移的风险
+    正是这次合并要关掉的——见 `redact_residual_secrets` 自己的 docstring)。改动前后逐
+    字节比对过(空/纯文本/中文/Bearer/私钥块/AWS 风格 key/二进制混杂字节等用例),输出
+    与原来这份内联实现完全相同,不是"看起来差不多"。
     """
-    report = scan_for_secrets(payload)
-    if report["ok"]:
-        return payload
-    text = payload.decode("latin-1")
-    for finding in sorted(report["findings"], key=lambda row: int(row["offset"]), reverse=True):
-        start = int(finding["offset"])
-        end = start + int(finding["length"])
-        text = text[:start] + "[REDACTED]" + text[end:]
-    return text.encode("latin-1")
+    return redact_residual_secrets(payload)
 
 
 def _capsule_root_for(scan: Path) -> Path | None:
