@@ -219,6 +219,28 @@ def test_e01_mutually_contradictory_card_stays_prohibited_and_records_conflict()
     assert any("entry_stance" in e for e in got["parse_errors"])
 
 
+def test_e01_table_without_earlystop_or_position_signal_is_unknown_not_full():
+    """fix round 1 finding 1:`card_kind` 的兜底分支——表是真的(`评级` 表可解析),
+    但既没有早停行、也没有仓位列(只有 评级/现价/时间框架/置信度)——此前**零覆盖**:
+    diff 里每张卡不是带仓位就是带早停,把 `else: card_kind = "unknown"` 改成
+    `"full"` 不会让任何用例变红。这条锁的正是 spec §7.1 的硬约束本身:
+    "无卡或未知卡种不伪装满卡"。
+    """
+    text = "\n".join([
+        "# 决策卡",
+        "| 评级 | 现价 | 时间框架 | 置信度 |",
+        "|---|---|---|---|",
+        "| Hold | 10 | T+1 | 中 |",
+        "FINAL TRANSACTION PROPOSAL: **HOLD**",
+    ])
+    got = parse_card_context(text)
+    assert got["card_kind"] == "unknown"          # 绝不能是 "full"
+    assert got["entry_stance"] == "UNKNOWN"        # 既无仓位列也无触发位列 → 无证据
+    assert got["no_new_position"] is None
+    assert got["parse_status"] == "PARTIAL"        # 表可读,只是卡种判不出来——不是 ERROR
+    assert any("card_kind" in e for e in got["parse_errors"])
+
+
 # ── 验收矩阵 E02:执行线版本缺失 vs 漂移,presence 与 contract_match 独立移动 ──
 
 
@@ -276,6 +298,30 @@ def test_parse_card_context_never_raises_on_degenerate_input(bad_text):
     assert got["entry_stance"] == "UNKNOWN"
     assert got["no_new_position"] is None
     assert got["parse_errors"]
+
+
+# ── 外层 try/except 兜底必须真的被触发过(fix round 1 finding 2)──────────────
+
+
+def test_backstop_catches_unexpected_exception_from_inner_helper(monkeypatch):
+    """`parse_card_context` 的外层 `try/except` 是"E6 绝不能因为一张坏卡丢掉整份
+    决策文档"这个保证唯一的执行机制——此前没有任何用例真正触发过它(五个退化输入
+    全部在更早的 `isinstance`/空串 guard 里就被挡下,删掉整段 try/except 也不会有
+    任何用例变红)。用 monkeypatch 让早 guard 通过*之后*才会被调用的内部函数
+    (`_parse_dashboard`)抛出,证明外层兜底真的吞下了它、留了原因、没有向上传播。
+    """
+    from autoresearch.scan.l4 import parsers
+
+    def _boom(_text: str) -> dict[str, str]:
+        raise RuntimeError("boom: unexpected dashboard parser failure")
+
+    monkeypatch.setattr(parsers, "_parse_dashboard", _boom)
+    got = parsers.parse_card_context("# 决策卡\n| 评级 | 现价 |\n|---|---|\n| Hold | 10 |\n")
+    assert got["card_kind"] == "unknown"
+    assert got["parse_status"] == "ERROR"
+    assert got["entry_stance"] == "UNKNOWN"
+    assert got["no_new_position"] is None
+    assert any("RuntimeError" in e and "boom" in e for e in got["parse_errors"])
 
 
 # ── read_card_text:公共入口 + `_decision_text` 别名(既有调用方零改动)────────
