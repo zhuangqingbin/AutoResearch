@@ -1,21 +1,261 @@
-# scan-market 现场重建:transcript 绑定与「看到了什么、怎么想的」设计
+# scan-market 现场重建：证据归属、E6 解释与历史补录设计
 
-> 日期:2026-09-12
-> 状态:设计五节已由用户逐节批准(2026-09-12),待审稿;**零实施**
-> 范围:scan-market 两引擎(Claude subagent transcript / Codex 主线程 rollout 区段)的 transcript 绑定、capsule agents 索引、`chain_view` 渲染、E6 决策记录 schema 2、账本外目录(离线索引 / 抢救 / exec_check 账本腿)
-> 不在范围:E6 行为改动(读卡的 EV 与执行线)、brief 报告改动、agent 模板改动(决策日志)、隐藏推理的捕获(harness 不落盘)
-> 引擎隔离:`$CTX`/`$RPT` 指当前引擎根;账本目录 `reports_<engine>/scan/_ledger/`;Codex rollout 只读 `~/.codex/sessions/`,Claude transcript 只读 `~/.claude/projects/`;`lake/` 与本稿无关
-> 上游设计:`2026-08-27-scan-forensic-run-capsule-design.md`(§8.5 适配器、§11 完整性契约)、`docs/specs/2026-08-26-scene-retention-and-buy-owner-design.md`(retention / chain_view / E6 v3.0)
+> 日期：2026-09-12；修订：v2（按本轮评审意见重写）。
+> 状态：用户已要求按评审意见修改文档；本次仅修订设计与计划，未实施代码、回填账本或启动扫描。
+> 实施入口：[现场重建计划](../plans/2026-09-12-scene-reconstruction-transcript-binding.md)。
+> 独立优先项：[P0 交易日历修复计划](../plans/2026-09-12-outcome-trading-calendar-integrity.md)。
+> 原稿中的历史立案材料保留在附录 A；本版契约替代原稿的路径子串绑定、顺序配 attempt、整文件来源优先及宽松日历放行规则。
 
-## 1. 决策摘要
+## 1. 目标与边界
 
-2026-09-12 对四笔亏损 relative BUY 做现场复盘,结论是:现场能答「当时说了什么」(L3 判断、L4 卡、E6 分数),答不全「当时看到了什么、怎么想的」。缺的不是留存量,是**绑定**:09-09 的 run 在 `trace/transcripts/` 里有 37 份 subagent transcript,slim 8332 字节整段在 tool_result 里,但 capsule 的 `agents/index.json` 把 36 个调用全记成 `GONE`(reached dispatch has no bound transcript),`chain_view` 又把已留存的 slim 印成「缺席」。Codex 引擎更彻底:一个 AGENT 事件都没有,期望恒为 0,rollout 从未归档。
+对任一 run、任一只票，回答：有哪些可归属的研究证据、实际 E6 选择依据是什么、卡面与选择是否冲突、哪些环节无法证明。每个结论可追到同一份源快照，每个已知期望调用都有状态和原因。
 
-本稿只做一件事:**把已经存在的证据绑到已经存在的调用上**,让两引擎的任一 run、任一只票在 `chain_view` 一屏回答四件事——读了什么(文件、字节、哈希)、搜了什么、写了什么、可见推理文本——外加 E6 为什么选它;缺的部分必须有账,写明谁缺、为什么缺。
+服务对象是人读复盘。保留零 LLM、只记不学、冻结 run 不变、引擎隔离、现有评级与 E6 选择规则不变。不承诺从残缺 transcript 恢复完整判断过程；不把证据绑定成功等同于收益有效或研究完整。
 
-零件都在:`capsule.bind_transcript` / `materialize_agent_index` / 两个 transcript 适配器 / `usage_harvest` 的 transcript 定位 / `chain_view` 的三级来源。scan 路从未调用过 `bind_transcript`(全仓唯一生产调用者是 `analyze/runctl.py`)。
+本期分成三个可独立验收的交付：新 run 留证及视图、E6 解释、历史补录。交易日历是独立 P0，优先修复后才能把历史收益用于策略评价。
 
-## 2. 立案证据(2026-09-12,逐条可核)
+不在本期：实时 exec_check 采集、券商成交接入、自动归因/学习/调参、放宽门槛凑 BUY、修改 brief 预算或 agent 决策日志模板、捕获隐藏推理、全面逐字节重放系统。正常 0 BUY 是合法业务结果，不得为了验收制造买单。
+
+## 2. 不变量
+
+1. Codex 会话每条 shell 命令显式设置 `AUTORESEARCH_ENGINE=codex`。研究产物仅访问当前引擎根；Codex 禁止读写另一引擎的 context/reports。两引擎适配测试只使用合成 fixture 和临时目录。
+2. transcript 链路不取行情、不改 `lake/`；P0 计划另行声明日历读取与行情只读边界。真实 transcript 只来自对应引擎的允许目录或已经校验的本引擎归档。
+3. 已冻结 run 的文件集合、文件内容、MANIFEST 均不改变。补录只落当前引擎的 `scan/_ledger/`。
+4. `contracts.stages.ROLE_STAGES` 是角色阶段唯一词表，`scan.run_profile` 决定当前模式是否需要该角色；不在绑定器手写第二张表。
+5. 已知期望集合 E 的每个 invocation 恰有一行，候选缺失、重试失败、单行冲突均不能缩小 E。仅有产物推导的 E 是已知下界，必须标明分母不完整。
+6. `PRESENT` 仅说明证据载体可读。归属强度、区段覆盖度、业务完成状态分别展示，均不能靠 PRESENT 推断。
+7. 绑定失败不阻断业务发布，但必须降级证据状态、逐项记原因；不能吞掉异常后仍显示“证据完整”。
+8. 保持 E6 `RULE_VERSION=e6.v3.0`、评级、候选池、硬门、排序、BUY/blocked 语义；原始决策与事后补充信息有明确版本和来源。
+9. 标识使用 `contract_run_id`（capsule 身份）与 `report_run_id`（报告目录名）两个明确字段，不把二者互换；关联键始终带 engine。
+
+## 3. 证据语义
+
+### 3.1 观察到什么
+
+| observation.kind | 定义 | 显示约束 |
+|---|---|---|
+| DISCOVERED | Glob/路径列表发现文件或命令中出现路径 | 只说发现，不说读到正文 |
+| READ_REQUESTED | 存在读取请求，但没有可关联的返回 | 只说请求读取 |
+| READ_SUCCEEDED | 同 call_id 返回成功、内容范围可识别 | 显示成功返回的范围；不暗示模型理解或采用 |
+| READ_PARTIAL | grep/sed/分页/截断/多文件混合输出仅能证明部分内容 | 明示部分返回，不满足全文已读断言 |
+| READ_FAILED | 返回错误或非成功退出 | 不计入成功读取 |
+| WRITE_REQUESTED / WRITE_SUCCEEDED / WRITE_FAILED | 写请求、明确成功返回、失败返回 | 只有成功写入可作为强产物归属证据 |
+| SEARCH_REQUESTED / SEARCH_SUCCEEDED / SEARCH_FAILED | 搜索请求与关联返回 | query、去重 URL 与返回范围分别记录 |
+
+未知工具形状仍保留原始工具往返，不能静默消失或猜成成功读写。仅出现产物名、读取产物、讨论如何写文件、失败的 Write，都不是成功写入。
+
+`NOT_OBSERVED` 是视图对“没有找到某项操作记录”的派生判断，不伪造为 transcript 事件。区段缺失、交错、坏行、工具未支持时显示“证据不足，未观察到”；只有确定覆盖完整且操作可识别时，才可说“在该调用记录中未观察到成功读取”。不输出绝对的“没读”。
+
+deep 的预期来自卡种、早停状态和当时契约；早停不要求 deep 时显示“该路径不要求”。无法判断要求时显示未知，不额外给评级或处罚。
+
+### 3.2 哈希与写入版本
+
+- `tool_response_sha256/tool_response_bytes`：对工具原始响应的规范化表示计算摘要。响应为字符串按 UTF-8；结构化值按固定 canonical JSON；必须记录表示口径。
+- `artifact_sha256/artifact_bytes`：对明确归属的文件内容字节计算。行号包装、工具提示、截断结果不能冒充源文件字节。
+- `source_prefix_sha256`：本次读取的原始 transcript 截止前缀摘要；`archive_sha256`：脱敏归档字节摘要。两种摘要允许不同，标签不能混用。
+- 发布卡一致性只对相同股票、相同产物、同一完整写入版本与发布卡比较。intel 比较对应 intel 归档，不拿 intel 与卡比较。
+- apply_patch/Edit 只有 diff 时，不声称得到了完整文件 hash；只有可核对的前镜像与补丁结果，或确定性写入回执/快照，才能计算完整后镜像。
+- 缺少关联内容、后续又有 Edit、存在多个版本、脱敏改变内容时，分别标记未知/版本变化/不可直接比较，不能用请求文本 hash 宣称最终发布一致。
+
+### 3.3 可见文本
+
+普通 assistant 文本标为“可见分析文本”；harness 明文摘要单列为“可见摘要”。加密内容不解密、不猜测，未落盘就记录缺失。文本只证明记录中说过什么，不证明所有影响决策的因素均被记录。
+
+## 4. 调用身份、期望与绑定
+
+### 4.1 身份
+
+归属键为 `(engine, contract_run_id, session/thread, role, subject_key, attempt)`，引用现有 invocation_id。sector 的展示名与 subject_key 分开；已有事件给出的 sector 序号不重排。
+
+角色产物仍为：l4-card → `details/<code>.md`；l4-intel → `_l4_intel_<code>.md`；sector-brief → `sector_briefs/<行业>.md`；l3-rank → `_l3_judged.json`；l3-repair → `_l3_repair_patch.json`；strategist → `market_view.md`。这些标记用于确认目标，不单独决定操作类型或调用边界。
+
+### 4.2 期望集合
+
+按角色、subject、attempt 合并已有 AGENT 事件与 TASK 事件，同一调用的强事实优先。不能因为全场存在一个 AGENT 事件，就关闭所有其他角色的回退。
+
+- l4-card 可由 `TASK_CLAIMED/TASK_SUCCEEDED/TASK_FAILED` 派生，对应关系显式保存。
+- 无事件的历史角色可以由 run 自有产物推导 `expectation_source=products`；保留原来的单例与按行业名排序规则，但 `terminal=null`、`boundary_quality=unknown`，不伪造完成事件。
+- 产物只能证明某项结果存在，不能证明没有失败的前置 attempt；这时 `denominator_quality=lower_bound`。
+- 候选中有强证据而期望中没有的调用列入 `unexpected`，不能借此提高 expected 覆盖率。
+- sentinel/未到达阶段依现有 run_profile 标记，不凭最终没有 BUY 推断没有研究任务。
+
+### 4.3 session 与路径定位
+
+优先使用 run contract 的 `session_ref`，验证仓库、引擎及 run 关联。缺少 session_ref 时，日期和 cwd 仅用于缩小搜索，再用本 run 的有效操作证据筛选；两条普通并行会话不自动导致全场 AMBIGUOUS。
+
+支持跨日恢复：按已知 session 找历史创建日期的 rollout；候选不在当天目录不等于缺失。可先扫有限日期范围，再使用对应引擎的完整 metadata 搜索；归一化只处理最终相关候选。显式记录搜索范围、候选数与耗时。
+
+相对路径按该条调用实际 cwd 归一化。校验路径组件及归属根，拒绝跨 run、跨 engine、目录逃逸和不明 symlink。离线搬家使用经 run contract/归档证明的根映射；同日 `/scan/<date>/`、路径子串或 mtime 都不足以确认 run 身份。
+
+### 4.4 区段
+
+优先由现有 task/agent 边界以及 transcript 中可关联的工具调用建立 start/end，并闭合范围内的 tool request/result。新 run 在已有确定性入口传递可获得的 session/attempt 关联信息；不依赖模型额外手敲一份独立日志，不要求修改研究模板。
+
+同票重试必须分别对应各自边界，禁止每个 attempt 都重用全文件的“最早输入—最晚产物”。没有显式边界时，只有证据唯一且不冲突的产物级关联可以成立，区段质量只能标 partial/unknown；intel 写产物之前的搜索无法归属时，不输出“搜索 0 次”。
+
+交错区段允许保留，但其中工具往返只有可唯一归属的才进入本票确定统计；共享上下文单列。子线程也要核验 run/角色/subject，不能仅凭 parent id 把整个多任务线程当成一次调用。
+
+### 4.5 状态与不变量
+
+绑定报告采用两个正交字段：
+
+- `binding_status`：BOUND / UNVERIFIED_BY_PRODUCT / AMBIGUOUS / GONE / ERROR。
+- `segment_quality`：complete / partial / interleaved / unknown。
+
+BOUND 要求唯一调用身份及可核验关联；UNVERIFIED_BY_PRODUCT 只用于调用身份已明确但产物写出未经证明的证据，不允许仅靠外部 run 的输入文件名绑定。是否有产物与是否有完整区段分开，BOUND 也可是 partial。
+
+同一 invocation 有竞争性证据且无法消解才记 AMBIGUOUS；不要靠时间排序强配 attempt。一条候选不能未经边界证据同时认领两个 attempt。每条失败均留 reason 与候选引用。
+
+报告 coverage 至少包含 `expected, accounted, bound, unverified, ambiguous, gone, errors, unexpected, denominator_quality`。`accounted == expected`，且五种期望行状态之和等于 expected。全部 accounted 不代表全部绑定或研究完整。
+
+## 5. 一致快照、归一化与生命周期
+
+### 5.1 单源一次快照
+
+在 active run 的 observe 阶段确定截止前缀：固定读取时的字节长度，只解析其中完整 JSONL 行，记录截止字节、最后 ordinal、坏行/尾半行数量。后续追加留到另一个快照；截断/替换源文件需报 SOURCE_CHANGED，不重试拼出混合快照。
+
+同一前缀先保存在内存，原始摘要、脱敏归档、归一化、usage 都从它派生。源内容不落未脱敏的额外副本；复用 `trace.identity` 与 `trace.atomic` 的脱敏、原子写和持久化规则。
+
+按源快照去重归档，invocation 引用 snapshot_id 和区段。已有 raw 路径消费者通过 index 解析，保留旧版读取兼容。适配器提供同一份 rows 的 normalize/stats/usage 入口，不能 usage 再读活文件。
+
+同源多个交错区段的 token 不直接相加。run 合计按可测的唯一 session 计数区间核算；不能可靠拆分到 invocation 就写 UNMEASURED，并保留 run 级计量。不通过均分或填零制造精度。
+
+### 5.2 生产接线
+
+`post_run.publish_run_observation` 内顺序：原有 E6 校验 → 绑定/快照与报告 → retain → finalize。finalize/materialize 消费此前选定快照，不能重新读活源改变身份。保留 `bind_transcript(stage=None)` 的旧调用语义，新调用显式传契约词表阶段。
+
+`retention.bind_transcripts` 默认为 true；false、无 active run 都写带原因的禁用报告，不清除已有证据。逐 invocation 捕获冲突后继续，最终原子写完整报告。若报告本身无法落盘，通过既有 evidence degradation/event 通道留失败状态与 stderr；不能报成功。
+
+重跑相同绑定、相同快照不重复追加。源文件增长但已闭合区段未变时复用原快照；需要修正已绑定区段则追加修订证据或报告冲突，不覆盖旧绑定。冻结后统一进入离线补录。
+
+## 6. 历史补录与来源选择
+
+### 6.1 离线索引
+
+输入顺序：run 自有已归档证据 → 本引擎 ledger 中已核验的抢救快照 → 对应 harness 尚在的源文件。harness 消失后，已归档快照仍可独立生成视图。
+
+以 `engine + contract_run_id + report_run_id + run manifest hash` 确认目标；所有输出在 ledger。索引记录源快照摘要、解析器版本、计算时间、重建身份和证据质量。坏文件按项报告，不使同场有效项消失；未知 schema 不按成功空列表处理。
+
+相同源快照与解析器版本重跑不改证据；内容变化创建新的重建版本，顶层当前索引原子切换，保留上一版。归一化目录属于相应版本，避免新旧文件混读；`computed_at` 记录真实 UTC 时间，不参与内容身份、不固定成哨兵时间。
+
+### 6.2 按 invocation 合并
+
+有效 capsule PRESENT 优先；capsule 缺失/GONE/无法归一化时，可用同一 run 的有效 ledger 项补充。行上同时保留原始状态、补录状态、实际来源。两边有效但内容冲突时明确列出冲突，不静默挑选。
+
+这解决“capsule 索引存在、全 GONE，ledger 已补齐却不可见”的场景。原始 capsule 的完好性结论不被补录改变；补录覆盖率另报。
+
+### 6.3 抢救件
+
+每件记录 source、source hash、source mtime、captured_at、target run identity、run 时间窗口及归属结论：
+
+| attribution | 含义 | 可否充当本 run 事实 |
+|---|---|---|
+| VERIFIED_RUN | 有 run 身份或原有内容哈希等强证据 | 可以 |
+| TIME_WINDOW_ONLY | 仅 mtime 与运行窗口接近 | 不可以，仅作参考 |
+| OVERWRITTEN_BY_LATER_RUN | 有后续 run 身份/产物证据证明覆盖 | 不可以 |
+| UNKNOWN / ABSENT | 无法归属 / 不存在 | 不可以 |
+
+mtime 只作线索，不能单独证明归属或覆盖。同日多个 run 必须检测；UTC 与本地时间先按已知时区转换，不能直接去 tzinfo。不知道源时区则标 UNKNOWN。
+
+逐文件抢救，不能因为 run 已有 E6 决策就跳过缺失的市场研判或 transcript。已确认归属的持久快照优先于可变 shared staging；其他抢救件只进“参考资料”，在片段旁标识，不参与 BUY、收益或覆盖率结论。
+
+`salvage --all` 使用各 run 的真实取证窗口；幂等指证据不重复、不覆盖，stdout 稳定不能以伪造时间实现。批量结果包含每项成功/缺失/冲突；退出码非零表示存在未处理错误，不把正常 ABSENT 当异常。
+
+## 7. E6 解释契约
+
+### 7.1 卡面结构
+
+`_relative_buy_decision.json` 升 schema 2，旧键与选择语义不变。每候选 `card_context` 包含：
+
+| 字段 | 契约 |
+|---|---|
+| card_kind | earlystop / full / unknown；空卡或解析失败不伪装 full |
+| proposal, ev_target, rr | 原机读提案与仪表盘原文；缺失为 null，不据区间中枢重算 EV |
+| position_raw, trigger_raw | 保留仪表盘原文 |
+| entry_stance | PROHIBITED / CONDITIONAL / ALLOWED / UNKNOWN |
+| no_new_position | PROHIBITED=true；ALLOWED=false；CONDITIONAL/UNKNOWN=null，仅兼容字段 |
+| exec_lines | 原文、操作符、阈值、presence、contract_match、contract_version |
+| source | 相对路径、卡内容 hash、来源版本/是否事后补充 |
+| parse_status, parse_errors | OK / PARTIAL / ERROR；逐字段记录失败原因 |
+
+仓位“0%/0.0%”（作为完整仓位数值）、不建仓、不新开仓、不新建仓 → PROHIBITED；“待突破确认/满足条件才考虑/不追高” → CONDITIONAL；明确肯定的新开仓建议且无否定/前置条件 → ALLOWED；其余 UNKNOWN。不使用“没有否定词”推导允许。否定或零仓位与允许同时出现时展示冲突，保守记 PROHIBITED；数量匹配不得把“10%”误读成“0%”。
+
+执行线 `presence` 与 `contract_match` 分开；历史卡按当时留存的契约版本验证，版本不可得就 UNKNOWN，不拿今天常量判历史漂移。`exec_lines_present` 若保留仅代表两行在场。
+
+### 7.2 实际选择依据
+
+解释在 `build_decision` 原有决策路径内取已有变量，不能另算一套排序：
+
+- `observation_rank` 对应现有全体 eligible 排名；保留旧 `rank`。
+- `selection` 记录实际 pool、最终 buy_pool 代码顺序、排序键名及值、入池/持仓排除、硬门结果、选中代码、池内名次和第二只未触发原因。
+- composite 使用当前 `target_align → amount → code`；finalists 使用原有顺序。解释与实际选中的列表同源。
+- 否决股票数按 code 去重；各门命中数单列，并注明可能重复。候选数、过硬门数、排持仓后数、最终池人数分别命名，不能都叫“合格”。
+- `field_usage` 记录 hard_gate / ranking / display_only：EV/执行线/仓位在当前规则中为 display_only；评级、提案和现有门按真实用途声明。
+- `conflicts` 至少记录选中票卡面 PROHIBITED、条件尚未证明满足、卡面缺失/解析未知。这是展示事实，不新增门。
+- `why` 由以上结构化字段固定渲染，使用实际池内名次。不得把全体观察第 3 名写成“实际池内第 3 名”。
+
+卡面读取/解析错误按单票隔离，card_context 留错误与原始片段，不能使 BUY 文档缺失。writer-1 与 writer-2 使用同一份已固定卡输入；相同输入字节级 parity。中途卡内容改变必须保留原决策并沿现有 mismatch 通道报差异，不能继续声称上下文一致。
+
+卡输入快照在 write_decision 的 I/O 边界生成，active run 复用现有 capsule blobs 保存脱敏后的卡内容，source 同时记录原始内容摘要与归档引用，再将固定输入传给纯 build_decision。writer-2 核对当前卡摘要并用已记录快照校验；来源变更即走 mismatch。无 active run 或归档失败时保留卡面解析和 source.snapshot_quality=unarchived，仍可做相同输入的 parity，但不能承诺脱离源文件重建。不得在 build_decision 内新增落盘副作用，也不建立第二份选择文档。
+
+schema 1、schema 2 卡面缺失、schema 2 解析失败分别显示；历史解释只补 ledger，不原地升级冻结的决策文件。新字段不回注 L3/L4，不改变 brief 或执行。
+
+## 8. 视图与交易时间语义
+
+默认 `chain_view <run> <code>` 输出摘要，目标上限 80 行；超出部分明确截断并指向 `--verbose`。固定排序与截断，同一冻结证据版本重复渲染字节相同；不把查看时刻写进正文。
+
+摘要优先展示身份/来源、E6 实际选择、卡面冲突、成功/失败/部分证据计数、缺口、已有执行时间锚与收益口径。80 行内必须保留所有冲突类型、缺口计数及详细入口，不能用截断掩盖异常。
+
+详细模式保留原链路各段，新增研究现场：逐项操作及 call_id、来源、字节/摘要口径、版本匹配、可见分析文本。长文本每块至多 300 字、至多 6 块，明确省略量并引用归档；搜索 URL 按结构化结果去重，不能用字符串中“http”出现次数代替 URL 数。
+
+输入定位可查 `trace/inputs/slim/`、`trace/staging/_external_inputs/` 与已核验补录；shared 候选只有证明同 run 归属才进入事实视图。删去“>8KB 才可信”，字节数仅为诊断。
+
+复用 `exec_anchor.read_execution` 的批准时刻、first_available_session、迟到状态。关联证据的 source_published_at、observed_at、decision_at（现有数据可得才填）；事后获取的信息只作补充，不能计作当时可用。时间缺失显示未知，不能因文件被归档就推断当时已看过。
+
+主尺固定 T+1 收盘买、T+2 开盘卖。推荐毛收益、事后执行条件测算、迟到报告反事实收益与实际成交分别命名。日线收盘条件不证明盘中某时刻核验过；未接 broker 就显示“实际成交未知”。未计费用/滑点不能标净收益；样本计数同时说明 run 数、交易日数及同票重跑，不把相关记录当独立样本。
+
+## 9. 模块与产物边界
+
+`trace/transcripts` 负责 harness 解析与源快照；`scan/transcript_binder.py` 负责 scan 期望和绑定编排；`scan/chain_view.py` 只渲染；E6 原有模块产出选择解释；历史 CLI 复用同一套快照、绑定与来源验证。禁止把 parsing、usage、归档在 active/offline/salvage 各写一遍。
+
+| 产物 | 根/生产者 | presence |
+|---|---|---|
+| _transcript_bindings.json | staging / transcript_binder | observe 执行时必须有报告，开关关闭亦有原因 |
+| agents/index.json、bindings.jsonl、raw/、normalized/ | capsule / 现有 materialize 扩展 | 沿用 capsule 契约，新增字段升级 transcript schema |
+| agents_index/<report_run_id>.json | ledger / transcript_binder --offline | 跑过该 CLI 时存在，完整当前视图索引 |
+| agents_index/<report_run_id>/<revision_id>/ | ledger / transcript_binder --offline | 保存该重建版本的 normalized/ 与源快照引用 |
+| salvage/<report_run_id>/provenance.json | ledger / salvage | 逐文件 provenance；文件快照按摘要命名保存 |
+| acceptance/scene-reconstruction-<date>.md | ledger / 本引擎验收执行者 | 真实验收发生后记录，不由文档修订生成 |
+
+先登记 `contracts/artifacts.py`，再执行 `contracts.emit --write` 并过 contracts 测试。ledger 版本目录内的 raw/normalized 用目录契约登记，顶层引用须校验 containment 和 hash。不新增 prelude 步骤，不额外建设服务、数据库或通用框架。
+
+## 10. 验收与交付
+
+完整反例矩阵及命令见实施计划。发布标准：
+
+1. 规定合成反例集中跨 run/attempt 误绑定为 0；每个已知期望恰有一行，计数守恒。
+2. 错误读取、部分输出、纯路径提及均不能生成成功全文读取/写入断言；未知证据明确降级。
+3. 快照过程中源追加、尾半行、重复 materialize 后，raw/normalized/usage/hash 有同一快照来源；交错 usage 无重复求和。
+4. capsule GONE + ledger PRESENT 能显示补录；已覆盖或仅时间吻合的 shared/salvage 不能改变当日 BUY 事实。
+5. 原始 schema 1 仍可读；观察字段变化不改变 E6 决策投影；writer parity 与中途输入变更检测都通过。
+6. 冻结目录前后对所有相对文件名与内容 SHA256 比较一致，另跑 capsule verify；不能只比较文件名。
+7. 当前引擎合成成功 run、失败 run、0 BUY、sentinel/pinned 路径均可解释；不把 PARTIAL 或 lower_bound 包装为完整。
+8. 真实验收按各引擎权限分别进行：记录实际覆盖/缺失，不设“必须 ≥34 PRESENT”凑数。另一引擎真实验收未做时明确标注；Codex 不代读 Claude 产物。
+9. 正式上线前保存基线与修订后处理耗时、源字节数、唯一快照数；同源 raw 不随 invocation 数重复增长。默认视图预算与详细模式均有 golden。
+
+回滚：关闭绑定开关停止新增采集，保留既有证据及读取兼容；E6 记录变更独立提交，可单独回退；历史 CLI 停止执行即可，不自动删除账本证据。P0 的回填恢复按独立计划，不靠回退代码清除已算数据。
+
+## 11. 修订取舍
+
+- 保留现有 capsule/事件链/原子写/脱敏/评级与收益尺，局部扩展。
+- 新 run 的明确边界优于历史路径推断；未取得边界时标部分证据，不夸大覆盖承诺。
+- 不新增专门的“完整推理日志”，不将证据数量、字节数或摘要长度当作研究质量。
+- P0 日历修复独立优先；实时执行采集、brief 改版、E6 行为变化分别另案。
+- 原稿 Q1 已在本次文档修订中改为独立 P0；修改文档不等于实施代码或批准回填数据。
+
+## 附录 A 历史立案材料（原稿记载，非本轮重新核验）
+
+以下保留原稿的调查记录和出处，便于对应历史问题。涉及另一引擎的路径只是文档出处，不授权 Codex 读取。原文统计、排名与判断可能受日历错误、规则版本及共享 staging 覆盖影响，不能作为本版验收真值。
 
 | # | 事实 | 出处 |
 |---|---|---|
@@ -33,242 +273,12 @@
 | E12 | 四笔亏损 BUY 的卡原文:金螳螂 UW·SELL(入场否决「收盘仍 < 5.60 弃买」T+1 已触发)、兴业银锡 Hold「不追」、瑞丰银行 早停 Hold「不建仓」、海博思创 早停 Hold「不新开仓」(L3 `finalist=False`,靠守卫⑨强塞;09-10 又选 #5/5) | 各 run `details/*.md`、`chain_view` |
 | E13 | CP7 定序:gate4 → usage_harvest → usage_reconcile → `post_run observe`(护照 → E6 → … → `retain()` → `_finalize_forensic_run`);`finalize` 内部第 1 步 `materialize_agent_index` → `_write_usage` | `SKILL.md:185-195`、`post_run.py:827-918,1116-1118`、`capsule.py finalize` |
 
-## 3. 目标与非目标
-
-### 3.1 目标
-
-1. 两引擎的每个成功 run,`capsule/agents/index.json` 的每个 reached 调用要么 `PRESENT`(绑定到 transcript 或 rollout 区段),要么 `GONE/AMBIGUOUS` **带原因**;不再有「东西在盘上、账上说没有」。
-2. `chain_view <run> <code>` 对该票每个调用印出:状态与 reason、model/effort/起止、读了什么(相对路径、字节、sha256 前 12 位、命中 prompt/slim/deep/intel/档案的标注)、**没读什么**、搜了什么(query 与命中 URL 数)、写了什么(产物与发布卡 hash 一致性)、可见推理文本(截断)。
-3. 已冻结的 run(09-01 起有 transcript 归档的五次 Claude run,以及 rollout 仍在的 Codex run)通过账本外目录的离线索引得到同样的视图,**不写 run 目录一个字节**。
-4. E6 决策记录能自己回答「E6 知不知道卡说别买」:记下卡的 EV/R:R/提案/不建仓/执行线,以及 E6 **没读**它们这一事实。
-5. 服务对象是**人读复盘**(用户 2026-09-12 裁定);机器逐字节重放不是本稿目标。
-
-### 3.2 非目标与补不了的
-
-- **隐藏推理**:Claude thinking 块落盘为空(E2),Codex `encrypted_reasoning` 同理;本稿不试图捕获。Codex 明文 `reasoning` 摘要可留(§6.2)。
-- **08-26 前 run 的 slim / deep / transcript**:当时未留存,永久缺;抢救(§9.1)只救共享 staging 里还在的 E6 决策与市场研判。
-- E6 是否应该读卡的 EV 与执行线、是否允许 0 BUY、是否换池——行为改动,另案裁决。
-- brief 是否印「卡面不建仓」——报告预算与 lint 契约,另案。
-- agent 模板加「决策日志」块(C 路)——模板冻结中,另案。
-- 账本 T+2 取错交易日历(`outcome.market_frame` 用湖文件列表定 T+1/T+2,湖缺日即滑到下一份文件并标 complete)——另一缺陷,**建议并入批 1 作 P0**,但属于用户裁决(§13)。
-
-## 4. 两引擎的「一次调用」与统一 invocation id
-
-| | Claude | Codex |
-|---|---|---|
-| 一次调用的证据 | 一份 subagent transcript(`~/.claude/projects/<proj>/<session>/subagents/**/agent-*.jsonl`) | 主线程 rollout(`~/.codex/sessions/Y/M/D/rollout-*.jsonl`)的一个 **ordinal 区段**;若 Codex 派了子线程,则子线程 rollout 整份 |
-| 谁定位 | `usage_harvest` 已按角色定位(`_token_usage.json` 行) | 无人定位;本稿的 Codex 定位器(§5.4) |
-| 调用边界的事实源 | 事件链 `AGENT_DISPATCHED/COMPLETED`(E6) | 事件链 `TASK_CLAIMED/SUCCEEDED`(l4)与产物在场(其它角色);见 §5.5 |
-| 绑定形式 | `bind_transcript(path, role, invocation_id, subject)` | 同一函数,加 `start_ordinal/end_ordinal`;`CodexTranscriptAdapter._segment` 已支持 |
-
-统一 invocation id(与现有事件链一致,不造第二套):`l4-card-<code>-<attempt>`、`l4-intel-<code>-<attempt>`、`sector-brief-<n>-<attempt>`(subject=行业名,n 为派发序号)、`l3-rank-market-1`、`l3-repair-market-1`、`strategist-market-1`。绑定器**按 (role, subject) 在期望表里查 id**,不自己拼;期望表缺席(Codex)时按 §5.5 派生。
-
-角色名映射只此一处:usage 行的 `macro-brief` = capsule 的 `strategist`;两份 `l3-rank` transcript 靠产物区分 rank 与 repair,不靠标签。
-
-## 5. 绑定器 `autoresearch/scan/transcript_binder.py`(零 LLM)
-
-### 5.1 生效点与失败纪律
-
-- 生效点:`post_run observe`,在 E6 决策之后、`retain()` 之前、`_finalize_forensic_run` 之前(E13)。此刻 `_token_usage.json` 已在 staging,run 仍 active(`bind_transcript` 要求 `require_active_run`);绑定后 `finalize` 第 1 步 `materialize_agent_index` 自然把 raw / normalized / tool_results 落进 `capsule/agents/`,`_write_usage` 顺带把两引擎的 token 计量变真。
-- 失败纪律:与护照、E6 同——任何异常只打一行 stderr,**不阻断发布**;`AUTORESEARCH_RUN_ID` 缺席(legacy 路)→ 跳过并留痕。
-- 开关:`scan_config.jsonc` 新键 `retention.bind_transcripts`(默认 `true`),走 `user_config` 白名单三件套:`_TOP_WHITELIST` 加 `retention`、`_SUB_WHITELIST` 加 `{"bind_transcripts"}`、类型表加 `_t_bool`,再加消费点与测试;`false` = 今天的行为。
-- `bind_transcript` 加可选形参 `stage`(默认仍读 `AUTORESEARCH_STAGE`),绑定器按角色传与事件链同名的 stage(l3-rank/l3-repair → `l3`,l4-card/l4-intel → `l4`,strategist/sector-brief → 其派发阶段名;须过 capsule 的 `_STAGE_RE`);不改既有调用者。
-
-### 5.2 核心规则(引擎无关)
-
-一份 transcript(或区段)绑到调用 X,当且仅当它含有**一次对 X 的产物路径的写入**,且该路径落在**本 run 的 staging 根**下:`context_<engine>/scan_runs/<RUN_ID>/staging/<date>/`。根校验是防误配的硬条件(前一天同名 `details/<code>.md` 不得匹配)。
-
-| 角色 | 产物标记(绑定判据) | 输入标记(区段起点 / 兜底) |
-|---|---|---|
-| l4-card | `details/<code>.md` | `_l4_prompt_<code>.md` |
-| l4-intel | `_l4_intel_<code>.md` | 无(盲搜,无输入文件) |
-| sector-brief | `sector_briefs/<行业>.md` | `context_<engine>/sector/<date>/<行业>.json` |
-| l3-rank | `_l3_judged.json` | `_l3_table.md` |
-| l3-repair | `_l3_repair_patch.json` | `_l3_repair_prompt.md` |
-| strategist | `market_view.md` | `strategist_pack.json` |
-
-结果四态(写进 §5.7 的报告;capsule 侧只见 PRESENT/GONE):
-
-- `BOUND`:产物标记命中 → 调 `bind_transcript`。
-- `UNVERIFIED_BY_PRODUCT`:只有输入标记、无产物(agent 失败没写出来)→ 仍绑,报告标注;materialize 后 index 行 PRESENT,但 §7 视图印「产物未写出」。
-- `AMBIGUOUS`:同一 (role, subject) 的候选数超过期望的 attempt 数,或 Codex 主线程候选多于一份 → **一份不绑**,报告记全部候选路径(沿用 STAGES.md 第 241 行:候选多个写 AMBIGUOUS,禁止按 mtime 猜)。
-- `GONE`:两种标记都没有,或期望的调用找不到任何候选。
-
-同一 (role, subject) 出现多份候选且不超过 attempt 数:按 transcript **首行时间戳**升序对应 attempt 1、2、…。
-
-### 5.3 Claude 定位器
-
-1. 读 staging `_token_usage.json` 的 `rows`,只取 `role=subagent` 且 `agent ∈ retention.ARCHIVE_TRANSCRIPT_AGENTS`(`l3-rank, l4-card, l4-intel, macro-brief, sector-brief`);`general-purpose`(trace-control 壳)与主会话排除。
-2. 逐份打开 jsonl(按 `retention.archive_transcripts` 同样的容错:坏行跳过、文件不在记 GONE),收集 `tool_use` 块里 `Write` 的 `file_path`、`Read`/`Glob` 的路径、首行 `timestamp`。
-3. 用 §5.2 表匹配 → (role, subject) → 在 `_agent_expectations` 里查 invocation id → 绑定。
-4. 不依赖 `agentId` 与 invocation id 的时间对齐——那是猜;产物路径是事实。
-
-### 5.4 Codex 定位器与 ordinal 区段
-
-1. 枚举 `~/.codex/sessions/<Y>/<M>/<D>/rollout-*.jsonl`,日期从 `RUN_STARTED` 事件的日期到当天;保留 `session_meta.payload.cwd == 仓库根` 且行时间戳区间与 `[RUN_STARTED − 5 分钟, 当下]` 重叠的文件。
-2. 主线程 = `session_meta.payload.source` 无 `subagent` 的文件;子线程 = `source.subagent.thread_spawn.parent_thread_id == 主线程 session_id` 的文件。主线程**恰一份** → 候选;多份 → 整场 AMBIGUOUS(报告记全部路径,一份不绑);零份 → 整场 GONE。
-3. 在候选主线程内按内容锚定每个调用的区段:起点 = 第一行(`response_item` 的 `custom_tool_call`/`function_call` input 或 `message` 文本)含该调用输入标记的 `ordinal`;终点 = 最后一行含其产物标记的 `ordinal`;无输入标记的角色(l4-intel)起点取产物标记首现。绑定 `bind_transcript(path, ..., start_ordinal, end_ordinal)`。
-4. 区段允许重叠(模型交错处理多只票);报告记 `segment_quality: exclusive | interleaved`。子线程 rollout 若命中某调用的产物标记,整份绑定(无区段)。
-5. `exec` 的 input 是 JS 片段,产物路径按**子串**匹配,不依赖工具形状;根校验同 §5.2。
-
-### 5.5 Codex 期望回退
-
-`_agent_expectations` 只消费 `AGENT_*` 事件(E7:Codex 零事件 → `expected 0`)。加一条回退,**仅当该 run 零 AGENT 事件时生效**:
-
-- l4-card:从 `TASK_CLAIMED`(stage=l4,subject=code,attempt)派生 `l4-card-<code>-<attempt>`;
-- l4-intel、sector-brief、l3-rank、l3-repair、strategist:从产物在场派生(`_l4_intel_*.md`、`sector_briefs/*.md`、`_l3_judged.json`、`_l3_repair_patch.json`、`market_view.md`),sector-brief 的 `<n>` 按行业名排序编号。
-
-index 行加字段 `expectation_source: agent_events | task_events | products`(capsule `_TRANSCRIPT_SCHEMA_VERSION` 1 → 2,只增不改)。这样 Codex 也有 GONE 账,且**不依赖 LLM 记得去敲 `capsule agent-event`**;让 Codex 主动发事件只作可选加固(§13)。
-
-### 5.6 歧义、失败、幂等
-
-- `bind_transcript` 对相同身份幂等,重跑 observe 不重复;身份不同而 invocation 相同 → 它抛 `conflicting transcript binding`,绑定器捕获后记 AMBIGUOUS,不覆盖既有绑定。
-- 候选文件不可读 / 是符号链接 → GONE 带原因(与 `_archive_bound_transcripts` 同判据)。
-- 期望表里有、候选里没有 → GONE(`no candidate transcript`);候选里有、期望表里没有 → 仍绑,materialize 记 `bound without a dispatch event`(现有行为)。
-
-### 5.7 绑定报告 `_transcript_bindings.json`
-
-落 staging,`retain()` 镜像进 `trace/staging/`。形状:
-
-```json
-{"schema_version": 1, "run_id": "...", "engine": "claude|codex", "enabled": true,
- "candidates": {"claude_usage_rows": 37, "codex_rollouts": 0},
- "rows": [{"invocation_id": "l4-card-688411-1", "role": "l4-card", "subject": "688411",
-           "status": "BOUND|UNVERIFIED_BY_PRODUCT|AMBIGUOUS|GONE", "reason": "...",
-           "path": "...", "product": "staging/2026-09-09/details/688411.md",
-           "start_ordinal": null, "end_ordinal": null, "segment_quality": null,
-           "expectation_source": "agent_events"}],
- "counts": {"bound": 36, "unverified": 0, "ambiguous": 0, "gone": 0}}
-```
-
-它是「谁缺、为什么缺」的账;`agents/index.json` 只说 PRESENT/GONE。
-
-### 5.8 回滚杆
-
-`retention.bind_transcripts=false`。批 2–4 各自独立(§12)。
-
-## 6. 索引与归一化
-
-### 6.1 现成链,不新建
-
-绑定一落,`finalize` 第 1 步 `materialize_agent_index` 即:脱敏 gzip 进 `capsule/agents/raw/`;按适配器归一化成 `message / tool_request / tool_result / error` 写 `agents/normalized/`;带 URL 的往返写 `lineage/external_tools.jsonl`;`agents/index.json` 每调用一行(PRESENT / GONE / AMBIGUOUS / UNSUPPORTED / NOT_EXPECTED,带 model、effort、usage、items)。两引擎共用;Codex 走区段(`_segment`),区段内 `token_count` 快照差分得 usage,量不出写 UNMEASURED。
-
-### 6.2 三处小改(两适配器各补一行级别)
-
-1. `tool_result` 项 payload 加 `bytes` 与 `sha256`(内容本身留在 raw);视图靠它回答「读到的 slim 是不是发布时那份」。
-2. Codex 适配器:`_SKIPPED_RESPONSE_ITEMS` 里的明文 `reasoning`(摘要文本)改留为 `reasoning_summary` 项;`encrypted_reasoning` 照丢。Claude 无对应物,视图写「无(harness 未落盘)」。
-3. 适配器把「读文件」与「归一化行」拆成两步(纯重构,文件版调用行版),供 §6.3 离线模式对 gz 归档在内存里归一化。
-
-### 6.3 已冻结 run 的离线外部索引
-
-同一绑定器核心加 `--offline <run_dir>` 模式:输入 `trace/transcripts/*.jsonl.gz`(Claude)或 §5.4 枚举到的 rollout(Codex),加 `capsule/events/events.jsonl`(期望);输出 `reports_<engine>/scan/_ledger/agents_index/<run_id>.json`,形状与 `agents/index.json` 一致,多两列 `source: trace_transcripts | codex_sessions` 与 `computed_at`。归一化结果落 `_ledger/agents_index/<run_id>/normalized/`。**不写 run 目录**(MANIFEST 不变量)。一次性 CLI,不进 prelude、不进 nightly。
-
-## 7. `chain_view` 改动
-
-1. **⑦ slim/deep 查找**:`trace/inputs/slim/` → `trace/staging/_external_inputs/` → 共享 staging `_external_inputs/`;命中哪级标哪级(复用 `Sources.find` 的三级语义)。E3 的假读数消失。
-2. **新增 ⑦b「研究员现场」**:来源顺序 `capsule/agents/index.json`(+`normalized/`)→ `_ledger/agents_index/<run_id>.json` → 缺席(写「未绑定:<reason>」)。对本票的每个调用(l4-intel、l4-card;L3 judged 已在 ⑥)印:
-   - 状态行:`PRESENT|GONE|AMBIGUOUS` · reason · `expectation_source` · Codex 加 `ordinal a–b · segment_quality`;
-   - model · effort · 起止时间 · items 数;
-   - 读了什么:每项一行,相对路径 · 字节 · sha256 前 12 位 · 标注 `[prompt|slim|deep|intel|dossier|其它]`;Codex 从 exec 命令串按正则取路径,tool_result 的 bytes/sha 来自输出;
-   - **没读什么**:按角色应读清单(l4-card:prompt/slim/intel 必读,deep 视早停)列出未命中的项;早停卡「deep 未读」在此可见;
-   - 搜了什么:query 列表 + 命中 URL 数(读 normalized 的 `tool_request`/`tool_result`,tool_name 为 WebSearch / WebFetch / web_search;capsule 在场时对照 `lineage/external_tools.jsonl`,离线索引无 lineage 也能印);
-   - 写了什么:产物路径 · 与发布卡 `details/<名>.md` 的 sha256 是否一致;
-   - 可见推理:assistant 文本块每块截 300 字、最多 6 块;Codex 另印 `reasoning_summary`(同截断)。
-3. **① 身份段**加一行:`transcript 绑定 N/M · AMBIGUOUS k · 来源 capsule|ledger`。
-4. **⑧ E6 段**:渲染 §8 的 `card_context` 与 `why`(缺席时印「schema 1,无卡面上下文」)。
-
-渲染保持确定性文本:排序固定、截断固定、两次渲染逐字节相等(现有 `test_chain_view` 风格加 golden 片段)。
-
-## 8. E6 决策记录 schema 2(只记不学)
-
-`_relative_buy_decision.json` `schema_version` 1 → 2;**选择语义一字不动,`RULE_VERSION` 不变**。
-
-每个候选加 `card_context`,全部从该票的卡 md(staging `details/<code>.md`)确定性解析;早停卡没有的字段写 `null`:
-
-| 字段 | 来源 | 例:688411 @ 09-09 |
-|---|---|---|
-| `card_kind` | 卡头标记(`〔早停·表面 DD〕` / 满卡) | `earlystop` |
-| `proposal` | `FINAL TRANSACTION PROPOSAL:` 行 | `HOLD` |
-| `ev_target` / `rr` | 仪表盘 EV 目标带、R:R(`l4/parsers.py` 现有解析) | `null` / `null` |
-| `no_new_position` | 仪表盘「仓位」或「触发位」含「不建仓 / 不新开仓 / 0%」 | `true` |
-| `exec_lines_present` | 卡尾两行 `[执行线]` 在场且阈值等于 `contracts.agent_output` 常量 | `true` |
-| `consulted` | `{"card_ev": false, "card_exec_lines": false, "card_position": false}`(v3.0 规则事实) | 全 `false` |
-
-顶层加 `why`,固定模板:`池=<pool>(席 <n_in_pool>):<n_vetoed> 只被硬门否决(<按 reason 计数>),持仓排除 <n_pinned>;合格 <n_elig>,BUY=#<rank>/<n_elig> <code>;卡面 <rating>·<proposal>·<不新开仓|可建仓>;E6 未读 EV/执行线。`
-
-- 写者与校验者(`safe_write_decision` / `safe_verify_decision`)用同一函数产出,parity 不变;卡文件缺席时 `card_context = null` 并在 `inputs` 留痕,不影响选择。
-- 既有消费者(brief、outcome 账本、chain_view ⑧、测试)只读旧键,向后兼容;brief 不动。
-
-## 9. 附加批
-
-### 9.1 A2 老 run 抢救(一次性 CLI `python -m autoresearch.scan.salvage <run_id>|--all`)
-
-- 对象:E10 的 13 个 run(E6 决策只在共享 staging)+ 07-01 起共享 staging 里仍在的 `market_view.md`;Codex 侧仍在 `~/.codex/sessions/` 的 rollout。
-- 产物:`_ledger/salvage/<run_id>/{_relative_buy_decision.json, market_view.md, transcripts/rollout-*.jsonl.gz, provenance.json}`;`provenance.json` 记源路径、mtime、sha256、run `generated_at`、判定 `MATCHES_RUN_WINDOW | OVERWRITTEN_BY_LATER_RUN | UNKNOWN`(`20260817_2150` 必判 OVERWRITTEN)。
-- 不写 run 目录;幂等;`chain_view` 的 `Sources.find` 加第四级「账本抢救」,命中时标注。
-
-### 9.2 A3 exec_check 账本腿(默认**不进**本波,用户裁)
-
-08-31 稿 D3 已裁、排 P3 未做。此处只提前其落盘腿:T+1 14:30 对当日 BUY 与 📌 持仓跑 `rt_min` 分钟线,现算 `pct_chg` / `pos_in_range`,用 `contracts.agent_output.EXEC_LINE_*` 判执行线,写 `$RPT/scan/_ledger/exec_checks/<anchor_session>/<code>.json`(时刻、价格、判定、快照),append-only,不展示、不改卡。它记的是「工具核过」,不是「人买了」;人的动作仍属 broker 分支。
-
-## 10. 产物登记(ARTIFACTS,先登记再写代码)
-
-| name | path | root | stage | producer | presence |
-|---|---|---|---|---|---|
-| `transcript_bindings` | `_transcript_bindings.json` | staging | observe | transcript_binder | gated(`retention.bind_transcripts` 且 observe 跑过) |
-| `agents_index_ledger` | `agents_index/*.json` | ledger | observe | transcript_binder | conditional(对冻结 run 跑过离线索引) |
-| `agents_index_normalized` | `agents_index/*/normalized/`(kind=dir) | ledger | observe | transcript_binder | conditional(同上) |
-| `salvage_provenance` | `salvage/*/provenance.json` | ledger | observe | salvage | conditional |
-| `exec_checks` | `exec_checks/*/*.json` | ledger | observe | exec_check | conditional(仅 A3 批准后) |
-
-`capsule/agents/bindings.jsonl` 已在 08-27 capsule 契约内,不新登记;`emit --write` 走一遍;不加 prelude 步骤,`STEP_NAMES` 与 `test_step_names_inventory` 不动。
-
-## 11. 验收、变异探针、回滚
-
-### 11.1 验收(两引擎各一遍)
-
-1. 单测(`tests/scan/test_transcript_binder.py`):合成 Claude jsonl(Write 到本 run staging 根)与合成 Codex rollout(exec 写文件、带 ordinal)→ 预期绑定;前一天同名路径不匹配;两份争一个调用 → AMBIGUOUS 且一份不绑;只有输入无产物 → UNVERIFIED_BY_PRODUCT;attempt 按首行时间排序。
-2. 集成(仿 `tests/integration/test_scan_capsule_faults.py`):begin → observe → finalize,`agents/index.json` `present == expected`;Codex 零 AGENT 事件时期望从 TASK_CLAIMED 派生,缺的记 GONE,`expectation_source` 正确。
-3. 离线索引对 09-09 真 run:36 个调用 ≥ 34 PRESENT;`chain_view 20260909-0909_2209 688411` ⑦b 印出 prompt、slim、intel 三次 Read、「deep 未读」、写出的卡 hash 与发布卡一致。
-4. 下一次真扫描(两引擎各一次):当日 BUY 的 `chain_view` 有 ⑦b;`capsule verify` 的 agents 轴转绿。其它轴(步骤 5 不经 exec_capture)不在本波承诺。
-5. E6:对 09-09 重算,688411 的 `card_context` 四字段与 `why` 逐字等于预期;writer-1/writer-2 parity 绿。
-6. `chain_view` 两次渲染逐字节相等;golden 片段锁 ⑦b 与 ⑧ 的格式。
-
-### 11.2 变异探针(每条先证明会变红)
-
-- 去掉「路径必须在本 run staging 根下」→ 前一天文件误配的测试必须红。
-- 区段逻辑换成整文件 → `segment_quality` 测试必须红。
-- 删掉 observe 里的绑定调用 → 集成测试 `present` 归零必须红。
-- 删 `card_context` → parity 测试必须红。
-- 把 `expectation_source` 回退关掉 → Codex 集成测试 `expected 0` 必须红。
-
-### 11.3 回滚
-
-`retention.bind_transcripts=false`(批 1);批 2 无开关,回滚 = revert 该提交;批 3、4 独立 CLI,删即回滚。
-
-## 12. 批次与类别
-
-| 批 | 内容 | 类别 | 依赖 |
-|---|---|---|---|
-| 1 | 绑定器 + Codex 期望回退 + 适配器三处小改 + `bind_transcript(stage=)` + `chain_view`(⑦ 修查找、⑦b、①、⑧ 渲染)+ ARTIFACTS + 测试 | I | 无 |
-| 2 | E6 schema 2(`card_context` + `why` + `consulted`) | I | 无 |
-| 3 | 离线索引 + A2 抢救 CLI + `Sources` 第四级来源 | I | 批 1 的核心 |
-| 4 | A3 exec_check 账本腿 | I(影子) | 用户裁 |
-| P0(另裁) | 账本 T+2 日历修复:`market_frame` 按交易日历取 T+1/T+2,湖缺日即未成熟;`fill --rebuild` | I | 无 |
-
-## 13. 待裁与不在范围
-
-| # | 问题 | 本稿建议 | 不选的后果 |
-|---|---|---|---|
-| Q1 | 账本 T+2 修复并入批 1? | 并入,作 P0 | `recommendations.csv` 里 09-01/09-07 两 run 21 行继续错,chain_view ⑩ 跟着错 |
-| Q2 | A3 exec_check 账本腿进不进本波? | 不进,留 P3 | 「14:45 有没有核过执行线」仍无记录 |
-| Q3 | 让 Codex 主动敲 `capsule agent-event`? | 只作可选加固,不作主路 | 无;§5.5 回退已覆盖 |
-| Q4 | E6 读卡的 EV 与执行线 / 允许 0 BUY / 换池 | 另案(行为改动) | 「有正期望才叫 BUY」的裁定与 E6 mandate 继续冲突 |
-| Q5 | brief 印「卡面不建仓」 | 另案(≤3000B 预算 + lint) | 人读 brief 看不到卡与 BUY 打架 |
-| Q6 | agent 模板加决策日志(C 路) | 等模板冻结解除 | 「哪条证据翻转了判断」仍只在卡的散文里 |
-
-## 附录 A 本次复盘的关键读数(引用须带限定:6 笔 / 未扣成本 / 单一 range regime)
+### 原稿统计的使用限制
 
 - 08-19 E6 转正起 9 次成熟 run、84 行:relative BUY 6 笔 5 负,均 −0.66pp、相对市场 −0.31pp;全部非持仓卡等权 −0.11pp、相对 +0.11(t −0.82);Hold 卡 −0.39(t −2.07)反比 UW 卡 +0.10 差;📌持仓 −0.36 不显著;执行线内 +0.11 vs 线外 −0.74(t −3.77)。
 - 四笔亏损 BUY 的现场:四张卡全写不建仓或 UW·SELL;BUY 由 E6 相对层制造;3/4 是📌排除后的第三名;E6 不读 EV/R:R/入场否决。
 - 09-01、09-07 两 run 的账本 T+2 取错(湖缺日滑到下一份文件),21/84 行错;`market.csv` 因 09-12 用补齐的湖重建反而正确——同一账本两套日历。
+
+这些读数仅作为待核对线索。完成独立 P0 后，以当时规则、可核验的 run 来源和统一交易日历重算；明确 6 笔、未扣成本、单一 range regime 等限制。同日重复 run/同票的相关性必须保留，不据这组小样本直接改选股规则或宣称执行线有效。
+
+上游参考：[法证 capsule 设计](2026-08-27-scan-forensic-run-capsule-design.md)、[现场留存与 BUY owner 设计](../../specs/2026-08-26-scene-retention-and-buy-owner-design.md)。
