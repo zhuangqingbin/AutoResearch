@@ -39,7 +39,7 @@ from pathlib import Path
 from types import MappingProxyType
 
 from autoresearch.trace.atomic import canonical_json, sha256_bytes
-from autoresearch.trace.identity import redact_value, scan_for_secrets
+from autoresearch.trace.identity import redact_residual_secrets, redact_value
 from autoresearch.trace.transcripts.base import ArchiveDigest, SourcePrefixDigest
 
 
@@ -142,30 +142,6 @@ def _parse_prefix(
     return rows, bad_lines, last_ordinal, cutoff_bytes, trailing_partial_bytes
 
 
-def _redact_archive_bytes(payload: bytes) -> bytes:
-    """Blank any secret span the scanner still finds after value redaction.
-
-    Same discipline as `capsule._redact_bytes` (the byte-level regex pass
-    that catches residual secrets the per-value :func:`redact_value` pass in
-    :func:`_archive_bytes` cannot see, e.g. a secret split across two JSON
-    string values that only forms a recognizable pattern once joined) --
-    duplicated here rather than imported because that helper is private to
-    `capsule.py`, and `snapshot.py` must not depend upward on `capsule.py`
-    (capsule.py depends on snapshot.py, never the reverse).
-    """
-    report = scan_for_secrets(payload)
-    if report["ok"]:
-        return payload
-    text = payload.decode("latin-1")
-    for finding in sorted(
-        report["findings"], key=lambda row: int(row["offset"]), reverse=True
-    ):
-        start = int(finding["offset"])
-        end = start + int(finding["length"])
-        text = text[:start] + "[REDACTED]" + text[end:]
-    return text.encode("latin-1")
-
-
 def _archive_bytes(rows: Sequence[Mapping[str, object]]) -> bytes:
     """Deterministic, redacted, gzip-compressed bytes of parsed JSONL rows.
 
@@ -173,10 +149,14 @@ def _archive_bytes(rows: Sequence[Mapping[str, object]]) -> bytes:
     redaction, canonical JSON per row, byte-level residual redaction pass,
     ``mtime=0`` gzip for byte-identical re-materialization) -- moved here so
     it operates on the rows this module already parsed once, instead of a
-    second, independent read+parse of the source file.
+    second, independent read+parse of the source file. The byte-level
+    residual pass (fix round 1, 2026-09-13) now calls
+    `trace.identity.redact_residual_secrets` -- shared with `capsule.py`'s
+    own `_archive_plain_bytes` instead of each module keeping its own
+    byte-identical copy of the same blanking loop.
     """
     lines = [canonical_json(redact_value(dict(row)).value) for row in rows]
-    body = _redact_archive_bytes(
+    body = redact_residual_secrets(
         ("\n".join(lines) + "\n" if lines else "").encode("utf-8")
     )
     buffer = io.BytesIO()

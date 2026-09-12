@@ -636,6 +636,40 @@ def scan_for_secrets(payload: bytes, *, environ: dict[str, str] | None = None) -
     return {"ok": not findings, "hits": len(findings), "findings": findings}
 
 
+def redact_residual_secrets(
+    payload: bytes, *, environ: dict[str, str] | None = None
+) -> bytes:
+    """Blank any secret span :func:`scan_for_secrets` still finds in *payload*.
+
+    A residual, byte-level pass for content that already went through a
+    value-level redaction (e.g. :func:`redact_value`, applied per JSON
+    field) but might still expose a secret that only forms a recognizable
+    pattern once several values are joined into one blob -- e.g. a bearer
+    token split across two JSON string values that becomes whole again once
+    the values are concatenated with a separator.
+
+    Shared by `trace.capsule` (transcript/tool-results archive bytes) and
+    `trace.transcripts.snapshot` (transcript snapshot archive bytes) so the
+    blanking behaviour can never drift between the two call sites (fix
+    round 1, 2026-09-13: previously two byte-identical copies of this exact
+    loop -- the review's point stands: the one that silently drifts is the
+    one that stops blanking something, and nobody notices until it's too
+    late). Both call sites already import this module, so sharing it here
+    adds no new layering edge.
+    """
+    report = scan_for_secrets(payload, environ=environ)
+    if report["ok"]:
+        return payload
+    text = payload.decode("latin-1")
+    for finding in sorted(
+        report["findings"], key=lambda row: int(row["offset"]), reverse=True
+    ):
+        start = int(finding["offset"])
+        end = start + int(finding["length"])
+        text = text[:start] + "[REDACTED]" + text[end:]
+    return text.encode("latin-1")
+
+
 def _safe_error(exc: BaseException | str, *, environ: dict[str, str]) -> str:
     raw = str(exc) or (type(exc).__name__ if isinstance(exc, BaseException) else "error")
     redacted = str(redact_value(raw, environ=environ).value)

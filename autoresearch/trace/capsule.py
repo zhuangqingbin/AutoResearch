@@ -49,6 +49,7 @@ from autoresearch.trace.events import (
 )
 from autoresearch.trace.identity import (
     load_snapshot_result,
+    redact_residual_secrets,
     redact_value,
     scan_for_secrets,
     snapshot_identity,
@@ -1654,25 +1655,17 @@ def bind_transcript(
     return bound
 
 
-def _redact_bytes(payload: bytes) -> bytes:
-    """Blank any secret span the scanner still finds after value redaction."""
-    report = scan_for_secrets(payload)
-    if report["ok"]:
-        return payload
-    text = payload.decode("latin-1")
-    for finding in sorted(
-        report["findings"], key=lambda row: int(row["offset"]), reverse=True
-    ):
-        start = int(finding["offset"])
-        end = start + int(finding["length"])
-        text = text[:start] + "[REDACTED]" + text[end:]
-    return text.encode("latin-1")
-
-
 def _archive_plain_bytes(body: bytes) -> bytes:
-    """Same mtime=0 + secret-redaction discipline as `_raw_archive_bytes`, for
-    arbitrary (non-JSONL harness-row) file content such as `tool-results/*`."""
-    safe = _redact_bytes(body)
+    """Same mtime=0 + secret-redaction discipline the transcript snapshot
+    archive path uses (`transcripts.snapshot._archive_bytes`), for arbitrary
+    (non-JSONL harness-row) file content such as `tool-results/*`.
+
+    The residual, byte-level redaction pass (fix round 1, 2026-09-13) now
+    lives in `trace.identity.redact_residual_secrets` -- shared with
+    `transcripts.snapshot` instead of each module keeping its own
+    byte-identical copy of the same blanking loop.
+    """
+    safe = redact_residual_secrets(body)
     buffer = io.BytesIO()
     with gzip.GzipFile(fileobj=buffer, mode="wb", mtime=0) as archive:
         archive.write(safe)
@@ -1780,14 +1773,20 @@ def _external_tool_rows(
 
 
 def _operation_row(operation) -> dict:
-    """One `ObservedOperation` -> a JSON-safe dict for `agents/normalized/*.json`."""
+    """One `ObservedOperation` -> a JSON-safe dict for `agents/normalized/*.json`.
+
+    `item_index` (fix-round-1, 2026-09-13): position in this call's
+    `NormalizedTranscript.items`, *not* an index into the snapshot's `rows`
+    -- see `ObservedOperation`'s own docstring in `transcripts/base.py` for
+    why the two sequences differ in length and cannot be conflated.
+    """
     return {
         "kind": operation.kind,
         "call_id": operation.call_id,
         "tool_name": operation.tool_name,
         "path": operation.path,
         "path_source": operation.path_source,
-        "row_index": operation.row_index,
+        "item_index": operation.item_index,
         "response": (
             None
             if operation.response is None

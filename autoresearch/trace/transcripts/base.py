@@ -518,18 +518,39 @@ class ObservedOperation:
       ``"tool_input"`` for a mapping-shaped ``input`` carrying an explicit
       path-like key, ``"unknown"`` otherwise.  Never guessed by scanning
       free-text shell/JS command strings (brief bullet 5's hard line).
-    - ``row_index``: the index into the *same* rows tuple a caller captured
-      via `snapshot.capture_snapshot` that this operation's request row came
-      from -- the "snapshot reference".  The snapshot's own content identity
-      (``snapshot_id``/``source_prefix``) is deliberately tracked one level
-      up by whoever holds both the `TranscriptSnapshot` and this
-      `TranscriptStats` together (capsule.py/usage_harvest.py's snapshot
-      cache): `stats_from_rows(rows, ref)`'s fixed signature (task-2-brief
-      §3, used verbatim) takes plain rows, not a snapshot object, so it has
-      no content hash to attach here even if it wanted to. Documented as an
-      explicit interpretation choice in the Task 2 report, matching Task 1's
-      own precedent (§10.2 of its report) of flagging rather than silently
-      picking one.
+    - ``item_index``: the position of this operation's request in the
+      *same* ``NormalizedTranscript.items`` sequence this
+      :class:`ObservedOperation` was extracted from (equal to that request
+      item's own ``NormalizedItem.index``). This is **not** an index into a
+      `snapshot.TranscriptSnapshot`'s ``rows`` -- a raw transcript row and a
+      normalized item are different sequences of different lengths: some
+      rows produce zero items (a superseded streaming update, keyed out by
+      `ClaudeTranscriptAdapter`'s ``last_message_row`` dedup) and some rows
+      produce several (one Claude row with a text block *and* one or more
+      tool_use blocks becomes one "message" item plus N "tool_request"
+      items). `snapshot.rows[item_index]` is therefore not guaranteed to be
+      the row that produced this operation, and may not even be in range.
+      Fix-round-1 correction (2026-09-13): an earlier revision of this
+      docstring claimed ``row_index`` aliased ``snapshot.rows`` directly --
+      false; both adapters set it from ``NormalizedItem.index``, an item-list
+      position, not a row position. Renamed to ``item_index`` to make the
+      field's actual meaning unmistakable, since it is persisted verbatim
+      into ``agents/normalized/*.json`` (frozen evidence a later task -- the
+      view under construction alongside this fix -- reads to trace an
+      observation back to its source).
+      **The "snapshot reference" spec bullet 2 asks for is not delivered by
+      this field at all.** `stats_from_rows(rows, ref)`'s fixed signature
+      (task-2-brief §3, used verbatim) takes plain rows, not a snapshot
+      object, so nothing at this layer has a snapshot_id to attach, and
+      `item_index` cannot substitute for one (see above -- it doesn't even
+      alias ``rows``). A caller that needs to correlate this operation back
+      to an exact snapshot/row **must reattach that correlation itself** --
+      e.g. by holding the same `TranscriptSnapshot` this call's ``rows``
+      came from and re-deriving which row produced which item, or by a
+      future revision that threads a genuine row pointer through
+      `NormalizedItem` end to end. This is not optional caller-side
+      convenience; it is a real, currently-unfilled gap between what bullet
+      2 asks for and what this layer alone can provide.
 
     ``response``/``artifact`` are optional because not every kind earns one:
     a bare ``DISCOVERED``/``*_REQUESTED`` has no result to hash yet, and an
@@ -542,7 +563,7 @@ class ObservedOperation:
     tool_name: str
     path: str | None
     path_source: str
-    row_index: int
+    item_index: int
     response: ToolResponseDigest | None = None
     artifact: ArtifactDigest | None = None
 
@@ -556,8 +577,8 @@ class ObservedOperation:
                 "ObservedOperation.path_source must be one of "
                 f"{sorted(_PATH_SOURCES)!r}, got {self.path_source!r}"
             )
-        if type(self.row_index) is not int or self.row_index < 0:
-            raise ValueError("ObservedOperation.row_index must be a non-negative integer")
+        if type(self.item_index) is not int or self.item_index < 0:
+            raise ValueError("ObservedOperation.item_index must be a non-negative integer")
 
 
 # ------------------------------------------------------- extraction helpers
@@ -726,7 +747,7 @@ def extract_operations(items: Sequence[NormalizedItem]) -> tuple[ObservedOperati
                 tool_name=tool_name,
                 path=path,
                 path_source=path_source,
-                row_index=item.index,
+                item_index=item.index,
                 response=response,
                 artifact=artifact,
             )

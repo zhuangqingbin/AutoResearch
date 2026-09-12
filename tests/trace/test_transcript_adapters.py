@@ -1804,8 +1804,12 @@ def test_codex_stats_from_rows_web_search_is_search_family(tmp_path):
 def test_extract_operations_never_drops_the_five_bundled_facts(tmp_path):
     """Brief bullet 2's non-conflation guardrail, exercised directly: every
     ObservedOperation must be able to carry call_id, kind (operation result
-    incl. the partial flag), path + path_source, and row_index (the
-    snapshot reference) all at once."""
+    incl. the partial flag), path + path_source, and item_index all at once.
+
+    Fix round 1 (2026-09-13): item_index is the position in this call's own
+    NormalizedTranscript.items, not a snapshot/row reference -- see
+    test_operation_item_index_is_not_a_row_index_when_rows_are_skipped_or_expanded
+    for the fixture that proves the two sequences differ."""
     rows = [
         _claude_row(
             "assistant",
@@ -1844,10 +1848,90 @@ def test_extract_operations_never_drops_the_five_bundled_facts(tmp_path):
     assert op.kind == "READ_SUCCEEDED"
     assert op.path == "/a.py"
     assert op.path_source == "tool_input"
-    assert op.row_index == stats.normalized.items[
+    assert op.item_index == stats.normalized.items[
         [item.kind for item in stats.normalized.items].index("tool_request")
     ].index
     assert op.response is not None
+
+
+def test_operation_item_index_is_not_a_row_index_when_rows_are_skipped_or_expanded(
+    tmp_path,
+):
+    """Fix round 1, Finding 1: item_index is a position in this call's
+    NormalizedTranscript.items, never an index into a TranscriptSnapshot's
+    rows -- rows and items are different sequences of different lengths.
+
+    This fixture has both properties the review required in one shot: two
+    superseded streaming rows (rows 0-1, same message id as row 2) that
+    contribute *zero* items each, and one row (row 3) whose text-plus-
+    tool_use content expands into *two* items. The Read operation's request
+    therefore lands at item_index 2, while its actual source is rows[3] --
+    provably different integers, not a coincidence of small counts.
+    """
+    rows = [
+        _claude_row(  # row 0: superseded, contributes 0 items
+            "assistant",
+            message={"id": "dup", "content": [{"type": "text", "text": "stale v1"}]},
+        ),
+        _claude_row(  # row 1: superseded, contributes 0 items
+            "assistant",
+            message={"id": "dup", "content": [{"type": "text", "text": "stale v2"}]},
+        ),
+        _claude_row(  # row 2: final "dup" -> 1 item (item_index 0)
+            "assistant",
+            message={
+                "id": "dup",
+                "content": [{"type": "text", "text": "final"}],
+                "stop_reason": "end_turn",
+            },
+        ),
+        _claude_row(  # row 3: expands into 2 items (item_index 1 message, 2 tool_request)
+            "assistant",
+            message={
+                "id": "m2",
+                "content": [
+                    {"type": "text", "text": "checking"},
+                    {
+                        "type": "tool_use",
+                        "id": "call-2",
+                        "name": "Read",
+                        "input": {"file_path": "/b.py"},
+                    },
+                ],
+            },
+        ),
+        _claude_row(  # row 4: tool_result for call-2 -> item_index 3
+            "user",
+            message={
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "call-2", "content": "ok"}
+                ]
+            },
+        ),
+    ]
+    ref = TranscriptRef(engine="claude", path=tmp_path / "unused.jsonl", role="subagent")
+    stats = ClaudeTranscriptAdapter().stats_from_rows(rows, ref)
+
+    # 5 rows -> 4 items: the two superseded rows vanish, the expanding row
+    # accounts for the surplus.
+    assert len(rows) == 5
+    assert len(stats.normalized.items) == 4
+    assert len(stats.operations) == 1
+    op = stats.operations[0]
+    assert op.kind == "READ_SUCCEEDED"
+
+    true_source_row_position = 3  # rows[3] is the row whose tool_use this came from
+    assert op.item_index == 2
+    assert op.item_index != true_source_row_position
+
+    # item_index correctly resolves within *items*...
+    assert stats.normalized.items[op.item_index].kind == "tool_request"
+    # ...but the same integer used as an index into `rows` selects an
+    # entirely different, wrong row: rows[2] is the message-only "final" row
+    # that never mentions this call at all.
+    wrong_row = rows[op.item_index]
+    assert wrong_row["message"]["id"] == "dup"
+    assert "call-2" not in str(wrong_row)
 
 
 def test_extract_operations_is_the_same_function_both_adapters_call():
@@ -1899,6 +1983,15 @@ def test_collect_run_deduplicates_overlapping_segments_of_one_source(codex_run):
     *overlapping* ordinal segments must not each contribute their own usage
     delta (that double-counts the overlap's cumulative window) -- both are
     UNMEASURED, and one combined, whole-source row carries the true total.
+
+    Realistic-fixture coverage (uses the packaged rollout.jsonl, which also
+    has an error `task_complete` inside segment A's window). Fix round 1,
+    Finding 3: this fixture is *not* the isolated mutation-probe evidence --
+    removing the overlap guard also changes segment A's own lifecycle status
+    for an unrelated reason (the error/retry timing), so a mutated run can
+    turn this test red before ever reaching the double-count claim. See
+    test_collect_run_overlap_dedup_prevents_a_double_counted_total for a
+    fixture that isolates exactly the claim this guard exists to prove.
     """
     from autoresearch.trace import usage_harvest as U
 
@@ -1934,6 +2027,103 @@ def test_collect_run_deduplicates_overlapping_segments_of_one_source(codex_run):
     naive_sum_input = (100000 - 50000) + (408129 - 200448)
     assert combined["input"] != naive_sum_input
     assert combined["merged_invocation_ids"] == ["overlap-a", "overlap-b"]
+
+
+def test_collect_run_overlap_dedup_prevents_a_double_counted_total(codex_run):
+    """S02 (usage half), isolated mutation-probe fixture (fix round 1,
+    Finding 3): every lifecycle event in both overlapping segments is a
+    *clean* task_complete (no error, no retry) so nothing about a segment's
+    own status can turn this test red for a reason unrelated to overlap
+    de-duplication -- the only way this test can fail is the summed `input`
+    across the returned rows landing on the naive double-counted sum instead
+    of the true whole-source total.
+    """
+    import json
+
+    from autoresearch.trace import usage_harvest as U
+
+    handle, source = codex_run
+    rows = [
+        {
+            "type": "session_meta", "ordinal": 0,
+            "timestamp": "2026-09-13T00:00:00.000Z",
+            "payload": {
+                "id": "clean-fixture", "session_id": "clean-fixture",
+                "timestamp": "2026-09-13T00:00:00.000Z", "cwd": "/fixture",
+                "originator": "codex-tui",
+            },
+        },
+        {
+            "type": "turn_context", "ordinal": 1,
+            "timestamp": "2026-09-13T00:00:01.000Z",
+            "payload": {
+                "turn_id": "t1", "model": "gpt-5-codex",
+                "collaboration_mode": {"settings": {"reasoning_effort": "high"}},
+            },
+        },
+        {
+            "type": "event_msg", "ordinal": 2,
+            "timestamp": "2026-09-13T00:00:02.000Z",
+            "payload": {"type": "token_count", "info": {"total_token_usage": {
+                "input_tokens": 1000, "cached_input_tokens": 100,
+                "output_tokens": 50, "cache_write_input_tokens": 10,
+                "reasoning_output_tokens": 5, "total_tokens": 1050,
+            }}},
+        },
+        {
+            "type": "event_msg", "ordinal": 3,
+            "timestamp": "2026-09-13T00:00:03.000Z",
+            # Clean completion -- no "error" key at all, unlike the packaged
+            # rollout.jsonl fixture used above.
+            "payload": {"type": "task_complete", "turn_id": "t1",
+                        "last_agent_message": "first turn done"},
+        },
+        {
+            "type": "event_msg", "ordinal": 4,
+            "timestamp": "2026-09-13T00:00:04.000Z",
+            "payload": {"type": "token_count", "info": {"total_token_usage": {
+                "input_tokens": 5000, "cached_input_tokens": 500,
+                "output_tokens": 200, "cache_write_input_tokens": 40,
+                "reasoning_output_tokens": 30, "total_tokens": 5200,
+            }}},
+        },
+        {
+            "type": "event_msg", "ordinal": 5,
+            "timestamp": "2026-09-13T00:00:05.000Z",
+            "payload": {"type": "task_complete", "turn_id": "t2",
+                        "last_agent_message": "second turn done"},
+        },
+    ]
+    source.write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8"
+    )
+    bind_transcript(
+        handle.run_id, source, role="l4-card", subject="600000",
+        invocation_id="clean-a", start_ordinal=0, end_ordinal=3,
+    )
+    bind_transcript(
+        handle.run_id, source, role="l4-intel", subject="600000",
+        invocation_id="clean-b", start_ordinal=2, end_ordinal=5,
+    )
+
+    result = U.collect_run(handle.run_id, engine="codex")
+
+    # The isolated claim, checked first and without depending on `status`
+    # strings at all: the summed input across every returned row must equal
+    # the true whole-source total (5000-500=4500 -- the last cumulative
+    # snapshot, ordinal 4), never the naive per-segment sum
+    # ((1000-100) + (5000-500) = 5400) a missing overlap guard would produce.
+    # UNMEASURED rows report input=0, so summing unconditionally is safe.
+    true_total_input = 5000 - 500
+    naive_sum_input = (1000 - 100) + (5000 - 500)
+    assert true_total_input != naive_sum_input
+    assert sum(r["input"] for r in result) == true_total_input
+
+    by_role = {row.get("role"): row for row in result}
+    assert by_role["l4-card"]["status"] == "UNMEASURED"
+    assert by_role["l4-intel"]["status"] == "UNMEASURED"
+    assert by_role["shared_source"]["input"] == true_total_input
+    assert by_role["shared_source"]["output"] == 200
 
 
 def test_collect_run_keeps_disjoint_shared_segments_individually_measured(codex_run):
