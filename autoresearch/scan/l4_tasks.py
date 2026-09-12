@@ -412,6 +412,17 @@ def _record_task_transition(
             "new_status": str(task.get("status") or ""),
             "old_status": str(old_status),
             "task_book_hash": task_book_hash,
+            # 2026-09-12 scene-reconstruction Task 3 (brief bullet 5): the one
+            # piece of session correlation obtainable *from inside this
+            # transition* that a TASK_* event does not otherwise carry --
+            # `handle.contract.session_ref` is already resolved above via
+            # `require_active_run`, so this is a zero-cost read, never a new
+            # lookup, a new event type, or anything asked of the research
+            # agents themselves. `None` when the harness never recorded one
+            # (`begin_run` under a harness `capsule.harness_session_ref`
+            # cannot identify) -- callers must read that as unknown, not
+            # guess a session.
+            "session_ref": handle.contract.session_ref,
         }
         for name in ("prompt", "slim", "card"):
             status, content_hash = _task_artifact_evidence(
