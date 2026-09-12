@@ -113,6 +113,26 @@ def _rows(path: pathlib.Path) -> list[dict]:
     return lv._load_csv(path)
 
 
+def _all_days(start: str, n: int) -> list[str]:
+    """连续自然日(不筛周末/节假日)——配本文件"逐日平推"夹具的简化口径:每天都当
+    交易日,不引入真实周末语义(市场读数逻辑本身不关心"是不是真周末")。"""
+    s = date.fromisoformat(start)
+    return [(s + timedelta(days=i)).isoformat() for i in range(n)]
+
+
+#: 覆盖本文件全部夹具日期(最早 2026-06-01)+ 前后余量的合成日历原料。
+_ALL_CALENDAR_DAYS = _all_days("2026-05-01", 210)
+
+
+def _trusted_calendar(quality: str = "trade_cal"):
+    """合成 `(start,end)->(sessions,quality)`——与 `test_outcome_calendar.py::_calendar`
+    同形状/同惯例(2026-09-12 Task C4:市场基准的 T+1/T+2 复用同一份可信日历契约)。"""
+    def cal(start: str, end: str):
+        return ([d for d in _ALL_CALENDAR_DAYS if start <= d <= end], quality)
+
+    return cal
+
+
 def _capsule_ledger(tmp_path, rows: list[dict]) -> pathlib.Path:
     """一条合法的 append-only hash 链(`read_valid_ledger` 会校验 prev/row hash 与 revision)。"""
     path = lv._outcome.ledger_root(_scan(tmp_path)) / "run_capsules.jsonl"
@@ -213,7 +233,10 @@ def test_sentinel_day_counts_as_a_real_zero_buy_day(tmp_path, monkeypatch):
                                         approved="2026-08-25T20:00:00"))
     (run / "trace" / "staging" / "finalists.csv").unlink()
     (run / "trace" / "staging" / "_relative_buy_decision.json").unlink()
-    lv.build(reports_root=_scan(tmp_path), now="2026-08-31T12:00:00+00:00")
+    # 2026-09-12 Task C4:市场基准的 T+1/T+2 现在只信可信日历——不注入的话(无网络单测
+    # 环境的默认回退)全部行都会落 `STATUS_UNVERIFIED_CALENDAR`,桶里就读不到 gap 了。
+    lv.build(reports_root=_scan(tmp_path), now="2026-08-31T12:00:00+00:00",
+             calendar=_trusted_calendar(), today="2026-08-31")
 
     runs = {r["report_dir_id"]: r for r in _rows(lv.views_root(_scan(tmp_path)) / lv.RUNS_CSV)}
     assert runs["20260825-0825_2000"]["run_mode"] == "SENTINEL_EMPTY"
@@ -321,7 +344,9 @@ def test_no_run_day_never_lands_in_the_zero_buy_bucket(tmp_path, monkeypatch):
     """把 NO_RUN 混进 0-BUY 桶 = 拿"根本没开工的日子"去证明"空仓正确"。"""
     monkeypatch.chdir(tmp_path)
     _three_kinds_of_day(tmp_path)
-    lv.build(reports_root=_scan(tmp_path), now="2026-08-31T12:00:00+00:00")
+    # 2026-09-12 Task C4:市场基准只信可信日历,见 test_sentinel_day_counts_... 的同一条注记。
+    lv.build(reports_root=_scan(tmp_path), now="2026-08-31T12:00:00+00:00",
+             calendar=_trusted_calendar(), today="2026-08-31")
     buckets = lv.session_buckets(_scan(tmp_path))
 
     # 读回来的是 view 里的 6 位小数(byte 稳定的代价),所以按绝对容差比。
@@ -365,7 +390,8 @@ def test_line_withholds_bucket_means_below_min_n(tmp_path, monkeypatch):
     """<20 有效日只印「攒样本」—— 小样本均值会被当成结论读。"""
     monkeypatch.chdir(tmp_path)
     _three_kinds_of_day(tmp_path)
-    lv.build(reports_root=_scan(tmp_path), now="2026-08-31T12:00:00+00:00")
+    lv.build(reports_root=_scan(tmp_path), now="2026-08-31T12:00:00+00:00",
+             calendar=_trusted_calendar(), today="2026-08-31")
     text = lv.line(_scan(tmp_path))
     assert f"0买日 攒样本 1/{lv.MIN_SESSION_N}" in text
     assert "市场 " not in text and "NO_RUN≠0买" in text
@@ -374,12 +400,14 @@ def test_line_withholds_bucket_means_below_min_n(tmp_path, monkeypatch):
 def test_line_prints_the_mean_once_a_bucket_matures(tmp_path, monkeypatch):
     """攒够 20 个有效日才开始展示(展示门槛,不是显著性门槛)。"""
     monkeypatch.chdir(tmp_path)
-    days = [(date(2026, 6, 1) + timedelta(days=i)).isoformat() for i in range(30)]
+    days = _all_days("2026-06-01", 30)
     _flat_lake(tmp_path, days)                            # 平推市场 → 每天 gap = 0
     _publish(tmp_path, "20260601-0601_2000", analysis_date="2026-06-01",
              execution=_execution("2026-06-01", first="2026-06-02",
                                   approved="2026-06-01T20:00:00"))
-    lv.build(reports_root=_scan(tmp_path), now="2026-07-01T12:00:00+00:00")
+    # 2026-09-12 Task C4:注入可信日历 + 足够晚的 today,让 30 天全部越过 T+2 成熟。
+    lv.build(reports_root=_scan(tmp_path), now="2026-07-01T12:00:00+00:00",
+             calendar=_trusted_calendar(), today="2026-07-15")
     text = lv.line(_scan(tmp_path))
     assert "没跑 " in text and "日 市场 +0.00pp" in text
     assert f"BUY日 攒样本 0/{lv.MIN_SESSION_N}" in text
@@ -424,7 +452,10 @@ def test_board_limits_and_buy_legs_come_from_the_shared_definitions(tmp_path, mo
     from autoresearch.research import edge_census as ec
 
     days = ec.lake_trade_days()
-    row = lv.market_metrics("20260824", days, ec.load_lake_pivots(days))
+    # 2026-09-12 Task C4:`market_metrics` 改签名为 `(t1, t2, piv)`——精确日期由调用方
+    # (`build_market`,经 `outcome.resolve_outcome_sessions`)解析好再传入,这里手动给出
+    # 与本夹具湖位置逐字相同的 T+1/T+2(08-24 的下两个交易日),不再传 `(day, trade_days)`。
+    row = lv.market_metrics("20260825", "20260826", ec.load_lake_pivots(days))
     assert row["n_buyable_c1"] == 2                 # 600001 封板收盘 → 出局
     assert row["n_buyable_o1"] == 3                 # 谁都不是一字板
     assert row["status"] == lv.STATUS_MATURE
@@ -452,7 +483,8 @@ def test_impossible_moves_are_clipped_as_data_errors(tmp_path, monkeypatch):
     from autoresearch.research import edge_census as ec
 
     days = ec.lake_trade_days()
-    row = lv.market_metrics("20260824", days, ec.load_lake_pivots(days))
+    # 见上一条用例同样的签名迁移说明(2026-09-12 Task C4)。
+    row = lv.market_metrics("20260825", "20260826", ec.load_lake_pivots(days))
     assert row["n_buyable_c1"] == 2                                  # 人口不动
     assert row["mean_c1o2"] == pytest.approx(0.02)                   # 只剩 000002
     assert lv._ruler.GAP_CLIP == 0.31
@@ -465,19 +497,29 @@ def test_market_row_is_pending_until_d2_lands(tmp_path, monkeypatch):
     _publish(tmp_path, "20260824-0824_2000", analysis_date="2026-08-24",
              execution=_execution("2026-08-24", first="2026-08-25",
                                   approved="2026-08-24T20:00:00"))
-    health = lv.build(reports_root=_scan(tmp_path), now="2026-08-25T12:00:00+00:00")
+    # 2026-09-12 Task C4:PENDING 现在由可信日历 + 显式 `today` 判定(T+2 尚未到达),
+    # 不再由"湖文件数量不够"顶替——today 定在 08-25,两行的 T+2(08-26/08-27)都还没到。
+    health = lv.build(reports_root=_scan(tmp_path), now="2026-08-25T12:00:00+00:00",
+                      calendar=_trusted_calendar(), today="2026-08-25")
     market = {r["date"]: r for r in _rows(lv.views_root(_scan(tmp_path)) / lv.MARKET_CSV)}
     assert market["2026-08-24"]["status"] == lv.STATUS_PENDING
+    assert market["2026-08-24"]["calendar_quality"] == "trade_cal"   # 日历本身可信,只是没到期
     assert market["2026-08-24"]["mean_c1o2"] == ""
     assert health["filled"] == 0 and health["pending"] == 2
     assert health["green"] is True                # PENDING 不是欠账:时间还没到
 
 
 def test_zero_filled_is_not_green_when_the_lake_is_missing_a_session(tmp_path, monkeypatch):
-    """「0 filled」只有在成熟欠账真的是 0 时才绿 —— 否则新任务会像 nightly-close 那样安静死掉。"""
+    """「0 filled」只有在成熟欠账真的是 0 时才绿 —— 否则新任务会像 nightly-close 那样安静死掉。
+
+    2026-09-12 Task C4:弱日历(`weekday_heuristic`)下**不再**区分"缺行情"与"还没到
+    期"——两者都需要先信任日历才能判断,日历本身不可信时统一记 `UNVERIFIED_CALENDAR`
+    (旧断言曾经让 08-25/08-26 判成 `UNAVAILABLE`、08-28 判成 `PENDING`,那正是本任务
+    要拆穿的口径:湖文件数量不够时旧代码把"到期与否"和"数据缺失"都猜成了确定结论;
+    `test_m01_*`/`test_m02_*` 用**可信**日历覆盖这两种状态的正确区分)。
+    """
     monkeypatch.chdir(tmp_path)
-    # 湖只有 08-24 与 08-27;run 的就绪日 08-28 比湖还新 → 日历退到工作日启发,
-    # 于是 08-25/08-26 是"日历里有、湖里没有、且比湖最后一天更早"的真缺口。
+    # 湖只有 08-24 与 08-27;run 的就绪日 08-28 比湖还新 → 日历退到工作日启发。
     _flat_lake(tmp_path, ["2026-08-24", "2026-08-27"])
     _publish(tmp_path, "20260824-0827_2000", analysis_date="2026-08-24",
              execution=_execution("2026-08-24", first="2026-08-28",
@@ -486,10 +528,11 @@ def test_zero_filled_is_not_green_when_the_lake_is_missing_a_session(tmp_path, m
     health = lv.build(reports_root=_scan(tmp_path), now="2026-08-28T12:00:00+00:00")
     market = {r["date"]: r for r in _rows(lv.views_root(_scan(tmp_path)) / lv.MARKET_CSV)}
     assert health["calendar_source"] == "weekday_heuristic"
-    assert market["2026-08-25"]["status"] == lv.STATUS_UNAVAILABLE
-    assert market["2026-08-26"]["status"] == lv.STATUS_UNAVAILABLE
-    assert market["2026-08-28"]["status"] == lv.STATUS_PENDING     # 比湖还新,轮不到它
+    for day in ("2026-08-25", "2026-08-26", "2026-08-28"):
+        assert market[day]["status"] == lv.STATUS_UNVERIFIED_CALENDAR
+        assert market[day]["calendar_quality"] == "weekday_heuristic"
     assert health["filled"] == 0 and health["blocked_by_data"] >= 2
+    assert health.get("unverified_calendar", 0) >= 2
     assert health["green"] is False and "成熟欠账" in health["green_reason"]
 
 
@@ -511,6 +554,204 @@ def test_regime_and_temperature_are_presence_gated(tmp_path, monkeypatch):
     assert market["2026-08-24"]["regime"] == "range"
     assert market["2026-08-24"]["temperature"] == "45.3"
     assert market["2026-08-25"]["regime"] == "" and market["2026-08-25"]["temperature"] == ""
+
+
+# ───────────────────────── ⑥ 可信交易日历(2026-09-12 Task C4) ─────────────────────────
+#
+# 病灶:`market_metrics`/`build_market` 曾用 `trade_days.index(day)` 在**湖分区排序后的
+# 位置**上取 D+1/D+2——湖缺一天,后面存在的文件就顶替成"下一交易日",与 C1 在
+# `outcome.market_frame` 修的是同一个缺陷,只是这次算的是**基准**(market.csv 的逐日
+# 市场均值,`rel_gap_market`/`excess_med_market` 拿它当分母)。修复:复用 C1 提供的
+# `outcome.resolve_outcome_sessions`(唯一决定"下一个交易日是哪天、可不可信"的地方),
+# 不再看湖文件列表的位置。
+#
+# M01–M05 对应 brief 的验收矩阵;`_trusted_calendar`/`_all_days` 见文件顶部"夹具"节。
+
+def _m04_lake(tmp_path) -> pathlib.Path:
+    """M04 安全网夹具:5 天无缺口,3 只票(10cm/20cm/10cm 参照),逐日涨跌不同(mean≠median
+    至少部分成立)。**数字取自 `capture_m04_baseline.py` 对本夹具跑出的 pre-fix 真实产出**
+    (见 task-C4-report.md「M04 基线如何捕获」),不是手算。
+    """
+    return _lake(tmp_path, {
+        "20260824": [("600001", 10.0, 10.0, 10.0, 10.0, 0.0),
+                     ("688001", 10.0, 10.0, 10.0, 10.0, 0.0),
+                     ("000002", 10.0, 10.0, 10.0, 10.0, 0.0)],
+        "20260825": [("600001", 10.5, 11.0, 10.4, 11.0, 10.0),
+                     ("688001", 11.0, 11.0, 11.0, 11.0, 10.0),
+                     ("000002", 10.0, 10.2, 9.8, 10.0, 0.0)],
+        "20260826": [("600001", 12.1, 12.1, 12.1, 12.1, 10.0),
+                     ("688001", 12.1, 12.1, 12.1, 12.1, 10.0),
+                     ("000002", 10.5, 10.6, 10.4, 10.6, 5.0)],
+        "20260827": [("600001", 11.5, 12.0, 11.3, 11.8, -2.5),
+                     ("688001", 12.3, 12.6, 12.1, 12.5, 3.3),
+                     ("000002", 10.7, 10.9, 10.5, 10.8, 1.9)],
+        "20260828": [("600001", 11.8, 12.2, 11.6, 12.0, 1.7),
+                     ("688001", 12.6, 12.9, 12.4, 12.8, 2.4),
+                     ("000002", 10.85, 11.0, 10.7, 10.95, 1.4)],
+    })
+
+
+def test_m01_missing_t1_partition_does_not_drift_the_market_benchmark(tmp_path):
+    """M01:湖缺 D+1(08-25),D+2(08-26)与更晚分区(08-27)都在——目标日不许漂移,
+    该日基准必须是 `STATUS_UNAVAILABLE`,不是拿"下一份存在的文件"顶替算出的假 MATURE。
+
+    旧实现(`trade_days.index(day)+1/+2`)会把 08-26/08-27 冒充成 T+1/T+2,一笔隔夜
+    错记成跨越缺口的多日持仓(与 C1 在 `outcome.py` 修的同一个缺陷)。report 里的
+    mutation probe 证实:把这段逻辑换回位置索引,本用例会去读到一个 MATURE 的假值。
+    """
+    _lake(tmp_path, {
+        "20260824": [("603317", 10.0, 10.0, 10.0, 10.0, 0.0)],
+        # 20260825(D+1)故意不写
+        "20260826": [("603317", 10.5, 10.5, 10.5, 10.5, 5.0)],
+        "20260827": [("603317", 11.0, 11.0, 11.0, 11.0, 4.8)],
+    })
+    rows = lv.build_market(["2026-08-24"], lake_daily=tmp_path / "lake" / "daily",
+                           calendar=_trusted_calendar(), today="2026-08-28")
+    assert rows[0]["status"] == lv.STATUS_UNAVAILABLE
+    assert rows[0]["calendar_quality"] == "trade_cal"        # 日历本身可信,是行情真缺
+    assert rows[0].get("mean_c1o2") is None
+
+
+def test_m02_missing_t2_partition_does_not_drift_the_market_benchmark(tmp_path):
+    """M02:湖缺 D+2(08-26),更晚分区(08-27)在——同 M01,目标不许漂移。"""
+    _lake(tmp_path, {
+        "20260824": [("603317", 10.0, 10.0, 10.0, 10.0, 0.0)],
+        "20260825": [("603317", 10.2, 10.2, 10.2, 10.2, 2.0)],
+        # 20260826(D+2)故意不写
+        "20260827": [("603317", 11.0, 11.0, 11.0, 11.0, 7.8)],
+    })
+    rows = lv.build_market(["2026-08-24"], lake_daily=tmp_path / "lake" / "daily",
+                           calendar=_trusted_calendar(), today="2026-08-28")
+    assert rows[0]["status"] == lv.STATUS_UNAVAILABLE
+    assert rows[0]["calendar_quality"] == "trade_cal"
+    assert rows[0].get("mean_c1o2") is None
+
+
+@pytest.mark.parametrize("quality", ["lake_partitions", "weekday_heuristic", ""])
+def test_m03_weak_calendar_quality_is_rejected_even_when_dates_align(tmp_path, quality):
+    """M03:弱日历(lake_partitions/weekday_heuristic/空)即便给出的日期与湖完全对齐,
+    也不可信——信任看来源,不看"猜没猜对"。"""
+    _flat_lake(tmp_path, SESSIONS)
+    rows = lv.build_market(["2026-08-24"], lake_daily=tmp_path / "lake" / "daily",
+                           calendar=_trusted_calendar(quality=quality), today="2026-08-28")
+    assert rows[0]["status"] == lv.STATUS_UNVERIFIED_CALENDAR
+    assert rows[0]["calendar_quality"] == quality
+    assert rows[0].get("mean_c1o2") is None
+
+
+def test_m04_parity_with_pre_fix_benchmark_on_a_no_missing_days_sample(tmp_path):
+    """M04(安全网):无缺日样本上,新实现(可信日历解析 T+1/T+2)与修复前(湖位置索引)
+    必须逐位一致——证明这次只修了缺日情形,没有顺手改变口径。
+
+    基线数字由 pre-fix 的 `market_metrics(day, trade_days, piv)`/`build_market` 对
+    **这份完全相同的 5 天无缺口夹具**跑出后捕获(脚本与产出见 task-C4-report.md),
+    不是手算——本用例的每一个数字都能对照那份捕获输出复核。
+    """
+    _m04_lake(tmp_path)
+    daily = tmp_path / "lake" / "daily"
+    days = lv._panel.lake_trade_days(daily)
+    piv = lv._panel.load_lake_pivots(days, daily)
+
+    # 直接 market_metrics:pre-fix 用位置索引取到的 d1/d2,在这份无缺口夹具上与"可信
+    # 日历给出的 T+1/T+2"逐字相同,这里手动传入同一对日期。
+    row_24 = lv.market_metrics("20260825", "20260826", piv)
+    row_25 = lv.market_metrics("20260826", "20260827", piv)
+    row_26 = lv.market_metrics("20260827", "20260828", piv)
+
+    baseline = {
+        "20260824": {"n_buyable_c1": 2, "n_buyable_o1": 3,
+                     "mean_c1o2": 0.07499999999999996, "median_c1o2": 0.07499999999999996,
+                     "mean_c1c2": 0.07999999999999996, "median_c1c2": 0.07999999999999996,
+                     "mean_o1o2": 0.10079365079365073, "median_o1o2": 0.09999999999999987,
+                     "mean_o1c2": 0.10412698412698407, "median_o1c2": 0.09999999999999987},
+        "20260825": {"n_buyable_c1": 2, "n_buyable_o1": 2,
+                     "mean_c1o2": 0.012981443941992854, "median_c1o2": 0.012981443941992854,
+                     "mean_c1c2": 0.025962887883985708, "median_c1c2": 0.025962887883985708,
+                     "mean_o1o2": 0.01778827233372693, "median_o1o2": 0.01778827233372693,
+                     "mean_o1c2": 0.030814639905549113, "median_o1c2": 0.030814639905549113},
+        "20260826": {"n_buyable_c1": 3, "n_buyable_o1": 3,
+                     "mean_c1o2": 0.004209876543209849, "median_c1o2": 0.004629629629629539,
+                     "mean_c1c2": 0.0182793471437539, "median_c1c2": 0.016949152542372836,
+                     "mean_o1o2": 0.021498630670987746, "median_o1o2": 0.024390243902439046,
+                     "mean_o1c2": 0.03583105111831286, "median_o1c2": 0.04065040650406493},
+    }
+    for day, row in (("20260824", row_24), ("20260825", row_25), ("20260826", row_26)):
+        for key, value in baseline[day].items():
+            assert row[key] == pytest.approx(value), f"{day}.{key}"
+        assert row["status"] == lv.STATUS_MATURE
+
+    # build_market 端到端:同一份 sessions,注入可信日历,today 定在 08-28(与 pre-fix
+    # 输出的 PENDING/MATURE 边界重合——pre-fix 在这份 5 天湖上 08-27/08-28 因为"湖位置
+    # 不够两个文件"落 PENDING,post-fix 在可信日历+today=08-28 下 T+2(08-29/08-30)
+    # 也确实还没到,两版本的 status 字面量因此逐位相同,不只是数值)。
+    sessions = ["2026-08-24", "2026-08-25", "2026-08-26", "2026-08-27", "2026-08-28"]
+    rows = {r["date"]: r for r in lv.build_market(
+        sessions, lake_daily=daily, calendar=_trusted_calendar(), today="2026-08-28")}
+    for day_dashed, day_compact in zip(sessions, ("20260824", "20260825", "20260826",
+                                                  "20260827", "20260828"), strict=True):
+        if day_compact in baseline:
+            for key, value in baseline[day_compact].items():
+                assert rows[day_dashed][key] == pytest.approx(value), f"{day_dashed}.{key}"
+            assert rows[day_dashed]["status"] == lv.STATUS_MATURE
+        else:
+            assert rows[day_dashed]["status"] == lv.STATUS_PENDING   # 08-27/08-28:pre-fix 同判
+
+
+def test_m05_consumer_excludes_unverified_calendar_rows_from_verified_stats(tmp_path, monkeypatch):
+    """M05:消费者(`session_buckets`/`line`)读到 `UNVERIFIED_CALENDAR` 的市场行,必须
+    显示未验证,不进任何已验证桶的均值——即便这天确实被选中且确实是 0-BUY。
+    """
+    monkeypatch.chdir(tmp_path)
+    _flat_lake(tmp_path, SESSIONS)      # 不注入可信日历 → 无网络单测环境默认回退到弱质量
+    _publish(tmp_path, "20260824-0824_2000", analysis_date="2026-08-24", buys=(),
+             execution=_execution("2026-08-24", first="2026-08-25",
+                                  approved="2026-08-24T20:00:00"))
+    lv.build(reports_root=_scan(tmp_path), now="2026-08-28T12:00:00+00:00")
+    market = {r["date"]: r for r in _rows(lv.views_root(_scan(tmp_path)) / lv.MARKET_CSV)}
+    assert market["2026-08-24"]["status"] == lv.STATUS_UNVERIFIED_CALENDAR
+    buckets = lv.session_buckets(_scan(tmp_path))
+    assert buckets["ZERO_BUY"] == []     # 不可信基准不进桶,即便这天确实是 0-BUY 且被选中
+
+
+def test_old_market_row_without_calendar_quality_reads_as_unverified(tmp_path, monkeypatch):
+    """旧 schema 的 market.csv 行(没有 `calendar_quality` 列)即便 `status=MATURE`,
+    也不能被当作已验证——与 C2 对六个新列的处理同律(brief 要求5)。`status=MATURE`
+    本身不够:它是修复前也存在的旧列,`session_buckets` 必须**同时**核对 `calendar_quality`。
+    """
+    monkeypatch.chdir(tmp_path)
+    root = lv.views_root(_scan(tmp_path))
+    root.mkdir(parents=True)
+    old_columns = tuple(c for c in lv.MARKET_COLUMNS if c != "calendar_quality")
+    (root / lv.MARKET_CSV).write_text(
+        lv.render_csv(old_columns, [{"date": "2026-08-24", "status": lv.STATUS_MATURE,
+                                     "mean_c1o2": 0.05}]), encoding="utf-8")
+    (root / lv.SESSIONS_CSV).write_text(
+        lv.render_csv(lv.SESSION_COLUMNS, [
+            {"session": "2026-08-24", "status": lv.SESSION_NO_RUN},
+            {"session": "2026-08-25", "status": lv.SESSION_SELECTED, "selected_run_id": "run1"},
+        ]), encoding="utf-8")
+    (root / lv.RUNS_CSV).write_text(
+        lv.render_csv(lv.RUNS_COLUMNS, [{"report_dir_id": "run1", "n_buy": 1}]), encoding="utf-8")
+    buckets = lv.session_buckets(_scan(tmp_path))
+    assert buckets["BUY"] == []          # 旧行缺 calendar_quality → 不算已验证,不进桶
+
+
+def test_batched_calendar_does_not_refetch_per_session(tmp_path):
+    """`build_market` 一次要给多个 session 各解一次 T+1/T+2;`resolve_outcome_sessions`
+    的请求窗口按 day 逐日不同(`day-10..day+45`),进程级缓存帮不上忙——不批一次预取
+    就是逐天各自问一遍日历。这里验证真正的底层日历调用确实只发生一次。
+    """
+    calls: list[tuple[str, str]] = []
+    real = _trusted_calendar()
+
+    def counting(start: str, end: str):
+        calls.append((start, end))
+        return real(start, end)
+
+    _flat_lake(tmp_path, SESSIONS)
+    lv.build_market(SESSIONS, lake_daily=tmp_path / "lake" / "daily",
+                    calendar=counting, today="2026-08-31")
+    assert len(calls) == 1, f"应只真正取一次日历,实际 {len(calls)} 次:{calls}"
 
 
 # ───────────────────────── ④ 幂等 / 原子 / 半张表 ─────────────────────────
@@ -565,7 +806,11 @@ def test_limit_only_narrows_the_calendar_never_the_run_facts(tmp_path, monkeypat
     **不**因为掉出窗口就被记成"就绪时点不可证"。"""
     monkeypatch.chdir(tmp_path)
     _three_kinds_of_day(tmp_path)
-    health = lv.build(reports_root=_scan(tmp_path), limit=2, now="2026-08-31T00:00:00+00:00")
+    # 2026-09-12 Task C4:today 定在窗口内最后一个 session(08-28)—— 两行的 T+2
+    # (08-29/08-30)都还没到,PENDING 不计入 blocked_by_data(与本用例原意一致:
+    # `--limit` 收窄之后不该凭空多出欠账)。
+    health = lv.build(reports_root=_scan(tmp_path), limit=2, now="2026-08-31T00:00:00+00:00",
+                      calendar=_trusted_calendar(), today="2026-08-28")
     root = lv.views_root(_scan(tmp_path))
     assert len(_rows(root / lv.RUNS_CSV)) == 2
     assert [r["session"] for r in _rows(root / lv.SESSIONS_CSV)] == ["2026-08-27", "2026-08-28"]
