@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -194,12 +195,19 @@ class TranscriptStats:
     suspected_tail: int
     tool_requests: Mapping[str, int] = field(default_factory=dict)
     tool_results: Mapping[str, int] = field(default_factory=dict)
+    #: Extracted, classified tool round trips (Task 2: spec §5.1 + §3.1) --
+    #: every one of these got its ``kind`` from `classify_observation`, never
+    #: a second parser.  Defaulted last so existing positional/keyword
+    #: `TranscriptStats(...)` construction (pre-Task-2 call sites, tests)
+    #: keeps working unchanged.
+    operations: tuple[ObservedOperation, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "context_tokens", tuple(self.context_tokens))
         object.__setattr__(self, "compact_pre_tokens", tuple(self.compact_pre_tokens))
         object.__setattr__(self, "tool_requests", _freeze(self.tool_requests))
         object.__setattr__(self, "tool_results", _freeze(self.tool_results))
+        object.__setattr__(self, "operations", tuple(self.operations))
 
 
 @runtime_checkable
@@ -480,3 +488,247 @@ def require_known_transcript_schema_version(payload: Mapping) -> int:
             f"unsupported transcript schema_version: {version!r}"
         )
     return version
+
+
+# -------------------------------------------------------- observed operations
+# (Task 2: docs/superpowers/specs/2026-09-12-scene-reconstruction-transcript-
+# binding-design.md §5.1 + §3.1.  `snapshot.capture_snapshot` (new module,
+# Task 2) fixes one stable rows prefix; each adapter's `stats_from_rows(rows,
+# ref)` walks those *same* rows exactly once to build this tuple -- never a
+# second, competing parser for "what operation was this".)
+
+_PATH_SOURCES: frozenset[str] = frozenset({"tool_input", "unknown"})
+
+
+@dataclass(frozen=True)
+class ObservedOperation:
+    """One classified tool round trip, bundling the five facts task-2 brief
+    bullet 2 requires travel together ("保留 call_id、操作结果、部分输出标志、
+    路径来源、快照引用") so a later task cannot silently drop one:
+
+    - ``call_id``: the correlation id (:func:`tool_call_id`'s return for the
+      request payload) -- ``None`` only when the raw row truly carried none.
+    - ``kind``: the operation result, one of `OBSERVATION_KINDS`, always
+      produced by :func:`classify_observation` -- never re-derived here. The
+      partial-output flag lives *inside* this value as ``READ_PARTIAL``
+      (matching spec §3.1's own table and Task 1's own §10.2 interpretation),
+      not as a second, bolted-on boolean field.
+    - ``path`` / ``path_source``: where a concrete file/resource path came
+      from, when one is knowable from a *structured* request field --
+      ``"tool_input"`` for a mapping-shaped ``input`` carrying an explicit
+      path-like key, ``"unknown"`` otherwise.  Never guessed by scanning
+      free-text shell/JS command strings (brief bullet 5's hard line).
+    - ``row_index``: the index into the *same* rows tuple a caller captured
+      via `snapshot.capture_snapshot` that this operation's request row came
+      from -- the "snapshot reference".  The snapshot's own content identity
+      (``snapshot_id``/``source_prefix``) is deliberately tracked one level
+      up by whoever holds both the `TranscriptSnapshot` and this
+      `TranscriptStats` together (capsule.py/usage_harvest.py's snapshot
+      cache): `stats_from_rows(rows, ref)`'s fixed signature (task-2-brief
+      §3, used verbatim) takes plain rows, not a snapshot object, so it has
+      no content hash to attach here even if it wanted to. Documented as an
+      explicit interpretation choice in the Task 2 report, matching Task 1's
+      own precedent (§10.2 of its report) of flagging rather than silently
+      picking one.
+
+    ``response``/``artifact`` are optional because not every kind earns one:
+    a bare ``DISCOVERED``/``*_REQUESTED`` has no result to hash yet, and an
+    artifact hash is withheld whenever the source/byte-range is not provably
+    exact (spec §3.2; brief bullet 6).
+    """
+
+    kind: str
+    call_id: str | None
+    tool_name: str
+    path: str | None
+    path_source: str
+    row_index: int
+    response: ToolResponseDigest | None = None
+    artifact: ArtifactDigest | None = None
+
+    def __post_init__(self) -> None:
+        if self.kind not in OBSERVATION_KINDS:
+            raise ValueError(
+                f"ObservedOperation.kind must be one of OBSERVATION_KINDS, got {self.kind!r}"
+            )
+        if self.path_source not in _PATH_SOURCES:
+            raise ValueError(
+                "ObservedOperation.path_source must be one of "
+                f"{sorted(_PATH_SOURCES)!r}, got {self.path_source!r}"
+            )
+        if type(self.row_index) is not int or self.row_index < 0:
+            raise ValueError("ObservedOperation.row_index must be a non-negative integer")
+
+
+# ------------------------------------------------------- extraction helpers
+# One shared walker for both engines (Task 2 ruling 1: "do not re-derive
+# observation kinds" -- a single `extract_operations` means there is exactly
+# one place that turns NormalizedItem pairs into ObservedOperations, not one
+# per adapter).  Safe to share: by the time either adapter's `normalize()`
+# has run, `tool_request`/`tool_result` items already carry the same payload
+# shape (`tool_name`, `input`, `is_error`, `content`) regardless of source
+# engine.
+
+#: Structured-input keys this module will read a path out of -- *only* when
+#: the request's own ``input`` is a mapping (or a JSON string that decodes to
+#: one) carrying one of these keys verbatim.  Never a guess from prose: a
+#: tool whose ``input`` is free-text shell/JS (e.g. `exec`) never reaches
+#: this helper in the first place (see `_UNCLASSIFIABLE_VALUE_ERROR` handling
+#: in `extract_operations` below).
+_PATH_INPUT_KEYS: tuple[str, ...] = ("file_path", "path", "notebook_path")
+
+#: Tool names whose successful result can stand in for the artifact's exact
+#: bytes -- because the *request* itself already declared the complete
+#: content it wrote, not a diff.  `edit`/`edit_file`/`apply_patch` are
+#: deliberately excluded (spec §3.2: "apply_patch/Edit 只有 diff 时，不声称得到
+#:了完整文件 hash").
+_FULL_CONTENT_WRITE_TOOL_NAMES: frozenset[str] = frozenset({"write", "write_file"})
+
+
+def _decode_structured_input(payload: Mapping) -> Mapping | None:
+    """Return ``input`` as a mapping, decoding one JSON-string layer only.
+
+    Codex's harness commonly double-encodes tool arguments as a JSON string
+    inside ``input`` (verified against the real rollout fixture: a
+    `custom_tool_call`'s ``input`` is the literal string
+    ``'{"query":"...","authorization":...}'``, not a mapping). Parsing that
+    string as JSON is reading a *declared, structured* format, not
+    interpreting shell/JS text -- categorically different from the refusal
+    this module enforces for `bash`/`exec` command strings. A value that is
+    neither a mapping nor a JSON-string-of-a-mapping yields ``None``: no
+    further guessing.
+    """
+    value = payload.get("input")
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except Exception:  # noqa: BLE001 - not JSON is a fact, not a crash
+            return None
+        value = decoded
+    return value if isinstance(value, Mapping) else None
+
+
+def extract_structured_path(payload: Mapping) -> tuple[str | None, str]:
+    """Read a concrete path off a tool request's *structured* input only.
+
+    Returns ``(path, path_source)`` where ``path_source`` is
+    ``"tool_input"`` when a known key was found, else ``(None, "unknown")``.
+    Never scans free text for something that looks like a path (brief bullet
+    5's hard line): a request whose ``input`` cannot be read as a mapping at
+    all yields ``(None, "unknown")`` rather than a best-effort text search.
+    """
+    structured = _decode_structured_input(payload)
+    if structured is None:
+        return None, "unknown"
+    for key in _PATH_INPUT_KEYS:
+        value = structured.get(key)
+        if isinstance(value, str) and value:
+            return value, "tool_input"
+    return None, "unknown"
+
+
+def artifact_digest_for_write(tool_name: str, payload: Mapping) -> ArtifactDigest | None:
+    """Hash a WRITE's exact declared content, never a diff or a read-back.
+
+    Only ``write``/``write_file`` requests carry a *complete* content field
+    the tool itself declared it would persist -- treated as the artifact's
+    bytes on the theory that a successful write's declared content is what
+    landed on disk. ``edit``/``edit_file``/``apply_patch`` never reach a
+    non-``None`` result here, matching spec §3.2's explicit "只有可核对的前镜像
+    与补丁结果...才能计算完整后镜像" restriction: a diff alone never earns a
+    full-file artifact hash.
+    """
+    if tool_name.strip().lower() not in _FULL_CONTENT_WRITE_TOOL_NAMES:
+        return None
+    structured = _decode_structured_input(payload)
+    if structured is None:
+        return None
+    content = structured.get("content")
+    if not isinstance(content, str):
+        return None
+    return hash_artifact_bytes(content.encode("utf-8"))
+
+
+def _read_is_structurally_partial(payload: Mapping) -> bool:
+    """Narrow, structural signal that downgrades a clean READ_SUCCEEDED to
+    READ_PARTIAL (task-2-brief bullet 6: "carries line numbers, is
+    paged/segmented/truncated, or mixes several files").
+
+    Deliberately *not* a second classifier competing with
+    `classify_observation`: this only ever narrows an already-SUCCEEDED READ
+    down to PARTIAL, and only off a structured signal -- an explicit
+    ``offset``/``limit`` on the request (a deliberate page of the file), the
+    one real, reproducible pagination fact available without sniffing
+    response prose. A file that silently hit an implicit line cap with
+    neither key set is a known, documented gap (see the Task 2 report).
+    """
+    structured = _decode_structured_input(payload)
+    if structured is None:
+        return False
+    return structured.get("offset") is not None or structured.get("limit") is not None
+
+
+def extract_operations(items: Sequence[NormalizedItem]) -> tuple[ObservedOperation, ...]:
+    """Walk one adapter's already-normalized items into classified operations.
+
+    Pure and engine-agnostic: no file IO, no re-parsing of raw transcript
+    rows -- every fact here comes from the ``NormalizedItem``s an adapter's
+    ``normalize()``/``stats_from_rows()`` already built from one captured
+    snapshot's rows. Every ``kind`` comes from :func:`classify_observation`;
+    a request this module's classifier refuses (a local orchestration verb
+    such as `bash`/`exec`) is skipped here, not guessed at -- its raw
+    `NormalizedItem` round trip still exists in the caller's ``items``, just
+    without an elevated ``ObservedOperation`` (brief bullet 5 / task-2-brief
+    context: "this is base.is_external_tool's existing fail-open
+    philosophy" -- the row is never hidden, only left unclassified).
+    """
+    results_by_call: dict[str, NormalizedItem] = {}
+    for item in items:
+        if item.kind != "tool_result":
+            continue
+        call_id = tool_call_id(item.payload)
+        if call_id is not None:
+            results_by_call[call_id] = item
+
+    operations: list[ObservedOperation] = []
+    for item in items:
+        if item.kind != "tool_request":
+            continue
+        tool_name = item.payload.get("tool_name")
+        if not isinstance(tool_name, str) or not tool_name.strip():
+            continue
+        call_id = tool_call_id(item.payload)
+        result_item = results_by_call.get(call_id) if call_id is not None else None
+        try:
+            kind = classify_observation(item, result_item)
+        except ValueError:
+            # A local orchestration/execution verb `classify_observation`
+            # refuses on purpose (never guessed from shell/JS text) -- not an
+            # operation this layer can honestly report.
+            continue
+        if kind == "READ_SUCCEEDED" and _read_is_structurally_partial(item.payload):
+            kind = "READ_PARTIAL"
+        path, path_source = extract_structured_path(item.payload)
+        response = (
+            hash_tool_response(result_item.payload.get("content"))
+            if result_item is not None
+            else None
+        )
+        artifact = (
+            artifact_digest_for_write(tool_name, item.payload)
+            if kind == "WRITE_SUCCEEDED"
+            else None
+        )
+        operations.append(
+            ObservedOperation(
+                kind=kind,
+                call_id=call_id,
+                tool_name=tool_name,
+                path=path,
+                path_source=path_source,
+                row_index=item.index,
+                response=response,
+                artifact=artifact,
+            )
+        )
+    return tuple(operations)

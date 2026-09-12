@@ -21,6 +21,9 @@ files, not inferred from the harness docs:
 from __future__ import annotations
 
 import json
+from collections import Counter
+from collections.abc import Mapping, Sequence
+from datetime import datetime
 from pathlib import Path
 
 from autoresearch.common import workspace as ws
@@ -30,9 +33,12 @@ from autoresearch.trace.transcripts.base import (
     NormalizedTranscript,
     RunIdentity,
     TranscriptRef,
+    TranscriptStats,
     TranscriptUnreadable,
     UsageRecord,
+    extract_operations,
 )
+from autoresearch.trace.transcripts.snapshot import capture_snapshot
 
 _SKIPPED_RESPONSE_ITEMS = frozenset(
     {"reasoning", "encrypted_reasoning"}
@@ -136,15 +142,21 @@ class CodexTranscriptAdapter:
 
     # -- shared parsing ---------------------------------------------------
 
-    def _rows(self, ref: TranscriptRef) -> list[dict]:
+    @staticmethod
+    def _validate_engine(ref: TranscriptRef, action: str) -> None:
         if ref.engine != "codex":
-            raise ValueError(f"Codex adapter cannot read engine {ref.engine!r}")
+            raise ValueError(f"Codex adapter cannot {action} engine {ref.engine!r}")
+
+    @staticmethod
+    def _validate_ref(ref: TranscriptRef, action: str) -> Path:
+        """Validate *ref* and return its path -- never reads the file."""
+        CodexTranscriptAdapter._validate_engine(ref, action)
         if ref.path is None or ref.status != "PRESENT":
             raise TranscriptUnreadable("Codex transcript is not PRESENT")
         path = Path(ref.path)
         if not path.is_file():
             raise TranscriptUnreadable(f"Codex transcript is gone: {path}")
-        return list(_iter_rows(path))
+        return path
 
     @staticmethod
     def _ordinal(row: dict) -> int | None:
@@ -252,13 +264,165 @@ class CodexTranscriptAdapter:
         ]
         return "\n".join(parts)
 
+    @staticmethod
+    def _timestamp_bounds(rows: list[dict]) -> tuple[str | None, str | None]:
+        """Chronological bounds from timezone-aware ISO timestamps.
+
+        Same discipline as `ClaudeTranscriptAdapter._timestamp_bounds`:
+        missing, malformed, or timezone-naive values cannot establish a
+        reliable absolute event time and are excluded. Every real Codex row
+        carries a top-level ``timestamp`` (verified against the packaged
+        rollout fixture), so this is expected to succeed in practice, not
+        merely defensive.
+        """
+        valid: list[tuple[datetime, int, str]] = []
+        for index, row in enumerate(rows):
+            raw = row.get("timestamp")
+            if not isinstance(raw, str) or not raw:
+                continue
+            try:
+                parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if parsed.tzinfo is None or parsed.utcoffset() is None:
+                continue
+            valid.append((parsed, index, raw))
+        if not valid:
+            return None, None
+        return (
+            min(valid, key=lambda item: (item[0], item[1]))[2],
+            max(valid, key=lambda item: (item[0], item[1]))[2],
+        )
+
+    @staticmethod
+    def _content_chars(content: object) -> int:
+        if content is None:
+            return 0
+        if isinstance(content, str):
+            return len(content)
+        return len(
+            json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        )
+
+    @staticmethod
+    def _tool_tallies(
+        items: tuple[NormalizedItem, ...],
+    ) -> tuple[Counter[str], Counter[str]]:
+        """Count tool_request occurrences by name, and tool_result content
+        size tallied under the *requesting* tool's name -- correlated via
+        `tool_call_id`, mirroring `ClaudeTranscriptAdapter`'s convention."""
+        from autoresearch.trace.transcripts.base import tool_call_id
+
+        names_by_call: dict[str, str] = {}
+        tool_requests: Counter[str] = Counter()
+        for item in items:
+            if item.kind != "tool_request":
+                continue
+            name = item.payload.get("tool_name")
+            if not isinstance(name, str) or not name:
+                continue
+            tool_requests[name] += 1
+            call_id = tool_call_id(item.payload)
+            if call_id is not None:
+                names_by_call[call_id] = name
+        tool_results: Counter[str] = Counter()
+        for item in items:
+            if item.kind != "tool_result":
+                continue
+            call_id = tool_call_id(item.payload)
+            name = names_by_call.get(call_id) if call_id is not None else None
+            if name:
+                tool_results[name] += CodexTranscriptAdapter._content_chars(
+                    item.payload.get("content")
+                )
+        return tool_requests, tool_results
+
+    @staticmethod
+    def _suspected_tail(items: tuple[NormalizedItem, ...]) -> int:
+        """Trailing agent/assistant message items after the last user
+        message -- the same "possibly wasted tail" diagnostic
+        `ClaudeTranscriptAdapter._is_user_turn`-based logic computes,
+        expressed over Codex's already-normalized ``message`` items."""
+        messages = [item for item in items if item.kind == "message"]
+        user_indices = [
+            item.index for item in messages if item.payload.get("role") == "user"
+        ]
+        if not user_indices:
+            return 0
+        last_user = max(user_indices)
+        after = sum(1 for item in messages if item.index > last_user)
+        return max(after - 1, 0)
+
     # -- protocol ---------------------------------------------------------
 
-    def normalize(self, ref: TranscriptRef) -> NormalizedTranscript:
+    def stats(self, ref: TranscriptRef) -> TranscriptStats:
+        """Capture one snapshot of ``ref.path``, then delegate to :meth:`stats_from_rows`.
+
+        The file-level entry point (task-2-brief §3): reads the source
+        exactly once via `snapshot.capture_snapshot`, never via a second,
+        independent parse -- everything `normalize()`/`usage()` used to
+        compute by separately re-reading the file now comes from one shared
+        rows-level pass below.
+        """
+        path = self._validate_ref(ref, "inspect")
+        snapshot = capture_snapshot(path, engine="codex")
+        return self.stats_from_rows(snapshot.rows, ref)
+
+    def stats_from_rows(
+        self, rows: Sequence[Mapping[str, object]], ref: TranscriptRef
+    ) -> TranscriptStats:
+        """Build normalization, usage, and diagnostics from already-read rows.
+
+        The rows-level entry point (task-2-brief §3): ``rows`` is the
+        *whole*, unsegmented captured snapshot -- a Codex session file is
+        routinely shared by several role segments (spec §5.1's "两个
+        invocation 共享源"). This restricts to ``ref``'s own
+        ``[start_ordinal, end_ordinal]`` window for normalize/diagnostics
+        while keeping the full rows available for usage's preceding-snapshot
+        baseline lookup -- the same two-views split `usage()` used before
+        this task, now computed once per call instead of by two independent,
+        each-re-reading-the-file calls.
+        """
+        self._validate_engine(ref, "inspect")
+        all_rows = list(rows)
+        segment = self._segment(all_rows, ref)
+        model, effort = self._context(segment)
+        lifecycle = self._lifecycle(segment)
+
+        normalized = self._normalize_segment(segment, ref, model, effort, lifecycle)
+        usage_record = self._usage_from_rows(all_rows, segment, ref, model, effort, lifecycle)
+        started_at, ended_at = self._timestamp_bounds(segment)
+        context_tokens = tuple(
+            int(snapshot.get("input_tokens") or 0) for snapshot in self._snapshots(segment)
+        )
+        tool_requests, tool_results = self._tool_tallies(normalized.items)
+
+        return TranscriptStats(
+            normalized=normalized,
+            usage=usage_record,
+            started_at=started_at,
+            ended_at=ended_at,
+            context_tokens=context_tokens,
+            first_context_tokens=context_tokens[0] if context_tokens else None,
+            # No evidence of a Codex compaction-boundary event shape
+            # analogous to Claude's `compact_boundary`/`compactMetadata` --
+            # left empty rather than guessed (documented gap, Task 2 report).
+            compact_pre_tokens=(),
+            suspected_tail=self._suspected_tail(normalized.items),
+            tool_requests=tool_requests,
+            tool_results=tool_results,
+            operations=extract_operations(normalized.items),
+        )
+
+    def _normalize_segment(
+        self,
+        rows: list[dict],
+        ref: TranscriptRef,
+        model: str,
+        effort: str,
+        lifecycle: dict,
+    ) -> NormalizedTranscript:
         """Keep visible messages, tool traffic and errors; drop model internals."""
-        rows = self._segment(self._rows(ref), ref)
-        model, effort = self._context(rows)
-        lifecycle = self._lifecycle(rows)
         items: list[NormalizedItem] = []
 
         def add(kind: str, payload: dict, timestamp: object) -> None:
@@ -377,12 +541,21 @@ class CodexTranscriptAdapter:
             effort=effort,
         )
 
-    def usage(self, ref: TranscriptRef) -> UsageRecord:
-        """Sample the last cumulative snapshot; difference it for role segments."""
-        all_rows = self._rows(ref)
-        rows = self._segment(all_rows, ref)
-        model, effort = self._context(rows)
-        lifecycle = self._lifecycle(rows)
+    def _usage_from_rows(
+        self,
+        all_rows: list[dict],
+        rows: list[dict],
+        ref: TranscriptRef,
+        model: str,
+        effort: str,
+        lifecycle: dict,
+    ) -> UsageRecord:
+        """Sample the last cumulative snapshot; difference it for role segments.
+
+        ``all_rows`` is the *full*, unsegmented capture (needed for the
+        preceding-snapshot baseline lookup below); ``rows`` is already
+        restricted to ``ref``'s own segment.
+        """
         snapshots = self._snapshots(rows)
         if not snapshots:
             return UsageRecord(
@@ -449,6 +622,12 @@ class CodexTranscriptAdapter:
             discarded=lifecycle["status"] == "FAILED",
             reasoning_output=delta("reasoning_output_tokens"),
         )
+
+    def normalize(self, ref: TranscriptRef) -> NormalizedTranscript:
+        return self.stats(ref).normalized
+
+    def usage(self, ref: TranscriptRef) -> UsageRecord:
+        return self.stats(ref).usage
 
 
 __all__ = ["CodexTranscriptAdapter", "locate_candidates"]

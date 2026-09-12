@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 from collections import Counter
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 
@@ -16,7 +17,9 @@ from autoresearch.trace.transcripts.base import (
     TranscriptRef,
     TranscriptStats,
     UsageRecord,
+    extract_operations,
 )
+from autoresearch.trace.transcripts.snapshot import capture_snapshot
 
 
 class ClaudeTranscriptAdapter:
@@ -24,19 +27,6 @@ class ClaudeTranscriptAdapter:
 
     def __init__(self, projects_root: Path | str | None = None):
         self.projects_root = Path(projects_root or (Path.home() / ".claude" / "projects"))
-
-    @staticmethod
-    def _iter_rows(path: Path):
-        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except Exception:  # noqa: BLE001 - a partial line must not discard the file
-                continue
-            if isinstance(row, dict):
-                yield row
 
     @staticmethod
     def _meta_agent(path: Path) -> str | None:
@@ -210,16 +200,41 @@ class ClaudeTranscriptAdapter:
         )[2]
 
     @staticmethod
-    def _validate_ref(ref: TranscriptRef, action: str) -> None:
+    def _validate_engine(ref: TranscriptRef, action: str) -> None:
         if ref.engine != "claude":
             raise ValueError(f"Claude adapter cannot {action} engine {ref.engine!r}")
+
+    @staticmethod
+    def _validate_ref(ref: TranscriptRef, action: str) -> None:
+        ClaudeTranscriptAdapter._validate_engine(ref, action)
         if ref.path is None or ref.status != "PRESENT":
             raise FileNotFoundError("Claude transcript is not PRESENT")
 
     def stats(self, ref: TranscriptRef) -> TranscriptStats:
-        """Parse one Claude JSONL once into normalization, usage, and diagnostics."""
+        """Capture one snapshot of ``ref.path``, then delegate to :meth:`stats_from_rows`.
+
+        The file-level entry point (task-2-brief §3): reads the source
+        exactly once via `snapshot.capture_snapshot`, never via a second,
+        independent parse -- everything else this method used to compute
+        directly now comes from the rows-level entry point below.
+        """
         self._validate_ref(ref, "inspect")
-        rows = list(self._iter_rows(ref.path))
+        snapshot = capture_snapshot(ref.path, engine="claude")
+        return self.stats_from_rows(snapshot.rows, ref)
+
+    def stats_from_rows(
+        self, rows: Sequence[Mapping[str, object]], ref: TranscriptRef
+    ) -> TranscriptStats:
+        """Build normalization, usage, and diagnostics from already-read rows.
+
+        The rows-level entry point (task-2-brief §3): pure with respect to
+        ``ref.path`` -- it never touches the filesystem, so a caller holding
+        one `snapshot.TranscriptSnapshot`'s ``rows`` (shared across several
+        invocations bound to the same source) can call this once per
+        invocation/segment without a second file read.
+        """
+        self._validate_engine(ref, "inspect")
+        rows = list(rows)
         last_message_row: dict[str, int] = {}
         for idx, row in enumerate(rows):
             msg = row.get("message") or {}
@@ -444,6 +459,7 @@ class ClaudeTranscriptAdapter:
             suspected_tail=max(assistant_after_last_user - 1, 0),
             tool_requests=tool_requests,
             tool_results=tool_results,
+            operations=extract_operations(normalized.items),
         )
 
     def normalize(self, ref: TranscriptRef) -> NormalizedTranscript:
