@@ -68,6 +68,96 @@ def _run(tmp_path, *, with_mirror=True):
     return run
 
 
+# ───────────────────── ⑩ 结果段:schema 2 / 日历状态 / 反事实标签(2026-09-12 Task C2) ─────────────────────
+#
+# 与上面 `_run` 的夹具不同,这些测试真的写一份 `outcome.py` 的逐 run JSON(`outcome.write_outcome`),
+# 因为 `_sec_outcome` 只在那份文档存在时才走到"结果"段本体——其它既有测试(`test_full_chain_links_
+# every_stage` 等)从不创建它,因此对它们零影响(已用 `-k` 复核)。
+
+def _outcome_doc(run, **overrides) -> dict:
+    from autoresearch.scan import outcome as oc
+
+    base = {
+        "schema_version": oc.OUTCOME_SCHEMA_VERSION, "run_id": run.name,
+        "contract_run_id": "x", "analysis_date": "2026-08-25", "ruler": oc.MAIN,
+        "outcome_status": oc.MATURE, "reason": "",
+        "calendar_quality": oc.TRADE_CAL_QUALITY, "calendar_digest": "d0",
+        "t1": "20260826", "t2": "20260827",
+        "decision_mode": "active", "rule_version": "e6.v2.0", "read_from_shared_staging": False,
+        "complete": True, "n_rows": 1, "n_scored": 1,
+        "exec_line": {"max_pct_1d": 3.0, "max_pos_in_range": 0.7},
+        "execution": {"first_available_session": "2026-08-26", "exec_lag": 0,
+                      "actionability_status": "ACTIONABLE"},
+        "rows": {"603317": {"code": "603317", "name": "天味食品", "role": "BUY",
+                             "t1_close": 10.6, "t1_pct_chg": 6.0, "t1_pos_in_range": 0.8,
+                             "exec_ok": False, "t2_open": 10.5, oc.MAIN: 0.08,
+                             "rel_gap_market": 0.02, "rel_gap_sector": 0.01,
+                             "fwd_5_oc": None, "fwd_10_oc": None,
+                             "exec_gap_c1_o2": None, "exec_outcome_status": None}},
+    }
+    base.update(overrides)
+    return base
+
+
+def test_outcome_section_shows_dates_and_calendar_quality_for_a_mature_run(tmp_path, monkeypatch):
+    """bullet 6/9:MATURE 结果的口径行必须带 T+1/T+2 日期与日历 quality,主尺标签必须
+    显式标"毛"(C14:不能读成实际成交)。"""
+    monkeypatch.chdir(tmp_path)
+    from autoresearch.scan import outcome as oc
+
+    run = _run(tmp_path)
+    oc.write_outcome(_outcome_doc(run), run.parent)
+
+    md = chain_view.render(run, "603317")
+    assert "T+1 20260826" in md and "T+2 20260827" in md
+    assert "quality=trade_cal" in md
+    assert "推荐毛收益" in md and "非实际成交" in md
+    assert "0.08" in md
+
+
+def test_outcome_section_shows_the_not_yet_mature_reason_instead_of_stale_numbers(tmp_path, monkeypatch):
+    """bullet 7:消费者的**输出**必须随 `outcome_status` 真的变化——非 MATURE 时不能展示
+    任何行级数字(没有可汇总的主尺值可展示),必须显式给出状态与原因。"""
+    monkeypatch.chdir(tmp_path)
+    from autoresearch.scan import outcome as oc
+
+    run = _run(tmp_path)
+    oc.write_outcome(_outcome_doc(run, outcome_status=oc.UNVERIFIED_CALENDAR,
+                                  reason="日历质量不可信:lake_partitions",
+                                  calendar_quality="lake_partitions",
+                                  complete=False, rows={}), run.parent)
+
+    md = chain_view.render(run, "603317")
+    assert "未成熟/未核验" in md
+    assert "UNVERIFIED_CALENDAR" in md
+    assert "日历质量不可信" in md
+    assert "0.08" not in md               # 旧数字不得残留在非成熟展示旁边
+    assert "推荐毛收益" not in md
+
+
+def test_outcome_section_separates_the_execution_counterfactual_from_the_main_ruler(tmp_path, monkeypatch):
+    """bullet 9:反事实(迟到锚)必须与主尺视觉上分开、明确标注,且**只在适用时才出现**——
+    `exec_outcome_status is None`(不适用)时这一行不应该渲染出来。"""
+    monkeypatch.chdir(tmp_path)
+    from autoresearch.scan import outcome as oc
+
+    run = _run(tmp_path)
+    # 不适用(正常 run,没有迟到锚)—— 不应该出现反事实行。
+    oc.write_outcome(_outcome_doc(run), run.parent)
+    md_normal = chain_view.render(run, "603317")
+    assert "反事实" not in md_normal
+
+    # 适用且算出了值 —— 必须单独一行,明确标"反事实"与"非实际成交",且与主尺分开。
+    doc = _outcome_doc(run)
+    doc["rows"]["603317"]["exec_gap_c1_o2"] = 0.077
+    doc["rows"]["603317"]["exec_outcome_status"] = oc.MATURE
+    oc.write_outcome(doc, run.parent)
+    md_late = chain_view.render(run, "603317")
+    assert "反事实" in md_late and "非实际成交" in md_late
+    assert "0.077" in md_late
+    assert "实际成交" not in md_late.replace("非实际成交", "")   # 唯一出现只在"非实际成交"里
+
+
 def test_full_chain_links_every_stage(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     md = chain_view.render(_run(tmp_path), "603317")

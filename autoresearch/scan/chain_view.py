@@ -403,7 +403,7 @@ def _sec_outcome(src: Sources, code6: str) -> list[str]:
     out = ["", "## ⑩ 结果(事后)"]
     # 结果落 `_ledger/outcome/<run_id>.json`(**不在 run 目录内**)—— run 目录有「发布后
     # 不再变」的 MANIFEST 不变量,事后往里写会让每个 run 的 `verify` 永远报一条 `extra`。
-    from autoresearch.scan.outcome import outcome_path
+    from autoresearch.scan.outcome import MATURE, outcome_path
     doc: object | None = None
     p = outcome_path(src.run.name, src.run.parent)
     if p.is_file():
@@ -414,10 +414,20 @@ def _sec_outcome(src: Sources, code6: str) -> list[str]:
     if not isinstance(doc, dict):
         return out + [f"- {ABSENT}(结果账本尚未回填 —— "
                       f"`python -m autoresearch.scan.outcome fill`)"]
-    out.append(f"- 口径:主尺 {doc.get('ruler')} · T+1 {doc.get('t1')} → T+2 {doc.get('t2')}"
+    status = str(doc.get("outcome_status") or "")
+    out.append(f"- 口径:主尺 {doc.get('ruler')} · T+1 {doc.get('t1') or ABSENT}"
+               f" → T+2 {doc.get('t2') or ABSENT}"
+               f" · 日历 quality={doc.get('calendar_quality') or ABSENT}"
                f" · 决策 mode={doc.get('decision_mode') or '?'}"
                + ("(读自共享 staging,未必是本 run 那份)"
                   if doc.get("read_from_shared_staging") else ""))
+    if status != MATURE:
+        # 2026-09-12 §2(ruling #2):非 MATURE 的文档不携带可汇总的主尺数值——这里没有
+        # "半个数字"可展示,只有状态与原因(不落到下面 `row is None` 的通用缺席文案,
+        # 那句话是给"这只票压根没被评级/没入 finalist"用的,与"整个 run 还没核验通过"
+        # 是两件不同的事,必须分开说)。
+        return out + [f"- **未成熟/未核验**:status={status or ABSENT}"
+                      f" · 原因:{doc.get('reason') or ABSENT}"]
     row = (doc.get("rows") or {}).get(code6)
     if not isinstance(row, dict):
         return out + ["- 本票不在结果账本(当日未被评级/未入 finalist)"]
@@ -427,10 +437,18 @@ def _sec_outcome(src: Sources, code6: str) -> list[str]:
         ("T+1 收盘区间位置", row.get("t1_pos_in_range")),
         ("执行线", f"exec_ok={row.get('exec_ok')}(追强否决口径)"),
         ("T+2 开", row.get("t2_open")),
-        ("主尺 gap_c1_o2", f"{row.get('gap_c1_o2')}"),
+        ("推荐毛收益 gap_c1_o2(非实际成交)", f"{row.get('gap_c1_o2')}"),
         ("相对全市场 / 行业", f"{row.get('rel_gap_market')} / {row.get('rel_gap_sector')}"),
         ("fwd_5 / fwd_10(参考尺)", f"{row.get('fwd_5_oc')} / {row.get('fwd_10_oc')}"),
     ])
+    # 迟到执行反事实(§2.4 G1):与上面的主尺**不是同一人口**,单独一行、明确标「反事实」
+    # 与「非实际成交」,不能让读者把它当成主尺的延伸,也不能读成真的成交回报。
+    # `exec_outcome_status is None` = 不适用(正常 run,没有迟到锚)—— 这一行压根不渲染,
+    # 不是渲染出一个空值(Ruling #3:不适用与有原因的错误态不能塌缩成同一种"空")。
+    exec_status = row.get("exec_outcome_status")
+    if exec_status is not None:
+        out.append(f"- ⚠️ **执行反事实估计**(迟到锚,非实际成交,不与主尺混算)"
+                   f":exec_status={exec_status} · exec_gap_c1_o2={row.get('exec_gap_c1_o2')}")
     return out
 
 

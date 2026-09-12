@@ -73,7 +73,15 @@ from autoresearch.contracts.agent_output import (
 from autoresearch.data import market_panel as _panel
 from autoresearch.scan.run_naming import is_run_dir
 
-OUTCOME_SCHEMA_VERSION = 1
+OUTCOME_SCHEMA_VERSION = 2
+#: schema 2(2026-09-12 Task C2):逐 run JSON 在 schema 1 的全部字段之上新增
+#: `outcome_status`/`reason`/`calendar_quality`/`calendar_digest`/`t1`/`t2`(doc 级,
+#: §2.2 五态之一)——非 `MATURE` 时 `rows` 恒为 `{}`(没有可汇总的主尺值,状态本身就是
+#: 那一行缺席的原因,不是数字旁边的装饰,见 `compute_outcome`)。`recommendations.csv`
+#: 同步增加同名的 `outcome_status`/`calendar_quality`/`calendar_digest`/`t1`/`t2` 五列
+#: (doc 级值逐行广播,同 `anchor_session`/`exec_lag`/`actionability` 的既定手法)加
+#: `exec_outcome_status`(行级,`compute_outcome` 已经算好)——合计六列,与 brief §3 字面
+#: 同源。
 LEDGER_DIRNAME = "_ledger"
 LEDGER_CSV = "recommendations.csv"
 MAIN = _ruler.MAIN_RULER
@@ -108,17 +116,31 @@ LEDGER_COLUMNS = (
     #  - `src`   `shared` = 这一行读自共享 staging(同数据日重跑会覆盖),未必是本 run 当时那份。
     #    实测 2026-08-13/08-18 两天:brief 印的是 BLOCKED,而共享 staging 的决策文件被后来的
     #    影子回放改写成 `buys=[688766]`(还是一只 📌 持仓)。不分列读 = 把两条假 BUY 算进战绩。
-    "run_id", "analysis_date", "mode", "src", "code", "name", "sector", "role", "lane", "guard",
+    "run_id", "analysis_date", "mode", "src",
+    # ── 日历完整性(2026-09-12 §2,schema 2)。**这三列与 `actionability` 同一条既定纪律**:
+    #  缺这一列(schema 1 的老行,本波之前写的账本)= 未知,不是「已核验」—— `ledger_line`
+    #  与其它消费者一律 `str(row.get(...) or "")` 读,空值与缺列同一个待遇,绝不当 MATURE
+    #  算进均值(2026-08-28 §2.4 G1 的 `actionability` 就是这样处理老行的,这里照抄)。
+    #  `outcome_status` 只有恰好是字面量 `"MATURE"` 才可信;`calendar_quality` 只有恰好是
+    #  `"trade_cal"` 才可信——弱回退(`lake_partitions`/`weekday_heuristic`)、空、旧行
+    #  统统落「未验证」桶,不会因为凑巧对上日期就被提级。
+    "outcome_status", "calendar_quality", "calendar_digest",
+    "code", "name", "sector", "role", "lane", "guard",
     "conviction", "rating", "proposal", "early_stop_reason", "e6_rank", "e6_eligible",
-    "e6_buy", "buyable_c1", "t1_open", "t1_high", "t1_low", "t1_close", "t1_pct_chg",
+    "e6_buy", "buyable_c1", "t1", "t2", "t1_open", "t1_high", "t1_low", "t1_close", "t1_pct_chg",
     "t1_pos_in_range", "exec_ok", "t2_open", "gap_c1_o2", "rel_gap_market",
     "rel_gap_sector", "excess_med_market", "fwd_5_oc", "fwd_10_oc", "ruler",
     # ── 时间锚(2026-08-28 §2.4 G1)。**读 BUY 战绩前必须先看 `actionability`** ──
     #  `anchor_session` 是本行主尺真正的买腿日:正常 run = analysis_date 的下一交易日
     #  (与上面各列同源);迟到 run(报告在 T+1 收盘后才就绪)的那一天已经过去了,
-    #  上面的 `gap_c1_o2` 记的是一笔**下不了的单**。`exec_gap_c1_o2` 是同一把尺从
-    #  第一个真正来得及的尾盘起算的反事实,**绝不与上面那列混算均值**(两个人口)。
-    "anchor_session", "exec_lag", "actionability", "exec_gap_c1_o2",
+    #  上面的 `gap_c1_o2` 记的是一笔**下不了的单**(且是**毛收益**——本模块从未接入
+    #  broker,不能读成实际成交)。`exec_gap_c1_o2` 是同一把尺从第一个真正来得及的尾盘
+    #  起算的反事实**估计**,**绝不与上面那列混算均值**(两个人口)。`exec_outcome_status`
+    #  是这份反事实自己的成熟状态(§2.2 五态之一,或 `None`=不适用/无需算,2026-09-12
+    #  C1 re-review Q2)——**空单元格(不适用)与一个失败态字符串是两个不同的意思**,
+    #  写盘时不能塌缩成同一种「空」:Python `None` 经 csv 模块写出即为空单元格,失败态
+    #  写出的是它自己的状态字符串(如 `UNVERIFIED_CALENDAR`),两者天然可辨。
+    "anchor_session", "exec_lag", "actionability", "exec_gap_c1_o2", "exec_outcome_status",
     "computed_at",
 )
 
@@ -548,16 +570,20 @@ def exec_anchor_frame(execution: dict | None, *, lake_daily: Path | None = None,
 
 def compute_outcome(run_dir: Path | str, *, lake_daily: Path | None = None,
                     calendar=None, today: object = None) -> dict | None:
-    """一次 run → 结果文档;D+2 未落湖(或日历不可信/分析日无效/行情缺失)→ `None`。
+    """一次 run → 结果文档。
 
     `calendar`/`today` 原样转发给 `market_frame`/`exec_anchor_frame`(§2.1 的显式
     `today` 注入):缺省时两者各自惰性默认到 `exec_anchor.trading_sessions` 与真实
     当前时刻,测试可注入合成日历与固定 `today` 让"成熟与否"完全确定性可控。
 
-    `fr is None`(非 `MATURE`)沿用旧契约直接返回 `None`——`market_frame` 已经在
-    `meta["outcome_status"]`/`meta["reason"]` 里如实记了原因(§2.2 五态之一);
-    把"这份 run 该怎么办"的决定(重试/跳过/记账)留给 `fill`,本函数不在这里
-    制造一份带假成熟标记的文档(那是 Task C2 的 CSV/视图传播范围,不在本任务)。
+    2026-09-12 §2(ruling #2,C1 re-review 遗留给 C2 的那半):只有 run/facts **本身**
+    定位不到(没有数据日,或当天一只票都没记录到)才沿用旧的裸 `None` 返回——`fill`
+    据此记「跳过原因」(见其 `skip_reasons`)。只要 run/facts 定位得到,不管
+    `market_frame` 判成五态里的哪一态,本函数都返回一份**带状态的文档**,不再用裸
+    `None` 丢掉原因:`outcome_status`/`reason`/`calendar_quality`/`calendar_digest`/
+    `t1`/`t2` 恒在 doc 顶层。非 `MATURE` 时 `complete=False`、`rows={}`——**没有可汇总
+    的主尺数值**,状态本身就是那一行缺席的原因,不是数字旁边的装饰(不允许一份非
+    `MATURE` 文档携带任何可 sum 的主尺值)。
     """
     run = Path(run_dir)
     facts = run_facts(run)
@@ -565,13 +591,32 @@ def compute_outcome(run_dir: Path | str, *, lake_daily: Path | None = None,
     if not date or not facts["rows"]:
         return None
     fr, meta = market_frame(date, lake_daily=lake_daily, calendar=calendar, today=today)
-    if fr is None:
-        return None
     # 时间锚(§2.4 G1):这份报告到底什么时候才能下单。正常 run 与主帧同锚;
-    # 迟到 run 另算一份反事实帧,**两者绝不混算**(列名即人口)。
+    # 迟到 run 另算一份反事实帧,**两者绝不混算**(列名即人口)。与主尺的成熟与否
+    # 无关——即便主尺非 MATURE,run 自己"何时才就绪"仍是一条独立、随时可读的事实。
     from autoresearch.scan import exec_anchor as _anchor
 
     execution = _anchor.read_execution(run)
+    doc: dict = {
+        "schema_version": OUTCOME_SCHEMA_VERSION,
+        "run_id": run.name,
+        "contract_run_id": facts["contract_run_id"],
+        "analysis_date": date,
+        "ruler": MAIN,
+        "outcome_status": meta.get("outcome_status") or "",
+        "reason": meta.get("reason") or "",
+        "calendar_quality": meta.get("calendar_quality") or "",
+        "calendar_digest": meta.get("calendar_digest") or "",
+        "t1": meta.get("t1"), "t2": meta.get("t2"),
+        "decision_mode": facts["decision_mode"],
+        "rule_version": facts["rule_version"],
+        "read_from_shared_staging": facts["used_shared"],
+        "exec_line": {"max_pct_1d": EXEC_MAX_PCT_1D, "max_pos_in_range": EXEC_MAX_POS_IN_RANGE},
+        "execution": execution,
+    }
+    if fr is None:
+        doc.update(complete=False, n_rows=len(facts["rows"]), n_scored=0, rows={})
+        return doc
     exec_fr, exec_status = None, None
     with contextlib.suppress(Exception):
         exec_fr, exec_meta = exec_anchor_frame(execution, lake_daily=lake_daily,
@@ -618,30 +663,18 @@ def compute_outcome(run_dir: Path | str, *, lake_daily: Path | None = None,
                                if exec_fr is not None and code in exec_fr.index else None),
             # review finding 1(2026-09-12 fix round 1):exec 侧状态,doc 级单值逐行广播
             # (与 `_ledger_rows` 里 anchor_session/exec_lag/actionability 同一手法)。
-            # C2 会把它接进 `recommendations.csv`(`LEDGER_COLUMNS` 本任务不改,这里
-            # 只负责把值算对、放进逐行文档,不会漏进现有 CSV——见 `_ledger_rows` 的
-            # allowlist 过滤)。
+            # Task C2 把它接进 `recommendations.csv`(`LEDGER_COLUMNS` 新增的
+            # `exec_outcome_status` 列——见 `_ledger_rows` 的 allowlist)。
             "exec_outcome_status": exec_status,
         }
     # 「成熟」= 主尺算得出来的行占多数。少数票停牌/新股缺数是常态,不该让整份结果反复重算。
     n_scored = sum(1 for r in rows.values() if r.get(MAIN) is not None)
-    return {
-        "schema_version": OUTCOME_SCHEMA_VERSION,
-        "run_id": run.name,
-        "contract_run_id": facts["contract_run_id"],
-        "analysis_date": date,
-        "ruler": MAIN,
-        "t1": meta.get("t1"), "t2": meta.get("t2"),
-        "decision_mode": facts["decision_mode"],
-        "rule_version": facts["rule_version"],
-        "read_from_shared_staging": facts["used_shared"],
+    doc.update({
         "complete": bool(rows) and n_scored >= max(1, len(rows) // 2),
         "n_rows": len(rows), "n_scored": n_scored,
-        "exec_line": {"max_pct_1d": EXEC_MAX_PCT_1D,
-                      "max_pos_in_range": EXEC_MAX_POS_IN_RANGE},
-        "execution": execution,
         "rows": rows,
-    }
+    })
+    return doc
 
 
 # ───────────────────────── 落盘:逐 run JSON + 跨 run CSV ─────────────────────────
@@ -661,6 +694,9 @@ def write_outcome(doc: dict, reports_root: Path | None = None) -> Path:
 
 
 def _ledger_rows(doc: dict) -> list[dict]:
+    """`doc["rows"]` 为空(非 `MATURE`,§2)时返回 `[]`——CSV 里没有一行属于这个 run,
+    这正是撤回(withdrawal,bullet 4)与整体替换(bullet 5)在这一层的落点。
+    """
     stamp = doc.get("computed_at") or ""
     anchor = doc.get("execution") or {}
     out = []
@@ -669,10 +705,18 @@ def _ledger_rows(doc: dict) -> list[dict]:
             "run_id": doc["run_id"], "analysis_date": doc["analysis_date"], "code": code,
             "mode": doc.get("decision_mode") or "",
             "src": "shared" if doc.get("read_from_shared_staging") else "run",
+            # 日历完整性五列(2026-09-12 §2,schema 2):doc 级单值逐行广播,同
+            # anchor_session/exec_lag/actionability 的既定手法——它们回答的是「这整个
+            # run 的结果算没算出来、算得对不对」,不是某一只票独有的属性。
+            "outcome_status": doc.get("outcome_status") or "",
+            "calendar_quality": doc.get("calendar_quality") or "",
+            "calendar_digest": doc.get("calendar_digest") or "",
+            "t1": doc.get("t1"), "t2": doc.get("t2"),
             **{k: row.get(k) for k in LEDGER_COLUMNS
                if k not in ("run_id", "analysis_date", "mode", "src", "code",
-                            "ruler", "computed_at", "anchor_session", "exec_lag",
-                            "actionability")},
+                            "outcome_status", "calendar_quality", "calendar_digest",
+                            "t1", "t2", "ruler", "computed_at", "anchor_session",
+                            "exec_lag", "actionability")},
             "ruler": doc["ruler"],
             # 三列同源于 doc 级 execution(逐行相同):读 BUY 战绩前先看 actionability。
             "anchor_session": anchor.get("first_available_session"),
@@ -688,6 +732,14 @@ def upsert_ledger(doc: dict, reports_root: Path | None = None) -> int:
 
     幂等是硬要求:`fill` 每晚可能对同一个 run 重算(结果尚未成熟时会重试),重复 append
     会让「BUY n 笔」这种最基础的计数直接翻倍。
+
+    2026-09-12 §5(bullet 5)——**一个 run 的行整体替换,不是合并**:写回之前先把这个
+    `run_id` 名下的全部旧行丢弃,再整批放回这次算出来的新集合(可能是空集合——重算
+    从 MATURE 收缩成非 MATURE 时就是这样,即撤回/withdrawal,见 bullet 4)。只
+    upsert 新出现的非空行、残留旧行不管,会让重算把行数从 N 个收缩到 0 个时,昨天那
+    N 行原样留在表里,和今天的失败状态并排展示成"两个版本各展示一半"的错觉——这正是
+    这份 CSV 存在的意义要防的事。这个替换严格按 `run_id` 划界,不影响其它 run 的行
+    (verified by `test_whole_run_replace_does_not_touch_other_runs_rows`)。
     """
     path = ledger_root(reports_root) / LEDGER_CSV
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -696,6 +748,8 @@ def upsert_ledger(doc: dict, reports_root: Path | None = None) -> int:
         with path.open(encoding="utf-8-sig", newline="") as fh:
             for r in csv.DictReader(fh):
                 existing[(str(r.get("run_id", "")), _z6(r.get("code")))] = r
+    run_id = str(doc["run_id"])
+    existing = {key: row for key, row in existing.items() if key[0] != run_id}
     fresh = _ledger_rows(doc)
     for r in fresh:
         existing[(r["run_id"], r["code"])] = r
@@ -730,13 +784,51 @@ def published_runs(reports_root: Path | None = None) -> list[Path]:
                   and (p / "manifest.json").is_file())
 
 
+def _is_settled(doc: object) -> bool:
+    """安全跳过(不重算、不重写)的唯一条件:schema 2、日历可信(`trade_cal`)、
+    `outcome_status == MATURE`、且 `complete`——四条同时成立才算。
+
+    2026-09-12 §5(bullet 3/C10):旧代码只看 `complete` 一个布尔,schema 1 的旧文档
+    (当年"湖分区排序位置"算出来的日期,可能整个错位)一旦 `complete=True` 就被永久
+    信任、再也不会被重新核验。schema 2 但缺日历质量字段的文档(同样是磁盘上真实可能
+    出现的形状——例如被外部工具手写、或未来某次迁移中途产物)同理不能被信任。这四条
+    与 `actionability` 的既定纪律同源:缺字段/字段不是恰好那个可信字面量,一律当作
+    "还没核验过",不是"已核验通过"。
+    """
+    if not isinstance(doc, dict):
+        return False
+    return (doc.get("schema_version") == OUTCOME_SCHEMA_VERSION
+            and doc.get("calendar_quality") == TRADE_CAL_QUALITY
+            and doc.get("outcome_status") == MATURE
+            and bool(doc.get("complete")))
+
+
 def fill(*, reports_root: Path | None = None, lake_daily: Path | None = None,
          limit: int | None = None, now: str | None = None,
          rebuild: bool = False, calendar=None, today: object = None) -> dict:
-    """回填全部**未成熟或未算过**的已发布 run。返回 `{filled, skipped, rows, runs}`。
+    """回填全部**未核验或未算过**的已发布 run。
 
-    幂等 + 增量:已存在且 `complete` 的 run 直接跳过(不重算、不重写),所以每天跑它的
-    成本只与「昨天新出的 run + 还没成熟的老 run」成正比。
+    返回 `{filled, skipped, rows, runs, skip_reasons}`——`skip_reasons` 是
+    `{run_id: 原因}`,2026-09-12 ruling #2 要求:即便一次 `fill()` 决定不重算某个 run,
+    也不能连"为什么跳过"都是静默的(`already_verified_complete` = 已核验成熟,安全跳过;
+    `run_or_facts_not_locatable` = `compute_outcome` 连 run/facts 都定位不到,唯一仍
+    返回裸 `None` 的情形)。
+
+    幂等 + 增量:只有 `_is_settled` 判真的 run 才直接跳过(不重算、不重写),所以每天
+    跑它的成本只与「昨天新出的 run + 还没被核验通过的老 run」成正比——schema 1、或
+    schema 2 但缺日历质量字段的旧文档都不在"安全跳过"之列,会被重新核验(bullet 3)。
+
+    只要 `compute_outcome` 返回了文档(不是裸 `None`),就会被写盘并计入 `filled`——
+    哪怕它不是 `MATURE`:2026-09-12 起,一份带 `outcome_status`/`reason` 的"还没成熟"
+    文档本身就是有效产出(ruling #2),不再是"没算出来就什么都不留"。
+
+    撤回(withdrawal,bullet 4):如果磁盘上的旧文档曾经 `complete=True`,而这次重算
+    的新文档不再 `complete`(核验通不过了,或数据被发现缺失),旧的行级数值不会被
+    悄悄丢弃——整份旧文档的一个紧凑快照存进新文档的 `previous` 键(不进 `rows`,不会
+    被 `_ledger_rows`/CSV/任何统计读到),新文档本身按非 MATURE 的规则写盘
+    (`rows={}`),CSV 里这个 run 的旧行随之被整体撤下(`upsert_ledger` 的整体替换,
+    见其 docstring)。前镜像因此"留了痕但不再算数",不是被销毁,也不会跟新的失败
+    状态并排展示成一个还有效的数字。
 
     `calendar`/`today` 原样转发给 `compute_outcome`(缺省即生产默认:真实交易日历、
     真实当前时刻);测试可注入两者让整条回填链路的"成熟与否"确定性可控,不依赖
@@ -744,22 +836,29 @@ def fill(*, reports_root: Path | None = None, lake_daily: Path | None = None,
     时间戳)是两个不同的概念,不要混用。
     """
     filled, skipped, n_rows, touched = 0, 0, 0, []
+    skip_reasons: dict[str, str] = {}
     for run in published_runs(reports_root):
         existing = None
         p = outcome_path(run.name, reports_root)
         if p.is_file():
             with contextlib.suppress(OSError, json.JSONDecodeError):
                 existing = json.loads(p.read_text(encoding="utf-8"))
-        # `rebuild`:口径变了(如 2026-08-28 新增时间锚四列)才需要重算已成熟的 run。
-        # 默认关着 —— 每晚跑的成本必须只与「昨天新出的 + 还没成熟的」成正比,
-        # 而不是与历史长度成正比。
-        if not rebuild and isinstance(existing, dict) and existing.get("complete"):
+        # `rebuild`:口径变了才需要重算已核验通过的 run。默认关着 —— 每晚跑的成本
+        # 必须只与「昨天新出的 + 还没核验通过的」成正比,而不是与历史长度成正比。
+        if not rebuild and _is_settled(existing):
             skipped += 1
+            skip_reasons[run.name] = "already_verified_complete"
             continue
         doc = compute_outcome(run, lake_daily=lake_daily, calendar=calendar, today=today)
         if doc is None:
             skipped += 1
+            skip_reasons[run.name] = "run_or_facts_not_locatable"
             continue
+        if isinstance(existing, dict) and existing.get("complete") and not doc.get("complete"):
+            # 撤回:前镜像存档,不进 `rows`(不会被任何统计读到)。
+            doc["previous"] = {k: existing.get(k) for k in
+                               ("schema_version", "outcome_status", "calendar_quality",
+                                "complete", "t1", "t2", "rows")}
         doc["computed_at"] = now or ""
         write_outcome(doc, reports_root)
         n_rows += upsert_ledger(doc, reports_root)
@@ -767,7 +866,8 @@ def fill(*, reports_root: Path | None = None, lake_daily: Path | None = None,
         touched.append(run.name)
         if limit and filled >= limit:
             break
-    return {"filled": filled, "skipped": skipped, "rows": n_rows, "runs": touched}
+    return {"filled": filled, "skipped": skipped, "rows": n_rows, "runs": touched,
+            "skip_reasons": skip_reasons}
 
 
 # ───────────────────────── 读数(prelude 汇总屏一行)─────────────────────────
@@ -780,6 +880,10 @@ def ledger_line(reports_root: Path | None = None) -> str:
 
     <20 笔时只印「攒样本 n/20」不印均值:小样本均值会被当成结论读,而这条线存在的意义
     正是不让人再凭印象说「最近推荐得挺准」。
+
+    均值印的是**毛收益**(`gap_c1_o2`,推荐票的前向收益)——本模块从未接入 broker,
+    没有任何输入能证明一笔真的成交了,所以这里绝不能把它说成"实际成交"或"净收益"
+    (2026-09-12 §7 C14:标签与人口不能混)。
     """
     rows = load_ledger(reports_root)
     if not rows:
@@ -797,27 +901,35 @@ def ledger_line(reports_root: Path | None = None) -> str:
     late_n = sum(1 for r in all_buys
                  if str(r.get("actionability") or "") in {"LATE_REVALIDATION_REQUIRED", "EXPIRED"})
     unknown_n = len(all_buys) - len(buys) - late_n
-    scored = [r for r in buys if _num(r.get(MAIN)) is not None]
+    # 日历完整性(2026-09-12 §2,同一条既定纪律):迁移前的老行(schema 1,或 schema 2
+    # 但缺这两列)与本次重算判定"日历不可信/行情缺失"的新行一样,都不能被算进已核验的
+    # 均值——`str(x or "")` 让"缺列"与"这一列恰好是空字符串"得到同一个待遇,只有
+    # 恰好等于 `MATURE`/`trade_cal` 两个字面量才算通过。
+    verified = [r for r in buys if str(r.get("outcome_status") or "") == MATURE
+               and str(r.get("calendar_quality") or "") == TRADE_CAL_QUALITY]
+    unverified_n = len(buys) - len(verified)
+    scored = [r for r in verified if _num(r.get(MAIN)) is not None]
     if len(scored) < MIN_LEDGER_N:
         return (f"结果账本:{len(rows)} 行 · active BUY {len(all_buys)} 笔"
                 f"(可执行 {len(buys)}·已成熟 {len(scored)})"
                 + (f" · 另 shadow 期 {shadow_n} 笔不计" if shadow_n else "")
                 + (f" · 迟到 {late_n} 笔不计" if late_n else "")
                 + (f" · 锚未知 {unknown_n} 笔不计" if unknown_n else "")
+                + (f" · 日历未验证 {unverified_n} 笔不计" if unverified_n else "")
                 + f" · 攒样本 {len(scored)}/{MIN_LEDGER_N},不印均值")
     gaps = [_num(r.get(MAIN)) for r in scored]
     rel = [_num(r.get(_ruler.REL_MARKET)) for r in scored
            if _num(r.get(_ruler.REL_MARKET)) is not None]
     ok = [r for r in scored if str(r.get("exec_ok")).lower() == "true"]
     ok_gaps = [_num(r.get(MAIN)) for r in ok]
-    txt = (f"结果账本:BUY {len(scored)} 笔 · 均 gap {100 * float(np.mean(gaps)):+.2f}pp"
+    txt = (f"结果账本:BUY {len(scored)} 笔 · 毛 gap {100 * float(np.mean(gaps)):+.2f}pp"
            f" · 相对市场 {100 * float(np.mean(rel)):+.2f}pp" if rel else
-           f"结果账本:BUY {len(scored)} 笔 · 均 gap {100 * float(np.mean(gaps)):+.2f}pp")
+           f"结果账本:BUY {len(scored)} 笔 · 毛 gap {100 * float(np.mean(gaps)):+.2f}pp")
     if ok_gaps:
         txt += (f" · 执行线内 {len(ok_gaps)} 笔 {100 * float(np.mean(ok_gaps)):+.2f}pp")
-    if late_n or unknown_n:
-        txt += f" · 排除迟到 {late_n}/锚未知 {unknown_n} 笔"
-    return txt + f" · 主尺 {MAIN}(可执行口径;只记不学;仅人看)"
+    if late_n or unknown_n or unverified_n:
+        txt += f" · 排除迟到 {late_n}/锚未知 {unknown_n}/日历未验证 {unverified_n} 笔"
+    return txt + f" · 主尺 {MAIN}(推荐毛收益·可执行口径;只记不学;仅人看;未接 broker,非实际成交)"
 
 
 def main(argv: list[str] | None = None) -> int:
