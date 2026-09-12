@@ -210,40 +210,12 @@ def _rows_by_invocation(doc: object) -> dict[str, dict]:
             if isinstance(r, dict) and r.get("invocation_id")}
 
 
-def _capsule_invocations(src: Sources) -> dict[str, dict]:
-    return _rows_by_invocation(_read_json_or_none(src.run / "capsule" / "agents" / "index.json"))
-
-
 def _ledger_agents_index_dir(src: Sources) -> Path:
     """`agents_index/` 的根——沿用 `outcome.ledger_root`(不另写一处 `_ledger` 字面量,
     同 `ledger_views.views_root` 的既定纪律)。"""
     from autoresearch.scan.outcome import ledger_root
 
     return ledger_root(src.run.parent) / "agents_index"
-
-
-def _ledger_index_doc(src: Sources, report_run_id: str) -> object | None:
-    return _read_json_or_none(_ledger_agents_index_dir(src) / f"{report_run_id}.json")
-
-
-def _ledger_invocations(src: Sources, report_run_id: str) -> dict[str, dict]:
-    return _rows_by_invocation(_ledger_index_doc(src, report_run_id))
-
-
-def _capsule_row_is_normalizable(src: Sources, capsule_row: dict | None) -> bool:
-    """spec §6.2 第三个回落触发词(fix round 1,finding 1)——capsule 行自称 PRESENT,
-    但它指向的 normalized 产物读不出来/解析不了,同「缺失」「GONE」一样不能当真。
-
-    只在 `status == "PRESENT"` 时才需要真的去读盘核实——GONE/NOT_EXPECTED 等其它状态
-    已经由 `status` 字面量本身说明问题,不重复判定,这里对它们恒返回 `True`(与本触发词
-    无关,交给 `_merge_invocation` 别的分支处理)。"""
-    if not isinstance(capsule_row, dict) or capsule_row.get("status") != "PRESENT":
-        return True
-    rel = capsule_row.get("normalized")
-    if not rel:
-        return False
-    doc = _read_json_or_none(src.run / "capsule" / rel)
-    return isinstance(doc, dict)
 
 
 def _merge_invocation(capsule_row: dict | None, ledger_row: dict | None, *,
@@ -295,16 +267,6 @@ def _merge_invocation(capsule_row: dict | None, ledger_row: dict | None, *,
     }
 
 
-def _merged_invocations(src: Sources, report_run_id: str) -> dict[str, dict]:
-    """capsule ∪ ledger 的 invocation_id 并集,逐条合并(从不因为文件存在就整份短路)。"""
-    cap_rows = _capsule_invocations(src)
-    led_rows = _ledger_invocations(src, report_run_id)
-    return {iid: _merge_invocation(
-                cap_rows.get(iid), led_rows.get(iid),
-                capsule_normalizable=_capsule_row_is_normalizable(src, cap_rows.get(iid)))
-           for iid in sorted(set(cap_rows) | set(led_rows))}
-
-
 def _find_invocation(merged: dict[str, dict], role: str, code6: str) -> tuple[str, dict] | None:
     """按角色 + 代码在合并表里找那条 invocation——`subject` 可能是展示名(含码但不等于
     码,capsule `_agent_expectations` 的既有行为),所以用子串匹配,不要求恰好相等。"""
@@ -318,26 +280,99 @@ def _find_invocation(merged: dict[str, dict], role: str, code6: str) -> tuple[st
     return None
 
 
-def _normalized_doc_for(src: Sources, report_run_id: str, m: dict) -> tuple[object | None, str]:
-    """合并结果 → 该 invocation 的 normalized 文档(读一次,不重新猜路径拼接规则)。
+class _EvidenceCache:
+    """一次 `render()` 内共享的证据读取缓存(fix round 2,finding 1)。
 
-    `effective is None`(冲突未消解/两边皆缺)时不读——没有单一可信来源可读;
-    `normalized` 引用缺失或指向的文件读不出来(corrupted normalized 场景)都返回
-    `(None, 原因)`,调用方据此渲染「证据不足」而不是空白或绝对断言。"""
-    row = m.get("effective")
-    if row is None:
-        return None, "两边均缺席,或两边冲突未消解——没有单一可信来源"
-    rel = row.get("normalized")
-    if not rel:
-        return None, "该 invocation 没有 normalized 产物引用"
-    if m["origin"] == "capsule":
-        path = src.run / "capsule" / rel
-    else:
-        path = _ledger_agents_index_dir(src) / rel
-    doc = _read_json_or_none(path)
-    if doc is None:
-        return None, f"normalized 产物缺失或损坏({rel})"
-    return doc, ""
+    修前的病灶:`_sec_l4` 与 `_sec_scene` 各自独立重建一遍合并表(各读一次 capsule
+    索引、一次 ledger 索引),而每条 PRESENT 的 capsule 行,判断"能不能归一化"
+    (fix round 1 finding 1 加的第三触发词)与真正消费 normalized 产物又是两次独立的
+    `_read_json_or_none` 调用——一条记录一次渲染里最多被读 4 次。这正是本计划要在
+    transcript 层根除的病(spec §5.1「同一份不可变快照派生一切」,读多次会在同一份
+    输出里描述两次不同的读)在视图层的重现:capsule 冻结后基本不会变,但 ledger 索引
+    会被 Task 8 的 `--offline` 重建改写,渲染途中撞上重建是真实可能发生的时序。
+
+    做法:`_read` 是所有磁盘读取的**唯一**入口,按已解析路径的字符串键缓存;
+    `capsule_invocations`/`ledger_invocations`/`merged_invocations`/`normalized_doc`
+    都通过它读,`render()` 建一个实例贯穿整次渲染,传给 `_sec_l4`/`_sec_scene`
+    共用——不再各段各建一份。"""
+
+    def __init__(self, src: Sources, report_run_id: str):
+        self.src = src
+        self.report_run_id = report_run_id
+        self._json: dict[str, object | None] = {}
+        self._merged: dict[str, dict] | None = None
+
+    def _read(self, path: Path) -> object | None:
+        key = str(path)
+        if key not in self._json:
+            self._json[key] = _read_json_or_none(path)
+        return self._json[key]
+
+    def capsule_invocations(self) -> dict[str, dict]:
+        return _rows_by_invocation(self._read(self.src.run / "capsule" / "agents" / "index.json"))
+
+    def ledger_invocations(self) -> dict[str, dict]:
+        path = _ledger_agents_index_dir(self.src) / f"{self.report_run_id}.json"
+        return _rows_by_invocation(self._read(path))
+
+    def _capsule_row_normalizable(self, capsule_row: dict | None) -> bool:
+        """spec §6.2 第三个回落触发词(fix round 1,finding 1)——capsule 行自称
+        PRESENT,但它指向的 normalized 产物读不出来/解析不了,同「缺失」「GONE」一样
+        不能当真。只在 `status == "PRESENT"` 时才需要真的去读盘核实。走缓存的 `_read`,
+        与 `normalized_doc` 后续真正消费同一条记录时共用同一次读取结果。"""
+        if not isinstance(capsule_row, dict) or capsule_row.get("status") != "PRESENT":
+            return True
+        rel = capsule_row.get("normalized")
+        if not rel:
+            return False
+        doc = self._read(self.src.run / "capsule" / rel)
+        return isinstance(doc, dict)
+
+    def merged_invocations(self) -> dict[str, dict]:
+        """capsule ∪ ledger 的 invocation_id 并集,逐条合并(从不因为文件存在就整份
+        短路)。同一实例内重复调用只建一次,结果缓存。"""
+        if self._merged is not None:
+            return self._merged
+        cap_rows = self.capsule_invocations()
+        led_rows = self.ledger_invocations()
+        self._merged = {
+            iid: _merge_invocation(
+                cap_rows.get(iid), led_rows.get(iid),
+                capsule_normalizable=self._capsule_row_normalizable(cap_rows.get(iid)))
+            for iid in sorted(set(cap_rows) | set(led_rows))
+        }
+        return self._merged
+
+    def normalized_doc(self, m: dict) -> tuple[object | None, str]:
+        """合并结果 → 该 invocation 的 normalized 文档,走缓存的 `_read`——与
+        `_capsule_row_normalizable` 判断"能不能归一化"时读的是同一份缓存条目,
+        不会因为先判断过一次就再独立读第二次。
+
+        `effective is None`(冲突未消解/两边皆缺)时不读——没有单一可信来源可读;
+        `normalized` 引用缺失或指向的文件读不出来(corrupted normalized 场景)都返回
+        `(None, 原因)`,调用方据此渲染「证据不足」而不是空白或绝对断言。"""
+        row = m.get("effective")
+        if row is None:
+            return None, "两边均缺席,或两边冲突未消解——没有单一可信来源"
+        rel = row.get("normalized")
+        if not rel:
+            return None, "该 invocation 没有 normalized 产物引用"
+        if m["origin"] == "capsule":
+            path = self.src.run / "capsule" / rel
+        else:
+            path = _ledger_agents_index_dir(self.src) / rel
+        doc = self._read(path)
+        if doc is None:
+            return None, f"normalized 产物缺失或损坏({rel})"
+        return doc, ""
+
+
+def _merged_invocations(src: Sources, report_run_id: str) -> dict[str, dict]:
+    """便捷入口(供独立调用/测试直接用):建一个一次性 `_EvidenceCache`,单次调用内部
+    每个文件仍然只读一次,只是不会跨多次调用共享。`render()` 改用跨段共享的
+    `_EvidenceCache` 实例(见该类),不再调用这个函数——保留它是为了不破坏直接调用它
+    的既有测试与任何未来的独立诊断脚本。"""
+    return _EvidenceCache(src, report_run_id).merged_invocations()
 
 
 def _operations(doc: object) -> list[dict]:
@@ -634,9 +669,8 @@ _TIER_LABEL: dict[str, str] = {
 }
 
 
-def _sec_l4(src: Sources, code6: str) -> list[str]:
+def _sec_l4(src: Sources, code6: str, cache: _EvidenceCache) -> list[str]:
     out = ["", "## ⑦ L4 研究"]
-    report_run_id = src.run.name
     prompt = src.find(f"reasoning/l4/_l4_prompt_{code6}.md", f"_l4_prompt_{code6}.md")
     intel = src.find(f"reasoning/l4/_l4_intel_{code6}.md", f"_l4_intel_{code6}.md")
     slim, slim_tier = src.find_input(code6, "_slim.md")
@@ -644,7 +678,9 @@ def _sec_l4(src: Sources, code6: str) -> list[str]:
 
     # 逐 invocation 合并证据(spec §6.2)——l4-card 管 slim/deep/卡的读写,l4-intel 管
     # 情报文件自己的写入;两者各自的 normalized 只读一次,不混用(读坏一个不牵连另一个)。
-    merged = _merged_invocations(src, report_run_id)
+    # `cache` 由 `render()` 建一份、贯穿整次渲染传进来(fix round 2,finding 1)——不在
+    # 这里再建一份新的,`_sec_scene` 共用同一个实例,一条 PRESENT 记录整次渲染只读一次。
+    merged = cache.merged_invocations()
     card_found = _find_invocation(merged, "l4-card", code6)
     intel_found = _find_invocation(merged, "l4-intel", code6)
 
@@ -652,7 +688,7 @@ def _sec_l4(src: Sources, code6: str) -> list[str]:
         if found is None:
             return [], "无可关联 invocation"
         _, m = found
-        doc, reason = _normalized_doc_for(src, report_run_id, m)
+        doc, reason = cache.normalized_doc(m)
         if doc is None:
             return [], (reason or "证据不可读")
         return _operations(doc), ""
@@ -942,20 +978,20 @@ def _visible_text_blocks(doc: object, *, cap_chars: int = 300) -> list[str]:
     return out
 
 
-def _sec_scene(src: Sources, code6: str, *, verbose: bool) -> list[str]:
+def _sec_scene(src: Sources, code6: str, cache: _EvidenceCache, *, verbose: bool) -> list[str]:
     """⑪ 证据现场——capsule↔ledger 按 invocation 合并后的展示层(spec §6.2/§8)。
 
     摘要模式只给「来源+原始/补录状态+冲突」与「成功/失败/部分/缺口」计数(spec §8:
     「80 行内必须保留所有冲突类型、缺口计数」);详细模式再加逐项操作(call_id/kind/
-    响应与产物摘要)与可见文本块。"""
+    响应与产物摘要)与可见文本块。`cache` 由 `render()` 建一份、贯穿整次渲染传进来
+    (fix round 2,finding 1)——与 `_sec_l4` 共用同一个实例,不再各自重建合并表。"""
     out = ["", "## ⑪ 证据现场(transcript 归属)"]
-    report_run_id = src.run.name
-    cap_rows = _capsule_invocations(src)
-    led_rows = _ledger_invocations(src, report_run_id)
+    cap_rows = cache.capsule_invocations()
+    led_rows = cache.ledger_invocations()
     if not cap_rows and not led_rows:
         return out + ["- capsule/ledger 均无证据索引(该 run 早于/未启用 transcript 绑定;"
                       "不代表研究没发生,只代表这层证据没有留痕)"]
-    merged = _merged_invocations(src, report_run_id)
+    merged = cache.merged_invocations()
     relevant: list[tuple[str, str, dict]] = []
     for role in ("l4-card", "l4-intel"):
         found = _find_invocation(merged, role, code6)
@@ -976,7 +1012,7 @@ def _sec_scene(src: Sources, code6: str, *, verbose: bool) -> list[str]:
                    + (" · ⚠️冲突" if m["conflict"] else ""))
         if m["conflict"]:
             conflict_lines.append(f"  - {role}:{_fmt(m['conflict_detail'], 200)}")
-        doc, reason = _normalized_doc_for(src, report_run_id, m)
+        doc, reason = cache.normalized_doc(m)
         if doc is None:
             gap_n += 1
             conflict_lines.append(f"  - {role}:证据不足,未观察到(原因:{_fmt(reason, 120)})")
@@ -1052,6 +1088,10 @@ _PROTECTED_SECTIONS = frozenset({"_sec_identity", "_sec_l4", "_sec_e6", "_sec_br
 def render(run_dir: Path | str, code: str, *, verbose: bool = False) -> str:
     src = Sources(Path(run_dir))
     code6 = _z6(code)
+    # 一次渲染一份缓存(fix round 2,finding 1)——`_sec_l4`/`_sec_scene` 都要读 capsule↔
+    # ledger 合并证据,以前各自独立重建、各自独立读盘,一条 PRESENT 记录最多被读 4 次;
+    # 现在两段共用同一个 `_EvidenceCache` 实例,每个文件整次渲染最多读一次。
+    cache = _EvidenceCache(src, src.run.name)
     head = [f"# 推荐链路 — {code6} @ run `{Path(run_dir).name}`(数据日 {src.analysis_date or '?'})",
             "",
             "_确定性生成(零 LLM);每段的「缺席」都是事实,不是渲染失败。仅供研究,非投资建议。_"]
@@ -1060,12 +1100,12 @@ def render(run_dir: Path | str, code: str, *, verbose: bool = False) -> str:
     chunks: dict[str, list[str]] = {}
     for fn in order:
         try:
-            chunks[fn.__name__] = fn(src, code6)
+            chunks[fn.__name__] = fn(src, code6, cache) if fn is _sec_l4 else fn(src, code6)
         except Exception as exc:  # noqa: BLE001 — 一段读坏不该让整张视图消失
             chunks[fn.__name__] = ["", f"## {fn.__name__} 渲染失败:{type(exc).__name__}: {exc}"]
     body = [ln for fn in order for ln in chunks[fn.__name__]]
     try:
-        scene = _sec_scene(src, code6, verbose=verbose)
+        scene = _sec_scene(src, code6, cache, verbose=verbose)
     except Exception as exc:  # noqa: BLE001 — 同上,⑪ 读坏不该拖垮整张视图
         scene = ["", f"## ⑪ 证据现场 渲染失败:{type(exc).__name__}: {exc}"]
     # 「读了共享 staging」这条警示只能**最后**判:`used_shared` 是各段读盘时才置位的,

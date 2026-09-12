@@ -697,10 +697,16 @@ def test_capsule_present_but_normalized_unreadable_falls_back_to_ledger(tmp_path
 def test_visible_text_blocks_cap_states_the_omitted_count(tmp_path, monkeypatch):
     """finding 2(fix round 1):spec §8「长文本…至多 6 块，明确省略量」——六块上限之外
     的内容不能悄悄丢弃,省略量必须现出来。8 段可见文本 → 显示 6 块 + 明确"另省略 2 块"。
-    """
+
+    `kind="message"` 是 Task 2 两个适配器共用的真实可见文本形状(`claude.py`/`codex.py`
+    的 `add("message", {"message_id":..., "role":..., "text":...}, timestamp)`)——
+    fix round 2 复核指出上一版夹具用的 `"assistant_text"` 是编的,不是任何适配器真的
+    产出的 kind,这里改用真实形状。"""
     monkeypatch.chdir(tmp_path)
     run = _base_run(tmp_path)
-    items = [{"index": i, "kind": "assistant_text", "payload": {"text": f"第{i}段可见分析文本"},
+    items = [{"index": i, "kind": "message",
+             "payload": {"message_id": f"m{i}", "role": "assistant",
+                        "text": f"第{i}段可见分析文本"},
              "timestamp": None} for i in range(8)]
     _capsule_index(run, [_row("l4-card-603317")])
     _capsule_normalized(run, "l4-card-603317", items=items, operations=[])
@@ -752,3 +758,77 @@ def test_find_invocation_subject_substring_does_not_match_a_different_neighbour(
     found_other = chain_view._find_invocation(merged, "l4-card", "000001")
     assert found_other is not None
     assert found_other[0] == "l4-card-b"
+
+
+# ═══════════════════════ fix round 2:复核两项 ═══════════════════════
+
+def test_render_reads_each_evidence_file_at_most_once(tmp_path, monkeypatch):
+    """finding 1(fix round 2):`_sec_l4` 与 `_sec_scene` 曾经各自独立重建一遍合并表,
+    每条 PRESENT 记录的"能不能归一化"判断(fix round 1)与真正消费又是各读一次——一条
+    记录一次 render() 里最多被读 4 次。用计数包装器包住真正的读取原语
+    (`chain_view._read_json_or_none`,所有磁盘 JSON 读取的唯一入口),断言一次渲染里
+    每个文件路径都只被读了一次。verbose 模式两段都会消费 normalized 文档,最容易暴露
+    重复读。"""
+    monkeypatch.chdir(tmp_path)
+    run = _base_run(tmp_path)
+    _capsule_index(run, [_row("l4-card-603317"), _row("l4-intel-603317", role="l4-intel")])
+    _capsule_normalized(run, "l4-card-603317", operations=[_read_op("c1", "/x/slim.md")])
+    _capsule_normalized(run, "l4-intel-603317", operations=[_read_op("i1", "/x/intel.md")])
+
+    counts: dict[str, int] = {}
+    real_read = chain_view._read_json_or_none
+
+    def counting(path):
+        counts[str(path)] = counts.get(str(path), 0) + 1
+        return real_read(path)
+
+    monkeypatch.setattr(chain_view, "_read_json_or_none", counting)
+    md = chain_view.render(run, CODE, verbose=True)
+
+    over_read = {p: n for p, n in counts.items() if n > 1}
+    assert not over_read, f"这些文件在一次 render() 里被读了不止一次:{over_read}"
+    # 不是空跑一场没读到任何东西——真的读到了 capsule 索引与两份 normalized 产物。
+    assert any(p.endswith("capsule/agents/index.json") for p in counts)
+    assert sum(1 for p in counts if p.endswith("l4-card-603317.json")) == 1
+    assert sum(1 for p in counts if p.endswith("l4-intel-603317.json")) == 1
+    assert "成功 2" in md   # 两条 invocation 的读取都被数进去了,不是被重复读悄悄弄丢
+
+
+def test_visible_text_classifies_message_agent_message_and_tool_result_correctly(
+        tmp_path, monkeypatch):
+    """finding 2(fix round 2):`_visible_text_blocks` 的分类逻辑此前只在空/合成
+    `items` 上跑过。用 Task 2 两个适配器**真实**产出的 item 形状(`claude.py`/
+    `codex.py` 的 `add()` 调用点逐字核对过):
+
+    - `kind="message"`、`role="assistant"`——Claude 侧普通 assistant 可见文本。
+    - `kind="message"`、`role="agent"`——Codex 侧 `agent_message` 的真实 role 字面量
+      (`("agent" if kind == "agent_message" else "assistant")`,codex.py 逐字如此)、
+      文本内容是一段"推理小结"——这是 Codex 把它对用户说的话明文暴露出来的真实形状,
+      不是编的;真正的原始 reasoning/encrypted_reasoning 事件在 `_SKIPPED_RESPONSE_
+      ITEMS` 那一步就被整个丢弃,从不会变成 `NormalizedItem`,所以它不是这里的反例。
+    - `kind="tool_result"`(Claude 真实形状,payload 里恰好也带一个 `content` 键)——
+      **必须不被当成可见文本**。这是比"没有 text/content 字段"更硬的反例:它的
+      payload 里确实有 `content`,如果分类只看字段有没有、不看 `kind`,这条会被
+      误当成可见文本泄出来——证明 kind 检查是真正在起作用,不是摆设。
+    """
+    monkeypatch.chdir(tmp_path)
+    run = _base_run(tmp_path)
+    items = [
+        {"index": 0, "kind": "message",
+         "payload": {"message_id": "m1", "role": "assistant", "text": "助手可见分析文本"},
+         "timestamp": None},
+        {"index": 1, "kind": "message",
+         "payload": {"message_id": "m2", "role": "agent", "text": "推理小结:综合三项指标后判断"},
+         "timestamp": None},
+        {"index": 2, "kind": "tool_result",
+         "payload": {"tool_use_id": "t1", "content": "这是工具返回,不该被当成可见分析文本",
+                    "is_error": False},
+         "timestamp": None},
+    ]
+    _capsule_index(run, [_row("l4-card-603317")])
+    _capsule_normalized(run, "l4-card-603317", items=items, operations=[])
+
+    md = chain_view.render(run, CODE, verbose=True)
+    assert "助手可见分析文本" in md
+    assert "推理小结:综合三项指标后判断" in md
+    assert "这是工具返回,不该被当成可见分析文本" not in md
