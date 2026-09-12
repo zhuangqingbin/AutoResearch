@@ -1635,7 +1635,8 @@ def test_missing_card_is_absent_source_and_unknown_card_context_without_blocking
     assert card["entry_stance"] == "UNKNOWN"
     assert card["source"] == {
         "relative_path": None, "card_sha256": None,
-        "snapshot_quality": "unarchived", "blob_digest": None, "post_hoc": False,
+        "snapshot_quality": "unarchived", "blob_digest": None,
+        "archive_error": None, "post_hoc": False,
     }
     assert doc["buys"][0]["code"] == "002345"          # 卡缺失不影响选择
     assert doc["conflicts"] == [{
@@ -1821,3 +1822,242 @@ def test_safe_write_decision_also_archives_card_snapshot(tmp_path):
     assert target is not None
     doc = json.loads(target.read_text(encoding="utf-8"))
     assert _by_code(doc)["002345"]["card_context"]["parse_status"] == "OK"
+
+
+# ═══════════════════════ fix round 1(review 2026-09-13,6 findings + "ALSO")═══════════
+#
+# 首轮评审:Spec ❌,行为逐条正确,缺口全在测试覆盖(finding 1/2)与两处生产代码的留痕
+# 纪律(finding 3/4)、一处防漂移闭环(finding 5)、一处重复计算(finding 6),外加评审
+# 主动指出的 concern 1 该关掉(ALSO)。
+
+from autoresearch.contracts.agent_output import (  # noqa: E402
+    EXEC_LINE_MAX_PCT_1D,
+    EXEC_LINE_MAX_POS_IN_RANGE,
+)
+
+
+# ── finding 1:finalists(默认池)的 why/selection 从未被断言过实际数值 ────────────
+def test_finalists_pool_why_and_sort_keys_match_the_actual_selected_order(tmp_path):
+    """brief bullet 7:"composite **与 finalists** 的解释都与实际选中顺序一致"——round 1
+    只对 composite 池与 blocked 边界断言过 `why`/`selection` 的内容,finalists(默认池)
+    只测过键存在。用 `_RANK_CANDS`(docstring 自带的 Borda 主用例,四面顺序刻意与乘积
+    顺序相反)锁死实际数值:排序依据、每只的排序键值、`why` 的渲染文本。
+    """
+    doc = build_decision(_build_scan(tmp_path, _RANK_CANDS))
+    selection = doc["selection"]
+
+    assert selection["pool"] == "finalists"
+    assert selection["codes"] == ["002345", "000034", "600188", "601699"]
+    assert selection["sort_keys"]["names"] == [
+        "relative_decision_score", "target_align", "amount", "code"]
+    assert selection["sort_keys"]["directions"] == ["desc", "desc", "desc", "asc"]
+    assert selection["sort_keys"]["values"] == {
+        "002345": [0.6875, 0.125, 9.0, "002345"],
+        "000034": [0.625, 0.625, 8.0, "000034"],
+        "600188": [0.5, 0.875, 7.0, "600188"],
+        "601699": [0.1875, 0.375, 6.0, "601699"],
+    }
+    assert selection["winner"] == {"code": "002345", "pool_rank": 1}
+
+    assert "002345 是 finalists 池(共 4 只)第 1 名" in doc["why"]
+    assert ("排序依据:relative_decision_score=0.6875、target_align=0.125、amount=9.0、"
+           "code=002345。") in doc["why"]
+
+
+# ── finding 2:exclude_pinned=True 与 composite not_in_pool 从未在 schema 2 层被断言 ──
+def test_selection_exclusions_and_after_pinned_exclusion_reflect_a_real_pinned_holding(
+    tmp_path,
+):
+    """`exclude_pinned=True` 且 rank1 是📌持仓:`selection.exclusions.pinned_holding`
+    非空,`after_pinned_exclusion` 真的比 `passed_hard_gates` 少 1——round 1 的 schema 2
+    测试没有一条传过 `exclude_pinned=True`。"""
+    top = replace(_RANK_CANDS[0], pinned=True)          # 002345——不排除时的 rank1
+    second = _RANK_CANDS[1]                              # 000034——不排除时的 rank2
+    doc = build_decision(_build_scan(tmp_path, [top, second]), exclude_pinned=True)
+
+    assert doc["buys"][0]["code"] == "000034"
+    selection = doc["selection"]
+    assert selection["exclusions"]["pinned_holding"] == ["002345"]
+    assert selection["exclusions"]["not_in_pool"] == []
+    assert selection["population"] == {
+        "candidates": 2, "passed_hard_gates": 2,
+        "after_pinned_exclusion": 1, "final_pool": 1,
+    }
+    veto = doc["veto_accounting"]
+    assert veto["population"]["after_pinned_exclusion"] == 1
+    assert veto["vetoed_stocks"] == 0            # 📌排除不是否决,两个流水口径不同
+
+
+def test_selection_exclusions_records_a_composite_day_not_in_pool_candidate(tmp_path):
+    """composite 池且存在至少一只不在证据席的候选:`selection.exclusions.not_in_pool`
+    非空——round 1 的 composite 测试都恰好全体候选皆席位或恰好只测了 `excluded` 顶层
+    数组,从未在 schema 2 的 `selection` 视角断言过这个字段有值。"""
+    cands = [
+        Cand(code="000034", name="非席位", composite_rank=20, amount_yi=9.0,
+             n_channels=4, best_channel_rank=1, rating="Hold", intel="INTEL",
+             dossier=True, price_claim="CLEAN"),
+        Cand(code="600188", name="证据席", composite_rank=1, amount_yi=3.0,
+             n_channels=1, best_channel_rank=30, rating="Hold", intel="NONE", seat=True),
+    ]
+    doc = build_decision(_build_scan(tmp_path, cands), mode=MODE_ACTIVE, pool=POOL_COMPOSITE)
+
+    assert doc["buys"][0]["code"] == "600188"
+    selection = doc["selection"]
+    assert selection["exclusions"]["not_in_pool"] == ["000034"]
+    assert selection["exclusions"]["pinned_holding"] == []
+    assert selection["population"] == {
+        "candidates": 2, "passed_hard_gates": 2,
+        "after_pinned_exclusion": 2, "final_pool": 1,
+    }
+
+
+# ── finding 3:卡缺席与读取失败必须分开留痕 ───────────────────────────────────────
+def test_unreadable_card_is_recorded_distinctly_from_a_missing_card(tmp_path):
+    """一只票的 `details/<code>.md` 是个**目录**(名字对、glob 会找到,但 `.read_text()`
+    必然抛 `IsADirectoryError`——`OSError` 子类,不靠 chmod,跨平台稳定可复现)。它必须被
+    记成"读取失败"而不是"卡缺失":`parse_errors` 点名读取失败与具体异常,不能印
+    "卡片正文为空或缺失"这句不实的话;`source.relative_path` 是已知的(glob 找到过这个
+    路径),`source.card_sha256` 是 `None`(没读到内容,算不出 hash)——这对字段组合与
+    "压根没有这张卡"(两个都是 `None`)结构上可辨。同一份 fixture 里另一只票压根没有
+    `details/*.md`,用作"缺席"对照组。
+    """
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    details = scan / "details"
+    details.mkdir(parents=True, exist_ok=True)
+    (details / "002345.md").mkdir()          # 名字对,是个目录——读取必炸
+
+    doc = json.loads(write_decision(scan).read_text(encoding="utf-8"))
+    unreadable = _by_code(doc)["002345"]["card_context"]
+
+    assert unreadable["parse_status"] == "ERROR"
+    assert unreadable["card_kind"] == "unknown"
+    assert any("读取失败" in e for e in unreadable["parse_errors"])
+    assert not any("正文为空或缺失" in e for e in unreadable["parse_errors"])
+    assert unreadable["source"]["relative_path"] == "details/002345.md"
+    assert unreadable["source"]["card_sha256"] is None
+
+    missing = _by_code(doc)["000034"]["card_context"]          # 对照组:真的没有这张卡
+    assert missing["source"]["relative_path"] is None
+    assert missing["source"]["card_sha256"] is None
+    assert any("正文为空或缺失" in e for e in missing["parse_errors"])
+
+    assert doc["buys"][0]["code"] == "002345"      # 读取失败是 display_only,不影响选择
+
+
+# ── finding 4:归档失败的原因不能被 `except Exception` 吞掉 ───────────────────────
+def test_archive_failure_records_the_cause_and_leaves_selection_unchanged(tmp_path, capsys):
+    """`capsule/blobs` 提前放一个**普通文件**(不是目录)——`trace.blobs._secure_directory`
+    走到这一级会发现"该组件存在但不是目录",抛 `ValueError`,是"活跃 run 在场但归档真的
+    失败"的确定性复现路径(不靠 chmod)。归档失败必须:①`snapshot_quality` 仍是
+    `unarchived`(不阻断);②原因记进 `source.archive_error`(不是 `None`);③原因也打进
+    stderr(与 `verify_decision` 既有的不一致留痕纪律一致);④决策投影分毫不受影响。
+    """
+    run_root = tmp_path / "run"
+    scan = _build_scan(run_root / "staging", _RANK_CANDS)
+    baseline = _projection(build_decision(scan))
+
+    capsule = run_root / "capsule"
+    (capsule / "identity").mkdir(parents=True)
+    (capsule / "blobs").write_text("occupied by a plain file, not a directory",
+                                   encoding="utf-8")
+    _write_card(scan, "002345", _CARD_ALLOWED_A)
+
+    doc = json.loads(write_decision(scan).read_text(encoding="utf-8"))
+
+    assert _projection(doc) == baseline
+    source = _by_code(doc)["002345"]["card_context"]["source"]
+    assert source["snapshot_quality"] == "unarchived"
+    assert source["blob_digest"] is None
+    assert source["archive_error"]                       # 非空、非 None——原因被记录了
+    assert "not a directory" in source["archive_error"]
+    assert doc["buys"][0]["code"] == "002345"
+
+    err = capsys.readouterr().err
+    assert "卡快照归档失败" in err
+    assert "not a directory" in err
+
+
+# ── finding 5:两处真实 `.sort()` 与 `_selection_sort_spec` 的复述必须有硬 guard ──────
+#: 四只票四面(target_align/recall_strength/evidence/risk_safety)与 composite_rank/
+#: n_channels/best_channel_rank/intel/dossier/price_claim/gate_states/early_stop
+#: 逐项相同(→ relative_decision_score 与 target_align 两级主键全部打平),只留
+#: amount_yi/code 可分胜负——逼真实排序用上 tiebreak 的每一级。`seat=True` 是为了同一份
+#: fixture 也能喂 composite 池(只靠 target_align 排,这里同样打平,一样落到 amount/code)。
+_TIE_BASE = Cand(code="900001", name="并列基准", composite_rank=1, amount_yi=5.0,
+                 n_channels=2, best_channel_rank=1, rating="Hold",
+                 early_stop={"phase": "P3", "reason": "其他"}, intel="INTEL",
+                 dossier=True, price_claim="CLEAN",
+                 gate_states={"主力真在": "PASS"}, seat=True)
+
+
+def test_finalists_and_composite_sort_key_specs_match_the_real_tiebreak_order(tmp_path):
+    """`_selection_sort_spec` 是对 `build_decision` 里两处真实 `.sort()` key 元组的**手动
+    复述**,没有结构性关联——本测试是唯一的防线:独立算出(不调用 `_selection_sort_spec`
+    本身)"前面主键全部打平,只剩 amount desc / code asc 能分胜负"场景下的期望顺序,断言
+    两个池的 `selection["codes"]` 都等于它。mutation probe(见 fix 报告)证实过它真的会
+    因为某一侧 `.sort()` 的 tiebreak 顺序被改动而变红。
+    """
+    tied = [
+        replace(_TIE_BASE, code="600300", amount_yi=9.0),   # amount 最高,应最先
+        replace(_TIE_BASE, code="600200", amount_yi=7.0),
+        replace(_TIE_BASE, code="600100", amount_yi=5.0),   # 与下面这只 amount 也打平
+        replace(_TIE_BASE, code="600050", amount_yi=5.0),   # code 更小,该排在 600100 前面
+    ]
+    scan = _build_scan(tmp_path, tied)
+
+    fin = build_decision(scan)
+    scores = {row["code"]: row["relative_decision_score"] for row in fin["candidates"]}
+    aligns = {row["code"]: row["faces"]["target_align"] for row in fin["candidates"]}
+    assert len(set(scores.values())) == 1        # 前提自证:relative_decision_score 真打平
+    assert len(set(aligns.values())) == 1         # 前提自证:target_align 真打平
+
+    expected_order = ["600300", "600200", "600050", "600100"]   # amount desc,同额 code asc
+    assert fin["selection"]["codes"] == expected_order
+
+    comp = build_decision(scan, mode=MODE_ACTIVE, pool=POOL_COMPOSITE)
+    assert comp["selection"]["codes"] == expected_order          # composite 只用 target_align,这里也打平
+
+
+# ── finding 6 的回归覆盖已经是既有测试的一部分(`build_decision` 每次只跑一遍,重算
+# 只在源码层面被移除,没有独立行为可测;上面 finding 1/2 的测试同时也在跑这条路径)。
+
+
+# ── ALSO:contract=_LIVE_EXEC_LINE_CONTRACT 让 contract_match 在活体卡上真正可读 ──────
+def _card_with_exec_lines(pct_chg, pos_in_range) -> str:
+    return "\n".join([
+        "# 决策卡 — 002345 示例票 @ 2026-08-06",
+        "| 评级 | 现价 | 仓位 |", "|---|---|---|", "| Hold | 10 | 10% |",
+        f"- [执行线] pct_chg <= {pct_chg} → 当日涨超放弃本次尾盘入场",
+        f"- [执行线] pos_in_range < {pos_in_range} → 收在当日区间上沿放弃",
+        "FINAL TRANSACTION PROPOSAL: **HOLD**",
+    ])
+
+
+def test_live_contract_reports_match_when_exec_lines_equal_the_in_force_thresholds(tmp_path):
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    _write_card(scan, "002345",
+               _card_with_exec_lines(EXEC_LINE_MAX_PCT_1D, EXEC_LINE_MAX_POS_IN_RANGE))
+
+    doc = json.loads(write_decision(scan).read_text(encoding="utf-8"))
+    exec_lines = _by_code(doc)["002345"]["card_context"]["exec_lines"]
+
+    assert exec_lines["pct_chg"]["contract_match"] == "MATCH"
+    assert exec_lines["pos_in_range"]["contract_match"] == "MATCH"
+    assert exec_lines["pct_chg"]["contract_version"] is None      # 不带 version(ALSO 条款)
+    assert exec_lines["pos_in_range"]["contract_version"] is None
+
+
+def test_live_contract_reports_drifted_when_exec_lines_differ_from_the_in_force_thresholds(
+    tmp_path,
+):
+    drifted_pct, drifted_pos = 5.0, 0.4
+    assert drifted_pct != EXEC_LINE_MAX_PCT_1D                    # 前提自证:真的不同
+    assert drifted_pos != EXEC_LINE_MAX_POS_IN_RANGE
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    _write_card(scan, "002345", _card_with_exec_lines(drifted_pct, drifted_pos))
+
+    doc = json.loads(write_decision(scan).read_text(encoding="utf-8"))
+    exec_lines = _by_code(doc)["002345"]["card_context"]["exec_lines"]
+
+    assert exec_lines["pct_chg"]["contract_match"] == "DRIFTED"
+    assert exec_lines["pos_in_range"]["contract_match"] == "DRIFTED"

@@ -128,6 +128,10 @@ from pathlib import Path
 
 from autoresearch.common import workspace as ws
 from autoresearch.common.ruler import MAIN_RULER, REL_MARKET, REL_SECTOR, entry_flag_for
+from autoresearch.contracts.agent_output import (
+    EXEC_LINE_MAX_PCT_1D,
+    EXEC_LINE_MAX_POS_IN_RANGE,
+)
 from autoresearch.scan.l4.parsers import parse_card_context
 from autoresearch.scan.passport import build_passport
 from autoresearch.trace import blobs as trace_blobs
@@ -229,7 +233,24 @@ _FALSY = {"false", "0", "no", "否"}
 #: 的职责)。
 _ABSENT_CARD_SOURCE = {
     "relative_path": None, "card_sha256": None,
-    "snapshot_quality": "unarchived", "blob_digest": None, "post_hoc": False,
+    "snapshot_quality": "unarchived", "blob_digest": None,
+    "archive_error": None, "post_hoc": False,
+}
+
+#: fix round 1(review "ALSO"):`write_decision`/`verify_decision` 只读**当日**活体卡
+#: ——对它们而言"今天"就是唯一在场的版本,今天的常量就是今天生效的契约,不是拿今天的
+#: 值去判"历史"卡漂移(spec §7.1 的禁令针对的是后者:替历史卡编一个它当时未必适用的
+#: 契约)。因此这里传真值,让 `contract_match` 在活体卡上真正可读——数字唯一真身仍是
+#: `contracts.agent_output`,这里只导入用、不重抄字面量(防三份手写拷贝那种漂移,同
+#: agent_output.py 里 `EXEC_LINE_MAX_PCT_1D` 旁注点名的病)。**不带 `version` 键**——
+#: `EXEC_LINE_MAX_PCT_1D`/`EXEC_LINE_MAX_POS_IN_RANGE` 没有独立于
+#: `AGENT_OUTPUT_SCHEMA_VERSION` 的版本号,编一个会把"这两个阈值有没有变"和"整份卡片
+#: 契约 schema 有没有变"两件不同的事绑在一起,阈值改了但 schema 没跟着升版时会静默
+#: 失配——没有版本号比编一个错的更诚实(`contract_version` 因此在活体卡上恒为 `None`,
+#: 这是 `l4/parsers._parse_exec_lines` 的既定行为,不是本次改的)。
+_LIVE_EXEC_LINE_CONTRACT = {
+    "EXEC_LINE_MAX_PCT_1D": EXEC_LINE_MAX_PCT_1D,
+    "EXEC_LINE_MAX_POS_IN_RANGE": EXEC_LINE_MAX_POS_IN_RANGE,
 }
 
 #: `field_usage`(spec §7.2)——真实规则**导出**的字段角色表,不是第二份手写清单:
@@ -652,29 +673,41 @@ def _hard_gate(entry: dict, ctx: dict) -> tuple[dict[str, bool], list[dict]]:
 # "同输入 → 同输出"的字节级 parity(spec §7.2 硬约束)。
 
 
-def _read_card_texts(scan: Path) -> dict[str, dict]:
+def _read_card_texts(scan: Path) -> tuple[dict[str, dict], dict[str, dict]]:
     """`details/*.md` 全部读一遍(与 `l4.parsers.write_early_stop`/
-    `parse_ratings_from_details` 同一遍历方式:glob 全部、文件名 stem 过 `_code` 归一)
-    → {code: {text, relative_path, card_sha256}}。纯读,不归档、不落盘;不按
-    `build_decision` 内部算出的候选集反查——那会形成"先算候选集才能读卡,读卡结果又要
-    喂回候选集构造"的循环。
+    `parse_ratings_from_details` 同一遍历方式:glob 全部、文件名 stem 过 `_code` 归一)。
+    纯读,不归档、不落盘;不按 `build_decision` 内部算出的候选集反查——那会形成"先算
+    候选集才能读卡,读卡结果又要喂回候选集构造"的循环。
+
+    返回 `(texts, unreadable)`(fix round 1,finding 3):**卡缺席与读取失败必须分开
+    留痕**——glob 压根没找到这个 code 的文件(= 缺席,不是错误)与 glob 找到了文件但
+    `.read_text()` 抛 `OSError`(= 这张卡在,但读不出来,是错误、且有具体原因)是两件不同
+    的事,原来的 `except OSError: continue` 把两者叠成同一种"该 code 不在返回值里",
+    调用方无从分辨。`texts` = `{code: {text, relative_path, card_sha256}}`(成功读到的);
+    `unreadable` = `{code: {relative_path, error}}`(文件存在但读失败的,`error` 是
+    `f"{异常类名}: {异常信息}"`,不吞原因)。两个字典的 code 键不相交。
     """
     base = scan / "details"
-    out: dict[str, dict] = {}
+    texts: dict[str, dict] = {}
+    unreadable: dict[str, dict] = {}
     if not base.is_dir():
-        return out
+        return texts, unreadable
     for path in sorted(base.glob("*.md")):
         code = _code(path.stem)
         try:
             text = path.read_text(encoding="utf-8")
-        except OSError:
+        except OSError as exc:
+            unreadable[code] = {
+                "relative_path": str(path.relative_to(scan)),
+                "error": f"{type(exc).__name__}: {exc}",
+            }
             continue
-        out[code] = {
+        texts[code] = {
             "text": text,
             "relative_path": str(path.relative_to(scan)),
             "card_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
         }
-    return out
+    return texts, unreadable
 
 
 def _redact_card_bytes(payload: bytes) -> bytes:
@@ -722,18 +755,29 @@ def _capsule_root_for(scan: Path) -> Path | None:
 def _archive_card_snapshot(scan: Path, payload: bytes) -> dict:
     """尽力而为地把(已脱敏的)卡原文归档进活跃 capsule 的内容寻址 blob 区。
 
-    没有活跃 run、或归档过程任何一步失败 → `{"snapshot_quality": "unarchived",
-    "blob_digest": None}`,绝不上抛——归档只是留痕,不是决策输入,选择结果不能依赖它
-    是否成功。
+    没有活跃 run、或归档过程任何一步失败 → `snapshot_quality="unarchived"`,绝不上抛
+    ——归档只是留痕,不是决策输入,选择结果不能依赖它是否成功。
+
+    `archive_error`(fix round 1,finding 4):**没有活跃 run**(`capsule is None`)与
+    **试了但失败**(`put_bytes`/`_redact_card_bytes` 抛异常——不可写的 capsule、损坏的
+    blob 目录、脱敏逻辑本身的 bug……)原来落地时是同一个原因不明的 `unarchived`,原来的
+    `except Exception: return {...}` 吞掉了具体是哪一种。前者不是错误(没有 run 可归档
+    是正常状态,`archive_error=None`);后者是真失败,必须留下可见原因——与
+    `verify_decision` 的既有纪律(不一致时打一行 stderr)对齐,`archive_error` 同时进
+    `source`(留痕,给读盘的人)和 stderr(留痕,给盯着日志的人),两处口径一致
+    (`f"{type(exc).__name__}: {exc}"`)。
     """
     capsule = _capsule_root_for(scan)
     if capsule is None:
-        return {"snapshot_quality": "unarchived", "blob_digest": None}
+        return {"snapshot_quality": "unarchived", "blob_digest": None, "archive_error": None}
     try:
         digest = trace_blobs.put_bytes(capsule, _redact_card_bytes(payload))
-        return {"snapshot_quality": "archived", "blob_digest": digest}
-    except Exception:  # noqa: BLE001 — 归档是尽力而为的留痕,不得阻断决策文件写出
-        return {"snapshot_quality": "unarchived", "blob_digest": None}
+        return {"snapshot_quality": "archived", "blob_digest": digest, "archive_error": None}
+    except Exception as exc:  # noqa: BLE001 — 归档尽力而为不得阻断发布,但原因不能被吞
+        reason = f"{type(exc).__name__}: {exc}"
+        print(f"[relative_buy] 卡快照归档失败(snapshot_quality=unarchived,不影响选择): "
+              f"{reason}", file=sys.stderr)
+        return {"snapshot_quality": "unarchived", "blob_digest": None, "archive_error": reason}
 
 
 def _card_source(entry: dict | None, archive: dict) -> dict:
@@ -749,6 +793,7 @@ def _card_source(entry: dict | None, archive: dict) -> dict:
         "card_sha256": entry.get("card_sha256"),
         "snapshot_quality": archive["snapshot_quality"],
         "blob_digest": archive["blob_digest"],
+        "archive_error": archive.get("archive_error"),
         "post_hoc": False,
     }
 
@@ -764,8 +809,13 @@ def _build_card_snapshot(scan: Path, *, reuse: dict[str, dict] | None = None) ->
     不一致」(那会把每天的正常 verify 都吵成假警报)。内容真的变了 → 不复用,现算一份新
     `source`,让既有的整份文档字节比较(`verify_decision` 主体逻辑)自然把这当成不一致
     处理——不必在这里另开一条"卡变了"的专用信道。
+
+    读取失败的 code(fix round 1,finding 3)不进这份字典的"正常"分支——它们带着
+    `read_error` 标记单独放进去(不尝试归档:内容都没读到,没有字节可归档),
+    `_card_context_for` 据此渲染出"读取失败"而不是"卡缺失"的 card_context。缺席
+    (glob 都没找到)的 code 干脆不出现在返回值里,与之前行为一致。
     """
-    texts = _read_card_texts(scan)
+    texts, unreadable = _read_card_texts(scan)
     out: dict[str, dict] = {}
     for code, entry in texts.items():
         prior = (reuse or {}).get(code)
@@ -774,6 +824,16 @@ def _build_card_snapshot(scan: Path, *, reuse: dict[str, dict] | None = None) ->
             continue
         archive = _archive_card_snapshot(scan, entry["text"].encode("utf-8"))
         out[code] = {"text": entry["text"], "source": _card_source(entry, archive)}
+    for code, failure in unreadable.items():
+        out[code] = {
+            "text": None,
+            "read_error": failure,
+            "source": {
+                "relative_path": failure["relative_path"], "card_sha256": None,
+                "snapshot_quality": "unarchived", "blob_digest": None,
+                "archive_error": None, "post_hoc": False,
+            },
+        }
     return out
 
 
@@ -805,13 +865,26 @@ def _card_context_for(code: str, card_snapshot: dict[str, dict] | None) -> dict:
     不读盘、不归档——所有 I/O 已经在调用方(`write_decision`/`verify_decision`)完成,
     `build_decision` 因此对"卡怎么读到的"保持纯计算(spec §7.2 硬约束)。
 
-    `contract` 恒传 `None`(见文件尾「已知问题」):要不要把「今天」的
-    `EXEC_LINE_MAX_PCT_1D`/`EXEC_LINE_MAX_POS_IN_RANGE` 常量喂给"今天自己产的卡"做自洽
-    核对,是一个本任务特意搁置、留给以后的决定——搁置理由见文件尾,不在这里悄悄接上。
+    `contract=_LIVE_EXEC_LINE_CONTRACT`(fix round 1,review "ALSO";两处 `parse_card_
+    context` 调用——正常路径与下面的读取失败路径——都传同一个真契约,理由见该常量旁注。
+
+    读取失败(fix round 1,finding 3)与卡缺席分开渲染:`card_snapshot[code]` 带
+    `read_error` 键 → 不当"文本为空"处理(那会印出"卡片正文为空或缺失"这句**不实**的
+    话——文本根本不是空的,是读不出来),改为在 `parse_card_context(None, ...)` 的标准
+    空壳基础上,把 `parse_errors` 换成点名文件路径与具体异常原因的那一句;`source.
+    relative_path` 仍是已知的(glob 找到过这个文件),只是 `card_sha256` 拿不到(没读到
+    内容)——这一对字段组合(有路径、无 hash)本身就是"存在但读不出来"与"压根不存在"
+    (两者都 `None`)的可辨结构信号,不必新开一个布尔位。
     """
     snap = (card_snapshot or {}).get(code)
-    text = snap.get("text") if snap else None
-    parsed = parse_card_context(text, contract=None)
+    if snap and snap.get("read_error"):
+        failure = snap["read_error"]
+        parsed = parse_card_context(None, contract=_LIVE_EXEC_LINE_CONTRACT)
+        parsed = {**parsed, "parse_errors": [
+            f"text: 卡片文件读取失败({failure['relative_path']}): {failure['error']}"]}
+    else:
+        text = snap.get("text") if snap else None
+        parsed = parse_card_context(text, contract=_LIVE_EXEC_LINE_CONTRACT)
     source = (dict(snap["source"]) if snap and isinstance(snap.get("source"), dict)
              else dict(_ABSENT_CARD_SOURCE))
     return {**parsed, "source": source}
@@ -819,8 +892,19 @@ def _card_context_for(code: str, card_snapshot: dict[str, dict] | None) -> dict:
 
 # ── E6 实际选择解释(spec §7.2「实际选择依据」)───────────────────────────────
 def _selection_sort_spec(pool: str) -> tuple[list[str], list[str]]:
-    """该 pool 的 buy_pool 排序键名 + 方向——与 `build_decision` 里真正用来 `.sort()` 的
-    key 逐字同源(见下面两处调用点旁注),不在这里重算一遍规则。"""
+    """该 pool 的 buy_pool 排序键名 + 方向——**手动**与 `build_decision` 里真正用来
+    `.sort()` 的 key 元组保持同序(那两处调用点各自带一行指回这里的旁注,搜
+    `_selection_sort_spec` 能看到全部三处)。
+
+    这是记录性的复述,不是从同一份源派生——两个 `.sort()` 调用嵌在 `eligible`/`buy_pool`
+    的构造逻辑里,不值得为了消掉这一份复述去拆解那段已经锁定、被大量既有测试钉死的排序
+    代码(fix round 1,finding 5 的权衡:**改成单一来源**风险高于**留复述 + 硬 guard**)。
+    真正的防线是 `test_finalists_and_composite_sort_key_specs_match_the_real_tiebreak_
+    order`:它用刻意做到"前面所有键都打平、只有最后一级 tiebreak 能分胜负"的 fixture,
+    独立算出(不借这个函数)两个池各自的期望顺序,再断言真实 `selection["codes"]` 与之
+    相等——mutation probe(把某一侧 `.sort()` 的 tiebreak 顺序换掉)证实过它真的会因为
+    `.sort()` 改了而变红,不是只测自己抄的这份复述有没有内部自洽。
+    """
     if pool == POOL_COMPOSITE:
         return (["target_align", "amount", "code"], ["desc", "desc", "asc"])
     return (["relative_decision_score", "target_align", "amount", "code"],
@@ -839,16 +923,18 @@ def _sort_key_values(row: dict, names: list[str], universe: dict) -> list:
 
 
 def _selection_block(*, pool: str, eligible: list[dict], buy_pool: list[dict],
-                     universe: dict, buys: list[dict], second_buy: dict,
-                     excluded: list[dict], candidates_n: int) -> dict:
+                     universe: dict, buys: list[dict], winner_code: str | None,
+                     second_buy: dict, excluded: list[dict], candidates_n: int) -> dict:
     """spec §7.2「实际选择依据」——只从 `build_decision` 已经算好的 eligible/buy_pool/
     排序值/excluded/second_buy 里摘,不重算第二套排序(那正是 composite 池 E03 场景要堵
     的病:重算迟早和真正选择分家)。`pool_rank` 用 `codes.index()` 现查,不从
     `observation_rank` 反推——两者在 composite 池下可以是不同的数。
+
+    `winner_code`(fix round 1,finding 6):由调用方(`build_decision`)算一次传进来,
+    不在这里对 `buys[0]` 再算第二遍——`buys` 仍作为形参保留,只用于 `buys_count`。
     """
     names, directions = _selection_sort_spec(pool)
     codes = [row["code"] for row in buy_pool]
-    winner_code = buys[0]["code"] if buys else None
     pinned_excluded = sorted(row["code"] for row in excluded if row["reason"] == "pinned_holding")
     not_in_pool_excluded = sorted(row["code"] for row in excluded if row["reason"] == "not_in_pool")
     return {
@@ -1052,6 +1138,9 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
         })
 
     by_code = {row["code"]: row for row in candidates}
+    # 这段 key 元组的键名/方向复述在 `_selection_sort_spec(POOL_FINALISTS)`(fix round 1,
+    # finding 5)——改这里的顺序必须同步改那份复述,`test_finalists_and_composite_sort_
+    # key_specs_match_the_real_tiebreak_order` 是防漂移的 guard。
     eligible = sorted(
         (row for row in candidates if row["eligible"]),
         key=lambda row: (-row["relative_decision_score"],
@@ -1079,6 +1168,8 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
             excluded.append({"code": row["code"], "reason": "not_in_pool",
                              "detail": "不在 composite 证据席(v3.0 候选池=L3 守卫⑨ 席位)"})
         buy_pool = [row for row in buy_pool if row["in_pool"]]
+        # 这段 key 元组的键名/方向复述在 `_selection_sort_spec(POOL_COMPOSITE)`(同上一处
+        # finalists 排序的旁注,fix round 1 finding 5)。
         buy_pool.sort(key=lambda row: (-row["faces"]["target_align"],
                                        -(universe["amount"].get(row["code"]) or 0.0),
                                        row["code"]))
@@ -1105,10 +1196,10 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
     # schema 2:实际选择依据 + 否决计数 + 字段角色 + 展示性冲突 + 固定渲染的 why。全部
     # 从上面已经算好的 eligible/buy_pool/excluded/second_buy/candidates 摘,不重算第二套
     # 排序或门(spec §7.2 硬约束)。
-    winner_code = buys[0]["code"] if buys else None
+    winner_code = buys[0]["code"] if buys else None       # 只算一次(fix round 1, finding 6)
     selection = _selection_block(
         pool=pool, eligible=eligible, buy_pool=buy_pool, universe=universe,
-        buys=buys, second_buy=second_buy, excluded=excluded,
+        buys=buys, winner_code=winner_code, second_buy=second_buy, excluded=excluded,
         candidates_n=len(candidates))
     veto_accounting = _veto_accounting_block(
         candidates=candidates, eligible=eligible, buy_pool=buy_pool,
@@ -1505,15 +1596,17 @@ def main(argv: list[str] | None = None) -> int:
 # 6. `research_rating != "Sell"` 只挡五档里最末一档。实测 2026-08-06 有 4 只 `Underweight`
 #    (`decision_records.proposal == "SELL"`)全部通过硬门并进入排序——当天冠军是 Hold 所以
 #    没咬到,但"提议卖出的票可以当相对 BUY 出"这条通路是敞开的。规则观察前锁定,本轮不改。
-# 7. **(schema 2,Task 7)`_card_context_for` 恒传 `contract=None` 给 `parse_card_context`**
-#    ——`exec_lines.*.contract_match` 因此对**每一天、每一张卡**都是 `UNKNOWN`,包括当天
-#    刚产出、理应能跟当前 `contracts.agent_output.EXEC_LINE_MAX_PCT_1D`/
-#    `EXEC_LINE_MAX_POS_IN_RANGE` 自洽核对的活体卡。这是本任务刻意搁置的决定,不是漏做:
-#    `l4/parsers.py` 明确不导入那两个常量(防止"没传 contract"退化成"拿今天的值判历史
-#    漂移"),该常量存在但没有独立的"版本号"字段——若直接用
-#    `contracts.agent_output.AGENT_OUTPUT_SCHEMA_VERSION` 顶替,会把"这两个阈值有没有变"
-#    这件事和"整份卡片输出契约的 schema 版本"这件**不同**的事捆在一起,阈值改了但
-#    schema 没升版时会静默失配——版本语义比"暂时留 UNKNOWN"更容易出错。给活体运行接一个
-#    真正独立的执行线契约版本号,是可以做但本任务没做的下一步。
+# 7. **(schema 2,Task 7,fix round 1 修订)`_card_context_for` 现在传
+#    `contract=_LIVE_EXEC_LINE_CONTRACT`**——最初实现(观察前)把这里恒锁 `None`,理由是
+#    误读了 `l4/parsers.py` "不导入这两个常量"的禁令:那条禁令是防止拿**今天**的值去判
+#    **历史**卡的漂移(parser 本身不知道调用者手上的卡是今天写的还是十天前的)。但
+#    `write_decision`/`verify_decision` 只读**当日**活体卡——对它们而言"今天"是唯一在场
+#    的版本,今天的常量就是今天在生效的契约,禁令并不适用。现在两个 `parse_card_context`
+#    调用点(正常路径 + 读取失败路径)都传 `_LIVE_EXEC_LINE_CONTRACT`(从
+#    `contracts.agent_output` 导入数值、不重抄字面量),`exec_lines.*.contract_match` 在
+#    活体卡上能真正读出 MATCH/DRIFTED。仍然**不带 `version`**:那两个常量没有独立于
+#    `AGENT_OUTPUT_SCHEMA_VERSION` 的版本号,编一个会把"阈值有没有变"和"整份卡片契约
+#    schema 有没有变"两件不同的事捆在一起,阈值改了但 schema 没跟着升版时会静默失配
+#    ——没有版本号比编一个错的更诚实,`contract_version` 因此仍恒为 `None`。
 if __name__ == "__main__":
     raise SystemExit(main())
