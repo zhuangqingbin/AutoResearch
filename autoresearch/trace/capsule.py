@@ -68,6 +68,7 @@ from autoresearch.trace.transcripts import (
 from autoresearch.trace.transcripts.base import (
     CURRENT_TRANSCRIPT_SCHEMA_VERSION as _TRANSCRIPT_SCHEMA_VERSION,
 )
+from autoresearch.trace.transcripts.snapshot import TranscriptSnapshot, capture_snapshot
 
 _STAGE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$", re.ASCII)
@@ -1668,28 +1669,6 @@ def _redact_bytes(payload: bytes) -> bytes:
     return text.encode("latin-1")
 
 
-def _raw_archive_bytes(source: Path) -> tuple[bytes, int, int]:
-    """Return deterministic gzip bytes of the redacted harness-schema rows."""
-    rows: list[str] = []
-    unparsed = 0
-    for line in source.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            parsed = json.loads(line)
-        except Exception:  # noqa: BLE001 - a truncated tail line is a fact, not a crash
-            unparsed += 1
-            continue
-        rows.append(canonical_json(redact_value(parsed).value))
-    body = _redact_bytes(("\n".join(rows) + "\n" if rows else "").encode("utf-8"))
-    buffer = io.BytesIO()
-    # mtime=0 keeps a re-materialized archive byte-identical.
-    with gzip.GzipFile(fileobj=buffer, mode="wb", mtime=0) as archive:
-        archive.write(body)
-    return buffer.getvalue(), len(rows), unparsed
-
-
 def _archive_plain_bytes(body: bytes) -> bytes:
     """Same mtime=0 + secret-redaction discipline as `_raw_archive_bytes`, for
     arbitrary (non-JSONL harness-row) file content such as `tool-results/*`."""
@@ -1800,8 +1779,54 @@ def _external_tool_rows(
     return rows
 
 
-def _archive_bound_transcripts(handle: RunHandle) -> dict[str, dict]:
-    """Archive every bound transcript and return one evidence row per binding."""
+def _operation_row(operation) -> dict:
+    """One `ObservedOperation` -> a JSON-safe dict for `agents/normalized/*.json`."""
+    return {
+        "kind": operation.kind,
+        "call_id": operation.call_id,
+        "tool_name": operation.tool_name,
+        "path": operation.path,
+        "path_source": operation.path_source,
+        "row_index": operation.row_index,
+        "response": (
+            None
+            if operation.response is None
+            else {
+                "sha256": operation.response.sha256,
+                "byte_count": operation.response.byte_count,
+                "encoding": operation.response.encoding,
+            }
+        ),
+        "artifact": (
+            None
+            if operation.artifact is None
+            else {
+                "sha256": operation.artifact.sha256,
+                "byte_count": operation.artifact.byte_count,
+            }
+        ),
+    }
+
+
+def _archive_bound_transcripts(
+    handle: RunHandle,
+    *,
+    snapshot_cache: dict[str, TranscriptSnapshot] | None = None,
+) -> dict[str, dict]:
+    """Archive every bound transcript and return one evidence row per binding.
+
+    Design §5.1 ("单源一次快照"): every fact derived below -- raw archive,
+    normalized items/operations, per-invocation usage, all hashes -- comes
+    from exactly one `snapshot.capture_snapshot` per unique source path,
+    cached in ``snapshot_cache`` (built locally when the caller does not
+    supply one, e.g. a direct test call; shared with `_write_usage` when
+    called from `finalize()`, so one `finalize()` pass reads each bound
+    source's bytes off disk exactly once in total). Two invocations bound to
+    the same source (spec's "两个 invocation 共享源") therefore reuse the same
+    in-memory snapshot rather than each triggering a fresh read, and the raw
+    archive on disk is keyed by ``snapshot_id`` (a content hash) so the same
+    source is written once regardless of how many invocations reference it.
+    """
     bindings = _read_jsonl(_bindings_path(handle))
     raw_root = _safe_directory(handle.capsule, Path("agents/raw"), create=True)
     normalized_root = _safe_directory(
@@ -1812,6 +1837,10 @@ def _archive_bound_transcripts(handle: RunHandle) -> dict[str, dict]:
         (row.get("invocation_id"), row.get("tool_call_id"))
         for row in _read_jsonl(lineage_path)
     }
+    cache: dict[str, TranscriptSnapshot] = (
+        {} if snapshot_cache is None else snapshot_cache
+    )
+    written_raw: set[str] = set()
     invocations: list[dict] = []
     pending_lineage: list[dict] = []
     for binding in bindings:
@@ -1828,6 +1857,7 @@ def _archive_bound_transcripts(handle: RunHandle) -> dict[str, dict]:
             "reason": None,
             "raw": None,
             "normalized": None,
+            "snapshot_id": None,
             "source_sha256": None,
             "source_bytes": None,
             "rows": None,
@@ -1856,17 +1886,32 @@ def _archive_bound_transcripts(handle: RunHandle) -> dict[str, dict]:
         )
         try:
             adapter = adapter_for(engine)
-            normalized = adapter.normalize(ref)
-            usage = adapter.usage(ref)
-            archive, parsed_rows, unparsed = _raw_archive_bytes(source)
+            cache_key = str(source)
+            snapshot = cache.get(cache_key)
+            if snapshot is None:
+                snapshot = capture_snapshot(source, engine=engine)
+                cache[cache_key] = snapshot
+            if snapshot.source_changed:
+                # spec §5.1: "无法保证同一前缀时 SOURCE_CHANGED，不混合重试内容" --
+                # a truthful degrade, not a silent best-effort archive of
+                # content that may not be one coherent prefix.
+                raise RuntimeError(
+                    "transcript source changed identity during capture "
+                    "(SOURCE_CHANGED); not trusted as evidence"
+                )
+            stats = adapter.stats_from_rows(snapshot.rows, ref)
         except Exception as exc:  # noqa: BLE001 - an unreadable transcript is a fact
             row["status"] = "UNSUPPORTED"
             row["reason"] = _safe_exception_text(exc)
             invocations.append(row)
             continue
-        raw_path = raw_root / f"{invocation_id}.jsonl.gz"
+        normalized = stats.normalized
+        usage = stats.usage
+        raw_path = raw_root / f"{snapshot.snapshot_id}.jsonl.gz"
         normalized_path = normalized_root / f"{invocation_id}.json"
-        atomic_write_bytes(raw_path, archive)
+        if snapshot.snapshot_id not in written_raw:
+            atomic_write_bytes(raw_path, snapshot.archive_bytes)
+            written_raw.add(snapshot.snapshot_id)
         atomic_write_json(
             normalized_path,
             {
@@ -1878,6 +1923,7 @@ def _archive_bound_transcripts(handle: RunHandle) -> dict[str, dict]:
                 "status": normalized.status,
                 "model": normalized.model,
                 "effort": normalized.effort,
+                "snapshot_id": snapshot.snapshot_id,
                 "items": [
                     {
                         "index": item.index,
@@ -1887,6 +1933,7 @@ def _archive_bound_transcripts(handle: RunHandle) -> dict[str, dict]:
                     }
                     for item in normalized.items
                 ],
+                "operations": [_operation_row(op) for op in stats.operations],
             },
         )
         if engine == "claude" and str(binding.get("role")) == "main":
@@ -1895,10 +1942,11 @@ def _archive_bound_transcripts(handle: RunHandle) -> dict[str, dict]:
             {
                 "raw": raw_path.relative_to(handle.capsule).as_posix(),
                 "normalized": normalized_path.relative_to(handle.capsule).as_posix(),
-                "source_sha256": sha256_file(source),
-                "source_bytes": source.stat().st_size,
-                "rows": parsed_rows,
-                "unparsed_rows": unparsed,
+                "snapshot_id": snapshot.snapshot_id,
+                "source_sha256": snapshot.source_prefix.sha256,
+                "source_bytes": snapshot.source_prefix.byte_count,
+                "rows": len(snapshot.rows),
+                "unparsed_rows": snapshot.bad_lines,
                 "items": len(normalized.items),
                 "model": normalized.model,
                 "effort": normalized.effort,
@@ -1979,16 +2027,24 @@ def materialize_agent_index(
     run_id: str,
     *,
     not_expected: Sequence[str] = (),
+    snapshot_cache: dict[str, TranscriptSnapshot] | None = None,
 ) -> dict:
     """Archive bound transcripts and account for **every** reached invocation.
 
     Coverage is never inferred from an absent directory: a dispatch with no
     bound transcript is an explicit ``GONE`` row, a role that structurally has
     no transcript is ``NOT_EXPECTED``, and a failed dispatch still gets a row.
+
+    ``snapshot_cache``: optional, keyed by resolved source path -- passed
+    through unchanged to `_archive_bound_transcripts`. ``None`` (every
+    pre-Task-2 caller, and this function's own default) keeps this call
+    self-contained (it builds and discards its own cache); `finalize()`
+    passes one shared dict so this call and the `_write_usage` call moments
+    later read each bound source exactly once in total.
     """
     handle = require_active_run(run_id)
     skipped_roles = _NON_TRANSCRIPT_ROLES | {str(role) for role in not_expected}
-    evidence = _archive_bound_transcripts(handle)
+    evidence = _archive_bound_transcripts(handle, snapshot_cache=snapshot_cache)
     expectations = _agent_expectations(handle)
 
     invocations: list[dict] = []
@@ -2007,6 +2063,7 @@ def materialize_agent_index(
                 "reason": "reached dispatch has no bound transcript",
                 "raw": None,
                 "normalized": None,
+                "snapshot_id": None,
                 "source_sha256": None,
                 "source_bytes": None,
                 "rows": None,
@@ -2401,10 +2458,28 @@ def _write_capsule_manifest(
     )
 
 
-def _write_usage(handle: RunHandle) -> None:
+def _write_usage(
+    handle: RunHandle,
+    *,
+    snapshot_cache: dict[str, TranscriptSnapshot] | None = None,
+) -> None:
+    """Write the run-level usage ledger.
+
+    ``snapshot_cache``: optional, passed through to
+    `usage_harvest.collect_run` so a source this run already captured (via
+    `materialize_agent_index` moments earlier in `finalize()`) is not read a
+    second time. ``None`` keeps every other, non-`finalize()` caller of this
+    function reading through `collect_run`'s own self-contained cache,
+    unchanged from before this task -- the standalone `usage_harvest` CLI
+    never reaches this function at all (ruling 2: it must not gain a
+    bindings dependency), so this parameter is exercised only inside
+    `finalize()`.
+    """
     from autoresearch.trace import usage_harvest
 
-    rows = usage_harvest.collect_run(handle.run_id, engine=handle.engine)
+    rows = usage_harvest.collect_run(
+        handle.run_id, engine=handle.engine, snapshot_cache=snapshot_cache
+    )
     source = f"run:{handle.run_id}"
     atomic_write_json(
         handle.capsule / "usage/_token_usage.json",
@@ -2617,8 +2692,13 @@ def finalize(
         )
 
     # 1. transcripts and truthful usage, then the two D-5 indexes that read them
-    materialize_agent_index(handle.run_id)
-    _write_usage(handle)
+    # One snapshot cache shared across both calls (design §5.1): every bound
+    # source this finalize pass touches is read off disk at most once in
+    # total, not once per call that happens to need it. Ordering unchanged
+    # (materialize before usage) -- only what each call is handed differs.
+    finalize_snapshot_cache: dict[str, TranscriptSnapshot] = {}
+    materialize_agent_index(handle.run_id, snapshot_cache=finalize_snapshot_cache)
+    _write_usage(handle, snapshot_cache=finalize_snapshot_cache)
     _materialize_external_evidence(handle)
 
     # 2. 阶段产物快照:capsule 必须自带业务产物,否则重放没有比对基准、

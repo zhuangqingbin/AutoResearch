@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Sequence
 from pathlib import Path
 
 from autoresearch.common import workspace as ws
@@ -36,6 +37,7 @@ from autoresearch.trace.transcripts.base import (
     TranscriptRef,
     UsageRecord,
 )
+from autoresearch.trace.transcripts.snapshot import TranscriptSnapshot, capture_snapshot
 
 PROJECTS_ROOT = Path.home() / ".claude" / "projects"
 
@@ -238,7 +240,36 @@ def unmeasured_row(ref: TranscriptRef, *, reason: str) -> dict:
     return row
 
 
-def collect_run(run_id: str, *, engine: str | None = None) -> list[dict]:
+def _ordinal_span(ref: TranscriptRef) -> tuple[float, float]:
+    start = ref.start_ordinal if ref.start_ordinal is not None else float("-inf")
+    end = ref.end_ordinal if ref.end_ordinal is not None else float("inf")
+    return start, end
+
+
+def _segments_overlap(a: TranscriptRef, b: TranscriptRef) -> bool:
+    """True when two refs' ``[start_ordinal, end_ordinal]`` windows share any
+    ordinal -- touching boundaries count as overlap (conservative: a shared
+    boundary ordinal would otherwise get counted in both segments' usage
+    deltas)."""
+    a_start, a_end = _ordinal_span(a)
+    b_start, b_end = _ordinal_span(b)
+    return a_start <= b_end and b_start <= a_end
+
+
+def _has_overlapping_segments(refs: Sequence[TranscriptRef]) -> bool:
+    return any(
+        _segments_overlap(refs[i], refs[j])
+        for i in range(len(refs))
+        for j in range(i + 1, len(refs))
+    )
+
+
+def collect_run(
+    run_id: str,
+    *,
+    engine: str | None = None,
+    snapshot_cache: dict[str, TranscriptSnapshot] | None = None,
+) -> list[dict]:
     """一个 run 的全部**显式绑定** transcript → 逐 agent usage(按加权降序)。
 
     定位权只在 adapter 手里:Claude 走 session 目录,Codex 走 capsule 里的显式绑定。
@@ -250,6 +281,17 @@ def collect_run(run_id: str, *, engine: str | None = None) -> list[dict]:
     真正定位过任何 transcript。contract 里仍读到 `None`(极少数没绑过 session 的
     run)时也不能让整函数安静地退化成 `[]`:那正是「表里没有的看起来像没花钱」的
     反面教材,所以改吐一行诚实的 UNMEASURED。
+
+    **单源一次快照(2026-09-12 task 2)**:每个唯一 source path 只
+    `snapshot.capture_snapshot` 一次(``snapshot_cache`` 可选,由调用方共享 —— 见
+    `capsule._write_usage`;这里独立调用时会自建并丢弃自己的 cache,**不要求**
+    调用方先绑定任何东西,standalone `usage_harvest` CLI 因此不获得新的 binding
+    依赖)。Codex 的一份 session 文件可能被多个角色段共享
+    (`start_ordinal`/`end_ordinal` 相邻或交错);当同一 path 下两个及以上引用的
+    区段**重叠**,任何一个都不能各自独立求 usage delta(会把重叠窗口的 token
+    算两遍)—— 这些引用各记一行 UNMEASURED,并额外产出**一行覆盖整份源文件**的
+    合计行,使 run 总量仍然真实(不是不计、也不是均分/填零)。互不重叠的共享段
+    仍各自正常计量(它们的差分窗口本就不相交)。
     """
     resolved_engine = str(engine or ws.ENGINE)
     # 未知 run 必须炸,不能安静地变成「0 份 transcript」= 免费。
@@ -268,17 +310,68 @@ def collect_run(run_id: str, *, engine: str | None = None) -> list[dict]:
                 reason="run contract 没有绑定 session_ref，Claude adapter 无法定位 transcript",
             )
         ]
+
+    cache: dict[str, TranscriptSnapshot] = {} if snapshot_cache is None else snapshot_cache
+
+    def snapshot_for(path: Path) -> TranscriptSnapshot:
+        key = str(path)
+        snapshot = cache.get(key)
+        if snapshot is None:
+            snapshot = capture_snapshot(path, engine=resolved_engine)
+            cache[key] = snapshot
+        return snapshot
+
+    by_path: dict[str, list[TranscriptRef]] = {}
+    for ref in refs:
+        if ref.status == "PRESENT" and ref.path is not None:
+            by_path.setdefault(str(ref.path), []).append(ref)
+    overlapping_paths = {
+        path for path, siblings in by_path.items()
+        if len(siblings) > 1 and _has_overlapping_segments(siblings)
+    }
+
     rows: list[dict] = []
     for ref in refs:
         if ref.status != "PRESENT":
             rows.append(unmeasured_row(ref, reason=f"transcript {ref.status}"))
             continue
+        if str(ref.path) in overlapping_paths:
+            rows.append(
+                unmeasured_row(
+                    ref,
+                    reason=(
+                        "source shared with an overlapping segment; cannot "
+                        "attribute usage to this invocation individually "
+                        "(see the combined row for this source)"
+                    ),
+                )
+            )
+            continue
         try:
-            rows.append(legacy_usage_dict(adapter.usage(ref)))
+            snapshot = snapshot_for(Path(ref.path))
+            usage = adapter.stats_from_rows(snapshot.rows, ref).usage
+            rows.append(legacy_usage_dict(usage))
         except Exception as exc:  # noqa: BLE001 - 不可解析也必须留一行
             rows.append(
                 unmeasured_row(ref, reason=f"{type(exc).__name__}: {exc}")
             )
+
+    for path in sorted(overlapping_paths):
+        siblings = by_path[path]
+        combined_ref = TranscriptRef(
+            engine=resolved_engine, path=Path(path), status="PRESENT", role="shared_source",
+        )
+        try:
+            snapshot = snapshot_for(Path(path))
+            usage = adapter.stats_from_rows(snapshot.rows, combined_ref).usage
+            combined_row = legacy_usage_dict(usage)
+            combined_row["merged_invocation_ids"] = sorted(
+                {ref.invocation_id for ref in siblings if ref.invocation_id}
+            )
+            rows.append(combined_row)
+        except Exception as exc:  # noqa: BLE001 - 就算整份源文件都读不出来也要留痕
+            rows.append(unmeasured_row(combined_ref, reason=f"{type(exc).__name__}: {exc}"))
+
     return sorted(rows, key=lambda r: -r["weighted_in"])
 
 

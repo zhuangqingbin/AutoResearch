@@ -28,6 +28,7 @@ from autoresearch.trace.transcripts.base import (
     ArchiveDigest,
     ArtifactDigest,
     NormalizedItem,
+    ObservedOperation,
     RunIdentity,
     SourcePrefixDigest,
     ToolResponseDigest,
@@ -36,6 +37,7 @@ from autoresearch.trace.transcripts.base import (
     TranscriptStats,
     TranscriptUnreadable,
     classify_observation,
+    extract_operations,
     hash_artifact_bytes,
     hash_tool_response,
     require_known_transcript_schema_version,
@@ -668,8 +670,12 @@ def test_raw_archive_is_redacted_and_deterministic(codex_run):
         invocation_id="agent-l4-card-600000-1",
     )
 
-    materialize_transcripts(handle.run_id)
-    archive = handle.capsule / "agents/raw/agent-l4-card-600000-1.jsonl.gz"
+    # Raw is keyed by snapshot_id (a content hash), not invocation_id (2026-09-12
+    # Task 2: "唯一 raw 数由唯一快照数决定") -- resolve the path through the index,
+    # the same way spec §5.1 says existing raw-path consumers must.
+    index = materialize_agent_index(handle.run_id)
+    raw_relative = index["invocations"][0]["raw"]
+    archive = handle.capsule / raw_relative
     first = archive.read_bytes()
     materialize_transcripts(handle.run_id)
 
@@ -1397,3 +1403,557 @@ def test_bindings_and_index_are_written_at_the_current_schema_version(codex_run)
     normalized_path = next((handle.capsule / "agents/normalized").glob("*.json"))
     normalized = json.loads(normalized_path.read_text(encoding="utf-8"))
     assert normalized["schema_version"] == CURRENT_TRANSCRIPT_SCHEMA_VERSION
+
+
+# --- Task 2: stats_from_rows / extract_operations (O01/O02) -----------------
+
+
+def _claude_row(row_type: str, **fields) -> dict:
+    return {"type": row_type, **fields}
+
+
+def test_claude_stats_from_rows_classifies_read_glob_grep_and_failure_separately(
+    tmp_path,
+):
+    """O01: Read failure, Glob, Grep, and a paginated Read are labeled
+    READ_FAILED / DISCOVERED / READ_PARTIAL / READ_PARTIAL respectively --
+    never mixed into one summary caliber."""
+    import json
+
+    rows = [
+        _claude_row(
+            "assistant",
+            message={
+                "id": "m1",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "call-read-fail",
+                        "name": "Read",
+                        "input": {"file_path": "/repo/missing.py"},
+                    }
+                ],
+            },
+        ),
+        _claude_row(
+            "user",
+            message={
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "call-read-fail",
+                        "content": "Error: file not found",
+                        "is_error": True,
+                    }
+                ]
+            },
+        ),
+        _claude_row(
+            "assistant",
+            message={
+                "id": "m2",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "call-glob",
+                        "name": "Glob",
+                        "input": {"pattern": "*.py", "path": "/repo"},
+                    }
+                ],
+            },
+        ),
+        _claude_row(
+            "user",
+            message={
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "call-glob",
+                        "content": "/repo/a.py\n/repo/b.py",
+                    }
+                ]
+            },
+        ),
+        _claude_row(
+            "assistant",
+            message={
+                "id": "m3",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "call-grep",
+                        "name": "Grep",
+                        "input": {"pattern": "TODO", "path": "/repo"},
+                    }
+                ],
+            },
+        ),
+        _claude_row(
+            "user",
+            message={
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "call-grep",
+                        "content": "/repo/a.py:3:TODO fix me",
+                    }
+                ]
+            },
+        ),
+        _claude_row(
+            "assistant",
+            message={
+                "id": "m4",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "call-read-paged",
+                        "name": "Read",
+                        "input": {
+                            "file_path": "/repo/big.py",
+                            "offset": 100,
+                            "limit": 50,
+                        },
+                    }
+                ],
+            },
+        ),
+        _claude_row(
+            "user",
+            message={
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "call-read-paged",
+                        "content": "   100\tsome line\n",
+                    }
+                ]
+            },
+        ),
+    ]
+    ref = TranscriptRef(engine="claude", path=tmp_path / "unused.jsonl", role="subagent")
+    adapter = ClaudeTranscriptAdapter()
+
+    stats = adapter.stats_from_rows(rows, ref)
+    by_call = {op.call_id: op for op in stats.operations}
+
+    assert by_call["call-read-fail"].kind == "READ_FAILED"
+    assert by_call["call-glob"].kind == "DISCOVERED"
+    assert by_call["call-glob"].path == "/repo"
+    assert by_call["call-grep"].kind == "READ_PARTIAL"
+    assert by_call["call-read-paged"].kind == "READ_PARTIAL"
+    assert by_call["call-read-paged"].path == "/repo/big.py"
+    assert by_call["call-read-paged"].path_source == "tool_input"
+    # Every operation carries a response digest (it has a correlated result);
+    # none of the four is missing one, and none is silently promoted to a
+    # full read -- summary caliber (kind) stays distinct per call.
+    assert {op.kind for op in by_call.values()} == {
+        "READ_FAILED",
+        "DISCOVERED",
+        "READ_PARTIAL",
+    }
+    assert json.dumps([op.kind for op in stats.operations])  # kinds are JSON-safe strings
+
+
+def test_claude_stats_from_rows_skips_local_orchestration_verbs_not_guessed(tmp_path):
+    """A `Bash` call is refused by classify_observation (never interpreted) --
+    it must not appear as an ObservedOperation, while its raw round trip
+    still exists in normalized.items (brief bullet 5)."""
+    rows = [
+        _claude_row(
+            "assistant",
+            message={
+                "id": "m1",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "call-bash",
+                        "name": "Bash",
+                        "input": {"command": "cat /etc/passwd"},
+                    }
+                ],
+            },
+        ),
+        _claude_row(
+            "user",
+            message={
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "call-bash",
+                        "content": "root:x:0:0",
+                    }
+                ]
+            },
+        ),
+    ]
+    ref = TranscriptRef(engine="claude", path=tmp_path / "unused.jsonl", role="subagent")
+    adapter = ClaudeTranscriptAdapter()
+
+    stats = adapter.stats_from_rows(rows, ref)
+
+    assert stats.operations == ()
+    assert [item.kind for item in stats.normalized.items] == [
+        "tool_request",
+        "tool_result",
+    ]
+
+
+def test_claude_stats_from_rows_write_then_edit_only_write_earns_an_artifact_hash(
+    tmp_path,
+):
+    """O02: a Write followed by an Edit on the same path -- both classify as
+    WRITE_SUCCEEDED, but only the Write's *declared, complete* content earns
+    an artifact hash; the Edit (a diff, old_string/new_string) never gets
+    one fabricated (spec §3.2)."""
+    import hashlib
+
+    rows = [
+        _claude_row(
+            "assistant",
+            message={
+                "id": "m1",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "call-write",
+                        "name": "Write",
+                        "input": {
+                            "file_path": "/repo/out.md",
+                            "content": "first version",
+                        },
+                    }
+                ],
+            },
+        ),
+        _claude_row(
+            "user",
+            message={
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "call-write",
+                        "content": "File written successfully.",
+                    }
+                ]
+            },
+        ),
+        _claude_row(
+            "assistant",
+            message={
+                "id": "m2",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "call-edit",
+                        "name": "Edit",
+                        "input": {
+                            "file_path": "/repo/out.md",
+                            "old_string": "first version",
+                            "new_string": "second version",
+                        },
+                    }
+                ],
+            },
+        ),
+        _claude_row(
+            "user",
+            message={
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "call-edit",
+                        "content": "The file /repo/out.md has been updated.",
+                    }
+                ]
+            },
+        ),
+    ]
+    ref = TranscriptRef(engine="claude", path=tmp_path / "unused.jsonl", role="subagent")
+    adapter = ClaudeTranscriptAdapter()
+
+    stats = adapter.stats_from_rows(rows, ref)
+    by_call = {op.call_id: op for op in stats.operations}
+
+    assert by_call["call-write"].kind == "WRITE_SUCCEEDED"
+    assert by_call["call-edit"].kind == "WRITE_SUCCEEDED"
+    assert by_call["call-write"].artifact is not None
+    assert by_call["call-write"].artifact.sha256 == hashlib.sha256(
+        b"first version"
+    ).hexdigest()
+    assert by_call["call-edit"].artifact is None
+    # Both target the same product path -- a later task compares by that
+    # path plus operation order, never by call_id alone.
+    assert by_call["call-write"].path == by_call["call-edit"].path == "/repo/out.md"
+
+
+def _codex_row(row_type: str, ordinal: int, payload: dict, timestamp: str) -> dict:
+    return {"type": row_type, "ordinal": ordinal, "payload": payload, "timestamp": timestamp}
+
+
+def test_codex_stats_from_rows_apply_patch_never_earns_a_full_file_artifact_hash(
+    tmp_path,
+):
+    """O02: Codex's apply_patch is patch-diff-only -- WRITE_SUCCEEDED, but
+    never a full-file artifact hash (spec §3.2)."""
+    rows = [
+        _codex_row(
+            "response_item",
+            0,
+            {
+                "type": "custom_tool_call",
+                "id": "ctc-1",
+                "call_id": "call-patch",
+                "name": "apply_patch",
+                "input": "*** Update File: /repo/out.md\n@@\n-old\n+new\n",
+            },
+            "2026-09-12T01:00:00.000Z",
+        ),
+        _codex_row(
+            "response_item",
+            1,
+            {
+                "type": "custom_tool_call_output",
+                "id": "ctco-1",
+                "call_id": "call-patch",
+                "output": [{"type": "output_text", "text": "Done"}],
+            },
+            "2026-09-12T01:00:01.000Z",
+        ),
+    ]
+    ref = TranscriptRef(engine="codex", path=tmp_path / "unused.jsonl", role="subagent")
+    adapter = CodexTranscriptAdapter()
+
+    stats = adapter.stats_from_rows(rows, ref)
+    ops = {op.call_id: op for op in stats.operations}
+
+    assert ops["call-patch"].kind == "WRITE_SUCCEEDED"
+    assert ops["call-patch"].artifact is None
+
+
+def test_codex_stats_from_rows_skips_exec_never_interprets_shell_text(tmp_path):
+    """Codex's real read/search operations mostly arrive wrapped in `exec`
+    (a JS snippet around a shell command) -- classify_observation refuses
+    this local orchestration verb rather than guess at the command text, so
+    no ObservedOperation is produced for it."""
+    rows = [
+        _codex_row(
+            "response_item",
+            0,
+            {
+                "type": "custom_tool_call",
+                "id": "ctc-1",
+                "call_id": "call-exec",
+                "name": "exec",
+                "input": "await shell(['cat', '/repo/out.md'])",
+            },
+            "2026-09-12T01:00:00.000Z",
+        ),
+        _codex_row(
+            "response_item",
+            1,
+            {
+                "type": "custom_tool_call_output",
+                "id": "ctco-1",
+                "call_id": "call-exec",
+                "output": [{"type": "output_text", "text": "file contents"}],
+            },
+            "2026-09-12T01:00:01.000Z",
+        ),
+    ]
+    ref = TranscriptRef(engine="codex", path=tmp_path / "unused.jsonl", role="subagent")
+    adapter = CodexTranscriptAdapter()
+
+    stats = adapter.stats_from_rows(rows, ref)
+
+    assert stats.operations == ()
+
+
+def test_codex_stats_from_rows_web_search_is_search_family(tmp_path):
+    """A recognized external tool (not in LOCAL_TOOL_NAMES) classifies as the
+    SEARCH family -- is_external_tool's existing fail-open bucket, not a
+    refusal."""
+    rows = [
+        _codex_row(
+            "response_item",
+            0,
+            {"type": "web_search_call", "id": "ws-1", "action": {"type": "search"}},
+            "2026-09-12T01:00:00.000Z",
+        ),
+        _codex_row(
+            "event_msg",
+            1,
+            {
+                "type": "web_search_end",
+                "call_id": "ws-1",
+                "query": "fixture query",
+                "results": [{"type": "text_result", "text": "..."}],
+            },
+            "2026-09-12T01:00:01.000Z",
+        ),
+    ]
+    ref = TranscriptRef(engine="codex", path=tmp_path / "unused.jsonl", role="subagent")
+    adapter = CodexTranscriptAdapter()
+
+    stats = adapter.stats_from_rows(rows, ref)
+    ops = {op.call_id: op for op in stats.operations}
+
+    assert ops["ws-1"].kind == "SEARCH_SUCCEEDED"
+
+
+def test_extract_operations_never_drops_the_five_bundled_facts(tmp_path):
+    """Brief bullet 2's non-conflation guardrail, exercised directly: every
+    ObservedOperation must be able to carry call_id, kind (operation result
+    incl. the partial flag), path + path_source, and row_index (the
+    snapshot reference) all at once."""
+    rows = [
+        _claude_row(
+            "assistant",
+            message={
+                "id": "m1",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "call-1",
+                        "name": "Read",
+                        "input": {"file_path": "/a.py"},
+                    }
+                ],
+            },
+        ),
+        _claude_row(
+            "user",
+            message={
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "call-1",
+                        "content": "print(1)",
+                    }
+                ]
+            },
+        ),
+    ]
+    ref = TranscriptRef(engine="claude", path=tmp_path / "unused.jsonl", role="subagent")
+    stats = ClaudeTranscriptAdapter().stats_from_rows(rows, ref)
+
+    assert len(stats.operations) == 1
+    op = stats.operations[0]
+    assert isinstance(op, ObservedOperation)
+    assert op.call_id == "call-1"
+    assert op.kind == "READ_SUCCEEDED"
+    assert op.path == "/a.py"
+    assert op.path_source == "tool_input"
+    assert op.row_index == stats.normalized.items[
+        [item.kind for item in stats.normalized.items].index("tool_request")
+    ].index
+    assert op.response is not None
+
+
+def test_extract_operations_is_the_same_function_both_adapters_call():
+    """Ruling 1 ("do not re-derive observation kinds"): there is exactly one
+    walker from NormalizedItems to ObservedOperations, imported by both
+    adapter modules rather than reimplemented per engine."""
+    import autoresearch.trace.transcripts.claude as claude_mod
+    import autoresearch.trace.transcripts.codex as codex_mod
+
+    assert claude_mod.extract_operations is extract_operations
+    assert codex_mod.extract_operations is extract_operations
+
+
+# --- Task 2 / S02: two invocations sharing one source -----------------------
+
+
+def test_two_disjoint_segments_of_one_source_write_exactly_one_raw_archive(codex_run):
+    """S02 (capsule half): two invocations bound to the same underlying
+    rollout file (disjoint ordinal segments) must dedupe the raw archive by
+    snapshot -- one physical file, both index rows referencing it -- while
+    each still gets its own per-invocation normalized JSON."""
+    handle, source = codex_run
+    bind_transcript(
+        handle.run_id, source, role="l4-card", subject="600000",
+        invocation_id="seg-a", start_ordinal=0, end_ordinal=6,
+    )
+    bind_transcript(
+        handle.run_id, source, role="l4-intel", subject="600000",
+        invocation_id="seg-b", start_ordinal=7, end_ordinal=13,
+    )
+
+    index = materialize_agent_index(handle.run_id)
+
+    rows_by_id = {row["invocation_id"]: row for row in index["invocations"]}
+    assert rows_by_id["seg-a"]["status"] == "PRESENT"
+    assert rows_by_id["seg-b"]["status"] == "PRESENT"
+    assert rows_by_id["seg-a"]["snapshot_id"] == rows_by_id["seg-b"]["snapshot_id"]
+    assert rows_by_id["seg-a"]["raw"] == rows_by_id["seg-b"]["raw"]
+    assert rows_by_id["seg-a"]["normalized"] != rows_by_id["seg-b"]["normalized"]
+
+    raw_files = sorted((handle.capsule / "agents/raw").glob("*.jsonl.gz"))
+    assert len(raw_files) == 1
+    normalized_files = sorted((handle.capsule / "agents/normalized").glob("*.json"))
+    assert len(normalized_files) == 2
+
+
+def test_collect_run_deduplicates_overlapping_segments_of_one_source(codex_run):
+    """S02 (usage half): two invocations bound to the same source with
+    *overlapping* ordinal segments must not each contribute their own usage
+    delta (that double-counts the overlap's cumulative window) -- both are
+    UNMEASURED, and one combined, whole-source row carries the true total.
+    """
+    from autoresearch.trace import usage_harvest as U
+
+    handle, source = codex_run
+    # Fixture token_count events sit at ordinal 5 (cumulative input 100000,
+    # cached 50000) and ordinal 10 (cumulative input 408129, cached 200448) --
+    # ordinal 10 is the *last* cumulative snapshot in the whole file, so it
+    # already subsumes everything counted at ordinal 5.
+    bind_transcript(
+        handle.run_id, source, role="l4-card", subject="600000",
+        invocation_id="overlap-a", start_ordinal=0, end_ordinal=8,
+    )
+    bind_transcript(
+        handle.run_id, source, role="l4-intel", subject="600000",
+        invocation_id="overlap-b", start_ordinal=5, end_ordinal=13,
+    )
+
+    rows = U.collect_run(handle.run_id, engine="codex")
+    by_role = {row.get("role"): row for row in rows}
+
+    assert by_role["l4-card"]["status"] == "UNMEASURED"
+    assert "overlap" in by_role["l4-card"]["reason"]
+    assert by_role["l4-intel"]["status"] == "UNMEASURED"
+    assert "overlap" in by_role["l4-intel"]["reason"]
+
+    combined = by_role["shared_source"]
+    assert combined["status"] != "UNMEASURED"
+    # The whole-file truth (the last cumulative snapshot, ordinal 10) --
+    # never the naive sum of the two overlapping deltas (which would double
+    # count everything already reflected by ordinal 5's snapshot).
+    assert combined["input"] == 408129 - 200448
+    assert combined["output"] == 1671
+    naive_sum_input = (100000 - 50000) + (408129 - 200448)
+    assert combined["input"] != naive_sum_input
+    assert combined["merged_invocation_ids"] == ["overlap-a", "overlap-b"]
+
+
+def test_collect_run_keeps_disjoint_shared_segments_individually_measured(codex_run):
+    """The overlap rule must not over-trigger: two segments of one source
+    that do *not* overlap are each measured normally (no combined row)."""
+    from autoresearch.trace import usage_harvest as U
+
+    handle, source = codex_run
+    bind_transcript(
+        handle.run_id, source, role="l4-card", subject="600000",
+        invocation_id="disjoint-a", start_ordinal=0, end_ordinal=6,
+    )
+    bind_transcript(
+        handle.run_id, source, role="l4-intel", subject="600000",
+        invocation_id="disjoint-b", start_ordinal=7, end_ordinal=13,
+    )
+
+    rows = U.collect_run(handle.run_id, engine="codex")
+    by_role = {row.get("role"): row for row in rows}
+
+    assert "shared_source" not in by_role
+    assert by_role["l4-card"]["status"] != "UNMEASURED"
+    assert by_role["l4-intel"]["status"] != "UNMEASURED"
