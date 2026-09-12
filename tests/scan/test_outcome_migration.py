@@ -548,3 +548,121 @@ def test_restore_recovers_after_an_interruption_inside_the_csv_rebuild_loop(tmp_
     assert by_run[run_a.name][outcome.MAIN] == "0.08"
     assert by_run[run_b.name][outcome.MAIN] == "0.09"
     assert len({(r["run_id"], r["code"]) for r in csv_rows}) == len(csv_rows)
+
+
+# ══════════ fix round 2 ══════════
+
+# ── finding 1(重要):apply → restore → re-apply 不能把撤回后的旧值悄悄覆写回 after ──
+
+def test_apply_restore_reapply_ends_up_matching_before_images_not_stale_after_values(tmp_path, monkeypatch):
+    """`restore_outcome_migration` 从不重置 `applied`/`csv_rebuilt`——旧代码里对同一个
+    `migration_id` 再调一次 `apply_outcome_migration` 会把"已经 applied"的 run 整个跳过
+    (marker 说已经做过),直接跑到"一次性重建 CSV"那一步,用规划时那份**已经过期**的
+    `after/` 候选文档重建 `recommendations.csv`——这时真实的逐 run JSON 早已被
+    restore 换回了迁移前的旧值,CSV 却被悄悄推回新值:两者从此互相矛盾,而这条链路
+    (应用→恢复→再应用)正是「迁移中途出问题之后」操作员会走的那条路,必须是最安全的
+    那条。
+
+    修法(应用侧按内容 hash 核验,而非重置恢复侧的 marker——见 round-2 报告附录选择
+    理由):`apply_outcome_migration` 不再盲信 `applied=True`,而是拿**当前磁盘内容**
+    去对 `after_sha256`——真的还是 after 内容才信;如果现在是 `before_sha256`(最常见
+    原因就是被 `restore_outcome_migration` 撤回过),就如实把 marker 改正成
+    `applied=False` 并且**这一遍什么都不覆写**——不会把 restore 刚放回去的旧值悄悄
+    换掉。`recommendations.csv` 因此维持 restore 留下的样子,不会又被拉回新值。
+    """
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / ws.reports_root() / "scan"
+    run = _run(tmp_path, "20260825-0826_2100", "2026-08-25")
+    old = _old_doc(run.name, "2026-08-25", "000001", gap=0.08)
+    _seed_old_state(root, run, old)
+    before_json_bytes = outcome.outcome_path(run.name, root).read_bytes()
+    before_csv_bytes = (outcome.ledger_root(root) / outcome.LEDGER_CSV).read_bytes()
+
+    new = _new_doc(run.name, "2026-08-25", "000001", gap=0.01)
+    _fake_compute_outcome(monkeypatch, {run.name: new})
+
+    # apply
+    apply_res = outcome.fill(reports_root=root, run_id=run.name, rebuild=True)
+    assert apply_res["status"] == "applied"
+    mig_id = apply_res["migration_id"]
+    assert outcome.outcome_path(run.name, root).read_bytes() != before_json_bytes   # 夹具健全性
+
+    # restore
+    restore_res = outcome.restore_outcome_migration(mig_id, reports_root=root)
+    assert restore_res["verified"][run.name]["content_hash_ok"] is True
+    assert outcome.sha256_bytes(outcome.outcome_path(run.name, root).read_bytes()) == \
+        outcome.sha256_bytes(before_json_bytes)
+
+    # re-apply(同一个 migration_id,不重新规划)——不能把 CSV/JSON 悄悄推回 after。
+    reapply_res = outcome.apply_outcome_migration(mig_id, reports_root=root)
+    assert reapply_res["ok"] is True
+
+    real_json_bytes = outcome.outcome_path(run.name, root).read_bytes()
+    real_csv_bytes = (outcome.ledger_root(root) / outcome.LEDGER_CSV).read_bytes()
+    # 按内容 hash 比较,不是数行数/看文件存不存在(同 Task C3 全篇的既定纪律)。
+    assert outcome.sha256_bytes(real_json_bytes) == outcome.sha256_bytes(before_json_bytes)
+    assert outcome.sha256_bytes(real_csv_bytes) == outcome.sha256_bytes(before_csv_bytes)
+
+    # marker 必须被如实改正,不是悄悄留着一个跟现实不符的 True。
+    mdir = outcome._migration_dir(mig_id, root)
+    state = json.loads((mdir / outcome.MIGRATION_STATE_FILE).read_text(encoding="utf-8"))
+    assert state["runs"][run.name]["applied"] is False
+
+    # "genuinely re-does the work"的另一半:marker 改正之后,一次**新的**、独立的
+    # apply 调用必须真的能把它重新推到 after——不是从此永久卡死在 before。
+    second_reapply = outcome.apply_outcome_migration(mig_id, reports_root=root)
+    assert second_reapply["status"] == "applied"
+    final_json = json.loads(outcome.outcome_path(run.name, root).read_text(encoding="utf-8"))
+    assert final_json["rows"]["000001"][outcome.MAIN] == 0.01
+    final_csv = {r["run_id"]: r for r in outcome.load_ledger(root)}
+    assert final_csv[run.name][outcome.MAIN] == "0.01"
+
+
+def test_reapply_after_restore_refuses_when_target_matches_neither_before_nor_after(tmp_path, monkeypatch):
+    """hash 核验的第三分支:如果 marker 说 applied,但磁盘现状既不是 before 也不是
+    after(第三方直接改写了文件),必须拒绝而不是猜——这正是"按内容 hash 核验,
+    不只是重置 marker"更强的地方:它连"被恢复"之外的过期原因也接得住。"""
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / ws.reports_root() / "scan"
+    run = _run(tmp_path, "20260825-0826_2100", "2026-08-25")
+    old = _old_doc(run.name, "2026-08-25", "000001", gap=0.08)
+    _seed_old_state(root, run, old)
+    new = _new_doc(run.name, "2026-08-25", "000001", gap=0.01)
+    _fake_compute_outcome(monkeypatch, {run.name: new})
+
+    apply_res = outcome.fill(reports_root=root, run_id=run.name, rebuild=True)
+    mig_id = apply_res["migration_id"]
+    outcome.restore_outcome_migration(mig_id, reports_root=root)
+    # 第三方(既不是这次迁移也不是它的 restore)直接改写了目标文件。
+    outcome.outcome_path(run.name, root).write_text('{"mystery": true}', encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match=run.name):
+        outcome.apply_outcome_migration(mig_id, reports_root=root)
+
+
+# ── finding 2(复核发现的覆盖缺口):迁移侧的撤回快照此前没有任何断言锁住 ──
+
+def test_plan_outcome_migration_records_a_withdrawal_snapshot_via_the_shared_helper(tmp_path, monkeypatch):
+    """`plan_outcome_migration` 调用共用的 `_maybe_withdraw`(见 fix round 1 finding 3),
+    但复核发现 `tests/scan/test_outcome_migration.py` 里连"previous"/"withdraw"字样都
+    搜不到一次——删掉 `plan_outcome_migration` 里那一行调用不会让任何测试变红。这里补上
+    直接断言:MATURE→非 MATURE 的过渡,候选文档必须带 `previous` 快照,内容与旧文档一致。
+    """
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / ws.reports_root() / "scan"
+    run = _run(tmp_path, "20260825-0826_2100", "2026-08-25")
+    old = _old_doc(run.name, "2026-08-25", "000001", gap=0.08, t1="20260826", t2="20260827")
+    _seed_old_state(root, run, old)
+    new = _new_doc(run.name, "2026-08-25", "000001", status=outcome.MISSING_MARKET_DATA,
+                   reason="行情缺失(湖无分区)")
+    _fake_compute_outcome(monkeypatch, {run.name: new})
+
+    plan = outcome.plan_outcome_migration(reports_root=root, run_id=run.name, rebuild=True)
+    entry = plan["runs"][run.name]
+    after_doc = json.loads(entry["after_bytes"].decode("utf-8"))
+
+    assert after_doc["outcome_status"] == outcome.MISSING_MARKET_DATA
+    assert after_doc["rows"] == {}                              # 非 MATURE,没有可汇总的行
+    assert after_doc["previous"]["complete"] is True
+    assert after_doc["previous"]["rows"]["000001"][outcome.MAIN] == 0.08
+    assert after_doc["previous"]["t1"] == "20260826"

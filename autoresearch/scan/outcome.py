@@ -1086,6 +1086,34 @@ def apply_outcome_migration(migration_id: str, *, reports_root: Path | None = No
     `"applying"` 并落盘;后续任何一次续跑(不论中断点在 JSON 阶段还是 CSV 重建阶段)
     都不再重问这个问题——"源账本从规划到第一次尝试应用之间有没有被别人动过"只需要
     回答一次,之后的账本变化只可能来自这次迁移自己。
+
+    2026-09-13 fix round 2(finding 1,重要):②此前是"`applied=True` 就直接跳过,
+    半个字节都不核验"——`restore_outcome_migration` 从不重置 `applied`/`csv_rebuilt`
+    (选择理由见下),于是 apply→restore→re-apply 这条"迁移出问题之后操作员会走的
+    路"会把 restore 刚换回去的旧文件**当作没发生过**,`applied` 的 run 全被跳过,
+    "全部 applied → 一次性重建 CSV"这道闸照样打开,用规划时那份**已经过期**的
+    `after/` 候选文档把 `recommendations.csv` 悄悄推回新值——JSON(旧)与
+    CSV(新)从此互相矛盾。
+
+    修法**在应用侧、按内容 hash 核验,不在恢复侧重置 marker**——两个选项里更强的
+    那个(controller ruling):`applied=True` 现在只有在**当前磁盘内容**恰好等于
+    `after_sha256` 时才被信任并跳过;如果现在恰好是 `before_sha256`(最常见原因是
+    被 `restore_outcome_migration` 换回去过),就如实把 marker 改正成
+    `applied=False`,**这一遍不覆写它**(不会把 restore 刚放回去的值悄悄换掉,
+    `recommendations.csv` 因此维持 restore 留下的样子);marker 改正之后,一次
+    **新的**、独立的 `apply_outcome_migration` 调用会把它当成"还没应用"正常处理
+    (前提校验 `before_sha256` 仍然成立),真的把它重新推到 after——不是永久卡死在
+    before。若现状既不是 before 也不是 after(第三方直接改写了文件),拒绝而不是
+    猜,与"未标记 applied"分支的既有纪律一致。按 hash 而不是"恢复时清掉 marker"
+    来判断的好处是:它同时防住了 marker 因为**任何其它原因**过期的情况,不只是
+    "被这个模块自己的 restore 动过"这一种。
+
+    配套地,"一次性重建 CSV"那道闸不能再只看 `csv_rebuilt` 是否曾经置真——它是
+    **一次性**语义,一旦置真就永远不会再让 CSV 追上"marker 被改正、之后又真的重新
+    应用"这条后续链路。改成:只要这一遍循环里**真的写过至少一个 run**
+    (`any_written`),就无条件重建(`csv_rebuilt` 是否已经是 `True` 不再拦它)——
+    "什么都没真的重写"(纯粹的 marker 核验/改正)则继续尊重既有的 `csv_rebuilt`
+    幂等门,不做多余的 I/O。
     """
     mdir = _migration_dir(migration_id, reports_root)
     state_path = mdir / MIGRATION_STATE_FILE
@@ -1103,12 +1131,23 @@ def apply_outcome_migration(migration_id: str, *, reports_root: Path | None = No
                 f"规划时 {state['source_ledger_digest']!r},现在 {current!r}")
         state["status"] = "applying"
         atomic_write_json(state_path, state)     # 检查点:这道门只问一次,问过不再重问
+    any_written = False
     for run_id in sorted(state["runs"]):
         run_state = state["runs"][run_id]
-        if run_state["applied"]:
-            continue
         target = outcome_path(run_id, reports_root)
         current = _sha_or_absent(target.read_bytes() if target.is_file() else None)
+        if run_state["applied"]:
+            if current == run_state["after_sha256"]:
+                continue                          # 磁盘内容真的还是 after,marker 可信
+            if current == run_state["before_sha256"]:
+                # marker 过期(典型原因:被 restore 换回去过)——如实改正,这一遍
+                # 不覆写,不把 restore 刚放回去的旧值悄悄换掉。
+                run_state["applied"] = False
+                atomic_write_json(state_path, state)
+                continue
+            raise RuntimeError(
+                f"{run_id} 已标记 applied,但现状既非规划的候选状态也非规划前的原始"
+                f"状态,拒绝在不确定状态上继续(现状={current!r})")
         if current != run_state["before_sha256"]:
             raise RuntimeError(
                 f"{run_id} 的目标文件自规划以来已经变化,拒绝覆盖(规划时 "
@@ -1119,8 +1158,10 @@ def apply_outcome_migration(migration_id: str, *, reports_root: Path | None = No
             raise RuntimeError(f"{run_id} 的候选文件哈希与迁移状态不符,拒绝应用")
         atomic_write_bytes(target, after_bytes)
         run_state["applied"] = True
+        any_written = True
         atomic_write_json(state_path, state)          # 每个 run 替换完立即落一次检查点
-    if all(r["applied"] for r in state["runs"].values()) and not state.get("csv_rebuilt"):
+    all_applied = all(r["applied"] for r in state["runs"].values())
+    if all_applied and (any_written or not state.get("csv_rebuilt")):
         for run_id in sorted(state["runs"]):
             after_path = mdir / "after" / f"{run_id}.json"
             upsert_ledger(json.loads(after_path.read_text(encoding="utf-8")), reports_root)
