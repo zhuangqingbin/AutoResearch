@@ -60,6 +60,15 @@ from autoresearch.trace.transcripts import (
     tool_call_id,
 )
 
+# Submodule-direct (not the package re-export above): the transcript *schema*
+# version is `trace/transcripts/base.py`'s vocabulary, not adapter machinery —
+# importing it here keeps this file's writer and that module's reader-side
+# `require_known_transcript_schema_version` guard sharing one literal instead
+# of two that could silently drift apart.
+from autoresearch.trace.transcripts.base import (
+    CURRENT_TRANSCRIPT_SCHEMA_VERSION as _TRANSCRIPT_SCHEMA_VERSION,
+)
+
 _STAGE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$", re.ASCII)
 _AGENT_EVENT_TYPES = frozenset(
@@ -1452,7 +1461,6 @@ def checkpoint(
 
 # ------------------------------------------------------------------ transcripts
 
-_TRANSCRIPT_SCHEMA_VERSION = 1
 _URL_RE = re.compile(r"https?://[^\s\"'<>\\]+")
 
 
@@ -2051,7 +2059,11 @@ def materialize_agent_index(
         run_id=handle.run_id,
         engine=handle.engine,
         stage=_validate_stage(
-            str(os.environ.get("AUTORESEARCH_STAGE", "")).strip() or "cp7"
+            # `materialize_agent_index` is finalize's own step 1 (see `finalize`'s
+            # docstring/body above) -- the fallback used to be the literal "cp7",
+            # a name `contracts.stages.STAGES` has never heard of (2026-09-12
+            # scene-reconstruction Task 1: "stage 来自契约词表").
+            str(os.environ.get("AUTORESEARCH_STAGE", "")).strip() or "finalize"
         ),
         invocation_id=f"transcripts-{handle.run_id}",
         attempt=1,

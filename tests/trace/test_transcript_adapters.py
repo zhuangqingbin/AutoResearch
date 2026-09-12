@@ -19,11 +19,26 @@ from autoresearch.trace.capsule import (
 )
 from autoresearch.trace.transcripts import adapter_for
 from autoresearch.trace.transcripts.base import (
+    BINDING_STATUSES,
+    COVERAGE_KEYS,
+    CURRENT_TRANSCRIPT_SCHEMA_VERSION,
+    KNOWN_TRANSCRIPT_SCHEMA_VERSIONS,
+    OBSERVATION_KINDS,
+    SEGMENT_QUALITIES,
+    ArchiveDigest,
+    ArtifactDigest,
     NormalizedItem,
     RunIdentity,
+    SourcePrefixDigest,
+    ToolResponseDigest,
     TranscriptAdapter,
     TranscriptRef,
     TranscriptStats,
+    TranscriptUnreadable,
+    classify_observation,
+    hash_artifact_bytes,
+    hash_tool_response,
+    require_known_transcript_schema_version,
 )
 from autoresearch.trace.transcripts.claude import ClaudeTranscriptAdapter
 from autoresearch.trace.transcripts.codex import (
@@ -1068,3 +1083,314 @@ def test_tool_results_spill_not_archived_for_non_main_role(codex_run):
     materialize_transcripts(handle.run_id)
 
     assert not (handle.capsule / "agents/tool_results").exists()
+
+
+# --- Task 1: observation vocabulary + one pure classifier (spec §3.1) --------
+
+
+def _tool_request(tool_name: str, **extra) -> NormalizedItem:
+    return NormalizedItem(
+        index=0, kind="tool_request", payload={"tool_name": tool_name, **extra}
+    )
+
+
+def _tool_result(*, is_error: bool = False, **extra) -> NormalizedItem:
+    return NormalizedItem(
+        index=1, kind="tool_result", payload={"is_error": is_error, **extra}
+    )
+
+
+def test_observation_kinds_excludes_not_observed():
+    """`NOT_OBSERVED` is a view's judgment about an absence (spec §3.1 last
+    paragraph, Task 5's chain_view render), never a transcript event a
+    classifier could emit -- it must not be a member of the vocabulary."""
+    assert "NOT_OBSERVED" not in OBSERVATION_KINDS
+
+
+# --- Task 1: binding_status / segment_quality / coverage keys (spec §4.5) ----
+
+
+def test_binding_statuses_match_spec():
+    assert BINDING_STATUSES == (
+        "BOUND", "UNVERIFIED_BY_PRODUCT", "AMBIGUOUS", "GONE", "ERROR",
+    )
+
+
+def test_segment_qualities_match_spec():
+    assert SEGMENT_QUALITIES == ("complete", "partial", "interleaved", "unknown")
+
+
+def test_binding_status_and_segment_quality_are_modeled_separately():
+    """Spec §4.5: "绑定报告采用两个正交字段" -- whether a call is bound and how
+    complete its segment is are independent axes; one vocabulary must not be
+    derivable from, or collapsed into, the other."""
+    assert BINDING_STATUSES != SEGMENT_QUALITIES
+    assert not set(BINDING_STATUSES) & set(SEGMENT_QUALITIES)
+    assert type(BINDING_STATUSES) is not type(SEGMENT_QUALITIES) or (
+        BINDING_STATUSES is not SEGMENT_QUALITIES
+    )
+
+
+def test_coverage_keys_match_spec_minimum():
+    """Spec §4.5: "报告 coverage 至少包含" these nine keys -- the minimum shape
+    every later task's coverage dict must carry, named once so Task 3/4/8/9
+    don't each retype the same nine strings."""
+    assert set(COVERAGE_KEYS) == {
+        "expected", "accounted", "bound", "unverified", "ambiguous",
+        "gone", "errors", "unexpected", "denominator_quality",
+    }
+
+
+@pytest.mark.parametrize("tool_name", ["Read", "read_file"])
+def test_classify_observation_read_error_is_not_read_succeeded(tool_name):
+    """Required behaviour: an errored Read response must never classify as
+    READ_SUCCEEDED (spec §3.1 READ_FAILED row)."""
+    kind = classify_observation(_tool_request(tool_name), _tool_result(is_error=True))
+
+    assert kind == "READ_FAILED"
+    assert kind != "READ_SUCCEEDED"
+
+
+@pytest.mark.parametrize(
+    "result", [None, _tool_result(is_error=False), _tool_result(is_error=True)]
+)
+def test_classify_observation_glob_is_always_discovered(result):
+    """Required behaviour: Glob can only ever classify as DISCOVERED, regardless
+    of whether/how the (irrelevant) result resolved (spec §3.1 DISCOVERED
+    row: "只说发现,不说读到正文")."""
+    assert classify_observation(_tool_request("Glob"), result) == "DISCOVERED"
+
+
+def test_classify_observation_read_success_is_read_succeeded():
+    kind = classify_observation(_tool_request("Read"), _tool_result(is_error=False))
+
+    assert kind == "READ_SUCCEEDED"
+
+
+def test_classify_observation_read_with_no_result_is_read_requested():
+    assert classify_observation(_tool_request("Read"), None) == "READ_REQUESTED"
+
+
+def test_classify_observation_grep_success_is_partial_not_succeeded():
+    """A grep hit proves only that its matched lines existed, never that the
+    rest of the file was seen (spec §3.1 READ_PARTIAL row) -- it must never
+    rise to READ_SUCCEEDED the way a plain Read does."""
+    kind = classify_observation(_tool_request("grep"), _tool_result(is_error=False))
+
+    assert kind == "READ_PARTIAL"
+
+
+def test_classify_observation_grep_error_is_read_failed():
+    kind = classify_observation(_tool_request("grep"), _tool_result(is_error=True))
+
+    assert kind == "READ_FAILED"
+
+
+@pytest.mark.parametrize(
+    "result,expected",
+    [
+        (None, "WRITE_REQUESTED"),
+        (_tool_result(is_error=False), "WRITE_SUCCEEDED"),
+        (_tool_result(is_error=True), "WRITE_FAILED"),
+    ],
+)
+def test_classify_observation_write_family_round_trip(result, expected):
+    assert classify_observation(_tool_request("Write"), result) == expected
+
+
+@pytest.mark.parametrize(
+    "result,expected",
+    [
+        (None, "SEARCH_REQUESTED"),
+        (_tool_result(is_error=False), "SEARCH_SUCCEEDED"),
+        (_tool_result(is_error=True), "SEARCH_FAILED"),
+    ],
+)
+def test_classify_observation_external_tool_is_search_family(result, expected):
+    """Any tool name outside the local read/write/discover verbs falls into the
+    same "external, evidence-bearing" bucket `is_external_tool` already fails
+    unknown names open into (base.py module docstring)."""
+    assert classify_observation(_tool_request("WebSearch"), result) == expected
+
+
+@pytest.mark.parametrize("tool_name", ["bash", "Task", "TodoWrite"])
+def test_classify_observation_rejects_local_tools_outside_its_domain(tool_name):
+    """`bash`/`Task`/`TodoWrite` are local orchestration verbs, not file
+    evidence.  Classifying `bash` would mean guessing at shell command text --
+    exactly what this helper must refuse to do rather than interpret."""
+    with pytest.raises(ValueError, match="no observation.kind"):
+        classify_observation(_tool_request(tool_name), None)
+
+
+def test_classify_observation_rejects_a_non_tool_request_item():
+    message = NormalizedItem(index=0, kind="message", payload={"text": "hi"})
+
+    with pytest.raises(ValueError, match="tool_request"):
+        classify_observation(message, None)
+
+
+def test_classify_observation_rejects_a_non_tool_result_item():
+    not_a_result = NormalizedItem(index=1, kind="message", payload={})
+
+    with pytest.raises(ValueError, match="tool_result"):
+        classify_observation(_tool_request("Read"), not_a_result)
+
+
+def test_classify_observation_rejects_a_blank_tool_name():
+    blank = NormalizedItem(index=0, kind="tool_request", payload={"tool_name": ""})
+
+    with pytest.raises(ValueError, match="tool_name"):
+        classify_observation(blank, None)
+
+
+# --- Task 1: hash families (spec §3.2) ---------------------------------------
+
+
+def test_tool_response_digest_is_stable_and_key_order_independent():
+    """Required behaviour: a structured response's digest must be stable --
+    canonical-JSON hashing makes it independent of dict key insertion order."""
+    first = hash_tool_response({"b": 2, "a": 1})
+    second = hash_tool_response({"a": 1, "b": 2})
+    third = hash_tool_response({"a": 1, "b": 2})
+
+    assert first.sha256 == second.sha256 == third.sha256
+    assert first.encoding == "canonical_json"
+
+
+def test_tool_response_digest_records_the_string_encoding_rule():
+    digest = hash_tool_response("plain text response")
+
+    assert digest.encoding == "utf8_text"
+    assert digest.sha256 == hash_tool_response("plain text response").sha256
+
+
+def test_tool_response_digest_differs_from_a_differently_encoded_response():
+    """Required behaviour: the digest must record which representation rule
+    produced it -- a string and a structured value that merely *contain* the
+    same text are not the same response."""
+    structured = hash_tool_response({"text": "plain text response"})
+    string = hash_tool_response("plain text response")
+
+    assert structured.sha256 != string.sha256
+    assert structured.encoding != string.encoding
+
+
+def test_tool_response_and_artifact_digests_are_distinct_types():
+    """Required behaviour: the structured-response digest must be separate
+    from the file-digest field -- a caller cannot pass one where the other is
+    meant without an explicit, visible type mismatch."""
+    response_digest = hash_tool_response("same bytes")
+    artifact_digest = hash_artifact_bytes(b"same bytes")
+
+    assert type(response_digest) is ToolResponseDigest
+    assert type(artifact_digest) is ArtifactDigest
+    assert not isinstance(response_digest, ArtifactDigest)
+    assert not isinstance(artifact_digest, ToolResponseDigest)
+
+
+def test_hash_artifact_bytes_rejects_non_bytes_input():
+    """`artifact_sha256` is defined over exact file bytes (spec §3.2) -- a
+    `str` must be refused, not silently UTF-8-encoded the way a tool response
+    would be, or the two families become interchangeable by accident."""
+    with pytest.raises(TypeError, match="bytes"):
+        hash_artifact_bytes("not bytes")  # type: ignore[arg-type]
+
+
+def test_source_prefix_and_archive_digests_are_also_distinct_value_types():
+    """The two snapshot-only hash families (populated by a later task's
+    `snapshot.capture_snapshot`) stay distinct from each other and from the
+    two in-memory ones defined here."""
+    prefix = SourcePrefixDigest(sha256="a" * 64, byte_count=10)
+    archive = ArchiveDigest(sha256="a" * 64, byte_count=10)
+
+    assert type(prefix) is not type(archive)
+    assert not isinstance(prefix, ArchiveDigest)
+    assert not isinstance(archive, SourcePrefixDigest)
+
+
+# --- Task 1: transcript schema version (bullet 3) ----------------------------
+
+
+def test_known_transcript_schema_versions_are_derived_from_current():
+    assert CURRENT_TRANSCRIPT_SCHEMA_VERSION == 2
+    assert {1, 2} == KNOWN_TRANSCRIPT_SCHEMA_VERSIONS
+
+
+def test_known_transcript_schema_versions_still_read():
+    assert require_known_transcript_schema_version({"schema_version": 1}) == 1
+    assert (
+        require_known_transcript_schema_version(
+            {"schema_version": CURRENT_TRANSCRIPT_SCHEMA_VERSION}
+        )
+        == CURRENT_TRANSCRIPT_SCHEMA_VERSION
+    )
+
+
+def test_unknown_transcript_schema_version_is_not_treated_as_empty_success():
+    """Required behaviour: an unrecognized `schema_version` must be refused,
+    never silently read as an empty/successful result (spec: "不把未知版本解释
+    为空成功")."""
+    with pytest.raises(TranscriptUnreadable, match="schema_version"):
+        require_known_transcript_schema_version(
+            {"schema_version": 999, "invocations": []}
+        )
+
+
+def test_missing_transcript_schema_version_is_also_refused():
+    with pytest.raises(TranscriptUnreadable, match="schema_version"):
+        require_known_transcript_schema_version({"invocations": []})
+
+
+# --- Task 1: stage values come from the contract vocabulary ------------------
+
+
+def test_bind_transcript_stage_is_a_known_pipeline_stage(codex_run):
+    from autoresearch.contracts.stages import STAGES
+
+    handle, source = codex_run
+    row = bind_transcript(
+        handle.run_id, source, role="l4-card", subject="600000",
+        invocation_id="agent-l4-card-600000-stage",
+    )
+
+    assert row["stage"] in STAGES
+
+
+def test_materialize_agent_index_event_stage_is_a_known_pipeline_stage(
+    codex_run, monkeypatch
+):
+    """`materialize_agent_index`'s own `TRANSCRIPTS_MATERIALIZED` event must
+    carry a stage name the contract vocabulary knows, not a hand-picked
+    literal -- the fallback used to be `"cp7"`, which `contracts.stages.STAGES`
+    has never heard of."""
+    from autoresearch.contracts.stages import STAGES
+
+    monkeypatch.delenv("AUTORESEARCH_STAGE", raising=False)
+    handle, source = codex_run
+
+    materialize_agent_index(handle.run_id)
+
+    events = read_jsonl(handle.capsule / "events/events.jsonl")
+    materialized = next(
+        e for e in events if e["event_type"] == "TRANSCRIPTS_MATERIALIZED"
+    )
+    assert materialized["stage"] in STAGES
+
+
+def test_bindings_and_index_are_written_at_the_current_schema_version(codex_run):
+    import json
+
+    handle, source = codex_run
+    bind_transcript(
+        handle.run_id, source, role="l4-card", subject="600000",
+        invocation_id="agent-l4-card-600000-schema",
+    )
+    binding_rows = read_jsonl(handle.capsule / "agents/bindings.jsonl")
+    assert binding_rows[-1]["schema_version"] == CURRENT_TRANSCRIPT_SCHEMA_VERSION
+
+    index = materialize_agent_index(handle.run_id)
+    assert index["schema_version"] == CURRENT_TRANSCRIPT_SCHEMA_VERSION
+
+    normalized_path = next((handle.capsule / "agents/normalized").glob("*.json"))
+    normalized = json.loads(normalized_path.read_text(encoding="utf-8"))
+    assert normalized["schema_version"] == CURRENT_TRANSCRIPT_SCHEMA_VERSION
