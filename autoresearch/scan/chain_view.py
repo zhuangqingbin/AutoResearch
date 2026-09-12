@@ -230,15 +230,43 @@ def _ledger_invocations(src: Sources, report_run_id: str) -> dict[str, dict]:
     return _rows_by_invocation(_ledger_index_doc(src, report_run_id))
 
 
-def _merge_invocation(capsule_row: dict | None, ledger_row: dict | None) -> dict:
+def _capsule_row_is_normalizable(src: Sources, capsule_row: dict | None) -> bool:
+    """spec §6.2 第三个回落触发词(fix round 1,finding 1)——capsule 行自称 PRESENT,
+    但它指向的 normalized 产物读不出来/解析不了,同「缺失」「GONE」一样不能当真。
+
+    只在 `status == "PRESENT"` 时才需要真的去读盘核实——GONE/NOT_EXPECTED 等其它状态
+    已经由 `status` 字面量本身说明问题,不重复判定,这里对它们恒返回 `True`(与本触发词
+    无关,交给 `_merge_invocation` 别的分支处理)。"""
+    if not isinstance(capsule_row, dict) or capsule_row.get("status") != "PRESENT":
+        return True
+    rel = capsule_row.get("normalized")
+    if not rel:
+        return False
+    doc = _read_json_or_none(src.run / "capsule" / rel)
+    return isinstance(doc, dict)
+
+
+def _merge_invocation(capsule_row: dict | None, ledger_row: dict | None, *,
+                      capsule_normalizable: bool = True) -> dict:
     """一条 invocation 的合并结果——原始状态/补录状态/实际来源/冲突全部保留(spec §6.2)。
 
     `effective` 只在**恰好一边**有效、或两边一致时才置位;两边都 PRESENT 但内容(源摘要)
-    不同 → `conflict=True`、`effective=None`,绝不悄悄挑一边(V02)。"""
-    cap_present = isinstance(capsule_row, dict) and capsule_row.get("status") == "PRESENT"
+    不同 → `conflict=True`、`effective=None`,绝不悄悄挑一边(V02)。
+
+    `capsule_normalizable=False`(fix round 1,finding 1;spec §6.2 第三个回落触发词)
+    与"缺失"/"GONE"同等对待——不能因为 `status` 字面量是 `PRESENT` 就认为这一边真的
+    可用,必须真正验证过 normalized 产物才算数。这种情形下 `original_status` 不塌缩成
+    普通的 `"PRESENT"`(那会让读者误以为 capsule 真的服务了这条证据)也不塌缩成
+    `"NO_CAPSULE_INDEX"`(那会抹掉"它确实自称 PRESENT 过"这个原始事实)——单独一个
+    字面量 `"PRESENT_UNNORMALIZABLE"`,原始事实与"不能当真"两件事都留痕。"""
+    cap_claims_present = isinstance(capsule_row, dict) and capsule_row.get("status") == "PRESENT"
+    cap_present = cap_claims_present and capsule_normalizable
     led_present = isinstance(ledger_row, dict) and ledger_row.get("status") == "PRESENT"
-    original_status = (capsule_row.get("status") if isinstance(capsule_row, dict)
-                       else "NO_CAPSULE_INDEX")
+    if cap_claims_present and not capsule_normalizable:
+        original_status = "PRESENT_UNNORMALIZABLE"
+    else:
+        original_status = (capsule_row.get("status") if isinstance(capsule_row, dict)
+                           else "NO_CAPSULE_INDEX")
     backfill_status = (ledger_row.get("status") if isinstance(ledger_row, dict)
                        else "NOT_BACKFILLED")
     effective: dict | None = None
@@ -271,7 +299,9 @@ def _merged_invocations(src: Sources, report_run_id: str) -> dict[str, dict]:
     """capsule ∪ ledger 的 invocation_id 并集,逐条合并(从不因为文件存在就整份短路)。"""
     cap_rows = _capsule_invocations(src)
     led_rows = _ledger_invocations(src, report_run_id)
-    return {iid: _merge_invocation(cap_rows.get(iid), led_rows.get(iid))
+    return {iid: _merge_invocation(
+                cap_rows.get(iid), led_rows.get(iid),
+                capsule_normalizable=_capsule_row_is_normalizable(src, cap_rows.get(iid)))
            for iid in sorted(set(cap_rows) | set(led_rows))}
 
 
@@ -427,6 +457,15 @@ def _hash_compare(ops_for_file: list[dict], on_disk_path: Path | None) -> tuple[
                + ("当前字节与该锚点一致" if matched else "当前字节与该锚点不同"))
     return (("MATCH", "与当前发布版本字节一致") if matched else
            ("DIFFERS", "与当前发布版本不一致(内容已变化,或经历过脱敏)"))
+
+
+def _hash_compare_note(ops_for_file: list[dict], on_disk_path: Path | None) -> str:
+    """`_hash_compare` 的 `(state, detail)` → 一段渲染文本(fix round 1,finding 3):
+    `detail` 此前算了就扔,两处调用点都只取 `[0]`——要么接进渲染,要么删掉,不留一个
+    算出来却没人读的值。选择接进渲染:不占新行(只是把已有的"写入核验:"这一行变长),
+    不影响 80 行摘要预算,`state` 仍是可 grep 的枚举前缀,`detail` 补足人读原因。"""
+    state, detail = _hash_compare(ops_for_file, on_disk_path)
+    return f"{state}({detail})"
 
 
 # ───────────────────────── 各段渲染 ─────────────────────────
@@ -644,7 +683,7 @@ def _sec_l4(src: Sources, code6: str) -> list[str]:
         _input_line("deep(P4 深核)", deep, deep_tier, ops=card_ops, ops_reason=card_ops_reason,
                     extra=deep_note),
         f"- 活体情报:{src.rel(intel)}"
-        + (f" · 写入核验:{_hash_compare(_ops_matching(intel_ops, intel.name) if intel else [], intel)[0]}"
+        + (f" · 写入核验:{_hash_compare_note(_ops_matching(intel_ops, intel.name), intel)}"
            if intel is not None else ""),
     ]
     tasks = src.doc("reasoning/l4/_l4_tasks.json", "_l4_tasks.json")
@@ -697,8 +736,7 @@ def _sec_l4(src: Sources, code6: str) -> list[str]:
             break
     card_hash_note = ""
     if card is not None:
-        state, _detail = _hash_compare(_ops_matching(card_ops, card.name), card)
-        card_hash_note = f" · 写入核验:{state}"
+        card_hash_note = f" · 写入核验:{_hash_compare_note(_ops_matching(card_ops, card.name), card)}"
     out.append(f"- 发布卡:{src.rel(card)}{card_hash_note}")
     return out
 
@@ -931,7 +969,7 @@ def _sec_scene(src: Sources, code6: str, *, verbose: bool) -> list[str]:
     gap_n = 0
     conflict_lines: list[str] = []
     op_lines: list[str] = []
-    text_blocks: list[str] = []
+    all_text_blocks: list[str] = []
     for role, iid, m in relevant:
         out.append(f"- {role}(`{iid}`):来源={m['origin']} · 原始状态={m['original_status']}"
                    f" · 补录状态={m['backfill_status']}"
@@ -962,8 +1000,12 @@ def _sec_scene(src: Sources, code6: str, *, verbose: bool) -> list[str]:
                     f" · item_index={op.get('item_index')}(归一化记录内位置,非 transcript 行号)"
                     f" · response_sha256={str(resp.get('sha256'))[:12] if resp.get('sha256') else '—'}"
                     f" · artifact_sha256={str(art.get('sha256'))[:12] if art.get('sha256') else '—'}")
-        if verbose and len(text_blocks) < 6:
-            text_blocks += _visible_text_blocks(doc)[: 6 - len(text_blocks)]
+        if verbose:
+            # fix round 1,finding 2:先攒**全部**可见文本块(不在这里就地截断),六块上限
+            # 与"省略了多少"的账都留到渲染前一次结算——中途按每个 invocation 分别截断会
+            # 让总省略数无法算清(某个 invocation 自己就有 8 块,提前切到 6 就永远不知道
+            # 后面 invocation 还有几块被彻底看不见)。
+            all_text_blocks += _visible_text_blocks(doc)
     out += conflict_lines
     success = sum(kind_tally.get(k, 0) for k in
                  ("READ_SUCCEEDED", "WRITE_SUCCEEDED", "SEARCH_SUCCEEDED"))
@@ -984,9 +1026,15 @@ def _sec_scene(src: Sources, code6: str, *, verbose: bool) -> list[str]:
         out.append(f"- 时间锚:决策批准时刻={approved or ABSENT}"
                    "(单项操作是否早于/晚于批准时刻,取决于 transcript 时间戳是否留存;"
                    "缺失一律显示未知,不能因为文件被归档就推断当时已看过)")
-        if text_blocks:
-            out.append(f"- 可见分析文本({len(text_blocks)} 块,每块≤300字):")
-            out += [f"  > {t}" for t in text_blocks]
+        if all_text_blocks:
+            # fix round 1,finding 2(spec §8「长文本…至多 6 块，明确省略量」):六块上限
+            # 之外的内容不能悄悄丢弃——`omitted_blocks` 就是那句话字面要求的"省略量",
+            # 只在真的省略了什么时才现出这半句,不为 0 编一句空话。
+            shown = all_text_blocks[:6]
+            omitted_blocks = len(all_text_blocks) - len(shown)
+            out.append(f"- 可见分析文本({len(shown)} 块,每块≤300字"
+                       + (f",另省略 {omitted_blocks} 块" if omitted_blocks else "") + "):")
+            out += [f"  > {t}" for t in shown]
     return out
 
 

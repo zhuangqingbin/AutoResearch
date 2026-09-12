@@ -659,3 +659,96 @@ def test_golden_with_one_capsule_invocation_summary_vs_verbose(tmp_path, monkeyp
     assert summary == _GOLDEN_WITH_EVIDENCE_SUMMARY
     assert verbose == _GOLDEN_WITH_EVIDENCE_VERBOSE
     assert verbose.startswith(summary)   # verbose 是 summary 逐字节前缀,再加详细内容
+
+
+# ═══════════════════════ fix round 1:复核四项 ═══════════════════════
+
+def test_capsule_present_but_normalized_unreadable_falls_back_to_ledger(tmp_path, monkeypatch):
+    """finding 1(fix round 1):spec §6.2 三个回落触发词——缺失/GONE/**不可归一化**——
+    只实现了前两个。capsule 行自称 PRESENT,但它的 normalized 产物是坏 JSON,必须与
+    "缺失"/"GONE"同等对待,回落到有效的 ledger 补录;不能让 ledger 的真实读取被吞掉、
+    只剩"证据不足"(复核直接复现的缺陷:旧代码在这个组合下把 ledger 的成功读取吞了)。
+
+    与已有的 `test_corrupted_normalized_document_is_insufficient_not_absolute` 的区别:
+    那条测试**没有 ledger 行**,从没练到"capsule 坏 + ledger 好"这个组合(复核原话)。
+    """
+    monkeypatch.chdir(tmp_path)
+    run = _base_run(tmp_path)
+    report_run_id = run.name
+    _capsule_index(run, [_row("l4-card-603317", status="PRESENT")])
+    bad = run / "capsule" / "agents" / "normalized" / "l4-card-603317.json"
+    bad.parent.mkdir(parents=True, exist_ok=True)
+    bad.write_text("{坏 json", encoding="utf-8")
+    _ledger_index(run, report_run_id,
+                 [_row("l4-card-603317",
+                       normalized=f"{report_run_id}/rev-1/normalized/l4-card-603317.json")])
+    _ledger_normalized(run, report_run_id, "rev-1", "l4-card-603317",
+                       operations=[_read_op("c1", "/x/603317_2026-08-25_slim.md")])
+
+    md = chain_view.render(run, CODE)
+    assert "来源=ledger_backfill" in md
+    assert "原始状态=PRESENT_UNNORMALIZABLE" in md   # 原始 PRESENT 这个事实没被抹掉,
+                                                      # 但也没被当成"真的可用"
+    assert "补录状态=PRESENT" in md
+    assert "成功 1" in md          # ledger 的真实读取没有被吞掉
+    assert "⚠️冲突" not in md      # 这不是冲突(capsule 那边压根不算数),是干净的回落
+
+
+def test_visible_text_blocks_cap_states_the_omitted_count(tmp_path, monkeypatch):
+    """finding 2(fix round 1):spec §8「长文本…至多 6 块，明确省略量」——六块上限之外
+    的内容不能悄悄丢弃,省略量必须现出来。8 段可见文本 → 显示 6 块 + 明确"另省略 2 块"。
+    """
+    monkeypatch.chdir(tmp_path)
+    run = _base_run(tmp_path)
+    items = [{"index": i, "kind": "assistant_text", "payload": {"text": f"第{i}段可见分析文本"},
+             "timestamp": None} for i in range(8)]
+    _capsule_index(run, [_row("l4-card-603317")])
+    _capsule_normalized(run, "l4-card-603317", items=items, operations=[])
+
+    md = chain_view.render(run, CODE, verbose=True)
+    assert "可见分析文本(6 块" in md
+    assert "另省略 2 块" in md
+    assert "第7段可见分析文本" not in md   # 第 8 块(index 7)确实没显示——不是凑巧对上
+
+
+def test_hash_compare_detail_is_rendered_not_discarded(tmp_path, monkeypatch):
+    """finding 3(fix round 1):`_hash_compare` 算出来的 `detail` 此前算了就扔——选择
+    "接进 --verbose 或删掉"里的前者:接进渲染(不限 verbose,因为它不占新行,只是把已有
+    "写入核验:"这一行变长,不影响 80 行预算)。"""
+    monkeypatch.chdir(tmp_path)
+    run = _base_run(tmp_path)
+    intel_path = run / "trace" / "staging" / f"_l4_intel_{CODE}.md"
+    content = b"# intel body"
+    intel_path.write_bytes(content)
+    _capsule_index(run, [_row("l4-intel-603317", role="l4-intel")])
+    _capsule_normalized(run, "l4-intel-603317",
+                        operations=[_write_op("c1", str(intel_path), content)])
+    md = chain_view.render(run, CODE)
+    assert "写入核验:MATCH(与当前发布版本字节一致)" in md
+
+
+def test_find_invocation_subject_substring_does_not_match_a_different_neighbour(tmp_path, monkeypatch):
+    """finding 4(fix round 1,cheap coverage):真实生产者(`.claude/workflows/l4-stock.js:166`)
+    对 l4-card/l4-intel 只发裸六位代码当 subject,子串匹配分支今天完全不会被真实数据触发
+    ——但从没有夹具练过它。构造一个"看起来像"、数字其实不同的邻居 invocation(平安银行
+    000001,不含目标 603317 的子串),证明:①找到的是目标本身(天味食品 603317 的
+    display-name 风格 subject,走的正是子串匹配那条分支)②邻居不会被误当成目标。"""
+    monkeypatch.chdir(tmp_path)
+    run = _base_run(tmp_path)
+    _capsule_index(run, [
+        _row("l4-card-a", subject="603317 天味食品"),
+        _row("l4-card-b", subject="000001 平安银行"),
+    ])
+    src = chain_view.Sources(run)
+    merged = chain_view._merged_invocations(src, run.name)
+
+    found = chain_view._find_invocation(merged, "l4-card", "603317")
+    assert found is not None
+    iid, m = found
+    assert iid == "l4-card-a"
+    assert (m["capsule"] or {}).get("subject") == "603317 天味食品"
+
+    # 反向核验:搜平安银行的代码不会被"天味食品"那行误配。
+    found_other = chain_view._find_invocation(merged, "l4-card", "000001")
+    assert found_other is not None
+    assert found_other[0] == "l4-card-b"
