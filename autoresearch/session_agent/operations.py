@@ -71,6 +71,16 @@ _OPERATIONS: dict[str, dict[str, object]] = {
         "idempotent": True,
         "stage": "publish",
     },
+    "stock.full.validate": {
+        "builder": lambda params: _no_params("stock-full-validate", params),
+        "idempotent": True,
+        "stage": "assemble",
+    },
+    "stock.full.assemble": {
+        "builder": lambda params: _no_params("stock-full-assemble", params),
+        "idempotent": True,
+        "stage": "assemble",
+    },
 }
 
 

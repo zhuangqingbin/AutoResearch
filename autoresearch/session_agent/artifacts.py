@@ -193,6 +193,19 @@ def bind_artifact_hash(handle, artifact_id: str) -> dict:
         return descriptor
 
 
+def snapshot_artifact(handle, artifact_id: str) -> dict:
+    """Verify a bound artifact and return the immutable task handoff identity."""
+    with open_artifact(handle, artifact_id):
+        pass
+    _, descriptor = _descriptor(handle, artifact_id)
+    return {
+        "artifact_id": artifact_id,
+        "sha256": descriptor["sha256"],
+        "relative_path": descriptor["relative_path"],
+    }
+
+
 __all__ = [
     "ArtifactConflict", "bind_artifact_hash", "open_artifact", "register_artifact",
+    "snapshot_artifact",
 ]

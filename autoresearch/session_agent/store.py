@@ -92,6 +92,7 @@ def claim(
     task_id: str,
     expected_attempt: int,
     session_ref: str,
+    input_snapshots: list[dict] | None = None,
 ) -> dict:
     if type(expected_attempt) is not int or expected_attempt < 1:
         raise ValueError("expected_attempt must be a positive integer")
@@ -123,6 +124,7 @@ def claim(
             "attempt": expected_attempt,
             "session_ref": session_ref,
             "spec": entry["spec"],
+            "input_snapshots": input_snapshots or [],
         }
         entry.update({
             "state": "RUNNING",

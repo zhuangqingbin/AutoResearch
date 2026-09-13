@@ -295,6 +295,19 @@ def _record_completion(handle, task: dict, attempt: int, payload: dict, recorder
     )
 
 
+def _verify_frozen_inputs(handle, task: dict, entry: dict) -> None:
+    frozen = {
+        item["artifact_id"]: item["sha256"]
+        for item in entry["claim_receipt"]["input_snapshots"]
+    }
+    current = {
+        artifact_id: artifacts.snapshot_artifact(handle, artifact_id)["sha256"]
+        for artifact_id in task["input_artifact_ids"]
+    }
+    if current != frozen:
+        raise ValueError("task inputs changed after claim")
+
+
 def claim(
     run_id: str,
     task_id: str,
@@ -308,8 +321,16 @@ def claim(
     handle = (handle_loader or require_active_run)(run_id)
     task = _task(handle, task_id)
     host_profile = _read_json(_session_dir(handle) / "host_profile.json")
+    input_snapshots = [
+        artifacts.snapshot_artifact(handle, artifact_id)
+        for artifact_id in task["input_artifact_ids"]
+    ]
     receipt = store.claim(
-        _store_path(handle), task_id, expected_attempt, host_profile["session_ref"]
+        _store_path(handle),
+        task_id,
+        expected_attempt,
+        host_profile["session_ref"],
+        input_snapshots,
     )
     claim_result: dict = {"claim_receipt": receipt}
     if task["kind"] == "INFERENCE":
@@ -379,6 +400,7 @@ def execute(
     entry = store.read_entry(_store_path(handle), task_id)
     if entry["state"] != "RUNNING" or entry["attempt"] != attempt:
         raise RuntimeError("deterministic task attempt is not claimed")
+    _verify_frozen_inputs(handle, task, entry)
     request = _read_json(_session_dir(handle) / "request.json")
     if task["operation"] != "test.noop":
         from autoresearch.session_agent.workflows import validate_operation_params
@@ -426,6 +448,8 @@ def submit(
     if task["kind"] != "INFERENCE":
         raise ValueError("submit requires an inference task")
     host_profile = _read_json(_session_dir(handle) / "host_profile.json")
+    entry = store.read_entry(_store_path(handle), task["task_id"])
+    _verify_frozen_inputs(handle, task, entry)
     if host_receipt is not None:
         validate_receipt(task, host_receipt, host_profile)
         if host_receipt["attempt"] != submission["envelope"]["attempt"]:

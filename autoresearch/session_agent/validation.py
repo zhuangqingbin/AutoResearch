@@ -51,7 +51,50 @@ def _stock_lite(handle, submission: dict, task: dict) -> None:
             raise DomainValidationError("buy-rated lite card requires stock.deep") from exc
 
 
-_CONTRACT_VALIDATORS = {"stock.lite.v1": _stock_lite}
+def _open_outputs(handle, submission: dict, task: dict) -> dict[str, str]:
+    expected = set(task["output_artifact_ids"])
+    actual = {item["artifact_id"] for item in submission["outputs"]}
+    if actual != expected:
+        raise DomainValidationError("inference output set is incomplete")
+    values = {}
+    for artifact_id in task["output_artifact_ids"]:
+        try:
+            with artifacts.open_artifact(handle, artifact_id) as stream:
+                text = stream.read().decode("utf-8").strip()
+        except (KeyError, ValueError, RuntimeError) as exc:
+            raise DomainValidationError(f"missing output artifact: {artifact_id}") from exc
+        if not text:
+            raise DomainValidationError(f"empty output artifact: {artifact_id}")
+        values[artifact_id] = text
+    return values
+
+
+def _stock_section(handle, submission: dict, task: dict) -> None:
+    for artifact_id, text in _open_outputs(handle, submission, task).items():
+        if "置信度:" not in text and "置信度：" not in text:
+            raise DomainValidationError(f"stock section lacks confidence line: {artifact_id}")
+
+
+def _stock_intel(handle, submission: dict, task: dict) -> None:
+    _open_outputs(handle, submission, task)
+
+
+def _stock_pm(handle, submission: dict, task: dict) -> None:
+    values = _open_outputs(handle, submission, task)
+    decisions = [text for key, text in values.items() if key.endswith(".decision")]
+    if len(decisions) != 1:
+        raise DomainValidationError("stock PM output lacks unique decision")
+    decision = decisions[0]
+    if parse_rating(decision, strict=True) is None or _PROPOSAL_RE.search(decision) is None:
+        raise DomainValidationError("stock PM decision lacks strict Rating or proposal")
+
+
+_CONTRACT_VALIDATORS = {
+    "stock.lite.v1": _stock_lite,
+    "stock.section.v1": _stock_section,
+    "company.intel.v1": _stock_intel,
+    "stock.pm.v1": _stock_pm,
+}
 
 
 def validate_registered_contract(handle, submission: dict, task: dict) -> None:

@@ -202,7 +202,7 @@ def main() -> int:
     title_id = f"{fname}（{ticker}）" if _is_ashare(ticker) and fname != ticker else ticker
     out = [f"# Trading Analysis Report: {title_id}\n",
            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  ",
-           "_Engine: Claude (in-session), zero paid LLM API. "
+           f"_Engine: {ws.ENGINE.title()} (subscription session), zero paid LLM API. "
            "Data: project tools (yfinance/FRED) + v2/v3/v4 enrichments._\n"]
 
     # --- table of contents (two-tier: spine then appendix) ----------------
