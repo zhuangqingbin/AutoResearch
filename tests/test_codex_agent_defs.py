@@ -1,8 +1,8 @@
 from pathlib import Path
+
 import tomllib
 
 from autoresearch.scan import user_config as uc
-
 
 ROOT = Path(__file__).resolve().parents[1]
 

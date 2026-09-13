@@ -220,6 +220,41 @@ def test_production_scan_config_resolves_cleanly():
     assert uc.resolve_agent_bundle(runtime_cfg, engine="codex")["roles"] == codex
 
 
+#: 迁移前(role→{model,effort} 直写)的 Claude 解析结果 —— 2026-09-13 迁到 role→tier +
+#: `agent_engines` 那天,在 main 上跑同一个 `resolve_agent_config` 取的真身。
+#: 搬迁类改动的 parity 要两条腿:**同对象**(都是 resolved dict)+ **搬迁前 golden**。
+#: 只断言"新配置能解析"证明不了等价 —— 一个 tier 表填错,它照样解析得干干净净。
+_CLAUDE_GOLDEN_BEFORE_TIER_MIGRATION = {
+    "dossier_init": {"effort": "max"},
+    "ens_review": {"effort": "max"},
+    "gp_shell": {"effort": "low", "model": "sonnet"},
+    "gp_shell_json": {"effort": "low", "model": "sonnet"},
+    "l3_rank": {"effort": "max"},
+    "l3_repair": {"effort": "medium"},
+    "l4_card": {"effort": "max"},
+    "l4_intel": {"effort": "max"},
+    "sector_brief": {"effort": "xhigh"},
+    "strategist": {"effort": "max"},
+}
+
+
+def test_claude_roles_resolve_exactly_as_before_the_tier_migration():
+    """双引擎改造不许动 Claude 侧一个字:十个 role 的解析结果必须与迁移前逐字段相同。
+
+    这些值直接决定每个 agent 跑在什么 effort 上 —— 判断类 role 悄悄从 max 掉到 xhigh,
+    产物照样长得像回事,账单也照样出得来,没有任何门会喊。
+    """
+    from pathlib import Path as _Path
+    prod = (_Path(__file__).resolve().parents[2]
+            / ".claude" / "skills" / "scan-market" / "scan_config.jsonc")
+    resolved = uc.resolve_agent_config(uc.load_user_config(prod))
+    assert resolved == _CLAUDE_GOLDEN_BEFORE_TIER_MIGRATION
+    # 判断类 role **不得**出现 model 键:那是 agent def frontmatter 的地盘(opus/sonnet),
+    # 配置里写死会把 frontmatter 压掉 —— 同族前科见 test_resolved_model_key_absent...
+    for role in ("l3_rank", "l4_card", "l4_intel", "strategist"):
+        assert "model" not in resolved[role]
+
+
 def _dual():
     roles = {role: {"tier": "critical"} for role in sorted(uc._AGENT_ROLES)}
     return {
