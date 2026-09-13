@@ -773,3 +773,127 @@ def test_store_blob_reuses_trace_blobs_layout_and_verifies_collisions(tmp_path, 
     expected_path.write_bytes(b"corrupted")
     with pytest.raises(RuntimeError):
         salvage._store_blob(run, payload)
+
+
+# ------------------------------------------------------------- fix round 2:
+# read compatibility for blobs recorded under the old flat layout
+#
+# Fix round 1 switched _store_blob's layout from a flat blobs/<digest> to
+# trace.blobs' own blobs/sha256/<xx>/<digest>, but _merge_rows' sticky rule means a
+# VERIFIED_RUN row written *before* that switch keeps its old blob["path"] forever --
+# it is never recomputed. Recomputing a blob's location from its digest (rather than
+# reading the recorded blob["path"]) therefore silently orphans every already-verified
+# row written under the old layout: the file is still genuinely on disk, just not
+# where the recompute rule looks. A repo-wide scan (the round-2 review) found 723 such
+# rows across 45 real runs.
+
+
+def _write_provenance_row(run, *, filename, file_kind, blob_path_str, payload,
+                           attribution="VERIFIED_RUN"):
+    """Build one provenance.json with a single row whose `blob["path"]` is exactly
+    *blob_path_str* (old flat form or new nested form, caller's choice), and place
+    *payload* bytes at that literal location under the salvage dir -- never through
+    `_store_blob` (which only ever writes the *current* layout) -- so this genuinely
+    exercises "a row written under either layout", not a fixture the current code
+    would itself produce."""
+    import hashlib
+
+    digest = hashlib.sha256(payload).hexdigest()
+    salvage_dir = salvage._salvage_dir(run)
+    blob_file = salvage_dir / blob_path_str
+    blob_file.parent.mkdir(parents=True, exist_ok=True)
+    blob_file.write_bytes(payload)
+    doc = {
+        "schema_version": salvage.PROVENANCE_SCHEMA_VERSION,
+        "report_run_id": run.name, "contract_run_id": "x", "engine": "claude",
+        "analysis_date": ANALYSIS_DATE, "run_window": {"start": None, "end": None},
+        "same_date_multi_run": False, "sibling_report_run_ids": [],
+        "captured_at": "2026-08-17T20:00:00+00:00",
+        "files": [{
+            "file_kind": file_kind, "logical_name": filename, "attribution": attribution,
+            "reason": "test fixture", "source": None, "source_sha256": digest,
+            "source_bytes": len(payload), "source_mtime": None, "captured_at": "x",
+            "same_date_multi_run": False, "sibling_report_run_ids": [], "overwritten_by": None,
+            "blob": {"sha256": digest, "bytes": len(payload), "path": blob_path_str},
+        }],
+    }
+    from autoresearch.common.atomic import atomic_write_json
+
+    atomic_write_json(salvage._provenance_path(run), doc)
+    return digest, blob_file
+
+
+def test_resolve_blob_path_reads_old_flat_layout_by_its_recorded_path(tmp_path, monkeypatch):
+    """The failing case the round-2 review found: a row whose blob["path"] is the old
+    flat form (`blobs/<digest>`, pre-fix-round-1) must still resolve -- by *reading*
+    that recorded path, never by recomputing a location from the digest alone (which
+    would land on the *new* nested layout, where nothing exists for an old row)."""
+    _redirect(monkeypatch, tmp_path)
+    run = _write_run(tmp_path, "20260817_2000")
+    payload = b"old-layout-payload"
+    old_rel = "blobs/deadbeef-not-a-real-digest-but-a-realistic-old-style-relpath"
+    salvage_dir = salvage._salvage_dir(run)
+    blob_file = salvage_dir / old_rel
+    blob_file.parent.mkdir(parents=True, exist_ok=True)
+    blob_file.write_bytes(payload)
+    import hashlib
+
+    blob = {"sha256": hashlib.sha256(payload).hexdigest(), "bytes": len(payload), "path": old_rel}
+
+    resolved = salvage.resolve_blob_path(run, blob)
+    assert resolved == blob_file
+    assert resolved.read_bytes() == payload
+
+
+def test_resolve_blob_path_reads_new_nested_layout_by_its_recorded_path(tmp_path, monkeypatch):
+    """Symmetric case: a row written under the *current* layout (via the real
+    _store_blob) must remain resolvable through the exact same code path."""
+    _redirect(monkeypatch, tmp_path)
+    run = _write_run(tmp_path, "20260817_2000")
+    payload = b"new-layout-payload"
+    blob = salvage._store_blob(run, payload)
+
+    resolved = salvage.resolve_blob_path(run, blob)
+    assert resolved == salvage._salvage_dir(run) / blob["path"]
+    assert resolved.read_bytes() == payload
+    assert "sha256/" in blob["path"]  # genuinely the new fan-out, not a coincidence
+
+
+def test_resolve_attributed_source_finds_a_verified_row_under_the_old_layout(tmp_path, monkeypatch):
+    """Consumer-adjacent integration test: `resolve_attributed_source` (chain_view's
+    own read point) must still find an old-layout VERIFIED_RUN row's blob -- proving
+    the fix at the level the review's real-run check exercised, not just the pure
+    resolver."""
+    _redirect(monkeypatch, tmp_path)
+    run = _write_run(tmp_path, "20260817_2000")
+    payload = b'{"mode": "active", "old": "layout"}'
+    digest, blob_file = _write_provenance_row(
+        run, filename=MARKET_VIEW, file_kind="market_view",
+        blob_path_str=f"blobs/{'a' * 64}", payload=payload,
+    )
+    resolved = salvage.resolve_attributed_source(run, MARKET_VIEW)
+    assert resolved == blob_file
+    assert resolved.read_bytes() == payload
+
+
+def test_h02_chain_view_promotes_an_old_layout_verified_blob_too(tmp_path, monkeypatch):
+    """Consumer-level proof (the review explicitly asked for at least one): chain_view's
+    own promoted tier (Sources.find, ruling 5) must still promote a VERIFIED_RUN row
+    whose blob sits at the pre-fix-round-1 flat-layout path -- this is the exact
+    scenario the repo-wide scan found silently losing evidence in real runs."""
+    _redirect(monkeypatch, tmp_path)
+    run = _write_run(tmp_path, "20260817_2000")
+    old_layout_content = '{"mode": "active", "buys": ["600000"], "old_layout": true}'
+    _write_provenance_row(
+        run, filename=DECISION_FILENAME, file_kind="e6_decision",
+        blob_path_str=f"blobs/{'b' * 64}", payload=old_layout_content.encode("utf-8"),
+    )
+    _touch_shared(
+        tmp_path, "claude", ANALYSIS_DATE, DECISION_FILENAME,
+        "# 共享的、不该被读到的当前内容\n",
+    )
+    src = chain_view.Sources(run)
+    found = src.find(DECISION_FILENAME)
+    assert found is not None
+    assert found.read_text(encoding="utf-8") == old_layout_content
+    assert src.used_shared is False  # promoted from the old-layout blob, not shared

@@ -62,6 +62,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -420,6 +421,63 @@ def _store_blob(run_dir: Path, data: bytes, *, ledger_root: Path | None = None) 
     digest = trace_blobs.put_bytes(root, data)
     rel = trace_blobs.blob_path(root, digest).relative_to(root).as_posix()
     return {"sha256": digest, "bytes": len(data), "path": rel}
+
+
+def resolve_blob_path(
+    run_dir: Path | str, blob: object, *, ledger_root: Path | None = None
+) -> Path | None:
+    """Resolve one provenance row's ``blob`` record to its real on-disk file —
+    the **public accessor** every reader of an already-written salvage blob
+    must use, including Task 8's offline index (fix-round-2).
+
+    Fix-round-2 (Important — the round-1 blob-layout switch's own
+    regression): ``_store_blob`` changed its layout from a flat
+    ``blobs/<digest>`` to `trace.blobs`' two-level fan-out
+    ``blobs/sha256/<xx>/<digest>``, but `_merge_rows`'s sticky rule (spec
+    §6.3 "保留已验证快照,不因 shared 后续变化覆盖旧件") means an already-
+    ``VERIFIED_RUN`` row written *before* that switch is never recomputed —
+    its ``blob["path"]`` still names the old flat location, where the file
+    genuinely still sits. A caller that *recomputes* a location from
+    ``blob["sha256"]`` alone (via `trace_blobs.blob_path`, which only ever
+    knows the *current* layout) silently looks in the wrong place for that
+    row forever — a real-run scan (fix-round-2 review) found 723 such rows
+    across 45 published runs, and a live check confirmed a genuine 172KB
+    transcript blob for run ``20260907-0907_2233`` had become unreadable
+    this way.
+
+    The fix is **read compatibility, not migration**: trust
+    ``blob["path"]`` exactly as recorded (resolved against this run's own
+    salvage directory, with a containment check — evidentiary paths are
+    never followed outside the salvage root) whenever one was recorded;
+    only fall back to computing a location from ``blob["sha256"]`` when no
+    path was recorded at all. A row's own record is authoritative for
+    *where that row's bytes actually are* — recomputing would silently
+    substitute "wherever today's code would put a file with this digest"
+    for "where this file has always actually been", which is precisely
+    backwards for a module whose only job is not losing track of evidence.
+    No existing blob is moved, renamed, or rewritten to do this — moving
+    776 real evidence files around this carelessly is exactly what this
+    module exists to avoid; every location this function can return is one
+    a caller already wrote to, under whichever layout was current then.
+    """
+    if not isinstance(blob, Mapping):
+        return None
+    run_dir = Path(run_dir)
+    root = _salvage_dir(run_dir, ledger_root=ledger_root)
+    recorded = blob.get("path")
+    if isinstance(recorded, str) and recorded:
+        try:
+            candidate = (root / recorded).resolve(strict=False)
+            root_resolved = root.resolve(strict=False)
+        except (OSError, ValueError):
+            return None
+        if not candidate.is_relative_to(root_resolved):
+            return None  # a recorded path must never point outside this run's own salvage dir
+        return candidate if candidate.is_file() else None
+    digest = blob.get("sha256")
+    if not isinstance(digest, str) or not digest:
+        return None
+    return _blob_path(run_dir, digest, ledger_root=ledger_root)
 
 
 # --------------------------------------------------------------- 单份 transcript
@@ -833,6 +891,9 @@ def resolve_attributed_source(
     化的 blob 路径(**不是**共享 staging 的活文件);没有(不存在、TIME_WINDOW_ONLY、
     OVERWRITTEN_BY_LATER_RUN、UNKNOWN 等)一律 ``None``,调用方据此继续走它自己
     原有的、标"仅供参考"的兜底路径 —— 本函数从不、也不应该把非事实提升成来源。
+
+    实际的 blob 定位委托给 `resolve_blob_path`(fix-round-2)——按记录的
+    ``blob["path"]`` 读,不按 ``sha256`` 现算,新旧两种落盘布局都能读回。
     """
     run_dir = Path(run_dir)
     doc = _read_json_lenient(_provenance_path(run_dir, ledger_root=ledger_root))
@@ -846,8 +907,7 @@ def resolve_attributed_source(
         blob = row.get("blob")
         if not isinstance(blob, dict) or not blob.get("sha256"):
             return None
-        path = _blob_path(run_dir, blob["sha256"], ledger_root=ledger_root)
-        return path if path is not None and path.is_file() else None
+        return resolve_blob_path(run_dir, blob, ledger_root=ledger_root)
     return None
 
 
