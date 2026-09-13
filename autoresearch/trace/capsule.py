@@ -1593,6 +1593,7 @@ def bind_transcript(
     engine: str | None = None,
     start_ordinal: int | None = None,
     end_ordinal: int | None = None,
+    stage: str | None = None,
 ) -> dict:
     """Record one authoritative transcript binding for an active run.
 
@@ -1600,6 +1601,14 @@ def bind_transcript(
     may enumerate candidates but never promote one by mtime.  Re-binding the
     same identity is idempotent; binding a different path to an invocation that
     already has one is rejected.
+
+    ``stage`` (2026-09-12 scene-reconstruction Task 4): ``None`` (every
+    pre-existing caller) preserves the exact old default -- resolved from
+    ``AUTORESEARCH_STAGE``, falling back to ``"l4"``.  An explicit value is
+    validated against `contracts.stages.STAGES` (the one stage vocabulary,
+    same discipline `materialize_agent_index`'s own stage fallback now
+    follows) and rejected loudly if it is not a real registered stage --
+    never silently coerced or hand-mapped a second time.
     """
     handle = require_active_run(run_id)
     resolved_role = _validate_agent_identifier("role", role)
@@ -1620,16 +1629,23 @@ def bind_transcript(
     ):
         raise ValueError("end_ordinal must not precede start_ordinal")
     source = _require_external_source(handle, Path(path))
-    stage = _validate_stage(
-        str(os.environ.get("AUTORESEARCH_STAGE", "")).strip() or "l4"
-    )
+    if stage is None:
+        resolved_stage = _validate_stage(
+            str(os.environ.get("AUTORESEARCH_STAGE", "")).strip() or "l4"
+        )
+    else:
+        from autoresearch.contracts.stages import STAGES
+
+        if stage not in STAGES:
+            raise ValueError(f"stage must be one of {STAGES!r}; got {stage!r}")
+        resolved_stage = _validate_stage(stage)
     row = {
         "schema_version": _TRANSCRIPT_SCHEMA_VERSION,
         "engine": resolved_engine,
         "invocation_id": resolved_invocation,
         "role": resolved_role,
         "subject": resolved_subject,
-        "stage": stage,
+        "stage": resolved_stage,
         "path": str(source),
         "start_ordinal": start_ordinal,
         "end_ordinal": end_ordinal,
@@ -1655,7 +1671,7 @@ def bind_transcript(
             handle.capsule / "events/events.jsonl",
             run_id=handle.run_id,
             engine=handle.engine,
-            stage=stage,
+            stage=resolved_stage,
             invocation_id=resolved_invocation,
             attempt=1,
             subject=resolved_subject,
@@ -3514,6 +3530,7 @@ def _parser() -> argparse.ArgumentParser:
     bind.add_argument("--engine", choices=ws.ENGINES)
     bind.add_argument("--from-ordinal", type=int)
     bind.add_argument("--to-ordinal", type=int)
+    bind.add_argument("--stage", default=None)
     materialize = commands.add_parser("materialize-agents")
     materialize.add_argument("run_id")
     replay_cmd = commands.add_parser("replay")
@@ -3592,6 +3609,7 @@ def main(argv: list[str] | None = None) -> int:
                 engine=args.engine,
                 start_ordinal=args.from_ordinal,
                 end_ordinal=args.to_ordinal,
+                stage=args.stage,
             )
         elif args.command == "materialize-agents":
             result = materialize_agent_index(args.run_id)
