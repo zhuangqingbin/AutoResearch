@@ -11,6 +11,10 @@ def build_plan(request: dict, handle) -> dict:
         from autoresearch.session_agent.workflows.macro import build_macro_plan
 
         return build_macro_plan(request, handle)
+    if request["kind"] == "sector-research":
+        from autoresearch.session_agent.workflows.sector import build_sector_plan
+
+        return build_sector_plan(request, handle)
     raise ValueError(f"session workflow is not implemented: {request['kind']}")
 
 
@@ -24,6 +28,11 @@ def register_artifacts(request: dict, handle, plan: dict) -> None:
         from autoresearch.session_agent.workflows.macro import register_macro_artifacts
 
         register_macro_artifacts(request, handle, plan)
+        return
+    if request["kind"] == "sector-research":
+        from autoresearch.session_agent.workflows.sector import register_sector_artifacts
+
+        register_sector_artifacts(request, handle, plan)
         return
     raise ValueError(f"session artifact workflow is not implemented: {request['kind']}")
 
@@ -40,6 +49,13 @@ def validate_operation_params(request: dict, task: dict, params: dict) -> None:
         )
 
         validate_macro_operation_params(request, task, params)
+        return
+    if request["kind"] == "sector-research":
+        from autoresearch.session_agent.workflows.sector import (
+            validate_sector_operation_params,
+        )
+
+        validate_sector_operation_params(request, task, params)
         return
     raise ValueError(f"session operation workflow is not implemented: {request['kind']}")
 

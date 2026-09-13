@@ -376,6 +376,176 @@ def macro_full_assemble(handle=None) -> dict:
     return value
 
 
+def sector_prepare(handle=None, *, scan_root: Path | str | None = None) -> dict:
+    current = handle or _active_handle()
+    request = _request(current)
+    analysis_date = request["analysis_date"]
+    industry = request["subject"]
+    source_root = Path(scan_root) if scan_root is not None else ws.scan_root()
+    source = source_root / analysis_date
+    input_dir = Path(current.staging) / "sector_inputs" / analysis_date
+    input_dir.mkdir(parents=True, exist_ok=True)
+    source_kind = "existing_scan"
+    l1_source = source / "L1_scored_full.csv"
+    if l1_source.is_file():
+        shutil.copyfile(l1_source, input_dir / "L1_scored_full.csv")
+        for name in ("L2_gbdt_top200.csv", "sectors.csv", "calendar.csv", "meta.json"):
+            candidate = source / name
+            if candidate.is_file():
+                shutil.copyfile(candidate, input_dir / name)
+    else:
+        source_kind = "generated_frame"
+        from autoresearch.scan.frame import build_market_frame
+
+        frame, _ = build_market_frame(
+            analysis_date, cap_floor_yi=30.0, include_bj=True, source="tushare"
+        )
+        frame.to_csv(input_dir / "L1_scored_full.csv", index=False)
+    import pandas as pd
+
+    l1 = pd.read_csv(input_dir / "L1_scored_full.csv", dtype={"code": str})
+    l2_path = input_dir / "L2_gbdt_top200.csv"
+    if not l2_path.is_file():
+        order = next(
+            (column for column in ("composite", "pct_60d") if column in l1.columns),
+            None,
+        )
+        l2 = l1.sort_values(order, ascending=False).head(200) if order else l1.head(200)
+        keep = [column for column in ("code", "name", "industry") if column in l2]
+        l2[keep].to_csv(l2_path, index=False)
+    input_hashes = {
+        path.name: sha256_bytes(path.read_bytes())
+        for path in sorted(input_dir.iterdir())
+        if path.is_file()
+    }
+    from autoresearch.sector import pack as sector_pack_module
+
+    pack = (
+        sector_pack_module._sector_pack_staging(industry, input_dir)
+        if request["requested_mode"] == "LITE"
+        else sector_pack_module.sector_pack(industry, input_dir)
+    )
+    if int(pack.get("n_market") or 0) < 1:
+        raise ValueError(f"industry is absent from verified market inputs: {industry}")
+    output = Path(current.staging) / "session_outputs"
+    manifest = {
+        "schema_version": 1,
+        "engine": current.engine,
+        "analysis_date": analysis_date,
+        "industry": industry,
+        "source": source_kind,
+        "input_hashes": input_hashes,
+    }
+    atomic_write_json(output / "sector.inputs.json", manifest)
+    atomic_write_json(output / "sector.pack.json", pack)
+    reuse_value = {"schema_version": 1, "reused": False, "source": None, "sha256": None, "body": None}
+    if request["requested_mode"] == "LITE" and source_kind == "existing_scan":
+        from autoresearch.sector.reuse import apply_reuse, find_reusable
+
+        found = find_reusable(analysis_date, [industry], root=source_root)
+        if industry in found:
+            reuse_root = Path(current.staging) / "sector_reuse"
+            apply_reuse(analysis_date, found, root=reuse_root)
+            reused_path = reuse_root / analysis_date / "sector_briefs" / f"{sector_pack_module._safe(industry)}.md"
+            body = reused_path.read_text(encoding="utf-8")
+            reuse_value = {
+                "schema_version": 1,
+                "reused": True,
+                "source": found[industry]["src"],
+                "sha256": sha256_bytes(body.encode("utf-8")),
+                "body": body,
+            }
+    atomic_write_json(output / "sector.reuse.json", reuse_value)
+    return {**manifest, "pack": pack, "reuse": reuse_value}
+
+
+_SECTOR_DIRECTIONS = re.compile(r"超配|低配|回避|买入|卖出|买卖|看多|看空")
+_SECTOR_SECTIONS = re.compile(r"(?m)^\s*#{1,6}\s*([1-6])[.、]\s*")
+
+
+def sector_lite_validate(handle=None) -> dict:
+    current = handle or _active_handle()
+    from autoresearch.sector.brief import extract_terrain
+
+    text = _text(current, "sector.report")
+    terrain = extract_terrain(text)
+    if not terrain:
+        raise RuntimeError("sector lite report lacks terrain section")
+    if _SECTOR_DIRECTIONS.search(terrain):
+        raise RuntimeError("sector lite terrain contains directional language")
+    reuse = json.loads(_text(current, "sector.reuse"))
+    if reuse.get("reused") and text != reuse.get("body"):
+        raise RuntimeError("reused sector brief changed during handoff")
+    descriptor = artifacts.bind_artifact_hash(current, "sector.report")
+    value = {
+        "schema_version": 1,
+        "contract": "sector.terrain.v1",
+        "report_sha256": descriptor["sha256"],
+        "reused": bool(reuse.get("reused")),
+    }
+    atomic_write_json(Path(current.staging) / "session_outputs/sector.validation.json", value)
+    return value
+
+
+def sector_full_validate(handle=None) -> dict:
+    current = handle or _active_handle()
+    text = _text(current, "sector.report")
+    sections = sorted({int(match.group(1)) for match in _SECTOR_SECTIONS.finditer(text)})
+    if sections != [1, 2, 3, 4, 5, 6]:
+        raise RuntimeError("sector full report requires six sections")
+    pack = json.loads(_text(current, "sector.pack"))
+    for item in pack.get("readthrough") or []:
+        if item.get("kind") == "company":
+            continue
+        symbol = re.escape(str(item.get("symbol") or ""))
+        if symbol and re.search(rf"(?im)^.*{symbol}.*(?:公司|财报|业绩指引).*$", text):
+            raise RuntimeError("non-company readthrough described as a company")
+    if not pack.get("historical_valuation_percentile") and not re.search(
+        r"历史估值分位.{0,12}(?:缺失|无|—|-)", text
+    ):
+        raise RuntimeError("missing historical valuation must be disclosed")
+    descriptor = artifacts.bind_artifact_hash(current, "sector.report")
+    value = {
+        "schema_version": 1,
+        "contract": "sector.full.v1",
+        "sections": sections,
+        "report_sha256": descriptor["sha256"],
+    }
+    atomic_write_json(Path(current.staging) / "session_outputs/sector.validation.json", value)
+    return value
+
+
+def sector_validate(handle=None) -> dict:
+    current = handle or _active_handle()
+    request = _request(current)
+    return (
+        sector_lite_validate(current)
+        if request["requested_mode"] == "LITE"
+        else sector_full_validate(current)
+    )
+
+
+def sector_prepare_publication(handle=None) -> dict:
+    current = handle or _active_handle()
+    request = _request(current)
+    validation = json.loads(_text(current, "sector.validation"))
+    report = artifacts.bind_artifact_hash(current, "sector.report")
+    if validation.get("report_sha256") != report["sha256"]:
+        raise RuntimeError("validated sector report changed before publication")
+    value = {
+        "schema_version": 1,
+        "kind": "sector-research",
+        "mode": request["requested_mode"],
+        "run_id": current.run_id,
+        "engine": current.engine,
+        "analysis_date": request["analysis_date"],
+        "industry": request["subject"],
+        "report_sha256": report["sha256"],
+    }
+    atomic_write_json(Path(current.staging) / "session_outputs/sector.publication.json", value)
+    return value
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="autoresearch.session_agent.domain_ops")
     parser.add_argument(
@@ -391,6 +561,9 @@ def main(argv: list[str] | None = None) -> int:
             "macro-publish",
             "macro-full-validate",
             "macro-full-assemble",
+            "sector-prepare",
+            "sector-validate",
+            "sector-publish",
         ),
     )
     args = parser.parse_args(argv)
@@ -412,8 +585,14 @@ def main(argv: list[str] | None = None) -> int:
         value = macro_prepare_publication()
     elif args.command == "macro-full-validate":
         value = macro_full_validate()
-    else:
+    elif args.command == "macro-full-assemble":
         value = macro_full_assemble()
+    elif args.command == "sector-prepare":
+        value = sector_prepare()
+    elif args.command == "sector-validate":
+        value = sector_validate()
+    else:
+        value = sector_prepare_publication()
     print(json.dumps(value, ensure_ascii=False, sort_keys=True))
     return 0
 
@@ -425,6 +604,8 @@ if __name__ == "__main__":
 __all__ = [
     "macro_full_assemble", "macro_full_validate", "macro_harvest_run",
     "macro_lite_prepare", "macro_lite_validate", "macro_prepare_publication",
+    "sector_full_validate", "sector_lite_validate", "sector_prepare",
+    "sector_prepare_publication", "sector_validate",
     "stock_full_assemble", "stock_full_validate", "stock_prepare_publication",
     "stock_validate",
 ]

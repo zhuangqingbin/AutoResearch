@@ -112,6 +112,42 @@ def _macro_brief(handle, submission: dict, task: dict) -> None:
         raise DomainValidationError("macro brief requires all six sections")
 
 
+_SECTOR_DIRECTIONS = re.compile(r"超配|低配|回避|买入|卖出|买卖|看多|看空")
+_SECTOR_SECTIONS = re.compile(r"(?m)^\s*#{1,6}\s*([1-6])[.、]\s*")
+
+
+def _sector_terrain(handle, submission: dict, task: dict) -> None:
+    from autoresearch.sector.brief import extract_terrain
+
+    text = next(iter(_open_outputs(handle, submission, task).values()))
+    terrain = extract_terrain(text)
+    if not terrain:
+        raise DomainValidationError("sector lite report lacks terrain section")
+    if _SECTOR_DIRECTIONS.search(terrain):
+        raise DomainValidationError("sector lite terrain contains directional language")
+
+
+def _sector_intel(handle, submission: dict, task: dict) -> None:
+    _open_outputs(handle, submission, task)
+
+
+def _sector_full(handle, submission: dict, task: dict) -> None:
+    import json
+
+    text = next(iter(_open_outputs(handle, submission, task).values()))
+    sections = {int(match.group(1)) for match in _SECTOR_SECTIONS.finditer(text)}
+    if sections != {1, 2, 3, 4, 5, 6}:
+        raise DomainValidationError("sector full report requires six sections")
+    with artifacts.open_artifact(handle, "sector.pack") as stream:
+        pack = json.loads(stream.read().decode("utf-8"))
+    for item in pack.get("readthrough") or []:
+        if item.get("kind") == "company":
+            continue
+        symbol = re.escape(str(item.get("symbol") or ""))
+        if symbol and re.search(rf"(?im)^.*{symbol}.*(?:公司|财报|业绩指引).*$", text):
+            raise DomainValidationError("non-company readthrough described as a company")
+
+
 _CONTRACT_VALIDATORS = {
     "stock.lite.v1": _stock_lite,
     "stock.section.v1": _stock_section,
@@ -120,6 +156,9 @@ _CONTRACT_VALIDATORS = {
     "macro.section.v1": _macro_section,
     "macro.allocation.v1": _macro_allocation,
     "macro.brief.v1": _macro_brief,
+    "sector.terrain.v1": _sector_terrain,
+    "sector.intel.v1": _sector_intel,
+    "sector.full.v1": _sector_full,
 }
 
 

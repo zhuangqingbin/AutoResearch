@@ -85,7 +85,7 @@ def test_run_root_by_kind(tmp_ws):
 
 def test_run_root_rejects_an_unregistered_kind(tmp_ws):
     with pytest.raises(ValueError, match="run kind"):
-        ws.run_root("sector-research", RUN_ID)
+        ws.run_root("unregistered-research", RUN_ID)
 
 
 def test_reports_root_by_kind(tmp_ws):
@@ -139,7 +139,7 @@ def test_begin_run_accepts_stock_research(tmp_ws):
 
 def test_begin_run_still_rejects_an_unregistered_kind(tmp_ws):
     with pytest.raises(ValueError, match="unsupported run kind"):
-        capsule_mod.begin_run("sector-research", DATE, ws.ENGINE, {}, now=NOW)
+        capsule_mod.begin_run("unregistered-research", DATE, ws.ENGINE, {}, now=NOW)
 
 
 def test_begin_run_refuses_a_non_scan_kind_without_a_bootstrap(tmp_ws):

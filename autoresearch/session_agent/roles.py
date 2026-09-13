@@ -92,7 +92,7 @@ _ROLE_STAGES = {
     "us.intel": "intel",
     "macro.brief": "write",
     "macro.research": "write",
-    "sector.brief": "l3",
+    "sector.brief": "write",
     "sector.research": "write",
     "sector.intel": "intel",
     "dossier.init": "intel",

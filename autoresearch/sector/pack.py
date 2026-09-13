@@ -456,6 +456,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("date", help="scan 日 YYYY-MM-DD(staging 需已就绪 = L2 后)")
     ap.add_argument("--industries", default=None, help="逗号分隔;缺省 = 自动选(红榜∪集中度∪观察单)")
     ap.add_argument("--scan-dir", default=None, help="缺省 context/scan/<date>")
+    ap.add_argument(
+        "--output-dir",
+        default=None,
+        help="显式工作目录(session adapter 使用);缺省保持历史 sector 目录",
+    )
     ap.add_argument("--k", type=int, default=None,
                     help="自动选行业数上限;缺省=scan_config sector.max_briefs→6")
     args = ap.parse_args(argv)
@@ -471,7 +476,7 @@ def main(argv: list[str] | None = None) -> int:
     if not inds:
         print("[sector.pack] 无可选行业(staging 缺/空)—— presence-gated 跳过", file=sys.stderr)
         return 0
-    outdir = PACK_ROOT / args.date
+    outdir = Path(args.output_dir) if args.output_dir else PACK_ROOT / args.date
     outdir.mkdir(parents=True, exist_ok=True)
     for ind in inds:
         p = sector_pack(ind, scan_dir)

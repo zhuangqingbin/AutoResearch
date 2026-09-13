@@ -41,6 +41,7 @@ PROFILE_FACTORIES: dict[str, str] = {
     "scan-market": "autoresearch.scan.run_profile:scan_profile",
     "stock-research": "autoresearch.analyze.run_profile:analyze_profile",
     "macro-research": "autoresearch.macro.run_profile:macro_profile",
+    "sector-research": "autoresearch.sector.run_profile:sector_profile",
 }
 
 if tuple(PROFILE_FACTORIES) != vocab.RUN_KINDS:

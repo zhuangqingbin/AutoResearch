@@ -111,6 +111,21 @@ _OPERATIONS: dict[str, dict[str, object]] = {
         "idempotent": True,
         "stage": "assemble",
     },
+    "sector.prepare": {
+        "builder": lambda params: _no_params("sector-prepare", params),
+        "idempotent": True,
+        "stage": "prepare",
+    },
+    "sector.validate": {
+        "builder": lambda params: _no_params("sector-validate", params),
+        "idempotent": True,
+        "stage": "validate",
+    },
+    "sector.publish": {
+        "builder": lambda params: _no_params("sector-publish", params),
+        "idempotent": True,
+        "stage": "publish",
+    },
 }
 
 
