@@ -271,7 +271,14 @@ def agent_expectations(handle: RunHandle) -> dict[str, dict]:
         else:
             row["source"] = "agent_events"
             row["task_invocation_ids"] = ()
-        row["expected_product"] = _expected_product_path(row["role"], subj_key or row["subject"])
+        # The selector resolves `*` against a filename, and wildcard
+        # products (sector-brief) are named on disk by the *display* name
+        # (申万一级行业名), never by its hashed `subject_key` -- so the
+        # display name must win here, with the key only a fallback for the
+        # rare row that has no display at all (`row["subject"]` then equals
+        # `subj_key` already, so the fallback is a no-op, never a different
+        # value). Do not invert this back to `subj_key or row["subject"]`.
+        row["expected_product"] = _expected_product_path(row["role"], row["subject"] or subj_key)
         merged[inv_id] = row
         handled_keys.add((row["role"], subj_key, row["attempt"]))
 

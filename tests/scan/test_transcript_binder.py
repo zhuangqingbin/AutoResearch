@@ -898,6 +898,66 @@ def test_b08_mixed_agent_task_product_sources_and_conditional_roles(tmp_path, mo
     assert len(expectations) == 3
 
 
+# ------------------------------------------------- expected_product keying
+
+
+def test_sector_brief_expected_product_keyed_by_display_name_not_hash(
+    tmp_path, monkeypatch,
+):
+    """`sector-brief-subject-key` brief: the agent-events leg's
+    `expected_product` must be built from the *display* name (what
+    `sector_briefs/*.md` files are actually named on disk), not the hashed
+    `subject_key` -- a real AGENT_COMPLETED event carries `subject_display`
+    in its result, and `agent_expectations` must prefer it.
+
+    Asserts the literal path, never a value recomputed through
+    `_expected_product_path` (the same helper production uses) -- that
+    would stay green after a revert of the fix and prove nothing.
+    """
+    handle = _begin_claude(tmp_path, monkeypatch)
+    _dispatch_agent(
+        handle, "AGENT_DISPATCHED", role="sector-brief", subject_display="银行",
+        invocation_id="sector-brief-yinhang-1", attempt=1,
+    )
+    _dispatch_agent(
+        handle, "AGENT_COMPLETED", role="sector-brief", subject_display="银行",
+        invocation_id="sector-brief-yinhang-1", attempt=1,
+    )
+
+    expectations = tb.agent_expectations(handle)
+
+    row = expectations["sector-brief-yinhang-1"]
+    assert row["subject"] == "银行"
+    assert row["subject_key"] == capsule_mod.subject_key("银行")
+    assert row["subject_key"] != "银行"  # sanity: the two really do differ here
+    assert row["expected_product"] == "sector_briefs/银行.md"
+
+
+def test_l4_card_expected_product_unaffected_by_display_precedence(
+    tmp_path, monkeypatch,
+):
+    """Companion case for the same fix: an ASCII subject (stock code) has no
+    separate display name, so `subject` and `subject_key` coincide and both
+    precedences give the same answer -- documents that the fix does not move
+    this role's already-correct behaviour."""
+    handle = _begin_claude(tmp_path, monkeypatch)
+    _dispatch_agent(
+        handle, "AGENT_DISPATCHED", role="l4-card", subject="600030",
+        invocation_id="l4-card-600030-1", attempt=1,
+    )
+    _dispatch_agent(
+        handle, "AGENT_COMPLETED", role="l4-card", subject="600030",
+        invocation_id="l4-card-600030-1", attempt=1,
+    )
+
+    expectations = tb.agent_expectations(handle)
+
+    row = expectations["l4-card-600030-1"]
+    assert row["subject"] == "600030"
+    assert row["subject_key"] == "600030"
+    assert row["expected_product"] == "details/600030.md"
+
+
 # ---------------------------------------------------------------------- B09
 
 
