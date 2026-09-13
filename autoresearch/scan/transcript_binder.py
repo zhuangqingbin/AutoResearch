@@ -169,6 +169,29 @@ def _subject_key_for(subject: str | None) -> str | None:
 # ------------------------------------------------------------- expectations
 
 
+def _role_owes_a_transcript(role: object) -> bool:
+    """Whether this role's invocation belongs in the coverage **denominator**.
+
+    A deterministic relay (`trace-control`, `gp-shell`) emits the AGENT_* event
+    pair around a shell command; its evidence is the captured command in
+    `logs/`, never an LLM transcript. `capsule.materialize_agent_index` has
+    always excluded exactly these (`capsule._NON_TRANSCRIPT_ROLES`) and buckets
+    them `NOT_EXPECTED`; this module's AGENT-events leg admitted them, so for a
+    real 33-invocation run the two sides answered the *same* question with
+    `expected 33` and `expected 101` (66 = 33 × 2 `trace-control` shells, two
+    events per real dispatch), and the headline read "68 gone" for a complete
+    result -- the "one question, several denominators" disease
+    `contracts/stages.py` exists to end (2026-09-13 final review, F2).
+
+    Deliberately **not** `RunProfile.role_expected`: that returns False for
+    conditional roles (`l3-repair`, `l4-ensemble`, `ens-review`) that genuinely
+    ran and genuinely owe a transcript -- gating on it would shrink E and hide
+    real evidence, violating spec invariant 5. The authority here is capsule's
+    own set, read directly so the two indices can never drift apart.
+    """
+    return str(role) not in capsule_mod._NON_TRANSCRIPT_ROLES
+
+
 def agent_expectations(handle: RunHandle) -> dict[str, dict]:
     """This run's known expectation set: one row per invocation.
 
@@ -279,6 +302,7 @@ def agent_expectations(handle: RunHandle) -> dict[str, dict]:
         # `subj_key` already, so the fallback is a no-op, never a different
         # value). Do not invert this back to `subj_key or row["subject"]`.
         row["expected_product"] = _expected_product_path(row["role"], row["subject"] or subj_key)
+        row["expected"] = _role_owes_a_transcript(row["role"])
         merged[inv_id] = row
         handled_keys.add((row["role"], subj_key, row["attempt"]))
 
@@ -315,6 +339,7 @@ def agent_expectations(handle: RunHandle) -> dict[str, dict]:
             "denominator_quality": "full",
             "task_invocation_ids": (trow["invocation_id"],),
             "expected_product": _expected_product_path(trow["role"], trow["subject"]),
+            "expected": _role_owes_a_transcript(trow["role"]),
         }
         handled_keys.add(key)
 
@@ -345,6 +370,7 @@ def agent_expectations(handle: RunHandle) -> dict[str, dict]:
                 "denominator_quality": "lower_bound",
                 "task_invocation_ids": (),
                 "expected_product": rel_path,
+                "expected": _role_owes_a_transcript(role),
             }
             handled_keys.add(key)
 
@@ -704,6 +730,11 @@ def _base_row(exp: Mapping[str, object]) -> dict:
         "source": exp.get("source"),
         "denominator_quality": exp.get("denominator_quality"),
         "expected_product": exp.get("expected_product"),
+        # Carried through so coverage counts the same population capsule's own
+        # index counts (F2). The row itself is always emitted -- a `NOT_EXPECTED`
+        # invocation stays visible with its real `binding_status`; only the
+        # denominator changes.
+        "expected": bool(exp.get("expected", True)),
     }
 
 
@@ -714,6 +745,37 @@ _STATUS_BUCKET = {
     "GONE": "gone",
     "ERROR": "errors",
 }
+
+
+def _coverage_from_rows(
+    rows: Mapping[str, Mapping[str, object]],
+    *,
+    unexpected: int,
+    denominator_quality: str,
+) -> dict:
+    """The one place a coverage block is computed from a set of rows.
+
+    Mirrors `capsule.materialize_agent_index`'s own arithmetic (2026-09-13
+    final review, F2): a row whose role owes no transcript by construction
+    (`_role_owes_a_transcript`) keeps its place in *rows* -- nothing is
+    dropped, and its real `binding_status` stays readable -- but leaves the
+    denominator and is counted separately under ``not_expected``. The spec
+    §4.5 invariants still hold over the expected population: ``accounted ==
+    expected`` and the five status counts sum to ``expected``. ``unexpected``
+    is never folded into that denominator (spec §4.2).
+    """
+    expected_rows = [row for row in rows.values() if row.get("expected", True)]
+    counts = dict.fromkeys(("bound", "unverified", "ambiguous", "gone", "errors"), 0)
+    for row in expected_rows:
+        counts[_STATUS_BUCKET[row["binding_status"]]] += 1
+    return {
+        "expected": len(expected_rows),
+        "accounted": len(expected_rows),
+        **counts,
+        "not_expected": len(rows) - len(expected_rows),
+        "unexpected": unexpected,
+        "denominator_quality": denominator_quality,
+    }
 
 #: Distinguishes "`staging_root` not supplied at all" (every *active*-run
 #: caller -- fall back to `ws.find_run_root`, the historical default
@@ -1089,20 +1151,16 @@ def assign(
 
     denom = (
         "lower_bound"
-        if any(exp.get("denominator_quality") == "lower_bound" for exp in expectations.values())
+        if any(
+            exp.get("denominator_quality") == "lower_bound"
+            for exp in expectations.values()
+            if exp.get("expected", True)
+        )
         else "full"
     )
-    counts = dict.fromkeys(("bound", "unverified", "ambiguous", "gone", "errors"), 0)
-    for row in rows.values():
-        counts[_STATUS_BUCKET[row["binding_status"]]] += 1
-
-    coverage = {
-        "expected": len(expectations),
-        "accounted": len(rows),
-        **counts,
-        "unexpected": len(unexpected),
-        "denominator_quality": denom,
-    }
+    coverage = _coverage_from_rows(
+        rows, unexpected=len(unexpected), denominator_quality=denom,
+    )
     return {
         "rows": rows,
         "unexpected": tuple(unexpected),
@@ -1152,6 +1210,7 @@ def _empty_coverage(*, denominator_quality: str = "full") -> dict:
         "ambiguous": 0,
         "gone": 0,
         "errors": 0,
+        "not_expected": 0,
         "unexpected": 0,
         "denominator_quality": denominator_quality,
     }
@@ -1235,16 +1294,9 @@ def _tally_coverage(
     row `assign()` called BOUND can still end up ERROR here (a persistence
     conflict, §ruling 2) and the two counts would then disagree with the rows
     they are supposed to summarize."""
-    counts = dict.fromkeys(("bound", "unverified", "ambiguous", "gone", "errors"), 0)
-    for row in rows.values():
-        counts[_STATUS_BUCKET[row["binding_status"]]] += 1
-    return {
-        "expected": len(rows),
-        "accounted": len(rows),
-        **counts,
-        "unexpected": unexpected,
-        "denominator_quality": denominator_quality,
-    }
+    return _coverage_from_rows(
+        rows, unexpected=unexpected, denominator_quality=denominator_quality,
+    )
 
 
 def _persist_binding(handle: RunHandle, inv_id: str, row: Mapping[str, object]) -> dict:
@@ -1974,6 +2026,11 @@ def _compute_revision_id(
 
 
 def _gone_ledger_row(inv_id: str, exp: Mapping[str, object], row: Mapping[str, object]) -> dict:
+    # F2: a role that owes no transcript by construction gets capsule's own
+    # label and wording verbatim (`materialize_agent_index`) instead of "GONE
+    # = evidence missing" -- the row stays, its `binding_status` stays, only
+    # the claim about what it means changes.
+    expected = bool(exp.get("expected", True))
     return {
         "engine": None,
         "invocation_id": inv_id,
@@ -1982,8 +2039,9 @@ def _gone_ledger_row(inv_id: str, exp: Mapping[str, object], row: Mapping[str, o
         "subject_key": exp.get("subject_key"),
         "stage": None,
         "source_path": None,
-        "status": "GONE",
-        "reason": row.get("reason"),
+        "status": "GONE" if expected else "NOT_EXPECTED",
+        "reason": (row.get("reason") if expected
+                   else "role has no transcript evidence by construction"),
         "raw": None,
         "normalized": None,
         "snapshot_id": None,
@@ -1998,7 +2056,7 @@ def _gone_ledger_row(inv_id: str, exp: Mapping[str, object], row: Mapping[str, o
         "effort": None,
         "usage": None,
         "attempt": exp.get("attempt"),
-        "expected": True,
+        "expected": expected,
         "binding_status": row.get("binding_status", "GONE"),
         "segment_quality": row.get("segment_quality"),
         "offline_source": None,
@@ -2062,7 +2120,7 @@ def _present_ledger_row(
             "reasoning_output": usage.reasoning_output, "status": usage.status,
         },
         "attempt": exp.get("attempt"),
-        "expected": True,
+        "expected": bool(exp.get("expected", True)),
         "binding_status": row["binding_status"],
         "segment_quality": row.get("segment_quality"),
         "offline_source": source_label,

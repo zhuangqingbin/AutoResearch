@@ -1119,7 +1119,7 @@ def test_bind_run_persists_bound_candidate_and_writes_staging_report(tmp_path, m
     assert row["segment_quality"] == "complete"
     assert report["coverage"] == {
         "expected": 1, "accounted": 1, "bound": 1, "unverified": 0,
-        "ambiguous": 0, "gone": 0, "errors": 0, "unexpected": 0,
+        "ambiguous": 0, "gone": 0, "errors": 0, "not_expected": 0, "unexpected": 0,
         "denominator_quality": "full",
     }
 
@@ -1335,7 +1335,7 @@ def test_r01_full_mode_run_accounts_without_inventing_invocations(tmp_path, monk
     assert set(report["rows"]) == {"strategist-market-1"}
     assert report["coverage"] == {
         "expected": 1, "accounted": 1, "bound": 1, "unverified": 0,
-        "ambiguous": 0, "gone": 0, "errors": 0, "unexpected": 0,
+        "ambiguous": 0, "gone": 0, "errors": 0, "not_expected": 0, "unexpected": 0,
         "denominator_quality": "full",
     }
 
@@ -2867,3 +2867,116 @@ def test_f1_a_pre_fix_index_row_without_archive_sha256_is_not_comparable_not_a_c
     assert merged["conflict"] is False
     assert merged["effective"] is cap_row
     assert "不可直接比较" in (merged["conflict_detail"] or "")
+
+
+# ══════════ 2026-09-13 final-review F2: one question, one denominator ══════════
+
+
+def test_f2_trace_control_shells_leave_the_denominator_but_keep_their_rows(
+    tmp_path, monkeypatch,
+):
+    """Final-review F2 (MAJOR). `capsule.materialize_agent_index` has always
+    bucketed the deterministic relays (`capsule._NON_TRANSCRIPT_ROLES`)
+    `NOT_EXPECTED`; this module's AGENT-events leg admitted them, so for the
+    real 09-11 run the capsule reported `expected 33` while the binder
+    reported `expected 101 / bound 32 / gone 68` for the same run -- 66 of
+    those 68 being the two bookkeeping shells per real dispatch.
+
+    The fix must move the denominator **without hiding anything**: the shell's
+    row stays, carrying its real `binding_status`; `not_expected` states the
+    count out loud; and a genuinely missing research transcript still lands in
+    `gone` where a human will see it.
+    """
+    projects_root = _home_projects_root(monkeypatch, tmp_path)
+    session_ref = "session-f2"
+    handle = _begin_claude(tmp_path, monkeypatch, session_ref=session_ref)
+
+    # Two bookkeeping shells per real dispatch -- the real production shape.
+    for n in (1, 2):
+        for event in ("AGENT_DISPATCHED", "AGENT_COMPLETED"):
+            _dispatch_agent(
+                handle, event, role="trace-control",
+                invocation_id=f"trace-control-{n}-agent_dispatched", attempt=1,
+            )
+
+    d = _dispatch_agent(
+        handle, "AGENT_DISPATCHED", role="strategist",
+        invocation_id="strategist-market-1", attempt=1,
+    )
+    c = _dispatch_agent(
+        handle, "AGENT_COMPLETED", role="strategist",
+        invocation_id="strategist-market-1", attempt=1,
+    )
+    # A *research* invocation with no transcript at all: the real gap that
+    # must stay visible after the denominator shrinks.
+    _dispatch_agent(
+        handle, "AGENT_DISPATCHED", role="l4-card", subject="600031",
+        invocation_id="l4-card-600031-1", attempt=1,
+    )
+    _dispatch_agent(
+        handle, "AGENT_COMPLETED", role="l4-card", subject="600031",
+        invocation_id="l4-card-600031-1", attempt=1,
+    )
+
+    strategist_path = handle.staging / "market_view.md"
+    sub = _claude_subagent_path(projects_root, session_ref, "f2strategist")
+    _write_claude_rows(sub, [
+        _claude_write_row("tool-s", strategist_path, ts=d["ts"], msg_id="msg-s"),
+        _claude_result_row("tool-s", ts=c["ts"]),
+    ])
+
+    report = tb.bind_run(handle.run_id, handle.staging)
+    coverage = report["coverage"]
+
+    # Denominator: only the two invocations that genuinely owe a transcript.
+    assert coverage["expected"] == 2
+    assert coverage["not_expected"] == 2    # the two trace-control shells
+    assert coverage["bound"] == 1           # strategist
+    assert coverage["gone"] == 1            # l4-card 600031 -- the real gap, still visible
+    # Spec §4.5 conservation still holds over the expected population.
+    assert coverage["accounted"] == coverage["expected"]
+    assert (coverage["bound"] + coverage["unverified"] + coverage["ambiguous"]
+            + coverage["gone"] + coverage["errors"]) == coverage["expected"]
+
+    # Nothing was dropped: the shells keep their rows and their real status.
+    shells = {k: v for k, v in report["rows"].items() if v["role"] == "trace-control"}
+    assert len(shells) == 2
+    assert all(row["expected"] is False for row in shells.values())
+    assert all(row["binding_status"] == "GONE" for row in shells.values())
+    assert report["rows"]["l4-card-600031-1"]["expected"] is True
+
+
+def test_f2_a_conditional_role_that_really_ran_stays_in_the_denominator(
+    tmp_path, monkeypatch,
+):
+    """The trap the fix must avoid. `RunProfile.role_expected` returns False
+    for `l3-repair`/`l4-ensemble`/`ens-review` -- conditional roles absent
+    from `agent_roles` -- so gating the AGENT-events leg on it would drop two
+    genuinely-bound invocations out of the real 09-11 run's denominator and
+    call that an improvement. The authority is capsule's own
+    `_NON_TRANSCRIPT_ROLES`, nothing wider.
+    """
+    from autoresearch.contracts.profiles import profile_factory
+
+    profile = profile_factory("scan-market")(mode="FULL")
+    for role in ("l3-repair", "ens-review"):
+        # Premise: these really are False under `role_expected` ...
+        assert profile.role_expected(role) is False
+        # ... and must still owe a transcript.
+        assert tb._role_owes_a_transcript(role) is True
+    for role in ("trace-control", "gp-shell"):
+        assert tb._role_owes_a_transcript(role) is False
+
+    handle = _begin_claude(tmp_path, monkeypatch, session_ref="session-f2-cond")
+    for event in ("AGENT_DISPATCHED", "AGENT_COMPLETED"):
+        _dispatch_agent(
+            handle, event, role="l3-repair", invocation_id="l3-repair-1", attempt=1,
+        )
+        _dispatch_agent(
+            handle, event, role="trace-control",
+            invocation_id="trace-control-1-agent_dispatched", attempt=1,
+        )
+
+    expectations = tb.agent_expectations(handle)
+    assert expectations["l3-repair-1"]["expected"] is True
+    assert expectations["trace-control-1-agent_dispatched"]["expected"] is False
