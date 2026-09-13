@@ -196,6 +196,44 @@ class TranscriptSnapshot:
             raise TypeError("TranscriptSnapshot.archive_bytes must be bytes")
 
 
+def _snapshot_from_raw(
+    raw: bytes, *, engine: str, path: Path, source_changed: bool
+) -> TranscriptSnapshot:
+    """Every fact on :class:`TranscriptSnapshot` derived, once, from already-
+    in-memory *raw* bytes. Shared by :func:`capture_snapshot` (raw comes from
+    one live read) and :func:`snapshot_from_archive_bytes` (raw comes from
+    decompressing an already-closed gzip archive) -- one line parser, one
+    archive recipe, never two (spec §9).
+    """
+    rows, bad_lines, last_ordinal, cutoff_bytes, trailing_partial_bytes = _parse_prefix(
+        raw
+    )
+    trusted_prefix = raw[:cutoff_bytes]
+
+    prefix_digest = SourcePrefixDigest(
+        sha256=sha256_bytes(trusted_prefix), byte_count=cutoff_bytes
+    )
+    archive_bytes = _archive_bytes(rows)
+    archive_digest = ArchiveDigest(
+        sha256=sha256_bytes(archive_bytes), byte_count=len(archive_bytes)
+    )
+
+    return TranscriptSnapshot(
+        engine=str(engine),
+        path=path,
+        snapshot_id=prefix_digest.sha256,
+        rows=tuple(rows),
+        cutoff_bytes=cutoff_bytes,
+        last_ordinal=last_ordinal,
+        source_prefix=prefix_digest,
+        archive=archive_digest,
+        archive_bytes=archive_bytes,
+        bad_lines=bad_lines,
+        trailing_partial_bytes=trailing_partial_bytes,
+        source_changed=source_changed,
+    )
+
+
 def capture_snapshot(path: Path | str, *, engine: str) -> TranscriptSnapshot:
     """Read *path*'s stable, complete-JSONL-lines-only prefix exactly once.
 
@@ -231,34 +269,34 @@ def capture_snapshot(path: Path | str, *, engine: str) -> TranscriptSnapshot:
         or after.st_ino != fd_stat.st_ino
         or after.st_dev != fd_stat.st_dev
     )
-
-    rows, bad_lines, last_ordinal, cutoff_bytes, trailing_partial_bytes = _parse_prefix(
-        raw
-    )
-    trusted_prefix = raw[:cutoff_bytes]
-
-    prefix_digest = SourcePrefixDigest(
-        sha256=sha256_bytes(trusted_prefix), byte_count=cutoff_bytes
-    )
-    archive_bytes = _archive_bytes(rows)
-    archive_digest = ArchiveDigest(
-        sha256=sha256_bytes(archive_bytes), byte_count=len(archive_bytes)
-    )
-
-    return TranscriptSnapshot(
-        engine=str(engine),
-        path=resolved,
-        snapshot_id=prefix_digest.sha256,
-        rows=tuple(rows),
-        cutoff_bytes=cutoff_bytes,
-        last_ordinal=last_ordinal,
-        source_prefix=prefix_digest,
-        archive=archive_digest,
-        archive_bytes=archive_bytes,
-        bad_lines=bad_lines,
-        trailing_partial_bytes=trailing_partial_bytes,
-        source_changed=source_changed,
-    )
+    return _snapshot_from_raw(raw, engine=engine, path=resolved, source_changed=source_changed)
 
 
-__all__ = ["TranscriptSnapshot", "capture_snapshot"]
+def snapshot_from_archive_bytes(
+    data: bytes, *, engine: str, path: Path | str
+) -> TranscriptSnapshot:
+    """Build a :class:`TranscriptSnapshot` from an *already-closed* gzip
+    JSONL archive's bytes -- e.g. the pre-existing, pre-Task-2 retention
+    mechanism's ``trace/transcripts/*.jsonl.gz`` or a ``scan.salvage`` blob
+    (2026-09-12 scene-reconstruction Task 8, spec §6.1: "旧 gz 用同一 rows
+    API" -- no second parsing/archiving path).
+
+    Reuses the exact same line parser (`_parse_prefix`) and redaction/archive
+    recipe (`_archive_bytes`) :func:`capture_snapshot` uses on a live read.
+    There is no live file here to compare a before/after stat against --
+    this content is, by definition, already fully written and closed -- so
+    ``source_changed`` is always ``False``; *path* is a caller-supplied
+    label only (where the archive/blob actually lives on disk), never read a
+    second time by this function.
+
+    Raises ``gzip.BadGzipFile``/``OSError`` for bytes that are not a valid
+    gzip stream -- propagated, not swallowed, so a caller can record *why*
+    one specific archived file could not be read rather than silently
+    treating it as zero evidence (ruling 7: an unreadable/corrupt archive is
+    a fact to report per item, not an empty success).
+    """
+    raw = gzip.decompress(data)
+    return _snapshot_from_raw(raw, engine=str(engine), path=Path(path), source_changed=False)
+
+
+__all__ = ["TranscriptSnapshot", "capture_snapshot", "snapshot_from_archive_bytes"]

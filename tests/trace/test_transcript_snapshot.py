@@ -11,6 +11,7 @@ tests/trace/test_capsule.py -- see the Task 2 report for the full mapping.
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -371,3 +372,92 @@ def test_one_snapshot_serves_two_disjoint_segments_without_rereading(tmp_path, m
     assert calls["n"] == 1
     assert len(segment_a) == 2  # session_meta + ordinal 1
     assert len(segment_b) == 1
+
+
+# --------------------------------------------------------------------------
+# Task 8 (2026-09-12 scene-reconstruction): `snapshot_from_archive_bytes` --
+# the same rows API a *closed* gzip archive needs (retention's pre-existing
+# `trace/transcripts/*.jsonl.gz` and `scan.salvage`'s blob store), reusing
+# `_parse_prefix`/`_archive_bytes` rather than a second parser (spec §9:
+# "旧 gz 用同一 rows API"). No live file is involved, so there is nothing to
+# compare a before/after stat against -- `source_changed` is always False.
+# --------------------------------------------------------------------------
+
+
+def test_snapshot_from_archive_bytes_parses_the_same_rows_a_live_capture_would():
+    import gzip as gzip_mod
+
+    from autoresearch.trace.transcripts.snapshot import snapshot_from_archive_bytes
+
+    rows = [
+        {"type": "user", "message": {"content": "first"}},
+        {"type": "assistant", "message": {"content": "second"}},
+    ]
+    raw = ("\n".join(json.dumps(r) for r in rows) + "\n").encode("utf-8")
+    archived = gzip_mod.compress(raw, compresslevel=6, mtime=0)
+
+    snapshot = snapshot_from_archive_bytes(
+        archived, engine="claude", path=Path("trace/transcripts/l4-card-agent-x.jsonl.gz")
+    )
+
+    assert [dict(r) for r in snapshot.rows] == rows
+    assert snapshot.bad_lines == 0
+    assert snapshot.trailing_partial_bytes == 0
+    assert snapshot.source_changed is False
+    assert snapshot.source_prefix.sha256 == hashlib.sha256(raw).hexdigest()
+    assert snapshot.snapshot_id == snapshot.source_prefix.sha256
+    assert snapshot.path == Path("trace/transcripts/l4-card-agent-x.jsonl.gz")
+
+
+def test_snapshot_from_archive_bytes_and_capture_snapshot_agree_on_identical_content(
+    tmp_path,
+):
+    """The same content read live vs. decompressed from an archive must
+    produce the *same* snapshot_id/rows -- the whole point of reusing one
+    parser is that identity does not depend on which of the two entry points
+    was used."""
+    import gzip as gzip_mod
+
+    from autoresearch.trace.transcripts.snapshot import (
+        capture_snapshot,
+        snapshot_from_archive_bytes,
+    )
+
+    rows = [{"type": "user", "message": {"content": "hello"}}]
+    raw = ("\n".join(json.dumps(r) for r in rows) + "\n").encode("utf-8")
+    live_path = tmp_path / "live.jsonl"
+    live_path.write_text(raw.decode("utf-8"), encoding="utf-8")
+
+    live_snapshot = capture_snapshot(live_path, engine="claude")
+    archived_snapshot = snapshot_from_archive_bytes(
+        gzip_mod.compress(raw, mtime=0), engine="claude", path=tmp_path / "archived.jsonl.gz"
+    )
+
+    assert archived_snapshot.snapshot_id == live_snapshot.snapshot_id
+    assert archived_snapshot.source_prefix.sha256 == live_snapshot.source_prefix.sha256
+    assert [dict(r) for r in archived_snapshot.rows] == [dict(r) for r in live_snapshot.rows]
+
+
+def test_snapshot_from_archive_bytes_recovers_a_row_missing_only_its_trailing_newline():
+    """Same complete-line rule as a live capture (§2 of the Task 2 report):
+    a syntactically valid final row with no trailing newline is recovered as
+    a real row, not excluded as a half line."""
+    import gzip as gzip_mod
+
+    from autoresearch.trace.transcripts.snapshot import snapshot_from_archive_bytes
+
+    raw = json.dumps({"type": "user", "message": {"content": "no trailing newline"}}).encode(
+        "utf-8"
+    )
+    snapshot = snapshot_from_archive_bytes(
+        gzip_mod.compress(raw, mtime=0), engine="claude", path=Path("x.jsonl.gz")
+    )
+    assert len(snapshot.rows) == 1
+    assert snapshot.trailing_partial_bytes == 0
+
+
+def test_snapshot_from_archive_bytes_rejects_non_gzip_bytes():
+    from autoresearch.trace.transcripts.snapshot import snapshot_from_archive_bytes
+
+    with pytest.raises(gzip.BadGzipFile):
+        snapshot_from_archive_bytes(b"not a gzip stream", engine="claude", path=Path("x.jsonl.gz"))
