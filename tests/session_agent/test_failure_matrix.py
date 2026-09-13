@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from autoresearch.session_agent import service
+from autoresearch.session_agent import service, store
 
 from .test_service import _handle, _planner, _request
 
@@ -27,6 +27,31 @@ def test_frozen_run_is_never_reactivated_by_resume():
 
     with pytest.raises(RuntimeError, match="not ACTIVE"):
         service.resume("20260913T010203000000Z", handle_loader=frozen_loader)
+
+
+def test_resume_probes_the_authoritative_deterministic_attempt(tmp_path, monkeypatch):
+    handle = _handle(tmp_path)
+    service.begin(
+        _request(),
+        begin_capsule=lambda request: handle,
+        planner=_planner,
+        artifact_registrar=lambda request, active, plan: None,
+    )
+    store_path = handle.workspace / "session/tasks.json"
+    store.claim(store_path, "step.one", 1, "session-main")
+    store.mark_failed(
+        store_path, "step.one", 1, {"code": "retry"}, retryable=True
+    )
+    store.claim(store_path, "step.one", 2, "session-main")
+    seen = []
+    monkeypatch.setattr(
+        service.executor,
+        "probe_execution",
+        lambda active, task_id, attempt: seen.append(attempt)
+        or {"state": "RUNNING", "invocation_id": "x"},
+    )
+    service.resume(handle.run_id, handle_loader=lambda run_id: handle)
+    assert seen == [2]
 
 
 def test_successor_requires_a_terminal_same_engine_predecessor(tmp_path):

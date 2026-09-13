@@ -98,3 +98,33 @@ def test_store_never_owns_l4_taskbook_state(tmp_path, two_step_plan):
     assert "l4.600519" not in json.loads(path.read_text())["tasks"]
     with pytest.raises(KeyError):
         store.claim(path, "l4.600519", 1, "session-a")
+
+
+def test_dynamic_session_tasks_register_idempotently(tmp_path, two_step_plan):
+    path = tmp_path / "session" / "tasks.json"
+    store.initialize(path, two_step_plan)
+    dynamic = {
+        **two_step_plan["tasks"][1],
+        "task_id": "dynamic.step",
+        "dependencies": ["step.two"],
+    }
+    store.register_tasks(path, [dynamic], plan_hash=two_step_plan["plan_hash"])
+    store.register_tasks(path, [dynamic], plan_hash=two_step_plan["plan_hash"])
+    assert store.read_entry(path, "dynamic.step")["state"] == "PENDING"
+
+    changed = {**dynamic, "dependencies": ["step.one"]}
+    with pytest.raises(store.TaskConflict, match="different spec"):
+        store.register_tasks(path, [changed], plan_hash=two_step_plan["plan_hash"])
+
+
+def test_dynamic_registry_keeps_l4_owner_external(tmp_path, two_step_plan):
+    path = tmp_path / "session" / "tasks.json"
+    store.initialize(path, two_step_plan)
+    external = {
+        **two_step_plan["tasks"][1],
+        "task_id": "l4.600519.a1",
+        "owner": "L4_TASKBOOK",
+        "subject": "600519",
+    }
+    store.register_tasks(path, [external], plan_hash=two_step_plan["plan_hash"])
+    assert "l4.600519.a1" not in store.read_states(path)

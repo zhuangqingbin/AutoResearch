@@ -76,7 +76,9 @@ def _all_tasks(handle, frozen_plan: dict | None = None) -> list[dict]:
     if root.is_dir():
         for path in sorted(root.glob("*.json")):
             expansion = _read_json(path)
-            tasks = plan_service.apply_expansion({**current, "tasks": tasks}, expansion)
+            tasks = plan_service.apply_expansion(
+                current, expansion, existing_tasks=tasks
+            )
     return tasks
 
 
@@ -579,7 +581,10 @@ def resume(
                             event_recorder,
                         )
         elif state == "RUNNING" and task["kind"] == "DETERMINISTIC":
-            running.append(executor.probe_execution(handle, task["task_id"], 1))
+            entry = store.read_entry(_store_path(handle), task["task_id"])
+            running.append(
+                executor.probe_execution(handle, task["task_id"], entry["attempt"])
+            )
     current = status(run_id, handle_loader=lambda unused: handle, command="resume")
     current["result"] = {"recovered_receipts": recovered, "running": running}
     return current

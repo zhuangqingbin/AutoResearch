@@ -10,7 +10,7 @@ from pathlib import Path
 
 from autoresearch.common.atomic import atomic_write_json, canonical_json
 from autoresearch.contracts.session_plan import validate_plan
-from autoresearch.contracts.session_task import validate_submission
+from autoresearch.contracts.session_task import validate_submission, validate_task
 
 
 class TaskConflict(RuntimeError):
@@ -85,6 +85,37 @@ def read_entry(path: Path | str, task_id: str) -> dict:
         if task_id not in payload["tasks"]:
             raise KeyError(task_id)
         return json.loads(canonical_json(payload["tasks"][task_id]))
+
+
+def register_tasks(
+    path: Path | str,
+    tasks: list[dict],
+    *,
+    plan_hash: str,
+) -> None:
+    """Add expanded SESSION tasks without taking ownership of L4 taskbook state."""
+    if not isinstance(tasks, list):
+        raise ValueError("tasks must be a list")
+    for task in tasks:
+        validate_task(task)
+    target = Path(path)
+    with _locked(target):
+        payload = _load(target)
+        if payload["plan_hash"] != plan_hash:
+            raise TaskConflict("dynamic task plan_hash mismatch")
+        changed = False
+        for task in tasks:
+            if task["owner"] != "SESSION":
+                continue
+            task_id = task["task_id"]
+            current = payload["tasks"].get(task_id)
+            if current is None:
+                payload["tasks"][task_id] = _entry(task)
+                changed = True
+            elif canonical_json(current["spec"]) != canonical_json(task):
+                raise TaskConflict(f"dynamic task has different spec: {task_id}")
+        if changed:
+            atomic_write_json(target, payload)
 
 
 def claim(
@@ -328,5 +359,5 @@ def mark_failed(
 
 __all__ = [
     "TaskConflict", "accept", "claim", "complete_deterministic", "initialize",
-    "mark_failed", "read_entry", "read_states", "recover_receipt",
+    "mark_failed", "read_entry", "read_states", "recover_receipt", "register_tasks",
 ]

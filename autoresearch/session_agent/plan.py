@@ -31,7 +31,12 @@ def freeze_plan(path: Path | str, payload: dict) -> Path:
     return atomic_write_json(target, payload)
 
 
-def apply_expansion(plan: dict, expansion: dict) -> list[dict]:
+def apply_expansion(
+    plan: dict,
+    expansion: dict,
+    *,
+    existing_tasks: list[dict] | None = None,
+) -> list[dict]:
     """Return the combined task view without mutating the frozen plan."""
     validate_plan(plan)
     templates = {item["template_id"]: item for item in plan["task_templates"]}
@@ -44,7 +49,11 @@ def apply_expansion(plan: dict, expansion: dict) -> list[dict]:
         if task["kind"] == "INFERENCE" and task["role"] not in allowed_roles:
             raise ValueError(f"expanded role is not allowed: {task['role']}")
 
-    combined = [*plan["tasks"], *expansion["tasks"]]
+    current = list(plan["tasks"] if existing_tasks is None else existing_tasks)
+    base_ids = {task["task_id"] for task in plan["tasks"]}
+    if not base_ids <= {task["task_id"] for task in current}:
+        raise ValueError("existing task view omits frozen plan tasks")
+    combined = [*current, *expansion["tasks"]]
     ids = [item["task_id"] for item in combined]
     if len(ids) != len(set(ids)):
         raise ValueError("expanded task identity collision")
