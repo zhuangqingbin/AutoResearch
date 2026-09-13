@@ -202,12 +202,27 @@ def test_workflow_reads_run_mode_and_has_the_middle_branch():
     from pathlib import Path
 
     src = Path(".claude/workflows/scan-market.js").read_text(encoding="utf-8")
-    assert "autoresearch.scan.run_mode" in src
+    assert "autoresearch.scan.gates gate1" in src and "--decide-run-mode" in src
     assert "SENTINEL_PINNED" in src and "SENTINEL_EMPTY" in src
     assert GATE2_SKIP_REASON in src
     # 中间档必须真的派发持仓、而不是像旧哨兵那样直接 return 0 只
     branch = src.split("if (runMode === 'SENTINEL_PINNED')")[1][:900]
     assert "l4-handoff" in branch and "dispatch" in branch
+
+
+def test_codex_session_path_also_decides_the_run_mode():
+    """双引擎:codex 在会话内自己跑门,也必须落 `run_mode.json`。
+
+    这条守的是「只有 Claude workflow 接了线」这种半边接线 —— 它在 codex 侧的代价很具体:
+    没有这份文件,`load()` 返回 None(=「不知道」,**不是** FULL),哨兵日会被 GATE4 按全扫口径
+    拿「覆盖率不足」毙掉,报告也印不出哨兵横幅。散文会漂,所以在这里钉住。
+    """
+    from pathlib import Path
+
+    src = Path("AGENTS.md").read_text(encoding="utf-8")
+    assert "gates gate1 <date> --decide-run-mode" in src
+    for mode in (FULL, FORCED_FULL, SENTINEL_EMPTY, SENTINEL_PINNED):
+        assert mode in src
 
 
 def test_report_banner_is_read_from_the_file():

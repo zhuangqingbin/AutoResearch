@@ -211,7 +211,11 @@ def test_workflow_js_has_no_undefined_calls(path):
 
 @pytest.mark.skipif(_NODE is None, reason="本机无 node,跳过(见模块 docstring)")
 @pytest.mark.parametrize(("fname", "anchor"), [
-    ("scan-market.js", "const gpJson = "),   # 2026-08-03 缺口①(真实复现)
+    # 缺口①的原锚点是 scan-market.js 的 `const gpJson = `(2026-08-03 真实复现)。2026-09-13
+    # GATE1 与 run-mode 判定合并后,它唯一的调用点没了、helper 随之退役 —— 锚点改用同文件的
+    # `PY`(32 个调用点)。**复现的仍是同一类缺口**:定义摘掉、调用点原地悬空,只是不再是当年
+    # 那个具体标识符。缺口②仍是原样本。
+    ("scan-market.js", "const PY = "),       # 2026-08-03 缺口①同类(原 gpJson 锚点已退役)
     ("l4-stock.js", "const bash = "),        # 2026-08-03 缺口②(真实复现)
 ])
 def test_ref_probe_catches_the_real_20260803_defects(tmp_path, fname, anchor):

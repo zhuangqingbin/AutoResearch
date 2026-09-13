@@ -108,8 +108,9 @@ function bash(cmd, label, phaseName) {   // 形参勿叫 phase:会遮蔽全局 p
     `\`\`\`\n${cmd}\n\`\`\``,
     { agentType: 'general-purpose', ...AG('gp_shell'), label, ...(phaseName ? { phase: phaseName } : {}) })
 }
-const RUN_MODE = { type: 'object', required: ['mode'],
-  properties: { mode: { type: 'string' }, pinned_codes: { type: 'array', items: { type: 'string' } } } }
+// run_mode 四态白名单 = `autoresearch.scan.run_mode.MODES` 的镜像。GATE1 回来的模式不在其中,
+// 就不是"取个默认值继续"的事(见下方 GATE1 处的守卫)。
+const RUN_MODES = ['FULL', 'FORCED_FULL', 'SENTINEL_EMPTY', 'SENTINEL_PINNED']
 const OK = { type: 'object', required: ['ok'],
   properties: { ok: { type: 'boolean' }, reason: { type: 'string' } } }
 const STAGE_RESULT = { type: 'object', required: ['stage', 'status', 'metrics'],
@@ -125,16 +126,12 @@ function gate(label, cmd, schema, phaseName) {   // 同上:避免遮蔽全局 ph
     `(混入 stderr 会污染这行 JSON)。`,
     { agentType: 'general-purpose', ...AG('gp_shell_json'), label, schema, ...(phaseName ? { phase: phaseName } : {}) })
 }
-// 通用确定性 CLI 壳:跑一条命令、把它打印的最后一行 JSON 原样带回(零判断)。
-// 2026-08-03 事故:Wave10 A2(99efe7d)把 run_mode 的**调用点**抄进本文件,却把这份定义
-// 落在了 l4-stock.js 里没一起搬过来 —— 每次全扫都在 GATE1 之后立刻 `gpJson is not defined`。
-// 调用点的 `.catch(() => null)` 兜不住:ReferenceError 是同步抛的,promise 压根没生成。
-// 与 l4-stock.js:42 保持同签名 (cmd, label, schema),phaseName 可选(缺省 = 沿用当前 phase())。
-const gpJson = (cmd, label, schema, phaseName) => agent(
-  `执行:\`${cmd}\`\n它会向 stdout 打印一行 JSON。把最后一行 JSON 原样作为结构化返回,` +
-  '不改、不增删字段。**逐字节原样执行:不得添加 2>&1、tee、管道,不得改写或增删任何重定向。**',
-  { agentType: 'general-purpose', ...AG('gp_shell_json'), label, schema,
-    ...(phaseName ? { phase: phaseName } : {}) })
+// 2026-09-13:本文件的通用 JSON 壳 `gpJson` 已随它唯一的调用点(GATE1 后的独立 run-mode 壳)
+// 一起退役 —— 模式判定并入 `gates gate1 --decide-run-mode`,少派一个 agent。
+// 2026-08-03 事故的教训不随代码走:Wave10 A2(99efe7d)曾把 run_mode 的**调用点**抄进本文件、
+// 定义却留在 l4-stock.js —— 每次全扫都在 GATE1 之后立刻 `gpJson is not defined`,而调用点的
+// `.catch(() => null)` 兜不住(ReferenceError 同步抛,promise 压根没生成)。守卫仍在:
+// tests/test_workflow_js_syntax.py 的未定义调用探针逐文件扫,本文件的反证锚点已改用 `PY`。
 // ── agent 边界取证(Task 11)──────────────────────────────────────────────
 // 每个**业务** agent(策略师/行业 brief/L3 精排/L3 自修)在派发前后各追加一条边界事件,
 // 失败也追加 —— CP7 的 agents/index.json 按事件链点名,少一条就是 GONE,不是「目录里没有」。
@@ -350,7 +347,15 @@ if (!l2ok || !l2ok.ok) {
   await bash(`${PY('prelude', 'prelude-attempt-2', 2)} autoresearch.scan.prelude ${date} --skip consensus`,
     'prelude-retry', 'Prelude')
 }
-const g1 = await stageGate('GATE1', `${PY('gate1', 'gate1-attempt-1')} autoresearch.scan.gates gate1 ${date}`, 'gate1', 'Prelude')
+// 2026-09-13(GATE1 调度合并):契约校验 + 预算 + **运行模式判定**合成一次确定性调用。
+// 这不只是省一个壳 —— 它把"判模式"收进 GATE1 这笔事务:gate 不过就根本不判模式,
+// 模式判定/落盘失败则整道 GATE1 记 FAILED。旧形状里两者分家,run-mode 壳失败被
+// `.catch(() => null)` 吞掉后由 JS 侧默认值补一个"看起来合理"的模式 —— 那正是拿默认值
+// 替失败签字:哨兵日被补成 FULL = 白跑一趟全市场;全扫日被补成 SENTINEL_EMPTY = 当天啥也不跑。
+const g1 = await stageGate('GATE1',
+  `${PY('gate1', 'gate1-attempt-1')} autoresearch.scan.gates gate1 ${date} --decide-run-mode` +
+  `${forceFull ? ' --force-full' : ''}`,
+  'gate1', 'Prelude')
 if (!g1 || !(g1.status === 'SUCCEEDED')) throw new Error(`GATE1 失败:${g1 ? g1.error : 'agent 无返回'}`)
 const g1m = stageMetrics(g1)
 log(`GATE1 ✓ sentinel=${g1m.sentinel_level} · L4预算=${g1m.l4_budget}`)
@@ -362,13 +367,17 @@ log(`📋 前奏汇总屏全文:${SD}/_prelude_summary.md(主会话 Read 后全�
 // (「finalists 为空」可能是哨兵没选、L3 选空、或写盘失败,三者对读者意义完全不同)。
 // 中间档 SENTINEL_PINNED 补的是此前的缺口:材料枯竭的日子里**持仓复核也一起没了**,
 // 07-31 只能靠 force_full 手工拉满,代价是把全市场选股一并跑了($34.48/113min)。
-const rm = await gpJson(
-  `${PY('gate1', 'run-mode-attempt-1')} autoresearch.scan.run_mode ${date} --decide --sentinel-level ${g1m.sentinel_level || 'full'}` +
-  `${forceFull ? ' --force-full' : ''}`,
-  'run-mode', RUN_MODE).catch(() => null)
-const runMode = (rm && rm.mode) || (g1m.sentinel_level === 'sentinel'
-  ? (forceFull ? 'FORCED_FULL' : 'SENTINEL_EMPTY') : 'FULL')
-log(`运行模式 = ${runMode}${rm && rm.pinned_codes ? `(持仓 ${rm.pinned_codes.length} 只)` : ''}`)
+const rm = g1m.run_mode || null
+const runMode = rm && rm.mode
+// 这里**没有** JS 侧兜底:run_mode 已是 GATE1 事务的一部分,SUCCEEDED 却拿不到四态之一,
+// 只可能是 StageResult 被转述污染(2026-07-30 嵌套 metrics 前科)或代码版本不匹配。
+// 与下方 l4_budget 的 NaN 守卫同款:宁可整条停,也不带着猜出来的模式往下跑。
+if (!RUN_MODES.includes(runMode)) {
+  throw new Error(`GATE1 通过却没给出可用的 run_mode(得到 ${JSON.stringify(runMode)})——` +
+    `拒绝用默认值替它签字:这个模式决定跑不跑全市场、跑不跑持仓复核。` +
+    `原始返回:${JSON.stringify(g1).slice(0, 400)}`)
+}
+log(`运行模式 = ${runMode}${rm.pinned_codes ? `(持仓 ${rm.pinned_codes.length} 只)` : ''}`)
 
 if (runMode === 'SENTINEL_EMPTY') {
   log('哨兵档且无持仓 → 跳过 L3/L4(日历已在 prelude 跑过);assemble+GATE4 由主会话收尾')
