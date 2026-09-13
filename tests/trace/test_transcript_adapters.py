@@ -2147,3 +2147,276 @@ def test_collect_run_keeps_disjoint_shared_segments_individually_measured(codex_
     assert "shared_source" not in by_role
     assert by_role["l4-card"]["status"] != "UNMEASURED"
     assert by_role["l4-intel"]["status"] != "UNMEASURED"
+
+
+# --- Fix round 2: redacted usage figures must not crash usage parsing ------
+#
+# `trace.identity._SECRET_KEY_RE` matches "token" anywhere in a dict *key*
+# (case-insensitive) -- every one of these usage field names contains it
+# (input_tokens, cached_input_tokens, cache_write_input_tokens,
+# output_tokens, reasoning_output_tokens, total_tokens), so a transcript
+# that has gone through `redact_value` (e.g. the salvage store's archived
+# copy) has every one of these *values* replaced with the literal string
+# "[REDACTED]", regardless of whether the original value was a number.
+# Real-world impact (Task 8's offline backfill of a real run): 183 crashes,
+# salvage-sourced usage effectively 100% unreadable for the Claude engine.
+
+
+def test_claude_stats_from_rows_redacted_usage_field_is_unmeasured_not_a_crash(
+    tmp_path,
+):
+    rows = [
+        {
+            "type": "assistant",
+            "timestamp": "2026-09-13T00:00:00Z",
+            "message": {
+                "id": "m1",
+                "model": "claude-opus-5",
+                "stop_reason": "end_turn",
+                "usage": {
+                    "input_tokens": "[REDACTED]",
+                    "output_tokens": 42,
+                    "cache_read_input_tokens": 10,
+                    "cache_creation_input_tokens": 5,
+                },
+                "content": [{"type": "text", "text": "hello"}],
+            },
+        },
+    ]
+    ref = TranscriptRef(engine="claude", path=tmp_path / "unused.jsonl", role="subagent")
+
+    stats = ClaudeTranscriptAdapter().stats_from_rows(rows, ref)
+
+    assert stats.usage.status == "UNMEASURED"
+    # A zero here is the documented UNMEASURED placeholder, not a claim that
+    # zero tokens were used -- the surrounding assertions on `status` are
+    # what make that distinction legible to a caller.
+    assert stats.usage.input == 0
+    assert stats.usage.output == 0
+    assert stats.usage.cache_read == 0
+    assert stats.usage.cache_create == 0
+    # One unreadable usage field must not cost the whole transcript: the
+    # message item is still there.
+    assert len(stats.normalized.items) == 1
+    assert stats.normalized.items[0].kind == "message"
+    assert stats.normalized.status == "SUCCEEDED"
+
+
+def test_claude_stats_from_rows_redacted_cache_split_field_is_also_unmeasured(
+    tmp_path,
+):
+    """Every usage field that can be redacted gets the same treatment, not
+    just input_tokens -- here the 1h/5m cache-creation split."""
+    rows = [
+        {
+            "type": "assistant",
+            "timestamp": "2026-09-13T00:00:00Z",
+            "message": {
+                "id": "m1",
+                "model": "claude-opus-5",
+                "stop_reason": "end_turn",
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 20,
+                    "cache_read_input_tokens": 0,
+                    "cache_creation_input_tokens": 5,
+                    "cache_creation": {
+                        "ephemeral_1h_input_tokens": "[REDACTED]",
+                        "ephemeral_5m_input_tokens": 5,
+                    },
+                },
+                "content": [{"type": "text", "text": "hello"}],
+            },
+        },
+    ]
+    ref = TranscriptRef(engine="claude", path=tmp_path / "unused.jsonl", role="subagent")
+
+    stats = ClaudeTranscriptAdapter().stats_from_rows(rows, ref)
+
+    assert stats.usage.status == "UNMEASURED"
+    assert stats.usage.input == 0
+
+
+def test_claude_stats_from_rows_context_tokens_skips_a_redacted_sample(tmp_path):
+    """context_tokens is a tuple of per-message samples: one unreadable
+    sample is omitted (never fabricated, never crashes), the rest survive."""
+    rows = [
+        {
+            "type": "assistant",
+            "timestamp": "2026-09-13T00:00:00Z",
+            "message": {
+                "id": "m1",
+                "usage": {
+                    "input_tokens": "[REDACTED]",
+                    "output_tokens": 1,
+                    "cache_read_input_tokens": 0,
+                    "cache_creation_input_tokens": 0,
+                },
+                "content": [{"type": "text", "text": "hi"}],
+            },
+        },
+        {
+            "type": "assistant",
+            "timestamp": "2026-09-13T00:00:01Z",
+            "message": {
+                "id": "m2",
+                "stop_reason": "end_turn",
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 1,
+                    "cache_read_input_tokens": 0,
+                    "cache_creation_input_tokens": 0,
+                },
+                "content": [{"type": "text", "text": "hi2"}],
+            },
+        },
+    ]
+    ref = TranscriptRef(engine="claude", path=tmp_path / "unused.jsonl", role="subagent")
+
+    stats = ClaudeTranscriptAdapter().stats_from_rows(rows, ref)
+
+    assert stats.context_tokens == (100,)
+
+
+def test_codex_stats_from_rows_redacted_usage_field_is_unmeasured_not_a_crash(
+    tmp_path,
+):
+    rows = [
+        {
+            "type": "session_meta", "ordinal": 0,
+            "timestamp": "2026-09-13T00:00:00.000Z",
+            "payload": {"id": "s1", "session_id": "s1",
+                        "timestamp": "2026-09-13T00:00:00.000Z",
+                        "cwd": "/fixture", "originator": "codex-tui"},
+        },
+        {
+            "type": "event_msg", "ordinal": 1,
+            "timestamp": "2026-09-13T00:00:01.000Z",
+            "payload": {"type": "token_count", "info": {"total_token_usage": {
+                "input_tokens": "[REDACTED]", "cached_input_tokens": 10,
+                "output_tokens": 5, "cache_write_input_tokens": 0,
+                "reasoning_output_tokens": 0, "total_tokens": 15,
+            }}},
+        },
+        {
+            "type": "event_msg", "ordinal": 2,
+            "timestamp": "2026-09-13T00:00:02.000Z",
+            "payload": {"type": "task_complete", "turn_id": "t1",
+                        "last_agent_message": "ok"},
+        },
+    ]
+    ref = TranscriptRef(engine="codex", path=tmp_path / "unused.jsonl", role="subagent")
+
+    stats = CodexTranscriptAdapter().stats_from_rows(rows, ref)
+
+    assert stats.usage.status == "UNMEASURED"
+    assert stats.usage.input == 0
+    assert stats.usage.output == 0
+    # normalization is unaffected by the redacted usage figure
+    assert stats.normalized.status == "SUCCEEDED"
+
+
+def test_codex_stats_from_rows_redacted_baseline_snapshot_is_also_unmeasured(
+    tmp_path,
+):
+    """The *baseline* (preceding) snapshot used for a role segment's delta
+    can be redacted too, not just the segment's own last snapshot."""
+    rows = [
+        {
+            "type": "session_meta", "ordinal": 0,
+            "timestamp": "2026-09-13T00:00:00.000Z",
+            "payload": {"id": "s1", "session_id": "s1",
+                        "timestamp": "2026-09-13T00:00:00.000Z",
+                        "cwd": "/fixture", "originator": "codex-tui"},
+        },
+        {
+            "type": "event_msg", "ordinal": 1,
+            "timestamp": "2026-09-13T00:00:01.000Z",
+            "payload": {"type": "token_count", "info": {"total_token_usage": {
+                "input_tokens": "[REDACTED]", "cached_input_tokens": 0,
+                "output_tokens": 0, "cache_write_input_tokens": 0,
+                "reasoning_output_tokens": 0, "total_tokens": 0,
+            }}},
+        },
+        {
+            "type": "event_msg", "ordinal": 2,
+            "timestamp": "2026-09-13T00:00:02.000Z",
+            "payload": {"type": "token_count", "info": {"total_token_usage": {
+                "input_tokens": 500, "cached_input_tokens": 50,
+                "output_tokens": 20, "cache_write_input_tokens": 5,
+                "reasoning_output_tokens": 1, "total_tokens": 520,
+            }}},
+        },
+        {
+            "type": "event_msg", "ordinal": 3,
+            "timestamp": "2026-09-13T00:00:03.000Z",
+            "payload": {"type": "task_complete", "turn_id": "t1",
+                        "last_agent_message": "ok"},
+        },
+    ]
+    ref = TranscriptRef(
+        engine="codex", path=tmp_path / "unused.jsonl", role="subagent",
+        start_ordinal=2, end_ordinal=3,
+    )
+
+    stats = CodexTranscriptAdapter().stats_from_rows(rows, ref)
+
+    # The segment's own window only sees the ordinal-2 snapshot (clean), but
+    # its *baseline* (the preceding ordinal-1 snapshot, used to difference
+    # against) is redacted -- must still come out UNMEASURED, not a crash
+    # and not a delta computed against a wrong (treated-as-zero) baseline.
+    assert stats.usage.status == "UNMEASURED"
+    assert stats.usage.input == 0
+
+
+def test_codex_stats_from_rows_context_tokens_skips_a_redacted_sample(tmp_path):
+    rows = [
+        {
+            "type": "session_meta", "ordinal": 0,
+            "timestamp": "2026-09-13T00:00:00.000Z",
+            "payload": {"id": "s1", "session_id": "s1",
+                        "timestamp": "2026-09-13T00:00:00.000Z",
+                        "cwd": "/fixture", "originator": "codex-tui"},
+        },
+        {
+            "type": "event_msg", "ordinal": 1,
+            "timestamp": "2026-09-13T00:00:01.000Z",
+            "payload": {"type": "token_count", "info": {"total_token_usage": {
+                "input_tokens": "[REDACTED]", "cached_input_tokens": 0,
+                "output_tokens": 0, "cache_write_input_tokens": 0,
+                "reasoning_output_tokens": 0, "total_tokens": 0,
+            }}},
+        },
+        {
+            "type": "event_msg", "ordinal": 2,
+            "timestamp": "2026-09-13T00:00:02.000Z",
+            "payload": {"type": "token_count", "info": {"total_token_usage": {
+                "input_tokens": 300, "cached_input_tokens": 0,
+                "output_tokens": 0, "cache_write_input_tokens": 0,
+                "reasoning_output_tokens": 0, "total_tokens": 300,
+            }}},
+        },
+    ]
+    ref = TranscriptRef(engine="codex", path=tmp_path / "unused.jsonl", role="subagent")
+
+    stats = CodexTranscriptAdapter().stats_from_rows(rows, ref)
+
+    assert stats.context_tokens == (300,)
+
+
+def test_parse_token_count_distinguishes_absent_zero_and_unparseable():
+    """The shared helper both adapters use: absent/falsy -> 0 (the historical
+    `int(x or 0)` behaviour), a real number -> itself, anything else
+    (a redacted string, a list, a non-integer float) -> None, an explicit
+    "cannot parse" signal rather than a fabricated 0."""
+    from autoresearch.trace.transcripts.base import parse_token_count
+
+    assert parse_token_count(None) == 0
+    assert parse_token_count(0) == 0
+    assert parse_token_count("") == 0
+    assert parse_token_count(1234) == 1234
+    assert parse_token_count(12.0) == 12
+    assert parse_token_count("[REDACTED]") is None
+    assert parse_token_count(True) is None
+    assert parse_token_count(12.5) is None
+    assert parse_token_count([1, 2]) is None

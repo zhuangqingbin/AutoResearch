@@ -18,6 +18,7 @@ from autoresearch.trace.transcripts.base import (
     TranscriptStats,
     UsageRecord,
     extract_operations,
+    parse_token_count,
 )
 from autoresearch.trace.transcripts.snapshot import capture_snapshot
 
@@ -369,17 +370,37 @@ class ClaudeTranscriptAdapter:
             "cache_create_5m": 0,
         }
         latest = summary["latest"]
+        # fix round 2: a redacted usage figure (see `parse_token_count`) must
+        # flip the whole record to UNMEASURED, not crash and not silently
+        # contribute a partial, misleading sum from whatever *other* fields
+        # happened to still be numeric.
+        usage_unmeasured = False
         for usage in latest.values():
-            totals["input"] += int(usage.get("input_tokens") or 0)
-            totals["output"] += int(usage.get("output_tokens") or 0)
-            totals["cache_read"] += int(usage.get("cache_read_input_tokens") or 0)
-            cache_total = int(usage.get("cache_creation_input_tokens") or 0)
-            totals["cache_create"] += cache_total
+            input_tokens = parse_token_count(usage.get("input_tokens"))
+            output_tokens = parse_token_count(usage.get("output_tokens"))
+            cache_read = parse_token_count(usage.get("cache_read_input_tokens"))
+            cache_total = parse_token_count(usage.get("cache_creation_input_tokens"))
             cache_split = usage.get("cache_creation") or {}
-            c1h = int(cache_split.get("ephemeral_1h_input_tokens") or 0)
-            c5m = int(cache_split.get("ephemeral_5m_input_tokens") or 0)
+            c1h = parse_token_count(cache_split.get("ephemeral_1h_input_tokens"))
+            c5m = parse_token_count(cache_split.get("ephemeral_5m_input_tokens"))
+            if None in (input_tokens, output_tokens, cache_read, cache_total, c1h, c5m):
+                usage_unmeasured = True
+                continue
+            totals["input"] += input_tokens
+            totals["output"] += output_tokens
+            totals["cache_read"] += cache_read
+            totals["cache_create"] += cache_total
             totals["cache_create_1h"] += c1h
             totals["cache_create_5m"] += c5m if c5m else max(cache_total - c1h, 0)
+        if usage_unmeasured:
+            # Discard any partial sum from other, cleanly-parsed messages --
+            # a mix of real and zero-filled numbers would misrepresent
+            # itself as a near-complete total. All-zero is the same
+            # documented UNMEASURED placeholder `unmeasured_row`/Codex's
+            # empty-snapshots branch already use, never a claim of zero
+            # spend.
+            totals = dict.fromkeys(totals, 0)
+        usage_status = "UNMEASURED" if usage_unmeasured else summary["status"]
         usage_record = UsageRecord(
             ref=ref,
             messages=len(latest),
@@ -394,7 +415,7 @@ class ClaudeTranscriptAdapter:
             effort=summary["effort"],
             model=summary["model"],
             speed=summary["speed"],
-            status=summary["status"],
+            status=usage_status,
             failure_count=summary["failure_count"],
             retry_count=summary["retry_count"],
             discarded=summary["status"] == "FAILED",
@@ -417,11 +438,18 @@ class ClaudeTranscriptAdapter:
             message_usage = message.get("usage")
             if row.get("type") != "assistant" or not isinstance(message_usage, dict):
                 continue
-            context_tokens.append(
-                int(message_usage.get("input_tokens") or 0)
-                + int(message_usage.get("cache_read_input_tokens") or 0)
-                + int(message_usage.get("cache_creation_input_tokens") or 0)
+            # fix round 2: one unreadable (e.g. redacted) field omits this
+            # sample from the series rather than crashing or fabricating a
+            # partial sum -- context_tokens is already a "however many
+            # samples we could measure" series, so a missing sample is a
+            # normal, representable state.
+            context_parts = (
+                parse_token_count(message_usage.get("input_tokens")),
+                parse_token_count(message_usage.get("cache_read_input_tokens")),
+                parse_token_count(message_usage.get("cache_creation_input_tokens")),
             )
+            if None not in context_parts:
+                context_tokens.append(sum(context_parts))
 
         compact_pre_tokens: list[int] = []
         for row in rows:

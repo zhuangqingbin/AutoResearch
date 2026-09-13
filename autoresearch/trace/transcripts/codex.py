@@ -39,6 +39,7 @@ from autoresearch.trace.transcripts.base import (
     TranscriptUnreadable,
     UsageRecord,
     extract_operations,
+    parse_token_count,
 )
 from autoresearch.trace.transcripts.snapshot import capture_snapshot
 
@@ -599,8 +600,16 @@ class CodexTranscriptAdapter:
         normalized = self._normalize_segment(segment, ref, model, effort, lifecycle)
         usage_record = self._usage_from_rows(all_rows, segment, ref, model, effort, lifecycle)
         started_at, ended_at = self._timestamp_bounds(segment)
+        # fix round 2: a redacted (e.g. "[REDACTED]") input_tokens value must
+        # not crash context_tokens -- omit that sample from the series
+        # rather than fabricate or crash (see `parse_token_count`).
         context_tokens = tuple(
-            int(snapshot.get("input_tokens") or 0) for snapshot in self._snapshots(segment)
+            value
+            for value in (
+                parse_token_count(snapshot.get("input_tokens"))
+                for snapshot in self._snapshots(segment)
+            )
+            if value is not None
         )
         tool_requests, tool_results = self._tool_tallies(normalized.items)
 
@@ -763,11 +772,10 @@ class CodexTranscriptAdapter:
         preceding-snapshot baseline lookup below); ``rows`` is already
         restricted to ``ref``'s own segment.
         """
-        snapshots = self._snapshots(rows)
-        if not snapshots:
+        def unmeasured(*, messages: int = 0) -> UsageRecord:
             return UsageRecord(
                 ref=ref,
-                messages=0,
+                messages=messages,
                 input=0,
                 output=0,
                 cache_read=0,
@@ -786,8 +794,9 @@ class CodexTranscriptAdapter:
                 reasoning_output=0,
             )
 
-        def field(snapshot: dict, name: str) -> int:
-            return int(snapshot.get(name) or 0)
+        snapshots = self._snapshots(rows)
+        if not snapshots:
+            return unmeasured()
 
         last = snapshots[-1]
         baseline: dict = {}
@@ -804,8 +813,31 @@ class CodexTranscriptAdapter:
             )
             baseline = preceding[-1] if preceding else {}
 
+        # fix round 2: every field either snapshot can carry is parsed
+        # defensively up front. A redacted (e.g. "[REDACTED]") value in
+        # *either* the last or the baseline snapshot -- not just the last --
+        # must flip the whole record to UNMEASURED rather than crash or
+        # compute a delta against a value silently treated as 0.
+        names = (
+            "input_tokens",
+            "cached_input_tokens",
+            "output_tokens",
+            "cache_write_input_tokens",
+            "reasoning_output_tokens",
+        )
+        parsed = {
+            name: (
+                parse_token_count(last.get(name)),
+                parse_token_count(baseline.get(name)),
+            )
+            for name in names
+        }
+        if any(last_value is None or base_value is None for last_value, base_value in parsed.values()):
+            return unmeasured(messages=len(snapshots))
+
         def delta(name: str) -> int:
-            return max(field(last, name) - field(baseline, name), 0)
+            last_value, base_value = parsed[name]
+            return max(last_value - base_value, 0)
 
         raw_input = delta("input_tokens")
         cached = delta("cached_input_tokens")

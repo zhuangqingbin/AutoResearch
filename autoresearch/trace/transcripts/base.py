@@ -648,6 +648,48 @@ def extract_structured_path(payload: Mapping) -> tuple[str | None, str]:
     return None, "unknown"
 
 
+def parse_token_count(value: object) -> int | None:
+    """Parse one usage token count, refusing to fabricate a number for a
+    non-numeric value (fix round 2, 2026-09-13).
+
+    ``None``, ``0``, ``""`` and other falsy values are the ordinary "field
+    absent" case and become ``0`` -- the historical ``int(x.get(key) or 0)``
+    both adapters used before this fix, preserved verbatim for every
+    legitimate shape. A *present*, non-numeric value is not the same as
+    absent and must not silently become 0 (spec §5.1: never invent
+    precision) or crash the bare ``int(...)`` call both adapters used to
+    make on it.
+
+    The concrete case this exists for: ``trace.identity.redact_value``
+    blanks any dict value whose *key* looks secret-shaped
+    (``_SECRET_KEY_RE`` matches ``"token"`` anywhere in a key name,
+    case-insensitive) -- and every one of these usage field names contains
+    it: ``input_tokens``, ``cached_input_tokens``, ``cache_write_input_tokens``,
+    ``cache_creation_input_tokens``, ``output_tokens``,
+    ``reasoning_output_tokens``, ``total_tokens``. A transcript that has been
+    through that redaction pass (verified in practice: the salvage store
+    archives redacted bytes, and a real backfill of run
+    ``20260911-0912_1248`` crashed 183 times reading it back) therefore has
+    every one of these *values* replaced with the literal string
+    ``"[REDACTED]"``, regardless of whether the original value was ever a
+    number.
+
+    Returns ``None`` as an explicit "cannot parse" signal; callers flip the
+    whole usage record to ``UNMEASURED`` rather than guess at a partial or
+    zero-filled total (matching the existing ``UNMEASURED`` vocabulary
+    ``CodexTranscriptAdapter`` already uses for "zero snapshots available").
+    """
+    if not value:
+        return 0
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return None
+
+
 def artifact_digest_for_write(tool_name: str, payload: Mapping) -> ArtifactDigest | None:
     """Hash a WRITE's exact declared content, never a diff or a read-back.
 
