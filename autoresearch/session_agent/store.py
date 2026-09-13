@@ -246,6 +246,56 @@ def recover_receipt(path: Path | str, task_id: str) -> dict | None:
         return receipt
 
 
+def complete_deterministic(
+    path: Path | str,
+    task_id: str,
+    attempt: int,
+    outputs: list[dict],
+    execution: dict,
+) -> dict:
+    """Commit a captured deterministic result without forging an inference envelope."""
+    target = Path(path)
+    with _locked(target):
+        payload = _load(target)
+        if task_id not in payload["tasks"]:
+            raise KeyError(task_id)
+        entry = payload["tasks"][task_id]
+        if entry["spec"]["kind"] != "DETERMINISTIC":
+            raise ValueError("task is not deterministic")
+        identity = {"outputs": outputs, "execution": execution}
+        digest = hashlib.sha256(canonical_json(identity).encode("utf-8")).hexdigest()
+        if entry["state"] == "SUCCEEDED":
+            if entry["submission_hash"] != digest:
+                raise TaskConflict("different deterministic result already accepted")
+            return _receipt(entry, task_id)
+        if entry["state"] != "RUNNING" or entry["attempt"] != attempt:
+            raise TaskConflict("deterministic completion attempt mismatch")
+        if execution.get("status") != "SUCCEEDED" or execution.get("exit_code") != 0:
+            raise ValueError("deterministic execution did not succeed")
+        expected = set(entry["spec"]["output_artifact_ids"])
+        actual = {item.get("artifact_id") for item in outputs}
+        if actual != expected or any(not item.get("sha256") for item in outputs):
+            raise ValueError("deterministic outputs do not match task")
+        intent = {
+            "schema_version": 1,
+            "task_id": task_id,
+            "attempt": attempt,
+            "submission_hash": digest,
+            "outputs": outputs,
+        }
+        atomic_write_json(_intent_path(target, task_id), intent)
+        entry.update({
+            "state": "SUCCEEDED",
+            "submission_hash": digest,
+            "outputs": outputs,
+            "error": None,
+        })
+        atomic_write_json(target, payload)
+        receipt = _receipt(entry, task_id)
+        atomic_write_json(_receipt_path(target, task_id), receipt)
+        return receipt
+
+
 def mark_failed(
     path: Path | str,
     task_id: str,
@@ -266,6 +316,6 @@ def mark_failed(
 
 
 __all__ = [
-    "TaskConflict", "accept", "claim", "initialize", "mark_failed", "read_states",
-    "recover_receipt",
+    "TaskConflict", "accept", "claim", "complete_deterministic", "initialize",
+    "mark_failed", "read_states", "recover_receipt",
 ]
