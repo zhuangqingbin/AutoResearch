@@ -544,4 +544,16 @@ NON_ARTIFACT_LITERALS: frozenset[str] = frozenset({
     # 整个迁移目录已用上面那条 dir-kind 登记覆盖,`diff.json`/`migration_state.json`
     # 在每个 <migration_id>/ 下逐字同名重复出现,不逐一登记成带完整路径的 Artifact。
     "diff.json", "migration_state.json",
+    # 2026-09-13:漏斗对照实验(`research/funnel_variants.py`)的研究 bundle —— 落
+    # `reports_<engine>/research/funnel_variants/<experiment_id>/`,不属于任何 run 的
+    # 期望证据:它由人手动对**已冻结**的历史日跑,不接 prelude、不写 run 目录,缺席也
+    # 不该让任何一次扫描的完整性判定变脸。同族处置见上面 W3 预注册方案那条。
+    # ⚠️ 同 bundle 的 `daily_metrics.csv` / `manifest.json` 之所以不在这里,只是因为
+    # 这两个名字与**别的**已登记产物重名、被守卫按基名放行了 —— 不是它们另有归属。
+    # 守卫按基名匹配,所以重名即免检:这是它今天的一个盲点,记在此处备查。
+    "membership.csv", "paired_summary.json",
+    # Codex harness 自己的模型能力缓存(`~/.codex/models_cache.json`)——**我们只读不产**。
+    # runtime capability 那一层事实的来源,不在本仓任何产物根下。读不到 = UNKNOWN,
+    # 不是缺产物(`user_config.load_codex_capabilities` 返回 None,不编造支持度)。
+    "models_cache.json",
 })
