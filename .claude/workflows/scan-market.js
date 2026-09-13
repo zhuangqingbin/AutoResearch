@@ -1,3 +1,4 @@
+// LEGACY_ORCHESTRATION_FALLBACK: keep for host rollback until real session_v1 acceptance.
 export const meta = {
   name: 'scan-market',
   description: '全 A股漏斗前段(prelude→市场/行业→L3→L4-prep,GATE1/2/3)→ 返回 dispatch 交接;决策卡=每股独立 l4-stock workflow 由主会话并行拉起,assemble+GATE4 由主会话收尾(fb_20260714_003)',

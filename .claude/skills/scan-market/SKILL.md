@@ -5,6 +5,13 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
 
 # scan-market — 全 A股六段漏斗扫描(挖掘个股 + 板块,零付费 API)
 
+## session_v1 编排入口
+
+显式选择新编排时使用 `python -m autoresearch.session_agent`，执行
+`begin → next → claim → execute/宿主研究 → submit → finish`。扫描的动态行业、L3、L4 和复核
+任务由冻结 expansion 生成；原 gate、taskbook、评级和发布器仍是业务真值。宿主真实验收尚未记录的
+场景可回退到标为 `LEGACY_ORCHESTRATION_FALLBACK` 的旧 Workflow。
+
 > 沿革见 git log;本文件 = 编排入口,机制/参数/实证读数快照见 `STAGES.md`(冲突以源码为准)。
 
 ## 核心原理

@@ -7,6 +7,12 @@ description: "Top-down GLOBAL + 中美 macro → cross-asset tilts AND A股行�
 
 # macro-research — 在 session 内零付费 API 跑全球+中美宏观 + A股中观 → 配置
 
+## session_v1 编排入口
+
+显式选择新编排时使用 `python -m autoresearch.session_agent`，执行
+`begin → next → claim → execute/宿主研究 → submit → finish`。FULL/LITE、macro_state 与市场研判
+仍走原领域契约；宿主真实验收尚未记录的场景保留 legacy 流程回退。
+
 ## 核心原理
 宏观研究 = `确定性数据(免费)` + `多 agent 推理(本来要钱)`。本 skill 调项目数据工具取真宏观/中观数据(FRED/akshare/yfinance),把推理换成你(Claude,本 session)——零 LLM API,产出 regime 判断 + 跨资产配置表 + A股行业配置表。
 

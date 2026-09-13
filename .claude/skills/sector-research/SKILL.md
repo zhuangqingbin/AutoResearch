@@ -7,6 +7,12 @@ description: "Single A-share INDUSTRY (申万一级) research — 景气度/产�
 
 # sector-research — 单行业研究:full 深研 / lite 行业 brief(一个 skill,两档)
 
+## session_v1 编排入口
+
+显式选择新编排时使用 `python -m autoresearch.session_agent`，执行
+`begin → next → claim → execute/宿主研究 → submit → finish`。FULL/LITE、地形段边界、数据前置和
+发布器仍走原领域契约；宿主真实验收尚未记录的场景保留 legacy 流程回退。
+
 ## 核心原理
 中观 = 宏观与微观之间此前缺失的海拔:**macro-research 横向比较所有行业给配置倾向(beta),本 skill 纵向深挖一个行业给结构认知(链/格局/景气位置/龙头映射,alpha 语境)**。数据层零新增端点——确定性 pack 全部聚合 scan staging 既有产物(`autoresearch/sector/pack.py`);判断层 = Claude subagent,零付费 API。(design: `docs/specs/2026-07-03-research-skills-altitude-refactor-design.md` §5.3)
 

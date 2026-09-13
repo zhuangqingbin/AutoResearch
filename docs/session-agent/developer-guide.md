@@ -168,6 +168,8 @@ uv run --no-sync python -m autoresearch.session_agent finish --run-id "$RUN_ID"
 uv run --no-sync python -m autoresearch.session_agent resume --run-id "$RUN_ID"
 ```
 
+宿主明确观察到推理失败时使用 `fail` 写真实错误；扫描整票符合 TASK_ATTEMPT 瞬时分类且未耗尽次数时，再用 `retry-l4 --code <CODE> --expected-attempt 2` 冻结新的 `a2` 子树。`retry-l4` 不直接认领，后续仍走 next/claim。详见 `operations.md`。
+
 恢复遵循以下规则：
 
 - RUNNING 的确定性进程仍有匹配身份时只报告等待，不启动副本。
@@ -190,6 +192,8 @@ CLI 退出码为：`0` 有效执行（含正常等待），`2` 参数或契约�
 7. 先用无网络合成夹具覆盖成功、失败、重复提交、替换文件和恢复，再做真实宿主实验。
 
 真实宿主实验必须记录实际 session/context/transcript 引用。合成测试中的假 handle、固定 hash 和回调只证明状态机与协议，不证明 Codex 或 Claude 的实际派发、联网和 token 计量能力。
+
+架构、运维、验收和学习实验分别见 `architecture.md`、`operations.md`、`acceptance.md` 与 `learning-lab.md`。
 
 ## 8. 验证
 

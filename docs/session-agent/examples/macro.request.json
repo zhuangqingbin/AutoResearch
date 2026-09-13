@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "kind": "macro-research",
+  "requested_mode": "FULL",
+  "analysis_date": "2026-09-14",
+  "subject": null,
+  "peers": [],
+  "asset_type": null,
+  "name": null,
+  "force_full": false,
+  "host_profile": {
+    "schema_version": 1,
+    "engine": "codex",
+    "session_ref": "replace-with-current-session-ref",
+    "deterministic_exec": true,
+    "capture_binding": true,
+    "inference_handoff": true,
+    "safe_resume": true,
+    "independent_context": false,
+    "native_dispatch": false,
+    "web_search": false,
+    "web_fetch": false,
+    "observed_model": null,
+    "observed_effort": null,
+    "evidence_refs": ["replace-with-observed-host-evidence"]
+  },
+  "predecessor_run_id": null
+}

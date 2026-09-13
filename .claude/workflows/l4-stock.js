@@ -1,3 +1,4 @@
+// LEGACY_ORCHESTRATION_FALLBACK: keep for host rollback until real session_v1 acceptance.
 export const meta = {
   name: 'l4-stock',
   description: '单只 finalist 的 L4 全链:活体情报盲搜 → 决策卡 → (≥OW)双复核折回;每股一个 workflow、N 股并行(fb_20260714_003)',

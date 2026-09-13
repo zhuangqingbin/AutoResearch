@@ -27,9 +27,14 @@
 
 # AutoResearch: Multi-Agent LLM Financial Trading Research Framework
 
-> **About this fork — AutoResearch.** A refocused fork of [TradingAgents](https://github.com/TauricResearch/TradingAgents). The paid-LLM multi-agent path (LangGraph orchestration, provider clients, the CLI, and the batch runner) has been **removed**; the multi-agent analysis now runs **in-session with Claude as the engine** via the `stock-research` / `scan-market` / `macro-research` skills, on top of the free data layer only (`autoresearch/data` + `autoresearch/dataflows` + `autoresearch/agents/utils` — yfinance / FRED / akshare / tushare, keyless + `FRED_API_KEY` / `TUSHARE_TOKEN`). Start at [`CLAUDE.md`](CLAUDE.md) and [`.claude/skills/stock-research/`](.claude/skills/stock-research/). Sections below that mention LLM providers, model catalogs, or `cli`/`run_analysis` usage are **legacy upstream docs** kept for reference.
+> **About this fork — AutoResearch.** A refocused fork of [TradingAgents](https://github.com/TauricResearch/TradingAgents). The paid-LLM provider path has been removed; research inference runs inside Codex or Claude Code subscription sessions. The unified `session_v1` control plane is `uv run --no-sync python -m autoresearch.session_agent` and covers scan, stock, macro, sector, and dossier workflows. Start with [`docs/session-agent/README.md`](docs/session-agent/README.md). Sections below that describe upstream provider clients are legacy reference material.
 
 ## 架构
+
+`session_v1` uses the same host loop for both supported subscription sessions:
+`begin → next → claim → execute/host inference → submit → finish`. Python owns frozen plans,
+deterministic operations, artifact validation, recovery, and publication; the active Codex or Claude Code
+session owns every model inference. No model API SDK or subscription credential bridge is used.
 
 All deterministic data/scoring/assembly code lives in the **`autoresearch/`** package (the old flat `scripts/` is gone). Skills (`scan-market` / `stock-research` / `macro-research`) drive these modules; Claude is the LLM engine in-session, so there are no paid-LLM deps. Design: [`docs/specs/2026-06-22-autoresearch-arch-redesign-design.md`](docs/specs/2026-06-22-autoresearch-arch-redesign-design.md).
 

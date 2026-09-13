@@ -2,17 +2,17 @@
 
 记录日期：2026-09-14。代码基线：`198a669`，迁移分支首提交：`b3be3f4`。
 
-基础层 A01–A08 已落地：严格任务与计划契约、冻结 DAG、动态展开记录、SESSION owner 状态机、run 内 artifact 安全、静态 operation、Codex/Claude 宿主能力适配、统一 CLI、capsule 事件/角色阶段/恢复接缝和故障演练。研究领域接线按 B01–C06 继续推进。
+基础层 A01–A08、研究接线 B01–B06 和扫描实现 C01–C03 已落地；C04–C06 的对拍、入口标记和操作文档也已实现。真实双宿主运行验收按设计保持独立：代码与合成回归完成不等于 Codex/Claude 的真实模型矩阵已经通过。
 
 ## 入口与状态归属
 
-| 入口 | 当前执行面 | 当前 run | 业务状态权威 | 迁移缺口 |
+| 入口 | session_v1 执行面 | run | 业务状态权威 | 验收状态 |
 |---|---|---|---|---|
-| scan-market | `.claude/workflows/scan-market.js`、`l4-stock.js` 与 Python stage CLI | scan-market capsule | `scan/stage_result.py`、`scan/l4_tasks.py`、原 gates | Python 只有 inference handoff 校验，没有可领取、提交和恢复的会话桥 |
-| stock-research FULL/LITE | skill 内顺序调用 harvest、角色研究、assemble | stock-research capsule 可选 | `analyze/runctl.py` 与 `analyze/assemble.py` | 没有显式任务 DAG、宿主回执和统一 CLI |
-| macro-research FULL/LITE | skill 内调用 harvest/assemble；扫描 LITE 写 market_view | 无独立 run kind | `macro/assemble.py`、`macro/state.py` | 缺 run profile、任务协议和独立入口生命周期 |
-| sector-research FULL/LITE | skill 调 pack/reuse/brief | 无独立 run kind | `sector/pack.py`、`sector/reuse.py`、地形契约 | 缺独立数据前置、run profile 和发布器 |
-| dossier-init | `.claude/workflows/dossier-init.js` | 无独立 run kind | builder/schema 与本引擎 dossier 正文 | 缺候选发布事务、编辑边界和统一恢复 |
+| scan-market | 固定前奏 + sector/L3/repair/L4/review 动态展开 | scan-market capsule | 原 gates、stage_result、l4_tasks、publisher | 自动化通过；双宿主真实矩阵 INCOMPLETE |
+| stock-research FULL/LITE | harvest、角色 DAG、validate/assemble/publish | stock-research capsule | analyze/runctl、assemble、rating validator | 自动化通过；双宿主真实矩阵 INCOMPLETE |
+| macro-research FULL/LITE | 独立 run、harvest/frame、sections、state/publish | macro-research capsule | macro assemble/state | 自动化通过；双宿主真实矩阵 INCOMPLETE |
+| sector-research FULL/LITE | 独立 run、prepare、terrain/full、publish | sector-research capsule | sector pack/reuse/brief | 自动化通过；双宿主真实矩阵 INCOMPLETE |
+| dossier-init | prefetch、skeleton、受限分节推理、lint/publish | dossier-init capsule | dossier builder/schema/pool | 自动化通过；双宿主真实矩阵 INCOMPLETE |
 
 ## 迁移后基础能力
 
@@ -23,8 +23,8 @@
 - `trace/exec_capture.py`：确定性子进程、退出事实、日志和进程身份。
 - `scan/user_config.py`：Claude/Codex 配置、能力核对、显式 fallback；迁移不另建模型路由。
 - `research/efficiency_baseline.py`：真实 usage/capability 读数，缺失值保持未知。
-- `common/workspace.py`：进程级引擎隔离；当前只登记 scan-market 和 stock-research。
-- `session_agent/service.py`：`begin/status/next/claim/execute/submit/resume/finish` 应用边界。
+- `common/workspace.py`：进程级引擎隔离，并登记五类 session run kind。
+- `session_agent/service.py`：`begin/status/next/claim/execute/submit/fail/retry-l4/resume/finish` 应用边界。
 - `session_agent/store.py`：SESSION owner 的 attempt、锁、接收意图、幂等回执与恢复。
 - `session_agent/artifacts.py`：run 内路径约束、symlink/inode/hash 校验。
 - `session_agent/hosts/*`：基于本次证据的宿主能力与独立上下文回执校验。

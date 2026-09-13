@@ -1,3 +1,4 @@
+// LEGACY_ORCHESTRATION_FALLBACK: keep for host rollback until real session_v1 acceptance.
 export const meta = {
   name: 'dossier-init',
   description: '单票首覆建档:确定性骨架(builder)→ Opus 首覆 agent 填四 LLM 节 → lint 校验;池内 pending_init 逐票拉起(spec 2026-07-22 ②)',

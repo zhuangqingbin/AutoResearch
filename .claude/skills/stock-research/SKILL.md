@@ -7,6 +7,12 @@ description: Two-tier single-ticker research. FULL deep-dive report by default (
 
 # stock-research — 单标的研究:full 全量报告 / lite 决策卡(一个 skill,两档)
 
+## session_v1 编排入口
+
+显式选择新编排时使用 `python -m autoresearch.session_agent`，执行
+`begin → next → claim → execute/宿主研究 → submit → finish`。FULL/LITE 的研究角色、输出正文、
+评级校验和发布器继续复用本 skill 的契约；宿主真实验收尚未记录的场景保留 legacy 流程回退。
+
 ## 核心原理
 同一免费数据层(yfinance/FRED/akshare/tushare)+ Claude(本 session)当引擎,零 LLM API。
 - **full 档** = v4 全量报告(决策主线+证据附录;`harvest` 全量 ~90KB context)。
