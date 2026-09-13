@@ -39,6 +39,7 @@ LAYERS: tuple[tuple[str, ...], ...] = (
     ("sector", "macro", "analyze"),
     ("scan",),
     ("research", "ops"),
+    ("session_agent",),
 )
 
 _LEVEL: dict[str, int] = {p: i for i, layer in enumerate(LAYERS) for p in layer}
