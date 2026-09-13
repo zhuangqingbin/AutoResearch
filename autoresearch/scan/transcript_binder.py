@@ -1989,6 +1989,8 @@ def _gone_ledger_row(inv_id: str, exp: Mapping[str, object], row: Mapping[str, o
         "snapshot_id": None,
         "source_sha256": None,
         "source_bytes": None,
+        "archive_sha256": None,
+        "archive_bytes": None,
         "rows": None,
         "unparsed_rows": None,
         "items": None,
@@ -2032,8 +2034,23 @@ def _present_ledger_row(
         "raw": raw_rel,
         "normalized": normalized_rel,
         "snapshot_id": snapshot.snapshot_id,
+        # `source_sha256` here is the digest of *whatever raw bytes this offline
+        # source handed us*, which is **not** the same object the capsule's own
+        # live row names: a retention-archived gz decompresses to the original
+        # unredacted prefix, but a `scan.salvage` blob is `snapshot.archive_bytes`
+        # itself (salvage.py:533) -- already redacted and canonicalized. Its
+        # digest therefore differs from the capsule's live `source_sha256` for
+        # the very same invocation, by construction (measured: f796a86b… over
+        # 28953 B live vs 06a51151… over 26109 B from the blob). Only
+        # `archive_sha256` means the same thing on both sides (re-redacting
+        # already-redacted canonical rows is idempotent, so `archive_bytes` come
+        # out byte-identical), which is why `chain_view._merge_invocation`
+        # compares that one and never `source_sha256` -- spec §3.2's "两种摘要
+        # 允许不同,标签不能混用".
         "source_sha256": snapshot.source_prefix.sha256,
         "source_bytes": snapshot.source_prefix.byte_count,
+        "archive_sha256": snapshot.archive.sha256,
+        "archive_bytes": snapshot.archive.byte_count,
         "rows": len(snapshot.rows),
         "unparsed_rows": snapshot.bad_lines,
         "items": len(normalized.items),

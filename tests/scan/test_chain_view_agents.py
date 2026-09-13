@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 
 from autoresearch.common import workspace as ws
 from autoresearch.scan import chain_view
@@ -67,13 +68,62 @@ def _capsule_normalized(run, invocation_id, *, operations=None, items=None, snap
     return doc
 
 
+def _transcript_bytes(marker: str) -> bytes:
+    """One realistic Claude harness JSONL prefix — the shape the real adapters
+    parse, written the way the harness writes it (per-row `json.dumps`, *not*
+    the canonical form the archive uses). Two different *marker*s give two
+    genuinely different transcripts."""
+    rows = [
+        {"type": "assistant", "timestamp": "2026-08-25T21:49:00.000Z",
+         "message": {"id": f"msg-{marker}", "model": "claude-opus-5",
+                     "content": [{"type": "tool_use", "id": "tool-1", "name": "Write",
+                                  "input": {"file_path": f"/x/{marker}.md",
+                                            "content": f"card {marker}"}}]}},
+        {"type": "user", "timestamp": "2026-08-25T21:49:01.000Z",
+         "message": {"content": [{"type": "tool_result", "tool_use_id": "tool-1",
+                                  "content": "ok", "is_error": False}]}},
+    ]
+    return ("\n".join(json.dumps(r) for r in rows) + "\n").encode("utf-8")
+
+
+def _digests(marker: str) -> tuple[str, str]:
+    """`(source_sha256, archive_sha256)` for one transcript, computed by the
+    **real** snapshot code (`trace.transcripts.snapshot`) over real bytes —
+    never a hand-typed `"a"*64`.
+
+    2026-09-13 final-review F1: the whole point of deriving these is that the
+    two producers' `source_sha256` measure different objects (capsule: the
+    unredacted live prefix; ledger: whatever raw the offline source handed it,
+    which for a `scan.salvage` blob is the redacted archive), while
+    `archive_sha256` measures the same object on both sides. A fixture built
+    from two identical literals cannot tell those two facts apart, which is
+    exactly how the mismatch shipped. The end-to-end guard that drives both
+    real producers lives in `tests/scan/test_transcript_binder.py`
+    (`test_f1_one_real_transcript_through_both_real_producers_*`); these
+    digests keep *this* file's merge fixtures honest about the same contract.
+    """
+    from autoresearch.trace.transcripts.snapshot import capture_snapshot
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / f"agent-{marker}.jsonl"
+        p.write_bytes(_transcript_bytes(marker))
+        snap = capture_snapshot(p, engine="claude")
+        return snap.source_prefix.sha256, snap.archive.sha256
+
+
+_SOURCE_A, _ARCHIVE_A = _digests("alpha")
+_SOURCE_B, _ARCHIVE_B = _digests("beta")
+
+
 def _row(invocation_id, *, role="l4-card", subject=CODE, status="PRESENT",
-        normalized=None, source_sha256="a" * 64, snapshot_id="snap-1", reason=None,
-        unparsed_rows=0):
+        normalized=None, source_sha256=_SOURCE_A, archive_sha256=_ARCHIVE_A,
+        snapshot_id="snap-1", reason=None, unparsed_rows=0):
     return {"invocation_id": invocation_id, "role": role, "subject": subject,
            "status": status, "reason": reason,
            "normalized": normalized or f"agents/normalized/{invocation_id}.json",
            "snapshot_id": snapshot_id, "source_sha256": source_sha256,
+           "archive_sha256": archive_sha256,
            "unparsed_rows": unparsed_rows}
 
 
@@ -146,15 +196,25 @@ def test_v01_capsule_gone_ledger_present_surfaces_backfill_and_keeps_original(tm
 
 
 def test_v02_two_valid_sources_conflict_is_shown_not_silently_picked(tmp_path, monkeypatch):
-    """V02(其一):capsule 与 ledger 两边都是有效 PRESENT,但内容(source_sha256)不同
-    —— 必须显式报冲突,不能悄悄选一边当答案。"""
+    """V02(其一):capsule 与 ledger 两边都是有效 PRESENT,但内容(`archive_sha256`)不同
+    —— 必须显式报冲突,不能悄悄选一边当答案。
+
+    2026-09-13 final-review F1:两边的摘要都由**真实字节经真实快照代码**算出
+    (`_digests`),不再是 `"a"*64`/`"b"*64` 两个手打字面量。差别是实质性的:两个手打
+    字面量无论生产者怎么改都恒不相等,这条用例因此对「两边量的根本不是同一件东西」
+    完全没有鉴别力——正是它一路绿着放过了 F1。现在 A/B 来自两份真不同的 transcript,
+    冲突是真冲突;而**同一份** transcript 经两条真实生产路径的那条对照,在
+    `tests/scan/test_transcript_binder.py::test_f1_one_real_transcript_through_both_real_producers_*`。
+    """
     monkeypatch.chdir(tmp_path)
     run = _base_run(tmp_path)
     report_run_id = run.name
-    _capsule_index(run, [_row("l4-card-603317", source_sha256="a" * 64)])
+    assert _ARCHIVE_A != _ARCHIVE_B      # 两份真 transcript,摘要真不同
+    _capsule_index(run, [_row("l4-card-603317",
+                              source_sha256=_SOURCE_A, archive_sha256=_ARCHIVE_A)])
     _capsule_normalized(run, "l4-card-603317", operations=[_read_op("c1", "/x/slim.md")])
     _ledger_index(run, report_run_id,
-                 [_row("l4-card-603317", source_sha256="b" * 64,
+                 [_row("l4-card-603317", source_sha256=_SOURCE_B, archive_sha256=_ARCHIVE_B,
                        normalized=f"{report_run_id}/rev-1/normalized/l4-card-603317.json")])
     _ledger_normalized(run, report_run_id, "rev-1", "l4-card-603317",
                        operations=[_read_op("c1", "/x/slim.md")])
@@ -162,7 +222,50 @@ def test_v02_two_valid_sources_conflict_is_shown_not_silently_picked(tmp_path, m
     md = chain_view.render(run, CODE)
     assert "冲突" in md
     # 两边的摘要都要现出来,不能只打个"冲突"旗子却藏起真正不同的地方是什么。
-    assert "a" * 12 in md and "b" * 12 in md
+    assert _ARCHIVE_A[:12] in md and _ARCHIVE_B[:12] in md
+
+
+def test_v02_same_transcript_through_both_producers_is_not_a_conflict(tmp_path, monkeypatch):
+    """V02(其二,2026-09-13 final-review F1):两边 PRESENT、内容其实**相同**时必须
+    合并成功、证据可见——绝不能因为两个生产者对 `source_sha256` 量的不是同一件东西
+    就判成冲突把证据整体压掉。
+
+    这正是 F1 的失败面:active binding 成功(本分支新默认)+ 离线索引跑过之后,每条
+    invocation 都会被判 `conflict=True`/`effective=None`,§⑪ 一条操作都不渲染——合并
+    视图比只看 capsule 还差,重现 spec §6.2 要根治的「索引存在、证据不可见」。
+    """
+    monkeypatch.chdir(tmp_path)
+    run = _base_run(tmp_path)
+    report_run_id = run.name
+    # 同一份 transcript 经两条真实生产路径:capsule 量未脱敏源文件前缀,ledger 量
+    # 离线源交给它的 raw(salvage blob = 脱敏归档字节本身)。`source_sha256` 因此不同,
+    # `archive_sha256` 相同——这才是可比的那一个。
+    from autoresearch.trace.transcripts.snapshot import snapshot_from_archive_bytes
+    import tempfile
+    from autoresearch.trace.transcripts.snapshot import capture_snapshot
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "agent-alpha.jsonl"
+        p.write_bytes(_transcript_bytes("alpha"))
+        cap_snap = capture_snapshot(p, engine="claude")
+        led_snap = snapshot_from_archive_bytes(cap_snap.archive_bytes, engine="claude", path=p)
+    assert cap_snap.source_prefix.sha256 != led_snap.source_prefix.sha256
+    assert cap_snap.archive.sha256 == led_snap.archive.sha256
+
+    _capsule_index(run, [_row("l4-card-603317",
+                              source_sha256=cap_snap.source_prefix.sha256,
+                              archive_sha256=cap_snap.archive.sha256)])
+    _capsule_normalized(run, "l4-card-603317", operations=[_read_op("c1", "/x/slim.md")])
+    _ledger_index(run, report_run_id,
+                 [_row("l4-card-603317", source_sha256=led_snap.source_prefix.sha256,
+                       archive_sha256=led_snap.archive.sha256,
+                       normalized=f"{report_run_id}/rev-1/normalized/l4-card-603317.json")])
+    _ledger_normalized(run, report_run_id, "rev-1", "l4-card-603317",
+                       operations=[_read_op("c1", "/x/slim.md")])
+
+    md = chain_view.render(run, CODE)
+    assert "⚠️冲突" not in md
+    assert "内容核对=match" in md
+    assert "成功 1" in md          # 证据真的渲染出来了,不是被冲突压掉的空白
 
 
 def test_corrupted_normalized_document_is_insufficient_not_absolute(tmp_path, monkeypatch):

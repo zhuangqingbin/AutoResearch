@@ -2682,3 +2682,188 @@ def test_load_frozen_run_rejects_a_contract_claiming_a_different_engine(tmp_path
 
     with pytest.raises(ValueError, match="identity mismatch"):
         tb._load_frozen_run(run_dir)
+
+
+# ═══════════ 2026-09-13 final-review F1: the two producers' digests must be comparable ═══════════
+
+
+def test_f1_one_real_transcript_through_both_real_producers_merges_without_conflict(
+    tmp_path, monkeypatch,
+):
+    """Final-review F1 (CRITICAL). `chain_view._merge_invocation` decides
+    capsule-vs-ledger agreement by comparing a digest on the two index rows.
+    The two producers must therefore agree on what that digest *measures*.
+
+    This guard drives **one** transcript's bytes through **both real
+    producers** -- `capsule.materialize_agent_index` (live `capture_snapshot`
+    of the unredacted harness file) and `transcript_binder.offline_index`
+    (offline `snapshot_from_archive_bytes` of a `scan.salvage` blob, which is
+    `snapshot.archive_bytes`, i.e. already redacted + canonicalized) -- and
+    then merges their two real rows.
+
+    It is deliberately *not* written with placeholder literals (`"a"*64` /
+    `"b"*64`): two hand-typed identical strings agree no matter what the
+    producers do, which is why the original suite stayed green while every
+    healthy future run rendered as a spurious conflict with its evidence
+    suppressed. The premise assertion below (`source_sha256` genuinely
+    differs across the two paths, measured on real bytes) is what gives the
+    rest of this test its teeth -- delete it and a regression to comparing
+    `source_sha256` would be indistinguishable from correct behavior.
+    """
+    from autoresearch.scan import chain_view
+    from autoresearch.scan import salvage as salvage_mod
+    from autoresearch.trace import blobs as trace_blobs
+    from autoresearch.trace.transcripts.snapshot import capture_snapshot
+
+    handle = _begin_claude(tmp_path, monkeypatch, session_ref="session-f1")
+    inv_id = "l4-card-600519-1"
+    d = _dispatch_agent(
+        handle, "AGENT_DISPATCHED", role="l4-card", subject="600519",
+        invocation_id=inv_id, attempt=1,
+    )
+    c = _dispatch_agent(
+        handle, "AGENT_COMPLETED", role="l4-card", subject="600519",
+        invocation_id=inv_id, attempt=1,
+    )
+    card_path = handle.staging / "details" / "600519.md"
+    card_path.parent.mkdir(parents=True, exist_ok=True)
+    card_path.write_text("# 600519 决策卡\n", encoding="utf-8")
+
+    live = tmp_path / "harness" / "agent-f1card.jsonl"
+    _write_claude_rows(live, [
+        _claude_write_row("tool-1", card_path, ts=d["ts"], msg_id="msg-1"),
+        _claude_result_row("tool-1", ts=c["ts"]),
+    ])
+
+    # ── producer 1: the capsule's own live path ──────────────────────────
+    capsule_mod.bind_transcript(
+        handle.run_id, live, role="l4-card", invocation_id=inv_id, subject="600519",
+    )
+    index = capsule_mod.materialize_agent_index(handle.run_id)
+    cap_row = next(r for r in index["invocations"] if r["invocation_id"] == inv_id)
+    assert cap_row["status"] == "PRESENT"
+
+    run_dir = _freeze_run(tmp_path, handle, "20260827-0827_2100")
+
+    # ── producer 2: the offline path, fed the blob `scan.salvage` really
+    # stores for a transcript (`salvage.py:533` -> `snapshot.archive_bytes`)
+    # rather than the original file, which is exactly why the two rows'
+    # `source_sha256` cannot mean the same thing. ────────────────────────
+    archive_bytes = capture_snapshot(live, engine="claude").archive_bytes
+    ledger_root = tmp_path / "_ledger"
+    salvage_dir = ledger_root / "salvage" / run_dir.name
+    salvage_dir.mkdir(parents=True)
+    digest = trace_blobs.put_bytes(salvage_dir, archive_bytes)
+    (salvage_dir / "provenance.json").write_text(json.dumps({
+        "schema_version": salvage_mod.PROVENANCE_SCHEMA_VERSION,
+        "report_run_id": run_dir.name, "contract_run_id": "x", "engine": "claude",
+        "analysis_date": DATE, "run_window": {}, "same_date_multi_run": False,
+        "sibling_report_run_ids": [], "captured_at": "2026-08-27T21:00:00Z",
+        "files": [{
+            "file_kind": "transcript", "logical_name": "transcript:f1",
+            "source": str(live), "source_sha256": None, "source_bytes": None,
+            "source_mtime": None, "captured_at": "2026-08-27T21:00:00Z",
+            "attribution": "VERIFIED_RUN", "reason": "session_ref matched",
+            "engine": "claude", "session_ref": "session-f1", "snapshot_id": "snap-f1",
+            "blob": {"sha256": digest, "bytes": len(archive_bytes),
+                     "path": f"blobs/sha256/{digest[:2]}/{digest}"},
+            "archive_sha256": digest,
+        }],
+    }), encoding="utf-8")
+
+    result = tb.offline_index(
+        run_dir, ledger_root=ledger_root, sessions_root=tmp_path / "no-such-sessions",
+    )
+    led_row = next(r for r in result["invocations"] if r["invocation_id"] == inv_id)
+    assert led_row["status"] == "PRESENT"
+
+    # ── the premise, measured on real bytes through the real producers ───
+    assert cap_row["source_sha256"] and led_row["source_sha256"]
+    assert cap_row["source_sha256"] != led_row["source_sha256"], (
+        "premise broken: if the two producers' `source_sha256` ever became equal, "
+        "this guard would stop discriminating -- rebuild it against a source pair "
+        "that genuinely diverges (redacted archive vs unredacted live file)"
+    )
+    # ── and the digest that genuinely means the same thing on both sides ─
+    assert cap_row["archive_sha256"] and led_row["archive_sha256"]
+    assert cap_row["archive_sha256"] == led_row["archive_sha256"]
+
+    merged = chain_view._merge_invocation(cap_row, led_row)
+    assert merged["comparison"] == "match"
+    assert merged["conflict"] is False
+    assert merged["effective"] is cap_row          # §6.2: 有效 capsule PRESENT 优先
+    assert merged["origin"] == "capsule"
+
+
+def test_f1_a_genuine_content_difference_between_the_two_producers_is_still_a_conflict(
+    tmp_path, monkeypatch,
+):
+    """The other half of F1: reconciling the digests must not blunt the V02
+    invariant. Two *different* real transcripts produce different
+    `archive_sha256`, and the merge must still refuse to pick a side."""
+    from autoresearch.scan import chain_view
+    from autoresearch.trace.transcripts.snapshot import (
+        capture_snapshot, snapshot_from_archive_bytes,
+    )
+
+    _redirect_claude(monkeypatch, tmp_path)
+    ts = "2026-08-27T20:00:00.000Z"
+    a = tmp_path / "agent-a.jsonl"
+    b = tmp_path / "agent-b.jsonl"
+    _write_claude_rows(a, [_claude_write_row("t1", tmp_path / "a.md", ts=ts, msg_id="m1")])
+    _write_claude_rows(b, [_claude_write_row("t1", tmp_path / "b.md", ts=ts, msg_id="m1")])
+
+    cap_snapshot = capture_snapshot(a, engine="claude")
+    led_snapshot = snapshot_from_archive_bytes(
+        capture_snapshot(b, engine="claude").archive_bytes, engine="claude", path=b,
+    )
+    cap_row = {"status": "PRESENT", "role": "l4-card", "subject": "600519",
+               "source_sha256": cap_snapshot.source_prefix.sha256,
+               "archive_sha256": cap_snapshot.archive.sha256}
+    led_row = {"status": "PRESENT", "role": "l4-card", "subject": "600519",
+               "source_sha256": led_snapshot.source_prefix.sha256,
+               "archive_sha256": led_snapshot.archive.sha256}
+
+    assert cap_row["archive_sha256"] != led_row["archive_sha256"]
+    merged = chain_view._merge_invocation(cap_row, led_row)
+    assert merged["comparison"] == "conflict"
+    assert merged["conflict"] is True
+    assert merged["effective"] is None
+
+
+def test_f1_a_pre_fix_index_row_without_archive_sha256_is_not_comparable_not_a_conflict(
+    tmp_path, monkeypatch,
+):
+    """An index row written *before* this fix carries no `archive_sha256`.
+    Falling back to `source_sha256` there would re-manufacture the very
+    false conflict this fix removes, so the merge must instead record spec
+    §3.2's third label -- 不可直接比较 -- take the capsule (spec §6.2), and
+    say out loud that no content comparison happened."""
+    from autoresearch.scan import chain_view
+    from autoresearch.trace.transcripts.snapshot import (
+        capture_snapshot, snapshot_from_archive_bytes,
+    )
+
+    _redirect_claude(monkeypatch, tmp_path)
+    live = tmp_path / "agent-legacy.jsonl"
+    _write_claude_rows(live, [
+        _claude_write_row("t1", tmp_path / "x.md", ts="2026-08-27T20:00:00.000Z", msg_id="m1"),
+    ])
+    cap_snapshot = capture_snapshot(live, engine="claude")
+    led_snapshot = snapshot_from_archive_bytes(
+        cap_snapshot.archive_bytes, engine="claude", path=live,
+    )
+    # Same underlying transcript, so a `source_sha256` comparison would call
+    # this a conflict even though nothing is actually in conflict.
+    assert cap_snapshot.source_prefix.sha256 != led_snapshot.source_prefix.sha256
+
+    cap_row = {"status": "PRESENT", "role": "l4-card", "subject": "600519",
+               "source_sha256": cap_snapshot.source_prefix.sha256}   # pre-fix row
+    led_row = {"status": "PRESENT", "role": "l4-card", "subject": "600519",
+               "source_sha256": led_snapshot.source_prefix.sha256}   # pre-fix row
+
+    merged = chain_view._merge_invocation(cap_row, led_row)
+    assert merged["comparison"] == "not_comparable"
+    assert merged["conflict"] is False
+    assert merged["effective"] is cap_row
+    assert "不可直接比较" in (merged["conflict_detail"] or "")

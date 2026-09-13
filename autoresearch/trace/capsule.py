@@ -1889,6 +1889,15 @@ def _archive_bound_transcripts(
             "snapshot_id": None,
             "source_sha256": None,
             "source_bytes": None,
+            # spec §3.2「两种摘要允许不同,标签不能混用」——`source_sha256` 是**本次读到
+            # 的原始 transcript 前缀**摘要,`archive_sha256` 是**脱敏归档字节**摘要。
+            # 两者在这条活跃路径上分别来自未脱敏源文件与脱敏后的 `archive_bytes`;离线
+            # 重建那条路径拿到的"源"往往已经是脱敏归档(salvage blob 就是
+            # `snapshot.archive_bytes` 本身,salvage.py:533),它算出的 `source_sha256`
+            # 因此与这里的不是同一件东西——只有 `archive_sha256` 在两条路径上恒等
+            # (对已脱敏的规范化行再脱敏一次是幂等的)。跨来源比对必须用后者。
+            "archive_sha256": None,
+            "archive_bytes": None,
             "rows": None,
             "unparsed_rows": None,
             "items": None,
@@ -1974,6 +1983,8 @@ def _archive_bound_transcripts(
                 "snapshot_id": snapshot.snapshot_id,
                 "source_sha256": snapshot.source_prefix.sha256,
                 "source_bytes": snapshot.source_prefix.byte_count,
+                "archive_sha256": snapshot.archive.sha256,
+                "archive_bytes": snapshot.archive.byte_count,
                 "rows": len(snapshot.rows),
                 "unparsed_rows": snapshot.bad_lines,
                 "items": len(normalized.items),
@@ -2168,6 +2179,8 @@ def materialize_agent_index(
                 "snapshot_id": None,
                 "source_sha256": None,
                 "source_bytes": None,
+                "archive_sha256": None,
+                "archive_bytes": None,
                 "rows": None,
                 "unparsed_rows": None,
                 "items": None,

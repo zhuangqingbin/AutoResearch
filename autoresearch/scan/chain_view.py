@@ -251,8 +251,11 @@ def _merge_invocation(capsule_row: dict | None, ledger_row: dict | None, *,
                       capsule_normalizable: bool = True) -> dict:
     """一条 invocation 的合并结果——原始状态/补录状态/实际来源/冲突全部保留(spec §6.2)。
 
-    `effective` 只在**恰好一边**有效、或两边一致时才置位;两边都 PRESENT 但内容(源摘要)
-    不同 → `conflict=True`、`effective=None`,绝不悄悄挑一边(V02)。
+    `effective` 只在**恰好一边**有效、或两边一致时才置位;两边都 PRESENT 但内容
+    (`archive_sha256`,**不是** `source_sha256`,见下方比对说明)不同 → `conflict=True`、
+    `effective=None`,绝不悄悄挑一边(V02)。`comparison` 如实记这次比对到底做成了什么:
+    `match` / `conflict` / `not_comparable`(至少一边的索引行没有 `archive_sha256`)/
+    `n/a`(不是两边都在场,没有可比的第二边)。
 
     `capsule_normalizable=False`(fix round 1,finding 1;spec §6.2 第三个回落触发词)
     与"缺失"/"GONE"同等对待——不能因为 `status` 字面量是 `PRESENT` 就认为这一边真的
@@ -274,15 +277,39 @@ def _merge_invocation(capsule_row: dict | None, ledger_row: dict | None, *,
     origin = "absent"
     conflict = False
     conflict_detail: str | None = None
+    comparison = "n/a"
     if cap_present and led_present:
-        cap_digest = capsule_row.get("source_sha256")
-        led_digest = ledger_row.get("source_sha256")
-        if cap_digest and led_digest and cap_digest != led_digest:
+        # spec §3.2:`source_prefix_sha256` 与 `archive_sha256` 是两件不同的东西,
+        # 「标签不能混用」。两个生产者的 `source_sha256` 量的不是同一份字节——capsule
+        # (`capsule.py` 活跃路径)量的是**未脱敏的 harness 源文件前缀**,ledger
+        # (`transcript_binder.offline_index`)量的是**离线源交给它的那份 raw**,而
+        # salvage blob 存的就是脱敏归档字节本身(`salvage.py:533`)。同一条 invocation
+        # 因此恒不相等(实测 f796a86b…/28953B vs 06a51151…/26109B),旧实现据此把每条
+        # 都判成 `conflict=True`+`effective=None`,证据被整体压掉——正是 §6.2 要根治的
+        # 「索引存在、证据不可见」。`archive_sha256` 才是两边同义的那个摘要(对已脱敏的
+        # 规范化行再脱敏一次幂等,归档字节逐字节相同),所以比它。
+        cap_digest = capsule_row.get("archive_sha256")
+        led_digest = ledger_row.get("archive_sha256")
+        if not (cap_digest and led_digest):
+            # 本轮修复之前写下的索引行没有这个字段。退回去比 `source_sha256` 就是把刚修
+            # 掉的假冲突再造一遍,所以不比——按 §3.2 的第三种标签如实记「不可直接比较」,
+            # 取值仍按 §6.2「有效 capsule PRESENT 优先」,不伪称两边已核对一致。
+            comparison = "not_comparable"
+            conflict_detail = (
+                f"capsule archive_sha256={str(cap_digest)[:12] + '…' if cap_digest else ABSENT}"
+                f" · ledger archive_sha256="
+                f"{str(led_digest)[:12] + '…' if led_digest else ABSENT}"
+                f":至少一边没有该字段(修复前写的旧索引),"
+                f"不可直接比较;按 spec §6.2 取 capsule,未做内容核对")
+            effective, origin = capsule_row, "capsule"
+        elif cap_digest != led_digest:
+            comparison = "conflict"
             conflict = True
-            conflict_detail = (f"capsule source_sha256={str(cap_digest)[:12]}… 与 ledger "
-                               f"source_sha256={str(led_digest)[:12]}… 不同,两边都在场但"
+            conflict_detail = (f"capsule archive_sha256={str(cap_digest)[:12]}… 与 ledger "
+                               f"archive_sha256={str(led_digest)[:12]}… 不同,两边都在场但"
                                f"内容冲突,不静默挑选")
         else:
+            comparison = "match"
             effective, origin = capsule_row, "capsule"
     elif cap_present:
         effective, origin = capsule_row, "capsule"
@@ -293,6 +320,7 @@ def _merge_invocation(capsule_row: dict | None, ledger_row: dict | None, *,
         "original_status": original_status, "backfill_status": backfill_status,
         "effective": effective, "origin": origin,
         "conflict": conflict, "conflict_detail": conflict_detail,
+        "comparison": comparison,
     }
 
 
@@ -1038,8 +1066,11 @@ def _sec_scene(src: Sources, code6: str, cache: _EvidenceCache, *, verbose: bool
     for role, iid, m in relevant:
         out.append(f"- {role}(`{iid}`):来源={m['origin']} · 原始状态={m['original_status']}"
                    f" · 补录状态={m['backfill_status']}"
+                   + (f" · 内容核对={m['comparison']}" if m["comparison"] != "n/a" else "")
                    + (" · ⚠️冲突" if m["conflict"] else ""))
-        if m["conflict"]:
+        # `not_comparable` 也带 detail(两边都在场却没能比):不打冲突旗,但必须说出
+        # "没比成"这件事,不能让它长得像"比过了、一致"。
+        if m["conflict_detail"]:
             conflict_lines.append(f"  - {role}:{_fmt(m['conflict_detail'], 200)}")
         doc, reason = cache.normalized_doc(m)
         if doc is None:
