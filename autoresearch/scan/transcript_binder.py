@@ -1363,12 +1363,40 @@ def _configured_bind_transcripts() -> bool:
     return bool(block.get("bind_transcripts", True))
 
 
+def _degrade_report_write_failure(run_id: str | None, reason: str) -> None:
+    """Route an unwritable staging report through the same evidence-
+    degradation channel `_bind_and_report`'s own whole-run-failure branch
+    already uses (spec §5.2: "若报告本身无法落盘,通过既有 evidence
+    degradation/event 通道留失败状态与 stderr;不能报成功").
+
+    This is the *more* serious of the two failure modes -- we cannot even
+    record what happened at all, versus binding merely not completing -- so
+    it must not be quieter than that branch's own `capsule._degrade_evidence`
+    call (fix round 1, Finding 1). Takes a plain ``run_id`` rather than a
+    `RunHandle` because some callers of `_safe_write` (the disabled-report
+    paths -- switch off, no active run) never obtain a handle at all;
+    `_degrade_evidence` itself only ever reads `handle.run_id`, so this
+    mirrors its exact two-tier behaviour (`record_degradation`, falling back
+    to a direct stderr line if even that bookkeeping call fails) without
+    requiring one.
+    """
+    endpoint = "capsule.transcript_binding"
+    try:
+        from autoresearch.data.contracts import record_degradation
+
+        record_degradation(endpoint, reason, key=run_id or "")
+    except Exception:  # noqa: BLE001 - degradation bookkeeping must not itself raise
+        print(f"[capsule·B级降级] {endpoint}[{run_id}]:{reason}", file=sys.stderr)
+
+
 def _safe_write(scan_dir: Path | str, report: dict) -> dict | None:
     try:
         return _write_report(scan_dir, report)
     except Exception as exc:  # noqa: BLE001 - even the fallback write must never raise outward
+        message = f"{type(exc).__name__}: {exc}"
+        _degrade_report_write_failure(report.get("run_id"), message)
         print(
-            f"[transcript_binder] 报告落盘失败({type(exc).__name__}: {exc})→ 本次无法留痕",
+            f"[transcript_binder] 报告落盘失败({message})→ 本次无法留痕",
             file=sys.stderr,
         )
         return None

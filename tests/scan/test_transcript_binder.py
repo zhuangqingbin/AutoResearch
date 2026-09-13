@@ -1509,6 +1509,182 @@ def test_cli_binds_using_run_handles_own_staging(tmp_path, monkeypatch, capsys):
 
 
 # ============================================================================
+# Task 4, fix round 1: three findings from review.
+# ============================================================================
+
+
+def test_safe_write_degrades_evidence_when_the_report_cannot_be_persisted(
+    tmp_path, monkeypatch, capsys,
+):
+    """Finding 1: spec §5.2's "若报告本身无法落盘,通过既有 evidence
+    degradation/event 通道留失败状态与 stderr;不能报成功" applies to the
+    write itself, not only to upstream computation failures -- the whole-run-
+    failure branch already calls `capsule._degrade_evidence`; an unwritable
+    report is the *more* serious failure (we cannot even record what
+    happened) and must not be the quieter of the two."""
+    from autoresearch.data import contracts as data_contracts
+
+    monkeypatch.setattr(
+        tb, "atomic_write_json",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    scan = tmp_path / "scan-dir-unwritable"
+    scan.mkdir()
+
+    result = tb._safe_write(
+        scan,
+        tb._base_report(
+            run_id="20260827T010203456789Z", engine="claude", enabled=True,
+            status="OK", reason=None,
+        ),
+    )
+
+    assert result is None
+    degraded = data_contracts.degradations()
+    assert any(
+        row["endpoint"] == "capsule.transcript_binding"
+        and row["key"] == "20260827T010203456789Z"
+        and "disk full" in row["reasons"][0]
+        for row in degraded
+    )
+    assert "报告落盘失败" in capsys.readouterr().err
+
+
+def test_persist_binding_isolates_an_unreadable_source_like_a_conflict(
+    tmp_path, monkeypatch,
+):
+    """Finding 2: of the three causes Controller ruling 2 names ("一条
+    binding conflict、一个源不可读或一次不支持的归一化"), only "binding
+    conflict" (B07 above) had a real fixture; "unreadable source" is the
+    cause most likely to occur in production and is exercised here directly
+    -- the candidate's own file is genuinely deleted between `assign()`
+    choosing it and `_persist_binding` trying to bind it (a real TOCTOU
+    window, not a mocked exception), so the *real* `capsule.
+    _require_external_source`'s `is_file()` check is what raises. A second,
+    independent invocation in the same batch (strategist) still binds
+    normally, proving the isolation, not just the failure."""
+    projects_root = _home_projects_root(monkeypatch, tmp_path)
+    session_ref = "session-finding2-unreadable"
+    handle = _begin_claude(tmp_path, monkeypatch, session_ref=session_ref)
+
+    strategist_d = _dispatch_agent(
+        handle, "AGENT_DISPATCHED", role="strategist", invocation_id="strategist-market-1",
+        attempt=1,
+    )
+    strategist_c = _dispatch_agent(
+        handle, "AGENT_COMPLETED", role="strategist", invocation_id="strategist-market-1",
+        attempt=1,
+    )
+    card_d = _dispatch_agent(
+        handle, "AGENT_DISPATCHED", role="l4-card", subject="600021",
+        invocation_id="l4-card-600021-1", attempt=1,
+    )
+    card_c = _dispatch_agent(
+        handle, "AGENT_COMPLETED", role="l4-card", subject="600021",
+        invocation_id="l4-card-600021-1", attempt=1,
+    )
+
+    strategist_path = handle.staging / "market_view.md"
+    card_path = handle.staging / "details" / "600021.md"
+    strategist_sub = _claude_subagent_path(projects_root, session_ref, "strategist-f2")
+    _write_claude_rows(
+        strategist_sub,
+        [
+            _claude_write_row("tool-s", strategist_path, ts=strategist_d["ts"], msg_id="msg-s"),
+            _claude_result_row("tool-s", ts=strategist_c["ts"]),
+        ],
+    )
+    card_sub = _claude_subagent_path(projects_root, session_ref, "card-f2")
+    _write_claude_rows(
+        card_sub,
+        [
+            _claude_write_row("tool-c", card_path, ts=card_d["ts"], msg_id="msg-c"),
+            _claude_result_row("tool-c", ts=card_c["ts"]),
+        ],
+    )
+
+    real_bind_transcript = capsule_mod.bind_transcript
+
+    def _delete_source_then_bind(run_id, path, *, invocation_id, **kwargs):
+        # The genuinely destructive step: this specific invocation's own
+        # candidate file is gone by the time persistence is attempted --
+        # `assign()` (called moments earlier, inside the same `bind_run`)
+        # already read it successfully to attribute this row, so this is a
+        # real TOCTOU gap, not a candidate that was never readable.
+        if invocation_id == "l4-card-600021-1":
+            Path(path).unlink()
+        return real_bind_transcript(run_id, path, invocation_id=invocation_id, **kwargs)
+
+    monkeypatch.setattr(capsule_mod, "bind_transcript", _delete_source_then_bind)
+
+    report = tb.bind_run(handle.run_id, handle.staging)
+
+    card_row = report["rows"]["l4-card-600021-1"]
+    strategist_row = report["rows"]["strategist-market-1"]
+    assert card_row["binding_status"] == "ERROR"
+    assert "not a regular file" in card_row["reason"] or "no such file" in card_row["reason"].lower()
+    assert strategist_row["binding_status"] == "BOUND"
+    assert report["coverage"]["expected"] == report["coverage"]["accounted"] == 2
+    assert report["coverage"]["bound"] == 1
+    assert report["coverage"]["errors"] == 1
+
+
+def test_lower_bound_denominator_does_not_make_completeness_green(tmp_path, monkeypatch):
+    """Finding 3: coverage, binding status, and the materialized carrier
+    status (`materialize_agent_index`/`completeness.evaluate`) are three
+    separate facts (spec §4.5) -- a grep shows neither reads
+    `transcript_binder`, `denominator_quality`, or `segment_quality` today,
+    but nothing pinned that. This builds a run where this module's own
+    report genuinely carries `denominator_quality="lower_bound"` (a
+    sector-brief with product evidence but no event at all) *alongside* a
+    genuine capsule-level gap (an l4-card AGENT_DISPATCHED with no bound
+    transcript), and asserts the separate completeness computation still
+    correctly reports incomplete -- a lower-bound-flavored report must not
+    quietly launder a real GONE gap into a green verdict, and the product-
+    only expectation this module invented must never even reach
+    `materialize_agent_index`'s own accounting.
+
+    What would turn this red: any future change that made `completeness.
+    evaluate`/`agent_coverage`/`materialize_agent_index` read this module's
+    `_transcript_bindings.json`, `coverage.denominator_quality`, or a row's
+    `segment_quality` and let any of them substitute for -- or paper over --
+    `agents/index.json`'s own PRESENT/GONE accounting.
+    """
+    from autoresearch.contracts.profiles import profile_factory
+    from autoresearch.trace import completeness as completeness_mod
+
+    _home_projects_root(monkeypatch, tmp_path)  # keep ~/.claude/projects under tmp_path
+    session_ref = "session-finding3"
+    handle = _begin_claude(tmp_path, monkeypatch, session_ref=session_ref)
+
+    # A genuine capsule-level gap: dispatched, never bound.
+    _dispatch_agent(
+        handle, "AGENT_DISPATCHED", role="l4-card", subject="600030",
+        invocation_id="l4-card-600030-1", attempt=1,
+    )
+    _dispatch_agent(
+        handle, "AGENT_COMPLETED", role="l4-card", subject="600030",
+        invocation_id="l4-card-600030-1", attempt=1,
+    )
+    # A product-only expectation with no event at all -- this module's own
+    # lower_bound leg, invisible to materialize_agent_index by construction.
+    (handle.staging / "sector_briefs").mkdir(parents=True, exist_ok=True)
+    (handle.staging / "sector_briefs" / "银行.md").write_text("## 地形段\n", encoding="utf-8")
+
+    report = tb.bind_run(handle.run_id, handle.staging)
+    assert report["coverage"]["denominator_quality"] == "lower_bound"  # sanity: scenario is real
+
+    index = capsule_mod.materialize_agent_index(handle.run_id)
+    assert index["coverage"]["missing"] > 0  # the l4-card gap really is there
+    assert not any(row.get("role") == "sector-brief" for row in index["invocations"])
+
+    profile = profile_factory(handle.contract.run_kind)(mode="FULL")
+    verdict = completeness_mod.evaluate(handle.capsule, profile)
+
+    assert verdict["completeness_ok"] is False
+
+
+# ============================================================================
 # Task 8 (2026-09-12 scene-reconstruction): offline reconstruction of a
 # *frozen*, already-published run's index -- `transcript_binder.offline_index`
 # / the `--offline` CLI flag.
