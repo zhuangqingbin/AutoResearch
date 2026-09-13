@@ -7,6 +7,10 @@ def build_plan(request: dict, handle) -> dict:
         from autoresearch.session_agent.workflows.stock import build_stock_plan
 
         return build_stock_plan(request, handle)
+    if request["kind"] == "macro-research":
+        from autoresearch.session_agent.workflows.macro import build_macro_plan
+
+        return build_macro_plan(request, handle)
     raise ValueError(f"session workflow is not implemented: {request['kind']}")
 
 
@@ -16,6 +20,11 @@ def register_artifacts(request: dict, handle, plan: dict) -> None:
 
         register_stock_artifacts(request, handle, plan)
         return
+    if request["kind"] == "macro-research":
+        from autoresearch.session_agent.workflows.macro import register_macro_artifacts
+
+        register_macro_artifacts(request, handle, plan)
+        return
     raise ValueError(f"session artifact workflow is not implemented: {request['kind']}")
 
 
@@ -24,6 +33,13 @@ def validate_operation_params(request: dict, task: dict, params: dict) -> None:
         from autoresearch.session_agent.workflows.stock import validate_stock_operation_params
 
         validate_stock_operation_params(request, task, params)
+        return
+    if request["kind"] == "macro-research":
+        from autoresearch.session_agent.workflows.macro import (
+            validate_macro_operation_params,
+        )
+
+        validate_macro_operation_params(request, task, params)
         return
     raise ValueError(f"session operation workflow is not implemented: {request['kind']}")
 

@@ -104,6 +104,7 @@ def validate_run_id(run_id) -> str:
 RUN_SPOOLS: dict[str, str] = {
     "scan-market": "scan_runs",
     "stock-research": "analyze_runs",
+    "macro-research": "macro_runs",
 }
 
 #: run kind → 发布产物根下的技能目录名(`reports_<engine>/<这里>/…`)。
@@ -112,6 +113,7 @@ RUN_SPOOLS: dict[str, str] = {
 RUN_REPORT_DIRS: dict[str, str] = {
     "scan-market": "scan",
     "stock-research": "analyze",
+    "macro-research": "macro",
 }
 
 if tuple(RUN_SPOOLS) != _RUN_KINDS or tuple(RUN_REPORT_DIRS) != _RUN_KINDS:

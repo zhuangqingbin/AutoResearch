@@ -81,6 +81,36 @@ _OPERATIONS: dict[str, dict[str, object]] = {
         "idempotent": True,
         "stage": "assemble",
     },
+    "macro.harvest": {
+        "builder": lambda params: _no_params("macro-harvest", params),
+        "idempotent": True,
+        "stage": "harvest",
+    },
+    "macro.lite.frame": {
+        "builder": lambda params: _no_params("macro-lite-frame", params),
+        "idempotent": True,
+        "stage": "frame",
+    },
+    "macro.lite.validate": {
+        "builder": lambda params: _no_params("macro-lite-validate", params),
+        "idempotent": True,
+        "stage": "write",
+    },
+    "macro.publish": {
+        "builder": lambda params: _no_params("macro-publish", params),
+        "idempotent": True,
+        "stage": "publish",
+    },
+    "macro.full.validate": {
+        "builder": lambda params: _no_params("macro-full-validate", params),
+        "idempotent": True,
+        "stage": "assemble",
+    },
+    "macro.full.assemble": {
+        "builder": lambda params: _no_params("macro-full-assemble", params),
+        "idempotent": True,
+        "stage": "assemble",
+    },
 }
 
 

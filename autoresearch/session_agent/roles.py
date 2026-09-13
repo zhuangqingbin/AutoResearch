@@ -90,7 +90,7 @@ _ROLE_STAGES = {
     "stock.pm": "assemble",
     "company.intel": "intel",
     "us.intel": "intel",
-    "macro.brief": "prelude",
+    "macro.brief": "write",
     "macro.research": "write",
     "sector.brief": "l3",
     "sector.research": "write",

@@ -124,6 +124,18 @@ def _default_begin_capsule(request: dict):
             name=request["name"],
         )
         return require_active_run(started["run_id"])
+    if kind == "macro-research":
+        from autoresearch.macro.run_bootstrap import prepare_macro_run
+        from autoresearch.trace.capsule import begin_run
+
+        return begin_run(
+            kind,
+            request["analysis_date"],
+            request["host_profile"]["engine"],
+            {"mode": request["requested_mode"]},
+            session_ref=request["host_profile"]["session_ref"],
+            bootstrap=prepare_macro_run,
+        )
     if kind != "scan-market":
         raise ValueError(f"run kind is not registered with workspace yet: {kind}")
     from autoresearch.trace.capsule import begin_run

@@ -2646,15 +2646,16 @@ def resolve_run_mode(handle: RunHandle) -> str:
     再去 staging 里找一个永远不存在的文件,只会给每一趟单票研究记一条假降级。
     """
     if handle.contract.run_kind != "scan-market":
-        from autoresearch.contracts.stages import ANALYZE_MODES
+        from autoresearch.contracts.session_task import RUN_MODES
 
+        allowed = RUN_MODES.get(handle.contract.run_kind, frozenset({"FULL"}))
         mode = str((handle.contract.user_config or {}).get("mode") or "")
-        if mode in ANALYZE_MODES:
+        if mode in allowed:
             return mode
         _degrade_evidence(
             handle,
             "capsule.run_mode",
-            f"契约 config echo 的 mode={mode!r} 不在 {ANALYZE_MODES} → 按 FULL 展开",
+            f"契约 config echo 的 mode={mode!r} 不在 {tuple(sorted(allowed))} → 按 FULL 展开",
         )
         return "FULL"
 

@@ -192,7 +192,7 @@ def skips_l4(mode: str) -> bool:
 
 # ── stock-research(analyze)词汇(2026-08-31 D6.1;scan 词汇在上,一个字未动) ──
 #: 已注册的 run kind——目前只有两个技能落 capsule。新技能接线前先在这里报到。
-RUN_KINDS: tuple[str, ...] = ("scan-market", "stock-research")
+RUN_KINDS: tuple[str, ...] = ("scan-market", "stock-research", "macro-research")
 #: full 档阶段序:取数 → 情报 → 撰写 → 组装 → 发布。
 ANALYZE_STAGES: tuple[str, ...] = ("harvest", "intel", "write", "assemble", "publish")
 #: lite 档(决策卡)只有两步——不派情报员,见 `engine-playbook`「lite 一律不派」。
@@ -203,3 +203,12 @@ ANALYZE_MODES: tuple[str, ...] = ("FULL", "LITE")
 ANALYZE_ROLE_STAGES: dict[str, str] = {"company-intel": "intel", "us-intel": "intel"}
 #: 只在标的市场匹配时才派发的腿——缺席是「这只票不是这个市场」的事实,不是证据的洞。
 ANALYZE_CONDITIONAL_ROLES: frozenset[str] = frozenset({"company-intel", "us-intel"})
+
+# ── macro-research 词汇 ───────────────────────────────────────────────
+MACRO_STAGES: tuple[str, ...] = ("harvest", "intel", "write", "assemble", "publish")
+MACRO_LITE_STAGES: tuple[str, ...] = ("frame", "write", "publish")
+MACRO_MODES: tuple[str, ...] = ("FULL", "LITE")
+MACRO_ROLE_STAGES: dict[str, str] = {
+    "macro.research": "write",
+    "macro.brief": "write",
+}

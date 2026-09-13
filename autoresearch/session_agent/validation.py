@@ -7,6 +7,7 @@ from collections.abc import Callable
 
 from autoresearch.agents.utils.rating import RATINGS_5_TIER, parse_rating
 from autoresearch.contracts.agent_output import L4_CARD
+from autoresearch.macro.assemble import parse_allocation
 from autoresearch.session_agent import artifacts
 
 
@@ -89,11 +90,36 @@ def _stock_pm(handle, submission: dict, task: dict) -> None:
         raise DomainValidationError("stock PM decision lacks strict Rating or proposal")
 
 
+def _macro_section(handle, submission: dict, task: dict) -> None:
+    for artifact_id, text in _open_outputs(handle, submission, task).items():
+        if "置信度:" not in text and "置信度：" not in text:
+            raise DomainValidationError(f"macro section lacks confidence line: {artifact_id}")
+
+
+def _macro_allocation(handle, submission: dict, task: dict) -> None:
+    for artifact_id, text in _open_outputs(handle, submission, task).items():
+        allocation = parse_allocation(text)
+        if not allocation or any(value is None for value in allocation.values()):
+            raise DomainValidationError(f"macro allocation is not parseable: {artifact_id}")
+        if "置信度:" not in text and "置信度：" not in text:
+            raise DomainValidationError(f"macro allocation lacks confidence: {artifact_id}")
+
+
+def _macro_brief(handle, submission: dict, task: dict) -> None:
+    text = next(iter(_open_outputs(handle, submission, task).values()))
+    sections = set(re.findall(r"(?m)^\s*([1-6])[.、]\s*\*\*", text))
+    if sections != {"1", "2", "3", "4", "5", "6"}:
+        raise DomainValidationError("macro brief requires all six sections")
+
+
 _CONTRACT_VALIDATORS = {
     "stock.lite.v1": _stock_lite,
     "stock.section.v1": _stock_section,
     "company.intel.v1": _stock_intel,
     "stock.pm.v1": _stock_pm,
+    "macro.section.v1": _macro_section,
+    "macro.allocation.v1": _macro_allocation,
+    "macro.brief.v1": _macro_brief,
 }
 
 

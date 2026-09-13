@@ -14,8 +14,8 @@ Usage:
     python -m autoresearch.macro.assemble context/macro/<YYYY-MM-DD>
     # → reports/macro/<YYYYMMDD>/<HHMM>_summary.md   (HHMM = 组装时本地时间)
 """
+import argparse
 import re
-import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -102,11 +102,13 @@ def _read(root: Path, rel: str) -> str:
     return (root / rel).read_text(encoding="utf-8").strip()
 
 
-def main() -> int:
-    if len(sys.argv) < 2:
-        print(__doc__)
-        return 1
-    root = Path(sys.argv[1])
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="组装宏观分节报告")
+    parser.add_argument("root", help="宏观分节草稿目录")
+    parser.add_argument("--output-dir", default=None)
+    parser.add_argument("--state-out-dir", default=None)
+    args = parser.parse_args(argv)
+    root = Path(args.root)
 
     required = [DECISION_REL] + [
         rel for _, items in (SPINE + MESO + APPENDIX) for _, rel, opt in items if not opt
@@ -123,7 +125,7 @@ def main() -> int:
 
     out = [f"# Macro Research Report: {root.name}\n",
            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  ",
-           "_Engine: Claude (in-session), zero paid LLM API. "
+           f"_Engine: {ws.ENGINE.title()} subscription session, zero paid LLM API. "
            "Data: FRED + akshare + yfinance._\n"]
 
     out.append("\n---\n\n" + SPINE_BANNER + "\n")
@@ -147,7 +149,11 @@ def main() -> int:
             out.append(_anchored("###", name, _read(root, rel)))
 
     hhmm = datetime.now().strftime("%H%M")
-    out_dir = ws.reports_root() / "macro" / root.name.replace("-", "")
+    out_dir = (
+        Path(args.output_dir)
+        if args.output_dir is not None
+        else ws.reports_root() / "macro" / root.name.replace("-", "")
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{hhmm}_summary.md"
     out_path.write_text("\n".join(out), encoding="utf-8")
@@ -155,8 +161,9 @@ def main() -> int:
 
     try:   # Phase 2:full 档机读摘要 macro_state.json(宏观 lite / scan Stage 0 消费;失败不阻报告)
         from autoresearch.macro.state import write_macro_state
-        st = write_macro_state(root, report_path=out_path, out_dir=root.parent)
-        print(f"[macro_state] {root.parent / 'macro_state.json'}(as_of {st['as_of']} · "
+        state_out = Path(args.state_out_dir) if args.state_out_dir else root.parent
+        st = write_macro_state(root, report_path=out_path, out_dir=state_out)
+        print(f"[macro_state] {state_out / 'macro_state.json'}(as_of {st['as_of']} · "
               f"跨资产 {len(st['cross_asset'])} 行 · A股行业 {len(st['ashare_sectors'])} 行 · "
               f"regime_at_run {st['regime_at_run'] or '未记'})")
     except Exception as e:  # noqa: BLE001

@@ -10,6 +10,7 @@ free vendors (yfinance keyless; FRED needs FRED_API_KEY; akshare optional).
 Usage:
     python -m autoresearch.macro.harvest [YYYY-MM-DD]
 """
+import argparse
 import json
 import os
 import re
@@ -777,12 +778,16 @@ def write_global_tape_json(out_dir: Path | str, tape: dict, cal: dict) -> Path:
     return path
 
 
-def main() -> int:
-    if any(a in ("-h", "--help") for a in sys.argv[1:]):
-        print(__doc__)
-        print("用法: python -m autoresearch.macro.harvest [YYYY-MM-DD]  (日期缺省=今天)")
-        return 0
-    trade_date = sys.argv[1] if len(sys.argv) > 1 else date.today().isoformat()
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="宏观确定性数据采集")
+    parser.add_argument("date", nargs="?", help="分析日 YYYY-MM-DD(缺省=今天)")
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="显式工作目录(session adapter 使用);缺省保持历史 context 宏观目录",
+    )
+    args = parser.parse_args(argv)
+    trade_date = args.date or date.today().isoformat()
     datetime.strptime(trade_date, "%Y-%m-%d")  # validate / fail loud on bad date
     set_config(DEFAULT_CONFIG)
     end = trade_date
@@ -819,7 +824,11 @@ def main() -> int:
     parts.append(_section("A股中观 (北向/两融/行业资金/涨停/指数估值 — tushare 优先;akshare 补龙虎榜游资)",
                           meso_ashare_best, end))
 
-    out_dir = ROOT / ws.context_root() / "macro" / trade_date
+    out_dir = (
+        Path(args.output_dir)
+        if args.output_dir is not None
+        else ROOT / ws.context_root() / "macro" / trade_date
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "data.md"
     out_path.write_text("".join(parts), encoding="utf-8")

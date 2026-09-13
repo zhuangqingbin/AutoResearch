@@ -12,6 +12,7 @@ from autoresearch.session_agent.roles import role_stage
 
 _PUBLISHERS: dict[str, str | Callable[[object], object]] = {
     "stock-research": "autoresearch.session_agent.workflows.stock:publish_stock",
+    "macro-research": "autoresearch.session_agent.workflows.macro:publish_macro",
 }
 
 
