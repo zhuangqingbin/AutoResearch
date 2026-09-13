@@ -44,6 +44,10 @@ def render_request(task: dict, host_profile: dict) -> dict:
     role = get_role(task["role"])
     if role["output_contract"] != task["expected_output_contract"]:
         raise ValueError("role output contract does not match task")
+    if "WEB" in role["tool_policy"].split("_") and not (
+        host_profile["web_search"] is True or host_profile["web_fetch"] is True
+    ):
+        raise HostCapabilityError("web capability is unavailable or unknown")
     return {
         "schema_version": 1,
         "task_id": task["task_id"],

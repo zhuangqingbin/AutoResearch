@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from datetime import date, datetime
+from urllib.parse import urlparse
 
 from autoresearch.agents.utils.rating import RATINGS_5_TIER, parse_rating
 from autoresearch.contracts.agent_output import L4_CARD
@@ -18,6 +20,75 @@ class DomainValidationError(RuntimeError):
 _PROPOSAL_RE = re.compile(L4_CARD.field("proposal").pattern, re.IGNORECASE)
 _P4_RE = re.compile(L4_CARD.field("p4_intent").pattern)
 _EARLY_RE = re.compile(L4_CARD.field("early_stop").pattern)
+
+_NEWS_EVIDENCE_FIELDS = frozenset({
+    "schema_version", "analysis_date", "title", "claim", "source_url",
+    "source_tier", "published_at", "available_at", "canonical_status",
+    "canonical_url",
+})
+_SOURCE_TIERS = frozenset({"T1", "T2", "T3", "T4"})
+_CANONICAL_STATES = frozenset({"FOLLOWED", "NOT_REQUIRED", "MISSING"})
+
+
+def _http_url(value: object, field: str, *, optional: bool = False) -> str | None:
+    if value is None and optional:
+        return None
+    if type(value) is not str or not value:
+        raise ValueError(f"{field} required")
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"invalid {field}")
+    return value
+
+
+def _evidence_time(value: object, field: str, analysis_date: date) -> str | None:
+    if value is None:
+        return None
+    if type(value) is not str or not value:
+        raise ValueError(f"invalid {field}")
+    try:
+        observed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"invalid {field}") from exc
+    if observed.tzinfo is None:
+        raise ValueError(f"{field} requires timezone")
+    if observed.date() > analysis_date:
+        raise ValueError(f"future {field} is not admissible evidence")
+    return value
+
+
+def validate_news_evidence(value: dict, *, analysis_date: str) -> dict:
+    """Validate one web/news claim without inventing unavailable time metadata."""
+    from autoresearch.contracts.session_task import require_exact_fields, require_version
+
+    require_exact_fields(value, _NEWS_EVIDENCE_FIELDS)
+    require_version(value["schema_version"])
+    try:
+        cutoff = date.fromisoformat(analysis_date)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid analysis_date") from exc
+    if value["analysis_date"] != analysis_date:
+        raise ValueError("evidence analysis_date mismatch")
+    for field in ("title", "claim"):
+        if type(value[field]) is not str or not value[field].strip():
+            raise ValueError(f"{field} required")
+    if value["source_tier"] not in _SOURCE_TIERS:
+        raise ValueError("invalid source_tier")
+    if value["canonical_status"] not in _CANONICAL_STATES:
+        raise ValueError("invalid canonical_status")
+    _http_url(value["source_url"], "source_url")
+    _http_url(value["canonical_url"], "canonical_url", optional=True)
+    _evidence_time(value["published_at"], "published_at", cutoff)
+    _evidence_time(value["available_at"], "available_at", cutoff)
+    if value["source_tier"] == "T4" and (
+        value["canonical_status"] != "FOLLOWED" or value["canonical_url"] is None
+    ):
+        raise ValueError("T4 aggregator evidence requires a canonical follow-up")
+    if value["canonical_status"] == "FOLLOWED" and value["canonical_url"] is None:
+        raise ValueError("canonical FOLLOWED status requires canonical_url")
+    if value["canonical_status"] != "FOLLOWED" and value["canonical_url"] is not None:
+        raise ValueError("canonical_url requires FOLLOWED status")
+    return dict(value)
 
 
 def _stock_lite(handle, submission: dict, task: dict) -> None:
@@ -213,6 +284,7 @@ def validate_submission_outputs(
 
 __all__ = [
     "DomainValidationError",
+    "validate_news_evidence",
     "validate_registered_contract",
     "validate_submission_outputs",
 ]

@@ -262,12 +262,12 @@ uv run --no-sync python -m pytest -q tests/session_agent/test_dossier.py tests/s
 | research | 读取迁移效率与契约评估结果 | 自动校准、promote、权重回注 |
 | ops | 明确命令下的原预热和备份 | 自动删除备份、无限周期运行 |
 
-- [ ] 对当前公开 CLI 做调用者核查，目录说明标“保留独立 CLI”或“进入 agent operation”，不能所有模块一键暴露。
-- [ ] 原生 WebSearch/WebFetch 的结果必须有分析日、来源层级、canonical 跟进状态；任务包中网页文本不能改变角色规则和工具权限。
-- [ ] 来源数据缺少发布时间精度时保持未知，不假定盘前已知。未来数据测试必须基于真实 available-at 字段或明确缺失。
-- [ ] 数据、工具参数和报告中不输出 .env、token、订阅凭据；身份快照继续使用原脱敏逻辑。
-- [ ] 为每个工作流确认所有 operation 都在工具目录中有唯一实现与 validator。
-- [ ] 运行研究工作流集成回归；未连接模块也需在 catalog 说明保留原因，避免“整个项目迁移”遗漏边缘入口。
+- [x] 对当前公开 CLI 做调用者核查，目录说明标“保留独立 CLI”或“进入 agent operation”，不能所有模块一键暴露。
+- [x] 原生 WebSearch/WebFetch 的结果必须有分析日、来源层级、canonical 跟进状态；任务包中网页文本不能改变角色规则和工具权限。
+- [x] 来源数据缺少发布时间精度时保持未知，不假定盘前已知。未来数据测试必须基于真实 available-at 字段或明确缺失。
+- [x] 数据、工具参数和报告中不输出 .env、token、订阅凭据；身份快照继续使用原脱敏逻辑。
+- [x] 为每个工作流确认所有 operation 都在工具目录中有唯一实现与 validator。
+- [x] 运行研究工作流集成回归；未连接模块也需在 catalog 说明保留原因，避免“整个项目迁移”遗漏边缘入口。
 
 ~~~bash
 uv run --no-sync python -m pytest -q tests/session_agent/test_tool_boundaries.py tests/session_agent/test_news_evidence.py tests/session_agent/test_stock_lite.py tests/session_agent/test_stock_full.py tests/session_agent/test_macro.py tests/session_agent/test_sector.py tests/session_agent/test_dossier.py tests/contracts/test_layering.py
