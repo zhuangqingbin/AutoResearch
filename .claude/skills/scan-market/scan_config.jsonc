@@ -217,5 +217,19 @@
   // 回滚杆 = 本键改回 "finalists"(**只回滚候选池与排序**;A2 的 UW/SELL 硬门对两个池都
   //   生效,要连它一起回滚得改 relative_buy.py 的两个 frozenset,那是显式代码改动)。
   "relative_buy": { "mode": "active", "exclude_pinned": true, "activate_date": "2026-08-19",
-                    "pool": "composite" }
+                    "pool": "composite" },
+
+  // ── 现场重建 · transcript 绑定(2026-09-12 scene-reconstruction Task 4)──
+  // 【生效点】autoresearch/scan/post_run.publish_run_observation(决策校验完成之后、
+  //   retain 镜像 staging 之前、capsule 冻结之前调 transcript_binder.safe_bind_run)→
+  //   写 `_transcript_bindings.json`(staging,observe 执行时恒有此产物)。
+  // bind_transcripts: 默认 true = 尝试把本 run 的研究 agent 实际读/搜/写过什么绑定进
+  //   capsule(每个已知期望一行:BOUND/UNVERIFIED_BY_PRODUCT/AMBIGUOUS/GONE/ERROR)。
+  //   关掉(false)或没有 active run 时,仍会写一份 `enabled:false` + 原因的报告,不清除
+  //   任何已有证据;单条绑定冲突/源不可读只降级那一条(报告标 ERROR),不挡业务发布。
+  //   **注意**:一条 BOUND 只说明"证据载体找到了",不说明"研究做完整了"——分母可能是
+  //   产物推导的下界,区段可能只是 partial;完整性结论仍以 capsule 自己的 completeness
+  //   校验为准,不能用这份报告的 enabled/BOUND 替代。
+  // 回滚杆 = 本键改回 false(只停止**新增**采集,已落盘的绑定/快照不受影响)。
+  "retention": { "bind_transcripts": true }
 }

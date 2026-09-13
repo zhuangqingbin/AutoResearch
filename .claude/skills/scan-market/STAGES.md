@@ -240,6 +240,22 @@ appendix 目标 20KB / warn 24KB。08-26 真 staging 离线重渲实测 **27,008
   事后找回的证据走**叠加层** `_repairs/<run_id>/revision-N/`,base root 永不变动。
   Codex transcript **只认显式绑定**(`capsule bind-transcript`),候选 0 个写 `GONE`、多个写 `AMBIGUOUS`,
   **禁止按最新 mtime 猜**;计量走 `usage_harvest --engine codex --run-id`,量不到写 `UNMEASURED`(不是 `$0`)。
+  **2026-09-12 起(scene-reconstruction Task 4)这条绑定真正接进了生产**(此前 `capsule bind-transcript`
+  只有 `analyze/runctl.py` 一个调用者,scan 路零调用,每条 invocation 恒读 `GONE`):`post_run
+  publish_run_observation` 在决策校验(相对 BUY 现算/比对)完成之后、`retain` 镜像 staging 之前、capsule
+  冻结之前,调 `autoresearch.scan.transcript_binder.safe_bind_run`——按 `agent_expectations` 算出的每个
+  已知期望(AGENT 事件/TASK 事件/产物回退三路合并)配真实候选,写五态之一
+  (`BOUND`/`UNVERIFIED_BY_PRODUCT`/`AMBIGUOUS`/`GONE`/`ERROR`)进 `_transcript_bindings.json`
+  (staging,`retention.bind_transcripts` 开关,默认 true,见 SKILL.md 配置表)。**逐条绑定失败都有
+  账**——单条冲突(同一 invocation 已绑定过一份不同来源)或源不可读,只把那一行标 `ERROR` 并留原因,
+  不阻断其余票、不阻断业务发布;整场故障(期望集合读不动、报告写不进去)走既有证据降级通道 +
+  stderr,报告仍标 `enabled:true, status:"ERROR"`,不会安静地报成"证据完整"。开关关闭或没有 active
+  run 时同样写一份 `enabled:false` + 原因的报告,不清除任何已有证据。**一条 `BOUND` 不是研究完整的
+  证明**:它只说明这段证据载体被找到并归档了,分母可能是产物推导的下界(`denominator_quality=
+  lower_bound`),区段可能只是 `partial`/`unknown`;完整性结论仍以 capsule 自己的
+  `completeness_ok`/`materialize_agent_index` 为准,不能拿这份报告的 `enabled`/`BOUND` 直接当"证据
+  完好"或"研究做完整了"。CLI:`python -m autoresearch.scan.transcript_binder --run-id <contract_run_id>`
+  (staging 取自 run handle 自身,不在日期目录里猜最后一份)。
 - **现场留存**(`scan/retention.py`,2026-08-26,**已降为兼容路径**:capsule 在场时它的 MANIFEST 绿灯只代表完好性,不再是完整性结论):发布收尾 + `post_run observe` 各跑一次 `retain()` → `trace/staging/`(**整目录镜像** staging,含子目录)+ `trace/inputs/{slim,sector_packs,prompts,temperature_row}`(staging 之外的输入:逐票 slim/深核、行业 pack、agent def/playbook/config 本体、当日温度计行)+ `trace/transcripts/*.jsonl.gz`(判断腿 subagent 推理链,≈1.3MB/run)+ `trace/lake_manifest.json`(窗口内湖指纹,~1s)+ `trace/MANIFEST.sha256`。**判据:run 目录自足到 staging 可弃**(staging 按数据日键,同日重跑原地覆盖 —— 实测 64 个已发布 run 只剩 49 个 staging)。**必须是发布的最后一步**:早一行就镜像到半成品。核验 `python -m autoresearch.scan.retention verify <run_dir>`;链路复盘 `python -m autoresearch.scan.chain_view <run_id> <code>`。
 - **run_contract v2**:加 `git_dirty`/`dirty_paths`/`prompt_hashes` —— `git_sha` 只说 HEAD 在哪,而 **agent def 未提交也会生效**(会话启动装载工作树那份)。v1 契约仍可读(`_hash_payload` 按 `schema_version` 排除 v2 三键,历史 run 身份不丢)。
 - **结果账本**(`scan/outcome.py`,**只记不学**):prelude 的 `outcome_fill` 步逐日回填已发布 run 的推荐票事后读数 → `$RPT/scan/_ledger/outcome/<run_id>.json` + `_ledger/recommendations.csv`。口径与 `research.edge_census` 逐字同源(同一 `forward_returns`/`entry_tradable`/`GAP_CLIP`),两边可直接对表。**必读两列**:`mode`(shadow 期的 BUY 明写「不执行」)与 `src`(`shared` = 读自共享 staging,未必是本 run 那份)。消费者只有 `chain_view` ⑩ 段与汇总屏一行;**不进 brief、不喂任何 agent、不改任何参数**。落 `_ledger/` 而非 run 目录内,是因为 run 目录刚立了「发布后不再变」的 MANIFEST 不变量。

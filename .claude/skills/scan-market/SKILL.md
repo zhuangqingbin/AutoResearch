@@ -54,6 +54,7 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
 | 精排 | `l3.composite_seat` | enabled·m | `scan/l3/merge.composite_seat_cfg` → ① `write_finalists` 的 `inject_composite_seats`(守卫⑨:当日 L2 composite 最高的 m 只强制进 finalists,`guard=composite_seat`)② `l3/prompt.prepare_l3_table` → `triage` 的 ①b 强留(让 l3-rank 真判到它们)。回滚 = `enabled:false` |
 | 收尾 | `relative_buy.pool` | finalists·composite | `relative_buy.configured_pool` → `post_run.publish_run_observation` → `build_decision(pool=…)`。`composite` = BUY 只在守卫⑨ 的证据席里选、按 composite 分排(2026-08-26 §3 路A)。回滚 = 改回 `finalists`(**只回滚候选池;A2 的 UW/SELL 硬门对两个池都生效**) |
 | 收尾 | `relative_buy` | mode·exclude_pinned·activate_date | `scan/post_run.py publish_run_observation` → `relative_buy.write_decision`/`verify_decision`(2026-08-19 裁决表 A1/A2:mode=active 正式接管 BUY、exclude_pinned=true 剔📌;**activate_date 自 2026-08-21 起无消费点** —— 原生效点 `learning/legacy_freeze` 随闭环删除,该键仅作转正日记录) |
+| 收尾 | `retention.bind_transcripts` | true/false(默认 true) | `scan/post_run.py publish_run_observation`(决策校验之后、`retain` 镜像 staging 之前)→ `transcript_binder.safe_bind_run`,把本 run 研究 agent 实际读/搜/写过什么绑定进 capsule。**逐条绑定失败都有账**(单条冲突/源不可读只把那一行标 ERROR 并留原因,不挡其余票、不挡业务发布);关掉或无 active run 时仍写一份 `enabled:false`+原因的 `_transcript_bindings.json`,不清除已有证据。**一条 BOUND 不是研究完整的证明**——分母可能是产物推导的下界,区段可能只是 partial,完整性结论仍看 capsule 自己的 completeness 校验,不能拿这份报告的 enabled/BOUND 直接当"证据完好"。回滚 = 改回 `false`(只停止新增采集) |
 
 **防漂移铁律:**
 1. **白名单外的键 load 即 raise**(`user_config.py`)——写错键名当场炸,不静默失效;错型同样 raise(`_KNOB_TYPES`)。
