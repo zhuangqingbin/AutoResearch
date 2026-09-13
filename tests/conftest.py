@@ -81,7 +81,7 @@ def _isolate_degradation_ledger():
     `pytest tests/trace tests/analyze` → `test_assemble_writes_manifest_v2_fields`
     断言 `manifest["degradations"] == 0` 却拿到 **22** —— 那 22 条是
     `tests/trace/test_finalization.py` 里每一趟 finalize 经
-    `capsule._resolve_run_mode → _degrade_evidence` 记下的 `capsule.run_mode` 降级。
+    `capsule.resolve_run_mode → _degrade_evidence` 记下的 `capsule.run_mode` 降级。
     单独跑 `tests/analyze` 永远是绿的,所以它伪装成「偶发」。
 
     修在这里而不是在受害者那边加防御:**受害者不止一个**(`tests/scan` 同样能触发),

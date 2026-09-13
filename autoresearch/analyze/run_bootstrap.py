@@ -10,7 +10,7 @@ task: `.superpowers/sdd/2026-08-31-stock-research-p0-p1/task-13-brief.md`。
 与 scan 的差别只有「配置是什么」:scan 读 `scan_config.jsonc`(几十个 knob),
 单票研究的全部可变量就是**档 + 标的**(外加同业/资产类型/中文简称三个取数参数),
 所以这里的 config echo 是一个小白名单 dict,直接冻进 `RunContract.user_config` ——
-`capsule._resolve_run_mode` 就是从这个 echo 读 `mode` 的(它没有 `run_mode.json`)。
+`capsule.resolve_run_mode` 就是从这个 echo 读 `mode` 的(它没有 `run_mode.json`)。
 """
 from __future__ import annotations
 
