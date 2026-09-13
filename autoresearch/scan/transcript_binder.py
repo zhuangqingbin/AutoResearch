@@ -1062,7 +1062,23 @@ def assign(
     unexpected: list[dict] = []
     for idx, candidate in enumerate(accepted):
         for rel in sorted(set(candidate_products[idx]) - known_products):
-            unexpected.append({"path": str(candidate.path), "product": rel})
+            # `artifact_sha256` (2026-09-13, Task 8 fix round 1): the winning
+            # write's own declared content hash, when one exists (never for a
+            # diff-only Edit/apply_patch, per Task 2's own artifact-digest
+            # rule) -- the most precise available "identity of the thing
+            # found", letting a caller that sees this same product from a
+            # *different* candidate (a different source's copy of the same
+            # underlying session) recognize it as the same real fact rather
+            # than a second, distinct one. Reused by `transcript_binder.
+            # offline_index`'s cross-source de-duplication; never computed a
+            # second, independent way there.
+            ops = candidate_products[idx][rel]
+            artifact_sha256 = next(
+                (op.artifact.sha256 for op in reversed(ops) if op.artifact is not None), None
+            )
+            unexpected.append(
+                {"path": str(candidate.path), "product": rel, "artifact_sha256": artifact_sha256}
+            )
 
     denom = (
         "lower_bound"
@@ -2137,8 +2153,14 @@ def offline_index(
             merged_rows[inv_id] = row
             if row["binding_status"] != "GONE":
                 source_of[inv_id] = source_label
-        all_unexpected.extend(result["unexpected"])
-        all_unmatched.extend(result["unmatched"])
+        # Tagged with the source that found it here, at collection time --
+        # `_dedupe_found` (fix round 1, Finding 1) needs to know every source
+        # that independently reported the same real fact before it can be
+        # collapsed into one entry with a `sources` list, and this is the one
+        # place that information exists (each `assign()` call only ever sees
+        # its own source's candidate pool, never the others').
+        all_unexpected.extend({**item, "_source": source_label} for item in result["unexpected"])
+        all_unmatched.extend({**item, "_source": source_label} for item in result["unmatched"])
 
     # Source 1: this run's own retention-archived transcripts.
     archived_candidates, archived_snapshots, archived_errors = _source1_archived_candidates(
@@ -2250,9 +2272,12 @@ def offline_index(
         if row.get("raw"):
             row["raw"] = row["raw"].replace("{revision}", revision_id)
 
+    deduped_unexpected = _dedupe_unexpected(all_unexpected)
+    deduped_unmatched = _dedupe_unmatched(all_unmatched)
+
     coverage = _tally_coverage(
         {row["invocation_id"]: row for row in ledger_rows},
-        unexpected=len(all_unexpected), denominator_quality=(
+        unexpected=len(deduped_unexpected), denominator_quality=(
             "lower_bound"
             if any(exp.get("denominator_quality") == "lower_bound" for exp in expectations.values())
             else "full"
@@ -2276,12 +2301,77 @@ def offline_index(
         "computed_at": _now_iso(),
         "invocations": ledger_rows,
         "coverage": coverage,
-        "unexpected": all_unexpected,
-        "unmatched": all_unmatched,
+        "unexpected": deduped_unexpected,
+        "unmatched": deduped_unmatched,
         "errors": all_errors,
     }
     atomic_write_json(index_root / f"{identity['report_run_id']}.json", top_level)
     return top_level
+
+
+def _dedupe_unexpected(tagged_items: Sequence[Mapping[str, object]]) -> list[dict]:
+    """Collapse `unexpected` entries found by more than one offline source
+    into one, keyed by **the identity of the thing found**, never by which
+    source found it (fix round 1, Finding 1 -- Critical).
+
+    Identity is the write's own declared content hash (`artifact_sha256`,
+    already computed once by `assign()` itself, never a second, independent
+    hash here) paired with the product path it targeted -- two sources
+    reporting the *same* content at the *same* unregistered path (the real,
+    verified case: an archived copy and the still-live original of one
+    session) are the same fact; falls back to the product path alone only
+    when no content hash could be derived at all (a diff-only write with no
+    full postimage -- rare, and strictly a degradation of precision, never
+    of correctness, since two genuinely different writes sharing an
+    unregistered path is already an edge case this repo has no other way to
+    distinguish).
+
+    Every source that independently reported this same identity is recorded
+    in the surviving entry's own `sources` list (sorted, deduped) -- the
+    "record which sources corroborated it, don't discard that" half of the
+    finding -- rather than the fact of corroboration being silently lost the
+    moment the duplicate is dropped.
+    """
+    groups: dict[tuple, dict] = {}
+    order: list[tuple] = []
+    for item in tagged_items:
+        digest = item.get("artifact_sha256")
+        key = ("hash", digest, item["product"]) if digest else ("product", item["product"])
+        if key not in groups:
+            groups[key] = {
+                "path": item["path"], "product": item["product"],
+                "artifact_sha256": digest, "sources": [],
+            }
+            order.append(key)
+        sources = groups[key]["sources"]
+        source = item["_source"]
+        if source not in sources:
+            sources.append(source)
+    return [{**groups[key], "sources": sorted(groups[key]["sources"])} for key in order]
+
+
+def _dedupe_unmatched(tagged_items: Sequence[Mapping[str, object]]) -> list[dict]:
+    """The `unmatched` analogue of `_dedupe_unexpected` -- these entries carry
+    no content hash (a candidate rejected on engine/session_ref *before* any
+    write is even scored has nothing to hash), so identity here is the
+    candidate's own file basename plus its exact rejection reasons: two
+    sources reporting rejection of a file with the *same name* for the
+    *same reasons* is the same real fact, not two distinct ones. Same
+    `sources` corroboration recording as `_dedupe_unexpected`.
+    """
+    groups: dict[tuple, dict] = {}
+    order: list[tuple] = []
+    for item in tagged_items:
+        reasons = tuple(item["reasons"])
+        key = (Path(str(item["path"])).name, tuple(sorted(reasons)))
+        if key not in groups:
+            groups[key] = {"path": item["path"], "reasons": reasons, "sources": []}
+            order.append(key)
+        sources = groups[key]["sources"]
+        source = item["_source"]
+        if source not in sources:
+            sources.append(source)
+    return [{**groups[key], "sources": sorted(groups[key]["sources"])} for key in order]
 
 
 def _publish_offline_revision(

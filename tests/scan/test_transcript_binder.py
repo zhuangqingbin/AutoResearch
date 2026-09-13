@@ -2297,3 +2297,300 @@ def test_source2_salvage_reads_a_pre_fan_out_blob_at_its_recorded_flat_path(
     assert len(candidates) == 1
     assert candidates[0].session_ref == "session-pre-fan-out"
     assert candidates[0].path == flat_blob_path.resolve()
+
+
+# ------------------------------------------------ fix round 1, Finding 1 (Critical)
+
+
+def test_h01_the_same_write_seen_by_two_sources_is_one_unexpected_entry(tmp_path, monkeypatch):
+    """Fix round 1, Finding 1 (Critical): the real `--offline` run against
+    `20260911-0912_1248` showed `coverage.unexpected == 16` when the true
+    count of *distinct* write events was 8 -- one l4-card retry and seven
+    sector-brief files, each counted once via its archived transcript
+    (source 1) and again via the identical file still live under
+    `~/.claude/projects/` (source 3). This fixture reproduces the mechanism
+    directly: an unregistered write (`scratch/extra.md`, matching no known
+    product selector) with the *same declared content* appears both in one
+    invocation's archived transcript and, independently, in the still-live
+    session file that resolves a *different*, still-GONE invocation --
+    exactly two sources each honestly reporting the same real fact.
+    `offline_index` must report it once, with both sources recorded as
+    having corroborated it."""
+    projects_root = _home_projects_root(monkeypatch, tmp_path)
+    session_ref = "session-dedupe"
+    handle = _begin_claude(tmp_path, monkeypatch, session_ref=session_ref)
+
+    d1 = _dispatch_agent(
+        handle, "AGENT_DISPATCHED", role="l4-card", subject="600110",
+        invocation_id="l4-card-600110-1", attempt=1,
+    )
+    c1 = _dispatch_agent(
+        handle, "AGENT_COMPLETED", role="l4-card", subject="600110",
+        invocation_id="l4-card-600110-1", attempt=1,
+    )
+    d2 = _dispatch_agent(
+        handle, "AGENT_DISPATCHED", role="l4-card", subject="600111",
+        invocation_id="l4-card-600111-1", attempt=1,
+    )
+    c2 = _dispatch_agent(
+        handle, "AGENT_COMPLETED", role="l4-card", subject="600111",
+        invocation_id="l4-card-600111-1", attempt=1,
+    )
+    card_110 = handle.staging / "details" / "600110.md"
+    card_111 = handle.staging / "details" / "600111.md"
+    for p in (card_110, card_111):
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("# 决策卡\n", encoding="utf-8")
+    shared_extra = handle.staging / "scratch" / "extra.md"
+    shared_extra.parent.mkdir(parents=True, exist_ok=True)
+    shared_content = "shared-unexpected-content"
+    capsule_mod.materialize_agent_index(handle.run_id)
+
+    run_dir = _freeze_run(tmp_path, handle, "20260827-0827_2030")
+    # Source 1: 600110's own archived transcript *also* wrote the same,
+    # unregistered `scratch/extra.md` -- a genuine second product this one
+    # session happened to write, with no expectation naming it.
+    _write_archived_transcript(
+        run_dir, agent="l4-card", original_name="agent-dedupe110.jsonl",
+        rows=[
+            _claude_write_row("tool-1", card_110, ts=d1["ts"], msg_id="msg-1"),
+            _claude_result_row("tool-1", ts=c1["ts"]),
+            _claude_write_row(
+                "tool-2", shared_extra, ts=d1["ts"], msg_id="msg-2", content=shared_content
+            ),
+            _claude_result_row("tool-2", ts=c1["ts"]),
+        ],
+    )
+    # 600111 has no archived transcript at all -- still GONE after source 1,
+    # forcing source 3 (the still-live harness session) to be consulted.
+    # That live session's own file resolves 600111 *and* independently
+    # contains the exact same `scratch/extra.md` write, byte-for-byte.
+    live_path = _claude_subagent_path(projects_root, session_ref, "dedupe111")
+    _write_claude_rows(
+        live_path,
+        [
+            _claude_write_row("tool-3", card_111, ts=d2["ts"], msg_id="msg-3"),
+            _claude_result_row("tool-3", ts=c2["ts"]),
+            _claude_write_row(
+                "tool-4", shared_extra, ts=d2["ts"], msg_id="msg-4", content=shared_content
+            ),
+            _claude_result_row("tool-4", ts=c2["ts"]),
+        ],
+    )
+
+    result = tb.offline_index(run_dir, sessions_root=projects_root)
+
+    row_110 = next(r for r in result["invocations"] if r["invocation_id"] == "l4-card-600110-1")
+    row_111 = next(r for r in result["invocations"] if r["invocation_id"] == "l4-card-600111-1")
+    assert row_110["binding_status"] == "BOUND"
+    assert row_111["binding_status"] == "BOUND"
+    assert row_111["offline_source"] == "harness_live"  # sanity: source 3 really ran
+
+    matches = [u for u in result["unexpected"] if u["product"] == "scratch/extra.md"]
+    assert len(matches) == 1, f"expected exactly one deduped entry, got {result['unexpected']}"
+    assert sorted(matches[0]["sources"]) == ["archived_transcript", "harness_live"]
+    assert result["coverage"]["unexpected"] == 1
+    assert matches[0]["artifact_sha256"] is not None
+
+
+# ------------------------------------------------ fix round 1, Findings 3-5 (coverage)
+
+
+def test_archived_transcript_index_unrecognized_schema_is_reported_not_treated_as_absent(
+    tmp_path,
+):
+    """Finding 3, site 1: ruling 7's "unknown schema version is not an empty
+    success" -- `_read_archived_transcript_rows` must return an explicit skip
+    reason distinguishing "this index exists but I don't understand its
+    schema" from "no index file exists at all", never collapsing the two."""
+    run_dir = tmp_path / "reports_claude" / "scan" / "20260827-0827_1400"
+    archive_dir = run_dir / "trace" / "transcripts"
+    archive_dir.mkdir(parents=True)
+    (archive_dir / "_index.json").write_text(
+        json.dumps({"schema_version": 999, "agents": [], "transcripts": []}), encoding="utf-8"
+    )
+
+    rows, reason = tb._read_archived_transcript_rows(run_dir)
+
+    assert rows == []
+    assert reason is not None
+    assert "schema_version" in reason and "999" in reason
+
+    # And the absent-index case stays genuinely distinct (empty reason).
+    absent_run = tmp_path / "reports_claude" / "scan" / "20260827-0827_1401"
+    (absent_run / "trace" / "transcripts").mkdir(parents=True)
+    absent_rows, absent_reason = tb._read_archived_transcript_rows(absent_run)
+    assert absent_rows == []
+    assert absent_reason is None
+
+
+def test_source1_reports_this_schema_error_without_hiding_it_as_absent(tmp_path, monkeypatch):
+    """Finding 3, site 1, at the `offline_index` level: an unrecognized
+    archived-transcript-index schema_version must show up in `errors`, and
+    must not silently make `offline_index` behave as if the archive were
+    simply missing for every other, otherwise-resolvable invocation."""
+    handle = _begin_claude(tmp_path, monkeypatch, session_ref="session-badschema1")
+    _dispatch_agent(
+        handle, "AGENT_DISPATCHED", role="l4-card", subject="600120",
+        invocation_id="l4-card-600120-1", attempt=1,
+    )
+    _dispatch_agent(
+        handle, "AGENT_COMPLETED", role="l4-card", subject="600120",
+        invocation_id="l4-card-600120-1", attempt=1,
+    )
+    capsule_mod.materialize_agent_index(handle.run_id)
+    run_dir = _freeze_run(tmp_path, handle, "20260827-0827_1410")
+    archive_dir = run_dir / "trace" / "transcripts"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    (archive_dir / "_index.json").write_text(
+        json.dumps({"schema_version": 999, "agents": [], "transcripts": []}), encoding="utf-8"
+    )
+
+    result = tb.offline_index(run_dir, sessions_root=tmp_path / "no-sessions")
+
+    assert any(
+        e.get("source") == "archived_transcript" and "schema_version" in str(e.get("error"))
+        for e in result["errors"]
+    )
+    row = next(r for r in result["invocations"] if r["invocation_id"] == "l4-card-600120-1")
+    assert row["binding_status"] == "GONE"  # honestly absent, not crashed
+
+
+def test_source2_salvage_index_unrecognized_schema_is_reported_not_treated_as_absent(
+    tmp_path, monkeypatch,
+):
+    """Finding 3, site 2: the same rule for `_source2_salvage_candidates`'s
+    own `provenance.json` schema check."""
+    _redirect_claude(monkeypatch, tmp_path)
+    run_dir = tmp_path / "reports_claude" / "scan" / "20260827-0827_1420"
+    run_dir.mkdir(parents=True)
+    salvage_dir = tmp_path / "_ledger" / "salvage" / run_dir.name
+    salvage_dir.mkdir(parents=True)
+    (salvage_dir / "provenance.json").write_text(
+        json.dumps({"schema_version": 999, "files": []}), encoding="utf-8"
+    )
+
+    candidates, snapshots, errors = tb._source2_salvage_candidates(
+        run_dir, engine="claude", ledger_root=tmp_path / "_ledger",
+    )
+
+    assert candidates == ()
+    assert len(errors) == 1
+    assert "schema_version" in errors[0]["error"] and "999" in errors[0]["error"]
+
+
+def test_source1_one_unreadable_archive_does_not_hide_the_others(tmp_path, monkeypatch):
+    """Finding 4: source 1's own per-file catch
+    (`_source1_archived_candidates`'s ``except Exception`` around one
+    archive's read+decompress) is untested and the real run produced zero
+    archived-transcript errors -- fully unexercised. This fixture makes one
+    archived file genuinely unreadable (not valid gzip) alongside one
+    genuinely good one, and proves the good one still indexes while the bad
+    one is reported, never silently dropped and never aborting the run."""
+    handle = _begin_claude(tmp_path, monkeypatch, session_ref="session-onebadarchive")
+    d = _dispatch_agent(
+        handle, "AGENT_DISPATCHED", role="l4-card", subject="600130",
+        invocation_id="l4-card-600130-1", attempt=1,
+    )
+    c = _dispatch_agent(
+        handle, "AGENT_COMPLETED", role="l4-card", subject="600130",
+        invocation_id="l4-card-600130-1", attempt=1,
+    )
+    _dispatch_agent(
+        handle, "AGENT_DISPATCHED", role="l4-card", subject="600131",
+        invocation_id="l4-card-600131-1", attempt=1,
+    )
+    _dispatch_agent(
+        handle, "AGENT_COMPLETED", role="l4-card", subject="600131",
+        invocation_id="l4-card-600131-1", attempt=1,
+    )
+    good_card = handle.staging / "details" / "600130.md"
+    good_card.parent.mkdir(parents=True, exist_ok=True)
+    good_card.write_text("# 600130 决策卡\n", encoding="utf-8")
+    capsule_mod.materialize_agent_index(handle.run_id)
+    run_dir = _freeze_run(tmp_path, handle, "20260827-0827_1430")
+    _write_archived_transcript(
+        run_dir, agent="l4-card", original_name="agent-good.jsonl",
+        rows=[
+            _claude_write_row("tool-1", good_card, ts=d["ts"], msg_id="msg-1"),
+            _claude_result_row("tool-1", ts=c["ts"]),
+        ],
+    )
+    # A second archived entry in the index, but its target file is corrupt
+    # (not valid gzip at all) -- a genuine unreadable archive, not a
+    # hypothetical.
+    archive_dir = run_dir / "trace" / "transcripts"
+    bad_path = archive_dir / "l4-card-agent-corrupt.jsonl.gz"
+    bad_path.write_bytes(b"this is not gzip data")
+    index_path = archive_dir / "_index.json"
+    doc = json.loads(index_path.read_text(encoding="utf-8"))
+    doc["transcripts"].append(
+        {"agent": "l4-card", "file": "agent-corrupt.jsonl", "status": "PRESENT",
+         "raw_bytes": 21, "gz_bytes": 21, "sha256": "0" * 64}
+    )
+    index_path.write_text(json.dumps(doc), encoding="utf-8")
+
+    result = tb.offline_index(run_dir, sessions_root=tmp_path / "no-sessions")
+
+    good_row = next(r for r in result["invocations"] if r["invocation_id"] == "l4-card-600130-1")
+    assert good_row["binding_status"] == "BOUND"
+    bad_row = next(r for r in result["invocations"] if r["invocation_id"] == "l4-card-600131-1")
+    assert bad_row["binding_status"] == "GONE"  # honestly absent -- the corrupt file proved nothing
+    assert any(
+        e.get("source") == "archived_transcript" and str(bad_path) in str(e.get("path"))
+        for e in result["errors"]
+    )
+
+
+def test_load_frozen_run_rejects_manifest_and_contract_run_id_disagreement(tmp_path, monkeypatch):
+    """Finding 5, branch 1: `manifest.json`'s `run_id` and
+    `trace/run_contract.json`'s own `run_id` disagreeing is a hard identity
+    failure -- this is exactly the check that stops a caller from indexing
+    under one run's name while actually reading another run's contract."""
+    _redirect_claude(monkeypatch, tmp_path)
+    run_dir = tmp_path / "reports_claude" / "scan" / "20260827-0827_1500"
+    (run_dir / "trace").mkdir(parents=True)
+    (run_dir / "trace" / "run_contract.json").write_text(
+        json.dumps({
+            "schema_version": 3, "run_id": "20260827T150000000000Z", "engine": "claude",
+            "run_kind": "scan-market", "analysis_date": "2026-08-27",
+            "workspace_path": str(tmp_path / "workspace"),
+        }),
+        encoding="utf-8",
+    )
+    (run_dir / "manifest.json").write_text(
+        json.dumps({"run_id": "20260827T999999000000Z", "analysis_date": "2026-08-27"}),
+        encoding="utf-8",
+    )
+    (run_dir / "capsule" / "events").mkdir(parents=True)
+    (run_dir / "capsule" / "events" / "events.jsonl").write_text("", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="identity mismatch"):
+        tb._load_frozen_run(run_dir)
+
+
+def test_load_frozen_run_rejects_a_contract_claiming_a_different_engine(tmp_path, monkeypatch):
+    """Finding 5, branch 2: a `run_contract.json` that internally claims a
+    different engine than the directory it lives under (`reports_claude/`)
+    is rejected outright -- defense in depth on top of the directory-root
+    check, refusing to trust the content's own claim over its location."""
+    _redirect_claude(monkeypatch, tmp_path)
+    run_dir = tmp_path / "reports_claude" / "scan" / "20260827-0827_1510"
+    (run_dir / "trace").mkdir(parents=True)
+    contract_run_id = "20260827T151000000000Z"
+    (run_dir / "trace" / "run_contract.json").write_text(
+        json.dumps({
+            "schema_version": 3, "run_id": contract_run_id, "engine": "codex",
+            "run_kind": "scan-market", "analysis_date": "2026-08-27",
+            "workspace_path": str(tmp_path / "workspace"),
+        }),
+        encoding="utf-8",
+    )
+    (run_dir / "manifest.json").write_text(
+        json.dumps({"run_id": contract_run_id, "analysis_date": "2026-08-27"}), encoding="utf-8"
+    )
+    (run_dir / "capsule" / "events").mkdir(parents=True)
+    (run_dir / "capsule" / "events" / "events.jsonl").write_text("", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="identity mismatch"):
+        tb._load_frozen_run(run_dir)
