@@ -4,7 +4,7 @@ import json
 import pandas as pd
 
 from autoresearch.common import workspace as ws
-from autoresearch.scan.gates import gate1, gate2, gate4
+from autoresearch.scan.gates import gate1, gate1_decide, gate2, gate4
 
 
 def test_gate1_flags_bad_codes(tmp_path):
@@ -34,6 +34,137 @@ def test_gate1_happy_path(tmp_path):
     assert r["ok"] is True
     assert isinstance(r["sentinel_level"], str)
     assert isinstance(r["l4_budget"], int)
+
+
+def test_gate1_decide_writes_full_mode_and_preserves_budget(tmp_path, monkeypatch):
+    from autoresearch.scan import gates, run_mode
+
+    monkeypatch.setattr(gates, "gate1", lambda _scan: {
+        "ok": True, "gate": "gate1", "reason": "ok", "sentinel_level": "full",
+        "sentinel_reason": "healthy", "l4_budget": 7, "l2_n": 200,
+    })
+    monkeypatch.setattr(run_mode, "pinned_from_contract", lambda _scan: ([], "h" * 64))
+    result = gate1_decide(tmp_path)
+    assert result["ok"] is True and result["l4_budget"] == 7
+    assert result["run_mode"]["mode"] == "FULL"
+    assert json.loads((tmp_path / "run_mode.json").read_text())["mode"] == "FULL"
+
+
+def test_gate1_decide_force_full_is_explicit(tmp_path, monkeypatch):
+    from autoresearch.scan import gates, run_mode
+
+    monkeypatch.setattr(gates, "gate1", lambda _scan: {
+        "ok": True, "gate": "gate1", "reason": "ok", "sentinel_level": "sentinel",
+        "sentinel_reason": "thin menu", "l4_budget": 3, "l2_n": 200,
+    })
+    monkeypatch.setattr(run_mode, "pinned_from_contract", lambda _scan: ([], None))
+    result = gate1_decide(tmp_path, force_full=True)
+    assert result["run_mode"]["mode"] == "FORCED_FULL"
+    assert result["run_mode"]["sentinel_reason"] == "thin menu"
+
+
+def test_gate1_decide_does_not_run_mode_after_gate_failure(tmp_path, monkeypatch):
+    from autoresearch.scan import gates, run_mode
+
+    monkeypatch.setattr(gates, "gate1", lambda _scan: {
+        "ok": False, "gate": "gate1", "reason": "bad L2",
+    })
+    monkeypatch.setattr(run_mode, "decide", lambda **_kw: (_ for _ in ()).throw(
+        AssertionError("run mode must not be decided after a failed gate")))
+    result = gate1_decide(tmp_path)
+    assert result == {"ok": False, "gate": "gate1", "reason": "bad L2"}
+    assert not (tmp_path / "run_mode.json").exists()
+
+
+def test_gate1_decide_fails_the_whole_gate_when_run_mode_cannot_be_written(
+    tmp_path, monkeypatch, capsys,
+):
+    """模式判定/落盘失败 = 整道 GATE1 FAILED(rc=1),不是"门过了、模式待定"。
+
+    合并后模式是 GATE1 这笔事务的一部分。若这里放行,workflow 会拿着一个**没落盘的**模式
+    往下跑:run_mode.json 缺席时 `gate4`/`assemble`/报告横幅一律按"不知道"处理,而流水线
+    却已经按某个猜测的模式跑完了 L3/L4 —— 账上与现场两张皮。
+    """
+    d = tmp_path / ws.scan_root() / "2026-07-28"
+    d.mkdir(parents=True)
+    pd.DataFrame({"code": ["000001", "000002"]}).to_csv(d / "L2_gbdt_top200.csv", index=False)
+    monkeypatch.chdir(tmp_path)
+    from autoresearch.scan import run_mode
+    from autoresearch.scan.gates import main
+    from autoresearch.scan.stage_result import load_stage_result
+
+    def _boom(*_a, **_kw):
+        raise OSError("Read-only file system")
+
+    monkeypatch.setattr(run_mode, "write", _boom)
+    rc = main(["gate1", "2026-07-28", "--decide-run-mode"])
+    legacy = json.loads(capsys.readouterr().out)
+    result = load_stage_result(d / "stage_results" / "gate1.json")
+
+    assert rc == 1 and legacy["ok"] is False
+    assert "run_mode" in legacy["reason"] and "Read-only file system" in legacy["reason"]
+    assert result.status == "FAILED" and result.error == legacy["reason"]
+    assert not (d / "run_mode.json").exists()
+
+
+def test_gate1_decide_cli_hands_run_mode_to_the_workflow_through_stage_metrics(
+    tmp_path, monkeypatch, capsys,
+):
+    """stage metrics 是 workflow 读模式的**唯一**路径(合并后不再有独立 run-mode 壳)。
+
+    这条线断了,scan-market.js 的 `RUN_MODES.includes(runMode)` 守卫会在每次真跑的 GATE1
+    之后硬停 —— 几十分钟 + 真金 token 之后才发现。
+    """
+    d = tmp_path / ws.scan_root() / "2026-07-28"
+    d.mkdir(parents=True)
+    pd.DataFrame({"code": ["000001", "000002"]}).to_csv(d / "L2_gbdt_top200.csv", index=False)
+    monkeypatch.chdir(tmp_path)
+    from autoresearch.scan.gates import main
+    from autoresearch.scan.run_mode import MODES
+    from autoresearch.scan.stage_result import load_stage_result
+
+    rc = main(["gate1", "2026-07-28", "--decide-run-mode"])
+    result = load_stage_result(d / "stage_results" / "gate1.json")
+
+    assert rc == 0 and result.status == "SUCCEEDED"
+    assert result.metrics["run_mode"]["mode"] in MODES
+    assert result.metrics["run_mode"]["mode"] == json.loads(
+        (d / "run_mode.json").read_text(encoding="utf-8"))["mode"]
+    # 判据随模式一起带回 —— 旧路径没传 `--sentinel-reason`,横幅一直印「判据:—」
+    assert "sentinel_reason" in result.metrics
+
+
+def test_gate1_cli_without_the_flag_does_not_decide_run_mode(tmp_path, monkeypatch, capsys):
+    """不带 `--decide-run-mode` 的 gate1 保持原样:只校验,不写模式(Codex 会话内仍这么调)。"""
+    d = tmp_path / ws.scan_root() / "2026-07-28"
+    d.mkdir(parents=True)
+    pd.DataFrame({"code": ["000001", "000002"]}).to_csv(d / "L2_gbdt_top200.csv", index=False)
+    monkeypatch.chdir(tmp_path)
+    from autoresearch.scan.gates import main
+    from autoresearch.scan.stage_result import load_stage_result
+
+    rc = main(["gate1", "2026-07-28"])
+    legacy = json.loads(capsys.readouterr().out)
+    assert rc == 0 and "run_mode" not in legacy
+    assert not (d / "run_mode.json").exists()
+    assert "run_mode" not in load_stage_result(d / "stage_results" / "gate1.json").metrics
+
+
+def test_run_mode_flags_are_refused_outside_gate1(tmp_path, monkeypatch):
+    """`--decide-run-mode` 只属于 gate1;`--force-full` 离开它就没有意义。
+
+    静默忽略比报错坏:调用方会以为模式已经判了。这两条 argparse 守卫没人测就会被顺手删掉。
+    """
+    import pytest
+
+    monkeypatch.chdir(tmp_path)
+    from autoresearch.scan.gates import main
+
+    for argv in (["gate2", "2026-07-28", "--decide-run-mode"],
+                 ["gate1", "2026-07-28", "--force-full"]):
+        with pytest.raises(SystemExit) as exc:
+            main(argv)
+        assert exc.value.code == 2                     # argparse 用法错误,不是门失败(rc=1)
 
 
 def test_gate2_ok_returns_finalists(tmp_path):
