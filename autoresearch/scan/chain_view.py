@@ -505,7 +505,7 @@ _EDIT_TOOL_NAMES = frozenset({"edit", "edit_file", "apply_patch", "notebookedit"
 
 
 def _hash_compare(ops_for_file: list[dict], on_disk_path: Path | None) -> tuple[str, str]:
-    """写入 hash 与当前发布版本核验(spec §3.2 + 本任务 bullet 5)——**同产物核验**
+    """写入 hash 与**核对锚点**字节核验(spec §3.2 + 本任务 bullet 5)——**同产物核验**
     (调用方保证只传同一产物自己的操作,intel 对 intel、卡对卡,不跨产物比较)。
 
     返回 `(state, detail)`;state ∈:
@@ -515,7 +515,7 @@ def _hash_compare(ops_for_file: list[dict], on_disk_path: Path | None) -> tuple[
     - `SUBSEQUENT_EDIT`   有完整后镜像可核对,但它**不是最后一次写入**——之后还发生过
       编辑(Edit/apply_patch 从不产出完整后镜像,spec §3.2),所以这次核对只能锚定在
       "最后一次留下完整后镜像"的那次写入,不是"最后一次写入";
-    - `MATCH`/`DIFFERS`   与当前发布版本字节核对的结果(在没有后续编辑时才是"最终态"
+    - `MATCH`/`DIFFERS`   与核对锚点字节核对的结果(在没有后续编辑时才是"最终态"
       本身的核对结果)。
 
     真实写入序列里,Write 后接 Edit 是**常态**(先落一版骨架,再改几处)——Edit 本身
@@ -537,18 +537,18 @@ def _hash_compare(ops_for_file: list[dict], on_disk_path: Path | None) -> tuple[
     has_later_edit = anchor_idx < len(writes) - 1
     artifact = writes[anchor_idx]["artifact"]
     if on_disk_path is None or not on_disk_path.is_file():
-        return "UNKNOWN", "当前发布版本文件缺失,无法核对"
+        return "UNKNOWN", "核对锚点文件缺失,无法核对"
     try:
         on_disk_sha = hashlib.sha256(on_disk_path.read_bytes()).hexdigest()
     except OSError:
-        return "UNKNOWN", "当前发布版本文件读取失败,无法核对"
+        return "UNKNOWN", "核对锚点文件读取失败,无法核对"
     matched = on_disk_sha == artifact["sha256"]
     if has_later_edit:
         return ("SUBSEQUENT_EDIT",
                "写入后又发生编辑,以最后一次完整后镜像为核对锚点,"
                + ("当前字节与该锚点一致" if matched else "当前字节与该锚点不同"))
-    return (("MATCH", "与当前发布版本字节一致") if matched else
-           ("DIFFERS", "与当前发布版本不一致(内容已变化,或经历过脱敏)"))
+    return (("MATCH", "与核对锚点字节一致") if matched else
+           ("DIFFERS", "与核对锚点不一致(内容已变化,或经历过脱敏)"))
 
 
 def _hash_compare_note(ops_for_file: list[dict], on_disk_path: Path | None) -> str:
@@ -827,10 +827,40 @@ def _sec_l4(src: Sources, code6: str, cache: _EvidenceCache) -> list[str]:
         if code6 in txt:
             card = cand
             break
-    card_hash_note = ""
-    if card is not None:
-        card_hash_note = f" · 写入核验:{_hash_compare_note(_ops_matching(card_ops, card.name), card)}"
-    out.append(f"- 发布卡:{src.rel(card)}{card_hash_note}")
+    # 写入核验的锚点必须是**经得起改名**的那一份(fix 2026-09-13,终审 finding 3)。
+    # l4-card 的写入操作记的是 staging 里的 `details/<code>.md`,而
+    # `publisher._publish_details` 发布时把它改名成**股票名**并在尾部追加情报附录
+    # (`publisher.py:170-178`)。按**发布名**去找写入操作(旧实现 `_ops_matching(
+    # card_ops, card.name)`)因此对每只票、每趟 run 都恒返回 UNKNOWN「未观察到对应
+    # 写入操作」——把"写入证据在,只是与发布副本不可直接比较"说成了"没有写入证据",
+    # 而 spec §3.2 对这两件事有不同的标签。实测 300750:写入回执
+    # `artifact.sha256=b11ec4e3…` 与 `trace/staging/details/300750.md` 逐字节相同,
+    # 发布副本 `details/宁德时代.md` 则是 68234b7b…/18773B(原卡 14547B + 附录)。
+    # 同一台机器在**没有**改名的 `_l4_intel_<code>.md` 上一直渲染 MATCH,证明机制本身
+    # 没坏,坏的只是拿来对名字的那个对象。
+    staged_card = src.find(f"details/{code6}.md")
+    card_writes = _ops_matching(card_ops, f"{code6}.md")
+    anchor, anchor_note = staged_card, "(锚点 %s,非发布副本)"
+    if anchor is None and card is not None and _ops_matching(card_ops, card.name):
+        # 发布副本自己就叫 `<code>.md`(`_safe_name` 回落到代码,或更早的形态):
+        # 它没被改名,本来就是可核对锚点——保持旧行为,不因为找不到镜像就退化。
+        anchor, card_writes = card, _ops_matching(card_ops, card.name)
+        anchor_note = "(锚点 %s)"
+    if anchor is not None:
+        note = (f" · 写入核验{anchor_note % src.rel(anchor)}:"
+                f"{_hash_compare_note(card_writes, anchor)}")
+    elif card_writes:
+        note = (f" · 写入核验:NOT_COMPARABLE(观察到对 `details/{code6}.md` 的写入,但"
+                "本 run 没留下同名 staging 镜像;发布副本经 publisher 改名 + 追加情报附录,"
+                "不能充当核对锚点 —— spec §3.2「不可直接比较」)")
+    elif card is not None:
+        note = f" · 写入核验:{_hash_compare_note([], None)}"
+    else:
+        note = ""
+    renamed = card is not None and card.name != f"{code6}.md"
+    rename_note = (f"(publisher 改名自 `details/{code6}.md`,尾部追加情报附录)"
+                   if renamed else "")
+    out.append(f"- 发布卡:{src.rel(card)}{rename_note}{note}")
     return out
 
 

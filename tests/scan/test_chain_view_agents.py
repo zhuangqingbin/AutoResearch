@@ -391,6 +391,66 @@ def test_o02_patch_diff_only_has_no_full_postimage_to_compare(tmp_path, monkeypa
     assert "NO_FULL_POSTIMAGE" in md
 
 
+def test_f3_published_card_renamed_by_publisher_still_verifies_against_staging(
+    tmp_path, monkeypatch,
+):
+    """Final-review F3 (MAJOR). `publisher._publish_details` publishes the L4
+    card **renamed to the stock name** and with an intel appendix appended
+    (`publisher.py:170-178`), while the l4-card transcript's write op names
+    `.../staging/details/<code>.md`. Matching the write op by the *published*
+    filename therefore found nothing for every card in every run and rendered
+    `写入核验:UNKNOWN(未观察到对应写入操作)` -- "no write evidence" where the
+    truth is "write evidence exists and verifies byte-for-byte against the
+    staging mirror" (spec §3.2 keeps those two apart).
+
+    Measured on the real 20260911 run, code 300750: the write op's
+    `artifact.sha256=b11ec4e3…` equals `trace/staging/details/300750.md` on
+    disk, while the published `details/宁德时代.md` is 68234b7b… / 18773 B vs
+    14547 B. This fixture reproduces exactly that shape.
+    """
+    monkeypatch.chdir(tmp_path)
+    run = _base_run(tmp_path)
+    body = f"# 决策卡 — {CODE} 天味食品\n正文".encode()
+    staged = run / "trace" / "staging" / "details" / f"{CODE}.md"
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    staged.write_bytes(body)
+    # The published copy: renamed to the stock name *and* appended to, exactly
+    # what `_publish_details` leaves behind -- so it can never byte-match.
+    published = run / "details" / "天味食品.md"
+    published.write_bytes(body + "\n\n## 情报附录\n...".encode())
+
+    _capsule_index(run, [_row("l4-card-603317")])
+    _capsule_normalized(run, "l4-card-603317",
+                        operations=[_write_op("c1", str(staged), body)])
+
+    md = chain_view.render(run, CODE)
+    assert "发布卡:details/天味食品.md" in md
+    assert "写入核验:UNKNOWN" not in md          # the false negative this fixes
+    assert "写入核验(锚点 trace/staging/details/603317.md,非发布副本):MATCH" in md
+    # And the reader is told why the published copy is not the anchor.
+    assert "publisher 改名自" in md
+
+
+def test_f3_write_observed_but_no_comparable_anchor_is_not_reported_as_unobserved(
+    tmp_path, monkeypatch,
+):
+    """The other half of F3: when the write *is* observed but no rename-proof
+    anchor survives (no staging mirror, published copy renamed), the view must
+    say 不可直接比较 -- spec §3.2's distinct label -- never fall back to
+    "未观察到对应写入操作"."""
+    monkeypatch.chdir(tmp_path)
+    run = _base_run(tmp_path)
+    (run / "details" / "天味食品.md").write_bytes(b"# published, renamed, appended")
+    staged_path = run / "trace" / "staging" / "details" / f"{CODE}.md"   # never written
+    _capsule_index(run, [_row("l4-card-603317")])
+    _capsule_normalized(run, "l4-card-603317",
+                        operations=[_write_op("c1", str(staged_path), b"# card body")])
+
+    md = chain_view.render(run, CODE)
+    assert "NOT_COMPARABLE" in md
+    assert "写入核验:UNKNOWN" not in md
+
+
 def test_o02_intel_write_hash_matches_current_published_version(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     run = _base_run(tmp_path)
@@ -833,7 +893,7 @@ def test_hash_compare_detail_is_rendered_not_discarded(tmp_path, monkeypatch):
     _capsule_normalized(run, "l4-intel-603317",
                         operations=[_write_op("c1", str(intel_path), content)])
     md = chain_view.render(run, CODE)
-    assert "写入核验:MATCH(与当前发布版本字节一致)" in md
+    assert "写入核验:MATCH(与核对锚点字节一致)" in md
 
 
 def test_find_invocation_subject_substring_does_not_match_a_different_neighbour(tmp_path, monkeypatch):
