@@ -213,3 +213,89 @@ def test_production_scan_config_resolves_cleanly():
     assert set(resolved) == uc._AGENT_ROLES
     assert resolved["l4_card"]["effort"] == "max"
     assert resolved["gp_shell"] == {"model": "sonnet", "effort": "low"}
+    codex = uc.resolve_agent_config(uc.load_user_config(prod), engine="codex")
+    assert codex["l4_card"] == {"model": "gpt-5.6-sol", "reasoning_effort": "xhigh"}
+    assert codex["l4_intel"]["web_search"] == "live"
+    runtime_cfg = {**uc.load_user_config(prod), "engine": "codex"}
+    assert uc.resolve_agent_bundle(runtime_cfg, engine="codex")["roles"] == codex
+
+
+def _dual():
+    roles = {role: {"tier": "critical"} for role in sorted(uc._AGENT_ROLES)}
+    return {
+        "agents": roles,
+        "agent_engines": {
+            "claude": {"tiers": {"critical": {"effort": "max"}}},
+            "codex": {"tiers": {"critical": {
+                "model": "gpt-5.6-sol", "reasoning_effort": "ultra",
+                "fallback": {"model": "gpt-5.6-terra", "reasoning_effort": "high"},
+            }}, "role_overrides": {"l4_intel": {"web_search": "live"}}},
+        },
+    }
+
+
+def test_dual_schema_resolves_engine_specific_vocabulary(tmp_path):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps(_dual()), encoding="utf-8")
+    cfg = uc.load_user_config(p)
+
+    claude = uc.resolve_agent_config(cfg, engine="claude")
+    codex = uc.resolve_agent_config(cfg, engine="codex")
+    assert claude["l3_rank"] == {"effort": "max"}
+    assert codex["l3_rank"] == {"model": "gpt-5.6-sol", "reasoning_effort": "ultra"}
+    assert codex["l4_intel"]["web_search"] == "live"
+
+
+def test_codex_capability_mismatch_uses_only_declared_supported_fallback():
+    capabilities = {
+        "gpt-5.6-sol": {"reasoning_efforts": ["low", "medium"], "web_search": True},
+        "gpt-5.6-terra": {"reasoning_efforts": ["high"], "web_search": True},
+    }
+    bundle = uc.resolve_agent_bundle(_dual(), engine="codex", capabilities=capabilities)
+
+    assert bundle["capability_status"] == "FALLBACK_APPLIED"
+    assert len(bundle["capability_mismatches"]) == len(uc._AGENT_ROLES)
+    assert bundle["declared_roles"]["l3_rank"]["reasoning_effort"] == "ultra"
+    assert bundle["roles"]["l3_rank"] == {
+        "model": "gpt-5.6-terra", "reasoning_effort": "high",
+    }
+    assert bundle["roles"]["l4_intel"]["web_search"] == "live"
+
+
+def test_dual_schema_rejects_unknown_tier_and_engine_fields(tmp_path):
+    bad_tier = _dual()
+    bad_tier["agents"]["l3_rank"] = {"tier": "missing"}
+    with pytest.raises(ValueError, match="tier"):
+        uc.resolve_agent_config(bad_tier, engine="codex")
+
+    bad_field = _dual()
+    bad_field["agent_engines"]["codex"]["tiers"]["critical"]["effort"] = "high"
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps(bad_field), encoding="utf-8")
+    with pytest.raises(ValueError, match="reasoning_effort"):
+        uc.load_user_config(p)
+
+
+def test_materialized_bundle_separates_declared_runtime_and_resolved(tmp_path):
+    capabilities = {"gpt-5.6-sol": {"reasoning_efforts": ["ultra"], "web_search": True}}
+    bundle = uc.resolve_agent_bundle(_dual(), engine="codex", capabilities=capabilities)
+    out = uc.materialize_agent_config(
+        "2026-09-13", _dual(), root=tmp_path, engine="codex", bundle=bundle,
+    )
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["engine"] == "codex"
+    assert payload["declared_roles"] == bundle["declared_roles"]
+    assert payload["runtime_capabilities"] == capabilities
+    assert payload["roles"] == bundle["roles"]
+
+
+def test_codex_runtime_capabilities_are_loaded_from_model_cache(tmp_path):
+    cache = tmp_path / "models_cache.json"
+    cache.write_text(json.dumps({"models": [{
+        "slug": "gpt-test", "supported_reasoning_levels": [
+            {"effort": "low"}, {"effort": "ultra"}],
+        "web_search_tool_type": "text_and_image",
+    }]}), encoding="utf-8")
+    assert uc.load_codex_capabilities(cache) == {
+        "gpt-test": {"reasoning_efforts": ["low", "ultra"], "web_search": True}
+    }

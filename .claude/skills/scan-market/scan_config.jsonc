@@ -35,25 +35,59 @@
   //   .claude/skills/scan-market/pinned.jsonc,cap=截断条数、ttl_days=缺 expires 时的失效窗)。
   "pinned": { "cap": 5, "ttl_days": 10 },
 
-  // ── Stage 0 · agent 档位(model/effort;10 role 闭集,**必须列全**,缺一 fail-fast)──
-  // 【生效点】user_config.resolve_agent_config(唯一解释点)→ _resolved_agent_config.json →
-  //   scan-market.js / l4-stock.js / dossier-init.js 的 AG() + usage_reconcile 逐 role 对账。
-  //   effort ∈ low/medium/high/xhigh/max;判断类 role 不写 model 键 = 落 agent def frontmatter
-  //   (l3_rank/l4_card=opus、l4_intel=sonnet)。按流程出场顺序排列。
+  // ── Stage 0 · agent 角色意图(10 role 闭集,**必须列全**,缺一 fail-fast)────────
+  // 【生效点】user_config.resolve_agent_bundle(唯一解释点)→ _resolved_agent_config.json →
+  //   Claude workflows / Codex project agents + usage_reconcile 逐 role 对账。角色只选 tier;
+  //   model/effort 词汇归各 engine profile,不再拿 Claude 枚举解释 Codex。
   "agents": {
-    "strategist":   { "effort": "max" },     // 市场研判(Stage0 旁路)——07-12 用户拍板 high→max
-    "sector_brief": { "effort": "xhigh" },   // 行业 brief(L2 后旁路)——07-12 拍板 sonnet 试点回滚+high→xhigh
-    "l3_rank":      { "effort": "max" },     // L3 精排(holistic 比较=判断核心,最高档)
-    "l3_repair":    { "effort": "medium" },  // L3 数字自修(可选增益,挂了不阻断)
-    "l4_intel":     { "effort": "max" },     // 活体情报员(盲搜六面;model=sonnet 由 agent def 定)
-    "l4_card":      { "effort": "max" },     // L4 决策卡(逐只渐进深度 DD)
-    "ens_review":   { "effort": "max" },     // ≥OW/SELL 双复核 run2/3——与 l4_card 同档(08-06 review:
-                                             // 写 xhigh 会让复核在生产静默降档,parity=max;要降档须显式决策)
-    "dossier_init": { "effort": "max" },     // 档案首覆(≤3 只/晚,盘后)
-    // 壳类缺省 sonnet·low:08-05 事故——haiku 壳遇长命令转后台会 pkill 生产作业;省钱可显式
-    // 改 haiku,但那是你的选择不是缺省。
-    "gp_shell":      { "model": "sonnet", "effort": "low" },   // 命令壳(bash/stageGate)
-    "gp_shell_json": { "model": "sonnet", "effort": "low" }    // JSON 壳(gate/gpJson/taskGate)
+    "strategist":   { "tier": "critical" },
+    "sector_brief": { "tier": "analytical" },
+    "l3_rank":      { "tier": "critical" },
+    "l3_repair":    { "tier": "repair" },
+    "l4_intel":     { "tier": "critical" },
+    "l4_card":      { "tier": "critical" },
+    "ens_review":   { "tier": "critical" },
+    "dossier_init": { "tier": "critical" },
+    "gp_shell":      { "tier": "relay" },
+    "gp_shell_json": { "tier": "relay" }
+  },
+
+  // ── engine profile · declared expectation，不代表 actual execution ─────────
+  // Claude 映射与迁移前逐 role 完全等价；判断类仍不显式 model，继续落 agent frontmatter。
+  // Codex reasoning_effort 由 model capability 校验，支持到 ultra；fallback 只有 capability
+  // 明确不支持 declared 时才可应用并留 mismatch。l4_intel 明确要求 live web search。
+  "agent_engines": {
+    "claude": {
+      "tiers": {
+        "critical":   { "effort": "max" },
+        "analytical": { "effort": "xhigh" },
+        "repair":     { "effort": "medium" },
+        "relay":      { "model": "sonnet", "effort": "low" }
+      }
+    },
+    "codex": {
+      "tiers": {
+        "critical": {
+          "model": "gpt-5.6-sol", "reasoning_effort": "xhigh",
+          "fallback": { "model": "gpt-5.6-terra", "reasoning_effort": "high" }
+        },
+        "analytical": {
+          "model": "gpt-5.6-sol", "reasoning_effort": "high",
+          "fallback": { "model": "gpt-5.6-terra", "reasoning_effort": "high" }
+        },
+        "repair": {
+          "model": "gpt-5.6-sol", "reasoning_effort": "medium",
+          "fallback": { "model": "gpt-5.6-terra", "reasoning_effort": "medium" }
+        },
+        "relay": {
+          "model": "gpt-5.6-luna", "reasoning_effort": "low",
+          "fallback": { "model": "gpt-5.6-terra", "reasoning_effort": "low" }
+        }
+      },
+      "role_overrides": {
+        "l4_intel": { "web_search": "live" }
+      }
+    }
   },
 
   // ── L0 · 选集硬门 ──────────────────────────────────────────────────────────

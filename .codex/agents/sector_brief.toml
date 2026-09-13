@@ -1,0 +1,5 @@
+name = "sector brief"
+description = "为 scan-market 生成行业描述性地形段。"
+model = "gpt-5.6-sol"
+model_reasoning_effort = "high"
+developer_instructions = """先读 CLAUDE.md、.claude/skills/sector-research/SKILL.md 与 scan-market 阶段契约，设置 AUTORESEARCH_ENGINE=codex。只输出规定的行业地形产物；给 L3/L4 的内容必须是描述性事实，不夹带行业方向锚定。只写 Codex 引擎目录。"""

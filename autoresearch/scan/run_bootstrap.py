@@ -19,9 +19,10 @@ from autoresearch.scan.budget import normalize_budgets
 from autoresearch.scan.run_contract import RunContract, sha256_json
 from autoresearch.scan.user_config import (
     knob,
+    load_codex_capabilities,
     load_pinned,
     load_user_config,
-    resolve_agent_config,
+    resolve_agent_bundle,
 )
 from autoresearch.trace.atomic import canonical_json
 
@@ -37,50 +38,7 @@ def _load_config(config: Mapping | Path | str | None) -> dict:
     value = json.loads(canonical_json(dict(config)))
     if not isinstance(value, dict):
         raise TypeError("scan config root must be an object")
-    unknown_top = sorted(set(value) - config_module._TOP_WHITELIST)
-    if unknown_top:
-        raise ValueError(f"scan_config.json 含未知顶层键: {unknown_top}")
-    for block_name, allowed in config_module._SUB_WHITELIST.items():
-        block = value.get(block_name)
-        if isinstance(block, dict):
-            unknown = sorted(set(block) - allowed)
-            if unknown:
-                raise ValueError(
-                    f"scan_config.json 的 {block_name} 含未知子键: {unknown}"
-                )
-    performance = value.get("performance")
-    if performance is not None:
-        if not isinstance(performance, dict):
-            raise ValueError("scan_config.json 的 performance 必须是 object")
-        if "streaming_l4" in performance and not isinstance(
-            performance["streaming_l4"], bool
-        ):
-            raise ValueError("scan_config.json performance.streaming_l4 必须是 boolean")
-    for (block_name, key), (predicate, wanted) in config_module._KNOB_TYPES.items():
-        block = value.get(block_name)
-        if isinstance(block, dict) and key in block and not predicate(block[key]):
-            raise ValueError(
-                f"scan_config.json {block_name}.{key}={block[key]!r} 非法(须为 {wanted})"
-            )
-    agents = value.get("agents")
-    if agents is not None:
-        if not isinstance(agents, dict):
-            raise ValueError("scan_config.json 的 agents 必须是 object")
-        unknown_roles = sorted(set(agents) - config_module._AGENT_ROLES)
-        if unknown_roles:
-            raise ValueError(f"scan_config.json agents 含未知 role: {unknown_roles}")
-        for role, spec in agents.items():
-            if spec is not None and not isinstance(spec, dict):
-                raise ValueError(f"agents.{role} 必须是 object")
-            spec = spec or {}
-            unknown = sorted(set(spec) - {"model", "effort"})
-            if unknown:
-                raise ValueError(f"agents.{role} 含未知子键: {unknown}")
-            if "effort" in spec and spec["effort"] not in config_module._EFFORTS:
-                raise ValueError(f"agents.{role}.effort={spec['effort']!r} 非法")
-            if "model" in spec and spec["model"] not in config_module._MODELS:
-                raise ValueError(f"agents.{role}.model={spec['model']!r} 非法")
-    return value
+    return config_module.validate_user_config(value)
 
 
 def _resolved_user_config(
@@ -92,9 +50,12 @@ def _resolved_user_config(
     if user_config:
         user_config = {**user_config, "engine": engine}
     if user_config.get("agents"):
+        capabilities = load_codex_capabilities() if engine == "codex" else None
+        bundle = resolve_agent_bundle(user_config, engine=engine, capabilities=capabilities)
         user_config = {
             **user_config,
-            "resolved_agents": resolve_agent_config(user_config),
+            "resolved_agents": bundle["roles"],
+            "resolved_agent_bundle": bundle,
         }
     return user_config
 

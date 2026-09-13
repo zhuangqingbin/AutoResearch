@@ -103,7 +103,7 @@ Stage 0 与 L0 并行,回退到 L2 之后落盘。模板在 `macro-playbook.md` 
 
 - **机制**:确定性 `market_pack(scan_dir)`(regime/宽度/估值分散/资金/红黑榜,只读 `L1_scored_full`)→ `macro-brief` agent 写六小节 `market_view.md`。三处复用:L3 地形段、L4 `market_context_block`、L5 置顶。
 - **防锚定铁律**:喂 L3/L4 的只能是**描述性地形**,不能是方向指令;操作建议只进 L5;**个股评级只由本股 rubric 三门决定**。缺文件 → L5 回退确定性脉搏。
-- **配置装载链**:见 SKILL.md「配置单一事实源」节(全流程唯一参数事实源)。agent model/effort 优先级 = scan_config > workflow 内建 > agent def frontmatter;当前档位见 `scan_config.jsonc` `agents` 块(strategist max / sector_brief xhigh / l3_rank max / l4_card max / l4_intel max(sonnet))。
+- **配置装载链**:见 SKILL.md「配置单一事实源」节。`agents` 只声明 role→tier，`agent_engines` 分别解释 Claude 的 model/effort 与 Codex 的 model/reasoning_effort；`_resolved_agent_config.json` 分开记录 declared、runtime capability、resolved，`usage_reconcile` 再与 actual 对账。Claude profile 与迁移前档位等价；Codex 当前核心判断档为 gpt-5.6-sol/xhigh，能力不支持时只按已声明 fallback 降级并留 mismatch。
 
 ---
 
@@ -380,7 +380,7 @@ launchctl kickstart -p gui/$(id -u)/com.tradingagents.scan-prewarm   # 手动触
 
 ### user_config 传参铁律
 
-`frame --json` 回显的 `user_config` 必须随 Workflow `args.config` 传入,L4 逐股 `args.cfg` 原样透传。**传 `{}` = 静默关 l4_intel + 全体 agent 掉回内建缺省 effort**(配置真身是 `scan_config.jsonc`,**.jsonc 非 .json**,按旧名查无传空就是事故形状;现 workflow 对空 config 直接 throw)。优先级:**scan_config > workflow 内建 > agent def frontmatter**。
+`frame --json` 回显的 `user_config` 必须随 Workflow `args.config` 传入,L4 逐股 `args.cfg` 原样透传。**传 `{}` = 静默关 l4_intel + 全体 agent 掉回内建缺省 effort**(配置真身是 `scan_config.jsonc`,**.jsonc 非 .json**,按旧名查无传空就是事故形状;现 workflow 对空 config 直接 throw)。新 run 优先消费 `resolved_agents`；Claude 老 workflow 的内建表只服务离线/历史兜底，Codex project agent TOML 与 production profile 由测试锁定同值。
 
 ### 哨兵 vs 持仓
 

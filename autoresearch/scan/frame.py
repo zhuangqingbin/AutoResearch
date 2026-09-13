@@ -333,7 +333,9 @@ def main(argv: list[str] | None = None) -> int:
             # workflow 读 echo,两边必须是同一张表,否则对账本身就是假的(修复轮 1)。
             mp_resolved = materialize_agent_config(
                 analysis_date, user_cfg, root=Path("."),
-                resolved=user_cfg["resolved_agents"])
+                resolved=user_cfg["resolved_agents"],
+                engine=user_cfg.get("engine") or ws.ENGINE,
+                bundle=user_cfg.get("resolved_agent_bundle"))
             print(f"[frame] resolved agent config → {mp_resolved}", file=sys.stderr)
         from autoresearch.scan.stage_result import safe_record_stage_result
         safe_record_stage_result(

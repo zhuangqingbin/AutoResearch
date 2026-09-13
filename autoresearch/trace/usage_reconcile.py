@@ -218,7 +218,15 @@ def _l3_repair_dispatched(scan: Path) -> bool:
 
 def _spec_of(atype: str, role: str, agents_cfg: dict) -> dict:
     """某 role 的期望 spec = agent def frontmatter 垫底 + config override 覆盖。"""
-    return {**_frontmatter(atype), **(agents_cfg.get(role) or {})}
+    return _normalise_expected_spec({**_frontmatter(atype), **(agents_cfg.get(role) or {})})
+
+
+def _normalise_expected_spec(spec: dict) -> dict:
+    """Map engine-specific request fields into the shared audit vocabulary."""
+    out = dict(spec or {})
+    if "reasoning_effort" in out:
+        out["effort"] = out.pop("reasoning_effort")
+    return out
 
 
 def _fits(exp: dict, got: tuple[str, str]) -> bool:
@@ -339,7 +347,7 @@ def _reconcile_core(echo: dict, rows: list[dict], *, date: str,
 
     gp_allowed: set[tuple[str, str]] = set()
     for shell in ("gp_shell", "gp_shell_json"):
-        spec = {**_GP_SHELL_DEFAULT, **(agents_cfg.get(shell) or {})}
+        spec = _normalise_expected_spec({**_GP_SHELL_DEFAULT, **(agents_cfg.get(shell) or {})})
         gp_allowed.add((spec["model"], spec["effort"]))
 
     mismatches: list[dict] = []
@@ -422,7 +430,10 @@ def _reconcile_core(echo: dict, rows: list[dict], *, date: str,
 
     ok = (not mismatches and not wire_breaks and not unknown_agent_types
           and not missing_resolved_roles)
-    return {"date": str(date), "ok": ok, "mismatches": mismatches, "wire_breaks": wire_breaks,
+    actual_status = ("UNKNOWN" if checked == 0 or unmeasured == checked else
+                     "PARTIAL" if unmeasured else "MEASURED")
+    return {"date": str(date), "ok": ok, "actual_status": actual_status,
+            "mismatches": mismatches, "wire_breaks": wire_breaks,
             "unknown_agent_types": unknown_agent_types,
             "harness_types": sorted(t for t in seen_types if t in _HARNESS_TYPES),
             "missing_resolved_roles": missing_resolved_roles, "checked": checked,

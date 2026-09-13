@@ -4,11 +4,11 @@
 design: docs/specs/2026-07-11-recall-gate-pinned-config-design.md §4.2。
 
 用户在 `.claude/skills/scan-market/scan_config.jsonc` 里管控 scan-market 全程用到的 agent
-model/effort、召回旋钮、保送参数、红队触发率、卡片复用参数——**白名单外的键一律
+role tier 与 Claude/Codex profile、召回旋钮、保送参数、红队触发率、卡片复用参数——**白名单外的键一律
 raise**(防拼写错静默失效,是本文件存在的唯一理由);缺文件 = 现行为(`{}`,一切默认关=parity)。
 
 装载链(技术约束:workflow 脚本无文件系统访问):`frame --json`(Stage 0)读入本模块 →
-`resolve_agent_config` 解释成 resolved spec → `materialize_agent_config` 落
+`resolve_agent_bundle` 解释 declared/runtime/resolved → `materialize_agent_config` 落
 `context/scan/<date>/_resolved_agent_config.json` + 回显进 market_pack/run meta
 (trace 记录本次跑用的配置=可复现)→ workflow 经 `args.config.resolved_agents` 消费 →
 `autoresearch.trace.usage_reconcile` 对**同一份 resolved** 对账。
@@ -88,7 +88,7 @@ def _read_jsonc(p: Path):
 # `l3_select.prepare_l3_table` 消费;finalist_max 由 merge v3 消费(`write_finalists` 已接线,
 # cap=min(finalist_max, budget))。
 _TOP_WHITELIST = {
-    "agents", "funnel", "pinned", "l4_intel", "l3",
+    "agents", "agent_engines", "funnel", "pinned", "l4_intel", "l3",
     "budgets", "performance",
     # 2026-08-11 配置单一事实源波:L0/L2/行业 brief 运行旋钮入白名单(消费点=knob() 解析,
     # 见各块注;jsonc 里每键必须标【生效点】,SKILL.md「配置」节列全表)。
@@ -180,6 +180,10 @@ _AGENT_ROLES = {
 }
 _EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 _MODELS = {"haiku", "sonnet", "opus"}
+_CODEX_REASONING_EFFORTS = {"low", "medium", "high", "xhigh", "max", "ultra"}
+_ENGINES = {"claude", "codex"}
+_WEB_SEARCH_MODES = {"disabled", "cached", "live"}
+_RUNTIME_CONFIG_KEYS = {"engine", "resolved_agents", "resolved_agent_bundle"}
 
 # ─────────────── Wave12-T33:resolved agent config(单一事实源 materialize)───────────────
 #
@@ -217,23 +221,106 @@ _ROLE_FALLBACK: dict[str, dict] = {
 _REQUIRED_AGENT_ROLES = frozenset(_AGENT_ROLES)
 
 RESOLVED_FILENAME = "_resolved_agent_config.json"
-RESOLVED_SCHEMA_VERSION = 1
+RESOLVED_SCHEMA_VERSION = 2
 
 
-def load_user_config(path: str | Path | None = None) -> dict:
-    """读 scan_config.json → 白名单校验后的 dict;缺文件 → `{}`(=现行为,parity)。
+def _validate_engine_agent_spec(engine: str, spec, *, where: str,
+                                allow_fallback: bool = True) -> None:
+    if not isinstance(spec, dict):
+        raise ValueError(f"{where} 必须是 object")
+    allowed = ({"model", "effort", "fallback"} if engine == "claude" else
+               {"model", "reasoning_effort", "web_search", "fallback"})
+    if not allow_fallback:
+        allowed.discard("fallback")
+    bad = sorted(set(spec) - allowed)
+    if bad:
+        wanted = "model/effort" if engine == "claude" else "model/reasoning_effort/web_search"
+        raise ValueError(f"{where} 含未知子键: {bad}({engine} 只认 {wanted})")
+    if engine == "claude":
+        if "effort" in spec and (not isinstance(spec["effort"], str)
+                                 or spec["effort"] not in _EFFORTS):
+            raise ValueError(f"{where}.effort={spec.get('effort')!r} 非法")
+        if "model" in spec and (not isinstance(spec["model"], str)
+                                or spec["model"] not in _MODELS):
+            raise ValueError(f"{where}.model={spec.get('model')!r} 非法")
+    else:
+        if "reasoning_effort" in spec and (
+                not isinstance(spec["reasoning_effort"], str)
+                or spec["reasoning_effort"] not in _CODEX_REASONING_EFFORTS):
+            raise ValueError(f"{where}.reasoning_effort={spec.get('reasoning_effort')!r} 非法")
+        if "model" in spec and (not isinstance(spec["model"], str)
+                                or not spec["model"].strip()):
+            raise ValueError(f"{where}.model 必须是非空字符串")
+        if "web_search" in spec and spec["web_search"] not in _WEB_SEARCH_MODES:
+            raise ValueError(f"{where}.web_search={spec.get('web_search')!r} 非法")
+    if "fallback" in spec:
+        _validate_engine_agent_spec(engine, spec["fallback"], where=f"{where}.fallback",
+                                    allow_fallback=False)
 
-    未知顶层键、或 funnel/pinned/reuse/l4_intel 内未知子键 → `ValueError`(消息含具体键名)。
-    """
-    p = Path(path) if path is not None else DEFAULT_PATH
-    if not p.exists():
-        return {}
-    cfg = _read_jsonc(p)
 
+def _validate_legacy_agents(agents: dict) -> None:
+    for role, spec in agents.items():
+        if spec is not None and not isinstance(spec, dict):
+            raise ValueError(f"agents.{role} 必须是 object,形如 "
+                             f'{{"model": "...", "effort": "..."}}(实际={spec!r})')
+        spec = spec or {}
+        bad = sorted(set(spec) - {"model", "effort"})
+        if bad:
+            raise ValueError(f"agents.{role} 含未知子键: {bad}(只认 model/effort)")
+        if "effort" in spec and (not isinstance(spec["effort"], str)
+                                 or spec["effort"] not in _EFFORTS):
+            raise ValueError(f"agents.{role}.effort={spec['effort']!r} 非法(∈{sorted(_EFFORTS)})")
+        if "model" in spec and (not isinstance(spec["model"], str)
+                                or spec["model"] not in _MODELS):
+            raise ValueError(f"agents.{role}.model={spec['model']!r} 非法(∈{sorted(_MODELS)})")
+
+
+def _validate_dual_agents(cfg: dict, agents: dict) -> None:
+    profiles = cfg.get("agent_engines")
+    if not isinstance(profiles, dict) or not profiles:
+        raise ValueError("新 agents tier 形状必须同时提供 agent_engines")
+    unknown_engines = sorted(set(profiles) - _ENGINES)
+    if unknown_engines:
+        raise ValueError(f"agent_engines 含未知 engine: {unknown_engines}")
+    for role, spec in agents.items():
+        if not isinstance(spec, dict):
+            raise ValueError(f"agents.{role} 必须是 object")
+        bad = sorted(set(spec) - {"tier"})
+        if bad or not isinstance(spec.get("tier"), str) or not spec["tier"].strip():
+            raise ValueError(f"agents.{role} 新形状只认非空 tier")
+    for engine, profile in profiles.items():
+        if not isinstance(profile, dict):
+            raise ValueError(f"agent_engines.{engine} 必须是 object")
+        bad = sorted(set(profile) - {"tiers", "role_overrides"})
+        if bad:
+            raise ValueError(f"agent_engines.{engine} 含未知子键: {bad}")
+        tiers = profile.get("tiers")
+        if not isinstance(tiers, dict) or not tiers:
+            raise ValueError(f"agent_engines.{engine}.tiers 必须是非空 object")
+        for tier, spec in tiers.items():
+            if not isinstance(tier, str) or not tier.strip():
+                raise ValueError(f"agent_engines.{engine} tier 名必须是非空字符串")
+            _validate_engine_agent_spec(engine, spec,
+                                        where=f"agent_engines.{engine}.tiers.{tier}")
+        overrides = profile.get("role_overrides") or {}
+        if not isinstance(overrides, dict):
+            raise ValueError(f"agent_engines.{engine}.role_overrides 必须是 object")
+        unknown = sorted(set(overrides) - _AGENT_ROLES)
+        if unknown:
+            raise ValueError(f"agent_engines.{engine}.role_overrides 含未知 role: {unknown}")
+        for role, spec in overrides.items():
+            _validate_engine_agent_spec(engine, spec,
+                                        where=f"agent_engines.{engine}.role_overrides.{role}",
+                                        allow_fallback=False)
+
+
+def validate_user_config(cfg: dict) -> dict:
+    """Validate an already-decoded config; shared by file and mapping loaders."""
+    if not isinstance(cfg, dict):
+        raise ValueError("scan_config.json 根必须是 object")
     unknown_top = sorted(set(cfg) - _TOP_WHITELIST)
     if unknown_top:
         raise ValueError(f"scan_config.json 含未知顶层键: {unknown_top}(白名单={sorted(_TOP_WHITELIST)})")
-
     for key, sub_whitelist in _SUB_WHITELIST.items():
         block = cfg.get(key)
         if isinstance(block, dict):
@@ -245,25 +332,19 @@ def load_user_config(path: str | Path | None = None) -> dict:
     if performance is not None:
         if not isinstance(performance, dict):
             raise ValueError("scan_config.json 的 performance 必须是 object")
-        for key in ("streaming_l4",):
-            if key in performance and not isinstance(performance[key], bool):
-                raise ValueError(f"scan_config.json performance.{key} 必须是 boolean")
-
-    for (blk, key), (ok_fn, want) in _KNOB_TYPES.items():   # 运行旋钮错型 raise(2026-08-11)
+        if "streaming_l4" in performance and not isinstance(performance["streaming_l4"], bool):
+            raise ValueError("scan_config.json performance.streaming_l4 必须是 boolean")
+    for (blk, key), (ok_fn, want) in _KNOB_TYPES.items():
         block = cfg.get(blk)
         if isinstance(block, dict) and key in block and not ok_fn(block[key]):
             raise ValueError(f"scan_config.json {blk}.{key}={block[key]!r} 非法(须为 {want})")
-
     budgets = cfg.get("budgets")
     if isinstance(budgets, dict):
         warn = budgets.get("run_weighted_warn", 7_000_000)
         target = budgets.get("run_weighted_target", 5_000_000)
         if target > warn:
-            raise ValueError(
-                "scan_config.json budgets.run_weighted_target 不得大于 "
-                "budgets.run_weighted_warn"
-            )
-
+            raise ValueError("scan_config.json budgets.run_weighted_target 不得大于 "
+                             "budgets.run_weighted_warn")
     agents = cfg.get("agents")
     if agents is not None:
         if not isinstance(agents, dict):
@@ -272,19 +353,25 @@ def load_user_config(path: str | Path | None = None) -> dict:
         if unknown:
             raise ValueError(f"scan_config.json agents 含未知 role: {unknown}"
                              f"(闭集={sorted(_AGENT_ROLES)})")
-        for role, spec in agents.items():
-            if spec is not None and not isinstance(spec, dict):
-                raise ValueError(f"agents.{role} 必须是 object,形如 "
-                                 f'{{"model": "...", "effort": "..."}}(实际={spec!r})')
-            spec = spec or {}
-            bad = sorted(set(spec) - {"model", "effort"})
-            if bad:
-                raise ValueError(f"agents.{role} 含未知子键: {bad}(只认 model/effort)")
-            if "effort" in spec and (not isinstance(spec["effort"], str) or spec["effort"] not in _EFFORTS):
-                raise ValueError(f"agents.{role}.effort={spec['effort']!r} 非法(∈{sorted(_EFFORTS)})")
-            if "model" in spec and (not isinstance(spec["model"], str) or spec["model"] not in _MODELS):
-                raise ValueError(f"agents.{role}.model={spec['model']!r} 非法(∈{sorted(_MODELS)})")
+        if "agent_engines" in cfg:
+            _validate_dual_agents(cfg, agents)
+        else:
+            _validate_legacy_agents(agents)
+    elif "agent_engines" in cfg:
+        raise ValueError("agent_engines 在场但 agents 缺失")
     return cfg
+
+
+def load_user_config(path: str | Path | None = None) -> dict:
+    """读 scan_config.json → 白名单校验后的 dict;缺文件 → `{}`(=现行为,parity)。
+
+    未知顶层键、或 funnel/pinned/reuse/l4_intel 内未知子键 → `ValueError`(消息含具体键名)。
+    """
+    p = Path(path) if path is not None else DEFAULT_PATH
+    if not p.exists():
+        return {}
+    cfg = _read_jsonc(p)
+    return validate_user_config(cfg)
 
 
 def knob(block: str, key: str, cli_value, default, cfg: dict | None = None):
@@ -313,7 +400,45 @@ def knob(block: str, key: str, cli_value, default, cfg: dict | None = None):
     return default if v is None else v
 
 
-def resolve_agent_config(cfg: dict, *, require_all: bool = True) -> dict:
+def _dual_role_specs(cfg: dict, engine: str, role: str) -> tuple[dict, dict | None]:
+    profile = cfg["agent_engines"][engine]
+    tier_name = cfg["agents"][role]["tier"]
+    tier = profile["tiers"].get(tier_name)
+    if tier is None:
+        raise ValueError(f"agents.{role}.tier={tier_name!r} 未在 agent_engines.{engine}.tiers 定义")
+    override = (profile.get("role_overrides") or {}).get(role) or {}
+    declared = {k: v for k, v in tier.items() if k != "fallback"}
+    declared.update(override)
+    fallback = tier.get("fallback")
+    if fallback is not None:
+        fallback = dict(fallback)
+        if "web_search" in override:
+            fallback["web_search"] = override["web_search"]
+    return declared, fallback
+
+
+def _resolve_dual_agent_config(cfg: dict, *, engine: str, require_all: bool) -> dict:
+    unexpected = sorted(set(cfg) - _TOP_WHITELIST - _RUNTIME_CONFIG_KEYS)
+    if unexpected:
+        raise ValueError(f"scan_config 含未知运行时键: {unexpected}")
+    validate_user_config({key: value for key, value in cfg.items() if key in _TOP_WHITELIST})
+    if engine not in _ENGINES:
+        raise ValueError(f"engine={engine!r} 非法(可选 {sorted(_ENGINES)})")
+    if engine not in cfg["agent_engines"]:
+        raise ValueError(f"agent_engines 缺 {engine!r} profile")
+    if require_all:
+        missing = sorted(_REQUIRED_AGENT_ROLES - set(cfg["agents"]))
+        if missing:
+            raise ValueError(f"scan_config agents 缺生产必填 role: {missing}")
+    resolved = {}
+    for role in sorted(set(cfg["agents"]) & _AGENT_ROLES):
+        declared, _ = _dual_role_specs(cfg, engine, role)
+        resolved[role] = declared
+    return resolved
+
+
+def resolve_agent_config(cfg: dict, *, require_all: bool = True,
+                         engine: str = "claude") -> dict:
     """`scan_config.jsonc` → 逐 role 的 **resolved** spec(`{role: {model?, effort}}`)。
 
     这是 model/effort 唯一的"解释点":config 覆盖在 `_ROLE_FALLBACK` 之上,产出的东西
@@ -342,6 +467,9 @@ def resolve_agent_config(cfg: dict, *, require_all: bool = True) -> dict:
     if not isinstance(agents, dict) or not agents:
         raise ValueError("scan_config.agents 为空 —— 同上,agent 档位必须显式声明,不接受"
                          "「不写=用缺省」(那正是 07-21 事故看不见的那一半)")
+
+    if "agent_engines" in cfg:
+        return _resolve_dual_agent_config(cfg, engine=engine, require_all=require_all)
 
     unknown = sorted(set(agents) - _AGENT_ROLES)
     if unknown:
@@ -374,10 +502,90 @@ def resolve_agent_config(cfg: dict, *, require_all: bool = True) -> dict:
     return resolved
 
 
+def _capability_issues(engine: str, spec: dict, capabilities: dict) -> list[str]:
+    model = spec.get("model")
+    if not model:
+        return []  # Claude frontmatter resolution remains a harness responsibility.
+    cap = capabilities.get(model)
+    if not isinstance(cap, dict):
+        return [f"model {model} unavailable"]
+    field = "effort" if engine == "claude" else "reasoning_effort"
+    supported = cap.get("efforts" if engine == "claude" else "reasoning_efforts")
+    issues: list[str] = []
+    if field in spec and supported is not None and spec[field] not in set(supported):
+        issues.append(f"{field} {spec[field]} unsupported by {model}")
+    if spec.get("web_search") == "live" and cap.get("web_search") is False:
+        issues.append(f"live web_search unsupported by {model}")
+    return issues
+
+
+def load_codex_capabilities(path: str | Path | None = None) -> dict | None:
+    """Read Codex's local model cache as runtime evidence; absence stays unknown."""
+    source = Path(path) if path is not None else Path.home() / ".codex" / "models_cache.json"
+    try:
+        payload = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+    models = payload.get("models")
+    if not isinstance(models, list):
+        return None
+    out: dict[str, dict] = {}
+    for record in models:
+        if not isinstance(record, dict) or not isinstance(record.get("slug"), str):
+            continue
+        levels = record.get("supported_reasoning_levels") or []
+        efforts = [row.get("effort") for row in levels
+                   if isinstance(row, dict) and row.get("effort") in _CODEX_REASONING_EFFORTS]
+        out[record["slug"]] = {
+            "reasoning_efforts": efforts,
+            "web_search": bool(record.get("web_search_tool_type")),
+        }
+    return out or None
+
+
+def resolve_agent_bundle(cfg: dict, *, engine: str = "claude", require_all: bool = True,
+                         capabilities: dict | None = None) -> dict:
+    """Resolve declared roles and optionally reconcile them with runtime capabilities."""
+    declared = resolve_agent_config(cfg, require_all=require_all, engine=engine)
+    resolved = {role: dict(spec) for role, spec in declared.items()}
+    mismatches: list[dict] = []
+    if capabilities is not None:
+        if not isinstance(capabilities, dict):
+            raise ValueError("capabilities 必须是 model→capability object")
+        for role, spec in declared.items():
+            issues = _capability_issues(engine, spec, capabilities)
+            if not issues:
+                continue
+            fallback = None
+            if "agent_engines" in cfg:
+                _, fallback = _dual_role_specs(cfg, engine, role)
+            fallback_issues = (_capability_issues(engine, fallback, capabilities)
+                               if fallback is not None else ["fallback not declared"])
+            applied = fallback is not None and not fallback_issues
+            if applied:
+                resolved[role] = fallback
+            mismatches.append({
+                "role": role, "declared": spec, "issues": issues,
+                "fallback": fallback, "fallback_issues": fallback_issues,
+                "status": "FALLBACK_APPLIED" if applied else "UNRESOLVED",
+            })
+    status = ("UNCHECKED" if capabilities is None else
+              "COMPATIBLE" if not mismatches else
+              "MISMATCH" if any(m["status"] == "UNRESOLVED" for m in mismatches)
+              else "FALLBACK_APPLIED")
+    return {
+        "schema_version": 1, "engine": engine, "declared_roles": declared,
+        "runtime_capabilities": capabilities, "roles": resolved,
+        "capability_status": status, "capability_mismatches": mismatches,
+    }
+
+
 def materialize_agent_config(date: str, cfg: dict | None = None, *,
                              root: str | Path | None = None,
                              require_all: bool = True,
-                             resolved: dict | None = None) -> Path:
+                             resolved: dict | None = None,
+                             engine: str | None = None,
+                             bundle: dict | None = None) -> Path:
     """把 resolved spec 落 `<root>/context/scan/<date>/_resolved_agent_config.json`。
 
     这份产物是 **workflow 与 `usage_reconcile` 共同的事实源**:前者照着它派发,后者
@@ -388,13 +596,34 @@ def materialize_agent_config(date: str, cfg: dict | None = None, *,
     而这份文件与 echo 里那份是不是同一张表,是 `usage_reconcile` 对账**是否为真**的前提。
     把同一个对象传下来,这件事就从推理变成构造性事实(并有测试逐字节比对)。
     """
-    if resolved is None:
-        resolved = resolve_agent_config(load_user_config() if cfg is None else cfg,
-                                        require_all=require_all)
+    source_cfg = load_user_config() if cfg is None else cfg
+    selected_engine = engine or source_cfg.get("engine") or "claude"
+    if bundle is None:
+        if resolved is None:
+            bundle = resolve_agent_bundle(source_cfg, require_all=require_all,
+                                          engine=selected_engine)
+            resolved = bundle["roles"]
+        else:
+            bundle = {
+                "engine": selected_engine, "declared_roles": resolved,
+                "runtime_capabilities": None, "roles": resolved,
+                "capability_status": "UNCHECKED", "capability_mismatches": [],
+            }
+    else:
+        if bundle.get("engine") != selected_engine:
+            raise ValueError("materialized bundle engine mismatch")
+        resolved = bundle.get("roles")
+        if not isinstance(resolved, dict):
+            raise ValueError("materialized bundle lacks roles")
     base = Path(root) if root is not None else Path(".")
     out = base / ws.scan_root() / str(date) / RESOLVED_FILENAME
     out.parent.mkdir(parents=True, exist_ok=True)
     payload = {"schema_version": RESOLVED_SCHEMA_VERSION, "date": str(date),
+               "engine": selected_engine,
+               "declared_roles": bundle.get("declared_roles") or resolved,
+               "runtime_capabilities": bundle.get("runtime_capabilities"),
+               "capability_status": bundle.get("capability_status", "UNCHECKED"),
+               "capability_mismatches": bundle.get("capability_mismatches") or [],
                "roles": resolved}
     tmp = out.with_name(out.name + ".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -411,6 +640,16 @@ def load_resolved_agent_config(scan_dir: str | Path) -> dict:
         return {}
     roles = payload.get("roles")
     return roles if isinstance(roles, dict) else {}
+
+
+def load_resolved_agent_bundle(scan_dir: str | Path) -> dict:
+    """Read the complete declared/runtime/resolved audit bundle."""
+    path = Path(scan_dir) / RESOLVED_FILENAME
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) and isinstance(payload.get("roles"), dict) else {}
 
 
 # ───────────────────────── pinned.json:保送票 loader(cap/TTL) ─────────────────────────
@@ -514,7 +753,10 @@ def main() -> int:
     """
     cfg = load_user_config()
     if cfg.get("agents"):
-        cfg = {**cfg, "resolved_agents": resolve_agent_config(cfg)}
+        engine = cfg.get("engine") or ws.ENGINE
+        bundle = resolve_agent_bundle(cfg, engine=engine)
+        cfg = {**cfg, "resolved_agents": bundle["roles"],
+               "resolved_agent_bundle": bundle}
     print(json.dumps(cfg, ensure_ascii=False))
     return 0
 

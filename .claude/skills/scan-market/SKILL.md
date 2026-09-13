@@ -43,7 +43,7 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
 |---|---|---|---|
 | 全局 | `budgets` | cache_hit_min·stage_cost_usd·stage_wall_seconds·min_real_scans·baseline_run·concurrency{tushare,web_search,web_fetch,l4_stock} | `scan/budget.py`(只告警不截断);并发帽 `scan/l4_tasks.py init` |
 | Stage0 | `pinned` | cap·ttl_days | `scan/frame.py`(load_pinned→run_contract) |
-| Stage0 | `agents` | 12 role × {model,effort}(闭集必须列全) | `user_config.resolve_agent_config` → `_resolved_agent_config.json` → 3 个 workflow AG() + `usage_reconcile` 对账 |
+| Stage0 | `agents` + `agent_engines` | 10 role→tier(闭集必须列全)+ Claude/Codex tier profile | `user_config.resolve_agent_bundle` → `_resolved_agent_config.json`(declared/runtime/resolved) → workflow/Codex project agents + `usage_reconcile` 对账 |
 | L0 | `l0` | cap_floor_yi·include_bj·source·min_amount_yi·min_list_days | `scan/frame.py build_market_frame`(单一代码路径)+ `universe.run`(meta 记生效值) |
 | L1 | `funnel` | regime_aware·recall_n·l2_n·recall_channels(10路,2026-08-21 重开 reversal_confirm、2026-08-22 加 lowturn)·channel_quotas(现值 value312·momentum188·heat112·healthy112·growth112·main_fund150·reversal_confirm150·lowturn120)·channel_floors | `universe.run`(`_funnel_overlay`+`knob`);regime_aware 另生效 `prelude.run_prelude`(生产路缺省 true) |
 | L2 | `l2` | sector_cap·(floors) | `universe.run` → `l2_stratify.select_l2` |
