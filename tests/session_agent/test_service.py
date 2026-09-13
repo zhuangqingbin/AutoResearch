@@ -49,7 +49,11 @@ def _handle(tmp_path):
     staging.mkdir(parents=True)
     capsule = workspace / "capsule"
     (capsule / "events").mkdir(parents=True)
-    contract = SimpleNamespace(contract_hash="a" * 64, run_kind="stock-research")
+    contract = SimpleNamespace(
+        contract_hash="a" * 64,
+        run_kind="stock-research",
+        user_config={"mode": "LITE"},
+    )
     return SimpleNamespace(
         workspace=workspace,
         staging=staging,
@@ -136,7 +140,13 @@ def test_synthetic_workflow_runs_begin_to_finish(tmp_path):
         runner=runner,
     )
     assert executed["state"] == "READY"
-    claimed = service.claim(handle.run_id, "step.two", 1, handle_loader=lambda run_id: handle)
+    claimed = service.claim(
+        handle.run_id,
+        "step.two",
+        1,
+        handle_loader=lambda run_id: handle,
+        event_recorder=lambda *args, **kwargs: None,
+    )
     assert claimed["result"]["envelope"]["role"] == "stock.card"
 
     output_two.write_text("**Rating**: Hold\nFINAL TRANSACTION PROPOSAL: HOLD\n")
@@ -153,6 +163,7 @@ def test_synthetic_workflow_runs_begin_to_finish(tmp_path):
         submission,
         handle_loader=lambda run_id: handle,
         validator=lambda submitted, task: None,
+        event_recorder=lambda *args, **kwargs: None,
     )
     assert submitted["state"] == "DONE"
     calls = []

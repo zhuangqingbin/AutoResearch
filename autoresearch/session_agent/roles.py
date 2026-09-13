@@ -64,6 +64,34 @@ _ROLES = {
     "scan.l5": _role("scan.l5", [".claude/skills/scan-market/STAGES.md"], "scan.l5.v1"),
 }
 
+_ROLE_STAGES = {
+    "stock.card": "card",
+    "stock.market": "write",
+    "stock.news": "write",
+    "stock.fundamentals": "write",
+    "stock.bull": "write",
+    "stock.bear": "write",
+    "stock.manager": "write",
+    "stock.premortem": "write",
+    "stock.pm": "assemble",
+    "company.intel": "intel",
+    "us.intel": "intel",
+    "macro.brief": "prelude",
+    "macro.research": "write",
+    "sector.brief": "l3",
+    "sector.research": "write",
+    "sector.intel": "intel",
+    "dossier.init": "intel",
+    "scan.l3": "l3",
+    "scan.l4.intel": "l4",
+    "scan.l4.card": "l4",
+    "scan.l4.review": "l4",
+    "scan.l5": "l5",
+}
+
+if set(_ROLE_STAGES) != set(_ROLES):
+    raise RuntimeError("logical role stage registry is incomplete")
+
 
 def _validate_role(value: dict) -> dict:
     if set(value) != _FIELDS:
@@ -99,8 +127,30 @@ def roles_hash() -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def role_stage(role_id: str) -> str:
+    get_role(role_id)
+    return _ROLE_STAGES[role_id]
+
+
+def role_manifest(role_ids: list[str] | tuple[str, ...]) -> dict:
+    roles = {}
+    for role_id in sorted(set(role_ids)):
+        role = get_role(role_id)
+        roles[role_id] = {
+            "stage": role_stage(role_id),
+            "instruction_refs": role["instruction_refs"],
+            "instruction_hashes": {
+                ref: hashlib.sha256(Path(ref).read_bytes()).hexdigest()
+                for ref in role["instruction_refs"]
+            },
+        }
+    return {"schema_version": 1, "roles_hash": roles_hash(), "roles": roles}
+
+
 def all_roles() -> tuple[str, ...]:
     return tuple(sorted(_ROLES))
 
 
-__all__ = ["all_roles", "get_role", "roles_hash"]
+__all__ = [
+    "all_roles", "get_role", "role_manifest", "role_stage", "roles_hash",
+]

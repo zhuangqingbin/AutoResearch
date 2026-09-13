@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from pathlib import Path
 
 from autoresearch.common import workspace as ws
-from autoresearch.common.atomic import atomic_write_json, canonical_json
+from autoresearch.common.atomic import (
+    atomic_write_json,
+    canonical_json,
+    sha256_bytes,
+    sha256_file,
+)
 from autoresearch.contracts.session_task import (
     validate_begin_request,
     validate_submission,
@@ -15,7 +21,8 @@ from autoresearch.contracts.session_task import (
 )
 from autoresearch.session_agent import artifacts, executor, plan as plan_service, store
 from autoresearch.session_agent.hosts.base import render_request, validate_receipt
-from autoresearch.session_agent.publication import publish as publish_run
+from autoresearch.session_agent.publication import publish as publish_run, session_profile
+from autoresearch.session_agent.roles import role_manifest, role_stage
 from autoresearch.session_agent.validation import validate_submission_outputs
 
 
@@ -45,6 +52,11 @@ def _freeze_json(path: Path, value: dict) -> Path:
             raise RuntimeError(f"frozen session input changed: {path.name}")
         return path
     return atomic_write_json(path, value)
+
+
+def _mirror_identity(handle, name: str, value: dict) -> None:
+    _freeze_json(_session_dir(handle) / name, value)
+    _freeze_json(Path(handle.capsule) / "identity" / "session" / name, value)
 
 
 def _load_plan(handle) -> dict:
@@ -139,11 +151,22 @@ def begin(
     handle = (begin_capsule or _default_begin_capsule)(request)
     if handle.engine != ws.ENGINE:
         raise ValueError("capsule engine does not match process engine")
-    session_dir = _session_dir(handle)
-    _freeze_json(session_dir / "request.json", request)
-    _freeze_json(session_dir / "host_profile.json", request["host_profile"])
+    _mirror_identity(handle, "request.json", request)
+    _mirror_identity(handle, "host_profile.json", request["host_profile"])
     frozen_plan = (planner or _default_planner)(request, handle)
     plan_service.freeze_plan(_plan_path(handle), frozen_plan)
+    _freeze_json(
+        Path(handle.capsule) / "identity" / "session" / "plan.json", frozen_plan
+    )
+    role_ids = [
+        task["role"]
+        for task in frozen_plan["tasks"]
+        if task["kind"] == "INFERENCE"
+    ]
+    _freeze_json(
+        Path(handle.capsule) / "identity" / "session" / "roles.json",
+        role_manifest(role_ids),
+    )
     store.initialize(_store_path(handle), frozen_plan)
     return status(handle.run_id, handle_loader=lambda unused: handle, command="begin")
 
@@ -201,12 +224,43 @@ def next(run_id: str, *, handle_loader: Callable[[str], object] | None = None) -
     return status(run_id, handle_loader=handle_loader, command="next")
 
 
+def _subject_kwargs(task: dict) -> dict:
+    subject = task.get("subject")
+    if subject is None or re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", subject
+    ):
+        return {"subject": subject}
+    return {"subject_display": subject}
+
+
+def _boundary_recorder(recorder):
+    if recorder is not None:
+        return recorder
+    from autoresearch.trace.capsule import record_agent_boundary
+
+    return record_agent_boundary
+
+
+def _record_completion(handle, task: dict, attempt: int, payload: dict, recorder) -> None:
+    _boundary_recorder(recorder)(
+        handle.run_id,
+        "AGENT_COMPLETED",
+        role=task["role"],
+        invocation_id=f"session-{task['task_id']}-a{attempt}",
+        attempt=attempt,
+        result=payload,
+        stage=role_stage(task["role"]),
+        **_subject_kwargs(task),
+    )
+
+
 def claim(
     run_id: str,
     task_id: str,
     expected_attempt: int,
     *,
     handle_loader: Callable[[str], object] | None = None,
+    event_recorder=None,
 ) -> dict:
     from autoresearch.trace.capsule import require_active_run
 
@@ -235,6 +289,33 @@ def claim(
                 "plan_hash": _load_plan(handle)["plan_hash"],
                 "request": render_request(task, host_profile),
             }
+        )
+        invocation_id = f"session-{task['task_id']}-a{expected_attempt}"
+        handoff = {
+            "schema_version": 1,
+            "envelope": envelope,
+            "plan_hash": claim_result["plan_hash"],
+            "request": claim_result["request"],
+            "claim_receipt": receipt,
+        }
+        request_path = (
+            Path(handle.capsule)
+            / "agents/session/requests"
+            / f"{invocation_id}.json"
+        )
+        _freeze_json(request_path, handoff)
+        _boundary_recorder(event_recorder)(
+            handle.run_id,
+            "AGENT_DISPATCHED",
+            role=task["role"],
+            invocation_id=invocation_id,
+            attempt=expected_attempt,
+            result={
+                "request_ref": request_path.relative_to(handle.capsule).as_posix(),
+                "request_sha256": sha256_file(request_path),
+            },
+            stage=role_stage(task["role"]),
+            **_subject_kwargs(task),
         )
     return _result("claim", handle.run_id, "WAITING", result=claim_result)
 
@@ -284,6 +365,7 @@ def submit(
     handle_loader: Callable[[str], object] | None = None,
     validator: Callable[[dict, dict], object] | None = None,
     host_receipt: dict | None = None,
+    event_recorder=None,
 ) -> dict:
     from autoresearch.trace.capsule import require_active_run
 
@@ -299,6 +381,21 @@ def submit(
         validate_receipt(task, host_receipt, host_profile)
         if host_receipt["attempt"] != submission["envelope"]["attempt"]:
             raise ValueError("host receipt attempt mismatch")
+        host_receipt_id = sha256_bytes(canonical_json(host_receipt).encode("utf-8"))
+        if submission["host_receipt_id"] != host_receipt_id:
+            raise ValueError("host_receipt_id does not match the verified receipt")
+        _freeze_json(
+            _session_dir(handle) / "receipts" / f"{host_receipt_id}.json",
+            host_receipt,
+        )
+        _freeze_json(
+            Path(handle.capsule)
+            / "agents/session/host_receipts"
+            / f"{host_receipt_id}.json",
+            host_receipt,
+        )
+    elif submission["host_receipt_id"] is not None:
+        raise ValueError("host_receipt_id requires the matching host receipt")
     elif task["independent_context"]:
         raise ValueError("independent task requires a verified host receipt")
 
@@ -306,12 +403,37 @@ def submit(
         validate_submission_outputs(handle, value, spec, domain_validator=validator)
 
     receipt = store.accept(_store_path(handle), submission, checked)
+    receipt_path = (
+        Path(handle.capsule)
+        / "agents/session/receipts"
+        / f"{receipt['receipt_id']}.json"
+    )
+    _freeze_json(receipt_path, receipt)
+    attempt = submission["envelope"]["attempt"]
+    completion = {
+        "receipt_ref": receipt_path.relative_to(handle.capsule).as_posix(),
+        "receipt_id": receipt["receipt_id"],
+        "outputs": submission["outputs"],
+        "host_receipt_id": submission["host_receipt_id"],
+    }
+    completion_path = (
+        Path(handle.capsule)
+        / "agents/session/completions"
+        / f"{task['task_id']}-a{attempt}.json"
+    )
+    _freeze_json(completion_path, completion)
+    _record_completion(handle, task, attempt, completion, event_recorder)
     current = status(run_id, handle_loader=lambda unused: handle, command="submit")
     current["result"] = {"receipt": receipt}
     return current
 
 
-def resume(run_id: str, *, handle_loader: Callable[[str], object] | None = None) -> dict:
+def resume(
+    run_id: str,
+    *,
+    handle_loader: Callable[[str], object] | None = None,
+    event_recorder=None,
+) -> dict:
     from autoresearch.trace.capsule import require_active_run
 
     handle = (handle_loader or require_active_run)(run_id)
@@ -324,6 +446,20 @@ def resume(run_id: str, *, handle_loader: Callable[[str], object] | None = None)
             receipt = store.recover_receipt(_store_path(handle), task["task_id"])
             if receipt is not None:
                 recovered.append(receipt)
+                if task["kind"] == "INFERENCE":
+                    completion_path = (
+                        Path(handle.capsule)
+                        / "agents/session/completions"
+                        / f"{task['task_id']}-a{receipt['attempt']}.json"
+                    )
+                    if completion_path.is_file():
+                        _record_completion(
+                            handle,
+                            task,
+                            receipt["attempt"],
+                            _read_json(completion_path),
+                            event_recorder,
+                        )
         elif state == "RUNNING" and task["kind"] == "DETERMINISTIC":
             running.append(executor.probe_execution(handle, task["task_id"], 1))
     current = status(run_id, handle_loader=lambda unused: handle, command="resume")
@@ -335,7 +471,12 @@ def _default_finalizer(handle, report):
     from autoresearch.trace.capsule import BusinessStatus, finalize
 
     report_dir = report if isinstance(report, (str, Path)) else None
-    return finalize(handle.run_id, BusinessStatus.SUCCEEDED, report_dir=report_dir)
+    return finalize(
+        handle.run_id,
+        BusinessStatus.SUCCEEDED,
+        report_dir=report_dir,
+        profile=session_profile(handle),
+    )
 
 
 def finish(

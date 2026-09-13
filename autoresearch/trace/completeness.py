@@ -17,12 +17,13 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-# 阶段 / 角色词汇的**唯一**来源。此前这里从 `run_profile` 里函数级 import 一份 ROLE_STAGES,
-# 于是「该有什么」的分母在这层又长出一个可以独立漂移的副本(spec 2026-08-29 §2.2 K3)。
-from autoresearch.contracts.stages import ROLE_STAGES
 # profile 工厂**按 kind 动态取**(`contracts.profiles.PROFILE_FACTORIES` 旁有设计意图):
 # 静态 import `scan.run_profile` / `analyze.run_profile` 都是 `trace` 向上的边。
 from autoresearch.contracts.profiles import RunProfile, profile_factory
+
+# 阶段 / 角色词汇的**唯一**来源。此前这里从 `run_profile` 里函数级 import 一份 ROLE_STAGES,
+# 于是「该有什么」的分母在这层又长出一个可以独立漂移的副本(spec 2026-08-29 §2.2 K3)。
+from autoresearch.contracts.stages import ROLE_STAGES
 from autoresearch.trace.atomic import atomic_write_json
 
 #: 冻结的 `verification/profile.json` 没记 kind 时按谁展开。v1 profile.json(2026-08-31
@@ -158,7 +159,7 @@ def build_expected(profile: RunProfile) -> ExpectedEvidence:
     for role in (*profile.agent_roles, *sorted(profile.conditional_roles)):
         expected = profile.role_expected(role)
         conditional = role in profile.conditional_roles
-        stage = ROLE_STAGES.get(role)
+        stage = (profile.role_stages or ROLE_STAGES).get(role)
         # 模式本身就没有这条腿 = NOT_EXPECTED;有这条腿但没跑到 = NOT_REACHED。
         unreached = (
             stage is not None
@@ -377,6 +378,11 @@ def profile_from_capsule(capsule: Path | str, *, kind: str | None = None) -> Run
             if payload.get("agent_roles") is not None
             else None,
             card_source=str(payload.get("card_source") or "legacy_md"),
+            role_stages=(
+                {str(key): str(value) for key, value in payload["role_stages"].items()}
+                if payload.get("role_stages") is not None
+                else None
+            ),
         )
     return profile_factory(str(kind or _DEFAULT_RUN_KIND))()
 
@@ -397,6 +403,7 @@ def write_expected(
             "last_stage": profile.last_stage,
             "agent_roles": list(profile.agent_roles),
             "card_source": profile.card_source,
+            "role_stages": profile.role_stages,
             "expected_stages": list(profile.expected_stages),
             "replayable_stages": list(profile.replayable_stages),
         },

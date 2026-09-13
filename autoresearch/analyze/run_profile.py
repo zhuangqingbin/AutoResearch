@@ -12,8 +12,11 @@ from __future__ import annotations
 from dataclasses import replace
 
 from autoresearch.contracts import stages as vocab
-from autoresearch.contracts.profiles import ArtifactRule, RunProfile
-from autoresearch.contracts.profiles import _BASE_RULES as _SCAN_BASE_RULES
+from autoresearch.contracts.profiles import (
+    _BASE_RULES as _SCAN_BASE_RULES,
+    ArtifactRule,
+    RunProfile,
+)
 
 TERMINAL = ("SUCCEEDED", "FAILED", "INTERRUPTED")
 
@@ -36,6 +39,7 @@ def analyze_profile(
     last_stage: str | None = None,
     agent_roles: tuple[str, ...] | None = None,
     card_source: str = "legacy_md",
+    role_stages: dict[str, str] | None = None,
 ) -> RunProfile:
     """Build the `stock-research` evidence profile for one run's mode and terminal state.
 
@@ -65,6 +69,7 @@ def analyze_profile(
         # 的进程内 checkpoint。声明成 `()` 而不是让它恒判缺失 —— 假警报不是发现。
         captured_stages=(),
         card_source=card_source,
+        role_stages=role_stages,
     )
 
 

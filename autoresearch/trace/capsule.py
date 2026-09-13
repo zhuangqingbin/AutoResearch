@@ -843,6 +843,7 @@ def record_agent_boundary(
     subject_display: str | None = None,
     result: Mapping | None = None,
     error: Mapping | None = None,
+    stage: str | None = None,
 ) -> dict:
     """Append one authoritative agent dispatch/terminal binding to an active run.
 
@@ -881,15 +882,17 @@ def record_agent_boundary(
             f"AUTORESEARCH_RUN_ID={ambient_run_id!r} does not match {run_id!r}"
         )
     handle = require_active_run(run_id)
-    stage = _validate_stage(
-        str(os.environ.get("AUTORESEARCH_STAGE", "")).strip() or "l4"
+    resolved_stage = _validate_stage(
+        stage
+        if stage is not None
+        else (str(os.environ.get("AUTORESEARCH_STAGE", "")).strip() or "l4")
     )
     return append_guarded_event(
         handle.capsule / "events/events.jsonl",
         guard=_agent_lifecycle_guard,
         run_id=handle.run_id,
         engine=handle.engine,
-        stage=stage,
+        stage=resolved_stage,
         invocation_id=resolved_invocation,
         attempt=attempt,
         subject=resolved_subject,

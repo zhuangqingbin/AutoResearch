@@ -122,6 +122,9 @@ class RunProfile:
     #: = 双产物只比较不消费;`research_json_v1` = JSON 权威(D5,解冻后)。冻进 run 契约 hash,
     #: 缺字段的历史 run 按 legacy_md 读,未知值失败。
     card_source: str = "legacy_md"
+    #: Session orchestration may use logical roles that are not part of the legacy
+    #: global role table.  ``None`` preserves the historical lookup exactly.
+    role_stages: dict[str, str] | None = None
 
     def owes_captured_logs(self, stage: str) -> bool:
         """这个阶段该不该有被捕获的 stdout/stderr。"""
@@ -144,7 +147,7 @@ class RunProfile:
     def role_expected(self, role: str) -> bool:
         if vocab.skips_l4(self.mode) and role in SENTINEL_SKIPPED_ROLES:
             return False
-        stage = ROLE_STAGES.get(role)
+        stage = (self.role_stages or ROLE_STAGES).get(role)
         if stage is not None and not self.stage_reached(stage):
             return False
         return role in self.agent_roles

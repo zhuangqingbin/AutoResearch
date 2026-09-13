@@ -127,6 +127,7 @@ def scan_profile(
     agent_roles: tuple[str, ...] | None = None,
     replayable_stages: tuple[str, ...] = REPLAYABLE_STAGES,
     card_source: str = "legacy_md",
+    role_stages: dict[str, str] | None = None,
 ) -> RunProfile:
     """Build the `scan-market` evidence profile for one run's mode and terminal state."""
     from autoresearch.contracts.agent_output import CARD_SOURCES
@@ -155,6 +156,7 @@ def scan_profile(
         last_stage=last_stage,
         conditional_roles=CONDITIONAL_AGENT_ROLES,
         card_source=card_source,
+        role_stages=role_stages,
     )
 
 
