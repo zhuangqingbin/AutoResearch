@@ -148,6 +148,13 @@ def _sector_full(handle, submission: dict, task: dict) -> None:
             raise DomainValidationError("non-company readthrough described as a company")
 
 
+def _dossier(handle, submission: dict, task: dict) -> None:
+    del submission, task
+    from autoresearch.session_agent.domain_ops import _validate_dossier_candidate
+
+    _validate_dossier_candidate(handle)
+
+
 _CONTRACT_VALIDATORS = {
     "stock.lite.v1": _stock_lite,
     "stock.section.v1": _stock_section,
@@ -159,6 +166,7 @@ _CONTRACT_VALIDATORS = {
     "sector.terrain.v1": _sector_terrain,
     "sector.intel.v1": _sector_intel,
     "sector.full.v1": _sector_full,
+    "dossier.v1": _dossier,
 }
 
 

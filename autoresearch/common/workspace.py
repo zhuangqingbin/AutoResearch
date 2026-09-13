@@ -106,6 +106,7 @@ RUN_SPOOLS: dict[str, str] = {
     "stock-research": "analyze_runs",
     "macro-research": "macro_runs",
     "sector-research": "sector_runs",
+    "dossier-init": "dossier_runs",
 }
 
 #: run kind → 发布产物根下的技能目录名(`reports_<engine>/<这里>/…`)。
@@ -116,6 +117,7 @@ RUN_REPORT_DIRS: dict[str, str] = {
     "stock-research": "analyze",
     "macro-research": "macro",
     "sector-research": "sector",
+    "dossier-init": "dossiers",
 }
 
 if tuple(RUN_SPOOLS) != _RUN_KINDS or tuple(RUN_REPORT_DIRS) != _RUN_KINDS:

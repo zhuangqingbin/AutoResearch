@@ -190,8 +190,8 @@ def _section6_body(staging_dir: Path | None, code6: str, today: str) -> str:
 # prefetch 落盘 json 读取(module-attr 调用,兼容测试 monkeypatch PREFETCH_DIR)
 # ---------------------------------------------------------------------------
 
-def _load_prefetch(code6: str) -> dict | None:
-    p = prefetch.PREFETCH_DIR / f"{code6}.json"
+def _load_prefetch(code6: str, path: str | Path | None = None) -> dict | None:
+    p = Path(path) if path is not None else prefetch.PREFETCH_DIR / f"{code6}.json"
     if not p.exists():
         return None
     try:
@@ -217,15 +217,28 @@ def _summary_lines(calc: dict[str, str]) -> list[str]:
     return lines
 
 
-def build_skeleton(code6: str, today: str, *, name: str = "", sector: str = "",
-                   scan_root: str | Path = _WS_SCAN_ROOT, force: bool = False) -> dict:
+def build_skeleton(
+    code6: str,
+    today: str,
+    *,
+    name: str = "",
+    sector: str = "",
+    scan_root: str | Path = _WS_SCAN_ROOT,
+    force: bool = False,
+    output_path: str | Path | None = None,
+    prefetch_path: str | Path | None = None,
+) -> dict:
     """确定性建档骨架。档案已存在且非 force → 原文不动(`created=False`)。"""
     code6 = str(code6).split(".")[0].zfill(6)
-    path = schema.dossier_path(code6)
+    path = Path(output_path) if output_path is not None else schema.dossier_path(code6)
     if path.exists() and not force:
         return {"path": path, "created": False, "issues": []}
 
-    prefetch_data = _load_prefetch(code6)
+    prefetch_data = (
+        _load_prefetch(code6)
+        if prefetch_path is None
+        else _load_prefetch(code6, prefetch_path)
+    )
     mainbz = (prefetch_data or {}).get("mainbz") or []
     fwd_eps = (prefetch_data or {}).get("fwd_eps") or {}
     has_fwd = isinstance(fwd_eps, dict) and any(str(k).startswith("fwd_eps_") for k in fwd_eps)
@@ -272,10 +285,19 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--name", default="", help="股票名称")
     ap.add_argument("--sector", default="", help="申万一级行业")
     ap.add_argument("--force", action="store_true", help="强制重建(覆盖已有档案)")
+    ap.add_argument("--output", default=None, help="显式候选路径(session adapter 使用)")
+    ap.add_argument("--prefetch", default=None, help="显式 prefetch JSON")
     args = ap.parse_args(argv)
 
-    out = build_skeleton(args.code, args.today, name=args.name, sector=args.sector,
-                         force=args.force)
+    out = build_skeleton(
+        args.code,
+        args.today,
+        name=args.name,
+        sector=args.sector,
+        force=args.force,
+        output_path=args.output,
+        prefetch_path=args.prefetch,
+    )
     status = "created" if out["created"] else "skip(existing,非 --force 不覆盖)"
     tail = f"; issues={out['issues']}" if out["issues"] else ""
     print(f"[builder] {args.code} @ {args.today} -> {out['path']} ({status}){tail}")

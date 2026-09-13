@@ -126,6 +126,26 @@ _OPERATIONS: dict[str, dict[str, object]] = {
         "idempotent": True,
         "stage": "publish",
     },
+    "dossier.prefetch": {
+        "builder": lambda params: _no_params("dossier-prefetch", params),
+        "idempotent": True,
+        "stage": "prefetch",
+    },
+    "dossier.skeleton": {
+        "builder": lambda params: _no_params("dossier-skeleton", params),
+        "idempotent": True,
+        "stage": "skeleton",
+    },
+    "dossier.validate": {
+        "builder": lambda params: _no_params("dossier-validate", params),
+        "idempotent": True,
+        "stage": "lint",
+    },
+    "dossier.publish": {
+        "builder": lambda params: _no_params("dossier-publish", params),
+        "idempotent": True,
+        "stage": "publish",
+    },
 }
 
 

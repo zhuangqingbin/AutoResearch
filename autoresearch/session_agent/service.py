@@ -148,6 +148,21 @@ def _default_begin_capsule(request: dict):
             session_ref=request["host_profile"]["session_ref"],
             bootstrap=prepare_sector_run,
         )
+    if kind == "dossier-init":
+        from autoresearch.dossier.run_bootstrap import prepare_dossier_run
+        from autoresearch.trace.capsule import begin_run
+
+        config = {"mode": "INIT", "code": request["subject"]}
+        if request.get("name"):
+            config["name"] = request["name"]
+        return begin_run(
+            kind,
+            request["analysis_date"],
+            request["host_profile"]["engine"],
+            config,
+            session_ref=request["host_profile"]["session_ref"],
+            bootstrap=prepare_dossier_run,
+        )
     if kind != "scan-market":
         raise ValueError(f"run kind is not registered with workspace yet: {kind}")
     from autoresearch.trace.capsule import begin_run

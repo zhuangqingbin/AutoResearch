@@ -14,6 +14,7 @@ _PUBLISHERS: dict[str, str | Callable[[object], object]] = {
     "stock-research": "autoresearch.session_agent.workflows.stock:publish_stock",
     "macro-research": "autoresearch.session_agent.workflows.macro:publish_macro",
     "sector-research": "autoresearch.session_agent.workflows.sector:publish_sector",
+    "dossier-init": "autoresearch.session_agent.workflows.dossier:publish_dossier",
 }
 
 

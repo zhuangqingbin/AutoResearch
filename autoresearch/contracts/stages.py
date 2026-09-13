@@ -197,6 +197,7 @@ RUN_KINDS: tuple[str, ...] = (
     "stock-research",
     "macro-research",
     "sector-research",
+    "dossier-init",
 )
 #: full 档阶段序:取数 → 情报 → 撰写 → 组装 → 发布。
 ANALYZE_STAGES: tuple[str, ...] = ("harvest", "intel", "write", "assemble", "publish")
@@ -227,3 +228,8 @@ SECTOR_ROLE_STAGES: dict[str, str] = {
     "sector.research": "write",
     "sector.brief": "write",
 }
+
+# ── dossier-init 词汇 ─────────────────────────────────────────────────
+DOSSIER_STAGES: tuple[str, ...] = ("prefetch", "skeleton", "research", "lint", "publish")
+DOSSIER_MODES: tuple[str, ...] = ("INIT",)
+DOSSIER_ROLE_STAGES: dict[str, str] = {"dossier.init": "research"}

@@ -23,6 +23,7 @@ import contextlib
 import json
 import os
 from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 from dateutil.relativedelta import relativedelta
@@ -81,7 +82,15 @@ def _default_band_fn(code6: str, today: str) -> dict | None:
     return out or None
 
 
-def prefetch_one(code6: str, today: str, *, fetch=None, ths_fn=None, band_fn=None) -> dict:
+def prefetch_one(
+    code6: str,
+    today: str,
+    *,
+    fetch=None,
+    ths_fn=None,
+    band_fn=None,
+    out_dir=None,
+) -> dict:
     """三腿各自降级取数 → 写 `_prefetch/<code6>.json` → 返回同一份 dict。"""
     code6 = str(code6).split(".")[0].zfill(6)
     notes: list[str] = []
@@ -111,8 +120,9 @@ def prefetch_one(code6: str, today: str, *, fetch=None, ths_fn=None, band_fn=Non
     out = {"code": code6, "asof": today, "mainbz": mainbz, "fwd_eps": fwd_eps_out,
            "val_band": val_band, "notes": notes}
 
-    PREFETCH_DIR.mkdir(parents=True, exist_ok=True)
-    p = PREFETCH_DIR / f"{code6}.json"
+    target_dir = Path(out_dir) if out_dir is not None else PREFETCH_DIR
+    target_dir.mkdir(parents=True, exist_ok=True)
+    p = target_dir / f"{code6}.json"
     tmp = p.with_suffix(p.suffix + ".tmp")
     tmp.write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
     os.replace(tmp, p)
@@ -142,6 +152,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("code", nargs="?", help="6 位代码(单码模式);--pool 模式下省略")
     ap.add_argument("today", nargs="?", default=None, help="YYYY-MM-DD;缺省=今天")
     ap.add_argument("--pool", action="store_true", help="预取整个覆盖池(coverage_pool active)")
+    ap.add_argument("--output-dir", default=None, help="单码显式输出目录(session adapter 使用)")
     args = ap.parse_args(argv)
     today = args.today or datetime.now().strftime("%Y-%m-%d")
 
@@ -155,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.code:
         ap.error("需要 code 位置参(单码模式),或加 --pool 全池")
-    prefetch_one(args.code, today)
+    prefetch_one(args.code, today, out_dir=args.output_dir)
     print(f"[prefetch] {args.code} @ {today}")
     return 0
 

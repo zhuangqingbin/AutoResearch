@@ -95,7 +95,7 @@ _ROLE_STAGES = {
     "sector.brief": "write",
     "sector.research": "write",
     "sector.intel": "intel",
-    "dossier.init": "intel",
+    "dossier.init": "research",
     "scan.l3": "l3",
     "scan.l4.intel": "l4",
     "scan.l4.card": "l4",

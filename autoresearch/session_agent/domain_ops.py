@@ -13,6 +13,11 @@ from autoresearch.analyze import assemble as stock_assemble
 from autoresearch.common import workspace as ws
 from autoresearch.common.atomic import atomic_write_bytes, atomic_write_json, sha256_bytes
 from autoresearch.contracts.agent_output import L4_CARD
+from autoresearch.dossier import (
+    builder as dossier_builder,
+    prefetch as dossier_prefetch,
+    schema as dossier_schema,
+)
 from autoresearch.macro import assemble as macro_assemble, harvest as macro_harvest
 from autoresearch.macro.state import load_macro_state, write_macro_state
 from autoresearch.session_agent import artifacts
@@ -546,6 +551,170 @@ def sector_prepare_publication(handle=None) -> dict:
     return value
 
 
+def dossier_prefetch_run(handle=None) -> dict:
+    current = handle or _active_handle()
+    request = _request(current)
+    output = Path(current.staging) / "session_outputs"
+    data = dossier_prefetch.prefetch_one(
+        request["subject"], request["analysis_date"], out_dir=output / "prefetch"
+    )
+    source = output / "prefetch" / f"{request['subject']}.json"
+    atomic_write_bytes(output / "dossier.prefetch.json", source.read_bytes())
+    return {
+        "code": request["subject"],
+        "degraded": bool(data.get("notes")),
+        "notes": data.get("notes") or [],
+    }
+
+
+def _summary_values(text: str) -> dict[str, str]:
+    block = dossier_schema._summary_block(text)
+    values = {}
+    for anchor in dossier_schema.SUMMARY_ANCHORS:
+        match = re.search(rf"(?m)^-\s*{re.escape(anchor)}\s*(.*)$", block)
+        values[anchor] = match.group(1).strip() if match else ""
+    return values
+
+
+def _dossier_permissions(
+    skeleton: str, *, target: Path, opening_hash: str | None
+) -> dict:
+    deterministic = {}
+    for index in (2, 3, 5, 6, 7):
+        block = dossier_schema._section_block(skeleton, dossier_schema.SECTIONS[index])
+        deterministic[str(index + 1)] = sha256_bytes(block.encode("utf-8"))
+    prefixes = {}
+    for index in (0, 1):
+        block = dossier_schema._section_block(skeleton, dossier_schema.SECTIONS[index])
+        prefix = block.partition(dossier_builder._LLM_ANCHOR)[0]
+        prefixes[str(index + 1)] = {
+            "sha256": sha256_bytes(prefix.encode("utf-8")),
+            "text": prefix,
+        }
+    summary = _summary_values(skeleton)
+    frontmatter = dossier_schema.parse_frontmatter(skeleton)
+    return {
+        "schema_version": 1,
+        "target": str(target),
+        "opening_target_sha256": opening_hash,
+        "frontmatter": {
+            key: value for key, value in frontmatter.items() if key != "initiated"
+        },
+        "deterministic_sections": deterministic,
+        "protected_prefixes": prefixes,
+        "summary_fixed": {anchor: summary[anchor] for anchor in ("带位:", "判例:")},
+    }
+
+
+def dossier_build_skeleton(handle=None, *, target_path: Path | str | None = None) -> dict:
+    current = handle or _active_handle()
+    request = _request(current)
+    output = Path(current.staging) / "session_outputs"
+    target = (
+        Path(target_path)
+        if target_path is not None
+        else dossier_schema.dossier_path(request["subject"])
+    )
+    opening_hash = sha256_bytes(target.read_bytes()) if target.is_file() else None
+    skeleton_path = output / "dossier.skeleton.md"
+    if target.is_file():
+        existing = target.read_text(encoding="utf-8")
+        if dossier_schema.parse_frontmatter(existing).get("initiated"):
+            raise RuntimeError("dossier is already initialized")
+        atomic_write_bytes(skeleton_path, target.read_bytes())
+        issues = dossier_schema.lint_dossier(existing)
+    else:
+        built = dossier_builder.build_skeleton(
+            request["subject"],
+            request["analysis_date"],
+            name=request.get("name") or "",
+            scan_root=ws.scan_root(),
+            output_path=skeleton_path,
+            prefetch_path=output / "dossier.prefetch.json",
+        )
+        issues = built["issues"]
+    if issues:
+        raise RuntimeError(f"dossier skeleton is invalid: {issues}")
+    skeleton = skeleton_path.read_text(encoding="utf-8")
+    permissions = _dossier_permissions(
+        skeleton, target=target, opening_hash=opening_hash
+    )
+    atomic_write_json(output / "dossier.permissions.json", permissions)
+    return permissions
+
+
+def _validate_dossier_candidate(current) -> dict:
+    request = _request(current)
+    candidate = _text(current, "dossier.candidate")
+    permissions = json.loads(_text(current, "dossier.permissions"))
+    issues = dossier_schema.lint_dossier(candidate)
+    if issues:
+        raise RuntimeError(";".join(issues))
+    meta = dossier_schema.parse_frontmatter(candidate)
+    if meta.get("initiated") != request["analysis_date"]:
+        raise RuntimeError("dossier initiated date is missing or incorrect")
+    if {key: value for key, value in meta.items() if key != "initiated"} != permissions["frontmatter"]:
+        raise RuntimeError("dossier deterministic frontmatter changed")
+    for raw_index, expected in permissions["deterministic_sections"].items():
+        index = int(raw_index) - 1
+        block = dossier_schema._section_block(candidate, dossier_schema.SECTIONS[index])
+        if sha256_bytes(block.encode("utf-8")) != expected:
+            raise RuntimeError(f"dossier deterministic section changed: {raw_index}")
+    for raw_index, expected in permissions["protected_prefixes"].items():
+        index = int(raw_index) - 1
+        block = dossier_schema._section_block(candidate, dossier_schema.SECTIONS[index])
+        prefix = expected["text"]
+        if not block.startswith(prefix) or sha256_bytes(prefix.encode("utf-8")) != expected["sha256"]:
+            raise RuntimeError(f"dossier deterministic section prefix changed: {raw_index}")
+    if dossier_builder._LLM_ANCHOR in candidate:
+        raise RuntimeError("dossier research anchors remain unfinished")
+    summary = _summary_values(candidate)
+    for anchor, expected in permissions["summary_fixed"].items():
+        if summary.get(anchor) != expected:
+            raise RuntimeError(f"dossier deterministic summary changed: {anchor}")
+    for anchor in ("业务:", "驱动:", "风险:", "催化:"):
+        if not summary.get(anchor) or summary[anchor] == dossier_builder._NARRATIVE_PENDING:
+            raise RuntimeError(f"dossier summary remains unfinished: {anchor}")
+    descriptor = artifacts.bind_artifact_hash(current, "dossier.candidate")
+    return {
+        "schema_version": 1,
+        "contract": "dossier.v1",
+        "code": request["subject"],
+        "candidate_sha256": descriptor["sha256"],
+        "summary_tokens": dossier_schema.est_tokens(
+            dossier_schema._summary_block(candidate)
+        ),
+    }
+
+
+def dossier_validate(handle=None) -> dict:
+    current = handle or _active_handle()
+    value = _validate_dossier_candidate(current)
+    atomic_write_json(Path(current.staging) / "session_outputs/dossier.validation.json", value)
+    return value
+
+
+def dossier_prepare_publication(handle=None) -> dict:
+    current = handle or _active_handle()
+    request = _request(current)
+    validation = json.loads(_text(current, "dossier.validation"))
+    candidate = artifacts.bind_artifact_hash(current, "dossier.candidate")
+    if validation.get("candidate_sha256") != candidate["sha256"]:
+        raise RuntimeError("validated dossier candidate changed before publication")
+    value = {
+        "schema_version": 1,
+        "kind": "dossier-init",
+        "mode": "INIT",
+        "run_id": current.run_id,
+        "engine": current.engine,
+        "analysis_date": request["analysis_date"],
+        "code": request["subject"],
+        "candidate_sha256": candidate["sha256"],
+    }
+    atomic_write_json(Path(current.staging) / "session_outputs/dossier.publication.json", value)
+    return value
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="autoresearch.session_agent.domain_ops")
     parser.add_argument(
@@ -564,6 +733,10 @@ def main(argv: list[str] | None = None) -> int:
             "sector-prepare",
             "sector-validate",
             "sector-publish",
+            "dossier-prefetch",
+            "dossier-skeleton",
+            "dossier-validate",
+            "dossier-publish",
         ),
     )
     args = parser.parse_args(argv)
@@ -591,8 +764,16 @@ def main(argv: list[str] | None = None) -> int:
         value = sector_prepare()
     elif args.command == "sector-validate":
         value = sector_validate()
-    else:
+    elif args.command == "sector-publish":
         value = sector_prepare_publication()
+    elif args.command == "dossier-prefetch":
+        value = dossier_prefetch_run()
+    elif args.command == "dossier-skeleton":
+        value = dossier_build_skeleton()
+    elif args.command == "dossier-validate":
+        value = dossier_validate()
+    else:
+        value = dossier_prepare_publication()
     print(json.dumps(value, ensure_ascii=False, sort_keys=True))
     return 0
 
@@ -606,6 +787,8 @@ __all__ = [
     "macro_lite_prepare", "macro_lite_validate", "macro_prepare_publication",
     "sector_full_validate", "sector_lite_validate", "sector_prepare",
     "sector_prepare_publication", "sector_validate",
+    "dossier_build_skeleton", "dossier_prefetch_run", "dossier_prepare_publication",
+    "dossier_validate",
     "stock_full_assemble", "stock_full_validate", "stock_prepare_publication",
     "stock_validate",
 ]
