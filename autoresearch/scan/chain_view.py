@@ -16,6 +16,9 @@ L2 凭什么进菜单、pass1 留没留、L3 写的兑现机制是什么、L4 �
 ## 读哪里(优先级)
 
 `trace/staging/`(2026-08-26 起随发布镜像)→ `trace/`(老 run 的白名单副本)→
+**抢救归属快照**(`scan.salvage` 的 `VERIFIED_RUN` 结论,2026-09-12 场景重建 Task 9
+—— 只有强证据佐证过的抢救件才会被提升到这一级,`TIME_WINDOW_ONLY`/
+`OVERWRITTEN_BY_LATER_RUN`/`UNKNOWN` 一律不提升,继续走下一级)→
 `context_<engine>/scan/<date>/`(最后兜底,**并标注**「读的是共享 staging,同数据日重跑
 会覆盖,可能已不是本 run 当时那份」——实测 64 个已发布 run 只剩 49 个 staging)。
 
@@ -48,6 +51,19 @@ class Sources:
         self.analysis_date = self._analysis_date()
         self.shared = (ws.scan_root() / self.analysis_date) if self.analysis_date else None
         self.used_shared = False
+        # 抢救归属快照的读取缓存(2026-09-12 Task 9)——`find()` 可能对同一个文件名
+        # 被调用多次(如 `_relative_buy_decision.json` 同时被 `_sec_e6` 与
+        # `_card_kind_and_early_stop` 各读一次),按文件名缓存 provenance 查询结果,
+        # 一次 `Sources` 实例(= 一次 `render()`)内每个文件名只查一次
+        # provenance.json,延续 `_EvidenceCache` 的"每份证据整次渲染只读一次"纪律。
+        self._salvage_cache: dict[str, Path | None] = {}
+
+    def _salvage_attributed(self, name: str) -> Path | None:
+        if name not in self._salvage_cache:
+            from autoresearch.scan import salvage
+
+            self._salvage_cache[name] = salvage.resolve_attributed_source(self.run, name)
+        return self._salvage_cache[name]
 
     def _analysis_date(self) -> str:
         for p in (self.run / "manifest.json",):
@@ -59,12 +75,25 @@ class Sources:
         return ""
 
     def find(self, *names: str) -> Path | None:
-        """按 mirror → trace → shared 找第一个存在的文件(names 是同一件东西的别名)。"""
+        """按 mirror → trace → 抢救归属快照 → shared 找第一个存在的文件
+        (names 是同一件东西的别名)。
+
+        第三级只提升 `scan.salvage` 判为 ``VERIFIED_RUN`` 的抢救件(controller
+        ruling 5:有效持久快照优先于可变 shared;仅 mtime 吻合/被后跑覆盖/未知
+        一律不提升,`resolve_attributed_source` 对这些一律返回 ``None``,本方法
+        据此继续往下走 shared 这一级——不会因为"查过 provenance"就跳过 shared,
+        也不会把非事实提升成来源。命中这一级不算"读了共享 staging"
+        (`used_shared` 不置位):它是已验证的持久快照,不是易变目录。
+        """
         for base in (self.mirror, self.trace):
             for name in names:
                 p = base / name
                 if p.is_file():
                     return p
+        for name in names:
+            attributed = self._salvage_attributed(name)
+            if attributed is not None:
+                return attributed
         if self.shared is not None:
             for name in names:
                 p = self.shared / name
@@ -269,7 +298,7 @@ def _merge_invocation(capsule_row: dict | None, ledger_row: dict | None, *,
 
 def _find_invocation(merged: dict[str, dict], role: str, code6: str) -> tuple[str, dict] | None:
     """按角色 + 代码在合并表里找那条 invocation——`subject` 可能是展示名(含码但不等于
-    码,capsule `_agent_expectations` 的既有行为),所以用子串匹配,不要求恰好相等。"""
+    码,capsule `_expectations_from_agent_events` 的既有行为),所以用子串匹配,不要求恰好相等。"""
     for iid, m in sorted(merged.items()):
         row = m["capsule"] or m["ledger"]
         if not isinstance(row, dict) or str(row.get("role")) != role:
