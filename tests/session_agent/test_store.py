@@ -5,10 +5,12 @@ import subprocess
 import sys
 
 import pytest
-from conftest import HASH, RUN_ID
 
 from autoresearch.contracts.session_plan import plan_hash
 from autoresearch.session_agent import store
+
+HASH = "a" * 64
+RUN_ID = "20260913T010203000000Z"
 
 
 def _submission(plan_hash: str, *, digest: str = "e" * 64):
