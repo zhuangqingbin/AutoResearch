@@ -23,7 +23,10 @@ from autoresearch.session_agent import artifacts, executor, plan as plan_service
 from autoresearch.session_agent.hosts.base import render_request, validate_receipt
 from autoresearch.session_agent.publication import publish as publish_run, session_profile
 from autoresearch.session_agent.roles import role_manifest, role_stage
-from autoresearch.session_agent.validation import validate_submission_outputs
+from autoresearch.session_agent.validation import (
+    validate_registered_contract,
+    validate_submission_outputs,
+)
 
 
 def _session_dir(handle) -> Path:
@@ -106,31 +109,31 @@ def _result(
 
 
 def _default_begin_capsule(request: dict):
+    kind = request["kind"]
+    if kind == "stock-research":
+        from autoresearch.analyze import runctl
+        from autoresearch.trace.capsule import require_active_run
+
+        started = runctl.begin(
+            request["subject"],
+            request["analysis_date"],
+            mode=request["requested_mode"],
+            session_ref=request["host_profile"]["session_ref"],
+            peers=request["peers"],
+            asset_type=request["asset_type"],
+            name=request["name"],
+        )
+        return require_active_run(started["run_id"])
+    if kind != "scan-market":
+        raise ValueError(f"run kind is not registered with workspace yet: {kind}")
     from autoresearch.trace.capsule import begin_run
 
-    kind = request["kind"]
-    config = None
-    bootstrap = None
-    if kind == "stock-research":
-        from autoresearch.analyze.run_bootstrap import prepare_analyze_run
-
-        config = {
-            "mode": request["requested_mode"],
-            "ticker": request["subject"],
-            "peers": request["peers"],
-            "asset_type": request["asset_type"],
-            "name": request["name"],
-        }
-        bootstrap = prepare_analyze_run
-    elif kind != "scan-market":
-        raise ValueError(f"run kind is not registered with workspace yet: {kind}")
     return begin_run(
         kind,
         request["analysis_date"],
         request["host_profile"]["engine"],
-        config,
+        None,
         session_ref=request["host_profile"]["session_ref"],
-        bootstrap=bootstrap,
     )
 
 
@@ -173,6 +176,7 @@ def begin(
     begin_capsule: Callable[[dict], object] | None = None,
     planner: Callable[[dict, object], dict] | None = None,
     predecessor_loader=None,
+    artifact_registrar=None,
 ) -> dict:
     """Validate and freeze a request before exposing its first ready task."""
     validate_begin_request(request, expected_engine=ws.ENGINE)
@@ -198,6 +202,12 @@ def begin(
         Path(handle.capsule) / "identity" / "session" / "roles.json",
         role_manifest(role_ids),
     )
+    if artifact_registrar is not None:
+        artifact_registrar(request, handle, frozen_plan)
+    elif planner is None:
+        from autoresearch.session_agent.workflows import register_artifacts
+
+        register_artifacts(request, handle, frozen_plan)
     store.initialize(_store_path(handle), frozen_plan)
     return status(handle.run_id, handle_loader=lambda unused: handle, command="begin")
 
@@ -366,6 +376,14 @@ def execute(
     task = _task(handle, task_id)
     if task["kind"] != "DETERMINISTIC":
         raise ValueError("execute requires a deterministic task")
+    entry = store.read_entry(_store_path(handle), task_id)
+    if entry["state"] != "RUNNING" or entry["attempt"] != attempt:
+        raise RuntimeError("deterministic task attempt is not claimed")
+    request = _read_json(_session_dir(handle) / "request.json")
+    if task["operation"] != "test.noop":
+        from autoresearch.session_agent.workflows import validate_operation_params
+
+        validate_operation_params(request, task, params)
     kwargs = {} if runner is None else {"runner": runner}
     execution = executor.execute_operation(handle, task, attempt, params, **kwargs)
     if execution["status"] != "SUCCEEDED":
@@ -431,7 +449,13 @@ def submit(
         raise ValueError("independent task requires a verified host receipt")
 
     def checked(value: dict, spec: dict) -> None:
-        validate_submission_outputs(handle, value, spec, domain_validator=validator)
+        domain_validator = validator
+        if domain_validator is None:
+            def domain_validator(submitted, task):
+                return validate_registered_contract(handle, submitted, task)
+        validate_submission_outputs(
+            handle, value, spec, domain_validator=domain_validator
+        )
 
     receipt = store.accept(_store_path(handle), submission, checked)
     receipt_path = (

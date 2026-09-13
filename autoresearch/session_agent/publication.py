@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 from collections.abc import Callable
 from pathlib import Path
@@ -9,12 +10,16 @@ from pathlib import Path
 from autoresearch.contracts.profiles import profile_factory
 from autoresearch.session_agent.roles import role_stage
 
-_PUBLISHERS: dict[str, Callable[[object], object]] = {}
+_PUBLISHERS: dict[str, str | Callable[[object], object]] = {
+    "stock-research": "autoresearch.session_agent.workflows.stock:publish_stock",
+}
 
 
-def register_publisher(run_kind: str, publisher: Callable[[object], object]) -> None:
-    if not run_kind or not callable(publisher):
-        raise ValueError("run kind and callable publisher required")
+def register_publisher(
+    run_kind: str, publisher: str | Callable[[object], object]
+) -> None:
+    if not run_kind or not (callable(publisher) or isinstance(publisher, str)):
+        raise ValueError("run kind and publisher required")
     if run_kind in _PUBLISHERS and _PUBLISHERS[run_kind] is not publisher:
         raise RuntimeError(f"publisher already registered: {run_kind}")
     _PUBLISHERS[run_kind] = publisher
@@ -23,11 +28,18 @@ def register_publisher(run_kind: str, publisher: Callable[[object], object]) -> 
 def publish(handle):
     """Invoke the registered domain publisher for a finished task graph."""
     try:
-        publisher = _PUBLISHERS[handle.contract.run_kind]
+        target = _PUBLISHERS[handle.contract.run_kind]
     except KeyError as exc:
         raise RuntimeError(
             f"no session publisher registered for {handle.contract.run_kind}"
         ) from exc
+    if isinstance(target, str):
+        module_name, separator, attribute = target.partition(":")
+        if not separator:
+            raise RuntimeError(f"invalid publisher target: {target}")
+        publisher = getattr(importlib.import_module(module_name), attribute)
+    else:
+        publisher = target
     return publisher(handle)
 
 

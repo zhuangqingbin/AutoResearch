@@ -78,6 +78,15 @@ def read_states(path: Path | str) -> dict[str, str]:
     return {task_id: entry["state"] for task_id, entry in payload["tasks"].items()}
 
 
+def read_entry(path: Path | str, task_id: str) -> dict:
+    target = Path(path)
+    with _locked(target):
+        payload = _load(target)
+        if task_id not in payload["tasks"]:
+            raise KeyError(task_id)
+        return json.loads(canonical_json(payload["tasks"][task_id]))
+
+
 def claim(
     path: Path | str,
     task_id: str,
@@ -317,5 +326,5 @@ def mark_failed(
 
 __all__ = [
     "TaskConflict", "accept", "claim", "complete_deterministic", "initialize",
-    "mark_failed", "read_states", "recover_receipt",
+    "mark_failed", "read_entry", "read_states", "recover_receipt",
 ]

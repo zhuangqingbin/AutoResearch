@@ -48,9 +48,29 @@ def _stock_harvest(params: dict) -> list[str]:
     return argv
 
 
+def _no_params(command: str, params: dict) -> list[str]:
+    require_exact_fields(params, frozenset())
+    return [
+        sys.executable,
+        "-m",
+        "autoresearch.session_agent.domain_ops",
+        command,
+    ]
+
+
 _OPERATIONS: dict[str, dict[str, object]] = {
     "test.noop": {"builder": _noop, "idempotent": True, "stage": "session"},
     "stock.harvest": {"builder": _stock_harvest, "idempotent": True, "stage": "harvest"},
+    "stock.validate": {
+        "builder": lambda params: _no_params("stock-validate", params),
+        "idempotent": True,
+        "stage": "card",
+    },
+    "stock.publish": {
+        "builder": lambda params: _no_params("stock-publish", params),
+        "idempotent": True,
+        "stage": "publish",
+    },
 }
 
 

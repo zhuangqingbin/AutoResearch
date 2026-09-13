@@ -225,3 +225,19 @@ def test_execute_rejects_unknown_operation(tmp_path):
             {},
             handle_loader=lambda run_id: handle,
         )
+
+
+def test_execute_requires_the_claimed_attempt_before_running(tmp_path):
+    handle = _handle(tmp_path)
+    service.begin(_request(), begin_capsule=lambda request: handle, planner=_planner)
+    called = []
+    with pytest.raises(RuntimeError, match="not claimed"):
+        service.execute(
+            handle.run_id,
+            "step.one",
+            1,
+            {"message": "ok"},
+            handle_loader=lambda run_id: handle,
+            runner=lambda *args, **kwargs: called.append(True),
+        )
+    assert called == []
