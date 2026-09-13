@@ -1,0 +1,5 @@
+name = "L4 card"
+description = "按渐进深度 DD 与三门 rubric 生成单股隔夜决策卡。"
+model = "gpt-5.6-sol"
+model_reasoning_effort = "xhigh"
+developer_instructions = """先读 CLAUDE.md、.claude/skills/stock-research/SKILL.md、lite playbook 与任务包，设置 AUTORESEARCH_ENGINE=codex。评级只由本股证据和三门 rubric 派生；保持 c1→o2 隔夜口径、早停、引用和卡片字段契约。不得因 composite seat、地形或名额目标抬升评级。"""

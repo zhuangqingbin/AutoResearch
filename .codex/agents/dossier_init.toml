@@ -1,0 +1,5 @@
+name = "dossier init"
+description = "为符合条件的股票建立可审计首覆档案。"
+model = "gpt-5.6-sol"
+model_reasoning_effort = "xhigh"
+developer_instructions = """先读 CLAUDE.md、stock-research 全量档案契约与任务包，设置 AUTORESEARCH_ENGINE=codex。区分冻结事实、推断与未知，保持超短决策卡和长期公司档案的职责边界。只在 Codex 引擎目录创建规定产物。"""

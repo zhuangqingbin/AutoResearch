@@ -103,7 +103,7 @@ Stage 0 与 L0 并行,回退到 L2 之后落盘。模板在 `macro-playbook.md` 
 
 - **机制**:确定性 `market_pack(scan_dir)`(regime/宽度/估值分散/资金/红黑榜,只读 `L1_scored_full`)→ `macro-brief` agent 写六小节 `market_view.md`。三处复用:L3 地形段、L4 `market_context_block`、L5 置顶。
 - **防锚定铁律**:喂 L3/L4 的只能是**描述性地形**,不能是方向指令;操作建议只进 L5;**个股评级只由本股 rubric 三门决定**。缺文件 → L5 回退确定性脉搏。
-- **配置装载链**:见 SKILL.md「配置单一事实源」节(全流程唯一参数事实源)。agent model/effort 优先级 = scan_config > workflow 内建 > agent def frontmatter;当前档位见 `scan_config.jsonc` `agents` 块(strategist max / sector_brief xhigh / l3_rank max / l4_card max / l4_intel max(sonnet))。
+- **配置装载链**:见 SKILL.md「配置单一事实源」节。`agents` 只声明 role→tier，`agent_engines` 分别解释 Claude 的 model/effort 与 Codex 的 model/reasoning_effort；`_resolved_agent_config.json` 分开记录 declared、runtime capability、resolved，`usage_reconcile` 再与 actual 对账。Claude profile 与迁移前档位等价；Codex 当前核心判断档为 gpt-5.6-sol/xhigh，能力不支持时只按已声明 fallback 降级并留 mismatch。
 
 ---
 
@@ -366,6 +366,11 @@ D1(2026-08-19,用户裁决 A3)删掉了预注册状态机(`experiment_registry`/
 
 - **低位转强 Gate 0 回测**(只读,手动):`uv run --no-sync python -m autoresearch.research.lowturn_precheck [--cap-floor 30]` → `reports_claude/research/lowturn_precheck.md`。前向收益由 `factor_lab` 面板**现算**,不依赖任何账本,故不受闭环退役影响。**参考尺只观察,决策尺不变**(2026-07-10 / 08-05 裁定)。(原 `--live` 活体双尺观察腿读 `retro/attribution.csv`,已随闭环删除。)
 
+- **漏斗形状对照实验**(只读,手动,**预注册**,不接 prelude):`uv run --no-sync python -m autoresearch.research.funnel_variants --spec <已冻结方案 spec.json> --scan-dir <冻结日目录> [--scan-dir …] --outcomes <收益表>` → `$RPT/research/funnel_variants/<experiment_id>/`(`spec.json` / `membership.csv` / `daily_metrics.csv` / `paired_summary.json` / `manifest.json`;实验目录排他创建,已存在即拒 —— **没有 `--force`**,想改假设就换 `experiment_id` 开新实验)。
+  逐日重建三个**同预算**漏斗(`current` 读冻结产物 / `composite_only` / `composite_plus_diversifiers`),同 L1/L2/pass1 名额、同主尺 `gap_c1_o2`、同可交易定义,按 date 等权配对。收益表需 `date`/`code`/`gap_c1_o2` 三列(有 `status_gap_c1_o2` 则按 MATURE 判成熟);**缺收益留空不填 0**,未成熟/空选择/缺行情是不同状态。
+  **旋钮全在 spec 里,命令行上一个都没有**:80/20 core、行业帽、style floor 写死在 `selection_rule`,bootstrap 的 `n_boot`/`seed` 与最小共同日(`maturity_policy`)同理 —— 留在 CLI 上,预注册就只是句口号。开跑前逐项验:引擎、evidence/cost 模式、`code_sha` 对 behavior roots 无漂移且工作区干净、输入清单 sha256 逐文件对得上、分析日全部落在冻结的 test 区间内;任一条不过就拒跑且**一个字节都不落盘**。家族登记见 `docs/research/2026-09-13-funnel-shape-family.spec.json`(过 F1 契约,`tests/research/test_family_registry.py` 守)。
+  读法只有一条:`paired_summary.json` 的 `evidence_status` —— `PROMOTION_EVIDENCE`(≥20 个共同成熟日 ∧ bootstrap 90% CI 下界 > 0)才够资格**另开**设计与回滚计划;`INSUFFICIENT_EVIDENCE` / `NO_SWITCH_EVIDENCE` 都是「尚无证据切换」,**不是「证明两者相等」**。本命令不写任何 run 目录、不改任何生产参数(召回通道、pass1=25、knife 硬门、finalist 上限 5、composite BUY seats 一律照旧)。设计:`docs/superpowers/specs/2026-09-13-funnel-shape-gates-dual-engine-design.md` §3。
+
 ### 夜间预热(launchd)
 
 交易日 19:30 自动 `scripts/prewarm.sh`(= `python -m autoresearch.scan.prewarm`,湖预拉+温度)。跑过预热的日子开扫全湖命中(L0-L2 ~6.5m);**当天有没有预热看汇总屏「预热(夜间):✓/✗」行**。安装:
@@ -380,7 +385,7 @@ launchctl kickstart -p gui/$(id -u)/com.tradingagents.scan-prewarm   # 手动触
 
 ### user_config 传参铁律
 
-`frame --json` 回显的 `user_config` 必须随 Workflow `args.config` 传入,L4 逐股 `args.cfg` 原样透传。**传 `{}` = 静默关 l4_intel + 全体 agent 掉回内建缺省 effort**(配置真身是 `scan_config.jsonc`,**.jsonc 非 .json**,按旧名查无传空就是事故形状;现 workflow 对空 config 直接 throw)。优先级:**scan_config > workflow 内建 > agent def frontmatter**。
+`frame --json` 回显的 `user_config` 必须随 Workflow `args.config` 传入,L4 逐股 `args.cfg` 原样透传。**传 `{}` = 静默关 l4_intel + 全体 agent 掉回内建缺省 effort**(配置真身是 `scan_config.jsonc`,**.jsonc 非 .json**,按旧名查无传空就是事故形状;现 workflow 对空 config 直接 throw)。新 run 优先消费 `resolved_agents`；Claude 老 workflow 的内建表只服务离线/历史兜底，Codex project agent TOML 与 production profile 由测试锁定同值。
 
 ### 哨兵 vs 持仓
 

@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "experiment_id": "FAM_FUNNEL_SHAPE_20260913",
+  "engine": "claude",
+  "created_at": "2026-09-13T00:00:00+08:00",
+  "code_sha": "2d49376f93f5e355e82c7bc3ccb8d6c95ceef143",
+  "prompt_hashes": {},
+  "input_manifest_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "experiment_family": "funnel-shape",
+  "hypotheses": [
+    {
+      "hypothesis_id": "funnel_composite_only",
+      "mechanism": "多通道召回的成员差异(低 Jaccard、较多 unique)只证明候选名单不同,不证明通道提供了独立经济信号。若通道的增量全在噪声里,那么单用 composite 排序取同样名额,应当不劣于current —— 通道轮转贡献的只是成员扰动。",
+      "expected_direction": "positive",
+      "available_at": "T 日盘后(只读当日已冻结的 L1/L2/pass1 产物,无前视)",
+      "metric_definition": "同日同预算重建后,challenger 与 current 在 excess_vs_market_median 上的日等权配对差;market median 取当日可交易全湖中位数,缺收益留空不填 0",
+      "population": "冻结日的 L1_scored_full 全帧;逐阶段 l1/l2/pass1 三个落点各算一次",
+      "label": "gap_c1_o2",
+      "rejection_condition": "共同成熟日 ≥ 20 且 bootstrap 90% CI 下界 ≤ 0 → 无切换证据(**不等于**两者等价);CI 上界 < 0 → 该变体劣于 current,反向证伪"
+    },
+    {
+      "hypothesis_id": "funnel_composite_plus_diversifiers",
+      "mechanism": "若通道确有独立信号但被 composite 排序淹没,那么保留 80% composite core、用剩余 20% 名额从 core 外按通道共振补入,应当优于纯 composite 也优于 current。80/20 是预注册的研究起点,不是已知最优参数。",
+      "expected_direction": "positive",
+      "available_at": "T 日盘后(同上,只读冻结产物)",
+      "metric_definition": "同日同预算重建后,composite_plus_diversifiers 与 current 在 excess_vs_market_median 上的日等权配对差;market median 取当日可交易全湖中位数,缺收益留空不填 0",
+      "population": "冻结日的 L1_scored_full 全帧;逐阶段 l1/l2/pass1 三个落点各算一次",
+      "label": "gap_c1_o2",
+      "rejection_condition": "共同成熟日 ≥ 20 且 bootstrap 90% CI 下界 ≤ 0 → 无切换证据(**不等于**两者等价);CI 上界 < 0 → 该变体劣于 current,反向证伪。另:若本变体与 funnel_composite_only 的配对差 CI 同样跨 0,则「20% 分散名额有独立信号」这一机制主张本身未获支持,不得只因它与 current 的比较好看就采信"
+    }
+  ],
+  "population_rule": "每个分析日只读该日已冻结的 L1_scored_full.csv / L1_recall_top1000.csv / L2_gbdt_top200.csv / _l3_pass1_kept.csv 与共享湖派生的收益表;不重跑取数、不写 run 目录",
+  "selection_rule": {
+    "hybrid_core_fraction": 0.8,
+    "sector_cap_frac": 0.2,
+    "floors": {}
+  },
+  "ruler": "gap_c1_o2",
+  "sensitivity_rulers": [],
+  "return_unit": "fraction",
+  "baseline": "current(该日冻结产物原样,保留真实 lane/backfill/pinned 原因)",
+  "evidence_mode": "EOD_PROXY",
+  "weighting": "day_equal",
+  "cost_model_version": "none",
+  "split": {
+    "train": [
+      "2026-06-01",
+      "2026-08-01"
+    ],
+    "validation": [
+      "2026-08-01",
+      "2026-09-01"
+    ],
+    "test": [
+      "2026-09-01",
+      "2026-12-31"
+    ]
+  },
+  "purge_rule": "隔夜标签只跨 T+1 收盘→T+2 开盘一个 session,日间无重叠;同一分析日只入一次,不做滚动窗重采样",
+  "embargo_sessions": 1,
+  "bootstrap": {
+    "n_boot": 2000,
+    "seed": 20260913
+  },
+  "multiplicity": "BY(2 challenger × 3 阶段 = 6 个比较一族,dependence=arbitrary)",
+  "maturity_policy": "scan_days >= 20",
+  "quality_constraints": "只读冻结产物与共享湖;不接 prelude、不写任何 run 目录、不改任何生产参数(召回通道/pass1=25/knife 硬门/finalist 上限 5/composite BUY seats 一律照旧);结果只进 $RPT/research/funnel_variants/<experiment_id>/",
+  "stop_rule": "样本终点 2026-12-31(test 段末),不因读数好看提前停、也不延后。晋级还要求:≥20 个共同成熟日中至少 10 个严格晚于本方案冻结日(2026-09-13)的滚动向前日,且 raw return 与 entry/exit 可交易覆盖不恶化。过门只换来「可以另开设计与回滚计划」,不自动上线。"
+}

@@ -886,3 +886,22 @@ def test_cli_still_works_without_the_caller_supplying_config(tmp_path, capsys):
     _write_run(tmp_path)
     assert ur.main(["2026-08-06", "--root", str(tmp_path), "--no-ledger"]) == 0
     assert "usage_reconcile" in capsys.readouterr().out
+
+
+def test_codex_reasoning_effort_is_normalized_for_actual_reconciliation():
+    resolved = {"l4_card": {"model": "gpt-5.6-sol", "reasoning_effort": "xhigh"}}
+    rows = [{"role": "subagent", "agent": "l4-card", "model": "gpt-5.6-sol",
+             "effort": "xhigh", "status": "SUCCEEDED"}]
+    result = ur._reconcile_core(
+        {"resolved_agents": resolved}, rows, date="2026-09-13", resolved=resolved,
+    )
+    assert result["mismatches"] == []
+    assert result["actual_status"] == "MEASURED"
+
+
+def test_absent_actual_is_unknown_not_a_configuration_match():
+    resolved = {"l4_card": {"model": "gpt-5.6-sol", "reasoning_effort": "xhigh"}}
+    result = ur._reconcile_core(
+        {"resolved_agents": resolved}, [], date="2026-09-13", resolved=resolved,
+    )
+    assert result["actual_status"] == "UNKNOWN"

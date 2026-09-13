@@ -50,10 +50,35 @@ def gate1(scan_dir: Path) -> dict:
         return {"ok": False, "gate": "gate1", "reason": "L2 代码非 6 位(前导零坑)"}
     from autoresearch.scan.menu import l4_budget, sentinel_advice
 
-    level, _ = sentinel_advice(scan_dir)
+    level, sentinel_reason = sentinel_advice(scan_dir)
     budget, _ = l4_budget(scan_dir)
     return {"ok": True, "gate": "gate1", "reason": "ok", "sentinel_level": level,
+            "sentinel_reason": sentinel_reason,
             "l4_budget": int(budget), "l2_n": int(len(df))}
+
+
+def gate1_decide(scan_dir: Path, *, force_full: bool = False) -> dict:
+    """Run GATE1, then materialize run mode only after the gate succeeds."""
+    result = gate1(Path(scan_dir))
+    if not result.get("ok"):
+        return result
+    try:
+        from autoresearch.scan import run_mode
+
+        codes, contract_hash = run_mode.pinned_from_contract(scan_dir)
+        mode = run_mode.decide(
+            sentinel_level=str(result.get("sentinel_level") or "full"),
+            force_full=bool(force_full), pinned_codes=codes,
+            sentinel_reason=result.get("sentinel_reason"),
+            pinned_snapshot_hash=contract_hash, contract_hash=contract_hash,
+        )
+        run_mode.write(scan_dir, mode)
+        if mode.mode == run_mode.SENTINEL_PINNED:
+            run_mode.write_pinned_finalists(scan_dir, mode.pinned_codes)
+    except Exception as exc:  # noqa: BLE001 - mode is part of the hard gate transaction
+        return {**result, "ok": False,
+                "reason": f"GATE1 通过但 run_mode 决策/落盘失败:{type(exc).__name__}:{exc}"}
+    return {**result, "run_mode": mode.to_dict()}
 
 
 def gate2(scan_dir: Path, budget: int = 30, *, skip_reason: str | None = None) -> dict:
@@ -158,7 +183,7 @@ def record_gate_stage_result(scan_dir: Path, result: dict, *, budget: int | None
     if gate == "gate1":
         metrics = {
             key: result[key]
-            for key in ("sentinel_level", "l4_budget", "l2_n")
+            for key in ("sentinel_level", "sentinel_reason", "l4_budget", "l2_n", "run_mode")
             if key in result
         }
     elif gate == "gate2":
@@ -192,10 +217,19 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--root", default=None)
     ap.add_argument("--skip", default=None,
                     help="gate2 专用:标 SKIPPED_NOT_APPLICABLE 并给出理由(如 sentinel_pinned_no_l3)")
+    ap.add_argument("--decide-run-mode", action="store_true",
+                    help="gate1 专用:通过后判定并落 run_mode.json")
+    ap.add_argument("--force-full", action="store_true",
+                    help="与 --decide-run-mode 合用:哨兵建议下显式强制全跑")
     a = ap.parse_args(argv)
+    if a.decide_run_mode and a.gate != "gate1":
+        ap.error("--decide-run-mode 只适用于 gate1")
+    if a.force_full and not a.decide_run_mode:
+        ap.error("--force-full 必须与 --decide-run-mode 合用")
     base = Path(a.root) if a.root else ws.scan_root()
     scan_dir = base / a.date
-    res = {"gate1": lambda: gate1(scan_dir),
+    res = {"gate1": lambda: (gate1_decide(scan_dir, force_full=a.force_full)
+                             if a.decide_run_mode else gate1(scan_dir)),
            "gate2": lambda: gate2(scan_dir, budget=a.budget, skip_reason=a.skip),
            "gate4": lambda: gate4(scan_dir)}[a.gate]()
     record_gate_stage_result(

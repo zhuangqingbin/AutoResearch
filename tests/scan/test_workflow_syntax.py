@@ -103,6 +103,39 @@ def test_scan_gate_branches_read_verified_stage_results():
     assert "g2.ok" not in src
 
 
+def test_gate1_and_run_mode_share_one_stage_gate_shell():
+    src = (WF / "scan-market.js").read_text(encoding="utf-8")
+    assert src.count("stageGate('GATE1'") == 1
+    assert "--decide-run-mode" in src
+    assert "run-mode-attempt-1" not in src
+    assert "l2-check" in src and "prelude-retry" in src
+
+
+def test_scan_refuses_to_run_on_an_unusable_run_mode():
+    """GATE1 通过却没带回四态之一 → 硬停,不许 JS 侧默认值替它签字。
+
+    合并前这里有兜底:run-mode 壳挂了被 `.catch(() => null)` 吞掉,再由 sentinel_level 推一个
+    模式出来。推错的代价是**整天跑错方向**——哨兵日补成 FULL = 白跑一趟全市场;全扫日补成
+    SENTINEL_EMPTY = 当天什么都不跑。合并后模式是 GATE1 事务的一部分,拿不到就是坏了。
+    """
+    src = (WF / "scan-market.js").read_text(encoding="utf-8")
+    assert "RUN_MODES.includes(runMode)" in src
+    assert "throw new Error" in src.split("RUN_MODES.includes(runMode)")[1][:400]
+    # 四态白名单必须齐:少一态就是把那种日子判成"坏了"并硬停
+    for mode in ("FULL", "FORCED_FULL", "SENTINEL_EMPTY", "SENTINEL_PINNED"):
+        assert f"'{mode}'" in src.split("const RUN_MODES")[1][:200]
+    # 旧兜底不得复活(它正是"默认值替失败签字")
+    assert "? 'FORCED_FULL' : 'SENTINEL_EMPTY'" not in src
+
+
+def test_force_full_reaches_the_merged_gate1_call():
+    """人工 override 必须真的进到合并后的那条命令 —— 掉了它,哨兵日会静默变成"什么都不跑"。"""
+    src = (WF / "scan-market.js").read_text(encoding="utf-8")
+    gate1_call = src.split("stageGate('GATE1'")[1][:400]
+    assert "--decide-run-mode" in gate1_call
+    assert "forceFull ? ' --force-full' : ''" in gate1_call
+
+
 def test_scan_refuses_to_run_on_an_unusable_l4_budget():
     """NaN/undefined 曾一路无声流进 L3 prompt 与 GATE2 —— 判断核心的指令被污染却没人喊。
 

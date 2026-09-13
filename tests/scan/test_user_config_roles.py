@@ -213,3 +213,124 @@ def test_production_scan_config_resolves_cleanly():
     assert set(resolved) == uc._AGENT_ROLES
     assert resolved["l4_card"]["effort"] == "max"
     assert resolved["gp_shell"] == {"model": "sonnet", "effort": "low"}
+    codex = uc.resolve_agent_config(uc.load_user_config(prod), engine="codex")
+    assert codex["l4_card"] == {"model": "gpt-5.6-sol", "reasoning_effort": "xhigh"}
+    assert codex["l4_intel"]["web_search"] == "live"
+    runtime_cfg = {**uc.load_user_config(prod), "engine": "codex"}
+    assert uc.resolve_agent_bundle(runtime_cfg, engine="codex")["roles"] == codex
+
+
+#: 迁移前(role→{model,effort} 直写)的 Claude 解析结果 —— 2026-09-13 迁到 role→tier +
+#: `agent_engines` 那天,在 main 上跑同一个 `resolve_agent_config` 取的真身。
+#: 搬迁类改动的 parity 要两条腿:**同对象**(都是 resolved dict)+ **搬迁前 golden**。
+#: 只断言"新配置能解析"证明不了等价 —— 一个 tier 表填错,它照样解析得干干净净。
+_CLAUDE_GOLDEN_BEFORE_TIER_MIGRATION = {
+    "dossier_init": {"effort": "max"},
+    "ens_review": {"effort": "max"},
+    "gp_shell": {"effort": "low", "model": "sonnet"},
+    "gp_shell_json": {"effort": "low", "model": "sonnet"},
+    "l3_rank": {"effort": "max"},
+    "l3_repair": {"effort": "medium"},
+    "l4_card": {"effort": "max"},
+    "l4_intel": {"effort": "max"},
+    "sector_brief": {"effort": "xhigh"},
+    "strategist": {"effort": "max"},
+}
+
+
+def test_claude_roles_resolve_exactly_as_before_the_tier_migration():
+    """双引擎改造不许动 Claude 侧一个字:十个 role 的解析结果必须与迁移前逐字段相同。
+
+    这些值直接决定每个 agent 跑在什么 effort 上 —— 判断类 role 悄悄从 max 掉到 xhigh,
+    产物照样长得像回事,账单也照样出得来,没有任何门会喊。
+    """
+    from pathlib import Path as _Path
+    prod = (_Path(__file__).resolve().parents[2]
+            / ".claude" / "skills" / "scan-market" / "scan_config.jsonc")
+    resolved = uc.resolve_agent_config(uc.load_user_config(prod))
+    assert resolved == _CLAUDE_GOLDEN_BEFORE_TIER_MIGRATION
+    # 判断类 role **不得**出现 model 键:那是 agent def frontmatter 的地盘(opus/sonnet),
+    # 配置里写死会把 frontmatter 压掉 —— 同族前科见 test_resolved_model_key_absent...
+    for role in ("l3_rank", "l4_card", "l4_intel", "strategist"):
+        assert "model" not in resolved[role]
+
+
+def _dual():
+    roles = {role: {"tier": "critical"} for role in sorted(uc._AGENT_ROLES)}
+    return {
+        "agents": roles,
+        "agent_engines": {
+            "claude": {"tiers": {"critical": {"effort": "max"}}},
+            "codex": {"tiers": {"critical": {
+                "model": "gpt-5.6-sol", "reasoning_effort": "ultra",
+                "fallback": {"model": "gpt-5.6-terra", "reasoning_effort": "high"},
+            }}, "role_overrides": {"l4_intel": {"web_search": "live"}}},
+        },
+    }
+
+
+def test_dual_schema_resolves_engine_specific_vocabulary(tmp_path):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps(_dual()), encoding="utf-8")
+    cfg = uc.load_user_config(p)
+
+    claude = uc.resolve_agent_config(cfg, engine="claude")
+    codex = uc.resolve_agent_config(cfg, engine="codex")
+    assert claude["l3_rank"] == {"effort": "max"}
+    assert codex["l3_rank"] == {"model": "gpt-5.6-sol", "reasoning_effort": "ultra"}
+    assert codex["l4_intel"]["web_search"] == "live"
+
+
+def test_codex_capability_mismatch_uses_only_declared_supported_fallback():
+    capabilities = {
+        "gpt-5.6-sol": {"reasoning_efforts": ["low", "medium"], "web_search": True},
+        "gpt-5.6-terra": {"reasoning_efforts": ["high"], "web_search": True},
+    }
+    bundle = uc.resolve_agent_bundle(_dual(), engine="codex", capabilities=capabilities)
+
+    assert bundle["capability_status"] == "FALLBACK_APPLIED"
+    assert len(bundle["capability_mismatches"]) == len(uc._AGENT_ROLES)
+    assert bundle["declared_roles"]["l3_rank"]["reasoning_effort"] == "ultra"
+    assert bundle["roles"]["l3_rank"] == {
+        "model": "gpt-5.6-terra", "reasoning_effort": "high",
+    }
+    assert bundle["roles"]["l4_intel"]["web_search"] == "live"
+
+
+def test_dual_schema_rejects_unknown_tier_and_engine_fields(tmp_path):
+    bad_tier = _dual()
+    bad_tier["agents"]["l3_rank"] = {"tier": "missing"}
+    with pytest.raises(ValueError, match="tier"):
+        uc.resolve_agent_config(bad_tier, engine="codex")
+
+    bad_field = _dual()
+    bad_field["agent_engines"]["codex"]["tiers"]["critical"]["effort"] = "high"
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps(bad_field), encoding="utf-8")
+    with pytest.raises(ValueError, match="reasoning_effort"):
+        uc.load_user_config(p)
+
+
+def test_materialized_bundle_separates_declared_runtime_and_resolved(tmp_path):
+    capabilities = {"gpt-5.6-sol": {"reasoning_efforts": ["ultra"], "web_search": True}}
+    bundle = uc.resolve_agent_bundle(_dual(), engine="codex", capabilities=capabilities)
+    out = uc.materialize_agent_config(
+        "2026-09-13", _dual(), root=tmp_path, engine="codex", bundle=bundle,
+    )
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["engine"] == "codex"
+    assert payload["declared_roles"] == bundle["declared_roles"]
+    assert payload["runtime_capabilities"] == capabilities
+    assert payload["roles"] == bundle["roles"]
+
+
+def test_codex_runtime_capabilities_are_loaded_from_model_cache(tmp_path):
+    cache = tmp_path / "models_cache.json"
+    cache.write_text(json.dumps({"models": [{
+        "slug": "gpt-test", "supported_reasoning_levels": [
+            {"effort": "low"}, {"effort": "ultra"}],
+        "web_search_tool_type": "text_and_image",
+    }]}), encoding="utf-8")
+    assert uc.load_codex_capabilities(cache) == {
+        "gpt-test": {"reasoning_efforts": ["low", "ultra"], "web_search": True}
+    }
