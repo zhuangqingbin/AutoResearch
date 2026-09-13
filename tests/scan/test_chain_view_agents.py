@@ -832,3 +832,139 @@ def test_visible_text_classifies_message_agent_message_and_tool_result_correctly
     assert "助手可见分析文本" in md
     assert "推理小结:综合三项指标后判断" in md
     assert "这是工具返回,不该被当成可见分析文本" not in md
+
+
+# ═══════════════════════ Task 8 (2026-09-12): the real producer, not the
+# synthetic ledger fixture ═══════════════════════
+#
+# `_ledger_index`/`_ledger_normalized` above are Task 5's own synthetic
+# contract, built before `transcript_binder.offline_index` (Task 8) existed
+# (controller ruling #2: "Task 5's own review flagged that its shape was a
+# synthetic contract pending your producer; your review will diff the two").
+# This test replaces that synthetic ledger with `offline_index`'s *real*
+# output against a real, hand-built frozen run (no `chain_view.py` edits --
+# this only proves the already-committed reader correctly consumes the new
+# producer's actual bytes).
+
+
+def _frozen_run_for_chain_view(tmp_path, *, code=CODE, date=DATE, report_run_id="20260827-0827_1930"):
+    """A minimal, *real* frozen run `transcript_binder.offline_index` can
+    process end to end: a real `capsule/events/events.jsonl` dispatch pair,
+    a real `run_contract.json` (with a `workspace_path` this run's own
+    archived transcript write path is built to agree with), and one
+    retention-archived transcript -- everything `offline_index` actually
+    reads, none of `chain_view`'s own synthetic ledger helpers."""
+    import gzip
+
+    from autoresearch.trace.events import append_event
+
+    run = _base_run(tmp_path, code=code, date=date, run_id=report_run_id)
+    contract_run_id = "20260827T193000000000Z"
+    workspace_path = str(tmp_path / "original-workspace")
+    contract = {
+        "schema_version": 3, "run_id": contract_run_id, "engine": "claude",
+        "run_kind": "scan-market", "analysis_date": date, "session_ref": None,
+        "workspace_path": workspace_path, "user_config": {},
+    }
+    (run / "trace" / "run_contract.json").write_text(json.dumps(contract), encoding="utf-8")
+    (run / "manifest.json").write_text(
+        json.dumps({"analysis_date": date, "run_id": contract_run_id,
+                    "generated_at": "2026-08-27T20:00:00"}),
+        encoding="utf-8",
+    )
+    (run / "trace" / "staging" / "run_mode.json").write_text(
+        json.dumps({"schema_version": 1, "mode": "FULL"}), encoding="utf-8"
+    )
+    events_path = run / "capsule" / "events" / "events.jsonl"
+    events_path.parent.mkdir(parents=True, exist_ok=True)
+    inv_id = f"l4-card-{code}-1"
+    # `append_event` stamps `ts` itself (the real wall clock -- it takes no
+    # `now=` override); this single-member family binds via a tier-1 product
+    # hit with no purpose-built invocation_id, so the exact dispatch/complete
+    # timestamps never enter the attribution decision (see `assign()`'s
+    # single-member-family fast path) -- the archived rows' own `timestamp`
+    # fields below are independent, fixed values used only for readability.
+    append_event(
+        events_path, run_id=contract_run_id, engine="claude", stage="l4",
+        invocation_id=inv_id, attempt=1, subject=code, event_type="AGENT_DISPATCHED",
+        payload={"role": "l4-card"},
+    )
+    append_event(
+        events_path, run_id=contract_run_id, engine="claude", stage="l4",
+        invocation_id=inv_id, attempt=1, subject=code, event_type="AGENT_COMPLETED",
+        payload={"role": "l4-card", "result": {}},
+    )
+    dispatched_ts = "2026-08-27T19:00:00.000000Z"
+    completed_ts = "2026-08-27T19:05:00.000000Z"
+
+    card_abs_path = f"{workspace_path}/staging/{date}/details/{code}.md"
+    rows = [
+        {
+            "type": "assistant", "timestamp": dispatched_ts,
+            "message": {"id": "msg-1", "model": "claude-opus-5", "content": [
+                {"type": "tool_use", "id": "tool-1", "name": "Write",
+                 "input": {"file_path": card_abs_path, "content": "# 决策卡\n"}},
+            ]},
+        },
+        {
+            "type": "user", "timestamp": completed_ts,
+            "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "tool-1", "content": "ok", "is_error": False},
+            ]},
+        },
+    ]
+    raw = ("\n".join(json.dumps(r) for r in rows) + "\n").encode("utf-8")
+    archive_dir = run / "trace" / "transcripts"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    (archive_dir / "l4-card-agent-h01chainview.jsonl.gz").write_bytes(
+        gzip.compress(raw, compresslevel=6, mtime=0)
+    )
+    (archive_dir / "_index.json").write_text(
+        json.dumps({
+            "schema_version": 1, "agents": ["l4-card"],
+            "transcripts": [{
+                "agent": "l4-card", "file": "agent-h01chainview.jsonl", "status": "PRESENT",
+                "raw_bytes": len(raw), "gz_bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
+            }],
+        }),
+        encoding="utf-8",
+    )
+    return run, inv_id
+
+
+def test_h01_real_offline_index_output_renders_through_chain_view(tmp_path, monkeypatch):
+    """`chain_view.py` is never edited for this task -- this proves the
+    reader already committed in Task 5 correctly consumes
+    `transcript_binder.offline_index`'s *actual* bytes (not a hand-built
+    stand-in), for a capsule whose own `agents/index.json` never even
+    mentions this invocation (the realistic "no capsule row at all" case,
+    distinct from V01's "capsule row present but GONE")."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ws, "ENGINE", "claude")
+    monkeypatch.setattr(ws, "context_root", lambda: tmp_path / "context_claude")
+    monkeypatch.setattr(ws, "reports_root", lambda: tmp_path / "reports_claude")
+    from autoresearch.scan import transcript_binder as tb
+
+    run, inv_id = _frozen_run_for_chain_view(tmp_path)
+    # No capsule/agents/index.json at all -- exactly what a real published
+    # run predating Task 4's active-wiring looks like (never even attempted
+    # to bind at publish time -- distinct from V01's "attempted and GONE").
+
+    result = tb.offline_index(run, sessions_root=tmp_path / "no-sessions")
+    row = next(r for r in result["invocations"] if r["invocation_id"] == inv_id)
+    assert row["status"] == "PRESENT"
+    assert row["binding_status"] == "BOUND"
+
+    md = chain_view.render(run, CODE)
+    assert "来源=ledger_backfill" in md
+    assert "原始状态=NO_CAPSULE_INDEX" in md
+    assert "补录状态=PRESENT" in md
+    assert "成功 1" in md  # the WRITE_SUCCEEDED offline_index actually recorded
+
+    # Verbose mode resolves the ledger-relative `normalized` path exactly as
+    # chain_view.py:_EvidenceCache.normalized_doc computes it -- proving the
+    # producer's relative-path convention (report_run_id/revision_id/
+    # normalized/<invocation_id>.json) is what the already-committed reader
+    # expects, not a shape this test had to special-case.
+    verbose_md = chain_view.render(run, CODE, verbose=True)
+    assert f"snapshot={row['snapshot_id'][:12]}" in verbose_md
