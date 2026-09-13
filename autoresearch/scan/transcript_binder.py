@@ -18,15 +18,20 @@ CLI、`post_run` 接线 —— 全部 Task 4。不建离线索引/抢救 —— 
 """
 from __future__ import annotations
 
+import argparse
+import contextlib
+import json
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from autoresearch.common import workspace as ws
 from autoresearch.contracts import artifacts
 from autoresearch.contracts.profiles import profile_factory
 from autoresearch.trace import capsule as capsule_mod
+from autoresearch.trace.atomic import atomic_write_json
 from autoresearch.trace.capsule_models import RunHandle
 from autoresearch.trace.transcripts.base import RunIdentity, TranscriptRef, TranscriptStats
 from autoresearch.trace.transcripts.claude import ClaudeTranscriptAdapter
@@ -185,6 +190,24 @@ def agent_expectations(handle: RunHandle) -> dict[str, dict]:
     """
     agent_rows = capsule_mod._expectations_from_agent_events(handle)
     task_rows = capsule_mod._task_expectations(handle)
+    # Deliberately permissive on `business_status`/`last_stage` (both left at
+    # `RunProfile`'s own defaults, "SUCCEEDED" and `None`) -- Finding 3,
+    # 2026-09-13 fix round 1. Unlike `finalize()`'s own `profile_factory(...)`
+    # call in capsule.py, which populates both from the run's actual
+    # terminal state, this loop only ever consults `profile.role_expected`,
+    # and `role_expected`'s SENTINEL_EMPTY mode-skip check -- the one thing
+    # that matters here -- returns before ever reaching `stage_reached()`
+    # (`contracts/profiles.py`: `if vocab.skips_l4(self.mode) and role in
+    # SENTINEL_SKIPPED_ROLES: return False`, checked first). A permissive
+    # `stage_reached()` therefore changes nothing this loop decides on its
+    # own: the real, load-bearing gate for "did this role's stage actually
+    # run" is `_iter_product_subjects`'s own file-existence check just below
+    # -- a stage genuinely never reached has no product file regardless of
+    # what this profile claims about "reached". Computing a real mid-run
+    # `last_stage` would mean reading checkpoints from a run still in
+    # flight, and risks a false "not yet reached" for a stage that
+    # completes moments later -- a worse failure mode than the permissive
+    # default, which never manufactures a false exclusion.
     profile = profile_factory(handle.contract.run_kind)(
         mode=capsule_mod.resolve_run_mode(handle)
     )
@@ -398,6 +421,15 @@ def build_codex_candidates(
     能归属才补入;补入后保留边界扩展证据" -- keeping the whole-file candidate
     around is how a call_id-correlated return outside the narrow window can
     still be found).
+
+    Finding 6 (2026-09-13 fix round 1): "complete"/"partial" is supposed to
+    mean the segment provably belongs to *that* invocation alone. Two
+    purpose-built windows sharing one rollout are cross-checked pairwise for
+    ordinal overlap before either candidate is built; an overlapping pair is
+    downgraded to ``segment_quality="interleaved"`` (spec §4.4's own term
+    for exactly this -- "交错区段...只有可唯一归属的才进入本票确定统计") rather
+    than letting both independently claim exclusivity `ordinal_window_for_timestamps`
+    (which only ever sees one invocation's own window at a time) cannot see.
     """
     resolved_adapter = adapter or CodexTranscriptAdapter()
     search = discover_rollout_candidates(
@@ -432,6 +464,10 @@ def build_codex_candidates(
             )
         )
 
+        # Precompute every l4-card invocation's own window over *this*
+        # snapshot before building any windowed candidate -- overlap can
+        # only be judged once every window for this shared source is known.
+        windows: dict[str, tuple[int | None, int | None, str]] = {}
         for inv_id, exp in expectations.items():
             if exp.get("role") != "l4-card":
                 continue
@@ -444,6 +480,13 @@ def build_codex_candidates(
             )
             if quality == "unknown":
                 continue
+            windows[inv_id] = (start_ord, end_ord, quality)
+
+        overlapping = _overlapping_invocations(windows)
+
+        for inv_id, (start_ord, end_ord, quality) in windows.items():
+            exp = expectations[inv_id]
+            effective_quality = "interleaved" if inv_id in overlapping else quality
             windowed_ref = TranscriptRef(
                 engine="codex",
                 path=path,
@@ -466,11 +509,38 @@ def build_codex_candidates(
                     path=path,
                     ref=windowed_ref,
                     stats=windowed_stats,
-                    segment_quality=quality,
+                    segment_quality=effective_quality,
                     session_ref=run_identity.session_ref,
                 )
             )
     return tuple(candidates)
+
+
+def _overlapping_invocations(
+    windows: Mapping[str, tuple[int | None, int | None, str]],
+) -> set[str]:
+    """Which invocation_ids' own ordinal windows overlap at least one other
+    invocation's, out of a set of windows over the *same* shared source.
+
+    An unbounded edge (``None``, from a partial window whose attempt has not
+    yet terminated) is treated conservatively as extending to cover
+    anything on that side -- never assumed non-overlapping just because one
+    edge is unknown, matching `_within`'s own conservative-on-``None``
+    convention elsewhere in this module.
+    """
+    ids = list(windows)
+    overlapping: set[str] = set()
+    for i, inv_a in enumerate(ids):
+        a_start, a_end, _ = windows[inv_a]
+        for inv_b in ids[i + 1 :]:
+            b_start, b_end, _ = windows[inv_b]
+            if a_end is not None and b_start is not None and a_end < b_start:
+                continue
+            if b_end is not None and a_start is not None and b_end < a_start:
+                continue
+            overlapping.add(inv_a)
+            overlapping.add(inv_b)
+    return overlapping
 
 
 # ------------------------------------------------------------- path safety
@@ -492,24 +562,56 @@ def _staging_root(workspace: Path) -> Path | None:
     return dated[0] if len(dated) == 1 else None
 
 
+def _other_run_id_in_path(path: Path, *, this_run_id: str) -> str | None:
+    """A different, validly-shaped run_id appearing anywhere in *path*'s
+    components, or ``None``. Used only to make a rejection reason *specific*
+    ("this write belongs to run X") rather than a bare "escaped somewhere" --
+    never used to accept or attribute anything; a hit here always leads to a
+    rejection, one reason string richer than the generic one.
+    """
+    for part in path.parts:
+        if part == this_run_id:
+            continue
+        try:
+            ws.validate_run_id(part)
+        except ValueError:
+            continue
+        return part
+    return None
+
+
 def _normalize_operation_path(
     raw: str | None,
     *,
     cwd: Path | None,
-    workspace: Path,
+    staging: Path,
+    run_id: str,
     engine: str,
-) -> tuple[Path | None, str | None]:
-    """Resolve *raw* against the call's own cwd, then verify it (spec §4.3).
+) -> tuple[str | None, str | None]:
+    """Resolve *raw* against the call's own cwd, verify it against *staging*,
+    and return it already made relative to *staging* (posix) -- the single
+    decision point for path safety in this task (spec §4.3; Controller
+    ruling 1: the only path work this task performs at all).
 
-    The only path work this whole task performs (Controller ruling 1): given
-    an already-classified operation's structured path, join it to *cwd* when
-    relative, then reject anything that (after following any symlinks --
-    `Path.resolve()` chases them, so a symlink-based escape is caught the
-    same way a literal ``..`` is, never trusted as "unverified") lands
-    outside *workspace* -- which is this run's own root, so this single
-    check rejects directory escape *and* cross-run at once (a different
-    run's workspace is a sibling directory, never a sub-path of this one)
-    -- or that crosses into another engine's root.
+    2026-09-13 fix round 1 (Findings 1+2): this function used to check
+    containment against the wider run *workspace* and return an absolute
+    path, while its one caller (`assign`) independently re-checked
+    containment against the narrower *staging* directory via a second
+    `.relative_to()` call. Two decision points for one question -- and the
+    workspace-level one was provably dead: *staging* is always a
+    subdirectory of *workspace*, so nothing could ever pass the caller's
+    staging check while failing this function's workspace check, and the
+    reviewer confirmed removing the internal check failed no test. Staging
+    is now the *only* boundary checked, here, and the caller trusts this
+    return value completely -- no second containment check anywhere else.
+
+    The *specific* rejection reason (previously computed and discarded by
+    the caller) is now the return value itself, not swallowed into a generic
+    "no evidence" message downstream: cross-engine, cross-run (naming the
+    other run), and generic directory escape are three distinguishable
+    strings, checked in that order so each is independently reachable (a
+    path that is both cross-engine *and* not cross-run reports "crosses
+    into engine", never falls through to the generic message).
     """
     if not raw:
         return None, "operation carries no path"
@@ -520,17 +622,26 @@ def _normalize_operation_path(
     except (OSError, RuntimeError) as exc:  # pragma: no cover - platform-dependent
         return None, f"path could not be resolved: {exc}"
     try:
-        workspace_resolved = workspace.resolve(strict=False)
+        staging_resolved = staging.resolve(strict=False)
     except (OSError, RuntimeError) as exc:  # pragma: no cover - platform-dependent
-        return None, f"workspace root could not be resolved: {exc}"
-    if not resolved.is_relative_to(workspace_resolved):
-        return None, f"path escapes this run's workspace: {resolved}"
-    for other in ws.ENGINES:
-        if other == engine:
-            continue
-        if f"context_{other}" in resolved.parts or f"reports_{other}" in resolved.parts:
-            return None, f"path crosses into engine {other!r}: {resolved}"
-    return resolved, None
+        return None, f"staging root could not be resolved: {exc}"
+    if not resolved.is_relative_to(staging_resolved):
+        for other in ws.ENGINES:
+            if other == engine:
+                continue
+            if f"context_{other}" in resolved.parts or f"reports_{other}" in resolved.parts:
+                return None, f"path crosses into engine {other!r}: {resolved}"
+        other_run = _other_run_id_in_path(resolved, this_run_id=run_id)
+        if other_run is not None:
+            return None, (
+                f"path belongs to a different run {other_run!r}, not this "
+                f"run's staging directory: {resolved}"
+            )
+        return None, (
+            f"path escapes this run's staging directory (directory "
+            f"traversal): {resolved}"
+        )
+    return resolved.relative_to(staging_resolved).as_posix(), None
 
 
 # --------------------------------------------------------------- attribution
@@ -626,7 +737,6 @@ def assign(
     """
     workspace = ws.find_run_root(run_identity.run_id)
     staging = _staging_root(workspace) if workspace is not None else None
-    staging_resolved = staging.resolve(strict=False) if staging is not None else None
 
     accepted: list[TranscriptCandidate] = []
     unmatched: list[dict] = []
@@ -648,27 +758,38 @@ def assign(
             continue
         accepted.append(candidate)
 
+    # `candidate_products[i]` / `candidate_rejections[i]` are parallel to
+    # `accepted[i]`. Fix round 1, Finding 2: `_normalize_operation_path` is
+    # now the *only* place that decides containment (against `staging`
+    # directly) -- there is no second `.relative_to()` check here anymore;
+    # its return value is trusted completely. Fix round 1, Finding 1: the
+    # *specific* reason a write was rejected (cross-engine / cross-run /
+    # directory escape) is kept per candidate rather than discarded, so a
+    # row that falls back to tier 2 or GONE can say what actually happened
+    # to that candidate's own write attempt(s), not just "no evidence".
     candidate_products: list[dict[str, list]] = []
+    candidate_rejections: list[list[str]] = []
     for candidate in accepted:
         hits: dict[str, list] = {}
-        if staging_resolved is not None and workspace is not None:
+        rejections: list[str] = []
+        if staging is not None:
             for op in candidate.stats.operations:
                 if op.kind != "WRITE_SUCCEEDED":
                     continue
-                resolved, _reason = _normalize_operation_path(
+                rel, reason = _normalize_operation_path(
                     op.path,
                     cwd=run_identity.cwd,
-                    workspace=workspace,
+                    staging=staging,
+                    run_id=run_identity.run_id,
                     engine=run_identity.engine,
                 )
-                if resolved is None:
-                    continue
-                try:
-                    rel = resolved.relative_to(staging_resolved).as_posix()
-                except ValueError:
+                if rel is None:
+                    if reason is not None:
+                        rejections.append(reason)
                     continue
                 hits.setdefault(rel, []).append(op)
         candidate_products.append(hits)
+        candidate_rejections.append(rejections)
 
     def candidate_window(candidate: TranscriptCandidate) -> tuple:
         return _parse_iso(candidate.stats.started_at), _parse_iso(candidate.stats.ended_at)
@@ -801,6 +922,17 @@ def assign(
                 row["segment_quality"] = candidate.segment_quality
                 row["candidate_path"] = str(candidate.path)
                 row["candidate_paths"] = (str(candidate.path),)
+                # Task 4's own source reference (spec's "来源引用"): the winning
+                # candidate's *own* ref fields, verbatim -- never re-derived. Two
+                # Codex candidates (whole-file + windowed) can share the exact same
+                # `candidate_path` (B05), so the path string alone cannot recover
+                # which one actually won; `bind_run` needs these to call
+                # `capsule.bind_transcript` with the identity `assign()` -- not a
+                # second, independent lookup -- actually chose.
+                row["candidate_engine"] = candidate.engine
+                row["candidate_start_ordinal"] = candidate.ref.start_ordinal
+                row["candidate_end_ordinal"] = candidate.ref.end_ordinal
+                row["candidate_session_ref"] = candidate.session_ref
                 row["search_count"] = (
                     sum(
                         1
@@ -810,12 +942,23 @@ def assign(
                     if candidate.segment_quality == "complete"
                     else None
                 )
-                row["reason"] = (
-                    None
-                    if has_product
-                    else "call identity verified by dispatch window; "
-                    "no verified product write found in the bound segment"
-                )
+                if has_product:
+                    row["reason"] = None
+                else:
+                    reason = (
+                        "call identity verified by dispatch window; "
+                        "no verified product write found in the bound segment"
+                    )
+                    # Finding 1 (2026-09-13 fix round 1): surface the
+                    # *specific* reason(s) this exact, already-identified
+                    # candidate's own rejected write(s) failed -- cross-run,
+                    # cross-engine, directory escape -- rather than only the
+                    # generic "no verified product write" message. Scoped to
+                    # this one candidate (`idx`), never guessed onto another.
+                    own_rejections = candidate_rejections[idx]
+                    if own_rejections:
+                        reason += "; rejected write path(s): " + "; ".join(own_rejections)
+                    row["reason"] = reason
             elif inv_id in ambiguous_for:
                 idxs = sorted(set(ambiguous_for[inv_id]))
                 row["binding_status"] = "AMBIGUOUS"
@@ -833,7 +976,27 @@ def assign(
                 row["candidate_path"] = None
                 row["candidate_paths"] = ()
                 row["search_count"] = None
-                row["reason"] = "no candidate transcript evidences this invocation"
+                reason = "no candidate transcript evidences this invocation"
+                # Finding 1: a GONE row can still name a *specific* rejection
+                # when a candidate whose own window genuinely overlaps this
+                # expectation's had a write rejected -- scoped by window so
+                # an unrelated candidate elsewhere never gets blamed on this
+                # invocation's behalf (no product-path signal survives to
+                # scope by here, since nothing bound).
+                exp_win = expectation_window(exp)
+                if exp_win != (None, None):
+                    relevant = [
+                        reason_text
+                        for cidx, candidate in enumerate(accepted)
+                        if _within(candidate_window(candidate), exp_win)
+                        for reason_text in candidate_rejections[cidx]
+                    ]
+                    if relevant:
+                        reason += (
+                            "; a window-matching candidate had rejected write "
+                            "path(s): " + "; ".join(relevant)
+                        )
+                row["reason"] = reason
             rows[inv_id] = row
 
     known_products = {
@@ -868,13 +1031,428 @@ def assign(
     }
 
 
+# -------------------------------------------------------------- active wiring
+#
+# Task 4 (design §5.2 生产接线). Everything below turns Task 3's pure
+# `agent_expectations`/`assign` into one active-run side effect: a set of
+# authoritative `capsule.bind_transcript` calls, plus the one report
+# `presence="always"` demands whenever `observe` runs
+# (`contracts/artifacts.py`'s `transcript_bindings_report`, registered by
+# Task 1 -- not re-registered here). Nothing here builds an offline index or
+# a salvage path (Tasks 8/9); nothing here is called unless
+# `post_run.publish_run_observation` calls `safe_bind_run` (wired in this
+# same task).
+
+#: The report's own two top-level facts, independent of any one row's
+#: `binding_status` (Controller ruling 5: coverage / binding status / the
+#: materialized carrier status `materialize_agent_index` computes later are
+#: three separate facts -- this module only ever speaks to the first two).
+REPORT_STATUSES: tuple[str, ...] = ("OK", "DISABLED", "ERROR")
+TRANSCRIPT_BINDING_REPORT_SCHEMA_VERSION = 1
+
+#: Single source for the report's on-disk name/root -- resolved from the
+#: registry Task 1 already populated, never a second hand-written literal.
+_BINDINGS_REPORT_ARTIFACT = artifacts.by_name("transcript_bindings_report")
+
+
+def _report_path(scan_dir: Path | str) -> Path:
+    return Path(scan_dir) / _BINDINGS_REPORT_ARTIFACT.path
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def _empty_coverage(*, denominator_quality: str = "full") -> dict:
+    return {
+        "expected": 0,
+        "accounted": 0,
+        "bound": 0,
+        "unverified": 0,
+        "ambiguous": 0,
+        "gone": 0,
+        "errors": 0,
+        "unexpected": 0,
+        "denominator_quality": denominator_quality,
+    }
+
+
+def _base_report(
+    *,
+    run_id: str | None,
+    engine: str | None,
+    enabled: bool,
+    status: str,
+    reason: str | None,
+) -> dict:
+    """The report shape every path (OK / DISABLED / ERROR) shares.
+
+    `rows`/`unexpected`/`unmatched` stay empty and `coverage` stays the
+    all-zero shape unless the caller (only :func:`_bind_and_report`) fills
+    them in from a real `assign()` result -- a disabled or whole-run-failure
+    report never fabricates a row it never computed (spec §4.5: `accounted ==
+    expected` holds trivially at 0 == 0, never "looks complete").
+    """
+    return {
+        "schema_version": TRANSCRIPT_BINDING_REPORT_SCHEMA_VERSION,
+        "run_id": run_id,
+        "engine": engine,
+        "generated_at": _now_iso(),
+        "enabled": enabled,
+        "status": status,
+        "reason": reason,
+        "rows": {},
+        "unexpected": [],
+        "unmatched": [],
+        "coverage": _empty_coverage(),
+    }
+
+
+def _report_without_timestamp(report: Mapping[str, object]) -> dict:
+    # Round-tripped through JSON so a tuple-valued field (e.g. a row's own
+    # `candidate_paths`) compares equal to the list form the *on-disk* report
+    # already carries -- never a real content difference, just JSON's own
+    # tuple/list distinction.
+    return json.loads(
+        json.dumps({k: v for k, v in report.items() if k != "generated_at"}, sort_keys=True)
+    )
+
+
+def _write_report(scan_dir: Path | str, report: dict) -> dict:
+    """Write the staging report, but only when it actually changed.
+
+    Re-running with unchanged bindings must not even touch this file's bytes
+    (ruling 6's "重跑相同绑定...不重复追加", generalized from `bindings.jsonl`
+    to the report that summarizes it) -- this repo's own `_atomic_json`
+    (post_run.py) already applies the identical "skip if unchanged" rule to
+    every other observe-time artifact; a `generated_at` timestamp that
+    changed on every call despite nothing else differing would make this the
+    one artifact that silently broke that convention, and did (caught by
+    `tests/scan/test_wave3_observation.py`'s byte-idempotence check on a
+    second real `publish_run_observation` call).
+    """
+    path = _report_path(scan_dir)
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        existing = None
+    if isinstance(existing, dict) and _report_without_timestamp(
+        existing
+    ) == _report_without_timestamp(report):
+        return existing
+    atomic_write_json(path, report)
+    return report
+
+
+def _tally_coverage(
+    rows: Mapping[str, Mapping[str, object]],
+    *,
+    unexpected: int,
+    denominator_quality: str,
+) -> dict:
+    """Recompute coverage from the *final* per-row statuses this report is
+    about to publish -- never a copy of `assign()`'s own coverage, because a
+    row `assign()` called BOUND can still end up ERROR here (a persistence
+    conflict, §ruling 2) and the two counts would then disagree with the rows
+    they are supposed to summarize."""
+    counts = dict.fromkeys(("bound", "unverified", "ambiguous", "gone", "errors"), 0)
+    for row in rows.values():
+        counts[_STATUS_BUCKET[row["binding_status"]]] += 1
+    return {
+        "expected": len(rows),
+        "accounted": len(rows),
+        **counts,
+        "unexpected": unexpected,
+        "denominator_quality": denominator_quality,
+    }
+
+
+def _persist_binding(handle: RunHandle, inv_id: str, row: Mapping[str, object]) -> dict:
+    """Turn one BOUND/UNVERIFIED_BY_PRODUCT attribution into an authoritative
+    capsule binding, or an explicit `ERROR` row -- never an exception that
+    reaches the caller (Controller ruling 2: a binding conflict, an
+    unreadable source, or any other persistence failure is caught *for this
+    invocation* and recorded with its cause; the batch's other invocations
+    are a separate concern this function knows nothing about, by
+    construction -- the loop in :func:`_bind_and_report` calls this once per
+    row, so nothing here can abort another invocation's turn).
+
+    Binds against the *exact* candidate `assign()` already chose (`path`,
+    `start_ordinal`, `end_ordinal` read straight off the row's own
+    `candidate_*` fields -- never re-derived, never re-scored here).
+    """
+    out = dict(row)
+    try:
+        capsule_mod.bind_transcript(
+            handle.run_id,
+            row["candidate_path"],
+            role=row["role"],
+            invocation_id=inv_id,
+            subject=row.get("subject_key") or row.get("subject"),
+            engine=row.get("candidate_engine") or handle.engine,
+            start_ordinal=row.get("candidate_start_ordinal"),
+            end_ordinal=row.get("candidate_end_ordinal"),
+        )
+    except Exception as exc:  # noqa: BLE001 - isolated per invocation, batch continues
+        out["binding_status"] = "ERROR"
+        out["reason"] = (
+            f"transcript located ({row.get('candidate_path')}) but the binding could "
+            f"not be persisted: {type(exc).__name__}: {exc}"
+        )
+    return out
+
+
+def _bind_and_report(handle: RunHandle, scan_dir: Path | str) -> dict:
+    """The real work: build this run's expectations, locate candidates, attribute
+    them, persist every attributable one, and write the complete report.
+
+    Raises on a *whole-run* failure only (an unreadable expectation set, an
+    unsupported engine, or the report itself being unwritable) -- per
+    invocation, `_persist_binding` never raises. Callers that must never fail
+    (the production wiring in `post_run.py`) go through :func:`safe_bind_run`
+    instead, which wraps this call and degrades rather than propagating.
+    """
+    run_identity = RunIdentity(
+        run_id=handle.run_id, engine=handle.engine, session_ref=handle.contract.session_ref,
+    )
+    if run_identity.engine != ws.ENGINE:
+        # `assign()` resolves this run's own workspace via
+        # `ws.find_run_root(run_identity.run_id)`, which reads the *ambient*
+        # `ws.ENGINE` -- if that ever disagreed with the run's own recorded
+        # engine, `find_run_root` would silently return `None` and every
+        # product-derived expectation would attribute zero evidence with no
+        # error raised (review finding on Task 3: "safe by convention, not
+        # enforced"). `handle.engine` is `require_active_run`'s own validated
+        # `contract.engine`, already checked against `ws.ENGINE` inside
+        # `capsule.load_run` -- so this can only fire if that invariant is
+        # ever broken elsewhere, and it must fail loudly rather than
+        # silently zero every product-derived row when it does.
+        raise RuntimeError(
+            "transcript_binder: run engine "
+            f"{run_identity.engine!r} does not match ambient ws.ENGINE {ws.ENGINE!r}; "
+            "refusing to attribute product evidence under a mismatched engine root"
+        )
+    expectations = agent_expectations(handle)
+    if handle.engine == "claude":
+        candidates: tuple[TranscriptCandidate, ...] = build_claude_candidates(run_identity)
+    elif handle.engine == "codex":
+        candidates = build_codex_candidates(run_identity, expectations)
+    else:
+        raise ValueError(f"unsupported engine for transcript binding: {handle.engine!r}")
+
+    result = assign(candidates, expectations, run_identity)
+
+    rows: dict[str, dict] = {}
+    for inv_id, row in result["rows"].items():
+        if row["binding_status"] in ("BOUND", "UNVERIFIED_BY_PRODUCT"):
+            rows[inv_id] = _persist_binding(handle, inv_id, row)
+        else:
+            rows[inv_id] = dict(row)
+
+    report = {
+        "schema_version": TRANSCRIPT_BINDING_REPORT_SCHEMA_VERSION,
+        "run_id": handle.run_id,
+        "engine": handle.engine,
+        "generated_at": _now_iso(),
+        "enabled": True,
+        "status": "OK",
+        "reason": None,
+        "rows": rows,
+        "unexpected": list(result["unexpected"]),
+        "unmatched": list(result["unmatched"]),
+        "coverage": _tally_coverage(
+            rows,
+            unexpected=len(result["unexpected"]),
+            denominator_quality=result["coverage"]["denominator_quality"],
+        ),
+    }
+    return _write_report(scan_dir, report)
+
+
+def bind_run(run_id: str, scan_dir: Path | str) -> dict:
+    """Bind *run_id*'s transcripts against its own expectation set, persist every
+    attributable one, and write the staging report -- the active CLI's and
+    `safe_bind_run`'s shared entry point.
+
+    Requires the run to still be ACTIVE (ruling 1: binding happens before
+    `retain` mirrors staging and before the capsule freezes). Raises on a
+    whole-run failure; use :func:`safe_bind_run` where binding must never
+    break a publish.
+    """
+    handle = capsule_mod.require_active_run(run_id)
+    return _bind_and_report(handle, scan_dir)
+
+
+def _configured_bind_transcripts() -> bool:
+    """`scan_config.jsonc`'s `retention.bind_transcripts` (default ``True``).
+
+    Config-layer failure (bad file / whitelist violation) degrades to the
+    documented default -- the same discipline as
+    `relative_buy.configured_relative_buy()`: a broken config must not
+    silently *turn off* evidence collection, so the safe fallback direction
+    is "still try", with the failure itself printed to stderr.
+    """
+    from autoresearch.scan.user_config import load_user_config
+
+    try:
+        block = load_user_config().get("retention") or {}
+    except Exception as exc:  # noqa: BLE001 - config failure must not silently disable binding
+        print(
+            f"[transcript_binder] scan_config 读取失败({exc!r})→ "
+            "retention.bind_transcripts 用内建默认 True",
+            file=sys.stderr,
+        )
+        return True
+    return bool(block.get("bind_transcripts", True))
+
+
+def _safe_write(scan_dir: Path | str, report: dict) -> dict | None:
+    try:
+        return _write_report(scan_dir, report)
+    except Exception as exc:  # noqa: BLE001 - even the fallback write must never raise outward
+        print(
+            f"[transcript_binder] 报告落盘失败({type(exc).__name__}: {exc})→ 本次无法留痕",
+            file=sys.stderr,
+        )
+        return None
+
+
+def safe_bind_run(scan_dir: Path | str) -> dict | None:
+    """Never raises. The only call site `post_run.publish_run_observation` uses.
+
+    Three outcomes, each still writing the ``presence="always"`` staging
+    report (design §9) so a consumer never has to guess why it is missing:
+
+    - the switch is off, or there is no active run -> ``enabled=False``
+      report with a reason; no existing evidence (`agents/bindings.jsonl`)
+      is touched or cleared (ruling 4).
+    - the switch is on, an active run exists, and binding completes ->
+      the real report from :func:`bind_run` (individual rows may still be
+      ``ERROR``/``AMBIGUOUS``/``GONE`` -- that is a legitimate, accounted
+      outcome, not a failure of this function).
+    - the switch is on, an active run exists, but something breaks before a
+      report can be computed (an unreadable expectation set, an unsupported
+      engine) -> ``enabled=True, status="ERROR"`` report, plus the existing
+      evidence-degradation channel and stderr (ruling 3: a publish must
+      never fail because evidence collection failed, and never silently
+      claim completeness when it did not).
+    """
+    scan = Path(scan_dir)
+    if not _configured_bind_transcripts():
+        return _safe_write(
+            scan,
+            _base_report(
+                run_id=None,
+                engine=None,
+                enabled=False,
+                status="DISABLED",
+                reason="retention.bind_transcripts=false in scan_config",
+            ),
+        )
+    try:
+        run_id = ws.active_run_id()
+    except ValueError as exc:
+        return _safe_write(
+            scan,
+            _base_report(
+                run_id=None,
+                engine=None,
+                enabled=False,
+                status="DISABLED",
+                reason=f"invalid AUTORESEARCH_RUN_ID: {exc}",
+            ),
+        )
+    if not run_id:
+        return _safe_write(
+            scan,
+            _base_report(
+                run_id=None,
+                engine=None,
+                enabled=False,
+                status="DISABLED",
+                reason="no active forensic run",
+            ),
+        )
+    try:
+        handle = capsule_mod.require_active_run(run_id)
+    except Exception as exc:  # noqa: BLE001 - "not active" is a normal disabled state, not a failure
+        return _safe_write(
+            scan,
+            _base_report(
+                run_id=run_id,
+                engine=None,
+                enabled=False,
+                status="DISABLED",
+                reason=f"run is not an active forensic run: {type(exc).__name__}: {exc}",
+            ),
+        )
+    try:
+        return _bind_and_report(handle, scan)
+    except Exception as exc:  # noqa: BLE001 - whole-run failure: degrade + stderr, never raise
+        message = f"{type(exc).__name__}: {exc}"
+        with contextlib.suppress(Exception):  # degradation bookkeeping must not itself raise here
+            capsule_mod._degrade_evidence(handle, "capsule.transcript_binding", message)
+        print(
+            "[transcript_binder] 整场绑定失败"
+            f"({message})→ 报告标 ERROR;证据降级不等于发布失败",
+            file=sys.stderr,
+        )
+        return _safe_write(
+            scan,
+            _base_report(
+                run_id=handle.run_id,
+                engine=handle.engine,
+                enabled=True,
+                status="ERROR",
+                reason=message,
+            ),
+        )
+
+
+def _cli_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="autoresearch.scan.transcript_binder")
+    parser.add_argument(
+        "--run-id",
+        required=True,
+        help=(
+            "contract_run_id (capsule identity). Staging is taken from this run's "
+            "own handle -- never guessed as the newest directory in a date folder."
+        ),
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _cli_parser().parse_args(argv)
+    try:
+        handle = capsule_mod.require_active_run(args.run_id)
+        report = bind_run(handle.run_id, handle.staging)
+    except Exception as exc:  # noqa: BLE001 - CLI surfaces one structured error, non-zero exit
+        print(
+            json.dumps(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False
+            ),
+            file=sys.stderr,
+        )
+        return 2
+    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
+
 __all__ = [
     "BOUNDARY_QUALITIES",
     "DENOMINATOR_QUALITIES",
     "EXPECTATION_SOURCES",
+    "REPORT_STATUSES",
     "TranscriptCandidate",
     "agent_expectations",
     "assign",
+    "bind_run",
     "build_claude_candidates",
     "build_codex_candidates",
+    "safe_bind_run",
 ]

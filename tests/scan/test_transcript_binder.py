@@ -9,7 +9,15 @@ Every fixture below is synthetic, built from the *real* event/transcript row
 shapes (`tests/trace/fixtures/{claude,codex}/*.jsonl` are the reference
 shapes copied here field-for-field), never a real private transcript, and
 every file this test suite writes lives under ``tmp_path`` -- nothing here
-ever reads or writes the real ``~/.claude/projects`` or ``~/.codex/sessions``.
+ever reads or writes the real ``~/.claude/projects`` or ``~/.codex/sessions``
+(the Task 4 tests below that exercise ``bind_run``/``safe_bind_run`` through
+their real, unoverridden adapter construction redirect ``$HOME`` itself to a
+``tmp_path`` subdirectory for exactly this reason -- see
+``_home_projects_root``).
+
+Task 4 additions (B07's persistence-level conflict, R01, the engine-agreement
+guard, the config switch, and the active CLI) start at the ``# Task 4``
+banner below; B01-B10 above it are Task 3's own, unmodified.
 """
 from __future__ import annotations
 
@@ -17,7 +25,10 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from autoresearch.common import workspace as ws
+from autoresearch.contracts import artifacts
 from autoresearch.contracts.stages import ROLE_STAGES
 from autoresearch.scan import l4_tasks, transcript_binder as tb
 from autoresearch.trace import capsule as capsule_mod
@@ -86,6 +97,23 @@ def _emit_task_event(
     """Drive the *real* `l4_tasks._record_task_transition` -- not a synthetic
     TASK_* event dict -- so this suite exercises the actual production
     writer, matching the brief's "real event ... formats" instruction.
+
+    Known, deliberate fixture limitation (2026-09-13 fix round 1, coordinator
+    note): the returned event's ``ts`` is `trace.events`'s own
+    `_utc_now()` -- the *real* wall clock -- because `append_event` takes no
+    ``now=`` override and this helper does not monkeypatch it. Tests that mix
+    this real ``ts`` with the fixed ``base = datetime(2026, 8, 27, ...)``
+    used for a rollout's own `session_meta`/`turn_context` rows (B05, the
+    overlapping-windows test) are therefore correct only because the real
+    clock is *after* 2026-08-27 -- true for the entire remaining lifetime of
+    this fixture, since 2026-08-27 only ever recedes further into the past,
+    but not a hermetically pinned guarantee. Deliberately left undone rather
+    than monkeypatching `trace.events._utc_now` (used by every event this
+    suite's fixtures record, including `RunState`/contract timestamps via
+    `begin_run` itself): that patch's blast radius is larger than this one
+    ordering assumption, and the assumption it would protect can only ever
+    fail under a deliberately-mocked-into-the-past system clock, not a
+    realistic CI condition.
     """
     task = l4_tasks._new_task(
         code,
@@ -133,6 +161,20 @@ def _claude_write_row(tool_id: str, target: Path, *, ts: str, msg_id: str, conte
                     "name": "Write",
                     "input": {"file_path": str(target), "content": content},
                 }
+            ],
+        },
+    }
+
+
+def _claude_search_row(tool_id: str, query: str, *, ts: str, msg_id: str) -> dict:
+    return {
+        "type": "assistant",
+        "timestamp": ts,
+        "message": {
+            "id": msg_id,
+            "model": "claude-opus-5",
+            "content": [
+                {"type": "tool_use", "id": tool_id, "name": "WebSearch", "input": {"query": query}}
             ],
         },
     }
@@ -265,6 +307,52 @@ def test_b01_successful_write_with_unique_identity_binds(tmp_path, monkeypatch):
     assert result["coverage"]["bound"] == 1
 
 
+def test_search_count_is_reported_when_segment_is_complete(tmp_path, monkeypatch):
+    """Finding 5 (2026-09-13 fix round 1): only the unknown-segment path
+    (B06) was previously exercised for `search_count` -- the case where a
+    `complete` segment is entitled to state a real, non-None number was
+    never held by any assertion. A Claude candidate is always `complete`
+    once uniquely bound, so two real search operations plus the product
+    write must be counted."""
+    handle = _begin_claude(tmp_path, monkeypatch)
+    d = _dispatch_agent(
+        handle, "AGENT_DISPATCHED", role="l4-card", subject="600016",
+        invocation_id="l4-card-600016-1", attempt=1,
+    )
+    c = _dispatch_agent(
+        handle, "AGENT_COMPLETED", role="l4-card", subject="600016",
+        invocation_id="l4-card-600016-1", attempt=1,
+    )
+
+    projects_root = tmp_path / "projects"
+    session_ref = "session-search-count"
+    subagent = _claude_subagent_path(projects_root, session_ref, "search-count")
+    card_path = handle.staging / "details" / "600016.md"
+    _write_claude_rows(
+        subagent,
+        [
+            _claude_search_row("tool-s1", "600016 news", ts=d["ts"], msg_id="msg-1"),
+            _claude_result_row("tool-s1", ts=d["ts"], content="search result 1"),
+            _claude_search_row("tool-s2", "600016 announcement", ts=d["ts"], msg_id="msg-2"),
+            _claude_result_row("tool-s2", ts=d["ts"], content="search result 2"),
+            _claude_write_row("tool-w", card_path, ts=c["ts"], msg_id="msg-3"),
+            _claude_result_row("tool-w", ts=c["ts"]),
+        ],
+    )
+
+    run_identity = RunIdentity(run_id=handle.run_id, engine="claude", session_ref=session_ref)
+    expectations = tb.agent_expectations(handle)
+    candidates = tb.build_claude_candidates(
+        run_identity, adapter=ClaudeTranscriptAdapter(projects_root=projects_root)
+    )
+    result = tb.assign(candidates, expectations, run_identity)
+
+    row = result["rows"]["l4-card-600016-1"]
+    assert row["binding_status"] == "BOUND"
+    assert row["segment_quality"] == "complete"
+    assert row["search_count"] == 2
+
+
 # ---------------------------------------------------------------------- B02
 
 
@@ -311,32 +399,58 @@ def test_b02_read_only_and_failed_write_never_claim_success(tmp_path, monkeypatc
 
 
 def test_b03_cross_run_and_escape_paths_are_rejected_visibly(tmp_path, monkeypatch):
-    """B03: 其他 run、同日重跑、相对路径逃逸 -> 不误绑定; 原因可见."""
-    handle = _begin_claude(tmp_path, monkeypatch)
-    d = _dispatch_agent(
-        handle, "AGENT_DISPATCHED", role="l4-card", subject="600002",
-        invocation_id="l4-card-600002-1", attempt=1,
-    )
-    c = _dispatch_agent(
-        handle, "AGENT_COMPLETED", role="l4-card", subject="600002",
-        invocation_id="l4-card-600002-1", attempt=1,
-    )
+    """B03: 其他 run、同日重跑、相对路径逃逸 -> 不误绑定; 原因可见.
 
-    projects_root = tmp_path / "projects"
+    2026-09-13 fix round 1 (Finding 1): one sub-case per rejection kind
+    `_normalize_operation_path` actually distinguishes -- directory escape,
+    cross-run (naming the other run), cross-engine -- each asserting the
+    *specific* reason text, not merely that some reason exists. Each code
+    gets its own AGENT dispatch cycle and its own subagent file so the three
+    rejections never interact.
+    """
+    handle = _begin_claude(tmp_path, monkeypatch)
     session_ref = "session-b03"
-    subagent = _claude_subagent_path(projects_root, session_ref, "b03")
-    # An "escape" write: walks out of this run's own workspace entirely.
-    escaping_target = handle.workspace / ".." / ".." / "etc" / "passwd"
-    other_run_target = handle.workspace.parent / "20260101T000000000000Z" / "staging" / DATE / "details" / "600002.md"
-    _write_claude_rows(
-        subagent,
-        [
-            _claude_write_row("tool-1", escaping_target, ts=d["ts"], msg_id="msg-1"),
-            _claude_result_row("tool-1", ts=d["ts"]),
-            _claude_write_row("tool-2", other_run_target, ts=c["ts"], msg_id="msg-2"),
-            _claude_result_row("tool-2", ts=c["ts"]),
-        ],
+    projects_root = tmp_path / "projects"
+
+    def _dispatch_and_write(code: str, agent_name: str, target: Path) -> dict:
+        d = _dispatch_agent(
+            handle, "AGENT_DISPATCHED", role="l4-card", subject=code,
+            invocation_id=f"l4-card-{code}-1", attempt=1,
+        )
+        c = _dispatch_agent(
+            handle, "AGENT_COMPLETED", role="l4-card", subject=code,
+            invocation_id=f"l4-card-{code}-1", attempt=1,
+        )
+        subagent = _claude_subagent_path(projects_root, session_ref, agent_name)
+        _write_claude_rows(
+            subagent,
+            [
+                _claude_write_row("tool-1", target, ts=d["ts"], msg_id="msg-1"),
+                _claude_result_row("tool-1", ts=c["ts"]),
+            ],
+        )
+        return {"dispatched": d, "completed": c}
+
+    # Case 1: pure directory escape -- no run-id-shaped or engine-shaped
+    # component anywhere in the resolved path, just walks out entirely.
+    escape_target = handle.workspace / ".." / ".." / "etc" / "passwd"
+    _dispatch_and_write("600002", "b03-escape", escape_target)
+
+    # Case 2: cross-run -- a syntactically valid *other* run_id sits in the
+    # resolved path, so the rejection can name it specifically.
+    other_run_target = (
+        handle.workspace.parent / "20260101T000000000000Z" / "staging" / DATE
+        / "details" / "600020.md"
     )
+    _dispatch_and_write("600020", "b03-crossrun", other_run_target)
+
+    # Case 3: cross-engine -- resolves under the *other* engine's context
+    # root entirely (never relative to this run's own staging).
+    cross_engine_target = (
+        tmp_path / "context_codex" / "scan_runs" / "20260101T000000000000Z"
+        / "staging" / DATE / "details" / "600021.md"
+    )
+    _dispatch_and_write("600021", "b03-crossengine", cross_engine_target)
 
     run_identity = RunIdentity(run_id=handle.run_id, engine="claude", session_ref=session_ref)
     expectations = tb.agent_expectations(handle)
@@ -345,11 +459,75 @@ def test_b03_cross_run_and_escape_paths_are_rejected_visibly(tmp_path, monkeypat
     )
     result = tb.assign(candidates, expectations, run_identity)
 
-    row = result["rows"]["l4-card-600002-1"]
-    assert row["binding_status"] != "BOUND"
-    assert row["reason"]
+    escape_row = result["rows"]["l4-card-600002-1"]
+    crossrun_row = result["rows"]["l4-card-600020-1"]
+    crossengine_row = result["rows"]["l4-card-600021-1"]
+
+    for row in (escape_row, crossrun_row, crossengine_row):
+        assert row["binding_status"] != "BOUND"
+        assert row["reason"]
+
+    assert "directory traversal" in escape_row["reason"]
+    assert "different run" in crossrun_row["reason"]
+    assert "20260101T000000000000Z" in crossrun_row["reason"]
+    assert "crosses into engine" in crossengine_row["reason"]
+    assert "'codex'" in crossengine_row["reason"]
+
     # Neither rejected write is silently promoted to "unexpected" evidence either.
     assert result["unexpected"] == ()
+
+
+def test_normalize_operation_path_rejects_each_kind_specifically(tmp_path):
+    """Unit-level companion to B03 (Finding 2): exercises
+    `_normalize_operation_path` directly so the single surviving containment
+    check has its own test independent of `assign()`'s wiring -- removing
+    the containment check inside the function must fail *this* test, not
+    only an integration-level one three layers away."""
+    run_id = "20260827T010203456789Z"
+    workspace = tmp_path / "context_claude" / "scan_runs" / run_id
+    staging = workspace / "staging" / DATE
+    staging.mkdir(parents=True)
+
+    # Success: a path genuinely inside staging normalizes to its relative form.
+    good = staging / "details" / "600002.md"
+    rel, reason = tb._normalize_operation_path(
+        str(good), cwd=None, staging=staging, run_id=run_id, engine="claude"
+    )
+    assert rel == "details/600002.md"
+    assert reason is None
+
+    # No path at all.
+    rel, reason = tb._normalize_operation_path(
+        None, cwd=None, staging=staging, run_id=run_id, engine="claude"
+    )
+    assert rel is None
+    assert "no path" in reason
+
+    # Directory escape.
+    escape = workspace / ".." / ".." / "etc" / "passwd"
+    rel, reason = tb._normalize_operation_path(
+        str(escape), cwd=None, staging=staging, run_id=run_id, engine="claude"
+    )
+    assert rel is None
+    assert "directory traversal" in reason
+
+    # Cross-run: a different, validly-shaped run_id in the path.
+    other_run = workspace.parent / "20260101T000000000000Z" / "staging" / DATE / "x.md"
+    rel, reason = tb._normalize_operation_path(
+        str(other_run), cwd=None, staging=staging, run_id=run_id, engine="claude"
+    )
+    assert rel is None
+    assert "different run" in reason
+    assert "20260101T000000000000Z" in reason
+
+    # Cross-engine.
+    cross_engine = tmp_path / "context_codex" / "scan_runs" / run_id / "staging" / DATE / "x.md"
+    rel, reason = tb._normalize_operation_path(
+        str(cross_engine), cwd=None, staging=staging, run_id=run_id, engine="claude"
+    )
+    assert rel is None
+    assert "crosses into engine" in reason
+    assert "'codex'" in reason
 
 
 # ---------------------------------------------------------------------- B04
@@ -467,6 +645,79 @@ def test_b05_two_retries_get_their_own_segments_not_the_whole_file(tmp_path, mon
     # claimed twice" -- distinguishable via the ref this task threads through.
     assert row1["segment_quality"] in ("complete", "partial")
     assert row2["segment_quality"] in ("complete", "partial")
+
+
+def test_overlapping_purpose_built_windows_are_interleaved_not_complete(tmp_path, monkeypatch):
+    """Finding 6 (2026-09-13 fix round 1): unlike B05's disjoint retries,
+    these two attempts' own [claimed, terminal] windows genuinely overlap in
+    wall-clock time (claimed1 < claimed2 < failed1 < succeeded2). Neither
+    `ordinal_window_for_timestamps` call sees the other invocation's window,
+    so each would independently report "complete" unless something
+    cross-checks them -- "complete" is supposed to mean the segment
+    provably covers that invocation *exclusively*, which is false here for
+    both. Both must downgrade to `segment_quality="interleaved"`, never
+    `"complete"`."""
+    handle = _begin_codex(tmp_path, monkeypatch, session_ref="0123456789abcdef-overlap")
+    claimed1 = _emit_task_event(handle, code="600017", attempt=1, event_type="TASK_CLAIMED")
+    claimed2 = _emit_task_event(handle, code="600017", attempt=2, event_type="TASK_CLAIMED")
+    failed1 = _emit_task_event(
+        handle, code="600017", attempt=1, event_type="TASK_FAILED",
+        error_class="TRANSIENT", old_status="CLAIMED",
+    )
+    success2 = _emit_task_event(
+        handle, code="600017", attempt=2, event_type="TASK_SUCCEEDED", old_status="CLAIMED",
+    )
+    # Sanity: the four events really did interleave in wall-clock order, so
+    # attempt1's window [claimed1, failed1] and attempt2's window
+    # [claimed2, succeeded2] genuinely overlap rather than this test
+    # accidentally reproducing B05's disjoint shape.
+    assert claimed1["ts"] < claimed2["ts"] < failed1["ts"] < success2["ts"]
+
+    session_ref = claimed1["payload"]["session_ref"]
+    sessions_root = tmp_path / "codex-sessions"
+    rollout = sessions_root / "2026" / "08" / "27" / "rollout-overlap.jsonl"
+    card_path = handle.staging / "details" / "600017.md"
+    base = datetime(2026, 8, 27, tzinfo=timezone.utc)
+    rows = [
+        _codex_session_meta(session_ref, str(handle.workspace), ts=_iso(base, 0), ordinal=0),
+        {"timestamp": _iso(base, 1), "ordinal": 1, "type": "turn_context",
+         "payload": {"model": "gpt-5.6-sol"}},
+        _codex_write_row("call-a", card_path, ts=claimed1["ts"], ordinal=2, content="attempt1"),
+        _codex_result_row("call-a", ts=claimed2["ts"], ordinal=3),
+        _codex_write_row("call-b", card_path, ts=failed1["ts"], ordinal=4, content="attempt2"),
+        _codex_result_row("call-b", ts=success2["ts"], ordinal=5),
+    ]
+    _write_codex_rows(rollout, rows)
+
+    run_identity = RunIdentity(
+        run_id=handle.run_id, engine="codex", session_ref=session_ref, cwd=handle.workspace,
+    )
+    expectations = tb.agent_expectations(handle)
+    inv1, inv2 = "l4-card-600017-1", "l4-card-600017-2"
+    assert {inv1, inv2} <= set(expectations)
+
+    candidates = tb.build_codex_candidates(
+        run_identity, expectations, sessions_root=sessions_root,
+        now=datetime(2026, 8, 27, tzinfo=timezone.utc),
+    )
+    # Both windowed candidates exist, and neither independently claims
+    # "complete" -- proving the downgrade happened at candidate-build time,
+    # not merely as an artifact of how `assign()` happens to render it.
+    windowed = [c for c in candidates if c.ref.invocation_id in (inv1, inv2)]
+    assert len(windowed) == 2
+    assert {c.segment_quality for c in windowed} == {"interleaved"}
+
+    result = tb.assign(candidates, expectations, run_identity)
+    row1 = result["rows"][inv1]
+    row2 = result["rows"][inv2]
+    assert row1["segment_quality"] == "interleaved"
+    assert row2["segment_quality"] == "interleaved"
+    assert row1["segment_quality"] != "complete"
+    assert row2["segment_quality"] != "complete"
+    # An interleaved segment's counts are exactly as untrustworthy as an
+    # unknown one -- never reported as a real number.
+    assert row1["search_count"] is None
+    assert row2["search_count"] is None
 
 
 # ---------------------------------------------------------------------- B06
@@ -738,3 +989,517 @@ def test_b10_session_created_yesterday_resumed_today_is_found(tmp_path, monkeypa
     result = tb.assign(candidates, expectations, run_identity)
     inv_id = next(iter(expectations))
     assert result["rows"][inv_id]["binding_status"] == "BOUND"
+
+
+# ============================================================================
+# Task 4
+#
+# `bind_run`/`safe_bind_run`/the report/the CLI (design §5.2 生产接线).
+# Brief: `.superpowers/sdd/2026-09-12-scene-reconstruction-transcript-
+# binding/task-4-brief.md`. Covers acceptance rows B07 (persistence-level
+# conflict -- distinct from Task 3's own attribution-level B07 above) and R01
+# (zero-BUY day / failed run / both sentinel paths), plus the reviewer's two
+# new requirements on Task 3 (engine-agreement guard; ids taken verbatim,
+# never re-derived -- every test below reads `report["rows"]` by the exact
+# key `agent_expectations()` produced, including the synthesized
+# `role-subject-attempt` form).
+# ============================================================================
+
+
+def _home_projects_root(monkeypatch, tmp_path: Path) -> Path:
+    """`bind_run`/`safe_bind_run` build candidates through each adapter's own
+    *default* construction -- the fixed 2-arg public signature
+    (`bind_run(run_id, scan_dir)`) has no room for a test-only adapter
+    override the way B01-B10 inject one directly into `build_claude_
+    candidates`/`build_codex_candidates`. Redirecting ``$HOME`` makes
+    `ClaudeTranscriptAdapter()`'s default `Path.home()/".claude"/"projects"`
+    (and Codex's `Path.home()/".codex"/"sessions"`) land under *tmp_path*,
+    never the real developer home directory."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    return tmp_path / ".claude" / "projects"
+
+
+def test_bind_run_persists_bound_candidate_and_writes_staging_report(tmp_path, monkeypatch):
+    """`bind_run`'s own new work, on top of what B01 already proved about
+    `assign()`: a clean BOUND attribution is actually persisted via
+    `capsule.bind_transcript` (a real row lands in `agents/bindings.jsonl`,
+    not just an in-memory attribution), and the presence=always staging
+    report lands at the registered artifact path with matching content."""
+    projects_root = _home_projects_root(monkeypatch, tmp_path)
+    session_ref = "session-bindrun-01"
+    handle = _begin_claude(tmp_path, monkeypatch, session_ref=session_ref)
+    d = _dispatch_agent(
+        handle, "AGENT_DISPATCHED", role="l4-card", subject="600010",
+        invocation_id="l4-card-600010-1", attempt=1,
+    )
+    c = _dispatch_agent(
+        handle, "AGENT_COMPLETED", role="l4-card", subject="600010",
+        invocation_id="l4-card-600010-1", attempt=1,
+    )
+    subagent = _claude_subagent_path(projects_root, session_ref, "bindrun01")
+    card_path = handle.staging / "details" / "600010.md"
+    _write_claude_rows(
+        subagent,
+        [
+            _claude_write_row("tool-1", card_path, ts=d["ts"], msg_id="msg-1"),
+            _claude_result_row("tool-1", ts=c["ts"]),
+        ],
+    )
+
+    report = tb.bind_run(handle.run_id, handle.staging)
+
+    assert report["enabled"] is True
+    assert report["status"] == "OK"
+    assert report["reason"] is None
+    row = report["rows"]["l4-card-600010-1"]
+    assert row["binding_status"] == "BOUND"
+    assert row["segment_quality"] == "complete"
+    assert report["coverage"] == {
+        "expected": 1, "accounted": 1, "bound": 1, "unverified": 0,
+        "ambiguous": 0, "gone": 0, "errors": 0, "unexpected": 0,
+        "denominator_quality": "full",
+    }
+
+    report_path = handle.staging / artifacts.by_name("transcript_bindings_report").path
+    assert report_path.is_file()
+    # Round-trip the in-memory report through JSON too before comparing --
+    # `assign()`'s own rows carry tuples (`candidate_paths`) that JSON
+    # legitimately renders as lists; a direct `==` against the raw in-memory
+    # dict would fail on that type distinction alone, not on any real content
+    # difference.
+    assert json.loads(report_path.read_text(encoding="utf-8")) == json.loads(json.dumps(report))
+
+    bindings = [
+        json.loads(line)
+        for line in (handle.capsule / "agents/bindings.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert len(bindings) == 1
+    assert bindings[0]["invocation_id"] == "l4-card-600010-1"
+    assert bindings[0]["path"] == str(subagent.resolve())
+
+
+def test_bind_run_rerun_with_unchanged_bindings_does_not_touch_report_bytes(
+    tmp_path, monkeypatch,
+):
+    """Ruling 6, generalized from `bindings.jsonl` to the report that
+    summarizes it: re-running `bind_run` against the exact same, already-
+    bound evidence must not even rewrite `_transcript_bindings.json`'s bytes
+    -- a `generated_at` timestamp that changed on every call despite nothing
+    else differing would make this the one observe-time artifact that broke
+    this repo's own byte-idempotence convention (caught for real by
+    `tests/scan/test_wave3_observation.py`'s second-call check)."""
+    projects_root = _home_projects_root(monkeypatch, tmp_path)
+    session_ref = "session-bindrun-rerun"
+    handle = _begin_claude(tmp_path, monkeypatch, session_ref=session_ref)
+    d = _dispatch_agent(
+        handle, "AGENT_DISPATCHED", role="l4-card", subject="600015",
+        invocation_id="l4-card-600015-1", attempt=1,
+    )
+    c = _dispatch_agent(
+        handle, "AGENT_COMPLETED", role="l4-card", subject="600015",
+        invocation_id="l4-card-600015-1", attempt=1,
+    )
+    subagent = _claude_subagent_path(projects_root, session_ref, "bindrunrerun")
+    card_path = handle.staging / "details" / "600015.md"
+    _write_claude_rows(
+        subagent,
+        [
+            _claude_write_row("tool-1", card_path, ts=d["ts"], msg_id="msg-1"),
+            _claude_result_row("tool-1", ts=c["ts"]),
+        ],
+    )
+    report_path = handle.staging / artifacts.by_name("transcript_bindings_report").path
+
+    first = tb.bind_run(handle.run_id, handle.staging)
+    first_bytes = report_path.read_bytes()
+    first_bindings = (handle.capsule / "agents/bindings.jsonl").read_bytes()
+
+    second = tb.bind_run(handle.run_id, handle.staging)
+
+    # Byte-level proof first (the real claim: the file was never rewritten,
+    # not even its `generated_at`) -- then a content check normalized through
+    # one JSON round-trip on *both* sides (the first call's raw in-memory
+    # dict still carries tuples like `candidate_paths`; `second` is read back
+    # off disk as lists -- the same distinction the on-disk-vs-in-memory
+    # comparisons above hit, not a real difference).
+    assert report_path.read_bytes() == first_bytes
+    assert (handle.capsule / "agents/bindings.jsonl").read_bytes() == first_bindings
+    assert json.loads(json.dumps(second)) == json.loads(json.dumps(first))
+
+
+def test_bind_and_report_rejects_engine_mismatch_loudly(tmp_path, monkeypatch):
+    """Review finding on Task 3: `assign()` resolves this run's own workspace
+    via `ws.find_run_root(run_identity.run_id)`, which reads the *ambient*
+    `ws.ENGINE` -- if that ever disagreed with the run's own recorded engine,
+    `find_run_root` would silently return `None` and every product-derived
+    expectation would attribute zero evidence with no error raised ("safe by
+    convention, not enforced"). `_bind_and_report` must fail loudly instead.
+
+    Exercised directly against the private `_bind_and_report`: `bind_run`/
+    `safe_bind_run`'s own `require_active_run` call already forbids reaching
+    a mismatched state through either public entry point in normal use (it
+    raises its own, different error first) -- this proves the belt as well
+    as the suspenders the review asked for.
+    """
+    _home_projects_root(monkeypatch, tmp_path)
+    handle = _begin_claude(tmp_path, monkeypatch)
+    monkeypatch.setattr(ws, "ENGINE", "codex")
+
+    with pytest.raises(RuntimeError, match="engine"):
+        tb._bind_and_report(handle, handle.staging)
+
+
+def test_b07_bind_conflict_leaves_original_binding_and_continues(tmp_path, monkeypatch):
+    """Task 4's own B07 (persistence-level -- distinct from Task 3's
+    attribution-level B07 above): a genuine change to an already-bound
+    segment is recorded as a conflict (Controller ruling 6), the pre-existing
+    binding is left untouched (never overwritten), the *other* invocation in
+    the same batch still binds normally (ruling 2: a per-invocation failure
+    never aborts the batch), and the report accounts for both (spec §4.5:
+    accounted == expected, coverage sums)."""
+    projects_root = _home_projects_root(monkeypatch, tmp_path)
+    session_ref = "session-b07-bindrun"
+    handle = _begin_claude(tmp_path, monkeypatch, session_ref=session_ref)
+
+    strategist_d = _dispatch_agent(
+        handle, "AGENT_DISPATCHED", role="strategist", invocation_id="strategist-market-1",
+        attempt=1,
+    )
+    strategist_c = _dispatch_agent(
+        handle, "AGENT_COMPLETED", role="strategist", invocation_id="strategist-market-1",
+        attempt=1,
+    )
+    card_d = _dispatch_agent(
+        handle, "AGENT_DISPATCHED", role="l4-card", subject="600011",
+        invocation_id="l4-card-600011-1", attempt=1,
+    )
+    card_c = _dispatch_agent(
+        handle, "AGENT_COMPLETED", role="l4-card", subject="600011",
+        invocation_id="l4-card-600011-1", attempt=1,
+    )
+
+    strategist_path = handle.staging / "market_view.md"
+    card_path = handle.staging / "details" / "600011.md"
+    strategist_sub = _claude_subagent_path(projects_root, session_ref, "strategist07")
+    _write_claude_rows(
+        strategist_sub,
+        [
+            _claude_write_row("tool-s", strategist_path, ts=strategist_d["ts"], msg_id="msg-s"),
+            _claude_result_row("tool-s", ts=strategist_c["ts"]),
+        ],
+    )
+    card_sub = _claude_subagent_path(projects_root, session_ref, "card07")
+    _write_claude_rows(
+        card_sub,
+        [
+            _claude_write_row("tool-c", card_path, ts=card_d["ts"], msg_id="msg-c"),
+            _claude_result_row("tool-c", ts=card_c["ts"]),
+        ],
+    )
+
+    # Pre-seed a *different*, already-bound identity for the card invocation
+    # -- a genuine prior binding this run's own real evidence now disagrees
+    # with (ruling 6's "变更区段写冲突而不覆盖").
+    conflicting_source = tmp_path / "external" / "unrelated.jsonl"
+    conflicting_source.parent.mkdir(parents=True, exist_ok=True)
+    conflicting_source.write_text('{"type": "unrelated"}\n', encoding="utf-8")
+    capsule_mod.bind_transcript(
+        handle.run_id, conflicting_source, role="l4-card", subject="600011",
+        invocation_id="l4-card-600011-1", engine="claude",
+    )
+    original_bindings = (handle.capsule / "agents/bindings.jsonl").read_text(encoding="utf-8")
+    assert original_bindings.strip()  # sanity: the pre-seed really landed
+
+    report = tb.bind_run(handle.run_id, handle.staging)
+
+    # The pre-seeded card line is untouched -- not overwritten, not dropped.
+    # The file as a *whole* legitimately grows (the strategist invocation, a
+    # genuinely new binding in the same batch, appends its own line) -- B07
+    # is about that one conflicting line surviving unmodified, not about the
+    # whole file staying byte-identical despite other real work happening.
+    after_bindings = (handle.capsule / "agents/bindings.jsonl").read_text(encoding="utf-8")
+    assert original_bindings.strip() in after_bindings
+    after_lines = [line for line in after_bindings.splitlines() if line.strip()]
+    card_lines = [line for line in after_lines if '"l4-card-600011-1"' in line]
+    assert card_lines == [original_bindings.strip()]  # exactly the one, unchanged line
+
+    card_row = report["rows"]["l4-card-600011-1"]
+    strategist_row = report["rows"]["strategist-market-1"]
+    assert card_row["binding_status"] == "ERROR"
+    assert "conflict" in card_row["reason"].lower()
+    assert strategist_row["binding_status"] == "BOUND"
+    assert report["coverage"]["expected"] == report["coverage"]["accounted"] == 2
+    assert report["coverage"]["bound"] == 1
+    assert report["coverage"]["errors"] == 1
+    assert report["status"] == "OK"  # the *run* of bind_run itself did not fail
+
+
+# ---------------------------------------------------------------------- R01
+
+
+def test_r01_full_mode_run_accounts_without_inventing_invocations(tmp_path, monkeypatch):
+    """R01, leg 1: a normal, fully-successful research day. Whether E6
+    ultimately decides BUY or 0-BUY that day is irrelevant to transcript
+    binding -- it never reads `_relative_buy_decision.json` -- so this test's
+    job is only to show accounting matches exactly what actually dispatched,
+    no more, no less."""
+    projects_root = _home_projects_root(monkeypatch, tmp_path)
+    session_ref = "session-r01-full"
+    handle = _begin_claude(tmp_path, monkeypatch, session_ref=session_ref)
+
+    d = _dispatch_agent(
+        handle, "AGENT_DISPATCHED", role="strategist", invocation_id="strategist-market-1",
+        attempt=1,
+    )
+    c = _dispatch_agent(
+        handle, "AGENT_COMPLETED", role="strategist", invocation_id="strategist-market-1",
+        attempt=1,
+    )
+    strategist_path = handle.staging / "market_view.md"
+    sub = _claude_subagent_path(projects_root, session_ref, "r01strategist")
+    _write_claude_rows(
+        sub,
+        [
+            _claude_write_row("tool-s", strategist_path, ts=d["ts"], msg_id="msg-s"),
+            _claude_result_row("tool-s", ts=c["ts"]),
+        ],
+    )
+
+    report = tb.bind_run(handle.run_id, handle.staging)
+
+    assert set(report["rows"]) == {"strategist-market-1"}
+    assert report["coverage"] == {
+        "expected": 1, "accounted": 1, "bound": 1, "unverified": 0,
+        "ambiguous": 0, "gone": 0, "errors": 0, "unexpected": 0,
+        "denominator_quality": "full",
+    }
+
+
+def test_r01_failed_run_accounts_as_gone_without_fabricating_evidence(tmp_path, monkeypatch):
+    """R01, leg 2: a failed attempt that never produced a transcript is
+    accounted as GONE -- never silently dropped, never fabricated as bound.
+    Also exercises the Codex engine branch of `_bind_and_report`: an empty
+    `~/.codex/sessions` naturally yields zero candidates with no crash, and
+    with no wall-clock-anchored fixture-date gymnastics required (nothing
+    exists to find, at any date)."""
+    monkeypatch.setenv("HOME", str(tmp_path))  # empty ~/.codex/sessions
+    handle = _begin_codex(tmp_path, monkeypatch)
+    _emit_task_event(handle, code="600012", attempt=1, event_type="TASK_CLAIMED")
+    _emit_task_event(
+        handle, code="600012", attempt=1, event_type="TASK_FAILED",
+        error_class="PERMANENT", old_status="CLAIMED",
+    )
+
+    report = tb.bind_run(handle.run_id, handle.staging)
+
+    assert report["engine"] == "codex"
+    inv_id = next(iter(report["rows"]))
+    assert inv_id == "l4-card-600012-1"  # the id agent_expectations() produced, verbatim
+    row = report["rows"][inv_id]
+    assert row["binding_status"] == "GONE"
+    assert report["coverage"]["expected"] == report["coverage"]["accounted"] == 1
+    assert report["coverage"]["gone"] == 1
+    assert report["unexpected"] == []
+
+
+def test_r01_sentinel_empty_mode_excludes_l4_without_inventing_rows(tmp_path, monkeypatch):
+    """R01, sentinel path 1: SENTINEL_EMPTY (nothing reached L4) must not
+    invent an l4-card expectation just because a stray product file happens
+    to sit on disk (e.g. left over from an unrelated earlier attempt) --
+    `RunProfile.role_expected` (Task 3's own gate, reused unchanged) excludes
+    the role structurally, not by accident of what files happen to exist."""
+    projects_root = _home_projects_root(monkeypatch, tmp_path)
+    session_ref = "session-r01-sentinel-empty"
+    handle = _begin_claude(tmp_path, monkeypatch, session_ref=session_ref)
+    (handle.staging / "run_mode.json").write_text(
+        json.dumps({"mode": "SENTINEL_EMPTY"}), encoding="utf-8",
+    )
+    d = _dispatch_agent(
+        handle, "AGENT_DISPATCHED", role="strategist", invocation_id="strategist-market-1",
+        attempt=1,
+    )
+    c = _dispatch_agent(
+        handle, "AGENT_COMPLETED", role="strategist", invocation_id="strategist-market-1",
+        attempt=1,
+    )
+    strategist_path = handle.staging / "market_view.md"
+    sub = _claude_subagent_path(projects_root, session_ref, "r01sentinelempty")
+    _write_claude_rows(
+        sub,
+        [
+            _claude_write_row("tool-s", strategist_path, ts=d["ts"], msg_id="msg-s"),
+            _claude_result_row("tool-s", ts=c["ts"]),
+        ],
+    )
+    (handle.staging / "details").mkdir(parents=True, exist_ok=True)
+    (handle.staging / "details" / "600013.md").write_text("stray\n", encoding="utf-8")
+
+    report = tb.bind_run(handle.run_id, handle.staging)
+
+    assert set(report["rows"]) == {"strategist-market-1"}
+    assert report["coverage"]["expected"] == 1
+
+
+def test_r01_sentinel_pinned_mode_still_binds_l4_card(tmp_path, monkeypatch):
+    """R01, sentinel path 2: SENTINEL_PINNED's evidence obligations are
+    "完全不同" from SENTINEL_EMPTY's (contracts/stages.py's own words) -- a
+    pinned holding's l4-card must still be expected and bindable, not swept
+    into the same "nothing ran" bucket as SENTINEL_EMPTY."""
+    projects_root = _home_projects_root(monkeypatch, tmp_path)
+    session_ref = "session-r01-sentinel-pinned"
+    handle = _begin_claude(tmp_path, monkeypatch, session_ref=session_ref)
+    (handle.staging / "run_mode.json").write_text(
+        json.dumps({"mode": "SENTINEL_PINNED"}), encoding="utf-8",
+    )
+    d = _dispatch_agent(
+        handle, "AGENT_DISPATCHED", role="l4-card", subject="600014",
+        invocation_id="l4-card-600014-1", attempt=1,
+    )
+    c = _dispatch_agent(
+        handle, "AGENT_COMPLETED", role="l4-card", subject="600014",
+        invocation_id="l4-card-600014-1", attempt=1,
+    )
+    card_path = handle.staging / "details" / "600014.md"
+    sub = _claude_subagent_path(projects_root, session_ref, "r01sentinelpinned")
+    _write_claude_rows(
+        sub,
+        [
+            _claude_write_row("tool-c", card_path, ts=d["ts"], msg_id="msg-c"),
+            _claude_result_row("tool-c", ts=c["ts"]),
+        ],
+    )
+
+    report = tb.bind_run(handle.run_id, handle.staging)
+
+    row = report["rows"]["l4-card-600014-1"]
+    assert row["binding_status"] == "BOUND"
+    assert report["coverage"]["expected"] == 1
+
+
+# ------------------------------------------------------------- safe_bind_run
+
+
+def test_safe_bind_run_writes_disabled_report_when_switch_off(tmp_path, monkeypatch):
+    """Controller ruling 4: the switch off -> `enabled=False` report with a
+    reason, still written (the report is `presence="always"`)."""
+    cfg_dir = tmp_path / ".claude" / "skills" / "scan-market"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "scan_config.jsonc").write_text(
+        json.dumps({"retention": {"bind_transcripts": False}}), encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "autoresearch.scan.user_config.DEFAULT_PATH", cfg_dir / "scan_config.jsonc"
+    )
+    scan = tmp_path / "scan-dir-off"
+    scan.mkdir()
+
+    report = tb.safe_bind_run(scan)
+
+    assert report["enabled"] is False
+    assert report["status"] == "DISABLED"
+    assert "bind_transcripts" in report["reason"]
+    assert report["coverage"]["expected"] == 0
+    on_disk = json.loads((scan / "_transcript_bindings.json").read_text(encoding="utf-8"))
+    assert on_disk == report
+
+
+def test_safe_bind_run_writes_disabled_report_without_active_run(tmp_path, monkeypatch):
+    """Controller ruling 4: no active run -> `enabled=False` report with a
+    reason, no existing evidence touched (there is none to touch here, but
+    the function must not attempt any binding at all)."""
+    monkeypatch.delenv("AUTORESEARCH_RUN_ID", raising=False)
+    monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH", tmp_path / "nope.jsonc")
+    scan = tmp_path / "scan-dir-no-run"
+    scan.mkdir()
+
+    report = tb.safe_bind_run(scan)
+
+    assert report["enabled"] is False
+    assert report["status"] == "DISABLED"
+    assert "active" in report["reason"].lower()
+
+
+def test_safe_bind_run_never_raises_and_degrades_on_whole_run_failure(
+    tmp_path, monkeypatch, capsys,
+):
+    """Controller ruling 3: a publish must never fail because evidence
+    collection failed. A whole-run failure (here: `agent_expectations`
+    itself blowing up) must not propagate -- it goes through the existing
+    evidence-degradation channel and stderr, and the report plainly says
+    ERROR rather than silently claiming completeness."""
+    _home_projects_root(monkeypatch, tmp_path)
+    monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH", tmp_path / "nope.jsonc")
+    handle = _begin_claude(tmp_path, monkeypatch)
+    degraded: list[tuple] = []
+    monkeypatch.setattr(
+        capsule_mod, "_degrade_evidence",
+        lambda handle_, endpoint, reason: degraded.append((endpoint, reason)),
+    )
+    monkeypatch.setattr(
+        tb, "agent_expectations",
+        lambda _handle: (_ for _ in ()).throw(RuntimeError("synthetic expectation failure")),
+    )
+
+    report = tb.safe_bind_run(handle.staging)
+
+    assert report is not None
+    assert report["enabled"] is True
+    assert report["status"] == "ERROR"
+    assert "synthetic expectation failure" in report["reason"]
+    assert degraded and "synthetic expectation failure" in degraded[0][1]
+    assert "整场绑定失败" in capsys.readouterr().err
+
+
+def test_configured_bind_transcripts_defaults_true_on_config_failure(
+    tmp_path, monkeypatch, capsys,
+):
+    """Config-layer failure must degrade toward *more* evidence collection,
+    not silently less (same discipline as `relative_buy.
+    configured_relative_buy()`) -- a scan_config.jsonc typo elsewhere in the
+    file must not silently turn binding off."""
+    bad_cfg = tmp_path / "scan_config.jsonc"
+    bad_cfg.write_text(json.dumps({"unknown_top_level_key": 1}), encoding="utf-8")
+    monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH", bad_cfg)
+
+    assert tb._configured_bind_transcripts() is True
+    assert "retention.bind_transcripts" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------- CLI
+
+
+def test_cli_binds_using_run_handles_own_staging(tmp_path, monkeypatch, capsys):
+    """The active CLI (`python -m autoresearch.scan.transcript_binder
+    --run-id <contract_run_id>`) resolves staging from the run handle
+    itself -- never a guessed "latest directory in a date folder"."""
+    projects_root = _home_projects_root(monkeypatch, tmp_path)
+    session_ref = "session-cli-01"
+    handle = _begin_claude(tmp_path, monkeypatch, session_ref=session_ref)
+    d = _dispatch_agent(
+        handle, "AGENT_DISPATCHED", role="strategist", invocation_id="strategist-market-1",
+        attempt=1,
+    )
+    c = _dispatch_agent(
+        handle, "AGENT_COMPLETED", role="strategist", invocation_id="strategist-market-1",
+        attempt=1,
+    )
+    strategist_path = handle.staging / "market_view.md"
+    sub = _claude_subagent_path(projects_root, session_ref, "clistrategist")
+    _write_claude_rows(
+        sub,
+        [
+            _claude_write_row("tool-s", strategist_path, ts=d["ts"], msg_id="msg-s"),
+            _claude_result_row("tool-s", ts=c["ts"]),
+        ],
+    )
+
+    exit_code = tb.main(["--run-id", handle.run_id])
+
+    assert exit_code == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["rows"]["strategist-market-1"]["binding_status"] == "BOUND"
+    on_disk_path = handle.staging / "_transcript_bindings.json"
+    assert on_disk_path.is_file()
+    assert json.loads(on_disk_path.read_text(encoding="utf-8")) == printed
