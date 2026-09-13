@@ -432,6 +432,16 @@ ARTIFACTS: tuple[Artifact, ...] = (
              required_when="transcript_binder --offline 生成了新的重建版本(revision_id)"),
     Artifact("salvage_provenance", "salvage/*/provenance.json", "ledger", "observe",
              "salvage", "json", "conditional", required_when="salvage 跑过该 report_run_id"),
+    # Task 9(2026-09-12):抢救到的文件字节本身——按内容摘要命名保存(spec §9「文件快照
+    # 按摘要命名保存」),与 `provenance.json` 分开登记,因为它是 dir-kind 的内容寻址
+    # 存储而非单一 JSON 文件;与 `transcript_ledger_revision`/`outcome_migration` 同一
+    # 处置,内部按 sha256 命名的具体文件不逐一登记。只在 `salvage.py` 真的读到了字节
+    # 时才写入(VERIFIED_RUN/TIME_WINDOW_ONLY/OVERWRITTEN_BY_LATER_RUN,以及少数"读到
+    # 字节但判不出窗口"的 UNKNOWN);连字节都没读到的 ABSENT,或未能定位到 transcript
+    # 候选的 UNKNOWN,不产生 blob。
+    Artifact("salvage_blob", "salvage/*/blobs/*", "ledger", "observe",
+             "salvage", "dir", "conditional",
+             required_when="salvage 抢救到至少一份可归档的文件字节(逐文件按内容摘要命名)"),
     Artifact("scene_reconstruction_acceptance", "acceptance/scene-reconstruction-*.md",
              "ledger", "observe", "acceptance", "md", "conditional",
              required_when="真实验收发生后由本引擎执行人记录,不由文档修订生成"),
