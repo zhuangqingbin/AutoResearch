@@ -1805,18 +1805,24 @@ def _source2_salvage_candidates(
     reference material only -- skipped, never contributed as a candidate
     (mutation probe (b) in the task report proves this is load-bearing).
 
-    A blob's on-disk location is resolved via `trace.blobs.blob_path` --
-    the same content-addressed accessor `salvage.py` itself now stores
-    through (2026-09-13, Task 9 fix round 1) -- keyed by the row's own
-    recorded digest, never by joining a stored relative-path string or
-    recomputing a layout this module would then have to keep in sync with
-    salvage's own storage rule by hand (spec §9's reuse mandate).
+    A blob's on-disk location is resolved via `salvage.resolve_blob_path` --
+    the **public accessor** Task 9's own fix round 2 built for exactly this
+    reader (2026-09-13, commit `fbc1a8f`): a row's recorded ``blob["path"]``
+    is trusted as-written (a real, pre-existing row may still name the flat
+    ``blobs/<digest>`` layout `_store_blob` used before it switched to
+    `trace.blobs`' two-level fan-out -- `_merge_rows`'s sticky rule never
+    rewrites an already-`VERIFIED_RUN` row, so that old path is still where
+    those 723 real rows' bytes actually are), falling back to a fresh
+    digest-derived location only when no path was recorded at all. Calling
+    `trace_blobs.blob_path` directly here -- as an earlier version of this
+    function did -- recomputes only the *current* layout and silently drops
+    every pre-fan-out row's evidence; this is exactly the "two modules
+    computing the same content address independently" duplication spec §9
+    forbids, now avoided by calling salvage's own accessor instead.
     """
     from autoresearch.scan import salvage as salvage_mod
-    from autoresearch.trace import blobs as trace_blobs
 
     provenance_path = salvage_mod._provenance_path(run_dir, ledger_root=ledger_root)
-    salvage_dir = provenance_path.parent
     doc = salvage_mod._read_json_lenient(provenance_path)
     if not isinstance(doc, dict):
         return (), {}, []
@@ -1838,14 +1844,14 @@ def _source2_salvage_candidates(
         if not salvage_mod.is_fact(str(row.get("attribution"))):
             continue  # TIME_WINDOW_ONLY/OVERWRITTEN_BY_LATER_RUN/UNKNOWN/ABSENT: reference only
         blob = row.get("blob")
-        if not isinstance(blob, dict) or not blob.get("sha256"):
+        if not isinstance(blob, dict):
             continue
-        try:
-            blob_path = trace_blobs.blob_path(salvage_dir, str(blob["sha256"]))
-        except (OSError, ValueError) as exc:
+        blob_path = salvage_mod.resolve_blob_path(run_dir, blob, ledger_root=ledger_root)
+        if blob_path is None:
             errors.append(
                 {"source": "salvage_verified_run", "path": None,
-                 "error": f"cannot resolve blob location: {exc}"}
+                 "error": f"cannot resolve blob location for {row.get('logical_name')!r} "
+                          f"(recorded blob={blob!r})"}
             )
             continue
         segment_quality = "complete" if row.get("engine") == "claude" else "unknown"

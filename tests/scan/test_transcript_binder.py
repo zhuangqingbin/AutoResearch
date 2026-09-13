@@ -1921,3 +1921,203 @@ def test_h01_invocation_id_that_would_escape_its_directory_is_rejected_not_writt
     assert good_row["binding_status"] == "BOUND"
 
     assert _run_dir_fingerprint(run_dir) == fingerprint_before
+
+
+# --------------------------------------------------- idempotence (ruling 4)
+
+
+def test_offline_index_rerun_against_the_same_sources_produces_no_new_revision(
+    tmp_path, monkeypatch,
+):
+    """Ruling 4: the same sources and the same `OFFLINE_INDEX_PARSER_VERSION`
+    must not rewrite evidence -- re-running produces the identical
+    `current_revision_id`, no second revision directory, and the existing
+    revision's `normalized`/`raw` files are never touched a second time
+    (mtime-unchanged proof, not just a content-equality one). This is also
+    mutation probe (a)'s target: making `revision_id` depend on the clock
+    must turn this test red."""
+    import time
+
+    handle = _begin_claude(tmp_path, monkeypatch, session_ref="session-h01-idempotent")
+    d = _dispatch_agent(
+        handle, "AGENT_DISPATCHED", role="l4-card", subject="600061",
+        invocation_id="l4-card-600061-1", attempt=1,
+    )
+    c = _dispatch_agent(
+        handle, "AGENT_COMPLETED", role="l4-card", subject="600061",
+        invocation_id="l4-card-600061-1", attempt=1,
+    )
+    card_path = handle.staging / "details" / "600061.md"
+    card_path.parent.mkdir(parents=True, exist_ok=True)
+    card_path.write_text("# 600061 决策卡\n", encoding="utf-8")
+    capsule_mod.materialize_agent_index(handle.run_id)
+    run_dir = _freeze_run(tmp_path, handle, "20260827-0827_2300")
+    _write_archived_transcript(
+        run_dir, agent="l4-card", original_name="agent-idempotent.jsonl",
+        rows=[
+            _claude_write_row("tool-1", card_path, ts=d["ts"], msg_id="msg-1"),
+            _claude_result_row("tool-1", ts=c["ts"]),
+        ],
+    )
+
+    first = tb.offline_index(run_dir, sessions_root=tmp_path / "no-sessions")
+    ledger_root = tb._ledger_agents_index_root(run_dir)
+    revision_root = ledger_root / run_dir.name
+    revision_dirs_after_first = sorted(p.name for p in revision_root.iterdir() if p.is_dir())
+    assert len(revision_dirs_after_first) == 1
+    normalized_path = (
+        revision_root / first["current_revision_id"] / "normalized" / "l4-card-600061-1.json"
+    )
+    assert normalized_path.is_file()
+    mtime_after_first = normalized_path.stat().st_mtime_ns
+
+    time.sleep(0.01)  # make a clock-driven bug observable, not just theoretical
+    second = tb.offline_index(run_dir, sessions_root=tmp_path / "no-sessions")
+
+    assert second["current_revision_id"] == first["current_revision_id"]
+    revision_dirs_after_second = sorted(p.name for p in revision_root.iterdir() if p.is_dir())
+    assert revision_dirs_after_second == revision_dirs_after_first  # no new sibling directory
+    assert normalized_path.stat().st_mtime_ns == mtime_after_first  # never rewritten
+    # The one field that *does* legitimately change every call -- it is real
+    # UTC wall-clock time and must not participate in revision identity.
+    assert second["computed_at"] != first["computed_at"]
+
+
+# ------------------------------------------- salvage attribution gate (ruling 3)
+
+
+def test_source2_salvage_only_verified_run_items_become_candidates(tmp_path, monkeypatch):
+    """Ruling 3 / mutation probe (b): only a salvage row whose ``attribution``
+    passes `salvage.is_fact` may serve as an offline-index input.
+    `TIME_WINDOW_ONLY` (and by the same logic `OVERWRITTEN_BY_LATER_RUN`/
+    `UNKNOWN`/`ABSENT`) rows are reference material only and must never
+    become a candidate, even though a blob genuinely exists for them."""
+    from autoresearch.scan import salvage as salvage_mod
+    from autoresearch.trace import blobs as trace_blobs
+
+    _redirect_claude(monkeypatch, tmp_path)
+    run_dir = tmp_path / "reports_claude" / "scan" / "20260827-0827_1800"
+    run_dir.mkdir(parents=True)
+    salvage_dir = tmp_path / "_ledger" / "salvage" / run_dir.name
+    salvage_dir.mkdir(parents=True)
+
+    def _archive(text: str) -> bytes:
+        raw = (json.dumps({"type": "user", "message": {"content": text}}) + "\n").encode("utf-8")
+        return gzip.compress(raw, mtime=0)
+
+    verified_archive = _archive("verified evidence")
+    verified_digest = trace_blobs.put_bytes(salvage_dir, verified_archive)
+    window_archive = _archive("time-window-only, not evidence")
+    window_digest = trace_blobs.put_bytes(salvage_dir, window_archive)
+
+    def _blob_ref(digest: str, size: int) -> dict:
+        return {"sha256": digest, "bytes": size, "path": f"blobs/sha256/{digest[:2]}/{digest}"}
+
+    provenance = {
+        "schema_version": salvage_mod.PROVENANCE_SCHEMA_VERSION,
+        "report_run_id": run_dir.name, "contract_run_id": "x", "engine": "claude",
+        "analysis_date": "2026-08-27", "run_window": {}, "same_date_multi_run": False,
+        "sibling_report_run_ids": [], "captured_at": "2026-08-27T20:00:00Z",
+        "files": [
+            {
+                "file_kind": "transcript", "logical_name": "transcript:verified",
+                "source": "verified-source", "source_sha256": "a" * 64, "source_bytes": 1,
+                "source_mtime": None, "captured_at": "2026-08-27T20:00:00Z",
+                "attribution": "VERIFIED_RUN", "reason": "session_ref matched",
+                "engine": "claude", "session_ref": "session-verified",
+                "snapshot_id": "snap-verified",
+                "blob": _blob_ref(verified_digest, len(verified_archive)),
+                "archive_sha256": verified_digest,
+            },
+            {
+                "file_kind": "transcript", "logical_name": "transcript:window",
+                "source": "window-source", "source_sha256": "b" * 64, "source_bytes": 1,
+                "source_mtime": None, "captured_at": "2026-08-27T20:00:00Z",
+                "attribution": "TIME_WINDOW_ONLY", "reason": "mtime close, not identity",
+                "engine": "claude", "session_ref": None, "snapshot_id": "snap-window",
+                "blob": _blob_ref(window_digest, len(window_archive)),
+                "archive_sha256": window_digest,
+            },
+        ],
+    }
+    (salvage_dir / "provenance.json").write_text(json.dumps(provenance), encoding="utf-8")
+
+    candidates, snapshots, errors = tb._source2_salvage_candidates(
+        run_dir, engine="claude", ledger_root=tmp_path / "_ledger",
+    )
+
+    assert errors == []
+    assert len(candidates) == 1
+    assert candidates[0].session_ref == "session-verified"
+    assert snapshots[str(candidates[0].path)].snapshot_id is not None
+    # The rejected row's own content never entered the candidate pool at all.
+    assert all(
+        "time-window-only" not in json.dumps([dict(r) for r in snap.rows])
+        for snap in snapshots.values()
+    )
+
+
+def test_source2_salvage_reads_a_pre_fan_out_blob_at_its_recorded_flat_path(
+    tmp_path, monkeypatch,
+):
+    """Coordinator finding (2026-09-13, mid-Task-8): a real repo-wide scan
+    found 723 already-`VERIFIED_RUN` salvage rows across 45 published runs
+    whose `blob["path"]` still names the *old*, pre-`trace.blobs` flat
+    layout (`blobs/<digest>`) -- `_merge_rows`'s sticky rule never rewrites
+    an already-verified row after `scan.salvage`'s storage layout changed
+    underneath it. Recomputing a location from `blob["sha256"]` alone (via
+    `trace_blobs.blob_path`, which only ever knows *today's* two-level
+    fan-out) silently finds nothing for every one of those real rows.
+
+    This fixture is built **by hand** at the old flat path -- not through
+    any current code path, which would only ever write the new layout and
+    could never exercise this regression."""
+    from autoresearch.scan import salvage as salvage_mod
+    from autoresearch.trace.atomic import sha256_bytes
+
+    _redirect_claude(monkeypatch, tmp_path)
+    run_dir = tmp_path / "reports_claude" / "scan" / "20260827-0827_1700"
+    run_dir.mkdir(parents=True)
+    salvage_dir = tmp_path / "_ledger" / "salvage" / run_dir.name
+
+    raw = (json.dumps({"type": "user", "message": {"content": "pre-fan-out evidence"}}) + "\n").encode(
+        "utf-8"
+    )
+    archive = gzip.compress(raw, mtime=0)
+    digest = sha256_bytes(archive)
+    flat_blob_path = salvage_dir / "blobs" / digest  # the *old*, pre-fan-out layout
+    flat_blob_path.parent.mkdir(parents=True, exist_ok=True)
+    flat_blob_path.write_bytes(archive)
+
+    provenance = {
+        "schema_version": salvage_mod.PROVENANCE_SCHEMA_VERSION,
+        "report_run_id": run_dir.name, "contract_run_id": "x", "engine": "claude",
+        "analysis_date": "2026-08-27", "run_window": {}, "same_date_multi_run": False,
+        "sibling_report_run_ids": [], "captured_at": "2026-08-27T20:00:00Z",
+        "files": [
+            {
+                "file_kind": "transcript", "logical_name": "transcript:pre-fan-out",
+                "source": "pre-fan-out-source", "source_sha256": "c" * 64, "source_bytes": 1,
+                "source_mtime": None, "captured_at": "2026-08-27T20:00:00Z",
+                "attribution": "VERIFIED_RUN", "reason": "session_ref matched (pre-fan-out era)",
+                "engine": "claude", "session_ref": "session-pre-fan-out",
+                "snapshot_id": "snap-pre-fan-out",
+                # The recorded path names the OLD flat layout verbatim -- exactly
+                # what a real row written before the fix-round-1 layout switch
+                # still has on disk today (`_merge_rows` never rewrote it).
+                "blob": {"sha256": digest, "bytes": len(archive), "path": f"blobs/{digest}"},
+                "archive_sha256": digest,
+            },
+        ],
+    }
+    salvage_dir.mkdir(parents=True, exist_ok=True)
+    (salvage_dir / "provenance.json").write_text(json.dumps(provenance), encoding="utf-8")
+
+    candidates, snapshots, errors = tb._source2_salvage_candidates(
+        run_dir, engine="claude", ledger_root=tmp_path / "_ledger",
+    )
+
+    assert errors == []
+    assert len(candidates) == 1
+    assert candidates[0].session_ref == "session-pre-fan-out"
+    assert candidates[0].path == flat_blob_path.resolve()
