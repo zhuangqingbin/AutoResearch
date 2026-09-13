@@ -860,6 +860,14 @@ def publish_run_observation(
 
         safe_verify_decision(scan, mode=_rb_mode, exclude_pinned=_rb_exclude_pinned,
                              pool=_rb_pool)
+    # 现场重建 Task 4(设计稿 §5.2 生产接线):绑定必须在**这里**——决策校验已经完成
+    # (E6 现算/比对已定稿,不再改变),retain 还没把 staging 镜像进 report_dir,capsule
+    # 也还没冻结。`safe_bind_run` 自己从不抛出(裁定③:证据采集失败不得让发布本身失败),
+    # 开关关闭/无 active run 时它仍写一份带 reason 的禁用报告(裁定④),真正的整场故障走
+    # 既有 evidence-degradation 通道 + stderr,不吞掉、也不假装「证据完整」(裁定③)。
+    from autoresearch.scan.transcript_binder import safe_bind_run
+
+    safe_bind_run(scan)
     report = Path(report_dir) if report_dir is not None else None
     if report is not None:
         # 先刷新报告。标记损坏会把同一 observation 降级；该事实必须先写回预算产物，

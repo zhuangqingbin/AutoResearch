@@ -486,6 +486,90 @@ def test_publish_run_observation_defaults_relative_buy_to_shadow_without_config(
                         "pool": "finalists"}
 
 
+# ── Task 4(2026-09-12 scene-reconstruction · 生产接线):safe_bind_run 的调用点与顺序 ──
+# design: docs/superpowers/specs/2026-09-12-scene-reconstruction-transcript-binding-
+# design.md §5.2 —— 顺序固定为「决策校验完成 → safe_bind_run → retain → finalize」;
+# finalize 在 `publish_run_observation` 返回之后由 CLI 单独调用,不在本函数内。
+
+
+def test_publish_run_observation_calls_safe_bind_run(tmp_path, monkeypatch):
+    """接线证明(task-4 brief 变异探针 (a) 的靶子):删掉生产调用,这条测试必须变红。"""
+    scan = tmp_path / "2026-08-08"
+    scan.mkdir()
+    captured: dict = {}
+
+    def _fake_safe_bind_run(scan_dir):
+        captured["scan_dir"] = scan_dir
+        return {"enabled": True, "status": "OK"}
+
+    monkeypatch.setattr(
+        "autoresearch.scan.transcript_binder.safe_bind_run", _fake_safe_bind_run
+    )
+
+    publish_run_observation(scan, real_scan=False, decision_write="write")
+
+    assert captured.get("scan_dir") == scan
+
+
+def test_publish_run_observation_binds_after_decision_write(tmp_path, monkeypatch):
+    """裁定①(post_run.py 内的顺序):绑定必须在决策校验(writer-1/writer-2)**完成
+    之后**才发生 —— 不能提前到 E6 现算/比对之前。"""
+    scan = tmp_path / "2026-08-09"
+    scan.mkdir()
+    order: list[str] = []
+
+    def _fake_safe_write(_scan_dir, **kwargs):
+        order.append("decision")
+
+    def _fake_safe_bind_run(_scan_dir):
+        order.append("bind")
+        return {"enabled": True, "status": "OK"}
+
+    monkeypatch.setattr("autoresearch.scan.relative_buy.safe_write_decision", _fake_safe_write)
+    monkeypatch.setattr(
+        "autoresearch.scan.transcript_binder.safe_bind_run", _fake_safe_bind_run
+    )
+
+    publish_run_observation(scan, real_scan=False, decision_write="write")
+
+    assert order == ["decision", "bind"]
+
+
+def test_publish_run_observation_binds_before_retain(tmp_path, monkeypatch):
+    """裁定①:绑定必须在 retain **镜像 staging 进 report_dir 之前**发生 —— run 仍
+    active、capsule 还没冻结的那一刻。"""
+    from autoresearch.scan import artifacts as scan_artifacts
+
+    scan = tmp_path / "2026-08-10"
+    scan.mkdir()
+    report = tmp_path / "report-2026-08-10"
+    report.mkdir()
+    order: list[str] = []
+
+    def _fake_safe_bind_run(_scan_dir):
+        order.append("bind")
+        return {"enabled": True, "status": "OK"}
+
+    def _fake_write_artifact_index(_scan_dir, *, report_dir):
+        idx = Path(report_dir) / "artifact_index.json"
+        idx.write_text("{}", encoding="utf-8")
+        return idx
+
+    def _fake_retain(_scan_dir, _report_dir):
+        order.append("retain")
+        return {"errors": []}
+
+    monkeypatch.setattr(
+        "autoresearch.scan.transcript_binder.safe_bind_run", _fake_safe_bind_run
+    )
+    monkeypatch.setattr(scan_artifacts, "write_artifact_index", _fake_write_artifact_index)
+    monkeypatch.setattr("autoresearch.scan.retention.retain", _fake_retain)
+
+    publish_run_observation(scan, report_dir=report, real_scan=False, decision_write="write")
+
+    assert order == ["bind", "retain"]
+
+
 # --- Task 16: CP7 冻结现场 ---------------------------------------------------
 
 
