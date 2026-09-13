@@ -1709,6 +1709,18 @@ def test_lower_bound_denominator_does_not_make_completeness_green(tmp_path, monk
     `_transcript_bindings.json`, `coverage.denominator_quality`, or a row's
     `segment_quality` and let any of them substitute for -- or paper over --
     `agents/index.json`'s own PRESENT/GONE accounting.
+
+    Task 4 guard-depth fix (2026-09-13, `.superpowers/sdd/2026-09-12-scene-
+    reconstruction-transcript-binding/task4-guard-depth-brief.md`): the
+    capsule under assertion now contains `capsule/products/staging/
+    _transcript_bindings.json` (the *archived* copy) before `evaluate` runs,
+    not just `handle.staging`'s live one -- `_transcript_bindings.json` is a
+    registered staging-root artifact (`contracts/artifacts.py:425`), so a
+    real finalize's own copytree (`capsule.py:2814-2819`) is what puts it
+    there, and that archived copy is the only place a future coupling could
+    plausibly read it from once a run is done. Without this, the guard's
+    capsule never contained the file it is meant to prove nobody reads --
+    a lamp-less green light.
     """
     from autoresearch.contracts.profiles import profile_factory
     from autoresearch.trace import completeness as completeness_mod
@@ -1737,6 +1749,22 @@ def test_lower_bound_denominator_does_not_make_completeness_green(tmp_path, monk
     index = capsule_mod.materialize_agent_index(handle.run_id)
     assert index["coverage"]["missing"] > 0  # the l4-card gap really is there
     assert not any(row.get("role") == "sector-brief" for row in index["invocations"])
+
+    # Reproduces finalize's step 2 (`capsule.py:2814-2819`) explicitly,
+    # rather than calling `capsule.finalize` itself, so this guard stays
+    # independent of finalize's other two steps -- transcript
+    # materialization/usage/external-evidence writing (step 1) and
+    # write_expected/replay (step 3) -- machinery this guard has no
+    # business depending on. This is what actually archives `handle.
+    # staging`'s just-written `_transcript_bindings.json` into the capsule,
+    # at `products/staging/_transcript_bindings.json`, exactly as a real
+    # finalize leaves it for `completeness.evaluate` to find (or not find).
+    if handle.staging.is_dir():
+        shutil.copytree(
+            handle.staging, handle.capsule / "products/staging", dirs_exist_ok=True,
+        )
+    archived_bindings = handle.capsule / "products/staging/_transcript_bindings.json"
+    assert archived_bindings.is_file()  # sanity: the guard can now see what it must ignore
 
     profile = profile_factory(handle.contract.run_kind)(mode="FULL")
     verdict = completeness_mod.evaluate(handle.capsule, profile)
