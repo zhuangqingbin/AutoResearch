@@ -595,3 +595,37 @@ def test_l3_lowturn_wrong_type_raises(tmp_path):
     p.write_text(json.dumps({"l3": {"lowturn": True}}), encoding="utf-8")   # 应为 object
     with pytest.raises(ValueError, match="lowturn"):
         load_user_config(p)
+
+
+# ───────────────────── retention.bind_transcripts(scene-reconstruction Task 4)─────────────────────
+# design: docs/superpowers/specs/2026-09-12-scene-reconstruction-transcript-binding-
+# design.md §5.2。白名单只负责「开关存在且类型对」;解析 + 默认值兜底(缺文件/缺块 = True)
+# 留在消费侧 `autoresearch.scan.transcript_binder._configured_bind_transcripts`,同
+# `relative_buy.configured_relative_buy()` 的既有分工——见该函数自己的测试。
+
+
+def test_retention_bind_transcripts_true_accepted(tmp_path):
+    cfg = load_from(tmp_path, {"retention": {"bind_transcripts": True}})
+    assert cfg["retention"]["bind_transcripts"] is True
+
+
+def test_retention_bind_transcripts_false_accepted(tmp_path):
+    cfg = load_from(tmp_path, {"retention": {"bind_transcripts": False}})
+    assert cfg["retention"]["bind_transcripts"] is False
+
+
+def test_retention_bind_transcripts_bad_type_raises(tmp_path):
+    with pytest.raises(ValueError, match="非法"):
+        load_from(tmp_path, {"retention": {"bind_transcripts": "yes"}})
+
+
+def test_retention_unknown_subkey_raises(tmp_path):
+    with pytest.raises(ValueError):
+        load_from(tmp_path, {"retention": {"bind_transcripts": True, "ttl_days": 3}})
+
+
+def test_retention_missing_block_stays_parity(tmp_path):
+    """缺 `retention` 块 = 现行为不变(parity)—— 白名单本身不隐含开关已经打开或关闭,
+    默认值的解释权在消费侧。"""
+    cfg = load_from(tmp_path, {})
+    assert "retention" not in cfg

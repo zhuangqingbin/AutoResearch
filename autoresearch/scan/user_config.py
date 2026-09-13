@@ -97,6 +97,11 @@ _TOP_WHITELIST = {
     # 默认值仍是 shadow/False(=现行为,parity);翻 active 是用户裁决表批准后的独立动作,
     # 白名单本身只负责「开关存在且类型对」,不隐含已经打开。
     "relative_buy",
+    # 2026-09-12(scene-reconstruction Task 4):transcript 绑定总开关。默认 true(=尝试
+    # 绑定,消费点 `autoresearch.scan.transcript_binder._configured_bind_transcripts`);
+    # 白名单同样只负责「开关存在且类型对」,解析+默认值兜底留在消费侧(同
+    # `relative_buy.configured_relative_buy()` 的既有分工)。
+    "retention",
 }
 _SUB_WHITELIST = {
     "l0": {"cap_floor_yi", "include_bj", "source", "min_amount_yi", "min_list_days"},
@@ -116,6 +121,7 @@ _SUB_WHITELIST = {
         "streaming_l4",
     },
     "relative_buy": {"mode", "exclude_pinned", "activate_date", "pool"},
+    "retention": {"bind_transcripts"},
 }
 
 # ── 运行旋钮类型校验(2026-08-11)——错型静默生效比缺键更难查,一律 raise ──
@@ -156,6 +162,10 @@ _KNOB_TYPES: dict[tuple[str, str], tuple] = {
     # BUY 候选池来源(2026-08-26 §3 路A):"finalists"=v2 逐字行为(判断层持有 BUY)/
     # "composite"=v3(证据层持有 BUY,判断层只否决)。回滚杆就是这一个键。
     ("relative_buy", "pool"): (_t_rbpool, "finalists|composite"),
+    # transcript 绑定总开关(2026-09-12 scene-reconstruction Task 4)。默认 true;
+    # false 或无 active run 时 `transcript_binder.safe_bind_run` 仍写带 reason 的
+    # 禁用报告,不清除已有证据。
+    ("retention", "bind_transcripts"): (_t_bool, "boolean"),
 }
 
 # agents={role: {model, effort}} 的 role 闭集(Wave11 B1)——白名单外一律 raise,防拼写错
