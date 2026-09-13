@@ -1,6 +1,8 @@
-# Session Agent 迁移基线
+# Session Agent 迁移现状
 
 记录日期：2026-09-14。代码基线：`198a669`，迁移分支首提交：`b3be3f4`。
+
+基础层 A01–A08 已落地：严格任务与计划契约、冻结 DAG、动态展开记录、SESSION owner 状态机、run 内 artifact 安全、静态 operation、Codex/Claude 宿主能力适配、统一 CLI、capsule 事件/角色阶段/恢复接缝和故障演练。研究领域接线按 B01–C06 继续推进。
 
 ## 入口与状态归属
 
@@ -12,7 +14,7 @@
 | sector-research FULL/LITE | skill 调 pack/reuse/brief | 无独立 run kind | `sector/pack.py`、`sector/reuse.py`、地形契约 | 缺独立数据前置、run profile 和发布器 |
 | dossier-init | `.claude/workflows/dossier-init.js` | 无独立 run kind | builder/schema 与本引擎 dossier 正文 | 缺候选发布事务、编辑边界和统一恢复 |
 
-## 当前可复用能力
+## 迁移后基础能力
 
 - `contracts/inference_task.py`：九字段、严格字段集合的推理交接信封；不调用模型。
 - `scan/deterministic_runner.py`：只验证 handoff 身份，不是完整 runner。
@@ -22,6 +24,11 @@
 - `scan/user_config.py`：Claude/Codex 配置、能力核对、显式 fallback；迁移不另建模型路由。
 - `research/efficiency_baseline.py`：真实 usage/capability 读数，缺失值保持未知。
 - `common/workspace.py`：进程级引擎隔离；当前只登记 scan-market 和 stock-research。
+- `session_agent/service.py`：`begin/status/next/claim/execute/submit/resume/finish` 应用边界。
+- `session_agent/store.py`：SESSION owner 的 attempt、锁、接收意图、幂等回执与恢复。
+- `session_agent/artifacts.py`：run 内路径约束、symlink/inode/hash 校验。
+- `session_agent/hosts/*`：基于本次证据的宿主能力与独立上下文回执校验。
+- `session_agent/roles.py`：复用现有 skill/agent 正文的逻辑角色登记，不复制 prompt。
 
 ## 宿主基线
 
@@ -33,7 +40,7 @@ Claude 的真实能力与验收必须由 Claude Code 会话在 `context_claude/`
 
 首次运行完整测试时，隔离环境缺少项目运行中实际使用的 `pyarrow`、`akshare`、`tushare` 和 `scipy`。补齐环境依赖后，原 9 个失败中的 8 个全部通过；剩余一项由 Codex harness 注入 `CODEX_*` 且当日 rollout 目录尚未出现，触发测试刻意检查的告警。移除这四个 harness 标识后该项通过。
 
-验证结果：`6105` 个通过，`13` 个按既有现场条件跳过；其中完整首跑为 `6096 passed / 9 failed / 13 skipped`，对 9 项环境失败的定向复验为 `9 passed`。这些结果属于迁移前基线，不表示 session agent 已实现。
+验证结果：`6105` 个通过，`13` 个按既有现场条件跳过；其中完整首跑为 `6096 passed / 9 failed / 13 skipped`，对 9 项环境失败的定向复验为 `9 passed`。这些数字是迁移前对照；每个迁移阶段另运行新增测试和受影响的旧回归。
 
 ## 边界
 

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
+import enum
 import json
 import os
 import sys
+from pathlib import Path
 
 
 def _parser():
@@ -45,7 +48,16 @@ def _load(path):
 
 
 def _emit(value):
-    sys.stdout.write(json.dumps(value, ensure_ascii=False, sort_keys=True) + "\n")
+    def encode(item):
+        if dataclasses.is_dataclass(item):
+            return dataclasses.asdict(item)
+        if isinstance(item, (Path, enum.Enum)):
+            return str(item.value if isinstance(item, enum.Enum) else item)
+        raise TypeError(f"not JSON serializable: {type(item).__name__}")
+
+    sys.stdout.write(
+        json.dumps(value, ensure_ascii=False, sort_keys=True, default=encode) + "\n"
+    )
 
 
 def _error(command, run_id, code, message):
@@ -89,6 +101,10 @@ def main(argv=None):
         os.environ["AUTORESEARCH_RUN_ID"] = run_id
     try:
         from autoresearch.session_agent import service
+        from autoresearch.session_agent.executor import OperationRunning
+        from autoresearch.session_agent.hosts.base import HostCapabilityError
+        from autoresearch.session_agent.store import TaskConflict
+        from autoresearch.session_agent.validation import DomainValidationError
 
         if args.command == "begin":
             request = _load(args.request_file)
@@ -117,6 +133,18 @@ def main(argv=None):
             )
         _emit(value)
         return 0
+    except DomainValidationError as exc:
+        _emit(_error(args.command, run_id, "DOMAIN_VALIDATION_FAILED", str(exc)))
+        return 3
+    except HostCapabilityError as exc:
+        _emit(_error(args.command, run_id, "HOST_CAPABILITY_REQUIRED", str(exc)))
+        return 4
+    except (OperationRunning, OSError) as exc:
+        _emit(_error(args.command, run_id, "RETRYABLE_TOOL_FAILURE", str(exc)))
+        return 5
+    except TaskConflict as exc:
+        _emit(_error(args.command, run_id, "IDENTITY_CONFLICT", str(exc)))
+        return 6
     except (ValueError, TypeError, KeyError, FileNotFoundError) as exc:
         _emit(_error(args.command, run_id, "CONTRACT_ERROR", str(exc)))
         return 2

@@ -7,6 +7,10 @@ from collections.abc import Callable
 from autoresearch.session_agent import artifacts
 
 
+class DomainValidationError(RuntimeError):
+    """A produced artifact failed its declared domain output contract."""
+
+
 def validate_submission_outputs(
     handle,
     submission: dict,
@@ -17,15 +21,25 @@ def validate_submission_outputs(
     """Re-open every declared output, verify its hash, then run domain checks."""
     declared = {item["artifact_id"]: item["sha256"] for item in submission["outputs"]}
     if set(declared) != set(task["output_artifact_ids"]):
-        raise ValueError("submitted outputs do not match task outputs")
+        raise DomainValidationError("submitted outputs do not match task outputs")
     for artifact_id, expected_hash in declared.items():
-        descriptor = artifacts.bind_artifact_hash(handle, artifact_id)
-        if descriptor["sha256"] != expected_hash:
-            raise ValueError(f"artifact hash mismatch: {artifact_id}")
-        with artifacts.open_artifact(handle, artifact_id):
-            pass
+        try:
+            descriptor = artifacts.bind_artifact_hash(handle, artifact_id)
+            if descriptor["sha256"] != expected_hash:
+                raise DomainValidationError(f"artifact hash mismatch: {artifact_id}")
+            with artifacts.open_artifact(handle, artifact_id):
+                pass
+        except DomainValidationError:
+            raise
+        except (KeyError, ValueError, RuntimeError) as exc:
+            raise DomainValidationError(str(exc)) from exc
     if domain_validator is not None:
-        domain_validator(submission, task)
+        try:
+            domain_validator(submission, task)
+        except DomainValidationError:
+            raise
+        except Exception as exc:
+            raise DomainValidationError(str(exc)) from exc
 
 
-__all__ = ["validate_submission_outputs"]
+__all__ = ["DomainValidationError", "validate_submission_outputs"]

@@ -140,19 +140,50 @@ def _default_planner(request: dict, handle) -> dict:
     return build_plan(request, handle)
 
 
+def _predecessor_evidence(request: dict, loader=None) -> dict | None:
+    predecessor_id = request["predecessor_run_id"]
+    if predecessor_id is None:
+        return None
+    if loader is None:
+        from autoresearch.trace.capsule import load_run
+
+        loader = load_run
+    predecessor = loader(predecessor_id)
+    if predecessor.engine != ws.ENGINE:
+        raise ValueError("predecessor engine does not match current engine")
+    state_path = Path(getattr(predecessor, "workspace", "")) / "state.json"
+    if state_path.is_file():
+        state = _read_json(state_path)
+        business_status = str(state.get("business_status") or "")
+    else:
+        business_status = str(getattr(predecessor, "business_status", ""))
+    if business_status == "ACTIVE" or not business_status:
+        raise ValueError("predecessor must be a terminal run")
+    return {
+        "schema_version": 1,
+        "run_id": predecessor_id,
+        "engine": predecessor.engine,
+        "business_status": business_status,
+    }
+
+
 def begin(
     request: dict,
     *,
     begin_capsule: Callable[[dict], object] | None = None,
     planner: Callable[[dict, object], dict] | None = None,
+    predecessor_loader=None,
 ) -> dict:
     """Validate and freeze a request before exposing its first ready task."""
     validate_begin_request(request, expected_engine=ws.ENGINE)
+    predecessor = _predecessor_evidence(request, predecessor_loader)
     handle = (begin_capsule or _default_begin_capsule)(request)
     if handle.engine != ws.ENGINE:
         raise ValueError("capsule engine does not match process engine")
     _mirror_identity(handle, "request.json", request)
     _mirror_identity(handle, "host_profile.json", request["host_profile"])
+    if predecessor is not None:
+        _mirror_identity(handle, "predecessor.json", predecessor)
     frozen_plan = (planner or _default_planner)(request, handle)
     plan_service.freeze_plan(_plan_path(handle), frozen_plan)
     _freeze_json(
