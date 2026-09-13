@@ -21,7 +21,10 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import os
+import shutil
 import sys
+import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -31,16 +34,25 @@ from autoresearch.common import workspace as ws
 from autoresearch.contracts import artifacts
 from autoresearch.contracts.profiles import profile_factory
 from autoresearch.trace import capsule as capsule_mod
-from autoresearch.trace.atomic import atomic_write_json
+from autoresearch.trace.atomic import atomic_write_json, canonical_json, sha256_bytes
 from autoresearch.trace.capsule_models import RunHandle
-from autoresearch.trace.transcripts.base import RunIdentity, TranscriptRef, TranscriptStats
+from autoresearch.trace.transcripts.base import (
+    CURRENT_TRANSCRIPT_SCHEMA_VERSION,
+    RunIdentity,
+    TranscriptRef,
+    TranscriptStats,
+)
 from autoresearch.trace.transcripts.claude import ClaudeTranscriptAdapter
 from autoresearch.trace.transcripts.codex import (
     CodexTranscriptAdapter,
     discover_rollout_candidates,
     ordinal_window_for_timestamps,
 )
-from autoresearch.trace.transcripts.snapshot import capture_snapshot
+from autoresearch.trace.transcripts.snapshot import (
+    TranscriptSnapshot,
+    capture_snapshot,
+    snapshot_from_archive_bytes,
+)
 
 # ---------------------------------------------------------------- vocabulary
 
@@ -696,11 +708,24 @@ _STATUS_BUCKET = {
     "ERROR": "errors",
 }
 
+#: Distinguishes "`staging_root` not supplied at all" (every *active*-run
+#: caller -- fall back to `ws.find_run_root`, the historical default
+#: behavior) from "`staging_root=None` supplied explicitly" (offline
+#: reconstruction's honest "no verifiable containment root exists" --
+#: `_load_frozen_run` returns `None` when a historical contract carries no
+#: `workspace_path`). Plain `None` cannot serve as that default itself: a
+#: caller that *means* "I explicitly have no root" must never be silently
+#: routed into the live `ws.find_run_root` fallback, which could coincidentally
+#: resolve to an unrelated directory that happens to share this run_id.
+_STAGING_ROOT_UNSET = object()
+
 
 def assign(
     candidates: Sequence[TranscriptCandidate],
     expectations: Mapping[str, Mapping[str, object]],
     run_identity: RunIdentity,
+    *,
+    staging_root: Path | str | None = _STAGING_ROOT_UNSET,  # type: ignore[assignment]
 ) -> dict:
     """Attribute *candidates* to *expectations*; never guess, never shrink E.
 
@@ -734,9 +759,41 @@ def assign(
     merged into scoring. A candidate with verified write evidence at a path
     no expectation names goes to ``unexpected`` -- it is *never* added to
     ``expected``/``accounted`` (spec §4.2's explicit prohibition).
+
+    ``staging_root`` (2026-09-12 scene-reconstruction Task 8): an explicit
+    override for the staging directory path-normalization is checked
+    against, bypassing ``ws.find_run_root(run_identity.run_id)`` entirely.
+    Every *active*-run caller (``bind_run``/``safe_bind_run``, and every
+    B01-B10/R01 test above) omits this keyword and gets the exact prior
+    behavior -- the *active* workspace genuinely exists on disk and is the
+    right root to ask. Offline reconstruction of a *frozen* run cannot rely
+    on that: the run's original active workspace
+    (`context_<engine>/scan_runs/<id>/`) may no longer exist by the time a
+    frozen run is reconstructed months later (the whole reason Task 8
+    exists), and `ws.find_run_root` would then silently return ``None`` --
+    collapsing every tier-1 product check to "no staging root, nothing
+    verifiable" for a reason that has nothing to do with the evidence
+    itself. `transcript_binder.offline_index` instead supplies this run's
+    own *original* workspace-derived staging path, reconstructed from the
+    run's own recorded `run_contract.workspace_path` (Controller ruling 6:
+    "离线根映射来自 contract/归档元信息" -- never the frozen `trace/staging/`
+    mirror, and never a live-filesystem guess); `_normalize_operation_path`'s
+    containment check works identically either way, since it only ever needs
+    a `Path` to resolve against, not proof the directory currently exists.
+
+    Passing ``staging_root=None`` *explicitly* (as opposed to omitting the
+    keyword) means "verified: no containment root exists for this run" --
+    every tier-1 product check then honestly resolves to "cannot verify",
+    never a live-lookup fallback that could coincidentally match an
+    unrelated directory sharing this run_id.
     """
-    workspace = ws.find_run_root(run_identity.run_id)
-    staging = _staging_root(workspace) if workspace is not None else None
+    if staging_root is _STAGING_ROOT_UNSET:
+        workspace = ws.find_run_root(run_identity.run_id)
+        staging: Path | None = _staging_root(workspace) if workspace is not None else None
+    elif staging_root is None:
+        staging = None
+    else:
+        staging = Path(staging_root)
 
     accepted: list[TranscriptCandidate] = []
     unmatched: list[dict] = []
@@ -1409,14 +1466,856 @@ def safe_bind_run(scan_dir: Path | str) -> dict | None:
         )
 
 
+# -------------------------------------------------------------- offline index
+#
+# Task 8 (design §6.1 离线索引). A *frozen*, already-published run's capsule
+# may show every invocation GONE even when real evidence still exists -- in
+# the run's own retention-archived transcript (`trace/transcripts/*.jsonl.gz`,
+# a pre-existing, pre-Task-2 mechanism -- `autoresearch.scan.retention.
+# archive_transcripts`), in the current engine's `scan.salvage` ledger, or in
+# the harness's own still-live session directory. This section rebuilds the
+# same per-invocation table `agent_expectations`/`assign` already build for
+# an *active* run, purely offline, writing only under the current engine's
+# `_ledger/agents_index/` -- never into the frozen run directory itself
+# (ruling 8; verified end to end by the H01 tests above and the real-run
+# check in the task report).
+
+#: Bumped whenever this *reconstruction algorithm* changes in a way that
+#: could produce different attribution from the exact same source snapshots
+#: -- distinct from `CURRENT_TRANSCRIPT_SCHEMA_VERSION` (the per-invocation
+#: normalized-item shape, owned by Task 1/2). Feeds `revision_id` (ruling 4).
+OFFLINE_INDEX_PARSER_VERSION = 1
+
+#: The three input sources, in the exact priority spec §6.1 states ("run 自有
+#: 已归档证据 → 本引擎 ledger 中已核验的抢救快照 → 对应 harness 尚在的源文件").
+#: A lower-priority source is only ever consulted to fill in invocations a
+#: higher-priority source left `GONE` -- never to override an already-found
+#: `BOUND`/`UNVERIFIED_BY_PRODUCT`/`AMBIGUOUS` verdict, and never mixed into
+#: the *same* `assign()` candidate pool as a higher source (that would let
+#: two independent, redundant copies of one file's evidence -- e.g. an
+#: archived transcript and a salvage blob of the very same original session
+#: -- manufacture a spurious cross-source AMBIGUOUS for a single-attempt
+#: family that either source alone would have cleanly resolved).
+OFFLINE_SOURCES: tuple[str, ...] = (
+    "archived_transcript",
+    "salvage_verified_run",
+    "harness_live",
+)
+
+#: Same charset `capsule._validate_agent_identifier` already enforces on
+#: every *live* dispatch's `invocation_id`/`role`/`subject` -- reused, not
+#: re-derived, so this module's own path-safety gate is exactly as strict as
+#: the production writer, never stricter or looser by coincidence. A frozen
+#: run's `events.jsonl` may predate that validation (or be hand-corrupted),
+#: so this offline *reader* must still defend itself against a value that
+#: was never actually checked at write time.
+_SAFE_ID_RE = capsule_mod._AGENT_ID_RE
+
+
+def _safe_ledger_component(value: object, *, what: str) -> str:
+    """*value* is safe to use verbatim as one path *segment* under
+    ``agents_index/`` (a directory name or a bare filename stem) -- never
+    containing ``/``, ``..``, or any character outside the same conservative
+    ASCII charset a live dispatch's own id must already satisfy.
+
+    Raises ``ValueError`` (never returns an unsafe string) so every caller is
+    forced to handle rejection explicitly -- this is the *one* decision point
+    fixture 4 (an index reference that would otherwise point outside its
+    directory) is tested against; there is no second, independent path-safety
+    check anywhere else in this module's write path.
+    """
+    text = str(value)
+    if not _SAFE_ID_RE.fullmatch(text):
+        raise ValueError(f"{what} is not safe for a ledger path component: {text!r}")
+    return text
+
+
+@dataclass(frozen=True)
+class _FrozenContract:
+    """A minimal, read-only stand-in for `common.run_identity.RunContract`,
+    built from a *lenient* dict read of a frozen run's own
+    `trace/run_contract.json` (`salvage._read_run_contract` -- Task 9's own
+    tolerant reader, reused rather than re-implemented: it already exists
+    precisely because a historical contract's exact byte/field shape cannot
+    always be re-validated the way `RunContract.from_dict`'s full
+    `contract_hash` recomputation demands).
+
+    Carries only the fields `agent_expectations`/`resolve_run_mode` actually
+    consult for a `scan-market` run rebuilt offline. This is *not* a
+    substitute for `capsule.load_run`'s full, hash-verified reconstruction --
+    that function requires the run's own *active* workspace to still exist on
+    disk, which offline reconstruction exists precisely because it may not
+    (spec §6.1's "harness 消失后").
+    """
+
+    run_kind: str
+    session_ref: str | None
+    user_config: Mapping[str, object]
+
+
+def _archived_transcripts_dir(run_dir: Path) -> Path:
+    return Path(run_dir) / "trace" / "transcripts"
+
+
+def _ledger_agents_index_root(run_dir: Path, *, ledger_root: Path | str | None = None) -> Path:
+    """`agents_index/` under `_ledger/` -- the exact same "override for
+    tests, else *run_dir*'s own grandparent" convention `scan.salvage.
+    _salvage_dir` already established (not a second, independently-invented
+    "where is `_ledger`" rule)."""
+    from autoresearch.scan.outcome import LEDGER_DIRNAME
+
+    base = Path(ledger_root) if ledger_root is not None else (Path(run_dir).parent / LEDGER_DIRNAME)
+    return base / "agents_index"
+
+
+def _load_frozen_run(run_dir: Path) -> tuple[RunHandle, dict, Path | None]:
+    """Load a *frozen*, published run directory as a read-only `RunHandle` --
+    never `capsule.load_run`/`require_active_run`, both of which require the
+    run's *original* active workspace (`context_<engine>/scan_runs/<id>/`) to
+    still physically exist. Offline reconstruction exists precisely because
+    it may not any more; everything here reads only *this run's own
+    published directory*, never a live-workspace guess (ruling 6).
+
+    Identity verification (Controller ruling 5), each a hard, loud failure,
+    none silently downgraded or guessed past:
+
+    1. `run_dir` resolves under the *current* engine's own `reports_<engine>/
+       scan/` root -- `scan.salvage._require_current_engine_run`, reused
+       rather than a second copy of the same check; never widened to accept
+       another engine's tree.
+    2. `run_dir.name` parses as a real publish directory name (either naming
+       generation) -- `run_naming.is_run_dir` -- so an arbitrary directory
+       is never mistaken for a published run's `report_run_id`.
+    3. `manifest.json` exists and parses; its own `run_id` is the
+       `contract_run_id` -- a fact distinct from `report_run_id` (the
+       directory name), never conflated or swapped for one another.
+    4. `trace/run_contract.json` exists, parses (`salvage._read_run_contract`
+       -- reused), and its own `run_id`/`engine` agree with the manifest and
+       the current process's engine -- a run_contract that internally claims
+       a *different* engine than the directory it lives under is rejected
+       outright, never silently trusted.
+    5. `capsule/events/events.jsonl` exists -- `agent_expectations`'s one
+       required input; without it there is nothing to rebuild expectations
+       from at all.
+
+    Returns ``(handle, identity, original_staging)``. ``handle.staging`` is
+    the *frozen* `trace/staging/` mirror -- the only place a published run's
+    product files (`details/*.md`, `run_mode.json`, ...) still reliably live
+    today, and what `agent_expectations`'s product-fallback/`resolve_run_mode`
+    must read. ``original_staging`` is a *different* path: the run's own
+    recorded `run_contract.workspace_path` + `/staging/` + `analysis_date` --
+    the absolute path every one of this run's *own* transcripts actually
+    recorded its writes under, at the time it ran, whether or not that
+    directory still physically exists. `assign()`'s path-containment check
+    (via its own `staging_root` override) must be verified against *that*
+    root, never the frozen mirror -- an archived transcript's own recorded
+    write path is `context_<engine>/scan_runs/<contract_run_id>/staging/
+    <date>/details/<code>.md`, not `reports_<engine>/scan/<report_run_id>/
+    trace/staging/details/<code>.md`; checking containment against the wrong
+    one would silently fail every real historical write's tier-1 match
+    (ruling 6: "离线根映射来自 contract/归档元信息", read here from the
+    contract's own `workspace_path`, never guessed or substituted with the
+    frozen mirror). ``None`` when the contract carries no `workspace_path` at
+    all -- callers then have no verifiable containment root and must not
+    invent one.
+    """
+    from autoresearch.scan import run_naming, salvage as salvage_mod
+
+    resolved = salvage_mod._require_current_engine_run(Path(run_dir))
+    report_run_id = resolved.name
+    if not run_naming.is_run_dir(report_run_id):
+        raise ValueError(
+            f"{report_run_id!r} is not a recognized published run directory name"
+        )
+
+    manifest_path = resolved / "manifest.json"
+    try:
+        manifest_bytes = manifest_path.read_bytes()
+    except FileNotFoundError as exc:
+        raise ValueError(f"{manifest_path}: manifest.json is missing") from exc
+    manifest = json.loads(manifest_bytes)
+    if not isinstance(manifest, dict) or not manifest.get("run_id"):
+        raise ValueError(f"{manifest_path}: manifest.json has no run_id (contract_run_id)")
+    contract_run_id = str(manifest["run_id"])
+    run_manifest_sha256 = sha256_bytes(manifest_bytes)
+
+    contract_dict = salvage_mod._read_run_contract(resolved)
+    if not contract_dict:
+        raise ValueError(f"{resolved}: trace/run_contract.json is missing or unreadable")
+    if str(contract_dict.get("run_id")) != contract_run_id:
+        raise ValueError(
+            f"identity mismatch: manifest.run_id={contract_run_id!r} != "
+            f"run_contract.run_id={contract_dict.get('run_id')!r}"
+        )
+    contract_engine = str(contract_dict.get("engine"))
+    if contract_engine != ws.ENGINE:
+        raise ValueError(
+            f"identity mismatch: run_contract.engine={contract_engine!r} != current "
+            f"ws.ENGINE={ws.ENGINE!r} -- refusing to guess another engine's root"
+        )
+    analysis_date = str(
+        contract_dict.get("analysis_date") or manifest.get("analysis_date") or ""
+    )
+
+    capsule_dir = resolved / "capsule"
+    events_path = capsule_dir / "events" / "events.jsonl"
+    if not events_path.is_file():
+        raise ValueError(f"{events_path}: missing -- cannot rebuild expectations without it")
+
+    contract = _FrozenContract(
+        run_kind=str(contract_dict.get("run_kind") or "scan-market"),
+        session_ref=(contract_dict.get("session_ref") or None),
+        user_config=contract_dict.get("user_config") or {},
+    )
+    handle = RunHandle(
+        run_id=contract_run_id,
+        analysis_date=analysis_date,
+        engine=contract_engine,
+        workspace=resolved,
+        staging=resolved / "trace" / "staging",
+        capsule=capsule_dir,
+        contract=contract,  # type: ignore[arg-type]  -- see _FrozenContract's own docstring
+    )
+    identity = {
+        "report_run_id": report_run_id,
+        "contract_run_id": contract_run_id,
+        "engine": contract_engine,
+        "run_manifest_sha256": run_manifest_sha256,
+        "analysis_date": analysis_date,
+    }
+    workspace_path = contract_dict.get("workspace_path")
+    original_staging = (
+        Path(str(workspace_path)) / "staging" / analysis_date
+        if workspace_path and analysis_date
+        else None
+    )
+    return handle, identity, original_staging
+
+
+def _read_archived_transcript_rows(run_dir: Path) -> tuple[list[dict], str | None]:
+    """`trace/transcripts/_index.json`'s own ``transcripts`` rows, or ``(([],
+    reason)`` for a genuinely absent/unreadable/schema-mismatched index --
+    ruling 7's "unknown schema version is not an empty success": a schema
+    this module does not understand is reported as a *skip reason*, never
+    silently treated the same as "the index file does not exist"."""
+    path = _archived_transcripts_dir(run_dir) / "_index.json"
+    if not path.is_file():
+        return [], None
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return [], f"{path}: unreadable ({type(exc).__name__}: {exc})"
+    if not isinstance(doc, dict):
+        return [], f"{path}: not a JSON object"
+    if doc.get("schema_version") != 1:
+        return [], f"{path}: unrecognized schema_version={doc.get('schema_version')!r}"
+    rows = doc.get("transcripts")
+    if not isinstance(rows, list):
+        return [], f"{path}: 'transcripts' is not a list"
+    return [r for r in rows if isinstance(r, dict)], None
+
+
+def _archived_transcript_targets(run_dir: Path) -> list[Path]:
+    """Distinct archived gz paths (`retention.archive_transcripts`'s own
+    naming: ``<agent>-<original stem>.jsonl.gz``) this run's own retention
+    step already wrote -- deduped by resolved output path, since several
+    usage rows can legitimately name the *same* underlying source (e.g.
+    Codex sharing one rollout across several role dispatches collapses onto
+    one archived target by that naming rule)."""
+    seen: dict[Path, None] = {}
+    for row in _read_archived_transcript_rows(run_dir)[0]:
+        if row.get("status") != "PRESENT":
+            continue
+        agent, file_name = row.get("agent"), row.get("file")
+        if not agent or not file_name:
+            continue
+        stem = Path(str(file_name)).stem
+        seen.setdefault(_archived_transcripts_dir(run_dir) / f"{agent}-{stem}.jsonl.gz", None)
+    return list(seen)
+
+
+def _candidate_from_archive_bytes(
+    data: bytes,
+    *,
+    engine: str,
+    path: Path,
+    segment_quality: str,
+    session_ref: str | None,
+) -> tuple[TranscriptCandidate, TranscriptSnapshot]:
+    """One whole-file candidate from *already-read* archive bytes -- a
+    retention-archived gz or a `scan.salvage` blob -- via
+    `snapshot.snapshot_from_archive_bytes` (Task 2's own line parser, never a
+    second one) and the same per-engine adapter the live candidate builders
+    above use. Raises (never fabricates a degraded candidate) for content
+    that is not valid gzip or does not classify -- the caller records that as
+    a per-item error and simply does not add this candidate to the pool,
+    exactly how `build_claude_candidates`/`build_codex_candidates` already
+    treat an unreadable live ref."""
+    snapshot = snapshot_from_archive_bytes(data, engine=engine, path=path)
+    role = "subagent" if engine == "claude" else "unbound"
+    ref = TranscriptRef(engine=engine, path=path, role=role, session_ref=session_ref)
+    adapter = ClaudeTranscriptAdapter() if engine == "claude" else CodexTranscriptAdapter()
+    stats = adapter.stats_from_rows(snapshot.rows, ref)
+    candidate = TranscriptCandidate(
+        engine=engine, path=path, ref=ref, stats=stats,
+        segment_quality=segment_quality, session_ref=session_ref,
+    )
+    return candidate, snapshot
+
+
+def _source1_archived_candidates(
+    run_dir: Path, *, engine: str,
+) -> tuple[tuple[TranscriptCandidate, ...], dict[str, TranscriptSnapshot], list[dict]]:
+    """Source 1 (highest priority): this run's own retention-archived
+    transcripts. Independently present per file: one bad archive never hides
+    the others (ruling 7)."""
+    _, schema_error = _read_archived_transcript_rows(run_dir)
+    errors: list[dict] = []
+    if schema_error is not None:
+        errors.append({"source": "archived_transcript", "path": None, "error": schema_error})
+    candidates: list[TranscriptCandidate] = []
+    snapshots: dict[str, TranscriptSnapshot] = {}
+    segment_quality = "complete" if engine == "claude" else "unknown"
+    for target in _archived_transcript_targets(run_dir):
+        try:
+            data = target.read_bytes()
+            candidate, snapshot = _candidate_from_archive_bytes(
+                data, engine=engine, path=target, segment_quality=segment_quality,
+                session_ref=None,
+            )
+        except Exception as exc:  # noqa: BLE001 - one unreadable archive is a fact, not a crash
+            errors.append(
+                {"source": "archived_transcript", "path": str(target),
+                 "error": f"{type(exc).__name__}: {exc}"}
+            )
+            continue
+        candidates.append(candidate)
+        snapshots[str(candidate.path)] = snapshot
+    return tuple(candidates), snapshots, errors
+
+
+def _source2_salvage_candidates(
+    run_dir: Path, *, engine: str, ledger_root: Path | str | None,
+) -> tuple[tuple[TranscriptCandidate, ...], dict[str, TranscriptSnapshot], list[dict]]:
+    """Source 2: this engine's own `scan.salvage` ledger -- only a row whose
+    ``attribution`` is a *fact* (`salvage.is_fact`, the single decision point
+    Task 9 established; never a second, independently-written
+    ``== "VERIFIED_RUN"`` check here) may serve as an index input. A
+    `TIME_WINDOW_ONLY`/`OVERWRITTEN_BY_LATER_RUN`/`UNKNOWN`/`ABSENT` row is
+    reference material only -- skipped, never contributed as a candidate
+    (mutation probe (b) in the task report proves this is load-bearing).
+
+    A blob's on-disk location is resolved via `trace.blobs.blob_path` --
+    the same content-addressed accessor `salvage.py` itself now stores
+    through (2026-09-13, Task 9 fix round 1) -- keyed by the row's own
+    recorded digest, never by joining a stored relative-path string or
+    recomputing a layout this module would then have to keep in sync with
+    salvage's own storage rule by hand (spec §9's reuse mandate).
+    """
+    from autoresearch.scan import salvage as salvage_mod
+    from autoresearch.trace import blobs as trace_blobs
+
+    provenance_path = salvage_mod._provenance_path(run_dir, ledger_root=ledger_root)
+    salvage_dir = provenance_path.parent
+    doc = salvage_mod._read_json_lenient(provenance_path)
+    if not isinstance(doc, dict):
+        return (), {}, []
+    if doc.get("schema_version") != salvage_mod.PROVENANCE_SCHEMA_VERSION:
+        return (), {}, [
+            {"source": "salvage_verified_run", "path": str(provenance_path),
+             "error": f"unrecognized schema_version={doc.get('schema_version')!r}"}
+        ]
+    rows = doc.get("files")
+    if not isinstance(rows, list):
+        return (), {}, []
+
+    candidates: list[TranscriptCandidate] = []
+    snapshots: dict[str, TranscriptSnapshot] = {}
+    errors: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("file_kind") != "transcript":
+            continue
+        if not salvage_mod.is_fact(str(row.get("attribution"))):
+            continue  # TIME_WINDOW_ONLY/OVERWRITTEN_BY_LATER_RUN/UNKNOWN/ABSENT: reference only
+        blob = row.get("blob")
+        if not isinstance(blob, dict) or not blob.get("sha256"):
+            continue
+        try:
+            blob_path = trace_blobs.blob_path(salvage_dir, str(blob["sha256"]))
+        except (OSError, ValueError) as exc:
+            errors.append(
+                {"source": "salvage_verified_run", "path": None,
+                 "error": f"cannot resolve blob location: {exc}"}
+            )
+            continue
+        segment_quality = "complete" if row.get("engine") == "claude" else "unknown"
+        try:
+            data = blob_path.read_bytes()
+            candidate, snapshot = _candidate_from_archive_bytes(
+                data, engine=str(row.get("engine") or engine), path=blob_path,
+                segment_quality=segment_quality, session_ref=row.get("session_ref"),
+            )
+        except Exception as exc:  # noqa: BLE001 - one unreadable blob is a fact, not a crash
+            errors.append(
+                {"source": "salvage_verified_run", "path": str(blob_path),
+                 "error": f"{type(exc).__name__}: {exc}"}
+            )
+            continue
+        candidates.append(candidate)
+        snapshots[str(candidate.path)] = snapshot
+    return tuple(candidates), snapshots, errors
+
+
+def _source3_harness_live_candidates(
+    run_identity: RunIdentity,
+    expectations: Mapping[str, Mapping[str, object]],
+    *,
+    engine: str,
+    sessions_root: Path | str | None,
+) -> tuple[tuple[TranscriptCandidate, ...], list[dict]]:
+    """Source 3 (lowest priority): the harness's own still-live session
+    directory -- built via the exact same, unmodified functions the active
+    path uses (`build_claude_candidates`/`build_codex_candidates`); the only
+    new behavior here is threading *sessions_root* through, so a test (or an
+    operator pointing at a non-default location) never has to touch the real
+    ``~/.claude``/``~/.codex``."""
+    try:
+        if engine == "claude":
+            adapter = ClaudeTranscriptAdapter(projects_root=sessions_root) if sessions_root else None
+            return build_claude_candidates(run_identity, adapter=adapter), []
+        if engine == "codex":
+            return (
+                build_codex_candidates(run_identity, expectations, sessions_root=sessions_root),
+                [],
+            )
+    except Exception as exc:  # noqa: BLE001 - a broken live search is a fact, not a crash
+        return (), [{"source": "harness_live", "path": None, "error": f"{type(exc).__name__}: {exc}"}]
+    return (), []
+
+
+def _compute_revision_id(
+    *, engine: str, contract_run_id: str, report_run_id: str,
+    run_manifest_sha256: str, snapshot_ids: Sequence[str], parser_version: int,
+) -> str:
+    """Content identity only -- the target identity, every distinct source
+    snapshot actually used, and the parser version, canonicalized (ruling 4).
+    The real UTC ``computed_at`` timestamp deliberately never enters this
+    computation: two calls against the exact same sources and the exact same
+    parser version must produce the *same* revision_id no matter when either
+    call happened, or a clock-driven rewrite would silently manufacture a new
+    "version" of evidence that never actually changed (proven by mutation
+    probe (a) in the task report)."""
+    payload = {
+        "engine": engine,
+        "contract_run_id": contract_run_id,
+        "report_run_id": report_run_id,
+        "run_manifest_sha256": run_manifest_sha256,
+        "snapshot_ids": sorted(set(snapshot_ids)),
+        "parser_version": parser_version,
+    }
+    return sha256_bytes(canonical_json(payload).encode("utf-8"))
+
+
+def _gone_ledger_row(inv_id: str, exp: Mapping[str, object], row: Mapping[str, object]) -> dict:
+    return {
+        "engine": None,
+        "invocation_id": inv_id,
+        "role": exp.get("role"),
+        "subject": exp.get("subject"),
+        "subject_key": exp.get("subject_key"),
+        "stage": None,
+        "source_path": None,
+        "status": "GONE",
+        "reason": row.get("reason"),
+        "raw": None,
+        "normalized": None,
+        "snapshot_id": None,
+        "source_sha256": None,
+        "source_bytes": None,
+        "rows": None,
+        "unparsed_rows": None,
+        "items": None,
+        "model": None,
+        "effort": None,
+        "usage": None,
+        "attempt": exp.get("attempt"),
+        "expected": True,
+        "binding_status": row.get("binding_status", "GONE"),
+        "segment_quality": row.get("segment_quality"),
+        "offline_source": None,
+        "search_count": None,
+    }
+
+
+def _present_ledger_row(
+    inv_id: str, exp: Mapping[str, object], row: Mapping[str, object], *,
+    candidate: TranscriptCandidate, snapshot: TranscriptSnapshot, source_label: str,
+    normalized_rel: str, raw_rel: str,
+) -> tuple[dict, dict]:
+    """One (index_row, normalized_doc) pair for a BOUND/UNVERIFIED_BY_PRODUCT
+    invocation -- the index_row's field set is deliberately the *same* one
+    `capsule.materialize_agent_index`'s own rows carry (spec: "shape 与
+    capsule 的公共字段一致"), plus the offline-only extras (source/version/
+    binding_status/segment_quality) the brief's own bullet allows ("额外含
+    来源/版本/补录时间"). The normalized_doc mirrors `capsule._operation_row`'s
+    exact per-operation shape -- reused via a direct call, not re-derived."""
+    stats = candidate.stats
+    normalized = stats.normalized
+    usage = stats.usage
+    index_row = {
+        "engine": candidate.engine,
+        "invocation_id": inv_id,
+        "role": exp.get("role"),
+        "subject": exp.get("subject"),
+        "subject_key": exp.get("subject_key"),
+        "stage": None,
+        "source_path": str(candidate.path),
+        "status": "PRESENT",
+        "reason": row.get("reason"),
+        "raw": raw_rel,
+        "normalized": normalized_rel,
+        "snapshot_id": snapshot.snapshot_id,
+        "source_sha256": snapshot.source_prefix.sha256,
+        "source_bytes": snapshot.source_prefix.byte_count,
+        "rows": len(snapshot.rows),
+        "unparsed_rows": snapshot.bad_lines,
+        "items": len(normalized.items),
+        "model": normalized.model,
+        "effort": normalized.effort,
+        "usage": {
+            "messages": usage.messages, "input": usage.input, "output": usage.output,
+            "cache_read": usage.cache_read, "cache_create": usage.cache_create,
+            "reasoning_output": usage.reasoning_output, "status": usage.status,
+        },
+        "attempt": exp.get("attempt"),
+        "expected": True,
+        "binding_status": row["binding_status"],
+        "segment_quality": row.get("segment_quality"),
+        "offline_source": source_label,
+        "search_count": row.get("search_count"),
+    }
+    doc = {
+        "schema_version": CURRENT_TRANSCRIPT_SCHEMA_VERSION,
+        "engine": candidate.engine,
+        "invocation_id": inv_id,
+        "role": normalized.ref.role,
+        "subject": normalized.ref.subject,
+        "status": normalized.status,
+        "model": normalized.model,
+        "effort": normalized.effort,
+        "snapshot_id": snapshot.snapshot_id,
+        "items": [
+            {
+                "index": item.index, "kind": item.kind,
+                "payload": json.loads(canonical_json(dict(item.payload))),
+                "timestamp": item.timestamp,
+            }
+            for item in normalized.items
+        ],
+        "operations": [capsule_mod._operation_row(op) for op in stats.operations],
+    }
+    return index_row, doc
+
+
+def _unsupported_ledger_row(
+    inv_id: str, exp: Mapping[str, object], *, reason: str,
+) -> dict:
+    row = _gone_ledger_row(inv_id, exp, {"reason": reason, "binding_status": "ERROR"})
+    row["status"] = "UNSUPPORTED"
+    return row
+
+
+def offline_index(
+    run_dir: Path | str, *, ledger_root: Path | str | None = None,
+    sessions_root: Path | str | None = None,
+) -> dict:
+    """Rebuild, purely offline, the same per-invocation evidence table
+    `agent_expectations`/`assign` already build for an active run -- for a
+    *frozen*, already-published run whose capsule may show every invocation
+    `GONE`. Writes only under the current engine's `_ledger/agents_index/`;
+    the frozen run directory named by *run_dir* is never opened for writing
+    (ruling 8).
+
+    Identity is verified before anything else is attempted (`_load_frozen_
+    run`, ruling 5); every one of its failures propagates -- there is no
+    "whole run" try/except here the way `safe_bind_run` has for the *active*
+    path, because a caller who explicitly asked to reconstruct one specific
+    run is entitled to know precisely why that failed, not a silently
+    degraded, empty result.
+
+    Input order (spec §6.1, ruling 3's `OFFLINE_SOURCES`): a lower-priority
+    source only ever fills in an invocation a higher-priority source left
+    `GONE` -- see `OFFLINE_SOURCES`'s own docstring for why sources are never
+    pooled together in one `assign()` call.
+
+    `revision_id` is content-derived (`_compute_revision_id`); re-running
+    against the exact same sources and the exact same
+    `OFFLINE_INDEX_PARSER_VERSION` reuses the existing revision directory
+    verbatim -- no new files, no rewritten evidence (ruling 4). The top-level
+    pointer file is rewritten every call (`computed_at` is the one field that
+    always reflects the real, current UTC time), but it is only switched to
+    reference a *complete* revision directory, built atomically underneath a
+    temporary name and renamed into place only once every `normalized`/`raw`
+    reference inside it is on disk (ruling 4's "normalized/source 引用齐全后,
+    最后原子发布顶层 index").
+    """
+    handle, identity, original_staging = _load_frozen_run(run_dir)
+    run_dir_resolved = handle.workspace
+    expectations = agent_expectations(handle)
+    run_identity = RunIdentity(
+        run_id=handle.run_id, engine=handle.engine, session_ref=handle.contract.session_ref,
+    )
+    # `assign()`'s path-containment check is verified against this run's own
+    # *original* workspace staging path (from `run_contract.workspace_path`),
+    # never the frozen `trace/staging/` mirror `handle.staging` points at --
+    # see `_load_frozen_run`'s own docstring for why these two are different
+    # roots serving two different questions. `None` (no recorded
+    # `workspace_path`) means every write-path containment check degrades to
+    # "cannot verify" (`assign()`'s own behavior when `staging` is `None`),
+    # never a guessed substitute root.
+    staging_root = original_staging
+
+    all_errors: list[dict] = []
+    all_unexpected: list[dict] = []
+    all_unmatched: list[dict] = []
+    snapshot_by_path: dict[str, TranscriptSnapshot] = {}
+    candidate_by_key: dict[tuple, TranscriptCandidate] = {}
+
+    def _register(
+        candidates: Sequence[TranscriptCandidate], snapshots: Mapping[str, TranscriptSnapshot],
+    ) -> None:
+        snapshot_by_path.update(snapshots)
+        for candidate in candidates:
+            candidate_by_key[
+                (str(candidate.path), candidate.ref.start_ordinal, candidate.ref.end_ordinal)
+            ] = candidate
+
+    merged_rows: dict[str, dict] = {}
+    source_of: dict[str, str] = {}
+
+    def _absorb(result: dict, *, source_label: str, only: set[str] | None = None) -> None:
+        for inv_id, row in result["rows"].items():
+            if only is not None and inv_id not in only:
+                continue
+            current = merged_rows.get(inv_id)
+            if current is not None and current["binding_status"] != "GONE":
+                continue
+            merged_rows[inv_id] = row
+            if row["binding_status"] != "GONE":
+                source_of[inv_id] = source_label
+        all_unexpected.extend(result["unexpected"])
+        all_unmatched.extend(result["unmatched"])
+
+    # Source 1: this run's own retention-archived transcripts.
+    archived_candidates, archived_snapshots, archived_errors = _source1_archived_candidates(
+        run_dir_resolved, engine=handle.engine
+    )
+    all_errors.extend(archived_errors)
+    _register(archived_candidates, archived_snapshots)
+    _absorb(
+        assign(archived_candidates, expectations, run_identity, staging_root=staging_root),
+        source_label="archived_transcript",
+    )
+
+    still_gone = {inv for inv, row in merged_rows.items() if row["binding_status"] == "GONE"}
+
+    # Source 2: this engine's own salvage ledger (VERIFIED_RUN only).
+    if still_gone:
+        salvage_candidates, salvage_snapshots, salvage_errors = _source2_salvage_candidates(
+            run_dir_resolved, engine=handle.engine, ledger_root=ledger_root,
+        )
+        all_errors.extend(salvage_errors)
+        _register(salvage_candidates, salvage_snapshots)
+        if salvage_candidates:
+            _absorb(
+                assign(salvage_candidates, expectations, run_identity, staging_root=staging_root),
+                source_label="salvage_verified_run", only=still_gone,
+            )
+
+    still_gone = {inv for inv, row in merged_rows.items() if row["binding_status"] == "GONE"}
+
+    # Source 3: the harness's own still-live session (reused, unmodified).
+    if still_gone:
+        live_candidates, live_errors = _source3_harness_live_candidates(
+            run_identity, expectations, engine=handle.engine, sessions_root=sessions_root,
+        )
+        all_errors.extend(live_errors)
+        _register(live_candidates, {})  # source 3 keeps no snapshot -- re-derived per-row below
+        if live_candidates:
+            _absorb(
+                assign(live_candidates, expectations, run_identity, staging_root=staging_root),
+                source_label="harness_live", only=still_gone,
+            )
+
+    # ---------------------------------------------------- build ledger rows
+    ledger_rows: list[dict] = []
+    normalized_docs: dict[str, dict] = {}  # invocation_id -> doc
+    raw_by_snapshot: dict[str, bytes] = {}
+    snapshot_ids_used: list[str] = []
+
+    for inv_id in sorted(expectations):
+        exp = expectations[inv_id]
+        row = merged_rows.get(inv_id)
+        if row is None or row["binding_status"] not in ("BOUND", "UNVERIFIED_BY_PRODUCT"):
+            ledger_rows.append(_gone_ledger_row(inv_id, exp, row or {"reason": "not attempted"}))
+            continue
+        try:
+            safe_inv = _safe_ledger_component(inv_id, what="invocation_id")
+        except ValueError as exc:
+            all_errors.append({"source": source_of.get(inv_id), "invocation_id": inv_id,
+                                "error": str(exc)})
+            ledger_rows.append(_unsupported_ledger_row(inv_id, exp, reason=str(exc)))
+            continue
+        key = (row["candidate_path"], row.get("candidate_start_ordinal"),
+               row.get("candidate_end_ordinal"))
+        candidate = candidate_by_key.get(key)
+        if candidate is None:
+            reason = "attributed candidate could not be re-resolved for normalization"
+            all_errors.append({"source": source_of.get(inv_id), "invocation_id": inv_id,
+                                "error": reason})
+            ledger_rows.append(_unsupported_ledger_row(inv_id, exp, reason=reason))
+            continue
+        snapshot = snapshot_by_path.get(str(candidate.path))
+        if snapshot is None:
+            # Source 3 (harness live) never hands back its internal snapshot
+            # -- a single, honest re-read of this one already-closed source,
+            # only for the rare invocation that fell all the way through to
+            # it (sources 1/2 always populate snapshot_by_path themselves).
+            try:
+                snapshot = capture_snapshot(candidate.path, engine=candidate.engine)
+                if snapshot.source_changed:
+                    raise RuntimeError(
+                        "source changed identity between attribution and normalization"
+                    )
+            except Exception as exc:  # noqa: BLE001 - one item's failure, not the whole run's
+                reason = f"could not re-derive snapshot for normalization: {exc}"
+                all_errors.append({"source": source_of.get(inv_id), "invocation_id": inv_id,
+                                    "error": reason})
+                ledger_rows.append(_unsupported_ledger_row(inv_id, exp, reason=reason))
+                continue
+        normalized_rel = f"{identity['report_run_id']}/{{revision}}/normalized/{safe_inv}.json"
+        raw_rel = f"{identity['report_run_id']}/{{revision}}/raw/{snapshot.snapshot_id}.jsonl.gz"
+        index_row, doc = _present_ledger_row(
+            inv_id, exp, row, candidate=candidate, snapshot=snapshot,
+            source_label=source_of.get(inv_id, "unknown"),
+            normalized_rel=normalized_rel, raw_rel=raw_rel,
+        )
+        ledger_rows.append(index_row)
+        normalized_docs[inv_id] = doc
+        raw_by_snapshot[snapshot.snapshot_id] = snapshot.archive_bytes
+        snapshot_ids_used.append(snapshot.snapshot_id)
+
+    revision_id = _compute_revision_id(
+        engine=identity["engine"], contract_run_id=identity["contract_run_id"],
+        report_run_id=identity["report_run_id"], run_manifest_sha256=identity["run_manifest_sha256"],
+        snapshot_ids=snapshot_ids_used, parser_version=OFFLINE_INDEX_PARSER_VERSION,
+    )
+    for row in ledger_rows:
+        if row.get("normalized"):
+            row["normalized"] = row["normalized"].replace("{revision}", revision_id)
+        if row.get("raw"):
+            row["raw"] = row["raw"].replace("{revision}", revision_id)
+
+    coverage = _tally_coverage(
+        {row["invocation_id"]: row for row in ledger_rows},
+        unexpected=len(all_unexpected), denominator_quality=(
+            "lower_bound"
+            if any(exp.get("denominator_quality") == "lower_bound" for exp in expectations.values())
+            else "full"
+        ),
+    )
+
+    index_root = _ledger_agents_index_root(run_dir_resolved, ledger_root=ledger_root)
+    _publish_offline_revision(
+        index_root, report_run_id=identity["report_run_id"], revision_id=revision_id,
+        normalized_docs=normalized_docs, raw_by_snapshot=raw_by_snapshot,
+    )
+
+    top_level = {
+        "schema_version": CURRENT_TRANSCRIPT_SCHEMA_VERSION,
+        "report_run_id": identity["report_run_id"],
+        "contract_run_id": identity["contract_run_id"],
+        "engine": identity["engine"],
+        "run_manifest_sha256": identity["run_manifest_sha256"],
+        "current_revision_id": revision_id,
+        "parser_version": OFFLINE_INDEX_PARSER_VERSION,
+        "computed_at": _now_iso(),
+        "invocations": ledger_rows,
+        "coverage": coverage,
+        "unexpected": all_unexpected,
+        "unmatched": all_unmatched,
+        "errors": all_errors,
+    }
+    atomic_write_json(index_root / f"{identity['report_run_id']}.json", top_level)
+    return top_level
+
+
+def _publish_offline_revision(
+    index_root: Path, *, report_run_id: str, revision_id: str,
+    normalized_docs: Mapping[str, dict], raw_by_snapshot: Mapping[str, bytes],
+) -> None:
+    """Write `agents_index/<report_run_id>/<revision_id>/{normalized,raw}/`
+    -- reusing this exact same content whenever it already exists (ruling 4:
+    "相同源快照与解析器版本重跑不改证据"), since `revision_id` is itself a hash
+    of every source that fed it: an existing directory of that exact name is
+    guaranteed byte-identical to what this call would produce again. Nothing
+    under an *older* revision_id is ever touched or removed (ruling 4's
+    "保留上一版" -- decided here as: never delete, a new revision is always a
+    new sibling directory, and the only thing this run's own `os.replace`
+    call ever retargets is the top-level pointer file, not any revision
+    directory's own name).
+
+    Builds the new revision under a temporary sibling name first and
+    `os.replace`s it into place only once fully populated -- so a reader can
+    never observe a half-written revision directory under its real name, and
+    a crash mid-build leaves only an orphaned temp directory, never a
+    corrupted "complete" one.
+    """
+    revision_dir = index_root / report_run_id / _safe_ledger_component(revision_id, what="revision_id")
+    if revision_dir.is_dir():
+        return  # ruling 4: identical revision_id => identical content, never rewritten
+    run_root = index_root / report_run_id
+    run_root.mkdir(parents=True, exist_ok=True)
+    tmp_dir = Path(tempfile.mkdtemp(prefix=f".{revision_id}.", dir=run_root))
+    try:
+        normalized_dir = tmp_dir / "normalized"
+        raw_dir = tmp_dir / "raw"
+        normalized_dir.mkdir()
+        raw_dir.mkdir()
+        for inv_id, doc in normalized_docs.items():
+            safe_inv = _safe_ledger_component(inv_id, what="invocation_id")
+            (normalized_dir / f"{safe_inv}.json").write_text(
+                canonical_json(doc), encoding="utf-8"
+            )
+        for snapshot_id, archive_bytes in raw_by_snapshot.items():
+            safe_snapshot = _safe_ledger_component(snapshot_id, what="snapshot_id")
+            (raw_dir / f"{safe_snapshot}.jsonl.gz").write_bytes(archive_bytes)
+        if revision_dir.is_dir():
+            return  # another process/call won the race; identical content by revision_id
+        os.replace(tmp_dir, revision_dir)
+    finally:
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def _cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="autoresearch.scan.transcript_binder")
-    parser.add_argument(
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument(
         "--run-id",
-        required=True,
         help=(
-            "contract_run_id (capsule identity). Staging is taken from this run's "
-            "own handle -- never guessed as the newest directory in a date folder."
+            "contract_run_id (capsule identity) of an *active* run. Staging is taken "
+            "from this run's own handle -- never guessed as the newest directory in a "
+            "date folder."
+        ),
+    )
+    group.add_argument(
+        "--offline",
+        metavar="RUN_DIR",
+        help=(
+            "Path to an already-published, frozen run directory "
+            "(reports_<engine>/scan/<report_run_id>/). Rebuilds the ledger index "
+            "offline; never writes into this directory."
         ),
     )
     return parser
@@ -1425,8 +2324,11 @@ def _cli_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _cli_parser().parse_args(argv)
     try:
-        handle = capsule_mod.require_active_run(args.run_id)
-        report = bind_run(handle.run_id, handle.staging)
+        if args.offline is not None:
+            report = offline_index(args.offline)
+        else:
+            handle = capsule_mod.require_active_run(args.run_id)
+            report = bind_run(handle.run_id, handle.staging)
     except Exception as exc:  # noqa: BLE001 - CLI surfaces one structured error, non-zero exit
         print(
             json.dumps(
@@ -1447,6 +2349,8 @@ __all__ = [
     "BOUNDARY_QUALITIES",
     "DENOMINATOR_QUALITIES",
     "EXPECTATION_SOURCES",
+    "OFFLINE_INDEX_PARSER_VERSION",
+    "OFFLINE_SOURCES",
     "REPORT_STATUSES",
     "TranscriptCandidate",
     "agent_expectations",
@@ -1454,5 +2358,6 @@ __all__ = [
     "bind_run",
     "build_claude_candidates",
     "build_codex_candidates",
+    "offline_index",
     "safe_bind_run",
 ]

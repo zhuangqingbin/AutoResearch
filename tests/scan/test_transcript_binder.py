@@ -21,7 +21,10 @@ banner below; B01-B10 above it are Task 3's own, unmodified.
 """
 from __future__ import annotations
 
+import gzip
+import hashlib
 import json
+import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -1503,3 +1506,418 @@ def test_cli_binds_using_run_handles_own_staging(tmp_path, monkeypatch, capsys):
     on_disk_path = handle.staging / "_transcript_bindings.json"
     assert on_disk_path.is_file()
     assert json.loads(on_disk_path.read_text(encoding="utf-8")) == printed
+
+
+# ============================================================================
+# Task 8 (2026-09-12 scene-reconstruction): offline reconstruction of a
+# *frozen*, already-published run's index -- `transcript_binder.offline_index`
+# / the `--offline` CLI flag.
+#
+# Every fixture directly, minimally constructs its own
+# `reports_<engine>/scan/<report_run_id>/` directory (same discipline as
+# `tests/scan/test_salvage.py`'s own `_write_run`) rather than driving the
+# full begin_run -> finalize -> publisher pipeline, which this task does not
+# own. `_freeze_run` below copies a *real* active run's capsule/staging (so
+# `capsule/events/events.jsonl` -- `agent_expectations`'s one required input
+# -- is the genuine production shape, not a hand-typed approximation) into
+# that frozen shape, exactly mirroring what a real publish leaves behind.
+# ============================================================================
+
+def _freeze_run(tmp_path, handle, report_run_id: str, *, engine: str = "claude") -> Path:
+    """Publish *handle*'s still-active capsule/staging into a frozen
+    `reports_<engine>/scan/<report_run_id>/` directory -- `manifest.json` +
+    `trace/run_contract.json` (both read by `offline_index`'s identity
+    check) + `capsule/` (copied whole, so `events/events.jsonl` is the real
+    production shape) + `trace/staging/` (the 2026-08-26+ retention mirror
+    `agent_expectations`'s product-fallback and `resolve_run_mode` both
+    read). Call `capsule_mod.materialize_agent_index(handle.run_id)` *before*
+    this to get a realistic (GONE-only, when no live transcript exists)
+    `capsule/agents/index.json` baked into the frozen copy, matching what a
+    real old run's capsule actually looks like today.
+    """
+    scan_reports = tmp_path / f"reports_{engine}" / "scan"
+    run_dir = scan_reports / report_run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(handle.capsule, run_dir / "capsule")
+    (run_dir / "trace").mkdir(exist_ok=True)
+    contract_bytes = (handle.workspace / "run_contract.json").read_bytes()
+    (run_dir / "trace" / "run_contract.json").write_bytes(contract_bytes)
+    shutil.copytree(handle.staging, run_dir / "trace" / "staging", dirs_exist_ok=True)
+    contract = json.loads(contract_bytes)
+    manifest = {
+        "analysis_date": contract["analysis_date"],
+        "run_id": contract["run_id"],
+        "generated_at": "2026-08-27T20:30:00",
+    }
+    (run_dir / "manifest.json").write_bytes(json.dumps(manifest).encode("utf-8"))
+    (run_dir / "trace" / "staging" / "run_mode.json").write_text(
+        json.dumps({"schema_version": 1, "mode": "FULL"}), encoding="utf-8"
+    )
+    return run_dir
+
+
+def _write_archived_transcript(
+    run_dir: Path, *, agent: str, original_name: str, rows: list[dict]
+) -> Path:
+    """Reproduce exactly what `retention.archive_transcripts` (the
+    pre-existing, pre-Task-2 mechanism) already leaves inside a published
+    run -- `trace/transcripts/<agent>-<stem>.jsonl.gz` + an `_index.json`
+    row -- without importing that module (out of this task's scope; this is
+    the *consumer* side, proving `offline_index` reads the real on-disk
+    shape, not a mocked one)."""
+    raw = ("\n".join(json.dumps(r) for r in rows) + "\n").encode("utf-8")
+    out_dir = run_dir / "trace" / "transcripts"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = Path(original_name).stem
+    target = out_dir / f"{agent}-{stem}.jsonl.gz"
+    target.write_bytes(gzip.compress(raw, compresslevel=6, mtime=0))
+    index_path = out_dir / "_index.json"
+    doc = (
+        json.loads(index_path.read_text(encoding="utf-8"))
+        if index_path.is_file()
+        else {"schema_version": 1, "agents": [], "transcripts": []}
+    )
+    doc["transcripts"].append(
+        {
+            "agent": agent,
+            "file": original_name,
+            "status": "PRESENT",
+            "raw_bytes": len(raw),
+            "gz_bytes": target.stat().st_size,
+            "sha256": hashlib.sha256(raw).hexdigest(),
+        }
+    )
+    if agent not in doc["agents"]:
+        doc["agents"].append(agent)
+    index_path.write_text(json.dumps(doc), encoding="utf-8")
+    return target
+
+
+def _run_dir_fingerprint(run_dir: Path) -> dict[str, str]:
+    """Relative-path -> sha256 for every file under *run_dir* -- the exact
+    before/after comparison ruling 8 demands ("every relative path and every
+    file's content hash under that run must be unchanged"), never a
+    filename-only comparison."""
+    out: dict[str, str] = {}
+    for p in sorted(run_dir.rglob("*")):
+        if p.is_file():
+            out[str(p.relative_to(run_dir))] = hashlib.sha256(p.read_bytes()).hexdigest()
+    return out
+
+
+# --------------------------------------------------- required fixture 1 (H01)
+
+
+def test_h01_offline_index_backfills_a_capsule_whose_invocations_are_all_gone(
+    tmp_path, monkeypatch,
+):
+    """Brief's first required fixture: a real, frozen capsule whose
+    `agents/index.json` shows every invocation GONE (no bound live
+    transcript ever existed), while the run's own retention-archived
+    transcript still holds the real evidence. `offline_index` must surface
+    it -- and never touch the frozen capsule's own GONE row."""
+    handle = _begin_claude(tmp_path, monkeypatch, session_ref="session-h01")
+    d = _dispatch_agent(
+        handle, "AGENT_DISPATCHED", role="l4-card", subject="600031",
+        invocation_id="l4-card-600031-1", attempt=1,
+    )
+    c = _dispatch_agent(
+        handle, "AGENT_COMPLETED", role="l4-card", subject="600031",
+        invocation_id="l4-card-600031-1", attempt=1,
+    )
+    card_path = handle.staging / "details" / "600031.md"
+    card_path.parent.mkdir(parents=True, exist_ok=True)
+    card_path.write_text("# 600031 决策卡\n", encoding="utf-8")
+    # No transcript ever bound at the live path -- materialize sees nothing.
+    before = capsule_mod.materialize_agent_index(handle.run_id)
+    before_row = next(
+        r for r in before["invocations"] if r["invocation_id"] == "l4-card-600031-1"
+    )
+    assert before_row["status"] == "GONE"
+
+    run_dir = _freeze_run(tmp_path, handle, "20260827-0827_2000")
+    _write_archived_transcript(
+        run_dir, agent="l4-card", original_name="agent-h01card.jsonl",
+        rows=[
+            _claude_write_row("tool-1", card_path, ts=d["ts"], msg_id="msg-1"),
+            _claude_result_row("tool-1", ts=c["ts"]),
+        ],
+    )
+    fingerprint_before = _run_dir_fingerprint(run_dir)
+
+    result = tb.offline_index(run_dir, sessions_root=tmp_path / "no-such-sessions")
+
+    row = next(r for r in result["invocations"] if r["invocation_id"] == "l4-card-600031-1")
+    assert row["status"] == "PRESENT"
+    assert row["binding_status"] == "BOUND"
+    assert row["role"] == "l4-card"
+    assert row["subject"] == "600031"
+    assert row["normalized"] is not None
+    assert result["current_revision_id"] == row["normalized"].split("/")[1]
+
+    normalized_doc_path = (
+        tb._ledger_agents_index_root(run_dir) / row["normalized"]
+    )
+    assert normalized_doc_path.is_file()
+    doc = json.loads(normalized_doc_path.read_text(encoding="utf-8"))
+    kinds = {op["kind"] for op in doc["operations"]}
+    assert "WRITE_SUCCEEDED" in kinds
+
+    # Ruling 8: the frozen run itself is never written.
+    assert _run_dir_fingerprint(run_dir) == fingerprint_before
+    after_capsule = json.loads(
+        (run_dir / "capsule" / "agents" / "index.json").read_text(encoding="utf-8")
+    )
+    after_row = next(
+        r for r in after_capsule["invocations"] if r["invocation_id"] == "l4-card-600031-1"
+    )
+    assert after_row["status"] == "GONE"  # original capsule's own conclusion, untouched
+
+
+# --------------------------------------------------- required fixture 2
+
+
+def test_h01_archive_alone_reproduces_what_the_live_session_showed_before_deletion(
+    tmp_path, monkeypatch,
+):
+    """Brief's second required fixture: once the harness's own live session
+    is deleted, the run's own already-archived snapshot must independently
+    reproduce the *same* observed evidence -- spec §6.1's "harness 消失后，
+    已归档快照仍可独立生成视图"."""
+    projects_root = _home_projects_root(monkeypatch, tmp_path)
+    session_ref = "session-h01-archive-only"
+    handle = _begin_claude(tmp_path, monkeypatch, session_ref=session_ref)
+    d = _dispatch_agent(
+        handle, "AGENT_DISPATCHED", role="l4-card", subject="600032",
+        invocation_id="l4-card-600032-1", attempt=1,
+    )
+    c = _dispatch_agent(
+        handle, "AGENT_COMPLETED", role="l4-card", subject="600032",
+        invocation_id="l4-card-600032-1", attempt=1,
+    )
+    card_path = handle.staging / "details" / "600032.md"
+    card_path.parent.mkdir(parents=True, exist_ok=True)
+    card_path.write_text("# 600032 决策卡\n", encoding="utf-8")
+    rows = [
+        _claude_write_row("tool-1", card_path, ts=d["ts"], msg_id="msg-1"),
+        _claude_result_row("tool-1", ts=c["ts"]),
+    ]
+    live_path = _claude_subagent_path(projects_root, session_ref, "h01archiveonly")
+    _write_claude_rows(live_path, rows)
+    capsule_mod.materialize_agent_index(handle.run_id)
+
+    run_dir = _freeze_run(tmp_path, handle, "20260827-0827_2010")
+    _write_archived_transcript(
+        run_dir, agent="l4-card", original_name=live_path.name, rows=rows,
+    )
+
+    # Sanity: with the live session still present, offline_index resolves it
+    # (via source 3) to the same conclusion source 1 alone will reach.
+    while_present = tb.offline_index(
+        run_dir, ledger_root=tmp_path / "ledger-a", sessions_root=projects_root,
+    )
+    row_present = next(
+        r for r in while_present["invocations"] if r["invocation_id"] == "l4-card-600032-1"
+    )
+    assert row_present["binding_status"] == "BOUND"
+
+    # Now the harness's own copy is gone -- only the run's own archive remains.
+    live_path.unlink()
+    assert not live_path.exists()
+
+    after_deletion = tb.offline_index(
+        run_dir, ledger_root=tmp_path / "ledger-b", sessions_root=projects_root,
+    )
+    row_after = next(
+        r for r in after_deletion["invocations"] if r["invocation_id"] == "l4-card-600032-1"
+    )
+    assert row_after["binding_status"] == "BOUND"
+    assert row_after["status"] == "PRESENT"
+    assert row_after["source_sha256"] == row_present["source_sha256"]
+    assert row_after["offline_source"] == "archived_transcript"
+
+
+# --------------------------------------------------- required fixture 3
+
+
+def test_h01_two_runs_same_date_never_borrow_each_others_evidence(tmp_path, monkeypatch):
+    """Brief's third required fixture: two different runs sharing one
+    `analysis_date` must never be conflated -- ruling 6's explicit "不能把
+    同日 shared 目录当归属证据". A decoy file sits in the *shared*,
+    date-keyed staging root (the historical, pre-2026-08-26 fallback
+    location) with different content than either run's own copy; if
+    `offline_index` ever fell back to that shared root instead of each run's
+    own `trace/staging/` mirror, this test would catch it."""
+    handle_a = _begin_claude(tmp_path, monkeypatch, session_ref="session-h01-run-a")
+    da = _dispatch_agent(
+        handle_a, "AGENT_DISPATCHED", role="l4-card", subject="600041",
+        invocation_id="l4-card-600041-1", attempt=1,
+    )
+    ca = _dispatch_agent(
+        handle_a, "AGENT_COMPLETED", role="l4-card", subject="600041",
+        invocation_id="l4-card-600041-1", attempt=1,
+    )
+    card_a = handle_a.staging / "details" / "600041.md"
+    card_a.parent.mkdir(parents=True, exist_ok=True)
+    card_a.write_text("# run A 600041\n", encoding="utf-8")
+    capsule_mod.materialize_agent_index(handle_a.run_id)
+    run_a = _freeze_run(tmp_path, handle_a, "20260827-0827_1900")
+    _write_archived_transcript(
+        run_a, agent="l4-card", original_name="agent-runA.jsonl",
+        rows=[
+            _claude_write_row("tool-a", card_a, ts=da["ts"], msg_id="msg-a"),
+            _claude_result_row("tool-a", ts=ca["ts"]),
+        ],
+    )
+
+    handle_b = _begin_claude(
+        tmp_path, monkeypatch, session_ref="session-h01-run-b",
+        now=FIXTURE_NOW + timedelta(hours=2),  # distinct contract_run_id from handle_a
+    )
+    db = _dispatch_agent(
+        handle_b, "AGENT_DISPATCHED", role="l4-card", subject="600042",
+        invocation_id="l4-card-600042-1", attempt=1,
+    )
+    cb = _dispatch_agent(
+        handle_b, "AGENT_COMPLETED", role="l4-card", subject="600042",
+        invocation_id="l4-card-600042-1", attempt=1,
+    )
+    card_b = handle_b.staging / "details" / "600042.md"
+    card_b.parent.mkdir(parents=True, exist_ok=True)
+    card_b.write_text("# run B 600042\n", encoding="utf-8")
+    capsule_mod.materialize_agent_index(handle_b.run_id)
+    run_b = _freeze_run(tmp_path, handle_b, "20260827-0827_2100")
+    _write_archived_transcript(
+        run_b, agent="l4-card", original_name="agent-runB.jsonl",
+        rows=[
+            _claude_write_row("tool-b", card_b, ts=db["ts"], msg_id="msg-b"),
+            _claude_result_row("tool-b", ts=cb["ts"]),
+        ],
+    )
+    assert run_a.parent == run_b.parent  # both under the same reports_.../scan/ root
+
+    # A decoy in the *shared*, date-keyed context root -- must never be read.
+    shared_dir = tmp_path / "context_claude" / "scan" / handle_a.analysis_date / "details"
+    shared_dir.mkdir(parents=True, exist_ok=True)
+    (shared_dir / "600041.md").write_text("# DECOY -- not either run's own copy\n", encoding="utf-8")
+
+    result_a = tb.offline_index(run_a, sessions_root=tmp_path / "no-sessions")
+    result_b = tb.offline_index(run_b, sessions_root=tmp_path / "no-sessions")
+
+    assert result_a["report_run_id"] == "20260827-0827_1900"
+    assert result_a["contract_run_id"] == handle_a.run_id
+    ids_a = {r["invocation_id"] for r in result_a["invocations"]}
+    assert "l4-card-600041-1" in ids_a
+    assert "l4-card-600042-1" not in ids_a
+    row_a = next(r for r in result_a["invocations"] if r["invocation_id"] == "l4-card-600041-1")
+    assert row_a["binding_status"] == "BOUND"
+
+    assert result_b["report_run_id"] == "20260827-0827_2100"
+    assert result_b["contract_run_id"] == handle_b.run_id
+    ids_b = {r["invocation_id"] for r in result_b["invocations"]}
+    assert "l4-card-600042-1" in ids_b
+    assert "l4-card-600041-1" not in ids_b
+
+
+# --------------------------------------------------- required fixture 4
+
+
+def test_h01_invocation_id_that_would_escape_its_directory_is_rejected_not_written(
+    tmp_path, monkeypatch,
+):
+    """Brief's fourth required fixture: a corrupted historical
+    `events.jsonl` line (bypassing `record_agent_boundary`'s own
+    `_AGENT_ID_RE` validation, which every *current* dispatch already goes
+    through -- this defends the *offline reader* against old/tampered data,
+    not the live writer) carries an invocation_id that would, if used
+    verbatim as a ledger filename, escape `agents_index/<report_run_id>/
+    <revision_id>/normalized/`. Its *subject* (600052) is otherwise ordinary
+    and has real, matching archived-transcript evidence -- so `assign()`
+    itself legitimately resolves it to `BOUND`, and it is specifically
+    `offline_index`'s own ledger-write path-safety gate (not
+    `_normalize_operation_path`'s unrelated staging-containment check, which
+    this fixture deliberately does not exercise) that must catch the unsafe
+    invocation_id and quarantine that one row (a distinct error, not a
+    crash, not a silently-dropped expectation) while every other,
+    well-formed invocation in the same run is unaffected.
+    """
+    handle = _begin_claude(tmp_path, monkeypatch, session_ref="session-h01-escape")
+    d = _dispatch_agent(
+        handle, "AGENT_DISPATCHED", role="l4-card", subject="600051",
+        invocation_id="l4-card-600051-1", attempt=1,
+    )
+    c = _dispatch_agent(
+        handle, "AGENT_COMPLETED", role="l4-card", subject="600051",
+        invocation_id="l4-card-600051-1", attempt=1,
+    )
+    card_path = handle.staging / "details" / "600051.md"
+    card_path.parent.mkdir(parents=True, exist_ok=True)
+    card_path.write_text("# 600051 决策卡\n", encoding="utf-8")
+    escape_card_path = handle.staging / "details" / "600052.md"
+    escape_card_path.write_text("# 600052 决策卡\n", encoding="utf-8")
+    capsule_mod.materialize_agent_index(handle.run_id)
+
+    run_dir = _freeze_run(tmp_path, handle, "20260827-0827_2200")
+    _write_archived_transcript(
+        run_dir, agent="l4-card", original_name="agent-escape.jsonl",
+        rows=[
+            _claude_write_row("tool-1", card_path, ts=d["ts"], msg_id="msg-1"),
+            _claude_result_row("tool-1", ts=c["ts"]),
+        ],
+    )
+    escape_ts = "2026-08-27T19:00:00.000000Z"
+    _write_archived_transcript(
+        run_dir, agent="l4-card", original_name="agent-escape2.jsonl",
+        rows=[
+            _claude_write_row("tool-2", escape_card_path, ts=escape_ts, msg_id="msg-2"),
+            _claude_result_row("tool-2", ts=escape_ts),
+        ],
+    )
+
+    # A hand-injected, malformed AGENT_DISPATCHED/AGENT_COMPLETED pair -- as
+    # if this run predated the id-shape validation `record_agent_boundary`
+    # enforces today. Never goes through the real writer on purpose. Ordinary
+    # subject (600052, matching the second archived write above) so this
+    # resolves as real, bound evidence -- only the invocation_id itself is
+    # unsafe.
+    events_path = run_dir / "capsule" / "events" / "events.jsonl"
+    malformed_events = [
+        {
+            "event_type": "AGENT_DISPATCHED", "invocation_id": "../../escape-1",
+            "payload": {"role": "l4-card"}, "subject": "600052", "attempt": 1,
+            "ts": escape_ts,
+        },
+        {
+            "event_type": "AGENT_COMPLETED", "invocation_id": "../../escape-1",
+            "payload": {"role": "l4-card", "result": {}}, "subject": "600052",
+            "attempt": 1, "ts": escape_ts,
+        },
+    ]
+    with events_path.open("a", encoding="utf-8") as fh:
+        for event in malformed_events:
+            fh.write(json.dumps(event) + "\n")
+    fingerprint_before = _run_dir_fingerprint(run_dir)
+
+    result = tb.offline_index(run_dir, sessions_root=tmp_path / "no-sessions")
+
+    ledger_root = tb._ledger_agents_index_root(run_dir)
+    # Nothing was ever written outside the revision directory this run owns.
+    for path in ledger_root.rglob("*"):
+        if path.is_file():
+            assert path.resolve().is_relative_to(ledger_root.resolve())
+            assert ".." not in path.relative_to(ledger_root).parts
+
+    escaped_row = next(
+        r for r in result["invocations"] if r["invocation_id"] == "../../escape-1"
+    )
+    assert escaped_row["status"] != "PRESENT"
+    assert escaped_row["normalized"] is None
+    assert "unsafe" in escaped_row["reason"].lower() or "escape" in escaped_row["reason"].lower()
+    assert any(err["invocation_id"] == "../../escape-1" for err in result["errors"])
+
+    # The well-formed invocation in the same run is entirely unaffected.
+    good_row = next(r for r in result["invocations"] if r["invocation_id"] == "l4-card-600051-1")
+    assert good_row["status"] == "PRESENT"
+    assert good_row["binding_status"] == "BOUND"
+
+    assert _run_dir_fingerprint(run_dir) == fingerprint_before
