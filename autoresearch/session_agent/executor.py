@@ -61,7 +61,7 @@ def execute_operation(
     if current["state"] in {"SUCCEEDED", "FAILED"}:
         raise RuntimeError("operation attempt already has terminal capture evidence")
     operation = task["operation"]
-    argv = build_argv(operation, params)
+    argv = build_argv(operation, params, subject=task.get("subject"))
     spec = operation_spec(operation)
     invocation_id = _invocation_id(task["task_id"], attempt)
     result = runner(

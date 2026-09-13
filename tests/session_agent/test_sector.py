@@ -18,6 +18,7 @@ def _request(mode="FULL", subject="电子"):
         "peers": [],
         "asset_type": None,
         "name": None,
+        "force_full": False,
         "host_profile": _profile(),
         "predecessor_run_id": None,
     }
@@ -49,4 +50,3 @@ def test_sector_plan_uses_stable_ascii_task_ids_and_fixed_chains(tmp_path):
         "sector.intel",
         "sector.research",
     ]
-

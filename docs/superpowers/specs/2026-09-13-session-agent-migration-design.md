@@ -320,6 +320,7 @@ BeginRequest v1 是 --request-file 的精确 JSON 对象；所有字段必须出
 | peers | stock 为原支持的 ticker 数组，无同业为 []；其他入口必须为 [] |
 | asset_type | stock 为原 harvest 支持值；其他入口为 null，不在迁移中扩大资产种类 |
 | name | 原入口允许的展示名称或 null；不作为证券身份 |
+| force_full | 布尔值；仅 scan 可为 true，显式请求把哨兵建议提升为 FORCED_FULL |
 | host_profile | 设计 §9 定义的 HostProfile 对象；engine 必须等于显式环境 |
 | predecessor_run_id | 普通新任务为 null；冻结 run 后继任务为可核验的本引擎旧 run_id |
 

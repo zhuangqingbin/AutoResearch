@@ -34,3 +34,11 @@ def test_operation_rejects_unknown_keys_unknown_operation_and_hostile_symbol():
             "slim": True,
         })
 
+
+def test_subject_scoped_scan_operations_get_identity_from_the_frozen_task():
+    assert build_argv("scan.l4.slim", {}, subject="600519")[-2:] == [
+        "--subject",
+        "600519",
+    ]
+    with pytest.raises(ValueError, match="subject"):
+        build_argv("scan.l4.slim", {})

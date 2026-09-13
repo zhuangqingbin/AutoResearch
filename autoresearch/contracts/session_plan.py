@@ -24,7 +24,8 @@ EXPANSION_FIELDS = frozenset({
     "tasks", "expansion_hash",
 })
 REGISTERED_EXPANDERS = frozenset({
-    "scan.sectors", "scan.l3", "scan.l4", "scan.reviews", "stock.optional_lenses",
+    "scan.sectors", "scan.l3", "scan.l3.repair", "scan.l4", "scan.reviews", "scan.review3",
+    "stock.optional_lenses",
     "macro.sections", "sector.sections",
 })
 

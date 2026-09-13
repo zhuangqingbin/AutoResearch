@@ -79,6 +79,12 @@ def _all_tasks(handle, frozen_plan: dict | None = None) -> list[dict]:
             tasks = plan_service.apply_expansion(
                 current, expansion, existing_tasks=tasks
             )
+    recovery_root = _session_dir(handle) / "recoveries"
+    if recovery_root.is_dir():
+        for path in sorted(recovery_root.glob("*.json")):
+            tasks = plan_service.apply_expansion(
+                current, _read_json(path), existing_tasks=tasks
+            )
     return tasks
 
 
@@ -239,6 +245,11 @@ def begin(
         for task in frozen_plan["tasks"]
         if task["kind"] == "INFERENCE"
     ]
+    role_ids.extend(
+        role
+        for template in frozen_plan["task_templates"]
+        for role in template["allowed_roles"]
+    )
     _freeze_json(
         Path(handle.capsule) / "identity" / "session" / "roles.json",
         role_manifest(role_ids),
@@ -253,10 +264,47 @@ def begin(
     return status(handle.run_id, handle_loader=lambda unused: handle, command="begin")
 
 
+def _sync_expansion(handle, request: dict, expansion: dict) -> None:
+    from autoresearch.session_agent.workflows import register_expansion_artifacts
+
+    register_expansion_artifacts(request, handle, expansion)
+    store.register_tasks(
+        _store_path(handle),
+        expansion["tasks"],
+        plan_hash=_load_plan(handle)["plan_hash"],
+    )
+
+
+def _activate_after_task(handle, task: dict) -> list[str]:
+    from autoresearch.session_agent.workflows import expansions_after_task
+
+    request = _read_json(_session_dir(handle) / "request.json")
+    frozen_plan = _load_plan(handle)
+    activated = []
+    for expansion in expansions_after_task(request, handle, frozen_plan, task):
+        path = plan_service.persist_expansion(
+            _session_dir(handle),
+            frozen_plan,
+            expansion,
+            existing_tasks=_all_tasks(handle, frozen_plan),
+        )
+        _sync_expansion(handle, request, expansion)
+        activated.append(path.name)
+    return activated
+
+
 def _state(handle) -> tuple[str, list[dict], list[dict]]:
     frozen_plan = _load_plan(handle)
     tasks = _all_tasks(handle, frozen_plan)
     states = store.read_states(_store_path(handle))
+    owner_tasks = [task for task in tasks if task["owner"] == "L4_TASKBOOK"]
+    if owner_tasks:
+        from autoresearch.session_agent import legacy_scan
+
+        if legacy_scan.taskbook_path(handle).is_file():
+            states.update(legacy_scan.ticket_states(handle, owner_tasks))
+        else:
+            states.update({task["task_id"]: "PENDING" for task in owner_tasks})
     ready = plan_service.ready_tasks(tasks, states)
     if ready:
         return "READY", ready, []
@@ -267,8 +315,10 @@ def _state(handle) -> tuple[str, list[dict], list[dict]]:
             [],
             [{"code": "TASK_BLOCKED", "task_id": task["task_id"]} for task in blocked],
         )
-    session_tasks = [task for task in tasks if task["owner"] == "SESSION"]
-    if session_tasks and all(states.get(task["task_id"]) == "SUCCEEDED" for task in session_tasks):
+    if tasks and all(
+        states.get(task["task_id"]) in {"SUCCEEDED", "SUPERSEDED"}
+        for task in tasks
+    ):
         expanded = {
             _read_json(path)["template_id"]
             for path in sorted((_session_dir(handle) / "expansions").glob("*.json"))
@@ -285,7 +335,7 @@ def _state(handle) -> tuple[str, list[dict], list[dict]]:
             [],
             [{"code": "EXPANSION_PENDING", "template_id": item} for item in missing],
         )
-    running = [task for task in session_tasks if states.get(task["task_id"]) == "RUNNING"]
+    running = [task for task in tasks if states.get(task["task_id"]) == "RUNNING"]
     return "WAITING", running, []
 
 
@@ -299,11 +349,154 @@ def status(
 
     handle = (handle_loader or require_active_run)(run_id)
     state, tasks, errors = _state(handle)
-    return _result(command, handle.run_id, state, tasks=tasks, errors=errors)
+    progress = None
+    if getattr(getattr(handle, "contract", None), "run_kind", None) == "scan-market":
+        from autoresearch.session_agent.progress import scan_progress
+
+        progress = scan_progress(handle)
+    return _result(
+        command,
+        handle.run_id,
+        state,
+        tasks=tasks,
+        result=progress,
+        errors=errors,
+    )
 
 
 def next(run_id: str, *, handle_loader: Callable[[str], object] | None = None) -> dict:
     return status(run_id, handle_loader=handle_loader, command="next")
+
+
+def fail(
+    run_id: str,
+    task_id: str,
+    attempt: int,
+    error_class: str,
+    message: str,
+    *,
+    handle_loader: Callable[[str], object] | None = None,
+) -> dict:
+    """Record an observed host failure without fabricating a task result."""
+    from autoresearch.contracts.retry import TASK_ATTEMPT
+    from autoresearch.trace.capsule import require_active_run
+
+    handle = (handle_loader or require_active_run)(run_id)
+    task = _task(handle, task_id)
+    if task["owner"] != "SESSION":
+        raise ValueError("fail applies to a claimed SESSION task")
+    kind = str(error_class).strip().upper()
+    if not kind or not message:
+        raise ValueError("error_class and message are required")
+    retryable = kind in TASK_ATTEMPT
+    store.mark_failed(
+        _store_path(handle),
+        task_id,
+        attempt,
+        {"code": kind, "message": message},
+        retryable=retryable,
+    )
+    if task["parent_task"] is not None:
+        from autoresearch.session_agent import legacy_scan
+
+        parent = task["parent_task"]
+        legacy_scan.fail_ticket(
+            handle,
+            parent["subject"],
+            parent["attempt"],
+            kind,
+            message,
+        )
+    current = status(run_id, handle_loader=lambda unused: handle, command="fail")
+    current["result"] = {"task_id": task_id, "attempt": attempt, "error_class": kind}
+    return current
+
+
+def retry_l4(
+    run_id: str,
+    code: str,
+    expected_attempt: int,
+    *,
+    handle_loader: Callable[[str], object] | None = None,
+) -> dict:
+    """Freeze a new L4 child subtree while leaving attempt ownership in l4_tasks."""
+    from autoresearch.contracts.retry import TASK_ATTEMPT
+    from autoresearch.session_agent.workflows.scan import l4_retry_expansion
+    from autoresearch.trace.capsule import require_active_run
+
+    handle = (handle_loader or require_active_run)(run_id)
+    frozen_plan = _load_plan(handle)
+    if frozen_plan["run_kind"] != "scan-market":
+        raise ValueError("retry-l4 only applies to scan-market runs")
+    code6 = str(code).zfill(6)
+    if not code6.isdigit() or len(code6) != 6 or expected_attempt < 2:
+        raise ValueError("invalid L4 retry identity")
+    from autoresearch.session_agent import legacy_scan
+
+    payload = legacy_scan._payload(handle)
+    ticket = (payload.get("tasks") or {}).get(code6)
+    if ticket is None:
+        raise KeyError(code6)
+    previous_attempt = expected_attempt - 1
+    if (
+        ticket.get("status") != "FAILED"
+        or int(ticket.get("attempt") or 0) != previous_attempt
+        or str(ticket.get("last_error_class") or "") not in TASK_ATTEMPT
+    ):
+        raise RuntimeError("L4 ticket is not eligible for the requested retry")
+    if not any(
+        task["task_id"] == f"l4.{code6}.a{previous_attempt}.card"
+        for task in _all_tasks(handle, frozen_plan)
+    ):
+        raise RuntimeError("previous L4 attempt subtree is missing")
+    previous_tasks = [
+        task
+        for task in _all_tasks(handle, frozen_plan)
+        if (task.get("parent_task") or {}).get("subject") == code6
+        and (task.get("parent_task") or {}).get("attempt") == previous_attempt
+    ]
+    states = store.read_states(_store_path(handle))
+    if any(states.get(task["task_id"]) == "RUNNING" for task in previous_tasks):
+        raise RuntimeError("L4 retry requires every previous child to be quiescent")
+    request = _read_json(_session_dir(handle) / "request.json")
+    config = getattr(handle.contract, "user_config", {}) or {}
+    intel_enabled = bool((config.get("l4_intel") or {}).get("enabled"))
+    prompt_snapshot = artifacts.snapshot_artifact(
+        handle, f"scan.l4.{code6}.a1.prompt"
+    )
+    expansion = l4_retry_expansion(
+        frozen_plan,
+        code6,
+        expected_attempt,
+        [
+            {
+                "artifact_id": prompt_snapshot["artifact_id"],
+                "sha256": prompt_snapshot["sha256"],
+            }
+        ],
+        intel_enabled=intel_enabled,
+    )
+    root = _session_dir(handle) / "recoveries"
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / f"{expansion['expansion_id']}.json"
+    existing_tasks = _all_tasks(handle, frozen_plan)
+    if path.is_file():
+        if canonical_json(_read_json(path)) != canonical_json(expansion):
+            raise RuntimeError("frozen L4 recovery changed")
+    else:
+        plan_service.apply_expansion(
+            frozen_plan, expansion, existing_tasks=existing_tasks
+        )
+        atomic_write_json(path, expansion)
+    _sync_expansion(handle, request, expansion)
+    store.prepare_l4_retry(_store_path(handle), code6, previous_attempt)
+    current = status(run_id, handle_loader=lambda unused: handle, command="retry-l4")
+    current["result"] = {
+        "code": code6,
+        "attempt": expected_attempt,
+        "expansion": path.name,
+    }
+    return current
 
 
 def _subject_kwargs(task: dict) -> dict:
@@ -336,6 +529,36 @@ def _record_completion(handle, task: dict, attempt: int, payload: dict, recorder
     )
 
 
+def _promote_l4_retry_output(handle, task: dict) -> None:
+    match = re.fullmatch(
+        r"l4\.(\d{6})\.a(\d+)\.(intel|card|review2|review3)",
+        task["task_id"],
+    )
+    if match is None or int(match.group(2)) < 2:
+        return
+    code, attempt_text, kind = match.groups()
+    with artifacts.open_artifact(handle, task["output_artifact_ids"][0]) as stream:
+        content = stream.read()
+    staging = Path(handle.staging)
+    targets = {
+        "intel": staging / f"_l4_intel_{code}.md",
+        "card": staging / "details" / f"{code}.md",
+        "review2": staging / "ensemble" / f"{code}.run2.md",
+        "review3": staging / "ensemble" / f"{code}.run3.md",
+    }
+    target = targets[kind]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.is_file() or target.read_bytes() != content:
+        temp = target.with_name(f".{target.name}.a{attempt_text}.tmp")
+        temp.write_bytes(content)
+        temp.replace(target)
+    if kind == "card":
+        previous = int(attempt_text) - 1
+        original_id = f"scan.l4.{code}.a{previous}.card"
+        artifacts.bind_artifact_hash(handle, original_id)
+        store.complete_l4_retry_alias(_store_path(handle), code, previous)
+
+
 def _verify_frozen_inputs(handle, task: dict, entry: dict) -> None:
     frozen = {
         item["artifact_id"]: item["sha256"]
@@ -361,6 +584,17 @@ def claim(
 
     handle = (handle_loader or require_active_run)(run_id)
     task = _task(handle, task_id)
+    if task["owner"] == "L4_TASKBOOK":
+        from autoresearch.session_agent import legacy_scan
+
+        receipt = legacy_scan.claim_ticket(handle, task["subject"], expected_attempt)
+        return _result(
+            "claim", handle.run_id, "WAITING", result={"claim_receipt": receipt}
+        )
+    if task["parent_task"] is not None:
+        from autoresearch.session_agent import legacy_scan
+
+        legacy_scan.validate_parent(handle, task["parent_task"])
     host_profile = _read_json(_session_dir(handle) / "host_profile.json")
     input_snapshots = [
         artifacts.snapshot_artifact(handle, artifact_id)
@@ -438,6 +672,10 @@ def execute(
     task = _task(handle, task_id)
     if task["kind"] != "DETERMINISTIC":
         raise ValueError("execute requires a deterministic task")
+    if task["parent_task"] is not None:
+        from autoresearch.session_agent import legacy_scan
+
+        legacy_scan.validate_parent(handle, task["parent_task"])
     entry = store.read_entry(_store_path(handle), task_id)
     if entry["state"] != "RUNNING" or entry["attempt"] != attempt:
         raise RuntimeError("deterministic task attempt is not claimed")
@@ -457,6 +695,17 @@ def execute(
             {"code": "OPERATION_FAILED", "execution": execution},
             retryable=bool(executor.operation_spec(task["operation"])["idempotent"]),
         )
+        if task["parent_task"] is not None:
+            from autoresearch.session_agent import legacy_scan
+
+            parent = task["parent_task"]
+            legacy_scan.fail_ticket(
+                handle,
+                parent["subject"],
+                parent["attempt"],
+                "OPERATION_FAILED",
+                f"child operation failed: {task_id}",
+            )
         return status(run_id, handle_loader=lambda unused: handle, command="execute")
     outputs = []
     for artifact_id in task["output_artifact_ids"]:
@@ -465,8 +714,13 @@ def execute(
     receipt = store.complete_deterministic(
         _store_path(handle), task_id, attempt, outputs, execution
     )
+    activated = _activate_after_task(handle, task)
     current = status(run_id, handle_loader=lambda unused: handle, command="execute")
-    current["result"] = {"execution": execution, "receipt": receipt}
+    current["result"] = {
+        "execution": execution,
+        "receipt": receipt,
+        "activated_expansions": activated,
+    }
     return current
 
 
@@ -488,6 +742,10 @@ def submit(
     task = _task(handle, submission["envelope"]["task_id"])
     if task["kind"] != "INFERENCE":
         raise ValueError("submit requires an inference task")
+    if task["parent_task"] is not None:
+        from autoresearch.session_agent import legacy_scan
+
+        legacy_scan.verify_child_handoff(handle, task, submission["envelope"])
     host_profile = _read_json(_session_dir(handle) / "host_profile.json")
     entry = store.read_entry(_store_path(handle), task["task_id"])
     _verify_frozen_inputs(handle, task, entry)
@@ -543,6 +801,7 @@ def submit(
     )
     _freeze_json(completion_path, completion)
     _record_completion(handle, task, attempt, completion, event_recorder)
+    _promote_l4_retry_output(handle, task)
     current = status(run_id, handle_loader=lambda unused: handle, command="submit")
     current["result"] = {"receipt": receipt}
     return current
@@ -557,12 +816,23 @@ def resume(
     from autoresearch.trace.capsule import require_active_run
 
     handle = (handle_loader or require_active_run)(run_id)
+    request = _read_json(_session_dir(handle) / "request.json")
+    expansion_root = _session_dir(handle) / "expansions"
+    if expansion_root.is_dir():
+        for path in sorted(expansion_root.glob("*.json")):
+            _sync_expansion(handle, request, _read_json(path))
     states = store.read_states(_store_path(handle))
     recovered = []
     running = []
     for task in _all_tasks(handle):
         state = states.get(task["task_id"])
+        if task["owner"] == "L4_TASKBOOK":
+            continue
         if state == "SUCCEEDED":
+            if task["kind"] == "INFERENCE":
+                _promote_l4_retry_output(handle, task)
+            if task["kind"] == "DETERMINISTIC":
+                _activate_after_task(handle, task)
             receipt = store.recover_receipt(_store_path(handle), task["task_id"])
             if receipt is not None:
                 recovered.append(receipt)
@@ -625,4 +895,7 @@ def finish(
     )
 
 
-__all__ = ["begin", "claim", "execute", "finish", "next", "resume", "status", "submit"]
+__all__ = [
+    "begin", "claim", "execute", "fail", "finish", "next", "resume",
+    "retry_l4", "status", "submit",
+]

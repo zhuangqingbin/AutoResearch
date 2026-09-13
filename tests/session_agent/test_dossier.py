@@ -18,6 +18,7 @@ def _request():
         "peers": [],
         "asset_type": None,
         "name": "贵州茅台",
+        "force_full": False,
         "host_profile": _profile(),
         "predecessor_run_id": None,
     }
@@ -47,4 +48,3 @@ def test_dossier_plan_has_one_research_owner_and_deterministic_guards(tmp_path):
         "dossier.init"
     ]
     assert all(re.fullmatch(r"[a-z0-9_.-]+", task["task_id"]) for task in tasks)
-

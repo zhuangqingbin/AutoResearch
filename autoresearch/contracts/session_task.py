@@ -25,7 +25,7 @@ HOST_PROFILE_FIELDS = frozenset({
 })
 BEGIN_REQUEST_FIELDS = frozenset({
     "schema_version", "kind", "requested_mode", "analysis_date", "subject", "peers",
-    "asset_type", "name", "host_profile", "predecessor_run_id",
+    "asset_type", "name", "force_full", "host_profile", "predecessor_run_id",
 })
 
 TASK_KINDS = ("DETERMINISTIC", "INFERENCE")
@@ -195,6 +195,10 @@ def validate_begin_request(value: dict, *, expected_engine: str | None = None) -
         raise ValueError("host engine does not match process engine")
     _unique_strings(value["peers"], "peers")
     _optional_string(value["name"], "name")
+    if type(value["force_full"]) is not bool:
+        raise ValueError("force_full must be boolean")
+    if value["force_full"] and kind != "scan-market":
+        raise ValueError("force_full only applies to scan-market")
     _optional_string(value["predecessor_run_id"], "predecessor_run_id")
     if value["predecessor_run_id"] is not None:
         _required_string(value["predecessor_run_id"], "predecessor_run_id", pattern=_RUN_ID_RE)

@@ -715,6 +715,656 @@ def dossier_prepare_publication(handle=None) -> dict:
     return value
 
 
+def scan_frame(handle=None) -> dict:
+    current = handle or _active_handle()
+    from autoresearch.scan import frame, strategist_pack
+
+    market = Path(current.staging) / "market_pack.json"
+    projected = Path(current.staging) / "strategist_pack.json"
+    if frame.main([current.analysis_date, "--json-out", str(market)]) != 0:
+        raise RuntimeError("scan frame failed")
+    if strategist_pack.main([str(market), "--out", str(projected)]) != 0:
+        raise RuntimeError("strategist projection failed")
+    return {"schema_version": 1, "market_pack": str(market), "strategist_pack": str(projected)}
+
+
+def scan_prelude(handle=None) -> dict:
+    current = handle or _active_handle()
+    from autoresearch.scan.prelude import STEP_NAMES, run_prelude
+
+    results = run_prelude(current.analysis_date)
+    if [item["step"] for item in results] != list(STEP_NAMES):
+        raise RuntimeError("prelude result steps differ from STEP_NAMES")
+    summary = Path(current.staging) / "_prelude_summary.md"
+    l2 = Path(current.staging) / "L2_gbdt_top200.csv"
+    if not summary.is_file() or not l2.is_file():
+        raise RuntimeError("prelude required outputs are missing")
+    return {"schema_version": 1, "steps": results, "summary": str(summary), "l2": str(l2)}
+
+
+def scan_gate1(handle=None) -> dict:
+    current = handle or _active_handle()
+    from autoresearch.scan.gates import gate1_decide, record_gate_stage_result
+
+    result = gate1_decide(
+        Path(current.staging), force_full=bool(_request(current)["force_full"])
+    )
+    record_gate_stage_result(Path(current.staging), result)
+    budget = result.get("l4_budget")
+    if result.get("ok") and (type(budget) is not int or budget < 1):
+        result = {**result, "ok": False, "reason": "invalid GATE1 l4_budget"}
+    atomic_write_json(Path(current.staging) / "session_outputs/gate1.json", result)
+    if not result.get("ok"):
+        raise RuntimeError(str(result.get("reason") or "GATE1 failed"))
+    return result
+
+
+def scan_sector_prepare(handle=None) -> dict:
+    current = handle or _active_handle()
+    from autoresearch.scan.user_config import knob
+    from autoresearch.sector import pack as sector_pack, reuse as sector_reuse
+    from autoresearch.session_agent.workflows.scan import _sector_key
+
+    scan_dir = Path(current.staging)
+    sectors, provenance = sector_pack.select_briefing_sectors(
+        scan_dir, k=int(knob("sector", "max_briefs", None, 6))
+    )
+    found = sector_reuse.find_reusable(current.analysis_date, sectors)
+    if found:
+        sector_reuse.apply_reuse(
+            current.analysis_date, found, root=ws.scan_root()
+        )
+    pack_dir = scan_dir / "session_inputs/sectors"
+    rows = []
+    for industry in sectors:
+        key = _sector_key(str(industry))
+        payload = sector_pack.sector_pack(industry, scan_dir)
+        atomic_write_json(pack_dir / f"{key}.json", payload)
+        rows.append(
+            {
+                "industry": str(industry),
+                "key": key,
+                "reused": industry in found,
+                "provenance": provenance.get(industry),
+            }
+        )
+    value = {"schema_version": 1, "mode": "FULL", "sectors": rows}
+    atomic_write_json(scan_dir / "session_outputs/sector.list.json", value)
+    return value
+
+
+def scan_sector_skip(handle=None) -> dict:
+    current = handle or _active_handle()
+    mode = json.loads(_text(current, "scan.run_mode"))
+    if mode.get("mode") not in {"SENTINEL_EMPTY", "SENTINEL_PINNED"}:
+        raise RuntimeError("sector skip only applies to sentinel modes")
+    value = {
+        "schema_version": 1,
+        "mode": mode["mode"],
+        "pinned_codes": list(mode.get("pinned_codes") or []),
+        "sectors": [],
+        "reason": "not applicable in sentinel mode",
+    }
+    atomic_write_json(Path(current.staging) / "session_outputs/sector.list.json", value)
+    return value
+
+
+def scan_l3_prepare(handle=None) -> dict:
+    current = handle or _active_handle()
+    from autoresearch.scan.l3.prompt import prepare_l3_table
+
+    return prepare_l3_table(current.analysis_date, root=ws.scan_root())
+
+
+def scan_l3_lint(handle=None) -> dict:
+    current = handle or _active_handle()
+    from autoresearch.scan.l3.validation import build_repair_pack, lint_judged
+
+    value = lint_judged(current.analysis_date, root=ws.scan_root())
+    atomic_write_json(Path(current.staging) / "session_outputs/l3.validation.json", value)
+    if not value.get("ok"):
+        build_repair_pack(current.analysis_date, root=ws.scan_root())
+    return value
+
+
+def scan_l3_repair_skip(handle=None) -> dict:
+    current = handle or _active_handle()
+    value = {
+        "schema_version": 1,
+        "status": "NOT_REQUIRED",
+        "patched": 0,
+        "codes": [],
+    }
+    atomic_write_json(Path(current.staging) / "session_outputs/l3.repair.json", value)
+    return value
+
+
+def scan_l3_repair_apply(handle=None) -> dict:
+    current = handle or _active_handle()
+    from autoresearch.scan.l3.validation import apply_repair_patch
+
+    applied = apply_repair_patch(current.analysis_date, root=ws.scan_root())
+    value = {"schema_version": 1, "status": "APPLIED", **applied}
+    atomic_write_json(Path(current.staging) / "session_outputs/l3.repair.json", value)
+    return value
+
+
+def scan_l3_merge(handle=None) -> dict:
+    current = handle or _active_handle()
+    from autoresearch.scan.gates import gate2, record_gate_stage_result
+    from autoresearch.scan.l3.merge import write_finalists
+
+    gate1 = json.loads(_text(current, "scan.gate1.result"))
+    budget = gate1.get("l4_budget")
+    if type(budget) is not int or budget < 1:
+        raise RuntimeError("invalid frozen GATE1 l4_budget")
+    write_finalists(current.analysis_date, budget=budget, root=ws.scan_root())
+    result = gate2(Path(current.staging), budget=budget)
+    record_gate_stage_result(Path(current.staging), result, budget=budget)
+    atomic_write_json(Path(current.staging) / "session_outputs/gate2.json", result)
+    if not result.get("ok"):
+        raise RuntimeError(str(result.get("reason") or "GATE2 failed"))
+    return result
+
+
+def scan_gate2_skip(handle=None) -> dict:
+    current = handle or _active_handle()
+    from autoresearch.scan import run_mode
+    from autoresearch.scan.gates import gate2, record_gate_stage_result
+
+    mode = run_mode.load(Path(current.staging))
+    if mode is None or not mode.is_sentinel:
+        raise RuntimeError("GATE2 skip requires a frozen sentinel mode")
+    run_mode.write_pinned_finalists(Path(current.staging), mode.pinned_codes)
+    reason = (
+        run_mode.GATE2_SKIP_REASON
+        if mode.mode == run_mode.SENTINEL_PINNED
+        else "sentinel_empty_no_l3"
+    )
+    result = gate2(Path(current.staging), skip_reason=reason)
+    record_gate_stage_result(Path(current.staging), result)
+    atomic_write_json(Path(current.staging) / "session_outputs/gate2.json", result)
+    return result
+
+
+def _scan_codes(scan_dir: Path) -> list[str]:
+    import pandas as pd
+
+    frame = pd.read_csv(scan_dir / "finalists.csv", dtype={"code": str})
+    if "code" not in frame.columns:
+        raise RuntimeError("finalists.csv missing code")
+    codes = [str(value).split(".")[0].zfill(6) for value in frame["code"].tolist()]
+    if any(not code.isdigit() or len(code) != 6 for code in codes):
+        raise RuntimeError("finalists.csv contains invalid code")
+    if len(codes) != len(set(codes)):
+        raise RuntimeError("finalists.csv contains duplicate code")
+    return codes
+
+
+def scan_l4_prepare(handle=None) -> dict:
+    """Run the original L4 producers, freeze prompts, then create the sole ticket owner."""
+    current = handle or _active_handle()
+    scan_dir = Path(current.staging)
+    from autoresearch.scan import calendar
+    from autoresearch.scan.l4 import producers, prompts
+    from autoresearch.scan.l4.dispatch import dispatch_plan
+    from autoresearch.session_agent import legacy_scan
+
+    prompts.write_shared_instructions(scan_dir)
+    producer_status = {}
+    for name, call in (
+        ("pledge", lambda: producers.fetch_pledge(scan_dir)),
+        ("seats", lambda: producers.fetch_seats(scan_dir)),
+        ("calendar", lambda: calendar.main([current.analysis_date])),
+        ("consensus", lambda: producers.fetch_consensus(scan_dir)),
+        ("fund_hold", lambda: producers.fetch_fund_hold(scan_dir)),
+    ):
+        try:
+            call()
+            producer_status[name] = "SUCCEEDED"
+        except Exception as exc:  # optional legacy producers degrade independently
+            producer_status[name] = f"DEGRADED:{type(exc).__name__}"
+    prompt_result = prompts.write_dispatch_pack(scan_dir)
+    dispatch = dispatch_plan(current.analysis_date, root=scan_dir.parent)
+    codes = list(dispatch.get("dispatch") or [])
+    expected = _scan_codes(scan_dir)
+    if codes != expected or prompt_result.get("n_prompts") != len(expected):
+        raise RuntimeError("L4 dispatch/prompts differ from frozen finalists")
+    meta = dispatch.get("meta") or {}
+    initialized = legacy_scan.initialize_tickets(current, codes, meta=meta)
+    config = getattr(current.contract, "user_config", {}) or {}
+    value = {
+        "schema_version": 1,
+        "codes": codes,
+        "meta": meta,
+        "pinned_codes": [code for code in codes if bool((meta.get(code) or {}).get("pinned"))],
+        "intel_enabled": bool((config.get("l4_intel") or {}).get("enabled")),
+        "intel_max_queries": (config.get("l4_intel") or {}).get("max_queries"),
+        "config_hash": getattr(current.contract, "config_hash", None),
+        "producer_status": producer_status,
+        "taskbook": initialized["path"],
+        "effective_cap": initialized.get("effective_cap"),
+    }
+    atomic_write_json(scan_dir / "session_outputs/l4.plan.json", value)
+    return value
+
+
+def scan_l4_skip(handle=None) -> dict:
+    current = handle or _active_handle()
+    mode = json.loads(_text(current, "scan.run_mode"))
+    if mode.get("mode") != "SENTINEL_EMPTY":
+        raise RuntimeError("L4 skip only applies to SENTINEL_EMPTY")
+    plan = {
+        "schema_version": 1,
+        "codes": [],
+        "meta": {},
+        "pinned_codes": [],
+        "intel_enabled": False,
+        "reason": "sentinel_empty_no_l4",
+    }
+    review = {"schema_version": 1, "reviews": [], "reason": "sentinel_empty_no_l4"}
+    output = Path(current.staging) / "session_outputs"
+    atomic_write_json(output / "l4.plan.json", plan)
+    atomic_write_json(output / "review.plan.json", review)
+    return plan
+
+
+def _require_code(code: str | None) -> str:
+    value = str(code or "").split(".")[0].zfill(6)
+    if not value.isdigit() or len(value) != 6:
+        raise ValueError("six-digit scan subject required")
+    return value
+
+
+def _l4_attempt(scan_dir: Path, code: str) -> int:
+    path = scan_dir / "_l4_tasks.json"
+    if not path.is_file():
+        return 1
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return int(payload["tasks"][code].get("attempt") or 0)
+
+
+def _retry_dir(scan_dir: Path, code: str, attempt: int) -> Path:
+    return scan_dir / "session_attempts" / code / f"a{attempt}"
+
+
+def scan_l4_slim(handle=None, *, code: str | None = None) -> dict:
+    current = handle or _active_handle()
+    from autoresearch.session_agent import legacy_scan
+
+    code6 = _require_code(code)
+    result = legacy_scan.prepare_slim(current, code6)
+    if not result.get("ok"):
+        raise RuntimeError(str(result.get("reason") or "L4 slim failed"))
+    scan_dir = Path(current.staging)
+    attempt = _l4_attempt(scan_dir, code6)
+    if attempt > 1:
+        task = legacy_scan._payload(current)["tasks"][code6]
+        source = Path(task["artifacts"]["slim"]["path"])
+        target = _retry_dir(scan_dir, code6, attempt) / "slim.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+    return result
+
+
+def _normalize_intel(scan_dir: Path, code: str) -> None:
+    from autoresearch.scan.l4.intel_guard import intel_path
+    from autoresearch.scan.l4.intel_status import normalize_stale_scores, write_normalization
+
+    source = intel_path(scan_dir, code)
+    if not source.is_file():
+        return
+    body = source.read_text(encoding="utf-8")
+    fixed, normalization = normalize_stale_scores(body, scan_dir.name, code=code)
+    if fixed != body:
+        source.write_text(fixed, encoding="utf-8")
+    write_normalization(scan_dir, normalization)
+
+
+def scan_l4_intel_status(handle=None, *, code: str | None = None) -> dict:
+    current = handle or _active_handle()
+    code6 = _require_code(code)
+    from autoresearch.scan.l4.intel_guard import guard_intel
+    from autoresearch.scan.l4.intel_status import from_guard, write_status
+
+    scan_dir = Path(current.staging)
+    attempt = _l4_attempt(scan_dir, code6)
+    if attempt > 1:
+        retry_intel = _retry_dir(scan_dir, code6, attempt) / "intel.md"
+        if retry_intel.is_file():
+            shutil.copyfile(retry_intel, scan_dir / f"_l4_intel_{code6}.md")
+    result = guard_intel(scan_dir, code6)
+    if result.get("action") in {"KEPT", "TRIMMED"}:
+        _normalize_intel(scan_dir, code6)
+    status = from_guard(result, code=code6, scan_dir=scan_dir, enabled=True, attempts=1)
+    write_status(scan_dir, status)
+    if attempt > 1:
+        target = _retry_dir(scan_dir, code6, attempt) / "intel_status.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(scan_dir / f"_l4_intel_status_{code6}.json", target)
+    return status.to_dict()
+
+
+def scan_l4_intel_disabled(handle=None, *, code: str | None = None) -> dict:
+    current = handle or _active_handle()
+    code6 = _require_code(code)
+    from autoresearch.scan.l4.intel_status import from_guard, write_status
+
+    scan_dir = Path(current.staging)
+    status = from_guard(None, code=code6, scan_dir=scan_dir, enabled=False, attempts=0)
+    write_status(scan_dir, status)
+    attempt = _l4_attempt(scan_dir, code6)
+    if attempt > 1:
+        target = _retry_dir(scan_dir, code6, attempt) / "intel_status.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(scan_dir / f"_l4_intel_status_{code6}.json", target)
+    return status.to_dict()
+
+
+def _card_rating(path: Path) -> str:
+    rating = parse_rating(path.read_text(encoding="utf-8"), strict=True)
+    if rating is None:
+        raise RuntimeError(f"card lacks strict rating: {path.name}")
+    return rating
+
+
+def scan_review_plan(handle=None) -> dict:
+    current = handle or _active_handle()
+    import pandas as pd
+
+    scan_dir = Path(current.staging)
+    finalists = pd.read_csv(scan_dir / "finalists.csv", dtype={"code": str})
+    rows = []
+    for _, item in finalists.iterrows():
+        code = _require_code(str(item["code"]))
+        card_path = scan_dir / "details" / f"{code}.md"
+        text = card_path.read_text(encoding="utf-8")
+        rating = parse_rating(text, strict=True)
+        proposal = _PROPOSAL_RE.search(text)
+        if rating is None or proposal is None:
+            raise RuntimeError(f"L4 card contract incomplete: {code}")
+        pinned = str(item.get("lane") or "").strip() == "pinned"
+        trigger = (
+            "ow_review"
+            if rating in {"Buy", "Overweight"}
+            else ("sell_review" if pinned and proposal.group(1).upper() == "SELL" else None)
+        )
+        rows.append(
+            {
+                "code": code,
+                "attempt": _l4_attempt(scan_dir, code),
+                "rating": rating,
+                "pinned": pinned,
+                "trigger": trigger,
+            }
+        )
+    value = {"schema_version": 1, "reviews": rows}
+    atomic_write_json(scan_dir / "session_outputs/review.plan.json", value)
+    return value
+
+
+def scan_review_none(handle=None, *, code: str | None = None) -> dict:
+    current = handle or _active_handle()
+    code6 = _require_code(code)
+    value = {"schema_version": 1, "code": code6, "trigger": None, "reason": "not_applicable"}
+    scan_dir = Path(current.staging)
+    attempt = _l4_attempt(scan_dir, code6)
+    target = (
+        _retry_dir(scan_dir, code6, attempt) / "review_none.json"
+        if attempt > 1
+        else scan_dir / "session_outputs/reviews" / f"{code6}.none.json"
+    )
+    atomic_write_json(target, value)
+    return value
+
+
+def scan_review_decide(handle=None) -> dict:
+    current = handle or _active_handle()
+    scan_dir = Path(current.staging)
+    plan = json.loads((scan_dir / "session_outputs/review.plan.json").read_text(encoding="utf-8"))
+    decisions = []
+    for row in plan.get("reviews") or []:
+        code = _require_code(row.get("code"))
+        trigger = row.get("trigger")
+        review2 = None
+        same_tier = None
+        if trigger is not None:
+            attempt = int(row.get("attempt") or 1)
+            review2_path = (
+                _retry_dir(scan_dir, code, attempt) / "review2.md"
+                if attempt > 1
+                else scan_dir / "ensemble" / f"{code}.run2.md"
+            )
+            review2 = _card_rating(review2_path)
+            same_tier = review2 == row["rating"]
+        decisions.append(
+            {
+                **row,
+                "review2_rating": review2,
+                "same_tier": same_tier,
+                "review3_required": same_tier is False,
+            }
+        )
+    value = {"schema_version": 1, "decisions": decisions}
+    atomic_write_json(scan_dir / "session_outputs/review.decision.json", value)
+    return value
+
+
+def scan_review_skip(handle=None) -> dict:
+    current = handle or _active_handle()
+    value = {"schema_version": 1, "decisions": [], "reason": "sentinel_empty_no_l4"}
+    atomic_write_json(Path(current.staging) / "session_outputs/review.decision.json", value)
+    return value
+
+
+def scan_review3_skip(handle=None) -> dict:
+    current = handle or _active_handle()
+    value = {"schema_version": 1, "status": "SUCCEEDED", "reason": "sentinel_empty_no_l4"}
+    atomic_write_json(Path(current.staging) / "session_outputs/l4.complete.json", value)
+    return value
+
+
+def scan_l4_finalize(handle=None, *, code: str | None = None) -> dict:
+    current = handle or _active_handle()
+    code6 = _require_code(code)
+    scan_dir = Path(current.staging)
+    from autoresearch.scan.stock_stage import record_l4_result
+    from autoresearch.session_agent import legacy_scan
+    from autoresearch.session_agent.workflows.scan import ensemble_record
+
+    decision = json.loads(
+        (scan_dir / "session_outputs/review.decision.json").read_text(encoding="utf-8")
+    )
+    matches = [row for row in decision.get("decisions") or [] if row.get("code") == code6]
+    if len(matches) != 1:
+        raise RuntimeError(f"review decision missing for {code6}")
+    row = matches[0]
+    attempt = int(row.get("attempt") or 1)
+    ensemble = None
+    if row.get("trigger") is not None:
+        review3_rating = (
+            _card_rating(
+                _retry_dir(scan_dir, code6, attempt) / "review3.md"
+                if attempt > 1
+                else scan_dir / "ensemble" / f"{code6}.run3.md"
+            )
+            if row.get("review3_required")
+            else None
+        )
+        ensemble = ensemble_record(
+            code6,
+            row["rating"],
+            row["review2_rating"],
+            review3_rating,
+            trigger=row["trigger"],
+            review3_dispatched=bool(row.get("review3_required")),
+        )
+        atomic_write_json(scan_dir / f"_ensemble_{code6}.json", ensemble)
+    stage = record_l4_result(scan_dir, code6)
+    ticket = {
+        "schema_version": 1,
+        "code": code6,
+        "attempt": attempt,
+        "status": "SUCCEEDED",
+        "source_rating": stage.metrics.get("source_rating"),
+        "provisional_rating": stage.metrics.get("provisional_rating"),
+        "ensemble": ensemble,
+    }
+    ticket_path = scan_dir / "session_outputs/tickets" / f"{code6}.a{attempt}.json"
+    atomic_write_json(ticket_path, ticket)
+    legacy_scan.complete_ticket(current, code6, attempt)
+    return ticket
+
+
+def scan_l4_complete(handle=None) -> dict:
+    current = handle or _active_handle()
+    path = Path(current.staging) / "_l4_tasks.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    states = {
+        str(code): str(task.get("status") or "PENDING")
+        for code, task in (payload.get("tasks") or {}).items()
+    }
+    bad = {code: state for code, state in states.items() if state != "SUCCEEDED"}
+    if bad:
+        raise RuntimeError(f"L4 taskbook not all SUCCEEDED: {bad}")
+    value = {"schema_version": 1, "status": "SUCCEEDED", "states": states}
+    atomic_write_json(Path(current.staging) / "session_outputs/l4.complete.json", value)
+    return value
+
+
+def scan_assemble(handle=None) -> dict:
+    current = handle or _active_handle()
+    from autoresearch.scan import publisher
+
+    scan_dir = Path(current.staging)
+    build_root = scan_dir / "session_outputs/report_build"
+    summary = Path(
+        publisher.run(
+            current.analysis_date,
+            scan_dir=scan_dir,
+            out_root=build_root,
+        )
+    )
+    report_dir = summary.parent
+    required = ["brief.md", "summary.md", "appendix.md", "manifest.json"]
+    missing = [name for name in required if not (report_dir / name).is_file()]
+    if missing:
+        raise RuntimeError(f"scan assembler omitted required report files: {missing}")
+    value = {
+        "schema_version": 1,
+        "run_id": current.run_id,
+        "engine": current.engine,
+        "analysis_date": current.analysis_date,
+        "folder": report_dir.name,
+        "candidate_relative": report_dir.relative_to(Path(current.workspace)).as_posix(),
+    }
+    atomic_write_json(scan_dir / "session_outputs/report.plan.json", value)
+    return value
+
+
+def scan_gate4(handle=None) -> dict:
+    current = handle or _active_handle()
+    from autoresearch.scan.gates import gate4, record_gate_stage_result
+
+    scan_dir = Path(current.staging)
+    value = gate4(scan_dir)
+    record_gate_stage_result(scan_dir, value)
+    atomic_write_json(scan_dir / "session_outputs/gate4.json", value)
+    if not value.get("ok"):
+        raise RuntimeError(str(value.get("reason") or "GATE4 failed"))
+    return value
+
+
+def _report_candidate(current) -> Path:
+    plan = json.loads(
+        (Path(current.staging) / "session_outputs/report.plan.json").read_text(encoding="utf-8")
+    )
+    workspace = Path(current.workspace).resolve(strict=True)
+    candidate = (workspace / plan["candidate_relative"]).resolve(strict=True)
+    try:
+        candidate.relative_to(workspace)
+    except ValueError as exc:
+        raise RuntimeError("report candidate escaped its run") from exc
+    return candidate
+
+
+def scan_usage(handle=None) -> dict:
+    current = handle or _active_handle()
+    from autoresearch.trace import usage_harvest, usage_reconcile
+
+    scan_dir = Path(current.staging)
+    candidate = _report_candidate(current)
+    source = f"run:{current.run_id}"
+    warnings = []
+    try:
+        rows = usage_harvest.collect_run(current.run_id, engine=current.engine)
+    except Exception as exc:  # missing host metering remains explicit, but does not erase research
+        rows = []
+        warnings.append(f"usage_harvest:{type(exc).__name__}:{exc}")
+    ledger = usage_harvest.build_ledger(rows, source=source)
+    if warnings:
+        ledger["measurement_status"] = "UNMEASURED"
+        ledger["warnings"] = warnings
+    atomic_write_json(scan_dir / "_token_usage.json", ledger)
+    atomic_write_bytes(
+        candidate / "token_usage.md",
+        (usage_harvest.render(rows, sub_dir=source) + "\n").encode("utf-8"),
+    )
+    try:
+        reconcile = usage_reconcile.reconcile(current.analysis_date)
+    except Exception as exc:
+        reconcile = {
+            "schema_version": 1,
+            "ok": False,
+            "status": "UNMEASURED",
+            "warnings": [f"usage_reconcile:{type(exc).__name__}:{exc}"],
+        }
+    atomic_write_json(scan_dir / "_usage_reconcile.json", reconcile)
+    return {"schema_version": 1, "usage": ledger, "reconcile": reconcile}
+
+
+def scan_observe(handle=None) -> dict:
+    current = handle or _active_handle()
+    from autoresearch.scan.post_run import publish_run_observation
+    from autoresearch.session_agent.progress import scan_progress
+    from autoresearch.session_agent.workflows.scan import directory_manifest
+
+    scan_dir = Path(current.staging)
+    candidate = _report_candidate(current)
+    observation = publish_run_observation(
+        scan_dir,
+        report_dir=candidate,
+        usage_path=scan_dir / "_token_usage.json",
+        decision_write="verify",
+    )
+    fixed = scan_dir / "session_outputs/report_files"
+    for name in ("brief.md", "summary.md", "appendix.md", "manifest.json"):
+        source = candidate / name
+        if not source.is_file():
+            raise RuntimeError(f"observed report is missing: {name}")
+        atomic_write_bytes(fixed / name, source.read_bytes())
+    plan = json.loads((scan_dir / "session_outputs/report.plan.json").read_text(encoding="utf-8"))
+    bundle = {
+        "schema_version": 1,
+        "run_id": current.run_id,
+        "engine": current.engine,
+        "analysis_date": current.analysis_date,
+        "folder": plan["folder"],
+        "candidate_relative": plan["candidate_relative"],
+        "files": directory_manifest(candidate),
+    }
+    atomic_write_json(scan_dir / "session_outputs/scan.publication.json", bundle)
+    progress = {
+        **scan_progress(current),
+        "checkpoint": "CP7",
+        "gate4": json.loads((scan_dir / "session_outputs/gate4.json").read_text(encoding="utf-8")),
+        "observation": observation,
+        "report_candidate": plan["candidate_relative"],
+    }
+    atomic_write_json(scan_dir / "session_outputs/progress.final.json", progress)
+    return bundle
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="autoresearch.session_agent.domain_ops")
     parser.add_argument(
@@ -737,8 +1387,37 @@ def main(argv: list[str] | None = None) -> int:
             "dossier-skeleton",
             "dossier-validate",
             "dossier-publish",
+            "scan-frame",
+            "scan-prelude",
+            "scan-gate1",
+            "scan-sector-prepare",
+            "scan-sector-skip",
+            "scan-l3-prepare",
+            "scan-l3-lint",
+            "scan-l3-repair-skip",
+            "scan-l3-repair-apply",
+            "scan-l3-merge",
+            "scan-gate2-skip",
+            "scan-l4-prepare",
+            "scan-l4-skip",
+            "scan-l4-ticket",
+            "scan-l4-slim",
+            "scan-l4-intel-status",
+            "scan-l4-intel-disabled",
+            "scan-review-plan",
+            "scan-review-none",
+            "scan-review-decide",
+            "scan-review-skip",
+            "scan-review3-skip",
+            "scan-l4-finalize",
+            "scan-l4-complete",
+            "scan-assemble",
+            "scan-gate4",
+            "scan-usage",
+            "scan-observe",
         ),
     )
+    parser.add_argument("--subject")
     args = parser.parse_args(argv)
     if args.command == "stock-validate":
         value = stock_validate()
@@ -772,8 +1451,64 @@ def main(argv: list[str] | None = None) -> int:
         value = dossier_build_skeleton()
     elif args.command == "dossier-validate":
         value = dossier_validate()
-    else:
+    elif args.command == "dossier-publish":
         value = dossier_prepare_publication()
+    elif args.command == "scan-frame":
+        value = scan_frame()
+    elif args.command == "scan-prelude":
+        value = scan_prelude()
+    elif args.command == "scan-gate1":
+        value = scan_gate1()
+    elif args.command == "scan-sector-prepare":
+        value = scan_sector_prepare()
+    elif args.command == "scan-sector-skip":
+        value = scan_sector_skip()
+    elif args.command == "scan-l3-prepare":
+        value = scan_l3_prepare()
+    elif args.command == "scan-l3-lint":
+        value = scan_l3_lint()
+    elif args.command == "scan-l3-repair-skip":
+        value = scan_l3_repair_skip()
+    elif args.command == "scan-l3-repair-apply":
+        value = scan_l3_repair_apply()
+    elif args.command == "scan-l3-merge":
+        value = scan_l3_merge()
+    elif args.command == "scan-gate2-skip":
+        value = scan_gate2_skip()
+    elif args.command == "scan-l4-prepare":
+        value = scan_l4_prepare()
+    elif args.command == "scan-l4-skip":
+        value = scan_l4_skip()
+    elif args.command == "scan-l4-ticket":
+        raise RuntimeError("L4 ticket is owned by l4_tasks and cannot be executed here")
+    elif args.command == "scan-l4-slim":
+        value = scan_l4_slim(code=args.subject)
+    elif args.command == "scan-l4-intel-status":
+        value = scan_l4_intel_status(code=args.subject)
+    elif args.command == "scan-l4-intel-disabled":
+        value = scan_l4_intel_disabled(code=args.subject)
+    elif args.command == "scan-review-plan":
+        value = scan_review_plan()
+    elif args.command == "scan-review-none":
+        value = scan_review_none(code=args.subject)
+    elif args.command == "scan-review-decide":
+        value = scan_review_decide()
+    elif args.command == "scan-review-skip":
+        value = scan_review_skip()
+    elif args.command == "scan-review3-skip":
+        value = scan_review3_skip()
+    elif args.command == "scan-l4-finalize":
+        value = scan_l4_finalize(code=args.subject)
+    elif args.command == "scan-l4-complete":
+        value = scan_l4_complete()
+    elif args.command == "scan-assemble":
+        value = scan_assemble()
+    elif args.command == "scan-gate4":
+        value = scan_gate4()
+    elif args.command == "scan-usage":
+        value = scan_usage()
+    else:
+        value = scan_observe()
     print(json.dumps(value, ensure_ascii=False, sort_keys=True))
     return 0
 
@@ -791,4 +1526,12 @@ __all__ = [
     "dossier_validate",
     "stock_full_assemble", "stock_full_validate", "stock_prepare_publication",
     "stock_validate",
+    "scan_frame", "scan_gate1", "scan_gate2_skip", "scan_l3_lint",
+    "scan_l3_repair_apply", "scan_l3_repair_skip",
+    "scan_assemble", "scan_gate4", "scan_l3_merge", "scan_l3_prepare", "scan_l4_complete",
+    "scan_l4_finalize", "scan_l4_intel_disabled",
+    "scan_l4_intel_status", "scan_l4_prepare", "scan_l4_skip", "scan_l4_slim",
+    "scan_observe", "scan_prelude", "scan_review_decide", "scan_review_none", "scan_review_plan",
+    "scan_review_skip", "scan_review3_skip", "scan_sector_prepare", "scan_sector_skip",
+    "scan_usage",
 ]

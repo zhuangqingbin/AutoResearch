@@ -69,3 +69,16 @@ def test_output_is_predeclared_then_bound_once(tmp_path):
     with pytest.raises(ArtifactConflict, match="changed"):
         bind_artifact_hash(handle, "stock.card")
 
+
+def test_bound_output_can_be_reused_as_a_later_expansion_input(tmp_path):
+    handle = _handle(tmp_path)
+    output = handle.workspace / "staging" / "card.md"
+    register_artifact(handle, "stock.card", output, "WRITE")
+    output.parent.mkdir(exist_ok=True)
+    output.write_text("# verified card")
+    bound = bind_artifact_hash(handle, "stock.card")
+
+    repeated = register_artifact(handle, "stock.card", output, "READ")
+
+    assert repeated == bound
+    assert repeated["access"] == "WRITE"

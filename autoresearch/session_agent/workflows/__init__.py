@@ -3,6 +3,10 @@ from __future__ import annotations
 
 
 def build_plan(request: dict, handle) -> dict:
+    if request["kind"] == "scan-market":
+        from autoresearch.session_agent.workflows.scan import build_scan_plan
+
+        return build_scan_plan(request, handle)
     if request["kind"] == "stock-research":
         from autoresearch.session_agent.workflows.stock import build_stock_plan
 
@@ -23,6 +27,11 @@ def build_plan(request: dict, handle) -> dict:
 
 
 def register_artifacts(request: dict, handle, plan: dict) -> None:
+    if request["kind"] == "scan-market":
+        from autoresearch.session_agent.workflows.scan import register_scan_artifacts
+
+        register_scan_artifacts(request, handle, plan)
+        return
     if request["kind"] == "stock-research":
         from autoresearch.session_agent.workflows.stock import register_stock_artifacts
 
@@ -47,6 +56,13 @@ def register_artifacts(request: dict, handle, plan: dict) -> None:
 
 
 def validate_operation_params(request: dict, task: dict, params: dict) -> None:
+    if request["kind"] == "scan-market":
+        from autoresearch.session_agent.workflows.scan import (
+            validate_scan_operation_params,
+        )
+
+        validate_scan_operation_params(request, task, params)
+        return
     if request["kind"] == "stock-research":
         from autoresearch.session_agent.workflows.stock import validate_stock_operation_params
 
@@ -76,4 +92,28 @@ def validate_operation_params(request: dict, task: dict, params: dict) -> None:
     raise ValueError(f"session operation workflow is not implemented: {request['kind']}")
 
 
-__all__ = ["build_plan", "register_artifacts", "validate_operation_params"]
+def expansions_after_task(request: dict, handle, plan: dict, task: dict) -> list[dict]:
+    if request["kind"] != "scan-market":
+        return []
+    from autoresearch.session_agent.workflows.scan import expansions_after_task as expand
+
+    return expand(request, handle, plan, task)
+
+
+def register_expansion_artifacts(request: dict, handle, expansion: dict) -> None:
+    if request["kind"] != "scan-market":
+        return
+    from autoresearch.session_agent.workflows.scan import (
+        register_scan_expansion_artifacts,
+    )
+
+    register_scan_expansion_artifacts(request, handle, expansion)
+
+
+__all__ = [
+    "build_plan",
+    "expansions_after_task",
+    "register_artifacts",
+    "register_expansion_artifacts",
+    "validate_operation_params",
+]

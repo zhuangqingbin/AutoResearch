@@ -357,7 +357,50 @@ def mark_failed(
         atomic_write_json(target, payload)
 
 
+def prepare_l4_retry(path: Path | str, code: str, previous_attempt: int) -> None:
+    """Retire one failed child subtree while its replacement remains auditable."""
+    target = Path(path)
+    with _locked(target):
+        payload = _load(target)
+        matching = [
+            entry
+            for entry in payload["tasks"].values()
+            if (entry["spec"].get("parent_task") or {}).get("subject") == code
+            and (entry["spec"].get("parent_task") or {}).get("attempt")
+            == previous_attempt
+        ]
+        if any(entry["state"] == "RUNNING" for entry in matching):
+            raise TaskConflict("L4 retry requires every previous child to be quiescent")
+        matched = False
+        for entry in matching:
+            matched = True
+            entry["state"] = (
+                "WAITING_RETRY"
+                if entry["spec"]["task_id"].endswith(".card")
+                else "SUPERSEDED"
+            )
+        if not matching or not matched:
+            raise KeyError(f"L4 child subtree is missing: {code}/a{previous_attempt}")
+        atomic_write_json(target, payload)
+
+
+def complete_l4_retry_alias(path: Path | str, code: str, previous_attempt: int) -> None:
+    """Release the original review dependency after the retry card is verified."""
+    target = Path(path)
+    task_id = f"l4.{code}.a{previous_attempt}.card"
+    with _locked(target):
+        payload = _load(target)
+        entry = payload["tasks"].get(task_id)
+        if entry is None:
+            raise KeyError(task_id)
+        if entry["state"] not in {"WAITING_RETRY", "SUPERSEDED"}:
+            raise TaskConflict("original L4 card is not waiting for retry")
+        entry["state"] = "SUPERSEDED"
+        atomic_write_json(target, payload)
+
+
 __all__ = [
     "TaskConflict", "accept", "claim", "complete_deterministic", "initialize",
-    "mark_failed", "read_entry", "read_states", "recover_receipt", "register_tasks",
+    "complete_l4_retry_alias", "mark_failed", "prepare_l4_retry", "read_entry",
+    "read_states", "recover_receipt", "register_tasks",
 ]

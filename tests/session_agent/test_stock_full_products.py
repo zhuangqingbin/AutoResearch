@@ -101,6 +101,7 @@ def test_full_assembler_and_publisher_accept_missing_optional_lenses(tmp_path):
         "peers": [],
         "asset_type": "stock",
         "name": "贵州茅台",
+        "force_full": False,
         "host_profile": {},
         "predecessor_run_id": None,
     }

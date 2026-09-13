@@ -10,11 +10,22 @@ from autoresearch.contracts.session_plan import validate_expansion, validate_pla
 
 def ready_tasks(tasks: list[dict], states: dict[str, str]) -> list[dict]:
     """Return PENDING tasks whose declared dependencies all succeeded."""
+    def parent_running(task: dict) -> bool:
+        parent = task.get("parent_task")
+        if parent is None:
+            return True
+        parent_id = f"l4.{parent['subject']}.a{parent['attempt']}"
+        return states.get(parent_id) == "RUNNING"
+
     return [
         task
         for task in tasks
         if states.get(task["task_id"], "PENDING") == "PENDING"
-        and all(states.get(dependency) == "SUCCEEDED" for dependency in task["dependencies"])
+        and parent_running(task)
+        and all(
+            states.get(dependency) in {"SUCCEEDED", "SUPERSEDED"}
+            for dependency in task["dependencies"]
+        )
     ]
 
 
@@ -65,9 +76,14 @@ def apply_expansion(
     return combined
 
 
-def persist_expansion(session_dir: Path | str, plan: dict, expansion: dict) -> Path:
+def persist_expansion(
+    session_dir: Path | str,
+    plan: dict,
+    expansion: dict,
+    *,
+    existing_tasks: list[dict] | None = None,
+) -> Path:
     """Persist one immutable expansion per template and frozen input snapshot."""
-    apply_expansion(plan, expansion)
     root = Path(session_dir) / "expansions"
     root.mkdir(parents=True, exist_ok=True)
     for candidate in sorted(root.glob("*.json")):
@@ -77,6 +93,7 @@ def persist_expansion(session_dir: Path | str, plan: dict, expansion: dict) -> P
         if canonical_json(current) == canonical_json(expansion):
             return candidate
         raise RuntimeError("template input conflict")
+    apply_expansion(plan, expansion, existing_tasks=existing_tasks)
     return atomic_write_json(root / f"{expansion['expansion_id']}.json", expansion)
 
 

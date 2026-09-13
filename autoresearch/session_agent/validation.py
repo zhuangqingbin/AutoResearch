@@ -123,6 +123,47 @@ def _stock_lite(handle, submission: dict, task: dict) -> None:
             raise DomainValidationError("buy-rated lite card requires stock.deep") from exc
 
 
+def _validate_rating_and_proposal(text: str) -> str:
+    rating = parse_rating(text, strict=True)
+    proposal_match = _PROPOSAL_RE.search(text)
+    if rating is None or proposal_match is None:
+        raise DomainValidationError("stock card requires strict Rating and proposal lines")
+    proposal = proposal_match.group(1).upper()
+    expected = (
+        "BUY"
+        if rating in {"Buy", "Overweight"}
+        else ("HOLD" if rating == "Hold" else "SELL")
+    )
+    if proposal != expected:
+        raise DomainValidationError("stock card rating and proposal disagree")
+    early = _EARLY_RE.search(text)
+    rank = {value: index for index, value in enumerate(RATINGS_5_TIER)}
+    if early is not None and rank[rating] < rank["Hold"]:
+        raise DomainValidationError("early-stop card cannot recommend a buy")
+    if early is None and rank[rating] < rank["Hold"] and _P4_RE.search(text) is None:
+        raise DomainValidationError("buy-rated lite card lacks P4 intent evidence")
+    return rating
+
+
+def _scan_l4_card(handle, submission: dict, task: dict) -> None:
+    values = _open_outputs(handle, submission, task)
+    if len(values) != 1:
+        raise DomainValidationError("scan L4 card requires one output")
+    text = next(iter(values.values()))
+    _validate_rating_and_proposal(text)
+    subject = str(task.get("subject") or "")
+    if subject and subject not in text:
+        raise DomainValidationError("scan L4 card identity is missing")
+
+
+def _scan_l4_intel(handle, submission: dict, task: dict) -> None:
+    text = next(iter(_open_outputs(handle, submission, task).values()))
+    if "## 事件段" not in text:
+        raise DomainValidationError("scan L4 intel lacks 事件段")
+    if "## 声明行" not in text:
+        raise DomainValidationError("scan L4 intel lacks 声明行")
+
+
 def _open_outputs(handle, submission: dict, task: dict) -> dict[str, str]:
     expected = set(task["output_artifact_ids"])
     actual = {item["artifact_id"] for item in submission["outputs"]}
@@ -226,6 +267,50 @@ def _dossier(handle, submission: dict, task: dict) -> None:
     _validate_dossier_candidate(handle)
 
 
+def _scan_l3(handle, submission: dict, task: dict) -> None:
+    import json
+
+    value = next(iter(_open_outputs(handle, submission, task).values()))
+    try:
+        rows = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise DomainValidationError("scan L3 output is malformed JSON") from exc
+    if not isinstance(rows, list) or not rows:
+        raise DomainValidationError("scan L3 output must be a non-empty list")
+    for row in rows:
+        if not isinstance(row, dict) or type(row.get("finalist")) is not bool:
+            raise DomainValidationError("scan L3 rows require boolean finalist")
+
+
+def _scan_l3_repair(handle, submission: dict, task: dict) -> None:
+    import json
+
+    value = next(iter(_open_outputs(handle, submission, task).values()))
+    try:
+        rows = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise DomainValidationError("scan L3 repair output is malformed JSON") from exc
+    if not isinstance(rows, list) or not rows:
+        raise DomainValidationError("scan L3 repair output must be a non-empty list")
+    with artifacts.open_artifact(handle, "scan.l3.repair.pack") as stream:
+        pack = json.loads(stream.read().decode("utf-8"))
+    expected = {str(code).zfill(6) for code in pack.get("codes") or []}
+    actual = set()
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {"code", "thesis"}:
+            raise DomainValidationError("scan L3 repair rows require only code and thesis")
+        code = str(row["code"]).zfill(6)
+        if (
+            code in actual
+            or not isinstance(row["thesis"], str)
+            or not row["thesis"].strip()
+        ):
+            raise DomainValidationError("scan L3 repair contains duplicate or empty rows")
+        actual.add(code)
+    if actual != expected:
+        raise DomainValidationError("scan L3 repair codes do not match the repair pack")
+
+
 _CONTRACT_VALIDATORS = {
     "stock.lite.v1": _stock_lite,
     "stock.section.v1": _stock_section,
@@ -238,10 +323,16 @@ _CONTRACT_VALIDATORS = {
     "sector.intel.v1": _sector_intel,
     "sector.full.v1": _sector_full,
     "dossier.v1": _dossier,
+    "scan.l3.v1": _scan_l3,
+    "scan.l3.repair.v1": _scan_l3_repair,
+    "scan.l4.intel.v1": _scan_l4_intel,
 }
 
 
 def validate_registered_contract(handle, submission: dict, task: dict) -> None:
+    if task.get("role") in {"scan.l4.card", "scan.l4.review"}:
+        _scan_l4_card(handle, submission, task)
+        return
     try:
         validator = _CONTRACT_VALIDATORS[task["expected_output_contract"]]
     except KeyError as exc:

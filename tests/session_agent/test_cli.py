@@ -16,6 +16,7 @@ def _request():
         "peers": [],
         "asset_type": "stock",
         "name": None,
+        "force_full": False,
         "host_profile": {
             "schema_version": 1,
             "engine": "codex",

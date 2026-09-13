@@ -82,6 +82,7 @@ def begin_request(**changes):
         "peers": [],
         "asset_type": "stock",
         "name": None,
+        "force_full": False,
         "host_profile": host_profile(),
         "predecessor_run_id": None,
     }
@@ -190,6 +191,19 @@ def test_begin_request_rejects_engine_crossing_and_irrelevant_peers():
         )
 
 
+def test_force_full_is_an_explicit_scan_only_request_option():
+    value = begin_request(
+        kind="scan-market",
+        requested_mode="AUTO",
+        subject=None,
+        asset_type=None,
+        force_full=True,
+    )
+    assert validate_begin_request(value, expected_engine="codex")["force_full"] is True
+    with pytest.raises(ValueError, match="force_full"):
+        validate_begin_request(begin_request(force_full=True), expected_engine="codex")
+
+
 def test_tool_result_uses_interface_state_not_business_stage_state():
     value = {
         "schema_version": 1,
@@ -203,4 +217,3 @@ def test_tool_result_uses_interface_state_not_business_stage_state():
     assert validate_tool_result(value) == value
     with pytest.raises(ValueError):
         validate_tool_result(dict(value, state="SUCCEEDED"))
-

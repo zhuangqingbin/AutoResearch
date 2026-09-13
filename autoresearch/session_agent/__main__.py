@@ -36,6 +36,16 @@ def _parser():
     submit.add_argument("--run-id", required=True)
     submit.add_argument("--submission-file", required=True)
     submit.add_argument("--host-receipt-file")
+    fail = subparsers.add_parser("fail")
+    fail.add_argument("--run-id", required=True)
+    fail.add_argument("--task-id", required=True)
+    fail.add_argument("--attempt", required=True, type=int)
+    fail.add_argument("--error-class", required=True)
+    fail.add_argument("--message", required=True)
+    retry_l4 = subparsers.add_parser("retry-l4")
+    retry_l4.add_argument("--run-id", required=True)
+    retry_l4.add_argument("--code", required=True)
+    retry_l4.add_argument("--expected-attempt", required=True, type=int)
     return parser
 
 
@@ -126,6 +136,16 @@ def main(argv=None):
             value = service.execute(
                 args.run_id, args.task_id, args.attempt, _load(args.params_file)
             )
+        elif args.command == "fail":
+            value = service.fail(
+                args.run_id,
+                args.task_id,
+                args.attempt,
+                args.error_class,
+                args.message,
+            )
+        elif args.command == "retry-l4":
+            value = service.retry_l4(args.run_id, args.code, args.expected_attempt)
         else:
             host_receipt = _load(args.host_receipt_file) if args.host_receipt_file else None
             value = service.submit(

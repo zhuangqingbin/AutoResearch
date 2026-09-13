@@ -118,7 +118,15 @@ def register_artifact(handle, artifact_id: str, path: Path | str, access: str) -
         registry = _read_registry(registry_path, handle)
         current = registry["artifacts"].get(artifact_id)
         if current is not None and current != descriptor:
-            raise ArtifactConflict("artifact identity already registered differently")
+            comparable_current = {key: value for key, value in current.items() if key != "access"}
+            comparable_new = {key: value for key, value in descriptor.items() if key != "access"}
+            if not (
+                current.get("access") == "WRITE"
+                and access == "READ"
+                and comparable_current == comparable_new
+            ):
+                raise ArtifactConflict("artifact identity already registered differently")
+            return current
         registry["artifacts"][artifact_id] = descriptor
         atomic_write_json(registry_path, registry)
     return descriptor

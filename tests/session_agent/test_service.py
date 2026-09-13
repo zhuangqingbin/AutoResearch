@@ -38,6 +38,7 @@ def _request():
         "peers": [],
         "asset_type": "stock",
         "name": None,
+        "force_full": False,
         "host_profile": _profile(),
         "predecessor_run_id": None,
     }

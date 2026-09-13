@@ -10,6 +10,7 @@ from autoresearch.session_agent.workflows import build_plan
 
 from .test_dossier import _context as dossier_context, _request as dossier_request
 from .test_macro import _context as macro_context, _request as macro_request
+from .test_scan_prelude import context as scan_context, request as scan_request
 from .test_sector import _context as sector_context, _request as sector_request
 from .test_service import _profile, _request as stock_request
 from .test_stock_full import _full_request
@@ -25,6 +26,7 @@ def test_every_workflow_operation_has_complete_catalog_metadata(tmp_path):
         build_plan(sector_request("FULL"), sector_context(tmp_path)),
         build_plan(sector_request("LITE"), sector_context(tmp_path)),
         build_plan(dossier_request(), dossier_context(tmp_path)),
+        build_plan(scan_request(), scan_context(tmp_path)),
     ]
     used = {
         task["operation"]

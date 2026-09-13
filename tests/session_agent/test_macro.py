@@ -28,6 +28,7 @@ def _request(mode="FULL"):
         "peers": [],
         "asset_type": None,
         "name": None,
+        "force_full": False,
         "host_profile": _profile(),
         "predecessor_run_id": None,
     }
