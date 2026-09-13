@@ -13,6 +13,7 @@ from autoresearch.common import workspace as ws
 from autoresearch.common.atomic import canonical_json, sha256_bytes
 from autoresearch.contracts.session_plan import expansion_hash, plan_hash
 from autoresearch.scan import run_mode
+from autoresearch.scan.l4_tasks import MAX_ATTEMPTS
 from autoresearch.session_agent import artifacts
 from autoresearch.session_agent.roles import roles_hash
 
@@ -378,6 +379,8 @@ def l4_retry_expansion(
     code = str(code).zfill(6)
     if not code.isdigit() or len(code) != 6 or attempt < 2:
         raise ValueError("invalid L4 retry identity")
+    if attempt > MAX_ATTEMPTS:
+        raise ValueError("L4 retry exceeds the taskbook attempt cap")
     ids = _l4_ids(code, attempt)
     parent = {"owner": "L4_TASKBOOK", "subject": code, "attempt": attempt}
     prefix = f"l4.{code}.a{attempt}"

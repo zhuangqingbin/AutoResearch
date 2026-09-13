@@ -50,4 +50,3 @@ def test_evidence_contract_rejects_secret_or_credential_fields():
     value["token"] = "secret"
     with pytest.raises(ValueError, match="fields mismatch"):
         validate_news_evidence(value, analysis_date="2026-09-13")
-

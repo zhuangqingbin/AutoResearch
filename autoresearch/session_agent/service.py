@@ -72,19 +72,44 @@ def _load_plan(handle) -> dict:
 def _all_tasks(handle, frozen_plan: dict | None = None) -> list[dict]:
     current = frozen_plan or _load_plan(handle)
     tasks = list(current["tasks"])
-    root = _session_dir(handle) / "expansions"
-    if root.is_dir():
-        for path in sorted(root.glob("*.json")):
-            expansion = _read_json(path)
+    paths = []
+    for folder in ("expansions", "recoveries"):
+        root = _session_dir(handle) / folder
+        if root.is_dir():
+            paths.extend(sorted(root.glob("*.json")))
+    pending = [_read_json(path) for path in paths]
+    while pending:
+        known = {task["task_id"] for task in tasks}
+        ready = []
+        waiting = []
+        for expansion in pending:
+            own = {task["task_id"] for task in expansion.get("tasks", [])}
+            required = {
+                dependency
+                for task in expansion.get("tasks", [])
+                for dependency in task.get("dependencies", [])
+            } - own
+            (ready if required <= known else waiting).append(expansion)
+        if not ready:
+            missing = sorted(
+                {
+                    dependency
+                    for expansion in waiting
+                    for task in expansion.get("tasks", [])
+                    for dependency in task.get("dependencies", [])
+                    if dependency not in known
+                    and dependency
+                    not in {
+                        item["task_id"] for item in expansion.get("tasks", [])
+                    }
+                }
+            )
+            raise ValueError(f"expanded task has missing dependencies: {missing}")
+        for expansion in ready:
             tasks = plan_service.apply_expansion(
                 current, expansion, existing_tasks=tasks
             )
-    recovery_root = _session_dir(handle) / "recoveries"
-    if recovery_root.is_dir():
-        for path in sorted(recovery_root.glob("*.json")):
-            tasks = plan_service.apply_expansion(
-                current, _read_json(path), existing_tasks=tasks
-            )
+        pending = waiting
     return tasks
 
 
@@ -368,6 +393,20 @@ def next(run_id: str, *, handle_loader: Callable[[str], object] | None = None) -
     return status(run_id, handle_loader=handle_loader, command="next")
 
 
+def _degrade_optional_l3_repair(handle, task_id: str, error: dict) -> bool:
+    if task_id not in {"scan.l3.repair", "scan.l3.repair.apply"}:
+        return False
+    from autoresearch.session_agent.domain_ops import scan_l3_repair_degraded
+
+    scan_l3_repair_degraded(error, handle=handle)
+    artifacts.bind_artifact_hash(handle, "scan.l3.repair.result")
+    task_ids = [task_id]
+    if task_id == "scan.l3.repair":
+        task_ids.append("scan.l3.repair.apply")
+    store.supersede_optional_failure(_store_path(handle), task_ids, error)
+    return True
+
+
 def fail(
     run_id: str,
     task_id: str,
@@ -395,6 +434,11 @@ def fail(
         attempt,
         {"code": kind, "message": message},
         retryable=retryable,
+    )
+    _degrade_optional_l3_repair(
+        handle,
+        task_id,
+        {"code": kind, "message": message},
     )
     if task["parent_task"] is not None:
         from autoresearch.session_agent import legacy_scan
@@ -548,15 +592,25 @@ def _promote_l4_retry_output(handle, task: dict) -> None:
     }
     target = targets[kind]
     target.parent.mkdir(parents=True, exist_ok=True)
+    if kind == "card":
+        previous = int(attempt_text) - 1
+        original_id = f"scan.l4.{code}.a{previous}.card"
+        original = store.read_entry(_store_path(handle), f"l4.{code}.a{previous}.card")
+        if original["state"] != "WAITING_RETRY":
+            raise RuntimeError("original L4 card is not waiting for retry promotion")
+        expected_sha256 = artifacts.binding_sha256(handle, original_id)
+        artifacts.replace_failed_output(
+            handle,
+            original_id,
+            content,
+            expected_sha256=expected_sha256,
+        )
+        store.complete_l4_retry_alias(_store_path(handle), code, previous)
+        return
     if not target.is_file() or target.read_bytes() != content:
         temp = target.with_name(f".{target.name}.a{attempt_text}.tmp")
         temp.write_bytes(content)
         temp.replace(target)
-    if kind == "card":
-        previous = int(attempt_text) - 1
-        original_id = f"scan.l4.{code}.a{previous}.card"
-        artifacts.bind_artifact_hash(handle, original_id)
-        store.complete_l4_retry_alias(_store_path(handle), code, previous)
 
 
 def _verify_frozen_inputs(handle, task: dict, entry: dict) -> None:
@@ -688,12 +742,24 @@ def execute(
     kwargs = {} if runner is None else {"runner": runner}
     execution = executor.execute_operation(handle, task, attempt, params, **kwargs)
     if execution["status"] != "SUCCEEDED":
+        failure = {
+            "code": "OPERATION_FAILED",
+            "execution": execution,
+        }
         store.mark_failed(
             _store_path(handle),
             task_id,
             attempt,
-            {"code": "OPERATION_FAILED", "execution": execution},
+            failure,
             retryable=bool(executor.operation_spec(task["operation"])["idempotent"]),
+        )
+        _degrade_optional_l3_repair(
+            handle,
+            task_id,
+            {
+                "code": "OPERATION_FAILED",
+                "message": f"deterministic operation failed: {task_id}",
+            },
         )
         if task["parent_task"] is not None:
             from autoresearch.session_agent import legacy_scan

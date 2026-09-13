@@ -50,4 +50,3 @@ def test_scan_publisher_copies_the_verified_whole_bundle_atomically(tmp_path):
     assert (target / "brief.md").read_text() == "brief"
     assert (target / "details/600519.md").read_text() == "card"
     assert publish_scan(handle, reports_root=tmp_path / "reports_codex/scan") == target
-

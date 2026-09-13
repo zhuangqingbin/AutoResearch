@@ -127,4 +127,3 @@ def test_builder_explicit_candidate_path_does_not_touch_live_dossier(tmp_path, m
     assert result["path"] == candidate
     assert candidate.is_file()
     assert not schema.dossier_path("600519").exists()
-

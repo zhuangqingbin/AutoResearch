@@ -37,4 +37,3 @@ def test_pinned_branch_uses_the_frozen_run_mode_codes(tmp_path):
     )
     assert [task["subject"] for task in expansion["tasks"]] == [None]
     assert expansion["input_artifacts"][0]["sha256"] == "e" * 64
-

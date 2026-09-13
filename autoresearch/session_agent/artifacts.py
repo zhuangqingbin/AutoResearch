@@ -10,7 +10,7 @@ import re
 from collections.abc import Iterator
 from pathlib import Path
 
-from autoresearch.common.atomic import atomic_write_json
+from autoresearch.common.atomic import atomic_write_bytes, atomic_write_json
 
 _ARTIFACT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", re.ASCII)
 _ACCESS = frozenset({"READ", "WRITE"})
@@ -201,6 +201,71 @@ def bind_artifact_hash(handle, artifact_id: str) -> dict:
         return descriptor
 
 
+def replace_failed_output(
+    handle,
+    artifact_id: str,
+    payload: bytes,
+    *,
+    expected_sha256: str | None,
+) -> dict:
+    """Replace a failed WRITE output while rejecting stale or changed bindings."""
+    if not isinstance(payload, bytes):
+        raise TypeError("replacement payload must be bytes")
+    registry_path = _registry_path(handle)
+    with _locked(registry_path):
+        registry = _read_registry(registry_path, handle)
+        descriptor = registry["artifacts"].get(artifact_id)
+        if descriptor is None:
+            raise KeyError(artifact_id)
+        if descriptor["access"] != "WRITE":
+            raise ArtifactConflict("only failed WRITE outputs can be replaced")
+        if descriptor["sha256"] != expected_sha256:
+            raise ArtifactConflict("failed output does not match expected binding")
+        target, relative = _safe_relative(
+            handle,
+            Path(handle.workspace) / descriptor["relative_path"],
+            may_not_exist=descriptor["sha256"] is None,
+        )
+        if relative != descriptor["relative_path"]:
+            raise ArtifactConflict("artifact relative path changed")
+        if descriptor["sha256"] is not None:
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(target, flags)
+            try:
+                stat = os.fstat(fd)
+                with os.fdopen(os.dup(fd), "rb") as stream:
+                    digest = _hash_stream(stream)
+            finally:
+                os.close(fd)
+            if (
+                digest != descriptor["sha256"]
+                or (stat.st_dev, stat.st_ino)
+                != (descriptor["device"], descriptor["inode"])
+            ):
+                raise ArtifactConflict("failed output changed before replacement")
+        atomic_write_bytes(target, payload)
+        stat = target.stat()
+        descriptor.update(
+            {
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "device": stat.st_dev,
+                "inode": stat.st_ino,
+            }
+        )
+        atomic_write_json(registry_path, registry)
+        return descriptor
+
+
+def binding_sha256(handle, artifact_id: str) -> str | None:
+    """Return the current binding after verifying it when content is already bound."""
+    _, descriptor = _descriptor(handle, artifact_id)
+    if descriptor["sha256"] is None:
+        return None
+    with open_artifact(handle, artifact_id):
+        pass
+    return str(descriptor["sha256"])
+
+
 def snapshot_artifact(handle, artifact_id: str) -> dict:
     """Verify a bound artifact and return the immutable task handoff identity."""
     with open_artifact(handle, artifact_id):
@@ -214,6 +279,6 @@ def snapshot_artifact(handle, artifact_id: str) -> dict:
 
 
 __all__ = [
-    "ArtifactConflict", "bind_artifact_hash", "open_artifact", "register_artifact",
-    "snapshot_artifact",
+    "ArtifactConflict", "bind_artifact_hash", "binding_sha256", "open_artifact",
+    "register_artifact", "replace_failed_output", "snapshot_artifact",
 ]

@@ -68,4 +68,3 @@ def test_comparison_verdict_is_fail_closed(changes, verdict):
     }
     kwargs.update(changes)
     assert build_comparison(**kwargs)["verdict"] == verdict
-

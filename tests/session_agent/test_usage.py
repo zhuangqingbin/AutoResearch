@@ -17,4 +17,3 @@ def test_handoff_request_is_not_counted_as_a_transcript(tmp_path):
     )
     assert not (handle.capsule / "agents/bindings.jsonl").exists()
     assert not (handle.capsule / "usage/_token_usage.json").exists()
-

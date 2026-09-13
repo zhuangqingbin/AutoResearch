@@ -26,7 +26,6 @@ def _full_request(*, subject="600519.SS", peers=None):
         "peers": peers or [],
     }
 
-
 def test_full_plan_preserves_research_dependency_order(tmp_path):
     plan = build_stock_plan(_full_request(), _context(tmp_path))
     tasks = {task["task_id"]: task for task in plan["tasks"]}
@@ -56,4 +55,3 @@ def test_full_pm_atomically_owns_four_required_products(tmp_path):
         "stock.full.2_research.variant",
         "stock.full.2_research.faceoff",
     }
-

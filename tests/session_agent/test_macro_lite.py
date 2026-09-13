@@ -60,4 +60,3 @@ def test_macro_lite_validator_requires_all_six_sections(tmp_path):
     )
     with pytest.raises(RuntimeError, match="six sections"):
         macro_lite_validate(handle)
-

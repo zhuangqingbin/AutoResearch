@@ -3,7 +3,15 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from autoresearch.session_agent import legacy_scan, plan as plan_service, service, store
+import pytest
+
+from autoresearch.session_agent import (
+    artifacts,
+    legacy_scan,
+    plan as plan_service,
+    service,
+    store,
+)
 from autoresearch.session_agent.workflows.scan import (
     build_scan_plan,
     ensemble_record,
@@ -104,6 +112,19 @@ def test_second_ticket_attempt_gets_a_new_child_subtree(tmp_path):
     assert all(".a2." in task["output_artifact_ids"][0] for task in children)
 
 
+def test_retry_expansion_rejects_an_attempt_beyond_the_taskbook_cap(tmp_path):
+    plan = build_scan_plan(request(), context(tmp_path))
+
+    with pytest.raises(ValueError, match="attempt cap"):
+        l4_retry_expansion(
+            plan,
+            "600519",
+            3,
+            [{"artifact_id": "scan.l4.600519.a1.prompt", "sha256": "a" * 64}],
+            intel_enabled=False,
+        )
+
+
 def test_taskbook_projects_only_the_current_attempt_as_authoritative(tmp_path):
     handle = _handle(tmp_path)
     (handle.staging / "_l4_prompt_600519.md").write_text("task pack")
@@ -171,6 +192,12 @@ def test_retry_service_freezes_a2_and_defers_the_old_card_dependency(tmp_path):
     from autoresearch.session_agent.workflows.scan import register_scan_expansion_artifacts
 
     register_scan_expansion_artifacts(request(), handle, expansion)
+    original_card = handle.staging / "details/600519.md"
+    original_card.parent.mkdir(parents=True)
+    original_card.write_text("invalid first attempt")
+    first_binding = artifacts.bind_artifact_hash(
+        handle, "scan.l4.600519.a1.card"
+    )
     legacy_scan.initialize_tickets(handle, ["600519"])
     legacy_scan.claim_ticket(handle, "600519", 1)
     legacy_scan.fail_ticket(handle, "600519", 1, "TIMEOUT", "lost response")
@@ -186,3 +213,21 @@ def test_retry_service_freezes_a2_and_defers_the_old_card_dependency(tmp_path):
     assert service._task(handle, "l4.600519.a2.card")["parent_task"]["attempt"] == 2
     assert store.read_entry(session / "tasks.json", "l4.600519.a1.card")["state"] == "WAITING_RETRY"
     assert (session / "recoveries").is_dir()
+
+    retry_card = handle.staging / "session_attempts/600519/a2/card.md"
+    retry_card.parent.mkdir(parents=True)
+    retry_card.write_text("verified retry card")
+    second_binding = artifacts.bind_artifact_hash(
+        handle, "scan.l4.600519.a2.card"
+    )
+    service._promote_l4_retry_output(
+        handle, service._task(handle, "l4.600519.a2.card")
+    )
+
+    assert original_card.read_text() == "verified retry card"
+    assert first_binding["sha256"] != second_binding["sha256"]
+    assert (
+        artifacts.binding_sha256(handle, "scan.l4.600519.a1.card")
+        == second_binding["sha256"]
+    )
+    assert store.read_entry(session / "tasks.json", "l4.600519.a1.card")["state"] == "SUPERSEDED"

@@ -52,14 +52,16 @@ resume 会补齐已接受 receipt、重放确定性成功后的合法 expansion�
 | `DOMAIN_VALIDATION_FAILED` | 修正登记输出；不要改 validator 或补造字段过门 |
 | `RETRYABLE_TOOL_FAILURE` | 先 resume 检查进程身份，再按同一 attempt 的恢复结果处理 |
 | artifact changed / symlink | 停止 run，保存现场；不要重新绑定已消费输入 |
+| L3 局部修复断连/应用失败 | `fail` 或 `execute` 写 `DEGRADED`，保留原 judged，将可选修复支路标为 `SUPERSEDED` 后继续 GATE2 |
 | 额度不足或证据缺失 | 保持 WAITING/BLOCKED 或明确 degraded；不能填“无风险” |
 | GATE4 失败 | 修复上游真实产物后走合法新 attempt；不得直接 finish |
 
 ## 发布中断
+
+L4 重试最多到 attempt 2。第二次卡通过后，服务核对首轮卡的旧 hash/inode 和 `WAITING_RETRY` 状态，再原子晋升到原领域路径；旧绑定已变化、任务仍在运行或次数超限都会拒绝。
 
 发布器在 run 内先生成候选 bundle 和文件 hash，再在锁内替换目标目录。同一 bundle 重试幂等，不同内容遇到同一目标会冲突。若发布完成但 finalize 中断，保留 candidate、target 和 capsule，使用只读校验确认目录 hash 后再恢复 finalize，不能重新运行研究。
 
 ## 回滚
 
 未通过真实宿主验收的入口继续走 `LEGACY_ORCHESTRATION_FALLBACK`。切回 legacy 只影响新 run：已有 `session_v1` run 的冻结计划不能交给旧 Workflow 从中间接管，可继续按原计划完成或冻结为 INTERRUPTED。历史 `context_*`、`reports_*`、capsule 和 usage 不移动、不改归因。
-

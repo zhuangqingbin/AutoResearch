@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python ≥3.10、现有 uv 环境、pytest、JSON/Markdown、现有文件锁与原子写工具；官方 Codex/Claude Code 交互会话。基础版本不新增 LLM provider SDK、LangGraph、数据库或 MCP 服务。
 
-**Status:** 文档完成待开发；下列任务均未因本次文档编写而实施。基线 48d1d4e，2026-09-13。
+**Status:** 软件实现完成，自动化验收通过；真实 Codex/Claude Code 订阅会话矩阵仍按引擎隔离规则分别验收。实现分支 `feature/session-agent-migration`，2026-09-14。逐项证据见 [Session Agent 验收状态](../../session-agent/acceptance.md)。
 
 ---
 
@@ -19,7 +19,7 @@
 3. [计划二：单股、宏观、行业与档案](2026-09-13-session-agent-migration-02-research.md)：B01–B06。
 4. [计划三：扫描、验收与切换](2026-09-13-session-agent-migration-03-scan-cutover.md)：C01–C06。
 
-文档中的新路径、CLI、类型和函数均为拟开发目标；标为“复用”的函数才是当前实现。不允许从文档中复制未来命令后声称今天已经可用。
+文档中的路径、CLI、类型和函数已经实现；真实宿主能力和 token 效率仍以本宿主落盘证据为准，不能用合成测试代替。
 
 ## 2. 固定决策
 

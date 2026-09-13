@@ -35,7 +35,7 @@
 | `scan.l3.prepare` | 无 | 原证据采集、分诊与紧凑表 | `scan.l3.prepare` | L3 输入失败；沿用 pass1/candidate 契约 | 是 | 是 |
 | `scan.l3.lint` | 无 | 原 judged JSON lint | `scan.l3.lint` | schema/证据失败；无网络 | 是 | 是 |
 | `scan.l3.repair.skip` | 无 | 记录无需局部修复 | `scan.l3.repair.skip` | 无网络 | 是 | 否 |
-| `scan.l3.repair.apply` | 无 | 校验并原子合并局部 thesis patch | `scan.l3.repair.apply` | patch 越权或仍不通过 lint；单次 | 是 | 是 |
+| `scan.l3.repair.apply` | 无 | 校验并原子合并局部 thesis patch；失败时保留原 judged 并写 `DEGRADED` | `scan.l3.repair.apply` | patch 越权或仍不通过 lint；单次、可选降级 | 是 | 是 |
 | `scan.l3.merge` | 无 | 原 finalists merge 与 GATE2 | `scan.gate2` | merge/GATE2 失败；使用冻结的 GATE1 预算 | 是 | 是 |
 | `scan.gate2.skip` | 无 | 写 pinned/空 finalists 与“不适用”GATE2 记录 | `scan.gate2` | 模式错误；仅哨兵、无网络 | 是 | 是 |
 | `scan.l4.prepare` | 无 | 原 producers/prompts 后初始化 taskbook | `scan.l4.prepare` | dispatch/taskbook 身份失败 | 是 | 是 |

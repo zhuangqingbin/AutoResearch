@@ -70,7 +70,6 @@ def test_lite_full_card_requires_deep_evidence(tmp_path):
     with pytest.raises(DomainValidationError, match="stock.deep"):
         validate_registered_contract(handle, _submission(digest), _task())
 
-
 @pytest.mark.parametrize(
     "text",
     [
@@ -89,4 +88,3 @@ def test_lite_contract_rejects_malformed_or_inconsistent_cards(tmp_path, text):
     digest = artifacts.bind_artifact_hash(handle, "stock.card.output")["sha256"]
     with pytest.raises(DomainValidationError):
         validate_registered_contract(handle, _submission(digest), _task())
-

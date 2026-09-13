@@ -23,4 +23,3 @@
 对相同冻结输入分别运行 legacy 与 `session_v1`，用 `evaluation.build_comparison` 记录确定性差异，用 `research.efficiency_baseline` 读取真实 usage。分别记录主会话、研究角色、重试、缓存 input、耗时和缺失率。少于 10 次真实扫描时只写观察值，不外推节省比例。
 
 建议按 1→5 顺序学习：静态工具边界、artifact、attempt、宿主证据、真实效率。每次只改一个变量并保存验证命令与 run_id。
-

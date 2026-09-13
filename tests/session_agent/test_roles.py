@@ -20,4 +20,3 @@ def test_unknown_role_is_rejected_and_registry_hash_is_stable():
         get_role("fake.model.client")
     assert roles_hash() == roles_hash()
     assert len(roles_hash()) == 64
-

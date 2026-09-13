@@ -61,4 +61,3 @@ def test_live_record_blocks_duplicate_execution(tmp_path, monkeypatch):
         executor.execute_operation(
             _handle(tmp_path), _task(), 1, {"message": "ok"}, runner=lambda *a, **k: None
         )
-

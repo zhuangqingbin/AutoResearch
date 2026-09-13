@@ -357,6 +357,37 @@ def mark_failed(
         atomic_write_json(target, payload)
 
 
+def supersede_optional_failure(
+    path: Path | str,
+    task_ids: list[str],
+    error: dict,
+) -> None:
+    """Release a declared optional branch while preserving its failure evidence."""
+    if not task_ids:
+        raise ValueError("optional failure requires at least one task")
+    target = Path(path)
+    with _locked(target):
+        payload = _load(target)
+        entries = []
+        for task_id in task_ids:
+            entry = payload["tasks"].get(task_id)
+            if entry is None:
+                raise KeyError(task_id)
+            if entry["state"] not in {"PENDING", "FAILED", "BLOCKED", "SUPERSEDED"}:
+                raise TaskConflict(
+                    f"optional task cannot be superseded from {entry['state']}: {task_id}"
+                )
+            entries.append(entry)
+        for entry in entries:
+            entry["state"] = "SUPERSEDED"
+            if entry["error"] is None:
+                entry["error"] = {
+                    "code": "OPTIONAL_PREDECESSOR_FAILED",
+                    "cause": error,
+                }
+        atomic_write_json(target, payload)
+
+
 def prepare_l4_retry(path: Path | str, code: str, previous_attempt: int) -> None:
     """Retire one failed child subtree while its replacement remains auditable."""
     target = Path(path)
@@ -402,5 +433,5 @@ def complete_l4_retry_alias(path: Path | str, code: str, previous_attempt: int) 
 __all__ = [
     "TaskConflict", "accept", "claim", "complete_deterministic", "initialize",
     "complete_l4_retry_alias", "mark_failed", "prepare_l4_retry", "read_entry",
-    "read_states", "recover_receipt", "register_tasks",
+    "read_states", "recover_receipt", "register_tasks", "supersede_optional_failure",
 ]

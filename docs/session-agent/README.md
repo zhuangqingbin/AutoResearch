@@ -50,4 +50,3 @@ uv run --no-sync python -m autoresearch.session_agent begin \
 ## 当前切换状态
 
 协议、五类计划、扫描四模式、恢复、发布和离线对拍已有自动化覆盖。真实 Codex/Claude 宿主仍须分别完成 [acceptance.md](acceptance.md) 的运行矩阵；未验收场景继续使用标为 `LEGACY_ORCHESTRATION_FALLBACK` 的旧 Workflow。旧 run 和历史 capsule 保持只读兼容。
-

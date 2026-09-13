@@ -42,6 +42,8 @@ Claude 的真实能力与验收必须由 Claude Code 会话在 `context_claude/`
 
 验证结果：`6105` 个通过，`13` 个按既有现场条件跳过；其中完整首跑为 `6096 passed / 9 failed / 13 skipped`，对 9 项环境失败的定向复验为 `9 passed`。这些数字是迁移前对照；每个迁移阶段另运行新增测试和受影响的旧回归。
 
+迁移完成后的最终全仓回归为 `6318 passed / 13 skipped`，session_agent 专项为 `209 passed`。迁移范围 Ruff、compileall 和三个 legacy Workflow 的 `node --check` 同时通过。
+
 ## 边界
 
 - 本迁移只在 `context_codex/`、`reports_codex/` 和 run 内临时夹具写 Codex 产物。

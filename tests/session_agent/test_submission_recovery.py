@@ -39,4 +39,3 @@ def test_owner_success_without_receipt_reconstructs_same_receipt(tmp_path, two_s
     second = store.recover_receipt(path, "step.one")
     assert first == second
     assert first["status"] == "ACCEPTED"
-

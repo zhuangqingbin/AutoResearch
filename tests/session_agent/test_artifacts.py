@@ -10,6 +10,7 @@ from autoresearch.session_agent.artifacts import (
     bind_artifact_hash,
     open_artifact,
     register_artifact,
+    replace_failed_output,
 )
 
 
@@ -82,3 +83,41 @@ def test_bound_output_can_be_reused_as_a_later_expansion_input(tmp_path):
 
     assert repeated == bound
     assert repeated["access"] == "WRITE"
+
+
+def test_failed_bound_output_can_be_atomically_replaced_for_a_retry(tmp_path):
+    handle = _handle(tmp_path)
+    output = handle.workspace / "staging" / "card.md"
+    register_artifact(handle, "stock.card", output, "WRITE")
+    output.parent.mkdir(exist_ok=True)
+    output.write_text("invalid first attempt")
+    first = bind_artifact_hash(handle, "stock.card")
+
+    replacement = replace_failed_output(
+        handle,
+        "stock.card",
+        b"verified retry",
+        expected_sha256=first["sha256"],
+    )
+
+    assert output.read_bytes() == b"verified retry"
+    assert replacement["sha256"] != first["sha256"]
+    with open_artifact(handle, "stock.card") as stream:
+        assert stream.read() == b"verified retry"
+
+
+def test_failed_output_replacement_rejects_a_stale_binding(tmp_path):
+    handle = _handle(tmp_path)
+    output = handle.workspace / "staging" / "card.md"
+    register_artifact(handle, "stock.card", output, "WRITE")
+    output.parent.mkdir(exist_ok=True)
+    output.write_text("first attempt")
+    bind_artifact_hash(handle, "stock.card")
+
+    with pytest.raises(ArtifactConflict, match="expected binding"):
+        replace_failed_output(
+            handle,
+            "stock.card",
+            b"retry",
+            expected_sha256="0" * 64,
+        )

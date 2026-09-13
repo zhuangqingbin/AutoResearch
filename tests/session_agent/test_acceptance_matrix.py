@@ -44,4 +44,3 @@ def test_synthetic_evidence_cannot_mark_a_real_host_scenario_passed():
                 }
             ]
         )
-

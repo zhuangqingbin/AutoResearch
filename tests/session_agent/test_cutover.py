@@ -32,4 +32,3 @@ def test_all_research_entry_kinds_are_registered_with_session_v1(tmp_path):
         plan = build_plan(req, handle)
         assert plan["run_kind"] == kind
         assert plan["orchestration_version"] == "session_v1"
-

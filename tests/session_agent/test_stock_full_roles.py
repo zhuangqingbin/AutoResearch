@@ -18,4 +18,3 @@ def test_full_logical_roles_reuse_the_existing_playbook():
             ".claude/skills/stock-research/engine-playbook.md"
         ]
         assert role_stage(role) in {"write", "intel"}
-

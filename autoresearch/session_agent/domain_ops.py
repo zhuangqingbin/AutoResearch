@@ -849,6 +849,24 @@ def scan_l3_repair_apply(handle=None) -> dict:
     return value
 
 
+def scan_l3_repair_degraded(error: dict, handle=None) -> dict:
+    """Record that the optional repair failed and the original judged set is retained."""
+    current = handle or _active_handle()
+    value = {
+        "schema_version": 1,
+        "status": "DEGRADED",
+        "patched": 0,
+        "codes": [],
+        "preserved_original": True,
+        "error": {
+            "code": str(error.get("code") or "UNKNOWN"),
+            "message": str(error.get("message") or "optional L3 repair failed"),
+        },
+    }
+    atomic_write_json(Path(current.staging) / "session_outputs/l3.repair.json", value)
+    return value
+
+
 def scan_l3_merge(handle=None) -> dict:
     current = handle or _active_handle()
     from autoresearch.scan.gates import gate2, record_gate_stage_result
@@ -1527,7 +1545,7 @@ __all__ = [
     "stock_full_assemble", "stock_full_validate", "stock_prepare_publication",
     "stock_validate",
     "scan_frame", "scan_gate1", "scan_gate2_skip", "scan_l3_lint",
-    "scan_l3_repair_apply", "scan_l3_repair_skip",
+    "scan_l3_repair_apply", "scan_l3_repair_degraded", "scan_l3_repair_skip",
     "scan_assemble", "scan_gate4", "scan_l3_merge", "scan_l3_prepare", "scan_l4_complete",
     "scan_l4_finalize", "scan_l4_intel_disabled",
     "scan_l4_intel_status", "scan_l4_prepare", "scan_l4_skip", "scan_l4_slim",

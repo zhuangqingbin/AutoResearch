@@ -66,4 +66,3 @@ def two_step_plan():
             expected_output_contract="test.markdown.v1",
         ),
     ])
-
