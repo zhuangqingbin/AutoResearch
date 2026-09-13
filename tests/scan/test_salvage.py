@@ -16,6 +16,8 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from autoresearch.common import workspace as ws
 from autoresearch.contracts import artifacts as ca
 from autoresearch.scan import chain_view, salvage
@@ -429,9 +431,17 @@ def test_all_never_aborts_on_one_malformed_run_directory(tmp_path, monkeypatch):
     (broken / "manifest.json").write_text("not json{{{", encoding="utf-8")
     result = salvage.salvage_all(sessions_root=tmp_path / "no-sessions")
     assert "20260810_1900" in result["runs"]
-    # a run whose manifest is unreadable degrades to "unknown analysis_date" rather
-    # than raising -- salvage_run itself must not crash on this shape.
-    assert "20260812_1930" in result["runs"] or "20260812_1930" in result["run_errors"]
+    # fix-round-1 finding 3: assert the outcome actually expected, not an `or` between
+    # two mutually exclusive branches that cannot discriminate which one happened. A
+    # manifest that fails to parse degrades to an unknown analysis_date (every
+    # downstream lookup gated on it returns UNKNOWN/ABSENT) rather than raising --
+    # salvage_run itself must not crash on this shape, so the run completes cleanly.
+    assert "20260812_1930" in result["runs"]
+    assert not result["run_errors"]
+    broken_files = {r["file_kind"]: r["attribution"] for r in result["runs"]["20260812_1930"]["files"]}
+    assert broken_files["e6_decision"] == "UNKNOWN"
+    assert broken_files["market_view"] == "UNKNOWN"
+    assert not result["runs"]["20260812_1930"]["errors"]
 
 
 # --------------------------------------------------------------- H02: attribution
@@ -501,18 +511,17 @@ def test_h02_chain_view_promotes_verified_run_before_shared(tmp_path, monkeypatc
 
     # Now simulate the case that actually exercises the new tier: a VERIFIED_RUN row
     # sourced from *outside* the run (transcript write-hash cross-check), which does
-    # carry a persisted blob distinct from the mutable shared file.
+    # carry a persisted blob distinct from the mutable shared file. Goes through the
+    # same trace.blobs-backed _store_blob production code uses -- not a hand-rolled
+    # path -- so the blob's recorded location matches trace.blobs' own fan-out layout.
     prov_path = salvage._provenance_path(run)
     doc = json.loads(prov_path.read_text(encoding="utf-8"))
     blob_bytes = b'{"mode": "active", "buys": ["600000"]}'
-    from autoresearch.common.atomic import sha256_bytes
-
-    digest = sha256_bytes(blob_bytes)
-    salvage._store_blob(run, blob_bytes, digest)
+    blob_record = salvage._store_blob(run, blob_bytes)
     for row in doc["files"]:
         if row["file_kind"] == "market_view":
             row["attribution"] = "VERIFIED_RUN"
-            row["blob"] = {"sha256": digest, "bytes": len(blob_bytes), "path": f"blobs/{digest}"}
+            row["blob"] = blob_record
     from autoresearch.common.atomic import atomic_write_json
 
     atomic_write_json(prov_path, doc)
@@ -543,12 +552,14 @@ def test_idempotent_rerun_does_not_duplicate_or_downgrade(tmp_path, monkeypatch)
     )
     first = salvage.salvage_run(run, sessions_root=sessions_root)
     assert first["wrote"] is True
+    # trace.blobs' own fan-out layout (blobs/sha256/<xx>/<digest>) -- count actual
+    # published files recursively, not a shallow glob of the "blobs" directory itself.
     blob_dir = salvage._salvage_dir(run) / "blobs"
-    n_blobs_first = len(list(blob_dir.glob("*")))
+    n_blobs_first = sum(1 for p in blob_dir.rglob("*") if p.is_file())
 
     second = salvage.salvage_run(run, sessions_root=sessions_root)
     assert second["wrote"] is False
-    n_blobs_second = len(list(blob_dir.glob("*")))
+    n_blobs_second = sum(1 for p in blob_dir.rglob("*") if p.is_file())
     assert n_blobs_second == n_blobs_first
 
     row1 = next(r for r in first["files"] if r["file_kind"] == "e6_decision")
@@ -588,6 +599,37 @@ def test_cli_exit_code_nonzero_on_unhandled_error(tmp_path, monkeypatch, capsys)
     assert rc == 1
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is False
+
+
+def test_cli_single_run_exit_code_nonzero_on_a_genuine_per_file_error(tmp_path, monkeypatch, capsys):
+    """FINDING 2: the per-file `errors` path (as opposed to the upfront wrong-engine
+    raise, or --all's whole-run run_errors) must itself drive a non-zero single-run
+    exit -- and a *different*, genuinely absent file in the same run must still read
+    as a clean ABSENT, not get swept into "something went wrong" by association. An
+    unreadable (chmod 000) shared file is a real, not simulated, per-file failure:
+    `_flat_file_row`'s `shared_path.read_bytes()` raises `PermissionError`, caught by
+    `salvage_run`'s own per-file try/except and recorded into `errors`."""
+    import os
+
+    _redirect(monkeypatch, tmp_path)
+    _write_run(tmp_path, "20260817_2000")
+    shared_path = _touch_shared(
+        tmp_path, "claude", ANALYSIS_DATE, DECISION_FILENAME, '{"mode": "active"}'
+    )
+    os.chmod(shared_path, 0o000)
+    try:
+        rc = salvage.main(["20260817_2000"])
+        payload = json.loads(capsys.readouterr().out)
+    finally:
+        os.chmod(shared_path, 0o644)  # restore before tmp_path teardown tries to clean up
+
+    assert rc == 1
+    assert payload["errors"], "expected a recorded per-file error, found none"
+    assert {e["file_kind"] for e in payload["errors"]} == {"e6_decision"}
+    # market_view was never touched -- must still read as a clean, non-error ABSENT,
+    # never conflated with the unrelated e6_decision failure.
+    market_row = next(r for r in payload["files"] if r["file_kind"] == "market_view")
+    assert market_row["attribution"] == "ABSENT"
 
 
 def test_all_exit_code_reflects_run_errors_not_absent_files(tmp_path, monkeypatch, capsys):
@@ -700,3 +742,34 @@ def test_salvage_blob_artifact_is_registered():
     assert art.root == "ledger"
     assert art.kind == "dir"
     assert art.presence == "conditional"
+    # fix-round-1 finding 1: the registered glob must match trace.blobs' own two-level
+    # fan-out (blobs/sha256/<xx>/<digest>), not a flat blobs/<digest> layout -- the
+    # registration must track the real store this module reuses, never invent its own.
+    assert art.path == "salvage/*/blobs/sha256/*/*"
+
+
+def test_store_blob_reuses_trace_blobs_layout_and_verifies_collisions(tmp_path, monkeypatch):
+    """fix-round-1 finding 1 (Critical): `_store_blob`/`_blob_path` must delegate to the
+    existing `trace.blobs` store, not a hand-rolled parallel one -- proven by checking
+    the actual on-disk layout `trace.blobs.blob_path` itself would produce, and by
+    confirming a corrupted pre-existing file at a digest's path is caught rather than
+    silently trusted (the exact safety property the review found missing)."""
+    from autoresearch.trace import blobs as trace_blobs
+
+    _redirect(monkeypatch, tmp_path)
+    run = _write_run(tmp_path, "20260817_2000")
+    payload = b'{"mode": "active"}'
+    record = salvage._store_blob(run, payload)
+    root = salvage._salvage_dir(run)
+    expected_path = trace_blobs.blob_path(root, record["sha256"])
+    assert (root / record["path"]) == expected_path
+    assert expected_path.is_file()
+    assert expected_path.read_bytes() == payload
+    assert record["path"] == f"blobs/sha256/{record['sha256'][:2]}/{record['sha256']}"
+
+    # Corrupt the already-published blob in place, then try to "store" the same
+    # original bytes again -- trace.blobs' own _verify_existing must detect the
+    # digest/content mismatch rather than silently treating the corrupt file as valid.
+    expected_path.write_bytes(b"corrupted")
+    with pytest.raises(RuntimeError):
+        salvage._store_blob(run, payload)

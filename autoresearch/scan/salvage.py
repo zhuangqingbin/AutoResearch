@@ -67,11 +67,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from autoresearch.common import workspace as ws
-from autoresearch.common.atomic import atomic_write_bytes, atomic_write_json, sha256_bytes
+from autoresearch.common.atomic import atomic_write_json, sha256_bytes
 from autoresearch.contracts import artifacts as ca
 from autoresearch.scan import run_naming
 from autoresearch.scan.outcome import LEDGER_DIRNAME
 from autoresearch.scan.relative_buy import DECISION_FILENAME
+from autoresearch.trace import blobs as trace_blobs
 from autoresearch.trace.transcripts.base import ObservedOperation, RunIdentity, TranscriptRef
 from autoresearch.trace.transcripts.claude import ClaudeTranscriptAdapter
 from autoresearch.trace.transcripts.codex import CodexTranscriptAdapter, discover_rollout_candidates
@@ -387,15 +388,38 @@ def _provenance_path(run_dir: Path, *, ledger_root: Path | None = None) -> Path:
     return _salvage_dir(run_dir, ledger_root=ledger_root) / "provenance.json"
 
 
-def _blob_path(run_dir: Path, digest: str, *, ledger_root: Path | None = None) -> Path:
-    return _salvage_dir(run_dir, ledger_root=ledger_root) / "blobs" / digest
+def _blob_path(run_dir: Path, digest: str, *, ledger_root: Path | None = None) -> Path | None:
+    """The on-disk location of an already-published salvage blob, via the
+    **existing** content-addressed store (`trace.blobs.blob_path`) —
+    fix-round-1, finding 1: this module never computes a blob's location by
+    its own rule. Callers (`resolve_attributed_source`) treat ``None`` as
+    "cannot resolve" — never a crash, since this is on a read path a broken
+    render must degrade past, not die on (chain_view's own discipline).
+    """
+    root = _salvage_dir(run_dir, ledger_root=ledger_root)
+    try:
+        return trace_blobs.blob_path(root, digest)
+    except (OSError, ValueError):
+        return None
 
 
-def _store_blob(run_dir: Path, data: bytes, digest: str, *, ledger_root: Path | None = None) -> dict:
-    path = _blob_path(run_dir, digest, ledger_root=ledger_root)
-    if not path.is_file():
-        atomic_write_bytes(path, data)
-    return {"sha256": digest, "bytes": len(data), "path": f"blobs/{digest}"}
+def _store_blob(run_dir: Path, data: bytes, *, ledger_root: Path | None = None) -> dict:
+    """Persist *data* through the **existing** evidentiary content-addressed
+    store (`trace.blobs.put_bytes`/`blob_path`) — never a second, parallel
+    implementation (spec §9's reuse mandate; fix-round-1, finding 1, Critical).
+
+    `put_bytes` computes its own digest from *data* (never trusts a
+    caller-supplied one) and, when a file already sits at that digest's path,
+    re-hashes and byte-compares it against *data* before ever treating it as
+    already-published (`trace.blobs._verify_existing`) — the collision/
+    corruption check this module's own first draft omitted entirely by
+    trusting whatever bytes already occupied a digest-named path.
+    """
+    root = _salvage_dir(run_dir, ledger_root=ledger_root)
+    root.mkdir(parents=True, exist_ok=True)  # trace.blobs requires an existing real directory
+    digest = trace_blobs.put_bytes(root, data)
+    rel = trace_blobs.blob_path(root, digest).relative_to(root).as_posix()
+    return {"sha256": digest, "bytes": len(data), "path": rel}
 
 
 # --------------------------------------------------------------- 单份 transcript
@@ -448,10 +472,11 @@ def _transcript_row(
         "snapshot_id": snapshot.snapshot_id,
     }
     if is_fact(attribution):
-        row["blob"] = _store_blob(
-            run_dir, snapshot.archive_bytes, snapshot.archive.sha256, ledger_root=ledger_root
-        )
-        row["archive_sha256"] = snapshot.archive.sha256
+        row["blob"] = _store_blob(run_dir, snapshot.archive_bytes, ledger_root=ledger_root)
+        # Same bytes in -> `trace.blobs.put_bytes` computes the identical sha256
+        # `capture_snapshot` already did; read the digest back off the blob record
+        # itself rather than keeping two separately-computed copies of one fact.
+        row["archive_sha256"] = row["blob"]["sha256"]
     else:
         row["blob"] = None
         row["archive_sha256"] = None
@@ -711,7 +736,7 @@ def _flat_file_row(
             "reason": f"共享 staging 当前内容的 sha256 与后续 run {overwritten_by} 自己"
                       "归档的副本一致 —— 本 run 的原始版本已不可从共享位置恢复",
         }
-        row["blob"] = _store_blob(run_dir, data, digest, ledger_root=ledger_root)
+        row["blob"] = _store_blob(run_dir, data, ledger_root=ledger_root)
         return row
 
     # 3) 本 run 已验证的 transcript 自己记录过这次写入、哈希吻合 —— 原有内容哈希。
@@ -722,7 +747,7 @@ def _flat_file_row(
             "reason": f"共享文件当前 sha256 与本 run 已验证 transcript({write_match})"
                       "自己记录的写入哈希一致",
         }
-        row["blob"] = _store_blob(run_dir, data, digest, ledger_root=ledger_root)
+        row["blob"] = _store_blob(run_dir, data, ledger_root=ledger_root)
         return row
 
     # 4) 只剩 mtime 这条线索。
@@ -733,14 +758,14 @@ def _flat_file_row(
             "reason": f"仅 mtime 落在本 run 取证窗口内({why});无 run 身份或内容哈希佐证"
                       " —— 只作参考,不得充当 BUY / 收益 / 覆盖率事实",
         }
-        row["blob"] = _store_blob(run_dir, data, digest, ledger_root=ledger_root)
+        row["blob"] = _store_blob(run_dir, data, ledger_root=ledger_root)
         return row
     reason = (
         f"mtime 落在本 run 取证窗口之外({why}),且无更强证据"
         if in_window is False else why
     )
     row = {**common, "attribution": "UNKNOWN", "reason": reason}
-    row["blob"] = _store_blob(run_dir, data, digest, ledger_root=ledger_root)
+    row["blob"] = _store_blob(run_dir, data, ledger_root=ledger_root)
     return row
 
 
@@ -822,7 +847,7 @@ def resolve_attributed_source(
         if not isinstance(blob, dict) or not blob.get("sha256"):
             return None
         path = _blob_path(run_dir, blob["sha256"], ledger_root=ledger_root)
-        return path if path.is_file() else None
+        return path if path is not None and path.is_file() else None
     return None
 
 
