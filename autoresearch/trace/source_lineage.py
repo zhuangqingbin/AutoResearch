@@ -17,6 +17,10 @@ from typing import Any
 import pandas as pd
 
 from autoresearch.common import workspace as ws
+from autoresearch.common.execution_context import (
+    SourceResponseHook,
+    current_execution_context,
+)
 from autoresearch.data.endpoints import policy
 from autoresearch.trace.atomic import canonical_json, sha256_bytes
 from autoresearch.trace.blobs import blob_path, put_bytes, put_dataframe
@@ -24,6 +28,7 @@ from autoresearch.trace.capsule import require_active_run
 from autoresearch.trace.capsule_models import RunHandle
 from autoresearch.trace.events import append_event
 from autoresearch.trace.identity import redact_value, scan_for_secrets
+from autoresearch.trace.source_receipts import record_response
 
 LINEAGE_SCHEMA_VERSION = 1
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
@@ -31,7 +36,9 @@ _DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+    execution = current_execution_context()
+    now = execution.clock.now() if execution is not None else datetime.now(timezone.utc)
+    return now.isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def _json_safe(value: Any) -> Any:
@@ -241,6 +248,10 @@ class SourceAccess:
     stage: str = "data"
     invocation_id: str = "source-read"
     attempt: int = 1
+    task_id: str = "source-read"
+    provider: str = "unknown"
+    as_of: str | None = None
+    source_hook: SourceResponseHook | None = None
     subject: str | None = None
     correlation_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     _finished: bool = field(default=False, init=False, repr=False)
@@ -361,6 +372,57 @@ class SourceAccess:
         error_type, error_message = (
             _safe_error(business_error) if business_error is not None else (None, None)
         )
+        ended_at = _utc_now()
+        source_receipt_id = None
+        try:
+            _lineage_directory(self.handle.capsule)
+        except BaseException as exc:
+            evidence_error = evidence_error or exc
+        try:
+            receipt_context = {
+                "engine": self.handle.engine,
+                "run_id": self.handle.run_id,
+                "task_id": self.task_id,
+                "attempt": self.attempt,
+                "provider": self.provider,
+                "endpoint": self.endpoint,
+                "normalized_params": self.normalized_params,
+                "started_at": self.started_at,
+                "ended_at": ended_at,
+                "as_of": self.as_of,
+                "available_at": ended_at,
+                "consumer_refs": [
+                    {
+                        "task_id": self.task_id,
+                        "attempt": self.attempt,
+                        "artifact_id": f"source.{self.endpoint}",
+                        "consumption_kind": "INPUT",
+                    }
+                ],
+            }
+            outcome = business_error if business_error is not None else frame
+            raw_bytes = (
+                blob_path(self.handle.capsule, blob_hash).read_bytes()
+                if blob_hash is not None
+                else None
+            )
+            receipt = (
+                self.source_hook.record_response(
+                    receipt_context,
+                    outcome,
+                    raw_bytes=raw_bytes,
+                )
+                if self.source_hook is not None
+                else record_response(
+                    self.handle,
+                    receipt_context,
+                    outcome,
+                    raw_bytes=raw_bytes,
+                )
+            )
+            source_receipt_id = receipt["receipt_id"]
+        except BaseException as exc:
+            evidence_error = evidence_error or exc
         evidence_error_type = type(evidence_error).__name__ if evidence_error is not None else None
         row = {
             "schema_version": LINEAGE_SCHEMA_VERSION,
@@ -385,12 +447,13 @@ class SourceAccess:
             "rows": len(frame) if isinstance(frame, pd.DataFrame) else None,
             "columns_hash": _columns_hash(frame),
             "started_at": self.started_at,
-            "ended_at": _utc_now(),
+            "ended_at": ended_at,
             "status": status,
             "error_type": error_type,
             "error_message": error_message,
             "evidence_complete": evidence_error is None,
             "evidence_error_type": evidence_error_type,
+            "source_receipt_id": source_receipt_id,
         }
         lineage_row_hash = sha256_bytes(canonical_json(row).encode("utf-8"))
         row_ok = True
@@ -411,6 +474,7 @@ class SourceAccess:
             "lineage_persisted": row_ok,
             "evidence_complete": evidence_error is None and row_ok,
             "error_type": error_type,
+            "source_receipt_id": source_receipt_id,
         }
         try:
             append_event(
@@ -542,6 +606,7 @@ def trace_access(
     """Start one best-effort source trace, or return a true no-op without an active run."""
     started_at = _utc_now()
     raw_run_id = str(os.environ.get("AUTORESEARCH_RUN_ID", "")).strip()
+    execution = current_execution_context()
     try:
         run_id = ws.active_run_id()
     except ValueError as exc:
@@ -572,11 +637,22 @@ def trace_access(
         str(os.environ.get("AUTORESEARCH_INVOCATION_ID", "")).strip() or f"source-{os.getpid()}"
     )
     subject = str(os.environ.get("AUTORESEARCH_SUBJECT", "")).strip() or None
+    task_id = (
+        str(os.environ.get("AUTORESEARCH_TASK_ID", "")).strip() or invocation_id
+    )
     setup_error = None
+    source_hook = None
+    if execution is not None:
+        if execution.engine != handle.engine or execution.run_id != handle.run_id:
+            setup_error = ValueError("execution context run identity mismatch")
+        else:
+            task_id = execution.task_id
+            attempt = execution.attempt
+            source_hook = execution.source_hook
     try:
         _safe_value(params)
     except BaseException as exc:
-        setup_error = exc
+        setup_error = setup_error or exc
     # One normalization for both writer and replay reader: if these two ever
     # disagreed, every replay lookup would miss and look like absent evidence.
     normalized = normalized_params(params)
@@ -590,6 +666,10 @@ def trace_access(
         stage=stage,
         invocation_id=invocation_id,
         attempt=attempt,
+        task_id=task_id,
+        provider=str(pol.get("source") or "unknown"),
+        as_of=str(today) if today is not None else None,
+        source_hook=source_hook,
         subject=subject,
         _setup_error=setup_error,
     )

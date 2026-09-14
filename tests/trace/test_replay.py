@@ -6,12 +6,14 @@ import importlib
 import importlib.util
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
 
 from autoresearch.trace import replay as R
 from autoresearch.trace.blobs import blob_path, put_dataframe
+from autoresearch.trace.source_receipts import record_response
 
 
 def _capsule(tmp_path: Path) -> Path:
@@ -35,6 +37,33 @@ def _freeze_read(capsule: Path, endpoint: str, params: dict, frame: pd.DataFrame
     return digest
 
 
+def _receipt(capsule: Path, outcome: object, *, occurrence_time: int) -> dict:
+    handle = SimpleNamespace(
+        capsule=capsule,
+        engine="codex",
+        run_id="20260914T010203000000Z",
+    )
+    stamp = f"2026-09-14T01:02:{occurrence_time:02d}Z"
+    return record_response(
+        handle,
+        {
+            "engine": handle.engine,
+            "run_id": handle.run_id,
+            "task_id": "scan.frame",
+            "attempt": 1,
+            "provider": "tushare",
+            "endpoint": "daily",
+            "normalized_params": {"trade_date": "20260912"},
+            "started_at": stamp,
+            "ended_at": stamp,
+            "as_of": "20260914",
+            "available_at": stamp,
+            "consumer_refs": [],
+        },
+        outcome,
+    )
+
+
 def test_frozen_read_round_trips_without_lake_or_network(tmp_path):
     capsule = _capsule(tmp_path)
     frame = pd.DataFrame({"ts_code": ["600000.SH"], "close": [10.5]})
@@ -43,6 +72,40 @@ def test_frozen_read_round_trips_without_lake_or_network(tmp_path):
     restored = R.frame_for(capsule, "daily", {"trade_date": "20260825"})
 
     pd.testing.assert_frame_equal(restored, frame)
+
+
+def test_strict_replay_consumes_repeated_responses_in_occurrence_order(tmp_path):
+    capsule = _capsule(tmp_path)
+    first = pd.DataFrame({"close": [10.0]})
+    second = pd.DataFrame({"close": [11.0]})
+    _receipt(capsule, first, occurrence_time=1)
+    _receipt(capsule, second, occurrence_time=2)
+    R.reset_replay_sequence(capsule)
+
+    pd.testing.assert_frame_equal(
+        R.frame_for(capsule, "daily", {"trade_date": "20260912"}), first
+    )
+    pd.testing.assert_frame_equal(
+        R.frame_for(capsule, "daily", {"trade_date": "20260912"}), second
+    )
+    with pytest.raises(R.SourceSequenceMismatch, match="response sequence exhausted"):
+        R.frame_for(capsule, "daily", {"trade_date": "20260912"})
+
+
+def test_strict_replay_raises_the_recorded_failure_before_later_success(tmp_path):
+    from autoresearch.data.contracts import DataContractError
+
+    capsule = _capsule(tmp_path)
+    _receipt(capsule, DataContractError("bad schema"), occurrence_time=1)
+    _receipt(capsule, pd.DataFrame({"close": [11.0]}), occurrence_time=2)
+    R.reset_replay_sequence(capsule)
+
+    with pytest.raises(DataContractError, match="bad schema"):
+        R.frame_for(capsule, "daily", {"trade_date": "20260912"})
+    pd.testing.assert_frame_equal(
+        R.frame_for(capsule, "daily", {"trade_date": "20260912"}),
+        pd.DataFrame({"close": [11.0]}),
+    )
 
 
 def test_missing_read_raises_instead_of_falling_back(tmp_path):

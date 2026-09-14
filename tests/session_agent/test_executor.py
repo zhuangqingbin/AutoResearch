@@ -30,8 +30,8 @@ def _task():
 def test_execute_passes_exact_argv_and_identity_to_capture(tmp_path):
     calls = []
 
-    def runner(handle, stage, argv, invocation_id, attempt, subject):
-        calls.append((stage, argv, invocation_id, attempt, subject))
+    def runner(handle, stage, argv, invocation_id, attempt, subject, *, task_id):
+        calls.append((stage, argv, invocation_id, attempt, subject, task_id))
         return SimpleNamespace(exit_code=0, invocation={"status": "COMPLETED"})
 
     result = executor.execute_operation(
@@ -40,7 +40,7 @@ def test_execute_passes_exact_argv_and_identity_to_capture(tmp_path):
     assert result["status"] == "SUCCEEDED"
     assert calls == [(
         "session", executor.build_argv("test.noop", {"message": "ok"}),
-        "session-test-noop-a1", 1, None,
+        "session-test-noop-a1", 1, None, "test.noop",
     )]
 
 

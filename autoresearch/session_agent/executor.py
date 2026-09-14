@@ -71,6 +71,7 @@ def execute_operation(
         invocation_id,
         attempt,
         task.get("subject"),
+        task_id=task["task_id"],
     )
     return {
         "schema_version": 1,

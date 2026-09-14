@@ -1148,6 +1148,7 @@ def run_captured(
     attempt: int = 1,
     subject: str | None = None,
     *,
+    task_id: str | None = None,
     drain_grace: float = _DEFAULT_DRAIN_GRACE,
     termination_grace: float = _DEFAULT_TERMINATION_GRACE,
 ) -> CaptureResult:
@@ -1155,6 +1156,7 @@ def run_captured(
     stage = _validate_identifier("stage", stage)
     invocation_id = _validate_identifier("invocation_id", invocation_id)
     subject = _validate_identifier("subject", subject, optional=True)
+    task_id = _validate_identifier("task_id", task_id, optional=True)
     attempt = _validate_attempt(attempt)
     drain_grace = _validate_grace("drain_grace", drain_grace)
     termination_grace = _validate_grace("termination_grace", termination_grace)
@@ -1180,8 +1182,13 @@ def run_captured(
             "AUTORESEARCH_RUN_ID": handle.run_id,
             "AUTORESEARCH_STAGE": stage,
             "AUTORESEARCH_INVOCATION_ID": invocation_id,
+            "AUTORESEARCH_ATTEMPT": str(attempt),
         }
     )
+    if task_id is not None:
+        child_env["AUTORESEARCH_TASK_ID"] = task_id
+    if subject is not None:
+        child_env["AUTORESEARCH_SUBJECT"] = subject
     started_at = _utc_now()
     started_monotonic = time.monotonic()
     stdout_ref = stdout_path.relative_to(handle.capsule).as_posix()

@@ -605,10 +605,10 @@ def test_parent_search_is_in_the_same_evidence_closure(forensic_case):
 
 **Files:** 修改 data/cache、dataflows/供应商实际返回边界、trace/source_lineage/blobs；新增 `autoresearch/common/execution_context.py`、`autoresearch/trace/source_receipts.py`、`tests/forensics/test_source_replay.py`。
 
-- [ ] 实现统一 `record_response(context, outcome)` 和 `replay_response(receipt_id)`；context 含当前 task/attempt/provider/endpoint/params，outcome 经允许 codec 固化。
-- [ ] 在 operation 启动时注入执行上下文/source hooks；供应商下层调用 Protocol，不反向 import trace。RunClock 采用同样注入路径，禁止通过全局 monkeypatch datetime 影响并发任务。
-- [ ] DataFrame/JSON/text/bytes/失败响应分别编码；记录实际交给消费者的对象，所有 B 级 UNMEASURED 原因保留。
-- [ ] 替换 replay 的 endpoint 最后值覆盖为 receipt+occurrence 消费；失败异常经固定工厂抛出，顺序/次数不符即 `SOURCE_SEQUENCE_MISMATCH`。
+- [x] 实现统一 `record_response(context, outcome)` 和 `replay_response(receipt_id)`；context 含当前 task/attempt/provider/endpoint/params，outcome 经允许 codec 固化。
+- [x] 在 operation 启动时注入执行上下文/source hooks；供应商下层调用 Protocol，不反向 import trace。RunClock 采用同样注入路径，禁止通过全局 monkeypatch datetime 影响并发任务。
+- [x] DataFrame/JSON/text/bytes/失败响应分别编码；记录实际交给消费者的对象，所有 B 级 UNMEASURED 原因保留。
+- [x] 替换 replay 的 endpoint 最后值覆盖为 receipt+occurrence 消费；失败异常经固定工厂抛出，顺序/次数不符即 `SOURCE_SEQUENCE_MISMATCH`。
 
 ```python
 def test_replay_preserves_failure_then_success(forensic_case):
@@ -619,8 +619,8 @@ def test_replay_preserves_failure_then_success(forensic_case):
     assert case.replay_source(ids[1]) == {"rows": 2}
 ```
 
-- [ ] 已知失败有完整 error receipt 时不再报告“成功数据缺 blob”；成功 payload 丢失必须失败；trace recorder 自身异常留下 sticky evidence error，不能静默变成无读点。
-- [ ] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_source_replay.py tests/trace/test_source_lineage.py tests/trace/test_blobs.py tests/data`；涉及供应商测试全用 fixture，不联网补数据。
+- [x] 已知失败有完整 error receipt 时不再报告“成功数据缺 blob”；成功 payload 丢失必须失败；trace recorder 自身异常留下 sticky evidence error，不能静默变成无读点。
+- [x] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_source_replay.py tests/trace/test_source_lineage.py tests/trace/test_blobs.py tests/data`；涉及供应商测试全用 fixture，不联网补数据。
 
 ### T08｜受控补算和重大断言来源连接（B，P1）
 

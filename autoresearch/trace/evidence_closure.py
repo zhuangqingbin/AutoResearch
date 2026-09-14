@@ -10,6 +10,8 @@ from autoresearch.contracts.forensic import (
     validate_task_evidence,
 )
 from autoresearch.trace.atomic import sha256_file
+from autoresearch.trace.blobs import blob_path
+from autoresearch.trace.source_receipts import read_receipts
 
 
 def _read_json(path: Path) -> dict:
@@ -31,7 +33,12 @@ def _verify_ref(root: Path, ref: dict, missing: list[str]) -> None:
         missing.append(f"EVIDENCE_REF_HASH_MISMATCH:{ref['captured_path']}")
 
 
-def _verify_required_legs(key: dict, evidence: dict, missing: list[str]) -> None:
+def _verify_required_legs(
+    capsule: Path,
+    key: dict,
+    evidence: dict,
+    missing: list[str],
+) -> None:
     """Derive presence from refs, never trust a stored PRESENT label."""
     requirements = set(key["requirements"])
     identity = f"{key['task_id']}:a{key['attempt']}"
@@ -53,6 +60,28 @@ def _verify_required_legs(key: dict, evidence: dict, missing: list[str]) -> None
         missing.append(f"TOOL_RESULTS_MISSING:{identity}")
     if "source_receipts" in requirements and not evidence["source_receipt_ids"]:
         missing.append(f"SOURCE_RECEIPTS_MISSING:{identity}")
+    try:
+        by_id = {row["receipt_id"]: row for row in read_receipts(capsule)}
+    except Exception as exc:
+        missing.append(f"SOURCE_RECEIPTS_INVALID:{identity}:{type(exc).__name__}")
+        return
+    for receipt_id in evidence["source_receipt_ids"]:
+        receipt = by_id.get(receipt_id)
+        if receipt is None:
+            missing.append(f"SOURCE_RECEIPT_MISSING:{identity}:{receipt_id}")
+            continue
+        if (
+            receipt["task_id"] != key["task_id"]
+            or receipt["attempt"] != key["attempt"]
+        ):
+            missing.append(f"SOURCE_RECEIPT_IDENTITY_MISMATCH:{identity}:{receipt_id}")
+        if not blob_path(capsule, receipt["payload_hash"]).is_file():
+            missing.append(f"SOURCE_RECEIPT_PAYLOAD_MISSING:{identity}:{receipt_id}")
+    if "tool_results" in requirements and not any(
+        by_id.get(receipt_id, {}).get("provider") == "host_tool"
+        for receipt_id in evidence["source_receipt_ids"]
+    ):
+        missing.append(f"TOOL_RESULTS_MISSING:{identity}")
 
 
 def evaluate_task_evidence_closure(
@@ -95,7 +124,7 @@ def evaluate_task_evidence_closure(
             )
             continue
         before = len(missing)
-        _verify_required_legs(key, evidence, missing)
+        _verify_required_legs(root, key, evidence, missing)
         for ref in [*evidence["input_refs"], *evidence["output_refs"]]:
             _verify_ref(root, ref, missing)
         for ref in (evidence["claim_ref"], evidence["receipt_ref"]):

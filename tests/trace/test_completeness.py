@@ -14,6 +14,7 @@ from autoresearch.trace.completeness import (
     build_expected,
     evaluate,
     profile_from_capsule,
+    source_coverage,
     write_completeness,
     write_expected,
 )
@@ -188,6 +189,61 @@ def test_source_coverage_counts_only_blobs_that_are_inside_the_capsule(tmp_path)
         "uncovered": ["adj"],
         "ok": False,
     }
+
+
+def test_source_coverage_accepts_captured_failure_but_rejects_missing_success_payload(
+    tmp_path,
+):
+    from types import SimpleNamespace
+
+    from autoresearch.data.contracts import DataContractError
+    from autoresearch.trace.blobs import blob_path
+    from autoresearch.trace.source_receipts import record_response
+
+    capsule = _complete_capsule(tmp_path)
+    handle = SimpleNamespace(
+        capsule=capsule,
+        engine="codex",
+        run_id="20260914T120000000000Z",
+    )
+
+    def freeze(outcome, endpoint):
+        return record_response(
+            handle,
+            {
+                "engine": handle.engine,
+                "run_id": handle.run_id,
+                "task_id": "scan.frame",
+                "attempt": 1,
+                "provider": "tushare",
+                "endpoint": endpoint,
+                "normalized_params": {},
+                "started_at": "2026-09-14T12:00:00Z",
+                "ended_at": "2026-09-14T12:00:01Z",
+                "as_of": "20260914",
+                "available_at": "2026-09-14T12:00:01Z",
+                "consumer_refs": [],
+            },
+            outcome,
+        )
+
+    failed = freeze(DataContractError("bad schema"), "daily")
+    succeeded = freeze({"ok": True}, "trade_cal")
+    (capsule / "lineage/reads.jsonl").write_text(
+        json.dumps({"endpoint": "daily", "source_receipt_id": failed["receipt_id"]})
+        + "\n"
+        + json.dumps(
+            {"endpoint": "trade_cal", "source_receipt_id": succeeded["receipt_id"]}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert source_coverage(capsule)["ok"] is True
+    blob_path(capsule, succeeded["payload_hash"]).unlink()
+    coverage = source_coverage(capsule)
+    assert coverage["ok"] is False
+    assert coverage["uncovered"] == ["trade_cal"]
 
 
 def test_session_origin_requires_a_recomputed_task_evidence_closure(tmp_path):

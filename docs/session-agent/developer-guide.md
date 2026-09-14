@@ -172,6 +172,19 @@ uv run --no-sync python -m autoresearch.session_agent finish --run-id "$RUN_ID"
 
 `RunProfile.role_stages` 只在 `session_v1` profile 中记录逻辑角色到既有领域阶段的映射。历史 profile 缺少该字段时继续使用旧全局角色表，因此新旧 capsule 可以同时验证。
 
+每次供应商返回和宿主外部工具返回都写入 `capsule/lineage/source_receipts.jsonl`。
+收据绑定 `task_id + attempt + provider + endpoint + normalized_params + occurrence`，所以相同参数的
+失败后重试、两次不同成功返回都不会被“最后值覆盖”。DataFrame 使用稳定 parquet，JSON 使用
+canonical JSON，文本和字节使用非可执行 codec；失败保存经过脱敏的固定异常类别与消息。回放按
+occurrence 顺序逐次消费：调用次数不足、次数超出、成功 payload 缺失或 hash 无法解析都直接失败，
+不会回退网络、湖或当前工作树。失败响应本身有完整 payload 时属于已捕获事实，不会被误报为
+“成功数据缺 blob”。
+
+确定性 operation 的子进程环境携带精确 `AUTORESEARCH_TASK_ID` 和
+`AUTORESEARCH_ATTEMPT`；推理任务的 WebSearch/WebFetch 则从已绑定 transcript 中转换为
+`provider=host_tool` 的同一收据。`TaskEvidence.source_receipt_ids` 只接纳本 task/attempt 的收据，
+闭包验证器会重新解析收据契约并检查 payload blob，不能靠手填一个 64 位 ID 过门。
+
 ## 6. 恢复与故障判断
 
 ```bash

@@ -12,6 +12,8 @@ from tests.session_agent.test_service import _handle, _request
 
 
 def _inference_plan(request, handle, *, independent=False, role="stock.card"):
+    from autoresearch.session_agent.roles import get_role
+
     task = {
         "task_id": "inference.one",
         "kind": "INFERENCE",
@@ -20,7 +22,7 @@ def _inference_plan(request, handle, *, independent=False, role="stock.card"):
         "dependencies": [],
         "input_artifact_ids": ["inference.input"],
         "output_artifact_ids": ["inference.output"],
-        "expected_output_contract": "stock.lite.v1",
+        "expected_output_contract": get_role(role)["output_contract"],
         "owner": "SESSION",
         "subject": "600519.SS",
         "independent_context": independent,
@@ -48,9 +50,14 @@ def _inference_plan(request, handle, *, independent=False, role="stock.card"):
     return value
 
 
-def _running_case(tmp_path, *, independent=False):
+def _running_case(tmp_path, *, independent=False, role="stock.card"):
     handle = _handle(tmp_path)
     request = _request()
+    if role == "stock.news":
+        request["host_profile"] = {
+            **request["host_profile"],
+            "web_search": True,
+        }
     if independent:
         request["host_profile"] = {
             **request["host_profile"],
@@ -68,7 +75,7 @@ def _running_case(tmp_path, *, independent=False):
         request,
         begin_capsule=lambda unused: handle,
         planner=lambda current, unused: _inference_plan(
-            current, unused, independent=independent
+            current, unused, independent=independent, role=role
         ),
         artifact_registrar=register,
     )
@@ -111,7 +118,7 @@ def _submission(claimed, output, handle, *, host_receipt_id):
 def test_bound_task_segment_enters_the_same_evidence_closure(tmp_path):
     from autoresearch.session_agent.host_evidence import bind_task_transcript
 
-    handle, output, claimed = _running_case(tmp_path)
+    handle, output, claimed = _running_case(tmp_path, role="stock.news")
     bound = bind_task_transcript(
         handle.run_id,
         "inference.one",
@@ -158,6 +165,24 @@ def test_bound_task_segment_enters_the_same_evidence_closure(tmp_path):
     assert closure["completeness_ok"] is True
     assert task["transcript_refs"][0]["context_source"] == "MAIN"
     assert bound["tool_call_ids"]
+    assert task["source_receipt_ids"]
+    receipts = [
+        json.loads(line)
+        for line in (handle.capsule / "lineage/source_receipts.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert {row["receipt_id"] for row in receipts} >= set(task["source_receipt_ids"])
+    assert all(row["provider"] == "host_tool" for row in receipts)
+
+    from autoresearch.session_agent.evidence import evaluate_closure
+    from autoresearch.trace.blobs import blob_path
+
+    captured = next(
+        row for row in receipts if row["receipt_id"] in task["source_receipt_ids"]
+    )
+    blob_path(handle.capsule, captured["payload_hash"]).unlink()
+    assert evaluate_closure(handle.capsule)["completeness_ok"] is False
 
 
 def test_host_receipt_cannot_cite_a_nonexistent_binding(tmp_path):

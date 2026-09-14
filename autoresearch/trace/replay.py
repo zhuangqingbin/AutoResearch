@@ -34,6 +34,7 @@ import os
 import shutil
 import tempfile
 from collections.abc import Callable, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -43,6 +44,12 @@ from autoresearch.contracts import stages as vocab
 from autoresearch.trace.atomic import atomic_write_json, canonical_json, sha256_bytes
 from autoresearch.trace.blobs import blob_path
 from autoresearch.trace.source_lineage import normalized_params
+from autoresearch.trace.source_receipts import (
+    SourcePayloadMissing,
+    SourceSequenceMismatch,
+    read_receipts,
+    replay_response,
+)
 
 REPLAY_ENV = "AUTORESEARCH_REPLAY_CAPSULE"
 SCHEMA_VERSION = 1
@@ -55,6 +62,12 @@ EVIDENCE_ONLY = "EVIDENCE_ONLY"
 
 class ReplayInputMissing(RuntimeError):
     """A replayed read has no frozen blob; replay must stop, never fall back."""
+
+
+_REPLAY_CURSORS: ContextVar[dict[tuple[str, str, int, str], int] | None] = ContextVar(
+    "autoresearch_replay_cursors",
+    default=None,
+)
 
 
 def _read_rows(capsule: Path) -> list[dict]:
@@ -77,9 +90,9 @@ def read_key(endpoint: str, params: object) -> str:
     )
 
 
-def build_index(capsule: Path | str) -> dict[str, dict]:
-    """Map every frozen read to its row; later reads of one key win."""
-    index: dict[str, dict] = {}
+def build_index(capsule: Path | str) -> dict[str, list[dict]]:
+    """Map every legacy read to its ordered occurrences without overwriting."""
+    index: dict[str, list[dict]] = {}
     for row in _read_rows(Path(capsule)):
         key = canonical_json(
             {
@@ -87,8 +100,51 @@ def build_index(capsule: Path | str) -> dict[str, dict]:
                 "params": row.get("normalized_params"),
             }
         )
-        index[key] = row
+        index.setdefault(key, []).append(row)
     return index
+
+
+def reset_replay_sequence(capsule: Path | str | None = None) -> None:
+    """Reset response occurrence cursors before one isolated replay execution."""
+    current = _REPLAY_CURSORS.get() or {}
+    if capsule is None:
+        _REPLAY_CURSORS.set({})
+        return
+    prefix = str(Path(capsule).resolve())
+    _REPLAY_CURSORS.set({key: value for key, value in current.items() if key[0] != prefix})
+
+
+def _cursor_key(capsule: Path, key: str) -> tuple[str, str, int, str]:
+    task_id = str(os.environ.get("AUTORESEARCH_TASK_ID", "")).strip()
+    try:
+        attempt = int(str(os.environ.get("AUTORESEARCH_ATTEMPT", "1")).strip())
+    except ValueError:
+        attempt = 1
+    return (str(capsule.resolve()), task_id, attempt, key)
+
+
+def _next_occurrence(capsule: Path, key: str) -> int:
+    cursor_key = _cursor_key(capsule, key)
+    current = _REPLAY_CURSORS.get() or {}
+    position = current.get(cursor_key, 0)
+    _REPLAY_CURSORS.set({**current, cursor_key: position + 1})
+    return position
+
+
+def _strict_matches(capsule: Path, endpoint: str, params: object) -> list[dict]:
+    rows = read_receipts(capsule)
+    wanted = normalized_params(params)
+    task_id = str(os.environ.get("AUTORESEARCH_TASK_ID", "")).strip()
+    attempt_raw = str(os.environ.get("AUTORESEARCH_ATTEMPT", "")).strip()
+    attempt = int(attempt_raw) if attempt_raw.isdigit() else None
+    return [
+        row
+        for row in rows
+        if row["endpoint"] == str(endpoint)
+        and row["normalized_params"] == wanted
+        and (not task_id or row["task_id"] == task_id)
+        and (attempt is None or row["attempt"] == attempt)
+    ]
 
 
 def active_capsule() -> Path | None:
@@ -105,11 +161,35 @@ def active_capsule() -> Path | None:
 def frame_for(capsule: Path | str, endpoint: str, params: object) -> pd.DataFrame:
     """Resolve one read through the frozen lineage; a miss is fatal by design."""
     root = Path(capsule)
-    row = build_index(root).get(read_key(endpoint, params))
-    if row is None:
+    key = read_key(endpoint, params)
+    position = _next_occurrence(root, key)
+    strict = _strict_matches(root, endpoint, params)
+    if strict:
+        if position >= len(strict):
+            raise SourceSequenceMismatch(
+                f"frozen response sequence exhausted for endpoint={endpoint!r} "
+                f"params={params!r} occurrence={position + 1}"
+            )
+        try:
+            value = replay_response(root, strict[position]["receipt_id"])
+        except SourcePayloadMissing as exc:
+            raise ReplayInputMissing(str(exc)) from exc
+        if not isinstance(value, pd.DataFrame):
+            raise ReplayInputMissing(
+                f"frozen response for {endpoint!r} is not a DataFrame"
+            )
+        return value
+    rows = build_index(root).get(key, [])
+    if position >= len(rows):
+        if rows:
+            raise SourceSequenceMismatch(
+                f"frozen response sequence exhausted for endpoint={endpoint!r} "
+                f"params={params!r} occurrence={position + 1}"
+            )
         raise ReplayInputMissing(
             f"no frozen read for endpoint={endpoint!r} params={params!r}"
         )
+    row = rows[position]
     digest = row.get("normalized_blob_hash") or row.get("blob_hash")
     if not digest:
         raise ReplayInputMissing(
@@ -125,8 +205,15 @@ def missing_blobs(capsule: Path | str) -> list[str]:
     """Every frozen read whose bytes are no longer inside the capsule."""
     root = Path(capsule)
     gaps = []
+    strict_ids = {row["receipt_id"]: row for row in read_receipts(root)}
     for row in _read_rows(root):
-        digest = row.get("normalized_blob_hash") or row.get("blob_hash")
+        receipt = strict_ids.get(str(row.get("source_receipt_id") or ""))
+        if receipt is not None:
+            digest = receipt["payload_hash"]
+            if blob_path(root, digest).is_file():
+                continue
+        else:
+            digest = row.get("normalized_blob_hash") or row.get("blob_hash")
         if not digest or not blob_path(root, digest).is_file():
             gaps.append(
                 canonical_json(
@@ -290,6 +377,7 @@ def replay(
 ) -> dict:
     """Replay the named deterministic stages inside a throwaway scratch tree."""
     root = Path(capsule).resolve()
+    reset_replay_sequence(root)
     gaps = missing_blobs(root)
     resolved_specs = {
         spec.stage: spec
@@ -344,7 +432,7 @@ def replay(
                     stale.unlink()
             try:
                 outcome = {"code": runner(spec, scratch, env), "error": None}
-            except ReplayInputMissing as exc:
+            except (ReplayInputMissing, SourceSequenceMismatch) as exc:
                 outcome = {"code": None, "error": str(exc)}
             executed[spec.stage] = outcome
         if outcome["error"] is not None:

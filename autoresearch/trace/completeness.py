@@ -229,16 +229,43 @@ def _read_rows(capsule: Path) -> list[dict]:
 def source_coverage(capsule: Path) -> dict:
     """How many recorded reads still have their exact bytes inside the capsule."""
     rows = _read_rows(capsule)
+    receipt_error = None
+    try:
+        from autoresearch.trace.source_receipts import read_receipts
+
+        receipts = {row["receipt_id"]: row for row in read_receipts(capsule)}
+    except Exception as exc:
+        receipts = {}
+        receipt_error = type(exc).__name__
     covered = 0
     uncovered: list[str] = []
     for row in rows:
-        digest = row.get("blob_hash") or row.get("normalized_blob_hash")
+        receipt = receipts.get(str(row.get("source_receipt_id") or ""))
+        digest = (
+            receipt["payload_hash"]
+            if receipt is not None
+            else row.get("blob_hash") or row.get("normalized_blob_hash")
+        )
         if digest and (capsule / "blobs/sha256" / digest[:2] / digest).is_file():
             covered += 1
         else:
             uncovered.append(str(row.get("endpoint") or row.get("key") or "(unnamed)"))
+    linked = {str(row.get("source_receipt_id") or "") for row in rows}
+    unlinked = [
+        receipt
+        for receipt_id, receipt in receipts.items()
+        if receipt_id not in linked
+    ]
+    for receipt in unlinked:
+        digest = receipt["payload_hash"]
+        if (capsule / "blobs/sha256" / digest[:2] / digest).is_file():
+            covered += 1
+        else:
+            uncovered.append(str(receipt.get("endpoint") or "(unnamed)"))
+    if receipt_error is not None:
+        uncovered.append(f"source_receipts:INVALID:{receipt_error}")
     return {
-        "reads": len(rows),
+        "reads": len(rows) + len(unlinked),
         "covered": covered,
         "uncovered": sorted(set(uncovered)),
         "ok": bool(rows) and not uncovered,

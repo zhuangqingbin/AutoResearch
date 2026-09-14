@@ -218,21 +218,29 @@ def test_capture_injects_run_stage_and_invocation_into_child(tmp_path, monkeypat
         "import json,os;"
         "print(json.dumps({k:os.environ[k] for k in "
         "['AUTORESEARCH_ENGINE','AUTORESEARCH_RUN_ID',"
-        "'AUTORESEARCH_STAGE','AUTORESEARCH_INVOCATION_ID']},sort_keys=True))"
+        "'AUTORESEARCH_STAGE','AUTORESEARCH_INVOCATION_ID',"
+        "'AUTORESEARCH_ATTEMPT','AUTORESEARCH_TASK_ID',"
+        "'AUTORESEARCH_SUBJECT']},sort_keys=True))"
     )
     run_captured(
         handle,
         stage="frame",
         argv=[sys.executable, "-c", script],
         invocation_id="child-env-1",
+        attempt=2,
+        subject="market",
+        task_id="scan.frame",
     )
 
     child = json.loads(_gzip_bytes(handle.capsule / "logs/frame/child-env-1.stdout.log.gz"))
     assert child == {
         "AUTORESEARCH_ENGINE": "codex",
         "AUTORESEARCH_INVOCATION_ID": "child-env-1",
+        "AUTORESEARCH_ATTEMPT": "2",
         "AUTORESEARCH_RUN_ID": handle.run_id,
         "AUTORESEARCH_STAGE": "frame",
+        "AUTORESEARCH_SUBJECT": "market",
+        "AUTORESEARCH_TASK_ID": "scan.frame",
     }
 
 

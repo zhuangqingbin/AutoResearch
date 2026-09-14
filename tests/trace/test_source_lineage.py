@@ -137,6 +137,45 @@ def test_trace_access_redacts_params_and_records_exact_context(active_run, monke
     assert blob_path(active_run.capsule, row["blob_hash"]).is_file()
     assert row["bytes"] == blob_path(active_run.capsule, row["blob_hash"]).stat().st_size
     assert _events(active_run)[-1]["event_type"] == "SOURCE_FETCHED"
+    receipts = [
+        json.loads(line)
+        for line in (active_run.capsule / "lineage/source_receipts.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert row["source_receipt_id"] == receipts[-1]["receipt_id"]
+    assert receipts[-1]["task_id"] == "lineage-l1-1"
+    assert receipts[-1]["provider"] == "tushare"
+
+
+def test_context_local_identity_clock_and_hook_bind_the_source_receipt(active_run):
+    from autoresearch.common.execution_context import (
+        ExecutionContext,
+        RunClock,
+        use_execution_context,
+    )
+    from autoresearch.trace.source_receipts import CapsuleSourceHook
+
+    context = ExecutionContext(
+        engine="codex",
+        run_id=active_run.run_id,
+        task_id="scan.frame",
+        attempt=4,
+        clock=RunClock(NOW),
+        source_hook=CapsuleSourceHook(active_run),
+    )
+    with use_execution_context(context):
+        access = trace_access("daily", {"trade_date": "20260825"}, today=DATE)
+        assert access.finish_success(_daily(), "FETCHED_LIVE", None) is True
+
+    receipt = json.loads(
+        (active_run.capsule / "lineage/source_receipts.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[-1]
+    )
+    assert (receipt["task_id"], receipt["attempt"]) == ("scan.frame", 4)
+    assert receipt["started_at"] == "2026-08-27T01:02:03.456789Z"
+    assert receipt["ended_at"] == receipt["started_at"]
 
 
 @pytest.mark.parametrize(
