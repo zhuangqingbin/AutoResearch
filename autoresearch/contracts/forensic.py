@@ -51,6 +51,14 @@ OPERATION_EVIDENCE_FIELDS = frozenset({
     "schema_version", "operation_id", "engine", "operation", "input_refs",
     "code_hash", "parameters", "output_refs", "effects", "status", "error",
 })
+HOST_EVIDENCE_BINDING_FIELDS = frozenset({
+    "schema_version", "engine", "run_id", "task_id", "attempt", "role",
+    "subject", "session_ref", "context_ref", "parent_context_ref",
+    "context_source", "invocation_id", "start_ordinal", "end_ordinal",
+    "source_path", "source_sha256", "archive_sha256", "raw_path",
+    "normalized_path", "normalized_sha256", "tool_call_ids", "status", "created_at",
+    "binding_id",
+})
 
 ENGINES = frozenset({"claude", "codex"})
 ORCHESTRATIONS = frozenset({"session_v1", "legacy", "untracked"})
@@ -180,6 +188,10 @@ def _validate_artifact_refs(value: object, field: str) -> list[dict]:
 
 def evidence_plan_hash(value: dict) -> str:
     return _digest_without(value, "evidence_plan_hash")
+
+
+def host_evidence_binding_hash(value: dict) -> str:
+    return _digest_without(value, "binding_id")
 
 
 def validate_execution_origin(value: dict) -> dict:
@@ -395,16 +407,54 @@ def validate_operation_evidence(value: dict) -> dict:
     return value
 
 
+def validate_host_evidence_binding(value: dict) -> dict:
+    require_exact_fields(value, HOST_EVIDENCE_BINDING_FIELDS)
+    require_version(value["schema_version"])
+    _engine(value["engine"])
+    _run_id(value["run_id"])
+    _required_string(value["task_id"], "task_id", pattern=_ID_RE)
+    _positive_int(value["attempt"], "attempt")
+    _required_string(value["role"], "role", pattern=_ID_RE)
+    _optional_string(value["subject"], "subject")
+    for field in ("session_ref", "context_ref", "invocation_id", "source_path"):
+        _required_string(value[field], field)
+    _optional_string(value["parent_context_ref"], "parent_context_ref")
+    if value["context_source"] not in CONTEXT_SOURCES:
+        raise ValueError("invalid context_source")
+    start, end = value["start_ordinal"], value["end_ordinal"]
+    for field, ordinal in (("start_ordinal", start), ("end_ordinal", end)):
+        if type(ordinal) is not int or ordinal < 0:
+            raise ValueError(f"invalid {field}")
+    if end < start:
+        raise ValueError("end_ordinal precedes start_ordinal")
+    require_sha256(value["source_sha256"], "source_sha256")
+    require_sha256(value["archive_sha256"], "archive_sha256")
+    _safe_relative(value["raw_path"], "raw_path")
+    _safe_relative(value["normalized_path"], "normalized_path")
+    require_sha256(value["normalized_sha256"], "normalized_sha256")
+    _unique_strings(value["tool_call_ids"], "tool_call_ids")
+    if value["status"] != "PRESENT":
+        raise ValueError("host evidence binding must be PRESENT")
+    _aware(value["created_at"], "created_at")
+    require_sha256(value["binding_id"], "binding_id")
+    if value["binding_id"] != host_evidence_binding_hash(value):
+        raise ValueError("binding_id mismatch")
+    return value
+
+
 __all__ = [
     "ARTIFACT_REF_FIELDS",
     "EVIDENCE_PLAN_FIELDS",
     "EXECUTION_ORIGIN_FIELDS",
+    "HOST_EVIDENCE_BINDING_FIELDS",
     "OPERATION_EVIDENCE_FIELDS",
     "TASK_EVIDENCE_FIELDS",
     "VERIFICATION_RESULT_FIELDS",
     "evidence_plan_hash",
+    "host_evidence_binding_hash",
     "validate_evidence_plan",
     "validate_execution_origin",
+    "validate_host_evidence_binding",
     "validate_operation_evidence",
     "validate_task_evidence",
     "validate_verification_result",

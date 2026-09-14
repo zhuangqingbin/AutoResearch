@@ -274,6 +274,9 @@ def begin(
         raise ValueError("capsule engine does not match process engine")
     _mirror_identity(handle, "request.json", request)
     _mirror_identity(handle, "host_profile.json", request["host_profile"])
+    from autoresearch.session_agent.host_evidence import register_main_context
+
+    register_main_context(handle, request["host_profile"])
     if predecessor is not None:
         _mirror_identity(handle, "predecessor.json", predecessor)
     frozen_plan = (planner or _default_planner)(request, handle)
@@ -863,6 +866,9 @@ def submit(
         host_receipt_id = sha256_bytes(canonical_json(host_receipt).encode("utf-8"))
         if submission["host_receipt_id"] != host_receipt_id:
             raise ValueError("host_receipt_id does not match the verified receipt")
+        from autoresearch.session_agent.host_evidence import resolve_receipt_evidence
+
+        resolve_receipt_evidence(handle, task, host_receipt)
         _freeze_json(
             _session_dir(handle) / "receipts" / f"{host_receipt_id}.json",
             host_receipt,

@@ -152,6 +152,10 @@ uv run --no-sync python -m autoresearch.session_agent submit \
 
 需要独立上下文的任务必须同时提供 `--host-receipt-file`。receipt 要证明子 context 与父 context 不同；其 canonical SHA-256 必须等于 submission 中的 `host_receipt_id`。普通主会话顺序执行不能声称自己是独立复核。
 
+在 `submit` 前调用 `bind-host-evidence`，把导出的宿主 transcript 精确区段绑定到本次
+`task_id/attempt`。host receipt 的 `evidence_refs` 只接受可解引用的
+`host-binding:<sha256>`；字段自洽但 binding 缺失、归属不符或归档 hash 变化都会拒绝提交。
+
 每轮提交后继续调用 `next`。全部任务为 `DONE` 后才可运行：
 
 ```bash

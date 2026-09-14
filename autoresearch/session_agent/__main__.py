@@ -33,6 +33,21 @@ def _parser():
     claim.add_argument("--run-id", required=True)
     claim.add_argument("--task-id", required=True)
     claim.add_argument("--expected-attempt", required=True, type=int)
+    bind = subparsers.add_parser("bind-host-evidence")
+    bind.add_argument("--run-id", required=True)
+    bind.add_argument("--task-id", required=True)
+    bind.add_argument("--attempt", required=True, type=int)
+    bind.add_argument("--transcript-file", required=True)
+    bind.add_argument("--session-ref", required=True)
+    bind.add_argument("--context-ref", required=True)
+    bind.add_argument("--parent-context-ref")
+    bind.add_argument("--start-ordinal", required=True, type=int)
+    bind.add_argument("--end-ordinal", required=True, type=int)
+    bind.add_argument(
+        "--context-source",
+        required=True,
+        choices=("MAIN", "SUBAGENT", "SHARED"),
+    )
     execute = subparsers.add_parser("execute")
     execute.add_argument("--run-id", required=True)
     execute.add_argument("--task-id", required=True)
@@ -145,6 +160,21 @@ def main(argv=None):
             value = getattr(service, args.command)(args.run_id)
         elif args.command == "claim":
             value = service.claim(args.run_id, args.task_id, args.expected_attempt)
+        elif args.command == "bind-host-evidence":
+            from autoresearch.session_agent.host_evidence import bind_task_transcript
+
+            value = bind_task_transcript(
+                args.run_id,
+                args.task_id,
+                args.attempt,
+                args.transcript_file,
+                session_ref=args.session_ref,
+                context_ref=args.context_ref,
+                parent_context_ref=args.parent_context_ref,
+                start_ordinal=args.start_ordinal,
+                end_ordinal=args.end_ordinal,
+                context_source=args.context_source,
+            )
         elif args.command == "execute":
             value = service.execute(
                 args.run_id, args.task_id, args.attempt, _load(args.params_file)

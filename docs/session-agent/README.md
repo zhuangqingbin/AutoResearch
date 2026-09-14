@@ -39,7 +39,9 @@ uv run --no-sync python -m autoresearch.session_agent begin \
 1. `next --run-id <RUN_ID>` 读取可运行任务，不发生认领。
 2. `claim --run-id <RUN_ID> --task-id <TASK> --expected-attempt 1` 冻结本次输入并取得所有权。
 3. DETERMINISTIC 任务用 `execute --params-file <JSON>`；INFERENCE 任务由当前宿主读取 claim 返回的角色说明和登记 artifact，写入指定输出后用 `submit` 回交。
-4. 需要独立上下文的复核必须附真实 `host_receipt`；同一主会话换角色名不算独立。
+4. 推理完成后先用 `bind-host-evidence` 把真实 transcript 区段绑定到
+   `task_id/attempt/session/context`，再提交输出。需要独立上下文的复核必须附引用该绑定的
+   真实 `host_receipt`；同一主会话换角色名不算独立。
 5. `next` 返回 `DONE` 后执行 `finish`。发布和 capsule finalize 只在完整任务图成功后发生。
 
 完整命令与恢复流程见 [operations.md](operations.md)，对象和依赖关系见 [architecture.md](architecture.md)。

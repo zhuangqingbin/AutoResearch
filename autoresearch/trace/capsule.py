@@ -1621,6 +1621,8 @@ def _binding_identity(row: Mapping) -> tuple:
         row.get("path"),
         row.get("start_ordinal"),
         row.get("end_ordinal"),
+        row.get("session_ref"),
+        row.get("attempt"),
     )
 
 
@@ -1655,6 +1657,38 @@ def bind_transcript(
     start_ordinal: int | None = None,
     end_ordinal: int | None = None,
     stage: str | None = None,
+    session_ref: str | None = None,
+    attempt: int = 1,
+) -> dict:
+    """Resolve an active run and bind one external transcript to it."""
+    return bind_transcript_handle(
+        require_active_run(run_id),
+        path,
+        role=role,
+        invocation_id=invocation_id,
+        subject=subject,
+        engine=engine,
+        start_ordinal=start_ordinal,
+        end_ordinal=end_ordinal,
+        stage=stage,
+        session_ref=session_ref,
+        attempt=attempt,
+    )
+
+
+def bind_transcript_handle(
+    handle: RunHandle,
+    path: Path | str,
+    *,
+    role: str,
+    invocation_id: str,
+    subject: str | None = None,
+    engine: str | None = None,
+    start_ordinal: int | None = None,
+    end_ordinal: int | None = None,
+    stage: str | None = None,
+    session_ref: str | None = None,
+    attempt: int = 1,
 ) -> dict:
     """Record one authoritative transcript binding for an active run.
 
@@ -1671,7 +1705,6 @@ def bind_transcript(
     follows) and rejected loudly if it is not a real registered stage --
     never silently coerced or hand-mapped a second time.
     """
-    handle = require_active_run(run_id)
     resolved_role = _validate_agent_identifier("role", role)
     resolved_invocation = _validate_agent_identifier("invocation_id", invocation_id)
     resolved_subject = (
@@ -1680,6 +1713,8 @@ def bind_transcript(
     resolved_engine = handle.engine if engine is None else str(engine)
     if resolved_engine not in ws.ENGINES:
         raise ValueError(f"engine must be one of {ws.ENGINES!r}")
+    if type(attempt) is not int or attempt < 1:
+        raise ValueError("attempt must be a positive integer")
     for name, value in (("start_ordinal", start_ordinal), ("end_ordinal", end_ordinal)):
         if value is not None and (type(value) is not int or value < 0):
             raise ValueError(f"{name} must be a non-negative integer or None")
@@ -1710,7 +1745,12 @@ def bind_transcript(
         "path": str(source),
         "start_ordinal": start_ordinal,
         "end_ordinal": end_ordinal,
-        "session_ref": handle.contract.session_ref,
+        "session_ref": (
+            session_ref
+            if session_ref is not None
+            else getattr(handle.contract, "session_ref", None)
+        ),
+        "attempt": attempt,
     }
 
     def guard(existing: list[dict]):
@@ -1734,7 +1774,7 @@ def bind_transcript(
             engine=handle.engine,
             stage=resolved_stage,
             invocation_id=resolved_invocation,
-            attempt=1,
+            attempt=attempt,
             subject=resolved_subject,
             event_type="TRANSCRIPT_BOUND",
             payload={
@@ -1942,6 +1982,7 @@ def _archive_bound_transcripts(
             "role": binding.get("role"),
             "subject": binding.get("subject"),
             "stage": binding.get("stage"),
+            "attempt": binding.get("attempt", 1),
             "source_path": binding.get("path"),
             "status": "PRESENT",
             "reason": None,
@@ -3830,6 +3871,7 @@ __all__ = [
     "append_ledger_revision",
     "begin_run",
     "bind_transcript",
+    "bind_transcript_handle",
     "checkpoint",
     "inspect_run",
     "load_run",

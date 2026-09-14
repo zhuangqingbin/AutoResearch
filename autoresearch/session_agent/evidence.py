@@ -394,6 +394,14 @@ def _task_evidence(handle, task: dict, key: dict, entry: dict | None) -> dict:
         command_ref, command_reasons = _command_ref(handle, task, key["attempt"], root)
         reasons.extend(command_reasons)
 
+    transcript_refs = []
+    if task["kind"] == "INFERENCE" and key["state"] != "NOT_REACHED":
+        from autoresearch.session_agent.host_evidence import transcript_refs_for_task
+
+        transcript_refs = transcript_refs_for_task(
+            handle, task["task_id"], key["attempt"]
+        )
+
     relevant = []
     if "claim" in requirements and claim_ref is None:
         relevant.append(f"CLAIM_MISSING:{task['task_id']}:a{key['attempt']}")
@@ -405,7 +413,9 @@ def _task_evidence(handle, task: dict, key: dict, entry: dict | None) -> dict:
         relevant.append(f"ACCEPTED_RECEIPT_MISSING:{task['task_id']}:a{key['attempt']}")
     if "command_capture" in requirements and command_ref is None:
         relevant.append(f"COMMAND_CAPTURE_MISSING:{task['task_id']}:a{key['attempt']}")
-    if "transcript" in requirements:
+    if "transcript" in requirements and not any(
+        ref["status"] == "PRESENT" for ref in transcript_refs
+    ):
         relevant.append(f"TRANSCRIPT_MISSING:{task['task_id']}:a{key['attempt']}")
     if "tool_results" in requirements:
         relevant.append(f"TOOL_RESULTS_MISSING:{task['task_id']}:a{key['attempt']}")
@@ -432,7 +442,7 @@ def _task_evidence(handle, task: dict, key: dict, entry: dict | None) -> dict:
         "claim_ref": claim_ref,
         "receipt_ref": receipt_ref,
         "command_ref": command_ref,
-        "transcript_refs": [],
+        "transcript_refs": transcript_refs,
         "source_receipt_ids": [],
         "status": status,
         "reasons": reasons,
@@ -449,6 +459,9 @@ def evaluate_closure(capsule: Path | str, evidence_plan: dict | None = None) -> 
 
 def materialize_evidence(handle, *, now: datetime | None = None) -> dict:
     """Freeze the denominator, capture referenced bytes, and write a recomputed verdict."""
+    from autoresearch.session_agent.host_evidence import capture_main_context
+
+    capture_main_context(handle)
     plan = build_evidence_plan(handle, now=now)
     atomic_write_json(Path(handle.capsule) / "evidence/evidence_plan.json", plan)
     tasks, _ = _expanded_tasks(handle, validate_plan(

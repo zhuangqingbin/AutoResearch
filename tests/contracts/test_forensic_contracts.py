@@ -6,8 +6,10 @@ import pytest
 
 from autoresearch.contracts.forensic import (
     evidence_plan_hash,
+    host_evidence_binding_hash,
     validate_evidence_plan,
     validate_execution_origin,
+    validate_host_evidence_binding,
     validate_task_evidence,
     validate_verification_result,
 )
@@ -111,12 +113,44 @@ def _verification_result():
     }
 
 
+def _host_binding():
+    value = {
+        "schema_version": 1,
+        "engine": "codex",
+        "run_id": RUN_ID,
+        "task_id": "stock.card",
+        "attempt": 1,
+        "role": "stock.card",
+        "subject": "600519.SS",
+        "session_ref": "session-main",
+        "context_ref": "context-main",
+        "parent_context_ref": None,
+        "context_source": "MAIN",
+        "invocation_id": "session-stock.card-a1",
+        "start_ordinal": 10,
+        "end_ordinal": 20,
+        "source_path": "/external/rollout.jsonl",
+        "source_sha256": H,
+        "archive_sha256": "b" * 64,
+        "raw_path": "agents/raw/snapshot.jsonl.gz",
+        "normalized_path": "agents/normalized/stock.card.json",
+        "normalized_sha256": "c" * 64,
+        "tool_call_ids": ["call-1"],
+        "status": "PRESENT",
+        "created_at": "2026-09-14T12:00:00Z",
+        "binding_id": "0" * 64,
+    }
+    value["binding_id"] = host_evidence_binding_hash(value)
+    return value
+
+
 def test_valid_forensic_objects_are_returned_without_mutation(valid_origin):
     for validator, value in (
         (validate_execution_origin, valid_origin),
         (validate_evidence_plan, _evidence_plan()),
         (validate_task_evidence, _task_evidence()),
         (validate_verification_result, _verification_result()),
+        (validate_host_evidence_binding, _host_binding()),
     ):
         before = deepcopy(value)
         assert validator(value) is value
@@ -194,3 +228,10 @@ def test_unbound_verification_cannot_claim_publication_success():
     })
     with pytest.raises(ValueError, match="publication_ok"):
         validate_verification_result(value)
+
+
+def test_host_binding_hash_covers_task_segment_identity():
+    value = _host_binding()
+    value["end_ordinal"] += 1
+    with pytest.raises(ValueError, match="binding_id"):
+        validate_host_evidence_binding(value)

@@ -217,6 +217,32 @@ def test_session_origin_requires_a_recomputed_task_evidence_closure(tmp_path):
     assert "evidence/evidence_plan.json" in result["missing_required"]
 
 
+def test_registered_main_transcript_is_part_of_completeness(tmp_path):
+    capsule = _complete_capsule(tmp_path)
+    _touch(
+        capsule / "identity/session/host_evidence.json",
+        json.dumps(
+            {
+                "schema_version": 1,
+                "engine": "codex",
+                "run_id": "20260914T120000000000Z",
+                "session_ref": "session-main",
+                "main_transcript": {
+                    "status": "REGISTERED",
+                    "source_path": "/external/main.jsonl",
+                    "start_ordinal": 5,
+                },
+            }
+        ).encode(),
+    )
+
+    result = evaluate(capsule, scan_profile())
+
+    assert result["completeness_ok"] is False
+    assert result["coverage"]["host"]["applicable"] is True
+    assert "evidence/main_host.json" in result["missing_required"]
+
+
 # ---------------------------------------------------------------- D6.5: evidence levels
 
 

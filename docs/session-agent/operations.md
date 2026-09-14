@@ -9,11 +9,18 @@ uv run --no-sync python -m autoresearch.session_agent status --run-id <RUN_ID>
 uv run --no-sync python -m autoresearch.session_agent next --run-id <RUN_ID>
 uv run --no-sync python -m autoresearch.session_agent claim --run-id <RUN_ID> --task-id <TASK> --expected-attempt 1
 uv run --no-sync python -m autoresearch.session_agent execute --run-id <RUN_ID> --task-id <TASK> --attempt 1 --params-file <PARAMS.json>
+uv run --no-sync python -m autoresearch.session_agent bind-host-evidence --run-id <RUN_ID> --task-id <TASK> --attempt 1 --transcript-file <TRANSCRIPT.jsonl> --session-ref <SESSION> --context-ref <CONTEXT> --start-ordinal <N> --end-ordinal <N> --context-source MAIN
 uv run --no-sync python -m autoresearch.session_agent submit --run-id <RUN_ID> --submission-file <SUBMISSION.json>
 uv run --no-sync python -m autoresearch.session_agent finish --run-id <RUN_ID>
 ```
 
 `READY` 表示至少有一个 PENDING 节点依赖已满足；`WAITING` 表示仍有运行中任务或待展开模板；`BLOCKED` 会列出阻断节点；`DONE` 只表示任务图完整，仍需 `finish` 发布。
+
+`bind-host-evidence` 必须在对应推理 task 仍为 RUNNING 时执行，并给出导出 transcript 的
+精确 ordinal 区段。命令返回 `host-binding:<sha256>`；把它放入 host receipt 的
+`evidence_refs`。独立复核使用 `--context-source SUBAGENT`，且必须提供不同的
+`--context-ref` 与 `--parent-context-ref`。绑定时立即归档该前缀，因此后续会话追加内容不会
+改变本 task 的证据字节。
 
 ## 失败与恢复
 

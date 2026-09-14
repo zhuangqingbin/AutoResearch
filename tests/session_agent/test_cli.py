@@ -49,6 +49,7 @@ def test_help_is_available_without_importing_a_workspace_engine():
     )
     assert result.returncode == 0
     assert "begin" in result.stdout and "submit" in result.stdout
+    assert "bind-host-evidence" in result.stdout
 
 
 def test_non_help_command_requires_explicit_engine():
