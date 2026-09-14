@@ -9,9 +9,12 @@ description: Two-tier single-ticker research. FULL deep-dive report by default (
 
 ## session_v1 编排入口
 
-显式选择新编排时使用 `python -m autoresearch.session_agent`，执行
+开发/验收期显式选择新编排时使用
+`python -m autoresearch.session_agent begin --orchestration session_v1 --request-file <request.json>`，执行
 `begin → next → claim → execute/宿主研究 → submit → finish`。FULL/LITE 的研究角色、输出正文、
-评级校验和发布器继续复用本 skill 的契约；宿主真实验收尚未记录的场景保留 legacy 流程回退。
+评级校验和发布器继续复用本 skill 的契约。宿主能力不足会在创建 run 前返回
+`HOST_CAPABILITY_REQUIRED`。`session_agent --orchestration legacy` 只返回
+`LEGACY_ENTRYPOINT_REQUIRED`，绝不代跑旧流程；回退必须显式进入下文 legacy 入口并记录原因。
 
 ## 核心原理
 同一免费数据层(yfinance/FRED/akshare/tushare)+ Claude(本 session)当引擎,零 LLM API。
@@ -47,7 +50,7 @@ description: Two-tier single-ticker research. FULL deep-dive report by default (
 
 ## 现场留存(可选但推荐;D6)
 开了就有一份可核验的法证现场(取数读点/prompt 哈希/产物快照/事件链);**不开 `RUN_ID` 时一切照旧、零留痕**,与今天逐字相同。
-0. 开场:`uv run --no-sync python -m autoresearch.analyze.runctl begin <TICKER> <日期> --mode FULL|LITE --session-ref <本会话 sessionId>` → 回显首行 `RUN_ID=…`,`export AUTORESEARCH_RUN_ID=<回显>`(此后 harvest/assemble 自动 checkpoint,无需额外命令)。
+0. 开场(仅显式 legacy 回退):`uv run --no-sync python -m autoresearch.analyze.runctl begin <TICKER> <日期> --mode FULL|LITE --session-ref <本会话 sessionId> --legacy-reason '<为何本次不能走 session_v1>'` → 回显首行 `RUN_ID=…`,`export AUTORESEARCH_RUN_ID=<回显>`(此后 harvest/assemble 自动 checkpoint,无需额外命令)。缺 `--legacy-reason` 会在创建 run 前失败。
 - **绑 transcript**(full 派了情报员时,第 5 步之后):`… runctl bind $AUTORESEARCH_RUN_ID ~/.claude/projects/<slug>/<sessionId>/subagents/agent-<情报员id>.jsonl --role company-intel|us-intel`。
 - **收尾**(full 第 6 步后 / lite 第 3 步后):`… runctl finalize $AUTORESEARCH_RUN_ID --report-dir $RPT/analyze/<YYYYMMDD_HHMM>`;中途放弃 → `--status INTERRUPTED --reason <一句话>`(无需 `--report-dir`)。
 - 读结论:`… runctl verify <RUN_ID>` —— **完好性 / 完整性 / 可重放性 三个结论互不替代**,`MANIFEST 通过 ≠ 现场完整`。

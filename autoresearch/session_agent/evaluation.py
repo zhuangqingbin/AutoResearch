@@ -203,10 +203,34 @@ def build_acceptance_matrix(cases: list[dict]) -> dict:
     }
 
 
+def orchestration_status(handle) -> dict:
+    """Project a recomputed origin verdict for evaluation and later cutover gates."""
+    import json
+    from pathlib import Path
+
+    from autoresearch.session_agent.origin import verify_execution_origin
+
+    path = Path(handle.capsule) / "identity/execution_origin.json"
+    orchestration = "UNKNOWN"
+    if path.is_file():
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+            orchestration = str(value.get("orchestration") or "UNKNOWN")
+        except Exception:
+            pass
+    checked = verify_execution_origin(handle)
+    return {
+        "orchestration": orchestration,
+        "orchestration_verified": checked["verified"],
+        "missing": checked["missing"],
+    }
+
+
 __all__ = [
     "COMPARISON_FIELDS",
     "build_acceptance_matrix",
     "build_comparison",
     "compare_manifests",
+    "orchestration_status",
     "validate_comparison",
 ]

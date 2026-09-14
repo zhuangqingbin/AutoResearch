@@ -696,6 +696,64 @@ def load_run(run_id: str) -> RunHandle:
     return handle
 
 
+def freeze_execution_origin(handle: RunHandle, payload: Mapping) -> dict:
+    """Freeze one validated origin record without importing orchestration layers."""
+    from autoresearch.contracts.forensic import validate_execution_origin
+
+    value = dict(payload)
+    if value.get("engine") != handle.engine or value.get("run_id") != handle.run_id:
+        raise ValueError("execution origin identity does not match run")
+    if value.get("run_kind") != handle.contract.run_kind:
+        raise ValueError("execution origin run_kind does not match run")
+    state_path = handle.workspace / "state.json"
+    if state_path.is_file():
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        value.setdefault("created_at", state["created_at"])
+    elif isinstance(handle, RunHandle):
+        raise FileNotFoundError(f"run state is missing: {state_path}")
+    else:  # structural test doubles are not production run identities
+        value.setdefault(
+            "created_at",
+            _utc_now().isoformat(timespec="microseconds").replace("+00:00", "Z"),
+        )
+    validate_execution_origin(value)
+    path = handle.capsule / "identity/execution_origin.json"
+    if path.is_file():
+        current = json.loads(path.read_text(encoding="utf-8"))
+        validate_execution_origin(current)
+        if canonical_json(current) != canonical_json(value):
+            raise RuntimeError("frozen execution origin changed")
+        return current
+    atomic_write_json(path, value)
+    return value
+
+
+def freeze_legacy_execution_origin(
+    handle: RunHandle,
+    *,
+    entrypoint: str,
+    legacy_reason: str,
+) -> dict:
+    """Record an explicitly selected legacy entry without inventing session hashes."""
+    reason = str(legacy_reason or "").strip()
+    if not reason:
+        raise ValueError("legacy_reason is required")
+    return freeze_execution_origin(
+        handle,
+        {
+            "schema_version": 1,
+            "engine": handle.engine,
+            "run_id": handle.run_id,
+            "run_kind": handle.contract.run_kind,
+            "orchestration": "legacy",
+            "entrypoint": entrypoint,
+            "plan_hash": None,
+            "host_profile_hash": None,
+            "legacy_reason": reason,
+        },
+    )
+
+
 def require_active_run(run_id: str) -> RunHandle:
     """Load a valid run and reject terminal business states."""
     handle = load_run(run_id)
@@ -3553,6 +3611,7 @@ def _parser() -> argparse.ArgumentParser:
     begin.add_argument("--engine", required=True, choices=ws.ENGINES)
     begin.add_argument("--config-file")
     begin.add_argument("--session-ref")
+    begin.add_argument("--legacy-reason", required=True)
     save = commands.add_parser("checkpoint")
     save.add_argument("run_id")
     save.add_argument("stage")
@@ -3620,6 +3679,11 @@ def main(argv: list[str] | None = None) -> int:
                 args.engine,
                 args.config_file,
                 session_ref=args.session_ref,
+            )
+            freeze_legacy_execution_origin(
+                handle,
+                entrypoint="autoresearch.trace.capsule.begin",
+                legacy_reason=args.legacy_reason,
             )
             result = {
                 "analysis_date": handle.analysis_date,

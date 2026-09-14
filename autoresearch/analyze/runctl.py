@@ -203,8 +203,13 @@ def begin(
     peers: str | None = None,
     asset_type: str = "stock",
     name: str | None = None,
+    legacy_reason: str | None = None,
 ) -> dict:
-    from autoresearch.trace.capsule import begin_run
+    from autoresearch.trace.capsule import begin_run, freeze_legacy_execution_origin
+
+    reason = str(legacy_reason or "").strip()
+    if not reason:
+        raise ValueError("legacy_reason is required")
 
     if ws.ENGINE == "codex":
         _warn_if_codex_rollout_missing()
@@ -225,6 +230,11 @@ def begin(
     )
     if ws.ENGINE == "codex":
         _record_codex_escape_hatch(handle)
+    freeze_legacy_execution_origin(
+        handle,
+        entrypoint="autoresearch.analyze.runctl.begin",
+        legacy_reason=reason,
+    )
     return {
         "run_id": handle.run_id,
         "analysis_date": handle.analysis_date,
@@ -326,6 +336,7 @@ def _parser() -> argparse.ArgumentParser:
     start.add_argument("--peers")
     start.add_argument("--asset-type", default="stock")
     start.add_argument("--name")
+    start.add_argument("--legacy-reason", required=True)
 
     attach = commands.add_parser("bind")
     attach.add_argument("run_id")
@@ -366,6 +377,7 @@ def main(argv: list[str] | None = None) -> int:
             peers=args.peers,
             asset_type=args.asset_type,
             name=args.name,
+            legacy_reason=args.legacy_reason,
         )
         # 第一行**必须**是可直接 `export` 的形状:SKILL 里写的就是
         # `export AUTORESEARCH_RUN_ID=<回显>`,人和 agent 都只读这一行。

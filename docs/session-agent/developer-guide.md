@@ -81,11 +81,17 @@ flowchart LR
 
 ```bash
 uv run --no-sync python -m autoresearch.session_agent begin \
+  --orchestration session_v1 \
   --request-file /tmp/request.json \
   --kind stock-research --mode LITE --date 2026-09-14 --subject 600519.SS
 ```
 
-四个可选标量只是对请求文件做一致性断言，不能覆盖文件内容。成功后，`session/request.json`、`host_profile.json`、`plan.json` 及角色来源哈希同时冻结到 run 和 capsule identity。
+四个可选标量只是对请求文件做一致性断言，不能覆盖文件内容。成功后，`session/request.json`、
+`host_profile.json`、`plan.json` 及角色来源哈希同时冻结到 run 和 capsule identity；
+`capsule/identity/execution_origin.json` 绑定实际 entrypoint、plan hash 与 host profile hash。
+缺少必需宿主能力时在创建 run 前返回 `HOST_CAPABILITY_REQUIRED`。选择
+`--orchestration legacy` 只返回 `LEGACY_ENTRYPOINT_REQUIRED`；调用方必须转到明确的旧入口并记录
+`legacy_reason`，session_agent 不代为回退。
 
 ## 4. 宿主执行循环
 

@@ -145,18 +145,28 @@ def _default_begin_capsule(request: dict):
     kind = request["kind"]
     if kind == "stock-research":
         from autoresearch.analyze import runctl
-        from autoresearch.trace.capsule import require_active_run
+        from autoresearch.analyze.run_bootstrap import prepare_analyze_run
+        from autoresearch.trace.capsule import begin_run
 
-        started = runctl.begin(
-            request["subject"],
+        if ws.ENGINE == "codex":
+            runctl._warn_if_codex_rollout_missing()
+        handle = begin_run(
+            kind,
             request["analysis_date"],
-            mode=request["requested_mode"],
+            request["host_profile"]["engine"],
+            {
+                "mode": request["requested_mode"],
+                "ticker": request["subject"],
+                "peers": request["peers"],
+                "asset_type": request["asset_type"],
+                **({"name": request["name"]} if request["name"] else {}),
+            },
             session_ref=request["host_profile"]["session_ref"],
-            peers=request["peers"],
-            asset_type=request["asset_type"],
-            name=request["name"],
+            bootstrap=prepare_analyze_run,
         )
-        return require_active_run(started["run_id"])
+        if ws.ENGINE == "codex":
+            runctl._record_codex_escape_hatch(handle)
+        return handle
     if kind == "macro-research":
         from autoresearch.macro.run_bootstrap import prepare_macro_run
         from autoresearch.trace.capsule import begin_run
@@ -252,6 +262,12 @@ def begin(
 ) -> dict:
     """Validate and freeze a request before exposing its first ready task."""
     validate_begin_request(request, expected_engine=ws.ENGINE)
+    from autoresearch.session_agent.origin import (
+        freeze_session_origin,
+        preflight_session_host,
+    )
+
+    preflight_session_host(request)
     predecessor = _predecessor_evidence(request, predecessor_loader)
     handle = (begin_capsule or _default_begin_capsule)(request)
     if handle.engine != ws.ENGINE:
@@ -265,6 +281,7 @@ def begin(
     _freeze_json(
         Path(handle.capsule) / "identity" / "session" / "plan.json", frozen_plan
     )
+    freeze_session_origin(handle, request, frozen_plan)
     role_ids = [
         task["role"]
         for task in frozen_plan["tasks"]

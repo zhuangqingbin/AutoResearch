@@ -20,6 +20,12 @@ def _parser():
     begin.add_argument("--mode")
     begin.add_argument("--date")
     begin.add_argument("--subject")
+    begin.add_argument(
+        "--orchestration",
+        choices=("session_v1", "legacy"),
+        default="session_v1",
+    )
+    begin.add_argument("--legacy-reason")
     for command in ("status", "next", "resume", "finish"):
         child = subparsers.add_parser(command)
         child.add_argument("--run-id", required=True)
@@ -113,6 +119,7 @@ def main(argv=None):
         from autoresearch.session_agent import service
         from autoresearch.session_agent.executor import OperationRunning
         from autoresearch.session_agent.hosts.base import HostCapabilityError
+        from autoresearch.session_agent.origin import EntrypointSelectionError
         from autoresearch.session_agent.store import TaskConflict
         from autoresearch.session_agent.validation import DomainValidationError
 
@@ -127,7 +134,13 @@ def main(argv=None):
             for field, expected in assertions.items():
                 if expected is not None and request.get(field) != expected:
                     raise ValueError(f"--{field} conflicts with request file")
-            value = service.begin(request)
+            from autoresearch.session_agent.origin import begin_via_entry
+
+            value = begin_via_entry(
+                request,
+                orchestration=args.orchestration,
+                legacy_reason=args.legacy_reason,
+            )
         elif args.command in {"status", "next", "resume", "finish"}:
             value = getattr(service, args.command)(args.run_id)
         elif args.command == "claim":
@@ -159,6 +172,9 @@ def main(argv=None):
     except HostCapabilityError as exc:
         _emit(_error(args.command, run_id, "HOST_CAPABILITY_REQUIRED", str(exc)))
         return 4
+    except EntrypointSelectionError as exc:
+        _emit(_error(args.command, run_id, exc.code, str(exc)))
+        return 7
     except (OperationRunning, OSError) as exc:
         _emit(_error(args.command, run_id, "RETRYABLE_TOOL_FAILURE", str(exc)))
         return 5

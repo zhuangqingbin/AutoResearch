@@ -35,7 +35,13 @@ def tmp_ws(tmp_path, monkeypatch):
 
 
 def _begin(monkeypatch, *, mode="LITE"):
-    started = runctl.begin(TICKER, DATE, mode=mode, session_ref="sess-abc123")
+    started = runctl.begin(
+        TICKER,
+        DATE,
+        mode=mode,
+        session_ref="sess-abc123",
+        legacy_reason="test legacy harness",
+    )
     monkeypatch.setenv("AUTORESEARCH_RUN_ID", started["run_id"])
     return started
 
@@ -248,7 +254,15 @@ def test_backfill_is_idempotent_and_skips_a_missing_manifest(tmp_ws):
 
 
 def test_cli_begin_prints_an_exportable_run_id(tmp_ws, capsys):
-    assert runctl.main(["begin", TICKER, DATE, "--mode", "LITE"]) == 0
+    assert runctl.main([
+        "begin",
+        TICKER,
+        DATE,
+        "--mode",
+        "LITE",
+        "--legacy-reason",
+        "test legacy CLI",
+    ]) == 0
     first = capsys.readouterr().out.splitlines()[0]
     assert first.startswith("RUN_ID=")
     run_id = first.split("=", 1)[1]
@@ -282,7 +296,13 @@ def test_begin_skips_the_codex_escape_hatch_on_claude_engine(tmp_ws, monkeypatch
         runctl, "_record_codex_escape_hatch", lambda handle: calls.append(handle.run_id)
     )
 
-    runctl.begin(TICKER, DATE, mode="LITE", session_ref="sess-claude-branch")
+    runctl.begin(
+        TICKER,
+        DATE,
+        mode="LITE",
+        session_ref="sess-claude-branch",
+        legacy_reason="test legacy harness",
+    )
 
     assert calls == []
 

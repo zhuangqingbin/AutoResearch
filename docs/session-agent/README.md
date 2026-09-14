@@ -29,6 +29,7 @@ Codex 只读写 `context_codex/`、`reports_codex/`；Claude 只读写 `context_
 
 ```bash
 uv run --no-sync python -m autoresearch.session_agent begin \
+  --orchestration session_v1 \
   --request-file docs/session-agent/examples/stock.request.json \
   --kind stock-research --mode LITE --date 2026-09-14 --subject 600519.SS
 ```
@@ -49,4 +50,9 @@ uv run --no-sync python -m autoresearch.session_agent begin \
 
 ## 当前切换状态
 
-协议、五类计划、扫描四模式、恢复、发布和离线对拍已有自动化覆盖。真实 Codex/Claude 宿主仍须分别完成 [acceptance.md](acceptance.md) 的运行矩阵；未验收场景继续使用标为 `LEGACY_ORCHESTRATION_FALLBACK` 的旧 Workflow。旧 run 和历史 capsule 保持只读兼容。
+协议、五类计划、扫描四模式、恢复、发布和离线对拍已有自动化覆盖。`begin` 会在创建 run 前检查
+`deterministic_exec`、`capture_binding` 和 `inference_handoff`，缺能力返回
+`HOST_CAPABILITY_REQUIRED`。真实 Codex/Claude 宿主仍须分别完成 [acceptance.md](acceptance.md)
+的运行矩阵；未验收场景只能显式进入标为 `LEGACY_ORCHESTRATION_FALLBACK` 的旧 Workflow 并记录
+原因。`session_agent --orchestration legacy` 返回 `LEGACY_ENTRYPOINT_REQUIRED`，不会静默代跑。
+旧 run 和历史 capsule 保持只读兼容。
