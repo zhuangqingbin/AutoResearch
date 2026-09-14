@@ -6,12 +6,21 @@ import json
 from pathlib import Path
 
 from autoresearch.common.atomic import atomic_write_json, canonical_json, sha256_bytes
+from autoresearch.contracts.calculation import validate_calculation
 from autoresearch.trace.blobs import blob_path
 from autoresearch.trace.source_receipts import read_receipts
 
 _FIELDS = {
-    "schema_version", "sidecar_id", "engine", "run_id", "task_id", "attempt",
-    "claim_id", "statement_sha256", "source_receipt_ids", "quote_refs",
+    "schema_version",
+    "sidecar_id",
+    "engine",
+    "run_id",
+    "task_id",
+    "attempt",
+    "claim_id",
+    "statement_sha256",
+    "source_receipt_ids",
+    "quote_refs",
     "calculation_ids",
 }
 _QUOTE_FIELDS = {"blob_hash", "start", "end", "text_sha256"}
@@ -19,8 +28,9 @@ _QUOTE_FIELDS = {"blob_hash", "start", "end", "text_sha256"}
 
 def _id(value: dict) -> str:
     return sha256_bytes(
-        canonical_json({key: item for key, item in value.items() if key != "sidecar_id"})
-        .encode("utf-8")
+        canonical_json({key: item for key, item in value.items() if key != "sidecar_id"}).encode(
+            "utf-8"
+        )
     )
 
 
@@ -51,8 +61,6 @@ def _validate(root: Path, value: dict) -> list[str]:
             missing.append(f"CALCULATION_MISSING:{calculation_id}")
         else:
             calculation = json.loads(path.read_text(encoding="utf-8"))
-            from autoresearch.research.calculations import validate_calculation
-
             try:
                 validate_calculation(calculation)
             except (TypeError, ValueError):
@@ -79,11 +87,7 @@ def _validate(root: Path, value: dict) -> list[str]:
                 missing.append(f"QUOTE_SPAN_MISMATCH:{quote['blob_hash']}")
         except (OSError, UnicodeDecodeError):
             missing.append(f"QUOTE_BLOB_INVALID:{quote['blob_hash']}")
-    if not (
-        value["source_receipt_ids"]
-        or value["quote_refs"]
-        or value["calculation_ids"]
-    ):
+    if not (value["source_receipt_ids"] or value["quote_refs"] or value["calculation_ids"]):
         missing.append("MATERIAL_CLAIM_HAS_NO_EVIDENCE")
     return sorted(set(missing))
 

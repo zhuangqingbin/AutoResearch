@@ -12,6 +12,11 @@ from pathlib import Path
 from autoresearch.common.atomic import atomic_write_json, canonical_json, sha256_bytes
 from autoresearch.common.execution_context import current_execution_context
 from autoresearch.common.uzi_lenses import dcf_sensitivity, simple_dcf
+from autoresearch.contracts.calculation import (
+    CALCULATOR_IDS,
+    calculation_id,
+    validate_calculation,
+)
 
 
 class CalculationInputError(ValueError):
@@ -80,9 +85,7 @@ def _financial_period_ratios(inputs: dict, parameters: dict) -> tuple[dict, dict
         previous_revenue, previous_revenue_meta = _money(
             inputs["previous_revenue"], "previous_revenue"
         )
-        previous_profit, previous_profit_meta = _money(
-            inputs["previous_profit"], "previous_profit"
-        )
+        previous_profit, previous_profit_meta = _money(inputs["previous_profit"], "previous_profit")
         for current, previous, name in (
             (revenue_meta, previous_revenue_meta, "revenue"),
             (profit_meta, previous_profit_meta, "profit"),
@@ -90,14 +93,14 @@ def _financial_period_ratios(inputs: dict, parameters: dict) -> tuple[dict, dict
             for field in comparable:
                 if current[field] != previous[field]:
                     raise CalculationInputError(f"previous {name} {field} mismatch")
-        values.update({
-            "revenue_growth": _ratio(
-                revenue - previous_revenue, previous_revenue, "revenue_growth"
-            ),
-            "profit_growth": _ratio(
-                profit - previous_profit, previous_profit, "profit_growth"
-            ),
-        })
+        values.update(
+            {
+                "revenue_growth": _ratio(
+                    revenue - previous_revenue, previous_revenue, "revenue_growth"
+                ),
+                "profit_growth": _ratio(profit - previous_profit, previous_profit, "profit_growth"),
+            }
+        )
     return values, {
         "period_start": start.isoformat(),
         "period_end": end.isoformat(),
@@ -258,11 +261,8 @@ _CALCULATORS: dict[str, tuple[Callable, tuple[Callable, ...]]] = {
     "conditional_base_rates.v1": (_conditional_base_rates, ()),
     "dcf_sensitivity.v1": (_dcf, (dcf_sensitivity, simple_dcf)),
 }
-_RESULT_FIELDS = {
-    "schema_version", "calculation_id", "calculator_id", "calculator_version",
-    "code_hash", "task_id", "attempt", "input_refs", "parameters", "values",
-    "assumptions", "status", "error",
-}
+if frozenset(_CALCULATORS) != CALCULATOR_IDS:  # pragma: no cover - import-time contract guard
+    raise RuntimeError("calculator registry differs from calculation contract")
 
 
 def calculator_ids() -> tuple[str, ...]:
@@ -277,10 +277,12 @@ def _code_hash(calculator_id: str) -> str:
 
 def _refs(inputs: dict, input_refs: list[dict] | None) -> list[dict]:
     if input_refs is None:
-        return [{
-            "artifact_id": "inline.inputs",
-            "sha256": sha256_bytes(canonical_json(inputs).encode("utf-8")),
-        }]
+        return [
+            {
+                "artifact_id": "inline.inputs",
+                "sha256": sha256_bytes(canonical_json(inputs).encode("utf-8")),
+            }
+        ]
     result = []
     for ref in input_refs:
         _exact(ref, {"artifact_id", "sha256"}, "input_ref")
@@ -293,36 +295,6 @@ def _refs(inputs: dict, input_refs: list[dict] | None) -> list[dict]:
     if not result or len({row["artifact_id"] for row in result}) != len(result):
         raise CalculationInputError("input refs must be non-empty and unique")
     return result
-
-
-def _id(value: dict) -> str:
-    return sha256_bytes(
-        canonical_json({key: item for key, item in value.items() if key != "calculation_id"})
-        .encode("utf-8")
-    )
-
-
-def validate_calculation(value: dict) -> dict:
-    _exact(value, _RESULT_FIELDS, "calculation")
-    if value["schema_version"] != 1 or value["calculator_id"] not in _CALCULATORS:
-        raise ValueError("unsupported calculation contract")
-    if value["calculation_id"] != _id(value):
-        raise ValueError("calculation identity mismatch")
-    for field in ("calculation_id", "code_hash"):
-        if (
-            not isinstance(value[field], str)
-            or len(value[field]) != 64
-            or any(character not in "0123456789abcdef" for character in value[field])
-        ):
-            raise ValueError(f"invalid calculation {field}")
-    if value["status"] not in {"SUCCEEDED", "FAILED"}:
-        raise ValueError("invalid calculation status")
-    if value["status"] == "SUCCEEDED" and value["error"] is not None:
-        raise ValueError("successful calculation cannot contain an error")
-    if value["status"] == "FAILED" and not isinstance(value["error"], dict):
-        raise ValueError("failed calculation requires an error")
-    _refs({}, value["input_refs"])
-    return value
 
 
 def calculate(
@@ -369,7 +341,7 @@ def calculate(
         "status": status,
         "error": error,
     }
-    result["calculation_id"] = _id(result)
+    result["calculation_id"] = calculation_id(result)
     json.loads(canonical_json(result))
     return validate_calculation(result)
 
