@@ -11,6 +11,7 @@ from autoresearch.session_agent.domain_ops import macro_full_assemble, macro_ful
 from autoresearch.session_agent.workflows.macro import (
     build_macro_plan,
     macro_product_artifacts,
+    prepare_macro_bundle,
     publish_macro,
     required_macro_products,
 )
@@ -151,6 +152,9 @@ def test_macro_assemble_publishes_run_state_without_overwriting_newer_state(tmp_
         "macro.publication.bundle",
     ):
         artifacts.bind_artifact_hash(handle, artifact_id)
+    prepared = prepare_macro_bundle(handle)
+    assert prepared["business_files"][0]["artifact_id"] == "macro.full.report"
+    assert prepared["state_mutations"][0]["target_key"] == "macro.latest_state"
     reports = tmp_path / "reports"
     latest = tmp_path / "context/macro/macro_state.json"
     latest.parent.mkdir(parents=True)

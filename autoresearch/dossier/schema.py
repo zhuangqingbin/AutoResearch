@@ -3,22 +3,29 @@
 spec: docs/specs/2026-07-22-research-depth-dossier-design.md ①。八节标题与摘要锚是
 机器契约:builder 写、lint 校、L4 注入器(Wave 3)按锚裁剪——改动须同步三方。
 """
+
 from __future__ import annotations
 
 from pathlib import Path
 
 from autoresearch.common import workspace as ws
+from autoresearch.common.published_state import read_committed_bytes
 
 DOSSIER_DIR = ws.knowledge_root() / "dossiers"
 
 SECTIONS: tuple[str, ...] = (
-    "## 1. 业务模型", "## 2. 盈利驱动与预测留档", "## 3. 估值带",
-    "## 4. 筹码与资金结构史", "## 5. 风险矩阵", "## 6. 催化剂日历",
-    "## 7. 判例账本", "## 8. 变化项日志",
+    "## 1. 业务模型",
+    "## 2. 盈利驱动与预测留档",
+    "## 3. 估值带",
+    "## 4. 筹码与资金结构史",
+    "## 5. 风险矩阵",
+    "## 6. 催化剂日历",
+    "## 7. 判例账本",
+    "## 8. 变化项日志",
 )
 SUMMARY_HEAD = "## 摘要(注入用)"
 SUMMARY_ANCHORS: tuple[str, ...] = ("业务:", "驱动:", "带位:", "风险:", "催化:", "判例:")
-SUMMARY_CAP = 3000    # 注入摘要 token 硬帽(spec ①;lint 与注入器同源引用)
+SUMMARY_CAP = 3000  # 注入摘要 token 硬帽(spec ①;lint 与注入器同源引用)
 
 # 研报体素材(§1/§2/§3/§5 四节合计)token 硬帽(与 SUMMARY_CAP 同源单位 est_tokens)。
 # 复核 Important 2(2026-07-30)实测:31 份真实档案该四节合计 6.8–15.1KB(≈2.4k–5.4k
@@ -27,12 +34,49 @@ SUMMARY_CAP = 3000    # 注入摘要 token 硬帽(spec ①;lint 与注入器同�
 # 研报体叙事主体,弃了等于卡片啥也没有,`dossier_sections` 改为截断保留 + 显式标记。
 RESEARCH_BODY_CAP = 12000
 
-_META_KEYS = ("code", "name", "sector", "pool_status", "entered", "entry_reason",
-              "initiated", "last_refresh", "last_delta")
+_META_KEYS = (
+    "code",
+    "name",
+    "sector",
+    "pool_status",
+    "entered",
+    "entry_reason",
+    "initiated",
+    "last_refresh",
+    "last_delta",
+)
 
 
 def dossier_path(code6: str) -> Path:
     return DOSSIER_DIR / f"{str(code6).zfill(6)}.md"
+
+
+def read_dossier_bytes(code6: str) -> bytes | None:
+    """Read exact latest committed dossier bytes, or a historical mirror."""
+    code = str(code6).zfill(6)
+    payload = read_committed_bytes(
+        f"dossier.stock.{code}",
+        state_root=ws.context_root() / "_published_state",
+        reports_root=ws.run_reports_root("dossier-init"),
+    )
+    if payload is not None:
+        return payload
+    path = dossier_path(code)
+    return path.read_bytes() if path.is_file() else None
+
+
+def read_dossier_text(code6: str) -> str | None:
+    """Read the latest committed dossier, falling back to the legacy mirror."""
+    payload = read_dossier_bytes(code6)
+    return payload.decode("utf-8") if payload is not None else None
+
+
+def dossier_exists(code6: str) -> bool:
+    """Return whether a committed dossier or historical mirror exists."""
+    try:
+        return read_dossier_text(code6) is not None
+    except (OSError, UnicodeDecodeError, ValueError):
+        return False
 
 
 def est_tokens(text: str) -> int:
@@ -102,9 +146,9 @@ def dossier_sections(code6: str, keys: tuple[str, ...], *, cap: int = RESEARCH_B
     """
     try:
         p = dossier_path(code6)
-        if not p.exists():
+        text = read_dossier_text(code6)
+        if text is None:
             return ""
-        text = p.read_text(encoding="utf-8")
         blocks = []
         for key in keys:
             if not (key.startswith("§") and key[1:].isdigit()):
@@ -141,10 +185,9 @@ def injectable_summary(code6: str) -> str:
     防「没注入却照查」的 FN-1 族缝)。异常吞成 ""(坏档不挡派发/lint)。
     """
     try:
-        p = dossier_path(code6)
-        if not p.exists():
+        text = read_dossier_text(code6)
+        if text is None:
             return ""
-        text = p.read_text(encoding="utf-8")
         if not parse_frontmatter(text).get("initiated"):
             return ""
         block = _summary_block(text)
@@ -167,7 +210,7 @@ def lint_dossier(text: str, cap: int = SUMMARY_CAP) -> list[str]:
     return issues
 
 
-STALE_DAYS = 90     # 档案陈旧告警阈值(spec 风险节:last_refresh 超 90 日 → warn)
+STALE_DAYS = 90  # 档案陈旧告警阈值(spec 风险节:last_refresh 超 90 日 → warn)
 
 
 def staleness_age(text: str, today: str) -> int | None:
@@ -186,11 +229,12 @@ def staleness_age(text: str, today: str) -> int | None:
     (`prelude` 已有 `contextlib.suppress`)。
     """
     from datetime import date as _date
+
     meta = parse_frontmatter(text)
     ref = meta.get("last_refresh") or meta.get("initiated")
     if not ref:
         return None
-    ty, tm, td = (int(x) for x in str(today).split("-"))   # today 畸形 → 直接抛,不 catch
+    ty, tm, td = (int(x) for x in str(today).split("-"))  # today 畸形 → 直接抛,不 catch
     today_d = _date(ty, tm, td)
     try:
         y, m, d = (int(x) for x in str(ref).split("-"))

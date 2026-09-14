@@ -1,4 +1,5 @@
 """常备覆盖池(spec ③;确定性,零 LLM)。进出规则见 plan Task 4 精确化。"""
+
 from __future__ import annotations
 
 import argparse
@@ -9,6 +10,7 @@ import sys
 from pathlib import Path
 
 from autoresearch.common import workspace as ws
+from autoresearch.common.published_state import read_committed_state
 from autoresearch.dossier import schema
 
 _WS_SCAN_ROOT = ws.scan_root()  # B008 修法:默认值须为模块级单例(def 时求值,与旧字面量常量同语义)
@@ -18,6 +20,15 @@ POOL_PATH = ws.knowledge_root() / "coverage_pool.json"
 
 def load_pool(path: Path | None = None) -> dict:
     p = Path(path) if path else POOL_PATH
+    if path is None:
+        committed = read_committed_state(
+            "dossier.coverage_pool",
+            state_root=ws.context_root() / "_published_state",
+            reports_root=ws.run_reports_root("dossier-init"),
+        )
+        if isinstance(committed, dict) and isinstance(committed.get("stocks"), dict):
+            committed.setdefault("cap", 30)
+            return committed
     if p.exists():
         try:
             d = json.loads(p.read_text(encoding="utf-8"))
@@ -27,22 +38,28 @@ def load_pool(path: Path | None = None) -> dict:
         except Exception:
             pass
         with contextlib.suppress(Exception):
-            shutil.copy2(p, p.with_suffix(".json.bak"))   # 坏 json(语法或形状):备份后重建
+            shutil.copy2(p, p.with_suffix(".json.bak"))  # 坏 json(语法或形状):备份后重建
     return {"stocks": {}, "cap": 30}
 
 
 def _recent_scan_days(scan_root: Path, n: int = 20) -> list[str]:
     if not scan_root.exists():
         return []
-    days = sorted((p.name for p in scan_root.iterdir()
-                   if p.is_dir() and p.name[:2] == "20" and (p / "finalists.csv").exists()),
-                  reverse=True)
+    days = sorted(
+        (
+            p.name
+            for p in scan_root.iterdir()
+            if p.is_dir() and p.name[:2] == "20" and (p / "finalists.csv").exists()
+        ),
+        reverse=True,
+    )
     return days[:n]
 
 
 def _selections(scan_root: Path, days: list[str]) -> dict[str, list[str]]:
     """code6 → 真选命中日列表(lane≠pinned)。"""
     import pandas as pd
+
     hits: dict[str, list[str]] = {}
     for d in days:
         with contextlib.suppress(Exception):
@@ -55,7 +72,7 @@ def _selections(scan_root: Path, days: list[str]) -> dict[str, list[str]]:
                     continue
                 c = raw.split(".")[0].zfill(6)
                 if str(r.get("lane", "") or "").strip() == "pinned":
-                    hits.setdefault(c, hits.get(c, []))   # pinned 注入不计真选
+                    hits.setdefault(c, hits.get(c, []))  # pinned 注入不计真选
                     continue
                 hits.setdefault(c, []).append(d)
     return hits
@@ -99,10 +116,11 @@ def pending_init(pool: dict) -> list[str]:
     "这票该建档"的证据,不该被"是否也满足常备池准入"这个不相关的问题挡住)。
     """
     stocks = pool.get("stocks", {})
-    candidates = {c for c, s in stocks.items()
-                  if s.get("status") == "active" and not schema.dossier_path(c).exists()}
+    candidates = {
+        c for c, s in stocks.items() if s.get("status") == "active" and not schema.dossier_exists(c)
+    }
     meta = _pending_priority_meta(pool)
-    candidates |= {c for c in meta if not schema.dossier_path(c).exists()}
+    candidates |= {c for c in meta if not schema.dossier_exists(c)}
 
     def _key(c: str) -> tuple[int, str, str]:
         e = meta.get(c, {})
@@ -111,9 +129,13 @@ def pending_init(pool: dict) -> list[str]:
     return sorted(candidates, key=_key)
 
 
-def _refresh_unlocked(today: str, *, scan_root: str | Path = _WS_SCAN_ROOT,
-                      pool_path: Path | None = None,
-                      pinned_path: Path | None = None) -> dict:
+def _refresh_unlocked(
+    today: str,
+    *,
+    scan_root: str | Path = _WS_SCAN_ROOT,
+    pool_path: Path | None = None,
+    pinned_path: Path | None = None,
+) -> dict:
     scan_root = Path(scan_root)
     pool = load_pool(pool_path)
     stocks = pool["stocks"]
@@ -122,6 +144,7 @@ def _refresh_unlocked(today: str, *, scan_root: str | Path = _WS_SCAN_ROOT,
     sel = _selections(scan_root, days)
 
     from autoresearch.scan.user_config import load_pinned
+
     kept: dict[str, str] = {}
     with contextlib.suppress(Exception):
         kw = {"path": pinned_path} if pinned_path else {}
@@ -134,8 +157,14 @@ def _refresh_unlocked(today: str, *, scan_root: str | Path = _WS_SCAN_ROOT,
         st = stocks.get(c)
         last = max(sel.get(c, []), default=None)
         if st is None:
-            stocks[c] = {"name": "", "status": "active", "entered": today,
-                         "entry_reason": reason, "last_selected": last, "note": note}
+            stocks[c] = {
+                "name": "",
+                "status": "active",
+                "entered": today,
+                "entry_reason": reason,
+                "last_selected": last,
+                "note": note,
+            }
             entered.append(c)
         else:
             if st.get("status") == "retired":
@@ -144,29 +173,34 @@ def _refresh_unlocked(today: str, *, scan_root: str | Path = _WS_SCAN_ROOT,
             if last and (st.get("last_selected") or "") < last:
                 st["last_selected"] = last
 
-    for c, note in kept.items():                     # pinned 即入/保活
+    for c, note in kept.items():  # pinned 即入/保活
         _touch(c, "pinned", note)
-    for c, ds in sel.items():                        # 真选 ≥2 入
+    for c, ds in sel.items():  # 真选 ≥2 入
         if len(ds) >= 2:
             _touch(c, "finalist_2x")
         elif c in stocks and stocks[c].get("status") == "active":
-            _touch(c, stocks[c].get("entry_reason", "manual"))   # 已在池:单次也刷新 last_selected
+            _touch(c, stocks[c].get("entry_reason", "manual"))  # 已在池:单次也刷新 last_selected
 
-    for c, st in stocks.items():                     # 退池
+    for c, st in stocks.items():  # 退池
         if st.get("status") != "active" or c in kept:
             continue
         last = st.get("last_selected")
-        out_of_window = (last is None and st.get("entered", "") < (window_first or today)) or \
-                        (last is not None and window_first is not None and last < window_first)
+        out_of_window = (last is None and st.get("entered", "") < (window_first or today)) or (
+            last is not None and window_first is not None and last < window_first
+        )
         if out_of_window:
             st["status"] = "retired"
             retired.append(c)
 
     actives = [c for c, s in stocks.items() if s.get("status") == "active"]
-    if len(actives) > pool.get("cap", 30):           # cap LRU:按 last_selected 升序驱逐,不是入池序 FIFO(pinned 永不被 cap 退)
-        evictable = sorted((c for c in actives if c not in kept),
-                           key=lambda c: stocks[c].get("last_selected") or "")
-        for c in evictable[:len(actives) - pool["cap"]]:
+    if len(actives) > pool.get(
+        "cap", 30
+    ):  # cap LRU:按 last_selected 升序驱逐,不是入池序 FIFO(pinned 永不被 cap 退)
+        evictable = sorted(
+            (c for c in actives if c not in kept),
+            key=lambda c: stocks[c].get("last_selected") or "",
+        )
+        for c in evictable[: len(actives) - pool["cap"]]:
             stocks[c]["status"] = "retired"
             retired.append(c)
 
@@ -174,13 +208,22 @@ def _refresh_unlocked(today: str, *, scan_root: str | Path = _WS_SCAN_ROOT,
     p = Path(pool_path) if pool_path else POOL_PATH
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(pool, ensure_ascii=False, indent=1), encoding="utf-8")
-    return {"entered": sorted(entered), "retired": sorted(retired), "revived": sorted(revived),
-            "pending_init": pending_init(pool),
-            "n_active": sum(1 for s in stocks.values() if s.get("status") == "active")}
+    return {
+        "entered": sorted(entered),
+        "retired": sorted(retired),
+        "revived": sorted(revived),
+        "pending_init": pending_init(pool),
+        "n_active": sum(1 for s in stocks.values() if s.get("status") == "active"),
+    }
 
 
-def refresh(today: str, *, scan_root: str | Path = _WS_SCAN_ROOT,
-            pool_path: Path | None = None, pinned_path: Path | None = None) -> dict:
+def refresh(
+    today: str,
+    *,
+    scan_root: str | Path = _WS_SCAN_ROOT,
+    pool_path: Path | None = None,
+    pinned_path: Path | None = None,
+) -> dict:
     """Refresh the pool only inside an active scan prelude write window."""
     from autoresearch.trace.write_guard import assert_output_path, guarded_ambient_write
 
@@ -208,7 +251,9 @@ def _print_status(pool: dict) -> None:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="常备覆盖池(确定性,零 LLM)")
     ap.add_argument("today", nargs="?", help="今日 YYYY-MM-DD(--status/--add/--remove 也需要)")
-    ap.add_argument("--status", action="store_true", help="只打印 active/retired/pending_init,不 refresh")
+    ap.add_argument(
+        "--status", action="store_true", help="只打印 active/retired/pending_init,不 refresh"
+    )
     ap.add_argument("--add", metavar="CODE", help="手动入池(entry_reason=manual)")
     ap.add_argument("--remove", metavar="CODE", help="手动退池(置 retired)")
     ap.add_argument("--note", default="", help="配合 --add 的备注")
@@ -224,9 +269,14 @@ def main(argv: list[str] | None = None) -> int:
         code = str(args.add).split(".")[0].zfill(6)
         st = pool["stocks"].get(code)
         if st is None:
-            pool["stocks"][code] = {"name": "", "status": "active", "entered": args.today,
-                                     "entry_reason": "manual", "last_selected": None,
-                                     "note": args.note}
+            pool["stocks"][code] = {
+                "name": "",
+                "status": "active",
+                "entered": args.today,
+                "entry_reason": "manual",
+                "last_selected": None,
+                "note": args.note,
+            }
         else:
             st["status"] = "active"
             st["note"] = args.note or st.get("note", "")

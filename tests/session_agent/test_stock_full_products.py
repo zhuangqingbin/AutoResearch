@@ -13,6 +13,7 @@ from autoresearch.session_agent.validation import (
 )
 from autoresearch.session_agent.workflows.stock import (
     full_product_artifacts,
+    prepare_stock_bundle,
     publish_stock,
 )
 
@@ -139,6 +140,12 @@ def test_full_assembler_and_publisher_accept_missing_optional_lenses(tmp_path):
         "stock.publication.bundle",
     ):
         artifacts.bind_artifact_hash(handle, artifact_id)
+    prepared = prepare_stock_bundle(handle)
+    assert {item["artifact_id"] for item in prepared["business_files"]} == {
+        "stock.full.report",
+        "stock.full.manifest",
+    }
+    assert prepared["state_mutations"] == []
     report_dir = publish_stock(handle, reports_root=tmp_path / "published")
     assert (report_dir / "贵州茅台.md").is_file()
     assert json.loads((report_dir / "manifest.json").read_text())["run_id"] == handle.run_id

@@ -666,9 +666,9 @@ def test_replay_does_not_depend_on_current_checkout(forensic_case):
 
 **Files:** 新增 `autoresearch/trace/publication.py`、`autoresearch/common/published_state.py`、`autoresearch/common/commit_chain.py`；修改 capsule、session service/publication 和五个 workflow publisher、common/workspace、macro/state、dossier/pool、scan/post_run；新增 `tests/forensics/test_publication_transaction.py`。
 
-- [ ] 五类 publisher 分解为 `prepare_bundle(handle)` 和状态计划；原 report/rating 内容生成复用不变。
-- [ ] 按 §6 实现 seal/promote/apply/commit；提取 capsule 的准备与提交接缝，使原 finalize façade 可兼容旧调用。
-- [ ] 不可变 canonical 目录用 run_id/publication_id；旧路径有明确 sidecar；所有内部状态 reader 核验 committed receipt。
+- [x] 五类 publisher 分解为 `prepare_bundle(handle)` 和状态计划；原 report/rating 内容生成复用不变。
+- [x] 按 §6 实现 seal/promote/apply/commit；提取 capsule 的准备与提交接缝，使原 finalize façade 可兼容旧调用。
+- [x] 不可变 canonical 目录用 run_id/publication_id；旧路径有明确 sidecar；所有内部状态 reader 核验 committed receipt。
 
 ```python
 @pytest.mark.parametrize("phase", ["BUNDLE_SEALED", "PROMOTED", "VIEWS_APPLIED"])
@@ -681,8 +681,8 @@ def test_resume_never_reexecutes_research(forensic_case, phase):
     assert case.research_execution_count() == before
 ```
 
-- [ ] 补并发两个同日 run、manifest 单文件写失败、pool 更新失败、macro 更晚版本、duplicate finish、已提交后更新、磁盘满的 fault injection。
-- [ ] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_publication_transaction.py tests/trace/test_finalization.py tests/trace/test_recovery.py tests/session_agent/test_stock_full.py tests/session_agent/test_macro.py tests/session_agent/test_sector.py tests/session_agent/test_dossier_publish.py tests/session_agent/test_scan_publish.py`。
+- [x] 补并发两个同日 run、manifest 单文件写失败、pool 更新失败、macro 更晚版本、duplicate finish、已提交后更新、磁盘满的 fault injection。
+- [x] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_publication_transaction.py tests/trace/test_finalization.py tests/trace/test_recovery.py tests/session_agent/test_stock_full.py tests/session_agent/test_macro.py tests/session_agent/test_sector.py tests/session_agent/test_dossier_publish.py tests/session_agent/test_scan_publish.py`。
 
 ### T11｜重放核心：全分母、真正执行、只读原现场（工作包 C，P1）
 

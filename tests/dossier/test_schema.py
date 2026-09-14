@@ -44,6 +44,17 @@ def test_lint_summary_over_cap():
     assert any("summary>cap" in i for i in lint_dossier(doc))
 
 
+def test_dossier_reader_prefers_receipt_committed_version(monkeypatch, tmp_path):
+    from autoresearch.dossier import schema
+
+    monkeypatch.setattr(schema, "DOSSIER_DIR", tmp_path)
+    schema.dossier_path("300857").write_text("legacy", encoding="utf-8")
+    monkeypatch.setattr(schema, "read_committed_bytes", lambda *args, **kwargs: b"committed")
+
+    assert schema.read_dossier_text("300857") == "committed"
+    assert schema.dossier_exists("300857") is True
+
+
 def test_est_tokens_cjk():
     assert est_tokens("字" * 28) == 30      # 28字×3B=84B ÷2.8 = 30
 

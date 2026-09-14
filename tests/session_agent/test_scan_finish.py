@@ -31,6 +31,7 @@ def test_review3_expansion_ends_in_original_assemble_gate_usage_observe_chain(tm
     assert tasks["scan.observe"]["dependencies"] == ["scan.usage"]
     assert tasks["scan.observe"]["output_artifact_ids"] == [
         "scan.publication.bundle",
+        "scan.pool.candidate",
         "scan.report.brief",
         "scan.report.summary",
         "scan.report.appendix",

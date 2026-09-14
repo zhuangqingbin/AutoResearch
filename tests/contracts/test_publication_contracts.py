@@ -133,3 +133,20 @@ def test_receipt_hash_covers_the_previous_chain_link():
     value["previous_receipt_hash"] = "f" * 64
     with pytest.raises(ValueError, match="receipt_hash"):
         validate_publication_receipt(value)
+
+
+@pytest.mark.parametrize("publication_id", ["../escape", "p0", "p01", "release"])
+def test_publication_id_is_a_safe_monotonic_identifier(publication_id):
+    value = _bundle()
+    value["publication_id"] = publication_id
+    value["bundle_hash"] = publication_bundle_hash(value)
+    with pytest.raises(ValueError, match="publication_id"):
+        validate_publication_bundle(value)
+
+
+def test_receipt_canonical_path_is_derived_from_its_identity():
+    value = _receipt()
+    value["canonical_path"] = "runs/other/p1"
+    value["receipt_hash"] = publication_receipt_hash(value)
+    with pytest.raises(ValueError, match="canonical_path"):
+        validate_publication_receipt(value)

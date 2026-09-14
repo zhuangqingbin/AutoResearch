@@ -10,6 +10,7 @@
 可被真数据升级替换,见 `_upsert_period_line`。
 短尺对账不在本模块职责内(spec 非目标)。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -35,7 +36,7 @@ def _txt(v, default: str = "—") -> str:
     return s if s and s.lower() != "nan" else default
 
 
-UNDISCLOSED_TAG = "未披露"    # §5 行内识别标记(真实业绩数据行不会自然出现这三个字)
+UNDISCLOSED_TAG = "未披露"  # §5 行内识别标记(真实业绩数据行不会自然出现这三个字)
 
 
 def _upsert_period_line(body5: str, mark: str, new_line: str, *, real: bool) -> str:
@@ -54,7 +55,7 @@ def _upsert_period_line(body5: str, mark: str, new_line: str, *, real: bool) -> 
         tail = body5.rstrip("\n")
         return (tail + "\n" if tail else "") + new_line + "\n"
     if not real and UNDISCLOSED_TAG not in lines[idx]:
-        return body5      # 已有真数据,未披露不得覆盖(真数据优先,不降级)
+        return body5  # 已有真数据,未披露不得覆盖(真数据优先,不降级)
     lines[idx] = new_line
     return "\n".join(lines) + "\n"
 
@@ -63,6 +64,7 @@ def _fetch_actual(code6: str, period: str, *, fetch=None) -> dict | None:
     """express 优先,forecast 兜底;皆空 → None。返回 {"kind","ann_date","line"}。"""
     from autoresearch.data import sources
     from autoresearch.dataflows.symbol_utils import to_ts_code  # 单一事实源(92xxxx→.BJ)
+
     fetch = fetch or sources.fetch
     ts = to_ts_code(code6)
     try:
@@ -93,8 +95,11 @@ def _fetch_actual(code6: str, period: str, *, fetch=None) -> dict | None:
         roe = _num(r.get("diluted_roe"))
         if roe is not None:
             parts.append(f"ROE {roe:.1f}%")
-        return {"kind": "express", "ann_date": _txt(r.get("ann_date")),
-                "line": "、".join(parts) if parts else "快报关键字段缺"}
+        return {
+            "kind": "express",
+            "ann_date": _txt(r.get("ann_date")),
+            "line": "、".join(parts) if parts else "快报关键字段缺",
+        }
     try:
         df = fetch("forecast", {"ts_code": ts, "period": period})
     except Exception:  # noqa: BLE001 — 两腿皆断按未披露处理(skip 留痕在调用方)
@@ -104,8 +109,11 @@ def _fetch_actual(code6: str, period: str, *, fetch=None) -> dict | None:
             df = df.sort_values("ann_date", ascending=False)
         r = df.iloc[0]
         lo, hi = _num(r.get("p_change_min")), _num(r.get("p_change_max"))
-        line = (f"预告净利变动 {lo:+.0f}%~{hi:+.0f}%" if lo is not None and hi is not None
-                else f"预告类型 {_txt(r.get('type'))}")
+        line = (
+            f"预告净利变动 {lo:+.0f}%~{hi:+.0f}%"
+            if lo is not None and hi is not None
+            else f"预告类型 {_txt(r.get('type'))}"
+        )
         return {"kind": "forecast", "ann_date": _txt(r.get("ann_date")), "line": line}
     return None
 
@@ -123,9 +131,9 @@ def reconcile_one(code6: str, period: str, today: str, *, fetch=None) -> dict:
     """
     code6 = str(code6).split(".")[0].zfill(6)
     path = schema.dossier_path(code6)
-    if not path.exists():
+    text = schema.read_dossier_text(code6)
+    if text is None:
         return {"code": code6, "skipped": "no_dossier"}
-    text = path.read_text(encoding="utf-8")
     if not schema.parse_frontmatter(text).get("initiated"):
         return {"code": code6, "skipped": "not_initiated"}
     mark = f"季度对账 {period}"
@@ -136,25 +144,37 @@ def reconcile_one(code6: str, period: str, today: str, *, fetch=None) -> dict:
         new_body5 = _upsert_period_line(body5, mark, line5, real=False)
         if new_body5 != body5:
             text = delta.replace_section(text, 4, new_body5)
-        text = delta.append_delta_line(text, today, f"{mark}:两端点均无数据,{UNDISCLOSED_TAG}",
-                                       key=mark)
+        text = delta.append_delta_line(
+            text, today, f"{mark}:两端点均无数据,{UNDISCLOSED_TAG}", key=mark
+        )
         text = delta.set_frontmatter_key(text, "last_delta", today)
         path.write_text(text, encoding="utf-8")
-        return {"code": code6, "skipped": "undisclosed", "recorded": True,
-                "issues": schema.lint_dossier(text)}
-    line5 = (f"- **{mark}**({today} 记,{actual['kind']} {actual['ann_date']}):"
-             f"{actual['line']};fwd-EPS 快照见 §2,三情景归属与证伪点核对由"
-             "下次 δ 卡内「档案对账」节裁决")
+        return {
+            "code": code6,
+            "skipped": "undisclosed",
+            "recorded": True,
+            "issues": schema.lint_dossier(text),
+        }
+    line5 = (
+        f"- **{mark}**({today} 记,{actual['kind']} {actual['ann_date']}):"
+        f"{actual['line']};fwd-EPS 快照见 §2,三情景归属与证伪点核对由"
+        "下次 δ 卡内「档案对账」节裁决"
+    )
     new_body5 = _upsert_period_line(body5, mark, line5, real=True)
     if new_body5 != body5:
         text = delta.replace_section(text, 4, new_body5)
-    text = delta.append_delta_line(text, today,
-                                   f"{mark}:{actual['line']}({actual['kind']})", key=mark)
+    text = delta.append_delta_line(
+        text, today, f"{mark}:{actual['line']}({actual['kind']})", key=mark
+    )
     text = delta.set_frontmatter_key(text, "last_delta", today)
-    text = delta.set_frontmatter_key(text, "last_refresh", today)   # 对账=报告期全量核对
+    text = delta.set_frontmatter_key(text, "last_refresh", today)  # 对账=报告期全量核对
     path.write_text(text, encoding="utf-8")
-    return {"code": code6, "updated": True, "kind": actual["kind"],
-            "issues": schema.lint_dossier(text)}
+    return {
+        "code": code6,
+        "updated": True,
+        "kind": actual["kind"],
+        "issues": schema.lint_dossier(text),
+    }
 
 
 def _valid_date(s: str) -> bool:
@@ -166,6 +186,7 @@ def _valid_date(s: str) -> bool:
     堵在写入前比事后探测更彻底。
     """
     from datetime import date as _date
+
     try:
         y, m, d = (int(x) for x in str(s).split("-"))
         _date(y, m, d)
@@ -189,6 +210,7 @@ def _valid_period(s: str) -> bool:
     if len(s) != 8 or not s.isdigit():
         return False
     from datetime import date as _date
+
     try:
         _date(int(s[:4]), int(s[4:6]), int(s[6:8]))
         return True
@@ -205,11 +227,15 @@ def main(argv: list[str] | None = None) -> int:
     if not _valid_period(args.period):
         ap.error(f"period 格式非法(需 YYYYMMDD,如 20260630):{args.period!r}")
     from datetime import datetime
+
     today = args.today or datetime.now().strftime("%Y-%m-%d")
     if not _valid_date(today):
         ap.error(f"--today 格式非法(需 YYYY-MM-DD):{today!r}")
-    codes = [args.code] if args.code else sorted(
-        c for c, e in pool.load_pool()["stocks"].items() if e.get("status") == "active")
+    codes = (
+        [args.code]
+        if args.code
+        else sorted(c for c, e in pool.load_pool()["stocks"].items() if e.get("status") == "active")
+    )
     n = 0
     for c in codes:
         res = reconcile_one(c, args.period, today)

@@ -10,7 +10,7 @@ from autoresearch.session_agent.domain_ops import (
     sector_lite_validate,
     sector_prepare_publication,
 )
-from autoresearch.session_agent.workflows.sector import publish_sector
+from autoresearch.session_agent.workflows.sector import prepare_sector_bundle, publish_sector
 
 from .test_sector import _request
 from .test_service import _handle
@@ -126,6 +126,9 @@ def test_sector_publisher_is_idempotent_and_conflict_safe(tmp_path):
     )
     sector_prepare_publication(handle)
     artifacts.bind_artifact_hash(handle, "sector.publication.bundle")
+    prepared = prepare_sector_bundle(handle)
+    assert prepared["business_files"][0]["artifact_id"] == "sector.report"
+    assert prepared["state_mutations"] == []
     target = publish_sector(handle, reports_root=tmp_path / "reports")
     assert target == tmp_path / "reports/2026-09-13/电子.md"
     assert publish_sector(handle, reports_root=tmp_path / "reports") == target

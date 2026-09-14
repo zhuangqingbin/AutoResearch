@@ -231,7 +231,7 @@ def intel_dossier_gaps(staging: Path | None, code6: str, max_lines: int = 2) -> 
         if s.startswith("档案缺口"):
             # 只剥「档案缺口」标签与紧随的一个冒号 —— 正文里还有「｜ 源: http(s)…」,
             # 逐个 split 冒号会把整条事实吃掉只剩 URL(首版就是这么写错的)。
-            body = s[len("档案缺口"):].lstrip(":: ").strip()
+            body = s[len("档案缺口"):].lstrip(": ").strip()
             if body:
                 out.append(body[:180])
         if len(out) >= max_lines:
@@ -267,9 +267,9 @@ def record_scan_delta(code6: str, date: str, *, rating: str, conviction=None,
     """
     code6 = str(code6).split(".")[0].zfill(6)
     path = schema.dossier_path(code6)
-    if not path.exists():
+    text = schema.read_dossier_text(code6)
+    if text is None:
         return {"code": code6, "skipped": "no_dossier"}
-    text = path.read_text(encoding="utf-8")
     if not schema.parse_frontmatter(text).get("initiated"):
         return {"code": code6, "skipped": "not_initiated"}
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from autoresearch.contracts.forensic import (
     _aware,
     _digest_without,
@@ -17,29 +19,68 @@ from autoresearch.contracts.session_task import (
 )
 from autoresearch.contracts.stages import RUN_KINDS
 
-STATE_MUTATION_FIELDS = frozenset({
-    "target_key", "expected_before_hash", "after_artifact_id", "after_hash", "apply_policy",
-})
-BUSINESS_FILE_FIELDS = frozenset({
-    "artifact_id", "relative_path", "sha256", "bytes", "media_type",
-})
+STATE_MUTATION_FIELDS = frozenset(
+    {
+        "target_key",
+        "expected_before_hash",
+        "after_artifact_id",
+        "after_hash",
+        "apply_policy",
+    }
+)
+BUSINESS_FILE_FIELDS = frozenset(
+    {
+        "artifact_id",
+        "relative_path",
+        "sha256",
+        "bytes",
+        "media_type",
+    }
+)
 PREDECESSOR_FIELDS = frozenset({"engine", "run_id", "publication_id", "root_hash"})
-PUBLICATION_BUNDLE_FIELDS = frozenset({
-    "schema_version", "engine", "run_id", "run_kind", "publication_id", "predecessor",
-    "origin_hash", "plan_hash", "evidence_plan_hash", "business_files",
-    "state_mutations", "generated_at", "bundle_hash",
-})
+PUBLICATION_BUNDLE_FIELDS = frozenset(
+    {
+        "schema_version",
+        "engine",
+        "run_id",
+        "run_kind",
+        "publication_id",
+        "predecessor",
+        "origin_hash",
+        "plan_hash",
+        "evidence_plan_hash",
+        "business_files",
+        "state_mutations",
+        "generated_at",
+        "bundle_hash",
+    }
+)
 STATE_EFFECT_FIELDS = frozenset({"target_key", "status", "before_hash", "after_hash"})
-PUBLICATION_RECEIPT_FIELDS = frozenset({
-    "schema_version", "engine", "run_id", "publication_id", "bundle_hash",
-    "capsule_root_hash", "canonical_path", "committed_at", "state_effects",
-    "previous_receipt_hash", "receipt_hash",
-})
+PUBLICATION_RECEIPT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "engine",
+        "run_id",
+        "publication_id",
+        "bundle_hash",
+        "capsule_root_hash",
+        "canonical_path",
+        "committed_at",
+        "state_effects",
+        "previous_receipt_hash",
+        "receipt_hash",
+    }
+)
 
 APPLY_POLICIES = frozenset({"CAS_REPLACE", "IDEMPOTENT_APPEND", "ADVANCE_IF_NEWER"})
-EFFECT_STATUSES = frozenset({
-    "APPLIED", "ALREADY_APPLIED", "SUPERSEDED_BY_NEWER", "CONFLICT",
-})
+EFFECT_STATUSES = frozenset(
+    {
+        "APPLIED",
+        "ALREADY_APPLIED",
+        "SUPERSEDED_BY_NEWER",
+        "CONFLICT",
+    }
+)
 
 
 def publication_bundle_hash(value: dict) -> str:
@@ -53,6 +94,13 @@ def publication_receipt_hash(value: dict) -> str:
 def _optional_sha256(value: object, field: str) -> None:
     if value is not None:
         require_sha256(value, field)
+
+
+def _publication_id(value: object) -> str:
+    resolved = _required_string(value, "publication_id")
+    if not re.fullmatch(r"p[1-9][0-9]*", resolved):
+        raise ValueError("invalid publication_id")
+    return resolved
 
 
 def validate_state_mutation(value: dict) -> dict:
@@ -83,7 +131,7 @@ def _validate_predecessor(value: dict | None) -> None:
     require_exact_fields(value, PREDECESSOR_FIELDS)
     _engine(value["engine"])
     _run_id(value["run_id"])
-    _required_string(value["publication_id"], "publication_id")
+    _publication_id(value["publication_id"])
     require_sha256(value["root_hash"], "predecessor root_hash")
 
 
@@ -94,7 +142,7 @@ def validate_publication_bundle(value: dict) -> dict:
     _run_id(value["run_id"])
     if value["run_kind"] not in RUN_KINDS:
         raise ValueError("invalid run_kind")
-    _required_string(value["publication_id"], "publication_id")
+    _publication_id(value["publication_id"])
     _validate_predecessor(value["predecessor"])
     for field in ("origin_hash", "plan_hash", "evidence_plan_hash"):
         require_sha256(value[field], field)
@@ -138,10 +186,12 @@ def validate_publication_receipt(value: dict) -> dict:
     require_version(value["schema_version"])
     _engine(value["engine"])
     _run_id(value["run_id"])
-    _required_string(value["publication_id"], "publication_id")
+    _publication_id(value["publication_id"])
     for field in ("bundle_hash", "capsule_root_hash"):
         require_sha256(value[field], field)
     _safe_relative(value["canonical_path"], "canonical_path")
+    if value["canonical_path"] != f"runs/{value['run_id']}/{value['publication_id']}":
+        raise ValueError("canonical_path does not match publication identity")
     _aware(value["committed_at"], "committed_at")
     if type(value["state_effects"]) is not list:
         raise ValueError("state_effects must be a list")

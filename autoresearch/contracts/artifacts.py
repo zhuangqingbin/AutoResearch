@@ -541,6 +541,9 @@ NON_ARTIFACT_LITERALS: frozenset[str] = frozenset({
     "snapshot_transaction.json", "source_links.json", "source_manifest.json",
     "source_tree.tar.zst", "source_tree_manifest.json", "runtime_manifest.json",
     "portable_runtime.tar.zst", "state.json", "submodules.json", "verification/ROOT.json",
+    # session_v1 发布事务自己的 journal/seal 元数据；业务文件仍逐项登记并绑定。
+    "publication/journal.json", "publication_bundle.json", "sealed_manifest.json",
+    "_publication/state_index.json",
     "dependencies.txt", "identity/dependencies.txt",
     "verification/profile.json", "usage/_token_usage.json", "usage/token_usage.md",
     "lake_manifest.json", "_t0.json", "environment.json",

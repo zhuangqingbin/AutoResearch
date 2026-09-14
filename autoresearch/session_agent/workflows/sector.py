@@ -1,4 +1,5 @@
 """Session plans and publication for standalone sector research."""
+
 from __future__ import annotations
 
 import contextlib
@@ -139,9 +140,7 @@ def build_sector_plan(request: dict, handle) -> dict:
         "orchestration_version": "session_v1",
         "input_contract_hash": handle.contract.contract_hash,
         "config_hash": config_hash,
-        "host_profile_hash": sha256_bytes(
-            canonical_json(request["host_profile"]).encode("utf-8")
-        ),
+        "host_profile_hash": sha256_bytes(canonical_json(request["host_profile"]).encode("utf-8")),
         "roles_hash": roles_hash(),
         "tasks": _tasks(request["subject"], request["requested_mode"]),
         "task_templates": [],
@@ -221,8 +220,26 @@ def publish_sector(handle, *, reports_root: Path | str | None = None) -> Path:
         return _publish_sector_active(handle, reports_root=reports_root)
 
 
+def prepare_sector_bundle(handle) -> dict:
+    """Describe the sector report before any compatibility path is touched."""
+    output = Path(handle.staging) / "session_outputs"
+    bundle = json.loads((output / "sector.publication.json").read_text(encoding="utf-8"))
+    return {
+        "business_files": [
+            {
+                "artifact_id": "sector.report",
+                "relative_path": f"report/{_safe(bundle['industry'])}.md",
+                "media_type": "text/markdown",
+            }
+        ],
+        "state_mutations": [],
+        "inline_artifacts": {},
+    }
+
+
 __all__ = [
     "build_sector_plan",
+    "prepare_sector_bundle",
     "publish_sector",
     "register_sector_artifacts",
     "sector_key",

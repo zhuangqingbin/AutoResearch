@@ -23,6 +23,7 @@ AGENTS.md 要求的 ``export AUTORESEARCH_ENGINE=codex``(沙箱外 CODEX_* 检�
 惰性形式。**除本模块外,生产代码不得再出现 ``"context…"`` / ``"reports…"`` 裸根
 字面量**(tests/common/test_workspace.py 的 grep 探针锁此契约)。
 """
+
 from __future__ import annotations
 
 import os
@@ -52,7 +53,8 @@ def detect_engine(environ=None) -> str:
         if explicit not in ENGINES:
             raise ValueError(
                 f"AUTORESEARCH_ENGINE={explicit!r} 非法(可选 {'/'.join(ENGINES)});"
-                "写错引擎名当场炸,不静默落回默认")
+                "写错引擎名当场炸,不静默落回默认"
+            )
         return explicit
     if env.get("CLAUDECODE"):
         return "claude"
@@ -81,6 +83,7 @@ def lake_root() -> Path:
 
 
 # ── 高频组合根(纯便捷,无独立语义)─────────────────────────────────────────────
+
 
 def active_run_id(environ=None) -> str | None:
     env = os.environ if environ is None else environ
@@ -151,6 +154,13 @@ def run_root(kind: str, run_id: str | None = None) -> Path:
 def run_reports_root(kind: str) -> Path:
     """某个 kind 的发布产物根 —— `reports_<engine>/scan` 或 `reports_<engine>/analyze`。"""
     return reports_root() / RUN_REPORT_DIRS[validate_run_kind(kind)]
+
+
+def canonical_publication_root(kind: str, run_id: str, publication_id: str = "p1") -> Path:
+    """不可变 session_v1 发布根；兼容日期路径不再承担提交真值。"""
+    if not re.fullmatch(r"p[1-9][0-9]*", str(publication_id)):
+        raise ValueError(f"publication_id={publication_id!r} 非法")
+    return run_reports_root(kind) / "runs" / validate_run_id(run_id) / str(publication_id)
 
 
 def find_run_root(run_id) -> Path | None:

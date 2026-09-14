@@ -1,4 +1,5 @@
 """Session plan and conflict-safe publication for dossier initialization."""
+
 from __future__ import annotations
 
 import contextlib
@@ -100,7 +101,7 @@ def build_dossier_plan(request: dict, handle) -> dict:
             code,
             dependencies=[f"{prefix}.lint"],
             inputs=["dossier.candidate", "dossier.validation"],
-            outputs=["dossier.publication.bundle"],
+            outputs=["dossier.pool.candidate", "dossier.publication.bundle"],
             contract="dossier.publication.v1",
             operation="dossier.publish",
         ),
@@ -118,9 +119,7 @@ def build_dossier_plan(request: dict, handle) -> dict:
         "orchestration_version": "session_v1",
         "input_contract_hash": handle.contract.contract_hash,
         "config_hash": config_hash,
-        "host_profile_hash": sha256_bytes(
-            canonical_json(request["host_profile"]).encode("utf-8")
-        ),
+        "host_profile_hash": sha256_bytes(canonical_json(request["host_profile"]).encode("utf-8")),
         "roles_hash": roles_hash(),
         "tasks": tasks,
         "task_templates": [],
@@ -139,6 +138,7 @@ def register_dossier_artifacts(request: dict, handle, plan: dict) -> None:
         "dossier.permissions": "dossier.permissions.json",
         "dossier.candidate": "dossier.candidate.md",
         "dossier.validation": "dossier.validation.json",
+        "dossier.pool.candidate": "dossier.pool.candidate.json",
         "dossier.publication.bundle": "dossier.publication.json",
     }.items():
         artifacts.register_artifact(handle, artifact_id, output / name, "WRITE")
@@ -189,6 +189,33 @@ def _update_pool(code: str, name: str | None, pool_path: Path | str | None) -> N
         atomic_write_json(target, value)
 
 
+def build_pool_candidate(code: str, name: str | None, current: dict) -> dict:
+    """Pure pool update used by both the task artifact and compatibility mirror."""
+    value = json.loads(canonical_json(current))
+    stocks = value.setdefault("stocks", {})
+    entry = stocks.setdefault(
+        code,
+        {
+            "name": name or "",
+            "status": "active",
+            "entered": None,
+            "entry_reason": "dossier-init",
+            "last_selected": None,
+            "note": "",
+        },
+    )
+    entry["status"] = "active"
+    if name:
+        entry["name"] = name
+    pending = value.get("pending_init") or []
+    value["pending_init"] = [
+        item
+        for item in pending
+        if str(item.get("code") if isinstance(item, dict) else item).zfill(6) != code
+    ]
+    return value
+
+
 def _publish_dossier_active(
     handle,
     *,
@@ -205,7 +232,9 @@ def _publish_dossier_active(
     candidate_bytes = candidate.read_bytes()
     if sha256_bytes(candidate_bytes) != bundle["candidate_sha256"]:
         raise RuntimeError("dossier candidate changed after validation")
-    target = Path(target_path) if target_path is not None else schema.dossier_path(request["subject"])
+    target = (
+        Path(target_path) if target_path is not None else schema.dossier_path(request["subject"])
+    )
     with _locked(target):
         current_hash = sha256_bytes(target.read_bytes()) if target.is_file() else None
         opening_hash = permissions.get("opening_target_sha256")
@@ -213,7 +242,25 @@ def _publish_dossier_active(
             raise RuntimeError("CONFLICT: live dossier changed after session began")
         if current_hash != bundle["candidate_sha256"]:
             atomic_write_bytes(target, candidate_bytes)
-    _update_pool(request["subject"], request.get("name"), pool_path)
+    pool_target = Path(pool_path) if pool_path is not None else pool.POOL_PATH
+    pool_candidate = output / "dossier.pool.candidate.json"
+    if pool_candidate.is_file() and bundle.get("pool_after_sha256"):
+        candidate_pool_bytes = pool_candidate.read_bytes()
+        if sha256_bytes(candidate_pool_bytes) != bundle["pool_after_sha256"]:
+            raise RuntimeError("dossier pool candidate changed after publication preparation")
+        with _locked(pool_target):
+            current_pool_hash = (
+                sha256_bytes(pool_target.read_bytes()) if pool_target.is_file() else None
+            )
+            if current_pool_hash not in {
+                bundle.get("pool_before_sha256"),
+                bundle["pool_after_sha256"],
+            }:
+                raise RuntimeError("CONFLICT: coverage pool changed after session began")
+            if current_pool_hash != bundle["pool_after_sha256"]:
+                atomic_write_bytes(pool_target, candidate_pool_bytes)
+    else:
+        _update_pool(request["subject"], request.get("name"), pool_path)
     return target
 
 
@@ -228,12 +275,16 @@ def publish_dossier(
 
     with guarded_handle_write(handle, "dossier.publish") as tracked:
         if tracked is not None:
-            target = Path(target_path) if target_path is not None else schema.dossier_path(
-                json.loads(
-                    (Path(handle.workspace) / "session/request.json").read_text(
-                        encoding="utf-8"
-                    )
-                )["subject"]
+            target = (
+                Path(target_path)
+                if target_path is not None
+                else schema.dossier_path(
+                    json.loads(
+                        (Path(handle.workspace) / "session/request.json").read_text(
+                            encoding="utf-8"
+                        )
+                    )["subject"]
+                )
             )
             resolved_pool = Path(pool_path) if pool_path is not None else pool.POOL_PATH
             assert_output_path(target, ws.context_root())
@@ -245,8 +296,44 @@ def publish_dossier(
         )
 
 
+def prepare_dossier_bundle(handle) -> dict:
+    """Describe the dossier version; the live Markdown remains a committed view."""
+    output = Path(handle.staging) / "session_outputs"
+    permissions = json.loads((output / "dossier.permissions.json").read_text(encoding="utf-8"))
+    request = json.loads(
+        (Path(handle.workspace) / "session/request.json").read_text(encoding="utf-8")
+    )
+    publication = json.loads((output / "dossier.publication.json").read_text(encoding="utf-8"))
+    return {
+        "business_files": [
+            {
+                "artifact_id": "dossier.candidate",
+                "relative_path": f"report/{request['subject']}.md",
+                "media_type": "text/markdown",
+            }
+        ],
+        "state_mutations": [
+            {
+                "target_key": f"dossier.stock.{request['subject']}",
+                "expected_before_hash": permissions.get("opening_target_sha256"),
+                "after_artifact_id": "dossier.candidate",
+                "apply_policy": "CAS_REPLACE",
+            },
+            {
+                "target_key": "dossier.coverage_pool",
+                "expected_before_hash": publication.get("pool_before_sha256"),
+                "after_artifact_id": "dossier.pool.candidate",
+                "apply_policy": "CAS_REPLACE",
+            },
+        ],
+        "inline_artifacts": {},
+    }
+
+
 __all__ = [
     "build_dossier_plan",
+    "build_pool_candidate",
+    "prepare_dossier_bundle",
     "publish_dossier",
     "register_dossier_artifacts",
     "validate_dossier_operation_params",

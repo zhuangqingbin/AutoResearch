@@ -1133,7 +1133,8 @@ def test_capsule_cli_emits_one_canonical_json_and_inspect_is_read_only(
     config = tmp_path / "scan_config.jsonc"
     config.write_text("{}\n", encoding="utf-8")
     assert main([
-        "begin", "scan-market", DATE, "--engine", "codex", "--config-file", str(config)
+        "begin", "scan-market", DATE, "--engine", "codex", "--config-file", str(config),
+        "--legacy-reason", "direct-capsule-cli-test",
     ]) == 0
     begun_text = capsys.readouterr().out
     assert begun_text.count("\n") == 1

@@ -42,7 +42,9 @@ uv run --no-sync python -m autoresearch.session_agent begin \
 4. 推理完成后先用 `bind-host-evidence` 把真实 transcript 区段绑定到
    `task_id/attempt/session/context`，再提交输出。需要独立上下文的复核必须附引用该绑定的
    真实 `host_receipt`；同一主会话换角色名不算独立。
-5. `next` 返回 `DONE` 后执行 `finish`。发布和 capsule finalize 只在完整任务图成功后发生。
+5. `next` 返回 `DONE` 后执行 `finish`。五类能力统一执行可恢复的
+   `seal → promote → state views → capsule finalize → commit receipt`；canonical 目录与
+   hash-chain 收据是发布真值，日期旧路径只是在提交后生成的兼容视图。
 
 完整命令与恢复流程见 [operations.md](operations.md)，对象和依赖关系见 [architecture.md](architecture.md)。
 

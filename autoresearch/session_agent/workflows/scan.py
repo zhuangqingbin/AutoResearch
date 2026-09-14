@@ -1,4 +1,5 @@
 """Frozen and dynamically expanded plans for whole-market research."""
+
 from __future__ import annotations
 
 import fcntl
@@ -10,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from autoresearch.common import workspace as ws
-from autoresearch.common.atomic import canonical_json, sha256_bytes
+from autoresearch.common.atomic import atomic_write_bytes, canonical_json, sha256_bytes
 from autoresearch.contracts.session_plan import expansion_hash, plan_hash
 from autoresearch.scan import run_mode
 from autoresearch.scan.l4_tasks import MAX_ATTEMPTS
@@ -106,9 +107,7 @@ def build_scan_plan(request: dict, handle) -> dict:
         "orchestration_version": "session_v1",
         "input_contract_hash": handle.contract.contract_hash,
         "config_hash": config_hash,
-        "host_profile_hash": sha256_bytes(
-            canonical_json(request["host_profile"]).encode("utf-8")
-        ),
+        "host_profile_hash": sha256_bytes(canonical_json(request["host_profile"]).encode("utf-8")),
         "roles_hash": roles_hash(),
         "tasks": _fixed_tasks(),
         "task_templates": [
@@ -248,8 +247,7 @@ def l3_expansion(
         )
     ]
     sector_rows = [
-        item if isinstance(item, dict) else {"industry": item, "reused": False}
-        for item in sectors
+        item if isinstance(item, dict) else {"industry": item, "reused": False} for item in sectors
     ]
     brief_ids = []
     brief_tasks = []
@@ -478,9 +476,9 @@ def l4_expansion(
                 _task(
                     "scan.l4.skip",
                     "DETERMINISTIC",
-                dependencies=["scan.gate2"],
-                inputs=["scan.run_mode", "scan.gate2.result"],
-                outputs=["scan.l4.plan", "scan.review.plan"],
+                    dependencies=["scan.gate2"],
+                    inputs=["scan.run_mode", "scan.gate2.result"],
+                    outputs=["scan.l4.plan", "scan.review.plan"],
                     contract="scan.l4.plan.v1",
                     operation="scan.l4.skip",
                 )
@@ -750,16 +748,16 @@ def review3_expansion(plan: dict, decision: dict, snapshots: list[dict]) -> dict
         )
         complete_dependency = "scan.review3.skip"
     else:
-        finalizers = [task["task_id"] for task in tasks if task.get("operation") == "scan.l4.finalize"]
+        finalizers = [
+            task["task_id"] for task in tasks if task.get("operation") == "scan.l4.finalize"
+        ]
         tasks.append(
             _task(
                 "scan.l4.complete",
                 "DETERMINISTIC",
                 dependencies=finalizers,
                 inputs=[
-                    _review_ids(
-                        str(row["code"]).zfill(6), int(row.get("attempt") or 1)
-                    )["ticket"]
+                    _review_ids(str(row["code"]).zfill(6), int(row.get("attempt") or 1))["ticket"]
                     for row in decision["decisions"]
                 ],
                 outputs=["scan.l4.complete"],
@@ -805,9 +803,15 @@ def _l5_tasks(complete_dependency: str) -> list[dict]:
             "scan.observe",
             "DETERMINISTIC",
             dependencies=["scan.usage"],
-            inputs=["scan.report.plan", "scan.gate4.result", "scan.token.usage", "scan.usage.reconcile"],
+            inputs=[
+                "scan.report.plan",
+                "scan.gate4.result",
+                "scan.token.usage",
+                "scan.usage.reconcile",
+            ],
             outputs=[
                 "scan.publication.bundle",
+                "scan.pool.candidate",
                 "scan.report.brief",
                 "scan.report.summary",
                 "scan.report.appendix",
@@ -977,7 +981,9 @@ def _paths_for_artifact(handle, task: dict, artifact_id: str) -> tuple[Path, str
         if attempt == 1:
             paths = {
                 "prompt": staging / f"_l4_prompt_{code}.md",
-                "slim": staging / "_external_inputs" / f"{normalize_symbol(code)}_{handle.analysis_date}_slim.md",
+                "slim": staging
+                / "_external_inputs"
+                / f"{normalize_symbol(code)}_{handle.analysis_date}_slim.md",
                 "intel": staging / f"_l4_intel_{code}.md",
                 "intel_status": staging / f"_l4_intel_status_{code}.json",
                 "card": staging / "details" / f"{code}.md",
@@ -1021,6 +1027,7 @@ def _paths_for_artifact(handle, task: dict, artifact_id: str) -> tuple[Path, str
         "scan.token.usage": staging / "_token_usage.json",
         "scan.usage.reconcile": staging / "_usage_reconcile.json",
         "scan.publication.bundle": staging / "session_outputs/scan.publication.json",
+        "scan.pool.candidate": staging / "session_outputs/scan.pool.candidate.json",
         "scan.report.brief": staging / "session_outputs/report_files/brief.md",
         "scan.report.summary": staging / "session_outputs/report_files/summary.md",
         "scan.report.appendix": staging / "session_outputs/report_files/appendix.md",
@@ -1052,9 +1059,7 @@ def register_scan_artifacts(request: dict, handle, plan: dict) -> None:
 def register_scan_expansion_artifacts(request: dict, handle, expansion: dict) -> None:
     del request
     produced = {
-        artifact_id
-        for task in expansion["tasks"]
-        for artifact_id in task["output_artifact_ids"]
+        artifact_id for task in expansion["tasks"] for artifact_id in task["output_artifact_ids"]
     }
     seen = set()
     for task in expansion["tasks"]:
@@ -1126,11 +1131,28 @@ def _publish_scan_active(handle, *, reports_root: Path | str | None = None) -> P
         if target.is_dir():
             if directory_manifest(target) != expected:
                 raise RuntimeError("scan report publication conflict")
-            return target
-        temp = root / f".{target.name}.{handle.run_id}.tmp"
-        shutil.rmtree(temp, ignore_errors=True)
-        shutil.copytree(candidate, temp)
-        temp.replace(target)
+        else:
+            temp = root / f".{target.name}.{handle.run_id}.tmp"
+            shutil.rmtree(temp, ignore_errors=True)
+            shutil.copytree(candidate, temp)
+            temp.replace(target)
+    if bundle.get("pool_mutation"):
+        from autoresearch.dossier import pool as dossier_pool
+
+        pool_candidate = Path(handle.staging) / "session_outputs/scan.pool.candidate.json"
+        payload = pool_candidate.read_bytes()
+        if sha256_bytes(payload) != bundle.get("pool_after_sha256"):
+            raise RuntimeError("scan pool candidate changed after publication preparation")
+        pool_target = Path(dossier_pool.POOL_PATH)
+        with _publish_lock(pool_target.parent):
+            current_hash = sha256_bytes(pool_target.read_bytes()) if pool_target.is_file() else None
+            if current_hash not in {
+                bundle.get("pool_before_sha256"),
+                bundle.get("pool_after_sha256"),
+            }:
+                raise RuntimeError("CONFLICT: coverage pool changed after scan began")
+            if current_hash != bundle.get("pool_after_sha256"):
+                atomic_write_bytes(pool_target, payload)
     return target
 
 
@@ -1140,14 +1162,57 @@ def publish_scan(handle, *, reports_root: Path | str | None = None) -> Path:
 
     with guarded_handle_write(handle, "scan.publish") as tracked:
         if tracked is not None:
-            root = Path(reports_root) if reports_root is not None else ws.run_reports_root(
-                "scan-market"
+            root = (
+                Path(reports_root)
+                if reports_root is not None
+                else ws.run_reports_root("scan-market")
             )
             assert_output_path(root, ws.run_reports_root("scan-market"))
             with artifacts.open_artifact(handle, "scan.publication.bundle") as stream:
                 bundle = json.loads(stream.read().decode("utf-8"))
             assert_output_path(root / str(bundle["folder"]), root)
         return _publish_scan_active(handle, reports_root=reports_root)
+
+
+def prepare_scan_bundle(handle) -> dict:
+    """Describe every verified report member without copying it to a public path."""
+    with artifacts.open_artifact(handle, "scan.publication.bundle") as stream:
+        bundle = json.loads(stream.read().decode("utf-8"))
+    workspace = Path(handle.workspace).resolve(strict=True)
+    candidate = (workspace / str(bundle["candidate_relative"])).resolve(strict=True)
+    candidate.relative_to(workspace)
+    if directory_manifest(candidate) != bundle["files"]:
+        raise RuntimeError("scan report candidate changed after observation")
+    files = []
+    inline = {}
+    for relative, digest in sorted(bundle["files"].items()):
+        artifact_id = f"scan.report.{digest[:24]}"
+        if artifact_id in inline:
+            artifact_id = f"{artifact_id}.{sha256_bytes(relative.encode())[:8]}"
+        source = candidate / relative
+        inline[artifact_id] = source
+        files.append(
+            {
+                "artifact_id": artifact_id,
+                "relative_path": f"report/{relative}",
+                "media_type": "application/json" if relative.endswith(".json") else "text/markdown",
+            }
+        )
+    mutations = []
+    if bundle.get("pool_mutation"):
+        mutations.append(
+            {
+                "target_key": "dossier.coverage_pool",
+                "expected_before_hash": bundle.get("pool_before_sha256"),
+                "after_artifact_id": "scan.pool.candidate",
+                "apply_policy": "CAS_REPLACE",
+            }
+        )
+    return {
+        "business_files": files,
+        "state_mutations": mutations,
+        "inline_artifacts": inline,
+    }
 
 
 __all__ = [
@@ -1161,6 +1226,7 @@ __all__ = [
     "ensemble_record",
     "directory_manifest",
     "publish_scan",
+    "prepare_scan_bundle",
     "expansions_after_task",
     "register_scan_artifacts",
     "register_scan_expansion_artifacts",

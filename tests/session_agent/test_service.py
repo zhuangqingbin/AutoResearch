@@ -245,3 +245,37 @@ def test_execute_requires_the_claimed_attempt_before_running(tmp_path):
             runner=lambda *args, **kwargs: called.append(True),
         )
     assert called == []
+
+
+def test_default_finish_uses_transactional_publication(monkeypatch, tmp_path):
+    from autoresearch.session_agent import evidence, publication
+    from autoresearch.trace import capsule
+
+    handle = _handle(tmp_path)
+    monkeypatch.setattr(capsule, "require_active_run", lambda run_id: handle)
+    monkeypatch.setattr(
+        service,
+        "status",
+        lambda run_id, **kwargs: {"state": "DONE", "run_id": run_id},
+    )
+    monkeypatch.setattr(
+        evidence,
+        "materialize_evidence",
+        lambda current: {"required_tasks": 2},
+    )
+    calls = []
+    committed = {
+        "canonical_path": "/reports/analyze/runs/run/p1",
+        "receipt": {"capsule_root_hash": "a" * 64},
+    }
+    monkeypatch.setattr(
+        publication,
+        "transactional_finish",
+        lambda current: calls.append(current.run_id) or committed,
+    )
+
+    result = service.finish(handle.run_id)
+
+    assert calls == [handle.run_id]
+    assert result["result"]["publication"] == committed
+    assert result["result"]["finalization"]["root_hash"] == "a" * 64

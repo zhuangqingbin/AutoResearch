@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Idempotent local consumers for post-run outbox events."""
+
 from __future__ import annotations
 
 import argparse
@@ -108,8 +109,7 @@ class ConsumerReceipt:
         receipt = cls(**raw)
         if receipt.schema_version != CONSUMER_RECEIPT_SCHEMA_VERSION:
             raise ValueError(
-                "unsupported consumer receipt schema_version="
-                f"{receipt.schema_version}"
+                f"unsupported consumer receipt schema_version={receipt.schema_version}"
             )
         rebuilt = cls.build(
             event_id=receipt.event_id,
@@ -141,10 +141,7 @@ def load_consumer_receipts(
     path: Path | str,
 ) -> dict[str, ConsumerReceipt]:
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
-    if (
-        not isinstance(raw, dict)
-        or raw.get("schema_version") != CONSUMER_STATE_SCHEMA_VERSION
-    ):
+    if not isinstance(raw, dict) or raw.get("schema_version") != CONSUMER_STATE_SCHEMA_VERSION:
         raise ValueError("unsupported consumer state book")
     rows = raw.get("receipts")
     if not isinstance(rows, list) or raw.get("receipts_hash") != sha256_json(rows):
@@ -205,10 +202,7 @@ def _dossier_delta(event: OutboxEvent, scan: Path) -> object:
     if result.get("issues"):
         print(f"[dossier] ⚠️ 档案 lint:{code} {result['issues']}")
     if result.get("sections_skipped"):
-        print(
-            "[dossier] ℹ️ §4/§6 跳过刷新(素材缺,保留旧值):"
-            f"{code} {result['sections_skipped']}"
-        )
+        print(f"[dossier] ℹ️ §4/§6 跳过刷新(素材缺,保留旧值):{code} {result['sections_skipped']}")
     return result
 
 
@@ -234,11 +228,7 @@ def _receipt_id(event_id: str, consumer: str) -> str:
 
 
 def _now() -> str:
-    return (
-        datetime.now(timezone.utc)
-        .isoformat(timespec="microseconds")
-        .replace("+00:00", "Z")
-    )
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def run_consumers(
@@ -263,8 +253,7 @@ def run_consumers(
         receipt_id = _receipt_id(event.event_id, consumer)
         prior = receipts.get(receipt_id)
         if prior is not None and (
-            prior.status == "SUCCEEDED"
-            or (prior.status == "FAILED" and not retry_failed)
+            prior.status == "SUCCEEDED" or (prior.status == "FAILED" and not retry_failed)
         ):
             skipped += 1
             continue
@@ -311,15 +300,9 @@ def consumer_status(
     routes = subscriptions or SUBSCRIPTIONS
     events = load_events(outbox_path(scan))
     if event_types is not None:
-        events = [
-            event for event in events if event.event_type in event_types
-        ]
+        events = [event for event in events if event.event_type in event_types]
     state_path = consumer_state_path(scan)
-    receipts = (
-        load_consumer_receipts(state_path)
-        if state_path.exists()
-        else {}
-    )
+    receipts = load_consumer_receipts(state_path) if state_path.exists() else {}
     pending_consumers = []
     failed_consumers = []
     succeeded = 0
@@ -491,15 +474,10 @@ def render_run_observation(observation: dict) -> str:
         f"晋升证据:{maturity.get('status', 'IMMATURE')}",
         f"- 当前估算成本:{_money(observation.get('estimated_usd'))}"
         "（Claude API 标准公开价估算，不等于实际账单） · "
-        + (
-            f"cache 命中率:{float(cache):.1%}"
-            if cache is not None
-            else "cache 命中率:—"
-        )
+        + (f"cache 命中率:{float(cache):.1%}" if cache is not None else "cache 命中率:—")
         + " · "
         + (f"交互墙钟:{int(wall)}s" if wall is not None else "交互墙钟:—"),
-        f"- 加权输入:{weighted_text} · "
-        f"预算带:{observation.get('budget_band') or 'RED'}",
+        f"- 加权输入:{weighted_text} · 预算带:{observation.get('budget_band') or 'RED'}",
     ]
     if maturity.get("status") in {"PASS", "FAIL"}:
         lines.append(
@@ -536,7 +514,7 @@ def _fmt_wall(seconds: object) -> str:
     if seconds is None:
         return "—"
     try:
-        total = int(float(seconds))          # type: ignore[arg-type]
+        total = int(float(seconds))  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return "—"
     minutes, secs = divmod(max(total, 0), 60)
@@ -568,8 +546,9 @@ def render_run_observation_line(observation: dict) -> str:
     return " · ".join(parts) + " → " + appendix_link("运行明细", "runtime")
 
 
-def _inject_managed(text: str, markdown: str, start: str, end: str,
-                    anchor: str) -> tuple[str, str | None]:
+def _inject_managed(
+    text: str, markdown: str, start: str, end: str, anchor: str
+) -> tuple[str, str | None]:
     """原位替换一对 managed 标记;标记缺席按**稳定锚**回退,并把回退如实报出来。
 
     回退不是失败(报告仍然拿到内容),但**必须留痕** —— 静默回退会让「渲染层把标记
@@ -583,19 +562,20 @@ def _inject_managed(text: str, markdown: str, start: str, end: str,
         return before.rstrip() + "\n\n" + managed + after, None
     if anchor in text:
         before, after = text.split(anchor, 1)
-        return (before.rstrip() + "\n\n" + managed + "\n" + anchor + after,
-                f"{start} 缺席,按稳定锚 `{anchor.strip()}` 回退")
-    return (text.rstrip() + "\n\n" + managed + "\n",
-            f"{start} 与锚 `{anchor.strip()}` 均缺席,已追加到文末")
+        return (
+            before.rstrip() + "\n\n" + managed + "\n" + anchor + after,
+            f"{start} 缺席,按稳定锚 `{anchor.strip()}` 回退",
+        )
+    return (
+        text.rstrip() + "\n\n" + managed + "\n",
+        f"{start} 与锚 `{anchor.strip()}` 均缺席,已追加到文末",
+    )
 
 
 def _managed_marker_problem(text: str, start: str, end: str) -> str | None:
     starts, ends = text.count(start), text.count(end)
     if starts != 1 or ends != 1:
-        return (
-            "managed 标记必须各出现一次"
-            f"(begin={starts},end={ends})，报告保持原字节"
-        )
+        return f"managed 标记必须各出现一次(begin={starts},end={ends})，报告保持原字节"
     begin, finish = text.index(start), text.index(end)
     if begin >= finish:
         return "managed 标记顺序错误，报告保持原字节"
@@ -614,19 +594,25 @@ def _replace_managed_strict(
         return text, problem
     begin, finish = text.index(start), text.index(end)
     managed = f"{start}\n{markdown.strip()}\n{end}"
-    return text[:begin] + managed + text[finish + len(end):], None
+    return text[:begin] + managed + text[finish + len(end) :], None
 
 
 def inject_run_observation_section(summary: str, markdown: str) -> str:
     """summary 的 `run-observation` managed 块(兼容面:签名与返回值不变)。"""
-    return _inject_managed(summary, markdown, OBSERVATION_START, OBSERVATION_END,
-                           SUMMARY_OBSERVATION_ANCHOR)[0]
+    return _inject_managed(
+        summary, markdown, OBSERVATION_START, OBSERVATION_END, SUMMARY_OBSERVATION_ANCHOR
+    )[0]
 
 
 def inject_run_observation_detail(appendix: str, markdown: str) -> str:
     """appendix E 的 `run-observation-detail` managed 块(完整成本表)。"""
-    return _inject_managed(appendix, markdown, OBSERVATION_DETAIL_START,
-                           OBSERVATION_DETAIL_END, APPENDIX_OBSERVATION_ANCHOR)[0]
+    return _inject_managed(
+        appendix,
+        markdown,
+        OBSERVATION_DETAIL_START,
+        OBSERVATION_DETAIL_END,
+        APPENDIX_OBSERVATION_ANCHOR,
+    )[0]
 
 
 def observation_after_failure(exc: BaseException) -> dict:
@@ -645,9 +631,11 @@ def observation_after_failure(exc: BaseException) -> dict:
         "n_llm_calls": None,
         "degraded_fields": [],
         "warnings": [reason],
-        "markdown": ("## 💸 成本与时延观测\n\n"
-                     f"- 计量:UNMEASURED · {reason}\n\n"
-                     "_未计量不等于零成本；该异常不改变任何评级或候选。_"),
+        "markdown": (
+            "## 💸 成本与时延观测\n\n"
+            f"- 计量:UNMEASURED · {reason}\n\n"
+            "_未计量不等于零成本；该异常不改变任何评级或候选。_"
+        ),
     }
 
 
@@ -670,8 +658,7 @@ def refresh_run_observation(
         summary_problem = None
         new_summary = None
     else:
-        summary_problem = _managed_marker_problem(
-            summary_text, OBSERVATION_START, OBSERVATION_END)
+        summary_problem = _managed_marker_problem(summary_text, OBSERVATION_START, OBSERVATION_END)
         if summary_problem:
             warns.append(f"summary.md:{summary_problem}")
     if appendix_text is None:
@@ -680,13 +667,19 @@ def refresh_run_observation(
         new_appendix = None
     else:
         appendix_problem = _managed_marker_problem(
-            appendix_text, OBSERVATION_DETAIL_START, OBSERVATION_DETAIL_END)
+            appendix_text, OBSERVATION_DETAIL_START, OBSERVATION_DETAIL_END
+        )
         if appendix_problem:
             warns.append(f"{APPENDIX_FILENAME}:{appendix_problem}")
     if warns:
-        observation["warnings"] = list(dict.fromkeys([
-            *(observation.get("warnings") or []), *warns,
-        ]))
+        observation["warnings"] = list(
+            dict.fromkeys(
+                [
+                    *(observation.get("warnings") or []),
+                    *warns,
+                ]
+            )
+        )
         observation["status"] = "DEGRADED"
     observation["markdown"] = render_run_observation(observation)
     line_md = render_run_observation_line(observation)
@@ -694,19 +687,21 @@ def refresh_run_observation(
         new_summary = summary_text
         if summary_problem is None:
             new_summary, _ = _replace_managed_strict(
-                summary_text, line_md, OBSERVATION_START, OBSERVATION_END)
+                summary_text, line_md, OBSERVATION_START, OBSERVATION_END
+            )
     if appendix_text is not None:
         new_appendix = appendix_text
         if appendix_problem is None:
             new_appendix, _ = _replace_managed_strict(
-                appendix_text, observation["markdown"],
-                OBSERVATION_DETAIL_START, OBSERVATION_DETAIL_END)
+                appendix_text,
+                observation["markdown"],
+                OBSERVATION_DETAIL_START,
+                OBSERVATION_DETAIL_END,
+            )
     return new_summary, new_appendix, warns
 
 
-def _refresh_run_observation_files_unlocked(
-    report_dir: Path | str, observation: dict
-) -> list[str]:
+def _refresh_run_observation_files_unlocked(report_dir: Path | str, observation: dict) -> list[str]:
     """把双刷新落到盘上(两文件各自原子替换);返回 warns。"""
     report = Path(report_dir)
     summary_path, appendix_path = report / "summary.md", report / APPENDIX_FILENAME
@@ -716,7 +711,8 @@ def _refresh_run_observation_files_unlocked(
 
     old_summary, old_appendix = _read(summary_path), _read(appendix_path)
     new_summary, new_appendix, warns = refresh_run_observation(
-        old_summary, old_appendix, observation)
+        old_summary, old_appendix, observation
+    )
     for path, text, old in (
         (summary_path, new_summary, old_summary),
         (appendix_path, new_appendix, old_appendix),
@@ -765,7 +761,8 @@ def _publish_run_observation_unlocked(
     if decision_write not in {"write", "verify"}:
         raise ValueError(
             "decision_write 必须是 'write' 或 'verify'(P0-2 显式模式参数,不接受隐式推断);"
-            f"收到 {decision_write!r}")
+            f"收到 {decision_write!r}"
+        )
     scan = Path(scan_dir)
     usage_file = Path(usage_path) if usage_path else scan / "_token_usage.json"
     timing_file = Path(timing_path) if timing_path else scan / "_stage_timing.json"
@@ -783,9 +780,7 @@ def _publish_run_observation_unlocked(
     run_id, contract_budgets = _run_identity_and_budgets(scan)
     policy = budgets if budgets is not None else contract_budgets
     if real_scan is None:
-        real_scan = scan.resolve() == (
-            ws.scan_root() / scan.name
-        ).resolve()
+        real_scan = scan.resolve() == (ws.scan_root() / scan.name).resolve()
     from autoresearch.scan.budget import evaluate_history, observe_run
 
     observation = observe_run(
@@ -797,9 +792,7 @@ def _publish_run_observation_unlocked(
         real_scan=real_scan,
         persist=False,
     )
-    observation["warnings"] = list(dict.fromkeys(
-        [*observation["warnings"], *external_warnings]
-    ))
+    observation["warnings"] = list(dict.fromkeys([*observation["warnings"], *external_warnings]))
     history = []
     for path in sorted(scan.parent.glob("*/_budget_observation.json")):
         try:
@@ -826,10 +819,14 @@ def _publish_run_observation_unlocked(
     # contract 团灭。失败只打一行,不阻断发布(与护照/决策同一失败纪律)。
     try:
         from autoresearch.scan.l4_tasks import reconcile
+
         _rec = reconcile(scan / "_l4_tasks.json")
         if _rec.get("recovered"):
-            print(f"[l4_tasks] reconcile 补记 {len(_rec['recovered'])} 票: "
-                  f"{','.join(_rec['recovered'])}", file=sys.stderr)
+            print(
+                f"[l4_tasks] reconcile 补记 {len(_rec['recovered'])} 票: "
+                f"{','.join(_rec['recovered'])}",
+                file=sys.stderr,
+            )
     except Exception as exc:  # noqa: BLE001
         print(f"[l4_tasks] reconcile 失败: {type(exc).__name__}: {exc}", file=sys.stderr)
     # 候选护照(Wave12 T19):L1→L4 全轨迹的**纯派生**视图,零 LLM/零联网、byte 稳定。
@@ -863,13 +860,11 @@ def _publish_run_observation_unlocked(
     if decision_write == "write":
         from autoresearch.scan.relative_buy import safe_write_decision
 
-        safe_write_decision(scan, mode=_rb_mode, exclude_pinned=_rb_exclude_pinned,
-                            pool=_rb_pool)
+        safe_write_decision(scan, mode=_rb_mode, exclude_pinned=_rb_exclude_pinned, pool=_rb_pool)
     else:
         from autoresearch.scan.relative_buy import safe_verify_decision
 
-        safe_verify_decision(scan, mode=_rb_mode, exclude_pinned=_rb_exclude_pinned,
-                             pool=_rb_pool)
+        safe_verify_decision(scan, mode=_rb_mode, exclude_pinned=_rb_exclude_pinned, pool=_rb_pool)
     # 现场重建 Task 4(设计稿 §5.2 生产接线):绑定必须在**这里**——决策校验已经完成
     # (E6 现算/比对已定稿,不再改变),retain 还没把 staging 镜像进 report_dir,capsule
     # 也还没冻结。`safe_bind_run` 自己从不抛出(裁定③:证据采集失败不得让发布本身失败),
@@ -990,6 +985,66 @@ def _pending_entry_code(entry: object) -> tuple[str, dict] | None:
     return raw.split(".")[0].zfill(6), meta
 
 
+def build_finalist_pool_candidate(
+    scan_dir: Path | str,
+    analysis_date: str,
+    current: dict,
+) -> tuple[dict, list[str]] | None:
+    """Purely derive the exact coverage-pool successor for a scan publication."""
+    sd = Path(scan_dir)
+    try:
+        present_raw = json.loads((sd / "_dossier_present.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(present_raw, list) or not isinstance(current, dict):
+        return None
+    present = {str(entry).split(".")[0].zfill(6) for entry in present_raw if isinstance(entry, str)}
+    codes: list[str] = []
+    with contextlib.suppress(Exception), (sd / "finalists.csv").open(encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            raw = str(row.get("code", "") or "").strip()
+            if not raw or str(row.get("lane", "") or "").strip() == "pinned":
+                continue
+            codes.append(raw.split(".")[0].zfill(6))
+    want = [code for code in dict.fromkeys(codes) if code not in present]
+    candidate = json.loads(json.dumps(current, ensure_ascii=False))
+    pending = candidate.setdefault("pending_init", [])
+    if not isinstance(pending, list):
+        return None
+    from autoresearch.dossier import schema as _schema
+
+    pending[:] = [
+        entry
+        for entry in pending
+        if (parsed := _pending_entry_code(entry)) is None or not _schema.dossier_exists(parsed[0])
+    ]
+    have_idx = {
+        parsed[0]: index
+        for index, entry in enumerate(pending)
+        if (parsed := _pending_entry_code(entry)) is not None
+    }
+    added: list[str] = []
+    for code in want:
+        index = have_idx.get(code)
+        if index is None:
+            pending.append({"code": code, "priority": "finalist", "last_seen": analysis_date})
+            have_idx[code] = len(pending) - 1
+            added.append(code)
+            continue
+        existing = pending[index]
+        if isinstance(existing, dict):
+            existing["last_seen"] = analysis_date
+            existing.setdefault("priority", "finalist")
+            existing.setdefault("code", code)
+        else:
+            pending[index] = {
+                "code": code,
+                "priority": "finalist",
+                "last_seen": analysis_date,
+            }
+    return candidate, added
+
+
 def enqueue_finalist_dossiers(scan_dir: Path | str, analysis_date: str) -> list[str]:
     """当日无档案的 finalist 插队进建档队列(Wave9 R6,B-3 续)。
 
@@ -1016,28 +1071,6 @@ def enqueue_finalist_dossiers(scan_dir: Path | str, analysis_date: str) -> list[
     不因为个别坏元素让其余已确认为字符串的合法条目也被牵连——每个字符串元素各自独立地
     断言"这个 code 有档案",丢弃坏元素只是少一条断言,不是推翻其它断言。
     """
-    sd = Path(scan_dir)
-    try:
-        present_raw = json.loads((sd / "_dossier_present.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError):
-        return []
-    if not isinstance(present_raw, list):
-        return []
-    present = {str(e).split(".")[0].zfill(6) for e in present_raw if isinstance(e, str)}
-
-    codes: list[str] = []
-    with contextlib.suppress(Exception), (sd / "finalists.csv").open(encoding="utf-8") as fh:
-        for row in csv.DictReader(fh):
-            raw = str(row.get("code", "") or "").strip()
-            if not raw or str(row.get("lane", "") or "").strip() == "pinned":
-                continue
-            codes.append(raw.split(".")[0].zfill(6))
-
-    # 去重(同码可能在 finalists.csv 里以多个 lane 行出现),保留原序
-    want = [c for c in dict.fromkeys(codes) if c not in present]
-    if not want:
-        return []
-
     p = _pool_path()
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
@@ -1045,46 +1078,12 @@ def enqueue_finalist_dossiers(scan_dir: Path | str, analysis_date: str) -> list[
         return []
     if not isinstance(data, dict):
         return []
-
-    pend = data.setdefault("pending_init", [])
-    if not isinstance(pend, list):
+    prepared = build_finalist_pool_candidate(scan_dir, analysis_date, data)
+    if prepared is None:
         return []
-
-    # Wave9 final-fix I-1 附带项(final-review 提):已建档的排队条目会永久占位、数组
-    # 无限累积(`pending_init()` 靠 `dossier_path().exists()` 在读时把它们过滤掉,但
-    # 写侧从不清理)。每次入队顺手扫一遍摘掉"确认已建档"的条目;认不出的元素(既不是
-    # dict 也不是非空 str)保守保留,不因看不懂形态就丢数据。
-    from autoresearch.dossier import (
-        schema as _schema,  # lazy:与本文件其它 dossier 子模块导入同款风格
-    )
-    pend[:] = [e for e in pend
-               if (parsed := _pending_entry_code(e)) is None
-               or not _schema.dossier_path(parsed[0]).exists()]
-
-    have_idx: dict[str, int] = {}
-    for i, e in enumerate(pend):
-        parsed = _pending_entry_code(e)
-        if parsed is not None:
-            have_idx[parsed[0]] = i
-
-    added: list[str] = []
-    for c in want:
-        i = have_idx.get(c)
-        if i is None:
-            pend.append({"code": c, "priority": "finalist", "last_seen": analysis_date})
-            have_idx[c] = len(pend) - 1
-            added.append(c)
-            continue
-        existing = pend[i]
-        if isinstance(existing, dict):
-            existing["last_seen"] = analysis_date
-            existing.setdefault("priority", "finalist")
-            existing.setdefault("code", c)
-        else:
-            # 既有纯字符串条目——就地升级成 dict,不重复追加、不丢原有位置(歧义3)
-            pend[i] = {"code": c, "priority": "finalist", "last_seen": analysis_date}
-
-    _atomic_json(p, data)
+    candidate, added = prepared
+    if candidate != data:
+        _atomic_json(p, candidate)
     return added
 
 
@@ -1166,14 +1165,20 @@ def main(argv: list[str] | None = None) -> int:
                 queued = receipt["inserted_codes"]
                 if queued:
                     print(f"[dossier] 插队 {len(queued)} 只:{', '.join(queued)}")
-            print(json.dumps({
-                "ok": True,
-                "status": result["status"],
-                "measurement_status": result["measurement_status"],
-                "maturity": result["maturity"],
-                "observation": str(scan / "_budget_observation.json"),
-                "capsule": finalization,
-            }, ensure_ascii=False, sort_keys=True))
+            print(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "status": result["status"],
+                        "measurement_status": result["measurement_status"],
+                        "maturity": result["maturity"],
+                        "observation": str(scan / "_budget_observation.json"),
+                        "capsule": finalization,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
             return 0
         result = run_consumers(
             scan,

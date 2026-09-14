@@ -40,6 +40,16 @@ def test_single_selection_not_enough(tmp_path):
     assert out["entered"] == [] and out["n_active"] == 0
 
 
+def test_default_pool_reader_prefers_committed_version(monkeypatch, tmp_path):
+    legacy = {"stocks": {"old": {"status": "active"}}, "cap": 30}
+    (tmp_path / "pool.json").write_text(json.dumps(legacy), encoding="utf-8")
+    monkeypatch.setattr(pool, "POOL_PATH", tmp_path / "pool.json")
+    committed = {"stocks": {"new": {"status": "active"}}}
+    monkeypatch.setattr(pool, "read_committed_state", lambda *args, **kwargs: committed)
+
+    assert pool.load_pool() == {"stocks": committed["stocks"], "cap": 30}
+
+
 def test_retire_after_window(tmp_path):
     scan = tmp_path / "scan"
     # 21 个交易日:码 600188 只在最早一天真选过 → 已滑出 20 日窗 → retire

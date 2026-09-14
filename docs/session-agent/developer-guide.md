@@ -162,7 +162,19 @@ uv run --no-sync python -m autoresearch.session_agent submit \
 uv run --no-sync python -m autoresearch.session_agent finish --run-id "$RUN_ID"
 ```
 
-`finish` 不补做研究。它先检查完整任务图，再调用原领域发布器和 capsule `finalize`。最终结果分别保留业务状态、证据完好性、完整性和可重放性。
+`finish` 不补做研究。它先检查完整任务图与 evidence closure，再将五类能力统一转换为
+`PublicationBundle v1`，按 `PREPARING → EVIDENCE_CLOSED → BUNDLE_SEALED → PROMOTED →
+VIEWS_APPLIED → COMMITTED` 推进。不可变真值落在
+`reports_<engine>/<kind>/runs/<run_id>/<publication_id>/`；只有 capsule 完成、收据写入该
+kind 的 `receipts.jsonl` hash-chain 且独立收据可验证后，状态 reader 才把版本视为可见。
+日期/时间命名的旧报告路径只是兼容交付视图，并带 `delivery.json` 或
+`<filename>.delivery.json` 指回 canonical path、bundle hash、capsule root 和 receipt hash。
+
+发布 journal 位于 run 内 `publication/journal.json`。seal、promote、状态指针、finalize、收据
+或兼容视图任一点崩溃，重复执行同一个 `finish` 会从已持久化阶段继续，不重跑研究；已经提交的
+重复 finish 是只读校验。多个 workflow 共享的状态（当前为 coverage pool）在 pointer 中记录
+收据 scope，因此 dossier 与 scan 的收据都能被同一 reader 验证。最终结果仍分别保留业务状态、
+证据完好性、完整性和可重放性。
 
 推理任务需要临时补算时，只能在该 task/attempt 仍为 RUNNING 时调用：
 
@@ -234,6 +246,10 @@ uv run --no-sync python -m autoresearch.session_agent resume --run-id "$RUN_ID"
 - 已成功但 receipt 写入中断时，从 owner 状态恢复相同 receipt。
 - 已绑定输出被替换时拒绝提交或恢复。
 - 已 finalize 的 run 由 `require_active_run` 拒绝，不会重新激活。
+- 发布已进入 `VIEWS_APPLIED` 或 `COMMITTED` 时，即使 run 已被 finalizer 标成终态，`finish`
+  仍可只恢复提交/兼容视图；更早阶段的终态 run 拒绝猜测性恢复。
+- journal、独立 receipt、receipt hash-chain、sealed manifest 或 committed canonical 字节任一
+  不一致都 fail closed；不会拿旧路径或当前工作树补齐后继续。
 - 旧 attempt 的迟到提交、不同 plan hash、不同引擎或不同 input contract 都按身份冲突拒绝。
 - 能力不足保留任务包并返回阻断；不会把未知能力自动改成可用。
 

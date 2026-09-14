@@ -14,6 +14,7 @@ regime 域同一教训)。缺/坏/过期 → (None, 原因),调用方回退"只�
 `macro_state.json` 供 full 档作者与审计读,`load_macro_state` 返回前由 `_hide_write_only`
 摘掉(策略师是否读属 B-1,受 08-26 冻结;摘的理由见该函数 docstring)。
 """
+
 from __future__ import annotations
 
 import json
@@ -21,7 +22,7 @@ import re
 from datetime import date as _date
 from pathlib import Path
 
-from autoresearch.common import workspace as ws
+from autoresearch.common import published_state, workspace as ws
 
 _WS_SCAN_ROOT = ws.scan_root()  # B008 修法:默认值须为模块级单例(def 时求值,与旧字面量常量同语义)
 
@@ -36,14 +37,25 @@ GLOBAL_TAPE_NAME = "global_tape.json"
 #: 的 `macro_state_numbers`,这里只负责「不管上游给多少,进 macro_state 的最多就这 8 个数、
 #: 且一个方向性字段都不许有」(§5.3:会议概率类字段须先有加权求解 + fixture 才准新增)。
 TAPE_NUMBER_KEYS: tuple[str, ...] = (
-    "vix", "vix_term_ratio", "skew", "move", "ust10y", "dxy", "usdcnh",
+    "vix",
+    "vix_term_ratio",
+    "skew",
+    "move",
+    "ust10y",
+    "dxy",
+    "usdcnh",
     "zq_front_month_avg_rate",
 )
 #: 「只写不读」的外源块 —— `load_macro_state` 返回前摘掉,理由见 `_hide_write_only`。
 _WRITE_ONLY_KEYS: tuple[str, ...] = ("global_tape_asof", "global_tape")
 
-_RISK_MAP = {"Buy": "risk_on", "Overweight": "risk_on", "Hold": "neutral",
-             "Underweight": "risk_off", "Sell": "risk_off"}
+_RISK_MAP = {
+    "Buy": "risk_on",
+    "Overweight": "risk_on",
+    "Hold": "neutral",
+    "Underweight": "risk_off",
+    "Sell": "risk_off",
+}
 
 
 def _regime_from_scan_meta(as_of: str, scan_root: Path | str = _WS_SCAN_ROOT) -> str | None:
@@ -100,12 +112,14 @@ def _global_tape_block(root: Path | str) -> dict:
     except Exception:  # noqa: BLE001 — 坏 JSON 不阻摘要
         return empty
     if not isinstance(data, dict) or not data.get("ok"):
-        return empty          # 取数失败那份也会落盘(带 ok=false),它不该冒充读数
+        return empty  # 取数失败那份也会落盘(带 ok=false),它不该冒充读数
     nums = data.get("macro_state_numbers")
     if not isinstance(nums, dict):
         return empty
-    return {"global_tape_asof": data.get("as_of"),
-            "global_tape": {k: nums.get(k) for k in TAPE_NUMBER_KEYS}}
+    return {
+        "global_tape_asof": data.get("as_of"),
+        "global_tape": {k: nums.get(k) for k in TAPE_NUMBER_KEYS},
+    }
 
 
 def _hide_write_only(state: dict) -> dict:
@@ -123,14 +137,18 @@ def _hide_write_only(state: dict) -> dict:
     return {k: v for k, v in state.items() if k not in _WRITE_ONLY_KEYS}
 
 
-def _write_macro_state_unlocked(root: Path | str, report_path: Path | str | None = None,
-                                out_dir: Path | str | None = None,
-                                scan_root: Path | str = _WS_SCAN_ROOT) -> dict:
+def _write_macro_state_unlocked(
+    root: Path | str,
+    report_path: Path | str | None = None,
+    out_dir: Path | str | None = None,
+    scan_root: Path | str = _WS_SCAN_ROOT,
+) -> dict:
     """从 macro context 目录(`context/macro/<date>`)抽机读摘要 → `<out_dir>/macro_state.json`。
 
     out_dir 缺省 = `context/macro`(assemble 传 root.parent,测试传 tmp);返回写入的 dict。
     """
     from autoresearch.macro.assemble import DECISION_REL, SECTOR_MAP_REL, parse_allocation
+
     root = Path(root)
     as_of = root.name
 
@@ -141,8 +159,9 @@ def _write_macro_state_unlocked(root: Path | str, report_path: Path | str | None
     decision = _txt(DECISION_REL) or ""
     cross = parse_allocation(decision)
     sectors_txt = _txt(SECTOR_MAP_REL)
-    overall = next((v for k, v in cross.items()
-                    if "风险档" in k or k.upper().startswith("OVERALL")), None)
+    overall = next(
+        (v for k, v in cross.items() if "风险档" in k or k.upper().startswith("OVERALL")), None
+    )
     state = {
         "as_of": as_of,
         "run_report": str(report_path) if report_path else None,
@@ -163,9 +182,12 @@ def _write_macro_state_unlocked(root: Path | str, report_path: Path | str | None
     return state
 
 
-def write_macro_state(root: Path | str, report_path: Path | str | None = None,
-                      out_dir: Path | str | None = None,
-                      scan_root: Path | str = _WS_SCAN_ROOT) -> dict:
+def write_macro_state(
+    root: Path | str,
+    report_path: Path | str | None = None,
+    out_dir: Path | str | None = None,
+    scan_root: Path | str = _WS_SCAN_ROOT,
+) -> dict:
     """Write the candidate state only while an ambient tracked run is active."""
     from autoresearch.trace.write_guard import guarded_ambient_write
 
@@ -190,20 +212,29 @@ def state_readiness(root: Path | str) -> dict:
     """
     root = Path(root)
     from autoresearch.macro.assemble import DECISION_REL, SECTOR_MAP_REL
-    have = [rel for rel in (DECISION_REL, SECTOR_MAP_REL, "1_spine/premortem.md")
-            if (root / rel).exists()]
-    return {"ok": (root / DECISION_REL).exists(), "have": have,
-            "required": DECISION_REL,
-            "missing_optional": [rel for rel in (SECTOR_MAP_REL, "1_spine/premortem.md")
-                                 if rel not in have]}
+
+    have = [
+        rel
+        for rel in (DECISION_REL, SECTOR_MAP_REL, "1_spine/premortem.md")
+        if (root / rel).exists()
+    ]
+    return {
+        "ok": (root / DECISION_REL).exists(),
+        "have": have,
+        "required": DECISION_REL,
+        "missing_optional": [
+            rel for rel in (SECTOR_MAP_REL, "1_spine/premortem.md") if rel not in have
+        ],
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
     """CLI:从 spine 直接落 macro_state.json,**不要求整份 20 节报告**。
 
-      uv run --no-sync python -m autoresearch.macro.state context/macro/2026-07-25
+    uv run --no-sync python -m autoresearch.macro.state context/macro/2026-07-25
     """
     import argparse
+
     ap = argparse.ArgumentParser(description="macro_state 落盘(只需 decision.md;零 LLM)")
     ap.add_argument("root", help="macro context 目录,如 context/macro/2026-07-25")
     ap.add_argument("--out-dir", default=None, help="macro_state.json 落点(默认 root 的父目录)")
@@ -211,31 +242,46 @@ def main(argv: list[str] | None = None) -> int:
     root = Path(a.root)
     rd = state_readiness(root)
     if not rd["ok"]:
-        print(f"[MISSING] {root / rd['required']} 不存在 —— macro_state 的唯一硬依赖。\n"
-              f"  先让 macro-research full 档写出 S1 决策(含每行 `- <KEY>: **Rating**: <档>`),"
-              f"其余分段可后补。")
+        print(
+            f"[MISSING] {root / rd['required']} 不存在 —— macro_state 的唯一硬依赖。\n"
+            f"  先让 macro-research full 档写出 S1 决策(含每行 `- <KEY>: **Rating**: <档>`),"
+            f"其余分段可后补。"
+        )
         return 1
     st = write_macro_state(root, out_dir=a.out_dir or root.parent)
-    print(f"[macro_state] {Path(a.out_dir or root.parent) / STATE_NAME}(as_of {st['as_of']} · "
-          f"跨资产 {len(st['cross_asset'])} 行 · A股行业 {len(st['ashare_sectors'])} 行 · "
-          f"overall {st['overall_rating'] or '—'} · regime_at_run {st['regime_at_run'] or '未记'})")
+    print(
+        f"[macro_state] {Path(a.out_dir or root.parent) / STATE_NAME}(as_of {st['as_of']} · "
+        f"跨资产 {len(st['cross_asset'])} 行 · A股行业 {len(st['ashare_sectors'])} 行 · "
+        f"overall {st['overall_rating'] or '—'} · regime_at_run {st['regime_at_run'] or '未记'})"
+    )
     if rd["missing_optional"]:
         print(f"[note] 可选分段缺(不阻):{'、'.join(rd['missing_optional'])}")
     return 0
 
 
-def load_macro_state(today: str, regime_today: str | None = None,
-                     path: Path | str | None = None) -> tuple[dict | None, str]:
+def load_macro_state(
+    today: str, regime_today: str | None = None, path: Path | str | None = None
+) -> tuple[dict | None, str]:
     """读 + 双失效判定 → (state|None, 原因一句)。
 
     ① age:today − as_of > ttl_days(或 as_of 晚于 today = 前视)→ 失效;
     ② regime:regime_today 与 regime_at_run **两侧都在**且不等 → 失效(任一侧缺 → 该判据跳过)。
     """
     p = Path(path) if path else DEFAULT_ROOT / STATE_NAME
-    if not p.exists():
-        return None, "无 macro_state.json → 只用日频 pack"
     try:
-        state = json.loads(p.read_text(encoding="utf-8"))
+        state = (
+            published_state.read_committed_state(
+                "macro.latest_state",
+                state_root=ws.context_root() / "_published_state",
+                reports_root=ws.run_reports_root("macro-research"),
+            )
+            if path is None
+            else None
+        )
+        if state is None:
+            if not p.exists():
+                return None, "无 macro_state.json → 只用日频 pack"
+            state = json.loads(p.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
         return None, "macro_state.json 不可读 → 只用日频 pack"
     as_of = state.get("as_of")
@@ -251,8 +297,10 @@ def load_macro_state(today: str, regime_today: str | None = None,
     base = state.get("regime_at_run")
     if regime_today and base and regime_today != base:
         return None, f"regime 已翻转({base}→{regime_today})→ 宏观视图失效,只用日频 pack"
-    return (_hide_write_only(state),
-            f"macro_state 新鲜(as_of {as_of},{age}d≤{ttl}d,regime_at_run {base or '未记'})")
+    return (
+        _hide_write_only(state),
+        f"macro_state 新鲜(as_of {as_of},{age}d≤{ttl}d,regime_at_run {base or '未记'})",
+    )
 
 
 if __name__ == "__main__":

@@ -98,17 +98,12 @@ def _all_tasks(handle, frozen_plan: dict | None = None) -> list[dict]:
                     for task in expansion.get("tasks", [])
                     for dependency in task.get("dependencies", [])
                     if dependency not in known
-                    and dependency
-                    not in {
-                        item["task_id"] for item in expansion.get("tasks", [])
-                    }
+                    and dependency not in {item["task_id"] for item in expansion.get("tasks", [])}
                 }
             )
             raise ValueError(f"expanded task has missing dependencies: {missing}")
         for expansion in ready:
-            tasks = plan_service.apply_expansion(
-                current, expansion, existing_tasks=tasks
-            )
+            tasks = plan_service.apply_expansion(current, expansion, existing_tasks=tasks)
         pending = waiting
     return tasks
 
@@ -281,19 +276,11 @@ def begin(
         _mirror_identity(handle, "predecessor.json", predecessor)
     frozen_plan = (planner or _default_planner)(request, handle)
     plan_service.freeze_plan(_plan_path(handle), frozen_plan)
-    _freeze_json(
-        Path(handle.capsule) / "identity" / "session" / "plan.json", frozen_plan
-    )
+    _freeze_json(Path(handle.capsule) / "identity" / "session" / "plan.json", frozen_plan)
     freeze_session_origin(handle, request, frozen_plan)
-    role_ids = [
-        task["role"]
-        for task in frozen_plan["tasks"]
-        if task["kind"] == "INFERENCE"
-    ]
+    role_ids = [task["role"] for task in frozen_plan["tasks"] if task["kind"] == "INFERENCE"]
     role_ids.extend(
-        role
-        for template in frozen_plan["task_templates"]
-        for role in template["allowed_roles"]
+        role for template in frozen_plan["task_templates"] for role in template["allowed_roles"]
     )
     _freeze_json(
         Path(handle.capsule) / "identity" / "session" / "roles.json",
@@ -360,10 +347,7 @@ def _state(handle) -> tuple[str, list[dict], list[dict]]:
             [],
             [{"code": "TASK_BLOCKED", "task_id": task["task_id"]} for task in blocked],
         )
-    if tasks and all(
-        states.get(task["task_id"]) in {"SUCCEEDED", "SUPERSEDED"}
-        for task in tasks
-    ):
+    if tasks and all(states.get(task["task_id"]) in {"SUCCEEDED", "SUPERSEDED"} for task in tasks):
         expanded = {
             _read_json(path)["template_id"]
             for path in sorted((_session_dir(handle) / "expansions").glob("*.json"))
@@ -525,9 +509,7 @@ def retry_l4(
     request = _read_json(_session_dir(handle) / "request.json")
     config = getattr(handle.contract, "user_config", {}) or {}
     intel_enabled = bool((config.get("l4_intel") or {}).get("enabled"))
-    prompt_snapshot = artifacts.snapshot_artifact(
-        handle, f"scan.l4.{code6}.a1.prompt"
-    )
+    prompt_snapshot = artifacts.snapshot_artifact(handle, f"scan.l4.{code6}.a1.prompt")
     expansion = l4_retry_expansion(
         frozen_plan,
         code6,
@@ -548,9 +530,7 @@ def retry_l4(
         if canonical_json(_read_json(path)) != canonical_json(expansion):
             raise RuntimeError("frozen L4 recovery changed")
     else:
-        plan_service.apply_expansion(
-            frozen_plan, expansion, existing_tasks=existing_tasks
-        )
+        plan_service.apply_expansion(frozen_plan, expansion, existing_tasks=existing_tasks)
         atomic_write_json(path, expansion)
     _sync_expansion(handle, request, expansion)
     store.prepare_l4_retry(_store_path(handle), code6, previous_attempt)
@@ -565,9 +545,7 @@ def retry_l4(
 
 def _subject_kwargs(task: dict) -> dict:
     subject = task.get("subject")
-    if subject is None or re.fullmatch(
-        r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", subject
-    ):
+    if subject is None or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", subject):
         return {"subject": subject}
     return {"subject_display": subject}
 
@@ -635,8 +613,7 @@ def _promote_l4_retry_output(handle, task: dict) -> None:
 
 def _verify_frozen_inputs(handle, task: dict, entry: dict) -> None:
     frozen = {
-        item["artifact_id"]: item["sha256"]
-        for item in entry["claim_receipt"]["input_snapshots"]
+        item["artifact_id"]: item["sha256"] for item in entry["claim_receipt"]["input_snapshots"]
     }
     current = {
         artifact_id: artifacts.snapshot_artifact(handle, artifact_id)["sha256"]
@@ -680,9 +657,7 @@ def claim(
                 "owner_receipt": receipt,
             },
         )
-        return _result(
-            "claim", handle.run_id, "WAITING", result={"claim_receipt": receipt}
-        )
+        return _result("claim", handle.run_id, "WAITING", result={"claim_receipt": receipt})
     if task["parent_task"] is not None:
         from autoresearch.session_agent import legacy_scan
 
@@ -730,11 +705,7 @@ def claim(
             "request": claim_result["request"],
             "claim_receipt": receipt,
         }
-        request_path = (
-            Path(handle.capsule)
-            / "agents/session/requests"
-            / f"{invocation_id}.json"
-        )
+        request_path = Path(handle.capsule) / "agents/session/requests" / f"{invocation_id}.json"
         _freeze_json(request_path, handoff)
         _boundary_recorder(event_recorder)(
             handle.run_id,
@@ -874,11 +845,7 @@ def calculate(
         attempt=attempt,
         raise_on_failure=False,
     )
-    path = (
-        Path(handle.capsule)
-        / "evidence/calculations"
-        / f"{calculation['calculation_id']}.json"
-    )
+    path = Path(handle.capsule) / "evidence/calculations" / f"{calculation['calculation_id']}.json"
     from autoresearch.trace.events import append_event
 
     append_event(
@@ -941,9 +908,7 @@ def submit(
             host_receipt,
         )
         _freeze_json(
-            Path(handle.capsule)
-            / "agents/session/host_receipts"
-            / f"{host_receipt_id}.json",
+            Path(handle.capsule) / "agents/session/host_receipts" / f"{host_receipt_id}.json",
             host_receipt,
         )
     elif submission["host_receipt_id"] is not None:
@@ -954,11 +919,11 @@ def submit(
     def checked(value: dict, spec: dict) -> None:
         domain_validator = validator
         if domain_validator is None:
+
             def domain_validator(submitted, task):
                 return validate_registered_contract(handle, submitted, task)
-        validate_submission_outputs(
-            handle, value, spec, domain_validator=domain_validator
-        )
+
+        validate_submission_outputs(handle, value, spec, domain_validator=domain_validator)
 
     receipt = store.accept(_store_path(handle), submission, checked)
     from autoresearch.session_agent.evidence import freeze_receipt
@@ -970,9 +935,7 @@ def submit(
         receipt,
     )
     receipt_path = (
-        Path(handle.capsule)
-        / "agents/session/receipts"
-        / f"{receipt['receipt_id']}.json"
+        Path(handle.capsule) / "agents/session/receipts" / f"{receipt['receipt_id']}.json"
     )
     _freeze_json(receipt_path, receipt)
     attempt = submission["envelope"]["attempt"]
@@ -983,9 +946,7 @@ def submit(
         "host_receipt_id": submission["host_receipt_id"],
     }
     completion_path = (
-        Path(handle.capsule)
-        / "agents/session/completions"
-        / f"{task['task_id']}-a{attempt}.json"
+        Path(handle.capsule) / "agents/session/completions" / f"{task['task_id']}-a{attempt}.json"
     )
     _freeze_json(completion_path, completion)
     _record_completion(handle, task, attempt, completion, event_recorder)
@@ -1040,9 +1001,7 @@ def resume(
                         )
         elif state == "RUNNING" and task["kind"] == "DETERMINISTIC":
             entry = store.read_entry(_store_path(handle), task["task_id"])
-            running.append(
-                executor.probe_execution(handle, task["task_id"], entry["attempt"])
-            )
+            running.append(executor.probe_execution(handle, task["task_id"], entry["attempt"]))
     current = status(run_id, handle_loader=lambda unused: handle, command="resume")
     current["result"] = {"recovered_receipts": recovered, "running": running}
     return current
@@ -1069,12 +1028,48 @@ def finish(
 ) -> dict:
     from autoresearch.trace.capsule import require_active_run
 
-    handle = (handle_loader or require_active_run)(run_id)
+    transactional = handle_loader is None and publisher is None and finalizer is None
+    if transactional:
+        try:
+            handle = require_active_run(run_id)
+        except RuntimeError:
+            from autoresearch.trace.capsule import load_run
+            from autoresearch.trace.publication import load_publication_journal
+
+            handle = load_run(run_id)
+            journal = load_publication_journal(handle.workspace)
+            if journal["state"] not in {"VIEWS_APPLIED", "COMMITTED"}:
+                raise
+    else:
+        handle = (handle_loader or require_active_run)(run_id)
     current = status(run_id, handle_loader=lambda unused: handle)
     if current["state"] != "DONE":
         raise RuntimeError("cannot finish an incomplete task graph")
     from autoresearch.session_agent.evidence import materialize_evidence
 
+    if transactional:
+        journal_path = Path(handle.workspace) / "publication/journal.json"
+        if journal_path.is_file():
+            evidence_path = Path(handle.capsule) / "verification/evidence_closure.json"
+            evidence = _read_json(evidence_path) if evidence_path.is_file() else {"resumed": True}
+        else:
+            evidence = materialize_evidence(handle)
+        from autoresearch.session_agent.publication import transactional_finish
+
+        publication = transactional_finish(handle)
+        return _result(
+            "finish",
+            handle.run_id,
+            "DONE",
+            result={
+                "evidence": evidence,
+                "publication": publication,
+                "finalization": {
+                    "root_hash": publication["receipt"]["capsule_root_hash"],
+                    "final_path": publication["canonical_path"],
+                },
+            },
+        )
     evidence = materialize_evidence(handle)
     report = (publisher or publish_run)(handle)
     finalized = (finalizer or _default_finalizer)(handle, report)
@@ -1091,6 +1086,15 @@ def finish(
 
 
 __all__ = [
-    "begin", "calculate", "claim", "execute", "fail", "finish", "next", "resume",
-    "retry_l4", "status", "submit",
+    "begin",
+    "calculate",
+    "claim",
+    "execute",
+    "fail",
+    "finish",
+    "next",
+    "resume",
+    "retry_l4",
+    "status",
+    "submit",
 ]

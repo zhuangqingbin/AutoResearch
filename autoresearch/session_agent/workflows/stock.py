@@ -1,4 +1,5 @@
 """Session plans for standalone stock research."""
+
 from __future__ import annotations
 
 import contextlib
@@ -52,26 +53,44 @@ def _task(
 def _lite_tasks(ticker: str) -> list[dict]:
     return [
         _task(
-            "stock.harvest", "DETERMINISTIC", dependencies=[], inputs=[],
-            outputs=["stock.slim", "stock.deep"], contract="stock.harvest.slim.v1",
-            subject=ticker, operation="stock.harvest",
+            "stock.harvest",
+            "DETERMINISTIC",
+            dependencies=[],
+            inputs=[],
+            outputs=["stock.slim", "stock.deep"],
+            contract="stock.harvest.slim.v1",
+            subject=ticker,
+            operation="stock.harvest",
         ),
         _task(
-            "stock.card", "INFERENCE", dependencies=["stock.harvest"],
-            inputs=["stock.slim"], outputs=["stock.card.output"],
-            contract="stock.lite.v1", subject=ticker, role="stock.card",
+            "stock.card",
+            "INFERENCE",
+            dependencies=["stock.harvest"],
+            inputs=["stock.slim"],
+            outputs=["stock.card.output"],
+            contract="stock.lite.v1",
+            subject=ticker,
+            role="stock.card",
         ),
         _task(
-            "stock.validate", "DETERMINISTIC", dependencies=["stock.card"],
+            "stock.validate",
+            "DETERMINISTIC",
+            dependencies=["stock.card"],
             inputs=["stock.card.output", "stock.slim"],
-            outputs=["stock.card.validation"], contract="stock.validation.v1",
-            subject=ticker, operation="stock.validate",
+            outputs=["stock.card.validation"],
+            contract="stock.validation.v1",
+            subject=ticker,
+            operation="stock.validate",
         ),
         _task(
-            "stock.publish", "DETERMINISTIC", dependencies=["stock.validate"],
+            "stock.publish",
+            "DETERMINISTIC",
+            dependencies=["stock.validate"],
             inputs=["stock.card.output", "stock.card.validation"],
-            outputs=["stock.publication.bundle"], contract="stock.publication.v1",
-            subject=ticker, operation="stock.publish",
+            outputs=["stock.publication.bundle"],
+            contract="stock.publication.v1",
+            subject=ticker,
+            operation="stock.publish",
         ),
     ]
 
@@ -99,14 +118,23 @@ def _full_tasks(ticker: str, *, ashare: bool, has_peers: bool) -> list[dict]:
     products = full_product_artifacts()
     tasks = [
         _task(
-            "stock.harvest", "DETERMINISTIC", dependencies=[], inputs=[],
+            "stock.harvest",
+            "DETERMINISTIC",
+            dependencies=[],
+            inputs=[],
             outputs=["stock.context", "stock.indicators"],
-            contract="stock.harvest.full.v1", subject=ticker, operation="stock.harvest",
+            contract="stock.harvest.full.v1",
+            subject=ticker,
+            operation="stock.harvest",
         ),
         _task(
-            "stock.intel", "INFERENCE", dependencies=["stock.harvest"],
-            inputs=["stock.context"], outputs=["stock.full.intel"],
-            contract="company.intel.v1", subject=ticker,
+            "stock.intel",
+            "INFERENCE",
+            dependencies=["stock.harvest"],
+            inputs=["stock.context"],
+            outputs=["stock.full.intel"],
+            contract="company.intel.v1",
+            subject=ticker,
             role="company.intel" if ashare else "us.intel",
         ),
     ]
@@ -123,87 +151,144 @@ def _full_tasks(ticker: str, *, ashare: bool, has_peers: bool) -> list[dict]:
         inputs = ["stock.context"]
         if name == "news":
             inputs.append("stock.full.intel")
-        tasks.append(_task(
-            f"stock.{name}", "INFERENCE", dependencies=dependencies,
-            inputs=inputs, outputs=[products[relative]],
-            contract="stock.section.v1", subject=ticker, role=role,
-        ))
+        tasks.append(
+            _task(
+                f"stock.{name}",
+                "INFERENCE",
+                dependencies=dependencies,
+                inputs=inputs,
+                outputs=[products[relative]],
+                contract="stock.section.v1",
+                subject=ticker,
+                role=role,
+            )
+        )
     if has_peers:
-        tasks.append(_task(
-            "stock.peer", "INFERENCE", dependencies=["stock.fundamentals"],
-            inputs=["stock.context"], outputs=[products["1_analysts/peer.md"]],
-            contract="stock.section.v1", subject=ticker, role="stock.peer",
-        ))
+        tasks.append(
+            _task(
+                "stock.peer",
+                "INFERENCE",
+                dependencies=["stock.fundamentals"],
+                inputs=["stock.context"],
+                outputs=[products["1_analysts/peer.md"]],
+                contract="stock.section.v1",
+                subject=ticker,
+                role="stock.peer",
+            )
+        )
     analyst_dependencies = [
-        task["task_id"] for task in tasks
+        task["task_id"]
+        for task in tasks
         if task["task_id"].startswith("stock.")
         and task["task_id"] not in {"stock.harvest", "stock.intel"}
     ]
-    tasks.extend([
-        _task(
-            "stock.reality_check", "INFERENCE", dependencies=analyst_dependencies,
-            inputs=[products["1_analysts/market.md"], products["1_analysts/news.md"], products["1_analysts/fundamentals.md"]],
-            outputs=[products["2_research/reality_check.md"]],
-            contract="stock.section.v1", subject=ticker, role="stock.reality_check",
-        ),
-        _task(
-            "stock.bull", "INFERENCE", dependencies=["stock.reality_check"],
-            inputs=[products["2_research/reality_check.md"]],
-            outputs=[products["2_research/bull.md"]], contract="stock.section.v1",
-            subject=ticker, role="stock.bull",
-        ),
-        _task(
-            "stock.bear", "INFERENCE", dependencies=["stock.bull"],
-            inputs=[products["2_research/bull.md"]],
-            outputs=[products["2_research/bear.md"]], contract="stock.section.v1",
-            subject=ticker, role="stock.bear",
-        ),
-        _task(
-            "stock.manager", "INFERENCE", dependencies=["stock.bear"],
-            inputs=[products["2_research/bull.md"], products["2_research/bear.md"]],
-            outputs=[products["2_research/manager.md"]], contract="stock.section.v1",
-            subject=ticker, role="stock.manager",
-        ),
-        _task(
-            "stock.risk", "INFERENCE", dependencies=["stock.manager"],
-            inputs=[products["2_research/manager.md"]],
-            outputs=[products["3_risk/debate.md"]], contract="stock.section.v1",
-            subject=ticker, role="stock.risk",
-        ),
-        _task(
-            "stock.premortem", "INFERENCE", dependencies=["stock.manager", "stock.risk"],
-            inputs=[products["2_research/manager.md"], products["3_risk/debate.md"]],
-            outputs=[products["3_risk/premortem.md"]], contract="stock.section.v1",
-            subject=ticker, role="stock.premortem",
-        ),
-        _task(
-            "stock.pm", "INFERENCE", dependencies=["stock.premortem"],
-            inputs=[products["2_research/manager.md"], products["3_risk/premortem.md"]],
-            outputs=[
-                products["4_portfolio/decision.md"],
-                products["4_portfolio/calendar.md"],
-                products["2_research/variant.md"],
-                products["2_research/faceoff.md"],
-            ], contract="stock.pm.v1", subject=ticker, role="stock.pm",
-        ),
-        _task(
-            "stock.full.validate", "DETERMINISTIC", dependencies=["stock.pm"],
-            inputs=[
-                products[relative]
-                for relative in sorted(products)
-                if relative in required_full_products()
-            ],
-            outputs=["stock.full.validation"], contract="stock.full.validation.v1",
-            subject=ticker, operation="stock.full.validate",
-        ),
-        _task(
-            "stock.assemble", "DETERMINISTIC", dependencies=["stock.full.validate"],
-            inputs=["stock.full.validation"],
-            outputs=["stock.full.report", "stock.full.manifest", "stock.publication.bundle"],
-            contract="stock.full.publication.v1", subject=ticker,
-            operation="stock.full.assemble",
-        ),
-    ])
+    tasks.extend(
+        [
+            _task(
+                "stock.reality_check",
+                "INFERENCE",
+                dependencies=analyst_dependencies,
+                inputs=[
+                    products["1_analysts/market.md"],
+                    products["1_analysts/news.md"],
+                    products["1_analysts/fundamentals.md"],
+                ],
+                outputs=[products["2_research/reality_check.md"]],
+                contract="stock.section.v1",
+                subject=ticker,
+                role="stock.reality_check",
+            ),
+            _task(
+                "stock.bull",
+                "INFERENCE",
+                dependencies=["stock.reality_check"],
+                inputs=[products["2_research/reality_check.md"]],
+                outputs=[products["2_research/bull.md"]],
+                contract="stock.section.v1",
+                subject=ticker,
+                role="stock.bull",
+            ),
+            _task(
+                "stock.bear",
+                "INFERENCE",
+                dependencies=["stock.bull"],
+                inputs=[products["2_research/bull.md"]],
+                outputs=[products["2_research/bear.md"]],
+                contract="stock.section.v1",
+                subject=ticker,
+                role="stock.bear",
+            ),
+            _task(
+                "stock.manager",
+                "INFERENCE",
+                dependencies=["stock.bear"],
+                inputs=[products["2_research/bull.md"], products["2_research/bear.md"]],
+                outputs=[products["2_research/manager.md"]],
+                contract="stock.section.v1",
+                subject=ticker,
+                role="stock.manager",
+            ),
+            _task(
+                "stock.risk",
+                "INFERENCE",
+                dependencies=["stock.manager"],
+                inputs=[products["2_research/manager.md"]],
+                outputs=[products["3_risk/debate.md"]],
+                contract="stock.section.v1",
+                subject=ticker,
+                role="stock.risk",
+            ),
+            _task(
+                "stock.premortem",
+                "INFERENCE",
+                dependencies=["stock.manager", "stock.risk"],
+                inputs=[products["2_research/manager.md"], products["3_risk/debate.md"]],
+                outputs=[products["3_risk/premortem.md"]],
+                contract="stock.section.v1",
+                subject=ticker,
+                role="stock.premortem",
+            ),
+            _task(
+                "stock.pm",
+                "INFERENCE",
+                dependencies=["stock.premortem"],
+                inputs=[products["2_research/manager.md"], products["3_risk/premortem.md"]],
+                outputs=[
+                    products["4_portfolio/decision.md"],
+                    products["4_portfolio/calendar.md"],
+                    products["2_research/variant.md"],
+                    products["2_research/faceoff.md"],
+                ],
+                contract="stock.pm.v1",
+                subject=ticker,
+                role="stock.pm",
+            ),
+            _task(
+                "stock.full.validate",
+                "DETERMINISTIC",
+                dependencies=["stock.pm"],
+                inputs=[
+                    products[relative]
+                    for relative in sorted(products)
+                    if relative in required_full_products()
+                ],
+                outputs=["stock.full.validation"],
+                contract="stock.full.validation.v1",
+                subject=ticker,
+                operation="stock.full.validate",
+            ),
+            _task(
+                "stock.assemble",
+                "DETERMINISTIC",
+                dependencies=["stock.full.validate"],
+                inputs=["stock.full.validation"],
+                outputs=["stock.full.report", "stock.full.manifest", "stock.publication.bundle"],
+                contract="stock.full.publication.v1",
+                subject=ticker,
+                operation="stock.full.assemble",
+            ),
+        ]
+    )
     return tasks
 
 
@@ -223,9 +308,7 @@ def build_stock_plan(request: dict, handle) -> dict:
         "orchestration_version": "session_v1",
         "input_contract_hash": handle.contract.contract_hash,
         "config_hash": config_hash,
-        "host_profile_hash": sha256_bytes(
-            canonical_json(request["host_profile"]).encode("utf-8")
-        ),
+        "host_profile_hash": sha256_bytes(canonical_json(request["host_profile"]).encode("utf-8")),
         "roles_hash": roles_hash(),
         "tasks": (
             _lite_tasks(request["subject"])
@@ -262,7 +345,8 @@ def register_stock_artifacts(request: dict, handle, plan: dict) -> None:
         registrations = {
             "stock.context": staging / f"{ticker}_{analysis_date}.md",
             "stock.indicators": staging / f"{ticker}_{analysis_date}_indicators.md",
-            "stock.full.intel": root / ("_company_intel.md" if ticker.split(".")[0].isdigit() else "_us_intel.md"),
+            "stock.full.intel": root
+            / ("_company_intel.md" if ticker.split(".")[0].isdigit() else "_us_intel.md"),
             **{
                 artifact_id: root / relative
                 for relative, artifact_id in full_product_artifacts().items()
@@ -335,9 +419,7 @@ def _publish_stock_active(handle, *, reports_root: Path | None = None) -> Path:
             raise RuntimeError("stock full manifest run identity mismatch")
     else:
         raise RuntimeError(f"unknown stock publication mode: {bundle['mode']}")
-    root = Path(reports_root) if reports_root is not None else ws.run_reports_root(
-        "stock-research"
-    )
+    root = Path(reports_root) if reports_root is not None else ws.run_reports_root("stock-research")
     run_hhmm = handle.run_id[9:13]
     report_dir = root / f"{bundle['analysis_date'].replace('-', '')}_{run_hhmm}"
     report = report_dir / bundle["output_name"]
@@ -360,8 +442,10 @@ def publish_stock(handle, *, reports_root: Path | None = None) -> Path:
 
     with guarded_handle_write(handle, "stock.publish") as tracked:
         if tracked is not None:
-            root = Path(reports_root) if reports_root is not None else ws.run_reports_root(
-                "stock-research"
+            root = (
+                Path(reports_root)
+                if reports_root is not None
+                else ws.run_reports_root("stock-research")
             )
             assert_output_path(root, ws.run_reports_root("stock-research"))
             with artifacts.open_artifact(handle, "stock.publication.bundle") as stream:
@@ -374,7 +458,41 @@ def publish_stock(handle, *, reports_root: Path | None = None) -> Path:
         return _publish_stock_active(handle, reports_root=reports_root)
 
 
+def prepare_stock_bundle(handle) -> dict:
+    """Describe immutable stock files without publishing compatibility views."""
+    with artifacts.open_artifact(handle, "stock.publication.bundle") as stream:
+        bundle = json.loads(stream.read().decode("utf-8"))
+    if bundle["mode"] == "LITE":
+        files = [
+            {
+                "artifact_id": "stock.card.output",
+                "relative_path": f"report/{bundle['output_name']}",
+                "media_type": "text/markdown",
+            }
+        ]
+    elif bundle["mode"] == "FULL":
+        files = [
+            {
+                "artifact_id": "stock.full.report",
+                "relative_path": f"report/{bundle['output_name']}",
+                "media_type": "text/markdown",
+            },
+            {
+                "artifact_id": "stock.full.manifest",
+                "relative_path": "report/manifest.json",
+                "media_type": "application/json",
+            },
+        ]
+    else:
+        raise RuntimeError(f"unknown stock publication mode: {bundle['mode']}")
+    return {"business_files": files, "state_mutations": [], "inline_artifacts": {}}
+
+
 __all__ = [
-    "build_stock_plan", "publish_stock", "register_stock_artifacts",
-    "required_full_products", "validate_stock_operation_params",
+    "build_stock_plan",
+    "prepare_stock_bundle",
+    "publish_stock",
+    "register_stock_artifacts",
+    "required_full_products",
+    "validate_stock_operation_params",
 ]

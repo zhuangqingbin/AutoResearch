@@ -18,14 +18,15 @@ design: docs/specs/2026-08-01-wave10-report-ops-slimdown-zerobuy-design.md §A10
 
   uv run --no-sync python -m autoresearch.dossier.debt_slo 2026-08-01
 """
+
 from __future__ import annotations
 
 from datetime import date as _date
 from pathlib import Path
 
-MAX_PENDING_AGE_DAYS = 2        # 48h
+MAX_PENDING_AGE_DAYS = 2  # 48h
 THROUGHPUT_WINDOW_DAYS = 7
-NIGHTLY_CAP = 3                 # 帽 ≤3/晚不变(§A10)
+NIGHTLY_CAP = 3  # 帽 ≤3/晚不变(§A10)
 
 
 def _days_between(earlier: str, later: str) -> int | None:
@@ -40,10 +41,11 @@ def _built_on(code: str) -> str | None:
     from autoresearch.dossier import schema
 
     path = schema.dossier_path(code)
-    if not path.exists():
+    text = schema.read_dossier_text(code)
+    if text is None:
         return None
     try:
-        stamp = schema.parse_frontmatter(path.read_text(encoding="utf-8")).get("initiated")
+        stamp = schema.parse_frontmatter(text).get("initiated")
     except Exception:  # noqa: BLE001
         stamp = None
     if stamp:
@@ -64,10 +66,9 @@ def reconcile_overdue(today: str, *, pool_path=None) -> list[str]:
     for code, st in sorted(_pool.load_pool(pool_path).get("stocks", {}).items()):
         if st.get("status") != "active":
             continue
-        path = _schema.dossier_path(code)
-        if not path.exists():
+        text = _schema.read_dossier_text(code)
+        if text is None:
             continue
-        text = path.read_text(encoding="utf-8")
         if not _schema.parse_frontmatter(text).get("initiated"):
             continue
         if f"季度对账 {period}" not in _delta.section_body(text, 4):
@@ -83,21 +84,29 @@ def compute(today: str, *, pool_path=None) -> dict:
     stocks = pool.get("stocks", {})
     pending = _pool.pending_init(pool)
 
-    ages = {c: age for c in pending
-            if (age := _days_between((stocks.get(c) or {}).get("entered", ""), today))
-            is not None}
+    ages = {
+        c: age
+        for c in pending
+        if (age := _days_between((stocks.get(c) or {}).get("entered", ""), today)) is not None
+    }
     oldest_code = max(ages, key=lambda c: ages[c]) if ages else None
     oldest_age = ages.get(oldest_code) if oldest_code else None
 
     overdue = reconcile_overdue(today, pool_path=pool_path)
 
-    added = [c for c, st in stocks.items()
-             if (d := _days_between(st.get("entered", ""), today)) is not None
-             and 0 <= d < THROUGHPUT_WINDOW_DAYS]
-    digested = [c for c in stocks
-                if (built := _built_on(c))
-                and (d := _days_between(built, today)) is not None
-                and 0 <= d < THROUGHPUT_WINDOW_DAYS]
+    added = [
+        c
+        for c, st in stocks.items()
+        if (d := _days_between(st.get("entered", ""), today)) is not None
+        and 0 <= d < THROUGHPUT_WINDOW_DAYS
+    ]
+    digested = [
+        c
+        for c in stocks
+        if (built := _built_on(c))
+        and (d := _days_between(built, today)) is not None
+        and 0 <= d < THROUGHPUT_WINDOW_DAYS
+    ]
 
     meets_age = None if oldest_age is None else oldest_age <= MAX_PENDING_AGE_DAYS
     meets_overdue = len(overdue) == 0

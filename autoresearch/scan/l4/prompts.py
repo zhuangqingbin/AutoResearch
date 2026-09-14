@@ -1,4 +1,5 @@
 """L4 shared-instruction and dispatch-prompt rendering."""
+
 from __future__ import annotations
 
 import contextlib
@@ -12,7 +13,9 @@ from autoresearch.common import workspace as ws
 from autoresearch.scan.l4.context import compose_funnel_brief
 from autoresearch.scan.l4.rubric import force_full_card
 
-_WS_REPORTS_SCAN = ws.reports_root() / "scan"  # B008 修法:默认值须为模块级单例(def 时求值,与旧字面量常量同语义)
+_WS_REPORTS_SCAN = (
+    ws.reports_root() / "scan"
+)  # B008 修法:默认值须为模块级单例(def 时求值,与旧字面量常量同语义)
 
 
 def write_shared_instructions(scan_dir: Path | str) -> int:
@@ -38,8 +41,14 @@ _ECHO_LS = re.compile(r"^\*\*一行多空\*\*:\s*(.+)$", re.M)
 _ECHO_WIRE = re.compile(r"^-?\s*\[价格线\][^\n]*$", re.M)
 
 
-def yesterday_echo(code6: str, name: str, analysis_date: str, *,
-                   lookback_days: int = 5, reports_root=_WS_REPORTS_SCAN) -> str:
+def yesterday_echo(
+    code6: str,
+    name: str,
+    analysis_date: str,
+    *,
+    lookback_days: int = 5,
+    reports_root=_WS_REPORTS_SCAN,
+) -> str:
     """昨卡回声(Wave9 B-1b):最近 ≤N 日已发布卡的 3 行摘要,注入任务包逐票段。
 
     R5 退役 TTL 复用后,"评级稳定性"不再靠**跳过研究**获得,而靠**记忆**:研究员知道
@@ -53,6 +62,7 @@ def yesterday_echo(code6: str, name: str, analysis_date: str, *,
     (总比拿一个跨越长假、语境已过期的旧判断当"昨天"强)。
     """
     from datetime import datetime, timedelta
+
     root = Path(reports_root)
     if not root.is_dir():
         return ""
@@ -61,13 +71,16 @@ def yesterday_echo(code6: str, name: str, analysis_date: str, *,
     except ValueError:
         return ""
 
-    best: tuple[str, str] | None = None      # (data_date, card_text)
+    best: tuple[str, str] | None = None  # (data_date, card_text)
     for run in sorted(root.iterdir(), reverse=True):
         if not run.is_dir():
             continue
         try:
-            dd = str(json.loads((run / "manifest.json").read_text(
-                encoding="utf-8")).get("analysis_date", ""))
+            dd = str(
+                json.loads((run / "manifest.json").read_text(encoding="utf-8")).get(
+                    "analysis_date", ""
+                )
+            )
             when = datetime.strptime(dd, "%Y-%m-%d")
         except Exception:  # noqa: BLE001
             continue
@@ -89,13 +102,13 @@ def yesterday_echo(code6: str, name: str, analysis_date: str, *,
     rating = (_ECHO_RATING.search(text) or [None, "—"])[1].strip()
     ls = (_ECHO_LS.search(text) or [None, "—"])[1].strip()
     wires = _ECHO_WIRE.findall(text)[:2]
-    lines = [f"## 昨卡回声(最近一次已发布判断 @ {dd})",
-             f"- 评级:**{rating}**",
-             f"- 一行多空:{ls}"]
+    lines = [f"## 昨卡回声(最近一次已发布判断 @ {dd})", f"- 评级:**{rating}**", f"- 一行多空:{ls}"]
     if wires:
         lines.append(f"- 盯梢线:{' ｜ '.join(w.strip('- ').strip() for w in wires)}")
-    lines.append("> 历史判断**非今日默认值**;若今日翻覆,必须在卡里写明触发翻覆的"
-                 "**增量证据**(新数字/新事件),不得只换措辞。")
+    lines.append(
+        "> 历史判断**非今日默认值**;若今日翻覆,必须在卡里写明触发翻覆的"
+        "**增量证据**(新数字/新事件),不得只换措辞。"
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -111,22 +124,28 @@ def _snapshot_dossiers(scan_dir: Path, codes: set[str]) -> dict:
     """
     import hashlib
 
-    from autoresearch.dossier.schema import dossier_path
+    from autoresearch.dossier.schema import dossier_path, read_dossier_text
+
     scan_dir = Path(scan_dir)
     out_dir = scan_dir / DOSSIER_SNAPSHOT_DIR
     index: dict[str, dict] = {}
     for code6 in sorted(codes):
         src = dossier_path(code6)
-        if not src.is_file():
+        text = read_dossier_text(code6)
+        if text is None:
             continue
-        raw = src.read_bytes()
+        raw = text.encode("utf-8")
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / f"{code6}.md").write_bytes(raw)
-        index[code6] = {"sha256": hashlib.sha256(raw).hexdigest(),
-                        "bytes": len(raw), "source": str(src)}
+        index[code6] = {
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "bytes": len(raw),
+            "source": str(src),
+        }
     doc = {"schema_version": 1, "captured_at_stage": "l4_prompts", "dossiers": index}
     (scan_dir / DOSSIER_SNAPSHOT_INDEX).write_text(
-        json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=1), encoding="utf-8")
+        json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=1), encoding="utf-8"
+    )
     return doc
 
 
@@ -160,6 +179,7 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
     if not fp.exists():
         return {"n_prompts": 0, "tickers": [], "pinned": []}
     from autoresearch.dataflows.symbol_utils import normalize_symbol  # lazy,保持模块轻量
+
     fin = pd.read_csv(fp, dtype={"code": str})
     shared = ""
     sp = scan_dir / "_l4_shared_instructions.md"
@@ -186,7 +206,7 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
 
     tickers: list[str] = []
     pinned: list[str] = []
-    with_dossier: set[str] = set()   # Wave9 B-3:本次派发里"哪些票有档案可注入"(lint 探针 10 读)
+    with_dossier: set[str] = set()  # Wave9 B-3:本次派发里"哪些票有档案可注入"(lint 探针 10 读)
     n_prompts = 0
     for _, r in fin.iterrows():
         raw = str(r.get("code", "") or "").strip()
@@ -196,38 +216,50 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
         # Wave9 B-3:档案存在性判据是**无条件**的 —— 它曾只在(已退役的)stable_context
         # 分支里判,于是 `_dossier_present.json` 在默认配置下恒空。
         with contextlib.suppress(Exception):
-            from autoresearch.dossier.schema import dossier_path
+            from autoresearch.dossier.schema import dossier_exists
 
-            if dossier_path(code6).is_file():
+            if dossier_exists(code6):
                 with_dossier.add(code6)
         # Wave9 R5(TTL 复用退役)后不再因 `details/<code>.md` 已存在而跳过写 prompt——
         # dispatch_plan 已无条件全票派发,"卡已存在"不再是跳过写 prompt 的正当理由
         # (旧跳过 + dispatch_plan 新语义组合会炸出 PENDING-但-prompt-不存在,详见函数 docstring)。
-        ticker = normalize_symbol(code6)            # 6 位码 → .SS/.SZ/.BJ(单一后缀口径)
+        ticker = normalize_symbol(code6)  # 6 位码 → .SS/.SZ/.BJ(单一后缀口径)
         tickers.append(ticker)
         is_pinned = str(r.get("lane", "") or "").strip() == "pinned"
         body = [f"## L4 派发 — {code6} {r.get('name', '')}", ""]
-        if is_pinned:                                # 逐卡块内标记(共享前缀之后,不破 cache 契约)
+        if is_pinned:  # 逐卡块内标记(共享前缀之后,不破 cache 契约)
             pinned.append(code6)
             note = str(r.get("pinned_note", "") or "").strip()
-            body += ["**📌 保送票**(用户手工直通;已在 L1→L3 全程强留,不受漏斗取舍影响"
-                    + (f":{note}" if note else "") +
-                    ")——仍须按下方真实证据独立评判,不因『保送』降低尽调标准。", "",
-                    "**📌持仓管理要求**:本票为用户保送票(可能已持有)——满卡/早停卡都必须含"
-                    "『持仓管理』小节:D+1/D+2 卖出纪律(何价减/何价清)+加减仓触发位;若 "
-                    "pinned_note 含成本信息按其计算浮盈亏,无则按现价基准写纪律。", ""]
+            body += [
+                "**📌 保送票**(用户手工直通;已在 L1→L3 全程强留,不受漏斗取舍影响"
+                + (f":{note}" if note else "")
+                + ")——仍须按下方真实证据独立评判,不因『保送』降低尽调标准。",
+                "",
+                "**📌持仓管理要求**:本票为用户保送票(可能已持有)——满卡/早停卡都必须含"
+                "『持仓管理』小节:D+1/D+2 卖出纪律(何价减/何价清)+加减仓触发位;若 "
+                "pinned_note 含成本信息按其计算浮盈亏,无则按现价基准写纪律。",
+                "",
+            ]
         # 强制满卡(逐卡块内,共享前缀之后 → 不破 cache 契约):priors = finalists 行(conviction/
         # lane)+ L2 行(n_channels/l2_lane_reserved)。
-        priors = {**l2_priors.get(code6, {}),
-                  "conviction": r.get("conviction"),
-                  "lane": r.get("lane")}
+        priors = {
+            **l2_priors.get(code6, {}),
+            "conviction": r.get("conviction"),
+            "lane": r.get("lane"),
+        }
         if force_full_card(priors):
-            why = ("📌 保送持仓票" if is_pinned else
-                   f"强先验(conviction {r.get('conviction')} + 多路共振/配额救回)")
-            body += [f"**⛔ 强制满卡 — {why}:禁止早停。** 必须跑完 P4(陷阱核)+ P5(满卡):"
-                     "「盈利质量」与「偿付(爆雷)」两维**不得**标『未核』,必须 Read "
-                     "`_slim_deep.md` 取证后给分。评级仍由 rubric 三门定——强制满卡只保证"
-                     "**核得够深**,不保证结论向好(照样可以是 Underweight/Sell)。", ""]
+            why = (
+                "📌 保送持仓票"
+                if is_pinned
+                else f"强先验(conviction {r.get('conviction')} + 多路共振/配额救回)"
+            )
+            body += [
+                f"**⛔ 强制满卡 — {why}:禁止早停。** 必须跑完 P4(陷阱核)+ P5(满卡):"
+                "「盈利质量」与「偿付(爆雷)」两维**不得**标『未核』,必须 Read "
+                "`_slim_deep.md` 取证后给分。评级仍由 rubric 三门定——强制满卡只保证"
+                "**核得够深**,不保证结论向好(照样可以是 Underweight/Sell)。",
+                "",
+            ]
         # Wave10 B4:stable_context 分支已退役(离线 benchmark 收益 4.0% < 10% 门),
         # 只剩这一条 legacy 字节路 —— 原先的 if/else 二选一塌成无条件追加。
         body.append(compose_funnel_brief(code6, scan_dir).rstrip())
@@ -246,7 +278,8 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
             # 否则 30 卡并发前缀全断、cache 全 miss。逐卡专属标题(含 📌 保送标记)移到共享块**之后**。
             "# L4 派发 prompt(确定性落稿;编排以此为派发正文;先读共享块再读下方逐卡简报)",
             "",
-            shared or "_(共享指令稿缺:`_l4_shared_instructions.md` 未落——按 stock-research lite-playbook 执行)_",
+            shared
+            or "_(共享指令稿缺:`_l4_shared_instructions.md` 未落——按 stock-research lite-playbook 执行)_",
             "",
         ]
         prompt_parts += [
@@ -260,15 +293,18 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
             f"- 活体情报:`{intel_path}`(若存在:P3 先读它作催化/题材/机构主料、"
             f"自发网查降 ≤1 条验证;缺文件=回退卡内网查,cap 原规则)",
             f"- 决策卡写往:`{card_path}`",
-            ""]
+            "",
+        ]
         prompt = "\n".join(prompt_parts)
         (scan_dir / f"_l4_prompt_{code6}.md").write_text(prompt, encoding="utf-8")
         n_prompts += 1
     (scan_dir / "_harvest_list.txt").write_text(
-        "\n".join(tickers) + ("\n" if tickers else ""), encoding="utf-8")
+        "\n".join(tickers) + ("\n" if tickers else ""), encoding="utf-8"
+    )
     with contextlib.suppress(Exception):
         (scan_dir / "_dossier_present.json").write_text(
-            json.dumps(sorted(with_dossier), ensure_ascii=False), encoding="utf-8")
+            json.dumps(sorted(with_dossier), ensure_ascii=False), encoding="utf-8"
+        )
     # 档案 as-read 快照(2026-08-26 现场留存波 §4 R2)。**必须在这一刻抄** —— 档案是
     # `knowledge/dossiers/<code>.md`,assemble 收尾的 `dossier.delta.record_scan_deltas`
     # 会**原地改写**它(实测 300857 的 mtime = 读它那次 run 的收尾时刻),所以发布时再抄
@@ -282,5 +318,5 @@ def write_dispatch_pack(scan_dir: Path | str) -> dict:
         "n_prompts": n_prompts,
         "tickers": tickers,
         "pinned": pinned,
-        "context_mode": "legacy",   # Wave10 B4:stable_context 已退役,只剩这一条路
+        "context_mode": "legacy",  # Wave10 B4:stable_context 已退役,只剩这一条路
     }

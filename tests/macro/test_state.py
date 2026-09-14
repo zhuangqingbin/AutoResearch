@@ -97,3 +97,28 @@ def test_load_regime_flip_invalidates(tmp_path):
     assert st is None and "翻转" in note                      # range → risk_off 立即失效
     st, note = load_macro_state("2026-07-03", regime_today="range", path=p)
     assert st is not None and "新鲜" in note
+
+
+def test_default_reader_prefers_receipt_committed_state(monkeypatch, tmp_path):
+    from autoresearch.macro import state as state_mod
+
+    stale = {"as_of": "2026-06-01", "ttl_days": 7}
+    live = tmp_path / "macro_state.json"
+    live.write_text(json.dumps(stale), encoding="utf-8")
+    monkeypatch.setattr(state_mod, "DEFAULT_ROOT", tmp_path)
+    committed = {
+        "as_of": AS_OF,
+        "ttl_days": 7,
+        "regime_at_run": None,
+        "global_tape_asof": "must-be-hidden",
+    }
+    monkeypatch.setattr(
+        state_mod.published_state,
+        "read_committed_state",
+        lambda *args, **kwargs: committed,
+    )
+
+    loaded, note = state_mod.load_macro_state("2026-07-03")
+
+    assert loaded == {key: value for key, value in committed.items() if key != "global_tape_asof"}
+    assert "新鲜" in note

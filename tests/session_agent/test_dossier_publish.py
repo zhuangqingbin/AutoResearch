@@ -11,7 +11,7 @@ from autoresearch.session_agent.domain_ops import (
     dossier_build_skeleton,
     dossier_validate,
 )
-from autoresearch.session_agent.workflows.dossier import publish_dossier
+from autoresearch.session_agent.workflows.dossier import prepare_dossier_bundle, publish_dossier
 
 from .test_dossier import _request
 from .test_service import _handle
@@ -28,6 +28,7 @@ def _setup(handle):
         "dossier.permissions": "dossier.permissions.json",
         "dossier.candidate": "dossier.candidate.md",
         "dossier.validation": "dossier.validation.json",
+        "dossier.pool.candidate": "dossier.pool.candidate.json",
         "dossier.publication.bundle": "dossier.publication.json",
     }.items():
         artifacts.register_artifact(handle, artifact_id, output / name, "WRITE")
@@ -100,7 +101,13 @@ def test_dossier_publish_detects_concurrent_manual_creation_and_is_idempotent(tm
     from autoresearch.session_agent.domain_ops import dossier_prepare_publication
 
     dossier_prepare_publication(handle)
+    artifacts.bind_artifact_hash(handle, "dossier.pool.candidate")
     artifacts.bind_artifact_hash(handle, "dossier.publication.bundle")
+    prepared = prepare_dossier_bundle(handle)
+    assert {mutation["target_key"] for mutation in prepared["state_mutations"]} == {
+        "dossier.stock.600519",
+        "dossier.coverage_pool",
+    }
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("人工在研究期间新建")
     with pytest.raises(RuntimeError, match="CONFLICT"):

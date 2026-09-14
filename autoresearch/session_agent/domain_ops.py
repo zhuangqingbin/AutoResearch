@@ -1,4 +1,5 @@
 """Deterministic domain operations invoked through command capture."""
+
 from __future__ import annotations
 
 import argparse
@@ -41,9 +42,7 @@ def _active_handle():
 
 
 def _request(handle) -> dict:
-    return json.loads(
-        (Path(handle.workspace) / "session/request.json").read_text(encoding="utf-8")
-    )
+    return json.loads((Path(handle.workspace) / "session/request.json").read_text(encoding="utf-8"))
 
 
 def _text(handle, artifact_id: str) -> str:
@@ -83,12 +82,8 @@ def research_calculate(
         if digest is None:
             raise RuntimeError(f"calculation input is not frozen: {artifact_id}")
         input_refs.append({"artifact_id": artifact_id, "sha256": digest})
-    environment_task = str(
-        __import__("os").environ.get("AUTORESEARCH_TASK_ID", "")
-    ).strip()
-    environment_attempt = int(
-        __import__("os").environ.get("AUTORESEARCH_ATTEMPT", "1")
-    )
+    environment_task = str(__import__("os").environ.get("AUTORESEARCH_TASK_ID", "")).strip()
+    environment_attempt = int(__import__("os").environ.get("AUTORESEARCH_ATTEMPT", "1"))
     result = calculate(
         calculator_id,
         merged,
@@ -142,9 +137,7 @@ def _safe_output_name(request: dict) -> str:
 def stock_prepare_publication(handle=None) -> dict:
     current = handle or _active_handle()
     request = _request(current)
-    validation = json.loads(
-        _text(current, "stock.card.validation")
-    )
+    validation = json.loads(_text(current, "stock.card.validation"))
     card = artifacts.bind_artifact_hash(current, "stock.card.output")
     if validation.get("card_sha256") != card["sha256"]:
         raise RuntimeError("validated stock card changed before publication")
@@ -191,9 +184,7 @@ def stock_full_validate(handle=None) -> dict:
         "required_products": sorted(required_full_products()),
         "hashes": hashes,
     }
-    atomic_write_json(
-        Path(current.staging) / "session_outputs/full.validation.json", value
-    )
+    atomic_write_json(Path(current.staging) / "session_outputs/full.validation.json", value)
     return value
 
 
@@ -209,9 +200,7 @@ def stock_full_assemble(handle=None) -> dict:
 
     ticker = normalize_symbol(ticker)
     draft_root = (
-        Path(current.staging)
-        / "analyze"
-        / f"{ticker}_{request['analysis_date'].replace('-', '')}"
+        Path(current.staging) / "analyze" / f"{ticker}_{request['analysis_date'].replace('-', '')}"
     )
     scratch = Path(current.staging) / "session_outputs/assemble_scratch"
     shutil.rmtree(scratch, ignore_errors=True)
@@ -293,17 +282,13 @@ def _macro_market_payload(current, macro_state_path: Path | str | None = None) -
     return payload
 
 
-def macro_lite_prepare(
-    handle=None, *, macro_state_path: Path | str | None = None
-) -> dict:
+def macro_lite_prepare(handle=None, *, macro_state_path: Path | str | None = None) -> dict:
     current = handle or _active_handle()
     from autoresearch.scan.strategist_pack import project
 
     payload = _macro_market_payload(current, macro_state_path)
     projection = project(payload)
-    atomic_write_json(
-        Path(current.staging) / "session_outputs/strategist_pack.json", projection
-    )
+    atomic_write_json(Path(current.staging) / "session_outputs/strategist_pack.json", projection)
     return {
         "pack": projection["pack"],
         "macro_state": projection["pack"].get("macro_state"),
@@ -327,9 +312,7 @@ def macro_lite_validate(handle=None) -> dict:
         "sections": sorted(sections),
         "report_sha256": descriptor["sha256"],
     }
-    atomic_write_json(
-        Path(current.staging) / "session_outputs/macro.lite.validation.json", value
-    )
+    atomic_write_json(Path(current.staging) / "session_outputs/macro.lite.validation.json", value)
     return value
 
 
@@ -350,9 +333,7 @@ def macro_prepare_publication(handle=None) -> dict:
         "output_name": f"{current.run_id}_market_view.md",
         "report_sha256": report["sha256"],
     }
-    atomic_write_json(
-        Path(current.staging) / "session_outputs/macro.publication.json", value
-    )
+    atomic_write_json(Path(current.staging) / "session_outputs/macro.publication.json", value)
     return value
 
 
@@ -385,9 +366,7 @@ def macro_full_validate(handle=None) -> dict:
         "required_products": sorted(required_macro_products()),
         "hashes": hashes,
     }
-    atomic_write_json(
-        Path(current.staging) / "session_outputs/macro.full.validation.json", value
-    )
+    atomic_write_json(Path(current.staging) / "session_outputs/macro.full.validation.json", value)
     return value
 
 
@@ -403,15 +382,18 @@ def macro_full_assemble(handle=None) -> dict:
     output = Path(current.staging) / "session_outputs"
     scratch = output / "macro_assembled"
     shutil.rmtree(scratch, ignore_errors=True)
-    if macro_assemble.main(
-        [
-            str(root),
-            "--output-dir",
-            str(scratch),
-            "--state-out-dir",
-            str(output),
-        ]
-    ) != 0:
+    if (
+        macro_assemble.main(
+            [
+                str(root),
+                "--output-dir",
+                str(scratch),
+                "--state-out-dir",
+                str(output),
+            ]
+        )
+        != 0
+    ):
         raise RuntimeError("existing macro assembler rejected full products")
     reports = sorted(scratch.glob("*_summary.md"))
     if len(reports) != 1:
@@ -498,7 +480,13 @@ def sector_prepare(handle=None, *, scan_root: Path | str | None = None) -> dict:
     }
     atomic_write_json(output / "sector.inputs.json", manifest)
     atomic_write_json(output / "sector.pack.json", pack)
-    reuse_value = {"schema_version": 1, "reused": False, "source": None, "sha256": None, "body": None}
+    reuse_value = {
+        "schema_version": 1,
+        "reused": False,
+        "source": None,
+        "sha256": None,
+        "body": None,
+    }
     if request["requested_mode"] == "LITE" and source_kind == "existing_scan":
         from autoresearch.sector.reuse import apply_reuse, find_reusable
 
@@ -506,7 +494,12 @@ def sector_prepare(handle=None, *, scan_root: Path | str | None = None) -> dict:
         if industry in found:
             reuse_root = Path(current.staging) / "sector_reuse"
             apply_reuse(analysis_date, found, root=reuse_root)
-            reused_path = reuse_root / analysis_date / "sector_briefs" / f"{sector_pack_module._safe(industry)}.md"
+            reused_path = (
+                reuse_root
+                / analysis_date
+                / "sector_briefs"
+                / f"{sector_pack_module._safe(industry)}.md"
+            )
             body = reused_path.read_text(encoding="utf-8")
             reuse_value = {
                 "schema_version": 1,
@@ -631,9 +624,7 @@ def _summary_values(text: str) -> dict[str, str]:
     return values
 
 
-def _dossier_permissions(
-    skeleton: str, *, target: Path, opening_hash: str | None
-) -> dict:
+def _dossier_permissions(skeleton: str, *, target: Path, opening_hash: str | None) -> dict:
     deterministic = {}
     for index in (2, 3, 5, 6, 7):
         block = dossier_schema._section_block(skeleton, dossier_schema.SECTIONS[index])
@@ -652,9 +643,7 @@ def _dossier_permissions(
         "schema_version": 1,
         "target": str(target),
         "opening_target_sha256": opening_hash,
-        "frontmatter": {
-            key: value for key, value in frontmatter.items() if key != "initiated"
-        },
+        "frontmatter": {key: value for key, value in frontmatter.items() if key != "initiated"},
         "deterministic_sections": deterministic,
         "protected_prefixes": prefixes,
         "summary_fixed": {anchor: summary[anchor] for anchor in ("带位:", "判例:")},
@@ -670,13 +659,22 @@ def dossier_build_skeleton(handle=None, *, target_path: Path | str | None = None
         if target_path is not None
         else dossier_schema.dossier_path(request["subject"])
     )
-    opening_hash = sha256_bytes(target.read_bytes()) if target.is_file() else None
+    opening_bytes = (
+        target.read_bytes()
+        if target_path is not None and target.is_file()
+        else (
+            None
+            if target_path is not None
+            else dossier_schema.read_dossier_bytes(request["subject"])
+        )
+    )
+    opening_hash = sha256_bytes(opening_bytes) if opening_bytes is not None else None
     skeleton_path = output / "dossier.skeleton.md"
-    if target.is_file():
-        existing = target.read_text(encoding="utf-8")
+    if opening_bytes is not None:
+        existing = opening_bytes.decode("utf-8")
         if dossier_schema.parse_frontmatter(existing).get("initiated"):
             raise RuntimeError("dossier is already initialized")
-        atomic_write_bytes(skeleton_path, target.read_bytes())
+        atomic_write_bytes(skeleton_path, opening_bytes)
         issues = dossier_schema.lint_dossier(existing)
     else:
         built = dossier_builder.build_skeleton(
@@ -691,9 +689,7 @@ def dossier_build_skeleton(handle=None, *, target_path: Path | str | None = None
     if issues:
         raise RuntimeError(f"dossier skeleton is invalid: {issues}")
     skeleton = skeleton_path.read_text(encoding="utf-8")
-    permissions = _dossier_permissions(
-        skeleton, target=target, opening_hash=opening_hash
-    )
+    permissions = _dossier_permissions(skeleton, target=target, opening_hash=opening_hash)
     atomic_write_json(output / "dossier.permissions.json", permissions)
     return permissions
 
@@ -708,7 +704,9 @@ def _validate_dossier_candidate(current) -> dict:
     meta = dossier_schema.parse_frontmatter(candidate)
     if meta.get("initiated") != request["analysis_date"]:
         raise RuntimeError("dossier initiated date is missing or incorrect")
-    if {key: value for key, value in meta.items() if key != "initiated"} != permissions["frontmatter"]:
+    if {key: value for key, value in meta.items() if key != "initiated"} != permissions[
+        "frontmatter"
+    ]:
         raise RuntimeError("dossier deterministic frontmatter changed")
     for raw_index, expected in permissions["deterministic_sections"].items():
         index = int(raw_index) - 1
@@ -719,7 +717,10 @@ def _validate_dossier_candidate(current) -> dict:
         index = int(raw_index) - 1
         block = dossier_schema._section_block(candidate, dossier_schema.SECTIONS[index])
         prefix = expected["text"]
-        if not block.startswith(prefix) or sha256_bytes(prefix.encode("utf-8")) != expected["sha256"]:
+        if (
+            not block.startswith(prefix)
+            or sha256_bytes(prefix.encode("utf-8")) != expected["sha256"]
+        ):
             raise RuntimeError(f"dossier deterministic section prefix changed: {raw_index}")
     if dossier_builder._LLM_ANCHOR in candidate:
         raise RuntimeError("dossier research anchors remain unfinished")
@@ -736,9 +737,7 @@ def _validate_dossier_candidate(current) -> dict:
         "contract": "dossier.v1",
         "code": request["subject"],
         "candidate_sha256": descriptor["sha256"],
-        "summary_tokens": dossier_schema.est_tokens(
-            dossier_schema._summary_block(candidate)
-        ),
+        "summary_tokens": dossier_schema.est_tokens(dossier_schema._summary_block(candidate)),
     }
 
 
@@ -756,6 +755,34 @@ def dossier_prepare_publication(handle=None) -> dict:
     candidate = artifacts.bind_artifact_hash(current, "dossier.candidate")
     if validation.get("candidate_sha256") != candidate["sha256"]:
         raise RuntimeError("validated dossier candidate changed before publication")
+    from autoresearch.common.published_state import read_committed_bytes
+    from autoresearch.dossier import pool as dossier_pool
+    from autoresearch.session_agent.workflows.dossier import build_pool_candidate
+
+    pool_path = Path(dossier_pool.POOL_PATH)
+    committed_pool = read_committed_bytes(
+        "dossier.coverage_pool",
+        state_root=ws.context_root() / "_published_state",
+        reports_root=ws.run_reports_root("dossier-init"),
+    )
+    pool_before = (
+        committed_pool
+        if committed_pool is not None
+        else (pool_path.read_bytes() if pool_path.is_file() else None)
+    )
+    current_pool = (
+        json.loads(committed_pool.decode("utf-8"))
+        if committed_pool is not None
+        else dossier_pool.load_pool(pool_path)
+    )
+    pool_before_sha256 = sha256_bytes(pool_before) if pool_before is not None else None
+    pool_candidate = build_pool_candidate(
+        request["subject"],
+        request.get("name"),
+        current_pool,
+    )
+    pool_candidate_path = Path(current.staging) / "session_outputs/dossier.pool.candidate.json"
+    atomic_write_json(pool_candidate_path, pool_candidate)
     value = {
         "schema_version": 1,
         "kind": "dossier-init",
@@ -765,6 +792,8 @@ def dossier_prepare_publication(handle=None) -> dict:
         "analysis_date": request["analysis_date"],
         "code": request["subject"],
         "candidate_sha256": candidate["sha256"],
+        "pool_before_sha256": pool_before_sha256,
+        "pool_after_sha256": sha256_bytes(pool_candidate_path.read_bytes()),
     }
     atomic_write_json(Path(current.staging) / "session_outputs/dossier.publication.json", value)
     return value
@@ -801,9 +830,7 @@ def scan_gate1(handle=None) -> dict:
     current = handle or _active_handle()
     from autoresearch.scan.gates import gate1_decide, record_gate_stage_result
 
-    result = gate1_decide(
-        Path(current.staging), force_full=bool(_request(current)["force_full"])
-    )
+    result = gate1_decide(Path(current.staging), force_full=bool(_request(current)["force_full"]))
     record_gate_stage_result(Path(current.staging), result)
     budget = result.get("l4_budget")
     if result.get("ok") and (type(budget) is not int or budget < 1):
@@ -826,9 +853,7 @@ def scan_sector_prepare(handle=None) -> dict:
     )
     found = sector_reuse.find_reusable(current.analysis_date, sectors)
     if found:
-        sector_reuse.apply_reuse(
-            current.analysis_date, found, root=ws.scan_root()
-        )
+        sector_reuse.apply_reuse(current.analysis_date, found, root=ws.scan_root())
     pack_dir = scan_dir / "session_inputs/sectors"
     rows = []
     for industry in sectors:
@@ -1398,7 +1423,12 @@ def scan_usage(handle=None) -> dict:
 
 def scan_observe(handle=None) -> dict:
     current = handle or _active_handle()
-    from autoresearch.scan.post_run import publish_run_observation
+    from autoresearch.common.published_state import read_committed_bytes
+    from autoresearch.dossier import pool as dossier_pool
+    from autoresearch.scan.post_run import (
+        build_finalist_pool_candidate,
+        publish_run_observation,
+    )
     from autoresearch.session_agent.progress import scan_progress
     from autoresearch.session_agent.workflows.scan import directory_manifest
 
@@ -1416,6 +1446,27 @@ def scan_observe(handle=None) -> dict:
         if not source.is_file():
             raise RuntimeError(f"observed report is missing: {name}")
         atomic_write_bytes(fixed / name, source.read_bytes())
+    committed_pool = read_committed_bytes(
+        "dossier.coverage_pool",
+        state_root=ws.context_root() / "_published_state",
+        reports_root=ws.run_reports_root("dossier-init"),
+    )
+    if committed_pool is not None:
+        pool_before = committed_pool
+        current_pool = json.loads(committed_pool.decode("utf-8"))
+    else:
+        pool_path = Path(dossier_pool.POOL_PATH)
+        pool_before = pool_path.read_bytes() if pool_path.is_file() else None
+        current_pool = dossier_pool.load_pool(pool_path)
+    prepared_pool = build_finalist_pool_candidate(
+        scan_dir,
+        current.analysis_date,
+        current_pool,
+    )
+    pool_candidate, _ = prepared_pool or (current_pool, [])
+    pool_candidate_path = scan_dir / "session_outputs/scan.pool.candidate.json"
+    atomic_write_json(pool_candidate_path, pool_candidate)
+    pool_mutation = prepared_pool is not None and pool_candidate != current_pool
     plan = json.loads((scan_dir / "session_outputs/report.plan.json").read_text(encoding="utf-8"))
     bundle = {
         "schema_version": 1,
@@ -1425,6 +1476,9 @@ def scan_observe(handle=None) -> dict:
         "folder": plan["folder"],
         "candidate_relative": plan["candidate_relative"],
         "files": directory_manifest(candidate),
+        "pool_mutation": pool_mutation,
+        "pool_before_sha256": sha256_bytes(pool_before) if pool_before is not None else None,
+        "pool_after_sha256": sha256_bytes(pool_candidate_path.read_bytes()),
     }
     atomic_write_json(scan_dir / "session_outputs/scan.publication.json", bundle)
     progress = {
@@ -1606,20 +1660,51 @@ if __name__ == "__main__":
 
 __all__ = [
     "research_calculate",
-    "macro_full_assemble", "macro_full_validate", "macro_harvest_run",
-    "macro_lite_prepare", "macro_lite_validate", "macro_prepare_publication",
-    "sector_full_validate", "sector_lite_validate", "sector_prepare",
-    "sector_prepare_publication", "sector_validate",
-    "dossier_build_skeleton", "dossier_prefetch_run", "dossier_prepare_publication",
+    "macro_full_assemble",
+    "macro_full_validate",
+    "macro_harvest_run",
+    "macro_lite_prepare",
+    "macro_lite_validate",
+    "macro_prepare_publication",
+    "sector_full_validate",
+    "sector_lite_validate",
+    "sector_prepare",
+    "sector_prepare_publication",
+    "sector_validate",
+    "dossier_build_skeleton",
+    "dossier_prefetch_run",
+    "dossier_prepare_publication",
     "dossier_validate",
-    "stock_full_assemble", "stock_full_validate", "stock_prepare_publication",
+    "stock_full_assemble",
+    "stock_full_validate",
+    "stock_prepare_publication",
     "stock_validate",
-    "scan_frame", "scan_gate1", "scan_gate2_skip", "scan_l3_lint",
-    "scan_l3_repair_apply", "scan_l3_repair_degraded", "scan_l3_repair_skip",
-    "scan_assemble", "scan_gate4", "scan_l3_merge", "scan_l3_prepare", "scan_l4_complete",
-    "scan_l4_finalize", "scan_l4_intel_disabled",
-    "scan_l4_intel_status", "scan_l4_prepare", "scan_l4_skip", "scan_l4_slim",
-    "scan_observe", "scan_prelude", "scan_review_decide", "scan_review_none", "scan_review_plan",
-    "scan_review_skip", "scan_review3_skip", "scan_sector_prepare", "scan_sector_skip",
+    "scan_frame",
+    "scan_gate1",
+    "scan_gate2_skip",
+    "scan_l3_lint",
+    "scan_l3_repair_apply",
+    "scan_l3_repair_degraded",
+    "scan_l3_repair_skip",
+    "scan_assemble",
+    "scan_gate4",
+    "scan_l3_merge",
+    "scan_l3_prepare",
+    "scan_l4_complete",
+    "scan_l4_finalize",
+    "scan_l4_intel_disabled",
+    "scan_l4_intel_status",
+    "scan_l4_prepare",
+    "scan_l4_skip",
+    "scan_l4_slim",
+    "scan_observe",
+    "scan_prelude",
+    "scan_review_decide",
+    "scan_review_none",
+    "scan_review_plan",
+    "scan_review_skip",
+    "scan_review3_skip",
+    "scan_sector_prepare",
+    "scan_sector_skip",
     "scan_usage",
 ]
