@@ -100,7 +100,7 @@ def build_dossier_plan(request: dict, handle) -> dict:
             "DETERMINISTIC",
             code,
             dependencies=[f"{prefix}.lint"],
-            inputs=["dossier.candidate", "dossier.validation"],
+            inputs=["dossier.candidate", "dossier.validation", "dossier.permissions"],
             outputs=["dossier.pool.candidate", "dossier.publication.bundle"],
             contract="dossier.publication.v1",
             operation="dossier.publish",

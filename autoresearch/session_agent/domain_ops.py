@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import re
 import shutil
@@ -12,7 +13,11 @@ from pathlib import Path
 from autoresearch.agents.utils.rating import parse_rating
 from autoresearch.analyze import assemble as stock_assemble
 from autoresearch.common import workspace as ws
-from autoresearch.common.atomic import atomic_write_bytes, atomic_write_json, sha256_bytes
+from autoresearch.common.atomic import (
+    atomic_write_bytes,
+    atomic_write_json,
+    sha256_bytes,
+)
 from autoresearch.contracts.agent_output import L4_CARD
 from autoresearch.dossier import (
     builder as dossier_builder,
@@ -510,23 +515,38 @@ def macro_full_assemble(handle=None) -> dict:
     return value
 
 
-def sector_prepare(handle=None, *, scan_root: Path | str | None = None) -> dict:
+_SECTOR_INPUT_NAMES = frozenset(
+    {"L1_scored_full.csv", "L2_gbdt_top200.csv", "sectors.csv", "calendar.csv", "meta.json"}
+)
+
+
+def _encode_payload(payload: bytes) -> str:
+    return base64.b64encode(payload).decode("ascii")
+
+
+def _decode_payload(payload: object) -> bytes:
+    if not isinstance(payload, str):
+        raise TypeError("frozen file payload must be base64 text")
+    return base64.b64decode(payload.encode("ascii"), validate=True)
+
+
+def collect_sector_snapshot(handle=None, *, scan_root: Path | str | None = None) -> dict:
+    """Collect the exact scan/brief/vendor inputs consumed by sector preparation."""
     current = handle or _active_handle()
     request = _request(current)
     analysis_date = request["analysis_date"]
     industry = request["subject"]
     source_root = Path(scan_root) if scan_root is not None else ws.scan_root()
     source = source_root / analysis_date
-    input_dir = Path(current.staging) / "sector_inputs" / analysis_date
-    input_dir.mkdir(parents=True, exist_ok=True)
     source_kind = "existing_scan"
+    input_files: dict[str, str] = {}
     l1_source = source / "L1_scored_full.csv"
     if l1_source.is_file():
-        shutil.copyfile(l1_source, input_dir / "L1_scored_full.csv")
-        for name in ("L2_gbdt_top200.csv", "sectors.csv", "calendar.csv", "meta.json"):
+        input_files[l1_source.name] = _encode_payload(l1_source.read_bytes())
+        for name in sorted(_SECTOR_INPUT_NAMES - {l1_source.name}):
             candidate = source / name
             if candidate.is_file():
-                shutil.copyfile(candidate, input_dir / name)
+                input_files[name] = _encode_payload(candidate.read_bytes())
     else:
         source_kind = "generated_frame"
         from autoresearch.scan.frame import build_market_frame
@@ -534,7 +554,79 @@ def sector_prepare(handle=None, *, scan_root: Path | str | None = None) -> dict:
         frame, _ = build_market_frame(
             analysis_date, cap_floor_yi=30.0, include_bj=True, source="tushare"
         )
-        frame.to_csv(input_dir / "L1_scored_full.csv", index=False)
+        input_files["L1_scored_full.csv"] = _encode_payload(
+            frame.to_csv(index=False).encode("utf-8")
+        )
+    readthrough = None
+    if request["requested_mode"] == "FULL":
+        from autoresearch.sector.pack import readthrough_block
+
+        readthrough = readthrough_block(industry, analysis_date)
+    reuse = {
+        "reused": False,
+        "source": None,
+        "previous_date": None,
+        "shift_pp": None,
+        "source_body": None,
+    }
+    if request["requested_mode"] == "LITE" and source_kind == "existing_scan":
+        from autoresearch.sector.reuse import find_reusable
+
+        found = find_reusable(analysis_date, [industry], root=source_root)
+        if industry in found:
+            item = found[industry]
+            reuse = {
+                "reused": True,
+                "source": item["src"],
+                "previous_date": item["prev"],
+                "shift_pp": item["shift_pp"],
+                "source_body": Path(item["src"]).read_text(encoding="utf-8"),
+            }
+    return {
+        "schema_version": 1,
+        "engine": current.engine,
+        "analysis_date": analysis_date,
+        "industry": industry,
+        "mode": request["requested_mode"],
+        "source": source_kind,
+        "input_files": input_files,
+        "readthrough": readthrough,
+        "reuse": reuse,
+    }
+
+
+def render_sector_snapshot(snapshot: dict, *, staging_root: Path | str) -> dict[str, Path]:
+    """Rebuild sector pack/reuse outputs from one frozen source snapshot only."""
+    required = {
+        "schema_version",
+        "engine",
+        "analysis_date",
+        "industry",
+        "mode",
+        "source",
+        "input_files",
+        "readthrough",
+        "reuse",
+    }
+    if set(snapshot) != required or snapshot["schema_version"] != 1:
+        raise ValueError("invalid sector snapshot contract")
+    if snapshot["mode"] not in {"FULL", "LITE"}:
+        raise ValueError("invalid sector snapshot mode")
+    if snapshot["source"] not in {"existing_scan", "generated_frame"}:
+        raise ValueError("invalid sector snapshot source")
+    input_files = snapshot["input_files"]
+    if (
+        not isinstance(input_files, dict)
+        or "L1_scored_full.csv" not in input_files
+        or not set(input_files) <= _SECTOR_INPUT_NAMES
+    ):
+        raise ValueError("invalid sector input file set")
+    root = Path(staging_root)
+    input_dir = root / "sector_inputs" / snapshot["analysis_date"]
+    input_dir.mkdir(parents=True, exist_ok=True)
+    for name, payload in input_files.items():
+        atomic_write_bytes(input_dir / name, _decode_payload(payload))
+
     import pandas as pd
 
     l1 = pd.read_csv(input_dir / "L1_scored_full.csv", dtype={"code": str})
@@ -554,20 +646,20 @@ def sector_prepare(handle=None, *, scan_root: Path | str | None = None) -> dict:
     }
     from autoresearch.sector import pack as sector_pack_module
 
-    pack = (
-        sector_pack_module._sector_pack_staging(industry, input_dir)
-        if request["requested_mode"] == "LITE"
-        else sector_pack_module.sector_pack(industry, input_dir)
-    )
+    pack = sector_pack_module._sector_pack_staging(snapshot["industry"], input_dir)
+    if snapshot["mode"] == "FULL" and snapshot["readthrough"]:
+        pack["readthrough"] = snapshot["readthrough"]
     if int(pack.get("n_market") or 0) < 1:
-        raise ValueError(f"industry is absent from verified market inputs: {industry}")
-    output = Path(current.staging) / "session_outputs"
+        raise ValueError(
+            f"industry is absent from verified market inputs: {snapshot['industry']}"
+        )
+    output = root / "session_outputs"
     manifest = {
         "schema_version": 1,
-        "engine": current.engine,
-        "analysis_date": analysis_date,
-        "industry": industry,
-        "source": source_kind,
+        "engine": snapshot["engine"],
+        "analysis_date": snapshot["analysis_date"],
+        "industry": snapshot["industry"],
+        "source": snapshot["source"],
         "input_hashes": input_hashes,
     }
     atomic_write_json(output / "sector.inputs.json", manifest)
@@ -579,29 +671,50 @@ def sector_prepare(handle=None, *, scan_root: Path | str | None = None) -> dict:
         "sha256": None,
         "body": None,
     }
-    if request["requested_mode"] == "LITE" and source_kind == "existing_scan":
-        from autoresearch.sector.reuse import apply_reuse, find_reusable
+    reuse = snapshot["reuse"]
+    if reuse.get("reused"):
+        from autoresearch.sector.reuse import render_reused_brief
 
-        found = find_reusable(analysis_date, [industry], root=source_root)
-        if industry in found:
-            reuse_root = Path(current.staging) / "sector_reuse"
-            apply_reuse(analysis_date, found, root=reuse_root)
-            reused_path = (
-                reuse_root
-                / analysis_date
-                / "sector_briefs"
-                / f"{sector_pack_module._safe(industry)}.md"
-            )
-            body = reused_path.read_text(encoding="utf-8")
-            reuse_value = {
-                "schema_version": 1,
-                "reused": True,
-                "source": found[industry]["src"],
-                "sha256": sha256_bytes(body.encode("utf-8")),
-                "body": body,
-            }
+        body = render_reused_brief(
+            reuse["previous_date"], reuse["shift_pp"], reuse["source_body"]
+        )
+        reuse_value = {
+            "schema_version": 1,
+            "reused": True,
+            "source": reuse["source"],
+            "sha256": sha256_bytes(body.encode("utf-8")),
+            "body": body,
+        }
     atomic_write_json(output / "sector.reuse.json", reuse_value)
-    return {**manifest, "pack": pack, "reuse": reuse_value}
+    return {
+        "manifest": output / "sector.inputs.json",
+        "pack": output / "sector.pack.json",
+        "reuse": output / "sector.reuse.json",
+    }
+
+
+def sector_prepare(handle=None, *, scan_root: Path | str | None = None) -> dict:
+    current = handle or _active_handle()
+    snapshot = collect_sector_snapshot(current, scan_root=scan_root)
+    from autoresearch.trace.source_receipts import record_active_response
+
+    record_active_response(
+        provider="sector.inputs",
+        endpoint="sector.prepare.snapshot.v1",
+        params={
+            "analysis_date": snapshot["analysis_date"],
+            "industry": snapshot["industry"],
+            "mode": snapshot["mode"],
+        },
+        outcome=snapshot,
+        consumer_artifact_ids=["sector.input.manifest", "sector.pack", "sector.reuse"],
+    )
+    rendered = render_sector_snapshot(snapshot, staging_root=current.staging)
+    return {
+        **json.loads(rendered["manifest"].read_text(encoding="utf-8")),
+        "pack": json.loads(rendered["pack"].read_text(encoding="utf-8")),
+        "reuse": json.loads(rendered["reuse"].read_text(encoding="utf-8")),
+    }
 
 
 _SECTOR_DIRECTIONS = re.compile(r"超配|低配|回避|买入|卖出|买卖|看多|看空")
@@ -691,6 +804,16 @@ def sector_prepare_publication(handle=None) -> dict:
     return value
 
 
+def render_dossier_prefetch_snapshot(snapshot: dict, *, output_path: Path | str) -> Path:
+    if not isinstance(snapshot, dict) or snapshot.get("schema_version") != 1:
+        raise ValueError("invalid dossier prefetch snapshot")
+    data = snapshot.get("data")
+    if not isinstance(data, dict):
+        raise TypeError("dossier prefetch data must be an object")
+    payload = json.dumps(data, ensure_ascii=False, indent=1).encode("utf-8")
+    return atomic_write_bytes(output_path, payload)
+
+
 def dossier_prefetch_run(handle=None) -> dict:
     current = handle or _active_handle()
     request = _request(current)
@@ -699,7 +822,21 @@ def dossier_prefetch_run(handle=None) -> dict:
         request["subject"], request["analysis_date"], out_dir=output / "prefetch"
     )
     source = output / "prefetch" / f"{request['subject']}.json"
-    atomic_write_bytes(output / "dossier.prefetch.json", source.read_bytes())
+    snapshot = {"schema_version": 1, "data": data}
+    from autoresearch.trace.source_receipts import record_active_response
+
+    record_active_response(
+        provider="dossier.prefetch",
+        endpoint="dossier.prefetch.snapshot.v1",
+        params={
+            "analysis_date": request["analysis_date"],
+            "code": request["subject"],
+        },
+        outcome=snapshot,
+        consumer_artifact_ids=["dossier.prefetch"],
+        raw_bytes=source.read_bytes(),
+    )
+    render_dossier_prefetch_snapshot(snapshot, output_path=output / "dossier.prefetch.json")
     return {
         "code": request["subject"],
         "degraded": bool(data.get("notes")),
@@ -742,10 +879,56 @@ def _dossier_permissions(skeleton: str, *, target: Path, opening_hash: str | Non
     }
 
 
-def dossier_build_skeleton(handle=None, *, target_path: Path | str | None = None) -> dict:
+_DOSSIER_STAGING_FILES = frozenset({"seats.csv", "pledge.csv", "calendar.csv"})
+
+
+def _dossier_scan_sources(scan_root: Path, code: str, analysis_date: str) -> dict[str, str]:
+    if not scan_root.is_dir():
+        return {}
+    days = sorted(
+        (path for path in scan_root.iterdir() if path.is_dir() and path.name[:2] == "20"),
+        key=lambda path: path.name,
+        reverse=True,
+    )
+    selected: set[Path] = set()
+    latest = next(
+        (
+            day
+            for day in days
+            if any((day / name).is_file() for name in _DOSSIER_STAGING_FILES)
+        ),
+        None,
+    )
+    if latest is not None:
+        selected.update(
+            latest / name for name in _DOSSIER_STAGING_FILES if (latest / name).is_file()
+        )
+    for day in [item for item in days if item.name != analysis_date][
+        : dossier_builder._PRECEDENT_WINDOW
+    ]:
+        selected.update(
+            path
+            for path in (day / "finalists.csv", day / "verify.csv")
+            if path.is_file()
+        )
+        details = day / "details"
+        if details.is_dir():
+            selected.update(path for path in details.glob(f"{code}*.md") if path.is_file())
+    return {
+        path.relative_to(scan_root).as_posix(): _encode_payload(path.read_bytes())
+        for path in sorted(selected)
+        if not path.is_symlink()
+    }
+
+
+def collect_dossier_skeleton_snapshot(
+    handle=None,
+    *,
+    target_path: Path | str | None = None,
+    scan_root: Path | str | None = None,
+) -> dict:
     current = handle or _active_handle()
     request = _request(current)
-    output = Path(current.staging) / "session_outputs"
     target = (
         Path(target_path)
         if target_path is not None
@@ -760,8 +943,70 @@ def dossier_build_skeleton(handle=None, *, target_path: Path | str | None = None
             else dossier_schema.read_dossier_bytes(request["subject"])
         )
     )
-    opening_hash = sha256_bytes(opening_bytes) if opening_bytes is not None else None
+    source_root = Path(scan_root) if scan_root is not None else ws.scan_root()
+    return {
+        "schema_version": 1,
+        "analysis_date": request["analysis_date"],
+        "code": request["subject"],
+        "name": request.get("name") or "",
+        "target": str(target),
+        "opening_target": (
+            _encode_payload(opening_bytes) if opening_bytes is not None else None
+        ),
+        "scan_files": _dossier_scan_sources(
+            source_root, request["subject"], request["analysis_date"]
+        ),
+    }
+
+
+def _restore_dossier_scan(snapshot: dict, scratch_root: Path) -> Path:
+    scan_root = scratch_root / "scan"
+    scan_files = snapshot.get("scan_files")
+    if not isinstance(scan_files, dict):
+        raise TypeError("dossier scan_files must be an object")
+    code = str(snapshot["code"])
+    for relative, payload in scan_files.items():
+        path = Path(relative)
+        if path.is_absolute() or ".." in path.parts or len(path.parts) not in {2, 3}:
+            raise ValueError("unsafe dossier scan source path")
+        allowed = (
+            len(path.parts) == 2
+            and path.name in {"finalists.csv", "verify.csv", *_DOSSIER_STAGING_FILES}
+        ) or (
+            len(path.parts) == 3
+            and path.parts[1] == "details"
+            and path.name.startswith(code)
+            and path.suffix == ".md"
+        )
+        if not allowed or not re.fullmatch(r"20\d{2}-\d{2}-\d{2}", path.parts[0]):
+            raise ValueError("unregistered dossier scan source path")
+        atomic_write_bytes(scan_root / path, _decode_payload(payload))
+    return scan_root
+
+
+def render_dossier_skeleton_snapshot(
+    snapshot: dict,
+    *,
+    prefetch_path: Path | str,
+    output_dir: Path | str,
+    scratch_root: Path | str,
+) -> dict[str, Path]:
+    required = {
+        "schema_version",
+        "analysis_date",
+        "code",
+        "name",
+        "target",
+        "opening_target",
+        "scan_files",
+    }
+    if set(snapshot) != required or snapshot["schema_version"] != 1:
+        raise ValueError("invalid dossier skeleton snapshot contract")
+    output = Path(output_dir)
     skeleton_path = output / "dossier.skeleton.md"
+    opening = snapshot["opening_target"]
+    opening_bytes = _decode_payload(opening) if opening is not None else None
+    opening_hash = sha256_bytes(opening_bytes) if opening_bytes is not None else None
     if opening_bytes is not None:
         existing = opening_bytes.decode("utf-8")
         if dossier_schema.parse_frontmatter(existing).get("initiated"):
@@ -769,20 +1014,56 @@ def dossier_build_skeleton(handle=None, *, target_path: Path | str | None = None
         atomic_write_bytes(skeleton_path, opening_bytes)
         issues = dossier_schema.lint_dossier(existing)
     else:
-        built = dossier_builder.build_skeleton(
-            request["subject"],
-            request["analysis_date"],
-            name=request.get("name") or "",
-            scan_root=ws.scan_root(),
+        restored_scan = _restore_dossier_scan(snapshot, Path(scratch_root))
+        built = dossier_builder._build_skeleton_unlocked(
+            snapshot["code"],
+            snapshot["analysis_date"],
+            name=snapshot["name"],
+            scan_root=restored_scan,
             output_path=skeleton_path,
-            prefetch_path=output / "dossier.prefetch.json",
+            prefetch_path=prefetch_path,
         )
         issues = built["issues"]
     if issues:
         raise RuntimeError(f"dossier skeleton is invalid: {issues}")
     skeleton = skeleton_path.read_text(encoding="utf-8")
-    permissions = _dossier_permissions(skeleton, target=target, opening_hash=opening_hash)
-    atomic_write_json(output / "dossier.permissions.json", permissions)
+    permissions = _dossier_permissions(
+        skeleton, target=Path(snapshot["target"]), opening_hash=opening_hash
+    )
+    permissions_path = atomic_write_json(output / "dossier.permissions.json", permissions)
+    return {"skeleton": skeleton_path, "permissions": permissions_path}
+
+
+def dossier_build_skeleton(
+    handle=None,
+    *,
+    target_path: Path | str | None = None,
+    scan_root: Path | str | None = None,
+) -> dict:
+    current = handle or _active_handle()
+    output = Path(current.staging) / "session_outputs"
+    snapshot = collect_dossier_skeleton_snapshot(
+        current, target_path=target_path, scan_root=scan_root
+    )
+    from autoresearch.trace.source_receipts import record_active_response
+
+    record_active_response(
+        provider="dossier.opening",
+        endpoint="dossier.skeleton.snapshot.v1",
+        params={
+            "analysis_date": snapshot["analysis_date"],
+            "code": snapshot["code"],
+        },
+        outcome=snapshot,
+        consumer_artifact_ids=["dossier.skeleton", "dossier.permissions"],
+    )
+    rendered = render_dossier_skeleton_snapshot(
+        snapshot,
+        prefetch_path=output / "dossier.prefetch.json",
+        output_dir=output,
+        scratch_root=Path(current.staging) / "dossier_inputs",
+    )
+    permissions = json.loads(rendered["permissions"].read_text(encoding="utf-8"))
     return permissions
 
 
@@ -840,16 +1121,10 @@ def dossier_validate(handle=None) -> dict:
     return value
 
 
-def dossier_prepare_publication(handle=None) -> dict:
-    current = handle or _active_handle()
-    request = _request(current)
-    validation = json.loads(_text(current, "dossier.validation"))
-    candidate = artifacts.bind_artifact_hash(current, "dossier.candidate")
-    if validation.get("candidate_sha256") != candidate["sha256"]:
-        raise RuntimeError("validated dossier candidate changed before publication")
+def collect_dossier_pool_snapshot() -> dict:
+    """Freeze the exact pool version that publication intends to update."""
     from autoresearch.common.published_state import read_committed_bytes
     from autoresearch.dossier import pool as dossier_pool
-    from autoresearch.session_agent.workflows.dossier import build_pool_candidate
 
     pool_path = Path(dossier_pool.POOL_PATH)
     committed_pool = read_committed_bytes(
@@ -867,11 +1142,38 @@ def dossier_prepare_publication(handle=None) -> dict:
         if committed_pool is not None
         else dossier_pool.load_pool(pool_path)
     )
+    return {
+        "schema_version": 1,
+        "pool_before_text": (
+            pool_before.decode("utf-8") if pool_before is not None else None
+        ),
+        "current_pool": current_pool,
+    }
+
+
+def render_dossier_publication_snapshot(current, snapshot: dict) -> list[dict]:
+    """Build the candidate pool and a non-executable CAS mutation plan."""
+    if set(snapshot) != {"schema_version", "pool_before_text", "current_pool"}:
+        raise ValueError("invalid dossier pool snapshot contract")
+    if snapshot["schema_version"] != 1 or not isinstance(snapshot["current_pool"], dict):
+        raise ValueError("invalid dossier pool snapshot")
+    request = _request(current)
+    validation = json.loads(_text(current, "dossier.validation"))
+    candidate = artifacts.bind_artifact_hash(current, "dossier.candidate")
+    if validation.get("candidate_sha256") != candidate["sha256"]:
+        raise RuntimeError("validated dossier candidate changed before publication")
+    permissions = json.loads(_text(current, "dossier.permissions"))
+    from autoresearch.session_agent.workflows.dossier import build_pool_candidate
+
+    pool_before_text = snapshot["pool_before_text"]
+    pool_before = (
+        pool_before_text.encode("utf-8") if pool_before_text is not None else None
+    )
     pool_before_sha256 = sha256_bytes(pool_before) if pool_before is not None else None
     pool_candidate = build_pool_candidate(
         request["subject"],
         request.get("name"),
-        current_pool,
+        snapshot["current_pool"],
     )
     pool_candidate_path = Path(current.staging) / "session_outputs/dossier.pool.candidate.json"
     atomic_write_json(pool_candidate_path, pool_candidate)
@@ -888,7 +1190,49 @@ def dossier_prepare_publication(handle=None) -> dict:
         "pool_after_sha256": sha256_bytes(pool_candidate_path.read_bytes()),
     }
     atomic_write_json(Path(current.staging) / "session_outputs/dossier.publication.json", value)
-    return value
+    return [
+        {
+            "target_key": f"dossier.stock.{request['subject']}",
+            "expected_before_hash": permissions.get("opening_target_sha256"),
+            "after_artifact_id": "dossier.candidate",
+            "after_hash": candidate["sha256"],
+            "apply_policy": "CAS_REPLACE",
+        },
+        {
+            "target_key": "dossier.coverage_pool",
+            "expected_before_hash": pool_before_sha256,
+            "after_artifact_id": "dossier.pool.candidate",
+            "after_hash": value["pool_after_sha256"],
+            "apply_policy": "CAS_REPLACE",
+        },
+    ]
+
+
+def dossier_prepare_publication(handle=None) -> dict:
+    current = handle or _active_handle()
+    snapshot = collect_dossier_pool_snapshot()
+    request = _request(current)
+    from autoresearch.trace.source_receipts import record_active_response
+
+    record_active_response(
+        provider="dossier.pool",
+        endpoint="dossier.pool.snapshot.v1",
+        params={
+            "analysis_date": request["analysis_date"],
+            "code": request["subject"],
+        },
+        outcome=snapshot,
+        consumer_artifact_ids=[
+            "dossier.pool.candidate",
+            "dossier.publication.bundle",
+        ],
+    )
+    render_dossier_publication_snapshot(current, snapshot)
+    return json.loads(
+        (Path(current.staging) / "session_outputs/dossier.publication.json").read_text(
+            encoding="utf-8"
+        )
+    )
 
 
 def scan_frame(handle=None) -> dict:

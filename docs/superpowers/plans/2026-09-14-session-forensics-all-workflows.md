@@ -738,8 +738,8 @@ def test_real_domain_replay_matches(forensic_case_factory, kind, mode):
 
 **Files:** 新增 replay_adapters/sector.py、dossier.py；修改 sector pack/reuse/brief、dossier builder/prefetch/pool/run_profile；新增 `tests/forensics/test_sector_dossier_replay.py`。
 
-- [ ] pack/reuse 的历史 scan 和 brief 来源转换为登记 artifact；不从今天目录找同名文件。
-- [ ] 档案 skeleton、LLM 允许节、确定性节、opening target/pool 全部冻结；pool 更新生成逻辑 patch，原并发保护不变。
+- [x] pack/reuse 的历史 scan 和 brief 来源转换为登记 artifact；不从今天目录找同名文件。
+- [x] 档案 skeleton、LLM 允许节、确定性节、opening target/pool 全部冻结；pool 更新生成逻辑 patch，原并发保护不变。
 
 ```python
 def test_dossier_replay_does_not_update_live_pool(forensic_case_factory):
@@ -752,8 +752,8 @@ def test_dossier_replay_does_not_update_live_pool(forensic_case_factory):
     assert case.snapshot_persistent_tree() == before
 ```
 
-- [ ] 行业 FULL/LITE 与 reuse 命中/失效均覆盖；确定性档案节被 LLM 修改仍按原 lint 失败；新版本档案不能被旧 replay 写回。
-- [ ] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_sector_dossier_replay.py tests/sector tests/dossier tests/session_agent/test_sector_prerequisites.py tests/session_agent/test_dossier_publish.py`。
+- [x] 行业 FULL/LITE 与 reuse 命中/失效均覆盖；确定性档案节被 LLM 修改仍按原 lint 失败；新版本档案不能被旧 replay 写回。
+- [x] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_sector_dossier_replay.py tests/sector tests/dossier tests/session_agent/test_sector_prerequisites.py tests/session_agent/test_dossier_publish.py`。
 
 ### T14｜扫描四模式与全部动态分支（C，P1）
 

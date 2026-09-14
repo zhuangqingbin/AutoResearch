@@ -474,7 +474,7 @@ _CATALOG_META: dict[str, dict[str, object]] = {
     },
     "sector.prepare": {
         "params": _NO_PARAMS,
-        "side_effects": "copies verified same-engine scan inputs or builds one market frame",
+        "side_effects": "freezes exact scan/brief/readthrough sources then renders one sector pack",
         "outputs": ["sector.input.manifest", "sector.pack", "sector.reuse"],
         "callers": ["sector.*.prepare"],
         "errors": ["DATA_CONTRACT", "UNKNOWN_INDUSTRY"],
@@ -501,7 +501,7 @@ _CATALOG_META: dict[str, dict[str, object]] = {
     },
     "dossier.prefetch": {
         "params": _NO_PARAMS,
-        "side_effects": "runs three existing data legs into active run staging",
+        "side_effects": "runs three data legs, freezes their typed result, then renders active staging",
         "outputs": ["dossier.prefetch"],
         "callers": ["dossier.*.prefetch"],
         "errors": ["OPERATION_FAILED"],
@@ -510,7 +510,7 @@ _CATALOG_META: dict[str, dict[str, object]] = {
     },
     "dossier.skeleton": {
         "params": _NO_PARAMS,
-        "side_effects": "builds candidate skeleton and immutable edit permissions",
+        "side_effects": "freezes opening target and bounded scan sources; builds skeleton and permissions",
         "outputs": ["dossier.skeleton", "dossier.permissions"],
         "callers": ["dossier.*.skeleton"],
         "errors": ["ALREADY_INITIALIZED", "INVALID_SKELETON"],
@@ -528,8 +528,8 @@ _CATALOG_META: dict[str, dict[str, object]] = {
     },
     "dossier.publish": {
         "params": _NO_PARAMS,
-        "side_effects": "prepares a run-scoped dossier publication bundle",
-        "outputs": ["dossier.publication.bundle"],
+        "side_effects": "freezes opening pool version; emits candidate pool, bundle, and CAS effect plan",
+        "outputs": ["dossier.pool.candidate", "dossier.publication.bundle"],
         "callers": ["dossier.*.publish"],
         "errors": ["ARTIFACT_CONFLICT"],
         "limits": "no network",

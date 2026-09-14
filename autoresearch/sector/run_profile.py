@@ -38,6 +38,8 @@ def sector_profile(
         ),
         agent_roles=tuple(agent_roles) if agent_roles is not None else default_roles,
         artifact_rules=_RULES,
+        # Session runs replace this legacy default with their frozen plan's actual
+        # operation projection; stage names alone do not prove replay capability.
         replayable_stages=(),
         mode=mode,
         business_status=business_status,

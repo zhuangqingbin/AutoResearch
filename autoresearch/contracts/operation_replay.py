@@ -12,6 +12,7 @@ _SOURCE_REPLAY = frozenset({
     "macro.lite.frame",
     "sector.prepare",
     "dossier.prefetch",
+    "dossier.skeleton",
     "scan.frame",
     "scan.prelude",
     "scan.sector.prepare",
@@ -34,7 +35,6 @@ _COMPUTE = frozenset({
     "macro.full.assemble",
     "sector.validate",
     "sector.publish",
-    "dossier.skeleton",
     "dossier.validate",
     "scan.gate1",
     "scan.sector.skip",
@@ -74,6 +74,9 @@ OPERATION_REPLAY_CLASSIFICATION = {
     for classification, operations in OPERATION_REPLAY_PARTITIONS.items()
     for operation in operations
 }
+OPERATIONS_REQUIRING_SOURCE_RECEIPTS = frozenset(
+    {*_SOURCE_REPLAY, "dossier.publish"}
+)
 _members = [
     operation
     for operations in OPERATION_REPLAY_PARTITIONS.values()
@@ -93,5 +96,6 @@ def operation_replay_classification(operation: str) -> str:
 __all__ = [
     "OPERATION_REPLAY_CLASSIFICATION",
     "OPERATION_REPLAY_PARTITIONS",
+    "OPERATIONS_REQUIRING_SOURCE_RECEIPTS",
     "operation_replay_classification",
 ]

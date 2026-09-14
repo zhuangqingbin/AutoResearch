@@ -49,6 +49,10 @@ def main(argv: list[str] | None = None) -> int:
             from autoresearch.session_agent.replay_adapters.stock import execute
         elif operation.startswith("macro."):
             from autoresearch.session_agent.replay_adapters.macro import execute
+        elif operation.startswith("sector."):
+            from autoresearch.session_agent.replay_adapters.sector import execute
+        elif operation.startswith("dossier."):
+            from autoresearch.session_agent.replay_adapters.dossier import execute
         else:
             raise KeyError(f"no domain replay adapter: {operation}")
         effects = execute(context.unit, context)

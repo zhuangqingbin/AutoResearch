@@ -19,20 +19,9 @@ from autoresearch.contracts.forensic import (
     validate_evidence_plan,
     validate_task_evidence,
 )
+from autoresearch.contracts.operation_replay import OPERATIONS_REQUIRING_SOURCE_RECEIPTS
 from autoresearch.contracts.session_plan import validate_expansion, validate_plan
 from autoresearch.session_agent import artifacts, plan as plan_service
-
-_SOURCE_OPERATIONS = frozenset({
-    "stock.harvest",
-    "macro.harvest",
-    "macro.lite.frame",
-    "sector.prepare",
-    "dossier.prefetch",
-    "scan.frame",
-    "scan.prelude",
-    "scan.sector.prepare",
-    "scan.l4.slim",
-})
 
 
 def _read_json(path: Path) -> dict:
@@ -131,7 +120,7 @@ def _requirements(task: dict, state: str) -> list[str]:
         required.extend(["outputs", "accepted_receipt"])
     if task["kind"] == "DETERMINISTIC":
         required.append("command_capture")
-        if task["operation"] in _SOURCE_OPERATIONS:
+        if task["operation"] in OPERATIONS_REQUIRING_SOURCE_RECEIPTS:
             required.append("source_receipts")
     else:
         required.append("transcript")

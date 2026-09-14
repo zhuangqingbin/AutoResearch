@@ -31,6 +31,8 @@ def dossier_profile(
         expected_stages=vocab.DOSSIER_STAGES,
         agent_roles=("dossier.init",) if agent_roles is None else tuple(agent_roles),
         artifact_rules=_RULES,
+        # Session runs project this from the exact deterministic operations that
+        # reached their EvidencePlan; legacy runs must not advertise that proof.
         replayable_stages=(),
         mode=mode,
         business_status=business_status,

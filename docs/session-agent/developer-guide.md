@@ -281,6 +281,20 @@ global-tape/scan-meta；validation JSON 里的 hash 清单不能替代这些输�
 生产 operation 投影，并在 `verification/profile.json` 原样恢复；legacy profile 仍保持空能力，
 不会凭阶段名字冒充执行过 ReplayPlan。
 
+sector/dossier 也使用同一离线适配协议。`sector.prepare` 把实际消费的当日 scan CSV/JSON
+字节、历史 brief 原文、TTL 判定结果及 FULL 才允许的 readthrough 返回合并为
+`sector.prepare.snapshot.v1`；renderer 在 scratch 中重建输入目录、缺失时重算 L2，并从冻结
+brief 生成复用 banner。后续 validate/publish 只消费登记 artifact，因此回放不会遍历当前日期目录
+或拾取后来生成的同名 brief。
+
+档案链分成三个来源边界：三腿预取为 `dossier.prefetch.snapshot.v1`；骨架生成冻结开场档案字节
+和最多十个历史扫描日中真正可影响 §4/§6/§7 的文件，形成
+`dossier.skeleton.snapshot.v1`；发布前把 committed/live pool 的精确版本冻结为
+`dossier.pool.snapshot.v1`。骨架 renderer 在隔离 scan 树上重算确定性节和 permissions，候选档案
+仍作为模型产出 `EVIDENCE_ONLY` 回注，原 lint 会重新核对所有保护段。发布重放只生成两条完整
+`CAS_REPLACE` StateMutation（档案与 coverage pool），不执行 mutation；即使真实档案或 pool 已有
+更新版本，历史 capsule 也只能报告 effect plan，不能写回。
+
 ## 6. 恢复与故障判断
 
 ```bash

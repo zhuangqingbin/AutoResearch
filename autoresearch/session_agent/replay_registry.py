@@ -8,6 +8,7 @@ from pathlib import Path
 
 from autoresearch.common.atomic import canonical_json, sha256_bytes, sha256_file
 from autoresearch.contracts.forensic import validate_evidence_plan, validate_task_evidence
+from autoresearch.contracts.operation_replay import OPERATIONS_REQUIRING_SOURCE_RECEIPTS
 from autoresearch.contracts.replay import replay_plan_hash, validate_replay_plan
 from autoresearch.contracts.session_plan import validate_expansion, validate_plan
 from autoresearch.session_agent.operations import replay_classification
@@ -197,7 +198,7 @@ def build_replay_plan(handle) -> dict:
                 ref["artifact_id"] for ref in input_refs
             }:
                 input_refs.append(session_ref)
-        if mode == "SOURCE_REPLAY" and not source_receipt_ids:
+        if operation in OPERATIONS_REQUIRING_SOURCE_RECEIPTS and not source_receipt_ids:
             source_receipt_ids = ["0" * 64]
         if mode in {"EVIDENCE_ONLY", "CONTROL_ONLY"}:
             source_receipt_ids = []

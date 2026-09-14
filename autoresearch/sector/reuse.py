@@ -90,6 +90,16 @@ def find_reusable(date: str, industries, root: Path | str | None = None,
     return out
 
 
+def render_reused_brief(previous_date: str, shift_pp: float, body: str) -> str:
+    """Render the immutable reuse banner around an already captured prior brief."""
+    banner = (
+        f"> ♻️ 复用自 {previous_date} 的行业 brief(regime 同 · 中位60日动量位移 "
+        f"{shift_pp}pp ≤ 3)。失效条件:regime 翻转 / 行业动量位移 >3pp / "
+        f"重大行业级公告。\n\n"
+    )
+    return banner + body
+
+
 def apply_reuse(date: str, found: dict[str, dict], root: Path | str = _WS_SCAN_ROOT) -> int:
     """把可复用 brief 拷到今日 sector_briefs/,顶部 ♻️banner(带失效条件)。返回份数。"""
     n = 0
@@ -97,10 +107,10 @@ def apply_reuse(date: str, found: dict[str, dict], root: Path | str = _WS_SCAN_R
         dst = brief_path(Path(root) / date, ind)
         dst.parent.mkdir(parents=True, exist_ok=True)
         body = Path(info["src"]).read_text(encoding="utf-8")
-        banner = (f"> ♻️ 复用自 {info['prev']} 的行业 brief(regime 同 · 中位60日动量位移 "
-                  f"{info['shift_pp']}pp ≤ 3)。失效条件:regime 翻转 / 行业动量位移 >3pp / "
-                  f"重大行业级公告。\n\n")
-        dst.write_text(banner + body, encoding="utf-8")
+        dst.write_text(
+            render_reused_brief(info["prev"], info["shift_pp"], body),
+            encoding="utf-8",
+        )
         n += 1
     return n
 
