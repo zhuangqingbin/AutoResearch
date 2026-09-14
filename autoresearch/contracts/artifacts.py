@@ -225,6 +225,8 @@ ARTIFACTS: tuple[Artifact, ...] = (
              "session_agent.plan", "json", "gated", required_when="session_v1"),
     Artifact("session_request", "identity/session/request.json", "capsule", "finalize",
              "session_agent.request", "json", "gated", required_when="session_v1"),
+    Artifact("session_host_profile", "identity/session/host_profile.json", "capsule", "finalize",
+             "session_agent.origin", "json", "gated", required_when="session_v1"),
     Artifact("host_evidence_registration", "identity/session/host_evidence.json", "capsule", "finalize",
              "session_agent.host_evidence", "json", "gated", required_when="session_v1"),
     Artifact("evidence_plan", "evidence/evidence_plan.json", "capsule", "finalize",
@@ -241,6 +243,15 @@ ARTIFACTS: tuple[Artifact, ...] = (
     Artifact("source_receipts", "lineage/source_receipts.jsonl", "capsule", "finalize",
              "trace.source_receipts", "json", "gated",
              required_when="有供应商或外部工具响应"),
+    # session_v1 commit 后给兼容交付路径写的身份 sidecar。目录型交付使用
+    # delivery.json，文件型交付使用 <name>.delivery.json；均只引用 canonical
+    # publication，不把可变兼容路径本身当作封存真身。
+    Artifact("publication_delivery_identity_dir", "delivery.json", "report", "finalize",
+             "session_agent.publication", "json", "conditional",
+             required_when="session_v1 发布器交付目录型兼容视图"),
+    Artifact("publication_delivery_identity_file", "*.delivery.json", "report", "finalize",
+             "session_agent.publication", "json", "conditional",
+             required_when="session_v1 发布器交付文件型兼容视图"),
     Artifact("calculation_evidence", "evidence/calculations/*.json", "capsule", "finalize",
              "research.calculations", "json", "conditional",
              required_when="推理任务调用了登记补算"),

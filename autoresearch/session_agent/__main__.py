@@ -72,6 +72,12 @@ def _parser():
     retry_l4.add_argument("--run-id", required=True)
     retry_l4.add_argument("--code", required=True)
     retry_l4.add_argument("--expected-attempt", required=True, type=int)
+    verify_report = subparsers.add_parser("verify-report")
+    verify_report.add_argument("--report-path", required=True)
+    verify_report.add_argument("--expected-run-id")
+    verify_report.add_argument(
+        "--level", choices=("integrity", "full"), default="full"
+    )
     return parser
 
 
@@ -198,6 +204,14 @@ def main(argv=None):
             )
         elif args.command == "retry-l4":
             value = service.retry_l4(args.run_id, args.code, args.expected_attempt)
+        elif args.command == "verify-report":
+            from autoresearch.trace.verification import verify_report
+
+            value = verify_report(
+                args.report_path,
+                expected_run_id=args.expected_run_id,
+                level=args.level,
+            )
         else:
             host_receipt = _load(args.host_receipt_file) if args.host_receipt_file else None
             value = service.submit(

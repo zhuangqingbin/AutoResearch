@@ -805,9 +805,9 @@ def test_service_replay_only_produces_scratch_effects(service_case, operation):
 
 **Files:** 新增 trace/verification.py；修改 capsule verify/replay façade、session_agent CLI；扩展既有 repair 与场景重建读者；新增 `tests/forensics/test_report_verification.py`、`test_historical_repair.py`。
 
-- [ ] 实现 `verify_report(path, expected_run_id=None, level='full')`，engine 从当前进程固定，artifact 从 path 自带身份和 manifest 解引用；冲突时不猜测。
-- [ ] integrity/full 两层均只读；full 重新计算证据闭包，不只返回旧 completeness.json；stored 与 recomputed 差异分别展示。
-- [ ] report_path 找不到对应 bundle hash 返回 `UNBOUND_REPORT`，同 run_id 的未封存新版本也必须如此。
+- [x] 实现 `verify_report(path, expected_run_id=None, level='full')`，engine 从当前进程固定，artifact 从 path 自带身份和 manifest 解引用；冲突时不猜测。
+- [x] integrity/full 两层均只读；full 重新计算证据闭包，不只返回旧 completeness.json；stored 与 recomputed 差异分别展示。
+- [x] report_path 找不到对应 bundle hash 返回 `UNBOUND_REPORT`，同 run_id 的未封存新版本也必须如此。
 
 ```python
 def test_report_path_cannot_borrow_old_run_verification(forensic_case):
@@ -819,8 +819,8 @@ def test_report_path_cannot_borrow_old_run_verification(forensic_case):
     assert "UNBOUND_REPORT" in result["missing"]
 ```
 
-- [ ] `create_unbound_revision_for_audit` 仅在 tmp 人工构造事故文件，不调用生产 guard 绕行。历史补录按 §14 加新修订，不更改旧 ROOT。
-- [ ] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_report_verification.py tests/forensics/test_historical_repair.py tests/trace/test_repairs.py tests/session_agent/test_legacy_compatibility.py`。
+- [x] `create_unbound_revision_for_audit` 仅在 tmp 人工构造事故文件，不调用生产 guard 绕行。历史补录按 §14 加新修订，不更改旧 ROOT。
+- [x] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_report_verification.py tests/forensics/test_historical_repair.py tests/trace/test_repairs.py tests/session_agent/test_legacy_compatibility.py`（2026-09-14：22 passed；另跑契约/分层守卫 244 passed）。
 
 ### T17｜双宿主真实验收、文档与默认切换（C，P1）
 

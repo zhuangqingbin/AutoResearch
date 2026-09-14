@@ -44,6 +44,7 @@ def test_repair_writes_overlay_and_preserves_base_root(frozen):
     assert result.overlay_path.name == "revision-2"
     assert capsule_mod._load_root(report_dir)["root_hash"] == base.root_hash
     assert any(name.startswith("capsule/agents/") for name in result.added)
+    assert capsule_mod.verify(handle.run_id)["root_ledger_ok"] is True
 
 
 def test_repair_cannot_overwrite_a_base_path(frozen):

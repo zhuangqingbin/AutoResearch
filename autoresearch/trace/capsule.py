@@ -3254,9 +3254,14 @@ def verify(
         for row in read_valid_ledger(kind=resolved_kind)
         if row.get("run_id") == run_id
     ]
-    ledger_ok = bool(ledger_rows) and ledger_rows[-1].get(
-        "root_hash"
-    ) == stored_root.get("root_hash")
+    # A repair appends a composite revision; it never replaces the frozen base
+    # ROOT.  The base remains ledger-anchored when either its original row or a
+    # later repair row names it explicitly as ``base_root_hash``.
+    ledger_ok = any(
+        row.get("root_hash") == stored_root.get("root_hash")
+        or row.get("base_root_hash") == stored_root.get("root_hash")
+        for row in ledger_rows
+    )
     completeness_path = published / "verification/completeness.json"
     evidence = (
         json.loads(completeness_path.read_text(encoding="utf-8"))
@@ -3286,6 +3291,17 @@ def verify(
         if archive.is_file()
         else False,
     }
+
+
+def verify_report(
+    path: Path | str,
+    expected_run_id: str | None = None,
+    level: str = "full",
+) -> dict:
+    """Compatibility façade for path-bound verification."""
+    from autoresearch.trace.verification import verify_report as verify_path
+
+    return verify_path(path, expected_run_id=expected_run_id, level=level)
 
 
 # ---------------------------------------------------------- lease and recovery
@@ -3887,6 +3903,7 @@ __all__ = [
     "refresh_heartbeat",
     "repair",
     "verify",
+    "verify_report",
     "verify_archive",
     "verify_manifest",
     "write_manifest",
