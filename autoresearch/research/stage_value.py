@@ -99,6 +99,36 @@ def paired_daily_selection(frame: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def evaluate_candidates(
+    frame: pd.DataFrame,
+    *,
+    stage: str,
+    ruler: str,
+    evidence_root: Path | str,
+) -> tuple[pd.DataFrame, dict]:
+    """Evaluate one candidate table and bind its exact standalone operation evidence."""
+    result = paired_daily_selection(frame)
+    from autoresearch.trace.operation_evidence import record_operation_evidence
+
+    evidence = record_operation_evidence(
+        "research.evaluate",
+        parameters={"stage": stage, "ruler": ruler},
+        inputs={"research.candidates": frame.to_csv(index=False)},
+        outputs={"research.evaluation": result.to_csv(index=False)},
+        effects=[
+            {
+                "kind": "CANDIDATE_EVALUATION",
+                "rows": int(len(result)),
+                "stage": stage,
+                "ruler": ruler,
+            }
+        ],
+        code_paths=[Path(__file__)],
+        evidence_root=evidence_root,
+    )
+    return result, evidence
+
+
 def pairs_from_population(table: pd.DataFrame, *, stage: str, ruler: str) -> tuple[pd.DataFrame, dict]:
     """populations 表 → 某阶段对在某把尺上的 (`date, code, baseline, refined, value`) + coverage。
 
@@ -214,13 +244,31 @@ def run(*, spec_path: Path, populations: list[Path], parent: Path | None = None)
     eio.freeze_spec(output, spec)
     rulers = [spec["ruler"], *spec["sensitivity_rulers"]]
     seed, n_boot = int(spec["bootstrap"]["seed"]), int(spec["bootstrap"]["n_boot"])
-    daily_frames, stats, coverage = [], {}, []
+    daily_frames, stats, coverage, operation_ids = [], {}, [], []
     for stage in STAGE_PAIRS:
         for ruler in rulers:
             frame, cov = pairs_from_population(table, stage=stage, ruler=ruler)
-            daily = paired_daily_selection(frame) if len(frame) else pd.DataFrame(
-                columns=["date", "baseline", "refined", "delta", "status", "n_baseline", "n_refined",
-                         "missing_outcomes"])
+            if len(frame):
+                daily, evidence = evaluate_candidates(
+                    frame,
+                    stage=stage,
+                    ruler=ruler,
+                    evidence_root=output / "_operation_evidence",
+                )
+                operation_ids.append(evidence["operation_id"])
+            else:
+                daily = pd.DataFrame(
+                    columns=[
+                        "date",
+                        "baseline",
+                        "refined",
+                        "delta",
+                        "status",
+                        "n_baseline",
+                        "n_refined",
+                        "missing_outcomes",
+                    ]
+                )
             for col in ("baseline", "refined", "delta"):     # 全 NA 的 object 列 → float,合并时 dtype 一致
                 daily[col] = pd.to_numeric(daily[col], errors="coerce").astype(float)
             daily.insert(0, "ruler", ruler)
@@ -246,6 +294,7 @@ def run(*, spec_path: Path, populations: list[Path], parent: Path | None = None)
                 "as_of": datetime.now(timezone.utc).isoformat(), "spec_sha256": eio.spec_digest(output),
                 "ruler": spec["ruler"], "sensitivity_rulers": spec["sensitivity_rulers"],
                 "main_ruler_is": _ruler.MAIN_RULER,
+                "operation_ids": operation_ids,
                 "registration": {"input_manifest_sha256": input_digest,
                                  "code": code_identity,
                                  "test_interval": registered_date_slice(spec),

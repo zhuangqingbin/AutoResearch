@@ -782,9 +782,9 @@ def test_scan_mode_has_complete_replay_denominator(scan_forensic_case, mode):
 
 **Files:** 新增 trace/operation_evidence.py；接入 scan/prewarm、dossier/reconcile、broker/ingest/reconcile、被报告消费的 research 工具；新增 `tests/forensics/test_service_evidence.py`。
 
-- [ ] 定义 `OperationEvidence` sidecar：`schema_version, operation_id, engine, operation, input_refs, code_hash, parameters, output_refs, effects, status, error`；由 contracts/forensic.py 验证。
-- [ ] 工具独立运行仍不伪装成 session run；研究消费其产物时引用 operation_id、产物 hash 和原 evidence root。
-- [ ] 实现 prewarm 的虚拟 lake 写入计划、reconcile 的虚拟 dossier patch、broker 的虚拟规范化/对账表、research 的候选评估输出；不改策略或赋予下单能力。
+- [x] 定义 `OperationEvidence` sidecar：`schema_version, operation_id, engine, operation, input_refs, code_hash, parameters, output_refs, effects, status, error`；由 contracts/forensic.py 验证。
+- [x] 工具独立运行仍不伪装成 session run；研究消费其产物时引用 operation_id、产物 hash 和原 evidence root。
+- [x] 实现 prewarm 的虚拟 lake 写入计划、reconcile 的虚拟 dossier patch、broker 的虚拟规范化/对账表、research 的候选评估输出；不改策略或赋予下单能力。
 
 ```python
 @pytest.mark.parametrize("operation", [
@@ -798,8 +798,8 @@ def test_service_replay_only_produces_scratch_effects(service_case, operation):
     assert case.snapshot_persistent_tree() == before
 ```
 
-- [ ] ops 删除/迁移/真实交易不存在 replay handler；未登记副作用被执行环境拒绝，不得使用 `--force` 让验收变绿。
-- [ ] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_service_evidence.py tests/broker tests/dossier tests/research`。
+- [x] ops 删除/迁移/真实交易不存在 replay handler；未登记副作用被执行环境拒绝，不得使用 `--force` 让验收变绿。
+- [x] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_service_evidence.py tests/broker tests/dossier tests/research`（2026-09-14：794 passed）。
 
 ### T16｜按报告核验与历史修订（C，P0/P1）
 

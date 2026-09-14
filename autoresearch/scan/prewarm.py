@@ -189,13 +189,52 @@ def run_prewarm(date: str | None = None, *, now: datetime | None = None) -> dict
 
     def _finish(target: str | None, record: Path) -> dict:
         record.parent.mkdir(parents=True, exist_ok=True)
-        record.write_text(json.dumps(
-            {"date": target, "started_at": started, "ended_at": time.time(), "steps": steps},
-            ensure_ascii=False, indent=1), encoding="utf-8")
+        manifest = {
+            "date": target,
+            "started_at": started,
+            "ended_at": time.time(),
+            "steps": steps,
+        }
+        record.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8"
+        )
         ok = bool(steps) and all(s["ok"] for s in steps)
         print(f"[prewarm] {target or '(日期未解析)'} {'✓' if ok else '✗'} · "
               + " · ".join(f"{s['step']}{'✓' if s['ok'] else '✗'} {s['note']}" for s in steps))
-        return {"date": target, "ok": ok, "steps": steps}
+        from autoresearch.common.atomic import sha256_bytes
+        from autoresearch.trace.operation_evidence import record_operation_evidence
+
+        virtual_after = {
+            f"prewarm/{target or 'unresolved'}/{step['step']}": sha256_bytes(
+                json.dumps(step, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            )
+            for step in steps
+            if step["ok"]
+        }
+        effects = [
+            {"kind": "VIRTUAL_LAKE_WRITE", "path": path, "sha256": digest}
+            for path, digest in sorted(virtual_after.items())
+        ]
+        evidence = record_operation_evidence(
+            "prewarm",
+            parameters=manifest,
+            inputs={
+                "prewarm.lake.before": {},
+                "prewarm.lake.after": virtual_after,
+                "prewarm.manifest.source": record,
+            },
+            outputs={"prewarm.manifest": record},
+            effects=effects,
+            code_paths=[Path(__file__)],
+            evidence_root=ws.scan_root() / "_operation_evidence",
+            status="SUCCEEDED" if ok else "UNMEASURED",
+        )
+        return {
+            "date": target,
+            "ok": ok,
+            "steps": steps,
+            "operation_id": evidence["operation_id"],
+        }
 
     if date is None:
         resolved = _step("resolve_date", latest_settled_trade_date, now, record_success=False)

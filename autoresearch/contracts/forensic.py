@@ -390,6 +390,8 @@ def validate_operation_evidence(value: dict) -> dict:
     require_exact_fields(value, OPERATION_EVIDENCE_FIELDS)
     require_version(value["schema_version"])
     require_sha256(value["operation_id"], "operation_id")
+    if value["operation_id"] != _digest_without(value, "operation_id"):
+        raise ValueError("operation_id mismatch")
     _engine(value["engine"])
     _required_string(value["operation"], "operation", pattern=_ID_RE)
     _validate_artifact_refs(value["input_refs"], "input_refs")
@@ -400,10 +402,15 @@ def validate_operation_evidence(value: dict) -> dict:
     _validate_artifact_refs(value["output_refs"], "output_refs")
     if type(value["effects"]) is not list:
         raise ValueError("effects must be a list")
+    _canonical(value["effects"])
     if value["status"] not in {"SUCCEEDED", "FAILED", "UNMEASURED"}:
         raise ValueError("invalid operation evidence status")
     if value["error"] is not None and type(value["error"]) is not dict:
         raise ValueError("error must be an object or null")
+    if value["status"] == "FAILED" and value["error"] is None:
+        raise ValueError("failed operation evidence requires error")
+    if value["status"] != "FAILED" and value["error"] is not None:
+        raise ValueError("successful operation evidence cannot carry error")
     return value
 
 

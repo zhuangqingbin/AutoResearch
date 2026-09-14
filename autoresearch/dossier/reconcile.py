@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 from autoresearch.data.express_fields import express_yoy_pct  # 快报字段语义单一事实源
 from autoresearch.dossier import delta, pool, schema
@@ -118,6 +119,55 @@ def _fetch_actual(code6: str, period: str, *, fetch=None) -> dict | None:
     return None
 
 
+def render_reconcile_candidate(
+    text: str,
+    code6: str,
+    period: str,
+    today: str,
+    actual: dict | None,
+) -> tuple[str, dict]:
+    """Pure dossier patch renderer used by live writes and offline replay."""
+    code6 = str(code6).split(".")[0].zfill(6)
+    if not schema.parse_frontmatter(text).get("initiated"):
+        return text, {"code": code6, "skipped": "not_initiated"}
+    mark = f"季度对账 {period}"
+    body5 = delta.section_body(text, 4)
+    if actual is None:
+        line5 = f"- **{mark}**({today} 查):两端点均无数据,{UNDISCLOSED_TAG}"
+        new_body5 = _upsert_period_line(body5, mark, line5, real=False)
+        if new_body5 != body5:
+            text = delta.replace_section(text, 4, new_body5)
+        text = delta.append_delta_line(
+            text, today, f"{mark}:两端点均无数据,{UNDISCLOSED_TAG}", key=mark
+        )
+        text = delta.set_frontmatter_key(text, "last_delta", today)
+        return text, {
+            "code": code6,
+            "skipped": "undisclosed",
+            "recorded": True,
+            "issues": schema.lint_dossier(text),
+        }
+    line5 = (
+        f"- **{mark}**({today} 记,{actual['kind']} {actual['ann_date']}):"
+        f"{actual['line']};fwd-EPS 快照见 §2,三情景归属与证伪点核对由"
+        "下次 δ 卡内「档案对账」节裁决"
+    )
+    new_body5 = _upsert_period_line(body5, mark, line5, real=True)
+    if new_body5 != body5:
+        text = delta.replace_section(text, 4, new_body5)
+    text = delta.append_delta_line(
+        text, today, f"{mark}:{actual['line']}({actual['kind']})", key=mark
+    )
+    text = delta.set_frontmatter_key(text, "last_delta", today)
+    text = delta.set_frontmatter_key(text, "last_refresh", today)
+    return text, {
+        "code": code6,
+        "updated": True,
+        "kind": actual["kind"],
+        "issues": schema.lint_dossier(text),
+    }
+
+
 def reconcile_one(code6: str, period: str, today: str, *, fetch=None) -> dict:
     """单票对账;presence-gated(无档案/未首覆 skip)。
 
@@ -136,45 +186,31 @@ def reconcile_one(code6: str, period: str, today: str, *, fetch=None) -> dict:
         return {"code": code6, "skipped": "no_dossier"}
     if not schema.parse_frontmatter(text).get("initiated"):
         return {"code": code6, "skipped": "not_initiated"}
-    mark = f"季度对账 {period}"
     actual = _fetch_actual(code6, period, fetch=fetch)
-    body5 = delta.section_body(text, 4)
-    if actual is None:
-        line5 = f"- **{mark}**({today} 查):两端点均无数据,{UNDISCLOSED_TAG}"
-        new_body5 = _upsert_period_line(body5, mark, line5, real=False)
-        if new_body5 != body5:
-            text = delta.replace_section(text, 4, new_body5)
-        text = delta.append_delta_line(
-            text, today, f"{mark}:两端点均无数据,{UNDISCLOSED_TAG}", key=mark
-        )
-        text = delta.set_frontmatter_key(text, "last_delta", today)
-        path.write_text(text, encoding="utf-8")
-        return {
+    candidate, result = render_reconcile_candidate(text, code6, period, today, actual)
+    if candidate != text or result.get("recorded") or result.get("updated"):
+        path.write_text(candidate, encoding="utf-8")
+    from autoresearch.common.atomic import sha256_bytes
+    from autoresearch.trace.operation_evidence import record_operation_evidence
+
+    effects = [
+        {
+            "kind": "DOSSIER_PATCH",
             "code": code6,
-            "skipped": "undisclosed",
-            "recorded": True,
-            "issues": schema.lint_dossier(text),
+            "before_sha256": sha256_bytes(text.encode("utf-8")),
+            "after_sha256": sha256_bytes(candidate.encode("utf-8")),
         }
-    line5 = (
-        f"- **{mark}**({today} 记,{actual['kind']} {actual['ann_date']}):"
-        f"{actual['line']};fwd-EPS 快照见 §2,三情景归属与证伪点核对由"
-        "下次 δ 卡内「档案对账」节裁决"
+    ]
+    evidence = record_operation_evidence(
+        "dossier.reconcile",
+        parameters={"code": code6, "period": period, "today": today},
+        inputs={"dossier.opening": text, "dossier.actual": actual},
+        outputs={"dossier.candidate": candidate, "dossier.result": result},
+        effects=effects,
+        code_paths=[Path(__file__)],
+        evidence_root=path.parent / "_operation_evidence",
     )
-    new_body5 = _upsert_period_line(body5, mark, line5, real=True)
-    if new_body5 != body5:
-        text = delta.replace_section(text, 4, new_body5)
-    text = delta.append_delta_line(
-        text, today, f"{mark}:{actual['line']}({actual['kind']})", key=mark
-    )
-    text = delta.set_frontmatter_key(text, "last_delta", today)
-    text = delta.set_frontmatter_key(text, "last_refresh", today)  # 对账=报告期全量核对
-    path.write_text(text, encoding="utf-8")
-    return {
-        "code": code6,
-        "updated": True,
-        "kind": actual["kind"],
-        "issues": schema.lint_dossier(text),
-    }
+    return {**result, "operation_id": evidence["operation_id"]}
 
 
 def _valid_date(s: str) -> bool:

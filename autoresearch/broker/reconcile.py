@@ -14,6 +14,7 @@ import argparse
 import sys
 from collections import Counter
 from itertools import combinations
+from pathlib import Path
 
 import pandas as pd
 
@@ -99,7 +100,26 @@ def main(argv: list[str] | None = None) -> int:
         if since is None:
             print(f"[broker·reconcile] --since {args.since!r} 不是日期(要 YYYY-MM-DD)", file=sys.stderr)
             return 2
-    print(report(args.root, account=args.account, since=since))
+    text = report(args.root, account=args.account, since=since)
+    from autoresearch.trace.operation_evidence import record_operation_evidence
+
+    root = store.root_or_default(args.root)
+    raw_dir = root / store.RAW_DIRNAME
+    inputs = {
+        f"broker.raw.{path.stem}": path
+        for path in sorted(raw_dir.glob("*.csv"))
+        if path.is_file()
+    }
+    record_operation_evidence(
+        "broker.reconcile",
+        parameters={"account": args.account, "since": since},
+        inputs=inputs,
+        outputs={"broker.reconcile.report": text + "\n"},
+        effects=[],
+        code_paths=[Path(__file__)],
+        evidence_root=root / "_operation_evidence",
+    )
+    print(text)
     return 0
 
 

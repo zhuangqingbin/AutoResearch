@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import asdict
 from datetime import date, datetime
 from pathlib import Path
 
@@ -23,6 +24,25 @@ from autoresearch.broker import adapters, schema, store
 from autoresearch.data.contracts import DataContractError
 
 _SKIP_NAMES = {".DS_Store"}
+
+
+def normalize_source_file(
+    path: Path,
+    *,
+    source_kind: str,
+    account: str | None,
+    ingested_at: str,
+    today: date | None = None,
+) -> tuple[pd.DataFrame, dict]:
+    """Pure parse/normalize/validate seam shared by live ingest and replay."""
+    raw = adapters.parse(path, source_kind, account=account)
+    frame = schema.normalize(
+        raw,
+        source_kind=source_kind,
+        source_file=path.name,
+        ingested_at=ingested_at,
+    )
+    return frame, asdict(schema.validate(frame, today=today))
 
 
 def iter_files(paths) -> list[Path]:
@@ -48,10 +68,15 @@ def ingest_file(path: Path, *, source_kind: str, account: str | None, root, forc
     if not force and sha in store.ingested_shas(root):
         entry["status"] = "skipped"
         return entry
+    validation_today = today or date.today()
     try:
-        raw = adapters.parse(path, source_kind, account=account)
-        df = schema.normalize(raw, source_kind=source_kind, source_file=path.name, ingested_at=now)
-        rep = schema.validate(df, today=today)
+        df, report = normalize_source_file(
+            path,
+            source_kind=source_kind,
+            account=account,
+            ingested_at=now,
+            today=validation_today,
+        )
     except (DataContractError, ValueError) as e:
         # ValueError = adapter 自己没包住的解析失败(pandas 的 EmptyDataError/ParserError 都是它的子类):
         # 同样按文件拒收,不许一份坏文件中止整批。日志只记首行 + 问题条数(§13:不记逐笔明细)。
@@ -62,14 +87,40 @@ def ingest_file(path: Path, *, source_kind: str, account: str | None, root, forc
         if not dry_run:
             store.append_log(entry, root)
         return entry
-    entry.update(accounts=list(rep.accounts), period=list(rep.period or ()), rows=rep.rows,
-                 b_degradations=rep.b_degradations, b_by_account=rep.b_by_account,
-                 warnings=rep.warnings)
+    entry.update(
+        accounts=list(report["accounts"]),
+        period=list(report["period"] or ()),
+        rows=report["rows"],
+        b_degradations=report["b_degradations"],
+        b_by_account=report["b_by_account"],
+        warnings=report["warnings"],
+    )
     if dry_run:
         entry["status"] = "dry-run"
         return entry
     n_new, n_dup = store.upsert_raw(df, root)
     entry.update(new=n_new, dup=n_dup)
+    from autoresearch.trace.operation_evidence import record_operation_evidence
+
+    evidence = record_operation_evidence(
+        "broker.ingest",
+        parameters={
+            "source_kind": source_kind,
+            "source_file": path.name,
+            "account": account,
+            "ingested_at": now,
+            "today": validation_today.isoformat(),
+        },
+        inputs={"broker.source": path},
+        outputs={
+            "broker.normalized": df.to_csv(index=False),
+            "broker.validation": report,
+        },
+        effects=[{"kind": "BROKER_NORMALIZED_ROWS", "rows": int(len(df))}],
+        code_paths=[Path(__file__)],
+        evidence_root=store.root_or_default(root) / "_operation_evidence",
+    )
+    entry["operation_id"] = evidence["operation_id"]
     store.append_log(entry, root)
     return entry
 
