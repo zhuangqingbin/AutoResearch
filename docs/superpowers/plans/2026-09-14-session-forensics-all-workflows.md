@@ -759,9 +759,9 @@ def test_dossier_replay_does_not_update_live_pool(forensic_case_factory):
 
 **Files:** 新增 replay_adapters/scan.py；修改 scan prelude/assemble/post_run/run_profile 及 session workflow scan/replay registry；新增 `tests/forensics/test_scan_replay_matrix.py`。
 
-- [ ] 对 operation_catalog 的 scan 项逐一分类；为 prelude 子步骤冻结源与状态；禁止把整段“有网络”标 EVIDENCE_ONLY 避开重放。
-- [ ] 以父票 attempt 构建 scratch taskbook；重算 GATE1/run_mode、GATE2/GATE4、自检、复核选择和候选排序；LLM judged/cards/reviews 回注。
-- [ ] a1/a2、局部修复成功/失败、第二轮同档止/第三轮、三种 skip 与保送票路径逐一校验分母。
+- [x] 对 operation_catalog 的 scan 项逐一分类；为 prelude 子步骤冻结源与状态；禁止把整段“有网络”标 EVIDENCE_ONLY 避开重放。
+- [x] 以父票 attempt 构建 scratch taskbook；重算 GATE1/run_mode、GATE2/GATE4、自检、复核选择和候选排序；LLM judged/cards/reviews 回注。
+- [x] a1/a2、局部修复成功/失败、第二轮同档止/第三轮、三种 skip 与保送票路径逐一校验分母。
 
 ```python
 @pytest.mark.parametrize("mode", [
@@ -775,8 +775,8 @@ def test_scan_mode_has_complete_replay_denominator(scan_forensic_case, mode):
     assert result["run_mode"] == mode
 ```
 
-- [ ] 测试 L1/L2 真实生产命令仅一次、0 BUY 合法成功、sector_healthy_top3 不进入 L3/L4 输入、收益主尺与交易日历不变。
-- [ ] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_scan_replay_matrix.py tests/trace/test_replay.py tests/session_agent/test_scan_modes.py tests/session_agent/test_scan_l3.py tests/session_agent/test_scan_l4_recovery.py tests/session_agent/test_scan_l4_review.py tests/scan`。
+- [x] 测试 L1/L2 真实生产命令仅一次、0 BUY 合法成功、sector_healthy_top3 不进入 L3/L4 输入、收益主尺与交易日历不变。
+- [x] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_scan_replay_matrix.py tests/trace/test_replay.py tests/session_agent/test_scan_modes.py tests/session_agent/test_scan_l3.py tests/session_agent/test_scan_l4_recovery.py tests/session_agent/test_scan_l4_review.py tests/scan`（2026-09-14：2655 passed，4 个真实现场缺失 skip，2 个既有 pandas FutureWarning）。
 
 ### T15｜配套确定性服务的证据与副作用清单（C，P1）
 

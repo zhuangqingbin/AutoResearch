@@ -546,8 +546,8 @@ _CATALOG_META: dict[str, dict[str, object]] = {
     },
     "scan.prelude": {
         "params": _NO_PARAMS,
-        "side_effects": "runs the original prelude STEP_NAMES pipeline",
-        "outputs": ["scan.prelude.summary", "scan.l2"],
+        "side_effects": "runs the original prelude STEP_NAMES pipeline and freezes its portable staging state",
+        "outputs": ["scan.prelude.summary", "scan.l2", "scan.prelude.bundle"],
         "callers": ["scan.prelude"],
         "errors": ["DATA_CONTRACT", "PRELUDE_FAILED"],
         "limits": "steps and retries remain owned by scan.prelude",
@@ -565,7 +565,7 @@ _CATALOG_META: dict[str, dict[str, object]] = {
     "scan.sector.prepare": {
         "params": _NO_PARAMS,
         "side_effects": "applies original sector reuse and builds run-scoped sector packs",
-        "outputs": ["scan.sector.list", "scan.sector.*.pack"],
+        "outputs": ["scan.sector.list", "scan.sector.source.bundle", "scan.sector.*.pack"],
         "callers": ["scan.sector.prepare"],
         "errors": ["SECTOR_PACK_FAILED"],
         "limits": "scan_config sector.max_briefs",
@@ -574,7 +574,7 @@ _CATALOG_META: dict[str, dict[str, object]] = {
     "scan.sector.skip": {
         "params": _NO_PARAMS,
         "side_effects": "records that sector research is not applicable for a sentinel branch",
-        "outputs": ["scan.sector.list"],
+        "outputs": ["scan.sector.list", "scan.sector.source.bundle"],
         "callers": ["scan.sector.skip"],
         "errors": ["RUN_MODE_FAILED"],
         "limits": "no network",
@@ -583,7 +583,7 @@ _CATALOG_META: dict[str, dict[str, object]] = {
     "scan.l3.prepare": {
         "params": _NO_PARAMS,
         "side_effects": "runs original L3 evidence harvest, triage and compact table preparation",
-        "outputs": ["scan.l3.table"],
+        "outputs": ["scan.l3.table", "scan.l3.source.bundle"],
         "callers": ["scan.l3.prepare"],
         "errors": ["L3_INPUT_FAILED"],
         "limits": "original pass1 target and candidate contract",
@@ -592,7 +592,7 @@ _CATALOG_META: dict[str, dict[str, object]] = {
     "scan.l3.lint": {
         "params": _NO_PARAMS,
         "side_effects": "runs original judged JSON lint and writes its exact result",
-        "outputs": ["scan.l3.validation"],
+        "outputs": ["scan.l3.validation", "scan.l3.repair.pack", "scan.l3.repair.prompt", "scan.l3.context.bundle"],
         "callers": ["scan.l3.lint"],
         "errors": ["L3_SCHEMA", "L3_EVIDENCE"],
         "limits": "no network; one bounded task attempt",
@@ -601,7 +601,7 @@ _CATALOG_META: dict[str, dict[str, object]] = {
     "scan.l3.repair.skip": {
         "params": _NO_PARAMS,
         "side_effects": "records that the bounded L3 repair was not required",
-        "outputs": ["scan.l3.repair.result"],
+        "outputs": ["scan.l3.repair.result", "scan.l3.effective.judged"],
         "callers": ["scan.l3.repair.skip"],
         "errors": [],
         "limits": "no network",
@@ -610,7 +610,7 @@ _CATALOG_META: dict[str, dict[str, object]] = {
     "scan.l3.repair.apply": {
         "params": _NO_PARAMS,
         "side_effects": "validates and atomically applies the original narrow L3 repair patch",
-        "outputs": ["scan.l3.repair.result", "scan.l3.judged"],
+        "outputs": ["scan.l3.repair.result", "scan.l3.effective.judged"],
         "callers": ["scan.l3.repair.apply"],
         "errors": ["L3_REPAIR_INVALID"],
         "limits": "one bounded patch; no network",
@@ -619,7 +619,7 @@ _CATALOG_META: dict[str, dict[str, object]] = {
     "scan.l3.merge": {
         "params": _NO_PARAMS,
         "side_effects": "runs original finalist merge and GATE2",
-        "outputs": ["scan.finalists", "scan.l3.bench", "scan.gate2.result"],
+        "outputs": ["scan.finalists", "scan.l3.bench", "scan.gate2.result", "scan.l3.final.bundle"],
         "callers": ["scan.gate2"],
         "errors": ["L3_MERGE_FAILED", "GATE2_FAILED"],
         "limits": "frozen GATE1 l4_budget",
@@ -628,7 +628,7 @@ _CATALOG_META: dict[str, dict[str, object]] = {
     "scan.gate2.skip": {
         "params": _NO_PARAMS,
         "side_effects": "writes frozen pinned/empty finalists and original not-applicable GATE2 record",
-        "outputs": ["scan.finalists", "scan.gate2.result"],
+        "outputs": ["scan.finalists", "scan.gate2.result", "scan.l3.final.bundle"],
         "callers": ["scan.gate2"],
         "errors": ["RUN_MODE_FAILED"],
         "limits": "sentinel branches only; no network",
@@ -637,7 +637,7 @@ _CATALOG_META: dict[str, dict[str, object]] = {
     "scan.l4.prepare": {
         "params": _NO_PARAMS,
         "side_effects": "runs original L4 producers, writes prompts, initializes the original taskbook",
-        "outputs": ["scan.l4.plan", "scan.l4.taskbook", "scan.l4.*.prompt"],
+        "outputs": ["scan.l4.plan", "scan.l4.taskbook", "scan.l4.source.bundle", "scan.l4.*.prompt"],
         "callers": ["scan.l4.prepare"],
         "errors": ["DISPATCH_MISMATCH", "TASKBOOK_INIT_FAILED"],
         "limits": "frozen finalists and original producer limits",
@@ -646,7 +646,7 @@ _CATALOG_META: dict[str, dict[str, object]] = {
     "scan.l4.skip": {
         "params": _NO_PARAMS,
         "side_effects": "records an empty-sentinel L4 and review plan",
-        "outputs": ["scan.l4.plan", "scan.review.plan"],
+        "outputs": ["scan.l4.plan", "scan.review.plan", "scan.l4.source.bundle"],
         "callers": ["scan.l4.skip"],
         "errors": ["RUN_MODE_FAILED"],
         "limits": "SENTINEL_EMPTY only",
@@ -673,7 +673,7 @@ _CATALOG_META: dict[str, dict[str, object]] = {
     "scan.l4.intel.status": {
         "params": _NO_PARAMS,
         "side_effects": "guards, normalizes, and records one web-intel result",
-        "outputs": ["scan.l4.*.intel_status"],
+        "outputs": ["scan.l4.*.intel_status", "scan.l4.*.intel_bundle"],
         "callers": ["l4.*.intel_status"],
         "errors": ["INTEL_CONTRACT"],
         "limits": "frozen runtime cap and original hard cap",
@@ -682,7 +682,7 @@ _CATALOG_META: dict[str, dict[str, object]] = {
     "scan.l4.intel.disabled": {
         "params": _NO_PARAMS,
         "side_effects": "records the distinct DISABLED intel state",
-        "outputs": ["scan.l4.*.intel_status"],
+        "outputs": ["scan.l4.*.intel_status", "scan.l4.*.intel_bundle"],
         "callers": ["l4.*.intel_status"],
         "errors": ["STATUS_CONTRACT"],
         "limits": "no network",
@@ -727,7 +727,7 @@ _CATALOG_META: dict[str, dict[str, object]] = {
     "scan.review3.skip": {
         "params": _NO_PARAMS,
         "side_effects": "records complete L4 in empty sentinel mode",
-        "outputs": ["scan.l4.complete"],
+        "outputs": ["scan.l4.complete", "scan.l4.final.bundle"],
         "callers": ["scan.review3.skip"],
         "errors": ["RUN_MODE_FAILED"],
         "limits": "SENTINEL_EMPTY only",
@@ -745,7 +745,7 @@ _CATALOG_META: dict[str, dict[str, object]] = {
     "scan.l4.complete": {
         "params": _NO_PARAMS,
         "side_effects": "verifies every original L4 taskbook ticket succeeded",
-        "outputs": ["scan.l4.complete"],
+        "outputs": ["scan.l4.complete", "scan.l4.final.bundle"],
         "callers": ["scan.l4.complete"],
         "errors": ["TASKBOOK_INCOMPLETE"],
         "limits": "no network",
@@ -754,7 +754,7 @@ _CATALOG_META: dict[str, dict[str, object]] = {
     "scan.assemble": {
         "params": _NO_PARAMS,
         "side_effects": "runs the original scan publisher into a run-scoped candidate directory",
-        "outputs": ["scan.report.plan"],
+        "outputs": ["scan.report.plan", "scan.report.build.bundle"],
         "callers": ["scan.assemble"],
         "errors": ["ASSEMBLY_FAILED", "REPORT_INCOMPLETE"],
         "limits": "no model calls",
@@ -772,7 +772,7 @@ _CATALOG_META: dict[str, dict[str, object]] = {
     "scan.usage": {
         "params": _NO_PARAMS,
         "side_effects": "harvests bound subscription-session usage and reconciles frozen role config",
-        "outputs": ["scan.token.usage", "scan.usage.reconcile"],
+        "outputs": ["scan.token.usage", "scan.usage.reconcile", "scan.report.used.bundle"],
         "callers": ["scan.usage"],
         "errors": ["UNMEASURED"],
         "limits": "read-only host transcript binding",

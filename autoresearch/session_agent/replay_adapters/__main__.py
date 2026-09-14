@@ -53,6 +53,8 @@ def main(argv: list[str] | None = None) -> int:
             from autoresearch.session_agent.replay_adapters.sector import execute
         elif operation.startswith("dossier."):
             from autoresearch.session_agent.replay_adapters.dossier import execute
+        elif operation.startswith("scan."):
+            from autoresearch.session_agent.replay_adapters.scan import execute
         else:
             raise KeyError(f"no domain replay adapter: {operation}")
         effects = execute(context.unit, context)

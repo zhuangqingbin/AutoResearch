@@ -410,6 +410,9 @@ def _degrade_optional_l3_repair(handle, task_id: str, error: dict) -> bool:
 
     scan_l3_repair_degraded(error, handle=handle)
     artifacts.bind_artifact_hash(handle, "scan.l3.repair.result")
+    effective = Path(handle.staging) / "_l3_effective_judged.json"
+    if effective.is_file():
+        artifacts.bind_artifact_hash(handle, "scan.l3.effective.judged")
     task_ids = [task_id]
     if task_id == "scan.l3.repair":
         task_ids.append("scan.l3.repair.apply")

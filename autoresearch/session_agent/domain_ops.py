@@ -1235,6 +1235,146 @@ def dossier_prepare_publication(handle=None) -> dict:
     )
 
 
+_SCAN_BUNDLE_CONTROL_ROOTS = frozenset({"session_outputs"})
+
+
+def collect_scan_staging_bundle(root: Path | str, *, phase: str) -> dict:
+    """Freeze a portable scan staging state without session control files.
+
+    The bundle is an explicit workflow artifact, not an ambient directory
+    escape hatch.  Report phases include only the run-scoped report build under
+    ``session_outputs``; task state, claims and artifact registries stay out.
+    """
+    base = Path(root)
+    files: dict[str, str] = {}
+    if base.is_dir():
+        for path in sorted(base.rglob("*")):
+            if not path.is_file() or path.is_symlink():
+                continue
+            relative = path.relative_to(base)
+            if relative.name.startswith(".session-agent") or relative.name.endswith(".lock"):
+                continue
+            if (
+                relative.parts
+                and relative.parts[0] in _SCAN_BUNDLE_CONTROL_ROOTS
+                and not (
+                    phase in {"report", "used_report", "observed_report"}
+                    and relative.parts[:2] == ("session_outputs", "report_build")
+                )
+            ):
+                continue
+            files[relative.as_posix()] = base64.b64encode(path.read_bytes()).decode("ascii")
+    return {"schema_version": 1, "phase": phase, "files": files}
+
+
+def restore_scan_staging_bundle(
+    bundle: dict,
+    root: Path | str,
+    *,
+    expected_phase: str | None = None,
+) -> Path:
+    """Restore one declared scan state bundle into an isolated staging root."""
+    if set(bundle) != {"schema_version", "phase", "files"}:
+        raise ValueError("invalid scan staging bundle contract")
+    if bundle["schema_version"] != 1 or not isinstance(bundle["files"], dict):
+        raise ValueError("invalid scan staging bundle")
+    if expected_phase is not None and bundle["phase"] != expected_phase:
+        raise ValueError(
+            f"scan staging bundle phase mismatch:{bundle['phase']} != {expected_phase}"
+        )
+    target_root = Path(root)
+    for raw_relative, encoded in bundle["files"].items():
+        relative = Path(raw_relative)
+        if (
+            relative.is_absolute()
+            or not relative.parts
+            or ".." in relative.parts
+            or relative.parts[0] == "session"
+        ):
+            raise ValueError(f"unsafe scan bundle path:{raw_relative}")
+        try:
+            payload = base64.b64decode(str(encoded).encode("ascii"), validate=True)
+        except Exception as exc:  # noqa: BLE001 - normalize corrupt bundle failures
+            raise ValueError(f"invalid scan bundle payload:{raw_relative}") from exc
+        atomic_write_bytes(target_root / relative, payload)
+    return target_root
+
+
+def _write_scan_bundle(current, phase: str, artifact_name: str) -> dict:
+    bundle = collect_scan_staging_bundle(current.staging, phase=phase)
+    atomic_write_json(Path(current.staging) / "session_outputs" / artifact_name, bundle)
+    return bundle
+
+
+def _freeze_scan_runtime_inputs(current) -> dict:
+    """Copy mutable scan configuration/state inputs into run-local staging."""
+    from autoresearch.scan import user_config
+
+    target = Path(current.staging) / "_session_inputs"
+    target.mkdir(parents=True, exist_ok=True)
+    sources = {
+        "scan_config.jsonc": Path(user_config.DEFAULT_PATH),
+        "pinned.jsonc": Path(user_config.DEFAULT_PINNED_PATH),
+        "L1_weights.json": ws.factor_lab_root() / "weights.json",
+    }
+    present = {}
+    for name, source in sources.items():
+        destination = target / name
+        present[name] = source.is_file()
+        if source.is_file():
+            shutil.copyfile(source, destination)
+        else:
+            destination.unlink(missing_ok=True)
+    value = {"schema_version": 1, "present": present}
+    atomic_write_json(target / "manifest.json", value)
+    return value
+
+
+def _use_frozen_scan_runtime_inputs(current) -> None:
+    """Route mutable config readers to the prelude-frozen run-local copies."""
+    frozen = Path(current.staging) / "_session_inputs"
+    if not (frozen / "manifest.json").is_file():
+        return
+    from autoresearch.scan import user_config
+
+    user_config.DEFAULT_PATH = frozen / "scan_config.jsonc"
+    user_config.DEFAULT_PINNED_PATH = frozen / "pinned.jsonc"
+
+
+def _record_scan_source(
+    *,
+    provider: str,
+    endpoint: str,
+    current,
+    outcome: dict,
+    consumers: list[str],
+) -> None:
+    if ws.active_run_id() is None:
+        return
+    from autoresearch.trace.source_receipts import record_active_response
+
+    record_active_response(
+        provider=provider,
+        endpoint=endpoint,
+        params={"analysis_date": current.analysis_date},
+        outcome=outcome,
+        consumer_artifact_ids=consumers,
+    )
+
+
+def render_scan_frame_snapshot(snapshot: dict, *, output_dir: Path | str) -> dict[str, Path]:
+    if set(snapshot) != {"schema_version", "market_pack", "strategist_pack"}:
+        raise ValueError("invalid scan frame snapshot contract")
+    if snapshot["schema_version"] != 1:
+        raise ValueError("invalid scan frame snapshot")
+    output = Path(output_dir)
+    market = atomic_write_json(output / "market_pack.json", snapshot["market_pack"])
+    strategist = atomic_write_json(
+        output / "strategist_pack.json", snapshot["strategist_pack"]
+    )
+    return {"market_pack": market, "strategist_pack": strategist}
+
+
 def scan_frame(handle=None) -> dict:
     current = handle or _active_handle()
     from autoresearch.scan import frame, strategist_pack
@@ -1245,6 +1385,18 @@ def scan_frame(handle=None) -> dict:
         raise RuntimeError("scan frame failed")
     if strategist_pack.main([str(market), "--out", str(projected)]) != 0:
         raise RuntimeError("strategist projection failed")
+    snapshot = {
+        "schema_version": 1,
+        "market_pack": json.loads(market.read_text(encoding="utf-8")),
+        "strategist_pack": json.loads(projected.read_text(encoding="utf-8")),
+    }
+    _record_scan_source(
+        provider="scan.frame",
+        endpoint="scan.frame.snapshot.v1",
+        current=current,
+        outcome=snapshot,
+        consumers=["scan.market.pack", "scan.strategist.pack"],
+    )
     return {"schema_version": 1, "market_pack": str(market), "strategist_pack": str(projected)}
 
 
@@ -1259,7 +1411,27 @@ def scan_prelude(handle=None) -> dict:
     l2 = Path(current.staging) / "L2_gbdt_top200.csv"
     if not summary.is_file() or not l2.is_file():
         raise RuntimeError("prelude required outputs are missing")
-    return {"schema_version": 1, "steps": results, "summary": str(summary), "l2": str(l2)}
+    _freeze_scan_runtime_inputs(current)
+    bundle = _write_scan_bundle(current, "prelude", "prelude.bundle.json")
+    _record_scan_source(
+        provider="scan.prelude",
+        endpoint="scan.prelude.snapshot.v1",
+        current=current,
+        outcome={
+            "schema_version": 1,
+            "step_names": list(STEP_NAMES),
+            "steps": results,
+            "bundle": bundle,
+        },
+        consumers=["scan.prelude.summary", "scan.l2", "scan.prelude.bundle"],
+    )
+    return {
+        "schema_version": 1,
+        "steps": results,
+        "summary": str(summary),
+        "l2": str(l2),
+        "bundle_files": len(bundle["files"]),
+    }
 
 
 def scan_gate1(handle=None) -> dict:
@@ -1279,6 +1451,7 @@ def scan_gate1(handle=None) -> dict:
 
 def scan_sector_prepare(handle=None) -> dict:
     current = handle or _active_handle()
+    _use_frozen_scan_runtime_inputs(current)
     from autoresearch.scan.user_config import knob
     from autoresearch.sector import pack as sector_pack, reuse as sector_reuse
     from autoresearch.session_agent.workflows.scan import _sector_key
@@ -1289,7 +1462,11 @@ def scan_sector_prepare(handle=None) -> dict:
     )
     found = sector_reuse.find_reusable(current.analysis_date, sectors)
     if found:
-        sector_reuse.apply_reuse(current.analysis_date, found, root=ws.scan_root())
+        sector_reuse.apply_reuse(
+            current.analysis_date,
+            found,
+            root=Path(current.staging).parent,
+        )
     pack_dir = scan_dir / "session_inputs/sectors"
     rows = []
     for industry in sectors:
@@ -1306,6 +1483,14 @@ def scan_sector_prepare(handle=None) -> dict:
         )
     value = {"schema_version": 1, "mode": "FULL", "sectors": rows}
     atomic_write_json(scan_dir / "session_outputs/sector.list.json", value)
+    bundle = _write_scan_bundle(current, "sector", "sector.source.bundle.json")
+    _record_scan_source(
+        provider="scan.sector",
+        endpoint="scan.sector.snapshot.v1",
+        current=current,
+        outcome={"schema_version": 1, "bundle": bundle, "sector_list": value},
+        consumers=["scan.sector.list", "scan.sector.source.bundle"],
+    )
     return value
 
 
@@ -1322,24 +1507,43 @@ def scan_sector_skip(handle=None) -> dict:
         "reason": "not applicable in sentinel mode",
     }
     atomic_write_json(Path(current.staging) / "session_outputs/sector.list.json", value)
+    _write_scan_bundle(current, "sector", "sector.source.bundle.json")
     return value
 
 
 def scan_l3_prepare(handle=None) -> dict:
     current = handle or _active_handle()
+    _use_frozen_scan_runtime_inputs(current)
     from autoresearch.scan.l3.prompt import prepare_l3_table
 
-    return prepare_l3_table(current.analysis_date, root=ws.scan_root())
+    value = prepare_l3_table(
+        current.analysis_date,
+        root=Path(current.staging).parent,
+    )
+    bundle = _write_scan_bundle(current, "l3_source", "l3.source.bundle.json")
+    _record_scan_source(
+        provider="scan.l3.prepare",
+        endpoint="scan.l3.prepare.snapshot.v1",
+        current=current,
+        outcome=bundle,
+        consumers=["scan.l3.table", "scan.l3.source.bundle"],
+    )
+    return value
 
 
 def scan_l3_lint(handle=None) -> dict:
     current = handle or _active_handle()
+    _use_frozen_scan_runtime_inputs(current)
     from autoresearch.scan.l3.validation import build_repair_pack, lint_judged
 
-    value = lint_judged(current.analysis_date, root=ws.scan_root())
+    root = Path(current.staging).parent
+    value = lint_judged(current.analysis_date, root=root)
     atomic_write_json(Path(current.staging) / "session_outputs/l3.validation.json", value)
-    if not value.get("ok"):
-        build_repair_pack(current.analysis_date, root=ws.scan_root())
+    # Always materialize the bounded repair contract.  On a clean pass it is an
+    # explicit empty pack, so later expansion evidence never depends on an
+    # unowned ambient file.
+    build_repair_pack(current.analysis_date, root=root)
+    _write_scan_bundle(current, "l3_context", "l3.context.bundle.json")
     return value
 
 
@@ -1352,14 +1556,31 @@ def scan_l3_repair_skip(handle=None) -> dict:
         "codes": [],
     }
     atomic_write_json(Path(current.staging) / "session_outputs/l3.repair.json", value)
+    judged_path = Path(current.staging) / "_l3_judged.json"
+    if judged_path.is_file():
+        atomic_write_bytes(
+            Path(current.staging) / "_l3_effective_judged.json",
+            judged_path.read_bytes(),
+        )
     return value
 
 
 def scan_l3_repair_apply(handle=None) -> dict:
     current = handle or _active_handle()
+    _use_frozen_scan_runtime_inputs(current)
     from autoresearch.scan.l3.validation import apply_repair_patch
 
-    applied = apply_repair_patch(current.analysis_date, root=ws.scan_root())
+    judged = Path(current.staging) / "_l3_judged.json"
+    opening = judged.read_bytes()
+    try:
+        applied = apply_repair_patch(
+            current.analysis_date,
+            root=Path(current.staging).parent,
+        )
+        effective = judged.read_bytes()
+    finally:
+        atomic_write_bytes(judged, opening)
+    atomic_write_bytes(Path(current.staging) / "_l3_effective_judged.json", effective)
     value = {"schema_version": 1, "status": "APPLIED", **applied}
     atomic_write_json(Path(current.staging) / "session_outputs/l3.repair.json", value)
     return value
@@ -1380,11 +1601,18 @@ def scan_l3_repair_degraded(error: dict, handle=None) -> dict:
         },
     }
     atomic_write_json(Path(current.staging) / "session_outputs/l3.repair.json", value)
+    judged_path = Path(current.staging) / "_l3_judged.json"
+    if judged_path.is_file():
+        atomic_write_bytes(
+            Path(current.staging) / "_l3_effective_judged.json",
+            judged_path.read_bytes(),
+        )
     return value
 
 
 def scan_l3_merge(handle=None) -> dict:
     current = handle or _active_handle()
+    _use_frozen_scan_runtime_inputs(current)
     from autoresearch.scan.gates import gate2, record_gate_stage_result
     from autoresearch.scan.l3.merge import write_finalists
 
@@ -1392,12 +1620,18 @@ def scan_l3_merge(handle=None) -> dict:
     budget = gate1.get("l4_budget")
     if type(budget) is not int or budget < 1:
         raise RuntimeError("invalid frozen GATE1 l4_budget")
-    write_finalists(current.analysis_date, budget=budget, root=ws.scan_root())
+    write_finalists(
+        current.analysis_date,
+        budget=budget,
+        root=Path(current.staging).parent,
+        judged_path=Path(current.staging) / "_l3_effective_judged.json",
+    )
     result = gate2(Path(current.staging), budget=budget)
     record_gate_stage_result(Path(current.staging), result, budget=budget)
     atomic_write_json(Path(current.staging) / "session_outputs/gate2.json", result)
     if not result.get("ok"):
         raise RuntimeError(str(result.get("reason") or "GATE2 failed"))
+    _write_scan_bundle(current, "l3_final", "l3.final.bundle.json")
     return result
 
 
@@ -1418,6 +1652,7 @@ def scan_gate2_skip(handle=None) -> dict:
     result = gate2(Path(current.staging), skip_reason=reason)
     record_gate_stage_result(Path(current.staging), result)
     atomic_write_json(Path(current.staging) / "session_outputs/gate2.json", result)
+    _write_scan_bundle(current, "l3_final", "l3.final.bundle.json")
     return result
 
 
@@ -1438,6 +1673,7 @@ def _scan_codes(scan_dir: Path) -> list[str]:
 def scan_l4_prepare(handle=None) -> dict:
     """Run the original L4 producers, freeze prompts, then create the sole ticket owner."""
     current = handle or _active_handle()
+    _use_frozen_scan_runtime_inputs(current)
     scan_dir = Path(current.staging)
     from autoresearch.scan import calendar
     from autoresearch.scan.l4 import producers, prompts
@@ -1480,6 +1716,19 @@ def scan_l4_prepare(handle=None) -> dict:
         "effective_cap": initialized.get("effective_cap"),
     }
     atomic_write_json(scan_dir / "session_outputs/l4.plan.json", value)
+    bundle = _write_scan_bundle(current, "l4_source", "l4.source.bundle.json")
+    _record_scan_source(
+        provider="scan.l4.prepare",
+        endpoint="scan.l4.prepare.snapshot.v1",
+        current=current,
+        outcome={"schema_version": 1, "bundle": bundle, "plan": value},
+        consumers=[
+            "scan.l4.plan",
+            "scan.l4.taskbook",
+            "scan.l4.source.bundle",
+            *[f"scan.l4.{code}.a1.prompt" for code in codes],
+        ],
+    )
     return value
 
 
@@ -1500,6 +1749,7 @@ def scan_l4_skip(handle=None) -> dict:
     output = Path(current.staging) / "session_outputs"
     atomic_write_json(output / "l4.plan.json", plan)
     atomic_write_json(output / "review.plan.json", review)
+    _write_scan_bundle(current, "l4_source", "l4.source.bundle.json")
     return plan
 
 
@@ -1532,13 +1782,36 @@ def scan_l4_slim(handle=None, *, code: str | None = None) -> dict:
         raise RuntimeError(str(result.get("reason") or "L4 slim failed"))
     scan_dir = Path(current.staging)
     attempt = _l4_attempt(scan_dir, code6)
+    source = Path(legacy_scan._payload(current)["tasks"][code6]["artifacts"]["slim"]["path"])
     if attempt > 1:
-        task = legacy_scan._payload(current)["tasks"][code6]
-        source = Path(task["artifacts"]["slim"]["path"])
         target = _retry_dir(scan_dir, code6, attempt) / "slim.md"
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
+        source = target
+    snapshot = {
+        "schema_version": 1,
+        "code": code6,
+        "attempt": attempt,
+        "result": result,
+        "slim": _encode_payload(source.read_bytes()),
+    }
+    _record_scan_source(
+        provider="scan.l4.slim",
+        endpoint="scan.l4.slim.snapshot.v1",
+        current=current,
+        outcome=snapshot,
+        consumers=[f"scan.l4.{code6}.a{attempt}.slim"],
+    )
     return result
+
+
+def render_scan_l4_slim_snapshot(snapshot: dict, *, output_path: Path | str) -> dict:
+    if set(snapshot) != {"schema_version", "code", "attempt", "result", "slim"}:
+        raise ValueError("invalid scan L4 slim snapshot contract")
+    if snapshot["schema_version"] != 1:
+        raise ValueError("invalid scan L4 slim snapshot")
+    atomic_write_bytes(Path(output_path), _decode_payload(snapshot["slim"]))
+    return dict(snapshot["result"])
 
 
 def _normalize_intel(scan_dir: Path, code: str) -> None:
@@ -1576,6 +1849,22 @@ def scan_l4_intel_status(handle=None, *, code: str | None = None) -> dict:
         target = _retry_dir(scan_dir, code6, attempt) / "intel_status.json"
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(scan_dir / f"_l4_intel_status_{code6}.json", target)
+    intel_path = scan_dir / f"_l4_intel_{code6}.md"
+    bundle_path = (
+        _retry_dir(scan_dir, code6, attempt) / "intel_bundle.json"
+        if attempt > 1
+        else scan_dir / "session_outputs/intel_bundles" / f"{code6}.a1.json"
+    )
+    atomic_write_json(
+        bundle_path,
+        {
+            "schema_version": 1,
+            "code": code6,
+            "attempt": attempt,
+            "enabled": True,
+            "intel": _encode_payload(intel_path.read_bytes()) if intel_path.is_file() else None,
+        },
+    )
     return status.to_dict()
 
 
@@ -1592,6 +1881,21 @@ def scan_l4_intel_disabled(handle=None, *, code: str | None = None) -> dict:
         target = _retry_dir(scan_dir, code6, attempt) / "intel_status.json"
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(scan_dir / f"_l4_intel_status_{code6}.json", target)
+    bundle_path = (
+        _retry_dir(scan_dir, code6, attempt) / "intel_bundle.json"
+        if attempt > 1
+        else scan_dir / "session_outputs/intel_bundles" / f"{code6}.a1.json"
+    )
+    atomic_write_json(
+        bundle_path,
+        {
+            "schema_version": 1,
+            "code": code6,
+            "attempt": attempt,
+            "enabled": False,
+            "intel": None,
+        },
+    )
     return status.to_dict()
 
 
@@ -1695,6 +1999,7 @@ def scan_review3_skip(handle=None) -> dict:
     current = handle or _active_handle()
     value = {"schema_version": 1, "status": "SUCCEEDED", "reason": "sentinel_empty_no_l4"}
     atomic_write_json(Path(current.staging) / "session_outputs/l4.complete.json", value)
+    _write_scan_bundle(current, "l4_final", "l4.final.bundle.json")
     return value
 
 
@@ -1714,6 +2019,17 @@ def scan_l4_finalize(handle=None, *, code: str | None = None) -> dict:
         raise RuntimeError(f"review decision missing for {code6}")
     row = matches[0]
     attempt = int(row.get("attempt") or 1)
+    intel_bundle_path = (
+        _retry_dir(scan_dir, code6, attempt) / "intel_bundle.json"
+        if attempt > 1
+        else scan_dir / "session_outputs/intel_bundles" / f"{code6}.a1.json"
+    )
+    intel_bundle = json.loads(intel_bundle_path.read_text(encoding="utf-8"))
+    if intel_bundle.get("intel") is not None:
+        atomic_write_bytes(
+            scan_dir / f"_l4_intel_{code6}.md",
+            _decode_payload(intel_bundle["intel"]),
+        )
     ensemble = None
     if row.get("trigger") is not None:
         review3_rating = (
@@ -1744,6 +2060,32 @@ def scan_l4_finalize(handle=None, *, code: str | None = None) -> dict:
         "provisional_rating": stage.metrics.get("provisional_rating"),
         "ensemble": ensemble,
     }
+    portable = [
+        scan_dir / f"_l4_prompt_{code6}.md",
+        scan_dir / f"_l4_intel_{code6}.md",
+        scan_dir / f"_l4_intel_status_{code6}.json",
+        scan_dir / f"_ensemble_{code6}.json",
+        scan_dir / "details" / f"{code6}.md",
+        scan_dir / "ensemble" / f"{code6}.run2.md",
+        scan_dir / "ensemble" / f"{code6}.run3.md",
+    ]
+    slim_path = Path(
+        legacy_scan._payload(current)["tasks"][code6]["artifacts"]["slim"]["path"]
+    )
+    try:
+        slim_path.relative_to(scan_dir)
+    except ValueError:
+        pass
+    else:
+        portable.append(slim_path)
+    retry_dir = _retry_dir(scan_dir, code6, attempt)
+    if attempt > 1 and retry_dir.is_dir():
+        portable.extend(path for path in retry_dir.rglob("*") if path.is_file())
+    ticket["files"] = {
+        path.relative_to(scan_dir).as_posix(): _encode_payload(path.read_bytes())
+        for path in sorted(set(portable))
+        if path.is_file() and not path.is_symlink()
+    }
     ticket_path = scan_dir / "session_outputs/tickets" / f"{code6}.a{attempt}.json"
     atomic_write_json(ticket_path, ticket)
     legacy_scan.complete_ticket(current, code6, attempt)
@@ -1763,11 +2105,13 @@ def scan_l4_complete(handle=None) -> dict:
         raise RuntimeError(f"L4 taskbook not all SUCCEEDED: {bad}")
     value = {"schema_version": 1, "status": "SUCCEEDED", "states": states}
     atomic_write_json(Path(current.staging) / "session_outputs/l4.complete.json", value)
+    _write_scan_bundle(current, "l4_final", "l4.final.bundle.json")
     return value
 
 
 def scan_assemble(handle=None) -> dict:
     current = handle or _active_handle()
+    _use_frozen_scan_runtime_inputs(current)
     from autoresearch.scan import publisher
 
     scan_dir = Path(current.staging)
@@ -1793,11 +2137,13 @@ def scan_assemble(handle=None) -> dict:
         "candidate_relative": report_dir.relative_to(Path(current.workspace)).as_posix(),
     }
     atomic_write_json(scan_dir / "session_outputs/report.plan.json", value)
+    _write_scan_bundle(current, "report", "report.build.bundle.json")
     return value
 
 
 def scan_gate4(handle=None) -> dict:
     current = handle or _active_handle()
+    _use_frozen_scan_runtime_inputs(current)
     from autoresearch.scan.gates import gate4, record_gate_stage_result
 
     scan_dir = Path(current.staging)
@@ -1824,6 +2170,7 @@ def _report_candidate(current) -> Path:
 
 def scan_usage(handle=None) -> dict:
     current = handle or _active_handle()
+    _use_frozen_scan_runtime_inputs(current)
     from autoresearch.trace import usage_harvest, usage_reconcile
 
     scan_dir = Path(current.staging)
@@ -1854,46 +2201,94 @@ def scan_usage(handle=None) -> dict:
             "warnings": [f"usage_reconcile:{type(exc).__name__}:{exc}"],
         }
     atomic_write_json(scan_dir / "_usage_reconcile.json", reconcile)
+    bundle = _write_scan_bundle(current, "used_report", "report.used.bundle.json")
+    snapshot = {
+        "schema_version": 1,
+        "usage": ledger,
+        "reconcile": reconcile,
+        "report_bundle": bundle,
+    }
+    _record_scan_source(
+        provider="scan.usage",
+        endpoint="scan.usage.snapshot.v1",
+        current=current,
+        outcome=snapshot,
+        consumers=[
+            "scan.token.usage",
+            "scan.usage.reconcile",
+            "scan.report.used.bundle",
+        ],
+    )
     return {"schema_version": 1, "usage": ledger, "reconcile": reconcile}
 
 
-def scan_observe(handle=None) -> dict:
-    current = handle or _active_handle()
+def render_scan_usage_snapshot(snapshot: dict, *, staging_root: Path | str) -> dict:
+    if set(snapshot) != {"schema_version", "usage", "reconcile", "report_bundle"}:
+        raise ValueError("invalid scan usage snapshot contract")
+    if snapshot["schema_version"] != 1:
+        raise ValueError("invalid scan usage snapshot")
+    staging = Path(staging_root)
+    atomic_write_json(staging / "_token_usage.json", snapshot["usage"])
+    atomic_write_json(staging / "_usage_reconcile.json", snapshot["reconcile"])
+    restore_scan_staging_bundle(
+        snapshot["report_bundle"], staging, expected_phase="used_report"
+    )
+    atomic_write_json(
+        staging / "session_outputs/report.used.bundle.json",
+        snapshot["report_bundle"],
+    )
+    return {"schema_version": 1, "usage": snapshot["usage"], "reconcile": snapshot["reconcile"]}
+
+
+def _scan_pool_snapshot() -> tuple[bytes | None, dict]:
     from autoresearch.common.published_state import read_committed_bytes
     from autoresearch.dossier import pool as dossier_pool
-    from autoresearch.scan.post_run import (
-        build_finalist_pool_candidate,
-        publish_run_observation,
+
+    committed = read_committed_bytes(
+        "dossier.coverage_pool",
+        state_root=ws.context_root() / "_published_state",
+        reports_root=ws.run_reports_root("dossier-init"),
     )
-    from autoresearch.session_agent.progress import scan_progress
+    if committed is not None:
+        return committed, json.loads(committed.decode("utf-8"))
+    pool_path = Path(dossier_pool.POOL_PATH)
+    before = pool_path.read_bytes() if pool_path.is_file() else None
+    return before, dossier_pool.load_pool(pool_path)
+
+
+def render_scan_observation_snapshot(current, snapshot: dict) -> list[dict]:
+    """Recompute report/pool publication facts from one frozen observation source."""
+    required = {
+        "schema_version",
+        "observation",
+        "pool_before_text",
+        "current_pool",
+        "report_bundle",
+        "progress_base",
+    }
+    if set(snapshot) != required or snapshot["schema_version"] != 1:
+        raise ValueError("invalid scan observation snapshot contract")
+    if not isinstance(snapshot["current_pool"], dict) or not isinstance(
+        snapshot["progress_base"], dict
+    ):
+        raise ValueError("invalid scan observation snapshot")
+    from autoresearch.scan.post_run import build_finalist_pool_candidate
     from autoresearch.session_agent.workflows.scan import directory_manifest
 
     scan_dir = Path(current.staging)
-    candidate = _report_candidate(current)
-    observation = publish_run_observation(
-        scan_dir,
-        report_dir=candidate,
-        usage_path=scan_dir / "_token_usage.json",
-        decision_write="verify",
+    restore_scan_staging_bundle(
+        snapshot["report_bundle"], scan_dir, expected_phase="observed_report"
     )
+    candidate = _report_candidate(current)
     fixed = scan_dir / "session_outputs/report_files"
     for name in ("brief.md", "summary.md", "appendix.md", "manifest.json"):
         source = candidate / name
         if not source.is_file():
             raise RuntimeError(f"observed report is missing: {name}")
         atomic_write_bytes(fixed / name, source.read_bytes())
-    committed_pool = read_committed_bytes(
-        "dossier.coverage_pool",
-        state_root=ws.context_root() / "_published_state",
-        reports_root=ws.run_reports_root("dossier-init"),
-    )
-    if committed_pool is not None:
-        pool_before = committed_pool
-        current_pool = json.loads(committed_pool.decode("utf-8"))
-    else:
-        pool_path = Path(dossier_pool.POOL_PATH)
-        pool_before = pool_path.read_bytes() if pool_path.is_file() else None
-        current_pool = dossier_pool.load_pool(pool_path)
+    pool_before_text = snapshot["pool_before_text"]
+    pool_before = pool_before_text.encode("utf-8") if pool_before_text is not None else None
+    current_pool = snapshot["current_pool"]
     prepared_pool = build_finalist_pool_candidate(
         scan_dir,
         current.analysis_date,
@@ -1918,14 +2313,70 @@ def scan_observe(handle=None) -> dict:
     }
     atomic_write_json(scan_dir / "session_outputs/scan.publication.json", bundle)
     progress = {
-        **scan_progress(current),
+        **snapshot["progress_base"],
         "checkpoint": "CP7",
         "gate4": json.loads((scan_dir / "session_outputs/gate4.json").read_text(encoding="utf-8")),
-        "observation": observation,
+        "observation": snapshot["observation"],
         "report_candidate": plan["candidate_relative"],
     }
     atomic_write_json(scan_dir / "session_outputs/progress.final.json", progress)
-    return bundle
+    if not pool_mutation:
+        return []
+    return [
+        {
+            "target_key": "dossier.coverage_pool",
+            "expected_before_hash": bundle["pool_before_sha256"],
+            "after_artifact_id": "scan.pool.candidate",
+            "after_hash": bundle["pool_after_sha256"],
+            "apply_policy": "CAS_REPLACE",
+        }
+    ]
+
+
+def scan_observe(handle=None) -> dict:
+    current = handle or _active_handle()
+    _use_frozen_scan_runtime_inputs(current)
+    from autoresearch.scan.post_run import publish_run_observation
+    from autoresearch.session_agent.progress import scan_progress
+
+    scan_dir = Path(current.staging)
+    candidate = _report_candidate(current)
+    observation = publish_run_observation(
+        scan_dir,
+        report_dir=candidate,
+        usage_path=scan_dir / "_token_usage.json",
+        decision_write="verify",
+    )
+    pool_before, current_pool = _scan_pool_snapshot()
+    snapshot = {
+        "schema_version": 1,
+        "observation": observation,
+        "pool_before_text": pool_before.decode("utf-8") if pool_before is not None else None,
+        "current_pool": current_pool,
+        "report_bundle": collect_scan_staging_bundle(
+            scan_dir, phase="observed_report"
+        ),
+        "progress_base": scan_progress(current),
+    }
+    _record_scan_source(
+        provider="scan.observe",
+        endpoint="scan.observe.snapshot.v1",
+        current=current,
+        outcome=snapshot,
+        consumers=[
+            "scan.publication.bundle",
+            "scan.pool.candidate",
+            "scan.report.brief",
+            "scan.report.summary",
+            "scan.report.appendix",
+            "scan.report.manifest",
+            "scan.progress.final",
+        ],
+    )
+    render_scan_observation_snapshot(current, snapshot)
+    return json.loads(
+        (scan_dir / "session_outputs/scan.publication.json").read_text(encoding="utf-8")
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

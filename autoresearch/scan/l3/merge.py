@@ -10,7 +10,6 @@ import pandas as pd
 
 from autoresearch.common import workspace as ws
 
-
 # 当日大涨阈(2026-08-22 批 B)。定义与 `docs/research/2026-08-08-overnight-evidence-gap.md` ①
 # 逐字一致(当日 ≥9.5%),**不做板别感知**:创业板 +9.5% 不是涨停但同样是追高,主尺量的也不是
 # 「打板当晚」而是第二个夜晚。读数:隔夜主尺最高桶 −0.96% [−1.06, −0.84] **整区间同号**。
@@ -66,7 +65,7 @@ def _is_st(name: object) -> bool:
     return "ST" in s or "退" in s
 
 
-def pick_composite_seats(l2: "pd.DataFrame | None", m: int,
+def pick_composite_seats(l2: pd.DataFrame | None, m: int,
                          exclude: set[str] | None = None) -> list[dict]:
     """当日 L2 菜单里 composite 最高的 ≤m 只(确定性;见 `COMPOSITE_SEAT_M` 旁注)。
 
@@ -561,7 +560,8 @@ def _inject_pinned_finalists(fin: pd.DataFrame, kept: list[dict],
     return out
 
 def write_finalists(date: str, budget: int = 30, root: Path | None = None,
-                    pinned_path: Path | str | None = None) -> dict:
+                    pinned_path: Path | str | None = None,
+                    judged_path: Path | str | None = None) -> dict:
     """确定性写 finalists.csv + L3_judged_full.csv + `_l3_bench.csv`(workflow L3 后确定性入口,
     取代手工 glue)。
 
@@ -583,7 +583,8 @@ def write_finalists(date: str, budget: int = 30, root: Path | None = None,
     """
     base = Path(root) if root else ws.scan_root()
     scan_dir = base / date
-    picks = json.loads((scan_dir / "_l3_judged.json").read_text(encoding="utf-8"))
+    source = Path(judged_path) if judged_path is not None else scan_dir / "_l3_judged.json"
+    picks = json.loads(source.read_text(encoding="utf-8"))
     jd = pd.DataFrame(picks)
     if jd.empty or "code" not in jd.columns:
         raise ValueError(f"_l3_judged.json 空或缺 code 列:{scan_dir / '_l3_judged.json'}")

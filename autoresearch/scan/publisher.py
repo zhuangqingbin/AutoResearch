@@ -288,8 +288,18 @@ def _publish_pipeline(scan_dir: Path, out_base: Path, analysis_date: str) -> int
         if p.exists():
             shutil.copy2(p, pdir / dst)
             n += 1
-    wp = ws.factor_lab_root() / "weights.json"
-    if wp.exists():
+    frozen_inputs = scan_dir / "_session_inputs"
+    frozen_manifest = frozen_inputs / "manifest.json"
+    if frozen_manifest.is_file():
+        manifest = _load_json(frozen_manifest)
+        wp = frozen_inputs / "L1_weights.json"
+        expected = bool((manifest.get("present") or {}).get("L1_weights.json"))
+        if expected and not wp.is_file():
+            raise RuntimeError("frozen L1 weights declared present but are missing")
+    else:
+        wp = ws.factor_lab_root() / "weights.json"
+        expected = wp.exists()
+    if expected:
         shutil.copy2(wp, pdir / "L1_weights.json")
         n += 1
     sb = scan_dir / "sector_briefs"
@@ -305,7 +315,8 @@ def _publish_pipeline(scan_dir: Path, out_base: Path, analysis_date: str) -> int
 
 def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None = None,
         hhmm: str | None = None, run_date: str | None = None,
-        pinned_path: str | Path | None = None) -> Path:
+        pinned_path: str | Path | None = None,
+        clock: datetime | None = None) -> Path:
     """L5 发布入口。薄壳,真身在 `_run_publish`。
 
     (2026-08-21 learning 层退役:原来这层壳存在的唯一理由是开一个「单次发布」的
@@ -316,19 +327,25 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
 
     with guarded_ambient_write("scan.assemble"):
         return _run_publish(analysis_date, scan_dir=scan_dir, out_root=out_root,
-                            hhmm=hhmm, run_date=run_date, pinned_path=pinned_path)
+                            hhmm=hhmm, run_date=run_date, pinned_path=pinned_path,
+                            clock=clock)
 
 
 def _run_publish(analysis_date: str, scan_dir: Path | None = None,
                  out_root: Path | None = None, hhmm: str | None = None,
                  run_date: str | None = None,
-                 pinned_path: str | Path | None = None) -> Path:
+                 pinned_path: str | Path | None = None,
+                 clock: datetime | None = None) -> Path:
     scan_dir = scan_dir or ws.scan_root() / analysis_date
     out_root = out_root or ws.reports_root() / "scan"
     is_real = Path(scan_dir).resolve() == (
         ws.scan_root() / analysis_date
     ).resolve()
-    now = datetime.now()
+    if clock is None:
+        from autoresearch.trace.operation_clock import operation_clock
+
+        clock = operation_clock()
+    now = clock
     hhmm = hhmm or now.strftime("%H%M")
     # 目录名 = **数据日在前,发布时刻在后**(2026-08-28 用户裁定;真身见 `run_naming`)。
     # 旧格式首段是跑动日,于是 `20260826_2000` 这个名字对人说"08-26"、研究的却是 08-25

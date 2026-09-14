@@ -16,7 +16,10 @@ _SOURCE_REPLAY = frozenset({
     "scan.frame",
     "scan.prelude",
     "scan.sector.prepare",
+    "scan.l3.prepare",
+    "scan.l4.prepare",
     "scan.l4.slim",
+    "scan.usage",
 })
 _EFFECT_PLAN = frozenset({
     "macro.publish",
@@ -38,15 +41,12 @@ _COMPUTE = frozenset({
     "dossier.validate",
     "scan.gate1",
     "scan.sector.skip",
-    "scan.l3.prepare",
     "scan.l3.lint",
     "scan.l3.repair.skip",
     "scan.l3.repair.apply",
     "scan.l3.merge",
     "scan.gate2.skip",
-    "scan.l4.prepare",
     "scan.l4.skip",
-    "scan.l4.ticket",
     "scan.l4.intel.status",
     "scan.l4.intel.disabled",
     "scan.review.plan",
@@ -58,9 +58,8 @@ _COMPUTE = frozenset({
     "scan.l4.complete",
     "scan.assemble",
     "scan.gate4",
-    "scan.usage",
 })
-_CONTROL_ONLY = frozenset()
+_CONTROL_ONLY = frozenset({"scan.l4.ticket"})
 
 OPERATION_REPLAY_PARTITIONS = {
     "SOURCE_REPLAY": _SOURCE_REPLAY,
@@ -75,7 +74,7 @@ OPERATION_REPLAY_CLASSIFICATION = {
     for operation in operations
 }
 OPERATIONS_REQUIRING_SOURCE_RECEIPTS = frozenset(
-    {*_SOURCE_REPLAY, "dossier.publish"}
+    {*_SOURCE_REPLAY, "dossier.publish", "scan.observe"}
 )
 _members = [
     operation

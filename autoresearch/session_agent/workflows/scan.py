@@ -75,7 +75,7 @@ def _fixed_tasks() -> list[dict]:
             "DETERMINISTIC",
             dependencies=[],
             inputs=[],
-            outputs=["scan.prelude.summary", "scan.l2"],
+            outputs=["scan.prelude.summary", "scan.l2", "scan.prelude.bundle"],
             contract="scan.prelude.v1",
             operation="scan.prelude",
         ),
@@ -83,7 +83,7 @@ def _fixed_tasks() -> list[dict]:
             "scan.gate1",
             "DETERMINISTIC",
             dependencies=["scan.prelude", "scan.market_view"],
-            inputs=["scan.l2", "scan.market.view"],
+            inputs=["scan.l2", "scan.market.view", "scan.prelude.bundle"],
             outputs=["scan.gate1.result", "scan.run_mode"],
             contract="scan.gate1.v1",
             operation="scan.gate1",
@@ -190,8 +190,8 @@ def sector_expansion(plan: dict, mode: dict, snapshot: dict) -> dict:
                 task_id,
                 "DETERMINISTIC",
                 dependencies=["scan.gate1"],
-                inputs=["scan.run_mode"],
-                outputs=["scan.sector.list"],
+                inputs=["scan.run_mode", "scan.prelude.bundle"],
+                outputs=["scan.sector.list", "scan.sector.source.bundle"],
                 contract="scan.sector.plan.v1",
                 operation=operation,
             )
@@ -227,8 +227,17 @@ def l3_expansion(
                     "scan.gate2",
                     "DETERMINISTIC",
                     dependencies=["scan.sector.skip"],
-                    inputs=["scan.run_mode", "scan.sector.list"],
-                    outputs=["scan.finalists", "scan.gate2.result"],
+                    inputs=[
+                        "scan.run_mode",
+                        "scan.sector.list",
+                        "scan.prelude.bundle",
+                        "scan.market.view",
+                    ],
+                    outputs=[
+                        "scan.finalists",
+                        "scan.gate2.result",
+                        "scan.l3.final.bundle",
+                    ],
                     contract="scan.gate2.v1",
                     operation="scan.gate2.skip",
                 )
@@ -240,8 +249,13 @@ def l3_expansion(
             "scan.l3.prepare",
             "DETERMINISTIC",
             dependencies=["scan.sector.prepare"],
-            inputs=["scan.sector.list", "scan.market.view"],
-            outputs=["scan.l3.table"],
+            inputs=[
+                "scan.sector.list",
+                "scan.market.view",
+                "scan.prelude.bundle",
+                "scan.sector.source.bundle",
+            ],
+            outputs=["scan.l3.table", "scan.l3.source.bundle"],
             contract="scan.l3.input.v1",
             operation="scan.l3.prepare",
         )
@@ -287,8 +301,19 @@ def l3_expansion(
                 "scan.l3.lint",
                 "DETERMINISTIC",
                 dependencies=["scan.l3.rank"],
-                inputs=["scan.l3.judged", "scan.market.pack"],
-                outputs=["scan.l3.validation"],
+                inputs=[
+                    "scan.l3.judged",
+                    "scan.market.pack",
+                    "scan.l3.source.bundle",
+                    "scan.sector.list",
+                    *brief_ids,
+                ],
+                outputs=[
+                    "scan.l3.validation",
+                    "scan.l3.repair.pack",
+                    "scan.l3.repair.prompt",
+                    "scan.l3.context.bundle",
+                ],
                 contract="scan.l3.validation.v1",
                 operation="scan.l3.lint",
             ),
@@ -306,8 +331,8 @@ def l3_repair_expansion(plan: dict, validation: dict, snapshots: list[dict]) -> 
             "scan.l3.repair.skip",
             "DETERMINISTIC",
             dependencies=["scan.l3.lint"],
-            inputs=["scan.l3.validation"],
-            outputs=["scan.l3.repair.result"],
+            inputs=["scan.l3.validation", "scan.l3.judged"],
+            outputs=["scan.l3.repair.result", "scan.l3.effective.judged"],
             contract="scan.l3.repair.result.v1",
             operation="scan.l3.repair.skip",
         )
@@ -328,8 +353,13 @@ def l3_repair_expansion(plan: dict, validation: dict, snapshots: list[dict]) -> 
                 "scan.l3.repair.apply",
                 "DETERMINISTIC",
                 dependencies=[repair_task["task_id"]],
-                inputs=["scan.l3.repair.pack", "scan.l3.repair.patch"],
-                outputs=["scan.l3.repair.result"],
+                inputs=[
+                    "scan.l3.repair.pack",
+                    "scan.l3.repair.patch",
+                    "scan.l3.judged",
+                    "scan.l3.context.bundle",
+                ],
+                outputs=["scan.l3.repair.result", "scan.l3.effective.judged"],
                 contract="scan.l3.repair.result.v1",
                 operation="scan.l3.repair.apply",
             )
@@ -340,12 +370,19 @@ def l3_repair_expansion(plan: dict, validation: dict, snapshots: list[dict]) -> 
             "DETERMINISTIC",
             dependencies=[tasks[-1]["task_id"]],
             inputs=[
-                "scan.l3.judged",
+                "scan.l3.effective.judged",
                 "scan.l3.validation",
                 "scan.l3.repair.result",
+                "scan.gate1.result",
                 "scan.run_mode",
+                "scan.l3.context.bundle",
             ],
-            outputs=["scan.finalists", "scan.l3.bench", "scan.gate2.result"],
+            outputs=[
+                "scan.finalists",
+                "scan.l3.bench",
+                "scan.gate2.result",
+                "scan.l3.final.bundle",
+            ],
             contract="scan.gate2.v1",
             operation="scan.l3.merge",
         )
@@ -360,6 +397,7 @@ def _l4_ids(code: str, attempt: int = 1) -> dict[str, str]:
         "slim": f"{prefix}.slim",
         "intel": f"{prefix}.intel",
         "intel_status": f"{prefix}.intel_status",
+        "intel_bundle": f"{prefix}.intel_bundle",
         "card": f"{prefix}.card",
         "ticket": f"{prefix}.ticket",
     }
@@ -387,7 +425,7 @@ def l4_retry_expansion(
             prefix,
             "DETERMINISTIC",
             dependencies=["scan.l4.prepare"],
-            inputs=["scan.l4.taskbook", ids["prompt"]],
+            inputs=["scan.l4.taskbook", "scan.l4.source.bundle", ids["prompt"]],
             outputs=[ids["ticket"]],
             contract="scan.l4.ticket.v1",
             operation="scan.l4.ticket",
@@ -398,7 +436,7 @@ def l4_retry_expansion(
             f"{prefix}.slim",
             "DETERMINISTIC",
             dependencies=["scan.l4.prepare"],
-            inputs=[ids["prompt"]],
+            inputs=["scan.l4.source.bundle", ids["prompt"]],
             outputs=[ids["slim"]],
             contract="stock.harvest.slim.v1",
             operation="scan.l4.slim",
@@ -421,11 +459,11 @@ def l4_retry_expansion(
             )
         )
         status_dependencies = [f"{prefix}.intel"]
-        status_inputs = [ids["intel"]]
+        status_inputs = ["scan.l4.source.bundle", ids["intel"]]
         status_operation = "scan.l4.intel.status"
     else:
         status_dependencies = ["scan.l4.prepare"]
-        status_inputs = [ids["prompt"]]
+        status_inputs = ["scan.l4.source.bundle", ids["prompt"]]
         status_operation = "scan.l4.intel.disabled"
     tasks.append(
         _task(
@@ -433,7 +471,7 @@ def l4_retry_expansion(
             "DETERMINISTIC",
             dependencies=status_dependencies,
             inputs=status_inputs,
-            outputs=[ids["intel_status"]],
+            outputs=[ids["intel_status"], ids["intel_bundle"]],
             contract="scan.l4.intel_status.v1",
             operation=status_operation,
             subject=code,
@@ -477,8 +515,16 @@ def l4_expansion(
                     "scan.l4.skip",
                     "DETERMINISTIC",
                     dependencies=["scan.gate2"],
-                    inputs=["scan.run_mode", "scan.gate2.result"],
-                    outputs=["scan.l4.plan", "scan.review.plan"],
+                    inputs=[
+                        "scan.run_mode",
+                        "scan.gate2.result",
+                        "scan.l3.final.bundle",
+                    ],
+                    outputs=[
+                        "scan.l4.plan",
+                        "scan.review.plan",
+                        "scan.l4.source.bundle",
+                    ],
                     contract="scan.l4.plan.v1",
                     operation="scan.l4.skip",
                 )
@@ -499,8 +545,18 @@ def l4_expansion(
             "scan.l4.prepare",
             "DETERMINISTIC",
             dependencies=["scan.gate2"],
-            inputs=["scan.finalists", "scan.gate2.result", "scan.run_mode"],
-            outputs=["scan.l4.plan", "scan.l4.taskbook", *prompt_ids],
+            inputs=[
+                "scan.finalists",
+                "scan.gate2.result",
+                "scan.run_mode",
+                "scan.l3.final.bundle",
+            ],
+            outputs=[
+                "scan.l4.plan",
+                "scan.l4.taskbook",
+                "scan.l4.source.bundle",
+                *prompt_ids,
+            ],
             contract="scan.l4.plan.v1",
             operation="scan.l4.prepare",
         )
@@ -515,7 +571,7 @@ def l4_expansion(
                 f"l4.{code}.a1",
                 "DETERMINISTIC",
                 dependencies=["scan.l4.prepare"],
-                inputs=["scan.l4.taskbook", ids["prompt"]],
+                inputs=["scan.l4.taskbook", "scan.l4.source.bundle", ids["prompt"]],
                 outputs=[ids["ticket"]],
                 contract="scan.l4.ticket.v1",
                 operation="scan.l4.ticket",
@@ -528,7 +584,7 @@ def l4_expansion(
                 f"l4.{code}.a1.slim",
                 "DETERMINISTIC",
                 dependencies=["scan.l4.prepare"],
-                inputs=[ids["prompt"]],
+                inputs=["scan.l4.source.bundle", ids["prompt"]],
                 outputs=[ids["slim"]],
                 contract="stock.harvest.slim.v1",
                 operation="scan.l4.slim",
@@ -551,11 +607,11 @@ def l4_expansion(
                 )
             )
             status_dependencies = [f"l4.{code}.a1.intel"]
-            status_inputs = [ids["intel"]]
+            status_inputs = ["scan.l4.source.bundle", ids["intel"]]
             status_operation = "scan.l4.intel.status"
         else:
             status_dependencies = ["scan.l4.prepare"]
-            status_inputs = [ids["prompt"]]
+            status_inputs = ["scan.l4.source.bundle", ids["prompt"]]
             status_operation = "scan.l4.intel.disabled"
         tasks.append(
             _task(
@@ -563,7 +619,7 @@ def l4_expansion(
                 "DETERMINISTIC",
                 dependencies=status_dependencies,
                 inputs=status_inputs,
-                outputs=[ids["intel_status"]],
+                outputs=[ids["intel_status"], ids["intel_bundle"]],
                 contract="scan.l4.intel_status.v1",
                 operation=status_operation,
                 subject=code,
@@ -588,7 +644,11 @@ def l4_expansion(
             "scan.review.plan",
             "DETERMINISTIC",
             dependencies=[task["task_id"] for task in card_tasks],
-            inputs=["scan.finalists", *[_l4_ids(row["code"])["card"] for row in rows]],
+            inputs=[
+                "scan.finalists",
+                "scan.l4.source.bundle",
+                *[_l4_ids(row["code"])["card"] for row in rows],
+            ],
             outputs=["scan.review.plan"],
             contract="scan.review.plan.v1",
             operation="scan.review.plan",
@@ -644,7 +704,7 @@ def review_expansion(plan: dict, review_plan: dict, snapshots: list[dict]) -> di
                     task_id,
                     "DETERMINISTIC",
                     dependencies=["scan.review.plan"],
-                    inputs=["scan.review.plan"],
+                    inputs=["scan.review.plan", "scan.l4.source.bundle"],
                     outputs=[ids["none"]],
                     contract="scan.review.none.v1",
                     operation="scan.review.none",
@@ -698,7 +758,16 @@ def review3_expansion(plan: dict, decision: dict, snapshots: list[dict]) -> dict
         attempt = int(row.get("attempt") or 1)
         parent = {"owner": "L4_TASKBOOK", "subject": code, "attempt": attempt}
         ids = _review_ids(code, attempt)
-        inputs = [_l4_ids(code, attempt)["card"], "scan.review.decision"]
+        l4_ids = _l4_ids(code, attempt)
+        inputs = [
+            l4_ids["card"],
+            l4_ids["prompt"],
+            l4_ids["slim"],
+            l4_ids["intel_status"],
+            l4_ids["intel_bundle"],
+            "scan.review.decision",
+            "scan.l4.source.bundle",
+        ]
         if trigger in {"ow_review", "sell_review"}:
             inputs.append(ids["review2"])
         if trigger is not None and row.get("same_tier") is False:
@@ -740,8 +809,12 @@ def review3_expansion(plan: dict, decision: dict, snapshots: list[dict]) -> dict
                 "scan.review3.skip",
                 "DETERMINISTIC",
                 dependencies=["scan.reviews.skip"],
-                inputs=["scan.review.decision"],
-                outputs=["scan.l4.complete"],
+                inputs=[
+                    "scan.review.decision",
+                    "scan.l4.source.bundle",
+                    "scan.l3.final.bundle",
+                ],
+                outputs=["scan.l4.complete", "scan.l4.final.bundle"],
                 contract="scan.l4.complete.v1",
                 operation="scan.review3.skip",
             )
@@ -757,10 +830,18 @@ def review3_expansion(plan: dict, decision: dict, snapshots: list[dict]) -> dict
                 "DETERMINISTIC",
                 dependencies=finalizers,
                 inputs=[
-                    _review_ids(str(row["code"]).zfill(6), int(row.get("attempt") or 1))["ticket"]
-                    for row in decision["decisions"]
+                    "scan.l4.source.bundle",
+                    "scan.l3.final.bundle",
+                    "scan.review.decision",
+                    *[
+                        _review_ids(
+                            str(row["code"]).zfill(6),
+                            int(row.get("attempt") or 1),
+                        )["ticket"]
+                        for row in decision["decisions"]
+                    ],
                 ],
-                outputs=["scan.l4.complete"],
+                outputs=["scan.l4.complete", "scan.l4.final.bundle"],
                 contract="scan.l4.complete.v1",
                 operation="scan.l4.complete",
             )
@@ -776,8 +857,14 @@ def _l5_tasks(complete_dependency: str) -> list[dict]:
             "scan.assemble",
             "DETERMINISTIC",
             dependencies=[complete_dependency],
-            inputs=["scan.l4.complete", "scan.run_mode", "scan.finalists", "scan.market.view"],
-            outputs=["scan.report.plan"],
+            inputs=[
+                "scan.l4.complete",
+                "scan.l4.final.bundle",
+                "scan.run_mode",
+                "scan.finalists",
+                "scan.market.view",
+            ],
+            outputs=["scan.report.plan", "scan.report.build.bundle"],
             contract="scan.report.plan.v1",
             operation="scan.assemble",
         ),
@@ -785,7 +872,7 @@ def _l5_tasks(complete_dependency: str) -> list[dict]:
             "scan.gate4",
             "DETERMINISTIC",
             dependencies=["scan.assemble"],
-            inputs=["scan.report.plan"],
+            inputs=["scan.report.plan", "scan.report.build.bundle"],
             outputs=["scan.gate4.result"],
             contract="scan.gate4.v1",
             operation="scan.gate4",
@@ -794,8 +881,16 @@ def _l5_tasks(complete_dependency: str) -> list[dict]:
             "scan.usage",
             "DETERMINISTIC",
             dependencies=["scan.gate4"],
-            inputs=["scan.report.plan", "scan.gate4.result"],
-            outputs=["scan.token.usage", "scan.usage.reconcile"],
+            inputs=[
+                "scan.report.plan",
+                "scan.report.build.bundle",
+                "scan.gate4.result",
+            ],
+            outputs=[
+                "scan.token.usage",
+                "scan.usage.reconcile",
+                "scan.report.used.bundle",
+            ],
             contract="scan.usage.v1",
             operation="scan.usage",
         ),
@@ -805,6 +900,8 @@ def _l5_tasks(complete_dependency: str) -> list[dict]:
             dependencies=["scan.usage"],
             inputs=[
                 "scan.report.plan",
+                "scan.report.build.bundle",
+                "scan.report.used.bundle",
                 "scan.gate4.result",
                 "scan.token.usage",
                 "scan.usage.reconcile",
@@ -970,7 +1067,7 @@ def _paths_for_artifact(handle, task: dict, artifact_id: str) -> tuple[Path, str
         )
     match = re.fullmatch(
         r"scan\.l4\.(\d{6})\.a(\d+)\."
-        r"(prompt|slim|intel|intel_status|card|review2|review3|review_none|ticket)",
+        r"(prompt|slim|intel|intel_status|intel_bundle|card|review2|review3|review_none|ticket)",
         artifact_id,
     )
     if match:
@@ -986,6 +1083,10 @@ def _paths_for_artifact(handle, task: dict, artifact_id: str) -> tuple[Path, str
                 / f"{normalize_symbol(code)}_{handle.analysis_date}_slim.md",
                 "intel": staging / f"_l4_intel_{code}.md",
                 "intel_status": staging / f"_l4_intel_status_{code}.json",
+                "intel_bundle": staging
+                / "session_outputs"
+                / "intel_bundles"
+                / f"{code}.a1.json",
                 "card": staging / "details" / f"{code}.md",
                 "review2": staging / "ensemble" / f"{code}.run2.md",
                 "review3": staging / "ensemble" / f"{code}.run3.md",
@@ -999,6 +1100,7 @@ def _paths_for_artifact(handle, task: dict, artifact_id: str) -> tuple[Path, str
                 "slim": retry / "slim.md",
                 "intel": retry / "intel.md",
                 "intel_status": retry / "intel_status.json",
+                "intel_bundle": retry / "intel_bundle.json",
                 "card": retry / "card.md",
                 "review2": retry / "review2.md",
                 "review3": retry / "review3.md",
@@ -1007,8 +1109,18 @@ def _paths_for_artifact(handle, task: dict, artifact_id: str) -> tuple[Path, str
             }
         return paths[kind], "WRITE" if artifact_id in task["output_artifact_ids"] else "READ"
     mapping = {
+        "scan.prelude.bundle": staging / "session_outputs/prelude.bundle.json",
+        "scan.sector.source.bundle": staging / "session_outputs/sector.source.bundle.json",
+        "scan.l3.source.bundle": staging / "session_outputs/l3.source.bundle.json",
+        "scan.l3.context.bundle": staging / "session_outputs/l3.context.bundle.json",
+        "scan.l3.final.bundle": staging / "session_outputs/l3.final.bundle.json",
+        "scan.l4.source.bundle": staging / "session_outputs/l4.source.bundle.json",
+        "scan.l4.final.bundle": staging / "session_outputs/l4.final.bundle.json",
+        "scan.report.build.bundle": staging / "session_outputs/report.build.bundle.json",
+        "scan.report.used.bundle": staging / "session_outputs/report.used.bundle.json",
         "scan.l3.table": staging / "_l3_table.md",
         "scan.l3.judged": staging / "_l3_judged.json",
+        "scan.l3.effective.judged": staging / "_l3_effective_judged.json",
         "scan.l3.validation": staging / "session_outputs/l3.validation.json",
         "scan.l3.repair.prompt": staging / "_l3_repair_prompt.md",
         "scan.l3.repair.pack": staging / "_l3_repair_pack.json",
@@ -1048,6 +1160,7 @@ def register_scan_artifacts(request: dict, handle, plan: dict) -> None:
         "scan.market.view": staging / "market_view.md",
         "scan.prelude.summary": staging / "_prelude_summary.md",
         "scan.l2": staging / "L2_gbdt_top200.csv",
+        "scan.prelude.bundle": staging / "session_outputs/prelude.bundle.json",
         "scan.gate1.result": staging / "session_outputs/gate1.json",
         "scan.run_mode": staging / "run_mode.json",
         "scan.sector.list": staging / "session_outputs/sector.list.json",
@@ -1069,6 +1182,7 @@ def register_scan_expansion_artifacts(request: dict, handle, expansion: dict) ->
         ]:
             if artifact_id in seen or artifact_id in {
                 "scan.run_mode",
+                "scan.gate1.result",
                 "scan.market.view",
                 "scan.market.pack",
                 "scan.sector.list",
