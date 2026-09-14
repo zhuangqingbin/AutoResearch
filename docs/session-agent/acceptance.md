@@ -11,7 +11,12 @@
 
 自动化测试和合成 handle 证明契约、状态机与领域接线，不证明真实模型派发、联网、独立上下文或 token 计量。Codex 不读取 `context_claude/`、`reports_claude/`，也不代填 Claude 结果。
 
-最终软件回归：全仓 `6318 passed, 13 skipped`；session_agent 专项 `209 passed`；迁移范围 Ruff、compileall、三个 legacy Workflow 的 `node --check` 均通过。跳过项均为缺少历史 gitignored 现场、可选 lightgbm 或文件系统能力，与迁移代码无关。
+文中的 `6318 passed, 13 skipped` 与 `209 passed` 是上一迁移基线，不作为本轮法证修复的
+测试声明。本轮最终数字只在实际命令完成后写入；软件绿灯仍不等于真实宿主运行通过。
+
+本轮实际软件结果：离线/故障矩阵 `1477 passed, 7 skipped, 4 subtests passed`；全仓
+`6557 passed, 12 skipped, 5 warnings, 4 subtests passed`；目标 Ruff 与 compileall 均通过。
+命令、代码摘要、skip 和隔离边界见 [synthetic-acceptance-2026-09-14.md](synthetic-acceptance-2026-09-14.md)。
 
 ## 调用者清点
 
@@ -20,6 +25,12 @@
 ## 真实验收矩阵
 
 每个宿主分别记录单股 LITE 早停/满卡、单股 FULL、宏观 FULL/LITE、行业 FULL/LITE、档案 INIT、扫描 FULL、三个 sentinel/forced 模式、中断恢复、独立复核、缺证据/额度不足。PASS 必须有本宿主真实 run_id 和 REAL_SESSION 证据；合成分支只能标 SYNTHETIC，缺项为 INCOMPLETE。
+
+机器记录由 `contracts.forensic.validate_acceptance_record` 做严格字段校验；没有 `status=PASS`
+捷径。portable proof 同时绑定报告核验、完整 ReplayPlan/ReplayResult、代码树 hash、发布
+bundle/receipt、ROOT 与 ExecutionOrigin。`evaluation.accept_workflow` 要求 Codex、Claude Code
+在固定场景分母上全部有可解引用 proof 才返回 `ENABLED`。当前仓库没有这组真实 proof，故五类
+能力仍为 `INCOMPLETE`；这不是测试失败，而是尚未发生的外部验收事实。
 
 对拍使用 Comparison v1：`schema_version、engine、workflow、mode、baseline_run_id、candidate_run_id、input_identity_equal、config_identity_equal、deterministic_diffs、research_diffs、missing_evidence、verdict`。只归一化 run_id、运行时刻和路径元信息；评级、数值、候选、来源和警告差异必须保留。输入/config 不同或有决定性差异为 FAIL；缺基线或计量为 INCOMPLETE。
 
@@ -32,3 +43,15 @@
 1. 宿主在自身根完成矩阵并保存 run_id、host receipt、comparison 和 efficiency 记录。
 2. 质量、恢复、门和证据先通过；性能不改善不阻断架构学习，但必须如实记录。
 3. 单个入口两宿主均 PASS 后，才移除该入口 legacy 默认；历史 Workflow 和 capsule 的只读兼容另行保留。
+
+### 当前固定场景分母
+
+| workflow | 每个宿主必须具备 |
+|---|---|
+| stock-research | A 股 FULL、美股 FULL、LITE 早停、LITE 满卡 |
+| macro-research | FULL、LITE |
+| sector-research | FULL、LITE 且真实 reuse |
+| dossier-init | INIT、新 session 恢复 |
+| scan-market | FULL、FORCED_FULL、SENTINEL_EMPTY、SENTINEL_PINNED；后三项允许明确标 DRILL |
+
+单股其他市场在取得各自真实样本前仍属 PILOT 范围，不因 A 股/美股 proof 自动推广。

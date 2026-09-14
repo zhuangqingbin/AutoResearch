@@ -10,6 +10,12 @@
 Claude Code 官方订阅会话完成，Python 不调用模型 API。完整教程见
 `docs/session-agent/README.md`。
 
+`finish` 后必须对其机器返回的 canonical 报告路径运行
+`uv run --no-sync python -m autoresearch.session_agent verify-report --report-path <PATH> --expected-run-id <RUN_ID> --level full`。
+交付结论只能引用该 `VerificationResult`；报告字节未绑定会明确返回 `UNBOUND_REPORT`。
+默认入口只由 `session_agent.evaluation.accept_workflow` 的双宿主 REAL_SESSION proof 门决定；
+当前矩阵未齐时继续显式标为 PILOT，不能因合成测试通过自行切换默认。
+
 ## 项目技能(trigger → 说明书)
 
 | 技能 | 何时用 | 说明书 |

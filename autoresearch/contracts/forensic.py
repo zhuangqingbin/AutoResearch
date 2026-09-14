@@ -59,6 +59,12 @@ HOST_EVIDENCE_BINDING_FIELDS = frozenset({
     "normalized_path", "normalized_sha256", "tool_call_ids", "status", "created_at",
     "binding_id",
 })
+ACCEPTANCE_RECORD_FIELDS = frozenset({
+    "schema_version", "engine", "workflow", "mode", "scenario",
+    "code_tree_hash", "run_id", "publication_id", "root_hash", "evidence_kind",
+    "orchestration_verified", "report_covered", "completeness_ok", "replay_scope",
+    "compute_status", "isolation_status", "notes",
+})
 
 ENGINES = frozenset({"claude", "codex"})
 ORCHESTRATIONS = frozenset({"session_v1", "legacy", "untracked"})
@@ -76,6 +82,9 @@ EVIDENCE_STATUSES = frozenset({
 })
 TRANSCRIPT_STATUSES = frozenset({"PRESENT", "PARTIAL", "MISSING", "UNAVAILABLE", "AMBIGUOUS"})
 CONTEXT_SOURCES = frozenset({"MAIN", "SUBAGENT", "SHARED", "UNKNOWN"})
+ACCEPTANCE_EVIDENCE_KINDS = frozenset(
+    {"REAL_SESSION", "REAL_SESSION_DRILL", "SYNTHETIC", "NONE"}
+)
 
 _ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,191}", re.ASCII)
 _RUN_ID_RE = re.compile(r"[0-9]{8}T[0-9]{12}Z", re.ASCII)
@@ -414,6 +423,39 @@ def validate_operation_evidence(value: dict) -> dict:
     return value
 
 
+def validate_acceptance_record(value: dict) -> dict:
+    """Validate one real-host acceptance claim without treating it as proof."""
+    require_exact_fields(value, ACCEPTANCE_RECORD_FIELDS)
+    require_version(value["schema_version"])
+    _engine(value["engine"])
+    if value["workflow"] not in RUN_KINDS:
+        raise ValueError("invalid acceptance workflow")
+    for field in ("mode", "scenario"):
+        _required_string(value[field], field, pattern=_ID_RE)
+    require_sha256(value["code_tree_hash"], "code_tree_hash")
+    _run_id(value["run_id"])
+    if not re.fullmatch(r"p[1-9][0-9]*", str(value["publication_id"])):
+        raise ValueError("invalid publication_id")
+    require_sha256(value["root_hash"], "root_hash")
+    if value["evidence_kind"] not in ACCEPTANCE_EVIDENCE_KINDS:
+        raise ValueError("invalid acceptance evidence_kind")
+    for field in (
+        "orchestration_verified",
+        "report_covered",
+        "completeness_ok",
+    ):
+        if type(value[field]) is not bool:
+            raise ValueError(f"{field} must be boolean")
+    _unique_strings(value["replay_scope"], "replay_scope", allow_empty=False)
+    if value["compute_status"] not in {"FULL", "PARTIAL", "NONE"}:
+        raise ValueError("invalid acceptance compute_status")
+    if value["isolation_status"] not in {"ENFORCED", "FAILED", "UNKNOWN"}:
+        raise ValueError("invalid acceptance isolation_status")
+    if type(value["notes"]) is not str:
+        raise ValueError("acceptance notes must be a string")
+    return value
+
+
 def validate_host_evidence_binding(value: dict) -> dict:
     require_exact_fields(value, HOST_EVIDENCE_BINDING_FIELDS)
     require_version(value["schema_version"])
@@ -450,6 +492,8 @@ def validate_host_evidence_binding(value: dict) -> dict:
 
 
 __all__ = [
+    "ACCEPTANCE_EVIDENCE_KINDS",
+    "ACCEPTANCE_RECORD_FIELDS",
     "ARTIFACT_REF_FIELDS",
     "EVIDENCE_PLAN_FIELDS",
     "EXECUTION_ORIGIN_FIELDS",
@@ -460,6 +504,7 @@ __all__ = [
     "evidence_plan_hash",
     "host_evidence_binding_hash",
     "validate_evidence_plan",
+    "validate_acceptance_record",
     "validate_execution_origin",
     "validate_host_evidence_binding",
     "validate_operation_evidence",

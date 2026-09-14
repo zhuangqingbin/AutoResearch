@@ -15,6 +15,11 @@ description: "Top-down GLOBAL + 中美 macro → cross-asset tilts AND A股行�
 仍走原领域契约。宿主能力不足会在创建 run 前返回 `HOST_CAPABILITY_REQUIRED`。
 `session_agent --orchestration legacy` 只返回 `LEGACY_ENTRYPOINT_REQUIRED`，绝不代跑旧流程；
 回退必须显式进入标为 `LEGACY_ORCHESTRATION_FALLBACK` 的旧入口并单独记录原因。
+当前双宿主真实验收为 `INCOMPLETE`，新入口仅作显式 PILOT，默认仍保留 legacy fallback。
+`finish` 后必须对机器返回的 canonical 报告路径运行
+`uv run --no-sync python -m autoresearch.session_agent verify-report --report-path <PATH> --expected-run-id <RUN_ID> --level full`；
+最终答复按 `VerificationResult` 分开报告编排、发布、完整性与重放状态，不能把合成 PASS 或
+`MANIFEST` 通过写成“完全可复现”。
 
 ## 核心原理
 宏观研究 = `确定性数据(免费)` + `多 agent 推理(本来要钱)`。本 skill 调项目数据工具取真宏观/中观数据(FRED/akshare/yfinance),把推理换成你(Claude,本 session)——零 LLM API,产出 regime 判断 + 跨资产配置表 + A股行业配置表。

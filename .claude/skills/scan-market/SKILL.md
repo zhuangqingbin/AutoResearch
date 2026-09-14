@@ -14,6 +14,10 @@ description: "Use when the user wants to scan the WHOLE A-share market to discov
 run 前返回 `HOST_CAPABILITY_REQUIRED`。`session_agent --orchestration legacy` 只返回
 `LEGACY_ENTRYPOINT_REQUIRED`，绝不代跑旧 Workflow；确需回退必须显式进入标为
 `LEGACY_ORCHESTRATION_FALLBACK` 的旧入口并记录原因，不能给旧执行贴 `session_v1` 标签。
+当前双宿主真实验收为 `INCOMPLETE`，新入口仅作显式 PILOT，默认仍保留 legacy fallback；
+四种 run mode 的合成重放通过不等于真实宿主放行。`finish` 后必须对机器返回的 canonical
+报告路径运行 `uv run --no-sync python -m autoresearch.session_agent verify-report --report-path <PATH> --expected-run-id <RUN_ID> --level full`，
+按结果分别声明编排、发布、完整性与重放；未绑定改写返回 `UNBOUND_REPORT`。
 
 > 沿革见 git log;本文件 = 编排入口,机制/参数/实证读数快照见 `STAGES.md`(冲突以源码为准)。
 

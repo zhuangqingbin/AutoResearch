@@ -46,6 +46,8 @@ design: `docs/specs/2026-08-29-full-coverage-research-system-brainstorm.md` §2.
   D6.1 落笔时尚无生产者,presence=gated 记的是「这一步还没接线」而不是「这一趟没触发」)
 - ``metering`` —— 跨 run 的本机计量读数 `$RPT/_metering/`(**不在任何 run 目录内**;
   JSON 是机器真相,Markdown 只由 JSON 渲染)
+- ``acceptance`` —— 本引擎可导入/导出的 portable 验收 proof
+  `$RPT/_acceptance/proofs/`；不读取另一引擎原始 context/reports。
 
 `presence`:``always`` = 该阶段跑到就必须有;``gated`` = 有前置条件才有(缺席是事实
 不是洞);``conditional`` = 只有被触发才有(复核、修补)。
@@ -80,6 +82,7 @@ ROOTS: tuple[str, ...] = (
     "staging", "report", "ledger", "capsule",
     "analyze_ctx", "analyze_staging", "analyze_report", "analyze_ledger",
     "metering",
+    "acceptance",
     # 2026-09-07(Q-R 裁定①):研究仪器与券商取数层的产物根,此前从未登记、守卫也不扫。
     # research_report = $RPT/research/(读数、离线实验目录);research_ctx = $CTX/research/
     # (研究账本);factor_lab = ws.factor_lab_root();broker = ws.broker_root()。
@@ -252,6 +255,9 @@ ARTIFACTS: tuple[Artifact, ...] = (
     Artifact("publication_delivery_identity_file", "*.delivery.json", "report", "finalize",
              "session_agent.publication", "json", "conditional",
              required_when="session_v1 发布器交付文件型兼容视图"),
+    Artifact("session_acceptance_proof", "*/*/*/*.json", "acceptance", "finalize",
+             "session_agent.evaluation", "json", "conditional",
+             required_when="某宿主真实场景生成或显式导入 portable proof"),
     Artifact("calculation_evidence", "evidence/calculations/*.json", "capsule", "finalize",
              "research.calculations", "json", "conditional",
              required_when="推理任务调用了登记补算"),

@@ -29,6 +29,10 @@
 - `session_agent/artifacts.py`：run 内路径约束、symlink/inode/hash 校验。
 - `session_agent/hosts/*`：基于本次证据的宿主能力与独立上下文回执校验。
 - `session_agent/roles.py`：复用现有 skill/agent 正文的逻辑角色登记，不复制 prompt。
+- `trace/verification.py`：按报告实际路径/字节解引用 bundle、receipt、ROOT 与 EvidencePlan；
+  未封存改写返回 `UNBOUND_REPORT`。
+- `session_agent/evaluation.py`：双宿主、固定场景、portable proof 的 fail-closed 默认切换门；
+  合成 PASS 只保留 `INCOMPLETE`。
 
 ## 宿主基线
 
@@ -43,6 +47,10 @@ Claude 的真实能力与验收必须由 Claude Code 会话在 `context_claude/`
 验证结果：`6105` 个通过，`13` 个按既有现场条件跳过；其中完整首跑为 `6096 passed / 9 failed / 13 skipped`，对 9 项环境失败的定向复验为 `9 passed`。这些数字是迁移前对照；每个迁移阶段另运行新增测试和受影响的旧回归。
 
 迁移完成后的最终全仓回归为 `6318 passed / 13 skipped`，session_agent 专项为 `209 passed`。迁移范围 Ruff、compileall 和三个 legacy Workflow 的 `node --check` 同时通过。
+
+2026-09-14 本轮法证扩展的实际全仓回归为 `6557 passed / 12 skipped / 5 warnings / 4 subtests passed`；
+离线与故障矩阵为 `1477 passed / 7 skipped / 4 subtests passed`。这些仍是 SYNTHETIC 软件证据，
+不改变下表“双宿主真实矩阵 INCOMPLETE”的状态。
 
 ## 边界
 

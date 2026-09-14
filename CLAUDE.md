@@ -15,6 +15,10 @@
 回执和发布由 Python 验证，推理仍发生在本 Claude Code 订阅会话。真实 Claude 验收未记录的
 场景继续使用标为 `LEGACY_ORCHESTRATION_FALLBACK` 的旧 Workflow；切换状态见
 `docs/session-agent/acceptance.md`，操作方法见 `docs/session-agent/README.md`。
+`finish` 后以返回的 canonical 路径运行 `session_agent verify-report --level full`；只有
+`report_covered/publication_ok/orchestration_verified/completeness_ok` 的机器结果可以用于交付说明。
+未绑定的改写报告返回 `UNBOUND_REPORT`，不得借同一 run_id 或旧 ROOT 归因。合成 PASS 不改变
+默认入口，双宿主真实 proof 未齐时 `session_v1` 仍是 PILOT。
 
 ### 研究入口（skill 自动触发）
 

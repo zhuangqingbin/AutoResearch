@@ -826,9 +826,9 @@ def test_report_path_cannot_borrow_old_run_verification(forensic_case):
 
 **Files:** 修改四个 skill、档案 agent 入口、AGENTS/CLAUDE 与 §10 的 session 文档；扩展 evaluation/acceptance；新增 `tests/forensics/test_acceptance_claims.py`。
 
-- [ ] 先跑全部离线与故障矩阵，保存代码 hash、测试摘要、隔离环境证明；合成结果保持 SYNTHETIC。
+- [x] 先跑全部离线与故障矩阵，保存代码 hash、测试摘要、隔离环境证明；合成结果保持 SYNTHETIC（见 `docs/session-agent/synthetic-acceptance-2026-09-14.md`；1477 passed，7 skipped，4 subtests passed）。
 - [ ] 两宿主各自在本引擎目录完成 §13 的真实矩阵，记录 request/plan/receipt/transcript/root/replay 证明。
-- [ ] `accept_workflow(records)` 仅在精确所需场景有 REAL_SESSION 证据且引用可校验时返回 ENABLED；字符串 PASS 和任意 run_id 不足以放行。
+- [x] `accept_workflow(records)` 仅在精确所需场景有 REAL_SESSION 证据且引用可校验时返回 ENABLED；字符串 PASS 和任意 run_id 不足以放行。
 
 ```python
 def test_synthetic_pass_cannot_enable_default(acceptance_case):
@@ -838,8 +838,8 @@ def test_synthetic_pass_cannot_enable_default(acceptance_case):
     assert result["missing_real_sessions"]
 ```
 
-- [ ] 完成后一次性同步入口默认、legacy 回退文档、命令样例及交付状态说明。skill 仍保持软链，不复制到另一技能树。
-- [ ] 运行 `uv run --no-sync python -m pytest -q` 与 `uv run --no-sync ruff check autoresearch/contracts autoresearch/session_agent autoresearch/trace tests/forensics`；预期无新增失败，skip 给出具体理由。
+- [x] 一次性同步入口状态、legacy 回退文档、命令样例及交付状态说明；因真实 proof 未齐，五类默认保持 legacy、session_v1 保持 PILOT。skill 仍保持软链，不复制到另一技能树。
+- [x] 运行 `uv run --no-sync python -m pytest -q` 与 `uv run --no-sync ruff check autoresearch/contracts autoresearch/session_agent autoresearch/trace tests/forensics`（2026-09-14：6557 passed，12 skipped，5 warnings，4 subtests passed；Ruff/compileall 通过；skip 原因见合成验收记录）。
 - [ ] 最终汇报按验收矩阵逐项声明；不预填固定测试数量，不把软件测试通过解释成真实宿主执行通过。
 
 ### 11.1 依赖与可独立交付

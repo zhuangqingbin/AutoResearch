@@ -45,6 +45,16 @@ uv run --no-sync python -m autoresearch.session_agent begin \
 5. `next` 返回 `DONE` 后执行 `finish`。五类能力统一执行可恢复的
    `seal → promote → state views → capsule finalize → commit receipt`；canonical 目录与
    hash-chain 收据是发布真值，日期旧路径只是在提交后生成的兼容视图。
+6. 从 `finish.result.publication.canonical_path` 取得真实路径并做只读核验：
+
+```bash
+uv run --no-sync python -m autoresearch.session_agent verify-report \
+  --report-path <CANONICAL_REPORT_PATH> --expected-run-id <RUN_ID> --level full
+```
+
+`integrity` 重算报告、MANIFEST、ROOT 与发布回执；`full` 还会重新计算 EvidencePlan 的任务
+证据闭包，并把旧存量结论与重算差异列入 `diffs`。命令按报告实际字节绑定身份；同 run_id 的
+未封存改写返回 `UNBOUND_REPORT`，不会借旧 capsule 放行。
 
 完整命令与恢复流程见 [operations.md](operations.md)，对象和依赖关系见 [architecture.md](architecture.md)。
 
@@ -60,3 +70,9 @@ uv run --no-sync python -m autoresearch.session_agent begin \
 的运行矩阵；未验收场景只能显式进入标为 `LEGACY_ORCHESTRATION_FALLBACK` 的旧 Workflow 并记录
 原因。`session_agent --orchestration legacy` 返回 `LEGACY_ENTRYPOINT_REQUIRED`，不会静默代跑。
 旧 run 和历史 capsule 保持只读兼容。
+
+默认切换由 `evaluation.accept_workflow(records)` 的机器门控制。每个 workflow 的 Codex 与
+Claude Code 必须分别覆盖登记场景，记录必须是 `REAL_SESSION`（仅扫描声明的控制场景允许
+`REAL_SESSION_DRILL`），且 portable proof 能同时解引用 VerificationResult、ReplayPlan、
+ReplayResult、bundle、receipt 和 ExecutionOrigin。`SYNTHETIC`、字符串 `PASS`、任意 run_id
+或缺 proof 都只得到 `INCOMPLETE`。当前没有完整双宿主 proof，因此五类默认均未切换。

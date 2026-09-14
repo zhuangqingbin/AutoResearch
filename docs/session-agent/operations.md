@@ -17,6 +17,21 @@ uv run --no-sync python -m autoresearch.session_agent finish --run-id <RUN_ID>
 
 `READY` 表示至少有一个 PENDING 节点依赖已满足；`WAITING` 表示仍有运行中任务或待展开模板；`BLOCKED` 会列出阻断节点；`DONE` 只表示任务图完整，仍需 `finish` 发布。
 
+## 交付核验
+
+`finish` 成功后只使用其返回的 canonical 路径，不从日期目录或“最新文件”猜版本：
+
+```bash
+uv run --no-sync python -m autoresearch.session_agent verify-report \
+  --report-path <CANONICAL_REPORT_PATH> \
+  --expected-run-id <RUN_ID> --level full
+```
+
+该命令不写原报告或 capsule。`report_covered=false`/`UNBOUND_REPORT` 表示这些字节没有发布身份；
+`integrity_ok`、`publication_ok`、`orchestration_verified`、`completeness_ok` 分别回答不同问题，
+不能用其中一个替代其余项。真正执行离线计算另走 replay，verify 的 `compute_status` 只描述
+证据闭包重算，不表示模型重新推理。
+
 `bind-host-evidence` 必须在对应推理 task 仍为 RUNNING 时执行，并给出导出 transcript 的
 精确 ordinal 区段。命令返回 `host-binding:<sha256>`；把它放入 host receipt 的
 `evidence_refs`。独立复核使用 `--context-source SUBAGENT`，且必须提供不同的
@@ -78,3 +93,12 @@ L4 重试最多到 attempt 2。第二次卡通过后，服务核对首轮卡的�
 ## 回滚
 
 未通过真实宿主验收的入口继续走 `LEGACY_ORCHESTRATION_FALLBACK`。切回 legacy 只影响新 run：已有 `session_v1` run 的冻结计划不能交给旧 Workflow 从中间接管，可继续按原计划完成或冻结为 INTERRUPTED。历史 `context_*`、`reports_*`、capsule 和 usage 不移动、不改归因。
+
+## 默认放行 proof
+
+`autoresearch.session_agent.evaluation` 提供严格 `AcceptanceRecord` 门。proof 默认存放在本引擎
+`reports_<engine>/_acceptance/proofs/<engine>/<workflow>/<run_id>/<scenario>.json`；跨宿主只可把
+对方明确导出的 portable proof 导入当前引擎审计根，不读取对方 context/reports 原目录。
+`write_acceptance_proof` 会校验并绑定 verification、replay plan/result、publication
+bundle/receipt 与 execution origin；`accept_workflow` 再按固定双宿主场景分母复核。缺文件、hash
+冲突、非 session_v1、非 FULL/ENFORCED、合成证据或缺任一宿主场景都保持 `INCOMPLETE`。
