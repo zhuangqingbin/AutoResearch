@@ -646,9 +646,9 @@ def test_period_ratio_has_replayable_inputs(forensic_case):
 
 **Files:** 新增 trace/source_tree.py；修改 trace/identity、snapshot inventory；新增 `tests/forensics/test_runtime_identity.py`。
 
-- [ ] 对允许源树打包实际 tracked/dirty/untracked 可执行内容及资源；沿用现有 secret 扫描/路径规则，拒绝逃逸 symlink、重复成员、特殊文件。
-- [ ] `restore_source_tree(bundle, target)` 解包前校验成员和总量界限，解包后校验清单；不能到当前 Git checkout 偷读缺失文件。
-- [ ] 实现 runtime manifest 与可用性检查；离线依赖不齐为 UNAVAILABLE。便携包经当前引擎授权路径导入并验证摘要，不自动安装网络依赖。
+- [x] 对允许源树打包实际 tracked/dirty/untracked 可执行内容及资源；沿用现有 secret 扫描/路径规则，拒绝逃逸 symlink、重复成员、特殊文件。
+- [x] `restore_source_tree(bundle, target)` 解包前校验成员和总量界限，解包后校验清单；不能到当前 Git checkout 偷读缺失文件。
+- [x] 实现 runtime manifest 与可用性检查；离线依赖不齐为 UNAVAILABLE。便携包经当前引擎授权路径导入并验证摘要，不自动安装网络依赖。
 
 ```python
 def test_replay_does_not_depend_on_current_checkout(forensic_case):
@@ -660,7 +660,7 @@ def test_replay_does_not_depend_on_current_checkout(forensic_case):
     assert result["uses_current_checkout"] is False
 ```
 
-- [ ] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_runtime_identity.py tests/trace/test_identity.py`，覆盖源码缺失、解包路径攻击、含凭据文件、平台不匹配。
+- [x] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_runtime_identity.py tests/trace/test_identity.py`，覆盖源码缺失、解包路径攻击、含凭据文件、平台不匹配。
 
 ### T10｜五类统一发布事务与副作用恢复（B，P0/P1）
 

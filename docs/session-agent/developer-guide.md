@@ -198,6 +198,28 @@ occurrence 顺序逐次消费：调用次数不足、次数超出、成功 paylo
 `provider=host_tool` 的同一收据。`TaskEvidence.source_receipt_ids` 只接纳本 task/attempt 的收据，
 闭包验证器会重新解析收据契约并检查 payload blob，不能靠手填一个 64 位 ID 过门。
 
+### 可执行源码与 runtime 身份
+
+每个 identity snapshot 除 Git head、dirty patch 和 untracked 增量外，还会生成：
+
+- `identity/source_tree.tar.zst`：`autoresearch/`、三类项目 instruction/workflow 目录和
+  `pyproject.toml`、`uv.lock`、`AGENTS.md`、`CLAUDE.md` 在捕获时实际存在的完整字节；
+- `identity/source_tree_manifest.json`：逐文件路径、模式、字节数、SHA-256、
+  `TRACKED|TRACKED_DIRTY|UNTRACKED` 分类及整树 hash；
+- `identity/runtime_manifest.json`：Python 实现/版本、OS release、architecture、byte order、
+  locale/timezone、`uv.lock` 和精确 dependency snapshot hash，以及当前离线可用状态。
+
+源码树不包含 `.git`、`.env`、lake、任一引擎的 context/reports 或允许根外文件。捕获遇到凭据、
+特殊文件或 symlink 时 fail closed，不写半包；identity component 明确为 `MISSING`。恢复入口
+`autoresearch.trace.source_tree.restore_source_tree` 会在创建 target 前完成 zstd/tar 上限、路径
+穿越、重复成员、文件类型、清单 membership/mode/size/hash 全校验，再通过独立 staging 原子晋升。
+它不调用 Git，也不会从当前 checkout 补缺失文件，返回值固定声明
+`uses_current_checkout=false`。
+
+runtime 可用性只有三态：当前平台与 dependencies 精确相等为 `LOCAL_ENV_MATCHED`；显式从调用方
+授权目录导入且摘要匹配的离线包为 `PACKAGED`；其余均为 `UNAVAILABLE`。接口没有安装分支，
+`network_install_allowed=false`；缺 wheel/runtime 包时应停止可执行重放，不能联网补装后声称复现。
+
 ## 6. 恢复与故障判断
 
 ```bash

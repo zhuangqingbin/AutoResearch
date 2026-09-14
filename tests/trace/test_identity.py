@@ -97,6 +97,14 @@ def test_identity_contains_dirty_patch_untracked_sources_and_environment(tmp_pat
     assert environment["secret_environment"]["TUSHARE_TOKEN"] == {"present": True}
     assert "fixture-secret-value" not in canonical_json(environment)
     assert (out / "dependencies.txt").is_file()
+    source_tree = json.loads((out / "source_tree_manifest.json").read_text())
+    source_rows = {row["path"]: row for row in source_tree["files"]}
+    assert source_rows["autoresearch/rule.py"]["classification"] == "TRACKED_DIRTY"
+    assert source_rows["autoresearch/new_rule.py"]["classification"] == "UNTRACKED"
+    assert (out / "source_tree.tar.zst").is_file()
+    runtime = json.loads((out / "runtime_manifest.json").read_text())
+    assert runtime["availability"]["status"] == "LOCAL_ENV_MATCHED"
+    assert runtime["network_install_allowed"] is False
 
 
 def test_untracked_tar_and_prompt_snapshot_are_byte_deterministic(tmp_path):
@@ -131,9 +139,10 @@ def test_real_repository_safe_prompt_corpus_snapshots_completely(tmp_path):
     repo = Path(__file__).resolve().parents[2]
     out = tmp_path / "identity"
 
-    result = snapshot_identity(repo, out, engine="codex")
+    result = snapshot_identity(repo, out, engine="codex", environ={})
 
     assert result["components"]["prompts"]["status"] == "SUCCESS"
+    assert result["components"]["source_tree"]["status"] == "SUCCESS"
     expected = {
         path.relative_to(repo).as_posix()
         for root in (".claude/agents", ".claude/skills", ".claude/workflows")
@@ -809,7 +818,7 @@ def test_secret_in_dirty_patch_is_not_persisted_and_marks_component_missing(tmp_
     assert result["components"]["git_patch"]["status"] == "MISSING"
     assert not (out / "code.patch").exists()
     assert secret.encode() not in _all_artifact_bytes(out)
-    assert result["missing"] == ["git_patch"]
+    assert result["missing"] == ["git_patch", "source_tree"]
 
 
 def test_uri_credentials_in_dirty_patch_are_never_persisted(tmp_path):

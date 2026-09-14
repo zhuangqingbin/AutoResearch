@@ -136,8 +136,11 @@ _OWNED_FILES = frozenset(
         _CLEANUP_WARNING,
         _SNAPSHOT_INVENTORY,
         "snapshot_result.json",
+        "runtime_manifest.json",
         "source_manifest.json",
         "source_links.json",
+        "source_tree.tar.zst",
+        "source_tree_manifest.json",
         "submodules.json",
         "untracked_sources.tar.zst",
     }
@@ -1168,6 +1171,14 @@ def _validate_manifest_hashes(output: Path) -> None:
                 and sha256_bytes(_claimed_artifact_path(output, snapshot).read_bytes()) != digest
             ):
                 raise ValueError("source link snapshot hash mismatch")
+    source_tree_path = output / "source_tree.tar.zst"
+    source_tree_manifest = output / "source_tree_manifest.json"
+    if source_tree_path.exists() or source_tree_manifest.exists():
+        if not source_tree_path.exists() or not source_tree_manifest.exists():
+            raise ValueError("source tree snapshot is incomplete")
+        from autoresearch.trace.source_tree import verify_source_tree_bundle
+
+        verify_source_tree_bundle(source_tree_path, manifest_path=source_tree_manifest)
 
 
 def _load_base_snapshot_result(output: Path) -> dict:
@@ -2303,6 +2314,7 @@ def _snapshot_identity_locked(
             missing=("environment.json",),
         )
 
+    dependency_payload: bytes | None = None
     try:
         dependencies = str(
             _run(
@@ -2320,6 +2332,53 @@ def _snapshot_identity_locked(
             "MISSING",
             errors=(_safe_error(exc, environ=env),),
             missing=("dependencies.txt",),
+        )
+
+    try:
+        from autoresearch.trace.source_tree import capture_source_tree
+
+        capture_source_tree(repo, output, environ=env)
+        components["source_tree"] = _component(
+            "SUCCESS",
+            artifacts=("source_tree.tar.zst", "source_tree_manifest.json"),
+        )
+    except Exception as exc:
+        (output / "source_tree.tar.zst").unlink(missing_ok=True)
+        (output / "source_tree_manifest.json").unlink(missing_ok=True)
+        components["source_tree"] = _component(
+            "MISSING",
+            errors=(_safe_error(exc, environ=env),),
+            missing=("source_tree.tar.zst", "source_tree_manifest.json"),
+        )
+
+    try:
+        from autoresearch.trace.source_tree import (
+            build_runtime_manifest,
+            check_runtime_availability,
+        )
+
+        runtime_manifest = build_runtime_manifest(repo, dependencies=dependency_payload)
+        runtime_manifest["availability"] = check_runtime_availability(
+            runtime_manifest,
+            dependencies=dependency_payload,
+        )
+        runtime_payload = (canonical_json(runtime_manifest) + "\n").encode("utf-8")
+        _write_scanned(output / "runtime_manifest.json", runtime_payload, environ=env)
+        runtime_available = runtime_manifest["availability"]["status"] != "UNAVAILABLE"
+        components["runtime"] = _component(
+            "SUCCESS" if runtime_available else "PARTIAL",
+            artifacts=("runtime_manifest.json",),
+            errors=()
+            if runtime_available
+            else (str(runtime_manifest["availability"]["reason"]),),
+            missing=() if runtime_available else ("offline replay runtime",),
+        )
+    except Exception as exc:
+        (output / "runtime_manifest.json").unlink(missing_ok=True)
+        components["runtime"] = _component(
+            "MISSING",
+            errors=(_safe_error(exc, environ=env),),
+            missing=("runtime_manifest.json",),
         )
 
     project_files: dict[str, dict] = {}
