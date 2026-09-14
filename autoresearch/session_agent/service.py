@@ -657,8 +657,26 @@ def claim(
     task = _task(handle, task_id)
     if task["owner"] == "L4_TASKBOOK":
         from autoresearch.session_agent import legacy_scan
+        from autoresearch.session_agent.evidence import freeze_claim
 
         receipt = legacy_scan.claim_ticket(handle, task["subject"], expected_attempt)
+        snapshots = [
+            artifacts.snapshot_artifact(handle, artifact_id)
+            for artifact_id in task["input_artifact_ids"]
+        ]
+        freeze_claim(
+            handle,
+            task,
+            expected_attempt,
+            {
+                "schema_version": 1,
+                "task_id": task_id,
+                "attempt": expected_attempt,
+                "spec": task,
+                "input_snapshots": snapshots,
+                "owner_receipt": receipt,
+            },
+        )
         return _result(
             "claim", handle.run_id, "WAITING", result={"claim_receipt": receipt}
         )
@@ -678,6 +696,9 @@ def claim(
         host_profile["session_ref"],
         input_snapshots,
     )
+    from autoresearch.session_agent.evidence import freeze_claim
+
+    freeze_claim(handle, task, expected_attempt, receipt)
     claim_result: dict = {"claim_receipt": receipt}
     if task["kind"] == "INFERENCE":
         envelope = {
@@ -797,6 +818,9 @@ def execute(
     receipt = store.complete_deterministic(
         _store_path(handle), task_id, attempt, outputs, execution
     )
+    from autoresearch.session_agent.evidence import freeze_receipt
+
+    freeze_receipt(handle, task, attempt, receipt)
     activated = _activate_after_task(handle, task)
     current = status(run_id, handle_loader=lambda unused: handle, command="execute")
     current["result"] = {
@@ -864,6 +888,14 @@ def submit(
         )
 
     receipt = store.accept(_store_path(handle), submission, checked)
+    from autoresearch.session_agent.evidence import freeze_receipt
+
+    freeze_receipt(
+        handle,
+        task,
+        submission["envelope"]["attempt"],
+        receipt,
+    )
     receipt_path = (
         Path(handle.capsule)
         / "agents/session/receipts"
@@ -968,13 +1000,20 @@ def finish(
     current = status(run_id, handle_loader=lambda unused: handle)
     if current["state"] != "DONE":
         raise RuntimeError("cannot finish an incomplete task graph")
+    from autoresearch.session_agent.evidence import materialize_evidence
+
+    evidence = materialize_evidence(handle)
     report = (publisher or publish_run)(handle)
     finalized = (finalizer or _default_finalizer)(handle, report)
     return _result(
         "finish",
         handle.run_id,
         "DONE",
-        result={"publication": report, "finalization": finalized},
+        result={
+            "evidence": evidence,
+            "publication": report,
+            "finalization": finalized,
+        },
     )
 
 

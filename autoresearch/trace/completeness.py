@@ -19,12 +19,13 @@ from pathlib import Path
 
 # profile 工厂**按 kind 动态取**(`contracts.profiles.PROFILE_FACTORIES` 旁有设计意图):
 # 静态 import `scan.run_profile` / `analyze.run_profile` 都是 `trace` 向上的边。
+from autoresearch.contracts.forensic import validate_execution_origin
 from autoresearch.contracts.profiles import RunProfile, profile_factory
 
 # 阶段 / 角色词汇的**唯一**来源。此前这里从 `run_profile` 里函数级 import 一份 ROLE_STAGES,
 # 于是「该有什么」的分母在这层又长出一个可以独立漂移的副本(spec 2026-08-29 §2.2 K3)。
 from autoresearch.contracts.stages import ROLE_STAGES
-from autoresearch.trace.atomic import atomic_write_json
+from autoresearch.trace.atomic import atomic_write_json, canonical_json
 
 #: 冻结的 `verification/profile.json` 没记 kind 时按谁展开。v1 profile.json(2026-08-31
 #: kind 化之前的全部历史 capsule)只有一个 kind 存在过,所以这个落回不是猜。
@@ -255,6 +256,77 @@ def agent_coverage(capsule: Path) -> dict:
     }
 
 
+def task_evidence_coverage(capsule: Path) -> dict:
+    """Recompute the task denominator for verified ``session_v1`` runs."""
+    origin_path = capsule / "identity/execution_origin.json"
+    if not origin_path.is_file():
+        return {
+            "applicable": False,
+            "ok": True,
+            "required_tasks": 0,
+            "present_tasks": 0,
+            "missing": [],
+        }
+    try:
+        origin = validate_execution_origin(
+            json.loads(origin_path.read_text(encoding="utf-8"))
+        )
+    except Exception as exc:
+        return {
+            "applicable": True,
+            "ok": False,
+            "required_tasks": 0,
+            "present_tasks": 0,
+            "missing": [f"identity/execution_origin.json:{type(exc).__name__}"],
+        }
+    if origin["orchestration"] != "session_v1":
+        return {
+            "applicable": False,
+            "ok": True,
+            "required_tasks": 0,
+            "present_tasks": 0,
+            "missing": [],
+        }
+    try:
+        from autoresearch.trace.evidence_closure import (
+            evaluate_task_evidence_closure,
+        )
+
+        recomputed = evaluate_task_evidence_closure(capsule)
+    except Exception as exc:
+        return {
+            "applicable": True,
+            "ok": False,
+            "required_tasks": 0,
+            "present_tasks": 0,
+            "missing": [
+                "evidence/evidence_plan.json"
+                if not (capsule / "evidence/evidence_plan.json").is_file()
+                else f"evidence/evidence_plan.json:{type(exc).__name__}"
+            ],
+        }
+    missing = list(recomputed["missing"])
+    stored_path = capsule / "verification/evidence_closure.json"
+    if not stored_path.is_file():
+        missing.append("verification/evidence_closure.json")
+    else:
+        try:
+            stored = json.loads(stored_path.read_text(encoding="utf-8"))
+            if canonical_json(stored) != canonical_json(recomputed):
+                missing.append("verification/evidence_closure.json:STALE")
+        except Exception as exc:
+            missing.append(
+                f"verification/evidence_closure.json:{type(exc).__name__}"
+            )
+    return {
+        "applicable": True,
+        "ok": recomputed["completeness_ok"] and not missing,
+        "required_tasks": recomputed["required_tasks"],
+        "present_tasks": recomputed["present_tasks"],
+        "missing": sorted(set(missing)),
+    }
+
+
 def _level_counts(results: list[dict]) -> dict[str, dict[str, int]]:
     """Bucket the REQUIRED tally by `evidence_level` (D6.5).
 
@@ -326,6 +398,7 @@ def evaluate(
     }
     agents = agent_coverage(root)
     sources = source_coverage(root)
+    tasks = task_evidence_coverage(root)
     # 一个被派发过、却没有 transcript 的 agent invocation 就是 GONE ——
     # 设计稿 §8.5 规则 4:LLM run 里出现 GONE/AMBIGUOUS,completeness_ok 必须为 false。
     # 只报覆盖率而不进结论,等于把这条规则写在文档里、不写在代码里。
@@ -333,6 +406,8 @@ def evaluate(
         missing_required.append(
             f"agents/index.json: {agents['missing']} reached invocation(s) without a transcript"
         )
+    if not tasks["ok"]:
+        missing_required.extend(tasks["missing"])
     return {
         "schema_version": SCHEMA_VERSION,
         "completeness_ok": not missing_required,
@@ -349,6 +424,7 @@ def evaluate(
         "coverage": {
             "agents": agents,
             "sources": sources,
+            "tasks": tasks,
             "replay": replay_state(root),
         },
         "durability": durability,
@@ -438,6 +514,7 @@ __all__ = [
     "profile_from_capsule",
     "replay_state",
     "source_coverage",
+    "task_evidence_coverage",
     "write_completeness",
     "write_expected",
 ]

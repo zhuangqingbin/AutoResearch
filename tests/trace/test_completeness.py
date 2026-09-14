@@ -190,6 +190,33 @@ def test_source_coverage_counts_only_blobs_that_are_inside_the_capsule(tmp_path)
     }
 
 
+def test_session_origin_requires_a_recomputed_task_evidence_closure(tmp_path):
+    capsule = _complete_capsule(tmp_path)
+    _touch(
+        capsule / "identity/execution_origin.json",
+        json.dumps(
+            {
+                "schema_version": 1,
+                "engine": "codex",
+                "run_id": "20260914T120000000000Z",
+                "run_kind": "scan-market",
+                "orchestration": "session_v1",
+                "entrypoint": "autoresearch.session_agent.begin",
+                "plan_hash": "a" * 64,
+                "host_profile_hash": "b" * 64,
+                "legacy_reason": None,
+                "created_at": "2026-09-14T12:00:00Z",
+            }
+        ).encode(),
+    )
+
+    result = evaluate(capsule, scan_profile())
+
+    assert result["completeness_ok"] is False
+    assert result["coverage"]["tasks"]["applicable"] is True
+    assert "evidence/evidence_plan.json" in result["missing_required"]
+
+
 # ---------------------------------------------------------------- D6.5: evidence levels
 
 

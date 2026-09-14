@@ -178,6 +178,9 @@ def test_synthetic_workflow_runs_begin_to_finish(tmp_path):
     )
     assert finished["state"] == "DONE"
     assert calls == [("publish", handle.run_id), ("finalize", handle.run_id)]
+    assert (handle.capsule / "evidence/evidence_plan.json").is_file()
+    assert (handle.capsule / "verification/evidence_closure.json").is_file()
+    assert finished["result"]["evidence"]["required_tasks"] == 2
 
 
 def test_finish_rejects_incomplete_graph_without_publishing(tmp_path):
