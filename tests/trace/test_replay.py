@@ -300,6 +300,35 @@ def test_replay_writes_its_verdict_into_the_capsule(tmp_path):
     assert payload["replayability"] == R.NONE
 
 
+def test_legacy_replay_refuses_to_write_a_frozen_capsule(tmp_path):
+    capsule = _capsule(tmp_path)
+    (capsule / "verification").mkdir()
+    (capsule / "verification/ROOT.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="external output_dir"):
+        R.replay(
+            "20260827T010203456789Z",
+            capsule=capsule,
+            analysis_date="2026-08-25",
+            stages=("l4",),
+            specs=(),
+            runner=lambda *a: 0,
+        )
+
+    audit = tmp_path / "audit"
+    R.replay(
+        "20260827T010203456789Z",
+        capsule=capsule,
+        analysis_date="2026-08-25",
+        stages=("l4",),
+        specs=(),
+        runner=lambda *a: 0,
+        output_dir=audit,
+    )
+    assert (audit / "replay.json").is_file()
+    assert not (capsule / "verification/replay.json").exists()
+
+
 def test_l5_spec_compares_both_halves_of_the_publish_bundle():
     """§6.3:L5 的产物是发布包(summary + appendix)。只比对 summary 会让「附录没重现」
     在 replay 结论里完全不可见 —— 「产物能证明跑过什么、不能证明没跑过什么」。"""

@@ -32,17 +32,28 @@ import io
 import json
 import os
 import shutil
+import stat
+import subprocess
+import sys
 import tempfile
 from collections.abc import Callable, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import quote
 
 import pandas as pd
 
 from autoresearch.contracts import stages as vocab
+from autoresearch.contracts.forensic import validate_evidence_plan
+from autoresearch.contracts.replay import (
+    validate_replay_plan,
+    validate_replay_result,
+)
+from autoresearch.session_agent.operations import operation_catalog
 from autoresearch.trace.atomic import atomic_write_json, canonical_json, sha256_bytes
 from autoresearch.trace.blobs import blob_path
+from autoresearch.trace.offline import IsolatedResult, OfflineLayout, create_offline_layout
 from autoresearch.trace.source_lineage import normalized_params
 from autoresearch.trace.source_receipts import (
     SourcePayloadMissing,
@@ -266,6 +277,28 @@ class StageSpec:
     outputs: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class ReplayContext:
+    """The runner-visible view.  It deliberately has no expected or frozen path."""
+
+    unit_id: str
+    code: Path
+    inputs: Path
+    runtime: Path
+    work: Path
+    outputs: Path
+    effects: Path
+    audit: Path
+    env: dict[str, str]
+    operation_request: dict
+    source_receipts: tuple[dict, ...]
+
+    def output_path(self, artifact_id: str) -> Path:
+        target = self.outputs / _safe_name(artifact_id)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        return target
+
+
 #: 单元名一律来自契约词汇(`contracts.stages`),不在这里另立一套 —— 「该有什么」的分母
 #: 有四个版本正是 spec §2.2 K3 的病。这里只保留**行为**:每个执行单元跑什么、产什么。
 L1L2 = vocab.L1L2_UNIT
@@ -364,6 +397,633 @@ def _subprocess_runner(spec: StageSpec, scratch: Path, env: dict) -> int:
     return completed.returncode
 
 
+# --- session_v1 replay ------------------------------------------------------
+
+_EXECUTABLE_MODES = frozenset({"COMPUTE", "SOURCE_REPLAY", "EFFECT_PLAN"})
+_SUCCESS_STATUSES = frozenset({"MATCH", "EXPECTED_FAILURE", "CONTROL_VERIFIED", "EVIDENCE_ONLY"})
+
+
+def _safe_name(value: str) -> str:
+    return quote(value, safe="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-")
+
+
+def _capsule_root(root: Path | str) -> Path:
+    candidate = Path(root)
+    direct = candidate / "evidence/evidence_plan.json"
+    nested = candidate / "capsule/evidence/evidence_plan.json"
+    if direct.is_file():
+        return candidate.resolve()
+    if nested.is_file():
+        return (candidate / "capsule").resolve()
+    return candidate.resolve()
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def _regular_payload(path: Path) -> bytes:
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise ValueError(f"replay input must be a regular file: {path}")
+    return path.read_bytes()
+
+
+def _tree_snapshot(root: Path) -> dict[str, tuple[str, str | None]]:
+    rows: dict[str, tuple[str, str | None]] = {}
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root).as_posix()
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            rows[relative] = ("symlink", os.readlink(path))
+        elif stat.S_ISDIR(info.st_mode):
+            rows[relative] = ("directory", None)
+        elif stat.S_ISREG(info.st_mode):
+            rows[relative] = ("file", sha256_bytes(path.read_bytes()))
+        else:
+            rows[relative] = ("special", None)
+    return rows
+
+
+def _copy_ref(capsule: Path, ref: dict, target: Path) -> str | None:
+    source = capsule / ref["captured_path"]
+    try:
+        source.resolve(strict=True).relative_to(capsule)
+        payload = _regular_payload(source)
+    except (FileNotFoundError, OSError, ValueError):
+        return f"ARTIFACT_MISSING:{ref['artifact_id']}"
+    if sha256_bytes(payload) != ref["sha256"]:
+        return f"ARTIFACT_HASH_MISMATCH:{ref['artifact_id']}"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(payload)
+    return None
+
+
+def _make_read_only(root: Path) -> None:
+    if not root.exists():
+        return
+    for path in sorted(root.rglob("*"), reverse=True):
+        if path.is_symlink():
+            raise ValueError(f"replay scratch input contains symlink: {path}")
+        path.chmod(0o555 if path.is_dir() else 0o444)
+    root.chmod(0o555)
+
+
+def _restore_identity(capsule: Path, layout: OfflineLayout, plan: dict) -> tuple[str, list[str]]:
+    missing: list[str] = []
+    runtime_target = layout.runtime / "runtime_manifest.json"
+    reason = _copy_ref(capsule, plan["runtime_ref"], runtime_target)
+    runtime_status = "UNAVAILABLE"
+    runtime: dict | None = None
+    if reason:
+        missing.append(reason)
+    else:
+        try:
+            runtime = json.loads(runtime_target.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            missing.append("RUNTIME_MANIFEST_INVALID")
+
+    bundle = capsule / "identity/source_tree.tar.zst"
+    manifest = capsule / "identity/source_tree_manifest.json"
+    restored = False
+    if bundle.is_file() and manifest.is_file():
+        try:
+            from autoresearch.trace.source_tree import restore_source_tree
+
+            layout.code.rmdir()
+            result = restore_source_tree(bundle, layout.code, manifest_path=manifest)
+            if result["code_tree_hash"] != plan["code_tree_hash"]:
+                raise ValueError("captured source hash differs from replay plan")
+            restored = True
+        except Exception as exc:  # the reason is evidence, never a live-code fallback
+            missing.append(f"SOURCE_TREE_UNAVAILABLE:{type(exc).__name__}")
+    else:
+        missing.append("SOURCE_TREE_UNAVAILABLE:MISSING_BUNDLE")
+    if not restored:
+        runtime_status = "UNAVAILABLE"
+        layout.code.mkdir(exist_ok=True)
+    elif runtime is not None:
+        try:
+            from autoresearch.trace.source_tree import check_runtime_availability
+
+            dependency_probe = subprocess.run(
+                ["uv", "pip", "freeze", "--python", sys.executable],
+                capture_output=True,
+                check=False,
+            )
+            dependencies = dependency_probe.stdout if dependency_probe.returncode == 0 else None
+            availability = check_runtime_availability(
+                runtime,
+                dependencies=dependencies,
+                portable_runtime=capsule / "identity/portable_runtime.tar.zst",
+            )
+            runtime_status = availability["status"]
+            if runtime_status == "UNAVAILABLE":
+                missing.append(f"RUNTIME_IDENTITY_UNAVAILABLE:{availability['reason']}")
+        except Exception as exc:
+            missing.append(f"RUNTIME_IDENTITY_UNAVAILABLE:{type(exc).__name__}")
+    _make_read_only(layout.code)
+    _make_read_only(layout.runtime)
+    return runtime_status, missing
+
+
+def _source_inputs(
+    capsule: Path,
+    unit: dict,
+    unit_inputs: Path,
+) -> tuple[tuple[dict, ...], list[str], Path]:
+    wanted = set(unit["source_receipt_ids"])
+    rows = {row["receipt_id"]: row for row in read_receipts(capsule)}
+    selected: list[dict] = []
+    missing: list[str] = []
+    source_capsule = unit_inputs / "source_capsule"
+    for receipt_id in unit["source_receipt_ids"]:
+        row = rows.get(receipt_id)
+        if row is None:
+            missing.append(f"SOURCE_RECEIPT_MISSING:{receipt_id}")
+            continue
+        selected.append(row)
+        for digest in (row["payload_hash"], row.get("raw_hash")):
+            if not digest:
+                continue
+            source = blob_path(capsule, digest)
+            target = source_capsule / blob_path(Path("."), digest)
+            try:
+                payload = _regular_payload(source)
+            except (FileNotFoundError, OSError, ValueError):
+                missing.append(f"SOURCE_PAYLOAD_MISSING:{receipt_id}:{digest}")
+                continue
+            if sha256_bytes(payload) != digest:
+                missing.append(f"SOURCE_PAYLOAD_HASH_MISMATCH:{receipt_id}:{digest}")
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(payload)
+    if selected:
+        receipt_path = source_capsule / "lineage/source_receipts.jsonl"
+        receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        receipt_path.write_text(
+            "".join(canonical_json(row) + "\n" for row in selected), encoding="utf-8"
+        )
+    if wanted != {row["receipt_id"] for row in selected}:
+        missing.extend(
+            f"SOURCE_RECEIPT_MISSING:{receipt_id}"
+            for receipt_id in sorted(wanted - {row["receipt_id"] for row in selected})
+        )
+    return tuple(selected), sorted(set(missing)), source_capsule
+
+
+def _normalized_text(path: Path) -> bytes:
+    return path.read_text(encoding="utf-8").replace("\r\n", "\n").encode("utf-8")
+
+
+def _compare_output(produced: Path, expected: Path, policy: str) -> bool:
+    if policy in {"CANONICAL_JSON", "STATE_MUTATION"}:
+        return canonical_json(json.loads(produced.read_text(encoding="utf-8"))) == canonical_json(
+            json.loads(expected.read_text(encoding="utf-8"))
+        )
+    if policy == "PARQUET_VALUES":
+        try:
+            pd.testing.assert_frame_equal(pd.read_parquet(produced), pd.read_parquet(expected))
+            return True
+        except AssertionError:
+            return False
+    if policy == "TEXT_NORMALIZED":
+        return _normalized_text(produced) == _normalized_text(expected)
+    return produced.read_bytes() == expected.read_bytes()
+
+
+def _runner_value(outcome: object, field: str, default=None):
+    if isinstance(outcome, dict):
+        return outcome.get(field, default)
+    return getattr(outcome, field, default)
+
+
+def _attests_path(path: Path, roots: tuple[str, ...]) -> bool:
+    resolved = path.resolve()
+    return any(_is_relative_to(resolved, Path(root)) for root in roots)
+
+
+def _isolation_verdict(outcome: object, capsule: Path, layout: OfflineLayout) -> str:
+    """Only a result minted by the system sandbox can attest ENFORCED."""
+    if not isinstance(outcome, IsolatedResult) or outcome.isolation_status != "ENFORCED":
+        return "UNKNOWN"
+    required_reads = (capsule, layout.expected)
+    required_writes = (
+        capsule,
+        layout.code,
+        layout.inputs,
+        layout.expected,
+        layout.runtime,
+    )
+    if not all(_attests_path(path, outcome.denied_read_roots) for path in required_reads):
+        return "FAILED"
+    if not all(_attests_path(path, outcome.denied_write_roots) for path in required_writes):
+        return "FAILED"
+    return "ENFORCED"
+
+
+def _run_mode(capsule: Path) -> str:
+    for path, field in (
+        (capsule / "products/staging/run_mode.json", "mode"),
+        (capsule / "identity/session/plan.json", "requested_mode"),
+        (capsule / "identity/session/request.json", "requested_mode"),
+    ):
+        if path.is_file():
+            try:
+                value = json.loads(path.read_text(encoding="utf-8")).get(field)
+            except (OSError, ValueError, TypeError):
+                continue
+            if isinstance(value, str) and value:
+                return value
+    return "UNKNOWN"
+
+
+def execute_replay(
+    plan: dict,
+    frozen_root: Path | str,
+    output_dir: Path | str,
+    runner: Callable[[dict, ReplayContext], object],
+) -> dict:
+    """Execute a frozen ReplayPlan without exposing or modifying its source capsule."""
+    validate_replay_plan(plan)
+    capsule = _capsule_root(frozen_root)
+    output = Path(output_dir).resolve()
+    if _is_relative_to(output, capsule):
+        raise ValueError("replay output_dir must be outside the frozen capsule")
+    evidence_plan = validate_evidence_plan(
+        json.loads((capsule / "evidence/evidence_plan.json").read_text(encoding="utf-8"))
+    )
+    if any(
+        evidence_plan[field] != plan[replay_field]
+        for field, replay_field in (
+            ("engine", "engine"),
+            ("run_id", "run_id"),
+            ("plan_hash", "plan_hash"),
+            ("evidence_plan_hash", "evidence_plan_hash"),
+        )
+    ):
+        raise ValueError("replay plan does not match the frozen evidence denominator")
+    before = _tree_snapshot(capsule)
+    layout = create_offline_layout(output)
+    identity_status, identity_missing = _restore_identity(capsule, layout, plan)
+    missing = list(identity_missing)
+    diffs: list[str] = []
+    effects: list[dict] = []
+    unit_results: list[dict] = []
+    status_by_unit: dict[str, str] = {}
+    executable_isolation: list[str] = []
+    catalog = operation_catalog()
+
+    requested_scope = list(evidence_plan["scope"])
+    scene_refs = 0
+    scene_present = 0
+
+    for unit in plan["units"]:
+        unit_id = unit["unit_id"]
+        safe_unit = _safe_name(unit_id)
+        mode = unit["mode"]
+        blocked = [
+            dependency
+            for dependency in unit["dependencies"]
+            if status_by_unit.get(dependency) not in _SUCCESS_STATUSES
+        ]
+        if blocked:
+            reason = f"DEPENDENCY_NOT_REPLAYED:{','.join(blocked)}"
+            missing.append(reason)
+            result = {
+                "unit_id": unit_id,
+                "status": "MISSING_INPUT",
+                "matched": False,
+                "exit_code": None,
+                "output_diffs": [],
+                "reason": reason,
+            }
+            unit_results.append(result)
+            status_by_unit[unit_id] = result["status"]
+            continue
+
+        if mode == "CONTROL_ONLY":
+            control_root = layout.inputs / "control" / safe_unit
+            local_missing = []
+            for ref in unit["input_refs"]:
+                scene_refs += 1
+                reason = _copy_ref(
+                    capsule,
+                    ref,
+                    control_root / _safe_name(ref["artifact_id"]),
+                )
+                if reason:
+                    local_missing.append(reason)
+                else:
+                    scene_present += 1
+            _make_read_only(control_root)
+            missing.extend(local_missing)
+            result = {
+                "unit_id": unit_id,
+                "status": "CONTROL_VERIFIED" if not local_missing else "MISSING_INPUT",
+                "matched": not local_missing,
+                "exit_code": None,
+                "output_diffs": [],
+                "reason": None if not local_missing else ";".join(local_missing),
+            }
+            unit_results.append(result)
+            status_by_unit[unit_id] = result["status"]
+            continue
+
+        if mode == "EVIDENCE_ONLY":
+            reinjected = layout.inputs / "reinjected" / safe_unit
+            local_missing = []
+            for ref in unit["input_refs"]:
+                scene_refs += 1
+                reason = _copy_ref(
+                    capsule,
+                    ref,
+                    reinjected / "evidence" / _safe_name(ref["artifact_id"]),
+                )
+                if reason:
+                    local_missing.append(reason)
+                else:
+                    scene_present += 1
+            for ref in unit["expected_outputs"]:
+                scene_refs += 1
+                reason = _copy_ref(capsule, ref, reinjected / _safe_name(ref["artifact_id"]))
+                if reason:
+                    local_missing.append(reason)
+                else:
+                    scene_present += 1
+            _make_read_only(reinjected)
+            missing.extend(local_missing)
+            result = {
+                "unit_id": unit_id,
+                "status": "EVIDENCE_ONLY" if not local_missing else "MISSING_INPUT",
+                "matched": False,
+                "exit_code": None,
+                "output_diffs": [],
+                "reason": (
+                    "frozen model output reinjected without inference"
+                    if not local_missing
+                    else ";".join(local_missing)
+                ),
+            }
+            unit_results.append(result)
+            status_by_unit[unit_id] = result["status"]
+            continue
+
+        operation = unit["operation"]
+        if operation not in catalog or catalog[operation]["replay_classification"] == "TEST_ONLY":
+            reason = f"UNSUPPORTED_OPERATION:{operation}"
+            missing.append(reason)
+            result = {
+                "unit_id": unit_id,
+                "status": "UNSUPPORTED",
+                "matched": False,
+                "exit_code": None,
+                "output_diffs": [],
+                "reason": reason,
+            }
+            unit_results.append(result)
+            status_by_unit[unit_id] = result["status"]
+            continue
+
+        unit_inputs = layout.inputs / "units" / safe_unit
+        expected_root = layout.expected / safe_unit
+        output_root = layout.outputs / safe_unit
+        effect_root = layout.effects / safe_unit
+        for path in (unit_inputs, expected_root, output_root, effect_root):
+            path.mkdir(parents=True, exist_ok=True)
+        local_missing: list[str] = []
+        operation_request: dict = {}
+        for ref in unit["input_refs"]:
+            scene_refs += 1
+            target = unit_inputs / "artifacts" / _safe_name(ref["artifact_id"])
+            reason = _copy_ref(capsule, ref, target)
+            if reason:
+                local_missing.append(reason)
+            else:
+                scene_present += 1
+                if ref["artifact_id"].startswith("operation.request:"):
+                    try:
+                        operation_request = json.loads(target.read_text(encoding="utf-8"))
+                    except (OSError, ValueError, TypeError):
+                        local_missing.append(f"OPERATION_REQUEST_INVALID:{unit_id}")
+        expected_paths: dict[str, Path] = {}
+        for ref in unit["expected_outputs"]:
+            scene_refs += 1
+            target = expected_root / _safe_name(ref["artifact_id"])
+            reason = _copy_ref(capsule, ref, target)
+            if reason:
+                local_missing.append(reason)
+            else:
+                scene_present += 1
+                expected_paths[ref["artifact_id"]] = target
+        source_receipts, source_missing, source_capsule = _source_inputs(
+            capsule, unit, unit_inputs
+        )
+        if any(
+            row["task_id"] != unit["task_id"] or row["attempt"] != unit["attempt"]
+            for row in source_receipts
+        ):
+            local_missing.append(f"SOURCE_RECEIPT_IDENTITY_MISMATCH:{unit_id}")
+        scene_refs += len(unit["source_receipt_ids"])
+        scene_present += len(source_receipts)
+        local_missing.extend(source_missing)
+        if not operation_request:
+            local_missing.append(f"OPERATION_REQUEST_MISSING:{unit_id}")
+        elif any(
+            operation_request.get(field) != expected
+            for field, expected in (
+                ("task_id", unit["task_id"]),
+                ("attempt", unit["attempt"]),
+                ("operation", unit["operation"]),
+            )
+        ):
+            local_missing.append(f"OPERATION_REQUEST_IDENTITY_MISMATCH:{unit_id}")
+        _make_read_only(unit_inputs)
+        _make_read_only(expected_root)
+        if local_missing:
+            missing.extend(local_missing)
+            reason = ";".join(sorted(set(local_missing)))
+            result = {
+                "unit_id": unit_id,
+                "status": "MISSING_INPUT",
+                "matched": False,
+                "exit_code": None,
+                "output_diffs": [],
+                "reason": reason,
+            }
+            unit_results.append(result)
+            status_by_unit[unit_id] = result["status"]
+            continue
+
+        env = {
+            "AUTORESEARCH_ENGINE": plan["engine"],
+            REPLAY_ENV: str(source_capsule),
+            "AUTORESEARCH_TASK_ID": unit["task_id"],
+            "AUTORESEARCH_ATTEMPT": str(unit["attempt"]),
+            "AUTORESEARCH_FROZEN_CLOCK": plan["frozen_clock"],
+        }
+        context = ReplayContext(
+            unit_id=unit_id,
+            code=layout.code,
+            inputs=unit_inputs,
+            runtime=layout.runtime,
+            work=layout.work / safe_unit,
+            outputs=output_root,
+            effects=effect_root,
+            audit=layout.audit / safe_unit,
+            env=env,
+            operation_request=operation_request,
+            source_receipts=source_receipts,
+        )
+        context.work.mkdir(parents=True, exist_ok=True)
+        context.audit.mkdir(parents=True, exist_ok=True)
+        try:
+            outcome = runner(unit, context)
+            exit_code = _runner_value(outcome, "exit_code")
+            if type(exit_code) is not int:
+                raise TypeError("replay runner did not return an integer exit_code")
+        except Exception as exc:
+            reason = f"RUNNER_FAILED:{type(exc).__name__}:{exc}"
+            result = {
+                "unit_id": unit_id,
+                "status": "EXECUTION_FAILED",
+                "matched": False,
+                "exit_code": None,
+                "output_diffs": [],
+                "reason": reason,
+            }
+            unit_results.append(result)
+            status_by_unit[unit_id] = result["status"]
+            diffs.append(reason)
+            executable_isolation.append("FAILED")
+            continue
+
+        executable_isolation.append(_isolation_verdict(outcome, capsule, layout))
+        returned_effects = _runner_value(outcome, "effects", [])
+        if isinstance(returned_effects, list):
+            effects.extend(returned_effects)
+        expectation = unit["failure_expectation"]
+        output_diffs: list[str] = []
+        if exit_code != 0:
+            error = _runner_value(outcome, "error", {})
+            category = str(error.get("code") or error.get("category") or "") if isinstance(error, dict) else ""
+            message_hash = (
+                sha256_bytes(canonical_json(error).encode("utf-8"))
+                if isinstance(error, dict)
+                else ""
+            )
+            expected_failure = bool(
+                expectation
+                and category == expectation["category"]
+                and message_hash == expectation["message_hash"]
+            )
+            status = "EXPECTED_FAILURE" if expected_failure else "EXECUTION_FAILED"
+            reason = (
+                "recorded failure reproduced"
+                if expected_failure
+                else f"UNEXPECTED_EXIT:{exit_code}"
+            )
+            if reason:
+                diffs.append(f"{unit_id}:{reason}")
+        elif expectation is not None:
+            status = "MISMATCH"
+            reason = "EXPECTED_FAILURE_NOT_REPRODUCED"
+            diffs.append(f"{unit_id}:{reason}")
+        else:
+            for artifact_id, expected_path in expected_paths.items():
+                produced = context.output_path(artifact_id)
+                if not produced.is_file():
+                    item = f"OUTPUT_NOT_PRODUCED:{unit_id}:{artifact_id}"
+                    output_diffs.append(item)
+                    missing.append(item)
+                    continue
+                try:
+                    matches = _compare_output(
+                        produced, expected_path, unit["comparison_policy"]["policy"]
+                    )
+                except (OSError, ValueError, TypeError):
+                    matches = False
+                if not matches:
+                    output_diffs.append(f"OUTPUT_MISMATCH:{unit_id}:{artifact_id}")
+            status = "MATCH" if not output_diffs else "MISMATCH"
+            reason = None if status == "MATCH" else "replayed output differs"
+            diffs.extend(output_diffs)
+        result = {
+            "unit_id": unit_id,
+            "status": status,
+            "matched": status in {"MATCH", "EXPECTED_FAILURE"},
+            "exit_code": exit_code,
+            "output_diffs": output_diffs,
+            "reason": reason,
+        }
+        unit_results.append(result)
+        status_by_unit[unit_id] = result["status"]
+
+    required_units = sum(unit["mode"] in _EXECUTABLE_MODES for unit in plan["units"])
+    executed_units = sum(
+        row["status"] in {"MATCH", "MISMATCH", "EXPECTED_FAILURE", "EXECUTION_FAILED"}
+        for row in unit_results
+    )
+    if executable_isolation and all(value == "ENFORCED" for value in executable_isolation):
+        isolation_status = "ENFORCED"
+    elif any(value == "FAILED" for value in executable_isolation):
+        isolation_status = "FAILED"
+    else:
+        isolation_status = "UNKNOWN"
+    if scene_refs == 0 or scene_present == 0:
+        scene_status = "NONE"
+    elif scene_present == scene_refs:
+        scene_status = "COMPLETE"
+    else:
+        scene_status = "PARTIAL"
+    clean_missing = sorted(set(missing))
+    clean_diffs = sorted(set(diffs))
+    executable_results = [
+        row
+        for unit, row in zip(plan["units"], unit_results, strict=True)
+        if unit["mode"] in _EXECUTABLE_MODES
+    ]
+    full = bool(
+        required_units > 0
+        and executed_units == required_units
+        and all(row["status"] in {"MATCH", "EXPECTED_FAILURE"} for row in executable_results)
+        and identity_status != "UNAVAILABLE"
+        and isolation_status == "ENFORCED"
+        and not clean_missing
+        and not clean_diffs
+    )
+    compute_status = "FULL" if full else "NONE" if executed_units == 0 else "PARTIAL"
+    result = {
+        "schema_version": 1,
+        "engine": plan["engine"],
+        "run_id": plan["run_id"],
+        "run_mode": _run_mode(capsule),
+        "replay_plan_hash": plan["replay_plan_hash"],
+        "requested_scope": requested_scope,
+        "required_units": required_units,
+        "executed_units": executed_units,
+        "scene_status": scene_status,
+        "compute_status": compute_status,
+        "model_status": "EVIDENCE_ONLY",
+        "identity_status": identity_status,
+        "isolation_status": isolation_status,
+        "unit_results": unit_results,
+        "effects": effects,
+        "missing": clean_missing,
+        "diffs": clean_diffs,
+    }
+    validate_replay_result(result)
+    atomic_write_json(layout.audit / "replay.json", result)
+    after = _tree_snapshot(capsule)
+    if after != before:
+        raise RuntimeError("frozen capsule changed during replay")
+    return result
+
+
 def replay(
     run_id: str,
     *,
@@ -374,9 +1034,13 @@ def replay(
     specs: Sequence[StageSpec] | None = None,
     keep_scratch: bool = True,
     kind: str = "scan-market",
+    output_dir: Path | str | None = None,
 ) -> dict:
     """Replay the named deterministic stages inside a throwaway scratch tree."""
     root = Path(capsule).resolve()
+    frozen = (root / "verification/ROOT.json").is_file()
+    if frozen and output_dir is None:
+        raise RuntimeError("frozen capsule replay requires an external output_dir")
     reset_replay_sequence(root)
     gaps = missing_blobs(root)
     resolved_specs = {
@@ -489,7 +1153,17 @@ def replay(
         "missing_blobs": gaps,
         "stages": rows,
     }
-    atomic_write_json(root / "verification/replay.json", result)
+    verdict_path = (
+        root / "verification/replay.json"
+        if output_dir is None
+        else Path(output_dir) / "replay.json"
+    )
+    if verdict_path.is_file():
+        current = json.loads(verdict_path.read_text(encoding="utf-8"))
+        if canonical_json(current) != canonical_json(result):
+            raise FileExistsError("replay output already exists with different content")
+    else:
+        atomic_write_json(verdict_path, result)
     if not keep_scratch:
         shutil.rmtree(scratch, ignore_errors=True)
     return result
@@ -504,6 +1178,7 @@ __all__ = [
     "REPLAY_ENV",
     "STAGE_ALIASES",
     "ReplayInputMissing",
+    "ReplayContext",
     "StageSpec",
     "active_capsule",
     "build_index",
@@ -513,4 +1188,5 @@ __all__ = [
     "missing_blobs",
     "read_key",
     "replay",
+    "execute_replay",
 ]

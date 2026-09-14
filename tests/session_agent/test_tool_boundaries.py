@@ -46,6 +46,7 @@ def test_every_workflow_operation_has_complete_catalog_metadata(tmp_path):
         "idempotent",
         "stage",
         "retained_cli",
+        "replay_classification",
     }
     assert all(set(catalog[operation]) == required for operation in used)
     document = Path("docs/session-agent/tool-catalog.md").read_text(encoding="utf-8")

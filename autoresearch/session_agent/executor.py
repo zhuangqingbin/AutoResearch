@@ -62,6 +62,9 @@ def execute_operation(
         raise RuntimeError("operation attempt already has terminal capture evidence")
     operation = task["operation"]
     argv = build_argv(operation, params, subject=task.get("subject"))
+    from autoresearch.session_agent.evidence import freeze_operation_request
+
+    freeze_operation_request(handle, task, attempt, params)
     spec = operation_spec(operation)
     invocation_id = _invocation_id(task["task_id"], attempt)
     result = runner(

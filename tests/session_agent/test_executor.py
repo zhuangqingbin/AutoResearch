@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -34,14 +35,23 @@ def test_execute_passes_exact_argv_and_identity_to_capture(tmp_path):
         calls.append((stage, argv, invocation_id, attempt, subject, task_id))
         return SimpleNamespace(exit_code=0, invocation={"status": "COMPLETED"})
 
+    handle = _handle(tmp_path)
     result = executor.execute_operation(
-        _handle(tmp_path), _task(), 1, {"message": "ok"}, runner=runner
+        handle, _task(), 1, {"message": "ok"}, runner=runner
     )
     assert result["status"] == "SUCCEEDED"
     assert calls == [(
         "session", executor.build_argv("test.noop", {"message": "ok"}),
         "session-test-noop-a1", 1, None, "test.noop",
     )]
+    request = json.loads(
+        (
+            handle.capsule
+            / "evidence/attempt_records/test.noop/a1/operation_request.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert request["operation"] == "test.noop"
+    assert request["params"] == {"message": "ok"}
 
 
 def test_nonzero_exit_is_not_success(tmp_path):

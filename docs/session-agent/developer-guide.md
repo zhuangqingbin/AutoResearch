@@ -232,6 +232,41 @@ runtime 可用性只有三态：当前平台与 dependencies 精确相等为 `LO
 授权目录导入且摘要匹配的离线包为 `PACKAGED`；其余均为 `UNAVAILABLE`。接口没有安装分支，
 `network_install_allowed=false`；缺 wheel/runtime 包时应停止可执行重放，不能联网补装后声称复现。
 
+### EvidencePlan 驱动的离线重放
+
+新重放入口不再从“检测到哪些 stage 文件”反推范围。`build_replay_plan(handle)` 逐项投影冻结的
+`evidence/evidence_plan.json.task_keys`，同一个 task 的失败、被替代 attempt 和最终成功 attempt
+各占一个 ReplayUnit。推理任务固定为 `EVIDENCE_ONLY`；确定性 operation 的分类来自
+`operation_catalog().replay_classification`。未知 operation 仍以必需计算单元进入分母，并在执行结果
+中报告 `UNSUPPORTED_OPERATION`，不能被过滤掉。
+
+每次确定性执行会在启动子进程前冻结
+`evidence/attempt_records/<task_id>/a<attempt>/operation_request.json`，保存结构化 params、operation、
+subject 和 attempt。失败同样冻结 `failure.json`，因此下一次 claim 清理可变 owner error 后，旧 attempt
+仍能重放原失败类型。动态 expansion/recovery 的 TaskSpec 另存到
+`identity/session/expansions/`，最终 capsule 不依赖已删除的活动 workspace 才能恢复完整任务图。
+
+`execute_replay(plan, frozen_root, output_dir, runner)` 只向外部目录写以下固定布局：
+
+```text
+code/      inputs/      expected/      runtime/
+work/      outputs/     effects/       audit/replay.json
+```
+
+runner 只拿到恢复后的只读 code/input/runtime、空 work/output/effects，以及 operation request 和带
+codec 的 source receipts；对象中没有 frozen capsule 或 expected 路径。expected 只由父比较器读取，
+模型输出则复制到 `inputs/reinjected/` 后设为只读，供下游确定性单元消费，不重新调用模型。runner
+没有真正产出声明文件时，即使冻结产物原本存在，也得到 `OUTPUT_NOT_PRODUCED`，不能复用旧字节冒充
+重算命中。
+
+严格隔离由 `trace.offline.run_isolated` 的系统 sandbox 提供：禁出站网络，拒读原 capsule/lake 和
+expected，拒写原状态以及 code/input/runtime。普通 Python callback 的结果最多为
+`isolation_status=UNKNOWN`；只有系统 sandbox 返回且 deny scope 覆盖必需路径的 attestation 才能标
+`ENFORCED`。宿主没有受支持的 sandbox 时测试与验收明确记为 `INCOMPLETE`，并且
+`compute_status` 不得为 `FULL`。旧 `trace.replay.replay` 只在 finalize 前的未冻结 staging 保留原位
+写 `verification/replay.json`；检测到 `verification/ROOT.json` 后必须提供外部 `output_dir`，历史
+capsule 始终只读。
+
 ## 6. 恢复与故障判断
 
 ```bash

@@ -300,6 +300,12 @@ def _sync_expansion(handle, request: dict, expansion: dict) -> None:
     from autoresearch.session_agent.workflows import register_expansion_artifacts
 
     register_expansion_artifacts(request, handle, expansion)
+    _freeze_json(
+        Path(handle.capsule)
+        / "identity/session/expansions"
+        / f"{expansion['expansion_id']}.json",
+        expansion,
+    )
     store.register_tasks(
         _store_path(handle),
         expansion["tasks"],
@@ -438,6 +444,14 @@ def fail(
         attempt,
         {"code": kind, "message": message},
         retryable=retryable,
+    )
+    from autoresearch.session_agent.evidence import freeze_failure
+
+    freeze_failure(
+        handle,
+        task,
+        attempt,
+        {"code": kind, "message": message},
     )
     _degrade_optional_l3_repair(
         handle,
@@ -765,6 +779,9 @@ def execute(
             failure,
             retryable=bool(executor.operation_spec(task["operation"])["idempotent"]),
         )
+        from autoresearch.session_agent.evidence import freeze_failure
+
+        freeze_failure(handle, task, attempt, failure)
         _degrade_optional_l3_repair(
             handle,
             task_id,

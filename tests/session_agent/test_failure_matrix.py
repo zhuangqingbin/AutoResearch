@@ -29,6 +29,29 @@ def test_frozen_run_is_never_reactivated_by_resume():
         service.resume("20260913T010203000000Z", handle_loader=frozen_loader)
 
 
+def test_failed_attempt_is_frozen_before_a_retry_can_replace_owner_state(tmp_path):
+    handle = _handle(tmp_path)
+    service.begin(_request(), begin_capsule=lambda request: handle, planner=_planner)
+    service.claim(handle.run_id, "step.one", 1, handle_loader=lambda run_id: handle)
+
+    service.fail(
+        handle.run_id,
+        "step.one",
+        1,
+        "TIMEOUT",
+        "captured timeout",
+        handle_loader=lambda run_id: handle,
+    )
+
+    failure = json.loads(
+        (
+            handle.capsule
+            / "evidence/attempt_records/step.one/a1/failure.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert failure["error"] == {"code": "TIMEOUT", "message": "captured timeout"}
+
+
 def test_resume_probes_the_authoritative_deterministic_attempt(tmp_path, monkeypatch):
     handle = _handle(tmp_path)
     service.begin(

@@ -688,9 +688,9 @@ def test_resume_never_reexecutes_research(forensic_case, phase):
 
 **Files:** 新增 trace/offline.py、session_agent/replay_registry.py；修改 trace/replay、session_agent/operations；新增 `tests/forensics/test_replay_core.py`、`test_replay_isolation.py`。
 
-- [ ] `build_replay_plan(handle)` 以 EvidencePlan 为分母，每个 operation 必须分类；固定 scope，未知项报缺，不跳过。
-- [ ] `execute_replay(plan, frozen_root, output_dir, runner)` 为纯执行/结果生成接口，不写 frozen_root；旧 replay façade 的写结果行为仅允许未冻结 staging，否则要求外部 output_dir。
-- [ ] runner 使用捕获源码、参数和 codec；expected 只给比较器；LLM output 只读回注。
+- [x] `build_replay_plan(handle)` 以 EvidencePlan 为分母，每个 operation 必须分类；固定 scope，未知项报缺，不跳过。
+- [x] `execute_replay(plan, frozen_root, output_dir, runner)` 为纯执行/结果生成接口，不写 frozen_root；旧 replay façade 的写结果行为仅允许未冻结 staging，否则要求外部 output_dir。
+- [x] runner 使用捕获源码、参数和 codec；expected 只给比较器；LLM output 只读回注。
 
 ```python
 def test_noop_runner_cannot_pass(forensic_case):
@@ -706,8 +706,8 @@ def test_unexecuted_required_unit_prevents_full(forensic_case):
     assert result["compute_status"] != "FULL"
 ```
 
-- [ ] 严格隔离测试实际尝试网络、原 lake 读取、原状态写入和 expected 读取，均应由执行环境拒绝；无该环境的本地测试显式 skip 并标验收 INCOMPLETE。
-- [ ] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_replay_core.py tests/forensics/test_replay_isolation.py tests/trace/test_replay.py`。
+- [x] 严格隔离测试实际尝试网络、原 lake 读取、原状态写入和 expected 读取，均应由执行环境拒绝；无该环境的本地测试显式 skip 并标验收 INCOMPLETE。
+- [x] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_replay_core.py tests/forensics/test_replay_isolation.py tests/trace/test_replay.py`。
 
 ### T12｜单股与宏观 FULL/LITE 重放（C，P1）
 

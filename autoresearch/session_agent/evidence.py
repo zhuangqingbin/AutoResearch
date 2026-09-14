@@ -245,6 +245,59 @@ def freeze_receipt(handle, task: dict, attempt: int, receipt: dict) -> Path:
     )
 
 
+def freeze_operation_request(
+    handle,
+    task: dict,
+    attempt: int,
+    params: dict,
+) -> Path:
+    """Freeze structured operation parameters before the child process starts."""
+    if task.get("kind") != "DETERMINISTIC" or not isinstance(params, dict):
+        raise ValueError("operation request requires a deterministic task and params")
+    return _freeze_attempt_record(
+        handle,
+        task["task_id"],
+        attempt,
+        "operation_request",
+        {
+            "schema_version": 1,
+            "task_id": task["task_id"],
+            "attempt": attempt,
+            "operation": task["operation"],
+            "subject": task.get("subject"),
+            "params": json.loads(canonical_json(params)),
+        },
+    )
+
+
+def freeze_failure(
+    handle,
+    task: dict,
+    attempt: int,
+    error: dict,
+) -> Path:
+    """Keep a retry's terminal failure after mutable owner state advances."""
+    if not isinstance(error, dict):
+        raise ValueError("failure evidence must be an object")
+    from autoresearch.trace.identity import redact_value
+
+    safe = redact_value(error).value
+    if not isinstance(safe, dict):
+        raise ValueError("redacted failure evidence must remain an object")
+    return _freeze_attempt_record(
+        handle,
+        task["task_id"],
+        attempt,
+        "failure",
+        {
+            "schema_version": 1,
+            "task_id": task["task_id"],
+            "attempt": attempt,
+            "error": safe,
+        },
+    )
+
+
 def _captured_ref(
     handle,
     artifact_id: str,
@@ -506,6 +559,8 @@ __all__ = [
     "build_evidence_plan",
     "evaluate_closure",
     "freeze_claim",
+    "freeze_failure",
+    "freeze_operation_request",
     "freeze_receipt",
     "materialize_evidence",
 ]

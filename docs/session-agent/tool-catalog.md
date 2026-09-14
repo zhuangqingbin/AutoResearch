@@ -58,7 +58,10 @@
 | `scan.observe` | 无 | 观察记录、文件 manifest 与 CP7 发布包 | `scan.observe` | 报告被改或观察失败 | 是 | 是 |
 
 代码目录中的每项还声明 `stage`、精确 `outputs`、`callers`、`errors`、`limits`、
-`idempotent` 和 `retained_cli`。表中的“旧 CLI”表示确定性实现继续复用原模块；它不是另一套业务编排入口。
+`idempotent`、`retained_cli` 和唯一的 `replay_classification`。生产分类只能是
+`COMPUTE`、`SOURCE_REPLAY`、`EFFECT_PLAN` 或 `CONTROL_ONLY`；`test.noop` 单独为
+`TEST_ONLY`，不进入生产重放分母。新增 operation 没有分类或同时落入两类时，注册表导入即失败。
+表中的“旧 CLI”表示确定性实现继续复用原模块；它不是另一套业务编排入口。
 
 ## 权限分区
 
