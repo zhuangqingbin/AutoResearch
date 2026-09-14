@@ -7,6 +7,7 @@ import json
 from collections.abc import Iterator
 from pathlib import Path
 
+from autoresearch.common import workspace as ws
 from autoresearch.common.atomic import (
     atomic_write_bytes,
     atomic_write_json,
@@ -188,7 +189,7 @@ def _update_pool(code: str, name: str | None, pool_path: Path | str | None) -> N
         atomic_write_json(target, value)
 
 
-def publish_dossier(
+def _publish_dossier_active(
     handle,
     *,
     target_path: Path | str | None = None,
@@ -214,6 +215,34 @@ def publish_dossier(
             atomic_write_bytes(target, candidate_bytes)
     _update_pool(request["subject"], request.get("name"), pool_path)
     return target
+
+
+def publish_dossier(
+    handle,
+    *,
+    target_path: Path | str | None = None,
+    pool_path: Path | str | None = None,
+) -> Path:
+    """Commit dossier and pool changes only while their run remains active."""
+    from autoresearch.trace.write_guard import assert_output_path, guarded_handle_write
+
+    with guarded_handle_write(handle, "dossier.publish") as tracked:
+        if tracked is not None:
+            target = Path(target_path) if target_path is not None else schema.dossier_path(
+                json.loads(
+                    (Path(handle.workspace) / "session/request.json").read_text(
+                        encoding="utf-8"
+                    )
+                )["subject"]
+            )
+            resolved_pool = Path(pool_path) if pool_path is not None else pool.POOL_PATH
+            assert_output_path(target, ws.context_root())
+            assert_output_path(resolved_pool, ws.context_root())
+        return _publish_dossier_active(
+            handle,
+            target_path=target_path,
+            pool_path=pool_path,
+        )
 
 
 __all__ = [

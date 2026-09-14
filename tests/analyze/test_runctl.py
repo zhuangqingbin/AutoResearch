@@ -110,20 +110,20 @@ def test_record_stage_is_a_true_noop_without_a_run(tmp_ws, monkeypatch, capsys):
     assert capsys.readouterr().err == ""
 
 
-def test_record_stage_swallows_an_evidence_failure(tmp_ws, monkeypatch, capsys):
-    """取证坏了只准喊一声,不准把用户的研究带走。"""
+def test_record_stage_propagates_a_missing_run_identity(tmp_ws, monkeypatch):
+    """显式绑定的假 run_id 不是普通外源降级，必须在业务写入前失败。"""
     monkeypatch.setenv("AUTORESEARCH_RUN_ID", "20260827T010203456789Z")
 
-    assert runctl.record_stage("harvest", outputs=[]) is None
-    assert "checkpoint 失败" in capsys.readouterr().err
+    with pytest.raises(RuntimeError, match="RUN_NOT_FOUND"):
+        runctl.record_stage("harvest", outputs=[])
 
 
-def test_record_stage_refuses_to_write_into_a_scan_run(tmp_ws, monkeypatch, capsys):
+def test_record_stage_propagates_a_cross_workflow_identity(tmp_ws, monkeypatch):
     scan = capsule_mod.begin_run("scan-market", DATE, ws.ENGINE, {})
     monkeypatch.setenv("AUTORESEARCH_RUN_ID", scan.run_id)
 
-    assert runctl.record_stage("harvest", outputs=[]) is None
-    assert "不往别人的现场里写" in capsys.readouterr().err
+    with pytest.raises(RuntimeError, match="RUN_OPERATION_NOT_OWNED"):
+        runctl.record_stage("harvest", outputs=[])
 
 
 # ---------------------------------------------------------------- 一圈跑完

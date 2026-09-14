@@ -123,9 +123,9 @@ def _hide_write_only(state: dict) -> dict:
     return {k: v for k, v in state.items() if k not in _WRITE_ONLY_KEYS}
 
 
-def write_macro_state(root: Path | str, report_path: Path | str | None = None,
-                      out_dir: Path | str | None = None,
-                      scan_root: Path | str = _WS_SCAN_ROOT) -> dict:
+def _write_macro_state_unlocked(root: Path | str, report_path: Path | str | None = None,
+                                out_dir: Path | str | None = None,
+                                scan_root: Path | str = _WS_SCAN_ROOT) -> dict:
     """从 macro context 目录(`context/macro/<date>`)抽机读摘要 → `<out_dir>/macro_state.json`。
 
     out_dir 缺省 = `context/macro`(assemble 传 root.parent,测试传 tmp);返回写入的 dict。
@@ -161,6 +161,21 @@ def write_macro_state(root: Path | str, report_path: Path | str | None = None,
     out.mkdir(parents=True, exist_ok=True)
     (out / STATE_NAME).write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     return state
+
+
+def write_macro_state(root: Path | str, report_path: Path | str | None = None,
+                      out_dir: Path | str | None = None,
+                      scan_root: Path | str = _WS_SCAN_ROOT) -> dict:
+    """Write the candidate state only while an ambient tracked run is active."""
+    from autoresearch.trace.write_guard import guarded_ambient_write
+
+    with guarded_ambient_write("macro.assemble"):
+        return _write_macro_state_unlocked(
+            root,
+            report_path=report_path,
+            out_dir=out_dir,
+            scan_root=scan_root,
+        )
 
 
 def state_readiness(root: Path | str) -> dict:

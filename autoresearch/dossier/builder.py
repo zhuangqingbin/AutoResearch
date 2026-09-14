@@ -217,7 +217,7 @@ def _summary_lines(calc: dict[str, str]) -> list[str]:
     return lines
 
 
-def build_skeleton(
+def _build_skeleton_unlocked(
     code6: str,
     today: str,
     *,
@@ -276,6 +276,33 @@ def build_skeleton(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     return {"path": path, "created": True, "issues": schema.lint_dossier(text)}
+
+
+def build_skeleton(
+    code6: str,
+    today: str,
+    *,
+    name: str = "",
+    sector: str = "",
+    scan_root: str | Path = _WS_SCAN_ROOT,
+    force: bool = False,
+    output_path: str | Path | None = None,
+    prefetch_path: str | Path | None = None,
+) -> dict:
+    """Build only while an ambient tracked run owns the dossier write window."""
+    from autoresearch.trace.write_guard import guarded_ambient_write
+
+    with guarded_ambient_write("dossier.skeleton"):
+        return _build_skeleton_unlocked(
+            code6,
+            today,
+            name=name,
+            sector=sector,
+            scan_root=scan_root,
+            force=force,
+            output_path=output_path,
+            prefetch_path=prefetch_path,
+        )
 
 
 def main(argv: list[str] | None = None) -> int:

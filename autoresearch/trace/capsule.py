@@ -2764,7 +2764,7 @@ def _publish_capsule(handle: RunHandle, final_path: Path) -> Path:
     return destination
 
 
-def finalize(
+def _finalize_unlocked(
     run_id: str,
     business_status: BusinessStatus | str,
     report_dir: Path | str | None = None,
@@ -3054,6 +3054,31 @@ def finalize(
         durability=durability,
         last_reliable_checkpoint=checkpoint_name,
     )
+
+
+def finalize(
+    run_id: str,
+    business_status: BusinessStatus | str,
+    report_dir: Path | str | None = None,
+    *,
+    error: Mapping | None = None,
+    replay_stages: Sequence[str] = (),
+    profile=None,
+    now: datetime | None = None,
+) -> FinalizationResult:
+    """Seal a run while holding the same lock used by every business publisher."""
+    from autoresearch.trace.write_guard import run_write_lock
+
+    with run_write_lock(run_id):
+        return _finalize_unlocked(
+            run_id,
+            business_status,
+            report_dir,
+            error=error,
+            replay_stages=replay_stages,
+            profile=profile,
+            now=now,
+        )
 
 
 def _write_root(published: Path, payload: Mapping) -> Path:

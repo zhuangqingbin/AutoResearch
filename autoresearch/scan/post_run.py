@@ -704,7 +704,9 @@ def refresh_run_observation(
     return new_summary, new_appendix, warns
 
 
-def refresh_run_observation_files(report_dir: Path | str, observation: dict) -> list[str]:
+def _refresh_run_observation_files_unlocked(
+    report_dir: Path | str, observation: dict
+) -> list[str]:
     """把双刷新落到盘上(两文件各自原子替换);返回 warns。"""
     report = Path(report_dir)
     summary_path, appendix_path = report / "summary.md", report / APPENDIX_FILENAME
@@ -729,7 +731,15 @@ def refresh_run_observation_files(report_dir: Path | str, observation: dict) -> 
     return warns
 
 
-def publish_run_observation(
+def refresh_run_observation_files(report_dir: Path | str, observation: dict) -> list[str]:
+    """Refresh report files only inside the active scan observation window."""
+    from autoresearch.trace.write_guard import guarded_ambient_write
+
+    with guarded_ambient_write("scan.observe"):
+        return _refresh_run_observation_files_unlocked(report_dir, observation)
+
+
+def _publish_run_observation_unlocked(
     scan_dir: Path | str,
     *,
     report_dir: Path | str | None = None,
@@ -925,6 +935,33 @@ def publish_run_observation(
             if ret["errors"]:
                 print(f"[post_run] ⚠️ 现场留存:{'; '.join(ret['errors'])}", file=sys.stderr)
     return observation
+
+
+def publish_run_observation(
+    scan_dir: Path | str,
+    *,
+    report_dir: Path | str | None = None,
+    usage_path: Path | str | None = None,
+    timing_path: Path | str | None = None,
+    budgets: dict | None = None,
+    real_scan: bool | None = None,
+    phase: int = 1,
+    decision_write: str = "write",
+) -> dict:
+    """Publish observations only while the scan run remains active."""
+    from autoresearch.trace.write_guard import guarded_ambient_write
+
+    with guarded_ambient_write("scan.observe"):
+        return _publish_run_observation_unlocked(
+            scan_dir,
+            report_dir=report_dir,
+            usage_path=usage_path,
+            timing_path=timing_path,
+            budgets=budgets,
+            real_scan=real_scan,
+            phase=phase,
+            decision_write=decision_write,
+        )
 
 
 def _pool_path() -> Path:

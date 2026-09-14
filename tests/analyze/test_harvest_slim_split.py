@@ -110,7 +110,9 @@ def test_full_report_output_stays_at_engine_context_root(tmp_path, monkeypatch):
 def test_slim_cli_writes_to_explicit_output_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(harvest, "ROOT", tmp_path / "repo")
     monkeypatch.setattr(ws, "ENGINE", "codex")
-    monkeypatch.setenv("AUTORESEARCH_RUN_ID", "20260827T010203456789Z")
+    # This is an explicit scratch-output CLI test, not a tracked run.  A made-up
+    # run id is no longer a harmless decoration: tracked identities fail closed.
+    monkeypatch.delenv("AUTORESEARCH_RUN_ID", raising=False)
     monkeypatch.setattr(harvest, "set_config", lambda _config: None)
     monkeypatch.setattr(harvest, "resolve_instrument_identity", lambda _ticker: None)
     monkeypatch.setattr(

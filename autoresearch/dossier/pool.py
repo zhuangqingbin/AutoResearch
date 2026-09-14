@@ -111,8 +111,9 @@ def pending_init(pool: dict) -> list[str]:
     return sorted(candidates, key=_key)
 
 
-def refresh(today: str, *, scan_root: str | Path = _WS_SCAN_ROOT,
-            pool_path: Path | None = None, pinned_path: Path | None = None) -> dict:
+def _refresh_unlocked(today: str, *, scan_root: str | Path = _WS_SCAN_ROOT,
+                      pool_path: Path | None = None,
+                      pinned_path: Path | None = None) -> dict:
     scan_root = Path(scan_root)
     pool = load_pool(pool_path)
     stocks = pool["stocks"]
@@ -176,6 +177,22 @@ def refresh(today: str, *, scan_root: str | Path = _WS_SCAN_ROOT,
     return {"entered": sorted(entered), "retired": sorted(retired), "revived": sorted(revived),
             "pending_init": pending_init(pool),
             "n_active": sum(1 for s in stocks.values() if s.get("status") == "active")}
+
+
+def refresh(today: str, *, scan_root: str | Path = _WS_SCAN_ROOT,
+            pool_path: Path | None = None, pinned_path: Path | None = None) -> dict:
+    """Refresh the pool only inside an active scan prelude write window."""
+    from autoresearch.trace.write_guard import assert_output_path, guarded_ambient_write
+
+    with guarded_ambient_write("scan.prelude") as tracked:
+        if tracked is not None:
+            assert_output_path(Path(pool_path) if pool_path else POOL_PATH, ws.context_root())
+        return _refresh_unlocked(
+            today,
+            scan_root=scan_root,
+            pool_path=pool_path,
+            pinned_path=pinned_path,
+        )
 
 
 def _print_status(pool: dict) -> None:

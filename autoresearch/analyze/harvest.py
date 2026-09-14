@@ -486,7 +486,7 @@ HARVEST_PLAN: dict[tuple[str, str], tuple[str, ...]] = {
 }
 
 
-def main() -> int:
+def _main_unlocked() -> int:
     # D1.6 #4:离线开关(措辞对齐 data/sources/yf_options.py 等既有 AUTORESEARCH_OFFLINE=1
     # 语义)——离线模式下不取任何网络,提前退出,免得跑一半才在各处炸成一串降级账。
     if os.environ.get("AUTORESEARCH_OFFLINE"):
@@ -601,6 +601,13 @@ def main() -> int:
         status="DEGRADED" if degs else "SUCCEEDED",
     )
     return 0
+
+
+def main() -> int:
+    from autoresearch.trace.write_guard import guarded_ambient_write
+
+    with guarded_ambient_write("stock.harvest"):
+        return _main_unlocked()
 
 
 def _harvest_outputs(out_dir: Path, ticker: str, trade_date: str, slim: bool) -> list[Path]:

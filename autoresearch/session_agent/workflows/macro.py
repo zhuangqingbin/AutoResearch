@@ -274,7 +274,7 @@ def _locked(path: Path) -> Iterator[None]:
             fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
 
-def publish_macro(
+def _publish_macro_active(
     handle,
     *,
     reports_root: Path | str | None = None,
@@ -312,6 +312,40 @@ def publish_macro(
             elif (current_as_of, current_run) == (candidate_as_of, candidate_run) and current != candidate:
                 raise RuntimeError("same-date macro_state publication conflict")
     return target
+
+
+def publish_macro(
+    handle,
+    *,
+    reports_root: Path | str | None = None,
+    state_path: Path | str | None = None,
+) -> Path:
+    """Publish report and optional state only inside an active run write window."""
+    from autoresearch.trace.write_guard import assert_output_path, guarded_handle_write
+
+    with guarded_handle_write(handle, "macro.publish") as tracked:
+        if tracked is not None:
+            base = Path(reports_root) if reports_root is not None else ws.reports_root() / "macro"
+            assert_output_path(base, ws.run_reports_root("macro-research"))
+            request = json.loads(
+                (Path(handle.workspace) / "session/request.json").read_text(encoding="utf-8")
+            )
+            bundle = json.loads(
+                (Path(handle.staging) / "session_outputs/macro.publication.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            assert_output_path(
+                base / request["analysis_date"].replace("-", "") / bundle["output_name"],
+                base,
+            )
+            if state_path is not None:
+                assert_output_path(state_path, ws.context_root())
+        return _publish_macro_active(
+            handle,
+            reports_root=reports_root,
+            state_path=state_path,
+        )
 
 
 __all__ = [

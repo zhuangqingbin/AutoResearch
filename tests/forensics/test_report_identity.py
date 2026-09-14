@@ -14,7 +14,7 @@ def test_unsealed_report_is_never_accepted_as_the_frozen_version(
 ):
     case = forensic_case_factory(kind, variant)
     case.finish()
-    late_report = case.produce_changed_report()
+    late_report = case.create_unbound_revision_for_audit()
 
     result = case.verify_report(late_report)
 

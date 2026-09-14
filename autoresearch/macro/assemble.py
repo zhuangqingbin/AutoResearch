@@ -102,7 +102,7 @@ def _read(root: Path, rel: str) -> str:
     return (root / rel).read_text(encoding="utf-8").strip()
 
 
-def main(argv: list[str] | None = None) -> int:
+def _main_unlocked(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="组装宏观分节报告")
     parser.add_argument("root", help="宏观分节草稿目录")
     parser.add_argument("--output-dir", default=None)
@@ -177,6 +177,13 @@ def main(argv: list[str] | None = None) -> int:
     if skipped:
         print("[note] 跳过未提供的可选分段: " + ", ".join(skipped))
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    from autoresearch.trace.write_guard import guarded_ambient_write
+
+    with guarded_ambient_write("macro.assemble"):
+        return _main_unlocked(argv)
 
 
 if __name__ == "__main__":

@@ -127,6 +127,17 @@ class ForensicCase:
         """Call the real domain publisher; no test rule is implemented here."""
         return self.publish()
 
+    def create_unbound_revision_for_audit(self) -> Path:
+        """Create an incident-only file without bypassing the production guard."""
+        audit = ws.reports_root() / "_audit_fixture" / self.kind / self.variant
+        audit.mkdir(parents=True, exist_ok=False)
+        source = Path(self.handle.staging) / "session_outputs"
+        candidates = sorted(source.glob("*.md"))
+        if not candidates and self.kind == "scan-market":
+            candidates = sorted((Path(self.handle.workspace) / "publication_candidate").glob("*.md"))
+        (audit / "report.md").write_bytes(candidates[0].read_bytes())
+        return audit
+
     def verify_report(self, path: Path) -> dict:
         candidate = path if path.is_dir() else path.parent
         return capsule_mod.verify(
@@ -228,8 +239,8 @@ def _prepare_publisher(handle, kind: str, payload: bytes) -> Callable[[], Path]:
         _write_json(output / "dossier.publication.json", {
             "candidate_sha256": sha256_bytes(payload),
         })
-        target = publication_root / "600519.md"
-        pool = publication_root / "pool.json"
+        target = ws.context_root() / "knowledge/dossiers/600519.md"
+        pool = ws.context_root() / "knowledge/dossiers/pool.json"
         return lambda: publish_dossier(handle, target_path=target, pool_path=pool)
 
     if kind == "scan-market":

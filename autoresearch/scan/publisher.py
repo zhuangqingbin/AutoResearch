@@ -312,8 +312,11 @@ def run(analysis_date: str, scan_dir: Path | None = None, out_root: Path | None 
      `buy_ledger.roll()` 缓存窗〔M-10〕—— 账本删了,窗也就没有了。壳保留是为了不动
      所有调用方的入口名。)
     """
-    return _run_publish(analysis_date, scan_dir=scan_dir, out_root=out_root,
-                        hhmm=hhmm, run_date=run_date, pinned_path=pinned_path)
+    from autoresearch.trace.write_guard import guarded_ambient_write
+
+    with guarded_ambient_write("scan.assemble"):
+        return _run_publish(analysis_date, scan_dir=scan_dir, out_root=out_root,
+                            hhmm=hhmm, run_date=run_date, pinned_path=pinned_path)
 
 
 def _run_publish(analysis_date: str, scan_dir: Path | None = None,

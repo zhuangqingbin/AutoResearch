@@ -1105,7 +1105,7 @@ def _publish_lock(root: Path):
             fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
 
-def publish_scan(handle, *, reports_root: Path | str | None = None) -> Path:
+def _publish_scan_active(handle, *, reports_root: Path | str | None = None) -> Path:
     """Publish the entire verified legacy report bundle after the task graph is done."""
     with artifacts.open_artifact(handle, "scan.publication.bundle") as stream:
         bundle = json.loads(stream.read().decode("utf-8"))
@@ -1132,6 +1132,22 @@ def publish_scan(handle, *, reports_root: Path | str | None = None) -> Path:
         shutil.copytree(candidate, temp)
         temp.replace(target)
     return target
+
+
+def publish_scan(handle, *, reports_root: Path | str | None = None) -> Path:
+    """Publish only while the bound scan run still owns its write window."""
+    from autoresearch.trace.write_guard import assert_output_path, guarded_handle_write
+
+    with guarded_handle_write(handle, "scan.publish") as tracked:
+        if tracked is not None:
+            root = Path(reports_root) if reports_root is not None else ws.run_reports_root(
+                "scan-market"
+            )
+            assert_output_path(root, ws.run_reports_root("scan-market"))
+            with artifacts.open_artifact(handle, "scan.publication.bundle") as stream:
+                bundle = json.loads(stream.read().decode("utf-8"))
+            assert_output_path(root / str(bundle["folder"]), root)
+        return _publish_scan_active(handle, reports_root=reports_root)
 
 
 __all__ = [

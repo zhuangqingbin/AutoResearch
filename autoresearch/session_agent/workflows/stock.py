@@ -302,7 +302,7 @@ def _publish_lock(root: Path) -> Iterator[None]:
             fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
 
-def publish_stock(handle, *, reports_root: Path | None = None) -> Path:
+def _publish_stock_active(handle, *, reports_root: Path | None = None) -> Path:
     """Publish a validated stock artifact under the existing analyze layout."""
     with artifacts.open_artifact(handle, "stock.publication.bundle") as stream:
         bundle = json.loads(stream.read().decode("utf-8"))
@@ -352,6 +352,26 @@ def publish_stock(handle, *, reports_root: Path | None = None) -> Path:
         atomic_write_bytes(report, report_bytes)
         atomic_write_json(manifest_path, manifest)
     return report_dir
+
+
+def publish_stock(handle, *, reports_root: Path | None = None) -> Path:
+    """Publish only while the bound run still owns an active write window."""
+    from autoresearch.trace.write_guard import assert_output_path, guarded_handle_write
+
+    with guarded_handle_write(handle, "stock.publish") as tracked:
+        if tracked is not None:
+            root = Path(reports_root) if reports_root is not None else ws.run_reports_root(
+                "stock-research"
+            )
+            assert_output_path(root, ws.run_reports_root("stock-research"))
+            with artifacts.open_artifact(handle, "stock.publication.bundle") as stream:
+                bundle = json.loads(stream.read().decode("utf-8"))
+            report_dir = root / (
+                f"{bundle['analysis_date'].replace('-', '')}_{handle.run_id[9:13]}"
+            )
+            assert_output_path(report_dir / bundle["output_name"], root)
+            assert_output_path(report_dir / "manifest.json", root)
+        return _publish_stock_active(handle, reports_root=reports_root)
 
 
 __all__ = [

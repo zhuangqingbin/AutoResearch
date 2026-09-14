@@ -83,24 +83,32 @@ def record_stage(
     if not run_id:
         return None
     try:
-        from autoresearch.trace.capsule import checkpoint, require_active_run
+        from autoresearch.trace.capsule import checkpoint
+        from autoresearch.trace.write_guard import (
+            RunWriteViolation,
+            assert_write_allowed,
+            run_write_lock,
+        )
 
-        handle = require_active_run(run_id)
-        if handle.contract.run_kind != "stock-research":
-            raise ValueError(
-                f"ambient run {run_id} is a {handle.contract.run_kind!r} run; "
-                "analyze 不往别人的现场里写"
-            )
-        names, origins = _stage_outputs(handle.staging, outputs)
-        payload = {
-            **(metrics or {}),
-            "inputs": [str(item) for item in inputs],
-            "origin": origins,
-        }
-        return checkpoint(
-            run_id, stage, status, names, payload, error=error
-        ).to_dict()
-    except Exception as exc:  # noqa: BLE001 — 取证故障不能改业务返回值
+        with run_write_lock(run_id):
+            handle = assert_write_allowed(run_id, f"stock.{stage}", ws.ENGINE)
+            if handle.contract.run_kind != "stock-research":
+                raise ValueError(
+                    f"ambient run {run_id} is a {handle.contract.run_kind!r} run; "
+                    "analyze 不往别人的现场里写"
+                )
+            names, origins = _stage_outputs(handle.staging, outputs)
+            payload = {
+                **(metrics or {}),
+                "inputs": [str(item) for item in inputs],
+                "origin": origins,
+            }
+            return checkpoint(
+                run_id, stage, status, names, payload, error=error
+            ).to_dict()
+    except RunWriteViolation:
+        raise
+    except Exception as exc:  # noqa: BLE001 — 普通取证故障仍不改业务返回值
         print(f"[analyze·capsule] {stage} checkpoint 失败: {exc}", file=sys.stderr)
         return None
 
@@ -281,16 +289,19 @@ def finalize(
     reason: str | None = None,
 ) -> dict:
     from autoresearch.trace.capsule import finalize as capsule_finalize
+    from autoresearch.trace.write_guard import assert_write_allowed, run_write_lock
 
-    if report_dir is not None:
-        backfill_manifest_run_id(report_dir, run_id)
-    error = None
-    if status != "SUCCEEDED":
-        error = {
-            "error_type": f"Run{status.title()}",
-            "reason": reason or "调用方未说明原因",
-        }
-    outcome = capsule_finalize(run_id, status, report_dir, error=error)
+    with run_write_lock(run_id):
+        assert_write_allowed(run_id, "stock.finalize", ws.ENGINE)
+        if report_dir is not None:
+            backfill_manifest_run_id(report_dir, run_id)
+        error = None
+        if status != "SUCCEEDED":
+            error = {
+                "error_type": f"Run{status.title()}",
+                "reason": reason or "调用方未说明原因",
+            }
+        outcome = capsule_finalize(run_id, status, report_dir, error=error)
     return {
         "run_id": outcome.run_id,
         "business_status": outcome.business_status.value,

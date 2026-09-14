@@ -185,7 +185,7 @@ def _locked(path: Path) -> Iterator[None]:
             fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
 
-def publish_sector(handle, *, reports_root: Path | str | None = None) -> Path:
+def _publish_sector_active(handle, *, reports_root: Path | str | None = None) -> Path:
     output = Path(handle.staging) / "session_outputs"
     bundle = json.loads((output / "sector.publication.json").read_text(encoding="utf-8"))
     source = output / "sector.md"
@@ -199,6 +199,26 @@ def publish_sector(handle, *, reports_root: Path | str | None = None) -> Path:
         if not target.is_file():
             atomic_write_bytes(target, source.read_bytes())
     return target
+
+
+def publish_sector(handle, *, reports_root: Path | str | None = None) -> Path:
+    """Publish only while the bound run still owns an active write window."""
+    from autoresearch.trace.write_guard import assert_output_path, guarded_handle_write
+
+    with guarded_handle_write(handle, "sector.publish") as tracked:
+        if tracked is not None:
+            base = Path(reports_root) if reports_root is not None else ws.reports_root() / "sector"
+            assert_output_path(base, ws.run_reports_root("sector-research"))
+            bundle = json.loads(
+                (Path(handle.staging) / "session_outputs/sector.publication.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            assert_output_path(
+                base / bundle["analysis_date"] / f"{_safe(bundle['industry'])}.md",
+                base,
+            )
+        return _publish_sector_active(handle, reports_root=reports_root)
 
 
 __all__ = [

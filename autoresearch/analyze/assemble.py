@@ -155,7 +155,7 @@ def _resolve_filename(ticker: str, root: Path, explicit_name: str | None) -> str
     return _safe_name(ticker)
 
 
-def main() -> int:
+def _main_unlocked() -> int:
     argv = sys.argv[1:]
     explicit_name = None
     if "--name" in argv:                        # A股 中文简称(Claude 在 session 内已知,显式传最稳)
@@ -288,6 +288,13 @@ def main() -> int:
         },
     )
     return 0
+
+
+def main() -> int:
+    from autoresearch.trace.write_guard import guarded_ambient_write
+
+    with guarded_ambient_write("stock.assemble"):
+        return _main_unlocked()
 
 
 if __name__ == "__main__":
