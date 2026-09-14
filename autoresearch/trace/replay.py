@@ -46,11 +46,11 @@ import pandas as pd
 
 from autoresearch.contracts import stages as vocab
 from autoresearch.contracts.forensic import validate_evidence_plan
+from autoresearch.contracts.operation_replay import OPERATION_REPLAY_CLASSIFICATION
 from autoresearch.contracts.replay import (
     validate_replay_plan,
     validate_replay_result,
 )
-from autoresearch.session_agent.operations import operation_catalog
 from autoresearch.trace.atomic import atomic_write_json, canonical_json, sha256_bytes
 from autoresearch.trace.blobs import blob_path
 from autoresearch.trace.offline import IsolatedResult, OfflineLayout, create_offline_layout
@@ -404,7 +404,7 @@ _SUCCESS_STATUSES = frozenset({"MATCH", "EXPECTED_FAILURE", "CONTROL_VERIFIED", 
 
 
 def _safe_name(value: str) -> str:
-    return quote(value, safe="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-")
+    return quote(value, safe="_.-")
 
 
 def _capsule_root(root: Path | str) -> Path:
@@ -676,7 +676,7 @@ def execute_replay(
     unit_results: list[dict] = []
     status_by_unit: dict[str, str] = {}
     executable_isolation: list[str] = []
-    catalog = operation_catalog()
+    operation_classes = OPERATION_REPLAY_CLASSIFICATION
 
     requested_scope = list(evidence_plan["scope"])
     scene_refs = 0
@@ -774,7 +774,7 @@ def execute_replay(
             continue
 
         operation = unit["operation"]
-        if operation not in catalog or catalog[operation]["replay_classification"] == "TEST_ONLY":
+        if operation not in operation_classes or operation_classes[operation] == "TEST_ONLY":
             reason = f"UNSUPPORTED_OPERATION:{operation}"
             missing.append(reason)
             result = {
@@ -864,7 +864,9 @@ def execute_replay(
             REPLAY_ENV: str(source_capsule),
             "AUTORESEARCH_TASK_ID": unit["task_id"],
             "AUTORESEARCH_ATTEMPT": str(unit["attempt"]),
-            "AUTORESEARCH_FROZEN_CLOCK": plan["frozen_clock"],
+            "AUTORESEARCH_FROZEN_CLOCK": str(
+                operation_request.get("frozen_clock") or plan["frozen_clock"]
+            ),
         }
         context = ReplayContext(
             unit_id=unit_id,

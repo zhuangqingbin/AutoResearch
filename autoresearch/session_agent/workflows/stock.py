@@ -289,6 +289,20 @@ def _full_tasks(ticker: str, *, ashare: bool, has_peers: bool) -> list[dict]:
             ),
         ]
     )
+    # The assembler reads the section tree directly.  Its forensic input contract must
+    # therefore name every section it can render, not merely the validation hash list.
+    assembled_products = [
+        artifact_id
+        for task in tasks
+        if task["kind"] == "INFERENCE"
+        for artifact_id in task["output_artifact_ids"]
+        if artifact_id in set(products.values())
+    ]
+    tasks[-1]["input_artifact_ids"] = [
+        "stock.full.validation",
+        "stock.context",
+        *dict.fromkeys(assembled_products),
+    ]
     return tasks
 
 

@@ -20,13 +20,14 @@ from autoresearch.dossier import (
     schema as dossier_schema,
 )
 from autoresearch.macro import assemble as macro_assemble, harvest as macro_harvest
-from autoresearch.macro.state import load_macro_state, write_macro_state
+from autoresearch.macro.state import load_macro_state
 from autoresearch.session_agent import artifacts
 from autoresearch.session_agent.validation import validate_registered_contract
 from autoresearch.session_agent.workflows.stock import (
     full_product_artifacts,
     required_full_products,
 )
+from autoresearch.trace.operation_clock import operation_clock
 
 _PROPOSAL_RE = re.compile(L4_CARD.field("proposal").pattern, re.IGNORECASE)
 
@@ -204,17 +205,18 @@ def stock_full_assemble(handle=None) -> dict:
     )
     scratch = Path(current.staging) / "session_outputs/assemble_scratch"
     shutil.rmtree(scratch, ignore_errors=True)
-    original_reports_root = stock_assemble.ws.reports_root
     original_argv = sys.argv
     try:
-        stock_assemble.ws.reports_root = lambda: scratch
         sys.argv = ["assemble.py", str(draft_root)]
         if request.get("name"):
             sys.argv.extend(["--name", request["name"]])
-        if stock_assemble.main() != 0:
+        if stock_assemble.main(
+            clock=operation_clock(current),
+            reports_root=scratch,
+            context_root=Path(current.staging),
+        ) != 0:
             raise RuntimeError("existing stock assembler rejected full products")
     finally:
-        stock_assemble.ws.reports_root = original_reports_root
         sys.argv = original_argv
     report_dirs = sorted((scratch / "analyze").glob("*"))
     if len(report_dirs) != 1:
@@ -226,6 +228,9 @@ def stock_full_assemble(handle=None) -> dict:
     report_bytes = reports[0].read_bytes()
     manifest = json.loads((source_dir / "manifest.json").read_text(encoding="utf-8"))
     manifest["run_id"] = current.run_id
+    manifest["context_file"] = "stock.context" if (
+        Path(current.staging) / f"{ticker}_{request['analysis_date']}.md"
+    ).is_file() else None
     output = Path(current.staging) / "session_outputs"
     atomic_write_bytes(output / "full_report.md", report_bytes)
     atomic_write_json(output / "full_manifest.json", manifest)
@@ -253,15 +258,46 @@ def macro_harvest_run(handle=None) -> dict:
     root = Path(current.staging) / "macro" / request["analysis_date"]
     if macro_harvest.main([request["analysis_date"], "--output-dir", str(root)]) != 0:
         raise RuntimeError("macro harvest failed")
-    return {"data": str(root / "data.md"), "global_tape": str(root / "global_tape.json")}
+    return {
+        "data": str(root / "data.md"),
+        "global_tape": str(root / "global_tape.json"),
+        "scan_meta": str(root / "scan_meta.json"),
+    }
 
 
-def _macro_market_payload(current, macro_state_path: Path | str | None = None) -> dict:
+def _macro_state_source_text(path: Path | str | None) -> tuple[str | None, str]:
+    if path is not None:
+        candidate = Path(path)
+        try:
+            return candidate.read_text(encoding="utf-8"), "PATH"
+        except FileNotFoundError:
+            return None, "MISSING"
+        except OSError:
+            return "{", "UNREADABLE"
+    from autoresearch.common import published_state
+
+    committed = published_state.read_committed_state(
+        "macro.latest_state",
+        state_root=ws.context_root() / "_published_state",
+        reports_root=ws.run_reports_root("macro-research"),
+    )
+    if committed is not None:
+        return json.dumps(committed, ensure_ascii=False), "COMMITTED"
+    candidate = ws.context_root() / "macro/macro_state.json"
+    try:
+        return candidate.read_text(encoding="utf-8"), "LEGACY_PATH"
+    except FileNotFoundError:
+        return None, "MISSING"
+    except OSError:
+        return "{", "UNREADABLE"
+
+
+def collect_macro_lite_snapshot(current, macro_state_path: Path | str | None = None) -> dict:
+    """Collect the frame supplier and exact state bytes before freshness processing."""
     request = _request(current)
-    target = Path(current.staging) / "session_outputs/market_pack.json"
     try:
         with artifacts.open_artifact(current, "macro.market_pack") as stream:
-            payload = json.loads(stream.read().decode("utf-8"))
+            market = json.loads(stream.read().decode("utf-8"))
     except (KeyError, ValueError, RuntimeError):
         from autoresearch.scan.frame import build_market_frame
         from autoresearch.scan.market import market_pack_from_frame
@@ -269,17 +305,64 @@ def _macro_market_payload(current, macro_state_path: Path | str | None = None) -
         frame, _ = build_market_frame(
             request["analysis_date"], cap_floor_yi=30.0, include_bj=True, source="tushare"
         )
-        payload = market_pack_from_frame(frame, date=request["analysis_date"])
-    regime = payload.get("regime") or {}
-    default_state = ws.context_root() / "macro/macro_state.json"
+        market = market_pack_from_frame(frame, date=request["analysis_date"])
+    state_text, source = _macro_state_source_text(macro_state_path)
+    return {
+        "schema_version": 1,
+        "analysis_date": request["analysis_date"],
+        "market_payload": market,
+        "macro_state_text": state_text,
+        "macro_state_source": source,
+    }
+
+
+def render_macro_lite_snapshot(snapshot: dict, *, output_dir: Path | str) -> dict:
+    """Apply freshness and strategist projection using frozen state bytes only."""
+    from autoresearch.scan.strategist_pack import project
+
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    state_text = snapshot.get("macro_state_text")
+    state_path = output / "_replay_inputs/macro_state.json"
+    if state_text is not None:
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(str(state_text), encoding="utf-8")
+    market = dict(snapshot["market_payload"])
+    regime = market.get("regime") or {}
     state, note = load_macro_state(
-        request["analysis_date"],
+        str(snapshot["analysis_date"]),
         regime_today=regime.get("label"),
-        path=macro_state_path or default_state,
+        path=state_path,
     )
-    payload = {**payload, "macro_state": state, "macro_state_note": note}
-    atomic_write_json(target, payload)
-    return payload
+    payload = {**market, "macro_state": state, "macro_state_note": note}
+    projection = project(payload)
+    atomic_write_json(output / "market_pack.json", payload)
+    atomic_write_json(output / "strategist_pack.json", projection)
+    return {
+        "pack": projection["pack"],
+        "macro_state": projection["pack"].get("macro_state"),
+        "macro_state_note": projection["pack"].get("macro_state_note"),
+    }
+
+
+def _macro_market_payload(current, macro_state_path: Path | str | None = None) -> dict:
+    snapshot = collect_macro_lite_snapshot(current, macro_state_path)
+    try:
+        from autoresearch.trace.source_receipts import record_active_response
+
+        record_active_response(
+            provider="macro_lite_frame",
+            endpoint="macro.lite.frame.snapshot.v1",
+            params={"analysis_date": snapshot["analysis_date"]},
+            outcome=snapshot,
+            consumer_artifact_ids=["macro.market_pack", "macro.strategist_pack"],
+        )
+    except Exception:  # noqa: BLE001
+        print("macro lite source snapshot evidence incomplete", file=sys.stderr)
+    render_macro_lite_snapshot(snapshot, output_dir=Path(current.staging) / "session_outputs")
+    return json.loads(
+        (Path(current.staging) / "session_outputs/market_pack.json").read_text(encoding="utf-8")
+    )
 
 
 def macro_lite_prepare(handle=None, *, macro_state_path: Path | str | None = None) -> dict:
@@ -382,6 +465,12 @@ def macro_full_assemble(handle=None) -> dict:
     output = Path(current.staging) / "session_outputs"
     scratch = output / "macro_assembled"
     shutil.rmtree(scratch, ignore_errors=True)
+    scan_root = output / "macro_state_scan"
+    scan_meta = root / "scan_meta.json"
+    if scan_meta.is_file():
+        target = scan_root / request["analysis_date"] / "meta.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_bytes(target, scan_meta.read_bytes())
     if (
         macro_assemble.main(
             [
@@ -390,7 +479,9 @@ def macro_full_assemble(handle=None) -> dict:
                 str(scratch),
                 "--state-out-dir",
                 str(output),
-            ]
+            ],
+            clock=operation_clock(current),
+            scan_root=scan_root,
         )
         != 0
     ):
@@ -400,7 +491,8 @@ def macro_full_assemble(handle=None) -> dict:
         raise RuntimeError("macro assembler did not create one report")
     report_bytes = reports[0].read_bytes()
     atomic_write_bytes(output / "macro.full.report.md", report_bytes)
-    state = write_macro_state(root, report_path=reports[0], out_dir=output)
+    state = json.loads((output / "macro_state.json").read_text(encoding="utf-8"))
+    state["run_report"] = "macro.full.report"
     state["session_run_id"] = current.run_id
     atomic_write_json(output / "macro_state.json", state)
     value = {

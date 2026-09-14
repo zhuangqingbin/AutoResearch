@@ -34,6 +34,8 @@ def macro_profile(
         ),
         agent_roles=tuple(agent_roles) if agent_roles is not None else default_roles,
         artifact_rules=_RULES,
+        # Session runs replace this legacy default with a projection of their frozen
+        # ReplayPlan; a tuple here would otherwise advertise work that never ran.
         replayable_stages=(),
         mode=mode,
         business_status=business_status,

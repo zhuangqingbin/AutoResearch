@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 from autoresearch.common import workspace as ws
@@ -237,6 +238,20 @@ def transactional_finish(handle) -> dict:
     }
 
 
+def replayable_plan_operations(plan: dict) -> tuple[str, ...]:
+    """Project replay capability from the actual frozen task graph."""
+    from autoresearch.session_agent.operations import replay_classification
+
+    operations = []
+    for task in plan["tasks"]:
+        if task["kind"] != "DETERMINISTIC":
+            continue
+        operation = task["operation"]
+        if replay_classification(operation) != "TEST_ONLY":
+            operations.append(operation)
+    return tuple(dict.fromkeys(operations))
+
+
 def session_profile(handle, *, business_status: str = "SUCCEEDED"):
     """Build the legacy-compatible evidence profile from the frozen task plan."""
     plan_path = Path(handle.workspace) / "session/plan.json"
@@ -251,18 +266,20 @@ def session_profile(handle, *, business_status: str = "SUCCEEDED"):
     mapping = {role: role_stage(role) for role in roles}
     from autoresearch.trace.capsule import _last_reliable_checkpoint, resolve_run_mode
 
-    return profile_factory(handle.contract.run_kind)(
+    profile = profile_factory(handle.contract.run_kind)(
         mode=resolve_run_mode(handle),
         business_status=business_status,
         last_stage=_last_reliable_checkpoint(handle.capsule),
         agent_roles=roles,
         role_stages=mapping,
     )
+    return replace(profile, replayable_stages=replayable_plan_operations({**frozen_plan, "tasks": tasks}))
 
 
 __all__ = [
     "prepare_bundle",
     "publish",
+    "replayable_plan_operations",
     "register_publisher",
     "session_profile",
     "transactional_finish",

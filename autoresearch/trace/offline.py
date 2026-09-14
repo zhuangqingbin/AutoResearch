@@ -14,7 +14,7 @@ import platform
 import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -44,6 +44,8 @@ class IsolatedResult:
     backend: str
     denied_read_roots: tuple[str, ...]
     denied_write_roots: tuple[str, ...]
+    effects: list[dict] = field(default_factory=list)
+    error: dict | None = None
 
 
 def create_offline_layout(root: Path | str) -> OfflineLayout:
@@ -149,6 +151,7 @@ def _clean_environment(layout: OfflineLayout, values: Mapping[str, str]) -> dict
             "AUTORESEARCH_REPLAY_CAPSULE",
             "AUTORESEARCH_TASK_ID",
             "AUTORESEARCH_ATTEMPT",
+            "AUTORESEARCH_FROZEN_CLOCK",
             "AUTORESEARCH_OFFLINE",
         }:
             continue

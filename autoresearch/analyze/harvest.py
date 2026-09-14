@@ -251,8 +251,18 @@ def _output_dir(trade_date: str, *, slim: bool, explicit: Path | None = None) ->
     """
     if explicit is not None and not slim:
         raise ValueError("--out-dir 仅支持 --slim，不得迁移 full 报告")
-    relative = explicit if explicit is not None else ws.context_root()
-    out_dir = ROOT / relative
+    session_dir = None
+    if explicit is None and os.environ.get("AUTORESEARCH_TASK_ID") == "stock.harvest":
+        try:
+            from autoresearch.trace.capsule import require_active_run
+
+            handle = require_active_run(str(os.environ.get("AUTORESEARCH_RUN_ID") or ""))
+            if handle.contract.run_kind == "stock-research":
+                session_dir = Path(handle.staging)
+        except Exception:  # noqa: BLE001 - a stale ambient id must keep standalone routing
+            session_dir = None
+    relative = explicit if explicit is not None else session_dir or ws.context_root()
+    out_dir = Path(relative) if Path(relative).is_absolute() else ROOT / relative
     out_dir.mkdir(parents=True, exist_ok=True)
     return out_dir
 
@@ -344,13 +354,14 @@ def _blk_technical_indicators_compact(ctx: dict) -> str:
                          "curr_date": ctx["end"], "look_back_days": 30},
         endpoint="analyze:yf-technical-indicators")
     try:
-        deep_path = ctx["out_dir"] / f"{ctx['ticker']}_{ctx['trade_date']}_indicators.md"
-        deep_path.write_text(
+        deep_name = f"{ctx['ticker']}_{ctx['trade_date']}_indicators.md"
+        ctx["side_artifacts"][deep_name] = (
             f"# 技术指标 30 天全序列(deep 附件,按需读)— {ctx['ticker']} @ {ctx['trade_date']}\n"
-            + raw_section, encoding="utf-8")
+            + raw_section
+        )
         rows = indicator_summary_table(raw_section, INDICATORS)
-        pointer = f"\n<!-- 指标全 30 天序列已拆到同目录 `{deep_path.name}`,按需 Read -->\n"
-        return (f"\n## Technical indicators (summary; full series → {deep_path.name})\n\n"
+        pointer = f"\n<!-- 指标全 30 天序列已拆到同目录 `{deep_name}`,按需 Read -->\n"
+        return (f"\n## Technical indicators (summary; full series → {deep_name})\n\n"
                 + render_indicator_summary_table(rows) + pointer)
     except Exception as e:  # noqa: BLE001 — 摘要/落盘失败也不许阻断 harvest(B 级)
         from autoresearch.data.contracts import record_degradation
@@ -486,6 +497,119 @@ HARVEST_PLAN: dict[tuple[str, str], tuple[str, ...]] = {
 }
 
 
+def market_key_for(ticker: str, asset_type: str) -> str:
+    """Return the explicit market branch without changing today's block menus."""
+    if _is_ashare(ticker):
+        return "ashare"
+    if asset_type == "crypto":
+        return "crypto"
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9.-]*", ticker) and not ticker.upper().endswith(
+        (".HK", ".L", ".TO", ".AX")
+    ):
+        return "us"
+    return "other"
+
+
+def collect_harvest_snapshot(
+    ticker: str,
+    trade_date: str,
+    asset_type: str,
+    peers: list[str],
+    *,
+    slim: bool,
+    explicit_name: str | None = None,
+    output_dir: Path | str | None = None,
+) -> dict:
+    """Collect live domain-source returns into one non-executable snapshot.
+
+    The block suppliers remain the production suppliers.  Joining, headers, clocks and
+    file placement happen later in :func:`render_harvest_snapshot`, which is the only
+    function used by offline replay.
+    """
+    ticker = normalize_symbol(ticker)
+    d = datetime.strptime(trade_date, "%Y-%m-%d")
+    peers = [normalize_symbol(peer) for peer in peers]
+    set_config(DEFAULT_CONFIG)
+    end = trade_date
+    news_start = (d - timedelta(days=14)).strftime("%Y-%m-%d")
+    identity = resolve_instrument_identity(ticker)
+    instrument_context = build_instrument_context(ticker, asset_type, identity)
+    is_ashare = _is_ashare(ticker)
+    l1_row = _load_l1_row(ticker, trade_date) if (slim and is_ashare) else None
+    side_artifacts: dict[str, str] = {}
+    ctx: dict = {
+        "ticker": ticker,
+        "trade_date": trade_date,
+        "end": end,
+        "news_start": news_start,
+        "peers": peers,
+        "identity": identity,
+        "slim": slim,
+        "explicit_name": explicit_name,
+        "l1_row": l1_row,
+        "snapshot_section": "",
+        "out_dir": Path(output_dir) if output_dir is not None else Path("."),
+        "side_artifacts": side_artifacts,
+    }
+    market_key = market_key_for(ticker, asset_type)
+    blocks = []
+    for name in HARVEST_PLAN[(market_key, "slim" if slim else "full")]:
+        text = BLOCKS[name](ctx)
+        if text is not None:
+            blocks.append({"name": name, "text": text})
+    return {
+        "schema_version": 1,
+        "ticker": ticker,
+        "trade_date": trade_date,
+        "asset_type": asset_type,
+        "peers": peers,
+        "slim": slim,
+        "market": market_key,
+        "instrument_context": instrument_context,
+        "blocks": blocks,
+        "side_artifacts": side_artifacts,
+    }
+
+
+def render_harvest_snapshot(
+    snapshot: dict,
+    *,
+    output_dir: Path | str,
+    clock: datetime,
+) -> dict[str, Path]:
+    """Render a frozen stock snapshot without reading ambient context or wall time."""
+    if not isinstance(clock, datetime):
+        raise TypeError("clock must be a datetime")
+    ticker = str(snapshot["ticker"])
+    trade_date = str(snapshot["trade_date"])
+    slim = bool(snapshot["slim"])
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    parts = [
+        f"# Data context — {ticker} @ {trade_date}\n",
+        f"_Harvested {clock.isoformat(timespec='seconds')} via project data tools + yfinance v2 "
+        f"enrichments. No LLM used._\n",
+        f"\n## Instrument identity\n\n{snapshot['instrument_context']}\n",
+        *(str(block["text"]) for block in snapshot["blocks"]),
+    ]
+    for name, body in (snapshot.get("side_artifacts") or {}).items():
+        target = Path(name)
+        if target.name != name or target.is_absolute():
+            raise ValueError(f"unsafe stock side artifact: {name!r}")
+        (out_dir / name).write_text(str(body), encoding="utf-8")
+    if slim:
+        primary = _write_slim_files(out_dir, ticker, trade_date, parts)
+        deep = out_dir / f"{ticker}_{trade_date}_slim_deep.md"
+        return {"primary": primary, **({"deep": deep} if deep.is_file() else {})}
+    primary = out_dir / f"{ticker}_{trade_date}.md"
+    primary.write_text("".join(parts), encoding="utf-8")
+    indicators = out_dir / f"{ticker}_{trade_date}_indicators.md"
+    return {
+        "primary": primary,
+        **({"indicators": indicators} if indicators.is_file() else {}),
+    }
+
+
 def _main_unlocked() -> int:
     # D1.6 #4:离线开关(措辞对齐 data/sources/yf_options.py 等既有 AUTORESEARCH_OFFLINE=1
     # 语义)——离线模式下不取任何网络,提前退出,免得跑一半才在各处炸成一串降级账。
@@ -522,61 +646,46 @@ def _main_unlocked() -> int:
     slim = "--slim" in flags
     ticker = normalize_symbol(pos[0])   # 入口归一(.SH→.SS 等):取数/staging 文件名/下游指针三处口径一致
     trade_date = pos[1] if len(pos) > 1 else date.today().isoformat()
-    d = datetime.strptime(trade_date, "%Y-%m-%d")
+    datetime.strptime(trade_date, "%Y-%m-%d")
     asset_type = pos[2] if len(pos) > 2 else "stock"
     peers_arg = pos[3] if len(pos) > 3 else ""
     peers = [normalize_symbol(p.strip()) for p in peers_arg.split(",") if p.strip()] \
         or PEER_MAP.get(ticker.upper(), [])
     out_dir = _output_dir(trade_date, slim=slim, explicit=explicit_out_dir)
 
-    set_config(DEFAULT_CONFIG)
-
-    end = trade_date
-    # D1.5(Q7):`price_start`(旧 400 天 OHLCV 起点)随 price_history_400d 块一起退役——
-    # `price_history_compact_block` 改用 `load_ohlcv` 自带的 5 年缓存窗 + `.tail(60/52)`,
-    # 不需要调用方算起点。
-    news_start = (d - timedelta(days=14)).strftime("%Y-%m-%d")
-
     print(f"[harvest v4{' SLIM' if slim else ''}] {ticker} @ {trade_date} "
           f"(asset_type={asset_type}, peers={peers or 'none'})", flush=True)
+    snapshot = collect_harvest_snapshot(
+        ticker,
+        trade_date,
+        asset_type,
+        peers,
+        slim=slim,
+        explicit_name=explicit_name,
+        output_dir=out_dir,
+    )
+    try:
+        from autoresearch.trace.source_receipts import record_active_response
 
-    identity = resolve_instrument_identity(ticker)
-    instrument_context = build_instrument_context(ticker, asset_type, identity)
+        record_active_response(
+            provider="stock_harvest",
+            endpoint="stock.harvest.snapshot.v1",
+            params={
+                "ticker": ticker,
+                "analysis_date": trade_date,
+                "asset_type": asset_type,
+                "peers": peers,
+                "slim": slim,
+            },
+            outcome=snapshot,
+            consumer_artifact_ids=["stock.slim" if slim else "stock.context"],
+        )
+    except Exception:  # noqa: BLE001 - evidence failure must not replace business output
+        print("[warn] stock harvest source snapshot evidence incomplete", file=sys.stderr)
+    from autoresearch.trace.operation_clock import operation_clock
 
-    parts: list[str] = [
-        f"# Data context — {ticker} @ {trade_date}\n",
-        f"_Harvested {datetime.now().isoformat(timespec='seconds')} via project data tools + yfinance v2 "
-        f"enrichments. No LLM used._\n",
-        f"\n## Instrument identity\n\n{instrument_context}\n",
-    ]
-
-    is_ashare = _is_ashare(ticker)
-    # scan-market L4:有 L1 召回行 → 复用(零富因子重复取数,与召回同源);全量
-    # analyze-ticker / 无 scan → live tushare。只在 slim + A股时才尝试命中(与拆分前
-    # `l1_row = _load_l1_row(...) if slim else None` 嵌在 `if _is_ashare(ticker):` 内
-    # 同一条件,只是提到派发循环之前一次性算好,供多个块共享)。
-    l1_row = _load_l1_row(ticker, trade_date) if (slim and is_ashare) else None
-
-    ctx: dict = {
-        "ticker": ticker, "trade_date": trade_date, "end": end,
-        "news_start": news_start,
-        "peers": peers, "identity": identity, "slim": slim,
-        "explicit_name": explicit_name, "l1_row": l1_row,
-        "snapshot_section": "",
-        "out_dir": out_dir,  # D1.5(Q7):technical_indicators_compact 落 deep 附件要用
-    }
-    market_key = "ashare" if is_ashare else "us"
-    tier_key = "slim" if slim else "full"
-    for name in HARVEST_PLAN[(market_key, tier_key)]:
-        out = BLOCKS[name](ctx)
-        if out is not None:
-            parts.append(out)
-
-    if slim:
-        out_path = _write_slim_files(out_dir, ticker, trade_date, parts)
-    else:
-        out_path = out_dir / f"{ticker}_{trade_date}.md"
-        out_path.write_text("".join(parts), encoding="utf-8")
+    rendered = render_harvest_snapshot(snapshot, output_dir=out_dir, clock=operation_clock())
+    out_path = rendered["primary"]
     print(f"\n[saved] {out_path}  ({out_path.stat().st_size:,} bytes)", flush=True)
 
     from autoresearch.data.contracts import degradations, render as _deg_render
@@ -588,13 +697,14 @@ def _main_unlocked() -> int:
     # 不套 scan 那层 traced 壳)。不开 run 时 `record_stage` 是真 no-op —— 零留痕,
     # 与今天逐字相同。取证故障只走 stderr,永不改本函数的返回码。
     from autoresearch.analyze.runctl import record_stage
+    tier_key = "slim" if slim else "full"
     record_stage(
         "harvest",
         outputs=[path for path in _harvest_outputs(out_dir, ticker, trade_date, slim)
                  if path.is_file()],
         inputs=[ticker, trade_date],
         metrics={
-            "tier": tier_key, "market": market_key, "blocks": len(parts),
+            "tier": tier_key, "market": snapshot["market"], "blocks": len(snapshot["blocks"]) + 3,
             "bytes": out_path.stat().st_size, "degradations": len(degs),
             "peers": len(peers),
         },

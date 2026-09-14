@@ -548,7 +548,7 @@ def profile_from_capsule(capsule: Path | str, *, kind: str | None = None) -> Run
         factory = profile_factory(
             str(kind or payload.get("kind") or _DEFAULT_RUN_KIND)
         )
-        return factory(
+        profile = factory(
             mode=str(payload.get("mode") or "FULL"),
             business_status=str(payload.get("business_status") or "SUCCEEDED"),
             last_stage=payload.get("last_stage"),
@@ -562,6 +562,14 @@ def profile_from_capsule(capsule: Path | str, *, kind: str | None = None) -> Run
                 else None
             ),
         )
+        if payload.get("replayable_stages") is not None:
+            from dataclasses import replace
+
+            profile = replace(
+                profile,
+                replayable_stages=tuple(str(item) for item in payload["replayable_stages"]),
+            )
+        return profile
     return profile_factory(str(kind or _DEFAULT_RUN_KIND))()
 
 

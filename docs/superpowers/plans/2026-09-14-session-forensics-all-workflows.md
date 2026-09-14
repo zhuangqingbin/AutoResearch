@@ -713,9 +713,9 @@ def test_unexecuted_required_unit_prevents_full(forensic_case):
 
 **Files:** 新增 replay_adapters/stock.py、macro.py；修改对应 harvest/assemble/state/run_profile 与 domain_ops；新增 `tests/forensics/test_stock_macro_replay.py`。
 
-- [ ] 将 harvest 中“取供应商返回”和“处理返回生成 context”拆成可注入接缝；默认 live 行为与现有数据源一致，offline 只接受 SourceReceipt。
-- [ ] renderer 接受固定 clock、输入目录和输出目录；不得隐式读取真实 context/reports、实际 `datetime.now()` 或写 latest。
-- [ ] 注册 §8.4 所列 stock/macro operation；更新 profile 以真实 ReplayPlan 投影能力，不能只把空 tuple 改成阶段名。
+- [x] 将 harvest 中“取供应商返回”和“处理返回生成 context”拆成可注入接缝；默认 live 行为与现有数据源一致，offline 只接受 SourceReceipt。
+- [x] renderer 接受固定 clock、输入目录和输出目录；不得隐式读取真实 context/reports、实际 `datetime.now()` 或写 latest。
+- [x] 注册 §8.4 所列 stock/macro operation；更新 profile 以真实 ReplayPlan 投影能力，不能只把空 tuple 改成阶段名。
 
 ```python
 @pytest.mark.parametrize("kind,mode", [
@@ -731,8 +731,8 @@ def test_real_domain_replay_matches(forensic_case_factory, kind, mode):
     assert result["diffs"] == []
 ```
 
-- [ ] stock 再覆盖 A股/美股/其他已支持市场/crypto、有无 peers、早停/满卡；macro 覆盖状态 freshness 和同日新旧版本。
-- [ ] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_stock_macro_replay.py tests/analyze tests/macro tests/session_agent/test_stock_lite_context.py tests/session_agent/test_macro_lite.py`。
+- [x] stock 再覆盖 A股/美股/其他已支持市场/crypto、有无 peers、早停/满卡；macro 覆盖状态 freshness 和同日新旧版本。
+- [x] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_stock_macro_replay.py tests/analyze tests/macro tests/session_agent/test_stock_lite_context.py tests/session_agent/test_macro_lite.py`。
 
 ### T13｜行业与档案重放（C，P1）
 

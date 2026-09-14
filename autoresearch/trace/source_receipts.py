@@ -8,6 +8,7 @@ import json
 import os
 import stat
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -242,6 +243,76 @@ def record_response(
     return _append_with_occurrence(Path(handle.capsule), context, build)
 
 
+def record_active_response(
+    *,
+    provider: str,
+    endpoint: str,
+    params: dict,
+    outcome: object,
+    consumer_artifact_ids: list[str],
+    raw_bytes: bytes | None = None,
+) -> dict | None:
+    """Record one high-level supplier snapshot for the active operation, if any.
+
+    This is the bridge for legacy suppliers that do not yet flow through the data-lake
+    cache (notably direct yfinance/akshare calls).  The payload codec remains one of the
+    non-executable SourceReceipt codecs, and the task/attempt identity comes from the
+    captured child environment rather than caller prose.
+    """
+    from autoresearch.common import workspace as ws
+    from autoresearch.common.execution_context import current_execution_context
+    from autoresearch.trace.capsule import require_active_run
+    from autoresearch.trace.source_lineage import normalized_params
+
+    run_id = ws.active_run_id()
+    if run_id is None:
+        return None
+    handle = require_active_run(run_id)
+    execution = current_execution_context()
+    if execution is not None:
+        task_id = execution.task_id
+        attempt = execution.attempt
+        stamp = execution.clock.now()
+    else:
+        task_id = str(os.environ.get("AUTORESEARCH_TASK_ID") or "").strip()
+        attempt_raw = str(os.environ.get("AUTORESEARCH_ATTEMPT") or "1").strip()
+        attempt = int(attempt_raw)
+        stamp = datetime.now(timezone.utc)
+    if not task_id or attempt < 1:
+        raise ValueError("active source snapshot requires task and attempt identity")
+    timestamp = stamp.astimezone(timezone.utc).isoformat(timespec="microseconds").replace(
+        "+00:00", "Z"
+    )
+    consumers = [
+        {
+            "task_id": task_id,
+            "attempt": attempt,
+            "artifact_id": artifact_id,
+            "consumption_kind": "INPUT",
+        }
+        for artifact_id in consumer_artifact_ids
+    ]
+    return record_response(
+        handle,
+        {
+            "engine": handle.engine,
+            "run_id": handle.run_id,
+            "task_id": task_id,
+            "attempt": attempt,
+            "provider": str(provider),
+            "endpoint": str(endpoint),
+            "normalized_params": normalized_params(params),
+            "started_at": timestamp,
+            "ended_at": timestamp,
+            "as_of": str(params.get("analysis_date") or params.get("date") or "") or None,
+            "available_at": timestamp,
+            "consumer_refs": consumers,
+        },
+        outcome,
+        raw_bytes=raw_bytes,
+    )
+
+
 def _failure(error: dict, *, unmeasured: bool) -> BaseException:
     category = error["category"]
     message = error["message"]
@@ -385,6 +456,7 @@ __all__ = [
     "SourceSequenceMismatch",
     "UnmeasuredSource",
     "CapsuleSourceHook",
+    "record_active_response",
     "materialize_tool_receipts",
     "read_receipts",
     "record_response",

@@ -155,7 +155,12 @@ def _resolve_filename(ticker: str, root: Path, explicit_name: str | None) -> str
     return _safe_name(ticker)
 
 
-def _main_unlocked() -> int:
+def _main_unlocked(
+    *,
+    clock: datetime | None = None,
+    reports_root: Path | str | None = None,
+    context_root: Path | str | None = None,
+) -> int:
     argv = sys.argv[1:]
     explicit_name = None
     if "--name" in argv:                        # A股 中文简称(Claude 在 session 内已知,显式传最稳)
@@ -200,8 +205,9 @@ def _main_unlocked() -> int:
 
     fname = _resolve_filename(ticker, root, explicit_name)
     title_id = f"{fname}（{ticker}）" if _is_ashare(ticker) and fname != ticker else ticker
+    now = clock or datetime.now().astimezone()
     out = [f"# Trading Analysis Report: {title_id}\n",
-           f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  ",
+           f"Generated: {now.strftime('%Y-%m-%d %H:%M:%S')}  ",
            f"_Engine: {ws.ENGINE.title()} (subscription session), zero paid LLM API. "
            "Data: project tools (yfinance/FRED) + v2/v3/v4 enrichments._\n"]
 
@@ -236,8 +242,8 @@ def _main_unlocked() -> int:
         for name, rel in present:
             out.append(_anchored("###", name, _read(root, rel)))
 
-    now = datetime.now()
-    out_dir = ws.reports_root() / "analyze" / now.strftime("%Y%m%d_%H%M")   # 目录名=运行时刻(与 scan 一致)
+    report_base = Path(reports_root) if reports_root is not None else ws.reports_root()
+    out_dir = report_base / "analyze" / now.strftime("%Y%m%d_%H%M")
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{fname}.md"
     out_path.write_text("\n".join(out), encoding="utf-8")
@@ -248,7 +254,8 @@ def _main_unlocked() -> int:
     # rating/proposal。run_id 由 T13(capsule 接线)填,这里先 None;context_file 探测
     # harvest 落盘的原始 md 是否在场(相对路径,或 null);degradations 读本进程累积的
     # B 级降级记账(assemble 自己不取数,同进程通常是 0)。
-    ctx_file = ws.context_root() / f"{ticker}_{adate}.md"
+    context_base = Path(context_root) if context_root is not None else ws.context_root()
+    ctx_file = context_base / f"{ticker}_{adate}.md"
     # D6.4:run_id 由 `AUTORESEARCH_RUN_ID` 直填(不在场 → None,与今天相同)。
     # `analyze.runctl finalize --report-dir` 还会在**冻结之前**再回填一次兜底:
     # 手工跑 assemble、事后才决定留现场的那条路,manifest 也不会缺身份。
@@ -290,11 +297,20 @@ def _main_unlocked() -> int:
     return 0
 
 
-def main() -> int:
+def main(
+    *,
+    clock: datetime | None = None,
+    reports_root: Path | str | None = None,
+    context_root: Path | str | None = None,
+) -> int:
     from autoresearch.trace.write_guard import guarded_ambient_write
 
     with guarded_ambient_write("stock.assemble"):
-        return _main_unlocked()
+        return _main_unlocked(
+            clock=clock,
+            reports_root=reports_root,
+            context_root=context_root,
+        )
 
 
 if __name__ == "__main__":

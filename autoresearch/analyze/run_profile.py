@@ -59,6 +59,8 @@ def analyze_profile(
         expected_stages=vocab.ANALYZE_LITE_STAGES if lite else vocab.ANALYZE_STAGES,
         agent_roles=tuple(agent_roles) if agent_roles is not None else default_roles,
         artifact_rules=_ANALYZE_ARTIFACT_RULES,
+        # Legacy runs have no Session ReplayPlan.  session_agent.publication projects
+        # this field from the actual frozen deterministic tasks before finalization.
         replayable_stages=(),
         mode=mode,
         business_status=business_status,

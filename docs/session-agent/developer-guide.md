@@ -267,6 +267,20 @@ expected，拒写原状态以及 code/input/runtime。普通 Python callback 的
 写 `verification/replay.json`；检测到 `verification/ROOT.json` 后必须提供外部 `output_dir`，历史
 capsule 始终只读。
 
+stock/macro 的 session_v1 重放由
+`session_agent/replay_adapters/{stock,macro}.py` 在同一系统 sandbox 中执行。两类 harvest
+先把供应商块返回冻结为带 task/attempt 的 JSON SourceReceipt，再由 renderer 仅使用该 receipt、
+显式 output root 和 `operation_request.frozen_clock` 重建 context；offline 路径不会调用 live
+yfinance、akshare、tushare 或 FRED。宏观 LITE 另冻结被 freshness gate 消费的确切
+`macro_state` 版本，FULL 则把当日 scan meta 作为 `macro.scan_meta` 产物传给状态生成。
+
+FULL assembler 的 TaskSpec 必须列出它实际读取的全部模型分段，以及 stock context 或 macro
+global-tape/scan-meta；validation JSON 里的 hash 清单不能替代这些输入字节。报告 manifest/state
+不得保存 replay scratch 的绝对路径：单股 `context_file` 使用稳定 artifact ID，宏观
+`run_report` 使用稳定报告 ID。session evidence profile 的 `replayable_stages` 从冻结任务图中的
+生产 operation 投影，并在 `verification/profile.json` 原样恢复；legacy profile 仍保持空能力，
+不会凭阶段名字冒充执行过 ReplayPlan。
+
 ## 6. 恢复与故障判断
 
 ```bash

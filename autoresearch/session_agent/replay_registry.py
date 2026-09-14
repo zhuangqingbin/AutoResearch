@@ -59,6 +59,11 @@ def _operation_request_ref(capsule: Path, task_id: str, attempt: int) -> dict:
     return _artifact_ref(path, capsule, f"operation.request:{task_id}:a{attempt}")
 
 
+def _session_request_ref(capsule: Path) -> dict | None:
+    path = capsule / "identity/session/request.json"
+    return _artifact_ref(path, capsule, "session.request") if path.is_file() else None
+
+
 def _failure_expectation(capsule: Path, task_id: str, attempt: int) -> dict | None:
     path = capsule / "evidence/attempt_records" / task_id / f"a{attempt}" / "failure.json"
     if not path.is_file():
@@ -187,6 +192,11 @@ def build_replay_plan(handle) -> dict:
             request_ref = _operation_request_ref(capsule, task_id, attempt)
             if request_ref["artifact_id"] not in {ref["artifact_id"] for ref in input_refs}:
                 input_refs.append(request_ref)
+            session_ref = _session_request_ref(capsule)
+            if session_ref is not None and session_ref["artifact_id"] not in {
+                ref["artifact_id"] for ref in input_refs
+            }:
+                input_refs.append(session_ref)
         if mode == "SOURCE_REPLAY" and not source_receipt_ids:
             source_receipt_ids = ["0" * 64]
         if mode in {"EVIDENCE_ONLY", "CONTROL_ONLY"}:

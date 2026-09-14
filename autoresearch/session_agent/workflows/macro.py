@@ -75,7 +75,7 @@ def _full_tasks() -> list[dict]:
             "DETERMINISTIC",
             dependencies=[],
             inputs=[],
-            outputs=["macro.data", "macro.global_tape"],
+            outputs=["macro.data", "macro.global_tape", "macro.scan_meta"],
             contract="macro.harvest.v1",
             operation="macro.harvest",
         )
@@ -154,6 +154,18 @@ def _full_tasks() -> list[dict]:
             ),
         ]
     )
+    assembled_products = [
+        artifact_id
+        for task in tasks
+        if task["kind"] == "INFERENCE"
+        for artifact_id in task["output_artifact_ids"]
+    ]
+    tasks[-1]["input_artifact_ids"] = [
+        "macro.full.validation",
+        "macro.global_tape",
+        "macro.scan_meta",
+        *dict.fromkeys(assembled_products),
+    ]
     return tasks
 
 
@@ -241,6 +253,7 @@ def register_macro_artifacts(request: dict, handle, plan: dict) -> None:
         registrations = {
             "macro.data": root / "data.md",
             "macro.global_tape": root / "global_tape.json",
+            "macro.scan_meta": root / "scan_meta.json",
             **{
                 artifact_id: root / relative
                 for relative, artifact_id in macro_product_artifacts().items()

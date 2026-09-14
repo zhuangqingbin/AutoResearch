@@ -123,12 +123,18 @@ def _section(title: str, fn, *args, **kwargs) -> str:
     """Run one data call, capturing output or a readable error per section.
     Verbatim from autoresearch.analyze.harvest."""
     print(f"  - {title} ...", flush=True)
+    body = _section_body(fn, *args, **kwargs)
+    return f"\n## {title}\n\n{body}\n"
+
+
+def _section_body(fn, *args, **kwargs) -> str:
+    """Return the supplier result/error body without applying report layout."""
     try:
         out = fn.invoke(*args, **kwargs) if hasattr(fn, "invoke") else fn(*args, **kwargs)
         body = (out or "").strip() or "_(empty)_"
     except Exception as e:  # noqa: BLE001 — one flaky vendor must not kill the harvest
         body = f"_ERROR fetching this section: {e}_\n```\n{traceback.format_exc()}```"
-    return f"\n## {title}\n\n{body}\n"
+    return body
 
 
 def us_macro_block(curr_date: str) -> str:
@@ -746,7 +752,13 @@ def external_sections(tape: dict, cal: dict) -> list[tuple[str, str]]:
     return out
 
 
-def write_global_tape_json(out_dir: Path | str, tape: dict, cal: dict) -> Path:
+def write_global_tape_json(
+    out_dir: Path | str,
+    tape: dict,
+    cal: dict,
+    *,
+    clock: datetime | None = None,
+) -> Path:
     """机读产物 `$CTX/macro/<date>/global_tape.json`(**失败也落**,带 `ok=false` + 原因)。
 
     `macro_state_numbers` 是给 `macro/state.py` 的唯一入口 —— 抽数逻辑只有这一处,state 侧
@@ -757,7 +769,7 @@ def write_global_tape_json(out_dir: Path | str, tape: dict, cal: dict) -> Path:
     payload = {
         "schema_version": 1,
         "as_of": tape.get("as_of"),
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "generated_at": (clock or datetime.now().astimezone()).isoformat(timespec="seconds"),
         "ok": bool(tape.get("ok")),
         "pct_unit": "percent",
         "units": {
@@ -778,6 +790,89 @@ def write_global_tape_json(out_dir: Path | str, tape: dict, cal: dict) -> Path:
     return path
 
 
+def collect_harvest_snapshot(
+    trade_date: str,
+    *,
+    scan_root: Path | str | None = None,
+) -> dict:
+    """Collect macro suppliers into a structured snapshot, without rendering files."""
+    datetime.strptime(trade_date, "%Y-%m-%d")
+    set_config(DEFAULT_CONFIG)
+    sections = []
+    for title, fn in (
+        ("US macro (FRED)", us_macro_block),
+        ("China macro (akshare macro_china)", china_macro_block),
+        ("Global outer layer (FRED international + WebSearch)", global_macro_block),
+        ("Cross-asset price basket (yfinance)", cross_asset_block),
+    ):
+        print(f"  - {title} ...", flush=True)
+        sections.append({"title": title, "body": _section_body(fn, trade_date)})
+    tape = global_tape_payload(trade_date)
+    cal = overseas_calendar_payload(trade_date)
+    for title, body in external_sections(tape, cal):
+        print(f"  - {title} ...", flush=True)
+        sections.append({"title": title, "body": body})
+    if not tape.get("ok"):
+        print(f"  - (略过 tape 两段:{tape.get('reason')})", flush=True)
+    if not cal.get("ok"):
+        print(f"  - (略过海外日历段:{cal.get('reason')})", flush=True)
+    meso_title = "A股中观 (北向/两融/行业资金/涨停/指数估值 — tushare 优先;akshare 补龙虎榜游资)"
+    print(f"  - {meso_title} ...", flush=True)
+    sections.append({"title": meso_title, "body": _section_body(meso_ashare_best, trade_date)})
+    scan_meta_path = Path(scan_root or ws.scan_root()) / trade_date / "meta.json"
+    try:
+        scan_meta = json.loads(scan_meta_path.read_text(encoding="utf-8"))
+        if not isinstance(scan_meta, dict):
+            raise ValueError("scan meta must be an object")
+    except FileNotFoundError:
+        scan_meta = {"schema_version": 1, "present": False}
+    except (OSError, ValueError, TypeError):
+        scan_meta = {"schema_version": 1, "present": False, "unreadable": True}
+    return {
+        "schema_version": 1,
+        "analysis_date": trade_date,
+        "sections": sections,
+        "tape": tape,
+        "calendar": cal,
+        "scan_meta": scan_meta,
+    }
+
+
+def render_harvest_snapshot(
+    snapshot: dict,
+    *,
+    output_dir: Path | str,
+    clock: datetime,
+) -> dict[str, Path]:
+    """Render only from the frozen macro snapshot and an explicit clock/root."""
+    if not isinstance(clock, datetime):
+        raise TypeError("clock must be a datetime")
+    trade_date = str(snapshot["analysis_date"])
+    parts = [
+        f"# Macro data context — {trade_date}\n",
+        f"_Harvested {clock.isoformat(timespec='seconds')} via project data tools "
+        f"+ yfinance + akshare. No LLM used._\n",
+    ]
+    for section in snapshot["sections"]:
+        body = str(section["body"]).strip() or "_(empty)_"
+        parts.append(f"\n## {section['title']}\n\n{body}\n")
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    data_path = out_dir / "data.md"
+    data_path.write_text("".join(parts), encoding="utf-8")
+    tape_path = write_global_tape_json(
+        out_dir,
+        snapshot["tape"],
+        snapshot["calendar"],
+        clock=clock,
+    )
+    scan_meta_path = out_dir / "scan_meta.json"
+    scan_meta_path.write_text(
+        json.dumps(snapshot["scan_meta"], ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return {"data": data_path, "global_tape": tape_path, "scan_meta": scan_meta_path}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="宏观确定性数据采集")
     parser.add_argument("date", nargs="?", help="分析日 YYYY-MM-DD(缺省=今天)")
@@ -789,51 +884,41 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     trade_date = args.date or date.today().isoformat()
     datetime.strptime(trade_date, "%Y-%m-%d")  # validate / fail loud on bad date
-    set_config(DEFAULT_CONFIG)
-    end = trade_date
-
     print(f"[harvest-macro] @ {trade_date}", flush=True)
-    parts: list[str] = [
-        f"# Macro data context — {trade_date}\n",
-        f"_Harvested {datetime.now().isoformat(timespec='seconds')} via project data tools "
-        f"+ yfinance + akshare. No LLM used._\n",
-    ]
-
     print("[regional macro]", flush=True)
-    parts.append(_section("US macro (FRED)", us_macro_block, end))
-    parts.append(_section("China macro (akshare macro_china)", china_macro_block, end))
-    parts.append(_section("Global outer layer (FRED international + WebSearch)", global_macro_block, end))
-
     print("[cross-asset]", flush=True)
-    parts.append(_section("Cross-asset price basket (yfinance)", cross_asset_block, end))
-
-    # 外源三段(D-4):波动率地形 / 隔夜 tape / 未来 7 日海外日历。全 B 级:失败只记账 +
-    # 整块省略,永不抛(顺序固定,playbook 与测试按标题定位)。
     print("[外源:波动率地形 / 隔夜 tape / 海外日历]", flush=True)
-    tape = global_tape_payload(end)
-    cal = overseas_calendar_payload(end)
-    for title, body in external_sections(tape, cal):
-        print(f"  - {title} ...", flush=True)
-        parts.append(f"\n## {title}\n\n{body}\n")
-    if not tape.get("ok"):
-        print(f"  - (略过 tape 两段:{tape.get('reason')})", flush=True)
-    if not cal.get("ok"):
-        print(f"  - (略过海外日历段:{cal.get('reason')})", flush=True)
-
     print("[A股中观]", flush=True)
-    parts.append(_section("A股中观 (北向/两融/行业资金/涨停/指数估值 — tushare 优先;akshare 补龙虎榜游资)",
-                          meso_ashare_best, end))
-
     out_dir = (
         Path(args.output_dir)
         if args.output_dir is not None
         else ROOT / ws.context_root() / "macro" / trade_date
     )
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / "data.md"
-    out_path.write_text("".join(parts), encoding="utf-8")
+    snapshot = collect_harvest_snapshot(trade_date)
+    try:
+        from autoresearch.trace.source_receipts import record_active_response
+
+        record_active_response(
+            provider="macro_harvest",
+            endpoint="macro.harvest.snapshot.v1",
+            params={"analysis_date": trade_date},
+            outcome=snapshot,
+            consumer_artifact_ids=["macro.data", "macro.global_tape", "macro.scan_meta"],
+        )
+    except Exception:  # noqa: BLE001
+        print("[warn] macro harvest source snapshot evidence incomplete", file=sys.stderr)
+    from autoresearch.trace.operation_clock import operation_clock
+
+    rendered = render_harvest_snapshot(
+        snapshot,
+        output_dir=out_dir,
+        clock=operation_clock(),
+    )
+    out_path = rendered["data"]
     print(f"\n[saved] {out_path}  ({out_path.stat().st_size:,} bytes)", flush=True)
-    tape_path = write_global_tape_json(out_dir, tape, cal)
+    tape_path = rendered["global_tape"]
+    tape = snapshot["tape"]
+    cal = snapshot["calendar"]
     print(f"[saved] {tape_path}(ok={tape.get('ok')} · tape {len(tape.get('rows') or [])} 行 · "
           f"日历 {len(cal.get('events') or [])} 条)", flush=True)
     return 0

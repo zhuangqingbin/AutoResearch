@@ -7,6 +7,10 @@ from collections.abc import Callable
 from copy import deepcopy
 from datetime import date
 
+from autoresearch.contracts.operation_replay import (
+    OPERATION_REPLAY_CLASSIFICATION,
+    operation_replay_classification,
+)
 from autoresearch.contracts.session_task import require_exact_fields
 
 _TICKER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.-]{0,31}", re.ASCII)
@@ -336,73 +340,7 @@ _OPERATIONS: dict[str, dict[str, object]] = {
     },
 }
 
-# Replay classification is a closed partition, not an inferred property of stage names
-# or side-effect prose.  Adding an operation without placing it in exactly one set fails
-# module import and therefore cannot silently shrink the forensic denominator.
-_REPLAY_SOURCE = frozenset({
-    "stock.harvest",
-    "macro.harvest",
-    "macro.lite.frame",
-    "sector.prepare",
-    "dossier.prefetch",
-    "scan.frame",
-    "scan.prelude",
-    "scan.sector.prepare",
-    "scan.l4.slim",
-})
-_REPLAY_EFFECT = frozenset({
-    "macro.publish",
-    "dossier.publish",
-    "scan.observe",
-})
-_REPLAY_TEST_ONLY = frozenset({"test.noop"})
-_REPLAY_COMPUTE = frozenset({
-    "research.calculate",
-    "stock.validate",
-    "stock.publish",
-    "stock.full.validate",
-    "stock.full.assemble",
-    "macro.lite.validate",
-    "macro.full.validate",
-    "macro.full.assemble",
-    "sector.validate",
-    "sector.publish",
-    "dossier.skeleton",
-    "dossier.validate",
-    "scan.gate1",
-    "scan.sector.skip",
-    "scan.l3.prepare",
-    "scan.l3.lint",
-    "scan.l3.repair.skip",
-    "scan.l3.repair.apply",
-    "scan.l3.merge",
-    "scan.gate2.skip",
-    "scan.l4.prepare",
-    "scan.l4.skip",
-    "scan.l4.ticket",
-    "scan.l4.intel.status",
-    "scan.l4.intel.disabled",
-    "scan.review.plan",
-    "scan.review.none",
-    "scan.review.decide",
-    "scan.review.skip",
-    "scan.review3.skip",
-    "scan.l4.finalize",
-    "scan.l4.complete",
-    "scan.assemble",
-    "scan.gate4",
-    "scan.usage",
-})
-_REPLAY_CONTROL = frozenset()
-_REPLAY_PARTITIONS = {
-    "SOURCE_REPLAY": _REPLAY_SOURCE,
-    "EFFECT_PLAN": _REPLAY_EFFECT,
-    "COMPUTE": _REPLAY_COMPUTE,
-    "CONTROL_ONLY": _REPLAY_CONTROL,
-    "TEST_ONLY": _REPLAY_TEST_ONLY,
-}
-_classified = [operation for values in _REPLAY_PARTITIONS.values() for operation in values]
-if set(_classified) != set(_OPERATIONS) or len(_classified) != len(set(_classified)):
+if set(OPERATION_REPLAY_CLASSIFICATION) != set(_OPERATIONS):
     raise RuntimeError("operation replay classifications must partition the registry")
 
 _NO_PARAMS = {"type": "object", "required": [], "additionalProperties": False}
@@ -437,7 +375,7 @@ _CATALOG_META: dict[str, dict[str, object]] = {
             "peers": "validated symbol[]",
             "slim": "boolean",
         },
-        "side_effects": "reads vendors/lake; writes the active stock run staging",
+        "side_effects": "reads vendors/lake; freezes a typed snapshot; writes active stock staging",
         "outputs": ["stock.slim", "stock.deep", "stock.context", "stock.indicators"],
         "callers": ["stock.harvest"],
         "errors": ["INVALID_PARAMS", "DATA_CONTRACT", "OPERATION_FAILED"],
@@ -482,8 +420,8 @@ _CATALOG_META: dict[str, dict[str, object]] = {
     },
     "macro.harvest": {
         "params": _NO_PARAMS,
-        "side_effects": "reads existing macro vendors; writes active run staging",
-        "outputs": ["macro.data", "macro.global_tape"],
+        "side_effects": "reads macro vendors; freezes a typed snapshot and scan-meta version",
+        "outputs": ["macro.data", "macro.global_tape", "macro.scan_meta"],
         "callers": ["macro.harvest"],
         "errors": ["DATA_CONTRACT", "OPERATION_FAILED"],
         "limits": "existing FRED/yfinance/akshare/tushare retry caps",
@@ -491,7 +429,7 @@ _CATALOG_META: dict[str, dict[str, object]] = {
     },
     "macro.lite.frame": {
         "params": _NO_PARAMS,
-        "side_effects": "builds market and strategist projections in active run",
+        "side_effects": "freezes market/state inputs then builds freshness-gated projections",
         "outputs": ["macro.market_pack", "macro.strategist_pack"],
         "callers": ["macro.frame"],
         "errors": ["DATA_CONTRACT", "PROJECTION_FAILED"],
@@ -890,10 +828,7 @@ def operation_catalog() -> dict[str, dict[str, object]]:
 
 def replay_classification(operation: str) -> str:
     operation_spec(operation)
-    for classification, members in _REPLAY_PARTITIONS.items():
-        if operation in members:
-            return classification
-    raise RuntimeError(f"operation has no replay classification: {operation}")
+    return operation_replay_classification(operation)
 
 
 __all__ = [

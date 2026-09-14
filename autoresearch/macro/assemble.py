@@ -102,7 +102,12 @@ def _read(root: Path, rel: str) -> str:
     return (root / rel).read_text(encoding="utf-8").strip()
 
 
-def _main_unlocked(argv: list[str] | None = None) -> int:
+def _main_unlocked(
+    argv: list[str] | None = None,
+    *,
+    clock: datetime | None = None,
+    scan_root: Path | str | None = None,
+) -> int:
     parser = argparse.ArgumentParser(description="组装宏观分节报告")
     parser.add_argument("root", help="宏观分节草稿目录")
     parser.add_argument("--output-dir", default=None)
@@ -123,8 +128,9 @@ def _main_unlocked(argv: list[str] | None = None) -> int:
     skipped = [rel for _, items in (SPINE + MESO + APPENDIX)
                for _, rel, opt in items if opt and not (root / rel).exists()]
 
+    now = clock or datetime.now().astimezone()
     out = [f"# Macro Research Report: {root.name}\n",
-           f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  ",
+           f"Generated: {now.strftime('%Y-%m-%d %H:%M:%S')}  ",
            f"_Engine: {ws.ENGINE.title()} subscription session, zero paid LLM API. "
            "Data: FRED + akshare + yfinance._\n"]
 
@@ -148,7 +154,7 @@ def _main_unlocked(argv: list[str] | None = None) -> int:
         for name, rel in present:
             out.append(_anchored("###", name, _read(root, rel)))
 
-    hhmm = datetime.now().strftime("%H%M")
+    hhmm = now.strftime("%H%M")
     out_dir = (
         Path(args.output_dir)
         if args.output_dir is not None
@@ -162,7 +168,8 @@ def _main_unlocked(argv: list[str] | None = None) -> int:
     try:   # Phase 2:full 档机读摘要 macro_state.json(宏观 lite / scan Stage 0 消费;失败不阻报告)
         from autoresearch.macro.state import write_macro_state
         state_out = Path(args.state_out_dir) if args.state_out_dir else root.parent
-        st = write_macro_state(root, report_path=out_path, out_dir=state_out)
+        kwargs = {"scan_root": scan_root} if scan_root is not None else {}
+        st = write_macro_state(root, report_path=out_path, out_dir=state_out, **kwargs)
         print(f"[macro_state] {state_out / 'macro_state.json'}(as_of {st['as_of']} · "
               f"跨资产 {len(st['cross_asset'])} 行 · A股行业 {len(st['ashare_sectors'])} 行 · "
               f"regime_at_run {st['regime_at_run'] or '未记'})")
@@ -179,11 +186,16 @@ def _main_unlocked(argv: list[str] | None = None) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    clock: datetime | None = None,
+    scan_root: Path | str | None = None,
+) -> int:
     from autoresearch.trace.write_guard import guarded_ambient_write
 
     with guarded_ambient_write("macro.assemble"):
-        return _main_unlocked(argv)
+        return _main_unlocked(argv, clock=clock, scan_root=scan_root)
 
 
 if __name__ == "__main__":

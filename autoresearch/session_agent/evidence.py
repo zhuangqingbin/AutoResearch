@@ -254,6 +254,9 @@ def freeze_operation_request(
     """Freeze structured operation parameters before the child process starts."""
     if task.get("kind") != "DETERMINISTIC" or not isinstance(params, dict):
         raise ValueError("operation request requires a deterministic task and params")
+    frozen_clock = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace(
+        "+00:00", "Z"
+    )
     return _freeze_attempt_record(
         handle,
         task["task_id"],
@@ -266,6 +269,7 @@ def freeze_operation_request(
             "operation": task["operation"],
             "subject": task.get("subject"),
             "params": json.loads(canonical_json(params)),
+            "frozen_clock": frozen_clock,
         },
     )
 
