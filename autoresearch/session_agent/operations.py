@@ -10,6 +10,7 @@ from datetime import date
 from autoresearch.contracts.session_task import require_exact_fields
 
 _TICKER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.-]{0,31}", re.ASCII)
+_ARTIFACT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", re.ASCII)
 
 
 def _noop(params: dict) -> list[str]:
@@ -59,8 +60,48 @@ def _no_params(command: str, params: dict) -> list[str]:
     ]
 
 
+def _research_calculate(params: dict) -> list[str]:
+    require_exact_fields(
+        params,
+        frozenset({"calculator_id", "input_artifact_ids", "parameters"}),
+    )
+    from autoresearch.common.atomic import canonical_json
+    from autoresearch.research.calculations import calculator_ids
+
+    calculator_id = params["calculator_id"]
+    if calculator_id not in calculator_ids():
+        raise KeyError(f"unregistered calculator: {calculator_id}")
+    inputs = params["input_artifact_ids"]
+    if (
+        not isinstance(inputs, list)
+        or not inputs
+        or any(not isinstance(item, str) or not _ARTIFACT_RE.fullmatch(item) for item in inputs)
+        or len(inputs) != len(set(inputs))
+    ):
+        raise ValueError("input_artifact_ids must be a non-empty unique artifact list")
+    if not isinstance(params["parameters"], dict):
+        raise ValueError("calculation parameters must be an object")
+    return [
+        sys.executable,
+        "-m",
+        "autoresearch.session_agent.domain_ops",
+        "research-calculate",
+        "--calculator-id",
+        calculator_id,
+        "--input-artifact-ids-json",
+        canonical_json(inputs),
+        "--parameters-json",
+        canonical_json(params["parameters"]),
+    ]
+
+
 _OPERATIONS: dict[str, dict[str, object]] = {
     "test.noop": {"builder": _noop, "idempotent": True, "stage": "session"},
+    "research.calculate": {
+        "builder": _research_calculate,
+        "idempotent": True,
+        "stage": "calculate",
+    },
     "stock.harvest": {"builder": _stock_harvest, "idempotent": True, "stage": "harvest"},
     "stock.validate": {
         "builder": lambda params: _no_params("stock-validate", params),
@@ -304,6 +345,19 @@ _CATALOG_META: dict[str, dict[str, object]] = {
         "callers": ["session-agent tests"],
         "errors": ["INVALID_PARAMS", "OPERATION_FAILED"],
         "limits": "test-only",
+        "retained_cli": False,
+    },
+    "research.calculate": {
+        "params": {
+            "calculator_id": "registered calculator ID",
+            "input_artifact_ids": "non-empty registered artifact ID[]",
+            "parameters": "calculator-specific exact object",
+        },
+        "side_effects": "writes one content-addressed calculation evidence artifact",
+        "outputs": ["capsule/evidence/calculations/<calculation_id>.json"],
+        "callers": ["bounded calculation child of any workflow task"],
+        "errors": ["INVALID_PARAMS", "UNSUPPORTED_CALCULATION", "CALCULATION_FAILED"],
+        "limits": "four registered pure calculators; no network, source text, shell, or dynamic import",
         "retained_cli": False,
     },
     "stock.harvest": {

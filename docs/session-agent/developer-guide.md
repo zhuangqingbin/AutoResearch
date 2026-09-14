@@ -164,6 +164,19 @@ uv run --no-sync python -m autoresearch.session_agent finish --run-id "$RUN_ID"
 
 `finish` 不补做研究。它先检查完整任务图，再调用原领域发布器和 capsule `finalize`。最终结果分别保留业务状态、证据完好性、完整性和可重放性。
 
+推理任务需要临时补算时，只能在该 task/attempt 仍为 RUNNING 时调用：
+
+```bash
+uv run --no-sync python -m autoresearch.session_agent calculate \
+  --run-id "$RUN_ID" --task-id stock.fundamentals --attempt 1 \
+  --params-file /tmp/calculation.json
+```
+
+参数文件只含 `calculator_id`、该任务已冻结的 `input_artifact_ids` 和 calculator-specific
+`parameters`。允许值固定为 `financial_period_ratios.v1`、`ah_premium.v1`、
+`conditional_base_rates.v1`、`dcf_sensitivity.v1`。系统不接受源码、模块名、shell 或任意路径；
+结果绑定父 attempt 并写入 `capsule/evidence/calculations/<calculation_id>.json`，不改变父任务状态。
+
 ## 5. 可观测性
 
 一次真实推理认领会写 `AGENT_DISPATCHED`，接受结果后写 `AGENT_COMPLETED`。未 claim 的计划节点不会产生派发事件；确定性节点只留命令捕获证据。事件写失败时命令失败，owner 已成功的提交可由 `resume` 按冻结 completion payload 幂等补写。

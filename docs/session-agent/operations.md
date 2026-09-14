@@ -10,6 +10,7 @@ uv run --no-sync python -m autoresearch.session_agent next --run-id <RUN_ID>
 uv run --no-sync python -m autoresearch.session_agent claim --run-id <RUN_ID> --task-id <TASK> --expected-attempt 1
 uv run --no-sync python -m autoresearch.session_agent execute --run-id <RUN_ID> --task-id <TASK> --attempt 1 --params-file <PARAMS.json>
 uv run --no-sync python -m autoresearch.session_agent bind-host-evidence --run-id <RUN_ID> --task-id <TASK> --attempt 1 --transcript-file <TRANSCRIPT.jsonl> --session-ref <SESSION> --context-ref <CONTEXT> --start-ordinal <N> --end-ordinal <N> --context-source MAIN
+uv run --no-sync python -m autoresearch.session_agent calculate --run-id <RUN_ID> --task-id <RUNNING_INFERENCE_TASK> --attempt 1 --params-file <CALCULATION.json>
 uv run --no-sync python -m autoresearch.session_agent submit --run-id <RUN_ID> --submission-file <SUBMISSION.json>
 uv run --no-sync python -m autoresearch.session_agent finish --run-id <RUN_ID>
 ```
@@ -21,6 +22,11 @@ uv run --no-sync python -m autoresearch.session_agent finish --run-id <RUN_ID>
 `evidence_refs`。独立复核使用 `--context-source SUBAGENT`，且必须提供不同的
 `--context-ref` 与 `--parent-context-ref`。绑定时立即归档该前缀，因此后续会话追加内容不会
 改变本 task 的证据字节。
+
+`calculate` 只接受父推理任务已冻结的输入 artifact。财务期间、币种、单位、股数口径、AH
+报价时点、基率样本窗/重叠政策和 DCF 网格有任一不可比时，计算 artifact 记录 FAILED 和原因；
+父推理任务仍保持 RUNNING，宿主可修正参数后再次调用。所有成功或失败结果都绑定父
+`task_id/attempt`、输入 hash 与 calculator code hash。
 
 ## 失败与恢复
 

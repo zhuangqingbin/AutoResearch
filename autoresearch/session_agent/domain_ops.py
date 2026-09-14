@@ -51,6 +51,61 @@ def _text(handle, artifact_id: str) -> str:
         return stream.read().decode("utf-8")
 
 
+def research_calculate(
+    calculator_id: str,
+    input_artifact_ids: list[str],
+    parameters: dict,
+    *,
+    handle=None,
+    task_id: str | None = None,
+    attempt: int | None = None,
+    raise_on_failure: bool = True,
+) -> dict:
+    """Run one registered calculation from frozen JSON artifacts only."""
+    current = handle or _active_handle()
+    from autoresearch.research.calculations import calculate, persist_calculation
+
+    merged: dict = {}
+    input_refs = []
+    for artifact_id in input_artifact_ids:
+        with artifacts.open_artifact(current, artifact_id) as stream:
+            payload = json.loads(stream.read().decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError(f"calculation input is not a JSON object: {artifact_id}")
+        values = payload.get("inputs", payload)
+        if not isinstance(values, dict):
+            raise ValueError(f"calculation input values are not an object: {artifact_id}")
+        conflicts = set(merged) & set(values)
+        if conflicts:
+            raise ValueError(f"calculation input keys conflict: {sorted(conflicts)}")
+        merged.update(values)
+        digest = artifacts.binding_sha256(current, artifact_id)
+        if digest is None:
+            raise RuntimeError(f"calculation input is not frozen: {artifact_id}")
+        input_refs.append({"artifact_id": artifact_id, "sha256": digest})
+    environment_task = str(
+        __import__("os").environ.get("AUTORESEARCH_TASK_ID", "")
+    ).strip()
+    environment_attempt = int(
+        __import__("os").environ.get("AUTORESEARCH_ATTEMPT", "1")
+    )
+    result = calculate(
+        calculator_id,
+        merged,
+        parameters,
+        input_refs=input_refs,
+        task_id=task_id or environment_task or "research.calculate",
+        attempt=attempt or environment_attempt,
+    )
+    persist_calculation(current, result)
+    if raise_on_failure and result["status"] != "SUCCEEDED":
+        raise RuntimeError(
+            f"registered calculation failed: {result['error']['category']}:"
+            f"{result['error']['message']}"
+        )
+    return result
+
+
 def stock_validate(handle=None) -> dict:
     current = handle or _active_handle()
     validate_registered_contract(
@@ -1389,6 +1444,7 @@ def main(argv: list[str] | None = None) -> int:
         "command",
         choices=(
             "stock-validate",
+            "research-calculate",
             "stock-publish",
             "stock-full-validate",
             "stock-full-assemble",
@@ -1436,8 +1492,21 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--subject")
+    parser.add_argument("--calculator-id")
+    parser.add_argument("--input-artifact-ids-json")
+    parser.add_argument("--parameters-json")
     args = parser.parse_args(argv)
-    if args.command == "stock-validate":
+    if args.command == "research-calculate":
+        input_artifact_ids = json.loads(args.input_artifact_ids_json)
+        parameters = json.loads(args.parameters_json)
+        if not isinstance(input_artifact_ids, list) or not isinstance(parameters, dict):
+            raise ValueError("invalid calculation command parameters")
+        value = research_calculate(
+            args.calculator_id,
+            input_artifact_ids,
+            parameters,
+        )
+    elif args.command == "stock-validate":
         value = stock_validate()
     elif args.command == "stock-publish":
         value = stock_prepare_publication()
@@ -1536,6 +1605,7 @@ if __name__ == "__main__":
 
 
 __all__ = [
+    "research_calculate",
     "macro_full_assemble", "macro_full_validate", "macro_harvest_run",
     "macro_lite_prepare", "macro_lite_validate", "macro_prepare_publication",
     "sector_full_validate", "sector_lite_validate", "sector_prepare",

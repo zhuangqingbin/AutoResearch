@@ -56,6 +56,13 @@ def register_artifacts(request: dict, handle, plan: dict) -> None:
 
 
 def validate_operation_params(request: dict, task: dict, params: dict) -> None:
+    if task.get("operation") == "research.calculate":
+        from autoresearch.session_agent.operations import build_argv
+
+        build_argv("research.calculate", params)
+        if not set(params["input_artifact_ids"]) <= set(task["input_artifact_ids"]):
+            raise ValueError("calculation inputs are outside the frozen task")
+        return
     if request["kind"] == "scan-market":
         from autoresearch.session_agent.workflows.scan import (
             validate_scan_operation_params,

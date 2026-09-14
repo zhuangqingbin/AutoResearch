@@ -834,6 +834,73 @@ def execute(
     return current
 
 
+def calculate(
+    run_id: str,
+    task_id: str,
+    attempt: int,
+    request: dict,
+    *,
+    handle_loader: Callable[[str], object] | None = None,
+) -> dict:
+    """Run a bounded pure calculator inside one claimed inference attempt."""
+    from autoresearch.contracts.session_task import require_exact_fields
+    from autoresearch.trace.capsule import require_active_run
+
+    handle = (handle_loader or require_active_run)(run_id)
+    task = _task(handle, task_id)
+    if task["kind"] != "INFERENCE" or task["owner"] != "SESSION":
+        raise ValueError("bounded calculation requires a SESSION inference task")
+    entry = store.read_entry(_store_path(handle), task_id)
+    if entry["state"] != "RUNNING" or entry["attempt"] != attempt:
+        raise RuntimeError("calculation parent task attempt is not running")
+    _verify_frozen_inputs(handle, task, entry)
+    require_exact_fields(
+        request,
+        frozenset({"calculator_id", "input_artifact_ids", "parameters"}),
+    )
+    from autoresearch.session_agent.operations import build_argv
+
+    build_argv("research.calculate", request)
+    if not set(request["input_artifact_ids"]) <= set(task["input_artifact_ids"]):
+        raise ValueError("calculation inputs are outside the claimed inference task")
+    from autoresearch.session_agent.domain_ops import research_calculate
+
+    calculation = research_calculate(
+        request["calculator_id"],
+        request["input_artifact_ids"],
+        request["parameters"],
+        handle=handle,
+        task_id=task_id,
+        attempt=attempt,
+        raise_on_failure=False,
+    )
+    path = (
+        Path(handle.capsule)
+        / "evidence/calculations"
+        / f"{calculation['calculation_id']}.json"
+    )
+    from autoresearch.trace.events import append_event
+
+    append_event(
+        Path(handle.capsule) / "events/events.jsonl",
+        run_id=handle.run_id,
+        engine=handle.engine,
+        stage=role_stage(task["role"]),
+        invocation_id=f"session-{task_id}-a{attempt}",
+        attempt=attempt,
+        subject=task["subject"],
+        event_type="CALCULATION_COMPLETED",
+        payload={
+            "calculation_id": calculation["calculation_id"],
+            "calculator_id": calculation["calculator_id"],
+            "status": calculation["status"],
+            "evidence_ref": path.relative_to(handle.capsule).as_posix(),
+            "code_hash": calculation["code_hash"],
+        },
+    )
+    return _result("calculate", run_id, "WAITING", result=calculation)
+
+
 def submit(
     run_id: str,
     submission: dict,
@@ -1024,6 +1091,6 @@ def finish(
 
 
 __all__ = [
-    "begin", "claim", "execute", "fail", "finish", "next", "resume",
+    "begin", "calculate", "claim", "execute", "fail", "finish", "next", "resume",
     "retry_l4", "status", "submit",
 ]

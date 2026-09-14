@@ -492,6 +492,9 @@ def evaluate(
     sources = source_coverage(root)
     tasks = task_evidence_coverage(root)
     host = host_evidence_coverage(root)
+    from autoresearch.news.material_claims import verify_material_claims
+
+    material_claims = verify_material_claims(root)
     # 一个被派发过、却没有 transcript 的 agent invocation 就是 GONE ——
     # 设计稿 §8.5 规则 4:LLM run 里出现 GONE/AMBIGUOUS,completeness_ok 必须为 false。
     # 只报覆盖率而不进结论,等于把这条规则写在文档里、不写在代码里。
@@ -503,6 +506,8 @@ def evaluate(
         missing_required.extend(tasks["missing"])
     if not host["ok"]:
         missing_required.extend(host["missing"])
+    if material_claims["claims"] and not material_claims["ok"]:
+        missing_required.extend(material_claims["missing"])
     return {
         "schema_version": SCHEMA_VERSION,
         "completeness_ok": not missing_required,
@@ -521,6 +526,7 @@ def evaluate(
             "host": host,
             "sources": sources,
             "tasks": tasks,
+            "material_claims": material_claims,
             "replay": replay_state(root),
         },
         "durability": durability,

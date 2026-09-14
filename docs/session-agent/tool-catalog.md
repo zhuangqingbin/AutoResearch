@@ -9,6 +9,7 @@
 | Operation | 参数 | 副作用与输出 | 调用者 | 错误与限制 | 幂等 | 旧 CLI |
 |---|---|---|---|---|---|---|
 | `test.noop` | `message`，最多 200 字符 | 测试捕获进程，无生产写入 | session-agent 测试 | 非法参数、进程失败；仅测试 | 是 | 否 |
+| `research.calculate` | 注册 calculator ID、冻结 input artifact ID、精确 parameters | 写内容寻址的 calculation evidence | 任一能力的有界补算支路 | 仅四个纯计算器；无网络、shell、源码或动态 import | 是 | 否 |
 | `stock.harvest` | 冻结的 ticker、analysis_date、asset_type、peers、slim | 读供应商/数据湖，写当前 run 的 stock pack | `stock.harvest` | 数据契约及既有供应商重试上限 | 是 | 是 |
 | `stock.validate` | 无 | 写 LITE 卡校验 | `stock.validate` | 领域校验、artifact 冲突；无网络 | 是 | 否 |
 | `stock.publish` | 无 | 写 run 内发布包 | `stock.publish` | 校验、并发冲突；无网络 | 是 | 否 |

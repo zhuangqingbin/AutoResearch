@@ -626,9 +626,9 @@ def test_replay_preserves_failure_then_success(forensic_case):
 
 **Files:** 新增 research/calculations.py；修改 common/uzi_lenses、session_agent/operations/domain_ops、news/证据连接边界；新增 `tests/forensics/test_calculation_evidence.py`。
 
-- [ ] 实现 `calculate(calculator_id, inputs, parameters)`，只接受 §7.3 四种首批计算；登记 source code hash、input refs、数值口径、输出与 error。
-- [ ] 各 task 可通过预登记的补算子模板使用 calculator；保持父 attempt 身份，不允许绕过图插入任意操作。
-- [ ] 将 material claim 的 source/quote/calculation refs 保存为 sidecar；沿用已有真假与时点校验器。
+- [x] 实现 `calculate(calculator_id, inputs, parameters)`，只接受 §7.3 四种首批计算；登记 source code hash、input refs、数值口径、输出与 error。
+- [x] 各 task 可通过预登记的补算子模板使用 calculator；保持父 attempt 身份，不允许绕过图插入任意操作。
+- [x] 将 material claim 的 source/quote/calculation refs 保存为 sidecar；沿用已有真假与时点校验器。
 
 ```python
 def test_period_ratio_has_replayable_inputs(forensic_case):
@@ -639,8 +639,8 @@ def test_period_ratio_has_replayable_inputs(forensic_case):
     assert case.replay_calculation(result)["values"] == result["values"]
 ```
 
-- [ ] 测试累计/单季混装、币种、股数变化、AH 同时点、基率样本窗与 DCF 参数完整性；原研究口径不因接口调整而漂移。
-- [ ] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_calculation_evidence.py tests/session_agent/test_operations.py tests/session_agent/test_news_evidence.py`。
+- [x] 测试累计/单季混装、币种、股数变化、AH 同时点、基率样本窗与 DCF 参数完整性；原研究口径不因接口调整而漂移。
+- [x] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_calculation_evidence.py tests/session_agent/test_operations.py tests/session_agent/test_news_evidence.py`。
 
 ### T09｜可执行源码和离线环境身份（B，P1）
 

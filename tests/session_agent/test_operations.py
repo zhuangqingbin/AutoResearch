@@ -42,3 +42,30 @@ def test_subject_scoped_scan_operations_get_identity_from_the_frozen_task():
     ]
     with pytest.raises(ValueError, match="subject"):
         build_argv("scan.l4.slim", {})
+
+
+def test_research_calculate_has_a_static_non_executable_argv():
+    argv = build_argv(
+        "research.calculate",
+        {
+            "calculator_id": "financial_period_ratios.v1",
+            "input_artifact_ids": ["stock.fundamentals.json"],
+            "parameters": {"period_start": "2026-01-01"},
+        },
+    )
+    assert argv[:4] == [
+        __import__("sys").executable,
+        "-m",
+        "autoresearch.session_agent.domain_ops",
+        "research-calculate",
+    ]
+    assert "eval" not in " ".join(argv)
+    with pytest.raises(KeyError, match="unregistered calculator"):
+        build_argv(
+            "research.calculate",
+            {
+                "calculator_id": "builtins.eval",
+                "input_artifact_ids": ["stock.fundamentals.json"],
+                "parameters": {},
+            },
+        )

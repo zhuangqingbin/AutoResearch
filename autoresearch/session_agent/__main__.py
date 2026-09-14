@@ -53,6 +53,11 @@ def _parser():
     execute.add_argument("--task-id", required=True)
     execute.add_argument("--attempt", required=True, type=int)
     execute.add_argument("--params-file", required=True)
+    calculation = subparsers.add_parser("calculate")
+    calculation.add_argument("--run-id", required=True)
+    calculation.add_argument("--task-id", required=True)
+    calculation.add_argument("--attempt", required=True, type=int)
+    calculation.add_argument("--params-file", required=True)
     submit = subparsers.add_parser("submit")
     submit.add_argument("--run-id", required=True)
     submit.add_argument("--submission-file", required=True)
@@ -177,6 +182,10 @@ def main(argv=None):
             )
         elif args.command == "execute":
             value = service.execute(
+                args.run_id, args.task_id, args.attempt, _load(args.params_file)
+            )
+        elif args.command == "calculate":
+            value = service.calculate(
                 args.run_id, args.task_id, args.attempt, _load(args.params_file)
             )
         elif args.command == "fail":
