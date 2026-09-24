@@ -11,10 +11,10 @@ import importlib.util
 import io
 import json
 import subprocess
-import tomllib
 from pathlib import Path
 
 import pytest
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 HOOK_DIR = ROOT / "scripts" / "hooks"

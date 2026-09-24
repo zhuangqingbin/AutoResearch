@@ -5,7 +5,9 @@ import json
 from pathlib import Path
 
 from autoresearch.scan.decision_finalize import (
-    BLIND_CARDS_FILENAME, _dump_final_ratings, mark_blind_cards,
+    BLIND_CARDS_FILENAME,
+    _dump_final_ratings,
+    mark_blind_cards,
 )
 
 
@@ -50,7 +52,9 @@ def test_blind_card_produces_no_dissent_record_or_line(tmp_path):
     `build_dissent_records` / `_ensemble_dissent_lines` 是 mark_blind_cards 之外第三处
     必须挡盲卡的产物(dissent_records.json + summary 行动节),此前没挡。"""
     from autoresearch.scan.decision_finalize import (
-        _ensemble_dissent_lines, _load_ensemble, build_dissent_records,
+        _ensemble_dissent_lines,
+        _load_ensemble,
+        build_dissent_records,
     )
     scan = _scan(tmp_path)
     (scan / "_ensemble_600150.json").write_text(json.dumps(
