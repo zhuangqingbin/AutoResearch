@@ -5,10 +5,19 @@
 名单)+ 生产同一段数学 `scoring.combine_group_scores` 重算 composite,再按 `select_l2` 重放菜单,
 量 A1–A7。不改任何生产产物;不走网络。
 
-批 1(本任务)范围:`recompute_composite` / `replay_l1` / `replay_l2` / `metrics`(A1–A5,
-A6/A7 缺列先报 `None`)+ CLI。`select_l2` 今天还没有 `knife_cap_share` 形参(Task 11 才加,
-Task 16 才在 `replay_l2` 里接线透传)——`replay_l2` 现在只在**自己的**签名里占位收
-`knife_cap_share`/`sector_seats`,绝不透传给 `select_l2`(传了就是 TypeError)。
+批 1:`recompute_composite` / `replay_l1` / `replay_l2` / `metrics`(A1–A5,A6/A7 缺列先报
+`None`)+ CLI;`replay_l2` 当时只在自己签名里占位收 `knife_cap_share`/`sector_seats`,不透传
+给 `select_l2`(它还没有这两个形参)。
+
+批 2(Task 16):`select_l2`/`stratified_l2` 已有 `knife_cap_share`(Task 11)与 `sector_seat`
+presence-gated 强留(行业席位波,`autoresearch.scan.sector_seats` + `universe._inject_
+sector_seats_l1`)——`replay_l2` 现在真透传两者:`knife_cap_share` 直接转给 `select_l2`;
+`sector_seats` 先经 `_inject_sector_seats_l1` 把座位打进 `l1p` 再喂 `select_l2`(它自己认
+`sector_seat` 列,按 pinned 同一套"先抽出、选完拼回末尾"语义处理)。`run_one` 新增
+`sector_seats_cfg` 形参,用**重算过的新 composite**(不是落盘旧值,也不读任何已存的
+`_sector_seats.json`)跑 `pick_sector_seats` 现选当日座位;CLI `--sector-seats` 读
+`l2.sector_seats` 配置块(缺块 → `pick_sector_seats` 自带默认 per_sector=2/max_sectors=3)。
+A6/A7 由此不再恒 `None`/`0`。
 """
 from __future__ import annotations
 
@@ -69,15 +78,26 @@ def replay_l1(full: pd.DataFrame, channels_long: pd.DataFrame, composite_new: pd
 
 def replay_l2(l1p: pd.DataFrame, *, l2_n: int = 200, floors: dict | None = None,
               sector_cap: float = 0.20, knife_cap_share: float | None = None,
-              enabled_channels=None, sector_seats=None) -> pd.DataFrame:
+              enabled_channels=None, sector_seats: list[dict] | None = None,
+              full: pd.DataFrame | None = None) -> pd.DataFrame:
     """L2′ = `select_l2` 重放(生产同一个采样器,零第二套实现)。
 
-    `knife_cap_share`/`sector_seats` 只占位、**不透传**:`select_l2` 现在没有这两个形参
-    (`knife_cap_share` 是 Task 11 给 `stratified_l2`/`select_l2` 加的;`sector_seats` 的行业席位
-    注入是 Task 16 的事)——传了就是 TypeError。Task 16 会在这里把它们接进 `select_l2(...)` 调用。
+    `knife_cap_share` 直接转给 `select_l2`(→ `stratified_l2`;`None` = 不设帽 = parity)。
+
+    `sector_seats`(非空)→ 先用 `_inject_sector_seats_l1` 把座位打进 `l1p`:座位码已在
+    `l1p` 里 → 原地打 `sector_seat=True`;不在 → 去 `full`(缺省退回 `l1p` 自己——这条默认
+    分支下,不在 `l1p` 里的座位码在"scored"里也找不到,会被静默丢弃;调用方想让"不在 l1p
+    里的座位"也生效就必须显式传 `full`)按码取那一行真实数据补进来。再喂 `select_l2`——它
+    自己认 `sector_seat` 列,按 pinned 同一套"先抽出、不进竞争、选完无条件拼回末尾"语义
+    处理(`selection_reason="sector_seat"`)。`sector_seats` 为 `None`/空 →
+    `_inject_sector_seats_l1` 原样返回 `l1p`(presence-gated parity,`select_l2` 也不会见到
+    `sector_seat` 列)。
     """
+    if sector_seats:
+        from autoresearch.scan.universe import _inject_sector_seats_l1
+        l1p = _inject_sector_seats_l1(l1p, full if full is not None else l1p, sector_seats)
     l2, _engine = select_l2(l1p, l2_n, floors=floors, sector_cap_frac=sector_cap,
-                            enabled_channels=enabled_channels)
+                            enabled_channels=enabled_channels, knife_cap_share=knife_cap_share)
     return l2
 
 
@@ -122,13 +142,26 @@ def metrics(full: pd.DataFrame, l1p: pd.DataFrame, l2p: pd.DataFrame, *,
 
 
 def run_one(staging: Path, weights_doc: dict, *, floors: dict | None, knife_cap: bool,
-            enabled_channels=None) -> dict:
+            enabled_channels=None, sector_seats_cfg: dict | None = None) -> dict:
     data = load_staging(staging)
     full, l1_old, l2_old = data["full"], data["full"][data["full"]["recalled"].astype(bool)], data["l2"]
     comp_new = recompute_composite(full, weights_doc)
     l1p = replay_l1(full, data["channels"], comp_new)
     share = _share(falling_knife_mask(full)) if knife_cap else None
-    l2p = replay_l2(l1p, floors=floors, knife_cap_share=share, enabled_channels=enabled_channels)
+    seats, full_new = None, None
+    if sector_seats_cfg is not None:
+        # 座位必须用**这次重算出来的新 composite**现选(不是落盘旧 composite,也不读任何
+        # 已存的 `_sector_seats.json`)——回放要问的是"这套新配置今天会选谁",不是"当天生产
+        # 选了谁"。`full` 是全帧(L0 全量,不是被召回收窄过的 `l1p`),与生产 `universe.run`
+        # 喂 `pick_sector_seats(scored, ...)` 同一层帧。
+        from autoresearch.scan.sector_seats import pick_sector_seats
+        full_new = full.copy()
+        full_new["composite"] = comp_new.to_numpy()
+        seats = pick_sector_seats(full_new, per_sector=int(sector_seats_cfg.get("per_sector", 2)),
+                                  max_sectors=int(sector_seats_cfg.get("max_sectors", 3)),
+                                  exclude=sector_seats_cfg.get("exclude"))
+    l2p = replay_l2(l1p, floors=floors, knife_cap_share=share, enabled_channels=enabled_channels,
+                    sector_seats=seats, full=full_new)
     return {"staging": str(staging), **metrics(full, l1p, l2p, l1_old=l1_old, l2_old=l2_old)}
 
 
@@ -138,6 +171,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--profile", choices=["preference", "calibrated"], default="preference")
     ap.add_argument("--config", default=".claude/skills/scan-market/scan_config.jsonc")
     ap.add_argument("--knife-cap", action="store_true")
+    ap.add_argument("--sector-seats", action="store_true", help="读 l2.sector_seats 配置块(缺块用 pick_sector_seats 自带默认)现选当日行业席位")
     ap.add_argument("--out", required=True)
     args = ap.parse_args(argv)
     from autoresearch.scan.user_config import load_user_config
@@ -148,14 +182,16 @@ def main(argv: list[str] | None = None) -> int:
     else:
         from autoresearch.common.scoring import _load_weights
         weights_doc = _load_weights(regime="range")
+    sector_seats_cfg = (l2cfg.get("sector_seats") or {}) if args.sector_seats else None
     rows = [run_one(Path(s), weights_doc, floors=l2cfg.get("floors"), knife_cap=args.knife_cap,
-                    enabled_channels=funnel.get("recall_channels")) for s in args.staging]
+                    enabled_channels=funnel.get("recall_channels"),
+                    sector_seats_cfg=sector_seats_cfg) for s in args.staging]
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     frame = pd.DataFrame(rows)
     frame.to_csv(out / "menu_replay.csv", index=False)
     (out / "menu_replay.md").write_text(
-        f"# menu_replay · profile={args.profile} · knife_cap={args.knife_cap}\n\n"
+        f"# menu_replay · profile={args.profile} · knife_cap={args.knife_cap} · sector_seats={args.sector_seats}\n\n"
         + frame.to_markdown(index=False) + "\n", encoding="utf-8")
     (out / "weights_doc.json").write_text(json.dumps(weights_doc, ensure_ascii=False, indent=1), encoding="utf-8")
     print(frame.to_string(index=False))

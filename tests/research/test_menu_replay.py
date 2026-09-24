@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from autoresearch.common.scoring import _PRIOR_WEIGHTS, composite_score
+from autoresearch.common.scoring import _PRIOR_WEIGHTS, composite_score, falling_knife_mask
 from tests.scan._synth_universe import synth_universe
 
 
@@ -62,17 +62,51 @@ def _all_composite_channels(full: pd.DataFrame) -> pd.DataFrame:
                          "channel_rank": range(1, len(full) + 1), "channel_score": 1.0})
 
 
-def test_replay_l2_does_not_forward_unwired_params_to_select_l2():
-    """`select_l2` 今天没有 `knife_cap_share` 形参(Task 11 才加),`replay_l2` 只能在**自己的**
-    签名里占位收 `knife_cap_share`/`sector_seats`(给 Task 16 接线用),绝不能把它们透传进
-    `select_l2` —— 传了就是 TypeError。本测试把两个参数都喂非默认值,证明调用不炸、且真的
-    重放出 l2_n 行。"""
+def test_replay_l2_forwards_knife_cap_and_sector_seats_and_they_take_effect():
+    """2026-09-24 §2.2/§2.3(Task 16):`replay_l2` 现在真的把 `knife_cap_share`/`sector_seats`
+    透传进 `select_l2` —— 取代同名旧锁 `test_replay_l2_does_not_forward_unwired_params_to_
+    select_l2`(那条测的是"绝不透传";`select_l2` 当时还没有 `knife_cap_share` 形参)。本测试
+    锁反方向的不变量:传了就必须生效,不是仍旧被吞掉。
+
+    `knife_cap_share=0.0` → merit/backfill(非豁免桶)一只落刀都不许进,L2′ 落刀占比必须砸到
+    0,且必须真发生过至少一次顶替(`knife_cap_swap`)—— 证明这个 seed 下样本里本就有落刀
+    候选会被跳过,不是巧合地一个都没有(帽不是摆设)。
+
+    `sector_seats` 在 `full` 参数缺省时退回 `l1p` 自己找行(brief 里的姊妹测试
+    `test_replay_l2_applies_knife_cap_and_sector_seats` 总是显式给 `full`,这里刻意不给,
+    覆盖 `full if full is not None else l1p` 那条默认分支):座位码选一个已在 `l1p` 里、原本会
+    正常参与竞争的普通行,断言它被摘出竞争池、全程直通拼回末尾(`sector_seat=True`、
+    `l2_lane_reserved=True`),总行数 = l2_n + 座位数。"""
     from autoresearch.research.menu_replay import replay_l1, replay_l2
     full = _saved_full()
     l1p = replay_l1(full, _all_composite_channels(full), full["composite"], composite_quota=len(full))
-    l2p = replay_l2(l1p, l2_n=50, knife_cap_share=0.1, sector_seats=3)
-    assert len(l2p) == 50
-    assert "selection_reason" in l2p.columns
+
+    l2_capped = replay_l2(l1p, l2_n=50, knife_cap_share=0.0, sector_seats=None)
+    assert len(l2_capped) == 50
+    assert "selection_reason" in l2_capped.columns
+    assert not falling_knife_mask(l2_capped).fillna(False).any()
+    assert l2_capped["knife_cap_swap"].astype(bool).sum() > 0
+
+    seat_code = str(l1p["code"].iloc[200])
+    l2_seated = replay_l2(l1p, l2_n=50, sector_seats=[{"code": seat_code, "industry": "电力"}])
+    assert len(l2_seated) == 51
+    seat_rows = l2_seated[l2_seated["sector_seat"].astype(bool)]
+    assert list(seat_rows["code"]) == [seat_code]
+    assert bool(seat_rows["l2_lane_reserved"].iloc[0])
+
+
+def test_replay_l2_applies_knife_cap_and_sector_seats():
+    """Task 16 brief §Step 1(追加):`sector_seats` 给了 `full` 时,座位码即便不在 `l1p` 里也能
+    从 `full` 取到真实行补进来(镜像 `_inject_pinned_l1` 的"打标 / 从 scored 现取"两分支)。"""
+    from autoresearch.research.menu_replay import recompute_composite, replay_l1, replay_l2
+    full = _saved_full()
+    channels = pd.DataFrame({"channel": "value", "code": full["code"].iloc[:50],
+                             "channel_rank": range(1, 51), "channel_score": 1.0})
+    l1p = replay_l1(full, channels, recompute_composite(full, _PRIOR_WEIGHTS), composite_quota=100)
+    seats = [{"code": full["code"].iloc[-1], "industry": "电力"}]
+    l2p = replay_l2(l1p, l2_n=40, knife_cap_share=0.05, sector_seats=seats, full=full)
+    assert "sector_seat" in l2p.columns and l2p["sector_seat"].astype(bool).sum() == 1
+    assert len(l2p) == 41
 
 
 def test_metrics_degrades_to_none_only_for_the_column_that_is_actually_missing():
