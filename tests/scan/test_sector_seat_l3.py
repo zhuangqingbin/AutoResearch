@@ -81,17 +81,21 @@ def _mk_seat_l2(root, rows):
 
 
 def test_l3_table_seat_column_and_legend_render_when_on(tmp_path):
-    """Feature ON:🏭 marks only the seat row; legend renders with two anchors —
+    """Feature ON:🏭 marks only the seat row; legend renders with three anchors —
     `🏭(seat列)`(结构锚,头部标识符,镜像 pinned 图例的 `📌(pinned列)` 锚——删掉整行图例
-    两边都会红)+ `不因席位抬评级`(内容锚,钉住「不构成推荐/无评级偏好」这条裁定本身——
-    图例措辞可以重写,但这条保证被删除或改成相反意思必须让测试知道)。"""
+    三个都会红)+ `不因席位抬评级`(内容锚①,钉住「不构成推荐/无评级偏好」这条裁定本身)+
+    `B 条照常适用`(内容锚②,fix round 2:这个 legend family 里「B 条」是活开关,不是套话
+    ——lowturn 图例同一函数渲染,写的是相反的「硬约束 B 不适用」;seat 图例若被误删或误copy
+    成 lowturn 那句,判断模型可能会认为席位票豁免下跌趋势硬排除,而前两个锚都不会发现)。
+    图例措辞可以重写,但这三条保证被删除或改成相反意思必须让测试知道。"""
     from autoresearch.scan.agents.l3_select import l3_table_md
     _mk_seat_l2(tmp_path, [_seat_row("000001", sector_seat=False),
                           _seat_row("000002", name="乙", sector_seat=True)])
     md = l3_table_md(_SEAT_TABLE_DATE, root=tmp_path)
     assert "| seat |" in md                    # 列头真的加进表,不是只有图例文字
     assert "🏭(seat列)" in md                   # 图例结构锚(镜像 📌(pinned列))
-    assert "不因席位抬评级" in md                 # 图例内容锚(「不构成推荐」裁定)
+    assert "不因席位抬评级" in md                 # 图例内容锚①(「不构成推荐」裁定)
+    assert "B 条照常适用" in md                  # 图例内容锚②(与 lowturn 的「B 不适用」对称相反)
     lines = [ln for ln in md.splitlines() if ln.startswith("|") and ("000001" in ln or "000002" in ln)]
     row1 = next(ln for ln in lines if "000001" in ln)
     row2 = next(ln for ln in lines if "000002" in ln)
