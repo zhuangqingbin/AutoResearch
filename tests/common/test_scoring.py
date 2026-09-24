@@ -8,6 +8,7 @@ helpers hit the A-share disclosure-deadline cases.
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from autoresearch.common.scoring import (
     _GROUPS,
@@ -258,3 +259,48 @@ def test_reversal_confirm_score_bounds_and_gate_dtype():
     sc = g["reversal_confirm_score"]
     assert (sc.dropna() >= 0).all() and (sc.dropna() <= 100).all()
     assert g["reversal_confirm_gate"].dtype == bool
+
+
+# ───────────────────────── combine_group_scores 抽取 + 偏好档权重(Task 7,2026-09-24) ─────────────────────────
+
+
+def test_combine_group_scores_is_what_composite_score_uses():
+    """抽取后 composite_score 必须逐值等于 combine_group_scores(_factor_groups(df))(变异探针:改任一权重必须变红)。"""
+    from autoresearch.common.scoring import combine_group_scores
+    df = _synthetic(150)
+    w = _PRIOR_WEIGHTS
+    a = composite_score(df, w)["composite"]
+    b = combine_group_scores(df, _factor_groups(df), w).clip(lower=0, upper=100).round(1)
+    pd.testing.assert_series_equal(a, b, check_names=False)
+    w2 = {"meta": {}, "weights": {"__global__": {**w["weights"]["__global__"], "momentum": -0.10}}}
+    assert not composite_score(df, w2)["composite"].equals(a)
+
+
+def test_preference_weights_doc_shape_and_validation():
+    from autoresearch.common.scoring import preference_weights_doc
+    pw = dict.fromkeys(_GROUPS, 0.0)
+    pw["momentum"] = 0.2
+    doc = preference_weights_doc(pw)
+    assert doc["weights"]["__global__"] == pw
+    assert doc["meta"]["profile"] == "preference" and doc["meta"]["regime_applied"] is None
+    assert doc["meta"]["source"] == "profile:preference" and len(doc["meta"]["config_sha256"]) == 64
+    with pytest.raises(ValueError):
+        preference_weights_doc({"momentum": 0.2})
+
+
+def test_resolve_weights_preference_ignores_regime_and_file(tmp_path):
+    from autoresearch.common.scoring import resolve_weights
+    pw = dict.fromkeys(_GROUPS, 0.0)
+    pw["value"] = 0.3
+    doc, regime = resolve_weights(_synthetic(50), profile="preference", preference_weights=pw,
+                                  regime_aware=True, path=str(tmp_path / "absent.json"))
+    assert regime is None and doc["meta"]["profile"] == "preference"
+
+
+def test_resolve_weights_calibrated_delegates_to_pick_weights(tmp_path):
+    from autoresearch.common.scoring import resolve_weights
+    doc, regime = resolve_weights(_synthetic(50), profile="calibrated", preference_weights=None,
+                                  regime_aware=False, path=str(tmp_path / "absent.json"))
+    assert doc["meta"]["source"].startswith("prior") and regime is None
+    with pytest.raises(ValueError):
+        resolve_weights(_synthetic(50), profile="bogus", preference_weights=None, regime_aware=False)

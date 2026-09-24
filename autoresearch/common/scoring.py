@@ -492,20 +492,19 @@ def _factor_groups(df: pd.DataFrame) -> dict[str, pd.Series]:
     }
 
 
-def composite_score(df: pd.DataFrame, weights: dict) -> pd.DataFrame:
-    """行业条件化复合分:Σ (组分位−0.5) × 该行业组权重(signed IC);归一映射 0–100。
+def combine_group_scores(df: pd.DataFrame, groups: dict[str, pd.Series], weights: dict) -> pd.Series:
+    """十组分位 → 0–100 composite(Σ(组分位−0.5)×行业权重 / Σ|w| → 50±50;过热 −8;吸筹 +5)。
 
-    权重符号由校准 IC 决定(正=该组高分看多、负=看空);排序用 composite 即可。
+    2026-09-24 从 `composite_score` 抽出:`research/menu_replay` 用已落盘的 `score_<group>` 列
+    重算 composite 时必须与生产**同一段数学**,不允许第二套实现(两套迟早给出两个数)。
+    返回未截断、未取整的 Series;`composite_score` 负责 clip/round 与 `score_*` 列。
     """
-    groups = _factor_groups(df)
     wmap = weights.get("weights", {})
     glob = wmap.get("__global__", {})
     ind = df["industry"] if "industry" in df.columns else pd.Series("", index=df.index)
-    out = df.copy()
     comp = pd.Series(0.0, index=df.index)
     wabs = pd.Series(0.0, index=df.index)
     for name, s in groups.items():
-        out[f"score_{name}"] = (s * 100).round(1)
         w = ind.map(lambda x, n=name: float(wmap.get(x, {}).get(n, glob.get(n, 0.0))))
         comp += (s - 0.5).fillna(0.0) * w
         wabs += s.notna().astype(float) * w.abs()
@@ -534,5 +533,56 @@ def composite_score(df: pd.DataFrame, weights: dict) -> pd.DataFrame:
         main_ok = (_num(df["main_net_ratio"]) >= 0) if "main_net_ratio" in df.columns else pd.Series(True, index=df.index)
         accum = (_num(df["vol_ratio"]) >= 1.5) & low_pos & not_high & main_ok
         comp100 = comp100 + accum.fillna(False).astype(float) * 5
-    out["composite"] = comp100.clip(lower=0, upper=100).round(1)   # upper 夹 100:吸筹加成不溢出
+    return comp100
+
+
+def composite_score(df: pd.DataFrame, weights: dict) -> pd.DataFrame:
+    """行业条件化复合分:Σ (组分位−0.5) × 该行业组权重(signed IC);归一映射 0–100。
+
+    权重符号由校准 IC 决定(正=该组高分看多、负=看空);排序用 composite 即可。
+    """
+    groups = _factor_groups(df)
+    out = df.copy()
+    for name, s in groups.items():
+        out[f"score_{name}"] = (s * 100).round(1)
+    out["composite"] = combine_group_scores(df, groups, weights).clip(lower=0, upper=100).round(1)   # upper 夹 100:吸筹加成不溢出
     return out
+
+
+PREFERENCE_PROFILE = "preference"
+CALIBRATED_PROFILE = "calibrated"
+
+
+def preference_weights_doc(pw: dict[str, float]) -> dict:
+    """偏好档权重 → 与 weights.json 同形的权重文档(仅 `__global__`,无行业覆盖、无 regime 块)。
+
+    2026-09-24 §2.1:符号 = 产品偏好,量级 = 裁定,**没有自动重标定**。键集必须恰为 `_GROUPS`。
+    `meta.config_sha256` 让 `weights_used.json` 能证明当天用的是哪一份数。
+    """
+    import hashlib
+    import json as _json
+    import math as _math
+    missing = [g for g in _GROUPS if g not in pw]
+    extra = [k for k in pw if k not in _GROUPS]
+    if missing or extra:
+        raise ValueError(f"preference_weights 键集须恰为 {_GROUPS}:缺 {missing} 多 {extra}")
+    vals = {g: float(pw[g]) for g in _GROUPS}
+    if any(not _math.isfinite(v) for v in vals.values()):
+        raise ValueError("preference_weights 含非有限值")
+    digest = hashlib.sha256(_json.dumps(vals, sort_keys=True).encode("utf-8")).hexdigest()
+    return {"meta": {"source": f"profile:{PREFERENCE_PROFILE}", "profile": PREFERENCE_PROFILE,
+                     "regime_applied": None, "config_sha256": digest},
+            "weights": {"__global__": vals}}
+
+
+def resolve_weights(frame: pd.DataFrame, *, profile: str, preference_weights: dict | None,
+                    regime_aware: bool, path: str | None = None) -> tuple[dict, str | None]:
+    """L1 权重的**唯一**入口(2026-09-24 §2.1):preference → 固定档、不看 regime、不读文件;
+    calibrated → 原 `pick_weights`(逐字 parity)。别的值 → ValueError(错型不静默生效)。"""
+    if profile == PREFERENCE_PROFILE:
+        if not preference_weights:
+            raise ValueError("weight_profile=preference 但 funnel.preference_weights 缺失")
+        return preference_weights_doc(preference_weights), None
+    if profile != CALIBRATED_PROFILE:
+        raise ValueError(f"weight_profile 只接受 {CALIBRATED_PROFILE!r}/{PREFERENCE_PROFILE!r};收到 {profile!r}")
+    return pick_weights(frame, regime_aware, **({"path": path} if path else {}))
