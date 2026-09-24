@@ -393,3 +393,36 @@ def test_l4_card_contract_has_entry_field():
     f = L4_CARD.field("entry")
     assert f.required is False
     assert re.search(f.pattern, "**入场**: 条件(x)").group(1) == "条件"
+
+
+# ── fix round 1:entry_source 的 None/"prose" 组合此前没有专属断言火力点 ────────
+#
+# 复核跑了七个变异,六个被逮到;第七个——把 `_empty_card_context` 的 `entry_source`
+# 默认值从 `None` 改成 `"prose"`——396 个用例一个都不红。原因是没有任何一条断言
+# 是"entry_source is None"本身,也没有任何一条把 entry_stance=UNKNOWN 与
+# entry_source="prose" 锁在同一个 assert 里。下面两条各自补一个火力点(手动执行过
+# 那个变异并确认能让它们变红,回合报告里有记录)。
+
+
+def test_unparsed_card_pins_entry_source_none_not_just_error_status():
+    """Mutation-7 pin:走真实早退路径(仪表盘解不出来,不是 monkeypatch),同一个
+    assert 里锁 `parse_status == "ERROR"` 与 `entry_source is None`——只测其中一个,
+    `_empty_card_context` 把默认值从 `None` 换成任何别的字符串都不会被抓到。
+    """
+    text = "# 决策卡\n\n(暂无仪表盘数据)\n"
+    got = parse_card_context(text)
+    assert got["parse_status"] == "ERROR" and got["entry_source"] is None
+
+
+def test_inconclusive_prose_pins_unknown_stance_together_with_prose_source():
+    """`entry_source` 记的是"问过哪个机制",不是"那个机制给出的答案好不好"——散文被
+    问过但没找到正证据(裸数字"10%",不是推荐)时 entry_stance 仍是 UNKNOWN,但
+    entry_source 必须仍是 "prose",不能因为答案含糊就被"纠正"成 None(那等价于把
+    "问过没答案"误记成"根本没问")。两值必须成对锁在同一个 assert 里。
+    """
+    text = "\n".join([
+        "# 决策卡", "| 评级 | 现价 | 仓位 |", "|---|---|---|", "| Hold | 10 | 10% |",
+        "FINAL TRANSACTION PROPOSAL: **HOLD**",
+    ])
+    got = parse_card_context(text)
+    assert got["entry_stance"] == "UNKNOWN" and got["entry_source"] == "prose"

@@ -528,6 +528,13 @@ def _empty_exec_lines(contract: dict | None) -> dict[str, dict]:
 
 def _empty_card_context(card_kind: str, parse_errors: list[str],
                         contract: dict | None) -> dict:
+    """三处早退路径(空文本/无仪表盘/外层 try 兜底)共用的空壳。`entry_source` 恒
+    `None`(fix round 1)——这里的 `None` 不是"没找到入场行",是"压根没能走到去找入场
+    行/散文的那一步":哪怕卡面其实写了 `**入场**` 行,只要仪表盘解不出来,
+    `_parse_card_context_impl` 在够到 `_ENTRY_LINE_RE.search` 之前就已经从这里退出
+    了。`entry_source` 记的是"问过哪个机制",不是"问出了什么答案"——三值完整语义见
+    `parse_card_context` 的 docstring。
+    """
     return {
         "card_kind": card_kind, "proposal": None, "ev_target": None, "rr": None,
         "position_raw": None, "trigger_raw": None,
@@ -567,6 +574,11 @@ def _parse_card_context_impl(text: str | None, contract: dict | None) -> dict:
     position_raw = _get(dash, "仓位") or None
     trigger_raw = _get(dash, "触发位") or None
 
+    # entry_source 三值(fix round 1;完整定义见 parse_card_context docstring):
+    # "line"  命中 **入场** 行,直接采用;
+    # "prose" 没有该行,退回仓位/触发位散文推断——不论推断结果是不是 UNKNOWN,只要
+    #         散文推断真的跑过就是 "prose",不能因为答案含糊就悄悄记成 None。
+    # (第三值 None 不在这个分支产生,见 _empty_card_context 的早退路径。)
     line_m = _ENTRY_LINE_RE.search(body)
     if line_m:                                   # 机读入场行优先(2026-09-24 §2.5)
         stance, conflict, entry_source = _ENTRY_LINE_STANCE[line_m.group(1)], False, "line"
@@ -606,6 +618,21 @@ def parse_card_context(text: str, *, contract: dict | None = None) -> dict:
     不产出 `source`(相对路径/内容 hash/版本/是否事后补充):那些字段需要调用方已知
     的文件身份与归档状态,本函数只接收卡面原文,由 Task 7 组装
     `_relative_buy_decision.json` 时在这份返回值之上补上。
+
+    `entry_source`(Task 17,fix round 1)记录的是**这次解析问过哪个机制,不是那个
+    机制给出的答案好不好**。三值:
+
+    - `"line"`  卡面存在可机读的 `**入场**` 行,直接采用其结论;
+    - `"prose"` 没有该行,退回仓位/触发位散文推断;**不论推断结果是 ALLOWED /
+      PROHIBITED / CONDITIONAL 还是 UNKNOWN,只要散文推断真的跑过就是
+      `"prose"`**——`entry_stance="UNKNOWN"` 配 `entry_source="prose"` 是合法组合,
+      不是待修的 bug,不能"纠正"成 `None`;
+    - `None`    没有做任何抽取尝试——**不止"没写入场行"这一种情况**:卡面即使真的
+      写了入场行,只要仪表盘本身解不出来(`_parse_dashboard` 早退,或外层 `try`
+      兜底真异常),也轮不到检查有没有入场行,同样记 `None`(见
+      `_empty_card_context` 的三处调用点)。下游据此可以分清"agent 压根没被问过
+      入场问题"(契约缺口)与"agent 给出了明确判断,只是散文没写清楚"(研究判断)——
+      前者才是 `None`,后者哪怕含糊也是 `"prose"`。
     """
     try:
         return _parse_card_context_impl(text, contract)
