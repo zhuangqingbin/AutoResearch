@@ -37,7 +37,6 @@ import numpy as np
 import pandas as pd
 
 from autoresearch.common import workspace as ws
-from autoresearch.common.turnup import PANEL_COLS
 
 # 纯打分原语(autoresearch.common.scoring),scan/factor_lab/handler 三处同口径复用。
 from autoresearch.common.scoring import (
@@ -51,9 +50,9 @@ from autoresearch.common.scoring import (
     lens_momentum,
     lens_reversal,
     lens_value,
-    pick_weights,
     prev_quarter,
 )
+from autoresearch.common.turnup import PANEL_COLS
 
 # 帧构建(L0 取数 + 轻门 + 多日量价)已抽到 scan.frame(Phase 0,design:
 # 2026-07-03-research-skills-altitude-refactor §5.1):run / L1Recall stage / 盘前预告 CLI 三处共用;
@@ -302,16 +301,23 @@ def run(analysis_date: str, cap_floor_yi: float | None = None, include_bj: bool 
         l2_floors: dict | None = None, l2_sector_cap: float | None = None,
         channel_quotas: dict[str, int] | None = None,                     # 覆盖各路 quota(None=CHANNEL_DEFAULTS,parity)
         channel_floors: dict[str, int] | None = None,                     # 覆盖各路 floor(None=CHANNEL_DEFAULTS,parity)
-        weights_path: str | None = None) -> dict:                         # L1 权重文件(None=默认路径=parity;回放器注入 as-of 快照防前视)
+        weights_path: str | None = None,                                  # L1 权重文件(None=默认路径=parity;回放器注入 as-of 快照防前视)
+        weight_profile: str | None = None,                                # 召回权重档(None→config funnel.weight_profile;内建 "calibrated"=parity)
+        preference_weights: dict | None = None) -> dict:                  # preference 档的十组权重(None→config funnel.preference_weights)
     """L0 选集 + L1 召回 + L2 粗排(确定性分层采样 → top l2_n)。全确定性,零 LLM。
 
     recall_mode:multi=多路策略召回(默认,带 provenance + L1_channels.csv)| composite=单复合分(对拍/回退)。
 
-    `weights_path`:透传 `pick_weights(path=...)`。**None = 现行为**(读
-    `context/factor_lab/weights.json`)→ 逐字节 parity,生产路径不受影响。存在的理由是
+    L1 权重经 `resolve_weights`(scoring.py)唯一入口解析:`weight_profile="calibrated"`(内建
+    默认,**None = 现行为**)→ 逐字委派 `pick_weights`,`weights_path` 透传给它(**None** 读
+    `context/factor_lab/weights.json` → 逐字节 parity,生产路径不受影响)。存在的理由是
     **权重 PIT**(design 2026-07-12-funnel-replay-l35-removal-design.md Part B §2.3):
     weights.json 是用含未来前向收益的面板校准出来的,拿它回放历史 = 用未来的权重预测过去;
     (原 `research.replay` 因此注入先验/as-of 权重快照;该回放器已随 2026-08-21 闭环退役删除。)
+
+    `weight_profile="preference"`(2026-09-24 §2.1):固定偏好档,十组权重取自
+    `preference_weights`(None→config `funnel.preference_weights`),**不看 regime_aware、不读
+    weights_path**——符号是产品偏好、量级是裁定,不是拟合出来的,所以没有自动重标定这回事。
     """
     # FN-1 缝第三修:生产真身(workflow→prelude→本函数直调)不经 cli._config_from_args,scan_config
     # 的 funnel 在真跑动从未生效(2026-07-11 冒烟坐实:仍 11 路旧配额)。兜底下沉:调用方没显式给的
@@ -338,6 +344,10 @@ def run(analysis_date: str, cap_floor_yi: float | None = None, include_bj: bool 
     recall_n = int(knob("funnel", "recall_n", recall_n, 1000, cfg=_ucfg))
     l2_n = int(knob("funnel", "l2_n", l2_n, 200, cfg=_ucfg))
     regime_aware = bool(knob("funnel", "regime_aware", regime_aware, False, cfg=_ucfg))
+    # 召回权重档(2026-09-24 §2.1):"calibrated"=旧行为(读 weights.json/内置先验,回滚杆)/
+    # "preference"=固定偏好档(十组权重就在 preference_weights 里,唯一事实源,无自动重标定)。
+    weight_profile = str(knob("funnel", "weight_profile", weight_profile, "calibrated", cfg=_ucfg))
+    preference_weights = knob("funnel", "preference_weights", preference_weights, None, cfg=_ucfg)
     l2_sector_cap = float(knob("l2", "sector_cap", l2_sector_cap, 0.20, cfg=_ucfg))
     l2_floors = knob("l2", "floors", l2_floors, None, cfg=_ucfg)
     # L0 取数 + L1 轻门 + 多日量价富化 → 全市场因子帧(scan.frame 单一代码路径,Phase 0 抽取)
@@ -345,9 +355,11 @@ def run(analysis_date: str, cap_floor_yi: float | None = None, include_bj: bool 
                                       source=source, l0_min_amount_yi=l0_min_amount_yi,
                                       l0_min_list_days=l0_min_list_days)
     n_raw, n_l0 = _counts["universe_raw"], _counts["universe"]
-    # weights_path=None → 不传 path,吃 pick_weights 的默认值(=现行为,parity);给了才覆盖。
-    weights, _regime = pick_weights(uni, regime_aware,
-                                    **({"path": weights_path} if weights_path else {}))
+    # L1 权重的唯一入口(2026-09-24 §2.1):calibrated 分支逐字委派 pick_weights(weights_path=None
+    # → 不传 path,吃其默认值 = 现行为,parity);preference 分支固定档、不看 regime、不读文件。
+    from autoresearch.common.scoring import resolve_weights
+    weights, _regime = resolve_weights(uni, profile=weight_profile, preference_weights=preference_weights,
+                                       regime_aware=regime_aware, path=weights_path)
     scored = composite_score(uni, weights)
     try:                                   # Wave4:事件列(湖优先),B 级增强腿,失败不阻扫描
         from autoresearch.scan.events import attach_event_cols, market_event_counts
@@ -435,8 +447,9 @@ def run(analysis_date: str, cap_floor_yi: float | None = None, include_bj: bool 
         "l2_sector_cap": l2_sector_cap,
         **_lt_counts,
         "cap_floor_yi": cap_floor_yi, "include_bj": include_bj, "source": source,
-        "regime": _regime,                                    # 当日 regime(regime_aware 关 = null)
+        "regime": _regime,                                    # 当日 regime(regime_aware 关 = null;preference 档恒 null)
         "weights_source": weights.get("meta", {}).get("source", "weights.json"),
+        "weight_profile": weight_profile,                     # 2026-09-24 §2.1:calibrated|preference,本跑实际生效档
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     try:                                                      # 重放快照:当日实际权重固化进现场
         (outdir / "weights_used.json").write_text(

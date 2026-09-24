@@ -1325,7 +1325,23 @@ def _freeze_scan_runtime_inputs(current) -> dict:
             shutil.copyfile(source, destination)
         else:
             destination.unlink(missing_ok=True)
-    value = {"schema_version": 1, "present": present}
+    # 2026-09-24 §2.1:preference 档时 L1_weights.json(校准文件)不再是当天用的真相——
+    # 快照改记「实际生效的权重文档」(resolve_weights 会用到的那份),而不是继续复制一份
+    # 谁都没读过的校准文件当"证据"。身份快照失败不挡 session,但必须留痕(不静默吞错)。
+    value_error: str | None = None
+    try:
+        cfg = user_config.load_user_config() or {}
+        funnel = cfg.get("funnel") or {}
+        if funnel.get("weight_profile") == "preference":
+            from autoresearch.common.scoring import preference_weights_doc
+
+            atomic_write_json(target / "L1_weight_profile.json",
+                              preference_weights_doc(funnel.get("preference_weights") or {}))
+            present["L1_weight_profile.json"] = True
+    except Exception as exc:  # noqa: BLE001 — 身份快照失败不挡 session,但要留痕
+        present["L1_weight_profile.json"] = False
+        value_error = repr(exc)
+    value = {"schema_version": 1, "present": present, "weight_profile_error": value_error}
     atomic_write_json(target / "manifest.json", value)
     return value
 

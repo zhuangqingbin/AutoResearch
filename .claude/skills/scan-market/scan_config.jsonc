@@ -108,7 +108,9 @@
   //   regime_aware 另生效于 prelude.run_prelude(生产路缺省 true;universe 直跑 CLI 内建缺省
   //   false,--regime-aware/--no-regime-aware 恒优先)。
   "funnel": {
-    "regime_aware": true,      // L1 权重按当日 regime 选块(weights.json regimes;07-02 校准开启)
+    "regime_aware": true,      // L1 权重按当日 regime 选块(weights.json regimes;07-02 校准开启)。
+                               // ⚠️ 只在 weight_profile="calibrated" 下生效;当前档是 preference
+                               // (见下方「召回权重档」)→ 本键此刻无效,regime_applied 恒 null。
     "recall_n": 1000,          // L1 召回收口数
     "l2_n": 200,               // L2 粗排收口数
     // 启用的召回通道。整编后 9 路(2026-07-11 channel_audit 13 日累计裁决):剔 accumulation
@@ -147,7 +149,17 @@
     // 删本行 = 注册表默认 quota。floor 覆盖同名 "channel_floors":{}(未用)。
     "channel_quotas": { "value": 312, "momentum": 188, "heat": 112, "healthy": 112, "growth": 112, "main_fund": 150,
                         "reversal_confirm": 150,    // 2026-08-21 重开:中档起步(design R6)
-                        "lowturn": 120 }            // 2026-08-22 新路:与注册默认同值,写明防「缺键回落注册表默认」
+                        "lowturn": 120 },           // 2026-08-22 新路:与注册默认同值,写明防「缺键回落注册表默认」
+    // ── 召回权重档(2026-09-24 可买性对齐 §2.1)──
+    // 【生效点】scoring.resolve_weights ← universe.run(knob funnel.weight_profile/preference_weights)。
+    // ⚖️ 证据:weights.json(08-19,gap_c1_o2 IC 校准)range 块 momentum/tech/volprice/fund_main 全负
+    //   → composite 实为超卖分(09-17 L1 池 spearman 对 pct_20d −0.80),落刀逐级叠加(L0 23%→L2 40%)。
+    //   偏好档符号 = 「上涨趋势 + 有支撑 + 主力真在 + 散户不拥挤」,量级是裁定不是拟合,无自动重标定。
+    // 回滚杆 = "weight_profile": "calibrated"(一行;preference_weights 留着无害)。
+    "weight_profile": "preference",
+    "preference_weights": { "momentum": 0.20, "tech": 0.15, "volprice": 0.15, "fund_main": 0.15,
+                            "chip": 0.05, "north": 0.05, "growth": 0.05, "value": 0.05,
+                            "fund_retail": -0.05, "rz": 0.0 }
   },
 
   // ── L2 · 粗排(确定性分层采样,不预测)────────────────────────────────────
