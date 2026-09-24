@@ -86,6 +86,50 @@ def test_select_l2_sector_seat_does_not_squeeze_other_tickets():
     assert non_seat_after == set(rest_only["code"])
 
 
+def test_select_l2_high_merit_sector_seat_no_duplicate_but_still_appended():
+    """镜像 tests/scan/test_pinned.py::test_select_l2_high_merit_pinned_no_duplicate_but_still_appended
+    (task-13 fix round 1,Important):这是 `select_l2` docstring 明确点名的唯一非显然分支——
+    "即便某行凭 merit 本就能挤进 l2_n,也只走保送这一条路,不占竞争名额"。即便该票凭 merit
+    本就能挤进 200,席位仍**只走**保留席这一条路(不因"两条路都成立"而重复出现),它让出的
+    名额由下一名顶替(竞争池仍满编 200),这是既定行为,不是 bug。
+
+    三件断言逐条对应评审要求:
+    ① 该码只出现一次(不重复);
+    ② 它是以席位理由/保留旗进场(`selection_reason="sector_seat"`、`l2_lane_reserved=True`),
+       不是它本可以凭 merit 拿到的那一套(`selection_reason="merit"`);
+    ③ 竞争部分仍然满编 200 —— 它让出的名额被下一名顶替,不是竞争池缩到 199
+       (pinned 的对应测试只断言 `len(out) == 201`,把"竞争池满编"留给读者去推;这里把它
+       拆成显式的 `len(competitive) == 200`,是 pinned 那条测试形状里唯一值得多做的一步)。
+    """
+    from autoresearch.scan.recall.l2_stratify import select_l2
+    from tests.scan.test_l2_stratify import _universe
+    df = _universe(600)
+    top_idx = df["composite"].idxmax()
+    top_code = df.loc[top_idx, "code"]
+
+    # 前提:不打席位标时,这票确实凭 merit 自己挤进 200 —— 否则下面"它本可以凭 merit 进"的
+    # 断言就是空话。用 df.copy() 隔离:baseline 跑完后 df 本身仍未带 sector_seat 列。
+    baseline, _ = select_l2(df.copy(), 200)
+    base_row = baseline[baseline["code"] == top_code]
+    assert len(base_row) == 1 and base_row.iloc[0]["selection_reason"] == "merit"
+
+    df["sector_seat"] = False
+    df["sector_seat_industry"] = ""
+    df.loc[top_idx, ["sector_seat", "sector_seat_industry"]] = [True, "电力"]
+
+    out, _ = select_l2(df, 200)
+    rows = out[out["code"] == top_code]
+    assert len(rows) == 1                                          # ① 不重复
+    seat_row = rows.iloc[0]
+    assert seat_row["selection_reason"] == "sector_seat"            # ② 席位理由,不是 merit
+    assert seat_row["l2_lane_reserved"]                             # ② 保留旗
+
+    assert len(out) == 201                                          # 200 竞争 + 1 席位
+    competitive = out[out["code"] != top_code]
+    assert len(competitive) == 200                                  # ③ 竞争池满编,空位已被顶替
+    assert (competitive["selection_reason"] != "sector_seat").all()
+
+
 def test_universe_run_writes_sector_seats_and_columns(monkeypatch, tmp_path):
     from autoresearch.scan import events as ev_mod, universe as U
     uni = _frame().drop(columns=["composite"])
