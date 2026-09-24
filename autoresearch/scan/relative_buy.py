@@ -28,12 +28,14 @@ publisher、不动 `decision_records.json`、不改任何 prompt**;活体真正�
 
 ## v1 规则(**观察前锁定**;任何改动 = 新 `RULE_VERSION`,经影子账本呈证 + proposal 人批)
 
-> 当前 `RULE_VERSION = "e6.v3.0"`。v1.1 只把两道硬门对"产物缺席"的静默放行堵上,
+> 当前 `RULE_VERSION = "e6.v4.0"`。v1.1 只把两道硬门对"产物缺席"的静默放行堵上,
 > v1.2 只把 `data_a` 第 4 判改读 `stage_results.failed_data`(gate4 的 hygiene/metering
 > 类失败不再连坐当日 BUY),v2.0 只把 `mode` 形参开放接受 `"active"` + 加 `exclude_pinned`
 > 过滤(生产默认仍 `shadow`/`False`)。**打分与选择语义与 v1 逐字相同**(8 日回放零变化
 > 为证);下面这套规则原文因此仍然逐字有效,不需要按 v1.1/v1.2/v2.0 重读。差异见文件尾
-> 「修复轮 1」与 `RULE_VERSION` 常量旁注。
+> 「修复轮 1」与 `RULE_VERSION` 常量旁注。v4.0(2026-09-24 可买性对齐 §2.6)加 `tiering`
+> 一个开关:**关(内建默认)时与 v3.0 逐字相同**,开时才有卡面入场硬门与 A/R 分级。生产
+> 配置开,回滚杆是 `relative_buy.tiering=false` **加** `pool="composite"` 两个键一起回。
 
 边看结果边调参数 = 作弊。下面每条都是在看到任何一天的影子输出**之前**写死的。
 
