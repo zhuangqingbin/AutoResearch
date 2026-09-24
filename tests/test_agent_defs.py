@@ -57,6 +57,10 @@ def test_l4_card_contract_anchors_synced():
                # T18(2026-09-24):入场行(机读契约)——`**入场**:` 行前缀与规则段落
                # 「入场行」小节名必须两边同步(E6 v4 A/R 分级的机读依据)。
                "**入场**:", "入场行",
+               # T18 fix round 3:Hold 未过门时"条件 vs 禁止"二选一的判据(指得出近端
+               # 前置条件 → 条件;论点本身负 → 禁止)——两个值下游分级不同(条件仍可
+               # 当 R 级买、禁止硬否决),judgment 必须两边同步,不能只改一侧。
+               "论点本身负",
                *(g for g in _OW_GATES)]
     for a in anchors:
         assert a in agent, f"l4-card 缺契约锚「{a}」"
