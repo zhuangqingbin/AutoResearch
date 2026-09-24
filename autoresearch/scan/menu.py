@@ -30,11 +30,14 @@ def _healthy(df: pd.DataFrame) -> int | None:
 
 
 def _knife_share(df: pd.DataFrame) -> float | None:
+    """落刀面占比,分母=非 NaN 行(与既有 `40%` 用例 parity)。谓词=`scoring.falling_knife_mask`
+    单一事实源,本函数只保留自己的分母口径(非 NaN),不改谓词本身。"""
+    from autoresearch.common.scoring import falling_knife_mask
+    m = falling_knife_mask(df)
     p = _num(df, "pct_60d")
-    if p is None or not p.notna().any():
+    if m is None or p is None or not p.notna().any():
         return None
-    p = p.dropna()
-    return float((p < -20).mean())
+    return float(m[p.notna()].mean())
 
 
 def menu_health(scan_dir: Path | str) -> str:

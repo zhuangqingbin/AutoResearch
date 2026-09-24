@@ -32,21 +32,25 @@ from pathlib import Path
 import pandas as pd
 
 from autoresearch.common import workspace as ws
+from autoresearch.common.scoring import KNIFE_PCT_60D, falling_knife_mask
 
 _WS_SCAN_ROOT = ws.scan_root()  # B008 修法:默认值须为模块级单例(def 时求值,与旧字面量常量同语义)
 
-_KNIFE = -20.0
 
-
-def _rate(df: pd.DataFrame, thresh: float) -> float | None:
-    if df is None or not len(df) or "pct_60d" not in df.columns:
+def _rate(df: pd.DataFrame, thresh: float = KNIFE_PCT_60D) -> float | None:
+    """落刀率,分母=非 NaN 行(与既有四联读数 parity)。谓词=`scoring.falling_knife_mask`
+    单一事实源,本函数只保留自己的分母口径(非 NaN),不改谓词本身。"""
+    if df is None or not len(df):
         return None
-    s = pd.to_numeric(df["pct_60d"], errors="coerce").dropna()
-    return None if not len(s) else float((s < thresh).mean())
+    m = falling_knife_mask(df, thresh)
+    p = pd.to_numeric(df["pct_60d"], errors="coerce") if "pct_60d" in df.columns else None
+    if m is None or p is None or not p.notna().any():
+        return None
+    return float(m[p.notna()].mean())
 
 
 def knife_rates(l1_df: pd.DataFrame, l2_df: pd.DataFrame, *,
-                thresh: float = _KNIFE) -> dict:
+                thresh: float = KNIFE_PCT_60D) -> dict:
     """落刀率四联:全市场(=L1 池)/ 菜单 / 菜单-主排序 / 菜单-floor 救回。"""
     out = {"market": _rate(l1_df, thresh), "menu": _rate(l2_df, thresh),
            "main": None, "floor": None, "n_main": 0, "n_floor": 0}

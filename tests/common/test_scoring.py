@@ -304,3 +304,15 @@ def test_resolve_weights_calibrated_delegates_to_pick_weights(tmp_path):
     assert doc["meta"]["source"].startswith("prior") and regime is None
     with pytest.raises(ValueError):
         resolve_weights(_synthetic(50), profile="bogus", preference_weights=None, regime_aware=False)
+
+
+# ───────────────────────── falling_knife_mask 单一事实源(Task 10,2026-09-24) ─────────────────────────
+
+
+def test_falling_knife_mask_single_source():
+    from autoresearch.common.scoring import KNIFE_PCT_60D, falling_knife_mask
+    df = pd.DataFrame({"pct_60d": [-30.0, -20.0, -19.9, float("nan"), 5.0]})
+    m = falling_knife_mask(df)
+    assert KNIFE_PCT_60D == -20.0
+    assert m.tolist() == [True, False, False, False, False]
+    assert falling_knife_mask(pd.DataFrame({"x": [1]})) is None

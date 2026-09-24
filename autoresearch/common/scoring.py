@@ -290,6 +290,18 @@ def lens_reversal_confirm(df: pd.DataFrame) -> pd.DataFrame:
     return g
 
 
+KNIFE_PCT_60D = -20.0
+
+
+def falling_knife_mask(frame: pd.DataFrame, thresh: float = KNIFE_PCT_60D) -> pd.Series | None:
+    """落刀谓词(**单一事实源**,2026-09-24 §2.2):pct_60d < −20。菜单体检 `menu._knife_share`、
+    `l2_knife_audit`、L2 落刀帽、两类席位剔刀全部改调本函数。缺列 → None(调用方降级);NaN 行 False。
+    L3 的 B 条散文另含「无主力」,那是判断层的口径,不在此收口。"""
+    if "pct_60d" not in frame.columns:
+        return None
+    return _num(frame["pct_60d"]) < thresh
+
+
 def healthy_riser_mask(frame: pd.DataFrame) -> pd.Series | None:
     """健康上涨谓词(**单一事实源**:menu_health 病灶指标 = healthy 召回通道同一定义):
     0<pct_60d<40(温和上涨,未过热)∧ main_net_ratio>0(主力真进)∧ cmf_20>0(多日资金共振)。
