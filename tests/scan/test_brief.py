@@ -907,3 +907,24 @@ def test_delta_line_reads_previous_published_run_under_run_partition(tmp_path, m
     md = out["markdown"]
     assert "vs 2026-08-05" in md
     assert "600018 Underweight→Hold" in md
+
+
+# ───────────────────── Task 20:relative BUY 行的 E6 A/R 分级标签 ─────────────────────
+#
+# v4.0(`relative_buy.tiering`)给 `buys[0]` 挂 `tier`(A=卡面自己允许入场 / R=卡面没给
+# 买点、靠「每天至少一只」的相对硬规则强出)。brief ③ 必须把这个分级念出来 —— 否则读者
+# 拿到一行「relative BUY」,分不清这次是研究真的认可了,还是规则替它凑的数。
+
+def test_buy_line_prints_tier_label(scan):
+    doc = json.loads((scan / brief.DECISION_FILENAME).read_text(encoding="utf-8"))
+    doc["buys"][0].update({"tier": "R", "basis": "relative_forced"})
+    doc["tiering"], doc["tier_counts"] = True, {"A": 0, "R": 2}
+    (scan / brief.DECISION_FILENAME).write_text(json.dumps(doc, ensure_ascii=False),
+                                                encoding="utf-8")
+    text = brief.build(scan, run_folder=_RUN)["markdown"]
+    assert "🟥 **R 级·卡面无买点·强制相对(裁定①)**" in text
+
+    doc["buys"][0].update({"tier": "A", "basis": "card_backed"})
+    (scan / brief.DECISION_FILENAME).write_text(json.dumps(doc, ensure_ascii=False),
+                                                encoding="utf-8")
+    assert "**A 级·卡面允许入场**" in brief.build(scan, run_folder=_RUN)["markdown"]

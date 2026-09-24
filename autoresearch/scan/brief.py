@@ -572,6 +572,14 @@ def _buy_lines(facts: dict, src: list[dict]) -> list[str]:
 
     tag = ("🕶 **影子 relative BUY(非正式·不执行)**"
            if not active else "✅ **relative BUY**")
+    # Task 20:E6 v4.0 的 A/R 分级(裁定①)—— A=卡面自己允许入场,R=卡面没给买点、
+    # 靠「每天至少一只」的相对硬规则强出。缺 `tier`(v3.0 决策书 / tiering=False)不挂标,
+    # 逐字兼容;present=False 或 blocked=True 时 `rel.get("tier")` 恒 None,同样不挂标。
+    tier = rel.get("tier")
+    if tier == "A":
+        tag += " · **A 级·卡面允许入场**"
+    elif tier == "R":
+        tag += " · 🟥 **R 级·卡面无买点·强制相对(裁定①)**"
     if not rel.get("present"):
         lines.append(f"- {tag}:—(`{DECISION_FILENAME}` 未生成 —— 缺证据不等于没候选)")
         return lines
@@ -598,6 +606,7 @@ def _buy_lines(facts: dict, src: list[dict]) -> list[str]:
             f" · 主尺 {rel.get('ruler')}"
             f" —— 只承诺「当日全集内相对最优」,**不承诺绝对收益为正**")
     _src(src, "relative.code", rel.get("code"), DECISION_FILENAME, "buys[0].code", text)
+    _src(src, "relative.tier", tier, DECISION_FILENAME, "buys[0].tier", text)
     _src(src, "relative.rank", rel.get("rank"), DECISION_FILENAME,
          "candidates[code].rank", text)
     # B-1:**两行,不是一行** —— 边表必须能把这两个 n/人口分开,否则 T27 的对账 lint

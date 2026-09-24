@@ -52,6 +52,7 @@ def relative_facts(decision: dict | None) -> dict:
         "blocked_reasons": reasons,
         "code": (buys[0]["code"] if buys else None),
         "basis": (buys[0].get("basis") if buys else None),
+        "tier": (buys[0].get("tier") if buys else None),
         "name": (top or {}).get("name"),
         "rank": (top or {}).get("rank"),
         "score": (top or {}).get("relative_decision_score"),
