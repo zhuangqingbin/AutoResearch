@@ -163,7 +163,7 @@ L3 conviction 与结果反向（全账本非持仓）：
 
 | # | 改什么 | 为什么 | 怎么验 |
 |---|---|---|---|
-| A1 | `data_a` 从日级改为票级：L4 单票 slim 失败只否决该票；日级只保留 `core_missing` / `run_contract` / `market_frame` | 09-15、09-17 两场 BUY 全因此 BLOCKED（§2.3） | 回放 09-15/09-17 的 `_relative_buy_decision.json`，data_a 否决数从 6/11 降到 2/1 |
+| A1 | `data_a` 从日级改为票级：L4 单票 slim 失败只否决该票；日级只保留 `core_missing` / `run_contract` / `market_frame` | 09-15、09-17 两场 BUY 全因此 BLOCKED（§2.3） | 回放 09-15/09-17 的 `_relative_buy_decision.json`，data_a 否决数 09-17 从 11 降到 2；**09-15 恒为 6**（2026-09-25 实测更正：该日另有一条真日级 `gate4` 失败，此处立案时预测的「降到 2」是错的） |
 | A2 | 盲卡不发：slim MISSING → 该票 BLOCKED，不进 `_final_ratings`、不进账本 | 中国船舶盲卡入账污染统计 | 09-17 回放卡数 10→9 |
 | A3 | 「昨日 delta」修跨 run 读者：prev_date 从 `_ledger/views/runs.csv` 取上一场 | 六场全印「无上一扫描日」 | 09-11 场 delta 应指向 09-10 |
 | A4 | `expected_abs_gap` 与 E6「证据」句改读账本真身：`e6_buy` 行 n/均值/胜率，n<20 就印「n=7，不足 20 不给区间」而不是 n=0 | 现在是永久 stub 冒充样本不足 | brief 文本随账本变 |

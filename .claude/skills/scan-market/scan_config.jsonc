@@ -172,7 +172,13 @@
     //   recall/l2_stratify.stratified_l2(merit/回填/非豁免桶各按份额设配额;反转/低位转强豁免)。
     // ⚖️ 证据:09-01→09-17 七场 L2 落刀 27–56% vs L0 15–27%(恒 ≈2×);floor 桶落刀率
     //   健康 0 / 成长 33 / 趋势 44 / 低位转强 54 / 反转 67(%)。健康桶供给 L1 8–11% ≈ 80–115 行,floor 25 够。
-    // 回滚杆 = "knife_cap": false + 删掉 "floors"(回 DEFAULT_FLOORS 101)。
+    // 回滚杆 = "knife_cap": false + 删掉 "floors"(回 DEFAULT_FLOORS,静态 101/生效 89)。
+    // ⚠️ 幽灵行(2026-09-25 记):下面的 "吸筹": 12 **运行时恒为 0** —— 吸筹桶只映射
+    //   accumulation 一路,该路已于 2026-07-11 退役出 funnel.recall_channels,
+    //   `l2_stratify.effective_floors()` 按启用集把它归零。故本块静态合计 103、**生效合计 91**,
+    //   merit_need = 200 − 91 = **109**(不是 200 − 103 = 97)。保留 12 而不写 0,是为了让
+    //   「删掉 floors 回 DEFAULT_FLOORS」这根回滚杆逐位对得上(DEFAULT_FLOORS 里它也是 12);
+    //   重开 accumulation 路时它会自动复活。同一病的另一处见上方 channel_quotas 的幽灵行注释。
     "knife_cap": true,
     "floors": { "趋势": 20, "健康": 25, "反转": 6, "价值": 12, "成长": 12, "吸筹": 12,
                 "主力": 10, "低位转强": 6, "事件": 0 }

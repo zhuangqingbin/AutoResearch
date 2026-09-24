@@ -185,15 +185,21 @@ Python 侧全部共用；引擎差异只在根目录与 agent 定义。清单：
 
 回归锚（同一段代码路径，核对与批 1 未漂移）：全帧 spearman(composite′, pct_20d) 0.577/0.702/0.723/0.719/0.738/0.620/0.597（与批 1 表中「A1 全帧(复核用)」列逐日 diff ≤0.0004）；composite′ 前 20 名落刀占比七日仍 0.0%（`A2_top20_knife`）。两锚都稳,证明本批(帽/floor/席位)没有改动 composite 本身。
 
-A4/A5/A6 七日全部达标，且 A4 余量远超 6pp 门槛本身（19.4–26.8pp）。**A7 七日合计 = 0,不达标**——诊断（09-01 staging 复核,`knife_cap_share` 按设计取 `l0_knife_share`≈15.1%）：merit 核（97 个名额）按 sector-neutral composite′ 排序后,落刀行天然只占 2.1%,远低于 15.1% 的配额门槛,帽从未被顶到;`--knife-cap` 关掉重跑同一天,L2′落刀占比逐位不变（1.5%→1.5%）,顶替数同为 0,证明不是"帽没生效"而是"帽没机会生效"。把 `knife_cap_share` 强改成 0.0（诊断用,非生产改动）确认同一条代码路径在真数据上仍能顶替（5 次、落刀压到 0%）,`replay_l2`/`stratified_l2` 的接线本身是活的。根因是批 1 的偏好档 composite 已经把落刀排到 merit 候选之外,批 2 落刀帽这道墙在当前七个交易日上从未被撞到——这是配置层面（`l2.knife_cap` 的阈值选择 = 全帧 L0 占比,批 1 生效后这条阈值相对当前候选池的落刀浓度过松）的读数,不是 `replay_l2`/`select_l2`/`stratified_l2` 三层任何一层的接线缺陷（单测 `test_l2_stratify.py` 与本任务新增的 `test_replay_l2_forwards_knife_cap_and_sector_seats_and_they_take_effect` 已经在合成数据上锁死"帽会顶替"这一行为）。不调整 `l2.floors`/阈值口径去凑这个读数（controller 裁定：门不过是关于配置的发现,不是仪器的缺陷）。
+A4/A5/A6 七日全部达标，且 A4 余量远超 6pp 门槛本身（19.4–26.8pp）。**A7 七日合计 = 0,不达标**——诊断（09-01 staging 复核,`knife_cap_share` 按设计取 `l0_knife_share`≈15.1%）：merit 核（**109 个名额**）按 sector-neutral composite′ 排序后,落刀行天然只占 **1.83%**（2/109）,远低于 15.1% 的配额门槛,帽从未被顶到;（**2026-09-25 更正**:此处原写「97 个名额 / 2.1%」,少算了一条 `enabled_channels` 交互——`l2.floors` 静态合计 103,但 `effective_floors()` 会把「通道全未启用」的桶归零,`吸筹` 桶只映射 `accumulation` 而该路已于 2026-07-11 退役出 `funnel.recall_channels`,故 **运行时生效 floor = 91**,`merit_need = 200 − 91 = 109`。读数本身（真帽 1.5%/0 次顶替、强改 0.0 后 0.0%/5 次顶替）逐位复现,错的只是这段叙述的算术;)`--knife-cap` 关掉重跑同一天,L2′落刀占比逐位不变（1.5%→1.5%）,顶替数同为 0,证明不是"帽没生效"而是"帽没机会生效"。把 `knife_cap_share` 强改成 0.0（诊断用,非生产改动）确认同一条代码路径在真数据上仍能顶替（5 次、落刀压到 0%）,`replay_l2`/`stratified_l2` 的接线本身是活的。根因是批 1 的偏好档 composite 已经把落刀排到 merit 候选之外,批 2 落刀帽这道墙在当前七个交易日上从未被撞到——这是配置层面（`l2.knife_cap` 的阈值选择 = 全帧 L0 占比,批 1 生效后这条阈值相对当前候选池的落刀浓度过松）的读数,不是 `replay_l2`/`select_l2`/`stratified_l2` 三层任何一层的接线缺陷（单测 `test_l2_stratify.py` 与本任务新增的 `test_replay_l2_forwards_knife_cap_and_sector_seats_and_they_take_effect` 已经在合成数据上锁死"帽会顶替"这一行为）。不调整 `l2.floors`/阈值口径去凑这个读数（controller 裁定：门不过是关于配置的发现,不是仪器的缺陷）。
 
-E6 v4：`tests/scan/test_relative_buy.py` 新增 golden：09-11 场 `tiering=true` 时 R 级应选出（合格 4 只里 Hold 3 只）；09-15/09-17 场票级 data_a 后 `data_a` 否决数 6→2、11→1；`tiering=false` 8 日回放与 v3.0 逐字 parity。
+**A7 重定义（2026-09-25 裁定 P18,Task 16 复审独立复现同一结论）**:原 A7「七日 `knife_cap_swap` 合计 > 0」把「**顶替过**」当成了「**活着**」,而一道配置正确的兜底墙在上游健康时本来就不该被撞到——批 1 的偏好档已把落刀排到 merit 核之外,墙于是闲置。要求它在生产里开火,等于逼着把上游调坏来证明下游有用。A7 改为两条:
+- **A7a(活体,离线)**:合成/真数据上强改 `knife_cap_share=0.0` 时该代码路径仍会顶替。已由三个提交在案的测试锁死——`tests/scan/test_l2_stratify.py::test_knife_cap_limits_merit_and_backfill_but_exempts_reversal_buckets`、`::test_knife_cap_lane_step_swap_is_marked`(stratified_l2 层)、`tests/research/test_menu_replay.py::test_replay_l2_forwards_knife_cap_and_sector_seats_and_they_take_effect`(replay_l2 层)。
+- **A7b(余量,每场真跑记)**:记 merit 核天然落刀浓度 vs 配额门槛的**余量**(当前 1.83% vs 15.1% ⇒ 余量 13.3pp)。余量压向 0 = 上游在退化,此时才该看到顶替。这是保险而非死重:闲置时零成本,一旦偏好档被放松就会自动开始修剪。
+
+E6 v4：`tests/scan/test_relative_buy.py` 新增 golden：09-11 场 `tiering=true` 时 R 级应选出（合格 4 只里 Hold 3 只）；09-17 场票级 data_a 后 `data_a` 否决数 **11→2**（`l4_002444`/`l4_600150`）；**09-15 场恒为 6→6**——该日 `failed_data` 除两条 `l4_*` 外还有一条 `gate4`（自检卡覆盖 4/6 < 80%），是**真的日级**数据失败，票级拆分既不能也不应把它救回来（2026-09-25 实测更正：立案时写的「6→2」是错的，票级化只救得了两场里的一场）；`tiering=false` 8 日回放与 v3.0 逐字 parity。
 
 ### 3.2 真实扫描（10 个成功扫描日，两引擎各自计）
 
 | # | 指标 | 门 |
 |---|---|---|
-| L1 | A 级 BUY 天数 | ≥ 5/10 |
+| L1a | 非盲卡里 `entry_source == "line"` 占比 | = 100%，≥ 8/10 日 |
+| L1b | 无 A 级 BUY 的日子 `wall` 落在具体取值；`cards_silent` 计数 | Task 18 上线后 → 0 |
+| L1c | A 级 BUY 日占比 | **只记录，不设门**（见下方「L1 为什么不设阈值」） |
 | L2 | `wall=="menu"` 天数 | ≤ 2/10 |
 | L3 | finalist 隔夜 \|gap\| 90 分位 | > 1.0pp |
 | L4 | L2 落刀 ≤ L0 落刀 + 6pp | 10/10 |
@@ -201,6 +207,22 @@ E6 v4：`tests/scan/test_relative_buy.py` 新增 golden：09-11 场 `tiering=tru
 | L6 | `_selection_conflicts` 的 `card_says_prohibited` | 0 次 |
 
 不设收益门：主尺读数照旧进账本，但本波的成功定义是「可买性」不是「隔夜赚钱」；20 个成熟结果日后另读 A 级 BUY 的 `gap_c1_o2` 与 `rel_gap_market`。
+
+**L1 为什么不设阈值（2026-09-25 裁定 P25，实测证伪，开工批 3 前）**：原 L1「A 级 BUY 天数 ≥ 5/10」量的是市场，不是仪器。把 8 个真跑日、81 张候选卡全部载入后统计：
+
+| 口径 | 读数 |
+|---|---|
+| card_kind | earlystop 57（70%）· full 18 · unknown 6 |
+| rating | Underweight 39 · Hold 35 · Sell 3 · — 4 · **Overweight 0 · Buy 0** |
+| 通往 A 级的唯一来源 `满卡 ∩ Hold` | **8 张 / 81**，其中 5 张是 📌 保送（按 `¬pinned` 本就进不了 A 级） |
+| 这 8 张的 EV 目标带中枢 | −0.9%~+1.2%（中值 −0.2%）、−0.2%、−0.06%、−0.21%、−0.2%~+0.4%、−0.3%、−0.3%、≈−0.1% —— **没有一张够到 +0.3%** |
+| 这 8 张的 R:R | 0.8 / 0.8 / 0.80 / 0.72 / 0.72 / 0.8 / 0.8 / 0.8 —— **没有一张够到 1.0** |
+
+即使 Tasks 17/18 全部落地、agent 老实写入场行，**A 级在这 8 天仍然恒为 0**；再叠一层结构性约束：早停卡不得写「允许」，而 70% 的卡是早停卡。
+
+这不是管道缺陷，是研究层自己的数字在说话：每只候选的隔夜预期收益中枢为负、报酬风险比全部低于 1。用户第 4 条裁定问「为什么不可买」，这就是机器可读的答案——菜单里没有一只票值得在隔夜尺上开仓。
+
+因此 L1 改为量仪器（L1a/L1b）+ 记读数（L1c）。**明令：不得为抬高 L1c 去放松 Hold 四条件的口径**——那正是本波立案要终结的「制造 BUY」（09-12 四笔亏损 BUY 全部由 E6 相对层制造）。与用户第 1 条裁定「保留成功交易日 ≥1 BUY」不冲突：命令由 R 级（`relative_forced`）照常满足，A 级只诚实标注「研究层真的说了 yes」没有。
 
 ---
 

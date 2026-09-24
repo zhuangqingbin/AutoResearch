@@ -18,7 +18,7 @@
 - 引擎隔离：Python 侧共用；不写死 `context_claude/`，路径走 `autoresearch.common.workspace`。
 - 新产物先登记 `autoresearch/contracts/artifacts.py` 的 `ARTIFACTS`，再写生产者；新生产者必须 `grep` 出真实调用点。
 - 每个任务：先写失败测试 → 跑红 → 最小实现 → 跑绿 → 提交。全量 `uv run --no-sync python -m pytest -q tests/` 在每批末尾跑一次绿。ruff 干净（`uv run --no-sync ruff check autoresearch tests`）。
-- 提交信息末尾加：`Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`。
+- 提交信息末尾加：`Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>`。
 - 与 spec 的四处差异（已回写 spec）：① 入场硬门与 A/R 分级同受 `relative_buy.tiering` 控制（一根杆）；② 不升 `CARD_SCHEMA_VERSION`（它是 ResearchCard JSON 的版本，与 md 入场行无关）；③ 归因行只印在 brief ③，summary 仪表盘镜像 brief；④ 行业席位在 L1 注入（镜像 pinned），L2 作保留行追加。
 
 ---
@@ -82,7 +82,7 @@ git commit -m "fix(scan): scan L4 slim harvest runs as scan.l4.slim under the ru
 Regression from 262f058: harvest.main hardcoded stock.harvest, so the write
 guard refused every scan L4 slim (09-14 run: 7/7 BLOCKED, no cards).
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -211,7 +211,7 @@ for d in ("20260915-0915_2242", "20260917-0917_2152"):
     print(d, doc["veto_accounting"]["by_gate"])
 EOF
 ```
-Expected: `data_a` 计数 09-15 从 6 降到 2（688411/300274），09-17 从 11 降到 2（002444/600150）。数字不符先查 `run_health.json` 的 `failed_data` 内容再改代码。
+Expected: `data_a` 计数 09-17 从 11 降到 2（002444/600150）；**09-15 仍为 6**（2026-09-25 实测更正：该日 `failed_data` 还含一条真日级 `gate4`，全天连坐是正确行为，不是 bug）。数字不符先查 `run_health.json` 的 `failed_data` 内容再改代码。
 
 - [ ] **Step 6: 提交**
 
@@ -219,7 +219,7 @@ Expected: `data_a` 计数 09-15 从 6 降到 2（688411/300274），09-17 从 11
 git add autoresearch/scan/relative_buy.py tests/scan/test_relative_buy.py
 git commit -m "fix(e6): per-ticker data_a — an l4_<code> slim failure no longer blocks the whole day
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -394,7 +394,7 @@ Expected: 全绿（contracts 目录若有「登记表 ↔ 白名单」不变量�
 git add autoresearch/scan/decision_finalize.py autoresearch/scan/report_sections.py autoresearch/contracts/artifacts.py tests/scan/test_blind_cards.py
 git commit -m "fix(scan): blind cards (slim never landed) are marked, unrated and kept out of ratings/records
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -517,7 +517,7 @@ Expected: 全绿（含 `test_whitelist_covers_every_file_read` / `test_whitelist
 git add autoresearch/scan/brief.py tests/scan/test_brief.py
 git commit -m "fix(brief): yesterday-delta reads the previous published run (run partition broke churn)
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -641,7 +641,7 @@ Expected: 全绿。若 `test_whitelist_has_no_dead_entry` 要求 fixture 真读�
 git add autoresearch/scan/brief.py tests/scan/test_brief.py
 git commit -m "fix(brief): BUY line prints realized ledger stats instead of the UNMEASURED stub and the fixed evidence template
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -771,7 +771,7 @@ Expected: 全绿。
 git add autoresearch/scan/l4/intel_guard.py autoresearch/scan/l4/intel_status.py autoresearch/session_agent/domain_ops.py autoresearch/scan/self_review.py tests/scan/test_intel_guard.py
 git commit -m "feat(intel): deterministic soft-cap trim at l4_intel.max_queries; lint recognizes trimmed reports
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
 
 - [ ] **Step 8: 批 0 收尾**
@@ -865,7 +865,7 @@ Run: `uv run --no-sync python -m pytest -q tests/scan/test_config_knobs.py`
 git add autoresearch/scan/user_config.py tests/scan/test_config_knobs.py
 git commit -m "feat(config): funnel.weight_profile / preference_weights knobs (whitelist + types)
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -1040,7 +1040,7 @@ Expected: 全绿。（`tests/scan/test_parity.py` 不存在——2026-07-13 comm
 git add autoresearch/common/scoring.py tests/common/test_scoring.py
 git commit -m "feat(scoring): combine_group_scores extraction + preference weight profile + resolve_weights
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -1174,7 +1174,7 @@ Expected: 全绿。
 git add autoresearch/scan/universe.py autoresearch/session_agent/domain_ops.py .claude/skills/scan-market/scan_config.jsonc tests/scan/test_universe_weight_profile.py
 git commit -m "feat(recall): universe.run resolves L1 weights via weight_profile; production switches to the preference profile
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -1414,7 +1414,7 @@ Expected（A1–A3 门，§3.1）：七日全部 `A1 > 0.3`、`A2 < 0.20`、`A3_
 git add autoresearch/research/menu_replay.py tests/research/test_menu_replay.py docs/specs/2026-09-24-buyability-realignment-design.md
 git commit -m "feat(research): menu_replay — offline L1'/L2' shape replay with production composite math (A1–A3)
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
 
 - [ ] **Step 7: 批 1 收尾**
@@ -1502,7 +1502,7 @@ Run: `uv run --no-sync python -m pytest -q tests/common/test_scoring.py tests/sc
 git add autoresearch/common/scoring.py autoresearch/scan/menu.py autoresearch/scan/l2_knife_audit.py autoresearch/research/menu_replay.py tests/common/test_scoring.py
 git commit -m "refactor(scan): single-source falling_knife_mask for menu health, knife audit and replay
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -1666,7 +1666,7 @@ Run: `uv run --no-sync python -m pytest -q tests/scan/test_l2_stratify.py tests/
 git add autoresearch/scan/recall/l2_stratify.py autoresearch/scan/universe.py autoresearch/scan/user_config.py tests/scan/test_l2_stratify.py tests/scan/test_config_knobs.py
 git commit -m "feat(l2): knife cap — merit/backfill/non-reversal floors admit falling knives only up to the L0 share
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -1720,7 +1720,7 @@ Run: `uv run --no-sync python -m pytest -q tests/scan/test_config_knobs.py tests
 git add .claude/skills/scan-market/scan_config.jsonc .claude/skills/scan-market/STAGES.md tests/scan/test_config_knobs.py
 git commit -m "feat(config): L2 knife cap on; floors 健康 25 / 反转 6 / 低位转强 6
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -2003,7 +2003,7 @@ Run: `uv run --no-sync python -m pytest -q tests/scan/test_sector_seats.py tests
 git add autoresearch/scan/sector_seats.py autoresearch/scan/universe.py autoresearch/scan/recall/l2_stratify.py autoresearch/scan/user_config.py autoresearch/contracts/artifacts.py tests/scan/test_sector_seats.py tests/scan/test_config_knobs.py
 git commit -m "feat(l2): sector seats — healthy top-3 industries' non-knife healthy risers ride L1→L2 as reserved rows
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -2138,7 +2138,7 @@ Run: `uv run --no-sync python -m pytest -q tests/scan/test_sector_seat_l3.py tes
 git add autoresearch/scan/l3/prompt.py autoresearch/scan/l3/triage.py autoresearch/scan/l3/merge.py autoresearch/scan/outcome.py tests/scan/test_sector_seat_l3.py
 git commit -m "feat(l3): sector seats are visible (🏭 column), protected in pass1, guard-marked in finalists and the ledger
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -2183,7 +2183,7 @@ Run: `uv run --no-sync python -m pytest -q tests/scan/test_l3_merge_v3.py tests/
 git add autoresearch/scan/l3/merge.py tests/scan/test_l3_merge_v3.py
 git commit -m "fix(l3): composite seats no longer admit falling knives
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -2237,7 +2237,7 @@ Expected（§3.1）：`A4_l2_knife_new ≤ L0_knife + 0.06`、`A5_l2_healthy_new
 git add autoresearch/research/menu_replay.py tests/research/test_menu_replay.py docs/specs/2026-09-24-buyability-realignment-design.md
 git commit -m "feat(research): menu_replay applies knife cap and sector seats (A4–A7 readings)
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 uv run --no-sync python -m pytest -q tests/ && uv run --no-sync ruff check autoresearch tests
 ```
 
@@ -2349,7 +2349,7 @@ Run: `uv run --no-sync python -m pytest -q tests/scan/test_parsers_card_context.
 git add autoresearch/contracts/agent_output.py autoresearch/scan/l4/parsers.py autoresearch/scan/relative_buy.py tests/scan/test_parsers_card_context.py
 git commit -m "feat(card): machine-readable entry line (允许|禁止|条件) with prose fallback
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -2422,7 +2422,7 @@ Run: `uv run --no-sync python -m pytest -q tests/test_agent_defs.py tests/test_c
 git add .claude/agents/l4-card.md .claude/skills/stock-research/lite-playbook.md tests/test_agent_defs.py autoresearch/scan/self_review.py tests/scan/test_self_review_brief.py
 git commit -m "feat(l4-card): entry line in both templates + rubric rule; self_review warns when missing
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -2594,7 +2594,7 @@ Run: `uv run --no-sync python -m pytest -q tests/scan/test_relative_buy.py tests
 git add autoresearch/scan/relative_buy.py autoresearch/scan/post_run.py autoresearch/scan/user_config.py .claude/skills/scan-market/scan_config.jsonc tests/scan/test_relative_buy.py tests/scan/test_config_knobs.py
 git commit -m "feat(e6): v4.0 — entry hard gate + A/R tiers behind relative_buy.tiering; pool back to finalists
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -2645,7 +2645,7 @@ Run: `uv run --no-sync python -m pytest -q tests/scan/test_brief.py tests/scan/t
 git add autoresearch/scan/relative_facts.py autoresearch/scan/brief.py tests/scan/test_brief.py
 git commit -m "feat(brief): BUY line shows the E6 tier (A card-backed / R forced relative)
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -2892,7 +2892,7 @@ Run: `uv run --no-sync python -m pytest -q tests/scan/test_buyability.py tests/s
 git add autoresearch/scan/buyability.py autoresearch/contracts/artifacts.py autoresearch/scan/post_run.py autoresearch/scan/brief.py tests/scan/test_buyability.py tests/scan/test_brief.py
 git commit -m "feat(scan): buyability attribution (menu/cards/gates walls) written after the E6 decision and printed in brief ③
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -2981,7 +2981,7 @@ Run: `uv run --no-sync python -m pytest -q tests/scan/test_outcome_buy_tier.py t
 git add autoresearch/scan/outcome.py autoresearch/scan/ledger_views.py autoresearch/scan/populations.py tests/scan/test_outcome_buy_tier.py
 git commit -m "feat(ledger): buy_tier column, runs.csv n_buy_a/wall, E6 a-tier day share ruler
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -3013,7 +3013,7 @@ Expected: 全绿、ruff 0。
 git add .claude/skills/scan-market/STAGES.md .claude/skills/scan-market/SKILL.md AGENTS.md
 git commit -m "docs(scan): buyability realignment — weights profile, L2 cap/floors/seats, card entry line, E6 tiers, attribution
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
 
 - [ ] **Step 5: 批 4 真跑验收（不是代码任务；10 个成功扫描日，两引擎各自记）**
