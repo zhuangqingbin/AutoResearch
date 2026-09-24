@@ -62,6 +62,12 @@ def triage_l2_for_l3(df: pd.DataFrame, target: int = 60, *, lowturn_cap: int = 0
        composite_seat`),并与 pinned 同属**受保护集**(mandatory 超 target 时不被截尾)。
        理由:守卫⑨ 会把它们强制送进 finalists,pass1 切了它们 = finalists 里出现空 thesis 行。
        `composite_seat_m<=0`(默认)= 现行为逐字 parity。
+    ①c 行业席位强留(2026-09-24 §2.3):`sector_seat` 布尔列(`universe._inject_sector_seats_l1`
+       全程带下来,presence-gated,多数未开启席位的日子该列不存在)为真的行一律入 mandatory
+       (`selection_reason=conviction_guard`、`selection_detail=sector_seat`),与 ①b 同属
+       **受保护集**(`is_seat`,mandatory 超 target 时不被截尾)——镜像 ①b 的"只保证被 l3-rank
+       看见/判到,不保证进 finalists"语义,B 条照常适用、不因席位抬评级。列不存在(未开启)
+       → 该规则贡献 0 行,不报错。
     ② 多路共振**按 composite 取前 `RESONANCE_CAP` 只**强留(2026-08-22 由「全入」收窄,
        理由见该常量注释):`n_channels >= 3`(真实列,直接可用)。列缺失(如 `recall_mode="composite"`
        的 L2,无 provenance 列)→ 跳过本规则,不报错。
@@ -155,6 +161,14 @@ def triage_l2_for_l3(df: pd.DataFrame, target: int = 60, *, lowturn_cap: int = 0
                     mandatory.loc[i] = True
                     _mark(i, "conviction_guard", "composite_seat")
 
+    if "sector_seat" in d.columns:                       # ①c 行业席位强留(2026-09-24 §2.3)
+        seat2 = d["sector_seat"].map(lambda v: bool(v) if pd.notna(v) else False)
+        for i in d.index[seat2]:
+            is_seat.loc[i] = True                        # 与 ①b 同属受保护集(超 target 不被截尾)
+            if not mandatory.loc[i]:
+                mandatory.loc[i] = True
+                _mark(i, "conviction_guard", "sector_seat")
+
     if "n_channels" in d.columns:                        # ② 多路共振 top-RESONANCE_CAP 强留
         n_ch = pd.to_numeric(d["n_channels"], errors="coerce").fillna(0)
         resonant = [i for i in d.index[n_ch >= 3] if not mandatory.loc[i]]
@@ -193,9 +207,12 @@ def triage_l2_for_l3(df: pd.DataFrame, target: int = 60, *, lowturn_cap: int = 0
         # `_l3_pass1_cut.csv`、丢失 L3 真判机会("L3 真判但不可淘汰"失守)。pinned 行数
         # 本身就超过 target 的极端情形(理论上用户 pinned 名单很小,不会发生)→ 全部保留,
         # kept 允许略超 target(强留优先级高于 target 硬性配额)。
-        # 受保护集 = 📌 保送 ∪ composite 席位。两者同理:守卫层会把它们**强制送进
-        # finalists**,若 pass1 在这里把它们切掉,l3-rank 就从没判过它们,finalists 里
-        # 那几行只剩 L2 展示字段 + 空 thesis(「保送 ≠ 免判,更 ≠ 判了不要」的同款事故)。
+        # 受保护集 = 📌 保送 ∪ composite 席位 ∪ 行业席位(`is_seat` 现在两者共用)。三者
+        # 同理:若 pass1 在这里把它们切掉,l3-rank 就从没判过它们,finalists 里那几行
+        # 只剩 L2 展示字段 + 空 thesis(「保送 ≠ 免判,更 ≠ 判了不要」的同款事故)——
+        # 📌/composite 席位守卫层还会把它们**强制送进 finalists**;行业席位不做这层强制
+        # (2026-09-24 §2.3:它只保证被 l3-rank 看见/判到,不保证进 finalists,B 条照常
+        # 适用、不因席位抬评级),但同样不能被 pass1 提前切掉、剥夺被真判的机会。
         protected = is_pinned | is_seat
         protected_idx = [i for i in mandatory_idx if protected.loc[i]]
         other_idx = [i for i in mandatory_idx if not protected.loc[i]]

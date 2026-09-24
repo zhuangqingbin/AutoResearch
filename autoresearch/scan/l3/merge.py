@@ -568,7 +568,9 @@ def write_finalists(date: str, budget: int = 30, root: Path | None = None,
     读 l3-rank agent 落的 _l3_judged.json → 从 L2 回填 pct_60d(供缺 `finalist` 列时的旧
     judged 回退路径与 v2 兼容;v3 本身不需要 pct_60d)→ `merge_l3_finalists_v3`(消费
     `finalist` 标记 + 确定性守卫,design: plan 2026-07-12-l3-merge-plan.md Task 2)产出
-    (finalists, bench)→ pinned 强留(`_inject_pinned_finalists`,design 2026-07-11 §4.1;
+    (finalists, bench)→ 守卫⑨ composite 席位注入(`inject_composite_seats`)→ 行业席位
+    guard 留痕(2026-09-24 §2.3;presence-gated:无 `_sector_seats.json` → 不变;只标记
+    已在场的行,不注入新行、不占 finalist 名额)→ pinned 强留(`_inject_pinned_finalists`,design 2026-07-11 §4.1;
     plan Task 4;presence-gated:无 pinned.json/kept 全空 → 不变,**在 v3 之后、不占
     finalist 名额**)→ bench 落 `_l3_bench.csv` **之前**先摘掉已被 pinned 注入进
     finalists 的码(M-1 修复:防止同票双记 bench 与 finalists,见 `refine_l3_bucket`/
@@ -621,6 +623,26 @@ def write_finalists(date: str, budget: int = 30, root: Path | None = None,
             bench = bench[~bench["code"].astype(str).isin({s["code"] for s in seats})
                           ].reset_index(drop=True)
     seat_n = int(len(seats))
+
+    # 行业席位 guard 留痕(2026-09-24 §2.3):与守卫⑨ composite 席位**不同**——这里不注入新行、
+    # 不强制送进 finalists(①c pass1 强留只保证 l3-rank 判到它们,B 条照常适用、不抬评级)。
+    # 只对**已经在场**(l3-rank 自己判了 finalist=True)的行打 `guard="sector_seat"` 留痕,
+    # 供下游(账本 role/L4 prompt)识别「这只 finalist 恰好也是行业席位」。**不覆盖**已有的
+    # 更具体标记(pinned 那次事故的同一条纪律:guard 说的是「它怎么进来的」,已有值优先)。
+    # 局部导入(而非模块顶层):`sector_seats.py` 反向 `from autoresearch.scan.l3.merge import
+    # CHASE_1D_PCT, _is_st`——模块顶层互相导入会循环失败,镜像 `universe._inject_sector_seats_l1`
+    # 调用点同款局部导入(同一个循环边)。
+    from autoresearch.scan.sector_seats import SECTOR_SEAT_GUARD, SECTOR_SEATS_FILENAME
+    seats_doc = scan_dir / SECTOR_SEATS_FILENAME
+    if seats_doc.exists():                                  # 行业席位 guard 留痕(2026-09-24 §2.3)
+        with contextlib.suppress(Exception):
+            sector_codes = {str(s["code"]).zfill(6) for s in
+                            (json.loads(seats_doc.read_text(encoding="utf-8")).get("seats") or [])}
+            if sector_codes and "code" in fin.columns:
+                if "guard" not in fin.columns:
+                    fin["guard"] = ""
+                m = fin["code"].astype(str).str.zfill(6).isin(sector_codes) & (fin["guard"].fillna("") == "")
+                fin.loc[m, "guard"] = SECTOR_SEAT_GUARD
 
     from autoresearch.scan.user_config import load_pinned
     kept = load_pinned(date, path=pinned_path)["kept"]

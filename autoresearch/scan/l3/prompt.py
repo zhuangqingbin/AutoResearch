@@ -260,6 +260,11 @@ def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
     2026-07-11-recall-gate-pinned-config-design.md §4.1);默认 False = 逐字 parity。
     pinned_path:`load_pinned` 的自定义路径(测试注入;生产默认
     `.claude/skills/scan-market/pinned.json`)。
+    行业席位列(`seat`,2026-09-24 §2.3):无独立 flag 参数——`sector_seat` 布尔列本身就是
+    presence-gate(`universe._inject_sector_seats_l1` 全程带下来,未开启 `l2.sector_seats`
+    的日子该列不存在;镜像 `pf` 恒计算的写法,而非另开一个 `*_flag` 参数)。列存在且至少
+    一行为真 → 加 `seat` 列(🏭 标记)+ 图例;图例只说明「行业席位=什么」与「B 条照常适用、
+    不抬评级」,**不构成推荐**——与 pinned 图例同一纪律:被看见不等于被偏袒。
     lane_blocks=True:表渲染从单一大表改为按 lane 分块(`_render_lane_blocks`——`### lane:<名>`
     小标题;`l2_lane_reserved` 真值行归 `floor` 块,其余行归 `recall_channels` 首通道块;
     块内按 composite 降序;块序=有机通道在前、`floor` 殿后)去位置偏差(07-08 诊断 22/31
@@ -342,6 +347,11 @@ def l3_table_md(date: str, root: Path | None = None, delta: bool = False,
             cols = [*cols, "pinned"]
             header += ["_📌(pinned列):用户手工保送票——L1→L5 全程强留、不可淘汰;"
                        "仍须按下表真实证据独立评判,不因『保送』降低尽调标准。_", ""]
+    if "sector_seat" in df.columns and df["sector_seat"].fillna(False).astype(bool).any():
+        df["seat"] = df["sector_seat"].map(lambda v: "🏭" if bool(v) else "")
+        cols = [*cols, "seat"]
+        header += ["_🏭(seat列):行业席位——当日 healthy top3 行业内的非落刀健康上涨成员,确定性直通到本表;"
+                   "B 条照常适用,不因席位抬评级;它只保证「被看见」。_", ""]
     if delta:
         prev = _prev_l3_day(date, root=root)
         if prev is None:

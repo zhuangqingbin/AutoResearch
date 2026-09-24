@@ -237,7 +237,8 @@ def run_facts(run_dir: Path | str) -> dict:
             "guard": guard,
             "conviction": fr.get("conviction"),
             "role": ("pinned" if lane == "pinned" else
-                     "composite_seat" if guard == "composite_seat" else "finalist"),
+                     "composite_seat" if guard == "composite_seat" else
+                     "sector_seat" if guard == "sector_seat" else "finalist"),
         }
     for code, rating in (ratings.items() if isinstance(ratings, dict) else []):
         code = _z6(code)
