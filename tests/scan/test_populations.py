@@ -546,6 +546,55 @@ def test_e6_metric_compares_buy_against_the_eligible_pool_only(tmp_path, monkeyp
     assert got.loc["e6_buy_minus_pool", "value"] == pytest.approx(0.04)
 
 
+# ───────────────────────── fix round 1 (reviewer mutation testing) ─────────────────────────
+# Neither of these two facts was covered anywhere in this file until now: deleting
+# `build_population`'s `"buy_tier"` row-dict line, or deleting the entire
+# `e6_a_tier_day_share` block in `stage_rulers()`, both left the whole 48-test file green.
+
+def test_build_population_carries_buy_tier_as_a_plain_column(tmp_path, monkeypatch):
+    """Mutation: deleting the `"buy_tier": ...` line from `build_population`'s
+    per-row record dict (right after `"e6_rank"`) stayed green here."""
+    monkeypatch.chdir(tmp_path)
+    lake = _lake(tmp_path)
+    top = CODES[:40]
+    run = _full_run(tmp_path, e6={
+        "buys": [{"code": top[0], "rank": 1, "tier": "A"}],
+        "candidates": [{"code": top[0], "eligible": True, "rank": 1},
+                       {"code": top[1], "eligible": True, "rank": 2},
+                       {"code": top[3], "eligible": False, "rank": None}]})
+    table, meta = P.build_population(run, lake_daily=lake)
+    assert "buy_tier" in table.columns
+    assert table.set_index("code").loc[top[0], "buy_tier"] == "A"
+
+
+def test_e6_a_tier_day_share_reads_true_on_an_a_tier_buy_day(tmp_path, monkeypatch):
+    """Mutation: deleting the entire `e6_a_tier_day_share` block in `stage_rulers()`
+    (right after the `e6_buy_minus_pool` paired-metric call) stayed green here."""
+    monkeypatch.chdir(tmp_path)
+    lake = _lake(tmp_path)
+    top = CODES[:40]
+    got = _rulers_for(tmp_path, lake, {"e6": {
+        "buys": [{"code": top[0], "rank": 1, "tier": "A"}],
+        "candidates": [{"code": top[0], "eligible": True, "rank": 1},
+                       {"code": top[1], "eligible": True, "rank": 2},
+                       {"code": top[3], "eligible": False, "rank": None}]}})
+    assert got.loc["e6_a_tier_day_share", "value"] == pytest.approx(1.0)
+
+
+def test_e6_a_tier_day_share_reads_false_on_an_r_tier_buy_day(tmp_path, monkeypatch):
+    """Same metric, R-tier day: must read 0.0, not merely "present" — guards
+    against a looser mutant that reports 1.0 for any BUY day regardless of tier."""
+    monkeypatch.chdir(tmp_path)
+    lake = _lake(tmp_path)
+    top = CODES[:40]
+    got = _rulers_for(tmp_path, lake, {"e6": {
+        "buys": [{"code": top[0], "rank": 1, "tier": "R"}],
+        "candidates": [{"code": top[0], "eligible": True, "rank": 1},
+                       {"code": top[1], "eligible": True, "rank": 2},
+                       {"code": top[3], "eligible": False, "rank": None}]}})
+    assert got.loc["e6_a_tier_day_share", "value"] == pytest.approx(0.0)
+
+
 def test_exec_line_metric_stays_inside_the_overnight_buy_candidates(tmp_path, monkeypatch):
     """执行线只在**前夜 BUY 候选**(E6 eligible 池)内比,不拿它量报告候选质量。"""
     monkeypatch.chdir(tmp_path)

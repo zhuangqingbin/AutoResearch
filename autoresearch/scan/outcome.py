@@ -134,6 +134,13 @@ LEDGER_COLUMNS = (
     "outcome_status", "calendar_quality", "calendar_digest",
     "code", "name", "sector", "role", "lane", "guard",
     "conviction", "rating", "proposal", "early_stop_reason", "e6_rank", "e6_eligible",
+    # `buy_tier`(2026-09-24 §2.7)是 `e6_buy` 的**从属**列,不是独立列——**读它之前先看
+    # `e6_buy`**:`buy_tier is None` 同时覆盖两件不同的事,「这行根本不是 BUY」与「这行
+    # 是 BUY,但决策文件写在 tiering 特性上线之前,那份 JSON 里压根没有 `tier` 键」,
+    # 单看这一列分不出是哪一种。**生产配置是 `relative_buy.tiering=true`**(实测
+    # `.claude/skills/scan-market/scan_config.jsonc`)——代码里 `tiering` 参数默认
+    # `False` 只是**新旧奇偶 + 回滚杆**的兜底值,不是线上常态;真正让 `buy_tier` 读成
+    # 空的是「run 比这个特性早」或「配置没读到、退到内建默认」,不是「生产照旧关着它」。
     "e6_buy", "buy_tier", "buyable_c1", "t1", "t2", "t1_open", "t1_high", "t1_low", "t1_close", "t1_pct_chg",
     "t1_pos_in_range", "exec_ok", "t2_open", "gap_c1_o2", "rel_gap_market",
     "rel_gap_sector", "excess_med_market", "fwd_5_oc", "fwd_10_oc", "ruler",
