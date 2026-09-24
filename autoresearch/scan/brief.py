@@ -575,11 +575,16 @@ def _buy_lines(facts: dict, src: list[dict]) -> list[str]:
     # Task 20:E6 v4.0 的 A/R 分级(裁定①)—— A=卡面自己允许入场,R=卡面没给买点、
     # 靠「每天至少一只」的相对硬规则强出。缺 `tier`(v3.0 决策书 / tiering=False)不挂标,
     # 逐字兼容;present=False 或 blocked=True 时 `rel.get("tier")` 恒 None,同样不挂标。
+    # fix round 1(reviewer minor):R 级不能只在 ✅ 后面追加说明——brief 是被快速略读的,
+    # 先入眼的字形才是真正落地的信号,追加在后面读者仍先看见绿勾。R 级改**替换**前导
+    # 字形(✅→🟥,行首即转红),标签里原来的 🟥 随之去重(否则会双红)。影子期前导
+    # 本来就不是 ✅ 而是 🕶,`str.replace` 找不到 ✅ 是无操作的 no-op——不补红也不留双
+    # 标,那句「非正式·不执行」本身已经是限定语,不需要额外的红色标记。
     tier = rel.get("tier")
     if tier == "A":
         tag += " · **A 级·卡面允许入场**"
     elif tier == "R":
-        tag += " · 🟥 **R 级·卡面无买点·强制相对(裁定①)**"
+        tag = tag.replace("✅", "🟥") + " · **R 级·卡面无买点·强制相对(裁定①)**"
     if not rel.get("present"):
         lines.append(f"- {tag}:—(`{DECISION_FILENAME}` 未生成 —— 缺证据不等于没候选)")
         return lines

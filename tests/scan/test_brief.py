@@ -914,17 +914,47 @@ def test_delta_line_reads_previous_published_run_under_run_partition(tmp_path, m
 # v4.0(`relative_buy.tiering`)给 `buys[0]` 挂 `tier`(A=卡面自己允许入场 / R=卡面没给
 # 买点、靠「每天至少一只」的相对硬规则强出)。brief ③ 必须把这个分级念出来 —— 否则读者
 # 拿到一行「relative BUY」,分不清这次是研究真的认可了,还是规则替它凑的数。
+#
+# fix round 1(reviewer minor,唯一一轮):R 级最初只在 ✅ 后面追加文字说明 —— brief 是
+# 被快速略读的,先入眼的字形才是真正落地的信号,追加在后面读者仍先看见绿勾。改为**替换**
+# 前导字形(active 期 ✅→🟥,行首即转红,标签里原来的 🟥 随之去重);A 级维持 ✅ 不变。
 
 def test_buy_line_prints_tier_label(scan):
+    """active 期是这次修复真正生效的地方:前导字形必须从 ✅ 换成 🟥,不是追加在后面。"""
+    doc = json.loads((scan / brief.DECISION_FILENAME).read_text(encoding="utf-8"))
+    doc["mode"] = "active"
+    doc["buys"][0].update({"tier": "R", "basis": "relative_forced"})
+    doc["tiering"], doc["tier_counts"] = True, {"A": 0, "R": 2}
+    (scan / brief.DECISION_FILENAME).write_text(json.dumps(doc, ensure_ascii=False),
+                                                encoding="utf-8")
+    md = brief.build(scan, run_folder=_RUN)["markdown"]
+    line = next(ln for ln in md.splitlines() if "relative BUY" in ln)
+    assert line.startswith(
+        "- 🟥 **relative BUY** · **R 级·卡面无买点·强制相对(裁定①)**:"), line
+    assert "✅" not in md, "R 级必须换掉前导 ✅,不能只在后面追加说明——略读时先看见的还是绿勾"
+    assert md.count("🟥") == 1, "替换 + 追加不能让红色标记出现两次"
+
+    doc["buys"][0].update({"tier": "A", "basis": "card_backed"})
+    (scan / brief.DECISION_FILENAME).write_text(json.dumps(doc, ensure_ascii=False),
+                                                encoding="utf-8")
+    md = brief.build(scan, run_folder=_RUN)["markdown"]
+    line = next(ln for ln in md.splitlines() if "relative BUY" in ln)
+    assert line.startswith("- ✅ **relative BUY** · **A 级·卡面允许入场**:"), line
+
+
+def test_shadow_r_tier_replace_is_a_harmless_noop(scan):
+    """影子期前导字形是 🕶 不是 ✅,`tag.replace("✅", "🟥")` 找不到目标 —— 必须**确认**
+    这确实是无操作,而不是想当然:不能留下两个标记(🕶+🟥),也不能一个都不剩。"""
     doc = json.loads((scan / brief.DECISION_FILENAME).read_text(encoding="utf-8"))
     doc["buys"][0].update({"tier": "R", "basis": "relative_forced"})
     doc["tiering"], doc["tier_counts"] = True, {"A": 0, "R": 2}
     (scan / brief.DECISION_FILENAME).write_text(json.dumps(doc, ensure_ascii=False),
                                                 encoding="utf-8")
-    text = brief.build(scan, run_folder=_RUN)["markdown"]
-    assert "🟥 **R 级·卡面无买点·强制相对(裁定①)**" in text
-
-    doc["buys"][0].update({"tier": "A", "basis": "card_backed"})
-    (scan / brief.DECISION_FILENAME).write_text(json.dumps(doc, ensure_ascii=False),
-                                                encoding="utf-8")
-    assert "**A 级·卡面允许入场**" in brief.build(scan, run_folder=_RUN)["markdown"]
+    md = brief.build(scan, run_folder=_RUN)["markdown"]
+    line = next(ln for ln in md.splitlines() if "relative BUY" in ln)
+    assert line.startswith(
+        "- 🕶 **影子 relative BUY(非正式·不执行)** · **R 级·卡面无买点·强制相对(裁定①)**:"
+    ), line
+    assert "✅" not in md
+    assert "🟥" not in md, "影子期不该补红——非正式已经是限定语,不能凭空多出一个标记"
+    assert md.count("🕶") == 1, "不能变成两个标记"
