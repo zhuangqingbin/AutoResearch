@@ -395,6 +395,20 @@ def test_l4_card_contract_has_entry_field():
     assert re.search(f.pattern, "**入场**: 条件(x)").group(1) == "条件"
 
 
+def test_entry_line_pattern_pinned_between_parser_and_contract():
+    """fix round 2(2026-09-24):`self_review.has_machine_entry_line` 现在编译自
+    `L4_CARD.field("entry").pattern`,但 `parsers._ENTRY_LINE_RE` 仍是它自己的字面量
+    正则——两处今天相同,只是巧合,没有任何东西钉住它们**继续**相同。谁悄悄放宽
+    parser 的正则(比如给"允许"加个同义词)而不动契约声明,lint 就会在无人察觉的
+    情况下与 parser 问不同的问题——正是 fix round 1 刚修完的缺陷,一步之遥地在别的
+    文件重演。这条测试把"今天恰好相同"钉成"字节相同,变了就红";不改 `parsers.py`
+    本身(它的正则/派发逻辑归另一个任务),只导入它做字符串比对。
+    """
+    from autoresearch.contracts.agent_output import L4_CARD
+    from autoresearch.scan.l4.parsers import _ENTRY_LINE_RE
+    assert _ENTRY_LINE_RE.pattern == L4_CARD.field("entry").pattern
+
+
 # ── fix round 1:entry_source 的 None/"prose" 组合此前没有专属断言火力点 ────────
 #
 # 复核跑了七个变异,六个被逮到;第七个——把 `_empty_card_context` 的 `entry_source`
