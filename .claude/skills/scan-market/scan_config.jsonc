@@ -181,7 +181,21 @@
     //   重开 accumulation 路时它会自动复活。同一病的另一处见上方 channel_quotas 的幽灵行注释。
     "knife_cap": true,
     "floors": { "趋势": 20, "健康": 25, "反转": 6, "价值": 12, "成长": 12, "吸筹": 12,
-                "主力": 10, "低位转强": 6, "事件": 0 }
+                "主力": 10, "低位转强": 6, "事件": 0 },
+    // ── 行业席位(2026-09-24 可买性对齐 §2.3;用户裁定③ 交由 Claude 决定 → 决定「接」)──
+    // 【生效点】universe.run 在 scored 就绪后、recall_select 之前:
+    //   sector_seats.pick_sector_seats(当日 healthy top3 行业内,取 healthy_riser ∧ ¬落刀
+    //   的成员,按偏好档 composite 降序每行业 per_sector 只;剔 📌/ST/当日涨幅≥9.5%)
+    //   → _inject_sector_seats_l1 镜像 pinned 注入 L1 → select_l2 作保留行追加
+    //   → l3/prompt 的 🏭 列 + triage ①c 强留 → l3/merge 给**已在场**的行打 guard 留痕。
+    // ⚖️ 证据:09-01→09-17 七日离线重放每日恰 3 行业 / 6 席、**席位全非落刀**(A6 7/7);
+    //   不净增 L4 卡数 —— 席位换掉菜单 200 行里的其他行,finalist 名额仍由 l4_budget 决定,
+    //   merge.py 只对 l3-rank 自己判成 finalist 的行打 sector_seat 标(不强推额外卡)。
+    // 🚨 2026-09-25:本键此前**只在离线重放里以参数形式存在,生产配置从未写过**,
+    //   而 user_config 的默认是「缺省 = 不出席 = parity」——即裁定③ 的交付物一直是关的。
+    //   批 2 的回滚杆文案写着 sector_seats.enabled=false,却指向一个没人打开过的开关。
+    // 回滚杆 = "enabled": false(一行,逐字 parity)。
+    "sector_seats": { "enabled": true, "per_sector": 2, "max_sectors": 3 }
   },
 
   // ── 旁路 · 行业 brief(L2 后并发)──────────────────────────────────────────
