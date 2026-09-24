@@ -191,6 +191,12 @@ A4/A5/A6 七日全部达标，且 A4 余量远超 6pp 门槛本身（19.4–26.8
 - **A7a(活体,离线)**:合成/真数据上强改 `knife_cap_share=0.0` 时该代码路径仍会顶替。已由三个提交在案的测试锁死——`tests/scan/test_l2_stratify.py::test_knife_cap_limits_merit_and_backfill_but_exempts_reversal_buckets`、`::test_knife_cap_lane_step_swap_is_marked`(stratified_l2 层)、`tests/research/test_menu_replay.py::test_replay_l2_forwards_knife_cap_and_sector_seats_and_they_take_effect`(replay_l2 层)。
 - **A7b(余量,每场真跑记)**:记 merit 核天然落刀浓度 vs 配额门槛的**余量**(当前 1.83% vs 15.1% ⇒ 余量 13.3pp)。余量压向 0 = 上游在退化,此时才该看到顶替。这是保险而非死重:闲置时零成本,一旦偏好档被放松就会自动开始修剪。
 
+  **口径必须写死,否则这道门无法测(2026-09-25 裁定 P39)**:`menu_replay.metrics()` 今天只产出 `L0_knife`(门槛侧)与 `A4_l2_knife_new`(**帽生效之后**的 L2 占比),**没有任何地方产出帽生效之前的 merit 核占比**——A7b 当时读的是一个没人生产的数。
+
+  不得用 `L0_knife − A4_l2_knife_new` 顶替:帽真开始咬的时候,后者恰恰被压低,余量于是在**最该报警的时刻读得最健康**,与这道门的用途正好相反。
+
+  正确口径(可用现有工具实现):**A7b 余量 = `L0_knife` − 把帽关掉(`knife_cap_share=None`)重放一遍得到的 merit 核落刀占比**。`replay_l2` 本就支持关帽重放,Task 16 做 A7 诊断时已经手工跑过这条路。实现时须有一个测试证明新键**不等同于**帽后占比(用既有的 `knife_cap_share=0.0` 强制 fixture,两者必须不同)——一个悄悄等于 `A4_l2_knife_new` 的键能骗过粗测试,也就废掉了这道门。
+
 E6 v4：`tests/scan/test_relative_buy.py` 新增 golden：09-11 场 `tiering=true` 时 R 级应选出（合格 4 只里 Hold 3 只）；09-17 场票级 data_a 后 `data_a` 否决数 **11→2**（`l4_002444`/`l4_600150`）；**09-15 场恒为 6→6**——该日 `failed_data` 除两条 `l4_*` 外还有一条 `gate4`（自检卡覆盖 4/6 < 80%），是**真的日级**数据失败，票级拆分既不能也不应把它救回来（2026-09-25 实测更正：立案时写的「6→2」是错的，票级化只救得了两场里的一场）；`tiering=false` 8 日回放与 v3.0 逐字 parity。
 
 ### 3.2 真实扫描（10 个成功扫描日，两引擎各自计）
