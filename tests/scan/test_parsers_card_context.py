@@ -387,8 +387,9 @@ def test_without_entry_line_prose_inference_is_kept_and_labelled():
 
 
 def test_l4_card_contract_has_entry_field():
-    from autoresearch.contracts.agent_output import L4_CARD
     import re
+
+    from autoresearch.contracts.agent_output import L4_CARD
     f = L4_CARD.field("entry")
     assert f.required is False
     assert re.search(f.pattern, "**入场**: 条件(x)").group(1) == "条件"
