@@ -134,7 +134,7 @@ LEDGER_COLUMNS = (
     "outcome_status", "calendar_quality", "calendar_digest",
     "code", "name", "sector", "role", "lane", "guard",
     "conviction", "rating", "proposal", "early_stop_reason", "e6_rank", "e6_eligible",
-    "e6_buy", "buyable_c1", "t1", "t2", "t1_open", "t1_high", "t1_low", "t1_close", "t1_pct_chg",
+    "e6_buy", "buy_tier", "buyable_c1", "t1", "t2", "t1_open", "t1_high", "t1_low", "t1_close", "t1_pct_chg",
     "t1_pos_in_range", "exec_ok", "t2_open", "gap_c1_o2", "rel_gap_market",
     "rel_gap_sector", "excess_med_market", "fwd_5_oc", "fwd_10_oc", "ruler",
     # ── 时间锚(2026-08-28 §2.4 G1)。**读 BUY 战绩前必须先看 `actionability`** ──
@@ -220,6 +220,7 @@ def run_facts(run_dir: Path | str) -> dict:
     judged = {_z6(r.get("code")): r for r in pick_rows("L3_judged_full.csv")}
 
     buys = {_z6(b.get("code")) for b in (decision.get("buys") or [])}
+    tiers = {_z6(b.get("code")): b.get("tier") for b in (decision.get("buys") or [])}
     cand = {_z6(c.get("code")): c for c in (decision.get("candidates") or [])}
 
     rows: dict[str, dict] = {}
@@ -259,6 +260,7 @@ def run_facts(run_dir: Path | str) -> dict:
         row["e6_rank"] = (c or {}).get("rank")
         row["e6_eligible"] = (c or {}).get("eligible")
         row["e6_buy"] = code in buys
+        row["buy_tier"] = tiers.get(code) if code in buys else None
         if code in buys:
             row["role"] = "BUY"
     return {"analysis_date": date, "rows": rows, "used_shared": used_shared,
@@ -651,7 +653,7 @@ def compute_outcome(run_dir: Path | str, *, lake_daily: Path | None = None,
         rows[code] = {
             **{k: row.get(k) for k in ("code", "name", "sector", "role", "lane", "guard",
                                        "conviction", "rating", "early_stop_reason",
-                                       "e6_rank", "e6_eligible", "e6_buy")},
+                                       "e6_rank", "e6_eligible", "e6_buy", "buy_tier")},
             "buyable_c1": buyable,
             "t1_open": _num(m["t1_open"]) if m is not None else None,
             "t1_high": _num(m["t1_high"]) if m is not None else None,

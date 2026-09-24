@@ -497,15 +497,17 @@ def _l4_facts(src: FrozenSources) -> tuple[dict[str, str] | None, dict[str, dict
     return ratings, early, missing
 
 
-def _e6_index(src: FrozenSources) -> tuple[dict[str, dict], set[str], bool]:
+def _e6_index(src: FrozenSources) -> tuple[dict[str, dict], set[str], dict[str, object], bool]:
     doc = src.json("_relative_buy_decision.json")
     if not isinstance(doc, dict):
-        return {}, set(), False
-    buys = {_z6(b.get("code")) for b in (doc.get("buys") or [])
-            if isinstance(b, dict) and b.get("code")}
+        return {}, set(), {}, False
+    buys_list = [b for b in (doc.get("buys") or []) if isinstance(b, dict) and b.get("code")]
+    buys = {_z6(b.get("code")) for b in buys_list}
+    # `tiers`:A(card-backed)/R(relative_forced)(Task 19,2026-09-24 §2.7)。
+    tiers = {_z6(b.get("code")): b.get("tier") for b in buys_list}
     cand = {_z6(c.get("code")): c for c in (doc.get("candidates") or [])
             if isinstance(c, dict) and c.get("code")}
-    return cand, buys, True
+    return cand, buys, tiers, True
 
 
 def _terminal(flags: dict[str, object]) -> tuple[str, str]:
@@ -559,7 +561,7 @@ def build_population(run_dir: Path | str, *,
     missing += l4_missing
     tasks_doc = src.json("_l4_tasks.json")
     passport, has_passport = _passport_index(src)
-    e6_cand, e6_buys, has_e6 = _e6_index(src)
+    e6_cand, e6_buys, e6_tiers, has_e6 = _e6_index(src)
 
     for name, present in (("L2_gbdt_top200.csv", l2_rows is not None),
                           ("_l3_pass1_kept.csv", kept_rows is not None),
@@ -710,6 +712,10 @@ def build_population(run_dir: Path | str, *,
             "research_rating": rating or l4_block.get("research_rating"),
             "l4_early_stop_reason": (stop or {}).get("reason") if stop else None,
             "e6_rank": (cand or {}).get("rank"),
+            # 非旗字符串列(2026-09-24 §2.7):不进 FLAG_COLUMNS —— 那个元组只装
+            # 「正交身份旗」(见 `FLAG_COLUMNS` 旁注),A/R/None 三值不是布尔,
+            # `pd.array(..., dtype="boolean")` 装不下。
+            "buy_tier": (e6_tiers.get(code) if (has_e6 and code in e6_buys) else None),
         })
 
     table = pd.DataFrame.from_records(records)
@@ -1079,6 +1085,17 @@ def stage_rulers(*, reports_root: Path | None = None) -> pd.DataFrame:
         sessions, "E6", "e6_buy_minus_pool",
         lambda t: t["is_buy"].fillna(False),
         lambda t: t["e6_eligible"].fillna(False) & ~t["is_buy"].fillna(False))
+
+    # ── E6:A 级天数占比(2026-09-24 §2.7 的成功尺;card-backed 允许才算 A)──────
+    a_days = []
+    for session in sorted(sessions):
+        t = sessions[session]
+        buy_rows = t[t["is_buy"].fillna(False).astype(bool)]
+        if not len(buy_rows) or "buy_tier" not in t.columns:
+            continue
+        a_days.append({"session": session, "value": float((buy_rows["buy_tier"] == "A").any()),
+                       "n_names": int(len(buy_rows)), "coverage": None})
+    rows += _ratio_metric(a_days, "E6", "e6_a_tier_day_share")
 
     # ── 执行线:只在**前夜 BUY 候选**(E6 eligible 池)内比 ────────────────────
     def exec_in(t: pd.DataFrame) -> pd.Series:

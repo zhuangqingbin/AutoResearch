@@ -110,7 +110,7 @@ RUNS_COLUMNS = (
     "engine", "capsule_run_id", "report_dir_id", "run_local_date", "analysis_date",
     "run_mode", "business_status", "evidence_status", "actionability_status",
     "decision_approved_at", "first_available_session", "exec_lag",
-    "n_finalist", "n_buy", "identity_quality", "ready_quality",
+    "n_finalist", "n_buy", "n_buy_a", "wall", "identity_quality", "ready_quality",
 )
 
 SESSION_COLUMNS = (
@@ -235,12 +235,15 @@ def _failed_dirs(scan: Path) -> list[Path]:
     return sorted(p for p in root.iterdir() if p.is_dir())
 
 
-def _run_counts(run_dir: Path, run_mode: str = "") -> tuple[int | None, int | None]:
-    """`(n_finalist, n_buy)`。读不到产物 → `(None, None)`,**不写 0**(0 是判断,缺席是状态)。
+def _run_counts(run_dir: Path, run_mode: str = "") -> tuple[int | None, int | None, int | None]:
+    """`(n_finalist, n_buy, n_buy_a)`。读不到产物 → `(None, None, None)`,**不写 0**(0 是判断,缺席是状态)。
 
     唯一的例外是 `SENTINEL_EMPTY`:它的 0 有**结构化事实**背书(`run_mode.json`,§R9
     「不从产物空否反推」的另一面 —— 有那份文件时,空就是真的空)。少了这一条,哨兵日
     会因为 `n_buy` 空白而整天掉出 0-BUY 桶,又变回本模块要修的那个病。
+
+    `n_buy_a` = BUY 里 `buy_tier == "A"` 的那部分(2026-09-24 §2.7:card-backed 允许
+    才叫 A 级,与 `n_buy` 同一份 rows,不另开读盘)。
     """
     with contextlib.suppress(Exception):
         facts = _outcome.run_facts(run_dir)
@@ -248,13 +251,21 @@ def _run_counts(run_dir: Path, run_mode: str = "") -> tuple[int | None, int | No
         if not rows:
             from autoresearch.scan.run_mode import SENTINEL_EMPTY
 
-            return (0, 0) if run_mode == SENTINEL_EMPTY else (None, None)
+            return (0, 0, 0) if run_mode == SENTINEL_EMPTY else (None, None, None)
         n_buy = sum(1 for row in rows.values() if row.get("e6_buy"))
+        n_buy_a = sum(1 for row in rows.values()
+                     if row.get("e6_buy") and row.get("buy_tier") == "A")
         # `run_facts` 把 BUY 的 role 覆盖在 finalist 身份之上,所以 finalist 数只能按
         # "非 rated-only" 数:E6 只从 finalist 里挑,BUY 行必然也是 finalist 行。
         n_finalist = sum(1 for row in rows.values() if row.get("role") != "rated")
-        return n_finalist, n_buy
-    return None, None
+        return n_finalist, n_buy, n_buy_a
+    return None, None, None
+
+
+def _wall_of(run_dir: Path) -> str | None:
+    """`_buyability.json.wall`(2026-09-24 §2.7);缺 → None(老 run 没有它)。"""
+    doc = _read_json(run_dir / "trace" / "staging" / "_buyability.json")
+    return str(doc.get("wall")) if isinstance(doc, dict) and doc.get("wall") else None
 
 
 def _run_mode_of(run_dir: Path) -> str:
@@ -296,7 +307,7 @@ def collect_runs(reports_root: Path | None = None) -> list[dict]:
         parsed = _naming.parse_run_dir(run.name)
         capsule_run_id = str(manifest.get("run_id") or "")
         run_mode = _run_mode_of(run)
-        n_finalist, n_buy = _run_counts(run, run_mode)
+        n_finalist, n_buy, n_buy_a = _run_counts(run, run_mode)
         shared_with = seen_capsule.setdefault(capsule_run_id, run.name) if capsule_run_id else ""
         rows[run.name] = {
             "engine": engine,
@@ -316,6 +327,8 @@ def collect_runs(reports_root: Path | None = None) -> list[dict]:
             "exec_lag": execution.get("exec_lag"),
             "n_finalist": n_finalist,
             "n_buy": n_buy,
+            "n_buy_a": n_buy_a,
+            "wall": _wall_of(run),
             "identity_quality": ("legacy" if not capsule_run_id
                                  else "shared_capsule_id" if shared_with != run.name
                                  else "capsule"),
