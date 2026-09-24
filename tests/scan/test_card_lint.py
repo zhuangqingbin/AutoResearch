@@ -56,15 +56,34 @@ def test_full_card_with_stray_early_stop_heading_still_warns(tmp_path):
 
 
 def test_card_contract_lint_flags_missing_entry_line(tmp_path):
-    """T18:`**入场**: 允许|禁止|条件` 行缺失 → warn(E6 v4 A/R 分级的机读依据)。"""
+    """T18:`**入场**: 允许|禁止|条件` 行缺失 → warn(E6 v4 A/R 分级的机读依据)。
+
+    fix round 1:第三张卡照抄模板占位符原文(`<禁止|条件(<一句>)>`,未填值)——
+    lint 必须**与 parser 问同一个问题**(`has_machine_entry_line`,单一事实源编译自
+    `agent_output.L4_CARD.field("entry").pattern`),不能用裸子串判"在场"。裸子串会把
+    这张卡误判合规,而 `l4/parsers._ENTRY_LINE_RE` 不匹配占位符,下游
+    `entry_source` 仍会落回 `"prose"`——lint 全绿、解析层却读到"没有行",两道验收门
+    就会读到两个不一致的答案(coordinator 复现的缺陷)。
+    """
     d = _mk(tmp_path, "2026-09-17", {
         "600018": ("# 决策卡 — 600018 上港 @ 2026-09-17  ·  〔早停·表面 DD〕\n"
                    "**早停**: 停于 P3 ｜ 停因:资金流出\nFINAL TRANSACTION PROPOSAL: **HOLD**\n"),
         "600035": ("# 决策卡 — 600035 楚天 @ 2026-09-17  ·  〔早停·表面 DD〕\n"
                    "**入场**: 禁止\n**早停**: 停于 P3 ｜ 停因:资金流出\nFINAL TRANSACTION PROPOSAL: **HOLD**\n"),
+        "600036": ("# 决策卡 — 600036 招商银行 @ 2026-09-17  ·  〔早停·表面 DD〕\n"
+                   "**一行多空**: 多 <…> ｜ 空 <…>\n"
+                   "**入场**: <禁止|条件(<一句>)>   ← 机读契约(2026-09-24);早停卡不得写「允许」\n"
+                   "**早停**: 停于 P3 ｜ 停因:资金流出\nFINAL TRANSACTION PROPOSAL: **HOLD**\n"),
     })
     hits = [h for h in card_contract_lint(d) if h["check"] == "卡片契约·入场行缺失"]
-    assert [h["code"] for h in hits] == ["600018"] and hits[0]["severity"] == "warn"
+    codes = {h["code"] for h in hits}
+    assert codes == {"600018", "600036"}                # 缺行 + 未填占位符都必须 warn
+    assert "600035" not in codes                         # 真填了值的卡不该警
+    assert all(h["severity"] == "warn" for h in hits)
+
+    from autoresearch.contracts.agent_output import has_machine_entry_line
+    assert has_machine_entry_line("**入场**: 禁止") is True
+    assert has_machine_entry_line("**入场**: <禁止|条件(<一句>)>") is False     # 占位符不算
 
 
 def test_dossier_change_section_lint(tmp_path):

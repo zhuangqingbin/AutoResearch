@@ -29,6 +29,7 @@ agent 说一套、python 猜一套,中间没有共同的真值源:
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 AGENT_OUTPUT_SCHEMA_VERSION = 1
@@ -259,3 +260,25 @@ def js_rank_view() -> dict[str, int]:
     `RATINGS_5_TIER` 方向相反这件事,此前只存在于人的记忆里。
     """
     return {r.lower(): len(RATING_ORDER) - 1 - i for i, r in enumerate(RATING_ORDER)}
+
+
+#: 编译自 `L4_CARD.field("entry").pattern`——不是另起一份字面量(2026-09-24 fix round 1)。
+_ENTRY_LINE_RE = re.compile(L4_CARD.field("entry").pattern)
+
+
+def has_machine_entry_line(text: str | None) -> bool:
+    """卡面是否带**可被 `scan/l4/parsers.parse_card_context` 采信**的机读入场行。
+
+    薄谓词(存在性检查),不是解析/取值——不越过本模块「不做解析」的边界。单一
+    事实源直接编译自 `L4_CARD.field("entry").pattern`,不是另一份正则字面量。
+
+    这条谓词存在的原因(2026-09-24 fix round 1 逮到的缝):`scan.self_review.
+    card_contract_lint` 曾用裸子串 `"**入场**:" in text` 判"缺失",对**未填的模板
+    占位符**(`**入场**: <禁止|条件(<一句>)>`——两份 agent 定义模板原样打印的文本)
+    会判"在场";而 `scan/l4/parsers._ENTRY_LINE_RE` 要求冒号后紧跟
+    `允许|禁止|条件` 三选一之一,不匹配占位符里的 `<`,判"未命中"、退回散文推断
+    (`entry_source="prose"`)。两处判据问的不是同一个问题:lint 全绿,下游却读到
+    "没有行"。调用方(lint,或任何要问"这张卡有没有写可机读入场行"的代码)一律走
+    这个函数。
+    """
+    return bool(_ENTRY_LINE_RE.search(text or ""))
