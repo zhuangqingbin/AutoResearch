@@ -238,7 +238,12 @@ def _consensus_eps_price(l1_row: dict | None, snapshot_section: str) -> float | 
     return px if px is not None else _snapshot_close(snapshot_section)
 
 
-def _output_dir(trade_date: str, *, slim: bool, explicit: Path | None = None) -> Path:
+def _anchor(path: Path | str) -> Path:
+    return Path(path) if Path(path).is_absolute() else ROOT / path
+
+
+def _output_dir(trade_date: str, *, slim: bool, explicit: Path | None = None,
+                tracked=None) -> Path:
     """独立 slim 不入 run 现场(D8.5):没有 `--out-dir` 时**一律**落 `ws.context_root()`,
 
     不看 `slim` 是不是 True、也不问 `AUTORESEARCH_RUN_ID` 是不是恰好指向一趟活跃的
@@ -248,6 +253,9 @@ def _output_dir(trade_date: str, *, slim: bool, explicit: Path | None = None) ->
     `<run>/_external_inputs/`,污染别人的法证现场。scan 自己的调用点
     (`scan/l4/producers._default_harvest_slim`)一律显式传 `--out-dir`——那是唯一
     该把 slim 写进某个 run 目录的路径,不能靠缺省猜。
+
+    `tracked` = 本次写窗守卫认下的活跃 run。显式 `--out-dir` 在 tracked run 里只许落进
+    **该 run 自己的** staging(scan L4 slim 的唯一合法落点),越界在建目录之前就拒。
     """
     if explicit is not None and not slim:
         raise ValueError("--out-dir 仅支持 --slim，不得迁移 full 报告")
@@ -262,7 +270,11 @@ def _output_dir(trade_date: str, *, slim: bool, explicit: Path | None = None) ->
         except Exception:  # noqa: BLE001 - a stale ambient id must keep standalone routing
             session_dir = None
     relative = explicit if explicit is not None else session_dir or ws.context_root()
-    out_dir = Path(relative) if Path(relative).is_absolute() else ROOT / relative
+    out_dir = _anchor(relative)
+    if explicit is not None and tracked is not None:
+        from autoresearch.trace.write_guard import assert_output_path
+
+        assert_output_path(out_dir, _anchor(tracked.staging))
     out_dir.mkdir(parents=True, exist_ok=True)
     return out_dir
 
@@ -610,7 +622,7 @@ def render_harvest_snapshot(
     }
 
 
-def _main_unlocked() -> int:
+def _main_unlocked(tracked=None) -> int:
     # D1.6 #4:离线开关(措辞对齐 data/sources/yf_options.py 等既有 AUTORESEARCH_OFFLINE=1
     # 语义)——离线模式下不取任何网络,提前退出,免得跑一半才在各处炸成一串降级账。
     if os.environ.get("AUTORESEARCH_OFFLINE"):
@@ -651,7 +663,7 @@ def _main_unlocked() -> int:
     peers_arg = pos[3] if len(pos) > 3 else ""
     peers = [normalize_symbol(p.strip()) for p in peers_arg.split(",") if p.strip()] \
         or PEER_MAP.get(ticker.upper(), [])
-    out_dir = _output_dir(trade_date, slim=slim, explicit=explicit_out_dir)
+    out_dir = _output_dir(trade_date, slim=slim, explicit=explicit_out_dir, tracked=tracked)
 
     print(f"[harvest v4{' SLIM' if slim else ''}] {ticker} @ {trade_date} "
           f"(asset_type={asset_type}, peers={peers or 'none'})", flush=True)
@@ -696,6 +708,10 @@ def _main_unlocked() -> int:
     # D6.4:`AUTORESEARCH_RUN_ID` 在场时把这一步记进法证现场(**进程内** checkpoint,
     # 不套 scan 那层 traced 壳)。不开 run 时 `record_stage` 是真 no-op —— 零留痕,
     # 与今天逐字相同。取证故障只走 stderr,永不改本函数的返回码。
+    # analyze 的 checkpoint 只进 stock-research 自己的现场:scan L4 的 slim(`SCAN_SLIM_OPERATION`)
+    # 由 scan 的 exec_capture 与 L4 任务簿记账,在 scan run 里调它会被判跨 workflow 写并抛出。
+    if tracked is not None and tracked.contract.run_kind != "stock-research":
+        return 0
     from autoresearch.analyze.runctl import record_stage
     tier_key = "slim" if slim else "full"
     record_stage(
@@ -713,11 +729,19 @@ def _main_unlocked() -> int:
     return 0
 
 
+#: 显式 `--out-dir` 只有 scan L4 的 slim 生产者会传(D8.5:`scan/l4/producers._default_harvest_slim`),
+#: 它在 scan run 里替 L4 备料 —— 写的是那趟 scan 自己的 staging,归 `scan.l4.slim`(session_v1
+#: 扫描计划同名登记)。2026-09-14 首跑前这里一律报 `stock.harvest`,守卫把每只 finalist 的 slim
+#: 都判成跨 workflow 写,7/7 票 BLOCKED。落点是否真在本 run staging 内由 `_output_dir` 再核一遍。
+SCAN_SLIM_OPERATION = "scan.l4.slim"
+
+
 def main() -> int:
     from autoresearch.trace.write_guard import guarded_ambient_write
 
-    with guarded_ambient_write("stock.harvest"):
-        return _main_unlocked()
+    operation = SCAN_SLIM_OPERATION if "--out-dir" in sys.argv[1:] else "stock.harvest"
+    with guarded_ambient_write(operation) as tracked:
+        return _main_unlocked(tracked)
 
 
 def _harvest_outputs(out_dir: Path, ticker: str, trade_date: str, slim: bool) -> list[Path]:

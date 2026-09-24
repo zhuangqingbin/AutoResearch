@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from autoresearch.agents.utils.rating import RATINGS_5_TIER
 from autoresearch.common import workspace as ws
 from autoresearch.scan.l4.context import compose_funnel_brief
 from autoresearch.scan.l4.rubric import force_full_card
@@ -37,6 +38,10 @@ def write_shared_instructions(scan_dir: Path | str) -> int:
 
 
 _ECHO_RATING = re.compile(r"^\*\*Rating\*\*:\s*(.+)$", re.M)
+# 回声只取五档词:历史已发布卡里有 141 张把模板提示抄进了 Rating 行
+# (`Underweight ← 必须 = Rubric建议(一致,无偏离)`),整行照搬会把「必须」这类模板残留
+# 注入次日任务包,诱使卡 agent 去翻源码核规则(2026-09-14 夜 688981 实况)。
+_ECHO_TIER = re.compile(r"\b(" + "|".join(RATINGS_5_TIER) + r")\b")
 _ECHO_LS = re.compile(r"^\*\*一行多空\*\*:\s*(.+)$", re.M)
 _ECHO_WIRE = re.compile(r"^-?\s*\[价格线\][^\n]*$", re.M)
 
@@ -99,7 +104,9 @@ def yesterday_echo(
         return ""
 
     dd, text = best
-    rating = (_ECHO_RATING.search(text) or [None, "—"])[1].strip()
+    rating_line = _ECHO_RATING.search(text)
+    tier = _ECHO_TIER.search(rating_line.group(1)) if rating_line else None
+    rating = tier.group(1) if tier else "—"
     ls = (_ECHO_LS.search(text) or [None, "—"])[1].strip()
     wires = _ECHO_WIRE.findall(text)[:2]
     lines = [f"## 昨卡回声(最近一次已发布判断 @ {dd})", f"- 评级:**{rating}**", f"- 一行多空:{ls}"]

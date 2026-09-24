@@ -1,11 +1,13 @@
 """slim 二段式:深核块分离到 *_slim_deep.md(spec 2026-07-08 T1;取代旧同文件重排)。"""
 import sys
+from pathlib import Path
 
 import pytest
 
 from autoresearch.analyze import harvest
 from autoresearch.analyze.harvest import _split_slim_for_progressive, _write_slim_files
 from autoresearch.common import workspace as ws
+from tests.forensic_fixtures import FIXTURE_DATE, begin_fixture_run
 
 
 def _parts():
@@ -185,3 +187,63 @@ def test_slim_cli_invalid_date_does_not_create_explicit_output_dir(tmp_path, mon
         harvest.main()
 
     assert not output_dir.exists()
+
+
+def _hermetic_harvest_in_active_scan_run(tmp_path, monkeypatch, argv_tail: list[str]):
+    """一趟真实活跃的 scan run + `AUTORESEARCH_RUN_ID` 指向它 —— 与生产里 exec_capture
+    给 `l4_tasks prepare` 子进程注入的环境同形;取数面全部换成桩,只留写窗守卫是真的。"""
+    handle = begin_fixture_run(tmp_path, monkeypatch)
+    monkeypatch.setenv("AUTORESEARCH_RUN_ID", handle.run_id)
+    monkeypatch.setattr(harvest, "ROOT", tmp_path / "repo")
+    monkeypatch.setattr(harvest, "set_config", lambda _config: None)
+    monkeypatch.setattr(harvest, "resolve_instrument_identity", lambda _ticker: None)
+    monkeypatch.setattr(
+        harvest,
+        "build_instrument_context",
+        lambda _ticker, _asset_type, _identity: "identity",
+    )
+    monkeypatch.setattr(
+        harvest,
+        "_section",
+        lambda title, *_args, **_kwargs: f"\n## {title}\n\ntest data\n",
+    )
+    monkeypatch.setattr(sys, "argv", ["harvest", "NVDA", FIXTURE_DATE, "stock", *argv_tail])
+    return handle
+
+
+def test_scan_l4_slim_writes_into_its_own_active_scan_run(tmp_path, monkeypatch):
+    """scan L4 的 slim 生产者(`scan/l4/producers._default_harvest_slim`)在活跃 scan run 里
+    显式 `--out-dir <staging>/_external_inputs` 调 harvest —— 那是 scan 自己的写。
+
+    2026-09-14 首跑:harvest 的写窗一律报 `stock.harvest`,守卫判「不属于 scan-market」,
+    7 只 finalist 的 slim 全部没写出来,整层 L4 BLOCKED。
+    """
+    handle = _hermetic_harvest_in_active_scan_run(tmp_path, monkeypatch, ["--slim"])
+    output_dir = Path(handle.staging) / "_external_inputs"
+    monkeypatch.setattr(sys, "argv", [*sys.argv, "--out-dir", str(output_dir)])
+
+    assert harvest.main() == 0
+    assert (output_dir / f"NVDA_{FIXTURE_DATE}_slim.md").is_file()
+
+
+def test_scan_run_slim_refuses_output_outside_its_own_staging(tmp_path, monkeypatch):
+    """scan 的写窗只覆盖本 run 的 staging:显式 `--out-dir` 指向别处 = 拒写,且目录不被创建。"""
+    outside = tmp_path / "elsewhere" / "_external_inputs"
+    _hermetic_harvest_in_active_scan_run(
+        tmp_path, monkeypatch, ["--slim", "--out-dir", str(outside)])
+
+    with pytest.raises(RuntimeError, match="OUTPUT_ROOT_MISMATCH"):
+        harvest.main()
+
+    assert not outside.exists()
+
+
+def test_standalone_harvest_under_ambient_scan_run_stays_refused(tmp_path, monkeypatch):
+    """不带 `--out-dir` 的 harvest 是 stock-research 自己的写;shell 里恰好留着一个活跃
+    scan run 的 `AUTORESEARCH_RUN_ID` 时仍须拒绝(262f058 要挡的正是这种跨 workflow 写)。"""
+    _hermetic_harvest_in_active_scan_run(tmp_path, monkeypatch, ["--slim"])
+
+    with pytest.raises(RuntimeError, match="RUN_OPERATION_NOT_OWNED"):
+        harvest.main()
+
+    assert not (tmp_path / "context_codex" / f"NVDA_{FIXTURE_DATE}_slim.md").exists()
