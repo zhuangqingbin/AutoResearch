@@ -115,6 +115,8 @@ ARTIFACTS: tuple[Artifact, ...] = (
     Artifact("l1_recall", "L1_recall_top1000.csv", "staging", "prelude", "universe", "csv", "always", replayable=True),
     Artifact("l1_channels", "L1_channels.csv", "staging", "prelude", "universe", "csv", "always", replayable=True),
     Artifact("l2", "L2_gbdt_top200.csv", "staging", "prelude", "universe", "csv", "always", replayable=True),
+    Artifact("sector_seats", "_sector_seats.json", "staging", "prelude", "universe", "json", "gated",
+             required_when="l2.sector_seats.enabled"),
     Artifact("sectors", "sectors.csv", "staging", "prelude", "universe", "csv", "always", replayable=True),
     Artifact("funnel_meta", "meta.json", "staging", "prelude", "universe", "json", "always", replayable=True),
     Artifact("weights_used", "weights_used.json", "staging", "prelude", "universe", "json", "always"),

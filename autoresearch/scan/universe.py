@@ -217,6 +217,50 @@ def _inject_pinned_l1(recall: pd.DataFrame, scored: pd.DataFrame,
     return out
 
 
+# ── 行业席位强注(2026-09-24 §2.3;裁定③:接上涨侧、席位制、不做排序驱动)──
+# 当日 healthy top3 行业里非落刀的健康上涨成员,直通 L1→L2(镜像 `_inject_pinned_l1`
+# 的"已在 recall 只打标,不在 → 从 scored 取真实行"结构)。`seats` 空 → 原样返回
+# (presence-gated parity)。选股逻辑本身在 `autoresearch.scan.sector_seats.pick_sector_seats`
+# ——本函数只管注入,不重新判断谁该入席。
+def _inject_sector_seats_l1(recall: pd.DataFrame, scored: pd.DataFrame,
+                            seats: list[dict]) -> pd.DataFrame:
+    """行业席位 L1 强注(镜像 `_inject_pinned_l1`):已在 recall 只打标;不在 → 从 scored 取真实行。
+    `seats` 空 → 原样返回(parity)。"""
+    if not seats:
+        return recall
+    out = recall.copy()
+    out["code"] = out["code"].astype(str).str.zfill(6)
+    out["sector_seat"] = False
+    out["sector_seat_industry"] = ""
+    have = set(out["code"])
+    scored_z = scored.assign(code=scored["code"].astype(str).str.zfill(6))
+    new_rows: list[pd.DataFrame] = []
+    for seat in seats:
+        code = str(seat["code"]).zfill(6)
+        if code in have:
+            m = out["code"] == code
+            out.loc[m, "sector_seat"] = True
+            out.loc[m, "sector_seat_industry"] = seat["industry"]
+            continue
+        hit = scored_z[scored_z["code"] == code]
+        if not len(hit):
+            continue
+        row = hit.iloc[[0]].copy()
+        row["sector_seat"] = True
+        row["sector_seat_industry"] = seat["industry"]
+        if "recall_channels" in out.columns:
+            row["recall_channels"] = "sector_seat"
+        if "n_channels" in out.columns:
+            row["n_channels"] = 0
+        if "best_rank" in out.columns:
+            row["best_rank"] = None
+        new_rows.append(row)
+        have.add(code)
+    if new_rows:
+        out = pd.concat([out, *new_rows], ignore_index=True, sort=False)
+    return out
+
+
 def recall_select(scored: pd.DataFrame, analysis_date: str, recall_n: int,
                   recall_mode: str = "multi", recall_channels=None,
                   pinned: list[dict] | None = None,
@@ -301,6 +345,7 @@ def run(analysis_date: str, cap_floor_yi: float | None = None, include_bj: bool 
         l0_min_amount_yi: float | None = None, l0_min_list_days: int | None = None,  # L0 流动性/次新硬门(内建 0=关=parity)
         l2_floors: dict | None = None, l2_sector_cap: float | None = None,
         l2_knife_cap: bool | None = None,                                 # L2 落刀帽总开关(None→config l2.knife_cap;内建 False=parity)
+        l2_sector_seats: dict | None = None,                              # 行业席位总开关+参数(None→config l2.sector_seats;内建 {}=关=parity)
         channel_quotas: dict[str, int] | None = None,                     # 覆盖各路 quota(None=CHANNEL_DEFAULTS,parity)
         channel_floors: dict[str, int] | None = None,                     # 覆盖各路 floor(None=CHANNEL_DEFAULTS,parity)
         weights_path: str | None = None,                                  # L1 权重文件(None=默认路径=parity;回放器注入 as-of 快照防前视)
@@ -353,6 +398,7 @@ def run(analysis_date: str, cap_floor_yi: float | None = None, include_bj: bool 
     l2_sector_cap = float(knob("l2", "sector_cap", l2_sector_cap, 0.20, cfg=_ucfg))
     l2_floors = knob("l2", "floors", l2_floors, None, cfg=_ucfg)
     l2_knife_cap = bool(knob("l2", "knife_cap", l2_knife_cap, False, cfg=_ucfg))
+    l2_sector_seats = dict(knob("l2", "sector_seats", l2_sector_seats, {}, cfg=_ucfg) or {})
     # L0 取数 + L1 轻门 + 多日量价富化 → 全市场因子帧(scan.frame 单一代码路径,Phase 0 抽取)
     uni, _counts = build_market_frame(analysis_date, cap_floor_yi=cap_floor_yi, include_bj=include_bj,
                                       source=source, l0_min_amount_yi=l0_min_amount_yi,
@@ -382,13 +428,37 @@ def run(analysis_date: str, cap_floor_yi: float | None = None, include_bj: bool 
     recall, per_channel = recall_select(scored, analysis_date, recall_n, recall_mode,
                                         recall_channels, pinned=pinned,
                                         channel_quotas=channel_quotas, channel_floors=channel_floors)
+    # outdir 在这里(recall_select 之后、而非等 L2 落盘前)一次性解析:行业席位产物
+    # `_sector_seats.json` 要在 L2 之前落盘,若仍在下方"L2 粗排"之后才
+    # `outdir = outdir or ws.scan_root() / analysis_date`,就得在两处各算一次同一个默认
+    # 路径——两个必须相等的表达式是等着出错的地雷(2026-09-24 §2.3 controller review:
+    # 上移这一行,而不是在席位块里再算一次)。必须严格晚于 `recall_select(...)` 这条语句
+    # 真正跑完(而非只晚于 build_market_frame):test_config_knobs.py 三个 spy 测试炸在
+    # build_market_frame 内部、test_events.py 的 `_run_to_recall` 炸在 `recall_select`
+    # 本体(把它整个替身成会立即 raise 的 spy)——两类"raise 后不该有任何副作用"的
+    # knob/接线锁都靠 tests/scan/conftest.py 的生产路径写守卫抓「过早建目录」,
+    # 这一行必须排在 `recall_select(...)` 调用**之后**才两边都不撞。
+    outdir = outdir or ws.scan_root() / analysis_date
+    outdir.mkdir(parents=True, exist_ok=True)
+    # 行业席位(2026-09-24 §2.3):healthy top3 行业内非落刀健康上涨成员直通 L1→L2,
+    # presence-gated(默认关=parity)。剔已 📌 保送的码(pinned 走自己的直通车,不重复占席)。
+    sector_seats: list[dict] = []
+    if bool(l2_sector_seats.get("enabled", False)):
+        from autoresearch.scan.sector_seats import SECTOR_SEATS_FILENAME, pick_sector_seats
+        sector_seats = pick_sector_seats(
+            scored, per_sector=int(l2_sector_seats.get("per_sector", 2)),
+            max_sectors=int(l2_sector_seats.get("max_sectors", 3)),
+            exclude={str(p["code"]).split(".")[0].zfill(6) for p in pinned})
+        recall = _inject_sector_seats_l1(recall, scored, sector_seats)
+        (outdir / SECTOR_SEATS_FILENAME).write_text(json.dumps(
+            {"schema_version": 1, "date": analysis_date, "seats": sector_seats},
+            ensure_ascii=False, indent=1), encoding="utf-8")
     # Wave5 ①:计数行走 stdout —— 编排层的 bash-agent 只回报 stdout,进 stderr 等于白打
     # ([warn]/异常仍走 stderr,别把告警混进给人看的进度流)。
     print(f"[L1 召回] L0 {n_l0} → 轻门 {len(uni)} → {recall_mode} top {len(recall)}")
     sectors = aggregate_sectors_overview(recall, uni)
 
-    outdir = outdir or ws.scan_root() / analysis_date
-    outdir.mkdir(parents=True, exist_ok=True)
+    # outdir 已在上方(recall_select 之后)解析 + 建目录,这里不再重复计算同一个默认路径。
     keep = (["code", "name", "industry", "composite"] + [f"score_{g}" for g in _GROUPS]
             + ["mktcap_yi", "close", "amount_yi", "vol_ratio", "turnover", "cmf_20", "obv_mom_20",
                "pct_1d", "pct_60d", "pct_ytd",     # pct_1d(Wave6 Q3):market_pack 的当日切面块
@@ -399,7 +469,9 @@ def run(analysis_date: str, cap_floor_yi: float | None = None, include_bj: bool 
                "ma_bull", "above_ma60",
                *PANEL_COLS])          # 2026-08-21 低位转强波:turnup 十列(B 级;缺列在下一行被过滤掉=parity)
     keep = keep + [c for c in ("recall_channels", "n_channels", "best_rank",
-                               "pinned", "pinned_note") if c in recall.columns]  # pinned 列 presence-gated:无保送不出现=parity
+                               "pinned", "pinned_note",
+                               "sector_seat", "sector_seat_industry") if c in recall.columns]
+    # pinned/sector_seat 列均 presence-gated:未触发 → 不出现 = parity
     recall[[c for c in keep if c in recall.columns]].to_csv(outdir / "L1_recall_top1000.csv", index=False)
     if per_channel is not None and len(per_channel):           # multi:各路召回名单留底(provenance/复盘)
         per_channel.to_csv(outdir / "L1_channels.csv", index=False)
@@ -455,6 +527,7 @@ def run(analysis_date: str, cap_floor_yi: float | None = None, include_bj: bool 
         "recall_n": len(recall), "l2_n": len(l2), "l2_engine": l2_engine,
         "l2_sector_cap": l2_sector_cap,
         "l2_knife_cap_share": l2_knife_cap_share,
+        "sector_seat_n": len(sector_seats),                   # 2026-09-24 §2.3:行业席位到货数(关=恒 0)
         **_lt_counts,
         "cap_floor_yi": cap_floor_yi, "include_bj": include_bj, "source": source,
         "regime": _regime,                                    # 当日 regime(regime_aware 关 = null;preference 档恒 null)

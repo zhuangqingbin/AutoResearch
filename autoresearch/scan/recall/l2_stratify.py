@@ -86,11 +86,13 @@ def effective_floors(floors: dict[str, int], enabled_channels=None) -> dict[str,
 #   backfill  ④ 回填到 l2_n(过 cap)
 #   sector    ④' cap 卡死后**松 cap** 才收进来的 —— 行业集中度约束被放开的那一批
 #   pinned    `select_l2` 的保送行(全程直通,不占竞争名额)
+#   sector_seat 行业席位(2026-09-24 §2.3):healthy top3 行业内非落刀健康上涨成员,
+#              全程直通(镜像 pinned,不占竞争名额)——见 `autoresearch.scan.sector_seats`。
 #
-# 与既有 `l2_lane_reserved` 的关系:后者 = merit 核之外的**全部**(floor∪回填∪松cap∪保送),
-# 是个二值旗且有三个真消费者;`selection_reason` 把那一团拆成四种不同的进场方式。
+# 与既有 `l2_lane_reserved` 的关系:后者 = merit 核之外的**全部**(floor∪回填∪松cap∪保送∪
+# 行业席位),是个二值旗且有三个真消费者;`selection_reason` 把那一团拆成不同的进场方式。
 # 两者并存、语义不同,**不得互相替代**。
-L2_SELECTION_REASONS = ("merit", "lane", "sector", "pinned", "backfill")
+L2_SELECTION_REASONS = ("merit", "lane", "sector", "pinned", "backfill", "sector_seat")
 
 
 def sector_neutral(score: pd.Series, industry: pd.Series) -> pd.Series:
@@ -292,6 +294,13 @@ def select_l2(recall: pd.DataFrame, l2_n: int, floors: dict[str, int] | None = N
     竞争名额,故其余票的入选结果零影响),分层采样只在剩余票上跑,选完后**无条件**拼回末尾
     (l2_rank 接续编号、`l2_lane_reserved=True`,与 floor 救回同一"保底进场"语义)。无
     `pinned` 列 / 全 False → 原逻辑不变(presence-gated parity)。
+
+    行业席位强留(2026-09-24 §2.3;`autoresearch.scan.sector_seats`):`recall` 若带
+    `sector_seat`(bool)列且有 True 行 → 与 pinned **同一套**"先抽出、不进竞争池、选完
+    无条件拼回末尾"语义(镜像 pinned 的实现,`selection_reason="sector_seat"`、
+    `selection_detail`=行业名)。同码既 pinned 又 sector_seat → pinned 先抽走,该码到
+    这里已不在 `rest` 里,不会被重复计入/重复出现。无 `sector_seat` 列 / 全 False →
+    原逻辑不变(presence-gated parity)。
     """
     has_pinned = "pinned" in recall.columns and bool(
         recall["pinned"].fillna(False).astype(bool).any())
@@ -302,10 +311,26 @@ def select_l2(recall: pd.DataFrame, l2_n: int, floors: dict[str, int] | None = N
     else:
         rest = recall
 
+    has_seat = "sector_seat" in rest.columns and bool(
+        rest["sector_seat"].fillna(False).astype(bool).any())
+    if has_seat:
+        smask = rest["sector_seat"].fillna(False).astype(bool)
+        seat_rows = rest[smask].copy()
+        rest = rest[~smask].copy()
+
     l2 = stratified_l2(rest, l2_n, floors=floors, sector_cap_frac=sector_cap_frac,
                        score_col="composite", regime=regime, regime_caps=regime_caps,
                        enabled_channels=enabled_channels, knife_cap_share=knife_cap_share)
     l2.insert(0, "l2_rank", range(1, len(l2) + 1))
+
+    if has_seat:
+        seat_rows.insert(0, "l2_rank", range(len(l2) + 1, len(l2) + 1 + len(seat_rows)))
+        seat_rows["l2_lane_reserved"] = True
+        seat_rows["selection_reason"] = "sector_seat"
+        seat_rows["selection_detail"] = seat_rows["sector_seat_industry"].astype(str) \
+            if "sector_seat_industry" in seat_rows.columns else ""
+        seat_rows["knife_cap_swap"] = False    # 行业席位全程不进分层竞争池,恒非顶替
+        l2 = pd.concat([l2, seat_rows], ignore_index=True, sort=False)
 
     if has_pinned:
         pinned_rows.insert(0, "l2_rank", range(len(l2) + 1, len(l2) + 1 + len(pinned_rows)))
