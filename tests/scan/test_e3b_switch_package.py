@@ -83,6 +83,24 @@ def activate(tmp_path, monkeypatch):
     monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH", cfg)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_ledger_root(monkeypatch):
+    """Task 4 fix round 1:`test_buy_and_blocked_conclusions_are_dashboard_exclusive`
+    and `test_safe_publish_is_the_real_injector` both call `brief.safe_publish`,
+    which calls `brief.build` → `collect_facts` → unconditional `_e6_realized_stats()`
+    → `outcome.load_ledger(None)` → `ws.reports_root()/scan/_ledger/recommendations.csv`
+    (a real, live, gitignored project artifact — not a fixture). Without isolation
+    these two tests would render whatever the dev machine's ledger says today instead
+    of the synthetic decision this file controls.
+
+    Same fix as `tests/scan/test_brief.py::_isolate_ledger_root` — **file-scoped
+    autouse, not `conftest.py`**: a shared/global override of `ws.reports_root()`
+    breaks other files that use it as a composable relative path fragment
+    (`test_retention.py` did exactly that once already)."""
+    from autoresearch.common import workspace as ws
+    monkeypatch.setattr(ws, "reports_root", lambda: Path("/nonexistent/tests-no-real-ledger"))
+
+
 # ── 1. shadow parity(改动点逐个回归)────────────────────────────────────────────
 
 

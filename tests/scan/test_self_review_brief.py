@@ -115,6 +115,29 @@ def published(tmp_path):
     return _publish(tmp_path, scan), scan
 
 
+@pytest.fixture(autouse=True)
+def _isolate_ledger_root(monkeypatch):
+    """Task 4 fix round 1:`_publish()` above calls `brief.build` directly, and
+    `brief.collect_facts` unconditionally calls `_e6_realized_stats()` →
+    `outcome.load_ledger(None)` → `ws.reports_root()/scan/_ledger/recommendations.csv`.
+    That CSV is a real, live project artifact (gitignored, grows with every published
+    scan) — without isolation, every one of the ~30 tests sharing the `published`
+    fixture would render whatever the dev machine's ledger says *today*, not the
+    synthetic decision fixture this file actually controls.
+
+    Same reasoning, same fix as `tests/scan/test_brief.py::_isolate_ledger_root` /
+    `tests/scan/test_publisher_artifact_map.py::_isolate_ledger_root` — **file-scoped
+    autouse, not a shared `conftest.py` fixture**: `ws.reports_root()` is used
+    elsewhere in `tests/scan/` as a composable *relative* path fragment
+    (`tmp_path / ws.reports_root() / ...`, e.g. `test_retention.py`), and a global
+    absolute-nonexistent override broke that composition once already. Scoping this
+    fixture to one file's own tests avoids that blast radius entirely. A test that
+    wants real ledger content may still monkeypatch `ws.reports_root` itself inside
+    the test body (executes after fixture setup, so it wins)."""
+    from autoresearch.common import workspace as ws
+    monkeypatch.setattr(ws, "reports_root", lambda: Path("/nonexistent/tests-no-real-ledger"))
+
+
 def _checks(rows) -> set[str]:
     return {r["check"] for r in rows}
 

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -241,3 +242,68 @@ def test_the_byte_pin_reads_the_real_product(tmp_path):
     md = brief.build(_scan_dir(tmp_path), run_folder=_RUN)["markdown"]
     assert "③ 结论" in md and len(md.encode("utf-8")) > 1000
     assert Path(brief.__file__).name == "brief.py"
+
+
+# ── ⑤ 「下一个漏网文件」守卫(Task 4 fix round 1)──────────────────────────────
+#
+# 病灶:Task 4 第一轮只隔离了 `test_brief.py` / `test_publisher_artifact_map.py` 两个
+# 调 `brief.build`/`brief.safe_publish` 的文件,漏了另外两个(`test_self_review_brief.py`
+# 的 `_publish()` 喂给 ~30 条用例的 `published` fixture、`test_e3b_switch_package.py` 的
+# 两条 `safe_publish` 真链用例)。没红是运气:当天真账本 buy n=7 / seat n=19,双双卡在
+# `_REALIZED_MIN_N=20` 门槛下,且两个文件的合成决策都不是 `pool=composite`,composite
+# 那句可变文本从没被触发过——`seat` 只差一笔已核验行就会跨过 20。
+#
+# 这条测试把「加一个新文件却忘了隔离」从**沉默漏网**变成**当场变红**:静态扫描
+# `tests/scan/` 下每个 `test_*.py`,凡是源码里出现过 `brief.build(`/`brief.safe_publish(`
+# 调用,就要求同一份源码里**也**出现过隔离 `ws.reports_root` 的 `monkeypatch.setattr(...)`
+# 痕迹,否则必须显式登记进下面的豁免表并写明理由。不追求语义精确(是不是真 autouse、
+# 覆盖到哪条用例)——静态字符串证据足够把「压根没想过隔离」这种最坏情况挡住。
+
+#: 会调 `brief.build`/`brief.safe_publish` 但**刻意**不隔离 `ws.reports_root` 的文件,
+#: 附理由。今天是空的——四个已知渲染者全部隔离了;只有在隔离本身会破坏测试目的时才
+#: 往这里加一条,不许为了让本测试通过就静默往这里塞。
+_ISOLATION_ALLOWLIST: dict[str, str] = {}
+
+#: 判定「调用了 brief 的渲染入口」:`brief.build(...)` 或 `brief.safe_publish(...)`
+#: (两者都会无条件触发 `_e6_realized_stats()` 读真账本;`brief.write`/`safe_write` 内部
+#: 转调 `build`,今天调它们的文件恰好都已经直接调 `build` 了,见 task-4-report.md)。
+_BRIEF_RENDER_CALL_RE = re.compile(r"\bbrief\.(?:build|safe_publish)\(")
+
+#: 判定「这份源码里有隔离账本根的痕迹」:宽松匹配 `monkeypatch.setattr(...reports_root...)`
+#: ——既认 `monkeypatch.setattr(ws, "reports_root", ...)`(本仓四个已知渲染者的写法),
+#: 也认 `monkeypatch.setattr("autoresearch.common.workspace.reports_root", ...)` 这种
+#: 字符串路径写法,不绑死某一种拼法。
+_ISOLATION_EVIDENCE_RE = re.compile(r"monkeypatch\.setattr\([^)]*reports_root")
+
+
+def test_every_brief_renderer_isolates_reports_root_or_is_allowlisted():
+    """加第五个渲染 brief 的测试文件却忘了隔离 `ws.reports_root` → 本条必须变红。
+
+    `ws.reports_root()`(未隔离时)在这台开发机上解析到一份真实、活的
+    `reports_claude/scan/_ledger/recommendations.csv`(gitignored,随每场发布扫描增长,
+    本机实测 300KB+)。四个已知渲染者(`test_brief.py` / `test_self_review_brief.py` /
+    `test_publisher_artifact_map.py` / `test_e3b_switch_package.py`)都已经用文件内
+    `@pytest.fixture(autouse=True)` 隔离(**不是**共享 `conftest.py` —— 那样会砸中
+    `test_retention.py` 等把 `ws.reports_root()` 当可组合相对路径用的无关测试,Task 4
+    第一轮已经真的踩过一次)。
+    """
+    scan_dir = Path(__file__).resolve().parent
+    offenders = []
+    for path in sorted(scan_dir.glob("test_*.py")):
+        text = path.read_text(encoding="utf-8")
+        if not _BRIEF_RENDER_CALL_RE.search(text):
+            continue
+        if path.name in _ISOLATION_ALLOWLIST:
+            continue
+        if not _ISOLATION_EVIDENCE_RE.search(text):
+            offenders.append(path.name)
+    assert not offenders, (
+        "这些 tests/scan/ 模块调用了 brief.build/brief.safe_publish,却在源码里找不到"
+        "隔离 ws.reports_root 的 monkeypatch.setattr(...) 痕迹,会读到本机真实的"
+        "recommendations.csv:" + ", ".join(offenders) + "。\n"
+        "修法二选一:① 在该文件内加一个文件级 `@pytest.fixture(autouse=True)`,内容同"
+        "`tests/scan/test_brief.py::_isolate_ledger_root`(`monkeypatch.setattr(ws, "
+        "\"reports_root\", lambda: Path(\"/nonexistent/...\"))`,禁止改用共享 "
+        "conftest.py fixture —— 会破坏 test_retention.py 等无关测试对 "
+        "ws.reports_root() 的相对路径组合用法);② 若隔离会破坏该测试本身的目的,"
+        "把文件名连同理由加进本文件的 _ISOLATION_ALLOWLIST。")

@@ -851,6 +851,44 @@ def test_composite_brief_lines_stay_within_budget():
     assert added < MAX_BYTES // 2       # ③ 一节远小于半个预算
 
 
+def test_worst_case_ledger_text_still_fits_budget_and_buy_line_survives(tmp_path, monkeypatch):
+    """字节最坏情形(fix round 1):③ 现在有两处可变长度文本 —— BUY 行的账本实测、
+    composite 证据席的账本实测。两处都用**最长形态**(n≥20 且均值为负,双双要追加
+    `WEAK_MARKET_PHRASE` 限定句),再叠加既有 `test_byte_budget_holds_when_raw_render_
+    would_overflow` 那招(`_flood_pinned` 把④灌到必然溢出),证明:
+      ① 未裁剪的原始渲染确实 >MAX_BYTES(探针有鉴别力,不是空放绿灯);
+      ② `build()` 的裁剪梯度(只砍④/⑥,`_sections`/`_FIT_LADDER`)仍能把成品**压回预算内**;
+      ③ ③ 段(BUY 行 + composite 证据席两条账本实测)**原样留在成品里**——它从不在
+         `_FIT_LADDER` 的裁剪范围内,这条测试把「不会被裁掉」从隐含假设钉成断言,防止
+         以后有人为了压预算把裁剪范围悄悄扩到 ③。
+    """
+    from autoresearch.common import workspace as ws
+
+    monkeypatch.setattr(ws, "reports_root", lambda: tmp_path / "reports")
+    rows = ([{"run_id": f"b{i}", "analysis_date": "2026-08-06", "mode": "active", "role": "BUY",
+              "e6_buy": "True", "outcome_status": "MATURE", "actionability": "ACTIONABLE",
+              "gap_c1_o2": "-0.0233"} for i in range(20)]
+            + [{"run_id": f"s{i}", "analysis_date": "2026-08-06", "mode": "active",
+                "role": "composite_seat", "e6_buy": "False", "outcome_status": "MATURE",
+                "actionability": "ACTIONABLE", "gap_c1_o2": "-0.0187"} for i in range(20)])
+    _ledger_csv(tmp_path / "reports", rows)
+
+    scan = _scan_dir(tmp_path, decision=_composite_decision())
+    _flood_pinned(scan, 80)
+    facts = brief.collect_facts(scan, run_folder=_RUN)
+    raw_lines, _ = brief._sections(facts, pinned_cap=99, delta_cap=6)
+    raw = len(("\n".join(raw_lines) + "\n").encode("utf-8"))
+    assert raw > brief.MAX_BYTES, f"探针失效:未裁剪只有 {raw}B,压不到预算线"
+
+    out = brief.build(scan, run_folder=_RUN)
+    assert out["n_bytes"] <= brief.MAX_BYTES, (
+        f"账本实测两行(BUY + composite 证据席)把 brief 顶出预算:{out['n_bytes']}B "
+        f"> {brief.MAX_BYTES}B —— 缩短 _realized_text 的措辞,不许调高 MAX_BYTES")
+    md = out["markdown"]
+    assert "账本 BUY 实测" in md and "弱市相对最优" in md, "BUY 行的账本实测被裁剪路径吞掉了"
+    assert "账本 席位 实测" in md, "composite 证据席的账本实测被裁剪路径吞掉了"
+
+
 # ───────────────────────────── ⑥ 跨 run 昨日 delta(Task 3) ─────────────────────────────
 
 def test_delta_line_reads_previous_published_run_under_run_partition(tmp_path, monkeypatch, scan):
