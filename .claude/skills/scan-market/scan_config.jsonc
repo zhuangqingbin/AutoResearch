@@ -263,22 +263,22 @@
   //   复核路(08-18 影子 BUY 688766 普冉本身就是📌,正是这条裁定要堵住的形状)。
   // activate_date: 保留键(YYYY-MM-DD 或 null)。原生效点 learning/legacy_freeze 已随
   //   2026-08-21「整个 learning 层退役」裁定删除,本键现无消费点,仅作 E6 转正日的记录。
-  // pool(2026-08-26 §3 路A · A1/A3):BUY 候选池来源。
-  //   "finalists" = v2 候选池(判断层 finalist 全体);
+  // pool(2026-08-26 §3 路A · A1/A3;2026-09-24 可买性对齐 §2.6 复核):BUY 候选池来源。
+  //   "finalists" = v2 候选池(判断层 finalist 全体,席位票含在内);
   //   "composite" = v3 证据席(L3 守卫⑨ 的 composite 席位),排序改按 composite 分。
   // 【生效点】relative_buy.configured_pool() → post_run.publish_run_observation →
   //   build_decision(pool=...);席位真身 = scan/l3/merge.pick_composite_seats。
-  // ⚖️ **上线理由与证据边界(必须连读)**:隔夜主尺上 L3·finalist 一族 40 日相对超额
-  //   **−0.27pp(t=−3.94)显著为负**,而全表唯一正证据是确定性 composite(+0.14pp,
-  //   t=3.05;L2 菜单内 top20/top50 +0.14/+0.17,t 1.96/2.78,42 个扫描日)。所以把 BUY
-  //   的所有权从判断层搬到证据层,判断层改做它被证明会做的事(拒绝)。
-  //   **期望 ≈ 一次 A 股往返成本量级,不承诺隔夜赚钱**;20 个结果日后按 `_ledger/
-  //   recommendations.csv` 的读数裁去留。读数全文:docs/specs/2026-08-26-scene-retention-
-  //   and-buy-owner-design.md §1.5/§1.7。
-  // 回滚杆 = 本键改回 "finalists"(**只回滚候选池与排序**;A2 的 UW/SELL 硬门对两个池都
-  //   生效,要连它一起回滚得改 relative_buy.py 的两个 frozenset,那是显式代码改动)。
+  // tiering(2026-09-24 可买性对齐 §2.6,v4.0,controller Ruling P21):入场门 + A/R 分级
+  //   总开关。true → ①卡面 entry_stance=PROHIBITED 进 no_redflag 硬门否决;②BUY 按
+  //   entry_stance=ALLOWED 分 A 级(card_backed)/R 级(其余 eligible,relative_forced)。
+  //   false(v3.0 逐字)= 不否决、不分级,entry_stance 只进 conflicts 展示。
+  // 【生效点】relative_buy.configured_tiering() → post_run.publish_run_observation →
+  //   build_decision(tiering=...)。
+  // 2026-09-24 可买性对齐 §2.6:池回到全部派发卡(席位含在内);tiering 开 = 入场门 + A/R 分级。
+  // ⚖️ 证据:pool=composite 19 席位卡面 UW 15/Sell 3/Hold 1;7 笔 active BUY −0.55pp 胜 2/7。
+  // 回滚杆 = "tiering": false(v3 逐字)+ "pool": "composite"。
   "relative_buy": { "mode": "active", "exclude_pinned": true, "activate_date": "2026-08-19",
-                    "pool": "composite" },
+                    "pool": "finalists", "tiering": true },
 
   // ── 现场重建 · transcript 绑定(2026-09-12 scene-reconstruction Task 4)──
   // 【生效点】autoresearch/scan/post_run.publish_run_observation(决策校验完成之后、

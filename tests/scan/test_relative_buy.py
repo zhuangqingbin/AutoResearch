@@ -39,6 +39,7 @@ from autoresearch.scan.relative_buy import (
     build_decision,
     activate_date,
     configured_relative_buy,
+    configured_tiering,
     is_active,
     load_decision,
     main,
@@ -311,8 +312,12 @@ def test_rule_version_is_pinned_and_reaches_the_written_product(tmp_path):
     **v3.0(2026-08-26 §3 路A)是第一次真的改规则**,两件事:① 硬门④ 扩集(UW/Sell 卡与
     `FINAL PROPOSAL: SELL` 一律否决 —— 08-20/08-25 两次把提议 SELL 的卡发成 BUY);
     ② 新增 `pool` 形参:`composite` 时候选池 = L3 守卫⑨ 的证据席,排序改按 composite 分。
+
+    v4.0(2026-09-24 可买性对齐 §2.6,controller Ruling P21)新增 `tiering` 开关:开时
+    卡面 `entry_stance=PROHIBITED` 进 `no_redflag` 硬门否决,`buys[0]` 按 `entry_stance
+    =ALLOWED` 分 A/R 两级;关(默认)= v3.0 逐字。
     """
-    assert RULE_VERSION == "e6.v3.0"
+    assert RULE_VERSION == "e6.v4.0"
     scan = _build_scan(tmp_path, _RANK_CANDS)
     assert build_decision(scan)["rule_version"] == RULE_VERSION
     written = json.loads(write_decision(scan).read_text(encoding="utf-8"))
@@ -1198,21 +1203,32 @@ def _write_config(tmp_path, block: dict, monkeypatch) -> None:
 
 
 def test_configured_relative_buy_defaults_to_shadow_without_config(tmp_path, monkeypatch):
-    """缺配置 → shadow/False/None = 内建默认 = 现行为(parity)。"""
+    """缺配置 → shadow/False/None = 内建默认 = 现行为(parity)。`tiering`(v4.0)第五元素
+    同样缺键 = False。"""
     monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH", tmp_path / "nope.jsonc")
 
-    assert configured_relative_buy() == ("shadow", False, None, "finalists")
+    assert configured_relative_buy() == ("shadow", False, None, "finalists", False)
     assert is_active() is False
     assert activate_date() is None
+    assert configured_tiering() is False
 
 
 def test_configured_relative_buy_reads_all_three_knobs(tmp_path, monkeypatch):
     _write_config(tmp_path, {"mode": "active", "exclude_pinned": True,
                              "activate_date": "2026-08-20"}, monkeypatch)
 
-    assert configured_relative_buy() == ("active", True, "2026-08-20", "finalists")
+    assert configured_relative_buy() == ("active", True, "2026-08-20", "finalists", False)
     assert is_active() is True
     assert activate_date() == "2026-08-20"
+
+
+def test_configured_tiering_reads_config_and_defaults(tmp_path, monkeypatch):
+    """回滚杆读得到、缺键回内建默认(= v3.0 逐字,parity)——同 `configured_pool` 的既有
+    测试手法(两键是同一个裁定的产物,见 scan_config.jsonc 该块注)。"""
+    _write_config(tmp_path, {"pool": "finalists", "tiering": True}, monkeypatch)
+    assert configured_tiering() is True
+    _write_config(tmp_path, {"mode": "active"}, monkeypatch)
+    assert configured_tiering() is False         # 缺键 = 内建默认(parity)
 
 
 def test_configured_relative_buy_degrades_loudly_on_broken_config(tmp_path, monkeypatch, capsys):
@@ -1221,7 +1237,7 @@ def test_configured_relative_buy_degrades_loudly_on_broken_config(tmp_path, monk
     cfg.write_text(json.dumps({"relative_buy": {"mode": "nonsense"}}), encoding="utf-8")
     monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH", cfg)
 
-    assert configured_relative_buy() == ("shadow", False, None, "finalists")
+    assert configured_relative_buy() == ("shadow", False, None, "finalists", False)
     assert "scan_config 读取失败" in capsys.readouterr().err
 
 
@@ -1435,6 +1451,7 @@ from autoresearch.scan.relative_buy import (  # noqa: E402
     _FACES,
     _HARD_GATES,
     FIELD_USAGE,
+    _field_usage,
     safe_write_decision,
 )
 from autoresearch.trace.blobs import blob_path  # noqa: E402
@@ -1525,7 +1542,7 @@ def test_schema_2_golden_projection_is_unchanged_by_new_fields(tmp_path):
     doc = build_decision(_build_scan(tmp_path, _RANK_CANDS))
 
     assert doc["schema_version"] == SCHEMA_VERSION == 2
-    assert doc["rule_version"] == RULE_VERSION == "e6.v3.0"
+    assert doc["rule_version"] == RULE_VERSION == "e6.v4.0"
     assert doc["blocked"] is False
     assert doc["blocked_reasons"] == []
     assert doc["buys"] == [{"basis": "relative", "code": "002345", "rank": 1}]
@@ -1654,18 +1671,39 @@ def test_veto_accounting_dedupes_stocks_but_lists_each_gate_hit_separately(tmp_p
     assert veto["population"]["candidates"] != veto["population"]["passed_hard_gates"]
 
 
-def test_field_usage_derives_from_hard_gates_and_faces_without_inventing_a_new_gate(tmp_path):
-    doc = build_decision(_build_scan(tmp_path, _RANK_CANDS))
+@pytest.mark.parametrize("tiering", [False, True])
+def test_field_usage_derives_from_hard_gates_and_faces_without_inventing_a_new_gate(
+    tmp_path, tiering,
+):
+    """v4.0(controller Ruling P21 (a)/(c)):`field_usage` 是 `tiering` 的函数,不是恒定
+    常量——`FIELD_USAGE` 模块常量只是 tiering=False 那一份的快照。hard_gate/ranking 两列
+    不随 tiering 变(veto 走的是既有 `no_redflag` 门名,A/R 分级不是排序键)——「不发明
+    新门」这条约束在两个 tiering 值下都要成立,不是只在关的时候成立。
+    """
+    doc = build_decision(_build_scan(tmp_path, _RANK_CANDS), tiering=tiering)
     fu = doc["field_usage"]
-    assert fu == FIELD_USAGE                              # 每天同一份常量,byte 稳定
-    assert fu["hard_gate"]["fields"] == list(_HARD_GATES)
-    assert fu["ranking"]["fields"] == [*_FACES, "amount", "code"]
+    assert fu == _field_usage(tiering)                    # 每天同一份派生,byte 稳定
+    if not tiering:
+        assert fu == FIELD_USAGE                          # v3.0 快照 = tiering=False 那份
+    assert fu["hard_gate"]["fields"] == list(_HARD_GATES)          # 不发明新门
+    assert fu["ranking"]["fields"] == [*_FACES, "amount", "code"]  # A/R 分级不是排序键
     display_only = set(fu["display_only"]["fields"])
     assert display_only & set(fu["hard_gate"]["fields"]) == set()
     assert display_only & set(fu["ranking"]["fields"]) == set()
     assert all(f.startswith("card_context.") for f in display_only)
     assert "research_rating" in fu and "hard_gate" in fu["research_rating"]["role"]
     assert "l4_proposal" in fu and "hard_gate" in fu["l4_proposal"]["role"]
+
+    if tiering:
+        # entry_stance 离开 display_only,搬进它自己的新键,点名两个真实角色。
+        assert "card_context.entry_stance" not in display_only
+        assert "entry_stance" in fu
+        assert "no_redflag" in fu["entry_stance"]["role"]
+        assert "ALLOWED" in fu["entry_stance"]["role"]
+    else:
+        # 关掉时逐字 v3.0:entry_stance 仍是纯 display_only,没有 entry_stance 顶层键。
+        assert "card_context.entry_stance" in display_only
+        assert "entry_stance" not in fu
 
 
 # ── 卡缺失:card_context 诚实降级,选择不受影响 ────────────────────────────
@@ -1721,6 +1759,41 @@ def test_display_only_card_fields_never_change_the_decision_projection(tmp_path)
     assert card_a["ev_target"] != card_b["ev_target"]
     assert card_a["position_raw"] != card_b["position_raw"]
     assert card_a["entry_stance"] == card_b["entry_stance"] == "ALLOWED"
+
+
+# ── E05 的 tiering=True 对照(addendum P21 (b)):关掉的那半仍然成立,entry_stance
+# 自己legitimately 移动投影这另一半也要有测试,不能只测「幸存的 8 个不动」那半 ──────
+def test_display_only_card_fields_never_change_the_decision_projection_under_tiering(tmp_path):
+    """tiering=True 时,entry_stance **之外**的 8 个 display_only 字段照样不改投影——
+    开关本身不得把别的字段也顺带拖进决策路径(那会一次改两件事,鉴别力就丢了)。"""
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    _write_card(scan, "002345", _CARD_ALLOWED_A)
+    doc_a = json.loads(write_decision(scan, tiering=True).read_text(encoding="utf-8"))
+
+    _write_card(scan, "002345", _CARD_ALLOWED_B)       # EV/仓位/执行线数值全部换掉,entry_stance 仍 ALLOWED
+    doc_b = json.loads(write_decision(scan, tiering=True).read_text(encoding="utf-8"))
+
+    assert _projection(doc_a) == _projection(doc_b)
+    assert doc_a["buys"][0] == {"code": "002345", "basis": "card_backed", "rank": 1, "tier": "A"}
+
+
+def test_entry_stance_legitimately_changes_the_decision_projection_under_tiering(tmp_path):
+    """E05 的另一半:entry_stance 是这九个字段里**唯一**真的改投影的那个——tiering=True
+    下从 ALLOWED 换成 PROHIBITED 必须真的否决候选、真的换 BUY,不然"A/R 分级是真实约束"
+    这句话就是空的(只测"别的字段不动"而不测"这个字段真的动",会漏掉同一个 bug 一格)。
+    """
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    _write_card(scan, "002345", _CARD_ALLOWED_A)
+    allowed = json.loads(write_decision(scan, tiering=True).read_text(encoding="utf-8"))
+
+    _write_card(scan, "002345", _CARD_PROHIBITED)
+    prohibited = json.loads(write_decision(scan, tiering=True).read_text(encoding="utf-8"))
+
+    assert _projection(allowed) != _projection(prohibited)
+    assert allowed["buys"][0]["code"] == "002345" and allowed["buys"][0]["tier"] == "A"
+    assert _by_code(allowed)["002345"]["hard_gate"]["no_redflag"] is True
+    assert _by_code(prohibited)["002345"]["hard_gate"]["no_redflag"] is False
+    assert prohibited["buys"][0]["code"] == "000034" and prohibited["buys"][0]["tier"] == "R"
 
 
 def test_prohibited_card_does_not_block_buy_but_surfaces_as_conflict(tmp_path):
@@ -2104,3 +2177,94 @@ def test_live_contract_reports_drifted_when_exec_lines_differ_from_the_in_force_
 
     assert exec_lines["pct_chg"]["contract_match"] == "DRIFTED"
     assert exec_lines["pos_in_range"]["contract_match"] == "DRIFTED"
+
+
+# ═══════════════════════ v4.0(2026-09-24 可买性对齐 §2.6,controller Ruling P21)══════
+#
+# `tiering` 开关:入场硬门(卡面 entry_stance=PROHIBITED → no_redflag 否决)+ A/R 分级
+# (entry_stance=ALLOWED → A 级/card_backed,其余 eligible → R 级/relative_forced)。
+# 关(默认)= v3.0 逐字,golden `test_tiering_off_is_v3_verbatim_even_with_prohibited_card`
+# 钉死这条 parity。**A 级在全部 8 个真实历史扫描日恒为 0**(没有卡带过入场线)——golden
+# 测试因此断言 R 级选出,不拿 A 级练手(任务书附注 P25:调参数去凑 A 级出现是在作弊)。
+
+
+def _card(entry_line: str | None, rating: str = "Hold") -> str:
+    lines = [f"# 决策卡 — 000000 x @ {DATE}", "| 评级 | 现价 | EV目标 | R:R | 仓位 | 触发位 |",
+             "|---|---|---|---|---|---|", f"| {rating} | 10 | +0.5% | 1.2 | 5% | 涨>3% 放弃 |"]
+    if entry_line:
+        lines.append(entry_line)
+    lines.append("FINAL TRANSACTION PROPOSAL: **HOLD**")
+    return "\n".join(lines)
+
+
+def _snapshot(**cards: str) -> dict:
+    return {code: {"text": text} for code, text in cards.items()}
+
+
+def test_tiering_off_is_v3_verbatim_even_with_prohibited_card(tmp_path):
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    snap = _snapshot(**{"002345": _card("**入场**: 禁止")})
+    doc = build_decision(scan, card_snapshot=snap)                      # tiering 默认 False
+    assert doc["buys"][0]["code"] == "002345" and "tier" not in doc["buys"][0]
+    assert doc["tiering"] is False and doc["tier_counts"] is None
+    assert any(c["type"] == "card_says_prohibited" for c in doc["conflicts"])
+
+
+def test_tiering_prohibited_card_is_hard_gated_out(tmp_path):
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    snap = _snapshot(**{"002345": _card("**入场**: 禁止")})
+    doc = build_decision(scan, card_snapshot=snap, tiering=True)
+    by = _by_code(doc)
+    assert by["002345"]["hard_gate"]["no_redflag"] is False
+    assert doc["buys"][0]["code"] == "000034" and doc["buys"][0]["tier"] == "R"
+    assert doc["buys"][0]["basis"] == "relative_forced"
+    # task-19-brief 原文在这里断言 `doc["conflicts"] == []`——技术性不成立,与本任务无关:
+    # `_snapshot` 这个夹具只给 002345 一张卡,000034/600188/601699 压根没有卡。002345 被
+    # 否决后新晋 R 级冠军 000034 自己就是"卡缺失",`_selection_conflicts`(既有 schema 2
+    # 机制,本任务未改一字)对"冠军卡缺失"本就会记一条 card_missing_or_unparseable——
+    # 这和 PROHIBITED 否决是两件独立的事(参见
+    # test_missing_card_is_absent_source_and_unknown_card_context_without_blocking_buy
+    # 同一机制)。已在 task-19-report.md 里点名此处与 brief 字面值的分歧,留给用户裁定。
+    new_winner_card = by["000034"]["card_context"]
+    assert new_winner_card["parse_status"] == "ERROR"
+    assert doc["conflicts"] == [{
+        "code": "000034", "type": "card_missing_or_unparseable",
+        "detail": f"card_context.parse_errors={new_winner_card['parse_errors']}",
+    }]
+
+
+def test_tiering_allowed_card_wins_as_A_tier_even_if_lower_scored(tmp_path):
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    snap = _snapshot(**{"601699": _card("**入场**: 允许"), "002345": _card("**入场**: 条件(收复均线)")})
+    doc = build_decision(scan, card_snapshot=snap, tiering=True)
+    assert doc["buys"][0] == {"code": "601699", "basis": "card_backed", "rank": 1, "tier": "A"}
+    assert doc["tier_counts"] == {"A": 1, "R": 3}
+    assert "A 级 1 只" in doc["why"]
+
+
+def test_tiering_all_prohibited_is_blocked_not_forced(tmp_path):
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    snap = _snapshot(**{c: _card("**入场**: 禁止") for c in _RANK_ORDER})
+    doc = build_decision(scan, card_snapshot=snap, tiering=True)
+    assert doc["blocked"] is True and doc["buys"] == []
+    assert {r["reason"] for r in doc["blocked_reasons"]} == {"hard_gate.no_redflag"}
+
+
+def test_rule_version_is_v4():
+    from autoresearch.scan.relative_buy import RULE_VERSION
+    assert RULE_VERSION == "e6.v4.0"
+
+
+def test_tiering_conditional_card_is_not_vetoed_and_lands_in_r_tier(tmp_path):
+    """CONDITIONAL 是第三个真值,不是 ALLOWED/PROHIBITED 两值的化简(addendum P21 附注
+    3:生产 Codex 引擎 4 次命中里 2 笔 BUY 就压在它上面)。它不触发 no_redflag 否决
+    (veto 只认 PROHIBITED),也进不了 A 级(A 级只认 ALLOWED),必须落在 R 级。
+    """
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    snap = _snapshot(**{"002345": _card("**入场**: 条件(待突破)")})
+    doc = build_decision(scan, card_snapshot=snap, tiering=True)
+    by = _by_code(doc)
+    assert by["002345"]["card_context"]["entry_stance"] == "CONDITIONAL"
+    assert by["002345"]["hard_gate"]["no_redflag"] is True     # CONDITIONAL 不是 PROHIBITED,不否决
+    assert doc["buys"][0]["code"] == "002345" and doc["buys"][0]["tier"] == "R"
+    assert doc["tier_counts"] == {"A": 0, "R": 4}

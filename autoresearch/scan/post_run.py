@@ -856,15 +856,17 @@ def _publish_run_observation_unlocked(
     # 这种半开状态,那是本波要防的分家的另一种形状。
     from autoresearch.scan.relative_buy import configured_relative_buy
 
-    _rb_mode, _rb_exclude_pinned, _, _rb_pool = configured_relative_buy()
+    _rb_mode, _rb_exclude_pinned, _, _rb_pool, _rb_tiering = configured_relative_buy()
     if decision_write == "write":
         from autoresearch.scan.relative_buy import safe_write_decision
 
-        safe_write_decision(scan, mode=_rb_mode, exclude_pinned=_rb_exclude_pinned, pool=_rb_pool)
+        safe_write_decision(scan, mode=_rb_mode, exclude_pinned=_rb_exclude_pinned, pool=_rb_pool,
+                            tiering=_rb_tiering)
     else:
         from autoresearch.scan.relative_buy import safe_verify_decision
 
-        safe_verify_decision(scan, mode=_rb_mode, exclude_pinned=_rb_exclude_pinned, pool=_rb_pool)
+        safe_verify_decision(scan, mode=_rb_mode, exclude_pinned=_rb_exclude_pinned, pool=_rb_pool,
+                             tiering=_rb_tiering)
     # 现场重建 Task 4(设计稿 §5.2 生产接线):绑定必须在**这里**——决策校验已经完成
     # (E6 现算/比对已定稿,不再改变),retain 还没把 staging 镜像进 report_dir,capsule
     # 也还没冻结。`safe_bind_run` 自己从不抛出(裁定③:证据采集失败不得让发布本身失败),

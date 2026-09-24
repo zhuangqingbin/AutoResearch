@@ -148,7 +148,11 @@ from autoresearch.trace.identity import redact_residual_secrets
 #: 新字段;不新增硬门,不改变任何一天的 `buys`/`blocked`/`rank`/`relative_decision_score`
 #: (golden 投影测试锁定,见 `tests/scan/test_relative_buy.py`)。
 SCHEMA_VERSION = 2
-RULE_VERSION = "e6.v3.0"
+RULE_VERSION = "e6.v4.0"
+# v4.0 = v3.0 + `tiering` 开关(2026-09-24 可买性对齐 §2.6):开 → ①卡面入场=禁止进 no_redflag 硬门;
+# ②BUY 分 A 级(卡面允许入场)/R 级(其余 eligible,裁定①「成功日 ≥1 只」的强制相对)。
+# 关(默认)→ v3.0 逐字(golden `test_tiering_off_is_v3_verbatim_even_with_prohibited_card`)。
+# 票级 data_a(批 0)不受开关控制:那是缺陷修,不是规则。
 # v1.1 = v1 + 两道硬门的 ABSENT 收紧(`data_a` 三个 status 一律要求 `== "OK"`;`contract`
 # 消费护照 `missing["l4.research_rating"]`)。**打分与选择语义与 v1 逐字相同** —— 四面算法 /
 # Borda 等权平均 / 并列决胜三级 / 第 2 只的门 / `expected_abs_gap` 一个字符未动。
@@ -257,38 +261,61 @@ _LIVE_EXEC_LINE_CONTRACT = {
 #: `field_usage`(spec §7.2)——真实规则**导出**的字段角色表,不是第二份手写清单:
 #: hard_gate/ranking 两列直接引用 `_HARD_GATES`/`_FACES`,改那两个常量这里自动跟着变,
 #: 不会有人忘记同步一份影子拷贝(同 `benchmark.redflag_early_stop_reasons` 的
-#: "导出词表 = 让它自己说话" 纪律)。`display_only` 列的是本任务新增的 `card_context`
-#: 全部字段——它们只供人读 / `conflicts` 展示,任何一个都不得进 `_hard_gate`/排序,这是
-#: 本任务最硬的约束:`_hard_gate`/`_raw_faces`/`_faces_table`/`eligible`/`buy_pool` 排序
-#: 逐字未动,就是这条约束成立的证据(diff 里找不到这几个函数的任何改动)。
-FIELD_USAGE = {
-    "hard_gate": {
-        "fields": list(_HARD_GATES),
-        "role": "决定 eligible;四类全过才有资格进入候选池(见 build_decision docstring)",
-    },
-    "ranking": {
-        "fields": [*_FACES, "amount", "code"],
-        "role": ("四面 Borda 等权平均 → relative_decision_score,驱动 rank/observation_rank;"
-                "amount/code 是并列决胜键(某天 buy_pool 实际用了哪几个键,见 "
-                "selection.sort_keys,composite 池只用 target_align 一面)"),
-    },
-    "display_only": {
-        "fields": ["card_context.ev_target", "card_context.rr", "card_context.position_raw",
-                   "card_context.trigger_raw", "card_context.exec_lines",
-                   "card_context.entry_stance", "card_context.no_new_position",
-                   "card_context.proposal", "card_context.card_kind",
-                   "card_context.entry_source"],
-        "role": "仅供人读与 conflicts 展示;不参与 eligible/hard_gate/排序/BUY 选择(本任务硬约束)",
-    },
-    "research_rating": {
-        "role": "hard_gate(no_redflag 的一部分:REDFLAG_RATINGS={Sell,Underweight} 命中即否决)",
-    },
-    "l4_proposal": {
-        "role": ("hard_gate(no_redflag 的一部分:卡面机读 proposal 命中 REDFLAG_PROPOSALS={SELL} "
-                "即否决;取自 decision_records,不是 card_context.proposal——两者来源不同,"
-                "后者是本任务新增的原文解析,见文件尾「已知问题」)"),
-    },
-}
+#: "导出词表 = 让它自己说话" 纪律)。`display_only` 列的是 `card_context` 的字段——它们
+#: 只供人读 / `conflicts` 展示,任何一个都不得进 `_hard_gate`/排序。
+#:
+#: v4.0(2026-09-24 §2.6,controller Ruling P21)—— `card_context.entry_stance` 的真实
+#: 角色随 `tiering` 开关而变:关(v3.0 逐字)时它仍是纯 display_only;开时它离开
+#: display_only,真正驱动 `_hard_gate` ④ 的否决与 `build_decision` 选择段的 A/R 分级。
+#: 这个字典逐字序列化进每一份决策文件(`"field_usage": ...`)——继续拿一份不随开关变的
+#: 模块常量发布,就是让 tiering=True 的生产 run 在书面上否认自己刚做过的事。因此
+#: `FIELD_USAGE` 不再是唯一真相,改成 `_field_usage(tiering)` 的一次调用;下面的
+#: `FIELD_USAGE = _field_usage(False)` 只是保留给"v3 那份"的既有引用(golden 常量
+#: import 等),生产运行按各自的 `tiering` 现选,不恒等于这个常量。
+def _field_usage(tiering: bool) -> dict:
+    display_only_fields = ["card_context.ev_target", "card_context.rr", "card_context.position_raw",
+                           "card_context.trigger_raw", "card_context.exec_lines",
+                           "card_context.entry_stance", "card_context.no_new_position",
+                           "card_context.proposal", "card_context.card_kind",
+                           "card_context.entry_source"]
+    if tiering:
+        display_only_fields = [f for f in display_only_fields if f != "card_context.entry_stance"]
+    usage = {
+        "hard_gate": {
+            "fields": list(_HARD_GATES),
+            "role": "决定 eligible;四类全过才有资格进入候选池(见 build_decision docstring)",
+        },
+        "ranking": {
+            "fields": [*_FACES, "amount", "code"],
+            "role": ("四面 Borda 等权平均 → relative_decision_score,驱动 rank/observation_rank;"
+                    "amount/code 是并列决胜键(某天 buy_pool 实际用了哪几个键,见 "
+                    "selection.sort_keys,composite 池只用 target_align 一面)"),
+        },
+        "display_only": {
+            "fields": display_only_fields,
+            "role": "仅供人读与 conflicts 展示;不参与 eligible/hard_gate/排序/BUY 选择(本任务硬约束)",
+        },
+        "research_rating": {
+            "role": "hard_gate(no_redflag 的一部分:REDFLAG_RATINGS={Sell,Underweight} 命中即否决)",
+        },
+        "l4_proposal": {
+            "role": ("hard_gate(no_redflag 的一部分:卡面机读 proposal 命中 REDFLAG_PROPOSALS={SELL} "
+                    "即否决;取自 decision_records,不是 card_context.proposal——两者来源不同,"
+                    "后者是本任务新增的原文解析,见文件尾「已知问题」)"),
+        },
+    }
+    if tiering:
+        usage["entry_stance"] = {
+            "fields": ["card_context.entry_stance"],
+            "role": ("v4.0 tiering=True 时脱离 display_only,真实驱动两件事:① hard_gate"
+                    "(no_redflag 的一部分:entry_stance==PROHIBITED 即否决,见 _hard_gate ④);"
+                    "② BUY 分级(entry_stance==ALLOWED → A 级/card_backed,其余 eligible → "
+                    "R 级/relative_forced,见 build_decision 选择段)。"),
+        }
+    return usage
+
+
+FIELD_USAGE = _field_usage(tiering=False)
 
 
 # ── 读取原语(容忍缺文件;不容忍猜)──────────────────────────────────────────
@@ -672,6 +699,11 @@ def _hard_gate(entry: dict, ctx: dict) -> tuple[dict[str, bool], list[dict]]:
         # 评级读不出来但卡自己写了 `FINAL TRANSACTION PROPOSAL: SELL` 的情形(两条独立防线:
         # 评级解析可能失手,提案行是卡的机读契约行)。
         fail("no_redflag", f"卡面提案 {proposal}")
+    elif ctx.get("tiering") and ctx["card_context"].get(code, {}).get("entry_stance") == "PROHIBITED":
+        # v4.0(2026-09-24 §2.6,controller Ruling P21):`tiering` 开时卡面入场=禁止直接
+        # 进 no_redflag 硬门(BUY 不能与卡自己写的「禁止开仓」打架)。关(默认)时这一支
+        # 不命中,PROHIBITED 只留在 `conflicts` 里当展示性冲突——v3.0 行为逐字不变。
+        fail("no_redflag", "卡面入场=禁止(entry_stance=PROHIBITED;v4.0 tiering)")
     elif stop_reason in REDFLAG_EARLY_STOP_REASONS:
         fail("no_redflag", f"早停红灯停因:{stop_reason}")
     elif amount_pctl is not None and amount_pctl < LIQUIDITY_PCTL_FLOOR:
@@ -1033,10 +1065,13 @@ def _selection_conflicts(by_code: dict[str, dict], winner_code: str | None) -> l
 
 
 def _render_why(*, pool: str, selection: dict, by_code: dict[str, dict],
-                conflicts: list[dict]) -> str:
+                conflicts: list[dict], tier_counts: dict | None = None,
+                tier: str | None = None) -> str:
     """`why`:由 `selection`/`conflicts` 结构化字段**固定渲染**,不另算——用实际池内
     名次(`selection.winner.pool_rank`),绝不用 `observation_rank`(mutation probe:把这里
     换成 observation_rank,composite 池的 E03 测试必须变红)。
+
+    `tier_counts`/`tier`(v4.0):`tiering=True` 时由调用方传入(`None` = 关,不渲染这句)。
     """
     winner_code = selection["winner"]["code"]
     if winner_code is None:
@@ -1053,6 +1088,8 @@ def _render_why(*, pool: str, selection: dict, by_code: dict[str, dict],
         f"排序依据:{key_text}。",
         f"第 2 只未出:{selection['second_buy_reason']}。",
     ]
+    if tier_counts is not None:
+        parts.append(f"分级:A 级 {tier_counts['A']} 只 / R 级 {tier_counts['R']} 只,选中 {tier} 级。")
     for c in conflicts:
         parts.append(f"冲突:{c['type']} — {c['detail']}")
     return " ".join(parts)
@@ -1062,7 +1099,8 @@ def _render_why(*, pool: str, selection: dict, by_code: dict[str, dict],
 def build_decision(scan_dir: Path | str, date: str | None = None,
                    mode: str = MODE_SHADOW, exclude_pinned: bool = False,
                    pool: str = POOL_FINALISTS,
-                   card_snapshot: dict[str, dict] | None = None) -> dict:
+                   card_snapshot: dict[str, dict] | None = None,
+                   tiering: bool = False) -> dict:
     """`context/scan/<date>` → 统一相对决策文档(确定性、零 LLM、零联网、只读)。
 
     护照**现算**(`passport.build_passport`),不读盘上那份 `_candidate_passport.json`:
@@ -1082,6 +1120,17 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
     的 `card_context` 一律按"卡缺失"处理(`parse_card_context(None)`),不影响
     `eligible`/`hard_gate`/`buys`/`rank` 等既有字段——这些字段与卡面解析完全独立
     (schema 1 行为逐字不变的证据)。
+
+    `tiering`(v4.0,2026-09-24 可买性对齐 §2.6,controller Ruling P21):缺省 `False` =
+    v3.0 逐字(golden `test_tiering_off_is_v3_verbatim_even_with_prohibited_card`)—— 卡面
+    `entry_stance` 只进 `conflicts` 展示,不碰 `eligible`/`buys`。`True` 时两件事同时打开:
+    ① `entry_stance == "PROHIBITED"` 在 `_hard_gate` ④ 直接否决(`no_redflag=False`);
+    ② `buy_pool` 按 `entry_stance == "ALLOWED"` 拆成 A 级(`basis="card_backed"`)/R 级
+    (`basis="relative_forced"`,其余 eligible)两桶,A 级非空则从 A 级出 `buys[0]`(带
+    `tier="A"`),否则从 R 级出(`tier="R"`);两桶都空则诚实 `blocked`,不强出。`CONDITIONAL`
+    /`UNKNOWN` 都落 R 级,不否决、不进 A 级——三值不是两值的化简。实测(P25):A 级在全部
+    8 个历史扫描日恒为 0(没有卡带过这条入场线),这是当前证据下的预期结果,不是要调参
+    数去凑出来的 bug。
     """
     if mode not in {MODE_SHADOW, MODE_ACTIVE}:
         raise ValueError(
@@ -1114,6 +1163,13 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
         "n_channels_pctl": _mid_rank_pctl({code: float(value)
                                            for code, value in n_channels.items()}),
     }
+    # v4.0:候选循环前先把 card_context 算齐一遍(避免每票在 _hard_gate 与候选字典构造
+    # 里各解析一次 —— `parse_card_context` 是纯函数,重复调用不会给出不同答案,但没理由
+    # 算两遍)。`ctx["tiering"]` 让 `_hard_gate` 能读到开关,不必再加一个形参改遍全部
+    # 调用点。
+    card_ctx = {entry["code"]: _card_context_for(entry["code"], card_snapshot) for entry in entries}
+    ctx["card_context"] = card_ctx
+    ctx["tiering"] = tiering
 
     faces = _faces_table(entries, ctx)
     excluded: list[dict] = []
@@ -1149,8 +1205,9 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
             # 全量留在 `candidates` 里(观测语义不变),只是不当 BUY。
             "in_pool": (True if pool == POOL_FINALISTS else code in seat_codes),
             # schema 2:卡面原文的保守解析(spec §7.1)。纯查表 + 纯函数,`card_snapshot`
-            # 缺该 code → "卡缺失"(不是错误,不影响 eligible/hard_gate/buys)。
-            "card_context": _card_context_for(code, card_snapshot),
+            # 缺该 code → "卡缺失"(不是错误,不影响 eligible/hard_gate/buys)。取自上面
+            # 候选循环前已经算好的 `card_ctx`(v4.0),不在这里二次解析。
+            "card_context": card_ctx[code],
         })
 
     by_code = {row["code"]: row for row in candidates}
@@ -1190,9 +1247,25 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
                                        -(universe["amount"].get(row["code"]) or 0.0),
                                        row["code"]))
 
-    # 第 2 只起的门:v1 影子期无已验证阈值 → 恒不满足,恒只出 1 只。
-    buys = ([{"code": buy_pool[0]["code"], "basis": "relative", "rank": 1}]
-            if buy_pool else [])
+    # v4.0(2026-09-24 §2.6,controller Ruling P21):`tiering` 开时把 buy_pool 拆成
+    # A 级(卡面 entry_stance==ALLOWED)/R 级(其余 eligible)两桶,A 级非空优先出、否则
+    # R 级出;两桶都空诚实 blocked,不强出。两桶各自沿用 buy_pool 已经算好的排序(finalists/
+    # composite 两套键均适用,这里不重排)。`tiering` 关(默认)= v3.0 逐字。
+    tier_counts: dict[str, int] | None = None
+    if tiering:
+        a_pool = [row for row in buy_pool if row["card_context"].get("entry_stance") == "ALLOWED"]
+        r_pool = [row for row in buy_pool if row["card_context"].get("entry_stance") != "ALLOWED"]
+        tier_counts = {"A": len(a_pool), "R": len(r_pool)}
+        if a_pool:
+            buys = [{"code": a_pool[0]["code"], "basis": "card_backed", "rank": 1, "tier": "A"}]
+        elif r_pool:
+            buys = [{"code": r_pool[0]["code"], "basis": "relative_forced", "rank": 1, "tier": "R"}]
+        else:
+            buys = []
+    else:
+        # 第 2 只起的门:v1 影子期无已验证阈值 → 恒不满足,恒只出 1 只。
+        buys = ([{"code": buy_pool[0]["code"], "basis": "relative", "rank": 1}]
+                if buy_pool else [])
     second_buy = {"fired": SECOND_BUY_THRESHOLD is not None,
                   "reason": SECOND_BUY_BLOCK_REASON,
                   "threshold": SECOND_BUY_THRESHOLD}
@@ -1221,7 +1294,8 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
         candidates=candidates, eligible=eligible, buy_pool=buy_pool,
         excluded=excluded, candidates_n=len(candidates))
     conflicts = _selection_conflicts(by_code, winner_code)
-    why = _render_why(pool=pool, selection=selection, by_code=by_code, conflicts=conflicts)
+    why = _render_why(pool=pool, selection=selection, by_code=by_code, conflicts=conflicts,
+                      tier_counts=tier_counts, tier=(buys[0].get("tier") if buys else None))
 
     market_members = universe["members"]
     raw_orphans = passport.get("orphans") or {}
@@ -1237,6 +1311,9 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
         # `finalists` 与 `composite` 是两条不同的规则,读数不可直接相连。
         "pool": pool,
         "pool_members": sorted(seat_codes),
+        # v4.0:入场门 + A/R 分级总开关 + 当日分桶计数(`None` = 关,未分级)。
+        "tiering": tiering,
+        "tier_counts": tier_counts,
         "date": date,
         "ruler": MAIN_RULER,
         "benchmark": {
@@ -1303,7 +1380,10 @@ def build_decision(scan_dir: Path | str, date: str | None = None,
         # 任何一个既有键的取值。
         "selection": selection,
         "veto_accounting": veto_accounting,
-        "field_usage": FIELD_USAGE,
+        # v4.0(controller Ruling P21 (a)):`field_usage` 是 `tiering` 的函数,不是恒定
+        # 常量——tiering=True 的 run 必须报 entry_stance 那天真实做过的两件事(否决 +
+        # 分级),不能继续宣称它是 display_only(见 `_field_usage` 旁注)。
+        "field_usage": _field_usage(tiering),
         "conflicts": conflicts,
         "why": why,
     }
@@ -1349,16 +1429,18 @@ def load_decision(scan_dir: Path | str, *, date: str | None = None) -> dict | No
     return doc
 
 
-def configured_relative_buy() -> tuple[str, bool, str | None, str]:
-    """`scan_config.jsonc` 的 `relative_buy` 块 → `(mode, exclude_pinned, activate_date, pool)`。
+def configured_relative_buy() -> tuple[str, bool, str | None, str, bool]:
+    """`scan_config.jsonc` 的 `relative_buy` 块 →
+    `(mode, exclude_pinned, activate_date, pool, tiering)`。
 
     **消费侧的 mode 事实源是 config,不是决策文件**:E3b 的渲染点要在决策文件写出来**之前**
     就决定"要不要落占位符",那时盘上那份要么不存在要么是过期的,拿它的 `mode` 反推等于让
     昨天的开关决定今天的渲染。config 才是 writer-1 待会儿要用的那份开关(`post_run.py:673`
     同一处读取),两边同源才不会一个落占位、另一个不注入。
 
-    缺文件 / 缺块 / 配置层故障 → `("shadow", False, None)` = 内建默认 = 现行为(parity)。
-    故障降级必须留痕(同 `user_config.knob` 纪律),所以异常路径打一行 stderr。
+    缺文件 / 缺块 / 配置层故障 → `("shadow", False, None, "finalists", False)` = 内建默认 =
+    现行为(parity)。故障降级必须留痕(同 `user_config.knob` 纪律),所以异常路径打一行
+    stderr。`tiering`(v4.0)是第五个元素,同样缺键 = `False`(= v3.0 逐字,parity)。
     """
     try:
         from autoresearch.scan.user_config import load_user_config
@@ -1377,7 +1459,8 @@ def configured_relative_buy() -> tuple[str, bool, str | None, str]:
     return (str(block.get("mode") or MODE_SHADOW),
             bool(block.get("exclude_pinned", False)),
             str(activate) if activate else None,
-            pool)
+            pool,
+            bool(block.get("tiering", False)))
 
 
 def configured_mode() -> str:
@@ -1400,21 +1483,28 @@ def configured_pool() -> str:
     return configured_relative_buy()[3]
 
 
+def configured_tiering() -> bool:
+    """入场门 + A/R 分级总开关(v4.0)。薄封装,消费点别再自己解析一遍 config。"""
+    return configured_relative_buy()[4]
+
+
 def write_decision(scan_dir: Path | str, date: str | None = None,
                    mode: str = MODE_SHADOW, exclude_pinned: bool = False,
-                   pool: str = POOL_FINALISTS) -> Path:
+                   pool: str = POOL_FINALISTS, tiering: bool = False) -> Path:
     """构建并原子落盘。`sort_keys=True` 是 byte 稳定契约的一半,另一半是构建本身无时序量。
 
     schema 2(Task 7):在这里的 I/O 边界一次性读齐 `details/*.md`、算 hash、尝试归档
     (`_build_card_snapshot`),把结果作为「固定卡输入」传给纯计算的 `build_decision`
     ——卡面读取只在这一处发生,`verify_decision` 复用同一构造函数,两者才谈得上"同一份
-    卡输入 → 字节级 parity"。
+    卡输入 → 字节级 parity"。`tiering`(v4.0)原样透传给 `build_decision`,缺省 `False`
+    = v3.0 逐字。
     """
     scan = Path(scan_dir)
     target = scan / DECISION_FILENAME
     card_snapshot = _build_card_snapshot(scan)
     payload = _serialize_decision(
-        build_decision(scan, date, mode, exclude_pinned, pool, card_snapshot=card_snapshot))
+        build_decision(scan, date, mode, exclude_pinned, pool,
+                       card_snapshot=card_snapshot, tiering=tiering))
     target.parent.mkdir(parents=True, exist_ok=True)
     temp = target.with_name(f"{target.name}.tmp")
     temp.write_bytes(payload)
@@ -1424,10 +1514,10 @@ def write_decision(scan_dir: Path | str, date: str | None = None,
 
 def safe_write_decision(scan_dir: Path | str, date: str | None = None,
                         mode: str = MODE_SHADOW, exclude_pinned: bool = False,
-                        pool: str = POOL_FINALISTS) -> Path | None:
+                        pool: str = POOL_FINALISTS, tiering: bool = False) -> Path | None:
     """影子件失败不得阻断任何东西(本轮没有任何生产消费者依赖它)。"""
     try:
-        return write_decision(scan_dir, date, mode, exclude_pinned, pool)
+        return write_decision(scan_dir, date, mode, exclude_pinned, pool, tiering)
     except Exception as exc:  # noqa: BLE001 — 纯影子件失败只记一行,不连累主链
         print(f"[relative_buy] 构建失败: {type(exc).__name__}: {exc}", file=sys.stderr)
         return None
@@ -1446,13 +1536,13 @@ def _decision_digest(doc: dict, raw: bytes) -> dict:
 
 def verify_decision(scan_dir: Path | str, date: str | None = None,
                     mode: str = MODE_SHADOW, exclude_pinned: bool = False,
-                    pool: str = POOL_FINALISTS) -> dict:
+                    pool: str = POOL_FINALISTS, tiering: bool = False) -> dict:
     """P0-2:writer-2(`post_run observe`)的第二次「写」改成幂等校验,不再无条件覆盖。
 
-    `mode`/`exclude_pinned`(v2.0,task-2.2)与 `write_decision` 同参、原样透传给现算的
-    `build_decision`——两个写者必须用**同一套**规则重算同一天的决策,否则"两次现算是否
-    一致"这句话本身就没有意义(writer-1 用 active 算、writer-2 却永远拿 shadow 去比,
-    每天都会误报"不一致")。
+    `mode`/`exclude_pinned`/`tiering`(v2.0/v4.0)与 `write_decision` 同参、原样透传给
+    现算的 `build_decision`——两个写者必须用**同一套**规则重算同一天的决策,否则"两次
+    现算是否一致"这句话本身就没有意义(writer-1 用 active 算、writer-2 却永远拿 shadow
+    去比,每天都会误报"不一致")。
 
     `docs/research/2026-08-19-decision-file-two-writers-and-taskbook-hash.md` §2.1/§2.5:
     `_relative_buy_decision.json` 的两个合法写者(`publisher._run_publish` 与
@@ -1488,7 +1578,8 @@ def verify_decision(scan_dir: Path | str, date: str | None = None,
     scan = Path(scan_dir)
     target = scan / DECISION_FILENAME
     card_snapshot = _build_card_snapshot(scan, reuse=_published_card_sources(target))
-    fresh_doc = build_decision(scan, date, mode, exclude_pinned, pool, card_snapshot=card_snapshot)
+    fresh_doc = build_decision(scan, date, mode, exclude_pinned, pool,
+                               card_snapshot=card_snapshot, tiering=tiering)
     fresh_bytes = _serialize_decision(fresh_doc)
     resolved_date = str(fresh_doc.get("date") or date or scan.name)
 
@@ -1544,11 +1635,11 @@ def verify_decision(scan_dir: Path | str, date: str | None = None,
 
 def safe_verify_decision(scan_dir: Path | str, date: str | None = None,
                          mode: str = MODE_SHADOW, exclude_pinned: bool = False,
-                         pool: str = POOL_FINALISTS) -> dict | None:
+                         pool: str = POOL_FINALISTS, tiering: bool = False) -> dict | None:
     """`verify_decision` 的失败纪律版:出异常只打一行,与 `safe_write_decision` 同一姿势
     (决策件本身从不阻断发布);但内部真正的「不一致」分支不算异常,是正常返回路径。"""
     try:
-        return verify_decision(scan_dir, date, mode, exclude_pinned, pool)
+        return verify_decision(scan_dir, date, mode, exclude_pinned, pool, tiering)
     except Exception as exc:  # noqa: BLE001 — 纯影子件失败只记一行,不连累主链
         print(f"[relative_buy] verify 失败: {type(exc).__name__}: {exc}", file=sys.stderr)
         return None

@@ -62,7 +62,11 @@ def test_new_blocks_whitelisted(tmp_path):
            "l2": {"sector_cap": 0.20, "knife_cap": True,
                   "sector_seats": {"enabled": True, "per_sector": 2, "max_sectors": 3}},
            "sector": {"reuse_ttl_days": 5, "max_briefs": 6},
-           "funnel": {"regime_aware": True, "recall_n": 1000, "l2_n": 200}}
+           "funnel": {"regime_aware": True, "recall_n": 1000, "l2_n": 200},
+           # 入场门 + A/R 分级总开关(2026-09-24 可买性对齐 §2.6,v4.0)——白名单只负责
+           # 「开关存在且类型对」,解析+默认值兜底留在消费侧
+           # `relative_buy.configured_tiering()`(见该函数自己的测试)。
+           "relative_buy": {"tiering": True}}
     p = tmp_path / "scan_config.jsonc"
     p.write_text(json.dumps(raw), encoding="utf-8")
     assert load_user_config(p) == raw

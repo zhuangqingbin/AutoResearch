@@ -436,7 +436,34 @@ def test_publish_run_observation_write_passes_relative_buy_config(tmp_path, monk
     publish_run_observation(scan, real_scan=False, decision_write="write")
 
     assert captured == {"mode": "active", "exclude_pinned": True,
-                        "pool": "finalists"}   # v3.0 起 pool 也必须原样透传
+                        "pool": "finalists", "tiering": False}   # v3.0/v4.0 起 pool/tiering 也必须原样透传
+
+
+def test_publish_run_observation_write_passes_tiering_true_when_configured(tmp_path, monkeypatch):
+    """v4.0(2026-09-24 可买性对齐 §2.6):`relative_buy.tiering` 同样必须原样透传给
+    `safe_write_decision`——两个写者(write/verify)都要用同一份开关重算,理由同 mode/
+    exclude_pinned/pool 那三个既有键(见本文件上一条测试的 docstring)。"""
+    scan = tmp_path / "2026-09-24"
+    scan.mkdir()
+    cfg_dir = tmp_path / ".claude" / "skills" / "scan-market"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "scan_config.jsonc").write_text(
+        json.dumps({"relative_buy": {"mode": "active", "exclude_pinned": True,
+                                     "pool": "finalists", "tiering": True}}),
+        encoding="utf-8")
+    monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH",
+                        cfg_dir / "scan_config.jsonc")
+    captured: dict = {}
+
+    def _fake_safe_write(_scan_dir, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("autoresearch.scan.relative_buy.safe_write_decision", _fake_safe_write)
+
+    publish_run_observation(scan, real_scan=False, decision_write="write")
+
+    assert captured == {"mode": "active", "exclude_pinned": True,
+                        "pool": "finalists", "tiering": True}
 
 
 def test_publish_run_observation_verify_passes_relative_buy_config(tmp_path, monkeypatch):
@@ -461,7 +488,7 @@ def test_publish_run_observation_verify_passes_relative_buy_config(tmp_path, mon
     publish_run_observation(scan, real_scan=False, decision_write="verify")
 
     assert captured == {"mode": "active", "exclude_pinned": True,
-                        "pool": "finalists"}   # v3.0 起 pool 也必须原样透传
+                        "pool": "finalists", "tiering": False}   # v3.0/v4.0 起 pool/tiering 也必须原样透传
 
 
 def test_publish_run_observation_defaults_relative_buy_to_shadow_without_config(
@@ -483,7 +510,7 @@ def test_publish_run_observation_defaults_relative_buy_to_shadow_without_config(
     publish_run_observation(scan, real_scan=False, decision_write="write")
 
     assert captured == {"mode": "shadow", "exclude_pinned": False,
-                        "pool": "finalists"}
+                        "pool": "finalists", "tiering": False}
 
 
 # ── Task 4(2026-09-12 scene-reconstruction · 生产接线):safe_bind_run 的调用点与顺序 ──

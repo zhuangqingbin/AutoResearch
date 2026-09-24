@@ -121,7 +121,7 @@ _SUB_WHITELIST = {
     "performance": {
         "streaming_l4",
     },
-    "relative_buy": {"mode", "exclude_pinned", "activate_date", "pool"},
+    "relative_buy": {"mode", "exclude_pinned", "activate_date", "pool", "tiering"},
     "retention": {"bind_transcripts"},
 }
 
@@ -181,6 +181,11 @@ _KNOB_TYPES: dict[tuple[str, str], tuple] = {
     # BUY 候选池来源(2026-08-26 §3 路A):"finalists"=v2 逐字行为(判断层持有 BUY)/
     # "composite"=v3(证据层持有 BUY,判断层只否决)。回滚杆就是这一个键。
     ("relative_buy", "pool"): (_t_rbpool, "finalists|composite"),
+    # 入场门 + A/R 分级总开关(2026-09-24 可买性对齐 §2.6,v4.0):true → 卡面
+    # entry_stance=PROHIBITED 进 no_redflag 硬门 + BUY 按 entry_stance=ALLOWED 分
+    # A/R 两级;false(默认)= v3.0 逐字(parity)。回滚杆是这一个键 + pool 两个一起改
+    # (见 scan_config.jsonc 该块注:单独关 tiering 会让 pool 扩容跑在没有否决门的情况下)。
+    ("relative_buy", "tiering"): (_t_bool, "boolean"),
     # transcript 绑定总开关(2026-09-12 scene-reconstruction Task 4)。默认 true;
     # false 或无 active run 时 `transcript_binder.safe_bind_run` 仍写带 reason 的
     # 禁用报告,不清除已有证据。
