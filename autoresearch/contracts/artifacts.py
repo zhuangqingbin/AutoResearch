@@ -603,6 +603,12 @@ NON_ARTIFACT_LITERALS: frozenset[str] = frozenset({
     # 这两个名字与**别的**已登记产物重名、被守卫按基名放行了 —— 不是它们另有归属。
     # 守卫按基名匹配,所以重名即免检:这是它今天的一个盲点,记在此处备查。
     "membership.csv", "paired_summary.json",
+    # 2026-09-24(Task 9,可买性对齐批 1):`research/menu_replay.py` 离线重算工具的输出——
+    # 同 `funnel_variants.py` 一族但更彻底:落点是调用方在 CLI 传的 `--out`(本任务实跑落在
+    # session scratchpad),不是仓内任何固定路径,连"reports_<engine>/research/..."这样的
+    # 可预测前缀都没有——工具本身对生产 staging 只读、只写 `--out`,不进 context_*/、
+    # reports_*/、lake/,天然不可能是任何一次扫描的期望证据。
+    "menu_replay.csv", "menu_replay.md", "weights_doc.json",
     # Codex harness 自己的模型能力缓存(`~/.codex/models_cache.json`)——**我们只读不产**。
     # runtime capability 那一层事实的来源,不在本仓任何产物根下。读不到 = UNKNOWN,
     # 不是缺产物(`user_config.load_codex_capabilities` 返回 None,不编造支持度)。
