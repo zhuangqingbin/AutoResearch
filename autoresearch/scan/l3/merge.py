@@ -72,7 +72,8 @@ def pick_composite_seats(l2: pd.DataFrame | None, m: int,
     排序键 `gbdt_score`(= sector-neutral composite,实测与 `composite` 列逐值相等),缺列
     退化 `composite`;两列都缺 → 空(presence-gated,parity)。
     剔:📌 保送(它们走自己的直通车)/ ST·退 / 当日涨幅 ≥`CHASE_1D_PCT`(追高在隔夜尺上
-    四年逐年为负)/ 调用方给的 `exclude`(通常是已在 finalists 的码 —— 已经在场就不必再占席)。
+    四年逐年为负)/ 落刀(pct_60d<−20,`common.scoring.falling_knife_mask`)/ 调用方给的
+    `exclude`(通常是已在 finalists 的码 —— 已经在场就不必再占席)。
     """
     if l2 is None or not len(l2):
         return []
@@ -90,6 +91,10 @@ def pick_composite_seats(l2: pd.DataFrame | None, m: int,
         keep &= ~d["name"].map(_is_st)
     if "pct_1d" in d.columns:
         keep &= ~(pd.to_numeric(d["pct_1d"], errors="coerce") >= CHASE_1D_PCT)
+    from autoresearch.common.scoring import falling_knife_mask
+    knife = falling_knife_mask(d)                        # 席位不接刀(2026-09-24 §2.4):19 席位 18 张 UW/Sell 的病根
+    if knife is not None:
+        keep &= ~knife.fillna(False)
     if exclude:
         keep &= ~d["code"].isin({str(c).zfill(6) for c in exclude})
     d = d.loc[keep].assign(_score=score.loc[keep])

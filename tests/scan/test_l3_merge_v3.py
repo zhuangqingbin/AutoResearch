@@ -540,3 +540,11 @@ def test_sector_cap_no_longer_protects_healthy_by_default():
     assert "000004" not in set(fin["code"])
     assert bench.set_index("code").loc["000004", "guard"] == "sector_cap"
     assert sum(1 for s in fin["sector"] if s == "贵金属") == 3
+
+
+def test_composite_seats_exclude_falling_knives():
+    from autoresearch.scan.l3.merge import pick_composite_seats
+    l2 = pd.DataFrame({"code": ["000001", "000002", "000003", "000004"], "name": list("甲乙丙丁"),
+                       "industry": "电力", "gbdt_score": [90.0, 80.0, 70.0, 60.0],
+                       "pct_1d": 1.0, "pct_60d": [-35.0, 5.0, -21.0, 8.0]})
+    assert [s["code"] for s in pick_composite_seats(l2, 3)] == ["000002", "000004"]
