@@ -30,6 +30,10 @@ from autoresearch.scan import brief, publisher
 from tests.scan.test_brief import _RUN, _scan_dir
 
 # ── 改造前的硬编码值(逐字抄自 `git show` 的改造前源码;**不许改**)────────────────
+#
+# 2026-09-24(Task 3):brief 内容本身有意变更(跨 run 昨日 delta 读点),按 `test_brief_
+# bytes_did_not_move` 的家训「要动它必须是有意改 brief 内容」在此追加第 14 项 ——
+# 这条 parity 钉的是「Task 9c 登记表改造没有顺手改内容」,不冻结 brief 未来的功能演进。
 
 _BRIEF_WHITELIST_BEFORE = (
     "meta.json",
@@ -45,6 +49,7 @@ _BRIEF_WHITELIST_BEFORE = (
     "temperature.csv",
     "menu_health",
     "overseas_calendar.csv",
+    "manifest.json",
 )
 
 _TRACE_MAPPING_BEFORE = (
@@ -85,16 +90,18 @@ def test_brief_whitelist_names_resolve_in_the_registry():
 
 
 def test_brief_whitelist_does_not_widen_permissions():
-    """白名单是**许可**表,比登记表窄:登记表里 85 个产物,brief 只准读这 10 个。
+    """白名单是**许可**表,比登记表窄:登记表里 85 个产物,brief 只准读这 11 个。
 
     反面锚:哪天有人图省事写成 `for_root("staging")`,这条立刻红。
     """
     staging_paths = {a.path for a in C.for_root("staging")}
-    assert len(brief.REGISTERED_INPUTS) == 10
+    assert len(brief.REGISTERED_INPUTS) == 11
     assert len(staging_paths) > 3 * len(brief.REGISTERED_INPUTS), \
         "登记表突然变小了?这条锚是为了保证下面那句『窄很多』还有意义"
     derived = {C.by_name(n).path for n in brief.REGISTERED_INPUTS}
-    assert derived < staging_paths | {C.by_name("run_health").path}, \
+    # `run_health`/`manifest` 都登记在 `report` 根(发布目录),不在 `staging` 根下 ——
+    # 两项都是 brief 合法读的「已发布」产物,所以显式并进右侧集合,不是放宽子集判据。
+    assert derived < staging_paths | {C.by_name("run_health").path, C.by_name("manifest").path}, \
         "brief 可读集不再是登记表的真子集 —— 许可被放宽了"
 
 

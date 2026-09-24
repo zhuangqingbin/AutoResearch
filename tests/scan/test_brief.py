@@ -15,6 +15,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -141,6 +142,43 @@ def _scan_dir(root: Path, *, with_decision=True, decision=None) -> Path:
 @pytest.fixture
 def scan(tmp_path):
     return _scan_dir(tmp_path)
+
+
+# ─────────── Task 3:跨 run 昨日 delta 的夹具助手(_prev_published 专用) ───────────
+
+def _publish_prev_run(reports_dir: Path, *, date: str, run_name: str, ratings: dict) -> Path:
+    """搭一场**已发布**的上一场 run —— `outcome.published_runs` 的最小骨架:
+    `manifest.json`(`analysis_date` 定位)+ `trace/staging/` 下的终评级与 finalist 名单
+    (`_prev_published` 的两个读点)。"""
+    run = reports_dir / "scan" / run_name
+    staging = run / "trace" / "staging"
+    staging.mkdir(parents=True)
+    (run / "manifest.json").write_text(json.dumps({"analysis_date": date}), encoding="utf-8")
+    (staging / "_final_ratings.json").write_text(json.dumps(ratings, ensure_ascii=False),
+                                                 encoding="utf-8")
+    with (staging / "finalists.csv").open("w", encoding="utf-8", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=["code", "name"])
+        w.writeheader()
+        for code in ratings:
+            w.writerow({"code": code, "name": ""})
+    return run
+
+
+def _strip_churn(scan: Path) -> None:
+    """拆掉 `_scan_dir` 硬编的 `run_health.churn` —— 留着它老分支先接管,新分支
+    (`_prev_published`)永远摸不到(2026-09-24 controller 校正②)。"""
+    path = scan / "run_health.json"
+    health = json.loads(path.read_text(encoding="utf-8"))
+    health.pop("churn", None)
+    path.write_text(json.dumps(health, ensure_ascii=False), encoding="utf-8")
+
+
+def _live_copy(scan: Path, tmp_path: Path) -> Path:
+    """把 `scan` 挪进「活体扫描」路径形状(`scan_runs/.../staging/<date>`)—— `_is_live_scan`
+    只认这个形状,原地 `context/scan/<date>` 摸不到新分支(2026-09-24 controller 校正⑤)。"""
+    live = tmp_path / "context" / "scan_runs" / "r1" / "staging" / scan.name
+    shutil.copytree(scan, live)
+    return live
 
 
 # ───────────────────────────── ① 确定性 ─────────────────────────────
@@ -368,23 +406,50 @@ def test_whitelist_covers_every_file_read():
 
 def test_no_details_or_trace_path_literal_in_brief():
     """禁读 `details/` 全文与 `trace/` 大文件 —— 这条查的是**源码里有没有这种路径**,
-    与只查白名单内容的 `test_no_details_or_trace_in_whitelist` 是互补的两条。"""
+    与只查白名单内容的 `test_no_details_or_trace_in_whitelist` 是互补的两条。
+
+    唯一豁免:`_prev_published`(Task 3)按行号圈定,读的是**另一场已发布 run**的
+    `trace/staging/` 小型结构化镜像(`_final_ratings.json`/`finalists.csv`,与
+    `outcome.run_facts` 的读盘优先级同源约定),不是本场 scan 自己的 `trace/` 大文件。
+    豁免只按函数名圈定行号,不是把 `"trace"` 整体摘出黑名单 —— 该函数之外任何地方
+    再出现裸 `"trace"`/`"details"` 仍然要红。
+    """
     import ast
     tree = ast.parse(Path(brief.__file__).read_text(encoding="utf-8"))
-    lits = [n.value for n in ast.walk(tree)
-            if isinstance(n, ast.Constant) and isinstance(n.value, str)]
-    bad = [s for s in lits if s.startswith(("details/", "trace/")) or s in ("details", "trace")]
+    exempt_fn = next((n for n in ast.walk(tree)
+                      if isinstance(n, ast.FunctionDef) and n.name == "_prev_published"), None)
+    exempt_lines = (set(range(exempt_fn.lineno, exempt_fn.end_lineno + 1))
+                   if exempt_fn else set())
+    bad = [n.value for n in ast.walk(tree)
+           if isinstance(n, ast.Constant) and isinstance(n.value, str)
+           and (n.value.startswith(("details/", "trace/")) or n.value in ("details", "trace"))
+           and n.lineno not in exempt_lines]
     assert not bad, f"brief 出现 details/trace 路径字面量:{bad}"
 
 
-def test_whitelist_has_no_dead_entry(scan):
+def test_whitelist_has_no_dead_entry(tmp_path, monkeypatch):
     """⊆:表内每一项都必须真被读过。判据不是「代码里提过」而是「**sources 边表用过它**」
     —— 前者可以靠一句死注释满足,后者必须真的渲染出一个数。
 
     三个虚拟项(`buy_ledger`/`menu_health`/`feedback_store`)与 `temperature.csv` 同理:
     它们也各自出边表行。`retro/attribution.csv` 的 R-X1 行是三态常驻的,必然在场。
+
+    `manifest.json`(Task 3:跨 run 昨日 delta 的读点)只在**新分支**——run 分区活体扫描
+    ∧ `run_health.churn` 缺失 ∧ 存在已发布的上一场 run——下才会被引用,普通 `scan` 夹具的
+    churn 恒在,永远摸不到新分支。这里搭一份满足新分支的夹具,让它真的读到、真的出边表行,
+    而不是把这一项从 ⊆ 断言里悄悄摘掉(controller 2026-09-24 裁定:宁可搭夹具也不许摘条目)。
     """
-    files = {r["file"] for r in brief.build(scan, run_folder=_RUN)["sources"]}
+    from autoresearch.common import workspace as ws
+
+    scan = _scan_dir(tmp_path)
+    _strip_churn(scan)
+    reports = tmp_path / "reports"
+    _publish_prev_run(reports, date="2026-08-05", run_name="20260805-0805_2200",
+                      ratings={"600018": "Underweight"})
+    monkeypatch.setattr(ws, "reports_root", lambda: reports)
+    live = _live_copy(scan, tmp_path)
+
+    files = {r["file"] for r in brief.build(live, run_folder=_RUN)["sources"]}
     dead = sorted(set(brief.INPUT_WHITELIST) - files)
     # 两个 presence-gated 项在夹具里天然不出边表行,**不是死条目**:
     #   `temperature.csv`        —— tests/scan/conftest 把它隔离成不存在;
@@ -706,3 +771,23 @@ def test_composite_brief_lines_stay_within_budget():
              "relative": relative_facts(_composite_decision())}
     added = len("\n".join(_buy_lines(facts, [])).encode("utf-8"))
     assert added < MAX_BYTES // 2       # ③ 一节远小于半个预算
+
+
+# ───────────────────────────── ⑥ 跨 run 昨日 delta(Task 3) ─────────────────────────────
+
+def test_delta_line_reads_previous_published_run_under_run_partition(tmp_path, monkeypatch, scan):
+    """run 分区下 `scan.parent` 只装本场日期(`run_health.churn` 恒 None)→ 改从已发布 run
+    目录(`outcome.published_runs`)里找上一场,不再对着「无上一扫描日」交白卷。"""
+    from autoresearch.common import workspace as ws
+
+    _strip_churn(scan)
+    reports = tmp_path / "reports"
+    _publish_prev_run(reports, date="2026-08-05", run_name="20260805-0805_2200",
+                      ratings={"600018": "Underweight"})
+    monkeypatch.setattr(ws, "reports_root", lambda: reports)
+    live = _live_copy(scan, tmp_path)
+
+    out = brief.build(live, run_folder=_RUN)
+    md = out["markdown"]
+    assert "vs 2026-08-05" in md
+    assert "600018 Underweight→Hold" in md

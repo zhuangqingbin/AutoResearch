@@ -109,6 +109,7 @@ _WHITELIST_SPEC: tuple[tuple[str, str], ...] = (
     ("literal", "temperature.csv"),
     ("literal", "menu_health"),
     ("artifact", "overseas_calendar"),  # D-2:隔夜窗海外事件(⑤ 风险哨一句;风险可见性,不喂判断层)
+    ("artifact", "manifest"),  # Task 3:跨 run 昨日 delta 读点(`_prev_published` 挑上一场发布 run)
 )
 
 #: 白名单里**已登记**产物的登记名(顺序同上)。
@@ -199,6 +200,41 @@ def _why_no_buy(scan_dir: Path) -> dict:
                 gates[str(gate)] = gates.get(str(gate), 0) + 1
     return {"early_stop": dict(sorted(stops.items())), "gate_fail": dict(sorted(gates.items())),
             "n_early": sum(stops.values()), "n_full": n_full}
+
+
+def _is_live_scan(scan: Path) -> bool:
+    """只有生产现场(run 分区 staging 或活着的 scan_root 子目录)才去翻已发布 run;
+    测试的 tmp 目录不是,行为逐字不变(也不会被开发机上的真实 run 污染)。"""
+    try:
+        return "scan_runs" in scan.resolve().parts or scan.parent.resolve() == ws.scan_root().resolve()
+    except OSError:
+        return False
+
+
+def _prev_published(date: str) -> tuple[str | None, dict[str, str], set[str]]:
+    """上一场**已发布** run(数据日 < date)的终评级与 finalist 码集。
+
+    run 分区后 `run_health.churn` 恒 None(09-09→09-17 六场全印「无上一扫描日」),因为
+    `health.finalist_churn` 只看 `scan_dir.parent`,那里只有本场自己的日期。改从
+    `reports_<engine>/scan/` 的已发布 run 里找(`outcome.published_runs`)。找不到 → (None, {}, set())。
+    """
+    try:
+        from autoresearch.scan.outcome import published_runs
+        runs = published_runs()
+    except Exception:  # noqa: BLE001 — 跨 run 读者是可选层,坏了只影响 ⑥ 那一行
+        return None, {}, set()
+    best: tuple[str, Path] | None = None
+    for run in runs:
+        manifest = _json(run / "manifest.json") or {}
+        d = str(manifest.get("analysis_date") or "")
+        if d and d < date and (best is None or d > best[0]):
+            best = (d, run)
+    if best is None:
+        return None, {}, set()
+    staging = best[1] / "trace" / "staging"
+    ratings = _json(staging / "_final_ratings.json") or {}
+    codes = {_code6(r.get("code")) for r in _rows(staging / "finalists.csv") if r.get("code")}
+    return best[0], {_code6(k): v for k, v in ratings.items()}, codes
 
 
 def _tripwire_counts(scan_dir: Path) -> dict[str, int]:
@@ -320,14 +356,23 @@ def collect_facts(scan_dir: Path | str, *, analysis_date: str | None = None,
 
     churn = health.get("churn") or {}
     prev_date = churn.get("prev_date")
-    changes: list[dict] = []
+    prev_by_code: dict[str, str] = {}
+    n_repeat, n_today = churn.get("n_repeat"), churn.get("n_today")
+    prev_file: str | None = None
     if prev_date:
         prev = _json(root / str(prev_date) / "_final_ratings.json") or {}
         prev_by_code = {_code6(k): v for k, v in prev.items()}
-        for code in sorted(set(prev_by_code) & set(rating_by_code)):
-            if prev_by_code[code] != rating_by_code[code]:
-                changes.append({"code": code, "from": prev_by_code[code],
-                                "to": rating_by_code[code]})
+    elif _is_live_scan(scan):
+        prev_date, prev_by_code, prev_codes = _prev_published(date)
+        if prev_date:
+            prev_file = "manifest.json"
+            today_codes = {_code6(r.get("code")) for r in finals if r.get("code")}
+            n_repeat, n_today = len(prev_codes & today_codes), len(today_codes)
+    changes: list[dict] = []
+    for code in sorted(set(prev_by_code) & set(rating_by_code)):
+        if prev_by_code[code] != rating_by_code[code]:
+            changes.append({"code": code, "from": prev_by_code[code],
+                            "to": rating_by_code[code]})
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -362,8 +407,8 @@ def collect_facts(scan_dir: Path | str, *, analysis_date: str | None = None,
                  "menu_sick": _menu_sick(scan),
                  "overseas": _overseas_line(scan),
                  "cards": counts.get("cards"), "finalists": len(finals)},
-        "delta": {"prev_date": prev_date, "n_repeat": churn.get("n_repeat"),
-                  "n_today": churn.get("n_today"), "changes": changes},
+        "delta": {"prev_date": prev_date, "n_repeat": n_repeat, "n_today": n_today,
+                  "changes": changes, "prev_file": prev_file},
     }
 
 
@@ -610,6 +655,12 @@ def _delta_text(facts: dict, src: list[dict], cap: int) -> str:
             body = "、".join(f"{c['code']} {c['from']}→{c['to']}" for c in shown)
             more = f" 等 {len(changes)} 只" if len(changes) > len(shown) else ""
             text = head + f" · 评级变动:{body}{more}"
+    if delta.get("prev_file"):
+        # 新分支(run 分区/无 churn/读已发布 run):prev_date 真身来自 manifest.json 的
+        # analysis_date,不是 run_health.json 的 churn.prev_date —— 单独锚一行,不与老分支
+        # 共用下面那条 `delta.n_repeat` 引用,防止「sources 误标」(I-2 同族)。
+        _src(src, "delta.prev_date", delta["prev_date"], delta["prev_file"],
+             "analysis_date", text)
     _src(src, "delta.n_repeat", delta.get("n_repeat"), "run_health.json",
          "churn.n_repeat", text)
     _src(src, "delta.changes", len(changes), "_final_ratings.json",
