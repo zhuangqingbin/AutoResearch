@@ -88,7 +88,7 @@
 
 ### 2.5 卡片机读入场行（两引擎）
 
-**契约**：`contracts/agent_output.L4_CARD` 新增 `Field("entry", r"\*\*入场\*\*[:：]\s*(允许|禁止|条件)", required=False, note="满卡必填、早停卡必填;缺席按散文推断并记 entry_source=prose")`。`CARD_SCHEMA_VERSION` 1→2；`RESEARCH_CARD_FIELDS` 已有 `entry_veto`，新增 `entry`。
+**契约**：`contracts/agent_output.L4_CARD` 新增 `Field("entry", r"\*\*入场\*\*[:：]\s*(允许|禁止|条件)", required=False, note="满卡必填、早停卡必填;缺席按散文推断并记 entry_source=prose")`。**不升** `CARD_SCHEMA_VERSION`（它是 ResearchCard JSON 的版本，与 md 入场行无关；`RESEARCH_CARD_FIELDS` 不动）。
 
 **语义分离**（写进三份 agent 定义）：五档评级答「值不值得持有」；`入场` 答「T+1 尾盘按执行线能不能新开仓」。规则：
 - 满卡：≥OW → `允许`（入场否决条件另写在触发位，不改本行）；Hold → `允许` 仅当 EV 目标带中枢 ≥ +0.3% ∧ R:R ≥ 1.0 ∧ OW 三门至少两门 ✓ ∧ 情报 T0/24h 无负面；否则 `条件(<一句>)` 或 `禁止`；UW/Sell → `禁止`。
@@ -107,7 +107,7 @@
 
 1. **池**：生产配置 `relative_buy.pool` 改回 `"finalists"`（= 全部 L4 派发卡，席位含在内）。`"composite"` 保留为回滚值。
 2. **票级 data_a**：`_data_contract_ok` 返回 `(day_ok, reason, per_ticker_failed: set[str])`：`failed_data` 中匹配 `^l4_(\d{6})$` 的项归入 `per_ticker_failed`，其余为日级。`_hard_gate` ②：日级不 OK → 全体 fail（原样）；否则仅 `code ∈ per_ticker_failed` 的票 fail（detail 写 `l4_<code> 失败`）。历史 `run_health` 无 `failed_data` 键 → 保持 v1.1 旧口径（不改写历史判定）。
-3. **入场门**：`_hard_gate` ④ `no_redflag` 在 UW/Sell 判定之后加：`card_context.entry_stance == "PROHIBITED"` → `fail("no_redflag", "卡面入场=禁止")`（`entry_source` 为 line 或 prose 皆算）。`_selection_conflicts` 保留（此后 PROHIBITED 冲突应恒 0，作为守卫的「会变的量」）。
+3. **入场门**：`_hard_gate` ④ `no_redflag` 在 UW/Sell 判定之后加：`card_context.entry_stance == "PROHIBITED"` → `fail("no_redflag", "卡面入场=禁止")`（`entry_source` 为 line 或 prose 皆算）。**与第 4 条的分级同受 `relative_buy.tiering` 控制**（一根杆：关 = v3 逐字，开 = 入场门 + 分级）。`_selection_conflicts` 保留（tiering 开后 PROHIBITED 冲突应恒 0，作为守卫的「会变的量」）。
 4. **分级选择**（`relative_buy.tiering` 旋钮，默认 `false` = v3 选择逻辑逐字；生产开 `true`）：
    - A 级候选 = `eligible ∧ ¬pinned ∧ entry_stance == "ALLOWED"`，排序沿用 v3 finalists 键 `(−relative_decision_score, −target_align, −amount, code)`；卡面 EV 只展示不排序（不给解析器新的承重）。
    - A 级空 → R 级候选 = `eligible ∧ ¬pinned ∧ entry_stance ≠ "ALLOWED"`（PROHIBITED 已在硬门被否，故实际 = CONDITIONAL/UNKNOWN），排序同上。
@@ -131,7 +131,7 @@
 
 `wall` 判定顺序（第一堵撞上的墙）：`menu` = L2 落刀 > L0 落刀 + 6pp 或 L2 健康 < L0 健康（与 §3.1 A4/A5 同一门）；`cards` = 菜单过关但 `allowed == 0`；`gates` = 有 allowed 卡但全被硬门否决；`none` = 出了 A 级。
 
-brief ③ 加一行固定格式：`不可买归因:<wall> ｜ 菜单 落刀 L2 40%/L0 23% · 健康 8%/11% ｜ 卡 允许 2/条件 3/禁止 5 ｜ 门 data_a 票级 1 · contract 2 · redflag 5`。每个数进 `_brief_sources.json`。`summary.md`「为什么没有 BUY」节引用同一文件。
+brief ③ 加一行固定格式：`不可买归因:<wall> ｜ 菜单 落刀 L2 40%/L0 23% · 健康 8%/11% ｜ 卡 允许 2/条件 3/禁止 5 ｜ 门 data_a 票级 1 · contract 2 · redflag 5`。每个数进 `_brief_sources.json`。summary 的 🧭 仪表盘镜像 brief ③，不单独渲染（`_buyability.json` 在 `post_run.observe` 才写，比 `build_summary` 晚一站）。
 
 账本：`LEDGER_COLUMNS` 加 `buy_tier`（A/R/空）；`RUNS_COLUMNS` 加 `n_buy_a`、`wall`；`stage_rulers.csv` 加 `E6/a_tier_day_share`（ALL 行 = A 级天数 / 成功天数）。
 
