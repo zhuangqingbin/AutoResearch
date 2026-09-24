@@ -13,6 +13,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from autoresearch.common.scoring import falling_knife_mask
+
 # 风格桶 → recall channel(召回 provenance 已打标,零新增)。northbound/composite 不单列桶。
 # 健康桶(2026-07-03):healthy 通道的票再由桶 floor 保底进 L2——通道进池、桶上菜,两级都补。
 STYLE_CHANNELS: dict[str, tuple[str, ...]] = {
@@ -41,6 +43,17 @@ STYLE_CHANNELS: dict[str, tuple[str, ...]] = {
 DEFAULT_FLOORS: dict[str, int] = {"趋势": 20, "健康": 15, "反转": 12, "价值": 12,
                                   "成长": 12, "吸筹": 12, "主力": 10, "低位转强": 8,
                                   "事件": 0}
+
+#: 落刀帽豁免桶(2026-09-24 §2.2):这两桶的语义就是「跌过、在转」(L3 的 lowturn 例外条同源);
+#: 其余桶(含趋势/成长——实测落刀率 44%/33%,heat 路按成交额不看方向)与 merit/回填一起受帽。
+KNIFE_CAP_EXEMPT_STYLES: frozenset[str] = frozenset({"反转", "低位转强"})
+
+
+def _knife_quota(share: float | None, n: int) -> int | None:
+    """某一步名额里允许的落刀行数;share=None → None = 不设帽(parity)。"""
+    if share is None:
+        return None
+    return int(round(max(0.0, min(1.0, float(share))) * n))
 
 
 def effective_floors(floors: dict[str, int], enabled_channels=None) -> dict[str, int]:
@@ -97,7 +110,8 @@ def _style_masks(channels: pd.Series) -> dict[str, pd.Series]:
 def stratified_l2(df: pd.DataFrame, l2_n: int = 200, floors: dict[str, int] | None = None,
                   sector_cap_frac: float = 0.20, score_col: str = "composite",
                   industry_col: str = "industry", regime: str | None = None,
-                  regime_caps: dict | None = None, enabled_channels=None) -> pd.DataFrame:
+                  regime_caps: dict | None = None, enabled_channels=None,
+                  *, knife_cap_share: float | None = None) -> pd.DataFrame:
     """召回帧 → 分层采样的 l2_n 行(确定性)。返回选中行 + `l2_lane_reserved`(floor 补进来的=True)。
 
     算法:① sn = sector-neutral(score)② merit 核 = top(l2_n−Σfloor) by sn(过 sector cap)
@@ -105,6 +119,13 @@ def stratified_l2(df: pd.DataFrame, l2_n: int = 200, floors: dict[str, int] | No
     floors=None → DEFAULT_FLOORS;floors={} → 纯 sn top-N(无分层,parity 用)。
     `enabled_channels`(可选,当日启用的召回通道名集合)→ 见 `effective_floors`:桶的通道
     全未启用则该桶 floor 运行时归 0;None = 原样(parity)。
+
+    `knife_cap_share`(2026-09-24 §2.2,可选,keyword-only)→ 限制②merit 核/③非豁免风格桶/
+    ④回填三处落刀行(`common.scoring.falling_knife_mask`,pct_60d < −20)占比,每步按**自己的
+    名额数**独立取整(`_knife_quota`);`KNIFE_CAP_EXEMPT_STYLES`(反转/低位转强)不受帽——
+    这两桶的语义就是「跌过、在转」。被帽跳过的落刀行由本步下一个非落刀候选顶上补足名额,
+    顶替行 `selection_detail="knife_cap"`(floor 桶仍写桶名,不覆盖)。末尾「cap 卡死→松 cap
+    兜底」的④'不受此帽(它是保证凑满 l2_n 的最后一道腿)。None(默认)= 不设帽 = 逐字节 parity。
 
     ⚠️ **`regime` / `regime_caps` 是「已建未接线」的半特性**(design 2026-08-03 §3.3 O3
     清算)。函数体确实按 regime 调 sector cap(见下面 `cap_frac` 一行),单测也覆盖了它 ——
@@ -142,6 +163,37 @@ def stratified_l2(df: pd.DataFrame, l2_n: int = 200, floors: dict[str, int] | No
     cap_frac = regime_caps[regime] if (regime and regime_caps and regime in regime_caps) else sector_cap_frac
     cap = l2_n + 1 if cap_frac >= 1.0 else int(np.floor(cap_frac * l2_n))
 
+    knife = falling_knife_mask(r) if knife_cap_share is not None else None
+    knife = knife.fillna(False).astype(bool) if knife is not None else None
+    owed = {"merit": 0, "backfill": 0, "lane": 0}     # 被帽跳过的落刀行数 → 顶上的非落刀行记 knife_cap
+    taken = {"merit": 0, "backfill": 0}
+    lane_taken: dict[str, int] = {}
+
+    def _knife_pass(idx: int, step: str, quota: int | None, style: str | None = None) -> bool:
+        """帽判定:非落刀恒过;落刀行在配额内过(计数),超配额跳过(记 owed)。"""
+        if knife is None or not knife.iloc[idx] or quota is None:
+            return True
+        if style is not None:
+            if style in KNIFE_CAP_EXEMPT_STYLES:
+                return True
+            n_taken = lane_taken.get(style, 0)
+            if n_taken >= quota:
+                owed["lane"] += 1
+                return False
+            lane_taken[style] = n_taken + 1
+            return True
+        if taken[step] >= quota:
+            owed[step] += 1
+            return False
+        taken[step] += 1
+        return True
+
+    def _detail_for(step: str, idx: int) -> str:
+        if knife is not None and not knife.iloc[idx] and owed[step] > 0:
+            owed[step] -= 1
+            return "knife_cap"
+        return ""
+
     sel: list[int] = []
     sel_set: set[int] = set()
     sec_cnt: dict = {}
@@ -158,29 +210,33 @@ def stratified_l2(df: pd.DataFrame, l2_n: int = 200, floors: dict[str, int] | No
 
     total_floor = sum(floors.values())
     merit_need = max(0, l2_n - total_floor)
-    for idx in order:                                # ② merit 核(sn top,过 cap)
+    merit_quota = _knife_quota(knife_cap_share, merit_need)
+    for idx in order:                                # ② merit 核(sn top,过 cap,过落刀帽)
         if len(sel) >= merit_need:
             break
-        if idx not in sel_set and _ok(idx):
-            _add(idx, "merit")
+        if idx not in sel_set and _ok(idx) and _knife_pass(idx, "merit", merit_quota):
+            _add(idx, "merit", _detail_for("merit", idx))
 
-    for st in sorted(floors, key=lambda s: -floors[s]):   # ③ floor 补(大 floor 先)
+    for st in sorted(floors, key=lambda s: -floors[s]):   # ③ floor 补(大 floor 先;非豁免桶受帽)
         m = masks[st]
         have = sum(1 for i in sel if m.iloc[i])
         need = floors[st] - have
+        st_quota = _knife_quota(knife_cap_share, floors[st])
         for idx in order:
             if need <= 0:
                 break
-            if idx not in sel_set and m.iloc[idx] and _ok(idx):
+            if idx not in sel_set and m.iloc[idx] and _ok(idx) and _knife_pass(idx, "lane", st_quota, st):
                 _add(idx, "lane", st)
                 need -= 1
 
-    if len(sel) < l2_n:                              # ④ 回填到 l2_n(过 cap)
+    backfill_need = l2_n - len(sel)
+    backfill_quota = _knife_quota(knife_cap_share, max(0, backfill_need))
+    if len(sel) < l2_n:                              # ④ 回填到 l2_n(过 cap,过落刀帽)
         for idx in order:
             if len(sel) >= l2_n:
                 break
-            if idx not in sel_set and _ok(idx):
-                _add(idx, "backfill")
+            if idx not in sel_set and _ok(idx) and _knife_pass(idx, "backfill", backfill_quota):
+                _add(idx, "backfill", _detail_for("backfill", idx))
     if len(sel) < l2_n:                              # cap 卡死 → 松 cap 兜底凑满
         for idx in order:
             if len(sel) >= l2_n:
@@ -201,13 +257,14 @@ def stratified_l2(df: pd.DataFrame, l2_n: int = 200, floors: dict[str, int] | No
 
 def select_l2(recall: pd.DataFrame, l2_n: int, floors: dict[str, int] | None = None,
               sector_cap_frac: float = 0.20, regime: str | None = None, regime_caps: dict | None = None,
-              enabled_channels=None):
+              enabled_channels=None, *, knife_cap_share: float | None = None):
     """L2 选股编排(`universe.run` 与 `L2Rank` stage **共用** → golden parity)。
 
     返回 (l2_df, engine):l2_df 带 `l2_rank`(分层选择序)+ `l2_lane_reserved` + `sector_mom`(行业动量)
     + `gbdt_score`/`l2_score`(=composite,显示用,向后兼容旧列名)+ 召回列。确定性、零 LLM、无模型。
     `regime`+`regime_caps` 给定 → 按 regime 调 sector cap(默认 None=固定 cap=parity)。
     `enabled_channels` 透传 `stratified_l2` → `effective_floors`(未启用通道的桶 floor 归 0)。
+    `knife_cap_share` 透传 `stratified_l2`(见其 docstring;None=不设帽=逐字节 parity)。
 
     pinned 强留(design 2026-07-11 §4.1;plan Task 3):`recall` 若带 `pinned`(bool)列且有
     True 行 → 这些行**先抽出、完全不进分层采样的竞争池**(不占 l2_n、不因它们恰好达标与否
@@ -227,7 +284,7 @@ def select_l2(recall: pd.DataFrame, l2_n: int, floors: dict[str, int] | None = N
 
     l2 = stratified_l2(rest, l2_n, floors=floors, sector_cap_frac=sector_cap_frac,
                        score_col="composite", regime=regime, regime_caps=regime_caps,
-                       enabled_channels=enabled_channels)
+                       enabled_channels=enabled_channels, knife_cap_share=knife_cap_share)
     l2.insert(0, "l2_rank", range(1, len(l2) + 1))
 
     if has_pinned:

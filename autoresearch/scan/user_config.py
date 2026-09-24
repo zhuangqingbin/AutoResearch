@@ -108,7 +108,7 @@ _SUB_WHITELIST = {
     "funnel": {"recall_channels", "channel_quotas", "channel_floors",
                "regime_aware", "recall_n", "l2_n",
                "weight_profile", "preference_weights"},
-    "l2": {"sector_cap", "floors"},
+    "l2": {"sector_cap", "floors", "knife_cap"},
     "sector": {"reuse_ttl_days", "max_briefs"},
     "pinned": {"cap", "ttl_days"},
     "l4_intel": {"enabled", "max_queries"},
@@ -162,6 +162,9 @@ _KNOB_TYPES: dict[tuple[str, str], tuple] = {
     ("funnel", "preference_weights"): (_t_pref_weights, "object:恰含 scoring._GROUPS 十键的有限数"),
     ("l2", "sector_cap"): (_t_num, "number"),
     ("l2", "floors"): (_t_dict, "object"),
+    # 落刀帽总开关(2026-09-24 §2.2):true → merit/backfill/非豁免风格桶按 L0 落刀份额封顶
+    # (见 recall/l2_stratify.KNIFE_CAP_EXEMPT_STYLES);false(默认)= 不设帽 = parity。
+    ("l2", "knife_cap"): (_t_bool, "boolean"),
     ("sector", "reuse_ttl_days"): (_t_posint, "正整数"),
     ("sector", "max_briefs"): (_t_posint, "正整数"),
     ("budgets", "run_weighted_warn"): (_t_posnum, "number>0"),

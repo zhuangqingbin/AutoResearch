@@ -59,7 +59,7 @@ def test_knob_bad_config_falls_back_with_warning(monkeypatch, tmp_path, capsys):
 def test_new_blocks_whitelisted(tmp_path):
     raw = {"l0": {"cap_floor_yi": 30, "include_bj": True, "source": "tushare",
                   "min_amount_yi": 0, "min_list_days": 0},
-           "l2": {"sector_cap": 0.20},
+           "l2": {"sector_cap": 0.20, "knife_cap": True},
            "sector": {"reuse_ttl_days": 5, "max_briefs": 6},
            "funnel": {"regime_aware": True, "recall_n": 1000, "l2_n": 200}}
     p = tmp_path / "scan_config.jsonc"

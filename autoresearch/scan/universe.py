@@ -300,6 +300,7 @@ def run(analysis_date: str, cap_floor_yi: float | None = None, include_bj: bool 
         regime_aware: bool | None = None,                                # L1 权重按 regime 选(None→config funnel.regime_aware;内建 False)
         l0_min_amount_yi: float | None = None, l0_min_list_days: int | None = None,  # L0 流动性/次新硬门(内建 0=关=parity)
         l2_floors: dict | None = None, l2_sector_cap: float | None = None,
+        l2_knife_cap: bool | None = None,                                 # L2 落刀帽总开关(None→config l2.knife_cap;内建 False=parity)
         channel_quotas: dict[str, int] | None = None,                     # 覆盖各路 quota(None=CHANNEL_DEFAULTS,parity)
         channel_floors: dict[str, int] | None = None,                     # 覆盖各路 floor(None=CHANNEL_DEFAULTS,parity)
         weights_path: str | None = None,                                  # L1 权重文件(None=默认路径=parity;回放器注入 as-of 快照防前视)
@@ -351,6 +352,7 @@ def run(analysis_date: str, cap_floor_yi: float | None = None, include_bj: bool 
     preference_weights = knob("funnel", "preference_weights", preference_weights, None, cfg=_ucfg)
     l2_sector_cap = float(knob("l2", "sector_cap", l2_sector_cap, 0.20, cfg=_ucfg))
     l2_floors = knob("l2", "floors", l2_floors, None, cfg=_ucfg)
+    l2_knife_cap = bool(knob("l2", "knife_cap", l2_knife_cap, False, cfg=_ucfg))
     # L0 取数 + L1 轻门 + 多日量价富化 → 全市场因子帧(scan.frame 单一代码路径,Phase 0 抽取)
     uni, _counts = build_market_frame(analysis_date, cap_floor_yi=cap_floor_yi, include_bj=include_bj,
                                       source=source, l0_min_amount_yi=l0_min_amount_yi,
@@ -418,8 +420,11 @@ def run(analysis_date: str, cap_floor_yi: float | None = None, include_bj: bool 
     if recall_mode == "multi":
         from autoresearch.scan.recall import registered_channels
         _enabled = list(recall_channels) if recall_channels else registered_channels()
+    from autoresearch.common.scoring import falling_knife_mask
+    _knife = falling_knife_mask(scored) if l2_knife_cap else None
+    l2_knife_cap_share = (float(_knife.fillna(False).mean()) if _knife is not None else None)
     l2, l2_engine = select_l2(recall, l2_n, floors=l2_floors, sector_cap_frac=l2_sector_cap,
-                              enabled_channels=_enabled)
+                              enabled_channels=_enabled, knife_cap_share=l2_knife_cap_share)
     # T16(Wave12 F1-3):select_l2 早算出 selection_reason/selection_detail(每票「因何进菜单」:
     # merit 核/风格桶救回/行业 cap/保送/回填,见 l2_stratify.py),此前这两列漏投影进白名单——
     # 内存里的 l2 有它们,CSV 却没有,导致 l2_slo._guards 的分布 guard 分支 31 天从未触发过
@@ -449,6 +454,7 @@ def run(analysis_date: str, cap_floor_yi: float | None = None, include_bj: bool 
         "analysis_date": analysis_date, "universe_raw": n_raw, "universe": n_l0, "after_gate_a": len(uni),
         "recall_n": len(recall), "l2_n": len(l2), "l2_engine": l2_engine,
         "l2_sector_cap": l2_sector_cap,
+        "l2_knife_cap_share": l2_knife_cap_share,
         **_lt_counts,
         "cap_floor_yi": cap_floor_yi, "include_bj": include_bj, "source": source,
         "regime": _regime,                                    # 当日 regime(regime_aware 关 = null;preference 档恒 null)

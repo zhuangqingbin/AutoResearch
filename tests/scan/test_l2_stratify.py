@@ -127,3 +127,38 @@ def test_reversal_confirm_feeds_reversal_bucket():
     侦察实测的真缺口(design §5.2)。"""
     from autoresearch.scan.recall.l2_stratify import STYLE_CHANNELS
     assert set(STYLE_CHANNELS["反转"]) == {"reversal", "reversal_confirm"}
+
+
+def _universe_with_knives(n=600, seed=11):
+    rng = np.random.default_rng(seed)
+    df = _universe(n, seed)
+    df["pct_60d"] = rng.uniform(-60, 60, n)            # 约一半落刀
+    return df
+
+
+def test_knife_cap_none_is_parity():
+    df = _universe_with_knives()
+    a = stratified_l2(df, l2_n=200)
+    b = stratified_l2(df, l2_n=200, knife_cap_share=None)
+    pd.testing.assert_frame_equal(a, b)
+
+
+def test_knife_cap_limits_merit_and_backfill_but_exempts_reversal_buckets():
+    from autoresearch.scan.recall.l2_stratify import KNIFE_CAP_EXEMPT_STYLES
+    df = _universe_with_knives()
+    out = stratified_l2(df, l2_n=200, knife_cap_share=0.10)
+    knife = out["pct_60d"] < -20
+    merit = out["selection_reason"].isin(["merit", "backfill"])
+    assert knife[merit].mean() <= 0.10 + 1 / merit.sum()          # 配额取整误差
+    lane_rows = out[(out["selection_reason"] == "lane") & ~out["selection_detail"].isin(KNIFE_CAP_EXEMPT_STYLES)]
+    if len(lane_rows):
+        assert (lane_rows["pct_60d"] < -20).mean() <= 0.10 + 1 / len(lane_rows)
+    assert (out["selection_detail"] == "knife_cap").sum() > 0     # 会变的量:真有非落刀行顶上来
+    assert len(out) == 200 and out["code"].is_unique
+
+
+def test_knife_cap_share_one_is_no_op():
+    df = _universe_with_knives()
+    a = stratified_l2(df, l2_n=200)
+    b = stratified_l2(df, l2_n=200, knife_cap_share=1.0)
+    assert set(a["code"]) == set(b["code"])
