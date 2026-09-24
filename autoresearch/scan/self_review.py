@@ -156,6 +156,9 @@ def intel_query_cap_lint(scan_dir, cap: int = 15, web_budget_path=None) -> list[
             out.append({"code": code, "claimed": None, "cap": cap})
             continue
         m = re.search(r"网查\s*(\d+)\s*条", text)
+        if m is not None and "〔已裁·cap" in text:
+            claimed_all.append(int(m.group(1)))   # 计入总数,但不再当指令级违规上报
+            continue
         if m is None:
             out.append({"code": code, "claimed": None, "cap": cap})
         else:

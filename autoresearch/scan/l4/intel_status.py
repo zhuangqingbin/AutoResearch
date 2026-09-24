@@ -421,8 +421,8 @@ def main(argv: list[str] | None = None) -> int:
     scan_dir = Path(args.scan_dir) if args.scan_dir else ws.scan_root() / args.date
     result = None
     if not args.disabled and args.error_class is None:
-        from autoresearch.scan.l4.intel_guard import guard_intel
-        result = guard_intel(scan_dir, args.code)
+        from autoresearch.scan.l4.intel_guard import configured_soft_cap, guard_intel
+        result = guard_intel(scan_dir, args.code, soft_cap=configured_soft_cap())
 
     if args.normalize and result is not None and result.get("action") in ("KEPT", "TRIMMED"):
         from autoresearch.scan.l4.intel_guard import intel_path

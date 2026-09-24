@@ -217,3 +217,47 @@ def test_sidecar_is_written_from_the_trimmed_text_not_the_pretrim(tmp_path):
     assert out["action"] == "TRIMMED" and out["dropped_rows"] > 0
     payload = json.loads((tmp_path / out["claim_events"]["sidecar"]).read_text(encoding="utf-8"))
     assert out["claim_events"]["n"] == len(payload["events"]) < 12
+
+
+# ───────────── Task 5(2026-09-24 批 0):软顶 cap 20 确定性裁剪 + lint 识别已裁 ─────────────
+#
+# cap 20 此前只是 prompt 里的指令级约束,无强制力(pr_20260714_007)——2026-09 近期几场
+# 生产扫描每场 4–11 稿自报 21–55 条,天天报警天天无视。本任务加一层确定性软顶:超软顶
+# (但仍 ≤ 硬顶 30)按时效裁到 ≤SOFT_TRIM_KEEP 事件行,声明行留痕〔已裁·cap N〕,
+# 让 self_review 的限频 lint 不再对已经被确定性层处理过的稿重复报警。红线不变:
+# 只裁稿不拒稿不拒票 —— action 必须是 TRIMMED,不是 REJECTED。
+
+def _intel_doc(n_events: int, claimed: int) -> str:
+    rows = "\n".join(f"| 2026-09-0{i % 9 + 1} | 背景 | 事件{i} | [x](https://x) | 0.0 |" for i in range(n_events))
+    return ("# 活体情报 — 600018 上港集团 @ 2026-09-17\n\n## 事件段\n| 日期 | 时效窗 | 事件 | 源 | 净分 |\n|---|---|---|---|---|\n"
+            + rows + f"\n\n## 声明行\n网查 {claimed} 条 ｜ T0面=无增量\n")
+
+
+def test_soft_cap_trims_and_marks_declaration(tmp_path):
+    from autoresearch.scan.l4.intel_guard import guard_intel, intel_path
+    scan = tmp_path / "2026-09-17"
+    scan.mkdir()
+    intel_path(scan, "600018").write_text(_intel_doc(14, 25), encoding="utf-8")
+    res = guard_intel(scan, "600018", soft_cap=20)
+    assert res["action"] == "TRIMMED" and res["soft_cap"] == 20 and res["dropped_rows"] == 4
+    text = intel_path(scan, "600018").read_text(encoding="utf-8")
+    assert "网查 25 条〔已裁·cap 20〕" in text
+    assert (scan / "_l4_intel_600018.pretrim").exists()
+
+
+def test_under_soft_cap_is_kept_untouched(tmp_path):
+    from autoresearch.scan.l4.intel_guard import guard_intel, intel_path
+    scan = tmp_path / "2026-09-17"
+    scan.mkdir()
+    intel_path(scan, "600018").write_text(_intel_doc(5, 18), encoding="utf-8")
+    assert guard_intel(scan, "600018", soft_cap=20)["action"] == "KEPT"
+
+
+def test_query_cap_lint_skips_trimmed_reports(tmp_path):
+    from autoresearch.scan.self_review import intel_query_cap_lint
+    scan = tmp_path / "2026-09-17"
+    scan.mkdir()
+    (scan / "_l4_intel_600018.md").write_text(_intel_doc(5, 25).replace("网查 25 条", "网查 25 条〔已裁·cap 20〕"), encoding="utf-8")
+    (scan / "_l4_intel_600035.md").write_text(_intel_doc(5, 25), encoding="utf-8")
+    hits = intel_query_cap_lint(scan, cap=20, web_budget_path=None)
+    assert [h["code"] for h in hits if h.get("claimed")] == ["600035"]

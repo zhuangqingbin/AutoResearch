@@ -59,6 +59,29 @@ from autoresearch.dataflows.symbol_utils import to_ts_code
 HARD_CAP_DEFAULT = 30
 _CLAIM_RE = re.compile(r"网查\s*(\d+)\s*条")
 
+# ── Task 5(2026-09-24 批 0):软顶 —— cap 20 此前只是 prompt 里的指令级约束,无强制力
+# (pr_20260714_007),2026-09 近期几场生产扫描每场 4–11 稿自报 21–55 条,warn 天天无视。
+# 软顶把 cap 从"建议"变"确定性执行":超软顶(仍 ≤ 硬顶)按时效裁到 ≤SOFT_TRIM_KEEP 行,
+# 声明行留痕,让 self_review 的限频 lint 认出「这份已经被确定性层处理过」。红线不变:
+# 只裁稿不拒稿不拒票 —— 硬顶 30 的既有行为(REJECTED 分支)原样不动。
+SOFT_TRIM_KEEP = 10
+_TRIM_MARK = "〔已裁·cap {cap}〕"
+
+
+def configured_soft_cap() -> int:
+    """`l4_intel.max_queries`(scan_config 单源;缺 → 内建 20)。"""
+    from autoresearch.scan.user_config import knob
+    return int(knob("l4_intel", "max_queries", None, 20))
+
+
+def _mark_declaration(text: str, claimed: int, cap: int) -> str:
+    """声明行「网查 N 条」后追加已裁标记(一次),让 self_review 的限频 lint 认出确定性层已经动过手。"""
+    mark = _TRIM_MARK.format(cap=cap)
+    if mark in text:
+        return text
+    return re.sub(rf"(网查\s*{claimed}\s*条)", rf"\1{mark}", text, count=1)
+
+
 # 事件行时效窗优先级(数值越小越新鲜,裁剪时最后被砍)。认不出的窗按"背景"降权 ——
 # 不把不明来源的行伪装成最新增量,是有意的保守选择。
 _WINDOW_RANK = {"T0": 0, "24h": 1, "催化挂": 2, "背景": 3, ">1周": 4}
@@ -279,7 +302,8 @@ def _extract_claim_events(src: Path, text: str, *, self_code: str, trade_date: s
 
 
 def guard_intel(scan_dir: Path | str, code: str, *,
-                hard_cap: int = HARD_CAP_DEFAULT) -> dict:
+                hard_cap: int = HARD_CAP_DEFAULT,
+                soft_cap: int | None = None) -> dict:
     """检查一份 intel 稿;超硬顶则按时效裁剪,裁无可裁才整拒。返回可直接 JSON 序列化的裁决。
 
     `action` ∈ `ABSENT`(无稿,presence-gated 安静通过)/ `KEPT`(未超顶)/
@@ -310,6 +334,22 @@ def guard_intel(scan_dir: Path | str, code: str, *,
         return {"ok": True, "code": code, "action": "KEPT", "claimed": None,
                 "warn": "unreported", "claims_lint": claims_lint,
                 "claim_events": _extract_claim_events(src, text, self_code=code, trade_date=trade_date)}
+    if soft_cap is not None and claimed > soft_cap and claimed <= hard_cap and _event_rows(text):
+        # 软顶(2026-09-24 批 0):cap 20 此前是指令级、无强制力(pr_20260714_007),每场 4–11 稿
+        # 自报 21–55 条。确定性层按时效裁到 ≤SOFT_TRIM_KEEP 事件行并在声明行留痕;不拒稿不拒票。
+        trimmed, cut = trim_by_recency(text, keep=SOFT_TRIM_KEEP)
+        trimmed = _mark_declaration(trimmed, claimed, soft_cap)
+        pretrim_as = None
+        if cut:
+            pre = src.with_name(f"_l4_intel_{code}.pretrim")
+            pre.write_text(text, encoding="utf-8")
+            pretrim_as = pre.name
+        src.write_text(trimmed, encoding="utf-8")
+        claims_lint = _apply_claims_lint(src, trimmed, self_code=code, trade_date=trade_date)
+        return {"ok": True, "code": code, "action": "TRIMMED", "claimed": claimed,
+                "soft_cap": soft_cap, "hard_cap": hard_cap, "dropped_rows": cut,
+                "pretrim_as": pretrim_as, "claims_lint": claims_lint,
+                "claim_events": _extract_claim_events(src, trimmed, self_code=code, trade_date=trade_date)}
     if claimed > hard_cap:
         trimmed, cut = trim_by_recency(text)
         if not _event_rows(text):

@@ -1831,7 +1831,7 @@ def _normalize_intel(scan_dir: Path, code: str) -> None:
 def scan_l4_intel_status(handle=None, *, code: str | None = None) -> dict:
     current = handle or _active_handle()
     code6 = _require_code(code)
-    from autoresearch.scan.l4.intel_guard import guard_intel
+    from autoresearch.scan.l4.intel_guard import configured_soft_cap, guard_intel
     from autoresearch.scan.l4.intel_status import from_guard, write_status
 
     scan_dir = Path(current.staging)
@@ -1840,7 +1840,7 @@ def scan_l4_intel_status(handle=None, *, code: str | None = None) -> dict:
         retry_intel = _retry_dir(scan_dir, code6, attempt) / "intel.md"
         if retry_intel.is_file():
             shutil.copyfile(retry_intel, scan_dir / f"_l4_intel_{code6}.md")
-    result = guard_intel(scan_dir, code6)
+    result = guard_intel(scan_dir, code6, soft_cap=configured_soft_cap())
     if result.get("action") in {"KEPT", "TRIMMED"}:
         _normalize_intel(scan_dir, code6)
     status = from_guard(result, code=code6, scan_dir=scan_dir, enabled=True, attempts=1)
