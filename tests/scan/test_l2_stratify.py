@@ -141,6 +141,12 @@ def test_knife_cap_none_is_parity():
     a = stratified_l2(df, l2_n=200)
     b = stratified_l2(df, l2_n=200, knife_cap_share=None)
     pd.testing.assert_frame_equal(a, b)
+    # fix round 1 (2026-09-25, controller review #1):knife_cap_swap is a new column added
+    # alongside the cap machinery — under knife_cap_share=None it must be present and all-False,
+    # not just "equal to itself" (assert_frame_equal above proves the no-arg call and the
+    # explicit-None call agree with each other, not that the column's value is correct).
+    assert "knife_cap_swap" in b.columns
+    assert not b["knife_cap_swap"].any()
 
 
 def test_knife_cap_limits_merit_and_backfill_but_exempts_reversal_buckets():
@@ -162,3 +168,47 @@ def test_knife_cap_share_one_is_no_op():
     a = stratified_l2(df, l2_n=200)
     b = stratified_l2(df, l2_n=200, knife_cap_share=1.0)
     assert set(a["code"]) == set(b["code"])
+
+
+def test_knife_cap_lane_step_swap_is_marked():
+    """Controller review #1 (2026-09-25): `_detail_for` was only ever called for merit/backfill,
+    so a skipped-and-replaced falling knife inside a non-exempt FLOOR bucket (the `lane` step)
+    left no trace anywhere — `owed["lane"]` was incremented and never read. `menu_replay`'s A7
+    metric counted `selection_detail == "knife_cap"`, which floor-bucket replacement rows never
+    carry (their detail is, and must stay, the bucket name — `edge_census.py` groups lane rows
+    by that name). Fix: a dedicated `knife_cap_swap` boolean column, set True on the replacing
+    row in all three steps (merit/lane/backfill), independent of what `selection_detail` says.
+
+    This test deliberately constructs a frame where the "价值" (non-exempt) floor bucket can
+    only be satisfied by falling-knife rows unless the cap forces a swap:
+    - 300 filler rows (shared industries with the value rows, so sector-neutral demeaning pins
+      the value rows' rank far below the merit cutoff — verified empirically, not just reasoned)
+      fill the merit core and leave "价值" untouched by it (`have == 0` when the floor step
+      reaches "价值").
+    - 12 "价值" rows that are falling knives (pct_60d well below -20) — with `knife_cap_share=0.0`
+      (strictest possible cap, quota=0), every one of them is skipped by the lane step.
+    - 12 more "价值" rows that are NOT falling knives, ranked just below the 12 knives — these are
+      the only remaining "价值"-tagged candidates, so the floor step (which must still fill its
+      need=12) can only complete by admitting exactly these 12 replacements.
+    """
+    rows = []
+    for i in range(300):
+        rows.append({"code": f"9{i:05d}", "industry": f"ind{i % 15}", "composite": 90 - i * 0.05,
+                     "recall_channels": "composite|momentum", "pct_60d": 5.0})
+    for i in range(12):                                # falling knives the cap must skip
+        rows.append({"code": f"3{i:05d}", "industry": f"ind{i % 15}", "composite": 2.0,
+                     "recall_channels": "value", "pct_60d": -30.0})
+    for i in range(12):                                # the only rows left to replace them
+        rows.append({"code": f"4{i:05d}", "industry": f"ind{i % 15}", "composite": 1.0,
+                     "recall_channels": "value", "pct_60d": 5.0})
+    df = pd.DataFrame(rows)
+
+    out = stratified_l2(df, l2_n=200, knife_cap_share=0.0)
+    assert len(out) == 200 and out["code"].is_unique          # headcount still filled, not shrunk
+
+    val = out[out["recall_channels"] == "value"]
+    assert len(val) == 12                                      # floor not shrunk either
+    assert (val["pct_60d"] >= -20).all()                       # every knife candidate got swapped out
+    assert val["selection_reason"].eq("lane").all()
+    assert val["selection_detail"].eq("价值").all()             # detail still the bucket name (not overwritten)
+    assert val["knife_cap_swap"].all()                          # the replacing rows ARE now marked

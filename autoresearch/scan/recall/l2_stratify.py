@@ -124,8 +124,12 @@ def stratified_l2(df: pd.DataFrame, l2_n: int = 200, floors: dict[str, int] | No
     ④回填三处落刀行(`common.scoring.falling_knife_mask`,pct_60d < −20)占比,每步按**自己的
     名额数**独立取整(`_knife_quota`);`KNIFE_CAP_EXEMPT_STYLES`(反转/低位转强)不受帽——
     这两桶的语义就是「跌过、在转」。被帽跳过的落刀行由本步下一个非落刀候选顶上补足名额,
-    顶替行 `selection_detail="knife_cap"`(floor 桶仍写桶名,不覆盖)。末尾「cap 卡死→松 cap
-    兜底」的④'不受此帽(它是保证凑满 l2_n 的最后一道腿)。None(默认)= 不设帽 = 逐字节 parity。
+    顶替行 `selection_detail="knife_cap"`(floor 桶仍写桶名,不覆盖)。顶替行同时打
+    `knife_cap_swap=True`(2026-09-25 fix round 1 补:独立布尔列,merit/lane/backfill 三步
+    统一含 lane——`selection_detail` 的桶名字符串不便当「帽生效」的唯一读法,
+    `menu_replay.A7_knife_cap_swaps` 改读这一列)。末尾「cap 卡死→松 cap
+    兜底」的④'不受此帽(它是保证凑满 l2_n 的最后一道腿),该步 `knife_cap_swap` 恒 False。
+    None(默认)= 不设帽 = 逐字节 parity,此时 `knife_cap_swap` 全列恒 False。
 
     ⚠️ **`regime` / `regime_caps` 是「已建未接线」的半特性**(design 2026-08-03 §3.3 O3
     清算)。函数体确实按 regime 调 sector cap(见下面 `cap_frac` 一行),单测也覆盖了它 ——
@@ -155,6 +159,7 @@ def stratified_l2(df: pd.DataFrame, l2_n: int = 200, floors: dict[str, int] | No
         out["l2_lane_reserved"] = False
         out["selection_reason"] = "merit"      # 没有竞争 → 全体都是有机进场
         out["selection_detail"] = ""
+        out["knife_cap_swap"] = False          # 无竞争 → 帽从未生效,恒 False
         return out
     r["_sn"] = sector_neutral(r[score_col], ind).fillna(-1e18).to_numpy()
     chan = r["recall_channels"] if "recall_channels" in r.columns else pd.Series([""] * n, index=r.index)
@@ -165,7 +170,12 @@ def stratified_l2(df: pd.DataFrame, l2_n: int = 200, floors: dict[str, int] | No
 
     knife = falling_knife_mask(r) if knife_cap_share is not None else None
     knife = knife.fillna(False).astype(bool) if knife is not None else None
-    owed = {"merit": 0, "backfill": 0, "lane": 0}     # 被帽跳过的落刀行数 → 顶上的非落刀行记 knife_cap
+    # 被帽跳过的落刀行数 → 顶上的非落刀行记 knife_cap_swap=True(2026-09-25 fix round 1:此前
+    # `owed["lane"]` 只增不读,是死账 —— floor 桶的顶替行从未被标记,menu_replay 的 A7 系统性
+    # 漏数 floor 桶(最多 ~81/200 行不可见)。`selection_detail` 的语义不能变(edge_census.py
+    # 按它把 lane 行分桶到桶名,merit/backfill 沿用既有 "knife_cap" 字样)——新增独立布尔列
+    # 承载「这行是不是顶替行」,detail 字符串本身不再是「帽生效」的唯一读法。
+    owed = {"merit": 0, "backfill": 0, "lane": 0}
     taken = {"merit": 0, "backfill": 0}
     lane_taken: dict[str, int] = {}
 
@@ -188,24 +198,29 @@ def stratified_l2(df: pd.DataFrame, l2_n: int = 200, floors: dict[str, int] | No
         taken[step] += 1
         return True
 
-    def _detail_for(step: str, idx: int) -> str:
+    def _swap_for(step: str, idx: int) -> bool:
+        """本行是否是「顶替某一行被帽跳过的落刀行」的那一行:非落刀 + 该步仍欠账(owed>0)才算,
+        merit/lane/backfill 三步共用同一套判定(`owed["lane"]` 是 ③ 整步的单一计数器,不分桶
+        ——与 `lane_taken` 按桶配额、但按步欠账的既有分工一致)。调用方按此结果写
+        `knife_cap_swap` 列;merit/backfill 沿用它顺带决定要不要写 `"knife_cap"` 的 detail
+        字符串,lane 的 detail 恒是桶名,不读这个返回值。"""
         if knife is not None and not knife.iloc[idx] and owed[step] > 0:
             owed[step] -= 1
-            return "knife_cap"
-        return ""
+            return True
+        return False
 
     sel: list[int] = []
     sel_set: set[int] = set()
     sec_cnt: dict = {}
-    reasons: dict[int, tuple[str, str]] = {}
+    reasons: dict[int, tuple[str, str, bool]] = {}
 
     def _ok(idx: int) -> bool:                       # sector cap 检查
         return sec_cnt.get(ind.iloc[idx], 0) < cap
 
-    def _add(idx: int, reason: str, detail: str = "") -> None:
+    def _add(idx: int, reason: str, detail: str = "", swap: bool = False) -> None:
         sel.append(idx)
         sel_set.add(idx)
-        reasons[idx] = (reason, detail)
+        reasons[idx] = (reason, detail, swap)
         sec_cnt[ind.iloc[idx]] = sec_cnt.get(ind.iloc[idx], 0) + 1
 
     total_floor = sum(floors.values())
@@ -215,7 +230,8 @@ def stratified_l2(df: pd.DataFrame, l2_n: int = 200, floors: dict[str, int] | No
         if len(sel) >= merit_need:
             break
         if idx not in sel_set and _ok(idx) and _knife_pass(idx, "merit", merit_quota):
-            _add(idx, "merit", _detail_for("merit", idx))
+            swap = _swap_for("merit", idx)
+            _add(idx, "merit", "knife_cap" if swap else "", swap)
 
     for st in sorted(floors, key=lambda s: -floors[s]):   # ③ floor 补(大 floor 先;非豁免桶受帽)
         m = masks[st]
@@ -226,7 +242,7 @@ def stratified_l2(df: pd.DataFrame, l2_n: int = 200, floors: dict[str, int] | No
             if need <= 0:
                 break
             if idx not in sel_set and m.iloc[idx] and _ok(idx) and _knife_pass(idx, "lane", st_quota, st):
-                _add(idx, "lane", st)
+                _add(idx, "lane", st, _swap_for("lane", idx))     # detail 仍桶名;swap 走独立列
                 need -= 1
 
     backfill_need = l2_n - len(sel)
@@ -236,7 +252,8 @@ def stratified_l2(df: pd.DataFrame, l2_n: int = 200, floors: dict[str, int] | No
             if len(sel) >= l2_n:
                 break
             if idx not in sel_set and _ok(idx) and _knife_pass(idx, "backfill", backfill_quota):
-                _add(idx, "backfill", _detail_for("backfill", idx))
+                swap = _swap_for("backfill", idx)
+                _add(idx, "backfill", "knife_cap" if swap else "", swap)
     if len(sel) < l2_n:                              # cap 卡死 → 松 cap 兜底凑满
         for idx in order:
             if len(sel) >= l2_n:
@@ -252,6 +269,9 @@ def stratified_l2(df: pd.DataFrame, l2_n: int = 200, floors: dict[str, int] | No
     # 按**原始行索引**取理由,不按 reset 后的位置 —— `kept` 是选择序不是行序,两者不相等。
     out["selection_reason"] = [reasons[i][0] for i in kept]
     out["selection_detail"] = [reasons[i][1] for i in kept]
+    # 独立布尔列(2026-09-25 fix round 1):本行是否顶替了一只被帽跳过的落刀行,三步统一
+    # 含 lane(松 cap 兜底 ④' 走 `_add` 的默认值 False,从不受帽也就从不是顶替)。
+    out["knife_cap_swap"] = [reasons[i][2] for i in kept]
     return out.drop(columns=["_sn"], errors="ignore").reset_index(drop=True)
 
 
@@ -292,6 +312,7 @@ def select_l2(recall: pd.DataFrame, l2_n: int, floors: dict[str, int] | None = N
         pinned_rows["l2_lane_reserved"] = True
         pinned_rows["selection_reason"] = "pinned"
         pinned_rows["selection_detail"] = ""
+        pinned_rows["knife_cap_swap"] = False    # 保送行全程不进分层竞争池,恒非顶替
         l2 = pd.concat([l2, pinned_rows], ignore_index=True, sort=False)
 
     if "composite" in l2.columns:                    # 显示分(两条管道列名各异,都填 composite)

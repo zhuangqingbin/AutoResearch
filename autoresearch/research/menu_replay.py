@@ -108,7 +108,16 @@ def metrics(full: pd.DataFrame, l1p: pd.DataFrame, l2p: pd.DataFrame, *,
         "A5_l2_healthy_new": _share(healthy_riser_mask(l2p)),
         "L0_healthy": _share(healthy_riser_mask(full)),
         "A6_sector_seats": int(l2p["sector_seat"].fillna(False).astype(bool).sum()) if "sector_seat" in l2p.columns else None,
-        "A7_knife_cap_swaps": int((l2p["selection_detail"].astype(str) == "knife_cap").sum()) if "selection_detail" in l2p.columns else None,
+        # 2026-09-25 fix round 1:floor 桶(lane)的顶替行只在 `knife_cap_swap` 列可见——
+        # `selection_detail` 对 lane 行恒写桶名,从不是 "knife_cap"(那字符串只出现在
+        # merit/backfill)。优先读新列;旧 CSV(round 1 之前落盘,没有这一列)才退回旧的
+        # `selection_detail` 计数(仍能出数,只是漏计 floor 桶——诚实但不崩)。
+        "A7_knife_cap_swaps": (
+            int(l2p["knife_cap_swap"].fillna(False).astype(bool).sum())
+            if "knife_cap_swap" in l2p.columns
+            else int((l2p["selection_detail"].astype(str) == "knife_cap").sum())
+            if "selection_detail" in l2p.columns else None
+        ),
     }
 
 

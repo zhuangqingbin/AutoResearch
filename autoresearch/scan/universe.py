@@ -430,7 +430,7 @@ def run(analysis_date: str, cap_floor_yi: float | None = None, include_bj: bool 
     # 内存里的 l2 有它们,CSV 却没有,导致 l2_slo._guards 的分布 guard 分支 31 天从未触发过
     # (guards 自己的单测靠手搭 fixture 绕过了本落盘点,盖不住这个洞)。纯新增列,零名单影响。
     l2_cols = ["l2_rank", "gbdt_score", "l2_lane_reserved", "sector_mom",
-              "selection_reason", "selection_detail", *keep]
+              "selection_reason", "selection_detail", "knife_cap_swap", *keep]
     l2[[c for c in l2_cols if c in l2.columns]].to_csv(outdir / "L2_gbdt_top200.csv", index=False)
     print(f"[L2 粗排] recall {len(recall)} → {l2_engine} top {len(l2)}")
 
