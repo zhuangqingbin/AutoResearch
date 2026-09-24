@@ -1023,3 +1023,32 @@ def test_buyability_line_absent_when_artifact_missing(scan):
 def test_buyability_facts_key_is_in_the_whitelist():
     assert ("artifact", "buyability") in brief._WHITELIST_SPEC
     assert "_buyability.json" in brief.INPUT_WHITELIST
+
+
+def test_buyability_line_still_renders_on_the_present_false_path(tmp_path):
+    """fix round 1(reviewer mutation finding):the present=False exit calls
+    `_buyability_line`/appends `ba_line` on its own literal line — deleting that append is
+    invisible to every other test in this suite (the `scan` fixture always has a decision
+    document, so it never takes this branch; `test_buyability_line_absent_when_artifact_
+    missing` only proves the internal guard no-ops, not that this exit calls the helper at
+    all). Build the one combination that pins it directly: no decision document (present=
+    False) but a `_buyability.json` that already has a real `wall` — an artificial pairing
+    post-fix (`build_buyability` itself would now emit `wall=None` for a missing decision
+    document; see `tests/scan/test_buyability.py::test_wall_is_none_when_decision_document_
+    is_missing`), constructed here purely to catch a regression on this exit's own append
+    line, independent of what upstream would ever actually produce."""
+    scan = _scan_dir(tmp_path, with_decision=False)
+    _write_buyability(scan, wall="cards_silent")
+    md = brief.build(scan, run_folder=_RUN)["markdown"]
+    assert "不可买归因:**cards_silent**" in md
+
+
+def test_buyability_line_shows_dash_for_missing_seat_counts(scan):
+    """fix round 1 finding ②:`sector_seats`/`composite_seats` 现在缺源是 `None`,brief 渲染
+    必须显式印「—」,不能让 f-string 吐出字面量 "None"。"""
+    _write_buyability(scan, wall="cards_silent",
+                      menu={"l2_knife": 0.6, "l0_knife": 0.55, "l2_healthy": 0.03, "l0_healthy": 0.02,
+                            "sector_seats": None, "composite_seats": None})
+    md = brief.build(scan, run_folder=_RUN)["markdown"]
+    assert "席位 行业 —/证据 —" in md
+    assert "None" not in md

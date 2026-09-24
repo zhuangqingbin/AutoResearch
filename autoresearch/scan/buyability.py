@@ -96,7 +96,7 @@ def build_buyability(scan_dir: Path | str) -> dict:
     scan = Path(scan_dir)
     l0, l2 = _csv(scan / "L1_scored_full.csv"), _csv(scan / "L2_gbdt_top200.csv")
     fins = _csv(scan / "finalists.csv")
-    decision = _json(scan / "_relative_buy_decision.json") or {}
+    decision = _json(scan / "_relative_buy_decision.json")
     blind = _json(scan / "_blind_cards.json") or {}
 
     menu = {
@@ -104,11 +104,25 @@ def build_buyability(scan_dir: Path | str) -> dict:
         "l0_knife": _share(falling_knife_mask(l0)) if l0 is not None else None,
         "l2_healthy": _share(healthy_riser_mask(l2)) if l2 is not None else None,
         "l0_healthy": _share(healthy_riser_mask(l0)) if l0 is not None else None,
+        # fix round 1 finding ②:缺列/缺文件是「没看过」,不是「看过、真是零」——两者绝不能
+        # 共用同一个 0(那正是下游会读错的「确定性假零」)。`l2_knife`/`l0_knife` 等字段
+        # 早就这么干了(`_share` 缺列即 None),这两个字段之前漏做,现在补齐同一纪律。
         "sector_seats": int(l2["sector_seat"].fillna(False).astype(bool).sum())
-        if l2 is not None and "sector_seat" in l2.columns else 0,
+        if l2 is not None and "sector_seat" in l2.columns else None,
         "composite_seats": int((fins["guard"].astype(str) == "composite_seat").sum())
-        if fins is not None and "guard" in fins.columns else 0,
+        if fins is not None and "guard" in fins.columns else None,
     }
+
+    if not decision:
+        # fix round 1 finding ①:决策文档缺席/不可读(含"读到了但是个空壳"),意味着没有
+        # 候选/买入数据可归因——**不得**假装算出一个"看起来合理"的 wall,哪怕 L0/L2 菜单
+        # 数据本身健在。`not decision` 与 `relative_facts()` 判 present=False 的
+        # `not isinstance(decision, dict)` 同一份文件、同一个"没读到就是没读到"的语义
+        # (外加空字典 `{}` 这个生产从不会写出的退化态,保守地也算"没有")——brief 自己的
+        # `if not ba.get("wall")` 天然把这个 None 当"缺席"处理,不必在 brief.py 再加一层
+        # 特判。menu 仍照算:它只读 L0/L2 CSV,与决策文档是否存在无关,不是从空处编出来的。
+        return {"schema_version": 1, "date": scan.name, "menu": menu,
+                "cards": None, "gates": None, "buy": None, "wall": None}
 
     cands = [c for c in (decision.get("candidates") or []) if isinstance(c, dict) and not c.get("pinned")]
     stance = [str(_ctx(c).get("entry_stance") or "UNKNOWN") for c in cands]
@@ -148,7 +162,15 @@ def build_buyability(scan_dir: Path | str) -> dict:
                  and menu["l2_knife"] > menu["l0_knife"] + MENU_KNIFE_TOLERANCE)
                 or (menu["l2_healthy"] is not None and menu["l0_healthy"] is not None
                     and menu["l2_healthy"] < menu["l0_healthy"]))
-    allowed_eligible = any(c.get("eligible") and str(_ctx(c).get("entry_stance")) == "ALLOWED"
+    # fix round 1 finding ③:`eligible` 只问四道硬门(tradable/data_a/contract/no_redflag),
+    # 不问候选池——composite 池下一张 ALLOWED 且过硬门的卡仍可能因为不在证据席被
+    # `relative_buy.py` 判 `in_pool=False`（该票同时会被记进 `excluded[reason=not_in_pool]`，
+    # 但**留在** `candidates` 里，"不进池 ≠ 不进候选表"，relative_buy.py 原话)，从未真正
+    # 有机会当 BUY。`in_pool` 由 relative_buy.py 按当天生效的 pool 逐票算好
+    # (`finalists` 池下恒 True,`composite` 池下=是否证据席),这里只读、不重算——
+    # 缺字段(旧 schema)默认 True，不倒过去惩罚没有这个概念的历史文档。
+    allowed_eligible = any(c.get("eligible") and c.get("in_pool", True)
+                           and str(_ctx(c).get("entry_stance")) == "ALLOWED"
                            for c in cands)
     if menu_bad:
         wall = "menu"

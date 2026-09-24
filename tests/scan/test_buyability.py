@@ -45,11 +45,17 @@ def _card(stance: str = "UNKNOWN", *, source: str | None = "prose", status: str 
 
 def _scan(tmp_path: Path, *, l2_knife: float = 0.25, l0_knife: float = 0.23,
          l2_healthy: float = 0.11, l0_healthy: float = 0.11,
-         cards: tuple[dict, ...] = (_card("ALLOWED"),), gates_ok: bool = True,
-         tier: str | None = None, blind: int = 0, extra_excluded: tuple[dict, ...] = ()) -> Path:
-    """`cards`:每个候选一份 `card_context`(用 `_card()` 造)。`gates_ok=False` 时给每张卡
-    按 Task 1 的文案造一条票级 `hard_gate.data_a` 否决(与原 brief 语义一致)。`extra_excluded`
-    用来叠加与 `cards`/`gates_ok` 无关的其它硬门否决行(no_redflag 拆分测试用)。"""
+         cards: tuple[dict, ...] = (_card("ALLOWED"),), in_pool: tuple[bool, ...] = (),
+         gates_ok: bool = True, tier: str | None = None, blind: int = 0,
+         extra_excluded: tuple[dict, ...] = (), write_decision: bool = True) -> Path:
+    """`cards`:每个候选一份 `card_context`(用 `_card()` 造)。`in_pool`:每个候选一个
+    bool,与 `cards` 等长,缺省全 True(`relative_buy.py` 的 `finalists` 池下恒 True;
+    `composite` 池下=是否证据席 —— fix round 1 finding ③ 测试用,与 `cards` 分开传避免把
+    两个维度耦合进 `_card()`)。`gates_ok=False` 时给每张卡按 Task 1 的文案造一条票级
+    `hard_gate.data_a` 否决(与原 brief 语义一致)。`extra_excluded` 用来叠加与
+    `cards`/`gates_ok` 无关的其它硬门否决行(no_redflag 拆分测试用)。
+    `write_decision=False`:不落 `_relative_buy_decision.json`(fix round 1 finding ①
+    「决策文档缺席」测试专用,其余参数在这条路径下不生效)。"""
     scan = tmp_path / "2026-09-17"
     scan.mkdir()
     _frame(1000, l0_knife, l0_healthy).to_csv(scan / "L1_scored_full.csv", index=False)
@@ -57,9 +63,12 @@ def _scan(tmp_path: Path, *, l2_knife: float = 0.25, l0_knife: float = 0.23,
     l2["sector_seat"] = False
     l2.to_csv(scan / "L2_gbdt_top200.csv", index=False)
     pd.DataFrame({"code": ["600001"], "guard": ["composite_seat"]}).to_csv(scan / "finalists.csv", index=False)
-    cands = [{"code": f"6000{i:02d}", "eligible": gates_ok, "pinned": False,
+    if not write_decision:
+        return scan
+    pool_flags = in_pool if in_pool else tuple(True for _ in cards)
+    cands = [{"code": f"6000{i:02d}", "eligible": gates_ok, "pinned": False, "in_pool": p,
               "hard_gate": {"tradable": True, "data_a": gates_ok, "contract": True, "no_redflag": True},
-              "card_context": ctx} for i, ctx in enumerate(cards)]
+              "card_context": ctx} for i, (ctx, p) in enumerate(zip(cards, pool_flags, strict=True))]
     excluded = list(extra_excluded)
     no_redflag_n = sum(1 for e in excluded if e.get("reason") == "hard_gate.no_redflag")
     if not gates_ok:
@@ -153,6 +162,27 @@ def test_wall_gates_when_allowed_cards_all_vetoed(tmp_path):
     assert doc["wall"] == "gates" and doc["gates"]["data_a_ticker"] == 1 and doc["buy"]["blocked"] is True
 
 
+def test_wall_gates_when_the_only_allowed_eligible_candidate_is_not_in_pool(tmp_path):
+    """fix round 1 finding ③:`eligible` 只问硬门,composite 池下过硬门的 ALLOWED 候选仍可能
+    因为不是证据席被 `relative_buy.py` 判 `in_pool=False`、从未真正有机会当 BUY —— `wall`
+    不能把这种情形读成 `none`(等于宣称出过一只 BUY)。用两张卡(in_pool 不同)锁住这个
+    组合,不是只造一张。"""
+    cards = (_card("ALLOWED", source="line", status="OK", kind="full"),
+             _card("CONDITIONAL", source="prose", status="OK", kind="full"))
+    doc = build_buyability(_scan(tmp_path, l2_knife=0.25, cards=cards, in_pool=(False, True)))
+    assert doc["wall"] == "gates"
+    assert doc["cards"]["allowed"] == 1, "计数不看 in_pool——仍诚实数「写了允许的卡」有几张"
+
+
+def test_wall_none_when_the_allowed_eligible_candidate_is_in_pool(tmp_path):
+    """对照组:同一张 ALLOWED 卡,`in_pool=True` 时(第二张卡陪衬,证明多候选下判定仍对)
+    才该读 `none`——防止 finding ③ 的修法矫枉过正,把 in_pool=True 也误判成 gates。"""
+    cards = (_card("ALLOWED", source="line", status="OK", kind="full"),
+             _card("CONDITIONAL", source="prose", status="OK", kind="full"))
+    doc = build_buyability(_scan(tmp_path, l2_knife=0.25, cards=cards, in_pool=(True, True), tier="A"))
+    assert doc["wall"] == "none"
+
+
 def test_gates_no_redflag_splits_card_prohibited_from_other_causes(tmp_path):
     """2026-09-25 controller 追加裁定(派工消息,不在 addendum 文件里):`hard_gate.
     no_redflag` 六个否决因里只有「卡面入场=禁止」(`entry_stance=PROHIBITED`)是本波新增,
@@ -185,3 +215,50 @@ def test_write_buyability_lands_the_file(tmp_path):
     p = write_buyability(scan)
     assert p == scan / BUYABILITY_FILENAME
     assert json.loads(p.read_text(encoding="utf-8"))["schema_version"] == 1
+
+
+# ───────────── fix round 1 finding ①:没有决策文档就没有 wall,不许编一个 ─────────────
+
+def test_wall_is_none_when_decision_document_is_missing(tmp_path):
+    """mutation-proof 靶子:菜单健康(若走旧逻辑 `cards["allowed"]==0` 会直接算成
+    `cards_silent`)+ 决策文档整份不存在 —— 必须读到 `wall is None`,不是一个「看起来
+    合理」的 cards_silent。`cards`/`gates`/`buy` 同理不得编成零值结构。"""
+    scan = _scan(tmp_path, l2_knife=0.25, write_decision=False)
+    doc = build_buyability(scan)
+    assert doc["wall"] is None
+    assert doc["cards"] is None and doc["gates"] is None and doc["buy"] is None
+    assert doc["menu"]["l2_knife"] == 0.25, "menu 是独立于决策文档的真实测量,不该被一并清空"
+
+
+def test_wall_is_none_when_decision_document_is_unreadable(tmp_path):
+    """「不可读」与「缺席」同一处置(`_json` 对坏 JSON 恒返回 `None`)。"""
+    scan = _scan(tmp_path, l2_knife=0.25, write_decision=False)
+    (scan / "_relative_buy_decision.json").write_text("{not valid json", encoding="utf-8")
+    doc = build_buyability(scan)
+    assert doc["wall"] is None
+
+
+def test_wall_is_none_when_decision_document_is_an_empty_object(tmp_path):
+    """退化态(生产从不会写出,但保守地也不算「有」):`{}` 是 falsy,和缺席同一处置。"""
+    scan = _scan(tmp_path, l2_knife=0.25, write_decision=False)
+    (scan / "_relative_buy_decision.json").write_text("{}", encoding="utf-8")
+    doc = build_buyability(scan)
+    assert doc["wall"] is None
+
+
+# ───────── fix round 1 finding ②:菜单席位缺源是 None,不是假 0 ─────────
+
+def test_menu_sector_seats_is_none_not_zero_when_l2_lacks_the_column(tmp_path):
+    scan = _scan(tmp_path, l2_knife=0.25)
+    l2 = pd.read_csv(scan / "L2_gbdt_top200.csv")
+    l2 = l2.drop(columns=["sector_seat"])
+    l2.to_csv(scan / "L2_gbdt_top200.csv", index=False)
+    doc = build_buyability(scan)
+    assert doc["menu"]["sector_seats"] is None
+
+
+def test_menu_composite_seats_is_none_not_zero_when_finalists_lacks_guard_column(tmp_path):
+    scan = _scan(tmp_path, l2_knife=0.25)
+    pd.DataFrame({"code": ["600001"]}).to_csv(scan / "finalists.csv", index=False)
+    doc = build_buyability(scan)
+    assert doc["menu"]["composite_seats"] is None

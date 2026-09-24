@@ -661,16 +661,22 @@ def _buyability_line(facts: dict, src: list[dict]) -> str | None:
     """不可买归因(Task 21,2026-09-24 §2.7 + 2026-09-25 controller 追加裁定)③ 附加行。
 
     单点渲染:`_buy_lines` 的三个出口(present=False / blocked / 正常)各自在
-    `return lines` 前调用本函数一次,不许各写一份各自漂 —— `_buyability.json` 缺席
-    (`ba.get("wall")` 为空,例如决策文件本就没生成)时自然返回 `None`,调用方不必
-    另加判断。blocked 日尤其要紧:上面那行「BLOCKED(...hard_gate.no_redflag×N...)」
-    把六个否决因揉成一个数,这一行才是把「卡面入场=禁止」从中拆出来的地方。
+    `return lines` 前调用本函数一次,不许各写一份各自漂 —— `ba.get("wall")` 为空
+    (falsy)时自然返回 `None`,调用方不必另加判断。这个 falsy 有两种成因:
+    `_buyability.json` 整份文件缺席(如决策文件本就没生成),或文件在场但
+    `wall` 字段本身是 `null`(fix round 1 finding ①:`build_buyability` 读不到决策文档
+    时诚实吐出 `wall=None`,而不是编一个「看起来合理」的墙)——两种成因在这里天然
+    同一处理,不必分辨。blocked 日尤其要紧:上面那行「BLOCKED(...hard_gate.no_redflag
+    ×N...)」把六个否决因揉成一个数,这一行才是把「卡面入场=禁止」从中拆出来的地方。
     """
     ba = facts.get("buyability") or {}
     if not ba.get("wall"):
         return None
     m, c, g = ba.get("menu") or {}, ba.get("cards") or {}, ba.get("gates") or {}
     pct = lambda v: "—" if v is None else f"{v:.0%}"   # noqa: E731
+    # fix round 1 finding ②:`sector_seats`/`composite_seats` 现在缺源时是 `None`(不是
+    # 假 0),渲染必须跟着用「—」而不是让 f-string 直接吐出字面量 "None"。
+    cnt = lambda v: "—" if v is None else str(v)   # noqa: E731
     wall = ba["wall"]
     # P22 的两个新值在中文行里是孤立的英文标识符,加一句短注让读者不必跳去查 wall 词表;
     # 判断力不能全指望后面那串「允许/条件/禁止/未知/盲」计数 —— 两支世界能落在完全相同的
@@ -679,7 +685,7 @@ def _buyability_line(facts: dict, src: list[dict]) -> str | None:
     gloss = {"cards_silent": "(没有卡写入场行)", "cards_refused": "(卡写了,不允许)"}.get(wall, "")
     text = (f"不可买归因:**{wall}**{gloss} ｜ 菜单 落刀 L2 {pct(m.get('l2_knife'))}/L0 {pct(m.get('l0_knife'))}"
             f" · 健康 {pct(m.get('l2_healthy'))}/{pct(m.get('l0_healthy'))}"
-            f" · 席位 行业 {m.get('sector_seats', 0)}/证据 {m.get('composite_seats', 0)}"
+            f" · 席位 行业 {cnt(m.get('sector_seats'))}/证据 {cnt(m.get('composite_seats'))}"
             f" ｜ 卡 允许 {c.get('allowed', 0)}/条件 {c.get('conditional', 0)}/禁止 {c.get('prohibited', 0)}"
             f"/未知 {c.get('unknown', 0)}/盲 {c.get('blind', 0)}"
             f" ｜ 早停 {c.get('earlystop', 0)}/满卡 {c.get('full', 0)}"
