@@ -25,15 +25,33 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
 from autoresearch.contracts import artifacts as C
 from autoresearch.scan import brief, publisher
 from tests.scan.test_brief import _RUN, _scan_dir
+
+
+@pytest.fixture(autouse=True)
+def _isolate_ledger_root(monkeypatch):
+    """同 `tests/scan/test_brief.py::_isolate_ledger_root`(Task 4):本文件的两条④断言
+    (`test_brief_bytes_did_not_move` 的 SHA 钉 / `test_the_byte_pin_reads_the_real_product`)
+    都靠 `brief.build` 现算,若不隔离 `ws.reports_root()` 会读到开发机真实
+    `recommendations.csv`,SHA 钉随真账本内容漂移——**只在本模块 autouse**,不放共享
+    `conftest.py`(那样会砸中 `test_retention.py` 等把 `ws.reports_root()` 当可组合相对
+    路径用的无关测试,已经踩过一次真实回归)。"""
+    from autoresearch.common import workspace as ws
+    monkeypatch.setattr(ws, "reports_root", lambda: Path("/nonexistent/tests-no-real-ledger"))
+
 
 # ── 改造前的硬编码值(逐字抄自 `git show` 的改造前源码;**不许改**)────────────────
 #
 # 2026-09-24(Task 3):brief 内容本身有意变更(跨 run 昨日 delta 读点),按 `test_brief_
 # bytes_did_not_move` 的家训「要动它必须是有意改 brief 内容」在此追加第 14 项 ——
 # 这条 parity 钉的是「Task 9c 登记表改造没有顺手改内容」,不冻结 brief 未来的功能演进。
+#
+# 2026-09-24(Task 4):同一条家训,追加第 15 项 —— BUY 行的「绝对 gap」stub 与固定的 42 日
+# 证据句改读账本(`recommendations.csv`);`INPUT_WHITELIST`/`REGISTERED_INPUTS` 因此各 +1。
 
 _BRIEF_WHITELIST_BEFORE = (
     "meta.json",
@@ -50,6 +68,7 @@ _BRIEF_WHITELIST_BEFORE = (
     "menu_health",
     "overseas_calendar.csv",
     "manifest.json",
+    "recommendations.csv",
 )
 
 _TRACE_MAPPING_BEFORE = (
@@ -90,18 +109,21 @@ def test_brief_whitelist_names_resolve_in_the_registry():
 
 
 def test_brief_whitelist_does_not_widen_permissions():
-    """白名单是**许可**表,比登记表窄:登记表里 85 个产物,brief 只准读这 11 个。
+    """白名单是**许可**表,比登记表窄:登记表里 85 个产物,brief 只准读这 12 个。
 
     反面锚:哪天有人图省事写成 `for_root("staging")`,这条立刻红。
     """
     staging_paths = {a.path for a in C.for_root("staging")}
-    assert len(brief.REGISTERED_INPUTS) == 11
+    assert len(brief.REGISTERED_INPUTS) == 12
     assert len(staging_paths) > 3 * len(brief.REGISTERED_INPUTS), \
         "登记表突然变小了?这条锚是为了保证下面那句『窄很多』还有意义"
     derived = {C.by_name(n).path for n in brief.REGISTERED_INPUTS}
     # `run_health`/`manifest` 都登记在 `report` 根(发布目录),不在 `staging` 根下 ——
     # 两项都是 brief 合法读的「已发布」产物,所以显式并进右侧集合,不是放宽子集判据。
-    assert derived < staging_paths | {C.by_name("run_health").path, C.by_name("manifest").path}, \
+    # `recommendations` 登记在 `ledger` 根(跨 run 账本,Task 4:E6 BUY/席位实测读点)——
+    # 同一条理由:它是本场 run 之外的合法输入,不在 `staging` 根下,同样显式并进去。
+    assert derived < staging_paths | {C.by_name("run_health").path, C.by_name("manifest").path,
+                                       C.by_name("recommendations").path}, \
         "brief 可读集不再是登记表的真子集 —— 许可被放宽了"
 
 
@@ -200,7 +222,10 @@ def test_assemble_stage_result_records_the_derived_list(tmp_path):
 #: 改造**之前**用 `tests/scan/test_brief.py` 的共享夹具渲染出的 brief.md 的 sha256。
 #: 本任务是登记表管线改造,`INPUT_WHITELIST` 在渲染路径上零消费者,所以这个 hash
 #: 必须一个 bit 都不变。**要动它必须是有意改 brief 内容**(那时 test_brief.py 会先红一片)。
-_BRIEF_SHA256_BEFORE = "3e21fbcff1c5e83baccc04c51330774be6e7fcfc1dc0e50c4243e1c59cfe9e62"
+#:
+#: 2026-09-24(Task 4):有意改了 —— BUY 行的「绝对 gap」stub 与固定的 42 日证据句改读账本,
+#: `test_brief.py` 先红了一片(见 task-4-report.md),这里跟着重算,不是绕过本条家训。
+_BRIEF_SHA256_BEFORE = "f3509321db85a88f1382e1558d42752b2a37058820b564f3c5ec83cdf11a696e"
 
 
 def test_brief_bytes_did_not_move(tmp_path):

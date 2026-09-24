@@ -110,6 +110,7 @@ _WHITELIST_SPEC: tuple[tuple[str, str], ...] = (
     ("literal", "menu_health"),
     ("artifact", "overseas_calendar"),  # D-2:隔夜窗海外事件(⑤ 风险哨一句;风险可见性,不喂判断层)
     ("artifact", "manifest"),  # Task 3:跨 run 昨日 delta 读点(`_prev_published` 挑上一场发布 run)
+    ("artifact", "recommendations"),  # Task 4:E6 BUY/席位实测读点(`_e6_realized_stats`)
 )
 
 #: 白名单里**已登记**产物的登记名(顺序同上)。
@@ -401,6 +402,7 @@ def collect_facts(scan_dir: Path | str, *, analysis_date: str | None = None,
             **_why_no_buy(scan),
         },
         "relative": _relative_facts(decision),
+        "e6_realized": _e6_realized_stats(),
         "pinned": pinned,
         "risk": {**_gate_counts(scan),
                  "degraded": list(health.get("degraded_fields") or []),
@@ -497,6 +499,52 @@ def _sections(facts: dict, *, pinned_cap: int, delta_cap: int) -> tuple[list[str
     return out, src
 
 
+_REALIZED_MIN_N = 20
+
+
+def _e6_realized_stats(reports_root: Path | None = None) -> dict:
+    """账本 `recommendations.csv` 里 E6 的**实测**:BUY 行(mode=active ∧ e6_buy)与席位行
+    (role=composite_seat),都限 MATURE ∧ ACTIONABLE。n<20 只报 n(账本自己的 `ledger_line`
+    纪律同款);n≥20 报均值 pp 与胜率。账本缺 → n=0。"""
+    try:
+        from autoresearch.scan.outcome import load_ledger
+        rows = load_ledger(reports_root)
+    except Exception:  # noqa: BLE001 — 账本是可选层
+        rows = []
+
+    def _stat(pred) -> dict:
+        vals = []
+        for r in rows:
+            if not pred(r):
+                continue
+            if str(r.get("outcome_status")) != "MATURE" or str(r.get("actionability")) != "ACTIONABLE":
+                continue
+            try:
+                vals.append(float(r.get("gap_c1_o2")))
+            except (TypeError, ValueError):
+                continue
+        n = len(vals)
+        if n < _REALIZED_MIN_N:
+            return {"n": n, "mean_pp": None, "win": None}
+        return {"n": n, "mean_pp": round(100 * sum(vals) / n, 2),
+                "win": round(sum(1 for v in vals if v > 0) / n, 2)}
+
+    return {
+        "buy": _stat(lambda r: str(r.get("e6_buy")).lower() == "true" and str(r.get("mode")) == "active"),
+        "seat": _stat(lambda r: str(r.get("role")) == "composite_seat"),
+    }
+
+
+def _realized_text(stat: dict, label: str) -> str:
+    """n<20:只给 n;为负 → 固定 `弱市相对最优`(语义纪律②)。"""
+    if stat.get("mean_pp") is None:
+        return f"账本 {label} 实测 n={stat.get('n', 0)},不足 {_REALIZED_MIN_N} 不给区间"
+    body = f"账本 {label} 实测 {stat['mean_pp']:+.2f}pp(n={stat['n']},胜率 {stat['win']:.0%},未扣成本)"
+    if stat["mean_pp"] < 0:
+        body += f" → **{WEAK_MARKET_PHRASE}**(相对 BUY 从不承诺绝对收益为正)"
+    return body
+
+
 def _buy_lines(facts: dict, src: list[dict]) -> list[str]:
     lines: list[str] = []
     buys = facts["buys"]
@@ -535,7 +583,7 @@ def _buy_lines(facts: dict, src: list[dict]) -> list[str]:
         lines.append("- " + text)
         return lines
 
-    gap_txt = _abs_gap_text(rel)
+    gap_txt = _realized_text(facts["e6_realized"]["buy"], "BUY")
     pool_txt = (f" · 池={rel.get('pool_label')}"
                 + (f"({rel.get('n_pool')} 只)" if rel.get("n_pool") is not None else ""))
     text = (f"{tag}:{rel.get('name') or '—'} {rel.get('code') or '—'}"
@@ -546,7 +594,7 @@ def _buy_lines(facts: dict, src: list[dict]) -> list[str]:
             f"{DECISION_POOL_LABEL} {rel.get('decision_pool_n')} = 决策层分位/流动性门分母,"
             f"非本列人口)"
             f"+{rel.get('sector_column')}"
-            f" · 绝对 gap {gap_txt} · 硬否决 {rel.get('hard_reject')}"
+            f" · {gap_txt} · 硬否决 {rel.get('hard_reject')}"
             f" · 主尺 {rel.get('ruler')}"
             f" —— 只承诺「当日全集内相对最优」,**不承诺绝对收益为正**")
     _src(src, "relative.code", rel.get("code"), DECISION_FILENAME, "buys[0].code", text)
@@ -559,16 +607,16 @@ def _buy_lines(facts: dict, src: list[dict]) -> list[str]:
     _src(src, "relative.eval_population", rel.get("eval_population"), DECISION_FILENAME,
          f"benchmark.market.eval_population({REL_MARKET} 的真分母;评分时由 "
          "relative_ledger 另算,不在本产物里)", text)
-    _src(src, "relative.abs_gap_status", rel.get("abs_gap_status"), DECISION_FILENAME,
-         "candidates[code].expected_abs_gap.status", text)
+    _src(src, "relative.realized_buy_n", facts["e6_realized"]["buy"]["n"], "recommendations.csv",
+         "rows[e6_buy ∧ mode=active ∧ MATURE ∧ ACTIONABLE]", text)
     _src(src, "relative.pool", rel.get("pool"), DECISION_FILENAME, "pool", text)
     lines.append("- " + text)
     if rel.get("pool") == "composite":
         # v3.0 的诚实呈现(A5):证据是什么、期望多大、执行条件是什么 —— 三样都写在
         # BUY 行下面,免得读者把「相对最优」读成「明天会涨」。
-        exec_txt = ("  ↳ 证据:当日 composite 分位最高的证据席(L2 菜单内 top20/50 隔夜相对超额 "
-                    "+0.14/+0.17pp,t 1.96/2.78,42 个扫描日)· L4 否决检查通过"
-                    f" · {COMPOSITE_EXPECTATION}")
+        exec_txt = ("  ↳ 证据:当日 composite 分位最高的证据席 · L4 否决检查通过 · "
+                    + _realized_text(facts["e6_realized"]["seat"], "席位")
+                    + f" · {COMPOSITE_EXPECTATION}")
         _src(src, "relative.pool_expectation", rel.get("pool"), DECISION_FILENAME,
              "pool==composite", exec_txt)
         lines.append(exec_txt)
@@ -600,17 +648,6 @@ def _why_text(buys: dict, *, active: bool = False) -> str:
     head = "└ 为什么没有 ≥OW 卡:" if active else "└ 为什么没买:"
     return (head + " · ".join(bits)
             + "(口径:`decision_records.gate_states` 结构化读数;早停卡不写三门段,两类不混算)")
-
-
-def _abs_gap_text(rel: dict) -> str:
-    """绝对 gap 口径。**为负 → 固定 `弱市相对最优`**(语义纪律②,不许换措辞)。"""
-    status, value = rel.get("abs_gap_status"), rel.get("abs_gap_value")
-    if value is None:
-        return f"{status}(n={rel.get('abs_gap_n', 0)},样本不足禁止拍数)"
-    if value < 0:
-        return (f"{_pct(value)}(n={rel.get('abs_gap_n', 0)})"
-                f" → **{WEAK_MARKET_PHRASE}**(相对 BUY 从不承诺绝对收益为正)")
-    return f"{_pct(value)}(n={rel.get('abs_gap_n', 0)})"
 
 
 def _pinned_text(facts: dict, src: list[dict], cap: int) -> str:

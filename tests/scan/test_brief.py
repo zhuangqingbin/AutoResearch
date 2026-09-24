@@ -3,7 +3,7 @@
 契约五条(任务书 Step 1):
   ① 同输入重复生成 hash 一致(零时间戳/零随机/无序遍历)
   ② 字节 ≤ `brief.MAX_BYTES`(3,000)
-  ③ 相对 BUY 行禁词(不得出现「预计上涨/看涨」);绝对 gap 为负必含「弱市相对最优」
+  ③ 相对 BUY 行禁词(不得出现「预计上涨/看涨」);账本 BUY 实测均值为负必含「弱市相对最优」
   ④ 每个渲染出的数字都能在**白名单输入文件**里找到 —— 生成器附 `sources` 边表,
      逐行 `file ∈ INPUT_WHITELIST` ∧ `text` 真在 brief 正文里(供 T27 lint 逐项对账)
   ⑤ 影子期 BUY 区**双行**:旧生产结论 + 影子 relative 行,且影子行带「非正式」标
@@ -144,6 +144,24 @@ def scan(tmp_path):
     return _scan_dir(tmp_path)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_ledger_root(monkeypatch):
+    """Task 4:`brief.collect_facts` 无条件调用 `_e6_realized_stats()` → `outcome.load_ledger(None)`
+    → `ws.reports_root()/scan/_ledger/recommendations.csv`。那份账本是真实项目产物(gitignored、
+    随每场发布扫描增长,本机实测 300KB+),不隔离的话本文件里没有显式 monkeypatch 的用例会读到
+    开发机当天的真实战绩,`test_publisher_artifact_map.py` 的 SHA 字节钉会跟着真账本内容漂移。
+
+    **只在本模块 autouse**(不放 `conftest.py`):`ws.reports_root()` 是被 `tests/scan/` 里其他
+    文件当**可组合相对路径**用的基础设施(如 `test_retention.py` 的 `tmp_path / ws.reports_root()
+    / ...`),那里改成不存在的绝对路径会让 `tmp_path` 组合直接逃逸到真文件系统根——已经踩过一次
+    (`FileNotFoundError: /nonexistent/...`),教训是隔离必须按「谁真的读账本」精确圈定,不能图省事
+    挂到共享 conftest 上。要测账本读数的用例自行在测试体内 monkeypatch `ws.reports_root`
+    (测试体内的 setattr 后执行,优先生效,`test_whitelist_has_no_dead_entry` 等用例已经这样做)。
+    """
+    from autoresearch.common import workspace as ws
+    monkeypatch.setattr(ws, "reports_root", lambda: Path("/nonexistent/tests-no-real-ledger"))
+
+
 # ─────────── Task 3:跨 run 昨日 delta 的夹具助手(_prev_published 专用) ───────────
 
 def _publish_prev_run(reports_dir: Path, *, date: str, run_name: str, ratings: dict) -> Path:
@@ -267,22 +285,73 @@ def test_semantic_constants_are_pinned_literals():
     assert brief.MAX_BYTES == 3000
 
 
-def test_negative_abs_gap_forces_weak_market_phrase(tmp_path):
-    dec = _decision(abs_gap={"value": -0.0233, "status": "MEASURED", "n": 24})
-    scan = _scan_dir(tmp_path, decision=dec)
+def _ledger_csv(root: Path, rows: list[dict]) -> None:
+    """`recommendations.csv` 的最小同构件 —— 只写 `_e6_realized_stats` 实际读的那 8 列
+    (`load_ledger` 是裸 `csv.DictReader`,列子集不影响解析)。"""
+    p = root / "scan" / "_ledger" / "recommendations.csv"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    cols = ["run_id", "analysis_date", "mode", "role", "e6_buy", "outcome_status",
+            "actionability", "gap_c1_o2"]
+    with p.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=cols)
+        w.writeheader()
+        for r in rows:
+            w.writerow({c: r.get(c, "") for c in cols})
+
+
+# Task 4(2026-09-24):`expected_abs_gap` 是写死的 UNMEASURED stub(`relative_buy.py:1145`
+# 永远 `{"value": None, "status": "UNMEASURED", "n": 0}`,见 `test_relative_buy.py::
+# test_expected_abs_gap_is_always_unmeasured_in_v1`)——brief ③ 从前直接印它,于是「样本不足
+# 禁止拍数」这句话每天不变,**看起来像度量、其实是常量**。改口径后 BUY 行印账本
+# `recommendations.csv` 里 e6_buy 行的真实现的均值;下面两条把「负 → 弱市相对最优 / 正 →
+# 不许声称上涨」这条不变量**原样保留**,只把驱动它的输入从决策文件换成账本
+# (controller 2026-09-24 裁定 P5:同一条不变量,只换数字来源,字面断言不许变)。
+
+def test_negative_abs_gap_forces_weak_market_phrase(tmp_path, monkeypatch, scan):
+    """账本 ≥20 笔已核验 active BUY 均值为负 → 固定含「弱市相对最优」(语义纪律②)。"""
+    from autoresearch.common import workspace as ws
+
+    monkeypatch.setattr(ws, "reports_root", lambda: tmp_path / "reports")
+    _ledger_csv(tmp_path / "reports", [
+        {"run_id": f"r{i}", "analysis_date": "2026-08-06", "mode": "active", "role": "BUY",
+         "e6_buy": "True", "outcome_status": "MATURE", "actionability": "ACTIONABLE",
+         "gap_c1_o2": "-0.0233"} for i in range(20)])
     md = brief.build(scan, run_folder=_RUN)["markdown"]
     assert "弱市相对最优" in md              # 字面量,不引常量(防同漂)
     for banned in ("预计上涨", "看涨", "必涨"):
         assert banned not in md
 
 
-def test_positive_abs_gap_does_not_claim_upside(tmp_path):
-    dec = _decision(abs_gap={"value": 0.0142, "status": "MEASURED", "n": 24})
-    scan = _scan_dir(tmp_path, decision=dec)
+def test_positive_abs_gap_does_not_claim_upside(tmp_path, monkeypatch, scan):
+    """账本 ≥20 笔已核验 active BUY 均值为正 → 不含「弱市相对最优」,也不得新增看涨措辞。"""
+    from autoresearch.common import workspace as ws
+
+    monkeypatch.setattr(ws, "reports_root", lambda: tmp_path / "reports")
+    _ledger_csv(tmp_path / "reports", [
+        {"run_id": f"r{i}", "analysis_date": "2026-08-06", "mode": "active", "role": "BUY",
+         "e6_buy": "True", "outcome_status": "MATURE", "actionability": "ACTIONABLE",
+         "gap_c1_o2": "0.0142"} for i in range(20)])
     md = brief.build(scan, run_folder=_RUN)["markdown"]
     assert "弱市相对最优" not in md
     for banned in ("预计上涨", "看涨", "必涨"):
         assert banned not in md
+
+
+def test_buy_line_reports_realized_ledger_stats_not_a_stub(tmp_path, monkeypatch, scan):
+    """n<20 只报 n,不印固定的「样本不足禁止拍数」stub 措辞,也不印 composite 池那句固定的
+    42 扫描日证据句(那句现在只在 `pool==composite` 且经由 `_realized_text` 时才可能出现,
+    且措辞已经不再是这个 42 日字面量——见下方 composite 测试)。"""
+    from autoresearch.common import workspace as ws
+
+    monkeypatch.setattr(ws, "reports_root", lambda: tmp_path / "reports")
+    _ledger_csv(tmp_path / "reports", [
+        {"run_id": f"r{i}", "analysis_date": "2026-08-06", "mode": "active", "role": "BUY",
+         "e6_buy": "True", "outcome_status": "MATURE", "actionability": "ACTIONABLE",
+         "gap_c1_o2": "-0.005"} for i in range(7)])
+    text = brief.build(scan, run_folder=_RUN)["markdown"]
+    assert "账本 BUY 实测 n=7,不足 20 不给区间" in text
+    assert "样本不足禁止拍数" not in text
+    assert "+0.14/+0.17pp" not in text
 
 
 # ───────────────────────────── ④ sources 边表 ─────────────────────────────
@@ -715,6 +784,12 @@ def test_shadow_mode_keeps_the_legacy_wording(tmp_path):
 
 # ── v3.0 composite 池的诚实呈现(2026-08-26 §3 路A · A5)────────────────────
 
+#: composite 池三条测试手搭 `facts`(不经 `collect_facts`),要补上 `_buy_lines` 现在
+#: 无条件要读的 `e6_realized` 键 —— 等价于「账本缺 → n=0」(`_e6_realized_stats` 的空账本分支)。
+_NO_LEDGER_STATS = {"buy": {"n": 0, "mean_pp": None, "win": None},
+                    "seat": {"n": 0, "mean_pp": None, "win": None}}
+
+
 def _composite_decision():
     return {
         "mode": "active", "rule_version": "e6.v3.0", "blocked": False,
@@ -739,7 +814,8 @@ def test_composite_pool_brief_states_pool_evidence_and_exec_line():
 
     facts = {"buys": {"production_n": 0, "dist": {"Hold": 2}, "run_mode": "FULL",
                       "n_early": 0},
-             "relative": relative_facts(_composite_decision())}
+             "relative": relative_facts(_composite_decision()),
+             "e6_realized": _NO_LEDGER_STATS}
     text = "\n".join(_buy_lines(facts, []))
     assert "池=composite 证据席(2 只)" in text
     assert "不承诺绝对收益为正" in text          # 期望的上限措辞
@@ -755,7 +831,8 @@ def test_finalists_pool_brief_has_no_composite_addendum():
     doc = {**_composite_decision(), "pool": "finalists", "pool_members": []}
     facts = {"buys": {"production_n": 0, "dist": {"Hold": 2}, "run_mode": "FULL",
                       "n_early": 0},
-             "relative": relative_facts(doc)}
+             "relative": relative_facts(doc),
+             "e6_realized": _NO_LEDGER_STATS}
     text = "\n".join(_buy_lines(facts, []))
     assert "池=L3 finalist 全体" in text
     assert "执行线" not in text
@@ -768,7 +845,8 @@ def test_composite_brief_lines_stay_within_budget():
 
     facts = {"buys": {"production_n": 0, "dist": {"Hold": 2}, "run_mode": "FULL",
                       "n_early": 0},
-             "relative": relative_facts(_composite_decision())}
+             "relative": relative_facts(_composite_decision()),
+             "e6_realized": _NO_LEDGER_STATS}
     added = len("\n".join(_buy_lines(facts, [])).encode("utf-8"))
     assert added < MAX_BYTES // 2       # ③ 一节远小于半个预算
 
