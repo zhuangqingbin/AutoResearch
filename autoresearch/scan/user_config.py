@@ -106,7 +106,8 @@ _TOP_WHITELIST = {
 _SUB_WHITELIST = {
     "l0": {"cap_floor_yi", "include_bj", "source", "min_amount_yi", "min_list_days"},
     "funnel": {"recall_channels", "channel_quotas", "channel_floors",
-               "regime_aware", "recall_n", "l2_n"},
+               "regime_aware", "recall_n", "l2_n",
+               "weight_profile", "preference_weights"},
     "l2": {"sector_cap", "floors"},
     "sector": {"reuse_ttl_days", "max_briefs"},
     "pinned": {"cap", "ttl_days"},
@@ -136,6 +137,14 @@ def _t_dict(v): return isinstance(v, dict)
 def _t_rbmode(v): return v in {"shadow", "active"}
 def _t_rbpool(v): return v in {"finalists", "composite"}
 def _t_date_or_null(v): return v is None or (isinstance(v, str) and _DATE_RE.fullmatch(v) is not None)
+def _t_profile(v): return v in {"calibrated", "preference"}
+
+
+def _t_pref_weights(v):
+    from autoresearch.common.scoring import _GROUPS
+    if not isinstance(v, dict) or set(v) != set(_GROUPS):
+        return False
+    return all(_t_num(x) and math.isfinite(x) for x in v.values())
 
 
 _KNOB_TYPES: dict[tuple[str, str], tuple] = {
@@ -147,6 +156,10 @@ _KNOB_TYPES: dict[tuple[str, str], tuple] = {
     ("funnel", "regime_aware"): (_t_bool, "boolean"),
     ("funnel", "recall_n"): (_t_posint, "正整数"),
     ("funnel", "l2_n"): (_t_posint, "正整数"),
+    # 召回权重档(2026-09-24 §2.1):"calibrated"=读 weights.json(旧行为,回滚杆)/
+    # "preference"=固定偏好档,十组权重就在下面这个键里(唯一事实源,无自动重标定)。
+    ("funnel", "weight_profile"): (_t_profile, "calibrated|preference"),
+    ("funnel", "preference_weights"): (_t_pref_weights, "object:恰含 scoring._GROUPS 十键的有限数"),
     ("l2", "sector_cap"): (_t_num, "number"),
     ("l2", "floors"): (_t_dict, "object"),
     ("sector", "reuse_ttl_days"): (_t_posint, "正整数"),

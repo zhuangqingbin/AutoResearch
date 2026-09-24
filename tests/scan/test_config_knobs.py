@@ -214,3 +214,37 @@ def test_prelude_regime_fallback_is_true(monkeypatch):
     _patch_cfg(monkeypatch, {"funnel": {"regime_aware": False}})
     assert knob("funnel", "regime_aware", None, True) is False
     assert knob("funnel", "regime_aware", False, True) is False   # CLI --no-regime-aware
+
+
+# ───────────────────────── 白名单:召回权重档(weight_profile/preference_weights) ─────────────────────────
+
+
+def test_weight_profile_keys_whitelisted(tmp_path):
+    raw = {"funnel": {"weight_profile": "preference", "preference_weights": {
+        "momentum": 0.20, "tech": 0.15, "volprice": 0.15, "fund_main": 0.15, "chip": 0.05,
+        "north": 0.05, "growth": 0.05, "value": 0.05, "fund_retail": -0.05, "rz": 0.0}}}
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps(raw), encoding="utf-8")
+    assert load_user_config(p) == raw
+
+
+@pytest.mark.parametrize("bad", ["prefer", "", 1, None])
+def test_weight_profile_must_be_calibrated_or_preference(tmp_path, bad):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"funnel": {"weight_profile": bad}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="weight_profile"):
+        load_user_config(p)
+
+
+@pytest.mark.parametrize("pw", [
+    {"momentum": 0.2},                                   # 缺键
+    {"momentum": 0.2, "tech": 0.1, "volprice": 0.1, "fund_main": 0.1, "chip": 0.0, "north": 0.0,
+     "growth": 0.0, "value": 0.0, "fund_retail": 0.0, "rz": 0.0, "extra": 1.0},   # 多键
+    {"momentum": math.nan, "tech": 0.1, "volprice": 0.1, "fund_main": 0.1, "chip": 0.0, "north": 0.0,
+     "growth": 0.0, "value": 0.0, "fund_retail": 0.0, "rz": 0.0},                 # 非有限
+])
+def test_preference_weights_must_be_exactly_the_ten_groups(tmp_path, pw):
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"funnel": {"preference_weights": pw}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="preference_weights"):
+        load_user_config(p)
