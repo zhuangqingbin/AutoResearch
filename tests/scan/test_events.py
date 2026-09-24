@@ -283,7 +283,10 @@ def _run_to_recall(monkeypatch, ev_fn):
                         "amount_yi": [5.0, 6.0], "mktcap_yi": [80.0, 90.0]})
     monkeypatch.setattr(U, "build_market_frame",
                         lambda *a, **k: (uni.copy(), {"universe_raw": 2, "universe": 2}))
-    monkeypatch.setattr(U, "pick_weights", lambda *a, **k: ({}, "range"))
+    # 2026-09-24 §2.1 起 run() 的权重入口是 resolve_weights(pick_weights 不再是模块级可 patch
+    # 的缝——见 universe.py 的接线注释);composite_score 已在下一行被 patch 成 identity,
+    # 不读 weights 内容,故返回值仍是无害的 {}。
+    monkeypatch.setattr(U, "resolve_weights", lambda *a, **k: ({}, "range"))
     monkeypatch.setattr(U, "composite_score", lambda df, w: df.copy())
     monkeypatch.setattr(events, "market_event_counts", ev_fn)
     seen: dict = {}

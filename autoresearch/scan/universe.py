@@ -51,6 +51,7 @@ from autoresearch.common.scoring import (
     lens_reversal,
     lens_value,
     prev_quarter,
+    resolve_weights,
 )
 from autoresearch.common.turnup import PANEL_COLS
 
@@ -357,7 +358,10 @@ def run(analysis_date: str, cap_floor_yi: float | None = None, include_bj: bool 
     n_raw, n_l0 = _counts["universe_raw"], _counts["universe"]
     # L1 权重的唯一入口(2026-09-24 §2.1):calibrated 分支逐字委派 pick_weights(weights_path=None
     # → 不传 path,吃其默认值 = 现行为,parity);preference 分支固定档、不看 regime、不读文件。
-    from autoresearch.common.scoring import resolve_weights
+    # 模块级导入(非函数体内局部导入):测试靠 `monkeypatch.setattr(U, "resolve_weights", ...)`
+    # patch 这条缝,函数体内 `from ... import` 每次调用都现取,不留可 patch 的模块属性
+    # (fix round 1,2026-09-25:此前局部导入让 tests/scan/test_events.py 的
+    # `U.pick_weights` patch 失效——真身早已换成 resolve_weights,模块上却没这个名字)。
     weights, _regime = resolve_weights(uni, profile=weight_profile, preference_weights=preference_weights,
                                        regime_aware=regime_aware, path=weights_path)
     scored = composite_score(uni, weights)
