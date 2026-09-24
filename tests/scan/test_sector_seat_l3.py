@@ -52,3 +52,61 @@ def test_run_facts_role_sector_seat(tmp_path):
         "code,name,sector,guard,lane\n600002,乙,电力,sector_seat,value\n", encoding="utf-8")
     facts = run_facts(run)
     assert facts["rows"]["600002"]["role"] == "sector_seat"
+
+
+# ── L3 表渲染层(fix round 1:上面三个测试都没碰过实际渲染的 l3_table_md/prepare_l3_table,
+# 🏭 列与图例——直接进判断模型 prompt 的那部分——此前无任何回归覆盖)。镜像
+# `tests/scan/test_l3_pinned_flag.py` 的 fixture 套路(`_mk`/`_row` → 落盘 L2_gbdt_top200.csv
+# → 调用真渲染函数)与断言粒度(doc 级图例锚 + 逐行 marker 精度 + presence-gated 双侧)。
+
+_SEAT_TABLE_DATE = "2026-09-17"
+
+
+def _seat_row(code, name="甲", sector_seat=None):
+    """镜像 test_l3_pinned_flag.py 的 `_row`(同款最小字段集)。`sector_seat=None` → 该键
+    整个不写进 dict,DataFrame 里就**没有这一列**(不是"这一列全 False")——OFF 测试要的
+    是生产默认(`l2.sector_seats` 未开启)那个真实形状:列压根不存在,不是列存在但假。"""
+    row = {"code": code, "name": name, "industry": "电子", "composite": 80.0,
+          "main_net_ratio": 0.05, "pct_60d": 10.0, "pe": 30.0}
+    if sector_seat is not None:
+        row["sector_seat"] = sector_seat
+    return row
+
+
+def _mk_seat_l2(root, rows):
+    d = root / _SEAT_TABLE_DATE
+    d.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows).to_csv(d / "L2_gbdt_top200.csv", index=False)
+    return d
+
+
+def test_l3_table_seat_column_and_legend_render_when_on(tmp_path):
+    """Feature ON:🏭 marks only the seat row; legend renders with two anchors —
+    `🏭(seat列)`(结构锚,头部标识符,镜像 pinned 图例的 `📌(pinned列)` 锚——删掉整行图例
+    两边都会红)+ `不因席位抬评级`(内容锚,钉住「不构成推荐/无评级偏好」这条裁定本身——
+    图例措辞可以重写,但这条保证被删除或改成相反意思必须让测试知道)。"""
+    from autoresearch.scan.agents.l3_select import l3_table_md
+    _mk_seat_l2(tmp_path, [_seat_row("000001", sector_seat=False),
+                          _seat_row("000002", name="乙", sector_seat=True)])
+    md = l3_table_md(_SEAT_TABLE_DATE, root=tmp_path)
+    assert "| seat |" in md                    # 列头真的加进表,不是只有图例文字
+    assert "🏭(seat列)" in md                   # 图例结构锚(镜像 📌(pinned列))
+    assert "不因席位抬评级" in md                 # 图例内容锚(「不构成推荐」裁定)
+    lines = [ln for ln in md.splitlines() if ln.startswith("|") and ("000001" in ln or "000002" in ln)]
+    row1 = next(ln for ln in lines if "000001" in ln)
+    row2 = next(ln for ln in lines if "000002" in ln)
+    assert "🏭" not in row1
+    assert "🏭" in row2
+
+
+def test_l3_table_seat_column_and_legend_absent_when_off(tmp_path):
+    """Feature OFF(presence-gating 半场,镜像
+    `test_l3_table_pinned_flag_no_file_column_absent`):L2 表压根没有 `sector_seat` 列
+    (生产默认——`l2.sector_seats` 未在 scan_config.jsonc 出现时的真实形状)→ 列与图例都
+    不出现。这半是将来有人不小心把 🏭 列改成恒渲染时才会变红的那一半。"""
+    from autoresearch.scan.agents.l3_select import l3_table_md
+    _mk_seat_l2(tmp_path, [_seat_row("000001")])         # 无 sector_seat 列
+    md = l3_table_md(_SEAT_TABLE_DATE, root=tmp_path)
+    assert "🏭(seat列)" not in md
+    assert "🏭" not in md
+    assert "| seat |" not in md
