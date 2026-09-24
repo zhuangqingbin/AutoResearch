@@ -509,9 +509,11 @@ def test_whitelist_has_no_dead_entry(tmp_path, monkeypatch):
     而不是把这一项从 ⊆ 断言里悄悄摘掉(controller 2026-09-24 裁定:宁可搭夹具也不许摘条目)。
     """
     from autoresearch.common import workspace as ws
+    from autoresearch.scan.buyability import write_buyability
 
     scan = _scan_dir(tmp_path)
     _strip_churn(scan)
+    write_buyability(scan)  # Task 21:白名单新条目「buyability」也要真被读到,不能靠豁免
     reports = tmp_path / "reports"
     _publish_prev_run(reports, date="2026-08-05", run_name="20260805-0805_2200",
                       ratings={"600018": "Underweight"})
@@ -958,3 +960,66 @@ def test_shadow_r_tier_replace_is_a_harmless_noop(scan):
     assert "✅" not in md
     assert "🟥" not in md, "影子期不该补红——非正式已经是限定语,不能凭空多出一个标记"
     assert md.count("🕶") == 1, "不能变成两个标记"
+
+
+# ───────────────── Task 21(2026-09-24 §2.7 + 2026-09-25 controller 追加裁定):
+# 不可买归因 ③ 附加行 ─────────────────
+
+def _write_buyability(scan: Path, **overrides) -> None:
+    """`_buyability.json` 的最小同构件(字段名照抄 `buyability.build_buyability` 的产物
+    形状,不发明)。"""
+    doc = {
+        "schema_version": 1, "date": _DATE, "wall": "cards_silent",
+        "menu": {"l2_knife": 0.6, "l0_knife": 0.55, "l2_healthy": 0.03, "l0_healthy": 0.02,
+                "sector_seats": 12, "composite_seats": 1},
+        "cards": {"n": 9, "allowed": 0, "conditional": 2, "prohibited": 4, "unknown": 3,
+                 "blind": 0, "parse_failed": 0, "earlystop": 6, "full": 3},
+        "gates": {"data_a_day": 0, "data_a_ticker": 0, "contract": 0, "no_redflag": 0,
+                 "no_redflag_card_prohibited": 0},
+        "buy": {"tier": None, "code": None, "blocked": False},
+    }
+    doc.update(overrides)
+    (scan / "_buyability.json").write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+
+
+def test_buyability_line_renders_on_a_blocked_day(tmp_path):
+    """coordinator 2026-09-25 追加裁定:blocked 日是这一行存在的理由(真实 8 个 Claude
+    扫描日 6 个 blocked)—— 只测有买日会让「功能在最要紧的地方缺席」这件事亮绿灯。归因行
+    必须**紧跟**在 BLOCKED 桶那行后面:那行把 `hard_gate.no_redflag` 六个否决因揉成一个
+    数,归因行才是把「卡面入场=禁止」从中拆出来的地方。"""
+    scan = _scan_dir(tmp_path, decision=_decision(blocked=True))
+    _write_buyability(scan, wall="cards_refused",
+                      gates={"data_a_day": 0, "data_a_ticker": 0, "contract": 0,
+                             "no_redflag": 7, "no_redflag_card_prohibited": 5})
+    md = brief.build(scan, run_folder=_RUN)["markdown"]
+    assert "**BLOCKED**" in md
+    lines = md.splitlines()
+    idx_blocked = next(i for i, ln in enumerate(lines) if "**BLOCKED**" in ln)
+    idx_ba = next(i for i, ln in enumerate(lines) if "不可买归因" in ln)
+    assert idx_ba == idx_blocked + 1, "归因行必须紧跟在 BLOCKED 行后面,不能被夹在别处"
+    assert "不可买归因:**cards_refused**(卡写了,不允许)" in lines[idx_ba]
+    assert "redflag 7(卡禁 5)" in lines[idx_ba]
+
+
+def test_buyability_line_renders_on_the_normal_buy_path_with_gloss(scan):
+    """有买日(正常出口)一样要出这一行,且两个新值各自带一句短注 —— 计数(允许/条件/
+    禁止/未知/盲)本身分不清 silent 和 refused(两支世界能落在同一套计数上,entry_source
+    是正交维度),所以 gloss 不是可省的装饰。"""
+    _write_buyability(scan, wall="cards_silent")
+    md = brief.build(scan, run_folder=_RUN)["markdown"]
+    assert "不可买归因:**cards_silent**(没有卡写入场行)" in md
+    assert "早停 6/满卡 3" in md
+    assert len(md.encode("utf-8")) <= brief.MAX_BYTES
+
+
+def test_buyability_line_absent_when_artifact_missing(scan):
+    """presence-gating,不是规则:`_buyability.json` 不存在(如决策产物本就没生成的
+    present=False 场景,或旧 run)时,三个出口都不必特判 —— 内部 `if not ba.get("wall")`
+    guard 天然不出线。"""
+    md = brief.build(scan, run_folder=_RUN)["markdown"]
+    assert "不可买归因" not in md
+
+
+def test_buyability_facts_key_is_in_the_whitelist():
+    assert ("artifact", "buyability") in brief._WHITELIST_SPEC
+    assert "_buyability.json" in brief.INPUT_WHITELIST

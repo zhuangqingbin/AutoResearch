@@ -111,6 +111,7 @@ _WHITELIST_SPEC: tuple[tuple[str, str], ...] = (
     ("artifact", "overseas_calendar"),  # D-2:隔夜窗海外事件(⑤ 风险哨一句;风险可见性,不喂判断层)
     ("artifact", "manifest"),  # Task 3:跨 run 昨日 delta 读点(`_prev_published` 挑上一场发布 run)
     ("artifact", "recommendations"),  # Task 4:E6 BUY/席位实测读点(`_e6_realized_stats`)
+    ("artifact", "buyability"),  # Task 21:不可买归因(`_buyability.json`),③ 附加一行
 )
 
 #: 白名单里**已登记**产物的登记名(顺序同上)。
@@ -402,6 +403,7 @@ def collect_facts(scan_dir: Path | str, *, analysis_date: str | None = None,
             **_why_no_buy(scan),
         },
         "relative": _relative_facts(decision),
+        "buyability": _json(scan / "_buyability.json") or {},
         "e6_realized": _e6_realized_stats(),
         "pinned": pinned,
         "risk": {**_gate_counts(scan),
@@ -549,6 +551,12 @@ def _buy_lines(facts: dict, src: list[dict]) -> list[str]:
     lines: list[str] = []
     buys = facts["buys"]
     rel = facts["relative"]
+    # Task 21(2026-09-24 §2.7 + 2026-09-25 controller 追加裁定):不可买归因,三个出口
+    # (present=False/blocked/正常)共用同一份渲染 —— 算一次,哪个分支 return 都带上它,
+    # 不许两份拷贝各自漂移。blocked 日尤其要紧:它是这一行存在的理由(八个真实扫描日
+    # 六个 blocked),present=False 时 `_buyability.json` 几乎必然也不存在,靠
+    # `_buyability_line` 内部的 `if not ba.get("wall")` 天然不出线,不必再加一层判断。
+    ba_line = _buyability_line(facts, src)
     # E3(task-2.4):active 期这一行**不再叫「生产 BUY」** —— 那个名字会让读者把研究评级
     # 的张数读成买入建议,而 active 期 BUY 由下一行的决策文件独家拥有。口径源同 `tag`
     # (决策文件的 `mode`,brief 渲染时它已定稿),两行不会一个说影子一个说正式。
@@ -587,6 +595,8 @@ def _buy_lines(facts: dict, src: list[dict]) -> list[str]:
         tag = tag.replace("✅", "🟥") + " · **R 级·卡面无买点·强制相对(裁定①)**"
     if not rel.get("present"):
         lines.append(f"- {tag}:—(`{DECISION_FILENAME}` 未生成 —— 缺证据不等于没候选)")
+        if ba_line:
+            lines.append(ba_line)
         return lines
     if rel.get("blocked"):
         why = "、".join(rel.get("blocked_reasons") or []) or "无分桶"
@@ -594,6 +604,12 @@ def _buy_lines(facts: dict, src: list[dict]) -> list[str]:
                 f"候选 {rel.get('n_candidates')} / 合格 {rel.get('n_eligible')})")
         _src(src, "relative.blocked", True, DECISION_FILENAME, "blocked", text)
         lines.append("- " + text)
+        # blocked 日是不可买归因这一行存在的理由(八个真实扫描日六个 blocked)——
+        # 上面那行「BLOCKED(...hard_gate.no_redflag×7...)」把六个否决因揉成一个数,
+        # 下面这行才是把它拆开的地方(2026-09-25 controller 追加裁定:不改 blocked_reasons
+        # 本身,两套词汇会打架;归因专用本行,所以必须紧跟着渲染)。
+        if ba_line:
+            lines.append(ba_line)
         return lines
 
     gap_txt = _realized_text(facts["e6_realized"]["buy"], "BUY")
@@ -636,7 +652,44 @@ def _buy_lines(facts: dict, src: list[dict]) -> list[str]:
         lines.append(exec_txt)
         lines.append("  ↳ 执行线(T+1 尾盘,机器可检):当日涨幅 ≤3% ∧ 收盘不在当日区间上 30% "
                      "∧ 未封涨停 —— 追强在隔夜尺上四年逐年为负(−0.13~−0.27pp)")
+    if ba_line:
+        lines.append(ba_line)
     return lines
+
+
+def _buyability_line(facts: dict, src: list[dict]) -> str | None:
+    """不可买归因(Task 21,2026-09-24 §2.7 + 2026-09-25 controller 追加裁定)③ 附加行。
+
+    单点渲染:`_buy_lines` 的三个出口(present=False / blocked / 正常)各自在
+    `return lines` 前调用本函数一次,不许各写一份各自漂 —— `_buyability.json` 缺席
+    (`ba.get("wall")` 为空,例如决策文件本就没生成)时自然返回 `None`,调用方不必
+    另加判断。blocked 日尤其要紧:上面那行「BLOCKED(...hard_gate.no_redflag×N...)」
+    把六个否决因揉成一个数,这一行才是把「卡面入场=禁止」从中拆出来的地方。
+    """
+    ba = facts.get("buyability") or {}
+    if not ba.get("wall"):
+        return None
+    m, c, g = ba.get("menu") or {}, ba.get("cards") or {}, ba.get("gates") or {}
+    pct = lambda v: "—" if v is None else f"{v:.0%}"   # noqa: E731
+    wall = ba["wall"]
+    # P22 的两个新值在中文行里是孤立的英文标识符,加一句短注让读者不必跳去查 wall 词表;
+    # 判断力不能全指望后面那串「允许/条件/禁止/未知/盲」计数 —— 两支世界能落在完全相同的
+    # 立场分布上(silent/refused 是 entry_source 维度,和立场分布是正交的两件事),所以
+    # 光靠计数认不出 silent 还是 refused,glosses 不是可省的装饰。
+    gloss = {"cards_silent": "(没有卡写入场行)", "cards_refused": "(卡写了,不允许)"}.get(wall, "")
+    text = (f"不可买归因:**{wall}**{gloss} ｜ 菜单 落刀 L2 {pct(m.get('l2_knife'))}/L0 {pct(m.get('l0_knife'))}"
+            f" · 健康 {pct(m.get('l2_healthy'))}/{pct(m.get('l0_healthy'))}"
+            f" · 席位 行业 {m.get('sector_seats', 0)}/证据 {m.get('composite_seats', 0)}"
+            f" ｜ 卡 允许 {c.get('allowed', 0)}/条件 {c.get('conditional', 0)}/禁止 {c.get('prohibited', 0)}"
+            f"/未知 {c.get('unknown', 0)}/盲 {c.get('blind', 0)}"
+            f" ｜ 早停 {c.get('earlystop', 0)}/满卡 {c.get('full', 0)}"
+            f" ｜ 门 data_a 日级 {g.get('data_a_day', 0)}·票级 {g.get('data_a_ticker', 0)}"
+            f" · contract {g.get('contract', 0)}"
+            f" · redflag {g.get('no_redflag', 0)}(卡禁 {g.get('no_redflag_card_prohibited', 0)})")
+    _src(src, "buyability.wall", wall, "_buyability.json", "wall", text)
+    _src(src, "buyability.l2_knife", m.get("l2_knife"), "_buyability.json", "menu.l2_knife", text)
+    _src(src, "buyability.allowed", c.get("allowed"), "_buyability.json", "cards.allowed", text)
+    return "  " + text
 
 
 def _why_text(buys: dict, *, active: bool = False) -> str:

@@ -867,6 +867,8 @@ def _publish_run_observation_unlocked(
 
         safe_verify_decision(scan, mode=_rb_mode, exclude_pinned=_rb_exclude_pinned, pool=_rb_pool,
                              tiering=_rb_tiering)
+    from autoresearch.scan.buyability import safe_write_buyability
+    safe_write_buyability(scan)          # 不可买归因(2026-09-24 §2.7):读决策文件,必须在它之后
     # 现场重建 Task 4(设计稿 §5.2 生产接线):绑定必须在**这里**——决策校验已经完成
     # (E6 现算/比对已定稿,不再改变),retain 还没把 staging 镜像进 report_dir,capsule
     # 也还没冻结。`safe_bind_run` 自己从不抛出(裁定③:证据采集失败不得让发布本身失败),

@@ -207,6 +207,7 @@ ARTIFACTS: tuple[Artifact, ...] = (
     Artifact("stage_timing", "_stage_timing.json", "staging", "observe", "post_run", "json", "gated",
              required_when="post_run observe 跑过"),
     Artifact("relative_buy_decision", "_relative_buy_decision.json", "staging", "observe", "relative_buy", "json", "always"),
+    Artifact("buyability", "_buyability.json", "staging", "observe", "buyability", "json", "always"),
     Artifact("outbox_events", "outbox/events.json", "staging", "observe", "post_run", "json", "always"),
     Artifact("consumer_state", "outbox/consumer_state.json", "staging", "observe", "post_run", "json", "always"),
     # ---- 账本(跨 run,run 目录之外)------------------------------------------

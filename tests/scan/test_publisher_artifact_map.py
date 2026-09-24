@@ -53,6 +53,9 @@ def _isolate_ledger_root(monkeypatch):
 #
 # 2026-09-24(Task 4):同一条家训,追加第 15 项 —— BUY 行的「绝对 gap」stub 与固定的 42 日
 # 证据句改读账本(`recommendations.csv`);`INPUT_WHITELIST`/`REGISTERED_INPUTS` 因此各 +1。
+#
+# 2026-09-24(Task 21):同一条家训,追加第 16 项 —— 不可买归因产物 `_buyability.json`
+# 挂进 ③ 附加行;`INPUT_WHITELIST`/`REGISTERED_INPUTS` 因此各 +1。
 
 _BRIEF_WHITELIST_BEFORE = (
     "meta.json",
@@ -70,6 +73,7 @@ _BRIEF_WHITELIST_BEFORE = (
     "overseas_calendar.csv",
     "manifest.json",
     "recommendations.csv",
+    "_buyability.json",
 )
 
 _TRACE_MAPPING_BEFORE = (
@@ -110,12 +114,12 @@ def test_brief_whitelist_names_resolve_in_the_registry():
 
 
 def test_brief_whitelist_does_not_widen_permissions():
-    """白名单是**许可**表,比登记表窄:登记表里 85 个产物,brief 只准读这 12 个。
+    """白名单是**许可**表,比登记表窄:登记表里 85+ 个产物,brief 只准读这 13 个。
 
     反面锚:哪天有人图省事写成 `for_root("staging")`,这条立刻红。
     """
     staging_paths = {a.path for a in C.for_root("staging")}
-    assert len(brief.REGISTERED_INPUTS) == 12
+    assert len(brief.REGISTERED_INPUTS) == 13
     assert len(staging_paths) > 3 * len(brief.REGISTERED_INPUTS), \
         "登记表突然变小了?这条锚是为了保证下面那句『窄很多』还有意义"
     derived = {C.by_name(n).path for n in brief.REGISTERED_INPUTS}
