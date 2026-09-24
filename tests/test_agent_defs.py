@@ -54,6 +54,9 @@ def test_l4_card_contract_anchors_synced():
                # chk_blind_pass 全 fail —— 指令在、检查在,缺的是机器可核的标签行);
                # ②转引标题标注(07-24 两条 price_claim_mismatch 的真身是转述媒体标题)。
                "**独立初判**:", "〔转引标题〕",
+               # T18(2026-09-24):入场行(机读契约)——`**入场**:` 行前缀与规则段落
+               # 「入场行」小节名必须两边同步(E6 v4 A/R 分级的机读依据)。
+               "**入场**:", "入场行",
                *(g for g in _OW_GATES)]
     for a in anchors:
         assert a in agent, f"l4-card 缺契约锚「{a}」"

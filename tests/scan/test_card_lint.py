@@ -8,9 +8,9 @@ import pandas as pd
 
 from autoresearch.scan.self_review import card_contract_lint
 
-FULL_OK = "# 卡\n**Rating**: Hold\n进入P4倾向: Hold\n变化项(vs 档案):无\n"
+FULL_OK = "# 卡\n**Rating**: Hold\n进入P4倾向: Hold\n变化项(vs 档案):无\n**入场**: 允许\n"
 FULL_NO_P4 = "# 卡\n**Rating**: Hold\n**一行多空**:多:x ｜ 空:y\n"
-STOP = "# 卡\n**Rating**: Hold\n早停因: 资金流出\n"
+STOP = "# 卡\n**Rating**: Hold\n早停因: 资金流出\n**入场**: 禁止\n"
 REUSE = "♻️ 复用卡\n**Rating**: Hold\n"
 # 07-06 假阳:标题标〔早停·表面 DD〕但正文无「早停因」字样的卡,被当满卡查 P4 行
 STOP_TITLE_ONLY = ("# 决策卡 — 002185 华天科技 @ 2026-07-06  ·  〔早停·表面 DD〕\n\n"
@@ -53,6 +53,18 @@ def test_full_card_with_stray_early_stop_heading_still_warns(tmp_path):
     d = _mk(tmp_path, "2026-07-06", {"000001": FULL_STRAY_HEADING})
     fires = card_contract_lint(d)
     assert [f for f in fires if f["check"] == "卡片契约·P4倾向缺失"], fires
+
+
+def test_card_contract_lint_flags_missing_entry_line(tmp_path):
+    """T18:`**入场**: 允许|禁止|条件` 行缺失 → warn(E6 v4 A/R 分级的机读依据)。"""
+    d = _mk(tmp_path, "2026-09-17", {
+        "600018": ("# 决策卡 — 600018 上港 @ 2026-09-17  ·  〔早停·表面 DD〕\n"
+                   "**早停**: 停于 P3 ｜ 停因:资金流出\nFINAL TRANSACTION PROPOSAL: **HOLD**\n"),
+        "600035": ("# 决策卡 — 600035 楚天 @ 2026-09-17  ·  〔早停·表面 DD〕\n"
+                   "**入场**: 禁止\n**早停**: 停于 P3 ｜ 停因:资金流出\nFINAL TRANSACTION PROPOSAL: **HOLD**\n"),
+    })
+    hits = [h for h in card_contract_lint(d) if h["check"] == "卡片契约·入场行缺失"]
+    assert [h["code"] for h in hits] == ["600018"] and hits[0]["severity"] == "warn"
 
 
 def test_dossier_change_section_lint(tmp_path):

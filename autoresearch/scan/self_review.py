@@ -302,6 +302,9 @@ def card_contract_lint(scan_dir) -> list[dict]:
         code = p.stem
         if "♻️" in text and "复用" in text:
             continue
+        if "**入场**:" not in text and "**入场**：" not in text:
+            out.append({"check": "卡片契约·入场行缺失", "severity": "warn", "code": code,
+                        "detail": f"{code} 卡缺『**入场**: 允许|禁止|条件』行(E6 v4 A/R 分级的机读依据;缺行只能当 R 级)"})
         # 早停豁免只认文本首行标题〔早停·表面 DD〕——正文杂散「早停」小标题不豁免(防吞满卡 warn)
         first_line = text.split("\n", 1)[0]
         if ("早停因" not in text and "早停" not in first_line
