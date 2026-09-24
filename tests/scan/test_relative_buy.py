@@ -856,7 +856,7 @@ def _health(tmp_path, stages):
 
 def test_hygiene_only_gate4_passes_data_a(tmp_path):
     _health(tmp_path, {"status": "OK", "failed": ["gate4"], "failed_data": []})
-    ok, why = _data_contract_ok(tmp_path)
+    ok, why, _per_ticker = _data_contract_ok(tmp_path)
     assert ok, why
 
 
@@ -868,6 +868,49 @@ def test_data_fail_blocks(tmp_path):
 def test_legacy_health_without_failed_data_keeps_old_semantics(tmp_path):
     _health(tmp_path, {"status": "OK", "failed": ["gate4"]})
     assert not _data_contract_ok(tmp_path)[0]  # 回退旧口径:failed 非空即拒
+
+
+# ══ Task 1(2026-09-24 §2.6-2):data_a 细分票级 —— l4_<code> 只否决该票 ══════════
+#
+# `stage_results.failed_data` 里形如 `l4_<code>` 的项是**单票** slim/卡失败,只应否决
+# 该票的 data_a,不该连坐当日其他候选(两次生产扫描全天 0 买的根因之一 —— 研究质量
+# 本身没问题,只是一只票取数失败)。非 `l4_<code>` 形状的项(如 `gate2`)仍是日级连坐。
+# 历史 run_health(无 `failed_data` 键)保持 v1.1 旧口径:`failed` 任一项全天否决,不
+# 改写历史判定。
+
+
+def _health_doc(**stage_results):
+    return {"date": DATE, "core_missing": [], "run_contract": {"status": "OK"},
+            "stage_results": {"status": "OK", **stage_results},
+            "decision_records": {"status": "OK"}}
+
+
+def test_l4_stage_failure_vetoes_only_that_ticker(tmp_path):
+    """票级 data_a(2026-09-24 §2.6-2):`l4_<code>` 失败只否决该票,其余候选照常。"""
+    scan = _build_scan(tmp_path, _RANK_CANDS,
+                       run_health=_health_doc(failed=["l4_600188"], failed_data=["l4_600188"]))
+    doc = build_decision(scan)
+    by = _by_code(doc)
+    assert by["600188"]["hard_gate"]["data_a"] is False
+    assert all(by[c]["hard_gate"]["data_a"] for c in _RANK_ORDER if c != "600188")
+    assert doc["buys"] and doc["buys"][0]["code"] == "002345"
+    detail = [e for e in doc["excluded"] if e["code"] == "600188" and e["reason"] == "hard_gate.data_a"]
+    assert detail and "l4_600188" in detail[0]["detail"]
+
+
+def test_day_level_data_failure_still_vetoes_everyone(tmp_path):
+    scan = _build_scan(tmp_path, _RANK_CANDS,
+                       run_health=_health_doc(failed=["gate2"], failed_data=["gate2"]))
+    doc = build_decision(scan)
+    assert all(not row["hard_gate"]["data_a"] for row in doc["candidates"])
+    assert doc["blocked"] is True
+
+
+def test_legacy_health_without_failed_data_keeps_v11_day_level_semantics(tmp_path):
+    """历史 run_health 无 failed_data 键 → 旧口径:任一 failed(含 l4_*)全天否决,不改写历史判定。"""
+    scan = _build_scan(tmp_path, _RANK_CANDS, run_health=_health_doc(failed=["l4_600188"]))
+    doc = build_decision(scan)
+    assert all(not row["hard_gate"]["data_a"] for row in doc["candidates"])
 
 
 # ══ P0-2(`docs/research/2026-08-19-decision-file-two-writers-and-taskbook-hash.md`

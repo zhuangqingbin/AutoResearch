@@ -122,6 +122,7 @@ import argparse
 import csv
 import hashlib
 import json
+import re
 import sys
 from bisect import bisect_left, bisect_right
 from pathlib import Path
@@ -423,27 +424,42 @@ def tradable_universe(scan_dir: Path | str) -> list[str]:
 
 
 # ── 日级 A 级契约判定 ───────────────────────────────────────────────────────
-def _data_contract_ok(scan: Path) -> tuple[bool, str]:
+_L4_STAGE_RE = re.compile(r"^l4_(\d{6})$")
+
+
+def _data_contract_ok(scan: Path) -> tuple[bool, str, frozenset[str]]:
+    """A 级数据契约:返回 (日级是否 OK, 日级原因, 票级失败码集)。
+
+    v4.0(2026-09-24 §2.6-2):`stage_results.failed_data` 里 `l4_<code>` 形状的项是
+    **单票** slim/卡失败,只否决该票;其余项仍是日级(全体连坐)。历史 `run_health` 无
+    `failed_data` 键 → 保持 v1.1 旧口径(`failed` 任一项全天否决,不改写历史判定)。
+    """
+    empty: frozenset[str] = frozenset()
     health = _json_doc(scan / "run_health.json")
     if not isinstance(health, dict):
-        return False, "run_health.json 缺失,A 级数据契约无从判定"
+        return False, "run_health.json 缺失,A 级数据契约无从判定", empty
     if health.get("core_missing"):
-        return False, f"core_missing={sorted(health['core_missing'])}"
+        return False, f"core_missing={sorted(health['core_missing'])}", empty
     contract = health.get("run_contract") or {}
     if str(contract.get("status") or "") != "OK":
-        return False, f"run_contract.status={contract.get('status')!r}"
+        return False, f"run_contract.status={contract.get('status')!r}", empty
     stages = health.get("stage_results") or {}
     if str(stages.get("status") or "") != "OK":
-        return False, f"stage_results.status={stages.get('status')!r}(非 OK)"
+        return False, f"stage_results.status={stages.get('status')!r}(非 OK)", empty
     failed_data = stages.get("failed_data")
-    if failed_data is None:            # 历史 run_health 无此键 → 保持 v1.1 旧口径
-        failed_data = stages.get("failed")
-    if failed_data:
-        return False, f"stage_results.failed_data={sorted(failed_data)}"
+    per_ticker = empty
+    if failed_data is None:            # 历史 run_health 无此键 → v1.1 旧口径(日级连坐)
+        day_level = list(stages.get("failed") or [])
+    else:
+        per_ticker = frozenset(m.group(1) for s in failed_data
+                               if (m := _L4_STAGE_RE.match(str(s))))
+        day_level = [s for s in failed_data if not _L4_STAGE_RE.match(str(s))]
+    if day_level:
+        return False, f"stage_results.failed_data={sorted(day_level)}", per_ticker
     records = health.get("decision_records") or {}
     if str(records.get("status") or "") != "OK":
-        return False, f"decision_records.status={records.get('status')!r}(非 OK)"
-    return True, ""
+        return False, f"decision_records.status={records.get('status')!r}(非 OK)", per_ticker
+    return True, "", per_ticker
 
 
 # ── 逐票契约(task-book + 价格断言)─────────────────────────────────────────
@@ -600,11 +616,14 @@ def _hard_gate(entry: dict, ctx: dict) -> tuple[dict[str, bool], list[dict]]:
     else:
         gates["tradable"] = True
 
-    # ② A 级数据契约(日级)
-    if ctx["data_a"][0]:
-        gates["data_a"] = True
+    # ② A 级数据契约:日级(全体)+ 票级(v4.0:`l4_<code>` 只否决该票)
+    day_ok, day_reason, per_ticker = ctx["data_a"]
+    if not day_ok:
+        fail("data_a", day_reason)
+    elif code in per_ticker:
+        fail("data_a", f"stage l4_{code} 失败(票级 data_a,不连坐当日其他候选)")
     else:
-        fail("data_a", ctx["data_a"][1])
+        gates["data_a"] = True
 
     # ③ slim / 卡 / 价格断言契约
     book = ctx["task_book"]
