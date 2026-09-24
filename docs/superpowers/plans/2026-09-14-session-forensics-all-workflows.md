@@ -489,7 +489,7 @@ finish 返回值由代码给出：正式路径、run/publication ID、报告 has
 
 `case` 其余稳定测试方法在后续对应任务定义：`verify/replay/drop_evidence/add_source/calculate/prepare_publication/resume_publication`；每个方法只是填参调用生产 API，不实现被测试规则。
 
-- [x] 写下面的合成版 10:40/10:41 回归，并参数化五类具有发布能力的入口。
+- [ ] 写下面的合成版 10:40/10:41 回归，并参数化五类具有发布能力的入口。
 
 ```python
 def test_terminal_run_cannot_create_another_report(forensic_case):
@@ -501,16 +501,16 @@ def test_terminal_run_cannot_create_another_report(forensic_case):
     assert case.snapshot_persistent_tree() == before
 ```
 
-- [x] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_terminal_writes.py tests/forensics/test_report_identity.py`，先以 `c3b5290` 固化红例，再由后续修复转绿。
-- [x] 增加“只有 generated_at 不同”和“业务数字不同”两种新版报告，确认报告身份检查都不能把未封存文件算成旧版。
-- [x] 只提交合成数据/测试工具；真实 transcript、报告、token 和供应商 payload 不入 Git。
+- [ ] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_terminal_writes.py tests/forensics/test_report_identity.py`，预期先暴露“已写新文件/旧 run_id 仍通过”的失败。
+- [ ] 增加“只有 generated_at 不同”和“业务数字不同”两种新版报告，确认报告身份检查都不能把未封存文件算成旧版。
+- [ ] 只提交合成数据/测试工具；真实 transcript、报告、token 和供应商 payload 不入 Git。
 
 ### T02｜引入严格 sidecar 契约与结果语义（A，P0）
 
 **Files:** 新增 §10 四个 contracts 文件；新增 `tests/contracts/test_forensic_contracts.py`、`test_publication_contracts.py`、`test_replay_contracts.py`、`test_source_receipts.py`。
 
-- [x] 为 §5/§8/§9 的每个对象实现 `validate_<name>(value)`，精确字段、哈希、枚举、带时区时间、相对路径与引用约束；返回原对象，不补隐式成功字段。
-- [x] JSON hash 排除且仅排除自身 hash 字段，沿用 common canonical JSON；拒绝重复引用、额外字段、空 scope、相同 task/attempt 的冲突来源。
+- [ ] 为 §5/§8/§9 的每个对象实现 `validate_<name>(value)`，精确字段、哈希、枚举、带时区时间、相对路径与引用约束；返回原对象，不补隐式成功字段。
+- [ ] JSON hash 排除且仅排除自身 hash 字段，沿用 common canonical JSON；拒绝重复引用、额外字段、空 scope、相同 task/attempt 的冲突来源。
 
 ```python
 def test_legacy_cannot_claim_session_plan(valid_origin):
@@ -524,27 +524,27 @@ def test_empty_replay_denominator_is_not_full(valid_replay_result):
         validate_replay_result(value)
 ```
 
-- [x] 验证旧 BeginRequest/信封/ResearchCard 精确字段测试仍通过；不要把新 sidecar 字段塞入旧对象。
-- [x] 运行 `uv run --no-sync python -m pytest -q tests/contracts`；新旧契约均通过（最终全仓回归亦覆盖）。
+- [ ] 验证旧 BeginRequest/信封/ResearchCard 精确字段测试仍通过；不要把新 sidecar 字段塞入旧对象。
+- [ ] 运行 `uv run --no-sync python -m pytest -q tests/contracts`；预期新旧契约均通过。
 
 ### T03｜所有写入入口的终态前置检查（A，P0）
 
 **Files:** 新增 `trace/write_guard.py`；修改 analyze/runctl/assemble、macro/assemble/state、sector/brief、dossier/builder/pool、scan/assemble/post_run 和已有 publisher；补 T01 测试。
 
-- [x] 实现 §6.1 的 `assert_write_allowed(run_id, operation, engine)`：验证存在、engine、ACTIVE、操作归属和输出根；不创建 run/staging 来“修复”不存在身份。
-- [x] 盘点所有到正式研究路径/状态路径的 `write_text/atomic_write/copy/replace`，调用前置检查。record_stage 的身份/终态异常必须向调用者传播；普通外源缺证据继续按已定义降级处理。
-- [x] 用同一个 run 级锁保护提交和 seal，补“检查 ACTIVE 后并发 finalize”的竞态测试。
-- [x] 命令失败时报告内容、manifest、目标父目录及状态均不变；允许独立审计日志记录错误，但不能带旧身份发布新业务文件。
-- [x] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_terminal_writes.py tests/analyze tests/macro tests/sector tests/dossier tests/session_agent/test_scan_publish.py`（最终全仓回归覆盖）。
-- [x] T01 红例已变绿；旧无 run CLI 的迁移期行为仍明确标 untracked，不被误当 session。
+- [ ] 实现 §6.1 的 `assert_write_allowed(run_id, operation, engine)`：验证存在、engine、ACTIVE、操作归属和输出根；不创建 run/staging 来“修复”不存在身份。
+- [ ] 盘点所有到正式研究路径/状态路径的 `write_text/atomic_write/copy/replace`，调用前置检查。record_stage 的身份/终态异常必须向调用者传播；普通外源缺证据继续按已定义降级处理。
+- [ ] 用同一个 run 级锁保护提交和 seal，补“检查 ACTIVE 后并发 finalize”的竞态测试。
+- [ ] 命令失败时报告内容、manifest、目标父目录及状态均不变；允许独立审计日志记录错误，但不能带旧身份发布新业务文件。
+- [ ] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_terminal_writes.py tests/analyze tests/macro tests/sector tests/dossier tests/session_agent/test_scan_publish.py`。
+- [ ] 预期 T01 红例变绿；旧无 run CLI 的迁移期行为仍明确标 untracked，不被误当 session。
 
 ### T04｜编排来源与薄入口（A，P0，默认切换留到 T17）
 
 **Files:** 新增 `autoresearch/session_agent/origin.py`；修改 `autoresearch/session_agent/{service,__main__,evaluation}.py`、`autoresearch/analyze/runctl.py`、`autoresearch/trace/capsule.py` 的 legacy begin CLI、四个 skill 和档案入口的试跑章节；新增 `tests/session_agent/test_execution_origin.py`。当前没有 `autoresearch/scan/runctl.py`，不得另造该入口。
 
-- [x] begin 在第一次业务任务前冻结 ExecutionOrigin；session 来源必须实际生成并校验 plan/host hashes；legacy begin 冻结显式选择理由。
-- [x] 增加入口选择参数与准确错误：不支持的能力返回 `HOST_CAPABILITY_REQUIRED`；不自动调用 legacy Workflow。
-- [x] 集成测试以真实 planner/CLI 调用记录判定路径，不能只查 skill 文件里出现字符串 `session_v1`。
+- [ ] begin 在第一次业务任务前冻结 ExecutionOrigin；session 来源必须实际生成并校验 plan/host hashes；legacy begin 冻结显式选择理由。
+- [ ] 增加入口选择参数与准确错误：不支持的能力返回 `HOST_CAPABILITY_REQUIRED`；不自动调用 legacy Workflow。
+- [ ] 集成测试以真实 planner/CLI 调用记录判定路径，不能只查 skill 文件里出现字符串 `session_v1`。
 
 ```python
 def test_new_entry_never_silently_falls_back(forensic_case):
@@ -555,16 +555,16 @@ def test_new_entry_never_silently_falls_back(forensic_case):
     assert case.executed_entrypoints() == []
 ```
 
-- [x] `begin_via_entry` 用真实入口进程；`executed_entrypoints` 读取进程捕获证据。开发期仅测试/显式试跑，不提前 ENABLED。
-- [x] 运行 `uv run --no-sync python -m pytest -q tests/session_agent/test_execution_origin.py tests/session_agent/test_entrypoints.py tests/session_agent/test_engine_bootstrap.py tests/session_agent/test_cutover.py`（最终全仓回归覆盖）。
+- [ ] `begin_via_entry` 用真实入口进程；`executed_entrypoints` 读取进程捕获证据。开发期仅测试/显式试跑，不提前 ENABLED。
+- [ ] 运行 `uv run --no-sync python -m pytest -q tests/session_agent/test_execution_origin.py tests/session_agent/test_entrypoints.py tests/session_agent/test_engine_bootstrap.py tests/session_agent/test_cutover.py`。
 
 ### T05｜由计划生成任务级证据闭包（工作包 B，P0）
 
 **Files:** 新增 `session_agent/evidence.py`；修改 artifacts/store/publication、trace/completeness/capsule；新增 `tests/forensics/test_evidence_closure.py`。
 
-- [x] 实现 `build_evidence_plan(handle)`：读取冻结 plan 与拓扑顺序 expansion，联合 SESSION/L4 owner 的实际 attempt；不改变 owner 状态。
-- [x] 将 inputs/outputs/receipts 按 hash 复制到 capsule 对应捕获路径；证明输入在消费时已固定。目录输入转精确文件清单，不能只保存一个原路径字符串。
-- [x] 实现 `evaluate_closure(capsule, evidence_plan)`，检查引用内容、源、transcript 和 command capture；把缺项实际纳入结论和分母。
+- [ ] 实现 `build_evidence_plan(handle)`：读取冻结 plan 与拓扑顺序 expansion，联合 SESSION/L4 owner 的实际 attempt；不改变 owner 状态。
+- [ ] 将 inputs/outputs/receipts 按 hash 复制到 capsule 对应捕获路径；证明输入在消费时已固定。目录输入转精确文件清单，不能只保存一个原路径字符串。
+- [ ] 实现 `evaluate_closure(capsule, evidence_plan)`，检查引用内容、源、transcript 和 command capture；把缺项实际纳入结论和分母。
 
 ```python
 @pytest.mark.parametrize("leg", ["inputs", "receipt", "source", "transcript"])
@@ -577,16 +577,16 @@ def test_missing_consumed_evidence_fails_completeness(forensic_case, leg):
     assert result["missing"]
 ```
 
-- [x] 测试 a1 失败/a2 成功、L3 修复被 supersede、第三轮未触发、SENTINEL_EMPTY，确保只有合法分支免除要求。
-- [x] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_evidence_closure.py tests/trace/test_completeness.py tests/session_agent/test_finalize.py tests/session_agent/test_scan_l4_recovery.py`（最终全仓回归覆盖）。
+- [ ] 测试 a1 失败/a2 成功、L3 修复被 supersede、第三轮未触发、SENTINEL_EMPTY，确保只有合法分支免除要求。
+- [ ] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_evidence_closure.py tests/trace/test_completeness.py tests/session_agent/test_finalize.py tests/session_agent/test_scan_l4_recovery.py`。
 
 ### T06｜主/子 transcript 精确绑定与工具回执（B，P0）
 
 **Files:** 修改 trace/transcripts、capsule、usage_harvest、web_budget/evidence_index、session_agent/hosts/base 与 evidence；新增 `tests/forensics/test_host_evidence.py`。
 
-- [x] begin 登记主 transcript；claim/submit 使用真实 call/segment refs，复用 snapshot cache，一份 raw 可多段引用但不能重复计 token。
-- [x] bind 验证 run/session/context/task/attempt/hash；用 §7.1 定义的精确证据证明独立 review，receipt 引用不存在则失败。
-- [x] 对主会话 WebSearch/WebFetch、子 agent 工具、未知工具和失败返回统一生成来源记录；保留真实内容范围。
+- [ ] begin 登记主 transcript；claim/submit 使用真实 call/segment refs，复用 snapshot cache，一份 raw 可多段引用但不能重复计 token。
+- [ ] bind 验证 run/session/context/task/attempt/hash；用 §7.1 定义的精确证据证明独立 review，receipt 引用不存在则失败。
+- [ ] 对主会话 WebSearch/WebFetch、子 agent 工具、未知工具和失败返回统一生成来源记录；保留真实内容范围。
 
 ```python
 def test_parent_search_is_in_the_same_evidence_closure(forensic_case):
@@ -598,17 +598,17 @@ def test_parent_search_is_in_the_same_evidence_closure(forensic_case):
     assert closure["main_transcript"]["status"] == "PRESENT"
 ```
 
-- [x] 合成两宿主格式测试：多 run 同会话、复用消息 ID、工具返回跨分页、session 压缩摘要、落盘晚于 submit、截断和无原文件。
-- [x] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_host_evidence.py tests/trace/test_transcript_adapters.py tests/trace/test_transcript_snapshot.py tests/trace/test_usage_reconcile.py tests/session_agent/test_independent_context.py`（最终全仓回归覆盖；真实 gitignored 现场缺席项保留具名 skip）。
+- [ ] 合成两宿主格式测试：多 run 同会话、复用消息 ID、工具返回跨分页、session 压缩摘要、落盘晚于 submit、截断和无原文件。
+- [ ] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_host_evidence.py tests/trace/test_transcript_adapters.py tests/trace/test_transcript_snapshot.py tests/trace/test_usage_reconcile.py tests/session_agent/test_independent_context.py`。
 
 ### T07｜全源返回、失败分支与消费引用（B，P1）
 
 **Files:** 修改 data/cache、dataflows/供应商实际返回边界、trace/source_lineage/blobs；新增 `autoresearch/common/execution_context.py`、`autoresearch/trace/source_receipts.py`、`tests/forensics/test_source_replay.py`。
 
-- [x] 实现统一 `record_response(context, outcome)` 和 `replay_response(receipt_id)`；context 含当前 task/attempt/provider/endpoint/params，outcome 经允许 codec 固化。
-- [x] 在 operation 启动时注入执行上下文/source hooks；供应商下层调用 Protocol，不反向 import trace。RunClock 采用同样注入路径，禁止通过全局 monkeypatch datetime 影响并发任务。
-- [x] DataFrame/JSON/text/bytes/失败响应分别编码；记录实际交给消费者的对象，所有 B 级 UNMEASURED 原因保留。
-- [x] 替换 replay 的 endpoint 最后值覆盖为 receipt+occurrence 消费；失败异常经固定工厂抛出，顺序/次数不符即 `SOURCE_SEQUENCE_MISMATCH`。
+- [ ] 实现统一 `record_response(context, outcome)` 和 `replay_response(receipt_id)`；context 含当前 task/attempt/provider/endpoint/params，outcome 经允许 codec 固化。
+- [ ] 在 operation 启动时注入执行上下文/source hooks；供应商下层调用 Protocol，不反向 import trace。RunClock 采用同样注入路径，禁止通过全局 monkeypatch datetime 影响并发任务。
+- [ ] DataFrame/JSON/text/bytes/失败响应分别编码；记录实际交给消费者的对象，所有 B 级 UNMEASURED 原因保留。
+- [ ] 替换 replay 的 endpoint 最后值覆盖为 receipt+occurrence 消费；失败异常经固定工厂抛出，顺序/次数不符即 `SOURCE_SEQUENCE_MISMATCH`。
 
 ```python
 def test_replay_preserves_failure_then_success(forensic_case):
@@ -619,16 +619,16 @@ def test_replay_preserves_failure_then_success(forensic_case):
     assert case.replay_source(ids[1]) == {"rows": 2}
 ```
 
-- [x] 已知失败有完整 error receipt 时不再报告“成功数据缺 blob”；成功 payload 丢失必须失败；trace recorder 自身异常留下 sticky evidence error，不能静默变成无读点。
-- [x] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_source_replay.py tests/trace/test_source_lineage.py tests/trace/test_blobs.py tests/data`；涉及供应商测试全用 fixture，不联网补数据。
+- [ ] 已知失败有完整 error receipt 时不再报告“成功数据缺 blob”；成功 payload 丢失必须失败；trace recorder 自身异常留下 sticky evidence error，不能静默变成无读点。
+- [ ] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_source_replay.py tests/trace/test_source_lineage.py tests/trace/test_blobs.py tests/data`；涉及供应商测试全用 fixture，不联网补数据。
 
 ### T08｜受控补算和重大断言来源连接（B，P1）
 
 **Files:** 新增 research/calculations.py；修改 common/uzi_lenses、session_agent/operations/domain_ops、news/证据连接边界；新增 `tests/forensics/test_calculation_evidence.py`。
 
-- [x] 实现 `calculate(calculator_id, inputs, parameters)`，只接受 §7.3 四种首批计算；登记 source code hash、input refs、数值口径、输出与 error。
-- [x] 各 task 可通过预登记的补算子模板使用 calculator；保持父 attempt 身份，不允许绕过图插入任意操作。
-- [x] 将 material claim 的 source/quote/calculation refs 保存为 sidecar；沿用已有真假与时点校验器。
+- [ ] 实现 `calculate(calculator_id, inputs, parameters)`，只接受 §7.3 四种首批计算；登记 source code hash、input refs、数值口径、输出与 error。
+- [ ] 各 task 可通过预登记的补算子模板使用 calculator；保持父 attempt 身份，不允许绕过图插入任意操作。
+- [ ] 将 material claim 的 source/quote/calculation refs 保存为 sidecar；沿用已有真假与时点校验器。
 
 ```python
 def test_period_ratio_has_replayable_inputs(forensic_case):
@@ -639,16 +639,16 @@ def test_period_ratio_has_replayable_inputs(forensic_case):
     assert case.replay_calculation(result)["values"] == result["values"]
 ```
 
-- [x] 测试累计/单季混装、币种、股数变化、AH 同时点、基率样本窗与 DCF 参数完整性；原研究口径不因接口调整而漂移。
-- [x] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_calculation_evidence.py tests/session_agent/test_operations.py tests/session_agent/test_news_evidence.py`。
+- [ ] 测试累计/单季混装、币种、股数变化、AH 同时点、基率样本窗与 DCF 参数完整性；原研究口径不因接口调整而漂移。
+- [ ] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_calculation_evidence.py tests/session_agent/test_operations.py tests/session_agent/test_news_evidence.py`。
 
 ### T09｜可执行源码和离线环境身份（B，P1）
 
 **Files:** 新增 trace/source_tree.py；修改 trace/identity、snapshot inventory；新增 `tests/forensics/test_runtime_identity.py`。
 
-- [x] 对允许源树打包实际 tracked/dirty/untracked 可执行内容及资源；沿用现有 secret 扫描/路径规则，拒绝逃逸 symlink、重复成员、特殊文件。
-- [x] `restore_source_tree(bundle, target)` 解包前校验成员和总量界限，解包后校验清单；不能到当前 Git checkout 偷读缺失文件。
-- [x] 实现 runtime manifest 与可用性检查；离线依赖不齐为 UNAVAILABLE。便携包经当前引擎授权路径导入并验证摘要，不自动安装网络依赖。
+- [ ] 对允许源树打包实际 tracked/dirty/untracked 可执行内容及资源；沿用现有 secret 扫描/路径规则，拒绝逃逸 symlink、重复成员、特殊文件。
+- [ ] `restore_source_tree(bundle, target)` 解包前校验成员和总量界限，解包后校验清单；不能到当前 Git checkout 偷读缺失文件。
+- [ ] 实现 runtime manifest 与可用性检查；离线依赖不齐为 UNAVAILABLE。便携包经当前引擎授权路径导入并验证摘要，不自动安装网络依赖。
 
 ```python
 def test_replay_does_not_depend_on_current_checkout(forensic_case):
@@ -660,15 +660,15 @@ def test_replay_does_not_depend_on_current_checkout(forensic_case):
     assert result["uses_current_checkout"] is False
 ```
 
-- [x] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_runtime_identity.py tests/trace/test_identity.py`，覆盖源码缺失、解包路径攻击、含凭据文件、平台不匹配。
+- [ ] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_runtime_identity.py tests/trace/test_identity.py`，覆盖源码缺失、解包路径攻击、含凭据文件、平台不匹配。
 
 ### T10｜五类统一发布事务与副作用恢复（B，P0/P1）
 
 **Files:** 新增 `autoresearch/trace/publication.py`、`autoresearch/common/published_state.py`、`autoresearch/common/commit_chain.py`；修改 capsule、session service/publication 和五个 workflow publisher、common/workspace、macro/state、dossier/pool、scan/post_run；新增 `tests/forensics/test_publication_transaction.py`。
 
-- [x] 五类 publisher 分解为 `prepare_bundle(handle)` 和状态计划；原 report/rating 内容生成复用不变。
-- [x] 按 §6 实现 seal/promote/apply/commit；提取 capsule 的准备与提交接缝，使原 finalize façade 可兼容旧调用。
-- [x] 不可变 canonical 目录用 run_id/publication_id；旧路径有明确 sidecar；所有内部状态 reader 核验 committed receipt。
+- [ ] 五类 publisher 分解为 `prepare_bundle(handle)` 和状态计划；原 report/rating 内容生成复用不变。
+- [ ] 按 §6 实现 seal/promote/apply/commit；提取 capsule 的准备与提交接缝，使原 finalize façade 可兼容旧调用。
+- [ ] 不可变 canonical 目录用 run_id/publication_id；旧路径有明确 sidecar；所有内部状态 reader 核验 committed receipt。
 
 ```python
 @pytest.mark.parametrize("phase", ["BUNDLE_SEALED", "PROMOTED", "VIEWS_APPLIED"])
@@ -681,16 +681,16 @@ def test_resume_never_reexecutes_research(forensic_case, phase):
     assert case.research_execution_count() == before
 ```
 
-- [x] 补并发两个同日 run、manifest 单文件写失败、pool 更新失败、macro 更晚版本、duplicate finish、已提交后更新、磁盘满的 fault injection。
-- [x] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_publication_transaction.py tests/trace/test_finalization.py tests/trace/test_recovery.py tests/session_agent/test_stock_full.py tests/session_agent/test_macro.py tests/session_agent/test_sector.py tests/session_agent/test_dossier_publish.py tests/session_agent/test_scan_publish.py`。
+- [ ] 补并发两个同日 run、manifest 单文件写失败、pool 更新失败、macro 更晚版本、duplicate finish、已提交后更新、磁盘满的 fault injection。
+- [ ] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_publication_transaction.py tests/trace/test_finalization.py tests/trace/test_recovery.py tests/session_agent/test_stock_full.py tests/session_agent/test_macro.py tests/session_agent/test_sector.py tests/session_agent/test_dossier_publish.py tests/session_agent/test_scan_publish.py`。
 
 ### T11｜重放核心：全分母、真正执行、只读原现场（工作包 C，P1）
 
 **Files:** 新增 trace/offline.py、session_agent/replay_registry.py；修改 trace/replay、session_agent/operations；新增 `tests/forensics/test_replay_core.py`、`test_replay_isolation.py`。
 
-- [x] `build_replay_plan(handle)` 以 EvidencePlan 为分母，每个 operation 必须分类；固定 scope，未知项报缺，不跳过。
-- [x] `execute_replay(plan, frozen_root, output_dir, runner)` 为纯执行/结果生成接口，不写 frozen_root；旧 replay façade 的写结果行为仅允许未冻结 staging，否则要求外部 output_dir。
-- [x] runner 使用捕获源码、参数和 codec；expected 只给比较器；LLM output 只读回注。
+- [ ] `build_replay_plan(handle)` 以 EvidencePlan 为分母，每个 operation 必须分类；固定 scope，未知项报缺，不跳过。
+- [ ] `execute_replay(plan, frozen_root, output_dir, runner)` 为纯执行/结果生成接口，不写 frozen_root；旧 replay façade 的写结果行为仅允许未冻结 staging，否则要求外部 output_dir。
+- [ ] runner 使用捕获源码、参数和 codec；expected 只给比较器；LLM output 只读回注。
 
 ```python
 def test_noop_runner_cannot_pass(forensic_case):
@@ -706,16 +706,16 @@ def test_unexecuted_required_unit_prevents_full(forensic_case):
     assert result["compute_status"] != "FULL"
 ```
 
-- [x] 严格隔离测试实际尝试网络、原 lake 读取、原状态写入和 expected 读取，均应由执行环境拒绝；无该环境的本地测试显式 skip 并标验收 INCOMPLETE。
-- [x] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_replay_core.py tests/forensics/test_replay_isolation.py tests/trace/test_replay.py`。
+- [ ] 严格隔离测试实际尝试网络、原 lake 读取、原状态写入和 expected 读取，均应由执行环境拒绝；无该环境的本地测试显式 skip 并标验收 INCOMPLETE。
+- [ ] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_replay_core.py tests/forensics/test_replay_isolation.py tests/trace/test_replay.py`。
 
 ### T12｜单股与宏观 FULL/LITE 重放（C，P1）
 
 **Files:** 新增 replay_adapters/stock.py、macro.py；修改对应 harvest/assemble/state/run_profile 与 domain_ops；新增 `tests/forensics/test_stock_macro_replay.py`。
 
-- [x] 将 harvest 中“取供应商返回”和“处理返回生成 context”拆成可注入接缝；默认 live 行为与现有数据源一致，offline 只接受 SourceReceipt。
-- [x] renderer 接受固定 clock、输入目录和输出目录；不得隐式读取真实 context/reports、实际 `datetime.now()` 或写 latest。
-- [x] 注册 §8.4 所列 stock/macro operation；更新 profile 以真实 ReplayPlan 投影能力，不能只把空 tuple 改成阶段名。
+- [ ] 将 harvest 中“取供应商返回”和“处理返回生成 context”拆成可注入接缝；默认 live 行为与现有数据源一致，offline 只接受 SourceReceipt。
+- [ ] renderer 接受固定 clock、输入目录和输出目录；不得隐式读取真实 context/reports、实际 `datetime.now()` 或写 latest。
+- [ ] 注册 §8.4 所列 stock/macro operation；更新 profile 以真实 ReplayPlan 投影能力，不能只把空 tuple 改成阶段名。
 
 ```python
 @pytest.mark.parametrize("kind,mode", [
@@ -731,15 +731,15 @@ def test_real_domain_replay_matches(forensic_case_factory, kind, mode):
     assert result["diffs"] == []
 ```
 
-- [x] stock 再覆盖 A股/美股/其他已支持市场/crypto、有无 peers、早停/满卡；macro 覆盖状态 freshness 和同日新旧版本。
-- [x] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_stock_macro_replay.py tests/analyze tests/macro tests/session_agent/test_stock_lite_context.py tests/session_agent/test_macro_lite.py`。
+- [ ] stock 再覆盖 A股/美股/其他已支持市场/crypto、有无 peers、早停/满卡；macro 覆盖状态 freshness 和同日新旧版本。
+- [ ] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_stock_macro_replay.py tests/analyze tests/macro tests/session_agent/test_stock_lite_context.py tests/session_agent/test_macro_lite.py`。
 
 ### T13｜行业与档案重放（C，P1）
 
 **Files:** 新增 replay_adapters/sector.py、dossier.py；修改 sector pack/reuse/brief、dossier builder/prefetch/pool/run_profile；新增 `tests/forensics/test_sector_dossier_replay.py`。
 
-- [x] pack/reuse 的历史 scan 和 brief 来源转换为登记 artifact；不从今天目录找同名文件。
-- [x] 档案 skeleton、LLM 允许节、确定性节、opening target/pool 全部冻结；pool 更新生成逻辑 patch，原并发保护不变。
+- [ ] pack/reuse 的历史 scan 和 brief 来源转换为登记 artifact；不从今天目录找同名文件。
+- [ ] 档案 skeleton、LLM 允许节、确定性节、opening target/pool 全部冻结；pool 更新生成逻辑 patch，原并发保护不变。
 
 ```python
 def test_dossier_replay_does_not_update_live_pool(forensic_case_factory):
@@ -752,16 +752,16 @@ def test_dossier_replay_does_not_update_live_pool(forensic_case_factory):
     assert case.snapshot_persistent_tree() == before
 ```
 
-- [x] 行业 FULL/LITE 与 reuse 命中/失效均覆盖；确定性档案节被 LLM 修改仍按原 lint 失败；新版本档案不能被旧 replay 写回。
-- [x] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_sector_dossier_replay.py tests/sector tests/dossier tests/session_agent/test_sector_prerequisites.py tests/session_agent/test_dossier_publish.py`。
+- [ ] 行业 FULL/LITE 与 reuse 命中/失效均覆盖；确定性档案节被 LLM 修改仍按原 lint 失败；新版本档案不能被旧 replay 写回。
+- [ ] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_sector_dossier_replay.py tests/sector tests/dossier tests/session_agent/test_sector_prerequisites.py tests/session_agent/test_dossier_publish.py`。
 
 ### T14｜扫描四模式与全部动态分支（C，P1）
 
 **Files:** 新增 replay_adapters/scan.py；修改 scan prelude/assemble/post_run/run_profile 及 session workflow scan/replay registry；新增 `tests/forensics/test_scan_replay_matrix.py`。
 
-- [x] 对 operation_catalog 的 scan 项逐一分类；为 prelude 子步骤冻结源与状态；禁止把整段“有网络”标 EVIDENCE_ONLY 避开重放。
-- [x] 以父票 attempt 构建 scratch taskbook；重算 GATE1/run_mode、GATE2/GATE4、自检、复核选择和候选排序；LLM judged/cards/reviews 回注。
-- [x] a1/a2、局部修复成功/失败、第二轮同档止/第三轮、三种 skip 与保送票路径逐一校验分母。
+- [ ] 对 operation_catalog 的 scan 项逐一分类；为 prelude 子步骤冻结源与状态；禁止把整段“有网络”标 EVIDENCE_ONLY 避开重放。
+- [ ] 以父票 attempt 构建 scratch taskbook；重算 GATE1/run_mode、GATE2/GATE4、自检、复核选择和候选排序；LLM judged/cards/reviews 回注。
+- [ ] a1/a2、局部修复成功/失败、第二轮同档止/第三轮、三种 skip 与保送票路径逐一校验分母。
 
 ```python
 @pytest.mark.parametrize("mode", [
@@ -775,16 +775,16 @@ def test_scan_mode_has_complete_replay_denominator(scan_forensic_case, mode):
     assert result["run_mode"] == mode
 ```
 
-- [x] 测试 L1/L2 真实生产命令仅一次、0 BUY 合法成功、sector_healthy_top3 不进入 L3/L4 输入、收益主尺与交易日历不变。
-- [x] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_scan_replay_matrix.py tests/trace/test_replay.py tests/session_agent/test_scan_modes.py tests/session_agent/test_scan_l3.py tests/session_agent/test_scan_l4_recovery.py tests/session_agent/test_scan_l4_review.py tests/scan`（2026-09-14：2655 passed，4 个真实现场缺失 skip，2 个既有 pandas FutureWarning）。
+- [ ] 测试 L1/L2 真实生产命令仅一次、0 BUY 合法成功、sector_healthy_top3 不进入 L3/L4 输入、收益主尺与交易日历不变。
+- [ ] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_scan_replay_matrix.py tests/trace/test_replay.py tests/session_agent/test_scan_modes.py tests/session_agent/test_scan_l3.py tests/session_agent/test_scan_l4_recovery.py tests/session_agent/test_scan_l4_review.py tests/scan`。
 
 ### T15｜配套确定性服务的证据与副作用清单（C，P1）
 
 **Files:** 新增 trace/operation_evidence.py；接入 scan/prewarm、dossier/reconcile、broker/ingest/reconcile、被报告消费的 research 工具；新增 `tests/forensics/test_service_evidence.py`。
 
-- [x] 定义 `OperationEvidence` sidecar：`schema_version, operation_id, engine, operation, input_refs, code_hash, parameters, output_refs, effects, status, error`；由 contracts/forensic.py 验证。
-- [x] 工具独立运行仍不伪装成 session run；研究消费其产物时引用 operation_id、产物 hash 和原 evidence root。
-- [x] 实现 prewarm 的虚拟 lake 写入计划、reconcile 的虚拟 dossier patch、broker 的虚拟规范化/对账表、research 的候选评估输出；不改策略或赋予下单能力。
+- [ ] 定义 `OperationEvidence` sidecar：`schema_version, operation_id, engine, operation, input_refs, code_hash, parameters, output_refs, effects, status, error`；由 contracts/forensic.py 验证。
+- [ ] 工具独立运行仍不伪装成 session run；研究消费其产物时引用 operation_id、产物 hash 和原 evidence root。
+- [ ] 实现 prewarm 的虚拟 lake 写入计划、reconcile 的虚拟 dossier patch、broker 的虚拟规范化/对账表、research 的候选评估输出；不改策略或赋予下单能力。
 
 ```python
 @pytest.mark.parametrize("operation", [
@@ -798,16 +798,16 @@ def test_service_replay_only_produces_scratch_effects(service_case, operation):
     assert case.snapshot_persistent_tree() == before
 ```
 
-- [x] ops 删除/迁移/真实交易不存在 replay handler；未登记副作用被执行环境拒绝，不得使用 `--force` 让验收变绿。
-- [x] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_service_evidence.py tests/broker tests/dossier tests/research`（2026-09-14：794 passed）。
+- [ ] ops 删除/迁移/真实交易不存在 replay handler；未登记副作用被执行环境拒绝，不得使用 `--force` 让验收变绿。
+- [ ] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_service_evidence.py tests/broker tests/dossier tests/research`。
 
 ### T16｜按报告核验与历史修订（C，P0/P1）
 
 **Files:** 新增 trace/verification.py；修改 capsule verify/replay façade、session_agent CLI；扩展既有 repair 与场景重建读者；新增 `tests/forensics/test_report_verification.py`、`test_historical_repair.py`。
 
-- [x] 实现 `verify_report(path, expected_run_id=None, level='full')`，engine 从当前进程固定，artifact 从 path 自带身份和 manifest 解引用；冲突时不猜测。
-- [x] integrity/full 两层均只读；full 重新计算证据闭包，不只返回旧 completeness.json；stored 与 recomputed 差异分别展示。
-- [x] report_path 找不到对应 bundle hash 返回 `UNBOUND_REPORT`，同 run_id 的未封存新版本也必须如此。
+- [ ] 实现 `verify_report(path, expected_run_id=None, level='full')`，engine 从当前进程固定，artifact 从 path 自带身份和 manifest 解引用；冲突时不猜测。
+- [ ] integrity/full 两层均只读；full 重新计算证据闭包，不只返回旧 completeness.json；stored 与 recomputed 差异分别展示。
+- [ ] report_path 找不到对应 bundle hash 返回 `UNBOUND_REPORT`，同 run_id 的未封存新版本也必须如此。
 
 ```python
 def test_report_path_cannot_borrow_old_run_verification(forensic_case):
@@ -819,16 +819,16 @@ def test_report_path_cannot_borrow_old_run_verification(forensic_case):
     assert "UNBOUND_REPORT" in result["missing"]
 ```
 
-- [x] `create_unbound_revision_for_audit` 仅在 tmp 人工构造事故文件，不调用生产 guard 绕行。历史补录按 §14 加新修订，不更改旧 ROOT。
-- [x] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_report_verification.py tests/forensics/test_historical_repair.py tests/trace/test_repairs.py tests/session_agent/test_legacy_compatibility.py`（2026-09-14：22 passed；另跑契约/分层守卫 244 passed）。
+- [ ] `create_unbound_revision_for_audit` 仅在 tmp 人工构造事故文件，不调用生产 guard 绕行。历史补录按 §14 加新修订，不更改旧 ROOT。
+- [ ] 运行 `uv run --no-sync python -m pytest -q tests/forensics/test_report_verification.py tests/forensics/test_historical_repair.py tests/trace/test_repairs.py tests/session_agent/test_legacy_compatibility.py`。
 
 ### T17｜双宿主真实验收、文档与默认切换（C，P1）
 
 **Files:** 修改四个 skill、档案 agent 入口、AGENTS/CLAUDE 与 §10 的 session 文档；扩展 evaluation/acceptance；新增 `tests/forensics/test_acceptance_claims.py`。
 
-- [x] 先跑全部离线与故障矩阵，保存代码 hash、测试摘要、隔离环境证明；合成结果保持 SYNTHETIC（见 `docs/session-agent/synthetic-acceptance-2026-09-14.md`；1477 passed，7 skipped，4 subtests passed）。
+- [ ] 先跑全部离线与故障矩阵，保存代码 hash、测试摘要、隔离环境证明；合成结果保持 SYNTHETIC。
 - [ ] 两宿主各自在本引擎目录完成 §13 的真实矩阵，记录 request/plan/receipt/transcript/root/replay 证明。
-- [x] `accept_workflow(records)` 仅在精确所需场景有 REAL_SESSION 证据且引用可校验时返回 ENABLED；字符串 PASS 和任意 run_id 不足以放行。
+- [ ] `accept_workflow(records)` 仅在精确所需场景有 REAL_SESSION 证据且引用可校验时返回 ENABLED；字符串 PASS 和任意 run_id 不足以放行。
 
 ```python
 def test_synthetic_pass_cannot_enable_default(acceptance_case):
@@ -838,9 +838,9 @@ def test_synthetic_pass_cannot_enable_default(acceptance_case):
     assert result["missing_real_sessions"]
 ```
 
-- [x] 一次性同步入口状态、legacy 回退文档、命令样例及交付状态说明；因真实 proof 未齐，五类默认保持 legacy、session_v1 保持 PILOT。skill 仍保持软链，不复制到另一技能树。
-- [x] 运行 `uv run --no-sync python -m pytest -q` 与 `uv run --no-sync ruff check autoresearch/contracts autoresearch/session_agent autoresearch/trace tests/forensics`（2026-09-14：6557 passed，12 skipped，5 warnings，4 subtests passed；Ruff/compileall 通过；skip 原因见合成验收记录）。
-- [x] 最终汇报按验收矩阵逐项声明；不预填固定测试数量，不把软件测试通过解释成真实宿主执行通过。
+- [ ] 完成后一次性同步入口默认、legacy 回退文档、命令样例及交付状态说明。skill 仍保持软链，不复制到另一技能树。
+- [ ] 运行 `uv run --no-sync python -m pytest -q` 与 `uv run --no-sync ruff check autoresearch/contracts autoresearch/session_agent autoresearch/trace tests/forensics`；预期无新增失败，skip 给出具体理由。
+- [ ] 最终汇报按验收矩阵逐项声明；不预填固定测试数量，不把软件测试通过解释成真实宿主执行通过。
 
 ### 11.1 依赖与可独立交付
 
@@ -967,12 +967,12 @@ fixture/单测阶段禁止真实 API 调用；真实验证单独执行并留可�
 最终完成条件逐项勾选：
 
 - [ ] A：五类入口的真实执行来源可核验，启用范围内默认 session_v1，显式 legacy 可识别。
-- [x] B：终态后不能再写关联业务产物，最终报告路径/字节与封存和发布回执一致。
-- [x] C：主/子 transcript、工具返回、分段、源成功/失败、补算、代码/环境进入明确证据闭包。
-- [x] D：完整性重算包含来源与任务分母，不因文件存在、usage 存在或某一阶段通过而错误放行。
-- [x] E：五类所有支持模式及配套服务的确定性部分真实离线执行，未知/失败单元不会被漏算。
-- [x] F：重放不联网、不读原现场/真实 lake、不写原状态，原 LLM 输出明确标 EVIDENCE_ONLY。
-- [x] G：恢复不重复研究、不倒灌最新状态、不覆盖并发档案或 pool，旧 capsule 始终只读。
+- [ ] B：终态后不能再写关联业务产物，最终报告路径/字节与封存和发布回执一致。
+- [ ] C：主/子 transcript、工具返回、分段、源成功/失败、补算、代码/环境进入明确证据闭包。
+- [ ] D：完整性重算包含来源与任务分母，不因文件存在、usage 存在或某一阶段通过而错误放行。
+- [ ] E：五类所有支持模式及配套服务的确定性部分真实离线执行，未知/失败单元不会被漏算。
+- [ ] F：重放不联网、不读原现场/真实 lake、不写原状态，原 LLM 输出明确标 EVIDENCE_ONLY。
+- [ ] G：恢复不重复研究、不倒灌最新状态、不覆盖并发档案或 pool，旧 capsule 始终只读。
 - [ ] H：两宿主真实矩阵、合成测试、业务质量结论各自独立；默认切换只覆盖有证据的能力范围。
 
 ## 16. 当前代码证据索引

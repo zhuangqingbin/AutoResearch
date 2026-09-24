@@ -1,6 +1,11 @@
 # AGENTS.md — 给 Codex 等非 Claude agent 的项目操作手册
 
-本仓的完整操作手册在 `CLAUDE.md`(先读它)+ `.claude/skills/*/SKILL.md`(六个项目技能,每个是一份可执行的流程说明书)。本文件只做两件事:告诉你技能在哪、以及非 Claude harness 下怎么适配。
+本仓的完整操作手册在 `CLAUDE.md`(主会话先读它)+ `.claude/skills/*/SKILL.md`(六个项目技能,每个是一份可执行的流程说明书)。本文件只做两件事:告诉你技能在哪、以及非 Claude harness 下怎么适配。**研究子 agent 不适用这句**,见下一节。
+
+## 研究子 agent 的输入边界(2026-09-15)
+
+`.codex/agents/` 里的研究角色(L4 card、L3 rank、L3 repair、L4 intel、ensemble review、sector brief、scan strategist、dossier init)**不读 CLAUDE.md 和技能说明书**:契约只看角色说明点名的 `.claude/agents/<role>.md` 与派发的任务包。它们也不读项目源码、测试、脚本、workflow、docs、lake、Claude 引擎目录和其它 run 的产物——解析、lint、对账在产物交付后由确定性层执行。`.codex/hooks.json` 的 PreToolUse hook(`scripts/hooks/agent_input_boundary.sh codex`)会直接拒绝越界的 shell 读;主会话与确定性命令壳不受影响。hook 首次出现或改动后,Codex 启动时会要求审查,**批准一次**才会生效。
+
 
 ## 统一 Session Agent 入口
 

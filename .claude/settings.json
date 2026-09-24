@@ -1,5 +1,16 @@
 {
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Grep|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$CLAUDE_PROJECT_DIR/scripts/hooks/agent_input_boundary.sh\" claude"
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "WebFetch|WebSearch",

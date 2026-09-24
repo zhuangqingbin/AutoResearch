@@ -107,6 +107,7 @@ run 前返回 `HOST_CAPABILITY_REQUIRED`。`session_agent --orchestration legacy
 > **CP7 播报 = 读 brief 原文,不复述**:`brief.md` 是确定性模板产物(零 LLM,六节 ≤3,000B,同 run 重放 byte 稳定)——主会话再总结一遍只会新增编数面,还要多一次对账。原文贴出 + 附 `$RPT/scan/<run_id>/` 路径即可;要展开某一节再读 `summary.md`(详细版)。brief 缺席 = `self_review` 的 `brief·缺失` **warn**(GATE4 照过,但 warn 进 `gate_fires.csv` 且照样播),如实播报,**不要拿 summary 顶替**。
 > **CP7 计量**:命令见步骤 5(含 `usage_reconcile`)。覆盖主会话+subagent,成本按公开计价倍率加权;缺 JSON 写 `UNMEASURED`,**不能写 `$0`**。
 > **唤醒纪律**(cache 读按全上下文计费,主会话曾独占近半全场成本):派发一次性全派、收通知只领不播,不出分析文字;CP2/CP3 合并播报,CP0/CP1/CP4/CP6/CP7 照常播。
+> **会话纪律**(2026-09-15 实况:同一会话里 run 失败 → 现场改代码 → 重跑,主会话上下文 61k→494k、cache 读 48.9M,正常 run 约 8M,凌晨撞 5 小时 session limit):**扫描只在干净的新会话里开**,开发或调试过的会话不开扫;run 失败需要改代码时,先冻结 FAILED 并结束本会话,在另一个会话里修,**重跑再开新会话**。改过 hook、agent 定义或 settings 要整个退出 Claude Code 再启动,`/clear` 不会重载它们。Codex 同理:改过 `.codex/agents` 或 `.codex/hooks.json` 要重开 Codex,新 hook 要在启动审查里批准一次才生效。
 
 0. **开场:先领 run_id,再取任何一个数**(2026-08-28 法证 capsule):
    ```bash
