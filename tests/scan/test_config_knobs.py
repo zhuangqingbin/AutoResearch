@@ -248,3 +248,16 @@ def test_preference_weights_must_be_exactly_the_ten_groups(tmp_path, pw):
     p.write_text(json.dumps({"funnel": {"preference_weights": pw}}), encoding="utf-8")
     with pytest.raises(ValueError, match="preference_weights"):
         load_user_config(p)
+
+
+# ───────────────────────── 活体验收:生产 l2 floors / knife_cap(2026-09-24 §2.2) ─────────────────────────
+
+
+def test_production_config_l2_shape_knobs():
+    """生产配置(2026-09-24 §2.2):健康 25 / 反转 6 / 低位转强 6,落刀帽开。"""
+    from pathlib import Path
+    cfg = load_user_config(Path(".claude/skills/scan-market/scan_config.jsonc"))
+    l2 = cfg["l2"]
+    assert l2["knife_cap"] is True
+    assert l2["floors"]["健康"] == 25 and l2["floors"]["反转"] == 6 and l2["floors"]["低位转强"] == 6
+    assert sum(l2["floors"].values()) == 103

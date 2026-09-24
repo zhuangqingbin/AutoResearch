@@ -163,10 +163,19 @@
   },
 
   // ── L2 · 粗排(确定性分层采样,不预测)────────────────────────────────────
-  // 【生效点】universe.run → recall/l2_stratify.select_l2。风格桶 floors 明细(趋势20/健康15/…)
-  //   =行为归属,留在 l2_stratify.DEFAULT_FLOORS,想调先立实验;此处只放行业集中度帽。
+  // 【生效点】universe.run → recall/l2_stratify.select_l2。风格桶 floors 内建默认(趋势20/健康15/…)
+  //   =行为归属,留在 l2_stratify.DEFAULT_FLOORS,想再调先立实验;此处另放行业集中度帽 + 落刀帽/floor 生产覆盖(§2.2,见下)。
   "l2": {
-    "sector_cap": 0.20         // 任一申万一级 ≤ 20%(=40/200);≥1.0=关
+    "sector_cap": 0.20,        // 任一申万一级 ≤ 20%(=40/200);≥1.0=关
+    // ── 落刀帽 + floor(2026-09-24 可买性对齐 §2.2)──
+    // 【生效点】universe.run(knob l2.knife_cap → L0 落刀占比 → select_l2 knife_cap_share)+
+    //   recall/l2_stratify.stratified_l2(merit/回填/非豁免桶各按份额设配额;反转/低位转强豁免)。
+    // ⚖️ 证据:09-01→09-17 七场 L2 落刀 27–56% vs L0 15–27%(恒 ≈2×);floor 桶落刀率
+    //   健康 0 / 成长 33 / 趋势 44 / 低位转强 54 / 反转 67(%)。健康桶供给 L1 8–11% ≈ 80–115 行,floor 25 够。
+    // 回滚杆 = "knife_cap": false + 删掉 "floors"(回 DEFAULT_FLOORS 101)。
+    "knife_cap": true,
+    "floors": { "趋势": 20, "健康": 25, "反转": 6, "价值": 12, "成长": 12, "吸筹": 12,
+                "主力": 10, "低位转强": 6, "事件": 0 }
   },
 
   // ── 旁路 · 行业 brief(L2 后并发)──────────────────────────────────────────
