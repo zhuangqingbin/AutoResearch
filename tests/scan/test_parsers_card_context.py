@@ -352,3 +352,43 @@ def test_decision_text_alias_is_read_card_text():
     from autoresearch.scan.l4 import parsers
 
     assert parsers._decision_text is parsers.read_card_text
+
+
+# ── Task 17:机读入场行(2026-09-24 §2.5)优先于散文推断,entry_source 全路径填充 ─────
+
+
+@pytest.mark.parametrize(("line", "stance"), [
+    ("**入场**: 允许", "ALLOWED"),
+    ("**入场**: 禁止", "PROHIBITED"),
+    ("**入场**: 条件(收复 10EMA 才考虑)", "CONDITIONAL"),
+    ("**入场**：允许", "ALLOWED"),
+])
+def test_entry_line_wins_over_prose(line, stance):
+    """机读入场行(2026-09-24 §2.5)优先于仓位/触发位散文推断;仓位写 0% 也不能压过它。"""
+    text = "\n".join([
+        "# 决策卡 — 600018 上港集团 @ 2026-09-17",
+        "| 评级 | 现价 | 仓位 | 触发位 |",
+        "|---|---|---|---|",
+        "| Hold | 5.43 | 0% | 不建仓 |",
+        line,
+        "FINAL TRANSACTION PROPOSAL: **HOLD**",
+    ])
+    got = parse_card_context(text)
+    assert got["entry_stance"] == stance and got["entry_source"] == "line"
+
+
+def test_without_entry_line_prose_inference_is_kept_and_labelled():
+    text = "\n".join([
+        "# 决策卡", "| 评级 | 现价 | 仓位 |", "|---|---|---|", "| Hold | 10 | 不新开仓 |",
+        "FINAL TRANSACTION PROPOSAL: **HOLD**",
+    ])
+    got = parse_card_context(text)
+    assert got["entry_stance"] == "PROHIBITED" and got["entry_source"] == "prose"
+
+
+def test_l4_card_contract_has_entry_field():
+    from autoresearch.contracts.agent_output import L4_CARD
+    import re
+    f = L4_CARD.field("entry")
+    assert f.required is False
+    assert re.search(f.pattern, "**入场**: 条件(x)").group(1) == "条件"

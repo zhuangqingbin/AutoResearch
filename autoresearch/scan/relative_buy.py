@@ -276,7 +276,8 @@ FIELD_USAGE = {
         "fields": ["card_context.ev_target", "card_context.rr", "card_context.position_raw",
                    "card_context.trigger_raw", "card_context.exec_lines",
                    "card_context.entry_stance", "card_context.no_new_position",
-                   "card_context.proposal", "card_context.card_kind"],
+                   "card_context.proposal", "card_context.card_kind",
+                   "card_context.entry_source"],
         "role": "仅供人读与 conflicts 展示;不参与 eligible/hard_gate/排序/BUY 选择(本任务硬约束)",
     },
     "research_rating": {

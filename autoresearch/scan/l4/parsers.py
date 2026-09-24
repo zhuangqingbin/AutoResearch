@@ -419,6 +419,8 @@ _STANCE_ZERO_RE = re.compile(r"^0(?:\.0+)?\s*%")
 _STANCE_PROHIBIT_WORDS = ("不建仓", "不新开仓", "不新建仓")
 _STANCE_CONDITIONAL_WORDS = ("待突破确认", "满足条件才考虑", "不追高")
 _STANCE_ALLOW_RE = re.compile(r"(?<![不无未非禁勿])(?:明确)?(?:允许|建议|可以?)新(?:开仓|建仓)")
+_ENTRY_LINE_RE = re.compile(r"\*\*入场\*\*[:：]\s*(允许|禁止|条件)")
+_ENTRY_LINE_STANCE = {"允许": "ALLOWED", "禁止": "PROHIBITED", "条件": "CONDITIONAL"}
 
 #: `[执行线]` 两个已知字段名(与 `contracts.agent_output.L4_CARD` 的
 #: `exec_line_pct`/`exec_line_pos` 同源)。本模块**不 import**
@@ -529,7 +531,7 @@ def _empty_card_context(card_kind: str, parse_errors: list[str],
     return {
         "card_kind": card_kind, "proposal": None, "ev_target": None, "rr": None,
         "position_raw": None, "trigger_raw": None,
-        "entry_stance": "UNKNOWN", "no_new_position": None,
+        "entry_stance": "UNKNOWN", "entry_source": None, "no_new_position": None,
         "exec_lines": _empty_exec_lines(contract),
         "parse_status": "ERROR", "parse_errors": parse_errors,
     }
@@ -565,7 +567,12 @@ def _parse_card_context_impl(text: str | None, contract: dict | None) -> dict:
     position_raw = _get(dash, "仓位") or None
     trigger_raw = _get(dash, "触发位") or None
 
-    stance, conflict = _entry_stance(position_raw, trigger_raw)
+    line_m = _ENTRY_LINE_RE.search(body)
+    if line_m:                                   # 机读入场行优先(2026-09-24 §2.5)
+        stance, conflict, entry_source = _ENTRY_LINE_STANCE[line_m.group(1)], False, "line"
+    else:
+        stance, conflict = _entry_stance(position_raw, trigger_raw)
+        entry_source = "prose"
     if conflict:
         parse_errors.append(
             "entry_stance: 否定/零仓位证据与允许新开仓证据同时出现,保守记 PROHIBITED")
@@ -574,7 +581,7 @@ def _parse_card_context_impl(text: str | None, contract: dict | None) -> dict:
         "card_kind": card_kind,
         "proposal": proposal, "ev_target": ev_target, "rr": rr,
         "position_raw": position_raw, "trigger_raw": trigger_raw,
-        "entry_stance": stance, "no_new_position": _no_new_position(stance),
+        "entry_stance": stance, "entry_source": entry_source, "no_new_position": _no_new_position(stance),
         "exec_lines": _parse_exec_lines(body, contract, parse_errors),
         "parse_status": "PARTIAL" if parse_errors else "OK",
         "parse_errors": parse_errors,
