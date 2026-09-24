@@ -43,6 +43,7 @@ from autoresearch.common.ruler import MAIN_RULER
 from autoresearch.scan.decision_finalize import (
     _PROPOSAL_BY_RATING,
     _VERDICT_BADGE,
+    BLIND_CARD_TARGET,
     TIER_RANK,
     _apply_ensemble_fold,
     _apply_verify_downgrade,
@@ -750,7 +751,7 @@ def _review_ctx(scan_dir: Path, rows: list[dict], regime_drift: str = "") -> dic
                        "main_net_ratio": lf.get("main_net_ratio"),
                        "rubric_suggest": r.get("rubric_suggest"), "rubric_dev": r.get("rubric_dev")})
     n_present = sum(1 for r in rows
-                    if r.get("target") not in ("⚠️卡片缺失", "⚠️数据不完整,未评级"))
+                    if r.get("target") not in ("⚠️卡片缺失", BLIND_CARD_TARGET))
     # E3b(task-2.4)· `flow.buys_n` 的口径:
     # shadow 期 = ≥OW 张数(现行为,逐字不变);active 期这个数**不再是买单数** ——
     # 买单只存在于 `_relative_buy_decision.json`,而本函数跑在 `build_summary` 内部,比

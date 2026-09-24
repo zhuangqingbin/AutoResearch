@@ -43,3 +43,24 @@ def test_no_task_book_means_no_blind_verdict(tmp_path):
     rows = [{"code": "600150", "rating": "Hold", "proposal": "HOLD", "target": "—"}]
     assert mark_blind_cards(scan, rows) == {}
     assert rows[0]["rating"] == "Hold" and not (scan / BLIND_CARDS_FILENAME).exists()
+
+
+def test_blind_card_produces_no_dissent_record_or_line(tmp_path):
+    """fix round 1:盲卡撞上 ensemble 分歧(spread≥2)也不许生出 DissentRecord 或 🎭 行——
+    `build_dissent_records` / `_ensemble_dissent_lines` 是 mark_blind_cards 之外第三处
+    必须挡盲卡的产物(dissent_records.json + summary 行动节),此前没挡。"""
+    from autoresearch.scan.decision_finalize import (
+        _ensemble_dissent_lines, _load_ensemble, build_dissent_records,
+    )
+    scan = _scan(tmp_path)
+    (scan / "_ensemble_600150.json").write_text(json.dumps(
+        {"code": "600150", "ratings": ["Buy", "Hold", "Sell"], "median": "Hold", "spread": 2}
+    ), encoding="utf-8")
+    rows = [{"code": "600150", "rating": "Hold", "proposal": "HOLD", "target": "—"},
+            {"code": "600018", "rating": "Hold", "proposal": "HOLD", "target": "—"}]
+    mark_blind_cards(scan, rows)
+    assert rows[0]["blind_card"] is True
+    emap = _load_ensemble(scan)
+    assert emap["600150"]["spread"] == 2   # sanity:分歧真的在,不是空跑
+    assert build_dissent_records(rows, emap) == []
+    assert _ensemble_dissent_lines(emap, rows) == []

@@ -192,6 +192,8 @@ def build_dissent_records(
     """折回循环跑完后的 `rows` × ensemble → 分歧事实。`rows` 必须已含终评级。"""
     out: list[DissentRecord] = []
     for row in sorted(rows, key=lambda r: str(r.get("code", ""))):
+        if row.get("blind_card"):
+            continue                      # 盲卡不进分歧记录(2026-09-24 §2.6-5)
         code = str(row.get("code", "") or "").zfill(6)
         rec = emap.get(code)
         if not rec:
@@ -266,6 +268,7 @@ def _ensemble_dissent_lines(emap: dict[str, dict],
     return lines
 
 BLIND_CARDS_FILENAME = "_blind_cards.json"
+BLIND_CARD_TARGET = "⚠️数据不完整,未评级"
 
 
 def _task_book_index(scan_dir: Path) -> dict[str, dict]:
@@ -303,7 +306,7 @@ def mark_blind_cards(scan_dir: Path, rows: list[dict]) -> dict[str, dict]:
             continue
         r["blind_card"] = True
         r["rating"], r["proposal"] = "—", "—"
-        r["target"] = "⚠️数据不完整,未评级"
+        r["target"] = BLIND_CARD_TARGET
         blind[code] = {"task_status": status, "slim_status": slim, "reason": "DATA_INTEGRITY"}
     if blind:
         with contextlib.suppress(Exception):
