@@ -68,6 +68,8 @@ L0 选集  →  L1 召回  →  L2 粗排  →  L3 精排(两遍法)      →  L
 
 **regime-aware(默认开,`funnel.regime_aware`)**:按当日 regime 取 `weights.json` 的 `regimes[trend|range|risk_off]` 权重块,缺块回退 flat。regime 判定(`common/regime.py`):breadth≥0.55 且 pct_60d>0 → trend;breadth≤0.30 且 pct_60d<0 → risk_off;其余 range。当前面板(107 成型日):trend 43 / range 53 / risk_off 11;momentum IC 在 trend −0.055、range +0.015。
 
+**召回权重档(2026-09-24 §2.1)**:上面这段 regime-aware 描述的是 `funnel.weight_profile="calibrated"` 档(读 `weights.json` 的 IC 校准权重)。**生产现档 = `"preference"`**——`weights.json` range 块符号全负(momentum/tech/volprice/fund_main 皆负),composite 因此曾是「超卖分」(09-17 L1 池 spearman 对 pct_20d −0.80),落刀逐级叠加 L0 23%→L2 40%;偏好档改用固定符号「上涨趋势+有支撑+主力真在+散户不拥挤」,量级是产品裁定不是拟合,**无自动重标定**(`weights.json` 自此仅供研究,不再是生产输入)。唯一入口 `common.scoring.resolve_weights`(`universe.run` 与 L1Recall stage 共用),`preference` 档下 `regime_aware` 无操作(meta 记 `regime_applied=None`);`weights_used.json`/`meta.json.weights_source` 记 profile 名 + `config_sha256`。回滚杆 = `funnel.weight_profile: "calibrated"`(一行;`preference_weights` 留着无害)。
+
 **已知局限**:
 
 - risk_off 样本薄(11 日);horizon 之争未决(`pr_20260702_001`)。
@@ -89,7 +91,9 @@ L0 选集  →  L1 召回  →  L2 粗排  →  L3 精排(两遍法)      →  L
 
 **哨兵建议**(`menu.sentinel_advice`,按全市场健康占比):<3% 建议哨兵档(跳 L3+L4 省 ~70% token);3–5% 仅 consider;≥5% 全扫。**由人拍板不自动**。
 
-**落刀帽与 floor(2026-09-24 §2.2)**:`l2.knife_cap` 开→merit 核/floor 桶/回填三步各自的落刀份额算的是**当日 L0 全市场帧**的落刀面(`falling_knife_mask`),不是 L2 自身占比;**反转/低位转强两桶豁免**(语义即「跌过、在转」);被帽跳过的落刀行由下一个非落刀候选顶上补名额,顶替行打 `selection_detail="knife_cap"`——复盘数这一列即知帽生效了多少行。
+**落刀帽与 floor(2026-09-24 §2.2)**:`l2.knife_cap` 开→merit 核/floor 桶/回填三步各自的落刀份额算的是**当日 L0 全市场帧**的落刀面(`falling_knife_mask`),不是 L2 自身占比;**反转/低位转强两桶豁免**(语义即「跌过、在转」);被帽跳过的落刀行由下一个非落刀候选顶上补名额,顶替行打 `selection_detail="knife_cap"`——复盘数这一列即知帽生效了多少行。生产 `l2.floors` 已覆盖(健康 15→25、反转 12→6、低位转强 8→6),`DEFAULT_FLOORS` 代码常量不动。
+
+**行业席位(2026-09-24 §2.3)**:`l2.sector_seats.enabled` 开 → `universe.run` 在 `scored` 就绪后、召回前用 `sector_healthy_top3` 选入围行业(≤`max_sectors`),行业内取非落刀健康上涨成员按当日 composite 降序各取 `per_sector` 只(剔 📌/ST/当日涨幅≥9.5%),`selection_reason="sector_seat"` 全程直通(镜像 `pinned`,不占 l2_n 竞争名额,不进 `recall_n`)。**生产 `scan_config.jsonc` 已开**(`per_sector:2 / max_sectors:3`,2026-09-25 补——批 2 曾只在离线重放里以参数形式存在,`user_config` 缺键即关的默认让这个键面世当天就处于关闭态,直到这次修正才第一次在真实扫描里生效);席位换掉菜单 200 行里的其他行,**不净增 L4 卡数**(`l3/merge.py` 只对 l3-rank 自己判成 finalist 的席位行打标,finalist 名额仍由 `l4_budget` 决定)。回滚杆 = `enabled: false`(一行,parity)。
 
 ---
 
@@ -131,6 +135,8 @@ L2 之后、与 L3 证据取数**并发**:
 4. 一个 Opus(`l3-rank`,max)通看 ~40 只,按 6 维 rubric(channel 共振/资金/基本面/情感/脆弱/T+2 兑现机制)**比较着选**(比较式 > 逐只打分),给出 **finalist tier 7–10 只**(`finalist:true`,宁缺毋滥不凑数)+ 其余 **bench**(`finalist:false`,落 `_l3_bench.csv`,防漏影子);
 5. `L3_judged_full.csv`(全量判断)→ `merge_l3_finalists_v3` 确定性守卫,**按序** ①`ins75`(conviction≥75 未标 finalist 强制补入,误杀保险)→ ②`lt55`(<55 剔除)→ ③`cap`(=min(`finalist_max`,当日 l4_budget) 按 conviction 截尾)→ **⑦`chase_1d`**(当日 `pct_1d`≥9.5 剔除 + 从 bench 回填 `chase_backfill`,conviction≥55 才够格、不硬凑;2026-08-22)→ ④`healthy_quota`(**2026-08-22 起 `HEALTHY_QUOTA_FRAC=0` 不动作**;回滚改 1/3 即恢复「健康画像不足 ceil(n/3) 从 bench 补」,⑤⑥⑧ 的保护集随同一常量联动)→ ⑤`trend_quota`(soft 2 席)→ ⑥`lowturn_quota`(soft 1 席,qualify 55)→ **⑧`sector_cap`**(同 `sector` >3 席则剔最弱 + 回填异行业 `sector_backfill`;2026-08-22)→ **⑨`composite_seat`**(2026-08-26 §3 路A:当日 L2 菜单 composite 最高的 M=3 只**强制进 finalists**,`guard=composite_seat`/`lane=composite`,**与 📌 同级** —— 不占名额、不受 ②lt55/③cap 约束;剔 📌/ST/`pct_1d≥9.5`;pass1 有配套 ①b 强留,让 l3-rank 真判到它们)。缺 `finalist` 字段(旧 judged)→ 按 conviction 排序取 cap 同守卫;各守卫的**列缺 → 整段 no-op**(parity);📌 保送在全部守卫**之后**由 `_inject_pinned_finalists` 注入,不受⑦⑧影响(持仓涨停/同行业照样出卡);
 6. 注入:策略师地形段。(**因子方向经验校准块与 T+1 快环校准块已于 2026-08-21 随闭环退役** —— 那是「把历史账本学到的东西塞回今天的判断 prompt」的回注腿。)
+
+**🏭 行业席位列(2026-09-24 §2.3)**:`prepare_l3_table` presence-gated 加 `seat` 列(`sector_seat` 行打 🏭)+ 图例——「行业席位=当日 healthy top3 行业内的非落刀健康上涨成员,确定性直通到本表;B 条照常适用;不因席位抬评级」;`triage` 同批加 ①c 强留 `sector_seat` 行(与 ①b 同属保护集,pass1 分诊切不掉)。座位在 L1/L2 就已选定,l3-rank 只是照 6 维 rubric 正常判断——**生产 `l2.sector_seats` 已开(见 L2 节,2026-09-25 补)**,此列此后在有入围行业的日子应非空,首次真实生效读数待批 4 真跑记录。
 
 **judged 输出契约**:每元素含 `mechanism`(两日内兑现机制+明日买家,写不出不选)与行为化 conviction(**≥70 = 能说出 D+1 谁买且愿真金买入,每日 ≥70 限 ~5 只**;50-69 = 值得 L4 验不背书)。
 
@@ -262,6 +268,7 @@ appendix 目标 20KB / warn 24KB。08-26 真 staging 离线重渲实测 **27,008
 - **run_contract v2**:加 `git_dirty`/`dirty_paths`/`prompt_hashes` —— `git_sha` 只说 HEAD 在哪,而 **agent def 未提交也会生效**(会话启动装载工作树那份)。v1 契约仍可读(`_hash_payload` 按 `schema_version` 排除 v2 三键,历史 run 身份不丢)。
 - **结果账本**(`scan/outcome.py`,**只记不学**):prelude 的 `outcome_fill` 步逐日回填已发布 run 的推荐票事后读数 → `$RPT/scan/_ledger/outcome/<run_id>.json` + `_ledger/recommendations.csv`。口径与 `research.edge_census` 逐字同源(同一 `forward_returns`/`entry_tradable`/`GAP_CLIP`),两边可直接对表。**必读两列**:`mode`(shadow 期的 BUY 明写「不执行」)与 `src`(`shared` = 读自共享 staging,未必是本 run 那份)。消费者只有 `chain_view` ⑩ 段与汇总屏一行;**不进 brief、不喂任何 agent、不改任何参数**。落 `_ledger/` 而非 run 目录内,是因为 run 目录刚立了「发布后不再变」的 MANIFEST 不变量。
 - **时间锚**(`scan/exec_anchor.py`,2026-08-28 §2.4 G1):manifest 新增 `execution` 块(`decision_approved_at`/`first_available_session`/`exec_lag`/`actionability_status`),账本新增同名四列。**读 BUY 战绩前先看 `actionability`**:报告在 T+1 收盘之后才就绪的 run(实测 8/61),主尺买腿是**已经过去的价格**——它们不进 `ledger_line` 的均值,单列「迟到 n 笔不计」;反事实收益走独立列 `exec_gap_c1_o2`(同一把尺、买腿改到第一个真正来得及的尾盘),**两列绝不混算**。运营截止 14:45(不是交易所的 14:57——人读完还要下单)。历史 manifest 一个字不改(run 发布后不再变是 MANIFEST/ROOT 的不变量),老 run 由 `read_execution` 按 `generated_at` 估算并标 `ready_quality=estimated`。
+- **不可买归因**(`scan/buyability.py`,2026-09-24 §2.7,零 LLM,`post_run.observe` 在 `relative_buy` 决策写完之后跑):产出 `_buyability.json`(登记产物),`wall` **五态**之一(第一堵撞上的算数)——`menu`(L2 落刀>L0+6pp 或 L2 健康<L0 健康,与 A4/A5 同一门)/`cards_silent`(菜单过关,但**解析成功**的卡里没有一张写过机读入场行——契约缺口)/`cards_refused`(至少一张解析成功的卡写了入场行、但不是允许——研究判断,不是接线问题)/`gates`(有卡写允许,但全被硬门否决)/`none`(出了一只 A 级)。brief ③ 固定格式转译一行:菜单落刀/健康两侧对照、卡立场四计数(允许/条件/禁止/未知)+盲/解析失败、早停/满卡计数、门四计数(`data_a` 拆日级/票级、`contract`、`no_redflag` 连同其 `entry_stance=PROHIBITED` 子集)。账本对应:`runs.csv` 的 `n_buy_a`/`wall`,`stage_rulers.csv` 的 `E6/e6_a_tier_day_share`(见上 E6 v4.0——只记录不设门)。
 
 ---
 
@@ -312,6 +319,9 @@ D1(2026-08-19,用户裁决 A3)删掉了预注册状态机(`experiment_registry`/
 - **A2 硬门扩集**(对**两个池都生效**):`research_rating ∈ {Sell, Underweight}` 或卡面 `FINAL TRANSACTION PROPOSAL: SELL` 或早停停因 ∈ {基本面恶化, 估值透支, 涨停追高, 数据不足} → 否决。立案:08-20 金螳螂、08-25 天味食品**两次**把提议 SELL 的 UW 卡发成当日 BUY(v1 已知问题 #6 原话:「提议卖出的票可以当相对 BUY 出这条通路是敞开的」)。**留在集合外的是 {其他, 题材透支, 资金流出}** —— 它们在隔夜尺上对 Hold/UW 无区分力(L4·Hold −0.20 vs UW −0.35 不显著),把它们也当红灯 = 拿没证据的判断否决有证据的候选。回滚 = 改 `relative_buy.py` 的两个 frozenset(代码改动,不是配置)。
 - **A1/A3 候选池切换**(`scan_config.relative_buy.pool`):`composite` = BUY 只在守卫⑨ 的证据席里选、**排序改按 composite 分**(`target_align`),另三面降为记录列。理由是尺:L3·finalist 一族 40 日隔夜相对超额 **−0.27pp(t=−3.94)显著为负**,而 composite 是全表唯一正证据(+0.14pp t=3.05;L2 top20/50 +0.14/+0.17,t 1.96/2.78)。**期望 ≈ 一次往返成本量级,不承诺隔夜赚钱**。席位为空 → 诚实 `blocked`,**不静默退回全体池**。回滚 = 该键改回 `finalists`。
 - **执行线(A4)**:卡片写两条机读行 `[执行线] pct_chg <= 3.0` / `[执行线] pos_in_range < 0.7`(T+1 尾盘**入场**条件,与三型盯梢线不同族;`tripwire_watch` 解析但**不报警**,事后计量在 `scan/outcome.exec_ok`)。证据:四年全湖 1086 日,收在当日区间上 30% 的票隔夜比全体差 0.13~0.27pp,**逐年同号**。
+
+**E6 v4.0(2026-09-24 可买性对齐 §2.6,controller Ruling P21)** —— `RULE_VERSION="e6.v4.0"`,一根总闸 `relative_buy.tiering`(默认 `false`=v3.0 逐字;**生产已开 `true`**),与 `relative_buy.pool` 回到 `"finalists"`(全部派发卡,席位含在内;`"composite"` 仍是回滚值)同批改。四处改动:①**票级 `data_a`**——`failed_data` 里 `l4_<code>` 只否决该票,不再连坐当日其余候选;②**入场门**——卡面机读入场行 `card_context.entry_stance=="PROHIBITED"` 直接进 `no_redflag` 硬门否决(`entry_source` 为 line 或 prose 皆算,§2.5);③**A/R 分级**——A 级候选=`eligible ∧ ¬pinned ∧ entry_stance=="ALLOWED"`;A 级空则退到 R 级候选=`eligible ∧ ¬pinned ∧ entry_stance≠"ALLOWED"`(PROHIBITED 已被②否决,故实际是 CONDITIONAL/UNKNOWN);两级皆空 → 诚实 `blocked`(不为凑单放行);`buys[0]` 加 `tier:"A"|"R"`/`basis:"card_backed"|"relative_forced"`,顶层加 `tier_counts`;④**盲卡不入账**——task-book `status!="SUCCEEDED"` 或 slim 缺席的票不写进 `_final_ratings.json`,单独落 `_blind_cards.json`,账本读 `_final_ratings.json` 自然不入账。
+**A 级只记录、不设门**:158 张真实卡(两引擎合计)里 A 级恒 0——早停卡结构性不得写「允许」而 70% 的卡是早停卡,把它设成门会逼着放松 Hold 四条件(09-12 四笔亏损 BUY 的病根),`stage_rulers.csv` 的 `E6/e6_a_tier_day_share`(有 BUY 的日子里 `buy_tier=="A"` 的占比,无 BUY 的日子不计入分母)只记读数。用户①「成功交易日 ≥1 BUY」裁定不受影响——命令由 R 级(`relative_forced`)照常满足。`_selection_conflicts` 的 `card_says_prohibited` 在 tiering 开启后应恒为 0(PROHIBITED 已在硬门被否,冲突检测器不该再见到它);历史基线测不到——买过禁止票的两天早于 `card_context` schema,有 schema 的两天没出 BUY,当前唯一能给的是用现代码回放得到的估计值 3,不是观测值。
 
 ---
 

@@ -18,6 +18,13 @@ sector_seats_l1`)——`replay_l2` 现在真透传两者:`knife_cap_share` 直�
 `_sector_seats.json`)跑 `pick_sector_seats` 现选当日座位;CLI `--sector-seats` 读
 `l2.sector_seats` 配置块(缺块 → `pick_sector_seats` 自带默认 per_sector=2/max_sectors=3)。
 A6/A7 由此不再恒 `None`/`0`。
+
+批 3 收尾(Task 23,2026-09-25 addendum §1,P39):A7(顶替次数)只回答"帽会不会顶替",答
+不了"帽离咬下去还有多远"——`run_one` 现在**无论 `--knife-cap` 是否传**都额外跑一份帽关掉
+的重放,`merit_core_knife_share` 只读其中 `selection_reason=="merit"` 的行,算出的份额与
+`L0_knife` 的差记进 `A7b_margin`(`A7b_merit_core_knife_uncapped` 是分子本身,供人核)。
+不读 `A4_l2_knife_new`(帽生效后的占比)做减法——那个数在帽真正咬下去时被压低,余量会在
+最该报警的时刻显得最健康,见 `metrics` 与 `merit_core_knife_share` 各自的 docstring。
 """
 from __future__ import annotations
 
@@ -105,17 +112,42 @@ def _share(mask: pd.Series | None) -> float | None:
     return None if mask is None or not len(mask) else float(mask.fillna(False).mean())
 
 
+def merit_core_knife_share(l2_uncapped: pd.DataFrame) -> float | None:
+    """A7b(2026-09-25 addendum §1,P39)分子:merit 核(② sector-neutral composite 排序、过
+    sector cap、**不受落刀帽**豁免——它本身就不该被帽保护,帽是给它设的)在一份**帽关掉**
+    (`knife_cap_share=None`)的重放里天然的落刀占比。只读 `selection_detail`/`selection_
+    reason=="merit"` 的行——不是整个 L2′(floor 桶语义是"这类风格就该有 floor 保护"、回填/
+    松cap 桶是"凑数",混进来会把"merit 核天然干不干净"这个问题答成另一个问题;经验值差异
+    真实存在,见本函数调用点旁的探针)。调用方(`run_one`)负责保证传入的是一份关帽重放,
+    本函数不重放、不检查这个前提,只做过滤 + 算份额。缺 `selection_reason` 列或无 merit
+    行(如 `floors` 配置到 merit_need=0)→ `None`(降级,不编 0)。
+    """
+    if "selection_reason" not in l2_uncapped.columns:
+        return None
+    merit = l2_uncapped[l2_uncapped["selection_reason"] == "merit"]
+    return _share(falling_knife_mask(merit)) if len(merit) else None
+
+
 def metrics(full: pd.DataFrame, l1p: pd.DataFrame, l2p: pd.DataFrame, *,
-            l1_old: pd.DataFrame, l2_old: pd.DataFrame) -> dict:
+            l1_old: pd.DataFrame, l2_old: pd.DataFrame,
+            merit_core_knife_uncapped: float | None = None) -> dict:
     """A1–A5(§3.1)。A6/A7 由批 2 的席位/落刀帽列现算(缺列 → None)。
 
     A1 是**池内**(l1p,L1′的候选池)spearman,与 §3.1 表的定义逐字一致——不是整个 L0 帧;
     窄化种群会让相关系数系统性偏离全帧读数(range restriction),这是预期行为,不是 bug。
+
+    `merit_core_knife_uncapped`(2026-09-25 addendum §1,P39,A7b 分子)= `merit_core_knife_
+    share` 读一份调用方(`run_one`)另外产出的**帽关掉**重放算出的 merit 核落刀占比;本函数
+    不重放,只做减法。`A7b_margin = L0_knife − merit_core_knife_uncapped`——**不是**
+    `L0_knife − A4_l2_knife_new`:后者是帽**生效之后**的 L2 占比,帽真咬下去时它恰好被压低,
+    余量会在最该报警的时刻读得最健康,方向与这道门的用途正相反(spec §3.1 A7b 明令禁止这个
+    偷懒实现)。两个输入任一缺失 → `None`,不编数。
     """
     comp = pd.to_numeric(l1p["composite"], errors="coerce")
     a1 = float(comp.corr(pd.to_numeric(l1p["pct_20d"], errors="coerce"), method="spearman")) \
         if "pct_20d" in l1p.columns else None
     top20 = l1p.sort_values("composite", ascending=False).head(20)
+    l0_knife = _share(falling_knife_mask(full))
     return {
         "n_l1_new": int(len(l1p)), "n_l1_old": int(len(l1_old)),
         "A1_spearman_composite_pct20d": a1,
@@ -124,7 +156,7 @@ def metrics(full: pd.DataFrame, l1p: pd.DataFrame, l2p: pd.DataFrame, *,
         "A3_l1_knife_old": _share(falling_knife_mask(l1_old)),
         "A4_l2_knife_new": _share(falling_knife_mask(l2p)),
         "A4_l2_knife_old": _share(falling_knife_mask(l2_old)),
-        "L0_knife": _share(falling_knife_mask(full)),
+        "L0_knife": l0_knife,
         "A5_l2_healthy_new": _share(healthy_riser_mask(l2p)),
         "L0_healthy": _share(healthy_riser_mask(full)),
         "A6_sector_seats": int(l2p["sector_seat"].fillna(False).astype(bool).sum()) if "sector_seat" in l2p.columns else None,
@@ -137,6 +169,11 @@ def metrics(full: pd.DataFrame, l1p: pd.DataFrame, l2p: pd.DataFrame, *,
             if "knife_cap_swap" in l2p.columns
             else int((l2p["selection_detail"].astype(str) == "knife_cap").sum())
             if "selection_detail" in l2p.columns else None
+        ),
+        "A7b_merit_core_knife_uncapped": merit_core_knife_uncapped,
+        "A7b_margin": (
+            None if merit_core_knife_uncapped is None or l0_knife is None
+            else round(l0_knife - merit_core_knife_uncapped, 4)
         ),
     }
 
@@ -162,7 +199,17 @@ def run_one(staging: Path, weights_doc: dict, *, floors: dict | None, knife_cap:
                                   exclude=sector_seats_cfg.get("exclude"))
     l2p = replay_l2(l1p, floors=floors, knife_cap_share=share, enabled_channels=enabled_channels,
                     sector_seats=seats, full=full_new)
-    return {"staging": str(staging), **metrics(full, l1p, l2p, l1_old=l1_old, l2_old=l2_old)}
+    # A7b(2026-09-25 addendum §1):merit 核落刀占比必须来自**帽关掉**的独立重放,不能读
+    # 上面这份 l2p——`knife_cap=False` 时 l2p 本身已经不设帽(share=None),但 `knife_cap=
+    # True` 时 l2p 是帽生效**之后**的结果,不能拿来回答"帽如果关掉会怎样"。用同一份
+    # l1p/floors/seats/full_new,只把 knife_cap_share 换成 None 单独重放一次(确定性
+    # pandas,零 LLM,记账时"每场真跑记"不因 --knife-cap 是否传而跳过)。
+    l2p_uncapped = replay_l2(l1p, floors=floors, knife_cap_share=None, enabled_channels=enabled_channels,
+                             sector_seats=seats, full=full_new)
+    merit_core_knife_uncapped = merit_core_knife_share(l2p_uncapped)
+    return {"staging": str(staging),
+           **metrics(full, l1p, l2p, l1_old=l1_old, l2_old=l2_old,
+                     merit_core_knife_uncapped=merit_core_knife_uncapped)}
 
 
 def main(argv: list[str] | None = None) -> int:

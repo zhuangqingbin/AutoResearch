@@ -212,3 +212,55 @@ def test_knife_cap_lane_step_swap_is_marked():
     assert val["selection_reason"].eq("lane").all()
     assert val["selection_detail"].eq("价值").all()             # detail still the bucket name (not overwritten)
     assert val["knife_cap_swap"].all()                          # the replacing rows ARE now marked
+
+
+def test_knife_cap_exempts_reversal_lane_rows_from_the_cap():
+    """2026-09-24 addendum §1/§6/§7(task-23 dispatch,P39 sibling finding):probe ② on the
+    existing `test_knife_cap_limits_merit_and_backfill_but_exempts_reversal_buckets` confirms
+    the addendum's prediction — emptying `KNIFE_CAP_EXEMPT_STYLES` leaves that test **green**,
+    because its `lane_rows` population is filtered by the very same set the production code
+    reads, so mutating the set moves the assertion's population and the capped behaviour in
+    the same direction and hides the change.
+
+    Tracing further than the addendum anticipated: with that test's `_universe_with_knives()`
+    fixture (`floors=None` → `DEFAULT_FLOORS`), the 反转/低位转强 floors are always satisfied
+    "for free" by rows that also rank into merit/backfill on raw composite — the exempt LANE
+    rows a positive assertion would need to read are empirically **zero** there (verified by
+    hand: that test's `selection_detail` value_counts for the lane step is `{"成长": 2}` only,
+    no 反转/低位转强 row ever takes the lane path). No assertion phrased against that fixture
+    can exercise the exemption at all.
+
+    This test hand-builds a frame instead (same recipe as `test_knife_cap_lane_step_swap_is_
+    marked` above, mirrored onto an EXEMPT style) where the "反转" floor can only be reached
+    through the lane step, with 12 falling-knife candidates ranked ABOVE 12 non-knife
+    replacements — so "exempt" and "not exempt" are forced to different, checkable outcomes:
+    exempt → the 12 knives win the floor, none swapped; not-exempt → `knife_cap_share=0.0`
+    forces all 12 out and the 12 non-knife replacements win instead. Manually confirmed this
+    goes red with `KNIFE_CAP_EXEMPT_STYLES` emptied (both assertions below flip: `pct_60d`
+    stops being < −20 and `knife_cap_swap` stops being all-False) — the positive assertion the
+    addendum asked for, and the fixture the existing test's own data could not support.
+    """
+    rows = []
+    for i in range(300):                              # fills the merit core; none tagged 反转
+        rows.append({"code": f"9{i:05d}", "industry": f"ind{i % 15}", "composite": 90 - i * 0.05,
+                     "recall_channels": "composite|momentum", "pct_60d": 5.0})
+    for i in range(12):                                # 反转 falling knives — must win the floor if exempt
+        rows.append({"code": f"5{i:05d}", "industry": f"ind{i % 15}", "composite": 2.0,
+                     "recall_channels": "reversal", "pct_60d": -30.0})
+    for i in range(12):                                # 反转 non-knives, ranked just below — would only
+        rows.append({"code": f"6{i:05d}", "industry": f"ind{i % 15}", "composite": 1.0,   # win if NOT exempt
+                     "recall_channels": "reversal", "pct_60d": 5.0})
+    df = pd.DataFrame(rows)
+
+    out = stratified_l2(df, l2_n=200, knife_cap_share=0.0)      # strictest possible cap (quota=0)
+    assert len(out) == 200 and out["code"].is_unique
+
+    val = out[out["recall_channels"] == "reversal"]
+    assert len(val) == 12                                        # floor met either way
+    assert val["selection_reason"].eq("lane").all()
+    assert val["selection_detail"].eq("反转").all()
+    # The positive assertion the addendum asked for: an exempt style keeps its falling knives —
+    # the cap never touches them, so nothing here is a "swap". Empty `KNIFE_CAP_EXEMPT_STYLES`
+    # and both lines below flip (non-knife replacements win instead, all marked swapped).
+    assert (val["pct_60d"] < -20).all()
+    assert not val["knife_cap_swap"].any()

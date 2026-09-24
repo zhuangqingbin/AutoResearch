@@ -48,7 +48,7 @@ run 前返回 `HOST_CAPABILITY_REQUIRED`。`session_agent --orchestration legacy
 
 ## 配置单一事实源(防流程漂移)
 
-**全部用户可调参数只有一个家:`.claude/skills/scan-market/scan_config.jsonc`**(JSONC;按漏斗阶段排序,每键标【生效点】)。例外仅两个:保送票**清单**在 `pinned.jsonc`(策略 cap/TTL 仍在 scan_config),L1 因子**权重**在 `$CTX/factor_lab/weights.json`(由 `factor_lab calibrate` 产,不手编;自动重标定腿已随闭环退役)。
+**全部用户可调参数只有一个家:`.claude/skills/scan-market/scan_config.jsonc`**(JSONC;按漏斗阶段排序,每键标【生效点】)。例外仅两个:保送票**清单**在 `pinned.jsonc`(策略 cap/TTL 仍在 scan_config),L1 因子**权重**在 `$CTX/factor_lab/weights.json`(由 `factor_lab calibrate` 产,不手编;自动重标定腿已随闭环退役)。⚠️ **`weights.json` 现仅供研究**:`funnel.weight_profile` 生产已切 `"preference"`(见下表),该档不读此文件,固定符号权重直接写在 `scan_config.jsonc` 的 `preference_weights` 里(2026-09-24 §2.1)。
 
 - **装载链**:`frame --json` 经 `autoresearch/scan/user_config.py` **白名单校验**后回显 → 随 Workflow `args.config` 传入(workflow 无文件系统访问)→ L4 每股 `args.cfg` 原样透传;确定性 CLI(universe/prelude/frame/sector.*)在入口经 `user_config.knob()` 读同一文件兜底。
 - **优先级恒为**:CLI 显式 flag / 显式形参 > scan_config > 代码内建默认;删 key = 内建默认(parity)。
@@ -60,13 +60,16 @@ run 前返回 `HOST_CAPABILITY_REQUIRED`。`session_agent --orchestration legacy
 | Stage0 | `agents` + `agent_engines` | 10 role→tier(闭集必须列全)+ Claude/Codex tier profile | `user_config.resolve_agent_bundle` → `_resolved_agent_config.json`(declared/runtime/resolved) → workflow/Codex project agents + `usage_reconcile` 对账 |
 | L0 | `l0` | cap_floor_yi·include_bj·source·min_amount_yi·min_list_days | `scan/frame.py build_market_frame`(单一代码路径)+ `universe.run`(meta 记生效值) |
 | L1 | `funnel` | regime_aware·recall_n·l2_n·recall_channels(10路,2026-08-21 重开 reversal_confirm、2026-08-22 加 lowturn)·channel_quotas(现值 value312·momentum188·heat112·healthy112·growth112·main_fund150·reversal_confirm150·lowturn120)·channel_floors | `universe.run`(`_funnel_overlay`+`knob`);regime_aware 另生效 `prelude.run_prelude`(生产路缺省 true) |
-| L2 | `l2` | sector_cap·(floors) | `universe.run` → `l2_stratify.select_l2` |
+| L1 | `funnel.weight_profile`·`funnel.preference_weights` | (2026-09-24 §2.1)`weight_profile`:`"calibrated"`(读 `weights.json` IC 校准,原行为)\|`"preference"`(固定符号档,量级裁定非拟合;**生产现值**)。`preference_weights` 键集须恰为 `scoring._GROUPS` 十项 | `common.scoring.resolve_weights`(`universe.run`+L1Recall stage 共用唯一入口);`weights_used.json` 记 profile+`config_sha256`。回滚 = `weight_profile:"calibrated"`(一行;`preference_weights` 留着无害) |
+| L2 | `l2` | sector_cap·knife_cap·floors | `universe.run` → `l2_stratify.select_l2`;`knife_cap`(2026-09-24 §2.2,**生产已开**)限 merit/回填/非豁免桶(反转·低位转强豁免)落刀份额 ≤ 当日 L0 落刀面;`floors` 覆盖(健康25·反转6·低位转强6,余同 `DEFAULT_FLOORS`)。回滚 = `knife_cap:false` + 删 `floors` 键 |
+| L2 | `l2.sector_seats` | enabled·per_sector·max_sectors(2026-09-24 §2.3;**生产已开** `{true,2,3}`,2026-09-25 补——批 2 曾只在离线重放里以参数存在,产品配置缺键即关的默认让它面世当天其实是关的) | `universe.run`(`scored` 就绪后、召回前)→ `sector_seats.pick_sector_seats` + `_inject_sector_seats_l1`;不净增 L4 卡数(换菜单内其他行,finalist 名额仍由 `l4_budget` 定)。回滚 = `enabled:false`(一行,parity) |
 | 旁路 | `sector` | reuse_ttl_days·max_briefs | `sector/reuse.py main` / `sector/pack.py main` |
 | L3 | `l3` | two_pass·pass1_target·finalist_max·lowturn{enabled,阈值×8,pass1_cap} | `scan/l3/prompt.py prepare_l3_table`(旗列)/ `scan/l3/triage.py`(pass1 强留)/ `scan/l3/merge.py write_finalists`(守卫⑥);谓词真身 `common/turnup.lowturn_flag` |
 | L4 | `l4_intel` | enabled·max_queries | `l4-stock.js`(intelOn/maxQ;**缺块=intel 关**)+ `scan/l4/intel_status.py` |
 | L4 | `performance` | streaming_l4 | `scan-market.js`(任务簿流式 vs 旧批量 GATE3) |
 | 精排 | `l3.composite_seat` | enabled·m | `scan/l3/merge.composite_seat_cfg` → ① `write_finalists` 的 `inject_composite_seats`(守卫⑨:当日 L2 composite 最高的 m 只强制进 finalists,`guard=composite_seat`)② `l3/prompt.prepare_l3_table` → `triage` 的 ①b 强留(让 l3-rank 真判到它们)。回滚 = `enabled:false` |
-| 收尾 | `relative_buy.pool` | finalists·composite | `relative_buy.configured_pool` → `post_run.publish_run_observation` → `build_decision(pool=…)`。`composite` = BUY 只在守卫⑨ 的证据席里选、按 composite 分排(2026-08-26 §3 路A)。回滚 = 改回 `finalists`(**只回滚候选池;A2 的 UW/SELL 硬门对两个池都生效**) |
+| 收尾 | `relative_buy.pool` | finalists·composite | `relative_buy.configured_pool` → `post_run.publish_run_observation` → `build_decision(pool=…)`。`composite` = BUY 只在守卫⑨ 的证据席里选、按 composite 分排(2026-08-26 §3 路A)。**生产已回到 `"finalists"`**(2026-09-24 §2.6,与 `tiering` 同批改)。回滚 = 改回 `finalists`→`composite`(**只回滚候选池;A2 的 UW/SELL 硬门对两个池都生效**) |
+| 收尾 | `relative_buy.tiering` | true·false(2026-09-24 §2.6,`RULE_VERSION="e6.v4.0"`;**生产已开** `true`) | `relative_buy.configured_tiering` → `build_decision(tiering=…)`。开:①卡面 `entry_stance=="PROHIBITED"` 进 `no_redflag` 硬门否决;②BUY 按 `entry_stance=="ALLOWED"` 分 A 级(`card_backed`)/其余 eligible 落 R 级(`relative_forced`);两级皆空→诚实 `blocked`。关(v3.0 逐字)= 不否决、不分级,`entry_stance` 只进 `conflicts` 展示。回滚 = `tiering:false` + `pool:"composite"`(同批,两键一起改) |
 | 收尾 | `relative_buy` | mode·exclude_pinned·activate_date | `scan/post_run.py publish_run_observation` → `relative_buy.write_decision`/`verify_decision`(2026-08-19 裁决表 A1/A2:mode=active 正式接管 BUY、exclude_pinned=true 剔📌;**activate_date 自 2026-08-21 起无消费点** —— 原生效点 `learning/legacy_freeze` 随闭环删除,该键仅作转正日记录) |
 | 收尾 | `retention.bind_transcripts` | true/false(默认 true) | `scan/post_run.py publish_run_observation`(决策校验之后、`retain` 镜像 staging 之前)→ `transcript_binder.safe_bind_run`,把本 run 研究 agent 实际读/搜/写过什么绑定进 capsule。**逐条绑定失败都有账**(单条冲突/源不可读只把那一行标 ERROR 并留原因,不挡其余票、不挡业务发布);关掉或无 active run 时仍写一份 `enabled:false`+原因的 `_transcript_bindings.json`,不清除已有证据。**一条 BOUND 不是研究完整的证明**——分母可能是产物推导的下界,区段可能只是 partial,完整性结论仍看 capsule 自己的 completeness 校验,不能拿这份报告的 enabled/BOUND 直接当"证据完好"。回滚 = 改回 `false`(只停止新增采集) |
 
@@ -206,7 +209,10 @@ run 前返回 `HOST_CAPABILITY_REQUIRED`。`session_agent --orchestration legacy
    reconcile → observe → expected/replay/completeness → finalize → verify),它的裁决在
    `observe` 的 stdout JSON 里以 `capsule` 段返回。Claude 引擎仍可用 `--session <sessionId>`
    走旧口径;Codex 引擎**必须**走 `--engine codex --run-id`(它没有 Claude 的 subagent 目录,
-   `--session` 只会给出一张空表)。
+   `--session` 只会给出一张空表)。**`observe` 同时写 `_buyability.json`**(2026-09-24 §2.7,
+   `scan/buyability.py`,零 LLM):四类候选墙(`menu`/`cards_silent`/`cards_refused`/`gates`,
+   撞不上任何一堵才是 `none`)第一堵撞上的判给 `wall`,brief ③ 附一行固定格式的归因(菜单
+   落刀/健康对照 · 卡立场计数 · 门计数),机制见 STAGES.md『不可买归因』。
    → `$RPT/scan/<数据日YYYYMMDD>-<发布MMDD_HHMM>/`(2026-08-28 用户裁定:**首段是研究的哪天行情**,尾段是写完的时刻;如 `20260825-0826_2000` = 研究 08-25 的市场、08-26 20:00 写完。旧格式 `<跑动日>_<HHMM>` 只读兼容,历史目录一律不改名):**`brief.md`(≤3KB 速读,入口)**+`summary.md`(**决策层**,11 节)+`appendix.md`(**现场层** A–G:漏斗/研究全文/门柱口径/耗时/方法/局限)+`details/`+`token_usage.md`+`trace/`;`index.md` 首行即指 brief。成本/墙钟成熟门(10 次真实扫描前恒 `IMMATURE`)见 STAGES.md『计量与跨层校准』;预算超线只写 warning/`DEGRADED`,不制造 BUY。
    **汇报(CP7)**:**先原文转播 `brief.md` 全文**(六节:市场/漏斗/BUY 结论/持仓/风险哨/昨日 delta),再补分段耗时(`render --view timing`)+ 产物路径;需要展开细节才引 `summary.md`。0 买日的**停因分桶**已由 brief ③ 自带,照贴即可,**不要说「无一过 ≥OW 三门」**——早停卡按定义不写三门段(见 STAGES.md『运维细节』)。
    **GATE4 拦什么**(控制方裁定):判据 = `gate_fires.csv` 里有任意一行 `severity=fail`。`brief_lint` 的八条按「**报告是不是在说假话**」二分 —— **fail(毙掉本趟)**:`brief·数字对账` / `brief↔summary不一致` / `brief·白名单外取数` / `brief·BUY契约(active 期)`;**warn(放行,但进账 + 播报)**:`brief·缺失` / `brief·超预算` / `brief·边表缺失` / `brief·边表过期`。**一份人类可读摘要排版超限是展示层问题;报告说假话才是硬门该拦的事**——别让 3KB 排版预算毙掉一条 60 分钟的流水线(「GATE3 差 16 字节」同族疤)。播报行 `[brief lint] fail N · warn M / 共 K 条` 两个计数都要念。
@@ -270,5 +276,5 @@ run 前返回 `HOST_CAPABILITY_REQUIRED`。`session_agent --orchestration legacy
 ## 常见坑
 - 必须 `uv run --no-sync`(不误删 venv-only 的 akshare/tushare/lightgbm)、仓库根目录。
 - **默认 `--source tushare`**(东财 push2 常被网络封锁);需 `TUSHARE_TOKEN`。
-- **召回权重 / L2 采样**:`weights.json` 缺失 → 内置先验(弱);改因子后重跑 `factor_lab harvest`→`calibrate`→`eval`。L2 为何不做模型见 STAGES.md 核心世界观节。
+- **召回权重 / L2 采样**:`weights.json` 缺失 → 内置先验(弱,仅 `weight_profile="calibrated"` 档读它;**生产现档 `"preference"` 从不读这个文件**,见配置表);改因子后重跑 `factor_lab harvest`→`calibrate`→`eval` 仍只喂研究/回滚路径。L2 为何不做模型见 STAGES.md 核心世界观节。
 - `context_*/`、`reports_*/`、`lake/` 已 gitignore;别误提交大文件。裸 `context/`、`reports/` 若重新出现 = 有代码绕过了 workspace 单一事实源(`autoresearch/common/workspace.py`),按 bug 处理。

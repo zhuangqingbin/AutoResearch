@@ -109,6 +109,68 @@ def test_replay_l2_applies_knife_cap_and_sector_seats():
     assert len(l2p) == 41
 
 
+def test_a7b_margin_reads_uncapped_merit_core_not_post_cap_share():
+    """2026-09-25 addendum §1(P39):A7b 余量必须是 `L0_knife − 帽关掉时 merit 核的落刀占比`,
+    不能偷懒读 `L0_knife − A4_l2_knife_new`(帽生效**之后**的 L2 占比)——后者在帽真正咬下去
+    的时候恰好被压到 0,余量因此会在最该报警的时刻读得最健康,与这道门的用途相反。
+
+    用既有的强制 `knife_cap_share=0.0` 手法(逼真落刀行全被顶替,`A4_l2_knife_new` 必为 0)
+    构造 A4/A7b 的分歧:`floors=None`(DEFAULT_FLOORS,与生产同源)+ `l2_n=200` 让 merit 核
+    (99 个名额)与 floor/回填(101 个名额)都非空,证明本测试确实过滤到了 `selection_reason
+    =="merit"`,不是偷懒读了整个 L2′。"""
+    from autoresearch.research.menu_replay import (
+        merit_core_knife_share,
+        metrics,
+        replay_l1,
+        replay_l2,
+    )
+    full = _saved_full()
+    l1p = replay_l1(full, _all_composite_channels(full), full["composite"], composite_quota=len(full))
+
+    l2_capped = replay_l2(l1p, l2_n=200, knife_cap_share=0.0, sector_seats=None)
+    l2_uncapped = replay_l2(l1p, l2_n=200, knife_cap_share=None, sector_seats=None)
+
+    # 前提核验:这份合成宇宙里 merit 核不是全部,也不是空的(混进 floor/回填的行会读到
+    # 另一个数,这两个断言防的就是那种悄悄偷懒)。
+    assert (l2_uncapped["selection_reason"] == "merit").sum() not in (0, len(l2_uncapped))
+
+    merit_uncapped = merit_core_knife_share(l2_uncapped)
+    out = metrics(full, l1p, l2_capped, l1_old=full.head(10), l2_old=full.head(10),
+                 merit_core_knife_uncapped=merit_uncapped)
+
+    assert out["A4_l2_knife_new"] == 0.0                    # 帽=0.0 把 L2 落刀砸到 0(既有断言同款手法)
+    assert merit_uncapped is not None and merit_uncapped > 0  # merit 核天然有落刀,不是巧合地一个都没有
+    assert out["A7b_merit_core_knife_uncapped"] == merit_uncapped
+    # 核心断言:A7b 的分子不等于 A4(帽后占比)——一个悄悄等于 A4_l2_knife_new 的实现会
+    # 让这一行失败,那正是 P39 明令禁止的偷懒写法。
+    assert out["A7b_merit_core_knife_uncapped"] != out["A4_l2_knife_new"]
+    assert out["A7b_margin"] == round(out["L0_knife"] - merit_uncapped, 4)
+
+
+def test_merit_core_knife_share_ignores_non_merit_rows():
+    """`merit_core_knife_share` 必须只读 `selection_reason=="merit"`——喂它整个 L2′(含
+    floor/回填/席位)会答错问题。构造一份 merit 核 100% 干净(0 落刀)、但 backfill 桶里塞满
+    落刀行的 L2′:混读会算出 >0,只读 merit 必须算出 0。"""
+    from autoresearch.research.menu_replay import merit_core_knife_share
+    l2 = pd.DataFrame({
+        "code": [f"{i:06d}" for i in range(6)],
+        "pct_60d": [10.0, 20.0, 30.0, -40.0, -50.0, -60.0],           # 后三行是落刀
+        "selection_reason": ["merit", "merit", "merit", "backfill", "backfill", "backfill"],
+    })
+    assert merit_core_knife_share(l2) == 0.0                          # 混着喂全表:仍只算 merit 三行,answer=0
+    # 对照:只喂 backfill(没有一行 merit)→ 函数按定义读不到 merit 行,必须降级 None,
+    # 不能把这三行落刀(pct_60d 全 <−20)错当成"merit 核 100% 落刀"读出来。
+    assert merit_core_knife_share(l2[l2["selection_reason"] == "backfill"]) is None
+
+
+def test_merit_core_knife_share_degrades_to_none_without_signal():
+    """缺 `selection_reason` 列、或列在但没有一行是 merit(如 floors 配置吃掉了全部
+    merit_need)→ `None`,不得编 0(0 是"核过、真干净",不是"没东西可核")。"""
+    from autoresearch.research.menu_replay import merit_core_knife_share
+    assert merit_core_knife_share(pd.DataFrame({"pct_60d": [-30.0]})) is None
+    assert merit_core_knife_share(pd.DataFrame({"pct_60d": [-30.0], "selection_reason": ["backfill"]})) is None
+
+
 def test_metrics_degrades_to_none_only_for_the_column_that_is_actually_missing():
     """A1 的输入列 `pct_20d` 缺失 → 该项报 `None`,不得抛异常、不得编一个 0 出来;缺列不该
     连累 A2/A3(它们靠 pct_60d,与 pct_20d 无关)——两者独立降级,不是整表塌成 None。"""
