@@ -174,6 +174,8 @@ ARTIFACTS: tuple[Artifact, ...] = (
     # ---- L5 ---------------------------------------------------------------
     Artifact("early_stop", "_early_stop.json", "staging", "l5", "assemble", "json", "always"),
     Artifact("final_ratings", "_final_ratings.json", "staging", "l5", "assemble", "json", "always"),
+    Artifact("blind_cards", "_blind_cards.json", "staging", "l5", "assemble", "json", "gated",
+             required_when="任务簿有 status≠SUCCEEDED 或 slim≠PRESENT 的票"),
     Artifact("decision_records", "decision_records.json", "staging", "l5", "decision_finalize", "json", "always"),
     Artifact("dissent_records", "dissent_records.json", "staging", "l5", "decision_finalize", "json", "gated",
              required_when="有复核分歧"),

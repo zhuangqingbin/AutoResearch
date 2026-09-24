@@ -265,6 +265,53 @@ def _ensemble_dissent_lines(emap: dict[str, dict],
             lines.append(f"🎭 买单复核分歧:{code} {len(ratings)} run={ratings},已按中位折回,建议人工复核")
     return lines
 
+BLIND_CARDS_FILENAME = "_blind_cards.json"
+
+
+def _task_book_index(scan_dir: Path) -> dict[str, dict]:
+    """`_l4_tasks.json` → {code6: task}。缺文件/坏文件 → {}(presence-gated:没有任务簿就没有盲卡判定)。"""
+    path = Path(scan_dir) / "_l4_tasks.json"
+    if not path.exists():
+        return {}
+    try:
+        book = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 — 坏任务簿按「没有任务簿」处理,不猜
+        return {}
+    tasks = book.get("tasks") if isinstance(book, dict) else None
+    if not isinstance(tasks, dict):
+        return {}
+    return {str(code).zfill(6): task for code, task in tasks.items() if isinstance(task, dict)}
+
+
+def mark_blind_cards(scan_dir: Path, rows: list[dict]) -> dict[str, dict]:
+    """盲卡(2026-09-24 §2.6-5)= 任务簿说 slim 没到货(status≠SUCCEEDED 或 artifacts.slim≠PRESENT)。
+
+    确定性层过滤,不依赖 agent 守规矩(09-17 中国船舶「slim/deep 全缺无法验证」仍出了 Hold 卡入账)。
+    行上打 `blind_card=True`,评级/提案改「—」,目标列写明原因;落 `_blind_cards.json`;
+    `_dump_final_ratings` / `_build_decision_records` 据此跳过。返回 {code: 记录}。
+    """
+    tasks = _task_book_index(scan_dir)
+    blind: dict[str, dict] = {}
+    for r in rows:
+        code = str(r.get("code", "")).zfill(6)
+        task = tasks.get(code)
+        if not task:
+            continue
+        status = str(task.get("status") or "")
+        slim = str(((task.get("artifacts") or {}).get("slim") or {}).get("status") or "")
+        if status == "SUCCEEDED" and slim == "PRESENT":
+            continue
+        r["blind_card"] = True
+        r["rating"], r["proposal"] = "—", "—"
+        r["target"] = "⚠️数据不完整,未评级"
+        blind[code] = {"task_status": status, "slim_status": slim, "reason": "DATA_INTEGRITY"}
+    if blind:
+        with contextlib.suppress(Exception):
+            (Path(scan_dir) / BLIND_CARDS_FILENAME).write_text(
+                json.dumps(blind, ensure_ascii=False, indent=1), encoding="utf-8")
+    return blind
+
+
 def _dump_final_ratings(scan_dir: Path, rows: list[dict]) -> None:
     """P0-2(坏账③修复):把 ensemble/verify 折回后的**终评级**落 `<scan_dir>/_final_ratings.json`
     (`{code: rating}`)。
@@ -279,7 +326,7 @@ def _dump_final_ratings(scan_dir: Path, rows: list[dict]) -> None:
     import contextlib
     with contextlib.suppress(Exception):
         out = {str(r.get("code", "")).zfill(6): r.get("rating", "—")
-               for r in rows if r.get("code")}
+               for r in rows if r.get("code") and not r.get("blind_card")}
         (Path(scan_dir) / "_final_ratings.json").write_text(
             json.dumps(out, ensure_ascii=False), encoding="utf-8")
     with contextlib.suppress(Exception):   # Wave5 ②C:早停分桶落盘(0买真机制记账,独立文件
@@ -304,6 +351,8 @@ def _build_decision_records(
     records = []
     qualified = {"Buy", "Overweight"}
     for row in rows:
+        if row.get("blind_card"):
+            continue                      # 盲卡不进事实本(2026-09-24 §2.6-5)
         code = str(row.get("code", "")).zfill(6)
         text = _decision_text(scan_dir, code)
         if row.get("_card_facts"):
