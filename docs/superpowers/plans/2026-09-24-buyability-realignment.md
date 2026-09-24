@@ -1031,8 +1031,8 @@ def resolve_weights(frame: pd.DataFrame, *, profile: str, preference_weights: di
 
 - [ ] **Step 4: 跑绿（含既有 parity 测试）**
 
-Run: `uv run --no-sync python -m pytest -q tests/common/test_scoring.py tests/scan/test_parity.py tests/scan/test_recall_merge.py tests/scan/test_scoring_distortion.py`
-Expected: 全绿（`test_parity.py` 锁的 golden 一位不变）。
+Run: `uv run --no-sync python -m pytest -q tests/common/test_scoring.py tests/common/test_scoring_distortion.py tests/scan/test_recall_merge.py tests/scan/test_recall_channels.py tests/scan/test_pinned.py`
+Expected: 全绿。（`tests/scan/test_parity.py` 不存在——2026-07-13 commit 174ffd7 随 typed-trace 死簇一起删除；这里列的是真正在生产形状的帧上跑 `composite_score` 的守卫。）
 
 - [ ] **Step 5: 提交**
 
@@ -1660,7 +1660,7 @@ def _knife_quota(share: float | None, n: int) -> int | None:
 
 - [ ] **Step 5: 跑绿并提交**
 
-Run: `uv run --no-sync python -m pytest -q tests/scan/test_l2_stratify.py tests/scan/test_universe_l2_cols.py tests/scan/test_config_knobs.py tests/scan/test_parity.py`
+Run: `uv run --no-sync python -m pytest -q tests/scan/test_l2_stratify.py tests/scan/test_universe_l2_cols.py tests/scan/test_config_knobs.py tests/scan/test_l2_regime_cap.py tests/scan/test_l2_regime_wiring_probe.py`
 
 ```bash
 git add autoresearch/scan/recall/l2_stratify.py autoresearch/scan/universe.py autoresearch/scan/user_config.py tests/scan/test_l2_stratify.py tests/scan/test_config_knobs.py
@@ -1997,7 +1997,7 @@ def _inject_sector_seats_l1(recall: pd.DataFrame, scored: pd.DataFrame,
 
 - [ ] **Step 7: 跑绿并提交**
 
-Run: `uv run --no-sync python -m pytest -q tests/scan/test_sector_seats.py tests/scan/test_l2_stratify.py tests/scan/test_universe_l2_cols.py tests/scan/test_config_knobs.py tests/scan/test_parity.py tests/contracts -q`
+Run: `uv run --no-sync python -m pytest -q tests/scan/test_sector_seats.py tests/scan/test_l2_stratify.py tests/scan/test_universe_l2_cols.py tests/scan/test_config_knobs.py tests/scan/test_l3_merge_v3.py tests/contracts -q`
 
 ```bash
 git add autoresearch/scan/sector_seats.py autoresearch/scan/universe.py autoresearch/scan/recall/l2_stratify.py autoresearch/scan/user_config.py autoresearch/contracts/artifacts.py tests/scan/test_sector_seats.py tests/scan/test_config_knobs.py
