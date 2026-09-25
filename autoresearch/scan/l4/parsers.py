@@ -419,8 +419,40 @@ _STANCE_ZERO_RE = re.compile(r"^0(?:\.0+)?\s*%")
 _STANCE_PROHIBIT_WORDS = ("不建仓", "不新开仓", "不新建仓")
 _STANCE_CONDITIONAL_WORDS = ("待突破确认", "满足条件才考虑", "不追高")
 _STANCE_ALLOW_RE = re.compile(r"(?<![不无未非禁勿])(?:明确)?(?:允许|建议|可以?)新(?:开仓|建仓)")
-_ENTRY_LINE_RE = re.compile(r"\*\*入场\*\*[:：]\s*(允许|禁止|条件)")
+#: fix round 3(2026-09-25):原 `.search` + 无锚正则会命中**任意位置**的字面串——包括
+#: agent 定义里教它怎么写这一行的规则原文本身(`允许 | 禁止 | 条件(...)`,三选一并列
+#: 用管道分隔),以及散文里提及"入场"两字附近偶然凑出的子串。若 agent 把指令原文
+#: 抄进卡面正文,旧正则会把规则原文的「允许」读成真实结论——即使卡面后面另有一条
+#: 真实的 `**入场**: 禁止`,`.search` 只取**第一个**匹配,真结论被规则原文抢先顶替。
+#: 两处收紧对应两种写法:①`(?m)^[ \t]*` 锚到行首(只容许前导空白)——真实入场行
+#: 独占一行,规则原文通常嵌在散文/反引号里,不在行首;②`(?!\s*[|｜])` 拒绝紧跟
+#: 管道符的候选——规则原文把三个选项用 `|`/`｜` 并列,真实入场行只会二选一/三选一
+#: 地**写一个值**,后面不会跟着"另一个选项"。两条防线独立生效,任一条命中就能挡下
+#: 对应的误读写法。
+_ENTRY_LINE_RE = re.compile(r"(?m)^[ \t]*\*\*入场\*\*[:：]\s*(允许|禁止|条件)(?!\s*[|｜])")
 _ENTRY_LINE_STANCE = {"允许": "ALLOWED", "禁止": "PROHIBITED", "条件": "CONDITIONAL"}
+#: 多条入场行分歧时的保守取值序——**绝不取 ALLOWED**(见 `_resolve_entry_line_matches`)。
+_ENTRY_STANCE_CONSERVATIVE_ORDER = ("PROHIBITED", "CONDITIONAL", "UNKNOWN")
+
+
+def _resolve_entry_line_matches(values: list[str]) -> tuple[str, bool]:
+    """`_ENTRY_LINE_RE.findall` 命中的全部机读入场行原文 → `(entry_stance, conflict)`。
+
+    fail-closed(fix round 3):一张卡即使收紧了正则,仍可能出现**不止一条**匹配
+    (例如规则原文虽被行首锚点挡掉,但卡面自己重复写了两条不一致的入场行)。这个
+    字段能一票否决交易——多条一致就照旧取值;多条**分歧**时绝不能取 ALLOWED,
+    按 PROHIBITED > CONDITIONAL > UNKNOWN 的保守序,取分歧集合里能取到的最保守项
+    ——即使分歧里含 ALLOWED,也只在其余候选都不比它更保守时才轮到它(而三值排他,
+    这种情况不会发生:分歧至少两个不同值,较保守的那个必然是 PROHIBITED 或
+    CONDITIONAL 之一)。`conflict=True` 时调用方须在 `parse_errors` 留痕。
+    """
+    stances = {_ENTRY_LINE_STANCE[v] for v in values}
+    if len(stances) == 1:
+        return next(iter(stances)), False
+    for candidate in _ENTRY_STANCE_CONSERVATIVE_ORDER:
+        if candidate in stances:
+            return candidate, True
+    return "UNKNOWN", True  # 只有三个可能取值,理论不可达;防御性兜底同样不取 ALLOWED
 
 #: `[执行线]` 两个已知字段名(与 `contracts.agent_output.L4_CARD` 的
 #: `exec_line_pct`/`exec_line_pos` 同源)。本模块**不 import**
@@ -531,7 +563,7 @@ def _empty_card_context(card_kind: str, parse_errors: list[str],
     """三处早退路径(空文本/无仪表盘/外层 try 兜底)共用的空壳。`entry_source` 恒
     `None`(fix round 1)——这里的 `None` 不是"没找到入场行",是"压根没能走到去找入场
     行/散文的那一步":哪怕卡面其实写了 `**入场**` 行,只要仪表盘解不出来,
-    `_parse_card_context_impl` 在够到 `_ENTRY_LINE_RE.search` 之前就已经从这里退出
+    `_parse_card_context_impl` 在够到 `_ENTRY_LINE_RE.findall` 之前就已经从这里退出
     了。`entry_source` 记的是"问过哪个机制",不是"问出了什么答案"——三值完整语义见
     `parse_card_context` 的 docstring。
     """
@@ -579,9 +611,13 @@ def _parse_card_context_impl(text: str | None, contract: dict | None) -> dict:
     # "prose" 没有该行,退回仓位/触发位散文推断——不论推断结果是不是 UNKNOWN,只要
     #         散文推断真的跑过就是 "prose",不能因为答案含糊就悄悄记成 None。
     # (第三值 None 不在这个分支产生,见 _empty_card_context 的早退路径。)
-    line_m = _ENTRY_LINE_RE.search(body)
-    if line_m:                                   # 机读入场行优先(2026-09-24 §2.5)
-        stance, conflict, entry_source = _ENTRY_LINE_STANCE[line_m.group(1)], False, "line"
+    line_matches = _ENTRY_LINE_RE.findall(body)   # findall,非 search:见 fail-closed 理由
+    if line_matches:                              # 机读入场行优先(2026-09-24 §2.5)
+        stance, line_conflict = _resolve_entry_line_matches(line_matches)
+        conflict, entry_source = False, "line"
+        if line_conflict:
+            parse_errors.append(
+                "entry_stance: 卡片含多条互相矛盾的机读入场行,已按保守序取值,不取 ALLOWED")
     else:
         stance, conflict = _entry_stance(position_raw, trigger_raw)
         entry_source = "prose"

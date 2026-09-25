@@ -440,3 +440,116 @@ def test_inconclusive_prose_pins_unknown_stance_together_with_prose_source():
     ])
     got = parse_card_context(text)
     assert got["entry_stance"] == "UNKNOWN" and got["entry_source"] == "prose"
+
+
+# ── fix round 3(2026-09-25):CRITICAL——`.search` + 无锚正则命中卡面任意位置,
+# 包括 agent 把 `.claude/agents/l4-card.md:64` 的规则原文(`**入场**: 允许 | 禁止 |
+# 条件(<一句前置条件>)`,三选一用管道并列)抄进正文的情况。规则原文的『允许』被
+# `.search` 当成第一个(也是唯一被看见的)结论,即便卡面后面另有一条真实
+# `**入场**: 禁止`,真否决也会被抢先出现的规则原文盖过——一张写着"禁止"的卡
+# 被读成允许新开仓。修复:行首锚定(`(?m)^[ \t]*`)+ 拒绝候选后紧跟管道符
+# (`(?!\s*[|｜])`)+ `findall`(而非 `search`)取全部候选、分歧时 fail-closed。
+# 下面四条直接对应 coordinator 复现表的四行;其余补充"合法行前有无关散文"
+# "两条一致""两条分歧且含禁止"三个场景。
+# ──────────────────────────────────────────────────────────────────────────
+
+_RULE_TEXT_LINE = "**入场**: 允许 | 禁止 | 条件(<一句前置条件>)"           # 规则原文,不是真实入场行
+_PLACEHOLDER_LINE = "**入场**: <允许|禁止|条件(<一句前置条件>)>"          # 未填的模板占位符
+
+
+def _card_with_entry(*extra_lines: str) -> str:
+    """最小满卡(带可解析仪表盘),把 `extra_lines` 插在仪表盘之后、提案行之前——
+    entry-line 解析必须真的跑到(不能被 `_parse_dashboard` 早退挡在门外)。
+    """
+    return "\n".join([
+        "# 决策卡 — 600018 上港集团 @ 2026-09-17",
+        "| 评级 | 现价 | 仓位 | 触发位 |",
+        "|---|---|---|---|",
+        "| Hold | 5.43 | 10% | — |",
+        *extra_lines,
+        "FINAL TRANSACTION PROPOSAL: **HOLD**",
+    ])
+
+
+def test_repro_table_row1_unfilled_placeholder_stays_unknown_safe():
+    """复现表第 1 行:未填占位符——此前的修复(round 1)已处理,回归收紧不能弄坏它。"""
+    got = parse_card_context(_card_with_entry(_PLACEHOLDER_LINE))
+    assert got["entry_stance"] == "UNKNOWN"
+    assert got["entry_source"] == "prose"
+
+
+def test_repro_table_row2_rule_text_alone_is_never_allowed():
+    """复现表第 2 行,缺陷本体:规则原文单独出现在卡里,旧代码判 ALLOWED。
+    `允许` 候选后紧跟管道符 → 被拒;`禁止`/`条件` 在该行都不紧跟 `**入场**:` 前缀
+    (前面是管道符和空格)→ 从未构成候选。`findall` 为空,退回散文推断 → UNKNOWN。
+    """
+    got = parse_card_context(_card_with_entry(_RULE_TEXT_LINE))
+    assert got["entry_stance"] != "ALLOWED"
+    assert got["entry_stance"] == "UNKNOWN"
+    assert got["entry_source"] == "prose"
+
+
+def test_repro_table_row3_rule_text_then_real_prohibited_wins_not_allowed():
+    """复现表第 3 行,缺陷本体:规则原文之后另有一条真实 `**入场**: 禁止`。旧代码
+    `.search` 只取第一个匹配(规则原文的『允许』),真实否决被跳过 → 误判 ALLOWED。
+    `findall` 只命中真实那一条(规则原文那行贡献 0 个候选,见上一条测试),一票
+    否决生效。
+    """
+    got = parse_card_context(
+        _card_with_entry(_RULE_TEXT_LINE, "中间是一段与入场无关的散文说明。", "**入场**: 禁止")
+    )
+    assert got["entry_stance"] == "PROHIBITED"
+    assert got["entry_source"] == "line"
+    assert not got["parse_errors"]  # 只有一条真实候选,不是分歧,不该留冲突痕迹
+
+
+def test_repro_table_row4_real_prohibited_line_unchanged():
+    """复现表第 4 行:干净的真实禁止行——修复前后都必须是 PROHIBITED,不能被收紧
+    的正则误伤。"""
+    got = parse_card_context(_card_with_entry("**入场**: 禁止"))
+    assert got["entry_stance"] == "PROHIBITED"
+    assert got["entry_source"] == "line"
+
+
+def test_agent_def_rule_text_verbatim_embedded_in_prose_is_never_allowed():
+    """`.claude/agents/l4-card.md:64` 的真实行原文(整句抄入卡面,规则原文嵌在
+    "入场行(...)**:` 反引号包裹"的散文里,不独占一行)——行首锚点必须挡住它,不只
+    是靠管道符。"""
+    real_def_line = (
+        "**入场行(2026-09-24 新增,机读契约,所有卡必写)**:"
+        "`**入场**: 允许 | 禁止 | 条件(<一句前置条件>)`。它与五档评级**语义分离**"
+    )
+    got = parse_card_context(_card_with_entry(real_def_line))
+    assert got["entry_stance"] != "ALLOWED"
+    assert got["entry_stance"] == "UNKNOWN"
+    assert got["entry_source"] == "prose"
+
+
+def test_legitimate_entry_line_after_unrelated_prose_is_still_recognized():
+    """真实入场行前面有大段无关散文(含"入场"两字但不构成机读行)——行首锚点只要求
+    它独占一行,不要求它紧邻仪表盘或是卡里第一行提到入场的地方。"""
+    got = parse_card_context(_card_with_entry(
+        "**一行多空**: 多 <催化未落地> ｜ 空 <量能不足>",
+        "**早停**: 停于 P3 ｜ 停因:资金流出",
+        "一段复盘式散文,提到「入场」时机未到,但这句本身不构成机读入场行。",
+        "**入场**: 禁止",
+    ))
+    assert got["entry_stance"] == "PROHIBITED"
+    assert got["entry_source"] == "line"
+
+
+def test_two_agreeing_entry_lines_use_that_stance_without_conflict():
+    got = parse_card_context(_card_with_entry("**入场**: 禁止", "**入场**: 禁止"))
+    assert got["entry_stance"] == "PROHIBITED"
+    assert got["entry_source"] == "line"
+    assert not got["parse_errors"]
+
+
+def test_two_disagreeing_entry_lines_with_prohibit_present_stays_prohibited():
+    """两条入场行互相矛盾(一条 允许、一条 禁止)——绝不能取 ALLOWED,必须是
+    PROHIBITED 并在 `parse_errors` 留痕(spec:存疑就不该往"能买"的方向猜)。
+    """
+    got = parse_card_context(_card_with_entry("**入场**: 允许", "**入场**: 禁止"))
+    assert got["entry_stance"] == "PROHIBITED"
+    assert got["entry_source"] == "line"
+    assert any("entry_stance" in e for e in got["parse_errors"])

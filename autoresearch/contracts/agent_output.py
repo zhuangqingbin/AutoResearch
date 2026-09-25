@@ -147,9 +147,12 @@ L4_CARD = OutputContract(
         Field("p4_intent", r"进入P4倾向[:：]\s*(\w+)", False),
         Field("exec_line_pct", r"\[执行线\]\s*pct_chg\s*<=\s*([\d.]+)", False,
               "T+1 尾盘入场条件;阈值真身 agent_output.EXEC_LINE_MAX_PCT_1D"),
-        Field("entry", r"\*\*入场\*\*[:：]\s*(允许|禁止|条件)", False,
+        Field("entry", r"(?m)^[ \t]*\*\*入场\*\*[:：]\s*(允许|禁止|条件)(?!\s*[|｜])", False,
               "机读入场行(2026-09-24 §2.5):T+1 尾盘按执行线能否新开仓;与五档评级语义分离。"
-              "早停卡只许 禁止|条件;满卡三选一。缺行 → parsers 按散文推断并记 entry_source=prose"),
+              "早停卡只许 禁止|条件;满卡三选一。缺行 → parsers 按散文推断并记 entry_source=prose。"
+              "fix round 3(2026-09-25):锚定行首 + 拒绝后随管道符,防止把 agent 定义里"
+              "『允许 | 禁止 | 条件(...)』那句规则原文(agent 若把指令抄进正文)误读成真实入场行——"
+              "行首排除了它嵌在散文里的写法,拒绝管道符排除了它被整句照抄成一行的写法。"),
         Field("exec_line_pos", r"\[执行线\]\s*pos_in_range\s*<\s*([\d.]+)", False,
               "阈值真身 agent_output.EXEC_LINE_MAX_POS_IN_RANGE"),
     ),
