@@ -40,9 +40,12 @@ def harvest_calendar(date: str, codes, root: Path | None = None,
 
     第三腿(2026-09-25 §2.3):`index_rebalance=None` → 读旋钮 `calendar.index_rebalance`(默认 False =
     parity)。开时先由 `index_events.harvest_index_events` 落全量 `index_events.csv`(源不可达 → 不落),
-    再把 **want 内且有生效日** 的行写成 `kind="index_rebalance"`:`event_date=` 被动调仓收盘日,
-    `detail=f"{指数} {调入|调出}|{phase}"`(phase 让 `calendar_flags` 分两种文案),`ratio=flow_adv_days`。
-    `unknown_eff` 行不进日历(没有日期就不是日历事实)。
+    再把 **want 内、phase 已解析(非 unknown_eff)且生效日非空** 的行写成 `kind="index_rebalance"`:
+    `event_date=` 被动调仓收盘日,`detail=f"{指数} {调入|调出}|{phase}"`(phase 让 `calendar_flags`
+    分两种文案),`ratio=flow_adv_days`。`unknown_eff` 行一律不进日历——即使它的 `eff_close_date`
+    非空:fix-round-1 #1(2026-09-25)之前这里只判「日期非空」,但 Task 3 的 `phase_for` 在生效日
+    撞上节假日时会**保留**解析/规则算出的日期字符串而不清空它(不猜该往哪边挪),于是「没有日期」
+    不再是 `unknown_eff` 的可靠标记——必须直接判 phase,日期检查只是第二道防线。
     """
     from autoresearch.data.tushare_source import _code6, _pro, _ts_call
     index_rebalance = knob("calendar", "index_rebalance", index_rebalance, False)
@@ -99,7 +102,7 @@ def harvest_calendar(date: str, codes, root: Path | None = None,
         if ev is not None:
             for r in ev.itertuples(index=False):
                 eff = r.eff_close_date
-                if r.code not in want or not isinstance(eff, str) or not eff:
+                if r.code not in want or r.phase == "unknown_eff" or not isinstance(eff, str) or not eff:
                     continue
                 flow = None if r.flow_adv_days is None or pd.isna(r.flow_adv_days) else float(r.flow_adv_days)
                 rows.append({"code": r.code, "kind": "index_rebalance", "event_date": str(eff)[:8],

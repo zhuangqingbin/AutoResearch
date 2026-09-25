@@ -101,6 +101,9 @@ def _offline(monkeypatch):
     from autoresearch.scan import calendar as cal
     monkeypatch.setattr(ts_src, "_pro", lambda: _DeadPro())
     monkeypatch.setattr(cal, "knob", lambda block, key, cli, default, cfg=None: default if cli is None else cli)
+    # fix-round-1 #2(2026-09-25):_ts_call 的重试退避(1.5+3+4.5+6=15s)× 4 次调用/测试 = 60s——
+    # 这三个测试不测重试,直接让被包装的 fn 立即抛,既有两腿的 try/except 照样吞。
+    monkeypatch.setattr(ts_src, "_ts_call", lambda fn, *a, **k: fn())
 
 
 def test_harvest_calendar_third_leg_is_off_by_default(tmp_path, monkeypatch):
@@ -131,6 +134,29 @@ def test_harvest_calendar_third_leg_filters_to_wanted_codes_and_keeps_phase(tmp_
     assert pd.isna(rows.iloc[0]["ratio"])
     assert (tmp_path / "2026-06-11" / "index_events.csv").exists()   # 全量表照落(999999 也在里面)
     assert len(ie.load_index_events(tmp_path / "2026-06-11")) == 3
+
+
+def test_harvest_calendar_third_leg_skips_unknown_eff_even_with_a_populated_date(tmp_path, monkeypatch):
+    """fix-round-1 #1(2026-09-25):`unknown_eff` 行不能只靠「日期是否非空」来挡——Task 3 的
+    `phase_for` 在生效日撞节假日时会保留解析/规则算出的日期字符串而不清空它(不猜该往哪边挪),
+    所以一条 `phase="unknown_eff"` 但 `eff_close_date` 非空的行,此前会漏过滤混进日历,把一个
+    未判定的日期当事实发布给全部四个日历消费者。"""
+    from autoresearch.scan import calendar as cal
+    _offline(monkeypatch)
+    ev = pd.DataFrame([*_EV.to_dict("records"), {
+        "code": "000003", "index_code": "000300", "index_name": "沪深300", "side": "add",
+        "ann_date": "20260529", "eff_close_date": "20260612", "phase": "unknown_eff",
+        "source": "csindex", "flow_adv_days": None,
+    }], columns=ie.EVENT_COLS)
+
+    def fake_harvest(date, outdir, **k):
+        ie.write_index_events(outdir, ev)
+        return ev
+    monkeypatch.setattr(ie, "harvest_index_events", fake_harvest)
+    df = cal.harvest_calendar("2026-06-11", {"000001", "000002", "000003"}, root=tmp_path, index_rebalance=True)
+    rows = df[df["kind"] == "index_rebalance"]
+    assert "000003" not in rows["code"].tolist()          # unknown_eff 即使带日期也不进日历
+    assert rows["code"].tolist() == ["000001"]             # 既有行为不受影响
 
 
 def test_harvest_calendar_source_absent_leaves_other_legs_intact(tmp_path, monkeypatch):
