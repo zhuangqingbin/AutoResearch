@@ -645,6 +645,29 @@ def measure_report_budget(scan_dir: Path | str, report_dir: Path | str) -> dict:
     return payload
 
 
+def index_events_health(scan_dir: Path) -> dict:
+    """`index_events.csv` 三态(design 2026-09-25 §2.7 / F11):disabled = 旋钮关且无文件;absent = 旋钮开
+    但源不可达(文件缺席,degraded.json 另有一行);ok = 文件在场(含只有表头的空表 = 源可达无事件)。
+    门命中数不在这里——run_health 在 E6 之前写盘,命中数只在决策文件 `index_events.hits` 与 brief ③。"""
+    from autoresearch.scan.index_events import load_index_events
+    from autoresearch.scan.user_config import knob
+
+    ev = load_index_events(scan_dir)
+    if ev is None:
+        on = bool(knob("calendar", "index_rebalance", None, False))
+        return {"source": "absent" if on else "disabled", "n_rows": 0,
+                "n_finalists_involved": 0, "n_passive_close_eve": 0}
+    if not len(ev):
+        return {"source": "ok", "n_rows": 0, "n_finalists_involved": 0, "n_passive_close_eve": 0}
+    fin = _read(Path(scan_dir) / "finalists.csv")
+    fin_codes = (set(fin["code"].astype(str).str.zfill(6))
+                 if fin is not None and "code" in fin.columns else set())
+    codes = ev["code"].astype(str).str.zfill(6)
+    return {"source": "ok", "n_rows": int(len(ev)),
+            "n_finalists_involved": int(codes.isin(fin_codes).sum()),
+            "n_passive_close_eve": int((ev["phase"] == "passive_close_eve").sum())}
+
+
 def run_health(scan_dir: Path) -> dict:
     """一次 scan 的体检 dict(artifacts/counts/NaN 降级/churn/L4 阶段/meta 回显)。"""
     scan_dir = Path(scan_dir)
@@ -675,7 +698,7 @@ def run_health(scan_dir: Path) -> dict:
               "cards": cards, "buys": buys}
     if buys_source is not None:      # active 期才有这个键 —— shadow 期 run_health 逐字节不变
         counts["buys_source"] = buys_source
-    return {"date": scan_dir.name, "artifacts": arts, "missing": missing,
+    out = {"date": scan_dir.name, "artifacts": arts, "missing": missing,
             "core_missing": sorted(_CORE & set(missing)),
             "counts": counts,
             "nan_rates": rates, "degraded_fields": degraded,
@@ -697,6 +720,10 @@ def run_health(scan_dir: Path) -> dict:
             # 展示层字节预算(§6.10);presence-gated —— 发布前跑 run_health 时还没有,
             # 那时是 None(「还没量」),不是 0(「量到了并且很小」)。
             "report_budget": report_budget(scan_dir)}
+    ih = index_events_health(scan_dir)
+    if ih["source"] != "disabled":        # 旋钮关且无文件 → 不出现该键(run_health 逐字节不变)
+        out["index_events"] = ih
+    return out
 
 
 def write_run_health(scan_dir: Path) -> Path:

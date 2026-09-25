@@ -711,3 +711,27 @@ def test_run_health_carries_report_budget_only_after_measuring(tmp_path):
     (report / "summary.md").write_text("x" * 100, encoding="utf-8")
     measure_report_budget(d, report)
     assert run_health(d)["report_budget"]["summary_bytes"] == 100
+
+
+def test_run_health_index_events_three_worlds(tmp_path, monkeypatch):
+    """disabled(旋钮关无文件 → 键不出现)/ absent(旋钮开无文件)/ ok(有文件,含空表)。"""
+    import autoresearch.scan.user_config as uc
+    from autoresearch.scan import index_events as ie
+    d = _mk_day(tmp_path, "2026-12-10", codes=("000001", "000002"))
+    monkeypatch.setattr(uc, "load_user_config", lambda path=None: {})
+    assert "index_events" not in run_health(d)                                   # 旋钮关:逐字节不变
+    monkeypatch.setattr(uc, "load_user_config", lambda path=None: {"calendar": {"index_rebalance": True}})
+    assert run_health(d)["index_events"] == {"source": "absent", "n_rows": 0,
+                                             "n_finalists_involved": 0, "n_passive_close_eve": 0}
+    ie.write_index_events(d, pd.DataFrame(columns=ie.EVENT_COLS))
+    assert run_health(d)["index_events"]["source"] == "ok"                      # 空表 ≠ 缺席
+    ie.write_index_events(d, pd.DataFrame([
+        {"code": "000001", "index_code": "000300", "index_name": "沪深300", "side": "add", "ann_date": "20261127",
+         "eff_close_date": "20261211", "phase": "passive_close_eve", "source": "csindex", "flow_adv_days": None},
+        {"code": "600221", "index_code": "000300", "index_name": "沪深300", "side": "add", "ann_date": "20261127",
+         "eff_close_date": "20261211", "phase": "announced_runup", "source": "csindex", "flow_adv_days": None},
+    ], columns=ie.EVENT_COLS))
+    h = run_health(d)["index_events"]
+    assert h == {"source": "ok", "n_rows": 2, "n_finalists_involved": 1, "n_passive_close_eve": 1}
+    monkeypatch.setattr(uc, "load_user_config", lambda path=None: {})
+    assert run_health(d)["index_events"]["source"] == "ok"                      # 文件在场就报,不看旋钮
