@@ -19,7 +19,9 @@ E = 被动调仓的那个收盘日:「X 日收市后生效」→ X;「X 日起�
 (节假日),`phase_for` 只标 `unknown_eff`,绝不悄悄挪到最近的交易日:我们手上没有「指数公司遇到
 节假日往哪边挪」的任何证据,猜错方向比诚实地说「不知道」更危险。
 
-六指数白名单是**产品选择**:附件里其它指数(上证380/三板…)入湖不进表。**已知覆盖缺口**:`399006`
+六指数白名单是**产品选择**(`INDEX_WHITELIST` 定义在 `contracts/index_whitelist.py`——`analyze/
+index_membership.py` 也要读它,而分层棘轮不许下层 import 本包,详见该模块 docstring):附件里
+其它指数(上证380/三板…)入湖不进表。**已知覆盖缺口**:`399006`
 创业板指是深证/国证口径指数,其调样公告不在本模块读的中证指数公司(csindex.com.cn)公告源里发布——
 公告驱动的这条路径永远不会为它产出一行事件。白名单仍保留这一项(不会误判,只是从不命中);真正能
 覆盖创业板指调样对账的是 `index_weight` 月末成分快照普查(census),不受此限制。
@@ -37,13 +39,10 @@ from pathlib import Path
 import pandas as pd
 
 from autoresearch.common import workspace as ws
+from autoresearch.contracts.index_whitelist import INDEX_WHITELIST
 from autoresearch.scan.user_config import knob
 
 INDEX_EVENTS_FILENAME = "index_events.csv"
-INDEX_WHITELIST: dict[str, str] = {
-    "000300": "沪深300", "000905": "中证500", "000852": "中证1000",
-    "000510": "中证A500", "000688": "科创50", "399006": "创业板指",
-}
 EVENT_COLS = ["code", "index_code", "index_name", "side", "ann_date", "eff_close_date",
               "phase", "source", "flow_adv_days"]
 PHASES = ("announced_runup", "passive_close_eve", "effective", "post", "unknown_eff")

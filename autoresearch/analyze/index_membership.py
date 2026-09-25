@@ -18,8 +18,8 @@ from pathlib import Path
 import pandas as pd
 
 from autoresearch.common import workspace as ws
+from autoresearch.contracts.index_whitelist import INDEX_WHITELIST
 from autoresearch.data.sources.csindex import parse_effective_date
-from autoresearch.scan.index_events import INDEX_WHITELIST
 
 
 def _fmt(d: str) -> str:
