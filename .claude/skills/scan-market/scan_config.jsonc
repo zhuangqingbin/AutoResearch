@@ -290,6 +290,24 @@
   //   build_decision(tiering=...)。
   // 2026-09-24 可买性对齐 §2.6:池回到全部派发卡(席位含在内);tiering 开 = 入场门 + A/R 分级。
   // ⚖️ 证据:pool=composite 19 席位卡面 UW 15/Sell 3/Hold 1;7 笔 active BUY −0.55pp 胜 2/7。
+  // 🚨 **这次反转推翻的是一组 42 日显著证据,理由必须写下来(2026-09-25 终审 I6 补)**:
+  //   本键 2026-08-26 改成 composite 时,注释里记着两个统计量 ——
+  //     · L2 菜单内按 composite 取 top20/top50,隔夜相对超额 **+0.14/+0.17pp(t 1.96/2.78,42 日)**
+  //     · L3·finalist 一族 **−0.27pp(t=−3.94,40 日)显著为负**
+  //   把 pool 改回 finalists,等于逆转一组 n=42 的显著读数。**但那两个量今天都已失效,
+  //   而且失效的方向未知**:批 1 把 composite 的权重符号整组翻了(旧档 momentum/tech/
+  //   volprice/fund_main 全负,是超卖分),所以 +0.14pp 描述的那个 composite **已经不存在**;
+  //   同理 −0.27pp 描述的 finalist 是从**旧菜单**里挑出来的,而批 1+2 换掉了菜单。
+  //   两边证据同时作废,这不是「新证据推翻旧证据」,是**两组数都不再描述当前系统**。
+  //   ⇒ 本次改回 finalists 真正依据的是两条,**都不是 alpha 证据**,必须明说:
+  //     ① 设计必要性:A/R 分级要读卡面入场行,而 composite 席位每天只有 ~3 只,
+  //        其中 19 张历史席位卡 18 张写 UW/Sell —— 池子里几乎没有能说「允许」的卡。
+  //     ② 实现结果读数(n 很小):该池 7 笔 active BUY 平均 −0.55pp、胜 2/7。
+  //   **n=7 的实现读数不足以证明 finalists 更好**,它只证明 composite 席位这条路走不通。
+  //   合并前请人工复核这一条;若要保守,回滚杆是 "pool": "finalists" → "composite"
+  //   **但必须与 tiering 一起回**(见下),且回去之后 8 天里有 4 天会重新变成 0 买日。
+  // 📌 另注:2026-08-26 设计稿(记忆标注「现行总调度权威」)至今仍把 finalists 池列为缺陷,
+  //   那份文档**未随本次改动更新**。两处说法冲突时以本注释与 2026-09-24 spec §2.6 为准。
   // 回滚杆 = "tiering": false(v3 逐字)+ "pool": "composite"。
   "relative_buy": { "mode": "active", "exclude_pinned": true, "activate_date": "2026-08-19",
                     "pool": "finalists", "tiering": true },
