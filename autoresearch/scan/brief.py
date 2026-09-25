@@ -549,13 +549,21 @@ def _realized_text(stat: dict, label: str) -> str:
 
 def _rebalance_line(rel: dict, src: list[dict]) -> str | None:
     """③ 附加行(v4.1):第五门 `rebalance_close` 的评估结果。块缺席(旧 schema / 门关)或无命中 → None(不出行)。
-    源缺席要**说出来**:门放行了,但那是「没看见」不是「没事件」(design F11)。"""
+    源缺席 / 源存在但读不出来都要**说出来**:门放行了,但那是「没看见」不是「没事件」(design F11)。
+    `source` 三值(2026-09-25 §2.4 追加裁定):`"absent"`(文件不在)与 `"error"`(文件在但读不出来,
+    如中途写坏的零字节文件)是两种不同的**因**,同一种门后果——各自专属一行,不合并成一句,
+    也不许 `"error"` 落进下面的 `hits` 空判断悄悄不出行(那会把"这张表读不出来"静默吞成
+    "今天没有事件",是三种结果里最坏的"什么都不说")。"""
     rb = rel.get("rebalance")
     if not isinstance(rb, dict):
         return None
     if rb.get("source") == "absent":
         text = "  ⛔ 指数调样门:源不可达,本日未评估(hard_gate.rebalance_close 放行,不等于无事件)"
         _src(src, "relative.rebalance_source", "absent", DECISION_FILENAME, "index_events.source", text)
+        return text
+    if rb.get("source") == "error":
+        text = "  ⛔ 指数调样门:源存在但读取失败,本日未评估(hard_gate.rebalance_close 放行,不等于无事件)"
+        _src(src, "relative.rebalance_source", "error", DECISION_FILENAME, "index_events.source", text)
         return text
     hits = [str(c) for c in (rb.get("hits") or [])]
     if not hits:

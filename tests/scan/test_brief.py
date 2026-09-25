@@ -673,6 +673,17 @@ def test_buy_line_prints_rebalance_source_absent_honestly(tmp_path):
     assert "⛔ 指数调样门:源不可达,本日未评估" in md
 
 
+def test_buy_line_prints_rebalance_source_error_honestly(tmp_path):
+    """第三个 source 值(2026-09-25 §2.4 追加裁定):文件存在但读不出来(零字节/手改坏)≠ 缺席
+    ——旧渲染只认 "absent" 一个非-ok 值,"error" 会落进 hits 空判断悄悄不出行(否决存在于
+    该表被静默吞掉,变成三种结果里最坏的"什么都不说")。必须像 absent 一样有专属一行,
+    只是把"源不可达"换成"源存在但读取失败"——同一句"门放行了,不等于无事件"。"""
+    scan = _scan_dir(tmp_path, decision=_decision(mode="active", index_events=_hits([], source="error")))
+    md = brief.build(scan, run_folder=_RUN)["markdown"]
+    assert "⛔ 指数调样门:源存在但读取失败,本日未评估" in md
+    assert "(hard_gate.rebalance_close 放行,不等于无事件)" in md
+
+
 def test_buy_line_is_silent_without_index_events_block_or_hits(tmp_path):
     scan = _scan_dir(tmp_path, decision=_decision(mode="active"))
     assert "指数调样" not in brief.build(scan, run_folder=_RUN)["markdown"]           # 旧 schema:逐字 parity
