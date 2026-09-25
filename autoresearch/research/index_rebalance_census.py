@@ -21,6 +21,13 @@
 静默失真(本仪器不越权替人判断「这份数据能不能用」);同时「源不可达」(两份快照都是空)与
 「有数据但可疑地少」是两个不同的世界,不能编码成同一个值(`included` 与 `suspect` 分开记)。
 
+窗口连续性可见性(fix round 1 #3,2026-09-25 落地):相位是**按位置**算的——`lake_trade_days()`
+自己的 docstring 明说它只列现存 parquet、不查真实交易日历。湖内窗口中间缺一天,后面每个相位的
+offset 会整体挪位(真实的 E−3 被读成 4.E-2),不报错、不留痕。本模块同样**不**在此把它变成门
+(修复正确性超出本任务范围),而是把每次事件窗口的湖内天数与 tushare `trade_cal` 的真实交易日历
+天数并排摆进 `calendar_gaps`:**只可见,不挡**。日历取不到(`calendar_fetch` 缺省不查,或查失败)
+时 `calendar_days`/`shortfall` 记 `None`——「没检查」不能读成「检查过=0 缺口」。
+
   uv run --no-sync python -m autoresearch.research.index_rebalance_census --start 2022-06 --end 2026-06
 """
 from __future__ import annotations
@@ -53,6 +60,38 @@ _SIZE_FLOOR_RATIO = 0.9
 
 def _default_fetch():
     return None                     # None → cache.get_or_fetch 走 sources.fetch(真 tushare)
+
+
+def _production_calendar_fetch(endpoint: str, params: dict):
+    """`main()` 的生产默认 `calendar_fetch`:经统一取数门面直连,不经 `cache.get_or_fetch`。
+
+    `trade_cal` 已登记的 `key="static"` 只认一份全局快照(`_cache_key` 对该 kind 忽略全部
+    params),与本模块「按 (start_date, end_date) 窗口查」的用法天然不匹配——真走 cache 会把
+    第一次调用的窗口钉成永远的"static"答案,污染后来要别的窗口的调用方。`autoresearch.scan.
+    index_events.trading_days_window` / `autoresearch.scan.exec_anchor.trading_sessions` 同样
+    为此绕开 cache、直连取数门面,本函数照做。
+    """
+    from autoresearch.data.sources import fetch as sources_fetch
+
+    return sources_fetch(endpoint, params)
+
+
+def _calendar_trading_days(start: str, end: str, fetch=None) -> list[str] | None:
+    """`start`~`end`(含)的真实交易日历(SSE,`is_open=1`),供 `calendar_gaps` 当地基。
+
+    `fetch=None`(缺省)→ **不查**,返回 `None`——调用方据此知道"没检查",不是"检查过=0 缺口"
+    (缺席 ≠ 否,08-29/09-25 两次撞过的坑)。取数失败/返回形状不对 → 同样降级为 `None`,可见
+    但不阻断:这条检查从头到尾都是一份读数,不是门。
+    """
+    if fetch is None:
+        return None
+    try:
+        df = fetch("trade_cal", {"exchange": "SSE", "start_date": start, "end_date": end, "is_open": "1"})
+    except Exception:
+        return None
+    if df is None or df.empty or "cal_date" not in df.columns:
+        return None
+    return sorted(df["cal_date"].astype(str).tolist())
 
 
 def _month_iter(start: str, end: str):
@@ -154,20 +193,32 @@ def _stats(obs: pd.DataFrame) -> dict:
 
 
 def run_census(start: str = "2022-06", end: str = "2026-06", *, lake_daily: Path | None = None,
-               fetch=None, indexes: dict[str, str] | None = None) -> dict:
+               fetch=None, indexes: dict[str, str] | None = None, calendar_fetch=None) -> dict:
     indexes = indexes or INDEXES
     days = lake_trade_days(lake_daily)
     op, cl = _load_pivots(lake_daily, days)
     tds = list(op.index)
     pos = {d: i for i, d in enumerate(tds)}
     gap = (op.shift(-2) / cl.shift(-1) - 1.0).replace([np.inf, -np.inf], np.nan)
+    cal_days = _calendar_trading_days(tds[0], tds[-1], calendar_fetch) if tds else None
     obs: list[dict] = []
     events_out: list[dict] = []
     snapshot_sizes: list[dict] = []
+    calendar_gaps: list[dict] = []
     for ev in rebalance_events(start, end, indexes):
         if ev["A"] not in pos or ev["E"] not in pos:
             continue
         i_a, i_e = pos[ev["A"]], pos[ev["E"]]
+        lo, hi = max(i_a - 2, 0), min(i_e + POST, len(tds) - 1)
+        window_days = tds[lo:hi + 1]
+        if cal_days is None:
+            cal_n, shortfall = None, None
+        else:
+            cal_n = sum(1 for d in cal_days if window_days[0] <= d <= window_days[-1])
+            shortfall = cal_n - len(window_days)
+        calendar_gaps.append({"A": ev["A"], "E": ev["E"], "window_start": window_days[0],
+                              "window_end": window_days[-1], "lake_days": len(window_days),
+                              "calendar_days": cal_n, "shortfall": shortfall})
         y, m = int(ev["E"][:4]), int(ev["E"][4:6])
         py, pm = (y, m - 1) if m > 1 else (y - 1, 12)
         names = []
@@ -205,7 +256,7 @@ def run_census(start: str = "2022-06", end: str = "2026-06", *, lake_daily: Path
                        for side in ("add", "drop")} for name in sorted(df["index"].unique())}
     return {"start": start, "end": end, "events": events_out, "n_obs": int(len(df)),
             "tables": {side: _stats(df[df.side == side]) for side in ("add", "drop")},
-            "by_index": by_index, "snapshot_sizes": snapshot_sizes}
+            "by_index": by_index, "snapshot_sizes": snapshot_sizes, "calendar_gaps": calendar_gaps}
 
 
 def render(doc: dict) -> str:
@@ -243,6 +294,25 @@ def render(doc: dict) -> str:
         flag = "⚠ 疑似截断" if s.get("suspect") else ""
         lines.append(f"| {s['E']} | {s['index']} | {s['prev_n']} | {s['cur_n']} | {included} | {flag} |")
     lines.append("")
+    lines.append("## 调样窗口交易日连续性(可见性,非门)")
+    lines.append("")
+    lines.append("`lake_trade_days()` 只列现存 parquet,不查真实交易日历;窗口中间缺一天,后面每个相位")
+    lines.append("会整体挪位、不报错。下表把每次事件窗口的湖内天数与 `trade_cal` 真实交易日历天数并排")
+    lines.append("列出——`日历天数`=未检查 表示没查(不是「查过=0 缺口」);**只标记,不改写任何统计**。")
+    lines.append("")
+    lines.append("| A | E | 窗口 | 湖内天数 | 日历天数 | 缺口 |")
+    lines.append("|---|---|---|---|---|---|")
+    for g in doc.get("calendar_gaps", []):
+        cal_disp = "未检查" if g["calendar_days"] is None else str(g["calendar_days"])
+        if g["shortfall"] is None:
+            short_disp = ""
+        elif g["shortfall"] > 0:
+            short_disp = f"⚠ 缺{g['shortfall']}日"
+        else:
+            short_disp = "0"
+        lines.append(f"| {g['A']} | {g['E']} | {g['window_start']}~{g['window_end']} | {g['lake_days']} | "
+                     f"{cal_disp} | {short_disp} |")
+    lines.append("")
     return "\n".join(lines) + "\n"
 
 
@@ -256,7 +326,7 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     indexes = dict(x.split("=", 1) for x in a.index) if a.index else None
     doc = run_census(start=a.start, end=a.end, lake_daily=Path(a.lake_daily) if a.lake_daily else None,
-                     fetch=_default_fetch(), indexes=indexes)
+                     fetch=_default_fetch(), indexes=indexes, calendar_fetch=_production_calendar_fetch)
     out = Path(a.out) if a.out else ws.reports_root() / "research" / "index_rebalance_census.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(render(doc), encoding="utf-8")
