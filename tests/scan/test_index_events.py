@@ -99,6 +99,23 @@ def test_phase_for_unknown_eff_does_not_survive_past_the_window_start():
     assert ie.phase_for("2026-12-10", "20260909", None, TDS) is None
 
 
+def test_phases_constant_is_the_closed_set_phase_for_actually_produces():
+    """minor-3(final whole-branch review):`PHASES` 是一份声明的契约(模块常量),但没有任何
+    代码检查 `phase_for` 的返回值真的落在这个集合里,也没有任何代码检查这个集合里的每一项
+    `phase_for` 都真的会吐出来——声明和产出可以悄悄漂移,这正是本仓库反复撞见的「有灯没人看」
+    (一份契约摆在那,没有测试盯着它,后人改一个不改另一个,两边都不会红)。双向锁死:五次调用
+    分别照抄本文件上面五个已验证通过的用例(不发明新参数),把返回值收进一个集合,应当恰好
+    等于 `PHASES`——目前五个值都被至少一条已有 fixture 命中过,不缺席。"""
+    produced = {
+        ie.phase_for("2026-11-27", A, E, TDS),         # announced_runup(同 test_phase_for 参数化)
+        ie.phase_for("2026-12-10", A, E, TDS),          # passive_close_eve
+        ie.phase_for("2026-12-11", A, E, TDS),          # effective
+        ie.phase_for("2026-12-16", A, E, TDS),          # post
+        ie.phase_for("2026-12-10", A, None, TDS),       # unknown_eff(同 test_phase_unknown_eff_...)
+    }
+    assert produced == set(ie.PHASES)
+
+
 def _list(items):
     return lambda endpoint, params: pd.DataFrame(items, columns=ie_list_cols())
 
@@ -139,6 +156,27 @@ def test_build_filters_whitelist_and_labels_phase(lake):
     migrate = df[df.code == "600188"]
     assert set(migrate.side) == {"drop", "add"}                              # 迁移不合并,两行都在
     assert df.flow_adv_days.isna().all()                                     # B3 之前恒空 = 未计算
+
+
+def test_build_dedups_same_code_index_side_keeping_the_newest_announcement(lake):
+    """minor-4(final whole-branch review):`sort_values("publish_date", ascending=False)` 读
+    起来像一句「newest-wins 去重」的承诺,但从没有任何代码兑现它——两份公告(原公告 + 更正
+    公告)覆盖同一个 (code, index_code, side) 时,旧代码会让两行都进最终表,门会对着同一个
+    事实的两个不同 `eff_close_date` 各自判一次。补上真正的去重:按 (code, index_code, side)
+    分组,循迭代顺序(已按 publish_date 降序)保留第一次出现的行 = 最新公告那份。"""
+    fl = _list([
+        ["3007011", "关于调整沪深300指数样本的公告", "20261127", "index_rebalance"],
+        ["3007012", "关于更正沪深300指数样本调整的公告", "20261128", "index_rebalance"],
+    ])
+    fd = _fetch_detail({
+        "3007011": _detail_rows("3007011", "20261127", "上述调整将于2026年12月11日收市后生效。", ROSTER[:1]),
+        "3007012": _detail_rows("3007012", "20261128", "上述调整将于2026年12月14日收市后生效。", ROSTER[:1]),
+    })
+    df = ie.build_index_events("2026-11-30", today="20261210", fetch_list=fl, fetch_detail=fd, trading_days=TDS)
+    hs300_add = df[(df.index_code == "000300") & (df.code == "600221") & (df.side == "add")]
+    assert len(hs300_add) == 1                                     # 不是两行
+    assert hs300_add.iloc[0]["ann_date"] == "20261128"              # 保留的是更新的那份公告(更正)
+    assert hs300_add.iloc[0]["eff_close_date"] == "20261214"
 
 
 def test_build_processes_announcements_whose_title_lacks_the_word_sample(lake):
@@ -321,6 +359,36 @@ def test_write_load_by_code_and_absence_semantics(tmp_path):
     by = ie.events_by_code(ie.load_index_events(d))
     assert list(by) == ["600221"] and by["600221"][0]["phase"] == "passive_close_eve"
     assert by["600221"][0]["eff_close_date"] == E                                  # 读回仍是字符串
+
+
+def test_write_index_events_is_atomic_not_a_bare_to_csv(tmp_path, monkeypatch):
+    """I2(final whole-branch review):`write_index_events` 曾是裸 `to_csv`——中断的一次
+    (如进程被杀在写盘中途)会在目标路径上留下一个读不出来的半成品(如零字节文件),而
+    `calendar_section`/`index_events_health`/`card_contract_lint` 三个读者当时都没有防这
+    件事的准备。镜像 `relative_buy.write_decision` 自己用的临时文件 + `Path.replace`:
+    一次写只有完整落盘才会替换掉目标路径,中断只留下一个从未被 rename 进目标名的孤儿文件,
+    盘上那份完好的旧文件永远不会被半成品覆盖。"""
+    d = tmp_path / "2026-12-10"
+    d.mkdir()
+    good = pd.DataFrame([{"code": "600221", "index_code": "000300", "index_name": "沪深300", "side": "add",
+                          "ann_date": A, "eff_close_date": E, "phase": "passive_close_eve",
+                          "source": "csindex", "flow_adv_days": None}], columns=ie.EVENT_COLS)
+    ie.write_index_events(d, good)
+    target = d / ie.INDEX_EVENTS_FILENAME
+    before = target.read_bytes()
+    assert not list(d.glob("*.tmp"))                       # 成功写不留孤儿临时文件
+
+    def boom(self, path_or_buf=None, **kw):
+        # 忠实重现"写到一半"——真 `to_csv` 也是边写边落盘,不是原子的一瞬间;直接照抄
+        # `path_or_buf` 写几个字节再抛,让裸 `to_csv(target)` 的旧实现在这里就会把目标文件
+        # 覆盖成半成品,而 tmp+replace 的新实现只会弄脏那个从未被 rename 进目标名的 `.tmp`。
+        from pathlib import Path
+        Path(path_or_buf).write_bytes(b"garbage-mid-write")
+        raise OSError("disk full mid-write")
+    monkeypatch.setattr(pd.DataFrame, "to_csv", boom)
+    with pytest.raises(OSError):
+        ie.write_index_events(d, pd.DataFrame(columns=ie.EVENT_COLS))
+    assert target.read_bytes() == before                   # 中断没有替换掉盘上那份完好的旧文件
 
 
 def test_trading_days_window_falls_back_to_weekdays_and_records_it(monkeypatch):

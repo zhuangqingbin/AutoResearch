@@ -275,6 +275,13 @@ def build_index_events(scan_date: str, *, today: str | None = None, fetch_list=N
                          "side": r.side, "ann_date": ann_date, "eff_close_date": eff, "phase": phase,
                          "source": source, "flow_adv_days": None})
     df = pd.DataFrame(rows, columns=EVENT_COLS)
+    if len(df):
+        # minor-4(final whole-branch review):上面 `sort_values("publish_date", ascending=False)`
+        # 读起来像一句「newest-wins 去重」的承诺,但直到这里都没有任何代码兑现它——两份公告
+        # (原公告 + 更正公告)覆盖同一个 (code, index_code, side) 时会各自贡献一行,门会对着
+        # 同一个事实的两个不同 `eff_close_date` 各判一次。真正兑现:按这三个键去重,`keep="first"`
+        # 配合上面已经按 publish_date 降序的迭代顺序,保留的正是最新公告那份。
+        df = df.drop_duplicates(subset=["code", "index_code", "side"], keep="first").reset_index(drop=True)
     if with_flow and len(df):
         from autoresearch.scan.index_flow import flow_adv_days
         try:
@@ -288,8 +295,16 @@ def build_index_events(scan_date: str, *, today: str | None = None, fetch_list=N
 
 # ── 落盘 / 读回 ─────────────────────────────────────────────────────────────
 def write_index_events(scan_dir: Path | str, df: pd.DataFrame) -> Path:
+    """I2(final whole-branch review,2026-09-26):原子写——临时文件 + `Path.replace`,镜像
+    `relative_buy.write_decision` 自己的姿势。此前是裸 `to_csv(p)`:中断的一次(进程被杀/
+    磁盘满)会在 `p` 这个名字上留下一个读不出来的半成品(如零字节文件),而三个读者
+    (`calendar.calendar_section`、`health.index_events_health`、`self_review.
+    card_contract_lint`)当时都会被那份半成品的读取异常整段拖垒。这里只管「写出来的文件
+    永远是完整的一份」;三个读者各自的容错见它们自己的 fix。"""
     p = Path(scan_dir) / INDEX_EVENTS_FILENAME
-    df.reindex(columns=EVENT_COLS).to_csv(p, index=False)
+    tmp = p.with_name(f"{p.name}.tmp")
+    df.reindex(columns=EVENT_COLS).to_csv(tmp, index=False)
+    tmp.replace(p)
     return p
 
 
