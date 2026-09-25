@@ -16,6 +16,7 @@ import pandas as pd
 
 from autoresearch.common import workspace as ws
 from autoresearch.common.regime import classify_regime
+from autoresearch.common.scoring import falling_knife_mask
 
 _REGIME_ZH = {"trend": "趋势", "range": "震荡", "risk_off": "避险"}
 
@@ -58,12 +59,20 @@ def _round(v, nd: int = 2):
 
 def _breadth(df: pd.DataFrame) -> dict:
     p60 = _num(df, "pct_60d")
+    # 2026-09-25 终审 M2:falling_knife 的谓词折到 scoring.falling_knife_mask(单一事实源),
+    # 不再自己平行维护 `< -20`。归约成"占比"仍走本函数的 dropna-first 语义(与 above_ma60/
+    # ma_bull/up_60d 同款,`_frac_of` 分母只数非缺失行)—— 已用 57 个真实交易日的
+    # L1_scored_full.csv(含缺列样本)核过折叠前后逐日 4 位小数位级相同,不是假设。
+    knife = falling_knife_mask(df)
+    valid60 = p60.notna()
+    falling_knife_frac = (round(float(knife[valid60].mean()), 4)
+                          if knife is not None and valid60.any() else None)
     return {
         "above_ma60": _frac_of(_num(df, "above_ma60"), lambda x: x > 0),
         "ma_bull": _frac_of(_num(df, "ma_bull"), lambda x: x > 0),
         "med_pct_60d": _med(p60),
         "med_pct_ytd": _med(_num(df, "pct_ytd")),
-        "falling_knife": _frac_of(p60, lambda x: x < -20),
+        "falling_knife": falling_knife_frac,
         "up_60d": _frac_of(p60, lambda x: x > 0),
     }
 

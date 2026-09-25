@@ -255,6 +255,20 @@ def test_preference_weights_must_be_exactly_the_ten_groups(tmp_path, pw):
         load_user_config(p)
 
 
+def test_preference_weights_all_zero_is_rejected(tmp_path):
+    """M3(2026-09-25 终审):键集全对、逐个有限,但绝对值之和为零的权重必须被拒——不然
+    `combine_group_scores` 除以 `wabs.replace(0, nan)` 全 NaN,composite 全 NaN,下游
+    `sector_neutral` 的 `fillna(-1e18)` 会让 L2 退化成输入行序,且没有任何测试会变红
+    (两处都在验证范围外)。唯一挡这条路的就是本函数——键集/有限性校验都过、但十个权重
+    全零的配置块此前会静默通过。"""
+    pw = {"momentum": 0.0, "tech": 0.0, "volprice": 0.0, "fund_main": 0.0, "chip": 0.0,
+          "north": 0.0, "growth": 0.0, "value": 0.0, "fund_retail": 0.0, "rz": 0.0}
+    p = tmp_path / "scan_config.jsonc"
+    p.write_text(json.dumps({"funnel": {"preference_weights": pw}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="preference_weights"):
+        load_user_config(p)
+
+
 # ───────────────────────── 活体验收:生产 l2 floors / knife_cap(2026-09-24 §2.2) ─────────────────────────
 
 

@@ -296,6 +296,14 @@ def _publish_pipeline(scan_dir: Path, out_base: Path, analysis_date: str) -> int
         expected = bool((manifest.get("present") or {}).get("L1_weights.json"))
         if expected and not wp.is_file():
             raise RuntimeError("frozen L1 weights declared present but are missing")
+        # 2026-09-25 终审 M4:L1_weights.json 是校准档遗物,production 现行 weight_profile=
+        # preference 下不再读它;`L1_weight_profile.json`(domain_ops._freeze_scan_runtime_
+        # inputs 写)才是这份 profile 实际对应的权重 identity 快照。同款完整性断言,镜像上面
+        # 那条——manifest 声称在场但文件缺失 → 炸,不许无声发布一份少了这件证据的 trace。
+        wpp = frozen_inputs / "L1_weight_profile.json"
+        expected_wpp = bool((manifest.get("present") or {}).get("L1_weight_profile.json"))
+        if expected_wpp and not wpp.is_file():
+            raise RuntimeError("frozen L1 weight profile declared present but is missing")
     else:
         wp = ws.factor_lab_root() / "weights.json"
         expected = wp.exists()

@@ -1341,7 +1341,11 @@ def _freeze_scan_runtime_inputs(current) -> dict:
     except Exception as exc:  # noqa: BLE001 — 身份快照失败不挡 session,但要留痕
         present["L1_weight_profile.json"] = False
         value_error = repr(exc)
-    value = {"schema_version": 1, "present": present, "weight_profile_error": value_error}
+    # 2026-09-25 终审 M4:schema_version=1 的形状历史上恰是两键 {"schema_version", "present"}。
+    # `weight_profile_error` 是新增的第三键(哪怕干净跑完也恒在、值 None)——identity 快照
+    # 的形状变了就该挪版本号,不能靠"新键缺省 None"悄悄冒充旧形状;bump 到 2 让任何读者从
+    # 这一个数字就能判断该按几个键去读,不用先探测键是否存在。
+    value = {"schema_version": 2, "present": present, "weight_profile_error": value_error}
     atomic_write_json(target / "manifest.json", value)
     return value
 

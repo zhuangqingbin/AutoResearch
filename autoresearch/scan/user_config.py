@@ -141,10 +141,19 @@ def _t_profile(v): return v in {"calibrated", "preference"}
 
 
 def _t_pref_weights(v):
+    """键集恰为 `_GROUPS`、逐个有限、且绝对值之和≠0(2026-09-25 终审 M3)。
+
+    全零权重会让 `combine_group_scores` 的 `wabs`(Σ|w|)恒为 0,`raw = comp / wabs.replace(0,
+    nan)` 全 NaN → composite 全 NaN → 下游 `sector_neutral` 的 `fillna(-1e18)` 把 L2 退化成
+    输入行序,且不抛异常、不留红灯。键集/有限性校验各自独立,单独失败也不该被这条新检查
+    的报错吞掉——所以先各自判、最后才判"和"。
+    """
     from autoresearch.common.scoring import _GROUPS
     if not isinstance(v, dict) or set(v) != set(_GROUPS):
         return False
-    return all(_t_num(x) and math.isfinite(x) for x in v.values())
+    if not all(_t_num(x) and math.isfinite(x) for x in v.values()):
+        return False
+    return sum(abs(float(x)) for x in v.values()) > 0
 
 
 _KNOB_TYPES: dict[tuple[str, str], tuple] = {
@@ -159,7 +168,7 @@ _KNOB_TYPES: dict[tuple[str, str], tuple] = {
     # 召回权重档(2026-09-24 §2.1):"calibrated"=读 weights.json(旧行为,回滚杆)/
     # "preference"=固定偏好档,十组权重就在下面这个键里(唯一事实源,无自动重标定)。
     ("funnel", "weight_profile"): (_t_profile, "calibrated|preference"),
-    ("funnel", "preference_weights"): (_t_pref_weights, "object:恰含 scoring._GROUPS 十键的有限数"),
+    ("funnel", "preference_weights"): (_t_pref_weights, "object:恰含 scoring._GROUPS 十键的有限数、且绝对值之和≠0"),
     ("l2", "sector_cap"): (_t_num, "number"),
     ("l2", "floors"): (_t_dict, "object"),
     # 落刀帽总开关(2026-09-24 §2.2):true → merit/backfill/非豁免风格桶按 L0 落刀份额封顶

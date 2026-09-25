@@ -36,6 +36,23 @@ def test_falling_knife_risk_off(tmp_path):
     assert pack["breadth"]["falling_knife"] == 0.8
 
 
+def test_falling_knife_delegates_to_shared_predicate(tmp_path, monkeypatch):
+    """M2(2026-09-25 终审):`_breadth` 的 falling_knife 字段必须真调用
+    `scoring.falling_knife_mask`(单一事实源),不是自己平行实现同一谓词(pct_60d < -20)。
+    Mock 掉共享谓词、断言 breadth 的读数完全由 mock 决定 —— 一份仍自己算 `< -20` 的实现会
+    对这个 mock 无感,继续读出真实的 0.2,本测试就会抓到它。"""
+    import pandas as pd
+
+    import autoresearch.scan.market as market
+
+    def _fake_mask(frame):
+        return pd.Series([True] * len(frame), index=frame.index)   # 全部判定落刀
+
+    monkeypatch.setattr(market, "falling_knife_mask", _fake_mask)
+    pack = market_pack(_mk(tmp_path, _rows(8, 2)))   # 真实阈值下应为 0.2(2/10 落刀)
+    assert pack["breadth"]["falling_knife"] == 1.0   # mock 生效 → 全部落刀,证明是委托
+
+
 def test_valuation_pe_positive_only(tmp_path):
     rows = _rows(5, 5)
     rows.append({"code": "999999", "above_ma60": 0.0, "pct_60d": -5.0, "pe": -10.0, "pb": 1.0})

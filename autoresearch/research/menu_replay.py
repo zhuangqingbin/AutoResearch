@@ -148,6 +148,12 @@ def metrics(full: pd.DataFrame, l1p: pd.DataFrame, l2p: pd.DataFrame, *,
         if "pct_20d" in l1p.columns else None
     top20 = l1p.sort_values("composite", ascending=False).head(20)
     l0_knife = _share(falling_knife_mask(full))
+    # M6(2026-09-25 终审):Gate A6 是两句——「席位≥2」∧「席位全部非落刀」。下面只答第一句
+    # (COUNT);第二句此前无字段可核,读者只能信"pick_sector_seats 已经排除落刀"这句构造性
+    # 承诺。缺 sector_seat 列(未启用席位)或缺 pct_60d(答不出落刀与否)→ None,不编 0。
+    seat_mask = l2p["sector_seat"].fillna(False).astype(bool) if "sector_seat" in l2p.columns else None
+    seat_knife_n = (int(falling_knife_mask(l2p[seat_mask]).fillna(False).sum())
+                    if seat_mask is not None and "pct_60d" in l2p.columns else None)
     return {
         "n_l1_new": int(len(l1p)), "n_l1_old": int(len(l1_old)),
         "A1_spearman_composite_pct20d": a1,
@@ -159,7 +165,10 @@ def metrics(full: pd.DataFrame, l1p: pd.DataFrame, l2p: pd.DataFrame, *,
         "L0_knife": l0_knife,
         "A5_l2_healthy_new": _share(healthy_riser_mask(l2p)),
         "L0_healthy": _share(healthy_riser_mask(full)),
-        "A6_sector_seats": int(l2p["sector_seat"].fillna(False).astype(bool).sum()) if "sector_seat" in l2p.columns else None,
+        "A6_sector_seats": int(seat_mask.sum()) if seat_mask is not None else None,
+        # A6 第二分句「席位全部非落刀」的可核字段:席位里落刀的行数。0 = 核过、真干净;
+        # >0 = gate 真的破了;None = 缺列答不出(与上面 A6_sector_seats 的 None 同款语义)。
+        "A6_sector_seats_knife": seat_knife_n,
         # 2026-09-25 fix round 1:floor 桶(lane)的顶替行只在 `knife_cap_swap` 列可见——
         # `selection_detail` 对 lane 行恒写桶名,从不是 "knife_cap"(那字符串只出现在
         # merit/backfill)。优先读新列;旧 CSV(round 1 之前落盘,没有这一列)才退回旧的
@@ -212,13 +221,25 @@ def run_one(staging: Path, weights_doc: dict, *, floors: dict | None, knife_cap:
                      merit_core_knife_uncapped=merit_core_knife_uncapped)}
 
 
+def resolve_sector_seats_cfg(sector_seats_flag: bool, l2cfg: dict) -> dict | None:
+    """`--sector-seats` 只是"要不要去读 `l2.sector_seats` 这块配置"的开关(M7,2026-09-25
+    终审),不能越过块自己的 `enabled` 字段——production(`universe.py` 的
+    `bool(l2_sector_seats.get("enabled", False))`)才是行业席位到底开没开的真相源;replay
+    必须读同一个字段、同一个默认值(缺省 False),否则 production 关掉时 replay 还在用,
+    两边对「这个功能今天生效了吗」能给出不同答案,而这原本该是同一件事。"""
+    if not sector_seats_flag:
+        return None
+    block = dict(l2cfg.get("sector_seats") or {})
+    return block if block.get("enabled") else None
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="L1′/L2′ 离线重算(只读 staging;产物只落 --out)")
     ap.add_argument("--staging", nargs="+", required=True, help="staging 目录(含 L1_scored_full/L1_channels/L2_gbdt_top200)")
     ap.add_argument("--profile", choices=["preference", "calibrated"], default="preference")
     ap.add_argument("--config", default=".claude/skills/scan-market/scan_config.jsonc")
     ap.add_argument("--knife-cap", action="store_true")
-    ap.add_argument("--sector-seats", action="store_true", help="读 l2.sector_seats 配置块(缺块用 pick_sector_seats 自带默认)现选当日行业席位")
+    ap.add_argument("--sector-seats", action="store_true", help="读 l2.sector_seats 配置块现选当日行业席位;块自己的 enabled 仍须为 true(与 production 同口径,M7)")
     ap.add_argument("--out", required=True)
     args = ap.parse_args(argv)
     from autoresearch.scan.user_config import load_user_config
@@ -229,7 +250,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         from autoresearch.common.scoring import _load_weights
         weights_doc = _load_weights(regime="range")
-    sector_seats_cfg = (l2cfg.get("sector_seats") or {}) if args.sector_seats else None
+    sector_seats_cfg = resolve_sector_seats_cfg(args.sector_seats, l2cfg)
     rows = [run_one(Path(s), weights_doc, floors=l2cfg.get("floors"), knife_cap=args.knife_cap,
                     enabled_channels=funnel.get("recall_channels"),
                     sector_seats_cfg=sector_seats_cfg) for s in args.staging]

@@ -306,6 +306,31 @@ def test_resolve_weights_calibrated_delegates_to_pick_weights(tmp_path):
         resolve_weights(_synthetic(50), profile="bogus", preference_weights=None, regime_aware=False)
 
 
+def test_all_zero_preference_weights_all_nan_blocked_only_by_validator():
+    """M3 belt-and-braces(2026-09-25 终审):`combine_group_scores` 自己对全零权重不设防——
+    Σ|w|=0 时 `raw = comp / wabs.replace(0, nan)` 全 NaN,composite 全 NaN(belt:漏洞在这一层
+    真实存在,本函数没有局部护栏)。唯一挡在用户配置与这条路径之间的是**另一个包**里的
+    `autoresearch.scan.user_config._t_pref_weights`(brace)——两层分属 common/ 与 scan/,
+    只锁一层等于没锁,这条测试把两半钉在一起。"""
+    from autoresearch.common.scoring import (
+        _GROUPS,
+        _factor_groups,
+        combine_group_scores,
+        preference_weights_doc,
+    )
+    zero_pw = dict.fromkeys(_GROUPS, 0.0)
+
+    # belt:combine_group_scores 直接吃下全零权重文档,产出全 NaN——漏洞是真的。
+    df = _synthetic(60)
+    weights_doc = preference_weights_doc(zero_pw)     # doc 校验只查键集/有限性,不查和
+    comp = combine_group_scores(df, _factor_groups(df), weights_doc)
+    assert comp.isna().all()
+
+    # brace:唯一挡在配置入口的校验器拒绝同一份权重——生产路径上这份 weights_doc 造不出来。
+    from autoresearch.scan.user_config import _t_pref_weights
+    assert _t_pref_weights(zero_pw) is False
+
+
 # ───────────────────────── falling_knife_mask 单一事实源(Task 10,2026-09-24) ─────────────────────────
 
 

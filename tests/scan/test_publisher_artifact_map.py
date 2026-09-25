@@ -190,6 +190,42 @@ def test_trace_mapping_is_actually_used_by_the_publisher(tmp_path):
         f"映射表里的目的文件没全落地:{set(publisher.TRACE_MAPPING.values()) - landed}"
 
 
+# ── ②b frozen `_session_inputs` 完整性断言(2026-09-25 终审 M4)───────────────────
+
+def test_frozen_l1_weights_declared_present_but_missing_raises(tmp_path):
+    """既有断言的活体覆盖(此前只有实现、没有测试锁):manifest 声称 `L1_weights.json` 在场
+    但文件缺失 → 必须炸,不能悄悄发布一份声称完整、实则残缺的 trace。"""
+    scan = tmp_path / "scan"
+    (scan / "_session_inputs").mkdir(parents=True)
+    (scan / "_session_inputs" / "manifest.json").write_text(json.dumps({
+        "schema_version": 1,
+        "present": {"scan_config.jsonc": True, "pinned.jsonc": True, "L1_weights.json": True},
+    }), encoding="utf-8")
+    # L1_weights.json 故意不写:manifest 声称 True,现场却没有这份文件。
+    out = tmp_path / "run"
+    with pytest.raises(RuntimeError, match="L1 weights"):
+        publisher._publish_pipeline(scan, out, "2026-08-06")
+
+
+def test_frozen_l1_weight_profile_declared_present_but_missing_raises(tmp_path):
+    """M4(2026-09-25 终审):`L1_weight_profile.json` 是 preference 档(生产现行 weight_profile)
+    实际对应的权重 identity 快照——`L1_weights.json`(校准档遗物,当前 profile 不读)享有的
+    冻结完整性断言,这份**production 实际用的**快照此前完全没有,manifest 声称在场但文件
+    缺失时会被无声放过,发布出去的 trace 悄悄少一件证据。"""
+    scan = tmp_path / "scan"
+    (scan / "_session_inputs").mkdir(parents=True)
+    (scan / "_session_inputs" / "manifest.json").write_text(json.dumps({
+        "schema_version": 2,
+        "present": {"scan_config.jsonc": True, "pinned.jsonc": True,
+                    "L1_weights.json": False, "L1_weight_profile.json": True},
+        "weight_profile_error": None,
+    }), encoding="utf-8")
+    # L1_weight_profile.json 故意不写:manifest 声称 True,现场却没有这份文件。
+    out = tmp_path / "run"
+    with pytest.raises(RuntimeError, match="weight profile"):
+        publisher._publish_pipeline(scan, out, "2026-08-06")
+
+
 # ── ③ assemble 阶段认领的产物清单 ───────────────────────────────────────────
 
 def test_assemble_stage_artifacts_are_byte_for_byte_todays_list():

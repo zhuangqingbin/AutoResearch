@@ -181,3 +181,70 @@ def test_metrics_degrades_to_none_only_for_the_column_that_is_actually_missing()
     assert out["A1_spearman_composite_pct20d"] is None
     assert out["A2_top20_knife"] is not None
     assert out["A3_l1_knife_new"] is not None
+
+
+def test_a6_sector_seats_knife_catches_a_seat_that_is_a_falling_knife():
+    """M6(2026-09-25 终审):Gate A6 有两个分句——「席位≥2」与「席位全部非落刀」。`metrics()`
+    此前只吐席位 COUNT(`A6_sector_seats`),批 4 读者没有任何字段能核实第二个分句,只能
+    凭"`pick_sector_seats` 内部已经把落刀排除了"这个构造性事实去相信它。本测试锁住新字段:
+    3 只席位里混 1 只 pct_60d=-30(落刀)→ `A6_sector_seats_knife` 必须读 1,不能读 0 或 None
+    (读 0/None 就是"用构造代替验证"这个病本身)。"""
+    from autoresearch.research.menu_replay import metrics
+    l1p = pd.DataFrame({"code": ["600000"], "composite": [50.0], "pct_60d": [10.0]})
+    l2p = pd.DataFrame({
+        "code": [f"{i:06d}" for i in range(4)],
+        "pct_60d": [10.0, 20.0, -30.0, 5.0],
+        "sector_seat": [True, True, True, False],   # 3 只席位,index 2 落刀
+    })
+    out = metrics(l1p, l1p, l2p, l1_old=l1p, l2_old=l2p)
+    assert out["A6_sector_seats"] == 3
+    assert out["A6_sector_seats_knife"] == 1
+
+
+def test_a6_sector_seats_knife_is_zero_not_none_when_seats_are_clean():
+    """全部席位非落刀(生产期望态)→ 读 0,不是 None——0 是"核过、真干净",None 才是"没法核"
+    (与 `merit_core_knife_share` 的 0/None 区分同一个纪律)。"""
+    from autoresearch.research.menu_replay import metrics
+    l1p = pd.DataFrame({"code": ["600000"], "composite": [50.0], "pct_60d": [10.0]})
+    l2p = pd.DataFrame({
+        "code": [f"{i:06d}" for i in range(3)],
+        "pct_60d": [10.0, 20.0, 5.0],
+        "sector_seat": [True, True, False],
+    })
+    out = metrics(l1p, l1p, l2p, l1_old=l1p, l2_old=l2p)
+    assert out["A6_sector_seats_knife"] == 0
+
+
+def test_a6_sector_seats_knife_degrades_to_none_without_seat_or_knife_columns():
+    """缺 `sector_seat` 列(未启用席位)或缺 `pct_60d` 列 → `None`,不得编 0 出来假装核过。"""
+    from autoresearch.research.menu_replay import metrics
+    l1p = pd.DataFrame({"code": ["600000"], "composite": [50.0], "pct_60d": [10.0]})
+    no_seat_col = pd.DataFrame({"code": ["600001"], "pct_60d": [10.0]})
+    out = metrics(l1p, l1p, no_seat_col, l1_old=l1p, l2_old=l1p)
+    assert out["A6_sector_seats"] is None
+    assert out["A6_sector_seats_knife"] is None
+
+    no_knife_col = pd.DataFrame({"code": ["600001"], "sector_seat": [True]})
+    out2 = metrics(l1p, l1p, no_knife_col, l1_old=l1p, l2_old=l1p)
+    assert out2["A6_sector_seats"] == 1          # 席位数不靠 pct_60d,仍可数
+    assert out2["A6_sector_seats_knife"] is None  # 但落刀与否答不出
+
+
+# ───────────────────────── M7(2026-09-25 终审):--sector-seats 必须尊重块自己的 enabled ─────────────────────────
+
+
+def test_sector_seats_cli_flag_honours_the_block_enabled_field():
+    """`--sector-seats` 只应是"要不要去读这块配置"的开关,不能越过 `l2.sector_seats.enabled`
+    自己说的话——否则 production(`universe.py:446` 的 `bool(l2_sector_seats.get("enabled",
+    False))`)把行业席位关掉之后,离线 replay 却还在拿它现选座位,两个本该一致的真相源就此
+    分岔:production 说这功能今天没开,replay 的读数却当它开着算。"""
+    from autoresearch.research.menu_replay import resolve_sector_seats_cfg
+    # 旗标给了、块也在,但 enabled=False(镜像 production 关闭)→ 必须不生效。
+    assert resolve_sector_seats_cfg(True, {"sector_seats": {"enabled": False, "per_sector": 2}}) is None
+    # 旗标给了、enabled=True → 透传整块(含其余键)。
+    assert resolve_sector_seats_cfg(True, {"sector_seats": {"enabled": True, "per_sector": 3}}) == \
+        {"enabled": True, "per_sector": 3}
+    # 旗标没给 → 无论 enabled 是什么都不生效(既有行为,parity)。
+    assert resolve_sector_seats_cfg(False, {"sector_seats": {"enabled": True}}) is None
+    # 缺块(未配置)+ 旗标给了 → enabled 缺省 False(与 production 的 knob 默认口径一致)→ None。
+    assert resolve_sector_seats_cfg(True, {}) is None
