@@ -317,8 +317,11 @@ def card_contract_lint(scan_dir) -> list[dict]:
                         "detail": f"{code} 卡缺『**入场**: 允许|禁止|条件』行(E6 v4 A/R 分级的机读依据;缺行只能当 R 级)"})
         if code in eve_rows and parse_card_context(text).get("entry_stance") == "ALLOWED":
             hit = next(r for r in eve_rows[code] if r.get("phase") == "passive_close_eve")
+            # fix(task-12 附带修复 B):中文调入/调出,不是原始 side 字面量"add"/"drop"——同
+            # relative_buy.py `_hard_gate` ⑤ 段、calendar.py:109 三处统一翻译同一个 side。
+            side_cn = "调入" if hit.get("side") == "add" else "调出"
             out.append({"check": "卡片契约·调样前夜入场允许", "severity": "warn", "code": code,
-                        "detail": (f"{code} 今晚是指数调样生效前夜({hit.get('index_name')} {hit.get('side')} "
+                        "detail": (f"{code} 今晚是指数调样生效前夜({hit.get('index_name')} {side_cn} "
                                    f"E={hit.get('eff_close_date')}:买 E 收盘 = 与被动资金同价买入,历史隔夜为负),"
                                    f"卡入场行却写『允许』——E6 硬门 rebalance_close 会否决,但卡应自己写 禁止")})
         # 早停豁免只认文本首行标题〔早停·表面 DD〕——正文杂散「早停」小标题不豁免(防吞满卡 warn)

@@ -2287,6 +2287,19 @@ def test_hard_gates_tuple_grows_only_when_the_knob_is_on():
     assert RULE_VERSION == "e6.v4.1"
 
 
+def test_field_usage_hard_gate_role_text_counts_match_the_fields_list():
+    """coordinator 派工(task-12 附带修复 C):`hard_gate.role` 的文案曾恒写"四类",与
+    `fields` 列表脱钩——旋钮开时 `fields` 已经是五项,文案却还在说四类,读者会读错门数。
+    与 `fields` 本身同一份开关(`rebalance_gate`)条件化,不是拍一个新常量:关时逐字不变
+    (parity),开时说真话。"""
+    off = _field_usage(False, rebalance_gate=False)["hard_gate"]
+    on = _field_usage(False, rebalance_gate=True)["hard_gate"]
+    assert len(off["fields"]) == 4 and "四类" in off["role"] and "五类" not in off["role"]
+    assert len(on["fields"]) == 5 and "五类" in on["role"] and "四类" not in on["role"]
+    # 关时文案逐字不变(byte parity 的另一半——不只是结构,是这句话本身没有变过)
+    assert off["role"] == "决定 eligible;四类全过才有资格进入候选池(见 build_decision docstring)"
+
+
 def test_rebalance_gate_off_is_v40_verbatim_even_with_passive_close_eve_row(tmp_path):
     scan = _build_scan(tmp_path, _RANK_CANDS)
     base = build_decision(scan)
@@ -2320,7 +2333,9 @@ def test_rebalance_gate_vetoes_the_passive_close_eve_row_and_says_where(tmp_path
     assert doc["index_events"] == {"source": "ok", "gate_evaluated": True, "n_rows": 1,
                                    "n_candidates_in_events": 1, "hits": ["002345"]}
     veto = [r for r in doc["excluded"] if r["reason"] == f"hard_gate.{REBALANCE_GATE}"]
-    assert len(veto) == 1 and "中证500 add E=20261211" in veto[0]["detail"]
+    # fix(task-12 附带修复 B):excluded 明细渲染中文调入/调出,不是原始 side 字面量
+    # "add"/"drop"——与 calendar.py:109 的翻译口径统一(该处已是先例)。
+    assert len(veto) == 1 and "中证500 调入 E=20261211" in veto[0]["detail"]
     assert doc["field_usage"]["hard_gate"]["fields"][-1] == REBALANCE_GATE
     assert "index_events" in doc["field_usage"]
     assert doc["veto_accounting"]["by_gate"][REBALANCE_GATE] == 1
@@ -2335,6 +2350,10 @@ def test_rebalance_gate_ignores_other_phases_and_also_vetoes_drops(tmp_path):
     assert by["002345"]["hard_gate"][REBALANCE_GATE] is True                # 跑道段:事实,不否决
     assert by["000034"]["hard_gate"][REBALANCE_GATE] is False               # E2 裁定:调出票同样一刀
     assert doc["index_events"]["hits"] == ["000034"] and doc["index_events"]["n_candidates_in_events"] == 2
+    # fix(task-12 附带修复 B)的另一半:side="drop" 必须译成"调出",不是恒写"调入"(防止
+    # 只测 add 分支时,一个恒返回"调入"的坏 ternary 也能骗过测试)。
+    veto = [r for r in doc["excluded"] if r["reason"] == f"hard_gate.{REBALANCE_GATE}"]
+    assert len(veto) == 1 and "调出" in veto[0]["detail"] and "调入" not in veto[0]["detail"]
 
 
 def test_rebalance_gate_source_absent_passes_everyone_and_says_so(tmp_path):

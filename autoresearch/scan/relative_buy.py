@@ -302,7 +302,15 @@ def _field_usage(tiering: bool, rebalance_gate: bool = False) -> dict:
     usage = {
         "hard_gate": {
             "fields": list(_hard_gates(rebalance_gate)),
-            "role": "决定 eligible;四类全过才有资格进入候选池(见 build_decision docstring)",
+            # fix(task-12 附带修复 C):文案曾恒写"四类",与上面的 `fields` 脱钩——旋钮开时
+            # `fields` 已经是五项(多 REBALANCE_GATE),文案却没跟着变,读者会读错门数。同
+            # `fields` 一样按 `rebalance_gate` 条件化(不是拍一个新常量):关时这句话逐字
+            # 不变(byte parity),开时说真话。做成"unconditional"(直接拼 len(fields) 之类)
+            # 曾被试过又撤回——不是因为它会算错,而是它会让这行代码看起来像"永远读当次门数"
+            # 从而更容易被后人删掉这个 if,悄悄丢失"关着时必须逐字不变"这条纪律本身;显式
+            # 的 if/else 把这条纪律写在字面上。
+            "role": ("决定 eligible;五类全过才有资格进入候选池(见 build_decision docstring)" if rebalance_gate
+                     else "决定 eligible;四类全过才有资格进入候选池(见 build_decision docstring)"),
         },
         "ranking": {
             "fields": [*_FACES, "amount", "code"],
@@ -749,7 +757,11 @@ def _hard_gate(entry: dict, ctx: dict) -> tuple[dict[str, bool], list[dict]]:
             if hit is None:
                 gates[REBALANCE_GATE] = True
             else:
-                fail(REBALANCE_GATE, f"指数调样生效前夜:{hit.get('index_name')} {hit.get('side')} "
+                # fix(task-12 附带修复 B):中文调入/调出,不是原始 side 字面量"add"/"drop"——
+                # calendar.py:109 的日历行已经这么翻译同一份事实,两个渲染同一件事的地方不能
+                # 各说各话(一个中文一个英文字面量)。
+                side_cn = "调入" if hit.get("side") == "add" else "调出"
+                fail(REBALANCE_GATE, f"指数调样生效前夜:{hit.get('index_name')} {side_cn} "
                                      f"E={hit.get('eff_close_date')}(买 E 收盘 = 与被动资金同价买入)")
 
     return {gate: gates.get(gate, False) for gate in ctx.get("hard_gates", _HARD_GATES)}, details

@@ -54,7 +54,7 @@ def _scan(tmp_path: Path, *, l2_knife: float = 0.25, l0_knife: float = 0.23,
          gates_ok: bool = True, tier: str | None = None, blind: int = 0,
          extra_excluded: tuple[dict, ...] = (), write_decision: bool = True,
          pinned_data_a_failures: int = 0, tiering: bool | None = None,
-         sector_seats: list[dict] | None = None) -> Path:
+         sector_seats: list[dict] | None = None, rebalance_close: int | None = None) -> Path:
     """`cards`:每个候选一份 `card_context`(用 `_card()` 造)。`in_pool`:每个候选一个
     bool,与 `cards` 等长,缺省全 True(`relative_buy.py` 的 `finalists` 池下恒 True;
     `composite` 池下=是否证据席 —— fix round 1 finding ③ 测试用,与 `cards` 分开传避免把
@@ -73,6 +73,11 @@ def _scan(tmp_path: Path, *, l2_knife: float = 0.25, l0_knife: float = 0.23,
     `sector_seats`(I5 专用,默认 `None`=不落该文件):非 None 时落一份 `_sector_seats.json`
     (`{"seats": sector_seats}`),模拟行业席位特性"开着"那天 universe.py 无条件写下的
     哨兵文件。
+    `rebalance_close`(task-12 附带修复 A 专用,默认 `None`):非 None 时把值写进
+    `veto_accounting.by_gate.rebalance_close`,镜像生产在 `relative_buy.py` 里的真实行为——
+    `by_gate` 字典推导式只遍历**当次运行实际生效**的硬门元组(`_hard_gates(rebalance_gate)`),
+    旋钮关/老 schema 时这个键根本不存在,不是存在且为 0。保持默认 `None` 时**不写这个键**,
+    模拟旋钮关或没有第五门概念的文档(读出来应为 `None`,不是 `0`)。
     """
     scan = tmp_path / "2026-09-17"
     scan.mkdir()
@@ -102,10 +107,12 @@ def _scan(tmp_path: Path, *, l2_knife: float = 0.25, l0_knife: float = 0.23,
     excluded = excluded + [{"code": c["code"], "reason": "hard_gate.data_a",
                             "detail": f"stage l4_{c['code']} 失败(票级 data_a)"} for c in pinned_cands]
     data_a_n = (len(cands) if not gates_ok else 0) + len(pinned_cands)
+    by_gate = {"data_a": data_a_n, "contract": 0, "no_redflag": no_redflag_n, "tradable": 0}
+    if rebalance_close is not None:
+        by_gate["rebalance_close"] = rebalance_close
     doc = {"blocked": not gates_ok, "buys": ([{"code": "600000", "tier": tier}] if gates_ok and tier else []),
            "candidates": cands + pinned_cands, "excluded": excluded,
-           "veto_accounting": {"by_gate": {"data_a": data_a_n, "contract": 0,
-                                           "no_redflag": no_redflag_n, "tradable": 0}}}
+           "veto_accounting": {"by_gate": by_gate}}
     if tiering is not None:
         doc["tiering"] = tiering
     (scan / "_relative_buy_decision.json").write_text(json.dumps(doc), encoding="utf-8")
@@ -305,6 +312,26 @@ def test_tiering_flag_is_none_for_legacy_documents_that_predate_the_key(tmp_path
     两者对"入场门有没有跑过"含义完全不同)。"""
     doc = build_buyability(_scan(tmp_path, l2_knife=0.25))   # 默认不传 tiering → 文档没有这个键
     assert doc["tiering"] is None
+
+
+# ───────────────── gates.rebalance_close(task-12 附带修复 A) ─────────────────
+
+
+def test_gates_rebalance_close_reads_the_fifth_gate_tally_when_present(tmp_path):
+    """第五门(`relative_buy.rebalance_gate` 开)命中数要能读到这份不可买归因产物里——
+    此前 `gates{}` 只选读 `contract`/`no_redflag` 两个键,第五门的计数进了决策文件的
+    `veto_accounting.by_gate` 却从没被 `buyability.py` 转抄出来,`⑤` 门否决的日子在这份
+    产物里读起来和其它三门否决完全一样看不出「是哪一道门」。"""
+    doc = build_buyability(_scan(tmp_path, l2_knife=0.25, rebalance_close=2))
+    assert doc["gates"]["rebalance_close"] == 2
+
+
+def test_gates_rebalance_close_is_none_not_zero_when_the_fifth_gate_never_ran(tmp_path):
+    """同 `tiering` 的 I4(c) 纪律:旋钮关/老 schema 时 `by_gate` 字典里压根没有
+    `rebalance_close` 这个键(`_veto_accounting_block` 只遍历当次真实生效的硬门元组)——
+    这与"门跑过、命中数是 0"是两个不同世界,不得共用同一个假 0。"""
+    doc = build_buyability(_scan(tmp_path, l2_knife=0.25))    # 默认不传 → by_gate 没有这个键
+    assert doc["gates"]["rebalance_close"] is None
 
 
 # ───────────────────────────── none(出了 A 级) ─────────────────────────────

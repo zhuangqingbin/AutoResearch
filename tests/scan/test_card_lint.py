@@ -118,12 +118,33 @@ def test_card_contract_lint_warns_when_card_allows_entry_on_rebalance_eve(tmp_pa
     ], columns=ie.EVENT_COLS))
     hits = [h for h in card_contract_lint(d) if h["check"] == "卡片契约·调样前夜入场允许"]
     assert {h["code"] for h in hits} == {"600035"}            # 600018 写了禁止;600036 不在守卫相位
-    assert hits[0]["severity"] == "warn" and "中证500" in hits[0]["detail"]
+    # fix(task-12 附带修复 B):明细渲染中文"调入"而非原始 side 字面量"add"——与
+    # relative_buy.py 的 excluded 明细、calendar.py:109 的翻译口径三处统一。
+    assert hits[0]["severity"] == "warn" and "中证500 调入" in hits[0]["detail"]
 
 
 def test_card_contract_lint_rebalance_check_is_silent_without_events_file(tmp_path):
     d = _mk(tmp_path, "2026-12-10", {"600035": "# 决策卡\n**Rating**: Hold\n进入P4倾向: Hold\n**入场**: 允许\n"})
     assert not [h for h in card_contract_lint(d) if h["check"] == "卡片契约·调样前夜入场允许"]
+
+
+def test_card_contract_lint_rebalance_check_says_drop_not_add_for_a_drop_row(tmp_path):
+    """fix(task-12 附带修复 B)的另一半:side="drop" 必须译成"调出"——只测 add→"调入" 分支
+    会漏掉一个恒返回"调入"的坏 ternary。"""
+    import pandas as pd
+
+    from autoresearch.scan import index_events as ie
+    d = _mk(tmp_path, "2026-12-10", {
+        "600018": ("# 决策卡 — 600018 上港 @ 2026-12-10\n**Rating**: Hold\n"
+                   "| 评级 | 现价 | 仓位 |\n|---|---|---|\n| Hold | 10 | 10% |\n进入P4倾向: Hold\n"
+                   "**入场**: 允许\nFINAL TRANSACTION PROPOSAL: **HOLD**\n"),
+    })
+    ie.write_index_events(d, pd.DataFrame([
+        {"code": "600018", "index_code": "000300", "index_name": "沪深300", "side": "drop", "ann_date": "20261127",
+         "eff_close_date": "20261211", "phase": "passive_close_eve", "source": "csindex", "flow_adv_days": None},
+    ], columns=ie.EVENT_COLS))
+    hits = [h for h in card_contract_lint(d) if h["check"] == "卡片契约·调样前夜入场允许"]
+    assert len(hits) == 1 and "调出" in hits[0]["detail"] and "调入" not in hits[0]["detail"]
 
 
 def test_dossier_change_section_lint(tmp_path):

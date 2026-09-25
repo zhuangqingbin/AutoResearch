@@ -226,6 +226,13 @@ def build_buyability(scan_dir: Path | str) -> dict:
         "data_a_day": max(0, int(by_gate.get("data_a", 0)) - data_a_ticker), "data_a_ticker": data_a_ticker,
         "contract": int(by_gate.get("contract", 0)), "no_redflag": int(by_gate.get("no_redflag", 0)),
         "no_redflag_card_prohibited": no_redflag_card_prohibited,
+        # task-12 附带修复 A:第五门(`relative_buy.rebalance_gate` 开时的 `rebalance_close`)
+        # 命中数——`_veto_accounting_block`(relative_buy.py)的 `by_gate` 只遍历**当次真实
+        # 生效**的硬门元组,旋钮关/老 schema 的文档里这个键压根不存在,不是存在且为 0
+        # (同 I4(c) `tiering` 的纪律:「没有这个概念」与「有、但零命中」是两个不同世界,
+        # 不得共用一个假 0)。既有键(`n`/`contract`/…)全部保持不变——这里只加新键,
+        # 不改老键的取值方式,老文档读出的既有字段逐字不变。
+        "rebalance_close": (int(by_gate["rebalance_close"]) if "rebalance_close" in by_gate else None),
     }
 
     buys = decision.get("buys") or []
@@ -236,8 +243,11 @@ def build_buyability(scan_dir: Path | str) -> dict:
                  and menu["l2_knife"] > menu["l0_knife"] + MENU_KNIFE_TOLERANCE)
                 or (menu["l2_healthy"] is not None and menu["l0_healthy"] is not None
                     and menu["l2_healthy"] < menu["l0_healthy"]))
-    # fix round 1 finding ③:`eligible` 只问四道硬门(tradable/data_a/contract/no_redflag),
-    # 不问候选池——composite 池下一张 ALLOWED 且过硬门的卡仍可能因为不在证据席被
+    # fix round 1 finding ③:`eligible` 只问当次运行实际生效的硬门(旋钮
+    # `relative_buy.rebalance_gate` 关时四道:tradable/data_a/contract/no_redflag;开时多
+    # 第五道 rebalance_close——`eligible` 是决策文档自己算好的字段,这里只读不重算,门数
+    # 随文档当天的旋钮状态走,不是本文件里硬编码的常数),不问候选池——composite 池下一张
+    # ALLOWED 且过硬门的卡仍可能因为不在证据席被
     # `relative_buy.py` 判 `in_pool=False`（该票同时会被记进 `excluded[reason=not_in_pool]`，
     # 但**留在** `candidates` 里，"不进池 ≠ 不进候选表"，relative_buy.py 原话)，从未真正
     # 有机会当 BUY。`in_pool` 由 relative_buy.py 按当天生效的 pool 逐票算好
