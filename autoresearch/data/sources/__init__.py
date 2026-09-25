@@ -8,6 +8,7 @@ design: docs/specs/2026-06-22-autoresearch-arch-redesign-design.md §B。
     akshare  → import akshare + getattr(ak, endpoint)(**params)。
     fred     → 现有 FRED dataflow(get_macro_data),params 给 indicator/curr_date。
     yfinance → 现有 y_finance dataflow。
+    csindex  → autoresearch.data.sources.csindex(公告列表/详情/附件名单)。
 
 本层**薄**:只取原始帧,不做富化/打分(那是 features/stages 的事)。网络路径 best-effort,
 不进单测——cache 的测试 monkeypatch 掉 fetch;此处只在真跑时点对点拉数。所有第三方/重 import
@@ -29,6 +30,8 @@ def fetch(endpoint: str, params: dict) -> pd.DataFrame:
         return _fetch_akshare(endpoint, params)
     if src == "eastmoney":
         return _fetch_eastmoney(endpoint, params)
+    if src == "csindex":
+        return _fetch_csindex(endpoint, params)
     if src == "fred":
         return _fetch_fred(endpoint, params)
     if src == "yfinance":
@@ -65,6 +68,17 @@ def _fetch_eastmoney(endpoint: str, params: dict) -> pd.DataFrame:
     if endpoint == "eastmoney_hot_rank":
         return fetch_hot_rank(**params)
     raise ValueError(f"unknown eastmoney endpoint {endpoint!r}")
+
+
+def _fetch_csindex(endpoint: str, params: dict) -> pd.DataFrame:
+    """中证指数公司公告(自采;design 2026-09-25 §2.1)。列表零参数;详情按 `ann_id`。"""
+    from autoresearch.data.sources import csindex
+
+    if endpoint == "csindex_rebalance_list":
+        return csindex.fetch_rebalance_list()
+    if endpoint == "csindex_rebalance_detail":
+        return csindex.fetch_rebalance_detail(params["ann_id"])
+    raise ValueError(f"unknown csindex endpoint {endpoint!r}")
 
 
 def _fetch_fred(endpoint: str, params: dict) -> pd.DataFrame:
