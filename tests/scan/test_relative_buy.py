@@ -2357,3 +2357,47 @@ def test_rebalance_gate_and_tiering_compose(tmp_path):
                          index_events=_events("601699", "passive_close_eve"), rebalance_gate=True)
     assert _by_code(doc)["601699"]["eligible"] is False                     # A 级卡也挡:门在分级之前
     assert doc["buys"][0]["tier"] == "R"
+
+
+def _events_csv(scan: Path, code: str, phase: str) -> None:
+    import pandas as pd
+
+    from autoresearch.scan import index_events as ie
+    ie.write_index_events(scan, pd.DataFrame([{
+        "code": code, "index_code": "000905", "index_name": "中证500", "side": "add", "ann_date": "20261127",
+        "eff_close_date": "20261211", "phase": phase, "source": "csindex", "flow_adv_days": None,
+    }], columns=ie.EVENT_COLS))
+
+
+def test_write_decision_reads_index_events_from_disk_when_gate_on(tmp_path):
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    _events_csv(scan, "002345", "passive_close_eve")
+    doc = json.loads(write_decision(scan, rebalance_gate=True).read_text(encoding="utf-8"))
+    assert doc["index_events"]["hits"] == ["002345"] and doc["buys"][0]["code"] == "000034"
+
+
+def test_write_decision_ignores_index_events_file_when_gate_off(tmp_path):
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    _events_csv(scan, "002345", "passive_close_eve")
+    doc = json.loads(write_decision(scan).read_text(encoding="utf-8"))
+    assert "index_events" not in doc and doc["buys"][0]["code"] == "002345"
+
+
+def test_write_decision_gate_on_without_file_records_absent(tmp_path):
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    doc = json.loads(write_decision(scan, rebalance_gate=True).read_text(encoding="utf-8"))
+    assert doc["index_events"] == {"source": "absent", "gate_evaluated": False, "n_rows": 0,
+                                   "n_candidates_in_events": 0, "hits": []}
+
+
+def test_verify_decision_must_use_the_same_gate_switch_as_the_writer(tmp_path):
+    from autoresearch.scan.relative_buy import verify_decision
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    _events_csv(scan, "002345", "passive_close_eve")
+    write_decision(scan, rebalance_gate=True)
+    verify_decision(scan, rebalance_gate=True)
+    assert not (scan / "_relative_buy_decision.mismatch.json").exists()      # 同开关 → 安静
+    verify_decision(scan, rebalance_gate=False)
+    assert (scan / "_relative_buy_decision.mismatch.json").exists()          # 不同开关 → 留证据、不覆盖
+    on_disk = json.loads((scan / "_relative_buy_decision.json").read_text(encoding="utf-8"))
+    assert on_disk["index_events"]["hits"] == ["002345"]                     # 盘上那份没被改写

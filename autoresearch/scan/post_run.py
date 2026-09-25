@@ -854,19 +854,20 @@ def _publish_run_observation_unlocked(
     # task-2.4:解析下沉到 `relative_buy.configured_relative_buy()`(消费侧同一入口)——
     # 写者与消费者用两份各自解析的 config,就会出现「渲染层以为在 shadow、写者按 active 写」
     # 这种半开状态,那是本波要防的分家的另一种形状。
-    from autoresearch.scan.relative_buy import configured_relative_buy
+    from autoresearch.scan.relative_buy import configured_rebalance_gate, configured_relative_buy
 
     _rb_mode, _rb_exclude_pinned, _, _rb_pool, _rb_tiering = configured_relative_buy()
+    _rb_gate = configured_rebalance_gate()            # v4.1:两个写者同一个开关(同 tiering 纪律)
     if decision_write == "write":
         from autoresearch.scan.relative_buy import safe_write_decision
 
         safe_write_decision(scan, mode=_rb_mode, exclude_pinned=_rb_exclude_pinned, pool=_rb_pool,
-                            tiering=_rb_tiering)
+                            tiering=_rb_tiering, rebalance_gate=_rb_gate)
     else:
         from autoresearch.scan.relative_buy import safe_verify_decision
 
         safe_verify_decision(scan, mode=_rb_mode, exclude_pinned=_rb_exclude_pinned, pool=_rb_pool,
-                             tiering=_rb_tiering)
+                             tiering=_rb_tiering, rebalance_gate=_rb_gate)
     from autoresearch.scan.buyability import safe_write_buyability
     safe_write_buyability(scan)          # 不可买归因(2026-09-24 §2.7):读决策文件,必须在它之后
     # 现场重建 Task 4(设计稿 §5.2 生产接线):绑定必须在**这里**——决策校验已经完成

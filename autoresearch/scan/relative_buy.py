@@ -920,6 +920,16 @@ def _build_card_snapshot(scan: Path, *, reuse: dict[str, dict] | None = None) ->
     return out
 
 
+def _index_events_input(scan: Path, rebalance_gate: bool) -> dict[str, list[dict]] | None:
+    """v4.1 I/O 边界(镜像 `_build_card_snapshot`):旋钮开才读 `index_events.csv`;缺文件 → None(= 源缺席,
+    `build_decision` 记 source=absent 放行);旋钮关 → None 且 `build_decision` 根本不看它。两个写者共用。"""
+    if not rebalance_gate:
+        return None
+    from autoresearch.scan.index_events import events_by_code, load_index_events
+
+    return events_by_code(load_index_events(scan))
+
+
 def _published_card_sources(target: Path) -> dict[str, dict]:
     """已发布决策文件的逐码 `card_context.source`(供 `verify_decision` 复用判据)。
     文件缺席/损坏/非 dict → 空字典(= 当作"什么都还没发布过",不是错误)。
@@ -1565,21 +1575,25 @@ def configured_tiering() -> bool:
 
 def write_decision(scan_dir: Path | str, date: str | None = None,
                    mode: str = MODE_SHADOW, exclude_pinned: bool = False,
-                   pool: str = POOL_FINALISTS, tiering: bool = False) -> Path:
+                   pool: str = POOL_FINALISTS, tiering: bool = False,
+                   rebalance_gate: bool = False) -> Path:
     """构建并原子落盘。`sort_keys=True` 是 byte 稳定契约的一半,另一半是构建本身无时序量。
 
     schema 2(Task 7):在这里的 I/O 边界一次性读齐 `details/*.md`、算 hash、尝试归档
     (`_build_card_snapshot`),把结果作为「固定卡输入」传给纯计算的 `build_decision`
     ——卡面读取只在这一处发生,`verify_decision` 复用同一构造函数,两者才谈得上"同一份
     卡输入 → 字节级 parity"。`tiering`(v4.0)原样透传给 `build_decision`,缺省 `False`
-    = v3.0 逐字。
+    = v3.0 逐字。`rebalance_gate`(v4.1)与 `tiering` 同款透传;两个写者必须用同一个值,
+    否则 verify 天天误报。
     """
     scan = Path(scan_dir)
     target = scan / DECISION_FILENAME
     card_snapshot = _build_card_snapshot(scan)
     payload = _serialize_decision(
         build_decision(scan, date, mode, exclude_pinned, pool,
-                       card_snapshot=card_snapshot, tiering=tiering))
+                       card_snapshot=card_snapshot, tiering=tiering,
+                       index_events=_index_events_input(scan, rebalance_gate),
+                       rebalance_gate=rebalance_gate))
     target.parent.mkdir(parents=True, exist_ok=True)
     temp = target.with_name(f"{target.name}.tmp")
     temp.write_bytes(payload)
@@ -1589,10 +1603,12 @@ def write_decision(scan_dir: Path | str, date: str | None = None,
 
 def safe_write_decision(scan_dir: Path | str, date: str | None = None,
                         mode: str = MODE_SHADOW, exclude_pinned: bool = False,
-                        pool: str = POOL_FINALISTS, tiering: bool = False) -> Path | None:
-    """影子件失败不得阻断任何东西(本轮没有任何生产消费者依赖它)。"""
+                        pool: str = POOL_FINALISTS, tiering: bool = False,
+                        rebalance_gate: bool = False) -> Path | None:
+    """影子件失败不得阻断任何东西(本轮没有任何生产消费者依赖它)。`rebalance_gate`(v4.1)与
+    `tiering` 同款透传;两个写者必须用同一个值,否则 verify 天天误报。"""
     try:
-        return write_decision(scan_dir, date, mode, exclude_pinned, pool, tiering)
+        return write_decision(scan_dir, date, mode, exclude_pinned, pool, tiering, rebalance_gate)
     except Exception as exc:  # noqa: BLE001 — 纯影子件失败只记一行,不连累主链
         print(f"[relative_buy] 构建失败: {type(exc).__name__}: {exc}", file=sys.stderr)
         return None
@@ -1611,13 +1627,15 @@ def _decision_digest(doc: dict, raw: bytes) -> dict:
 
 def verify_decision(scan_dir: Path | str, date: str | None = None,
                     mode: str = MODE_SHADOW, exclude_pinned: bool = False,
-                    pool: str = POOL_FINALISTS, tiering: bool = False) -> dict:
+                    pool: str = POOL_FINALISTS, tiering: bool = False,
+                    rebalance_gate: bool = False) -> dict:
     """P0-2:writer-2(`post_run observe`)的第二次「写」改成幂等校验,不再无条件覆盖。
 
     `mode`/`exclude_pinned`/`tiering`(v2.0/v4.0)与 `write_decision` 同参、原样透传给
     现算的 `build_decision`——两个写者必须用**同一套**规则重算同一天的决策,否则"两次
     现算是否一致"这句话本身就没有意义(writer-1 用 active 算、writer-2 却永远拿 shadow
-    去比,每天都会误报"不一致")。
+    去比,每天都会误报"不一致")。`rebalance_gate`(v4.1)与 `tiering` 同款透传;两个写者
+    必须用同一个值,否则 verify 天天误报。
 
     `docs/research/2026-08-19-decision-file-two-writers-and-taskbook-hash.md` §2.1/§2.5:
     `_relative_buy_decision.json` 的两个合法写者(`publisher._run_publish` 与
@@ -1654,7 +1672,9 @@ def verify_decision(scan_dir: Path | str, date: str | None = None,
     target = scan / DECISION_FILENAME
     card_snapshot = _build_card_snapshot(scan, reuse=_published_card_sources(target))
     fresh_doc = build_decision(scan, date, mode, exclude_pinned, pool,
-                               card_snapshot=card_snapshot, tiering=tiering)
+                               card_snapshot=card_snapshot, tiering=tiering,
+                               index_events=_index_events_input(scan, rebalance_gate),
+                               rebalance_gate=rebalance_gate)
     fresh_bytes = _serialize_decision(fresh_doc)
     resolved_date = str(fresh_doc.get("date") or date or scan.name)
 
@@ -1710,11 +1730,13 @@ def verify_decision(scan_dir: Path | str, date: str | None = None,
 
 def safe_verify_decision(scan_dir: Path | str, date: str | None = None,
                          mode: str = MODE_SHADOW, exclude_pinned: bool = False,
-                         pool: str = POOL_FINALISTS, tiering: bool = False) -> dict | None:
+                         pool: str = POOL_FINALISTS, tiering: bool = False,
+                         rebalance_gate: bool = False) -> dict | None:
     """`verify_decision` 的失败纪律版:出异常只打一行,与 `safe_write_decision` 同一姿势
-    (决策件本身从不阻断发布);但内部真正的「不一致」分支不算异常,是正常返回路径。"""
+    (决策件本身从不阻断发布);但内部真正的「不一致」分支不算异常,是正常返回路径。
+    `rebalance_gate`(v4.1)与 `tiering` 同款透传;两个写者必须用同一个值,否则 verify 天天误报。"""
     try:
-        return verify_decision(scan_dir, date, mode, exclude_pinned, pool, tiering)
+        return verify_decision(scan_dir, date, mode, exclude_pinned, pool, tiering, rebalance_gate)
     except Exception as exc:  # noqa: BLE001 — 纯影子件失败只记一行,不连累主链
         print(f"[relative_buy] verify 失败: {type(exc).__name__}: {exc}", file=sys.stderr)
         return None

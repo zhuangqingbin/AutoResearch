@@ -435,8 +435,8 @@ def test_publish_run_observation_write_passes_relative_buy_config(tmp_path, monk
 
     publish_run_observation(scan, real_scan=False, decision_write="write")
 
-    assert captured == {"mode": "active", "exclude_pinned": True,
-                        "pool": "finalists", "tiering": False}   # v3.0/v4.0 起 pool/tiering 也必须原样透传
+    assert captured == {"mode": "active", "exclude_pinned": True, "pool": "finalists",
+                        "tiering": False, "rebalance_gate": False}   # v3.0/v4.0/v4.1 起 pool/tiering/rebalance_gate 也必须原样透传
 
 
 def test_publish_run_observation_write_passes_tiering_true_when_configured(tmp_path, monkeypatch):
@@ -463,7 +463,7 @@ def test_publish_run_observation_write_passes_tiering_true_when_configured(tmp_p
     publish_run_observation(scan, real_scan=False, decision_write="write")
 
     assert captured == {"mode": "active", "exclude_pinned": True,
-                        "pool": "finalists", "tiering": True}
+                        "pool": "finalists", "tiering": True, "rebalance_gate": False}
 
 
 def test_publish_run_observation_verify_passes_relative_buy_config(tmp_path, monkeypatch):
@@ -487,8 +487,8 @@ def test_publish_run_observation_verify_passes_relative_buy_config(tmp_path, mon
 
     publish_run_observation(scan, real_scan=False, decision_write="verify")
 
-    assert captured == {"mode": "active", "exclude_pinned": True,
-                        "pool": "finalists", "tiering": False}   # v3.0/v4.0 起 pool/tiering 也必须原样透传
+    assert captured == {"mode": "active", "exclude_pinned": True, "pool": "finalists",
+                        "tiering": False, "rebalance_gate": False}   # v3.0/v4.0/v4.1 起 pool/tiering/rebalance_gate 也必须原样透传
 
 
 def test_publish_run_observation_defaults_relative_buy_to_shadow_without_config(
@@ -510,7 +510,7 @@ def test_publish_run_observation_defaults_relative_buy_to_shadow_without_config(
     publish_run_observation(scan, real_scan=False, decision_write="write")
 
     assert captured == {"mode": "shadow", "exclude_pinned": False,
-                        "pool": "finalists", "tiering": False}
+                        "pool": "finalists", "tiering": False, "rebalance_gate": False}
 
 
 # ── Task 4(2026-09-12 scene-reconstruction · 生产接线):safe_bind_run 的调用点与顺序 ──
