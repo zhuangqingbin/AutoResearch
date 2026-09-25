@@ -35,11 +35,25 @@ def test_second_friday_and_rule_dates():
     assert ie.rule_eff_close_date("20260909") is None          # 临时调整无规则日
 
 
+def test_rule_eff_close_date_covers_kechuang50_quarterly_legs():
+    """review 2026-09-25 #6:半年腿只覆盖 5/11 月公告,科创50 的季度腿(2/8 月公告)此前无规则。"""
+    assert ie.rule_eff_close_date("20260212") == ie.second_friday(2026, 3) == "20260313"
+    assert ie.rule_eff_close_date("20260810") == ie.second_friday(2026, 9) == "20260911"
+    assert ie.rule_eff_close_date("20260909") is None           # 9 月不在 {2,5,8,11} 里,仍无规则
+
+
 def test_eff_close_from_three_sources():
     assert ie.eff_close_from("20261211", "after_close", A, TDS) == ("20261211", "csindex")
     assert ie.eff_close_from("20261214", "from_date", A, TDS) == ("20261211", "csindex")   # 起生效 → 前一交易日
     assert ie.eff_close_from(None, None, A, TDS) == ("20261211", "rule")                  # 11 月公告 → 规则兜底
     assert ie.eff_close_from(None, None, "20260909", TDS) == (None, "none")
+
+
+def test_eff_close_from_never_fabricates_csindex_source_without_a_resolved_date():
+    """review 2026-09-25 #3:「起生效」推到窗口下界之外(prev_trading_day → None)时,绝不能仍报
+    source="csindex"——那是把「解析不出」编码成了「有一个 csindex 日期」。"""
+    assert ie.eff_close_from(TDS[0], "from_date", A, TDS) == (None, "none")
+    assert any(r["endpoint"] == "trade_cal" for r in contracts.degradations())
 
 
 @pytest.mark.parametrize("scan_date,expect", [
@@ -57,6 +71,32 @@ def test_phase_for(scan_date, expect):
 
 def test_phase_unknown_eff_when_no_effective_date():
     assert ie.phase_for("2026-12-10", A, None, TDS) == "unknown_eff"
+
+
+def test_phase_for_effective_date_not_a_trading_day_is_unknown_eff_not_snapped():
+    """review 2026-09-25 #2(b):E 落在窗口内但不是交易日(这里用周六 20261212)——只标
+    unknown_eff,绝不悄悄挪到最近的交易日(那会把真正的 E−1 错判成 announced_runup)。"""
+    assert ie.phase_for("2026-12-10", A, "20261212", TDS) == "unknown_eff"
+    assert any(r["endpoint"] == "trade_cal" for r in contracts.degradations())
+
+
+def test_phase_for_effective_date_past_window_end_still_announced_runup():
+    """review 2026-09-25 #2(b):E 越过窗口右端(不是节假日,只是窗口不够长)必须仍是
+    announced_runup——出窗和节假日是两件不同的事,不能被同一条判据混在一起。"""
+    assert ie.phase_for("2026-12-10", A, "20270101", TDS) == "announced_runup"
+
+
+def test_phase_for_no_earlier_trading_day_in_window_records_degradation():
+    """review 2026-09-25 #2(c):E 等于窗口最早一天,窗口内找不到它的前一交易日——必须显式记账,
+    不能靠 `day == None` 的哑比较悄悄不吭声;返回值本身(announced_runup)不受影响。"""
+    assert ie.phase_for("2026-11-25", "20261120", TDS[0], TDS) == "announced_runup"
+    assert any(r["endpoint"] == "trade_cal" for r in contracts.degradations())
+
+
+def test_phase_for_unknown_eff_does_not_survive_past_the_window_start():
+    """review 2026-09-25 #7:unknown_eff 不能无限期挂着——公告比整段窗口都老 → 出窗(None),
+    不再是 unknown_eff。"""
+    assert ie.phase_for("2026-12-10", "20260909", None, TDS) is None
 
 
 def _list(items):
@@ -101,6 +141,17 @@ def test_build_filters_whitelist_and_labels_phase(lake):
     assert df.flow_adv_days.isna().all()                                     # B3 之前恒空 = 未计算
 
 
+def test_build_processes_announcements_whose_title_lacks_the_word_sample(lake):
+    """review 2026-09-25 #8:list 端点本身只返回调样类公告,标题关键词过滤只会制造静默丢失
+    (换个措辞的真公告消失进空表,读起来像「源可达无事件」)。这条标题里没有「样本」二字,
+    在旧的 `_looks_like_sample_adjustment` 下会被整条跳过;现在必须照常入表。"""
+    fl = _list([["3007009", "关于调整沪深300成份股的公告", "20261127", "index_rebalance"]])
+    fd = _fetch_detail({"3007009": _detail_rows("3007009", "20261127",
+                                                 "上述调整将于2026年12月11日收市后生效。", ROSTER[:1])})
+    df = ie.build_index_events("2026-12-10", today="20261210", fetch_list=fl, fetch_detail=fd, trading_days=TDS)
+    assert len(df) == 1 and df.iloc[0]["phase"] == "passive_close_eve"
+
+
 def test_build_uses_rule_date_when_text_has_no_date(lake):
     fl = _list([["3007002", "关于调整沪深300等指数样本的公告", "20261127", "index_rebalance"]])
     fd = _fetch_detail({"3007002": _detail_rows("3007002", "20261127", "调整名单见附件。", ROSTER[:1])})
@@ -112,7 +163,12 @@ def test_build_uses_rule_date_when_text_has_no_date(lake):
 def test_build_unknown_eff_row_is_kept_with_its_own_phase(lake):
     fl = _list([["3006227", "关于沪深300等指数样本临时调整的公告", "20260909", "index_rebalance"]])
     fd = _fetch_detail({"3006227": _detail_rows("3006227", "20260909", "自东兴证券、信达证券退市日起调整", ROSTER[:1])})
-    df = ie.build_index_events("2026-09-10", today="20261210", fetch_list=fl, fetch_detail=fd, trading_days=TDS)
+    # 本用例的公告/扫描日都在 2026-09,窗口必须真的覆盖那段时间(而不是像别处复用的 TDS 那样
+    # 落在 11/12 月)——否则 review 2026-09-25 #7 的「公告老过窗口 → 出窗」新规则会正确地把它
+    # 判成 None,而这条用例本意是测试「窗口内、真解析不出生效日」这个不同的场景。
+    sept_tds = ["20260908", "20260909", "20260910", "20260911", "20260914"]
+    df = ie.build_index_events("2026-09-10", today="20261210", fetch_list=fl, fetch_detail=fd,
+                               trading_days=sept_tds)
     assert df.iloc[0]["phase"] == "unknown_eff" and pd.isna(df.iloc[0]["eff_close_date"])
 
 
@@ -142,6 +198,9 @@ def test_build_on_past_date_reuses_latest_list_snapshot_instead_of_fetching(lake
     ie.build_index_events("2026-12-10", today="20261210", fetch_list=fl, fetch_detail=fd, trading_days=TDS)
     df = ie.build_index_events("2026-12-01", today="20261201", fetch_list=fl, fetch_detail=fd, trading_days=TDS)
     assert len(calls) == 1 and len(df) == 1                                  # 补跑:读湖里最新快照,不取网
+    # review 2026-09-25 #4:这是把另一天的观测代入一个对时间敏感的相位计算,必须留痕,不能悄悄做。
+    assert any(r["endpoint"] == "csindex_rebalance_list" and "快照" in r["reasons"][0]
+               for r in contracts.degradations())
 
 
 def test_detail_is_fetched_once_per_announcement(lake):
@@ -199,4 +258,29 @@ def test_trading_days_window_falls_back_to_weekdays_and_records_it(monkeypatch):
     monkeypatch.setattr(ts_src, "_pro", lambda: (_ for _ in ()).throw(RuntimeError("no token")))
     days, source = ie.trading_days_window("2026-12-10", before=7, after=7)
     assert source == "weekday_approx" and "20261210" in days and "20261212" not in days   # 周六不在
+    assert any(r["endpoint"] == "trade_cal" for r in contracts.degradations())
+
+
+def test_trading_days_window_success_path_reports_trade_cal_basis(monkeypatch):
+    """review 2026-09-25(#1/#2 缺的测试):目前只测过失败/近似路径——成功路径从没被测过,
+    所以 `tushare_source._trade_days` 被改名/签名变化会被 `except Exception` 悄悄吞成
+    weekday_approx,而不会有任何测试变红。这条直接注入一个成功的 `_trade_days`,钉住
+    source == "trade_cal"。"""
+    import autoresearch.data.tushare_source as ts_src
+    monkeypatch.setattr(ts_src, "_pro", lambda: object())
+    monkeypatch.setattr(ts_src, "_trade_days", lambda pro, start, end: ["20261127", "20261211"])
+    days, source = ie.trading_days_window("2026-12-10", before=7, after=7)
+    assert source == "trade_cal" and days == ["20261127", "20261211"]
+
+
+def test_build_returns_none_when_trading_calendar_is_only_approximated(lake, monkeypatch):
+    """review 2026-09-25 #1(a):没有显式传 `trading_days` 的生产路径,真实日历不可达、只拿到
+    weekday_approx 近似时,`build_index_events` 必须不产表——一张按近似日历算出的相位表比没有
+    表更危险(它会把 passive_close_eve 错标到真实日历上的另一天)。"""
+    import autoresearch.data.tushare_source as ts_src
+    monkeypatch.setattr(ts_src, "_pro", lambda: (_ for _ in ()).throw(RuntimeError("no token")))
+    fl = _list([["3007001", "关于调整沪深300等指数样本的公告", "20261127", "index_rebalance"]])
+    fd = _fetch_detail({"3007001": _detail_rows("3007001", "20261127", "x", ROSTER[:1])})
+    df = ie.build_index_events("2026-12-10", today="20261210", fetch_list=fl, fetch_detail=fd)  # 无 trading_days=
+    assert df is None
     assert any(r["endpoint"] == "trade_cal" for r in contracts.degradations())
