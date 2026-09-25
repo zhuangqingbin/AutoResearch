@@ -466,6 +466,36 @@ def test_publish_run_observation_write_passes_tiering_true_when_configured(tmp_p
                         "pool": "finalists", "tiering": True, "rebalance_gate": False}
 
 
+def test_publish_run_observation_write_passes_rebalance_gate_true_when_configured(tmp_path, monkeypatch):
+    """fix round 1(item 1,coordinator review):every existing assertion in this file pins
+    `"rebalance_gate": False` — nothing in the suite exercises the `True` direction, so
+    replacing `rebalance_gate=_rb_gate` with a literal `False` at both `post_run.py` call
+    sites would leave the whole suite green while the production knob silently does
+    nothing once the configuration task turns it on. Clone of the `tiering=True` test
+    directly above, same shape, new knob."""
+    scan = tmp_path / "2026-09-26"
+    scan.mkdir()
+    cfg_dir = tmp_path / ".claude" / "skills" / "scan-market"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "scan_config.jsonc").write_text(
+        json.dumps({"relative_buy": {"mode": "active", "exclude_pinned": True,
+                                     "pool": "finalists", "rebalance_gate": True}}),
+        encoding="utf-8")
+    monkeypatch.setattr("autoresearch.scan.user_config.DEFAULT_PATH",
+                        cfg_dir / "scan_config.jsonc")
+    captured: dict = {}
+
+    def _fake_safe_write(_scan_dir, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("autoresearch.scan.relative_buy.safe_write_decision", _fake_safe_write)
+
+    publish_run_observation(scan, real_scan=False, decision_write="write")
+
+    assert captured == {"mode": "active", "exclude_pinned": True,
+                        "pool": "finalists", "tiering": False, "rebalance_gate": True}
+
+
 def test_publish_run_observation_verify_passes_relative_buy_config(tmp_path, monkeypatch):
     """writer-2(verify 模式):同一份 config 必须同样传给 `safe_verify_decision`——两个
     写者用不同规则重算,「两次现算是否一致」这句话就没有意义。"""

@@ -2290,11 +2290,24 @@ def test_hard_gates_tuple_grows_only_when_the_knob_is_on():
 def test_rebalance_gate_off_is_v40_verbatim_even_with_passive_close_eve_row(tmp_path):
     scan = _build_scan(tmp_path, _RANK_CANDS)
     base = build_decision(scan)
-    doc = build_decision(scan, index_events=_events("002345", "passive_close_eve"))   # rebalance_gate 默认 False
+    # fix round 1:`index_events_error=True` 同 `index_events` 一样,门关时必须被忽略——旋钮才是
+    # 唯一开关,不是"给了任何一个 index_events* 形参就多少生效一点"。
+    doc = build_decision(scan, index_events=_events("002345", "passive_close_eve"),
+                         index_events_error=True)                                    # rebalance_gate 默认 False
     assert doc == base
     assert "index_events" not in doc
     assert "rebalance_close" not in doc["candidates"][0]["hard_gate"]
     assert doc["field_usage"]["hard_gate"]["fields"] == ["tradable", "data_a", "contract", "no_redflag"]
+    # fix round 1(item 2,coordinator review):`doc == base` 与既有 `test_field_usage_derives_
+    # from_hard_gates_and_faces_without_inventing_a_new_gate` 都拿两侧共享 rebalance_gate=False 的
+    # 值互相比较——`_field_usage` 里的 `if rebalance_gate:` 守卫被删掉也会两侧同时漂移、什么都不动。
+    # 建议的 `set(doc["field_usage"]) == set(FIELD_USAGE)` 我先按变异测试验证过一遍,再落这里:
+    # `FIELD_USAGE = _field_usage(tiering=False)` 的 `rebalance_gate` 同样吃的是形参默认值——对着
+    # 它比,和对着另一次 `build_decision()` 调用比是**同一个盲点**,守卫被删时两侧一起多出
+    # `"index_events"` 键、比较仍然相等、断言仍然绿(实测确认,不是猜的)。真正独立于本函数的
+    # 参照只能是硬编码的字面量键集——`_field_usage` 关双开关时的完整契约就是这五个,一个不多。
+    assert set(doc["field_usage"]) == {
+        "hard_gate", "ranking", "display_only", "research_rating", "l4_proposal"}
 
 
 def test_rebalance_gate_vetoes_the_passive_close_eve_row_and_says_where(tmp_path):
@@ -2329,6 +2342,18 @@ def test_rebalance_gate_source_absent_passes_everyone_and_says_so(tmp_path):
     doc = build_decision(scan, index_events=None, rebalance_gate=True)
     assert all(row["hard_gate"][REBALANCE_GATE] is True for row in doc["candidates"])
     assert doc["index_events"] == {"source": "absent", "gate_evaluated": False, "n_rows": 0,
+                                   "n_candidates_in_events": 0, "hits": []}
+
+
+def test_rebalance_gate_source_error_passes_everyone_and_says_so(tmp_path):
+    """fix round 1(item 3):第三个 source 值——`index_events_error=True` 时门后果与 `absent`
+    完全相同(全员放行),但产物必须记 `source="error"` 不是 `"absent"`(「读不出来」与「压根
+    没有」是两个不同的因,即使门后果相同;consumer 端 `brief._rebalance_line` 已在 `f302cc8`
+    读这第三个值)。"""
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    doc = build_decision(scan, index_events_error=True, rebalance_gate=True)
+    assert all(row["hard_gate"][REBALANCE_GATE] is True for row in doc["candidates"])
+    assert doc["index_events"] == {"source": "error", "gate_evaluated": False, "n_rows": 0,
                                    "n_candidates_in_events": 0, "hits": []}
 
 
@@ -2388,6 +2413,25 @@ def test_write_decision_gate_on_without_file_records_absent(tmp_path):
     doc = json.loads(write_decision(scan, rebalance_gate=True).read_text(encoding="utf-8"))
     assert doc["index_events"] == {"source": "absent", "gate_evaluated": False, "n_rows": 0,
                                    "n_candidates_in_events": 0, "hits": []}
+
+
+def test_write_decision_gate_on_with_unreadable_file_records_error_and_still_writes(tmp_path, capsys):
+    """fix round 1(item 3,coordinator review):`index_events.csv` 的写者是非原子写,中断的一次
+    会留下一个读不出来的半成品(此处用零字节文件模拟)。旧代码此处会让 `pd.read_csv` 的异常穿透
+    `_index_events_input` → `write_decision` → 调用方(`safe_write_decision` 的兜底 catch 才接得住,
+    但那意味着当天**完全不产出**决策文件,比任何一道门单独否决都坏)。修复后 `write_decision`
+    本身(不是 `safe_write_decision`)必须稳态返回一份 source="error" 的决策文件——门在读失败时
+    与 source 缺席同一后果(全员放行),但产物必须留痕这是「读不出来」不是「压根没有」。
+    """
+    from autoresearch.scan.index_events import INDEX_EVENTS_FILENAME
+
+    scan = _build_scan(tmp_path, _RANK_CANDS)
+    (scan / INDEX_EVENTS_FILENAME).write_bytes(b"")           # 零字节:中断写留下的半成品
+    doc = json.loads(write_decision(scan, rebalance_gate=True).read_text(encoding="utf-8"))
+    assert doc["index_events"] == {"source": "error", "gate_evaluated": False, "n_rows": 0,
+                                   "n_candidates_in_events": 0, "hits": []}
+    assert doc["buys"][0]["code"] == "002345"                 # 当天照样产出决策文件,冠军照选
+    assert "index_events" in capsys.readouterr().err          # 降级必须可见(同 configured_rebalance_gate 姿势)
 
 
 def test_verify_decision_must_use_the_same_gate_switch_as_the_writer(tmp_path):
