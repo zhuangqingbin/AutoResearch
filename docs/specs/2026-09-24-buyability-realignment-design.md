@@ -76,6 +76,24 @@
 
 ### 2.3 行业席位（裁定③，Claude 决定：接，上涨侧、席位制、不做排序驱动）
 
+> 🚨 **这条决定与一条既有架构约束相冲突，代价必须写明（2026-09-25 终审 I7 补）**：
+> `scan/market.py:259` 的 `render_sector_top3` docstring 写着「仅 L5 + sector_ledger；**防锚定：不喂 L3/L4**」，
+> `scan/self_review.py` 还有一道 lint 专门查 `sector_healthy_top3` 有没有泄漏进策略师稿。
+> 而行业席位**正是**用 `sector_healthy_top3` 选出入围行业，Task 14 写的 🏭 图例更是直接告诉 L3
+> 「行业席位 = 当日 healthy top3 行业内的非落刀健康上涨成员」。
+>
+> **约束的字面仍然成立**（那道 lint 查的是 `market_view.md`，席位走的是 L3 表，是另一个产物，不会误报），
+> **但它的用意被部分跨过了**：L3 现在能从 🏭 列推断出哪些行业在当日 healthy 前三。
+>
+> 这是裁定③「接」的直接代价，不是疏忽。设计时已经安排了三道反锚定的对冲，全部写在同一句图例里：
+> ①「确定性直通到本表」——说明它为什么在这里，不是 L3 自己挑的；②「**不因席位抬评级**」；
+> ③「**B 条照常适用**」——硬下跌排除对席位票一视同仁（Task 14 的复审专门为这一句补了锚测试，
+> 因为低位转强旗的图例写的是「B 条对其不适用」，同一族图例里这是个有两档的活开关）。
+>
+> **该被观察的风险**：席位票在 L3 的评级分布，是否系统性高于同画像的非席位票。若是，说明对冲失效，
+> 回滚杆是 `l2.sector_seats.enabled = false`（一行，逐字 parity）。批 4 真跑时把这个对照读出来。
+
+
 - 生效点：`universe.run` 在 `scored` 就绪后、`recall_select` 之前：`top = sector_healthy_top3(scored, k=cfg.max_sectors)`；每个入围行业内取 `healthy_riser_mask ∧ ¬falling_knife_mask` 的成员，按当日 composite（偏好档）降序取 `per_sector` 只；剔 📌/ST/当日涨幅 ≥ `CHASE_1D_PCT`。产出 `sector_seats: list[{code, industry, rank_in_sector}]`，落 `_sector_seats.json`（新登记产物）。
 - 注入：席位行以 `sector_seat=True`、`recall_channels += "sector_seat"` 加进 `recall`（不占 `recall_n`，镜像 `pinned` 强注）；`select_l2` 把 `sector_seat` 行与 `pinned` 同一处理：不进竞争、选完追加、`l2_lane_reserved=True`、`selection_reason="sector_seat"`、`selection_detail=<industry>`。
 - L3：`prompt.prepare_l3_table` 加 🏭 列（图例：「行业席位 = 当日 healthy top3 行业内的非落刀健康上涨成员，确定性直通到 L3；B 条照常适用；不因席位抬评级」）；`triage` 新增 ①c 强留 `sector_seat` 行（与 ①b 同属受保护集）。L3 守卫链不加新守卫；席位票在 L3 正常参与 finalist 竞争。
