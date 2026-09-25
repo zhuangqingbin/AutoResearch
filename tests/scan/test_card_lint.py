@@ -86,6 +86,46 @@ def test_card_contract_lint_flags_missing_entry_line(tmp_path):
     assert has_machine_entry_line("**入场**: <禁止|条件(<一句>)>") is False     # 占位符不算
 
 
+def test_card_contract_lint_warns_when_card_allows_entry_on_rebalance_eve(tmp_path):
+    """2026-09-25 §2.5:该票今晚是调样生效前夜,卡入场行却写『允许』→ warn(E6 门会否决,但卡应自己写 禁止)。
+
+    brief 原字面卡面文本没有『评级』仪表盘表——`parse_card_context._parse_dashboard` 找不到表
+    会在够到 `**入场**` 行之前整段早退(`entry_stance` 恒 UNKNOWN),三张卡全部读不出 ALLOWED,
+    这条测试原样抄反而会红。这里按仓库既有真实卡面形状(`test_parsers_card_context.py` 的
+    `| 评级 | 现价 | 仓位 |` 三行)补一张最小表,断言本身(哪只该警、警什么)照抄不动。
+    """
+    import pandas as pd
+
+    from autoresearch.scan import index_events as ie
+    d = _mk(tmp_path, "2026-12-10", {
+        "600035": ("# 决策卡 — 600035 楚天 @ 2026-12-10\n**Rating**: Hold\n"
+                   "| 评级 | 现价 | 仓位 |\n|---|---|---|\n| Hold | 10 | 10% |\n进入P4倾向: Hold\n"
+                   "**入场**: 允许\nFINAL TRANSACTION PROPOSAL: **HOLD**\n"),
+        "600018": ("# 决策卡 — 600018 上港 @ 2026-12-10\n**Rating**: Hold\n"
+                   "| 评级 | 现价 | 仓位 |\n|---|---|---|\n| Hold | 10 | 10% |\n进入P4倾向: Hold\n"
+                   "**入场**: 禁止\nFINAL TRANSACTION PROPOSAL: **HOLD**\n"),
+        "600036": ("# 决策卡 — 600036 招行 @ 2026-12-10\n**Rating**: Hold\n"
+                   "| 评级 | 现价 | 仓位 |\n|---|---|---|\n| Hold | 10 | 10% |\n进入P4倾向: Hold\n"
+                   "**入场**: 允许\nFINAL TRANSACTION PROPOSAL: **HOLD**\n"),
+    })
+    ie.write_index_events(d, pd.DataFrame([
+        {"code": "600035", "index_code": "000905", "index_name": "中证500", "side": "add", "ann_date": "20261127",
+         "eff_close_date": "20261211", "phase": "passive_close_eve", "source": "csindex", "flow_adv_days": None},
+        {"code": "600018", "index_code": "000300", "index_name": "沪深300", "side": "drop", "ann_date": "20261127",
+         "eff_close_date": "20261211", "phase": "passive_close_eve", "source": "csindex", "flow_adv_days": None},
+        {"code": "600036", "index_code": "000300", "index_name": "沪深300", "side": "add", "ann_date": "20261127",
+         "eff_close_date": "20261211", "phase": "announced_runup", "source": "csindex", "flow_adv_days": None},
+    ], columns=ie.EVENT_COLS))
+    hits = [h for h in card_contract_lint(d) if h["check"] == "卡片契约·调样前夜入场允许"]
+    assert {h["code"] for h in hits} == {"600035"}            # 600018 写了禁止;600036 不在守卫相位
+    assert hits[0]["severity"] == "warn" and "中证500" in hits[0]["detail"]
+
+
+def test_card_contract_lint_rebalance_check_is_silent_without_events_file(tmp_path):
+    d = _mk(tmp_path, "2026-12-10", {"600035": "# 决策卡\n**Rating**: Hold\n进入P4倾向: Hold\n**入场**: 允许\n"})
+    assert not [h for h in card_contract_lint(d) if h["check"] == "卡片契约·调样前夜入场允许"]
+
+
 def test_dossier_change_section_lint(tmp_path):
     # 前日该票有卡 → 今日档案可注入 → 卡缺"变化项" → warn
     prev = _mk(tmp_path, "2026-07-02", {"000001": FULL_OK})

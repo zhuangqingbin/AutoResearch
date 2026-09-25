@@ -301,6 +301,11 @@ def card_contract_lint(scan_dir) -> list[dict]:
     if not base.is_dir():
         return []
     p4_re = re.compile(r"进入P4倾向[:：]")
+    # 2026-09-25 §2.5:今晚处于调样生效前夜的票 → 卡入场行不该是「允许」。文件缺席 → 整段 no-op(parity)。
+    from autoresearch.scan.index_events import events_by_code, load_index_events
+    from autoresearch.scan.l4.parsers import parse_card_context
+    eve_rows = {code: rows for code, rows in (events_by_code(load_index_events(scan_dir)) or {}).items()
+                if any(r.get("phase") == "passive_close_eve" for r in rows)}
     out: list[dict] = []
     for p in sorted(base.glob("*.md")):
         text = p.read_text(encoding="utf-8")
@@ -310,6 +315,12 @@ def card_contract_lint(scan_dir) -> list[dict]:
         if not has_machine_entry_line(text):
             out.append({"check": "卡片契约·入场行缺失", "severity": "warn", "code": code,
                         "detail": f"{code} 卡缺『**入场**: 允许|禁止|条件』行(E6 v4 A/R 分级的机读依据;缺行只能当 R 级)"})
+        if code in eve_rows and parse_card_context(text).get("entry_stance") == "ALLOWED":
+            hit = next(r for r in eve_rows[code] if r.get("phase") == "passive_close_eve")
+            out.append({"check": "卡片契约·调样前夜入场允许", "severity": "warn", "code": code,
+                        "detail": (f"{code} 今晚是指数调样生效前夜({hit.get('index_name')} {hit.get('side')} "
+                                   f"E={hit.get('eff_close_date')}:买 E 收盘 = 与被动资金同价买入,历史隔夜为负),"
+                                   f"卡入场行却写『允许』——E6 硬门 rebalance_close 会否决,但卡应自己写 禁止")})
         # 早停豁免只认文本首行标题〔早停·表面 DD〕——正文杂散「早停」小标题不豁免(防吞满卡 warn)
         first_line = text.split("\n", 1)[0]
         if ("早停因" not in text and "早停" not in first_line
