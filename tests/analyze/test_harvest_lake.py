@@ -336,6 +336,48 @@ def test_ashare_corporate_calendar_keeps_membership_lines_when_akshare_import_fa
 
 
 @pytest.mark.unit
+def test_ashare_corporate_calendar_restores_websearch_fallback_when_lake_has_nothing(tmp_path, monkeypatch):
+    """I4(final whole-branch review,design §2.6/§4 option c):`index_weight` 在 production
+    里没有自动生产者(B3 批之前只有手工普查 CLI 会写),所以成分行会**永久**读成"湖内无",而
+    合并前的旧尾注还在断言"指数调样已由确定性行供给,不再网查"——一份文档声称有能力,产线上
+    却没有任何东西在产数据。恢复该腿的 WebSearch 兜底,只在确定性行自己报告"湖内(成分)真的
+    什么都没有"时才补。显式给一个空湖(不依赖 worktree 真实 lake 里 Task 4 普查留下的数据)。"""
+    empty_lake = tmp_path / "empty_lake"
+    empty_lake.mkdir()
+    monkeypatch.setattr("autoresearch.common.workspace.lake_root", lambda: empty_lake)
+
+    def boom(endpoint, params, today=None, fetch=None):
+        raise ImportError("akshare not installed")
+    monkeypatch.setattr("autoresearch.data.cache.get_or_fetch", boom)
+    out = blocks_ashare.ashare_corporate_calendar("300308.SZ", "2026-08-30") or ""
+    assert "指数成分快照:湖内无" in out
+    assert "WebSearch" in out and "300308" in out and "沪深300" in out
+    assert "不再网查" not in out                     # 旧尾注的无条件断言已删
+
+
+@pytest.mark.unit
+def test_ashare_corporate_calendar_stays_deterministic_when_lake_has_membership_data(tmp_path, monkeypatch):
+    """镶边测试:湖里确实有成分快照时,不该额外补一句成分方向的 WebSearch 兜底——确定性行
+    是更好的答案,搜索仍应保持退役状态,不与之打架。"""
+    import pandas as pd
+
+    lake = tmp_path / "lake"
+    (lake / "index_weight").mkdir(parents=True)
+    (lake / "csindex_rebalance_detail").mkdir(parents=True)
+    (lake / "csindex_rebalance_list").mkdir(parents=True)
+    pd.DataFrame({"index_code": "000300.SH", "con_code": ["300308.SZ"], "trade_date": "20260828",
+                  "weight": 0.1}).to_parquet(lake / "index_weight" / "000300_SH@20260828.parquet")
+    monkeypatch.setattr("autoresearch.common.workspace.lake_root", lambda: lake)
+
+    def boom(endpoint, params, today=None, fetch=None):
+        raise ImportError("akshare not installed")
+    monkeypatch.setattr("autoresearch.data.cache.get_or_fetch", boom)
+    out = blocks_ashare.ashare_corporate_calendar("300308.SZ", "2026-08-30") or ""
+    assert "当前属于 沪深300" in out
+    assert "是否属于沪深300" not in out                # 成分方向的 WebSearch 兜底没有多出来
+
+
+@pytest.mark.unit
 def test_stock_lhb_stock_statistic_em_goes_through_lake(monkeypatch):
     calls: list[tuple[str, dict]] = []
     stat = pd.DataFrame({"代码": ["300308"], "上榜次数": [3], "最近上榜日": ["2026-08-20"],

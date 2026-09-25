@@ -274,14 +274,29 @@ def ashare_corporate_calendar(sym: str, curr_date: str) -> str:
     overhang on/after curr_date) via akshare (OPTIONAL); 业绩预告/政策窗口
     left to WebSearch at reasoning time; 指数成分/调样事件 deterministic
     (index_membership, unconditionally — it has no akshare dependency, so
-    akshare's absence must not gate it; fix round 1 #1, 2026-09-26)."""
+    akshare's absence must not gate it; fix round 1 #1, 2026-09-26).
+
+    I4(final whole-branch review,design §2.6/§4 option c):`index_weight`(成分快照)当前
+    在 production 里没有任何自动生产者——B3 批(ETF 规模描述字段)之前只有手工普查 CLI 会写
+    它,所以这条腿在合并后会**永久**读成"湖内无",而本函数的旧尾注还在断言"指数调样已由
+    确定性行供给,不再网查"。恢复该腿的 WebSearch 兜底,但只在确定性行自己报告"湖内(成分)
+    真的什么都没有"时才补(`index_membership_lines` 返回的 `lake_has_nothing`)——湖里有数据
+    时确定性行是更好的答案,搜索仍应保持退役状态,不与之打架。"""
     code = sym.split(".")[0]
     out = []
     try:
         from autoresearch.analyze.index_membership import index_membership_lines
-        out.append(index_membership_lines(code, curr_date))
+        membership_text, lake_has_nothing = index_membership_lines(code, curr_date)
+        out.append(membership_text)
+        if lake_has_nothing:
+            out.append(
+                f"> 湖内指数成分快照缺席(`index_weight` 尚无自动生产者,B3 批之前手工普查才会写)→ "
+                f"推理时用 **WebSearch** 取『{code} 是否属于沪深300/中证500/中证1000/中证A500/科创50/"
+                "创业板指 最新成分』兜底,标注『实时网查 (WebSearch)』、**不计入确定性 context**。")
     except Exception as e:  # noqa: BLE001 — 只读湖失败不挡日历块;与 akshare 装没装无关
         out.append(f"_指数成分/调样事件读湖失败: {e}_")
+        out.append(f"> 推理时用 **WebSearch** 取『{code} 是否属于六大指数 最新成分/调样』兜底,"
+                   "标注『实时网查 (WebSearch)』。")
     try:
         # D1.1:stock_restricted_release_queue_em 已登记 policy key="as_of"(entity=symbol)——
         # ImportError(akshare 未安装)与其它取数失败原先分两个 try 块渲染不同文案,合并进
@@ -322,8 +337,12 @@ def ashare_corporate_calendar(sym: str, curr_date: str) -> str:
         out.append(f"_akshare 未安装 → 解禁队列不可用；WebSearch『{code} 限售解禁 时间表』兜底。_")
     except Exception as e:
         out.append(f"_解禁队列取数失败: {e}（WebSearch『{code} 限售解禁 时间表』兜底）_")
+    # I4:原句"指数调样已由上方确定性行供给，不再网查"曾无条件收在这里——成分腿在湖内有数据
+    # 时确实如此,但湖内无数据(结构性、永久性,见函数 docstring)时上面已经补了专属的 WebSearch
+    # 兜底行,这条尾注不该继续无条件断言"不再网查"这句现在只对一半情形为真的话。业绩预告/政策
+    # 窗口本身与指数调样无关,单独留一句就够。
     out.append("> 业绩预告窗口（A股 1月底/4月底强制）、政策窗口（政治局会议/两会/降准降息）→ 推理时用 **WebSearch** 补，"
-               "标注『实时网查』。指数调样已由上方确定性行供给，**不再网查**。")
+               "标注『实时网查』。")
     return "\n\n".join(out)
 
 

@@ -74,14 +74,21 @@ def _recent_events(code6: str, curr_date: str, lake: Path, days: int = 60) -> tu
         if not (since <= pub <= cur):
             continue
         eff, kind = parse_effective_date(str(df["content_text"].iloc[0] or ""))
-        eff_txt = f"{_fmt(eff)} {'收盘' if kind == 'after_close' else '起'}生效" if eff else "生效日待公告"
+        # minor-2(final whole-branch review):这里没有交易日历可查(本模块只读湖、零网络,
+        # 详见模块 docstring)——scan 侧 `index_events.phase_for` 撞节假日时会诚实标
+        # `unknown_eff`、绝不把解析/规则算出的日期当已核实的生效日 snap 出去;这里若直接断言
+        # 「X 日收盘生效」,就是在单票路径上重新做了 scan 路径明确拒绝做的事。改成引述公告
+        # 原文的措辞,不升级为已核实事实。
+        eff_txt = (f"公告原文称{_fmt(eff)}{'收盘后' if kind == 'after_close' else '起'}生效"
+                  "(未核交易日历,非已确认生效日)") if eff else "生效日待公告"
         mine = df[(df["code"].astype(str) == code6) & df["index_code"].astype(str).str[:6].isin(INDEX_WHITELIST)]
         for r in mine.itertuples(index=False):
             lines.append(f"{_fmt(pub)} 公告 {INDEX_WHITELIST[str(r.index_code)[:6]]} {'调入' if r.side == 'add' else '调出'},{eff_txt}")
     return lines, any_recent
 
 
-def index_membership_lines(code6: str, curr_date: str, *, lake_root: Path | None = None) -> str:
+def index_membership_lines(code6: str, curr_date: str, *,
+                           lake_root: Path | None = None) -> tuple[str, bool]:
     """该票的「指数成分」+「调样事件(近 60 日)」两行(markdown),供 stock-research full 档日历块嵌入。
 
     presence-gated:成分快照缺席 → 明说"湖内无",不是"不属于"。事件行三态互不合并(fix round 1 #2,
@@ -90,6 +97,17 @@ def index_membership_lines(code6: str, curr_date: str, *, lake_root: Path | None
     六指数半年/季度才调一次样,这是正常的安静期)、从未 consulted("调样事件:源无近 60 日快照")。
     第三态不能靠"detail 里有没有这只票的文件"来判定——那只能证明"没有公告"或"没查过"之一,
     分不清是哪个;必须靠 list 快照(每次跑动都会留一份,不管当天有没有真事件)。
+
+    返回 `(两行 markdown, lake_has_nothing)`(I4,final whole-branch review,design §2.6/§4
+    option c):`lake_has_nothing` 只问**成分**腿(`snap is None`,即 `index_weight` 从未被
+    取数)——这是本模块当前唯一没有自动生产者的那一半:调样事件那一半靠 scan-market 每日日历
+    步 `harvest_index_events` 顺带产、会随时间自愈,`index_weight` 只有手工普查 CLI 会写
+    (`research/index_rebalance_census.py`),B3 批(ETF 规模描述字段)之前 production 里没有
+    任何调用点会生产它,「湖内无」不是"暂时没取到",是这条腿结构性、永久性地没人产。不看事件
+    信号:"近 60 日无调样事件(源可达)"本身就是一句有信息量的确定性答案,不该触发网查;
+    "调样事件:源无近 60 日快照"只说这条腿这次没被查过,不是"什么都不知道"(成分快照仍可能
+    在场)。调用方(`blocks_ashare.ashare_corporate_calendar`)据此决定是否补一句 WebSearch
+    兜底——只在成分这条结构性的洞上补,不在会自愈的事件腿上补。
     """
     lake = Path(lake_root) if lake_root else ws.lake_root()
     names, snap = _membership(code6, lake)
@@ -106,4 +124,4 @@ def index_membership_lines(code6: str, curr_date: str, *, lake_root: Path | None
         e = "**调样事件(近 60 日)**:近 60 日无调样事件(源可达)。"
     else:
         e = "**调样事件(近 60 日)**:调样事件:源无近 60 日快照。"
-    return m + "\n\n" + e
+    return m + "\n\n" + e, snap is None
