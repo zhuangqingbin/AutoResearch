@@ -140,13 +140,30 @@ def parse_effective_date(content_text: str) -> tuple[str | None, str | None]:
 
     kind = "after_close":「X 日收市后生效」→ 被动调仓收盘日 = X;
            "from_date"  :「X 日起生效 / 正式实施」→ 被动调仓收盘日 = X 的前一交易日(由调用方查交易日历);
-           None         :解析不出(如「自退市日起」;落款日期不算)。
+           None         :解析不出,或解析出多个互相竞争的候选(如「自退市日起」;落款日期不算)。
+
+    正文里常同时出现两类日期候选:引用规则本身的生效日(常见于括注引文,写在决定句之前)与
+    **本次调整**真正的操作生效日 —— 两者用词相同,**位置先后不是可靠信号**(引文可能在前也可能
+    在后)。故用「kind 优先 + 唯一性」两级裁决,不做括注剥离/关键词邻近度打分/分句这类无实测样本
+    撑腰的启发式:
+    1) 若候选里恰有一个 after_close —— 不论 from_date 候选有多少个 —— 就是它(指数公司真实公告
+       的操作句几乎总用「收市后」措辞,引文/次要提法多用较松的「起生效/实施」);
+    2) 否则若候选总数恰为 1,就是它;
+    3) 否则(0 个,或 ≥2 个仍不满足①)→ (None, None)——**宁可诚实退化,不猜**:调用方
+       (Task 3 `eff_close_from`)会落回按公告周期推算的 `rule_eff_close_date`,或标记
+       `unknown_eff`,这都好过在硬门上认错生效夜。
     """
+    hits: list[tuple[str, str]] = []
     for m in _DATE_RE.finditer(content_text):
         tail = content_text[m.end(): m.end() + 12]
         d = f"{int(m.group(1)):04d}{int(m.group(2)):02d}{int(m.group(3)):02d}"
         if "收市后" in tail or "收盘后" in tail:
-            return d, "after_close"
-        if re.match(r"\s*起?\s*(正式)?\s*(生效|实施)", tail):
-            return d, "from_date"
+            hits.append((d, "after_close"))
+        elif re.match(r"\s*起?\s*(正式)?\s*(生效|实施)", tail):
+            hits.append((d, "from_date"))
+    after_close = [h for h in hits if h[1] == "after_close"]
+    if len(after_close) == 1:
+        return after_close[0]
+    if len(hits) == 1:
+        return hits[0]
     return None, None
