@@ -9,6 +9,8 @@
   unknown_eff        生效日解析不出(如「自退市日起」),且公告没有老过整段窗口(见 #7)
 E = 被动调仓的那个收盘日:「X 日收市后生效」→ X;「X 日起生效/实施」→ X 的前一交易日;半年定期调样
 (公告在 5/11 月)规则兜底 = 次月第二个周五;科创50 另有季度调样,2/8 月公告兜底到 3/9 月第二个周五。
+**规则兜底只描述周期性调样**:标题带「临时」的调整公告即便落在这四个月,也不套用那张周期表
+(fix-round-2 #1)——它只在文字解析不出日期时才会被问到,而「临时」公告的月份本就与周期性无关。
 
 **E 必须落在真交易日历上,猜不得**(2026-09-25 review #1/#2):`trading_days_window` 取不到真日历、
 只拿到 `weekday_approx` 近似时,`build_index_events` 直接不产表(降级成「源不可达」同一世界)——一张
@@ -80,13 +82,21 @@ def prev_trading_day(day: str, trading_days: list[str]) -> str | None:
 
 
 def eff_close_from(parsed_date: str | None, kind: str | None, ann_date: str,
-                   trading_days: list[str]) -> tuple[str | None, str]:
+                   trading_days: list[str], *, is_temporary: bool = False) -> tuple[str | None, str]:
     """→ (被动调仓收盘日, source)。source ∈ {csindex, rule, none}。
 
     review 2026-09-25 #3:「起生效」推前一交易日,如果 `parsed_date` 落在窗口下界之内
     (`prev_trading_day` 返回 `None`)绝不能仍然报 `source="csindex"`——那等于把「给了日期但解析
     不出前一交易日」编码成了「我们有一个 csindex 日期」,是这个仓库反复撞见的「缺席≠否」病的
     又一个变种。诚实退化成 `(None, "none")` 并留痕,让 `phase_for` 按「解析不出」处理。
+
+    review 2026-09-25 fix-round-2 #1:`rule_eff_close_date` 描述的是**周期性**调样的月份规律,
+    一条标题带「临时」的调整公告(如 2026-09-25 live 探针抓到的「关于沪深300等指数样本临时
+    调整的公告」,同一 feed 里的周期公告都读「关于调整…样本(股)的公告」,没有「临时」二字)
+    即便正好落在 2/5/8/11 月,也不遵守那张周期表——`is_temporary=True` 时直接放弃规则兜底,
+    退化成 `(None, "none")`,让 `phase_for` 按「解析不出」处理,而不是在一个什么都不会发生的
+    夜晚点亮硬门。只挡「猜」,不挡「已解析出的日期」:`parsed_date` 给出的 after_close/from_date
+    分支不受此影响——那是正文里明确写出来的日期,不是按月份猜的。
     """
     if parsed_date and kind == "after_close":
         return parsed_date, "csindex"
@@ -98,6 +108,8 @@ def eff_close_from(parsed_date: str | None, kind: str | None, ann_date: str,
                                             "→ 不冒充已解析的 csindex 日期,退化为未知", key=parsed_date)
             return None, "none"
         return prev, "csindex"
+    if is_temporary:
+        return None, "none"
     rule = rule_eff_close_date(ann_date)
     return (rule, "rule") if rule else (None, "none")
 
@@ -214,9 +226,11 @@ def build_index_events(scan_date: str, *, today: str | None = None, fetch_list=N
     except Exception as e:  # noqa: BLE001
         record_degradation(_LIST_EP, f"取数失败({type(e).__name__}: {e})", key=day)
         return None
-    if lst is None or lst.empty:
-        return pd.DataFrame(columns=EVENT_COLS)
 
+    # fix-round-2 item 2:日历基准检查必须在「列表是否为空」之前——世界①(日历只能近似,不可信)
+    # 与世界②(源可达但列表真的没有事件)必须保持互斥。放在空表检查之后曾会让两者在「近似日历 +
+    # 恰好也是空列表」这一刻塌成同一件事(返回空帧而不是 None)。取数(上面)仍须留在检查之前,
+    # 让湖在日历退化的日子照样积累它自己的按时快照。
     if trading_days is not None:
         tds = trading_days                                      # 显式传入 = 调用方信任的日历,直接用
     else:
@@ -225,6 +239,9 @@ def build_index_events(scan_date: str, *, today: str | None = None, fetch_list=N
             record_degradation("trade_cal", f"交易日历退化为 {tds_basis}(非 trade_cal)"
                                             "→ 相位判定不可信,index_events 本次不产表", key=day)
             return None
+
+    if lst is None or lst.empty:
+        return pd.DataFrame(columns=EVENT_COLS)
 
     rows: list[dict] = []
     for ann in lst.sort_values("publish_date", ascending=False).itertuples(index=False):
@@ -238,7 +255,11 @@ def build_index_events(scan_date: str, *, today: str | None = None, fetch_list=N
         head = detail.iloc[0]
         ann_date = str(head["publish_date"])
         parsed, kind = parse_effective_date(str(head["content_text"] or ""))
-        eff, source = eff_close_from(parsed, kind, ann_date, tds)
+        # fix-round-2 item 1:标题带「临时」→ 不许走周期规则兜底(见 eff_close_from 的
+        # is_temporary 文档)。用的是 list 行的标题(`ann.title`,真实公告标题),不是
+        # detail 里的标题字段。
+        is_temporary = "临时" in str(ann.title)
+        eff, source = eff_close_from(parsed, kind, ann_date, tds, is_temporary=is_temporary)
         phase = phase_for(day, ann_date, eff, tds)
         if phase is None:
             continue

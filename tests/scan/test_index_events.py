@@ -160,6 +160,45 @@ def test_build_uses_rule_date_when_text_has_no_date(lake):
     assert df.iloc[0]["phase"] == "announced_runup"
 
 
+def test_build_withholds_rule_fallback_for_november_temporary_notice(lake):
+    """review 2026-09-25 fix-round-2 item 1:标题带「临时」的公告即便落在规则月份(这里是半年腿
+    的 11 月,规则本身在 #6 之前就已经存在),文字解析不出日期时也不能套用周期规则——旧代码会把
+    这条临时公告在 2026-12-10(规则算出的 12 月11日的前一交易日)判成 passive_close_eve,而那
+    一夜什么都不会发生。标题措辞取自 2026-09-25 对 csindex 的活体探针(见本轮修复报告)。"""
+    fl = _list([["3006227", "关于沪深300等指数样本临时调整的公告", "20261127", "index_rebalance"]])
+    fd = _fetch_detail({"3006227": _detail_rows("3006227", "20261127",
+                                                "自东兴证券、信达证券退市日起调整", ROSTER[:1])})
+    df = ie.build_index_events("2026-12-10", today="20261210", fetch_list=fl, fetch_detail=fd, trading_days=TDS)
+    assert df.iloc[0]["phase"] == "unknown_eff" and df.iloc[0]["source"] == "none"
+    assert pd.isna(df.iloc[0]["eff_close_date"])
+
+
+def test_build_withholds_rule_fallback_for_february_temporary_notice(lake):
+    """同上,针对 #6 新增的 2→3 月季度腿:标题带「临时」+ 解析不出日期 → unknown_eff/source=none,
+    不是 2026 年 3 月第二个周五。"""
+    feb_tds = ["20260210", "20260211", "20260212", "20260213", "20260216"]
+    fl = _list([["3006227", "关于沪深300等指数样本临时调整的公告", "20260212", "index_rebalance"]])
+    fd = _fetch_detail({"3006227": _detail_rows("3006227", "20260212",
+                                                "自东兴证券、信达证券退市日起调整", ROSTER[:1])})
+    df = ie.build_index_events("2026-02-13", today="20261210", fetch_list=fl, fetch_detail=fd,
+                               trading_days=feb_tds)
+    assert df.iloc[0]["phase"] == "unknown_eff" and df.iloc[0]["source"] == "none"
+    assert pd.isna(df.iloc[0]["eff_close_date"])
+
+
+def test_build_keeps_rule_fallback_for_february_periodic_notice(lake):
+    """review 2026-09-25 fix-round-2 item 1:标题**没有**「临时」的周期公告(措辞取自活体探针的
+    「关于调整…样本股的公告」)即便文字解析不出日期,仍然要吃到 #6 新增的 2→3 月规则兜底——这条
+    修复只挡「临时」,不挡真正周期性的调样。"""
+    feb_mar_tds = ["20260209", "20260210", "20260211", "20260212", "20260213",
+                   "20260306", "20260309", "20260310", "20260311", "20260312", "20260313", "20260316"]
+    fl = _list([["3007101", "关于调整科创50等指数样本股的公告", "20260212", "index_rebalance"]])
+    fd = _fetch_detail({"3007101": _detail_rows("3007101", "20260212", "调整名单见附件。", ROSTER[:1])})
+    df = ie.build_index_events("2026-03-10", today="20261210", fetch_list=fl, fetch_detail=fd,
+                               trading_days=feb_mar_tds)
+    assert df.iloc[0]["eff_close_date"] == "20260313" and df.iloc[0]["source"] == "rule"
+
+
 def test_build_unknown_eff_row_is_kept_with_its_own_phase(lake):
     fl = _list([["3006227", "关于沪深300等指数样本临时调整的公告", "20260909", "index_rebalance"]])
     fd = _fetch_detail({"3006227": _detail_rows("3006227", "20260909", "自东兴证券、信达证券退市日起调整", ROSTER[:1])})
@@ -173,9 +212,12 @@ def test_build_unknown_eff_row_is_kept_with_its_own_phase(lake):
 
 
 def test_build_returns_empty_frame_when_no_whitelist_events(lake):
-    fl = _list([["3006244", "关于调整三板成指样本股的公告", "20260918", "index_rebalance"]])
-    fd = _fetch_detail({"3006244": _detail_rows("3006244", "20260918", "x", ROSTER[3:])})
-    df = ie.build_index_events("2026-09-20", today="20261210", fetch_list=fl, fetch_detail=fd, trading_days=TDS)
+    # review 2026-09-25 fix-round-2 item 4:公告日必须落在 TDS 窗口内(12 月,不是 9 月),否则
+    # review #7 的「公告老过窗口 → 出窗」新规则会在 phase_for 里就把这一行判成 None、提前
+    # continue——这条用例本意是测「白名单过滤」这一步,不是测出窗,两者必须分开各自被覆盖。
+    fl = _list([["3006244", "关于调整三板成指样本股的公告", "20261201", "index_rebalance"]])
+    fd = _fetch_detail({"3006244": _detail_rows("3006244", "20261201", "x", ROSTER[3:])})
+    df = ie.build_index_events("2026-12-05", today="20261210", fetch_list=fl, fetch_detail=fd, trading_days=TDS)
     assert df is not None and df.empty and list(df.columns) == ie.EVENT_COLS     # 源可达无事件 = 空表,不是 None
 
 
@@ -215,6 +257,32 @@ def test_detail_is_fetched_once_per_announcement(lake):
     assert calls == ["3007001"]                                              # 第二次命中 <ann_id>@*.parquet
 
 
+def test_load_detail_lake_hit_runs_the_contract_and_is_not_a_rubber_stamp(lake):
+    """review 2026-09-25 fix-round-2 item 3:两个 csindex 端点都是 B 级,`check()` 从不对干净帧
+    抛异常,所以此前每条测过湖命中分支的用例都只喂过干净数据——`check(...)` 调用本身从没被
+    这些测试真正验证过存在的必要性。这里手写一份缺 `content_text` 列的 parquet 直接进湖,
+    走 `_load_detail` 的湖命中分支,确认降级确实被记了账。"""
+    folder = cache.LAKE / ie._DETAIL_EP
+    folder.mkdir(parents=True, exist_ok=True)
+    bad = pd.DataFrame([{"ann_id": "9999999", "publish_date": "20261127"}])   # 缺 content_text
+    bad.to_parquet(folder / "9999999@20261210.parquet")
+    detail = ie._load_detail("9999999", "20261210", fetch_detail=None)        # 缓存命中,fetch_detail 不会被调
+    assert detail is not None and "content_text" not in detail.columns
+    assert any(r["endpoint"] == ie._DETAIL_EP and "缺列" in r["reasons"][0] for r in contracts.degradations())
+
+
+def test_latest_list_snapshot_lake_hit_runs_the_contract_and_is_not_a_rubber_stamp(lake):
+    """同上,针对 `_latest_list_snapshot` 的湖命中分支:手写一份缺 `title` 列的 parquet,
+    确认它也真的跑了契约,不是摆设。"""
+    folder = cache.LAKE / ie._LIST_EP
+    folder.mkdir(parents=True, exist_ok=True)
+    bad = pd.DataFrame([{"ann_id": "8888888", "publish_date": "20261127"}])   # 缺 title
+    bad.to_parquet(folder / "all@20261127.parquet")
+    lst = ie._latest_list_snapshot("20261201")
+    assert lst is not None and "title" not in lst.columns
+    assert any(r["endpoint"] == ie._LIST_EP and "缺列" in r["reasons"][0] for r in contracts.degradations())
+
+
 def test_harvest_writes_no_file_when_source_unreachable(lake, tmp_path):
     d = tmp_path / "2026-12-10"
     d.mkdir()
@@ -226,11 +294,13 @@ def test_harvest_writes_no_file_when_source_unreachable(lake, tmp_path):
 
 
 def test_harvest_writes_header_only_file_when_reachable_without_events(lake, tmp_path):
-    d = tmp_path / "2026-09-20"
+    # review 2026-09-25 fix-round-2 item 4:同上——公告日移进 TDS 窗口(12 月),让这条用例继续
+    # 覆盖白名单过滤这一步,而不是被 #7 的出窗规则提前接管。
+    d = tmp_path / "2026-12-05"
     d.mkdir()
-    fl = _list([["3006244", "关于调整三板成指样本股的公告", "20260918", "index_rebalance"]])
-    fd = _fetch_detail({"3006244": _detail_rows("3006244", "20260918", "x", ROSTER[3:])})
-    df = ie.harvest_index_events("2026-09-20", d, today="20261210", fetch_list=fl, fetch_detail=fd,
+    fl = _list([["3006244", "关于调整三板成指样本股的公告", "20261201", "index_rebalance"]])
+    fd = _fetch_detail({"3006244": _detail_rows("3006244", "20261201", "x", ROSTER[3:])})
+    df = ie.harvest_index_events("2026-12-05", d, today="20261210", fetch_list=fl, fetch_detail=fd,
                                  trading_days=TDS)
     assert df is not None and df.empty and (d / ie.INDEX_EVENTS_FILENAME).exists()   # 世界②:可达无事件 = 落表头
     reloaded = ie.load_index_events(d)
@@ -283,4 +353,17 @@ def test_build_returns_none_when_trading_calendar_is_only_approximated(lake, mon
     fd = _fetch_detail({"3007001": _detail_rows("3007001", "20261127", "x", ROSTER[:1])})
     df = ie.build_index_events("2026-12-10", today="20261210", fetch_list=fl, fetch_detail=fd)  # 无 trading_days=
     assert df is None
+    assert any(r["endpoint"] == "trade_cal" for r in contracts.degradations())
+
+
+def test_build_returns_none_not_empty_frame_when_calendar_degraded_and_list_is_also_empty(lake, monkeypatch):
+    """review 2026-09-25 fix-round-2 item 2:世界①(日历只能近似,不可信)与世界②(源可达但列表
+    真的没有事件)必须保持互斥,即便两个条件同时成立——日历基准检查排在「列表是否为空」之前,
+    产物是 None,不是只有表头的空帧。(空列表帧本身是 B 级违约、`persist_violations=False`,
+    按设计不会落湖——那是另一件事,这条用例只钉产物形状,不断言湖里有没有文件。)"""
+    import autoresearch.data.tushare_source as ts_src
+    monkeypatch.setattr(ts_src, "_pro", lambda: (_ for _ in ()).throw(RuntimeError("no token")))
+    fl = _list([])                                            # 源可达,但真的一条公告都没有
+    df = ie.build_index_events("2026-12-10", today="20261210", fetch_list=fl)   # 无 trading_days=
+    assert df is None                                          # 不是 pd.DataFrame(columns=...) 的空帧
     assert any(r["endpoint"] == "trade_cal" for r in contracts.degradations())
