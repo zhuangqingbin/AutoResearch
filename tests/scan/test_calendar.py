@@ -165,3 +165,77 @@ def test_harvest_calendar_source_absent_leaves_other_legs_intact(tmp_path, monke
     monkeypatch.setattr(ie, "harvest_index_events", lambda date, outdir, **k: None)
     df = cal.harvest_calendar("2026-06-11", {"000001"}, root=tmp_path, index_rebalance=True)
     assert df.empty and not (tmp_path / "2026-06-11" / "index_events.csv").exists()
+
+
+def _mk_index(tmp_path, date="2026-06-11"):
+    d = tmp_path / date
+    d.mkdir(parents=True, exist_ok=True)
+    rows = _ROWS + [
+        {"code": "000004", "kind": "index_rebalance", "event_date": "20260612",
+         "detail": "沪深300 调入|passive_close_eve", "ratio": 0.3},
+        {"code": "000005", "kind": "index_rebalance", "event_date": "20260612",
+         "detail": "中证500 调出|announced_runup", "ratio": None},
+        {"code": "000006", "kind": "index_rebalance", "event_date": "20260612",
+         "detail": "沪深300 调入|announced_runup", "ratio": 0.3},
+    ]
+    pd.DataFrame(rows).to_csv(d / "calendar.csv", index=False)
+    pd.DataFrame([{"code": c, "name": f"N{c}", "sector": "半导体"} for c in ("000001", "000004")]).to_csv(
+        d / "finalists.csv", index=False)
+    ie.write_index_events(d, pd.DataFrame([
+        {"code": "000004", "index_code": "000300", "index_name": "沪深300", "side": "add", "ann_date": "20260529",
+         "eff_close_date": "20260612", "phase": "passive_close_eve", "source": "csindex", "flow_adv_days": 0.3},
+        {"code": "000006", "index_code": "000300", "index_name": "沪深300", "side": "add", "ann_date": "20260529",
+         "eff_close_date": "20260612", "phase": "passive_close_eve", "source": "csindex", "flow_adv_days": 0.3},
+        {"code": "000005", "index_code": "000905", "index_name": "中证500", "side": "drop", "ann_date": "20260529",
+         "eff_close_date": "20260612", "phase": "passive_close_eve", "source": "csindex", "flow_adv_days": None},
+        # amendment(task-6,非 brief 原文):Task 3 的 phase_for 撞节假日时保留日期字符串不清空——
+        # unknown_eff 行可以带一个"看起来"合法的 eff_close_date。它不是已核实的生效日,
+        # calendar_section 的市场级计数必须把它挡在外面(同 harvest_calendar 对第三腿的处理)。
+        # 若过滤漏了,下面这行会把同日沪深300计数从 ×2 顶成 ×3,冲掉
+        # test_calendar_section_prints_market_level_rebalance_counts 的断言——这就是「pin」。
+        {"code": "000007", "index_code": "000300", "index_name": "沪深300", "side": "add", "ann_date": "20260529",
+         "eff_close_date": "20260612", "phase": "unknown_eff", "source": "csindex", "flow_adv_days": None},
+    ], columns=ie.EVENT_COLS))
+    return d
+
+
+def test_calendar_flags_rebalance_eve_is_the_only_directional_line(tmp_path):
+    d = _mk_index(tmp_path)
+    eve = calendar_flags(d, "000004")
+    assert len(eve) == 1 and eve[0].startswith("- ⛔ **指数调样生效前夜**")
+    assert "沪深300 调入" in eve[0] and "20260612" in eve[0] and eve[0].endswith("入场行写 禁止")
+    fact = calendar_flags(d, "000005")
+    assert len(fact) == 1 and fact[0].startswith("- 📅 **指数调样**")
+    assert "中证500 调出" in fact[0] and "事实日期非方向" in fact[0]
+    assert "禁止" not in fact[0] and "买入" not in fact[0]           # 其它相位零方向词
+
+
+def test_calendar_flags_fact_line_carries_flow_only_when_present(tmp_path):
+    d = _mk_index(tmp_path)
+    assert "ETF 被动买入≈0.3 天 ADV" in calendar_flags(d, "000006")[0]
+    assert "ADV" not in calendar_flags(d, "000005")[0]
+
+
+def test_calendar_section_prints_market_level_rebalance_counts(tmp_path):
+    d = _mk_index(tmp_path)
+    s = calendar_section(d)
+    assert "- **指数调样 20260612 收盘生效**:" in s
+    assert "沪深300 ×2" in s and "中证500 ×1" in s and "finalist 涉及 1 只" in s
+    # amendment(task-6):000007 是 unknown_eff,即使带 eff_close_date 也不得计入——若漏过滤,
+    # 上面的 "沪深300 ×2" 断言会失败(实际会是 ×3),这里再加一条直接否定式断言便于定位。
+    assert "沪深300 ×3" not in s
+
+
+def test_calendar_section_shows_rebalance_even_without_unlock_or_disclosure_rows(tmp_path):
+    d = _mk_index(tmp_path)
+    df = pd.read_csv(d / "calendar.csv", dtype={"code": str})
+    df[df["kind"] == "index_rebalance"].to_csv(d / "calendar.csv", index=False)
+    s = calendar_section(d)
+    assert "指数调样 20260612" in s and "预约披露" not in s
+
+
+def test_brief_injects_rebalance_eve_line(tmp_path):
+    from autoresearch.scan.agents.l4_card import compose_funnel_brief
+    d = _mk_index(tmp_path)
+    assert "⛔ **指数调样生效前夜**" in compose_funnel_brief("000004", d)
+    assert "指数调样" not in compose_funnel_brief("000002", d)

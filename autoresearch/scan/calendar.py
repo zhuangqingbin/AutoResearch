@@ -127,7 +127,8 @@ def _load(scan_dir: Path | str) -> pd.DataFrame | None:
 
 def calendar_flags(scan_dir: Path | str, code: str, within_days: int = 30,
                    min_ratio: float = 2.0) -> list[str]:
-    """该票的日历行(L4 简报注入):解禁窗内且占比≥阈 → ⚠️;预约披露 → 📅。缺文件 → []。"""
+    """该票的日历行(L4 简报注入):解禁窗内且占比≥阈 → ⚠️;预约披露 → 📅。缺文件 → []。
+    指数调样 → 生效前夜 ⛔(唯一带方向词的日历行,方向是「禁止」),其它相位 📅 事实行。"""
     df = _load(scan_dir)
     if df is None:
         return []
@@ -142,12 +143,27 @@ def calendar_flags(scan_dir: Path | str, code: str, within_days: int = 30,
             out.append(f"- ⚠️ **解禁**:{ev} 占流通 {r.ratio:.1f}%({r.detail})——P4 必核抛压,事实日期非方向")
         elif r.kind == "disclosure":
             out.append(f"- 📅 **预约披露**:{ev}({r.detail})——业绩验证日,触发条件可锚定此日")
+        elif r.kind == "index_rebalance":
+            label, _, phase = str(r.detail).partition("|")
+            if phase == "passive_close_eve":
+                out.append(f"- ⛔ **指数调样生效前夜**:{label} 于 {ev} 收盘生效;今晚买入 = 与被动资金同价买入,"
+                           f"隔夜尺历史为负(docs/specs/2026-09-25-index-inclusion-signal-design.md §1)→ 入场行写 禁止")
+            else:
+                flow = "" if r.ratio is None or pd.isna(r.ratio) else f";ETF 被动买入≈{float(r.ratio):.1f} 天 ADV"
+                out.append(f"- 📅 **指数调样**:{ev} 收盘生效({label}{flow})——事实日期非方向")
     return out
 
 
 def calendar_section(scan_dir: Path | str, horizon_days: int = 14,
                      big_ratio: float = 5.0) -> str:
-    """summary 的未来两周日历块:finalists 披露日 + 大解禁(占比≥big_ratio)。缺文件 → ""。"""
+    """summary 的未来两周日历块:finalists 披露日 + 大解禁(占比≥big_ratio)+ 指数调样市场级计数。
+
+    调样计数读**全量** `index_events.csv`,不像披露/解禁两腿那样先过 `want`/finalists 过滤——一次
+    调样常牵动本轮既不在 finalists 也不在 L2 名单里的票,过滤会把市场级事实一并过滤掉。`unknown_eff`
+    相位的行即使 `eff_close_date` 非空也不计入:那一列日期是 `phase_for` 撞上节假日时保留下来的
+    解析产物,不是已核实的生效日(同 `harvest_calendar` 对第三腿的处理,2026-09-25 fix-round-1 #1)——
+    这一行断言的是「这一天是真的」,把未判定的日期算进计数就是把它当事实发布。缺文件 → ""。
+    """
     df = _load(scan_dir)
     if df is None:
         return ""
@@ -166,9 +182,16 @@ def calendar_section(scan_dir: Path | str, horizon_days: int = 14,
     df = df[df["event_date"].astype(str).str[:8] <= cut]
     disc = df[(df["kind"] == "disclosure") & df["code"].isin(fin)]
     unlk = df[(df["kind"] == "unlock") & (pd.to_numeric(df["ratio"], errors="coerce") >= big_ratio)]
-    if not len(disc) and not len(unlk):
+    from autoresearch.scan.index_events import load_index_events
+    ev = load_index_events(scan_dir)
+    if ev is not None and len(ev):
+        # amendment(task-6):unknown_eff 排除——见上面 docstring 与 harvest_calendar 同一处理。
+        ev = ev[ev["eff_close_date"].notna() & (ev["eff_close_date"].astype(str).str[:8] <= cut)
+                & (ev["phase"] != "unknown_eff")]
+    has_ev = ev is not None and len(ev) > 0
+    if not len(disc) and not len(unlk) and not has_ev:
         return ""
-    lines = [f"### 📅 未来 {horizon_days} 天日历(披露=催化锚,解禁=风险窗;事实日期非方向)"]
+    lines = [f"### 📅 未来 {horizon_days} 天日历(披露=催化锚,解禁=风险窗,调样=被动调仓收盘日;事实日期非方向)"]
     if len(disc):
         lines.append("- **finalists 预约披露**:" + "、".join(
             f"{r.code} {str(r.event_date)[:8]}" for r in disc.itertuples(index=False)))
@@ -176,6 +199,13 @@ def calendar_section(scan_dir: Path | str, horizon_days: int = 14,
         top = unlk.sort_values("ratio", ascending=False).head(8)
         lines.append(f"- **大解禁(占比≥{big_ratio:.0f}%)**:" + "、".join(
             f"{r.code} {str(r.event_date)[:8]}({r.ratio:.0f}%)" for r in top.itertuples(index=False)))
+    if has_ev:
+        for e_date, g in ev.groupby(ev["eff_close_date"].astype(str).str[:8]):
+            counts = g.groupby("index_name").size()
+            fin_n = int(g["code"].astype(str).str.zfill(6).isin(fin).sum())
+            lines.append(f"- **指数调样 {e_date} 收盘生效**:"
+                         + " / ".join(f"{k} ×{int(v)}" for k, v in counts.items())
+                         + f"(finalist 涉及 {fin_n} 只)")
     return "\n".join(lines) + "\n"
 
 
