@@ -414,6 +414,11 @@ ARTIFACTS: tuple[Artifact, ...] = (
              "factor_lab", "md", "gated", required_when="factor_lab run_ic_by_regime"),
     Artifact("sector_top3_backtest_csv", "sector_top3_backtest.csv", "research_report", "observe",
              "sector_top3_backtest", "csv", "gated", required_when="sector_top3_backtest 跑过"),
+    # 指数调样事件 · 隔夜尺普查(design 2026-09-25 附录 A 的可复现版;O8)
+    Artifact("index_rebalance_census_md", "index_rebalance_census.md", "research_report", "observe",
+             "index_rebalance_census", "md", "gated", required_when="index_rebalance_census 跑过"),
+    Artifact("index_rebalance_census_json", "_index_rebalance_census.json", "research_report", "observe",
+             "index_rebalance_census", "json", "gated", required_when="index_rebalance_census 跑过"),
     # factor_lab 自己的落盘根(ws.factor_lab_root())
     Artifact("factor_lab_ic_table", "ic_table.csv", "factor_lab", "observe",
              "factor_lab", "csv", "gated", required_when="factor_lab eval"),
